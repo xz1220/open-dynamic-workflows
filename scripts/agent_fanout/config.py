@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -91,12 +93,7 @@ def load_config(explicit_path: str | None = None) -> tuple[FanoutConfig, Path | 
 
 
 def parse_config(path: Path) -> FanoutConfig:
-    if tomllib is None:
-        raise RuntimeError(
-            "Reading TOML config requires Python 3.11+ or the 'tomli' package."
-        )
-    with path.open("rb") as handle:
-        raw = tomllib.load(handle)
+    raw = load_toml(path)
     if not isinstance(raw, dict):
         raise ValueError(f"Config must be a TOML table: {path}")
 
@@ -183,3 +180,76 @@ def _non_negative_int(value: Any, key: str) -> int:
     if not isinstance(value, int) or value < 0:
         raise ValueError(f"{key} must be a non-negative integer")
     return value
+
+
+def load_toml(path: Path) -> dict[str, Any]:
+    if tomllib is not None:
+        with path.open("rb") as handle:
+            return tomllib.load(handle)
+    return parse_simple_toml(path.read_text(encoding="utf-8"))
+
+
+def parse_simple_toml(text: str) -> dict[str, Any]:
+    data: dict[str, Any] = {}
+    current: dict[str, Any] = data
+    for line_number, raw_line in enumerate(text.splitlines(), start=1):
+        line = strip_comment(raw_line).strip()
+        if not line:
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            current = data
+            for part in line[1:-1].split("."):
+                if not part:
+                    raise ValueError(f"Invalid TOML table on line {line_number}")
+                next_table = current.setdefault(part, {})
+                if not isinstance(next_table, dict):
+                    raise ValueError(f"Cannot redefine TOML value as table on line {line_number}")
+                current = next_table
+            continue
+        if "=" not in line:
+            raise ValueError(f"Invalid TOML assignment on line {line_number}")
+        key, raw_value = line.split("=", 1)
+        key = key.strip()
+        if not re.match(r"^[A-Za-z0-9_-]+$", key):
+            raise ValueError(f"Unsupported TOML key on line {line_number}: {key}")
+        current[key] = parse_simple_toml_value(raw_value.strip(), line_number)
+    return data
+
+
+def parse_simple_toml_value(raw_value: str, line_number: int) -> Any:
+    if raw_value == "true":
+        return True
+    if raw_value == "false":
+        return False
+    if re.match(r"^-?\d+$", raw_value):
+        return int(raw_value)
+    try:
+        return json.loads(raw_value)
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            "Python 3.9 fallback parser supports strings, booleans, integers, "
+            f"and JSON-style arrays only; invalid value on line {line_number}: {raw_value}"
+        ) from exc
+
+
+def strip_comment(raw_line: str) -> str:
+    in_string = False
+    escaped = False
+    output: list[str] = []
+    for char in raw_line:
+        if escaped:
+            output.append(char)
+            escaped = False
+            continue
+        if char == "\\" and in_string:
+            output.append(char)
+            escaped = True
+            continue
+        if char == '"':
+            in_string = not in_string
+            output.append(char)
+            continue
+        if char == "#" and not in_string:
+            break
+        output.append(char)
+    return "".join(output)
