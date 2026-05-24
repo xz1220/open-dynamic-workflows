@@ -243,3 +243,34 @@ def test_builtin_claude_adapter_uses_stdin() -> None:
     claude = default_config().agents["claude"]
     assert "{prompt}" not in claude.command
     assert claude.stdin == "{prompt}"
+
+
+def test_builtin_qwen_and_kimi_adapters_are_available() -> None:
+    config = default_config()
+    assert config.default_agents == ["codex", "claude", "gemini", "qwen", "kimi"]
+
+    qwen = config.agents["qwen"]
+    assert qwen.label == "Qwen Code"
+    assert qwen.command == [
+        "qwen",
+        "--approval-mode",
+        "auto-edit",
+        "--output-format",
+        "text",
+        "{prompt}",
+    ]
+    assert qwen.stdin is None
+
+    kimi = config.agents["kimi"]
+    assert kimi.label == "Kimi CLI"
+    assert kimi.command == [
+        "kimi",
+        "--work-dir",
+        "{workspace}",
+        "--print",
+        "--input-format",
+        "text",
+        "--output-format",
+        "text",
+    ]
+    assert kimi.stdin == "{prompt}"

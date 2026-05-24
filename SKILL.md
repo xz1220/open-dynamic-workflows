@@ -1,6 +1,6 @@
 ---
 name: agent-swarm
-description: Dispatch one Plan, Execute, or Review request to multiple independent coding agents such as Codex CLI, Claude Code, Gemini CLI, or MCP-backed wrappers, then return their raw outputs to the main agent. Use when the user explicitly invokes $agent-swarm for multi-agent planning, implementation attempts, or review. Treat plan, execute, and review as actions, not separate skills.
+description: Dispatch one Plan, Execute, or Review request to multiple independent coding agents such as Codex CLI, Claude Code, Gemini CLI, Qwen Code, Kimi CLI, or MCP-backed wrappers, then return their raw outputs to the main agent. Use when the user explicitly invokes $agent-swarm for multi-agent planning, implementation attempts, or review. Treat plan, execute, and review as actions, not separate skills.
 license: MIT. See LICENSE for full terms.
 ---
 
@@ -34,7 +34,7 @@ This skill is not a voting system, debate loop, consensus engine, or autonomous 
    - Then `$AGENT_SWARM_CONFIG`.
    - Then `./agent-swarm.toml`.
    - Then `~/.config/agent-swarm/config.toml`.
-   - If no config exists, built-in `codex`, `claude`, and `gemini` command adapters are available.
+   - If no config exists, built-in `codex`, `claude`, `gemini`, `qwen`, and `kimi` command adapters are available.
 4. Run the script from the skill directory:
    ```bash
    python3 scripts/agent_swarm.py plan --task "Design the migration."
@@ -48,7 +48,7 @@ This skill is not a voting system, debate loop, consensus engine, or autonomous 
 Users can set default agents in TOML:
 
 ```toml
-default_agents = ["codex", "claude", "gemini"]
+default_agents = ["codex", "claude", "gemini", "qwen", "kimi"]
 
 [agents.codex]
 command = ["codex", "exec", "--skip-git-repo-check", "--sandbox", "workspace-write", "--cd", "{workspace}", "-"]
@@ -60,6 +60,13 @@ stdin = "{prompt}"
 
 [agents.gemini]
 command = ["gemini", "--approval-mode", "auto_edit", "{prompt}"]
+
+[agents.qwen]
+command = ["qwen", "--approval-mode", "auto-edit", "--output-format", "text", "{prompt}"]
+
+[agents.kimi]
+command = ["kimi", "--work-dir", "{workspace}", "--print", "--input-format", "text", "--output-format", "text"]
+stdin = "{prompt}"
 ```
 
 Single-call overrides:
@@ -68,8 +75,8 @@ Single-call overrides:
 python3 scripts/agent_swarm.py plan --agents codex,claude --task "..."
 ```
 
-If Gemini CLI is not installed, set `default_agents = ["codex", "claude"]` or pass
-`--agents codex,claude`.
+If Gemini, Qwen, or Kimi CLI is not installed, set `default_agents` to the
+agents you have locally, or pass `--agents codex,claude`.
 
 Read `config.example.toml` and `references/adapters.md` when adding MCP wrappers such as `codex-mcp-server` or `claude-code-mcp`.
 
@@ -94,4 +101,4 @@ Read `config.example.toml` and `references/adapters.md` when adding MCP wrappers
 - `scripts/agent_swarm.py`: CLI entry point.
 - `scripts/agent_swarm/`: implementation package.
 - `config.example.toml`: default adapter examples.
-- `references/adapters.md`: notes for Codex CLI, Claude Code, Gemini CLI, and MCP-backed wrappers.
+- `references/adapters.md`: notes for Codex CLI, Claude Code, Gemini CLI, Qwen Code, Kimi CLI, and MCP-backed wrappers.

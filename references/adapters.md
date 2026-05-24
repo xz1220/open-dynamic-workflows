@@ -52,6 +52,34 @@ command = ["gemini", "--approval-mode", "auto_edit", "{prompt}"]
 
 If your Gemini setup requires sandboxing or extension controls, add those flags in this command list.
 
+## Qwen Code
+
+Qwen Code supports non-interactive prompts through a positional prompt or `-p/--prompt`.
+The built-in adapter uses the positional form:
+
+```toml
+[agents.qwen]
+command = ["qwen", "--approval-mode", "auto-edit", "--output-format", "text", "{prompt}"]
+```
+
+The agent runs with the temporary workspace as its current working directory. If your
+Qwen setup needs a specific model or auth type, add flags such as `--model` or
+`--auth-type` to the command list.
+
+## Kimi CLI
+
+Kimi CLI supports print mode for non-interactive runs. Use stdin for the generated
+prompt so large tasks do not need to fit in one shell argument:
+
+```toml
+[agents.kimi]
+command = ["kimi", "--work-dir", "{workspace}", "--print", "--input-format", "text", "--output-format", "text"]
+stdin = "{prompt}"
+```
+
+`--print` currently implies automatic approval in Kimi CLI. Agent Swarm still runs
+each agent in a temporary workspace copy by default and collects the resulting diff.
+
 ## codex-plugin-cc
 
 `openai/codex-plugin-cc` is a Claude Code plugin. It is useful when Claude Code is the host and Codex is the delegated reviewer or worker. Agent Swarm is host-neutral, so it does not invoke Claude slash commands directly. If you want to reuse that plugin path, wrap the relevant Claude Code command in a script and configure it as an agent.

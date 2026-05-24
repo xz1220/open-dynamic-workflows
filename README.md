@@ -10,7 +10,7 @@
 
 <br>
 
-Codex、Claude Code、Gemini CLI 各有盲区？<br>
+Codex、Claude Code、Gemini CLI、Qwen Code、Kimi CLI 各有盲区？<br>
 想让它们独立 plan、execute、review，但不想要自动投票？<br>
 需要把所有原始意见摆到主 agent 面前再判断？
 
@@ -121,8 +121,8 @@ python3 scripts/agent_swarm.py review \
 python3 scripts/agent_swarm.py plan --agents codex,claude --task "..."
 ```
 
-如果你没有安装 Gemini CLI，把配置里的 `default_agents` 改成
-`["codex", "claude"]`，或单次运行时传 `--agents codex,claude`。
+如果你没有安装某个 CLI，把配置里的 `default_agents` 改成你本机有的
+agent，或单次运行时传 `--agents codex,claude,qwen,kimi`。
 
 ---
 
@@ -147,6 +147,12 @@ python3 scripts/agent_swarm.py plan --agents codex,claude --task "..."
 
 ## Agent: gemini
 原始方案...
+
+## Agent: qwen
+原始方案...
+
+## Agent: kimi
+原始方案...
 ```
 
 随后主 agent 再基于这些原始输出做综合判断。
@@ -161,7 +167,7 @@ python3 scripts/agent_swarm.py plan --agents codex,claude --task "..."
 2. `$AGENT_SWARM_CONFIG`
 3. 当前目录 `agent-swarm.toml`
 4. `~/.config/agent-swarm/config.toml`
-5. 内置 `codex` / `claude` / `gemini` 适配示例
+5. 内置 `codex` / `claude` / `gemini` / `qwen` / `kimi` 适配示例
 
 复制示例配置：
 
@@ -170,9 +176,10 @@ mkdir -p "$HOME/.config/agent-swarm"
 cp config.example.toml "$HOME/.config/agent-swarm/config.toml"
 ```
 
-配置文件里通过 `default_agents` 设置默认 agent；单次调用用 `--agents codex,claude` 覆盖。
+配置文件里通过 `default_agents` 设置默认 agent；单次调用用
+`--agents codex,claude,qwen,kimi` 覆盖。
 
-底层不重造 harness。它只调用你配置好的本地命令，例如 `codex exec`、`claude --print`、`gemini`、`codex-mcp-server` 或 `claude-code-mcp` wrapper。更多例子见 [`references/adapters.md`](references/adapters.md)。
+底层不重造 harness。它只调用你配置好的本地命令，例如 `codex exec`、`claude --print`、`gemini`、`qwen`、`kimi`、`codex-mcp-server` 或 `claude-code-mcp` wrapper。更多例子见 [`references/adapters.md`](references/adapters.md)。
 
 ---
 

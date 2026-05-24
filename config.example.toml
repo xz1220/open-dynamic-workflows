@@ -1,7 +1,7 @@
 # Copy to ~/.config/agent-swarm/config.toml or pass with --config.
 # This file intentionally calls existing harness CLIs instead of implementing model APIs.
 
-default_agents = ["codex", "claude", "gemini"]
+default_agents = ["codex", "claude", "gemini", "qwen", "kimi"]
 timeout_seconds = 1800
 workspace_mode = "copy"
 capture_diff = true
@@ -40,6 +40,31 @@ command = [
   "auto_edit",
   "{prompt}"
 ]
+
+[agents.qwen]
+label = "Qwen Code"
+command = [
+  "qwen",
+  "--approval-mode",
+  "auto-edit",
+  "--output-format",
+  "text",
+  "{prompt}"
+]
+
+[agents.kimi]
+label = "Kimi CLI"
+command = [
+  "kimi",
+  "--work-dir",
+  "{workspace}",
+  "--print",
+  "--input-format",
+  "text",
+  "--output-format",
+  "text"
+]
+stdin = "{prompt}"
 
 # Example: a custom wrapper around an MCP-backed bridge.
 # [agents.codex_mcp]

@@ -69,8 +69,38 @@ def default_config() -> SwarmConfig:
             label="Gemini CLI",
             command=["gemini", "--approval-mode", "auto_edit", "{prompt}"],
         ),
+        "qwen": AgentConfig(
+            name="qwen",
+            label="Qwen Code",
+            command=[
+                "qwen",
+                "--approval-mode",
+                "auto-edit",
+                "--output-format",
+                "text",
+                "{prompt}",
+            ],
+        ),
+        "kimi": AgentConfig(
+            name="kimi",
+            label="Kimi CLI",
+            command=[
+                "kimi",
+                "--work-dir",
+                "{workspace}",
+                "--print",
+                "--input-format",
+                "text",
+                "--output-format",
+                "text",
+            ],
+            stdin="{prompt}",
+        ),
     }
-    return SwarmConfig(default_agents=["codex", "claude", "gemini"], agents=agents)
+    return SwarmConfig(
+        default_agents=["codex", "claude", "gemini", "qwen", "kimi"],
+        agents=agents,
+    )
 
 
 def config_search_paths(explicit_path: str | None = None) -> list[Path]:
