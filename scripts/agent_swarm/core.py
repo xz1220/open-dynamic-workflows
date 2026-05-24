@@ -12,7 +12,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .config import AgentConfig, FanoutConfig
+from .config import AgentConfig, SwarmConfig
 from .workspace import WorkspaceCopy, collect_diff
 
 PLACEHOLDER_PATTERN = re.compile(r"\{(prompt|prompt_file|workspace|source|action|agent)\}")
@@ -42,7 +42,7 @@ class AgentResult:
 
 
 @dataclass
-class FanoutRun:
+class SwarmRun:
     action: str
     task: str
     source: str
@@ -55,7 +55,7 @@ class FanoutRun:
 
     def to_markdown(self) -> str:
         lines = [
-            f"# agent-fanout {self.action}",
+            f"# agent-swarm {self.action}",
             "",
             f"- source: `{self.source}`",
             f"- started_at: `{self.started_at}`",
@@ -74,19 +74,19 @@ class FanoutRun:
         return "\n".join(lines).rstrip() + "\n"
 
 
-def run_fanout(
+def run_swarm(
     *,
     action: str,
     task: str,
     source: Path,
-    config: FanoutConfig,
+    config: SwarmConfig,
     config_path: Path | None,
     agents: list[AgentConfig],
     artifacts: list[Artifact],
     workspace_mode: str | None = None,
     keep_workspaces: bool = False,
     timeout_seconds: int | None = None,
-) -> FanoutRun:
+) -> SwarmRun:
     started_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
     mode = workspace_mode or config.workspace_mode
     timeout = timeout_seconds or config.timeout_seconds
@@ -107,7 +107,7 @@ def run_fanout(
             for agent in agents
         ]
         results = [future.result() for future in futures]
-    return FanoutRun(
+    return SwarmRun(
         action=action,
         task=task,
         source=str(source.resolve()),
@@ -122,7 +122,7 @@ def run_agent(
     action: str,
     task: str,
     source: Path,
-    config: FanoutConfig,
+    config: SwarmConfig,
     agent: AgentConfig,
     artifacts: list[Artifact],
     workspace_mode: str,
@@ -142,7 +142,7 @@ def run_agent(
             "w",
             encoding="utf-8",
             delete=False,
-            prefix="agent-fanout-prompt-",
+            prefix="agent-swarm-prompt-",
             suffix=".md",
         ) as handle:
             handle.write(prompt)
@@ -243,7 +243,7 @@ def build_prompt(
 ) -> str:
     action_title = action.upper()
     lines = [
-        "You are one of several independent coding agents in an agent-fanout run.",
+        "You are one of several independent coding agents in an agent-swarm run.",
         "Other agents are receiving the same request, but you must not coordinate with them.",
         "Do not ask for or infer their drafts. Do not run a debate or consensus process.",
         "Return your own raw result for the main agent to inspect.",
@@ -265,7 +265,7 @@ def build_prompt(
             [
                 "Attempt the implementation independently in this isolated workspace copy.",
                 "Do not write outside the workspace. Do not commit, push, or open a PR.",
-                "Leave any file edits in the workspace; the fanout tool will collect the diff.",
+                "Leave any file edits in the workspace; Agent Swarm will collect the diff.",
             ]
         )
     elif action == "review":
@@ -426,7 +426,7 @@ def truncate(value: str, max_chars: int) -> str:
     if max_chars <= 0 or len(value) <= max_chars:
         return value
     omitted = len(value) - max_chars
-    return value[:max_chars] + f"\n[agent-fanout truncated {omitted} chars]\n"
+    return value[:max_chars] + f"\n[agent-swarm truncated {omitted} chars]\n"
 
 
 def _maybe_decode(value: str | bytes | None) -> str:

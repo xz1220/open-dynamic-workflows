@@ -26,7 +26,7 @@ class AgentConfig:
 
 
 @dataclass(frozen=True)
-class FanoutConfig:
+class SwarmConfig:
     default_agents: list[str]
     agents: dict[str, AgentConfig]
     timeout_seconds: int = 1800
@@ -35,7 +35,7 @@ class FanoutConfig:
     max_output_chars: int = 0
 
 
-def default_config() -> FanoutConfig:
+def default_config() -> SwarmConfig:
     agents = {
         "codex": AgentConfig(
             name="codex",
@@ -70,29 +70,29 @@ def default_config() -> FanoutConfig:
             command=["gemini", "--approval-mode", "auto_edit", "{prompt}"],
         ),
     }
-    return FanoutConfig(default_agents=["codex", "claude", "gemini"], agents=agents)
+    return SwarmConfig(default_agents=["codex", "claude", "gemini"], agents=agents)
 
 
 def config_search_paths(explicit_path: str | None = None) -> list[Path]:
     paths: list[Path] = []
     if explicit_path:
         paths.append(Path(explicit_path).expanduser())
-    env_path = os.environ.get("AGENT_FANOUT_CONFIG")
+    env_path = os.environ.get("AGENT_SWARM_CONFIG")
     if env_path:
         paths.append(Path(env_path).expanduser())
-    paths.append(Path.cwd() / "agent-fanout.toml")
-    paths.append(Path.home() / ".config" / "agent-fanout" / "config.toml")
+    paths.append(Path.cwd() / "agent-swarm.toml")
+    paths.append(Path.home() / ".config" / "agent-swarm" / "config.toml")
     return paths
 
 
-def load_config(explicit_path: str | None = None) -> tuple[FanoutConfig, Path | None]:
+def load_config(explicit_path: str | None = None) -> tuple[SwarmConfig, Path | None]:
     for path in config_search_paths(explicit_path):
         if path.exists():
             return parse_config(path), path
     return default_config(), None
 
 
-def parse_config(path: Path) -> FanoutConfig:
+def parse_config(path: Path) -> SwarmConfig:
     raw = load_toml(path)
     if not isinstance(raw, dict):
         raise ValueError(f"Config must be a TOML table: {path}")
@@ -144,7 +144,7 @@ def parse_config(path: Path) -> FanoutConfig:
     if not isinstance(capture_diff, bool):
         raise ValueError("capture_diff must be true or false")
 
-    return FanoutConfig(
+    return SwarmConfig(
         default_agents=default_agents,
         agents=agents,
         timeout_seconds=timeout_seconds,
@@ -154,7 +154,7 @@ def parse_config(path: Path) -> FanoutConfig:
     )
 
 
-def select_agents(config: FanoutConfig, override: str | None) -> list[AgentConfig]:
+def select_agents(config: SwarmConfig, override: str | None) -> list[AgentConfig]:
     names = parse_agent_names(override) if override else config.default_agents
     missing = [name for name in names if name not in config.agents]
     if missing:

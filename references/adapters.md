@@ -1,6 +1,6 @@
 # Adapter Notes
 
-Agent Fanout delegates to existing local harnesses. It does not call LLM APIs directly and does not reimplement MCP bridges.
+Agent Swarm delegates to existing local harnesses. It does not call LLM APIs directly and does not reimplement MCP bridges.
 
 ## Command Placeholders
 
@@ -54,12 +54,12 @@ If your Gemini setup requires sandboxing or extension controls, add those flags 
 
 ## codex-plugin-cc
 
-`openai/codex-plugin-cc` is a Claude Code plugin. It is useful when Claude Code is the host and Codex is the delegated reviewer or worker. Agent Fanout is host-neutral, so it does not invoke Claude slash commands directly. If you want to reuse that plugin path, wrap the relevant Claude Code command in a script and configure it as an agent.
+`openai/codex-plugin-cc` is a Claude Code plugin. It is useful when Claude Code is the host and Codex is the delegated reviewer or worker. Agent Swarm is host-neutral, so it does not invoke Claude slash commands directly. If you want to reuse that plugin path, wrap the relevant Claude Code command in a script and configure it as an agent.
 
 ## codex-mcp-server
 
-`tuannvm/codex-mcp-server` exposes Codex CLI through MCP. Keep using that server from the host that already supports MCP. For Agent Fanout, configure a thin local command that calls your MCP client or existing wrapper; do not duplicate the server.
+`tuannvm/codex-mcp-server` exposes Codex CLI through MCP. Keep using that server from the host that already supports MCP. For Agent Swarm, configure a thin local command that calls your MCP client or existing wrapper; do not duplicate the server.
 
 ## claude-code-mcp
 
-`steipete/claude-code-mcp` exposes Claude Code as a one-shot MCP server. Configure your MCP client or local wrapper as an Agent Fanout command when the current host cannot call Claude Code directly.
+`steipete/claude-code-mcp` exposes Claude Code as a one-shot MCP server. Configure your MCP client or local wrapper as an Agent Swarm command when the current host cannot call Claude Code directly.

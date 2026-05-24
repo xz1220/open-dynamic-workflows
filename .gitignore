@@ -8,4 +8,4 @@ dist/
 build/
 *.egg-info/
 .DS_Store
-agent-fanout.toml
+agent-swarm.toml

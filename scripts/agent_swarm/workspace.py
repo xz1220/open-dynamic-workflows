@@ -36,7 +36,7 @@ class WorkspaceCopy(AbstractContextManager["WorkspaceCopy"]):
             self.path = self.source
             return self
 
-        self._tmp = tempfile.TemporaryDirectory(prefix="agent-fanout-")
+        self._tmp = tempfile.TemporaryDirectory(prefix="agent-swarm-")
         self.path = Path(self._tmp.name) / "workspace"
         self.path.mkdir(parents=True)
         self.copied = True
@@ -108,10 +108,10 @@ def git_visible_files(source: Path) -> list[Path] | None:
 def init_baseline(path: Path) -> None:
     commands = [
         ["git", "init", "-q"],
-        ["git", "config", "user.email", "agent-fanout@example.invalid"],
-        ["git", "config", "user.name", "Agent Fanout"],
+        ["git", "config", "user.email", "agent-swarm@example.invalid"],
+        ["git", "config", "user.name", "Agent Swarm"],
         ["git", "add", "-A"],
-        ["git", "commit", "--allow-empty", "-qm", "agent-fanout baseline"],
+        ["git", "commit", "--allow-empty", "-qm", "agent-swarm baseline"],
     ]
     for command in commands:
         subprocess.run(

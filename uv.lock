@@ -7,7 +7,7 @@ resolution-markers = [
 ]
 
 [[package]]
-name = "agent-fanout-skill"
+name = "agent-swarm"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [

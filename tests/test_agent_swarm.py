@@ -6,10 +6,10 @@ import subprocess
 import sys
 from pathlib import Path
 
-from agent_fanout.config import default_config, parse_simple_toml
+from agent_swarm.config import default_config, parse_simple_toml
 
 ROOT = Path(__file__).resolve().parents[1]
-CLI = ROOT / "scripts" / "agent_fanout.py"
+CLI = ROOT / "scripts" / "agent_swarm.py"
 
 
 def write_config(path: Path, python: str) -> Path:
@@ -170,7 +170,7 @@ def test_prompt_expansion_preserves_placeholders_inside_prompt(tmp_path: Path) -
         "artifact=data.split('--- artifact:', 1)[1].split('--- end artifact:', 1)[0]; "
         "target='\"' + '{' + 'workspace' + '}' + '\"'; "
         "print('literal placeholder', target in artifact); "
-        "print('temp path leaked', '/agent-fanout-' in artifact)"
+        "print('temp path leaked', '/agent-swarm-' in artifact)"
     )
     reader_command = json.dumps([sys.executable, "-c", reader_code])
     config.write_text(
@@ -204,7 +204,7 @@ stdin = "{{prompt}}"
 
 
 def test_docs_do_not_reference_nonexistent_skill_triggers() -> None:
-    invalid = ("$agent-fanout-plan", "$agent-fanout-execute", "$agent-fanout-review")
+    invalid = ("$agent-swarm-plan", "$agent-swarm-execute", "$agent-swarm-review")
     paths = [ROOT / "README.md", ROOT / "SKILL.md", ROOT / "agents" / "openai.yaml"]
     for path in paths:
         content = path.read_text()

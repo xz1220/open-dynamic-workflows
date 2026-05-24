@@ -1,7 +1,7 @@
 [project]
-name = "agent-fanout-skill"
+name = "agent-swarm"
 version = "0.1.0"
-description = "Agent Skill for fan-out and raw collection across multiple coding agents"
+description = "Agent Skill for independent multi-agent runs and raw output collection"
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
@@ -16,17 +16,17 @@ test = [
 ]
 
 [project.scripts]
-agent-fanout = "agent_fanout.cli:main"
-agent-fanout-plan = "agent_fanout.cli:plan_main"
-agent-fanout-execute = "agent_fanout.cli:execute_main"
-agent-fanout-review = "agent_fanout.cli:review_main"
+agent-swarm = "agent_swarm.cli:main"
+agent-swarm-plan = "agent_swarm.cli:plan_main"
+agent-swarm-execute = "agent_swarm.cli:execute_main"
+agent-swarm-review = "agent_swarm.cli:review_main"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["scripts/agent_fanout"]
+packages = ["scripts/agent_swarm"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

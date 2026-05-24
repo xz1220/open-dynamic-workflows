@@ -1,6 +1,6 @@
 <div align="center">
 
-# agent-fanout.skill
+# Agent Swarm
 
 > 把同一个开发问题并发分发给多个 coding agent，收集原始输出，交给主 agent 综合判断。
 
@@ -14,7 +14,7 @@ Codex、Claude Code、Gemini CLI 各有盲区？<br>
 想让它们独立 plan、execute、review，但不想要自动投票？<br>
 需要把所有原始意见摆到主 agent 面前再判断？
 
-**用这个 skill 做 fan-out + collect，不在 skill 内做共识、投票或自动落盘。**
+**用这个 skill 做并发分发 + 原始收集，不在 skill 内做共识、投票或自动落盘。**
 
 [安装](#安装) · [使用](#使用) · [效果示例](#效果示例) · [配置](#配置) · [开发与校验](#开发与校验)
 
@@ -41,36 +41,36 @@ Codex、Claude Code、Gemini CLI 各有盲区？<br>
 把这段话发给你正在使用的 Coding Agent：
 
 ```text
-请安装这个 Agent Skill：https://github.com/xz1220/agent-fanout-skill。
+请安装这个 Agent Skill：https://github.com/xz1220/agent-swarm。
 
-这个仓库本身就是 skill 根目录。请把它 clone 到当前 Agent 的 skills 目录并命名为 `agent-fanout`，确保安装后是 `agent-fanout/SKILL.md`。装完后运行 `python3 scripts/agent_fanout.py --help` 验证，并提醒我配置默认 agents。
+这个仓库本身就是 skill 根目录。请把它 clone 到当前 Agent 的 skills 目录并命名为 `agent-swarm`，确保安装后是 `agent-swarm/SKILL.md`。装完后运行 `python3 scripts/agent_swarm.py --help` 验证，并提醒我配置默认 agents。
 ```
 
 ### 手动安装
 
 ```bash
-git clone https://github.com/xz1220/agent-fanout-skill.git \
-  "${CODEX_HOME:-$HOME/.codex}/skills/agent-fanout"
+git clone https://github.com/xz1220/agent-swarm.git \
+  "${CODEX_HOME:-$HOME/.codex}/skills/agent-swarm"
 ```
 
 Claude Code：
 
 ```bash
 mkdir -p "$HOME/.claude/skills"
-git clone https://github.com/xz1220/agent-fanout-skill.git \
-  "$HOME/.claude/skills/agent-fanout"
+git clone https://github.com/xz1220/agent-swarm.git \
+  "$HOME/.claude/skills/agent-swarm"
 ```
 
 可选安装 CLI：
 
 ```bash
-cd /path/to/agent-fanout-skill
+cd /path/to/agent-swarm
 python3 -m pip install -e .
 ```
 
-安装 CLI 后，shell 入口是 `agent-fanout plan|execute|review`。包内也提供
-`agent-fanout-plan`、`agent-fanout-execute`、`agent-fanout-review` 这几个可选
-shell shortcut；它们不是 Agent Skill 名称。Agent Skill 只有 `$agent-fanout`。
+安装 CLI 后，shell 入口是 `agent-swarm plan|execute|review`。包内也提供
+`agent-swarm-plan`、`agent-swarm-execute`、`agent-swarm-review` 这几个可选
+shell shortcut；它们不是 Agent Skill 名称。Agent Skill 只有 `$agent-swarm`。
 
 ---
 
@@ -79,38 +79,38 @@ shell shortcut；它们不是 Agent Skill 名称。Agent Skill 只有 `$agent-fa
 ### Plan
 
 ```text
-请使用 $agent-fanout plan：
+请使用 $agent-swarm plan：
 为这个迁移任务设计方案：...
 ```
 
 等价脚本命令：
 
 ```bash
-python3 scripts/agent_fanout.py plan --task "为这个迁移任务设计方案：..."
+python3 scripts/agent_swarm.py plan --task "为这个迁移任务设计方案：..."
 ```
 
 ### Execute
 
 ```text
-请使用 $agent-fanout execute：
+请使用 $agent-swarm execute：
 实现这个明确任务：...
 ```
 
 脚本会给每个 agent 建一个临时工作区副本。agent 可以在副本里改文件，脚本只返回 diff，不会把改动写回你的主仓库。
 
 ```bash
-python3 scripts/agent_fanout.py execute --task "实现这个明确任务：..."
+python3 scripts/agent_swarm.py execute --task "实现这个明确任务：..."
 ```
 
 ### Review
 
 ```text
-请使用 $agent-fanout review 这个 patch，重点看并发和错误处理：
+请使用 $agent-swarm review 这个 patch，重点看并发和错误处理：
 path/to/changes.patch
 ```
 
 ```bash
-python3 scripts/agent_fanout.py review \
+python3 scripts/agent_swarm.py review \
   --artifact path/to/changes.patch \
   --task "重点看并发和错误处理"
 ```
@@ -118,7 +118,7 @@ python3 scripts/agent_fanout.py review \
 单次覆盖 agents：
 
 ```bash
-python3 scripts/agent_fanout.py plan --agents codex,claude --task "..."
+python3 scripts/agent_swarm.py plan --agents codex,claude --task "..."
 ```
 
 如果你没有安装 Gemini CLI，把配置里的 `default_agents` 改成
@@ -128,16 +128,16 @@ python3 scripts/agent_fanout.py plan --agents codex,claude --task "..."
 
 ## 效果示例
 
-**没用 agent-fanout**：
+**没用 agent-swarm**：
 
 ```text
 主 agent：我会给出一个方案，并自行判断风险。
 ```
 
-**使用 agent-fanout**：
+**使用 agent-swarm**：
 
 ```text
-# agent-fanout plan
+# agent-swarm plan
 
 ## Agent: codex
 原始方案...
@@ -158,16 +158,16 @@ python3 scripts/agent_fanout.py plan --agents codex,claude --task "..."
 默认查找顺序：
 
 1. `--config <path>`
-2. `$AGENT_FANOUT_CONFIG`
-3. 当前目录 `agent-fanout.toml`
-4. `~/.config/agent-fanout/config.toml`
+2. `$AGENT_SWARM_CONFIG`
+3. 当前目录 `agent-swarm.toml`
+4. `~/.config/agent-swarm/config.toml`
 5. 内置 `codex` / `claude` / `gemini` 适配示例
 
 复制示例配置：
 
 ```bash
-mkdir -p "$HOME/.config/agent-fanout"
-cp config.example.toml "$HOME/.config/agent-fanout/config.toml"
+mkdir -p "$HOME/.config/agent-swarm"
+cp config.example.toml "$HOME/.config/agent-swarm/config.toml"
 ```
 
 配置文件里通过 `default_agents` 设置默认 agent；单次调用用 `--agents codex,claude` 覆盖。
@@ -179,15 +179,15 @@ cp config.example.toml "$HOME/.config/agent-fanout/config.toml"
 ## 项目结构
 
 ```text
-agent-fanout-skill/
+agent-swarm/
 ├── SKILL.md
 ├── README.md
 ├── config.example.toml
 ├── references/
 │   └── adapters.md
 ├── scripts/
-│   ├── agent_fanout.py
-│   └── agent_fanout/
+│   ├── agent_swarm.py
+│   └── agent_swarm/
 ├── tests/
 ├── pyproject.toml
 └── LICENSE
@@ -198,7 +198,7 @@ agent-fanout-skill/
 ## 开发与校验
 
 ```bash
-python3 scripts/agent_fanout.py --help
+python3 scripts/agent_swarm.py --help
 python3 -m pytest
 python3 /path/to/skill-creator/scripts/quick_validate.py .
 ```
