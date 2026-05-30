@@ -1,5 +1,5 @@
 [project]
-name = "agent-swarm"
+name = "tutti"
 version = "0.1.0"
 description = "Agent Skill for independent multi-agent runs and raw output collection"
 readme = "README.md"
@@ -16,17 +16,17 @@ test = [
 ]
 
 [project.scripts]
-agent-swarm = "agent_swarm.cli:main"
-agent-swarm-plan = "agent_swarm.cli:plan_main"
-agent-swarm-execute = "agent_swarm.cli:execute_main"
-agent-swarm-review = "agent_swarm.cli:review_main"
+tutti = "tutti.cli:main"
+tutti-plan = "tutti.cli:plan_main"
+tutti-execute = "tutti.cli:execute_main"
+tutti-review = "tutti.cli:review_main"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["scripts/agent_swarm"]
+packages = ["scripts/tutti"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -1,4 +1,4 @@
 interface:
-  display_name: "Agent Swarm"
+  display_name: "Tutti"
   short_description: "Collect raw multi-agent outputs"
-  default_prompt: "Use $agent-swarm to collect independent plans from configured coding agents."
+  default_prompt: "Use $tutti to collect independent plans from configured coding agents."

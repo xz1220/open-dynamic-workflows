@@ -8,4 +8,4 @@ dist/
 build/
 *.egg-info/
 .DS_Store
-agent-swarm.toml
+tutti.toml

@@ -55,7 +55,7 @@ class SwarmRun:
 
     def to_markdown(self) -> str:
         lines = [
-            f"# agent-swarm {self.action}",
+            f"# tutti {self.action}",
             "",
             f"- source: `{self.source}`",
             f"- started_at: `{self.started_at}`",
@@ -142,7 +142,7 @@ def run_agent(
             "w",
             encoding="utf-8",
             delete=False,
-            prefix="agent-swarm-prompt-",
+            prefix="tutti-prompt-",
             suffix=".md",
         ) as handle:
             handle.write(prompt)
@@ -243,7 +243,7 @@ def build_prompt(
 ) -> str:
     action_title = action.upper()
     lines = [
-        "You are one of several independent coding agents in an agent-swarm run.",
+        "You are one of several independent coding agents in an tutti run.",
         "Other agents are receiving the same request, but you must not coordinate with them.",
         "Do not ask for or infer their drafts. Do not run a debate or consensus process.",
         "Return your own raw result for the main agent to inspect.",
@@ -265,7 +265,7 @@ def build_prompt(
             [
                 "Attempt the implementation independently in this isolated workspace copy.",
                 "Do not write outside the workspace. Do not commit, push, or open a PR.",
-                "Leave any file edits in the workspace; Agent Swarm will collect the diff.",
+                "Leave any file edits in the workspace; Tutti will collect the diff.",
             ]
         )
     elif action == "review":
@@ -426,7 +426,7 @@ def truncate(value: str, max_chars: int) -> str:
     if max_chars <= 0 or len(value) <= max_chars:
         return value
     omitted = len(value) - max_chars
-    return value[:max_chars] + f"\n[agent-swarm truncated {omitted} chars]\n"
+    return value[:max_chars] + f"\n[tutti truncated {omitted} chars]\n"
 
 
 def _maybe_decode(value: str | bytes | None) -> str:

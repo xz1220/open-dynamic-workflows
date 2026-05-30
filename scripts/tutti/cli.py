@@ -32,7 +32,7 @@ def review_main(argv: list[str] | None = None) -> int:
 
 
 def command_entry(action: str, argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog=f"agent-swarm-{action}")
+    parser = argparse.ArgumentParser(prog=f"tutti-{action}")
     add_common_args(parser)
     parser.set_defaults(action=action)
     args = parser.parse_args(argv)
@@ -40,7 +40,7 @@ def command_entry(action: str, argv: list[str] | None = None) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="agent-swarm")
+    parser = argparse.ArgumentParser(prog="tutti")
     subparsers = parser.add_subparsers(dest="action")
     for action in VALID_ACTIONS:
         subparser = subparsers.add_parser(action)
@@ -51,7 +51,7 @@ def build_parser() -> argparse.ArgumentParser:
 def add_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--task", help="Task, problem, or review focus text.")
     parser.add_argument("--agents", help="Comma-separated agent names overriding default_agents.")
-    parser.add_argument("--config", help="Path to agent-swarm TOML config.")
+    parser.add_argument("--config", help="Path to tutti TOML config.")
     parser.add_argument("--source", default=".", help="Workspace source to copy. Defaults to cwd.")
     parser.add_argument(
         "--artifact",
@@ -103,7 +103,7 @@ def run_from_args(args: argparse.Namespace) -> int:
             timeout_seconds=args.timeout,
         )
     except Exception as exc:
-        print(f"agent-swarm: {exc}", file=sys.stderr)
+        print(f"tutti: {exc}", file=sys.stderr)
         return 2
     print(run.to_json() if args.json else run.to_markdown(), end="")
     return 0 if all(result.status == "ok" for result in run.results) else 1

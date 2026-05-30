@@ -1,4 +1,4 @@
-# Copy to ~/.config/agent-swarm/config.toml or pass with --config.
+# Copy to ~/.config/tutti/config.toml or pass with --config.
 # This file intentionally calls existing harness CLIs instead of implementing model APIs.
 
 default_agents = ["codex", "claude", "gemini", "qwen", "kimi"]

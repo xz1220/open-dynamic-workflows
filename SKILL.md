@@ -1,12 +1,12 @@
 ---
-name: agent-swarm
-description: Dispatch one Plan, Execute, or Review request to multiple independent coding agents such as Codex CLI, Claude Code, Gemini CLI, Qwen Code, Kimi CLI, or MCP-backed wrappers, then return their raw outputs to the main agent. Use when the user explicitly invokes $agent-swarm for multi-agent planning, implementation attempts, or review. Treat plan, execute, and review as actions, not separate skills.
+name: tutti
+description: Dispatch one Plan, Execute, or Review request to multiple independent coding agents such as Codex CLI, Claude Code, Gemini CLI, Qwen Code, Kimi CLI, or MCP-backed wrappers, then return their raw outputs to the main agent. Use when the user explicitly invokes $tutti for multi-agent planning, implementation attempts, or review. Treat plan, execute, and review as actions, not separate skills.
 license: MIT. See LICENSE for full terms.
 ---
 
-# Agent Swarm
+# Tutti
 
-Use this skill only when the user manually invokes `$agent-swarm`. It dispatches one task to configured agent commands in parallel and collects raw outputs. The main agent decides what to do with the results.
+Use this skill only when the user manually invokes `$tutti`. It dispatches one task to configured agent commands in parallel and collects raw outputs. The main agent decides what to do with the results.
 
 This skill is not a voting system, debate loop, consensus engine, or autonomous file editor.
 
@@ -14,16 +14,16 @@ This skill is not a voting system, debate loop, consensus engine, or autonomous 
 
 | User prompt | Action | Script command |
 | --- | --- | --- |
-| `$agent-swarm plan` | Ask each agent for an independent plan or design. | `python3 scripts/agent_swarm.py plan --task "..."`
-| `$agent-swarm execute` | Ask each agent to independently attempt a concrete implementation in an isolated workspace copy. | `python3 scripts/agent_swarm.py execute --task "..."`
-| `$agent-swarm review` | Ask each agent to independently review an artifact, patch, design, or code. | `python3 scripts/agent_swarm.py review --artifact path --task "..."`
+| `$tutti plan` | Ask each agent for an independent plan or design. | `python3 scripts/tutti.py plan --task "..."`
+| `$tutti execute` | Ask each agent to independently attempt a concrete implementation in an isolated workspace copy. | `python3 scripts/tutti.py execute --task "..."`
+| `$tutti review` | Ask each agent to independently review an artifact, patch, design, or code. | `python3 scripts/tutti.py review --artifact path --task "..."`
 
-`$agent-swarm` is the only Agent Skill entry point. Do not treat plan, execute, or review as separate skills.
+`$tutti` is the only Agent Skill entry point. Do not treat plan, execute, or review as separate skills.
 
 ## Workflow
 
 1. Locate the installed skill directory:
-   - Prefer `$AGENT_SWARM_SKILL_DIR` when set.
+   - Prefer `$TUTTI_SKILL_DIR` when set.
    - Otherwise use the directory containing this `SKILL.md`.
 2. Choose the action:
    - Plan: problem statement in `--task`.
@@ -31,15 +31,15 @@ This skill is not a voting system, debate loop, consensus engine, or autonomous 
    - Review: review focus in `--task` plus one or more `--artifact` files when available.
 3. Load configuration:
    - Prefer `--config <path>`.
-   - Then `$AGENT_SWARM_CONFIG`.
-   - Then `./agent-swarm.toml`.
-   - Then `~/.config/agent-swarm/config.toml`.
+   - Then `$TUTTI_CONFIG`.
+   - Then `./tutti.toml`.
+   - Then `~/.config/tutti/config.toml`.
    - If no config exists, built-in `codex`, `claude`, `gemini`, `qwen`, and `kimi` command adapters are available.
 4. Run the script from the skill directory:
    ```bash
-   python3 scripts/agent_swarm.py plan --task "Design the migration."
-   python3 scripts/agent_swarm.py execute --task "Implement the parser."
-   python3 scripts/agent_swarm.py review --artifact changes.patch --task "Find correctness risks."
+   python3 scripts/tutti.py plan --task "Design the migration."
+   python3 scripts/tutti.py execute --task "Implement the parser."
+   python3 scripts/tutti.py review --artifact changes.patch --task "Find correctness risks."
    ```
 5. Paste the full script output back into the conversation before synthesizing. The script output is the collected evidence.
 
@@ -72,7 +72,7 @@ stdin = "{prompt}"
 Single-call overrides:
 
 ```bash
-python3 scripts/agent_swarm.py plan --agents codex,claude --task "..."
+python3 scripts/tutti.py plan --agents codex,claude --task "..."
 ```
 
 If Gemini, Qwen, or Kimi CLI is not installed, set `default_agents` to the
@@ -98,7 +98,7 @@ Read `config.example.toml` and `references/adapters.md` when adding MCP wrappers
 
 ## Resources
 
-- `scripts/agent_swarm.py`: CLI entry point.
-- `scripts/agent_swarm/`: implementation package.
+- `scripts/tutti.py`: CLI entry point.
+- `scripts/tutti/`: implementation package.
 - `config.example.toml`: default adapter examples.
 - `references/adapters.md`: notes for Codex CLI, Claude Code, Gemini CLI, Qwen Code, Kimi CLI, and MCP-backed wrappers.

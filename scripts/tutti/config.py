@@ -107,11 +107,11 @@ def config_search_paths(explicit_path: str | None = None) -> list[Path]:
     paths: list[Path] = []
     if explicit_path:
         paths.append(Path(explicit_path).expanduser())
-    env_path = os.environ.get("AGENT_SWARM_CONFIG")
+    env_path = os.environ.get("TUTTI_CONFIG")
     if env_path:
         paths.append(Path(env_path).expanduser())
-    paths.append(Path.cwd() / "agent-swarm.toml")
-    paths.append(Path.home() / ".config" / "agent-swarm" / "config.toml")
+    paths.append(Path.cwd() / "tutti.toml")
+    paths.append(Path.home() / ".config" / "tutti" / "config.toml")
     return paths
 
 

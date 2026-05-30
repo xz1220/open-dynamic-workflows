@@ -6,10 +6,10 @@ import subprocess
 import sys
 from pathlib import Path
 
-from agent_swarm.config import default_config, parse_simple_toml
+from tutti.config import default_config, parse_simple_toml
 
 ROOT = Path(__file__).resolve().parents[1]
-CLI = ROOT / "scripts" / "agent_swarm.py"
+CLI = ROOT / "scripts" / "tutti.py"
 
 
 def write_config(path: Path, python: str) -> Path:
@@ -170,7 +170,7 @@ def test_prompt_expansion_preserves_placeholders_inside_prompt(tmp_path: Path) -
         "artifact=data.split('--- artifact:', 1)[1].split('--- end artifact:', 1)[0]; "
         "target='\"' + '{' + 'workspace' + '}' + '\"'; "
         "print('literal placeholder', target in artifact); "
-        "print('temp path leaked', '/agent-swarm-' in artifact)"
+        "print('temp path leaked', '/tutti-' in artifact)"
     )
     reader_command = json.dumps([sys.executable, "-c", reader_code])
     config.write_text(
@@ -204,7 +204,7 @@ stdin = "{{prompt}}"
 
 
 def test_docs_do_not_reference_nonexistent_skill_triggers() -> None:
-    invalid = ("$agent-swarm-plan", "$agent-swarm-execute", "$agent-swarm-review")
+    invalid = ("$tutti-plan", "$tutti-execute", "$tutti-review")
     paths = [ROOT / "README.md", ROOT / "SKILL.md", ROOT / "agents" / "openai.yaml"]
     for path in paths:
         content = path.read_text()

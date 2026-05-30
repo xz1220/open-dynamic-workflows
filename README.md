@@ -1,6 +1,6 @@
 <div align="center">
 
-# Agent Swarm
+# Tutti
 
 > 把同一个开发问题并发分发给多个 coding agent，收集原始输出，交给主 agent 综合判断。
 
@@ -41,36 +41,36 @@ Codex、Claude Code、Gemini CLI、Qwen Code、Kimi CLI 各有盲区？<br>
 把这段话发给你正在使用的 Coding Agent：
 
 ```text
-请安装这个 Agent Skill：https://github.com/xz1220/agent-swarm。
+请安装这个 Agent Skill：https://github.com/xz1220/tutti。
 
-这个仓库本身就是 skill 根目录。请把它 clone 到当前 Agent 的 skills 目录并命名为 `agent-swarm`，确保安装后是 `agent-swarm/SKILL.md`。装完后运行 `python3 scripts/agent_swarm.py --help` 验证，并提醒我配置默认 agents。
+这个仓库本身就是 skill 根目录。请把它 clone 到当前 Agent 的 skills 目录并命名为 `tutti`，确保安装后是 `tutti/SKILL.md`。装完后运行 `python3 scripts/tutti.py --help` 验证，并提醒我配置默认 agents。
 ```
 
 ### 手动安装
 
 ```bash
-git clone https://github.com/xz1220/agent-swarm.git \
-  "${CODEX_HOME:-$HOME/.codex}/skills/agent-swarm"
+git clone https://github.com/xz1220/tutti.git \
+  "${CODEX_HOME:-$HOME/.codex}/skills/tutti"
 ```
 
 Claude Code：
 
 ```bash
 mkdir -p "$HOME/.claude/skills"
-git clone https://github.com/xz1220/agent-swarm.git \
-  "$HOME/.claude/skills/agent-swarm"
+git clone https://github.com/xz1220/tutti.git \
+  "$HOME/.claude/skills/tutti"
 ```
 
 可选安装 CLI：
 
 ```bash
-cd /path/to/agent-swarm
+cd /path/to/tutti
 python3 -m pip install -e .
 ```
 
-安装 CLI 后，shell 入口是 `agent-swarm plan|execute|review`。包内也提供
-`agent-swarm-plan`、`agent-swarm-execute`、`agent-swarm-review` 这几个可选
-shell shortcut；它们不是 Agent Skill 名称。Agent Skill 只有 `$agent-swarm`。
+安装 CLI 后，shell 入口是 `tutti plan|execute|review`。包内也提供
+`tutti-plan`、`tutti-execute`、`tutti-review` 这几个可选
+shell shortcut；它们不是 Agent Skill 名称。Agent Skill 只有 `$tutti`。
 
 ---
 
@@ -79,38 +79,38 @@ shell shortcut；它们不是 Agent Skill 名称。Agent Skill 只有 `$agent-sw
 ### Plan
 
 ```text
-请使用 $agent-swarm plan：
+请使用 $tutti plan：
 为这个迁移任务设计方案：...
 ```
 
 等价脚本命令：
 
 ```bash
-python3 scripts/agent_swarm.py plan --task "为这个迁移任务设计方案：..."
+python3 scripts/tutti.py plan --task "为这个迁移任务设计方案：..."
 ```
 
 ### Execute
 
 ```text
-请使用 $agent-swarm execute：
+请使用 $tutti execute：
 实现这个明确任务：...
 ```
 
 脚本会给每个 agent 建一个临时工作区副本。agent 可以在副本里改文件，脚本只返回 diff，不会把改动写回你的主仓库。
 
 ```bash
-python3 scripts/agent_swarm.py execute --task "实现这个明确任务：..."
+python3 scripts/tutti.py execute --task "实现这个明确任务：..."
 ```
 
 ### Review
 
 ```text
-请使用 $agent-swarm review 这个 patch，重点看并发和错误处理：
+请使用 $tutti review 这个 patch，重点看并发和错误处理：
 path/to/changes.patch
 ```
 
 ```bash
-python3 scripts/agent_swarm.py review \
+python3 scripts/tutti.py review \
   --artifact path/to/changes.patch \
   --task "重点看并发和错误处理"
 ```
@@ -118,7 +118,7 @@ python3 scripts/agent_swarm.py review \
 单次覆盖 agents：
 
 ```bash
-python3 scripts/agent_swarm.py plan --agents codex,claude --task "..."
+python3 scripts/tutti.py plan --agents codex,claude --task "..."
 ```
 
 如果你没有安装某个 CLI，把配置里的 `default_agents` 改成你本机有的
@@ -128,16 +128,16 @@ agent，或单次运行时传 `--agents codex,claude,qwen,kimi`。
 
 ## 效果示例
 
-**没用 agent-swarm**：
+**没用 tutti**：
 
 ```text
 主 agent：我会给出一个方案，并自行判断风险。
 ```
 
-**使用 agent-swarm**：
+**使用 tutti**：
 
 ```text
-# agent-swarm plan
+# tutti plan
 
 ## Agent: codex
 原始方案...
@@ -164,16 +164,16 @@ agent，或单次运行时传 `--agents codex,claude,qwen,kimi`。
 默认查找顺序：
 
 1. `--config <path>`
-2. `$AGENT_SWARM_CONFIG`
-3. 当前目录 `agent-swarm.toml`
-4. `~/.config/agent-swarm/config.toml`
+2. `$TUTTI_CONFIG`
+3. 当前目录 `tutti.toml`
+4. `~/.config/tutti/config.toml`
 5. 内置 `codex` / `claude` / `gemini` / `qwen` / `kimi` 适配示例
 
 复制示例配置：
 
 ```bash
-mkdir -p "$HOME/.config/agent-swarm"
-cp config.example.toml "$HOME/.config/agent-swarm/config.toml"
+mkdir -p "$HOME/.config/tutti"
+cp config.example.toml "$HOME/.config/tutti/config.toml"
 ```
 
 配置文件里通过 `default_agents` 设置默认 agent；单次调用用
@@ -186,15 +186,15 @@ cp config.example.toml "$HOME/.config/agent-swarm/config.toml"
 ## 项目结构
 
 ```text
-agent-swarm/
+tutti/
 ├── SKILL.md
 ├── README.md
 ├── config.example.toml
 ├── references/
 │   └── adapters.md
 ├── scripts/
-│   ├── agent_swarm.py
-│   └── agent_swarm/
+│   ├── tutti.py
+│   └── tutti/
 ├── tests/
 ├── pyproject.toml
 └── LICENSE
@@ -205,7 +205,7 @@ agent-swarm/
 ## 开发与校验
 
 ```bash
-python3 scripts/agent_swarm.py --help
+python3 scripts/tutti.py --help
 python3 -m pytest
 python3 /path/to/skill-creator/scripts/quick_validate.py .
 ```

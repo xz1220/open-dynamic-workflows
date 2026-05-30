@@ -1,6 +1,6 @@
 # Adapter Notes
 
-Agent Swarm delegates to existing local harnesses. It does not call LLM APIs directly and does not reimplement MCP bridges.
+Tutti delegates to existing local harnesses. It does not call LLM APIs directly and does not reimplement MCP bridges.
 
 ## Command Placeholders
 
@@ -77,17 +77,17 @@ command = ["kimi", "--work-dir", "{workspace}", "--print", "--input-format", "te
 stdin = "{prompt}"
 ```
 
-`--print` currently implies automatic approval in Kimi CLI. Agent Swarm still runs
+`--print` currently implies automatic approval in Kimi CLI. Tutti still runs
 each agent in a temporary workspace copy by default and collects the resulting diff.
 
 ## codex-plugin-cc
 
-`openai/codex-plugin-cc` is a Claude Code plugin. It is useful when Claude Code is the host and Codex is the delegated reviewer or worker. Agent Swarm is host-neutral, so it does not invoke Claude slash commands directly. If you want to reuse that plugin path, wrap the relevant Claude Code command in a script and configure it as an agent.
+`openai/codex-plugin-cc` is a Claude Code plugin. It is useful when Claude Code is the host and Codex is the delegated reviewer or worker. Tutti is host-neutral, so it does not invoke Claude slash commands directly. If you want to reuse that plugin path, wrap the relevant Claude Code command in a script and configure it as an agent.
 
 ## codex-mcp-server
 
-`tuannvm/codex-mcp-server` exposes Codex CLI through MCP. Keep using that server from the host that already supports MCP. For Agent Swarm, configure a thin local command that calls your MCP client or existing wrapper; do not duplicate the server.
+`tuannvm/codex-mcp-server` exposes Codex CLI through MCP. Keep using that server from the host that already supports MCP. For Tutti, configure a thin local command that calls your MCP client or existing wrapper; do not duplicate the server.
 
 ## claude-code-mcp
 
-`steipete/claude-code-mcp` exposes Claude Code as a one-shot MCP server. Configure your MCP client or local wrapper as an Agent Swarm command when the current host cannot call Claude Code directly.
+`steipete/claude-code-mcp` exposes Claude Code as a one-shot MCP server. Configure your MCP client or local wrapper as an Tutti command when the current host cannot call Claude Code directly.
