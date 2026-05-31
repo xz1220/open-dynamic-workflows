@@ -8,4 +8,6 @@ dist/
 build/
 *.egg-info/
 .DS_Store
-agent-swarm.toml
+agentswarm.toml
+/runs/
+.claude/
