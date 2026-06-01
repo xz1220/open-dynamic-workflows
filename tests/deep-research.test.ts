@@ -14,7 +14,7 @@ const deepResearch = fileURLToPath(new URL("../examples/deep-research.js", impor
 
 // The flagship acceptance: a Claude Code-format workflow script written for
 // Claude's runtime runs unchanged on ours, driven by a schema-satisfying mock.
-test("deep-research.js runs end-to-end (plan -> gather -> verify -> synthesize -> critique)", async () => {
+test("deep-research.js runs end-to-end (plan -> search -> extract -> vote -> report)", async () => {
   const root = mkdtempSync(join(tmpdir(), "odw-dr-"));
   try {
     const config = join(root, "odw.config.json");
@@ -43,19 +43,22 @@ test("deep-research.js runs end-to-end (plan -> gather -> verify -> synthesize -
     const result = store.readResult(id) as {
       question: string;
       report: { markdown: string };
-      verification: { supported: number; disputed: number };
-      critique: unknown;
-      stats: { angles: number; claims: number; keyClaims: number };
+      verification: { accepted: number; rejected: number; totalVoted: number };
+      acceptedClaims: unknown[];
+      rejectedClaims: unknown[];
+      stats: { angles: number; sources: number; extractedClaims: number; votedClaims: number };
     };
     assert.match(result.question, /rate limiter/);
     assert.equal(typeof result.report.markdown, "string");
     assert.ok(result.stats.angles >= 1, "planned at least one angle");
-    assert.ok(result.stats.claims >= 1, "gathered at least one claim");
-    assert.ok(result.critique, "produced a critique");
+    assert.ok(result.stats.extractedClaims >= 1, "extracted at least one claim");
+    assert.ok(result.stats.votedClaims >= 1, "voted on at least one claim");
+    assert.ok(Array.isArray(result.acceptedClaims), "returned accepted claims");
+    assert.ok(Array.isArray(result.rejectedClaims), "returned rejected claims");
 
     // The run emitted lifecycle + agent events across all five phases.
     const phases = new Set(store.readEvents(id).map((e) => e.phase).filter(Boolean));
-    for (const p of ["Plan", "Gather", "Verify", "Synthesize", "Critique"]) {
+    for (const p of ["Plan", "Search", "Extract", "Vote", "Report"]) {
       assert.ok(phases.has(p), `expected progress under phase '${p}'`);
     }
   } finally {

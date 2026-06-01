@@ -1,45 +1,43 @@
 export const meta = {
   name: 'deep-research',
-  description: 'Fan-out web research with adversarial fact-checking and a cited synthesis report',
+  description:
+    'Fan-out web research workflow that cross-checks cited claims by vote and returns a sourced report.',
   whenToUse:
-    'Deep, multi-source, fact-checked research on a topic. Pass the research question as args ' +
-    '(a string, or {question, maxAngles?, sourcesPerAngle?}). Returns a cited Markdown report.',
+    'Use for research questions that need multiple web searches, source fetching, adversarial verification, ' +
+    'and a final Markdown report with citations. Requires the underlying agent adapter to have WebSearch/WebFetch tools.',
   phases: [
-    { title: 'Plan', detail: 'decompose the question into distinct search angles' },
-    { title: 'Gather', detail: 'search the web + fetch sources + extract cited claims per angle' },
-    { title: 'Verify', detail: 'adversarially fact-check key claims from multiple lenses' },
-    { title: 'Synthesize', detail: 'write a cited Markdown report from verified evidence' },
-    { title: 'Critique', detail: 'completeness pass — surface gaps and follow-ups' },
+    { title: 'Plan', detail: 'split the question into independent research angles' },
+    { title: 'Search', detail: 'fan out web searches from each angle' },
+    { title: 'Extract', detail: 'fetch sources and extract concrete cited claims' },
+    { title: 'Vote', detail: 'cross-check each important claim from several skeptical lenses' },
+    { title: 'Report', detail: 'synthesize only the claims that survived verification' },
   ],
 }
-
-// ---------------------------------------------------------------------------
-// Schemas — each agent returns validated structured data (no parsing needed).
-// ---------------------------------------------------------------------------
 
 const PLAN_SCHEMA = {
   type: 'object',
   properties: {
-    interpretation: { type: 'string', description: 'Restated question + scope/assumptions' },
+    scope: { type: 'string' },
+    assumptions: { type: 'array', items: { type: 'string' } },
     angles: {
       type: 'array',
-      description: 'Distinct, non-overlapping research angles',
+      minItems: 3,
       items: {
         type: 'object',
         properties: {
-          key: { type: 'string', description: 'short kebab-case id' },
+          id: { type: 'string' },
           question: { type: 'string' },
-          searchQueries: { type: 'array', items: { type: 'string' } },
-          rationale: { type: 'string' },
+          searchQueries: { type: 'array', minItems: 2, items: { type: 'string' } },
+          whyItMatters: { type: 'string' },
         },
-        required: ['key', 'question', 'searchQueries'],
+        required: ['id', 'question', 'searchQueries'],
       },
     },
   },
-  required: ['interpretation', 'angles'],
+  required: ['scope', 'angles'],
 }
 
-const SOURCES_SCHEMA = {
+const SEARCH_SCHEMA = {
   type: 'object',
   properties: {
     sources: {
@@ -47,12 +45,18 @@ const SOURCES_SCHEMA = {
       items: {
         type: 'object',
         properties: {
-          url: { type: 'string' },
           title: { type: 'string' },
+          url: { type: 'string' },
+          publisher: { type: 'string' },
+          date: { type: 'string' },
           snippet: { type: 'string' },
-          relevance: { type: 'number', description: '0-1 relevance to the angle' },
+          sourceType: {
+            type: 'string',
+            enum: ['primary', 'official', 'academic', 'news', 'analysis', 'other'],
+          },
+          relevance: { type: 'number' },
         },
-        required: ['url', 'title'],
+        required: ['title', 'url'],
       },
     },
   },
@@ -68,11 +72,11 @@ const CLAIMS_SCHEMA = {
         type: 'object',
         properties: {
           statement: { type: 'string' },
-          evidence: { type: 'string', description: 'verbatim or close paraphrase supporting the claim' },
           sourceUrl: { type: 'string' },
           sourceTitle: { type: 'string' },
-          confidence: { type: 'string', enum: ['high', 'medium', 'low'] },
+          evidence: { type: 'string' },
           importance: { type: 'string', enum: ['key', 'supporting', 'minor'] },
+          confidence: { type: 'string', enum: ['high', 'medium', 'low'] },
         },
         required: ['statement', 'sourceUrl'],
       },
@@ -81,45 +85,30 @@ const CLAIMS_SCHEMA = {
   required: ['claims'],
 }
 
-const VERDICT_SCHEMA = {
+const VOTE_SCHEMA = {
   type: 'object',
   properties: {
-    refuted: { type: 'boolean', description: 'true if the claim could NOT be independently supported' },
-    assessment: { type: 'string' },
-    correction: { type: 'string', description: 'corrected statement if the claim is wrong/partial' },
+    vote: { type: 'string', enum: ['supported', 'refuted', 'uncertain'] },
+    rationale: { type: 'string' },
+    correction: { type: 'string' },
     supportingUrls: { type: 'array', items: { type: 'string' } },
+    contradictingUrls: { type: 'array', items: { type: 'string' } },
+    confidence: { type: 'number' },
   },
-  required: ['refuted', 'assessment'],
+  required: ['vote', 'rationale', 'supportingUrls', 'contradictingUrls'],
 }
 
 const REPORT_SCHEMA = {
   type: 'object',
   properties: {
     title: { type: 'string' },
-    summary: { type: 'string', description: 'executive summary, 2-4 sentences' },
-    markdown: {
-      type: 'string',
-      description: 'full report in Markdown with inline [n] citations and a Sources section',
-    },
+    answer: { type: 'string' },
+    markdown: { type: 'string' },
     confidence: { type: 'string', enum: ['high', 'medium', 'low'] },
+    remainingUncertainty: { type: 'array', items: { type: 'string' } },
   },
-  required: ['title', 'summary', 'markdown'],
+  required: ['title', 'answer', 'markdown', 'confidence'],
 }
-
-const CRITIQUE_SCHEMA = {
-  type: 'object',
-  properties: {
-    gaps: { type: 'array', items: { type: 'string' } },
-    unverifiedClaims: { type: 'array', items: { type: 'string' } },
-    suggestedFollowups: { type: 'array', items: { type: 'string' } },
-    overallConfidence: { type: 'string', enum: ['high', 'medium', 'low'] },
-  },
-  required: ['gaps'],
-}
-
-// ---------------------------------------------------------------------------
-// Inputs — accept a plain string or an options object.
-// ---------------------------------------------------------------------------
 
 const question =
   typeof args === 'string'
@@ -129,176 +118,264 @@ const question =
       : ''
 
 if (!question) {
-  log('No research question provided. Invoke with args: "your question" or {question: "..."}.')
+  log('Missing research question. Pass a string or { "question": "..." }.')
   return { error: 'missing_question' }
 }
 
-// Scale depth to the token budget when the user set one (a "+Nk" directive); else use defaults.
-const optMaxAngles = args && Number(args.maxAngles)
-const MAX_ANGLES = optMaxAngles
-  ? Math.max(3, Math.min(8, optMaxAngles))
-  : budget.total
-    ? Math.min(8, Math.max(4, Math.floor(budget.total / 120_000)))
-    : 5
-const SOURCES_PER_ANGLE = args && Number(args.sourcesPerAngle) ? Number(args.sourcesPerAngle) : 4
-const VERIFY_LENSES = ['primary-source check', 'recency & currency', 'contradicting evidence']
+const clamp = (value, min, max) => Math.max(min, Math.min(max, value))
+const numberArg = (name, fallback) => {
+  const raw = args && typeof args === 'object' ? Number(args[name]) : NaN
+  return Number.isFinite(raw) ? raw : fallback
+}
+const integerArg = (name, fallback) => Math.floor(numberArg(name, fallback))
 
-// ---------------------------------------------------------------------------
-// Phase 1 — Plan: decompose the question into diverse research angles.
-// ---------------------------------------------------------------------------
+const budgetAngles = budget.total ? Math.floor(budget.total / 120000) : 4
+const MAX_ANGLES = clamp(integerArg('maxAngles', budgetAngles), 3, 8)
+const SOURCES_PER_ANGLE = clamp(integerArg('sourcesPerAngle', 4), 2, 8)
+const CLAIMS_PER_ANGLE = clamp(integerArg('claimsPerAngle', 6), 3, 12)
+const MAX_CLAIMS_TO_VERIFY = clamp(integerArg('maxClaimsToVerify', MAX_ANGLES * 4), 4, 32)
+const VOTING_LENSES = [
+  'independent corroboration from a different source',
+  'primary or official source check',
+  'contradiction search and counter-evidence',
+  'date, recency, and changed-context check',
+]
 
 phase('Plan')
-log(`Planning up to ${MAX_ANGLES} research angles for: ${question}`)
+log(`Planning ${MAX_ANGLES} research angles for: ${question}`)
 
 const plan = await agent(
-  `You are a research lead. Decompose this research question into distinct, non-overlapping angles ` +
-    `for a deep, multi-source investigation.\n\n` +
-    `RESEARCH QUESTION:\n${question}\n\n` +
-    `Produce ${MAX_ANGLES} angles that together give comprehensive coverage. Diversify by modality: ` +
-    `fundamentals/definitions, key players & entities, recent developments (time-based), ` +
-    `data & numbers, counterarguments/risks, and comparisons. For each angle, give 2-3 concrete ` +
-    `web search queries. First restate your interpretation of the question and its scope.`,
-  { label: 'plan', schema: PLAN_SCHEMA }
+  `You are the lead researcher for a deep-research workflow.
+
+Question:
+${question}
+
+Create up to ${MAX_ANGLES} independent research angles. Make them non-overlapping and collectively useful.
+For each angle, include 2-4 concrete WebSearch queries. Prefer angles that force different evidence paths:
+definitions/background, primary entities, data and numbers, recent changes, disagreement, risks, and comparisons.`,
+  { label: 'plan', phase: 'Plan', schema: PLAN_SCHEMA },
 )
 
 const angles = (plan.angles || []).slice(0, MAX_ANGLES)
-log(`${angles.length} angles planned.`)
+if (angles.length === 0) {
+  return { error: 'no_angles', question, plan }
+}
 
-// ---------------------------------------------------------------------------
-// Phase 2 — Gather: per angle, search → fetch+extract. Pipelined (no barrier):
-// one angle can be extracting while another is still searching.
-// ---------------------------------------------------------------------------
+phase('Search')
+log(`Searching from ${angles.length} angles.`)
 
-phase('Gather')
-const gathered = await pipeline(
-  angles,
-  // Stage 1: find the best sources for this angle via web search.
-  (angle) =>
+const searchResults = await parallel(
+  angles.map((angle) => () =>
     agent(
-      `You are a research scout. Use the WebSearch tool to find the best sources for this angle. ` +
-        `Run several searches, prefer authoritative / primary sources, and avoid low-quality SEO spam.\n\n` +
-        `ANGLE: ${angle.question}\n` +
-        `SUGGESTED QUERIES: ${(angle.searchQueries || []).join(' | ')}\n\n` +
-        `Return the top ${SOURCES_PER_ANGLE} most relevant sources with url, title, a short snippet, ` +
-        `and a relevance score (0-1).`,
-      { label: `search:${angle.key}`, phase: 'Gather', schema: SOURCES_SCHEMA }
-    ),
-  // Stage 2: fetch the top sources and extract verifiable, cited claims.
-  (found, angle) =>
-    agent(
-      `You are a research analyst. Fetch the most relevant of these sources with the WebFetch tool and ` +
-        `extract concrete, verifiable claims relevant to the angle. EVERY claim must cite the source URL ` +
-        `it came from. Mark importance (key/supporting/minor) and your confidence. Do not invent claims.\n\n` +
-        `ANGLE: ${angle.question}\n\n` +
-        `SOURCES (fetch the top ${SOURCES_PER_ANGLE}):\n` +
-        (found.sources || []).map((s, i) => `${i + 1}. ${s.title} — ${s.url}`).join('\n'),
-      { label: `extract:${angle.key}`, phase: 'Gather', schema: CLAIMS_SCHEMA }
+      `Use WebSearch to find high-quality sources for this research angle.
+
+Main question:
+${question}
+
+Angle:
+${angle.question}
+
+Suggested searches:
+${(angle.searchQueries || []).map((q) => `- ${q}`).join('\n')}
+
+Return the best ${SOURCES_PER_ANGLE} sources. Prefer primary, official, academic, reputable news, or expert analysis.
+Avoid thin SEO pages, duplicate syndications, and sources that do not directly support the angle.`,
+      { label: `search:${angle.id}`, phase: 'Search', schema: SEARCH_SCHEMA },
     )
+  ),
 )
 
-// Barrier-justified merge: dedupe across ALL claims before the expensive verify pass.
-const allClaims = gathered.filter(Boolean).flatMap((g) => g.claims || [])
-log(`${allClaims.length} claims gathered across angles.`)
+phase('Extract')
+log('Fetching sources and extracting cited claims.')
 
-const seen = new Set()
-const keyClaims = []
-for (const c of allClaims) {
-  const norm = (c.statement || '').toLowerCase().replace(/\s+/g, ' ').trim().slice(0, 140)
-  if (!norm || seen.has(norm)) continue
-  seen.add(norm)
-  // Verify the load-bearing claims and anything the analyst flagged as shaky.
-  if (c.importance === 'key' || c.confidence === 'low') keyClaims.push(c)
+const extracted = await parallel(
+  angles.map((angle, index) => () => {
+    const found = searchResults[index]
+    const sources = (found && found.sources ? found.sources : []).slice(0, SOURCES_PER_ANGLE)
+    return agent(
+      `Use WebFetch on the sources below and extract concrete, checkable claims.
+
+Main question:
+${question}
+
+Angle:
+${angle.question}
+
+Sources:
+${sources.map((s, i) => `${i + 1}. ${s.title} - ${s.url}`).join('\n')}
+
+Return up to ${CLAIMS_PER_ANGLE} claims. Every claim must have a sourceUrl. Favor specific claims with dates,
+numbers, named entities, or causal assertions. Do not include claims that are only opinion or cannot be checked.`,
+      { label: `extract:${angle.id}`, phase: 'Extract', schema: CLAIMS_SCHEMA },
+    )
+  }),
+)
+
+const sourceByUrl = new Map()
+for (const found of searchResults.filter(Boolean)) {
+  for (const source of found.sources || []) {
+    if (source.url && !sourceByUrl.has(source.url)) sourceByUrl.set(source.url, source)
+  }
 }
-log(`${keyClaims.length} key/uncertain claims selected for adversarial verification.`)
 
-// ---------------------------------------------------------------------------
-// Phase 3 — Verify: each key claim is attacked from multiple independent lenses.
-// A claim survives only if a majority of lenses fail to refute it.
-// ---------------------------------------------------------------------------
+const allClaims = []
+const seenClaims = new Set()
+for (const batch of extracted.filter(Boolean)) {
+  for (const claim of batch.claims || []) {
+    const key = normalizeClaim(claim.statement)
+    if (!key || seenClaims.has(key)) continue
+    seenClaims.add(key)
+    allClaims.push(claim)
+  }
+}
 
-phase('Verify')
-const verifications = await parallel(
-  keyClaims.map((claim) => () =>
+const claimsToVerify = allClaims
+  .filter((claim) => claim.importance === 'key' || claim.confidence !== 'high')
+  .slice(0, MAX_CLAIMS_TO_VERIFY)
+
+log(`${allClaims.length} unique claims extracted; ${claimsToVerify.length} selected for voting.`)
+
+phase('Vote')
+const votedClaims = await parallel(
+  claimsToVerify.map((claim, claimIndex) => () =>
     parallel(
-      VERIFY_LENSES.map((lens) => () =>
+      VOTING_LENSES.map((lens) => () =>
         agent(
-          `You are a skeptical fact-checker. Try to REFUTE the claim below using INDEPENDENT web ` +
-            `research (WebSearch/WebFetch) through this lens: "${lens}". Do not rely on the original ` +
-            `source. Default to refuted=true if you cannot find solid independent support. Be specific ` +
-            `about what you found and cite supporting URLs.\n\n` +
-            `CLAIM: ${claim.statement}\n` +
-            `ORIGINAL SOURCE: ${claim.sourceUrl}`,
-          { label: `verify:${lens}`, phase: 'Verify', schema: VERDICT_SCHEMA }
+          `You are one voter in a deep-research verification panel.
+
+Your lens:
+${lens}
+
+Use WebSearch and WebFetch. Do not rely only on the original source. Vote "supported" only when independent
+evidence supports the claim. Vote "refuted" when credible evidence contradicts it. Vote "uncertain" when
+the evidence is weak, missing, or ambiguous.
+
+Main question:
+${question}
+
+Claim:
+${claim.statement}
+
+Original source:
+${claim.sourceUrl}`,
+          { label: `vote:${claimIndex + 1}`, phase: 'Vote', schema: VOTE_SCHEMA },
         )
       )
-    ).then((votes) => {
-      const valid = votes.filter(Boolean)
-      const refutedCount = valid.filter((v) => v.refuted).length
-      return {
-        claim,
-        verdicts: valid,
-        supported: valid.length > 0 && refutedCount < Math.ceil(valid.length / 2),
-        corrections: valid.map((v) => v.correction).filter(Boolean),
-      }
-    })
-  )
+    ).then((votes) => tallyVotes(claim, votes.filter(Boolean)))
+  ),
 )
 
-const checked = verifications.filter(Boolean)
-const supported = checked.filter((v) => v.supported)
-const disputed = checked.filter((v) => !v.supported)
-log(`Verification done: ${supported.length} supported, ${disputed.length} disputed/uncertain.`)
+const verification = votedClaims.filter(Boolean)
+const acceptedClaims = verification.filter((item) => item.accepted)
+const rejectedClaims = verification.filter((item) => !item.accepted)
 
-// ---------------------------------------------------------------------------
-// Phase 4 — Synthesize: write a cited report using only verified evidence.
-// ---------------------------------------------------------------------------
+const supportingClaims = allClaims.filter(
+  (claim) => claim.importance !== 'key' && claim.confidence === 'high' && !claimsToVerify.includes(claim),
+)
 
-phase('Synthesize')
+log(`${acceptedClaims.length} claims survived voting; ${rejectedClaims.length} were rejected or left uncertain.`)
+
+phase('Report')
 const evidence = {
-  supportedKeyClaims: supported.map((v) => ({
-    statement: v.claim.statement,
-    source: v.claim.sourceUrl,
-    corrections: v.corrections,
+  question,
+  scope: plan.scope,
+  assumptions: plan.assumptions || [],
+  acceptedClaims,
+  supportingClaims: supportingClaims.map((claim) => ({
+    statement: claim.statement,
+    sourceUrl: claim.sourceUrl,
+    evidence: claim.evidence,
   })),
-  disputedKeyClaims: disputed.map((v) => ({
-    statement: v.claim.statement,
-    source: v.claim.sourceUrl,
-    corrections: v.corrections,
+  rejectedClaims: rejectedClaims.map((item) => ({
+    statement: item.claim.statement,
+    reason: item.reason,
+    corrections: item.corrections,
   })),
-  supportingClaims: allClaims
-    .filter((c) => c.importance !== 'key')
-    .map((c) => ({ statement: c.statement, source: c.sourceUrl })),
+  sources: Array.from(sourceByUrl.values()).map((source) => ({
+    title: source.title,
+    url: source.url,
+    publisher: source.publisher,
+    date: source.date,
+    sourceType: source.sourceType,
+  })),
 }
 
 const report = await agent(
-  `You are a research writer. Write a rigorous, well-structured research report in Markdown that ` +
-    `answers the question. Use ONLY the verified evidence below. Use inline numbered citations [1], [2], … ` +
-    `and end with a "## Sources" section mapping each number to its URL. Clearly flag disputed/uncertain ` +
-    `points and state your overall confidence. Never invent facts or sources.\n\n` +
-    `QUESTION:\n${question}\n\n` +
-    `INTERPRETATION:\n${plan.interpretation || ''}\n\n` +
-    `EVIDENCE (JSON):\n${JSON.stringify(evidence, null, 2)}`,
-  { label: 'synthesize', schema: REPORT_SCHEMA }
-)
+  `Write the final deep-research report in Markdown.
 
-// ---------------------------------------------------------------------------
-// Phase 5 — Critique: completeness pass for gaps and follow-ups.
-// ---------------------------------------------------------------------------
+Rules:
+- Answer the question directly.
+- Use only acceptedClaims and high-confidence supportingClaims as factual evidence.
+- Do not use rejectedClaims as facts; mention them only as caveats when useful.
+- Include inline numbered citations like [1], [2].
+- End with a "## Sources" section mapping citation numbers to URLs.
+- If evidence is thin, say so plainly.
 
-phase('Critique')
-const critique = await agent(
-  `You are a research editor doing a completeness pass. Given the question and the draft report, ` +
-    `identify what is missing: unaddressed sub-questions, claims that remain unverified, missing recent ` +
-    `developments, and concrete follow-up searches that would strengthen it.\n\n` +
-    `QUESTION:\n${question}\n\nREPORT:\n${report.markdown}`,
-  { label: 'critique', schema: CRITIQUE_SCHEMA }
+Evidence JSON:
+${JSON.stringify(evidence, null, 2)}`,
+  { label: 'report', phase: 'Report', schema: REPORT_SCHEMA },
 )
 
 return {
   question,
-  interpretation: plan.interpretation,
   report,
-  verification: { supported: supported.length, disputed: disputed.length },
-  critique,
-  stats: { angles: angles.length, claims: allClaims.length, keyClaims: keyClaims.length },
+  verification: {
+    accepted: acceptedClaims.length,
+    rejected: rejectedClaims.length,
+    totalVoted: verification.length,
+  },
+  acceptedClaims,
+  rejectedClaims,
+  stats: {
+    angles: angles.length,
+    sources: sourceByUrl.size,
+    extractedClaims: allClaims.length,
+    votedClaims: verification.length,
+  },
+}
+
+function normalizeClaim(statement) {
+  return String(statement || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 180)
+}
+
+function tallyVotes(claim, votes) {
+  const supported = votes.filter((vote) => vote.vote === 'supported').length
+  const refuted = votes.filter((vote) => vote.vote === 'refuted').length
+  const uncertain = votes.filter((vote) => vote.vote === 'uncertain').length
+  const accepted = votes.length > 0 && supported >= 2 && refuted === 0 && supported > uncertain
+  const corrections = votes.map((vote) => vote.correction).filter(Boolean)
+  const supportingUrls = unique(
+    [claim.sourceUrl].concat(votes.flatMap((vote) => vote.supportingUrls || [])).filter(Boolean),
+  )
+  const contradictingUrls = unique(votes.flatMap((vote) => vote.contradictingUrls || []).filter(Boolean))
+  const reason = accepted
+    ? `accepted by ${supported}/${votes.length} voters`
+    : `rejected or uncertain: ${supported} supported, ${refuted} refuted, ${uncertain} uncertain`
+
+  return {
+    claim,
+    accepted,
+    reason,
+    votes,
+    corrections,
+    supportingUrls,
+    contradictingUrls,
+  }
+}
+
+function unique(items) {
+  const out = []
+  const seen = new Set()
+  for (const item of items) {
+    const key = String(item).trim()
+    if (!key || seen.has(key)) continue
+    seen.add(key)
+    out.push(key)
+  }
+  return out
 }
