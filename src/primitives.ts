@@ -1,9 +1,9 @@
 /**
- * Programming primitives (L4) — STUB (M2).
+ * Programming primitives (L4): the verbs a workflow author composes with.
  *
- * The verbs a workflow author composes with ordinary JS control flow. In the
- * Claude Code dialect these are *injected globals*, never imported, so the
- * loader binds a freshly-built set of these into the script's scope per run.
+ * In the Claude Code dialect these are *injected globals*, never imported, so
+ * {@link createPrimitives} builds a fresh set bound to one run's context and the
+ * loader injects them into the script's scope.
  *
  *   - agent     — run one coding agent on a subtask (the only verb that works)
  *   - parallel  — fan out a batch and wait for all of it (barrier)
@@ -16,24 +16,26 @@
  * `args` is not here: it is run data injected alongside these globals.
  */
 
-import { notImplemented } from "./errors.js";
-import type { JsonSchema } from "./schema.js";
+import type { AgentRequest } from "./bridge.js";
 import type { RunContext } from "./context.js";
+import { isFatalError, notImplemented } from "./errors.js";
+import { AGENT_FAILED, AGENT_FINISHED, AGENT_STARTED, LOG, PHASE_STARTED, event } from "./events.js";
+import type { JsonSchema } from "./schema.js";
 
 export interface AgentOptions {
   /** Which configured adapter/CLI to use; falls back to the default. */
   adapter?: string;
-  /** A JSON Schema; when set, the reply is validated and returned as an object. */
+  /** When set, the reply is validated against it and returned as an object. */
   schema?: JsonSchema;
   /** Short label for progress display. */
   label?: string;
   /** Override the current phase for this one call (use inside parallel/pipeline). */
   phase?: string;
-  /** Reserved (v1.5): map to an adapter's model flag. */
+  /** Reserved (v1.5): map to an adapter's model flag. Ignored in v1. */
   model?: string;
-  /** Reserved (v1.5): map to a named adapter/role. */
+  /** v1: treated as an adapter name when `adapter` is not given. */
   agentType?: string;
-  /** Reserved (v1.5): `"worktree"` for git-worktree isolation. */
+  /** Reserved (v1.5): `"worktree"` for git-worktree isolation. Ignored in v1. */
   isolation?: "worktree";
 }
 
@@ -58,6 +60,65 @@ export interface WorkflowGlobals {
 }
 
 /** Build the injected primitive set bound to a single run's context. */
-export function createPrimitives(_ctx: RunContext): WorkflowGlobals {
-  throw notImplemented("primitives (M2)");
+export function createPrimitives(ctx: RunContext): WorkflowGlobals {
+  const agent = async (prompt: string, opts: AgentOptions = {}): Promise<unknown> => {
+    const activePhase = opts.phase !== undefined ? opts.phase : ctx.currentPhase;
+    const adapter = opts.adapter ?? opts.agentType;
+    const display = opts.label ?? adapter ?? ctx.config.settings.defaultAdapter ?? "agent";
+    ctx.emit(event(AGENT_STARTED, { label: display, phase: activePhase }));
+
+    const request: AgentRequest = { prompt, adapter, schema: opts.schema, label: opts.label };
+    let outcome;
+    try {
+      outcome = await ctx.scheduler.runAgent(() => ctx.bridge.run(request));
+    } catch (err) {
+      if (isFatalError(err)) throw err; // budget exhausted / stop: abort the run
+      ctx.emit(event(AGENT_FAILED, { label: display, phase: activePhase, error: String(err) }));
+      throw err;
+    }
+    ctx.emit(
+      event(AGENT_FINISHED, {
+        label: display,
+        phase: activePhase,
+        adapter: outcome.adapter,
+        attempts: outcome.attempts,
+      }),
+    );
+    return outcome.value;
+  };
+
+  const parallel = <T>(thunks: Array<Thunk<T>>): Promise<Array<T | null>> =>
+    ctx.scheduler.gather(thunks.map((t) => async () => t()));
+
+  const pipeline = (items: unknown[], ...stages: Stage[]): Promise<unknown[]> => {
+    const chains = items.map((item, index) => async (): Promise<unknown> => {
+      let value: unknown = item;
+      for (const stage of stages) {
+        value = await stage(value, item, index);
+      }
+      return value;
+    });
+    return ctx.scheduler.gather(chains) as Promise<unknown[]>;
+  };
+
+  const phase = (title: string): void => {
+    ctx.currentPhase = title;
+    ctx.emit(event(PHASE_STARTED, { phase: title }));
+  };
+
+  const log = (message: unknown): void => {
+    ctx.emit(event(LOG, { message: String(message) }));
+  };
+
+  const budget: Budget = {
+    total: ctx.budgetTotal,
+    spent: () => 0, // best-effort in v1; real token accounting is v1.5+
+    remaining: () => (ctx.budgetTotal === null ? Infinity : Math.max(0, ctx.budgetTotal)),
+  };
+
+  const workflow = async (): Promise<unknown> => {
+    throw notImplemented("nested workflow() — deferred to v2");
+  };
+
+  return { agent, parallel, pipeline, phase, log, budget, workflow };
 }

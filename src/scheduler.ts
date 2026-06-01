@@ -1,21 +1,22 @@
 /**
- * Concurrency scheduler (L3) — STUB (M2).
+ * Concurrency scheduler (L3): bounded async fan-out with a runaway guard.
  *
- * Unlike the Python reference (which needed OS threads because its agent calls
- * blocked), the Node runtime is async to the core: there are NO threads. This
- * layer is just two limits over Promises:
+ * Unlike a thread pool, this is pure async: `agent()` is a non-blocking
+ * subprocess call, so concurrency is bounded by a small semaphore over Promises,
+ * not by OS threads. Two limits are enforced here and only here:
  *
- *   - **Concurrency cap** — at most N agent CLIs run at once, enforced by a
- *     small async semaphore (a queue that admits N runners and parks the rest).
- *   - **Total-agent backstop** — a hard ceiling on how many agents a single run
- *     may ever dispatch, so a buggy `while` loop cannot fan out forever.
+ *   - **Concurrency cap** — at most N agent CLIs run at once. A free slot is
+ *     handed *directly* to the next waiter on release, so the cap can never be
+ *     over-subscribed by a racing acquire.
+ *   - **Total-agent backstop** — a hard ceiling on total dispatches per run, so
+ *     a buggy loop cannot fan out forever.
  *
- * `gather` runs a batch of thunks concurrently under those limits; a recoverable
- * failure becomes a `null` slot, a fatal one (backstop hit / stop) aborts.
- * `parallel` and `pipeline` are both expressed in terms of it.
+ * `gather` runs a batch concurrently: a recoverable failure becomes a `null`
+ * slot; a fatal error (backstop hit / stop requested) is re-thrown to abort the
+ * surrounding workflow. `parallel` and `pipeline` both build on it.
  */
 
-import { notImplemented } from "./errors.js";
+import { AgentLimitExceeded, isFatalError } from "./errors.js";
 
 export interface SchedulerOptions {
   concurrency: number;
@@ -25,22 +26,72 @@ export interface SchedulerOptions {
 }
 
 export class Scheduler {
-  constructor(private readonly options: SchedulerOptions) {
-    void this.options;
+  private readonly concurrency: number;
+  private readonly maxAgents: number;
+  private readonly checkpoint: () => void | Promise<void>;
+  private dispatchedCount = 0;
+  private active = 0;
+  private readonly waiters: Array<() => void> = [];
+
+  constructor(options: SchedulerOptions) {
+    this.concurrency = Math.max(1, options.concurrency);
+    this.maxAgents = options.maxAgents;
+    this.checkpoint = options.checkpoint ?? (() => {});
   }
 
   /** How many agents have been dispatched so far in this run. */
   get dispatched(): number {
-    throw notImplemented("scheduler (M2)");
+    return this.dispatchedCount;
   }
 
   /** Run one agent unit under the concurrency cap and total backstop. */
-  async runAgent<T>(_fn: () => Promise<T>): Promise<T> {
-    throw notImplemented("scheduler (M2)");
+  async runAgent<T>(fn: () => Promise<T>): Promise<T> {
+    await this.checkpoint();
+    // Reserve the budget synchronously right after the checkpoint: the
+    // read-and-increment has no await between, so it is atomic on the loop.
+    if (this.dispatchedCount >= this.maxAgents) {
+      throw new AgentLimitExceeded(`run reached its cap of ${this.maxAgents} agent dispatches`);
+    }
+    this.dispatchedCount++;
+
+    await this.acquire();
+    try {
+      return await fn();
+    } finally {
+      this.release();
+    }
   }
 
   /** Run thunks concurrently; results in input order, `null` for a recoverable failure. */
-  async gather<T>(_thunks: Array<() => Promise<T>>): Promise<Array<T | null>> {
-    throw notImplemented("scheduler (M2)");
+  async gather<T>(thunks: Array<() => Promise<T>>): Promise<Array<T | null>> {
+    const settled = await Promise.allSettled(thunks.map((t) => t()));
+    let fatal: unknown;
+    const out: Array<T | null> = settled.map((r) => {
+      if (r.status === "fulfilled") return r.value;
+      if (isFatalError(r.reason) && fatal === undefined) fatal = r.reason;
+      return null;
+    });
+    if (fatal !== undefined) throw fatal;
+    return out;
+  }
+
+  // --- internal semaphore ----------------------------------------------------
+
+  private async acquire(): Promise<void> {
+    if (this.active < this.concurrency) {
+      this.active++;
+      return;
+    }
+    // Park until a slot is handed to us; ownership transfers without a re-count.
+    await new Promise<void>((resolve) => this.waiters.push(resolve));
+  }
+
+  private release(): void {
+    const next = this.waiters.shift();
+    if (next) {
+      next(); // hand our slot directly to the next waiter; `active` is unchanged
+    } else {
+      this.active--;
+    }
   }
 }
