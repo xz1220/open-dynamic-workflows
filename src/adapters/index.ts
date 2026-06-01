@@ -6,6 +6,13 @@ export { expand, expandAll, PLACEHOLDERS } from "./placeholders.js";
 export type { PlaceholderName, PlaceholderContext } from "./placeholders.js";
 export { BUILTIN_ADAPTERS, DEFAULT_SETTINGS } from "./builtin.js";
 export type { RawAdapter } from "./builtin.js";
-export { loadConfig, defaultConfig, resolveConcurrency, CONFIG_ENV_VAR } from "./config.js";
+export {
+  loadConfig,
+  defaultConfig,
+  resolveAdapter,
+  resolveConcurrency,
+  resolveRunsRoot,
+  CONFIG_ENV_VAR,
+} from "./config.js";
 export { runCommand } from "./runner.js";
 export type { CommandRunner, RunCommandOptions } from "./runner.js";
