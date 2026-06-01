@@ -1,0 +1,997 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Open Dynamic Workflows - Claude Code-style workflows for any coding agent</title>
+    <meta
+      name="description"
+      content="Open Dynamic Workflows is a TypeScript CLI runtime for portable dynamic workflows across Codex, Claude Code, Gemini, Qwen, Kimi, and custom coding-agent CLIs."
+    />
+    <meta name="robots" content="index,follow" />
+    <link rel="canonical" href="https://xz1220.github.io/open-dynamic-workflows/" />
+
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://xz1220.github.io/open-dynamic-workflows/" />
+    <meta property="og:title" content="Open Dynamic Workflows" />
+    <meta
+      property="og:description"
+      content="A TypeScript CLI runtime for Claude Code-style dynamic workflows across any coding-agent CLI."
+    />
+    <meta name="twitter:card" content="summary" />
+    <meta name="twitter:title" content="Open Dynamic Workflows" />
+    <meta
+      name="twitter:description"
+      content="Portable dynamic workflows for Codex, Claude Code, Gemini, Qwen, Kimi, and custom coding-agent CLIs."
+    />
+
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "SoftwareSourceCode",
+        "name": "Open Dynamic Workflows",
+        "alternateName": ["ODW", "Open Dynamic Workflow"],
+        "description": "Open Dynamic Workflows is a TypeScript CLI runtime for Claude Code-style dynamic workflows across any coding-agent CLI.",
+        "codeRepository": "https://github.com/xz1220/open-dynamic-workflows",
+        "programmingLanguage": "TypeScript",
+        "runtimePlatform": "Node.js",
+        "license": "https://opensource.org/license/mit",
+        "keywords": "open dynamic workflows, dynamic workflow, coding agents, agent orchestration, Claude Code, Codex"
+      }
+    </script>
+
+    <style>
+      :root {
+        color-scheme: light;
+        --ink: #101315;
+        --muted: #5f676f;
+        --soft: #f4f5f2;
+        --panel: #ffffff;
+        --line: #d9ded8;
+        --accent: #13875d;
+        --accent-strong: #0f6b4b;
+        --accent-soft: #e4f6ee;
+        --amber: #d8a620;
+        --code: #161a1d;
+        --code-soft: #20272b;
+        --max: 1160px;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html {
+        scroll-behavior: smooth;
+      }
+
+      body {
+        margin: 0;
+        background: #fbfcf8;
+        color: var(--ink);
+        font-family:
+          ui-sans-serif,
+          system-ui,
+          -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          sans-serif;
+        letter-spacing: 0;
+      }
+
+      a {
+        color: inherit;
+        text-decoration: none;
+      }
+
+      .site-shell {
+        min-height: 100dvh;
+        overflow: hidden;
+      }
+
+      .nav {
+        position: fixed;
+        top: 0;
+        z-index: 10;
+        width: 100%;
+        border-bottom: 1px solid rgba(16, 19, 21, 0.1);
+        background: rgba(251, 252, 248, 0.88);
+        backdrop-filter: blur(18px);
+      }
+
+      .nav-inner {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        width: min(calc(100vw - 40px), var(--max));
+        height: 68px;
+        margin: 0 auto;
+      }
+
+      .brand {
+        display: inline-flex;
+        align-items: center;
+        gap: 12px;
+        font-weight: 760;
+      }
+
+      .brand-mark {
+        display: grid;
+        width: 34px;
+        height: 34px;
+        place-items: center;
+        border: 1px solid #0c2f23;
+        border-radius: 8px;
+        background: var(--ink);
+        color: #e9fff5;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 13px;
+        font-weight: 700;
+      }
+
+      .nav-links {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .nav-links a {
+        min-height: 40px;
+        padding: 10px 13px;
+        border-radius: 8px;
+        color: #30363a;
+        font-size: 14px;
+        font-weight: 650;
+      }
+
+      .nav-links a:hover {
+        background: #eef1ec;
+      }
+
+      .hero {
+        position: relative;
+        display: grid;
+        min-height: 88dvh;
+        padding: 118px 0 44px;
+        isolation: isolate;
+      }
+
+      .hero::before {
+        position: absolute;
+        inset: 68px 0 0;
+        z-index: -3;
+        content: "";
+        background:
+          linear-gradient(rgba(16, 19, 21, 0.045) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(16, 19, 21, 0.045) 1px, transparent 1px);
+        background-size: 48px 48px;
+        mask-image: linear-gradient(to bottom, #000 0%, transparent 86%);
+      }
+
+      .hero-stage {
+        position: absolute;
+        inset: 88px max(24px, calc((100vw - var(--max)) / 2)) 36px auto;
+        z-index: -2;
+        width: min(720px, 62vw);
+        opacity: 0.94;
+      }
+
+      .runtime-visual {
+        position: relative;
+        height: 100%;
+        min-height: 560px;
+      }
+
+      .terminal {
+        position: absolute;
+        right: 0;
+        width: min(620px, 100%);
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        border-radius: 18px;
+        background: var(--code);
+        box-shadow: 0 24px 80px rgba(16, 19, 21, 0.24);
+        color: #d9f6e7;
+        overflow: hidden;
+      }
+
+      .terminal.primary {
+        top: 8px;
+        height: 322px;
+      }
+
+      .terminal.secondary {
+        right: 80px;
+        bottom: 18px;
+        width: min(480px, 82%);
+        height: 232px;
+        background: #f7faf5;
+        border-color: var(--line);
+        color: var(--ink);
+      }
+
+      .terminal-bar {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        height: 42px;
+        padding: 0 16px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        color: #92a19a;
+        font: 12px/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      }
+
+      .secondary .terminal-bar {
+        border-bottom-color: var(--line);
+        color: #606a70;
+      }
+
+      .dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        background: #54615c;
+      }
+
+      .dot:nth-child(2) {
+        background: var(--amber);
+      }
+
+      .dot:nth-child(3) {
+        background: var(--accent);
+      }
+
+      .code-lines {
+        display: grid;
+        gap: 12px;
+        padding: 22px;
+        font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      }
+
+      .code-line {
+        display: block;
+        width: fit-content;
+        max-width: 100%;
+        white-space: nowrap;
+      }
+
+      .code-dim {
+        color: #7b8a82;
+      }
+
+      .code-accent {
+        color: #65d89e;
+      }
+
+      .code-warn {
+        color: #e0c25b;
+      }
+
+      .graph {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 12px;
+        padding: 18px;
+      }
+
+      .node {
+        min-height: 62px;
+        padding: 13px;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        background: #ffffff;
+      }
+
+      .node strong {
+        display: block;
+        margin-bottom: 6px;
+        font-size: 13px;
+      }
+
+      .node span {
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .orbit {
+        position: absolute;
+        right: 42px;
+        top: 360px;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 10px 12px;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.88);
+        box-shadow: 0 18px 42px rgba(16, 19, 21, 0.12);
+        color: #26302b;
+        font-size: 13px;
+        font-weight: 700;
+      }
+
+      .pulse {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        background: var(--accent);
+        box-shadow: 0 0 0 0 rgba(19, 135, 93, 0.42);
+        animation: pulse 2.2s infinite;
+      }
+
+      .hero-content {
+        width: min(calc(100vw - 40px), var(--max));
+        margin: auto;
+      }
+
+      .eyebrow {
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        margin-bottom: 22px;
+        padding: 8px 11px;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.78);
+        color: #36423c;
+        font-size: 13px;
+        font-weight: 750;
+      }
+
+      .eyebrow::before {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: var(--accent);
+        content: "";
+      }
+
+      h1 {
+        max-width: 780px;
+        margin: 0;
+        font-size: clamp(48px, 8vw, 116px);
+        font-weight: 830;
+        line-height: 0.94;
+        letter-spacing: 0;
+      }
+
+      .hero-copy {
+        max-width: 620px;
+        margin: 26px 0 0;
+        color: #3e474d;
+        font-size: clamp(18px, 2vw, 22px);
+        line-height: 1.45;
+      }
+
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        margin-top: 32px;
+      }
+
+      .button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 48px;
+        padding: 0 18px;
+        border-radius: 9px;
+        font-size: 15px;
+        font-weight: 780;
+        transition:
+          transform 180ms ease,
+          background 180ms ease,
+          border-color 180ms ease;
+      }
+
+      .button:active {
+        transform: translateY(1px);
+      }
+
+      .button.primary {
+        border: 1px solid #0f5f44;
+        background: var(--accent);
+        color: #ffffff;
+      }
+
+      .button.primary:hover {
+        background: var(--accent-strong);
+      }
+
+      .button.secondary {
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.82);
+        color: #111719;
+      }
+
+      .button.secondary:hover {
+        border-color: #b8c0b8;
+        background: #ffffff;
+      }
+
+      .proof-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-top: 34px;
+      }
+
+      .proof {
+        padding: 8px 10px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.7);
+        color: #404a43;
+        font-size: 13px;
+        font-weight: 720;
+      }
+
+      section {
+        padding: 86px 0;
+      }
+
+      .section-inner {
+        width: min(calc(100vw - 40px), var(--max));
+        margin: 0 auto;
+      }
+
+      .section-kicker {
+        margin: 0 0 14px;
+        color: var(--accent-strong);
+        font-size: 13px;
+        font-weight: 800;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      h2 {
+        max-width: 780px;
+        margin: 0;
+        font-size: clamp(34px, 5vw, 64px);
+        font-weight: 820;
+        line-height: 1;
+        letter-spacing: 0;
+      }
+
+      .section-lede {
+        max-width: 720px;
+        margin: 20px 0 0;
+        color: var(--muted);
+        font-size: 18px;
+        line-height: 1.6;
+      }
+
+      .primitive-grid {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 14px;
+        margin-top: 40px;
+      }
+
+      .primitive {
+        min-height: 214px;
+        padding: 22px;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        background: var(--panel);
+      }
+
+      .primitive code {
+        display: inline-block;
+        margin-bottom: 42px;
+        padding: 6px 8px;
+        border-radius: 7px;
+        background: var(--accent-soft);
+        color: #0b5c3f;
+        font: 13px/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      }
+
+      .primitive h3,
+      .flow-step h3 {
+        margin: 0 0 10px;
+        font-size: 20px;
+        line-height: 1.15;
+      }
+
+      .primitive p,
+      .flow-step p {
+        margin: 0;
+        color: var(--muted);
+        font-size: 15px;
+        line-height: 1.55;
+      }
+
+      .flow {
+        background: var(--soft);
+        border-block: 1px solid var(--line);
+      }
+
+      .flow-track {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 1px;
+        margin-top: 40px;
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        background: var(--line);
+        overflow: hidden;
+      }
+
+      .flow-step {
+        min-height: 220px;
+        padding: 24px;
+        background: #fbfcf8;
+      }
+
+      .step-index {
+        display: block;
+        margin-bottom: 54px;
+        color: var(--accent-strong);
+        font: 13px/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-weight: 800;
+      }
+
+      .install {
+        padding-bottom: 104px;
+      }
+
+      .install-panel {
+        display: grid;
+        grid-template-columns: minmax(0, 0.9fr) minmax(320px, 1.1fr);
+        gap: 32px;
+        align-items: stretch;
+        margin-top: 42px;
+      }
+
+      .install-copy {
+        padding: 30px 0;
+      }
+
+      .install-copy p {
+        color: var(--muted);
+        font-size: 17px;
+        line-height: 1.6;
+      }
+
+      .code-card {
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        border-radius: 18px;
+        background: var(--code);
+        color: #e7f3ec;
+        overflow: hidden;
+        box-shadow: 0 20px 64px rgba(16, 19, 21, 0.2);
+      }
+
+      .code-card pre {
+        margin: 0;
+        padding: 24px;
+        overflow-x: auto;
+        font: 14px/1.7 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      }
+
+      .code-card code {
+        white-space: pre;
+      }
+
+      .footer {
+        border-top: 1px solid var(--line);
+        padding: 26px 0;
+        color: #626b64;
+        font-size: 14px;
+      }
+
+      .footer-inner {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: space-between;
+        gap: 14px;
+        width: min(calc(100vw - 40px), var(--max));
+        margin: 0 auto;
+      }
+
+      .footer a {
+        font-weight: 720;
+      }
+
+      @keyframes pulse {
+        0% {
+          box-shadow: 0 0 0 0 rgba(19, 135, 93, 0.42);
+        }
+        70% {
+          box-shadow: 0 0 0 10px rgba(19, 135, 93, 0);
+        }
+        100% {
+          box-shadow: 0 0 0 0 rgba(19, 135, 93, 0);
+        }
+      }
+
+      @media (max-width: 960px) {
+        .hero {
+          display: flex;
+          flex-direction: column;
+          overflow-x: hidden;
+          min-height: auto;
+          padding-bottom: 54px;
+        }
+
+        .hero-stage {
+          position: relative;
+          inset: auto;
+          z-index: 0;
+          order: 2;
+          min-width: 0;
+          width: min(calc(100vw - 40px), var(--max));
+          margin: 34px auto 0;
+        }
+
+        .hero-content {
+          order: 1;
+          min-width: 0;
+        }
+
+        .runtime-visual {
+          min-height: 420px;
+        }
+
+        .terminal.primary {
+          top: 0;
+        }
+
+        .terminal.secondary {
+          right: 18px;
+          bottom: 0;
+        }
+
+        .primitive-grid,
+        .flow-track,
+        .install-panel {
+          grid-template-columns: 1fr;
+        }
+
+        .flow-step {
+          min-height: auto;
+        }
+
+        .step-index {
+          margin-bottom: 30px;
+        }
+      }
+
+      @media (max-width: 680px) {
+        .nav-inner {
+          width: min(calc(100vw - 28px), var(--max));
+        }
+
+        .nav-links a:not(:last-child) {
+          display: none;
+        }
+
+        .brand span:last-child {
+          max-width: 190px;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+
+        .hero {
+          padding-top: 106px;
+        }
+
+        .hero-content,
+        .hero-stage,
+        .section-inner,
+        .footer-inner {
+          width: calc(100vw - 28px);
+          max-width: calc(100vw - 28px);
+        }
+
+        .hero-copy,
+        .actions,
+        .proof-row {
+          max-width: calc(100vw - 28px);
+        }
+
+        .hero-copy {
+          overflow-wrap: break-word;
+        }
+
+        .proof {
+          max-width: 100%;
+        }
+
+        h1 {
+          font-size: clamp(44px, 14vw, 70px);
+        }
+
+        .hero-copy {
+          font-size: 18px;
+        }
+
+        .actions {
+          flex-direction: column;
+        }
+
+        .button {
+          width: 100%;
+        }
+
+        .runtime-visual {
+          min-height: 374px;
+        }
+
+        .terminal.primary {
+          height: 268px;
+        }
+
+        .terminal.secondary {
+          width: 92%;
+          height: 196px;
+        }
+
+        .code-lines {
+          padding: 18px;
+          font-size: 11px;
+        }
+
+        .graph {
+          grid-template-columns: 1fr;
+          padding: 14px;
+        }
+
+        .node {
+          min-height: 52px;
+        }
+
+        .orbit {
+          right: 18px;
+          top: 292px;
+        }
+
+        section {
+          padding: 64px 0;
+        }
+
+        .primitive {
+          min-height: auto;
+        }
+
+        .primitive code {
+          margin-bottom: 30px;
+        }
+      }
+
+      @media (max-width: 430px) {
+        .nav-inner,
+        .hero-content,
+        .hero-stage,
+        .section-inner,
+        .footer-inner {
+          width: calc(100vw - 28px);
+          max-width: 362px;
+        }
+
+        .hero-copy,
+        .actions,
+        .proof-row {
+          max-width: 362px;
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        html {
+          scroll-behavior: auto;
+        }
+
+        *,
+        *::before,
+        *::after {
+          animation-duration: 0.01ms !important;
+          animation-iteration-count: 1 !important;
+          scroll-behavior: auto !important;
+          transition-duration: 0.01ms !important;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="site-shell">
+      <header class="nav" aria-label="Primary navigation">
+        <div class="nav-inner">
+          <a class="brand" href="#" aria-label="Open Dynamic Workflows home">
+            <span class="brand-mark">ODW</span>
+            <span>Open Dynamic Workflows</span>
+          </a>
+          <nav class="nav-links" aria-label="Site links">
+            <a href="#primitives">Primitives</a>
+            <a href="#runtime">Runtime</a>
+            <a href="#start">Start</a>
+            <a href="https://github.com/xz1220/open-dynamic-workflows">GitHub</a>
+          </nav>
+        </div>
+      </header>
+
+      <main>
+        <section class="hero" aria-labelledby="hero-title">
+          <div class="hero-stage" aria-hidden="true">
+            <div class="runtime-visual">
+              <div class="terminal primary">
+                <div class="terminal-bar">
+                  <span class="dot"></span>
+                  <span class="dot"></span>
+                  <span class="dot"></span>
+                  <span>workflow.js</span>
+                </div>
+                <div class="code-lines">
+                  <span class="code-line code-dim">export const meta = { name: "deep-research" }</span>
+                  <span class="code-line"><span class="code-accent">phase</span>("Research")</span>
+                  <span class="code-line">const drafts = await <span class="code-accent">parallel</span>(sources.map(scan))</span>
+                  <span class="code-line"><span class="code-warn">phase</span>("Verify")</span>
+                  <span class="code-line">const checks = await <span class="code-accent">pipeline</span>(drafts, critique, cite)</span>
+                  <span class="code-line">return await <span class="code-accent">agent</span>("Synthesize the report", { schema })</span>
+                </div>
+              </div>
+
+              <div class="terminal secondary">
+                <div class="terminal-bar">
+                  <span class="dot"></span>
+                  <span class="dot"></span>
+                  <span class="dot"></span>
+                  <span>run graph</span>
+                </div>
+                <div class="graph">
+                  <div class="node">
+                    <strong>Codex</strong>
+                    <span>adapter ready</span>
+                  </div>
+                  <div class="node">
+                    <strong>Claude Code</strong>
+                    <span>adapter ready</span>
+                  </div>
+                  <div class="node">
+                    <strong>Gemini</strong>
+                    <span>adapter ready</span>
+                  </div>
+                  <div class="node">
+                    <strong>Custom CLI</strong>
+                    <span>shell command</span>
+                  </div>
+                </div>
+              </div>
+
+              <div class="orbit">
+                <span class="pulse"></span>
+                <span>background run active</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="hero-content">
+            <p class="eyebrow">TypeScript CLI runtime for coding agents</p>
+            <h1 id="hero-title">Open Dynamic Workflows</h1>
+            <p class="hero-copy">
+              Run Claude Code-style dynamic workflows across Codex, Claude Code,
+              Gemini, Qwen, Kimi, and custom coding-agent CLIs.
+            </p>
+            <div class="actions" aria-label="Primary actions">
+              <a class="button primary" href="https://github.com/xz1220/open-dynamic-workflows">View GitHub</a>
+              <a class="button secondary" href="https://github.com/xz1220/open-dynamic-workflows#readme">Read README</a>
+            </div>
+            <div class="proof-row" aria-label="Project attributes">
+              <span class="proof">Open source</span>
+              <span class="proof">Node 20+</span>
+              <span class="proof">Zero runtime deps target</span>
+              <span class="proof">Local CLI adapters</span>
+            </div>
+          </div>
+        </section>
+
+        <section id="primitives" aria-labelledby="primitives-title">
+          <div class="section-inner">
+            <p class="section-kicker">Portable workflow scripts</p>
+            <h2 id="primitives-title">Keep the plan in code. Let agents do the parallel work.</h2>
+            <p class="section-lede">
+              ODW runs the same JavaScript workflow dialect used by Claude Code:
+              ordinary control flow, injected primitives, background execution,
+              and CLI adapters that keep orchestration outside the host context.
+            </p>
+
+            <div class="primitive-grid">
+              <article class="primitive">
+                <code>agent(prompt)</code>
+                <h3>Dispatch real work</h3>
+                <p>Send a scoped task to a coding-agent CLI and collect text or schema-validated output.</p>
+              </article>
+              <article class="primitive">
+                <code>parallel(thunks)</code>
+                <h3>Fan out safely</h3>
+                <p>Run independent subtasks concurrently when the next step needs the full batch.</p>
+              </article>
+              <article class="primitive">
+                <code>pipeline(items)</code>
+                <h3>Stream stages</h3>
+                <p>Move each item through multi-step review, verification, or synthesis without a global barrier.</p>
+              </article>
+            </div>
+          </div>
+        </section>
+
+        <section class="flow" id="runtime" aria-labelledby="runtime-title">
+          <div class="section-inner">
+            <p class="section-kicker">Runtime shape</p>
+            <h2 id="runtime-title">A small engine between workflow scripts and real agent CLIs.</h2>
+            <p class="section-lede">
+              The runtime loads the workflow, injects primitives, schedules agent
+              calls, and persists run state so long-running orchestration can be
+              observed after it starts.
+            </p>
+
+            <div class="flow-track">
+              <article class="flow-step">
+                <span class="step-index">01</span>
+                <h3>Load</h3>
+                <p>Read a Claude Code-style script and wrap top-level return and await into a runnable function.</p>
+              </article>
+              <article class="flow-step">
+                <span class="step-index">02</span>
+                <h3>Schedule</h3>
+                <p>Apply async concurrency limits and route each agent call through the selected adapter.</p>
+              </article>
+              <article class="flow-step">
+                <span class="step-index">03</span>
+                <h3>Persist</h3>
+                <p>Store run state, logs, events, and results in a run directory outside the caller process.</p>
+              </article>
+              <article class="flow-step">
+                <span class="step-index">04</span>
+                <h3>Observe</h3>
+                <p>Use the CLI to follow logs, check status, pause, resume, stop, or print the final result.</p>
+              </article>
+            </div>
+          </div>
+        </section>
+
+        <section class="install" id="start" aria-labelledby="start-title">
+          <div class="section-inner">
+            <p class="section-kicker">Start from source</p>
+            <h2 id="start-title">Clone the runtime and run the test-backed CLI locally.</h2>
+            <div class="install-panel">
+              <div class="install-copy">
+                <p>
+                  Open Dynamic Workflows is currently in an active TypeScript
+                  rewrite. The repository includes the CLI shell, runtime layers,
+                  mock-adapter tests, examples, and the skill documentation for
+                  host agents.
+                </p>
+                <div class="actions">
+                  <a class="button primary" href="https://github.com/xz1220/open-dynamic-workflows">Open repository</a>
+                </div>
+              </div>
+              <div class="code-card" aria-label="Local setup commands">
+                <div class="terminal-bar">
+                  <span class="dot"></span>
+                  <span class="dot"></span>
+                  <span class="dot"></span>
+                  <span>terminal</span>
+                </div>
+                <pre><code>git clone https://github.com/xz1220/open-dynamic-workflows.git
+cd open-dynamic-workflows
+npm install
+npm test
+npm run build
+node dist/cli.js --help</code></pre>
+              </div>
+            </div>
+          </div>
+        </section>
+      </main>
+
+      <footer class="footer">
+        <div class="footer-inner">
+          <span>MIT licensed. Built for portable dynamic workflows.</span>
+          <a href="https://github.com/xz1220/open-dynamic-workflows">github.com/xz1220/open-dynamic-workflows</a>
+        </div>
+      </footer>
+    </div>
+  </body>
+</html>
