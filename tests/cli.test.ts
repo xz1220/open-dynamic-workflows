@@ -1,7 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { helpText, versionText, main, COMMANDS } from "../src/cli.js";
+import { helpText, versionText, main, COMMANDS, isCliEntrypoint } from "../src/cli.js";
 
 test("help text lists the core commands", () => {
   const help = helpText();
@@ -34,5 +38,18 @@ test("known-but-unwired command exits 1 (not yet implemented)", async () => {
 test("COMMANDS covers the documented verbs", () => {
   for (const command of ["run", "status", "logs", "result", "list", "pause", "resume", "stop"]) {
     assert.ok((COMMANDS as readonly string[]).includes(command));
+  }
+});
+
+test("CLI entrypoint detection follows npm bin symlinks", () => {
+  const tempDir = mkdtempSync(join(tmpdir(), "odw-cli-"));
+  try {
+    const cliPath = fileURLToPath(new URL("../src/cli.ts", import.meta.url));
+    const linkedPath = join(tempDir, "odw");
+    symlinkSync(cliPath, linkedPath);
+
+    assert.equal(isCliEntrypoint(linkedPath, pathToFileURL(cliPath).href), true);
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
   }
 });

@@ -16,7 +16,8 @@
  *   odw pause|resume|stop <run_id>
  */
 
-import { pathToFileURL } from "node:url";
+import { realpathSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { VERSION } from "./index.js";
 
 export const COMMANDS = [
@@ -82,7 +83,19 @@ export async function main(argv: string[]): Promise<number> {
   return 1;
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+export function isCliEntrypoint(argvEntry: string | undefined, moduleUrl = import.meta.url): boolean {
+  if (!argvEntry) {
+    return false;
+  }
+
+  try {
+    return realpathSync(argvEntry) === realpathSync(fileURLToPath(moduleUrl));
+  } catch {
+    return false;
+  }
+}
+
+if (isCliEntrypoint(process.argv[1])) {
   main(process.argv.slice(2)).then((code) => {
     process.exitCode = code;
   });
