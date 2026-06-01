@@ -1,0 +1,1313 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ODW Flow Console Prototype</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f4f7f4;
+        --surface: #ffffff;
+        --surface-alt: #eef4ef;
+        --surface-strong: #16231c;
+        --line: #d7dfd8;
+        --line-strong: #aab8ad;
+        --text: #17231c;
+        --muted: #607069;
+        --faint: #7b8a83;
+        --accent: #2f7d5d;
+        --accent-strong: #1f6047;
+        --accent-soft: #dcebe2;
+        --warning: #b36b1e;
+        --warning-soft: #f7ead5;
+        --danger: #ad3737;
+        --danger-soft: #f6dddd;
+        --ok: #2f7d5d;
+        --ok-soft: #dcebe2;
+        --idle: #6c7680;
+        --idle-soft: #e4e8ea;
+        --shadow: 0 18px 45px rgba(26, 44, 34, 0.08);
+        --radius: 8px;
+        --mono: "SFMono-Regular", "Cascadia Code", "Liberation Mono", Menlo, monospace;
+        --sans: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100dvh;
+        font-family: var(--sans);
+        background:
+          linear-gradient(180deg, rgba(255, 255, 255, 0.74), rgba(255, 255, 255, 0)),
+          var(--bg);
+        color: var(--text);
+      }
+
+      button,
+      input {
+        font: inherit;
+      }
+
+      button {
+        cursor: pointer;
+      }
+
+      .app {
+        min-height: 100dvh;
+        display: grid;
+        grid-template-columns: 248px minmax(0, 1fr);
+      }
+
+      .rail {
+        border-right: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.72);
+        padding: 18px 14px;
+        display: flex;
+        flex-direction: column;
+        gap: 22px;
+        position: sticky;
+        top: 0;
+        height: 100dvh;
+      }
+
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 4px 6px;
+      }
+
+      .brand-mark {
+        width: 34px;
+        height: 34px;
+        border-radius: var(--radius);
+        background: var(--surface-strong);
+        color: #f8fbf8;
+        display: grid;
+        place-items: center;
+        font-family: var(--mono);
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0;
+      }
+
+      .brand-title {
+        font-size: 15px;
+        font-weight: 720;
+        letter-spacing: 0;
+      }
+
+      .brand-caption {
+        color: var(--muted);
+        font-size: 12px;
+        margin-top: 1px;
+      }
+
+      .nav {
+        display: grid;
+        gap: 4px;
+      }
+
+      .nav button {
+        border: 0;
+        background: transparent;
+        color: var(--muted);
+        min-height: 36px;
+        border-radius: var(--radius);
+        text-align: left;
+        padding: 0 10px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+      }
+
+      .nav button.active {
+        background: var(--surface-alt);
+        color: var(--text);
+        font-weight: 680;
+      }
+
+      .nav-kbd {
+        font-family: var(--mono);
+        font-size: 11px;
+        color: var(--faint);
+      }
+
+      .source-box {
+        margin-top: auto;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        padding: 12px;
+        background: var(--surface);
+      }
+
+      .source-label {
+        color: var(--muted);
+        font-size: 12px;
+        margin-bottom: 7px;
+      }
+
+      .source-path {
+        font-family: var(--mono);
+        font-size: 12px;
+        line-height: 1.45;
+        word-break: break-word;
+      }
+
+      .page {
+        min-width: 0;
+        padding: 18px;
+      }
+
+      .topbar {
+        min-height: 58px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        margin-bottom: 18px;
+      }
+
+      .page-title {
+        margin: 0;
+        font-size: clamp(24px, 3vw, 34px);
+        line-height: 1.08;
+        letter-spacing: 0;
+      }
+
+      .page-subtitle {
+        color: var(--muted);
+        margin-top: 6px;
+        font-size: 14px;
+      }
+
+      .toolbar {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+      }
+
+      .button {
+        border: 1px solid var(--line-strong);
+        background: var(--surface);
+        color: var(--text);
+        border-radius: var(--radius);
+        min-height: 36px;
+        padding: 0 12px;
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        white-space: nowrap;
+      }
+
+      .button.primary {
+        background: var(--accent);
+        border-color: var(--accent);
+        color: #ffffff;
+      }
+
+      .button:active {
+        transform: translateY(1px);
+      }
+
+      .icon {
+        width: 16px;
+        height: 16px;
+        border: 1.7px solid currentColor;
+        border-radius: 50%;
+        display: inline-block;
+        position: relative;
+        flex: 0 0 auto;
+      }
+
+      .icon.refresh::after {
+        content: "";
+        position: absolute;
+        right: -3px;
+        top: 3px;
+        width: 5px;
+        height: 5px;
+        border-top: 1.7px solid currentColor;
+        border-right: 1.7px solid currentColor;
+        transform: rotate(45deg);
+        background: var(--surface);
+      }
+
+      .icon.play {
+        border-radius: 3px;
+      }
+
+      .icon.play::before {
+        content: "";
+        position: absolute;
+        left: 5px;
+        top: 3px;
+        width: 0;
+        height: 0;
+        border-top: 4px solid transparent;
+        border-bottom: 4px solid transparent;
+        border-left: 6px solid currentColor;
+      }
+
+      .metrics {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 12px;
+        margin-bottom: 14px;
+      }
+
+      .metric {
+        background: var(--surface);
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        padding: 14px;
+        min-height: 104px;
+        box-shadow: 0 8px 24px rgba(25, 43, 32, 0.04);
+      }
+
+      .metric-label {
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .metric-value {
+        font-size: 30px;
+        font-weight: 760;
+        letter-spacing: 0;
+        margin-top: 8px;
+      }
+
+      .metric-note {
+        color: var(--muted);
+        font-size: 12px;
+        margin-top: 8px;
+      }
+
+      .layout {
+        display: grid;
+        grid-template-columns: minmax(300px, 0.86fr) minmax(470px, 1.5fr) minmax(320px, 0.9fr);
+        gap: 14px;
+        align-items: start;
+      }
+
+      .panel {
+        background: rgba(255, 255, 255, 0.92);
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        box-shadow: var(--shadow);
+        min-width: 0;
+      }
+
+      .panel-head {
+        padding: 14px;
+        border-bottom: 1px solid var(--line);
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+      }
+
+      .panel-title {
+        font-weight: 720;
+        letter-spacing: 0;
+      }
+
+      .panel-subtitle {
+        margin-top: 3px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .panel-body {
+        padding: 14px;
+      }
+
+      .filters {
+        display: flex;
+        gap: 6px;
+        flex-wrap: wrap;
+      }
+
+      .filter {
+        border: 1px solid var(--line);
+        background: var(--surface);
+        color: var(--muted);
+        border-radius: 999px;
+        min-height: 28px;
+        padding: 0 10px;
+        font-size: 12px;
+      }
+
+      .filter.active {
+        background: var(--accent-soft);
+        color: var(--accent-strong);
+        border-color: #b7d7c4;
+        font-weight: 700;
+      }
+
+      .run-list {
+        display: grid;
+        gap: 8px;
+      }
+
+      .run-row {
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: var(--surface);
+        padding: 12px;
+        display: grid;
+        gap: 9px;
+        text-align: left;
+        color: inherit;
+      }
+
+      .run-row.active {
+        border-color: var(--accent);
+        box-shadow: 0 0 0 2px rgba(47, 125, 93, 0.12);
+      }
+
+      .run-main {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 12px;
+      }
+
+      .run-name {
+        font-weight: 720;
+        line-height: 1.25;
+      }
+
+      .run-id {
+        color: var(--muted);
+        font-family: var(--mono);
+        font-size: 11px;
+        margin-top: 4px;
+      }
+
+      .status {
+        border-radius: 999px;
+        min-height: 24px;
+        padding: 0 8px;
+        display: inline-flex;
+        align-items: center;
+        font-size: 12px;
+        font-weight: 700;
+        white-space: nowrap;
+      }
+
+      .status.running,
+      .status.done {
+        color: var(--ok);
+        background: var(--ok-soft);
+      }
+
+      .status.paused,
+      .status.pending {
+        color: var(--warning);
+        background: var(--warning-soft);
+      }
+
+      .status.failed,
+      .status.stopped {
+        color: var(--danger);
+        background: var(--danger-soft);
+      }
+
+      .run-meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 7px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .runtime-chip {
+        border-radius: 6px;
+        padding: 4px 7px;
+        background: var(--surface-alt);
+        color: var(--text);
+        font-family: var(--mono);
+        font-size: 11px;
+      }
+
+      .bar {
+        height: 7px;
+        border-radius: 999px;
+        background: #e4ebe5;
+        overflow: hidden;
+      }
+
+      .bar span {
+        display: block;
+        height: 100%;
+        background: var(--accent);
+        border-radius: inherit;
+      }
+
+      .detail-hero {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 16px;
+        padding: 16px;
+        border-bottom: 1px solid var(--line);
+        background:
+          linear-gradient(135deg, rgba(47, 125, 93, 0.12), rgba(255, 255, 255, 0) 48%),
+          var(--surface);
+        border-radius: var(--radius) var(--radius) 0 0;
+      }
+
+      .detail-title {
+        margin: 0;
+        font-size: 24px;
+        letter-spacing: 0;
+        line-height: 1.16;
+      }
+
+      .detail-desc {
+        color: var(--muted);
+        margin-top: 8px;
+        max-width: 70ch;
+        line-height: 1.5;
+        font-size: 14px;
+      }
+
+      .detail-actions {
+        display: flex;
+        gap: 7px;
+        align-items: flex-start;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+      }
+
+      .mini-button {
+        border: 1px solid var(--line-strong);
+        background: rgba(255, 255, 255, 0.86);
+        border-radius: var(--radius);
+        min-height: 32px;
+        padding: 0 10px;
+        color: var(--text);
+      }
+
+      .mini-button.danger {
+        color: var(--danger);
+        border-color: #e2b7b7;
+        background: var(--danger-soft);
+      }
+
+      .detail-grid {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(230px, 0.72fr);
+        gap: 14px;
+        padding: 14px;
+      }
+
+      .subpanel {
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: var(--surface);
+        min-width: 0;
+      }
+
+      .subpanel-head {
+        padding: 12px;
+        border-bottom: 1px solid var(--line);
+        font-weight: 700;
+      }
+
+      .phase-track {
+        padding: 12px;
+        display: grid;
+        gap: 10px;
+      }
+
+      .phase {
+        display: grid;
+        grid-template-columns: 22px minmax(0, 1fr) auto;
+        gap: 10px;
+        align-items: center;
+      }
+
+      .phase-dot {
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        border: 2px solid var(--line-strong);
+        justify-self: center;
+      }
+
+      .phase.complete .phase-dot {
+        background: var(--accent);
+        border-color: var(--accent);
+      }
+
+      .phase.current .phase-dot {
+        border-color: var(--accent);
+        box-shadow: 0 0 0 4px rgba(47, 125, 93, 0.12);
+      }
+
+      .phase-title {
+        font-weight: 690;
+        font-size: 13px;
+      }
+
+      .phase-detail {
+        color: var(--muted);
+        font-size: 12px;
+        margin-top: 2px;
+      }
+
+      .phase-count {
+        color: var(--muted);
+        font-family: var(--mono);
+        font-size: 11px;
+      }
+
+      .runtime-map {
+        padding: 12px;
+        display: grid;
+        gap: 9px;
+      }
+
+      .runtime-row {
+        display: grid;
+        grid-template-columns: 86px minmax(0, 1fr) 42px;
+        gap: 10px;
+        align-items: center;
+        font-size: 12px;
+      }
+
+      .runtime-name {
+        font-family: var(--mono);
+        color: var(--text);
+      }
+
+      .runtime-line {
+        height: 8px;
+        border-radius: 999px;
+        background: #e5ebe6;
+        overflow: hidden;
+      }
+
+      .runtime-line span {
+        display: block;
+        height: 100%;
+        border-radius: inherit;
+        background: var(--accent);
+      }
+
+      .runtime-value {
+        color: var(--muted);
+        font-family: var(--mono);
+        text-align: right;
+      }
+
+      .agent-table {
+        width: 100%;
+        border-collapse: collapse;
+      }
+
+      .agent-table th,
+      .agent-table td {
+        padding: 10px 12px;
+        border-bottom: 1px solid var(--line);
+        text-align: left;
+        vertical-align: middle;
+        font-size: 12px;
+      }
+
+      .agent-table th {
+        color: var(--muted);
+        font-weight: 650;
+        background: #fbfcfb;
+      }
+
+      .agent-table tr:last-child td {
+        border-bottom: 0;
+      }
+
+      .mono {
+        font-family: var(--mono);
+      }
+
+      .event-list {
+        padding: 12px;
+        display: grid;
+        gap: 9px;
+        max-height: 514px;
+        overflow: auto;
+      }
+
+      .event {
+        display: grid;
+        grid-template-columns: 62px minmax(0, 1fr);
+        gap: 10px;
+        padding-bottom: 9px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .event:last-child {
+        border-bottom: 0;
+      }
+
+      .event-time {
+        font-family: var(--mono);
+        color: var(--faint);
+        font-size: 11px;
+      }
+
+      .event-type {
+        font-weight: 700;
+        font-size: 12px;
+      }
+
+      .event-copy {
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.45;
+        margin-top: 3px;
+      }
+
+      .inspector {
+        padding: 12px;
+        display: grid;
+        gap: 10px;
+        border-top: 1px solid var(--line);
+        background: #fbfcfb;
+        border-radius: 0 0 var(--radius) var(--radius);
+      }
+
+      .kv {
+        display: grid;
+        grid-template-columns: 96px minmax(0, 1fr);
+        gap: 10px;
+        font-size: 12px;
+      }
+
+      .kv span:first-child {
+        color: var(--muted);
+      }
+
+      .kv span:last-child {
+        min-width: 0;
+        overflow-wrap: anywhere;
+      }
+
+      .runtime-matrix {
+        margin-top: 14px;
+      }
+
+      .adapter-grid {
+        display: grid;
+        grid-template-columns: repeat(5, minmax(0, 1fr));
+        gap: 10px;
+      }
+
+      .adapter {
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        padding: 12px;
+        background: var(--surface);
+        display: grid;
+        gap: 8px;
+        min-height: 116px;
+      }
+
+      .adapter-head {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 8px;
+      }
+
+      .adapter-name {
+        font-weight: 720;
+      }
+
+      .adapter-key {
+        color: var(--muted);
+        font-family: var(--mono);
+        font-size: 11px;
+        margin-top: 2px;
+      }
+
+      .adapter-cmd {
+        color: var(--muted);
+        font-family: var(--mono);
+        font-size: 11px;
+        line-height: 1.45;
+        overflow-wrap: anywhere;
+      }
+
+      .toast {
+        position: fixed;
+        right: 18px;
+        bottom: 18px;
+        min-width: 220px;
+        max-width: 360px;
+        background: var(--surface-strong);
+        color: #f8fbf8;
+        border-radius: var(--radius);
+        padding: 12px 14px;
+        box-shadow: var(--shadow);
+        opacity: 0;
+        transform: translateY(8px);
+        transition: opacity 160ms ease, transform 160ms ease;
+        pointer-events: none;
+        z-index: 20;
+      }
+
+      .toast.show {
+        opacity: 1;
+        transform: translateY(0);
+      }
+
+      @media (max-width: 1280px) {
+        .layout {
+          grid-template-columns: minmax(300px, 0.9fr) minmax(430px, 1.35fr);
+        }
+
+        .event-panel {
+          grid-column: 1 / -1;
+        }
+
+        .event-list {
+          max-height: 260px;
+        }
+
+        .adapter-grid {
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+        }
+      }
+
+      @media (max-width: 920px) {
+        .app {
+          grid-template-columns: 1fr;
+        }
+
+        .rail {
+          position: static;
+          height: auto;
+          border-right: 0;
+          border-bottom: 1px solid var(--line);
+        }
+
+        .nav {
+          grid-template-columns: repeat(4, minmax(0, 1fr));
+        }
+
+        .source-box {
+          display: none;
+        }
+
+        .topbar {
+          align-items: flex-start;
+          flex-direction: column;
+        }
+
+        .toolbar {
+          justify-content: flex-start;
+        }
+
+        .metrics,
+        .layout,
+        .detail-grid,
+        .adapter-grid {
+          grid-template-columns: 1fr;
+        }
+
+        .detail-hero {
+          grid-template-columns: 1fr;
+        }
+
+        .detail-actions {
+          justify-content: flex-start;
+        }
+      }
+
+      @media (max-width: 560px) {
+        .page {
+          padding: 12px;
+        }
+
+        .rail {
+          padding: 12px;
+        }
+
+        .nav {
+          grid-template-columns: 1fr 1fr;
+        }
+
+        .runtime-row {
+          grid-template-columns: 76px minmax(0, 1fr) 34px;
+        }
+
+        .agent-table {
+          display: block;
+          overflow-x: auto;
+          white-space: nowrap;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="app">
+      <aside class="rail" aria-label="Primary">
+        <div class="brand">
+          <div class="brand-mark">ODW</div>
+          <div>
+            <div class="brand-title">Flow Console</div>
+            <div class="brand-caption">Dynamic Goals runtime view</div>
+          </div>
+        </div>
+
+        <nav class="nav" aria-label="Sections">
+          <button class="active" type="button">Flows <span class="nav-kbd">1</span></button>
+          <button type="button">Runtimes <span class="nav-kbd">2</span></button>
+          <button type="button">Events <span class="nav-kbd">3</span></button>
+          <button type="button">Controls <span class="nav-kbd">4</span></button>
+        </nav>
+
+        <div class="source-box">
+          <div class="source-label">Run store</div>
+          <div class="source-path">~/.odw/runs</div>
+        </div>
+      </aside>
+
+      <main class="page">
+        <header class="topbar">
+          <div>
+            <h1 class="page-title">Dynamic Goals Flow Console</h1>
+            <div class="page-subtitle">Running flows, agent runtime routing, and progress events in one operational view.</div>
+          </div>
+          <div class="toolbar">
+            <button class="button" type="button" data-action="refresh"><span class="icon refresh"></span>Refresh</button>
+            <button class="button primary" type="button" data-action="new-flow"><span class="icon play"></span>New flow</button>
+          </div>
+        </header>
+
+        <section class="metrics" aria-label="Summary metrics">
+          <div class="metric">
+            <div class="metric-label">Active flows</div>
+            <div class="metric-value" id="metric-active">0</div>
+            <div class="metric-note">running or paused</div>
+          </div>
+          <div class="metric">
+            <div class="metric-label">Agent processes</div>
+            <div class="metric-value" id="metric-agents">0</div>
+            <div class="metric-note">in flight now</div>
+          </div>
+          <div class="metric">
+            <div class="metric-label">Default runtime</div>
+            <div class="metric-value" id="metric-runtime">claude</div>
+            <div class="metric-note">from odw.config.json</div>
+          </div>
+          <div class="metric">
+            <div class="metric-label">Dispatch cap</div>
+            <div class="metric-value">16</div>
+            <div class="metric-note">auto concurrency limit</div>
+          </div>
+        </section>
+
+        <div class="layout">
+          <section class="panel" aria-label="Flow list">
+            <div class="panel-head">
+              <div>
+                <div class="panel-title">Flow queue</div>
+                <div class="panel-subtitle">One row per run directory</div>
+              </div>
+              <div class="filters" aria-label="Flow filters">
+                <button class="filter active" type="button" data-filter="all">All</button>
+                <button class="filter" type="button" data-filter="running">Live</button>
+                <button class="filter" type="button" data-filter="done">Done</button>
+                <button class="filter" type="button" data-filter="failed">Needs eye</button>
+              </div>
+            </div>
+            <div class="panel-body">
+              <div class="run-list" id="run-list"></div>
+            </div>
+          </section>
+
+          <section class="panel" aria-label="Selected flow">
+            <div id="detail"></div>
+          </section>
+
+          <aside class="panel event-panel" aria-label="Event stream">
+            <div class="panel-head">
+              <div>
+                <div class="panel-title">Event stream</div>
+                <div class="panel-subtitle">events.jsonl tail</div>
+              </div>
+              <button class="mini-button" type="button" data-action="follow">Follow</button>
+            </div>
+            <div class="event-list" id="events"></div>
+            <div class="inspector" id="inspector"></div>
+          </aside>
+        </div>
+
+        <section class="panel runtime-matrix" aria-label="Runtime matrix">
+          <div class="panel-head">
+            <div>
+              <div class="panel-title">Agent runtime map</div>
+              <div class="panel-subtitle">Configured adapters and current assignment pressure</div>
+            </div>
+          </div>
+          <div class="panel-body">
+            <div class="adapter-grid" id="adapter-grid"></div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+    <script>
+      const runs = [
+        {
+          id: "20260601-214822-a91c2f",
+          name: "deep-research",
+          state: "running",
+          description: "Fan-out web research with adversarial fact-checking and cited synthesis.",
+          args: "question: portable multi-agent workflows",
+          defaultRuntime: "claude",
+          source: "/Users/danielxing/repos/open-dynamic-workflows",
+          started: "21:48",
+          updated: "22:03",
+          activeAgents: 7,
+          dispatched: 31,
+          progress: 62,
+          currentPhase: "Verify",
+          phases: [
+            ["Plan", "question decomposition", "complete", 1],
+            ["Gather", "source search and claim extraction", "complete", 18],
+            ["Verify", "adversarial fact checks", "current", 9],
+            ["Synthesize", "cited report", "pending", 0],
+            ["Critique", "gap analysis", "pending", 0],
+          ],
+          runtimes: { claude: 18, codex: 7, gemini: 4, qwen: 2, kimi: 0 },
+          agents: [
+            ["verify:primary-source check", "claude", "Verify", "running", "02:14"],
+            ["verify:recency & currency", "codex", "Verify", "running", "01:42"],
+            ["verify:contradicting evidence", "gemini", "Verify", "done", "00:58"],
+            ["extract:ecosystem", "claude", "Gather", "done", "03:06"],
+          ],
+          events: [
+            ["22:03", "agent_started", "verify:primary-source check started on Claude Code."],
+            ["22:02", "agent_finished", "extract:ecosystem returned 8 cited claims."],
+            ["22:00", "log", "17 key or uncertain claims selected for verification."],
+            ["21:58", "phase_started", "Verify phase opened."],
+            ["21:55", "agent_finished", "search:recent-developments completed on Gemini CLI."],
+          ],
+        },
+        {
+          id: "20260601-211610-c441ac",
+          name: "migration-review",
+          state: "paused",
+          description: "Scan migration plan, split by risk area, and verify findings with a judge panel.",
+          args: "repo: billing-service",
+          defaultRuntime: "codex",
+          source: "/Users/danielxing/repos/billing-service",
+          started: "21:16",
+          updated: "21:45",
+          activeAgents: 0,
+          dispatched: 12,
+          progress: 44,
+          currentPhase: "Review",
+          phases: [
+            ["Plan", "risk taxonomy", "complete", 1],
+            ["Review", "parallel area reviews", "current", 11],
+            ["Verify", "judge panel", "pending", 0],
+            ["Synthesize", "patch guidance", "pending", 0],
+          ],
+          runtimes: { codex: 8, claude: 2, qwen: 2, gemini: 0, kimi: 0 },
+          agents: [
+            ["review:data-model", "codex", "Review", "paused", "04:11"],
+            ["review:auth-paths", "qwen", "Review", "done", "02:28"],
+            ["review:rollout-risk", "claude", "Review", "done", "03:02"],
+          ],
+          events: [
+            ["21:45", "run_paused", "Pause requested through control.json."],
+            ["21:43", "agent_finished", "review:auth-paths returned 3 findings."],
+            ["21:37", "phase_started", "Review phase opened."],
+          ],
+        },
+        {
+          id: "20260601-204312-6e03d1",
+          name: "adapter-smoke",
+          state: "done",
+          description: "Run a minimal prompt across configured CLI adapters and collect stdout.",
+          args: "mode: smoke",
+          defaultRuntime: "claude",
+          source: "/Users/danielxing/repos/open-dynamic-workflows",
+          started: "20:43",
+          updated: "20:48",
+          activeAgents: 0,
+          dispatched: 5,
+          progress: 100,
+          currentPhase: "Result",
+          phases: [
+            ["Dispatch", "adapter smoke prompts", "complete", 5],
+            ["Result", "stdout capture", "complete", 5],
+          ],
+          runtimes: { codex: 1, claude: 1, gemini: 1, qwen: 1, kimi: 1 },
+          agents: [
+            ["smoke:codex", "codex", "Dispatch", "done", "00:17"],
+            ["smoke:claude", "claude", "Dispatch", "done", "00:13"],
+            ["smoke:gemini", "gemini", "Dispatch", "done", "00:20"],
+          ],
+          events: [
+            ["20:48", "run_finished", "All configured adapters produced output."],
+            ["20:47", "agent_finished", "smoke:kimi completed."],
+            ["20:43", "run_started", "Worker process attached to run directory."],
+          ],
+        },
+        {
+          id: "20260601-193028-b7d9cc",
+          name: "schema-retry-check",
+          state: "failed",
+          description: "Exercise structured output retries against a strict JSON Schema.",
+          args: "schema: report",
+          defaultRuntime: "qwen",
+          source: "/Users/danielxing/repos/open-dynamic-workflows",
+          started: "19:30",
+          updated: "19:36",
+          activeAgents: 0,
+          dispatched: 4,
+          progress: 71,
+          currentPhase: "Validate",
+          phases: [
+            ["Dispatch", "mock dirty reply", "complete", 1],
+            ["Validate", "schema retry loop", "current", 3],
+            ["Result", "persist object", "pending", 0],
+          ],
+          runtimes: { qwen: 4, codex: 0, claude: 0, gemini: 0, kimi: 0 },
+          agents: [
+            ["schema:attempt-1", "qwen", "Validate", "failed", "00:21"],
+            ["schema:attempt-2", "qwen", "Validate", "failed", "00:25"],
+            ["schema:attempt-3", "qwen", "Validate", "failed", "00:24"],
+          ],
+          events: [
+            ["19:36", "run_failed", "SchemaValidationError after 3 attempts."],
+            ["19:35", "agent_failed", "schema:attempt-3 returned prose instead of JSON."],
+            ["19:31", "phase_started", "Validate phase opened."],
+          ],
+        },
+      ];
+
+      const adapters = [
+        ["claude", "Claude Code", "claude --print ...", "ready", 21],
+        ["codex", "Codex CLI", "codex exec --cd {workspace} -", "ready", 16],
+        ["gemini", "Gemini CLI", "gemini --approval-mode auto_edit", "ready", 6],
+        ["qwen", "Qwen Code", "qwen --output-format text", "retrying", 6],
+        ["kimi", "Kimi CLI", "kimi --work-dir {workspace}", "idle", 1],
+      ];
+
+      let selected = runs[0].id;
+      let filter = "all";
+
+      const byId = (id) => document.getElementById(id);
+      const stateLabel = (state) => state.replace("-", " ");
+
+      function visibleRuns() {
+        if (filter === "all") return runs;
+        if (filter === "running") return runs.filter((run) => run.state === "running" || run.state === "paused");
+        if (filter === "failed") return runs.filter((run) => run.state === "failed" || run.state === "stopped");
+        return runs.filter((run) => run.state === filter);
+      }
+
+      function renderMetrics() {
+        byId("metric-active").textContent = runs.filter((run) => run.state === "running" || run.state === "paused").length;
+        byId("metric-agents").textContent = runs.reduce((sum, run) => sum + run.activeAgents, 0);
+        byId("metric-runtime").textContent = runs[0].defaultRuntime;
+      }
+
+      function renderRunList() {
+        const list = byId("run-list");
+        list.innerHTML = "";
+        for (const run of visibleRuns()) {
+          const row = document.createElement("button");
+          row.className = "run-row" + (run.id === selected ? " active" : "");
+          row.type = "button";
+          row.innerHTML = `
+            <div class="run-main">
+              <div>
+                <div class="run-name">${run.name}</div>
+                <div class="run-id">${run.id}</div>
+              </div>
+              <span class="status ${run.state}">${stateLabel(run.state)}</span>
+            </div>
+            <div class="run-meta">
+              <span>${run.currentPhase}</span>
+              <span>${run.dispatched} agents</span>
+              <span>${run.started} start</span>
+              <span class="runtime-chip">${run.defaultRuntime}</span>
+            </div>
+            <div class="bar" aria-label="${run.progress} percent complete"><span style="width:${run.progress}%"></span></div>
+          `;
+          row.addEventListener("click", () => {
+            selected = run.id;
+            render();
+          });
+          list.appendChild(row);
+        }
+      }
+
+      function renderDetail() {
+        const run = runs.find((item) => item.id === selected) || runs[0];
+        const totalRuntime = Object.values(run.runtimes).reduce((sum, value) => sum + value, 0) || 1;
+        byId("detail").innerHTML = `
+          <div class="detail-hero">
+            <div>
+              <h2 class="detail-title">${run.name}</h2>
+              <div class="detail-desc">${run.description}</div>
+            </div>
+            <div class="detail-actions">
+              <button class="mini-button" type="button" data-action="pause">Pause</button>
+              <button class="mini-button" type="button" data-action="resume">Resume</button>
+              <button class="mini-button danger" type="button" data-action="stop">Stop</button>
+            </div>
+          </div>
+          <div class="detail-grid">
+            <div class="subpanel">
+              <div class="subpanel-head">Phase path</div>
+              <div class="phase-track">
+                ${run.phases.map(([title, detail, state, count]) => `
+                  <div class="phase ${state}">
+                    <span class="phase-dot"></span>
+                    <div>
+                      <div class="phase-title">${title}</div>
+                      <div class="phase-detail">${detail}</div>
+                    </div>
+                    <span class="phase-count">${count}</span>
+                  </div>
+                `).join("")}
+              </div>
+            </div>
+            <div class="subpanel">
+              <div class="subpanel-head">Runtime mix</div>
+              <div class="runtime-map">
+                ${Object.entries(run.runtimes).map(([name, count]) => `
+                  <div class="runtime-row">
+                    <span class="runtime-name">${name}</span>
+                    <span class="runtime-line"><span style="width:${Math.max(4, Math.round((count / totalRuntime) * 100))}%"></span></span>
+                    <span class="runtime-value">${count}</span>
+                  </div>
+                `).join("")}
+              </div>
+            </div>
+          </div>
+          <div class="subpanel" style="margin:0 14px 14px">
+            <div class="subpanel-head">Agent calls</div>
+            <table class="agent-table">
+              <thead>
+                <tr>
+                  <th>Label</th>
+                  <th>Runtime</th>
+                  <th>Phase</th>
+                  <th>State</th>
+                  <th>Elapsed</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${run.agents.map(([label, runtime, phase, state, elapsed]) => `
+                  <tr>
+                    <td class="mono">${label}</td>
+                    <td>${runtime}</td>
+                    <td>${phase}</td>
+                    <td><span class="status ${state}">${state}</span></td>
+                    <td class="mono">${elapsed}</td>
+                  </tr>
+                `).join("")}
+              </tbody>
+            </table>
+          </div>
+        `;
+      }
+
+      function renderEvents() {
+        const run = runs.find((item) => item.id === selected) || runs[0];
+        byId("events").innerHTML = run.events.map(([time, type, message]) => `
+          <div class="event">
+            <div class="event-time">${time}</div>
+            <div>
+              <div class="event-type">${type}</div>
+              <div class="event-copy">${message}</div>
+            </div>
+          </div>
+        `).join("");
+        byId("inspector").innerHTML = `
+          <div class="kv"><span>run_id</span><span class="mono">${run.id}</span></div>
+          <div class="kv"><span>source</span><span class="mono">${run.source}</span></div>
+          <div class="kv"><span>args</span><span>${run.args}</span></div>
+          <div class="kv"><span>updated</span><span>${run.updated}</span></div>
+        `;
+      }
+
+      function renderAdapters() {
+        byId("adapter-grid").innerHTML = adapters.map(([key, name, command, state, count]) => `
+          <div class="adapter">
+            <div class="adapter-head">
+              <div>
+                <div class="adapter-name">${name}</div>
+                <div class="adapter-key">${key}</div>
+              </div>
+              <span class="status ${state === "ready" ? "done" : state === "retrying" ? "paused" : "pending"}">${state}</span>
+            </div>
+            <div class="adapter-cmd">${command}</div>
+            <div class="bar"><span style="width:${Math.min(100, count * 4)}%"></span></div>
+          </div>
+        `).join("");
+      }
+
+      function toast(message) {
+        const node = byId("toast");
+        node.textContent = message;
+        node.classList.add("show");
+        window.clearTimeout(toast.timer);
+        toast.timer = window.setTimeout(() => node.classList.remove("show"), 1700);
+      }
+
+      function bindControls() {
+        document.querySelectorAll("[data-filter]").forEach((button) => {
+          button.addEventListener("click", () => {
+            filter = button.dataset.filter;
+            document.querySelectorAll("[data-filter]").forEach((node) => node.classList.toggle("active", node === button));
+            renderRunList();
+          });
+        });
+
+        document.body.addEventListener("click", (event) => {
+          const button = event.target.closest("[data-action]");
+          if (!button) return;
+          const action = button.dataset.action;
+          const copy = {
+            refresh: "Run store refreshed from mock data.",
+            "new-flow": "New flow launcher would open here.",
+            follow: "Following the selected events stream.",
+            pause: "Pause request would write control.json.",
+            resume: "Resume request would clear pause state.",
+            stop: "Stop request would write control.json.",
+          };
+          toast(copy[action] || "Action queued.");
+        });
+      }
+
+      function render() {
+        renderMetrics();
+        renderRunList();
+        renderDetail();
+        renderEvents();
+        renderAdapters();
+      }
+
+      bindControls();
+      render();
+    </script>
+  </body>
+</html>
