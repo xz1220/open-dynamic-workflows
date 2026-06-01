@@ -63,23 +63,32 @@ export function extractJson(text: string): unknown {
 
 function* candidates(text: string): Generator<string> {
   const stripped = text.trim();
-  const fenced = fencedBlock(stripped);
-  if (fenced !== null) yield fenced;
+  // Try every fenced block (not just the first) so an inline ``` in prose
+  // ahead of the real answer doesn't mask it.
+  yield* fencedBlocks(stripped);
   const span = balancedSpan(stripped);
   if (span !== null) yield span;
   yield stripped;
 }
 
-/** Contents of the first ```json (or bare ```) fenced block, if any. */
-function fencedBlock(text: string): string | null {
-  const fence = text.indexOf("```");
-  if (fence === -1) return null;
-  const after = text.slice(fence + 3);
-  const newline = after.indexOf("\n");
-  if (newline === -1) return null;
-  const body = after.slice(newline + 1);
-  const close = body.indexOf("```");
-  return close === -1 ? body : body.slice(0, close);
+/** Contents of each ```json (or bare ```) fenced block, in order. */
+function* fencedBlocks(text: string): Generator<string> {
+  let from = 0;
+  for (;;) {
+    const fence = text.indexOf("```", from);
+    if (fence === -1) return;
+    const after = text.slice(fence + 3);
+    const newline = after.indexOf("\n");
+    if (newline === -1) return;
+    const body = after.slice(newline + 1);
+    const close = body.indexOf("```");
+    if (close === -1) {
+      yield body;
+      return;
+    }
+    yield body.slice(0, close);
+    from = fence + 3 + newline + 1 + close + 3;
+  }
 }
 
 /** The first balanced {...} or [...] span, ignoring braces inside strings. */
@@ -120,15 +129,39 @@ type Checker = (value: unknown, schema: JsonSchema, path: string) => string[];
 
 /** Return a list of validation problems; empty means the value is valid. */
 export function validate(value: unknown, schema: JsonSchema, path = "$"): string[] {
+  const errors: string[] = [];
+  // `enum` and `type` are independent JSON-Schema constraints; check both.
   if ("enum" in schema) {
     const choices = schema.enum as unknown[];
-    return choices.includes(value) ? [] : [`${path}: ${JSON.stringify(value)} is not one of ${JSON.stringify(choices)}`];
+    if (!choices.some((choice) => deepEqual(choice, value))) {
+      errors.push(`${path}: ${JSON.stringify(value)} is not one of ${JSON.stringify(choices)}`);
+    }
   }
   const expected = schema.type;
-  if (expected === undefined) return [];
-  const checker = CHECKERS[expected as string];
-  if (!checker) return [`${path}: unknown schema type ${JSON.stringify(expected)}`];
-  return checker(value, schema, path);
+  if (expected !== undefined) {
+    const checker = CHECKERS[expected as string];
+    if (!checker) errors.push(`${path}: unknown schema type ${JSON.stringify(expected)}`);
+    else errors.push(...checker(value, schema, path));
+  }
+  return errors;
+}
+
+/** Structural equality over the JSON value space (for `enum` membership). */
+function deepEqual(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (a === null || b === null || typeof a !== "object" || typeof b !== "object") return false;
+  if (Array.isArray(a) || Array.isArray(b)) {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+    return a.every((x, i) => deepEqual(x, b[i]));
+  }
+  const ak = Object.keys(a as Record<string, unknown>);
+  const bk = Object.keys(b as Record<string, unknown>);
+  if (ak.length !== bk.length) return false;
+  return ak.every(
+    (k) =>
+      Object.prototype.hasOwnProperty.call(b, k) &&
+      deepEqual((a as Record<string, unknown>)[k], (b as Record<string, unknown>)[k]),
+  );
 }
 
 const checkObject: Checker = (value, schema, path) => {

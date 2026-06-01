@@ -81,16 +81,22 @@ export const runCommand: CommandRunner = (command, options = {}) => {
       });
     });
 
-    child.on("close", (code) => {
-      finish({
-        returncode: timedOut ? -1 : code ?? 0,
-        stdout,
-        stderr,
-        timedOut,
-        duration: elapsed(),
-      });
+    child.on("close", (code, signal) => {
+      // A process killed by a signal reports code===null. Distinguish our own
+      // timeout kill (already flagged) from an external/crash signal (SIGSEGV,
+      // OOM SIGKILL, …) so a crash is never mistaken for a clean exit (0).
+      let returncode: number;
+      if (timedOut) returncode = -1;
+      else if (code !== null) returncode = code;
+      else returncode = signal ? 128 : 1;
+      const note = signal && !timedOut ? `\n[process terminated by signal ${signal}]` : "";
+      finish({ returncode, stdout, stderr: stderr + note, timedOut, duration: elapsed() });
     });
 
+    // The child may close stdin before consuming all input; an unhandled EPIPE
+    // on the write would otherwise crash the whole process. Swallow it — the
+    // real outcome arrives via the 'close'/'error' handlers above.
+    child.stdin.on("error", () => {});
     if (options.stdin != null) child.stdin.write(options.stdin);
     child.stdin.end();
   });

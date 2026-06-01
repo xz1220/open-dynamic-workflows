@@ -15,7 +15,7 @@ import { basename, dirname } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { loadConfig } from "../adapters/config.js";
-import { buildContext } from "../context.js";
+import { buildContext, type RunContext } from "../context.js";
 import { RunStopped } from "../errors.js";
 import { RUN_FAILED, RUN_FINISHED, RUN_STARTED, RUN_STOPPED, event } from "../events.js";
 import { loadWorkflowScript } from "../loader.js";
@@ -32,25 +32,30 @@ export async function executeRun(runDir: string): Promise<string> {
   const script = meta.script as string | undefined;
   if (!script) throw new Error(`no run metadata found at ${runDir}`);
 
-  const config = loadConfig((meta.configPath as string | null) ?? null);
   const sink = new JsonlSink(store.eventsPath(runId));
-  const control = new FileControl({
-    readAction: () => store.readControl(runId),
-    onState: (state) => store.updateStatus(runId, { state }),
-  });
   const args = meta.args;
-  const ctx = buildContext(config, {
-    source: meta.source as string | undefined,
-    args,
-    sink,
-    control,
-    budgetTotal: (meta.budgetTotal as number | null) ?? null,
-  });
-
-  store.updateStatus(runId, { state: "running", pid: process.pid });
-  sink.emit(event(RUN_STARTED, { runId }));
+  // ctx is created inside the try so that a config or context-build failure is
+  // still recorded as a failed run rather than leaving it stuck in "pending".
+  let ctx: RunContext | undefined;
+  const dispatched = () => ctx?.scheduler.dispatched ?? 0;
 
   try {
+    const config = loadConfig((meta.configPath as string | null) ?? null);
+    const control = new FileControl({
+      readAction: () => store.readControl(runId),
+      onState: (state) => store.updateStatus(runId, { state }),
+    });
+    ctx = buildContext(config, {
+      source: meta.source as string | undefined,
+      args,
+      sink,
+      control,
+      budgetTotal: (meta.budgetTotal as number | null) ?? null,
+    });
+
+    store.updateStatus(runId, { state: "running", pid: process.pid });
+    sink.emit(event(RUN_STARTED, { runId }));
+
     const source = readFileSync(script, "utf8");
     const loaded = loadWorkflowScript(source, script);
     store.updateStatus(runId, {
@@ -63,18 +68,18 @@ export async function executeRun(runDir: string): Promise<string> {
 
     store.writeResult(runId, result);
     sink.emit(event(RUN_FINISHED, { runId }));
-    store.updateStatus(runId, { state: "done", dispatched: ctx.scheduler.dispatched });
+    store.updateStatus(runId, { state: "done", dispatched: dispatched() });
     return "done";
   } catch (err) {
     if (err instanceof RunStopped) {
       sink.emit(event(RUN_STOPPED, { runId }));
-      store.updateStatus(runId, { state: "stopped", dispatched: ctx.scheduler.dispatched });
+      store.updateStatus(runId, { state: "stopped", dispatched: dispatched() });
       return "stopped";
     }
     const e = err as Error;
     sink.emit(event(RUN_FAILED, { runId, error: e.message ?? String(err) }));
     store.writeError(runId, { error: e.message ?? String(err), stack: e.stack ?? null });
-    store.updateStatus(runId, { state: "failed", dispatched: ctx.scheduler.dispatched });
+    store.updateStatus(runId, { state: "failed", dispatched: dispatched() });
     return "failed";
   }
 }

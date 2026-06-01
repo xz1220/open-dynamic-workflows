@@ -16,9 +16,11 @@
  *      injected primitives (plus `args`), so the body's top-level `return`
  *      becomes the workflow's result and its top-level `await` is legal.
  *
- * The transform stays dependency-free: a balanced-brace scan finds the `meta`
- * object literal, and `AsyncFunction` provides the async-with-injected-params
- * wrapper.
+ * Scanning is **string/comment/regex aware**: a masked copy of the source (with
+ * strings, template literals, comments and regex literals blanked) drives every
+ * search, so an `export const meta =` or a brace that lives inside a string or
+ * comment is never mistaken for the real declaration. The literal is then sliced
+ * from the *original* source so its quoted content and comments survive `eval`.
  */
 
 import { WorkflowScriptError } from "./errors.js";
@@ -60,6 +62,8 @@ const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor as new (
   ...args: string[]
 ) => (...callArgs: unknown[]) => Promise<unknown>;
 
+const EXPORT_META = /\bexport\s+const\s+meta\s*=/;
+
 /** Parse + transform a workflow script's source into a runnable form. */
 export function loadWorkflowScript(source: string, filename: string): LoadedWorkflow {
   const { meta, body } = extractMeta(source, filename);
@@ -91,20 +95,26 @@ export function loadWorkflowScript(source: string, filename: string): LoadedWork
 // --- internals ---------------------------------------------------------------
 
 function extractMeta(source: string, filename: string): { meta: WorkflowMeta; body: string } {
-  const match = /export\s+const\s+meta\s*=/.exec(source);
+  const masked = maskNonCode(source);
+
+  const match = EXPORT_META.exec(masked);
   if (!match) {
     throw new WorkflowScriptError(`workflow ${filename} must 'export const meta = { ... }'`);
   }
-  const valueStart = source.indexOf("{", match.index + match[0].length);
-  if (valueStart === -1) {
+  const exportStart = match.index;
+  const exportLen = "export".length;
+
+  const braceStart = masked.indexOf("{", exportStart + match[0].length);
+  if (braceStart === -1) {
     throw new WorkflowScriptError(`workflow ${filename}: could not find the meta object literal`);
   }
-  const end = balancedBraceEnd(source, valueStart);
+  const end = matchBrace(masked, braceStart);
   if (end === null) {
     throw new WorkflowScriptError(`workflow ${filename}: unterminated meta object literal`);
   }
 
-  const literal = source.slice(valueStart, end + 1);
+  // The literal comes from the ORIGINAL source so its strings/comments survive.
+  const literal = source.slice(braceStart, end + 1);
   let meta: unknown;
   try {
     meta = new Function(`return (${literal});`)();
@@ -115,35 +125,127 @@ function extractMeta(source: string, filename: string): { meta: WorkflowMeta; bo
   }
   assertMeta(meta, filename);
 
-  // Strip the `export` keyword; keep `const meta = <literal>` in the body so the
-  // body remains a valid statement sequence.
-  const body = source.slice(0, match.index) + "const meta =" + source.slice(match.index + match[0].length);
+  // Reject any *other* top-level export/import: blank the meta `export` keyword
+  // in the masked copy, then look for a stray one outside strings/comments.
+  const restMasked =
+    masked.slice(0, exportStart) + " ".repeat(exportLen) + masked.slice(exportStart + exportLen);
+  if (/\b(?:export|import)\b/.test(restMasked)) {
+    throw new WorkflowScriptError(
+      `workflow ${filename}: a workflow body may only 'export const meta'; other top-level ` +
+        `export/import statements are not supported (the primitives are injected, not imported)`,
+    );
+  }
+
+  // Strip just the `export` keyword; keep `const meta = <literal>` in the body
+  // so the body remains a valid statement sequence.
+  const body = source.slice(0, exportStart) + source.slice(exportStart + exportLen);
   return { meta, body };
 }
 
-/** Index of the `}` that closes the object opening at `start`, ignoring strings. */
-function balancedBraceEnd(text: string, start: number): number | null {
+/** Index of the `}` that closes the brace opening at `start` (masked source). */
+function matchBrace(masked: string, start: number): number | null {
   let depth = 0;
-  let quote: string | null = null;
-  let escaped = false;
-  for (let i = start; i < text.length; i++) {
-    const ch = text[i]!;
-    if (quote) {
-      if (escaped) escaped = false;
-      else if (ch === "\\") escaped = true;
-      else if (ch === quote) quote = null;
-      continue;
-    }
-    if (ch === '"' || ch === "'" || ch === "`") {
-      quote = ch;
-    } else if (ch === "{") {
-      depth++;
-    } else if (ch === "}") {
+  for (let i = start; i < masked.length; i++) {
+    const ch = masked[i];
+    if (ch === "{") depth++;
+    else if (ch === "}") {
       depth--;
       if (depth === 0) return i;
     }
   }
   return null;
+}
+
+/**
+ * Return a copy of `src` with every string, template literal, comment and regex
+ * literal replaced by spaces (newlines preserved). Code structure — braces,
+ * keywords, positions — is untouched, so simple scans over the result only ever
+ * see real code.
+ */
+function maskNonCode(src: string): string {
+  const out = src.split("");
+  const n = src.length;
+  let prevSig = "";
+
+  const blank = (from: number, to: number): void => {
+    for (let k = from; k < to; k++) if (out[k] !== "\n") out[k] = " ";
+  };
+
+  let i = 0;
+  while (i < n) {
+    const ch = src[i]!;
+    const next = src[i + 1];
+
+    if (ch === "/" && next === "/") {
+      let j = i + 2;
+      while (j < n && src[j] !== "\n") j++;
+      blank(i, j);
+      i = j;
+      continue;
+    }
+    if (ch === "/" && next === "*") {
+      let j = i + 2;
+      while (j < n && !(src[j] === "*" && src[j + 1] === "/")) j++;
+      j = Math.min(n, j + 2);
+      blank(i, j);
+      i = j;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === "`") {
+      let j = i + 1;
+      let escaped = false;
+      while (j < n) {
+        const c = src[j]!;
+        if (escaped) escaped = false;
+        else if (c === "\\") escaped = true;
+        else if (c === ch) {
+          j++;
+          break;
+        }
+        j++;
+      }
+      blank(i, j);
+      i = j;
+      prevSig = ch;
+      continue;
+    }
+    if (ch === "/" && regexAllowed(prevSig)) {
+      let j = i + 1;
+      let escaped = false;
+      let inClass = false;
+      let closed = false;
+      while (j < n) {
+        const c = src[j]!;
+        if (escaped) escaped = false;
+        else if (c === "\\") escaped = true;
+        else if (c === "[") inClass = true;
+        else if (c === "]") inClass = false;
+        else if (c === "\n") break;
+        else if (c === "/" && !inClass) {
+          j++;
+          closed = true;
+          break;
+        }
+        j++;
+      }
+      if (closed) {
+        blank(i, j);
+        i = j;
+        prevSig = "/";
+        continue;
+      }
+      // Not a terminated regex — treat the `/` as ordinary code (division).
+    }
+
+    if (!/\s/.test(ch)) prevSig = ch;
+    i++;
+  }
+  return out.join("");
+}
+
+/** Whether a `/` at this point can begin a regex literal (vs. division). */
+function regexAllowed(prevSig: string): boolean {
+  return prevSig === "" || "([{,;:=!&|?+-*%<>~^".includes(prevSig);
 }
 
 function assertMeta(meta: unknown, filename: string): asserts meta is WorkflowMeta {

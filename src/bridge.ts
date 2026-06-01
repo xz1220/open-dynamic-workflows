@@ -91,8 +91,10 @@ export class Bridge {
       }
 
       const value = extractJson(text);
+      // `undefined` is extractJson's only "nothing parsed" sentinel; a parsed
+      // JSON `null` is a real value — let validate() decide if the schema allows it.
       problems =
-        value === undefined || value === null
+        value === undefined
           ? ["no JSON value found in the reply"]
           : validate(value, request.schema);
       if (problems.length === 0) {

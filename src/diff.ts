@@ -61,10 +61,11 @@ export function unifiedDiff(aText: string, bText: string, fromFile: string, toFi
     }
     const ctxEnd = Math.min(ann.length, end + CONTEXT);
     const slice = ann.slice(ctxStart, ctxEnd);
-    const aFirst = firstLineNo(slice, "a");
-    const bFirst = firstLineNo(slice, "b");
     const aCount = slice.filter((o) => o.type !== "ins").length;
     const bCount = slice.filter((o) => o.type !== "del").length;
+    // Unified-diff convention: a side with zero lines starts at line 0.
+    const aFirst = aCount === 0 ? 0 : firstLineNo(slice, "a");
+    const bFirst = bCount === 0 ? 0 : firstLineNo(slice, "b");
     const body = slice
       .map((o) => (o.type === "eq" ? " " : o.type === "del" ? "-" : "+") + o.line)
       .join("\n");

@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>ODW 动态工作流原型</title>
+    <title>Open Dynamic Workflows 动态拓扑原型</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
@@ -16,7 +16,7 @@
         --ink: #111111;
         --muted: #777777;
         --line: #ececec;
-        --soft-line: #f4f4f4;
+        --soft-line: #f5f5f5;
         --mint: #d7f1e1;
         --peach: #ffe8d6;
         --sky: #e0f2fe;
@@ -55,54 +55,52 @@
         gap: 26px;
       }
 
-      .sidebar {
+      .sidebar,
+      .stage {
         border: 1px solid var(--line);
         border-radius: var(--radius);
-        padding: 24px;
         box-shadow: var(--shadow);
+        background: #ffffff;
+      }
+
+      .sidebar {
+        min-height: calc(100dvh - 68px);
+        padding: 26px 24px;
         display: flex;
         flex-direction: column;
-        min-height: calc(100dvh - 68px);
       }
 
       .brand {
         display: flex;
         justify-content: space-between;
         align-items: flex-start;
-        gap: 20px;
-        margin-bottom: 42px;
+        gap: 18px;
+        margin-bottom: 70px;
       }
 
       .brand-name {
+        max-width: 230px;
         font-family: var(--soft);
-        font-size: 36px;
+        font-size: 33px;
         font-weight: 700;
-        line-height: 0.9;
+        line-height: 0.88;
         letter-spacing: 0;
-      }
-
-      .brand-caption {
-        margin-top: 8px;
-        font-size: 13px;
-        color: var(--muted);
-        line-height: 1.45;
       }
 
       .live-pill {
         display: inline-flex;
         align-items: center;
-        gap: 8px;
-        border-radius: 999px;
-        padding: 8px 12px;
-        background: #f5f5f5;
-        color: #555;
+        gap: 7px;
+        padding: 0;
+        background: transparent;
+        color: #666666;
         font-size: 12px;
         white-space: nowrap;
       }
 
       .live-dot {
-        width: 8px;
-        height: 8px;
+        width: 7px;
+        height: 7px;
         border-radius: 50%;
         background: var(--green);
         box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.4);
@@ -121,9 +119,10 @@
       }
 
       .flow {
+        width: 100%;
         border: 1px solid var(--line);
         background: #ffffff;
-        border-radius: 22px;
+        border-radius: 20px;
         padding: 16px;
         cursor: pointer;
         text-align: left;
@@ -145,10 +144,10 @@
       .flow-title {
         display: flex;
         justify-content: space-between;
-        gap: 12px;
         align-items: center;
-        font-weight: 700;
+        gap: 12px;
         font-size: 16px;
+        font-weight: 700;
       }
 
       .flow-meta {
@@ -190,17 +189,15 @@
       .summary {
         margin-top: auto;
         padding-top: 28px;
-        display: grid;
-        gap: 10px;
       }
 
       .summary-row {
         display: flex;
         justify-content: space-between;
+        border-top: 1px solid var(--soft-line);
+        padding-top: 12px;
         color: var(--muted);
         font-size: 13px;
-        border-top: 1px solid var(--soft-line);
-        padding-top: 10px;
       }
 
       .summary-row strong {
@@ -209,72 +206,35 @@
 
       .stage {
         position: relative;
-        border: 1px solid var(--line);
-        border-radius: var(--radius);
-        overflow: hidden;
         min-height: calc(100dvh - 68px);
-        box-shadow: var(--shadow);
+        overflow: hidden;
       }
 
-      .stage-top {
+      .stage-header {
         position: absolute;
-        top: 28px;
-        left: 32px;
-        right: 32px;
+        top: 32px;
+        left: 36px;
+        right: 36px;
         z-index: 4;
         display: flex;
         justify-content: space-between;
-        align-items: flex-start;
+        align-items: center;
         gap: 24px;
       }
 
-      .title-block {
-        max-width: 520px;
-      }
-
-      .stage-kicker {
-        font-size: 13px;
-        color: var(--muted);
-        margin-bottom: 8px;
-      }
-
-      h1 {
-        margin: 0;
-        font-family: var(--soft);
-        font-size: clamp(52px, 7vw, 96px);
-        line-height: 0.84;
-        letter-spacing: -1px;
-      }
-
-      .stage-copy {
-        margin-top: 18px;
-        max-width: 460px;
-        color: #666666;
-        line-height: 1.55;
+      .stage-title {
         font-size: 15px;
-      }
-
-      .mode-card {
-        width: 230px;
-        border-radius: 24px;
-        padding: 16px;
-        background: #f7f7f7;
-      }
-
-      .mode-label {
-        color: var(--muted);
-        font-size: 12px;
-        margin-bottom: 10px;
-      }
-
-      .mode-value {
         font-weight: 700;
-        line-height: 1.25;
       }
 
-      .graph {
+      .stage-hint {
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .topology {
         position: absolute;
-        inset: 0;
+        inset: 96px 34px 78px;
       }
 
       .wires {
@@ -288,179 +248,132 @@
       .wire {
         fill: none;
         stroke: #111111;
-        stroke-width: 1.4;
+        stroke-width: 1.35;
         stroke-linecap: round;
         stroke-dasharray: 7 12;
-        opacity: 0.16;
+        opacity: 0.18;
         animation: move-wire 6s linear infinite;
       }
 
-      .node {
+      .topo-node {
         position: absolute;
-        width: 212px;
-        min-height: 138px;
-        border-radius: 30px;
-        padding: 20px;
-        box-shadow: var(--shadow);
+        z-index: 2;
+        width: 150px;
+        min-height: 88px;
+        border: 1px solid rgba(0, 0, 0, 0.04);
+        border-radius: 18px;
+        padding: 16px;
+        box-shadow: rgba(0, 0, 0, 0.05) 0 18px 45px;
         transition:
-          transform 0.35s cubic-bezier(0.23, 1, 0.32, 1),
-          opacity 0.2s ease;
+          transform 0.24s ease,
+          box-shadow 0.24s ease;
       }
 
-      .node:hover {
-        transform: translateY(-5px) rotate(0deg) scale(1.015);
+      .topo-node:hover {
+        transform: translateY(-3px);
+        box-shadow: rgba(0, 0, 0, 0.08) 0 24px 55px;
       }
 
-      .node-label {
-        display: inline-flex;
-        border-radius: 999px;
-        padding: 5px 10px;
-        background: rgba(255, 255, 255, 0.58);
-        font-size: 11px;
-        font-weight: 700;
-        color: #333333;
+      .topo-node.running::after {
+        content: "";
+        position: absolute;
+        top: 14px;
+        right: 14px;
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: var(--green);
+        box-shadow: 0 0 0 7px rgba(16, 185, 129, 0.1);
       }
 
-      .node h2 {
-        margin: 14px 0 0;
-        font-size: 20px;
-        line-height: 1.15;
+      .topo-node h2 {
+        margin: 0;
+        font-size: 17px;
+        line-height: 1.2;
       }
 
-      .node p {
-        margin: 8px 0 0;
+      .topo-node p {
+        margin: 10px 0 0;
         color: #666666;
         font-size: 13px;
-        line-height: 1.45;
+        line-height: 1.35;
       }
 
-      .node .tiny {
-        margin-top: 16px;
-        font-family: var(--soft);
-        font-size: 21px;
-        line-height: 1;
-        color: rgba(0, 0, 0, 0.45);
-      }
-
-      .node-source {
-        top: 23%;
-        left: 11%;
+      .node-question {
+        left: 2%;
+        top: 43%;
         background: var(--sky);
-        transform: rotate(-3deg);
       }
 
       .node-plan {
-        top: 18%;
-        right: 17%;
+        left: 21%;
+        top: 43%;
         background: var(--peach);
-        transform: rotate(2deg);
       }
 
-      .node-runtime {
-        left: 50%;
-        top: 47%;
-        width: 254px;
-        min-height: 172px;
-        transform: translate(-50%, -50%);
+      .node-dispatch {
+        left: 40%;
+        top: 43%;
         background: #ffffff;
-        border: 1px solid var(--line);
-        text-align: center;
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        justify-content: center;
+        border-color: var(--line);
       }
 
-      .node-runtime:hover {
-        transform: translate(-50%, -50%) scale(1.015);
-      }
-
-      .runtime-ring {
-        width: 56px;
-        height: 56px;
-        border-radius: 50%;
-        border: 1px solid #111111;
-        display: grid;
-        place-items: center;
-        margin-bottom: 14px;
-        position: relative;
-      }
-
-      .runtime-ring::after {
-        content: "";
-        position: absolute;
-        inset: -8px;
-        border: 1px solid rgba(0, 0, 0, 0.08);
-        border-radius: inherit;
-        animation: breathe 2.8s ease-in-out infinite;
-      }
-
-      .node-worker {
-        bottom: 18%;
-        left: 17%;
+      .node-a {
+        left: 59%;
+        top: 12%;
         background: var(--mint);
-        transform: rotate(4deg);
       }
 
-      .node-check {
-        bottom: 20%;
-        right: 12%;
+      .node-b {
+        left: 59%;
+        top: 43%;
+        background: var(--cream);
+      }
+
+      .node-c {
+        left: 59%;
+        top: 74%;
+        background: var(--sky);
+      }
+
+      .node-merge {
+        right: 2%;
+        top: 43%;
         background: var(--lilac);
-        transform: rotate(-2deg);
-      }
-
-      .note {
-        position: absolute;
-        font-family: var(--soft);
-        font-size: 24px;
-        color: rgba(0, 0, 0, 0.32);
-        pointer-events: none;
-      }
-
-      .note-one {
-        left: 30%;
-        top: 30%;
-        transform: rotate(-8deg);
-      }
-
-      .note-two {
-        right: 27%;
-        bottom: 32%;
-        transform: rotate(6deg);
       }
 
       .floating-dot {
         position: absolute;
-        width: 9px;
-        height: 9px;
+        width: 8px;
+        height: 8px;
         border-radius: 50%;
-        background: #efefef;
+        background: #eeeeee;
         animation: drift 5s ease-in-out infinite;
       }
 
       .dot-a {
-        left: 43%;
-        top: 16%;
+        left: 48%;
+        top: 17%;
       }
 
       .dot-b {
-        left: 8%;
-        bottom: 14%;
+        left: 9%;
+        bottom: 9%;
         animation-delay: 0.8s;
       }
 
       .dot-c {
-        right: 9%;
-        top: 41%;
+        right: 7%;
+        top: 24%;
         animation-delay: 1.4s;
       }
 
       .footer-status {
         position: absolute;
-        left: 32px;
-        right: 32px;
+        left: 36px;
+        right: 36px;
         bottom: 28px;
-        z-index: 3;
+        z-index: 4;
         display: flex;
         justify-content: space-between;
         align-items: center;
@@ -472,7 +385,7 @@
       .soft-button {
         border: 0;
         border-radius: 999px;
-        padding: 13px 20px;
+        padding: 12px 18px;
         background: #111111;
         color: #ffffff;
         font-weight: 700;
@@ -495,18 +408,6 @@
       @keyframes move-wire {
         to {
           stroke-dashoffset: -76;
-        }
-      }
-
-      @keyframes breathe {
-        0%,
-        100% {
-          transform: scale(1);
-          opacity: 0.35;
-        }
-        50% {
-          transform: scale(1.14);
-          opacity: 0.08;
         }
       }
 
@@ -543,45 +444,59 @@
       }
 
       @media (max-width: 720px) {
-        .stage-top,
+        .stage-header,
         .footer-status {
           left: 18px;
           right: 18px;
         }
 
-        .stage-top {
+        .stage-header {
+          align-items: flex-start;
           flex-direction: column;
         }
 
-        .mode-card {
-          width: 100%;
+        .topology {
+          inset: 120px 18px 86px;
         }
 
-        .node {
-          width: 180px;
-          min-height: 128px;
-          padding: 16px;
+        .topo-node {
+          width: 128px;
+          min-height: 76px;
+          padding: 13px;
         }
 
-        .node-runtime {
-          width: 220px;
+        .topo-node h2 {
+          font-size: 15px;
         }
 
-        .node-source {
-          left: 4%;
+        .topo-node p {
+          font-size: 12px;
+        }
+
+        .node-question {
+          left: 0;
+          top: 42%;
         }
 
         .node-plan {
-          right: 4%;
-          top: 28%;
+          left: 22%;
+          top: 42%;
         }
 
-        .node-worker {
-          left: 7%;
+        .node-dispatch {
+          left: 44%;
+          top: 42%;
         }
 
-        .node-check {
-          right: 4%;
+        .node-a,
+        .node-b,
+        .node-c {
+          left: 44%;
+        }
+
+        .node-merge {
+          right: 0;
+          top: 42%;
         }
       }
     </style>
@@ -590,10 +505,7 @@
     <main class="page">
       <aside class="sidebar">
         <div class="brand">
-          <div>
-            <div class="brand-name">ODW</div>
-            <div class="brand-caption">看见动态工作流如何启动、分叉、汇合。</div>
-          </div>
+          <div class="brand-name">Open Dynamic Workflows</div>
           <div class="live-pill"><span class="live-dot"></span>运行中</div>
         </div>
 
@@ -603,73 +515,67 @@
         <div class="summary" id="summary"></div>
       </aside>
 
-      <section class="stage" aria-label="动态工作流可视化">
-        <div class="stage-top">
-          <div class="title-block">
-            <div class="stage-kicker">Dynamic Workflow Map</div>
-            <h1 id="headline">flow is<br />moving</h1>
-            <div class="stage-copy" id="description">
-              一个 workflow run 会把任务展开成多个节点。这里先只看运行形态，不展示输入细节。
-            </div>
-          </div>
-          <div class="mode-card">
-            <div class="mode-label">当前形态</div>
-            <div class="mode-value" id="modeText">扇出研究节点，然后回到综合节点。</div>
-          </div>
+      <section class="stage" aria-label="动态工作流拓扑">
+        <div class="stage-header">
+          <div class="stage-title">动态工作流拓扑</div>
+          <div class="stage-hint" id="stageHint">从一个问题开始</div>
         </div>
 
-        <div class="graph">
-          <svg class="wires" viewBox="0 0 1000 700" preserveAspectRatio="none" aria-hidden="true">
-            <path class="wire" d="M220 250 C360 190, 445 250, 500 330"></path>
-            <path class="wire" d="M780 230 C640 188, 555 245, 500 330"></path>
-            <path class="wire" d="M500 330 C385 425, 300 455, 260 530"></path>
-            <path class="wire" d="M500 330 C640 410, 720 450, 790 520"></path>
+        <div class="topology">
+          <svg class="wires" viewBox="0 0 1000 620" preserveAspectRatio="none" aria-hidden="true">
+            <path class="wire" d="M118 310 C175 310, 210 310, 268 310"></path>
+            <path class="wire" d="M330 310 C392 310, 420 310, 482 310"></path>
+            <path class="wire" d="M545 310 C590 190, 630 155, 705 150"></path>
+            <path class="wire" d="M545 310 C610 310, 640 310, 705 310"></path>
+            <path class="wire" d="M545 310 C590 430, 630 465, 705 470"></path>
+            <path class="wire" d="M780 150 C845 190, 840 265, 884 310"></path>
+            <path class="wire" d="M780 310 C822 310, 842 310, 884 310"></path>
+            <path class="wire" d="M780 470 C845 430, 840 355, 884 310"></path>
           </svg>
 
-          <article class="node node-source">
-            <span class="node-label" id="nodeOneLabel">Script</span>
-            <h2 id="nodeOneTitle">读取 workflow</h2>
-            <p id="nodeOneCopy">解析 meta，建立运行上下文。</p>
-            <div class="tiny" id="nodeOneTiny">ready</div>
+          <article class="topo-node node-question running">
+            <h2 id="nodeOneTitle">接收问题</h2>
+            <p id="nodeOneCopy">已启动</p>
           </article>
 
-          <article class="node node-plan">
-            <span class="node-label" id="nodeTwoLabel">Plan</span>
-            <h2 id="nodeTwoTitle">拆成节点</h2>
-            <p id="nodeTwoCopy">把阶段拆开，决定哪些可以并发。</p>
-            <div class="tiny" id="nodeTwoTiny">fan out</div>
+          <article class="topo-node node-plan running">
+            <h2 id="nodeTwoTitle">规划角度</h2>
+            <p id="nodeTwoCopy">5 条路径</p>
           </article>
 
-          <article class="node node-runtime">
-            <div class="runtime-ring">ODW</div>
-            <h2 id="centerTitle">运行时调度</h2>
-            <p id="centerCopy">控制并发、记录事件、等待节点返回。</p>
+          <article class="topo-node node-dispatch running">
+            <h2 id="nodeThreeTitle">派发节点</h2>
+            <p id="nodeThreeCopy">等待返回</p>
           </article>
 
-          <article class="node node-worker">
-            <span class="node-label" id="nodeThreeLabel">Agents</span>
-            <h2 id="nodeThreeTitle">多个 Agent 节点</h2>
-            <p id="nodeThreeCopy">不同节点被派发到不同 runtime。</p>
-            <div class="tiny" id="nodeThreeTiny">12 active</div>
+          <article class="topo-node node-a running">
+            <h2 id="nodeFourTitle">研究节点 A</h2>
+            <p id="nodeFourCopy">运行中</p>
           </article>
 
-          <article class="node node-check">
-            <span class="node-label" id="nodeFourLabel">Merge</span>
-            <h2 id="nodeFourTitle">汇合结果</h2>
-            <p id="nodeFourCopy">筛掉失败节点，进入最终综合。</p>
-            <div class="tiny" id="nodeFourTiny">62%</div>
+          <article class="topo-node node-b running">
+            <h2 id="nodeFiveTitle">研究节点 B</h2>
+            <p id="nodeFiveCopy">运行中</p>
           </article>
 
-          <div class="note note-one">parallel nodes</div>
-          <div class="note note-two">back to one result</div>
+          <article class="topo-node node-c">
+            <h2 id="nodeSixTitle">验证节点</h2>
+            <p id="nodeSixCopy">排队中</p>
+          </article>
+
+          <article class="topo-node node-merge">
+            <h2 id="nodeSevenTitle">汇合结果</h2>
+            <p id="nodeSevenCopy">62%</p>
+          </article>
+
           <div class="floating-dot dot-a"></div>
           <div class="floating-dot dot-b"></div>
           <div class="floating-dot dot-c"></div>
         </div>
 
         <div class="footer-status">
-          <div id="footerText">当前 3 个 workflow 正在运行，17 个节点已启动。</div>
-          <button class="soft-button" type="button" id="shuffleButton">切换视图</button>
+          <div id="footerText">12 个节点活跃，5 个节点已完成。</div>
+          <button class="soft-button" type="button" id="shuffleButton">切换工作流</button>
         </div>
       </section>
     </main>
@@ -677,74 +583,65 @@
     <script>
       const flows = [
         {
-          id: "research",
           title: "深度研究工作流",
           meta: "5 个阶段 · 17 个节点 · 62%",
           colors: [42, 28, 20, 10],
-          headline: "research<br />is moving",
-          description: "从一个问题开始，先规划角度，再并发收集、交叉验证，最后汇合成报告。",
-          mode: "扇出研究节点，然后回到综合节点。",
+          hint: "从一个问题开始",
           nodes: [
-            ["Question", "接收问题", "只记录目标，不展开输入细节。", "seed"],
-            ["Plan", "规划角度", "把问题拆成多个互补方向。", "5 paths"],
-            ["Agents", "并发搜索", "多个节点同时访问不同来源。", "12 active"],
-            ["Merge", "交叉验证", "把证据重新汇合，过滤不稳的结论。", "62%"],
+            ["接收问题", "已启动"],
+            ["规划角度", "5 条路径"],
+            ["派发节点", "等待返回"],
+            ["研究节点 A", "运行中"],
+            ["研究节点 B", "运行中"],
+            ["验证节点", "排队中"],
+            ["汇合结果", "62%"],
           ],
-          footer: "深度研究工作流正在运行，12 个节点活跃，5 个节点已完成。",
+          footer: "12 个节点活跃，5 个节点已完成。",
         },
         {
-          id: "migration",
           title: "迁移审查工作流",
           meta: "4 个阶段 · 9 个节点 · 48%",
           colors: [30, 34, 18, 8],
-          headline: "review<br />in layers",
-          description: "把迁移风险拆成结构、数据、权限和发布路径，再让节点分别审查。",
-          mode: "分层审查节点并行推进，后面进入统一判断。",
+          hint: "从迁移范围开始",
           nodes: [
-            ["Scope", "确定范围", "识别这次迁移覆盖哪些区域。", "locked"],
-            ["Review", "分层审查", "节点按风险面独立运行。", "9 nodes"],
-            ["Agents", "runtime 派发", "审查节点被分配到不同 agent。", "6 active"],
-            ["Merge", "生成结论", "保留高置信问题，等待综合。", "48%"],
+            ["确定范围", "已启动"],
+            ["拆分风险", "3 条路径"],
+            ["派发节点", "等待返回"],
+            ["结构审查", "运行中"],
+            ["数据审查", "运行中"],
+            ["权限审查", "排队中"],
+            ["生成结论", "48%"],
           ],
-          footer: "迁移审查工作流正在运行，6 个节点活跃，3 个节点已完成。",
+          footer: "6 个节点活跃，3 个节点已完成。",
         },
         {
-          id: "release",
           title: "发布检查工作流",
           meta: "3 个阶段 · 6 个节点 · 71%",
           colors: [22, 18, 38, 12],
-          headline: "release<br />almost ready",
-          description: "围绕测试、文档、变更摘要和风险说明启动检查节点。",
-          mode: "检查节点更少，路径更短，重点是快速汇合。",
+          hint: "从变更读取开始",
           nodes: [
-            ["Input", "读取变更", "从当前工作区识别发布内容。", "ready"],
-            ["Check", "检查节点", "测试、文档、风险说明同时跑。", "6 nodes"],
-            ["Agents", "轻量派发", "节点小而快，等待最后两个返回。", "2 active"],
-            ["Merge", "发布摘要", "汇合成一个可读的发布判断。", "71%"],
+            ["读取变更", "已启动"],
+            ["规划检查", "4 条路径"],
+            ["派发节点", "等待返回"],
+            ["测试节点", "已完成"],
+            ["文档节点", "运行中"],
+            ["风险节点", "运行中"],
+            ["发布摘要", "71%"],
           ],
-          footer: "发布检查工作流接近完成，2 个节点活跃，4 个节点已完成。",
+          footer: "2 个节点活跃，4 个节点已完成。",
         },
       ];
 
       let active = 0;
 
-      const ids = [
-        "nodeOneLabel",
-        "nodeOneTitle",
-        "nodeOneCopy",
-        "nodeOneTiny",
-        "nodeTwoLabel",
-        "nodeTwoTitle",
-        "nodeTwoCopy",
-        "nodeTwoTiny",
-        "nodeThreeLabel",
-        "nodeThreeTitle",
-        "nodeThreeCopy",
-        "nodeThreeTiny",
-        "nodeFourLabel",
-        "nodeFourTitle",
-        "nodeFourCopy",
-        "nodeFourTiny",
+      const nodeIds = [
+        ["nodeOneTitle", "nodeOneCopy"],
+        ["nodeTwoTitle", "nodeTwoCopy"],
+        ["nodeThreeTitle", "nodeThreeCopy"],
+        ["nodeFourTitle", "nodeFourCopy"],
+        ["nodeFiveTitle", "nodeFiveCopy"],
+        ["nodeSixTitle", "nodeSixCopy"],
+        ["nodeSevenTitle", "nodeSevenCopy"],
       ];
 
       function renderList() {
@@ -755,7 +652,7 @@
               <button class="flow ${index === active ? "active" : ""}" type="button" data-index="${index}">
                 <div class="flow-title">
                   <span>${flow.title}</span>
-                  <span class="live-pill"><span class="live-dot"></span>live</span>
+                  <span class="live-pill"><span class="live-dot"></span>运行</span>
                 </div>
                 <div class="flow-meta">${flow.meta}</div>
                 <div class="flow-strip">
@@ -779,20 +676,16 @@
 
       function renderStage() {
         const flow = flows[active];
-        document.getElementById("headline").innerHTML = flow.headline;
-        document.getElementById("description").textContent = flow.description;
-        document.getElementById("modeText").textContent = flow.mode;
+        document.getElementById("stageHint").textContent = flow.hint;
         document.getElementById("footerText").textContent = flow.footer;
 
-        const flat = flow.nodes.flat();
-        ids.forEach((id, index) => {
-          document.getElementById(id).textContent = flat[index];
+        nodeIds.forEach(([titleId, copyId], index) => {
+          document.getElementById(titleId).textContent = flow.nodes[index][0];
+          document.getElementById(copyId).textContent = flow.nodes[index][1];
         });
 
         document.getElementById("summary").innerHTML = `
           <div class="summary-row"><span>运行中</span><strong>${flows.length}</strong></div>
-          <div class="summary-row"><span>已启动节点</span><strong>32</strong></div>
-          <div class="summary-row"><span>当前视图</span><strong>${flow.title}</strong></div>
         `;
       }
 

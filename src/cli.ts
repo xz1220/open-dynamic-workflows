@@ -102,8 +102,10 @@ export async function main(argv: string[]): Promise<number> {
         return 2;
     }
   } catch (err) {
-    process.stderr.write(`odw: ${(err as Error).message}\n`);
-    return 1;
+    const e = err as NodeJS.ErrnoException;
+    process.stderr.write(`odw: ${e.message}\n`);
+    // A parseArgs usage error (unknown flag, missing value) is a usage error → 2.
+    return typeof e.code === "string" && e.code.startsWith("ERR_PARSE_ARGS") ? 2 : 1;
   }
 }
 
@@ -129,12 +131,31 @@ async function cmdRun(rest: string[]): Promise<number> {
     return 2;
   }
 
+  let budgetTotal: number | null = null;
+  if (values.budget !== undefined) {
+    budgetTotal = Number(values.budget);
+    if (!Number.isFinite(budgetTotal) || budgetTotal <= 0) {
+      process.stderr.write("odw run: --budget must be a positive number\n");
+      return 2;
+    }
+  }
+
+  let timeoutMs: number | undefined;
+  if (values.timeout !== undefined) {
+    const seconds = Number(values.timeout);
+    if (!Number.isFinite(seconds) || seconds < 0) {
+      process.stderr.write("odw run: --timeout must be a non-negative number of seconds\n");
+      return 2;
+    }
+    timeoutMs = seconds * 1000;
+  }
+
   const { runId, store } = startRun(script, {
     args: parseArgsValue(values.args),
     configPath: values.config ?? null,
     runsRoot: values["runs-root"] ?? null,
     source: values.source ?? null,
-    budgetTotal: values.budget !== undefined ? Number(values.budget) : null,
+    budgetTotal,
   });
 
   if (!values.wait) {
@@ -144,9 +165,7 @@ async function cmdRun(rest: string[]): Promise<number> {
   }
 
   process.stderr.write(`running ${runId} ...\n`);
-  const status = await waitFor(store, runId, {
-    timeoutMs: values.timeout ? Number(values.timeout) * 1000 : undefined,
-  });
+  const status = await waitFor(store, runId, { timeoutMs });
   return reportTerminal(store, runId, status);
 }
 

@@ -59,7 +59,9 @@ export async function withWorkspace<T>(
   try {
     await cp(source, work, {
       recursive: true,
-      filter: (src) => !IGNORED_DIRS.has(basename(src)),
+      // Apply the ignore list only below the root — never to the root itself,
+      // even if the source dir's own name happens to be an ignored name.
+      filter: (src) => src === source || !IGNORED_DIRS.has(basename(src)),
     });
     const before = await snapshot(work);
     const ws: Workspace = {

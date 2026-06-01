@@ -8,7 +8,7 @@
  */
 
 import { spawn } from "node:child_process";
-import { existsSync, openSync } from "node:fs";
+import { closeSync, existsSync, openSync } from "node:fs";
 import { resolve } from "node:path";
 import { execPath } from "node:process";
 import { fileURLToPath } from "node:url";
@@ -54,6 +54,7 @@ export function startRun(
     detached: true, // the run outlives this process
     stdio: ["ignore", logFd, logFd],
   });
+  closeSync(logFd); // the child holds its own dup'd descriptors; don't leak ours
   child.unref();
 
   return { runId, store };
