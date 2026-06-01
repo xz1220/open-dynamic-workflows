@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="assets/odw-logo.png" alt="Open Dynamic Workflows logo" width="96" />
+<img src="assets/odw-logo.png" alt="Open Dynamic Workflows logo" width="128" />
 
 # Open Dynamic Workflows
 
