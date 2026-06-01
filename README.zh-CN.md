@@ -2,7 +2,7 @@
 
 # Open Dynamic Workflows
 
-**让任意一个 coding agent 都能跑 Claude Code 式的 dynamic workflow。**
+**开放的 dynamic workflow 运行时,让任意 coding agent 都能跑 Claude Code 式的 agent 编排。**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/Node-%E2%89%A520-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
@@ -20,6 +20,12 @@
 > [路线图](#路线图)。
 
 ## 这是什么?
+
+**Open Dynamic Workflows(ODW)** 是一个 TypeScript / Node CLI 运行时,面向可移植的
+dynamic workflow:用 JavaScript 脚本在宿主 agent 上下文之外,通过 `agent()`、
+`parallel()`、`pipeline()` 扇出并编排 coding agent。如果你在找一个 open dynamic
+workflow engine,想让 Codex、Claude Code、Gemini、Qwen、Kimi 或自定义 CLI 都能跑同一份
+workflow 脚本,这就是这个项目。
 
 **dynamic workflow** 是一段小小的 JavaScript 脚本:它把编排计划放在普通代码里,
 在宿主 agent 的上下文**之外**、**大规模**地调度 coding-agent CLI。你写好脚本(或

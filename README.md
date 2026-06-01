@@ -2,7 +2,7 @@
 
 # Open Dynamic Workflows
 
-**Run Claude Code-style dynamic workflows on _any_ coding agent.**
+**An open dynamic workflow runtime for Claude Code-style agent orchestration on _any_ coding agent.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/Node-%E2%89%A520-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
@@ -21,6 +21,12 @@ English · [简体中文](README.zh-CN.md)
 > design — see the [Roadmap](#roadmap) for what is wired up today.
 
 ## What is this?
+
+**Open Dynamic Workflows (ODW)** is a TypeScript / Node CLI runtime for
+portable dynamic workflows: JavaScript scripts that fan out coding agents with
+`agent()`, `parallel()`, and `pipeline()` outside the host agent's context. If
+you are looking for an open dynamic workflow engine for Codex, Claude Code,
+Gemini, Qwen, Kimi, or a custom CLI, this is the project.
 
 A **dynamic workflow** is a small JavaScript script that holds an orchestration
 plan in ordinary code and dispatches coding-agent CLIs *at scale* — outside the

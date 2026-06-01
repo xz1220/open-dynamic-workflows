@@ -1,7 +1,7 @@
 {
   "name": "open-dynamic-workflows",
   "version": "0.1.0",
-  "description": "Portable dynamic workflows: a runtime that runs Claude Code-format workflow scripts against any coding-agent CLI.",
+  "description": "Open Dynamic Workflows: a TypeScript CLI runtime for Claude Code-style dynamic workflows across any coding-agent CLI.",
   "type": "module",
   "bin": {
     "odw": "dist/cli.js"
@@ -30,11 +30,17 @@
     "prepublishOnly": "npm run build"
   },
   "keywords": [
+    "open-dynamic-workflows",
+    "open-dynamic-workflow",
+    "dynamic-workflow",
     "dynamic-workflows",
-    "workflow",
-    "agent",
-    "orchestration",
+    "agent-orchestration",
+    "ai-agents",
+    "multi-agent",
     "coding-agent",
+    "claude-code",
+    "codex",
+    "typescript",
     "cli"
   ],
   "license": "MIT",
