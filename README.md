@@ -48,7 +48,31 @@ producing become artifacts you can run anywhere.
   (`parallel` is `Promise.all`); workflow scripts stay plain `.js` and ship with
   `.d.ts` authoring types for editor autocomplete.
 
+## Install
+
+**A self-contained binary (recommended).** One file that embeds the Node runtime
+*and* ODW — no Node, no npm, no PATH gymnastics, no global-module conflicts.
+Download, `chmod +x`, run, exactly like a Go or Rust binary:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/xz1220/open-dynamic-workflows/main/scripts/install.sh | sh
+```
+
+That drops `odw` on your PATH and installs the workflow skill into your agent's
+skills directory — **the whole install is a binary + a skill**. You can also grab
+a binary from [Releases](https://github.com/xz1220/open-dynamic-workflows/releases)
+and `chmod +x` it. (The agents ODW *drives* — `claude`, `codex`, … — remain their
+own CLIs you install separately.)
+
+**From npm** (needs Node ≥20):
+
+```bash
+npm i -g open-dynamic-workflows   # puts `odw` on your PATH
+```
+
 ## Quick start
+
+From source (to hack on the engine):
 
 ```bash
 git clone https://github.com/xz1220/open-dynamic-workflows.git
@@ -200,10 +224,21 @@ Runnable, plain-JS workflows in [`examples/`](examples/):
 ## Develop
 
 ```bash
-npm run build      # tsc → dist/
-npm test           # node:test suite, driven by a mock adapter (no real accounts)
-npm run typecheck  # tsc --noEmit
+npm run build         # tsc → dist/
+npm test              # node:test suite, driven by a mock adapter (no real accounts)
+npm run typecheck     # tsc --noEmit
+npm run build:binary  # bundle + Node SEA + postject → a single self-contained ./build/odw
 ```
+
+`build:binary` follows the standard single-executable recipe: [esbuild](https://esbuild.github.io/)
+bundles `dist/` (zero-dep ESM) into one CommonJS file, `node --experimental-sea-config`
+turns it into a [SEA](https://nodejs.org/api/single-executable-applications.html)
+blob, and [postject](https://github.com/nodejs/postject) grafts that blob into a
+copy of the `node` binary (ad-hoc code-signed on macOS). esbuild and postject are
+**build-only devDependencies** — the binary and the npm package stay zero
+*runtime* dependencies. Cross-platform binaries are built per-OS in CI
+([`.github/workflows/release.yml`](.github/workflows/release.yml)); SEA injects
+into the host's `node`, so each target is built on its own runner.
 
 > Once published, `npm i -g open-dynamic-workflows` (or `npx open-dynamic-workflows …`)
 > puts the `odw` command on your PATH.

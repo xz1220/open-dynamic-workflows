@@ -25,6 +25,8 @@ import type { WorkflowEvent } from "./events.js";
 import { VERSION } from "./index.js";
 import { startRun, waitFor } from "./runtime/launcher.js";
 import { RunStore, TERMINAL_STATES } from "./runtime/run-store.js";
+import { executeRun } from "./runtime/worker.js";
+import { isSeaBinary } from "./sea.js";
 
 export const COMMANDS = [
   "run",
@@ -83,6 +85,10 @@ export async function main(argv: string[]): Promise<number> {
 
   try {
     switch (command) {
+      case "__worker":
+        // Hidden: the worker entrypoint a background run re-execs into. In a SEA
+        // binary there is no separate worker.js, so the binary calls itself here.
+        return await cmdWorker(rest);
       case "run":
         return await cmdRun(rest);
       case "status":
@@ -110,6 +116,17 @@ export async function main(argv: string[]): Promise<number> {
 }
 
 // --- commands ----------------------------------------------------------------
+
+/** Hidden worker entrypoint: execute a run in this (SEA-re-exec'd) process. */
+async function cmdWorker(rest: string[]): Promise<number> {
+  const runDir = rest[0];
+  if (!runDir) {
+    process.stderr.write("odw __worker: missing <run_dir>\n");
+    return 2;
+  }
+  const state = await executeRun(runDir);
+  return state === "done" ? 0 : 1;
+}
 
 async function cmdRun(rest: string[]): Promise<number> {
   const { values, positionals } = parseArgs({
@@ -333,7 +350,9 @@ export function isCliEntrypoint(argvEntry: string | undefined, moduleUrl = impor
   }
 }
 
-if (isCliEntrypoint(process.argv[1])) {
+// Run when invoked directly (`node dist/cli.js …`) or as the compiled SEA binary
+// (where there is no script path on argv to match against this module).
+if (isCliEntrypoint(process.argv[1]) || isSeaBinary()) {
   main(process.argv.slice(2)).then((code) => {
     process.exitCode = code;
   });

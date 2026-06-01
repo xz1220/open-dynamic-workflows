@@ -1,0 +1,49 @@
+name: release
+
+# Build a self-contained `odw` binary for every platform and attach them to the
+# GitHub Release. SEA injects the blob into the *host's* node binary, so there is
+# no cross-compiling — each target is built on its own runner.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  binary:
+    name: ${{ matrix.os }}-${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: macos-14,         os: darwin, arch: arm64 }
+          - { runner: macos-13,         os: darwin, arch: x64 }
+          - { runner: ubuntu-latest,    os: linux,  arch: x64 }
+          - { runner: ubuntu-24.04-arm, os: linux,  arch: arm64 }
+          - { runner: windows-latest,   os: win,    arch: x64 }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - run: npm ci
+      - run: npm run build:binary
+      - name: Name the artifact
+        shell: bash
+        run: |
+          ext=""; [ "${{ matrix.os }}" = "win" ] && ext=".exe"
+          mv "build/odw$ext" "odw-${{ matrix.os }}-${{ matrix.arch }}$ext"
+          echo "ASSET=odw-${{ matrix.os }}-${{ matrix.arch }}$ext" >> "$GITHUB_ENV"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ASSET }}
+          path: ${{ env.ASSET }}
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.ASSET }}

@@ -14,6 +14,7 @@ import { execPath } from "node:process";
 import { fileURLToPath } from "node:url";
 
 import { loadConfig, resolveRunsRoot } from "../adapters/config.js";
+import { isSeaBinary } from "../sea.js";
 import { RunStore, TERMINAL_STATES } from "./run-store.js";
 
 export interface StartRunOptions {
@@ -47,9 +48,16 @@ export function startRun(
     budgetTotal: options.budgetTotal ?? null,
   });
 
-  const workerPath = fileURLToPath(new URL("./worker.js", import.meta.url));
+  // How the worker is launched depends on how *we* were launched. As a normal
+  // Node process, `execPath` is `node` and we hand it `worker.js`. As a compiled
+  // SEA binary there is no `node` and no `worker.js` on disk, so we re-exec the
+  // binary itself (`execPath`) with the hidden `__worker` subcommand, which runs
+  // the same `executeRun` from inside the bundle.
+  const workerArgv = isSeaBinary()
+    ? ["__worker", store.runDir(runId)]
+    : [fileURLToPath(new URL("./worker.js", import.meta.url)), store.runDir(runId)];
   const logFd = openSync(store.logPath(runId), "w");
-  const child = spawn(execPath, [workerPath, store.runDir(runId)], {
+  const child = spawn(execPath, workerArgv, {
     cwd: source,
     detached: true, // the run outlives this process
     stdio: ["ignore", logFd, logFd],

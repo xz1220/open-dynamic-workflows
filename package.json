@@ -24,6 +24,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "build:binary": "npm run build && node scripts/build-binary.mjs",
     "dev": "tsx src/cli.ts",
     "test": "tsx --test tests/*.test.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
@@ -47,8 +48,9 @@
   "author": "Daniel Xing",
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "esbuild": "^0.28.0",
+    "postject": "^1.0.0-alpha.6",
     "tsx": "^4.19.0",
     "typescript": "^5.6.0"
-  },
-  "dependencies": {}
+  }
 }
