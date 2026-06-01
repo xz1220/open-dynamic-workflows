@@ -1,6 +1,6 @@
 {
   "name": "open-dynamic-workflows",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Open Dynamic Workflows: a TypeScript CLI runtime for Claude Code-style dynamic workflows across any coding-agent CLI.",
   "type": "module",
   "bin": {
