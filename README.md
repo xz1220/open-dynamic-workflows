@@ -48,6 +48,30 @@ pipx install agent-swarm     # or: uvx agent-swarm ... / pip install agent-swarm
 
 This puts a `swarm` command on your PATH (`python -m agentswarm` also works).
 
+### Let an agent install it
+
+Hand the prompt below to any coding agent (Codex, Claude Code, Gemini, …) that
+has never seen agent-swarm. It clones the repo, puts the `swarm` CLI on your
+PATH, and installs the skill into the agent's own skills directory — so the same
+agent can immediately author and run workflows.
+
+> Install the **agent-swarm** dynamic-workflow engine for me, then teach
+> yourself to use it.
+>
+> 1. If `https://github.com/xz1220/agent-swarm.git` isn't already checked out
+>    locally, clone it to a stable path (e.g. `~/repos/agent-swarm`).
+> 2. Put the `swarm` command on my PATH by installing that checkout: try
+>    `pipx install <path>`, else `uv tool install <path>`, else
+>    `pip install <path>`. Confirm with `swarm --help`.
+> 3. Install the skill so you can author workflows: symlink the repo's `skill/`
+>    directory into your own skills directory under the name `agent-swarm`
+>    (Codex CLI → `~/.codex/skills/agent-swarm`; Claude Code → its skills dir).
+>    The skill's `SKILL.md` must end up at the root of that skill directory.
+> 4. Read `skill/SKILL.md` to learn the primitives, then verify end-to-end:
+>    `swarm run examples/fan_out_reduce.py --wait --args '{"question": "Design a rate limiter."}'`.
+> 5. Report the install method used, the skill path you created, and the output
+>    of the verification run.
+
 ## The primitives
 
 | Primitive | Role |
