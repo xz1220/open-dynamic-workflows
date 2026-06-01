@@ -3,12 +3,13 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Open Dynamic Workflows - Claude Code-style workflows for any coding agent</title>
+    <title>Open Dynamic Workflows - dynamic workflow runtime for coding agents</title>
     <meta
       name="description"
-      content="Open Dynamic Workflows is a TypeScript CLI runtime for portable dynamic workflows across Codex, Claude Code, Gemini, Qwen, Kimi, and custom coding-agent CLIs."
+      content="Open Dynamic Workflows is a TypeScript CLI runtime for Claude Code-style dynamic workflows across Codex, Claude Code, Gemini, Qwen, Kimi, and custom coding-agent CLIs. Open Dynamic Workflows 是面向 coding agent 的动态工作流运行时。"
     />
     <meta name="robots" content="index,follow" />
+    <meta name="theme-color" content="#ffffff" />
     <link rel="canonical" href="https://xz1220.github.io/open-dynamic-workflows/" />
 
     <meta property="og:type" content="website" />
@@ -16,13 +17,13 @@
     <meta property="og:title" content="Open Dynamic Workflows" />
     <meta
       property="og:description"
-      content="A TypeScript CLI runtime for Claude Code-style dynamic workflows across any coding-agent CLI."
+      content="Portable Claude Code-style dynamic workflows for Codex, Claude Code, Gemini, Qwen, Kimi, and custom coding-agent CLIs."
     />
     <meta name="twitter:card" content="summary" />
     <meta name="twitter:title" content="Open Dynamic Workflows" />
     <meta
       name="twitter:description"
-      content="Portable dynamic workflows for Codex, Claude Code, Gemini, Qwen, Kimi, and custom coding-agent CLIs."
+      content="A TypeScript CLI runtime for portable dynamic workflows and agent orchestration."
     />
 
     <script type="application/ld+json">
@@ -34,27 +35,30 @@
         "description": "Open Dynamic Workflows is a TypeScript CLI runtime for Claude Code-style dynamic workflows across any coding-agent CLI.",
         "codeRepository": "https://github.com/xz1220/open-dynamic-workflows",
         "programmingLanguage": "TypeScript",
-        "runtimePlatform": "Node.js",
+        "runtimePlatform": "Node.js >=20",
         "license": "https://opensource.org/license/mit",
-        "keywords": "open dynamic workflows, dynamic workflow, coding agents, agent orchestration, Claude Code, Codex"
+        "inLanguage": ["en", "zh-CN"],
+        "keywords": "open dynamic workflows, dynamic workflow, dynamic workflows, agent orchestration, coding agents, Claude Code, Codex, Gemini, Qwen, Kimi"
       }
     </script>
 
     <style>
       :root {
         color-scheme: light;
-        --ink: #101315;
-        --muted: #5f676f;
-        --soft: #f4f5f2;
-        --panel: #ffffff;
-        --line: #d9ded8;
-        --accent: #13875d;
-        --accent-strong: #0f6b4b;
-        --accent-soft: #e4f6ee;
-        --amber: #d8a620;
-        --code: #161a1d;
-        --code-soft: #20272b;
-        --max: 1160px;
+        --bg: #ffffff;
+        --ink: #111111;
+        --muted: #6a6a6a;
+        --line: #e8e8e8;
+        --soft-line: #f3f3f3;
+        --soft: #f7f8f5;
+        --green: #10b981;
+        --green-deep: #087a58;
+        --green-soft: #e8f8f1;
+        --code: #141817;
+        --grid: rgba(0, 0, 0, 0.035);
+        --max: 1180px;
+        --sans: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
       }
 
       * {
@@ -67,16 +71,11 @@
 
       body {
         margin: 0;
-        background: #fbfcf8;
+        background: var(--bg);
         color: var(--ink);
-        font-family:
-          ui-sans-serif,
-          system-ui,
-          -apple-system,
-          BlinkMacSystemFont,
-          "Segoe UI",
-          sans-serif;
+        font-family: var(--sans);
         letter-spacing: 0;
+        -webkit-font-smoothing: antialiased;
       }
 
       a {
@@ -84,18 +83,26 @@
         text-decoration: none;
       }
 
-      .site-shell {
+      button {
+        font: inherit;
+      }
+
+      .page {
         min-height: 100dvh;
         overflow: hidden;
+        background:
+          linear-gradient(var(--grid) 1px, transparent 1px),
+          linear-gradient(90deg, var(--grid) 1px, transparent 1px),
+          #ffffff;
+        background-size: 36px 36px;
       }
 
       .nav {
-        position: fixed;
+        position: sticky;
         top: 0;
-        z-index: 10;
-        width: 100%;
-        border-bottom: 1px solid rgba(16, 19, 21, 0.1);
-        background: rgba(251, 252, 248, 0.88);
+        z-index: 20;
+        border-bottom: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.88);
         backdrop-filter: blur(18px);
       }
 
@@ -103,261 +110,150 @@
         display: flex;
         align-items: center;
         justify-content: space-between;
+        gap: 24px;
         width: min(calc(100vw - 40px), var(--max));
-        height: 68px;
+        min-height: 68px;
         margin: 0 auto;
       }
 
       .brand {
         display: inline-flex;
+        min-width: 0;
         align-items: center;
         gap: 12px;
+        font-size: 15px;
         font-weight: 760;
       }
 
       .brand-mark {
         display: grid;
+        flex: 0 0 auto;
         width: 34px;
         height: 34px;
         place-items: center;
-        border: 1px solid #0c2f23;
+        border: 1px solid #0d241d;
         border-radius: 8px;
         background: var(--ink);
-        color: #e9fff5;
-        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-        font-size: 13px;
-        font-weight: 700;
+        color: #effff7;
+        font-family: var(--mono);
+        font-size: 12px;
+        font-weight: 800;
+      }
+
+      .brand-name {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .nav-actions {
+        display: flex;
+        flex: 0 0 auto;
+        align-items: center;
+        gap: 12px;
       }
 
       .nav-links {
         display: flex;
         align-items: center;
-        gap: 8px;
+        gap: 4px;
       }
 
       .nav-links a {
-        min-height: 40px;
-        padding: 10px 13px;
+        min-height: 38px;
+        padding: 10px 12px;
         border-radius: 8px;
-        color: #30363a;
+        color: #343434;
         font-size: 14px;
-        font-weight: 650;
+        font-weight: 680;
       }
 
       .nav-links a:hover {
-        background: #eef1ec;
+        background: #f1f1f1;
+      }
+
+      .lang-toggle {
+        display: inline-flex;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        background: #ffffff;
+        padding: 3px;
+      }
+
+      .lang-toggle button {
+        min-width: 42px;
+        min-height: 30px;
+        border: 0;
+        border-radius: 999px;
+        background: transparent;
+        color: #626262;
+        cursor: pointer;
+        font-size: 12px;
+        font-weight: 780;
+      }
+
+      .lang-toggle button[aria-pressed="true"] {
+        background: var(--ink);
+        color: #ffffff;
       }
 
       .hero {
-        position: relative;
-        display: grid;
-        min-height: 88dvh;
-        padding: 118px 0 44px;
-        isolation: isolate;
-      }
-
-      .hero::before {
-        position: absolute;
-        inset: 68px 0 0;
-        z-index: -3;
-        content: "";
-        background:
-          linear-gradient(rgba(16, 19, 21, 0.045) 1px, transparent 1px),
-          linear-gradient(90deg, rgba(16, 19, 21, 0.045) 1px, transparent 1px);
-        background-size: 48px 48px;
-        mask-image: linear-gradient(to bottom, #000 0%, transparent 86%);
-      }
-
-      .hero-stage {
-        position: absolute;
-        inset: 88px max(24px, calc((100vw - var(--max)) / 2)) 36px auto;
-        z-index: -2;
-        width: min(720px, 62vw);
-        opacity: 0.94;
-      }
-
-      .runtime-visual {
-        position: relative;
-        height: 100%;
-        min-height: 560px;
-      }
-
-      .terminal {
-        position: absolute;
-        right: 0;
-        width: min(620px, 100%);
-        border: 1px solid rgba(255, 255, 255, 0.14);
-        border-radius: 18px;
-        background: var(--code);
-        box-shadow: 0 24px 80px rgba(16, 19, 21, 0.24);
-        color: #d9f6e7;
-        overflow: hidden;
-      }
-
-      .terminal.primary {
-        top: 8px;
-        height: 322px;
-      }
-
-      .terminal.secondary {
-        right: 80px;
-        bottom: 18px;
-        width: min(480px, 82%);
-        height: 232px;
-        background: #f7faf5;
-        border-color: var(--line);
-        color: var(--ink);
-      }
-
-      .terminal-bar {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        height: 42px;
-        padding: 0 16px;
-        border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-        color: #92a19a;
-        font: 12px/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-      }
-
-      .secondary .terminal-bar {
-        border-bottom-color: var(--line);
-        color: #606a70;
-      }
-
-      .dot {
-        width: 10px;
-        height: 10px;
-        border-radius: 50%;
-        background: #54615c;
-      }
-
-      .dot:nth-child(2) {
-        background: var(--amber);
-      }
-
-      .dot:nth-child(3) {
-        background: var(--accent);
-      }
-
-      .code-lines {
-        display: grid;
-        gap: 12px;
-        padding: 22px;
-        font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-      }
-
-      .code-line {
-        display: block;
-        width: fit-content;
-        max-width: 100%;
-        white-space: nowrap;
-      }
-
-      .code-dim {
-        color: #7b8a82;
-      }
-
-      .code-accent {
-        color: #65d89e;
-      }
-
-      .code-warn {
-        color: #e0c25b;
-      }
-
-      .graph {
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 12px;
-        padding: 18px;
-      }
-
-      .node {
-        min-height: 62px;
-        padding: 13px;
-        border: 1px solid var(--line);
-        border-radius: 12px;
-        background: #ffffff;
-      }
-
-      .node strong {
-        display: block;
-        margin-bottom: 6px;
-        font-size: 13px;
-      }
-
-      .node span {
-        color: var(--muted);
-        font-size: 12px;
-      }
-
-      .orbit {
-        position: absolute;
-        right: 42px;
-        top: 360px;
-        display: flex;
-        align-items: center;
-        gap: 10px;
-        padding: 10px 12px;
-        border: 1px solid var(--line);
-        border-radius: 999px;
-        background: rgba(255, 255, 255, 0.88);
-        box-shadow: 0 18px 42px rgba(16, 19, 21, 0.12);
-        color: #26302b;
-        font-size: 13px;
-        font-weight: 700;
-      }
-
-      .pulse {
-        width: 10px;
-        height: 10px;
-        border-radius: 50%;
-        background: var(--accent);
-        box-shadow: 0 0 0 0 rgba(19, 135, 93, 0.42);
-        animation: pulse 2.2s infinite;
-      }
-
-      .hero-content {
         width: min(calc(100vw - 40px), var(--max));
-        margin: auto;
+        margin: 0 auto;
+        padding: 60px 0 42px;
+      }
+
+      .hero-grid {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(440px, 0.78fr);
+        gap: 48px;
+        align-items: center;
       }
 
       .eyebrow {
         display: inline-flex;
         align-items: center;
-        gap: 10px;
-        margin-bottom: 22px;
-        padding: 8px 11px;
+        gap: 9px;
+        min-height: 30px;
+        padding: 0 10px;
         border: 1px solid var(--line);
         border-radius: 999px;
-        background: rgba(255, 255, 255, 0.78);
-        color: #36423c;
+        background: rgba(255, 255, 255, 0.86);
+        color: #333333;
         font-size: 13px;
-        font-weight: 750;
+        font-weight: 760;
       }
 
       .eyebrow::before {
-        width: 8px;
-        height: 8px;
+        width: 7px;
+        height: 7px;
         border-radius: 50%;
-        background: var(--accent);
+        background: var(--green);
+        box-shadow: 0 0 0 5px rgba(16, 185, 129, 0.11);
         content: "";
       }
 
+      h1,
+      h2,
+      h3,
+      p {
+        margin-top: 0;
+      }
+
       h1 {
-        max-width: 780px;
-        margin: 0;
-        font-size: clamp(48px, 8vw, 116px);
-        font-weight: 830;
-        line-height: 0.94;
+        max-width: 760px;
+        margin-bottom: 22px;
+        margin-top: 26px;
+        font-size: clamp(46px, 7vw, 88px);
+        font-weight: 860;
+        line-height: 0.96;
         letter-spacing: 0;
       }
 
       .hero-copy {
-        max-width: 620px;
-        margin: 26px 0 0;
-        color: #3e474d;
+        max-width: 640px;
+        margin-bottom: 0;
+        color: #494f4d;
         font-size: clamp(18px, 2vw, 22px);
         line-height: 1.45;
       }
@@ -366,7 +262,7 @@
         display: flex;
         flex-wrap: wrap;
         gap: 12px;
-        margin-top: 32px;
+        margin-top: 30px;
       }
 
       .button {
@@ -375,13 +271,14 @@
         justify-content: center;
         min-height: 48px;
         padding: 0 18px;
-        border-radius: 9px;
+        border-radius: 8px;
         font-size: 15px;
         font-weight: 780;
         transition:
-          transform 180ms ease,
-          background 180ms ease,
-          border-color 180ms ease;
+          transform 160ms ease,
+          border-color 160ms ease,
+          background 160ms ease;
+        white-space: nowrap;
       }
 
       .button:active {
@@ -389,45 +286,227 @@
       }
 
       .button.primary {
-        border: 1px solid #0f5f44;
-        background: var(--accent);
+        border: 1px solid #0b6f4e;
+        background: #0f8f65;
         color: #ffffff;
       }
 
       .button.primary:hover {
-        background: var(--accent-strong);
+        background: var(--green-deep);
       }
 
       .button.secondary {
         border: 1px solid var(--line);
-        background: rgba(255, 255, 255, 0.82);
-        color: #111719;
+        background: #ffffff;
+        color: #171717;
       }
 
       .button.secondary:hover {
-        border-color: #b8c0b8;
-        background: #ffffff;
+        border-color: #cfcfcf;
       }
 
-      .proof-row {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 10px;
-        margin-top: 34px;
-      }
-
-      .proof {
-        padding: 8px 10px;
+      .workflow-visual {
+        position: relative;
+        min-height: 440px;
         border: 1px solid var(--line);
-        border-radius: 8px;
-        background: rgba(255, 255, 255, 0.7);
-        color: #404a43;
-        font-size: 13px;
-        font-weight: 720;
+        border-radius: 16px;
+        background:
+          linear-gradient(var(--grid) 1px, transparent 1px),
+          linear-gradient(90deg, var(--grid) 1px, transparent 1px),
+          #ffffff;
+        background-size: 32px 32px;
+        box-shadow: rgba(0, 0, 0, 0.055) 0 24px 80px;
+        overflow: hidden;
       }
 
-      section {
-        padding: 86px 0;
+      .visual-topbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 14px;
+        min-height: 50px;
+        padding: 0 16px;
+        border-bottom: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.86);
+      }
+
+      .traffic {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+      }
+
+      .traffic span {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: #cfcfcf;
+      }
+
+      .traffic span:nth-child(2) {
+        background: #d9b647;
+      }
+
+      .traffic span:nth-child(3) {
+        background: var(--green);
+      }
+
+      .visual-title {
+        color: var(--muted);
+        font-family: var(--mono);
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .status-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        color: #4d4d4d;
+        font-size: 12px;
+        font-weight: 760;
+        white-space: nowrap;
+      }
+
+      .status-pill::before {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: var(--green);
+        box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.4);
+        content: "";
+        animation: pulse 1.9s infinite;
+      }
+
+      .topology {
+        position: absolute;
+        inset: 82px 28px 36px;
+      }
+
+      .wires {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        pointer-events: none;
+      }
+
+      .wire {
+        fill: none;
+        stroke: #111111;
+        stroke-width: 1.2;
+        stroke-linecap: round;
+        stroke-dasharray: 6 12;
+        opacity: 0.2;
+        animation: move-wire 6s linear infinite;
+      }
+
+      .topo-node {
+        position: absolute;
+        z-index: 2;
+        width: 130px;
+        min-height: 64px;
+        border: 1px solid #d8d8d8;
+        border-radius: 8px;
+        padding: 12px;
+        background: rgba(255, 255, 255, 0.94);
+        box-shadow: rgba(0, 0, 0, 0.035) 0 12px 28px;
+      }
+
+      .topo-node.running::after {
+        position: absolute;
+        top: 12px;
+        right: 12px;
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: var(--green);
+        content: "";
+      }
+
+      .topo-node strong {
+        display: block;
+        padding-right: 12px;
+        font-size: 14px;
+        line-height: 1.15;
+      }
+
+      .topo-node span {
+        display: block;
+        margin-top: 7px;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.35;
+      }
+
+      .node-start {
+        left: 0;
+        top: 45%;
+      }
+
+      .node-plan {
+        left: 22%;
+        top: 45%;
+      }
+
+      .node-dispatch {
+        left: 44%;
+        top: 45%;
+        border-color: #111111;
+      }
+
+      .node-a {
+        right: 2%;
+        top: 10%;
+      }
+
+      .node-b {
+        right: 2%;
+        top: 45%;
+      }
+
+      .node-merge {
+        right: 2%;
+        bottom: 6%;
+      }
+
+      .code-strip {
+        position: absolute;
+        left: 28px;
+        right: 28px;
+        bottom: 24px;
+        display: grid;
+        gap: 7px;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        border-radius: 12px;
+        background: var(--code);
+        padding: 15px;
+        color: #dff5e9;
+        font-family: var(--mono);
+        font-size: 12px;
+        line-height: 1.35;
+      }
+
+      .code-muted {
+        color: #82908a;
+      }
+
+      .code-green {
+        color: #65d89e;
+      }
+
+      .section {
+        border-top: 1px solid var(--line);
+        background: #ffffff;
+        padding: 72px 0;
+      }
+
+      .hero + .section {
+        padding-top: 38px;
+      }
+
+      .section.soft {
+        background: var(--soft);
       }
 
       .section-inner {
@@ -436,147 +515,156 @@
       }
 
       .section-kicker {
-        margin: 0 0 14px;
-        color: var(--accent-strong);
-        font-size: 13px;
-        font-weight: 800;
+        margin-bottom: 12px;
+        color: var(--green-deep);
+        font-size: 12px;
+        font-weight: 820;
         letter-spacing: 0.08em;
         text-transform: uppercase;
       }
 
       h2 {
-        max-width: 780px;
-        margin: 0;
-        font-size: clamp(34px, 5vw, 64px);
-        font-weight: 820;
-        line-height: 1;
+        max-width: 760px;
+        margin-bottom: 0;
+        font-size: clamp(34px, 5vw, 56px);
+        font-weight: 850;
+        line-height: 1.02;
         letter-spacing: 0;
       }
 
       .section-lede {
         max-width: 720px;
-        margin: 20px 0 0;
-        color: var(--muted);
-        font-size: 18px;
-        line-height: 1.6;
-      }
-
-      .primitive-grid {
-        display: grid;
-        grid-template-columns: repeat(3, 1fr);
-        gap: 14px;
-        margin-top: 40px;
-      }
-
-      .primitive {
-        min-height: 214px;
-        padding: 22px;
-        border: 1px solid var(--line);
-        border-radius: 12px;
-        background: var(--panel);
-      }
-
-      .primitive code {
-        display: inline-block;
-        margin-bottom: 42px;
-        padding: 6px 8px;
-        border-radius: 7px;
-        background: var(--accent-soft);
-        color: #0b5c3f;
-        font: 13px/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-      }
-
-      .primitive h3,
-      .flow-step h3 {
-        margin: 0 0 10px;
-        font-size: 20px;
-        line-height: 1.15;
-      }
-
-      .primitive p,
-      .flow-step p {
-        margin: 0;
-        color: var(--muted);
-        font-size: 15px;
-        line-height: 1.55;
-      }
-
-      .flow {
-        background: var(--soft);
-        border-block: 1px solid var(--line);
-      }
-
-      .flow-track {
-        display: grid;
-        grid-template-columns: repeat(4, 1fr);
-        gap: 1px;
-        margin-top: 40px;
-        border: 1px solid var(--line);
-        border-radius: 14px;
-        background: var(--line);
-        overflow: hidden;
-      }
-
-      .flow-step {
-        min-height: 220px;
-        padding: 24px;
-        background: #fbfcf8;
-      }
-
-      .step-index {
-        display: block;
-        margin-bottom: 54px;
-        color: var(--accent-strong);
-        font: 13px/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-        font-weight: 800;
-      }
-
-      .install {
-        padding-bottom: 104px;
-      }
-
-      .install-panel {
-        display: grid;
-        grid-template-columns: minmax(0, 0.9fr) minmax(320px, 1.1fr);
-        gap: 32px;
-        align-items: stretch;
-        margin-top: 42px;
-      }
-
-      .install-copy {
-        padding: 30px 0;
-      }
-
-      .install-copy p {
+        margin: 18px 0 0;
         color: var(--muted);
         font-size: 17px;
         line-height: 1.6;
       }
 
-      .code-card {
-        border: 1px solid rgba(255, 255, 255, 0.14);
-        border-radius: 18px;
+      .signal-grid {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 12px;
+        margin-top: 32px;
+      }
+
+      .signal {
+        min-height: 174px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: #ffffff;
+        padding: 20px;
+      }
+
+      .signal code,
+      .primitive code {
+        display: inline-flex;
+        min-height: 28px;
+        align-items: center;
+        margin-bottom: 28px;
+        border-radius: 7px;
+        background: var(--green-soft);
+        padding: 0 8px;
+        color: #087a58;
+        font-family: var(--mono);
+        font-size: 12px;
+        font-weight: 760;
+      }
+
+      .signal h3,
+      .primitive h3 {
+        margin-bottom: 9px;
+        font-size: 19px;
+        line-height: 1.18;
+      }
+
+      .signal p,
+      .primitive p,
+      .install-copy p {
+        margin-bottom: 0;
+        color: var(--muted);
+        font-size: 15px;
+        line-height: 1.55;
+      }
+
+      .runtime-grid {
+        display: grid;
+        grid-template-columns: minmax(320px, 0.92fr) minmax(0, 1.08fr);
+        gap: 30px;
+        align-items: start;
+        margin-top: 36px;
+      }
+
+      .terminal {
+        border: 1px solid rgba(255, 255, 255, 0.13);
+        border-radius: 14px;
         background: var(--code);
-        color: #e7f3ec;
+        box-shadow: rgba(0, 0, 0, 0.12) 0 22px 70px;
+        color: #e7f7ed;
         overflow: hidden;
-        box-shadow: 0 20px 64px rgba(16, 19, 21, 0.2);
       }
 
-      .code-card pre {
+      .terminal-bar {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        min-height: 42px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        padding: 0 14px;
+        color: #8a9991;
+        font-family: var(--mono);
+        font-size: 12px;
+      }
+
+      .terminal pre {
         margin: 0;
-        padding: 24px;
         overflow-x: auto;
-        font: 14px/1.7 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        padding: 21px;
+        font-family: var(--mono);
+        font-size: 13px;
+        line-height: 1.65;
       }
 
-      .code-card code {
-        white-space: pre;
+      .terminal code {
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+      }
+
+      .primitive-list {
+        display: grid;
+        gap: 10px;
+      }
+
+      .primitive {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: #ffffff;
+        padding: 18px;
+      }
+
+      .primitive code {
+        margin-bottom: 18px;
+      }
+
+      .install-panel {
+        display: grid;
+        grid-template-columns: minmax(0, 0.82fr) minmax(340px, 1fr);
+        gap: 30px;
+        align-items: center;
+        margin-top: 34px;
+      }
+
+      .install-copy {
+        max-width: 540px;
+      }
+
+      .install-copy .actions {
+        margin-top: 26px;
       }
 
       .footer {
         border-top: 1px solid var(--line);
-        padding: 26px 0;
-        color: #626b64;
+        background: #ffffff;
+        color: var(--muted);
         font-size: 14px;
       }
 
@@ -587,194 +675,197 @@
         justify-content: space-between;
         gap: 14px;
         width: min(calc(100vw - 40px), var(--max));
+        min-height: 72px;
         margin: 0 auto;
       }
 
       .footer a {
-        font-weight: 720;
+        color: #353535;
+        font-weight: 740;
       }
 
       @keyframes pulse {
         0% {
-          box-shadow: 0 0 0 0 rgba(19, 135, 93, 0.42);
+          box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.38);
         }
+
         70% {
-          box-shadow: 0 0 0 10px rgba(19, 135, 93, 0);
+          box-shadow: 0 0 0 9px rgba(16, 185, 129, 0);
         }
+
         100% {
-          box-shadow: 0 0 0 0 rgba(19, 135, 93, 0);
+          box-shadow: 0 0 0 0 rgba(16, 185, 129, 0);
         }
       }
 
-      @media (max-width: 960px) {
+      @keyframes move-wire {
+        to {
+          stroke-dashoffset: -72;
+        }
+      }
+
+      @media (max-width: 980px) {
         .hero {
-          display: flex;
-          flex-direction: column;
-          overflow-x: hidden;
-          min-height: auto;
-          padding-bottom: 54px;
+          padding-top: 54px;
         }
 
-        .hero-stage {
-          position: relative;
-          inset: auto;
-          z-index: 0;
-          order: 2;
-          min-width: 0;
-          width: min(calc(100vw - 40px), var(--max));
-          margin: 34px auto 0;
-        }
-
-        .hero-content {
-          order: 1;
-          min-width: 0;
-        }
-
-        .runtime-visual {
-          min-height: 420px;
-        }
-
-        .terminal.primary {
-          top: 0;
-        }
-
-        .terminal.secondary {
-          right: 18px;
-          bottom: 0;
-        }
-
-        .primitive-grid,
-        .flow-track,
+        .hero-grid,
+        .runtime-grid,
         .install-panel {
           grid-template-columns: 1fr;
         }
 
-        .flow-step {
-          min-height: auto;
+        .workflow-visual {
+          min-height: 420px;
         }
 
-        .step-index {
-          margin-bottom: 30px;
+        .signal-grid {
+          grid-template-columns: 1fr;
         }
       }
 
-      @media (max-width: 680px) {
+      @media (max-width: 720px) {
+        .nav-inner,
+        .hero,
+        .section-inner,
+        .footer-inner {
+          width: calc(100vw - 28px);
+        }
+
         .nav-inner {
-          width: min(calc(100vw - 28px), var(--max));
+          min-height: 62px;
+          gap: 10px;
+        }
+
+        .brand {
+          gap: 9px;
+        }
+
+        .brand-name {
+          max-width: 168px;
+          font-size: 13px;
         }
 
         .nav-links a:not(:last-child) {
           display: none;
         }
 
-        .brand span:last-child {
-          max-width: 190px;
-          overflow: hidden;
-          text-overflow: ellipsis;
-          white-space: nowrap;
+        .nav-actions {
+          gap: 8px;
+        }
+
+        .lang-toggle button {
+          min-width: 36px;
         }
 
         .hero {
-          padding-top: 106px;
+          padding: 30px 0 30px;
         }
 
-        .hero-content,
-        .hero-stage,
-        .section-inner,
-        .footer-inner {
-          width: calc(100vw - 28px);
-          max-width: calc(100vw - 28px);
-        }
-
-        .hero-copy,
-        .actions,
-        .proof-row {
-          max-width: calc(100vw - 28px);
-        }
-
-        .hero-copy {
-          overflow-wrap: break-word;
-        }
-
-        .proof {
-          max-width: 100%;
+        .hero-grid {
+          gap: 26px;
         }
 
         h1 {
-          font-size: clamp(44px, 14vw, 70px);
+          max-width: 360px;
+          font-size: clamp(39px, 12vw, 52px);
         }
 
         .hero-copy {
-          font-size: 18px;
+          font-size: 17px;
         }
 
-        .actions {
+        .hero .actions {
+          flex-direction: row;
+          gap: 10px;
+        }
+
+        .hero .button {
+          flex: 1 1 0;
+          width: auto;
+          padding-inline: 12px;
+        }
+
+        .install-copy .actions {
           flex-direction: column;
         }
 
-        .button {
+        .install-copy .button {
           width: 100%;
         }
 
-        .runtime-visual {
-          min-height: 374px;
+        .workflow-visual {
+          min-height: 220px;
+          border-radius: 12px;
         }
 
-        .terminal.primary {
-          height: 268px;
+        .topology {
+          inset: 66px 14px 18px;
+          display: grid;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 10px;
+          align-content: center;
         }
 
-        .terminal.secondary {
-          width: 92%;
-          height: 196px;
+        .wires {
+          display: none;
         }
 
-        .code-lines {
-          padding: 18px;
+        .topo-node {
+          position: static;
+          width: auto;
+          min-height: 60px;
+          padding: 10px;
+        }
+
+        .topo-node strong {
+          font-size: 13px;
+        }
+
+        .topo-node span {
           font-size: 11px;
         }
 
-        .graph {
-          grid-template-columns: 1fr;
-          padding: 14px;
+        .node-a,
+        .node-b {
+          display: none;
         }
 
-        .node {
-          min-height: 52px;
+        .code-strip {
+          display: none;
         }
 
-        .orbit {
-          right: 18px;
-          top: 292px;
+        .section {
+          padding: 58px 0;
         }
 
-        section {
-          padding: 64px 0;
+        .hero + .section {
+          padding-top: 40px;
         }
 
-        .primitive {
+        .signal {
           min-height: auto;
         }
 
-        .primitive code {
-          margin-bottom: 30px;
+        .terminal pre {
+          font-size: 12px;
+        }
+
+        .footer-inner {
+          align-items: flex-start;
+          flex-direction: column;
+          justify-content: center;
+          padding: 18px 0;
         }
       }
 
       @media (max-width: 430px) {
-        .nav-inner,
-        .hero-content,
-        .hero-stage,
-        .section-inner,
-        .footer-inner {
-          width: calc(100vw - 28px);
-          max-width: 362px;
+        .brand-name {
+          max-width: 126px;
         }
 
-        .hero-copy,
-        .actions,
-        .proof-row {
-          max-width: 362px;
+        .workflow-visual {
+          min-height: 218px;
         }
       }
 
@@ -795,191 +886,208 @@
     </style>
   </head>
   <body>
-    <div class="site-shell">
+    <div class="page">
       <header class="nav" aria-label="Primary navigation">
         <div class="nav-inner">
           <a class="brand" href="#" aria-label="Open Dynamic Workflows home">
             <span class="brand-mark">ODW</span>
-            <span>Open Dynamic Workflows</span>
+            <span class="brand-name">Open Dynamic Workflows</span>
           </a>
-          <nav class="nav-links" aria-label="Site links">
-            <a href="#primitives">Primitives</a>
-            <a href="#runtime">Runtime</a>
-            <a href="#start">Start</a>
-            <a href="https://github.com/xz1220/open-dynamic-workflows">GitHub</a>
-          </nav>
+          <div class="nav-actions">
+            <nav class="nav-links" aria-label="Site links">
+              <a href="#runtime" data-i18n="nav.runtime">Runtime</a>
+              <a href="#install" data-i18n="nav.install">Install</a>
+              <a href="https://github.com/xz1220/open-dynamic-workflows">GitHub</a>
+            </nav>
+            <div class="lang-toggle" aria-label="Language">
+              <button type="button" data-lang="en" aria-pressed="true">EN</button>
+              <button type="button" data-lang="zh" aria-pressed="false">中</button>
+            </div>
+          </div>
         </div>
       </header>
 
       <main>
         <section class="hero" aria-labelledby="hero-title">
-          <div class="hero-stage" aria-hidden="true">
-            <div class="runtime-visual">
-              <div class="terminal primary">
+          <div class="hero-grid">
+            <div>
+              <p class="eyebrow" data-i18n="hero.eyebrow">Open workflow runtime</p>
+              <h1 id="hero-title" data-i18n="hero.title">Run agent workflows anywhere.</h1>
+              <p class="hero-copy" data-i18n="hero.copy">
+                Write orchestration in JavaScript; dispatch Codex, Claude Code, Gemini, Qwen, Kimi, or any local CLI.
+              </p>
+              <div class="actions" aria-label="Primary actions">
+                <a class="button primary" href="https://github.com/xz1220/open-dynamic-workflows" data-i18n="cta.github">
+                  View GitHub
+                </a>
+                <a class="button secondary" href="https://github.com/xz1220/open-dynamic-workflows#readme" data-i18n="cta.readme">
+                  Read README
+                </a>
+              </div>
+            </div>
+
+            <div class="workflow-visual" aria-label="Dynamic workflow topology preview">
+              <div class="visual-topbar">
+                <div class="traffic" aria-hidden="true"><span></span><span></span><span></span></div>
+                <div class="visual-title">workflow.js</div>
+                <div class="status-pill" data-i18n="visual.status">running</div>
+              </div>
+
+              <div class="topology">
+                <svg class="wires" viewBox="0 0 520 380" preserveAspectRatio="none" aria-hidden="true">
+                  <path class="wire" d="M60 190 C96 190, 112 190, 150 190"></path>
+                  <path class="wire" d="M198 190 C232 190, 248 190, 286 190"></path>
+                  <path class="wire" d="M330 190 C360 108, 404 82, 458 80"></path>
+                  <path class="wire" d="M330 190 C374 190, 404 190, 458 190"></path>
+                  <path class="wire" d="M330 190 C360 272, 404 304, 458 308"></path>
+                </svg>
+
+                <article class="topo-node node-start">
+                  <strong data-i18n="visual.input">Input</strong>
+                  <span data-i18n="visual.inputCopy">args loaded</span>
+                </article>
+                <article class="topo-node node-plan running">
+                  <strong data-i18n="visual.plan">Plan</strong>
+                  <span data-i18n="visual.planCopy">plain JS</span>
+                </article>
+                <article class="topo-node node-dispatch running">
+                  <strong data-i18n="visual.dispatch">Dispatch</strong>
+                  <span>parallel()</span>
+                </article>
+                <article class="topo-node node-a running">
+                  <strong>Codex</strong>
+                  <span data-i18n="visual.agentA">agent task</span>
+                </article>
+                <article class="topo-node node-b running">
+                  <strong>Claude Code</strong>
+                  <span data-i18n="visual.agentB">agent task</span>
+                </article>
+                <article class="topo-node node-merge">
+                  <strong data-i18n="visual.merge">Result</strong>
+                  <span data-i18n="visual.mergeCopy">schema checked</span>
+                </article>
+              </div>
+
+              <div class="code-strip" aria-hidden="true">
+                <span class="code-muted">export const meta = { name: "deep-research" }</span>
+                <span>const drafts = await <span class="code-green">parallel</span>(sources.map(scan))</span>
+                <span>return await <span class="code-green">agent</span>("Synthesize", { schema })</span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="section" aria-labelledby="why-title">
+          <div class="section-inner">
+            <p class="section-kicker" data-i18n="why.kicker">Why ODW</p>
+            <h2 id="why-title" data-i18n="why.title">Keep the plan in code. Keep the agent context clean.</h2>
+            <p class="section-lede" data-i18n="why.copy">
+              ODW turns dynamic workflow scripts into portable artifacts: easy to inspect, run, pause, resume, and move between agent CLIs.
+            </p>
+
+            <div class="signal-grid">
+              <article class="signal">
+                <code>workflow.js</code>
+                <h3 data-i18n="signals.portable.title">Portable scripts</h3>
+                <p data-i18n="signals.portable.copy">
+                  The same Claude Code-style workflow can run on Codex, Gemini, Qwen, Kimi, or a custom shell adapter.
+                </p>
+              </article>
+              <article class="signal">
+                <code>parallel()</code>
+                <h3 data-i18n="signals.parallel.title">Parallel by design</h3>
+                <p data-i18n="signals.parallel.copy">
+                  Fan out independent subtasks without filling the host agent's conversation with every intermediate step.
+                </p>
+              </article>
+              <article class="signal">
+                <code>odw status</code>
+                <h3 data-i18n="signals.observe.title">Observable runs</h3>
+                <p data-i18n="signals.observe.copy">
+                  Detached workers persist logs, state, and final results so long-running orchestration can be inspected later.
+                </p>
+              </article>
+            </div>
+          </div>
+        </section>
+
+        <section class="section soft" id="runtime" aria-labelledby="runtime-title">
+          <div class="section-inner">
+            <p class="section-kicker" data-i18n="runtime.kicker">Runtime shape</p>
+            <h2 id="runtime-title" data-i18n="runtime.title">A small engine between workflow scripts and real agent CLIs.</h2>
+            <p class="section-lede" data-i18n="runtime.copy">
+              The loader wraps Claude-style JavaScript, the scheduler limits concurrency, and adapters shell out to the local agents you already use.
+            </p>
+
+            <div class="runtime-grid">
+              <div class="terminal" aria-label="Example workflow code">
                 <div class="terminal-bar">
-                  <span class="dot"></span>
-                  <span class="dot"></span>
-                  <span class="dot"></span>
-                  <span>workflow.js</span>
+                  <div class="traffic" aria-hidden="true"><span></span><span></span><span></span></div>
+                  <span>fan-out-reduce.js</span>
                 </div>
-                <div class="code-lines">
-                  <span class="code-line code-dim">export const meta = { name: "deep-research" }</span>
-                  <span class="code-line"><span class="code-accent">phase</span>("Research")</span>
-                  <span class="code-line">const drafts = await <span class="code-accent">parallel</span>(sources.map(scan))</span>
-                  <span class="code-line"><span class="code-warn">phase</span>("Verify")</span>
-                  <span class="code-line">const checks = await <span class="code-accent">pipeline</span>(drafts, critique, cite)</span>
-                  <span class="code-line">return await <span class="code-accent">agent</span>("Synthesize the report", { schema })</span>
-                </div>
+                <pre><code>export const meta = { name: "fan-out-reduce" }
+
+const drafts = await parallel(
+  [1, 2, 3, 4].map((i) =&gt; () =&gt;
+    agent(`Draft #${i}: ${args.question}`)
+  )
+)
+
+return await agent(
+  "Synthesize the best answer",
+  { schema }
+)</code></pre>
               </div>
 
-              <div class="terminal secondary">
-                <div class="terminal-bar">
-                  <span class="dot"></span>
-                  <span class="dot"></span>
-                  <span class="dot"></span>
-                  <span>run graph</span>
-                </div>
-                <div class="graph">
-                  <div class="node">
-                    <strong>Codex</strong>
-                    <span>adapter ready</span>
-                  </div>
-                  <div class="node">
-                    <strong>Claude Code</strong>
-                    <span>adapter ready</span>
-                  </div>
-                  <div class="node">
-                    <strong>Gemini</strong>
-                    <span>adapter ready</span>
-                  </div>
-                  <div class="node">
-                    <strong>Custom CLI</strong>
-                    <span>shell command</span>
-                  </div>
-                </div>
+              <div class="primitive-list">
+                <article class="primitive">
+                  <code>agent(prompt)</code>
+                  <h3 data-i18n="primitive.agent.title">Dispatch real work</h3>
+                  <p data-i18n="primitive.agent.copy">Run one coding-agent CLI on a scoped subtask and collect text or schema-validated output.</p>
+                </article>
+                <article class="primitive">
+                  <code>parallel(thunks)</code>
+                  <h3 data-i18n="primitive.parallel.title">Fan out safely</h3>
+                  <p data-i18n="primitive.parallel.copy">Run independent branches concurrently when the next step needs the full batch.</p>
+                </article>
+                <article class="primitive">
+                  <code>pipeline(items)</code>
+                  <h3 data-i18n="primitive.pipeline.title">Stream stages</h3>
+                  <p data-i18n="primitive.pipeline.copy">Move each item through review, verification, and synthesis without a global barrier.</p>
+                </article>
               </div>
-
-              <div class="orbit">
-                <span class="pulse"></span>
-                <span>background run active</span>
-              </div>
-            </div>
-          </div>
-
-          <div class="hero-content">
-            <p class="eyebrow">TypeScript CLI runtime for coding agents</p>
-            <h1 id="hero-title">Open Dynamic Workflows</h1>
-            <p class="hero-copy">
-              Run Claude Code-style dynamic workflows across Codex, Claude Code,
-              Gemini, Qwen, Kimi, and custom coding-agent CLIs.
-            </p>
-            <div class="actions" aria-label="Primary actions">
-              <a class="button primary" href="https://github.com/xz1220/open-dynamic-workflows">View GitHub</a>
-              <a class="button secondary" href="https://github.com/xz1220/open-dynamic-workflows#readme">Read README</a>
-            </div>
-            <div class="proof-row" aria-label="Project attributes">
-              <span class="proof">Open source</span>
-              <span class="proof">Node 20+</span>
-              <span class="proof">Zero runtime deps target</span>
-              <span class="proof">Local CLI adapters</span>
             </div>
           </div>
         </section>
 
-        <section id="primitives" aria-labelledby="primitives-title">
+        <section class="section" id="install" aria-labelledby="install-title">
           <div class="section-inner">
-            <p class="section-kicker">Portable workflow scripts</p>
-            <h2 id="primitives-title">Keep the plan in code. Let agents do the parallel work.</h2>
-            <p class="section-lede">
-              ODW runs the same JavaScript workflow dialect used by Claude Code:
-              ordinary control flow, injected primitives, background execution,
-              and CLI adapters that keep orchestration outside the host context.
-            </p>
-
-            <div class="primitive-grid">
-              <article class="primitive">
-                <code>agent(prompt)</code>
-                <h3>Dispatch real work</h3>
-                <p>Send a scoped task to a coding-agent CLI and collect text or schema-validated output.</p>
-              </article>
-              <article class="primitive">
-                <code>parallel(thunks)</code>
-                <h3>Fan out safely</h3>
-                <p>Run independent subtasks concurrently when the next step needs the full batch.</p>
-              </article>
-              <article class="primitive">
-                <code>pipeline(items)</code>
-                <h3>Stream stages</h3>
-                <p>Move each item through multi-step review, verification, or synthesis without a global barrier.</p>
-              </article>
-            </div>
-          </div>
-        </section>
-
-        <section class="flow" id="runtime" aria-labelledby="runtime-title">
-          <div class="section-inner">
-            <p class="section-kicker">Runtime shape</p>
-            <h2 id="runtime-title">A small engine between workflow scripts and real agent CLIs.</h2>
-            <p class="section-lede">
-              The runtime loads the workflow, injects primitives, schedules agent
-              calls, and persists run state so long-running orchestration can be
-              observed after it starts.
-            </p>
-
-            <div class="flow-track">
-              <article class="flow-step">
-                <span class="step-index">01</span>
-                <h3>Load</h3>
-                <p>Read a Claude Code-style script and wrap top-level return and await into a runnable function.</p>
-              </article>
-              <article class="flow-step">
-                <span class="step-index">02</span>
-                <h3>Schedule</h3>
-                <p>Apply async concurrency limits and route each agent call through the selected adapter.</p>
-              </article>
-              <article class="flow-step">
-                <span class="step-index">03</span>
-                <h3>Persist</h3>
-                <p>Store run state, logs, events, and results in a run directory outside the caller process.</p>
-              </article>
-              <article class="flow-step">
-                <span class="step-index">04</span>
-                <h3>Observe</h3>
-                <p>Use the CLI to follow logs, check status, pause, resume, stop, or print the final result.</p>
-              </article>
-            </div>
-          </div>
-        </section>
-
-        <section class="install" id="start" aria-labelledby="start-title">
-          <div class="section-inner">
-            <p class="section-kicker">Start from source</p>
-            <h2 id="start-title">Clone the runtime and run the test-backed CLI locally.</h2>
+            <p class="section-kicker" data-i18n="install.kicker">Start</p>
+            <h2 id="install-title" data-i18n="install.title">Install the runtime or hack from source.</h2>
             <div class="install-panel">
               <div class="install-copy">
-                <p>
-                  Open Dynamic Workflows is currently in an active TypeScript
-                  rewrite. The repository includes the CLI shell, runtime layers,
-                  mock-adapter tests, examples, and the skill documentation for
-                  host agents.
+                <p data-i18n="install.copy">
+                  Use the single-file installer, install from npm, or clone the repository. ODW drives local agent CLIs; it does not call model APIs directly.
                 </p>
                 <div class="actions">
-                  <a class="button primary" href="https://github.com/xz1220/open-dynamic-workflows">Open repository</a>
+                  <a class="button primary" href="https://github.com/xz1220/open-dynamic-workflows" data-i18n="cta.repo">
+                    Open repository
+                  </a>
+                  <a class="button secondary" href="https://github.com/xz1220/open-dynamic-workflows#install" data-i18n="cta.install">
+                    Install notes
+                  </a>
                 </div>
               </div>
-              <div class="code-card" aria-label="Local setup commands">
+              <div class="terminal" aria-label="Install commands">
                 <div class="terminal-bar">
-                  <span class="dot"></span>
-                  <span class="dot"></span>
-                  <span class="dot"></span>
+                  <div class="traffic" aria-hidden="true"><span></span><span></span><span></span></div>
                   <span>terminal</span>
                 </div>
-                <pre><code>git clone https://github.com/xz1220/open-dynamic-workflows.git
-cd open-dynamic-workflows
-npm install
-npm test
-npm run build
-node dist/cli.js --help</code></pre>
+                <pre><code>curl -fsSL https://raw.githubusercontent.com/xz1220/open-dynamic-workflows/main/scripts/install.sh | sh
+
+npm i -g open-dynamic-workflows
+
+odw run examples/deep-research.js --wait</code></pre>
               </div>
             </div>
           </div>
@@ -988,10 +1096,135 @@ node dist/cli.js --help</code></pre>
 
       <footer class="footer">
         <div class="footer-inner">
-          <span>MIT licensed. Built for portable dynamic workflows.</span>
+          <span data-i18n="footer.copy">MIT licensed. Built for portable dynamic workflows.</span>
           <a href="https://github.com/xz1220/open-dynamic-workflows">github.com/xz1220/open-dynamic-workflows</a>
         </div>
       </footer>
     </div>
+
+    <script>
+      const copy = {
+        en: {
+          "nav.runtime": "Runtime",
+          "nav.install": "Install",
+          "hero.eyebrow": "Open workflow runtime",
+          "hero.title": "Run agent workflows anywhere.",
+          "hero.copy":
+            "Write orchestration in JavaScript; dispatch Codex, Claude Code, Gemini, Qwen, Kimi, or any local CLI.",
+          "cta.github": "View GitHub",
+          "cta.readme": "Read README",
+          "cta.repo": "Open repository",
+          "cta.install": "Install notes",
+          "visual.status": "running",
+          "visual.input": "Input",
+          "visual.inputCopy": "args loaded",
+          "visual.plan": "Plan",
+          "visual.planCopy": "plain JS",
+          "visual.dispatch": "Dispatch",
+          "visual.agentA": "agent task",
+          "visual.agentB": "agent task",
+          "visual.merge": "Result",
+          "visual.mergeCopy": "schema checked",
+          "why.kicker": "Why ODW",
+          "why.title": "Keep the plan in code. Keep the agent context clean.",
+          "why.copy":
+            "ODW turns dynamic workflow scripts into portable artifacts: easy to inspect, run, pause, resume, and move between agent CLIs.",
+          "signals.portable.title": "Portable scripts",
+          "signals.portable.copy":
+            "The same Claude Code-style workflow can run on Codex, Gemini, Qwen, Kimi, or a custom shell adapter.",
+          "signals.parallel.title": "Parallel by design",
+          "signals.parallel.copy":
+            "Fan out independent subtasks without filling the host agent's conversation with every intermediate step.",
+          "signals.observe.title": "Observable runs",
+          "signals.observe.copy":
+            "Detached workers persist logs, state, and final results so long-running orchestration can be inspected later.",
+          "runtime.kicker": "Runtime shape",
+          "runtime.title": "A small engine between workflow scripts and real agent CLIs.",
+          "runtime.copy":
+            "The loader wraps Claude-style JavaScript, the scheduler limits concurrency, and adapters shell out to the local agents you already use.",
+          "primitive.agent.title": "Dispatch real work",
+          "primitive.agent.copy":
+            "Run one coding-agent CLI on a scoped subtask and collect text or schema-validated output.",
+          "primitive.parallel.title": "Fan out safely",
+          "primitive.parallel.copy":
+            "Run independent branches concurrently when the next step needs the full batch.",
+          "primitive.pipeline.title": "Stream stages",
+          "primitive.pipeline.copy":
+            "Move each item through review, verification, and synthesis without a global barrier.",
+          "install.kicker": "Start",
+          "install.title": "Install the runtime or hack from source.",
+          "install.copy":
+            "Use the single-file installer, install from npm, or clone the repository. ODW drives local agent CLIs; it does not call model APIs directly.",
+          "footer.copy": "MIT licensed. Built for portable dynamic workflows.",
+        },
+        zh: {
+          "nav.runtime": "运行时",
+          "nav.install": "安装",
+          "hero.eyebrow": "开放式动态工作流运行时",
+          "hero.title": "让 agent 工作流到处跑。",
+          "hero.copy": "用 JavaScript 写编排，派发给 Codex、Claude Code、Gemini、Qwen、Kimi 或本地 CLI。",
+          "cta.github": "查看 GitHub",
+          "cta.readme": "读 README",
+          "cta.repo": "打开仓库",
+          "cta.install": "安装说明",
+          "visual.status": "运行中",
+          "visual.input": "输入",
+          "visual.inputCopy": "参数已载入",
+          "visual.plan": "规划",
+          "visual.planCopy": "普通 JS",
+          "visual.dispatch": "派发",
+          "visual.agentA": "agent 任务",
+          "visual.agentB": "agent 任务",
+          "visual.merge": "结果",
+          "visual.mergeCopy": "schema 校验",
+          "why.kicker": "为什么是 ODW",
+          "why.title": "计划留在代码里，主 agent 上下文保持干净。",
+          "why.copy": "ODW 把动态工作流脚本变成可迁移的产物：可检查、可运行、可暂停恢复，也能在不同 agent CLI 之间移动。",
+          "signals.portable.title": "脚本可迁移",
+          "signals.portable.copy": "同一份 Claude Code 风格 workflow 可以运行在 Codex、Gemini、Qwen、Kimi 或自定义 shell 适配器上。",
+          "signals.parallel.title": "天然并行",
+          "signals.parallel.copy": "独立子任务可以 fan out，不需要把所有中间过程塞回主 agent 的对话上下文。",
+          "signals.observe.title": "运行可观察",
+          "signals.observe.copy": "后台 worker 会保存日志、状态和最终结果，长任务启动后也能继续查看。",
+          "runtime.kicker": "运行时结构",
+          "runtime.title": "一个夹在 workflow 脚本和真实 agent CLI 之间的小引擎。",
+          "runtime.copy": "loader 包装 Claude 风格 JavaScript，scheduler 控制并发，adapter 调用你本地已经在用的 agent CLI。",
+          "primitive.agent.title": "派发真实任务",
+          "primitive.agent.copy": "让一个 coding-agent CLI 处理范围清晰的子任务，并收集文本或 schema 校验后的输出。",
+          "primitive.parallel.title": "安全 fan out",
+          "primitive.parallel.copy": "当下一步需要完整批次时，并发运行相互独立的分支。",
+          "primitive.pipeline.title": "流式阶段",
+          "primitive.pipeline.copy": "让每个 item 独立经过审阅、验证、综合，不必等待全局屏障。",
+          "install.kicker": "开始使用",
+          "install.title": "安装运行时，或直接从源码改起。",
+          "install.copy": "可以用单文件安装器、npm 安装，或 clone 仓库。ODW 只驱动本地 agent CLI，不直接调用模型 API。",
+          "footer.copy": "MIT 许可。为可迁移的动态工作流而构建。",
+        },
+      };
+
+      const buttons = [...document.querySelectorAll("[data-lang]")];
+      const textNodes = [...document.querySelectorAll("[data-i18n]")];
+
+      function setLanguage(lang) {
+        const dictionary = copy[lang] || copy.en;
+        document.documentElement.lang = lang === "zh" ? "zh-CN" : "en";
+        textNodes.forEach((node) => {
+          const value = dictionary[node.dataset.i18n];
+          if (value) node.textContent = value;
+        });
+        buttons.forEach((button) => {
+          button.setAttribute("aria-pressed", String(button.dataset.lang === lang));
+        });
+        localStorage.setItem("odw-language", lang);
+      }
+
+      const savedLanguage = localStorage.getItem("odw-language");
+      const browserLanguage = navigator.language && navigator.language.toLowerCase().startsWith("zh") ? "zh" : "en";
+      setLanguage(savedLanguage || browserLanguage);
+
+      buttons.forEach((button) => {
+        button.addEventListener("click", () => setLanguage(button.dataset.lang));
+      });
+    </script>
   </body>
 </html>
