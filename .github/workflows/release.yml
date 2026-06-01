@@ -12,6 +12,10 @@ on:
 permissions:
   contents: write
 
+# Run all JavaScript actions on Node 24 (the Node 20 action runtime is deprecated).
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   binary:
     name: ${{ matrix.os }}-${{ matrix.arch }}
@@ -19,9 +23,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # No darwin-x64: GitHub's Intel macOS runners (macos-13) are being retired
+        # and queue indefinitely. Intel-mac users install via npm (see install.sh).
         include:
           - { runner: macos-14,         os: darwin, arch: arm64 }
-          - { runner: macos-13,         os: darwin, arch: x64 }
           - { runner: ubuntu-latest,    os: linux,  arch: x64 }
           - { runner: ubuntu-24.04-arm, os: linux,  arch: arm64 }
           - { runner: windows-latest,   os: win,    arch: x64 }
@@ -36,17 +41,13 @@ jobs:
         shell: bash
         run: |
           # The binary is ~110 MB (almost entirely the embedded Node runtime);
-          # gzip cuts the *download* to ~35 MB. gzip is lossless, so the macOS
-          # code signature survives the round-trip. Windows ships the raw .exe.
+          # gzip -9 cuts the *download* to ~30–40 MB on every platform. gzip is
+          # lossless, so the macOS code signature survives the round-trip.
           ext=""; [ "${{ matrix.os }}" = "win" ] && ext=".exe"
           bin="odw-${{ matrix.os }}-${{ matrix.arch }}$ext"
           mv "build/odw$ext" "$bin"
-          if [ "${{ matrix.os }}" = "win" ]; then
-            echo "ASSET=$bin" >> "$GITHUB_ENV"
-          else
-            gzip -9 "$bin"
-            echo "ASSET=$bin.gz" >> "$GITHUB_ENV"
-          fi
+          gzip -9 "$bin"
+          echo "ASSET=$bin.gz" >> "$GITHUB_ENV"
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ env.ASSET }}

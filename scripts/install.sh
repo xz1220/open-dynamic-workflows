@@ -21,13 +21,22 @@ os="$(uname -s)"; arch="$(uname -m)"
 case "$os" in
   Darwin) OS=darwin ;;
   Linux)  OS=linux ;;
-  *) echo "unsupported OS: $os — on Windows, download odw-win-x64.exe from Releases" >&2; exit 1 ;;
+  *) echo "unsupported OS: $os — on Windows, download odw-win-x64.exe.gz from Releases" >&2; exit 1 ;;
 esac
 case "$arch" in
   arm64|aarch64) ARCH=arm64 ;;
   x86_64|amd64)  ARCH=x64 ;;
   *) echo "unsupported arch: $arch" >&2; exit 1 ;;
 esac
+
+# No prebuilt binary for Intel macs (GitHub's Intel runners are retiring). Use npm.
+if [ "$OS" = "darwin" ] && [ "$ARCH" = "x64" ]; then
+  echo "No prebuilt binary for Intel macs. Install via npm (needs Node >=20):" >&2
+  echo "  npm i -g open-dynamic-workflows" >&2
+  echo "then copy the skill: git clone $REPO && cp -r open-dynamic-workflows/skill ~/.claude/skills/open-dynamic-workflows" >&2
+  exit 1
+fi
+
 ASSET="odw-$OS-$ARCH.gz"   # the binary is ~110 MB; the release ships it gzipped (~35 MB)
 
 if [ "$VERSION" = "latest" ]; then
