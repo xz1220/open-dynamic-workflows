@@ -1,13 +1,24 @@
+# Node
+node_modules/
+dist/
+build/
+*.tsbuildinfo
+npm-debug.log*
+
+# Local run state (background workers persist runs under here by default)
+/runs/
+.odw/
+odw.config.json
+
+# OS / editor
+.DS_Store
+*.log
+.claude/
+
+# Leftover Python venv & caches from the pre-rewrite implementation
+.venv/
 __pycache__/
 *.pyc
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
-.venv/
-dist/
-build/
-*.egg-info/
-.DS_Store
-agentswarm.toml
-/runs/
-.claude/

@@ -1,0 +1,41 @@
+{
+  "$comment": "Copy to ./odw.config.json, ~/.config/odw/config.json, or pass --config. odw never calls model APIs directly: each adapter is a local CLI it shells out to. The five below ship as built-ins, so you only need this file to change defaults, tune flags, or add your own adapter.",
+
+  "defaultAdapter": "claude",
+  "concurrency": 8,
+  "maxAgents": 1000,
+  "workspaceMode": "copy",
+  "timeout": 1800,
+  "schemaRetries": 2,
+  "runsRoot": "~/.odw/runs",
+
+  "adapters": {
+    "codex": {
+      "label": "Codex CLI",
+      "command": ["codex", "exec", "--skip-git-repo-check", "--sandbox", "workspace-write", "--cd", "{workspace}", "-"],
+      "stdin": "{prompt}"
+    },
+    "claude": {
+      "label": "Claude Code",
+      "command": ["claude", "--print", "--permission-mode", "acceptEdits", "--no-session-persistence"],
+      "stdin": "{prompt}"
+    },
+    "gemini": {
+      "label": "Gemini CLI",
+      "command": ["gemini", "--approval-mode", "auto_edit", "{prompt}"]
+    },
+    "qwen": {
+      "label": "Qwen Code",
+      "command": ["qwen", "--approval-mode", "auto-edit", "--output-format", "text", "{prompt}"]
+    },
+    "kimi": {
+      "label": "Kimi CLI",
+      "command": ["kimi", "--work-dir", "{workspace}", "--print", "--input-format", "text", "--output-format", "text"],
+      "stdin": "{prompt}"
+    },
+    "my_wrapper": {
+      "label": "My custom wrapper (example)",
+      "command": ["my-agent-wrapper", "--cwd", "{workspace}", "--prompt-file", "{prompt_file}"]
+    }
+  }
+}

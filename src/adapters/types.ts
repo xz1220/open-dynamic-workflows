@@ -1,0 +1,65 @@
+/**
+ * Configuration model shapes (L1).
+ *
+ * A {@link Config} is the immutable description of *which* coding-agent CLIs
+ * exist ({@link Adapter}) and *how* a run behaves ({@link Settings}). It is
+ * loaded once at run start and then only read.
+ */
+
+/** How to invoke one coding-agent CLI. */
+export interface Adapter {
+  name: string;
+  /** Argument-vector template; `{placeholder}` tokens are expanded per call. */
+  command: string[];
+  /** Optional stdin template (e.g. `"{prompt}"`). */
+  stdin?: string;
+  /** Extra environment variables layered over the process environment. */
+  env?: Record<string, string>;
+  /** Per-call timeout in seconds; falls back to the run-wide setting. */
+  timeout?: number;
+  /** Human-friendly label for progress display. */
+  label?: string;
+}
+
+/** Run-wide knobs independent of any single adapter. */
+export interface Settings {
+  /** Which adapter `agent()` uses when a call does not name one. */
+  defaultAdapter: string | null;
+  /** Max agent CLIs running at once; `null` => auto from CPU count. */
+  concurrency: number | null;
+  /** Hard ceiling on total dispatches per run (runaway guard). */
+  maxAgents: number;
+  /** `"copy"` (isolated + diff) or `"inplace"` (read-only / fast). */
+  workspaceMode: "copy" | "inplace";
+  /** Per-agent CLI timeout in seconds; `null` => no timeout. */
+  timeout: number | null;
+  /** Extra attempts when a schema fails to validate. */
+  schemaRetries: number;
+  /** Directory runs are stored under; `null` => `~/.odw/runs`. */
+  runsRoot: string | null;
+}
+
+export interface Config {
+  adapters: Record<string, Adapter>;
+  settings: Settings;
+}
+
+/** The outcome of a single CLI invocation. */
+export interface CliResult {
+  returncode: number;
+  stdout: string;
+  stderr: string;
+  timedOut: boolean;
+  /** Wall-clock seconds the process ran. */
+  duration: number;
+}
+
+/** True when the process exited cleanly and did not time out. */
+export function cliOk(result: CliResult): boolean {
+  return result.returncode === 0 && !result.timedOut;
+}
+
+/** The label to show for an adapter (its `label`, else its name). */
+export function adapterDisplayName(adapter: Adapter): string {
+  return adapter.label ?? adapter.name;
+}
