@@ -10,6 +10,9 @@ npm-debug.log*
 .odw/
 odw.config.json
 
+# Generated social promo drafts
+/assets/social-card-*/
+
 # OS / editor
 .DS_Store
 *.log
