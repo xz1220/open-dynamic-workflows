@@ -89,7 +89,7 @@ git clone https://github.com/xz1220/open-dynamic-workflows.git
 cp -r open-dynamic-workflows/skill ~/.claude/skills/open-dynamic-workflows
 ```
 
-或者,**如果你已经有 Node ≥20**,可以跳过二进制:`npm i -g open-dynamic-workflows`
+或者,**如果你已经有 Node ≥20**,可以跳过二进制:`npm i -g odw`
 就能把 `odw` 装到 PATH 上(skill 仍按上面第 *b* 步装)。
 
 > 二进制在磁盘上约 110 MB——和任何 Node→二进制 的工具一样,几乎全是内嵌的 Node 运行
@@ -171,6 +171,17 @@ odw list
 
 一次运行在独立的 detached worker 进程里执行,并把一切持久化到一个 run 目录——所以它能
 比启动它的命令活得更久,也能从任何地方被观测。
+
+**喜欢用浏览器?** `odw serve` 会对同一个 run 目录开一个零依赖的实时仪表盘——阶段分栏、
+每个 agent 的卡片(适配器 + 耗时)、运行状态都通过 SSE 实时更新。无需构建,不引入任何
+额外依赖。
+
+```bash
+odw serve [--open]                      # 实时仪表盘,默认 http://127.0.0.1:4317
+odw serve --port 8080 --host 0.0.0.0    # 自定义端口 / 绑定地址
+```
+
+![odw serve —— 一次 deep-research 运行的实时看板:阶段分栏(Search → Extract → Vote → Report)、每个 agent 的卡片(适配器 + 耗时)、实时状态](assets/odw-dashboard.png)
 
 ## 配置适配器
 
@@ -257,8 +268,7 @@ npm run build:binary  # 打包 + Node SEA + postject → 单个自包含的 ./bu
 ([`.github/workflows/release.yml`](.github/workflows/release.yml)):SEA 注入的是宿主
 机的 `node`,所以每个目标平台都要在各自的 runner 上构建。
 
-> 发布后,`npm i -g open-dynamic-workflows`(或 `npx open-dynamic-workflows …`)会把
-> `odw` 命令装到你的 PATH 上。
+> 发布后,`npm i -g odw`(或 `npx odw …`)会把 `odw` 命令装到你的 PATH 上。
 
 ## 状态
 

@@ -186,6 +186,17 @@ A run executes in a detached worker process and persists everything to a run
 directory, so it outlives the command that started it and can be observed from
 anywhere.
 
+**Prefer a browser?** `odw serve` opens a zero-dependency live dashboard onto the same
+run directory — phase columns, per-agent cards (adapter + elapsed time), and run status
+stream in real time over SSE. No build step, no extra deps.
+
+```bash
+odw serve [--open]                      # live dashboard at http://127.0.0.1:4317
+odw serve --port 8080 --host 0.0.0.0    # custom port / bind address
+```
+
+![odw serve — a live board of a deep-research run: phase columns (Search → Extract → Vote → Report), per-agent cards with adapter and elapsed time, and live status](assets/odw-dashboard.png)
+
 ## Configure adapters
 
 Codex, Claude Code, Gemini, Qwen, and Kimi work out of the box. To change the
@@ -277,8 +288,7 @@ copy of the `node` binary (ad-hoc code-signed on macOS). esbuild and postject ar
 ([`.github/workflows/release.yml`](.github/workflows/release.yml)); SEA injects
 into the host's `node`, so each target is built on its own runner.
 
-> Once published, `npm i -g open-dynamic-workflows` (or `npx open-dynamic-workflows …`)
-> puts the `odw` command on your PATH.
+> Once published, `npm i -g odw` (or `npx odw …`) puts the `odw` command on your PATH.
 
 ## Status
 

@@ -1,5 +1,5 @@
 {
-  "name": "open-dynamic-workflows",
+  "name": "odw",
   "version": "0.2.1",
   "description": "Open Dynamic Workflows: a TypeScript CLI runtime for Claude Code-style dynamic workflows across any coding-agent CLI.",
   "type": "module",

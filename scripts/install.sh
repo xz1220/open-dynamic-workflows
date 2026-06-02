@@ -32,7 +32,7 @@ esac
 # No prebuilt binary for Intel macs (GitHub's Intel runners are retiring). Use npm.
 if [ "$OS" = "darwin" ] && [ "$ARCH" = "x64" ]; then
   echo "No prebuilt binary for Intel macs. Install via npm (needs Node >=20):" >&2
-  echo "  npm i -g open-dynamic-workflows" >&2
+  echo "  npm i -g odw" >&2
   echo "then copy the skill: git clone $REPO && cp -r open-dynamic-workflows/skill ~/.claude/skills/open-dynamic-workflows" >&2
   exit 1
 fi
