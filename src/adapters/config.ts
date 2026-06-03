@@ -76,6 +76,11 @@ export function resolveRunsRoot(runsRoot: string | null): string {
   return runsRoot ? expandHome(runsRoot) : join(homedir(), ".odw", "runs");
 }
 
+/** Directory workflows are resolved by name from; defaults to `~/.odw/workflows`. */
+export function resolveWorkflowsRoot(workflowsRoot: string | null): string {
+  return workflowsRoot ? expandHome(workflowsRoot) : join(homedir(), ".odw", "workflows");
+}
+
 // --- internals ---------------------------------------------------------------
 
 function expandHome(p: string): string {
@@ -168,5 +173,6 @@ function buildSettings(raw: Record<string, unknown>): Settings {
     timeout: numOrNull("timeout", DEFAULT_SETTINGS.timeout),
     schemaRetries: Number(pick("schemaRetries", DEFAULT_SETTINGS.schemaRetries)),
     runsRoot: pick("runsRoot", DEFAULT_SETTINGS.runsRoot),
+    workflowsRoot: pick("workflowsRoot", DEFAULT_SETTINGS.workflowsRoot),
   };
 }

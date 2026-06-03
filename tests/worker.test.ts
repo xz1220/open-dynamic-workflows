@@ -82,3 +82,38 @@ test("executeRun drives a real agent call through a mock adapter", async () => {
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("executeRun logs a meta.name / filename divergence as an event", async () => {
+  const { root, store } = setup();
+  try {
+    const script = join(root, "ai-news.js"); // stem 'ai-news' ≠ meta.name
+    writeFileSync(script, "export const meta = { name: 'ai-news-v2', description: 'd' }\nreturn 1");
+    const id = store.create({ script, args: null, source: root });
+    await executeRun(store.runDir(id));
+    const logs = store.readEvents(id).filter((e) => e.type === "log");
+    assert.ok(
+      logs.some((e) => /declares meta\.name 'ai-news-v2'/.test(String(e.message))),
+      "divergence note should be emitted through the event stream",
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("executeRun stays quiet when meta.name matches the filename stem", async () => {
+  const { root, store } = setup();
+  try {
+    const script = join(root, "match.js");
+    writeFileSync(script, "export const meta = { name: 'match', description: 'd' }\nreturn 1");
+    const id = store.create({ script, args: null, source: root });
+    await executeRun(store.runDir(id));
+    const logs = store.readEvents(id).filter((e) => e.type === "log");
+    assert.equal(
+      logs.some((e) => /declares meta\.name/.test(String(e.message))),
+      false,
+      "no divergence note when name === stem",
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

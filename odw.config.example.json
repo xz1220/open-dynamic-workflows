@@ -8,6 +8,7 @@
   "timeout": 1800,
   "schemaRetries": 2,
   "runsRoot": "~/.odw/runs",
+  "workflowsRoot": "~/.odw/workflows",
 
   "adapters": {
     "codex": {

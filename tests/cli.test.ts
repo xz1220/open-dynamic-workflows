@@ -53,3 +53,16 @@ test("CLI entrypoint detection follows npm bin symlinks", () => {
     rmSync(tempDir, { recursive: true, force: true });
   }
 });
+
+test("help and COMMANDS cover the workflows command", () => {
+  assert.match(helpText(), /workflows list/);
+  assert.match(helpText(), /workflows where/);
+  assert.ok((COMMANDS as readonly string[]).includes("workflows"));
+});
+
+test("workflows: unknown subcommand and missing args are usage errors (exit 2)", async () => {
+  assert.equal(await main(["workflows"]), 2); // no subcommand
+  assert.equal(await main(["workflows", "bogus"]), 2); // unknown subcommand
+  assert.equal(await main(["workflows", "where"]), 2); // missing <name>
+  assert.equal(await main(["workflows", "list", "--project", "--global"]), 2); // mutually exclusive
+});

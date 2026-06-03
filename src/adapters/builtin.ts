@@ -74,4 +74,5 @@ export const DEFAULT_SETTINGS: Settings = {
   timeout: 1800, // per-agent CLI timeout, seconds
   schemaRetries: 2, // extra attempts when a schema fails to validate
   runsRoot: null, // null => ~/.odw/runs
+  workflowsRoot: null, // null => ~/.odw/workflows
 };

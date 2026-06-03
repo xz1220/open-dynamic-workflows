@@ -7,7 +7,12 @@ npm-debug.log*
 
 # Local run state (background workers persist runs under here by default)
 /runs/
-.odw/
+# Ignore everything odw writes under .odw/ (runs, scratch) EXCEPT named workflows,
+# which are authored source and meant to be committed. The dir negation must come
+# before the contents negation, and both are needed for git to descend into it.
+.odw/*
+!.odw/workflows/
+!.odw/workflows/**
 odw.config.json
 
 # Generated social promo drafts

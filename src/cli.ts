@@ -29,6 +29,7 @@ import { RunStore, TERMINAL_STATES } from "./runtime/run-store.js";
 import { startServer } from "./runtime/server.js";
 import { executeRun } from "./runtime/worker.js";
 import { isSeaBinary } from "./sea.js";
+import { listWorkflows, resolveWorkflow } from "./workflows/resolve.js";
 
 export const COMMANDS = [
   "run",
@@ -37,6 +38,7 @@ export const COMMANDS = [
   "logs",
   "result",
   "serve",
+  "workflows",
   "pause",
   "resume",
   "stop",
@@ -56,18 +58,21 @@ export function helpText(): string {
     "Run Claude Code-format dynamic-workflow scripts against any coding-agent CLI.",
     "",
     "Usage:",
-    "  odw run <script.js> [--args JSON|@file] [--wait]   start a workflow (background)",
+    "  odw run <script.js|name> [--args JSON|@file] [--wait]  start a workflow (background)",
     "  odw status <run_id>                                show a run's current state",
     "  odw logs <run_id> [--follow]                       print a run's progress events",
     "  odw result <run_id>                                print a finished run's result",
     "  odw list                                           list known runs",
     "  odw serve [--port N] [--host H] [--open]           open the live dashboard in a browser",
+    "  odw workflows list [--project|--global|--all]      list workflows runnable by name",
+    "  odw workflows where <name>                         show the file a name resolves to",
     "  odw pause|resume|stop <run_id>                     control a running workflow",
     "",
     "Options:",
     "  --args JSON|@file   workflow input (JSON, @file.json, or a raw string)",
     "  --config <path>     path to an odw.config.json",
     "  --runs-root <dir>   directory runs are stored under",
+    "  --source <dir>      run's working dir; also anchors a relative script path & project-name lookup",
     "  --wait              block until the run finishes and print the result",
     "  --port <n>          dashboard port (serve; default 4317)",
     "  --host <addr>       dashboard bind address (serve; default 127.0.0.1)",
@@ -108,6 +113,8 @@ export async function main(argv: string[]): Promise<number> {
         return cmdList(rest);
       case "serve":
         return await cmdServe(rest);
+      case "workflows":
+        return cmdWorkflows(rest);
       case "pause":
       case "resume":
       case "stop":
@@ -151,9 +158,9 @@ async function cmdRun(rest: string[]): Promise<number> {
       budget: { type: "string" },
     },
   });
-  const script = positionals[0];
-  if (!script) {
-    process.stderr.write("odw run: missing <script.js>\n");
+  const ref = positionals[0];
+  if (!ref) {
+    process.stderr.write("odw run: missing <script.js|name>\n");
     return 2;
   }
 
@@ -176,7 +183,7 @@ async function cmdRun(rest: string[]): Promise<number> {
     timeoutMs = seconds * 1000;
   }
 
-  const { runId, store } = startRun(script, {
+  const { runId, store } = startRun(ref, {
     args: parseArgsValue(values.args),
     configPath: values.config ?? null,
     runsRoot: values["runs-root"] ?? null,
@@ -327,6 +334,74 @@ function cmdControl(action: Command, rest: string[]): number {
   store.writeControl(runId, action);
   process.stderr.write(`${action} requested for ${runId}\n`);
   return 0;
+}
+
+/** `odw workflows <list|where>` — inspect the workflows runnable by name. */
+function cmdWorkflows(rest: string[]): number {
+  const [sub, ...subRest] = rest;
+  if (sub === "list") return cmdWorkflowsList(subRest);
+  if (sub === "where") return cmdWorkflowsWhere(subRest);
+  process.stderr.write(`odw workflows: expected 'list' or 'where', got '${sub ?? ""}'\n`);
+  return 2;
+}
+
+function cmdWorkflowsList(rest: string[]): number {
+  const { values } = parseArgs({
+    args: rest,
+    allowPositionals: true,
+    options: {
+      config: { type: "string" },
+      project: { type: "boolean" },
+      global: { type: "boolean" },
+      all: { type: "boolean" },
+    },
+  });
+  if (values.project && values.global) {
+    process.stderr.write("odw workflows list: --project and --global are mutually exclusive\n");
+    return 2;
+  }
+  const config = loadConfig(values.config ?? null);
+  let entries = listWorkflows(process.cwd(), config);
+  const scoped = Boolean(values.project || values.global);
+  if (values.project) entries = entries.filter((e) => e.origin === "project");
+  if (values.global) entries = entries.filter((e) => e.origin === "global");
+  // The default (unscoped) view shows only the effective set; an explicit scope
+  // or --all shows every entry, with shadowed ones still flagged.
+  if (!values.all && !scoped) entries = entries.filter((e) => !e.shadowed);
+
+  if (entries.length === 0) {
+    process.stderr.write("no named workflows found\n");
+    process.stderr.write("  add one by dropping a .js file in ./.odw/workflows (project) or ~/.odw/workflows (global)\n");
+    return 0;
+  }
+  const width = Math.max(...entries.map((e) => e.name.length));
+  for (const e of entries) {
+    const shadow = e.shadowed ? "  ⚠ shadowed by project" : "";
+    process.stdout.write(`${e.name.padEnd(width)}  (${e.origin.padEnd(7)})  ${e.path}${shadow}\n`);
+  }
+  return 0;
+}
+
+function cmdWorkflowsWhere(rest: string[]): number {
+  const { values, positionals } = parseArgs({
+    args: rest,
+    allowPositionals: true,
+    options: { config: { type: "string" } },
+  });
+  const name = positionals[0];
+  if (!name) {
+    process.stderr.write("odw workflows where: missing <name>\n");
+    return 2;
+  }
+  const config = loadConfig(values.config ?? null);
+  try {
+    const { scriptPath, origin } = resolveWorkflow(name, { cwd: process.cwd(), config });
+    process.stdout.write(`${scriptPath}  (${origin})\n`);
+    return 0;
+  } catch (err) {
+    process.stderr.write(`${(err as Error).message}\n`);
+    return 1;
+  }
 }
 
 // --- helpers -----------------------------------------------------------------

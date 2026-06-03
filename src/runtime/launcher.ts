@@ -8,13 +8,14 @@
  */
 
 import { spawn } from "node:child_process";
-import { closeSync, existsSync, openSync } from "node:fs";
+import { closeSync, openSync } from "node:fs";
 import { resolve } from "node:path";
 import { execPath } from "node:process";
 import { fileURLToPath } from "node:url";
 
 import { loadConfig, resolveRunsRoot } from "../adapters/config.js";
 import { isSeaBinary } from "../sea.js";
+import { resolveWorkflow } from "../workflows/resolve.js";
 import { RunStore, TERMINAL_STATES } from "./run-store.js";
 
 export interface StartRunOptions {
@@ -30,14 +31,13 @@ export function startRun(
   script: string,
   options: StartRunOptions = {},
 ): { runId: string; store: RunStore } {
-  const scriptPath = resolve(script);
-  if (!existsSync(scriptPath)) {
-    throw new Error(`workflow script not found: ${scriptPath}`);
-  }
-
   const config = loadConfig(options.configPath ?? null); // validates config & resolves defaults
-  const root = options.runsRoot ?? resolveRunsRoot(config.settings.runsRoot);
   const source = options.source ? resolve(options.source) : process.cwd();
+  // `script` may be a path (./wf.js) or a managed-directory name (deep-research);
+  // resolve against `source` so --source steers both literal paths and name lookup.
+  const { scriptPath } = resolveWorkflow(script, { cwd: source, config });
+
+  const root = options.runsRoot ?? resolveRunsRoot(config.settings.runsRoot);
 
   const store = new RunStore(root);
   const runId = store.create({

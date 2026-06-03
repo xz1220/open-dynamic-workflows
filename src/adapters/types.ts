@@ -37,6 +37,8 @@ export interface Settings {
   schemaRetries: number;
   /** Directory runs are stored under; `null` => `~/.odw/runs`. */
   runsRoot: string | null;
+  /** Directory workflows are resolved by name from; `null` => `~/.odw/workflows`. */
+  workflowsRoot: string | null;
 }
 
 export interface Config {

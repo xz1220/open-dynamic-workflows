@@ -17,7 +17,7 @@ import { pathToFileURL } from "node:url";
 import { loadConfig } from "../adapters/config.js";
 import { buildContext, type RunContext } from "../context.js";
 import { RunStopped } from "../errors.js";
-import { RUN_FAILED, RUN_FINISHED, RUN_STARTED, RUN_STOPPED, event } from "../events.js";
+import { LOG, RUN_FAILED, RUN_FINISHED, RUN_STARTED, RUN_STOPPED, event } from "../events.js";
 import { loadWorkflowScript } from "../loader.js";
 import { createPrimitives } from "../primitives.js";
 import { FileControl } from "./file-control.js";
@@ -58,6 +58,19 @@ export async function executeRun(runDir: string): Promise<string> {
 
     const source = readFileSync(script, "utf8");
     const loaded = loadWorkflowScript(source, script);
+    // The run-by-name lookup keys on the filename stem, not meta.name. Flag a
+    // divergence (through the event stream, so it shows in `odw logs` and the
+    // dashboard) so the author knows which token actually invokes this file.
+    const stem = basename(script).replace(/\.[^.]*$/, "");
+    if (loaded.meta.name !== stem) {
+      sink.emit(
+        event(LOG, {
+          message:
+            `workflow file '${basename(script)}' declares meta.name '${loaded.meta.name}'; ` +
+            `run it by name as '${stem}'`,
+        }),
+      );
+    }
     store.updateStatus(runId, {
       name: loaded.meta.name,
       description: loaded.meta.description,
