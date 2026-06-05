@@ -20,7 +20,10 @@ use tauri::{
     AppHandle, Emitter, Listener, Manager, RunEvent, WindowEvent,
 };
 use tauri_plugin_notification::NotificationExt;
-use tauri_plugin_shell::{process::CommandEvent, ShellExt};
+use tauri_plugin_shell::{
+    process::{CommandChild, CommandEvent},
+    ShellExt,
+};
 
 /// The loopback port the sidecar serves on. Fixed for v1 (one window, one
 /// server); a later version can probe for a free port and pass it through.
@@ -34,6 +37,20 @@ fn serve_url() -> String {
 /// Shared flag so we navigate the window to the server exactly once.
 #[derive(Default)]
 struct Navigated(Mutex<bool>);
+
+/// The running `odw serve` child. Kept so a real app quit does not orphan it.
+#[derive(Default)]
+struct Sidecar(Mutex<Option<CommandChild>>);
+
+impl Drop for Sidecar {
+    fn drop(&mut self) {
+        if let Ok(slot) = self.0.get_mut() {
+            if let Some(child) = slot.take() {
+                stop_sidecar_child(child);
+            }
+        }
+    }
+}
 
 /// Payload the web layer emits when a run reaches a terminal state.
 #[derive(Debug, Deserialize)]
@@ -51,6 +68,7 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_notification::init())
         .manage(Navigated::default())
+        .manage(Sidecar::default())
         .setup(|app| {
             spawn_sidecar(app.handle().clone());
             build_tray(app.handle())?;
@@ -69,12 +87,9 @@ pub fn run() {
         })
         .build(tauri::generate_context!())
         .expect("error while building the ODW desktop shell")
-        .run(|app, event| {
-            // Keep running after the last window closes (macOS tray-resident app).
-            if let RunEvent::ExitRequested { api, .. } = event {
-                let _ = app;
-                api.prevent_exit();
-            }
+        .run(|app, event| match event {
+            RunEvent::ExitRequested { .. } | RunEvent::Exit => shutdown_sidecar(app),
+            _ => {}
         });
 }
 
@@ -88,13 +103,16 @@ fn spawn_sidecar(app: AppHandle) {
         }
     };
 
-    let (mut rx, _child) = match sidecar.spawn() {
+    let (mut rx, child) = match sidecar.spawn() {
         Ok(pair) => pair,
         Err(err) => {
             eprintln!("failed to spawn odw serve: {err}");
             return;
         }
     };
+    let pid = child.pid();
+    *app.state::<Sidecar>().0.lock().unwrap() = Some(child);
+    eprintln!("[odw] serve started: pid {pid}");
 
     // Drain the sidecar's stdout/stderr so it never blocks on a full pipe, and
     // surface fatal exits to the console.
@@ -104,6 +122,7 @@ fn spawn_sidecar(app: AppHandle) {
             match event {
                 CommandEvent::Stderr(line) => eprintln!("[odw] {}", String::from_utf8_lossy(&line)),
                 CommandEvent::Terminated(payload) => {
+                    let _ = app_for_log.state::<Sidecar>().0.lock().unwrap().take();
                     eprintln!("[odw] serve exited: {:?}", payload.code);
                     let _ = app_for_log.emit("sidecar:exited", payload.code);
                 }
@@ -123,6 +142,22 @@ fn spawn_sidecar(app: AppHandle) {
         }
         eprintln!("odw serve did not become ready in time");
     });
+}
+
+fn shutdown_sidecar(app: &AppHandle) {
+    let child = app.state::<Sidecar>().0.lock().unwrap().take();
+    if let Some(child) = child {
+        stop_sidecar_child(child);
+    }
+}
+
+fn stop_sidecar_child(child: CommandChild) {
+    let pid = child.pid();
+    if let Err(err) = child.kill() {
+        eprintln!("[odw] failed to stop serve pid {pid}: {err}");
+    } else {
+        eprintln!("[odw] stopped serve pid {pid}");
+    }
 }
 
 /// A dependency-free readiness probe: open a TCP connection to the port.
