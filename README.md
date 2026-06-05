@@ -186,6 +186,11 @@ A run executes in a detached worker process and persists everything to a run
 directory, so it outlives the command that started it and can be observed from
 anywhere.
 
+Saved workflows can also be run by name. ODW searches project workflows first,
+then personal workflows, across both its own directories and Claude Code's saved
+workflow directories: `.odw/workflows`, `.claude/workflows`, `~/.odw/workflows`,
+and `~/.claude/workflows` (honoring `CLAUDE_CONFIG_DIR`).
+
 **Prefer a browser?** `odw serve` opens a zero-dependency live dashboard onto the same
 run directory — phase columns, per-agent cards (adapter + elapsed time), and run status
 stream in real time over SSE. No build step, no extra deps.

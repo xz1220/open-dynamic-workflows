@@ -9,6 +9,7 @@
   "schemaRetries": 2,
   "runsRoot": "~/.odw/runs",
   "workflowsRoot": "~/.odw/workflows",
+  "claudeWorkflowsRoot": "~/.claude/workflows",
 
   "adapters": {
     "codex": {

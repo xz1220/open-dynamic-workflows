@@ -7,7 +7,7 @@
  *   - a PATH (`./wf.js`, `/abs/wf.js`, `foo.js`) → used literally, exactly as the
  *     CLI always has (backward compatible);
  *   - a NAME (`deep-research`) → looked up by FILENAME STEM in a managed
- *     directory odw owns, project-local first then global.
+ *     directory ODW or Claude Code owns, project-local first then global.
  *
  * It is a PURE path/fs-stat resolver: it never reads, parses, or compiles a
  * workflow body, so a malformed neighbour can never poison resolution and
@@ -23,25 +23,30 @@
 import { existsSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute, join, resolve, sep } from "node:path";
 
-import { resolveWorkflowsRoot } from "../adapters/config.js";
+import { resolveClaudeWorkflowsRoot, resolveWorkflowsRoot } from "../adapters/config.js";
 import type { Config } from "../adapters/types.js";
 import { ConfigError, WorkflowScriptError } from "../errors.js";
 
 /** How a `run` argument was resolved. */
 export type WorkflowOrigin = "path" | "project" | "global";
+export type WorkflowProvider = "odw" | "claude";
 
 export interface ResolvedWorkflow {
   /** Absolute path of the script to load and run. */
   scriptPath: string;
   origin: WorkflowOrigin;
+  /** Present for named workflows; omitted for literal path runs. */
+  provider?: WorkflowProvider;
+  /** Human-readable root label, e.g. `.claude/workflows`. */
+  rootLabel?: string;
 }
 
 export interface ResolveOptions {
   /**
    * Directory the run operates against (the run's `source`, NOT necessarily
    * `process.cwd()`). Both literal-path resolution and the project-local
-   * `.odw/workflows` lookup are anchored here, so `--source` is honoured
-   * consistently for paths and names alike.
+   * `.odw/workflows` / `.claude/workflows` lookup are anchored here, so
+   * `--source` is honoured consistently for paths and names alike.
    */
   cwd: string;
   config: Config;
@@ -55,6 +60,8 @@ const MAX_NAME_LEN = 255;
 interface SearchRoot {
   dir: string;
   origin: "project" | "global";
+  provider: WorkflowProvider;
+  label: string;
 }
 
 /** Resolve a `run` argument to an absolute script path. Throws on miss/invalid. */
@@ -78,6 +85,8 @@ export function resolveWorkflow(arg: string, opts: ResolveOptions): ResolvedWork
 export interface WorkflowListing {
   name: string;
   origin: "project" | "global";
+  provider: WorkflowProvider;
+  rootLabel: string;
   path: string;
   /** A higher-precedence root defines this name, so this entry never wins. */
   shadowed: boolean;
@@ -98,7 +107,14 @@ export function listWorkflows(cwd: string, config: Config): WorkflowListing[] {
       const name = file.slice(0, -".js".length);
       const shadowed = winners.has(name);
       if (!shadowed) winners.add(name);
-      out.push({ name, origin: root.origin, path: join(root.dir, file), shadowed });
+      out.push({
+        name,
+        origin: root.origin,
+        provider: root.provider,
+        rootLabel: root.label,
+        path: join(root.dir, file),
+        shadowed,
+      });
     }
   }
   return out;
@@ -137,16 +153,33 @@ function resolveAsName(name: string, opts: ResolveOptions): ResolvedWorkflow {
     if (!existsSync(candidate)) continue;
     assertContained(name, root.dir, candidate);
     if (!isRegularFile(candidate)) continue; // a dir named "<name>.js": skip, don't run
-    return { scriptPath: candidate, origin: root.origin };
+    return { scriptPath: candidate, origin: root.origin, provider: root.provider, rootLabel: root.label };
   }
   throw notFound(name, roots, opts.cwd);
 }
 
-/** Project root (always `<cwd>/.odw/workflows`) then global, deduped by realpath. */
+/** Project roots then global roots, deduped by realpath. */
 function searchRoots(cwd: string, config: Config): SearchRoot[] {
   const candidates: SearchRoot[] = [
-    { dir: join(cwd, ".odw", "workflows"), origin: "project" },
-    { dir: resolveWorkflowsRoot(config.settings.workflowsRoot), origin: "global" },
+    { dir: join(cwd, ".odw", "workflows"), origin: "project", provider: "odw", label: ".odw/workflows" },
+    {
+      dir: join(cwd, ".claude", "workflows"),
+      origin: "project",
+      provider: "claude",
+      label: ".claude/workflows",
+    },
+    {
+      dir: resolveWorkflowsRoot(config.settings.workflowsRoot),
+      origin: "global",
+      provider: "odw",
+      label: config.settings.workflowsRoot ?? "~/.odw/workflows",
+    },
+    {
+      dir: resolveClaudeWorkflowsRoot(config.settings.claudeWorkflowsRoot),
+      origin: "global",
+      provider: "claude",
+      label: config.settings.claudeWorkflowsRoot ?? defaultClaudeWorkflowsLabel(),
+    },
   ];
   const seen = new Set<string>();
   const out: SearchRoot[] = [];
@@ -159,6 +192,11 @@ function searchRoots(cwd: string, config: Config): SearchRoot[] {
     out.push(root);
   }
   return out;
+}
+
+function defaultClaudeWorkflowsLabel(): string {
+  const configDir = process.env.CLAUDE_CONFIG_DIR;
+  return configDir ? `${configDir.replace(/[/\\]+$/, "")}/workflows` : "~/.claude/workflows";
 }
 
 /**
@@ -194,7 +232,7 @@ function notFound(name: string, roots: SearchRoot[], cwd: string): WorkflowScrip
     }
   }
   const lines = [`no workflow named '${name}'`, "searched:"];
-  for (const root of roots) lines.push(`  ${root.dir} (${root.origin})`);
+  for (const root of roots) lines.push(`  ${root.dir} (${root.label}, ${root.origin})`);
   const suggestions = nearest(name, [...known]);
   if (suggestions.length) lines.push(`did you mean: ${suggestions.join(", ")}?`);
   // If the user typed a name but a same-named local file exists, point them at it.

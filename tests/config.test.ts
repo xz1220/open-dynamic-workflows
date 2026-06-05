@@ -8,6 +8,7 @@ import {
   defaultConfig,
   loadConfig,
   resolveAdapter,
+  resolveClaudeWorkflowsRoot,
   resolveConcurrency,
   resolveRunsRoot,
 } from "../src/adapters/config.js";
@@ -29,12 +30,14 @@ test("loadConfig merges a user file over the built-ins (user wins)", () => {
       JSON.stringify({
         defaultAdapter: "codex",
         concurrency: 3,
+        claudeWorkflowsRoot: "/tmp/claude-workflows",
         adapters: { mine: { command: ["my", "{prompt}"] } },
       }),
     );
     const cfg = loadConfig(p);
     assert.equal(cfg.settings.defaultAdapter, "codex");
     assert.equal(cfg.settings.concurrency, 3);
+    assert.equal(cfg.settings.claudeWorkflowsRoot, "/tmp/claude-workflows");
     assert.ok(cfg.adapters.mine, "user adapter present");
     assert.ok(cfg.adapters.claude, "built-ins still present");
     assert.deepEqual(cfg.adapters.mine!.command, ["my", "{prompt}"]);
@@ -60,6 +63,20 @@ test("resolveConcurrency: explicit wins; auto is bounded to [1,16]", () => {
 test("resolveRunsRoot defaults under home, honours an explicit path", () => {
   assert.match(resolveRunsRoot(null), /\.odw[\\/]runs$/);
   assert.equal(resolveRunsRoot("/tmp/x"), "/tmp/x");
+});
+
+test("resolveClaudeWorkflowsRoot honours explicit root and CLAUDE_CONFIG_DIR", () => {
+  const old = process.env.CLAUDE_CONFIG_DIR;
+  try {
+    delete process.env.CLAUDE_CONFIG_DIR;
+    assert.match(resolveClaudeWorkflowsRoot(null), /\.claude[\\/]workflows$/);
+    assert.equal(resolveClaudeWorkflowsRoot("/tmp/claude-wf"), "/tmp/claude-wf");
+    process.env.CLAUDE_CONFIG_DIR = "/tmp/custom-claude";
+    assert.equal(resolveClaudeWorkflowsRoot(null), join("/tmp/custom-claude", "workflows"));
+  } finally {
+    if (old === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+    else process.env.CLAUDE_CONFIG_DIR = old;
+  }
 });
 
 test("a missing explicit config path throws", () => {

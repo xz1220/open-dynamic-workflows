@@ -6,9 +6,10 @@
 import { esc } from "../util";
 
 function setRow(title: string, sub: string, control: string): string {
+  const subClass = sub.startsWith("/") || sub.startsWith("~") || sub.startsWith(".") ? "path" : "d";
   return (
     `<div class="setrow"><div class="body"><h4>${title}</h4>` +
-    (sub ? `<div class="${sub.startsWith("/") || sub.startsWith("~") ? "path" : "d"}">${esc(sub)}</div>` : "") +
+    (sub ? `<div class="${subClass}">${esc(sub)}</div>` : "") +
     `</div>${control}</div>`
   );
 }
@@ -44,7 +45,7 @@ export function renderSettings(): string {
     `<div>` +
     `<div class="section-label" style="margin:0 0 6px;">Reading</div>` +
     setRow("Run directory", "~/.odw/runs · reveal in Finder", "") +
-    setRow("Workflow directories", "~/.odw/workflows · .odw/workflows", "") +
+    setRow("Workflow directories", ".odw/workflows · .claude/workflows · ~/.odw/workflows · ~/.claude/workflows", "") +
     `<div class="section-label" style="margin:22px 0 6px;">App</div>` +
     setRow("Launch at login", "keep watching runs in the background", toggle(true)) +
     setRow("Dock badge — active run count", "", toggle(true)) +
