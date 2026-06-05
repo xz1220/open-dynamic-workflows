@@ -1,7 +1,7 @@
 # ② 客户端（只读展示层）— 任务拆解
 
 > 对应 [ROADMAP](../ROADMAP.md) 的 ②：`(a) Workspace` + `(b) Jobs` +（待定）`(c) 第三维`。
-> **视觉真相（visual source of truth）**：`docs/odw-client-mockup.html`（7 屏浅色 mockup，真实 mock 数据）、`docs/odw-client.html`（画廊索引 + 导入说明）、`docs/odw-client-screens/*.png`（逐屏导出）。深色「watch」主题已存档于 `docs/odw-client-mockup-v1-full.html`，本期不做、留待后续。
+> **视觉真相（visual source of truth）**：`docs/odw-client-mockup.html`（7 屏浅色 mockup，真实 mock 数据）、`docs/odw-client.html`（画廊索引 + 导入说明）、`assets/app-screenshots/*.png`（当前 App 截图）。深色「watch」主题已存档于 `docs/odw-client-mockup-v1-full.html`，本期不做、留待后续。
 > 每个任务带：目标 / 做法 / 文件锚点 / 完成标准（DoD）。可直接分配给 agent 开工。
 
 ---
@@ -359,4 +359,4 @@ open-dynamic-workflows/
 - `web/` — ✅ vanilla TS SPA（`build.mjs` + `src/` + `index.html` + `demo-fixtures.mjs`）
 - `apps/desktop/` — ◐ Tauri 壳（`src-tauri/` + `scripts/bundle-sidecar.mjs` + `splash/` + `README.md`；未编译）
 - `.github/workflows/release.yml` — 加 `tauri build` 一步（TODO）
-- 视觉真相：`docs/odw-client-mockup.html`、`docs/odw-client.html`、`docs/odw-client-screens/*.png`
+- 视觉真相：`docs/odw-client-mockup.html`、`docs/odw-client.html`、`assets/app-screenshots/*.png`

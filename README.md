@@ -9,7 +9,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/Node-%E2%89%A520-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178C6?logo=typescript&logoColor=white)](tsconfig.json)
-[![tests](https://img.shields.io/badge/tests-94%20passing-brightgreen.svg)](tests)
+[![tests](https://img.shields.io/badge/tests-129%20passing-brightgreen.svg)](tests)
 [![runtime deps](https://img.shields.io/badge/runtime%20deps-0-blue.svg)](package.json)
 
 [English](README.md) · [简体中文](README.zh-CN.md)
@@ -31,6 +31,52 @@ it in the background, and only the final result comes back. Claude Code can
 already do this inside its own private runtime; ODW makes the **same scripts**
 portable to any agent, so the workflows the Claude Code ecosystem is already
 producing become artifacts you can run anywhere.
+
+## Recent updates
+
+ODW has moved from "runtime only" into a usable app + CLI loop. Recent versions
+focused on:
+
+- **Desktop observatory** — a read-only Tauri shell that bundles the same
+  `odw serve` dashboard, keeps runs visible from the Dock / tray, and now shuts
+  its sidecar down cleanly on quit.
+- **Live run monitoring** — Activity, Jobs, and Job detail views now show active
+  runs, per-adapter agent load, stale workers, Graph / Logs / Result tabs, and
+  quick actions to copy run IDs or open run directories.
+- **Workflow workspace** — the app reads saved workflows from `.odw/workflows`,
+  `.claude/workflows`, `~/.odw/workflows`, and `~/.claude/workflows`, then shows
+  phases, inferred structure, source, and recent runs.
+- **Runtime correctness** — scheduled agents are dispatched and counted
+  accurately, run records are bucketed for the client, and the dashboard reports
+  stalled workers honestly.
+- **Install path polish** — the binary + skill installer, zero-dependency web
+  dashboard, and sidecar bundling path are aligned so agents can install ODW and
+  immediately fan work out.
+
+## App screenshots
+
+<table>
+  <tr>
+    <td width="50%">
+      <strong>Activity</strong><br />
+      <img src="assets/app-screenshots/activity.png" alt="Activity view showing live event stream, active run counters, and per-adapter agent load" />
+    </td>
+    <td width="50%">
+      <strong>Workspace</strong><br />
+      <img src="assets/app-screenshots/workspace.png" alt="Workspace view showing saved workflows, phases, inferred workflow structure, and source" />
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
+      <strong>Jobs</strong><br />
+      <img src="assets/app-screenshots/jobs.png" alt="Jobs view showing active runs and a history table" />
+    </td>
+    <td width="50%">
+      <strong>Job detail</strong><br />
+      <img src="assets/app-screenshots/job-detail.png" alt="Job detail view showing a live workflow graph with phase columns and agent nodes" />
+    </td>
+  </tr>
+</table>
 
 ## Highlights
 
@@ -95,9 +141,8 @@ git clone https://github.com/xz1220/open-dynamic-workflows.git
 cp -r open-dynamic-workflows/skill ~/.claude/skills/open-dynamic-workflows
 ```
 
-Or, **if you already have Node ≥20**, skip the binary: `npm i -g
-open-dynamic-workflows` puts `odw` on your PATH (then still do step *b* for the
-skill).
+Or, **if you already have Node ≥20**, skip the binary: `npm i -g odw` puts `odw`
+on your PATH (then still do step *b* for the skill).
 
 > The on-disk binary is ~110 MB — almost entirely the embedded Node runtime, like
 > any Node→binary tool — but the download is gzipped to ~35 MB. The agents ODW
@@ -300,7 +345,7 @@ into the host's `node`, so each target is built on its own runner.
 
 ## Status
 
-**v1 is shipped.** The full runtime is on `main` — the adapter layer, execution
+**Core runtime is shipped.** The full runtime is on `main` — the adapter layer, execution
 bridge, workspace isolation, the async scheduler, the injected primitives, the
 loader/transform, the JSON-Schema engine, the background runtime, and the `odw`
 CLI. **129 tests pass**, and the flagship [`examples/deep-research.js`](examples/deep-research.js)
