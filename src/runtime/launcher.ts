@@ -8,12 +8,13 @@
  */
 
 import { spawn } from "node:child_process";
-import { closeSync, openSync } from "node:fs";
+import { closeSync, openSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { execPath } from "node:process";
 import { fileURLToPath } from "node:url";
 
 import { loadConfig, resolveRunsRoot } from "../adapters/config.js";
+import { loadWorkflowScript } from "../loader.js";
 import { isSeaBinary } from "../sea.js";
 import { resolveWorkflow } from "../workflows/resolve.js";
 import { RunStore, TERMINAL_STATES } from "./run-store.js";
@@ -37,6 +38,18 @@ export function startRun(
   // resolve against `source` so --source steers both literal paths and name lookup.
   const { scriptPath } = resolveWorkflow(script, { cwd: source, config });
 
+  // Read the workflow's identity (meta.name) up front so the run is bucketed by
+  // its workflow even before — and whether or not — it ever starts running. This
+  // only COMPILES the script (extracts meta + builds the body factory); it never
+  // executes the body. A malformed script leaves the name unknown (the run still
+  // gets created, then the worker records it as failed in the normal way).
+  let workflowName: string | null = null;
+  try {
+    workflowName = loadWorkflowScript(readFileSync(scriptPath, "utf8"), scriptPath).meta.name;
+  } catch {
+    workflowName = null;
+  }
+
   const root = options.runsRoot ?? resolveRunsRoot(config.settings.runsRoot);
 
   const store = new RunStore(root);
@@ -46,6 +59,7 @@ export function startRun(
     configPath: options.configPath ?? null,
     source,
     budgetTotal: options.budgetTotal ?? null,
+    workflowName,
   });
 
   // How the worker is launched depends on how *we* were launched. As a normal

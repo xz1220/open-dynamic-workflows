@@ -2,6 +2,11 @@
 
 > 对应 [ROADMAP](../ROADMAP.md) 的 ①：`(a) 运行层 Runtime` + `(b) 运行记录 Runs`。
 > 每个任务带:目标 / 做法 / 文件锚点 / 完成标准(DoD)。可直接分配给 agent 开工。
+>
+> **实现状态(2026-06-05)**:T1–T7 与 R1–R7 全部完成,测试全绿。
+> 运行层引入可替换的 `OptionRouter`(默认 `LiteralRouter`,src/router.ts);运行记录改为
+> `runs/<workflow-slug>/<runId>/` 分桶并兼容旧扁平 run;dual-compat 审计见 src/dual-compat.ts;
+> cron 配方见 [docs/recipes/cron.md](../recipes/cron.md)。
 
 ---
 
@@ -49,37 +54,37 @@ interface OptionRouter {
 
 ### 任务清单
 
-- [ ] **T1 — `AgentRequest` 透传三个 option,primitives 不再丢**
+- [x] **T1 — `AgentRequest` 透传三个 option,primitives 不再丢**
   - 做法:`AgentRequest`(bridge.ts:37-42)加 `model? / agentType? / isolation?`;`agent()`(primitives.ts:64-70)把 `opts.model/opts.agentType/opts.isolation` 塞进 request;**删掉** primitives.ts:66 的 `opts.adapter ?? opts.agentType` 错接(adapter 选择只认 `opts.adapter`)。
   - DoD:`agent("x", {model:"m", agentType:"p", isolation:"worktree"})` 后,三者都到达 bridge(单测断言 request 字段);`agentType` 不再影响 adapter 解析。
   - 依赖:无(其他任务的地基)。
 
-- [ ] **T2 — `{model}` placeholder + adapter 旗标声明 + 默认 Router**
+- [x] **T2 — `{model}` placeholder + adapter 旗标声明 + 默认 Router**
   - 做法:`PLACEHOLDERS`(placeholders.ts:11)加 `model`,保持未知 token 原样透传不变;`Adapter` 加 `flags`(types.ts:10);实现 `OptionRouter` + `LiteralRouter`,在 bridge.invoke() 用它替换 inline context 构建(bridge.ts:135-148),并把 `extraArgs` 拼到 `expandAll(adapter.command,...)` 之后。
   - DoD:adapter 声明 `flags.model=["--model"]` 时,`agent(..,{model:"m"})` 实际命令含 `--model m`;不传 model 时命令**不含** `--model`(无空值);built-in 模板保持保守(不硬塞旗标,只声明)。
   - 依赖:T1。
 
-- [ ] **T3 — `agentType` → 人格 prompt 注入(通用层)**
+- [x] **T3 — `agentType` → 人格 prompt 注入(通用层)**
   - 做法:本期只做**全平台通用的 prompt 注入层**——`composePrompt`(bridge.ts:113-117)把 persona 文本拼进 prompt(用 `request.agentType` 或经 `{role}` 通道)。**不碰**各 CLI 原生 system-prompt 旗标(那是延后的 Tier-2)。
   - DoD:`agent("task", {agentType:"code-reviewer"})` 的最终 prompt 含该 persona 的指令文本(单测);任何 CLI 上都生效(因为只动 prompt)。
   - 依赖:T1。
 
-- [ ] **T4 — `isolation:'worktree'` → copy 隔离 + LOG**
+- [x] **T4 — `isolation:'worktree'` → copy 隔离 + LOG**
   - 做法:Router 把 `isolation:'worktree'` 映射到现有的隔离 workspace 模式(copy 已隔离,workspace.ts);并按 T5 发 `LOG` 说明"worktree 语义已由 copy 隔离满足"。真 git-worktree 延后。
   - DoD:并行写文件的 agent 互不污染(已由 copy 保证);run 日志里出现该 LOG;不报错、不静默。
   - 依赖:T2、T5。
 
-- [ ] **T5 — "无原语沉默丢弃"不变量**
+- [x] **T5 — "无原语沉默丢弃"不变量**
   - 做法:Router 发现 option 被 set 但路由不到(model 无声明载体 / isolation 非原生 / 未来任何接受但未兑现的 opt)时,发一条可观测 `LOG`(进 `odw logs` + dashboard),写明"已接受但未原生兑现 + 实际采用了什么"。
   - DoD:每个"被接受却未兑现"的 opt 都产生可见 LOG(单测覆盖三种:model 无载体、isolation worktree、agentType 在无原生旗标的 CLI);**没有任何 opt 被无声吞掉**。
   - 依赖:T2。
 
-- [ ] **T6 — `budget` 的 `spent>=total` 硬钩子(空跑就位)**
+- [x] **T6 — `budget` 的 `spent>=total` 硬钩子(空跑就位)**
   - 做法:在 scheduler 的 1000-agent 兜底之前(scheduler.ts:52)插 `if (budget.total!=null && spent()>=total) throw <fatal BudgetExhausted>`,走和 `AgentLimitExceeded` 同样的 fatal 路径。`spent()` **仍保持桩(恒 0)**,故现在恒不触发、零行为变化。
   - DoD:用非桩 budget mock 的单测能证明钩子在 `spent>=total` 时抛 fatal 并中止 run;真实跑(spent=0)行为不变。目的=门控未来 `workflow()` 嵌套。
   - 依赖:无(独立)。
 
-- [ ] **T7 — dual-compat 静态审计 + CI**
+- [x] **T7 — dual-compat 静态审计 + CI**
   - 做法:**新建**一个审计工具(仓库现在没有),机械校验每个工作流的 `meta` 是**真·纯字面量**。Oracle:`meta` 那段 `eval` 出的值,必须 `deepEqual` 同一 span 的 `JSON.parse` 结果(JSON.parse 只认纯数据,计算式会失败/不等)。放 `tests/fixtures/dual-compat/`(known-good / known-bad 各若干),接入 CI。**注意**:odw 的 loader 故意宽松(loader.ts:120),**不改 loader**;审计是测试,不是用户命令、也不是运行时拦截。
   - DoD:8 个 example 全部通过审计;known-bad fixture 全被判失败;CI 拦截不合规的 meta。守的是"方言可反向移植回 Claude Code"这条护城河。
   - 依赖:无(独立)。
@@ -155,37 +160,37 @@ interface OptionRouter {
 
 ### 任务清单
 
-- [ ] **R1 — 创建时写入 workflow 身份 + 目录分桶**
+- [x] **R1 — 创建时写入 workflow 身份 + 目录分桶**
   - 做法:`CreateRunInput`(run-store.ts:45)加 `workflowName`;`cmdRun`(cli.ts:147)在 launch 前用 `loadWorkflowScript(source).meta`(**只编译不执行**)取 `meta.name`,传入 create;`create()`(run-store.ts:58)把 run 落到 `runs/<slug(meta.name)>/<runId>/`,真实 `workflowName` 写进 meta.json。worker.ts:74 现有运行中写 name 可保留(冗余无害)。
   - DoD:新 run 落在 `runs/<name>/<runId>/`;meta.json 含 `workflowName`;一个 pending 的 run 也已知归属。
   - 依赖:无(B 段地基)。
 
-- [ ] **R2 — `listRuns` 两层遍历 + 兼容旧扁平 run**
+- [x] **R2 — `listRuns` 两层遍历 + 兼容旧扁平 run**
   - 做法:`listRuns`(run-store.ts:155)改为"找含 meta.json 的目录,最多下探两层",bucket = 其父目录名;返回项带 `{runId, workflowName}`,按 runId(时间戳前缀)倒序。
   - DoD:新旧两种结构都被列出;时间倒序;旧扁平 run 不报错。
   - 依赖:R1。
 
-- [ ] **R3 — 按 workflow 反查(不全表扫描)**
+- [x] **R3 — 按 workflow 反查(不全表扫描)**
   - 做法:`odw list --workflow <name>` 直接读 `runs/<slug(name)>/`;`odw logs --workflow <name>`(cmdLogs:223)读该桶最近一条 run 的 worker.log;`odw list`(cmdList:254)默认输出保留 name 列(cli.ts:268)。
   - DoD:两条命令只读对应桶、不扫全部 run;`odw list` 全量走 R2。
   - 依赖:R1、R2。
 
-- [ ] **R4 — `stem == meta.name` 的 lint**
+- [x] **R4 — `stem == meta.name` 的 lint**
   - 做法:加一个校验(可并进 §a 的 **T7** 审计,或独立):工作流文件名 stem 必须 == 其 `meta.name`,不等则告警/失败。
   - DoD:8 个 example 通过;构造一个 stem≠meta.name 的 fixture 被判失败。
   - 依赖:无。
 
-- [ ] **R5 — `--wait` 终态退出码保证**
+- [x] **R5 — `--wait` 终态退出码保证**
   - 做法:`odw run --wait` 对 `failed`/`stopped` 终态返回非零(复用 reportTerminal,cli.ts:439-451);非 `--wait` 仍在 spawn 即返回 0(fire-and-forget,正确,**不改**,cli.ts:196)。
   - DoD:`--wait` 跑失败/停止的 run 返回非零(测试覆盖),成功返回 0。**这是一切自动化(含 cron)的前提。**
   - 依赖:无。
 
-- [ ] **R6 —(可选)cron 配方文档**
+- [x] **R6 —(可选)cron 配方文档**
   - 做法:一份 doc + shell 模板:`0 8 * * * flock -n /tmp/odw-digest.lock odw run digest --wait`(`--wait` 拿退出码、`flock` 防重叠)。**无调度代码、无 daemon、无新模块。**
   - DoD:macOS/Linux 照配方能定时跑命名 workflow,成功 exit 0 / 失败 exit 非零,且 ODW 未加任何调度代码。
   - 依赖:R5。
 
-- [ ] **R7 —(可选,低优先)`odw rerun <runId>`**
+- [x] **R7 —(可选,低优先)`odw rerun <runId>`**
   - 做法:读该 run 的 meta.json(script/args/config/source/budget),原样再发一次(= 新 run)。
   - DoD:`odw rerun <id>` 产生一个 args 相同的新 run。
   - 依赖:R1。

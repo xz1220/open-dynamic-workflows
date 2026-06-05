@@ -15,6 +15,7 @@ export const PLACEHOLDERS = [
   "source",
   "adapter",
   "role",
+  "model",
 ] as const;
 
 export type PlaceholderName = (typeof PLACEHOLDERS)[number];

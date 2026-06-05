@@ -55,7 +55,7 @@ class SummaryCache {
   private readonly entries = new Map<string, { sig: string; value: RunSummary }>();
 
   list(store: RunStore): RunSummary[] {
-    const live = new Set(store.listRuns());
+    const live = new Set(store.listRuns().map((r) => r.runId));
     const out: RunSummary[] = [];
     for (const runId of live) {
       if (!store.exists(runId)) continue; // deleted between listRuns() and now

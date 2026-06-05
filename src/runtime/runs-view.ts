@@ -272,7 +272,7 @@ export function detail(store: RunStore, runId: string): RunDetail {
 export function listSummaries(store: RunStore): RunSummary[] {
   return store
     .listRuns()
-    .map((runId) => summarize(store, runId))
+    .map((ref) => summarize(store, ref.runId))
     .sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0));
 }
 

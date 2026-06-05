@@ -5,7 +5,7 @@ import { defaultConfig } from "../src/adapters/config.js";
 import type { Bridge } from "../src/bridge.js";
 import type { RunContext } from "../src/context.js";
 import { NullControl } from "../src/control.js";
-import { AGENT_FINISHED, MemorySink } from "../src/events.js";
+import { AGENT_FINISHED, LOG, MemorySink } from "../src/events.js";
 import { createPrimitives } from "../src/primitives.js";
 import { Scheduler } from "../src/scheduler.js";
 
@@ -99,4 +99,36 @@ test("nested fan-out (pipeline stage spawning parallel) does not deadlock", asyn
     p.parallel((group as string[]).map((g) => () => p.agent(g))),
   );
   assert.deepEqual(out, [["a", "b"], ["c"]]);
+});
+
+test("T1: agent forwards model/agentType/isolation and never treats agentType as an adapter", async () => {
+  let captured: Record<string, unknown> = {};
+  const { ctx } = fakeContext(async (req) => {
+    captured = req as Record<string, unknown>;
+    return outcome("r");
+  });
+  const p = createPrimitives(ctx);
+  await p.agent("hi", { model: "m", agentType: "persona", isolation: "worktree" });
+  assert.equal(captured.model, "m");
+  assert.equal(captured.agentType, "persona");
+  assert.equal(captured.isolation, "worktree");
+  // The mis-mapping is gone: agentType must NOT leak into adapter selection.
+  assert.equal(captured.adapter, undefined);
+});
+
+test("T5: routing notes on the outcome are emitted as LOG events", async () => {
+  const { ctx, sink } = fakeContext(async () => ({
+    value: "v",
+    text: "v",
+    adapter: "claude",
+    attempts: 1,
+    diff: "",
+    cli: null,
+    notes: ["note-A", "note-B"],
+  }));
+  const p = createPrimitives(ctx);
+  await p.agent("hi");
+  const messages = sink.ofType(LOG).map((e) => e.message);
+  assert.ok(messages.includes("note-A"));
+  assert.ok(messages.includes("note-B"));
 });

@@ -12,6 +12,7 @@ import { resolveConcurrency } from "./adapters/config.js";
 import type { Config } from "./adapters/types.js";
 import { Bridge } from "./bridge.js";
 import { NullControl, type Control } from "./control.js";
+import { BudgetExhausted } from "./errors.js";
 import { NullSink, type EventSink, type WorkflowEvent } from "./events.js";
 import { Scheduler } from "./scheduler.js";
 
@@ -41,10 +42,21 @@ export function buildContext(config: Config, options: BuildContextOptions = {}):
   const sink = options.sink ?? new NullSink();
   const control = options.control ?? new NullControl();
   const bridge = new Bridge(config, { source: options.source });
+  const budgetTotal = options.budgetTotal ?? null;
+  // spent() is a v1 stub (0), so this guard never fires today; it is the seam
+  // that real token accounting (and nested workflow() cost control) will read.
+  const spent = (): number => 0;
   const scheduler = new Scheduler({
     concurrency: resolveConcurrency(config.settings.concurrency),
     maxAgents: config.settings.maxAgents,
     checkpoint: () => control.checkpoint(),
+    budgetGuard: () => {
+      if (budgetTotal !== null && spent() >= budgetTotal) {
+        throw new BudgetExhausted(
+          `run reached its budget ceiling of ${budgetTotal} (spent ${spent()})`,
+        );
+      }
+    },
   });
   return {
     config,
@@ -53,7 +65,7 @@ export function buildContext(config: Config, options: BuildContextOptions = {}):
     control,
     sink,
     args: options.args ?? null,
-    budgetTotal: options.budgetTotal ?? null,
+    budgetTotal,
     currentPhase: null,
     emit(ev: WorkflowEvent): void {
       sink.emit(ev);

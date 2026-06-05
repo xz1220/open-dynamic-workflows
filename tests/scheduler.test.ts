@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import { Scheduler } from "../src/scheduler.js";
-import { AgentLimitExceeded, RunStopped } from "../src/errors.js";
+import { AgentLimitExceeded, BudgetExhausted, RunStopped } from "../src/errors.js";
 
 const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
@@ -67,4 +67,50 @@ test("the checkpoint runs before each dispatch", async () => {
   });
   await Promise.all([s.runAgent(async () => 1), s.runAgent(async () => 1)]);
   assert.equal(calls, 2);
+});
+
+test("T6: a budgetGuard that throws aborts dispatch with a fatal error", async () => {
+  const s = new Scheduler({
+    concurrency: 2,
+    maxAgents: 1000,
+    budgetGuard: () => {
+      // a non-stub `spent() >= total` would throw exactly like this
+      throw new BudgetExhausted("over budget");
+    },
+  });
+  await assert.rejects(() => s.runAgent(async () => "x"), BudgetExhausted);
+  assert.equal(s.dispatched, 0, "a spent-out run dispatches nothing");
+  // and it is fatal, so it re-throws through gather (aborts the batch) — the
+  // thunks must go through runAgent, where the guard lives.
+  await assert.rejects(
+    () => s.gather([() => s.runAgent(async () => "a"), () => s.runAgent(async () => "b")]),
+    BudgetExhausted,
+  );
+});
+
+test("T6: the budget guard runs before the runaway backstop", async () => {
+  // maxAgents would also reject, but the budget guard must win and abort first.
+  const s = new Scheduler({
+    concurrency: 1,
+    maxAgents: 0,
+    budgetGuard: () => {
+      throw new BudgetExhausted("over budget");
+    },
+  });
+  await assert.rejects(() => s.runAgent(async () => 1), BudgetExhausted);
+});
+
+test("T6: a non-throwing budget guard (v1 stub spent=0) leaves dispatch unchanged", async () => {
+  let calls = 0;
+  const s = new Scheduler({
+    concurrency: 2,
+    maxAgents: 1000,
+    budgetGuard: () => {
+      calls++; // spent() === 0 < total → never throws
+    },
+  });
+  const r = await s.runAgent(async () => 42);
+  assert.equal(r, 42);
+  assert.equal(calls, 1);
+  assert.equal(s.dispatched, 1);
 });

@@ -37,6 +37,14 @@ export class SchemaValidationError extends DynamicWorkflowError {}
 /** The run-wide cap on total agent dispatches was hit (a runaway guard). */
 export class AgentLimitExceeded extends DynamicWorkflowError {}
 
+/**
+ * The run's token budget (`budget.total`) was reached. A hard ceiling, not
+ * advisory: once `spent() >= total` no further agent may dispatch. In v1
+ * `spent()` is a stub (0), so this never fires; it is the gate that future
+ * nested `workflow()` cost control hangs on.
+ */
+export class BudgetExhausted extends DynamicWorkflowError {}
+
 /** A stop was requested; the run unwinds at the next safe point. */
 export class RunStopped extends DynamicWorkflowError {}
 
@@ -48,7 +56,11 @@ export class WorkflowScriptError extends DynamicWorkflowError {}
  * a `null` result slot. Everything else is a recoverable per-item failure.
  */
 export function isFatalError(error: unknown): boolean {
-  return error instanceof AgentLimitExceeded || error instanceof RunStopped;
+  return (
+    error instanceof AgentLimitExceeded ||
+    error instanceof RunStopped ||
+    error instanceof BudgetExhausted
+  );
 }
 
 /** Uniform placeholder for layers still being built out, milestone by milestone. */

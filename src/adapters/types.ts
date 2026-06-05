@@ -6,6 +6,18 @@
  * loaded once at run start and then only read.
  */
 
+/**
+ * Which per-call options this CLI can carry, and the argv flag that carries
+ * each. An option absent here is one this adapter does NOT support natively, so
+ * the router routes it elsewhere (e.g. prompt injection) or logs that it could
+ * not be honoured — it is never silently dropped. Declaring support is one line
+ * of config; no code change adds a CLI's model flag.
+ */
+export interface AdapterFlags {
+  /** The flag(s) that select a model, e.g. `["--model"]` or `["-m"]`. */
+  model?: string[];
+}
+
 /** How to invoke one coding-agent CLI. */
 export interface Adapter {
   name: string;
@@ -19,6 +31,8 @@ export interface Adapter {
   timeout?: number;
   /** Human-friendly label for progress display. */
   label?: string;
+  /** Capability declaration: which per-call options this CLI carries natively. */
+  flags?: AdapterFlags;
 }
 
 /** Run-wide knobs independent of any single adapter. */

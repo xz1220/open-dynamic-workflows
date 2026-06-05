@@ -5,14 +5,21 @@
  * CLI reads from it. They never talk directly, which lets a run outlive the
  * command that started it and be observed from anywhere.
  *
- * Layout of `<runsRoot>/<runId>/`:
- *   meta.json      immutable run description (script, args, source, config)
- *   status.json    mutable state (running/paused/done/failed/stopped, counters)
- *   events.jsonl   append-only progress stream
- *   result.json    final return value (on success)
- *   error.json     message + stack (on failure)
- *   control.json   pause/resume/stop request written by the CLI
- *   worker.log     the worker process's stdout/stderr
+ * Runs are bucketed by workflow so a run's owner is visible from its path and a
+ * workflow's runs can be listed without scanning every run:
+ *
+ *   <runsRoot>/<workflow-slug>/<runId>/
+ *     meta.json      immutable run description (script, args, source, config, workflowName)
+ *     status.json    mutable state (running/paused/done/failed/stopped, counters)
+ *     events.jsonl   append-only progress stream
+ *     result.json    final return value (on success)
+ *     error.json     message + stack (on failure)
+ *     control.json   pause/resume/stop request written by the CLI
+ *     worker.log     the worker process's stdout/stderr
+ *
+ * A `runId` is globally unique, so it stays the public handle: `runDir(runId)`
+ * locates a run across buckets (and still finds pre-bucket flat runs under
+ * `<runsRoot>/<runId>/`, so old run directories keep working).
  *
  * All JSON writes are atomic (temp file + rename) so a concurrent reader never
  * sees a half-written file.
@@ -27,7 +34,7 @@ import {
   renameSync,
   writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 
 import type { EventSink, WorkflowEvent } from "../events.js";
 
@@ -48,17 +55,30 @@ export interface CreateRunInput {
   configPath?: string | null;
   source: string;
   budgetTotal?: number | null;
+  /** The workflow's identity (meta.name). Drives the run's bucket; recorded in meta. */
+  workflowName?: string | null;
+}
+
+/** A run plus the workflow it belongs to, returned by listing. */
+export interface RunRef {
+  runId: string;
+  workflowName: string | null;
 }
 
 export class RunStore {
+  /** runId → its directory, primed on create/list so reads avoid a bucket scan. */
+  private readonly dirCache = new Map<string, string>();
+
   constructor(readonly root: string) {}
 
   // --- creation & paths ------------------------------------------------------
 
   create(input: CreateRunInput): string {
     const runId = newRunId();
-    const dir = this.runDir(runId);
+    const bucket = bucketFor(input.workflowName, input.script);
+    const dir = join(this.root, bucket, runId);
     mkdirSync(dir, { recursive: true });
+    this.dirCache.set(runId, dir);
     writeJson(join(dir, META), {
       runId,
       script: input.script,
@@ -66,14 +86,37 @@ export class RunStore {
       configPath: input.configPath ?? null,
       source: input.source,
       budgetTotal: input.budgetTotal ?? null,
+      workflowName: input.workflowName ?? null,
       createdAt: now(),
     });
     writeJson(join(dir, STATUS), { runId, state: "pending", dispatched: 0, updatedAt: now() });
     return runId;
   }
 
+  /** Locate a run's directory by id, across buckets (and legacy flat layout). */
   runDir(runId: string): string {
-    return join(this.root, runId);
+    const cached = this.dirCache.get(runId);
+    if (cached) return cached;
+    // Legacy flat layout: <root>/<runId>/.
+    const flat = join(this.root, runId);
+    if (existsSync(join(flat, META))) {
+      this.dirCache.set(runId, flat);
+      return flat;
+    }
+    // Bucketed layout: <root>/<bucket>/<runId>/.
+    if (existsSync(this.root)) {
+      for (const entry of readdirSync(this.root, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        const candidate = join(this.root, entry.name, runId);
+        if (existsSync(join(candidate, META))) {
+          this.dirCache.set(runId, candidate);
+          return candidate;
+        }
+      }
+    }
+    // Not found: the flat path, so existsSync(.../meta.json) stays false and the
+    // caller's "no such run" handling is unchanged.
+    return flat;
   }
   exists(runId: string): boolean {
     return existsSync(join(this.runDir(runId), META));
@@ -152,12 +195,61 @@ export class RunStore {
 
   // --- listing ---------------------------------------------------------------
 
-  listRuns(): string[] {
+  /**
+   * Every known run, newest first. Walks at most two levels so it lists both the
+   * bucketed layout (`<bucket>/<runId>/`) and any legacy flat run
+   * (`<runId>/`) — a `meta.json` at level 1 marks a flat run, at level 2 a
+   * bucketed one. Runs are sorted by runId descending (the id's timestamp prefix
+   * makes that reverse-chronological).
+   */
+  listRuns(): RunRef[] {
     if (!existsSync(this.root)) return [];
-    return readdirSync(this.root, { withFileTypes: true })
-      .filter((e) => e.isDirectory() && existsSync(join(this.root, e.name, META)))
-      .map((e) => e.name)
-      .sort();
+    const out: RunRef[] = [];
+    for (const entry of readdirSync(this.root, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const lvl1 = join(this.root, entry.name);
+      if (existsSync(join(lvl1, META))) {
+        // Legacy flat run: the directory name is the runId.
+        this.dirCache.set(entry.name, lvl1);
+        out.push({ runId: entry.name, workflowName: readWorkflowName(lvl1) });
+        continue;
+      }
+      // A bucket: descend exactly one level.
+      let subEntries;
+      try {
+        subEntries = readdirSync(lvl1, { withFileTypes: true });
+      } catch {
+        continue;
+      }
+      for (const sub of subEntries) {
+        if (!sub.isDirectory()) continue;
+        const dir = join(lvl1, sub.name);
+        if (!existsSync(join(dir, META))) continue;
+        this.dirCache.set(sub.name, dir);
+        out.push({ runId: sub.name, workflowName: readWorkflowName(dir) ?? entry.name });
+      }
+    }
+    out.sort(byRunIdDesc);
+    return out;
+  }
+
+  /**
+   * Runs for one workflow, newest first. Reads only that workflow's bucket — no
+   * full-tree scan — so it stays cheap as the runs root grows.
+   */
+  listRunsForWorkflow(name: string): RunRef[] {
+    const dir = join(this.root, slugify(name));
+    if (!existsSync(dir)) return [];
+    const out: RunRef[] = [];
+    for (const sub of readdirSync(dir, { withFileTypes: true })) {
+      if (!sub.isDirectory()) continue;
+      const runDir = join(dir, sub.name);
+      if (!existsSync(join(runDir, META))) continue;
+      this.dirCache.set(sub.name, runDir);
+      out.push({ runId: sub.name, workflowName: readWorkflowName(runDir) ?? name });
+    }
+    out.sort(byRunIdDesc);
+    return out;
   }
 }
 
@@ -170,6 +262,38 @@ export class JsonlSink implements EventSink {
 }
 
 // --- module helpers ----------------------------------------------------------
+
+/** Newest-first comparator on runId (its timestamp prefix orders chronologically). */
+function byRunIdDesc(a: RunRef, b: RunRef): number {
+  return a.runId < b.runId ? 1 : a.runId > b.runId ? -1 : 0;
+}
+
+/** The bucket a run lands in: its workflow name (else the script's stem), slugified. */
+function bucketFor(workflowName: string | null | undefined, script: string): string {
+  const name = workflowName && workflowName.trim() ? workflowName : stemOf(script);
+  return slugify(name);
+}
+
+/** Filename stem of a script path (basename without its extension). */
+function stemOf(script: string): string {
+  return basename(script).replace(/\.[^.]*$/, "");
+}
+
+/**
+ * A filesystem-safe bucket name. meta.name may contain spaces or slashes, so
+ * anything outside `[A-Za-z0-9._-]` collapses to a dash; the true name is kept
+ * in meta.json. Empty or all-punctuation names fall back to a fixed bucket.
+ */
+function slugify(name: string): string {
+  const s = name.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^[-.]+|[-.]+$/g, "");
+  return s.length ? s : "_workflow";
+}
+
+/** The recorded workflowName from a run directory's meta.json, or null. */
+function readWorkflowName(dir: string): string | null {
+  const meta = readJson(join(dir, META));
+  return meta && typeof meta.workflowName === "string" ? meta.workflowName : null;
+}
 
 function now(): number {
   return Date.now() / 1000;

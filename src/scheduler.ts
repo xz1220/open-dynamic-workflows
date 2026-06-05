@@ -23,12 +23,21 @@ export interface SchedulerOptions {
   maxAgents: number;
   /** The pause/stop safe point, run right before each dispatch. */
   checkpoint?: () => void | Promise<void>;
+  /**
+   * The budget ceiling, run right before the runaway backstop on each dispatch.
+   * Throw a fatal error (e.g. {@link BudgetExhausted}) to abort the run when the
+   * token budget is spent. The default is a no-op; in v1 the budget is a stub so
+   * nothing throws, but the seam is here so cost control can land without moving
+   * the dispatch path.
+   */
+  budgetGuard?: () => void;
 }
 
 export class Scheduler {
   private readonly concurrency: number;
   private readonly maxAgents: number;
   private readonly checkpoint: () => void | Promise<void>;
+  private readonly budgetGuard: () => void;
   private dispatchedCount = 0;
   private active = 0;
   private readonly waiters: Array<() => void> = [];
@@ -37,6 +46,7 @@ export class Scheduler {
     this.concurrency = Math.max(1, options.concurrency);
     this.maxAgents = options.maxAgents;
     this.checkpoint = options.checkpoint ?? (() => {});
+    this.budgetGuard = options.budgetGuard ?? (() => {});
   }
 
   /** How many agents have been dispatched so far in this run. */
@@ -47,6 +57,9 @@ export class Scheduler {
   /** Run one agent unit under the concurrency cap and total backstop. */
   async runAgent<T>(fn: () => Promise<T>): Promise<T> {
     await this.checkpoint();
+    // Budget ceiling first: a spent-out run must not dispatch, even if it is
+    // still under the runaway cap. Fatal, so it unwinds the whole run.
+    this.budgetGuard();
     // Reserve the budget synchronously right after the checkpoint: the
     // read-and-increment has no await between, so it is atomic on the loop.
     if (this.dispatchedCount >= this.maxAgents) {

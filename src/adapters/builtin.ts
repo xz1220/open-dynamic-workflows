@@ -10,7 +10,7 @@
  * explains how to tune them rather than baking opinions in here.
  */
 
-import type { Settings } from "./types.js";
+import type { AdapterFlags, Settings } from "./types.js";
 
 /** A built-in adapter spec — same shape as a config entry, minus its name. */
 export interface RawAdapter {
@@ -19,8 +19,14 @@ export interface RawAdapter {
   env?: Record<string, string>;
   timeout?: number;
   label?: string;
+  flags?: AdapterFlags;
 }
 
+// `flags` only DECLARES which native flag carries a model — the router appends
+// it (with a value) when a call sets `model`, and otherwise leaves the command
+// untouched. Templates stay conservative: no `{model}` baked in, no value forced.
+// Model ids do not cross CLIs (e.g. `claude-opus-4-8` is invalid to codex), so a
+// model is honoured per-CLI, not normalised across them.
 export const BUILTIN_ADAPTERS: Record<string, RawAdapter> = {
   codex: {
     label: "Codex CLI",
@@ -35,21 +41,27 @@ export const BUILTIN_ADAPTERS: Record<string, RawAdapter> = {
       "-",
     ],
     stdin: "{prompt}",
+    flags: { model: ["--model"] },
   },
   claude: {
     label: "Claude Code",
     command: ["claude", "--print", "--permission-mode", "acceptEdits", "--no-session-persistence"],
     stdin: "{prompt}",
+    flags: { model: ["--model"] },
   },
   gemini: {
     label: "Gemini CLI",
     command: ["gemini", "--approval-mode", "auto_edit", "{prompt}"],
+    flags: { model: ["--model"] },
   },
   qwen: {
     label: "Qwen Code",
     command: ["qwen", "--approval-mode", "auto-edit", "--output-format", "text", "{prompt}"],
+    flags: { model: ["--model"] },
   },
   kimi: {
+    // kimi's `--model` expects an alias pre-declared in its config.toml, so the
+    // value is forwarded syntactically but may need that alias to resolve.
     label: "Kimi CLI",
     command: [
       "kimi",
@@ -62,6 +74,7 @@ export const BUILTIN_ADAPTERS: Record<string, RawAdapter> = {
       "text",
     ],
     stdin: "{prompt}",
+    flags: { model: ["--model"] },
   },
 };
 

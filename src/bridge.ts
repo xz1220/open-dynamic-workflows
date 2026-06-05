@@ -26,8 +26,9 @@ import {
   type Config,
 } from "./adapters/types.js";
 import { AdapterExecutionError, SchemaValidationError } from "./errors.js";
+import { LiteralRouter, type InvocationPlan, type OptionRouter } from "./router.js";
 import { describeSchema, extractJson, validate, type JsonSchema } from "./schema.js";
-import { withWorkspace, type WorkspaceMode } from "./workspace.js";
+import { withWorkspace } from "./workspace.js";
 
 export const INDEPENDENCE_PREAMBLE =
   "You are one agent in an automated multi-agent workflow. Work independently " +
@@ -39,6 +40,20 @@ export interface AgentRequest {
   adapter?: string;
   schema?: JsonSchema;
   label?: string;
+  /** Select a model; routed to the adapter's declared model flag (or noted). */
+  model?: string;
+  /** Persona to take on; injected into the prompt (universal, every CLI). */
+  agentType?: string;
+  /** `"worktree"` requests isolation; satisfied by a copy-isolated workspace. */
+  isolation?: "worktree";
+}
+
+/** The persona framing injected for `agentType`, on top of the independence preamble. */
+export function personaPreamble(agentType: string): string {
+  return (
+    `Take on the role of the "${agentType}" agent for this task. Bring the ` +
+    `expertise, priorities, and conventions that role implies to the work below.`
+  );
 }
 
 export interface AgentOutcome {
@@ -53,16 +68,25 @@ export interface AgentOutcome {
   /** Workspace diff (empty for inplace mode / no changes). */
   diff: string;
   cli: CliResult | null;
+  /**
+   * Notes from option routing: options accepted but not honoured natively, and
+   * what was done instead. The caller surfaces these as LOG events so no option
+   * is dropped silently. Empty when every set option mapped cleanly.
+   */
+  notes: string[];
 }
 
 export interface BridgeOptions {
   source?: string;
   runner?: CommandRunner;
+  /** How `agent` options map to a CLI invocation; defaults to {@link LiteralRouter}. */
+  router?: OptionRouter;
 }
 
 export class Bridge {
   private readonly source: string;
   private readonly runner: CommandRunner;
+  private readonly router: OptionRouter;
 
   constructor(
     private readonly config: Config,
@@ -70,24 +94,28 @@ export class Bridge {
   ) {
     this.source = options.source ?? process.cwd();
     this.runner = options.runner ?? runCommand;
+    this.router = options.router ?? new LiteralRouter();
   }
 
   async run(request: AgentRequest): Promise<AgentOutcome> {
     const adapter = resolveAdapter(this.config, request.adapter);
     const settings = this.config.settings;
     const timeout = adapter.timeout ?? settings.timeout ?? undefined;
+    // Plan the invocation once: workspace mode, the model token/flag, and the
+    // routing notes do not change across schema retries — only the prompt does.
+    const plan = this.router.plan({ request, adapter, settings });
     const basePrompt = this.composePrompt(request);
     const maxAttempts = request.schema ? settings.schemaRetries + 1 : 1;
 
     let problems: string[] = [];
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       const prompt = problems.length ? `${basePrompt}\n\n${retryFeedback(problems)}` : basePrompt;
-      const { cli, diff } = await this.invoke(adapter, prompt, timeout, settings.workspaceMode);
+      const { cli, diff } = await this.invoke(adapter, plan, prompt, timeout);
       if (!cliOk(cli)) throw new AdapterExecutionError(cliFailureMessage(adapter, cli));
 
       const text = cli.stdout.trim();
       if (!request.schema) {
-        return { value: text, text, adapter: adapter.name, attempts: attempt, diff, cli };
+        return { value: text, text, adapter: adapter.name, attempts: attempt, diff, cli, notes: plan.notes };
       }
 
       const value = extractJson(text);
@@ -98,7 +126,7 @@ export class Bridge {
           ? ["no JSON value found in the reply"]
           : validate(value, request.schema);
       if (problems.length === 0) {
-        return { value, text, adapter: adapter.name, attempts: attempt, diff, cli };
+        return { value, text, adapter: adapter.name, attempts: attempt, diff, cli, notes: plan.notes };
       }
     }
 
@@ -111,18 +139,22 @@ export class Bridge {
   // --- internals -------------------------------------------------------------
 
   private composePrompt(request: AgentRequest): string {
-    const parts = [INDEPENDENCE_PREAMBLE, request.prompt];
+    const parts = [INDEPENDENCE_PREAMBLE];
+    // Persona (agentType) is universal prompt text — it works on every CLI,
+    // which native system-prompt flags do not. See LiteralRouter.noteAgentType.
+    if (request.agentType) parts.push(personaPreamble(request.agentType));
+    parts.push(request.prompt);
     if (request.schema) parts.push(describeSchema(request.schema));
     return parts.join("\n\n");
   }
 
   private async invoke(
     adapter: Adapter,
+    plan: InvocationPlan,
     prompt: string,
     timeout: number | undefined,
-    mode: WorkspaceMode,
   ): Promise<{ cli: CliResult; diff: string }> {
-    return withWorkspace(this.source, mode, async (ws) => {
+    return withWorkspace(this.source, plan.workspaceMode, async (ws) => {
       let promptFile = "";
       let cleanup: (() => Promise<void>) | undefined;
       if (usesPromptFile(adapter)) {
@@ -139,8 +171,10 @@ export class Bridge {
           source: ws.source,
           adapter: adapter.name,
           role: adapterDisplayName(adapter),
+          // Option-derived tokens (the model token this phase) win over the base.
+          ...plan.context,
         };
-        const command = expandAll(adapter.command, context);
+        const command = [...expandAll(adapter.command, context), ...plan.extraArgs];
         const stdin = adapter.stdin ? expand(adapter.stdin, context) : undefined;
         const env = adapter.env
           ? ({ ...process.env, ...adapter.env } as Record<string, string>)

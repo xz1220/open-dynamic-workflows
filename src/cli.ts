@@ -33,6 +33,7 @@ import { listWorkflows, resolveWorkflow } from "./workflows/resolve.js";
 
 export const COMMANDS = [
   "run",
+  "rerun",
   "list",
   "status",
   "logs",
@@ -59,10 +60,11 @@ export function helpText(): string {
     "",
     "Usage:",
     "  odw run <script.js|name> [--args JSON|@file] [--wait]  start a workflow (background)",
+    "  odw rerun <run_id>                                 start a fresh run with the same inputs",
     "  odw status <run_id>                                show a run's current state",
-    "  odw logs <run_id> [--follow]                       print a run's progress events",
+    "  odw logs <run_id|--workflow name> [--follow]       print a run's progress events",
     "  odw result <run_id>                                print a finished run's result",
-    "  odw list                                           list known runs",
+    "  odw list [--workflow <name>]                       list known runs",
     "  odw serve [--port N] [--host H] [--open]           open the live dashboard in a browser",
     "  odw workflows list [--project|--global|--all]      list workflows runnable by name",
     "  odw workflows where <name>                         show the file a name resolves to",
@@ -103,6 +105,8 @@ export async function main(argv: string[]): Promise<number> {
         return await cmdWorker(rest);
       case "run":
         return await cmdRun(rest);
+      case "rerun":
+        return cmdRerun(rest);
       case "status":
         return cmdStatus(rest);
       case "result":
@@ -228,14 +232,25 @@ async function cmdLogs(rest: string[]): Promise<number> {
       config: { type: "string" },
       "runs-root": { type: "string" },
       follow: { type: "boolean" },
+      workflow: { type: "string" },
     },
   });
-  const runId = positionals[0];
+  const store = storeFrom(values);
+  let runId = positionals[0];
+  // --workflow with no explicit id targets that workflow's most recent run,
+  // reading only its bucket (no full scan).
+  if (!runId && values.workflow) {
+    const refs = store.listRunsForWorkflow(values.workflow);
+    if (refs.length === 0) {
+      process.stderr.write(`no runs found for workflow '${values.workflow}'\n`);
+      return 1;
+    }
+    runId = refs[0]!.runId;
+  }
   if (!runId) {
-    process.stderr.write("missing <run_id>\n");
+    process.stderr.write("missing <run_id> (or --workflow <name>)\n");
     return 2;
   }
-  const store = storeFrom(values);
   if (!store.exists(runId)) {
     process.stderr.write(`no such run: ${runId}\n`);
     return 1;
@@ -255,18 +270,60 @@ function cmdList(rest: string[]): number {
   const { values } = parseArgs({
     args: rest,
     allowPositionals: true,
-    options: { config: { type: "string" }, "runs-root": { type: "string" } },
+    options: {
+      config: { type: "string" },
+      "runs-root": { type: "string" },
+      workflow: { type: "string" },
+    },
   });
   const store = storeFrom(values);
-  const runs = store.listRuns();
+  const runs = values.workflow ? store.listRunsForWorkflow(values.workflow) : store.listRuns();
   if (runs.length === 0) {
-    process.stderr.write("no runs found\n");
+    process.stderr.write(
+      values.workflow ? `no runs found for workflow '${values.workflow}'\n` : "no runs found\n",
+    );
     return 0;
   }
-  for (const runId of runs) {
-    const status = store.readStatus(runId);
-    process.stdout.write(`${runId}  ${String(status.state ?? "?").padEnd(8)}  ${status.name ?? ""}\n`);
+  for (const ref of runs) {
+    const status = store.readStatus(ref.runId);
+    const name = (status.name as string) || ref.workflowName || "";
+    process.stdout.write(`${ref.runId}  ${String(status.state ?? "?").padEnd(8)}  ${name}\n`);
   }
+  return 0;
+}
+
+/** `odw rerun <run_id>` — start a fresh run with the same inputs as an existing one. */
+function cmdRerun(rest: string[]): number {
+  const { values, positionals } = parseArgs({
+    args: rest,
+    allowPositionals: true,
+    options: { config: { type: "string" }, "runs-root": { type: "string" } },
+  });
+  const runId = positionals[0];
+  if (!runId) {
+    process.stderr.write("odw rerun: missing <run_id>\n");
+    return 2;
+  }
+  const store = storeFrom(values);
+  if (!store.exists(runId)) {
+    process.stderr.write(`no such run: ${runId}\n`);
+    return 1;
+  }
+  const meta = store.readMeta(runId);
+  const script = meta.script as string | undefined;
+  if (!script) {
+    process.stderr.write(`run ${runId} has no script to rerun\n`);
+    return 1;
+  }
+  const { runId: newId } = startRun(script, {
+    args: meta.args,
+    configPath: (meta.configPath as string | null) ?? null,
+    runsRoot: values["runs-root"] ?? null,
+    source: (meta.source as string | undefined) ?? null,
+    budgetTotal: (meta.budgetTotal as number | null) ?? null,
+  });
+  process.stdout.write(newId + "\n");
+  process.stderr.write(`re-running ${runId} as ${newId} (use 'odw status ${newId}')\n`);
   return 0;
 }
 

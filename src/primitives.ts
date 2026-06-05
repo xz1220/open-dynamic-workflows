@@ -31,11 +31,11 @@ export interface AgentOptions {
   label?: string;
   /** Override the current phase for this one call (use inside parallel/pipeline). */
   phase?: string;
-  /** Reserved (v1.5): map to an adapter's model flag. Ignored in v1. */
+  /** Select a model; routed to the adapter's declared model flag (else logged). */
   model?: string;
-  /** v1: treated as an adapter name when `adapter` is not given. */
+  /** Persona to take on; injected into the prompt so it works on every CLI. */
   agentType?: string;
-  /** Reserved (v1.5): `"worktree"` for git-worktree isolation. Ignored in v1. */
+  /** `"worktree"` requests isolation; satisfied by a copy-isolated workspace. */
   isolation?: "worktree";
 }
 
@@ -63,11 +63,21 @@ export interface WorkflowGlobals {
 export function createPrimitives(ctx: RunContext): WorkflowGlobals {
   const agent = async (prompt: string, opts: AgentOptions = {}): Promise<unknown> => {
     const activePhase = opts.phase !== undefined ? opts.phase : ctx.currentPhase;
-    const adapter = opts.adapter ?? opts.agentType;
-    const display = opts.label ?? adapter ?? ctx.config.settings.defaultAdapter ?? "agent";
+    // Adapter selection honours ONLY opts.adapter. agentType is a persona (it is
+    // forwarded to the bridge and injected into the prompt), never an adapter name.
+    const display =
+      opts.label ?? opts.adapter ?? opts.agentType ?? ctx.config.settings.defaultAdapter ?? "agent";
     ctx.emit(event(AGENT_STARTED, { label: display, phase: activePhase }));
 
-    const request: AgentRequest = { prompt, adapter, schema: opts.schema, label: opts.label };
+    const request: AgentRequest = {
+      prompt,
+      adapter: opts.adapter,
+      schema: opts.schema,
+      label: opts.label,
+      model: opts.model,
+      agentType: opts.agentType,
+      isolation: opts.isolation,
+    };
     let outcome;
     try {
       outcome = await ctx.scheduler.runAgent(() => ctx.bridge.run(request));
@@ -75,6 +85,11 @@ export function createPrimitives(ctx: RunContext): WorkflowGlobals {
       if (isFatalError(err)) throw err; // budget exhausted / stop: abort the run
       ctx.emit(event(AGENT_FAILED, { label: display, phase: activePhase, error: String(err) }));
       throw err;
+    }
+    // No option is dropped silently: surface each routing note as a LOG event
+    // (visible in `odw logs` and the dashboard).
+    for (const note of outcome.notes ?? []) {
+      ctx.emit(event(LOG, { message: note, label: display, phase: activePhase }));
     }
     ctx.emit(
       event(AGENT_FINISHED, {

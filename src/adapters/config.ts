@@ -21,7 +21,7 @@ import { join } from "node:path";
 
 import { AdapterNotFound, ConfigError } from "../errors.js";
 import { BUILTIN_ADAPTERS, DEFAULT_SETTINGS, type RawAdapter } from "./builtin.js";
-import type { Adapter, Config, Settings } from "./types.js";
+import type { Adapter, AdapterFlags, Config, Settings } from "./types.js";
 
 export const CONFIG_ENV_VAR = "ODW_CONFIG";
 
@@ -153,7 +153,24 @@ function buildAdapter(name: string, spec: RawAdapter): Adapter {
   }
   if (spec.timeout !== undefined) adapter.timeout = Number(spec.timeout);
   if (spec.label !== undefined) adapter.label = spec.label;
+  if (spec.flags !== undefined) adapter.flags = buildFlags(name, spec.flags);
   return adapter;
+}
+
+/** Validate and normalise an adapter's capability declaration. */
+function buildFlags(name: string, raw: unknown): AdapterFlags {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    throw new ConfigError(`adapter '${name}' 'flags' must be an object`);
+  }
+  const out: AdapterFlags = {};
+  const model = (raw as Record<string, unknown>).model;
+  if (model !== undefined) {
+    if (!Array.isArray(model) || !model.every((p) => typeof p === "string")) {
+      throw new ConfigError(`adapter '${name}' 'flags.model' must be an array of strings`);
+    }
+    out.model = [...(model as string[])];
+  }
+  return out;
 }
 
 function buildSettings(raw: Record<string, unknown>): Settings {

@@ -51,3 +51,52 @@ test("the chosen adapter can be overridden per call", async () => {
   const out = await bridge.run({ prompt: "x", adapter: "codex" });
   assert.equal(out.adapter, "codex");
 });
+
+test("T2: a declared model flag reaches the command with its value", async () => {
+  let cmd: string[] = [];
+  const bridge = new Bridge(inplaceConfig(), {
+    runner: async (command) => {
+      cmd = command;
+      return ok("hi");
+    },
+  });
+  await bridge.run({ prompt: "x", model: "claude-sonnet-4-6" });
+  const i = cmd.indexOf("--model");
+  assert.ok(i >= 0, `expected --model in ${JSON.stringify(cmd)}`);
+  assert.equal(cmd[i + 1], "claude-sonnet-4-6");
+});
+
+test("T2: with no model the command carries no --model (no dangling flag)", async () => {
+  let cmd: string[] = [];
+  const bridge = new Bridge(inplaceConfig(), {
+    runner: async (command) => {
+      cmd = command;
+      return ok("hi");
+    },
+  });
+  await bridge.run({ prompt: "x" });
+  assert.equal(cmd.includes("--model"), false);
+});
+
+test("T3: agentType injects a persona into the prompt (universal, every CLI)", async () => {
+  let stdin = "";
+  const bridge = new Bridge(inplaceConfig(), {
+    runner: async (_command, options) => {
+      stdin = options?.stdin ?? "";
+      return ok("ok");
+    },
+  });
+  await bridge.run({ prompt: "do it", agentType: "code-reviewer" });
+  assert.match(stdin, /code-reviewer/);
+  assert.match(stdin, /role/i);
+  assert.match(stdin, /do it/);
+});
+
+test("T5: an option with no native carrier surfaces as an outcome note, never dropped", async () => {
+  const bridge = new Bridge(inplaceConfig(), { runner: async () => ok("hi") });
+  const out = await bridge.run({ prompt: "x", agentType: "qa-reviewer" });
+  assert.ok(
+    out.notes.some((n) => /qa-reviewer/.test(n) && /prompt injection/.test(n)),
+    `expected a routing note, got ${JSON.stringify(out.notes)}`,
+  );
+});
