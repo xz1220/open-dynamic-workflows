@@ -81,6 +81,18 @@ export function resolveWorkflowsRoot(workflowsRoot: string | null): string {
   return workflowsRoot ? expandHome(workflowsRoot) : join(homedir(), ".odw", "workflows");
 }
 
+/**
+ * Directory Claude Code saved workflows are resolved by name from.
+ *
+ * Claude Code lets `CLAUDE_CONFIG_DIR` relocate every `~/.claude` path, so this
+ * mirrors that rule for the personal workflow directory.
+ */
+export function resolveClaudeWorkflowsRoot(claudeWorkflowsRoot: string | null): string {
+  if (claudeWorkflowsRoot) return expandHome(claudeWorkflowsRoot);
+  const configDir = process.env.CLAUDE_CONFIG_DIR;
+  return join(configDir ? expandHome(configDir) : join(homedir(), ".claude"), "workflows");
+}
+
 // --- internals ---------------------------------------------------------------
 
 function expandHome(p: string): string {
@@ -191,5 +203,6 @@ function buildSettings(raw: Record<string, unknown>): Settings {
     schemaRetries: Number(pick("schemaRetries", DEFAULT_SETTINGS.schemaRetries)),
     runsRoot: pick("runsRoot", DEFAULT_SETTINGS.runsRoot),
     workflowsRoot: pick("workflowsRoot", DEFAULT_SETTINGS.workflowsRoot),
+    claudeWorkflowsRoot: pick("claudeWorkflowsRoot", DEFAULT_SETTINGS.claudeWorkflowsRoot),
   };
 }

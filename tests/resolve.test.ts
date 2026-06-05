@@ -13,19 +13,24 @@ function scaffold() {
   const tmp = mkdtempSync(join(tmpdir(), "odw-resolve-"));
   const project = join(tmp, "project");
   const projectWf = join(project, ".odw", "workflows");
+  const projectClaudeWf = join(project, ".claude", "workflows");
   const globalWf = join(tmp, "global-workflows");
+  const globalClaudeWf = join(tmp, "global-claude-workflows");
   mkdirSync(projectWf, { recursive: true });
+  mkdirSync(projectClaudeWf, { recursive: true });
   mkdirSync(globalWf, { recursive: true });
+  mkdirSync(globalClaudeWf, { recursive: true });
 
   const config = defaultConfig();
   config.settings.workflowsRoot = globalWf;
+  config.settings.claudeWorkflowsRoot = globalClaudeWf;
 
   const writeWf = (dir: string, name: string) => {
     const p = join(dir, `${name}.js`);
     writeFileSync(p, `export const meta = { name: "${name}", description: "x" }\nreturn 1\n`);
     return p;
   };
-  return { tmp, project, projectWf, globalWf, config, writeWf };
+  return { tmp, project, projectWf, projectClaudeWf, globalWf, globalClaudeWf, config, writeWf };
 }
 
 test("a .js argument is always a path, even when a same-named workflow exists", () => {
@@ -92,6 +97,34 @@ test("a name only in the global dir resolves there", () => {
   }
 });
 
+test("a name in Claude's project workflows dir resolves there", () => {
+  const s = scaffold();
+  try {
+    const p = s.writeWf(s.projectClaudeWf, "claude-review");
+    const r = resolveWorkflow("claude-review", { cwd: s.project, config: s.config });
+    assert.equal(r.origin, "project");
+    assert.equal(r.provider, "claude");
+    assert.equal(r.rootLabel, ".claude/workflows");
+    assert.equal(r.scriptPath, p);
+  } finally {
+    rmSync(s.tmp, { recursive: true, force: true });
+  }
+});
+
+test("a name only in Claude's global workflows dir resolves there", () => {
+  const s = scaffold();
+  try {
+    const p = s.writeWf(s.globalClaudeWf, "personal-research");
+    const r = resolveWorkflow("personal-research", { cwd: s.project, config: s.config });
+    assert.equal(r.origin, "global");
+    assert.equal(r.provider, "claude");
+    assert.equal(r.rootLabel, s.globalClaudeWf);
+    assert.equal(r.scriptPath, p);
+  } finally {
+    rmSync(s.tmp, { recursive: true, force: true });
+  }
+});
+
 test("project shadows global for the same name", () => {
   const s = scaffold();
   try {
@@ -100,6 +133,33 @@ test("project shadows global for the same name", () => {
     const r = resolveWorkflow("shared", { cwd: s.project, config: s.config });
     assert.equal(r.origin, "project");
     assert.equal(r.scriptPath, projP);
+  } finally {
+    rmSync(s.tmp, { recursive: true, force: true });
+  }
+});
+
+test("ODW project workflows shadow same-named Claude project workflows", () => {
+  const s = scaffold();
+  try {
+    const p = s.writeWf(s.projectWf, "shared-local");
+    s.writeWf(s.projectClaudeWf, "shared-local");
+    const r = resolveWorkflow("shared-local", { cwd: s.project, config: s.config });
+    assert.equal(r.provider, "odw");
+    assert.equal(r.scriptPath, p);
+  } finally {
+    rmSync(s.tmp, { recursive: true, force: true });
+  }
+});
+
+test("Claude project workflows shadow ODW global workflows", () => {
+  const s = scaffold();
+  try {
+    const p = s.writeWf(s.projectClaudeWf, "shared-scope");
+    s.writeWf(s.globalWf, "shared-scope");
+    const r = resolveWorkflow("shared-scope", { cwd: s.project, config: s.config });
+    assert.equal(r.origin, "project");
+    assert.equal(r.provider, "claude");
+    assert.equal(r.scriptPath, p);
   } finally {
     rmSync(s.tmp, { recursive: true, force: true });
   }
@@ -188,7 +248,8 @@ test("a not-found name suggests near matches and lists the roots searched", () =
     })();
     assert.ok(err instanceof WorkflowScriptError);
     assert.match(err.message, /did you mean: deep-research/);
-    assert.match(err.message, /\(project\)/);
+    assert.match(err.message, /\.odw\/workflows, project/);
+    assert.match(err.message, /\.claude\/workflows, project/);
   } finally {
     rmSync(s.tmp, { recursive: true, force: true });
   }

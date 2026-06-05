@@ -2,9 +2,9 @@
  * Read-model for workflows (L5) — the Workspace tab's data.
  *
  * Mirrors {@link ./runs-view} but for the *managed directory* side: it turns the
- * workflow scripts a user's agent has written into `.odw/workflows` (project) and
- * `~/.odw/workflows` (global) into the shape the Workspace UI wants — name,
- * description, declared phases, source text, and which runs belong to each.
+ * workflow scripts a user's agent has written into ODW and Claude Code workflow
+ * roots into the shape the Workspace UI wants — name, description, declared
+ * phases, source text, and which runs belong to each.
  *
  * Like the rest of `odw serve`, it is strictly read-only and never executes a
  * workflow body: `listWorkflows` is a pure readdir, and `loadWorkflowScript` only
@@ -23,6 +23,8 @@ export interface WorkflowSummary {
   /** meta.name === filename stem (the run handle). */
   name: string;
   origin: "project" | "global";
+  provider: "odw" | "claude";
+  rootLabel: string;
   /** Absolute path of the script on disk. */
   path: string;
   description: string | null;
@@ -60,6 +62,8 @@ export function listWorkflowSummaries(
     out.push({
       name: w.name,
       origin: w.origin,
+      provider: w.provider,
+      rootLabel: w.rootLabel,
       path: w.path,
       description: meta?.description ?? null,
       phases: meta?.phases ?? [],
@@ -90,6 +94,8 @@ export function workflowDetail(
   return {
     name: w.name,
     origin: w.origin,
+    provider: w.provider,
+    rootLabel: w.rootLabel,
     path: w.path,
     description: meta?.description ?? null,
     phases: meta?.phases ?? [],

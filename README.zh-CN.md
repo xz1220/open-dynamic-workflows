@@ -172,6 +172,10 @@ odw list
 一次运行在独立的 detached worker 进程里执行,并把一切持久化到一个 run 目录——所以它能
 比启动它的命令活得更久,也能从任何地方被观测。
 
+保存好的 workflow 也可以直接按名字运行。ODW 会先找项目级、再找个人级,并同时读取自己
+的目录和 Claude Code 保存 workflow 的目录: `.odw/workflows`、`.claude/workflows`、
+`~/.odw/workflows`、`~/.claude/workflows`(遵循 `CLAUDE_CONFIG_DIR`)。
+
 **喜欢用浏览器?** `odw serve` 会对同一个 run 目录开一个零依赖的实时仪表盘——阶段分栏、
 每个 agent 的卡片(适配器 + 耗时)、运行状态都通过 SSE 实时更新。无需构建,不引入任何
 额外依赖。
