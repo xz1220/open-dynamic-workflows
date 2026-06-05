@@ -429,13 +429,16 @@ function cmdWorkflowsList(rest: string[]): number {
 
   if (entries.length === 0) {
     process.stderr.write("no named workflows found\n");
-    process.stderr.write("  add one by dropping a .js file in ./.odw/workflows (project) or ~/.odw/workflows (global)\n");
+    process.stderr.write(
+      "  add one by dropping a .js file in ./.odw/workflows, ./.claude/workflows, ~/.odw/workflows, or ~/.claude/workflows\n",
+    );
     return 0;
   }
   const width = Math.max(...entries.map((e) => e.name.length));
   for (const e of entries) {
-    const shadow = e.shadowed ? "  ⚠ shadowed by project" : "";
-    process.stdout.write(`${e.name.padEnd(width)}  (${e.origin.padEnd(7)})  ${e.path}${shadow}\n`);
+    const scope = `${e.provider}:${e.origin}`;
+    const shadow = e.shadowed ? "  shadowed by higher-precedence workflow" : "";
+    process.stdout.write(`${e.name.padEnd(width)}  (${scope.padEnd(14)} ${e.rootLabel})  ${e.path}${shadow}\n`);
   }
   return 0;
 }
@@ -453,8 +456,9 @@ function cmdWorkflowsWhere(rest: string[]): number {
   }
   const config = loadConfig(values.config ?? null);
   try {
-    const { scriptPath, origin } = resolveWorkflow(name, { cwd: process.cwd(), config });
-    process.stdout.write(`${scriptPath}  (${origin})\n`);
+    const { scriptPath, origin, provider, rootLabel } = resolveWorkflow(name, { cwd: process.cwd(), config });
+    const source = provider ? `${provider}:${origin}${rootLabel ? ` ${rootLabel}` : ""}` : origin;
+    process.stdout.write(`${scriptPath}  (${source})\n`);
     return 0;
   } catch (err) {
     process.stderr.write(`${(err as Error).message}\n`);

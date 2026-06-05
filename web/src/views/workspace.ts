@@ -17,10 +17,8 @@ function highlight(src: string): string {
 }
 
 function listItem(w: WorkflowSummary, activeName: string | null): string {
-  const badge =
-    w.origin === "global"
-      ? `<span class="srcbadge global">~/.odw/workflows</span>`
-      : `<span class="srcbadge">.odw/workflows</span>`;
+  const badgeClass = w.origin === "global" ? "srcbadge global" : "srcbadge";
+  const badge = `<span class="${badgeClass}">${esc(w.rootLabel)}</span>`;
   return (
     `<div class="wfitem ${w.name === activeName ? "on" : ""}" data-wf="${esc(w.name)}">` +
     `<h4>${esc(w.name)}</h4>` +
@@ -91,8 +89,8 @@ export function renderWorkspace(activeName: string | null, detail: WorkflowDetai
   if (list.length === 0) {
     return (
       `<div class="empty"><div class="gh">No workflows yet</div>` +
-      `<div>Your agent writes workflows into the managed directory.</div>` +
-      `<div class="codehint">~/.odw/workflows · .odw/workflows</div></div>`
+      `<div>Your agent writes workflows into the managed directories.</div>` +
+      `<div class="codehint">.odw/workflows · .claude/workflows · ~/.odw/workflows · ~/.claude/workflows</div></div>`
     );
   }
   const items = list.map((w) => listItem(w, activeName)).join("");
@@ -101,7 +99,7 @@ export function renderWorkspace(activeName: string | null, detail: WorkflowDetai
     : `<div class="wfdetail"><div class="empty"><div>Select a workflow to see its structure and source.</div></div></div>`;
   return (
     `<div class="wsplit">` +
-    `<div class="wflist"><div class="lh"><span class="t">Workflows</span><span class="c">${list.length} · managed dir</span></div>${items}</div>` +
+    `<div class="wflist"><div class="lh"><span class="t">Workflows</span><span class="c">${list.length} · managed dirs</span></div>${items}</div>` +
     pane +
     `</div>`
   );

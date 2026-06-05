@@ -88,4 +88,5 @@ export const DEFAULT_SETTINGS: Settings = {
   schemaRetries: 2, // extra attempts when a schema fails to validate
   runsRoot: null, // null => ~/.odw/runs
   workflowsRoot: null, // null => ~/.odw/workflows
+  claudeWorkflowsRoot: null, // null => ~/.claude/workflows, honoring CLAUDE_CONFIG_DIR
 };

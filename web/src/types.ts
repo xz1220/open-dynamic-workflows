@@ -60,6 +60,8 @@ export interface RunDetail extends RunSummary {
 export interface WorkflowSummary {
   name: string;
   origin: "project" | "global";
+  provider: "odw" | "claude";
+  rootLabel: string;
   path: string;
   description: string | null;
   phases: Array<{ title: string }>;

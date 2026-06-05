@@ -5,7 +5,7 @@ import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "n
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { loadConfig } from "../src/adapters/config.js";
+import { defaultConfig } from "../src/adapters/config.js";
 import { RunStore } from "../src/runtime/run-store.js";
 import {
   foldAgents,
@@ -249,7 +249,10 @@ test("HTTP: control endpoint rejects non-JSON and cross-origin (CSRF guard)", as
 test("HTTP: /api/workflows lists managed-dir workflows + detail with source", async () => {
   const root = tempRoot(); // runs root
   const proj = tempRoot(); // a project cwd with .odw/workflows
+  const globalWf = tempRoot();
+  const globalClaudeWf = tempRoot();
   mkdirSync(join(proj, ".odw", "workflows"), { recursive: true });
+  mkdirSync(join(proj, ".claude", "workflows"), { recursive: true });
   writeFileSync(
     join(proj, ".odw", "workflows", "echo.js"),
     [
@@ -264,29 +267,61 @@ test("HTTP: /api/workflows lists managed-dir workflows + detail with source", as
       "",
     ].join("\n"),
   );
+  writeFileSync(
+    join(proj, ".claude", "workflows", "claude-audit.js"),
+    [
+      "export const meta = {",
+      "  name: 'claude-audit',",
+      "  description: 'Audit with a saved Claude workflow.',",
+      "  phases: [{ title: 'Audit' }, { title: 'Report' }],",
+      "}",
+      "",
+      "phase('Audit')",
+      "return await agent('audit: ' + args.target)",
+      "",
+    ].join("\n"),
+  );
   const store = new RunStore(root);
+  const config = defaultConfig();
+  config.settings.workflowsRoot = globalWf;
+  config.settings.claudeWorkflowsRoot = globalClaudeWf;
   const handle = await startServer({
     store,
     port: 0,
     host: "127.0.0.1",
     cwd: proj,
-    config: loadConfig(null),
+    config,
   });
   try {
     const list = await fetch(`${handle.url}/api/workflows`).then((r) => r.json());
     const echo = (list as Array<{ name: string }>).find((w) => w.name === "echo") as
       | Record<string, unknown>
       | undefined;
+    const claudeAudit = (list as Array<{ name: string }>).find((w) => w.name === "claude-audit") as
+      | Record<string, unknown>
+      | undefined;
     assert.ok(echo, "echo workflow is listed");
     assert.equal(echo!.origin, "project");
+    assert.equal(echo!.provider, "odw");
+    assert.equal(echo!.rootLabel, ".odw/workflows");
     assert.equal(echo!.description, "Echo the input back.");
     assert.deepEqual(echo!.phases, [{ title: "Echo" }]);
     assert.equal(echo!.runCount, 0);
+    assert.ok(claudeAudit, "saved Claude workflow is listed");
+    assert.equal(claudeAudit!.origin, "project");
+    assert.equal(claudeAudit!.provider, "claude");
+    assert.equal(claudeAudit!.rootLabel, ".claude/workflows");
+    assert.deepEqual(claudeAudit!.phases, [{ title: "Audit" }, { title: "Report" }]);
 
     const det = await fetch(`${handle.url}/api/workflows/echo`).then((r) => r.json());
     assert.equal(det.name, "echo");
     assert.match(det.source, /export const meta/);
     assert.deepEqual(det.runs, []);
+
+    const claudeDet = await fetch(`${handle.url}/api/workflows/claude-audit`).then((r) => r.json());
+    assert.equal(claudeDet.name, "claude-audit");
+    assert.equal(claudeDet.provider, "claude");
+    assert.match(claudeDet.source, /saved Claude workflow/);
 
     const missing = await fetch(`${handle.url}/api/workflows/nope`);
     assert.equal(missing.status, 404);
@@ -294,5 +329,7 @@ test("HTTP: /api/workflows lists managed-dir workflows + detail with source", as
     await handle.close();
     rmSync(root, { recursive: true, force: true });
     rmSync(proj, { recursive: true, force: true });
+    rmSync(globalWf, { recursive: true, force: true });
+    rmSync(globalClaudeWf, { recursive: true, force: true });
   }
 });

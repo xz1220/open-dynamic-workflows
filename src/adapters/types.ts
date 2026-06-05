@@ -53,6 +53,8 @@ export interface Settings {
   runsRoot: string | null;
   /** Directory workflows are resolved by name from; `null` => `~/.odw/workflows`. */
   workflowsRoot: string | null;
+  /** Directory Claude Code saved workflows are read from; `null` => `~/.claude/workflows`. */
+  claudeWorkflowsRoot: string | null;
 }
 
 export interface Config {

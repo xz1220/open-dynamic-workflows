@@ -5,7 +5,8 @@ operating system's job — `cron` already does it well. ODW only has to make a r
 *scriptable*, and it does:
 
 - **Run by name.** `odw run <name>` resolves a workflow from the managed
-  directory (`./.odw/workflows`, then `~/.odw/workflows`), so a cron line never
+  directories (`./.odw/workflows`, `./.claude/workflows`,
+  `~/.odw/workflows`, then `~/.claude/workflows`), so a cron line never
   hard-codes a path.
 - **`--wait` gives a real exit code.** With `--wait`, `odw run` blocks until the
   run reaches a terminal state and exits **0** on `done`, **non-zero** on
