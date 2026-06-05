@@ -12,14 +12,14 @@ transitions, and "close hides, stays resident".
 > permits spawning `binaries/odw serve --port <digits>` — there is no surface to
 > POST `/api/runs/:id/control`.
 
-## ⚠️ Build status: authored, not compiled here
+## Build status: builds, bundles, and runs ✅
 
-The Rust shell was written and reviewed but **has not been compiled in this
-environment** — there is no `cargo`/`rustc`/`@tauri-apps/cli` toolchain available
-where it was authored. Treat `src-tauri/` as code that is correct by inspection
-and against the Tauri 2 API, but that still needs a first real `tauri build` on a
-machine with the toolchain installed. The web SPA it loads **is** built and
-verified (`npm run build:web` at the repo root, served by `odw serve`).
+Compiled and bundled with Rust 1.96 + Tauri CLI 2.11 into
+`Open Dynamic Workflows.app`, installed to `/Applications`, and verified
+launching: the shell spawns its bundled `odw serve` sidecar, the webview
+navigates to it, and the live client renders. The app is **ad-hoc signed**
+(no Developer ID); for distribution outside this machine it still needs
+signing + notarization (see "Release wiring" below).
 
 ## Prerequisites
 

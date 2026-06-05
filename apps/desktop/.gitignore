@@ -1,0 +1,8 @@
+# Rust / Tauri build output
+/src-tauri/target/
+# Generated capability schemas + mobile project scaffolding
+/src-tauri/gen/
+# Staged sidecar binary (produced by `npm run bundle:sidecar`; ~116MB)
+/src-tauri/binaries/
+# JS deps
+node_modules/

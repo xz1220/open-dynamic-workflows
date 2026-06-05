@@ -8,12 +8,25 @@
  */
 import type { RunSummary } from "./types";
 
+interface BadgeTarget {
+  setBadgeCount?: (n?: number) => Promise<void>;
+}
 interface TauriGlobal {
   event?: { emit?: (event: string, payload?: unknown) => Promise<void> };
-  app?: { setBadgeCount?: (n?: number) => Promise<void> };
+  // macOS Dock badge: a window method in Tauri 2 (core:window:allow-set-badge-count);
+  // older shapes exposed it on `app`. Try the window first, fall back to app.
+  window?: { getCurrentWindow?: () => BadgeTarget };
+  app?: BadgeTarget;
 }
 function tauri(): TauriGlobal | null {
   return (globalThis as unknown as { __TAURI__?: TauriGlobal }).__TAURI__ ?? null;
+}
+
+/** Set (or clear, when undefined) the Dock badge via whichever API this build exposes. */
+function setBadge(t: TauriGlobal, count: number | undefined): void {
+  const win = t.window?.getCurrentWindow?.();
+  if (win?.setBadgeCount) void win.setBadgeCount(count);
+  else void t.app?.setBadgeCount?.(count);
 }
 
 export function isNative(): boolean {
@@ -34,7 +47,7 @@ export function syncNative(runs: RunSummary[]): void {
   if (!t) return;
 
   const active = runs.filter((r) => ACTIVE.has(r.state)).length;
-  void t.app?.setBadgeCount?.(active > 0 ? active : undefined);
+  setBadge(t, active > 0 ? active : undefined);
 
   const next = new Map<string, string>();
   for (const r of runs) {

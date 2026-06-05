@@ -8,7 +8,8 @@
     "core:window:allow-show",
     "core:window:allow-hide",
     "core:window:allow-set-focus",
-    "core:webview:allow-navigate",
+    "core:window:allow-set-badge-count",
+    "core:event:allow-emit",
     "shell:allow-spawn",
     {
       "identifier": "shell:allow-spawn",

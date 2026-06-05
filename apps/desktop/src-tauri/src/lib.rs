@@ -17,7 +17,7 @@ use serde::Deserialize;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::TrayIconBuilder,
-    AppHandle, Emitter, Manager, RunEvent, WebviewUrl, WindowEvent,
+    AppHandle, Emitter, Listener, Manager, RunEvent, WindowEvent,
 };
 use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_shell::{process::CommandEvent, ShellExt};
@@ -151,9 +151,9 @@ fn navigate_once(app: &AppHandle) {
 
     if let Some(window) = app.get_webview_window("main") {
         let url = serve_url();
-        match url.parse() {
+        match url.parse::<tauri::Url>() {
             Ok(parsed) => {
-                let _ = window.navigate(WebviewUrl::External(parsed).into());
+                let _ = window.navigate(parsed);
                 let _ = window.show();
                 let _ = window.set_focus();
             }
