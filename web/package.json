@@ -1,0 +1,11 @@
+{
+  "name": "@odw/web",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Read-only desktop client SPA for Open Dynamic Workflows (built into the odw server bundle).",
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  }
+}

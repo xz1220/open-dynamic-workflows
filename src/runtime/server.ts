@@ -23,14 +23,21 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { statSync, watch, type FSWatcher } from "node:fs";
 
+import { loadConfig } from "../adapters/config.js";
+import type { Config } from "../adapters/types.js";
 import { DASHBOARD_HTML } from "../dashboard.generated.js";
 import { RunStore } from "./run-store.js";
 import { detail, summarize, type RunSummary } from "./runs-view.js";
+import { listWorkflowSummaries, workflowDetail } from "./workflows-view.js";
 
 export interface ServeOptions {
   store: RunStore;
   port?: number;
   host?: string;
+  /** Anchors the project-local `.odw/workflows` lookup for /api/workflows. */
+  cwd?: string;
+  /** Config whose `workflowsRoot` is the global managed dir. Defaults to loadConfig(null). */
+  config?: Config;
 }
 
 export interface ServeHandle {
@@ -94,10 +101,12 @@ export function startServer(options: ServeOptions): Promise<ServeHandle> {
   const { store } = options;
   const host = options.host ?? DEFAULT_HOST;
   const port = options.port ?? DEFAULT_PORT;
+  const cwd = options.cwd ?? process.cwd();
+  const config = options.config ?? loadConfig(null);
   const cache = new SummaryCache();
   const clients = new Set<ServerResponse>();
 
-  const server = createServer((req, res) => handle(req, res, store, cache, clients));
+  const server = createServer((req, res) => handle(req, res, store, cache, clients, cwd, config));
 
   // Push the run list to every SSE client when the runs root changes, and on a
   // 1s tick as a floor (fs.watch recursion is platform-spotty; the tick keeps
@@ -162,6 +171,8 @@ function handle(
   store: RunStore,
   cache: SummaryCache,
   clients: Set<ServerResponse>,
+  cwd: string,
+  config: Config,
 ): void {
   const method = req.method ?? "GET";
   const url = new URL(req.url ?? "/", "http://localhost");
@@ -181,8 +192,23 @@ function handle(
       openStream(res, store, cache, clients);
       return;
     }
+    if (method === "GET" && path === "/api/workflows") {
+      sendJson(res, 200, listWorkflowSummaries(cwd, config, store));
+      return;
+    }
+    const wfMatch = path.match(/^\/api\/workflows\/([^/]+)$/);
+    if (method === "GET" && wfMatch) {
+      const name = decodeURIComponent(wfMatch[1]!);
+      const det = workflowDetail(cwd, config, store, name);
+      if (!det) {
+        sendJson(res, 404, { error: `no such workflow: ${name}` });
+        return;
+      }
+      sendJson(res, 200, det);
+      return;
+    }
 
-    const runMatch = path.match(/^\/api\/runs\/([^/]+)(\/events|\/control)?$/);
+    const runMatch = path.match(/^\/api\/runs\/([^/]+)(\/events|\/control|\/result)?$/);
     if (runMatch) {
       const runId = decodeURIComponent(runMatch[1]!);
       const sub = runMatch[2];
@@ -197,6 +223,14 @@ function handle(
       if (method === "GET" && sub === "/events") {
         const since = Number(url.searchParams.get("since") ?? "0") || 0;
         sendJson(res, 200, store.readEvents(runId).slice(Math.max(0, since)));
+        return;
+      }
+      if (method === "GET" && sub === "/result") {
+        if (!store.hasResult(runId)) {
+          sendJson(res, 404, { error: "no result for this run" });
+          return;
+        }
+        sendJson(res, 200, { value: store.readResult(runId) });
         return;
       }
       if (method === "POST" && sub === "/control") {

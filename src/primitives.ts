@@ -67,7 +67,16 @@ export function createPrimitives(ctx: RunContext): WorkflowGlobals {
     // forwarded to the bridge and injected into the prompt), never an adapter name.
     const display =
       opts.label ?? opts.adapter ?? opts.agentType ?? ctx.config.settings.defaultAdapter ?? "agent";
-    ctx.emit(event(AGENT_STARTED, { label: display, phase: activePhase }));
+    // Record the adapter the call will run on at start (the bridge resolves it
+    // the same way) so observers can show per-adapter load while agents are live,
+    // not just after they settle. agent_finished still carries the resolved one.
+    ctx.emit(
+      event(AGENT_STARTED, {
+        label: display,
+        phase: activePhase,
+        adapter: opts.adapter ?? ctx.config.settings.defaultAdapter ?? null,
+      }),
+    );
 
     const request: AgentRequest = {
       prompt,

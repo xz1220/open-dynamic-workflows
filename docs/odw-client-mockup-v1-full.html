@@ -1,0 +1,1169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Open Dynamic Workflows — Desktop Client</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Gaegu:wght@400;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
+<style>
+/* ===================================================================
+   OPEN DYNAMIC WORKFLOWS — desktop client
+   Two-zone canvas: charcoal = WATCH (live machine), paper = READ/FILL.
+   Tokens, badge formulas, 7-state machine, 34px grid taken from the
+   synthesized spec (verbatim from src/dashboard.html semantics).
+   =================================================================== */
+:root{
+  /* paper zone */
+  --paper-bg:#FBFAF6; --paper-surface:#FFFFFF; --paper-alt:#F4F4F1; --paper-sunken:#FCFCFC;
+  --ink:#111111; --muted:#707070; --faint:#B8B8B8;
+  --hair:#E8E8E8; --soft:#F3F3F3; --node-border:#D7D7D7; --node-active:#111111;
+  --paper-grid:rgba(0,0,0,0.05);
+  /* charcoal zone */
+  --stage-bg:#0E1311; --stage-surface:#141B18; --stage-alt:#1B2420;
+  --node-surface:#1F2329; --node-hover:#252A31;
+  --stage-ink:#ECF1EE; --stage-muted:#8A988F; --stage-faint:#5C6A62;
+  --stage-hair:#27302C; --stage-hair2:#33433B; --stage-node-border:#2C3631;
+  --stage-grid:rgba(255,255,255,0.035); --stage-grid-major:rgba(16,185,129,0.07);
+  /* emerald */
+  --green:#10b981; --green-deep:#0a7d57; --green-bright:#22D89A;
+  --green-tint:#F0FBF6; --green-tint-border:#BFE6D5;
+  --green-tint-dark:#0F2A22; --green-border-dark:#1C4A3A;
+  /* status */
+  --amber:#f59e0b; --amber-ink:#92610c; --amber-tint:#FDF8EE; --amber-border:#F3E2BD;
+  --red:#ef4444; --red-deep:#b42318; --red-tint:#FDF1F0; --red-border:#F4C7C2;
+  --orange:#f97316; --orange-ink:#9a3412; --orange-tint:#FDF1EA; --orange-border:#F6D4BD;
+  --done:#7E8D84; --done-paper:#C0C0C0; --cancel:#9AA0A6;
+}
+*{box-sizing:border-box;}
+html,body{margin:0;padding:0;}
+body{
+  background:#13161a;
+  font-family:'Inter',system-ui,sans-serif;
+  -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility;
+  color:var(--ink);
+}
+.board{ width:1680px; margin:0 auto; padding:80px 120px 160px; }
+.board-head{ margin:0 0 64px; }
+.board-head .mark{ display:flex; align-items:center; gap:16px; }
+.board-head h1{ font-family:'Gaegu'; font-weight:700; font-size:46px; color:#fff; margin:0; letter-spacing:.5px;}
+.board-head p{ color:#8a949c; font-size:15px; margin:10px 0 0; max-width:760px; line-height:1.55;}
+.board-head .meta{ color:#5a636b; font-family:'JetBrains Mono'; font-size:12px; margin-top:14px;}
+.frame-label{ display:flex; align-items:baseline; gap:12px; margin:0 0 16px; }
+.frame-label .n{ font-family:'JetBrains Mono'; font-size:12px; color:#5a636b; }
+.frame-label .t{ font-family:'Gaegu'; font-weight:700; font-size:24px; color:#e8edf1; }
+.frame-label .z{ font-family:'JetBrains Mono'; font-size:11px; padding:2px 8px; border-radius:999px; }
+.frame-label .z.watch{ color:#9fe9cf; background:rgba(16,185,129,.12); border:1px solid rgba(16,185,129,.25);}
+.frame-label .z.read{ color:#cfc6a8; background:rgba(245,158,11,.10); border:1px solid rgba(245,158,11,.22);}
+.frame-wrap{ margin-bottom:80px; }
+.frame{
+  width:1440px; height:900px; position:relative; overflow:hidden;
+  border-radius:14px; box-shadow:0 40px 90px -30px rgba(0,0,0,.7), 0 0 0 1px rgba(255,255,255,.04);
+}
+.frame.wide{ width:1640px; }
+.frame.tall{ height:980px; }
+.frame.short{ height:760px; }
+
+/* ---- grid textures ---- */
+.grid-paper{
+  background:
+    linear-gradient(var(--paper-grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--paper-grid) 1px, transparent 1px),
+    var(--paper-bg);
+  background-size:34px 34px;
+}
+.grid-stage{
+  position:relative;
+  background:
+    linear-gradient(var(--stage-grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--stage-grid) 1px, transparent 1px),
+    linear-gradient(var(--stage-grid-major) 1px, transparent 1px),
+    linear-gradient(90deg, var(--stage-grid-major) 1px, transparent 1px),
+    var(--stage-bg);
+  background-size:34px 34px, 34px 34px, 180px 180px, 180px 180px;
+}
+.grid-stage::after{
+  content:""; position:absolute; inset:0; pointer-events:none;
+  background:radial-gradient(120% 120% at 50% 42%, transparent 55%, rgba(0,0,0,.42) 100%);
+}
+
+/* ===================== APP SHELL ===================== */
+.app{ position:absolute; inset:0; display:grid; grid-template-rows:52px 1fr 28px; }
+.app.has-rail .body{ display:grid; }
+.body{ position:relative; overflow:hidden; }
+
+.toolbar{
+  display:flex; align-items:center; justify-content:space-between;
+  padding:0 18px 0 20px; border-bottom:1px solid var(--stage-hair);
+  background:rgba(20,27,24,.92); position:relative; z-index:6;
+}
+.toolbar.paper{ background:rgba(255,255,255,.82); border-bottom:1px solid var(--hair); backdrop-filter:saturate(1.2) blur(6px); }
+.tl{ display:flex; gap:8px; align-items:center; }
+.tl i{ width:12px; height:12px; border-radius:999px; display:block; }
+.tl i.r{ background:#FF5F57; } .tl i.y{ background:#FEBC2E; } .tl i.g{ background:#28C840; }
+.crumb{ display:flex; align-items:center; gap:8px; margin-left:16px; font-size:12.5px; }
+.crumb .s{ color:var(--stage-muted); font-weight:500; } .crumb.paper .s{ color:var(--muted); }
+.crumb .cur{ color:var(--stage-ink); font-weight:600; } .crumb.paper .cur{ color:var(--ink); }
+.crumb .sep{ color:var(--stage-faint); } .crumb.paper .sep{ color:var(--faint); }
+.idchip{ font-family:'JetBrains Mono'; font-size:11px; color:var(--stage-muted); background:var(--stage-alt); border:1px solid var(--stage-hair); padding:3px 7px; border-radius:5px; }
+.seg{ display:flex; gap:2px; padding:3px; background:var(--stage-alt); border:1px solid var(--stage-hair); border-radius:8px; }
+.seg.paper{ background:var(--paper-alt); border-color:var(--hair); }
+.seg b{ font-weight:500; font-size:12.5px; color:var(--stage-muted); padding:5px 12px; border-radius:6px; cursor:default; }
+.seg.paper b{ color:var(--muted); }
+.seg b.on{ background:var(--stage-bg); color:var(--stage-ink); border:1px solid var(--stage-hair2); font-weight:600; }
+.seg.paper b.on{ background:#fff; color:var(--ink); border-color:var(--hair); box-shadow:0 1px 2px rgba(0,0,0,.04); }
+.tr{ display:flex; align-items:center; gap:12px; }
+.kbd{ font-family:'JetBrains Mono'; font-size:11px; color:var(--stage-muted); border:1px solid var(--stage-hair2); border-radius:5px; padding:2px 6px; }
+.kbd.paper{ color:var(--muted); border-color:var(--hair); }
+.gear{ width:20px;height:20px;color:var(--stage-muted); }
+
+/* connection chip */
+.conn{ display:inline-flex; align-items:center; gap:6px; font-size:12px; font-weight:600; }
+.conn .d{ width:8px;height:8px;border-radius:999px; }
+.conn.live{ color:#76e3bd;} .conn.live .d{ background:var(--green); box-shadow:0 0 0 0 rgba(16,185,129,.5); animation:pulse 1.8s infinite; }
+.conn.recon{ color:var(--orange); } .conn.recon .d{ background:var(--orange); }
+@keyframes pulse{ 0%{box-shadow:0 0 0 0 rgba(16,185,129,.45);} 70%{box-shadow:0 0 0 8px rgba(16,185,129,0);} 100%{box-shadow:0 0 0 0 rgba(16,185,129,0);} }
+
+/* status bar */
+.statusbar{ display:flex; align-items:center; justify-content:space-between; padding:0 18px; font-family:'JetBrains Mono'; font-size:11.5px; border-top:1px solid var(--stage-hair); background:var(--stage-surface); color:var(--stage-muted); z-index:6;}
+.statusbar.paper{ border-top:1px solid var(--hair); background:var(--paper-alt); color:var(--muted);}
+.statusbar .live-dot{ width:7px;height:7px;border-radius:999px;background:var(--green); display:inline-block; box-shadow:0 0 8px rgba(16,185,129,.6); }
+
+/* ===================== SIDEBAR / RAIL ===================== */
+.rail{ width:240px; border-right:1px solid var(--hair); background:var(--paper-alt); padding:22px 16px 16px; display:flex; flex-direction:column; }
+.rail.dark, .runsidebar{ background:var(--stage-surface); border-right:1px solid var(--stage-hair); }
+.brand{ display:flex; align-items:center; gap:11px; padding:2px 6px 0; }
+.brand .logo{ width:34px; height:22px; }
+.brand .wm{ font-family:'Gaegu'; font-weight:700; font-size:30px; line-height:.8; }
+.brand.dark .wm{ color:var(--stage-ink);} .brand.paper .wm{ color:var(--ink);}
+.tagline{ font-size:11.5px; color:var(--muted); margin:4px 6px 20px; }
+.tagline.dark{ color:var(--stage-faint); }
+.navitem{ display:flex; align-items:center; gap:11px; padding:9px 11px; border-radius:8px; font-size:13.5px; color:var(--ink); font-weight:500; cursor:default; margin-bottom:2px;}
+.navitem.dark{ color:var(--stage-muted); }
+.navitem .ic{ width:17px; height:17px; opacity:.8; }
+.navitem.on{ background:#fff; color:var(--ink); box-shadow:0 1px 2px rgba(0,0,0,.05); font-weight:600;}
+.navitem.dark.on{ background:var(--stage-alt); color:var(--stage-ink); box-shadow:none;}
+.navitem .count{ margin-left:auto; font-family:'JetBrains Mono'; font-size:11px; color:#fff; background:var(--green-deep); border-radius:999px; padding:1px 7px; font-weight:600;}
+.navitem.dark .count{ background:var(--green-border-dark); color:var(--green-bright);}
+.rail .spacer{ flex:1; }
+.rail .divider{ height:1px; background:var(--hair); margin:12px 6px; }
+.rail.dark .divider{ background:var(--stage-hair); }
+.section-label{ font-size:11.5px; font-weight:600; letter-spacing:.05em; text-transform:uppercase; color:var(--muted); margin:6px 8px; display:flex; justify-content:space-between;}
+.section-label.dark{ color:var(--stage-faint); }
+.section-label .num{ font-family:'JetBrains Mono'; color:var(--green-deep); }
+
+/* live mini run row */
+.minirun{ display:flex; align-items:center; gap:9px; padding:8px 10px; border-radius:8px; font-size:12.5px; color:var(--stage-muted);}
+.minirun .dot{ width:7px;height:7px;border-radius:999px;background:var(--green); animation:pulse 1.8s infinite;}
+.minirun .nm{ color:var(--stage-ink); font-weight:500; }
+.minirun .ph{ margin-left:auto; font-family:'JetBrains Mono'; font-size:11px; color:var(--stage-faint);}
+
+/* ===================== BADGES ===================== */
+.badge{ display:inline-flex; align-items:center; gap:6px; font-size:11.5px; font-weight:600; padding:3px 9px 3px 8px; border-radius:999px; border:1px solid; }
+.badge .d{ width:7px;height:7px;border-radius:999px; }
+.badge.running{ color:var(--green-deep); background:var(--green-tint); border-color:var(--green-tint-border);} .badge.running .d{ background:var(--green);}
+.badge.done{ color:#555; background:#F5F5F4; border-color:#E2E2E0;} .badge.done .d{ background:var(--done-paper);}
+.badge.failed{ color:var(--red-deep); background:var(--red-tint); border-color:var(--red-border);} .badge.failed .d{ background:var(--red);}
+.badge.paused{ color:var(--amber-ink); background:var(--amber-tint); border-color:var(--amber-border);} .badge.paused .d{ background:var(--amber);}
+.badge.pending{ color:var(--amber-ink); background:var(--amber-tint); border-color:var(--amber-border);} .badge.pending .d{ background:var(--amber);}
+.badge.stale{ color:var(--orange-ink); background:var(--orange-tint); border-color:var(--orange-border);} .badge.stale .d{ background:var(--orange);}
+.badge.dark.running{ color:var(--green); background:var(--green-tint-dark); border-color:var(--green-border-dark);}
+.badge.dark.paused{ color:var(--amber); background:#2A2110; border-color:#43340f;}
+.badge.dark.failed{ color:var(--red); background:#2A1513; border-color:#492019;}
+
+/* chips */
+.chip{ display:inline-flex; align-items:center; gap:5px; font-family:'JetBrains Mono'; font-size:12px; font-weight:500; padding:3px 9px; border-radius:999px; border:1px solid var(--stage-hair); color:var(--stage-muted); }
+.chip.paper{ border-color:var(--hair); color:var(--muted); background:#fff;}
+.chip b{ color:var(--stage-ink); font-weight:700;} .chip.paper b{ color:var(--ink);}
+.chip .em{ color:var(--green); } .chip .rd{ color:var(--red);} .chip .am{ color:var(--amber);}
+
+/* ===================== BUTTONS ===================== */
+.btn{ display:inline-flex; align-items:center; gap:7px; font-family:'Inter'; font-size:13px; font-weight:600; padding:8px 15px; border-radius:9px; border:1px solid; cursor:default; line-height:1;}
+.btn.primary{ background:var(--green-deep); color:#fff; border-color:var(--green-deep);}
+.btn.secondary{ background:transparent; color:var(--ink); border-color:var(--node-border);}
+.btn.secondary.dark{ color:var(--stage-ink); border-color:var(--stage-hair2); background:var(--stage-alt);}
+.btn.ghost{ background:transparent; border-color:transparent; color:var(--muted);}
+.btn.danger{ background:transparent; color:var(--muted); border-color:var(--node-border);}
+.btn.danger.dark{ color:var(--stage-muted); border-color:var(--stage-hair2); background:var(--stage-alt);}
+.btn.sm{ padding:6px 12px; font-size:12.5px; }
+.btn .kbd2{ font-family:'JetBrains Mono'; font-size:10.5px; opacity:.7; }
+
+/* ===================== STAGE HEAD (hero) ===================== */
+.stagehead{ padding:24px 34px 18px; border-bottom:1px solid var(--stage-hair); background:linear-gradient(180deg, rgba(20,27,24,.55), rgba(20,27,24,0)); position:relative; z-index:5;}
+.stagehead .row1{ display:flex; align-items:center; gap:14px; }
+.stagehead .rtitle{ font-family:'Gaegu'; font-weight:700; font-size:27px; color:var(--stage-ink); line-height:1; }
+.phasestepper{ display:flex; align-items:center; gap:7px; margin-left:auto; }
+.phasestepper .pp{ font-size:12px; color:var(--stage-faint); font-weight:600;}
+.phasestepper .pp.done{ color:var(--stage-muted);}
+.phasestepper .pp.on{ color:var(--green); }
+.phasestepper .ar{ color:var(--stage-faint); font-size:11px;}
+.stagehead .desc{ color:var(--stage-muted); font-size:13.5px; margin:9px 0 0; max-width:62ch; line-height:1.45;}
+.progressbar{ height:6px; border-radius:999px; background:var(--stage-hair); overflow:hidden; margin:14px 0 12px; max-width:560px;}
+.progressbar i{ display:block; height:100%; width:58%; background:linear-gradient(90deg,var(--green-deep),var(--green)); border-radius:999px;}
+.stagehead .row3{ display:flex; align-items:center; gap:10px; }
+.heartbeat{ width:8px;height:8px;border-radius:999px;background:var(--green); animation:pulse 1.8s infinite; }
+.ctrlcluster{ margin-left:auto; display:flex; gap:8px; }
+
+/* ===================== DAG CANVAS ===================== */
+.dagwrap{ position:absolute; inset:0; overflow:hidden; }
+.dag{ position:absolute; left:24px; top:18px; right:18px; bottom:54px; }
+.lanehead{ position:absolute; top:0; font-size:13px; font-weight:700; color:var(--stage-ink); display:flex; align-items:center; gap:8px;}
+.lanehead .ix{ font-family:'JetBrains Mono'; font-size:11px; color:var(--stage-faint); font-weight:500;}
+.lanehead .n{ font-family:'JetBrains Mono'; font-size:11px; color:var(--stage-muted);}
+.lanehead .line{ position:absolute; top:26px; left:0; height:1px; background:var(--stage-hair2);}
+.watermark{ position:absolute; font-family:'Gaegu'; font-weight:700; font-size:60px; color:rgba(236,241,238,.05); pointer-events:none; top:40px; }
+.edges{ position:absolute; inset:0; pointer-events:none; }
+.flowdot{ fill:var(--green-bright); }
+
+/* agent node */
+.node{ position:absolute; width:152px; background:var(--node-surface); border:1px solid var(--stage-node-border); border-left:3px solid var(--stage-node-border); border-radius:9px; padding:10px 12px; box-shadow:0 1px 0 rgba(255,255,255,.03), 0 8px 24px rgba(0,0,0,.45); }
+.node .h{ font-family:'JetBrains Mono'; font-weight:500; font-size:13px; color:var(--stage-ink); padding-right:14px; line-height:1.2; letter-spacing:-.2px;}
+.node .sub{ font-family:'JetBrains Mono'; font-weight:500; font-size:10.5px; color:var(--stage-muted); margin-top:5px; }
+.node .dot{ position:absolute; top:11px; right:11px; width:7px; height:7px; border-radius:999px; }
+.node .gl{ position:absolute; top:9px; right:9px; font-size:11px; }
+.node.running{ border-color:var(--green-border-dark); border-left-color:var(--green); box-shadow:0 0 0 1px rgba(34,226,166,.18), 0 0 22px rgba(16,185,129,.22), 0 8px 24px rgba(0,0,0,.45); }
+.node.running .dot{ background:var(--green); box-shadow:0 0 0 0 rgba(16,185,129,.45); animation:pulse 1.8s infinite; }
+.node.running .sub{ color:#9fe9cf;}
+.node.done{ border-color:var(--stage-node-border); border-left-color:var(--done); opacity:.92;}
+.node.done .dot{ background:var(--done);}
+.node.done .h{ color:var(--stage-muted);}
+.node.failed{ border-color:#492019; border-left-color:var(--red); box-shadow:0 0 0 4px rgba(239,68,68,.10), 0 8px 24px rgba(0,0,0,.5);}
+.node.failed .dot{ background:var(--red);}
+.node.queued{ border-style:dashed; border-color:var(--stage-node-border); border-left:3px solid var(--stage-faint); opacity:.6;}
+.node.queued .dot{ background:var(--stage-faint);}
+.node.queued .h{ color:var(--stage-muted);}
+.node.paused{ border-color:#43340f; border-left-color:var(--amber);} .node.paused .dot{ background:var(--amber);}
+.node .err{ font-family:'JetBrains Mono'; font-size:10px; color:#f7a8a0; margin-top:6px; background:rgba(239,68,68,.08); border-radius:4px; padding:3px 5px; line-height:1.3;}
+.node.compact{ width:118px; padding:7px 9px;}
+.node.compact .h{ font-size:11.5px;} .node.compact .sub{ display:none;}
+.groupcard{ position:absolute; width:152px; border:1px dashed var(--stage-hair2); border-radius:9px; padding:9px 12px; color:var(--stage-muted); font-family:'JetBrains Mono'; font-size:11.5px; background:rgba(31,35,41,.5);}
+.groupcard b{ color:var(--stage-ink);}
+
+/* footer ticker */
+.ticker{ position:absolute; left:0; right:0; bottom:0; height:36px; display:flex; align-items:center; justify-content:space-between; padding:0 20px; border-top:1px solid var(--stage-hair); background:rgba(20,27,24,.7); font-family:'JetBrains Mono'; font-size:11.5px; color:var(--stage-muted); z-index:5;}
+.ticker .r{ color:var(--stage-faint);}
+
+/* node detail panel */
+.detailpanel{ position:absolute; top:0; right:0; bottom:36px; width:360px; background:var(--stage-alt); border-left:1px solid var(--stage-hair); box-shadow:-18px 0 50px rgba(0,0,0,.55); z-index:7; padding:18px 20px; overflow:hidden;}
+.detailpanel h4{ font-family:'JetBrains Mono'; font-size:13px; color:var(--stage-ink); margin:0; font-weight:700;}
+.detailpanel .close{ position:absolute; top:16px; right:16px; color:var(--stage-faint); font-size:14px;}
+.dp-meta{ margin:16px 0; display:grid; grid-template-columns:auto 1fr; gap:8px 14px; font-size:12px;}
+.dp-meta .k{ color:var(--stage-faint); } .dp-meta .v{ font-family:'JetBrains Mono'; font-size:11.5px; color:var(--stage-ink); text-align:right;}
+.dp-sec{ font-size:11px; font-weight:600; letter-spacing:.05em; text-transform:uppercase; color:var(--stage-faint); margin:16px 0 8px;}
+.dp-out{ font-family:'JetBrains Mono'; font-size:11px; line-height:1.6; color:var(--stage-muted); background:var(--stage-bg); border:1px solid var(--stage-hair); border-radius:8px; padding:10px 12px; height:120px; overflow:hidden;}
+.dp-out .em{ color:#9fe9cf;}
+
+/* ===================== HUB / CARDS ===================== */
+.screenbody{ position:absolute; inset:0; }
+.content{ padding:30px 40px; overflow:hidden; height:100%;}
+.page-h1{ font-family:'Gaegu'; font-weight:700; font-size:30px; color:var(--ink); margin:0; line-height:1;}
+.page-sub{ color:var(--muted); font-size:14px; margin:8px 0 0; }
+.searchbar{ display:flex; align-items:center; gap:9px; background:#fff; border:1px solid var(--hair); border-radius:9px; padding:9px 13px; color:var(--faint); font-size:13px; width:320px;}
+.filterchips{ display:flex; gap:8px; margin-top:18px;}
+.fchip{ font-size:12.5px; font-weight:500; color:var(--muted); padding:6px 13px; border-radius:999px; border:1px solid var(--hair); background:#fff;}
+.fchip.on{ background:var(--ink); color:#fff; border-color:var(--ink);}
+.cardgrid{ display:grid; grid-template-columns:repeat(3,1fr); gap:20px; margin-top:24px;}
+.hubcard{ background:#fff; border:1px solid var(--hair); border-radius:14px; padding:20px; box-shadow:0 8px 20px rgba(0,0,0,.03);}
+.hubcard h3{ font-size:16px; font-weight:700; margin:0; color:var(--ink); display:flex; align-items:center; gap:8px;}
+.hubcard .tag{ font-family:'JetBrains Mono'; font-size:10px; color:var(--muted); background:var(--paper-alt); border:1px solid var(--hair); border-radius:999px; padding:1px 7px; font-weight:500;}
+.hubcard .ds{ color:var(--muted); font-size:13px; line-height:1.45; margin:9px 0 16px; min-height:38px;}
+.hubcard .fanout{ font-family:'JetBrains Mono'; font-size:11.5px; color:var(--green-deep); margin:14px 0 4px; }
+.hubcard .av{ font-family:'JetBrains Mono'; font-size:11.5px; color:var(--faint); }
+.hubcard .foot{ display:flex; align-items:center; justify-content:space-between; margin-top:16px; padding-top:15px; border-top:1px solid var(--soft);}
+
+/* mini dag glyph */
+.miniglyph{ display:flex; align-items:center; gap:0; height:30px; }
+.installed{ font-family:'JetBrains Mono'; font-size:12px; color:var(--green-deep); font-weight:600; display:inline-flex; gap:5px; align-items:center;}
+
+/* ===================== INSTALL REVIEW ===================== */
+.tworow{ display:grid; grid-template-columns:1fr 340px; height:100%;}
+.readcol{ padding:34px 40px; overflow:hidden;}
+.trustcol{ background:var(--paper-alt); border-left:1px solid var(--hair); padding:30px 26px; overflow:hidden;}
+.rsec{ font-size:11.5px; font-weight:600; letter-spacing:.05em; text-transform:uppercase; color:var(--muted); margin:26px 0 11px;}
+.prose{ color:#3a3a3a; font-size:14px; line-height:1.6; max-width:64ch;}
+.argrow{ display:grid; grid-template-columns:160px 90px 1fr; gap:10px; padding:9px 0; border-bottom:1px solid var(--soft); font-size:13px; align-items:center;}
+.argrow .nm{ font-family:'JetBrains Mono'; font-weight:500; color:var(--ink);}
+.argrow .ty{ font-family:'JetBrains Mono'; font-size:11.5px; color:var(--muted);}
+.argrow .rq{ font-size:11.5px; color:var(--red-deep); font-weight:600;}
+.argrow .df{ font-family:'JetBrains Mono'; font-size:11.5px; color:var(--faint);}
+.provrow{ display:flex; justify-content:space-between; font-size:12.5px; padding:7px 0; border-bottom:1px solid var(--hair);}
+.provrow .k{ color:var(--muted);} .provrow .v{ font-family:'JetBrains Mono'; font-size:11.5px; color:var(--ink); }
+.shabox{ background:#fff; border:1px solid var(--hair); border-radius:10px; padding:12px; margin-top:16px;}
+.shabox .lbl{ font-family:'JetBrains Mono'; font-size:10.5px; color:var(--muted); letter-spacing:.04em; text-transform:uppercase;}
+.shabox .hash{ font-family:'JetBrains Mono'; font-size:12px; color:var(--ink); margin:6px 0; word-break:break-all; line-height:1.45;}
+.shabox .cap{ font-size:11.5px; color:var(--green-deep); display:flex; align-items:center; gap:5px;}
+.srcview{ background:#0E1311; border-radius:10px; margin-top:16px; padding:12px 10px; font-family:'JetBrains Mono'; font-size:11px; line-height:1.7; color:#9fb0a6; overflow:hidden; max-height:160px;}
+.srcview .ln{ color:#3d4a44; user-select:none; display:inline-block; width:22px; text-align:right; margin-right:12px;}
+.srcview .kw{ color:#79c0ff;} .srcview .fn{ color:#d2a8ff;} .srcview .st{ color:#7ee787;} .srcview .cm{ color:#566;}
+.stickyfoot{ position:absolute; bottom:0; left:0; right:340px; padding:16px 40px; background:rgba(251,250,246,.9); border-top:1px solid var(--hair); display:flex; gap:12px; justify-content:flex-end; align-items:center; backdrop-filter:blur(4px);}
+.stickyfoot .note{ margin-right:auto; font-size:12px; color:var(--muted);}
+.stickyfoot .note code{ font-family:'JetBrains Mono'; background:var(--paper-alt); padding:2px 6px; border-radius:4px; font-size:11px;}
+
+/* ===================== LIBRARY ===================== */
+.installedcard{ background:#fff; border:1px solid var(--hair); border-radius:12px; padding:16px 18px; display:flex; align-items:center; gap:16px; margin-bottom:14px; box-shadow:0 6px 16px rgba(0,0,0,.03);}
+.installedcard .body{ flex:1; }
+.installedcard h3{ font-size:15px; font-weight:700; margin:0; color:var(--ink); display:flex; align-items:center; gap:10px;}
+.installedcard .ver{ font-family:'JetBrains Mono'; font-size:11px; color:var(--faint);}
+.installedcard .lastrun{ font-family:'JetBrains Mono'; font-size:11.5px; color:var(--muted); margin-top:6px;}
+.installedcard .ds{ color:var(--muted); font-size:13px; margin-top:3px;}
+.updatepill{ font-size:11px; color:var(--amber-ink); background:var(--amber-tint); border:1px solid var(--amber-border); border-radius:999px; padding:1px 8px; font-weight:600; display:inline-flex; gap:4px; align-items:center;}
+.kebab{ width:32px; height:32px; border:1px solid var(--hair); border-radius:8px; display:grid; place-items:center; color:var(--muted); background:#fff;}
+
+/* ===================== FORM (launcher) ===================== */
+.modalwrap{ position:absolute; inset:0; display:grid; place-items:center; background:rgba(20,18,12,.28); backdrop-filter:blur(2px);}
+.modal{ width:620px; background:#fff; border-radius:16px; box-shadow:0 40px 90px -20px rgba(0,0,0,.4); overflow:hidden; border:1px solid var(--hair);}
+.modal-h{ padding:22px 26px 18px; border-bottom:1px solid var(--soft); display:flex; align-items:flex-start; gap:14px;}
+.modal-h h2{ font-family:'Gaegu'; font-weight:700; font-size:26px; margin:0; color:var(--ink); line-height:1;}
+.modal-h p{ color:var(--muted); font-size:13px; margin:6px 0 0;}
+.modal-b{ padding:22px 26px; }
+.field{ margin-bottom:20px; }
+.field .lab{ display:flex; align-items:center; gap:8px; margin-bottom:7px;}
+.field .lab .nm{ font-size:13px; font-weight:600; color:var(--ink);}
+.field .lab .ty{ font-family:'JetBrains Mono'; font-size:11px; color:var(--muted); border:1px solid var(--hair); border-radius:5px; padding:1px 6px;}
+.field .lab .req{ font-size:11.5px; color:var(--red-deep); font-weight:600;}
+.input{ width:100%; border:1px solid var(--node-border); border-radius:9px; padding:11px 13px; font-size:14px; color:var(--ink); font-family:'Inter';}
+.input.focus{ border-color:var(--green); box-shadow:0 0 0 3px rgba(16,185,129,.12);}
+.stepper{ display:inline-flex; align-items:center; border:1px solid var(--node-border); border-radius:9px; overflow:hidden;}
+.stepper .v{ padding:10px 16px; font-family:'JetBrains Mono'; font-size:14px; color:var(--ink);}
+.stepper .b{ padding:10px 12px; color:var(--muted); border-left:1px solid var(--hair);}
+.field .help{ font-size:12px; color:var(--muted); margin-top:7px;}
+.field .ghost{ color:var(--faint); }
+.advanced{ font-size:13px; color:var(--green-deep); font-weight:600; }
+.modal-f{ padding:18px 26px; background:var(--paper-alt); border-top:1px solid var(--hair); }
+.runrow{ display:flex; align-items:center; gap:12px; }
+.adapterpick{ display:inline-flex; align-items:center; gap:7px; border:1px solid var(--node-border); border-radius:8px; padding:7px 12px; font-size:13px; background:#fff;}
+.adapterpick .mono{ font-family:'JetBrains Mono'; font-weight:600; }
+.climirror{ font-family:'JetBrains Mono'; font-size:11.5px; color:var(--muted); background:var(--stage-bg); color:#9fb0a6; border-radius:7px; padding:9px 12px; margin:14px 0; overflow:hidden; white-space:nowrap; text-overflow:ellipsis;}
+.climirror .p{ color:var(--green-bright); }
+
+/* ===================== ONBOARDING ===================== */
+.onb{ position:absolute; inset:0; display:grid; place-items:center; text-align:center;}
+.onb .constell{ position:absolute; inset:0; }
+.onb-card{ position:relative; z-index:2; max-width:680px; }
+.onb h1{ font-family:'Gaegu'; font-weight:700; font-size:52px; color:var(--stage-ink); margin:0; }
+.onb .sub{ color:var(--stage-muted); font-size:16px; margin:12px 0 0;}
+.onbsteps{ display:flex; align-items:center; justify-content:center; gap:0; margin:44px 0 36px;}
+.onbsteps .st{ display:flex; flex-direction:column; align-items:center; gap:8px; width:150px;}
+.onbsteps .st .n{ font-family:'JetBrains Mono'; font-size:13px; width:34px;height:34px;border-radius:999px; display:grid;place-items:center; border:1px solid var(--stage-hair2); color:var(--stage-muted);}
+.onbsteps .st.on .n{ background:var(--green-deep); color:#fff; border-color:var(--green-deep);}
+.onbsteps .st .l{ font-size:13px; color:var(--stage-muted); font-weight:500;}
+.onbsteps .st.on .l{ color:var(--stage-ink);}
+.onbsteps .bar{ width:90px; height:1px; background:var(--stage-hair2); margin:0 -10px; margin-bottom:26px;}
+.checkline{ display:inline-flex; align-items:center; gap:10px; font-family:'JetBrains Mono'; font-size:13px; color:var(--stage-muted); margin:5px 0;}
+.checkline .ck{ color:var(--green); } .checkline .cmd{ color:var(--stage-ink); }
+.onbnote{ color:var(--stage-faint); font-size:12.5px; margin-top:28px;}
+
+/* ===================== RUNS ===================== */
+.activestrip{ background:var(--stage-surface); border-bottom:1px solid var(--stage-hair); padding:18px 30px; }
+.activestrip .lbl{ font-size:11.5px; font-weight:600; letter-spacing:.06em; text-transform:uppercase; color:var(--stage-faint); margin-bottom:14px;}
+.runcards{ display:flex; gap:16px; }
+.runcard{ width:230px; background:var(--stage-alt); border:1px solid var(--stage-hair); border-radius:12px; padding:13px 15px;}
+.runcard.on{ border-color:var(--green-border-dark);}
+.runcard .top{ display:flex; align-items:center; justify-content:space-between;}
+.runcard .nm{ font-weight:600; font-size:13.5px; color:var(--stage-ink);}
+.runcard .spark{ display:flex; align-items:flex-end; gap:3px; height:24px; margin:11px 0 9px;}
+.runcard .spark i{ width:10px; background:var(--green-border-dark); border-radius:2px;}
+.runcard.run .spark i.a{ background:var(--green);}
+.runcard .strip{ height:5px; border-radius:999px; background:var(--stage-hair); overflow:hidden;}
+.runcard .strip i{ display:block;height:100%;background:var(--green); border-radius:999px;}
+.runcard .meta{ font-family:'JetBrains Mono'; font-size:11px; color:var(--stage-faint); margin-top:8px;}
+.histtable{ width:100%; border-collapse:collapse; margin-top:6px;}
+.histtable th{ text-align:left; font-size:11px; font-weight:600; letter-spacing:.04em; text-transform:uppercase; color:var(--muted); padding:10px 12px; border-bottom:1px solid var(--hair);}
+.histtable td{ padding:13px 12px; border-bottom:1px solid var(--soft); font-size:13px; color:var(--ink);}
+.histtable td.mono{ font-family:'JetBrains Mono'; font-size:12px; color:var(--muted);}
+.daterow td{ font-size:12px; font-weight:600; color:var(--muted); background:var(--paper-alt); padding:7px 12px;}
+
+/* ===================== SETTINGS ===================== */
+.setrow{ display:flex; align-items:center; gap:16px; padding:16px 0; border-bottom:1px solid var(--soft);}
+.setrow .body{ flex:1;} .setrow h4{ margin:0; font-size:14px; font-weight:600; color:var(--ink);}
+.setrow .d{ font-size:12.5px; color:var(--muted); margin-top:3px;}
+.setrow .path{ font-family:'JetBrains Mono'; font-size:12px; color:var(--green-deep);}
+.toggle{ width:40px; height:23px; border-radius:999px; background:var(--green-deep); position:relative;}
+.toggle i{ position:absolute; top:2px; right:2px; width:19px;height:19px;border-radius:999px; background:#fff;}
+.toggle.off{ background:var(--node-border);} .toggle.off i{ left:2px; right:auto;}
+
+/* ===================== FOUNDATIONS ===================== */
+.found{ padding:36px 44px; height:100%; overflow:hidden;}
+.swatchrow{ display:flex; gap:12px; flex-wrap:wrap; margin:10px 0 26px;}
+.swatch{ width:118px;}
+.swatch .ch{ height:56px; border-radius:10px; border:1px solid rgba(0,0,0,.08);}
+.swatch .nm{ font-size:12px; font-weight:600; color:var(--ink); margin-top:7px;}
+.swatch .hx{ font-family:'JetBrains Mono'; font-size:10.5px; color:var(--muted);}
+.typerow{ display:flex; align-items:baseline; gap:18px; padding:9px 0; border-bottom:1px solid var(--soft);}
+.typerow .tag{ font-family:'JetBrains Mono'; font-size:11px; color:var(--muted); width:120px;}
+.found h3{ font-family:'Gaegu'; font-weight:700; font-size:24px; margin:0 0 6px; color:var(--ink);}
+.found .lead{ color:var(--muted); font-size:13px; margin:0 0 22px; max-width:60ch;}
+</style>
+</head>
+<body>
+<div class="board">
+
+  <div class="board-head">
+    <div class="mark">
+      <svg width="58" height="34" viewBox="0 0 116 64" fill="none">
+        <path d="M14 44 C44 44, 50 22, 78 22" stroke="#16C079" stroke-width="11" stroke-linecap="round"/>
+        <path d="M62 30 L58 46" stroke="#16C079" stroke-width="9" stroke-linecap="round"/>
+        <circle cx="14" cy="44" r="11" fill="#15110F"/>
+        <circle cx="92" cy="22" r="11" fill="#15110F"/>
+        <circle cx="55" cy="52" r="8" fill="#16C079"/>
+      </svg>
+      <h1>Open Dynamic Workflows</h1>
+    </div>
+    <p>Desktop client — a mission-control app for fanning out coding agents. You browse shareable workflows, install one with a provenance check, fill a form generated from its inputs, and <b style="color:#cfe">watch the run fan out live as a DAG</b>. Designed around a two-zone canvas: charcoal when you <b style="color:#9fe9cf">watch a live machine</b>, warm paper when you <b style="color:#e7d9a8">read &amp; fill</b>.</p>
+    <div class="meta">design system: emerald status semantics · 34px blueprint grid · Gaegu / Inter / JetBrains Mono · 1440×900 macOS</div>
+  </div>
+
+  <!-- ============================ 01 · HERO ============================ -->
+  <div class="frame-wrap" id="s01" style="scroll-margin-top:24px;">
+    <div class="frame-label"><span class="n">01</span><span class="t">Live Run — DAG Mission Control</span><span class="z watch">WATCH · charcoal</span></div>
+    <div class="frame grid-stage">
+      <div class="app has-rail" style="grid-template-rows:52px 1fr 28px;">
+
+        <!-- toolbar -->
+        <div class="toolbar">
+          <div style="display:flex;align-items:center;">
+            <div class="tl"><i class="r"></i><i class="y"></i><i class="g"></i></div>
+            <div class="crumb"><span class="s">Runs</span><span class="sep">/</span><span class="cur">deep-research</span><span class="idchip">#20260605-1442-a3f9</span></div>
+          </div>
+          <div class="seg"><b class="on">Graph</b><b>Logs</b><b>Result</b></div>
+          <div class="tr"><span class="kbd">⌘K</span><span class="conn live"><span class="d"></span>Live · 实时</span><svg class="gear" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1l2-1.6-2-3.4-2.4 1a7 7 0 0 0-1.7-1L14.5 2h-5l-.3 2.6a7 7 0 0 0-1.7 1l-2.4-1-2 3.4 2 1.6a7 7 0 0 0 0 2l-2 1.6 2 3.4 2.4-1a7 7 0 0 0 1.7 1l.3 2.4h5l.3-2.6a7 7 0 0 0 1.7-1l2.4 1 2-3.4-2-1.6a7 7 0 0 0 .1-1Z"/></svg></div>
+        </div>
+
+        <!-- body: run sidebar + stage -->
+        <div class="body" style="display:grid;grid-template-columns:340px 1fr;">
+
+          <!-- run sidebar -->
+          <div class="runsidebar" style="padding:20px 16px;display:flex;flex-direction:column;">
+            <div class="brand dark" style="margin-bottom:6px;">
+              <svg class="logo" viewBox="0 0 116 64" fill="none"><path d="M14 44 C44 44, 50 22, 78 22" stroke="#16C079" stroke-width="11" stroke-linecap="round"/><path d="M62 30 L58 46" stroke="#16C079" stroke-width="9" stroke-linecap="round"/><circle cx="14" cy="44" r="11" fill="#0b0f0d"/><circle cx="92" cy="22" r="11" fill="#0b0f0d"/><circle cx="55" cy="52" r="8" fill="#16C079"/></svg>
+              <span class="wm">odw</span>
+            </div>
+            <div class="tagline dark">fan out coding agents</div>
+
+            <div class="section-label dark"><span>Running</span><span class="num">3</span></div>
+            <div class="runcard run on" style="margin:6px 0 10px;">
+              <div class="top"><span class="nm">deep-research</span><span class="conn live" style="font-size:11px;"><span class="d"></span></span></div>
+              <div class="spark"><i class="a" style="height:7px"></i><i class="a" style="height:14px"></i><i class="a" style="height:20px"></i><i style="height:9px"></i><i class="a" style="height:23px"></i><i style="height:6px"></i></div>
+              <div class="strip"><i style="width:58%"></i></div>
+              <div class="meta">5 phase · 31 agent · 58%</div>
+            </div>
+            <div class="runcard run" style="margin-bottom:10px;">
+              <div class="top"><span class="nm">agent-daily-digest</span><span class="conn live" style="font-size:11px;"><span class="d"></span></span></div>
+              <div class="spark"><i class="a" style="height:9px"></i><i class="a" style="height:17px"></i><i style="height:7px"></i><i class="a" style="height:12px"></i><i style="height:6px"></i><i style="height:6px"></i></div>
+              <div class="strip"><i style="width:34%"></i></div>
+              <div class="meta">3 phase · 9 agent · 34%</div>
+            </div>
+
+            <div class="section-label dark" style="margin-top:8px;"><span>Ended</span><span class="num" style="color:var(--stage-faint)">12</span></div>
+            <div class="runcard" style="margin:6px 0 8px;opacity:.85;">
+              <div class="top"><span class="nm" style="color:var(--stage-muted)">routing</span><span class="badge dark failed" style="padding:1px 7px;font-size:10px;"><span class="d"></span>failed</span></div>
+              <div class="meta" style="margin-top:9px;">3 agent · 0m38s · codex</div>
+            </div>
+            <div class="runcard" style="opacity:.7;">
+              <div class="top"><span class="nm" style="color:var(--stage-muted)">tournament</span><span class="badge done" style="padding:1px 7px;font-size:10px;background:#1c2420;border-color:#2c3631;color:#8A988F;"><span class="d" style="background:#7E8D84"></span>done</span></div>
+              <div class="meta" style="margin-top:9px;">8 agent · 6m02s · claude</div>
+            </div>
+
+            <div class="spacer"></div>
+            <div style="font-family:'JetBrains Mono';font-size:11px;color:var(--stage-faint);display:flex;justify-content:space-between;padding:0 6px;border-top:1px solid var(--stage-hair);padding-top:12px;"><span>running 3</span><span>all 15</span></div>
+          </div>
+
+          <!-- stage -->
+          <div class="stage" style="position:relative;display:flex;flex-direction:column;overflow:hidden;">
+            <div class="stagehead">
+              <div class="row1">
+                <span class="rtitle">deep-research</span>
+                <span class="badge dark running"><span class="d"></span>running</span>
+                <div class="phasestepper">
+                  <span class="pp done">Plan</span><span class="ar">▸</span>
+                  <span class="pp done">Search</span><span class="ar">▸</span>
+                  <span class="pp on">Extract</span><span class="ar">▸</span>
+                  <span class="pp">Vote</span><span class="ar">▸</span>
+                  <span class="pp">Report</span>
+                </div>
+              </div>
+              <div class="progressbar"><i></i></div>
+              <div class="row3">
+                <span class="chip"><b>31</b> agent</span>
+                <span class="chip"><span class="em">●</span><b>18</b> running</span>
+                <span class="chip"><b>11</b> done</span>
+                <span class="chip"><span class="rd">✕</span><b>1</b> failed</span>
+                <span class="chip"><b>5</b> phases</span>
+                <span class="chip" style="border-color:var(--stage-hair2);"><b>2m41s</b></span>
+                <span class="chip" style="border-color:var(--stage-hair2);"><b>41k</b>/120k tok</span>
+                <span class="heartbeat"></span>
+                <div class="ctrlcluster">
+                  <span class="btn secondary dark sm">⏸ Pause <span class="kbd2">⌥P</span></span>
+                  <span class="btn danger dark sm">⏹ Stop <span class="kbd2">⌥⇧.</span></span>
+                </div>
+              </div>
+            </div>
+
+            <!-- DAG area -->
+            <div class="dagarea" style="position:relative;flex:1;overflow:hidden;">
+              <div class="dag" style="width:1040px;height:600px;position:relative;margin:14px auto 0;">
+                <!-- watermarks -->
+                <div class="watermark" style="left:6px;">Plan</div>
+                <div class="watermark" style="left:221px;">Search</div>
+                <div class="watermark" style="left:441px;">Extract</div>
+                <div class="watermark" style="left:661px;">Vote</div>
+                <div class="watermark" style="left:876px;">Report</div>
+                <!-- lane heads -->
+                <div class="lanehead" style="left:10px;width:152px;"><span class="ix">1/5</span> Plan <span class="n">1</span><span class="line" style="width:152px;"></span></div>
+                <div class="lanehead" style="left:225px;width:152px;"><span class="ix">2/5</span> Search <span class="n">14</span><span class="line" style="width:152px;"></span></div>
+                <div class="lanehead" style="left:445px;width:152px;"><span class="ix">3/5</span> Extract <span class="n">9</span><span class="line" style="width:152px;"></span></div>
+                <div class="lanehead" style="left:665px;width:152px;"><span class="ix">4/5</span> Vote <span class="n">10</span><span class="line" style="width:152px;"></span></div>
+                <div class="lanehead" style="left:880px;width:152px;"><span class="ix">5/5</span> Report <span class="n">1</span><span class="line" style="width:152px;"></span></div>
+
+                <!-- edges -->
+                <svg class="edges" width="1040" height="600" viewBox="0 0 1040 600" preserveAspectRatio="none" fill="none">
+                  <!-- plan -> branch stub -->
+                  <path d="M162 278 L196 278" stroke="#16C079" stroke-width="2.5" stroke-linecap="round"/>
+                  <path d="M196 278 L196 300" stroke="#16C079" stroke-width="2.5" stroke-linecap="round" opacity="0.85"/>
+                  <!-- plan fan-out to search -->
+                  <path d="M196 278 C214 278 210 98 225 98" stroke="#16C079" stroke-width="2"/>
+                  <path d="M196 278 C214 278 210 170 225 170" stroke="#16C079" stroke-width="2"/>
+                  <path d="M196 278 C214 278 210 242 225 242" stroke="#7E8D84" stroke-width="1.6"/>
+                  <path d="M196 278 C214 278 210 314 225 314" stroke="#16C079" stroke-width="2"/>
+                  <path d="M196 278 C214 290 210 386 225 386" stroke="#33433B" stroke-width="1.4"/>
+                  <!-- search -> extract -->
+                  <path d="M377 98 C410 98 412 98 445 98" stroke="#16C079" stroke-width="2"/>
+                  <path d="M377 170 C410 170 412 170 445 170" stroke="#ef4444" stroke-width="2"/>
+                  <path d="M377 242 C410 242 412 242 445 242" stroke="#7E8D84" stroke-width="1.6"/>
+                  <!-- extract -> vote -->
+                  <path d="M597 98 C630 98 632 98 665 98" stroke="#16C079" stroke-width="2"/>
+                  <path d="M597 242 C632 242 634 170 665 170" stroke="#16C079" stroke-width="2"/>
+                  <!-- vote -> report -->
+                  <path d="M817 98 C850 98 852 122 880 122" stroke="#33433B" stroke-width="1.6" stroke-dasharray="4 5"/>
+                  <!-- flow dots (live work) -->
+                  <circle r="3.2" class="flowdot"><animateMotion dur="1.3s" repeatCount="indefinite" path="M196 278 C214 278 210 98 225 98"/></circle>
+                  <circle r="3.2" class="flowdot"><animateMotion dur="1.5s" repeatCount="indefinite" path="M196 278 C214 278 210 314 225 314"/></circle>
+                  <circle r="3.2" class="flowdot"><animateMotion dur="1.2s" repeatCount="indefinite" path="M377 98 C410 98 412 98 445 98"/></circle>
+                  <circle r="3.2" class="flowdot"><animateMotion dur="1.4s" repeatCount="indefinite" path="M597 98 C630 98 632 98 665 98"/></circle>
+                  <circle r="3.2" fill="#ef4444"><animateMotion dur="1.6s" repeatCount="indefinite" path="M377 170 C410 170 412 170 445 170"/></circle>
+                </svg>
+
+                <!-- PLAN -->
+                <div class="node done" style="left:10px;top:252px;width:152px;"><div class="h">plan ✓</div><div class="sub">claude · 0m22s</div><span class="dot"></span></div>
+                <!-- SEARCH fan-out -->
+                <div class="node running" style="left:225px;top:72px;"><div class="h">search:angle-1</div><div class="sub">codex · ⏱ 2m17s</div><span class="dot"></span></div>
+                <div class="node running" style="left:225px;top:144px;"><div class="h">search:angle-2</div><div class="sub">codex · ⏱ 1m48s</div><span class="dot"></span></div>
+                <div class="node done" style="left:225px;top:216px;"><div class="h">search:angle-3</div><div class="sub">codex · 1m04s</div><span class="dot"></span><span class="gl" style="color:var(--done)">✓</span></div>
+                <div class="node running" style="left:225px;top:288px;"><div class="h">search:angle-4</div><div class="sub">gemini · ⏱ 0m51s</div><span class="dot"></span></div>
+                <div class="groupcard" style="left:225px;top:362px;"><b>+9</b> agents queued · fan-out</div>
+                <!-- EXTRACT -->
+                <div class="node running" style="left:445px;top:72px;"><div class="h">extract:angle-1</div><div class="sub">claude · ⏱ 0m30s</div><span class="dot"></span></div>
+                <div class="node failed" style="left:445px;top:144px;"><div class="h">extract:angle-2</div><span class="dot"></span><span class="gl" style="color:var(--red)">✕</span><div class="err">exit 1 · non-zero · malformed JSON under schema</div></div>
+                <div class="node running" style="left:445px;top:222px;"><div class="h">extract:angle-3</div><div class="sub">claude · ⏱ 0m18s</div><span class="dot"></span></div>
+                <div class="groupcard" style="left:445px;top:296px;"><b>+5</b> agents queued</div>
+                <!-- VOTE -->
+                <div class="node running" style="left:665px;top:72px;"><div class="h">vote:1</div><div class="sub">claude · ⏱ 0m12s</div><span class="dot"></span></div>
+                <div class="node running" style="left:665px;top:144px;"><div class="h">vote:2</div><div class="sub">claude · ⏱ 0m09s</div><span class="dot"></span></div>
+                <div class="groupcard" style="left:665px;top:216px;"><b>+8</b> queued</div>
+                <!-- REPORT -->
+                <div class="node queued" style="left:880px;top:96px;"><div class="h">report</div><div class="sub">planned</div><span class="dot"></span></div>
+              </div>
+
+              <!-- node detail panel -->
+              <div class="detailpanel">
+                <span class="close">esc ✕</span>
+                <h4>extract:angle-2</h4>
+                <div style="margin-top:8px;"><span class="badge dark failed"><span class="d"></span>failed</span></div>
+                <div class="dp-meta">
+                  <span class="k">adapter</span><span class="v">claude · sonnet</span>
+                  <span class="k">phase</span><span class="v">Extract · 3/5</span>
+                  <span class="k">group</span><span class="v">parallel · 2/14</span>
+                  <span class="k">started</span><span class="v">14:44:12 · +0m07s</span>
+                  <span class="k">exit code</span><span class="v" style="color:#f7a8a0">1 · non-zero</span>
+                </div>
+                <div class="dp-sec">Error · malformed JSON under schema</div>
+                <div class="dp-out"><span style="color:#f7a8a0">SchemaError: response did not match</span><br>  expected { claims: array }<br>  got "I found several relevant…"<br><span style="color:#f7a8a0">retry 2/2 exhausted</span></div>
+                <div style="display:flex;gap:8px;margin-top:14px;"><span class="btn primary sm">↻ Retry this agent</span><span class="btn secondary dark sm">Open run dir</span></div>
+                <div class="dp-sec" style="margin-top:18px;">Prompt ▸</div>
+                <div style="font-family:'JetBrains Mono';font-size:11px;color:var(--stage-faint);">Extract every cited claim from angle-2 sources as {claims:[…]} …</div>
+              </div>
+
+              <!-- footer ticker -->
+              <div class="ticker">
+                <span>▸ Extract phase: 9 agents pulling cited claims from 24 sources…</span>
+                <span class="r">last activity 2s · 最近活动 2s</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- status bar -->
+        <div class="statusbar">
+          <span>3 active · 18 running</span>
+          <span style="font-family:'JetBrains Mono';color:var(--stage-muted);">claude · sonnet</span>
+          <span style="display:inline-flex;align-items:center;gap:7px;"><span class="live-dot"></span> live · SSE</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================ 02 · HUB ============================ -->
+  <div class="frame-wrap" id="s02" style="scroll-margin-top:24px;">
+    <div class="frame-label"><span class="n">02</span><span class="t">Workflow Hub — discover &amp; install</span><span class="z read">READ · paper</span></div>
+    <div class="frame grid-paper">
+      <div class="app has-rail" style="grid-template-rows:52px 1fr 28px;">
+        <!-- paper toolbar -->
+        <div class="toolbar paper">
+          <div style="display:flex;align-items:center;">
+            <div class="tl"><i class="r"></i><i class="y"></i><i class="g"></i></div>
+            <div class="crumb paper"><span class="cur">Hub</span></div>
+          </div>
+          <div class="seg paper"><b class="on">Hub</b><b>Runs</b></div>
+          <div class="tr"><span class="kbd paper">⌘K</span><span class="conn live"><span class="d"></span>3 live</span><svg class="gear" style="color:var(--muted)" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1l2-1.6-2-3.4-2.4 1a7 7 0 0 0-1.7-1L14.5 2h-5l-.3 2.6a7 7 0 0 0-1.7 1l-2.4-1-2 3.4 2 1.6a7 7 0 0 0 0 2l-2 1.6 2 3.4 2.4-1a7 7 0 0 0 1.7 1l.3 2.4h5l.3-2.6a7 7 0 0 0 1.7-1l2.4 1 2-3.4-2-1.6a7 7 0 0 0 .1-1Z"/></svg></div>
+        </div>
+
+        <div class="body" style="display:grid;grid-template-columns:240px 1fr;">
+          <!-- nav rail (paper) -->
+          <div class="rail">
+            <div class="brand paper"><svg class="logo" viewBox="0 0 116 64" fill="none"><path d="M14 44 C44 44, 50 22, 78 22" stroke="#16C079" stroke-width="11" stroke-linecap="round"/><path d="M62 30 L58 46" stroke="#16C079" stroke-width="9" stroke-linecap="round"/><circle cx="14" cy="44" r="11" fill="#15110F"/><circle cx="92" cy="22" r="11" fill="#15110F"/><circle cx="55" cy="52" r="8" fill="#16C079"/></svg><span class="wm">odw</span></div>
+            <div class="tagline">fan out coding agents</div>
+            <div class="navitem on"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>Hub</div>
+            <div class="navitem"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h16M4 18h16"/></svg>Library</div>
+            <div class="navitem"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h4l2-7 4 14 2-7h6"/></svg>Runs<span class="count">3</span></div>
+            <div class="navitem"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 3v18M5 4h11l-2 4 2 4H5"/></svg>Onboarding</div>
+            <div class="divider"></div>
+            <div class="section-label"><span>Live now</span><span class="num">3</span></div>
+            <div class="minirun" style="color:var(--muted);"><span class="dot"></span><span class="nm" style="color:var(--ink)">deep-research</span><span class="ph" style="color:var(--faint)">3/5</span></div>
+            <div class="minirun" style="color:var(--muted);"><span class="dot"></span><span class="nm" style="color:var(--ink)">agent-daily-digest</span><span class="ph" style="color:var(--faint)">2/3</span></div>
+            <div class="spacer"></div>
+            <div class="navitem"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 13a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-2.7 1.1V20a2 2 0 1 1-4 0v-.1A1.6 1.6 0 0 0 6.6 18.3a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0-1.1-2.7H2a2 2 0 1 1 0-4h.1A1.6 1.6 0 0 0 3.7 6.6a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3H8.4A1.6 1.6 0 0 0 10 2.6V2a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 2.7 1.1 2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8V8.4a1.6 1.6 0 0 0 1.4 1.6H22a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1Z"/></svg>Settings</div>
+          </div>
+
+          <!-- hub content -->
+          <div class="content" style="position:relative;">
+            <div style="display:flex;align-items:flex-end;justify-content:space-between;">
+              <div>
+                <h1 class="page-h1">Workflow Hub</h1>
+                <p class="page-sub">Installable, shareable agent workflows. Open one to see its phases and what it fans out.</p>
+              </div>
+              <div class="searchbar"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg>search by name, phase, or what it does</div>
+            </div>
+            <div class="filterchips"><span class="fchip on">All</span><span class="fchip">Research</span><span class="fchip">Code</span><span class="fchip">Ops</span><span class="fchip">Content</span></div>
+
+            <div class="cardgrid">
+              <!-- deep-research -->
+              <div class="hubcard">
+                <h3>deep-research</h3>
+                <p class="ds">Fan-out web research that cross-checks cited claims by vote, then writes a sourced report.</p>
+                <svg class="miniglyph" width="180" height="30" viewBox="0 0 180 30"><line x1="14" y1="15" x2="166" y2="15" stroke="#BFE6D5" stroke-width="2"/><circle cx="14" cy="15" r="5" fill="#0a7d57"/><circle cx="52" cy="15" r="5" fill="#0a7d57"/><circle cx="90" cy="8" r="4" fill="#10b981"/><circle cx="90" cy="22" r="4" fill="#10b981"/><circle cx="128" cy="15" r="5" fill="#0a7d57"/><circle cx="166" cy="15" r="5" fill="#0a7d57"/></svg>
+                <div class="fanout">↯ fans out ~31 agents · 5 phases</div>
+                <div class="hubcard .foot foot"><span class="av">odw-team · v1.2.0</span><span class="btn primary sm">Install</span></div>
+              </div>
+              <!-- fan-out-reduce -->
+              <div class="hubcard">
+                <h3>fan-out-reduce</h3>
+                <p class="ds">Draft N candidates in parallel, then synthesize the single best answer from the batch.</p>
+                <svg class="miniglyph" width="180" height="30" viewBox="0 0 180 30"><circle cx="16" cy="15" r="5" fill="#0a7d57"/><line x1="16" y1="15" x2="70" y2="6" stroke="#BFE6D5" stroke-width="2"/><line x1="16" y1="15" x2="70" y2="15" stroke="#BFE6D5" stroke-width="2"/><line x1="16" y1="15" x2="70" y2="24" stroke="#BFE6D5" stroke-width="2"/><circle cx="74" cy="6" r="4" fill="#10b981"/><circle cx="74" cy="15" r="4" fill="#10b981"/><circle cx="74" cy="24" r="4" fill="#10b981"/><line x1="78" y1="6" x2="150" y2="15" stroke="#BFE6D5" stroke-width="2"/><line x1="78" y1="15" x2="150" y2="15" stroke="#BFE6D5" stroke-width="2"/><line x1="78" y1="24" x2="150" y2="15" stroke="#BFE6D5" stroke-width="2"/><circle cx="156" cy="15" r="5" fill="#0a7d57"/></svg>
+                <div class="fanout">↯ fans out ~8 agents · 2 phases</div>
+                <div class="foot"><span class="av">odw-team · v0.9.0</span><span class="installed">✓ Installed</span></div>
+              </div>
+              <!-- routing -->
+              <div class="hubcard">
+                <h3>routing <span class="tag">bundled</span></h3>
+                <p class="ds">Classify the request, route to a specialist agent, then grade the result.</p>
+                <svg class="miniglyph" width="180" height="30" viewBox="0 0 180 30"><circle cx="16" cy="15" r="5" fill="#0a7d57"/><line x1="16" y1="15" x2="86" y2="8" stroke="#BFE6D5" stroke-width="2"/><line x1="16" y1="15" x2="86" y2="22" stroke="#BFE6D5" stroke-width="2"/><circle cx="90" cy="8" r="4" fill="#10b981"/><circle cx="90" cy="22" r="4" fill="#10b981"/><line x1="94" y1="8" x2="160" y2="15" stroke="#BFE6D5" stroke-width="2"/><circle cx="164" cy="15" r="5" fill="#0a7d57"/></svg>
+                <div class="fanout">↯ fans out ~3 agents · 3 phases</div>
+                <div class="foot"><span class="av">odw-team · v1.0.0</span><span class="btn primary sm">Install</span></div>
+              </div>
+              <!-- tournament -->
+              <div class="hubcard">
+                <h3>tournament</h3>
+                <p class="ds">N approaches attempt the task, a pairwise judging bracket runs, one winner advances.</p>
+                <svg class="miniglyph" width="180" height="30" viewBox="0 0 180 30"><circle cx="14" cy="6" r="4" fill="#10b981"/><circle cx="14" cy="24" r="4" fill="#10b981"/><line x1="14" y1="6" x2="64" y2="11" stroke="#BFE6D5" stroke-width="2"/><line x1="14" y1="24" x2="64" y2="19" stroke="#BFE6D5" stroke-width="2"/><circle cx="68" cy="11" r="4" fill="#10b981"/><circle cx="68" cy="19" r="4" fill="#10b981"/><line x1="68" y1="11" x2="120" y2="15" stroke="#BFE6D5" stroke-width="2"/><line x1="68" y1="19" x2="120" y2="15" stroke="#BFE6D5" stroke-width="2"/><circle cx="124" cy="15" r="5" fill="#0a7d57"/><line x1="129" y1="15" x2="162" y2="15" stroke="#BFE6D5" stroke-width="2"/><circle cx="166" cy="15" r="5" fill="#0a7d57"/></svg>
+                <div class="fanout">↯ fans out ~7 agents · 3 phases</div>
+                <div class="foot"><span class="av">community · v0.4.1</span><span class="btn primary sm">Install</span></div>
+              </div>
+              <!-- generate-and-filter -->
+              <div class="hubcard">
+                <h3>generate-and-filter</h3>
+                <p class="ds">Generate many ideas in parallel, dedupe, and keep only the rubric-passers.</p>
+                <svg class="miniglyph" width="180" height="30" viewBox="0 0 180 30"><circle cx="16" cy="15" r="5" fill="#0a7d57"/><line x1="16" y1="15" x2="70" y2="5" stroke="#BFE6D5" stroke-width="2"/><line x1="16" y1="15" x2="70" y2="15" stroke="#BFE6D5" stroke-width="2"/><line x1="16" y1="15" x2="70" y2="25" stroke="#BFE6D5" stroke-width="2"/><circle cx="74" cy="5" r="4" fill="#10b981"/><circle cx="74" cy="15" r="4" fill="#10b981"/><circle cx="74" cy="25" r="4" fill="#10b981"/><rect x="110" y="9" width="12" height="12" rx="2" fill="none" stroke="#0a7d57" stroke-width="2"/><line x1="78" y1="10" x2="110" y2="15" stroke="#BFE6D5" stroke-width="2"/><line x1="126" y1="15" x2="160" y2="15" stroke="#BFE6D5" stroke-width="2"/><circle cx="164" cy="15" r="5" fill="#0a7d57"/></svg>
+                <div class="fanout">↯ fans out ~12 agents · 3 phases</div>
+                <div class="foot"><span class="av">community · v1.1.0</span><span class="btn primary sm">Install</span></div>
+              </div>
+              <!-- adversarial-verify -->
+              <div class="hubcard">
+                <h3>adversarial-verify</h3>
+                <p class="ds">Surface findings, then keep only those that survive independent refutation.</p>
+                <svg class="miniglyph" width="180" height="30" viewBox="0 0 180 30"><circle cx="16" cy="15" r="5" fill="#0a7d57"/><line x1="16" y1="15" x2="72" y2="6" stroke="#BFE6D5" stroke-width="2"/><line x1="16" y1="15" x2="72" y2="15" stroke="#BFE6D5" stroke-width="2"/><line x1="16" y1="15" x2="72" y2="24" stroke="#BFE6D5" stroke-width="2"/><circle cx="76" cy="6" r="4" fill="#10b981"/><circle cx="76" cy="15" r="4" fill="#ef4444"/><circle cx="76" cy="24" r="4" fill="#10b981"/><line x1="80" y1="6" x2="158" y2="15" stroke="#BFE6D5" stroke-width="2"/><line x1="80" y1="24" x2="158" y2="15" stroke="#BFE6D5" stroke-width="2"/><circle cx="162" cy="15" r="5" fill="#0a7d57"/></svg>
+                <div class="fanout">↯ fans out ~9 agents · 2 phases</div>
+                <div class="foot"><span class="av">community · v0.6.0</span><span class="btn primary sm">Install</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="statusbar paper"><span>3 active · 18 running</span><span style="font-family:'JetBrains Mono';">claude · sonnet</span><span style="display:inline-flex;align-items:center;gap:7px;"><span class="live-dot"></span> live</span></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+  /* ?only=s0X renders one screen alone at top-left (for screenshots + Figma capture) */
+  document.addEventListener('DOMContentLoaded',()=>{
+    const only=new URLSearchParams(location.search).get('only');
+    if(!only)return;
+    document.querySelectorAll('.frame-wrap').forEach(f=>{ if(f.id!==only) f.remove(); });
+    const b=document.querySelector('.board'); b.style.padding='0'; b.style.width='auto'; b.style.margin='0';
+    const h=document.querySelector('.board-head'); if(h)h.remove();
+    const t=document.getElementById(only); if(t){ t.style.margin='0'; const l=t.querySelector('.frame-label'); if(l)l.style.display='none'; }
+    document.body.style.background='#0b0d0c';
+  });
+  </script>
+
+  <!-- ============================ 04 · LIBRARY ============================ -->
+  <div class="frame-wrap" id="s04" style="scroll-margin-top:24px;">
+    <div class="frame-label"><span class="n">04</span><span class="t">Library — your installed workflows</span><span class="z read">READ · paper</span></div>
+    <div class="frame grid-paper">
+      <div class="app has-rail" style="grid-template-rows:52px 1fr 28px;">
+        <div class="toolbar paper">
+          <div style="display:flex;align-items:center;">
+            <div class="tl"><i class="r"></i><i class="y"></i><i class="g"></i></div>
+            <div class="crumb paper"><span class="cur">Library</span></div>
+          </div>
+          <div class="seg paper"><b class="on">Hub</b><b>Runs</b></div>
+          <div class="tr"><span class="kbd paper">⌘K</span><span class="conn live"><span class="d"></span>3 live</span></div>
+        </div>
+        <div class="body" style="display:grid;grid-template-columns:240px 1fr;">
+          <div class="rail">
+            <div class="brand paper"><svg class="logo" viewBox="0 0 116 64" fill="none"><path d="M14 44 C44 44, 50 22, 78 22" stroke="#16C079" stroke-width="11" stroke-linecap="round"/><path d="M62 30 L58 46" stroke="#16C079" stroke-width="9" stroke-linecap="round"/><circle cx="14" cy="44" r="11" fill="#15110F"/><circle cx="92" cy="22" r="11" fill="#15110F"/><circle cx="55" cy="52" r="8" fill="#16C079"/></svg><span class="wm">odw</span></div>
+            <div class="tagline">fan out coding agents</div>
+            <div class="navitem"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>Hub</div>
+            <div class="navitem on"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h16M4 18h16"/></svg>Library</div>
+            <div class="navitem"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h4l2-7 4 14 2-7h6"/></svg>Runs<span class="count">3</span></div>
+            <div class="divider"></div>
+            <div class="section-label"><span>Live now</span><span class="num">3</span></div>
+            <div class="minirun"><span class="dot"></span><span class="nm" style="color:var(--ink)">deep-research</span><span class="ph" style="color:var(--faint)">3/5</span></div>
+            <div class="minirun"><span class="dot"></span><span class="nm" style="color:var(--ink)">agent-daily-digest</span><span class="ph" style="color:var(--faint)">2/3</span></div>
+            <div class="spacer"></div>
+            <div class="navitem"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg>Settings</div>
+          </div>
+          <div class="content">
+            <div style="display:flex;align-items:flex-end;justify-content:space-between;">
+              <div><h1 class="page-h1">Your workflows</h1><p class="page-sub">4 installed · ready to run. <span style="color:var(--green-deep);font-weight:600;">Get more from the Hub →</span></p></div>
+              <span class="btn secondary sm">sort: last run ▾</span>
+            </div>
+            <div style="margin-top:26px;">
+              <div class="installedcard">
+                <div class="body">
+                  <h3>deep-research <span class="ver">v1.2.0</span> <span class="updatepill">● update</span></h3>
+                  <div class="ds">Fan-out web research that cross-checks cited claims and writes a sourced report.</div>
+                  <div class="lastrun">ran 2h ago · <span style="color:var(--green-deep)">● done</span> · 14 agents · 4m12s</div>
+                </div>
+                <span class="btn primary">▶ Run</span>
+                <span class="kebab">⋮</span>
+              </div>
+              <div class="installedcard">
+                <div class="body">
+                  <h3>agent-daily-digest <span class="ver">v2.0.0</span></h3>
+                  <div class="ds">Pulls your channels, summarizes, and posts a digest each morning.</div>
+                  <div class="lastrun">running now · <span style="color:var(--green-deep)">● 2/3 phases</span> · 9 agents</div>
+                </div>
+                <span class="btn primary">▶ Run</span>
+                <span class="kebab">⋮</span>
+              </div>
+              <div class="installedcard">
+                <div class="body">
+                  <h3>routing <span class="ver">v1.0.0</span></h3>
+                  <div class="ds">Classify the request, route to a specialist, then grade the result.</div>
+                  <div class="lastrun">ran 1d ago · <span style="color:var(--red-deep)">● failed</span> · 3 agents · 0m38s</div>
+                </div>
+                <span class="btn primary">▶ Run</span>
+                <span class="kebab">⋮</span>
+              </div>
+              <div class="installedcard">
+                <div class="body">
+                  <h3>fan-out-reduce <span class="ver">v0.9.0</span></h3>
+                  <div class="ds">Draft N candidates in parallel, then synthesize the single best.</div>
+                  <div class="lastrun">ran 3d ago · <span style="color:var(--green-deep)">● done</span> · 8 agents · 1m47s</div>
+                </div>
+                <span class="btn primary">▶ Run</span>
+                <span class="kebab">⋮</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="statusbar paper"><span>3 active · 18 running</span><span style="font-family:'JetBrains Mono';">claude · sonnet</span><span style="display:inline-flex;align-items:center;gap:7px;"><span class="live-dot"></span> live</span></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================ 05 · LAUNCHER FORM ============================ -->
+  <div class="frame-wrap" id="s05" style="scroll-margin-top:24px;">
+    <div class="frame-label"><span class="n">05</span><span class="t">Run Launcher — a form from meta.args (never JSON)</span><span class="z read">READ · paper</span></div>
+    <div class="frame grid-paper">
+      <div class="modalwrap">
+        <div class="modal">
+          <div class="modal-h">
+            <div style="flex:1;"><h2>deep-research</h2><p>Fan-out web research → fact-check → cited report.</p></div>
+            <svg class="miniglyph" width="120" height="30" viewBox="0 0 180 30"><line x1="14" y1="15" x2="166" y2="15" stroke="#BFE6D5" stroke-width="2"/><circle cx="14" cy="15" r="5" fill="#0a7d57"/><circle cx="52" cy="15" r="5" fill="#0a7d57"/><circle cx="90" cy="8" r="4" fill="#10b981"/><circle cx="90" cy="22" r="4" fill="#10b981"/><circle cx="128" cy="15" r="5" fill="#0a7d57"/><circle cx="166" cy="15" r="5" fill="#0a7d57"/></svg>
+          </div>
+          <div class="modal-b">
+            <div class="field">
+              <div class="lab"><span class="nm">question</span><span class="ty">string</span><span class="req">• required</span></div>
+              <div class="input focus">How is solid-state battery technology progressing in 2026?</div>
+              <div class="help">the research question to investigate</div>
+            </div>
+            <div class="field">
+              <div class="lab"><span class="nm">maxAngles</span><span class="ty">number</span></div>
+              <div class="stepper"><span class="v">4</span><span class="b">▾</span></div>
+              <div class="help">number of independent research angles <span class="ghost">(3–8)</span></div>
+            </div>
+            <div class="field">
+              <div class="lab"><span class="nm">depth</span><span class="ty">enum</span></div>
+              <div class="seg paper" style="display:inline-flex;"><b>quick</b><b class="on">standard</b><b>exhaustive</b></div>
+              <div class="help">how hard each angle is researched</div>
+            </div>
+            <div class="advanced">▸ Advanced: edit as JSON</div>
+          </div>
+          <div class="modal-f">
+            <div class="climirror"><span class="p">$</span> odw run deep-research --args '{"question":"How is solid-state…","maxAngles":4}'</div>
+            <div class="runrow">
+              <span class="adapterpick">run on <span class="mono">claude</span> ▾</span>
+              <span class="adapterpick">budget <span class="mono">120000</span> tok</span>
+              <span style="flex:1;"></span>
+              <span class="btn primary">Run workflow <span class="kbd2">⌘⏎</span></span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================ 03 · INSTALL REVIEW ============================ -->
+  <div class="frame-wrap" id="s03" style="scroll-margin-top:24px;">
+    <div class="frame-label"><span class="n">03</span><span class="t">Install Review — the provenance gate</span><span class="z read">READ · paper</span></div>
+    <div class="frame grid-paper">
+      <div class="app" style="grid-template-rows:52px 1fr 28px;">
+        <div class="toolbar paper">
+          <div style="display:flex;align-items:center;">
+            <div class="tl"><i class="r"></i><i class="y"></i><i class="g"></i></div>
+            <div class="crumb paper"><span class="s">Hub</span><span class="sep">/</span><span class="cur">deep-research</span></div>
+          </div>
+          <div class="tr"><span class="btn ghost sm">← Back to Hub</span><span class="kbd paper">⌘K</span></div>
+        </div>
+        <div class="body">
+          <div class="tworow">
+            <!-- read column -->
+            <div class="readcol">
+              <h1 class="page-h1">deep-research</h1>
+              <p class="page-sub" style="margin-bottom:4px;">Fan-out web research workflow that cross-checks cited claims by vote and returns a sourced report.</p>
+              <div class="rsec">When to use</div>
+              <p class="prose">Use for research questions that need multiple independent angles and a verification pass — comparisons, “state of X”, due-diligence. It plans angles, searches each in parallel, extracts cited claims, cross-checks them by vote, and synthesizes a report with sources. Not for quick single-fact lookups.</p>
+              <div class="rsec">Phases</div>
+              <div style="display:flex;align-items:center;gap:0;margin:6px 0 4px;">
+                <svg width="640" height="46" viewBox="0 0 640 46"><line x1="40" y1="23" x2="600" y2="23" stroke="#BFE6D5" stroke-width="2.5"/><circle cx="40" cy="23" r="7" fill="#0a7d57"/><circle cx="180" cy="23" r="7" fill="#0a7d57"/><circle cx="320" cy="23" r="7" fill="#0a7d57"/><circle cx="460" cy="23" r="7" fill="#0a7d57"/><circle cx="600" cy="23" r="7" fill="#0a7d57"/><text x="40" y="44" fill="#707070" font-family="Inter" font-size="12" text-anchor="middle">Plan</text><text x="180" y="44" fill="#707070" font-family="Inter" font-size="12" text-anchor="middle">Search</text><text x="320" y="44" fill="#707070" font-family="Inter" font-size="12" text-anchor="middle">Extract</text><text x="460" y="44" fill="#707070" font-family="Inter" font-size="12" text-anchor="middle">Vote</text><text x="600" y="44" fill="#707070" font-family="Inter" font-size="12" text-anchor="middle">Report</text></svg>
+              </div>
+              <div class="rsec">Inputs it will ask for</div>
+              <div class="argrow"><span class="nm">question</span><span class="ty">string</span><span class="rq">• required</span></div>
+              <div class="argrow"><span class="nm">maxAngles</span><span class="ty">number</span><span class="df">default 4</span></div>
+              <div class="argrow"><span class="nm">depth</span><span class="ty">enum</span><span class="df">default “standard”</span></div>
+              <div class="argrow" style="border-bottom:none;"><span class="nm">budget</span><span class="ty">number</span><span class="df">default 120000</span></div>
+            </div>
+            <!-- trust sidebar -->
+            <div class="trustcol">
+              <div class="rsec" style="margin-top:0;">Provenance</div>
+              <div class="provrow"><span class="k">author</span><span class="v">odw-team</span></div>
+              <div class="provrow"><span class="k">version</span><span class="v">v1.2.0</span></div>
+              <div class="provrow"><span class="k">source</span><span class="v" style="color:var(--green-deep)">github.com/odw/hub</span></div>
+              <div class="provrow"><span class="k">published</span><span class="v">2026-05-01</span></div>
+              <div class="provrow" style="border-bottom:none;"><span class="k">license</span><span class="v">MIT</span></div>
+              <div class="shabox">
+                <div class="lbl">sha256</div>
+                <div class="hash">9f2c7a4b1e08d3a6c5b29f81e7d40a2c6b13f8e94a31bd72c0fa8e15d9c3a31b</div>
+                <div class="cap">✓ verify this matches the source <span class="btn secondary sm" style="margin-left:auto;padding:3px 9px;font-size:11px;">copy</span></div>
+              </div>
+              <div class="rsec">▾ View source (deep-research.js)</div>
+              <div class="srcview"><div><span class="ln">1</span><span class="kw">export const</span> meta = {</div><div><span class="ln">2</span>  name: <span class="st">'deep-research'</span>,</div><div><span class="ln">3</span>  phases: [ Plan, Search, … ],</div><div><span class="ln">4</span>}</div><div><span class="ln">5</span><span class="kw">const</span> angles = <span class="kw">await</span> <span class="fn">agent</span>(plan)</div><div><span class="ln">6</span><span class="kw">const</span> hits = <span class="kw">await</span> <span class="fn">parallel</span>(…)</div><div><span class="ln">7</span><span class="cm">// 5 phases · 18 agent() calls</span></div></div>
+              <div class="rsec">Permissions</div>
+              <p style="font-size:12.5px;color:var(--muted);margin:0;line-height:1.5;">Runs your default adapter. Needs <b style="color:var(--ink)">WebSearch</b> / <b style="color:var(--ink)">WebFetch</b>. No filesystem writes.</p>
+            </div>
+          </div>
+          <div class="stickyfoot">
+            <span class="note">Installs to <code>~/Library/odw/workflows</code> — sha256 re-checked on disk.</span>
+            <span class="btn secondary">Install &amp; Run</span>
+            <span class="btn primary">Install workflow <span class="kbd2">⌘⏎</span></span>
+          </div>
+        </div>
+        <div class="statusbar paper"><span>3 active · 18 running</span><span style="font-family:'JetBrains Mono';">claude · sonnet</span><span style="display:inline-flex;align-items:center;gap:7px;"><span class="live-dot"></span> live</span></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================ 06 · ONBOARDING ============================ -->
+  <div class="frame-wrap" id="s06" style="scroll-margin-top:24px;">
+    <div class="frame-label"><span class="n">06</span><span class="t">First-run Onboarding — the hero is real</span><span class="z watch">WATCH · charcoal</span></div>
+    <div class="frame grid-stage">
+      <div class="onb">
+        <svg class="constell" viewBox="0 0 1440 900" preserveAspectRatio="none">
+          <g stroke="#1C4A3A" stroke-width="1.4" fill="none" opacity="0.7">
+            <path d="M120 180 C300 160 360 320 540 300"/><path d="M540 300 C720 280 760 140 980 170"/>
+            <path d="M200 700 C420 720 460 540 660 560"/><path d="M980 170 C1140 190 1180 380 1320 360"/>
+            <path d="M660 560 C840 580 900 720 1080 700"/><path d="M540 300 L560 420"/>
+          </g>
+          <g fill="#16C079" opacity="0.5"><circle cx="120" cy="180" r="5"/><circle cx="540" cy="300" r="5"/><circle cx="980" cy="170" r="5"/><circle cx="660" cy="560" r="5"/><circle cx="1320" cy="360" r="5"/><circle cx="200" cy="700" r="5"/><circle cx="1080" cy="700" r="5"/></g>
+          <g fill="#0b0f0d" stroke="#1C4A3A" stroke-width="2"><circle cx="360" cy="240" r="6"/><circle cx="820" cy="640" r="6"/></g>
+        </svg>
+        <div class="onb-card">
+          <h1>Open Dynamic Workflows</h1>
+          <div class="sub">fan out coding agents, at scale</div>
+          <div class="onbsteps">
+            <div class="st on"><div class="n">01</div><div class="l">Install</div></div>
+            <div class="bar"></div>
+            <div class="st"><div class="n">02</div><div class="l">Hello-world</div></div>
+            <div class="bar"></div>
+            <div class="st"><div class="n">03</div><div class="l">Pick an adapter</div></div>
+          </div>
+          <div style="display:inline-flex;flex-direction:column;gap:6px;text-align:left;background:var(--stage-surface);border:1px solid var(--stage-hair);border-radius:12px;padding:18px 22px;">
+            <div class="checkline"><span class="ck">✓</span><span>odw binary detected</span><span style="color:var(--stage-faint)">$ odw --version → <span class="cmd">0.3.1</span></span></div>
+            <div class="checkline"><span class="ck">✓</span><span>workflow skill installed</span><span style="color:var(--stage-faint)">~/.claude/skills/odw</span></div>
+          </div>
+          <div style="margin-top:30px;display:flex;justify-content:center;align-items:center;gap:14px;">
+            <span class="btn primary" style="padding:11px 20px;font-size:14px;">▶ Run hello-world</span>
+            <span style="color:var(--stage-muted);font-size:13px;">→ drops you straight into the live DAG</span>
+          </div>
+          <div class="onbnote">you can change this later in Settings · <span style="color:var(--stage-muted)">Skip for now</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================ 07 · RUNS ============================ -->
+  <div class="frame-wrap" id="s07" style="scroll-margin-top:24px;">
+    <div class="frame-label"><span class="n">07</span><span class="t">Runs — multi-run monitor + history</span><span class="z read">READ + WATCH</span></div>
+    <div class="frame grid-paper">
+      <div class="app" style="grid-template-rows:52px 1fr 28px;">
+        <div class="toolbar paper">
+          <div style="display:flex;align-items:center;"><div class="tl"><i class="r"></i><i class="y"></i><i class="g"></i></div><div class="crumb paper"><span class="cur">Runs</span></div></div>
+          <div class="seg paper"><b>Hub</b><b class="on">Runs</b></div>
+          <div class="tr"><span class="kbd paper">⌘F</span><span class="conn live"><span class="d"></span>3 live</span></div>
+        </div>
+        <div class="body" style="display:flex;flex-direction:column;overflow:hidden;">
+          <!-- active strip (charcoal) -->
+          <div class="activestrip grid-stage" style="border-bottom:1px solid var(--stage-hair);">
+            <div class="lbl">Active now</div>
+            <div class="runcards">
+              <div class="runcard run on">
+                <div class="top"><span class="nm">deep-research</span><span class="conn live" style="font-size:11px;"><span class="d"></span></span></div>
+                <div class="spark"><i class="a" style="height:7px"></i><i class="a" style="height:14px"></i><i class="a" style="height:20px"></i><i style="height:9px"></i><i class="a" style="height:23px"></i><i style="height:6px"></i></div>
+                <div class="strip"><i style="width:58%"></i></div>
+                <div class="meta">phase 3/5 · 18 running</div>
+              </div>
+              <div class="runcard run">
+                <div class="top"><span class="nm">agent-daily-digest</span><span class="conn live" style="font-size:11px;"><span class="d"></span></span></div>
+                <div class="spark"><i class="a" style="height:9px"></i><i class="a" style="height:17px"></i><i style="height:7px"></i><i class="a" style="height:12px"></i><i style="height:6px"></i><i style="height:6px"></i></div>
+                <div class="strip"><i style="width:34%"></i></div>
+                <div class="meta">phase 2/3 · 6 running</div>
+              </div>
+              <div class="runcard">
+                <div class="top"><span class="nm" style="color:var(--stage-ink)">codereview-fanout</span><span class="badge dark paused" style="padding:1px 7px;font-size:10px;"><span class="d"></span>⏸</span></div>
+                <div class="spark"><i class="a" style="height:11px;background:var(--amber)"></i><i class="a" style="height:8px;background:var(--amber)"></i><i style="height:14px"></i><i style="height:6px"></i><i style="height:6px"></i><i style="height:6px"></i></div>
+                <div class="strip"><i style="width:46%;background:var(--amber)"></i></div>
+                <div class="meta">paused · 4 in flight</div>
+              </div>
+            </div>
+          </div>
+          <!-- history table (paper) -->
+          <div style="flex:1;overflow:hidden;padding:20px 30px;">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
+              <span class="section-label" style="margin:0;">History</span>
+              <span class="btn secondary sm">status: all ▾</span>
+            </div>
+            <table class="histtable">
+              <thead><tr><th>workflow</th><th>run id</th><th>status</th><th>started</th><th>duration</th><th>agents</th><th>adapter</th><th></th></tr></thead>
+              <tbody>
+                <tr class="daterow"><td colspan="8">Today</td></tr>
+                <tr><td style="font-weight:600;">deep-research</td><td class="mono">…605-1442-a3f9</td><td><span class="badge done"><span class="d"></span>done</span></td><td class="mono">14:42</td><td class="mono">4m12s</td><td class="mono">14</td><td class="mono">claude</td><td style="color:var(--faint)">▸</td></tr>
+                <tr><td style="font-weight:600;">routing</td><td class="mono">…605-1310-7c2e</td><td><span class="badge failed"><span class="d"></span>failed</span></td><td class="mono">13:10</td><td class="mono">0m38s</td><td class="mono">3</td><td class="mono">codex</td><td style="color:var(--faint)">▸</td></tr>
+                <tr><td style="font-weight:600;">tournament</td><td class="mono">…605-1118-1b80</td><td><span class="badge done"><span class="d"></span>done</span></td><td class="mono">11:18</td><td class="mono">6m02s</td><td class="mono">8</td><td class="mono">claude</td><td style="color:var(--faint)">▸</td></tr>
+                <tr class="daterow"><td colspan="8">Yesterday</td></tr>
+                <tr><td style="font-weight:600;">fan-out-reduce</td><td class="mono">…604-2033-9de1</td><td><span class="badge done"><span class="d"></span>done</span></td><td class="mono">20:33</td><td class="mono">1m47s</td><td class="mono">8</td><td class="mono">gemini</td><td style="color:var(--faint)">▸</td></tr>
+                <tr><td style="font-weight:600;">deep-research</td><td class="mono">…604-0912-4ac7</td><td><span class="badge stale"><span class="d"></span>stale</span></td><td class="mono">09:12</td><td class="mono">—</td><td class="mono">22</td><td class="mono">claude</td><td style="color:var(--faint)">▸</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div class="statusbar paper"><span>3 active · 18 running</span><span style="font-family:'JetBrains Mono';">claude · sonnet</span><span style="display:inline-flex;align-items:center;gap:7px;"><span class="live-dot"></span> live</span></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================ 08 · SETTINGS ============================ -->
+  <div class="frame-wrap" id="s08" style="scroll-margin-top:24px;">
+    <div class="frame-label"><span class="n">08</span><span class="t">Settings — adapters &amp; residency</span><span class="z read">READ · paper</span></div>
+    <div class="frame grid-paper">
+      <div class="app has-rail" style="grid-template-rows:52px 1fr 28px;">
+        <div class="toolbar paper"><div style="display:flex;align-items:center;"><div class="tl"><i class="r"></i><i class="y"></i><i class="g"></i></div><div class="crumb paper"><span class="cur">Settings</span></div></div><div class="tr"><span class="kbd paper">⌘K</span></div></div>
+        <div class="body" style="display:grid;grid-template-columns:240px 1fr;">
+          <div class="rail">
+            <div class="brand paper"><svg class="logo" viewBox="0 0 116 64" fill="none"><path d="M14 44 C44 44, 50 22, 78 22" stroke="#16C079" stroke-width="11" stroke-linecap="round"/><path d="M62 30 L58 46" stroke="#16C079" stroke-width="9" stroke-linecap="round"/><circle cx="14" cy="44" r="11" fill="#15110F"/><circle cx="92" cy="22" r="11" fill="#15110F"/><circle cx="55" cy="52" r="8" fill="#16C079"/></svg><span class="wm">odw</span></div>
+            <div class="tagline">fan out coding agents</div>
+            <div class="navitem"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>Hub</div>
+            <div class="navitem"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h16M4 18h16"/></svg>Library</div>
+            <div class="navitem"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h4l2-7 4 14 2-7h6"/></svg>Runs<span class="count">3</span></div>
+            <div class="spacer"></div>
+            <div class="navitem on"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg>Settings</div>
+          </div>
+          <div class="content" style="overflow:hidden;">
+            <h1 class="page-h1">Settings</h1>
+            <p class="page-sub">Adapters, run defaults, and how the app stays resident.</p>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:40px;margin-top:24px;">
+              <div>
+                <div class="section-label" style="margin:0 0 6px;">Adapters</div>
+                <div class="setrow"><div class="body"><h4>claude <span style="font-weight:400;color:var(--green-deep);font-size:12px;">· default</span></h4><div class="path">/usr/local/bin/claude · sonnet</div></div><span class="btn secondary sm">test</span></div>
+                <div class="setrow"><div class="body"><h4>codex</h4><div class="path">/opt/homebrew/bin/codex</div></div><span class="btn secondary sm">test</span></div>
+                <div class="setrow"><div class="body"><h4>gemini</h4><div class="path">/usr/local/bin/gemini</div></div><span class="btn secondary sm">test</span></div>
+                <div class="setrow"><div class="body"><h4 style="color:var(--muted);">qwen <span style="color:var(--faint);font-weight:400;">· not found</span></h4><div class="d">add a path in odw.config.json</div></div><span class="btn secondary sm">test</span></div>
+              </div>
+              <div>
+                <div class="section-label" style="margin:0 0 6px;">Run defaults</div>
+                <div class="setrow"><div class="body"><h4>Concurrency</h4><div class="d">max agents running at once</div></div><span class="stepper"><span class="v" style="padding:7px 14px;">8</span><span class="b" style="padding:7px 10px;">▾</span></span></div>
+                <div class="setrow"><div class="body"><h4>Default budget</h4><div class="d">token target per run</div></div><span class="stepper"><span class="v" style="padding:7px 14px;">120000</span><span class="b" style="padding:7px 10px;">▾</span></span></div>
+                <div class="setrow"><div class="body"><h4>Run directory</h4><div class="path">~/Library/odw/runs · reveal in Finder</div></div></div>
+                <div class="section-label" style="margin:22px 0 6px;">Resident</div>
+                <div class="setrow"><div class="body"><h4>Dock badge — active run count</h4></div><span class="toggle"><i></i></span></div>
+                <div class="setrow"><div class="body"><h4>Native completion notifications</h4></div><span class="toggle"><i></i></span></div>
+                <div class="setrow"><div class="body"><h4>Notify only on failure</h4></div><span class="toggle off"><i></i></span></div>
+                <div class="setrow" style="border:none;"><div class="body"><h4>Launch at login</h4></div><span class="toggle off"><i></i></span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="statusbar paper"><span>3 active · 18 running</span><span style="font-family:'JetBrains Mono';">odw v0.3.1</span><span style="display:inline-flex;align-items:center;gap:7px;"><span class="live-dot"></span> live</span></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================ 09 · STATES ============================ -->
+  <div class="frame-wrap" id="s09" style="scroll-margin-top:24px;">
+    <div class="frame-label"><span class="n">09</span><span class="t">Run states — designed, never a spinner</span><span class="z watch">WATCH · charcoal</span></div>
+    <div class="frame wide" style="background:#0b0d0c;padding:30px;display:grid;grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr;gap:24px;">
+
+      <!-- FAILED -->
+      <div class="grid-stage" style="border-radius:12px;border:1px solid var(--stage-hair);padding:20px 22px;position:relative;overflow:hidden;">
+        <div style="display:flex;align-items:center;gap:10px;"><span class="badge dark failed"><span class="d"></span>FAILED</span><span style="color:var(--stage-muted);font-size:13px;">routing · run ended</span><span class="btn secondary dark sm" style="margin-left:auto;">⌘J Jump to failure</span></div>
+        <div style="font-size:12px;color:var(--stage-faint);margin:14px 0 8px;font-family:'JetBrains Mono';">overall ▰▰▰▰▰<span style="color:var(--red)">▰</span>░░░ failed at Route</div>
+        <div style="position:relative;height:150px;margin-top:8px;">
+          <svg width="100%" height="150" viewBox="0 0 700 150" preserveAspectRatio="none"><path d="M70 75 C140 75 150 40 210 40" stroke="#7E8D84" stroke-width="1.6" fill="none"/><path d="M70 75 C140 75 150 110 210 110" stroke="#ef4444" stroke-width="2" fill="none"/></svg>
+          <div class="node done" style="left:0;top:50px;width:130px;"><div class="h">classify ✓</div><span class="dot"></span></div>
+          <div class="node failed" style="left:200px;top:8px;width:150px;"><div class="h">route:specialist</div><span class="dot"></span><span class="gl" style="color:var(--red)">✕</span><div class="err">exit 127 · executable not found: gemini</div></div>
+          <div class="node done" style="left:200px;top:92px;width:130px;opacity:.5;"><div class="h">grade</div><span class="dot" style="background:var(--cancel)"></span><div class="sub" style="color:var(--cancel)">cancelled</div></div>
+        </div>
+        <div style="font-family:'JetBrains Mono';font-size:11px;color:var(--stage-muted);margin-top:6px;">▸ failure floats to top + carries its error · <span style="color:#f7a8a0">which agent &amp; why, zero clicks</span></div>
+      </div>
+
+      <!-- PAUSED -->
+      <div class="grid-stage" style="border-radius:12px;border:1px solid var(--stage-hair);padding:20px 22px;position:relative;overflow:hidden;">
+        <div style="display:flex;align-items:center;gap:10px;"><span class="badge dark paused"><span class="d"></span>PAUSED</span><span style="color:var(--stage-muted);font-size:13px;">codereview-fanout</span><span class="btn primary sm" style="margin-left:auto;">▶ Resume <span class="kbd2">⌥P</span></span></div>
+        <div style="background:#2A2110;border:1px solid #43340f;border-radius:8px;padding:9px 12px;margin:14px 0;font-size:12.5px;color:#e2b66a;">⏸ Paused — agents in flight will finish; no new agents start.</div>
+        <div style="position:relative;height:120px;">
+          <svg width="100%" height="120" viewBox="0 0 700 120" preserveAspectRatio="none"><path d="M70 60 C150 60 160 30 230 30" stroke="#43340f" stroke-width="1.8" fill="none"/><path d="M70 60 C150 60 160 90 230 90" stroke="#43340f" stroke-width="1.8" fill="none"/></svg>
+          <div class="node done" style="left:0;top:36px;width:120px;"><div class="h">plan ✓</div><span class="dot"></span></div>
+          <div class="node paused" style="left:220px;top:6px;width:140px;"><div class="h">review:bugs</div><span class="dot"></span><span class="gl" style="color:var(--amber)">⏸</span><div class="sub" style="color:#cfa85f;">claude · ⏸ 1m12s</div></div>
+          <div class="node paused" style="left:220px;top:74px;width:140px;"><div class="h">review:perf</div><span class="dot"></span><span class="gl" style="color:var(--amber)">⏸</span><div class="sub" style="color:#cfa85f;">claude · ⏸ 0m48s</div></div>
+        </div>
+        <div style="font-family:'JetBrains Mono';font-size:11px;color:var(--stage-muted);margin-top:4px;">▸ edge flow-dots freeze — motion stopping <span style="color:var(--amber)">is</span> the paused signal</div>
+      </div>
+
+      <!-- EMPTY -->
+      <div class="grid-stage" style="border-radius:12px;border:1px solid var(--stage-hair);padding:20px 22px;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;position:relative;overflow:hidden;">
+        <svg width="360" height="120" viewBox="0 0 360 120" style="opacity:.14;"><g stroke="#ECF1EE" stroke-width="1.6" fill="none"><path d="M40 60 C100 60 100 30 160 30"/><path d="M40 60 C100 60 100 90 160 90"/><path d="M170 30 C230 30 230 60 290 60"/><path d="M170 90 C230 90 230 60 290 60"/></g><g fill="none" stroke="#ECF1EE" stroke-width="1.6"><circle cx="40" cy="60" r="9"/><circle cx="165" cy="30" r="9"/><circle cx="165" cy="90" r="9"/><circle cx="293" cy="60" r="9"/></g></svg>
+        <div style="font-family:'Gaegu';font-weight:700;font-size:26px;color:var(--stage-ink);margin-top:10px;">No runs yet</div>
+        <div style="color:var(--stage-muted);font-size:13.5px;margin:6px 0 16px;">This is where your agents will fan out.</div>
+        <div style="display:flex;gap:10px;align-items:center;"><span class="btn primary sm">Browse the Hub <span class="kbd2">⌘1</span></span><span style="font-family:'JetBrains Mono';font-size:12px;color:var(--stage-faint);background:var(--stage-surface);border:1px dashed var(--stage-hair2);border-radius:6px;padding:6px 10px;">odw run deep-research</span></div>
+      </div>
+
+      <!-- MASSIVE FAN-OUT -->
+      <div class="grid-stage" style="border-radius:12px;border:1px solid var(--stage-hair);padding:20px 22px;position:relative;overflow:hidden;">
+        <div style="display:flex;align-items:center;gap:10px;"><span style="font-size:13px;font-weight:700;color:var(--stage-ink);">Search</span><span class="chip"><b>fan-out</b> · 128 agents</span><span class="btn secondary dark sm" style="margin-left:auto;">⌥C collapse done ×84</span></div>
+        <!-- 4-color distribution bar -->
+        <div style="display:flex;height:8px;border-radius:999px;overflow:hidden;margin:14px 0 16px;"><i style="flex:0 0 66%;background:var(--done)"></i><i style="flex:0 0 24%;background:var(--green)"></i><i style="flex:0 0 7%;background:var(--stage-faint)"></i><i style="flex:0 0 3%;background:var(--red)"></i></div>
+        <div style="display:flex;flex-wrap:wrap;gap:5px;">
+          <!-- dense agent grid: done(grey), running(green), queued(faint), failed(red) -->
+          <!-- This block visually conveys 128 agents staying legible -->
+          <span class="ag d"></span><span class="ag d"></span><span class="ag r"></span><span class="ag d"></span><span class="ag d"></span><span class="ag r"></span><span class="ag d"></span><span class="ag d"></span><span class="ag d"></span><span class="ag r"></span><span class="ag d"></span><span class="ag d"></span><span class="ag d"></span><span class="ag r"></span><span class="ag d"></span><span class="ag d"></span><span class="ag d"></span><span class="ag d"></span><span class="ag r"></span><span class="ag d"></span><span class="ag d"></span><span class="ag d"></span><span class="ag r"></span><span class="ag f"></span><span class="ag d"></span><span class="ag d"></span><span class="ag r"></span><span class="ag d"></span><span class="ag d"></span><span class="ag d"></span><span class="ag r"></span><span class="ag d"></span><span class="ag d"></span><span class="ag q"></span><span class="ag d"></span><span class="ag r"></span><span class="ag d"></span><span class="ag d"></span><span class="ag d"></span><span class="ag r"></span><span class="ag d"></span><span class="ag d"></span><span class="ag q"></span><span class="ag r"></span><span class="ag d"></span><span class="ag d"></span><span class="ag d"></span><span class="ag r"></span><span class="ag d"></span><span class="ag d"></span><span class="ag d"></span><span class="ag q"></span><span class="ag d"></span><span class="ag r"></span>
+        </div>
+        <div style="font-family:'JetBrains Mono';font-size:11px;color:var(--stage-muted);margin-top:14px;">▸ 128 agents stay beautiful — a glanceable health read, not noise</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================ 10 · FOUNDATIONS ============================ -->
+  <div class="frame-wrap" id="s10" style="scroll-margin-top:24px;">
+    <div class="frame-label"><span class="n">10</span><span class="t">Foundations — one system, two zones</span><span class="z read">design system</span></div>
+    <div class="frame tall grid-paper">
+      <div class="found">
+        <h3>The two-zone canvas</h3>
+        <p class="lead">One ink, one emerald, one grid. The canvas color is the mode: <b style="color:var(--ink)">charcoal when you watch a live machine</b>, <b style="color:var(--ink)">warm paper when you read &amp; fill</b>. Never flat white.</p>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:40px;">
+          <div>
+            <div class="section-label" style="margin:0 0 12px;">Emerald &amp; status — shipped semantics</div>
+            <div class="swatchrow">
+              <div class="swatch"><div class="ch" style="background:#10b981"></div><div class="nm">running</div><div class="hx">#10b981</div></div>
+              <div class="swatch"><div class="ch" style="background:#0a7d57"></div><div class="nm">primary</div><div class="hx">#0a7d57</div></div>
+              <div class="swatch"><div class="ch" style="background:#f59e0b"></div><div class="nm">paused</div><div class="hx">#f59e0b</div></div>
+              <div class="swatch"><div class="ch" style="background:#ef4444"></div><div class="nm">failed</div><div class="hx">#ef4444</div></div>
+              <div class="swatch"><div class="ch" style="background:#f97316"></div><div class="nm">stale</div><div class="hx">#f97316</div></div>
+              <div class="swatch"><div class="ch" style="background:#7E8D84"></div><div class="nm">done</div><div class="hx">#7E8D84</div></div>
+            </div>
+            <div class="section-label" style="margin:0 0 12px;">Canvas — paper &amp; charcoal</div>
+            <div class="swatchrow">
+              <div class="swatch"><div class="ch" style="background:#FBFAF6"></div><div class="nm">paper.bg</div><div class="hx">#FBFAF6</div></div>
+              <div class="swatch"><div class="ch" style="background:#F4F4F1"></div><div class="nm">paper.alt</div><div class="hx">#F4F4F1</div></div>
+              <div class="swatch"><div class="ch" style="background:#111111"></div><div class="nm">ink</div><div class="hx">#111111</div></div>
+              <div class="swatch"><div class="ch" style="background:#0E1311"></div><div class="nm">stage.bg</div><div class="hx">#0E1311</div></div>
+              <div class="swatch"><div class="ch" style="background:#141B18"></div><div class="nm">stage.surface</div><div class="hx">#141B18</div></div>
+              <div class="swatch"><div class="ch" style="background:#1F2329"></div><div class="nm">node.surface</div><div class="hx">#1F2329</div></div>
+            </div>
+          </div>
+          <div>
+            <div class="section-label" style="margin:0 0 12px;">Type — identity / chrome / machine</div>
+            <div class="typerow"><span class="tag">Gaegu · display</span><span style="font-family:'Gaegu';font-weight:700;font-size:30px;color:var(--ink);">odw — fan out agents</span></div>
+            <div class="typerow"><span class="tag">Inter · UI</span><span style="font-family:'Inter';font-weight:600;font-size:17px;color:var(--ink);">Install workflow · run · phases</span></div>
+            <div class="typerow"><span class="tag">Inter · body</span><span style="font-family:'Inter';font-size:14px;color:var(--muted);">Fan-out web research that cross-checks claims.</span></div>
+            <div class="typerow" style="border:none;"><span class="tag">JetBrains&nbsp;Mono</span><span style="font-family:'JetBrains Mono';font-size:13px;color:var(--ink);">search:angle-2 · claude · 2m17s · 9f2c…a31b</span></div>
+            <div class="section-label" style="margin:22px 0 10px;">Radius &amp; grid</div>
+            <div style="display:flex;gap:14px;align-items:center;">
+              <div style="width:60px;height:40px;border:1px solid var(--node-border);border-radius:5px;display:grid;place-items:center;font-size:10px;color:var(--muted);">5</div>
+              <div style="width:60px;height:40px;border:1px solid var(--node-border);border-radius:9px;display:grid;place-items:center;font-size:10px;color:var(--muted);">9</div>
+              <div style="width:60px;height:40px;border:1px solid var(--node-border);border-radius:12px;display:grid;place-items:center;font-size:10px;color:var(--muted);">12</div>
+              <div style="width:60px;height:40px;border:1px solid var(--node-border);border-radius:14px;display:grid;place-items:center;font-size:10px;color:var(--muted);">14</div>
+              <div class="grid-stage" style="width:90px;height:40px;border-radius:8px;border:1px solid var(--stage-hair);"></div>
+              <span style="font-size:11px;color:var(--muted);font-family:'JetBrains Mono';">34px blueprint grid</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="section-label" style="margin:26px 0 14px;">The node language — color + shape + word, always (triple-encoded)</div>
+        <div class="grid-stage" style="border-radius:12px;border:1px solid var(--stage-hair);padding:20px 22px;display:flex;gap:16px;flex-wrap:wrap;">
+          <div class="node queued" style="position:static;width:150px;"><div class="h">search:angle-7</div><div class="sub">planned</div><span class="dot" style="top:13px;"></span></div>
+          <div class="node running" style="position:static;width:150px;"><div class="h">search:angle-1</div><div class="sub">codex · ⏱ 2m17s</div><span class="dot" style="top:13px;"></span></div>
+          <div class="node done" style="position:static;width:150px;"><div class="h">search:angle-3</div><div class="sub">codex · 1m04s</div><span class="dot" style="top:13px;"></span><span class="gl" style="color:var(--done);top:11px;">✓</span></div>
+          <div class="node failed" style="position:static;width:160px;"><div class="h">extract:angle-2</div><span class="dot" style="top:13px;"></span><span class="gl" style="color:var(--red);top:11px;">✕</span><div class="err">exit 1 · malformed JSON</div></div>
+          <div class="node paused" style="position:static;width:150px;"><div class="h">review:perf</div><div class="sub" style="color:#cfa85f;">⏸ 0m48s</div><span class="dot" style="top:13px;"></span><span class="gl" style="color:var(--amber);top:11px;">⏸</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  </div><!-- /.board -->
+
+  <style>
+  /* keep board screens in numeric reading order regardless of source order */
+  .board{ display:flex; flex-direction:column; align-items:flex-start; }
+  .board-head{ order:0; } #s01{order:1} #s02{order:2} #s03{order:3} #s04{order:4} #s05{order:5} #s06{order:6} #s07{order:7} #s08{order:8} #s09{order:9} #s10{order:10}
+  /* dense agent cell for massive fan-out */
+  .ag{ width:30px;height:13px;border-radius:3px;border-left:2px solid; display:block; }
+  .ag.d{ background:#262d29;border-left-color:#7E8D84; }
+  .ag.r{ background:#13261e;border-left-color:#10b981;box-shadow:0 0 6px rgba(16,185,129,.4); }
+  .ag.q{ background:#1a1f1d;border-left-color:#5C6A62;border:1px dashed #2C3631;border-left:2px solid #5C6A62; }
+  .ag.f{ background:#2a1513;border-left-color:#ef4444; }
+  </style>
+</body>
+</html>

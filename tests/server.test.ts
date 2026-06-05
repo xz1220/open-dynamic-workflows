@@ -1,10 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { appendFileSync, mkdtempSync, rmSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { loadConfig } from "../src/adapters/config.js";
 import { RunStore } from "../src/runtime/run-store.js";
 import {
   foldAgents,
@@ -217,5 +218,56 @@ test("HTTP: control endpoint rejects non-JSON and cross-origin (CSRF guard)", as
   } finally {
     await handle.close();
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("HTTP: /api/workflows lists managed-dir workflows + detail with source", async () => {
+  const root = tempRoot(); // runs root
+  const proj = tempRoot(); // a project cwd with .odw/workflows
+  mkdirSync(join(proj, ".odw", "workflows"), { recursive: true });
+  writeFileSync(
+    join(proj, ".odw", "workflows", "echo.js"),
+    [
+      "export const meta = {",
+      "  name: 'echo',",
+      "  description: 'Echo the input back.',",
+      "  phases: [{ title: 'Echo' }],",
+      "}",
+      "",
+      "phase('Echo')",
+      "return await agent('echo: ' + args.q)",
+      "",
+    ].join("\n"),
+  );
+  const store = new RunStore(root);
+  const handle = await startServer({
+    store,
+    port: 0,
+    host: "127.0.0.1",
+    cwd: proj,
+    config: loadConfig(null),
+  });
+  try {
+    const list = await fetch(`${handle.url}/api/workflows`).then((r) => r.json());
+    const echo = (list as Array<{ name: string }>).find((w) => w.name === "echo") as
+      | Record<string, unknown>
+      | undefined;
+    assert.ok(echo, "echo workflow is listed");
+    assert.equal(echo!.origin, "project");
+    assert.equal(echo!.description, "Echo the input back.");
+    assert.deepEqual(echo!.phases, [{ title: "Echo" }]);
+    assert.equal(echo!.runCount, 0);
+
+    const det = await fetch(`${handle.url}/api/workflows/echo`).then((r) => r.json());
+    assert.equal(det.name, "echo");
+    assert.match(det.source, /export const meta/);
+    assert.deepEqual(det.runs, []);
+
+    const missing = await fetch(`${handle.url}/api/workflows/nope`);
+    assert.equal(missing.status, 404);
+  } finally {
+    await handle.close();
+    rmSync(root, { recursive: true, force: true });
+    rmSync(proj, { recursive: true, force: true });
   }
 });

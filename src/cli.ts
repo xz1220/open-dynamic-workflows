@@ -347,8 +347,9 @@ async function cmdServe(rest: string[]): Promise<number> {
   }
   const host = values.host ?? "127.0.0.1";
   const store = storeFrom(values);
+  const config = loadConfig(values.config ?? null);
 
-  const handle = await startServer({ store, port, host });
+  const handle = await startServer({ store, port, host, cwd: process.cwd(), config });
   process.stdout.write(`odw dashboard → ${handle.url}\n`);
   process.stdout.write(`  watching ${store.root}\n`);
   if (host !== "127.0.0.1" && host !== "localhost" && host !== "::1") {

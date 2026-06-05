@@ -24,8 +24,9 @@
     "node": ">=20"
   },
   "scripts": {
+    "build:web": "node web/build.mjs",
     "embed": "node scripts/embed-dashboard.mjs",
-    "prebuild": "npm run embed",
+    "prebuild": "npm run build:web && npm run embed",
     "build": "tsc -p tsconfig.json",
     "build:binary": "npm run build && node scripts/build-binary.mjs",
     "dev": "tsx src/cli.ts",
@@ -35,6 +36,9 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "prepublishOnly": "npm run build"
   },
+  "workspaces": [
+    "web"
+  ],
   "keywords": [
     "open-dynamic-workflows",
     "open-dynamic-workflow",

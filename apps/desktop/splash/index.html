@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Open Dynamic Workflows</title>
+<style>
+  html,body{ height:100%; margin:0; }
+  body{
+    display:flex; flex-direction:column; align-items:center; justify-content:center; gap:18px;
+    font-family:-apple-system, system-ui, sans-serif; color:#8A988F;
+    background:
+      linear-gradient(rgba(255,255,255,.03) 1px,transparent 1px),
+      linear-gradient(90deg, rgba(255,255,255,.03) 1px,transparent 1px),
+      #0E1311;
+    background-size:34px 34px;
+  }
+  .spin{ width:22px;height:22px;border-radius:999px;border:2px solid #27302C;border-top-color:#10b981;animation:s .8s linear infinite; }
+  @keyframes s{ to{ transform:rotate(360deg);} }
+  .t{ font-size:13px; }
+  .m{ font-family:ui-monospace,Menlo,monospace; font-size:11px; color:#5C6A62; }
+</style>
+</head>
+<body>
+  <svg width="58" height="34" viewBox="0 0 116 64" fill="none"><path d="M14 44 C44 44, 50 22, 78 22" stroke="#16C079" stroke-width="11" stroke-linecap="round"/><path d="M62 30 L58 46" stroke="#16C079" stroke-width="9" stroke-linecap="round"/><circle cx="14" cy="44" r="11" fill="#0b0f0d"/><circle cx="92" cy="22" r="11" fill="#0b0f0d"/><circle cx="55" cy="52" r="8" fill="#16C079"/></svg>
+  <div class="spin"></div>
+  <div class="t">Starting the runtime…</div>
+  <div class="m">spawning odw serve</div>
+</body>
+</html>

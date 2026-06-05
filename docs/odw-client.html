@@ -3,28 +3,21 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>ODW Desktop Client — design gallery &amp; Figma import</title>
+<title>ODW Read-only Client — design gallery</title>
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Gaegu:wght@400;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
 <style>
   :root{ --bg:#0E1311; --surf:#141B18; --ink:#ECF1EE; --muted:#8A988F; --faint:#5C6A62; --hair:#27302C; --green:#10b981; --deep:#0a7d57; }
   *{box-sizing:border-box;} html,body{margin:0;}
-  body{
-    background:
-      linear-gradient(rgba(255,255,255,.03) 1px, transparent 1px),
-      linear-gradient(90deg, rgba(255,255,255,.03) 1px, transparent 1px),
-      var(--bg);
-    background-size:34px 34px;
-    color:var(--ink); font-family:'Inter',system-ui,sans-serif; -webkit-font-smoothing:antialiased;
-  }
+  body{ background:linear-gradient(rgba(255,255,255,.03) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.03) 1px,transparent 1px),var(--bg); background-size:34px 34px; color:var(--ink); font-family:'Inter',system-ui,sans-serif; -webkit-font-smoothing:antialiased; }
   .wrap{ max-width:1180px; margin:0 auto; padding:60px 40px 120px; }
   header{ display:flex; align-items:center; gap:18px; }
   header h1{ font-family:'Gaegu'; font-weight:700; font-size:44px; margin:0; }
-  header .sub{ color:var(--muted); margin:8px 0 0; font-size:15px; max-width:720px; line-height:1.55; }
-  .pill{ font-family:'JetBrains Mono'; font-size:12px; color:#9fe9cf; background:rgba(16,185,129,.12); border:1px solid rgba(16,185,129,.25); border-radius:999px; padding:3px 10px; }
+  header .sub{ color:var(--muted); margin:8px 0 0; font-size:15px; max-width:760px; line-height:1.55; }
+  .pill{ font-family:'JetBrains Mono'; font-size:12px; color:#9fe9cf; background:rgba(16,185,129,.12); border:1px solid rgba(16,185,129,.25); border-radius:999px; padding:4px 11px; text-decoration:none; }
   .grid{ display:grid; grid-template-columns:repeat(3,1fr); gap:22px; margin-top:40px; }
-  .card{ background:var(--surf); border:1px solid var(--hair); border-radius:14px; overflow:hidden; text-decoration:none; color:inherit; transition:transform .15s ease, border-color .15s ease; display:block; }
+  .card{ background:var(--surf); border:1px solid var(--hair); border-radius:14px; overflow:hidden; text-decoration:none; color:inherit; transition:transform .15s ease,border-color .15s ease; display:block; }
   .card:hover{ transform:translateY(-3px); border-color:var(--deep); }
   .card .thumb{ aspect-ratio:1448/908; background:#0b0d0c; border-bottom:1px solid var(--hair); overflow:hidden; }
   .card .thumb img{ width:100%; height:100%; object-fit:cover; object-position:top; display:block; }
@@ -32,14 +25,15 @@
   .card .n{ font-family:'JetBrains Mono'; font-size:11px; color:var(--faint); }
   .card .t{ font-weight:600; font-size:14px; margin-top:3px; }
   .card .z{ font-family:'JetBrains Mono'; font-size:10.5px; color:var(--muted); margin-top:6px; display:inline-block; }
-  .guide{ margin-top:64px; background:var(--surf); border:1px solid var(--hair); border-radius:16px; padding:30px 34px; }
+  .card.prop{ border-color:rgba(127,179,255,.3); } .card.prop .z{ color:#9db7e8; }
+  .guide{ margin-top:60px; background:var(--surf); border:1px solid var(--hair); border-radius:16px; padding:30px 34px; }
   .guide h2{ font-family:'Gaegu'; font-weight:700; font-size:30px; margin:0 0 6px; }
   .guide p{ color:var(--muted); font-size:14px; line-height:1.6; }
   .guide ol{ color:var(--ink); font-size:14px; line-height:1.9; padding-left:22px; }
   .guide code{ font-family:'JetBrains Mono'; font-size:12.5px; background:#0b0d0c; border:1px solid var(--hair); border-radius:5px; padding:2px 7px; color:#9fe9cf; }
   .guide .lead{ color:var(--ink); font-weight:600; }
-  .two{ display:grid; grid-template-columns:1fr 1fr; gap:32px; margin-top:18px; }
-  .two h3{ font-size:15px; margin:0 0 4px; }
+  .scope{ display:grid; grid-template-columns:1fr 1fr; gap:30px; margin-top:18px; }
+  .scope h3{ font-size:14px; margin:0 0 8px; } .scope ul{ margin:0; padding-left:18px; color:var(--muted); font-size:13.5px; line-height:1.8; } .scope b{ color:var(--ink); }
   a{ color:#76e3bd; }
   .foot{ color:var(--faint); font-family:'JetBrains Mono'; font-size:12px; margin-top:40px; }
 </style>
@@ -49,55 +43,55 @@
   <header>
     <svg width="64" height="38" viewBox="0 0 116 64" fill="none"><path d="M14 44 C44 44, 50 22, 78 22" stroke="#16C079" stroke-width="11" stroke-linecap="round"/><path d="M62 30 L58 46" stroke="#16C079" stroke-width="9" stroke-linecap="round"/><circle cx="14" cy="44" r="11" fill="#0b0f0d"/><circle cx="92" cy="22" r="11" fill="#0b0f0d"/><circle cx="55" cy="52" r="8" fill="#16C079"/></svg>
     <div>
-      <h1>ODW Desktop Client</h1>
-      <p class="sub">Mission control for fanning out coding agents. 10 screens · two-zone canvas (charcoal&nbsp;=&nbsp;watch, paper&nbsp;=&nbsp;read) · emerald status system · 34px blueprint grid. Click any screen to open it isolated (ideal for importing to Figma one frame at a time).</p>
+      <h1>ODW — Read-only Client</h1>
+      <p class="sub">A pure <b style="color:#cfe">observatory</b>: runs are launched by your agent via the CLI; the app only shows what's there and what's happening. Two modules — <b style="color:#e7d9a8">Workspace</b> (read source) and <b style="color:#9fe9cf">Jobs</b> (watch the live DAG) — plus a proposed third, <b style="color:#9db7e8">Activity</b>. No Run / Install / Hub.</p>
     </div>
   </header>
 
-  <div style="margin-top:18px;"><a class="pill" href="odw-client-mockup.html" style="text-decoration:none;">▤ Open the full scrolling board →</a></div>
+  <div style="margin-top:18px;display:flex;gap:12px;"><a class="pill" href="odw-client-mockup.html">▤ Open the full scrolling board →</a><a class="pill" style="color:#cbb;background:rgba(245,158,11,.10);border-color:rgba(245,158,11,.25)" href="odw-client-mockup-v1-full.html">archive · v1 full-scope (10 screens)</a></div>
 
   <div class="grid">
-    <a class="card" href="odw-client-mockup.html?only=s01"><div class="thumb"><img src="odw-client-screens/01-live-dag-hero.png" alt="Live DAG"></div><div class="meta"><div class="n">01</div><div class="t">Live Run — DAG Mission Control</div><span class="z">WATCH · charcoal · the hero</span></div></a>
-    <a class="card" href="odw-client-mockup.html?only=s02"><div class="thumb"><img src="odw-client-screens/02-hub-gallery.png" alt="Hub"></div><div class="meta"><div class="n">02</div><div class="t">Workflow Hub</div><span class="z">READ · paper</span></div></a>
-    <a class="card" href="odw-client-mockup.html?only=s03"><div class="thumb"><img src="odw-client-screens/03-install-review.png" alt="Install Review"></div><div class="meta"><div class="n">03</div><div class="t">Install Review — provenance gate</div><span class="z">READ · paper</span></div></a>
-    <a class="card" href="odw-client-mockup.html?only=s04"><div class="thumb"><img src="odw-client-screens/04-library.png" alt="Library"></div><div class="meta"><div class="n">04</div><div class="t">Library</div><span class="z">READ · paper</span></div></a>
-    <a class="card" href="odw-client-mockup.html?only=s05"><div class="thumb"><img src="odw-client-screens/05-run-launcher.png" alt="Launcher"></div><div class="meta"><div class="n">05</div><div class="t">Run Launcher — form, not JSON</div><span class="z">READ · paper</span></div></a>
-    <a class="card" href="odw-client-mockup.html?only=s06"><div class="thumb"><img src="odw-client-screens/06-onboarding.png" alt="Onboarding"></div><div class="meta"><div class="n">06</div><div class="t">First-run Onboarding</div><span class="z">WATCH · charcoal</span></div></a>
-    <a class="card" href="odw-client-mockup.html?only=s07"><div class="thumb"><img src="odw-client-screens/07-runs-monitor.png" alt="Runs"></div><div class="meta"><div class="n">07</div><div class="t">Runs — monitor + history</div><span class="z">READ + WATCH</span></div></a>
-    <a class="card" href="odw-client-mockup.html?only=s08"><div class="thumb"><img src="odw-client-screens/08-settings.png" alt="Settings"></div><div class="meta"><div class="n">08</div><div class="t">Settings — adapters &amp; residency</div><span class="z">READ · paper</span></div></a>
-    <a class="card" href="odw-client-mockup.html?only=s09"><div class="thumb"><img src="odw-client-screens/09-run-states.png" alt="States"></div><div class="meta"><div class="n">09</div><div class="t">Run States — failed / paused / empty / 128-agent</div><span class="z">WATCH · charcoal</span></div></a>
-    <a class="card" href="odw-client-mockup.html?only=s10"><div class="thumb"><img src="odw-client-screens/10-foundations.png" alt="Foundations"></div><div class="meta"><div class="n">10</div><div class="t">Foundations — the design system</div><span class="z">design system</span></div></a>
+    <a class="card prop" href="odw-client-mockup.html?only=s01"><div class="thumb"><img src="odw-client-screens/01-activity.png" alt="Activity"></div><div class="meta"><div class="n">01</div><div class="t">Activity — the machine pulse</div><span class="z">PROPOSED 3rd dimension</span></div></a>
+    <a class="card" href="odw-client-mockup.html?only=s02"><div class="thumb"><img src="odw-client-screens/02-workspace.png" alt="Workspace"></div><div class="meta"><div class="n">02</div><div class="t">Workspace — workflows + structure</div><span class="z">READ</span></div></a>
+    <a class="card" href="odw-client-mockup.html?only=s03"><div class="thumb"><img src="odw-client-screens/03-jobs.png" alt="Jobs"></div><div class="meta"><div class="n">03</div><div class="t">Jobs — live + history</div><span class="z">live</span></div></a>
+    <a class="card" href="odw-client-mockup.html?only=s04"><div class="thumb"><img src="odw-client-screens/04-job-dag.png" alt="Job DAG"></div><div class="meta"><div class="n">04</div><div class="t">Job — live DAG (read-only)</div><span class="z">live · the hero</span></div></a>
+    <a class="card" href="odw-client-mockup.html?only=s05"><div class="thumb"><img src="odw-client-screens/05-job-logs-result.png" alt="Logs & Result"></div><div class="meta"><div class="n">05</div><div class="t">Job — Logs &amp; Result</div><span class="z">9 event types</span></div></a>
+    <a class="card" href="odw-client-mockup.html?only=s06"><div class="thumb"><img src="odw-client-screens/06-settings.png" alt="Settings"></div><div class="meta"><div class="n">06</div><div class="t">Settings — adapters &amp; prefs</div><span class="z">READ</span></div></a>
+    <a class="card" href="odw-client-mockup.html?only=s07"><div class="thumb"><img src="odw-client-screens/07-foundations.png" alt="Foundations"></div><div class="meta"><div class="n">07</div><div class="t">Foundations — design system</div><span class="z">7 states · 9 events</span></div></a>
   </div>
 
   <div class="guide">
-    <h2>Import into Figma (no plan upgrade)</h2>
-    <p>The Figma MCP is capped at 6 calls/month on the Starter/View seat, so I can't push to the file directly. The <span class="lead">html.to.design</span> plugin converts these screens into <span class="lead">editable Figma layers</span> — text, frames, vectors — not flat images.</p>
-    <div class="two">
+    <h2>Scope — converged to read-only</h2>
+    <div class="scope">
       <div>
-        <h3>A · Browser-extension flow (best fidelity, works with localhost)</h3>
-        <ol>
-          <li>In Figma: <code>Plugins → html.to.design</code> (install from Community if needed).</li>
-          <li>Install the companion <span class="lead">html.to.design</span> browser extension (Chrome/Firefox).</li>
-          <li>Open a screen from the grid above (each <code>?only=s0X</code> URL is one clean frame).</li>
-          <li>Click the extension → <span class="lead">Send to Figma</span>. The frame lands as editable layers.</li>
-          <li>Repeat per screen. Tip: import <code>?only=s01</code> (the hero) first.</li>
-        </ol>
+        <h3 style="color:#9fe9cf;">What's in</h3>
+        <ul>
+          <li><b>Workspace</b> — local workflows (managed dir), each one's phases, structure diagram, and source. Read-only.</li>
+          <li><b>Jobs</b> — every run (live + history), grouped to its workflow, with the live DAG, Logs, and Result.</li>
+          <li><b>Activity</b> (proposed 3rd) — fleet load per adapter + a live firehose of the 9 event types.</li>
+          <li><b>Settings</b> — adapters + app prefs only.</li>
+        </ul>
       </div>
       <div>
-        <h3>B · URL flow (if you expose a public URL)</h3>
-        <ol>
-          <li>Make the prototype reachable: <code>npx serve docs</code> then a tunnel (e.g. <code>ngrok http 3000</code>), or host the file.</li>
-          <li>In the plugin choose <span class="lead">Import web page</span> and paste the public <code>…/odw-client-mockup.html?only=s01</code> URL.</li>
-          <li>Repeat per screen.</li>
-        </ol>
-        <h3 style="margin-top:14px;">C · Quick option</h3>
-        <ol><li>Drag the 10 PNGs in <code>docs/odw-client-screens/</code> straight onto a Figma canvas as reference frames.</li></ol>
+        <h3 style="color:#cbb;">What's out (by design)</h3>
+        <ul>
+          <li>No <b>Run / Launch / Execute</b> — runs always start from the agent via <code>odw run &lt;name&gt;</code>.</li>
+          <li>No <b>Install / Hub</b> — distribution isn't in this iteration.</li>
+          <li>No <b>param forms</b> — the GUI never fills args to start a run.</li>
+        </ul>
       </div>
     </div>
-    <p style="margin-top:18px;">Serve locally first: <code>cd docs &amp;&amp; python3 -m http.server 4319</code> → open <code>http://127.0.0.1:4319/odw-client.html</code>. Fonts are Gaegu / Inter / JetBrains Mono (Google Fonts) — the plugin fetches them automatically.</p>
+    <h2 style="margin-top:24px;">Import into Figma (no plan upgrade)</h2>
+    <p>The Figma MCP is capped at 6 calls/month on the Starter/View seat. The <span class="lead">html.to.design</span> plugin converts these screens into <span class="lead">editable Figma layers</span>:</p>
+    <ol>
+      <li>Serve locally: <code>cd docs &amp;&amp; python3 -m http.server 4319</code> → open <code>http://127.0.0.1:4319/odw-client.html</code></li>
+      <li>In Figma: <code>Plugins → html.to.design</code>, and install its browser extension.</li>
+      <li>Open a screen above (each <code>?only=s0X</code> URL is one clean frame) → click the extension → <span class="lead">Send to Figma</span>. Repeat per screen.</li>
+      <li>Or just drag the 7 PNGs in <code>docs/odw-client-screens/</code> onto a Figma canvas as reference frames.</li>
+    </ol>
   </div>
 
-  <div class="foot">open-dynamic-workflows · client design · 10 screens · charcoal #0E1311 / paper #FBFAF6 / emerald #10b981</div>
+  <div class="foot">open-dynamic-workflows · read-only client · 7 screens · light theme · paper #FBFAF6 / emerald #10b981 / ink #111111 · runs/&lt;workflow&gt;/&lt;runId&gt; · 9 event types</div>
 </div>
 </body>
 </html>

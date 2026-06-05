@@ -143,7 +143,7 @@ export function foldAgents(events: WorkflowEvent[]): AgentView[] {
         label: String(ev.label ?? "agent"),
         phase: ev.phase != null ? String(ev.phase) : null,
         state: "running",
-        adapter: null,
+        adapter: ev.adapter != null ? String(ev.adapter) : null,
         attempts: null,
         error: null,
         startedAt: typeof ev.ts === "number" ? ev.ts : null,

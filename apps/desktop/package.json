@@ -1,0 +1,18 @@
+{
+  "name": "@odw/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Open Dynamic Workflows — read-only desktop client (Tauri shell). Wraps `odw serve`.",
+  "type": "module",
+  "scripts": {
+    "bundle:sidecar": "node scripts/bundle-sidecar.mjs",
+    "predev": "npm run bundle:sidecar",
+    "dev": "tauri dev",
+    "prebuild": "npm run bundle:sidecar",
+    "build": "tauri build",
+    "tauri": "tauri"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}
