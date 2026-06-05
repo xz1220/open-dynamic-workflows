@@ -17,7 +17,7 @@ import { renderSettings } from "./views/settings";
 import { renderWorkspace } from "./views/workspace";
 import type { WorkflowDetail } from "./types";
 import { api } from "./api";
-import { syncNative } from "./native";
+import { syncNative, isNative } from "./native";
 
 const root = document.getElementById("app")!;
 
@@ -208,6 +208,9 @@ store.subscribe(render);
 // stream, so a headless capture's virtual clock can settle (an open stream keeps
 // the network "busy" forever). Harmless in normal use — no one passes it.
 const snap = new URLSearchParams(location.search).get("snap") === "1";
+// In the Tauri shell the OS draws real traffic lights (Overlay titlebar), so drop
+// our decorative ones and inset the toolbar to clear them (see .is-native in CSS).
+document.body.classList.toggle("is-native", isNative());
 if (!location.hash) location.hash = "#/activity";
 if (!snap) store.connect();
 void store.loadRuns().then(() => enterRoute());

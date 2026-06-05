@@ -37,6 +37,13 @@ body{ font-family:'Inter', system-ui, sans-serif; -webkit-font-smoothing:antiali
 /* toolbar bits */
 .tl{ display:flex; gap:8px; align-items:center; } .tl i{ width:12px;height:12px;border-radius:999px;display:block; }
 .tl i.r{ background:#FF5F57; } .tl i.y{ background:#FEBC2E; } .tl i.g{ background:#28C840; }
+/* Native (Tauri) shell: the OS draws real traffic lights over an Overlay titlebar.
+   Hide our decorative dots, inset the toolbar so the real buttons have room, and
+   make the (non-interactive) toolbar a window-drag handle since the titlebar is hidden. */
+body.is-native .tl{ display:none; }
+body.is-native .toolbar{ padding-left:82px; -webkit-app-region:drag; }
+body.is-native .crumb{ margin-left:0; }
+body.is-native .toolbar .kbd, body.is-native .toolbar .conn{ -webkit-app-region:no-drag; }
 .crumb{ display:flex; align-items:center; gap:8px; margin-left:14px; font-size:12.5px; }
 .crumb .s{ color:var(--muted); font-weight:500; } .crumb .cur{ color:var(--ink); font-weight:600; } .crumb .sep{ color:var(--faint); }
 .idchip{ font-family:var(--mono); font-size:11px; color:var(--muted); background:var(--alt); border:1px solid var(--hair); padding:3px 7px; border-radius:5px; }
