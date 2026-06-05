@@ -268,6 +268,9 @@ Runnable, plain-JS workflows in [`examples/`](examples/):
 | [`fan-out-reduce.js`](examples/fan-out-reduce.js) | draft N in parallel → synthesize the best |
 | [`adversarial-verify.js`](examples/adversarial-verify.js) | surface findings → keep only those that survive refutation |
 | [`loop-until-dry.js`](examples/loop-until-dry.js) | loop fanning out finders until K dry rounds |
+| [`routing.js`](examples/routing.js) | classify the request → route to a specialist → grade the result |
+| [`generate-and-filter.js`](examples/generate-and-filter.js) | generate many ideas in parallel → dedupe → keep only rubric-passers |
+| [`tournament.js`](examples/tournament.js) | N approaches attempt the task → pairwise judging bracket → one winner |
 
 ## Develop
 
@@ -295,7 +298,7 @@ into the host's `node`, so each target is built on its own runner.
 **v1 is shipped.** The full runtime is on `main` — the adapter layer, execution
 bridge, workspace isolation, the async scheduler, the injected primitives, the
 loader/transform, the JSON-Schema engine, the background runtime, and the `odw`
-CLI. **94 tests pass**, and the flagship [`examples/deep-research.js`](examples/deep-research.js)
+CLI. **129 tests pass**, and the flagship [`examples/deep-research.js`](examples/deep-research.js)
 runs end-to-end (plan → gather → verify → synthesize → critique).
 
 ### Roadmap (v1.5+)

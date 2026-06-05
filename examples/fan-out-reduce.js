@@ -2,8 +2,7 @@ export const meta = {
   name: 'fan-out-reduce',
   description: 'Draft N answers in parallel, then synthesize the single best one.',
   whenToUse:
-    'A question worth attacking from several independent angles before committing to one answer. ' +
-    'Pass a bare question string, or {question, drafts?} as args.',
+    'A question worth attacking from several independent angles before committing to one answer. Pass a bare question string, or {question, drafts?} as args.',
   phases: [{ title: 'Draft' }, { title: 'Synthesize' }],
 }
 

@@ -74,3 +74,58 @@ test("loop-until-dry.js runs bounded by maxRounds", async () => {
   assert.ok(r.rounds <= 2);
   assert.ok(Array.isArray(r.discovered));
 });
+
+test("routing.js classifies, routes, and grades", async () => {
+  const { state, result, error } = await runExample("routing.js", {
+    request: "Add dark mode to settings",
+  });
+  assert.equal(state, "done", JSON.stringify(error));
+  const r = result as { category: string; output: string; grade: { verdict: string } };
+  assert.equal(typeof r.category, "string");
+  assert.equal(typeof r.output, "string");
+  assert.equal(typeof r.grade.verdict, "string");
+});
+
+test("generate-and-filter.js generates, dedupes, and keeps survivors", async () => {
+  const { state, result, error } = await runExample("generate-and-filter.js", {
+    topic: "Cut build times",
+    generators: 3,
+  });
+  assert.equal(state, "done", JSON.stringify(error));
+  const r = result as { unique: number; generated: number; kept: unknown[] };
+  assert.ok(r.generated >= 1);
+  assert.ok(Array.isArray(r.kept));
+  assert.ok(r.kept.length >= 1);
+});
+
+test("tournament.js runs a bracket to a single winner", async () => {
+  const { state, result, error } = await runExample("tournament.js", {
+    task: "Design a cache",
+    approaches: ["simple", "scalable", "safe", "fast"],
+  });
+  assert.equal(state, "done", JSON.stringify(error));
+  const r = result as { winner: { seed: number }; rounds: unknown[] };
+  assert.ok(r.winner && typeof r.winner.seed === "number");
+  assert.ok(Array.isArray(r.rounds) && r.rounds.length >= 1);
+});
+
+test("agent-daily-digest.js runs end-to-end (discover -> extract -> synthesize -> verify -> report)", async () => {
+  const { state, result, error } = await runExample("agent-daily-digest.js", {
+    date: "2026-06-04",
+    maxSessions: 5,
+    maxVerify: 3,
+  });
+  assert.equal(state, "done", JSON.stringify(error));
+  const r = result as {
+    date: string;
+    scope: { agents: string[]; sessionCount: number };
+    digest: { headline: string; sections: Record<string, unknown[]> };
+    markdown: string;
+    stats: { sessions: number; candidateItems: number };
+  };
+  assert.equal(typeof r.markdown, "string");
+  assert.ok(r.markdown.length > 0, "rendered a non-empty digest");
+  assert.ok(Array.isArray(r.digest.sections.progress), "digest has a progress section");
+  assert.ok(Array.isArray(r.digest.sections.followups), "digest has a followups section");
+  assert.ok(r.stats.sessions >= 1, "scanned at least one session");
+});

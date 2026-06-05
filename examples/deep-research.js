@@ -3,8 +3,7 @@ export const meta = {
   description:
     'Fan-out web research workflow that cross-checks cited claims by vote and returns a sourced report.',
   whenToUse:
-    'Use for research questions that need multiple web searches, source fetching, adversarial verification, ' +
-    'and a final Markdown report with citations. Requires the underlying agent adapter to have WebSearch/WebFetch tools.',
+    'Use for research questions that need multiple web searches, source fetching, adversarial verification, and a final Markdown report with citations. Requires the underlying agent adapter to have WebSearch/WebFetch tools.',
   phases: [
     { title: 'Plan', detail: 'split the question into independent research angles' },
     { title: 'Search', detail: 'fan out web searches from each angle' },
