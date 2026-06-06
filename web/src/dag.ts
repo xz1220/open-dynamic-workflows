@@ -8,6 +8,7 @@
  * runs. Faithful for the real workflows; explicit groupId/kind/index remain an
  * additive runtime follow-up (see docs/tasks/gui.md G2).
  */
+import { t } from "./i18n";
 import type { AgentView, RunDetail } from "./types";
 import { esc, fmtDurSec } from "./util";
 
@@ -22,19 +23,19 @@ function laneTitles(run: RunDetail): string[] {
   if (run.phaseOrder && run.phaseOrder.length) return run.phaseOrder;
   const seen: string[] = [];
   for (const a of run.agents) {
-    const p = a.phase ?? "run";
+    const p = a.phase ?? t("run");
     if (!seen.includes(p)) seen.push(p);
   }
-  return seen.length ? seen : ["run"];
+  return seen.length ? seen : [t("run")];
 }
 
 function subLine(a: AgentView): string {
   if (a.state === "running") {
-    const t = a.startedAt != null ? `⏱ ${fmtDurSec(Date.now() / 1000 - a.startedAt)}` : "";
-    return [a.adapter, t].filter(Boolean).join(" · ") || "running";
+    const elapsed = a.startedAt != null ? `⏱ ${fmtDurSec(Date.now() / 1000 - a.startedAt)}` : "";
+    return [a.adapter, elapsed].filter(Boolean).join(" · ") || t("running");
   }
   if (a.state === "stale") {
-    return [a.adapter, "stale"].filter(Boolean).join(" · ");
+    return [a.adapter, t("stale")].filter(Boolean).join(" · ");
   }
   const dur = a.durationMs != null ? fmtDurSec(a.durationMs / 1000) : "";
   return [a.adapter, dur].filter(Boolean).join(" · ") || (a.adapter ?? "");
@@ -63,7 +64,7 @@ export function renderDag(run: RunDetail, selectedAi: number | null): { html: st
   const lanes = laneTitles(run);
   const cols: Array<Array<{ a: AgentView; ai: number }>> = lanes.map(() => []);
   run.agents.forEach((a, ai) => {
-    const p = a.phase ?? "run";
+    const p = a.phase ?? t("run");
     let li = lanes.indexOf(p);
     if (li < 0) li = 0;
     cols[li]!.push({ a, ai });
@@ -127,7 +128,7 @@ export function renderDag(run: RunDetail, selectedAi: number | null): { html: st
       const extra = cols[li]!.length - MAX_PER_LANE;
       const y = PAD_TOP + shown.length * SLOT;
       parts.push(
-        `<div class="groupcard" style="left:${x}px;top:${y}px;width:${LANE_W}px;"><b>+${extra}</b> more agents</div>`,
+        `<div class="groupcard" style="left:${x}px;top:${y}px;width:${LANE_W}px;"><b>+${extra}</b> ${t("more agents")}</div>`,
       );
     }
   });

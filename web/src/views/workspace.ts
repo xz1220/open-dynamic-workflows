@@ -1,4 +1,5 @@
 /** Workspace — managed-dir workflows: list + phases + structure + source. Read-only. */
+import { t } from "../i18n";
 import { store } from "../store";
 import type { WorkflowDetail, WorkflowSummary } from "../types";
 import { esc } from "../util";
@@ -30,24 +31,24 @@ function listItem(w: WorkflowSummary, activeKey: string | null): string {
   const badgeClass = w.origin === "global" ? "srcbadge global" : "srcbadge";
   const badge = `<span class="${badgeClass}">${esc(w.rootLabel)}</span>`;
   const shadow = w.shadowed
-    ? `<span class="shadow" title="name shadowed — odw run ${esc(w.name)} runs a higher-precedence workflow">shadowed</span>`
+    ? `<span class="shadow" title="${t("name shadowed — odw run {name} runs a higher-precedence workflow", { name: esc(w.name) })}">${t("shadowed")}</span>`
     : "";
   return (
     `<div class="wfitem ${key === activeKey ? "on" : ""}" data-wf="${esc(key)}">` +
     `<h4>${esc(w.name)}</h4>` +
     (w.description ? `<div class="ds">${esc(w.description)}</div>` : "") +
-    `<div class="mini">${badge}<span>${w.phases.length} phases</span>${w.runCount ? `<span>· ${w.runCount} runs</span>` : ""}${shadow}</div>` +
+    `<div class="mini">${badge}<span>${t("{n} phases", { n: w.phases.length })}</span>${w.runCount ? `<span>${t("· {n} runs", { n: w.runCount })}</span>` : ""}${shadow}</div>` +
     `</div>`
   );
 }
 
 /** Infer a coarse structure row per phase, by name heuristic (display-only). */
 function structureLane(title: string, i: number): string {
-  const t = title.toLowerCase();
-  const fanout = /search|extract|vote|draft|generate|compete|verify|find|discover|map/.test(t);
-  const pipe = /filter|judge|grade|handle|route|synth|report|reduce|rank/.test(t);
+  const tl = title.toLowerCase();
+  const fanout = /search|extract|vote|draft|generate|compete|verify|find|discover|map/.test(tl);
+  const pipe = /filter|judge|grade|handle|route|synth|report|reduce|rank/.test(tl);
   const kind = fanout ? "par" : pipe ? "pipe" : "";
-  const kindLabel = fanout ? "parallel · fan-out" : pipe ? "pipeline" : "agent";
+  const kindLabel = fanout ? t("parallel · fan-out") : pipe ? t("pipeline") : t("agent");
   const group = fanout ? `<div class="sgroup">× N</div>` : "";
   return (
     `<div class="slane"><div class="sh"><span class="ix">${i + 1}</span>${esc(title)}</div>` +
@@ -60,41 +61,41 @@ function detailPane(d: WorkflowDetail): string {
     ? d.phases
         .map((p, i) => `<span class="ppill"><span class="ix">${i + 1}</span>${esc(p.title)}</span>`)
         .join(`<span class="ar"> → </span>`)
-    : `<span style="color:var(--muted)">no declared phases</span>`;
+    : `<span style="color:var(--muted)">${t("no declared phases")}</span>`;
 
   const structure = d.phases.length
-    ? `<div class="rsec">Structure</div><div class="structure">${d.phases
+    ? `<div class="rsec">${t("Structure")}</div><div class="structure">${d.phases
         .map((p, i) => structureLane(p.title, i))
         .join("")}</div>`
     : "";
 
   const runs = d.runs.length
-    ? `<div class="rsec">Recent runs</div>` +
+    ? `<div class="rsec">${t("Recent runs")}</div>` +
       d.runs
         .slice(0, 6)
         .map(
           (r) =>
-            `<div class="runmini" data-run="${esc(r.runId)}"><span class="rid">${esc(r.runId)}</span><span class="when">view →</span></div>`,
+            `<div class="runmini" data-run="${esc(r.runId)}"><span class="rid">${esc(r.runId)}</span><span class="when">${t("view →")}</span></div>`,
         )
         .join("")
     : "";
 
   const badgeClass = d.origin === "global" ? "srcbadge global" : "srcbadge";
   const runNote = d.shadowed
-    ? `<span class="note">— shadowed; this runs a higher-precedence ${esc(d.name)}</span>`
-    : `<span class="note">— started by your agent, not here</span>`;
+    ? `<span class="note">${t("— shadowed; this runs a higher-precedence {name}", { name: esc(d.name) })}</span>`
+    : `<span class="note">${t("— started by your agent, not here")}</span>`;
 
   return (
     `<div class="wfdetail">` +
     `<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px;">` +
     `<div><h1 class="page-h1">${esc(d.name)}</h1>` +
-    `<div class="wfmeta"><span class="${badgeClass}">${esc(d.rootLabel)}</span>${d.shadowed ? `<span class="shadow">shadowed</span>` : ""}</div>` +
+    `<div class="wfmeta"><span class="${badgeClass}">${esc(d.rootLabel)}</span>${d.shadowed ? `<span class="shadow">${t("shadowed")}</span>` : ""}</div>` +
     (d.description ? `<p class="page-sub" style="max-width:64ch;">${esc(d.description)}</p>` : "") +
     `</div></div>` +
     `<div style="margin-top:14px;"><span class="clihint"><span class="p">$</span> odw run ${esc(d.name)}${runNote}</span></div>` +
-    `<div class="rsec">Phases</div><div class="phasepills">${phasePills}</div>` +
+    `<div class="rsec">${t("Phases")}</div><div class="phasepills">${phasePills}</div>` +
     structure +
-    `<div class="rsec">Source — ${esc(d.name)}.js</div><div class="srcview">${highlight(d.source)}</div>` +
+    `<div class="rsec">${t("Source — {name}.js", { name: esc(d.name) })}</div><div class="srcview">${highlight(d.source)}</div>` +
     runs +
     `</div>`
   );
@@ -118,12 +119,12 @@ export function orderedWorkflows(list: WorkflowSummary[]): WorkflowSummary[] {
 export function renderWorkspace(activeKey: string | null, detail: WorkflowDetail | null): string {
   const list = store.workflows;
   if (list === null) {
-    return `<div class="empty"><div class="spinner"></div><div>Loading workflows…</div></div>`;
+    return `<div class="empty"><div class="spinner"></div><div>${t("Loading workflows…")}</div></div>`;
   }
   if (list.length === 0) {
     return (
-      `<div class="empty"><div class="gh">No workflows yet</div>` +
-      `<div>Your agent writes workflows into the managed directories.</div>` +
+      `<div class="empty"><div class="gh">${t("No workflows yet")}</div>` +
+      `<div>${t("Your agent writes workflows into the managed directories.")}</div>` +
       `<div class="codehint">.odw/workflows · .claude/workflows · ~/.odw/workflows · ~/.claude/workflows</div></div>`
     );
   }
@@ -142,10 +143,10 @@ export function renderWorkspace(activeKey: string | null, detail: WorkflowDetail
     .join("");
   const pane = detail
     ? detailPane(detail)
-    : `<div class="wfdetail"><div class="empty"><div>Select a workflow to see its structure and source.</div></div></div>`;
+    : `<div class="wfdetail"><div class="empty"><div>${t("Select a workflow to see its structure and source.")}</div></div></div>`;
   return (
     `<div class="wsplit">` +
-    `<div class="wflist"><div class="lh"><span class="t">Workflows</span><span class="c">${list.length} · managed dirs</span></div>${sections}</div>` +
+    `<div class="wflist"><div class="lh"><span class="t">${t("Workflows")}</span><span class="c">${t("{n} · managed dirs", { n: list.length })}</span></div>${sections}</div>` +
     pane +
     `</div>`
   );

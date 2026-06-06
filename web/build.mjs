@@ -25,6 +25,9 @@ const result = await build({
   platform: "browser",
   target: ["es2020"],
   minify: true,
+  // Keep CJK (the zh i18n strings) as raw UTF-8 rather than \uXXXX escapes — the
+  // HTML shell is UTF-8, so this is smaller and readable in the inlined bundle.
+  charset: "utf8",
   legalComments: "none",
   write: false,
 });

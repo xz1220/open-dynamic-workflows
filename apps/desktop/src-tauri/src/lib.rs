@@ -61,6 +61,12 @@ struct RunTransition {
     agents: u32,
     #[serde(default)]
     failed: u32,
+    // Localized title/body built by the web layer in the active UI language. When
+    // present they win; an older web build omits them and we fall back to English.
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    body: Option<String>,
 }
 
 pub fn run() {
@@ -227,16 +233,17 @@ fn listen_for_notifications(app: AppHandle) {
         let Ok(t) = serde_json::from_str::<RunTransition>(event.payload()) else {
             return;
         };
-        let (title, body) = match t.state.as_str() {
-            "failed" => (
-                format!("{} failed", t.name),
-                format!("{} of {} agents failed", t.failed, t.agents),
-            ),
-            "stopped" => (format!("{} stopped", t.name), "Run was stopped".to_string()),
-            _ => (
-                format!("{} finished", t.name),
-                format!("{} agents", t.agents),
-            ),
+        let (title, body) = match (t.title.clone(), t.body.clone()) {
+            // Prefer the web layer's localized copy when it sent both.
+            (Some(title), Some(body)) => (title, body),
+            _ => match t.state.as_str() {
+                "failed" => (
+                    format!("{} failed", t.name),
+                    format!("{} of {} agents failed", t.failed, t.agents),
+                ),
+                "stopped" => (format!("{} stopped", t.name), "Run was stopped".to_string()),
+                _ => (format!("{} finished", t.name), format!("{} agents", t.agents)),
+            },
         };
         let _ = handle
             .notification()

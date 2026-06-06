@@ -1,4 +1,5 @@
 /** Activity — the machine pulse: per-adapter fleet load + a live event firehose. */
+import { t } from "../i18n";
 import { store } from "../store";
 import type { RunDetail } from "../types";
 import { ACTIVE, esc, fmtClock } from "../util";
@@ -14,6 +15,7 @@ const EVT_CLASS: Record<string, string> = {
   agent_failed: "afail",
   log: "log",
 };
+// Machine event tokens — mirror events.jsonl; left untranslated by design.
 const EVT_LABEL: Record<string, string> = {
   run_started: "RUN_STARTED",
   run_finished: "RUN_FINISHED",
@@ -67,14 +69,14 @@ export function renderActivity(): string {
       return (
         `<div class="fleetrow"><span class="nm">${esc(name)}</span>` +
         `<span class="track"><i class="${n === 0 ? "idle" : ""}" style="width:${pct}%"></i></span>` +
-        `<span class="ct">${n} running</span></div>`
+        `<span class="ct">${t("{n} running", { n })}</span></div>`
       );
     })
     .join("");
 
   const rows =
     store.activity.length === 0
-      ? `<div class="evrow"><span></span><span class="evt log">idle</span><span class="where">No recent events — start a run with <b>odw run &lt;name&gt;</b></span><span></span></div>`
+      ? `<div class="evrow"><span></span><span class="evt log">${t("idle")}</span><span class="where">${t("No recent events — start a run with {cmd}", { cmd: "<b>odw run &lt;name&gt;</b>" })}</span><span></span></div>`
       : store.activity
           .map((e) => {
             const cls = EVT_CLASS[e.type] ?? "log";
@@ -93,15 +95,15 @@ export function renderActivity(): string {
   return (
     `<div class="act-top">` +
     `<div class="counters">` +
-    `<div class="counter green"><div class="v">${activeCount}</div><div class="k">runs active</div></div>` +
-    `<div class="counter green"><div class="v">${runningAgents}</div><div class="k">agents running</div></div>` +
-    `<div class="counter"><div class="v">${doneAgents}</div><div class="k">agents done</div></div>` +
-    `<div class="counter red"><div class="v">${failedAgents}</div><div class="k">agents failed</div></div>` +
+    `<div class="counter green"><div class="v">${activeCount}</div><div class="k">${t("runs active")}</div></div>` +
+    `<div class="counter green"><div class="v">${runningAgents}</div><div class="k">${t("agents running")}</div></div>` +
+    `<div class="counter"><div class="v">${doneAgents}</div><div class="k">${t("agents done")}</div></div>` +
+    `<div class="counter red"><div class="v">${failedAgents}</div><div class="k">${t("agents failed")}</div></div>` +
     `</div>` +
-    `<div class="fleet"><h5>Fleet — agents running, by adapter</h5>${fleetRows}</div>` +
+    `<div class="fleet"><h5>${t("Fleet — agents running, by adapter")}</h5>${fleetRows}</div>` +
     `</div>` +
     `<div class="firehose">` +
-    `<div class="fh-head"><span class="t">Live event stream</span><span class="sub">all runs · events.jsonl</span>` +
+    `<div class="fh-head"><span class="t">${t("Live event stream")}</span><span class="sub">${t("all runs · events.jsonl")}</span>` +
     `<span class="legend"><span class="evt astart">AGENT_STARTED</span><span class="evt afin">FINISHED</span><span class="evt afail">FAILED</span><span class="evt phase">PHASE</span><span class="evt log">LOG</span></span></div>` +
     rows +
     `</div>`

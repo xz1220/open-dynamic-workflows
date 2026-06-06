@@ -18,6 +18,12 @@ import { orderedWorkflows, renderWorkspace, wfKey } from "./views/workspace";
 import type { WorkflowDetail } from "./types";
 import { api } from "./api";
 import { syncNative, isNative } from "./native";
+import { getLang, setLang, t as tr, type Lang } from "./i18n";
+
+/** Reflect the chosen language on <html lang> (a11y + correct CJK shaping). */
+function applyDocLang(): void {
+  document.documentElement.lang = getLang() === "zh" ? "zh-CN" : "en";
+}
 
 const root = document.getElementById("app")!;
 
@@ -179,6 +185,16 @@ root.addEventListener("click", (ev) => {
     render();
     return;
   }
+  const langEl = t.closest<HTMLElement>("[data-lang]");
+  if (langEl) {
+    const next = langEl.dataset.lang as Lang;
+    if (next !== getLang()) {
+      setLang(next);
+      applyDocLang();
+      render();
+    }
+    return;
+  }
   const nodeEl = t.closest<HTMLElement>("[data-ai]");
   if (nodeEl) {
     const ai = Number(nodeEl.dataset.ai);
@@ -194,7 +210,7 @@ root.addEventListener("click", (ev) => {
   const copyEl = t.closest<HTMLElement>("[data-copy]");
   if (copyEl) {
     void navigator.clipboard?.writeText(copyEl.dataset.copy!).catch(() => {});
-    copyEl.textContent = "✓ copied";
+    copyEl.textContent = tr("✓ copied");
     setTimeout(() => render(), 900);
     return;
   }
@@ -221,6 +237,7 @@ const snap = new URLSearchParams(location.search).get("snap") === "1";
 // In the Tauri shell the OS draws real traffic lights (Overlay titlebar), so drop
 // our decorative ones and inset the toolbar to clear them (see .is-native in CSS).
 document.body.classList.toggle("is-native", isNative());
+applyDocLang();
 if (!location.hash) location.hash = "#/activity";
 if (!snap) store.connect();
 void store.loadRuns().then(() => enterRoute());
