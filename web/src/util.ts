@@ -1,4 +1,5 @@
-/** Small formatting + DOM helpers. No deps. */
+/** Small formatting + DOM helpers. */
+import { t } from "./i18n";
 
 const ESC: Record<string, string> = {
   "&": "&amp;",
@@ -50,10 +51,10 @@ export function fmtDurMs(ms: number | null | undefined): string {
 export function fmtAgo(tsSec: number | null | undefined): string {
   if (tsSec == null) return "—";
   const d = nowSec() - tsSec;
-  if (d < 45) return "just now";
-  if (d < 3600) return `${Math.round(d / 60)}m ago`;
-  if (d < 86400) return `${Math.round(d / 3600)}h ago`;
-  return `${Math.round(d / 86400)}d ago`;
+  if (d < 45) return t("just now");
+  if (d < 3600) return t("{n}m ago", { n: Math.round(d / 60) });
+  if (d < 86400) return t("{n}h ago", { n: Math.round(d / 3600) });
+  return t("{n}d ago", { n: Math.round(d / 86400) });
 }
 
 /** Run wall-clock: created→updated for terminal runs, created→now otherwise. */
@@ -69,13 +70,13 @@ export function runDurationSec(
 
 /** Day bucket label for the history table. */
 export function fmtDayGroup(tsSec: number | null): string {
-  if (tsSec == null) return "Earlier";
+  if (tsSec == null) return t("Earlier");
   const d = new Date(tsSec * 1000);
   const today = new Date();
   const startOf = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
   const diffDays = Math.round((startOf(today) - startOf(d)) / 86400000);
-  if (diffDays <= 0) return "Today";
-  if (diffDays === 1) return "Yesterday";
+  if (diffDays <= 0) return t("Today");
+  if (diffDays === 1) return t("Yesterday");
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 

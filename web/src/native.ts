@@ -6,6 +6,7 @@
  * notifications — keeping all run *state* in the (single) web layer and letting
  * Rust stay a thin presenter.
  */
+import { t as tr } from "./i18n";
 import type { RunSummary } from "./types";
 import { ACTIVE } from "./util";
 
@@ -37,6 +38,22 @@ export function isNative(): boolean {
 let lastStates = new Map<string, string>();
 
 /**
+ * Build the notification title/body in the *current UI language*, so the native
+ * toast matches what the user sees. The Rust side prefers these when present and
+ * falls back to its own English copy if an older web build omits them.
+ */
+function notifText(r: RunSummary): { title: string; body: string } {
+  if (r.state === "failed")
+    return {
+      title: tr("{name} failed", { name: r.name }),
+      body: tr("{failed} of {agents} agents failed", { failed: r.counts.failed, agents: r.counts.agents }),
+    };
+  if (r.state === "stopped")
+    return { title: tr("{name} stopped", { name: r.name }), body: tr("Run was stopped") };
+  return { title: tr("{name} finished", { name: r.name }), body: tr("{agents} agents", { agents: r.counts.agents }) };
+}
+
+/**
  * Push UI-derived signals to the shell. Call on every run-list update.
  *  - Dock badge = active run count (0 clears it).
  *  - Emit `run:transition` for any run that just reached a terminal state, so
@@ -55,12 +72,15 @@ export function syncNative(runs: RunSummary[]): void {
     const prev = lastStates.get(r.runId);
     const terminal = r.state === "done" || r.state === "failed" || r.state === "stopped";
     if (prev && prev !== r.state && terminal) {
+      const { title, body } = notifText(r);
       void t.event?.emit?.("run:transition", {
         runId: r.runId,
         name: r.name,
         state: r.state,
         agents: r.counts.agents,
         failed: r.counts.failed,
+        title,
+        body,
       });
     }
   }

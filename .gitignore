@@ -18,6 +18,15 @@ odw.config.json
 # Generated social promo drafts
 /assets/social-card-*/
 
+# Demo-video build workspace: ignore the heavy intermediates (alt renders, audio,
+# extracted frames, contact sheets). The final render — videos/odw-demo/odw-product-demo.mp4,
+# embedded in the README — and the small build scripts/notes stay tracked.
+/videos/odw-demo/variants/
+/videos/odw-demo/capture/
+/videos/odw-demo/film/
+/videos/odw-demo/*.wav
+/videos/odw-demo/*.png
+
 # OS / editor
 .DS_Store
 *.log

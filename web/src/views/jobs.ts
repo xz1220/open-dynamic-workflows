@@ -1,4 +1,5 @@
 /** Jobs — the run monitor: an active strip + a date-grouped history table. */
+import { t } from "../i18n";
 import { activeRuns } from "../shell";
 import { store } from "../store";
 import type { RunSummary } from "../types";
@@ -23,10 +24,10 @@ function runCard(r: RunSummary): string {
   return (
     `<div class="runcard ${paused ? "" : "run"}" data-run="${esc(r.runId)}">` +
     `<div class="top"><span><span class="nm">${esc(r.name)}</span><div class="wf">${esc(r.runId)}</div></span>` +
-    `<span class="badge ${r.state}"><span class="d"></span>${esc(r.state)}</span></div>` +
+    `<span class="badge ${r.state}"><span class="d"></span>${esc(t(r.state))}</span></div>` +
     `<div class="spark">${spark(r.runId, paused)}</div>` +
     `<div class="strip"><i style="width:${Math.round(r.progress * 100)}%"></i></div>` +
-    `<div class="meta">${r.counts.running} running · ${r.counts.done} done${r.counts.failed ? ` · ${r.counts.failed} failed` : ""}</div>` +
+    `<div class="meta">${t("{n} running", { n: r.counts.running })} · ${t("{n} done", { n: r.counts.done })}${r.counts.failed ? ` · ${t("{n} failed", { n: r.counts.failed })}` : ""}</div>` +
     `</div>`
   );
 }
@@ -39,7 +40,7 @@ function historyRow(r: RunSummary): string {
     `<tr class="run" data-run="${esc(r.runId)}">` +
     `<td style="font-weight:600;">${esc(r.name)}</td>` +
     `<td class="mono">${esc(r.runId)}</td>` +
-    `<td><span class="badge ${r.state}"><span class="d"></span>${esc(r.state)}</span></td>` +
+    `<td><span class="badge ${r.state}"><span class="d"></span>${esc(t(r.state))}</span></td>` +
     `<td class="mono">${fmtClock(r.createdAt)}</td>` +
     `<td class="mono">${dur}</td>` +
     `<td class="mono">${r.counts.agents}</td>` +
@@ -52,7 +53,7 @@ export function renderJobs(): string {
   const ended = store.runs.filter((r) => TERMINAL.has(r.state) || r.state === "stale");
 
   const strip = active.length
-    ? `<div class="activestrip"><div class="lbl">Active now</div><div class="runcards">${active.map(runCard).join("")}</div></div>`
+    ? `<div class="activestrip"><div class="lbl">${t("Active now")}</div><div class="runcards">${active.map(runCard).join("")}</div></div>`
     : "";
 
   // Group history rows by day.
@@ -69,11 +70,11 @@ export function renderJobs(): string {
 
   const body =
     store.runs.length === 0
-      ? `<div class="empty"><div class="gh">No runs yet</div><div>Runs your agent starts with the CLI appear here.</div><div class="codehint">odw run &lt;name&gt;</div></div>`
+      ? `<div class="empty"><div class="gh">${t("No runs yet")}</div><div>${t("Runs your agent starts with the CLI appear here.")}</div><div class="codehint">odw run &lt;name&gt;</div></div>`
       : strip +
         `<div class="histwrap"><table class="histtable">` +
-        `<thead><tr><th>workflow</th><th>run id</th><th>status</th><th>started</th><th>duration</th><th>agents</th></tr></thead>` +
-        `<tbody>${histRows.join("") || `<tr><td colspan="6" style="color:var(--muted);padding:18px 14px;">No finished runs yet.</td></tr>`}</tbody></table></div>`;
+        `<thead><tr><th>${t("workflow")}</th><th>${t("run id")}</th><th>${t("status")}</th><th>${t("started")}</th><th>${t("duration")}</th><th>${t("agents")}</th></tr></thead>` +
+        `<tbody>${histRows.join("") || `<tr><td colspan="6" style="color:var(--muted);padding:18px 14px;">${t("No finished runs yet.")}</td></tr>`}</tbody></table></div>`;
 
   return `<div class="jobs">${body}</div>`;
 }

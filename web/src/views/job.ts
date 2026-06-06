@@ -1,5 +1,6 @@
 /** Job detail — the live DAG (hero), plus Logs and Result tabs. Read-only. */
 import { renderDag } from "../dag";
+import { t } from "../i18n";
 import { store } from "../store";
 import type { AgentView, RunDetail, WorkflowEvent } from "../types";
 import { TERMINAL, esc, fmtClock, fmtDurMs } from "../util";
@@ -43,30 +44,30 @@ function stageHead(run: RunDetail, tab: JobTab): string {
 
   const subtabs =
     `<div class="subtabs">` +
-    `<b class="${tab === "graph" ? "on" : ""}" data-tab="graph">Graph</b>` +
-    `<b class="${tab === "logs" ? "on" : ""}" data-tab="logs">Logs</b>` +
-    `<b class="${tab === "result" ? "on" : ""}" data-tab="result">Result</b>` +
+    `<b class="${tab === "graph" ? "on" : ""}" data-tab="graph">${t("Graph")}</b>` +
+    `<b class="${tab === "logs" ? "on" : ""}" data-tab="logs">${t("Logs")}</b>` +
+    `<b class="${tab === "result" ? "on" : ""}" data-tab="result">${t("Result")}</b>` +
     `</div>`;
 
   return (
     `<div class="stagehead">` +
     `<div class="row1"><span class="rtitle">${esc(run.name)}</span>` +
-    `<span class="badge ${run.state}"><span class="d"></span>${esc(run.state)}</span>` +
+    `<span class="badge ${run.state}"><span class="d"></span>${esc(t(run.state))}</span>` +
     `<div class="phasestepper">${stepper}</div>` +
     `<div style="margin-left:auto;">${subtabs}</div></div>` +
     `<div class="progressbar"><i class="${progClass}" style="width:${Math.max(pct, run.state === "failed" || run.state === "stopped" ? 100 : 0)}%"></i></div>` +
     `<div class="row3">` +
-    `<span class="chip"><b>${run.counts.agents}</b> agents</span>` +
-    `<span class="chip"><span class="em">●</span><b>${run.counts.running}</b> running</span>` +
-    `<span class="chip"><b>${run.counts.done}</b> done</span>` +
-    (run.counts.failed ? `<span class="chip"><span class="rd">✕</span><b>${run.counts.failed}</b> failed</span>` : "") +
-    (run.counts.stale ? `<span class="chip"><span class="am">●</span><b>${run.counts.stale}</b> stale</span>` : "") +
-    `<span class="chip"><b>${order.length}</b> phases</span>` +
+    `<span class="chip"><b>${run.counts.agents}</b> ${t("agents")}</span>` +
+    `<span class="chip"><span class="em">●</span><b>${run.counts.running}</b> ${t("running")}</span>` +
+    `<span class="chip"><b>${run.counts.done}</b> ${t("done")}</span>` +
+    (run.counts.failed ? `<span class="chip"><span class="rd">✕</span><b>${run.counts.failed}</b> ${t("failed")}</span>` : "") +
+    (run.counts.stale ? `<span class="chip"><span class="am">●</span><b>${run.counts.stale}</b> ${t("stale")}</span>` : "") +
+    `<span class="chip"><b>${order.length}</b> ${t("phases")}</span>` +
     (run.pid != null ? `<span class="chip">pid <b>${run.pid}</b></span>` : "") +
     beat +
     `<div class="readonly-actions">` +
-    `<span class="btn ghost sm" data-copy="${esc(run.runId)}">⧉ Copy run id</span>` +
-    (terminal ? "" : `<span class="btn secondary sm" data-reveal="1">⊞ Open run dir</span>`) +
+    `<span class="btn ghost sm" data-copy="${esc(run.runId)}">${t("⧉ Copy run id")}</span>` +
+    (terminal ? "" : `<span class="btn secondary sm" data-reveal="1">${t("⊞ Open run dir")}</span>`) +
     `</div></div></div>`
   );
 }
@@ -74,29 +75,29 @@ function stageHead(run: RunDetail, tab: JobTab): string {
 function detailPanel(a: AgentView): string {
   const errBlock =
     a.state === "failed"
-      ? `<div class="dp-sec">Error</div><div class="dp-out">${esc(a.error ?? "(no message)")}</div>`
+      ? `<div class="dp-sec">${t("Error")}</div><div class="dp-out">${esc(a.error ?? t("(no message)"))}</div>`
       : "";
   const out =
     a.state === "running"
-      ? `<div class="dp-sec">Status</div><div class="dp-out">running…<br>started ${fmtClock(a.startedAt)}</div>`
+      ? `<div class="dp-sec">${t("Status")}</div><div class="dp-out">${t("running…")}<br>${t("started {t}", { t: fmtClock(a.startedAt) })}</div>`
       : a.state === "done"
-        ? `<div class="dp-sec">Outcome</div><div class="dp-out">done in ${fmtDurMs(a.durationMs)}${a.attempts ? `<br>attempts: ${a.attempts}` : ""}</div>`
+        ? `<div class="dp-sec">${t("Outcome")}</div><div class="dp-out">${t("done in {d}", { d: fmtDurMs(a.durationMs) })}${a.attempts ? `<br>${t("attempts: {n}", { n: a.attempts })}` : ""}</div>`
         : a.state === "stale"
-          ? `<div class="dp-sec">Status</div><div class="dp-out">worker lost contact<br>started ${fmtClock(a.startedAt)}</div>`
+          ? `<div class="dp-sec">${t("Status")}</div><div class="dp-out">${t("worker lost contact")}<br>${t("started {t}", { t: fmtClock(a.startedAt) })}</div>`
         : errBlock;
   return (
     `<div class="detailpanel">` +
     `<span class="close" data-close="1">esc ✕</span>` +
     `<h4>${esc(a.label)}</h4>` +
-    `<div style="margin-top:8px;"><span class="badge ${a.state}"><span class="d"></span>${esc(a.state)}</span></div>` +
+    `<div style="margin-top:8px;"><span class="badge ${a.state}"><span class="d"></span>${esc(t(a.state))}</span></div>` +
     `<div class="dp-meta">` +
-    `<span class="k">adapter</span><span class="v">${esc(a.adapter ?? "—")}</span>` +
-    `<span class="k">phase</span><span class="v">${esc(a.phase ?? "—")}</span>` +
-    `<span class="k">started</span><span class="v">${fmtClock(a.startedAt)}</span>` +
-    `<span class="k">duration</span><span class="v">${a.state === "running" ? "live" : fmtDurMs(a.durationMs)}</span>` +
+    `<span class="k">${t("adapter")}</span><span class="v">${esc(a.adapter ?? "—")}</span>` +
+    `<span class="k">${t("phase")}</span><span class="v">${esc(a.phase ?? "—")}</span>` +
+    `<span class="k">${t("started")}</span><span class="v">${fmtClock(a.startedAt)}</span>` +
+    `<span class="k">${t("duration")}</span><span class="v">${a.state === "running" ? t("live") : fmtDurMs(a.durationMs)}</span>` +
     `</div>` +
     out +
-    `<div class="dp-sec">Read-only</div><div style="font-size:11.5px;color:var(--muted);">This view never re-runs or controls an agent — runs are driven by the CLI.</div>` +
+    `<div class="dp-sec">${t("Read-only")}</div><div style="font-size:11.5px;color:var(--muted);">${t("This view never re-runs or controls an agent — runs are driven by the CLI.")}</div>` +
     `</div>`
   );
 }
@@ -106,9 +107,9 @@ function ticker(run: RunDetail): string {
   const left = lastLog ? `▸ ${esc(String(lastLog.message ?? ""))}` : `▸ ${esc(run.description ?? run.name)}`;
   const right =
     run.lastActivityTs != null
-      ? `last activity ${fmtClock(run.lastActivityTs)}`
+      ? t("last activity {t}", { t: fmtClock(run.lastActivityTs) })
       : run.stale
-        ? "⚠ worker lost contact"
+        ? t("⚠ worker lost contact")
         : "";
   return `<div class="ticker"><span>${left}</span><span class="r">${right}</span></div>`;
 }
@@ -120,8 +121,8 @@ function graphTab(run: RunDetail, selectedAi: number | null): string {
       .join(`<span class="ar" style="color:var(--faint)"> → </span>`);
     return (
       `<div class="dagarea"><div class="empty">` +
-      `<div class="gh">Waiting for the first agent…</div>` +
-      `<div>Declared phases:</div><div class="phasepills">${planned || "—"}</div>` +
+      `<div class="gh">${t("Waiting for the first agent…")}</div>` +
+      `<div>${t("Declared phases:")}</div><div class="phasepills">${planned || "—"}</div>` +
       `</div>${ticker(run)}</div>`
     );
   }
@@ -154,7 +155,7 @@ function logRow(e: WorkflowEvent): string {
 function logsTab(): string {
   const rows = store.runEvents.length
     ? store.runEvents.map(logRow).join("")
-    : `<div style="color:var(--muted);padding:14px;">No events yet.</div>`;
+    : `<div style="color:var(--muted);padding:14px;">${t("No events yet.")}</div>`;
   return `<div class="logwrap">${rows}</div>`;
 }
 
@@ -167,10 +168,10 @@ function resultTab(run: RunDetail): string {
     );
   }
   if (!run.hasResult) {
-    return `<div class="resultwrap"><div class="empty"><div class="gh">No result yet</div><div>A result is written when the run finishes successfully.</div></div></div>`;
+    return `<div class="resultwrap"><div class="empty"><div class="gh">${t("No result yet")}</div><div>${t("A result is written when the run finishes successfully.")}</div></div></div>`;
   }
   if (!store.resultLoaded) {
-    return `<div class="resultwrap"><div class="empty"><div class="spinner"></div><div>Loading result…</div></div></div>`;
+    return `<div class="resultwrap"><div class="empty"><div class="spinner"></div><div>${t("Loading result…")}</div></div></div>`;
   }
   const pretty =
     typeof store.result === "string" ? store.result : JSON.stringify(store.result, null, 2);
@@ -180,7 +181,7 @@ function resultTab(run: RunDetail): string {
 export function renderJob(tab: JobTab, selectedAi: number | null): string {
   const run = store.run;
   if (!run) {
-    return `<div class="job"><div class="empty"><div class="spinner"></div><div>Loading run…</div></div></div>`;
+    return `<div class="job"><div class="empty"><div class="spinner"></div><div>${t("Loading run…")}</div></div></div>`;
   }
   const head = stageHead(run, tab);
   const body = tab === "graph" ? graphTab(run, selectedAi) : tab === "logs" ? logsTab() : resultTab(run);

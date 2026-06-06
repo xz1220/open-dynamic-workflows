@@ -1,5 +1,6 @@
 /** The persistent app shell: unified toolbar, left rail, bottom status bar. */
 import { icons, logoSvg } from "./icons";
+import { t } from "./i18n";
 import { store } from "./store";
 import { ACTIVE, clsx, esc } from "./util";
 
@@ -14,7 +15,7 @@ export function activeRuns() {
 
 function connChip(): string {
   const c = store.conn;
-  const label = c === "live" ? "Live · 实时" : c === "reconnecting" ? "Reconnecting…" : "Connecting…";
+  const label = c === "live" ? t("Live") : c === "reconnecting" ? t("Reconnecting…") : t("Connecting…");
   return `<span class="conn ${c}"><span class="d"></span>${label}</span>`;
 }
 
@@ -54,18 +55,18 @@ export function rail(route: Route): string {
     })
     .join("");
   const liveSection = active.length
-    ? `<div class="divider"></div><div class="section-label"><span>Live now</span><span class="num">${active.length}</span></div>${mini}`
+    ? `<div class="divider"></div><div class="section-label"><span>${t("Live now")}</span><span class="num">${active.length}</span></div>${mini}`
     : "";
   return (
     `<div class="rail">` +
     `<div class="brand">${logoSvg}<span class="wm">odw</span></div>` +
-    `<div class="tagline">fan out coding agents</div>` +
-    navItem("activity", route, icons.activity, "Activity") +
-    navItem("workspace", route, icons.workspace, "Workspace") +
-    navItem("jobs", route, icons.jobs, "Jobs", active.length) +
+    `<div class="tagline">${t("fan out coding agents")}</div>` +
+    navItem("activity", route, icons.activity, t("Activity")) +
+    navItem("workspace", route, icons.workspace, t("Workspace")) +
+    navItem("jobs", route, icons.jobs, t("Jobs"), active.length) +
     liveSection +
     `<div class="spacer"></div>` +
-    navItem("settings", route, icons.settings, "Settings") +
+    navItem("settings", route, icons.settings, t("Settings")) +
     `</div>`
   );
 }
@@ -76,9 +77,9 @@ export function statusbar(): string {
   const live = store.conn === "live";
   return (
     `<div class="statusbar">` +
-    `<span>${active.length} active · ${running} running</span>` +
+    `<span>${t("{a} active · {r} running", { a: active.length, r: running })}</span>` +
     `<span>runs/&lt;workflow&gt;/&lt;runId&gt;</span>` +
-    `<span style="display:inline-flex;align-items:center;gap:7px;"><span class="live-dot${live ? "" : " off"}"></span> ${live ? "live · SSE" : store.conn}</span>` +
+    `<span style="display:inline-flex;align-items:center;gap:7px;"><span class="live-dot${live ? "" : " off"}"></span> ${live ? t("live · SSE") : t(store.conn)}</span>` +
     `</div>`
   );
 }
