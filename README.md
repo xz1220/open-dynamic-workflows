@@ -4,7 +4,7 @@
 
 # Open Dynamic Workflows
 
-**An open dynamic workflow runtime for Claude Code-style agent orchestration on _any_ coding agent.**
+**An open runtime for Claude Code-style _dynamic workflows_ — run the same agent-orchestration scripts on _any_ coding agent (Codex, Claude, Gemini, Qwen, Kimi).**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/Node-%E2%89%A520-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
@@ -32,51 +32,15 @@ already do this inside its own private runtime; ODW makes the **same scripts**
 portable to any agent, so the workflows the Claude Code ecosystem is already
 producing become artifacts you can run anywhere.
 
-## Recent updates
+<div align="center">
 
-ODW has moved from "runtime only" into a usable app + CLI loop. Recent versions
-focused on:
+<a href="videos/odw-demo/odw-product-demo.mp4">
+  <img src="assets/image.png" alt="Watch the ODW product demo — fan coding agents out across a live workflow and watch it run" width="720" />
+</a>
 
-- **Desktop observatory** — a read-only Tauri shell that bundles the same
-  `odw serve` dashboard, keeps runs visible from the Dock / tray, and now shuts
-  its sidecar down cleanly on quit.
-- **Live run monitoring** — Activity, Jobs, and Job detail views now show active
-  runs, per-adapter agent load, stale workers, Graph / Logs / Result tabs, and
-  quick actions to copy run IDs or open run directories.
-- **Workflow workspace** — the app reads saved workflows from `.odw/workflows`,
-  `.claude/workflows`, `~/.odw/workflows`, and `~/.claude/workflows`, then shows
-  phases, inferred structure, source, and recent runs.
-- **Runtime correctness** — scheduled agents are dispatched and counted
-  accurately, run records are bucketed for the client, and the dashboard reports
-  stalled workers honestly.
-- **Install path polish** — the binary + skill installer, zero-dependency web
-  dashboard, and sidecar bundling path are aligned so agents can install ODW and
-  immediately fan work out.
+<sub><b><a href="videos/odw-demo/odw-product-demo.mp4">▶ Watch the 33-second demo</a></b> — author a workflow, fan agents out, and watch the run light up live.</sub>
 
-## App screenshots
-
-<table>
-  <tr>
-    <td width="50%">
-      <strong>Activity</strong><br />
-      <img src="assets/app-screenshots/activity.png" alt="Activity view showing live event stream, active run counters, and per-adapter agent load" />
-    </td>
-    <td width="50%">
-      <strong>Workspace</strong><br />
-      <img src="assets/app-screenshots/workspace.png" alt="Workspace view showing saved workflows, phases, inferred workflow structure, and source" />
-    </td>
-  </tr>
-  <tr>
-    <td width="50%">
-      <strong>Jobs</strong><br />
-      <img src="assets/app-screenshots/jobs.png" alt="Jobs view showing active runs and a history table" />
-    </td>
-    <td width="50%">
-      <strong>Job detail</strong><br />
-      <img src="assets/app-screenshots/job-detail.png" alt="Job detail view showing a live workflow graph with phase columns and agent nodes" />
-    </td>
-  </tr>
-</table>
+</div>
 
 ## Highlights
 
@@ -95,6 +59,21 @@ focused on:
 - **No threads, zero runtime dependencies** — the engine is async TypeScript
   (`parallel` is `Promise.all`); workflow scripts stay plain `.js` and ship with
   `.d.ts` authoring types for editor autocomplete.
+
+## Why not just use Claude Code's built-in Workflow tool?
+
+Claude Code can already run dynamic workflows — but only inside its own private
+runtime, for Claude Code itself. ODW makes the **same scripts** portable and
+standalone:
+
+- **Any agent, same script** — run a workflow on Codex, Gemini, Qwen, Kimi, or
+  your own CLI, not just Claude Code. Switch the underlying agent by switching
+  adapters.
+- **Out of band** — runs are detached background workers backed by a run
+  directory, so you can `status` / `logs --follow` / `pause` / `stop` them and
+  watch from a browser or the desktop app — independent of any host agent session.
+- **Portable artifacts** — the workflows the Claude Code ecosystem is already
+  producing become files you can version, share, and run anywhere.
 
 ## Install
 
@@ -141,8 +120,9 @@ git clone https://github.com/xz1220/open-dynamic-workflows.git
 cp -r open-dynamic-workflows/skill ~/.claude/skills/open-dynamic-workflows
 ```
 
-Or, **if you already have Node ≥20**, skip the binary: `npm i -g odw` puts `odw`
-on your PATH (then still do step *b* for the skill).
+Or, **once `odw` is published to npm** (not yet — see [Develop](#develop)) and you
+have Node ≥20, `npm i -g odw` will put `odw` on your PATH (you'd still do step *b*
+for the skill). For now, use the binary above.
 
 > The on-disk binary is ~110 MB — almost entirely the embedded Node runtime, like
 > any Node→binary tool — but the download is gzipped to ~35 MB. The agents ODW
@@ -247,6 +227,22 @@ odw serve --port 8080 --host 0.0.0.0    # custom port / bind address
 
 ![odw serve — a live board of a deep-research run: phase columns (Search → Extract → Vote → Report), per-agent cards with adapter and elapsed time, and live status](assets/odw-dashboard.png)
 
+**Prefer a native app?** The same dashboard ships as a read-only desktop
+**observatory** (a Tauri shell) that keeps runs visible from the Dock / tray:
+
+<table>
+  <tr>
+    <td width="50%">
+      <strong>Activity</strong><br />
+      <img src="assets/app-screenshots/activity.png" alt="Activity view showing live event stream, active run counters, and per-adapter agent load" />
+    </td>
+    <td width="50%">
+      <strong>Job detail</strong><br />
+      <img src="assets/app-screenshots/job-detail.png" alt="Job detail view showing a live workflow graph with phase columns and agent nodes" />
+    </td>
+  </tr>
+</table>
+
 ## Configure adapters
 
 Codex, Claude Code, Gemini, Qwen, and Kimi work out of the box. To change the
@@ -345,6 +341,11 @@ into the host's `node`, so each target is built on its own runner.
 
 ## Status
 
+**What's new (v0.2.4):** a read-only desktop **observatory** app + live run
+monitoring (Activity / Jobs / Job detail), a workflow workspace that reads saved
+workflows from `.odw/`–`.claude/` dirs, and install-path polish — see
+[Releases](https://github.com/xz1220/open-dynamic-workflows/releases).
+
 **Core runtime is shipped.** The full runtime is on `main` — the adapter layer, execution
 bridge, workspace isolation, the async scheduler, the injected primitives, the
 loader/transform, the JSON-Schema engine, the background runtime, and the `odw`
@@ -365,6 +366,16 @@ Background on the Claude Code dialect ODW aligns with:
 [`skill/SKILL.md`](skill/SKILL.md) teaches a host agent to author and run
 workflows from documentation alone — install it into your agent's skills
 directory (Codex CLI → `~/.codex/skills/`, Claude Code → its skills dir).
+
+## Star history
+
+<a href="https://star-history.com/#xz1220/open-dynamic-workflows&Date">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=xz1220/open-dynamic-workflows&type=Date&theme=dark" />
+    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=xz1220/open-dynamic-workflows&type=Date" />
+    <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=xz1220/open-dynamic-workflows&type=Date" width="600" />
+  </picture>
+</a>
 
 ## License
 
