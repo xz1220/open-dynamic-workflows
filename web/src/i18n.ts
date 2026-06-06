@@ -7,10 +7,11 @@
  * partial translation degrades gracefully and never throws. Interpolate with
  * `{name}` placeholders: `t("{n} running", { n: 3 })`.
  *
- * The chosen language is persisted to localStorage; on first load it is inferred
- * from the browser/OS locale (a Chinese system opens in Chinese). Switching is a
- * pure presentation change — the app re-renders from `t()` on every paint, so a
- * single re-render after setLang() updates the whole UI.
+ * The chosen language is persisted to localStorage and defaults to English; the
+ * UI only switches to Chinese when the user explicitly picks it (the choice then
+ * persists across loads). Switching is a pure presentation change — the app
+ * re-renders from `t()` on every paint, so a single re-render after setLang()
+ * updates the whole UI.
  */
 
 export type Lang = "en" | "zh";
@@ -24,11 +25,8 @@ function initialLang(): Lang {
   } catch {
     /* localStorage may be unavailable (private mode / sandbox) */
   }
-  try {
-    if (navigator.language?.toLowerCase().startsWith("zh")) return "zh";
-  } catch {
-    /* navigator may be absent in headless capture */
-  }
+  // Default to English. We intentionally do NOT auto-detect from navigator.language
+  // — a Chinese OS still opens in English unless the user opts into 中文 in Settings.
   return "en";
 }
 
