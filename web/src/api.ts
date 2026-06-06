@@ -22,5 +22,6 @@ export const api = {
     getJSON<WorkflowEvent[]>(`/api/runs/${enc(id)}/events?since=${since}`),
   result: (id: string) => getJSON<{ value: unknown }>(`/api/runs/${enc(id)}/result`),
   workflows: () => getJSON<WorkflowSummary[]>("/api/workflows"),
-  workflow: (name: string) => getJSON<WorkflowDetail>(`/api/workflows/${enc(name)}`),
+  workflow: (name: string, provider?: string) =>
+    getJSON<WorkflowDetail>(`/api/workflows/${enc(name)}${provider ? `?provider=${enc(provider)}` : ""}`),
 };

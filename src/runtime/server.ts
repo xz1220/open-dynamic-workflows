@@ -199,7 +199,11 @@ function handle(
     const wfMatch = path.match(/^\/api\/workflows\/([^/]+)$/);
     if (method === "GET" && wfMatch) {
       const name = decodeURIComponent(wfMatch[1]!);
-      const det = workflowDetail(cwd, config, store, name);
+      // Optional ?provider= disambiguates a cross-provider name collision (so a
+      // shadowed Claude workflow's source is reachable); ignored if not odw|claude.
+      const p = url.searchParams.get("provider");
+      const provider = p === "odw" || p === "claude" ? p : undefined;
+      const det = workflowDetail(cwd, config, store, name, provider);
       if (!det) {
         sendJson(res, 404, { error: `no such workflow: ${name}` });
         return;

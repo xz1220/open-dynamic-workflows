@@ -66,6 +66,8 @@ export interface WorkflowSummary {
   description: string | null;
   phases: Array<{ title: string }>;
   runCount: number;
+  /** A higher-precedence same-named workflow wins `odw run <name>`; we still show this. */
+  shadowed: boolean;
 }
 
 export interface WorkflowDetail extends WorkflowSummary {

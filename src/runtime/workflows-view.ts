@@ -31,6 +31,13 @@ export interface WorkflowSummary {
   phases: Array<{ title: string }>;
   /** How many recorded runs this workflow has (its bucket size). */
   runCount: number;
+  /**
+   * A higher-precedence root (of ANY provider) already defines this name, so
+   * `odw run <name>` resolves to that other script — not this one. The Workspace
+   * still SHOWS it (grouped under its provider) so a Claude workflow is never
+   * silently hidden behind a same-named ODW one; the flag lets the UI say so.
+   */
+  shadowed: boolean;
 }
 
 export interface WorkflowDetail extends WorkflowSummary {
@@ -49,15 +56,24 @@ function readMetaSafe(path: string): WorkflowMeta | null {
   }
 }
 
-/** Every resolvable workflow (winners only — shadowed duplicates dropped). */
+/**
+ * Every workflow the dashboard should SHOW, deduped per (provider, name) so the
+ * higher-precedence root wins within a provider — but cross-provider collisions
+ * are kept: a Claude `deep-research` and an ODW `deep-research` both appear, the
+ * shadowed one flagged. (Contrast `odw run`, which must pick exactly one script;
+ * the observatory's job is to show what exists, not hide it.)
+ */
 export function listWorkflowSummaries(
   cwd: string,
   config: Config,
   store?: RunStore,
 ): WorkflowSummary[] {
   const out: WorkflowSummary[] = [];
+  const seen = new Set<string>(); // `${provider}:${name}` — top root per provider+name wins
   for (const w of listWorkflows(cwd, config)) {
-    if (w.shadowed) continue; // a higher-precedence root already defines this name
+    const key = `${w.provider}:${w.name}`;
+    if (seen.has(key)) continue; // a higher-precedence root of the SAME provider already won this name
+    seen.add(key);
     const meta = readMetaSafe(w.path);
     out.push({
       name: w.name,
@@ -67,21 +83,33 @@ export function listWorkflowSummaries(
       path: w.path,
       description: meta?.description ?? null,
       phases: meta?.phases ?? [],
-      runCount: store ? store.listRunsForWorkflow(w.name).length : 0,
+      // Run buckets are keyed by NAME only (no provider), so a shadowed entry would
+      // otherwise borrow the winner's runs — runs it can never have produced, since
+      // `odw run <name>` always resolves to the winner. Credit only the winner.
+      runCount: store && !w.shadowed ? store.listRunsForWorkflow(w.name).length : 0,
+      shadowed: w.shadowed,
     });
   }
   return out;
 }
 
-/** One workflow with its source and runs, or null if no such name resolves. */
+/**
+ * One workflow with its source and runs, or null if no such name resolves.
+ * `provider` disambiguates a cross-provider name collision: with it, the named
+ * provider's entry is returned (so the Workspace can open a shadowed Claude
+ * workflow's source); without it, the run-resolution winner is returned.
+ */
 export function workflowDetail(
   cwd: string,
   config: Config,
   store: RunStore,
   name: string,
+  provider?: "odw" | "claude",
 ): WorkflowDetail | null {
   const all = listWorkflows(cwd, config);
-  const w = all.find((x) => x.name === name && !x.shadowed) ?? all.find((x) => x.name === name);
+  const w = provider
+    ? all.find((x) => x.name === name && x.provider === provider)
+    : (all.find((x) => x.name === name && !x.shadowed) ?? all.find((x) => x.name === name));
   if (!w) return null;
   const meta = readMetaSafe(w.path);
   let source = "";
@@ -90,7 +118,9 @@ export function workflowDetail(
   } catch {
     source = "";
   }
-  const runs = store.listRunsForWorkflow(name).map((r) => ({ runId: r.runId }));
+  // Same name-keyed-bucket caveat as listWorkflowSummaries: a shadowed entry must
+  // not claim the winner's run history, so report no runs for it.
+  const runs = w.shadowed ? [] : store.listRunsForWorkflow(name).map((r) => ({ runId: r.runId }));
   return {
     name: w.name,
     origin: w.origin,
@@ -100,6 +130,7 @@ export function workflowDetail(
     description: meta?.description ?? null,
     phases: meta?.phases ?? [],
     runCount: runs.length,
+    shadowed: w.shadowed,
     source,
     runs,
   };

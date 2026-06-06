@@ -14,7 +14,7 @@ import { renderActivity } from "./views/activity";
 import { renderJob, type JobTab } from "./views/job";
 import { renderJobs } from "./views/jobs";
 import { renderSettings } from "./views/settings";
-import { renderWorkspace } from "./views/workspace";
+import { orderedWorkflows, renderWorkspace, wfKey } from "./views/workspace";
 import type { WorkflowDetail } from "./types";
 import { api } from "./api";
 import { syncNative, isNative } from "./native";
@@ -95,8 +95,10 @@ async function enterRoute(): Promise<void> {
     poll = window.setInterval(() => store.loadActivity(), 1500);
   } else if (route.view === "workspace") {
     if (store.workflows === null) await store.loadWorkflows();
-    // Default-select the first workflow (or the routed one).
-    const want = route.param ?? wfActive ?? store.workflows?.[0]?.name ?? null;
+    // Default-select the first workflow (or the routed one). Keys are provider:name.
+    // Use render order so the default highlight matches the visually-first row.
+    const first = store.workflows ? orderedWorkflows(store.workflows)[0] : undefined;
+    const want = route.param ?? wfActive ?? (first ? wfKey(first) : null);
     if (want && want !== wfActive) await selectWorkflow(want, false);
     else render();
   } else if (route.view === "jobs") {
@@ -120,18 +122,26 @@ async function enterRoute(): Promise<void> {
   }
 }
 
-async function selectWorkflow(name: string, navigate = true): Promise<void> {
-  wfActive = name;
+async function selectWorkflow(key: string, navigate = true): Promise<void> {
+  wfActive = key;
   wfDetail = null;
   render();
+  // key is `provider:name`; name has no colon, so split on the first one. Tolerate
+  // a bare name (old bookmark) by treating the whole thing as the name.
+  const i = key.indexOf(":");
+  const provider = i >= 0 ? key.slice(0, i) : undefined;
+  const name = i >= 0 ? key.slice(i + 1) : key;
   try {
-    wfDetail = await api.workflow(name);
+    wfDetail = await api.workflow(name, provider);
+    // Normalize to the canonical provider:name so a bare-name (old-bookmark) key
+    // still highlights its list row, which compares against wfKey(w).
+    if (wfDetail) wfActive = wfKey(wfDetail);
   } catch {
     wfDetail = null;
   }
   render();
-  if (navigate && location.hash !== `#/workspace/${encodeURIComponent(name)}`) {
-    history.replaceState(null, "", `#/workspace/${encodeURIComponent(name)}`);
+  if (navigate && location.hash !== `#/workspace/${encodeURIComponent(key)}`) {
+    history.replaceState(null, "", `#/workspace/${encodeURIComponent(key)}`);
   }
 }
 

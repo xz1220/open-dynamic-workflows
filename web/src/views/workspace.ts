@@ -16,14 +16,27 @@ function highlight(src: string): string {
     .replace(/\b(agent|parallel|pipeline|phase|log)\b(?=\()/g, '<span style="color:#d2a8ff">$1</span>');
 }
 
-function listItem(w: WorkflowSummary, activeName: string | null): string {
+/**
+ * A workflow's stable identity for selection + detail routing. Two providers can
+ * own the same name (e.g. an ODW and a Claude `deep-research`), so name alone is
+ * ambiguous; `provider:name` is unique (name excludes `:`).
+ */
+export function wfKey(w: { provider: string; name: string }): string {
+  return `${w.provider}:${w.name}`;
+}
+
+function listItem(w: WorkflowSummary, activeKey: string | null): string {
+  const key = wfKey(w);
   const badgeClass = w.origin === "global" ? "srcbadge global" : "srcbadge";
   const badge = `<span class="${badgeClass}">${esc(w.rootLabel)}</span>`;
+  const shadow = w.shadowed
+    ? `<span class="shadow" title="name shadowed — odw run ${esc(w.name)} runs a higher-precedence workflow">shadowed</span>`
+    : "";
   return (
-    `<div class="wfitem ${w.name === activeName ? "on" : ""}" data-wf="${esc(w.name)}">` +
+    `<div class="wfitem ${key === activeKey ? "on" : ""}" data-wf="${esc(key)}">` +
     `<h4>${esc(w.name)}</h4>` +
     (w.description ? `<div class="ds">${esc(w.description)}</div>` : "") +
-    `<div class="mini">${badge}<span>${w.phases.length} phases</span>${w.runCount ? `<span>· ${w.runCount} runs</span>` : ""}</div>` +
+    `<div class="mini">${badge}<span>${w.phases.length} phases</span>${w.runCount ? `<span>· ${w.runCount} runs</span>` : ""}${shadow}</div>` +
     `</div>`
   );
 }
@@ -66,13 +79,19 @@ function detailPane(d: WorkflowDetail): string {
         .join("")
     : "";
 
+  const badgeClass = d.origin === "global" ? "srcbadge global" : "srcbadge";
+  const runNote = d.shadowed
+    ? `<span class="note">— shadowed; this runs a higher-precedence ${esc(d.name)}</span>`
+    : `<span class="note">— started by your agent, not here</span>`;
+
   return (
     `<div class="wfdetail">` +
     `<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px;">` +
     `<div><h1 class="page-h1">${esc(d.name)}</h1>` +
+    `<div class="wfmeta"><span class="${badgeClass}">${esc(d.rootLabel)}</span>${d.shadowed ? `<span class="shadow">shadowed</span>` : ""}</div>` +
     (d.description ? `<p class="page-sub" style="max-width:64ch;">${esc(d.description)}</p>` : "") +
     `</div></div>` +
-    `<div style="margin-top:14px;"><span class="clihint"><span class="p">$</span> odw run ${esc(d.name)}<span class="note">— started by your agent, not here</span></span></div>` +
+    `<div style="margin-top:14px;"><span class="clihint"><span class="p">$</span> odw run ${esc(d.name)}${runNote}</span></div>` +
     `<div class="rsec">Phases</div><div class="phasepills">${phasePills}</div>` +
     structure +
     `<div class="rsec">Source — ${esc(d.name)}.js</div><div class="srcview">${highlight(d.source)}</div>` +
@@ -81,7 +100,22 @@ function detailPane(d: WorkflowDetail): string {
   );
 }
 
-export function renderWorkspace(activeName: string | null, detail: WorkflowDetail | null): string {
+/** Provider sections, in display order. A provider with no workflows is dropped. */
+const PROVIDER_GROUPS: Array<{ provider: WorkflowSummary["provider"]; title: string }> = [
+  { provider: "odw", title: "ODW" },
+  { provider: "claude", title: "Claude Code" },
+];
+
+/**
+ * Workflows in the exact order the Workspace paints them (provider groups, in
+ * order). The single source of truth for "first visible row", so default
+ * selection in main.ts can't disagree with what the user sees.
+ */
+export function orderedWorkflows(list: WorkflowSummary[]): WorkflowSummary[] {
+  return PROVIDER_GROUPS.flatMap((g) => list.filter((w) => w.provider === g.provider));
+}
+
+export function renderWorkspace(activeKey: string | null, detail: WorkflowDetail | null): string {
   const list = store.workflows;
   if (list === null) {
     return `<div class="empty"><div class="spinner"></div><div>Loading workflows…</div></div>`;
@@ -93,13 +127,25 @@ export function renderWorkspace(activeName: string | null, detail: WorkflowDetai
       `<div class="codehint">.odw/workflows · .claude/workflows · ~/.odw/workflows · ~/.claude/workflows</div></div>`
     );
   }
-  const items = list.map((w) => listItem(w, activeName)).join("");
+  // Group by provider so Claude Code's saved workflows read as their own section,
+  // visible even when a name collides with an ODW workflow.
+  const sections = PROVIDER_GROUPS.map((g) => ({
+    ...g,
+    items: list.filter((w) => w.provider === g.provider),
+  }))
+    .filter((g) => g.items.length > 0)
+    .map(
+      (g) =>
+        `<div class="wfgroup"><span class="gt">${esc(g.title)}</span><span class="gc">${g.items.length}</span></div>` +
+        g.items.map((w) => listItem(w, activeKey)).join(""),
+    )
+    .join("");
   const pane = detail
     ? detailPane(detail)
     : `<div class="wfdetail"><div class="empty"><div>Select a workflow to see its structure and source.</div></div></div>`;
   return (
     `<div class="wsplit">` +
-    `<div class="wflist"><div class="lh"><span class="t">Workflows</span><span class="c">${list.length} · managed dirs</span></div>${items}</div>` +
+    `<div class="wflist"><div class="lh"><span class="t">Workflows</span><span class="c">${list.length} · managed dirs</span></div>${sections}</div>` +
     pane +
     `</div>`
   );
