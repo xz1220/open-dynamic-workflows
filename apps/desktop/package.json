@@ -1,6 +1,6 @@
 {
   "name": "@odw/desktop",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "private": true,
   "description": "Open Dynamic Workflows — read-only desktop client (Tauri shell). Wraps `odw serve`.",
   "type": "module",

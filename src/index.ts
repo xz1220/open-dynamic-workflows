@@ -12,7 +12,7 @@
  * the usual front door.
  */
 
-export const VERSION = "0.2.3";
+export const VERSION = "0.2.4";
 
 // Errors & events
 export * from "./errors.js";
