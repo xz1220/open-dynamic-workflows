@@ -214,8 +214,14 @@ function cmdStatus(rest: string[]): number {
   const name = (status.name as string) || baseName(meta.script as string | undefined);
   process.stdout.write(`${runId}  [${status.state ?? "?"}]  ${name}\n`);
   if (status.description) process.stdout.write(`  ${status.description as string}\n`);
-  process.stdout.write(`  dispatched: ${status.dispatched ?? 0} agent(s)\n`);
+  process.stdout.write(`  dispatched: ${dispatchedCount(store, runId, status)} agent(s)\n`);
   return 0;
+}
+
+function dispatchedCount(store: RunStore, runId: string, status: Record<string, unknown>): number {
+  const recorded = typeof status.dispatched === "number" ? status.dispatched : 0;
+  const observed = store.readEvents(runId).filter((e) => e.type === "agent_started").length;
+  return Math.max(recorded, observed);
 }
 
 function cmdResult(rest: string[]): number {

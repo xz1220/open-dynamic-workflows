@@ -43,7 +43,7 @@ export async function executeRun(runDir: string): Promise<string> {
     const config = loadConfig((meta.configPath as string | null) ?? null);
     const control = new FileControl({
       readAction: () => store.readControl(runId),
-      onState: (state) => store.updateStatus(runId, { state }),
+      onState: (state) => store.updateStatus(runId, { state, dispatched: dispatched() }),
     });
     ctx = buildContext(config, {
       source: meta.source as string | undefined,

@@ -202,10 +202,10 @@ body.is-native .crumb{ margin-left:0; }
 .dp-out{ font-family:var(--mono); font-size:11px; line-height:1.55; color:var(--muted); background:var(--alt); border:1px solid var(--hair); border-radius:8px; padding:10px 12px; white-space:pre-wrap; word-break:break-word; }
 
 /* logs + result */
-.logwrap{ position:absolute; left:0; right:0; top:0; bottom:36px; overflow:auto; padding:14px 30px; }
+.logwrap{ flex:1; min-height:0; overflow:auto; padding:14px 30px 50px; }
 .logrow{ display:grid; grid-template-columns:96px 128px 1fr; gap:14px; padding:5px 8px; border-bottom:1px solid var(--soft); font-family:var(--mono); font-size:12px; align-items:center; }
 .logrow .ts{ color:var(--faint); } .logrow .msg{ color:var(--muted); } .logrow .msg b{ color:var(--ink); } .logrow .msg .er{ color:var(--red-deep); }
-.resultwrap{ position:absolute; inset:0; bottom:36px; overflow:auto; padding:26px 32px; }
+.resultwrap{ flex:1; min-height:0; overflow:auto; padding:26px 32px 50px; }
 .resultcard{ max-width:760px; background:#fff; border:1px solid var(--hair); border-radius:12px; padding:20px 24px; }
 .resultcard h4{ margin:0 0 12px; font-size:13px; color:var(--ink); font-family:var(--mono); }
 .resultcard pre{ font-family:var(--mono); font-size:12.5px; line-height:1.6; color:var(--ink); white-space:pre-wrap; word-break:break-word; margin:0; }

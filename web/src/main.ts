@@ -49,6 +49,7 @@ function parseHash(): Route {
         jobTab = last;
         return { view: "job", param: rest.slice(0, -1).join("/") || null };
       }
+      jobTab = "graph";
       return { view: "job", param: rest.join("/") || null };
     }
     case "settings":
@@ -176,11 +177,12 @@ root.addEventListener("click", (ev) => {
   }
   const tabEl = t.closest<HTMLElement>("[data-tab]");
   if (tabEl) {
-    jobTab = tabEl.dataset.tab as JobTab;
+    const nextTab = tabEl.dataset.tab as JobTab;
     const r = currentRoute();
+    jobTab = nextTab;
     if (r.param) {
-      history.replaceState(null, "", `#/job/${encodeURIComponent(r.param)}/${jobTab}`);
-      if (jobTab === "result") void store.loadResult(r.param);
+      history.replaceState(null, "", `#/job/${encodeURIComponent(r.param)}/${nextTab}`);
+      if (nextTab === "result") void store.loadResult(r.param);
     }
     render();
     return;

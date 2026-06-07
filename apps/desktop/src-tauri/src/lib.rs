@@ -195,12 +195,17 @@ fn navigate_once(app: &AppHandle) {
         match url.parse::<tauri::Url>() {
             Ok(parsed) => {
                 let _ = window.navigate(parsed);
-                let _ = window.show();
-                let _ = window.set_focus();
+                show_main_window(&window);
             }
             Err(err) => eprintln!("bad serve url {url}: {err}"),
         }
     }
+}
+
+fn show_main_window(window: &tauri::WebviewWindow) {
+    let _ = window.center();
+    let _ = window.show();
+    let _ = window.set_focus();
 }
 
 /// A minimal tray: show the window, or quit for real.
@@ -215,8 +220,7 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
         .on_menu_event(|app, event| match event.id().as_ref() {
             "show" => {
                 if let Some(w) = app.get_webview_window("main") {
-                    let _ = w.show();
-                    let _ = w.set_focus();
+                    show_main_window(&w);
                 }
             }
             "quit" => app.exit(0),
