@@ -28,6 +28,7 @@ Testing should start from user actions and visible results. Internal files and A
 - Web populated test URL: `http://127.0.0.1:4328/?snap=1`
 - Web empty-state test URL: `http://127.0.0.1:4329/?snap=1`
 - Desktop app observed: `/Applications/Open Dynamic Workflows.app`
+- Desktop live smoke run: `20260607-140053-4d9d55` / `desktop-smoke-codex-20260607`
 
 ## Result Legend
 
@@ -99,7 +100,7 @@ These tests require real visual desktop interaction. Computer Use / visual app c
 | DESK-01 | Build | Desktop app can be built or existing app can be launched | Build with `npm run build:binary`, `cd apps/desktop`, `npm run build`, or launch the existing `.app` if already available. | App bundle exists and can be opened. | Pass | Existing `/Applications/Open Dynamic Workflows.app` was present and running. Current worktree app bundle was not rebuilt in this pass. |
 | DESK-02 | Launch | Desktop app opens to the ODW client | Open the app with Computer Use and observe the window. | Splash transitions to the ODW client loaded from local sidecar. | Pass | Visual desktop verification passed via macOS window capture. Window showed the ODW client Activity page. Dedicated desktop Computer Use tooling was not exposed in this environment. |
 | DESK-03 | Sidecar | App starts `odw serve` sidecar | Launch app and inspect visible page / process output. | Client loads from `http://127.0.0.1:4317` and uses the bundled sidecar. | Pass | Process list showed `/Applications/Open Dynamic Workflows.app/.../odw serve --port 4317`, and port 4317 was listening. Window showed `Live`. |
-| DESK-04 | Page operation | Desktop-hosted pages behave like web client | Use Computer Use to click Activity, Workspace, Jobs, Job detail, Logs, Result, Settings. | Same visible behavior as web client. | Blocked | ODW window could be captured by window id, but coordinate clicks landed on the current Codex Space/window. No dedicated desktop CUA tool was available, so full click-through desktop page operation was not completed. |
+| DESK-04 | Page operation | Desktop-hosted pages behave like web client | Use Computer Use to click Activity, Workspace, Jobs, Job detail, Logs, Result, Settings. | Same visible behavior as web client. | Partial | Ran a real flow into the desktop sidecar's default runs root. Desktop window visually showed `desktop-smoke-codex-20260607` events. Using the same `http://127.0.0.1:4317` sidecar in browser, Jobs -> detail -> Result worked. Native-window click-through remained unreliable because dedicated desktop CUA tooling was not exposed. |
 | DESK-05 | Window close | Closing window hides app instead of quitting | Close main window, then use tray/Dock to show it again if available. | App stays resident and can be shown again. | Blocked | Not executed to avoid disrupting the user's already-running installed app without reliable desktop control. |
 | DESK-06 | Quit | Quitting stops the sidecar | Quit app. | Sidecar process is not left running. | Blocked | Not executed to avoid stopping the user's already-running installed app without reliable desktop control. |
 | DESK-07 | Notifications/badge | Native signals reflect run transitions | With app open, transition a run to done/failed. | Dock badge / notification behavior matches active and terminal run state. | Blocked | Not executed; requires reliable desktop interaction and notification observation. |
@@ -117,6 +118,28 @@ These tests require real visual desktop interaction. Computer Use / visual app c
 | 2026-06-07 | WEB-01..18 | Browser-hosted client tested with populated and empty fixtures; found Logs/header overlay and tab-state leakage. |
 | 2026-06-07 | DESK-01..03 | Existing installed desktop app and sidecar visually verified through window-specific screenshot. |
 | 2026-06-07 | DESK-04..08 | Full desktop click-through, close/quit, notification, and port-conflict cases blocked by lack of dedicated desktop CUA tooling and risk of disrupting the installed app. |
+| 2026-06-07 | DESK-04 follow-up | Ran real workflow `desktop-smoke-codex-20260607` into `~/.odw/runs`; desktop window showed the new events. Verified Jobs -> detail -> Result on the desktop sidecar at `127.0.0.1:4317` through browser automation. |
+
+## Follow-up: Real Desktop Smoke Run
+
+After the initial pass, I ran an actual dynamic flow in this session specifically for desktop verification:
+
+- Workflow: `desktop-smoke-codex-20260607`
+- Run id: `20260607-140053-4d9d55`
+- Runs root: `/Users/danielxing/.odw/runs`
+- Command path: `node dist/cli.js run <temp>/desktop-smoke-codex-20260607.js --config <temp>/odw.config.json --runs-root /Users/danielxing/.odw/runs --wait`
+- Result: passed; returned `{ "ok": true, "source": "codex-session", "reply": "mock reply" }`
+
+Verification:
+
+- `http://127.0.0.1:4317/api/runs` showed the run as `done`.
+- `http://127.0.0.1:4317/api/runs/20260607-140053-4d9d55` showed 2 phases, 1 done agent, and `hasResult: true`.
+- Desktop window capture showed the new `desktop-smoke-codex-20260607` Activity events (`RUN_STARTED`, `AGENT_STARTED`, `RUN_FINISHED`) at the top of the live event stream.
+- Using browser automation against the same desktop sidecar URL (`http://127.0.0.1:4317/?snap=1`), I clicked Jobs -> the new run -> Result. Job detail showed the correct workflow name, `done` badge, 2 phase lanes, one done `desktop-agent`, and the expected `result.json`.
+
+Limitation:
+
+- I still did not complete a reliable native-window click-through inside the Tauri window itself. Once the ODW window was visibly on the current desktop, a coordinate click was attempted, but it did not switch from Activity to Jobs. The same path worked through the sidecar URL in the browser. This leaves native-window interaction as partially verified, not fully verified.
 
 ## Issues Found
 
@@ -125,4 +148,4 @@ These tests require real visual desktop interaction. Computer Use / visual app c
 | ISSUE-WEB-01 | High | Web Job Detail | WEB-11, WEB-12, WEB-14 | Logs content overlaps the stage header and intercepts tab/copy clicks. | In Job detail Logs tab, visual screenshot showed log rows starting underneath the header. `document.elementFromPoint()` on the visible Result tab returned `.logrow`, so clicking Result from Logs did nothing. This also explains copy failing from Result/Logs surfaces. |
 | ISSUE-WEB-02 | Medium | Web navigation state | WEB-12, WEB-15 | Job tab state leaks between different jobs / bare job routes. | After visiting `#/job/<run>/logs`, opening another bare `#/job/<other-run>` route still showed Logs instead of defaulting to Graph. Direct `#/job/<run>/result` works, so the result renderer is fine; the user navigation state is the problem. |
 | ISSUE-CLI-01 | Low | CLI status | CLI-15 | Paused run status shows inaccurate dispatched count. | During `slow-control`, pause was requested after the first agent completed. `status` correctly showed `[paused]`, but also showed `dispatched: 0 agent(s)` even though one agent had already run. Terminal state later showed `dispatched: 2`. |
-| ISSUE-DESK-01 | Medium | Desktop testing / window management | DESK-04 | Installed desktop window opened off-screen / different Space during testing. | `odw-desktop` had a real window named `Open Dynamic Workflows`, but initial full-screen captures showed Codex. System Events reported the window at `{165, -960}` before it was moved. Window-id capture showed the app correctly, but coordinate interaction remained unreliable. |
+| ISSUE-DESK-01 | Medium | Desktop testing / window management | DESK-04 | Installed desktop window opened off-screen / different Space during testing; native-window coordinate click-through remained unreliable. | `odw-desktop` had a real window named `Open Dynamic Workflows`, but initial full-screen captures showed Codex. System Events reported the window at `{165, -960}` before it was moved. Window-id capture showed the app correctly, and later full-screen capture showed it visibly on the desktop. A coordinate click on Jobs still did not switch views, while the same route worked through the 4317 sidecar in browser automation. |
