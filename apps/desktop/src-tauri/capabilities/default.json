@@ -1,7 +1,10 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capabilities for the read-only ODW shell: spawn the odw sidecar and show native notifications. No run-control surface.",
+  "description": "Capabilities for the read-only ODW shell: spawn the odw sidecar, drag the custom (Overlay) titlebar, and show native notifications. No run-control surface.",
+  "remote": {
+    "urls": ["http://127.0.0.1:4317/*"]
+  },
   "windows": ["main"],
   "permissions": [
     "core:default",
@@ -9,6 +12,7 @@
     "core:window:allow-hide",
     "core:window:allow-set-focus",
     "core:window:allow-set-badge-count",
+    "core:window:allow-start-dragging",
     "core:event:allow-emit",
     "shell:allow-spawn",
     {

@@ -26,8 +26,13 @@ function crumb(_route: Route): string {
 }
 
 export function toolbar(route: Route): string {
+  // `data-tauri-drag-region="deep"` makes the whole top bar a window-drag handle in
+  // the native (Tauri) shell: it calls the real `start_dragging`, which WKWebView
+  // honors, and the "deep" mode drags on a click anywhere in the subtree while
+  // Tauri's runtime still auto-excludes real controls (<a>/<button>/<input>…). In a
+  // plain browser (`odw serve`) it's just an inert data-attribute — no behavior change.
   return (
-    `<div class="toolbar">` +
+    `<div class="toolbar" data-tauri-drag-region="deep">` +
     `<div style="display:flex;align-items:center;"><div class="tl"><i class="r"></i><i class="y"></i><i class="g"></i></div>${crumb(route)}</div>` +
     `<div class="tr"><span class="kbd">⌘K</span>${connChip()}</div>` +
     `</div>`

@@ -6,9 +6,11 @@
   "type": "module",
   "scripts": {
     "bundle:sidecar": "node scripts/bundle-sidecar.mjs",
-    "predev": "npm run bundle:sidecar",
+    "sidecar:fresh": "npm --prefix ../.. run build:binary && npm run bundle:sidecar",
+    "predev": "npm run sidecar:fresh",
     "dev": "tauri dev",
-    "prebuild": "npm run bundle:sidecar",
+    "dev:fast": "npm run bundle:sidecar && tauri dev",
+    "prebuild": "npm run sidecar:fresh",
     "build": "tauri build",
     "tauri": "tauri"
   },
