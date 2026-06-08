@@ -318,9 +318,11 @@ npm run build:binary  # 打包 + Node SEA + postject → 单个自包含的 ./bu
 
 ## 状态
 
-**v0.2.4 新增:** 一个只读的桌面**观测台** App + 实时运行监控(Activity / Jobs /
-Job detail)、一个读取 `.odw/`–`.claude/` 目录里已保存 workflow 的工作区,以及安装路径
-打磨——见 [Releases](https://github.com/xz1220/open-dynamic-workflows/releases)。
+**v0.3.0 新增:****Jobs** 标签页现在也会展示 **Claude Code 自己的 workflow 运行**——
+既有已完成的历史,也有正在跑的实时任务——只读,并与 ODW 自己的 run 合并在一起,
+一个观测台即可看到本机上所有的动态 workflow。(v0.2.4 带来了观测台 App 本身:
+Activity / Jobs / Job detail + `.odw/`–`.claude/` workflow 工作区。)见
+[Releases](https://github.com/xz1220/open-dynamic-workflows/releases)。
 
 **核心运行时已交付。** 完整运行时已在 `main` 上——适配层、执行桥接、工作区隔离、异步调度器、
 注入原语、loader/transform、JSON-Schema 引擎、后台运行时,以及 `odw` CLI。**129 个测试

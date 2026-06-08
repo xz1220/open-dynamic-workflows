@@ -2328,7 +2328,7 @@ dependencies = [
 
 [[package]]
 name = "odw-desktop"
-version = "0.2.4"
+version = "0.3.0"
 dependencies = [
  "serde",
  "serde_json",

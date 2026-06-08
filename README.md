@@ -341,9 +341,11 @@ into the host's `node`, so each target is built on its own runner.
 
 ## Status
 
-**What's new (v0.2.4):** a read-only desktop **observatory** app + live run
-monitoring (Activity / Jobs / Job detail), a workflow workspace that reads saved
-workflows from `.odw/`–`.claude/` dirs, and install-path polish — see
+**What's new (v0.3.0):** the **Jobs** tab now also surfaces **Claude Code's own
+workflow runs** — both finished history and live in-flight jobs — read-only and
+merged alongside ODW's own runs, so one observatory watches every dynamic
+workflow on your machine. (v0.2.4 added the desktop **observatory** app itself:
+Activity / Jobs / Job detail + the `.odw/`–`.claude/` workflow workspace.) See
 [Releases](https://github.com/xz1220/open-dynamic-workflows/releases).
 
 **Core runtime is shipped.** The full runtime is on `main` — the adapter layer, execution
