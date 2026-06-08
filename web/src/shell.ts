@@ -55,6 +55,7 @@ export function rail(route: Route): string {
         `<a class="minirun" data-run="${esc(r.runId)}">` +
         `<span class="dot${paused ? " paused" : ""}"></span>` +
         `<span class="nm">${esc(r.name)}</span>` +
+        (r.provider === "claude" ? `<span class="ccmini" title="Claude Code">CC</span>` : "") +
         `<span class="ph">${Math.round(r.progress * 100)}%</span></a>`
       );
     })

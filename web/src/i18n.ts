@@ -140,6 +140,7 @@ const ZH: Record<string, string> = {
 
   // Jobs.
   "Active now": "进行中",
+  "Claude Code workflow — observed read-only": "Claude Code 工作流 —— 只读观测",
   workflow: "工作流",
   "run id": "运行 ID",
   status: "状态",
@@ -180,6 +181,7 @@ const ZH: Record<string, string> = {
   "done in {d}": "耗时 {d} 完成",
   "attempts: {n}": "重试：{n}",
   "worker lost contact": "worker 失联",
+  "no recent signal": "近期无信号",
   "(no message)": "（无消息）",
   adapter: "适配器",
   phase: "阶段",
@@ -189,6 +191,7 @@ const ZH: Record<string, string> = {
     "此视图从不重跑或控制智能体——运行由 CLI 驱动。",
   "last activity {t}": "最后活动 {t}",
   "⚠ worker lost contact": "⚠ worker 失联",
+  "⚠ no recent signal": "⚠ 近期无信号",
   "Waiting for the first agent…": "等待第一个智能体…",
   "Declared phases:": "已声明的阶段：",
   "No events yet.": "暂无事件。",

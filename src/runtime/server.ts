@@ -16,18 +16,26 @@
  *   GET  /api/stream             text/event-stream; pushes the run list on change
  *   POST /api/runs/:id/control   { action: pause|resume|stop } → writeControl
  *
- * Security: binds 127.0.0.1 by default. The global runs root aggregates every
- * project's runs (prompts, results), so exposing it off-loopback is opt-in.
+ * Security: binds 127.0.0.1 by default. The run list aggregates every project's
+ * runs (prompts, results) — both ODW's own runs root AND, with the default
+ * `claudeJobsScope: "all"`, Claude Code's `~/.claude/projects` across every repo
+ * — so exposing it off-loopback is opt-in. The Claude side is strictly read-only
+ * (control is refused) and surfaces a run's metadata + author `log()` lines +
+ * final result, NOT raw agent transcripts; narrow it with `claudeJobsScope:
+ * "project"` to the served repo + its worktrees.
  */
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { statSync, watch, type FSWatcher } from "node:fs";
+import { watch, type FSWatcher } from "node:fs";
 
-import { loadConfig } from "../adapters/config.js";
+import { loadConfig, resolveClaudeProjectsRoot } from "../adapters/config.js";
 import type { Config } from "../adapters/types.js";
 import { DASHBOARD_HTML } from "../dashboard.generated.js";
+import { ClaudeRunSource } from "./claude-run-source.js";
+import { OdwRunSource } from "./odw-run-source.js";
+import type { RunSource } from "./run-source.js";
 import { RunStore } from "./run-store.js";
-import { detail, summarize, type RunSummary } from "./runs-view.js";
+import type { RunSummary } from "./runs-view.js";
 import { listWorkflowSummaries, workflowDetail } from "./workflows-view.js";
 
 export interface ServeOptions {
@@ -38,6 +46,10 @@ export interface ServeOptions {
   cwd?: string;
   /** Config whose `workflowsRoot` is the global managed dir. Defaults to loadConfig(null). */
   config?: Config;
+  /** Root of Claude Code's per-project run store. Defaults to `~/.claude/projects`. */
+  claudeProjectsRoot?: string | null;
+  /** Which Claude runs to surface: "all" projects (default) or just the served repo + worktrees. */
+  claudeJobsScope?: "all" | "project";
 }
 
 export interface ServeHandle {
@@ -52,48 +64,14 @@ const DEFAULT_HOST = "127.0.0.1";
 const RUN_ID = /^[A-Za-z0-9._-]+$/;
 const CONTROL_ACTIONS = new Set(["pause", "resume", "stop"]);
 
-/**
- * Summary cache keyed by the run's mutable artifacts. Folding events.jsonl on
- * every poll is O(events) per run; here we recompute a run's summary only when
- * its status.json or events.jsonl changed size/mtime, so steady-state polling of
- * many runs stays cheap.
- */
-class SummaryCache {
-  private readonly entries = new Map<string, { sig: string; value: RunSummary }>();
-
-  list(store: RunStore): RunSummary[] {
-    const live = new Set(store.listRuns().map((r) => r.runId));
-    const out: RunSummary[] = [];
-    for (const runId of live) {
-      if (!store.exists(runId)) continue; // deleted between listRuns() and now
-      const sig = this.signature(store, runId);
-      const hit = this.entries.get(runId);
-      if (hit && hit.sig === sig) {
-        out.push(hit.value);
-        continue;
-      }
-      const value = summarize(store, runId);
-      this.entries.set(runId, { sig, value });
-      out.push(value);
-    }
-    for (const key of this.entries.keys()) if (!live.has(key)) this.entries.delete(key);
-    return out.sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0));
-  }
-
-  /** A cheap fingerprint of a run's mutable files; '' on the first miss. */
-  private signature(store: RunStore, runId: string): string {
-    const dir = store.runDir(runId);
-    return [statSig(`${dir}/status.json`), statSig(`${dir}/events.jsonl`)].join("|");
-  }
+/** Every source's summaries, merged and sorted newest-first (the unified run list). */
+function allSummaries(sources: RunSource[]): RunSummary[] {
+  return sources.flatMap((s) => s.listSummaries()).sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0));
 }
 
-function statSig(path: string): string {
-  try {
-    const s = statSync(path);
-    return `${s.size}:${s.mtimeMs}`;
-  } catch {
-    return "-";
-  }
+/** The source that owns + has this run, or null. Ids are disjoint, so at most one matches. */
+function sourceForRun(sources: RunSource[], runId: string): RunSource | null {
+  return sources.find((s) => s.owns(runId) && s.exists(runId)) ?? null;
 }
 
 /** Start the dashboard server. Resolves once it is listening. */
@@ -103,10 +81,20 @@ export function startServer(options: ServeOptions): Promise<ServeHandle> {
   const port = options.port ?? DEFAULT_PORT;
   const cwd = options.cwd ?? process.cwd();
   const config = options.config ?? loadConfig(null);
-  const cache = new SummaryCache();
+  const sources: RunSource[] = [
+    new OdwRunSource(store),
+    // Default scope "all": the observatory aggregates every project's Claude runs,
+    // mirroring how the global runs root already aggregates ODW runs. The scope can
+    // be narrowed to the served repo + its worktrees via claudeJobsScope.
+    new ClaudeRunSource({
+      projectsRoot: options.claudeProjectsRoot ?? resolveClaudeProjectsRoot(),
+      cwd,
+      scope: options.claudeJobsScope ?? config.settings.claudeJobsScope,
+    }),
+  ];
   const clients = new Set<ServerResponse>();
 
-  const server = createServer((req, res) => handle(req, res, store, cache, clients, cwd, config));
+  const server = createServer((req, res) => handle(req, res, sources, store, clients, cwd, config));
 
   // Push the run list to every SSE client when the runs root changes, and on a
   // 1s tick as a floor (fs.watch recursion is platform-spotty; the tick keeps
@@ -115,7 +103,7 @@ export function startServer(options: ServeOptions): Promise<ServeHandle> {
   let lastSig = "";
   const broadcast = (force = false) => {
     if (clients.size === 0) return;
-    const runs = cache.list(store);
+    const runs = allSummaries(sources);
     const sig = JSON.stringify(runs.map((r) => [r.runId, r.state, r.counts, r.progress]));
     if (!force && sig === lastSig) return;
     lastSig = sig;
@@ -168,8 +156,8 @@ function closeServer(
 function handle(
   req: IncomingMessage,
   res: ServerResponse,
+  sources: RunSource[],
   store: RunStore,
-  cache: SummaryCache,
   clients: Set<ServerResponse>,
   cwd: string,
   config: Config,
@@ -185,11 +173,11 @@ function handle(
       return;
     }
     if (method === "GET" && path === "/api/runs") {
-      sendJson(res, 200, cache.list(store));
+      sendJson(res, 200, allSummaries(sources));
       return;
     }
     if (method === "GET" && path === "/api/stream") {
-      openStream(res, store, cache, clients);
+      openStream(res, sources, clients);
       return;
     }
     if (method === "GET" && path === "/api/workflows") {
@@ -216,29 +204,42 @@ function handle(
     if (runMatch) {
       const runId = decodeURIComponent(runMatch[1]!);
       const sub = runMatch[2];
-      if (!RUN_ID.test(runId) || !store.exists(runId)) {
+      // Route to the source that owns this id (ODW's RunStore, or Claude Code's).
+      const src = RUN_ID.test(runId) ? sourceForRun(sources, runId) : null;
+      if (!src) {
         sendJson(res, 404, { error: `no such run: ${runId}` });
         return;
       }
       if (method === "GET" && !sub) {
-        sendJson(res, 200, detail(store, runId));
+        const det = src.detail(runId);
+        if (!det) {
+          sendJson(res, 404, { error: `no such run: ${runId}` });
+          return;
+        }
+        sendJson(res, 200, det);
         return;
       }
       if (method === "GET" && sub === "/events") {
         const since = Number(url.searchParams.get("since") ?? "0") || 0;
-        sendJson(res, 200, store.readEvents(runId).slice(Math.max(0, since)));
+        sendJson(res, 200, src.events(runId, since));
         return;
       }
       if (method === "GET" && sub === "/result") {
-        if (!store.hasResult(runId)) {
+        const { has, value } = src.result(runId);
+        if (!has) {
           sendJson(res, 404, { error: "no result for this run" });
           return;
         }
-        sendJson(res, 200, { value: store.readResult(runId) });
+        sendJson(res, 200, { value });
         return;
       }
       if (method === "POST" && sub === "/control") {
-        controlRun(req, res, store, runId);
+        // A read-only source (Claude) refuses control with a 409 before any work.
+        if (src.controlError) {
+          sendJson(res, 409, { error: src.controlError });
+          return;
+        }
+        controlRun(req, res, src, runId);
         return;
       }
     }
@@ -251,8 +252,7 @@ function handle(
 
 function openStream(
   res: ServerResponse,
-  store: RunStore,
-  cache: SummaryCache,
+  sources: RunSource[],
   clients: Set<ServerResponse>,
 ): void {
   res.writeHead(200, {
@@ -271,7 +271,7 @@ function openStream(
   res.on("close", cleanup);
   res.on("error", cleanup); // a socket error must not become an uncaught throw
   safeWrite(res, ": connected\n\n", clients);
-  safeWrite(res, `event: runs\ndata: ${JSON.stringify(cache.list(store))}\n\n`, clients);
+  safeWrite(res, `event: runs\ndata: ${JSON.stringify(allSummaries(sources))}\n\n`, clients);
 }
 
 /** Write to an SSE client; on failure drop it from the pool. Never throws. */
@@ -291,7 +291,7 @@ function safeWrite(res: ServerResponse, data: string, clients: Set<ServerRespons
 function controlRun(
   req: IncomingMessage,
   res: ServerResponse,
-  store: RunStore,
+  src: RunSource,
   runId: string,
 ): void {
   // CSRF: this endpoint mutates a run and has no auth. Require a JSON content-type
@@ -331,9 +331,8 @@ function controlRun(
       sendJson(res, 400, { error: "action must be one of pause, resume, stop" });
       return;
     }
-    // resume clears the control file by writing a benign "running" request; the
-    // worker's FileControl treats any non-pause/stop action as "carry on".
-    store.writeControl(runId, action === "resume" ? "running" : action);
+    // The source applies the action (ODW maps resume→"running" for FileControl).
+    src.control(runId, action);
     sendJson(res, 200, { ok: true, runId, action });
   });
 }

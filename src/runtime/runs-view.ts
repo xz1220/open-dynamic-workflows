@@ -62,6 +62,8 @@ export interface RunCounts {
 
 export interface RunSummary {
   runId: string;
+  /** Which engine produced this run: ODW's own RunStore, or Claude Code's. */
+  provider: "odw" | "claude";
   /** Reconciled state shown to the user (may be "stale"). */
   state: RunDisplayState;
   /** The on-disk status.state before staleness reconciliation. */
@@ -245,6 +247,9 @@ export function summarize(store: RunStore, runId: string, events?: WorkflowEvent
 
   return {
     runId,
+    // summarize() reads the ODW RunStore; a Claude run is built by ClaudeRunSource,
+    // never here, so this is always "odw".
+    provider: "odw",
     state,
     rawState,
     stale,

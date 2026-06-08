@@ -55,6 +55,13 @@ export interface Settings {
   workflowsRoot: string | null;
   /** Directory Claude Code saved workflows are read from; `null` => `~/.claude/workflows`. */
   claudeWorkflowsRoot: string | null;
+  /**
+   * Which Claude Code runs the Jobs tab surfaces: `"all"` aggregates every
+   * project's runs (the observatory default, matching the global ODW runs root);
+   * `"project"` narrows to the served repo and its git worktrees. `"all"` is
+   * broader — it exposes other projects' run names/results on this loopback server.
+   */
+  claudeJobsScope: "all" | "project";
 }
 
 export interface Config {

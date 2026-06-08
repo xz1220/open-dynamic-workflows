@@ -81,6 +81,7 @@ body.is-native .crumb{ margin-left:0; }
 .minirun .dot{ width:7px;height:7px;border-radius:999px;background:var(--green); animation:pulse 1.8s infinite; }
 .minirun .dot.paused{ background:var(--amber); animation:none; }
 .minirun .nm{ color:var(--ink); font-weight:500; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.minirun .ccmini{ flex:none; font-family:var(--mono); font-size:8.5px; font-weight:600; color:var(--faint); border:1px solid var(--hair); border-radius:3px; padding:0 3px; line-height:1.4; }
 .minirun .ph{ margin-left:auto; font-family:var(--mono); font-size:11px; color:var(--faint); }
 
 /* badges + chips + buttons */

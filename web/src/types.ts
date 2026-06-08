@@ -21,6 +21,8 @@ export interface RunCounts {
 
 export interface RunSummary {
   runId: string;
+  /** Which engine produced this run: ODW's own RunStore, or Claude Code's. */
+  provider: "odw" | "claude";
   state: RunDisplayState;
   rawState: string;
   stale: boolean;

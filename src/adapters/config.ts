@@ -93,6 +93,20 @@ export function resolveClaudeWorkflowsRoot(claudeWorkflowsRoot: string | null): 
   return join(configDir ? expandHome(configDir) : join(homedir(), ".claude"), "workflows");
 }
 
+/**
+ * Root of Claude Code's per-project session store (`~/.claude/projects`), where
+ * Claude Code writes its OWN workflow runs — terminal journals under
+ * `<encoded-cwd>/<session>/workflows/wf_<id>.json` and live progress under
+ * `<encoded-cwd>/<session>/subagents/workflows/wf_<id>/`. Honors `CLAUDE_CONFIG_DIR`
+ * exactly like {@link resolveClaudeWorkflowsRoot}, so a relocated `~/.claude` is
+ * followed for runs too.
+ */
+export function resolveClaudeProjectsRoot(claudeProjectsRoot?: string | null): string {
+  if (claudeProjectsRoot) return expandHome(claudeProjectsRoot);
+  const configDir = process.env.CLAUDE_CONFIG_DIR;
+  return join(configDir ? expandHome(configDir) : join(homedir(), ".claude"), "projects");
+}
+
 // --- internals ---------------------------------------------------------------
 
 function expandHome(p: string): string {
@@ -204,5 +218,7 @@ function buildSettings(raw: Record<string, unknown>): Settings {
     runsRoot: pick("runsRoot", DEFAULT_SETTINGS.runsRoot),
     workflowsRoot: pick("workflowsRoot", DEFAULT_SETTINGS.workflowsRoot),
     claudeWorkflowsRoot: pick("claudeWorkflowsRoot", DEFAULT_SETTINGS.claudeWorkflowsRoot),
+    // Only "project" narrows; anything else (incl. null/garbage) keeps the "all" default.
+    claudeJobsScope: raw["claudeJobsScope"] === "project" ? "project" : DEFAULT_SETTINGS.claudeJobsScope,
   };
 }

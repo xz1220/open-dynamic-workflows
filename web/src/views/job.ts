@@ -57,6 +57,9 @@ function stageHead(run: RunDetail, tab: JobTab): string {
     `<div style="margin-left:auto;">${subtabs}</div></div>` +
     `<div class="progressbar"><i class="${progClass}" style="width:${Math.max(pct, run.state === "failed" || run.state === "stopped" ? 100 : 0)}%"></i></div>` +
     `<div class="row3">` +
+    (run.provider === "claude"
+      ? `<span class="chip" title="${t("Claude Code workflow — observed read-only")}">Claude Code</span>`
+      : "") +
     `<span class="chip"><b>${run.counts.agents}</b> ${t("agents")}</span>` +
     `<span class="chip"><span class="em">●</span><b>${run.counts.running}</b> ${t("running")}</span>` +
     `<span class="chip"><b>${run.counts.done}</b> ${t("done")}</span>` +
@@ -67,12 +70,13 @@ function stageHead(run: RunDetail, tab: JobTab): string {
     beat +
     `<div class="readonly-actions">` +
     `<span class="btn ghost sm" data-copy="${esc(run.runId)}">${t("⧉ Copy run id")}</span>` +
-    (terminal ? "" : `<span class="btn secondary sm" data-reveal="1">${t("⊞ Open run dir")}</span>`) +
+    // A Claude run has no ODW run directory to reveal — it lives under ~/.claude.
+    (terminal || run.provider === "claude" ? "" : `<span class="btn secondary sm" data-reveal="1">${t("⊞ Open run dir")}</span>`) +
     `</div></div></div>`
   );
 }
 
-function detailPanel(a: AgentView): string {
+function detailPanel(a: AgentView, provider: RunDetail["provider"]): string {
   const errBlock =
     a.state === "failed"
       ? `<div class="dp-sec">${t("Error")}</div><div class="dp-out">${esc(a.error ?? t("(no message)"))}</div>`
@@ -83,7 +87,7 @@ function detailPanel(a: AgentView): string {
       : a.state === "done"
         ? `<div class="dp-sec">${t("Outcome")}</div><div class="dp-out">${t("done in {d}", { d: fmtDurMs(a.durationMs) })}${a.attempts ? `<br>${t("attempts: {n}", { n: a.attempts })}` : ""}</div>`
         : a.state === "stale"
-          ? `<div class="dp-sec">${t("Status")}</div><div class="dp-out">${t("worker lost contact")}<br>${t("started {t}", { t: fmtClock(a.startedAt) })}</div>`
+          ? `<div class="dp-sec">${t("Status")}</div><div class="dp-out">${provider === "claude" ? t("no recent signal") : t("worker lost contact")}<br>${t("started {t}", { t: fmtClock(a.startedAt) })}</div>`
         : errBlock;
   return (
     `<div class="detailpanel">` +
@@ -109,7 +113,9 @@ function ticker(run: RunDetail): string {
     run.lastActivityTs != null
       ? t("last activity {t}", { t: fmtClock(run.lastActivityTs) })
       : run.stale
-        ? t("⚠ worker lost contact")
+        ? run.provider === "claude"
+          ? t("⚠ no recent signal")
+          : t("⚠ worker lost contact")
         : "";
   return `<div class="ticker"><span>${left}</span><span class="r">${right}</span></div>`;
 }
@@ -127,7 +133,7 @@ function graphTab(run: RunDetail, selectedAi: number | null): string {
     );
   }
   const { html } = renderDag(run, selectedAi);
-  const panel = selectedAi != null && run.agents[selectedAi] ? detailPanel(run.agents[selectedAi]!) : "";
+  const panel = selectedAi != null && run.agents[selectedAi] ? detailPanel(run.agents[selectedAi]!, run.provider) : "";
   return `<div class="dagarea">${html}${panel}${ticker(run)}</div>`;
 }
 

@@ -19,11 +19,18 @@ function spark(seed: string, paused: boolean): string {
   return bars.join("");
 }
 
+/** A small "Claude Code" tag for runs ODW only observes (its own runs stay unbadged). */
+function provBadge(r: RunSummary): string {
+  return r.provider === "claude"
+    ? ` <span class="srcbadge" title="${t("Claude Code workflow — observed read-only")}">Claude Code</span>`
+    : "";
+}
+
 function runCard(r: RunSummary): string {
   const paused = r.state === "paused";
   return (
     `<div class="runcard ${paused ? "" : "run"}" data-run="${esc(r.runId)}">` +
-    `<div class="top"><span><span class="nm">${esc(r.name)}</span><div class="wf">${esc(r.runId)}</div></span>` +
+    `<div class="top"><span><span class="nm">${esc(r.name)}</span>${provBadge(r)}<div class="wf">${esc(r.runId)}</div></span>` +
     `<span class="badge ${r.state}"><span class="d"></span>${esc(t(r.state))}</span></div>` +
     `<div class="spark">${spark(r.runId, paused)}</div>` +
     `<div class="strip"><i style="width:${Math.round(r.progress * 100)}%"></i></div>` +
@@ -38,7 +45,7 @@ function historyRow(r: RunSummary): string {
   void adapter;
   return (
     `<tr class="run" data-run="${esc(r.runId)}">` +
-    `<td style="font-weight:600;">${esc(r.name)}</td>` +
+    `<td style="font-weight:600;">${esc(r.name)}${provBadge(r)}</td>` +
     `<td class="mono">${esc(r.runId)}</td>` +
     `<td><span class="badge ${r.state}"><span class="d"></span>${esc(t(r.state))}</span></td>` +
     `<td class="mono">${fmtClock(r.createdAt)}</td>` +

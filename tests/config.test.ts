@@ -46,6 +46,23 @@ test("loadConfig merges a user file over the built-ins (user wins)", () => {
   }
 });
 
+test("claudeJobsScope defaults to 'all'; only an explicit 'project' narrows it", () => {
+  assert.equal(defaultConfig().settings.claudeJobsScope, "all");
+  const dir = mkdtempSync(join(tmpdir(), "odw-cfg-"));
+  try {
+    const write = (v: unknown) => {
+      const p = join(dir, "odw.config.json");
+      writeFileSync(p, JSON.stringify({ claudeJobsScope: v }));
+      return loadConfig(p).settings.claudeJobsScope;
+    };
+    assert.equal(write("project"), "project");
+    assert.equal(write("all"), "all");
+    assert.equal(write("garbage"), "all"); // unknown value falls back to the default
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("resolveAdapter falls back to defaultAdapter and errors clearly", () => {
   const cfg = defaultConfig();
   cfg.settings.defaultAdapter = "claude";

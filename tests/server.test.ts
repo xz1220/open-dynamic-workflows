@@ -174,7 +174,8 @@ test("HTTP: serves dashboard, run list, detail, control, and 404s", async () => 
     A("agent_started", "alpha", "Research", 1),
     A("agent_finished", "alpha", "Research", 2, { adapter: "mock", attempts: 1 }),
   ]);
-  const handle = await startServer({ store, port: 0, host: "127.0.0.1" });
+  // Point the Claude source at an empty dir so this test sees only the ODW run.
+  const handle = await startServer({ store, port: 0, host: "127.0.0.1", claudeProjectsRoot: join(root, "no-claude") });
   try {
     const html = await fetch(`${handle.url}/`).then((r) => r.text());
     assert.match(html, /Open Dynamic Workflows/);
@@ -182,6 +183,7 @@ test("HTTP: serves dashboard, run list, detail, control, and 404s", async () => 
     const runs = await fetch(`${handle.url}/api/runs`).then((r) => r.json());
     assert.equal(runs.length, 1);
     assert.equal(runs[0].runId, id);
+    assert.equal(runs[0].provider, "odw");
     assert.equal(runs[0].counts.done, 1);
 
     const one = await fetch(`${handle.url}/api/runs/${id}`).then((r) => r.json());
@@ -208,6 +210,45 @@ test("HTTP: serves dashboard, run list, detail, control, and 404s", async () => 
       body: JSON.stringify({ action: "explode" }),
     });
     assert.equal(badCtl.status, 400);
+  } finally {
+    await handle.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("HTTP: merges Claude Code runs into /api/runs (read-only: control → 409)", async () => {
+  const root = tempRoot();
+  const store = new RunStore(root);
+  const odwId = seedRun(store, { name: "odw-job", state: "done" }, []);
+  // A fake ~/.claude/projects with one terminal Claude run.
+  const projects = join(root, "claude-projects");
+  const sess = join(projects, "-tmp-proj", "sess1", "workflows");
+  mkdirSync(sess, { recursive: true });
+  writeFileSync(
+    join(sess, "wf_abc.json"),
+    JSON.stringify({ runId: "wf_abc", status: "completed", workflowName: "cc-job", startTime: 1780000000000, durationMs: 1000, workflowProgress: [] }),
+  );
+  const handle = await startServer({ store, port: 0, host: "127.0.0.1", claudeProjectsRoot: projects, claudeJobsScope: "all" });
+  try {
+    const runs = await fetch(`${handle.url}/api/runs`).then((r) => r.json());
+    assert.equal(runs.length, 2); // ODW + Claude, merged
+    const cc = runs.find((r: { runId: string }) => r.runId === "cc-wf_abc");
+    const odw = runs.find((r: { runId: string }) => r.runId === odwId);
+    assert.ok(cc && odw);
+    assert.equal(cc.provider, "claude");
+    assert.equal(odw.provider, "odw");
+
+    // detail routes to the Claude source
+    const det = await fetch(`${handle.url}/api/runs/cc-wf_abc`).then((r) => r.json());
+    assert.equal(det.name, "cc-job");
+
+    // control on a Claude run is refused with 409 (read-only), never mutating anything
+    const ctl = await fetch(`${handle.url}/api/runs/cc-wf_abc/control`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action: "stop" }),
+    });
+    assert.equal(ctl.status, 409);
   } finally {
     await handle.close();
     rmSync(root, { recursive: true, force: true });
