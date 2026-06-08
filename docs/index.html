@@ -9,7 +9,7 @@
       content="Open Dynamic Workflows is a TypeScript CLI runtime for Claude Code-style dynamic workflows across Codex, Claude Code, Gemini, Qwen, Kimi, and custom coding-agent CLIs. Open Dynamic Workflows 是面向 coding agent 的动态工作流运行时。"
     />
     <meta name="robots" content="index,follow" />
-    <meta name="theme-color" content="#ffffff" />
+    <meta name="theme-color" content="#FBFAF6" />
     <link rel="canonical" href="https://xz1220.github.io/open-dynamic-workflows/" />
 
     <meta property="og:type" content="website" />
@@ -42,23 +42,62 @@
       }
     </script>
 
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Gaegu:wght@400;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap"
+      rel="stylesheet"
+    />
+
     <style>
+      /* ==================================================================
+         Open Dynamic Workflows — landing page. Paper / blueprint theme.
+         Tokens + components ported from web/src/theme.css and the
+         approved odw-client-mockup.html (the shipped visual spec).
+         ================================================================== */
       :root {
         color-scheme: light;
-        --bg: #ffffff;
+        --bg: #fbfaf6;
+        --surface: #ffffff;
+        --alt: #f4f4f1;
+        --sunken: #fcfcfc;
         --ink: #111111;
-        --muted: #6a6a6a;
-        --line: #e8e8e8;
-        --soft-line: #f3f3f3;
-        --soft: #f7f8f5;
+        --muted: #707070;
+        --faint: #b8b8b8;
+        --hair: #e8e8e8;
+        --soft: #f3f3f3;
+        --node-border: #d7d7d7;
+        --node-active: #111111;
+        --grid: rgba(0, 0, 0, 0.05);
         --green: #10b981;
-        --green-deep: #087a58;
-        --green-soft: #e8f8f1;
-        --code: #141817;
-        --grid: rgba(0, 0, 0, 0.035);
-        --max: 1180px;
-        --sans: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-        --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+        --green-deep: #0a7d57;
+        --green-bright: #22d89a;
+        --green-tint: #f0fbf6;
+        --green-tint-border: #bfe6d5;
+        --amber: #f59e0b;
+        --amber-ink: #92610c;
+        --amber-tint: #fdf8ee;
+        --amber-border: #f3e2bd;
+        --red: #ef4444;
+        --red-deep: #b42318;
+        --red-tint: #fdf1f0;
+        --red-border: #f4c7c2;
+        --orange: #f97316;
+        --orange-ink: #9a3412;
+        --orange-tint: #fdf1ea;
+        --orange-border: #f6d4bd;
+        --blue: #2563a8;
+        --done: #7e8d84;
+        --done-paper: #c0c0c0;
+        --cancel: #9aa0a6;
+        --stage-bg: #0e1311;
+        --stage-body: #c9d1cf;
+        --stage-muted: #9fb0a6;
+        --stage-comment: #5c6a62;
+        --max: 1200px;
+        --sans: "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        --display: "Gaegu", "Inter", system-ui, sans-serif;
       }
 
       * {
@@ -74,8 +113,9 @@
         background: var(--bg);
         color: var(--ink);
         font-family: var(--sans);
-        letter-spacing: 0;
+        line-height: 1.5;
         -webkit-font-smoothing: antialiased;
+        text-rendering: optimizeLegibility;
       }
 
       a {
@@ -87,23 +127,44 @@
         font: inherit;
       }
 
-      .page {
-        min-height: 100dvh;
-        overflow: hidden;
-        background:
-          linear-gradient(var(--grid) 1px, transparent 1px),
-          linear-gradient(90deg, var(--grid) 1px, transparent 1px),
-          #ffffff;
-        background-size: 36px 36px;
+      :focus-visible {
+        outline: 2px solid var(--green-deep);
+        outline-offset: 2px;
+        border-radius: 4px;
       }
 
+      /* ---------- skip link (CSS-only, hidden until focus) ---------- */
+      .skip-link {
+        position: absolute;
+        left: -9999px;
+        top: 0;
+        z-index: 100;
+        background: var(--ink);
+        color: #fff;
+        padding: 10px 16px;
+        border-radius: 0 0 8px 0;
+        font-size: 13px;
+        font-weight: 600;
+      }
+      .skip-link:focus {
+        left: 0;
+      }
+
+      .grid-paper {
+        background:
+          linear-gradient(var(--grid) 1px, transparent 1px),
+          linear-gradient(90deg, var(--grid) 1px, transparent 1px), var(--bg);
+        background-size: 34px 34px;
+      }
+
+      /* ---------- top nav ---------- */
       .nav {
         position: sticky;
         top: 0;
-        z-index: 20;
-        border-bottom: 1px solid var(--line);
-        background: rgba(255, 255, 255, 0.88);
-        backdrop-filter: blur(18px);
+        z-index: 40;
+        border-bottom: 1px solid var(--hair);
+        background: rgba(251, 250, 246, 0.86);
+        backdrop-filter: saturate(1.2) blur(10px);
       }
 
       .nav-inner {
@@ -112,7 +173,7 @@
         justify-content: space-between;
         gap: 24px;
         width: min(calc(100vw - 40px), var(--max));
-        min-height: 68px;
+        min-height: 64px;
         margin: 0 auto;
       }
 
@@ -120,76 +181,83 @@
         display: inline-flex;
         min-width: 0;
         align-items: center;
-        gap: 12px;
-        font-size: 15px;
-        font-weight: 760;
+        gap: 11px;
       }
 
-      .brand-mark {
-        display: grid;
+      .brand .logo {
         flex: 0 0 auto;
-        width: 34px;
-        height: 34px;
-        place-items: center;
-        border: 1px solid #0d241d;
-        border-radius: 8px;
-        background: var(--ink);
-        color: #effff7;
-        font-family: var(--mono);
-        font-size: 12px;
-        font-weight: 800;
+        width: 38px;
+        height: 22px;
       }
 
-      .brand-name {
+      .brand .wm {
+        font-family: var(--display);
+        font-weight: 700;
+        font-size: 30px;
+        line-height: 0.8;
+        color: var(--ink);
+        letter-spacing: 0.5px;
+      }
+
+      .brand .full {
+        font-size: 13px;
+        font-weight: 600;
+        color: var(--muted);
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
+        border-left: 1px solid var(--hair);
+        padding-left: 11px;
+        margin-left: 2px;
       }
 
       .nav-actions {
         display: flex;
         flex: 0 0 auto;
         align-items: center;
-        gap: 12px;
+        gap: 10px;
       }
 
       .nav-links {
         display: flex;
         align-items: center;
-        gap: 4px;
+        gap: 2px;
       }
 
       .nav-links a {
-        min-height: 38px;
-        padding: 10px 12px;
+        min-height: 36px;
+        display: inline-flex;
+        align-items: center;
+        padding: 8px 12px;
         border-radius: 8px;
         color: #343434;
-        font-size: 14px;
-        font-weight: 680;
+        font-size: 13.5px;
+        font-weight: 600;
       }
 
       .nav-links a:hover {
-        background: #f1f1f1;
+        background: rgba(0, 0, 0, 0.04);
       }
 
       .lang-toggle {
         display: inline-flex;
-        border: 1px solid var(--line);
+        border: 1px solid var(--hair);
         border-radius: 999px;
-        background: #ffffff;
+        background: var(--surface);
         padding: 3px;
       }
 
       .lang-toggle button {
-        min-width: 42px;
-        min-height: 30px;
+        min-width: 40px;
+        min-height: 28px;
         border: 0;
         border-radius: 999px;
         background: transparent;
         color: #626262;
         cursor: pointer;
-        font-size: 12px;
-        font-weight: 780;
+        font-family: var(--mono);
+        font-size: 11.5px;
+        font-weight: 600;
       }
 
       .lang-toggle button[aria-pressed="true"] {
@@ -197,40 +265,48 @@
         color: #ffffff;
       }
 
-      .hero {
+      /* ---------- shared section scaffolding ---------- */
+      .section {
+        border-top: 1px solid var(--hair);
+        padding: 80px 0;
+      }
+
+      /* alternating blueprint-tinted section: 34px grid over --alt */
+      .section.tint {
+        background:
+          linear-gradient(var(--grid) 1px, transparent 1px),
+          linear-gradient(90deg, var(--grid) 1px, transparent 1px), var(--alt);
+        background-size: 34px 34px;
+      }
+
+      .section-inner {
         width: min(calc(100vw - 40px), var(--max));
         margin: 0 auto;
-        padding: 60px 0 42px;
       }
 
-      .hero-grid {
-        display: grid;
-        grid-template-columns: minmax(0, 1fr) minmax(440px, 0.78fr);
-        gap: 48px;
+      /* section grammar: mono numbered kicker + hairline rule, Gaegu title, Inter lede */
+      .seclabel {
+        display: flex;
         align-items: center;
+        gap: 12px;
+        margin-bottom: 18px;
+        font-family: var(--mono);
+        font-size: 11.5px;
+        font-weight: 500;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--green-deep);
       }
 
-      .eyebrow {
-        display: inline-flex;
-        align-items: center;
-        gap: 9px;
-        min-height: 30px;
-        padding: 0 10px;
-        border: 1px solid var(--line);
-        border-radius: 999px;
-        background: rgba(255, 255, 255, 0.86);
-        color: #333333;
-        font-size: 13px;
-        font-weight: 760;
+      .seclabel .num {
+        color: var(--ink);
+        font-weight: 700;
       }
 
-      .eyebrow::before {
-        width: 7px;
-        height: 7px;
-        border-radius: 50%;
-        background: var(--green);
-        box-shadow: 0 0 0 5px rgba(16, 185, 129, 0.11);
-        content: "";
+      .seclabel .rule {
+        flex: 1;
+        height: 1px;
+        background: var(--hair);
       }
 
       h1,
@@ -240,45 +316,132 @@
         margin-top: 0;
       }
 
+      .sectitle {
+        font-family: var(--display);
+        font-weight: 700;
+        font-size: clamp(34px, 4.6vw, 54px);
+        line-height: 1.04;
+        max-width: 20ch;
+        color: var(--ink);
+        margin: 0;
+      }
+
+      .section-lede {
+        max-width: 64ch;
+        margin: 18px 0 0;
+        color: var(--muted);
+        font-size: 16.5px;
+        line-height: 1.6;
+      }
+
+      /* ---------- HERO ---------- */
+      .hero {
+        position: relative;
+        overflow: hidden;
+        padding: 56px 0 64px;
+      }
+
+      .hero-inner {
+        width: min(calc(100vw - 40px), 1320px);
+        margin: 0 auto;
+      }
+
+      .hero-watermark {
+        position: absolute;
+        top: -10px;
+        right: -2%;
+        font-family: var(--display);
+        font-weight: 700;
+        font-size: clamp(120px, 20vw, 300px);
+        line-height: 0.8;
+        color: rgba(17, 17, 17, 0.04);
+        pointer-events: none;
+        user-select: none;
+        z-index: 0;
+      }
+
+      .hero-grid {
+        position: relative;
+        z-index: 1;
+        display: grid;
+        grid-template-columns: minmax(0, 0.82fr) minmax(560px, 1.18fr);
+        gap: 46px;
+        align-items: center;
+      }
+
+      .eyebrow {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        min-height: 28px;
+        padding: 3px 12px 3px 10px;
+        border: 1px solid var(--green-tint-border);
+        border-radius: 999px;
+        background: var(--green-tint);
+        color: var(--green-deep);
+        font-family: var(--mono);
+        font-size: 12px;
+        font-weight: 500;
+      }
+
+      .eyebrow .d {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: var(--green);
+        box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.4);
+        animation: pulse 1.9s infinite;
+      }
+
       h1 {
-        max-width: 760px;
-        margin-bottom: 22px;
-        margin-top: 26px;
-        font-size: clamp(46px, 7vw, 88px);
-        font-weight: 860;
-        line-height: 0.96;
+        margin: 24px 0 0;
+        max-width: 14ch;
+        font-family: var(--display);
+        font-weight: 700;
+        font-size: clamp(46px, 6.6vw, 84px);
+        line-height: 0.94;
         letter-spacing: 0;
       }
 
+      h1 .accent {
+        color: var(--green-deep);
+      }
+
       .hero-copy {
-        max-width: 640px;
-        margin-bottom: 0;
-        color: #494f4d;
-        font-size: clamp(18px, 2vw, 22px);
-        line-height: 1.45;
+        max-width: 46ch;
+        margin: 22px 0 0;
+        color: #45494b;
+        font-size: clamp(17px, 1.5vw, 20px);
+        line-height: 1.5;
       }
 
       .actions {
         display: flex;
         flex-wrap: wrap;
-        gap: 12px;
-        margin-top: 30px;
+        gap: 11px;
+        margin-top: 28px;
       }
 
       .button {
         display: inline-flex;
         align-items: center;
+        gap: 8px;
         justify-content: center;
-        min-height: 48px;
+        min-height: 46px;
         padding: 0 18px;
-        border-radius: 8px;
-        font-size: 15px;
-        font-weight: 780;
+        border-radius: 9px;
+        font-size: 14.5px;
+        font-weight: 600;
         transition:
-          transform 160ms ease,
-          border-color 160ms ease,
-          background 160ms ease;
+          transform 150ms ease,
+          border-color 150ms ease,
+          background 150ms ease;
         white-space: nowrap;
+      }
+
+      .button svg {
+        width: 17px;
+        height: 17px;
       }
 
       .button:active {
@@ -286,7 +449,7 @@
       }
 
       .button.primary {
-        border: 1px solid #0b6f4e;
+        border: 1px solid var(--green-deep);
         background: #0f8f65;
         color: #ffffff;
       }
@@ -296,94 +459,513 @@
       }
 
       .button.secondary {
-        border: 1px solid var(--line);
-        background: #ffffff;
-        color: #171717;
+        border: 1px solid var(--node-border);
+        background: var(--surface);
+        color: var(--ink);
       }
 
       .button.secondary:hover {
-        border-color: #cfcfcf;
+        border-color: var(--node-active);
       }
 
-      .workflow-visual {
-        position: relative;
-        min-height: 440px;
-        border: 1px solid var(--line);
-        border-radius: 16px;
-        background:
-          linear-gradient(var(--grid) 1px, transparent 1px),
-          linear-gradient(90deg, var(--grid) 1px, transparent 1px),
-          #ffffff;
-        background-size: 32px 32px;
-        box-shadow: rgba(0, 0, 0, 0.055) 0 24px 80px;
-        overflow: hidden;
-      }
-
-      .visual-topbar {
+      .hero-meta {
         display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 26px;
+      }
+
+      /* ---------- chip / badge (from theme.css) ---------- */
+      .chip {
+        display: inline-flex;
         align-items: center;
-        justify-content: space-between;
-        gap: 14px;
-        min-height: 50px;
-        padding: 0 16px;
-        border-bottom: 1px solid var(--line);
-        background: rgba(255, 255, 255, 0.86);
-      }
-
-      .traffic {
-        display: flex;
-        align-items: center;
-        gap: 7px;
-      }
-
-      .traffic span {
-        width: 8px;
-        height: 8px;
-        border-radius: 50%;
-        background: #cfcfcf;
-      }
-
-      .traffic span:nth-child(2) {
-        background: #d9b647;
-      }
-
-      .traffic span:nth-child(3) {
-        background: var(--green);
-      }
-
-      .visual-title {
-        color: var(--muted);
+        gap: 6px;
         font-family: var(--mono);
-        font-size: 12px;
+        font-size: 11.5px;
+        font-weight: 500;
+        padding: 3px 9px;
+        border-radius: 999px;
+        border: 1px solid var(--hair);
+        color: var(--muted);
+        background: var(--surface);
+      }
+
+      .chip b {
+        color: var(--ink);
         font-weight: 700;
       }
 
-      .status-pill {
+      .chip .em {
+        color: var(--green);
+      }
+
+      .chip .rd {
+        color: var(--red);
+      }
+
+      .badge {
         display: inline-flex;
         align-items: center;
-        gap: 7px;
-        color: #4d4d4d;
-        font-size: 12px;
-        font-weight: 760;
+        gap: 6px;
+        font-family: var(--mono);
+        font-size: 11px;
+        font-weight: 500;
+        letter-spacing: 0.02em;
+        padding: 3px 9px 3px 8px;
+        border-radius: 999px;
+        border: 1px solid;
         white-space: nowrap;
       }
 
-      .status-pill::before {
+      .badge .d {
         width: 7px;
         height: 7px;
-        border-radius: 50%;
+        border-radius: 999px;
+      }
+
+      .badge.running {
+        color: var(--green-deep);
+        background: var(--green-tint);
+        border-color: var(--green-tint-border);
+      }
+      .badge.running .d {
         background: var(--green);
-        box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.4);
-        content: "";
-        animation: pulse 1.9s infinite;
+        animation: pulse 1.8s infinite;
+      }
+      .badge.pending,
+      .badge.paused {
+        color: var(--amber-ink);
+        background: var(--amber-tint);
+        border-color: var(--amber-border);
+      }
+      .badge.pending .d,
+      .badge.paused .d {
+        background: var(--amber);
+      }
+      .badge.done {
+        color: #555;
+        background: #f5f5f4;
+        border-color: #e2e2e0;
+      }
+      .badge.done .d {
+        background: var(--done-paper);
+      }
+      .badge.failed {
+        color: var(--red-deep);
+        background: var(--red-tint);
+        border-color: var(--red-border);
+      }
+      .badge.failed .d {
+        background: var(--red);
+      }
+      .badge.stale {
+        color: var(--orange-ink);
+        background: var(--orange-tint);
+        border-color: var(--orange-border);
+      }
+      .badge.stale .d {
+        background: var(--orange);
       }
 
-      .topology {
+      /* ===================================================================
+         APP WINDOW — the live observatory hero centerpiece
+         =================================================================== */
+      .appwin {
+        position: relative;
+        border: 1px solid var(--hair);
+        border-radius: 14px;
+        background: var(--surface);
+        box-shadow:
+          0 1px 0 rgba(255, 255, 255, 0.6),
+          0 40px 90px -34px rgba(0, 0, 0, 0.42),
+          0 0 0 1px rgba(0, 0, 0, 0.02);
+        overflow: hidden;
+      }
+
+      .appwin .grid {
+        display: grid;
+        grid-template-columns: 196px 1fr;
+        grid-template-rows: 48px 1fr 28px;
+      }
+
+      /* toolbar */
+      .toolbar {
+        grid-column: 1 / 3;
+        grid-row: 1;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 0 16px;
+        border-bottom: 1px solid var(--hair);
+        background: rgba(255, 255, 255, 0.82);
+        backdrop-filter: saturate(1.2) blur(6px);
+      }
+
+      .tl {
+        display: flex;
+        gap: 7px;
+        align-items: center;
+      }
+
+      .tl i {
+        width: 11px;
+        height: 11px;
+        border-radius: 999px;
+        display: block;
+      }
+
+      .tl i.r {
+        background: #ff5f57;
+      }
+      .tl i.y {
+        background: #febc2e;
+      }
+      .tl i.g {
+        background: #28c840;
+      }
+
+      .crumb {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-left: 14px;
+        font-size: 12.5px;
+        min-width: 0;
+      }
+
+      .crumb .s {
+        color: var(--muted);
+        font-weight: 500;
+      }
+      .crumb .cur {
+        color: var(--ink);
+        font-weight: 600;
+      }
+      .crumb .sep {
+        color: var(--faint);
+      }
+
+      .idchip {
+        font-family: var(--mono);
+        font-size: 10.5px;
+        color: var(--muted);
+        background: var(--alt);
+        border: 1px solid var(--hair);
+        padding: 3px 7px;
+        border-radius: 5px;
+        white-space: nowrap;
+      }
+
+      .tr {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+
+      .conn {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 12px;
+        font-weight: 600;
+      }
+
+      .conn .d {
+        width: 8px;
+        height: 8px;
+        border-radius: 999px;
+      }
+
+      .conn.live {
+        color: var(--green-deep);
+      }
+      .conn.live .d {
+        background: var(--green);
+        animation: pulse 1.8s infinite;
+      }
+
+      /* rail */
+      .rail {
+        grid-column: 1;
+        grid-row: 2;
+        border-right: 1px solid var(--hair);
+        background: var(--alt);
+        padding: 18px 12px 14px;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+      }
+
+      .rail .brandmini {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        padding: 2px 6px 0;
+      }
+
+      .rail .brandmini .logo {
+        width: 30px;
+        height: 19px;
+      }
+
+      .rail .brandmini .wm {
+        font-family: var(--display);
+        font-weight: 700;
+        font-size: 26px;
+        line-height: 0.8;
+        color: var(--ink);
+      }
+
+      .rail .tagline {
+        font-size: 11px;
+        color: var(--muted);
+        margin: 5px 6px 18px;
+      }
+
+      .navitem {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 8px 10px;
+        border-radius: 8px;
+        font-size: 13px;
+        color: var(--ink);
+        font-weight: 500;
+        margin-bottom: 2px;
+      }
+
+      .navitem .ic {
+        width: 16px;
+        height: 16px;
+        opacity: 0.8;
+        flex: 0 0 auto;
+      }
+
+      .navitem.on {
+        background: var(--surface);
+        color: var(--ink);
+        box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+        font-weight: 600;
+      }
+
+      .navitem .count {
+        margin-left: auto;
+        font-family: var(--mono);
+        font-size: 10.5px;
+        color: #fff;
+        background: var(--green-deep);
+        border-radius: 999px;
+        padding: 1px 7px;
+        font-weight: 600;
+      }
+
+      .rail .spacer {
+        flex: 1;
+      }
+
+      .rail .divider {
+        height: 1px;
+        background: var(--hair);
+        margin: 12px 6px;
+      }
+
+      .rail .sl {
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+        color: var(--muted);
+        margin: 4px 8px 6px;
+        display: flex;
+        justify-content: space-between;
+      }
+
+      .rail .sl .n {
+        font-family: var(--mono);
+        color: var(--green-deep);
+      }
+
+      .minirun {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        padding: 7px 9px;
+        border-radius: 8px;
+        font-size: 12px;
+        color: var(--muted);
+      }
+
+      .minirun .dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 999px;
+        background: var(--green);
+        animation: pulse 1.8s infinite;
+        flex: 0 0 auto;
+      }
+
+      .minirun .nm {
+        color: var(--ink);
+        font-weight: 500;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .minirun .ph {
+        margin-left: auto;
+        font-family: var(--mono);
+        font-size: 10.5px;
+        color: var(--faint);
+      }
+
+      /* main board */
+      .board {
+        grid-column: 2;
+        grid-row: 2;
+        position: relative;
+        overflow: hidden;
+        background:
+          linear-gradient(var(--grid) 1px, transparent 1px),
+          linear-gradient(90deg, var(--grid) 1px, transparent 1px), var(--bg);
+        background-size: 34px 34px;
+        display: flex;
+        flex-direction: column;
+      }
+
+      .stagehead {
+        padding: 16px 22px 12px;
+        border-bottom: 1px solid var(--hair);
+        background: linear-gradient(180deg, rgba(255, 255, 255, 0.62), rgba(255, 255, 255, 0));
+      }
+
+      .stagehead .row1 {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        flex-wrap: wrap;
+      }
+
+      .stagehead .rtitle {
+        font-family: var(--display);
+        font-weight: 700;
+        font-size: 25px;
+        color: var(--ink);
+        line-height: 1;
+      }
+
+      .phasestepper {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+
+      .phasestepper .pp {
+        font-size: 11.5px;
+        color: var(--faint);
+        font-weight: 600;
+      }
+      .phasestepper .pp.done {
+        color: var(--muted);
+      }
+      .phasestepper .pp.on {
+        color: var(--green-deep);
+      }
+      .phasestepper .ar {
+        color: var(--faint);
+        font-size: 10px;
+      }
+
+      .progressbar {
+        height: 6px;
+        border-radius: 999px;
+        background: var(--hair);
+        overflow: hidden;
+        margin: 12px 0 11px;
+        max-width: 100%;
+      }
+
+      .progressbar i {
+        display: block;
+        height: 100%;
+        width: 58%;
+        background: linear-gradient(90deg, var(--green-deep), var(--green));
+        border-radius: 999px;
+      }
+
+      .row3 {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+
+      .heartbeat {
+        width: 8px;
+        height: 8px;
+        border-radius: 999px;
+        background: var(--green);
+        animation: pulse 1.8s infinite;
+      }
+
+      .dagarea {
+        position: relative;
+        flex: 1;
+        overflow: hidden;
+        min-height: 360px;
+      }
+
+      .dag {
+        position: relative;
+        width: 100%;
+        height: 100%;
+      }
+
+      .watermark {
         position: absolute;
-        inset: 82px 28px 36px;
+        font-family: var(--display);
+        font-weight: 700;
+        font-size: 50px;
+        color: rgba(17, 17, 17, 0.045);
+        pointer-events: none;
+        top: 30px;
+        user-select: none;
       }
 
-      .wires {
+      .lanehead {
+        position: absolute;
+        top: 12px;
+        font-size: 12px;
+        font-weight: 700;
+        color: var(--ink);
+        display: flex;
+        align-items: center;
+        gap: 7px;
+      }
+
+      .lanehead .ix {
+        font-family: var(--mono);
+        font-size: 10px;
+        color: var(--faint);
+        font-weight: 500;
+      }
+
+      .lanehead .n {
+        font-family: var(--mono);
+        font-size: 10px;
+        color: var(--muted);
+      }
+
+      .lanehead .line {
+        position: absolute;
+        top: 22px;
+        left: 0;
+        height: 1px;
+        background: var(--hair);
+      }
+
+      .edges {
         position: absolute;
         inset: 0;
         width: 100%;
@@ -391,281 +973,532 @@
         pointer-events: none;
       }
 
-      .wire {
-        fill: none;
-        stroke: #111111;
-        stroke-width: 1.2;
-        stroke-linecap: round;
-        stroke-dasharray: 6 12;
-        opacity: 0.2;
-        animation: move-wire 6s linear infinite;
+      .flowdot {
+        fill: var(--green-bright);
       }
 
-      .topo-node {
+      /* DAG node card (.node from theme.css) */
+      .node {
         position: absolute;
-        z-index: 2;
-        width: 130px;
-        min-height: 64px;
-        border: 1px solid #d8d8d8;
-        border-radius: 8px;
-        padding: 12px;
-        background: rgba(255, 255, 255, 0.94);
-        box-shadow: rgba(0, 0, 0, 0.035) 0 12px 28px;
+        width: 142px;
+        background: var(--surface);
+        border: 1px solid var(--node-border);
+        border-left: 3px solid var(--node-border);
+        border-radius: 9px;
+        padding: 9px 11px;
+        box-shadow: 0 8px 20px rgba(0, 0, 0, 0.04);
       }
 
-      .topo-node.running::after {
-        position: absolute;
-        top: 12px;
-        right: 12px;
-        width: 6px;
-        height: 6px;
-        border-radius: 50%;
-        background: var(--green);
-        content: "";
-      }
-
-      .topo-node strong {
-        display: block;
-        padding-right: 12px;
-        font-size: 14px;
-        line-height: 1.15;
-      }
-
-      .topo-node span {
-        display: block;
-        margin-top: 7px;
-        color: var(--muted);
-        font-size: 12px;
-        line-height: 1.35;
-      }
-
-      .node-start {
-        left: 0;
-        top: 45%;
-      }
-
-      .node-plan {
-        left: 22%;
-        top: 45%;
-      }
-
-      .node-dispatch {
-        left: 44%;
-        top: 45%;
-        border-color: #111111;
-      }
-
-      .node-a {
-        right: 2%;
-        top: 10%;
-      }
-
-      .node-b {
-        right: 2%;
-        top: 45%;
-      }
-
-      .node-merge {
-        right: 2%;
-        bottom: 6%;
-      }
-
-      .code-strip {
-        position: absolute;
-        left: 28px;
-        right: 28px;
-        bottom: 24px;
-        display: grid;
-        gap: 7px;
-        border: 1px solid rgba(255, 255, 255, 0.12);
-        border-radius: 12px;
-        background: var(--code);
-        padding: 15px;
-        color: #dff5e9;
+      .node .h {
         font-family: var(--mono);
+        font-weight: 500;
         font-size: 12px;
-        line-height: 1.35;
+        color: var(--ink);
+        padding-right: 14px;
+        line-height: 1.2;
+        letter-spacing: -0.2px;
+        word-break: break-word;
       }
 
-      .code-muted {
-        color: #82908a;
-      }
-
-      .code-green {
-        color: #65d89e;
-      }
-
-      .section {
-        border-top: 1px solid var(--line);
-        background: #ffffff;
-        padding: 72px 0;
-      }
-
-      .hero + .section {
-        padding-top: 38px;
-      }
-
-      .section.soft {
-        background: var(--soft);
-      }
-
-      .section-inner {
-        width: min(calc(100vw - 40px), var(--max));
-        margin: 0 auto;
-      }
-
-      .section-kicker {
-        margin-bottom: 12px;
-        color: var(--green-deep);
-        font-size: 12px;
-        font-weight: 820;
-        letter-spacing: 0.08em;
-        text-transform: uppercase;
-      }
-
-      h2 {
-        max-width: 760px;
-        margin-bottom: 0;
-        font-size: clamp(34px, 5vw, 56px);
-        font-weight: 850;
-        line-height: 1.02;
-        letter-spacing: 0;
-      }
-
-      .section-lede {
-        max-width: 720px;
-        margin: 18px 0 0;
+      .node .sub {
+        font-family: var(--mono);
+        font-weight: 500;
+        font-size: 10px;
         color: var(--muted);
-        font-size: 17px;
-        line-height: 1.6;
+        margin-top: 4px;
       }
 
+      .node .dot {
+        position: absolute;
+        top: 10px;
+        right: 10px;
+        width: 7px;
+        height: 7px;
+        border-radius: 999px;
+      }
+
+      .node .gl {
+        position: absolute;
+        top: 8px;
+        right: 9px;
+        font-size: 10px;
+      }
+
+      .node.running {
+        border-color: var(--green-tint-border);
+        border-left-color: var(--green);
+        box-shadow:
+          0 0 0 3px rgba(16, 185, 129, 0.07),
+          0 8px 20px rgba(0, 0, 0, 0.04);
+      }
+      .node.running .dot {
+        background: var(--green);
+        animation: pulse 1.8s infinite;
+      }
+      .node.running .sub {
+        color: var(--green-deep);
+      }
+
+      .node.done {
+        border-left-color: var(--done-paper);
+        opacity: 0.95;
+      }
+      .node.done .dot {
+        background: var(--done-paper);
+      }
+      .node.done .h {
+        color: var(--muted);
+      }
+
+      .node.failed {
+        background: var(--red-tint);
+        border-color: var(--red-border);
+        border-left-color: var(--red);
+        box-shadow:
+          0 0 0 3px rgba(239, 68, 68, 0.07),
+          0 8px 20px rgba(0, 0, 0, 0.04);
+      }
+      .node.failed .dot {
+        background: var(--red);
+      }
+
+      .node.queued {
+        border-style: dashed;
+        border-left: 3px solid var(--faint);
+        opacity: 0.72;
+      }
+      .node.queued .dot {
+        background: var(--faint);
+      }
+      .node.queued .h {
+        color: var(--muted);
+      }
+
+      .node .err {
+        font-family: var(--mono);
+        font-size: 9.5px;
+        color: var(--red-deep);
+        margin-top: 6px;
+        background: rgba(239, 68, 68, 0.07);
+        border-radius: 4px;
+        padding: 3px 5px;
+        line-height: 1.3;
+        word-break: break-word;
+      }
+
+      .groupcard {
+        position: absolute;
+        width: 142px;
+        border: 1px dashed var(--node-border);
+        border-radius: 9px;
+        padding: 8px 11px;
+        color: var(--muted);
+        font-family: var(--mono);
+        font-size: 11px;
+        background: var(--sunken);
+      }
+
+      .groupcard b {
+        color: var(--ink);
+      }
+
+      .ticker {
+        position: absolute;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        height: 32px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0 18px;
+        border-top: 1px solid var(--hair);
+        background: rgba(255, 255, 255, 0.72);
+        font-family: var(--mono);
+        font-size: 11px;
+        color: var(--muted);
+      }
+
+      .ticker .r {
+        color: var(--faint);
+      }
+
+      .statusbar {
+        grid-column: 1 / 3;
+        grid-row: 3;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 0 16px;
+        font-family: var(--mono);
+        font-size: 11px;
+        border-top: 1px solid var(--hair);
+        background: var(--alt);
+        color: var(--muted);
+      }
+
+      .statusbar .live-dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 999px;
+        background: var(--green);
+        display: inline-block;
+        box-shadow: 0 0 8px rgba(16, 185, 129, 0.6);
+      }
+
+      .statusbar .seg {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      /* ---------- WHY: signal cards ---------- */
       .signal-grid {
         display: grid;
         grid-template-columns: repeat(3, 1fr);
-        gap: 12px;
-        margin-top: 32px;
+        gap: 14px;
+        margin-top: 36px;
       }
 
       .signal {
-        min-height: 174px;
-        border: 1px solid var(--line);
-        border-radius: 8px;
-        background: #ffffff;
+        position: relative;
+        border: 1px solid var(--node-border);
+        border-left: 3px solid var(--green);
+        border-radius: 9px;
+        background: var(--surface);
         padding: 20px;
+        box-shadow: 0 8px 20px rgba(0, 0, 0, 0.03);
+        transition:
+          transform 150ms ease,
+          box-shadow 150ms ease;
       }
 
-      .signal code,
-      .primitive code {
-        display: inline-flex;
-        min-height: 28px;
-        align-items: center;
-        margin-bottom: 28px;
-        border-radius: 7px;
-        background: var(--green-soft);
-        padding: 0 8px;
-        color: #087a58;
+      .signal:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 14px 28px rgba(0, 0, 0, 0.05);
+      }
+
+      .signal .kd {
         font-family: var(--mono);
-        font-size: 12px;
-        font-weight: 760;
+        font-size: 11px;
+        font-weight: 500;
+        color: var(--green-deep);
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        margin-bottom: 20px;
+        background: var(--green-tint);
+        border: 1px solid var(--green-tint-border);
+        border-radius: 6px;
+        padding: 3px 8px;
       }
 
-      .signal h3,
+      .signal h3 {
+        margin: 0 0 9px;
+        font-family: var(--display);
+        font-weight: 700;
+        font-size: 25px;
+        line-height: 1.1;
+      }
+
       .primitive h3 {
-        margin-bottom: 9px;
-        font-size: 19px;
-        line-height: 1.18;
+        margin: 0 0 9px;
+        font-size: 16px;
+        font-weight: 700;
+        line-height: 1.2;
       }
 
       .signal p,
       .primitive p,
       .install-copy p {
-        margin-bottom: 0;
+        margin: 0;
         color: var(--muted);
-        font-size: 15px;
+        font-size: 14.5px;
         line-height: 1.55;
+      }
+
+      /* ---------- RUNTIME: phase pills + code + primitives ---------- */
+      .phasepills {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        align-items: center;
+        margin-top: 24px;
+      }
+      .ppill {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 12px;
+        font-weight: 600;
+        color: var(--ink);
+        background: var(--surface);
+        border: 1px solid var(--node-border);
+        border-radius: 999px;
+        padding: 4px 12px;
+      }
+      .ppill .ix {
+        font-family: var(--mono);
+        font-size: 10px;
+        color: var(--faint);
+      }
+      .phasepills .ar {
+        color: var(--faint);
+        font-size: 12px;
       }
 
       .runtime-grid {
         display: grid;
-        grid-template-columns: minmax(320px, 0.92fr) minmax(0, 1.08fr);
-        gap: 30px;
+        grid-template-columns: minmax(340px, 1.04fr) minmax(0, 0.96fr);
+        gap: 26px;
         align-items: start;
-        margin-top: 36px;
+        margin-top: 30px;
+      }
+
+      .srcview {
+        border: 1px solid rgba(255, 255, 255, 0.06);
+        border-radius: 12px;
+        background: var(--stage-bg);
+        box-shadow: 0 22px 60px -24px rgba(0, 0, 0, 0.5);
+        overflow: hidden;
+      }
+
+      .srcview-bar {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        min-height: 40px;
+        padding: 0 14px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+        color: #8a988f;
+        font-family: var(--mono);
+        font-size: 11.5px;
+      }
+
+      .srcview-bar .tl i {
+        width: 10px;
+        height: 10px;
+      }
+
+      .srcview pre {
+        margin: 0;
+        overflow-x: auto;
+        padding: 18px 20px;
+        font-family: var(--mono);
+        font-size: 12.5px;
+        line-height: 1.75;
+        color: #c9d1cf;
+      }
+
+      .srcview pre code {
+        white-space: pre;
+        overflow-wrap: anywhere;
+      }
+
+      .srcview .cm {
+        color: #5c6a62;
+      }
+      .srcview .kw {
+        color: #22d89a;
+      }
+      .srcview .fn {
+        color: #22d89a;
+      }
+      .srcview .st {
+        color: #9fb0a6;
+      }
+      .srcview .nm {
+        color: #c9d1cf;
+      }
+
+      .primitive-list {
+        display: grid;
+        gap: 11px;
+      }
+
+      .primitive {
+        border: 1px solid var(--node-border);
+        border-left: 3px solid var(--node-border);
+        border-radius: 9px;
+        background: var(--surface);
+        padding: 16px 18px;
+        box-shadow: 0 8px 20px rgba(0, 0, 0, 0.03);
+      }
+
+      .primitive.par {
+        border-left-color: var(--green);
+      }
+      .primitive.pipe {
+        border-left-color: var(--blue);
+      }
+      .primitive.agent {
+        border-left-color: var(--ink);
+      }
+
+      .primitive .kd {
+        display: block;
+        font-family: var(--mono);
+        font-size: 9.5px;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: var(--green-deep);
+        margin-bottom: 6px;
+      }
+
+      .primitive.pipe .kd {
+        color: var(--blue);
+      }
+      .primitive.agent .kd {
+        color: var(--ink);
+      }
+
+      .primitive code.sig {
+        display: inline-flex;
+        align-items: center;
+        min-height: 26px;
+        margin-bottom: 12px;
+        border-radius: 7px;
+        background: var(--alt);
+        border: 1px solid var(--hair);
+        padding: 0 9px;
+        color: var(--ink);
+        font-family: var(--mono);
+        font-size: 12px;
+        font-weight: 500;
+      }
+
+      /* ---------- INSTALL ---------- */
+      .install-panel {
+        display: grid;
+        grid-template-columns: minmax(0, 0.85fr) minmax(360px, 1fr);
+        gap: 28px;
+        align-items: center;
+        margin-top: 30px;
+      }
+
+      .install-copy {
+        max-width: 50ch;
+      }
+
+      .install-copy p {
+        margin: 0;
+        color: var(--muted);
+        font-size: 16px;
+        line-height: 1.6;
+      }
+
+      .install-copy .actions {
+        margin-top: 24px;
+      }
+
+      /* CLI-hint chips next to the terminal */
+      .clihints {
+        display: grid;
+        gap: 10px;
+        margin-top: 24px;
+      }
+
+      .clihint {
+        display: inline-flex;
+        align-items: baseline;
+        gap: 9px;
+        background: var(--stage-bg);
+        border: 1px solid rgba(255, 255, 255, 0.06);
+        border-radius: 9px;
+        padding: 9px 13px;
+        font-family: var(--mono);
+        font-size: 12px;
+        color: var(--stage-muted);
+      }
+
+      .clihint .p {
+        color: var(--green-bright);
+        font-weight: 700;
+        flex: 0 0 auto;
+      }
+
+      .clihint .note {
+        color: var(--stage-comment);
+        margin-left: 2px;
       }
 
       .terminal {
-        border: 1px solid rgba(255, 255, 255, 0.13);
-        border-radius: 14px;
-        background: var(--code);
-        box-shadow: rgba(0, 0, 0, 0.12) 0 22px 70px;
-        color: #e7f7ed;
+        border: 1px solid rgba(255, 255, 255, 0.06);
+        border-radius: 12px;
+        background: var(--stage-bg);
+        box-shadow: 0 22px 60px -24px rgba(0, 0, 0, 0.5);
         overflow: hidden;
       }
 
       .terminal-bar {
         display: flex;
         align-items: center;
-        gap: 7px;
-        min-height: 42px;
-        border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        gap: 10px;
+        min-height: 40px;
         padding: 0 14px;
-        color: #8a9991;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+        color: #8a988f;
         font-family: var(--mono);
-        font-size: 12px;
+        font-size: 11.5px;
       }
 
-      .terminal pre {
-        margin: 0;
-        overflow-x: auto;
-        padding: 21px;
-        font-family: var(--mono);
-        font-size: 13px;
-        line-height: 1.65;
+      .terminal-bar .tl i {
+        width: 10px;
+        height: 10px;
       }
 
-      .terminal code {
-        white-space: pre-wrap;
+      .terminal .body {
+        padding: 18px 20px;
+        font-family: var(--mono);
+        font-size: 12.5px;
+        line-height: 1.5;
+      }
+
+      .cmd {
+        display: grid;
+        grid-template-columns: auto 1fr;
+        gap: 11px;
+        padding: 8px 0;
+        align-items: baseline;
+      }
+
+      .cmd:not(:last-child) {
+        border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+      }
+
+      .cmd .p {
+        color: var(--green-bright);
+        font-weight: 700;
+        user-select: none;
+      }
+
+      .cmd .c {
+        color: var(--stage-body);
         overflow-wrap: anywhere;
       }
 
-      .primitive-list {
-        display: grid;
-        gap: 10px;
+      .cmd .c .fn {
+        color: var(--green-bright);
       }
 
-      .primitive {
-        border: 1px solid var(--line);
-        border-radius: 8px;
-        background: #ffffff;
-        padding: 18px;
+      .cmd .note {
+        grid-column: 2;
+        color: var(--stage-comment);
+        font-size: 11.5px;
+        margin-top: 2px;
       }
 
-      .primitive code {
-        margin-bottom: 18px;
-      }
-
-      .install-panel {
-        display: grid;
-        grid-template-columns: minmax(0, 0.82fr) minmax(340px, 1fr);
-        gap: 30px;
-        align-items: center;
-        margin-top: 34px;
-      }
-
-      .install-copy {
-        max-width: 540px;
-      }
-
-      .install-copy .actions {
-        margin-top: 26px;
-      }
-
+      /* ---------- FOOTER ---------- */
       .footer {
-        border-top: 1px solid var(--line);
-        background: #ffffff;
+        border-top: 1px solid var(--hair);
+        background: var(--surface);
         color: var(--muted);
-        font-size: 14px;
+        font-size: 13.5px;
       }
 
       .footer-inner {
@@ -673,52 +1506,63 @@
         flex-wrap: wrap;
         align-items: center;
         justify-content: space-between;
-        gap: 14px;
+        gap: 16px;
         width: min(calc(100vw - 40px), var(--max));
-        min-height: 72px;
+        min-height: 80px;
         margin: 0 auto;
+        padding: 18px 0;
+      }
+
+      .footer .fbrand {
+        display: inline-flex;
+        align-items: center;
+        gap: 9px;
+      }
+
+      .footer .fbrand .wm {
+        font-family: var(--display);
+        font-weight: 700;
+        font-size: 24px;
+        line-height: 0.8;
+        color: var(--ink);
       }
 
       .footer a {
         color: #353535;
-        font-weight: 740;
+        font-family: var(--mono);
+        font-size: 12.5px;
       }
 
+      .footer a:hover {
+        color: var(--green-deep);
+      }
+
+      /* ---------- motion ---------- */
       @keyframes pulse {
         0% {
-          box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.38);
+          box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.45);
         }
-
         70% {
-          box-shadow: 0 0 0 9px rgba(16, 185, 129, 0);
+          box-shadow: 0 0 0 8px rgba(16, 185, 129, 0);
         }
-
         100% {
           box-shadow: 0 0 0 0 rgba(16, 185, 129, 0);
         }
       }
 
-      @keyframes move-wire {
-        to {
-          stroke-dashoffset: -72;
+      /* ===================== RESPONSIVE ===================== */
+      @media (max-width: 1080px) {
+        .hero-grid {
+          grid-template-columns: 1fr;
+          gap: 34px;
         }
-      }
-
-      @media (max-width: 980px) {
-        .hero {
-          padding-top: 54px;
+        .hero-inner {
+          width: calc(100vw - 36px);
         }
-
-        .hero-grid,
         .runtime-grid,
         .install-panel {
           grid-template-columns: 1fr;
         }
-
-        .workflow-visual {
-          min-height: 420px;
-        }
-
         .signal-grid {
           grid-template-columns: 1fr;
         }
@@ -726,146 +1570,131 @@
 
       @media (max-width: 720px) {
         .nav-inner,
-        .hero,
         .section-inner,
         .footer-inner {
           width: calc(100vw - 28px);
         }
-
-        .nav-inner {
-          min-height: 62px;
-          gap: 10px;
-        }
-
-        .brand {
-          gap: 9px;
-        }
-
-        .brand-name {
-          max-width: 168px;
-          font-size: 13px;
-        }
-
-        .nav-links a:not(:last-child) {
+        .brand .full {
           display: none;
         }
-
-        .nav-actions {
-          gap: 8px;
+        .nav-links a:not(.gh) {
+          display: none;
         }
-
-        .lang-toggle button {
-          min-width: 36px;
+        .section {
+          padding: 54px 0;
         }
-
         .hero {
-          padding: 30px 0 30px;
+          padding: 36px 0 44px;
         }
-
-        .hero-grid {
-          gap: 26px;
-        }
-
         h1 {
-          max-width: 360px;
-          font-size: clamp(39px, 12vw, 52px);
+          font-size: clamp(40px, 13vw, 60px);
         }
-
-        .hero-copy {
-          font-size: 17px;
+        .hero .actions .button {
+          flex: 1 1 auto;
         }
-
-        .hero .actions {
-          flex-direction: row;
-          gap: 10px;
-        }
-
-        .hero .button {
-          flex: 1 1 0;
-          width: auto;
-          padding-inline: 12px;
-        }
-
         .install-copy .actions {
           flex-direction: column;
         }
-
         .install-copy .button {
           width: 100%;
         }
 
-        .workflow-visual {
-          min-height: 220px;
-          border-radius: 12px;
+        /* app window: stack toolbar / rail / board / statusbar */
+        .appwin .grid {
+          grid-template-columns: 1fr;
+          grid-template-rows: 44px auto auto 24px;
         }
-
-        .topology {
-          inset: 66px 14px 18px;
-          display: grid;
-          grid-template-columns: repeat(2, minmax(0, 1fr));
-          gap: 10px;
-          align-content: center;
+        .rail {
+          grid-column: 1;
+          grid-row: 2;
+          flex-direction: row;
+          align-items: center;
+          gap: 4px;
+          overflow-x: auto;
+          padding: 8px 10px;
+          border-right: none;
+          border-bottom: 1px solid var(--hair);
         }
-
-        .wires {
+        .rail .brandmini,
+        .rail .tagline,
+        .rail .divider,
+        .rail .sl,
+        .rail .minirun,
+        .rail .spacer {
           display: none;
         }
-
-        .topo-node {
-          position: static;
-          width: auto;
-          min-height: 60px;
-          padding: 10px;
-        }
-
-        .topo-node strong {
-          font-size: 13px;
-        }
-
-        .topo-node span {
-          font-size: 11px;
-        }
-
-        .node-a,
-        .node-b {
-          display: none;
-        }
-
-        .code-strip {
-          display: none;
-        }
-
-        .section {
-          padding: 58px 0;
-        }
-
-        .hero + .section {
-          padding-top: 40px;
-        }
-
-        .signal {
-          min-height: auto;
-        }
-
-        .terminal pre {
+        .navitem {
+          margin-bottom: 0;
+          white-space: nowrap;
           font-size: 12px;
+          padding: 7px 9px;
+        }
+        .navitem .ic {
+          display: none;
+        }
+        .board {
+          grid-column: 1;
+          grid-row: 3;
+        }
+        .statusbar {
+          grid-column: 1;
+          grid-row: 4;
+        }
+        .statusbar .seg.mid {
+          display: none;
+        }
+        .crumb .s,
+        .crumb .sep {
+          display: none;
         }
 
-        .footer-inner {
-          align-items: flex-start;
-          flex-direction: column;
-          justify-content: center;
-          padding: 18px 0;
+        /* DAG board: reflow absolute nodes into a stacked grid (no horizontal scroll) */
+        .dagarea {
+          overflow: visible;
+          min-height: 0;
+        }
+        .dag {
+          height: auto;
+          padding: 16px 14px 18px;
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          gap: 10px;
+        }
+        .dag .watermark,
+        .dag .lanehead,
+        .dag .edges,
+        .dag .flowdot {
+          display: none;
+        }
+        .dag .node,
+        .dag .groupcard {
+          position: static;
+          left: auto;
+          top: auto;
+          right: auto;
+          width: auto !important;
+        }
+        .ticker {
+          position: static;
+          height: auto;
+          gap: 8px;
+          padding: 8px 14px;
+          flex-wrap: wrap;
         }
       }
 
       @media (max-width: 430px) {
-        .brand-name {
-          max-width: 126px;
+        .hero-watermark {
+          font-size: 110px;
         }
-
-        .workflow-visual {
-          min-height: 218px;
+        .stagehead .phasestepper {
+          display: none;
+        }
+        .row3 .chip.opt {
+          display: none;
+        }
+        .dag {
+          grid-template-columns: 1fr;
         }
       }
 
@@ -873,258 +1702,455 @@
         html {
           scroll-behavior: auto;
         }
-
         *,
         *::before,
         *::after {
           animation-duration: 0.01ms !important;
           animation-iteration-count: 1 !important;
-          scroll-behavior: auto !important;
           transition-duration: 0.01ms !important;
+        }
+        /* SVG <animateMotion> is not stopped by CSS animation overrides:
+           hide the traveling flow dots entirely under reduced motion. */
+        .flowdot {
+          display: none;
         }
       }
     </style>
   </head>
-  <body>
-    <div class="page">
-      <header class="nav" aria-label="Primary navigation">
-        <div class="nav-inner">
-          <a class="brand" href="#" aria-label="Open Dynamic Workflows home">
-            <span class="brand-mark">ODW</span>
-            <span class="brand-name">Open Dynamic Workflows</span>
-          </a>
-          <div class="nav-actions">
-            <nav class="nav-links" aria-label="Site links">
-              <a href="#runtime" data-i18n="nav.runtime">Runtime</a>
-              <a href="#install" data-i18n="nav.install">Install</a>
-              <a href="https://github.com/xz1220/open-dynamic-workflows">GitHub</a>
-            </nav>
-            <div class="lang-toggle" aria-label="Language">
-              <button type="button" data-lang="en" aria-pressed="true">EN</button>
-              <button type="button" data-lang="zh" aria-pressed="false">中</button>
-            </div>
+
+  <body class="grid-paper">
+    <a class="skip-link" href="#main" data-i18n="a11y.skip">Skip to content</a>
+
+    <header class="nav" aria-label="Primary">
+      <div class="nav-inner">
+        <a class="brand" href="#main" aria-label="Open Dynamic Workflows home">
+          <svg class="logo" viewBox="0 0 116 64" fill="none" aria-hidden="true">
+            <path d="M14 44 C44 44, 50 22, 78 22" stroke="#16C079" stroke-width="11" stroke-linecap="round" />
+            <path d="M62 30 L58 46" stroke="#16C079" stroke-width="9" stroke-linecap="round" />
+            <circle cx="14" cy="44" r="11" fill="#15110F" />
+            <circle cx="92" cy="22" r="11" fill="#15110F" />
+            <circle cx="55" cy="52" r="8" fill="#16C079" />
+          </svg>
+          <span class="wm">odw</span>
+          <span class="full">Open Dynamic Workflows</span>
+        </a>
+        <div class="nav-actions">
+          <nav class="nav-links" aria-label="Site links">
+            <a href="#why" data-i18n="nav.why">Why</a>
+            <a href="#runtime" data-i18n="nav.runtime">Runtime</a>
+            <a href="#install" data-i18n="nav.install">Install</a>
+            <a class="gh" href="https://github.com/xz1220/open-dynamic-workflows">GitHub</a>
+          </nav>
+          <div class="lang-toggle" role="group" aria-label="Language / 语言">
+            <button type="button" data-lang="en" aria-pressed="true" aria-label="English">EN</button>
+            <button type="button" data-lang="zh" aria-pressed="false" aria-label="中文">中</button>
           </div>
         </div>
-      </header>
+      </div>
+    </header>
 
-      <main>
-        <section class="hero" aria-labelledby="hero-title">
+    <main id="main">
+      <!-- ============================ HERO — Live Observatory ============================ -->
+      <section class="hero" aria-labelledby="hero-title">
+        <span class="hero-watermark" aria-hidden="true">odw</span>
+        <div class="hero-inner">
           <div class="hero-grid">
             <div>
-              <p class="eyebrow" data-i18n="hero.eyebrow">Open workflow runtime</p>
-              <h1 id="hero-title" data-i18n="hero.title">Run agent workflows anywhere.</h1>
+              <p class="eyebrow"><span class="d" aria-hidden="true"></span><span data-i18n="hero.eyebrow">Open workflow runtime</span></p>
+              <h1 id="hero-title"><span data-i18n="hero.title1">Run agent workflows</span> <span class="accent" data-i18n="hero.title2">anywhere.</span></h1>
               <p class="hero-copy" data-i18n="hero.copy">
                 Write orchestration in JavaScript; dispatch Codex, Claude Code, Gemini, Qwen, Kimi, or any local CLI.
               </p>
               <div class="actions" aria-label="Primary actions">
-                <a class="button primary" href="https://github.com/xz1220/open-dynamic-workflows" data-i18n="cta.github">
-                  View GitHub
+                <a class="button primary" href="https://github.com/xz1220/open-dynamic-workflows">
+                  <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .5C5.7.5.5 5.7.5 12a11.5 11.5 0 0 0 7.9 10.9c.6.1.8-.2.8-.5v-2c-3.2.7-3.9-1.4-3.9-1.4-.5-1.3-1.3-1.7-1.3-1.7-1.1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1 1.8 2.8 1.3 3.5 1 .1-.8.4-1.3.7-1.6-2.6-.3-5.3-1.3-5.3-5.7 0-1.3.4-2.3 1.2-3.1-.1-.3-.5-1.5.1-3.1 0 0 1-.3 3.2 1.2a11 11 0 0 1 5.8 0c2.2-1.5 3.2-1.2 3.2-1.2.6 1.6.2 2.8.1 3.1.8.8 1.2 1.8 1.2 3.1 0 4.4-2.7 5.4-5.3 5.7.4.4.8 1.1.8 2.2v3.3c0 .3.2.6.8.5A11.5 11.5 0 0 0 23.5 12C23.5 5.7 18.3.5 12 .5Z"/></svg>
+                  <span data-i18n="cta.github">View GitHub</span>
                 </a>
-                <a class="button secondary" href="https://github.com/xz1220/open-dynamic-workflows#readme" data-i18n="cta.readme">
-                  Read README
+                <a class="button secondary" href="https://github.com/xz1220/open-dynamic-workflows#readme">
+                  <span data-i18n="cta.readme">Read README</span>
                 </a>
               </div>
-            </div>
-
-            <div class="workflow-visual" aria-label="Dynamic workflow topology preview">
-              <div class="visual-topbar">
-                <div class="traffic" aria-hidden="true"><span></span><span></span><span></span></div>
-                <div class="visual-title">workflow.js</div>
-                <div class="status-pill" data-i18n="visual.status">running</div>
-              </div>
-
-              <div class="topology">
-                <svg class="wires" viewBox="0 0 520 380" preserveAspectRatio="none" aria-hidden="true">
-                  <path class="wire" d="M60 190 C96 190, 112 190, 150 190"></path>
-                  <path class="wire" d="M198 190 C232 190, 248 190, 286 190"></path>
-                  <path class="wire" d="M330 190 C360 108, 404 82, 458 80"></path>
-                  <path class="wire" d="M330 190 C374 190, 404 190, 458 190"></path>
-                  <path class="wire" d="M330 190 C360 272, 404 304, 458 308"></path>
-                </svg>
-
-                <article class="topo-node node-start">
-                  <strong data-i18n="visual.input">Input</strong>
-                  <span data-i18n="visual.inputCopy">args loaded</span>
-                </article>
-                <article class="topo-node node-plan running">
-                  <strong data-i18n="visual.plan">Plan</strong>
-                  <span data-i18n="visual.planCopy">plain JS</span>
-                </article>
-                <article class="topo-node node-dispatch running">
-                  <strong data-i18n="visual.dispatch">Dispatch</strong>
-                  <span>parallel()</span>
-                </article>
-                <article class="topo-node node-a running">
-                  <strong>Codex</strong>
-                  <span data-i18n="visual.agentA">agent task</span>
-                </article>
-                <article class="topo-node node-b running">
-                  <strong>Claude Code</strong>
-                  <span data-i18n="visual.agentB">agent task</span>
-                </article>
-                <article class="topo-node node-merge">
-                  <strong data-i18n="visual.merge">Result</strong>
-                  <span data-i18n="visual.mergeCopy">schema checked</span>
-                </article>
-              </div>
-
-              <div class="code-strip" aria-hidden="true">
-                <span class="code-muted">export const meta = { name: "deep-research" }</span>
-                <span>const drafts = await <span class="code-green">parallel</span>(sources.map(scan))</span>
-                <span>return await <span class="code-green">agent</span>("Synthesize", { schema })</span>
+              <div class="hero-meta" aria-hidden="true">
+                <span class="chip"><span class="em">●</span><b data-i18n="hero.chip1b">3</b> <span data-i18n="hero.chip1k">runs live</span></span>
+                <span class="chip"><b data-i18n="hero.chip2b">18</b> <span data-i18n="hero.chip2k">agents</span></span>
+                <span class="chip"><b>5</b> <span data-i18n="hero.chip3k">adapters</span></span>
               </div>
             </div>
-          </div>
-        </section>
 
-        <section class="section" aria-labelledby="why-title">
-          <div class="section-inner">
-            <p class="section-kicker" data-i18n="why.kicker">Why ODW</p>
-            <h2 id="why-title" data-i18n="why.title">Keep the plan in code. Keep the agent context clean.</h2>
-            <p class="section-lede" data-i18n="why.copy">
-              ODW turns dynamic workflow scripts into portable artifacts: easy to inspect, run, pause, resume, and move between agent CLIs.
-            </p>
-
-            <div class="signal-grid">
-              <article class="signal">
-                <code>workflow.js</code>
-                <h3 data-i18n="signals.portable.title">Portable scripts</h3>
-                <p data-i18n="signals.portable.copy">
-                  The same Claude Code-style workflow can run on Codex, Gemini, Qwen, Kimi, or a custom shell adapter.
-                </p>
-              </article>
-              <article class="signal">
-                <code>parallel()</code>
-                <h3 data-i18n="signals.parallel.title">Parallel by design</h3>
-                <p data-i18n="signals.parallel.copy">
-                  Fan out independent subtasks without filling the host agent's conversation with every intermediate step.
-                </p>
-              </article>
-              <article class="signal">
-                <code>odw status</code>
-                <h3 data-i18n="signals.observe.title">Observable runs</h3>
-                <p data-i18n="signals.observe.copy">
-                  Detached workers persist logs, state, and final results so long-running orchestration can be inspected later.
-                </p>
-              </article>
-            </div>
-          </div>
-        </section>
-
-        <section class="section soft" id="runtime" aria-labelledby="runtime-title">
-          <div class="section-inner">
-            <p class="section-kicker" data-i18n="runtime.kicker">Runtime shape</p>
-            <h2 id="runtime-title" data-i18n="runtime.title">A small engine between workflow scripts and real agent CLIs.</h2>
-            <p class="section-lede" data-i18n="runtime.copy">
-              The loader wraps Claude-style JavaScript, the scheduler limits concurrency, and adapters shell out to the local agents you already use.
-            </p>
-
-            <div class="runtime-grid">
-              <div class="terminal" aria-label="Example workflow code">
-                <div class="terminal-bar">
-                  <div class="traffic" aria-hidden="true"><span></span><span></span><span></span></div>
-                  <span>fan-out-reduce.js</span>
+            <!-- the app-window centerpiece -->
+            <figure
+              class="appwin"
+              role="img"
+              aria-label="Open Dynamic Workflows desktop client — live deep-research run"
+              data-i18n-aria="hero.boardAlt"
+              style="margin:0;"
+            >
+              <div class="grid">
+                <!-- toolbar -->
+                <div class="toolbar">
+                  <div style="display:flex;align-items:center;min-width:0;">
+                    <div class="tl" aria-hidden="true"><i class="r"></i><i class="y"></i><i class="g"></i></div>
+                    <div class="crumb">
+                      <span class="s">odw</span><span class="sep">/</span>
+                      <span class="s">deep-research</span><span class="sep">/</span>
+                      <span class="cur" data-i18n="win.crumbRun">run</span>
+                    </div>
+                  </div>
+                  <div class="tr">
+                    <span class="idchip">20260607-1442-a3f9c1</span>
+                    <span class="conn live"><span class="d" aria-hidden="true"></span><span data-i18n="win.live">live</span></span>
+                  </div>
                 </div>
-                <pre><code>export const meta = { name: "fan-out-reduce" }
 
-const drafts = await parallel(
-  [1, 2, 3, 4].map((i) =&gt; () =&gt;
-    agent(`Draft #${i}: ${args.question}`)
+                <!-- rail -->
+                <nav class="rail" aria-label="Client navigation">
+                  <div class="brandmini">
+                    <svg class="logo" viewBox="0 0 116 64" fill="none" aria-hidden="true">
+                      <path d="M14 44 C44 44, 50 22, 78 22" stroke="#16C079" stroke-width="11" stroke-linecap="round" />
+                      <path d="M62 30 L58 46" stroke="#16C079" stroke-width="9" stroke-linecap="round" />
+                      <circle cx="14" cy="44" r="11" fill="#15110F" />
+                      <circle cx="92" cy="22" r="11" fill="#15110F" />
+                      <circle cx="55" cy="52" r="8" fill="#16C079" />
+                    </svg>
+                    <span class="wm">odw</span>
+                  </div>
+                  <p class="tagline" data-i18n="win.tagline">fan out coding agents</p>
+
+                  <div class="navitem">
+                    <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 12h4l2-7 4 14 2-7h6" /></svg>
+                    <span data-i18n="win.navActivity">Activity</span>
+                  </div>
+                  <div class="navitem">
+                    <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16" /></svg>
+                    <span data-i18n="win.navWorkspace">Workspace</span>
+                  </div>
+                  <div class="navitem on">
+                    <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="6" cy="6" r="2" /><circle cx="6" cy="18" r="2" /><circle cx="18" cy="12" r="2" /><path d="M8 6h4a4 4 0 0 1 4 4M8 18h4a4 4 0 0 0 4-4" /></svg>
+                    <span data-i18n="win.navJobs">Jobs</span><span class="count">3</span>
+                  </div>
+
+                  <div class="divider"></div>
+                  <div class="sl"><span data-i18n="win.liveNow">Live now</span><span class="n">3</span></div>
+                  <div class="minirun"><span class="dot" aria-hidden="true"></span><span class="nm">deep-research</span><span class="ph">3/5</span></div>
+                  <div class="minirun"><span class="dot" aria-hidden="true"></span><span class="nm">agent-daily-digest</span><span class="ph">2/4</span></div>
+                  <div class="minirun"><span class="dot" aria-hidden="true"></span><span class="nm">generate-and-filter</span><span class="ph">1/2</span></div>
+
+                  <div class="spacer"></div>
+                  <div class="navitem">
+                    <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="3" /><path d="M12 2v3M12 19v3M2 12h3M19 12h3" /></svg>
+                    <span data-i18n="win.navSettings">Settings</span>
+                  </div>
+                </nav>
+
+                <!-- main DAG board -->
+                <div class="board">
+                  <div class="stagehead">
+                    <div class="row1">
+                      <span class="rtitle">deep-research</span>
+                      <span class="badge running"><span class="d" aria-hidden="true"></span><span data-i18n="win.statRunning">running</span></span>
+                      <div class="phasestepper" aria-hidden="true">
+                        <span class="pp done" data-i18n="win.phPlan">Plan</span><span class="ar">▸</span>
+                        <span class="pp done" data-i18n="win.phSearch">Search</span><span class="ar">▸</span>
+                        <span class="pp on" data-i18n="win.phExtract">Extract</span><span class="ar">▸</span>
+                        <span class="pp" data-i18n="win.phVote">Vote</span><span class="ar">▸</span>
+                        <span class="pp" data-i18n="win.phReport">Report</span>
+                      </div>
+                    </div>
+                    <div class="progressbar" aria-hidden="true"><i></i></div>
+                    <div class="row3">
+                      <span class="chip"><b>31</b> <span data-i18n="win.cAgent">agents</span></span>
+                      <span class="chip"><span class="em">●</span><b>18</b> <span data-i18n="win.cRunning">running</span></span>
+                      <span class="chip opt"><b>11</b> <span data-i18n="win.cDone">done</span></span>
+                      <span class="chip opt"><span class="rd">✕</span><b>1</b> <span data-i18n="win.cFailed">failed</span></span>
+                      <span class="chip opt"><b>2m41s</b></span>
+                      <span class="chip opt"><span data-i18n="win.cAdapter">adapter</span> <b>claude</b></span>
+                      <span class="heartbeat" aria-hidden="true"></span>
+                    </div>
+                  </div>
+
+                  <div class="dagarea">
+                    <div class="dag">
+                      <div class="watermark" style="left:1.5%;" aria-hidden="true" data-i18n="win.phPlan">Plan</div>
+                      <div class="watermark" style="left:21%;" aria-hidden="true" data-i18n="win.phSearch">Search</div>
+                      <div class="watermark" style="left:42%;" aria-hidden="true" data-i18n="win.phExtract">Extract</div>
+                      <div class="watermark" style="left:63%;" aria-hidden="true" data-i18n="win.phVote">Vote</div>
+                      <div class="watermark" style="left:83.5%;" aria-hidden="true" data-i18n="win.phReport">Report</div>
+
+                      <div class="lanehead" style="left:1.5%;width:148px;"><span class="ix">1/5</span> <span data-i18n="win.phPlan">Plan</span> <span class="n">1</span><span class="line" style="width:148px;"></span></div>
+                      <div class="lanehead" style="left:21%;width:148px;"><span class="ix">2/5</span> <span data-i18n="win.phSearch">Search</span> <span class="n">14</span><span class="line" style="width:148px;"></span></div>
+                      <div class="lanehead" style="left:42%;width:148px;"><span class="ix">3/5</span> <span data-i18n="win.phExtract">Extract</span> <span class="n">9</span><span class="line" style="width:148px;"></span></div>
+                      <div class="lanehead" style="left:63%;width:148px;"><span class="ix">4/5</span> <span data-i18n="win.phVote">Vote</span> <span class="n">10</span><span class="line" style="width:148px;"></span></div>
+                      <div class="lanehead" style="left:83.5%;width:120px;"><span class="ix">5/5</span> <span data-i18n="win.phReport">Report</span> <span class="n">1</span><span class="line" style="width:120px;"></span></div>
+
+                      <svg class="edges" viewBox="0 0 1000 470" preserveAspectRatio="none" fill="none" aria-hidden="true">
+                        <path d="M150 235 L196 235" stroke="#16C079" stroke-width="2.4" stroke-linecap="round" />
+                        <path d="M196 235 C220 235 214 86 240 86" stroke="#16C079" stroke-width="1.8" />
+                        <path d="M196 235 C220 235 214 156 240 156" stroke="#16C079" stroke-width="1.8" />
+                        <path d="M196 235 C220 235 214 226 240 226" stroke="#7E8D84" stroke-width="1.5" />
+                        <path d="M196 235 C220 235 214 296 240 296" stroke="#16C079" stroke-width="1.8" />
+                        <path d="M196 235 C220 250 214 366 240 366" stroke="#CFCFCF" stroke-width="1.3" />
+                        <path d="M390 86 C420 86 422 86 450 86" stroke="#16C079" stroke-width="1.8" />
+                        <path d="M390 156 C420 156 422 156 450 156" stroke="#ef4444" stroke-width="1.8" />
+                        <path d="M390 226 C420 226 422 226 450 226" stroke="#7E8D84" stroke-width="1.5" />
+                        <path d="M600 86 C630 86 632 86 660 86" stroke="#16C079" stroke-width="1.8" />
+                        <path d="M600 226 C634 226 636 156 660 156" stroke="#16C079" stroke-width="1.8" />
+                        <path d="M810 86 C840 86 842 110 870 110" stroke="#CFCFCF" stroke-width="1.5" stroke-dasharray="4 5" />
+                        <circle r="3.2" class="flowdot"><animateMotion dur="1.3s" repeatCount="indefinite" path="M196 235 C220 235 214 86 240 86" /></circle>
+                        <circle r="3.2" class="flowdot"><animateMotion dur="1.5s" repeatCount="indefinite" path="M196 235 C220 235 214 296 240 296" /></circle>
+                        <circle r="3.2" class="flowdot"><animateMotion dur="1.2s" repeatCount="indefinite" path="M390 86 C420 86 422 86 450 86" /></circle>
+                        <circle r="3.2" class="flowdot"><animateMotion dur="1.4s" repeatCount="indefinite" path="M600 86 C630 86 632 86 660 86" /></circle>
+                        <circle r="3.2" fill="#ef4444"><animateMotion dur="1.6s" repeatCount="indefinite" path="M390 156 C420 156 422 156 450 156" /></circle>
+                      </svg>
+
+                      <article class="node done" style="left:1.5%;top:212px;width:140px;"><div class="h">plan ✓</div><div class="sub">claude · 0m22s</div><span class="dot" aria-hidden="true"></span></article>
+                      <article class="node running" style="left:21%;top:62px;"><div class="h">search:angle-1</div><div class="sub">codex · ⏱ 2m17s</div><span class="dot" aria-hidden="true"></span></article>
+                      <article class="node running" style="left:21%;top:132px;"><div class="h">search:angle-2</div><div class="sub">codex · ⏱ 1m48s</div><span class="dot" aria-hidden="true"></span></article>
+                      <article class="node done" style="left:21%;top:202px;"><div class="h">search:angle-3</div><div class="sub">codex · 1m04s</div><span class="gl" style="color:var(--done)">✓</span></article>
+                      <article class="node running" style="left:21%;top:272px;"><div class="h">search:angle-4</div><div class="sub">gemini · ⏱ 0m51s</div><span class="dot" aria-hidden="true"></span></article>
+                      <div class="groupcard" style="left:21%;top:344px;"><b>+9</b> <span data-i18n="win.queued">queued · fan-out</span></div>
+                      <article class="node running" style="left:42%;top:62px;"><div class="h">extract:angle-1</div><div class="sub">claude · ⏱ 0m30s</div><span class="dot" aria-hidden="true"></span></article>
+                      <article class="node failed" style="left:42%;top:132px;"><div class="h">extract:angle-2</div><span class="gl" style="color:var(--red)">✕</span><div class="err">exit 1 · malformed JSON under schema</div></article>
+                      <article class="node running" style="left:42%;top:214px;"><div class="h">extract:angle-3</div><div class="sub">claude · ⏱ 0m18s</div><span class="dot" aria-hidden="true"></span></article>
+                      <div class="groupcard" style="left:42%;top:286px;"><b>+5</b> <span data-i18n="win.queuedShort">queued</span></div>
+                      <article class="node running" style="left:63%;top:62px;"><div class="h">vote:1</div><div class="sub">claude · ⏱ 0m12s</div><span class="dot" aria-hidden="true"></span></article>
+                      <article class="node running" style="left:63%;top:132px;"><div class="h">vote:2</div><div class="sub">claude · ⏱ 0m09s</div><span class="dot" aria-hidden="true"></span></article>
+                      <div class="groupcard" style="left:63%;top:204px;"><b>+8</b> <span data-i18n="win.queuedShort">queued</span></div>
+                      <article class="node queued" style="left:83.5%;top:86px;width:120px;"><div class="h">report</div><div class="sub" data-i18n="win.planned">planned</div><span class="dot" aria-hidden="true"></span></article>
+                    </div>
+
+                    <div class="ticker">
+                      <span data-i18n="win.ticker">▸ Extract phase: 9 agents pulling cited claims from 24 sources…</span>
+                      <span class="r" data-i18n="win.tickerR">last activity 2s</span>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- status bar -->
+                <div class="statusbar">
+                  <span class="seg">deep-research · 20260607-1442-a3f9c1</span>
+                  <span class="seg mid">claude · sonnet · pid 48213</span>
+                  <span class="seg"><span class="live-dot" aria-hidden="true"></span> <span data-i18n="win.sse">live · SSE</span></span>
+                </div>
+              </div>
+            </figure>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================ 01 · WHY ODW ============================ -->
+      <section class="section" id="why" aria-labelledby="why-title">
+        <div class="section-inner">
+          <p class="seclabel"><span class="num">01</span> <span data-i18n="why.kicker">Why ODW</span> <span class="rule"></span></p>
+          <h2 class="sectitle" id="why-title" data-i18n="why.title">Keep the plan in code. Keep the agent context clean.</h2>
+          <p class="section-lede" data-i18n="why.copy">
+            ODW turns dynamic workflow scripts into portable artifacts: easy to inspect, run, pause, resume, and move between agent CLIs.
+          </p>
+
+          <div class="signal-grid">
+            <article class="signal">
+              <span class="kd">workflow.js</span>
+              <h3 data-i18n="signals.portable.title">Portable scripts</h3>
+              <p data-i18n="signals.portable.copy">
+                The same Claude Code-style workflow can run on Codex, Gemini, Qwen, Kimi, or a custom shell adapter.
+              </p>
+            </article>
+            <article class="signal">
+              <span class="kd">parallel()</span>
+              <h3 data-i18n="signals.parallel.title">Parallel by design</h3>
+              <p data-i18n="signals.parallel.copy">
+                Fan out independent subtasks without filling the host agent's conversation with every intermediate step.
+              </p>
+            </article>
+            <article class="signal">
+              <span class="kd">odw status</span>
+              <h3 data-i18n="signals.observe.title">Observable runs</h3>
+              <p data-i18n="signals.observe.copy">
+                Detached workers persist logs, state, and final results so long-running orchestration can be inspected later.
+              </p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================ 02 · RUNTIME SHAPE ============================ -->
+      <section class="section tint" id="runtime" aria-labelledby="runtime-title">
+        <div class="section-inner">
+          <p class="seclabel"><span class="num">02</span> <span data-i18n="runtime.kicker">Runtime shape</span> <span class="rule"></span></p>
+          <h2 class="sectitle" id="runtime-title" data-i18n="runtime.title">A small engine between workflow scripts and real agent CLIs.</h2>
+          <p class="section-lede" data-i18n="runtime.copy">
+            The loader wraps Claude-style JavaScript, the scheduler limits concurrency, and adapters shell out to the local agents you already use.
+          </p>
+
+          <div class="phasepills" aria-hidden="true">
+            <span class="ppill"><span class="ix">1</span><span data-i18n="phase.load">load</span></span>
+            <span class="ar">→</span>
+            <span class="ppill"><span class="ix">2</span><span data-i18n="phase.schedule">schedule</span></span>
+            <span class="ar">→</span>
+            <span class="ppill"><span class="ix">3</span><span data-i18n="phase.dispatch">dispatch</span></span>
+            <span class="ar">→</span>
+            <span class="ppill"><span class="ix">4</span><span data-i18n="phase.persist">persist</span></span>
+          </div>
+
+          <div class="runtime-grid">
+            <div class="srcview" aria-label="Example workflow: fan out, then reduce">
+              <div class="srcview-bar">
+                <div class="tl" aria-hidden="true"><i class="r"></i><i class="y"></i><i class="g"></i></div>
+                <span>fan-out-reduce.js</span>
+              </div>
+<pre><code><span class="kw">export const</span> meta = { name: <span class="st">"fan-out-reduce"</span> }
+
+<span class="kw">const</span> drafts = <span class="kw">await</span> <span class="fn">parallel</span>(
+  [<span class="nm">1</span>, <span class="nm">2</span>, <span class="nm">3</span>, <span class="nm">4</span>].map((i) =&gt; () =&gt;
+    <span class="fn">agent</span>(`Draft #${i}: ${args.question}`)
   )
 )
 
-return await agent(
-  "Synthesize the best answer",
+<span class="kw">return await</span> <span class="fn">agent</span>(
+  <span class="st">"Synthesize the best answer"</span>,
   { schema }
 )</code></pre>
-              </div>
+            </div>
 
-              <div class="primitive-list">
-                <article class="primitive">
-                  <code>agent(prompt)</code>
-                  <h3 data-i18n="primitive.agent.title">Dispatch real work</h3>
-                  <p data-i18n="primitive.agent.copy">Run one coding-agent CLI on a scoped subtask and collect text or schema-validated output.</p>
-                </article>
-                <article class="primitive">
-                  <code>parallel(thunks)</code>
-                  <h3 data-i18n="primitive.parallel.title">Fan out safely</h3>
-                  <p data-i18n="primitive.parallel.copy">Run independent branches concurrently when the next step needs the full batch.</p>
-                </article>
-                <article class="primitive">
-                  <code>pipeline(items)</code>
-                  <h3 data-i18n="primitive.pipeline.title">Stream stages</h3>
-                  <p data-i18n="primitive.pipeline.copy">Move each item through review, verification, and synthesis without a global barrier.</p>
-                </article>
-              </div>
+            <div class="primitive-list">
+              <article class="primitive agent">
+                <span class="kd">agent</span>
+                <code class="sig">agent(prompt)</code>
+                <h3 data-i18n="primitive.agent.title">Dispatch real work</h3>
+                <p data-i18n="primitive.agent.copy">Run one coding-agent CLI on a scoped subtask and collect text or schema-validated output.</p>
+              </article>
+              <article class="primitive par">
+                <span class="kd">parallel</span>
+                <code class="sig">parallel(thunks)</code>
+                <h3 data-i18n="primitive.parallel.title">Fan out safely</h3>
+                <p data-i18n="primitive.parallel.copy">Run independent branches concurrently when the next step needs the full batch.</p>
+              </article>
+              <article class="primitive pipe">
+                <span class="kd">pipeline</span>
+                <code class="sig">pipeline(items)</code>
+                <h3 data-i18n="primitive.pipeline.title">Stream stages</h3>
+                <p data-i18n="primitive.pipeline.copy">Move each item through review, verification, and synthesis without a global barrier.</p>
+              </article>
             </div>
           </div>
-        </section>
-
-        <section class="section" id="install" aria-labelledby="install-title">
-          <div class="section-inner">
-            <p class="section-kicker" data-i18n="install.kicker">Start</p>
-            <h2 id="install-title" data-i18n="install.title">Install the runtime or hack from source.</h2>
-            <div class="install-panel">
-              <div class="install-copy">
-                <p data-i18n="install.copy">
-                  Use the single-file installer, install from npm, or clone the repository. ODW drives local agent CLIs; it does not call model APIs directly.
-                </p>
-                <div class="actions">
-                  <a class="button primary" href="https://github.com/xz1220/open-dynamic-workflows" data-i18n="cta.repo">
-                    Open repository
-                  </a>
-                  <a class="button secondary" href="https://github.com/xz1220/open-dynamic-workflows#install" data-i18n="cta.install">
-                    Install notes
-                  </a>
-                </div>
-              </div>
-              <div class="terminal" aria-label="Install commands">
-                <div class="terminal-bar">
-                  <div class="traffic" aria-hidden="true"><span></span><span></span><span></span></div>
-                  <span>terminal</span>
-                </div>
-                <pre><code>curl -fsSL https://raw.githubusercontent.com/xz1220/open-dynamic-workflows/main/scripts/install.sh | sh
-
-npm i -g open-dynamic-workflows
-
-odw run examples/deep-research.js --wait</code></pre>
-              </div>
-            </div>
-          </div>
-        </section>
-      </main>
-
-      <footer class="footer">
-        <div class="footer-inner">
-          <span data-i18n="footer.copy">MIT licensed. Built for portable dynamic workflows.</span>
-          <a href="https://github.com/xz1220/open-dynamic-workflows">github.com/xz1220/open-dynamic-workflows</a>
         </div>
-      </footer>
-    </div>
+      </section>
+
+      <!-- ============================ 03 · INSTALL ============================ -->
+      <section class="section" id="install" aria-labelledby="install-title">
+        <div class="section-inner">
+          <p class="seclabel"><span class="num">03</span> <span data-i18n="install.kicker">Start</span> <span class="rule"></span></p>
+          <h2 class="sectitle" id="install-title" data-i18n="install.title">Install the runtime or hack from source.</h2>
+          <div class="install-panel">
+            <div class="install-copy">
+              <p data-i18n="install.copy">
+                Use the single-file installer, install from npm, or clone the repository. ODW drives local agent CLIs; it does not call model APIs directly.
+              </p>
+              <div class="actions">
+                <a class="button primary" href="https://github.com/xz1220/open-dynamic-workflows">
+                  <span data-i18n="cta.repo">Open repository</span>
+                </a>
+                <a class="button secondary" href="https://github.com/xz1220/open-dynamic-workflows#install">
+                  <span data-i18n="cta.install">Install notes</span>
+                </a>
+              </div>
+              <div class="clihints" aria-hidden="true">
+                <span class="clihint"><span class="p">$ odw run deep-research</span><span class="note" data-i18n="install.hintRun">dispatched by your agent</span></span>
+                <span class="clihint"><span class="p">$ odw status</span><span class="note" data-i18n="install.hintStatus">inspect detached workers</span></span>
+              </div>
+            </div>
+            <div class="terminal" aria-label="Install commands">
+              <div class="terminal-bar">
+                <div class="tl" aria-hidden="true"><i class="r"></i><i class="y"></i><i class="g"></i></div>
+                <span>terminal</span>
+              </div>
+              <div class="body">
+                <div class="cmd">
+                  <span class="p">$</span>
+                  <span class="c">curl -fsSL https://raw.githubusercontent.com/xz1220/open-dynamic-workflows/main/scripts/install.sh | sh</span>
+                  <span class="note" data-i18n="install.cmd1">one-file installer</span>
+                </div>
+                <div class="cmd">
+                  <span class="p">$</span>
+                  <span class="c">npm i -g open-dynamic-workflows</span>
+                  <span class="note" data-i18n="install.cmd2">or from npm</span>
+                </div>
+                <div class="cmd">
+                  <span class="p">$</span>
+                  <span class="c">odw <span class="fn">run</span> examples/deep-research.js --wait</span>
+                  <span class="note" data-i18n="install.cmd3">run your first workflow</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <div class="footer-inner">
+        <span class="fbrand">
+          <svg class="logo" viewBox="0 0 116 64" fill="none" width="36" height="22" aria-hidden="true">
+            <path d="M14 44 C44 44, 50 22, 78 22" stroke="#16C079" stroke-width="11" stroke-linecap="round" />
+            <path d="M62 30 L58 46" stroke="#16C079" stroke-width="9" stroke-linecap="round" />
+            <circle cx="14" cy="44" r="11" fill="#15110F" />
+            <circle cx="92" cy="22" r="11" fill="#15110F" />
+            <circle cx="55" cy="52" r="8" fill="#16C079" />
+          </svg>
+          <span class="wm">odw</span>
+          <span data-i18n="footer.copy" style="margin-left:6px;">MIT licensed. Built for portable dynamic workflows.</span>
+        </span>
+        <a href="https://github.com/xz1220/open-dynamic-workflows">github.com/xz1220/open-dynamic-workflows</a>
+      </div>
+    </footer>
 
     <script>
       const copy = {
         en: {
+          "a11y.skip": "Skip to content",
+          "nav.why": "Why",
           "nav.runtime": "Runtime",
           "nav.install": "Install",
           "hero.eyebrow": "Open workflow runtime",
-          "hero.title": "Run agent workflows anywhere.",
+          "hero.title1": "Run agent workflows",
+          "hero.title2": "anywhere.",
           "hero.copy":
             "Write orchestration in JavaScript; dispatch Codex, Claude Code, Gemini, Qwen, Kimi, or any local CLI.",
+          "hero.chip1b": "3",
+          "hero.chip1k": "runs live",
+          "hero.chip2b": "18",
+          "hero.chip2k": "agents",
+          "hero.chip3k": "adapters",
+          "hero.boardAlt":
+            "Open Dynamic Workflows desktop client showing a live deep-research run as a directed graph: a done plan node fans out to running Codex, Claude Code and Gemini search agents, one failed extract node, queued fan-out groups, and a planned report.",
           "cta.github": "View GitHub",
           "cta.readme": "Read README",
           "cta.repo": "Open repository",
           "cta.install": "Install notes",
-          "visual.status": "running",
-          "visual.input": "Input",
-          "visual.inputCopy": "args loaded",
-          "visual.plan": "Plan",
-          "visual.planCopy": "plain JS",
-          "visual.dispatch": "Dispatch",
-          "visual.agentA": "agent task",
-          "visual.agentB": "agent task",
-          "visual.merge": "Result",
-          "visual.mergeCopy": "schema checked",
+          "win.crumbRun": "run",
+          "win.live": "live",
+          "win.tagline": "fan out coding agents",
+          "win.navActivity": "Activity",
+          "win.navWorkspace": "Workspace",
+          "win.navJobs": "Jobs",
+          "win.navSettings": "Settings",
+          "win.liveNow": "Live now",
+          "win.statRunning": "running",
+          "win.phPlan": "Plan",
+          "win.phSearch": "Search",
+          "win.phExtract": "Extract",
+          "win.phVote": "Vote",
+          "win.phReport": "Report",
+          "win.cAgent": "agents",
+          "win.cRunning": "running",
+          "win.cDone": "done",
+          "win.cFailed": "failed",
+          "win.cAdapter": "adapter",
+          "win.queued": "queued · fan-out",
+          "win.queuedShort": "queued",
+          "win.planned": "planned",
+          "win.ticker": "▸ Extract phase: 9 agents pulling cited claims from 24 sources…",
+          "win.tickerR": "last activity 2s",
+          "win.sse": "live · SSE",
           "why.kicker": "Why ODW",
           "why.title": "Keep the plan in code. Keep the agent context clean.",
           "why.copy":
@@ -1142,6 +2168,10 @@ odw run examples/deep-research.js --wait</code></pre>
           "runtime.title": "A small engine between workflow scripts and real agent CLIs.",
           "runtime.copy":
             "The loader wraps Claude-style JavaScript, the scheduler limits concurrency, and adapters shell out to the local agents you already use.",
+          "phase.load": "load",
+          "phase.schedule": "schedule",
+          "phase.dispatch": "dispatch",
+          "phase.persist": "persist",
           "primitive.agent.title": "Dispatch real work",
           "primitive.agent.copy":
             "Run one coding-agent CLI on a scoped subtask and collect text or schema-validated output.",
@@ -1155,31 +2185,62 @@ odw run examples/deep-research.js --wait</code></pre>
           "install.title": "Install the runtime or hack from source.",
           "install.copy":
             "Use the single-file installer, install from npm, or clone the repository. ODW drives local agent CLIs; it does not call model APIs directly.",
+          "install.hintRun": "dispatched by your agent",
+          "install.hintStatus": "inspect detached workers",
+          "install.cmd1": "one-file installer",
+          "install.cmd2": "or from npm",
+          "install.cmd3": "run your first workflow",
           "footer.copy": "MIT licensed. Built for portable dynamic workflows.",
         },
         zh: {
+          "a11y.skip": "跳到正文",
+          "nav.why": "理念",
           "nav.runtime": "运行时",
           "nav.install": "安装",
           "hero.eyebrow": "开放式动态工作流运行时",
-          "hero.title": "让 agent 工作流到处跑。",
+          "hero.title1": "让 agent 工作流",
+          "hero.title2": "到处跑。",
           "hero.copy": "用 JavaScript 写编排，派发给 Codex、Claude Code、Gemini、Qwen、Kimi 或本地 CLI。",
+          "hero.chip1b": "3",
+          "hero.chip1k": "个运行中",
+          "hero.chip2b": "18",
+          "hero.chip2k": "个 agent",
+          "hero.chip3k": "个适配器",
+          "hero.boardAlt":
+            "Open Dynamic Workflows 桌面客户端展示一次实时 deep-research 运行的有向图：已完成的 plan 节点 fan-out 到运行中的 Codex、Claude Code、Gemini 搜索 agent，其中一个 extract 节点失败，还有排队中的 fan-out 分组和待执行的 report。",
           "cta.github": "查看 GitHub",
           "cta.readme": "读 README",
           "cta.repo": "打开仓库",
           "cta.install": "安装说明",
-          "visual.status": "运行中",
-          "visual.input": "输入",
-          "visual.inputCopy": "参数已载入",
-          "visual.plan": "规划",
-          "visual.planCopy": "普通 JS",
-          "visual.dispatch": "派发",
-          "visual.agentA": "agent 任务",
-          "visual.agentB": "agent 任务",
-          "visual.merge": "结果",
-          "visual.mergeCopy": "schema 校验",
+          "win.crumbRun": "运行",
+          "win.live": "实时",
+          "win.tagline": "fan out 多个 coding agent",
+          "win.navActivity": "活动",
+          "win.navWorkspace": "工作区",
+          "win.navJobs": "任务",
+          "win.navSettings": "设置",
+          "win.liveNow": "正在运行",
+          "win.statRunning": "运行中",
+          "win.phPlan": "规划",
+          "win.phSearch": "搜索",
+          "win.phExtract": "抽取",
+          "win.phVote": "投票",
+          "win.phReport": "报告",
+          "win.cAgent": "个 agent",
+          "win.cRunning": "运行中",
+          "win.cDone": "已完成",
+          "win.cFailed": "失败",
+          "win.cAdapter": "适配器",
+          "win.queued": "排队中 · fan-out",
+          "win.queuedShort": "排队中",
+          "win.planned": "已规划",
+          "win.ticker": "▸ 抽取阶段：9 个 agent 正从 24 个来源中提取被引用的论点…",
+          "win.tickerR": "最近活动 2s",
+          "win.sse": "实时 · SSE",
           "why.kicker": "为什么是 ODW",
           "why.title": "计划留在代码里，主 agent 上下文保持干净。",
-          "why.copy": "ODW 把动态工作流脚本变成可迁移的产物：可检查、可运行、可暂停恢复，也能在不同 agent CLI 之间移动。",
+          "why.copy":
+            "ODW 把动态工作流脚本变成可迁移的产物：可检查、可运行、可暂停恢复，也能在不同 agent CLI 之间移动。",
           "signals.portable.title": "脚本可迁移",
           "signals.portable.copy": "同一份 Claude Code 风格 workflow 可以运行在 Codex、Gemini、Qwen、Kimi 或自定义 shell 适配器上。",
           "signals.parallel.title": "天然并行",
@@ -1189,6 +2250,10 @@ odw run examples/deep-research.js --wait</code></pre>
           "runtime.kicker": "运行时结构",
           "runtime.title": "一个夹在 workflow 脚本和真实 agent CLI 之间的小引擎。",
           "runtime.copy": "loader 包装 Claude 风格 JavaScript，scheduler 控制并发，adapter 调用你本地已经在用的 agent CLI。",
+          "phase.load": "加载",
+          "phase.schedule": "调度",
+          "phase.dispatch": "派发",
+          "phase.persist": "落盘",
           "primitive.agent.title": "派发真实任务",
           "primitive.agent.copy": "让一个 coding-agent CLI 处理范围清晰的子任务，并收集文本或 schema 校验后的输出。",
           "primitive.parallel.title": "安全 fan out",
@@ -1198,28 +2263,48 @@ odw run examples/deep-research.js --wait</code></pre>
           "install.kicker": "开始使用",
           "install.title": "安装运行时，或直接从源码改起。",
           "install.copy": "可以用单文件安装器、npm 安装，或 clone 仓库。ODW 只驱动本地 agent CLI，不直接调用模型 API。",
+          "install.hintRun": "由你的 agent 派发",
+          "install.hintStatus": "查看后台 worker",
+          "install.cmd1": "单文件安装器",
+          "install.cmd2": "或从 npm 安装",
+          "install.cmd3": "运行第一个 workflow",
           "footer.copy": "MIT 许可。为可迁移的动态工作流而构建。",
         },
       };
 
       const buttons = [...document.querySelectorAll("[data-lang]")];
       const textNodes = [...document.querySelectorAll("[data-i18n]")];
+      const ariaNodes = [...document.querySelectorAll("[data-i18n-aria]")];
 
       function setLanguage(lang) {
         const dictionary = copy[lang] || copy.en;
         document.documentElement.lang = lang === "zh" ? "zh-CN" : "en";
         textNodes.forEach((node) => {
           const value = dictionary[node.dataset.i18n];
-          if (value) node.textContent = value;
+          if (value !== undefined) node.textContent = value;
+        });
+        ariaNodes.forEach((node) => {
+          const value = dictionary[node.dataset.i18nAria];
+          if (value !== undefined) node.setAttribute("aria-label", value);
         });
         buttons.forEach((button) => {
           button.setAttribute("aria-pressed", String(button.dataset.lang === lang));
         });
-        localStorage.setItem("odw-language", lang);
+        try {
+          localStorage.setItem("odw-language", lang);
+        } catch (e) {
+          /* localStorage may be unavailable */
+        }
       }
 
-      const savedLanguage = localStorage.getItem("odw-language");
-      const browserLanguage = navigator.language && navigator.language.toLowerCase().startsWith("zh") ? "zh" : "en";
+      let savedLanguage = null;
+      try {
+        savedLanguage = localStorage.getItem("odw-language");
+      } catch (e) {
+        /* ignore */
+      }
+      const browserLanguage =
+        navigator.language && navigator.language.toLowerCase().startsWith("zh") ? "zh" : "en";
       setLanguage(savedLanguage || browserLanguage);
 
       buttons.forEach((button) => {
