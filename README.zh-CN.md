@@ -33,10 +33,10 @@ workflow,就成了你在任何 agent 上都能跑的资产。
 <div align="center">
 
 <a href="videos/odw-demo/odw-product-demo.mp4">
-  <img src="assets/image.png" alt="观看 ODW 产品演示 —— 把 coding agent 扇出到一个实时 workflow 上,看它跑起来" width="720" />
+  <img src="assets/odw.gif" alt="观看 ODW 产品演示 —— 把 coding agent 扇出到一个实时 workflow 上,看它跑起来" width="720" />
 </a>
 
-<sub><b><a href="videos/odw-demo/odw-product-demo.mp4">▶ 观看 33 秒演示</a></b> —— 写一个 workflow、把 agent 扇出去,看整个运行实时点亮。</sub>
+<sub><b><a href="videos/odw-demo/odw-product-demo.mp4">▶ 观看 33 秒演示(带声音)</a></b> —— 写一个 workflow、把 agent 扇出去,看整个运行实时点亮。</sub>
 
 </div>
 

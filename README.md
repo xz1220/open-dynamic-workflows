@@ -35,10 +35,10 @@ producing become artifacts you can run anywhere.
 <div align="center">
 
 <a href="videos/odw-demo/odw-product-demo.mp4">
-  <img src="assets/image.png" alt="Watch the ODW product demo — fan coding agents out across a live workflow and watch it run" width="720" />
+  <img src="assets/odw.gif" alt="Watch the ODW product demo — fan coding agents out across a live workflow and watch it run" width="720" />
 </a>
 
-<sub><b><a href="videos/odw-demo/odw-product-demo.mp4">▶ Watch the 33-second demo</a></b> — author a workflow, fan agents out, and watch the run light up live.</sub>
+<sub><b><a href="videos/odw-demo/odw-product-demo.mp4">▶ Watch the 33-second demo with sound</a></b> — author a workflow, fan agents out, and watch the run light up live.</sub>
 
 </div>
 
