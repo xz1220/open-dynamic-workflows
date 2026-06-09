@@ -27,6 +27,9 @@ odw.config.json
 /videos/odw-demo/*.wav
 /videos/odw-demo/*.png
 
+# Promo/explainer video build workspaces (renders, QA frames) — same policy as above
+/exports/
+
 # OS / editor
 .DS_Store
 *.log
