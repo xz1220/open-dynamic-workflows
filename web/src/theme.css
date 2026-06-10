@@ -254,3 +254,32 @@ body.is-native .crumb{ margin-left:0; }
 .toggle.off{ background:var(--node-border); } .toggle.off i{ left:2px; right:auto; }
 .note-banner{ margin-top:26px; padding:14px 16px; background:var(--alt); border:1px solid var(--hair); border-radius:10px; font-size:12.5px; color:var(--muted); display:flex; gap:10px; align-items:center; }
 .note-banner code{ font-family:var(--mono); background:#fff; border:1px solid var(--hair); border-radius:4px; padding:1px 6px; font-size:11px; }
+
+/* ===== Launch ===== */
+.launch .lform{ max-width:760px; margin-top:24px; display:flex; flex-direction:column; gap:8px; }
+.lf-label{ font-size:11.5px; font-weight:600; letter-spacing:.05em; text-transform:uppercase; color:var(--muted); margin-top:10px; }
+.lf-task{ font-family:'Inter', system-ui, sans-serif; font-size:13.5px; line-height:1.5; color:var(--ink); background:#fff; border:1px solid var(--node-border); border-radius:10px; padding:12px 14px; resize:vertical; min-height:96px; }
+.lf-task:focus, .lf-input:focus, .lf-select:focus{ outline:none; border-color:var(--green-deep); box-shadow:0 0 0 3px rgba(16,185,129,.10); }
+.lf-row{ display:flex; gap:14px; }
+.lf-col{ display:flex; flex-direction:column; gap:8px; }
+.lf-col.grow{ flex:1; }
+.lf-select, .lf-input{ font-family:var(--mono); font-size:12.5px; color:var(--ink); background:#fff; border:1px solid var(--node-border); border-radius:9px; padding:8px 11px; }
+.lf-select.sm, .lf-input.sm{ padding:5px 9px; font-size:11.5px; border-radius:7px; }
+.lf-perm{ display:flex; gap:10px; align-items:baseline; margin-top:8px; font-size:12px; }
+.lf-perm .k{ font-weight:600; letter-spacing:.04em; text-transform:uppercase; font-size:10.5px; color:var(--muted); }
+.lf-perm .v{ font-family:var(--mono); font-size:11.5px; color:var(--amber-ink); background:var(--amber-tint); border:1px solid var(--amber-border); border-radius:6px; padding:2px 8px; }
+.lf-error{ font-family:var(--mono); font-size:12px; color:var(--red-deep); background:var(--red-tint); border:1px solid var(--red-border); border-radius:8px; padding:8px 12px; margin-top:8px; }
+.lf-actions{ display:flex; align-items:center; gap:14px; margin-top:14px; }
+.lf-hint{ font-size:12px; color:var(--faint); }
+.btn.primary{ background:var(--green-deep); border-color:var(--green-deep); color:#fff; }
+.btn.primary:hover{ background:#0a6e4d; }
+.btn.danger{ border-color:var(--red-border); color:var(--red-deep); background:var(--red-tint); }
+.btn.danger:hover{ border-color:var(--red); }
+.btn.disabled{ opacity:.55; pointer-events:none; }
+
+/* job result specializations */
+.resultcard.wide{ max-width:980px; }
+.resultcard .srcview{ max-height:380px; }
+.savebar{ max-width:760px; margin-top:14px; display:flex; align-items:center; gap:10px; background:#fff; border:1px solid var(--hair); border-radius:10px; padding:12px 16px; font-size:12.5px; flex-wrap:wrap; }
+.savebar .lbl{ font-weight:600; color:var(--ink); }
+.savebar.saved{ color:var(--green-deep); font-family:var(--mono); font-size:12px; background:var(--green-tint); border-color:var(--green-tint-border); }

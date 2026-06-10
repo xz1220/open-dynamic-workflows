@@ -69,7 +69,7 @@ export function renderSettings(): string {
     setRow(t("Notify only on failure"), "", toggle(false)) +
     `</div>` +
     `</div>` +
-    `<div class="note-banner"><span style="font-family:var(--mono);color:var(--green-deep);">ⓘ</span> ${t("This build is read-only. To start a run, your agent uses {cmd} — there is no run button by design.", { cmd: "<code>odw run &lt;name&gt;</code>" })}</div>` +
+    `<div class="note-banner"><span style="font-family:var(--mono);color:var(--green-deep);">ⓘ</span> ${t("Runs start from the Launch tab or from your agent via {cmd}. Claude Code runs stay strictly read-only.", { cmd: "<code>odw run &lt;name&gt;</code>" })}</div>` +
     `</div>`
   );
 }

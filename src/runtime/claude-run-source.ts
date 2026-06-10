@@ -246,6 +246,9 @@ export class ClaudeRunSource implements RunSource {
       phaseOrder,
       hasResult,
       error: state === "failed" ? { error: String(j.summary ?? "workflow failed") } : null,
+      origin: null,
+      adapter: null,
+      workflowName: String(j.workflowName ?? d.wid),
     };
     const events = synthTerminalEvents(summary, agents, phaseOrder, j);
     return { summary, detail, events };
@@ -331,6 +334,9 @@ export class ClaudeRunSource implements RunSource {
       phaseOrder: [],
       hasResult: false,
       error: null,
+      origin: null,
+      adapter: null,
+      workflowName: null,
     };
     const events: WorkflowEvent[] = [
       { type: "run_started", ts: created } as WorkflowEvent,

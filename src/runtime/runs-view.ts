@@ -90,6 +90,12 @@ export interface RunDetail extends RunSummary {
   phaseOrder: string[];
   hasResult: boolean;
   error: { error?: string; stack?: string } | null;
+  /** Where the run was initiated from (meta.origin, e.g. "launch"); null for CLI runs. */
+  origin: string | null;
+  /** Run-level adapter override recorded at launch (meta.adapter), if any. */
+  adapter: string | null;
+  /** The workflow identity recorded at create time (meta.workflowName). */
+  workflowName: string | null;
 }
 
 /** Is `pid` a live process on this host? null when unknowable (no pid). */
@@ -280,6 +286,9 @@ export function detail(store: RunStore, runId: string): RunDetail {
     phaseOrder: phaseOrderFrom(events, base.phases),
     hasResult: store.hasResult(runId),
     error: store.readError(runId) as { error?: string; stack?: string } | null,
+    origin: (meta.origin as string) ?? null,
+    adapter: (meta.adapter as string) ?? null,
+    workflowName: (meta.workflowName as string) ?? null,
   };
 }
 

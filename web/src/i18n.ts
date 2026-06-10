@@ -221,4 +221,42 @@ const ZH: Record<string, string> = {
   "Run was stopped": "运行已停止",
   "{name} finished": "{name} 已完成",
   "{agents} agents": "{agents} 个智能体",
+  // Launch view + the launch-layer affordances (preview / save / stop).
+  Launch: "发射台",
+  "Describe a task. The system generates a dynamic workflow — preview it, run it, watch it live in Jobs.":
+    "描述一个任务，系统会生成一个 dynamic workflow——预览确认后运行，全程在任务页实时观测。",
+  Task: "任务",
+  "e.g. Review the auth module for race conditions; have a second agent verify every finding adversarially.":
+    "例如：审查 auth 模块的竞态条件；由第二个 agent 对每个发现做对抗性核实。",
+  Agent: "智能体",
+  "Source directory": "工作目录",
+  "defaults to the directory odw serve runs in": "默认为 odw serve 的运行目录",
+  "not installed": "未安装",
+  "loading adapters…": "加载适配器…",
+  "agent permissions": "智能体权限",
+  "⚡ Generate workflow": "⚡ 生成 workflow",
+  "Generating…": "生成中…",
+  "Generation itself runs as a workflow — you can watch it in Jobs.":
+    "生成过程本身就是一个 workflow——可以在任务页观测。",
+  "⏹ Stop": "⏹ 停止",
+  "generated — review before running": "已生成——运行前请确认",
+  "▶ Run workflow": "▶ 运行 workflow",
+  "↻ Regenerate": "↻ 重新生成",
+  "Keep this workflow?": "保留这个 workflow？",
+  "workflow name": "workflow 名称",
+  "global (~/.odw/workflows)": "全局（~/.odw/workflows）",
+  "project (<source>/.odw/workflows)": "项目（<source>/.odw/workflows）",
+  "☆ Save to Workspace": "☆ 收藏到工作区",
+  "Saving…": "保存中…",
+  "saved to {path}": "已保存到 {path}",
+  "open Workspace": "打开工作区",
+  "Launch a task here, or have your agent start one with the CLI.":
+    "在这里发起一个任务，或让你的 agent 用 CLI 发起。",
+  "Generate one from a task in Launch, or have your agent write one into the managed directories.":
+    "在发射台用一个任务生成，或让你的 agent 写入受管目录。",
+  "⚡ Open Launch": "⚡ 打开发射台",
+  "Runs start from the Launch tab or from your agent via {cmd}. Claude Code runs stay strictly read-only.":
+    "运行可从发射台发起，也可由你的 agent 通过 {cmd} 发起。Claude Code 的运行始终严格只读。",
+  "Agents are never re-run from here. An ODW run can be stopped from the header; Claude Code runs stay read-only.":
+    "这里不会重跑任何 agent。ODW 运行可从顶部停止；Claude Code 运行保持只读。",
 };

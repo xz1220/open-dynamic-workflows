@@ -5,7 +5,7 @@ import { store } from "./store";
 import { ACTIVE, clsx, esc } from "./util";
 
 export interface Route {
-  view: "activity" | "workspace" | "jobs" | "job" | "settings";
+  view: "activity" | "workspace" | "jobs" | "job" | "settings" | "launch";
   param: string | null;
 }
 
@@ -67,6 +67,7 @@ export function rail(route: Route): string {
     `<div class="rail">` +
     `<div class="brand">${logoSvg}<span class="wm">odw</span></div>` +
     `<div class="tagline">${t("fan out coding agents")}</div>` +
+    navItem("launch", route, icons.launch, t("Launch")) +
     navItem("activity", route, icons.activity, t("Activity")) +
     navItem("workspace", route, icons.workspace, t("Workspace")) +
     navItem("jobs", route, icons.jobs, t("Jobs"), active.length) +

@@ -5,7 +5,8 @@ import type { WorkflowDetail, WorkflowSummary } from "../types";
 import { esc } from "../util";
 
 // Very light source highlighting for the dark source view (string/keyword/comment).
-function highlight(src: string): string {
+// Exported: the Job view's generated-script preview uses the same treatment.
+export function highlight(src: string): string {
   const escaped = esc(src);
   return escaped
     .replace(/(\/\/[^\n]*)/g, '<span style="color:#5c6a62">$1</span>')
@@ -124,7 +125,8 @@ export function renderWorkspace(activeKey: string | null, detail: WorkflowDetail
   if (list.length === 0) {
     return (
       `<div class="empty"><div class="gh">${t("No workflows yet")}</div>` +
-      `<div>${t("Your agent writes workflows into the managed directories.")}</div>` +
+      `<div>${t("Generate one from a task in Launch, or have your agent write one into the managed directories.")}</div>` +
+      `<span class="btn primary" data-nav="#/launch">${t("⚡ Open Launch")}</span>` +
       `<div class="codehint">.odw/workflows · .claude/workflows · ~/.odw/workflows · ~/.claude/workflows</div></div>`
     );
   }

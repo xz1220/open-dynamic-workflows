@@ -77,7 +77,7 @@ export function renderJobs(): string {
 
   const body =
     store.runs.length === 0
-      ? `<div class="empty"><div class="gh">${t("No runs yet")}</div><div>${t("Runs your agent starts with the CLI appear here.")}</div><div class="codehint">odw run &lt;name&gt;</div></div>`
+      ? `<div class="empty"><div class="gh">${t("No runs yet")}</div><div>${t("Launch a task here, or have your agent start one with the CLI.")}</div><span class="btn primary" data-nav="#/launch">${t("⚡ Open Launch")}</span><div class="codehint">odw run &lt;name&gt;</div></div>`
       : strip +
         `<div class="histwrap"><table class="histtable">` +
         `<thead><tr><th>${t("workflow")}</th><th>${t("run id")}</th><th>${t("status")}</th><th>${t("started")}</th><th>${t("duration")}</th><th>${t("agents")}</th></tr></thead>` +

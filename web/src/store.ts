@@ -8,7 +8,14 @@
  * crashes the window, it just leaves the last-known state and flips `conn`.
  */
 import { api } from "./api";
-import type { Connection, RunDetail, RunSummary, WorkflowEvent, WorkflowSummary } from "./types";
+import type {
+  AdapterListing,
+  Connection,
+  RunDetail,
+  RunSummary,
+  WorkflowEvent,
+  WorkflowSummary,
+} from "./types";
 import { ACTIVE } from "./util";
 
 export type ActivityEvent = WorkflowEvent & { _run: string; _adapter: string | null };
@@ -19,6 +26,7 @@ class Store {
   conn: Connection = "connecting";
   runs: RunSummary[] = [];
   workflows: WorkflowSummary[] | null = null;
+  adapters: AdapterListing[] | null = null;
   run: RunDetail | null = null;
   runEvents: WorkflowEvent[] = [];
   result: unknown = undefined;
@@ -85,6 +93,16 @@ class Store {
       this.emit();
     } catch {
       this.workflows = this.workflows ?? [];
+      this.emit();
+    }
+  }
+
+  async loadAdapters(): Promise<void> {
+    try {
+      this.adapters = await api.adapters();
+      this.emit();
+    } catch {
+      this.adapters = this.adapters ?? [];
       this.emit();
     }
   }

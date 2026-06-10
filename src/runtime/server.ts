@@ -42,7 +42,7 @@
  */
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { existsSync, mkdirSync, statSync, watch, writeFileSync, type FSWatcher } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, watch, writeFileSync, type FSWatcher } from "node:fs";
 import { join } from "node:path";
 
 import {
@@ -322,7 +322,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandleCont
     }
     if (method === "POST" && path === "/api/workflows") {
       if (!writeGuard(req, res, boundHost)) return;
-      await postWorkflows(req, res, config, cwd);
+      await postWorkflows(req, res, store, config, cwd);
       return;
     }
     if (method === "GET" && path === "/api/workflows") {
@@ -514,6 +514,7 @@ async function postRuns(
 async function postWorkflows(
   req: IncomingMessage,
   res: ServerResponse,
+  store: RunStore,
   config: Config,
   cwd: string,
 ): Promise<void> {
@@ -527,7 +528,27 @@ async function postWorkflows(
     sendJson(res, 400, { error: "name must use only letters, digits, '.', '_' or '-'" });
     return;
   }
-  const source = typeof body.source === "string" ? body.source : "";
+  // The script content comes inline ('source') or from an existing run's
+  // archived script ('fromRun') — the Save-to-Workspace path, where the browser
+  // has the run id but not the file content.
+  let source = typeof body.source === "string" ? body.source : "";
+  if (!source && typeof body.fromRun === "string" && body.fromRun) {
+    const runId = body.fromRun;
+    if (!RUN_ID.test(runId) || !store.exists(runId)) {
+      sendJson(res, 404, { error: `no such run: ${runId}` });
+      return;
+    }
+    const script = store.readMeta(runId).script as string | undefined;
+    try {
+      source = script ? readFileSync(script, "utf8") : "";
+    } catch {
+      source = "";
+    }
+    if (!source) {
+      sendJson(res, 400, { error: "the run has no readable script to save" });
+      return;
+    }
+  }
   try {
     loadWorkflowScript(source, `${name}.js`);
   } catch (err) {
