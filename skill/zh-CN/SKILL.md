@@ -68,7 +68,8 @@ return await agent(
 | `phase(title)` / `log(msg)` | 给后续工作打上进度标签 / 发一行进度消息。 |
 | `args` | workflow 的输入（注入）。 |
 | `budget` | `{ total, spent(), remaining() }`——按 token 目标扩缩深度。 |
-| `workflow(ref, args?)` | 内联调用另一个 workflow。属于方言的一部分；odw 尚未实现——调用会抛出明确的 "not implemented" 错误。 |
+| `workflow(ref, args?)` | 内联调用另一个 workflow（仅一层）。`ref` 是受管目录中的名字或 `{ scriptPath }`；子 workflow 共享本次 run 的并发上限、agent 计数和预算，其 phase 以 `▸ <名字> · <phase>` 形式归组为独立泳道。 |
+| `validate(source)` | 只编译不执行地校验一段候选 workflow 源码；返回 `{ ok, meta?, errors, warnings }`（warnings 标记 Claude Code 禁用的 API）。**ODW 扩展**——不属于 Claude Code 方言，使用它的脚本只能在 odw 上运行。 |
 | `schema` | 一个原始 JSON Schema 对象，作为 `agent(..., { schema })` 传入（是选项，不是全局）。 |
 
 `agent` 的 `opts`：`{ adapter?, schema?, label?, phase?, model?, agentType?, isolation? }`。

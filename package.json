@@ -25,7 +25,7 @@
   },
   "scripts": {
     "build:web": "node web/build.mjs",
-    "embed": "node scripts/embed-dashboard.mjs",
+    "embed": "node scripts/embed-dashboard.mjs && node scripts/embed-skill.mjs",
     "prebuild": "npm run build:web && npm run embed",
     "build": "tsc -p tsconfig.json",
     "build:binary": "npm run build && node scripts/build-binary.mjs",

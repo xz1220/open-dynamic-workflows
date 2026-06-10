@@ -74,7 +74,8 @@ return await agent(
 | `phase(title)` / `log(msg)` | Label following work for progress / emit a progress line. |
 | `args` | The workflow input (injected). |
 | `budget` | `{ total, spent(), remaining() }` — scale depth to a token target. |
-| `workflow(ref, args?)` | Run another workflow inline. Part of the dialect; not yet implemented in odw — calling it throws a clear "not implemented" error. |
+| `workflow(ref, args?)` | Run another workflow inline (one level deep). `ref` is a managed-directory name or `{ scriptPath }`; the child shares this run's concurrency cap, agent counter, and budget, and its phases group as `▸ <name> · <phase>` lanes. |
+| `validate(source)` | Compile-check a candidate workflow source without executing it; returns `{ ok, meta?, errors, warnings }` (warnings flag Claude-Code-banned APIs). **ODW extension** — not part of Claude Code's dialect, so a script that uses it runs on odw only. |
 | `schema` | A raw JSON Schema object passed as `agent(..., { schema })` (an option, not a global). |
 
 `opts` for `agent`: `{ adapter?, schema?, label?, phase?, model?, agentType?, isolation? }`.
