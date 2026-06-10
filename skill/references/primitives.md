@@ -3,7 +3,8 @@
 The primitives are **injected globals** inside a workflow script — never
 imported. The script body runs in an async context (top-level `await` and
 top-level `return` are legal), with `meta` declared via `export const meta` at
-the top.
+the top (`meta.name` and `meta.description` are required; no other top-level
+`import`/`export` may appear in the file).
 
 ## agent
 
@@ -23,9 +24,15 @@ other primitive organizes calls to it.
   inside `parallel`/`pipeline`, where the global phase is shared.
 - **opts.adapter** — which configured CLI to use (e.g. `"codex"`); defaults to
   the config's `defaultAdapter`.
-- **opts.model / opts.agentType / opts.isolation** — accepted for Claude-dialect
-  compatibility; `agentType` is treated as an adapter name in v1, `model` and
-  `isolation` are reserved for v1.5+.
+- **opts.model** — a model id forwarded to the adapter's declared model flag
+  (e.g. `claude --model …`). If the adapter declares no `flags.model` in config,
+  the option is not silently dropped — a routing note appears in the run's logs.
+  Model ids do not transfer across CLIs.
+- **opts.agentType** — a **persona** injected into the prompt (e.g.
+  `"code-reviewer"`), so it works on every CLI. It is **not** an adapter name and
+  never affects adapter selection — only `opts.adapter` does.
+- **opts.isolation** — `"worktree"` requests isolation; satisfied by the default
+  copy-isolated workspace.
 
 Returns the reply text, or the validated object when `schema` is set. Throws on
 hard failure (the CLI errored, or the schema never validated). **Inside
@@ -96,11 +103,24 @@ args                                  // the workflow input, injected verbatim
 budget // { total: number | null, spent(): number, remaining(): number }
 ```
 
-`args` is whatever you passed with `--args` (parsed JSON, or a raw string).
-`budget.total` is the token target set with `--budget` (or in `args`), else
-`null`; scale depth to it, e.g. `budget.total ? Math.floor(budget.total / 120_000) : 5`.
+`args` is whatever you passed with `--args` (parsed JSON, or a raw string;
+JSON-looking input that fails to parse is rejected rather than silently passed
+through as a string). `budget.total` is the token target set with
+`odw run … --budget <tokens>`, else `null`; scale depth to it, e.g.
+`budget.total ? Math.floor(budget.total / 120_000) : 5`.
 In v1 `spent()` is a best-effort stub (`0`) and `remaining()` is `total` (or
 `Infinity` when no target); real token accounting is a v1.5+ increment.
+
+## workflow
+
+```js
+workflow(nameOrRef, args?) -> Promise<unknown>
+```
+
+Run another workflow inline. The global is injected for Claude-dialect
+compatibility, but it is **not yet implemented in odw** — calling it throws a
+clear "not implemented" error. Compose with `agent`/`parallel`/`pipeline`
+instead for now.
 
 ## schema
 

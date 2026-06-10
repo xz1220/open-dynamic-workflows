@@ -3,7 +3,9 @@
 <sub>[English](../../references/primitives.md) · 简体中文</sub>
 
 原语是 workflow 脚本里的**注入的全局**——绝不 import。脚本体运行在 async 上下文里（顶层
-`await` 和顶层 `return` 都合法），`meta` 在最顶部用 `export const meta` 声明。
+`await` 和顶层 `return` 都合法），`meta` 在最顶部用 `export const meta` 声明
+（`meta.name` 和 `meta.description` 必填；文件里不得出现任何其他顶层
+`import`/`export`）。
 
 ## agent
 
@@ -19,8 +21,12 @@ agent(prompt, opts?) -> Promise<string | object>
 - **opts.phase** —— 为这一次调用覆盖当前 phase。在 `parallel`/`pipeline` 里优先用它，那里
   全局 phase 是共享的。
 - **opts.adapter** —— 用哪个配置好的 CLI（如 `"codex"`）；默认用配置里的 `defaultAdapter`。
-- **opts.model / opts.agentType / opts.isolation** —— 为兼容 Claude 方言而接受；
-  `agentType` 在 v1 里当作适配器名处理，`model` 和 `isolation` 保留到 v1.5+。
+- **opts.model** —— 一个 model id，转发给该 adapter 声明的 model 旗标（如
+  `claude --model …`）。若 adapter 没在配置里声明 `flags.model`，该选项也不会被静默丢弃
+  ——运行日志里会出现一条路由说明。model id 不能跨 CLI 通用。
+- **opts.agentType** —— 注入进 prompt 的**人设**（如 `"code-reviewer"`），因此在任何 CLI
+  上都生效。它**不是** adapter 名，永远不影响 adapter 选择——只有 `opts.adapter` 才会。
+- **opts.isolation** —— `"worktree"` 表示请求隔离；由默认的 copy 隔离工作区满足。
 
 返回回复文本，设了 `schema` 则返回校验过的对象。硬失败时抛错（CLI 出错，或 schema 始终
 没通过校验）。**在 `parallel`/`pipeline` 内部，抛错的调用会变成一个 `null` 槽位，而不是
@@ -87,11 +93,22 @@ args                                  // the workflow input, injected verbatim
 budget // { total: number | null, spent(): number, remaining(): number }
 ```
 
-`args` 是你用 `--args` 传入的任何东西（解析后的 JSON，或一段原始字符串）。`budget.total`
-是用 `--budget`（或在 `args` 里）设的 token 目标，否则为 `null`；按它扩缩深度，例如
+`args` 是你用 `--args` 传入的任何东西（解析后的 JSON，或一段原始字符串；*看起来像*
+JSON 但解析失败的输入会被拒绝，不会悄悄按字符串传入）。`budget.total`
+是用 `odw run … --budget <tokens>` 设的 token 目标，否则为 `null`；按它扩缩深度，例如
 `budget.total ? Math.floor(budget.total / 120_000) : 5`。v1 里 `spent()` 是尽力而为的
 占位（`0`），`remaining()` 就是 `total`（没设目标时为 `Infinity`）；真实的 token 计量是
 v1.5+ 的增量。
+
+## workflow
+
+```js
+workflow(nameOrRef, args?) -> Promise<unknown>
+```
+
+内联调用另一个 workflow。这个全局是为兼容 Claude 方言而注入的，但 **odw 尚未实现**——
+调用会抛出明确的 "not implemented" 错误。当下请改用 `agent`/`parallel`/`pipeline`
+组合。
 
 ## schema
 

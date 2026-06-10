@@ -13,6 +13,8 @@ license: MIT. See LICENSE for full terms.
 
 # Open Dynamic Workflows
 
+> 简体中文版: [`zh-CN/SKILL.md`](zh-CN/SKILL.md)
+
 A *dynamic workflow* is a small JavaScript script that holds an orchestration
 plan in ordinary code and dispatches coding-agent CLIs at scale — outside your
 own context. You (the host agent) **write the script, then run it**; the runtime
@@ -29,9 +31,11 @@ until nothing new turns up.
 ## 1. Write a workflow script
 
 A workflow is `export const meta = {…}` (a **pure literal**, at the top) followed
-by a script body. The body runs in an async context — use `await` directly — and
-its top-level `return` is the workflow's result. The primitives are **injected
-globals**: do **not** import them.
+by a script body. `meta.name` and `meta.description` are **required**; `whenToUse`,
+`phases`, and `model` are optional. The body runs in an async context — use `await`
+directly — and its top-level `return` is the workflow's result. The primitives are
+**injected globals**: do **not** import them — any other top-level `import` or
+`export` in the file is rejected by the loader.
 
 ```js
 // fan-out-reduce.js
@@ -55,7 +59,8 @@ return await agent(
 )
 ```
 
-- `args` is the input you pass with `--args` (parsed JSON, or a raw string).
+- `args` is the input you pass with `--args` (parsed JSON, or a raw string —
+  input that *looks* like JSON but fails to parse is rejected, not passed through).
 - Ordinary control flow (loops, `if`, dedup) lives in the script. The primitives
   only **dispatch and wait** — you decide what to do with results.
 
@@ -69,11 +74,14 @@ return await agent(
 | `phase(title)` / `log(msg)` | Label following work for progress / emit a progress line. |
 | `args` | The workflow input (injected). |
 | `budget` | `{ total, spent(), remaining() }` — scale depth to a token target. |
-| `schema` | A raw JSON Schema object passed as `agent(..., { schema })`. |
+| `workflow(ref, args?)` | Run another workflow inline. Part of the dialect; not yet implemented in odw — calling it throws a clear "not implemented" error. |
+| `schema` | A raw JSON Schema object passed as `agent(..., { schema })` (an option, not a global). |
 
-`opts` for `agent`: `{ label?, phase?, schema?, adapter? }` (v1; `model` /
-`agentType` / `isolation` are accepted but reserved for v1.5+). Full reference:
-[`references/primitives.md`](references/primitives.md).
+`opts` for `agent`: `{ adapter?, schema?, label?, phase?, model?, agentType?, isolation? }`.
+`adapter` picks the CLI; `model` is forwarded to that adapter's declared model
+flag; `agentType` is a **persona** injected into the prompt (it is *not* an
+adapter name); `isolation: "worktree"` is satisfied by the default copy-isolated
+workspace. Full reference: [`references/primitives.md`](references/primitives.md).
 
 **Rule of thumb:** `parallel` when the next step needs the *whole* batch at once
 (dedup, tally, synthesis); `pipeline` for multi-stage work (the default). Keep
@@ -112,8 +120,10 @@ it at `./odw.config.json` or `~/.config/odw/config.json`.
 - Agents run independently and in isolation; one never sees another's draft
   unless your script passes it along.
 - By default each agent runs in an isolated copy of the working tree
-  (`workspaceMode: "copy"`); your real tree is not modified. Use `inplace` for
-  read-only / analysis workflows.
+  (`workspaceMode: "copy"`); your real tree is not modified. `inplace` runs
+  agents **directly in the real tree** — no isolation, no diff — so use it only
+  when you *want* in-place edits and point `--source` at a directory you can
+  afford to have modified.
 - Concurrency is capped (`min(16, cpus-2)` by default) and total dispatches are
   bounded (a runaway guard). Cost is controlled with that cap and `pause`/`stop`.
 - The result is whatever the script `return`s. Inspect it, then decide what to do

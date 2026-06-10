@@ -11,6 +11,31 @@ shell 出去执行一个本地命令，通过 stdin 或一个参数把拼好的 
 五个开箱即用、无需配置文件：`codex`、`claude`、`gemini`、`qwen`、`kimi`。它们用各自 CLI
 的非交互模式。
 
+### 权限：每个内置适配器能做什么
+
+命令模板刻意保守，而且内置适配器之间**权限并不相同**：
+
+- `codex` 以 `--sandbox workspace-write` 运行：开箱即可在其工作区内**编辑文件并执行
+  命令**。
+- `claude` 以 `--permission-mode acceptEdits` 运行：**能编辑文件但不能执行命令**
+  （要求它运行什么的 prompt 会卡住或被拒绝）。要让 Claude 也能跑命令，用
+  `--dangerously-skip-permissions` 覆盖该适配器——它**没有任何沙箱**，所以只能对着一个
+  用完即弃的 `--source` 目录这么干，绝不要指向你的真实仓库：
+
+```json
+{
+  "adapters": {
+    "claude": {
+      "command": ["claude", "--print", "--dangerously-skip-permissions", "--no-session-persistence"],
+      "stdin": "{prompt}"
+    }
+  }
+}
+```
+
+一种实用的最小权限分工：让 `claude` 写代码（acceptEdits）、让 `codex` 运行/验证
+（workspace-write 沙箱）——见 `examples/codex-claude-loop.js`。
+
 ## 配置文件
 
 要改默认、调参，或加自己的 CLI，写一个 `odw.config.json`。它按优先级从高到低被发现：
@@ -36,25 +61,31 @@ shell 出去执行一个本地命令，通过 stdin 或一个参数把拼好的 
     "my_wrapper": {
       "label": "My custom CLI",
       "command": ["my-agent", "--cwd", "{workspace}", "--prompt-file", "{prompt_file}"],
-      "stdin": null,
       "env": { "MY_FLAG": "1" },
-      "timeout": 600
+      "timeout": 600,
+      "flags": { "model": ["--model"] }
     }
   }
 }
 ```
 
+所有设置项都是**顶层键**——不要嵌套在 `"settings"` 包装层下。odw 会对未知或放错位置
+的键在 stderr 上给出警告（附 did-you-mean 提示），而不是静默忽略。
+
 ### 设置项
 
 | 键 | 含义 |
 | --- | --- |
-| `defaultAdapter` | 一次调用没指名适配器时用的（或唯一的那个）适配器 |
+| `defaultAdapter` | 一次调用没指名适配器时用的适配器。未设置时：用唯一配置的那个，或——全新安装下——用 PATH 上唯一真实存在的那个 CLI |
 | `concurrency` | 同时运行的 agent CLI 上限；省略则自动（`min(16, cpus-2)`） |
 | `maxAgents` | 单次运行总派发量的硬上限（防失控兜底） |
-| `workspaceMode` | `"copy"`（隔离工作树 + diff）或 `"inplace"`（只读 / 快速） |
+| `workspaceMode` | `"copy"`（隔离工作树 + diff；安全的默认值）或 `"inplace"`（agent 直接在真实目录里工作——没有隔离、没有 diff；只在想要就地修改时使用） |
 | `timeout` | 每个 agent CLI 的超时（秒） |
 | `schemaRetries` | schema 校验失败时的额外重试次数 |
 | `runsRoot` | run 的存放位置（默认 `~/.odw/runs`） |
+| `workflowsRoot` | 按名字解析 workflow 的目录（默认 `~/.odw/workflows`） |
+| `claudeWorkflowsRoot` | 读取 Claude Code 已保存 workflow 的目录（默认 `~/.claude/workflows`，遵循 `CLAUDE_CONFIG_DIR`） |
+| `claudeJobsScope` | dashboard 显示哪些 Claude Code 运行：`"all"`（默认）或 `"project"` |
 
 ### 适配器字段
 
@@ -65,6 +96,7 @@ shell 出去执行一个本地命令，通过 stdin 或一个参数把拼好的 
 | `env` | 叠加在进程环境之上的额外环境变量 |
 | `timeout` | 每次调用的超时（秒）（覆盖运行级的 `timeout`） |
 | `label` | 进度显示用的友好名字 |
+| `flags` | 能力声明，如 `{ "model": ["--model"] }`——承载每次调用 `model` 的原生旗标。不声明它，`agent(..., { model })` 对该适配器就不生效（日志里会出现一条路由说明） |
 
 ### 占位符
 
