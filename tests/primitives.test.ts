@@ -26,7 +26,9 @@ function fakeContext(
     control: new NullControl(),
     sink,
     args: null,
+    source: process.cwd(),
     budgetTotal: null,
+    usage: { outputChars: 0 },
     currentPhase: null,
     emit(ev) {
       sink.emit(ev);

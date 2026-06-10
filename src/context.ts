@@ -23,10 +23,23 @@ export interface RunContext {
   control: Control;
   sink: EventSink;
   args: unknown;
+  /** The run's working directory; anchors nested workflow() name resolution. */
+  source: string;
   /** The run's token target (for `budget`), or null when none was set. */
   budgetTotal: number | null;
+  /**
+   * Shared usage tally behind `budget.spent()`. Tokens are ESTIMATED from agent
+   * reply text (chars/4) — adapters do not report real usage uniformly — so the
+   * budget is an honest approximation, shared across nested workflow() calls.
+   */
+  usage: { outputChars: number };
   currentPhase: string | null;
   emit(ev: WorkflowEvent): void;
+}
+
+/** Estimated tokens spent so far (chars/4 of every agent reply in this run). */
+export function spentTokens(usage: { outputChars: number }): number {
+  return Math.ceil(usage.outputChars / 4);
 }
 
 export interface BuildContextOptions {
@@ -43,17 +56,17 @@ export function buildContext(config: Config, options: BuildContextOptions = {}):
   const control = options.control ?? new NullControl();
   const bridge = new Bridge(config, { source: options.source });
   const budgetTotal = options.budgetTotal ?? null;
-  // spent() is a v1 stub (0), so this guard never fires today; it is the seam
-  // that real token accounting (and nested workflow() cost control) will read.
-  const spent = (): number => 0;
+  // The shared tally `budget.spent()` reads. Estimated (chars/4 of agent
+  // replies); the guard makes --budget a real ceiling, not advisory.
+  const usage = { outputChars: 0 };
   const scheduler = new Scheduler({
     concurrency: resolveConcurrency(config.settings.concurrency),
     maxAgents: config.settings.maxAgents,
     checkpoint: () => control.checkpoint(),
     budgetGuard: () => {
-      if (budgetTotal !== null && spent() >= budgetTotal) {
+      if (budgetTotal !== null && spentTokens(usage) >= budgetTotal) {
         throw new BudgetExhausted(
-          `run reached its budget ceiling of ${budgetTotal} (spent ${spent()})`,
+          `run reached its budget ceiling of ${budgetTotal} estimated tokens (spent ~${spentTokens(usage)})`,
         );
       }
     },
@@ -65,7 +78,9 @@ export function buildContext(config: Config, options: BuildContextOptions = {}):
     control,
     sink,
     args: options.args ?? null,
+    source: options.source ?? process.cwd(),
     budgetTotal,
+    usage,
     currentPhase: null,
     emit(ev: WorkflowEvent): void {
       sink.emit(ev);

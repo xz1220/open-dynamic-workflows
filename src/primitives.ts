@@ -16,14 +16,18 @@
  * `args` is not here: it is run data injected alongside these globals.
  */
 
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+
 import type { AgentRequest } from "./bridge.js";
-import type { RunContext } from "./context.js";
-import { isFatalError, notImplemented } from "./errors.js";
+import { spentTokens, type RunContext } from "./context.js";
+import { WorkflowScriptError, isFatalError } from "./errors.js";
 import { AGENT_FAILED, AGENT_FINISHED, AGENT_STARTED, LOG, PHASE_STARTED, event } from "./events.js";
 // Value import of the loader is safe: loader.ts only type-imports from here, so
 // the module cycle is erased at compile time and never exists at runtime.
 import { loadWorkflowScript, scanDualCompat, type WorkflowMeta } from "./loader.js";
 import type { JsonSchema } from "./schema.js";
+import { resolveWorkflow } from "./workflows/resolve.js";
 
 export interface AgentOptions {
   /** Which configured adapter/CLI to use; falls back to the default. */
@@ -81,7 +85,13 @@ export interface WorkflowGlobals {
 }
 
 /** Build the injected primitive set bound to a single run's context. */
-export function createPrimitives(ctx: RunContext): WorkflowGlobals {
+export function createPrimitives(
+  ctx: RunContext,
+  internal: { depth?: number; phasePrefix?: string } = {},
+): WorkflowGlobals {
+  const depth = internal.depth ?? 0;
+  const phasePrefix = internal.phasePrefix ?? "";
+
   const agent = async (prompt: string, opts: AgentOptions = {}): Promise<unknown> => {
     const activePhase = opts.phase !== undefined ? opts.phase : ctx.currentPhase;
     // Adapter selection honours ONLY opts.adapter. agentType is a persona (it is
@@ -129,6 +139,8 @@ export function createPrimitives(ctx: RunContext): WorkflowGlobals {
         attempts: outcome.attempts,
       }),
     );
+    // Feed the shared budget tally (estimated tokens ≈ chars/4 of the reply).
+    ctx.usage.outputChars += outcome.text.length;
     return outcome.value;
   };
 
@@ -147,8 +159,9 @@ export function createPrimitives(ctx: RunContext): WorkflowGlobals {
   };
 
   const phase = (title: string): void => {
-    ctx.currentPhase = title;
-    ctx.emit(event(PHASE_STARTED, { phase: title }));
+    const labelled = phasePrefix + title;
+    ctx.currentPhase = labelled;
+    ctx.emit(event(PHASE_STARTED, { phase: labelled }));
   };
 
   const log = (message: unknown): void => {
@@ -157,12 +170,57 @@ export function createPrimitives(ctx: RunContext): WorkflowGlobals {
 
   const budget: Budget = {
     total: ctx.budgetTotal,
-    spent: () => 0, // best-effort in v1; real token accounting is v1.5+
-    remaining: () => (ctx.budgetTotal === null ? Infinity : Math.max(0, ctx.budgetTotal)),
+    // Estimated output tokens (chars/4 of every agent reply) — see RunContext.usage.
+    spent: () => spentTokens(ctx.usage),
+    remaining: () =>
+      ctx.budgetTotal === null ? Infinity : Math.max(0, ctx.budgetTotal - spentTokens(ctx.usage)),
   };
 
-  const workflow = async (): Promise<unknown> => {
-    throw notImplemented("nested workflow() — deferred to v2");
+  /**
+   * Run another workflow inline as a sub-step (Claude Code parity, one level
+   * deep). The child shares this run's scheduler (concurrency cap + agent
+   * counter), control, budget tally, and event sink; its phases are labelled
+   * `▸ <name> · <phase>` so its agents group as their own lanes in the DAG.
+   */
+  const workflow = async (
+    nameOrRef: string | { scriptPath: string },
+    childArgs?: unknown,
+  ): Promise<unknown> => {
+    if (depth >= 1) {
+      throw new WorkflowScriptError(
+        "workflow() inside a child workflow is not supported — nesting is one level deep",
+      );
+    }
+    let scriptPath: string;
+    if (typeof nameOrRef === "string") {
+      scriptPath = resolveWorkflow(nameOrRef, { cwd: ctx.source, config: ctx.config }).scriptPath;
+    } else if (nameOrRef && typeof nameOrRef.scriptPath === "string") {
+      scriptPath = resolve(ctx.source, nameOrRef.scriptPath);
+    } else {
+      throw new WorkflowScriptError("workflow() expects a name or { scriptPath }");
+    }
+    let text: string;
+    try {
+      text = readFileSync(scriptPath, "utf8");
+    } catch (err) {
+      throw new WorkflowScriptError(
+        `workflow(): cannot read ${scriptPath}: ${(err as Error).message}`,
+      );
+    }
+    const loaded = loadWorkflowScript(text, scriptPath); // throws on a syntax error
+    const name = loaded.meta.name;
+    // The child gets its own phase cursor (so a concurrent parent agent keeps
+    // its label) but shares everything that costs or controls: scheduler,
+    // bridge, sink, control, and the usage tally.
+    const childCtx: RunContext = { ...ctx, currentPhase: `▸ ${name}` };
+    const childGlobals = createPrimitives(childCtx, {
+      depth: depth + 1,
+      phasePrefix: `▸ ${name} · `,
+    });
+    ctx.emit(event(LOG, { message: `▸ entering workflow ${name} (${scriptPath})` }));
+    const result = await loaded.run(childGlobals, childArgs ?? null);
+    ctx.emit(event(LOG, { message: `▸ workflow ${name} returned` }));
+    return result;
   };
 
   const validate = (source: string): ValidationReport => {

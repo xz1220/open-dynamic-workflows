@@ -15,7 +15,7 @@ import { basename, dirname } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { loadConfig } from "../adapters/config.js";
-import { buildContext, type RunContext } from "../context.js";
+import { buildContext, spentTokens, type RunContext } from "../context.js";
 import { RunStopped } from "../errors.js";
 import { LOG, RUN_FAILED, RUN_FINISHED, RUN_STARTED, RUN_STOPPED, event } from "../events.js";
 import { loadWorkflowScript } from "../loader.js";
@@ -38,6 +38,7 @@ export async function executeRun(runDir: string): Promise<string> {
   // still recorded as a failed run rather than leaving it stuck in "pending".
   let ctx: RunContext | undefined;
   const dispatched = () => ctx?.scheduler.dispatched ?? 0;
+  const spent = () => (ctx ? spentTokens(ctx.usage) : 0);
 
   try {
     const baseConfig = loadConfig((meta.configPath as string | null) ?? null);
@@ -51,7 +52,7 @@ export async function executeRun(runDir: string): Promise<string> {
       : baseConfig;
     const control = new FileControl({
       readAction: () => store.readControl(runId),
-      onState: (state) => store.updateStatus(runId, { state, dispatched: dispatched() }),
+      onState: (state) => store.updateStatus(runId, { state, dispatched: dispatched(), spentTokens: spent() }),
     });
     ctx = buildContext(config, {
       source: meta.source as string | undefined,
@@ -89,18 +90,18 @@ export async function executeRun(runDir: string): Promise<string> {
 
     store.writeResult(runId, result);
     sink.emit(event(RUN_FINISHED, { runId }));
-    store.updateStatus(runId, { state: "done", dispatched: dispatched() });
+    store.updateStatus(runId, { state: "done", dispatched: dispatched(), spentTokens: spent() });
     return "done";
   } catch (err) {
     if (err instanceof RunStopped) {
       sink.emit(event(RUN_STOPPED, { runId }));
-      store.updateStatus(runId, { state: "stopped", dispatched: dispatched() });
+      store.updateStatus(runId, { state: "stopped", dispatched: dispatched(), spentTokens: spent() });
       return "stopped";
     }
     const e = err as Error;
     sink.emit(event(RUN_FAILED, { runId, error: e.message ?? String(err) }));
     store.writeError(runId, { error: e.message ?? String(err), stack: e.stack ?? null });
-    store.updateStatus(runId, { state: "failed", dispatched: dispatched() });
+    store.updateStatus(runId, { state: "failed", dispatched: dispatched(), spentTokens: spent() });
     return "failed";
   }
 }
