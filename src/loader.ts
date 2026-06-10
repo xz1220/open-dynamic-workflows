@@ -47,6 +47,8 @@ export interface LoadedWorkflow {
 }
 
 // The injected names, in the order the wrapper function receives them.
+// `validate` is an ODW extension (absent from Claude Code's Workflow tool); it
+// sits last so the Claude-compatible prefix of the signature never moves.
 const PARAM_NAMES = [
   "agent",
   "parallel",
@@ -56,6 +58,7 @@ const PARAM_NAMES = [
   "args",
   "budget",
   "workflow",
+  "validate",
 ] as const;
 
 const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor as new (
@@ -87,9 +90,34 @@ export function loadWorkflowScript(source: string, filename: string): LoadedWork
         args,
         globals.budget,
         globals.workflow,
+        globals.validate,
       );
     },
   };
+}
+
+/**
+ * Scan a workflow source for APIs that compile and run fine under ODW but are
+ * BANNED in Claude Code's Workflow tool (they break its resume journal):
+ * `Date.now()`, `Math.random()`, and arg-less `new Date()`. The scan runs over
+ * the masked source, so occurrences inside strings/comments never count.
+ *
+ * These come back as *warnings*, not errors — ODW itself executes them — so a
+ * caller (the generate-workflow repair loop, a linter) can decide how hard to
+ * push for dual-compatibility.
+ */
+export function scanDualCompat(source: string): string[] {
+  const masked = maskNonCode(source);
+  const warnings: string[] = [];
+  const rules: Array<[RegExp, string]> = [
+    [/\bDate\s*\.\s*now\s*\(/, "Date.now() is banned in Claude Code workflows — pass timestamps in via args"],
+    [/\bMath\s*\.\s*random\s*\(/, "Math.random() is banned in Claude Code workflows — vary prompts by index instead"],
+    [/\bnew\s+Date\s*\(\s*\)/, "arg-less new Date() is banned in Claude Code workflows — pass timestamps in via args"],
+  ];
+  for (const [re, message] of rules) {
+    if (re.test(masked)) warnings.push(message);
+  }
+  return warnings;
 }
 
 // --- internals ---------------------------------------------------------------

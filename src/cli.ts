@@ -75,6 +75,7 @@ export function helpText(): string {
     "  --config <path>     path to an odw.config.json",
     "  --runs-root <dir>   directory runs are stored under",
     "  --source <dir>      run's working dir; also anchors a relative script path & project-name lookup",
+    "  --adapter <name>    default agent() adapter for this run (explicit agent(p,{adapter}) still wins)",
     "  --wait              block until the run finishes and print the result",
     "  --timeout <s>       with --wait: stop waiting after s seconds (the run itself continues)",
     "  --budget <tokens>   token target exposed to the script as budget.total",
@@ -159,6 +160,7 @@ async function cmdRun(rest: string[]): Promise<number> {
       config: { type: "string" },
       "runs-root": { type: "string" },
       source: { type: "string" },
+      adapter: { type: "string" },
       wait: { type: "boolean" },
       timeout: { type: "string" },
       budget: { type: "string" },
@@ -194,6 +196,7 @@ async function cmdRun(rest: string[]): Promise<number> {
     configPath: values.config ?? null,
     runsRoot: values["runs-root"] ?? null,
     source: values.source ?? null,
+    adapter: values.adapter ?? null,
     budgetTotal,
   });
 
@@ -328,6 +331,7 @@ function cmdRerun(rest: string[]): number {
     configPath: (meta.configPath as string | null) ?? null,
     runsRoot: values["runs-root"] ?? null,
     source: (meta.source as string | undefined) ?? null,
+    adapter: (meta.adapter as string | null) ?? null,
     budgetTotal: (meta.budgetTotal as number | null) ?? null,
   });
   process.stdout.write(newId + "\n");

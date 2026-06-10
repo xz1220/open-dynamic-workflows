@@ -40,7 +40,15 @@ export async function executeRun(runDir: string): Promise<string> {
   const dispatched = () => ctx?.scheduler.dispatched ?? 0;
 
   try {
-    const config = loadConfig((meta.configPath as string | null) ?? null);
+    const baseConfig = loadConfig((meta.configPath as string | null) ?? null);
+    // Run-level adapter override (meta.adapter): becomes this run's default for
+    // every `agent()` call that does not name one explicitly. Priority chain:
+    // agent(p, { adapter }) > meta.adapter > config defaultAdapter > auto-pick.
+    const adapterOverride =
+      typeof meta.adapter === "string" && meta.adapter.length > 0 ? meta.adapter : null;
+    const config = adapterOverride
+      ? { ...baseConfig, settings: { ...baseConfig.settings, defaultAdapter: adapterOverride } }
+      : baseConfig;
     const control = new FileControl({
       readAction: () => store.readControl(runId),
       onState: (state) => store.updateStatus(runId, { state, dispatched: dispatched() }),

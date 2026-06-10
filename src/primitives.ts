@@ -20,6 +20,9 @@ import type { AgentRequest } from "./bridge.js";
 import type { RunContext } from "./context.js";
 import { isFatalError, notImplemented } from "./errors.js";
 import { AGENT_FAILED, AGENT_FINISHED, AGENT_STARTED, LOG, PHASE_STARTED, event } from "./events.js";
+// Value import of the loader is safe: loader.ts only type-imports from here, so
+// the module cycle is erased at compile time and never exists at runtime.
+import { loadWorkflowScript, scanDualCompat, type WorkflowMeta } from "./loader.js";
 import type { JsonSchema } from "./schema.js";
 
 export interface AgentOptions {
@@ -48,6 +51,18 @@ export interface Budget {
 export type Thunk<T> = () => Promise<T> | T;
 export type Stage = (previous: unknown, item: unknown, index: number) => unknown;
 
+/** What `validate(source)` reports about a candidate workflow script. */
+export interface ValidationReport {
+  /** True when the source compiles as a workflow (meta extracted, body wraps). */
+  ok: boolean;
+  /** The compiled meta, when ok. */
+  meta?: WorkflowMeta;
+  /** Compile errors (empty when ok). */
+  errors: string[];
+  /** Dual-compat advisories (Date.now etc.) — ODW runs them, Claude Code won't. */
+  warnings: string[];
+}
+
 /** The surface injected into a workflow script (alongside `args`). */
 export interface WorkflowGlobals {
   agent(prompt: string, opts?: AgentOptions): Promise<unknown>;
@@ -57,6 +72,12 @@ export interface WorkflowGlobals {
   log(message: unknown): void;
   budget: Budget;
   workflow(nameOrRef: string | { scriptPath: string }, args?: unknown): Promise<unknown>;
+  /**
+   * Compile-check a candidate workflow source without executing it (ODW
+   * extension; not part of Claude Code's Workflow tool surface). The seam that
+   * lets a workflow generate and verify other workflows.
+   */
+  validate(source: string): ValidationReport;
 }
 
 /** Build the injected primitive set bound to a single run's context. */
@@ -144,5 +165,17 @@ export function createPrimitives(ctx: RunContext): WorkflowGlobals {
     throw notImplemented("nested workflow() — deferred to v2");
   };
 
-  return { agent, parallel, pipeline, phase, log, budget, workflow };
+  const validate = (source: string): ValidationReport => {
+    if (typeof source !== "string") {
+      return { ok: false, errors: ["validate() expects a string of workflow source"], warnings: [] };
+    }
+    try {
+      const loaded = loadWorkflowScript(source, "candidate.js");
+      return { ok: true, meta: loaded.meta, errors: [], warnings: scanDualCompat(source) };
+    } catch (err) {
+      return { ok: false, errors: [(err as Error).message], warnings: [] };
+    }
+  };
+
+  return { agent, parallel, pipeline, phase, log, budget, workflow, validate };
 }

@@ -50,6 +50,11 @@ const CONTROL = "control.json";
 const LOG = "worker.log";
 
 export interface CreateRunInput {
+  /**
+   * Absolute path of the script to run. With `inlineSource` set, pass "" — the
+   * store writes the source as `workflow.js` inside the run directory and
+   * records THAT path, so an inline script is archived with its run.
+   */
   script: string;
   args: unknown;
   configPath?: string | null;
@@ -57,6 +62,12 @@ export interface CreateRunInput {
   budgetTotal?: number | null;
   /** The workflow's identity (meta.name). Drives the run's bucket; recorded in meta. */
   workflowName?: string | null;
+  /** Workflow source to materialise inside the run dir (inline launches). */
+  inlineSource?: string | null;
+  /** Run-level adapter override: the default `agent()` adapter for this run. */
+  adapter?: string | null;
+  /** Where the run was initiated from (e.g. "launch" for the GUI flow). */
+  origin?: string | null;
 }
 
 /** A run plus the workflow it belongs to, returned by listing. */
@@ -75,18 +86,27 @@ export class RunStore {
 
   create(input: CreateRunInput): string {
     const runId = newRunId();
-    const bucket = bucketFor(input.workflowName, input.script);
+    const bucket = bucketFor(input.workflowName, input.inlineSource != null ? "workflow.js" : input.script);
     const dir = join(this.root, bucket, runId);
     mkdirSync(dir, { recursive: true });
     this.dirCache.set(runId, dir);
+    let script = input.script;
+    if (input.inlineSource != null) {
+      // Materialise the inline source before meta.json so a reader never sees a
+      // meta that points at a not-yet-written file.
+      script = join(dir, "workflow.js");
+      writeFileSync(script, input.inlineSource, "utf8");
+    }
     writeJson(join(dir, META), {
       runId,
-      script: input.script,
+      script,
       args: input.args ?? null,
       configPath: input.configPath ?? null,
       source: input.source,
       budgetTotal: input.budgetTotal ?? null,
       workflowName: input.workflowName ?? null,
+      adapter: input.adapter ?? null,
+      origin: input.origin ?? null,
       createdAt: now(),
     });
     writeJson(join(dir, STATUS), { runId, state: "pending", dispatched: 0, updatedAt: now() });
