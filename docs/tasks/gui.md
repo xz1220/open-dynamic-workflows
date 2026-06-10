@@ -29,14 +29,19 @@
 
 ## 0. 定位与两条铁律
 
+> **⚠ 修订（2026-06-11，[launch.md](launch.md)）**：下面两条铁律已按产品升级（观测台 → 发射台）**有意修订**——
+> 第 1 条废止：GUI 可以发起、控制 **ODW 自己的** run（Launch 视图 → `POST /api/generate` / `POST /api/runs`）；
+> 第 2 条收窄：写路径全部走 `odw serve` 的 loopback HTTP API（writeGuard + Host 校验，见 launch.md §3.5），**Claude provider 仍然严格只读**，Tauri 壳零扩权。
+> 本节其余内容保留为历史决策记录；新的不变量见 [launch.md §0](launch.md)。
+
 **客户端 = 基于 ODW 套件的只读观测窗口。** 它把运行时已经在写的东西（run 目录、events.jsonl、result）渲染成好看、可读、实时的看板，**不发起任何运行**。
 
 两条铁律（决定下面全部取舍）：
 
-1. **发起运行的永远是 Agent（走 CLI `odw run <name>`）。** GUI 没有 Run / Launch / Execute / Install 按钮，没有参数表单。
-2. **客户端只读。** 唯一被允许的「写」是 App 自身偏好（开机启动、通知开关）与适配器配置——**绝不写 run、绝不调用 `/control`**。
+1. **发起运行的永远是 Agent（走 CLI `odw run <name>`）。** GUI 没有 Run / Launch / Execute / Install 按钮，没有参数表单。（已废止，见上方修订）
+2. **客户端只读。** 唯一被允许的「写」是 App 自身偏好（开机启动、通知开关）与适配器配置——**绝不写 run、绝不调用 `/control`**。（已收窄，见上方修订）
 
-> 推论：服务端早已有的 `POST /api/runs/:id/control`（pause/resume/stop）本客户端**一律不调用**——它是给 CLI / 未来其它客户端的，不在只读窗口的职责里。
+> 推论：服务端早已有的 `POST /api/runs/:id/control`（pause/resume/stop）本客户端**一律不调用**——它是给 CLI / 未来其它客户端的，不在只读窗口的职责里。（已废止：D6 解禁了 ODW run 的 Stop 入口）
 
 ---
 

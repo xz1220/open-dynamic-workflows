@@ -4,12 +4,14 @@
 
 # Open Dynamic Workflows
 
-**An open runtime for Claude Code-style _dynamic workflows_ — run the same agent-orchestration scripts on _any_ coding agent (Codex, Claude, Gemini, Qwen, Kimi).**
+**Dynamic workflows for coding agents.** An open runtime that turns Codex, Claude Code,
+Gemini, Qwen and Kimi into orchestrated fleets — same scripts as Claude Code's own
+Workflow tool, plus a desktop app that generates, launches, and watches every run live.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/Node-%E2%89%A520-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178C6?logo=typescript&logoColor=white)](tsconfig.json)
-[![tests](https://img.shields.io/badge/tests-129%20passing-brightgreen.svg)](tests)
+[![tests](https://img.shields.io/badge/tests-235%20passing-brightgreen.svg)](tests)
 [![runtime deps](https://img.shields.io/badge/runtime%20deps-0-blue.svg)](package.json)
 
 [English](README.md) · [简体中文](README.zh-CN.md)
@@ -42,14 +44,31 @@ producing become artifacts you can run anywhere.
 
 </div>
 
+## Why orchestrate at all?
+
+Letting one agent grind in its own context tops out fast. Each row is a failure
+mode you have probably met; each mechanism is a runnable pattern in this repo:
+
+| One-agent failure mode | The dynamic-workflow answer |
+| --- | --- |
+| **Self-review bias** — the author grades its own work | Cross-CLI adversarial review: one adapter implements, a different one refutes ([`adversarial-verify.js`](examples/adversarial-verify.js), [`codex-claude-loop.js`](examples/codex-claude-loop.js)) |
+| **One-shot quality lottery** | N approaches compete, pairwise judging picks a survivor ([`tournament.js`](examples/tournament.js)) |
+| **Serial waiting** | `parallel()` fans subtasks across dozens of agent processes under a bounded semaphore ([`fan-out-reduce.js`](examples/fan-out-reduce.js)) |
+| **Context pollution** — long work trashes the host agent's window | Runs are detached background workers; only the final `return` value comes back |
+| **Invisible long runs** | Every run is a live DAG — browser dashboard, desktop observatory, or `odw logs --follow` |
+
 ## Highlights
 
 - **Portable** — run the *same* workflow script on Codex, Claude Code, Gemini,
   Qwen, Kimi, or your own CLI. Switch the underlying agent by switching adapters.
-- **Claude Code's dialect, unchanged** — `export const meta` + injected
-  `agent` / `parallel` / `pipeline` / `phase` / `log` / `args` / `budget`
-  globals, with top-level `await` and `return`. A script written for Claude Code
-  runs here as-is, and vice versa.
+- **Claude Code's dialect, complete** — `export const meta` + injected
+  `agent` / `parallel` / `pipeline` / `phase` / `log` / `args` / `budget` /
+  `workflow` globals (nested workflows included), with top-level `await` and
+  `return`. A script written for Claude Code runs here as-is, and vice versa.
+- **A launch pad, not just a viewer** — describe a task in the app, an agent
+  generates the workflow (generation itself runs as a workflow), you preview the
+  script and its agent permissions, run it, watch the live DAG, and save keepers
+  to your workspace.
 - **Out of context, at scale** — the plan lives in code, so intermediate work
   never pollutes the host's context and you can fan out dozens of subagents.
 - **Reliable hand-offs** — JSON-Schema structured outputs, validated and retried,
@@ -187,7 +206,8 @@ control flow (loops, `if`, dedup) — no imports:
 | `schema` (JSON Schema) | A typed output contract for `agent`; the reply is validated and retried until it conforms. |
 | `args` | The workflow's input, injected verbatim. |
 | `budget` | `{ total, spent(), remaining() }` — scale depth to a token target. |
-| `workflow(ref, args?)` | Run another workflow inline. Part of the dialect; not yet implemented in odw — calling it throws a clear "not implemented" error. |
+| `workflow(ref, args?)` | Run another workflow inline (one level deep). The child shares this run's concurrency cap, agent counter, and budget; its phases group as their own DAG lanes. |
+| `validate(source)` | Compile-check a candidate workflow without executing it — the seam that lets workflows generate workflows. **ODW extension** (not in Claude Code's dialect). |
 
 Use **`parallel`** when the next step needs the whole batch at once (dedup,
 tally, synthesis); **`pipeline`** for multi-stage work (the default). Keep
@@ -201,6 +221,7 @@ watch it. `--wait` blocks and prints the result.
 
 ```bash
 odw run wf.js [--args JSON|@file] [--wait]   # start (background); --wait blocks & prints result
+                                             #   --adapter <name> sets this run's default agent
                                              #   --timeout <s> caps the wait; --budget <tokens> sets budget.total
 odw status <id>          # state + agent count
 odw logs <id> --follow   # stream progress events
@@ -244,6 +265,48 @@ odw serve --port 8080 --host 0.0.0.0    # custom port / bind address
     </td>
   </tr>
 </table>
+
+## Launch: task in → running workflow out
+
+The app is a launch pad as well as an observatory. Describe a task and pick an
+agent; ODW **generates a dynamic workflow** for it — the generation itself runs
+as a workflow (`Generate → Validate → Repair`), so you watch it as a live DAG
+like any other job:
+
+<table>
+  <tr>
+    <td width="50%">
+      <strong>1 · Describe the task</strong><br />
+      <img src="assets/app-screenshots/launch.png" alt="Launch view: task description, agent picker with permission note, source directory" />
+    </td>
+    <td width="50%">
+      <strong>2 · Preview, then decide</strong><br />
+      <img src="assets/app-screenshots/launch-preview.png" alt="Generated workflow preview: phase pills, syntax-highlighted script, agent permission note, Run and Regenerate buttons" />
+    </td>
+  </tr>
+</table>
+
+Nothing runs until you press **Run** — the preview shows the generated script,
+its phases, and exactly what permission posture the chosen agent will run with.
+After the run, **Save to Workspace** turns a good one-off into a named, reusable
+workflow (`odw run <name>` works immediately).
+
+<div align="center">
+  <img src="assets/app-screenshots/launch-live-run.png" alt="The generated adversarial-review workflow running live: a finder agent fans out to three parallel refuter agents, with a Stop button in the header" width="720" />
+  <br /><sub><b>A real run of a generated workflow.</b> Task: “adversarially review <code>rate-limiter.js</code>”. The generated script's finder reported 3 candidate bugs; three parallel refuters then killed the plausible-but-wrong one (a “race” that can't actually interleave in single-threaded Node) and confirmed the two real ones — exactly what adversarial verification is for.</sub>
+</div>
+
+The same flow is scriptable:
+
+```bash
+curl -X POST http://127.0.0.1:4317/api/generate \
+  -H 'content-type: application/json' \
+  -d '{"task": "adversarially review src/rate-limiter.js", "adapter": "claude"}'
+```
+
+Write endpoints are loopback-only with CSRF/DNS-rebinding guards; binding
+`--host` off-loopback keeps the dashboard readable but refuses every write.
+Claude Code's own runs stay strictly read-only.
 
 ## Configure adapters
 
@@ -326,6 +389,8 @@ Runnable, plain-JS workflows in [`examples/`](examples/):
 | [`routing.js`](examples/routing.js) | classify the request → route to a specialist → grade the result |
 | [`generate-and-filter.js`](examples/generate-and-filter.js) | generate many ideas in parallel → dedupe → keep only rubric-passers |
 | [`tournament.js`](examples/tournament.js) | N approaches attempt the task → pairwise judging bracket → one winner |
+| [`codex-claude-loop.js`](examples/codex-claude-loop.js) | two rival CLIs in a turn-based duel: Claude implements, Codex reviews, repeat until sign-off |
+| [`agent-daily-digest.js`](examples/agent-daily-digest.js) | discover sources → extract in parallel → synthesize → verify |
 
 ## Develop
 
@@ -350,23 +415,31 @@ into the host's `node`, so each target is built on its own runner.
 
 ## Status
 
-**What's new (v0.3.0):** the **Jobs** tab now also surfaces **Claude Code's own
-workflow runs** — both finished history and live in-flight jobs — read-only and
-merged alongside ODW's own runs, so one observatory watches every dynamic
-workflow on your machine. (v0.2.4 added the desktop **observatory** app itself:
-Activity / Jobs / Job detail + the `.odw/`–`.claude/` workflow workspace.) See
+**What's new (unreleased, on `main`):** the **launch layer** — the app upgrades
+from observatory to launch pad. Describe a task → an agent **generates a
+workflow** (generation runs as a workflow, watchable live) → preview the script
++ agent permissions → run → save keepers to the Workspace. Under the hood the
+dialect got **complete**: nested `workflow()` is implemented (shared scheduler/
+budget, one level deep), `budget.spent()` does real (estimated) accounting so
+`--budget` is a hard ceiling, plus `odw run --adapter <name>`, inline-source
+runs archived in their run directory, and a `validate()` primitive so workflows
+can generate workflows.
+
+**v0.3.0:** the **Jobs** tab also surfaces **Claude Code's own workflow runs** —
+finished history and live in-flight jobs — read-only, merged alongside ODW's own
+runs. (v0.2.4 added the desktop **observatory** app itself.) See
 [Releases](https://github.com/xz1220/open-dynamic-workflows/releases).
 
 **Core runtime is shipped.** The full runtime is on `main` — the adapter layer, execution
 bridge, workspace isolation, the async scheduler, the injected primitives, the
 loader/transform, the JSON-Schema engine, the background runtime, and the `odw`
-CLI. **129 tests pass**, and the flagship [`examples/deep-research.js`](examples/deep-research.js)
+CLI. **235 tests pass**, and the flagship [`examples/deep-research.js`](examples/deep-research.js)
 runs end-to-end (plan → gather → verify → synthesize → critique).
 
 ### Roadmap (v1.5+)
 
-`model` / `agentType` rich routing · git-worktree `isolation` · nested
-`workflow()` · real token-budget accounting · resume / journaling · a
+`model` / `agentType` rich routing · git-worktree `isolation` · adapter-reported
+token usage (today's budget meters an estimate) · resume / journaling · a
 `Date.now`/`Math.random` sandbox for replay-determinism. Full plan:
 [`docs/dynamic-workflows-tech-plan.md`](docs/dynamic-workflows-tech-plan.md).
 Background on the Claude Code dialect ODW aligns with:
@@ -378,6 +451,52 @@ Background on the Claude Code dialect ODW aligns with:
 teaches a host agent to author and run workflows from documentation alone —
 install it into your agent's skills directory (Codex CLI → `~/.codex/skills/`,
 Claude Code → its skills dir).
+
+## FAQ
+
+<details>
+<summary><b>How is this different from a CLAUDE.md / AGENTS.md / a skill?</b></summary>
+
+Those teach an agent how to behave <i>inside its own context</i>. A dynamic
+workflow moves the work <i>out</i>: the plan lives in a script, the subtasks run
+as separate agent processes at scale, and only the final value returns. ODW
+ships a skill too — but the skill's job is to teach your agent to write and run
+workflows, not to be the orchestration.
+</details>
+
+<details>
+<summary><b>How is this different from LangGraph / n8n / Airflow?</b></summary>
+
+Those orchestrate API calls and custom nodes. ODW orchestrates <b>coding-agent
+CLIs</b> — the agents you already pay for and configure (Codex, Claude Code,
+Gemini, …) — in their own working directories, with workspace isolation and
+diffs. There is no DSL and no server farm: a workflow is one plain JavaScript
+file in Claude Code's existing dialect, and the engine is a zero-dependency
+Node CLI.
+</details>
+
+<details>
+<summary><b>Does ODW call model APIs directly?</b></summary>
+
+No. ODW only shells out to local CLIs you already authenticated. No API keys,
+no token billing of its own, no network calls from the engine.
+</details>
+
+<details>
+<summary><b>Can a web page drive my local agents through <code>odw serve</code>?</b></summary>
+
+No. Write endpoints require <code>Content-Type: application/json</code> and a
+same-origin Origin, the Host header is allowlisted against DNS rebinding, and
+any off-loopback bind refuses writes entirely (the dashboard stays readable).
+</details>
+
+<details>
+<summary><b>Is the desktop app available for Linux / Windows?</b></summary>
+
+Not yet — macOS first (the web dashboard via <code>odw serve</code> is
+cross-platform today). The app is a thin Tauri shell over the same single-file
+SPA, so a port is packaging work, not a rewrite.
+</details>
 
 ## Star history
 

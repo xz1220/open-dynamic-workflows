@@ -70,8 +70,11 @@ export async function executeRun(runDir: string): Promise<string> {
     // The run-by-name lookup keys on the filename stem, not meta.name. Flag a
     // divergence (through the event stream, so it shows in `odw logs` and the
     // dashboard) so the author knows which token actually invokes this file.
+    // Inline-source runs are exempt: their workflow.js lives inside the run
+    // directory and is not name-addressable, so the note would only mislead.
     const stem = basename(script).replace(/\.[^.]*$/, "");
-    if (loaded.meta.name !== stem) {
+    const isInline = dirname(script) === runDir;
+    if (!isInline && loaded.meta.name !== stem) {
       sink.emit(
         event(LOG, {
           message:

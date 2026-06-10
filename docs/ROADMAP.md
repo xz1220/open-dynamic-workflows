@@ -99,6 +99,17 @@ Open Dynamic Workflows (ODW)
 
 ---
 
+## 3.5 ③ 发起层（Launch）— 观测台升级为发射台（2026-06-11 落地）
+
+> 完整任务拆解与决策记录：[`docs/tasks/launch.md`](tasks/launch.md)。②的「只读」铁律在此**有意修订**（不是漂移）：GUI 可以发起、控制 **ODW 自己的** run；Claude provider 仍严格只读；Tauri 壳零扩权（写全走 `odw serve` 的 loopback HTTP API）。
+
+- **用户流（单次任务式）**：Launch 视图描述任务 + 选 agent → `POST /api/generate` 启动**生成 run**（生成本身就是一个 workflow：Generate → Validate → Repair，live DAG 全程可观测）→ Result tab 特化为脚本预览 + 权限说明 + `[Run]` 确认闸 → 正式 run 跑完后 `[Save to Workspace]` 沉淀为可复用 workflow（`odw run <name>` 同样可跑）。
+- **引擎三缝（CLI 同样受益）**：`validate(source)` 原语（workflow 生成 workflow 的自举能力）；run 级 adapter 覆盖（`odw run --adapter <name>`）；`startRunFromSource`（生成的脚本随 run 留档于 run 目录）。
+- **方言完备性（同期补齐）**：嵌套 `workflow()` 已实现（单层、共享调度与预算，Claude Code 对齐）；`budget.spent()` 从桩升级为估算计量（chars/4），`--budget` 成为真上限。
+- **安全面**：所有写端点过 `writeGuard`（Content-Type + same-origin）+ Host 头校验（防 DNS rebinding）；off-loopback bind 写一律 409。
+
+---
+
 ## 4. 推进顺序（按依赖，不绑版本号）
 
 1. **`workflowName` 创建时写入 + 反查**（run-store / cli）——客户端 Jobs 的最小前置。
