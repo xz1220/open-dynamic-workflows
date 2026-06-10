@@ -76,6 +76,8 @@ export function helpText(): string {
     "  --runs-root <dir>   directory runs are stored under",
     "  --source <dir>      run's working dir; also anchors a relative script path & project-name lookup",
     "  --wait              block until the run finishes and print the result",
+    "  --timeout <s>       with --wait: stop waiting after s seconds (the run itself continues)",
+    "  --budget <tokens>   token target exposed to the script as budget.total",
     "  --port <n>          dashboard port (serve; default 4317)",
     "  --host <addr>       dashboard bind address (serve; default 127.0.0.1)",
     "  --open              open the dashboard in the default browser (serve)",
@@ -523,12 +525,22 @@ function reportTerminal(store: RunStore, runId: string, status: Record<string, u
   return 1;
 }
 
-function parseArgsValue(raw?: string): unknown {
+export function parseArgsValue(raw?: string): unknown {
   if (raw === undefined) return null;
   const text = raw.startsWith("@") ? readFileSync(raw.slice(1), "utf8") : raw;
   try {
     return JSON.parse(text);
-  } catch {
+  } catch (err) {
+    // Input that *looks* like JSON but doesn't parse is almost always a typo'd
+    // object, and silently passing it through as a string corrupts the run
+    // (`args.foo` becomes undefined in every agent prompt). Fail loudly instead.
+    const head = text.trimStart()[0];
+    if (head === "{" || head === "[") {
+      throw new Error(
+        `--args looks like JSON but failed to parse: ${(err as Error).message}\n` +
+          `  fix the JSON, or pass input that does not start with '{' or '[' to send a plain string`,
+      );
+    }
     return text; // a plain string that isn't JSON, e.g. --args hello
   }
 }
