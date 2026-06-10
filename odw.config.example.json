@@ -1,5 +1,5 @@
 {
-  "$comment": "Copy to ./odw.config.json, ~/.config/odw/config.json, or pass --config. odw never calls model APIs directly: each adapter is a local CLI it shells out to. The five below ship as built-ins, so you only need this file to change defaults, tune flags, or add your own adapter.",
+  "$comment": "Copy to ./odw.config.json, ~/.config/odw/config.json, or pass --config. All keys are TOP-LEVEL (no 'settings' wrapper; odw warns about unknown or misplaced keys). odw never calls model APIs directly: each adapter is a local CLI it shells out to. The five below ship as built-ins, so you only need this file to change defaults, tune flags, or add your own adapter.",
 
   "defaultAdapter": "claude",
   "concurrency": 8,
@@ -10,6 +10,7 @@
   "runsRoot": "~/.odw/runs",
   "workflowsRoot": "~/.odw/workflows",
   "claudeWorkflowsRoot": "~/.claude/workflows",
+  "claudeJobsScope": "all",
 
   "adapters": {
     "codex": {
@@ -37,7 +38,8 @@
     },
     "my_wrapper": {
       "label": "My custom wrapper (example)",
-      "command": ["my-agent-wrapper", "--cwd", "{workspace}", "--prompt-file", "{prompt_file}"]
+      "command": ["my-agent-wrapper", "--cwd", "{workspace}", "--prompt-file", "{prompt_file}"],
+      "flags": { "model": ["--model"] }
     }
   }
 }

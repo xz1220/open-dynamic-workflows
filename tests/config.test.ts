@@ -110,3 +110,127 @@ test("an invalid adapter (no command) is rejected", () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// --- usability guardrails: unknown-key warnings & zero-config adapter pick ---
+
+import { collectConfigWarnings } from "../src/adapters/config.js";
+import { chmodSync, mkdirSync } from "node:fs";
+
+test("collectConfigWarnings flags a nested 'settings' wrapper as ignored", () => {
+  const warnings = collectConfigWarnings({
+    settings: { defaultAdapter: "claude", workspaceMode: "inplace" },
+  });
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0]!, /IGNORED/);
+  assert.match(warnings[0]!, /"defaultAdapter", "workspaceMode"/);
+  assert.match(warnings[0]!, /top level/);
+});
+
+test("collectConfigWarnings suggests the nearest key for typos", () => {
+  const warnings = collectConfigWarnings({ workspacemode: "inplace", defaultAdaptor: "codex" });
+  assert.equal(warnings.length, 2);
+  assert.match(warnings[0]!, /did you mean "workspaceMode"/);
+  assert.match(warnings[1]!, /did you mean "defaultAdapter"/);
+});
+
+test("collectConfigWarnings flags unknown adapter fields", () => {
+  const warnings = collectConfigWarnings({
+    adapters: { mine: { command: ["x"], stdn: "{prompt}" } },
+  });
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0]!, /adapter "mine"/);
+  assert.match(warnings[0]!, /did you mean "stdin"/);
+});
+
+test("collectConfigWarnings is silent on a fully valid config and on comment keys", () => {
+  assert.deepEqual(
+    collectConfigWarnings({
+      $comment: "hi",
+      "//": "also a comment",
+      defaultAdapter: "claude",
+      concurrency: 4,
+      adapters: { mine: { command: ["x"], stdin: "{prompt}", $comment: "ok" } },
+    }),
+    [],
+  );
+});
+
+test("loadConfig prints config warnings to stderr", () => {
+  const dir = mkdtempSync(join(tmpdir(), "odw-cfg-"));
+  const original = process.stderr.write.bind(process.stderr);
+  let captured = "";
+  process.stderr.write = ((chunk: string | Uint8Array) => {
+    captured += String(chunk);
+    return true;
+  }) as typeof process.stderr.write;
+  try {
+    const p = join(dir, "odw.config.json");
+    writeFileSync(p, JSON.stringify({ settings: { workspaceMode: "inplace" } }));
+    loadConfig(p);
+    assert.match(captured, /odw: config warning:/);
+    assert.match(captured, /IGNORED/);
+  } finally {
+    process.stderr.write = original;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("resolveAdapter with no default picks the sole adapter whose CLI is installed", () => {
+  const dir = mkdtempSync(join(tmpdir(), "odw-path-"));
+  const oldPath = process.env.PATH;
+  try {
+    mkdirSync(join(dir, "bin"), { recursive: true });
+    const stub = join(dir, "bin", "claude");
+    writeFileSync(stub, "#!/bin/sh\n");
+    chmodSync(stub, 0o755);
+    process.env.PATH = join(dir, "bin");
+    const cfg = defaultConfig(); // five builtins, defaultAdapter null
+    assert.equal(resolveAdapter(cfg).name, "claude");
+  } finally {
+    process.env.PATH = oldPath;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("resolveAdapter with no default and several installed CLIs errors with guidance", () => {
+  const dir = mkdtempSync(join(tmpdir(), "odw-path-"));
+  const oldPath = process.env.PATH;
+  try {
+    mkdirSync(join(dir, "bin"), { recursive: true });
+    for (const name of ["claude", "codex"]) {
+      const stub = join(dir, "bin", name);
+      writeFileSync(stub, "#!/bin/sh\n");
+      chmodSync(stub, 0o755);
+    }
+    process.env.PATH = join(dir, "bin");
+    const cfg = defaultConfig();
+    assert.throws(
+      () => resolveAdapter(cfg),
+      (err: Error) =>
+        err instanceof AdapterNotFound &&
+        /installed here: claude, codex/.test(err.message) &&
+        /defaultAdapter/.test(err.message) &&
+        /agent\(prompt, \{ adapter:/.test(err.message),
+    );
+  } finally {
+    process.env.PATH = oldPath;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("resolveAdapter with no default and no installed CLIs says so", () => {
+  const dir = mkdtempSync(join(tmpdir(), "odw-path-"));
+  const oldPath = process.env.PATH;
+  try {
+    mkdirSync(join(dir, "bin"), { recursive: true }); // empty PATH dir
+    process.env.PATH = join(dir, "bin");
+    const cfg = defaultConfig();
+    assert.throws(
+      () => resolveAdapter(cfg),
+      (err: Error) => err instanceof AdapterNotFound && /none of their CLIs/.test(err.message),
+    );
+  } finally {
+    process.env.PATH = oldPath;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

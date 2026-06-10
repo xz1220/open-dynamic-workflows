@@ -165,7 +165,8 @@ return await agent(
 ```
 
 ```bash
-odw run fan-out-reduce.js --wait --args '{"question": "Design a rate limiter."}'
+# from this repo's root (the script ships in examples/); any path works
+odw run examples/fan-out-reduce.js --wait --args '{"question": "Design a rate limiter."}'
 ```
 
 The flagship [`examples/deep-research.js`](examples/deep-research.js) (fan-out web
@@ -186,7 +187,7 @@ control flow (loops, `if`, dedup) — no imports:
 | `schema` (JSON Schema) | A typed output contract for `agent`; the reply is validated and retried until it conforms. |
 | `args` | The workflow's input, injected verbatim. |
 | `budget` | `{ total, spent(), remaining() }` — scale depth to a token target. |
-| `workflow(ref, args?)` | Run another workflow inline (one level of nesting; v1.5+). |
+| `workflow(ref, args?)` | Run another workflow inline. Part of the dialect; not yet implemented in odw — calling it throws a clear "not implemented" error. |
 
 Use **`parallel`** when the next step needs the whole batch at once (dedup,
 tally, synthesis); **`pipeline`** for multi-stage work (the default). Keep
@@ -200,6 +201,7 @@ watch it. `--wait` blocks and prints the result.
 
 ```bash
 odw run wf.js [--args JSON|@file] [--wait]   # start (background); --wait blocks & prints result
+                                             #   --timeout <s> caps the wait; --budget <tokens> sets budget.total
 odw status <id>          # state + agent count
 odw logs <id> --follow   # stream progress events
 odw result <id>          # final value
@@ -263,6 +265,13 @@ commands — it never calls model APIs directly.
   }
 }
 ```
+
+Config keys live at the **top level** — there is no `"settings"` wrapper, and odw
+warns about unknown or misplaced keys (with a did-you-mean hint) instead of
+silently ignoring them. With no `defaultAdapter` set, odw uses the sole
+configured adapter — or, on a fresh install, the sole adapter whose CLI it
+actually finds on PATH; if several are installed, the error lists them and shows
+how to pick one.
 
 ## How it works
 
@@ -365,9 +374,10 @@ Background on the Claude Code dialect ODW aligns with:
 
 ## Use as a skill
 
-[`skill/SKILL.md`](skill/SKILL.md) teaches a host agent to author and run
-workflows from documentation alone — install it into your agent's skills
-directory (Codex CLI → `~/.codex/skills/`, Claude Code → its skills dir).
+[`skill/SKILL.md`](skill/SKILL.md) (简体中文: [`skill/zh-CN/SKILL.md`](skill/zh-CN/SKILL.md))
+teaches a host agent to author and run workflows from documentation alone —
+install it into your agent's skills directory (Codex CLI → `~/.codex/skills/`,
+Claude Code → its skills dir).
 
 ## Star history
 

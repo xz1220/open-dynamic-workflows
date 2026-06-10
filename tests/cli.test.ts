@@ -66,3 +66,32 @@ test("workflows: unknown subcommand and missing args are usage errors (exit 2)",
   assert.equal(await main(["workflows", "where"]), 2); // missing <name>
   assert.equal(await main(["workflows", "list", "--project", "--global"]), 2); // mutually exclusive
 });
+
+// --- --args parsing: JSON-looking input must parse, plain strings pass through ---
+
+import { parseArgsValue } from "../src/cli.js";
+import { writeFileSync } from "node:fs";
+
+test("parseArgsValue: valid JSON, raw strings, and @file all work", () => {
+  assert.deepEqual(parseArgsValue('{"q": 1}'), { q: 1 });
+  assert.equal(parseArgsValue("hello world"), "hello world");
+  assert.equal(parseArgsValue(undefined), null);
+  const dir = mkdtempSync(join(tmpdir(), "odw-args-"));
+  try {
+    const p = join(dir, "args.json");
+    writeFileSync(p, '{"from": "file"}');
+    assert.deepEqual(parseArgsValue(`@${p}`), { from: "file" });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("parseArgsValue: input that looks like JSON but fails to parse throws loudly", () => {
+  for (const bad of ['{bad json', '{"q": }', "[1, 2,", '  {"unterminated": "str']) {
+    assert.throws(
+      () => parseArgsValue(bad),
+      /looks like JSON but failed to parse/,
+      `expected '${bad}' to be rejected`,
+    );
+  }
+});
