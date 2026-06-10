@@ -14,6 +14,10 @@
  *   GET  /api/runs/:id           RunDetail
  *   GET  /api/runs/:id/events    raw events (optionally ?since=N for the tail)
  *   GET  /api/stream             text/event-stream; pushes the run list on change
+ *   GET  /api/adapters           [AdapterListing] — the Launch view's agent picker
+ *   POST /api/generate           { task, adapter?, source? } → { runId } (generation run)
+ *   POST /api/runs               { script | name, args?, adapter?, source? } → { runId }
+ *   POST /api/workflows          { name, source, scope, projectDir? } → { path } (save)
  *   POST /api/runs/:id/control   { action: pause|resume|stop } → writeControl
  *
  * Security: binds 127.0.0.1 by default. The run list aggregates every project's
@@ -23,15 +27,37 @@
  * (control is refused) and surfaces a run's metadata + author `log()` lines +
  * final result, NOT raw agent transcripts; narrow it with `claudeJobsScope:
  * "project"` to the served repo + its worktrees.
+ *
+ * Write-path security (launch.md §3.5): POST /api/runs accepts inline scripts —
+ * an HTTP handle on "drive a local coding agent" — so the realistic threat is a
+ * hostile web page reaching loopback through the user's browser, not the local
+ * machine (local processes can already run code). Defenses:
+ *   1. writeGuard on every POST: Content-Type must be application/json (kills
+ *      CORS "simple requests") and, when an Origin header is present, it must be
+ *      same-origin.
+ *   2. Host-header allowlist on loopback binds (DNS-rebinding guard, all routes).
+ *   3. Off-loopback binds (--host) refuse every write with 409 — the dashboard
+ *      can be viewed remotely, the launch pad cannot; token auth is a future
+ *      opt-in gate.
  */
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { watch, type FSWatcher } from "node:fs";
+import { existsSync, mkdirSync, statSync, watch, writeFileSync, type FSWatcher } from "node:fs";
+import { join } from "node:path";
 
-import { loadConfig, resolveClaudeProjectsRoot } from "../adapters/config.js";
+import {
+  listAdapters,
+  loadConfig,
+  resolveClaudeProjectsRoot,
+  resolveWorkflowsRoot,
+} from "../adapters/config.js";
 import type { Config } from "../adapters/types.js";
 import { DASHBOARD_HTML } from "../dashboard.generated.js";
+import { loadWorkflowScript } from "../loader.js";
+import { SKILL_MD } from "../skill.generated.js";
+import { GENERATE_WORKFLOW_SOURCE, PATTERNS_DIGEST } from "../workflows/generate-workflow.js";
 import { ClaudeRunSource } from "./claude-run-source.js";
+import { startRun, startRunFromSource } from "./launcher.js";
 import { OdwRunSource } from "./odw-run-source.js";
 import type { RunSource } from "./run-source.js";
 import { RunStore } from "./run-store.js";
@@ -46,6 +72,9 @@ export interface ServeOptions {
   cwd?: string;
   /** Config whose `workflowsRoot` is the global managed dir. Defaults to loadConfig(null). */
   config?: Config;
+  /** Path of the config file behind `config`, forwarded to launched runs so a
+   *  worker loads the SAME adapters/settings the server validated against. */
+  configPath?: string | null;
   /** Root of Claude Code's per-project run store. Defaults to `~/.claude/projects`. */
   claudeProjectsRoot?: string | null;
   /** Which Claude runs to surface: "all" projects (default) or just the served repo + worktrees. */
@@ -63,6 +92,78 @@ const DEFAULT_PORT = 4317;
 const DEFAULT_HOST = "127.0.0.1";
 const RUN_ID = /^[A-Za-z0-9._-]+$/;
 const CONTROL_ACTIONS = new Set(["pause", "resume", "stop"]);
+/** Workflow names savable via POST /api/workflows — mirrors resolve.ts NAME_RE. */
+const WORKFLOW_NAME = /^[A-Za-z0-9._-]+$/;
+/** Body cap for write endpoints; inline scripts are the largest legitimate payload. */
+const MAX_BODY_BYTES = 512 * 1024;
+
+const LOOPBACK_BINDS = new Set(["127.0.0.1", "localhost", "::1"]);
+const LOOPBACK_HOST_NAMES = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
+
+/** Whether the server was bound to a loopback address (the default). */
+function isLoopbackBind(host: string): boolean {
+  return LOOPBACK_BINDS.has(host);
+}
+
+/** The hostname part of a Host header, with any port stripped ([::1]:p safe). */
+function hostHeaderName(header: string): string {
+  const h = header.trim();
+  if (h.startsWith("[")) return h.replace(/\]:\d+$/, "]"); // [::1]:4317 → [::1]
+  return h.replace(/:\d+$/, "");
+}
+
+/**
+ * The write-path gate shared by every POST (launch.md §3.5). Returns true when
+ * the request may proceed; otherwise the response has been written.
+ */
+function writeGuard(req: IncomingMessage, res: ServerResponse, boundHost: string): boolean {
+  if (!isLoopbackBind(boundHost)) {
+    sendJson(res, 409, { error: "writes are loopback-only; token auth is a future opt-in" });
+    return false;
+  }
+  if (!String(req.headers["content-type"] ?? "").includes("application/json")) {
+    sendJson(res, 415, { error: "write requests require Content-Type: application/json" });
+    return false;
+  }
+  const origin = req.headers.origin;
+  if (origin) {
+    let sameOrigin = false;
+    try {
+      sameOrigin = new URL(origin).host === req.headers.host;
+    } catch {
+      sameOrigin = false;
+    }
+    if (!sameOrigin) {
+      sendJson(res, 403, { error: "cross-origin write requests are rejected" });
+      return false;
+    }
+  }
+  return true;
+}
+
+/** Read and JSON-parse a request body. Resolves undefined on invalid JSON. */
+function readJsonBody(req: IncomingMessage): Promise<Record<string, unknown> | undefined> {
+  return new Promise((resolvePromise) => {
+    let body = "";
+    req.on("data", (chunk) => {
+      body += chunk;
+      if (body.length > MAX_BODY_BYTES) req.destroy();
+    });
+    req.on("error", () => resolvePromise(undefined));
+    req.on("end", () => {
+      try {
+        const parsed = JSON.parse(body || "{}") as unknown;
+        resolvePromise(
+          parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
+            ? (parsed as Record<string, unknown>)
+            : undefined,
+        );
+      } catch {
+        resolvePromise(undefined);
+      }
+    });
+  });
+}
 
 /** Every source's summaries, merged and sorted newest-first (the unified run list). */
 function allSummaries(sources: RunSource[]): RunSummary[] {
@@ -81,6 +182,7 @@ export function startServer(options: ServeOptions): Promise<ServeHandle> {
   const port = options.port ?? DEFAULT_PORT;
   const cwd = options.cwd ?? process.cwd();
   const config = options.config ?? loadConfig(null);
+  const configPath = options.configPath ?? null;
   const sources: RunSource[] = [
     new OdwRunSource(store),
     // Default scope "all": the observatory aggregates every project's Claude runs,
@@ -94,7 +196,15 @@ export function startServer(options: ServeOptions): Promise<ServeHandle> {
   ];
   const clients = new Set<ServerResponse>();
 
-  const server = createServer((req, res) => handle(req, res, sources, store, clients, cwd, config));
+  const server = createServer((req, res) => {
+    handle(req, res, { sources, store, clients, cwd, config, configPath, boundHost: host }).catch((err) => {
+      try {
+        sendJson(res, 500, { error: (err as Error).message ?? "internal error" });
+      } catch {
+        /* response already gone */
+      }
+    });
+  });
 
   // Push the run list to every SSE client when the runs root changes, and on a
   // 1s tick as a floor (fs.watch recursion is platform-spotty; the tick keeps
@@ -153,20 +263,36 @@ function closeServer(
   return new Promise<void>((resolve) => server.close(() => resolve()));
 }
 
-function handle(
-  req: IncomingMessage,
-  res: ServerResponse,
-  sources: RunSource[],
-  store: RunStore,
-  clients: Set<ServerResponse>,
-  cwd: string,
-  config: Config,
-): void {
+interface HandleContext {
+  sources: RunSource[];
+  store: RunStore;
+  clients: Set<ServerResponse>;
+  cwd: string;
+  config: Config;
+  configPath: string | null;
+  /** The address the server was bound to (drives the write/Host policy). */
+  boundHost: string;
+}
+
+async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandleContext): Promise<void> {
+  const { sources, store, clients, cwd, config, configPath, boundHost } = ctx;
   const method = req.method ?? "GET";
   const url = new URL(req.url ?? "/", "http://localhost");
   const path = url.pathname;
 
   try {
+    // DNS-rebinding guard: on a loopback bind, a browser reaching this server
+    // through a hostile DNS name carries that name in Host — refuse it outright
+    // (reads too: the run list is sensitive). Off-loopback binds are explicit
+    // opt-ins to remote reads, so the allowlist does not apply there.
+    if (isLoopbackBind(boundHost)) {
+      const header = req.headers.host;
+      if (header && !LOOPBACK_HOST_NAMES.has(hostHeaderName(header))) {
+        sendJson(res, 403, { error: `unexpected Host '${header}' — refusing (DNS rebinding guard)` });
+        return;
+      }
+    }
+
     if (method === "GET" && (path === "/" || path === "/index.html")) {
       res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
       res.end(DASHBOARD_HTML);
@@ -178,6 +304,25 @@ function handle(
     }
     if (method === "GET" && path === "/api/stream") {
       openStream(res, sources, clients);
+      return;
+    }
+    if (method === "GET" && path === "/api/adapters") {
+      sendJson(res, 200, listAdapters(config));
+      return;
+    }
+    if (method === "POST" && path === "/api/generate") {
+      if (!writeGuard(req, res, boundHost)) return;
+      await postGenerate(req, res, store, config, configPath, cwd);
+      return;
+    }
+    if (method === "POST" && path === "/api/runs") {
+      if (!writeGuard(req, res, boundHost)) return;
+      await postRuns(req, res, store, config, configPath, cwd);
+      return;
+    }
+    if (method === "POST" && path === "/api/workflows") {
+      if (!writeGuard(req, res, boundHost)) return;
+      await postWorkflows(req, res, config, cwd);
       return;
     }
     if (method === "GET" && path === "/api/workflows") {
@@ -204,6 +349,9 @@ function handle(
     if (runMatch) {
       const runId = decodeURIComponent(runMatch[1]!);
       const sub = runMatch[2];
+      // Writes are gated before any run lookup: an off-loopback bind refuses
+      // outright (no run-existence oracle), and CSRF posture comes first.
+      if (method === "POST" && sub === "/control" && !writeGuard(req, res, boundHost)) return;
       // Route to the source that owns this id (ODW's RunStore, or Claude Code's).
       const src = RUN_ID.test(runId) ? sourceForRun(sources, runId) : null;
       if (!src) {
@@ -239,7 +387,7 @@ function handle(
           sendJson(res, 409, { error: src.controlError });
           return;
         }
-        controlRun(req, res, src, runId);
+        await controlRun(req, res, src, runId);
         return;
       }
     }
@@ -248,6 +396,167 @@ function handle(
   } catch (err) {
     sendJson(res, 500, { error: (err as Error).message ?? "internal error" });
   }
+}
+
+// --- write endpoints (launch.md §3.1) ------------------------------------------
+
+/** Shared adapter/source validation for the two launch endpoints. */
+function checkLaunchInputs(
+  res: ServerResponse,
+  config: Config,
+  cwd: string,
+  body: Record<string, unknown>,
+): { adapter: string | null; source: string } | null {
+  const adapter = typeof body.adapter === "string" && body.adapter ? body.adapter : null;
+  if (adapter && !config.adapters[adapter]) {
+    sendJson(res, 400, {
+      error: `unknown adapter '${adapter}'; available: ${Object.keys(config.adapters).sort().join(", ")}`,
+    });
+    return null;
+  }
+  const source = typeof body.source === "string" && body.source ? body.source : cwd;
+  let isDir = false;
+  try {
+    isDir = statSync(source).isDirectory();
+  } catch {
+    isDir = false;
+  }
+  if (!isDir) {
+    sendJson(res, 400, { error: `source directory does not exist: ${source}` });
+    return null;
+  }
+  return { adapter, source };
+}
+
+/** POST /api/generate — start a generation run of the built-in generate-workflow. */
+async function postGenerate(
+  req: IncomingMessage,
+  res: ServerResponse,
+  store: RunStore,
+  config: Config,
+  configPath: string | null,
+  cwd: string,
+): Promise<void> {
+  const body = await readJsonBody(req);
+  if (!body) {
+    sendJson(res, 400, { error: "body must be a JSON object" });
+    return;
+  }
+  const task = typeof body.task === "string" ? body.task.trim() : "";
+  if (!task) {
+    sendJson(res, 400, { error: "task must be a non-empty string" });
+    return;
+  }
+  const checked = checkLaunchInputs(res, config, cwd, body);
+  if (!checked) return;
+  const { runId } = startRunFromSource(GENERATE_WORKFLOW_SOURCE, {
+    args: { task, dialectDoc: SKILL_MD, patternsDigest: PATTERNS_DIGEST },
+    adapter: checked.adapter,
+    source: checked.source,
+    runsRoot: store.root,
+    configPath,
+    origin: "launch",
+  });
+  sendJson(res, 200, { runId });
+}
+
+/** POST /api/runs — start a run from inline source or a managed-directory name. */
+async function postRuns(
+  req: IncomingMessage,
+  res: ServerResponse,
+  store: RunStore,
+  config: Config,
+  configPath: string | null,
+  cwd: string,
+): Promise<void> {
+  const body = await readJsonBody(req);
+  if (!body) {
+    sendJson(res, 400, { error: "body must be a JSON object" });
+    return;
+  }
+  const script = typeof body.script === "string" && body.script ? body.script : null;
+  const name = typeof body.name === "string" && body.name ? body.name : null;
+  if ((script === null) === (name === null)) {
+    sendJson(res, 400, { error: "provide exactly one of 'script' (inline source) or 'name'" });
+    return;
+  }
+  const checked = checkLaunchInputs(res, config, cwd, body);
+  if (!checked) return;
+  // Never hand a known-bad script to a worker: compile first, 400 with the error.
+  if (script) {
+    try {
+      loadWorkflowScript(script, "workflow.js");
+    } catch (err) {
+      sendJson(res, 400, { error: (err as Error).message });
+      return;
+    }
+  }
+  try {
+    const common = {
+      args: body.args,
+      adapter: checked.adapter,
+      source: checked.source,
+      runsRoot: store.root,
+      configPath,
+      origin: "launch",
+    };
+    const { runId } = script
+      ? startRunFromSource(script, common)
+      : startRun(name!, common);
+    sendJson(res, 200, { runId });
+  } catch (err) {
+    const message = (err as Error).message ?? String(err);
+    sendJson(res, /no workflow named/.test(message) ? 404 : 400, { error: message });
+  }
+}
+
+/** POST /api/workflows — save a script into a managed directory (D4: collect). */
+async function postWorkflows(
+  req: IncomingMessage,
+  res: ServerResponse,
+  config: Config,
+  cwd: string,
+): Promise<void> {
+  const body = await readJsonBody(req);
+  if (!body) {
+    sendJson(res, 400, { error: "body must be a JSON object" });
+    return;
+  }
+  const name = typeof body.name === "string" ? body.name.trim() : "";
+  if (!name || !WORKFLOW_NAME.test(name) || name === "." || name === "..") {
+    sendJson(res, 400, { error: "name must use only letters, digits, '.', '_' or '-'" });
+    return;
+  }
+  const source = typeof body.source === "string" ? body.source : "";
+  try {
+    loadWorkflowScript(source, `${name}.js`);
+  } catch (err) {
+    sendJson(res, 400, { error: (err as Error).message });
+    return;
+  }
+  const scope = body.scope === "project" ? "project" : "global";
+  let projectDir = cwd;
+  if (scope === "project" && typeof body.projectDir === "string" && body.projectDir) {
+    try {
+      if (!statSync(body.projectDir).isDirectory()) throw new Error("not a directory");
+    } catch {
+      sendJson(res, 400, { error: `projectDir does not exist: ${body.projectDir}` });
+      return;
+    }
+    projectDir = body.projectDir;
+  }
+  const dir =
+    scope === "project"
+      ? join(projectDir, ".odw", "workflows")
+      : resolveWorkflowsRoot(config.settings.workflowsRoot);
+  const target = join(dir, `${name}.js`);
+  if (existsSync(target)) {
+    sendJson(res, 409, { error: `a workflow named '${name}' already exists at ${target}` });
+    return;
+  }
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(target, source, "utf8");
+  sendJson(res, 200, { path: target });
 }
 
 function openStream(
@@ -288,53 +597,22 @@ function safeWrite(res: ServerResponse, data: string, clients: Set<ServerRespons
   }
 }
 
-function controlRun(
+async function controlRun(
   req: IncomingMessage,
   res: ServerResponse,
   src: RunSource,
   runId: string,
-): void {
-  // CSRF: this endpoint mutates a run and has no auth. Require a JSON content-type
-  // and a same-origin (or absent) Origin so a cross-site page can't drive it with
-  // a CORS "simple request" — matters when the user opts into an off-loopback bind.
-  if (!String(req.headers["content-type"] ?? "").includes("application/json")) {
-    sendJson(res, 415, { error: "control requires Content-Type: application/json" });
+): Promise<void> {
+  // CSRF posture (Content-Type + same-origin) is enforced by writeGuard upstream.
+  const body = await readJsonBody(req);
+  const action = body && typeof body.action === "string" ? body.action : undefined;
+  if (!action || !CONTROL_ACTIONS.has(action)) {
+    sendJson(res, 400, { error: "action must be one of pause, resume, stop" });
     return;
   }
-  const origin = req.headers.origin;
-  if (origin) {
-    let sameOrigin = false;
-    try {
-      sameOrigin = new URL(origin).host === req.headers.host;
-    } catch {
-      sameOrigin = false;
-    }
-    if (!sameOrigin) {
-      sendJson(res, 403, { error: "cross-origin control requests are rejected" });
-      return;
-    }
-  }
-
-  let body = "";
-  req.on("data", (chunk) => {
-    body += chunk;
-    if (body.length > 4096) req.destroy(); // control payloads are tiny
-  });
-  req.on("end", () => {
-    let action: string | undefined;
-    try {
-      action = JSON.parse(body || "{}").action;
-    } catch {
-      action = undefined;
-    }
-    if (!action || !CONTROL_ACTIONS.has(action)) {
-      sendJson(res, 400, { error: "action must be one of pause, resume, stop" });
-      return;
-    }
-    // The source applies the action (ODW maps resume→"running" for FileControl).
-    src.control(runId, action);
-    sendJson(res, 200, { ok: true, runId, action });
-  });
+  // The source applies the action (ODW maps resume→"running" for FileControl).
+  src.control(runId, action);
+  sendJson(res, 200, { ok: true, runId, action });
 }
 
 function sendJson(res: ServerResponse, status: number, payload: unknown): void {

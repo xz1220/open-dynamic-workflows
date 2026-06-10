@@ -169,8 +169,55 @@ export function resolveAdapter(config: Config, name?: string | null): Adapter {
   return adapter;
 }
 
+/** One row of `GET /api/adapters` / the Launch view's agent picker. */
+export interface AdapterListing {
+  name: string;
+  /** Display label (adapter.label, else the name). */
+  label: string;
+  /** Whether the CLI's executable resolves on PATH right now. */
+  installed: boolean;
+  /** Whether this is the configured defaultAdapter. */
+  isDefault: boolean;
+  /**
+   * The adapter's permission posture in one human-readable line, derived from
+   * its command flags — shown before a user lets it loose on a directory.
+   */
+  permissionNote: string;
+}
+
+/** Every configured adapter with install/default/permission info, sorted by name. */
+export function listAdapters(config: Config): AdapterListing[] {
+  return Object.keys(config.adapters)
+    .sort()
+    .map((name) => {
+      const a = config.adapters[name]!;
+      return {
+        name,
+        label: a.label ?? name,
+        installed: isOnPath(a.command[0]!),
+        isDefault: config.settings.defaultAdapter === name,
+        permissionNote: permissionNote(a.command),
+      };
+    });
+}
+
+/** Derive a one-line permission summary from known CLI flags (else the command). */
+function permissionNote(command: string[]): string {
+  const notes: string[] = [];
+  for (let i = 0; i < command.length; i++) {
+    const arg = command[i]!;
+    const next = command[i + 1];
+    if (arg === "--permission-mode" && next) notes.push(`permission mode: ${next}`);
+    else if (arg === "--dangerously-skip-permissions") notes.push("full autonomy (permission prompts skipped)");
+    else if (arg === "--sandbox" && next) notes.push(`sandbox: ${next}`);
+    else if (arg === "--approval-mode" && next) notes.push(`approval mode: ${next}`);
+    else if (arg === "--yolo" || arg === "--full-auto") notes.push("full autonomy");
+  }
+  return notes.length ? notes.join(" · ") : `runs: ${command[0]}`;
+}
+
 /** Whether an adapter's executable resolves on the current PATH. */
-function isOnPath(cmd: string): boolean {
+export function isOnPath(cmd: string): boolean {
   if (cmd.includes("/")) return existsSync(expandHome(cmd));
   for (const dir of (process.env.PATH ?? "").split(delimiter)) {
     if (!dir) continue;
