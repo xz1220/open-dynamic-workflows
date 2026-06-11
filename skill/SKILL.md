@@ -1,41 +1,43 @@
 ---
 name: open-dynamic-workflows
 description: >
-  Give any coding agent dynamic-workflow power. Write a short JavaScript script
-  in Claude Code's workflow dialect (export const meta + injected agent /
-  parallel / pipeline / phase / log / args / budget globals) and run it against
-  any coding-agent CLI (Codex, Claude Code, Gemini, Qwen, Kimi, or your own) with
-  the `odw` command. Use when a task benefits from fanning out subtasks,
-  multi-stage pipelines, adversarial verification, or loop-until-done discovery,
-  rather than one in-context attempt.
-license: MIT. See LICENSE for full terms.
+  Write and run dynamic workflows: short JavaScript scripts in Claude Code's
+  workflow dialect, run with the `odw` CLI outside the host agent's context,
+  fanning subtasks out to coding-agent CLIs (Codex, Claude Code, Gemini, Qwen,
+  Kimi, or your own) in a background process and handing back only the final
+  result. Use this skill when a task is bigger than a single call — parallel
+  draft fan-out, multi-stage review pipelines, adversarial verification of
+  findings, or discovery loops that run until nothing new turns up — or when
+  the user mentions odw, dynamic workflows, multi-agent orchestration, or
+  fanning out subagents.
+license: MIT
 ---
 
 # Open Dynamic Workflows
 
-> 简体中文版: [`zh-CN/SKILL.md`](zh-CN/SKILL.md)
+A dynamic workflow is a short JavaScript script: the orchestration plan is
+ordinary code, executed by `odw` in a detached background process, dispatching
+each subtask to a real coding-agent CLI process. Intermediate output never
+enters your context; all that comes back is the script's final `return` value.
 
-A *dynamic workflow* is a small JavaScript script that holds an orchestration
-plan in ordinary code and dispatches coding-agent CLIs at scale — outside your
-own context. You (the host agent) **write the script, then run it**; the runtime
-executes it in a background process and hands back only the final result.
+The flow is always three steps: **write the script → `odw run` → inspect the
+result, then act**. Don't use this for work that fits in a single call — just
+do it directly.
 
-The script is plain JavaScript in **Claude Code's exact workflow dialect**, so a
-script written for Claude Code runs here unchanged, and one you write here runs
-on Claude Code.
+## Write the workflow script
 
-Use this when the work is bigger than one call: fan out N drafts and synthesize,
-run a multi-stage review pipeline, verify findings adversarially, or discover
-until nothing new turns up.
-
-## 1. Write a workflow script
-
-A workflow is `export const meta = {…}` (a **pure literal**, at the top) followed
-by a script body. `meta.name` and `meta.description` are **required**; `whenToUse`,
-`phases`, and `model` are optional. The body runs in an async context — use `await`
-directly — and its top-level `return` is the workflow's result. The primitives are
-**injected globals**: do **not** import them — any other top-level `import` or
-`export` in the file is rejected by the loader.
+- The file starts with `export const meta = {…}` — a **pure literal** (no
+  variables, function calls, or template interpolation). `meta.name` and
+  `meta.description` are required; `whenToUse`, `phases`, and `model` are
+  optional.
+- The body runs in an async context: use top-level `await` directly; the
+  top-level `return` value is the workflow's result.
+- The primitives are **injected globals** — never import them. Any top-level
+  `import` / `export` other than `export const meta` is rejected by the
+  loader.
+- Ordinary control flow (loops, `if`, dedup) lives in the script. The
+  primitives only **dispatch and wait**; what to do with results is the
+  script's decision.
 
 ```js
 // fan-out-reduce.js
@@ -59,49 +61,45 @@ return await agent(
 )
 ```
 
-- `args` is the input you pass with `--args` (parsed JSON, or a raw string —
-  input that *looks* like JSON but fails to parse is rejected, not passed through).
-- Ordinary control flow (loops, `if`, dedup) lives in the script. The primitives
-  only **dispatch and wait** — you decide what to do with results.
+Input passed with `--args` is injected as the global `args` (parsed JSON, or a
+raw string — input that *looks like* JSON but fails to parse is rejected
+outright, never silently passed through as a string).
 
-## 2. The primitives (at a glance)
+## Primitives at a glance
 
 | Primitive | What it does |
 | --- | --- |
-| `agent(prompt, opts?)` | Run one coding agent on a subtask; returns its reply text, or a validated object when `opts.schema` is set. The only verb that does work. |
-| `parallel(thunks)` | Run zero-arg thunks concurrently and **wait for all** (barrier). Order preserved; a failed one is `null`. |
-| `pipeline(items, ...stages)` | Stream each item through the stages independently (**no barrier**). Each stage gets `(prev, item, index)`. |
-| `phase(title)` / `log(msg)` | Label following work for progress / emit a progress line. |
+| `agent(prompt, opts?)` | Run one coding agent on a subtask; returns its reply text, or a validated object when `opts.schema` is set. The only verb that does real work. |
+| `parallel(thunks)` | Run zero-arg thunks concurrently and **wait for all** (barrier). Order preserved; a failed slot is `null`. |
+| `pipeline(items, ...stages)` | Stream each item through the stages independently (**no barrier**). Each stage receives `(prev, item, index)`. |
+| `phase(title)` / `log(msg)` | Label the following work for progress / emit one progress line. |
 | `args` | The workflow input (injected). |
 | `budget` | `{ total, spent(), remaining() }` — scale depth to a token target. |
-| `workflow(ref, args?)` | Run another workflow inline (one level deep). `ref` is a managed-directory name or `{ scriptPath }`; the child shares this run's concurrency cap, agent counter, and budget, and its phases group as `▸ <name> · <phase>` lanes. |
-| `validate(source)` | Compile-check a candidate workflow source without executing it; returns `{ ok, meta?, errors, warnings }` (warnings flag Claude-Code-banned APIs). **ODW extension** — not part of Claude Code's dialect, so a script that uses it runs on odw only. |
-| `schema` | A raw JSON Schema object passed as `agent(..., { schema })` (an option, not a global). |
+| `workflow(ref, args?)` | Run another workflow inline (one level deep). `ref` is a managed-directory name or `{ scriptPath }`; the child shares this run's concurrency cap, agent counter, and budget. |
+| `validate(source)` | Compile-check a candidate workflow source without executing it; returns `{ ok, meta?, errors, warnings }`. **ODW extension** — not part of Claude Code's dialect. |
 
 `opts` for `agent`: `{ adapter?, schema?, label?, phase?, model?, agentType?, isolation? }`.
-`adapter` picks the CLI; `model` is forwarded to that adapter's declared model
-flag; `agentType` is a **persona** injected into the prompt (it is *not* an
-adapter name); `isolation: "worktree"` is satisfied by the default copy-isolated
-workspace. Full reference: [`references/primitives.md`](references/primitives.md).
+`adapter` picks the CLI; `schema` is a raw JSON Schema object (an option, not
+a global); `agentType` is a **persona** injected into the prompt — *not* an
+adapter name.
 
-**Rule of thumb:** `parallel` when the next step needs the *whole* batch at once
-(dedup, tally, synthesis); `pipeline` for multi-stage work (the default). Keep
-reductions order-independent — branching on *which agent finished first* breaks
-reproducibility.
+**Rule of thumb:** use `parallel` when the next step needs the **whole batch**
+at once (dedup, tally, synthesis); default to `pipeline` for multi-stage work.
 
-## 3. Run it
+Before writing complex compositions — nested workflows, schema retries,
+budget-scaled depth — read
+[`references/primitives.md`](references/primitives.md).
 
-The `odw` CLI starts the script in the background (fire-and-poll) and lets you
-observe it. Use `--wait` to block and print the result:
+## Run and observe
 
 ```bash
-odw run fan-out-reduce.js --wait --args '{"question": "Design a cache."}'
+odw run wf.js --wait --args '{"question": "Design a cache."}'   # block and print the result
 ```
 
-Fire-and-poll instead:
+For long runs, fire-and-poll instead of blocking yourself:
 
 ```bash
-RUN=$(odw run wf.js)        # prints a run id
+RUN=$(odw run wf.js)        # prints a run id and returns immediately
 odw status $RUN             # state + agent count
 odw logs $RUN --follow      # stream progress events
 odw result $RUN             # print the final value when done
@@ -109,32 +107,38 @@ odw pause $RUN / resume $RUN / stop $RUN
 odw list                    # all runs
 ```
 
-## 4. Configure adapters
+Saved workflows run by name (`odw run <name>`); lookup order:
+`.odw/workflows`, `.claude/workflows`, `~/.odw/workflows`,
+`~/.claude/workflows`.
 
-Codex, Claude Code, Gemini, Qwen, and Kimi work out of the box. To change the
-default, tune flags, or add your own CLI, write an `odw.config.json` (see
-[`references/adapters.md`](references/adapters.md)) and pass `--config`, or place
-it at `./odw.config.json` or `~/.config/odw/config.json`.
+## Adapters
 
-## 5. Invariants
+Codex, Claude Code, Gemini, Qwen, and Kimi work out of the box with no
+configuration. To change the default CLI, tune flags, or plug in a custom CLI,
+read [`references/adapters.md`](references/adapters.md) and write an
+`odw.config.json` (at the project root or `~/.config/odw/config.json`, or pass
+`--config`).
 
-- Agents run independently and in isolation; one never sees another's draft
-  unless your script passes it along.
-- By default each agent runs in an isolated copy of the working tree
-  (`workspaceMode: "copy"`); your real tree is not modified. `inplace` runs
-  agents **directly in the real tree** — no isolation, no diff — so use it only
-  when you *want* in-place edits and point `--source` at a directory you can
-  afford to have modified.
-- Concurrency is capped (`min(16, cpus-2)` by default) and total dispatches are
-  bounded (a runaway guard). Cost is controlled with that cap and `pause`/`stop`.
-- The result is whatever the script `return`s. Inspect it, then decide what to do
-  — the engine does not commit, push, or apply diffs for you.
+## Behavior you must know
 
-## Resources
+- **Isolation**: agents run independently and never see each other — unless
+  the script feeds one's output into another's prompt.
+- **Workspace**: by default each agent runs in an isolated copy of the working
+  tree (copy mode); the real tree is never modified. `inplace` mode has no
+  isolation and no diff — use it only when you actually want in-place edits
+  and `--source` points at a directory you can afford to break.
+- **Cost**: concurrency is capped (default `min(16, cpus - 2)`) and total
+  dispatches per run have a hard guard; use `odw pause` / `odw stop` when a
+  run exceeds expectations.
+- **Results**: the engine never commits, pushes, or applies diffs for you.
+  Inspect the `return` value first, then decide the next step.
 
-- [`references/primitives.md`](references/primitives.md) — full primitive
-  reference, composition patterns, determinism rule.
-- [`references/adapters.md`](references/adapters.md) — adapter config and the
-  built-in CLIs.
-- `examples/` (repo root) — `deep-research.js`, `fan-out-reduce.js`,
-  `adversarial-verify.js`, `loop-until-dry.js`.
+## Common mistakes
+
+| Mistake | Correction |
+| --- | --- |
+| Importing primitives or other modules in the script | Primitives are injected globals; any extra top-level `import`/`export` is rejected by the loader. |
+| Variables, spreads, or function calls inside `meta` | `meta` must be a pure literal. |
+| Expecting failures inside `parallel`/`pipeline` to throw | A failed slot is `null`; `.filter(Boolean)` before reducing. |
+| Branching on which agent finished first | Breaks reproducibility; keep reductions order-independent. |
+| Using `validate()` and expecting the script to run on Claude Code | `validate` is an ODW extension and runs on odw only. |
