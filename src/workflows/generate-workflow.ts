@@ -48,9 +48,6 @@ export const PATTERNS_DIGEST = `Known orchestration patterns (pick what fits; co
 8. duel loop (two CLIs) — one adapter implements, another reviews; a FAIL verdict becomes the
    next round's instruction: agent(fix, { adapter: 'claude' }) ↔ agent(review, { adapter: 'codex' }).`;
 
-/** meta.name of the built-in — Job views key on this to render the preview tab. */
-export const GENERATE_WORKFLOW_NAME = "generate-workflow";
-
 /**
  * The workflow source. Plain dialect JavaScript; it uses the `validate` global
  * (ODW extension), so it runs on odw only — by design, it is the engine's own

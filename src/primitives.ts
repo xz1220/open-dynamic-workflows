@@ -209,15 +209,21 @@ export function createPrimitives(
     }
     const loaded = loadWorkflowScript(text, scriptPath); // throws on a syntax error
     const name = loaded.meta.name;
+    const entryLane = `▸ ${name}`;
     // The child gets its own phase cursor (so a concurrent parent agent keeps
     // its label) but shares everything that costs or controls: scheduler,
     // bridge, sink, control, and the usage tally.
-    const childCtx: RunContext = { ...ctx, currentPhase: `▸ ${name}` };
+    const childCtx: RunContext = { ...ctx, currentPhase: entryLane };
     const childGlobals = createPrimitives(childCtx, {
       depth: depth + 1,
       phasePrefix: `▸ ${name} · `,
     });
     ctx.emit(event(LOG, { message: `▸ entering workflow ${name} (${scriptPath})` }));
+    // Open the child's entry lane as a real phase, so a child that dispatches
+    // agents BEFORE its first phase() call (phases are optional) renders them in
+    // its own lane rather than inheriting the parent's current phase. A child
+    // that does call phase() immediately just adds its named lanes after this.
+    ctx.emit(event(PHASE_STARTED, { phase: entryLane }));
     const result = await loaded.run(childGlobals, childArgs ?? null);
     ctx.emit(event(LOG, { message: `▸ workflow ${name} returned` }));
     return result;

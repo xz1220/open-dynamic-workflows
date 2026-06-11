@@ -72,7 +72,7 @@ function stageHead(run: RunDetail, tab: JobTab): string {
     `<div class="readonly-actions">` +
     // D6: a run launched from the App must be stoppable from the App. ODW only —
     // the Claude provider stays read-only (the server refuses control anyway).
-    (run.provider === "odw" && ACTIVE.has(run.state)
+    (run.provider === "odw" && ACTIVE.has(run.state) && store.capabilities.writable
       ? `<span class="btn danger sm" data-stop="${esc(run.runId)}">${t("⏹ Stop")}</span>`
       : "") +
     `<span class="btn ghost sm" data-copy="${esc(run.runId)}">${t("⧉ Copy run id")}</span>` +
@@ -199,10 +199,12 @@ function previewTab(run: RunDetail, gen: { script: string; meta?: { name?: strin
     `<div class="phasepills" style="margin:10px 0 14px;">${pills}</div>` +
     `<div class="srcview">${highlight(gen.script)}</div>` +
     perm +
-    `<div class="lf-actions" style="margin-top:16px;">` +
-    `<span class="btn primary" data-run-generated="1">${t("▶ Run workflow")}</span>` +
-    `<span class="btn secondary" data-regenerate="1">${t("↻ Regenerate")}</span>` +
-    `</div>` +
+    (store.capabilities.writable
+      ? `<div class="lf-actions" style="margin-top:16px;">` +
+        `<span class="btn primary" data-run-generated="1">${t("▶ Run workflow")}</span>` +
+        `<span class="btn secondary" data-regenerate="1">${t("↻ Regenerate")}</span>` +
+        `</div>`
+      : `<div class="lf-hint" style="margin-top:14px;">${t("This dashboard is read-only (served off-loopback). Run it from the local app or CLI.")}</div>`) +
     `</div></div>`
   );
 }
@@ -210,7 +212,7 @@ function previewTab(run: RunDetail, gen: { script: string; meta?: { name?: strin
 /** D4: a launch-originated run's result offers one-click save to the Workspace. */
 function saveBlock(run: RunDetail): string {
   if (run.origin !== "launch" || run.workflowName === "generate-workflow") return "";
-  if (run.state !== "done") return "";
+  if (run.state !== "done" || !store.capabilities.writable) return "";
   if (saveForm.savedPath) {
     return `<div class="savebar saved">✓ ${t("saved to {path}", { path: esc(saveForm.savedPath) })} — <span data-nav="#/workspace" style="cursor:pointer;text-decoration:underline;">${t("open Workspace")}</span></div>`;
   }
@@ -221,8 +223,8 @@ function saveBlock(run: RunDetail): string {
     `<span class="lbl">${t("Keep this workflow?")}</span>` +
     `<input id="save-name" class="lf-input sm" value="${esc(name)}" placeholder="${t("workflow name")}">` +
     `<select id="save-scope" class="lf-select sm">` +
-    `<option value="global"${saveForm.scope === "global" ? " selected" : ""}>${t("global (~/.odw/workflows)")}</option>` +
-    `<option value="project"${saveForm.scope === "project" ? " selected" : ""}>${t("project (<source>/.odw/workflows)")}</option>` +
+    `<option value="global"${saveForm.scope === "global" ? " selected" : ""}>${esc(t("global (~/.odw/workflows)"))}</option>` +
+    `<option value="project"${saveForm.scope === "project" ? " selected" : ""}>${esc(t("project (<source>/.odw/workflows)"))}</option>` +
     `</select>` +
     `<span class="btn secondary sm${saveForm.busy ? " disabled" : ""}" data-save="1">${saveForm.busy ? t("Saving…") : t("☆ Save to Workspace")}</span>` +
     err +

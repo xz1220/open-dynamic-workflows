@@ -14,6 +14,7 @@ import { execPath } from "node:process";
 import { fileURLToPath } from "node:url";
 
 import { loadConfig, resolveAdapter, resolveRunsRoot } from "../adapters/config.js";
+import type { Config } from "../adapters/types.js";
 import { loadWorkflowScript } from "../loader.js";
 import { isSeaBinary } from "../sea.js";
 import { resolveWorkflow } from "../workflows/resolve.js";
@@ -36,14 +37,39 @@ export interface StartRunOptions {
   origin?: string | null;
 }
 
+/**
+ * The prelude both entry points share: load + validate config, resolve the run
+ * source, fail-fast on an unknown adapter, and open the run store. Keeping it in
+ * one place means a new StartRunOption or validation rule lands for path-based
+ * AND inline launches at once.
+ */
+function prepare(options: StartRunOptions): { config: Config; source: string; store: RunStore } {
+  const config = loadConfig(options.configPath ?? null); // validates config & resolves defaults
+  const source = options.source ? resolve(options.source) : process.cwd();
+  if (options.adapter) resolveAdapter(config, options.adapter); // fail fast on unknown names
+  const store = new RunStore(options.runsRoot ?? resolveRunsRoot(config.settings.runsRoot));
+  return { config, source, store };
+}
+
+/** The CreateRunInput fields every launch shares, given its resolved source. */
+function commonCreateInput(options: StartRunOptions, source: string, workflowName: string | null) {
+  return {
+    args: options.args,
+    configPath: options.configPath ?? null,
+    source,
+    budgetTotal: options.budgetTotal ?? null,
+    workflowName,
+    adapter: options.adapter ?? null,
+    origin: options.origin ?? null,
+  };
+}
+
 /** Create a run and launch its worker process; return `{ runId, store }`. */
 export function startRun(
   script: string,
   options: StartRunOptions = {},
 ): { runId: string; store: RunStore } {
-  const config = loadConfig(options.configPath ?? null); // validates config & resolves defaults
-  const source = options.source ? resolve(options.source) : process.cwd();
-  if (options.adapter) resolveAdapter(config, options.adapter); // fail fast on unknown names
+  const { config, source, store } = prepare(options);
   // `script` may be a path (./wf.js) or a managed-directory name (deep-research);
   // resolve against `source` so --source steers both literal paths and name lookup.
   const { scriptPath } = resolveWorkflow(script, { cwd: source, config });
@@ -60,17 +86,7 @@ export function startRun(
     workflowName = null;
   }
 
-  const store = new RunStore(options.runsRoot ?? resolveRunsRoot(config.settings.runsRoot));
-  const runId = store.create({
-    script: scriptPath,
-    args: options.args,
-    configPath: options.configPath ?? null,
-    source,
-    budgetTotal: options.budgetTotal ?? null,
-    workflowName,
-    adapter: options.adapter ?? null,
-    origin: options.origin ?? null,
-  });
+  const runId = store.create({ script: scriptPath, ...commonCreateInput(options, source, workflowName) });
   spawnWorker(store, runId, source);
   return { runId, store };
 }
@@ -90,9 +106,7 @@ export function startRunFromSource(
   sourceCode: string,
   options: StartRunOptions & { allowInvalid?: boolean } = {},
 ): { runId: string; store: RunStore } {
-  const config = loadConfig(options.configPath ?? null);
-  const source = options.source ? resolve(options.source) : process.cwd();
-  if (options.adapter) resolveAdapter(config, options.adapter);
+  const { source, store } = prepare(options);
 
   let workflowName: string | null = null;
   try {
@@ -101,17 +115,10 @@ export function startRunFromSource(
     if (!options.allowInvalid) throw err; // surface the compile error to the caller
   }
 
-  const store = new RunStore(options.runsRoot ?? resolveRunsRoot(config.settings.runsRoot));
   const runId = store.create({
     script: "",
     inlineSource: sourceCode,
-    args: options.args,
-    configPath: options.configPath ?? null,
-    source,
-    budgetTotal: options.budgetTotal ?? null,
-    workflowName,
-    adapter: options.adapter ?? null,
-    origin: options.origin ?? null,
+    ...commonCreateInput(options, source, workflowName),
   });
   spawnWorker(store, runId, source);
   return { runId, store };

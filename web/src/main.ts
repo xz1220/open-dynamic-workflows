@@ -13,7 +13,7 @@ import { store } from "./store";
 import { renderActivity } from "./views/activity";
 import { renderJob, saveForm, type JobTab } from "./views/job";
 import { renderJobs } from "./views/jobs";
-import { launchForm, prefillLaunch, rememberDir, renderLaunch } from "./views/launch";
+import { effectiveAdapter, launchForm, prefillLaunch, rememberDir, renderLaunch } from "./views/launch";
 import { renderSettings } from "./views/settings";
 import { orderedWorkflows, renderWorkspace, wfKey } from "./views/workspace";
 import type { WorkflowDetail } from "./types";
@@ -86,6 +86,11 @@ function viewHtml(route: Route): string {
 function render(): void {
   const route = currentRoute();
   syncNative(store.runs); // drive Dock badge + native notifications when wrapped
+  // render() is a full innerHTML swap fired on every store emit (SSE pushes,
+  // 1.2s job poll). That destroys any focused text field mid-typing — the Launch
+  // task box and the Save-to-Workspace name input. Capture focus + caret on our
+  // own form fields and restore them after the swap so typing survives a repaint.
+  const focus = captureFocus();
   root.innerHTML =
     `<div class="app">` +
     toolbar(route) +
@@ -93,6 +98,33 @@ function render(): void {
     `<div class="main">${viewHtml(route)}</div>` +
     statusbar() +
     `</div>`;
+  restoreFocus(focus);
+}
+
+const FOCUSABLE_IDS = new Set(["lf-task", "lf-source", "lf-adapter", "save-name", "save-scope"]);
+type FocusSnapshot = { id: string; start: number | null; end: number | null } | null;
+
+function captureFocus(): FocusSnapshot {
+  const el = document.activeElement as HTMLInputElement | HTMLTextAreaElement | null;
+  if (!el || !el.id || !FOCUSABLE_IDS.has(el.id)) return null;
+  // selectionStart is null on <select> and some input types — guard it.
+  const start = "selectionStart" in el ? el.selectionStart : null;
+  const end = "selectionEnd" in el ? el.selectionEnd : null;
+  return { id: el.id, start, end };
+}
+
+function restoreFocus(snap: FocusSnapshot): void {
+  if (!snap) return;
+  const el = document.getElementById(snap.id) as HTMLInputElement | HTMLTextAreaElement | null;
+  if (!el) return;
+  el.focus();
+  if (snap.start != null && "setSelectionRange" in el) {
+    try {
+      el.setSelectionRange(snap.start, snap.end ?? snap.start);
+    } catch {
+      /* type doesn't support selection ranges — focus alone is enough */
+    }
+  }
 }
 
 // --- per-route data loading + polling ---
@@ -227,12 +259,11 @@ root.addEventListener("click", (ev) => {
       launchForm.error = "";
       render();
       try {
-        // Read the live DOM values: the select's preselected default counts even
-        // when the user never touched it (module state only tracks edits).
-        const adapterEl = document.getElementById("lf-adapter") as HTMLSelectElement | null;
-        const sourceEl = document.getElementById("lf-source") as HTMLInputElement | null;
-        const adapter = (adapterEl?.value ?? launchForm.adapter).trim();
-        const source = (sourceEl?.value ?? launchForm.source).trim();
+        // effectiveAdapter() is the single source of truth for the picked agent
+        // (the same value the <select> preselects), so a never-touched default
+        // still posts — and it can never be an uninstalled adapter.
+        const adapter = effectiveAdapter();
+        const source = launchForm.source.trim();
         const body: { task: string; adapter?: string; source?: string } = { task: launchForm.task.trim() };
         if (adapter) body.adapter = adapter;
         if (source) body.source = source;
@@ -357,4 +388,7 @@ document.body.classList.toggle("is-native", isNative());
 applyDocLang();
 if (!location.hash) location.hash = "#/activity";
 if (!snap) store.connect();
+// Learn whether this dashboard may write (loopback) so write affordances are
+// hidden on a remotely-viewed off-loopback bind rather than failing on click.
+void store.loadCapabilities();
 void store.loadRuns().then(() => enterRoute());

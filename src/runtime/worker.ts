@@ -73,7 +73,9 @@ export async function executeRun(runDir: string): Promise<string> {
     // Inline-source runs are exempt: their workflow.js lives inside the run
     // directory and is not name-addressable, so the note would only mislead.
     const stem = basename(script).replace(/\.[^.]*$/, "");
-    const isInline = dirname(script) === runDir;
+    // Inline-launched runs (meta.inline) carry their script inside the run dir
+    // and are not name-addressable, so the divergence note would only mislead.
+    const isInline = meta.inline === true;
     if (!isInline && loaded.meta.name !== stem) {
       sink.emit(
         event(LOG, {

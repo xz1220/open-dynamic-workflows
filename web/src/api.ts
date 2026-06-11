@@ -7,6 +7,7 @@
  */
 import type {
   AdapterListing,
+  Capabilities,
   RunDetail,
   RunSummary,
   WorkflowDetail,
@@ -44,6 +45,7 @@ export const api = {
   workflow: (name: string, provider?: string) =>
     getJSON<WorkflowDetail>(`/api/workflows/${enc(name)}${provider ? `?provider=${enc(provider)}` : ""}`),
   adapters: () => getJSON<AdapterListing[]>("/api/adapters"),
+  capabilities: () => getJSON<Capabilities>("/api/capabilities"),
 
   // --- launch-layer writes ---
   generate: (body: { task: string; adapter?: string; source?: string }) =>

@@ -46,10 +46,10 @@ export interface LoadedWorkflow {
   run(globals: WorkflowGlobals, args: unknown): Promise<unknown>;
 }
 
-// The injected names, in the order the wrapper function receives them.
-// `validate` is an ODW extension (absent from Claude Code's Workflow tool); it
-// sits last so the Claude-compatible prefix of the signature never moves.
-const PARAM_NAMES = [
+// The injected names, in the order the wrapper function receives them. These
+// eight are Claude Code's exact Workflow-tool globals, so the parameter list a
+// script compiles against matches both runtimes.
+const CLAUDE_PARAM_NAMES = [
   "agent",
   "parallel",
   "pipeline",
@@ -58,8 +58,15 @@ const PARAM_NAMES = [
   "args",
   "budget",
   "workflow",
-  "validate",
 ] as const;
+// `validate` is an ODW-only extension. Injecting it as a 9th formal parameter
+// would make `const validate = …` in a body a duplicate-declaration compile
+// error — and Claude Code does NOT reserve the name, so a perfectly valid
+// Claude-authored script would break only on odw. So we inject it only when the
+// body does not declare its own `validate` (the script's own binding then wins,
+// exactly as it would on Claude Code).
+const VALIDATE_PARAM = "validate";
+const DECLARES_VALIDATE = /\b(?:const|let|var|function|class)\s+validate\b/;
 
 const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor as new (
   ...args: string[]
@@ -71,9 +78,14 @@ const EXPORT_META = /\bexport\s+const\s+meta\s*=/;
 export function loadWorkflowScript(source: string, filename: string): LoadedWorkflow {
   const { meta, body } = extractMeta(source, filename);
 
+  // Inject `validate` only if the body does not bind that identifier itself.
+  // Check the masked body so a `validate` inside a string/comment never counts.
+  const injectValidate = !DECLARES_VALIDATE.test(maskNonCode(body));
+  const paramNames = injectValidate ? [...CLAUDE_PARAM_NAMES, VALIDATE_PARAM] : [...CLAUDE_PARAM_NAMES];
+
   let factory: (...callArgs: unknown[]) => Promise<unknown>;
   try {
-    factory = new AsyncFunction(...PARAM_NAMES, `${body}\n//# sourceURL=${filename}`);
+    factory = new AsyncFunction(...paramNames, `${body}\n//# sourceURL=${filename}`);
   } catch (err) {
     throw new WorkflowScriptError(`failed to compile workflow ${filename}: ${(err as Error).message}`);
   }
@@ -81,6 +93,9 @@ export function loadWorkflowScript(source: string, filename: string): LoadedWork
   return {
     meta,
     run(globals: WorkflowGlobals, args: unknown): Promise<unknown> {
+      // Extra trailing args are ignored by JS, so passing validate even when the
+      // factory has eight params is harmless — the order of the first eight is
+      // what matters and never moves.
       return factory(
         globals.agent,
         globals.parallel,
@@ -99,15 +114,20 @@ export function loadWorkflowScript(source: string, filename: string): LoadedWork
 /**
  * Scan a workflow source for APIs that compile and run fine under ODW but are
  * BANNED in Claude Code's Workflow tool (they break its resume journal):
- * `Date.now()`, `Math.random()`, and arg-less `new Date()`. The scan runs over
- * the masked source, so occurrences inside strings/comments never count.
+ * `Date.now()`, `Math.random()`, and arg-less `new Date()`.
+ *
+ * The scan runs over a mask that blanks comments and ordinary strings AND the
+ * *text* of template literals, but KEEPS the code inside `${…}` interpolations
+ * visible — `agent(`as of ${Date.now()}`)` runs that banned call for real, so
+ * the warning must catch it (the generic `maskNonCode`, used for meta
+ * extraction, blanks whole template literals and would miss it).
  *
  * These come back as *warnings*, not errors — ODW itself executes them — so a
  * caller (the generate-workflow repair loop, a linter) can decide how hard to
  * push for dual-compatibility.
  */
 export function scanDualCompat(source: string): string[] {
-  const masked = maskNonCode(source);
+  const masked = maskForDualScan(source);
   const warnings: string[] = [];
   const rules: Array<[RegExp, string]> = [
     [/\bDate\s*\.\s*now\s*\(/, "Date.now() is banned in Claude Code workflows — pass timestamps in via args"],
@@ -118,6 +138,163 @@ export function scanDualCompat(source: string): string[] {
     if (re.test(masked)) warnings.push(message);
   }
   return warnings;
+}
+
+/**
+ * Like {@link maskNonCode}, but template-literal *interpolations* stay visible:
+ * only comments, ordinary strings, and template *text* are blanked. Strings,
+ * comments, and nested templates inside an interpolation are themselves masked,
+ * so the result is "code as it executes" with only inert text removed.
+ */
+function maskForDualScan(src: string): string {
+  const out = src.split("");
+  const n = src.length;
+  const blank = (from: number, to: number): void => {
+    for (let k = from; k < to; k++) if (out[k] !== "\n") out[k] = " ";
+  };
+
+  // src[i] is the char after an opening backtick; returns the index after the
+  // closing backtick. Blanks literal text, recurses into ${…} as code.
+  const scanTemplate = (start: number): number => {
+    let i = start;
+    let textStart = i;
+    while (i < n) {
+      const ch = src[i];
+      if (ch === "\\") {
+        i += 2;
+        continue;
+      }
+      if (ch === "`") {
+        blank(textStart, i);
+        return i + 1;
+      }
+      if (ch === "$" && src[i + 1] === "{") {
+        blank(textStart, i + 2); // text + the "${" delimiter
+        i = scanInterp(i + 2); // interior visible (its own strings blanked)
+        textStart = i;
+        continue;
+      }
+      i++;
+    }
+    blank(textStart, i);
+    return i;
+  };
+
+  // src[i] is the char after "${"; returns the index after the matching "}".
+  const scanInterp = (start: number): number => {
+    let i = start;
+    let depth = 1;
+    while (i < n && depth > 0) {
+      const ch = src[i];
+      const next = src[i + 1];
+      if (ch === "/" && next === "/") {
+        let j = i + 2;
+        while (j < n && src[j] !== "\n") j++;
+        blank(i, j);
+        i = j;
+        continue;
+      }
+      if (ch === "/" && next === "*") {
+        let j = i + 2;
+        while (j < n && !(src[j] === "*" && src[j + 1] === "/")) j++;
+        j = Math.min(n, j + 2);
+        blank(i, j);
+        i = j;
+        continue;
+      }
+      if (ch === '"' || ch === "'") {
+        i = scanString(i, ch);
+        continue;
+      }
+      if (ch === "`") {
+        i = scanTemplate(i + 1);
+        continue;
+      }
+      if (ch === "{") depth++;
+      else if (ch === "}") depth--;
+      i++;
+    }
+    return i;
+  };
+
+  const scanString = (start: number, quote: string): number => {
+    let j = start + 1;
+    let escaped = false;
+    while (j < n) {
+      const c = src[j];
+      if (escaped) escaped = false;
+      else if (c === "\\") escaped = true;
+      else if (c === quote) {
+        j++;
+        break;
+      }
+      j++;
+    }
+    blank(start, j);
+    return j;
+  };
+
+  let i = 0;
+  let prevSig = "";
+  while (i < n) {
+    const ch = src[i]!;
+    const next = src[i + 1];
+    if (ch === "/" && next === "/") {
+      let j = i + 2;
+      while (j < n && src[j] !== "\n") j++;
+      blank(i, j);
+      i = j;
+      continue;
+    }
+    if (ch === "/" && next === "*") {
+      let j = i + 2;
+      while (j < n && !(src[j] === "*" && src[j + 1] === "/")) j++;
+      j = Math.min(n, j + 2);
+      blank(i, j);
+      i = j;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      i = scanString(i, ch);
+      prevSig = ch;
+      continue;
+    }
+    if (ch === "`") {
+      i = scanTemplate(i + 1);
+      prevSig = "`";
+      continue;
+    }
+    if (ch === "/" && regexAllowed(prevSig)) {
+      const j = scanRegex(src, i, n);
+      if (j !== null) {
+        blank(i, j);
+        i = j;
+        prevSig = "/";
+        continue;
+      }
+    }
+    if (!/\s/.test(ch)) prevSig = ch;
+    i++;
+  }
+  return out.join("");
+}
+
+/** A terminated regex literal starting at `start`, or null. Shared shape with maskNonCode. */
+function scanRegex(src: string, start: number, n: number): number | null {
+  let j = start + 1;
+  let escaped = false;
+  let inClass = false;
+  while (j < n) {
+    const c = src[j]!;
+    if (escaped) escaped = false;
+    else if (c === "\\") escaped = true;
+    else if (c === "[") inClass = true;
+    else if (c === "]") inClass = false;
+    else if (c === "\n") return null;
+    else if (c === "/" && !inClass) return j + 1;
+    j++;
+  }
+  return null;
 }
 
 // --- internals ---------------------------------------------------------------

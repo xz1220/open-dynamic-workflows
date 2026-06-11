@@ -201,16 +201,31 @@ export function listAdapters(config: Config): AdapterListing[] {
     });
 }
 
-/** Derive a one-line permission summary from known CLI flags (else the command). */
+/**
+ * Derive a one-line permission summary from known CLI flags (else the command).
+ * Handles both `--flag value` and `--flag=value` spellings — the `=` form is
+ * common and a security-transparency note that missed it would silently
+ * under-report the most dangerous (`--sandbox=danger-full-access`,
+ * `--permission-mode=bypassPermissions`) configurations.
+ */
 function permissionNote(command: string[]): string {
   const notes: string[] = [];
+  /** The value of `flag`, whether spelled `--flag value` or `--flag=value`. */
+  const valueOf = (flag: string, i: number): string | null => {
+    const arg = command[i]!;
+    if (arg === flag) return command[i + 1] ?? null;
+    if (arg.startsWith(flag + "=")) return arg.slice(flag.length + 1) || null;
+    return null;
+  };
   for (let i = 0; i < command.length; i++) {
     const arg = command[i]!;
-    const next = command[i + 1];
-    if (arg === "--permission-mode" && next) notes.push(`permission mode: ${next}`);
+    const pm = valueOf("--permission-mode", i);
+    const sb = valueOf("--sandbox", i);
+    const am = valueOf("--approval-mode", i);
+    if (pm) notes.push(`permission mode: ${pm}`);
+    else if (sb) notes.push(`sandbox: ${sb}`);
+    else if (am) notes.push(`approval mode: ${am}`);
     else if (arg === "--dangerously-skip-permissions") notes.push("full autonomy (permission prompts skipped)");
-    else if (arg === "--sandbox" && next) notes.push(`sandbox: ${next}`);
-    else if (arg === "--approval-mode" && next) notes.push(`approval mode: ${next}`);
     else if (arg === "--yolo" || arg === "--full-auto") notes.push("full autonomy");
   }
   return notes.length ? notes.join(" · ") : `runs: ${command[0]}`;

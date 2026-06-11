@@ -107,6 +107,10 @@ export class RunStore {
       workflowName: input.workflowName ?? null,
       adapter: input.adapter ?? null,
       origin: input.origin ?? null,
+      // First-class fact (not inferred from path topology): the script lives in
+      // this run dir because it was launched from inline source. Drives the
+      // worker's run-by-name divergence exemption and `odw rerun` re-archival.
+      inline: input.inlineSource != null,
       createdAt: now(),
     });
     writeJson(join(dir, STATUS), { runId, state: "pending", dispatched: 0, updatedAt: now() });

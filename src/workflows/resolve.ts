@@ -134,8 +134,13 @@ function isPathLike(arg: string): boolean {
   );
 }
 
+/** A safe, flat workflow name (the same rule `odw run <name>` resolves by). */
+export function isValidWorkflowName(arg: string): boolean {
+  return arg.length > 0 && arg.length <= MAX_NAME_LEN && arg !== "." && arg !== ".." && NAME_RE.test(arg);
+}
+
 function isValidName(arg: string): boolean {
-  return arg.length <= MAX_NAME_LEN && arg !== "." && arg !== ".." && NAME_RE.test(arg);
+  return isValidWorkflowName(arg);
 }
 
 function resolveAsPath(arg: string, cwd: string): ResolvedWorkflow {

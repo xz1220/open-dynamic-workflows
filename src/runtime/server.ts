@@ -63,6 +63,7 @@ import type { RunSource } from "./run-source.js";
 import { RunStore } from "./run-store.js";
 import type { RunSummary } from "./runs-view.js";
 import { listWorkflowSummaries, workflowDetail } from "./workflows-view.js";
+import { isValidWorkflowName } from "../workflows/resolve.js";
 
 export interface ServeOptions {
   store: RunStore;
@@ -92,8 +93,6 @@ const DEFAULT_PORT = 4317;
 const DEFAULT_HOST = "127.0.0.1";
 const RUN_ID = /^[A-Za-z0-9._-]+$/;
 const CONTROL_ACTIONS = new Set(["pause", "resume", "stop"]);
-/** Workflow names savable via POST /api/workflows — mirrors resolve.ts NAME_RE. */
-const WORKFLOW_NAME = /^[A-Za-z0-9._-]+$/;
 /** Body cap for write endpoints; inline scripts are the largest legitimate payload. */
 const MAX_BODY_BYTES = 512 * 1024;
 
@@ -121,7 +120,14 @@ function writeGuard(req: IncomingMessage, res: ServerResponse, boundHost: string
     sendJson(res, 409, { error: "writes are loopback-only; token auth is a future opt-in" });
     return false;
   }
-  if (!String(req.headers["content-type"] ?? "").includes("application/json")) {
+  // Compare the MIME *essence* (type/subtype before any ";" parameters), not a
+  // substring: `text/plain; x=application/json` is a CORS "simple request" and
+  // must NOT pass, while `application/json; charset=utf-8` must.
+  const essence = String(req.headers["content-type"] ?? "")
+    .split(";")[0]!
+    .trim()
+    .toLowerCase();
+  if (essence !== "application/json") {
     sendJson(res, 415, { error: "write requests require Content-Type: application/json" });
     return false;
   }
@@ -141,25 +147,42 @@ function writeGuard(req: IncomingMessage, res: ServerResponse, boundHost: string
   return true;
 }
 
-/** Read and JSON-parse a request body. Resolves undefined on invalid JSON. */
+/**
+ * Read and JSON-parse a request body. Resolves `undefined` on invalid/empty
+ * JSON OR when the body exceeds {@link MAX_BODY_BYTES} (the caller turns that
+ * into a 400). Settling exactly once is guaranteed even on `destroy()`, whose
+ * abort emits neither `end` nor `error` — a `close` listener catches it, so the
+ * awaiting handler never hangs and the oversized buffer is dropped.
+ */
 function readJsonBody(req: IncomingMessage): Promise<Record<string, unknown> | undefined> {
   return new Promise((resolvePromise) => {
     let body = "";
+    let settled = false;
+    const settle = (value: Record<string, unknown> | undefined): void => {
+      if (settled) return;
+      settled = true;
+      resolvePromise(value);
+    };
     req.on("data", (chunk) => {
+      if (settled) return;
       body += chunk;
-      if (body.length > MAX_BODY_BYTES) req.destroy();
+      if (body.length > MAX_BODY_BYTES) {
+        settle(undefined); // too large → caller responds 400; stop buffering
+        req.destroy();
+      }
     });
-    req.on("error", () => resolvePromise(undefined));
+    req.on("error", () => settle(undefined));
+    req.on("close", () => settle(undefined)); // covers destroy() with no error
     req.on("end", () => {
       try {
         const parsed = JSON.parse(body || "{}") as unknown;
-        resolvePromise(
+        settle(
           parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
             ? (parsed as Record<string, unknown>)
             : undefined,
         );
       } catch {
-        resolvePromise(undefined);
+        settle(undefined);
       }
     });
   });
@@ -310,6 +333,13 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandleCont
       sendJson(res, 200, listAdapters(config));
       return;
     }
+    if (method === "GET" && path === "/api/capabilities") {
+      // The SPA hides write affordances (Launch form, Run/Save/Stop) when writes
+      // are refused, so a remotely-viewed off-loopback dashboard shows no dead
+      // buttons. Mirrors the writeGuard's loopback-only rule exactly.
+      sendJson(res, 200, { writable: isLoopbackBind(boundHost) });
+      return;
+    }
     if (method === "POST" && path === "/api/generate") {
       if (!writeGuard(req, res, boundHost)) return;
       await postGenerate(req, res, store, config, configPath, cwd);
@@ -408,11 +438,22 @@ function checkLaunchInputs(
   body: Record<string, unknown>,
 ): { adapter: string | null; source: string } | null {
   const adapter = typeof body.adapter === "string" && body.adapter ? body.adapter : null;
-  if (adapter && !config.adapters[adapter]) {
-    sendJson(res, 400, {
-      error: `unknown adapter '${adapter}'; available: ${Object.keys(config.adapters).sort().join(", ")}`,
-    });
-    return null;
+  if (adapter) {
+    const known = listAdapters(config).find((a) => a.name === adapter);
+    if (!known) {
+      sendJson(res, 400, {
+        error: `unknown adapter '${adapter}'; available: ${Object.keys(config.adapters).sort().join(", ")}`,
+      });
+      return null;
+    }
+    // A configured-but-not-installed adapter would spawn-ENOENT at the first
+    // dispatch — fail here with an actionable message instead of a dead run.
+    if (!known.installed) {
+      sendJson(res, 400, {
+        error: `adapter '${adapter}' is configured but its CLI was not found on PATH`,
+      });
+      return null;
+    }
   }
   const source = typeof body.source === "string" && body.source ? body.source : cwd;
   let isDir = false;
@@ -523,8 +564,12 @@ async function postWorkflows(
     sendJson(res, 400, { error: "body must be a JSON object" });
     return;
   }
-  const name = typeof body.name === "string" ? body.name.trim() : "";
-  if (!name || !WORKFLOW_NAME.test(name) || name === "." || name === "..") {
+  // Accept a user-typed filename ("review.js") as the name "review": the run-by-
+  // name resolver keys on the stem, so saving the extension would create
+  // "review.js.js" that `odw run review` could never find.
+  const rawName = typeof body.name === "string" ? body.name.trim() : "";
+  const name = rawName.replace(/\.(?:js|mjs|cjs)$/i, "");
+  if (!isValidWorkflowName(name)) {
     sendJson(res, 400, { error: "name must use only letters, digits, '.', '_' or '-'" });
     return;
   }

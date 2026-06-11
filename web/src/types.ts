@@ -99,3 +99,8 @@ export interface WorkflowEvent {
 }
 
 export type Connection = "connecting" | "live" | "reconnecting";
+
+/** GET /api/capabilities — whether this dashboard may start/control runs. */
+export interface Capabilities {
+  writable: boolean;
+}

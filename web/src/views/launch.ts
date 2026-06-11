@@ -56,16 +56,27 @@ export function prefillLaunch(values: { task?: string; adapter?: string; source?
   launchForm.error = "";
 }
 
+/**
+ * The adapter the form should act on: the user's explicit pick, else the
+ * configured default IF it's installed, else the first installed adapter. Never
+ * an uninstalled adapter — selecting one yields an `<option selected disabled>`
+ * whose value still posts, producing a guaranteed spawn-ENOENT run. Returns ""
+ * when nothing is installed.
+ */
+export function effectiveAdapter(): string {
+  const adapters = store.adapters ?? [];
+  if (launchForm.adapter && adapters.some((a) => a.name === launchForm.adapter && a.installed)) {
+    return launchForm.adapter;
+  }
+  const def = adapters.find((a) => a.isDefault && a.installed);
+  if (def) return def.name;
+  return adapters.find((a) => a.installed)?.name ?? "";
+}
+
 function adapterOptions(): string {
   const adapters = store.adapters ?? [];
   if (adapters.length === 0) return `<option value="">${t("loading adapters…")}</option>`;
-  // Preselect: the user's previous pick, else the configured default, else the
-  // first installed adapter.
-  const selected =
-    launchForm.adapter ||
-    adapters.find((a) => a.isDefault)?.name ||
-    adapters.find((a) => a.installed)?.name ||
-    "";
+  const selected = effectiveAdapter();
   return adapters
     .map((a) => {
       const flag = a.installed ? "" : ` — ${t("not installed")}`;
@@ -79,9 +90,7 @@ function adapterOptions(): string {
 /** The permission line for the currently selected adapter (transparency, §3.5-4). */
 function permissionLine(): string {
   const adapters = store.adapters ?? [];
-  const name =
-    launchForm.adapter || adapters.find((a) => a.isDefault)?.name || adapters.find((a) => a.installed)?.name;
-  const chosen = adapters.find((a) => a.name === name);
+  const chosen = adapters.find((a) => a.name === effectiveAdapter());
   if (!chosen) return "";
   return (
     `<div class="lf-perm"><span class="k">${t("agent permissions")}</span>` +
@@ -90,6 +99,18 @@ function permissionLine(): string {
 }
 
 export function renderLaunch(): string {
+  // Off-loopback dashboards can't write — show the read-only truth instead of a
+  // form whose Generate would 409. Mirrors the server's writeGuard.
+  if (!store.capabilities.writable) {
+    return (
+      `<div class="content launch">` +
+      `<h1 class="page-h1">${t("Launch")}</h1>` +
+      `<div class="empty"><div class="gh">${t("Read-only dashboard")}</div>` +
+      `<div>${t("This dashboard is served off-loopback, so it can only observe. Start runs from the local app or the CLI.")}</div>` +
+      `<div class="codehint">odw run &lt;name&gt;</div></div>` +
+      `</div>`
+    );
+  }
   const recents = recentDirs();
   const datalist = recents.length
     ? `<datalist id="recent-dirs">${recents.map((d) => `<option value="${esc(d)}"></option>`).join("")}</datalist>`

@@ -10,6 +10,7 @@
 import { api } from "./api";
 import type {
   AdapterListing,
+  Capabilities,
   Connection,
   RunDetail,
   RunSummary,
@@ -27,6 +28,9 @@ class Store {
   runs: RunSummary[] = [];
   workflows: WorkflowSummary[] | null = null;
   adapters: AdapterListing[] | null = null;
+  // Default writable = true (the loopback common case) until the probe answers,
+  // so local use never flashes a read-only UI on first paint.
+  capabilities: Capabilities = { writable: true };
   run: RunDetail | null = null;
   runEvents: WorkflowEvent[] = [];
   result: unknown = undefined;
@@ -97,12 +101,23 @@ class Store {
     }
   }
 
+  async loadCapabilities(): Promise<void> {
+    try {
+      this.capabilities = await api.capabilities();
+      this.emit();
+    } catch {
+      /* keep the optimistic default; a failed write still surfaces its 409 */
+    }
+  }
+
   async loadAdapters(): Promise<void> {
     try {
       this.adapters = await api.adapters();
       this.emit();
     } catch {
-      this.adapters = this.adapters ?? [];
+      // Leave a never-loaded list as null (not []) so enterRoute's
+      // `adapters === null` guard retries on the next visit instead of caching a
+      // permanently-empty picker from one transient failure.
       this.emit();
     }
   }

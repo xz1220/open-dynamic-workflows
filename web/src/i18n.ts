@@ -239,6 +239,9 @@ const ZH: Record<string, string> = {
   "Generation itself runs as a workflow — you can watch it in Jobs.":
     "生成过程本身就是一个 workflow——可以在任务页观测。",
   "⏹ Stop": "⏹ 停止",
+  "This dashboard is read-only (served off-loopback). Run it from the local app or CLI.": "此看板为只读（绑定在非回环地址）。请用本地 App 或 CLI 运行。",
+  "Read-only dashboard": "只读看板",
+  "This dashboard is served off-loopback, so it can only observe. Start runs from the local app or the CLI.": "此看板绑定在非回环地址，只能观测。请用本地 App 或 CLI 发起运行。",
   "generated — review before running": "已生成——运行前请确认",
   "▶ Run workflow": "▶ 运行 workflow",
   "↻ Regenerate": "↻ 重新生成",
