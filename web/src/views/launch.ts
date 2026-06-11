@@ -129,7 +129,7 @@ export function renderLaunch(): string {
     `<div class="lf-col"><label class="lf-label">${t("Agent")}</label>` +
     `<select id="lf-adapter" class="lf-select">${adapterOptions()}</select></div>` +
     `<div class="lf-col grow"><label class="lf-label">${t("Source directory")}</label>` +
-    `<input id="lf-source" class="lf-input" list="recent-dirs" placeholder="${esc(t("defaults to the directory odw serve runs in"))}" value="${esc(launchForm.source)}">${datalist}</div>` +
+    `<input id="lf-source" class="lf-input" list="recent-dirs" placeholder="${esc(t("optional — point at a project the workflow should read; blank runs in a scratch dir"))}" value="${esc(launchForm.source)}">${datalist}</div>` +
     `</div>` +
     permissionLine() +
     err +

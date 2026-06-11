@@ -102,7 +102,17 @@ pub fn run() {
 /// Launch `odw serve` as a sidecar; when it is reachable, navigate the window.
 fn spawn_sidecar(app: AppHandle) {
     let sidecar = match app.shell().sidecar("odw") {
-        Ok(cmd) => cmd.args(["serve", "--port", &SERVE_PORT.to_string()]),
+        Ok(cmd) => {
+            let cmd = cmd.args(["serve", "--port", &SERVE_PORT.to_string()]);
+            // A launched .app inherits cwd `/`. Root is a terrible default for a
+            // run's working directory (copy-mode workspace isolation can't copy
+            // `/`, and project workflow lookups would root at `/.odw/workflows`).
+            // Anchor the sidecar at the user's home instead.
+            match std::env::var_os("HOME") {
+                Some(home) => cmd.current_dir(home),
+                None => cmd,
+            }
+        }
         Err(err) => {
             eprintln!("failed to locate the odw sidecar: {err}");
             return;

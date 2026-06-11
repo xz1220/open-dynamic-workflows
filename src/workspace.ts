@@ -11,7 +11,7 @@
 
 import { cp, mkdtemp, readdir, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, join, relative } from "node:path";
+import { basename, join, relative, resolve, sep } from "node:path";
 
 import { unifiedDiff } from "./diff.js";
 
@@ -56,6 +56,20 @@ export async function withWorkspace<T>(
 
   const tmp = await mkdtemp(join(tmpdir(), "odw-ws-"));
   const work = join(tmp, basename(source));
+  // The workspace temp dir lives under the OS temp root. If `source` is the
+  // filesystem root (or any ancestor of the temp root — e.g. when the desktop
+  // app spawns the sidecar with cwd `/` and a run inherits source `/`), copying
+  // it would try to copy a directory into its own subtree. node's fs.cp refuses
+  // that with a cryptic ERR_FS_CP_EINVAL; pre-empt it with an actionable error
+  // (and never attempt to copy the entire filesystem).
+  const absSource = resolve(source);
+  const absWork = resolve(work);
+  if (absWork === absSource || absWork.startsWith(absSource.endsWith(sep) ? absSource : absSource + sep)) {
+    throw new Error(
+      `cannot copy-isolate from '${source}': it contains the temp workspace, so copy mode would ` +
+        `copy a directory into itself. Choose a project subdirectory, or set workspaceMode: "inplace".`,
+    );
+  }
   try {
     await cp(source, work, {
       recursive: true,

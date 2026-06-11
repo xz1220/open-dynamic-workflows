@@ -44,6 +44,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { existsSync, mkdirSync, readFileSync, statSync, watch, writeFileSync, type FSWatcher } from "node:fs";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 
 import {
   listAdapters,
@@ -430,11 +431,25 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandleCont
 
 // --- write endpoints (launch.md §3.1) ------------------------------------------
 
+/**
+ * A stable, empty, copy-safe scratch directory used when a GUI launch names no
+ * source. The serve process's cwd is NOT a safe default: when the desktop app
+ * spawns the sidecar, that cwd is `/`, and copy-mode workspace isolation cannot
+ * copy `/` into its own temp subdirectory (ERR_FS_CP_EINVAL). An empty scratch
+ * dir copies instantly and lets generic workflows (those that don't read the
+ * user's files) run; a workflow that must see project files needs an explicit
+ * source, which is the correct requirement.
+ */
+function scratchSourceDir(): string {
+  const dir = join(tmpdir(), "odw-launch-scratch");
+  mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
 /** Shared adapter/source validation for the two launch endpoints. */
 function checkLaunchInputs(
   res: ServerResponse,
   config: Config,
-  cwd: string,
   body: Record<string, unknown>,
 ): { adapter: string | null; source: string } | null {
   const adapter = typeof body.adapter === "string" && body.adapter ? body.adapter : null;
@@ -455,18 +470,22 @@ function checkLaunchInputs(
       return null;
     }
   }
-  const source = typeof body.source === "string" && body.source ? body.source : cwd;
-  let isDir = false;
-  try {
-    isDir = statSync(source).isDirectory();
-  } catch {
-    isDir = false;
+  // An explicit source must exist; an empty one falls back to the scratch dir
+  // (NOT the serve cwd, which is `/` under the desktop app).
+  if (typeof body.source === "string" && body.source) {
+    let isDir = false;
+    try {
+      isDir = statSync(body.source).isDirectory();
+    } catch {
+      isDir = false;
+    }
+    if (!isDir) {
+      sendJson(res, 400, { error: `source directory does not exist: ${body.source}` });
+      return null;
+    }
+    return { adapter, source: body.source };
   }
-  if (!isDir) {
-    sendJson(res, 400, { error: `source directory does not exist: ${source}` });
-    return null;
-  }
-  return { adapter, source };
+  return { adapter, source: scratchSourceDir() };
 }
 
 /** POST /api/generate — start a generation run of the built-in generate-workflow. */
@@ -488,7 +507,7 @@ async function postGenerate(
     sendJson(res, 400, { error: "task must be a non-empty string" });
     return;
   }
-  const checked = checkLaunchInputs(res, config, cwd, body);
+  const checked = checkLaunchInputs(res, config, body);
   if (!checked) return;
   const { runId } = startRunFromSource(GENERATE_WORKFLOW_SOURCE, {
     args: { task, dialectDoc: SKILL_MD, patternsDigest: PATTERNS_DIGEST },
@@ -521,7 +540,7 @@ async function postRuns(
     sendJson(res, 400, { error: "provide exactly one of 'script' (inline source) or 'name'" });
     return;
   }
-  const checked = checkLaunchInputs(res, config, cwd, body);
+  const checked = checkLaunchInputs(res, config, body);
   if (!checked) return;
   // Never hand a known-bad script to a worker: compile first, 400 with the error.
   if (script) {

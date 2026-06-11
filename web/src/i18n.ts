@@ -230,7 +230,7 @@ const ZH: Record<string, string> = {
     "例如：审查 auth 模块的竞态条件；由第二个 agent 对每个发现做对抗性核实。",
   Agent: "智能体",
   "Source directory": "工作目录",
-  "defaults to the directory odw serve runs in": "默认为 odw serve 的运行目录",
+  "optional — point at a project the workflow should read; blank runs in a scratch dir": "可选——指向 workflow 需要读取的项目目录;留空则在临时草稿目录运行",
   "not installed": "未安装",
   "loading adapters…": "加载适配器…",
   "agent permissions": "智能体权限",
