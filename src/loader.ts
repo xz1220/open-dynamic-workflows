@@ -19,8 +19,14 @@
  * Scanning is **string/comment/regex aware**: a masked copy of the source (with
  * strings, template literals, comments and regex literals blanked) drives every
  * search, so an `export const meta =` or a brace that lives inside a string or
- * comment is never mistaken for the real declaration. The literal is then sliced
- * from the *original* source so its quoted content and comments survive `eval`.
+ * comment is never mistaken for the real declaration.
+ *
+ * `meta` is **parsed, never evaluated**: listing workflows (the dashboard, `odw
+ * workflows`, run-by-name) reads the meta of every file it finds, so evaluating
+ * it would run arbitrary code from any of them. Claude Code's own contract is
+ * that meta is a pure literal — no variables, calls, or interpolation — and the
+ * parser below accepts exactly that subset (see {@link readMetaLiteral}). The
+ * body is only compiled here; it runs when, and only when, the workflow does.
  */
 
 import { WorkflowScriptError } from "./errors.js";
@@ -139,6 +145,103 @@ export function scanDualCompat(source: string): string[] {
   }
   return warnings;
 }
+
+/**
+ * Read a workflow's `export const meta` literal WITHOUT compiling or running
+ * anything. Returns null when the source has no meta declaration (outside
+ * strings and comments); throws {@link MetaLiteralError} when the declaration's
+ * value is not a pure object literal.
+ *
+ * The accepted grammar is the static subset Claude Code documents for meta:
+ *
+ *   - object literals with identifier, string, or numeric keys — no computed
+ *     keys, shorthand properties, spreads, methods, or accessors
+ *   - array literals (no holes)
+ *   - strings in single or double quotes with the standard escapes; template
+ *     literals only without `${…}`
+ *   - numbers: decimal (with fraction/exponent), hex `0x`, octal `0o`, binary
+ *     `0b`, numeric separators, and one leading `-` or `+`
+ *   - `true`, `false`, `null`
+ *   - line/block comments and trailing commas wherever JavaScript allows them
+ *
+ * Everything else — identifiers (including `undefined`, `NaN`, `Infinity`),
+ * calls, operators, regex literals, BigInts, legacy octal — is rejected, so the
+ * result is always JSON-compatible. Keys are created as own data properties
+ * (a `"__proto__"` key never swaps the prototype), and the last duplicate wins.
+ */
+export function readMetaLiteral(source: string): Record<string, unknown> | null {
+  const decl = locateMeta(maskNonCode(source));
+  return decl ? parseMetaLiteral(source, decl.valueStart) : null;
+}
+
+/** The meta declaration is not a pure literal; the message says what and where. */
+export class MetaLiteralError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "MetaLiteralError";
+  }
+}
+
+// --- internals ---------------------------------------------------------------
+
+function extractMeta(source: string, filename: string): { meta: WorkflowMeta; body: string } {
+  const masked = maskNonCode(source);
+
+  const decl = locateMeta(masked);
+  if (!decl) {
+    throw new WorkflowScriptError(`workflow ${filename} must 'export const meta = { ... }'`);
+  }
+  const { exportStart } = decl;
+  const exportLen = "export".length;
+
+  let meta: Record<string, unknown>;
+  try {
+    meta = parseMetaLiteral(source, decl.valueStart);
+  } catch (err) {
+    if (err instanceof MetaLiteralError) {
+      throw new WorkflowScriptError(`workflow ${filename}: ${err.message}`);
+    }
+    throw err;
+  }
+  assertMeta(meta, filename);
+
+  // Reject any *other* top-level export/import: blank the meta `export` keyword
+  // in the masked copy, then look for a stray one outside strings/comments.
+  const restMasked =
+    masked.slice(0, exportStart) + " ".repeat(exportLen) + masked.slice(exportStart + exportLen);
+  if (/\b(?:export|import)\b/.test(restMasked)) {
+    throw new WorkflowScriptError(
+      `workflow ${filename}: a workflow body may only 'export const meta'; other top-level ` +
+        `export/import statements are not supported (the primitives are injected, not imported)`,
+    );
+  }
+
+  // Strip just the `export` keyword; keep `const meta = <literal>` in the body
+  // so the body remains a valid statement sequence.
+  const body = source.slice(0, exportStart) + source.slice(exportStart + exportLen);
+  return { meta, body };
+}
+
+/** Where `export const meta =` is, found in the masked source; null if absent. */
+function locateMeta(masked: string): { exportStart: number; valueStart: number } | null {
+  const match = EXPORT_META.exec(masked);
+  return match ? { exportStart: match.index, valueStart: match.index + match[0].length } : null;
+}
+
+function assertMeta(meta: unknown, filename: string): asserts meta is WorkflowMeta {
+  if (meta === null || typeof meta !== "object" || Array.isArray(meta)) {
+    throw new WorkflowScriptError(`workflow ${filename}: meta must be an object`);
+  }
+  const m = meta as Record<string, unknown>;
+  if (typeof m.name !== "string" || m.name.length === 0) {
+    throw new WorkflowScriptError(`workflow ${filename}: meta.name must be a non-empty string`);
+  }
+  if (typeof m.description !== "string") {
+    throw new WorkflowScriptError(`workflow ${filename}: meta.description must be a string`);
+  }
+}
+
+// --- masking -------------------------------------------------------------------
 
 /**
  * Like {@link maskNonCode}, but template-literal *interpolations* stay visible:
@@ -297,70 +400,6 @@ function scanRegex(src: string, start: number, n: number): number | null {
   return null;
 }
 
-// --- internals ---------------------------------------------------------------
-
-function extractMeta(source: string, filename: string): { meta: WorkflowMeta; body: string } {
-  const masked = maskNonCode(source);
-
-  const match = EXPORT_META.exec(masked);
-  if (!match) {
-    throw new WorkflowScriptError(`workflow ${filename} must 'export const meta = { ... }'`);
-  }
-  const exportStart = match.index;
-  const exportLen = "export".length;
-
-  const braceStart = masked.indexOf("{", exportStart + match[0].length);
-  if (braceStart === -1) {
-    throw new WorkflowScriptError(`workflow ${filename}: could not find the meta object literal`);
-  }
-  const end = matchBrace(masked, braceStart);
-  if (end === null) {
-    throw new WorkflowScriptError(`workflow ${filename}: unterminated meta object literal`);
-  }
-
-  // The literal comes from the ORIGINAL source so its strings/comments survive.
-  const literal = source.slice(braceStart, end + 1);
-  let meta: unknown;
-  try {
-    meta = new Function(`return (${literal});`)();
-  } catch (err) {
-    throw new WorkflowScriptError(
-      `workflow ${filename}: meta must be a literal expression (${(err as Error).message})`,
-    );
-  }
-  assertMeta(meta, filename);
-
-  // Reject any *other* top-level export/import: blank the meta `export` keyword
-  // in the masked copy, then look for a stray one outside strings/comments.
-  const restMasked =
-    masked.slice(0, exportStart) + " ".repeat(exportLen) + masked.slice(exportStart + exportLen);
-  if (/\b(?:export|import)\b/.test(restMasked)) {
-    throw new WorkflowScriptError(
-      `workflow ${filename}: a workflow body may only 'export const meta'; other top-level ` +
-        `export/import statements are not supported (the primitives are injected, not imported)`,
-    );
-  }
-
-  // Strip just the `export` keyword; keep `const meta = <literal>` in the body
-  // so the body remains a valid statement sequence.
-  const body = source.slice(0, exportStart) + source.slice(exportStart + exportLen);
-  return { meta, body };
-}
-
-/** Index of the `}` that closes the brace opening at `start` (masked source). */
-function matchBrace(masked: string, start: number): number | null {
-  let depth = 0;
-  for (let i = start; i < masked.length; i++) {
-    const ch = masked[i];
-    if (ch === "{") depth++;
-    else if (ch === "}") {
-      depth--;
-      if (depth === 0) return i;
-    }
-  }
-  return null;
-}
-
 /**
  * Return a copy of `src` with every string, template literal, comment and regex
  * literal replaced by spaces (newlines preserved). Code structure — braces,
@@ -453,15 +492,353 @@ function regexAllowed(prevSig: string): boolean {
   return prevSig === "" || "([{,;:=!&|?+-*%<>~^".includes(prevSig);
 }
 
-function assertMeta(meta: unknown, filename: string): asserts meta is WorkflowMeta {
-  if (meta === null || typeof meta !== "object") {
-    throw new WorkflowScriptError(`workflow ${filename}: meta must be an object`);
+// --- the pure-literal grammar ----------------------------------------------------
+
+const IDENTIFIER = /[\p{ID_Start}$_][\p{ID_Continue}$\u200C\u200D]*/uy;
+// Unsigned numeric literal: hex/octal/binary, or decimal with optional fraction
+// and exponent; `_` separators only between digits. Leading-zero decimals
+// (legacy octal like `017`) stop after the `0` and are rejected by the caller.
+const NUMBER =
+  /0[xX][\da-fA-F](?:_?[\da-fA-F])*|0[oO][0-7](?:_?[0-7])*|0[bB][01](?:_?[01])*|(?:(?:0|[1-9](?:_?\d)*)(?:\.(?:\d(?:_?\d)*)?)?|\.\d(?:_?\d)*)(?:[eE][+-]?\d(?:_?\d)*)?/y;
+// What may not directly follow a numeric literal (`3in`, `1n`, `08`, `1_`).
+const AFTER_NUMBER = /[\p{ID_Start}$_\\\d]/u;
+const MAX_DEPTH = 100;
+
+/** Parse the meta object literal at `start` (just after `=`). Never evaluates. */
+function parseMetaLiteral(src: string, start: number): Record<string, unknown> {
+  return new MetaLiteralParser(src, start).parseMeta();
+}
+
+class MetaLiteralParser {
+  private pos: number;
+  private depth = 0;
+
+  constructor(
+    private readonly src: string,
+    start: number,
+  ) {
+    this.pos = start;
   }
-  const m = meta as Record<string, unknown>;
-  if (typeof m.name !== "string" || m.name.length === 0) {
-    throw new WorkflowScriptError(`workflow ${filename}: meta.name must be a non-empty string`);
+
+  parseMeta(): Record<string, unknown> {
+    this.skipTrivia();
+    const start = this.pos;
+    const c = this.src[start];
+    if (c !== "{") {
+      // A literal of the wrong shape vs. anything computed get different advice.
+      const literal = c === "[" || c === '"' || c === "'" || c === "`" || this.startsNumber(start) ||
+        c === "-" || c === "+" || /^(?:true|false|null)$/.test(this.wordAt(start) ?? "");
+      if (literal) {
+        throw new MetaLiteralError(
+          `meta must be an object literal (found ${this.describe(start)} at line ${this.lineCol(start)})`,
+        );
+      }
+      throw this.fail(`found ${this.describe(start)}`, start);
+    }
+    const value = this.parseObject();
+    this.checkEnd();
+    return value;
   }
-  if (typeof m.description !== "string") {
-    throw new WorkflowScriptError(`workflow ${filename}: meta.description must be a string`);
+
+  private parseValue(): unknown {
+    this.skipTrivia();
+    const at = this.pos;
+    const c = this.src[at];
+    if (c === "{") return this.parseObject();
+    if (c === "[") return this.parseArray();
+    if (c === '"' || c === "'") return this.parseString();
+    if (c === "`") return this.parseTemplate();
+    if (c === "-" || c === "+") {
+      this.pos++;
+      this.skipTrivia();
+      if (!this.startsNumber(this.pos)) {
+        throw this.fail(`found ${this.describe(this.pos)} after '${c}'`, this.pos);
+      }
+      const n = this.parseNumber();
+      return c === "-" ? -n : n;
+    }
+    if (this.startsNumber(at)) return this.parseNumber();
+    const word = this.wordAt(at);
+    if (word === "true" || word === "false" || word === "null") {
+      this.pos += word.length;
+      return word === "null" ? null : word === "true";
+    }
+    throw this.fail(`found ${this.describe(at)}`, at);
+  }
+
+  private parseObject(): Record<string, unknown> {
+    this.enter();
+    this.pos++; // "{"
+    const obj: Record<string, unknown> = {};
+    for (;;) {
+      this.skipTrivia();
+      if (this.src[this.pos] === "}") break;
+      const keyStart = this.pos;
+      const key = this.parseKey();
+      this.skipTrivia();
+      const c = this.src[this.pos];
+      if (c !== ":") {
+        if (c === "," || c === "}") throw this.fail(`found shorthand property '${key}'`, keyStart);
+        if (c === "(" || ((key === "get" || key === "set" || key === "async") && c !== undefined)) {
+          throw this.fail(`found method or accessor '${key}'`, keyStart);
+        }
+        throw this.fail(`expected ':' but found ${this.describe(this.pos)}`, this.pos);
+      }
+      this.pos++; // ":"
+      // An own data property even for "__proto__" (as JSON.parse does).
+      Object.defineProperty(obj, key, {
+        value: this.parseValue(),
+        writable: true,
+        enumerable: true,
+        configurable: true,
+      });
+      this.skipTrivia();
+      const sep = this.src[this.pos];
+      if (sep === "}") break;
+      if (sep !== ",") throw this.fail(`expected ',' or '}' but found ${this.describe(this.pos)}`, this.pos);
+      this.pos++;
+    }
+    this.pos++; // "}"
+    this.depth--;
+    return obj;
+  }
+
+  private parseArray(): unknown[] {
+    this.enter();
+    this.pos++; // "["
+    const arr: unknown[] = [];
+    for (;;) {
+      this.skipTrivia();
+      const c = this.src[this.pos];
+      if (c === "]") break;
+      if (c === ",") throw this.fail("found array hole ','", this.pos);
+      arr.push(this.parseValue());
+      this.skipTrivia();
+      const sep = this.src[this.pos];
+      if (sep === "]") break;
+      if (sep !== ",") throw this.fail(`expected ',' or ']' but found ${this.describe(this.pos)}`, this.pos);
+      this.pos++;
+    }
+    this.pos++; // "]"
+    this.depth--;
+    return arr;
+  }
+
+  private parseKey(): string {
+    const at = this.pos;
+    const c = this.src[at];
+    if (c === '"' || c === "'") return this.parseString();
+    if (c === "[") throw this.fail("found computed key '['", at);
+    if (this.startsNumber(at)) return String(this.parseNumber());
+    const word = this.wordAt(at);
+    if (word === null) throw this.fail(`found ${this.describe(at)}`, at);
+    this.pos += word.length; // any identifier name, reserved words included
+    return word;
+  }
+
+  private parseString(): string {
+    const start = this.pos;
+    const quote = this.src[this.pos++];
+    let out = "";
+    for (;;) {
+      const c = this.src[this.pos];
+      if (c === undefined || c === "\n" || c === "\r") throw this.fail("unterminated string", start);
+      if (c === quote) {
+        this.pos++;
+        return out;
+      }
+      if (c === "\\") out += this.parseEscape();
+      else {
+        out += c;
+        this.pos++;
+      }
+    }
+  }
+
+  /** A template literal without interpolation (its cooked value). */
+  private parseTemplate(): string {
+    const start = this.pos++;
+    let out = "";
+    for (;;) {
+      const c = this.src[this.pos];
+      if (c === undefined) throw this.fail("unterminated template literal", start);
+      if (c === "`") {
+        this.pos++;
+        return out;
+      }
+      if (c === "$" && this.src[this.pos + 1] === "{") {
+        throw this.fail("found template interpolation '${'", this.pos);
+      }
+      if (c === "\\") out += this.parseEscape();
+      else if (c === "\r") {
+        // CR and CRLF in template text both read as LF.
+        this.pos += this.src[this.pos + 1] === "\n" ? 2 : 1;
+        out += "\n";
+      } else {
+        out += c;
+        this.pos++;
+      }
+    }
+  }
+
+  /** The escape sequence at `pos` (a backslash), as the characters it denotes. */
+  private parseEscape(): string {
+    const at = this.pos;
+    const c = this.src[at + 1];
+    this.pos += 2;
+    switch (c) {
+      case undefined:
+        throw this.fail("unterminated string", at);
+      case "n":
+        return "\n";
+      case "t":
+        return "\t";
+      case "r":
+        return "\r";
+      case "b":
+        return "\b";
+      case "f":
+        return "\f";
+      case "v":
+        return "\v";
+      case "\r": // line continuation (CR or CRLF)
+        if (this.src[this.pos] === "\n") this.pos++;
+        return "";
+      case "\n":
+      case "\u2028":
+      case "\u2029":
+        return "";
+      case "x":
+        return String.fromCharCode(this.hexDigits(at, 2));
+      case "u":
+        if (this.src[this.pos] === "{") {
+          const close = this.src.indexOf("}", this.pos);
+          const hex = close === -1 ? "" : this.src.slice(this.pos + 1, close);
+          const cp = /^[\da-fA-F]+$/.test(hex) ? parseInt(hex, 16) : NaN;
+          if (!(cp <= 0x10ffff)) throw this.fail("invalid \\u{…} escape", at);
+          this.pos = close + 1;
+          return String.fromCodePoint(cp);
+        }
+        return String.fromCharCode(this.hexDigits(at, 4));
+      default:
+        if (c >= "0" && c <= "9" && !(c === "0" && !/\d/.test(this.src[this.pos] ?? ""))) {
+          throw this.fail(`found legacy octal escape '\\${c}'`, at);
+        }
+        return c === "0" ? "\0" : c; // \' \" \\ \` \$ and the rest stand for themselves
+    }
+  }
+
+  private hexDigits(at: number, count: number): number {
+    const hex = this.src.slice(this.pos, this.pos + count);
+    if (hex.length !== count || !/^[\da-fA-F]+$/.test(hex)) {
+      throw this.fail(`invalid escape '${this.src.slice(at, this.pos + count)}'`, at);
+    }
+    this.pos += count;
+    return parseInt(hex, 16);
+  }
+
+  /** An unsigned numeric literal at `pos`. */
+  private parseNumber(): number {
+    const at = this.pos;
+    NUMBER.lastIndex = at;
+    const m = NUMBER.exec(this.src);
+    const after = m ? this.src[at + m[0].length] : undefined;
+    if (!m || (after !== undefined && AFTER_NUMBER.test(after))) {
+      const token = /^[\w.$]*/.exec(this.src.slice(at))![0] || this.src[at];
+      throw this.fail(`found unsupported number '${token}'`, at);
+    }
+    this.pos += m[0].length;
+    return Number(m[0].replace(/_/g, ""));
+  }
+
+  /**
+   * After the literal: the declaration must end here. Anything that would
+   * continue the expression (`.x`, `(…)`, `[…]`, a tagged template, an operator,
+   * another declarator) means `meta` is not the literal itself.
+   */
+  private checkEnd(): void {
+    const end = this.pos;
+    // An unterminated comment here is the body's syntax error, not meta's.
+    try {
+      this.skipTrivia();
+    } catch {
+      return;
+    }
+    const at = this.pos;
+    const c = this.src[at];
+    if (c === undefined || c === ";") return;
+    const next = this.src[at + 1];
+    const newline = /[\n\r\u2028\u2029]/.test(this.src.slice(end, at));
+    const word = this.wordAt(at);
+    const continues =
+      ".?[(`,=*/%<>&|^".includes(c) ||
+      // `++`/`--` on a new line start a new statement (ASI); a lone `+`/`-` never does.
+      ((c === "+" || c === "-") && !(newline && next === c)) ||
+      (c === "!" && next === "=") ||
+      word === "in" ||
+      word === "instanceof";
+    if (continues) throw this.fail(`found ${this.describe(at)} after the literal`, at);
+  }
+
+  private skipTrivia(): void {
+    for (;;) {
+      const c = this.src[this.pos];
+      if (c === undefined) return;
+      if (/\s/.test(c)) {
+        this.pos++; // every JS whitespace and line terminator (NBSP, BOM, U+2028/9 too)
+      } else if (c === "/" && this.src[this.pos + 1] === "/") {
+        while (this.pos < this.src.length && !/[\n\r\u2028\u2029]/.test(this.src[this.pos]!)) this.pos++;
+      } else if (c === "/" && this.src[this.pos + 1] === "*") {
+        const close = this.src.indexOf("*/", this.pos + 2);
+        if (close === -1) throw this.fail("unterminated comment", this.pos);
+        this.pos = close + 2;
+      } else {
+        return;
+      }
+    }
+  }
+
+  private startsNumber(at: number): boolean {
+    const c = this.src[at];
+    return c !== undefined && (/\d/.test(c) || (c === "." && /\d/.test(this.src[at + 1] ?? "")));
+  }
+
+  private wordAt(at: number): string | null {
+    IDENTIFIER.lastIndex = at;
+    return IDENTIFIER.exec(this.src)?.[0] ?? null;
+  }
+
+  private enter(): void {
+    if (++this.depth > MAX_DEPTH) throw this.fail("found nesting deeper than " + MAX_DEPTH, this.pos);
+  }
+
+  /** A short description of the token at `at`, for error messages. */
+  private describe(at: number): string {
+    if (at >= this.src.length) return "end of input";
+    if (this.src.startsWith("...", at)) return "spread '...'";
+    const c = this.src[at];
+    if (c === '"' || c === "'") return "string";
+    if (c === "`") return "template literal";
+    const word = this.wordAt(at);
+    if (word !== null) return `identifier '${word}'`;
+    return `'${String.fromCodePoint(this.src.codePointAt(at)!)}'`;
+  }
+
+  private fail(what: string, at: number): MetaLiteralError {
+    return new MetaLiteralError(`meta must be a pure literal (${what} at line ${this.lineCol(at)})`);
+  }
+
+  /** 1-based `line:column` of `at` in the whole source. */
+  private lineCol(at: number): string {
+    let line = 1;
+    let lineStart = 0;
+    for (let i = 0; i < at; i++) {
+      const c = this.src[i];
+      if (c === "\n" || c === "\u2028" || c === "\u2029" || (c === "\r" && this.src[i + 1] !== "\n")) {
+        line++;
+        lineStart = i + 1;
+      }
+    }
+    return `${line}:${at - lineStart + 1}`;
   }
 }
