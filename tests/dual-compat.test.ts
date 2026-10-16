@@ -33,7 +33,7 @@ test("R4: every example's meta.name matches its filename stem", () => {
 });
 
 test("T7: known-good fixtures pass (comments, nesting, negatives, booleans, null)", () => {
-  for (const file of ["good-comments.js", "good-nested.js"]) {
+  for (const file of ["good-comments.js", "good-nested.js", "good-grammar.js"]) {
     const c = checkMeta(read(fixturesDir, file));
     assert.ok(c.pure, `${file}: expected pure — ${c.reason}`);
     assert.equal(c.name, workflowStem(file));
@@ -61,4 +61,23 @@ test("a source with no meta declaration is reported not-found", () => {
   const c = checkMeta("const x = 1\nreturn x");
   assert.equal(c.found, false);
   assert.equal(c.pure, false);
+});
+
+test("a commented-out or quoted declaration is not the meta the audit reads", () => {
+  // The real declaration below a commented-out impure one is the one audited.
+  const c = checkMeta(
+    "// export const meta = { name: NAME }\nexport const meta = { name: 'real', description: 'd' }\nreturn 1",
+  );
+  assert.deepEqual(c, { found: true, pure: true, reason: null, name: "real" });
+  for (const src of [
+    "/* export const meta = { name: 'gone', description: 'd' } */\nreturn 1",
+    "log(\"export const meta = { name: 'quoted', description: 'd' }\")\nreturn 1",
+  ]) {
+    assert.equal(checkMeta(src).found, false, src);
+  }
+});
+
+test("the audit and the loader share one parser: the reason pinpoints the token", () => {
+  const c = checkMeta(read(fixturesDir, "bad-variable.js"));
+  assert.equal(c.reason, "meta must be a pure literal (found identifier 'NAME' at line 3:9)");
 });
