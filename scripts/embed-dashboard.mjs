@@ -43,5 +43,7 @@ const banner =
   " * Source: web/dist/index.html (client SPA) · regenerate: node scripts/embed-dashboard.mjs\n" +
   " */\n\n";
 
-writeFileSync(out, `${banner}export const DASHBOARD_HTML = ${JSON.stringify(html)};\n`, "utf8");
+// The explicit `: string` keeps tsc from also emitting the whole page as a
+// literal *type* into dist/dashboard.generated.d.ts (doubling it in the package).
+writeFileSync(out, `${banner}export const DASHBOARD_HTML: string = ${JSON.stringify(html)};\n`, "utf8");
 console.error(`embedded ${html.length} bytes from web/dist/index.html (client SPA) → src/dashboard.generated.ts`);
