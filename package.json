@@ -31,7 +31,7 @@
     "build:binary": "npm run build && node scripts/build-binary.mjs",
     "dev": "node scripts/generate-version.mjs && tsx src/cli.ts",
     "serve": "node scripts/generate-version.mjs && tsx src/cli.ts serve --open",
-    "pretypecheck": "npm run embed",
+    "pretypecheck": "node scripts/generate-version.mjs",
     "test": "tsx --test tests/*.test.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "prepublishOnly": "npm run build",

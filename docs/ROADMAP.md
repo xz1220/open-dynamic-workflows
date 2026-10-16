@@ -79,7 +79,7 @@ Open Dynamic Workflows (ODW)
 
 ## 3. ② 客户端（只读展示层）
 
-**定位**：基于 ODW 套件的**只读窗口**。当前 `dashboard.html` 是单文件 vanilla JS 看板，待升级为数据驱动的 DAG。
+**定位**：基于 ODW 套件的**只读窗口**。当前看板是 `web/` 下的单页应用（构建为 `web/dist/index.html` 后内嵌；旧的单文件 `src/dashboard.html` 已删除），待升级为数据驱动的 DAG。
 
 **技术选型（2026-07-09 更新）**：客户端形态收敛为**纯 Web**——`odw serve` 的浏览器看板是唯一客户端；此前的 Tauri 原生外壳（`apps/desktop`）已退役删除。运行时永远纯 Node 零依赖；前端经 `scripts/embed-dashboard.mjs` 产出**唯一一份 bundle**，由内嵌二进制直接服务。
 
@@ -144,6 +144,6 @@ Open Dynamic Workflows (ODW)
 - `src/cli.ts` — list 已含 name:268；reportTerminal 退出码:439-451；非 --wait spawn 即 0:196
 - `src/workflows/resolve.ts` — 命名解析 resolver:14-16
 - `src/runtime/server.ts` — API 端点（拓扑事件 / SSE）
-- `src/dashboard.html` — 待升级为数据驱动 DAG（单一 bundle 工件）
+- `web/` — 看板 SPA，经 `scripts/embed-dashboard.mjs` 内嵌为单一 bundle 工件（待升级为数据驱动 DAG）
 - `skills/open-dynamic-workflows/SKILL.md` — 待复核
 - `tests/` — 待加双兼容静态审计 + fixtures
