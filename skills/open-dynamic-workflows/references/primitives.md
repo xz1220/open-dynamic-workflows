@@ -154,8 +154,8 @@ can become `null` when this call is inside `parallel`/`pipeline`.
 ## validate (ODW extension)
 
 `validate(source)` loads a candidate workflow without running its body and
-returns `{ ok, meta?, errors, warnings }`. Loading evaluates `meta` as
-JavaScript, so use this helper only on trusted source. Warnings flag selected portability
+returns `{ ok, meta?, errors, warnings }`. Loading parses `meta` as a pure
+literal (never evaluating it) and only compiles the body. Warnings flag selected portability
 hazards such as `Date.now()` and `Math.random()`; they do not block execution.
 This helper is not part of the shared core surface. A script's own `validate`
 binding takes precedence over the injected helper.
