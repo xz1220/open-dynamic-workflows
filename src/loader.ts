@@ -86,7 +86,7 @@ export function loadWorkflowScript(source: string, filename: string): LoadedWork
 
   // Inject `validate` only if the body does not bind that identifier itself.
   // Check the masked body so a `validate` inside a string/comment never counts.
-  const injectValidate = !DECLARES_VALIDATE.test(maskNonCode(body));
+  const injectValidate = !DECLARES_VALIDATE.test(maskCode(body));
   const paramNames = injectValidate ? [...CLAUDE_PARAM_NAMES, VALIDATE_PARAM] : [...CLAUDE_PARAM_NAMES];
 
   let factory: (...callArgs: unknown[]) => Promise<unknown>;
@@ -125,15 +125,15 @@ export function loadWorkflowScript(source: string, filename: string): LoadedWork
  * The scan runs over a mask that blanks comments and ordinary strings AND the
  * *text* of template literals, but KEEPS the code inside `${…}` interpolations
  * visible — `agent(`as of ${Date.now()}`)` runs that banned call for real, so
- * the warning must catch it (the generic `maskNonCode`, used for meta
- * extraction, blanks whole template literals and would miss it).
+ * the warning must catch it (the default mask, used for meta extraction, blanks
+ * whole template literals and would miss it).
  *
  * These come back as *warnings*, not errors — ODW itself executes them — so a
  * caller (the generate-workflow repair loop, a linter) can decide how hard to
  * push for dual-compatibility.
  */
 export function scanDualCompat(source: string): string[] {
-  const masked = maskForDualScan(source);
+  const masked = maskCode(source, { keepInterpolations: true });
   const warnings: string[] = [];
   const rules: Array<[RegExp, string]> = [
     [/\bDate\s*\.\s*now\s*\(/, "Date.now() is banned in Claude Code workflows — pass timestamps in via args"],
@@ -170,7 +170,7 @@ export function scanDualCompat(source: string): string[] {
  * (a `"__proto__"` key never swaps the prototype), and the last duplicate wins.
  */
 export function readMetaLiteral(source: string): Record<string, unknown> | null {
-  const decl = locateMeta(maskNonCode(source));
+  const decl = locateMeta(maskCode(source));
   return decl ? parseMetaLiteral(source, decl.valueStart) : null;
 }
 
@@ -185,7 +185,7 @@ export class MetaLiteralError extends Error {
 // --- internals ---------------------------------------------------------------
 
 function extractMeta(source: string, filename: string): { meta: WorkflowMeta; body: string } {
-  const masked = maskNonCode(source);
+  const masked = maskCode(source);
 
   const decl = locateMeta(masked);
   if (!decl) {
@@ -243,24 +243,89 @@ function assertMeta(meta: unknown, filename: string): asserts meta is WorkflowMe
 
 // --- masking -------------------------------------------------------------------
 
+export interface MaskOptions {
+  /**
+   * Keep the code inside template `${…}` interpolations visible — only the
+   * template *text* and delimiters are blanked, and strings, comments and
+   * nested templates inside the interpolation are masked in turn. Default:
+   * blank whole template literals, interpolations included.
+   */
+  keepInterpolations?: boolean;
+}
+
+// After these words a `/` starts a regex literal, not a division.
+const REGEX_AFTER_WORD = new Set([
+  "return",
+  "typeof",
+  "instanceof",
+  "in",
+  "of",
+  "new",
+  "delete",
+  "void",
+  "throw",
+  "case",
+  "do",
+  "else",
+  "yield",
+  "await",
+]);
+
 /**
- * Like {@link maskNonCode}, but template-literal *interpolations* stay visible:
- * only comments, ordinary strings, and template *text* are blanked. Strings,
- * comments, and nested templates inside an interpolation are themselves masked,
- * so the result is "code as it executes" with only inert text removed.
+ * Return a copy of `src` with every comment, string, template literal and regex
+ * literal replaced by spaces (line breaks preserved). Code structure — braces,
+ * keywords, positions — is untouched, so simple scans over the result only ever
+ * see real code. This is the single tokenizer behind every scan in the loader.
  */
-function maskForDualScan(src: string): string {
-  const out = src.split("");
+export function maskCode(src: string, opts: MaskOptions = {}): string {
+  const keepInterpolations = opts.keepInterpolations === true;
   const n = src.length;
+  const out = src.split("");
   const blank = (from: number, to: number): void => {
-    for (let k = from; k < to; k++) if (out[k] !== "\n") out[k] = " ";
+    for (let k = from; k < to; k++) if (out[k] !== "\n" && out[k] !== "\r") out[k] = " ";
   };
 
-  // src[i] is the char after an opening backtick; returns the index after the
-  // closing backtick. Blanks literal text, recurses into ${…} as code.
-  const scanTemplate = (start: number): number => {
+  // Scan code from `start` to EOF or — inside an interpolation — to the `}`
+  // that closes it. Returns where it stopped: that brace's index, or n.
+  const scanCode = (start: number, inInterpolation: boolean): number => {
+    let depth = 0;
+    let prev = -1; // index of the last significant code character
     let i = start;
-    let textStart = i;
+    while (i < n) {
+      const ch = src[i]!;
+      const next = src[i + 1];
+      if (ch === "/" && (next === "/" || next === "*")) {
+        // A comment: blanked, and not a token (`prev` stays put).
+        const close = next === "/" ? lineEnd(src, i + 2) : src.indexOf("*/", i + 2);
+        const end = next === "/" ? close : close === -1 ? n : close + 2;
+        blank(i, end);
+        i = end;
+        continue;
+      }
+      let end: number | null = null;
+      if (ch === '"' || ch === "'") end = stringEnd(src, i);
+      else if (ch === "`") end = scanTemplate(i); // blanks as it goes
+      else if (ch === "/" && regexAllowed(src, prev)) end = regexEnd(src, i); // null: a division
+      if (end !== null) {
+        if (ch !== "`") blank(i, end);
+        prev = end - 1; // a literal ended here, so a following `/` is a division
+        i = end;
+        continue;
+      }
+      if (inInterpolation) {
+        if (ch === "{") depth++;
+        else if (ch === "}" && depth-- === 0) return i;
+      }
+      if (!/\s/.test(ch)) prev = i;
+      i++;
+    }
+    return n;
+  };
+
+  // src[start] is a backtick; returns the index after the closing backtick.
+  const scanTemplate = (start: number): number => {
+    let textStart = start;
+    let i = start + 1;
     while (i < n) {
       const ch = src[i];
       if (ch === "\\") {
@@ -268,228 +333,81 @@ function maskForDualScan(src: string): string {
         continue;
       }
       if (ch === "`") {
-        blank(textStart, i);
+        blank(textStart, i + 1);
         return i + 1;
       }
       if (ch === "$" && src[i + 1] === "{") {
-        blank(textStart, i + 2); // text + the "${" delimiter
-        i = scanInterp(i + 2); // interior visible (its own strings blanked)
-        textStart = i;
+        blank(textStart, i + 2); // template text + the "${" delimiter
+        const close = scanCode(i + 2, true);
+        if (!keepInterpolations) blank(i + 2, close);
+        i = textStart = Math.min(close + 1, n); // the closing "}" is blanked with the text
+        blank(close, i);
         continue;
       }
       i++;
     }
-    blank(textStart, i);
-    return i;
+    blank(textStart, n);
+    return n;
   };
 
-  // src[i] is the char after "${"; returns the index after the matching "}".
-  const scanInterp = (start: number): number => {
-    let i = start;
-    let depth = 1;
-    while (i < n && depth > 0) {
-      const ch = src[i];
-      const next = src[i + 1];
-      if (ch === "/" && next === "/") {
-        let j = i + 2;
-        while (j < n && src[j] !== "\n") j++;
-        blank(i, j);
-        i = j;
-        continue;
-      }
-      if (ch === "/" && next === "*") {
-        let j = i + 2;
-        while (j < n && !(src[j] === "*" && src[j + 1] === "/")) j++;
-        j = Math.min(n, j + 2);
-        blank(i, j);
-        i = j;
-        continue;
-      }
-      if (ch === '"' || ch === "'") {
-        i = scanString(i, ch);
-        continue;
-      }
-      if (ch === "`") {
-        i = scanTemplate(i + 1);
-        continue;
-      }
-      if (ch === "{") depth++;
-      else if (ch === "}") depth--;
-      i++;
-    }
-    return i;
-  };
-
-  const scanString = (start: number, quote: string): number => {
-    let j = start + 1;
-    let escaped = false;
-    while (j < n) {
-      const c = src[j];
-      if (escaped) escaped = false;
-      else if (c === "\\") escaped = true;
-      else if (c === quote) {
-        j++;
-        break;
-      }
-      j++;
-    }
-    blank(start, j);
-    return j;
-  };
-
-  let i = 0;
-  let prevSig = "";
-  while (i < n) {
-    const ch = src[i]!;
-    const next = src[i + 1];
-    if (ch === "/" && next === "/") {
-      let j = i + 2;
-      while (j < n && src[j] !== "\n") j++;
-      blank(i, j);
-      i = j;
-      continue;
-    }
-    if (ch === "/" && next === "*") {
-      let j = i + 2;
-      while (j < n && !(src[j] === "*" && src[j + 1] === "/")) j++;
-      j = Math.min(n, j + 2);
-      blank(i, j);
-      i = j;
-      continue;
-    }
-    if (ch === '"' || ch === "'") {
-      i = scanString(i, ch);
-      prevSig = ch;
-      continue;
-    }
-    if (ch === "`") {
-      i = scanTemplate(i + 1);
-      prevSig = "`";
-      continue;
-    }
-    if (ch === "/" && regexAllowed(prevSig)) {
-      const j = scanRegex(src, i, n);
-      if (j !== null) {
-        blank(i, j);
-        i = j;
-        prevSig = "/";
-        continue;
-      }
-    }
-    if (!/\s/.test(ch)) prevSig = ch;
-    i++;
-  }
+  scanCode(0, false);
   return out.join("");
 }
 
-/** A terminated regex literal starting at `start`, or null. Shared shape with maskNonCode. */
-function scanRegex(src: string, start: number, n: number): number | null {
-  let j = start + 1;
-  let escaped = false;
-  let inClass = false;
-  while (j < n) {
-    const c = src[j]!;
-    if (escaped) escaped = false;
-    else if (c === "\\") escaped = true;
-    else if (c === "[") inClass = true;
-    else if (c === "]") inClass = false;
-    else if (c === "\n") return null;
-    else if (c === "/" && !inClass) return j + 1;
-    j++;
-  }
-  return null;
+/** Whether a `/` after the code character at `prev` can begin a regex literal. */
+function regexAllowed(src: string, prev: number): boolean {
+  if (prev < 0) return true;
+  const c = src[prev]!;
+  if ("([{,;:=!&|?+-*%<>~^".includes(c)) return true;
+  if (!/[a-z]/.test(c)) return false; // `)`, `]`, `}`, digits, identifiers: division
+  let start = prev;
+  while (start > 0 && /[\w$]/.test(src[start - 1]!)) start--;
+  // `obj.return / 2` is a property, not the keyword.
+  return src[start - 1] !== "." && REGEX_AFTER_WORD.has(src.slice(start, prev + 1));
+}
+
+/** Index of the line break ending a `//` comment that starts before `from`. */
+function lineEnd(src: string, from: number): number {
+  let j = from;
+  while (j < src.length && src[j] !== "\n" && src[j] !== "\r") j++;
+  return j;
 }
 
 /**
- * Return a copy of `src` with every string, template literal, comment and regex
- * literal replaced by spaces (newlines preserved). Code structure — braces,
- * keywords, positions — is untouched, so simple scans over the result only ever
- * see real code.
+ * Index after the quoted string opening at `start`. An unescaped line break
+ * ends it early — a JS string cannot span lines, so a stray quote (say, in a
+ * regex the scan could not tell from a division) never swallows later code.
  */
-function maskNonCode(src: string): string {
-  const out = src.split("");
-  const n = src.length;
-  let prevSig = "";
-
-  const blank = (from: number, to: number): void => {
-    for (let k = from; k < to; k++) if (out[k] !== "\n") out[k] = " ";
-  };
-
-  let i = 0;
-  while (i < n) {
-    const ch = src[i]!;
-    const next = src[i + 1];
-
-    if (ch === "/" && next === "/") {
-      let j = i + 2;
-      while (j < n && src[j] !== "\n") j++;
-      blank(i, j);
-      i = j;
+function stringEnd(src: string, start: number): number {
+  const quote = src[start];
+  let j = start + 1;
+  while (j < src.length) {
+    const c = src[j];
+    if (c === "\\") {
+      j += src[j + 1] === "\r" && src[j + 2] === "\n" ? 3 : 2; // escape or line continuation
       continue;
     }
-    if (ch === "/" && next === "*") {
-      let j = i + 2;
-      while (j < n && !(src[j] === "*" && src[j + 1] === "/")) j++;
-      j = Math.min(n, j + 2);
-      blank(i, j);
-      i = j;
-      continue;
-    }
-    if (ch === '"' || ch === "'" || ch === "`") {
-      let j = i + 1;
-      let escaped = false;
-      while (j < n) {
-        const c = src[j]!;
-        if (escaped) escaped = false;
-        else if (c === "\\") escaped = true;
-        else if (c === ch) {
-          j++;
-          break;
-        }
-        j++;
-      }
-      blank(i, j);
-      i = j;
-      prevSig = ch;
-      continue;
-    }
-    if (ch === "/" && regexAllowed(prevSig)) {
-      let j = i + 1;
-      let escaped = false;
-      let inClass = false;
-      let closed = false;
-      while (j < n) {
-        const c = src[j]!;
-        if (escaped) escaped = false;
-        else if (c === "\\") escaped = true;
-        else if (c === "[") inClass = true;
-        else if (c === "]") inClass = false;
-        else if (c === "\n") break;
-        else if (c === "/" && !inClass) {
-          j++;
-          closed = true;
-          break;
-        }
-        j++;
-      }
-      if (closed) {
-        blank(i, j);
-        i = j;
-        prevSig = "/";
-        continue;
-      }
-      // Not a terminated regex — treat the `/` as ordinary code (division).
-    }
-
-    if (!/\s/.test(ch)) prevSig = ch;
-    i++;
+    if (c === quote) return j + 1;
+    if (c === "\n" || c === "\r") return j;
+    j++;
   }
-  return out.join("");
+  return src.length;
 }
 
-/** Whether a `/` at this point can begin a regex literal (vs. division). */
-function regexAllowed(prevSig: string): boolean {
-  return prevSig === "" || "([{,;:=!&|?+-*%<>~^".includes(prevSig);
+/** Index after the regex literal opening at `start`, or null if it is not one. */
+function regexEnd(src: string, start: number): number | null {
+  let inClass = false;
+  for (let j = start + 1; j < src.length; j++) {
+    const c = src[j];
+    if (c === "\n" || c === "\r") return null;
+    if (c === "\\") {
+      if (src[j + 1] === "\n" || src[j + 1] === "\r") return null;
+      j++;
+    } else if (c === "[") inClass = true;
+    else if (c === "]") inClass = false;
+    else if (c === "/" && !inClass) return j + 1;
+  }
+  return null;
 }
 
 // --- the pure-literal grammar ----------------------------------------------------

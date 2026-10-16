@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
-import { loadWorkflowScript, MetaLiteralError, readMetaLiteral } from "../src/loader.js";
+import { loadWorkflowScript, maskCode, MetaLiteralError, readMetaLiteral } from "../src/loader.js";
 import { WorkflowScriptError } from "../src/errors.js";
 import type { WorkflowGlobals } from "../src/primitives.js";
 
@@ -237,4 +237,22 @@ test("readMetaLiteral ignores declarations in comments and strings", () => {
     readMetaLiteral("/* export const meta = NOPE */\nexport const meta = { name: 'real' }"),
     { name: "real" },
   );
+});
+
+// --- the one tokenizer behind every scan ------------------------------------------
+
+test("maskCode blanks whole templates by default and keeps interpolation code on request", () => {
+  const src = "f(`t ${g('s', `u ${h}`)} v`) // c\nreturn /'}/.test(x)";
+  // The regex after `return` is masked too — read as a division, its quote would
+  // have opened a string swallowing the rest of the file.
+  assert.equal(maskCode(src), "f(                         )     \nreturn     .test(x)");
+  assert.equal(
+    maskCode(src, { keepInterpolations: true }),
+    "f(     g(   ,      h  )    )     \nreturn     .test(x)",
+  );
+});
+
+test("maskCode: a stray quote never swallows the next line", () => {
+  const masked = maskCode('const s = "unterminated\nexport const x = 1');
+  assert.equal(masked.split("\n")[1], "export const x = 1");
 });
