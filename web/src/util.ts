@@ -34,10 +34,14 @@ export function fmtClock(tsSec: number | null | undefined): string {
   return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
-/** A coarse duration like "4m12s" / "0m51s" / "320ms". */
+/** A coarse duration like "1h04m" / "4m12s" / "0m51s" / "320ms". */
 export function fmtDurSec(sec: number | null | undefined): string {
   if (sec == null || !Number.isFinite(sec) || sec < 0) return "—";
   if (sec < 1) return `${Math.round(sec * 1000)}ms`;
+  if (sec >= 3600) {
+    const h = Math.floor(sec / 3600);
+    return `${h}h${pad(Math.floor((sec % 3600) / 60))}m`;
+  }
   const m = Math.floor(sec / 60);
   const s = Math.floor(sec % 60);
   return `${m}m${pad(s)}s`;
@@ -85,3 +89,41 @@ export const TERMINAL = new Set(["done", "failed", "stopped"]);
 
 /** States that should count as live/active in the shell. */
 export const ACTIVE = new Set(["running", "paused", "pending"]);
+
+/**
+ * Subsequence match for the command palette: every query character must appear
+ * in order. Scores contiguous runs and word starts higher; null = no match.
+ * Returns the matched indices so the caller can underline them.
+ */
+export function fuzzy(query: string, text: string): { score: number; hits: number[] } | null {
+  const q = query.toLowerCase();
+  const s = text.toLowerCase();
+  if (!q) return { score: 0, hits: [] };
+  const hits: number[] = [];
+  let score = 0;
+  let from = 0;
+  for (const ch of q) {
+    const i = s.indexOf(ch, from);
+    if (i < 0) return null;
+    const prev = hits[hits.length - 1];
+    score += prev != null && i === prev + 1 ? 3 : 1;
+    if (i === 0 || /[\s:/._-]/.test(s[i - 1]!)) score += 2;
+    hits.push(i);
+    from = i + 1;
+  }
+  return { score: score - s.length * 0.01, hits };
+}
+
+/** Escape `text`, wrapping the characters at `hits` in <mark>. */
+export function markHits(text: string, hits: number[]): string {
+  if (!hits.length) return esc(text);
+  const set = new Set(hits);
+  let out = "";
+  for (let i = 0; i < text.length; i++) out += set.has(i) ? `<mark>${esc(text[i])}</mark>` : esc(text[i]);
+  return out;
+}
+
+/** Clamp to [0, 1]. */
+export function unit(n: number): number {
+  return Math.min(1, Math.max(0, Number.isFinite(n) ? n : 0));
+}

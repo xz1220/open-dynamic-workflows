@@ -174,3 +174,18 @@ export interface ChatSession extends Omit<ChatSessionSummary, "lastMessage" | "l
   messages: ChatMessage[];
   linkedRuns: ChatLinkedRun[];
 }
+
+/** One event in the cross-run activity stream (GET /api/activity). */
+export type ActivityEvent = WorkflowEvent & {
+  runId: string;
+  /** The run's workflow name. */
+  run: string;
+  adapter: string | null;
+  provider?: "odw" | "claude";
+};
+
+/** GET /api/activity — the newest events across runs + running agents per adapter. */
+export interface ActivitySnapshot {
+  events: ActivityEvent[];
+  fleet: Record<string, number>;
+}

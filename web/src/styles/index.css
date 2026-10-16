@@ -1,0 +1,7 @@
+/* Open Dynamic Workflows — client stylesheet (bundled by esbuild; see web/bundle.mjs). */
+@import "./tokens.css";
+@import "./base.css";
+@import "./shell.css";
+@import "./components.css";
+@import "./dag.css";
+@import "./views.css";
