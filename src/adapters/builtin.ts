@@ -10,7 +10,7 @@
  * explains how to tune them rather than baking opinions in here.
  */
 
-import type { AdapterFailures, AdapterFlags, AdapterOutput, PermissionArgs, PermissionTier, Settings } from "./types.js";
+import type { AdapterFailures, AdapterFlags, AdapterOutput, DenialPolicy, PermissionArgs, PermissionTier, SchemaFlag, Settings } from "./types.js";
 
 /** A built-in adapter spec — same shape as a config entry, minus its name. */
 export interface RawAdapter {
@@ -27,6 +27,7 @@ export interface RawAdapter {
   failures?: AdapterFailures;
   permissionArgs?: PermissionArgs;
   permissions?: PermissionTier;
+  permissionDenials?: DenialPolicy;
 }
 
 // `flags` only DECLARES which native flag carries a model — the router appends
@@ -44,7 +45,12 @@ const KILO_OPENCODE_OUTPUT: AdapterOutput = {
 // Claude Code's stream-json (https://code.claude.com/docs/en/headless): one
 // event per message, ending in a `result` event with the reply, the session's
 // usage and cost, and `is_error` when it failed — rate limits, spent quotas
-// and logins arrive that way, often with exit 0.
+// and logins arrive that way, often with exit 0. Given --json-schema, that
+// event also carries the validated value as `structured_output` (the Agent
+// SDK's result message, which is this event: `structured_output?: unknown`);
+// a run that produced none has it absent or null, and its `result` text is
+// read instead. Its `permission_denials` list the tool calls headless mode
+// refused, under a reply that may claim success.
 const CLAUDE_OUTPUT: AdapterOutput = {
   format: "jsonl",
   eventType: "result",
@@ -53,7 +59,21 @@ const CLAUDE_OUTPUT: AdapterOutput = {
   usagePath: ["usage"],
   costPath: ["total_cost_usd"],
   errorPath: ["is_error"],
+  structuredPath: ["structured_output"],
+  deniedPath: ["permission_denials"],
 };
+
+// Native structured output (ODW extension; see native-schema.ts). Claude Code
+// 2.1.302 `--json-schema <schema>` takes the schema's JSON as its value and
+// rejects an invalid one before the run starts ("Error: --json-schema is not
+// a valid JSON Schema"); it treats `format` as an annotation.
+const CLAUDE_SCHEMA: SchemaFlag = { args: ["--json-schema"], mode: "inline" };
+// `codex exec --output-schema <file>` (https://developers.openai.com/codex/noninteractive)
+// is an exec option declared `global = true` beside an optional PROMPT
+// positional, so it parses after `-` as `--model` does. Codex sends the schema
+// in OpenAI's strict mode, which refuses (HTTP 400, before the model runs) a
+// schema whose objects are not all closed with every property required.
+const CODEX_SCHEMA: SchemaFlag = { args: ["--output-schema"], mode: "file", strict: true };
 
 // Permission tiers (ODW extension). Each built-in's posture flags sit in
 // `permissionArgs` and are spliced where its command has `{permission_args}`;
@@ -140,7 +160,7 @@ export const BUILTIN_ADAPTERS: Record<string, RawAdapter> = {
       "-",
     ],
     stdin: "{prompt}",
-    flags: { model: ["--model"] },
+    flags: { model: ["--model"], schema: CODEX_SCHEMA },
     permissionArgs: CODEX_PERMISSIONS,
   },
   claude: {
@@ -157,7 +177,7 @@ export const BUILTIN_ADAPTERS: Record<string, RawAdapter> = {
       "--no-session-persistence",
     ],
     stdin: "{prompt}",
-    flags: { model: ["--model"] },
+    flags: { model: ["--model"], schema: CLAUDE_SCHEMA },
     output: CLAUDE_OUTPUT,
     permissionArgs: CLAUDE_PERMISSIONS,
     // Anthropic's API caches a prompt's prefix: a fan-out sharing one starts
@@ -263,4 +283,11 @@ export const DEFAULT_SETTINGS: Settings = {
   permissions: "edit", // the tier every built-in ran with before tiers existed
   agentEnv: "inherit", // agent CLIs see ODW's whole environment
   agentEnvPass: [], // more variables a "minimal" agent environment passes through
+  schemaKeywords: "warn", // what ODW's validator does not check is logged once per run, not refused
+  schemaPrompt: "auto", // the prompt describes a schema only to a CLI that does not take it natively
+  fallback: {}, // no fallback chains: a spent quota or a refused login fails the agent
+  models: {}, // no model tiers: model: "@<tier>" names none
+  quotaBreaker: 3, // quota failures in a row before the run's later agents skip an adapter
+  expectRetries: 1, // reruns of an agent whose work missed its expect checks, told what it missed
+  permissionDenials: "warn", // a reply whose CLI refused tool calls stands, recorded and logged ("fail": it fails)
 };

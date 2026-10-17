@@ -16,12 +16,37 @@
 export interface AdapterFlags {
   /** The flag(s) that select a model, e.g. `["--model"]` or `["-m"]`. */
   model?: string[];
+  /**
+   * How this CLI takes a call's JSON Schema to enforce itself (an ODW
+   * extension; see adapters/native-schema.ts). Without it the schema is
+   * described in the prompt, and only ODW validates the reply.
+   */
+  schema?: SchemaFlag;
+}
+
+/**
+ * How a CLI takes a JSON Schema natively (an ODW extension): `args`, then the
+ * schema — `inline`, its JSON as the next argv element (Claude Code's
+ * `--json-schema`); `file`, the path of a file holding it, written for each
+ * CLI run and removed after it (Codex's `--output-schema`). They go after
+ * every other argument, as a model flag does.
+ */
+export interface SchemaFlag {
+  args: string[];
+  mode: "inline" | "file";
+  /**
+   * The CLI takes only OpenAI strict-mode schemas (Codex): an object at the
+   * root, and every object `"additionalProperties": false` with all its
+   * properties `required`. Any other schema goes in the prompt instead.
+   */
+  strict?: boolean;
 }
 
 /**
  * How stdout from an adapter becomes the agent's final response — and, for the
- * JSON formats, what the run spent and whether the CLI itself reported it
- * failed (`usagePath`, `costPath`, `errorPath`: ODW extensions). A path is a
+ * JSON formats, what the run spent, whether the CLI itself reported it failed,
+ * and what it refused the agent (`usagePath`, `costPath`, `errorPath`,
+ * `deniedPath`: ODW extensions). A path is a
  * list of object keys; a whole number in it indexes an array (negative: from
  * its end). When the declared text is not there, the raw stdout is the reply
  * and the run's log says why (see adapters/output.ts).
@@ -46,6 +71,18 @@ export type AdapterOutput =
        * run failed with it (classified like any failure), whatever its exit.
        */
       errorPath?: string[];
+      /**
+       * Path, in a text event, to the value the CLI validated against a schema
+       * it was handed natively (Claude Code's `structured_output`). When the
+       * last text event has one (not null), it is the reply's value.
+       */
+      structuredPath?: string[];
+      /**
+       * Path, in a text event, to the tool calls the CLI refused the agent
+       * (Claude Code's `permission_denials`). What the last text event lists
+       * is recorded on the agent, or fails it (`permissionDenials`, `expect`).
+       */
+      deniedPath?: string[];
     }
   | {
       /** One JSON document on stdout: the paths are read from it. */
@@ -54,6 +91,8 @@ export type AdapterOutput =
       usagePath?: string[];
       costPath?: string[];
       errorPath?: string[];
+      structuredPath?: string[];
+      deniedPath?: string[];
     };
 
 /**
@@ -128,7 +167,17 @@ export interface Adapter {
   permissionArgs?: PermissionArgs;
   /** Caps this CLI's tier below the run's (ODW extension): an agent on it gets the lower of the two. */
   permissions?: PermissionTier;
+  /** What tool calls this CLI refused do to a reply that claims success; overrides `permissionDenials` (ODW extension). */
+  permissionDenials?: DenialPolicy;
 }
+
+/**
+ * What a reply that claims success does when its CLI refused the agent tool
+ * calls (`deniedPath`; an ODW extension): `"warn"` keeps it — the refused calls
+ * are recorded on the agent and logged — and `"fail"` fails the agent with
+ * reason "permission". A call with `expect` counts them as a miss either way.
+ */
+export type DenialPolicy = "warn" | "fail";
 
 /** Run-wide knobs independent of any single adapter. */
 export interface Settings {
@@ -230,6 +279,48 @@ export interface Settings {
   agentEnv: "inherit" | "minimal";
   /** Names or `*` globs of more variables a `"minimal"` agent environment passes through. */
   agentEnvPass: string[];
+  /**
+   * What happens to JSON Schema in an agent()'s schema that ODW's validator
+   * does not check (an ODW extension): `"warn"` — the call runs, ODW checks
+   * the rest, and the run logs once which keywords, where, and who enforces
+   * them (a CLI that takes schemas natively, else nobody); `"strict"` — the
+   * call fails before it starts. A malformed schema fails in either mode.
+   */
+  schemaKeywords: "warn" | "strict";
+  /**
+   * When an agent's prompt describes its schema (an ODW extension): `"auto"` —
+   * only when the CLI does not take the schema natively; `"always"`.
+   */
+  schemaPrompt: "auto" | "always";
+  /**
+   * Fallback chains (an ODW extension): adapter name → the adapters a call on
+   * it moves to, in order, when its CLI's quota is spent or its login is
+   * refused. An agent() call that lists its own adapters uses that list instead.
+   */
+  fallback: Record<string, string[]>;
+  /**
+   * Model tiers (an ODW extension): tier name → adapter name → that CLI's
+   * model id. `model: "@<tier>"` picks the id for the adapter a call runs on.
+   */
+  models: Record<string, Record<string, string>>;
+  /**
+   * The run's quota breaker (an ODW extension): after this many quota
+   * failures in a row on one adapter, the run's later calls skip it; `null` => never.
+   */
+  quotaBreaker: number | null;
+  /**
+   * How many times an agent whose work missed its `expect` checks is run again,
+   * told what it missed, before it fails (an ODW extension; `expectRetries`
+   * on one agent() call overrides it).
+   */
+  expectRetries: number;
+  /**
+   * A reply that claims success while its CLI refused tool calls (an ODW
+   * extension): `"warn"` keeps it, recording and logging the refusals;
+   * `"fail"` fails the agent with reason "permission". An adapter's own
+   * `permissionDenials` overrides it.
+   */
+  permissionDenials: DenialPolicy;
 }
 
 /** How a fan-out on a prompt-caching adapter is staggered (see `Settings.staggerFanOut`). */

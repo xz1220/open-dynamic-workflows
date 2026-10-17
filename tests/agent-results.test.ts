@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { defaultConfig, resolveAdapter } from "../src/adapters/config.js";
-import type { Bridge } from "../src/bridge.js";
+import { Bridge } from "../src/bridge.js";
 import type { RunContext } from "../src/context.js";
 import { NullControl } from "../src/control.js";
 import { RunStopped } from "../src/errors.js";
@@ -33,9 +33,15 @@ function fakeContext(
   const sink = new MemorySink();
   const config = defaultConfig();
   config.settings.defaultAdapter = "claude";
+  // Where a call starts is a real bridge's decision; the fake only runs it.
+  const routing = new Bridge(config);
   const ctx: RunContext = {
     config,
-    bridge: { run, adapterFor: (name?: string | null) => resolveAdapter(config, name) } as unknown as Bridge,
+    bridge: {
+      run,
+      adapterFor: (name?: string | null) => resolveAdapter(config, name),
+      route: routing.route.bind(routing),
+    } as unknown as Bridge,
     scheduler: new Scheduler({ concurrency: options.concurrency ?? 4, maxAgents: options.maxAgents ?? 1000 }),
     control: new NullControl(),
     sink,

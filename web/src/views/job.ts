@@ -241,10 +241,19 @@ function drawer(run: RunDetail, ai: number, nowSec: number): string {
     `<div class="drawer-body">` +
     `<div class="kv">` +
     `<span class="k">${t("phase")}</span><span class="v">${esc(a.phase ?? "—")}</span>` +
-    (a.kind === "command" ? "" : `<span class="k">${t("adapter")}</span><span class="v">${esc(a.adapter ?? "—")}</span>`) +
+    (a.kind === "command"
+      ? ""
+      : `<span class="k">${t("adapter")}</span><span class="v">${esc(a.adapter ?? "—")}` +
+        (a.fellBackFrom?.length
+          ? ` <span class="tag warn" title="${esc(t("its earlier adapters ran out of quota or refused the login"))}">${esc(t("after {chain}", { chain: a.fellBackFrom.join(" → ") }))}</span>`
+          : "") +
+        `</span>`) +
     `<span class="k">${t("started")}</span><span class="v">${fmtClock(a.startedAt)}</span>` +
     `<span class="k">${t("finished")}</span><span class="v">${fmtClock(a.finishedAt)}</span>` +
     `<span class="k">${t("duration")}</span><span class="v">${dur}</span>` +
+    (a.kind === "command" && a.forAgentId != null
+      ? `<span class="k">${t("checks")}</span><span class="v">${t("agent #{n}'s work", { n: a.forAgentId })}</span>`
+      : "") +
     (a.kind === "command"
       ? `<span class="k">${t("exit code")}</span><span class="v">${a.exitCode ?? "—"}</span>`
       : `<span class="k">${t("attempts")}</span><span class="v">${a.attempts ?? "—"}</span>`) +
@@ -261,6 +270,13 @@ function drawer(run: RunDetail, ai: number, nowSec: number): string {
       ? `<button class="btn sm tx-open" data-transcript="${ai}">${icons.logs}${t("Transcript")}</button>`
       : "") +
     status +
+    (a.misses?.length
+      ? `<div class="drawer-sec">${t("Missed")}</div><ul class="misses">${a.misses.map((m) => `<li>${esc(m)}</li>`).join("")}</ul>`
+      : "") +
+    (a.denied?.length
+      ? `<div class="drawer-sec">${t("Refused tool calls")}</div><ul class="denied">${a.denied.map((d) => `<li>${esc(d)}</li>`).join("")}</ul>` +
+        `<p class="dnote">${t("Its reply may rest on work it could not do — raise its tier with --permissions, or allowlist the tool.")}</p>`
+      : "") +
     changesSection(run, a, ai, rec?.branch) +
     output +
     (evs ? `<div class="drawer-sec">${t("Events")}</div><div class="mini-events">${evs}</div>` : "") +

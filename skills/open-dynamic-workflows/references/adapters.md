@@ -158,6 +158,13 @@ did-you-mean hint) instead of silently ignoring them.
 | `permissions` | **ODW extension.** The run's permission tier: `"read"`, `"edit"` (default) or `"full"` — see [permissions](#permissions-what-each-built-in-may-do). `odw run\|rerun\|resume --permissions` overrides it |
 | `agentEnv` | **ODW extension.** `"inherit"` (default): agent CLIs get ODW's whole environment. `"minimal"`: only `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `LANG`, `LC_*`, `TERM`, `TMPDIR`, `TZ` (and the Windows system variables), the auth and config variables the built-in CLIs document (`ANTHROPIC_*`, `CLAUDE_*`, `OPENAI_*`, `CODEX_*`, `GEMINI_*`, `GOOGLE_*`, `DASHSCOPE_*`, `QWEN_*`, `MOONSHOT_*`, `KIMI_*`, `CURSOR_*`, `OPENCODE_*`, the proxy variables, `NODE_EXTRA_CA_CERTS`), `ODW_*`, `agentEnvPass` and the adapter's `env`. `exec()` commands, `worktreeSetup` and `notify` keep the whole environment |
 | `agentEnvPass` | **ODW extension.** More names, or `*` globs, a `"minimal"` agent environment passes (e.g. `["AWS_*"]` for Claude Code on Bedrock) |
+| `schemaKeywords` | **ODW extension.** What happens to keywords in an `agent()` schema that ODW's validator does not check. `"warn"` (default): the call runs, ODW checks the rest, and the run logs once which keywords, where, and who enforces them (an adapter's CLI that takes schemas natively, `flags.schema`, else nobody). `"strict"`: the call fails before it starts, naming each one. A malformed schema fails in either mode. See [native structured output](#native-structured-output) |
+| `schemaPrompt` | **ODW extension.** `"auto"` (default): the prompt describes the schema only to a CLI that does not take it natively; `"always"`: to every CLI |
+| `fallback` | **ODW extension.** Fallback chains: `{ "codex": ["claude"], … }` — when an agent's CLI has spent its usage quota or its login is refused, the agent runs again on the next adapter listed for the one it was on (a fresh prompt, the same options, the same permission tier: an adapter that cannot run that tier is skipped). A rate limit is still retried in place. An `agent()` call's own list, `adapter: ["codex", "claude"]`, takes its place. Every adapter named must be configured. Default `{}` — see [routing](primitives.md#routing-phase-defaults-model-tiers-fallback-chains-odw-extension) |
+| `quotaBreaker` | **ODW extension.** After this many quota failures in a row on one adapter, the run's later agents skip it — each starts on the next adapter of its chain, or fails at once without one — with one warning. Default 3; `0` or `null` = never |
+| `models` | **ODW extension.** Model tiers: `{ "fast": { "claude": "haiku", "codex": "gpt-5-mini" }, … }`. `model: "@fast"` (in `agent()`, `phase()` or `meta.phases`) runs an agent with its adapter's id for the tier — after a fallback, the next adapter's; an adapter the tier names no id for runs its CLI's default (logged), and an unknown tier fails the agent. Tier names are letters, digits, `_`, `-` and `.`; every adapter named must be configured. Default `{}` |
+| `expectRetries` | **ODW extension.** How many times an agent whose work missed its `expect` checks runs again, told what it missed, before it fails with reason `unmet_expectation` (default 1; an `agent()` call's own `expectRetries` wins) — see [expect](primitives.md#expect-odw-extension) |
+| `permissionDenials` | **ODW extension.** What a reply that claims success does when the CLI refused the agent tool calls (`deniedPath`): `"warn"` (default) keeps it — the calls are recorded as `denied` on the agent and logged once — and `"fail"` fails the agent with reason `permission`. An adapter's own `permissionDenials` wins; a call with `expect` counts refused calls as a miss either way |
 
 ### Adapter fields
 
@@ -171,11 +178,12 @@ did-you-mean hint) instead of silently ignoring them.
 | `concurrency` | **ODW extension.** At most this many agents at once on this CLI, inside the run-wide `concurrency`: an agent needs a slot in both, each adapter queues first come, first served, and a throttled adapter never holds up the others. Unset: the run-wide cap alone |
 | `promptCache` | **ODW extension.** `true`: this CLI's model API caches a prompt's prefix, so its fan-outs start staggered (see `staggerFanOut`). The built-in `claude` declares it |
 | `label` | human-friendly name for progress display |
-| `flags` | capability declaration, e.g. `{ "model": ["--model"] }` — the native flag that carries a per-call `model`. Without it, `agent(..., { model })` is not honored for this adapter (a routing note appears in the logs) |
+| `flags` | capability declaration, e.g. `{ "model": ["--model"] }` — the native flag that carries a per-call `model`. Without it, `agent(..., { model })` is not honored for this adapter (a routing note appears in the logs). **ODW extension:** `"schema": { "args": [...], "mode": "inline" \| "file", "strict"?: true }` says the CLI validates a call's JSON Schema itself — see [native structured output](#native-structured-output) |
 | `failures` | **ODW extension.** This CLI's own failure wording: `{ "rate_limit": [...], "quota": [...], "auth": [...] }`, regular expressions matched case-insensitively against the end of a failed run's output before the built-in table |
 | `output` | how stdout becomes the reply (default: trimmed text) — see below |
 | `permissionArgs` | **ODW extension.** Each tier's flags: `{ "read"?: [...], "edit": [...], "full"?: [...] }` (`edit` required, `[]` for none), put where the command has a `{permission_args}` element — which it must have exactly when this is set |
 | `permissions` | **ODW extension.** Caps this adapter's tier below the run's: its agents get the lower of the two |
+| `permissionDenials` | **ODW extension.** `"warn"` or `"fail"`: this CLI's own `permissionDenials`, over the run-wide setting |
 
 ### Output formats
 
@@ -186,14 +194,53 @@ did-you-mean hint) instead of silently ignoring them.
 - `{ "format": "json", "textPath": ["response"] }` — one JSON document on stdout.
 
 **ODW extension:** both JSON formats may add `usagePath` (the token counts), `costPath`
-(US dollars) and `errorPath` (`true`, a message or an error object: the run failed
-with it, classified like any failure whatever its exit status); `jsonl` reads usage
+(US dollars), `errorPath` (`true`, a message or an error object: the run failed
+with it, classified like any failure whatever its exit status) and `deniedPath`
+(the tool calls the CLI refused the agent, under a reply that may claim success:
+recorded as `denied` on the agent and logged, or a `permission` failure under
+`permissionDenials: "fail"` — the built-in `claude` reads `permission_denials`);
+`jsonl` reads usage
 and cost from `usageEvent` events (default: `eventType`) and adds them up. Usage is
 normalized across the CLIs' field names (Anthropic's, OpenAI's, Codex's):
 `inputTokens` (cached input included), `outputTokens`, `cacheReadTokens`,
 `cacheWriteTokens`, `costUsd`. A whole number in a path indexes an array (negative:
 from its end). When stdout does not have the declared text, the raw stdout is the
-reply and the run's log says why — the agent does not fail.
+reply and the run's log says why — the agent does not fail. A `structuredPath`
+points at the value the CLI validated against a schema it was handed natively (see
+below).
+
+### Native structured output
+
+**ODW extension.** `flags.schema` declares that a CLI validates a JSON Schema itself,
+and how it takes one:
+
+| Field | Meaning |
+| --- | --- |
+| `args` | the flag(s) before the schema, e.g. `["--json-schema"]` |
+| `mode` | `"inline"`: the schema's compact JSON is the next argument. `"file"`: the path of a file holding it — `agents/<agentId>.schema.json` in the run directory (a temp directory outside a run), written before each CLI run and removed after it |
+| `strict` | `true` for a CLI that takes only OpenAI strict-mode schemas (codex): any other schema — one whose root is not an object, or with an object that is not `"additionalProperties": false` with all its properties `required` — goes in the prompt instead, and the run says so once |
+
+The schema goes after every other argument, where a model flag goes, and is not
+placeholder-expanded; a call without a schema runs the command exactly as
+configured. When the CLI's output carries the validated value apart from its text,
+`output.structuredPath` says where; a value there (not null) is the reply's value,
+else the reply text is searched for the JSON, as for any adapter. ODW validates the
+value either way and retries with feedback when it does not satisfy the schema; the
+prompt describes the schema only to CLIs that do not take it (`schemaPrompt`).
+
+| Built-in | `flags.schema` | The value comes from |
+| --- | --- | --- |
+| `claude` | `{ "args": ["--json-schema"], "mode": "inline" }` | `structured_output` in its `result` event (`"structuredPath": ["structured_output"]`), else the `result` text |
+| `codex` | `{ "args": ["--output-schema"], "mode": "file", "strict": true }` | its final message on stdout |
+
+Before an agent starts, its schema is checked against the subset ODW's validator
+enforces ([primitives](primitives.md#schema)). Anything else is named in the run's
+log, once, with where it is — left to the CLI when the adapter takes the schema
+natively (on a `strict` one, only a strict schema), enforced by nobody otherwise —
+and ODW checks the part it can; under `"schemaKeywords": "strict"` the call fails
+with an `AgentError` instead. A malformed schema or an unknown keyword fails in either
+mode. To turn native schemas off for a built-in, give its `flags` without `schema`:
+`"claude": { "flags": { "model": ["--model"] } }`.
 
 ### Run notifications (`notify`)
 
@@ -233,4 +280,8 @@ failed agent call, classified as `rate_limit`, `quota`, `auth`, `timeout`,
 So does a failure the CLI reports in its output (`errorPath`: Claude Code's
 stream-json `is_error` result, often with exit 0), and a clean exit whose short
 text reply is nothing but a rate-limit, quota or login error (`API Error: Rate
-limit reached`).
+limit reached`). A clean exit can still fail (ODW extensions): with reason
+`empty_reply` when the reply is empty (unless the call sets `allowEmpty`),
+`unmet_expectation` when the work missed the call's `expect` checks, and
+`permission` when the CLI refused tool calls (`deniedPath`) and either
+`permissionDenials` is `"fail"` or the call has `expect`.

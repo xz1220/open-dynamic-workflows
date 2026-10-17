@@ -56,10 +56,22 @@ export interface AgentView {
   error: string | null;
   /**
    * Why a failed agent's CLI failed (agent_failed's `reason`): rate_limit,
-   * quota, auth, timeout, stalled, not_found, permission or exit. Absent while
-   * running, for other failures (schema, stop) and for older event files.
+   * quota, auth, timeout, stalled, not_found, permission or exit — or, ODW
+   * extensions, empty_reply and unmet_expectation. Absent while running, for
+   * other failures (schema, stop) and for older event files.
    */
   failureReason?: string;
+  /**
+   * Agents only (ODW extension): the `expect` checks a failed agent's work did
+   * not meet (agent_failed's `misses`, with reason "unmet_expectation"), one
+   * line each. Absent otherwise.
+   */
+  misses?: string[];
+  /**
+   * Agents only (ODW extension): the tool calls its CLI refused under a reply
+   * that stood anyway (agent_finished's `denied`), one line each. Absent otherwise.
+   */
+  denied?: string[];
   startedAt: number | null;
   finishedAt: number | null;
   /** Wall-clock from agent_started to agent_finished/failed, in ms (a command's own measurement). */
@@ -70,6 +82,11 @@ export interface AgentView {
   commandId?: number | null;
   /** Commands only: the exit status once settled; null while running or when a signal ended it. */
   exitCode?: number | null;
+  /**
+   * Commands only (ODW extension): the agent whose `expect.command` check
+   * this step is — it belongs under that agent. Absent for exec() steps.
+   */
+  forAgentId?: number;
   /**
    * What a settled agent spent (its event's `usage`; ODW extension): tokens
    * and cost as its CLI reported them, `estimated` where output tokens are
@@ -89,6 +106,13 @@ export interface AgentView {
    * agent_started's `permissions`. Absent for older event files.
    */
   permissions?: PermissionTier;
+  /**
+   * Agents only (ODW extension): the adapters it fell back from, in order —
+   * their quota was spent or their login refused — before `adapter`, the one
+   * it runs on now and, once settled, the one that produced its value (or
+   * failed last). Absent when it never left the adapter it started on.
+   */
+  fellBackFrom?: string[];
 }
 
 export type RunDisplayState =
@@ -259,6 +283,18 @@ export function applyAgentEvent(
   if (ev.type === "command_started" || ev.type === "command_finished" || ev.type === "command_failed") {
     return applyCommandEvent(agents, ev);
   }
+  if (ev.type === "log") {
+    // A fallback (ODW extension) moves a running agent to another adapter:
+    // its log line names the adapter and every one the agent has left.
+    const from = adapterNames(ev.fellBackFrom);
+    if (!from || typeof ev.agentId !== "number" || typeof ev.adapter !== "string") return {};
+    const target = agents.find((a) => a.state === "running" && a.agentId === ev.agentId);
+    if (target) {
+      target.adapter = ev.adapter;
+      target.fellBackFrom = from;
+    }
+    return {};
+  }
   if (ev.type === "agent_started") {
     const opened: AgentView = {
       agentId: typeof ev.agentId === "number" ? ev.agentId : null,
@@ -307,11 +343,20 @@ export function applyAgentEvent(
     // What an isolated agent changed, finished or failed (ODW extension).
     target.changes = agentChanges(ev.changes);
     target.branch = typeof ev.branch === "string" && ev.branch !== "" ? ev.branch : null;
+    // The adapters it fell back from, finished or failed (ODW extension).
+    const from = adapterNames(ev.fellBackFrom);
+    if (from) target.fellBackFrom = from;
     if (ev.type === "agent_failed") {
       target.state = "failed";
       target.error = ev.error != null ? String(ev.error) : null;
       if (typeof ev.reason === "string" && ev.reason !== "") target.failureReason = ev.reason;
+      // One that fell back failed on the adapter its event names.
+      if (from && typeof ev.adapter === "string") target.adapter = ev.adapter;
+      const misses = strings(ev.misses);
+      if (misses) target.misses = misses;
     } else {
+      const denied = strings(ev.denied);
+      if (denied) target.denied = denied;
       target.state = "done";
       target.adapter = ev.adapter != null ? String(ev.adapter) : null;
       target.attempts = typeof ev.attempts === "number" ? ev.attempts : null;
@@ -345,6 +390,7 @@ function applyCommandEvent(
       commandId,
       exitCode: null,
     };
+    if (typeof ev.forAgentId === "number") opened.forAgentId = ev.forAgentId;
     agents.push(opened);
     return { opened };
   }
@@ -372,6 +418,12 @@ function applyCommandEvent(
     target.state = "done";
   }
   return { settled: target };
+}
+
+/** An event's `fellBackFrom`, when it lists adapters (ODW extension); undefined otherwise. */
+function adapterNames(raw: unknown): string[] | undefined {
+  if (!Array.isArray(raw) || raw.length === 0 || !raw.every((name) => typeof name === "string")) return undefined;
+  return [...(raw as string[])];
 }
 
 /** An event's `changes`, when it is a diffstat; null otherwise. */
@@ -403,8 +455,18 @@ function copyAgents(agents: AgentView[], stale: boolean): AgentView[] {
   return agents.map((a) => {
     const copy: AgentView = stale && a.state === "running" ? { ...a, state: "stale" } : { ...a };
     if (a.usage) copy.usage = { ...a.usage };
+    if (a.fellBackFrom) copy.fellBackFrom = [...a.fellBackFrom];
+    if (a.misses) copy.misses = [...a.misses];
+    if (a.denied) copy.denied = [...a.denied];
     return copy;
   });
+}
+
+/** An event's list of lines (`misses`, `denied`), when it has any. */
+function strings(raw: unknown): string[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const lines = raw.filter((line): line is string => typeof line === "string");
+  return lines.length > 0 ? lines : undefined;
 }
 
 function phaseOrderFrom(started: string[], declared: Array<{ title: string }>): string[] {

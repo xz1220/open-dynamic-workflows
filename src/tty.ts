@@ -111,6 +111,8 @@ export interface Glyphs {
   bullet: string;
   header: string;
   rule: string;
+  /** From one adapter to the next: an agent's fallbacks (ODW extension). */
+  arrow: string;
 }
 
 export function glyphs(caps: TermCaps): Glyphs {
@@ -124,6 +126,7 @@ export function glyphs(caps: TermCaps): Glyphs {
         bullet: "·",
         header: "◆",
         rule: "─",
+        arrow: "→",
       }
     : {
         spinner: ["-", "\\", "|", "/"],
@@ -134,6 +137,7 @@ export function glyphs(caps: TermCaps): Glyphs {
         bullet: "-",
         header: "*",
         rule: "-",
+        arrow: "->",
       };
 }
 

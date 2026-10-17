@@ -22,18 +22,22 @@ other primitive organizes calls to it.
 - **opts.schema** — a JSON Schema object. When given, the reply is parsed and
   validated, and the agent is retried with corrective feedback until it conforms
   or the retry budget runs out (then the call throws). Without it, the raw reply
-  text is returned.
+  text is returned. What ODW cannot check in a schema is named in the run's log (or,
+  under `"schemaKeywords": "strict"`, fails the call before it starts); CLIs that
+  validate schemas get it natively — see [schema](#schema).
 - **opts.label** — a short name for progress display.
 - **opts.phase** — overrides the current phase for this one call. Prefer this
   inside `parallel`/`pipeline`, where the global phase is shared.
 - **opts.adapter** — which configured CLI to use (e.g. `"codex"`); defaults to
-  the config's `defaultAdapter`.
+  the phase's adapter (below), then the config's `defaultAdapter`. **ODW
+  extension:** a list, `["codex", "claude"]`, is a fallback chain in order of
+  preference — see [routing](#routing-phase-defaults-model-tiers-fallback-chains-odw-extension).
 - **opts.model** — a model id forwarded through the adapter's `{model}` template
   token or declared `flags.model` (e.g. `claude --model …`). Without either
   carrier, the CLI's default model is used and a routing note records the
-  ignored option. Model ids are CLI-specific. `meta.model` and
-  `meta.phases[].model` are accepted metadata, but do not select execution
-  models; pass `{ model }` to each `agent()` call that needs one.
+  ignored option. Model ids are CLI-specific. **ODW extension:** `"@fast"`
+  names a model tier — each CLI's own id for it — and a phase may give a
+  default model; `meta.model` stays metadata.
 - **opts.agentType** — a **persona** injected into the prompt (e.g.
   `"code-reviewer"`), so it works on every CLI. It is **not** an adapter name and
   never affects adapter selection — only `opts.adapter` does. It does not load
@@ -61,12 +65,26 @@ other primitive organizes calls to it.
   before its CLI starts; `claude`, `codex` and `gemini` have one). See
   [adapters](adapters.md#permissions-what-each-built-in-may-do). Claude Code
   ignores it.
+- **opts.expect** (**ODW extension**) — what must hold once the agent has
+  replied, checked by odw: `{ changes?, files?, command?, match?, timeout? }`. See
+  [expect](#expect-odw-extension). Claude Code ignores it.
+- **opts.expectRetries** (**ODW extension**) — how many times work that missed
+  `expect` runs again, told what it missed (default: the `expectRetries`
+  setting, 1).
+- **opts.allowEmpty** (**ODW extension**) — accept an empty or whitespace-only
+  reply as the answer. Without it, an empty reply fails the call with reason
+  `"empty_reply"`. (Tool calls the CLI refused do not fail a call by default:
+  they are recorded as `denied` — see [expect](#expect-odw-extension).)
 
 Returns the reply text, or the validated JSON value when `schema` is set. CLI
-errors and exhausted schema retries throw. Inside `parallel`/`pipeline`, these
-recoverable failures become `null`. Fatal errors — stop requests, exhausted
-budgets, the total-agent cap, and invalid adapter/run configuration —
-propagate and terminate the run.
+errors, exhausted schema retries, work that missed its `expect` checks and an
+empty reply throw. Inside `parallel`/`pipeline`, these recoverable failures
+become `null`. Fatal errors — stop requests, exhausted budgets, the total-agent
+cap, and invalid adapter/run configuration — propagate and terminate the run.
+A failed CLI run's error carries `reason` (`rate_limit`, `quota`, `auth`,
+`timeout`, `stalled`, `not_found`, `permission`, `exit`, `empty_reply` or
+`unmet_expectation`), the same as its `agent_failed` event — branch on it in a
+`try`/`catch`.
 
 Every call that completes is saved in its run directory
 (`agents/<agentId>.json`) before its `agent_finished` event, so a finished
@@ -127,13 +145,63 @@ concurrently" — handy when each step itself fans out with `parallel`.
 ## phase / log
 
 ```js
-phase(title)    // group following agent calls under a named phase
-log(message)    // emit a one-line progress event
+phase(title, opts?)    // group following agent calls under a named phase
+log(message)           // emit a one-line progress event
 ```
 
-Both are observation only. `phase` sets a run-global current phase; inside
-concurrent sections pass `{ phase }` to `agent` instead, since the global is
-shared.
+Both are observation only — save `opts` (below). `phase` sets a run-global
+current phase; inside concurrent sections pass `{ phase }` to `agent` instead,
+since the global is shared.
+
+## Routing: phase defaults, model tiers, fallback chains (ODW extension)
+
+Which CLI and model each agent runs on, and where it goes when that CLI cannot
+take it. Claude Code ignores all of it.
+
+- **Phase defaults.** A `meta.phases` entry `{ title, adapter?, model? }` (a
+  plain string entry is just a title) gives its phase's agents an adapter and a
+  model; `phase(title, { adapter?, model? })` sets them for the agents that
+  follow, in place of the entry (`phase(title)` alone keeps what the phase has;
+  `{}` clears it). An option the `agent()` call sets always wins, and a call's
+  own `phase` option brings that phase's defaults. A bad `adapter` or `model`
+  in `meta.phases` fails the workflow's load (and `validate()`); bad `phase()`
+  options throw.
+- **Model tiers.** `model: "@fast"` picks the id the `models` setting gives the
+  adapter the agent runs on — after a fallback, the next adapter's. A tier
+  with no id for that adapter leaves its CLI's default model (logged); an
+  unknown tier fails the call with an `AgentError` listing the tiers. A model
+  without the `@` (or with characters a tier name cannot have, such as
+  `@cf/…`) is a model id, passed to every adapter as is.
+- **Fallback chains.** `adapter: ["codex", "claude"]`, or the `fallback`
+  setting for the adapter a call runs on: when its CLI's quota is spent or its
+  login is refused, the call runs again on the next adapter — a fresh prompt,
+  the same options, its [`expect`](#expect-odw-extension) checks included. A
+  rate limit is retried in place (`transientRetries`); any other failure — an
+  unmet expectation too — is the call's. Each move is a log line
+  (`search:3 → claude after codex quota`); the call takes a slot on its new
+  adapter, letting the old one's go first; its transcript goes on after an
+  `{"kind":"attempt","reason":"fallback","adapter":"claude"}` line; and what
+  the failed runs spent still counts. A fallback runs at the call's own
+  permission tier — an adapter that cannot run exactly that tier is skipped,
+  with a log line. `agent_finished` and the saved result name the adapter that
+  produced the value (`adapter`) and the ones left (`fellBackFrom`);
+  `agent_failed` names them too when the call fell back.
+- **Quota breaker.** After `quotaBreaker` (default 3) quota failures in a row
+  on one adapter, the run's later calls skip it: each starts on the next
+  adapter of its chain, or fails at once (reason `quota`) without one. One
+  warning says so.
+
+```js
+export const meta = {
+  name: 'triage',
+  description: 'Map cheaply, judge carefully.',
+  phases: [{ title: 'Map', model: '@fast' }, { title: 'Judge', adapter: ['claude', 'codex'], model: '@strong' }],
+}
+phase('Map')
+const areas = await agent('List the modules touched by HEAD~5..HEAD, one per line.')
+phase('Judge')
+return await agent(`Which of these needs a careful review first, and why?\n${areas}`)
+```
 
 ## args / budget
 
@@ -198,7 +266,10 @@ with no adapter call, concurrency slot, dispatch count or budget, when its
 (as written in the call, not the run's default), `model`, `agentType`,
 `isolation`, `label` and `permissions` (as written in the call). `phase` is not
 part of the key, and `--adapter` or `--permissions` on the resume change only
-the run's defaults, so calls that name no adapter or tier still replay.
+the run's defaults, so calls that name no adapter or tier still replay. Nor
+are a phase's default adapter and model (ODW extension), so a phase routed
+elsewhere still replays; an adapter list keys in its order, and a model tier
+as the tier. A call that fell back replays its value and walks no chain.
 Calls with the same key replay in call order (the n-th such call gets the n-th
 saved result); a call past them, or one whose prompt or options changed, runs
 normally. Nested `workflow()` calls replay the same way. A `checkpoint()` is
@@ -404,8 +475,74 @@ A diff past `maxDiffBytes` (default 2 MB) keeps its head and ends with a
 `odw apply` refuses it — use the agent's branch (`keep: true`, or
 `keepBranches`). Each attempt of a call works in a fresh worktree: a schema retry
 that only reformats its reply keeps the earlier attempt's change, while a stall
-restart or a rate-limit retry redoes the work, so its change replaces the
-earlier one. `odw resume` copies a replayed agent's diff into the new run.
+restart, a rate-limit retry or an `expect` retry redoes the work, so its change
+replaces the earlier one. `odw resume` copies a replayed agent's diff into the new run.
+
+## expect (ODW extension)
+
+```js
+agent(prompt, { expect: { changes?, files?, command?, match?, timeout? }, expectRetries?, allowEmpty? })
+```
+
+What must hold once the agent has replied — checked by odw, instead of asking
+the model whether it did the work. Prefer it to a second "did you do it?" agent:
+
+- **changes** — `true`: the agent must change some file; `false`: it must change
+  none.
+- **files** — globs relative to the agent's workspace (`*`, `**`, `?`, `[…]`,
+  `{a,b}`): each must match a file the agent changed or created (a deletion does
+  not count).
+- **command** — must exit 0, run in the agent's workspace: a string through the
+  shell, an array as argv. Killed after `timeout` seconds (default 600), which is
+  a miss. It runs as an `exec()` step under the agent — its `command_*` events
+  carry `forAgentId` — after the change is read, so what it writes is never the
+  agent's work; a stop kills it.
+- **match** — a regular expression (its source, no flags) the reply must match.
+
+The checks run once the reply is in and has satisfied its `schema`. What the
+agent changed is read from git. In place, it is what differs from the source
+tree as it was before the agent's first CLI run: your own uncommitted edits and
+the run's directory are left out, the agent's commits count — and so do edits
+another in-place agent makes meanwhile, so isolate agents whose changes must be
+told apart. `expect.changes` or `expect.files` in place needs a git repository
+(else the call fails before its CLI starts). With `isolation: "worktree"`, it is
+exactly the change the run keeps as the agent's diff; a schema retry that only
+reformats is judged on the attempt that did the work.
+
+Work that misses runs again — `expectRetries` times (default 1, or the
+`expectRetries` setting) — with what it missed appended to its prompt, a failed
+command's output included; an isolated retry starts over in a fresh worktree.
+Each retry is logged, and the transcript marks it `{"kind":"attempt","reason":"expect"}`.
+A retry runs on the adapter whose work missed: a miss never falls back. A call
+that falls back (a spent quota, a refused login) keeps its `expect`, and the
+next adapter starts the work over with its own retries — isolated, in a fresh
+worktree; in place, judged against the tree as it was before the call's first
+CLI run. If the work still misses, the call throws (recoverable) with `reason:
+"unmet_expectation"` and `misses` — one line per check — on the error and on its
+`agent_failed` event:
+
+```js
+try {
+  await agent('Fix the flaky date test.', { expect: { command: ['npm', 'test', '--', 'dates'], changes: true } })
+} catch (err) {
+  if (err.reason !== 'unmet_expectation') throw err
+  log(`not fixed: ${err.misses.join('; ')}`)   // "`npm test -- dates` must exit 0, and it exited with code 1"
+}
+```
+
+Tool calls the CLI refused — Claude Code's `permission_denials`, read through the
+adapter's `output.deniedPath` — count as a miss: the retry is told which, and a
+call still refused after its retries throws with reason `"permission"`, its
+`misses` listing the refusal and anything else the work missed.
+
+Without `expect`: an empty or whitespace-only reply throws with reason
+`"empty_reply"` unless `allowEmpty: true`. A reply that claims success while the
+CLI refused tool calls stands — they are kept as `denied` on the agent's
+`agent_finished` event and saved result, and the run logs one line — unless
+`"permissionDenials": "fail"` (run-wide, or in the adapter's entry), which throws
+with reason `"permission"`, naming them. Neither failure is retried. `expect` is
+part of the call's resume key; Claude Code ignores it, so there the checks do not
+run.
 
 ## schema
 
@@ -438,14 +575,37 @@ The validator implements this subset, not the full JSON Schema standard:
 | `type: "array"` | `items` as one schema object and `minItems` |
 | `enum` | Structural membership, independently of `type` |
 
-Object and array constraints need their explicit `type`; omitting it skips
-those checks. Schema-valued `additionalProperties`, tuple/boolean schemas,
-and union-type arrays are outside this subset. Unsupported keywords such as
-`const`, `$ref`/`$defs`, `oneOf`/`anyOf`/`allOf`, `minimum`/`maximum`, `pattern`,
-`format`, and `maxItems` are not enforced: they may still be sent to the agent
-as instructions, but passing validation does not prove them. An unknown
-`type` produces a validation error. Rewrite schemas into the supported subset
-or explicitly check additional constraints in the workflow.
+Object and array constraints need their explicit `type`. Annotations —
+`description`, `title`, `default`, `examples`, `format`, `$comment`, `$schema` —
+constrain nothing and are fine anywhere (`format` is an annotation by default since
+JSON Schema 2019-09; Claude Code does not enforce it either).
+
+**Nothing outside the subset goes silently unchecked (ODW extension).** Before the
+agent starts, its schema is checked for anything the validator would not enforce:
+keywords such as `const`, `$ref`, `oneOf`/`anyOf`/`allOf`, `minimum`/`maximum`,
+`pattern` and `maxItems`, schema-valued `additionalProperties`, tuple or boolean
+schemas, type unions like `["string", "null"]`, and an object or array keyword
+without its `type`. The config's `schemaKeywords` decides what happens:
+
+- `"warn"` (the default) — the call runs and ODW validates the rest; the run's log
+  says once which keywords it does not check and where (`"pattern" at
+  #/properties/id`), and who enforces them: a CLI that validates schemas itself
+  (it got the whole schema), otherwise nobody.
+- `"strict"` — the call fails with an `AgentError` naming each one, before anything
+  is spawned.
+
+A typo (`requird`, an unknown `type`) or another malformed schema fails the call in
+either mode, with a did-you-mean. To make a limit count everywhere, put it in a
+`description` (the agent still reads it) and check it in the workflow.
+
+**Native schemas (ODW extension).** A CLI that validates schemas itself is handed
+the whole schema as well — `claude` with `--json-schema` (its value comes from
+`structured_output`), `codex` with `--output-schema` when the schema is strict (an
+object at the root; every object `"additionalProperties": false` and all its
+properties `required`) — and it enforces what ODW does not check; ODW still
+validates every reply and retries as usual. The prompt describes the schema only to
+a CLI that does not take it (`"schemaPrompt": "always"` describes it everywhere).
+See [adapters](adapters.md#native-structured-output).
 
 ## Composition patterns
 

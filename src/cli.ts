@@ -54,7 +54,7 @@ import {
   type ApplyReport,
 } from "./runtime/changes-view.js";
 import { startRun, startRunFromSource, waitFor } from "./runtime/launcher.js";
-import { attachRun, bannerLines, checkpointCommands, formatEvent, formatUsage, resolveRunMode, type RunMode } from "./runtime/live-view.js";
+import { attachRun, bannerLines, checkpointCommands, fallbackLines, formatEvent, formatUsage, resolveRunMode, type RunMode } from "./runtime/live-view.js";
 import { isRunActive, RunObserver } from "./runtime/run-liveness.js";
 import { RunStore, TERMINAL_STATES } from "./runtime/run-store.js";
 import { detail, type RunDetail } from "./runtime/runs-view.js";
@@ -612,6 +612,8 @@ function cmdStatus(rest: string[]): number {
   process.stdout.write(`  dispatched: ${dispatchedCount(events, status)} agent(s)\n`);
   // What its agents spent (ODW extension): as their CLIs reported it, or chars/4 estimates.
   if (run.usage) process.stdout.write(`  usage: ${formatUsage(run.usage)}${estimateNote(run)}\n`);
+  // Agents that fell back to another adapter, and adapters the quota breaker took out (ODW extensions).
+  for (const line of fallbackLines(run.agents, events)) process.stdout.write(`  ${line}\n`);
   if (typeof meta.resumedFrom === "string") {
     const replayed = events.filter((e) => e.type === "agent_finished" && e.cached === true).length;
     process.stdout.write(`  resumed from: ${meta.resumedFrom} (${replayed} agent result(s) replayed)\n`);

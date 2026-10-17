@@ -18,19 +18,39 @@
 export {};
 
 declare global {
-  /** ODW's JSON Schema subset; unsupported keywords are not enforced. See the primitive reference. */
+  /**
+   * ODW's JSON Schema subset. A keyword outside it is named in the run's log
+   * (the config's `schemaKeywords: "strict"` fails the call instead), and a
+   * CLI that validates schemas itself enforces it. See the primitive reference.
+   */
   type JsonSchema = Record<string, unknown>;
 
   interface AgentOptions {
-    /** Which configured adapter/CLI to use; falls back to the default. */
-    adapter?: string;
-    /** When set, the reply is checked against ODW's schema subset and returned as a JSON value. */
+    /**
+     * Which configured adapter/CLI to use; falls back to the phase's default, then the run's.
+     * ODW extension — Claude Code ignores it: a list such as `["codex", "claude"]` is a
+     * fallback chain, in order of preference — when an adapter's quota is spent or its login
+     * refused, the call runs again on the next one (fresh prompt, same options, same
+     * permission tier), in place of the `fallback` setting's chain.
+     */
+    adapter?: string | string[];
+    /**
+     * When set, the reply is checked against ODW's schema subset and returned as
+     * a JSON value. A CLI that validates schemas (claude, codex) is also handed it
+     * natively (an ODW extension).
+     */
     schema?: JsonSchema;
     /** Short label for progress display. */
     label?: string;
     /** Override the current phase for this one call (use inside parallel/pipeline). */
     phase?: string;
-    /** CLI-specific model id via `{model}` or flags.model; otherwise ignored with a routing note. Metadata model fields do not supply a default. */
+    /**
+     * CLI-specific model id via `{model}` or flags.model; otherwise ignored with a routing note.
+     * ODW extension: `"@fast"` names a tier of the `models` setting — each adapter's own model
+     * id for it, picked for the adapter the call runs on (after a fallback, the next one's); an
+     * unknown tier fails the call. A `meta.phases` entry's `model` (or `phase(title, { model })`)
+     * is the default for the phase's agents; `meta.model` is metadata only.
+     */
     model?: string;
     /** Prompt persona, not an adapter name or a loader for Claude roles, tools, permissions, or project subagent definitions. */
     agentType?: string;
@@ -49,6 +69,37 @@ declare global {
      * does `"read"` on a CLI with no read-only mode.
      */
     permissions?: "read" | "edit" | "full";
+    /**
+     * ODW extension — Claude Code ignores it. What must hold once the agent replied (after
+     * `schema` validation), checked by ODW instead of asking the model; tool calls its CLI
+     * refused count as a miss too. Work that misses runs again, on the same adapter, with what
+     * it missed appended to its prompt (`expectRetries`), then the call throws (recoverable)
+     * with `misses` and reason `"unmet_expectation"` — `"permission"` when refused calls are
+     * among them. A call that falls back to another adapter keeps its checks.
+     */
+    expect?: ExpectOptions;
+    /** ODW extension: how many times work that missed `expect` runs again (default: the `expectRetries` setting, 1). */
+    expectRetries?: number;
+    /** ODW extension: accept an empty or whitespace-only reply; without it the call throws with reason `"empty_reply"`. */
+    allowEmpty?: boolean;
+  }
+
+  /** What {@link AgentOptions.expect} checks (ODW extension). */
+  interface ExpectOptions {
+    /**
+     * `true`: the agent must change some file; `false`: it must change none. Read from git: in
+     * place, against the source tree as it was before the agent started (edits a concurrent
+     * in-place agent makes count too); with isolation, the change its worktree leaves.
+     */
+    changes?: boolean;
+    /** Globs (`*`, `**`, `?`, `[…]`, `{a,b}`) relative to the agent's workspace: each must match a file it changed or created. */
+    files?: string[];
+    /** Must exit 0 in the agent's workspace: a string through the shell, an array as argv. Runs as a command step under the agent; a stop kills it. */
+    command?: string | string[];
+    /** A regular expression (its source, no flags) the reply must match. */
+    match?: string;
+    /** Seconds `command` may run before it is killed, which is a miss (default 600). */
+    timeout?: number;
   }
 
   interface Budget {
@@ -66,7 +117,8 @@ declare global {
   /**
    * Run one coding agent; returns reply text or a validated JSON value, not a worktree diff.
    * Saved as soon as it completes; under `odw resume`, a call with the same prompt and
-   * options (phase aside) returns its saved value instead of running again. What an isolated
+   * options as written (phase, and the defaults a phase gives, aside) returns its saved value
+   * instead of running again — without walking a fallback chain. What an isolated
    * agent changed is kept with the run as a diff to review and apply (ODW extension).
    */
   function agent(prompt: string, opts?: AgentOptions): Promise<any>;
@@ -80,8 +132,20 @@ declare global {
     ...stages: Array<(previous: any, item: any, index: number) => any>
   ): Promise<any[]>;
 
-  /** Start a new named phase for progress grouping. */
-  function phase(title: string): void;
+  /** Defaults a phase gives its agents (ODW extension — Claude Code ignores them). */
+  interface PhaseOptions {
+    /** The adapter, or fallback chain, of the phase's agents that name none. */
+    adapter?: string | string[];
+    /** The model (or `"@tier"`) of the phase's agents that name none. */
+    model?: string;
+  }
+
+  /**
+   * Start a new named phase for progress grouping. ODW extension: `opts` gives the phase's
+   * agents an adapter and a model, in place of its `meta.phases` entry's (`{ title, adapter?,
+   * model? }`); an option an agent() call sets always wins.
+   */
+  function phase(title: string, opts?: PhaseOptions): void;
 
   /** Emit a one-line progress message. */
   function log(message: unknown): void;
@@ -175,7 +239,7 @@ declare global {
       name: string;
       description: string;
       whenToUse?: string;
-      phases?: Array<{ title: string; detail?: string; model?: string }>;
+      phases?: Array<{ title: string; detail?: string; model?: string; adapter?: string | string[] }>;
       model?: string;
     };
     errors: string[];

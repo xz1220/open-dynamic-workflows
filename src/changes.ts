@@ -207,6 +207,62 @@ export async function captureChanges(
 ): Promise<CapturedChanges | null> {
   const { work, base } = tree;
   const signal = opts.signal;
+  return withAgentIndex(tree, baseline, signal, async (env) => {
+    const stat = numstat(
+      await git(work, [...DIFF_CONFIG, "diff", "--cached", "--numstat", "-z", "--no-textconv", "-M", base], { env, signal }),
+    );
+    if (stat.files === 0) return null;
+    const truncated = await writeDiff(work, base, env, opts, stat.files);
+    const result: CapturedChanges = { changes: { ...stat, truncated }, commit: null, repo: tree.top };
+    if (opts.commitMessage) {
+      try {
+        result.commit = await commitIndex(work, base, env, opts.commitMessage, signal);
+      } catch (err) {
+        if (signal?.aborted) throw err;
+        result.commitError = errorText(err);
+      }
+    }
+    return result;
+  });
+}
+
+/**
+ * The paths the agent changed in `tree` — the files {@link captureChanges}
+ * puts in its diff, a rename as both its paths — relative to the worktree's
+ * root. What an `expect` check of an isolated agent reads (ODW extension).
+ */
+export async function listChanges(tree: WorktreeRef, baseline: WorktreeBaseline, signal?: AbortSignal): Promise<string[]> {
+  return withAgentIndex(tree, baseline, signal, async (_env, paths) => paths);
+}
+
+/**
+ * A path relative to a repository's root, made relative to `dir` — one of its
+ * directories, given relative to the root ("" for the root itself) — with
+ * forward slashes: `src/a.ts` is `a.ts` from `src`, `README.md` is
+ * `../README.md` from it.
+ */
+export function relativeToDir(dir: string, path: string): string {
+  if (dir === "") return path;
+  const from = dir.split("/");
+  const to = path.split("/");
+  let common = 0;
+  while (common < from.length && common < to.length - 1 && from[common] === to[common]) common++;
+  return [...from.slice(common).map(() => ".."), ...to.slice(common)].join("/");
+}
+
+/**
+ * Stage the agent's change in `tree` into a private copy of its index (see the
+ * module doc: everything that differs from the base, less what was there
+ * before the agent started), and run `fn` with that index's environment and
+ * the paths of the change. The copy is removed afterwards.
+ */
+async function withAgentIndex<T>(
+  tree: WorktreeRef,
+  baseline: WorktreeBaseline,
+  signal: AbortSignal | undefined,
+  fn: (env: NodeJS.ProcessEnv, paths: string[]) => Promise<T>,
+): Promise<T> {
+  const { work, base } = tree;
   const index = join(tree.scratch, `changes-${process.pid}-${++captures}.index`);
   // A copy of the worktree's own index carries git's stat cache: staging the
   // tree then reads only what changed.
@@ -226,21 +282,8 @@ export async function captureChanges(
         input: `${notTheAgents.join("\0")}\0`,
       });
     }
-    const stat = numstat(
-      await git(work, [...DIFF_CONFIG, "diff", "--cached", "--numstat", "-z", "--no-textconv", "-M", base], { env, signal }),
-    );
-    if (stat.files === 0) return null;
-    const truncated = await writeDiff(work, base, env, opts, stat.files);
-    const result: CapturedChanges = { changes: { ...stat, truncated }, commit: null, repo: tree.top };
-    if (opts.commitMessage) {
-      try {
-        result.commit = await commitIndex(work, base, env, opts.commitMessage, signal);
-      } catch (err) {
-        if (signal?.aborted) throw err;
-        result.commitError = errorText(err);
-      }
-    }
-    return result;
+    const skip = new Set(notTheAgents);
+    return await fn(env, changed.filter((path) => !skip.has(path)));
   } finally {
     await rm(index, { force: true }).catch(() => {});
   }
@@ -393,6 +436,71 @@ async function commitIndex(
   return commit.trim();
 }
 
+// --- in place -------------------------------------------------------------------
+
+/**
+ * A working tree as it stood before an agent ran in it in place — its HEAD,
+ * and what `git status` listed, fingerprinted — so {@link changedSince} can
+ * tell what changed in a tree that may already hold uncommitted work. What an
+ * `expect` check of an in-place agent compares against (ODW extension).
+ */
+export interface TreeSnapshot {
+  /** The repository's root: the snapshot's paths are relative to it. */
+  root: string;
+  /** The commit HEAD named; null before the first commit. */
+  head: string | null;
+  /** Fingerprint of each path `git status` listed ({@link fingerprint}; null: absent). */
+  paths: Map<string, string | null>;
+}
+
+/** Snapshot the git working tree `dir` is in; throws when it is in none. */
+export async function snapshotTree(dir: string, signal?: AbortSignal): Promise<TreeSnapshot> {
+  const root = (await git(dir, ["rev-parse", "--show-toplevel"], { signal })).trim();
+  const { paths } = await snapshotWorktree(root, [], signal);
+  return { root, head: await headCommit(root, signal), paths };
+}
+
+/**
+ * What changed in a snapshot's tree since it was taken — by whoever changed
+ * it — as paths relative to its root, sorted: what `git status` lists now and
+ * did not then, what it listed then whose content differs now (a revert or a
+ * deletion included), and what the commits made since then changed.
+ */
+export async function changedSince(snap: TreeSnapshot, signal?: AbortSignal): Promise<string[]> {
+  const { root } = snap;
+  const listed = statusPaths(await git(root, ["status", "--porcelain=v1", "-z", "--untracked-files=all"], { signal }));
+  const changed = new Set(listed.filter((path) => !snap.paths.has(path)));
+  await eachLimited([...snap.paths.keys()], async (path) => {
+    if ((await fingerprint(join(root, path))) !== snap.paths.get(path)) changed.add(path);
+  });
+  const head = await headCommit(root, signal);
+  if (head !== null && head !== snap.head) {
+    const committed =
+      snap.head === null
+        ? await git(root, ["ls-tree", "-r", "-z", "--name-only", head], { signal })
+        : await git(root, ["diff", "--name-only", "-z", "--no-renames", snap.head, head], { signal });
+    for (const path of splitNul(committed)) changed.add(path);
+  }
+  return [...changed].sort();
+}
+
+/**
+ * Take what `paths` (relative to the snapshot's root) hold now as where they
+ * started: what was done to them since — by a check's command, not the agent
+ * — is no longer a change, while a later edit to them is.
+ */
+export async function rebaseline(snap: TreeSnapshot, paths: readonly string[]): Promise<void> {
+  await eachLimited([...paths], async (path) => {
+    snap.paths.set(path, await fingerprint(join(snap.root, path)));
+  });
+}
+
+/** The commit HEAD names in `dir`'s repository, or null before the first one. */
+async function headCommit(dir: string, signal?: AbortSignal): Promise<string | null> {
+  // Exit 1, quietly: no commit yet.
+  return (await git(dir, ["rev-parse", "-q", "--verify", "HEAD"], { signal, okCodes: [0, 1] })).trim() || null;
+}
+
 // --- branches ---------------------------------------------------------------------
 
 /**
@@ -447,14 +555,20 @@ interface Pending extends CapturedChanges {
  * A run supersedes the earlier runs of its attempt: a stall restart or a
  * rate-limit retry redoes the work from scratch. A schema retry is asked only
  * to reformat its reply, so an attempt that changed nothing leaves the earlier
- * attempt's change standing; one that did change files replaces it. When the
- * call settles, {@link settle} keeps the winner as `agents/<agentId>.diff` and
- * creates its branch; {@link discard} drops everything (a stop).
+ * attempt's change standing; one that did change files replaces it. A retry of
+ * work that missed its `expect` checks ({@link redo}) starts the work over:
+ * once a run of it is in, the earlier attempts' change is gone, even when it
+ * changed nothing. When the call settles, {@link settle} keeps the winner as
+ * `agents/<agentId>.diff` and creates its branch; {@link discard} drops
+ * everything (a stop, or a fallback that starts the work over on another
+ * adapter).
  */
 export class ChangeRecorder {
   private kept: Pending | null = null;
   private latest: Pending | null = null;
   private runs = 0;
+  /** The next run starts the work over (see {@link redo}). */
+  private redoing = false;
 
   constructor(private readonly opts: ChangeRecorderOptions) {}
 
@@ -479,6 +593,20 @@ export class ChangeRecorder {
     if (!pending) await rm(file, { force: true }).catch(() => {});
     await this.drop(this.latest);
     this.latest = pending;
+    if (this.redoing) {
+      this.redoing = false;
+      await this.drop(this.kept);
+      this.kept = null;
+    }
+  }
+
+  /**
+   * The next attempt starts the call's work over in a fresh worktree — a retry
+   * of work that missed its `expect` checks — so what it changes, even
+   * nothing, supersedes the earlier attempts' change once a run of it is in.
+   */
+  redo(): void {
+    this.redoing = true;
   }
 
   /** An attempt's last CLI run is in: what it changed, if anything, replaces an earlier attempt's change. */
@@ -509,12 +637,17 @@ export class ChangeRecorder {
     return { changes: kept.changes, branch };
   }
 
-  /** The call ended with the run (a stop): keep nothing. */
+  /**
+   * Keep nothing captured so far: the call ended with the run (a stop), or it
+   * starts its work over on another adapter (a fallback, an ODW extension) —
+   * whose runs the recorder goes on capturing.
+   */
   async discard(): Promise<void> {
     await this.drop(this.latest);
     await this.drop(this.kept);
     this.latest = null;
     this.kept = null;
+    this.redoing = false;
   }
 
   private async drop(pending: Pending | null): Promise<void> {

@@ -19,6 +19,7 @@
 import type { Adapter, Settings } from "./adapters/types.js";
 import type { PlaceholderContext } from "./adapters/placeholders.js";
 import type { AgentRequest } from "./bridge.js";
+import { resolveModel } from "./routing.js";
 import type { WorkspaceMode } from "./workspace.js";
 
 /** Everything the router needs to plan one invocation. */
@@ -55,12 +56,12 @@ export interface OptionRouter {
  */
 export class LiteralRouter implements OptionRouter {
   plan(input: RouterInput): InvocationPlan {
-    const { request, adapter } = input;
+    const { request, adapter, settings } = input;
     const context: PlaceholderContext = {};
     const extraArgs: string[] = [];
     const notes: string[] = [];
 
-    this.routeModel(request, adapter, context, extraArgs, notes);
+    this.routeModel(request, adapter, settings, context, extraArgs, notes);
     this.noteAgentType(request, adapter, notes);
     const workspaceMode = this.routeIsolation(request);
 
@@ -71,26 +72,30 @@ export class LiteralRouter implements OptionRouter {
    * model → either a `{model}` token the template already carries, or the flag
    * the adapter declares, appended *only when a value is present* (so a call
    * with no model never produces a dangling `--model ""`). No carrier → a note.
+   * A model tier (`"@fast"`, an ODW extension) is first this adapter's own id
+   * for it (see ./routing): an unknown tier fails the call.
    */
   private routeModel(
     request: AgentRequest,
     adapter: Adapter,
+    settings: Settings,
     context: PlaceholderContext,
     extraArgs: string[],
     notes: string[],
   ): void {
-    if (!request.model) return;
+    const model = resolveModel(request.model, adapter, settings, notes);
+    if (!model) return;
     const usesToken =
       adapter.command.some((p) => p.includes("{model}")) ||
       (adapter.stdin?.includes("{model}") ?? false);
     const flag = adapter.flags?.model;
     if (usesToken) {
-      context.model = request.model;
+      context.model = model;
     } else if (flag && flag.length > 0) {
-      extraArgs.push(...flag, request.model);
+      extraArgs.push(...flag, model);
     } else {
       notes.push(
-        `model '${request.model}' requested but adapter '${adapter.name}' declares no model flag ` +
+        `model '${model}' requested but adapter '${adapter.name}' declares no model flag ` +
           `— ignored (the CLI's own default model is used)`,
       );
     }

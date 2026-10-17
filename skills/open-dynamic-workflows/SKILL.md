@@ -29,7 +29,9 @@ do it directly.
 - The file starts with `export const meta = {…}` — a **pure literal** (no
   variables, function calls, or template interpolation). `meta.name` and
   `meta.description` are required; `whenToUse`, `phases`, and `model` are
-  optional.
+  optional. A `phases` entry is `{ title, detail? }` (or just the title); its
+  `adapter` and `model` are the defaults of the phase's agents (**ODW
+  extension** — see [per-phase routing](#per-phase-adapters-model-tiers-and-fallback-chains-odw-extension)).
 - The body runs in an async context: use top-level `await` directly; the
   top-level `return` value is the workflow's result.
 - The primitives are **injected globals** — never import them. Any top-level
@@ -72,7 +74,7 @@ outright, never silently passed through as a string).
 | `agent(prompt, opts?)` | Run one coding agent on a subtask; returns its reply text, or a validated object when `opts.schema` is set. The only verb that does real work. |
 | `parallel(thunks)` | Run zero-arg thunks concurrently and **wait for all** (barrier). Order preserved; a failed slot is `null`. |
 | `pipeline(items, ...stages)` | Stream each item through the stages independently (**no barrier**). Each stage receives `(prev, item, index)`. |
-| `phase(title)` / `log(msg)` | Label the following work for progress / emit one progress line. |
+| `phase(title, opts?)` / `log(msg)` | Label the following work for progress / emit one progress line. `opts` (`{ adapter, model }`, **ODW extension**) gives the phase's agents a CLI and a model. |
 | `args` | The workflow input (injected). |
 | `budget` | `{ total, spent(), remaining() }` — scale depth to a token target. |
 | `workflow(ref, args?)` | Run another workflow inline (one level deep). `ref` is a managed-directory name or `{ scriptPath }`; the child shares this run's concurrency cap, agent counter, and budget. |
@@ -80,13 +82,47 @@ outright, never silently passed through as a string).
 | `exec(command, opts?)` | Run a command (tests, a build, a linter) without a model; resolves to `{ stdout, stderr, exitCode, signal, timedOut, truncated, durationMs }`. A string runs through the shell, an array as argv. **ODW extension** — not part of Claude Code's dialect. |
 | `checkpoint(title, opts?)` | Pause the run until a person approves or rejects; resolves to `{ approved, note, by }`. **ODW extension** — not part of Claude Code's dialect. |
 
-`opts` for `agent`: `{ adapter?, schema?, label?, phase?, model?, agentType?, isolation?, keep?, permissions? }`.
-`adapter` picks the CLI; `schema` is a raw JSON Schema object (an option, not
+`opts` for `agent`: `{ adapter?, schema?, label?, phase?, model?, agentType?, isolation?, keep?, permissions?, expect?, expectRetries?, allowEmpty? }`.
+`adapter` picks the CLI — or, as a list (`['codex', 'claude']`, **ODW
+extension**), a fallback chain; `model: '@fast'` picks a tier's model for
+whichever CLI runs it (**ODW extension**); `schema` is a raw JSON Schema object (an option, not
 a global); `agentType` is a **persona** injected into the prompt — *not* an
 adapter name. `keep: true` (**ODW extension**) also commits an isolated agent's
 change to a branch `odw/<runId>/<agentId>-<label>`. `permissions: "read"`
 (**ODW extension**) runs the agent at a stricter tier than the run's — see
 [permission tiers](#permission-tiers-odw-extension).
+
+Write `schema` in the subset ODW checks — `type` (one name), `enum`, `properties`,
+`required`, `additionalProperties: false`, `items` (one schema), `minItems`, plus
+annotations like `description` and `format`. Any other keyword (`oneOf`, `$ref`,
+`const`, `pattern`, `maxItems`, a type union, …) is not checked by ODW: the run's log
+says so once, with where it is, and the call runs — or, under `"schemaKeywords":
+"strict"`, fails with an `AgentError` before it starts (**ODW extension**). Put a
+limit ODW cannot check in a `description`. On `claude` and `codex` the schema is
+passed to the CLI natively, which enforces it; ODW validates the reply either way —
+see [`references/primitives.md`](references/primitives.md#schema).
+
+`expect` (**ODW extension**) states what must hold once the agent has replied,
+and odw checks it — prefer it to asking the model "did you do it?", or to
+trusting a reply that says so. `changes: true|false` (some file changed / none
+did), `files` (globs, each matching a file it changed or created), `command`
+(must exit 0 in the agent's workspace; `timeout` seconds, default 600) and
+`match` (a regular expression the reply must match). Work that misses runs
+again, on the same adapter, with what it missed in its prompt (`expectRetries`,
+default 1), then throws — recoverable — with `reason: "unmet_expectation"` and
+`misses`; a miss never falls back, and a call that does fall back keeps its
+`expect`. Tool
+calls the CLI refused (claude's `permission_denials`) count as a miss too, and
+then the reason is `"permission"`. Without `expect`, such a reply stands: the
+refused calls are kept as `denied` on the agent and logged once
+(`"permissionDenials": "fail"` fails it instead). An empty reply always throws
+`reason: "empty_reply"` (`allowEmpty: true` accepts one):
+
+```js
+const fix = await agent('Fix the failing parser tests.', {   // ODW extension: expect
+  expect: { command: 'npm test', changes: true, files: ['src/parser/**'] },
+})
+```
 
 `opts` for `exec`: `{ cwd?, env?, timeout?, input?, maxOutputBytes?, label?, phase?, check? }`.
 It runs in the source directory by default, is killed after `timeout` seconds
@@ -227,6 +263,37 @@ const findings = await parallel(files.map((f) => () =>
   agent(`Review ${f}: list bugs with evidence; change nothing`, { permissions: 'read', label: f })))  // ODW extension
 ```
 
+### Per-phase adapters, model tiers and fallback chains (ODW extension)
+
+Mix CLIs and models per stage — a cheap model for wide search or extraction
+fan-outs, a strong one for synthesis and verdicts — and keep a long run going
+when one CLI runs out of quota.
+
+- **Phase defaults.** `meta.phases: [{ title: 'Search', adapter: 'codex', model: '@fast' }]`,
+  or `phase('Search', { adapter: 'codex', model: '@fast' })` for the agents that
+  follow. An option the `agent()` call sets always wins.
+- **Model tiers.** `model: '@fast'` uses the `models` tier the user configured, with
+  each CLI's own model id; an unknown tier fails the agent and lists the tiers. A
+  plain model id is passed to every CLI as is — prefer a tier whenever an agent
+  may run on more than one CLI.
+- **Fallback chains.** `adapter: ['codex', 'claude']` (or the user's `fallback`
+  config): when the first CLI's quota is spent or its login is refused, the agent
+  runs again on the next one, at the same permission tier, and the log says so
+  (`search:3 → claude after codex quota`). Rate limits are still retried in place.
+  After three quota failures in a row on one CLI, the run's later agents skip it.
+  `odw agents --json` and the `agent_finished` event name the CLI that produced
+  each value (`adapter`) and the ones it left (`fellBackFrom`).
+- Only name adapters the user has installed (`odw doctor` lists them), and keep
+  the user's choice of default CLI: suggest a chain when long runs keep stopping
+  on quota, don't add one silently.
+
+```js
+phase('Extract', { model: '@fast' })   // ODW extension
+const claims = await pipeline(sources, (s) => agent(`Extract cited claims from ${s}`, { schema: CLAIMS }))
+phase('Verdict', { adapter: ['claude', 'codex'], model: '@strong' })   // ODW extension
+return await agent(`Rank these claims by evidence:\n${JSON.stringify(claims.filter(Boolean))}`)
+```
+
 ### Human checkpoints (ODW extension)
 
 Add a `checkpoint()` only where a person's judgment is worth the wait: before
@@ -323,7 +390,8 @@ without answering when headless (a login, trust or approval prompt).
   (an agent CLI may wait for its background commands before exiting) (ODW extension).
 - **Rate limits**: a rate-limited CLI is retried after a backoff (honoring its
   retry-after); a spent quota or a failed login is not retried — the agent fails
-  with what to do, and `odw logs` names the reason. Switch adapter with
+  with what to do, and `odw logs` names the reason — unless it has a fallback
+  chain, which moves it to the next CLI (ODW extension). Switch adapter with
   `--adapter` rather than retrying a quota failure.
 - **Throttling and the prompt cache** (ODW extensions): an adapter's own
   `concurrency` caps its agents inside the run's, and a rate limit halves that cap
@@ -347,6 +415,8 @@ without answering when headless (a login, trust or approval prompt).
 | Branching on which agent finished first | Breaks reproducibility; keep reductions order-independent. |
 | Re-running a stalled or failed run from scratch | Read finished agents with `odw result <run> --agent <id>`; `odw stop`, fix the script, then `odw resume` — finished calls replay for free. |
 | Retrying a failed agent without looking at what it did | Read its transcript first — `odw logs <run> --agent <id\|label>` shows its tool calls, results, errors and the end of its stderr (ODW extension) — and fix the cause. |
+| Asking an agent whether it did the work, or trusting a reply that says so | State it with `expect` — `{ command: 'npm test', changes: true }`: odw checks it after the reply, hands misses back once, and fails the agent with `unmet_expectation` and what it missed (ODW extension; `examples/fix-until-green.js`). |
+| Retrying an agent that failed with reason `permission` as if it were flaky, or ignoring a finished agent's `denied` | Both name the tool calls headless mode refused (`denied: Bash (npm test)`) — its reply may rest on work it could not do: ask the user to allow exactly those in the adapter's `permissionArgs` for its tier, or give the agent work it can do without them. |
 | Looking for an isolated agent's edits in your files after the run | They are kept as diffs, not merged: `odw diff <run> --stat`, then `odw apply <run> --agent <id> --check` and `odw apply`. |
 | Using `validate()` and expecting the script to run on Claude Code | `validate` is an ODW extension and runs on odw only. |
 | Using `exec()` and expecting the script to run on Claude Code | `exec` is an ODW extension and runs on odw only; `validate()` warns about it. |
@@ -354,5 +424,6 @@ without answering when headless (a login, trust or approval prompt).
 | Approving a checkpoint yourself because the run looks stuck | A waiting checkpoint is the user's decision: show them `odw status $RUN`, and run `odw approve`/`odw reject` only on their explicit say-so. |
 | Fanning out research or review agents that can edit | `{ permissions: 'read' }` on those agents, or `odw run --permissions read`: they read and report, and cannot change the tree (ODW extension; claude, codex or gemini). |
 | Reaching for `--permissions full` when an agent was refused or denied | `full` drops the sandbox and every approval — ask the user. A refused `read` agent needs a read-capable adapter instead. |
+| Giving one CLI's model id to agents that may run on another (a phase default, a fallback chain) | Model ids do not cross CLIs: use a tier, `model: '@fast'`, which picks each CLI's own id (ODW extension). |
 | Fanning out wide without watching what it spends | `odw status $RUN` shows the run's tokens and cost so far, and a `parallel()`/`pipeline()` wider than `fanOutWarn` (default 25) logs a warning (ODW extensions). Size fan-outs to `budget.total` when one is set; `--budget` caps output tokens. |
 | Hand-writing a cron line around `odw run` | `odw schedule add` writes it with an overlap lock, a log and a pinned `PATH` — and only on the user's request: it edits their crontab or LaunchAgents. |

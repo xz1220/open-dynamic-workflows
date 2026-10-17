@@ -16,6 +16,7 @@ import { NullControl, type Control } from "./control.js";
 import { BudgetExhausted } from "./errors.js";
 import { LOG, NullSink, event, type EventSink, type WorkflowEvent } from "./events.js";
 import type { AgentResultRecord, ReplayJournal } from "./journal.js";
+import type { PhaseDefaults } from "./routing.js";
 import { Scheduler } from "./scheduler.js";
 import { capChangeMessage } from "./throttle.js";
 import type { TranscriptPaths } from "./transcript.js";
@@ -31,6 +32,12 @@ export interface RunContext {
   source: string;
   /** The run's id (`ODW_RUN_ID` for its processes); absent where no run is persisted. */
   runId?: string;
+  /**
+   * The run's directory; absent where no run is persisted. ODW writes there
+   * while agents work, so an in-place `expect` check leaves it out of what an
+   * agent changed when it lies in the source tree (ODW extension).
+   */
+  runDir?: string;
   /** The run's token target (for `budget`), or null when none was set. */
   budgetTotal: number | null;
   /**
@@ -59,6 +66,13 @@ export interface RunContext {
    * has logged, so each is said once per run (ODW extension). Shared like `seq`.
    */
   permissionNotes?: Set<string>;
+  /**
+   * Each phase's defaults (ODW extension; see ./routing): the adapter and
+   * model its agents run with when they name none — from `meta.phases` and
+   * phase(title, {…}), by phase title. Shared like `seq`: a nested
+   * workflow()'s phases are there under their prefixed titles.
+   */
+  phaseDefaults?: Map<string, PhaseDefaults>;
   currentPhase: string | null;
   /**
    * Save a completed agent's record (the worker writes the run directory's
@@ -105,6 +119,7 @@ export function spentTokens(usage: { outputChars: number; outputTokens?: number 
 export interface BuildContextOptions {
   source?: string;
   runId?: string;
+  runDir?: string;
   args?: unknown;
   sink?: EventSink;
   control?: Control;
@@ -114,13 +129,15 @@ export interface BuildContextOptions {
   agentTranscriptPaths?: (agentId: number) => TranscriptPaths;
   replay?: ReplayJournal;
   onCheckpoint?: (cp: WaitingCheckpoint, waiting: boolean) => void;
+  /** Where an agent's schema file goes for a CLI that reads one (the bridge's `agentSchemaPath`). */
+  agentSchemaPath?: (agentId: number) => string;
 }
 
 /** Wire a full run context from a config and the run's surroundings. */
 export function buildContext(config: Config, options: BuildContextOptions = {}): RunContext {
   const sink = options.sink ?? new NullSink();
   const control: Control = options.control ?? new NullControl();
-  const bridge = new Bridge(config, { source: options.source, runId: options.runId });
+  const bridge = new Bridge(config, { source: options.source, runId: options.runId, agentSchemaPath: options.agentSchemaPath });
   const budgetTotal = options.budgetTotal ?? null;
   // The shared tally `budget.spent()` reads: reported output tokens, else
   // chars/4 of the reply; the guard makes --budget a real ceiling, not advisory.
@@ -156,12 +173,14 @@ export function buildContext(config: Config, options: BuildContextOptions = {}):
     args: options.args ?? null,
     source: options.source ?? process.cwd(),
     runId: options.runId,
+    runDir: options.runDir,
     budgetTotal,
     usage,
     seq: { value: 0 },
     commandSeq: { value: 0 },
     checkpointSeq: { value: 0 },
     permissionNotes: new Set(),
+    phaseDefaults: new Map(),
     currentPhase: null,
     saveAgentResult: options.saveAgentResult,
     agentDiffPath: options.agentDiffPath,

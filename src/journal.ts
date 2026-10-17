@@ -32,6 +32,12 @@ export interface AgentResultRecord {
   phase: string | null;
   /** The adapter that produced the value. */
   adapter: string | null;
+  /**
+   * The adapters it fell back from, in order, before `adapter` produced the
+   * value (ODW extension): their quota was spent or their login refused.
+   * Absent when the adapter it started on produced it.
+   */
+  fellBackFrom?: string[];
   /** CLI runs it took (>1: schema retries). */
   attempts: number | null;
   /** Epoch seconds, like event `ts`. */
@@ -52,6 +58,11 @@ export interface AgentResultRecord {
   branch?: string | null;
   /** The permission tier its CLI ran at (ODW extension); absent in records from before tiers. */
   permissions?: PermissionTier;
+  /**
+   * The tool calls its CLI refused while it did the work, under a reply that
+   * stood anyway (ODW extension; `permissionDenials: "warn"`), when it refused any.
+   */
+  denied?: string[];
 }
 
 /**
@@ -65,8 +76,18 @@ export interface AgentResultRecord {
  *   - adapter    the CLI AS REQUESTED (`opts.adapter`), not the resolved
  *                default: switching the run's default (`odw resume --adapter`,
  *                say after the first CLI stalled or ran out of quota) must
- *                still replay every call that did not name an adapter.
- *   - model      a different model is a different producer.
+ *                still replay every call that did not name an adapter. For
+ *                the same reason a phase's default adapter (`meta.phases`,
+ *                phase(title, {…}); an ODW extension) stays out: it is a
+ *                default like the run's, so re-routing a phase — to another
+ *                CLI after one ran out of quota, say — still replays every
+ *                call that names none. A list (a fallback chain, an ODW
+ *                extension) keys in its order: another order is another
+ *                preference. Where a call fell back to is no input at all: a
+ *                replayed call returns its value and never walks its chain.
+ *   - model      a different model is a different producer. As requested,
+ *                like `adapter`: a tier (`"@fast"`) keys as the tier, and a
+ *                phase's default model stays out.
  *   - agentType  the persona is part of the effective prompt.
  *   - isolation  a worktree agent sees HEAD only and its edits stay in its
  *                kept diff; in place it sees, and edits, the working tree.
@@ -76,11 +97,17 @@ export interface AgentResultRecord {
  *   - permissions the tier the call asked for (ODW extension): an agent held
  *                to read cannot make the change an edit one would. Like
  *                `adapter`, as requested — the run's tier is not in the key.
+ *   - expect     the checks the work had to pass (ODW extension): like a
+ *                schema, they decide which outcome is accepted, and a value
+ *                saved under other checks was never held to these.
+ *   - allowEmpty whether an empty reply was accepted as the value — only
+ *                when true, so `false` keys like an absent option.
  *
  * `phase` is left out on purpose: it is display only (often ambient, from
  * phase(), and prefixed inside a nested workflow()), and regrouping progress
  * must not invalidate finished work. So is `keep`: it only decides whether an
- * isolated agent's change is also committed to a branch. An option left
+ * isolated agent's change is also committed to a branch; and `expectRetries`:
+ * it only decides how often missed work is tried again. An option left
  * undefined keys exactly like an absent one. Should this derivation ever
  * change, old records simply stop matching and their calls run again — the
  * safe direction.
@@ -95,6 +122,8 @@ export function resumeKey(prompt: string, opts: AgentOptions): string {
     isolation: opts.isolation,
     label: opts.label,
     permissions: opts.permissions,
+    expect: opts.expect,
+    allowEmpty: opts.allowEmpty === true ? true : undefined,
   };
   return createHash("sha256").update(stableJson(inputs)).digest("hex");
 }

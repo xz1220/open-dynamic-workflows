@@ -48,6 +48,29 @@
   "//agentEnv": "ODW extension. \"inherit\" (the default) starts agent CLIs with ODW's whole environment. \"minimal\" passes only PATH, HOME, USER, LOGNAME, SHELL, LANG, LC_*, TERM, TMPDIR, TZ (and the Windows system variables), the auth and config variables the built-in CLIs document (ANTHROPIC_*, CLAUDE_*, OPENAI_*, CODEX_*, GEMINI_*, GOOGLE_*, DASHSCOPE_*, QWEN_*, MOONSHOT_*, KIMI_*, CURSOR_*, OPENCODE_*, the proxy variables, NODE_EXTRA_CA_CERTS), the adapter's env, ODW_* and the names or globs in \"agentEnvPass\" (e.g. [\"AWS_*\"] for Claude Code on Bedrock).",
   "agentEnv": "inherit",
 
+  "//schemaKeywords": "ODW extension. What happens to JSON Schema in an agent()'s schema that ODW's validator does not check. It checks type (one name), enum, properties, required, additionalProperties: false, items (one schema) and minItems; annotations such as description, title and format constrain nothing. Anything else (oneOf/anyOf/allOf, $ref, const, pattern, minimum, maxItems, type unions, …) is never silently unchecked: \"warn\" (the default) runs the call, validates the rest, and logs once per run which keywords, where, and who enforces them — an adapter whose CLI validates schemas itself (\"flags.schema\": the built-in claude, and codex for strict schemas), otherwise nobody; \"strict\" fails the call before it starts, naming each one. A malformed schema (a typo, an unknown type) fails in either mode. A CLI with flags.schema is handed every schema (claude --json-schema, codex --output-schema) and ODW still validates each reply. schemaPrompt \"auto\" describes the schema in the prompt only for a CLI that does not take it natively; \"always\" for every CLI.",
+  "schemaKeywords": "warn",
+  "schemaPrompt": "auto",
+
+  "//fallback": {
+    "$comment": "ODW extension: fallback chains. Rename \"//fallback\" to \"fallback\" to turn them on. When an agent's CLI has spent its usage quota or its login is refused (not a rate limit: that is retried in place, see transientRetries), the agent runs again on the next adapter listed for the one it was on — a fresh prompt, the same options, at the same permission tier (an adapter that cannot run that tier is skipped, with a log line) — and the run's log, odw status, the live view and the dashboard say where it went: \"search:3 → claude after codex quota\". An agent() call's own list, agent(prompt, { adapter: [\"codex\", \"claude\"] }), takes the place of these. Every adapter named must be configured.",
+    "codex": ["claude"],
+    "claude": ["codex"]
+  },
+  "//quotaBreaker": "ODW extension. After this many quota failures in a row on one adapter, the run's later agents skip it — each starts on the next adapter of its fallback chain, or fails at once without one — and the run logs it once. 0 or null never skips an adapter.",
+  "quotaBreaker": 3,
+  "//models": {
+    "$comment": "ODW extension: model tiers. Rename \"//models\" to \"models\" to turn them on. agent(prompt, { model: \"@fast\" }) — or a phase's model — runs each adapter with its own id for the tier: the one the agent runs on, or after a fallback the next one's. An adapter a tier names no model for runs its CLI's default (logged); an unknown tier fails the agent. A model without the @ is a model id, passed to every adapter as it is.",
+    "fast": { "claude": "haiku", "codex": "gpt-5-mini", "gemini": "gemini-2.5-flash" },
+    "strong": { "claude": "opus", "codex": "gpt-5", "gemini": "gemini-2.5-pro" }
+  },
+
+  "//expectRetries": "ODW extension. agent(prompt, { expect }) states what must hold once the agent replied — some file changed or none (changes: true|false), files matching globs changed or created (files), a command exiting 0 in the agent's workspace (command, killed after timeout seconds, 600 by default), the reply matching a regular expression (match) — and odw checks it rather than asking the model; tool calls its CLI refused count as a miss too. Work that misses runs again with what it missed appended to its prompt, at most expectRetries times (an agent's own expectRetries overrides this); then it fails with reason unmet_expectation (permission when refused calls are among the misses) and the list of misses. Without any opt-in, an empty reply fails with reason empty_reply (allowEmpty: true accepts one).",
+  "expectRetries": 1,
+
+  "//permissionDenials": "ODW extension. What a reply that claims success does when its CLI refused the agent tool calls (claude's permission_denials, read through an adapter's output deniedPath; under the edit tier, Claude Code refuses every shell command that is not allowlisted): \"warn\" (the default) keeps the reply, records the refused calls as denied on the agent's agent_finished event and saved result, and logs one line; \"fail\" fails the agent with reason permission. An adapter's own \"permissionDenials\" overrides this; with expect, refused calls are a miss whatever it says.",
+  "permissionDenials": "warn",
+
   "//notify": {
     "$comment": "ODW extension: run-end hooks. Rename \"//notify\" to \"notify\" to turn them on. They fire once, after the run's final state is written, and can never change it; a failing or slow hook is only logged to the run's worker.log. command: an argv run WITHOUT a shell (killed after 30s), with ODW_RUN_ID, ODW_RUN_STATE, ODW_WORKFLOW, ODW_RUN_DIR, ODW_RESULT_FILE (only when the run has a result), ODW_DURATION_SEC, ODW_AGENTS and ODW_FAILED_AGENTS in its environment. webhook: an http(s) URL that receives a JSON POST (10s limit) whose text/content fields render as-is in Slack and Discord. on: which final states fire them (default: all three).",
     "command": ["/usr/local/bin/odw-notify"],
@@ -60,7 +83,7 @@
       "label": "Codex CLI",
       "command": ["codex", "--search", "exec", "--skip-git-repo-check", "{permission_args}", "--cd", "{workspace}", "-"],
       "stdin": "{prompt}",
-      "flags": { "model": ["--model"] },
+      "flags": { "model": ["--model"], "schema": { "args": ["--output-schema"], "mode": "file", "strict": true } },
       "permissionArgs": {
         "read": ["--sandbox", "read-only"],
         "edit": ["--sandbox", "workspace-write"],
@@ -71,8 +94,8 @@
       "label": "Claude Code",
       "command": ["claude", "--print", "--output-format", "stream-json", "--verbose", "{permission_args}", "--no-session-persistence"],
       "stdin": "{prompt}",
-      "flags": { "model": ["--model"] },
-      "output": { "format": "jsonl", "eventType": "result", "textPath": ["result"], "select": "last", "usagePath": ["usage"], "costPath": ["total_cost_usd"], "errorPath": ["is_error"] },
+      "flags": { "model": ["--model"], "schema": { "args": ["--json-schema"], "mode": "inline" } },
+      "output": { "format": "jsonl", "eventType": "result", "textPath": ["result"], "select": "last", "usagePath": ["usage"], "costPath": ["total_cost_usd"], "errorPath": ["is_error"], "structuredPath": ["structured_output"], "deniedPath": ["permission_denials"] },
       "permissionArgs": {
         "read": ["--permission-mode", "dontAsk", "--tools", "Read,Glob,Grep,WebSearch,WebFetch", "--allowedTools", "WebSearch", "WebFetch", "--strict-mcp-config"],
         "edit": ["--permission-mode", "acceptEdits", "--allowedTools", "WebSearch", "WebFetch"],

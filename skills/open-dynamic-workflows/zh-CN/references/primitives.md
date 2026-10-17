@@ -20,15 +20,19 @@ agent(prompt, opts?) -> Promise<unknown>
 
 - **opts.schema** —— 一个 JSON Schema 对象。给了它，回复就会被解析并校验，并带着纠正反馈
   重试 agent，直到符合契约或重试预算耗尽（届时这次调用抛错）。不给，则返回原始回复文本。
+  schema 里 ODW 检查不了的内容会记入运行日志（设 `"schemaKeywords": "strict"` 时则让调用在
+  启动前失败）；会校验 schema 的 CLI 直接原生拿到它——见 [schema](#schema)。
 - **opts.label** —— 进度显示用的短名字。
 - **opts.phase** —— 为这一次调用覆盖当前 phase。在 `parallel`/`pipeline` 里优先用它，那里
   全局 phase 是共享的。
-- **opts.adapter** —— 用哪个配置好的 CLI（如 `"codex"`）；默认用配置里的 `defaultAdapter`。
+- **opts.adapter** —— 用哪个配置好的 CLI（如 `"codex"`）；默认先用阶段的适配器（见下文），
+  再用配置里的 `defaultAdapter`。**ODW 扩展：** 写成列表 `["codex", "claude"]` 就是按偏好
+  排序的回退链——见[路由](#路由阶段默认值模型分层回退链odw-扩展)。
 - **opts.model** —— 一个 model id，通过 adapter 的 `{model}` 模板占位符或
   `flags.model`（如 `claude --model …`）转发。两者都没有时，使用 CLI 自己的默认模型，
-  并记录该选项被忽略的路由说明。model id 不能跨 CLI 通用。`meta.model` 和
-  `meta.phases[].model` 可作为元数据读取，但不决定执行模型；需要指定模型的每次
-  `agent()` 调用都应显式传 `{ model }`。
+  并记录该选项被忽略的路由说明。model id 不能跨 CLI 通用。**ODW 扩展：** `"@fast"`
+  指定一个模型层级——各 CLI 用自己在该层级下的 ID——阶段也可以给出默认模型；`meta.model`
+  仍只是元数据。
 - **opts.agentType** —— 注入进 prompt 的**人设**（如 `"code-reviewer"`），因此在任何 CLI
   上都生效。它**不是** adapter 名，永远不影响 adapter 选择——只有 `opts.adapter` 才会。
   它不会加载 Claude 内置角色的权限、工具或项目里的子 agent 定义。
@@ -48,10 +52,21 @@ agent(prompt, opts?) -> Promise<unknown>
   full）——请求更高档位会让调用以 `AgentError` 失败，报错写明两个档位——没有只读模式的适配器会
   拒绝 `"read"`（调用在 CLI 启动前失败；`claude`、`codex` 和 `gemini` 有只读模式）。见
   [适配器](adapters.md#权限每个内置适配器能做什么)。Claude Code 会忽略它。
+- **opts.expect**（**ODW 扩展**）—— agent 回复之后必须成立的条件，由 odw 检查：
+  `{ changes?, files?, command?, match?, timeout? }`。见 [expect](#expectodw-扩展)。
+  Claude Code 会忽略它。
+- **opts.expectRetries**（**ODW 扩展**）—— 没达到 `expect` 的工作带着缺失项重跑的次数
+  （默认取 `expectRetries` 设置，即 1）。
+- **opts.allowEmpty**（**ODW 扩展**）—— 接受空回复或只有空白的回复作为答案。不设时，空回复
+  会让调用以 `"empty_reply"` 失败。（CLI 拒绝工具调用默认不会让调用失败：它们会记为
+  `denied`——见 [expect](#expectodw-扩展)。）
 
-返回回复文本，设了 `schema` 则返回校验过的 JSON 值。CLI 出错或 schema 重试耗尽会抛错；
-这些可恢复失败在 `parallel`/`pipeline` 内变成 `null`。停止请求、预算耗尽和 agent
-总量上限以及无效的 adapter/运行配置属于 fatal 错误，会继续向上抛出并终止运行。
+返回回复文本，设了 `schema` 则返回校验过的 JSON 值。CLI 出错、schema 重试耗尽、工作没达到
+`expect`、空回复都会抛错；这些可恢复失败在 `parallel`/`pipeline` 内变成 `null`。停止请求、
+预算耗尽和 agent 总量上限以及无效的 adapter/运行配置属于 fatal 错误，会继续向上抛出并终止
+运行。失败的 CLI 运行抛出的错误带有 `reason`（`rate_limit`、`quota`、`auth`、`timeout`、
+`stalled`、`not_found`、`permission`、`exit`、`empty_reply` 或 `unmet_expectation`），与它的
+`agent_failed` 事件一致——可以在 `try`/`catch` 里据此分支。
 
 每次完成的调用都会在发出 `agent_finished` 事件之前保存到运行目录
 （`agents/<agentId>.json`），所以某条泳道卡住、运行被停止或 worker 死掉，已完成的
@@ -108,12 +123,51 @@ stage 的可恢复失败会把那个条目降为 `null` 并跳过它剩下的 st
 ## phase / log
 
 ```js
-phase(title)    // group following agent calls under a named phase
-log(message)    // emit a one-line progress event
+phase(title, opts?)    // group following agent calls under a named phase
+log(message)           // emit a one-line progress event
 ```
 
-两者都只用于观测。`phase` 设置一个运行级的全局当前 phase；在并发段落里改为给 `agent` 传
+两者都只用于观测——`opts` 除外（见下文）。`phase` 设置一个运行级的全局当前 phase；在并发段落里改为给 `agent` 传
 `{ phase }`，因为那个全局是共享的。
+
+## 路由：阶段默认值、模型分层、回退链（ODW 扩展）
+
+每个 agent 跑在哪个 CLI、用哪个模型，以及那个 CLI 接不了时去哪里。Claude Code 会忽略这些。
+
+- **阶段默认值。** `meta.phases` 的条目 `{ title, adapter?, model? }`（纯字符串条目只是
+  标题）为该阶段的 agent 指定适配器和模型；`phase(title, { adapter?, model? })` 为其后的
+  agent 设置它们，取代该条目（只写 `phase(title)` 保留阶段已有的设置；传 `{}` 则清空）。
+  `agent()` 调用自己给出的选项永远优先，调用自带的 `phase` 选项会带上那个阶段的默认值。
+  `meta.phases` 里写错的 `adapter` 或 `model` 会让工作流加载失败（`validate()` 也会报出）；
+  写错的 `phase()` 选项会抛错。
+- **模型分层。** `model: "@fast"` 选用 `models` 设置为 agent 所在适配器给出的 ID——回退之后
+  用下一个适配器的。该层级没给这个适配器 ID 时，使用其 CLI 的默认模型（记日志）；未知层级
+  会让调用以 `AgentError` 失败并列出已有层级。不带 `@` 的模型（或含有层级名不允许的字符，
+  如 `@cf/…`）就是模型 ID，原样传给每个适配器。
+- **回退链。** `adapter: ["codex", "claude"]`，或调用所在适配器在 `fallback` 设置里的回退链：
+  CLI 额度用尽或登录被拒时，调用会在下一个适配器上重新运行——全新的提示词、相同的选项，
+  [`expect`](#expectodw-扩展) 检查也一样。限流仍在原地重试（`transientRetries`）；其他失败
+  ——包括没达到 expect 检查——都算调用自己的。每次切换记一行日志
+  （`search:3 → claude after codex quota`）；调用会在新适配器上取得槽位，先释放旧适配器的；
+  它的 transcript 在一行 `{"kind":"attempt","reason":"fallback","adapter":"claude"}` 之后
+  继续；失败的那些运行花掉的用量照样计入。回退时沿用调用自己的权限档位——不能恰好运行该档位
+  的适配器会被跳过并记一行日志。`agent_finished` 和保存的结果会写明产出结果的适配器
+  （`adapter`）和离开过的那些（`fellBackFrom`）；发生过回退的 `agent_failed` 也会写明。
+- **额度熔断。** 同一个适配器上连续 `quotaBreaker`（默认 3）次额度失败后，本次运行之后的
+  调用都会跳过它：各自从回退链上的下一个适配器开始，没有回退链的则立即失败（原因为 `quota`）。
+  只记一条警告。
+
+```js
+export const meta = {
+  name: 'triage',
+  description: 'Map cheaply, judge carefully.',
+  phases: [{ title: 'Map', model: '@fast' }, { title: 'Judge', adapter: ['claude', 'codex'], model: '@strong' }],
+}
+phase('Map')
+const areas = await agent('List the modules touched by HEAD~5..HEAD, one per line.')
+phase('Judge')
+return await agent(`Which of these needs a careful review first, and why?\n${areas}`)
+```
 
 ## args / budget
 
@@ -167,7 +221,7 @@ warnings 提示 `Date.now()`、`Math.random()`、调用仅 ODW 提供的 `exec()
 不调用 adapter、不占并发槽位、不计入派发数、不消耗预算。恢复键是 prompt 加上
 `schema`、`adapter`（调用里写的值，而不是运行的默认值）、`model`、`agentType`、
 `isolation`、`label` 和 `permissions`（调用里写的值）的 sha256。`phase` 不在键里；resume
-时的 `--adapter` 或 `--permissions` 只改运行的默认值，所以没指定 adapter 或档位的调用仍会重放。同一个键的多次调用按调用顺序重放（第 n 次这样的调用
+时的 `--adapter` 或 `--permissions` 只改运行的默认值，所以没指定 adapter 或档位的调用仍会重放。阶段的默认适配器和模型（ODW 扩展）同样不在键里，所以把阶段改到别处后仍会重放；适配器列表按其顺序计入键，模型层级按层级名计入。发生过回退的调用会重放它的值，不会再走一遍回退链。同一个键的多次调用按调用顺序重放（第 n 次这样的调用
 拿到第 n 个保存的结果）；超出的调用，以及 prompt 或选项改变的调用，照常执行。嵌套的
 `workflow()` 调用同样会重放。`checkpoint()` 永远不会重放：恢复出来的运行会重新提问。
 
@@ -336,8 +390,62 @@ odw apply <run> --agent <id|label>       # 用 git apply --3way 应用到你所�
 `maxDiffBytes`（默认 2 MB）的 diff 只保留开头，并以一行 `# odw: diff truncated …` 结尾；
 计数仍描述完整改动，但 `odw apply` 会拒绝它——请改用该 agent 的分支（`keep: true` 或
 `keepBranches`）。一次调用的每次尝试都在新的 worktree 里进行：只重排回复格式的 schema
-重试会保留之前那次尝试的改动；卡死重启或限流重试会重做工作，所以它的改动取代之前的。
-`odw resume` 会把重放 agent 的 diff 复制到新运行里。
+重试会保留之前那次尝试的改动；卡死重启、限流重试或 `expect` 重试会重做工作，所以它的改动
+取代之前的。`odw resume` 会把重放 agent 的 diff 复制到新运行里。
+
+## expect（ODW 扩展）
+
+```js
+agent(prompt, { expect: { changes?, files?, command?, match?, timeout? }, expectRetries?, allowEmpty? })
+```
+
+agent 回复之后必须成立的条件——由 odw 检查，而不是问模型有没有做完。优先用它，而不是
+再派一个"你做了吗"的 agent：
+
+- **changes** —— `true`：agent 必须改动某个文件；`false`：不许改动任何文件。
+- **files** —— 相对 agent 工作区的 glob（`*`、`**`、`?`、`[…]`、`{a,b}`）：每个都必须匹配到
+  一个 agent 改动或新建的文件（删除不算）。
+- **command** —— 必须在 agent 的工作区里以 0 退出：字符串经 shell 执行，数组按 argv 执行。
+  超过 `timeout` 秒（默认 600）会被杀掉，算作未达到。它作为 agent 名下的一个 `exec()` 步骤
+  运行——它的 `command_*` 事件带 `forAgentId`——在读取改动之后执行，所以它写出的文件绝不会
+  被算成 agent 的工作；停止会杀掉它。
+- **match** —— 回复必须匹配的正则表达式（只给源码，不带 flag）。
+
+检查在回复到达、并通过 `schema` 校验之后进行。agent 改了什么从 git 读取。原地运行时，是与
+agent 第一次 CLI 运行前的源码树相比的差异：你自己未提交的改动和运行目录不算，agent 的提交算
+——同时原地运行的其他 agent 的改动也会算进来，所以需要分清各自改动的 agent 请用隔离。原地
+使用 `expect.changes` 或 `expect.files` 需要 git 仓库（否则调用在 CLI 启动前失败）。用
+`isolation: "worktree"` 时，就是运行为该 agent 保留的那份 diff；只重排回复格式的 schema 重试，
+按真正干活的那次尝试来评判。
+
+没达到要求的工作会重跑——`expectRetries` 次（默认 1，或取 `expectRetries` 设置）——并把缺失
+项追加到提示词里，失败命令的输出也一并附上；隔离的重试会在全新的 worktree 里从头开始。每次重试
+都会记日志，transcript 里标为 `{"kind":"attempt","reason":"expect"}`。重试在做出这份工作的
+适配器上进行：缺失绝不会触发回退。回退的调用（额度用尽、登录被拒）会带着它的 `expect`，下一个
+适配器从头开始这项工作，有自己的重试次数——隔离运行时在全新的 worktree 里；原地运行时，对照
+调用第一次 CLI 运行前的源码树来判断。仍未达到时，调用抛出
+可恢复的错误，错误和它的 `agent_failed` 事件上都带有 `reason: "unmet_expectation"` 和逐条的
+`misses`：
+
+```js
+try {
+  await agent('Fix the flaky date test.', { expect: { command: ['npm', 'test', '--', 'dates'], changes: true } })
+} catch (err) {
+  if (err.reason !== 'unmet_expectation') throw err
+  log(`not fixed: ${err.misses.join('; ')}`)   // "`npm test -- dates` must exit 0, and it exited with code 1"
+}
+```
+
+CLI 拒绝的工具调用——Claude Code 的 `permission_denials`，经适配器的 `output.deniedPath`
+读取——算作一项缺失：重试时会告诉 agent 是哪些，重试之后仍被拒绝的调用会以 `"permission"`
+抛错，`misses` 里列出这次拒绝以及工作的其他缺失。
+
+没设 `expect` 时：空回复或只有空白的回复会以 `"empty_reply"` 抛错，除非设了
+`allowEmpty: true`。声称成功、但 CLI 拒绝了工具调用的回复照常成立——这些调用作为 `denied`
+记在 agent 的 `agent_finished` 事件和保存的结果上，运行也会记一行日志——除非设了
+`"permissionDenials": "fail"`（运行级，或写在适配器条目里），此时以 `"permission"` 抛错并
+列出它们。两种失败都不重试。`expect` 属于调用的 resume key；Claude Code 会忽略它，在那里检查
+不会执行。
 
 ## schema
 
@@ -370,12 +478,31 @@ const result = await agent('Review this diff.', { schema: FINDINGS }) // -> vali
 | `type: "array"` | `items` 为一个 schema 对象，以及 `minItems` |
 | `enum` | 按 JSON 结构比较成员，独立于 `type` 生效 |
 
-对象和数组约束需要显式 `type`，缺少时跳过这些检查。schema 对象形式的
-`additionalProperties`、元组/布尔 schema 和联合类型数组都不属于支持的子集。
-`const`、`$ref`/`$defs`、`oneOf`/`anyOf`/`allOf`、`minimum`/`maximum`、`pattern`、
-`format`、`maxItems` 等未支持的关键字不会强制校验：它们可能仍作为提示发给 agent，
-但校验通过不代表满足这些约束。未知 `type` 会产生校验错误。请将 schema 改写为支持的
-子集，或在工作流中显式检查额外约束。
+对象和数组约束需要显式 `type`。`description`、`title`、`default`、`examples`、`format`、
+`$comment`、`$schema` 等注解不构成约束，放在哪里都可以（自 JSON Schema 2019-09 起 `format`
+默认只是注解；Claude Code 也不强制执行它）。
+
+**子集之外的内容不会被悄悄放过（ODW 扩展）。** agent 启动前，会检查它的 schema 里有没有
+校验器不会强制执行的内容：`const`、`$ref`、`oneOf`/`anyOf`/`allOf`、`minimum`/`maximum`、
+`pattern`、`maxItems` 等关键字，schema 对象形式的 `additionalProperties`，元组或布尔 schema，
+`["string", "null"]` 这样的类型联合，以及缺少对应 `type` 的对象或数组关键字。由配置里的
+`schemaKeywords` 决定怎么处理：
+
+- `"warn"`（默认）——调用照常运行，ODW 校验其余部分；运行日志只说一次哪些关键字它不检查、
+  位于何处（`"pattern" at #/properties/id`），以及由谁强制执行：自己校验 schema 的 CLI（它拿到
+  了完整 schema），否则无人。
+- `"strict"`——在任何东西启动前，调用以 `AgentError` 失败，逐个写明它们。
+
+拼写错误（`requird`、未知的 `type`）或其他格式错误的 schema 在两种模式下都会让调用失败，并附
+did-you-mean 提示。想让某个限制处处生效，就写进 `description`（agent 仍会读到），并在工作流里
+自行检查。
+
+**原生 schema（ODW 扩展）。** 自己会校验 schema 的 CLI 还会直接拿到完整 schema——`claude`
+通过 `--json-schema`（值取自 `structured_output`），`codex` 在 schema 为 strict（根为对象；
+每个对象都设 `"additionalProperties": false` 并把全部属性列进 `required`）时通过
+`--output-schema`——由它强制执行 ODW 不检查的部分；ODW 依旧校验每一次回复并照常重试。只有不
+接收原生 schema 的 CLI 才会在提示词里看到 schema 描述（`"schemaPrompt": "always"` 则全部附上）。
+见[适配器](adapters.md#原生结构化输出)。
 
 ## 组合模式
 

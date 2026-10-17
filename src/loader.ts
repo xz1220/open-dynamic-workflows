@@ -33,11 +33,18 @@ import { Script } from "node:vm";
 
 import { WorkflowScriptError } from "./errors.js";
 import type { WorkflowGlobals } from "./primitives.js";
+import { phaseDefaultsOf, type AdapterChoice } from "./routing.js";
 
+/**
+ * One `meta.phases` entry. A plain string is read as `{ title }`. Its
+ * `adapter` and `model` are the defaults of the phase's agents (an ODW
+ * extension; see ./routing).
+ */
 export interface WorkflowPhaseMeta {
   title: string;
   detail?: string;
   model?: string;
+  adapter?: AdapterChoice;
 }
 
 export interface WorkflowMeta {
@@ -130,6 +137,16 @@ export function readWorkflowMeta(source: string, filename: string): WorkflowMeta
 /** Parse + transform a workflow script's source into a runnable form. */
 export function loadWorkflowScript(source: string, filename: string): LoadedWorkflow {
   const { meta, body } = extractMeta(source, filename);
+  // The defaults its phases give their agents (an ODW extension) must be
+  // usable before the body runs; a listing reads only the titles.
+  for (const [i, entry] of (Array.isArray(meta.phases) ? meta.phases : []).entries()) {
+    if (entry === null || typeof entry !== "object" || Array.isArray(entry)) continue;
+    try {
+      phaseDefaultsOf(entry, `meta.phases[${i}]`);
+    } catch (err) {
+      throw new WorkflowScriptError(`workflow ${filename}: ${(err as Error).message}`);
+    }
+  }
 
   // Inject each extension unless the body's own top-level binding of that
   // name would clash with it. The masked body (strings and comments blanked)
@@ -310,6 +327,10 @@ function assertMeta(meta: unknown, filename: string): asserts meta is WorkflowMe
   }
   if (typeof m.description !== "string") {
     throw new WorkflowScriptError(`workflow ${filename}: meta.description must be a string`);
+  }
+  // A phase given as a plain string is its title.
+  if (Array.isArray(m.phases)) {
+    m.phases = m.phases.map((entry: unknown) => (typeof entry === "string" ? { title: entry } : entry));
   }
 }
 

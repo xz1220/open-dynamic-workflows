@@ -46,6 +46,21 @@ export class AdapterExecutionError extends DynamicWorkflowError {
   }
 }
 
+/**
+ * An agent's work missed its `expect` checks, retries included (an ODW
+ * extension; see ./expect): reason "unmet_expectation" — or "permission" when
+ * its CLI refused it tool calls, which count as a miss — and what it missed.
+ */
+export class UnmetExpectationError extends AdapterExecutionError {
+  /** Each check the last attempt did not meet, in one line. */
+  readonly misses: string[];
+
+  constructor(message: string, misses: string[], reason: "unmet_expectation" | "permission" = "unmet_expectation") {
+    super(message, { reason });
+    this.misses = misses;
+  }
+}
+
 /** An agent never produced output matching the requested schema. */
 export class SchemaValidationError extends DynamicWorkflowError {}
 

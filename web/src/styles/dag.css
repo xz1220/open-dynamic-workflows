@@ -322,6 +322,40 @@
 .node.cmd.failed {
   background: linear-gradient(var(--alarm-soft), var(--alarm-soft)), var(--code-bg);
 }
+.node .ndeny {
+  flex-shrink: 0;
+  font-family: var(--f-mono);
+  font-size: 10px;
+  color: var(--amber-ink);
+}
+.misses,
+.denied {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-family: var(--f-mono);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+.misses li,
+.denied li {
+  position: relative;
+  padding: 6px 0 6px 18px;
+  border-bottom: 1px dashed var(--line);
+  word-break: break-word;
+}
+.misses li::before {
+  content: "✗";
+  position: absolute;
+  left: 2px;
+  color: var(--alarm-ink);
+}
+.denied li::before {
+  content: "⚠";
+  position: absolute;
+  left: 0;
+  color: var(--amber-ink);
+}
 .node .cached {
   font-family: var(--f-mono);
   font-size: 12px;

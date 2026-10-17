@@ -23,7 +23,8 @@ license: MIT
 
 - 文件最顶部放 `export const meta = {…}`，必须是**纯字面量**（不含变量、函数调用、
   模板插值）。`meta.name` 与 `meta.description` 必填；`whenToUse`、`phases`、`model`
-  可选。
+  可选。`phases` 的条目是 `{ title, detail? }`（或者只写标题）；条目里的 `adapter` 和
+  `model` 是该阶段 agent 的默认值（**ODW 扩展**——见[按阶段路由](#按阶段指定适配器模型分层与回退链odw-扩展)）。
 - 脚本体运行在 async 上下文里：直接用顶层 `await`；顶层 `return` 的值就是整个
   workflow 的结果。
 - 原语全部是**注入的全局**——不要 import。除 `export const meta` 外，文件里出现任何
@@ -63,7 +64,7 @@ return await agent(
 | `agent(prompt, opts?)` | 让一个 coding agent 跑一个子任务；返回它的回复文本，设了 `opts.schema` 则返回校验过的对象。唯一真正干活的动词。 |
 | `parallel(thunks)` | 并发执行一组零参 thunk，并**等全部完成**（屏障）。顺序保留；失败的槽位是 `null`。 |
 | `pipeline(items, ...stages)` | 让每个条目独立地流过各 stage（**无屏障**）。每个 stage 收到 `(prev, item, index)`。 |
-| `phase(title)` / `log(msg)` | 给后续工作打上进度标签 / 发一行进度消息。 |
+| `phase(title, opts?)` / `log(msg)` | 给后续工作打上进度标签 / 发一行进度消息。`opts`（`{ adapter, model }`，**ODW 扩展**）为该阶段的 agent 指定 CLI 和模型。 |
 | `args` | workflow 的输入（注入）。 |
 | `budget` | `{ total, spent(), remaining() }`——按 token 目标扩缩深度。 |
 | `workflow(ref, args?)` | 内联调用另一个 workflow（仅一层）。`ref` 是受管目录中的名字或 `{ scriptPath }`；子 workflow 共享本次运行的并发上限、agent 计数和预算。 |
@@ -71,11 +72,37 @@ return await agent(
 | `exec(command, opts?)` | 不启动模型直接运行一条命令（测试、构建、linter）；返回 `{ stdout, stderr, exitCode, signal, timedOut, truncated, durationMs }`。字符串经 shell 执行，数组按 argv 执行。**ODW 扩展**——不属于 Claude Code 方言。 |
 | `checkpoint(title, opts?)` | 暂停运行，直到有人批准或拒绝；返回 `{ approved, note, by }`。**ODW 扩展**——不属于 Claude Code 方言。 |
 
-`agent` 的 `opts`：`{ adapter?, schema?, label?, phase?, model?, agentType?, isolation?, keep?, permissions? }`。
-`adapter` 选择用哪个 CLI；`schema` 是一个原始 JSON Schema 对象（选项，不是全局）；
+`agent` 的 `opts`：`{ adapter?, schema?, label?, phase?, model?, agentType?, isolation?, keep?, permissions?, expect?, expectRetries?, allowEmpty? }`。
+`adapter` 选择用哪个 CLI——写成列表（`['codex', 'claude']`，**ODW 扩展**）就是回退链；
+`model: '@fast'` 为实际运行它的 CLI 选出该层级的模型（**ODW 扩展**）；`schema` 是一个原始 JSON Schema 对象（选项，不是全局）；
 `agentType` 是注入进 prompt 的**人设**，*不是* adapter 名。`keep: true`（**ODW 扩展**）
 还会把隔离 agent 的改动提交到分支 `odw/<runId>/<agentId>-<label>`。`permissions: "read"`
 （**ODW 扩展**）让该 agent 以比运行更严格的档位运行——见[权限档位](#权限档位odw-扩展)。
+
+`schema` 请只用 ODW 会检查的子集——`type`（单个类型名）、`enum`、`properties`、`required`、
+`additionalProperties: false`、`items`（单个 schema）、`minItems`，外加 `description`、
+`format` 等注解。其他关键字（`oneOf`、`$ref`、`const`、`pattern`、`maxItems`、类型联合……）
+ODW 不检查：运行日志会连同位置说明一次，调用照常运行——设 `"schemaKeywords": "strict"` 时则在
+启动前以 `AgentError` 失败（**ODW 扩展**）。ODW 检查不了的限制请写进 `description`。在
+`claude` 和 `codex` 上 schema 会原生交给 CLI，由它强制执行；无论哪种，ODW 都会校验回复——见
+[`references/primitives.md`](references/primitives.md#schema)。
+
+`expect`（**ODW 扩展**）写明 agent 回复之后必须成立的条件，由 odw 来检查——优先用它，
+而不是问模型"你做了吗"，或相信一个这么说的回复。`changes: true|false`（有文件改动 / 不许
+有改动）、`files`（glob 列表，每个都要匹配到一个被改动或新建的文件）、`command`（必须在
+agent 的工作区里以 0 退出；`timeout` 秒，默认 600）和 `match`（回复必须匹配的正则）。没
+达到要求的工作会在同一个适配器上带着缺失项重跑（`expectRetries`，默认 1），之后抛出可恢复的
+错误，带 `reason: "unmet_expectation"` 和 `misses`；缺失绝不会触发回退，而发生回退的调用会
+带着它的 `expect`。CLI 拒绝的工具调用（claude 的
+`permission_denials`）也算作缺失，此时原因为 `"permission"`。没设 `expect` 时，这样的回复
+照常成立：被拒绝的调用作为 `denied` 记在 agent 上，并记一次日志（`"permissionDenials":
+"fail"` 则让它失败）。空回复总会抛出 `reason: "empty_reply"`（`allowEmpty: true` 接受空回复）：
+
+```js
+const fix = await agent('Fix the failing parser tests.', {   // ODW 扩展：expect
+  expect: { command: 'npm test', changes: true, files: ['src/parser/**'] },
+})
+```
 
 `exec` 的 `opts`：`{ cwd?, env?, timeout?, input?, maxOutputBytes?, label?, phase?, check? }`。
 默认在源目录中运行，超过 `timeout` 秒（600）后连同它启动的所有进程一起被杀，每个输出流
@@ -196,6 +223,32 @@ const findings = await parallel(files.map((f) => () =>
   agent(`Review ${f}: list bugs with evidence; change nothing`, { permissions: 'read', label: f })))  // ODW 扩展
 ```
 
+### 按阶段指定适配器、模型分层与回退链（ODW 扩展）
+
+按阶段混用 CLI 和模型——大范围的搜索或抽取扇出用便宜的模型，综合与裁决用强的——并在某个
+CLI 额度用尽时让长时间运行继续下去。
+
+- **阶段默认值。** `meta.phases: [{ title: 'Search', adapter: 'codex', model: '@fast' }]`，
+  或用 `phase('Search', { adapter: 'codex', model: '@fast' })` 设置其后的 agent。`agent()`
+  调用自己给出的选项永远优先。
+- **模型分层。** `model: '@fast'` 使用用户配置的 `models` 层级，各 CLI 用自己的模型 ID；
+  未知层级会让该 agent 失败并列出已有层级。普通模型 ID 会原样传给每个 CLI——只要 agent
+  可能跑在不止一个 CLI 上，就优先用层级。
+- **回退链。** `adapter: ['codex', 'claude']`（或用户配置的 `fallback`）：第一个 CLI 额度
+  用尽或登录被拒时，agent 会以相同的权限档位在下一个 CLI 上重新运行，日志会写明
+  （`search:3 → claude after codex quota`）。限流仍在原 CLI 上重试。同一个 CLI 连续三次
+  额度失败后，本次运行之后的 agent 会跳过它。`odw agents --json` 和 `agent_finished` 事件
+  会写明产出每个结果的 CLI（`adapter`）以及它离开过的那些（`fellBackFrom`）。
+- 只写用户装好的适配器（`odw doctor` 会列出），并尊重用户选定的默认 CLI：长时间运行总因
+  额度停下时，建议用户加回退链，不要擅自加。
+
+```js
+phase('Extract', { model: '@fast' })   // ODW 扩展
+const claims = await pipeline(sources, (s) => agent(`Extract cited claims from ${s}`, { schema: CLAIMS }))
+phase('Verdict', { adapter: ['claude', 'codex'], model: '@strong' })   // ODW 扩展
+return await agent(`Rank these claims by evidence:\n${JSON.stringify(claims.filter(Boolean))}`)
+```
+
 ### 人工检查点（ODW 扩展）
 
 只在值得等人判断的地方加 `checkpoint()`：昂贵或难以撤销的步骤之前（大规模扇出、横跨
@@ -271,8 +324,8 @@ Codex、Claude Code、Gemini、Qwen、Kimi 开箱即用，无需配置。要换�
   让并行的 agent "在 `$ODW_PORT` 上启动开发服务器"，它们就不会冲突；并让它们在结束前停掉服务
   （agent CLI 退出前可能会等待自己的后台命令）（ODW 扩展）。
 - **限流**：被限流的 CLI 会按退避时间重试（遵守它给出的 retry-after）；额度耗尽或登录失败
-  不会重试——agent 会失败并说明该怎么做，`odw logs` 会写明原因。遇到额度耗尽，用
-  `--adapter` 换一个适配器，而不是反复重试。
+  不会重试——agent 会失败并说明该怎么做，`odw logs` 会写明原因——除非它有回退链，那样它会
+  换到下一个 CLI（ODW 扩展）。遇到额度耗尽，用 `--adapter` 换一个适配器，而不是反复重试。
 - **限速与提示缓存**（ODW 扩展）：适配器自己的 `concurrency` 在运行级上限之内限制它的
   agent 数，一次限流会让这个上限在本次运行中减半；在 `claude` 上，提示的前 1,024 个以上
   字符相同的 `parallel()`/`pipeline()` 会错开启动，让其余 agent 读取提示缓存——把共享的
@@ -292,6 +345,8 @@ Codex、Claude Code、Gemini、Qwen、Kimi 开箱即用，无需配置。要换�
 | 按"哪个 agent 先跑完"来分支 | 破坏可复现性；归并要保持顺序无关。 |
 | 卡住或失败的运行从头重跑 | 用 `odw result <run> --agent <id>` 读出已完成的 agent；`odw stop`、修好脚本，再 `odw resume`——已完成的调用免费重放。 |
 | 不看失败的 agent 做了什么就重试 | 先读它的 transcript——`odw logs <run> --agent <id\|label>` 会显示它的工具调用、结果、错误和 stderr 的结尾（ODW 扩展）——再修原因。 |
+| 问 agent 是否完成了工作，或相信一个这么说的回复 | 用 `expect` 写明——`{ command: 'npm test', changes: true }`：odw 在回复后检查，把缺失项交还一次，仍未达到就以 `unmet_expectation` 和缺失项让该 agent 失败（ODW 扩展；`examples/fix-until-green.js`）。 |
+| 把以 `permission` 失败的 agent 当成偶发问题重试，或忽略已完成 agent 上的 `denied` | 两者都列出了无头模式拒绝的工具调用（`denied: Bash (npm test)`）——它的回复可能建立在没能完成的工作上：请用户在适配器对应档位的 `permissionArgs` 里只放行这些，或给 agent 不需要它们的工作。 |
 | 运行结束后在自己的文件里找隔离 agent 的修改 | 它们以 diff 保存，不会自动合并：先 `odw diff <run> --stat`，再 `odw apply <run> --agent <id> --check`，然后 `odw apply`。 |
 | 用了 `validate()` 还指望脚本跑在 Claude Code 上 | `validate` 是 ODW 扩展，只能在 odw 上运行。 |
 | 用了 `exec()` 还指望脚本跑在 Claude Code 上 | `exec` 是 ODW 扩展，只能在 odw 上运行；`validate()` 会对此给出 warning。 |
@@ -299,5 +354,6 @@ Codex、Claude Code、Gemini、Qwen、Kimi 开箱即用，无需配置。要换�
 | 看运行像是卡住了，就自己批准了检查点 | 等待中的检查点由用户决定：给用户看 `odw status $RUN`，只有用户明确同意后才运行 `odw approve`/`odw reject`。 |
 | 扇出的调研或审查 agent 能改文件 | 给这些 agent 传 `{ permissions: 'read' }`，或用 `odw run --permissions read`：它们只读取和报告，改不了工作树（ODW 扩展；claude、codex 或 gemini）。 |
 | agent 被拒绝或被拦下时，转而用 `--permissions full` | `full` 去掉了沙箱和所有审批——先问用户。被拒绝的 `read` agent 需要的是一个支持只读的适配器。 |
+| 把某个 CLI 的模型 ID 交给可能跑在别的 CLI 上的 agent（阶段默认值、回退链） | 模型 ID 不能跨 CLI 通用：用层级 `model: '@fast'`，它会为每个 CLI 选出自己的 ID（ODW 扩展）。 |
 | 大规模扇出却不看它花了多少 | `odw status $RUN` 会显示运行到目前为止的 token 与花费，比 `fanOutWarn`（默认 25）更宽的 `parallel()`/`pipeline()` 会记一条警告（均为 ODW 扩展）。设了 `budget.total` 时按它决定扇出规模；`--budget` 限制输出 token。 |
 | 自己手写一条包着 `odw run` 的 cron 行 | `odw schedule add` 会带上防重叠锁、日志和固定的 `PATH` 写好它——且只在用户要求时使用：它会改动用户的 crontab 或 LaunchAgents。 |

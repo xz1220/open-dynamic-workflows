@@ -62,7 +62,9 @@
 - 看板：「待你处理」提醒、失败原因旁显示限流/额度的解除时间、为 X1 准备好的改动审阅页；官网新增「为长任务而生」；两篇实用配方（恢复运行、运行通知）；删除无人使用的 skill 内嵌产物。
 - **审阅并应用改动（X1）**：worktree agent 的改动在 worktree 删除前落盘为 `agents/<id>.diff`（与 diff 解析器约定的 git 参数；`.worktreeinclude`/`worktreeSetup` 放进去的文件按内容哈希排除；超过 `maxDiffBytes` 在行边界截断并附说明，计数始终描述完整改动）；`keep: true` / `keepBranches` 把改动提交到 `odw/<runId>/<agentId>-<label>` 分支且不碰用户的 HEAD 和索引；`odw diff [--agent] [--stat]`、`odw apply --agent [--check] [--force]`（`git apply --3way`）；`GET /api/runs/:id/agents/:agentId/diff`；看板改动页端到端验证。
 - **权限档位（X2 前半）**：`read` / `edit` / `full` 三档（ODW 扩展），运行档位来自配置 `permissions` 或 `odw run|rerun|resume --permissions`，适配器自己的 `permissions` 与 `agent(…, { permissions })` 只能降档，越权的调用以写明两个档位的 `AgentError` 失败；各内置适配器的姿态参数移入 `permissionArgs`、在命令的 `{permission_args}` 处展开，默认 `edit` 与原 argv 逐字节一致；只填各 CLI 文档证实的映射（claude、codex、gemini 三档，qwen 有 full），不支持只读的 CLI 在启动前拒绝、没有 full 的按 edit 运行并每个适配器记一次 LOG；启动横幅逐个适配器列出实际档位，`agent_started` 与保存的结果带上档位，`odw doctor` 列出各适配器支持的档位；`agentEnv: "minimal"` 只把必要变量与各 CLI 文档列出的认证变量传给 agent（`agentEnvPass` 追加）。Codex 的 MCP 写工具审批（#23）不由任何档位解决，文档给出 `approval_mode = "approve"` 的做法。
+- **有证据的成功（N7 大部分）**：`agent(…, { expect })`（ODW 扩展）在回复与 schema 校验之后检查工作——`changes`（有/无文件改动）、`files`（glob 须匹配改动或新建的文件）、`command`（在 agent 工作区以 0 退出，作为 agent 名下的 `exec()` 步骤，可被停止）、`match`（回复正则）；改动从 git 读取：原地运行对比 agent 启动前的快照（排除用户自己的未提交改动和运行目录，计入 agent 的提交），隔离运行与保留的 diff 完全一致；没达到就带着缺失项（含失败命令的输出）重试 `expectRetries` 次（默认 1），之后以 `reason: "unmet_expectation"` 和 `misses` 失败；隔离重试从全新 worktree 开始并取代先前的改动；缺失在产出回复的适配器上重试、绝不触发回退，回退（额度/登录）的调用在下一个适配器上带着 `expect` 从头开始。无需开启：空回复 → `empty_reply`（`allowEmpty: true` 例外）；claude `result` 的 `permission_denials` 非空而回复声称成功时（输出解码器经 `deniedPath` 读取），默认回复照常成立，被拒绝的调用记为 `agent_finished` 与保存结果上的 `denied` 并写一行日志（与 Claude Code 自己的 Workflow 工具一致），`expect` 下算作一项缺失（重试后仍被拒绝即 `permission`），`permissionDenials: "fail"`（运行级或按适配器）则直接以 `permission` 失败。
 - **真实用量与花费（N5）**：内置 `claude` 适配器改用 `stream-json`（逐轮输出，`result` 事件带回复、用量、花费与 `is_error`，错误走失败分类）；JSON / JSONL 输出格式可声明 `usagePath`/`costPath`/`errorPath`，解析不到文本时退回原始输出并记一条 LOG；用量按 agent 与运行汇总（含重试），`budget` 优先计真实输出 token；`odw status`、实时视图与看板显示 token 与花费；单次 `parallel()`/`pipeline()` 超过 `fanOutWarn`（默认 25）时提示。
+- **按阶段指定适配器与模型、回退链（X7 前半）**（ODW 扩展）：`meta.phases` 条目可写 `{ title, adapter?, model? }`（纯字符串仍是标题），`phase(title, { adapter?, model? })` 为其后的调用设置同样的默认值，`agent()` 自己的选项永远优先；resume key 只取调用写下的选项，阶段默认值不进键（与运行默认适配器同理），改动阶段路由后已完成的调用仍会重放。`models` 配置定义模型分层，`model: "@fast"` 按实际运行的适配器取各自的模型 ID，未知层级以列出所有层级的 `AgentError` 失败。`fallback` 配置与 `agent(…, { adapter: ["codex", "claude"] })` 定义回退链：额度用尽或登录失败（限流仍原地重试）时换到链上下一个适配器——全新提示词、相同选项、相同权限档位（不能运行该档位的适配器记 LOG 后跳过，绝不升档）——先释放旧适配器槽位再在新适配器上排队，transcript 记 `{"kind":"attempt","reason":"fallback","adapter":…}`，失败尝试的用量照常计入；`agent_finished` 与保存的结果记录产出值的适配器和 `fellBackFrom`，`odw status`、实时视图与 `/api/runs/:id` 显示回退路径。额度熔断：同一适配器连续 `quotaBreaker`（默认 3）次额度失败后，本次运行之后的调用跳过它（只记一条 LOG）。
 
 ---
 
@@ -77,9 +79,9 @@
 | N3 | **卡死看门狗**：agent 输出长时间没有动静（`stallTimeout`）就终止并重启，重启次数有上限（`stallRestarts`）并记录事件；worker 收到 SIGTERM/SIGINT/SIGHUP 时干净地停止运行 | #5 | S | ✅ |
 | N4 | **命令原语** `exec()`（ODW 扩展）：异步执行，支持参数、cwd、超时、输出上限，可被取消，返回 stdout/stderr/退出码，并在 DAG 中可见；附 `test-fix-loop.js` 示例 | [#31](https://github.com/xz1220/open-dynamic-workflows/issues/31) | M | ✅ |
 | N5 | **用量与成本**：适配器改用各 CLI 的 JSON 输出模式（`claude --output-format json` 的 `total_cost_usd`、`codex exec --json` 的 usage），按 agent 和阶段记录真实用量，`budget` 改用真实计量；大规模 fan-out 启动前给出预警 | #1 | M | ✅ claude 改用 stream-json，按 agent / 运行记录 token 与花费，`budget` 用真实输出 token，`fanOutWarn`；codex 仍为文本模式 |
-| N6 | **失败分类与退避**：区分限流、过载、额度耗尽、鉴权四类失败；按适配器节流，遵守 retry-after；额度耗尽时整体暂停，到重置时间自动恢复；支持回退适配器链 | #3 | M | 🚧 分类、退避重试、可操作的报错 ✅；按适配器的并发上限、限流后自适应减半、为提示缓存错开扇出 ✅；额度暂停与回退链待做（回退链并入 X7） |
-| N7 | **有证据的成功**：读取 CLI 报告的成功信号（`is_error`、`permission_denials`、MCP 状态），转成有类型的失败；`agent()` 可声明后置条件（"有文件改动"、"某命令通过"）。`odw doctor --smoke` 已交付 | #7（[#23](https://github.com/xz1220/open-dynamic-workflows/issues/23)） | M | 🚧 部分 |
-| N8 | **原生结构化输出**：优先使用 `codex --output-schema` / `claude --json-schema`；启动前拒绝不受支持的 schema 关键字 | #12 | S–M | ⏳ |
+| N6 | **失败分类与退避**：区分限流、过载、额度耗尽、鉴权四类失败；按适配器节流，遵守 retry-after；额度耗尽时整体暂停，到重置时间自动恢复；支持回退适配器链 | #3 | M | 🚧 分类、退避重试、可操作的报错 ✅；按适配器的并发上限、限流后自适应减半、为提示缓存错开扇出 ✅；回退链与额度熔断随 X7 ✅；额度暂停待做 |
+| N7 | **有证据的成功**：读取 CLI 报告的成功信号（`is_error`、`permission_denials`、MCP 状态），转成有类型的失败；`agent()` 可声明后置条件（"有文件改动"、"某命令通过"）。`odw doctor --smoke` 已交付 | #7（[#23](https://github.com/xz1220/open-dynamic-workflows/issues/23)） | M | 🚧 `agent(…, { expect })`（`changes`/`files`/`command`/`match`，带缺失项重试后以 `unmet_expectation` 失败）、空回复 `empty_reply`、claude `permission_denials` 记为 agent 的 `denied` 并写日志（`expect` 下算缺失，`permissionDenials: "fail"` 时为 `permission`）✅；MCP 状态待做 |
+| N8 | **原生结构化输出**：优先使用 `codex --output-schema` / `claude --json-schema`；校验器不检查的 schema 关键字默认在运行日志里大声报告，设 `schemaKeywords: "strict"` 则启动前拒绝 | #12 | S–M | ✅ `claude --json-schema`（取 `result` 事件的 `structured_output`）、`codex --output-schema`（仅 strict schema，文件放在 run 目录、用完即删），本地仍校验每次回复；启动前逐个找出校验器不检查的关键字与位置：默认（`"warn"`）每次运行记录一次 LOG，写明由谁强制执行（拿到原生 schema 的 CLI，否则无人），`"strict"` 以 `AgentError` 拒绝；`format` 视为注解；格式错误的 schema 一律拒绝；`schemaPrompt` |
 
 ### Next — 0.7「审阅与掌控」
 
@@ -91,7 +93,7 @@
 | X4 | **人工检查点** `checkpoint()`（ODW 扩展）：持久暂停，`odw approve/reject [--edit]` 继续；看板提供审批入口（依赖 N1） | #9 | M | ✅（`--edit` 待做） |
 | X5 | **worktree 环境**：支持 `.worktreeinclude`、带超时的 setup 命令、为每个 agent 分配 `ODW_PORT` | #10 | S | ✅ |
 | X6 | **调度**：`odw schedule add/list/remove/run` 写入 cron/launchd/systemd（不引入 daemon）；每个定时任务一把防重叠锁（失效锁自动接管）、每次运行一行日志、上次与下次运行时间；错过的运行按各后端处理（systemd `Persistent=true` 开机补跑）；失败通知复用 `notify` | #14 | S | ✅ |
-| X7 | **按阶段指定适配器和模型**：设置默认值、模型分层和回退链；解析 Claude plugin 工作流 | #13 | M | ⏳ |
+| X7 | **按阶段指定适配器和模型**：设置默认值、模型分层和回退链；解析 Claude plugin 工作流 | #13 | M | 🚧 阶段默认适配器/模型、模型分层、回退链与额度熔断 ✅；解析 Claude plugin 工作流待做 |
 
 ### Later — 0.8+「规模与生态」
 
@@ -113,7 +115,8 @@
 | ✅ 前端已就绪 | 检查点审批卡片（X4）、token 与花费（N5）、失败原因标签（N6）、运行钩子配置（N2）——后端数据一到即可显示 |
 | ✅ 前端已就绪（随 X1） | **改动（Changes）标签页**：按 agent 审阅 worktree 改动——文件卡片可折叠、表头吸顶、新旧行号、替换行按词标出改动、锁文件与删除默认折叠、行数上限外给出 `odw diff`；抽屉内的改动摘要、DAG 节点上的 +/− 角标、运行头部的改动行数；一键复制 `odw apply` 与保留分支的 `git switch`；`j`/`k` 切换 agent |
 | ✅ 本轮 | 「待你处理」：Activity 首屏列出等待决定的检查点，以及过去一天失败或失去 worker 的运行（附 `odw resume` 命令）；官网新增「为长任务而生」一节 |
-| ⏳ 随 N5、X3 | 按 agent 和阶段的成本视图；transcript 回放 |
+| ✅ 本轮 | 执行记录侧栏（运行中实时跟随、追加不重绘）；Jobs 页「即将运行」（下一次触发、cron 的自然语言描述、上次运行）；检查点关卡节点与等待提醒；抽屉里的权限档位、回退链、未达成的预期与被拒的工具调用；DAG 节点上的回退链与被拒计数 |
+| ⏳ | 按阶段的成本视图；运行之间的对比（`odw compare`） |
 
 开发方式：`node web/demo-fixtures.mjs <runs> <proj> --live` 生成实时模拟数据，`node web/dev.mjs --api http://127.0.0.1:4317` 启动开发服务器（每次刷新都会重新构建）。
 

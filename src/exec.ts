@@ -117,30 +117,42 @@ const IS_WINDOWS = process.platform === "win32";
 
 /** Build the exec() primitive bound to one run's context. */
 export function createExec(ctx: RunContext): ExecPrimitive {
-  return async (command, opts = {}) => {
-    const step = planStep(command, opts, ctx.source, ctx.runId);
-    const phase = opts.phase !== undefined ? opts.phase : ctx.currentPhase;
-    // Ids follow call order, as agent ids do, on the run's command sequence.
-    const commandId = ++ctx.commandSeq.value;
-    const fields = { commandId, label: step.label, phase, command: clip(step.display, EVENT_COMMAND_CHARS) };
-    return ctx.scheduler.runCommand(async (signal) => {
-      // Emitted once past the checkpoint, so a paused step never shows as running.
-      ctx.emit(event(COMMAND_STARTED, fields));
-      const { result, failure, aborted } = await runStep(step, signal);
-      const settled = { ...fields, exitCode: result.exitCode, durationMs: result.durationMs };
-      ctx.emit(
-        failure === null
-          ? event(COMMAND_FINISHED, settled)
-          : event(COMMAND_FAILED, { ...settled, error: failure }),
-      );
-      // Killed because the run is ending: report the run's reason (fatal), as an agent does.
-      if (aborted) throw abortReason(signal);
-      if (step.check && result.exitCode !== 0) {
-        throw new ExecError(checkMessage(fields.command, failure ?? "failed", result), fields.command, result);
-      }
-      return result;
-    });
-  };
+  return (command, opts = {}) => execStep(ctx, command, opts);
+}
+
+/**
+ * Run one command step in a run: what exec() does, and how an agent's
+ * `expect.command` check runs (see ./expect), with `extra` on its events — the
+ * agent it checks.
+ */
+export async function execStep(
+  ctx: RunContext,
+  command: string | string[],
+  opts: ExecOptions = {},
+  extra: Record<string, unknown> = {},
+): Promise<ExecResult> {
+  const step = planStep(command, opts, ctx.source, ctx.runId);
+  const phase = opts.phase !== undefined ? opts.phase : ctx.currentPhase;
+  // Ids follow call order, as agent ids do, on the run's command sequence.
+  const commandId = ++ctx.commandSeq.value;
+  const fields = { commandId, label: step.label, phase, command: clip(step.display, EVENT_COMMAND_CHARS), ...extra };
+  return ctx.scheduler.runCommand(async (signal) => {
+    // Emitted once past the checkpoint, so a paused step never shows as running.
+    ctx.emit(event(COMMAND_STARTED, fields));
+    const { result, failure, aborted } = await runStep(step, signal);
+    const settled = { ...fields, exitCode: result.exitCode, durationMs: result.durationMs };
+    ctx.emit(
+      failure === null
+        ? event(COMMAND_FINISHED, settled)
+        : event(COMMAND_FAILED, { ...settled, error: failure }),
+    );
+    // Killed because the run is ending: report the run's reason (fatal), as an agent does.
+    if (aborted) throw abortReason(signal);
+    if (step.check && result.exitCode !== 0) {
+      throw new ExecError(checkMessage(fields.command, failure ?? "failed", result), fields.command, result);
+    }
+    return result;
+  });
 }
 
 // --- planning -------------------------------------------------------------------

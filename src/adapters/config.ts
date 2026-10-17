@@ -20,6 +20,7 @@ import { cpus, homedir } from "node:os";
 import { dirname, join } from "node:path";
 
 import { AdapterNotFound, ConfigError } from "../errors.js";
+import { TIER_NAME } from "../routing.js";
 import { BUILTIN_ADAPTERS, DEFAULT_SETTINGS, type RawAdapter } from "./builtin.js";
 import { isOnPath } from "./executable.js";
 import { CONFIGURABLE_REASONS } from "./failures.js";
@@ -42,6 +43,7 @@ import type {
   PermissionArgs,
   PermissionTier,
   RunEndState,
+  SchemaFlag,
   Settings,
   StaggerFanOut,
 } from "./types.js";
@@ -72,10 +74,12 @@ export function loadConfig(
       process.stderr.write(`odw: config warning: ${w}\n`);
     }
   }
-  return {
+  const config = {
     adapters: buildAdapters((raw.adapters as Record<string, RawAdapter>) ?? {}),
     settings: buildSettings(raw),
   };
+  checkRouting(config);
+  return config;
 }
 
 // Every key buildSettings reads, plus the adapters map. Anything else in a
@@ -108,16 +112,27 @@ const KNOWN_TOP_KEYS = [
   "permissions",
   "agentEnv",
   "agentEnvPass",
+  "schemaKeywords",
+  "schemaPrompt",
+  "fallback",
+  "models",
+  "quotaBreaker",
+  "expectRetries",
+  "permissionDenials",
 ] as const;
 
-const KNOWN_ADAPTER_KEYS = ["command", "stdin", "env", "timeout", "stallTimeout", "concurrency", "promptCache", "label", "flags", "output", "failures", "permissionArgs", "permissions"] as const;
+const KNOWN_ADAPTER_KEYS = ["command", "stdin", "env", "timeout", "stallTimeout", "concurrency", "promptCache", "label", "flags", "output", "failures", "permissionArgs", "permissions", "permissionDenials"] as const;
 
 /** The fields of an adapter's `output`, per format. */
 const KNOWN_OUTPUT_KEYS: Record<string, readonly string[]> = {
   text: ["format"],
-  jsonl: ["format", "eventType", "textPath", "select", "usageEvent", "usagePath", "costPath", "errorPath"],
-  json: ["format", "textPath", "usagePath", "costPath", "errorPath"],
+  jsonl: ["format", "eventType", "textPath", "select", "usageEvent", "usagePath", "costPath", "errorPath", "structuredPath", "deniedPath"],
+  json: ["format", "textPath", "usagePath", "costPath", "errorPath", "structuredPath", "deniedPath"],
 };
+
+/** The fields of an adapter's `flags`, and of its `flags.schema`. */
+const KNOWN_FLAG_KEYS = ["model", "schema"] as const;
+const KNOWN_SCHEMA_FLAG_KEYS = ["args", "mode", "strict"] as const;
 
 const KNOWN_NOTIFY_KEYS = ["command", "webhook", "on"] as const;
 
@@ -158,6 +173,12 @@ export function collectConfigWarnings(raw: Record<string, unknown>): string[] {
       const output = isObject(spec) ? spec.output : undefined;
       const knownOutput = isObject(output) ? KNOWN_OUTPUT_KEYS[String(output.format)] : undefined;
       if (knownOutput) warnings.push(...unknownFields(output as Record<string, unknown>, knownOutput, `adapter "${name}" output`));
+      // A misspelled capability would quietly leave the CLI's native support unused.
+      const flags = isObject(spec) ? spec.flags : undefined;
+      if (isObject(flags)) {
+        warnings.push(...unknownFields(flags, KNOWN_FLAG_KEYS, `adapter "${name}" flags`));
+        if (isObject(flags.schema)) warnings.push(...unknownFields(flags.schema, KNOWN_SCHEMA_FLAG_KEYS, `adapter "${name}" flags.schema`));
+      }
       // A cap ODW cannot enforce: an adapter of the user's own (or a built-in
       // replaced whole) that declares no tier flags runs as configured.
       const replaced = isObject(spec) && (spec.command != null || !(name in BUILTIN_ADAPTERS));
@@ -231,7 +252,10 @@ function editDistance(a: string, b: string): number {
 
 /** Config from built-ins only — handy for tests and programmatic use. */
 export function defaultConfig(): Config {
-  return { adapters: buildAdapters({}), settings: { ...DEFAULT_SETTINGS, staggerFanOut: defaultStagger() } };
+  return {
+    adapters: buildAdapters({}),
+    settings: { ...DEFAULT_SETTINGS, staggerFanOut: defaultStagger(), fallback: {}, models: {} },
+  };
 }
 
 /**
@@ -608,6 +632,14 @@ function buildAdapter(name: string, spec: RawAdapter): Adapter {
     }
     adapter.permissions = spec.permissions;
   }
+  if (spec.permissionDenials != null) {
+    if (spec.permissionDenials !== "warn" && spec.permissionDenials !== "fail") {
+      throw new ConfigError(
+        `adapter '${name}' 'permissionDenials' must be "warn" or "fail"; got ${JSON.stringify(spec.permissionDenials)}`,
+      );
+    }
+    adapter.permissionDenials = spec.permissionDenials;
+  }
   return adapter;
 }
 
@@ -721,7 +753,36 @@ function buildFlags(name: string, raw: unknown): AdapterFlags {
     }
     out.model = [...(model as string[])];
   }
+  // null, like leaving it out, means the CLI takes no schema natively.
+  const schema = (raw as Record<string, unknown>).schema;
+  if (schema != null) out.schema = buildSchemaFlag(name, schema);
   return out;
+}
+
+/**
+ * Validate how a CLI takes a JSON Schema natively (ODW extension): the flag(s)
+ * before it, `inline` or `file`, and whether it takes only strict schemas.
+ */
+function buildSchemaFlag(name: string, raw: unknown): SchemaFlag {
+  if (!isObject(raw)) {
+    throw new ConfigError(
+      `adapter '${name}' 'flags.schema' must be an object: { "args": ["--json-schema"], "mode": "inline" | "file", "strict"?: true }`,
+    );
+  }
+  const { args, mode, strict } = raw;
+  if (!Array.isArray(args) || args.length === 0 || !args.every((part) => typeof part === "string" && part.length > 0)) {
+    throw new ConfigError(`adapter '${name}' 'flags.schema.args' must be a non-empty array of strings: the flag(s) before the schema`);
+  }
+  if (mode !== "inline" && mode !== "file") {
+    throw new ConfigError(
+      `adapter '${name}' 'flags.schema.mode' must be "inline" (the schema's JSON is the next argument) ` +
+        `or "file" (the path of a file holding it); got ${JSON.stringify(mode)}`,
+    );
+  }
+  if (strict != null && typeof strict !== "boolean") {
+    throw new ConfigError(`adapter '${name}' 'flags.schema.strict' must be true or false; got ${JSON.stringify(strict)}`);
+  }
+  return { args: [...(args as string[])], mode, ...(strict ? { strict: true } : {}) };
 }
 
 /** Validate and normalize an adapter's stdout decoding declaration. */
@@ -738,9 +799,16 @@ function buildOutput(name: string, raw: unknown): AdapterOutput {
     throw new ConfigError(`adapter '${name}' 'output.eventType' must be a non-empty string`);
   }
   const textPath = buildPath(name, "textPath", value.textPath)!;
-  // Usage, cost and the CLI's own error report (ODW extensions): set only when declared.
-  const extras: { usagePath?: string[]; costPath?: string[]; errorPath?: string[] } = {};
-  for (const key of ["usagePath", "costPath", "errorPath"] as const) {
+  // Usage, cost, the CLI's own error report, its natively validated value and
+  // what it refused (ODW extensions): set only when declared.
+  const extras: {
+    usagePath?: string[];
+    costPath?: string[];
+    errorPath?: string[];
+    structuredPath?: string[];
+    deniedPath?: string[];
+  } = {};
+  for (const key of ["usagePath", "costPath", "errorPath", "structuredPath", "deniedPath"] as const) {
     const path = buildPath(name, key, value[key], { optional: true });
     if (path) extras[key] = path;
   }
@@ -879,7 +947,102 @@ function buildSettings(raw: Record<string, unknown>): Settings {
     permissions: raw["permissions"] == null ? DEFAULT_SETTINGS.permissions : buildTier(raw["permissions"]),
     agentEnv: raw["agentEnv"] == null ? DEFAULT_SETTINGS.agentEnv : buildAgentEnv(raw["agentEnv"]),
     agentEnvPass: raw["agentEnvPass"] == null ? [...DEFAULT_SETTINGS.agentEnvPass] : buildEnvPass(raw["agentEnvPass"]),
+    schemaKeywords:
+      raw["schemaKeywords"] == null
+        ? DEFAULT_SETTINGS.schemaKeywords
+        : buildChoice("schemaKeywords", raw["schemaKeywords"], ["warn", "strict"] as const),
+    schemaPrompt:
+      raw["schemaPrompt"] == null
+        ? DEFAULT_SETTINGS.schemaPrompt
+        : buildChoice("schemaPrompt", raw["schemaPrompt"], ["auto", "always"] as const),
+    // Fallback chains and model tiers (ODW extensions): the adapters they name
+    // are checked against the configured ones once both are built (checkRouting).
+    fallback: raw["fallback"] == null ? {} : buildFallback(raw["fallback"]),
+    models: raw["models"] == null ? {} : buildModels(raw["models"]),
+    // Like fanOutWarn: null and 0 both mean "never".
+    quotaBreaker:
+      raw["quotaBreaker"] === null
+        ? null
+        : num("quotaBreaker", DEFAULT_SETTINGS.quotaBreaker, "a positive integer, or 0/null to never skip an adapter", {
+            min: 0,
+            integer: true,
+          }) || null,
+    expectRetries: num("expectRetries", DEFAULT_SETTINGS.expectRetries, "a non-negative integer", {
+      min: 0,
+      integer: true,
+    }),
+    permissionDenials:
+      raw["permissionDenials"] == null
+        ? DEFAULT_SETTINGS.permissionDenials
+        : buildChoice("permissionDenials", raw["permissionDenials"], ["warn", "fail"] as const),
   };
+}
+
+/** Validate a setting that takes one of a few words, such as `schemaKeywords`. */
+function buildChoice<T extends string>(key: string, raw: unknown, choices: readonly T[]): T {
+  if ((choices as readonly unknown[]).includes(raw)) return raw as T;
+  const quoted = choices.map((choice) => `"${choice}"`);
+  const listed = quoted.length > 1 ? `${quoted.slice(0, -1).join(", ")} or ${quoted.at(-1)}` : quoted.join("");
+  throw new ConfigError(`"${key}" must be ${listed}; got ${JSON.stringify(raw)}`);
+}
+
+/** Validate `fallback`: adapter name → the adapters its calls fall back to, in order. */
+function buildFallback(raw: unknown): Record<string, string[]> {
+  if (!isObject(raw)) {
+    throw new ConfigError(`"fallback" must be an object: { "<adapter>": ["<next adapter>", …] }; got ${kindOf(raw)}`);
+  }
+  const out: Record<string, string[]> = {};
+  for (const [name, chain] of Object.entries(raw)) {
+    if (name.startsWith("$") || name.startsWith("//")) continue; // comment conventions
+    if (!Array.isArray(chain) || !chain.every((next) => typeof next === "string" && next !== "")) {
+      throw new ConfigError(`"fallback.${name}" must be a list of adapter names; got ${JSON.stringify(chain)}`);
+    }
+    out[name] = [...(chain as string[])];
+  }
+  return out;
+}
+
+/** Validate `models`: tier name → adapter name → that CLI's model id. */
+function buildModels(raw: unknown): Record<string, Record<string, string>> {
+  const shape = `{ "<tier>": { "<adapter>": "<model id>", … }, … }`;
+  if (!isObject(raw)) throw new ConfigError(`"models" must be an object of tiers: ${shape}; got ${kindOf(raw)}`);
+  const out: Record<string, Record<string, string>> = {};
+  for (const [tier, ids] of Object.entries(raw)) {
+    if (tier.startsWith("$") || tier.startsWith("//")) continue; // comment conventions
+    if (!TIER_NAME.test(tier)) {
+      throw new ConfigError(`"models" tier names are letters, digits, "_", "-" and "."; got ${JSON.stringify(tier)}`);
+    }
+    if (!isObject(ids)) throw new ConfigError(`"models.${tier}" must be an object: { "<adapter>": "<model id>", … }; got ${kindOf(ids)}`);
+    const tierIds: Record<string, string> = {};
+    for (const [adapter, id] of Object.entries(ids)) {
+      if (adapter.startsWith("$") || adapter.startsWith("//")) continue;
+      if (typeof id !== "string" || id.trim() === "") {
+        throw new ConfigError(`"models.${tier}.${adapter}" must be a model id; got ${JSON.stringify(id)}`);
+      }
+      tierIds[adapter] = id;
+    }
+    out[tier] = tierIds;
+  }
+  return out;
+}
+
+/**
+ * Every adapter `fallback` and `models` name must be configured: a typo'd
+ * name would otherwise never take effect, silently.
+ */
+function checkRouting(config: Config): void {
+  const known = (name: string): boolean => Object.prototype.hasOwnProperty.call(config.adapters, name);
+  const available = (): string => Object.keys(config.adapters).sort().join(", ");
+  for (const [name, chain] of Object.entries(config.settings.fallback)) {
+    for (const adapter of [name, ...chain]) {
+      if (!known(adapter)) throw new ConfigError(`"fallback.${name}" names unknown adapter '${adapter}'; available: ${available()}`);
+    }
+  }
+  for (const [tier, ids] of Object.entries(config.settings.models)) {
+    for (const adapter of Object.keys(ids)) {
+      if (!known(adapter)) throw new ConfigError(`"models.${tier}" names unknown adapter '${adapter}'; available: ${available()}`);
+    }
+  }
 }
 
 /** Validate the run's permission tier. */

@@ -149,6 +149,7 @@ export async function executeRun(runDir: string): Promise<string> {
     ctx = buildContext(config, {
       source: meta.source as string | undefined,
       runId,
+      runDir: store.runDir(runId),
       args,
       sink,
       control,
@@ -160,6 +161,8 @@ export async function executeRun(runDir: string): Promise<string> {
       agentDiffPath: (agentId) => store.agentDiffPath(runId, agentId),
       // What each agent's CLI prints, as agents/<agentId>.transcript.jsonl and .stderr.txt.
       agentTranscriptPaths: (agentId) => store.agentTranscriptPaths(runId, agentId),
+      // A schema handed to a CLI as a file, as agents/<agentId>.schema.json while it runs.
+      agentSchemaPath: (agentId) => store.agentSchemaPath(runId, agentId),
       replay,
       onCheckpoint: (cp, isWaiting) => {
         if (isWaiting) {
@@ -212,7 +215,8 @@ export async function executeRun(runDir: string): Promise<string> {
       description: loaded.meta.description,
       phases: loaded.meta.phases,
     });
-    const primitives = createPrimitives(ctx);
+    // Its meta.phases may give their agents an adapter and a model (ODW extension).
+    const primitives = createPrimitives(ctx, { phases: loaded.meta.phases });
     const result = await crashes.race(loaded.run(primitives, args));
     // Agents the script started but never awaited are still this run's work:
     // let them finish (and clean up their worktrees) before recording it.

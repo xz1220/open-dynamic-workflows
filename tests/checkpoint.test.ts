@@ -38,8 +38,10 @@ function harness(options: { concurrency?: number; maxAgents?: number; budgetTota
   const ctx: RunContext = buildContext(config, { control, sink, budgetTotal: options.budgetTotal ?? null });
   const started: string[] = [];
   const replies = new Map<string, (value: string) => void>();
+  const routing = ctx.bridge; // where a call starts is a real bridge's decision
   ctx.bridge = {
     adapterFor: () => ({ name: "claude" }),
+    route: routing.route.bind(routing),
     run: (req: { prompt: string }) => {
       started.push(req.prompt);
       return new Promise((resolve) => replies.set(req.prompt, (value) => resolve({ value, adapter: "claude", attempts: 1 })));

@@ -304,8 +304,10 @@ test("exec takes no agent slot and does not count toward maxAgents", async () =>
     let release!: () => void;
     const held = new Promise<void>((resolve) => (release = resolve));
     let calls = 0;
+    const routing = ctx.bridge; // where a call starts is a real bridge's decision
     ctx.bridge = {
       adapterFor: (name?: string | null) => resolveAdapter(ctx.config, name),
+      route: routing.route.bind(routing),
       run: async () => {
         calls++;
         await held;

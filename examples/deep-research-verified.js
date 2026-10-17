@@ -15,12 +15,15 @@ const MAX_FETCH = 15
 const MAX_VERIFY_CLAIMS = 25
 
 // ─── Schemas ───
+// Upper bounds are descriptions, not maxItems: ODW's validator does not check
+// maxItems (references/primitives.md#schema), and the prompts below ask for
+// these counts anyway.
 const SCOPE_SCHEMA = {
   type: "object", required: ["question", "angles", "summary"],
   properties: {
     question: { type: "string" },
     summary: { type: "string" },
-    angles: { type: "array", minItems: 3, maxItems: 6, items: {
+    angles: { type: "array", minItems: 3, description: "3 to 6 angles", items: {
       type: "object", required: ["label", "query"],
       properties: {
         label: { type: "string" },
@@ -33,7 +36,7 @@ const SCOPE_SCHEMA = {
 const SEARCH_SCHEMA = {
   type: "object", required: ["results"],
   properties: {
-    results: { type: "array", maxItems: 6, items: {
+    results: { type: "array", description: "at most 6 results", items: {
       type: "object", required: ["url", "title", "relevance"],
       properties: {
         url: { type: "string" },
@@ -49,7 +52,7 @@ const EXTRACT_SCHEMA = {
   properties: {
     sourceQuality: { enum: ["primary", "secondary", "blog", "forum", "unreliable"] },
     publishDate: { type: "string" },
-    claims: { type: "array", maxItems: 5, items: {
+    claims: { type: "array", description: "at most 5 claims", items: {
       type: "object", required: ["claim", "quote", "importance"],
       properties: {
         claim: { type: "string" },

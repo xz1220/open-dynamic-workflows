@@ -1,6 +1,8 @@
 /**
  * Decode an adapter's stdout into the agent's reply — and, for the JSON
- * formats, what the run spent and whether the CLI itself reported a failure.
+ * formats, what the run spent, whether the CLI itself reported a failure, the
+ * value it validated against a schema it was handed natively, and which tool
+ * calls it refused the agent (Claude Code's `permission_denials`).
  *
  * A structured decode that cannot find its text never fails the agent: the
  * raw stdout becomes the reply and {@link DecodedOutput.fallback} says why, for
@@ -32,8 +34,21 @@ export interface DecodedOutput {
   usage?: Usage;
   /** The CLI's own report that the run failed (`errorPath`): its message. */
   error?: string;
+  /**
+   * The tool calls the CLI refused the agent (`deniedPath`), one line each
+   * ("Bash (npm test)"); absent when it refused none. A reply that claims
+   * success with some may rest on work the agent could not do: the bridge
+   * records them, or fails the run (`permissionDenials`, `expect`).
+   */
+  denied?: string[];
   /** Set when stdout did not match the declared format and `text` is the raw stdout: why, for the run's log. */
   fallback?: string;
+  /**
+   * The value the CLI validated against a schema it was handed natively — at
+   * `structuredPath` in the latest text event — when it has one: absent, or
+   * null (a run that produced none), leaves this unset.
+   */
+  structured?: unknown;
 }
 
 type JsonlOutput = Extract<AdapterOutput, { format: "jsonl" }>;
@@ -92,6 +107,10 @@ export class AdapterOutputDecoder {
   private found = false;
   /** What the latest matching event reported at `errorPath`, when it reported a failure. */
   private error: string | undefined;
+  /** What the latest matching event had at `structuredPath` (null: nothing). */
+  private structured: unknown;
+  /** What the latest matching event listed at `deniedPath`, when it listed any. */
+  private denied: string[] | undefined;
   private usage: Usage | undefined;
   /** The first line that was not JSON, for the fallback note. */
   private badLine: string | undefined;
@@ -148,8 +167,9 @@ export class AdapterOutputDecoder {
       this.consume(tail);
     }
     const usage = this.usage;
-    if (this.error !== undefined) return withUsage({ text: this.error, error: this.error }, usage);
-    if (this.found) return withUsage({ text: this.last ?? "" }, usage);
+    const denied = this.denied;
+    if (this.error !== undefined) return withUsage({ text: this.error, error: this.error }, usage, denied);
+    if (this.found) return withUsage(withStructured({ text: this.last ?? "" }, this.structured), usage, denied);
     const why = this.overflow
       ? this.overflow
       : this.matching > 0
@@ -161,7 +181,7 @@ export class AdapterOutputDecoder {
             : `no '${output.eventType}' event was found`;
     const kept = this.raw.length > MAX_FALLBACK_CHARS ? this.raw.slice(-MAX_FALLBACK_CHARS) : this.raw;
     const dropped = this.rawDropped + (this.raw.length - kept.length);
-    return withUsage(this.fallback(kept, why, dropped > 0 ? kept.length : null), usage);
+    return withUsage(this.fallback(kept, why, dropped > 0 ? kept.length : null), usage, denied);
   }
 
   private decodeJson(output: JsonOutput): DecodedOutput {
@@ -176,9 +196,13 @@ export class AdapterOutputDecoder {
     const value = walk(doc, output.textPath);
     const text = typeof value === "string" ? value.trim() : undefined;
     const error = output.errorPath ? reportedError(doc, output.errorPath, text) : undefined;
-    if (error !== undefined) return withUsage({ text: error, error }, usage);
-    if (text !== undefined) return withUsage({ text }, usage);
-    return withUsage(this.fallback(raw, `it has no text at '${output.textPath.join(".")}'`), usage);
+    const structured = output.structuredPath ? walk(doc, output.structuredPath) : undefined;
+    const denied = output.deniedPath ? deniedCalls(doc, output.deniedPath) : undefined;
+    if (error !== undefined) return withUsage({ text: error, error }, usage, denied);
+    if (text !== undefined || isPresent(structured)) {
+      return withUsage(withStructured({ text: text ?? "" }, structured), usage, denied);
+    }
+    return withUsage(this.fallback(raw, `it has no text at '${output.textPath.join(".")}'`), usage, denied);
   }
 
   private fallback(raw: string, why: string, keptChars: number | null = null): DecodedOutput {
@@ -228,18 +252,32 @@ export class AdapterOutputDecoder {
 
     const value = walk(event, output.textPath);
     const text = typeof value === "string" ? value.trim() : undefined;
-    if (text !== undefined) {
+    // The latest text event decides whether the CLI reported a failure, what
+    // value it validated natively, and what it refused.
+    this.structured = output.structuredPath ? walk(event, output.structuredPath) : undefined;
+    if (text !== undefined || isPresent(this.structured)) {
       this.found = true;
       this.raw = ""; // the fallback is no longer needed
       if (text) this.last = text;
     }
-    // The latest text event decides whether the CLI reported a failure.
     this.error = output.errorPath ? reportedError(event, output.errorPath, text) : undefined;
+    this.denied = output.deniedPath ? deniedCalls(event, output.deniedPath) : undefined;
   }
 }
 
-function withUsage(decoded: DecodedOutput, usage: Usage | undefined): DecodedOutput {
-  return usage ? { ...decoded, usage } : decoded;
+function withUsage(decoded: DecodedOutput, usage: Usage | undefined, denied?: string[]): DecodedOutput {
+  const out = usage ? { ...decoded, usage } : decoded;
+  return denied ? { ...out, denied } : out;
+}
+
+/** `decoded` with the CLI's natively validated value, when it has one. */
+function withStructured(decoded: DecodedOutput, structured: unknown): DecodedOutput {
+  return isPresent(structured) ? { ...decoded, structured } : decoded;
+}
+
+/** A value at `structuredPath`: anything but absent, or null (a run that produced none). */
+function isPresent(value: unknown): boolean {
+  return value !== undefined && value !== null;
 }
 
 /**
@@ -283,6 +321,37 @@ function reportedError(
   if (text) return text;
   const quoted = JSON.stringify(holder) ?? String(holder);
   return quoted.length > ERROR_EXCERPT_CHARS ? `${quoted.slice(0, ERROR_EXCERPT_CHARS)}…` : quoted;
+}
+
+/** Characters of one refused call's description. */
+const DENIAL_CHARS = 160;
+
+/**
+ * The tool calls a CLI refused, listed at `path` — one line each — or
+ * undefined when it lists none. An entry is a string, or an object naming the
+ * tool (Claude Code's `{ tool_name, tool_use_id, tool_input }`) and, from its
+ * input, what the call was about: `Bash (npm test)`, `WebFetch (https://…)`.
+ */
+function deniedCalls(holder: unknown, path: readonly string[]): string[] | undefined {
+  const list = walk(holder, path);
+  if (!Array.isArray(list) || list.length === 0) return undefined;
+  return list.map((entry) => {
+    if (typeof entry === "string") return clipLine(entry);
+    if (!isRecord(entry)) return clipLine(JSON.stringify(entry) ?? String(entry));
+    const tool = [entry.tool_name, entry.name, entry.tool].find((v): v is string => typeof v === "string" && v !== "");
+    const input = isRecord(entry.tool_input) ? entry.tool_input : isRecord(entry.input) ? entry.input : {};
+    const about = [input.command, input.file_path, input.path, input.url, input.pattern, input.query].find(
+      (v): v is string => typeof v === "string" && v.trim() !== "",
+    );
+    if (!tool) return clipLine(JSON.stringify(entry));
+    return clipLine(about ? `${tool} (${about.trim()})` : tool);
+  });
+}
+
+/** One line of at most {@link DENIAL_CHARS} characters. */
+function clipLine(text: string): string {
+  const line = text.replace(/\s+/g, " ").trim();
+  return line.length > DENIAL_CHARS ? `${line.slice(0, DENIAL_CHARS - 1)}…` : line;
 }
 
 /**

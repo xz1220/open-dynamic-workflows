@@ -146,6 +146,13 @@ agent 的 `permissions`；`odw doctor` 会列出每个适配器支持的档位�
 | `permissions` | **ODW 扩展。** 运行的权限档位：`"read"`、`"edit"`（默认）或 `"full"`——见[权限](#权限每个内置适配器能做什么)。`odw run\|rerun\|resume --permissions` 可覆盖 |
 | `agentEnv` | **ODW 扩展。** `"inherit"`（默认）：agent CLI 拿到 ODW 的全部环境变量。`"minimal"`：只传 `PATH`、`HOME`、`USER`、`LOGNAME`、`SHELL`、`LANG`、`LC_*`、`TERM`、`TMPDIR`、`TZ`（以及 Windows 系统变量）、内置 CLI 文档中列出的认证与配置变量（`ANTHROPIC_*`、`CLAUDE_*`、`OPENAI_*`、`CODEX_*`、`GEMINI_*`、`GOOGLE_*`、`DASHSCOPE_*`、`QWEN_*`、`MOONSHOT_*`、`KIMI_*`、`CURSOR_*`、`OPENCODE_*`、代理变量、`NODE_EXTRA_CA_CERTS`）、`ODW_*`、`agentEnvPass` 和适配器的 `env`。`exec()` 命令、`worktreeSetup` 和 `notify` 仍拿到完整环境 |
 | `agentEnvPass` | **ODW 扩展。** `"minimal"` 环境下额外放行的变量名或 `*` 通配（如在 Bedrock 上用 Claude Code 时的 `["AWS_*"]`） |
+| `schemaKeywords` | **ODW 扩展。** `agent()` 的 schema 里 ODW 校验器不检查的关键字如何处理。`"warn"`（默认）：调用照常运行，ODW 检查其余部分，运行日志只说一次哪些关键字、位于何处、由谁强制执行（接收原生 schema 的适配器 CLI，即 `flags.schema`，否则无人）。`"strict"`：调用在启动前失败，逐个写明。格式错误的 schema 在两种模式下都会失败。见[原生结构化输出](#原生结构化输出) |
+| `schemaPrompt` | **ODW 扩展。** `"auto"`（默认）：只有不接收原生 schema 的 CLI 才在提示词里看到 schema 描述；`"always"`：所有 CLI 都附上 |
+| `fallback` | **ODW 扩展。** 回退链：`{ "codex": ["claude"], … }`——agent 的 CLI 额度用尽或登录被拒时，它会在为其所在适配器列出的下一个适配器上重新运行（全新的提示词、相同的选项、相同的权限档位：不能运行该档位的适配器会被跳过）。限流仍在原地重试。`agent()` 调用自己的列表 `adapter: ["codex", "claude"]` 会取代它。列出的每个适配器都必须已配置。默认 `{}`——见[路由](primitives.md#路由阶段默认值模型分层回退链odw-扩展) |
+| `quotaBreaker` | **ODW 扩展。** 同一个适配器上连续这么多次额度失败后，本次运行之后的 agent 都会跳过它——各自从回退链上的下一个适配器开始，没有回退链的则立即失败——并记一条警告。默认 3；`0` 或 `null` 表示从不跳过 |
+| `models` | **ODW 扩展。** 模型层级：`{ "fast": { "claude": "haiku", "codex": "gpt-5-mini" }, … }`。`model: "@fast"`（写在 `agent()`、`phase()` 或 `meta.phases` 里）让 agent 使用其适配器在该层级下的 ID——回退之后用下一个适配器的；层级没给某适配器 ID 时使用其 CLI 的默认模型（记日志），未知层级会让 agent 失败。层级名由字母、数字、`_`、`-` 和 `.` 组成；列出的每个适配器都必须已配置。默认 `{}` |
+| `expectRetries` | **ODW 扩展。** 工作没达到 `expect` 检查的 agent 带着缺失项重跑的次数，之后以 `unmet_expectation` 失败（默认 1；`agent()` 调用自己的 `expectRetries` 优先）——见 [expect](primitives.md#expectodw-扩展) |
+| `permissionDenials` | **ODW 扩展。** CLI 拒绝了 agent 的工具调用（`deniedPath`）、而回复声称成功时怎么办：`"warn"`（默认）保留回复——这些调用记为 agent 上的 `denied` 并记一次日志——`"fail"` 让 agent 以 `permission` 失败。适配器自己的 `permissionDenials` 优先；设了 `expect` 的调用无论如何都把被拒绝的调用算作缺失 |
 
 ### 适配器字段
 
@@ -159,11 +166,12 @@ agent 的 `permissions`；`odw doctor` 会列出每个适配器支持的档位�
 | `concurrency` | **ODW 扩展。** 在运行级 `concurrency` 之内，这个 CLI 上同时最多运行多少个 agent：一个 agent 需要两边各一个槽位，每个适配器先到先得地排队，被限住的适配器不会挡住其他适配器。不设置：只受运行级上限约束 |
 | `promptCache` | **ODW 扩展。** `true`：这个 CLI 背后的模型 API 会缓存提示前缀，所以它的扇出会错开启动（见 `staggerFanOut`）。内置 `claude` 声明了它 |
 | `label` | 进度显示用的友好名字 |
-| `flags` | 能力声明，如 `{ "model": ["--model"] }`——承载每次调用 `model` 的原生旗标。不声明它，`agent(..., { model })` 对该适配器就不生效（日志里会出现一条路由说明） |
+| `flags` | 能力声明，如 `{ "model": ["--model"] }`——承载每次调用 `model` 的原生旗标。不声明它，`agent(..., { model })` 对该适配器就不生效（日志里会出现一条路由说明）。**ODW 扩展：**`"schema": { "args": [...], "mode": "inline" \| "file", "strict"?: true }` 声明该 CLI 会自己校验调用的 JSON Schema——见[原生结构化输出](#原生结构化输出) |
 | `failures` | **ODW 扩展。** 这个 CLI 自己的失败措辞：`{ "rate_limit": [...], "quota": [...], "auth": [...] }`，正则表达式，先于内置表、不区分大小写地匹配失败运行输出的末尾 |
 | `output` | stdout 如何变成回复（默认：去掉首尾空白的文本）——见下文 |
 | `permissionArgs` | **ODW 扩展。** 各档位的参数：`{ "read"?: [...], "edit": [...], "full"?: [...] }`（`edit` 必填，没有参数写 `[]`），放在命令中 `{permission_args}` 那一项的位置——设置了它，命令就必须恰好有这一项 |
 | `permissions` | **ODW 扩展。** 把该适配器的档位封顶在运行档位之下：它的 agent 取两者中较低的一档 |
+| `permissionDenials` | **ODW 扩展。** `"warn"` 或 `"fail"`：这个 CLI 自己的 `permissionDenials`，优先于运行级设置 |
 
 ### 输出格式
 
@@ -173,13 +181,44 @@ agent 的 `permissions`；`odw doctor` 会列出每个适配器支持的档位�
   事件里 `textPath` 处的文本。
 - `{ "format": "json", "textPath": ["response"] }`——stdout 上的一个 JSON 文档。
 
-**ODW 扩展：** 两种 JSON 格式都可以加上 `usagePath`（token 计数）、`costPath`（美元）和
+**ODW 扩展：** 两种 JSON 格式都可以加上 `usagePath`（token 计数）、`costPath`（美元）、
 `errorPath`（`true`、一条消息或一个错误对象：这次运行以它失败，不论退出码都像任何失败一样
-被归类）；`jsonl` 从 `usageEvent` 事件（默认同 `eventType`）读取用量和花费并累加。用量会在
+被归类）和 `deniedPath`（CLI 拒绝了 agent 的哪些工具调用，回复可能仍声称成功：记为 agent
+上的 `denied` 并写入日志，或在 `permissionDenials: "fail"` 下算作 `permission` 失败——内置
+`claude` 读取 `permission_denials`）；`jsonl` 从 `usageEvent` 事件（默认同 `eventType`）读取用量和花费并累加。用量会在
 不同 CLI 的字段名（Anthropic、OpenAI、Codex）之间归一化为：`inputTokens`（含缓存命中的
 输入）、`outputTokens`、`cacheReadTokens`、`cacheWriteTokens`、`costUsd`。路径里的整数
 用于索引数组（负数从末尾数）。stdout 里找不到声明的文本时，原始 stdout 就作为回复，运行
-日志会说明原因——agent 不会因此失败。
+日志会说明原因——agent 不会因此失败。`structuredPath` 指向 CLI 按原生拿到的 schema 校验过的
+值（见下文）。
+
+### 原生结构化输出
+
+**ODW 扩展。** `flags.schema` 声明某个 CLI 会自己校验 JSON Schema，以及它如何接收 schema：
+
+| 字段 | 含义 |
+| --- | --- |
+| `args` | schema 前面的旗标，如 `["--json-schema"]` |
+| `mode` | `"inline"`：schema 的紧凑 JSON 作为下一个参数。`"file"`：一个保存 schema 的文件路径——run 目录下的 `agents/<agentId>.schema.json`（不在运行中时用临时目录），每次 CLI 运行前写入、运行后删除 |
+| `strict` | `true` 表示该 CLI 只接受 OpenAI strict 模式的 schema（codex）：其他 schema——根不是对象，或某个对象没有设 `"additionalProperties": false` 并把全部属性列进 `required`——改为写进提示词，运行会提示一次 |
+
+schema 参数排在所有其他参数之后（与模型参数同处），且不做占位符展开；没有 schema 的调用完全
+按配置的命令运行。若 CLI 的输出把校验后的值与文本分开放，用 `output.structuredPath` 指出位置；
+那里有值（非 null）就是回复的值，否则像任何适配器一样在回复文本里找 JSON。无论哪种，ODW 都会
+校验这个值，不满足 schema 时带反馈重试；只有不接收原生 schema 的 CLI 才会在提示词里看到 schema
+描述（`schemaPrompt`）。
+
+| 内置适配器 | `flags.schema` | 值的来源 |
+| --- | --- | --- |
+| `claude` | `{ "args": ["--json-schema"], "mode": "inline" }` | `result` 事件里的 `structured_output`（`"structuredPath": ["structured_output"]`），否则用 `result` 文本 |
+| `codex` | `{ "args": ["--output-schema"], "mode": "file", "strict": true }` | stdout 上的最终消息 |
+
+agent 启动前，会对照 ODW 校验器支持的子集检查它的 schema（[原语](primitives.md#schema)）。
+其他内容会连同位置在运行日志里写明一次——适配器接收原生 schema 时（`strict` 的适配器上只限
+strict schema）交给 CLI，否则没有谁会强制执行——ODW 检查它能检查的部分；设
+`"schemaKeywords": "strict"` 时则改为让调用以 `AgentError` 失败。格式错误的 schema 或未知关键字
+在两种模式下都会失败。要为某个内置适配器关闭原生 schema，给它不含 `schema` 的 `flags`：
+`"claude": { "flags": { "model": ["--model"] } }`。
 
 ### 运行通知（`notify`）
 
@@ -216,4 +255,7 @@ hook 只会记录到该运行的 `worker.log`。
 `agent_failed` 事件上的 `reason`；只有 `rate_limit` 会重试——见 `transientRetries`）。
 CLI 在输出里报告的失败（`errorPath`：Claude Code stream-json 的 `is_error` 结果，常常以 0
 退出）也一样，干净退出、但简短的文本回复只是一条限流、额度或登录错误的情况（如
-`API Error: Rate limit reached`）同样算作失败。
+`API Error: Rate limit reached`）同样算作失败。干净退出也可能失败（ODW 扩展）：回复为空时
+为 `empty_reply`（除非调用设了 `allowEmpty`），工作没达到调用的 `expect` 检查时为
+`unmet_expectation`，CLI 拒绝了工具调用（`deniedPath`）且 `permissionDenials` 为 `"fail"`
+或调用设了 `expect` 时为 `permission`。

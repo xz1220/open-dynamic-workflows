@@ -20,6 +20,8 @@
  *     agents/<agentId>.transcript.jsonl  what an agent's CLI printed on stdout, as it ran
  *                    (ODW extension; see ../transcript), and agents/<agentId>.stderr.txt
  *                    the end of its stderr — none for a replayed agent
+ *     agents/<agentId>.schema.json  the schema of an agent whose CLI reads it from a file
+ *                    (ODW extension; see ../adapters/native-schema), there only while it runs
  *     result.json    final return value (on success)
  *     error.json     message + stack (on failure)
  *     control.json   pause/resume/stop request written by the CLI
@@ -356,6 +358,15 @@ export class RunStore {
     if (!isAgentId(agentId)) throw new Error(`invalid agentId ${String(agentId)}`);
     const dir = join(this.runDir(runId), AGENTS);
     return { transcript: join(dir, `${agentId}.transcript.jsonl`), stderr: join(dir, `${agentId}.stderr.txt`) };
+  }
+  /**
+   * Where an agent's schema is written for a CLI that reads it from a file
+   * (ODW extension; `flags.schema.mode: "file"`): `agents/<agentId>.schema.json`,
+   * removed once each of its CLI runs ends.
+   */
+  agentSchemaPath(runId: string, agentId: number): string {
+    if (!isAgentId(agentId)) throw new Error(`invalid agentId ${String(agentId)}`);
+    return join(this.runDir(runId), AGENTS, `${agentId}.schema.json`);
   }
   /** Every saved agent result of a run, by agentId (call order). */
   listAgentResults(runId: string): AgentResultRecord[] {
