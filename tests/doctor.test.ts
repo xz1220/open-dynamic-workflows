@@ -3,11 +3,11 @@
  * catches CLIs which exit 0 without answering when run headless.
  */
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execPath } from "node:process";
-import { test } from "node:test";
+import { after, test } from "node:test";
 
 import { loadConfig, locateConfig } from "../src/adapters/config.ts";
 import { runDoctor, SMOKE_TOKEN } from "../src/doctor.ts";
@@ -16,8 +16,15 @@ const answer = "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{const m=
 const silent = "process.stdin.resume();process.stdin.on('end',()=>process.stdout.write('sure, done'))";
 const broken = "process.stderr.write('please log in');process.exit(3)";
 
+/** Every temp dir this file made, removed once its tests are done. */
+const made: string[] = [];
+after(() => {
+  for (const dir of made) rmSync(dir, { recursive: true, force: true });
+});
+
 function setup(extra: Record<string, unknown> = {}) {
   const dir = mkdtempSync(join(tmpdir(), "odw-doctor-"));
+  made.push(dir);
   const path = join(dir, "odw.config.json");
   writeFileSync(
     path,

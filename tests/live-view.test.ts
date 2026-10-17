@@ -3,17 +3,25 @@ import { spawnSync } from "node:child_process";
 import { appendFileSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "node:test";
+import { after, test } from "node:test";
 
 import { attachRun, formatEvent, resolveRunMode } from "../src/runtime/live-view.js";
 import { RunStore } from "../src/runtime/run-store.js";
 import { FakeTerm } from "./fake-term.js";
 
+/** Every temp dir this file made, removed once its tests are done. */
+const made: string[] = [];
+after(() => {
+  for (const dir of made) rmSync(dir, { recursive: true, force: true });
+});
+
 const ENV = { TERM: "xterm", LANG: "en_US.UTF-8" }; // color on (16), unicode on
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 function freshStore(): RunStore {
-  return new RunStore(mkdtempSync(join(tmpdir(), "odw-live-")));
+  const dir = mkdtempSync(join(tmpdir(), "odw-live-"));
+  made.push(dir);
+  return new RunStore(dir);
 }
 
 function makeRun(store: RunStore, name = "demo"): string {
