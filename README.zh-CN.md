@@ -945,6 +945,9 @@ node web/dev.mjs --api http://127.0.0.1:4317     # → http://127.0.0.1:5173
 - **扛过限流。** 每次 agent 失败都会被分类(限流、额度、登录、超时、卡死……)。被限流的
   CLI 会按退避时间重试并遵守它给出的 retry-after;额度耗尽或登录失败则立即失败并说明该
   怎么做——`odw logs`、实时视图和看板里都能看到,连同恢复时间。
+- **看清每个 agent 做了什么。** 每个 agent 的 CLI 输出都会保存为执行记录——工具调用、结果、
+  重试——可以用 `odw logs <run> --agent <id|label>` 查看(运行中加 `--follow`),也可以在看板的
+  执行记录侧栏里实时跟随。
 - **无需常驻进程的定时运行。** `odw schedule add <name> <workflow> --cron "15 2 * * 1-5"`
   会写入一条 cron、launchd 或 systemd 定时项,由它回调 odw——带防重叠锁、每个定时任务各自的日志,
   `odw schedule list` 里能看到上一次运行([配方](docs/recipes/cron.md))。
@@ -1006,7 +1009,7 @@ node web/dev.mjs --api http://127.0.0.1:4317     # → http://127.0.0.1:5173
 
 按并行 coding agent 用户反馈的需求排序([调研](docs/research/user-needs-2026-10.md)):
 更多 CLI 上报的真实 token 用量与花费(目前 Claude Code 已上报,其余仍按估算)·
-无头运行的"成功证据" · 每个 agent 的 transcript · 只读/编辑/完全三档权限 ·
+无头运行的"成功证据" · 只读/编辑/完全三档权限 ·
 原生结构化输出 · 按阶段指定适配器与回退链 · 评测。完整规划见 [`docs/ROADMAP.md`](docs/ROADMAP.md);
 最初的设计见 [`docs/dynamic-workflows-tech-plan.md`](docs/dynamic-workflows-tech-plan.md);
 ODW 所对齐的 Claude Code 方言背景见

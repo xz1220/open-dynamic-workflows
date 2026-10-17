@@ -1047,6 +1047,9 @@ into the host's `node`, so each target is built on its own runner.
   login, timeout, stall, …). A rate-limited CLI is retried after a backoff that
   honors its retry-after; a spent quota or a failed login fails fast with what to do
   — in `odw logs`, the live view and the dashboard, with the reset time.
+- **See what each agent did.** Every agent's CLI output is kept as a transcript —
+  tool calls, results, retries — readable with `odw logs <run> --agent <id|label>`
+  (`--follow` while it runs) or live in the dashboard's Transcript sheet.
 - **Scheduled runs without a daemon.** `odw schedule add <name> <workflow> --cron
   "15 2 * * 1-5"` writes a cron, launchd or systemd entry that calls back into odw —
   with an overlap lock, a per-schedule log and the last run in `odw schedule list`
@@ -1125,7 +1128,7 @@ runs end-to-end (plan → search → extract → vote → report).
 Ranked by what users of parallel coding agents report needing
 ([research](docs/research/user-needs-2026-10.md)): adapter-reported token usage and
 cost for more CLIs (Claude Code reports it today; the others are estimated) ·
-evidence of success for headless runs · per-agent transcripts ·
+evidence of success for headless runs ·
 read/edit/full permission tiers · native structured output · per-phase adapters
 and fallback chains · evaluation. Full plan: [`docs/ROADMAP.md`](docs/ROADMAP.md); the
 original design: [`docs/dynamic-workflows-tech-plan.md`](docs/dynamic-workflows-tech-plan.md).

@@ -86,7 +86,7 @@
 | --- | --- | --- | --- | --- |
 | X1 | **diff 作为运行产物 + `odw apply`**：保留 worktree 的分支和 diff；合并前用 `git merge-tree` 预检，再跑校验命令，逐个合并；看板提供并排 diff 审阅 | #2 | M | ✅ diff 落盘（排除初始化文件、可截断）、`keep` 分支、`odw diff`/`odw apply [--check]`、看板改动页；`git merge-tree` 预检与逐个合并后的校验命令待做 |
 | X2 | **权限档位**：read-only / edit / full 三档，映射到各 CLI 的对应参数，启动前展示；环境变量白名单 + 密钥引用脱敏；不受信任的仓库使用 `--bare` | #6 | M | ⏳ |
-| X3 | **agent transcript**：保存每个 agent 的 JSON 流（工具调用、重试）；看板和 `odw logs --agent` 可查看；导出 OpenTelemetry GenAI span | #8 | M | ⏳ |
+| X3 | **agent transcript**：保存每个 agent 的 JSON 流（工具调用、重试）；看板和 `odw logs --agent` 可查看；导出 OpenTelemetry GenAI span | #8 | M | ✅ 记录与回看（`odw logs --agent [--raw] [--follow]`、API、看板实时侧栏）；OpenTelemetry 导出待做 |
 | X4 | **人工检查点** `checkpoint()`（ODW 扩展）：持久暂停，`odw approve/reject [--edit]` 继续；看板提供审批入口（依赖 N1） | #9 | M | ✅（`--edit` 待做） |
 | X5 | **worktree 环境**：支持 `.worktreeinclude`、带超时的 setup 命令、为每个 agent 分配 `ODW_PORT` | #10 | S | ✅ |
 | X6 | **调度**：`odw schedule add/list/remove/run` 写入 cron/launchd/systemd（不引入 daemon）；每个定时任务一把防重叠锁（失效锁自动接管）、每次运行一行日志、上次与下次运行时间；错过的运行按各后端处理（systemd `Persistent=true` 开机补跑）；失败通知复用 `notify` | #14 | S | ✅ |
