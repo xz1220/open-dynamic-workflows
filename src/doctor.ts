@@ -25,6 +25,7 @@ import {
 import { runCommand, type CommandRunner } from "./adapters/runner.js";
 import type { Config, PermissionTier } from "./adapters/types.js";
 import { Bridge } from "./bridge.js";
+import { redactorFor, type RedactionCoverage } from "./redact.js";
 import { describeConcurrency } from "./throttle.js";
 
 export type CheckStatus = "ok" | "warn" | "fail" | "skip";
@@ -57,6 +58,8 @@ export interface DoctorOptions {
   smokeTimeout?: number;
   runner?: CommandRunner;
   nodeVersion?: string;
+  /** The environment runs would start agents with; defaults to this process's. */
+  env?: Record<string, string | undefined>;
 }
 
 /** The marker a smoke prompt asks for — unlikely to appear by accident. */
@@ -146,6 +149,9 @@ export async function runDoctor(opts: DoctorOptions): Promise<DoctorReport> {
   // The caps a run's agents get, per adapter too, and how rate limits and fan-outs move them (ODW extensions).
   add({ id: "concurrency", title: "Concurrency", status: "ok", detail: describeConcurrency(config, { details: true }) });
 
+  // Whether what runs keep and serve has its likely secrets redacted (ODW extension; see ./redact).
+  add(redactionCheck(redactorFor(config, opts.env ?? process.env).coverage));
+
   for (const a of listing) {
     // The permission tiers it can run (ODW extension): `odw run --permissions`
     // refuses read on an adapter without it, and runs full as edit.
@@ -216,4 +222,39 @@ export async function runDoctor(opts: DoctorOptions): Promise<DoctorReport> {
   }
 
   return { ok: !checks.some((c) => c.status === "fail"), checks };
+}
+
+/** Variables the redaction check names before it says how many more. */
+const VARIABLES_SHOWN = 5;
+
+/**
+ * The redaction check (ODW extension): what is redacted from what runs keep
+ * and serve — or, with `redact: false` (or every part of it off), a warning.
+ */
+export function redactionCheck(coverage: RedactionCoverage): DoctorCheck {
+  const check = { id: "redaction", title: "Redaction" };
+  const parts: string[] = [];
+  if (coverage.env) {
+    const names = coverage.variables;
+    const shown = names.slice(0, VARIABLES_SHOWN).join(", ");
+    const more = names.length > VARIABLES_SHOWN ? `, and ${names.length - VARIABLES_SHOWN} more` : "";
+    parts.push(
+      names.length === 0
+        ? "NAME=value of secret-looking names (no secret-named variable in this environment)"
+        : `the values of ${names.length} secret-named variable${names.length === 1 ? "" : "s"} (${shown}${more}), NAME=value of secret-looking names`,
+    );
+  }
+  if (coverage.patterns) parts.push("token shapes");
+  if (coverage.extra > 0) parts.push(`${coverage.extra} extra pattern${coverage.extra === 1 ? "" : "s"}`);
+  if (coverage.off || parts.length === 0) {
+    return {
+      ...check,
+      status: "warn",
+      detail: coverage.off ? 'off ("redact": false)' : "nothing to look for (redact.env and redact.patterns are false, no extra)",
+      hint: `secrets agents print are kept and served in clear — ${
+        coverage.off ? 'remove "redact": false from the config' : 'set "redact.env" or "redact.patterns" back to true'
+      }`,
+    };
+  }
+  return { ...check, status: "ok", detail: `on — ${parts.join(", ")}` };
 }

@@ -154,7 +154,8 @@ export interface RunDetail extends RunSummary {
   agents: AgentView[];
   phaseOrder: string[];
   hasResult: boolean;
-  error: { error?: string; stack?: string } | null;
+  /** `redacted`: secrets its message quoted were replaced by `«redacted:<kind>»` (ODW extension). */
+  error: { error?: string; stack?: string; redacted?: boolean } | null;
   /** Where the run was initiated from, when recorded by the launcher. */
   origin: string | null;
   /** Run-level adapter override recorded at start, if any. */
@@ -222,6 +223,8 @@ export interface WorkflowDetail extends WorkflowSummary {
 export interface WorkflowEvent {
   ts: number;
   type: string;
+  /** Secrets in its text were replaced by `«redacted:<kind>»` before it was written (ODW extension). */
+  redacted?: boolean;
   [key: string]: unknown;
 }
 
@@ -323,6 +326,8 @@ export interface AgentResultRecord {
   fellBackFrom?: string[];
   /** The tool calls its CLI refused while it did the work (ODW extension). */
   denied?: string[];
+  /** Secrets in it were replaced by `«redacted:<kind>»` before it was saved (ODW extension): show a "redacted" tag. */
+  redacted?: boolean;
 }
 
 /** One step of an agent's transcript, normalized (ODW extension; src/runtime/transcript-view.ts). */
@@ -358,6 +363,8 @@ export interface TranscriptEntry {
   /** result: the turns the session took and what it cost, as its CLI reported. */
   turns?: number;
   costUsd?: number;
+  /** Secrets in it were kept out as `«redacted:<kind>»` (ODW extension): show a "redacted" tag. */
+  redacted?: true;
 }
 
 /** GET /api/runs/:id/agents/:agentId/transcript?since=<i> — 404 when the agent has no transcript. */

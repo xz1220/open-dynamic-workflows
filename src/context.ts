@@ -16,6 +16,7 @@ import { NullControl, type Control } from "./control.js";
 import { BudgetExhausted } from "./errors.js";
 import { LOG, NullSink, event, type EventSink, type WorkflowEvent } from "./events.js";
 import type { AgentResultRecord, ReplayJournal } from "./journal.js";
+import { redactorFor, type Redactor } from "./redact.js";
 import type { PhaseDefaults } from "./routing.js";
 import { Scheduler } from "./scheduler.js";
 import { capChangeMessage } from "./throttle.js";
@@ -105,6 +106,12 @@ export interface RunContext {
    * may throw: the checkpoint goes on, and the failure is logged.
    */
   onCheckpoint?: (cp: WaitingCheckpoint, waiting: boolean) => void;
+  /**
+   * What keeps likely secrets out of what the run writes down — transcripts,
+   * saved results, events, exec() failures (ODW extension; see ./redact).
+   * Built once per run, shared like `seq`; absent: nothing is redacted.
+   */
+  redactor?: Redactor;
   emit(ev: WorkflowEvent): void;
 }
 
@@ -131,13 +138,17 @@ export interface BuildContextOptions {
   onCheckpoint?: (cp: WaitingCheckpoint, waiting: boolean) => void;
   /** Where an agent's schema file goes for a CLI that reads one (the bridge's `agentSchemaPath`). */
   agentSchemaPath?: (agentId: number) => string;
+  /** The run's redactor; built from the config's `redact` when absent. */
+  redactor?: Redactor;
 }
 
 /** Wire a full run context from a config and the run's surroundings. */
 export function buildContext(config: Config, options: BuildContextOptions = {}): RunContext {
   const sink = options.sink ?? new NullSink();
   const control: Control = options.control ?? new NullControl();
-  const bridge = new Bridge(config, { source: options.source, runId: options.runId, agentSchemaPath: options.agentSchemaPath });
+  // Compiled once for the whole run (ODW extension; see ./redact).
+  const redactor = options.redactor ?? redactorFor(config);
+  const bridge = new Bridge(config, { source: options.source, runId: options.runId, agentSchemaPath: options.agentSchemaPath, redactor });
   const budgetTotal = options.budgetTotal ?? null;
   // The shared tally `budget.spent()` reads: reported output tokens, else
   // chars/4 of the reply; the guard makes --budget a real ceiling, not advisory.
@@ -187,6 +198,7 @@ export function buildContext(config: Config, options: BuildContextOptions = {}):
     agentTranscriptPaths: options.agentTranscriptPaths,
     replay: options.replay,
     onCheckpoint: options.onCheckpoint,
+    redactor,
     emit(ev: WorkflowEvent): void {
       sink.emit(ev);
     },

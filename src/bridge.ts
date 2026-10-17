@@ -100,6 +100,7 @@ import {
 } from "./errors.js";
 import { refusedMiss, type ExpectationSink } from "./expect.js";
 import { PortPool } from "./ports.js";
+import { bothEnds, type Redactor } from "./redact.js";
 import { LiteralRouter, type InvocationPlan, type OptionRouter } from "./router.js";
 import { isAdapterChoice, type AdapterChoice } from "./routing.js";
 import { describeSchema, pickStructured, type JsonSchema } from "./schema.js";
@@ -195,6 +196,11 @@ export interface BridgeOptions {
    * `agents/<agentId>.schema.json`. Absent, it goes in a temp directory.
    */
   agentSchemaPath?: (agentId: number) => string;
+  /**
+   * What a failed call's error quotes of its CLI's output is redacted first
+   * (an ODW extension; see ./redact), so no secret is kept or cut in half.
+   */
+  redactor?: Redactor;
 }
 
 /** What the scheduler hands one call; all optional, so a bare `run(request)` works. */
@@ -395,6 +401,7 @@ export class Bridge {
   private readonly quotaStreaks = new Map<string, number>();
   /** Adapters the quota breaker took out of the run: later calls start past them. */
   private readonly tripped = new Set<string>();
+  private readonly redactor: Redactor | undefined;
 
   constructor(
     private readonly config: Config,
@@ -408,6 +415,7 @@ export class Bridge {
     this.random = options.random ?? Math.random;
     this.runId = options.runId;
     this.agentSchemaPath = options.agentSchemaPath;
+    this.redactor = options.redactor;
     this.ports = new PortPool(...config.settings.portRange);
   }
 
@@ -678,7 +686,7 @@ export class Bridge {
         if (failure || !cliOk(cli)) {
           const verdict = failure ?? classifyFailure(cli, { patterns: adapter.failures, prompt, now: this.now() });
           throw new AdapterExecutionError(
-            cliFailureMessage(adapter, cli, this.whatFailed(adapter, cli, verdict, limits, reruns)),
+            cliFailureMessage(adapter, cli, this.whatFailed(adapter, cli, verdict, limits, reruns), this.redactor),
             verdict,
           );
         }
@@ -691,7 +699,7 @@ export class Bridge {
         // A CLI that exits cleanly with nothing to say did not do the task (ODW
         // extension) — unless it gave the value it validated natively.
         if (!request.allowEmpty && text.trim() === "" && output.structured === undefined) {
-          throw new AdapterExecutionError(cliFailureMessage(adapter, cli, EMPTY_REPLY), { reason: "empty_reply" });
+          throw new AdapterExecutionError(cliFailureMessage(adapter, cli, EMPTY_REPLY, this.redactor), { reason: "empty_reply" });
         }
         for (const denial of output.denied ?? []) if (!refused.includes(denial)) refused.push(denial);
         let value: unknown = text;
@@ -865,7 +873,7 @@ export class Bridge {
     reruns: Reruns,
   ): UnmetExpectationError {
     const why = this.whatFailed(adapter, cli, { reason: "permission" }, limits, reruns);
-    const message = cliFailureMessage(adapter, refusedEvidence(cli, refused), why);
+    const message = cliFailureMessage(adapter, refusedEvidence(cli, refused), why, this.redactor);
     const others = misses.slice(1);
     return new UnmetExpectationError(
       others.length > 0 ? `${message} — and its work did not meet: ${others.join("; ")}` : message,
@@ -1220,12 +1228,13 @@ function stallReason(stallTimeout: number | undefined, restarts: number): string
   return `stalled — ${quiet}${again}`;
 }
 
-/** `adapter '<name>' <what happened>: <the CLI's own diagnostic>`. */
-function cliFailureMessage(adapter: Adapter, cli: CliResult, what: string): string {
-  const text = cli.stderr.trim() || cli.stdout.trim();
+/** `adapter '<name>' <what happened>: <the CLI's own diagnostic>` — redacted before it is cut (ODW extension). */
+function cliFailureMessage(adapter: Adapter, cli: CliResult, what: string, redactor?: Redactor): string {
+  const said = cli.stderr.trim() || cli.stdout.trim();
+  const text = redactor ? redactor.text(said) : said;
   // Keep both ends of a long diagnostic: the head usually names the error, the
   // tail holds the final message and the runner's own notes (kill reasons).
-  const detail = text.length > 500 ? `${text.slice(0, 250)} … ${text.slice(-250)}` : text;
+  const detail = bothEnds(text, 250);
   const suffix = detail ? `: ${detail}` : "";
   return `adapter '${adapter.name}' ${what}${suffix}`;
 }

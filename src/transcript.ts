@@ -26,6 +26,13 @@
  * {"kind":"truncated","bytes":N} line, N being the bytes kept. ODW's own lines
  * carry a `kind` and no `type`, so they never pass for an adapter's events.
  *
+ * With a redactor (an ODW extension; see ./redact), likely secrets are kept as
+ * `«redacted:<kind>»`: a JSONL adapter's event that had any is written anew,
+ * marked `"redacted":true`; text is redacted as it streams, a secret split
+ * across two chunks included, and a text line that had any is marked the same;
+ * the stderr file is redacted each time it is written, its kept end starting
+ * at a line (a secret is never kept cut in half).
+ *
  * The output arrives on the runner's hot path, so keeping it never waits:
  * whole lines are queued in memory (never more than `maxTranscriptBytes` of
  * them) and appended by one asynchronous writer, and the stderr file is
@@ -38,6 +45,7 @@ import { mkdir, open, rename, writeFile, type FileHandle } from "node:fs/promise
 import { dirname } from "node:path";
 
 import type { Adapter, CliResult } from "./adapters/types.js";
+import { hasMarker, type RedactStream, type Redactor } from "./redact.js";
 
 /**
  * Why a call ran a CLI once more: its reply failed the schema, the CLI
@@ -113,6 +121,8 @@ export interface TranscriptRecorderOptions extends TranscriptPaths {
   maxBytes: number;
   /** Receives what the run should log: a transcript that could not be written. */
   onNote?: (message: string) => void;
+  /** Keeps likely secrets out of both files (an ODW extension; see ./redact). */
+  redactor?: Redactor;
 }
 
 /**
@@ -136,6 +146,8 @@ export class TranscriptRecorder {
   private heard = false;
   /** How this CLI run's stdout is kept: the format of the adapter it runs on (a fallback may change it). */
   private format: "jsonl" | "text";
+  /** This CLI run's text output, redacted as it streams (see ./redact). */
+  private redacting: RedactStream | null = null;
   private file: FileHandle | null = null;
   private writing: Promise<void> | null = null;
   private broken = false;
@@ -181,6 +193,18 @@ export class TranscriptRecorder {
     if (this.closed || !chunk) return;
     this.heard = true;
     if (this.cut) return;
+    // Text is redacted as it streams: what can be kept now comes back (see ./redact).
+    if (this.format === "text" && this.opts.redactor?.active) {
+      this.redacting ??= this.opts.redactor.stream();
+      this.take(this.redacting.write(chunk));
+    } else {
+      this.take(chunk);
+    }
+  }
+
+  /** What the CLI printed, ready to keep: whole lines go, the rest waits for its newline. */
+  private take(chunk: string): void {
+    if (!chunk) return;
     let from = 0;
     for (let nl = chunk.indexOf("\n"); nl !== -1 && !this.cut; nl = chunk.indexOf("\n", from)) {
       const line = this.partial + chunk.slice(from, nl + 1);
@@ -211,7 +235,7 @@ export class TranscriptRecorder {
     if (this.closed || !chunk) return;
     this.stderrNow += chunk;
     // Trim lazily, at twice the limit, so a stream of small chunks stays linear.
-    if (this.stderrNow.length > 2 * STDERR_TAIL_CHARS) this.stderrNow = this.stderrNow.slice(-STDERR_TAIL_CHARS);
+    if (this.stderrNow.length > 2 * STDERR_TAIL_CHARS) this.stderrNow = this.tail(this.stderrNow);
     this.writeStderrSoon(STDERR_FLUSH_MS);
   }
 
@@ -226,8 +250,10 @@ export class TranscriptRecorder {
     if (!this.heard && cli.stdout) this.stdout(cli.stdout);
     this.flushPartial();
     if (cli.stderr.trim()) {
-      const stderr = cli.stderr.endsWith("\n") ? cli.stderr : `${cli.stderr}\n`;
-      this.stderrBefore = lastChars(this.stderrBefore + this.stderrHead + stderr);
+      // The runner keeps the end of stderr too: one it cut may start inside a secret.
+      const kept = this.opts.redactor?.active && cli.stderr.length >= STDERR_TAIL_CHARS ? fromLineStart(cli.stderr) : cli.stderr;
+      const stderr = kept.endsWith("\n") ? kept : `${kept}\n`;
+      this.stderrBefore = this.tail(this.stderrBefore + this.stderrHead + stderr);
     }
     this.stderrNow = "";
     this.stderrHead = "";
@@ -255,8 +281,10 @@ export class TranscriptRecorder {
   /** One whole line of stdout, its newline included (the last one of a run may have none). */
   private line(text: string): void {
     if (this.format === "jsonl") {
-      // An event, as received; a blank line carries none.
-      if (text.trim() !== "") this.accept(text.endsWith("\n") ? text : `${text}\n`);
+      // An event, as received — its secrets redacted; a blank line carries none.
+      if (text.trim() === "") return;
+      const line = this.opts.redactor ? this.opts.redactor.jsonLine(text) : text;
+      this.accept(line.endsWith("\n") ? line : `${line}\n`);
       return;
     }
     for (let at = 0; at < text.length && !this.cut; ) {
@@ -267,11 +295,16 @@ export class TranscriptRecorder {
   }
 
   private textPiece(text: string): void {
-    this.accept(JSON.stringify({ kind: "text", text }) + "\n");
+    const redacted = this.opts.redactor?.active && hasMarker(text);
+    this.accept(JSON.stringify(redacted ? { kind: "text", text, redacted: true } : { kind: "text", text }) + "\n");
   }
 
   /** The line the CLI left unterminated: kept as it is, before anything else is. */
   private flushPartial(): void {
+    // What the redacting stream still holds goes first: the run is over, nothing more completes it.
+    const held = this.redacting?.end() ?? "";
+    this.redacting = null;
+    if (held && !this.cut) this.take(held);
     const rest = this.partial;
     this.partial = "";
     if (rest && !this.cut) this.line(rest);
@@ -326,7 +359,18 @@ export class TranscriptRecorder {
 
   private stderrText(): string {
     const running = this.stderrNow ? this.stderrHead + this.stderrNow : "";
-    return lastChars(this.stderrBefore + running);
+    const text = this.tail(this.stderrBefore + running);
+    return this.opts.redactor ? this.opts.redactor.text(text) : text;
+  }
+
+  /**
+   * The end of `text` that is kept: its last 64 KB — from the start of a line,
+   * with a redactor, so no secret is kept cut in half.
+   */
+  private tail(text: string): string {
+    if (text.length <= STDERR_TAIL_CHARS) return text;
+    const end = text.slice(-STDERR_TAIL_CHARS);
+    return this.opts.redactor?.active ? fromLineStart(end) : end;
   }
 
   /** Rewrite the stderr file after `delayMs` (one write is due at a time), or at once. */
@@ -374,8 +418,12 @@ export class TranscriptRecorder {
   }
 }
 
-function lastChars(text: string): string {
-  return text.length > STDERR_TAIL_CHARS ? text.slice(-STDERR_TAIL_CHARS) : text;
+/** Text whose start was cut off, from its next line on — else past its next space; as it is without either. */
+function fromLineStart(text: string): string {
+  const nl = text.indexOf("\n");
+  if (nl !== -1 && nl < text.length - 1) return text.slice(nl + 1);
+  const space = text.search(/\s/);
+  return space !== -1 && space < text.length - 1 ? text.slice(space + 1) : text;
 }
 
 function errorText(err: unknown): string {

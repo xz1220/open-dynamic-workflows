@@ -29,6 +29,7 @@ import { LOG, RUN_FAILED, RUN_FINISHED, RUN_STARTED, RUN_STOPPED, event } from "
 import { ReplayJournal } from "../journal.js";
 import { loadWorkflowScript } from "../loader.js";
 import { createPrimitives } from "../primitives.js";
+import { redactorFor, type Redactor } from "../redact.js";
 import type { Scheduler } from "../scheduler.js";
 import { FileControl } from "./file-control.js";
 import { notifyCheckpoint, notifyRunEnd } from "./notify.js";
@@ -72,6 +73,11 @@ const SIGNAL_GRACE_MS = 10_000;
  * Once the outcome is on disk, the configured run-end hooks (`notify`) fire;
  * they are bounded and never throw, so they cannot change the returned state.
  *
+ * What the run writes down has its likely secrets redacted (an ODW extension;
+ * see ../redact): its events, each saved agent result, its error, a webhook's
+ * payload — and its result, but there only the token shapes, never the values
+ * of variables: a workflow's return value is the user's data.
+ *
  * A checkpoint() waiting for a person is shown in status.json as `waiting`
  * (the oldest one, which `odw approve` answers by default) and, when
  * `notify.on` lists "waiting", fires the hooks at once — the run waits on.
@@ -89,6 +95,9 @@ export async function executeRun(runDir: string): Promise<string> {
   // ctx is created inside the try so that a config or context-build failure is
   // still recorded as a failed run rather than leaving it stuck in "pending".
   let ctx: RunContext | undefined;
+  // Built once the config is loaded: what the run writes down goes through it.
+  let redactor: Redactor | undefined;
+  const redact = <T extends object>(record: T): T => redactor?.record(record) ?? record;
   const dispatched = () => ctx?.scheduler.dispatched ?? 0;
   const spent = () => (ctx ? spentTokens(ctx.usage) : 0);
 
@@ -137,6 +146,9 @@ export async function executeRun(runDir: string): Promise<string> {
         ...(permissionsOverride ? { permissions: permissionsOverride } : {}),
       },
     };
+    const runRedactor = redactorFor(config);
+    redactor = runRedactor;
+    sink.redactor = runRedactor;
     const control = new FileControl({
       readAction: () => store.readControl(runId),
       // checkpoint() answers from `odw approve|reject` and the dashboard.
@@ -155,8 +167,10 @@ export async function executeRun(runDir: string): Promise<string> {
       control,
       budgetTotal: (meta.budgetTotal as number | null) ?? null,
       // Each completed agent's result lands in agents/<agentId>.json at once,
-      // so a run that stalls, is stopped, or dies keeps its finished work.
-      saveAgentResult: (rec) => store.writeAgentResult(runId, rec),
+      // so a run that stalls, is stopped, or dies keeps its finished work —
+      // its likely secrets redacted (ODW extension).
+      saveAgentResult: (rec) => store.writeAgentResult(runId, runRedactor.record(rec)),
+      redactor: runRedactor,
       // What an isolated agent changed is kept beside it, as agents/<agentId>.diff.
       agentDiffPath: (agentId) => store.agentDiffPath(runId, agentId),
       // What each agent's CLI prints, as agents/<agentId>.transcript.jsonl and .stderr.txt.
@@ -169,6 +183,7 @@ export async function executeRun(runDir: string): Promise<string> {
           waiting.set(cp.checkpointId, cp);
           const hooks = notifyCheckpoint(config.settings.notify, { store, runId, checkpoint: cp }, {
             cwd: typeof meta.source === "string" ? meta.source : undefined,
+            redactor: runRedactor,
           });
           checkpointHooks.push(hooks);
         } else {
@@ -176,7 +191,7 @@ export async function executeRun(runDir: string): Promise<string> {
         }
         // The oldest question still open: the one `odw approve <run>` answers.
         const oldest = [...waiting.values()].sort((a, b) => a.checkpointId - b.checkpointId)[0];
-        store.updateStatus(runId, { waiting: oldest ?? null });
+        store.updateStatus(runId, { waiting: oldest ? { ...oldest, title: runRedactor.text(oldest.title) } : null });
       },
     });
 
@@ -235,7 +250,9 @@ export async function executeRun(runDir: string): Promise<string> {
       throw fatal;
     }
 
-    store.writeResult(runId, result);
+    // The workflow's own value: token shapes are redacted, the values of variables are not (ODW extension).
+    const kept = runRedactor.shapes.record({ value: result });
+    store.writeResult(runId, kept.value, "redacted" in kept);
     sink.emit(event(RUN_FINISHED, { runId }));
     store.updateStatus(runId, { state: "done", dispatched: dispatched(), spentTokens: spent() });
     end = { state: "done" };
@@ -253,11 +270,12 @@ export async function executeRun(runDir: string): Promise<string> {
       end = { state: "stopped", error: outcome.message };
     } else {
       // A script may throw anything — `throw null` included — so never read
-      // properties off the outcome without checking what it is.
-      const message = errorMessage(outcome);
-      const stack = outcome instanceof Error ? (outcome.stack ?? null) : null;
+      // properties off the outcome without checking what it is. What it says
+      // may quote an agent's or a command's output: redacted (ODW extension).
+      const failure = redact({ error: errorMessage(outcome), stack: outcome instanceof Error ? (outcome.stack ?? null) : null });
+      const message = failure.error;
       sink.emit(event(RUN_FAILED, { runId, error: message }));
-      store.writeError(runId, { error: message, stack });
+      store.writeError(runId, failure);
       store.updateStatus(runId, { state: "failed", dispatched: dispatched(), spentTokens: spent() });
       end = { state: "failed", error: message };
     }
@@ -270,6 +288,7 @@ export async function executeRun(runDir: string): Promise<string> {
   try {
     await notifyRunEnd(ctx?.config.settings.notify ?? null, { store, runId, ...end }, {
       cwd: typeof meta.source === "string" ? meta.source : undefined,
+      redactor,
     });
     // A checkpoint's hooks may still be on their way (a quick answer): let them finish.
     await Promise.all(checkpointHooks);

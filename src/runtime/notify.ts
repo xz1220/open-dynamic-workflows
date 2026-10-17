@@ -22,6 +22,10 @@
  * waiting, so they never hold it up: state "waiting", no finishedAt or
  * result, and the checkpoint (`ODW_CHECKPOINT_ID`, `ODW_CHECKPOINT_TITLE`; the
  * webhook's `checkpoint: { checkpointId, title, since }`).
+ *
+ * A webhook's payload leaves the machine: its likely secrets are redacted
+ * first (an ODW extension; see ../redact) — an error quoting an agent's output
+ * included — and a payload that had any carries `redacted: true`.
  */
 
 import { existsSync } from "node:fs";
@@ -30,6 +34,7 @@ import { join } from "node:path";
 import { runCommand } from "../adapters/runner.js";
 import { cliOk, type NotifySettings, type RunEndState } from "../adapters/types.js";
 import type { WaitingCheckpoint } from "../checkpoint.js";
+import type { Redactor } from "../redact.js";
 import type { RunStore } from "./run-store.js";
 import { countAgents, foldAgents } from "./runs-view.js";
 
@@ -73,6 +78,8 @@ export interface NotifyOptions {
   log?: (line: string) => void;
   /** The command's working directory: the run's source, when it still exists. */
   cwd?: string;
+  /** The run's redactor: what a webhook is sent goes through it. */
+  redactor?: Redactor;
   /** Test seams for the time limits. */
   commandTimeoutSec?: number;
   webhookTimeoutMs?: number;
@@ -94,7 +101,7 @@ export async function notifyRunEnd(
     const end = describeRunEnd(run.store, run.runId, run.state, run.error);
     const hooks: Array<Promise<void>> = [];
     if (notify.command) hooks.push(runHookCommand(notify.command, notifyEnv(end), options, log));
-    if (notify.webhook) hooks.push(postWebhook(notify.webhook, webhookPayload(end), options, log));
+    if (notify.webhook) hooks.push(postWebhook(notify.webhook, redacted(webhookPayload(end), options), options, log));
     await Promise.all(hooks);
   } catch (err) {
     log(`notify: hooks for run ${run.runId} failed: ${errorMessage(err)}`);
@@ -117,7 +124,7 @@ export async function notifyCheckpoint(
     const waiting = describeWaiting(run.store, run.runId, run.checkpoint);
     const hooks: Array<Promise<void>> = [];
     if (notify.command) hooks.push(runHookCommand(notify.command, waitingEnv(waiting), options, log));
-    if (notify.webhook) hooks.push(postWebhook(notify.webhook, waitingPayload(waiting), options, log));
+    if (notify.webhook) hooks.push(postWebhook(notify.webhook, redacted(waitingPayload(waiting), options), options, log));
     await Promise.all(hooks);
   } catch (err) {
     log(`notify: hooks for checkpoint #${run.checkpoint.checkpointId} of run ${run.runId} failed: ${errorMessage(err)}`);
@@ -278,6 +285,11 @@ export function webhookOrigin(url: string): string {
   } catch {
     return "(invalid URL)";
   }
+}
+
+/** A webhook's payload as it is sent: its likely secrets redacted, when the run has a redactor. */
+function redacted(payload: Record<string, unknown>, options: NotifyOptions): Record<string, unknown> {
+  return options.redactor ? options.redactor.record(payload) : payload;
 }
 
 // --- the hooks ----------------------------------------------------------------

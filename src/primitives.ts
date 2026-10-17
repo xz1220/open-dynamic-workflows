@@ -27,7 +27,9 @@
  * — where it reported no output tokens — chars/4 of its replies, `estimated`.
  *
  * What each agent's CLI printed is kept as it runs, as the agent's transcript
- * (an ODW extension; see ./transcript) — complete before its terminal event.
+ * (an ODW extension; see ./transcript) — complete before its terminal event —
+ * with its likely secrets redacted, like its saved result (an ODW extension;
+ * see ./redact); a resume replays a redacted result as saved, and says so.
  *
  * Every agent_started event carries the agent's permission tier (an ODW
  * extension, adapters/permissions.ts); an adapter that runs another tier than
@@ -264,11 +266,23 @@ export function createPrimitives(
     // What its CLI refused when the value was produced travels with it (ODW extension).
     const denied = deniedField(recorded.denied);
     const changed = changeFields(kept);
+    // A value saved with its secrets redacted replays as saved, and says so (ODW extension; see ./redact).
+    const redacted = recorded.redacted === true ? { redacted: true } : {};
+    if (recorded.redacted === true) {
+      ctx.emit(
+        event(LOG, {
+          message: `${label}:${agentId}: replays a saved result whose secrets were redacted when it was kept — the workflow gets it redacted`,
+          agentId,
+          label,
+          phase,
+        }),
+      );
+    }
     const finished = event(AGENT_FINISHED, { agentId, label, phase, adapter, ...moved, attempts, ...marks, ...changed, ...denied });
     const startedAt = startedEv.ts;
     const finishedAt = finished.ts;
     const value = recorded.value;
-    if (save({ agentId, key, label, phase, adapter, ...moved, attempts, startedAt, finishedAt, value, ...tier, ...marks, ...changed, ...denied })) {
+    if (save({ agentId, key, label, phase, adapter, ...moved, attempts, startedAt, finishedAt, value, ...tier, ...marks, ...changed, ...denied, ...redacted })) {
       finished.saved = true;
     }
     ctx.emit(finished);
@@ -341,6 +355,8 @@ export function createPrimitives(
       format: adapter.output?.format === "jsonl" ? "jsonl" : "text",
       maxBytes,
       onNote: note,
+      // Likely secrets are kept redacted (ODW extension; see ./redact).
+      redactor: ctx.redactor,
     });
   };
 
