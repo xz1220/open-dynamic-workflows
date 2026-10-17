@@ -118,8 +118,9 @@ changed, and run on a schedule — and a dashboard redesigned to watch them.
   checks the runtime, config and every adapter — `--smoke` sends one real prompt.
 - A redesigned dashboard ("paper, ink and signal"): an Activity pulse with a "Needs
   you" strip, a live DAG with checkpoint gates and diff badges, a timeline, drawers with
-  outputs, usage, failure reasons and tiers, the Changes and Transcript views, Upcoming
-  schedules, a command palette, light and dark themes, English and Chinese.
+  outputs, usage, failure reasons and tiers, the Changes and Transcript views, a Spend
+  receipt (where a run's tokens and dollars went, by phase, adapter and agent; `$`),
+  Upcoming schedules, a command palette, light and dark themes, English and Chinese.
 
 ### Reliability and safety
 - Timeouts and stops reach an agent's whole process tree (SIGTERM, then SIGKILL).

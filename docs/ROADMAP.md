@@ -89,7 +89,7 @@
 
 | # | 方向 | 需求 | 规模 | 状态 |
 | --- | --- | --- | --- | --- |
-| X1 | **diff 作为运行产物 + `odw apply`**：保留 worktree 的分支和 diff；合并前用 `git merge-tree` 预检，再跑校验命令，逐个合并；看板提供并排 diff 审阅 | #2 | M | ✅ diff 落盘（排除初始化文件、可截断）、`keep` 分支、`odw diff`/`odw apply [--check]`、看板改动页；合并前逐文件预检（临时索引上的 `git apply --3way --cached`，没有分支的 diff 同样适用）、`--all` 叠加预览并逐个应用、`--verify`/`applyVerify` 校验失败精确回滚 ✅；看板改动页复制 `--check`/`--all` 命令待接入 |
+| X1 | **diff 作为运行产物 + `odw apply`**：保留 worktree 的分支和 diff；合并前用 `git merge-tree` 预检，再跑校验命令，逐个合并；看板提供并排 diff 审阅 | #2 | M | ✅ diff 落盘（排除初始化文件、可截断）、`keep` 分支、`odw diff`/`odw apply [--check]`、看板改动页；合并前逐文件预检（临时索引上的 `git apply --3way --cached`，没有分支的 diff 同样适用）、`--all` 叠加预览并逐个应用、`--verify`/`applyVerify` 校验失败精确回滚 ✅；看板改动页可复制预览、全部预览与全部应用命令 ✅ |
 | X2 | **权限档位**：read-only / edit / full 三档，映射到各 CLI 的对应参数，启动前展示；环境变量白名单 + 密钥引用脱敏；不受信任的仓库使用 `--bare` | #6 | M | 🚧 三档 + 按 CLI 映射（只填文档证实的）、`--permissions`、`agent()` 只能降档、启动横幅、`odw doctor` 档位、`agentEnv: "minimal"` 白名单、密钥脱敏（`redact`）✅；`--bare` 待做 |
 | X3 | **agent transcript**：保存每个 agent 的 JSON 流（工具调用、重试）；看板和 `odw logs --agent` 可查看；导出 OpenTelemetry GenAI span | #8 | M | ✅ 记录与回看（`odw logs --agent [--raw] [--follow]`、API、看板实时侧栏）；OpenTelemetry 导出待做 |
 | X4 | **人工检查点** `checkpoint()`（ODW 扩展）：持久暂停，`odw approve/reject [--edit]` 继续；看板提供审批入口（依赖 N1） | #9 | M | ✅（`--edit` 待做） |
@@ -118,7 +118,8 @@
 | ✅ 前端已就绪（随 X1） | **改动（Changes）标签页**：按 agent 审阅 worktree 改动——文件卡片可折叠、表头吸顶、新旧行号、替换行按词标出改动、锁文件与删除默认折叠、行数上限外给出 `odw diff`；抽屉内的改动摘要、DAG 节点上的 +/− 角标、运行头部的改动行数；一键复制 `odw apply` 与保留分支的 `git switch`；`j`/`k` 切换 agent |
 | ✅ 本轮 | 「待你处理」：Activity 首屏列出等待决定的检查点，以及过去一天失败或失去 worker 的运行（附 `odw resume` 命令）；官网新增「为长任务而生」一节 |
 | ✅ 本轮 | 执行记录侧栏（运行中实时跟随、追加不重绘）；Jobs 页「即将运行」（下一次触发、cron 的自然语言描述、上次运行）；检查点关卡节点与等待提醒；抽屉里的权限档位、回退链、未达成的预期与被拒的工具调用；DAG 节点上的回退链与被拒计数 |
-| ⏳ | 按阶段的成本视图；运行之间的对比（`odw compare`）；额度暂停的看板视图（`pausedFor` 数据与类型已就绪） |
+| ✅ 本轮 | 额度暂停卡片（重置时间、倒计时、立即继续）与运行卡片上的「暂停至」；花费小票：按阶段、按适配器与花费最多的 agent（`$` 键） |
+| ⏳ | 运行之间的对比（`odw compare`）；检查点审批时编辑 payload；MCP 状态与 codex 用量在抽屉中的呈现 |
 
 开发方式：`node web/demo-fixtures.mjs <runs> <proj> --live` 生成实时模拟数据，`node web/dev.mjs --api http://127.0.0.1:4317` 启动开发服务器（每次刷新都会重新构建）。
 

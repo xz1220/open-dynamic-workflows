@@ -11,6 +11,7 @@ import { store } from "../store";
 import type { AgentView, RunDetail, WorkflowEvent } from "../types";
 import { ACTIVE, TERMINAL, esc, fmtClock, fmtDurMs, fmtDurSec, fmtHourMin, fmtTokens, fmtUsd, markRedactions } from "../util";
 import { EVT_CLASS, commandDetail, emptyArt } from "./activity";
+import { spendReceipt } from "./spend";
 
 export type JobTab = "graph" | "timeline" | "logs" | "result" | "changes";
 
@@ -23,6 +24,8 @@ export interface JobViewState {
   reviewAi: number | null;
   /** The agent whose transcript sheet is open (index into run.agents). */
   transcriptAi?: number | null;
+  /** The spend receipt under the header is unfolded. */
+  spend?: boolean;
   zoom: number;
   logQuery: string;
   logTypes: Set<string>;
@@ -78,7 +81,7 @@ function stepper(run: RunDetail): string {
   );
 }
 
-function runHead(run: RunDetail, nowSec: number): string {
+function runHead(run: RunDetail, nowSec: number, spendOpen: boolean): string {
   const terminal = TERMINAL.has(run.state);
   const elapsed =
     run.createdAt != null ? fmtDurSec((terminal ? (run.updatedAt ?? run.createdAt) : nowSec) - run.createdAt) : "—";
@@ -113,19 +116,27 @@ function runHead(run: RunDetail, nowSec: number): string {
     stat(c.running, t("running"), c.running ? "sig" : "") +
     stat(c.done, t("done")) +
     (c.failed ? stat(c.failed, t("failed"), "alarm") : "") +
-    (run.usage && (run.usage.inputTokens != null || run.usage.outputTokens != null)
-      ? stat(
-          `${fmtTokens((run.usage.inputTokens ?? 0) + (run.usage.outputTokens ?? 0))}${run.usage.estimated ? "~" : ""}`,
-          t("tokens"),
-        )
-      : "") +
-    (run.usage?.costUsd != null ? stat(fmtUsd(run.usage.costUsd), t("cost")) : "") +
+    spendButton(run, stat, spendOpen) +
     changedStat(run, stat) +
     stat(elapsed, t("elapsed")) +
     `</div></div>` +
     `<div class="run-prog"><div class="prog">` +
     `<i class="p-done" style="width:${w(c.done)}"></i><i class="p-run" style="width:${w(c.running)}"></i>` +
     `<i class="p-fail" style="width:${w(c.failed)}"></i><i class="p-stale" style="width:${w(c.stale)}"></i></div></div>`
+  );
+}
+
+/** The run's tokens and cost — a button that unfolds where they went. */
+function spendButton(run: RunDetail, stat: (v: string, k: string) => string, open: boolean): string {
+  const u = run.usage;
+  const stats =
+    (u && (u.inputTokens != null || u.outputTokens != null)
+      ? stat(`${fmtTokens((u.inputTokens ?? 0) + (u.outputTokens ?? 0))}${u.estimated ? "~" : ""}`, t("tokens"))
+      : "") + (u?.costUsd != null ? stat(fmtUsd(u.costUsd), t("cost")) : "");
+  if (!stats) return "";
+  return (
+    `<button class="spend-btn${open ? " on" : ""}" data-spend aria-expanded="${open}" data-tip="${esc(t("where the tokens and dollars went"))}">` +
+    `${stats}<i class="caret" aria-hidden="true"></i></button>`
   );
 }
 
@@ -653,7 +664,7 @@ export function renderJob(s: JobViewState, nowSec: number): string {
             ? changesTab(run, s)
             : resultTab(run);
   return (
-    `<div class="job" data-key="job-${esc(run.runId)}">${runHead(run, nowSec)}${quotaPause(run, nowSec)}${checkpoints(run, s)}${tabs(run, s.tab)}` +
+    `<div class="job" data-key="job-${esc(run.runId)}">${runHead(run, nowSec, !!s.spend)}${spendReceipt(run, !!s.spend)}${quotaPause(run, nowSec)}${checkpoints(run, s)}${tabs(run, s.tab)}` +
     `<section class="tab-body" data-tabbody="${s.tab}" data-key="tb-${s.tab}">${body}</section></div>`
   );
 }

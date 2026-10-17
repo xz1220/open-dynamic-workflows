@@ -15,7 +15,8 @@
 |---|---|---|
 | Activity | `views/activity.ts` | 自适应标题、四个计数、**待你处理**（等待决定的检查点 + 过去一天失败/失联的运行，附 `odw resume`）、脉搏山脊图、按适配器的机队、实时事件流 |
 | Jobs | `views/jobs.ts` | 实时运行卡片（阶段条）、按日分组且分页的历史、花费列 |
-| Job 头部 | `views/job.ts` | Stop / Resume in terminal / Follow / Copy id；阶段步进条；计数（token、花费、改动行数）；检查点审批卡片（问题、payload、备注、批准/拒绝） |
+| Job 头部 | `views/job.ts` | Stop / Resume in terminal / Follow / Copy id；阶段步进条；计数（token、花费、改动行数）；检查点审批卡片（问题、payload、备注、批准/拒绝）；额度暂停卡片（重置时间、倒计时、立即继续） |
+| 花费小票 | `views/spend.ts` | 点 token/花费计数（或按 `$`）从头部"打印"出一张小票：按声明顺序的阶段行（点线引导、agent 数、token、花费、占比条，运行中的阶段带信号色流光）、按适配器的分段条（claude 用来源色 clay）、花费最多的 agent（点击跳到抽屉）；每个花了钱的 agent 都报告了金额时按花费算占比，否则按 token；底部撕纸边 |
 | Graph | `dag.ts` | 按 phase 分泳道；节点三类：agent、`exec()` 命令（终端样式）、`checkpoint()` 关卡（胶囊形，等待时琥珀呼吸，答复后显示结论与备注，拒绝时划线）；边按状态着色、运行中有流动与火花，等待中为琥珀虚线；节点上的 `+N −M` 改动角标 |
 | Timeline | `components/timeline.ts` | 每个节点一根条（检查点的条是等待时长） |
 | Drawer | `views/job.ts` | 按节点类型分支：agent（输出 JSON、失败原因与限流/额度解除时间、用量、改动摘要）、命令（退出码、输出）、检查点（问题、payload、答复人、备注、等待时长） |

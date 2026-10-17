@@ -48,6 +48,7 @@ export const icons = {
   send: stroke(`<path d="M4.5 12 20 4.5 15 20l-3.5-6.5z"/><path d="M11.5 13.5 20 4.5"/>`),
   globe: stroke(`<circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5c2.6 2.6 2.6 14.4 0 17M12 3.5c-2.6 2.6-2.6 14.4 0 17"/>`),
   motion: stroke(`<path d="M3 12c3-6 6-6 9 0s6 6 9 0"/>`),
+  receipt: stroke(`<path d="M6 3.5h12v17l-2-1.4-2 1.4-2-1.4-2 1.4-2-1.4-2 1.4z"/><path d="M9 8.5h6M9 12h6M9 15.5h3.5"/>`),
   diff: stroke(`<rect x="4.5" y="3.5" width="15" height="17" rx="2.5"/><path d="M12 7v6M9 10h6M9 16.5h6"/>`),
   branch: stroke(`<circle cx="7" cy="5.5" r="2"/><circle cx="7" cy="18.5" r="2"/><circle cx="17" cy="7.5" r="2"/><path d="M7 7.5v9M17 9.5c0 4.5-10 2.5-10 7"/>`),
 };

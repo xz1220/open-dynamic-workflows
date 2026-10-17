@@ -818,6 +818,18 @@ root.addEventListener("click", (ev) => {
     job.transcriptAi = null;
     return render();
   }
+  const spendAi = t.closest<HTMLElement>("[data-spend-ai]");
+  if (spendAi) {
+    // A top spender opens in the drawer, which the graph and the timeline show;
+    // the receipt folds away to give it the room.
+    job.selectedAi = Number(spendAi.dataset.spendAi);
+    job.spend = false;
+    return job.tab === "graph" || job.tab === "timeline" ? render() : selectTab("graph");
+  }
+  if (t.closest("[data-spend]")) {
+    job.spend = !job.spend;
+    return render();
+  }
   const nodeEl = t.closest<HTMLElement>("[data-ai]");
   if (nodeEl) {
     const ai = Number(nodeEl.dataset.ai);
@@ -937,6 +949,10 @@ document.addEventListener("keydown", (e) => {
     job.selectedAi = null;
     return render();
   }
+  if (e.key === "Escape" && job.spend && currentRoute().view === "job") {
+    job.spend = false;
+    return render();
+  }
   const now = Date.now();
   if (gPending && now - gPending < 900 && G_TARGETS[e.key]) {
     gPending = 0;
@@ -945,6 +961,10 @@ document.addEventListener("keydown", (e) => {
   gPending = e.key === "g" ? now : 0;
   const route = currentRoute();
   if (route.view === "job" && /^[1-5]$/.test(e.key)) selectTab(JOB_TABS[Number(e.key) - 1]!);
+  if (route.view === "job" && e.key === "$") {
+    job.spend = !job.spend;
+    render();
+  }
   // j / k step through the agents with changes.
   if (route.view === "job" && job.tab === "changes" && store.run && (e.key === "j" || e.key === "k")) {
     const changed = changedAgents(store.run);

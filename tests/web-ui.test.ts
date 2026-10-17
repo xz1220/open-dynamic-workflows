@@ -15,6 +15,7 @@ import { applyRunsDelta, store } from "../web/src/store.ts";
 import { renderActivity } from "../web/src/views/activity.ts";
 import { renderJob, type JobViewState } from "../web/src/views/job.ts";
 import { renderJobs } from "../web/src/views/jobs.ts";
+import { spendOf } from "../web/src/views/spend.ts";
 import type { ActivityEvent, AgentView, RunDetail, RunSummary } from "../web/src/types.ts";
 import { cronWords, esc, fmtDurSec, fmtTokens, fmtUsd, fuzzy, markHits, markRedactions } from "../web/src/util.ts";
 
@@ -646,5 +647,81 @@ test("a run waiting out a spent quota says until when, and offers to go on now",
   store.runs = [summary({ runId: "r-q", name: "nightly", state: "paused", pausedFor })];
   assert.match(renderActivity(NOW), /class="ticket paused"[\s\S]*?codex is out of quota — resumes at/);
   store.runs = prev;
+  store.focusRun(null);
+});
+
+test("spend: phases in declared order with outsiders last, shares of cost, top spenders, and nothing before any usage", () => {
+  const u = (inputTokens: number, outputTokens: number, costUsd?: number) => ({ inputTokens, outputTokens, ...(costUsd != null ? { costUsd } : {}) });
+  const run = detail([
+    agent("search:1", "Search", "done", { adapter: "claude", usage: u(4000, 1000, 0.3) }),
+    agent("plan", "Plan", "done", { adapter: "claude", usage: u(1000, 500, 0.05) }),
+    agent("loose", undefined as unknown as string, "done", { adapter: "claude", phase: undefined, usage: u(100, 100, 0.01) }),
+    agent("search:2", "Search", "running", { adapter: "claude" }),
+    agent("$ npm test", "Search", "done", { kind: "command" }),
+  ]);
+  const sp = spendOf(run)!;
+  assert.equal(sp.by, "cost");
+  assert.deepEqual(
+    sp.phases.map((l) => [l.key, l.agents, l.running, l.tokens, l.costUsd]),
+    [
+      ["Plan", 1, 0, 1500, 0.05],
+      ["Search", 2, 1, 5000, 0.3],
+      ["Report", 0, 0, 0, null],
+      ["", 1, 0, 200, 0.01],
+    ],
+    "declared phases keep their order (one not started yet included), commands spend nothing, outsiders close the list",
+  );
+  assert.deepEqual(sp.top.map((x) => x.a.label), ["search:1", "plan", "loose"]);
+  assert.equal(sp.tokens, 6700);
+  assert.ok(Math.abs(sp.costUsd! - 0.36) < 1e-9);
+  assert.equal(sp.running, 1);
+
+  // A codex agent reports tokens but no dollars: the shares are of tokens.
+  const mixed = spendOf(detail([agent("a", "Plan", "done", { adapter: "claude", usage: u(10, 10, 0.5) }), agent("b", "Plan", "done", { adapter: "codex", usage: u(900, 100) })]))!;
+  assert.equal(mixed.by, "tokens");
+  assert.deepEqual(mixed.adapters.map((l) => l.key), ["codex", "claude"], "adapters biggest first");
+  assert.deepEqual(mixed.top.map((x) => x.a.label), ["b", "a"]);
+
+  assert.equal(spendOf(detail([agent("a", "Plan", "running")])), null, "no receipt before an agent reports usage");
+});
+
+test("spend: the tokens and cost unfold a receipt by phase, adapter and agent", () => {
+  const view: JobViewState = {
+    cpNote: "",
+    tab: "logs",
+    selectedAi: null,
+    reviewAi: null,
+    zoom: 1,
+    logQuery: "",
+    logTypes: new Set(["agent"]),
+    logLimit: 600,
+    follow: true,
+    motion: false,
+  };
+  store.focusRun("20260101-000000-aaaaaa");
+  store.run = detail(
+    [
+      agent("plan", "Plan", "done", { adapter: "claude", usage: { inputTokens: 1000, outputTokens: 500, costUsd: 0.05 } }),
+      agent("search:1", "Search", "done", { adapter: "codex", usage: { inputTokens: 8000, outputTokens: 1000, estimated: true } }),
+    ],
+    { state: "running", usage: { inputTokens: 9000, outputTokens: 1500, costUsd: 0.05, estimated: true } },
+  );
+  store.runEvents = [];
+  const closed = renderJob(view, NOW);
+  assert.match(closed, /<button class="spend-btn" data-spend aria-expanded="false"/, "tokens and cost are one button");
+  assert.doesNotMatch(closed, /class="receipt"/);
+
+  const html = renderJob({ ...view, spend: true }, NOW);
+  assert.match(html, /<button class="spend-btn on" data-spend aria-expanded="true"/);
+  assert.match(html, /<section class="receipt"/);
+  assert.match(html, /Where this run spent/);
+  assert.equal(count(html, /<li class="rc-line/g), 3, "Plan, Search, and Report not started yet");
+  assert.match(html, /data-key="rc-Report"[^>]*>.*?not started/s);
+  assert.match(html, /share of tokens/, "codex reported no dollars, so shares are of tokens");
+  assert.match(html, /Not every agent reported dollars/);
+  assert.match(html, /partly estimated/);
+  assert.match(html, /class="rc-split"/, "two adapters: a split bar");
+  assert.match(html, /--c:var\(--clay\)/, "claude in its provenance colour");
+  assert.match(html, /data-spend-ai="1"[\s\S]*data-spend-ai="0"/, "top spenders biggest first");
   store.focusRun(null);
 });
