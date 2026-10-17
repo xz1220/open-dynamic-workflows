@@ -230,7 +230,18 @@ without answering when headless (a login, trust or approval prompt).
   with at least one commit; the agent sees HEAD, not uncommitted edits).
   The temporary worktree is removed afterward and changes are not merged.
   `agent()` returns the reply, not a diff; include required deliverables in the
-  reply or persist them explicitly before cleanup.
+  reply or persist them explicitly before cleanup. A fresh worktree lacks
+  untracked files: a `.worktreeinclude` at the repository root (gitignore
+  syntax; `symlink: node_modules` links instead of copying) brings in `.env`
+  and the like, and a `worktreeSetup` command in the config runs before the
+  agent (both ODW extensions).
+- **Ports**: every agent process gets a unique `$ODW_PORT` (with `$ODW_RUN_ID`
+  and `$ODW_AGENT_ID`) — tell parallel agents "start the dev server on
+  `$ODW_PORT`" so they never collide (ODW extension).
+- **Rate limits**: a rate-limited CLI is retried after a backoff (honoring its
+  retry-after); a spent quota or a failed login is not retried — the agent fails
+  with what to do, and `odw logs` names the reason. Switch adapter with
+  `--adapter` rather than retrying a quota failure.
 - **Cost**: concurrency is capped (default `min(16, cpus - 2)`) and total
   dispatches per run have a hard guard; use `odw pause` / `odw stop` when a
   run exceeds expectations.

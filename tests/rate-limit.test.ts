@@ -95,15 +95,16 @@ test("the third quota failure in a row on an adapter logs one warning", async ()
 
 /**
  * A mock CLI that prints `stderr` and exits 1 on its first `limitedRuns`
- * invocations (counted in a file), then answers.
+ * invocations, then answers. Each invocation appends one byte to `counter`
+ * (an O_APPEND write, so concurrent agents never lose a count): the file's
+ * length is the number of invocations.
  */
 function limitedAgent(counter: string, limitedRuns: number, stderr: string): string[] {
   const file = JSON.stringify(counter);
   return [
     execPath,
     "-e",
-    `const fs = require('fs'); const n = fs.existsSync(${file}) ? Number(fs.readFileSync(${file}, 'utf8')) : 0;` +
-      `fs.writeFileSync(${file}, String(n + 1));` +
+    `const fs = require('fs'); fs.appendFileSync(${file}, '.'); const n = fs.statSync(${file}).size - 1;` +
       `if (n < ${limitedRuns}) { process.stderr.write(${JSON.stringify(stderr)}); process.exit(1); }` +
       `process.stdout.write('answered on run ' + (n + 1));`,
   ];
@@ -142,7 +143,7 @@ test("a CLI rate-limited twice and then answering finishes the run, every wait l
     assert.equal(await executeRun(store.runDir(id)), "done");
     assert.ok(Date.now() - started < 15_000, "the waits honored the CLI's 0.05s retry-after");
     assert.equal(store.readResult(id), "answered on run 3");
-    assert.equal(Number(readFileSync(counter, "utf8")), 3, "two rate-limited runs, then the answer");
+    assert.equal(readFileSync(counter, "utf8").length, 3, "two rate-limited runs, then the answer");
     const events = store.readEvents(id);
     assert.deepEqual(
       events.filter((e) => e.type === "log" && /rate limit/.test(String(e.message))).map((e) => e.message),
@@ -176,7 +177,7 @@ test("a stop during a rate-limit backoff ends the run promptly", async () => {
     store.writeControl(id, "stop");
     assert.equal(await run, "stopped");
     assert.ok(Date.now() - stopped < 5000, `the stop cut the 2-minute wait short (${Date.now() - stopped}ms)`);
-    assert.equal(Number(readFileSync(counter, "utf8")), 1, "no retry after the stop");
+    assert.equal(readFileSync(counter, "utf8").length, 1, "no retry after the stop");
     const [failed] = store.readEvents(id).filter((e) => e.type === "agent_failed");
     assert.match(String(failed!.error), /RunStopped/);
     assert.equal(failed!.reason, undefined, "a stop is not a CLI failure class");
@@ -202,7 +203,7 @@ test("a spent quota fails that adapter's agents, not the run; observers see why"
   try {
     assert.equal(await executeRun(store.runDir(id)), "done", "other adapters may be fine: the run goes on");
     assert.deepEqual(store.readResult(id), [null, null, null, "fine answer"]);
-    assert.equal(Number(readFileSync(counter, "utf8")), 3, "a spent quota is never retried");
+    assert.equal(readFileSync(counter, "utf8").length, 3, "a spent quota is never retried");
 
     const events = store.readEvents(id);
     const failed = events.filter((e) => e.type === "agent_failed");

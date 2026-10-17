@@ -754,6 +754,17 @@ node web/dev.mjs --api http://127.0.0.1:4317     # → http://127.0.0.1:5173
 ## 状态
 
 **`main` 上的新内容(2026 年 10 月):**
+- **人工检查点。** `checkpoint()` 会让运行暂停,直到有人批准或拒绝——通过
+  `odw approve|reject`、看板,或可选的 `waiting` 钩子——让计划在昂贵的 fan-out 之前先
+  得到一个"可以"(ODW 扩展;见 [`plan-approve-execute.js`](examples/plan-approve-execute.js))。
+- **扛过限流。** 每次 agent 失败都会被分类(限流、额度、登录、超时、卡死……)。被限流的
+  CLI 会按退避时间重试并遵守它给出的 retry-after;额度耗尽或登录失败则立即失败并说明该
+  怎么做——`odw logs`、实时视图和看板里都能看到,连同恢复时间。
+- **开箱即用的 worktree。** `.worktreeinclude` 会把 `.env`、`node_modules` 等复制或链接
+  进隔离 agent 的 worktree,`worktreeSetup` 运行你的初始化命令,每个 agent 都有自己的
+  `$ODW_PORT`。
+- 看板 Activity 页新增 **"待你处理"**:等待决定的运行,以及过去一天失败的运行和接着跑的
+  `odw resume` 命令。
 - **可恢复的运行。** 每个 agent 完成时结果即落盘——运行中就能用 `odw agents` /
   `odw result <run> --agent <id|label>` 或看板查看;`odw resume <run>` 会启动新运行并
   重放所有未变的 `agent()` 调用,卡住或失败的运行只需重跑改动的部分(#24)。
@@ -775,11 +786,6 @@ node web/dev.mjs --api http://127.0.0.1:4317     # → http://127.0.0.1:5173
 
 **0.5.0 开发版：**排队任务在真正启动前重新检查暂停、停止和预算;等待命令能识别后台进程
 已退出。升级时二进制与 skill 固定同一版本,替换失败恢复旧文件;源码构建显示具体修订号。
-
-**下一版(未发版):**每个已完成 agent 的结果都会**在完成时保存**——`odw agents`、
-`odw result --agent` 和看板在运行中即可读取——`odw resume` 则把已结束的运行变成一个新运行,
-**重放**每个未改动的 `agent()` 调用,卡住或失败的运行不必再从头开始
-([#24](https://github.com/xz1220/open-dynamic-workflows/issues/24))。
 
 **最新(`main` 上,未发版):**在交互式终端里,`odw run` 现在会直接挂上**前台实时视图**
 ——Ctrl-C 只脱离不杀任务,`odw attach` 随时挂回,管道/CI 下仍保持先拿 run id 再轮询的
@@ -805,9 +811,9 @@ node web/dev.mjs --api http://127.0.0.1:4317     # → http://127.0.0.1:5173
 ### 路线图
 
 按并行 coding agent 用户反馈的需求排序([调研](docs/research/user-needs-2026-10.md)):
-adapter 上报的真实 token 用量与花费(当前预算按估算计量)· 感知限流/额度的重试与
-有类型的失败 · 无头运行的"成功证据" · 隔离 agent 改动的审阅与合并 · 人工 `checkpoint()` ·
-worktree 环境准备与每个 agent 的端口 · 调度与评测。完整规划见 [`docs/ROADMAP.md`](docs/ROADMAP.md);
+adapter 上报的真实 token 用量与花费(当前预算按估算计量)· 隔离 agent 改动的审阅与合并 ·
+调度 · 无头运行的"成功证据" · 每个 agent 的 transcript · 只读/编辑/完全三档权限 ·
+原生结构化输出 · 按阶段指定适配器与回退链 · 评测。完整规划见 [`docs/ROADMAP.md`](docs/ROADMAP.md);
 最初的设计见 [`docs/dynamic-workflows-tech-plan.md`](docs/dynamic-workflows-tech-plan.md);
 ODW 所对齐的 Claude Code 方言背景见
 [`docs/dynamic-workflows-research.md`](docs/dynamic-workflows-research.md)。

@@ -835,6 +835,19 @@ into the host's `node`, so each target is built on its own runner.
 ## Status
 
 **What's new on `main` (October 2026):**
+- **Human checkpoints.** `checkpoint()` pauses a run until a person approves or
+  rejects — with `odw approve|reject`, the dashboard, or an opt-in `waiting` hook —
+  so a plan gets a yes before the expensive fan-out (ODW extension; see
+  [`plan-approve-execute.js`](examples/plan-approve-execute.js)).
+- **Rate limits ridden out.** Every agent failure is classified (rate limit, quota,
+  login, timeout, stall, …). A rate-limited CLI is retried after a backoff that
+  honors its retry-after; a spent quota or a failed login fails fast with what to do
+  — in `odw logs`, the live view and the dashboard, with the reset time.
+- **Ready-to-work worktrees.** `.worktreeinclude` copies or links `.env`,
+  `node_modules` and the like into isolated agents' worktrees, `worktreeSetup` runs
+  your bootstrap command, and every agent gets its own `$ODW_PORT`.
+- **"Needs you"** on the dashboard's Activity page: runs waiting for a decision, and
+  the day's failed runs with the `odw resume` command that picks them up.
 - **Recoverable runs.** Every finished agent's result is saved as it lands — read it
   mid-run with `odw agents` / `odw result <run> --agent <id|label>` or in the
   dashboard — and `odw resume <run>` starts a new run that replays every unchanged
@@ -862,12 +875,6 @@ into the host's `node`, so each target is built on its own runner.
 starting. Waiting commands detect a vanished worker instead of waiting forever.
 Upgrades keep the binary and skill on the same release and roll back replacement
 failures; source builds now report their revision.
-
-**Next (unreleased):** every finished agent's result is **saved as it lands** —
-`odw agents`, `odw result --agent` and the dashboard read it mid-run — and
-`odw resume` turns an ended run into a new one that **replays** every unchanged
-`agent()` call, so a stalled or failed run no longer starts over
-([#24](https://github.com/xz1220/open-dynamic-workflows/issues/24)).
 
 **What's new (unreleased, on `main`):** `odw run` now attaches a **live
 foreground view** in interactive terminals — Ctrl-C detaches, `odw attach`
@@ -901,10 +908,10 @@ runs end-to-end (plan → search → extract → vote → report).
 
 Ranked by what users of parallel coding agents report needing
 ([research](docs/research/user-needs-2026-10.md)): adapter-reported token usage and
-cost (today's budget meters an estimate) · rate-limit/quota-aware retries and
-typed failures · evidence of success for headless runs · review-and-apply for
-isolated agents' diffs · human `checkpoint()`s · worktree setup and per-agent ports ·
-scheduling and evaluation. Full plan: [`docs/ROADMAP.md`](docs/ROADMAP.md); the
+cost (today's budget meters an estimate) · review-and-apply for isolated agents'
+diffs · scheduling · evidence of success for headless runs · per-agent transcripts ·
+read/edit/full permission tiers · native structured output · per-phase adapters
+and fallback chains · evaluation. Full plan: [`docs/ROADMAP.md`](docs/ROADMAP.md); the
 original design: [`docs/dynamic-workflows-tech-plan.md`](docs/dynamic-workflows-tech-plan.md).
 Background on the Claude Code dialect ODW aligns with:
 [`docs/dynamic-workflows-research.md`](docs/dynamic-workflows-research.md).

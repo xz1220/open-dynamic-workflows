@@ -54,6 +54,13 @@
 - GitHub Pages 落地页按同一套设计语言重做。
 - **看板重新设计**（"纸、墨、信号"）：脉搏图、带走线动画的 DAG、甘特时间线、agent 抽屉、可过滤可跟随的日志、JSON 结果树、命令面板、快捷键、运行结束提示与桌面通知、亮/暗主题、减弱动效、增量渲染（不再重置滚动位置）。
 
+**第三轮（2026-10，`next`）：** ✅
+
+- **人工检查点（X4）**：`checkpoint(title, { payload, timeout, onTimeout })` 持久等待，不占 agent 槽位也不计预算；`odw approve|reject [--note] [--checkpoint N]`、看板审批卡片、`POST /api/runs/:id/checkpoint` 三种回答方式；决定写入只追加的 `decisions.jsonl`，不与停止指令争用 `control.json`；`notify.on` 可选 `"waiting"`；resume 时重新询问；示例 `plan-approve-execute.js`。
+- **失败分类与退避（N6 前半）**：8 类失败原因，约 80 条各 CLI 原文样本；限流按 retry-after 或指数退避（带抖动、上限 `maxBackoff`）重试，等待中停止立即生效；额度/登录不重试而给出可操作的提示，同一适配器连续 3 次时告警；Claude 文本模式"以 0 退出的 API 错误"也能识别。
+- **worktree 环境（X5）**：`.worktreeinclude`（含 `symlink:`）、带超时的 `worktreeSetup`、每个 agent 独占的 `ODW_PORT` 及 `ODW_RUN_ID`/`ODW_AGENT_ID`。
+- 看板：「待你处理」提醒、失败原因旁显示限流/额度的解除时间、为 X1 准备好的改动审阅页；官网新增「为长任务而生」；两篇实用配方（恢复运行、运行通知）；删除无人使用的 skill 内嵌产物。
+
 ---
 
 ## 3. 路线：按需求排序
@@ -67,21 +74,21 @@
 | N3 | **卡死看门狗**：agent 输出长时间没有动静（`stallTimeout`）就终止并重启，重启次数有上限（`stallRestarts`）并记录事件；worker 收到 SIGTERM/SIGINT/SIGHUP 时干净地停止运行 | #5 | S | ✅ |
 | N4 | **命令原语** `exec()`（ODW 扩展）：异步执行，支持参数、cwd、超时、输出上限，可被取消，返回 stdout/stderr/退出码，并在 DAG 中可见；附 `test-fix-loop.js` 示例 | [#31](https://github.com/xz1220/open-dynamic-workflows/issues/31) | M | ✅ |
 | N5 | **用量与成本**：适配器改用各 CLI 的 JSON 输出模式（`claude --output-format json` 的 `total_cost_usd`、`codex exec --json` 的 usage），按 agent 和阶段记录真实用量，`budget` 改用真实计量；大规模 fan-out 启动前给出预警 | #1 | M | ⏳ |
-| N6 | **失败分类与退避**：区分限流、过载、额度耗尽、鉴权四类失败；按适配器节流，遵守 retry-after；额度耗尽时整体暂停，到重置时间自动恢复；支持回退适配器链 | #3 | M | ⏳ |
+| N6 | **失败分类与退避**：区分限流、过载、额度耗尽、鉴权四类失败；按适配器节流，遵守 retry-after；额度耗尽时整体暂停，到重置时间自动恢复；支持回退适配器链 | #3 | M | 🚧 分类、退避重试、可操作的报错 ✅；额度暂停与回退链待做（回退链并入 X7） |
 | N7 | **有证据的成功**：读取 CLI 报告的成功信号（`is_error`、`permission_denials`、MCP 状态），转成有类型的失败；`agent()` 可声明后置条件（"有文件改动"、"某命令通过"）。`odw doctor --smoke` 已交付 | #7（[#23](https://github.com/xz1220/open-dynamic-workflows/issues/23)） | M | 🚧 部分 |
 | N8 | **原生结构化输出**：优先使用 `codex --output-schema` / `claude --json-schema`；启动前拒绝不受支持的 schema 关键字 | #12 | S–M | ⏳ |
 
 ### Next — 0.7「审阅与掌控」
 
-| # | 方向 | 需求 | 规模 |
-| --- | --- | --- | --- |
-| X1 | **diff 作为运行产物 + `odw apply`**：保留 worktree 的分支和 diff；合并前用 `git merge-tree` 预检，再跑校验命令，逐个合并；看板提供并排 diff 审阅 | #2 | M |
-| X2 | **权限档位**：read-only / edit / full 三档，映射到各 CLI 的对应参数，启动前展示；环境变量白名单 + 密钥引用脱敏；不受信任的仓库使用 `--bare` | #6 | M |
-| X3 | **agent transcript**：保存每个 agent 的 JSON 流（工具调用、重试）；看板和 `odw logs --agent` 可查看；导出 OpenTelemetry GenAI span | #8 | M |
-| X4 | **人工检查点** `checkpoint()`（ODW 扩展）：持久暂停，`odw approve/reject [--edit]` 继续；看板提供审批入口（依赖 N1） | #9 | M |
-| X5 | **worktree 环境**：支持 `.worktreeinclude`、带超时的 setup 命令、为每个 agent 分配 `ODW_PORT` | #10 | S |
-| X6 | **调度**：`odw schedule add` 写入 cron/launchd/systemd，带防重叠锁、错过运行的处理策略和失败通知（不引入 daemon） | #14 | S |
-| X7 | **按阶段指定适配器和模型**：设置默认值、模型分层和回退链；解析 Claude plugin 工作流 | #13 | M |
+| # | 方向 | 需求 | 规模 | 状态 |
+| --- | --- | --- | --- | --- |
+| X1 | **diff 作为运行产物 + `odw apply`**：保留 worktree 的分支和 diff；合并前用 `git merge-tree` 预检，再跑校验命令，逐个合并；看板提供并排 diff 审阅 | #2 | M | 🚧 看板审阅页 ✅，后端进行中 |
+| X2 | **权限档位**：read-only / edit / full 三档，映射到各 CLI 的对应参数，启动前展示；环境变量白名单 + 密钥引用脱敏；不受信任的仓库使用 `--bare` | #6 | M | ⏳ |
+| X3 | **agent transcript**：保存每个 agent 的 JSON 流（工具调用、重试）；看板和 `odw logs --agent` 可查看；导出 OpenTelemetry GenAI span | #8 | M | ⏳ |
+| X4 | **人工检查点** `checkpoint()`（ODW 扩展）：持久暂停，`odw approve/reject [--edit]` 继续；看板提供审批入口（依赖 N1） | #9 | M | ✅（`--edit` 待做） |
+| X5 | **worktree 环境**：支持 `.worktreeinclude`、带超时的 setup 命令、为每个 agent 分配 `ODW_PORT` | #10 | S | ✅ |
+| X6 | **调度**：`odw schedule add` 写入 cron/launchd/systemd，带防重叠锁、错过运行的处理策略和失败通知（不引入 daemon） | #14 | S | 🚧 进行中 |
+| X7 | **按阶段指定适配器和模型**：设置默认值、模型分层和回退链；解析 Claude plugin 工作流 | #13 | M | ⏳ |
 
 ### Later — 0.8+「规模与生态」
 

@@ -56,24 +56,9 @@ test("embed-dashboard inlines web/dist/index.html byte-for-byte", (t) => {
   assert.equal(exported(generated, "DASHBOARD_HTML"), html);
 });
 
-test("embed-skill inlines SKILL.md byte-for-byte", (t) => {
-  const { root, run } = sandbox(t, "embed-skill.mjs");
-  const md = "---\nname: x\n---\n\n# A `dialect` doc with ${braces} and \"quotes\"\n";
-  mkdirSync(join(root, "skills", "open-dynamic-workflows"), { recursive: true });
-  writeFileSync(join(root, "skills", "open-dynamic-workflows", "SKILL.md"), md);
-  const r = run();
-  assert.equal(r.status, 0, r.stderr);
-  assert.equal(exported(readFileSync(join(root, "src", "skill.generated.ts"), "utf8"), "SKILL_MD"), md);
-});
-
-test("the committed embeds are in the generated format (typed as plain strings)", () => {
-  for (const [file, name] of [
-    ["dashboard.generated.ts", "DASHBOARD_HTML"],
-    ["skill.generated.ts", "SKILL_MD"],
-  ] as const) {
-    const text = readFileSync(new URL(`../src/${file}`, import.meta.url), "utf8");
-    assert.ok(exported(text, name).length > 1000, file);
-  }
+test("the committed embed is in the generated format (typed as a plain string)", () => {
+  const text = readFileSync(new URL("../src/dashboard.generated.ts", import.meta.url), "utf8");
+  assert.ok(exported(text, "DASHBOARD_HTML").length > 1000);
 });
 
 test("typecheck only generates the gitignored version file, never the committed embeds", () => {
