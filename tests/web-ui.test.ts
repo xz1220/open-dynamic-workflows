@@ -203,3 +203,14 @@ test("applyRunsDelta upserts, removes and keeps newest-first order", () => {
     ],
   );
 });
+
+test("renderDag draws exec() steps as terminal cards with their exit code", () => {
+  const run = detail([
+    agent("plan", "Plan", "done"),
+    agent("npm test", "Search", "done", { kind: "command", exitCode: 1, adapter: null }),
+  ]);
+  const { html } = renderDag(run, null, { nowSec: NOW, zoom: 1, motion: false, currentPhase: null });
+  assert.match(html, /class="node done cmd/);
+  assert.match(html, /<span class="prompt">\$<\/span> npm test/);
+  assert.match(html, /command · exit 1/);
+});

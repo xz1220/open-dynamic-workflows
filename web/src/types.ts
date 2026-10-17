@@ -43,6 +43,10 @@ export interface AgentView {
   agentId?: number | null;
   /** The value was replayed from an earlier run by `odw resume`. */
   cached?: boolean;
+  /** `exec()` steps fold into the same list as agents (ODW extension). */
+  kind?: "agent" | "command";
+  /** A command step's exit code once it settled. */
+  exitCode?: number | null;
   label: string;
   phase: string | null;
   state: AgentState;

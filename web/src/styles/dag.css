@@ -302,6 +302,22 @@
 .node.done {
   background: var(--card-2);
 }
+/* exec() steps: a squarer, terminal-like card. */
+.node.cmd {
+  border-radius: 5px;
+  background: var(--code-bg);
+  border-color: var(--code-bg);
+  color: var(--code-ink);
+}
+.node.cmd .sub {
+  color: var(--code-dim);
+}
+.node.cmd .lbl .prompt {
+  color: var(--sig);
+}
+.node.cmd.failed {
+  background: linear-gradient(var(--alarm-soft), var(--alarm-soft)), var(--code-bg);
+}
 .node .cached {
   font-family: var(--f-mono);
   font-size: 12px;

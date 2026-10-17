@@ -39,6 +39,16 @@ function laneTitles(run: RunDetail): string[] {
 }
 
 function subLine(a: AgentView, nowSec: number): string {
+  if (a.kind === "command") {
+    const dur =
+      a.state === "running" && a.startedAt != null
+        ? fmtDurSec(nowSec - a.startedAt)
+        : a.durationMs != null
+          ? fmtDurSec(a.durationMs / 1000)
+          : "";
+    const code = a.state === "running" ? t("running") : a.exitCode != null ? `exit ${a.exitCode}` : "";
+    return [t("command"), code, dur].filter(Boolean).join(" · ");
+  }
   if (a.state === "failed" && a.error) return a.error.split("\n")[0]!.slice(0, 80);
   if (a.state === "running") {
     const elapsed = a.startedAt != null ? fmtDurSec(nowSec - a.startedAt) : "";
@@ -146,9 +156,9 @@ export function renderDag(
       const sel = selectedAi === p.ai ? " selected" : "";
       const dim = selectedAi != null && selectedAi !== p.ai ? " dim" : "";
       parts.push(
-        `<div class="node ${esc(a.state)}${sel}${dim}" data-ai="${p.ai}" data-key="n-${p.ai}" tabindex="0" role="button" aria-pressed="${selectedAi === p.ai}" ` +
+        `<div class="node ${esc(a.state)}${a.kind === "command" ? " cmd" : ""}${sel}${dim}" data-ai="${p.ai}" data-key="n-${p.ai}" tabindex="0" role="button" aria-pressed="${selectedAi === p.ai}" ` +
           `style="left:${p.x}px;top:${p.y}px;width:${NODE_W}px" title="${esc(a.label)}">` +
-          `<div class="h">${glyph(a.state)}<span class="lbl">${esc(a.label)}</span>${a.cached ? `<span class="cached" title="${esc(t("replayed from an earlier run"))}">↺</span>` : ""}</div>` +
+          `<div class="h">${glyph(a.state)}<span class="lbl">${a.kind === "command" ? `<span class="prompt">$</span> ` : ""}${esc(a.label)}</span>${a.cached ? `<span class="cached" title="${esc(t("replayed from an earlier run"))}">↺</span>` : ""}</div>` +
           `<div class="sub">${esc(subLine(a, opts.nowSec))}</div></div>`,
       );
     }
