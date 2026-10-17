@@ -14,6 +14,7 @@ import { Bridge } from "./bridge.js";
 import { NullControl, type Control } from "./control.js";
 import { BudgetExhausted } from "./errors.js";
 import { NullSink, type EventSink, type WorkflowEvent } from "./events.js";
+import type { AgentResultRecord } from "./journal.js";
 import { Scheduler } from "./scheduler.js";
 
 export interface RunContext {
@@ -41,6 +42,12 @@ export interface RunContext {
    */
   seq: { value: number };
   currentPhase: string | null;
+  /**
+   * Save a completed agent's record (the worker writes the run directory's
+   * `agents/<agentId>.json`). Absent where nothing is persisted (in-process
+   * runs). It may throw: the agent still succeeds, and the failure is logged.
+   */
+  saveAgentResult?: (rec: AgentResultRecord) => void;
   emit(ev: WorkflowEvent): void;
 }
 
@@ -55,6 +62,7 @@ export interface BuildContextOptions {
   sink?: EventSink;
   control?: Control;
   budgetTotal?: number | null;
+  saveAgentResult?: (rec: AgentResultRecord) => void;
 }
 
 /** Wire a full run context from a config and the run's surroundings. */
@@ -92,6 +100,7 @@ export function buildContext(config: Config, options: BuildContextOptions = {}):
     usage,
     seq: { value: 0 },
     currentPhase: null,
+    saveAgentResult: options.saveAgentResult,
     emit(ev: WorkflowEvent): void {
       sink.emit(ev);
     },

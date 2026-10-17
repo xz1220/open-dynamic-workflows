@@ -2,9 +2,9 @@
  * Workflow worker (L5): load one script and run it to completion.
  *
  * The back end. It runs in its own Node process (started by the launcher), so
- * the workflow holds its entire plan in local variables while only the final
- * return value is written back to the run directory. Exactly one run executes
- * per worker process.
+ * the workflow holds its entire plan in local variables; what is written back
+ * to the run directory is each completed agent's result (as it lands) and the
+ * final return value. Exactly one run executes per worker process.
  *
  * `executeRun` is also callable in-process (that is how tests exercise the full
  * stack without spawning a subprocess).
@@ -82,6 +82,9 @@ export async function executeRun(runDir: string): Promise<string> {
       sink,
       control,
       budgetTotal: (meta.budgetTotal as number | null) ?? null,
+      // Each completed agent's result lands in agents/<agentId>.json at once,
+      // so a run that stalls, is stopped, or dies keeps its finished work.
+      saveAgentResult: (rec) => store.writeAgentResult(runId, rec),
     });
 
     store.updateStatus(runId, { state: "running", pid: process.pid });

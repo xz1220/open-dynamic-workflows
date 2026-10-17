@@ -11,7 +11,8 @@
  *   odw list
  *   odw status <run_id>
  *   odw logs <run_id> [--follow]
- *   odw result <run_id>
+ *   odw agents <run_id> [--json]
+ *   odw result <run_id> [--agent <id|label>]
  *   odw pause|resume|stop <run_id>
  */
 
@@ -27,6 +28,7 @@ import { runDoctor, type CheckStatus } from "./doctor.js";
 import { AdapterNotFound } from "./errors.js";
 import { VERSION } from "./index.js";
 import { cmdInit } from "./init.js";
+import { agentRowJson, agentRows, formatAgentTable, matchAgents } from "./runtime/agents-view.js";
 import { startRun, startRunFromSource, waitFor } from "./runtime/launcher.js";
 import { attachRun, formatEvent, resolveRunMode, type RunMode } from "./runtime/live-view.js";
 import { RunObserver } from "./runtime/run-liveness.js";
@@ -46,6 +48,7 @@ export const COMMANDS = [
   "list",
   "status",
   "logs",
+  "agents",
   "result",
   "serve",
   "workflows",
@@ -75,7 +78,8 @@ export function helpText(): string {
     "  odw rerun <run_id>                                 start a fresh run with the same inputs",
     "  odw status <run_id>                                show a run's current state",
     "  odw logs <run_id|--workflow name> [--follow]       print a run's progress events",
-    "  odw result <run_id>                                print a finished run's result",
+    "  odw agents <run_id> [--json]                       list a run's agents with their saved results",
+    "  odw result <run_id> [--agent <id|label>]           print a finished run's result, or one agent's (mid-run too)",
     "  odw list [--workflow <name>]                       list known runs",
     "  odw serve [--port N] [--host H] [--open]           open the live dashboard in a browser",
     "  odw workflows list [--project|--global|--all]      list workflows runnable by name",
@@ -142,6 +146,8 @@ export async function main(argv: string[]): Promise<number> {
         return await cmdRerun(rest);
       case "status":
         return cmdStatus(rest);
+      case "agents":
+        return cmdAgents(rest);
       case "result":
         return cmdResult(rest);
       case "logs":
@@ -467,10 +473,95 @@ function dispatchedCount(store: RunStore, runId: string, status: Record<string, 
   return Math.max(recorded, observed);
 }
 
+/**
+ * `odw result <run_id>` prints a finished run's result; with `--agent
+ * <id|label>`, one agent's saved value — there as soon as that agent finished,
+ * while the run is still going (or after it stalled, stopped or died).
+ */
 function cmdResult(rest: string[]): number {
-  const { store, runId } = storeAndRun(rest);
-  if (!store) return runId ? 1 : 2;
+  const { values, positionals } = parseArgs({
+    args: rest,
+    allowPositionals: true,
+    options: { config: { type: "string" }, "runs-root": { type: "string" }, agent: { type: "string" } },
+  });
+  const runId = positionals[0];
+  if (!runId) {
+    process.stderr.write("missing <run_id>\n");
+    return 2;
+  }
+  const store = storeFrom(values);
+  if (!store.exists(runId)) {
+    process.stderr.write(`no such run: ${runId}\n`);
+    return 1;
+  }
+  if (values.agent !== undefined) return reportAgent(store, runId, values.agent);
   return reportTerminal(store, runId, store.readStatus(runId));
+}
+
+/** One agent's saved value as JSON on stdout; an unknown, ambiguous or unfinished agent is an error. */
+function reportAgent(store: RunStore, runId: string, ref: string): number {
+  const matches = matchAgents(agentRows(store, runId), ref);
+  if (matches.length === 0) {
+    process.stderr.write(`run ${runId} has no agent '${ref}' (see odw agents ${runId})\n`);
+    return 1;
+  }
+  if (matches.length > 1) {
+    const ids = matches.map((r) => `${r.agentId ?? "?"} (${r.state})`).join(", ");
+    process.stderr.write(
+      `label '${ref}' matches ${matches.length} agents of run ${runId}: ${ids} — pick one: odw result ${runId} --agent <id>\n`,
+    );
+    return 1;
+  }
+  const row = matches[0]!;
+  if (!row.record) {
+    const why =
+      row.state === "failed"
+        ? `failed: ${row.error ?? "unknown error"}`
+        : row.state === "done"
+          ? "finished, but no result was saved for it (a run from before per-agent results, or the save failed — see odw logs)"
+          : `is ${row.state}: no result yet`;
+    process.stderr.write(`agent ${row.agentId ?? "?"} (${row.label}) ${why}\n`);
+    return 1;
+  }
+  process.stdout.write(JSON.stringify(row.record.value, null, 2) + "\n");
+  return 0;
+}
+
+/**
+ * `odw agents <run_id> [--json]` — every agent of a run (running and failed
+ * ones too) with a one-line preview of its saved result. Works mid-run.
+ */
+function cmdAgents(rest: string[]): number {
+  const { values, positionals } = parseArgs({
+    args: rest,
+    allowPositionals: true,
+    options: { config: { type: "string" }, "runs-root": { type: "string" }, json: { type: "boolean" } },
+  });
+  const runId = positionals[0];
+  if (!runId) {
+    process.stderr.write("odw agents: missing <run_id>\n");
+    return 2;
+  }
+  const store = storeFrom(values);
+  if (!store.exists(runId)) {
+    process.stderr.write(`no such run: ${runId}\n`);
+    return 1;
+  }
+  const rows = agentRows(store, runId);
+  if (values.json) {
+    process.stdout.write(JSON.stringify(rows.map(agentRowJson), null, 2) + "\n");
+    return 0;
+  }
+  if (rows.length === 0) {
+    process.stderr.write(`run ${runId} has no agents yet\n`);
+    return 0;
+  }
+  const caps = detectCaps(process.stdout, process.env);
+  const width = process.stdout.isTTY && process.stdout.columns ? process.stdout.columns : 120;
+  for (const line of formatAgentTable(rows, { width, caps })) process.stdout.write(line + "\n");
+  const replayed = rows.some((r) => r.cached) ? `${caps.unicode ? "↺" : "(r)"} replayed by odw resume · ` : "";
+  process.stderr.write(`${replayed}full value: odw result ${runId} --agent <id|label>\n`);
+  return 0;
 }
 
 async function cmdLogs(rest: string[]): Promise<number> {

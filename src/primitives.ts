@@ -15,6 +15,8 @@
  *   - validate  — compile-check workflow source (ODW extension)
  *
  * `args` is not here: it is run data injected alongside these globals.
+ *
+ * Every completed agent() is saved as it lands (see ./journal).
  */
 
 import { readFileSync } from "node:fs";
@@ -24,6 +26,7 @@ import type { AgentRequest } from "./bridge.js";
 import { spentTokens, type RunContext } from "./context.js";
 import { WorkflowScriptError, isFatalError } from "./errors.js";
 import { AGENT_FAILED, AGENT_FINISHED, AGENT_STARTED, LOG, PHASE_STARTED, event } from "./events.js";
+import { resumeKey, type AgentResultRecord } from "./journal.js";
 // Value import of the loader is safe: loader.ts only type-imports from here, so
 // the module cycle is erased at compile time and never exists at runtime.
 import { loadWorkflowScript, scanDualCompat, type WorkflowMeta } from "./loader.js";
@@ -93,12 +96,37 @@ export function createPrimitives(
   const depth = internal.depth ?? 0;
   const phasePrefix = internal.phasePrefix ?? "";
 
+  /**
+   * Save a completed agent's record before its agent_finished event, so an
+   * observer that sees the event can read the result, and a run that stalls
+   * or dies later still has it. Events only reference results (`saved`),
+   * never carry them. Saving never fails the agent: an error is logged.
+   */
+  const save = (rec: AgentResultRecord): boolean => {
+    if (!ctx.saveAgentResult) return false;
+    try {
+      ctx.saveAgentResult(rec);
+      return true;
+    } catch (err) {
+      ctx.emit(
+        event(LOG, {
+          message: `could not save the result of agent ${rec.agentId}: ${err instanceof Error ? err.message : String(err)}`,
+          label: rec.label,
+          phase: rec.phase,
+        }),
+      );
+      return false;
+    }
+  };
+
   const dispatch = async (prompt: string, opts: AgentOptions): Promise<unknown> => {
     const activePhase = opts.phase !== undefined ? opts.phase : ctx.currentPhase;
     // Stable per-dispatch identity. Events for THIS dispatch all carry it, so
     // observers pair started/finished exactly even when several concurrent
     // agents share a label+phase (the pre-agentId pairing was heuristic).
     const agentId = ++ctx.seq.value;
+    // What a resume matches this call by; saved with its result.
+    const key = resumeKey(prompt, opts);
     // Adapter selection honours ONLY opts.adapter. agentType is a persona (it is
     // forwarded to the bridge and injected into the prompt), never an adapter name.
     // Resolve it before asking for a slot: an unknown or ambiguous adapter is a
@@ -129,9 +157,8 @@ export function createPrimitives(
         // Record the adapter only once the scheduler has handed out a real
         // dispatch slot, so queued work is not presented as running.
         started = true;
-        ctx.emit(
-          event(AGENT_STARTED, { agentId, label: display, phase: activePhase, adapter: adapter.name }),
-        );
+        const startedEv = event(AGENT_STARTED, { agentId, label: display, phase: activePhase, adapter: adapter.name });
+        ctx.emit(startedEv);
         let outcome;
         try {
           outcome = await ctx.bridge.run(request, {
@@ -156,15 +183,26 @@ export function createPrimitives(
         for (const note of outcome.notes ?? []) {
           ctx.emit(event(LOG, { message: note, label: display, phase: activePhase }));
         }
-        ctx.emit(
-          event(AGENT_FINISHED, {
-            agentId,
-            label: display,
-            phase: activePhase,
-            adapter: outcome.adapter,
-            attempts: outcome.attempts,
-          }),
-        );
+        const finished = event(AGENT_FINISHED, {
+          agentId,
+          label: display,
+          phase: activePhase,
+          adapter: outcome.adapter,
+          attempts: outcome.attempts,
+        });
+        const persisted = save({
+          agentId,
+          key,
+          label: display,
+          phase: activePhase,
+          adapter: outcome.adapter,
+          attempts: outcome.attempts,
+          startedAt: startedEv.ts,
+          finishedAt: finished.ts,
+          value: outcome.value,
+        });
+        if (persisted) finished.saved = true;
+        ctx.emit(finished);
         return outcome.value;
       });
     } catch (err) {

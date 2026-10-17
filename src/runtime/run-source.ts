@@ -20,6 +20,7 @@
  */
 
 import type { WorkflowEvent } from "../events.js";
+import type { AgentResultRecord } from "../journal.js";
 import type { RunDetail, RunSummary } from "./runs-view.js";
 
 /** A run id (or Claude session dir name) is one safe path segment: `[A-Za-z0-9._-]`. */
@@ -51,6 +52,13 @@ export interface RunSource {
   eventLog(runId: string): readonly WorkflowEvent[];
   /** The run's final result, if any. */
   result(runId: string): { has: boolean; value: unknown };
+  /**
+   * The run's saved per-agent results, by agentId — readable while the run is
+   * still going. Null when this provider saves none (Claude runs).
+   */
+  agentResults(runId: string): AgentResultRecord[] | null;
+  /** One agent's saved result; null when it has none or the provider saves none. */
+  agentResult(runId: string, agentId: number): AgentResultRecord | null;
   /**
    * Null when this source can pause/resume/stop a run; otherwise a human reason
    * the server returns (409) for any control attempt. Claude runs are read-only.
