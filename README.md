@@ -945,9 +945,8 @@ been read. A fan-out that starts every agent at once pays the full prefix in eac
 So in one `parallel()` or `pipeline()` call, agents on an adapter that declares
 `"promptCache": true` (the built-in `claude` does) whose prompts share at least their
 first 1,024 characters start `first` at a time; the rest start once the first one's
-CLI has produced output — for a JSONL adapter, its first event past the CLI's
-start-up `system` events; other formats are read when the CLI exits — or `delayMs`
-later, whichever comes first. Put the shared instructions first and the per-item
+CLI has produced output — for a JSONL adapter such as `claude`, its first event past
+the CLI's start-up `system` events — or `delayMs` later, whichever comes first. Put the shared instructions first and the per-item
 part last to benefit. A lone agent, an agent whose prompt is shorter or different (or
 on another model or persona), and a replayed one never wait; a held agent holds no
 slot, and a stop ends the wait at once. Each staggered fan-out logs one line:

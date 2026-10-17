@@ -174,9 +174,9 @@ export interface RunOptions {
   onRateLimit?: (retry: RateLimitRetry) => void;
   /**
    * Called when a CLI run of the call starts answering, as its output
-   * streams — a JSONL event past the CLI's start-up `system` events — so a
-   * staggered fan-out can let the agents waiting on this one go (an ODW
-   * extension; see ./throttle). Other formats are read once the CLI exits.
+   * streams — a JSONL event past the CLI's start-up `system` events, any
+   * other format's first output — so a staggered fan-out can let the agents
+   * waiting on this one go (an ODW extension; see ./throttle).
    */
   onOutput?: () => void;
   /**
@@ -580,17 +580,22 @@ export class Bridge {
     // is retained (and a verbose session is never cut off at the stdout cap);
     // text replies are buffered by the runner under its cap, as before.
     const decoder = adapter.output?.format === "jsonl" ? new AdapterOutputDecoder(adapter) : null;
+    // Told once the CLI starts answering: a JSONL stream past its start-up
+    // events, else its first output (see RunOptions.onOutput).
     let answering = false;
+    const answered = (): void => {
+      if (answering) return;
+      answering = true;
+      call.onOutput?.();
+    };
     const onStdout = decoder
       ? (chunk: string, terminate: (reason: string) => void) => {
           decoder.write(chunk);
           if (decoder.overflow) terminate(decoder.overflow);
-          if (!answering && decoder.answering) {
-            answering = true;
-            call.onOutput?.();
-          }
+          if (decoder.answering) answered();
         }
       : undefined;
+    const watch = !decoder && call.onOutput ? answered : undefined;
     const { worktreeSetup, worktreeSetupTimeout } = this.config.settings;
     const setup = {
       command: worktreeSetup,
@@ -635,7 +640,13 @@ export class Bridge {
           timeout: limits.timeout,
           stallTimeout: limits.stallTimeout,
           onStdout,
-          observeStdout: transcript && ((chunk) => transcript.stdout(chunk)),
+          observeStdout:
+            transcript || watch
+              ? (chunk) => {
+                  transcript?.stdout(chunk);
+                  watch?.();
+                }
+              : undefined,
           onStderr: transcript && ((chunk) => transcript.stderr(chunk)),
           signal,
         });

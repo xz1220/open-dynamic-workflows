@@ -859,8 +859,8 @@ adaptive concurrency: no rate limit on codex for 4m — back to 8 of its agents 
 所有 agent 同时启动的扇出,每个 agent 都要为完整前缀付费。因此在一次 `parallel()` 或
 `pipeline()` 调用中,运行在声明了 `"promptCache": true` 的适配器上(内置 `claude` 就是)、
 且提示的前 1,024 个字符相同的 agent,每次先启动 `first` 个;其余的在第一个 agent 的 CLI
-产生输出后启动——对 JSONL 适配器而言,是它越过 CLI 启动时那些 `system` 事件之后的第一个
-事件;其他格式要等 CLI 退出才读取——或在 `delayMs` 之后启动,以先到者为准。把共享的说明
+产生输出后启动——对 `claude` 这样的 JSONL 适配器而言,是它越过 CLI 启动时那些 `system`
+事件之后的第一个事件——或在 `delayMs` 之后启动,以先到者为准。把共享的说明
 放在前面、每项不同的部分放在最后,就能从中受益。单独的 agent、提示更短或不同(或用了别的
 模型、别的角色)的 agent,以及重放的 agent 从不等待;等待中的 agent 不占任何槽位,停止会
 立刻结束等待。每次错开的扇出记一行日志:

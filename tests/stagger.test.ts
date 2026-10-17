@@ -364,6 +364,62 @@ test("the bridge says once per CLI run that it started answering", async () => {
   assert.equal(told, 1, "once, though more events followed");
 });
 
+/**
+ * A fake text-output CLI with a prompt cache: it prints a first word when the
+ * test says (an observer sees it as it streams), and its reply as it exits.
+ */
+function fakeTextCli() {
+  const runs: FakeRun[] = [];
+  const runner: CommandRunner = async (_command, options = {}) => {
+    let speak!: () => void;
+    let end!: () => void;
+    const spoken = new Promise<void>((resolve) => (speak = resolve));
+    const ended = new Promise<void>((resolve) => (end = resolve));
+    const prompt = options.stdin ?? "";
+    runs.push({ prompt, speak, finish: () => (speak(), end()), fail: () => end() });
+    await spoken;
+    options.observeStdout?.("Reading the file… ");
+    await ended;
+    const reply = `Reading the file… reviewed ${/module-(\d+)/.exec(prompt)?.[1] ?? "?"}`;
+    return { returncode: 0, stdout: reply, stderr: "", timedOut: false, duration: 0.1 };
+  };
+  return { runner, runs };
+}
+
+test("a text adapter's first output lets the rest go too", async () => {
+  const config = defaultConfig();
+  config.settings.concurrency = 8;
+  config.settings.defaultAdapter = "plain";
+  config.settings.staggerFanOut = { first: 1, delayMs: 60_000 };
+  config.adapters.plain = { name: "plain", command: ["plain-cli"], stdin: "{prompt}", promptCache: true };
+  const sink = new MemorySink();
+  const ctx = buildContext(config, { sink });
+  const { runner, runs } = fakeTextCli();
+  ctx.bridge = new Bridge(config, { runner });
+  const primitives = createPrimitives(ctx);
+
+  let told = 0;
+  const call = ctx.bridge.run({ prompt: task(5) }, { onOutput: () => told++ });
+  await waitUntil(() => runs.length === 1);
+  runs[0]!.speak();
+  await waitUntil(() => told === 1);
+  runs[0]!.finish();
+  assert.equal((await call).text, "Reading the file… reviewed 5");
+  assert.equal(told, 1, "once per CLI run");
+
+  const fanOut = primitives.parallel([0, 1, 2].map((i) => () => primitives.agent(task(i))));
+  await waitUntil(() => runs.length === 2);
+  await settle();
+  assert.equal(sink.ofType(AGENT_STARTED).length, 1, "the rest wait for the first one's output");
+  runs[1]!.speak();
+  await waitUntil(() => runs.length === 4);
+  for (const run of runs.slice(1)) run.finish();
+  assert.deepEqual(await fanOut, [0, 1, 2].map((i) => `Reading the file… reviewed ${i}`));
+  const lines = sink.ofType(LOG).filter((e) => /^staggered fan-out/.test(String(e.message)));
+  assert.equal(lines.length, 1);
+  assert.match(String(lines[0]!.message), /^staggered fan-out: 2 plain agents .* until it produced output$/);
+});
+
 // --- end to end: the worker, a stream-json mock CLI ----------------------------------
 
 test("end to end: a fan-out on a promptCache adapter waits for the first CLI's output, then runs", async () => {
