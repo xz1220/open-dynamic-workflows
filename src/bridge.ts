@@ -83,7 +83,7 @@ export interface BridgeOptions {
   runner?: CommandRunner;
   /** How `agent` options map to a CLI invocation; defaults to {@link LiteralRouter}. */
   router?: OptionRouter;
-  /** The run's id, given to every agent process as `ODW_RUN_ID`. */
+  /** The run's id, given to every agent process (and worktree setup) as `ODW_RUN_ID`. */
   runId?: string;
 }
 
@@ -97,7 +97,10 @@ export interface RunOptions {
   signal?: AbortSignal;
   /** The call's agent id (its events' `agentId`), given to its processes as `ODW_AGENT_ID`. */
   agentId?: number;
-  /** Called with a note on preparing the call (no port left for `ODW_PORT`), so the run can log it. */
+  /**
+   * Called with a note on preparing the call — no port left for `ODW_PORT`, a
+   * file `.worktreeinclude` left out — so the run can log it.
+   */
   onNote?: (message: string) => void;
   /**
    * Called with every attempt's decoded reply as soon as it arrives — schema
@@ -156,8 +159,8 @@ export class Bridge {
   }
 
   async run(request: AgentRequest, options: RunOptions = {}): Promise<AgentOutcome> {
-    // The agent's ids and port, the same for every CLI run of the call; no
-    // other agent of the run gets the port until the call settles.
+    // The agent's ids and port, the same for every CLI run (and worktree setup)
+    // of the call; no other agent of the run gets the port until the call settles.
     const port = await this.ports.acquire();
     if (port === null) {
       const [first, last] = this.config.settings.portRange;
@@ -275,6 +278,14 @@ export class Bridge {
           if (decoder.overflow) terminate(decoder.overflow);
         }
       : undefined;
+    const { worktreeSetup, worktreeSetupTimeout } = this.config.settings;
+    const setup = {
+      command: worktreeSetup,
+      timeout: worktreeSetupTimeout,
+      env: withAgentVars(process.env, call.env),
+      signal,
+      onNote: call.onNote,
+    };
     return withWorkspace(this.source, plan.workspaceMode, async (ws) => {
       let promptFile = "";
       let cleanup: (() => Promise<void>) | undefined;
@@ -313,7 +324,7 @@ export class Bridge {
       } finally {
         if (cleanup) await cleanup();
       }
-    });
+    }, setup);
   }
 }
 

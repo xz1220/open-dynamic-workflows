@@ -77,6 +77,8 @@ const KNOWN_TOP_KEYS = [
   "claudeWorkflowsRoot",
   "claudeJobsScope",
   "notify",
+  "worktreeSetup",
+  "worktreeSetupTimeout",
   "portRange",
 ] as const;
 
@@ -606,8 +608,24 @@ function buildSettings(raw: Record<string, unknown>): Settings {
     // Only "project" narrows; anything else (incl. null/garbage) keeps the "all" default.
     claudeJobsScope: raw["claudeJobsScope"] === "project" ? "project" : DEFAULT_SETTINGS.claudeJobsScope,
     notify: raw["notify"] == null ? DEFAULT_SETTINGS.notify : buildNotify(raw["notify"]),
+    worktreeSetup: raw["worktreeSetup"] == null ? DEFAULT_SETTINGS.worktreeSetup : buildWorktreeSetup(raw["worktreeSetup"]),
+    worktreeSetupTimeout: num("worktreeSetupTimeout", DEFAULT_SETTINGS.worktreeSetupTimeout, "a positive number of seconds", {
+      min: 0,
+      exclusiveMin: true,
+    }),
     portRange: raw["portRange"] == null ? [...DEFAULT_SETTINGS.portRange] : buildPortRange(raw["portRange"]),
   };
+}
+
+/** Validate `worktreeSetup`: a command line for the shell, or an argv run without one. */
+function buildWorktreeSetup(raw: unknown): string | string[] {
+  if (typeof raw === "string" && raw.trim()) return raw;
+  if (Array.isArray(raw) && raw.every((part) => typeof part === "string") && raw[0]) return [...(raw as string[])];
+  // The kind only: a setup command may carry a token.
+  throw new ConfigError(
+    `"worktreeSetup" must be a command string (run by the platform shell) or a non-empty array of strings ` +
+      `(an argv, run without a shell); got ${kindOf(raw)}`,
+  );
 }
 
 /** Validate `portRange`: `[first, last]`, two whole port numbers with first <= last. */

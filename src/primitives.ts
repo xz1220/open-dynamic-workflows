@@ -210,7 +210,7 @@ export function createPrimitives(
           outcome = await ctx.bridge.run(request, {
             signal,
             // The agent process's ODW_AGENT_ID; what preparing it noted (no free
-            // port) is logged against it.
+            // port, a file .worktreeinclude left out) is logged against it.
             agentId,
             onNote: (message) =>
               ctx.emit(
