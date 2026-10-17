@@ -61,6 +61,7 @@ import { detail, type RunDetail } from "./runtime/runs-view.js";
 import { startServer } from "./runtime/server.js";
 import { printAgentLogs } from "./runtime/transcript-view.js";
 import { executeRun } from "./runtime/worker.js";
+import { pausedForOf, pausedText } from "./quota-wait.js";
 import { cmdSchedule } from "./schedule/command.js";
 import { isSeaBinary } from "./sea.js";
 import { describeConcurrency } from "./throttle.js";
@@ -536,10 +537,17 @@ async function afterStart(
     process.stderr.write(`running ${runId} ...\n${banner}`);
     // A checkpoint() holds the run until someone answers it: say so, and how, once each.
     const told = new Set<number>();
+    // A pause for a spent quota (ODW extension: quotaWait) ends by itself: say until when, once each.
+    const toldPauses = new Set<string>();
     let flags: string[] | undefined;
     const status = await waitFor(store, runId, {
       timeoutMs: opts.timeoutMs,
-      onStatus: ({ waiting }) => {
+      onStatus: ({ waiting, state, pausedFor }) => {
+        const pause = state === "paused" ? pausedForOf(pausedFor) : null;
+        if (pause && !toldPauses.has(`${pause.adapter}@${pause.resumeAt}`)) {
+          toldPauses.add(`${pause.adapter}@${pause.resumeAt}`);
+          process.stderr.write(`${sanitizeText(pausedText(pause), 120)} — odw resume ${runId} goes on now\n`);
+        }
         const cp = waiting as { checkpointId?: unknown; title?: unknown } | null | undefined;
         if (!cp || !isCheckpointId(cp.checkpointId) || told.has(cp.checkpointId)) return;
         told.add(cp.checkpointId);
@@ -609,6 +617,10 @@ function cmdStatus(rest: string[]): number {
   const pending = run.pendingCheckpoints ?? [];
   process.stdout.write(`${runId}  [${run.state === "waiting" ? "waiting" : (status.state ?? "?")}]  ${name}\n`);
   if (status.description) process.stdout.write(`  ${status.description as string}\n`);
+  // What a run paused for a spent quota waits for (ODW extension: quotaWait).
+  if (run.pausedFor) {
+    process.stdout.write(`  ${sanitizeText(pausedText(run.pausedFor), 120)} — its agents go on then; odw resume ${runId} goes on now\n`);
+  }
   process.stdout.write(`  dispatched: ${dispatchedCount(events, status)} agent(s)\n`);
   // What its agents spent (ODW extension): as their CLIs reported it, or chars/4 estimates.
   if (run.usage) process.stdout.write(`  usage: ${formatUsage(run.usage)}${estimateNote(run)}\n`);
@@ -1039,7 +1051,10 @@ function cmdList(rest: string[]): number {
     const name = (status.name as string) || ref.workflowName || "";
     // status.json names the checkpoint() a running run waits at (ODW extension).
     const state = status.state === "running" && status.waiting ? "waiting" : String(status.state ?? "?");
-    process.stdout.write(`${ref.runId}  ${state.padEnd(8)}  ${name}\n`);
+    // …and what a run paused for a spent quota waits for (ODW extension: quotaWait).
+    const pausedFor = status.state === "paused" ? pausedForOf(status.pausedFor) : null;
+    const until = pausedFor ? `  ${sanitizeText(pausedText(pausedFor), 120)}` : "";
+    process.stdout.write(`${ref.runId}  ${state.padEnd(8)}  ${name}${until}\n`);
   }
   return 0;
 }
@@ -1120,7 +1135,10 @@ async function cmdResume(rest: string[]): Promise<number> {
         );
       }
       store.writeControl(runId, "resume");
-      process.stderr.write(`resume requested for ${runId}\n`);
+      // A pause for a spent quota (ODW extension: quotaWait) ends at once: its agents retry now.
+      const pausedFor = pausedForOf(store.readStatus(runId).pausedFor);
+      const quota = pausedFor ? ` — it was ${sanitizeText(pausedText(pausedFor), 120)}; its agents go on now` : "";
+      process.stderr.write(`resume requested for ${runId}${quota}\n`);
       return 0;
     }
     // A run waiting at a checkpoint() goes on once someone answers it, not by resume.

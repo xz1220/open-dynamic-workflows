@@ -23,12 +23,13 @@ import { killAllAgentProcesses } from "../adapters/runner.js";
 import type { RunEndState } from "../adapters/types.js";
 import type { WaitingCheckpoint } from "../checkpoint.js";
 import { buildContext, spentTokens, type RunContext } from "../context.js";
-import type { CheckpointRequest } from "../control.js";
+import { PAUSED, RUNNING, type CheckpointRequest } from "../control.js";
 import { RunStopped, WorkflowScriptError, isFatalError } from "../errors.js";
 import { LOG, RUN_FAILED, RUN_FINISHED, RUN_STARTED, RUN_STOPPED, event } from "../events.js";
 import { ReplayJournal } from "../journal.js";
 import { loadWorkflowScript } from "../loader.js";
 import { createPrimitives } from "../primitives.js";
+import type { QuotaPause } from "../quota-wait.js";
 import { redactorFor, type Redactor } from "../redact.js";
 import type { Scheduler } from "../scheduler.js";
 import { FileControl } from "./file-control.js";
@@ -81,6 +82,12 @@ const SIGNAL_GRACE_MS = 10_000;
  * A checkpoint() waiting for a person is shown in status.json as `waiting`
  * (the oldest one, which `odw approve` answers by default) and, when
  * `notify.on` lists "waiting", fires the hooks at once — the run waits on.
+ *
+ * While agents wait for an adapter's spent quota to reset (an ODW extension:
+ * quotaWait), status.json shows the run `paused`, with `pausedFor: { reason:
+ * "quota", adapter, resumeAt }` — the soonest reset. The wait lives in this
+ * process: a worker that dies leaves the run stale, and `odw resume` replays
+ * it. A new `odw resume` ends the wait at once.
  */
 export async function executeRun(runDir: string): Promise<string> {
   const store = new RunStore(dirname(runDir));
@@ -118,8 +125,8 @@ export async function executeRun(runDir: string): Promise<string> {
       if (!end) {
         sink.emit(event(LOG, { message: `${why} — killing the agents and exiting` }));
         sink.emit(event(RUN_STOPPED, { runId }));
-        // No checkpoint gets to withdraw itself here: nothing waits any more.
-        store.updateStatus(runId, { state: "stopped", dispatched: dispatched(), spentTokens: spent(), waiting: null });
+        // No checkpoint (nor quota pause) gets to withdraw itself here: nothing waits any more.
+        store.updateStatus(runId, { state: "stopped", dispatched: dispatched(), spentTokens: spent(), waiting: null, pausedFor: null });
       } else {
         // Nothing may follow the terminal event in events.jsonl: say it in worker.log.
         process.stderr.write(`odw: ${why} — exiting before the run-end hooks finished\n`);
@@ -149,12 +156,23 @@ export async function executeRun(runDir: string): Promise<string> {
     const runRedactor = redactorFor(config);
     redactor = runRedactor;
     sink.redactor = runRedactor;
+    // The state status.json shows: the control's (odw pause|resume|stop) —
+    // and "paused" while agents wait for a spent quota to reset (ODW
+    // extension: quotaWait), whose soonest reset is the run's `pausedFor`.
+    let controlState = RUNNING;
+    const quotaPauses = new Map<string, QuotaPause>();
+    const shownState = (): string => (controlState === RUNNING && quotaPauses.size > 0 ? PAUSED : controlState);
     const control = new FileControl({
       readAction: () => store.readControl(runId),
+      // A new `odw resume` — not one already there — ends a quota pause at once.
+      readRequest: () => store.readControlRequest(runId),
       // checkpoint() answers from `odw approve|reject` and the dashboard.
       readDecisions: () => store.readCheckpointRequests(runId),
       onUnmatchedDecision: (request) => sink.emit(event(LOG, { message: unmatchedDecision(request) })),
-      onState: (state) => store.updateStatus(runId, { state, dispatched: dispatched(), spentTokens: spent() }),
+      onState: (state) => {
+        controlState = state;
+        store.updateStatus(runId, { state: shownState(), dispatched: dispatched(), spentTokens: spent() });
+      },
     });
     const replay = replayJournal(meta);
     const waiting = new Map<number, WaitingCheckpoint>();
@@ -192,6 +210,15 @@ export async function executeRun(runDir: string): Promise<string> {
         // The oldest question still open: the one `odw approve <run>` answers.
         const oldest = [...waiting.values()].sort((a, b) => a.checkpointId - b.checkpointId)[0];
         store.updateStatus(runId, { waiting: oldest ? { ...oldest, title: runRedactor.text(oldest.title) } : null });
+      },
+      onQuotaPause: ({ pause, change }) => {
+        if (change === "started" || change === "extended") quotaPauses.set(pause.adapter, pause);
+        else quotaPauses.delete(pause.adapter);
+        // The soonest reset: when the run goes on. A run ending under its
+        // pause only drops it — its final state comes next.
+        const soonest = [...quotaPauses.values()].sort((a, b) => a.resumeAt - b.resumeAt)[0];
+        const pausedFor = soonest ? { reason: "quota", ...soonest } : null;
+        store.updateStatus(runId, change === "withdrawn" ? { pausedFor } : { state: shownState(), pausedFor });
       },
     });
 

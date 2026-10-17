@@ -397,6 +397,15 @@ export class RunStore {
     const payload = readJsonFile(this.controlPath(runId));
     return payload === null ? null : ((payload.action as string) ?? null);
   }
+  /** The control request whole: its action and when it was written (epoch seconds); null when none was. */
+  readControlRequest(runId: string): { action: string | null; at: number | null } | null {
+    const payload = readJsonFile(this.controlPath(runId));
+    if (payload === null) return null;
+    return {
+      action: typeof payload.action === "string" ? payload.action : null,
+      at: typeof payload.at === "number" ? payload.at : null,
+    };
+  }
   /**
    * Answer a waiting checkpoint() (ODW extension): one line appended to the
    * run's decisions.jsonl, stamped with `at`. Appending rewrites nothing, so

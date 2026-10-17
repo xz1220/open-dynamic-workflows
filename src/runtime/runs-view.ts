@@ -32,6 +32,7 @@ import { addUsage, readUsage, type Usage } from "../adapters/usage.js";
 import type { AgentChanges } from "../changes.js";
 import type { WaitingCheckpoint } from "../checkpoint.js";
 import type { WorkflowEvent } from "../events.js";
+import { pausedForOf, type PausedFor } from "../quota-wait.js";
 import { RunStore, TERMINAL_STATES } from "./run-store.js";
 
 export type AgentState = "running" | "done" | "failed" | "stale";
@@ -184,6 +185,13 @@ export interface RunSummary {
    * otherwise, and absent for Claude Code runs.
    */
   waiting?: WaitingCheckpoint | null;
+  /**
+   * What a "paused" run waits for when its agents wait for an adapter's
+   * spent quota to reset (ODW extension: quotaWait) — `{ reason: "quota",
+   * adapter, resumeAt }`, resumeAt in epoch seconds; null otherwise, and
+   * absent for Claude Code runs.
+   */
+  pausedFor?: PausedFor | null;
 }
 
 export interface RunDetail extends RunSummary {
@@ -608,6 +616,8 @@ export function summaryFrom(runId: string, facts: RunFacts): RunSummary {
     lastActivityTs: fold.lastActivityTs,
     usage: fold.usage ? { ...fold.usage } : null,
     waiting: state === "waiting" ? oldestWaiting(fold) : null,
+    // Only a live paused run waits for a quota; a stale one's worker is gone.
+    pausedFor: state === "paused" ? pausedForOf(status.pausedFor) : null,
   };
 }
 

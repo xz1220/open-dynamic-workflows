@@ -44,6 +44,12 @@ export interface RunSummary {
   usage?: UsageTotals | null;
   /** The oldest checkpoint() waiting for a person, while the run is `waiting`. */
   waiting?: { checkpointId: number; title: string; since: number } | null;
+  /**
+   * While the run is `paused` because its agents wait for an adapter's spent
+   * quota to reset (ODW extension: quotaWait): which adapter, and when the run
+   * goes on (epoch seconds) — "paused until 19:10 (codex quota)". Null otherwise.
+   */
+  pausedFor?: { reason: "quota"; adapter: string; resumeAt: number } | null;
 }
 
 /**
