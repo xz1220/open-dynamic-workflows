@@ -51,6 +51,8 @@ export interface ClaudeRunSourceOptions {
 const RUN_ID = /^[A-Za-z0-9._-]+$/;
 const ID_PREFIX = "cc-";
 const DEFAULT_FRESH_MS = 90_000;
+/** Full terminal folds kept in memory (the runs being viewed), not every run's. */
+const FOLDS_KEPT = 32;
 
 /** A discovered run: where it lives and whether it is still in flight. */
 interface Discovered {
@@ -95,6 +97,10 @@ export class ClaudeRunSource implements RunSource {
   private readonly now: () => number;
   /** Per-run fold keyed by the run's file signatures (terminal: final; live: clock-free scan). */
   private readonly cache = new SigCache<TerminalSummary | LiveScan>();
+  /** Full terminal folds (detail + synthesized events) for the most recently viewed runs. */
+  private readonly folds = new SigCache<Folded>(FOLDS_KEPT);
+  /** runId → location, from the last {@link discover} walk. */
+  private index = new Map<string, Discovered>();
 
   constructor(private readonly opts: ClaudeRunSourceOptions) {
     this.freshMs = opts.freshMs ?? DEFAULT_FRESH_MS;
@@ -160,8 +166,12 @@ export class ClaudeRunSource implements RunSource {
       .map((e) => join(root, e.name));
   }
 
-  /** Every Claude run visible from the configured scope, terminal and live. */
-  private discover(): Discovered[] {
+  /**
+   * Every Claude run visible from the configured scope, terminal and live — a
+   * walk of every project + session dir. Also refreshes the run-location index
+   * that lets {@link find} skip the walk.
+   */
+  protected discover(): Discovered[] {
     const out: Discovered[] = [];
     for (const projDir of this.projectDirs()) {
       for (const sess of safeReaddir(projDir)) {
@@ -170,8 +180,7 @@ export class ClaudeRunSource implements RunSource {
         // terminal journals
         for (const f of safeReaddir(join(sessDir, "workflows"))) {
           if (!f.isFile() || !/^wf_.+\.json$/.test(f.name)) continue;
-          const wid = f.name.slice(0, -".json".length);
-          out.push({ runId: ID_PREFIX + wid, wid, sessDir, kind: "terminal", path: join(sessDir, "workflows", f.name) });
+          out.push(terminalRun(sessDir, f.name.slice(0, -".json".length)));
         }
         // live dirs — running iff no terminal sibling exists yet
         for (const d of safeReaddir(join(sessDir, "subagents", "workflows"))) {
@@ -182,12 +191,25 @@ export class ClaudeRunSource implements RunSource {
         }
       }
     }
+    this.index = new Map(out.map((d) => [d.runId, d]));
     return out;
   }
 
-  /** Locate one run by id within the current scope (used by detail/events/result). */
+  /**
+   * Locate one run by id within the current scope (used by detail/events/result).
+   * The last discovery's index answers in O(1), re-validated against the disk
+   * (a live run may have finished since); only a miss pays for a full walk.
+   */
   private find(runId: string): Discovered | null {
     if (!this.owns(runId)) return null;
+    const known = this.index.get(runId);
+    if (known) {
+      const current = stillThere(known);
+      if (current) {
+        if (current !== known) this.index.set(runId, current);
+        return current;
+      }
+    }
     return this.discover().find((d) => d.runId === runId) ?? null;
   }
 
@@ -218,8 +240,15 @@ export class ClaudeRunSource implements RunSource {
     return entry.kind === "terminal" ? entry.summary : this.foldLive(d, entry).summary;
   }
 
+  /** Detail + events: cached for terminal runs; rebuilt as of now for live ones. */
   private fold(d: Discovered): Folded {
-    return d.kind === "terminal" ? this.foldTerminal(d) : this.foldLive(d, this.scanLive(d), true);
+    if (d.kind === "live") {
+      const scan = this.cache.get(d.runId, this.signature(d), () => this.scanLive(d));
+      return this.foldLive(d, scan.kind === "live" ? scan : this.scanLive(d), true);
+    }
+    const folded = this.folds.get(d.runId, this.signature(d), () => this.foldTerminal(d));
+    // The cached fold is shared: hand out a detail the caller may freely mutate.
+    return { ...folded, detail: { ...folded.detail, agents: folded.detail.agents.map((a) => ({ ...a })) } };
   }
 
   private foldTerminal(d: Discovered): Folded {
@@ -402,6 +431,22 @@ export class ClaudeRunSource implements RunSource {
 }
 
 // --- module helpers ----------------------------------------------------------
+
+function terminalRun(sessDir: string, wid: string): Discovered {
+  return { runId: ID_PREFIX + wid, wid, sessDir, kind: "terminal", path: join(sessDir, "workflows", `${wid}.json`) };
+}
+
+/**
+ * Re-validate an indexed location: a terminal journal must still exist; a live
+ * run must still exist and is upgraded to its terminal journal once that
+ * appears (terminal wins, as in discovery). Null when it is gone.
+ */
+function stillThere(d: Discovered): Discovered | null {
+  if (d.kind === "terminal") return existsSync(d.path) ? d : null;
+  const terminal = terminalRun(d.sessDir, d.wid);
+  if (existsSync(terminal.path)) return terminal;
+  return existsSync(d.path) ? d : null;
+}
 
 function mapTerminalState(status: string): RunDisplayState {
   if (status === "completed") return "done";

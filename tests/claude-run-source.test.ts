@@ -190,6 +190,67 @@ test("one source instance: a write to ANY running agent's transcript revives a s
   }
 });
 
+/** Counts full discovery walks (every project + session dir). */
+class CountingSource extends ClaudeRunSource {
+  walks = 0;
+  protected override discover() {
+    this.walks++;
+    return super.discover();
+  }
+}
+
+test("run lookups use the location index instead of rescanning every project", () => {
+  const root = fixture();
+  try {
+    const src = new CountingSource({ projectsRoot: root, cwd: CWD, scope: "all" });
+    src.listSummaries();
+    assert.equal(src.walks, 1);
+
+    // What the server does per request: exists() (routing) then detail/events/result.
+    assert.equal(src.exists("cc-wf_term1"), true);
+    assert.equal(src.detail("cc-wf_term1")!.name, "my-terminal-wf");
+    assert.ok(src.events("cc-wf_term1", 0).length > 0);
+    assert.equal(src.result("cc-wf_term1").has, true);
+    assert.equal(src.summary("cc-wf_live1")!.state, "running");
+    assert.equal(src.walks, 1, "indexed lookups never walk the projects tree");
+
+    // A live run that finished since the walk is re-validated to its terminal journal.
+    const sess = join(root, encodeProjectDir(CWD), "5fe06326-session");
+    writeFileSync(
+      join(sess, "workflows", "wf_live1.json"),
+      JSON.stringify({ runId: "wf_live1", status: "completed", workflowName: "my-live-wf", startTime: 1780000000000, durationMs: 1, workflowProgress: [] }),
+    );
+    assert.equal(src.detail("cc-wf_live1")!.state, "done");
+    assert.equal(src.walks, 1);
+
+    // A miss (new or unknown run) falls back to one walk, which refreshes the index.
+    mkdirSync(join(sess, "subagents", "workflows", "wf_new"), { recursive: true });
+    assert.equal(src.exists("cc-wf_new"), true);
+    assert.equal(src.walks, 2);
+    assert.equal(src.detail("cc-wf_new")!.provider, "claude");
+    assert.equal(src.walks, 2);
+    assert.equal(src.detail("cc-wf_missing"), null);
+    assert.equal(src.walks, 3);
+
+    // A deleted run is not served from the index.
+    rmSync(join(sess, "workflows", "wf_term1.json"));
+    assert.equal(src.exists("cc-wf_term1"), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a cached terminal detail is not corrupted by a caller mutating it", () => {
+  const root = fixture();
+  try {
+    const src = new ClaudeRunSource({ projectsRoot: root, cwd: CWD, scope: "all" });
+    src.detail("cc-wf_term1")!.agents[0]!.label = "mutated";
+    assert.equal(src.detail("cc-wf_term1")!.agents[0]!.label, "a1");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("scope: 'project' sees only the served repo; 'all' sees every project", () => {
   const root = fixture();
   try {
