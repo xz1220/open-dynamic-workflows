@@ -144,6 +144,58 @@ test("test-fix-loop.js stops after maxRounds when the tests stay red", async () 
   assert.equal(nodes.filter((n) => n.kind === "agent").length, 2);
 });
 
+// A fixer that says it fixed the bug the first time without touching a file —
+// the silent failure `expect` exists for — and really fixes it once told what
+// its previous attempt missed.
+const CLAIMS_FIRST =
+  "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{" +
+  "if(d.includes('did not meet these expectations'))require('fs').writeFileSync('fixed.txt','1');" +
+  "process.stdout.write('patched add()')})";
+
+test("fix-until-green.js: expect catches a fix that never happened and hands the red suite back until it is green", async () => {
+  const { state, result, error, events } = await runExample(
+    "fix-until-green.js",
+    { test: [execPath, "-e", SUITE], retries: 2 },
+    [execPath, "-e", CLAIMS_FIRST],
+  );
+  assert.equal(state, "done", JSON.stringify(error));
+  assert.deepEqual(result, { passed: true, fixed: true, summary: "patched add()" });
+  assert.deepEqual(
+    foldAgents(events).map((n) => [n.kind, n.label, n.state]),
+    [
+      ["command", "tests", "failed"],
+      ["agent", "fixer", "done"],
+      ["command", "fixer: expect", "failed"],
+      ["command", "fixer: expect", "done"],
+    ],
+  );
+  assert.equal(events.find((e) => e.type === "agent_finished")?.attempts, 2);
+});
+
+test("fix-until-green.js reports a suite that stays red with what the fixer missed, not its word", async () => {
+  const { state, result, error, events } = await runExample("fix-until-green.js", {
+    test: [execPath, "-e", "console.error('still broken'); process.exit(1)"],
+    retries: 1,
+  });
+  assert.equal(state, "done", JSON.stringify(error));
+  const r = result as { passed: boolean; reason: string; misses: string[] };
+  assert.equal(r.passed, false);
+  assert.equal(r.reason, "unmet_expectation");
+  assert.equal(r.misses.length, 2);
+  assert.equal(r.misses[0], "a file must change, and none did");
+  assert.match(r.misses[1]!, /must exit 0, and it exited with code 1$/);
+  const failed = events.find((e) => e.type === "agent_failed");
+  assert.equal(failed?.reason, "unmet_expectation");
+  assert.deepEqual(failed?.misses, r.misses);
+});
+
+test("fix-until-green.js starts no agent when the suite is already green", async () => {
+  const { state, result, events } = await runExample("fix-until-green.js", { test: [execPath, "-e", ""] });
+  assert.equal(state, "done");
+  assert.deepEqual(result, { passed: true, fixed: false });
+  assert.equal(events.filter((e) => e.type === "agent_started").length, 0);
+});
+
 test("routing.js classifies, routes, and grades", async () => {
   const { state, result, error } = await runExample("routing.js", {
     request: "Add dark mode to settings",
