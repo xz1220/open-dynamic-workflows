@@ -79,6 +79,10 @@ export interface AgentView {
   failureReason?: string | null;
   /** What the adapter reported spending on this agent. */
   usage?: Usage | null;
+  /** What an isolated (worktree) agent changed; its diff is served separately. */
+  changes?: AgentChanges | null;
+  /** The branch its changes were kept on (`keep: true`), when any. */
+  branch?: string | null;
   label: string;
   phase: string | null;
   state: AgentState;
@@ -88,6 +92,15 @@ export interface AgentView {
   startedAt: number | null;
   finishedAt: number | null;
   durationMs: number | null;
+}
+
+/** The diffstat of a worktree agent's changes (ODW extension). */
+export interface AgentChanges {
+  files: number;
+  insertions: number;
+  deletions: number;
+  /** The stored diff was cut at the size cap. */
+  truncated?: boolean;
 }
 
 export interface RunDetail extends RunSummary {
@@ -255,4 +268,6 @@ export interface AgentResultRecord {
   /** Replayed from an earlier run by `odw resume`. */
   cached?: boolean;
   sourceRunId?: string | null;
+  changes?: AgentChanges | null;
+  branch?: string | null;
 }

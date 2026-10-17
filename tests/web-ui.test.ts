@@ -230,6 +230,7 @@ test("a run view shows pending checkpoints, usage and failure reasons when the s
     cpNote: "",
     tab: "graph",
     selectedAi: 1,
+    reviewAi: null,
     zoom: 1,
     logQuery: "",
     logTypes: new Set(["agent"]),
@@ -264,6 +265,7 @@ test("the Logs tab paints the newest events and pages older ones in", () => {
     cpNote: "",
     tab: "logs",
     selectedAi: null,
+    reviewAi: null,
     zoom: 1,
     logQuery: "",
     logTypes: new Set(["agent", "phase", "log", "run"]),
@@ -290,4 +292,55 @@ test("exec() steps read as commands in the outline, the logs and the drawer", as
   const outline = outlineSource("phase('Test')\nconst r = await exec('npm test')\nawait agent('fix')\n", ["Test"]);
   assert.deepEqual(outline[0]!.ops.map((o) => o.kind), ["agent", "exec"]);
   assert.match(highlightSource("await exec('ls')"), /class="tk-f">exec/);
+});
+
+test("the Changes tab lists agents that left a diff and freezes a host for the diff itself", () => {
+  const view: JobViewState = {
+    cpNote: "",
+    tab: "changes",
+    selectedAi: 0,
+    reviewAi: null,
+    zoom: 1,
+    logQuery: "",
+    logTypes: new Set(["agent"]),
+    logLimit: 600,
+    follow: true,
+    motion: false,
+  };
+  store.focusRun("20260101-000000-aaaaaa");
+  store.run = detail(
+    [
+      agent("fix:auth", "Fix", "done", { agentId: 1, changes: { files: 2, insertions: 40, deletions: 3 }, branch: "odw/r/1-fix-auth" }),
+      agent("survey", "Plan", "done", { agentId: 2 }),
+      agent("fix:cache", "Fix", "done", { agentId: 3, changes: { files: 1, insertions: 0, deletions: 12, truncated: true } }),
+    ],
+    { state: "done" },
+  );
+  const html = renderJob(view, NOW);
+  assert.match(html, /data-tab="changes"[^>]*>.*?<span class="n">2<\/span>/, "the tab counts agents with changes");
+  assert.equal(count(html, /class="rv-item/g), 2, "an agent that changed nothing is not listed");
+  assert.match(html, /class="rv-item on" data-review="0"/, "the first agent with changes is reviewed by default");
+  assert.match(html, /data-copy="odw apply 20260101-000000-aaaaaa --agent 1"/);
+  assert.match(html, /data-copy="git switch odw\/r\/1-fix-auth"/, "a kept branch can be checked out");
+  assert.match(html, /<div class="diff-host"[^>]*data-morph="skip" data-v="20260101-000000-aaaaaa:1\|loading\|en"/);
+  assert.match(html, /<b class="ins">\+40<\/b><b class="del">−15<\/b><\/span><span class="k">lines changed/);
+
+  view.reviewAi = 2;
+  const second = renderJob(view, NOW);
+  assert.match(second, /class="rv-item on" data-review="2"/);
+  assert.match(second, /class="tag warn">truncated/);
+
+  // The drawer, on the graph, summarizes and links to the review.
+  view.tab = "graph";
+  const drawer = renderJob(view, NOW);
+  assert.match(drawer, /<button class="btn sm chg-go" data-review="0">/);
+  assert.match(drawer, /class="ndelta"/, "graph nodes carry their diffstat");
+
+  // A run with no diffs keeps the tab out of the way.
+  store.run = detail([agent("survey", "Plan", "done", { agentId: 2 })], { state: "done" });
+  view.tab = "graph";
+  assert.ok(!renderJob(view, NOW).includes('data-tab="changes"'));
+  view.tab = "changes";
+  assert.match(renderJob(view, NOW), /No changes recorded/);
+  store.focusRun(null);
 });

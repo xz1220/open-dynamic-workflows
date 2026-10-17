@@ -1,0 +1,664 @@
+/* ==================================================================
+   Changes — what worktree agents changed, read like a marked-up proof.
+   Additions take the signal ink, removals the vermilion; the part of a
+   replaced line that actually changed is struck harder. Line numbers and
+   +/− signs are painted from attributes so a copied selection is pure code.
+   ================================================================== */
+
+/* ---- shared bits: counts, the five-cell bar, status marks, paths ---- */
+.dn {
+  display: inline-flex;
+  gap: 7px;
+  font-family: var(--f-mono);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.dn b,
+.rs .v b,
+.ndelta b {
+  font-weight: 600;
+}
+.dn .ins,
+.rs .v .ins,
+.ndelta .ins {
+  color: var(--sig-ink);
+}
+.dn .del,
+.rs .v .del,
+.ndelta .del {
+  color: var(--alarm-ink);
+}
+.rs .v .del {
+  margin-left: 6px;
+}
+.dbar {
+  display: inline-flex;
+  gap: 2px;
+  flex-shrink: 0;
+}
+.dbar i {
+  width: 7px;
+  height: 7px;
+  border-radius: 1.5px;
+  background: var(--line-2);
+  animation: dcell-in var(--t-slow) var(--ease-spring) both;
+}
+.dbar i.a {
+  background: var(--sig);
+}
+.dbar i.d {
+  background: var(--alarm);
+}
+.dbar i:nth-child(2) {
+  animation-delay: 40ms;
+}
+.dbar i:nth-child(3) {
+  animation-delay: 80ms;
+}
+.dbar i:nth-child(4) {
+  animation-delay: 120ms;
+}
+.dbar i:nth-child(5) {
+  animation-delay: 160ms;
+}
+@keyframes dcell-in {
+  from {
+    transform: scale(0.2);
+    opacity: 0;
+  }
+}
+.dk {
+  display: inline-grid;
+  place-items: center;
+  width: 17px;
+  height: 17px;
+  flex-shrink: 0;
+  border-radius: 4px;
+  font-family: var(--f-mono);
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--ink-2);
+  border: 1px solid var(--line-2);
+  background: var(--card);
+}
+.dk-A {
+  color: var(--sig-ink);
+  border-color: var(--sig-line);
+  background: var(--sig-soft);
+}
+.dk-D {
+  color: var(--alarm-ink);
+  border-color: var(--alarm-line);
+  background: var(--alarm-soft);
+}
+.dk-R,
+.dk-C {
+  color: var(--amber-ink);
+  border-color: var(--amber-line);
+  background: var(--amber-soft);
+}
+.dpath {
+  display: flex;
+  min-width: 0;
+  font-family: var(--f-mono);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.dpath .dir {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--faint);
+}
+.dpath .base {
+  flex-shrink: 0;
+  color: var(--ink);
+  font-weight: 500;
+}
+.dnote {
+  margin: 10px 0;
+  font-family: var(--f-mono);
+  font-size: 11.5px;
+  color: var(--mute);
+}
+.dnote code {
+  color: var(--ink-2);
+}
+
+/* ---- the graph node's badge ---- */
+.ndelta {
+  display: inline-flex;
+  gap: 4px;
+  flex-shrink: 0;
+  font-family: var(--f-mono);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- the drawer's summary ---- */
+.chg {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.chg-sum {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+.chg-files {
+  font-family: var(--f-mono);
+  font-size: 11.5px;
+  color: var(--mute);
+}
+.chg-sum .dbar {
+  margin-left: auto;
+}
+.chg-file {
+  display: grid;
+  grid-template-columns: 17px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 0;
+  border-bottom: 1px dashed var(--line);
+}
+.chg-file .dpath {
+  font-size: 11.5px;
+}
+.chg-more {
+  padding: 6px 0 0;
+  font-family: var(--f-mono);
+  font-size: 11px;
+  color: var(--faint);
+}
+.chg-branch {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  font-size: 11.5px;
+  color: var(--mute);
+}
+.chg-branch .ic {
+  width: 14px;
+  height: 14px;
+}
+.chg-go {
+  align-self: flex-start;
+  margin-top: 12px;
+}
+
+/* ---- the Changes tab: agents on the left, the proof on the right ---- */
+.review {
+  display: grid;
+  grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
+  gap: 22px;
+  align-items: start;
+  padding: 24px 32px 56px;
+}
+.review-empty {
+  padding: 24px 32px;
+}
+.review-empty .empty p {
+  max-width: 520px;
+}
+.rv-list {
+  position: sticky;
+  top: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: calc(100vh - 220px);
+  overflow: auto;
+  padding: 2px;
+}
+.rv-total {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  padding: 2px 4px 12px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--line);
+}
+.rv-total .v {
+  font-family: var(--f-display);
+  font-size: 38px;
+  line-height: 1;
+}
+.rv-total .k {
+  flex: 1;
+  font-family: var(--f-mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+.rv-total .dn {
+  width: 100%;
+}
+.rv-item {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  width: 100%;
+  padding: 10px 12px 10px 14px;
+  text-align: left;
+  border-radius: var(--r-sm);
+  border: 1px solid transparent;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  transition:
+    background var(--t-fast) var(--ease-out),
+    border-color var(--t-fast) var(--ease-out),
+    transform var(--t-fast) var(--ease-out);
+}
+.rv-item::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 10px;
+  bottom: 10px;
+  width: 2px;
+  border-radius: 2px;
+  background: var(--ink);
+  transform: scaleY(0);
+  transition: transform var(--t-med) var(--ease-spring);
+}
+.rv-item:hover {
+  background: var(--card);
+  border-color: var(--line);
+}
+.rv-item:active {
+  transform: translateY(1px);
+}
+.rv-item.on {
+  background: var(--card);
+  border-color: var(--line-2);
+  box-shadow: var(--shadow-1);
+}
+.rv-item.on::before {
+  transform: scaleY(1);
+}
+.rv-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.rv-top .gly {
+  width: 13px;
+  height: 13px;
+  flex-shrink: 0;
+}
+.rv-top .lbl {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--f-mono);
+  font-size: 12px;
+  font-weight: 500;
+}
+.rv-sub {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-left: 21px;
+  font-family: var(--f-mono);
+  font-size: 10.5px;
+  color: var(--mute);
+}
+.rv-sub > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rv-sub .dn {
+  font-size: 10.5px;
+  gap: 5px;
+}
+.rv-main {
+  min-width: 0;
+  animation: rv-in var(--t-slow) var(--ease-out) both;
+}
+@keyframes rv-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+.rv-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 14px 24px;
+  margin-bottom: 18px;
+}
+.rv-title {
+  min-width: 0;
+}
+.rv-title h3 {
+  margin: 6px 0 8px;
+  font-family: var(--f-display);
+  font-size: 30px;
+  font-weight: 400;
+  line-height: 1.05;
+  letter-spacing: -0.01em;
+  word-break: break-word;
+}
+.rv-stat {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-family: var(--f-mono);
+  font-size: 11.5px;
+  color: var(--mute);
+}
+.rv-stat .dn {
+  font-size: 13px;
+}
+.rv-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.rv-actions .mono {
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.diff-loading {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 18px 20px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--line);
+  background: var(--card);
+}
+.diff-loading .skel {
+  height: 14px;
+}
+.diff-loading .skel:nth-child(1) {
+  width: 42%;
+}
+.diff-loading .skel:nth-child(2) {
+  width: 68%;
+}
+.diff-loading .skel:nth-child(3) {
+  width: 55%;
+}
+
+/* ---- the diff itself ---- */
+.diff {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.dfile {
+  border-radius: var(--r-md);
+  border: 1px solid var(--line);
+  background: var(--card);
+  box-shadow: var(--shadow-1);
+}
+.dfile > summary {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 10px 14px;
+  list-style: none;
+  cursor: pointer;
+  border-radius: var(--r-md);
+  background: var(--card);
+}
+.dfile[open] > summary {
+  border-bottom: 1px solid var(--line);
+  border-radius: var(--r-md) var(--r-md) 0 0;
+}
+.dfile > summary::-webkit-details-marker {
+  display: none;
+}
+.dfile > summary::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  flex-shrink: 0;
+  margin-right: 2px;
+  border-right: 1.5px solid var(--mute);
+  border-bottom: 1.5px solid var(--mute);
+  transform: rotate(-45deg);
+  transition: transform var(--t-med) var(--ease-spring);
+}
+.dfile[open] > summary::before {
+  transform: rotate(45deg);
+}
+.dfile > summary:hover .base {
+  text-decoration: underline;
+  text-decoration-color: var(--line-2);
+  text-underline-offset: 3px;
+}
+.dfile > summary .dpath {
+  flex: 0 1 auto;
+  overflow: hidden;
+}
+/* What a file was renamed from gives way first when the header is tight. */
+.dfrom,
+.dmode {
+  flex: 0 1000 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--f-mono);
+  font-size: 11px;
+  color: var(--faint);
+}
+.dsp {
+  flex: 1;
+}
+.dfile > .dnote {
+  margin: 0;
+  padding: 12px 16px;
+}
+.dscroll {
+  overflow-x: auto;
+  border-radius: 0 0 var(--r-md) var(--r-md);
+}
+.dfile[open] > .dscroll {
+  animation: dfile-in var(--t-med) var(--ease-out);
+}
+@keyframes dfile-in {
+  from {
+    opacity: 0;
+  }
+}
+.dtab {
+  min-width: 100%;
+  border-collapse: collapse;
+  font-family: var(--f-mono);
+  font-size: 12px;
+  line-height: 1.6;
+  tab-size: 4;
+}
+.dtab td {
+  padding: 0;
+  vertical-align: top;
+}
+.dtab td.o,
+.dtab td.n {
+  width: 1%;
+  min-width: 46px;
+  padding: 0 10px;
+  text-align: right;
+  font-size: 11px;
+  color: var(--faint);
+  background: var(--card-2);
+  user-select: none;
+}
+.dtab td.n {
+  border-right: 1px solid var(--line);
+}
+.dtab td[data-n]::before {
+  content: attr(data-n);
+}
+.dtab td.c {
+  position: relative;
+  padding: 0 18px 0 26px;
+  white-space: pre;
+  color: var(--ink-2);
+}
+.dtab td.c::before {
+  position: absolute;
+  left: 10px;
+  user-select: none;
+  color: var(--faint);
+}
+.dtab tr.add td.c::before {
+  content: "+";
+  color: var(--sig-ink);
+}
+.dtab tr.del td.c::before {
+  content: "−";
+  color: var(--alarm-ink);
+}
+.dtab tr.add td.c {
+  background: var(--sig-soft);
+  color: var(--ink);
+}
+.dtab tr.add td.o,
+.dtab tr.add td.n {
+  background: color-mix(in srgb, var(--sig) 16%, var(--card));
+  color: var(--sig-ink);
+}
+.dtab tr.del td.c {
+  background: var(--alarm-soft);
+  color: var(--ink);
+}
+.dtab tr.del td.o,
+.dtab tr.del td.n {
+  background: color-mix(in srgb, var(--alarm) 13%, var(--card));
+  color: var(--alarm-ink);
+}
+.dtab mark {
+  color: inherit;
+  border-radius: 3px;
+  padding: 1px 0;
+}
+.dtab tr.add mark {
+  background: color-mix(in srgb, var(--sig) 30%, transparent);
+}
+.dtab tr.del mark {
+  background: color-mix(in srgb, var(--alarm) 24%, transparent);
+}
+.dtab tr.dh td {
+  background: var(--card-2);
+  color: var(--mute);
+}
+.dtab tr.dh td.c {
+  padding-top: 5px;
+  padding-bottom: 5px;
+  font-size: 11px;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+.dtab tr.dh:first-child td.c {
+  border-top: 0;
+}
+.dtab tr.dh .rng {
+  color: var(--faint);
+}
+.dtab tr.eof td.c {
+  font-style: italic;
+  font-size: 11px;
+  color: var(--faint);
+}
+.dnotes {
+  margin: 0;
+  padding: 12px 16px;
+  border-radius: var(--r-md);
+  border: 1px dashed var(--line-2);
+  font-family: var(--f-mono);
+  font-size: 11.5px;
+  color: var(--mute);
+  white-space: pre-wrap;
+}
+.dnote.more {
+  padding: 4px 2px;
+}
+
+@media (max-width: 1080px) {
+  .review {
+    grid-template-columns: minmax(0, 1fr);
+    padding: 18px 20px 48px;
+  }
+  .rv-list {
+    position: static;
+    flex-direction: row;
+    max-height: none;
+    overflow-x: auto;
+    padding-bottom: 6px;
+  }
+  .rv-total {
+    flex-direction: column;
+    align-items: flex-start;
+    flex-wrap: nowrap;
+    flex-shrink: 0;
+    border-bottom: 0;
+    border-right: 1px solid var(--line);
+    padding: 2px 14px 2px 4px;
+    margin: 0 4px 0 0;
+  }
+  .rv-total .dn {
+    width: auto;
+  }
+  .rv-item {
+    width: 230px;
+    flex-shrink: 0;
+  }
+}
+@media (max-width: 760px) {
+  .review {
+    padding: 14px 12px 40px;
+  }
+  .dfrom,
+  .dmode {
+    display: none;
+  }
+  .rv-list {
+    flex-direction: column;
+    max-height: 320px;
+    overflow: auto;
+  }
+  .rv-total {
+    flex-direction: row;
+    align-items: baseline;
+    flex-wrap: wrap;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+    padding: 2px 4px 10px;
+    margin: 0 0 4px;
+  }
+  .rv-item {
+    width: 100%;
+  }
+  .rv-title h3 {
+    font-size: 24px;
+  }
+  .dtab td.o {
+    display: none;
+  }
+}

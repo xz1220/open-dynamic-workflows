@@ -1,22 +1,25 @@
-/** Job detail — header + phase stepper, then Graph (live DAG) · Timeline · Logs · Result. */
+/** Job detail — header + phase stepper, then Graph (live DAG) · Timeline · Logs · Result · Changes. */
+import { deltaHtml, diffBar, filePath, pathHtml, statusMark } from "../components/diff";
 import { glyph, pill } from "../components/glyph";
 import { renderJson } from "../components/json";
 import { renderTimeline } from "../components/timeline";
 import { reasonLabel, renderDag } from "../dag";
 import { icons } from "../icons";
-import { t } from "../i18n";
+import { getLang, t, tn } from "../i18n";
 import { store } from "../store";
 import type { AgentView, RunDetail, WorkflowEvent } from "../types";
 import { ACTIVE, TERMINAL, esc, fmtClock, fmtDurMs, fmtDurSec, fmtTokens, fmtUsd } from "../util";
 import { EVT_CLASS, commandDetail, emptyArt } from "./activity";
 
-export type JobTab = "graph" | "timeline" | "logs" | "result";
+export type JobTab = "graph" | "timeline" | "logs" | "result" | "changes";
 
 export interface JobViewState {
   /** Draft note for a checkpoint decision. */
   cpNote: string;
   tab: JobTab;
   selectedAi: number | null;
+  /** The agent whose diff the Changes tab shows (index into run.agents). */
+  reviewAi: number | null;
   zoom: number;
   logQuery: string;
   logTypes: Set<string>;
@@ -114,6 +117,7 @@ function runHead(run: RunDetail, nowSec: number): string {
         )
       : "") +
     (run.usage?.costUsd != null ? stat(fmtUsd(run.usage.costUsd), t("cost")) : "") +
+    changedStat(run, stat) +
     stat(elapsed, t("elapsed")) +
     `</div></div>` +
     `<div class="run-prog"><div class="prog">` +
@@ -123,6 +127,7 @@ function runHead(run: RunDetail, nowSec: number): string {
 }
 
 function tabs(run: RunDetail, tab: JobTab): string {
+  const changed = changedAgents(run);
   const item = (key: JobTab, icon: string, label: string, n?: number) =>
     `<a class="tab${tab === key ? " on" : ""}" href="#/job/${encodeURIComponent(run.runId)}/${key}" data-tab="${key}" data-key="tab-${key}" role="tab" aria-selected="${tab === key}">${icon}${esc(label)}${n != null ? `<span class="n">${n}</span>` : ""}</a>`;
   return (
@@ -131,6 +136,7 @@ function tabs(run: RunDetail, tab: JobTab): string {
     item("timeline", icons.timeline, t("Timeline")) +
     item("logs", icons.logs, t("Logs"), store.runEvents.length) +
     item("result", icons.result, t("Result")) +
+    (changed.length || tab === "changes" ? item("changes", icons.diff, t("Changes"), changed.length) : "") +
     `<i class="ink-bar"></i></nav>`
   );
 }
@@ -199,6 +205,7 @@ function drawer(run: RunDetail, ai: number, nowSec: number): string {
     (a.usage?.costUsd != null ? `<span class="k">${t("cost")}</span><span class="v">${fmtUsd(a.usage.costUsd)}</span>` : "") +
     `</div>` +
     status +
+    changesSection(run, a, ai, rec?.branch) +
     output +
     (evs ? `<div class="drawer-sec">${t("Events")}</div><div class="mini-events">${evs}</div>` : "") +
     `</div></aside>`
@@ -379,6 +386,125 @@ function checkpoints(run: RunDetail, s: JobViewState): string {
     .join("");
 }
 
+// --- changes: what worktree agents changed, to review and apply ---
+
+/** Agents that left a diff, in call order. */
+export function changedAgents(run: RunDetail): Array<{ a: AgentView; ai: number }> {
+  const out: Array<{ a: AgentView; ai: number }> = [];
+  run.agents.forEach((a, ai) => {
+    if (a.agentId != null && a.changes && a.changes.files > 0) out.push({ a, ai });
+  });
+  return out;
+}
+
+/** The agent the Changes tab shows: the chosen one, else the first with changes. */
+export function reviewTarget(run: RunDetail, reviewAi: number | null): { a: AgentView; ai: number } | null {
+  const changed = changedAgents(run);
+  return changed.find((c) => c.ai === reviewAi) ?? changed[0] ?? null;
+}
+
+function changedStat(run: RunDetail, stat: (v: string, k: string) => string): string {
+  let ins = 0;
+  let del = 0;
+  for (const { a } of changedAgents(run)) {
+    ins += a.changes!.insertions;
+    del += a.changes!.deletions;
+  }
+  if (!ins && !del) return "";
+  return stat(`<b class="ins">+${fmtTokens(ins)}</b><b class="del">−${fmtTokens(del)}</b>`, t("lines changed"));
+}
+
+const applyCmd = (run: RunDetail, a: AgentView) => `odw apply ${run.runId} --agent ${a.agentId}`;
+
+/** The drawer's summary of an agent's changes, with the way to review and apply them. */
+function changesSection(run: RunDetail, a: AgentView, ai: number, recordBranch: string | null | undefined): string {
+  const c = a.changes;
+  if (!c || !c.files || a.agentId == null) return "";
+  const parsed = store.agentDiffs.get(`${run.runId}:${a.agentId}`);
+  const SHOWN = 8;
+  const files = parsed
+    ? parsed.files
+        .slice(0, SHOWN)
+        .map((f) => `<div class="chg-file">${statusMark(f)}${pathHtml(filePath(f))}${f.binary ? "" : deltaHtml(f.insertions, f.deletions)}</div>`)
+        .join("") +
+      (parsed.files.length > SHOWN ? `<div class="chg-more">${t("+{n} more files", { n: parsed.files.length - SHOWN })}</div>` : "")
+    : parsed === undefined
+      ? `<div class="chg-file"><span class="skel" style="height:12px;width:64%"></span></div>`
+      : "";
+  const branch = a.branch ?? recordBranch;
+  return (
+    `<div class="drawer-sec">${t("Changes")}<button class="iconbtn sm" data-copy="${esc(applyCmd(run, a))}" aria-label="${esc(t("Copy apply command"))}" data-tip="${esc(t("copies odw apply for this agent"))}">${icons.copy}</button></div>` +
+    `<div class="chg">` +
+    `<div class="chg-sum">${deltaHtml(c.insertions, c.deletions)}<span class="chg-files">${tn(c.files, "{n} file", "{n} files")}</span>${diffBar(c.insertions, c.deletions)}</div>` +
+    files +
+    (c.truncated ? `<p class="dnote">${t("The stored diff was cut at the size cap.")}</p>` : "") +
+    (branch ? `<div class="chg-branch">${icons.branch}<code>${esc(branch)}</code></div>` : "") +
+    `<button class="btn sm chg-go" data-review="${ai}">${icons.diff}${t("Review changes")}</button>` +
+    `</div>`
+  );
+}
+
+function changesTab(run: RunDetail, s: JobViewState): string {
+  const changed = changedAgents(run);
+  const target = reviewTarget(run, s.reviewAi);
+  if (!target) {
+    return (
+      `<div class="review-empty">` +
+      emptyArt(
+        t("No changes recorded"),
+        t("Agents that run with isolation: \"worktree\" keep a diff of what they changed, to review here and apply with odw apply. Agents that work in place edit your files directly — review those with git diff."),
+      ) +
+      `</div>`
+    );
+  }
+  let ins = 0;
+  let del = 0;
+  for (const { a } of changed) {
+    ins += a.changes!.insertions;
+    del += a.changes!.deletions;
+  }
+  const list = changed
+    .map(
+      ({ a, ai }) =>
+        `<button class="rv-item${ai === target.ai ? " on" : ""}" data-review="${ai}" data-key="rv-${ai}" aria-pressed="${ai === target.ai}">` +
+        `<span class="rv-top">${glyph(a.state)}<span class="lbl">${esc(a.label)}</span>${diffBar(a.changes!.insertions, a.changes!.deletions)}</span>` +
+        `<span class="rv-sub"><span>${esc([a.phase, a.adapter].filter(Boolean).join(" · "))}</span>${deltaHtml(a.changes!.insertions, a.changes!.deletions)}</span>` +
+        `</button>`,
+    )
+    .join("");
+  const a = target.a;
+  const c = a.changes!;
+  const key = `${run.runId}:${a.agentId}`;
+  const parsed = store.agentDiffs.get(key);
+  const rec = store.agentResults.get(key);
+  const branch = a.branch ?? rec?.branch;
+  // The diff is painted into this host once per version (main.ts), not on every tick.
+  const version = `${key}|${parsed === undefined ? "loading" : parsed === null ? "none" : "ready"}|${getLang()}`;
+  const head =
+    `<header class="rv-head">` +
+    `<div class="rv-title"><span class="eyebrow">${t("Agent")} #${a.agentId}${a.phase ? ` · ${esc(a.phase)}` : ""}${a.adapter ? ` · ${esc(a.adapter)}` : ""}</span>` +
+    `<h3>${esc(a.label)}</h3>` +
+    `<div class="rv-stat">${deltaHtml(c.insertions, c.deletions)}<span>${tn(c.files, "{n} file", "{n} files")}</span>${diffBar(c.insertions, c.deletions)}` +
+    (c.truncated ? `<span class="tag warn">${t("truncated")}</span>` : "") +
+    `</div></div>` +
+    `<div class="rv-actions">` +
+    `<button class="btn primary" data-copy="${esc(applyCmd(run, a))}" data-tip="${esc(t("applies this diff to your working tree"))}">${icons.terminal}${t("Copy apply command")}</button>` +
+    (branch
+      ? `<button class="btn ghost" data-copy="git switch ${esc(branch)}" data-tip="${esc(t("copy a checkout command"))}">${icons.branch}<span class="mono">${esc(branch)}</span></button>`
+      : "") +
+    `</div></header>`;
+  return (
+    `<div class="review">` +
+    `<aside class="rv-list" aria-label="${esc(t("Agents with changes"))}">` +
+    `<div class="rv-total"><span class="v num">${changed.length}</span><span class="k">${tn(changed.length, "agent changed files", "agents changed files")}</span>${deltaHtml(ins, del)}</div>` +
+    list +
+    `</aside>` +
+    `<section class="rv-main" data-key="rvm-${esc(key)}">${head}` +
+    `<div class="diff-host" data-key="dh-${esc(key)}" data-morph="skip" data-v="${esc(version)}" data-diff="${esc(key)}" data-full="${esc(`odw diff ${run.runId} --agent ${a.agentId}`)}"></div>` +
+    `</section></div>`
+  );
+}
+
 export function renderJob(s: JobViewState, nowSec: number): string {
   const run = store.run;
   if (!run) {
@@ -391,7 +517,9 @@ export function renderJob(s: JobViewState, nowSec: number): string {
         ? renderTimeline(run, s.selectedAi, nowSec) + (s.selectedAi != null ? drawer(run, s.selectedAi, nowSec) : "")
         : s.tab === "logs"
           ? logsTab(s)
-          : resultTab(run);
+          : s.tab === "changes"
+            ? changesTab(run, s)
+            : resultTab(run);
   return (
     `<div class="job" data-key="job-${esc(run.runId)}">${runHead(run, nowSec)}${checkpoints(run, s)}${tabs(run, s.tab)}` +
     `<section class="tab-body" data-tabbody="${s.tab}" data-key="tb-${s.tab}">${body}</section></div>`

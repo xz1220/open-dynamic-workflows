@@ -1255,7 +1255,9 @@
     padding: 16px;
   }
   .runstats {
+    flex-wrap: wrap;
     justify-content: space-between;
+    gap: 14px 18px;
   }
   .run-prog {
     padding: 0 16px;

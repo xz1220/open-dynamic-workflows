@@ -14,7 +14,7 @@
 import { glyph } from "./components/glyph";
 import { t } from "./i18n";
 import type { AgentView, RunDetail } from "./types";
-import { esc, fmtDurSec } from "./util";
+import { esc, fmtDurSec, fmtTokens } from "./util";
 
 export const NODE_W = 196;
 const NODE_H = 58;
@@ -176,7 +176,7 @@ export function renderDag(
       parts.push(
         `<div class="node ${esc(a.state)}${a.kind === "command" ? " cmd" : ""}${sel}${dim}" data-ai="${p.ai}" data-key="n-${p.ai}" tabindex="0" role="button" aria-pressed="${selectedAi === p.ai}" ` +
           `style="left:${p.x}px;top:${p.y}px;width:${NODE_W}px" title="${esc(a.label)}">` +
-          `<div class="h">${glyph(a.state)}<span class="lbl">${a.kind === "command" ? `<span class="prompt">$</span> ` : ""}${esc(a.label)}</span>${a.cached ? `<span class="cached" title="${esc(t("replayed from an earlier run"))}">↺</span>` : ""}</div>` +
+          `<div class="h">${glyph(a.state)}<span class="lbl">${a.kind === "command" ? `<span class="prompt">$</span> ` : ""}${esc(a.label)}</span>${a.changes?.files ? `<span class="ndelta" title="${esc(t("lines changed"))}"><b class="ins">+${fmtTokens(a.changes.insertions)}</b><b class="del">−${fmtTokens(a.changes.deletions)}</b></span>` : ""}${a.cached ? `<span class="cached" title="${esc(t("replayed from an earlier run"))}">↺</span>` : ""}</div>` +
           `<div class="sub">${esc(subLine(a, opts.nowSec))}</div></div>`,
       );
     }
