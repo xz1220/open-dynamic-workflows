@@ -119,7 +119,8 @@ export class Bridge {
         return { value: text, text, adapter: adapter.name, attempts: attempt, notes: plan.notes };
       }
 
-      const value = extractJson(text);
+      // The schema steers extraction to the candidate that satisfies it.
+      const value = extractJson(text, request.schema);
       // `undefined` is extractJson's only "nothing parsed" sentinel; a parsed
       // JSON `null` is a real value — let validate() decide if the schema allows it.
       problems =
