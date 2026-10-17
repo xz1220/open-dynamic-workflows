@@ -318,6 +318,9 @@ odw resume $RUN              # 启动一个新运行,重放每个未改动的 ag
 `--config`、`--runs-root`。看板通过 `GET /api/runs/:id/agents` 和
 `GET /api/runs/:id/agents/:agentId` 提供同样的记录。
 
+分步演练——读取已完成的部分、停掉卡住的、修复、再 resume:
+[`docs/recipes/recover-a-run.md`](docs/recipes/recover-a-run.md)。
+
 ## 看板:观测、检查、对话
 
 看板的视觉像一张印刷品——纸、墨和一种信号色——也可以随时切换到夜间主题。它提供:
@@ -492,6 +495,9 @@ Windows 下的可执行文件探测遵循 `PATHEXT`,所以 `agent.cmd`、`kilo.c
 Slack 和 Discord 的 incoming webhook 能直接渲染(同时设置了 Discord 的
 `allowed_mentions`,一次运行永远不会 @ 到任何人)。看板的设置页会显示配置了哪些
 hook——webhook 只显示协议和主机,因为 URL 的其余部分就是密钥。
+
+Slack、Discord、ntfy 和桌面横幅的现成配置见
+[`docs/recipes/notify.md`](docs/recipes/notify.md)。
 
 ## 工作原理
 

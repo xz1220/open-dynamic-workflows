@@ -353,6 +353,9 @@ deterministic. Resume takes rerun's flags: `--wait`/`--fg`/`-d`/`--timeout`,
 `--adapter`, `--config`, `--runs-root`. The dashboard serves the same records:
 `GET /api/runs/:id/agents` and `GET /api/runs/:id/agents/:agentId`.
 
+A step-by-step walkthrough — read what finished, stop what is stuck, fix, resume:
+[`docs/recipes/recover-a-run.md`](docs/recipes/recover-a-run.md).
+
 ## Dashboard: observe, inspect, chat
 
 The dashboard reads like a printed sheet — paper, ink and one signal colour — and
@@ -546,6 +549,9 @@ same line, so Slack and Discord incoming webhooks render it as is (Discord's
 `allowed_mentions` is set too, so a run never pings anyone). The dashboard's
 settings show which hooks are configured — the webhook as scheme and host only,
 since the rest of its URL is the secret.
+
+Ready-made setups for Slack, Discord, ntfy and desktop banners:
+[`docs/recipes/notify.md`](docs/recipes/notify.md).
 
 ## How it works
 
