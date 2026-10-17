@@ -918,6 +918,10 @@ into the host's `node`, so each target is built on its own runner.
   login, timeout, stall, …). A rate-limited CLI is retried after a backoff that
   honors its retry-after; a spent quota or a failed login fails fast with what to do
   — in `odw logs`, the live view and the dashboard, with the reset time.
+- **Real usage and cost.** The built-in `claude` adapter now reads Claude Code's
+  `stream-json`, so every agent records the tokens and dollars its CLI reported —
+  in `odw status`, the live view and the dashboard — and `--budget` meters real
+  output tokens. A single fan-out wider than `fanOutWarn` (25) says so up front.
 - **Ready-to-work worktrees.** `.worktreeinclude` copies or links `.env`,
   `node_modules` and the like into isolated agents' worktrees, `worktreeSetup` runs
   your bootstrap command, and every agent gets its own `$ODW_PORT`.
