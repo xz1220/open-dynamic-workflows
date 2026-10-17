@@ -95,6 +95,7 @@ import {
   sendJson,
   sendJsonCached,
   writeGuard,
+  logServeError,
 } from "./http-util.js";
 import { webhookOrigin } from "./notify.js";
 import { OdwRunSource } from "./odw-run-source.js";
@@ -184,15 +185,20 @@ export function startServer(options: ServeOptions): Promise<ServeHandle> {
   };
 
   return new Promise<ServeHandle>((resolve, reject) => {
-    server.on("error", (err: NodeJS.ErrnoException) => {
+    const onListenError = (err: NodeJS.ErrnoException) => {
       stopBackground(); // a server that never listened must not leave its watcher behind
       if (err.code === "EADDRINUSE") {
         reject(new Error(`port ${port} is already in use — try \`odw serve --port <n>\``));
       } else {
         reject(err);
       }
-    });
+    };
+    server.once("error", onListenError);
     server.listen(port, host, () => {
+      // Once listening, an error (EMFILE on accept, …) is logged, not fatal:
+      // the listen-failure handler must not tear the live feed down.
+      server.off("error", onListenError);
+      server.on("error", (err) => logServeError("server error", err));
       const addr = server.address();
       const boundPort = typeof addr === "object" && addr ? addr.port : port;
       const shown = host === "0.0.0.0" || host === "::" ? "localhost" : host;

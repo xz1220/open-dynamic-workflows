@@ -48,6 +48,22 @@ test("executeRun captures a thrown workflow as failed", async () => {
   }
 });
 
+test("executeRun records a workflow that throws a non-Error value as failed", async () => {
+  const { root, store } = setup();
+  try {
+    for (const thrown of ["null", "undefined", "'plain string'", "42"]) {
+      const script = join(root, "odd.js");
+      writeFileSync(script, `export const meta = { name: 'o', description: 'd' }\nthrow ${thrown}`);
+      const id = store.create({ script, args: null, source: root });
+      const state = await executeRun(store.runDir(id));
+      assert.equal(state, "failed", `throw ${thrown}`);
+      assert.equal(typeof store.readError(id)?.error, "string", `throw ${thrown}`);
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("executeRun drives a real agent call through a mock adapter", async () => {
   const { root, store } = setup();
   try {

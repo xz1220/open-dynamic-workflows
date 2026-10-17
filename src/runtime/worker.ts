@@ -207,10 +207,12 @@ export async function executeRun(runDir: string): Promise<string> {
       store.updateStatus(runId, { state: "stopped", dispatched: dispatched(), spentTokens: spent() });
       end = { state: "stopped", error: outcome.message };
     } else {
-      const e = outcome as Error;
-      const message = e.message ?? String(outcome);
+      // A script may throw anything — `throw null` included — so never read
+      // properties off the outcome without checking what it is.
+      const message = errorMessage(outcome);
+      const stack = outcome instanceof Error ? (outcome.stack ?? null) : null;
       sink.emit(event(RUN_FAILED, { runId, error: message }));
-      store.writeError(runId, { error: message, stack: e.stack ?? null });
+      store.writeError(runId, { error: message, stack });
       store.updateStatus(runId, { state: "failed", dispatched: dispatched(), spentTokens: spent() });
       end = { state: "failed", error: message };
     }
