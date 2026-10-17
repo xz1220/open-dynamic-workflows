@@ -259,6 +259,7 @@ function persist(
   if (written.shadowWarning) {
     err.write(`  ${p.err("warning:")} ${written.shadowWarning}\n`);
   }
-  err.write(p.dim("  try it: odw run <workflow.js>") + "\n");
+  err.write(p.dim(`  check it: odw doctor --smoke   (one real prompt to ${name})`) + "\n");
+  err.write(p.dim("  then try: odw run <workflow.js>") + "\n");
   return 0;
 }
