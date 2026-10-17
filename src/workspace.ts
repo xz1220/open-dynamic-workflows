@@ -19,19 +19,22 @@
  *   - the source must be a git repository with at least one commit; asking for
  *     isolation elsewhere fails the run with an actionable ConfigError
  *   - the worktree is a clean checkout of the base commit — the agent sees the
- *     last commit, not any uncommitted edits in the source tree
+ *     last commit, not any uncommitted edits in the source tree. What a
+ *     checkout lacks (`.env`, `node_modules`, …) `.worktreeinclude` brings in
+ *     and `worktreeSetup` builds, before the agent starts (./worktree-setup)
  *   - submodules are NOT initialised (their directories are empty), and
  *     absolute symlinks are checked out verbatim — a link that points back
  *     into the source tree escapes the isolation if the agent writes through it
  */
 
 import { execFile } from "node:child_process";
-import { mkdtemp, open, realpath, rm } from "node:fs/promises";
+import { mkdtemp, open, realpath, rm, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
 
 import { ConfigError } from "./errors.js";
+import { prepareWorktree, type WorktreeSetupOptions } from "./worktree-setup.js";
 
 const run = promisify(execFile);
 
@@ -77,11 +80,17 @@ async function readCapped(path: string, cap: number): Promise<string> {
   }
 }
 
-/** Open a workspace, run `fn` inside it, then clean up (worktree mode only). */
+/**
+ * Open a workspace, run `fn` inside it, then clean up (worktree mode only). A
+ * new worktree is made ready first — `.worktreeinclude`, then the `setup`
+ * command, see {@link prepareWorktree} — and a failure there fails the call
+ * with a recoverable WorktreeSetupError, after the same cleanup.
+ */
 export async function withWorkspace<T>(
   source: string,
   mode: WorkspaceMode,
   fn: (workspace: Workspace) => Promise<T>,
+  setup: WorktreeSetupOptions = {},
 ): Promise<T> {
   if (mode === "inplace") {
     return fn({ path: source, source, diff: async () => "" });
@@ -142,9 +151,14 @@ export async function withWorkspace<T>(
       return readCapped(out, DIFF_CAP_BYTES);
     },
   };
+  // The links .worktreeinclude made to the source tree go first, so removing
+  // the worktree can never reach through one into the source.
+  const links: string[] = [];
   try {
+    await prepareWorktree(top, work, wsPath, setup, links);
     return await fn(ws);
   } finally {
+    for (const link of links) await unlink(link).catch(() => {});
     // An agent may have locked its worktree; unlock (best-effort), then
     // remove with double --force (dirty AND locked); if git still refuses,
     // delete the tree and prune the stale registration.

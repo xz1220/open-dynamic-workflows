@@ -36,7 +36,9 @@ agent(prompt, opts?) -> Promise<unknown>
   就是 source 目录本身）。要求 source 是有提交的 git 仓库；agent 看到 HEAD，不包含
   未提交改动。调用结束后清理 worktree，不把改动合入 source。`agent()` 只返回回复，
   不返回 diff 或可保留的 worktree 路径；需要保留的交付物应进入回复，或显式保存到临时
-  worktree 之外。
+  worktree 之外。agent 启动前，`.worktreeinclude` 会补上检出缺少的文件（`.env`、
+  `node_modules` 等），然后运行 `worktreeSetup`——见
+  [隔离 worktree](#隔离-worktree-与-agent-环境)。
 
 返回回复文本，设了 `schema` 则返回校验过的 JSON 值。CLI 出错或 schema 重试耗尽会抛错；
 这些可恢复失败在 `parallel`/`pipeline` 内变成 `null`。停止请求、估算预算耗尽和 agent
@@ -178,7 +180,7 @@ Claude Code 的 Workflow 工具没有 `exec` 全局（`validate()` 会对此给�
   Windows 上，`npm` 这类批处理文件只能经 shell 运行：请用字符串形式。
 - **opts.cwd** —— 工作目录。默认是本次运行的源目录（agent 运行的地方）；相对路径按它
   解析。
-- **opts.env** —— 额外的环境变量，叠加在 worker 自身环境之上。
+- **opts.env** —— 额外的环境变量，叠加在 worker 自身环境和本次运行的 `ODW_RUN_ID` 之上。
 - **opts.input** —— 写入 stdin 的文本；不传则 stdin 立即关闭。
 - **opts.timeout** —— 秒，默认 `600`。超时后命令连同它启动的所有进程一起被杀，结果里
   `timedOut: true`（同时 `exitCode: null`、`signal: "SIGKILL"`）。
@@ -210,6 +212,44 @@ await exec(['git', 'diff', '--stat'], { check: true }) // 退出码不为 0 时�
 
 命令以 worker 自身的权限运行——与脚本本身同等的信任；`exec` 不提供沙箱。ODW 仓库里的
 `examples/test-fix-loop.js` 就是这个循环的完整 workflow。
+
+## 隔离 worktree 与 agent 环境
+
+隔离的 agent（`isolation: "worktree"`）从 HEAD 的干净检出开始，所以 git 不跟踪的东西——
+`.env`、`.venv`、`node_modules`——在那里都不存在。agent 启动前分两步把 worktree 准备好：
+
+1. **`.worktreeinclude`**：放在仓库根目录，用 `.gitignore` 语法（模式相对根目录，`#`
+   注释，`!` 取反）列出要带进来的东西：git 不跟踪、且被某一行匹配到的每个文件或目录，都会
+   复制进 worktree。Claude Code 也读这个文件，但只复制被 gitignore 的文件；ODW 连单纯
+   未跟踪的文件也复制。以 `symlink:` 开头的行（**ODW 扩展**）把匹配到的东西链接到源目录
+   而不是复制——对大目录（`symlink: node_modules`）瞬间完成，但它是共享的：agent 往里写
+   的东西会落到源目录。`.git` 永远不复制；超过 100 MB 的文件会被跳过，并在日志里点名。
+2. **`worktreeSetup`**（**ODW 扩展**；见适配器参考）在 agent 的工作区里运行——字符串
+   交给平台 shell，数组作为 argv——超过 `worktreeSetupTimeout` 秒（默认 600）就被杀掉。
+   setup 失败或超时，会像 CLI 出错一样让这个 agent 失败（可恢复：在 `parallel`/`pipeline`
+   里变成 `null`），错误里带着它输出的结尾。
+
+一次调用的每次尝试（schema 重试、卡死重启）都会得到一个新的 worktree，并以同样方式准备。
+
+每个 agent 进程——不论是否隔离——都会拿到三个变量（**ODW 扩展**）：
+
+| 变量 | 值 |
+| --- | --- |
+| `ODW_RUN_ID` | 本次运行的 id |
+| `ODW_AGENT_ID` | 这个 agent 的 id，与它的事件和 `odw agents` 里的一致 |
+| `ODW_PORT` | 来自 `portRange`（默认 41000–41999）的一个端口，本次运行中没有其他正在运行的 agent 占用它——已经有程序在监听的端口会被跳过——直到这次调用结束都归它所有 |
+
+这样并行的 agent 各自起服务也不会冲突：
+
+```js
+await parallel(['grid', 'list'].map((layout) => () =>
+  agent(`Build the ${layout} layout, start the dev server on port $ODW_PORT and check that the page renders.`,
+    { isolation: 'worktree', label: layout })))
+```
+
+当本次运行中正在运行的 agent 占满了整个端口范围，下一个 agent 就不带 `ODW_PORT` 运行，
+运行日志会说明这一点：请让 `portRange` 比 `concurrency` 更宽。worktree setup 拿到同样的
+三个变量；`exec()` 命令拿到 `ODW_RUN_ID`。
 
 ## schema
 

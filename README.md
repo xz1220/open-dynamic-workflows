@@ -250,7 +250,7 @@ private runtime behavior need the following checks before migration:
 | Nested `workflow()` | Implemented for one level, sharing the parent's scheduler, control and budget. Flatten deeper nesting. |
 | Model selection | Pass `agent(..., {model})` using that CLI's model ID. `meta.model` and phase metadata do not set execution defaults; an adapter without model routing support emits a note. |
 | `agentType` | A persona added to the prompt. It does not load a host's named subagent configuration or select an adapter. |
-| Worktree isolation | Starts from committed HEAD, excludes uncommitted edits, and cleans up afterward. Changes are not merged and `agent()` returns the reply, not a diff; put required deliverables in that reply or persist them explicitly. |
+| Worktree isolation | Starts from committed HEAD, excludes uncommitted edits, and cleans up afterward. Changes are not merged and `agent()` returns the reply, not a diff; put required deliverables in that reply or persist them explicitly. `.worktreeinclude` is honored (ODW copies untracked files too, not only gitignored ones); its `symlink:` lines, `worktreeSetup` and the agents' `ODW_PORT` are ODW extensions — see [Isolated worktrees](#isolated-worktrees-and-agent-ports). |
 | Budget | Estimates output tokens as `ceil(chars / 4)` over every reply, schema retries included (inputs and failed calls are not). The guard runs before each dispatch and each schema retry; once the target is spent the run ends and agents still running are stopped. |
 | JSON Schema | Supports the [documented subset](skills/open-dynamic-workflows/references/primitives.md#schema). Unknown constraints such as `$ref`, `const` and `oneOf` are not enforced. Use explicit object/array types and supported constraints. |
 | Script trust | Run trusted scripts only: a run executes the workflow body as ordinary JavaScript. Loading parses metadata as a pure literal without evaluating it; validation and compatibility warnings are not a sandbox. |
@@ -611,6 +611,61 @@ since the rest of its URL is the secret.
 
 Ready-made setups for Slack, Discord, ntfy and desktop banners:
 [`docs/recipes/notify.md`](docs/recipes/notify.md).
+
+### Isolated worktrees and agent ports
+
+`agent(prompt, { isolation: "worktree" })` runs that agent in a throwaway git
+worktree: a clean checkout of HEAD, without the `.env`, `.venv` or
+`node_modules` your source tree has. Two things make it ready before the agent
+starts:
+
+- **`.worktreeinclude`** at the repository root — the file Claude Code reads
+  too — lists what to bring in, in `.gitignore` syntax. Every file or directory
+  git does not track that a line matches is copied into the worktree (Claude
+  Code copies only gitignored files; ODW copies merely untracked ones as well).
+  `.git` is never copied, and a file over 100 MB is left out with a log line. A
+  `symlink:` prefix (**ODW extension**) links what the line matches instead of
+  copying it: instant for a heavy directory, but shared — what an agent writes
+  there lands in your source tree.
+- **`worktreeSetup`** (**ODW extension**) runs in the agent's workspace once the
+  files are in: a string through the platform shell, an array as an argv. It is
+  killed after `worktreeSetupTimeout` seconds (600 by default); a setup that
+  fails or times out fails that agent — not the run — with the end of its
+  output in the error.
+
+```gitignore
+# .worktreeinclude
+.env
+.env.local
+config/secrets.json
+symlink: node_modules
+```
+
+```jsonc
+{
+  "worktreeSetup": "npm run codegen", // or an argv, e.g. ["uv", "sync"]
+  "worktreeSetupTimeout": 600,
+  "portRange": [41000, 41999]
+}
+```
+
+Every agent process — isolated or not — also gets `ODW_RUN_ID`, `ODW_AGENT_ID`
+and `ODW_PORT` (**ODW extension**). `ODW_PORT` comes from `portRange`; no other
+running agent of the run holds it (ports something already listens on are
+passed over), and it stays the agent's until its call settles. So agents
+running side by side can each start a dev server:
+
+```js
+await parallel(['grid', 'list'].map((layout) => () =>
+  agent(`Build the ${layout} layout, start the dev server on port $ODW_PORT and check that the page renders.`,
+    { isolation: 'worktree', label: layout })))
+```
+
+The setup command gets the same three variables, and `exec()` commands get
+`ODW_RUN_ID`. Keep `portRange` wider than `concurrency`: an agent started while
+the others hold every port runs without `ODW_PORT`, and the run's log says so.
+Each attempt of a call (a schema retry, a stall restart, a rate-limit retry)
+starts from a fresh worktree, prepared the same way.
 
 ## How it works
 

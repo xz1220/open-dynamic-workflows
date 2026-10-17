@@ -126,6 +126,7 @@ export async function executeRun(runDir: string): Promise<string> {
     const replay = replayJournal(meta);
     ctx = buildContext(config, {
       source: meta.source as string | undefined,
+      runId,
       args,
       sink,
       control,

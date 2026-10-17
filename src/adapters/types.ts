@@ -111,6 +111,16 @@ export interface Settings {
   claudeJobsScope: "all" | "project";
   /** Hooks fired when a run ends; `null` => none. */
   notify: NotifySettings | null;
+  /**
+   * A command run in each new isolated worktree before its agent starts (an
+   * ODW extension): a string runs through the platform shell, an array is an
+   * argv run without one; `null` => none.
+   */
+  worktreeSetup: string | string[] | null;
+  /** Seconds the worktree setup may run before it is killed and its agent fails. */
+  worktreeSetupTimeout: number;
+  /** Where each running agent's `ODW_PORT` comes from: `[first, last]`, inclusive (an ODW extension). */
+  portRange: [number, number];
 }
 
 /** The terminal states a run can end in, and that notify hooks can fire on. */

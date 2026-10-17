@@ -44,7 +44,10 @@ other primitive organizes calls to it.
   uncommitted changes. The worktree is cleaned up after the call and changes
   are not merged into the source. `agent()` returns only the reply, not a diff
   or a persistent worktree path: include required deliverables in the reply or
-  explicitly save them outside the temporary worktree.
+  explicitly save them outside the temporary worktree. Before the agent starts,
+  `.worktreeinclude` brings in what a checkout lacks (`.env`, `node_modules`, …)
+  and `worktreeSetup` runs — see
+  [isolated worktrees](#isolated-worktrees-and-the-agent-environment).
 
 Returns the reply text, or the validated JSON value when `schema` is set. CLI
 errors and exhausted schema retries throw. Inside `parallel`/`pipeline`, these
@@ -205,7 +208,8 @@ script's own `exec` binding takes precedence over the injected one.
   as `npm` run only through the shell: use the string form.
 - **opts.cwd** — the working directory. Defaults to the run's source directory
   (where agents run); a relative path resolves against it.
-- **opts.env** — extra variables, layered over the worker's environment.
+- **opts.env** — extra variables, layered over the worker's environment and
+  the run's `ODW_RUN_ID`.
 - **opts.input** — text written to stdin; without it, stdin is closed at once.
 - **opts.timeout** — seconds, default `600`. On expiry the command is killed
   together with every process it started; the result has `timedOut: true`
@@ -244,6 +248,53 @@ await exec(['git', 'diff', '--stat'], { check: true }) // throws ExecError unles
 The command runs with the worker's own permissions — the same trust as the
 script itself; `exec` adds no sandbox. The ODW repository's
 `examples/test-fix-loop.js` is this loop as a complete workflow.
+
+## Isolated worktrees and the agent environment
+
+An isolated agent (`isolation: "worktree"`) starts in a clean checkout of HEAD,
+so whatever git does not track — `.env`, `.venv`, `node_modules` — is missing
+there. Two steps make the worktree ready before the agent starts:
+
+1. **`.worktreeinclude`** at the repository root lists what to bring in, in
+   `.gitignore` syntax (patterns relative to the root, `#` comments, `!`
+   negations): every file or directory git does not track that a line matches
+   is copied into the worktree. Claude Code reads the same file, but copies
+   only gitignored files; ODW copies merely untracked ones too. A line starting
+   `symlink:` (**ODW extension**) links what it matches to the source instead
+   of copying it — instant for a heavy directory (`symlink: node_modules`), but
+   shared: what an agent writes there lands in the source tree. `.git` is never
+   copied, and a file over 100 MB is left out with a log line naming it.
+2. **`worktreeSetup`** (**ODW extension**; see the adapters reference) runs in
+   the agent's workspace — a string through the platform shell, an array as an
+   argv — and is killed after `worktreeSetupTimeout` seconds (600 by default).
+   A setup that fails or times out fails that agent like a CLI error
+   (recoverable: `null` inside `parallel`/`pipeline`), with the end of its
+   output in the error.
+
+Each attempt of a call (a schema retry, a stall restart) gets a fresh worktree,
+prepared the same way.
+
+Every agent process — isolated or not — gets three variables (**ODW
+extension**):
+
+| Variable | Value |
+| --- | --- |
+| `ODW_RUN_ID` | the run's id |
+| `ODW_AGENT_ID` | the agent's id, as in its events and `odw agents` |
+| `ODW_PORT` | a port from `portRange` (default 41000–41999) that no other running agent of the run holds — ports something already listens on are passed over — kept until the call settles |
+
+So agents running side by side can each start a server without colliding:
+
+```js
+await parallel(['grid', 'list'].map((layout) => () =>
+  agent(`Build the ${layout} layout, start the dev server on port $ODW_PORT and check that the page renders.`,
+    { isolation: 'worktree', label: layout })))
+```
+
+When this run's running agents hold every port of the range, the next one runs
+without `ODW_PORT` and the run's log says so: keep `portRange` wider than
+`concurrency`. The worktree setup gets the same three variables; `exec()`
+commands get `ODW_RUN_ID`.
 
 ## schema
 
