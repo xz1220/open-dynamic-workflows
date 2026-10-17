@@ -226,7 +226,7 @@ control flow (loops, `if`, dedup) — no imports:
 
 | Primitive | Role |
 | --- | --- |
-| `agent(prompt, opts?)` | Run one coding agent on a subtask. The only verb that does work. Returns its text, or a validated object when `opts.schema` is set. |
+| `agent(prompt, opts?)` | Run one coding agent on a subtask. The only verb that does work. Returns its text, or a validated object when `opts.schema` is set. With `opts.expect` its work is checked — a command exits 0, files changed, the reply matches — and retried, told what it missed; see [Check an agent's work](#check-an-agents-work-odw-extension) (**ODW extension**). |
 | `parallel(thunks)` | Run a batch concurrently and wait for all of it (**barrier**). Recoverable failures become `null`; stop, budget, and dispatch-limit errors abort the run. |
 | `pipeline(items, ...stages)` | Stream each item through the stages independently (**no barrier**). Each stage gets `(prev, item, index)`. |
 | `phase(title, opts?)` / `log(msg)` | Group progress under a phase / emit a progress line. `opts` — `{ adapter, model }` — gives the phase's agents an adapter and a model (**ODW extension**; see [per-phase adapters](#per-phase-adapters-model-tiers-and-fallback-chains-odw-extension)). |
@@ -242,6 +242,54 @@ Use **`parallel`** when the next step needs the whole batch at once (dedup,
 tally, synthesis); **`pipeline`** for multi-stage work (the default). Keep
 reductions order-independent — branching on *which agent finished first* breaks
 reproducibility. Full reference: [`skills/open-dynamic-workflows/references/primitives.md`](skills/open-dynamic-workflows/references/primitives.md).
+
+### Check an agent's work (ODW extension)
+
+A headless agent can "succeed" without doing the work: it says it fixed the bug
+and never touched a file, or that the tests pass while they are still red. Rather
+than asking the model whether it did it, say what must hold — odw checks it once
+the agent has replied (and its `schema`, if any, validated):
+
+```js
+const summary = await agent('Fix the failing tests in src/parser.', {
+  expect: {
+    command: 'npm test',        // must exit 0 in the agent's workspace (timeout: 600 s)
+    changes: true,              // some file must change (false: none may)
+    files: ['src/parser/**'],   // each glob must match a file it changed or created
+    match: '^Fixed',            // a regular expression the reply must match
+  },
+})
+```
+
+Work that misses runs again — once by default (`expectRetries`, per call or in
+the config) — with what it missed appended to its prompt, a failed command's
+output included. If it still misses, `agent()` throws a recoverable error (a
+`null` slot in `parallel()`) carrying `reason: "unmet_expectation"` and `misses`,
+one line per check — as do its `agent_failed` event, `odw logs`, the live view
+and `/api/runs/:id`:
+
+```text
+agent_failed    (Fix) fixer — [unmet_expectation] did not meet: `npm test` must exit 0, and it exited with code 1
+```
+
+- **What the agent changed** is read from git, relative to its workspace. In
+  place, it is what differs from the source tree as it was before the agent
+  started — your own uncommitted edits and odw's run directory are left out, the
+  agent's commits count — so edits another in-place agent makes meanwhile count
+  too: isolate when that matters. With `isolation: "worktree"`, it is the change
+  odw keeps as the agent's diff, and a retry starts over in a fresh worktree
+  whose change replaces the earlier one.
+- **The command** runs as an `exec()` step under the agent (its events carry
+  `forAgentId`), after the change is read, so what it writes is never the
+  agent's work; a stop kills it.
+- **Silent failures are typed without opting in:** an empty reply fails with
+  `reason: "empty_reply"` (`allowEmpty: true` accepts one), and a Claude Code
+  reply that claims success while its `result` lists `permission_denials` fails
+  with `reason: "permission"`, naming the refused calls.
+
+Claude Code's Workflow tool ignores `expect`, so there the checks do not run.
+[`examples/fix-until-green.js`](examples/fix-until-green.js) lets `expect` run a
+fix-until-the-tests-pass loop.
 
 ## Compatibility and migration
 
@@ -638,8 +686,9 @@ the event and final-text path explicitly:
 }
 ```
 
-**ODW extension:** a JSON output can also say what a run spent and whether the
-CLI itself reported a failure. The built-in `claude` adapter is declared this way:
+**ODW extension:** a JSON output can also say what a run spent, whether the CLI
+itself reported a failure, and which tool calls it refused the agent. The
+built-in `claude` adapter is declared this way:
 
 ```jsonc
 "output": {
@@ -649,15 +698,22 @@ CLI itself reported a failure. The built-in `claude` adapter is declared this wa
   "select": "last",
   "usagePath": ["usage"],         // token counts, in a usageEvent (default: eventType)
   "costPath": ["total_cost_usd"], // US dollars, in the same event
-  "errorPath": ["is_error"]       // true, a message or an error object: the run failed with it
+  "errorPath": ["is_error"],      // true, a message or an error object: the run failed with it
+  "deniedPath": ["permission_denials"] // refused tool calls: a reply that claims success with any fails ("permission")
 }
 ```
+
+Under `acceptEdits`, Claude Code refuses headless what it would have asked about —
+a shell command that is not allowlisted, say — and the reply may still claim
+success; the refusals are what `deniedPath` reads. Allow what your agents need in
+the adapter's `permissionArgs` for their tier; to accept such replies after all,
+re-declare the adapter's `output` without `deniedPath`.
 
 Usage from every `usageEvent` adds up; it is normalized across the CLIs' field
 names (Anthropic's, OpenAI's, Codex's — see
 [`src/adapters/usage.ts`](src/adapters/usage.ts)). A CLI that prints one JSON
 document instead takes `{ "format": "json", "textPath": […], "usagePath": […],
-"costPath": […], "errorPath": […] }`; a whole number in a path indexes an array
+"costPath": […], "errorPath": […], "deniedPath": […] }`; a whole number in a path indexes an array
 (negative: from its end). A failure reported at `errorPath` is classified like
 any failed run — whatever the exit status — so a rate limit is retried and a spent
 quota says when it resets. When the declared text is not in the output — a CLI
@@ -890,7 +946,9 @@ long test run inside one tool call prints nothing either.
 **ODW extension.** Every failed agent is classified from its CLI's exit status
 and the end of its output: `rate_limit`, `quota`, `auth`, `timeout`, `stalled`,
 `not_found` (the CLI could not start), `permission` (a tool call or approval was
-refused) or `exit`. The class is the `reason` on the `agent_failed` event (with
+refused) or `exit` — and two classes for runs that "succeeded" without the
+evidence: `empty_reply` and `unmet_expectation` (see
+[Check an agent's work](#check-an-agents-work-odw-extension)). The class is the `reason` on the `agent_failed` event (with
 `retryAfter`, in seconds, when the CLI said when to come back), the agent's
 `failureReason` in the dashboard and `/api/runs/:id`, and it shows in the live
 view and `odw logs`:
@@ -923,7 +981,10 @@ Claude Code reports such errors in its output, often with exit 0: its stream-jso
 reached`, `Claude AI usage limit reached|…`), and that counts as the failure it
 names. In text mode (a text adapter, or JSON output that fell back to its raw
 stdout), a short reply that is nothing but such a rate-limit, quota or login error
-counts as that failure too — never as the agent's answer.
+counts as that failure too — never as the agent's answer. A `result` that claims
+success while its `permission_denials` list tool calls headless mode refused is a
+`permission` failure naming them, and an empty reply is an `empty_reply` one;
+neither is retried.
 
 The wording ODW recognizes — collected from each built-in CLI's source and issue
 tracker — lives in one table,
@@ -1308,6 +1369,7 @@ Runnable, plain-JS workflows in [`examples/`](examples/):
 | [`codex-claude-loop.js`](examples/codex-claude-loop.js) | two rival CLIs in a turn-based duel: Claude implements, Codex reviews, repeat until sign-off |
 | [`agent-daily-digest.js`](examples/agent-daily-digest.js) | discover sources → extract in parallel → synthesize → verify |
 | [`test-fix-loop.js`](examples/test-fix-loop.js) | run the tests with `exec()` → an agent fixes the failures → re-run until green (ODW only) |
+| [`fix-until-green.js`](examples/fix-until-green.js) | the same loop with `expect`: odw runs the tests after the agent replies and hands a red suite — or a "fix" that changed nothing — back to it, then fails with what it missed (ODW only) |
 | [`plan-approve-execute.js`](examples/plan-approve-execute.js) | an agent drafts a plan → a person approves it at a `checkpoint()` (a rejection with a note re-plans) → parallel execution → report (ODW only) |
 
 ## Develop
@@ -1373,6 +1435,11 @@ upgrading, is in [`CHANGELOG.md`](CHANGELOG.md):
   not check is named in the run's log with where it is, never silently skipped —
   `"schemaKeywords": "strict"` refuses such calls (ODW extensions; see
   [Structured output](#structured-output-odw-extension)).
+- **Evidence of success.** `agent(…, { expect })` checks an agent's work instead of
+  taking its word — a command exits 0, files changed, the reply matches — and hands
+  misses back once before failing with `reason: "unmet_expectation"` and what it
+  missed. Empty replies and Claude Code's `permission_denials` are typed failures
+  too (ODW extensions; see [Check an agent's work](#check-an-agents-work-odw-extension)).
 - **Permission tiers.** Every agent runs `read`, `edit` (the default, unchanged) or
   `full`, mapped to each CLI's own flags: review and research fan-outs that cannot
   touch the tree (`--permissions read`, `agent(…, { permissions: 'read' })`), full
@@ -1472,7 +1539,7 @@ runs end-to-end (plan → search → extract → vote → report).
 Ranked by what users of parallel coding agents report needing
 ([research](docs/research/user-needs-2026-10.md)): adapter-reported token usage and
 cost for more CLIs (Claude Code reports it today; the others are estimated) ·
-evidence of success for headless runs · running Claude plugin
+running Claude plugin
 workflows · evaluation. Full plan: [`docs/ROADMAP.md`](docs/ROADMAP.md); the
 original design: [`docs/dynamic-workflows-tech-plan.md`](docs/dynamic-workflows-tech-plan.md).
 Background on the Claude Code dialect ODW aligns with:

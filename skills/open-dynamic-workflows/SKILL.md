@@ -82,7 +82,7 @@ outright, never silently passed through as a string).
 | `exec(command, opts?)` | Run a command (tests, a build, a linter) without a model; resolves to `{ stdout, stderr, exitCode, signal, timedOut, truncated, durationMs }`. A string runs through the shell, an array as argv. **ODW extension** — not part of Claude Code's dialect. |
 | `checkpoint(title, opts?)` | Pause the run until a person approves or rejects; resolves to `{ approved, note, by }`. **ODW extension** — not part of Claude Code's dialect. |
 
-`opts` for `agent`: `{ adapter?, schema?, label?, phase?, model?, agentType?, isolation?, keep?, permissions? }`.
+`opts` for `agent`: `{ adapter?, schema?, label?, phase?, model?, agentType?, isolation?, keep?, permissions?, expect?, expectRetries?, allowEmpty? }`.
 `adapter` picks the CLI — or, as a list (`['codex', 'claude']`, **ODW
 extension**), a fallback chain; `model: '@fast'` picks a tier's model for
 whichever CLI runs it (**ODW extension**); `schema` is a raw JSON Schema object (an option, not
@@ -101,6 +101,24 @@ says so once, with where it is, and the call runs — or, under `"schemaKeywords
 limit ODW cannot check in a `description`. On `claude` and `codex` the schema is
 passed to the CLI natively, which enforces it; ODW validates the reply either way —
 see [`references/primitives.md`](references/primitives.md#schema).
+
+`expect` (**ODW extension**) states what must hold once the agent has replied,
+and odw checks it — prefer it to asking the model "did you do it?", or to
+trusting a reply that says so. `changes: true|false` (some file changed / none
+did), `files` (globs, each matching a file it changed or created), `command`
+(must exit 0 in the agent's workspace; `timeout` seconds, default 600) and
+`match` (a regular expression the reply must match). Work that misses runs
+again with what it missed in its prompt (`expectRetries`, default 1), then
+throws — recoverable — with `reason: "unmet_expectation"` and `misses`. Without
+any opt-in, an empty reply throws `reason: "empty_reply"` (`allowEmpty: true`
+accepts one), and a claude reply whose result lists `permission_denials` throws
+`reason: "permission"`, naming the refused calls:
+
+```js
+const fix = await agent('Fix the failing parser tests.', {   // ODW extension: expect
+  expect: { command: 'npm test', changes: true, files: ['src/parser/**'] },
+})
+```
 
 `opts` for `exec`: `{ cwd?, env?, timeout?, input?, maxOutputBytes?, label?, phase?, check? }`.
 It runs in the source directory by default, is killed after `timeout` seconds
@@ -393,6 +411,8 @@ without answering when headless (a login, trust or approval prompt).
 | Branching on which agent finished first | Breaks reproducibility; keep reductions order-independent. |
 | Re-running a stalled or failed run from scratch | Read finished agents with `odw result <run> --agent <id>`; `odw stop`, fix the script, then `odw resume` — finished calls replay for free. |
 | Retrying a failed agent without looking at what it did | Read its transcript first — `odw logs <run> --agent <id\|label>` shows its tool calls, results, errors and the end of its stderr (ODW extension) — and fix the cause. |
+| Asking an agent whether it did the work, or trusting a reply that says so | State it with `expect` — `{ command: 'npm test', changes: true }`: odw checks it after the reply, hands misses back once, and fails the agent with `unmet_expectation` and what it missed (ODW extension; `examples/fix-until-green.js`). |
+| Retrying an agent that failed with reason `permission` as if it were flaky | Its error names the tool calls headless mode refused (`denied: Bash (npm test)`): ask the user to allow exactly those in the adapter's `permissionArgs` for its tier, or give the agent work it can do without them. |
 | Looking for an isolated agent's edits in your files after the run | They are kept as diffs, not merged: `odw diff <run> --stat`, then `odw apply <run> --agent <id> --check` and `odw apply`. |
 | Using `validate()` and expecting the script to run on Claude Code | `validate` is an ODW extension and runs on odw only. |
 | Using `exec()` and expecting the script to run on Claude Code | `exec` is an ODW extension and runs on odw only; `validate()` warns about it. |

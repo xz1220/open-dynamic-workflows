@@ -65,12 +65,25 @@ other primitive organizes calls to it.
   before its CLI starts; `claude`, `codex` and `gemini` have one). See
   [adapters](adapters.md#permissions-what-each-built-in-may-do). Claude Code
   ignores it.
+- **opts.expect** (**ODW extension**) — what must hold once the agent has
+  replied, checked by odw: `{ changes?, files?, command?, match?, timeout? }`. See
+  [expect](#expect-odw-extension). Claude Code ignores it.
+- **opts.expectRetries** (**ODW extension**) — how many times work that missed
+  `expect` runs again, told what it missed (default: the `expectRetries`
+  setting, 1).
+- **opts.allowEmpty** (**ODW extension**) — accept an empty or whitespace-only
+  reply as the answer. Without it, an empty reply fails the call with reason
+  `"empty_reply"`.
 
 Returns the reply text, or the validated JSON value when `schema` is set. CLI
-errors and exhausted schema retries throw. Inside `parallel`/`pipeline`, these
-recoverable failures become `null`. Fatal errors — stop requests, exhausted
-budgets, the total-agent cap, and invalid adapter/run configuration —
-propagate and terminate the run.
+errors, exhausted schema retries, work that missed its `expect` checks and an
+empty reply throw. Inside `parallel`/`pipeline`, these recoverable failures
+become `null`. Fatal errors — stop requests, exhausted budgets, the total-agent
+cap, and invalid adapter/run configuration — propagate and terminate the run.
+A failed CLI run's error carries `reason` (`rate_limit`, `quota`, `auth`,
+`timeout`, `stalled`, `not_found`, `permission`, `exit`, `empty_reply` or
+`unmet_expectation`), the same as its `agent_failed` event — branch on it in a
+`try`/`catch`.
 
 Every call that completes is saved in its run directory
 (`agents/<agentId>.json`) before its `agent_finished` event, so a finished
@@ -460,8 +473,63 @@ A diff past `maxDiffBytes` (default 2 MB) keeps its head and ends with a
 `odw apply` refuses it — use the agent's branch (`keep: true`, or
 `keepBranches`). Each attempt of a call works in a fresh worktree: a schema retry
 that only reformats its reply keeps the earlier attempt's change, while a stall
-restart or a rate-limit retry redoes the work, so its change replaces the
-earlier one. `odw resume` copies a replayed agent's diff into the new run.
+restart, a rate-limit retry or an `expect` retry redoes the work, so its change
+replaces the earlier one. `odw resume` copies a replayed agent's diff into the new run.
+
+## expect (ODW extension)
+
+```js
+agent(prompt, { expect: { changes?, files?, command?, match?, timeout? }, expectRetries?, allowEmpty? })
+```
+
+What must hold once the agent has replied — checked by odw, instead of asking
+the model whether it did the work. Prefer it to a second "did you do it?" agent:
+
+- **changes** — `true`: the agent must change some file; `false`: it must change
+  none.
+- **files** — globs relative to the agent's workspace (`*`, `**`, `?`, `[…]`,
+  `{a,b}`): each must match a file the agent changed or created (a deletion does
+  not count).
+- **command** — must exit 0, run in the agent's workspace: a string through the
+  shell, an array as argv. Killed after `timeout` seconds (default 600), which is
+  a miss. It runs as an `exec()` step under the agent — its `command_*` events
+  carry `forAgentId` — after the change is read, so what it writes is never the
+  agent's work; a stop kills it.
+- **match** — a regular expression (its source, no flags) the reply must match.
+
+The checks run once the reply is in and has satisfied its `schema`. What the
+agent changed is read from git. In place, it is what differs from the source
+tree as it was before the agent's first CLI run: your own uncommitted edits and
+the run's directory are left out, the agent's commits count — and so do edits
+another in-place agent makes meanwhile, so isolate agents whose changes must be
+told apart. `expect.changes` or `expect.files` in place needs a git repository
+(else the call fails before its CLI starts). With `isolation: "worktree"`, it is
+exactly the change the run keeps as the agent's diff; a schema retry that only
+reformats is judged on the attempt that did the work.
+
+Work that misses runs again — `expectRetries` times (default 1, or the
+`expectRetries` setting) — with what it missed appended to its prompt, a failed
+command's output included; an isolated retry starts over in a fresh worktree.
+Each retry is logged, and the transcript marks it `{"kind":"attempt","reason":"expect"}`.
+If the work still misses, the call throws (recoverable) with `reason:
+"unmet_expectation"` and `misses` — one line per check — on the error and on its
+`agent_failed` event:
+
+```js
+try {
+  await agent('Fix the flaky date test.', { expect: { command: ['npm', 'test', '--', 'dates'], changes: true } })
+} catch (err) {
+  if (err.reason !== 'unmet_expectation') throw err
+  log(`not fixed: ${err.misses.join('; ')}`)   // "`npm test -- dates` must exit 0, and it exited with code 1"
+}
+```
+
+Typed without opting in: an empty or whitespace-only reply throws with reason
+`"empty_reply"` unless `allowEmpty: true`; a reply that claims success while the
+CLI refused tool calls — Claude Code's `permission_denials`, read through the
+adapter's `output.deniedPath` — throws with reason `"permission"`, naming them.
+Neither is retried. `expect` is part of the call's resume key; Claude Code
+ignores it, so there the checks do not run.
 
 ## schema
 

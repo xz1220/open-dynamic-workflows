@@ -205,7 +205,7 @@ odw run examples/fan-out-reduce.js --wait --args '{"question": "Design a rate li
 
 | 原语 | 作用 |
 | --- | --- |
-| `agent(prompt, opts?)` | 让一个 coding agent 跑一个子任务。唯一真正"产出工作"的原语。返回文本;设了 `opts.schema` 则返回校验过的对象。 |
+| `agent(prompt, opts?)` | 让一个 coding agent 跑一个子任务。唯一真正"产出工作"的原语。返回文本;设了 `opts.schema` 则返回校验过的对象。设了 `opts.expect` 时,它的工作会被检查——某条命令以 0 退出、有文件改动、回复匹配——没达到就带着缺失项重试;见[检查 agent 的工作](#检查-agent-的工作odw-扩展)(**ODW 扩展**)。 |
 | `parallel(thunks)` | 一组任务并发执行、**等全部完成**(屏障)。可恢复失败变 `null`;停止、预算耗尽和派发上限错误会中止运行。 |
 | `pipeline(items, ...stages)` | 每个条目独立穿过各 stage(**无屏障**)。每个 stage 收 `(prev, item, index)`。 |
 | `phase(title, opts?)` / `log(msg)` | 把进度归入某阶段 / 发一行进度消息。`opts`——`{ adapter, model }`——为该阶段的 agent 指定适配器和模型(**ODW 扩展**;见[按阶段路由](#按阶段路由与回退链odw-扩展))。 |
@@ -220,6 +220,47 @@ odw run examples/fan-out-reduce.js --wait --args '{"question": "Design a rate li
 下一步需要"全量结果一次到位"(去重、计票、综合)时用 **`parallel`**;多阶段处理默认用
 **`pipeline`**。归并要保持顺序无关——按"谁先跑完"分支会破坏可复现性。完整参考见
 [`skills/open-dynamic-workflows/references/primitives.md`](skills/open-dynamic-workflows/references/primitives.md)。
+
+### 检查 agent 的工作(ODW 扩展)
+
+无头运行的 agent 可能"成功"了却没干活:说修好了 bug,其实一个文件都没碰;说测试通过了,
+其实还是红的。与其问模型"你做了吗",不如写明必须成立的条件——agent 回复之后(若设了
+`schema`,则在校验通过之后),由 odw 来检查:
+
+```js
+const summary = await agent('Fix the failing tests in src/parser.', {
+  expect: {
+    command: 'npm test',        // 必须在 agent 的工作区里以 0 退出(超时 600 秒)
+    changes: true,              // 必须有文件改动(false:不许有任何改动)
+    files: ['src/parser/**'],   // 每个 glob 都必须匹配到一个被改动或新建的文件
+    match: '^Fixed',            // 回复必须匹配的正则表达式
+  },
+})
+```
+
+没达到要求的工作会重跑——默认一次(`expectRetries`,可按调用或在配置里设)——并把缺失项
+追加到提示词里,失败命令的输出也一并附上。仍未达到时,`agent()` 抛出一个可恢复的错误
+(在 `parallel()` 里变成 `null`),带有 `reason: "unmet_expectation"` 和逐条列出的
+`misses`——它的 `agent_failed` 事件、`odw logs`、实时视图和 `/api/runs/:id` 也都带着它们:
+
+```text
+agent_failed    (Fix) fixer — [unmet_expectation] did not meet: `npm test` must exit 0, and it exited with code 1
+```
+
+- **agent 改了什么**从 git 读取,路径相对于它的工作区。原地运行时,是与 agent 启动前的
+  源码树相比的差异——你自己未提交的改动和 odw 的运行目录不算,agent 的提交算——所以同时
+  原地运行的其他 agent 的改动也会算进来:在意这一点就用隔离。用 `isolation: "worktree"`
+  时,就是 odw 作为该 agent 的 diff 保留的那份改动,而重试会在全新的 worktree 里从头开始,
+  它的改动取代先前的改动。
+- **命令**作为 agent 名下的一个 `exec()` 步骤运行(它的事件带 `forAgentId`),在读取改动
+  之后执行,所以它写出的文件绝不会被算成 agent 的工作;停止会杀掉它。
+- **无需开启就有类型的静默失败:**空回复以 `reason: "empty_reply"` 失败(`allowEmpty: true`
+  接受空回复);Claude Code 的回复声称成功、但其 `result` 列出了 `permission_denials` 时,
+  以 `reason: "permission"` 失败,并列出被拒绝的调用。
+
+Claude Code 的 Workflow 工具会忽略 `expect`,在那里检查不会执行。
+[`examples/fix-until-green.js`](examples/fix-until-green.js) 用 `expect` 驱动一个
+"修到测试通过为止"的循环。
 
 ## 兼容性与迁移
 
@@ -586,8 +627,8 @@ Codex、Claude Code、Gemini、Qwen、Kimi、Oh My Pi、Kilo Code、OpenCode、C
 }
 ```
 
-**ODW 扩展:** JSON 输出还可以声明这次运行花了多少,以及 CLI 自己是否报告了失败。
-内置的 `claude` 适配器就是这样声明的:
+**ODW 扩展:** JSON 输出还可以声明这次运行花了多少、CLI 自己是否报告了失败,以及它拒绝了
+agent 的哪些工具调用。内置的 `claude` 适配器就是这样声明的:
 
 ```jsonc
 "output": {
@@ -597,14 +638,20 @@ Codex、Claude Code、Gemini、Qwen、Kimi、Oh My Pi、Kilo Code、OpenCode、C
   "select": "last",
   "usagePath": ["usage"],         // token 计数,位于 usageEvent 事件中(默认同 eventType)
   "costPath": ["total_cost_usd"], // 美元花费,位于同一事件
-  "errorPath": ["is_error"]       // true、一条消息或一个错误对象:这次运行以它失败
+  "errorPath": ["is_error"],      // true、一条消息或一个错误对象:这次运行以它失败
+  "deniedPath": ["permission_denials"] // 被拒绝的工具调用:声称成功的回复只要带着一条就失败("permission")
 }
 ```
+
+在 `acceptEdits` 下,Claude Code 无头运行时会直接拒绝本该询问的操作——比如没在允许列表里
+的 shell 命令——而回复仍可能声称成功;`deniedPath` 读的就是这些拒绝。在适配器对应档位的
+`permissionArgs` 里放行 agent 需要的操作;若仍想接受这样的回复,就在重新声明该适配器的
+`output` 时去掉 `deniedPath`。
 
 每个 `usageEvent` 事件的用量会累加;不同 CLI 的字段名(Anthropic、OpenAI、Codex)会被
 统一归一化——见 [`src/adapters/usage.ts`](src/adapters/usage.ts)。只打印一个 JSON 文档
 的 CLI 则用 `{ "format": "json", "textPath": […], "usagePath": […], "costPath": […],
-"errorPath": […] }`;路径里的整数用于索引数组(负数从末尾数)。`errorPath` 上报的失败
+"errorPath": […], "deniedPath": […] }`;路径里的整数用于索引数组(负数从末尾数)。`errorPath` 上报的失败
 会像任何失败的运行一样被归类——不论退出码——所以限流会被重试,额度用尽会说明何时重置。
 输出里找不到声明的文本时——CLI 的格式变了,或配置写错了——原始 stdout 就作为回复,运行
 日志会说明原因;agent 不会因此失败。
@@ -808,7 +855,8 @@ approval_mode = "approve"
 
 **ODW 扩展。** 每个失败的 agent 都会根据其 CLI 的退出状态和输出末尾被归类:`rate_limit`、
 `quota`、`auth`、`timeout`、`stalled`、`not_found`(CLI 无法启动)、`permission`(工具
-调用或审批被拒)或 `exit`。这个类别就是 `agent_failed` 事件上的 `reason`(CLI 说明了何时
+调用或审批被拒)或 `exit`——另有两个类别,给"成功了"却拿不出证据的运行:`empty_reply` 和
+`unmet_expectation`(见[检查 agent 的工作](#检查-agent-的工作odw-扩展))。这个类别就是 `agent_failed` 事件上的 `reason`(CLI 说明了何时
 可以重试时,还带有以秒计的 `retryAfter`),也是看板和 `/api/runs/:id` 里该 agent 的
 `failureReason`,并显示在实时视图和 `odw logs` 中:
 
@@ -835,7 +883,9 @@ Claude Code 会在输出里报告这类错误,而且常常以 0 退出:它的 st
 带着 `is_error: true` 和错误消息(`API Error: Rate limit reached`、
 `Claude AI usage limit reached|…`),这会被算作消息所指的那种失败。在文本模式下(文本
 适配器,或回退到原始 stdout 的 JSON 输出),一条简短、内容只有这类限流、额度或登录错误
-的回复同样会被算作对应的失败——绝不会被当成 agent 的答案。
+的回复同样会被算作对应的失败——绝不会被当成 agent 的答案。声称成功、但 `permission_denials`
+列出了被无头模式拒绝的工具调用的 `result`,算作 `permission` 失败并列出这些调用;空回复
+算作 `empty_reply` 失败;两者都不重试。
 
 ODW 能识别的措辞——从每个内置 CLI 的源码和 issue 中收集而来——集中在一张表里:
 [`src/adapters/failures.ts`](src/adapters/failures.ts)。用适配器的 `failures` 教它
@@ -1180,6 +1230,7 @@ workflow 脚本始终是**纯 `.js`**、从不编译;引擎用 **TypeScript** �
 | [`codex-claude-loop.js`](examples/codex-claude-loop.js) | 两个对家 CLI 回合制对弈:Claude 实现,Codex 评审,循环直到签收 |
 | [`agent-daily-digest.js`](examples/agent-daily-digest.js) | 发现信息源 → 并行提取 → 综合 → 核查 |
 | [`test-fix-loop.js`](examples/test-fix-loop.js) | 用 `exec()` 跑测试 → agent 修复失败 → 重跑直到全绿(仅 ODW) |
+| [`fix-until-green.js`](examples/fix-until-green.js) | 同样的循环改用 `expect`:agent 回复后由 odw 跑测试,把仍然红的测试——或什么都没改的"修复"——交还给它,最后带着缺失项失败(仅 ODW) |
 | [`plan-approve-execute.js`](examples/plan-approve-execute.js) | agent 起草计划 → 有人在 `checkpoint()` 处批准(附说明的拒绝会重新规划)→ 并行执行 → 汇报(仅 ODW) |
 
 ## 开发
@@ -1235,6 +1286,10 @@ node web/dev.mjs --api http://127.0.0.1:4317     # → http://127.0.0.1:5173
   schema)直接拿到 agent 的 schema 并自行强制执行;ODW 依旧校验每一次回复。ODW 校验器不检查
   的 schema 关键字会连同位置写进运行日志,绝不悄悄跳过——`"schemaKeywords": "strict"` 则拒绝
   这类调用(ODW 扩展;见[结构化输出](#结构化输出odw-扩展))。
+- **有证据的成功。** `agent(…, { expect })` 检查 agent 的工作,而不是听它怎么说——某条命令
+  以 0 退出、有文件改动、回复匹配——没达到就把缺失项交还给它一次,之后以
+  `reason: "unmet_expectation"` 和缺失项失败。空回复和 Claude Code 的 `permission_denials`
+  也成了有类型的失败(ODW 扩展;见[检查 agent 的工作](#检查-agent-的工作odw-扩展))。
 - **权限档位。** 每个 agent 以 `read`、`edit`(默认,与以往一致)或 `full` 运行,映射到各
   CLI 自己的参数:审查与调研类 fan-out 碰不到工作树(`--permissions read`、
   `agent(…, { permissions: 'read' })`),完全权限必须显式开启,无法强制执行某档位的 CLI 会被
@@ -1313,7 +1368,6 @@ node web/dev.mjs --api http://127.0.0.1:4317     # → http://127.0.0.1:5173
 
 按并行 coding agent 用户反馈的需求排序([调研](docs/research/user-needs-2026-10.md)):
 更多 CLI 上报的真实 token 用量与花费(目前 Claude Code 已上报,其余仍按估算)·
-无头运行的"成功证据" ·
 运行 Claude plugin 工作流 · 评测。完整规划见 [`docs/ROADMAP.md`](docs/ROADMAP.md);
 最初的设计见 [`docs/dynamic-workflows-tech-plan.md`](docs/dynamic-workflows-tech-plan.md);
 ODW 所对齐的 Claude Code 方言背景见

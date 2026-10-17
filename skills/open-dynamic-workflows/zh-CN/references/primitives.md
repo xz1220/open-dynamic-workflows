@@ -52,10 +52,20 @@ agent(prompt, opts?) -> Promise<unknown>
   full）——请求更高档位会让调用以 `AgentError` 失败，报错写明两个档位——没有只读模式的适配器会
   拒绝 `"read"`（调用在 CLI 启动前失败；`claude`、`codex` 和 `gemini` 有只读模式）。见
   [适配器](adapters.md#权限每个内置适配器能做什么)。Claude Code 会忽略它。
+- **opts.expect**（**ODW 扩展**）—— agent 回复之后必须成立的条件，由 odw 检查：
+  `{ changes?, files?, command?, match?, timeout? }`。见 [expect](#expectodw-扩展)。
+  Claude Code 会忽略它。
+- **opts.expectRetries**（**ODW 扩展**）—— 没达到 `expect` 的工作带着缺失项重跑的次数
+  （默认取 `expectRetries` 设置，即 1）。
+- **opts.allowEmpty**（**ODW 扩展**）—— 接受空回复或只有空白的回复作为答案。不设时，空回复
+  会让调用以 `"empty_reply"` 失败。
 
-返回回复文本，设了 `schema` 则返回校验过的 JSON 值。CLI 出错或 schema 重试耗尽会抛错；
-这些可恢复失败在 `parallel`/`pipeline` 内变成 `null`。停止请求、预算耗尽和 agent
-总量上限以及无效的 adapter/运行配置属于 fatal 错误，会继续向上抛出并终止运行。
+返回回复文本，设了 `schema` 则返回校验过的 JSON 值。CLI 出错、schema 重试耗尽、工作没达到
+`expect`、空回复都会抛错；这些可恢复失败在 `parallel`/`pipeline` 内变成 `null`。停止请求、
+预算耗尽和 agent 总量上限以及无效的 adapter/运行配置属于 fatal 错误，会继续向上抛出并终止
+运行。失败的 CLI 运行抛出的错误带有 `reason`（`rate_limit`、`quota`、`auth`、`timeout`、
+`stalled`、`not_found`、`permission`、`exit`、`empty_reply` 或 `unmet_expectation`），与它的
+`agent_failed` 事件一致——可以在 `try`/`catch` 里据此分支。
 
 每次完成的调用都会在发出 `agent_finished` 事件之前保存到运行目录
 （`agents/<agentId>.json`），所以某条泳道卡住、运行被停止或 worker 死掉，已完成的
@@ -378,8 +388,54 @@ odw apply <run> --agent <id|label>       # 用 git apply --3way 应用到你所�
 `maxDiffBytes`（默认 2 MB）的 diff 只保留开头，并以一行 `# odw: diff truncated …` 结尾；
 计数仍描述完整改动，但 `odw apply` 会拒绝它——请改用该 agent 的分支（`keep: true` 或
 `keepBranches`）。一次调用的每次尝试都在新的 worktree 里进行：只重排回复格式的 schema
-重试会保留之前那次尝试的改动；卡死重启或限流重试会重做工作，所以它的改动取代之前的。
-`odw resume` 会把重放 agent 的 diff 复制到新运行里。
+重试会保留之前那次尝试的改动；卡死重启、限流重试或 `expect` 重试会重做工作，所以它的改动
+取代之前的。`odw resume` 会把重放 agent 的 diff 复制到新运行里。
+
+## expect（ODW 扩展）
+
+```js
+agent(prompt, { expect: { changes?, files?, command?, match?, timeout? }, expectRetries?, allowEmpty? })
+```
+
+agent 回复之后必须成立的条件——由 odw 检查，而不是问模型有没有做完。优先用它，而不是
+再派一个"你做了吗"的 agent：
+
+- **changes** —— `true`：agent 必须改动某个文件；`false`：不许改动任何文件。
+- **files** —— 相对 agent 工作区的 glob（`*`、`**`、`?`、`[…]`、`{a,b}`）：每个都必须匹配到
+  一个 agent 改动或新建的文件（删除不算）。
+- **command** —— 必须在 agent 的工作区里以 0 退出：字符串经 shell 执行，数组按 argv 执行。
+  超过 `timeout` 秒（默认 600）会被杀掉，算作未达到。它作为 agent 名下的一个 `exec()` 步骤
+  运行——它的 `command_*` 事件带 `forAgentId`——在读取改动之后执行，所以它写出的文件绝不会
+  被算成 agent 的工作；停止会杀掉它。
+- **match** —— 回复必须匹配的正则表达式（只给源码，不带 flag）。
+
+检查在回复到达、并通过 `schema` 校验之后进行。agent 改了什么从 git 读取。原地运行时，是与
+agent 第一次 CLI 运行前的源码树相比的差异：你自己未提交的改动和运行目录不算，agent 的提交算
+——同时原地运行的其他 agent 的改动也会算进来，所以需要分清各自改动的 agent 请用隔离。原地
+使用 `expect.changes` 或 `expect.files` 需要 git 仓库（否则调用在 CLI 启动前失败）。用
+`isolation: "worktree"` 时，就是运行为该 agent 保留的那份 diff；只重排回复格式的 schema 重试，
+按真正干活的那次尝试来评判。
+
+没达到要求的工作会重跑——`expectRetries` 次（默认 1，或取 `expectRetries` 设置）——并把缺失
+项追加到提示词里，失败命令的输出也一并附上；隔离的重试会在全新的 worktree 里从头开始。每次重试
+都会记日志，transcript 里标为 `{"kind":"attempt","reason":"expect"}`。仍未达到时，调用抛出
+可恢复的错误，错误和它的 `agent_failed` 事件上都带有 `reason: "unmet_expectation"` 和逐条的
+`misses`：
+
+```js
+try {
+  await agent('Fix the flaky date test.', { expect: { command: ['npm', 'test', '--', 'dates'], changes: true } })
+} catch (err) {
+  if (err.reason !== 'unmet_expectation') throw err
+  log(`not fixed: ${err.misses.join('; ')}`)   // "`npm test -- dates` must exit 0, and it exited with code 1"
+}
+```
+
+无需开启就有类型的失败：空回复或只有空白的回复会以 `"empty_reply"` 抛错，除非设了
+`allowEmpty: true`；声称成功、但 CLI 拒绝了工具调用的回复——Claude Code 的
+`permission_denials`，经适配器的 `output.deniedPath` 读取——会以 `"permission"` 抛错，并列出
+被拒绝的调用。两者都不重试。`expect` 属于调用的 resume key；Claude Code 会忽略它，在那里检查
+不会执行。
 
 ## schema
 

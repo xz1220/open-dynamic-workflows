@@ -72,7 +72,7 @@ return await agent(
 | `exec(command, opts?)` | 不启动模型直接运行一条命令（测试、构建、linter）；返回 `{ stdout, stderr, exitCode, signal, timedOut, truncated, durationMs }`。字符串经 shell 执行，数组按 argv 执行。**ODW 扩展**——不属于 Claude Code 方言。 |
 | `checkpoint(title, opts?)` | 暂停运行，直到有人批准或拒绝；返回 `{ approved, note, by }`。**ODW 扩展**——不属于 Claude Code 方言。 |
 
-`agent` 的 `opts`：`{ adapter?, schema?, label?, phase?, model?, agentType?, isolation?, keep?, permissions? }`。
+`agent` 的 `opts`：`{ adapter?, schema?, label?, phase?, model?, agentType?, isolation?, keep?, permissions?, expect?, expectRetries?, allowEmpty? }`。
 `adapter` 选择用哪个 CLI——写成列表（`['codex', 'claude']`，**ODW 扩展**）就是回退链；
 `model: '@fast'` 为实际运行它的 CLI 选出该层级的模型（**ODW 扩展**）；`schema` 是一个原始 JSON Schema 对象（选项，不是全局）；
 `agentType` 是注入进 prompt 的**人设**，*不是* adapter 名。`keep: true`（**ODW 扩展**）
@@ -86,6 +86,21 @@ ODW 不检查：运行日志会连同位置说明一次，调用照常运行—�
 启动前以 `AgentError` 失败（**ODW 扩展**）。ODW 检查不了的限制请写进 `description`。在
 `claude` 和 `codex` 上 schema 会原生交给 CLI，由它强制执行；无论哪种，ODW 都会校验回复——见
 [`references/primitives.md`](references/primitives.md#schema)。
+
+`expect`（**ODW 扩展**）写明 agent 回复之后必须成立的条件，由 odw 来检查——优先用它，
+而不是问模型"你做了吗"，或相信一个这么说的回复。`changes: true|false`（有文件改动 / 不许
+有改动）、`files`（glob 列表，每个都要匹配到一个被改动或新建的文件）、`command`（必须在
+agent 的工作区里以 0 退出；`timeout` 秒，默认 600）和 `match`（回复必须匹配的正则）。没
+达到要求的工作会带着缺失项重跑（`expectRetries`，默认 1），之后抛出可恢复的错误，带
+`reason: "unmet_expectation"` 和 `misses`。无需开启：空回复抛出 `reason: "empty_reply"`
+（`allowEmpty: true` 接受空回复）；claude 的结果里列出 `permission_denials` 时抛出
+`reason: "permission"`，并列出被拒绝的调用：
+
+```js
+const fix = await agent('Fix the failing parser tests.', {   // ODW 扩展：expect
+  expect: { command: 'npm test', changes: true, files: ['src/parser/**'] },
+})
+```
 
 `exec` 的 `opts`：`{ cwd?, env?, timeout?, input?, maxOutputBytes?, label?, phase?, check? }`。
 默认在源目录中运行，超过 `timeout` 秒（600）后连同它启动的所有进程一起被杀，每个输出流
@@ -328,6 +343,8 @@ Codex、Claude Code、Gemini、Qwen、Kimi 开箱即用，无需配置。要换�
 | 按"哪个 agent 先跑完"来分支 | 破坏可复现性；归并要保持顺序无关。 |
 | 卡住或失败的运行从头重跑 | 用 `odw result <run> --agent <id>` 读出已完成的 agent；`odw stop`、修好脚本，再 `odw resume`——已完成的调用免费重放。 |
 | 不看失败的 agent 做了什么就重试 | 先读它的 transcript——`odw logs <run> --agent <id\|label>` 会显示它的工具调用、结果、错误和 stderr 的结尾（ODW 扩展）——再修原因。 |
+| 问 agent 是否完成了工作，或相信一个这么说的回复 | 用 `expect` 写明——`{ command: 'npm test', changes: true }`：odw 在回复后检查，把缺失项交还一次，仍未达到就以 `unmet_expectation` 和缺失项让该 agent 失败（ODW 扩展；`examples/fix-until-green.js`）。 |
+| 把以 `permission` 失败的 agent 当成偶发问题重试 | 它的错误列出了无头模式拒绝的工具调用（`denied: Bash (npm test)`）：请用户在适配器对应档位的 `permissionArgs` 里只放行这些，或给 agent 不需要它们的工作。 |
 | 运行结束后在自己的文件里找隔离 agent 的修改 | 它们以 diff 保存，不会自动合并：先 `odw diff <run> --stat`，再 `odw apply <run> --agent <id> --check`，然后 `odw apply`。 |
 | 用了 `validate()` 还指望脚本跑在 Claude Code 上 | `validate` 是 ODW 扩展，只能在 odw 上运行。 |
 | 用了 `exec()` 还指望脚本跑在 Claude Code 上 | `exec` 是 ODW 扩展，只能在 odw 上运行；`validate()` 会对此给出 warning。 |

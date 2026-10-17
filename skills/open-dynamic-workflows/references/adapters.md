@@ -163,6 +163,7 @@ did-you-mean hint) instead of silently ignoring them.
 | `fallback` | **ODW extension.** Fallback chains: `{ "codex": ["claude"], … }` — when an agent's CLI has spent its usage quota or its login is refused, the agent runs again on the next adapter listed for the one it was on (a fresh prompt, the same options, the same permission tier: an adapter that cannot run that tier is skipped). A rate limit is still retried in place. An `agent()` call's own list, `adapter: ["codex", "claude"]`, takes its place. Every adapter named must be configured. Default `{}` — see [routing](primitives.md#routing-phase-defaults-model-tiers-fallback-chains-odw-extension) |
 | `quotaBreaker` | **ODW extension.** After this many quota failures in a row on one adapter, the run's later agents skip it — each starts on the next adapter of its chain, or fails at once without one — with one warning. Default 3; `0` or `null` = never |
 | `models` | **ODW extension.** Model tiers: `{ "fast": { "claude": "haiku", "codex": "gpt-5-mini" }, … }`. `model: "@fast"` (in `agent()`, `phase()` or `meta.phases`) runs an agent with its adapter's id for the tier — after a fallback, the next adapter's; an adapter the tier names no id for runs its CLI's default (logged), and an unknown tier fails the agent. Tier names are letters, digits, `_`, `-` and `.`; every adapter named must be configured. Default `{}` |
+| `expectRetries` | **ODW extension.** How many times an agent whose work missed its `expect` checks runs again, told what it missed, before it fails with reason `unmet_expectation` (default 1; an `agent()` call's own `expectRetries` wins) — see [expect](primitives.md#expect-odw-extension) |
 
 ### Adapter fields
 
@@ -191,8 +192,12 @@ did-you-mean hint) instead of silently ignoring them.
 - `{ "format": "json", "textPath": ["response"] }` — one JSON document on stdout.
 
 **ODW extension:** both JSON formats may add `usagePath` (the token counts), `costPath`
-(US dollars) and `errorPath` (`true`, a message or an error object: the run failed
-with it, classified like any failure whatever its exit status); `jsonl` reads usage
+(US dollars), `errorPath` (`true`, a message or an error object: the run failed
+with it, classified like any failure whatever its exit status) and `deniedPath`
+(the tool calls the CLI refused the agent: a reply that claims success while it
+lists any fails with reason `permission`, naming them — the built-in `claude`
+reads `permission_denials`; an adapter entry whose `output` leaves it out accepts
+such replies); `jsonl` reads usage
 and cost from `usageEvent` events (default: `eventType`) and adds them up. Usage is
 normalized across the CLIs' field names (Anthropic's, OpenAI's, Codex's):
 `inputTokens` (cached input included), `outputTokens`, `cacheReadTokens`,
@@ -273,4 +278,7 @@ failed agent call, classified as `rate_limit`, `quota`, `auth`, `timeout`,
 So does a failure the CLI reports in its output (`errorPath`: Claude Code's
 stream-json `is_error` result, often with exit 0), and a clean exit whose short
 text reply is nothing but a rate-limit, quota or login error (`API Error: Rate
-limit reached`).
+limit reached`). A clean exit can still fail (ODW extensions): with reason
+`permission` when the CLI refused tool calls (`deniedPath`), `empty_reply` when
+the reply is empty (unless the call sets `allowEmpty`), and `unmet_expectation`
+when the work missed the call's `expect` checks.

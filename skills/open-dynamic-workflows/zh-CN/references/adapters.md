@@ -151,6 +151,7 @@ agent 的 `permissions`；`odw doctor` 会列出每个适配器支持的档位�
 | `fallback` | **ODW 扩展。** 回退链：`{ "codex": ["claude"], … }`——agent 的 CLI 额度用尽或登录被拒时，它会在为其所在适配器列出的下一个适配器上重新运行（全新的提示词、相同的选项、相同的权限档位：不能运行该档位的适配器会被跳过）。限流仍在原地重试。`agent()` 调用自己的列表 `adapter: ["codex", "claude"]` 会取代它。列出的每个适配器都必须已配置。默认 `{}`——见[路由](primitives.md#路由阶段默认值模型分层回退链odw-扩展) |
 | `quotaBreaker` | **ODW 扩展。** 同一个适配器上连续这么多次额度失败后，本次运行之后的 agent 都会跳过它——各自从回退链上的下一个适配器开始，没有回退链的则立即失败——并记一条警告。默认 3；`0` 或 `null` 表示从不跳过 |
 | `models` | **ODW 扩展。** 模型层级：`{ "fast": { "claude": "haiku", "codex": "gpt-5-mini" }, … }`。`model: "@fast"`（写在 `agent()`、`phase()` 或 `meta.phases` 里）让 agent 使用其适配器在该层级下的 ID——回退之后用下一个适配器的；层级没给某适配器 ID 时使用其 CLI 的默认模型（记日志），未知层级会让 agent 失败。层级名由字母、数字、`_`、`-` 和 `.` 组成；列出的每个适配器都必须已配置。默认 `{}` |
+| `expectRetries` | **ODW 扩展。** 工作没达到 `expect` 检查的 agent 带着缺失项重跑的次数，之后以 `unmet_expectation` 失败（默认 1；`agent()` 调用自己的 `expectRetries` 优先）——见 [expect](primitives.md#expectodw-扩展) |
 
 ### 适配器字段
 
@@ -178,9 +179,11 @@ agent 的 `permissions`；`odw doctor` 会列出每个适配器支持的档位�
   事件里 `textPath` 处的文本。
 - `{ "format": "json", "textPath": ["response"] }`——stdout 上的一个 JSON 文档。
 
-**ODW 扩展：** 两种 JSON 格式都可以加上 `usagePath`（token 计数）、`costPath`（美元）和
+**ODW 扩展：** 两种 JSON 格式都可以加上 `usagePath`（token 计数）、`costPath`（美元）、
 `errorPath`（`true`、一条消息或一个错误对象：这次运行以它失败，不论退出码都像任何失败一样
-被归类）；`jsonl` 从 `usageEvent` 事件（默认同 `eventType`）读取用量和花费并累加。用量会在
+被归类）和 `deniedPath`（CLI 拒绝了 agent 的哪些工具调用：声称成功的回复只要列出一条就以
+`permission` 失败，并写明是哪些——内置 `claude` 读取 `permission_denials`；适配器条目的
+`output` 里不写它，就会接受这样的回复）；`jsonl` 从 `usageEvent` 事件（默认同 `eventType`）读取用量和花费并累加。用量会在
 不同 CLI 的字段名（Anthropic、OpenAI、Codex）之间归一化为：`inputTokens`（含缓存命中的
 输入）、`outputTokens`、`cacheReadTokens`、`cacheWriteTokens`、`costUsd`。路径里的整数
 用于索引数组（负数从末尾数）。stdout 里找不到声明的文本时，原始 stdout 就作为回复，运行
@@ -250,4 +253,6 @@ hook 只会记录到该运行的 `worker.log`。
 `agent_failed` 事件上的 `reason`；只有 `rate_limit` 会重试——见 `transientRetries`）。
 CLI 在输出里报告的失败（`errorPath`：Claude Code stream-json 的 `is_error` 结果，常常以 0
 退出）也一样，干净退出、但简短的文本回复只是一条限流、额度或登录错误的情况（如
-`API Error: Rate limit reached`）同样算作失败。
+`API Error: Rate limit reached`）同样算作失败。干净退出也可能失败（ODW 扩展）：CLI 拒绝了
+工具调用时（`deniedPath`）为 `permission`，回复为空时为 `empty_reply`（除非调用设了
+`allowEmpty`），工作没达到调用的 `expect` 检查时为 `unmet_expectation`。
