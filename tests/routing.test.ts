@@ -156,3 +156,67 @@ test("the example config lints clean, and its commented-out fallback and models 
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// --- the scheduler ----------------------------------------------------------------------
+
+test("AgentSlot.moveTo: both slots go back first, then the pair on the new adapter — ahead of the agents that have not started", async () => {
+  const s = new Scheduler({ concurrency: 2, maxAgents: 1000, adapterConcurrency: { a: 1, b: 1 } });
+  const order: string[] = [];
+  const gates = new Map<string, () => void>();
+  const hold = (name: string) => new Promise<void>((resolve) => gates.set(name, resolve));
+  const y = s.runAgent(async () => {
+    order.push("y@b");
+    await hold("y");
+  }, { adapter: "b" });
+  await until(() => order.length === 1);
+  const x = s.runAgent(async (_signal, slot) => {
+    order.push("x@a");
+    await slot.moveTo("b");
+    order.push("x@b");
+    await hold("x");
+  }, { adapter: "a" });
+  const z = s.runAgent(async () => {
+    order.push("z@a");
+    await hold("z");
+  }, { adapter: "a" });
+  await until(() => order.length === 3);
+  assert.deepEqual(order, ["y@b", "x@a", "z@a"], "x let go of a's slot and its run slot: z has them while x waits for b");
+  const w = s.runAgent(async () => {
+    order.push("w@b");
+    await hold("w");
+  }, { adapter: "b" });
+  gates.get("y")!();
+  await y;
+  await until(() => order.length === 4);
+  assert.equal(order[3], "x@b", "x goes before w, which had not started");
+  gates.get("x")!();
+  await x;
+  await until(() => order.length === 5);
+  assert.equal(order[4], "w@b");
+  gates.get("z")!();
+  gates.get("w")!();
+  await Promise.all([z, w]);
+  assert.equal(s.dispatched, 4, "a move is no dispatch");
+  assert.equal(await s.drain(100), true);
+});
+
+test("AgentSlot.moveTo: a stop while it waits ends the wait; the agent leaves holding no slot", async () => {
+  const s = new Scheduler({ concurrency: 2, maxAgents: 1000, adapterConcurrency: { b: 1 } });
+  let releaseY!: () => void;
+  const y = s.runAgent(() => new Promise<void>((resolve) => (releaseY = resolve)), { adapter: "b" });
+  let waiting = false;
+  const x = s.runAgent(async (_signal, slot) => {
+    waiting = true;
+    await slot.moveTo("b");
+    return "moved";
+  }, { adapter: "a" });
+  await until(() => waiting);
+  s.abort(new RunStopped("run was stopped"));
+  await assert.rejects(x, RunStopped);
+  releaseY();
+  await y;
+  assert.equal(await s.drain(100), true, "nothing is left holding a slot or pending");
+  // Moving where nothing limits either adapter keeps the slots: there is nothing to wait for.
+  const free = new Scheduler({ concurrency: 1, maxAgents: 10 });
+  assert.equal(await free.runAgent(async (_signal, slot) => (await slot.moveTo("b"), "stayed")), "stayed");
+});

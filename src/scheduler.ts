@@ -18,7 +18,9 @@
  * oldest request whose adapter has room, so one throttled adapter never holds
  * up the others. With adaptive back-pressure, a rate limit (which a running
  * agent reports through its {@link AgentSlot}) halves its adapter's cap, and
- * each minute without another gives one slot back.
+ * each minute without another gives one slot back. An agent that falls back
+ * to another adapter (an ODW extension) moves its slots there the same way:
+ * it lets go of both, then waits for the pair on the new adapter.
  *
  * The scheduler also owns the run's abort signal. The first fatal error (stop,
  * budget, backstop, configuration) is recorded as the run's outcome and aborts
@@ -96,6 +98,15 @@ export interface AgentSlot {
    * its quiet minute starts over.
    */
   rateLimited(): void;
+  /**
+   * Move this agent to another adapter (a fallback, an ODW extension): its
+   * slot on the old adapter, and its run slot, are let go first; then it
+   * waits — ahead of every agent that has not started — for a run slot and a
+   * slot on the new adapter, handed out together as at dispatch. It never
+   * holds two adapters' slots. Rejects with the run's reason when the run
+   * ends meanwhile. Not a dispatch: the backstop does not count it.
+   */
+  moveTo(adapter: string): Promise<void>;
 }
 
 /** An adapter's cap changed under adaptive back-pressure (an ODW extension). */
@@ -134,6 +145,14 @@ interface Waiter {
   lane: Lane | undefined;
   resolve: () => void;
   reject: (reason: unknown) => void;
+}
+
+/** What a running agent holds: a run slot and its lane's slot, the lane it is in now, and the wave it entered that lane in. */
+interface Held {
+  lane: Lane | undefined;
+  /** It holds its slots: false while a move waits for the new ones. */
+  slotted: boolean;
+  wave: number;
 }
 
 export class Scheduler {
@@ -251,6 +270,8 @@ export class Scheduler {
       }
       const lane = options.adapter !== undefined ? this.laneFor(options.adapter) : undefined;
       await this.acquire(lane);
+      // A fallback may move the agent to another lane (see AgentSlot.moveTo).
+      const held: Held = { lane, slotted: true, wave: 0 };
       try {
         // Control and usage can change while this request waits for a slot.
         // Check at the actual dispatch boundary; a paused request holds its slot
@@ -264,11 +285,12 @@ export class Scheduler {
           throw new AgentLimitExceeded(`run reached its cap of ${this.maxAgents} agent dispatches`);
         }
         this.dispatchedCount++;
-        const slot = this.slotIn(lane);
+        const slot = this.slotIn(held);
         return await this.track((signal) => fn(signal, slot));
       } finally {
         // Guard failures must also hand the slot to the next queued request.
-        this.release(lane);
+        // (A move the run's end cut short left the agent holding none.)
+        if (held.slotted) this.release(held.lane);
       }
     } catch (err) {
       // One fatal error ends the run: stop the other agents now instead of
@@ -462,10 +484,34 @@ export class Scheduler {
     return lane;
   }
 
-  /** The slot handle of an agent dispatched in `lane` now: its rate limits count against this wave. */
-  private slotIn(lane: Lane | undefined): AgentSlot {
-    const wave = lane?.wave ?? 0;
-    return { rateLimited: () => this.rateLimited(lane, wave) };
+  /** The slot handle of an agent dispatched now: its rate limits count against its lane's current wave. */
+  private slotIn(held: Held): AgentSlot {
+    held.wave = held.lane?.wave ?? 0;
+    return {
+      rateLimited: () => this.rateLimited(held.lane, held.wave),
+      moveTo: (adapter) => this.move(held, adapter),
+    };
+  }
+
+  /**
+   * Move a running agent to `adapter`'s lane (see AgentSlot.moveTo): both its
+   * slots go back in the same step that queues it, first, for the new pair —
+   * so it never holds one while it waits for the other, and a free pair goes
+   * to it before any agent that has not started.
+   */
+  private async move(held: Held, adapter: string): Promise<void> {
+    const lane = this.laneFor(adapter);
+    if (!held.slotted || lane === held.lane) return; // nothing but the run limits either adapter, or the same lane
+    this.throwIfAborted();
+    held.slotted = false;
+    this.active--;
+    if (held.lane) held.lane.active--;
+    held.lane = lane;
+    const granted = new Promise<void>((resolve, reject) => this.waiters.unshift({ lane, resolve, reject }));
+    this.pump();
+    await granted;
+    held.slotted = true;
+    held.wave = lane?.wave ?? 0;
   }
 
   /**
