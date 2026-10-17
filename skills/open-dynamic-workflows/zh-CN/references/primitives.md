@@ -35,10 +35,13 @@ agent(prompt, opts?) -> Promise<unknown>
 - **opts.isolation** —— `"worktree"` 给这个 agent 一个一次性 **git worktree**（默认工作区
   就是 source 目录本身）。要求 source 是有提交的 git 仓库；agent 看到 HEAD，不包含
   未提交改动。调用结束后清理 worktree，不把改动合入 source。`agent()` 只返回回复，
-  不返回 diff 或可保留的 worktree 路径；需要保留的交付物应进入回复，或显式保存到临时
-  worktree 之外。agent 启动前，`.worktreeinclude` 会补上检出缺少的文件（`.env`、
-  `node_modules` 等），然后运行 `worktreeSetup`——见
+  不返回 diff 或可保留的 worktree 路径；运行会把 agent 的改动保存为 diff，供审阅和应用
+  ——见[保存的改动](#隔离-agent-的改动odw-扩展)。agent 启动前，`.worktreeinclude` 会补上
+  检出缺少的文件（`.env`、`node_modules` 等），然后运行 `worktreeSetup`——见
   [隔离 worktree](#隔离-worktree-与-agent-环境)。
+- **opts.keep**（**ODW 扩展**）—— 配合 `isolation: "worktree"`，还会把 agent 的改动提交到
+  源仓库的分支 `odw/<runId>/<agentId>-<label>`。`false` 让单个 agent 不受 `keepBranches`
+  设置影响。没有隔离时会被忽略（并记一行日志）；Claude Code 会忽略它。
 
 返回回复文本，设了 `schema` 则返回校验过的 JSON 值。CLI 出错或 schema 重试耗尽会抛错；
 这些可恢复失败在 `parallel`/`pipeline` 内变成 `null`。停止请求、预算耗尽和 agent
@@ -304,6 +307,31 @@ await parallel(['grid', 'list'].map((layout) => () =>
 当本次运行中正在运行的 agent 占满了整个端口范围，下一个 agent 就不带 `ODW_PORT` 运行，
 运行日志会说明这一点：请让 `portRange` 比 `concurrency` 更宽。worktree setup 拿到同样的
 三个变量；`exec()` 命令拿到 `ODW_RUN_ID`。
+
+## 隔离 agent 的改动（ODW 扩展）
+
+在隔离 agent 的 worktree 被删除之前，ODW 会保存它的改动：相对它开始时那个提交的一切
+差异——修改、新增、删除、重命名和二进制文件，不论是否暂存或提交——以统一 diff 的形式存进
+run 目录（`agents/<agentId>.diff`），并把 `changes: { files, insertions, deletions,
+truncated }` 记在它的 `agent_finished` 事件（或 `agent_failed`：失败的 agent 同样保留它的
+工作）和已保存结果上。`.worktreeinclude` 放进来的、`worktreeSetup` 生成的东西不算在内，
+除非 agent 之后又改了它们；被 git 忽略的文件从不计入，符号链接也从不被跟随。什么都没改的
+agent 不保留 diff；被停止的运行也不保留。
+
+```bash
+odw diff <run> --stat                    # 每个 agent：文件数、增删行数、保留的分支
+odw diff <run> --agent <id|label>        # 某个 agent 的 diff，原样输出
+odw apply <run> --agent <id|label> --check
+odw apply <run> --agent <id|label>       # 用 git apply --3way 应用到你所在的工作树
+```
+
+`odw apply` 会暂存能应用的部分，在 hunk 冲突处留下冲突标记（退出码 1）；只要 diff 涉及的
+路径上有未提交改动它就拒绝，除非加 `--force`。改动不同文件的多个 agent 可以依次应用。超过
+`maxDiffBytes`（默认 2 MB）的 diff 只保留开头，并以一行 `# odw: diff truncated …` 结尾；
+计数仍描述完整改动，但 `odw apply` 会拒绝它——请改用该 agent 的分支（`keep: true` 或
+`keepBranches`）。一次调用的每次尝试都在新的 worktree 里进行：只重排回复格式的 schema
+重试会保留之前那次尝试的改动；卡死重启或限流重试会重做工作，所以它的改动取代之前的。
+`odw resume` 会把重放 agent 的 diff 复制到新运行里。
 
 ## schema
 

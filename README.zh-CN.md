@@ -229,7 +229,7 @@ ODW 已实现下列原语能力。依赖宿主私有运行机制的脚本,迁移
 | 嵌套 `workflow()` | 已实现一层嵌套,共享父任务的调度器、控制和预算。更深层的调用需要展平。 |
 | 模型选择 | 在 `agent(..., {model})` 中传该 CLI 的模型 ID。`meta.model` 和阶段元数据不设置执行模型;适配器没有模型参数时会记录路由说明。 |
 | `agentType` | 将人设加入提示词,不会加载宿主的同名子 agent 配置或选择适配器。 |
-| 工作区隔离 | 从已保存的 HEAD 创建临时工作区,不含未保存修改,结束后清理。不会自动合并,`agent()` 返回回复而非 diff;需保留的交付物应放进回复或显式持久化。支持 `.worktreeinclude`(ODW 连未跟踪文件也复制,而不只是被 gitignore 的文件);其中的 `symlink:` 行、`worktreeSetup` 和 agent 的 `ODW_PORT` 是 ODW 扩展——见[隔离 worktree](#隔离-worktree-与-agent-端口)。 |
+| 工作区隔离 | 从已保存的 HEAD 创建临时工作区,不含未保存修改,结束后清理。不会自动合并,`agent()` 返回回复而非 diff;ODW 会把每个隔离 agent 的改动保存为 diff,供审阅和应用(`odw diff`、`odw apply`、`keep` 分支——均为 ODW 扩展;见[审阅并应用](#审阅并应用隔离-agent-的改动odw-扩展))。支持 `.worktreeinclude`(ODW 连未跟踪文件也复制,而不只是被 gitignore 的文件);其中的 `symlink:` 行、`worktreeSetup` 和 agent 的 `ODW_PORT` 是 ODW 扩展——见[隔离 worktree](#隔离-worktree-与-agent-端口)。 |
 | 预算 | 计算输出 token:适配器上报用量时用 CLI 自己的计数(内置 `claude` 会上报——见[用量与花费](#用量与花费odw-扩展)),否则按每条回复的 `ceil(字符数 / 4)` 估算。每次 CLI 运行都计入:schema 重试、限流重试,以及上报了用量的失败运行。每次派发和每次 schema 重试前都会检查;预算用尽时运行结束,仍在运行的 agent 会被停止。 |
 | JSON Schema | 只校验[已列出的子集](skills/open-dynamic-workflows/zh-CN/references/primitives.md#schema)。`$ref`、`const`、`oneOf` 等约束不会生效;请明确声明对象/数组类型并使用受支持的约束。 |
 | 脚本可信性 | 只运行可信脚本:运行工作流会把正文当作普通 JavaScript 执行。加载时元数据按纯字面量解析,不会被求值;编译检查和兼容性警告都不提供沙箱隔离。 |
@@ -263,6 +263,7 @@ odw status $RUN          # 状态、agent 计数、token 与花费
 odw agents $RUN          # 每个 agent 及其已保存的结果,运行中也可看
 odw logs $RUN --follow   # 流式输出原始进度事件
 odw result $RUN          # 最终值
+odw diff $RUN --stat     # 隔离 agent 改了什么;odw apply $RUN --agent N 应用其中一个
 odw pause|resume|stop $RUN
 odw approve|reject $RUN  # 回答运行正在等待的 checkpoint()(--note TEXT、--checkpoint N)
 odw list
@@ -409,7 +410,8 @@ $ odw status $RUN
   就已保存,运行中即可查看;重放的 agent 标记为 ↺。`exec()` 命令步骤以终端风格的节点
   (带退出码)出现在同一张图和时间线里;运行的计数包含它们(它们不算 agent 派发)。
   在 `checkpoint()` 处等待的运行会在图上方显示问题和它的 payload;看板可写时还提供
-  **Approve** / **Reject** 和附言。
+  **Approve** / **Reject** 和附言。**Changes** 标签页按文件审阅每个隔离 agent 的改动,
+  并可复制 `odw apply` 命令(以及保留的分支)。
 - **Workspace** —— 所有已保存的工作流:阶段的静态结构及每个阶段调用的原语、源码和最近的运行。
 - **Chat Host** —— 正常的 Codex 对话;提到 ODW 或 workflow 时,该回合会关联到一个真实的后台
   运行,工具卡片实时更新。
@@ -721,6 +723,49 @@ setup 命令拿到同样的三个变量,`exec()` 命令拿到 `ODW_RUN_ID`。请
 运行,运行日志里会说明。一次调用的每次尝试(schema 重试、卡死重启、限流重试)都从一个新的
 worktree 开始,并以同样方式准备。
 
+### 审阅并应用隔离 agent 的改动(ODW 扩展)
+
+隔离 agent 的 worktree 会在调用结束时删除,但它的工作不会丢:删除之前,ODW 把这个 agent
+的改动——修改、新增、删除、重命名和二进制文件,不论是否暂存或提交——以统一 diff 的形式
+保存在 run 目录里(`agents/<agentId>.diff`),并把改动规模
+`changes: { files, insertions, deletions, truncated }` 记在该 agent 的 `agent_finished`
+事件和已保存结果上。`agent()` 返回的仍是回复。`.worktreeinclude` 放进来的、`worktreeSetup`
+生成的东西不算 agent 的改动,不会出现在 diff 里——除非 agent 之后又改了它们。
+
+```bash
+odw diff $RUN --stat               # 谁改了什么:文件数、增删行数、保留的分支
+odw diff $RUN --agent fix:auth     # 某个 agent 的 diff(按 label 或 id)——git 能读的补丁
+odw apply $RUN --agent 3 --check   # 能否应用到这里?哪些文件会冲突?
+odw apply $RUN --agent 3           # 用 git apply --3way 应用到当前工作树
+```
+
+`odw apply` 在你所在的 git 工作树里用 `git apply --3way` 应用一个 agent 的 diff:能应用的
+部分会被暂存,与你自己的改动冲突的 hunk 做三方合并并留下冲突标记(退出码 1)。只要 diff
+涉及的路径上有未提交的改动,它就拒绝执行——先提交或 stash,或者加 `--force`。改动不同
+文件的多个 agent 可以依次应用。看板在运行的 **Changes** 标签页里展示同样的 diff,并通过
+`GET /api/runs/:id/agents/:agentId/diff` 提供。
+
+- **`keep: true`**(`agent()` 选项)或 **`keepBranches: true`**(配置)还会把改动提交到源
+  仓库的分支 `odw/<runId>/<agentId>-<label>` 上——作者是 `odw <odw@localhost>`,父提交是
+  agent 开始时的那个提交——方便检出、合并或 cherry-pick。ODW 只创建这个分支:你的 HEAD、
+  索引和其他分支都不会被碰。`keep: false` 让单个 agent 不受 `keepBranches` 影响。
+- **`maxDiffBytes`**(默认 2 MB)限制单个 diff 的大小:超出时保留开头部分(在行边界截断),
+  并在末尾加一行 `# odw: diff truncated …`。计数仍然描述完整的改动;被截断的 diff
+  `odw apply` 会拒绝——请改用分支。
+- 二进制文件在 diff 里只以对象 id 标出,不携带内容;git 从仓库的对象库里取回它(ODW 记录
+  改动时已写入;保留的分支会让它永久保留)。
+- 失败的 agent 同样保留 diff(比如超时前完成的工作),`odw resume` 会把重放 agent 的 diff
+  带进新运行。被停止的运行不保留 diff。
+
+```jsonc
+{
+  "maxDiffBytes": 2097152, // run 目录中单个 agent 的 diff 最多保留的字节数
+  "keepBranches": false    // true:每个隔离 agent 的改动也都提交到一个分支
+}
+```
+
+分步说明:[`docs/recipes/review-and-apply.md`](docs/recipes/review-and-apply.md)。
+
 ## 工作原理
 
 ```
@@ -752,6 +797,7 @@ odw (CLI) ─▶ runtime(后台 worker + run 目录)
 | `src/runtime/` | L5 — 后台 worker、run 目录、控制 |
 | `src/cli.ts` | L6 — `odw` 命令 |
 | `src/workspace.ts` | 横切 — 工作区隔离与 diff |
+| `src/changes.ts` | 横切 — 隔离 agent 的改动,保存为 diff 和分支 |
 
 workflow 脚本始终是**纯 `.js`**、从不编译;引擎用 **TypeScript** 写(编译成 ESM,
 **零运行时依赖**),并附带 `.d.ts` authoring 类型,让脚本作者在编辑器里对注入的全局有

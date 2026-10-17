@@ -107,6 +107,8 @@ did-you-mean hint) instead of silently ignoring them.
 | `worktreeSetupTimeout` | seconds the worktree setup may run before it is killed (default 600) |
 | `portRange` | **ODW extension.** `[first, last]`: the ports each running agent's `ODW_PORT` comes from (default `[41000, 41999]`); keep it wider than `concurrency` |
 | `fanOutWarn` | **ODW extension.** When one `parallel()` or `pipeline()` call fans out more than this many tasks or items, the run logs one warning with the count (`large fan-out: …`); it never blocks. Default 25; `0` or `null` = off |
+| `maxDiffBytes` | **ODW extension.** Bytes of an isolated agent's diff kept in the run directory (`agents/<agentId>.diff`, read by `odw diff` / `odw apply`; default 2 MB). Past it the head is kept, cut at a line, with a `# odw: diff truncated …` note; the counts still describe the whole change |
+| `keepBranches` | **ODW extension.** `true`: every isolated agent's change is also committed to a branch `odw/<runId>/<agentId>-<label>` of the source repository, as `keep: true` does for one agent (`keep: false` opts one out). Default `false` |
 
 ### Adapter fields
 

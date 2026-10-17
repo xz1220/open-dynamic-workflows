@@ -80,10 +80,11 @@ outright, never silently passed through as a string).
 | `exec(command, opts?)` | Run a command (tests, a build, a linter) without a model; resolves to `{ stdout, stderr, exitCode, signal, timedOut, truncated, durationMs }`. A string runs through the shell, an array as argv. **ODW extension** — not part of Claude Code's dialect. |
 | `checkpoint(title, opts?)` | Pause the run until a person approves or rejects; resolves to `{ approved, note, by }`. **ODW extension** — not part of Claude Code's dialect. |
 
-`opts` for `agent`: `{ adapter?, schema?, label?, phase?, model?, agentType?, isolation? }`.
+`opts` for `agent`: `{ adapter?, schema?, label?, phase?, model?, agentType?, isolation?, keep? }`.
 `adapter` picks the CLI; `schema` is a raw JSON Schema object (an option, not
 a global); `agentType` is a **persona** injected into the prompt — *not* an
-adapter name.
+adapter name. `keep: true` (**ODW extension**) also commits an isolated agent's
+change to a branch `odw/<runId>/<agentId>-<label>`.
 
 `opts` for `exec`: `{ cwd?, env?, timeout?, input?, maxOutputBytes?, label?, phase?, check? }`.
 It runs in the source directory by default, is killed after `timeout` seconds
@@ -171,6 +172,27 @@ odw resume $RUN --wait        # …a NEW run: unchanged agent() calls replay, on
 - Keep prompts deterministic — one built from `Date.now()` or `Math.random()`
   never matches, so it runs again.
 
+### Review and apply isolated agents' changes (ODW extension)
+
+An agent with `isolation: "worktree"` edits a throwaway worktree, never your
+files. Its change is kept with the run as a diff (`agents/<agentId>.diff`) —
+`agent()` still returns only the reply:
+
+```bash
+odw diff $RUN --stat                  # which agents changed which files, +/- lines
+odw diff $RUN --agent <id|label>      # one agent's diff — read it before applying
+odw apply $RUN --agent <id> --check   # would it apply here? which files would conflict?
+odw apply $RUN --agent <id>           # git apply --3way into this working tree (staged)
+```
+
+- Apply what the task calls for, one agent at a time, and tell the user what you
+  applied and what conflicted (exit 1: conflict markers to resolve). Run it inside
+  the repository the run worked on.
+- `odw apply` refuses while a path the diff touches has uncommitted changes —
+  commit or stash first; use `--force` only when the user agrees.
+- A diff cut at `maxDiffBytes` cannot be applied: use the agent's branch
+  (`keep: true`, or `"keepBranches": true` in the config).
+
 ### Human checkpoints (ODW extension)
 
 Add a `checkpoint()` only where a person's judgment is worth the wait: before
@@ -229,8 +251,9 @@ without answering when headless (a login, trust or approval prompt).
   agent gets a throwaway **git worktree** (needs the source to be a git repo
   with at least one commit; the agent sees HEAD, not uncommitted edits).
   The temporary worktree is removed afterward and changes are not merged.
-  `agent()` returns the reply, not a diff; include required deliverables in the
-  reply or persist them explicitly before cleanup. A fresh worktree lacks
+  `agent()` returns the reply, not a diff; the run keeps the agent's change as
+  a diff to review and apply (`odw diff`, `odw apply`; ODW extensions — see
+  above). A fresh worktree lacks
   untracked files: a `.worktreeinclude` at the repository root (gitignore
   syntax; `symlink: node_modules` links instead of copying) brings in `.env`
   and the like, and a `worktreeSetup` command in the config runs before the
@@ -247,7 +270,8 @@ without answering when headless (a login, trust or approval prompt).
   dispatches per run have a hard guard; use `odw pause` / `odw stop` when a
   run exceeds expectations.
 - **Results**: the engine never commits, pushes, or applies diffs for you.
-  Inspect the `return` value first, then decide the next step.
+  Inspect the `return` value first, then decide the next step — for isolated
+  agents, that includes reviewing their kept diffs and running `odw apply`.
 
 ## Common mistakes
 
@@ -258,6 +282,7 @@ without answering when headless (a login, trust or approval prompt).
 | Treating all failures in `parallel`/`pipeline` alike | Recoverable failures become `null`; stop, budget and dispatch-limit errors abort. Retry missing results or fail when every item is required; filter only when partial output is acceptable. |
 | Branching on which agent finished first | Breaks reproducibility; keep reductions order-independent. |
 | Re-running a stalled or failed run from scratch | Read finished agents with `odw result <run> --agent <id>`; `odw stop`, fix the script, then `odw resume` — finished calls replay for free. |
+| Looking for an isolated agent's edits in your files after the run | They are kept as diffs, not merged: `odw diff <run> --stat`, then `odw apply <run> --agent <id> --check` and `odw apply`. |
 | Using `validate()` and expecting the script to run on Claude Code | `validate` is an ODW extension and runs on odw only. |
 | Using `exec()` and expecting the script to run on Claude Code | `exec` is an ODW extension and runs on odw only; `validate()` warns about it. |
 | Using `checkpoint()` and expecting the script to run on Claude Code | `checkpoint` is an ODW extension and runs on odw only; `validate()` warns about it. |

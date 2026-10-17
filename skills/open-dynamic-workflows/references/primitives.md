@@ -43,11 +43,15 @@ other primitive organizes calls to it.
   itself). Needs a repo with at least one commit; the agent sees HEAD without
   uncommitted changes. The worktree is cleaned up after the call and changes
   are not merged into the source. `agent()` returns only the reply, not a diff
-  or a persistent worktree path: include required deliverables in the reply or
-  explicitly save them outside the temporary worktree. Before the agent starts,
-  `.worktreeinclude` brings in what a checkout lacks (`.env`, `node_modules`, …)
-  and `worktreeSetup` runs — see
+  or a persistent worktree path; the run keeps what the agent changed as a diff
+  to review and apply — see [kept changes](#what-an-isolated-agent-changed-odw-extension).
+  Before the agent starts, `.worktreeinclude` brings in what a checkout lacks
+  (`.env`, `node_modules`, …) and `worktreeSetup` runs — see
   [isolated worktrees](#isolated-worktrees-and-the-agent-environment).
+- **opts.keep** (**ODW extension**) — with `isolation: "worktree"`, also commit
+  the agent's change to a branch `odw/<runId>/<agentId>-<label>` of the source
+  repository. `false` opts one agent out of the `keepBranches` setting. Ignored
+  (with a log line) without isolation; Claude Code ignores it.
 
 Returns the reply text, or the validated JSON value when `schema` is set. CLI
 errors and exhausted schema retries throw. Inside `parallel`/`pipeline`, these
@@ -362,6 +366,36 @@ When this run's running agents hold every port of the range, the next one runs
 without `ODW_PORT` and the run's log says so: keep `portRange` wider than
 `concurrency`. The worktree setup gets the same three variables; `exec()`
 commands get `ODW_RUN_ID`.
+
+## What an isolated agent changed (ODW extension)
+
+Before an isolated agent's worktree is removed, ODW keeps its change: everything
+that differs from the commit it started from — edits, new, deleted, renamed and
+binary files, staged, committed or not — as a unified diff in the run directory
+(`agents/<agentId>.diff`), with `changes: { files, insertions, deletions,
+truncated }` on its `agent_finished` event (or `agent_failed`: a failed agent
+keeps its work too) and its saved result. What `.worktreeinclude` placed and
+`worktreeSetup` produced is left out unless the agent changed it afterwards; git
+ignored files never count, and symlinks are never followed. An agent that changed
+nothing keeps no diff; a stopped run keeps none.
+
+```bash
+odw diff <run> --stat                    # per agent: files, +/- lines, kept branch
+odw diff <run> --agent <id|label>        # one agent's diff, verbatim
+odw apply <run> --agent <id|label> --check
+odw apply <run> --agent <id|label>       # git apply --3way into the working tree you are in
+```
+
+`odw apply` stages what applies and leaves conflict markers where a hunk clashes
+(exit 1); it refuses while a path the diff touches has uncommitted changes, unless
+`--force`. Several agents that changed different files apply one after another.
+A diff past `maxDiffBytes` (default 2 MB) keeps its head and ends with a
+`# odw: diff truncated …` line; its counts still describe the whole change, and
+`odw apply` refuses it — use the agent's branch (`keep: true`, or
+`keepBranches`). Each attempt of a call works in a fresh worktree: a schema retry
+that only reformats its reply keeps the earlier attempt's change, while a stall
+restart or a rate-limit retry redoes the work, so its change replaces the
+earlier one. `odw resume` copies a replayed agent's diff into the new run.
 
 ## schema
 

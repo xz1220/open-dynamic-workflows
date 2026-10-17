@@ -252,7 +252,7 @@ private runtime behavior need the following checks before migration:
 | Nested `workflow()` | Implemented for one level, sharing the parent's scheduler, control and budget. Flatten deeper nesting. |
 | Model selection | Pass `agent(..., {model})` using that CLI's model ID. `meta.model` and phase metadata do not set execution defaults; an adapter without model routing support emits a note. |
 | `agentType` | A persona added to the prompt. It does not load a host's named subagent configuration or select an adapter. |
-| Worktree isolation | Starts from committed HEAD, excludes uncommitted edits, and cleans up afterward. Changes are not merged and `agent()` returns the reply, not a diff; put required deliverables in that reply or persist them explicitly. `.worktreeinclude` is honored (ODW copies untracked files too, not only gitignored ones); its `symlink:` lines, `worktreeSetup` and the agents' `ODW_PORT` are ODW extensions — see [Isolated worktrees](#isolated-worktrees-and-agent-ports). |
+| Worktree isolation | Starts from committed HEAD, excludes uncommitted edits, and cleans up afterward. Changes are not merged and `agent()` returns the reply, not a diff; ODW keeps each isolated agent's change as a diff to review and apply (`odw diff`, `odw apply`, `keep` branches — ODW extensions; see [Review and apply](#review-and-apply-what-isolated-agents-changed-odw-extension)). `.worktreeinclude` is honored (ODW copies untracked files too, not only gitignored ones); its `symlink:` lines, `worktreeSetup` and the agents' `ODW_PORT` are ODW extensions — see [Isolated worktrees](#isolated-worktrees-and-agent-ports). |
 | Budget | Counts output tokens: the CLI's own count where its adapter reports usage (the built-in `claude` does — see [Usage and cost](#usage-and-cost-odw-extension)), else `ceil(chars / 4)` of each reply. Every CLI run counts: schema and rate-limit retries, and failed runs that reported usage. The guard runs before each dispatch and each schema retry; once the target is spent the run ends and agents still running are stopped. |
 | JSON Schema | Supports the [documented subset](skills/open-dynamic-workflows/references/primitives.md#schema). Unknown constraints such as `$ref`, `const` and `oneOf` are not enforced. Use explicit object/array types and supported constraints. |
 | Script trust | Run trusted scripts only: a run executes the workflow body as ordinary JavaScript. Loading parses metadata as a pure literal without evaluating it; validation and compatibility warnings are not a sandbox. |
@@ -287,6 +287,7 @@ odw status $RUN          # state, agent count, tokens and cost
 odw agents $RUN          # each agent and its saved result, mid-run too
 odw logs $RUN --follow   # stream raw progress events
 odw result $RUN          # final value
+odw diff $RUN --stat     # what isolated agents changed; odw apply $RUN --agent N applies one
 odw pause|resume|stop $RUN
 odw approve|reject $RUN  # answer a checkpoint() the run waits at (--note TEXT, --checkpoint N)
 odw list
@@ -452,6 +453,8 @@ switches to a night theme on demand. What it gives you:
   with their exit code; a run's counts include them (they are not agent dispatches).
   A run waiting at a `checkpoint()` shows the question and its payload above the
   graph, with **Approve** / **Reject** and a note when the dashboard can write.
+  A **Changes** tab reviews what each isolated agent changed, file by file, with
+  the `odw apply` command (and the kept branch) to copy.
 - **Workspace** — every saved workflow with a static outline of its phases and the
   primitives each one calls, its source, and its recent runs.
 - **Chat Host** — ordinary Codex conversation; mention ODW or workflow and the turn
@@ -800,6 +803,56 @@ the others hold every port runs without `ODW_PORT`, and the run's log says so.
 Each attempt of a call (a schema retry, a stall restart, a rate-limit retry)
 starts from a fresh worktree, prepared the same way.
 
+### Review and apply what isolated agents changed (ODW extension)
+
+An isolated agent's worktree is removed when its call settles, but its work is
+not lost: before the worktree goes, ODW keeps what the agent changed — edits,
+new, deleted, renamed and binary files, staged, committed or not — as a unified
+diff in the run directory (`agents/<agentId>.diff`), and records its size,
+`changes: { files, insertions, deletions, truncated }`, on the agent's
+`agent_finished` event and saved result. `agent()` still returns the reply.
+What `.worktreeinclude` placed and `worktreeSetup` produced is not the agent's
+change and stays out, unless the agent edited it afterwards.
+
+```bash
+odw diff $RUN --stat               # who changed what: files, +/- lines, kept branch
+odw diff $RUN --agent fix:auth     # one agent's diff, by label or id — a patch git can read
+odw apply $RUN --agent 3 --check   # would it apply here, and what would conflict?
+odw apply $RUN --agent 3           # apply it to this working tree (git apply --3way)
+```
+
+`odw apply` applies one agent's diff to the git working tree you run it in with
+`git apply --3way`: what applies is staged, and a hunk that clashes with your
+own change is merged three-way and left with conflict markers (exit 1). It
+refuses while a path the diff touches has uncommitted changes — commit or stash
+them, or pass `--force`. Agents that changed different files apply one after
+another. The dashboard shows the same diffs in a run's **Changes** tab and serves
+them at `GET /api/runs/:id/agents/:agentId/diff`.
+
+- **`keep: true`** (an `agent()` option) or **`keepBranches: true`** (config) also
+  commits the change to a branch `odw/<runId>/<agentId>-<label>` of the source
+  repository — by `odw <odw@localhost>`, on top of the commit the agent started
+  from — to check out, merge or cherry-pick. ODW only creates that branch: your
+  HEAD, index and other branches are never touched. `keep: false` opts one agent
+  out of `keepBranches`.
+- **`maxDiffBytes`** (default 2 MB) caps a stored diff: past it, the head is kept,
+  cut at a line, with one final `# odw: diff truncated …` line. The counts still
+  describe the whole change; `odw apply` refuses a cut diff — use the branch.
+- A binary file is named in the diff by its object id, not carried in it; git
+  applies it from the repository's object store, where ODW wrote it (a kept
+  branch pins it for good).
+- A failed agent keeps its diff too (the work of one that timed out), and `odw
+  resume` brings a replayed agent's diff into the new run. A stopped run keeps none.
+
+```jsonc
+{
+  "maxDiffBytes": 2097152, // bytes of one agent's diff kept in the run directory
+  "keepBranches": false    // true: every isolated agent's change also goes on a branch
+}
+```
+
+Step by step: [`docs/recipes/review-and-apply.md`](docs/recipes/review-and-apply.md).
+
 ## How it works
 
 ```
@@ -834,6 +887,7 @@ Two design points are worth calling out:
 | `src/runtime/` | L5 — background worker, run directory, control |
 | `src/cli.ts` | L6 — the `odw` command |
 | `src/workspace.ts` | cross-cutting — workspace isolation and diff |
+| `src/changes.ts` | cross-cutting — what isolated agents changed, kept as diffs and branches |
 
 Workflow scripts stay **plain `.js`** and are never compiled; the engine is
 written in **TypeScript** (compiled to ESM, **zero runtime dependencies**) and

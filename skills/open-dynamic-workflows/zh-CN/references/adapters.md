@@ -101,6 +101,8 @@ shell 出去执行一个本地命令，通过 stdin 或一个参数把拼好的 
 | `worktreeSetupTimeout` | worktree setup 被杀掉之前最多运行的秒数（默认 600） |
 | `portRange` | **ODW 扩展。** `[first, last]`：每个正在运行的 agent 的 `ODW_PORT` 从这个范围分配（默认 `[41000, 41999]`）；请让它比 `concurrency` 更宽 |
 | `fanOutWarn` | **ODW 扩展。** 单次 `parallel()` 或 `pipeline()` 调用扇出的任务或条目超过这个数时，运行记一条带数量的警告（`large fan-out: …`）；从不阻塞。默认 25；`0` 或 `null` = 关闭 |
+| `maxDiffBytes` | **ODW 扩展。** run 目录里保存的单个隔离 agent 的 diff 最多多少字节（`agents/<agentId>.diff`，由 `odw diff` / `odw apply` 读取；默认 2 MB）。超出时保留开头（在行边界截断）并加一行 `# odw: diff truncated …`；计数仍描述完整改动 |
+| `keepBranches` | **ODW 扩展。** `true`：每个隔离 agent 的改动也都提交到源仓库的分支 `odw/<runId>/<agentId>-<label>`，就像对单个 agent 用 `keep: true`（`keep: false` 可让某个 agent 不受影响）。默认 `false` |
 
 ### 适配器字段
 
