@@ -356,6 +356,37 @@ test("attachRun: TERM=dumb never enters the live renderer (no cursor CSI at all)
   assert.doesNotMatch(term.raw, /\x1b\[0J/);
 });
 
+test("attachRun: a Windows console without TERM still gets the live renderer", async () => {
+  const store = freshStore();
+  const runId = makeRun(store, "win");
+  const term = new FakeTerm(80);
+  emit(store, runId, { ts: 1, type: "run_finished", runId });
+  store.writeResult(runId, 1);
+  store.updateStatus(runId, { state: "done" });
+  const code = await attachRun(store, runId, {
+    out: new Collector(),
+    err: term,
+    pollMs: 10,
+    signals: false,
+    env: {},
+    platform: "win32",
+  });
+  assert.equal(code, 0);
+  assert.match(term.raw, /\x1b\[\?25l/); // the live view hid the cursor while drawing
+  assert.equal(term.hiddenCursor, false); // …and restored it on exit
+});
+
+test("attachRun: no TERM on POSIX stays on the plain line stream", async () => {
+  const store = freshStore();
+  const runId = makeRun(store, "posix");
+  const term = new FakeTerm(80);
+  emit(store, runId, { ts: 1, type: "run_finished", runId });
+  store.writeResult(runId, 1);
+  store.updateStatus(runId, { state: "done" });
+  await attachRun(store, runId, { out: new Collector(), err: term, pollMs: 10, signals: false, env: {}, platform: "linux" });
+  assert.doesNotMatch(term.raw, /\x1b\[\?25l/);
+});
+
 // --- timeout & detach -------------------------------------------------------------------
 
 test("attachRun: --timeout exits 124 and says the run continues", async () => {

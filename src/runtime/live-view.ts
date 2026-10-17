@@ -303,6 +303,8 @@ export interface AttachOptions {
   now?: () => number;
   /** Install SIGINT/SIGTERM/SIGHUP handlers (default true; tests pass false). */
   signals?: boolean;
+  /** Platform override for tests (default process.platform). */
+  platform?: NodeJS.Platform;
 }
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
@@ -320,11 +322,13 @@ export async function attachRun(
   const env = opts.env ?? process.env;
   const now = opts.now ?? Date.now;
   // Live rendering needs real cursor control, not just a TTY: TERM=dumb (or no
-  // TERM at all) gets the plain line stream even under --fg.
+  // TERM at all) gets the plain line stream even under --fg. Windows consoles
+  // set no TERM yet handle VT sequences (Node enables them), like detectCaps.
+  const platform = opts.platform ?? process.platform;
   const cursorCapable =
-    opts.err.isTTY === true && env.TERM !== undefined && env.TERM !== "dumb";
+    opts.err.isTTY === true && (env.TERM === undefined ? platform === "win32" : env.TERM !== "dumb");
   const live = (opts.live ?? opts.err.isTTY === true) && cursorCapable;
-  const caps = detectCaps(opts.err, env);
+  const caps = detectCaps(opts.err, env, platform);
   const pollMs = opts.pollMs ?? (live ? 120 : 250);
   const attachStart = now();
   const deadline = opts.timeoutMs !== undefined ? attachStart + opts.timeoutMs : null;
