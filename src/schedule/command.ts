@@ -354,7 +354,7 @@ function windowsHelp(def: ScheduleDefinition, spec: CronSpec, dryRunOnly: boolea
 
 // --- list ------------------------------------------------------------------------
 
-interface ScheduleRow {
+export interface ScheduleRow {
   def: ScheduleDefinition;
   /** The OS entry is in place; null when that cannot be told. */
   installed: boolean | null;
@@ -363,9 +363,15 @@ interface ScheduleRow {
   log: string;
 }
 
-function scheduleList(rest: string[], deps: ScheduleDeps): number {
-  const { values, positionals } = parseArgs({ args: rest, allowPositionals: true, options: { json: { type: "boolean" } } });
-  if (positionals.length > 0) throw usage(`odw schedule list: unexpected argument '${positionals[0]}'`);
+/**
+ * Every schedule with whether its OS entry is in place, its last run and its
+ * next fire time — what `odw schedule list` prints and `GET /api/schedules`
+ * serves. A definition that no longer checks out is reported to `onSkip`.
+ */
+export function listSchedules(
+  deps: Pick<ScheduleDeps, "exec" | "now"> = {},
+  onSkip: (message: string) => void = () => {},
+): ScheduleRow[] {
   const paths = schedulePaths();
   const now = deps.now?.() ?? new Date();
   const env = backendEnv(deps);
@@ -374,7 +380,7 @@ function scheduleList(rest: string[], deps: ScheduleDeps): number {
   for (const [i, entry] of readScheduleFile(paths.definitions).entries()) {
     const def = checkDefinition(entry);
     if (typeof def === "string") {
-      process.stderr.write(`odw schedule list: skipped schedule #${i + 1} of ${paths.definitions}: ${def}\n`);
+      onSkip(`skipped schedule #${i + 1} of ${paths.definitions}: ${def}`);
       continue;
     }
     if (def.backend === "cron" && crontab === undefined) crontab = tryReadCrontab(env.exec);
@@ -392,15 +398,26 @@ function scheduleList(rest: string[], deps: ScheduleDeps): number {
       log: logPath(paths.stateDir, def.name),
     });
   }
+  return rows;
+}
+
+/** A schedule row as JSON: the definition plus `installed`, `lastRun`, `nextRun` (local ISO time) and `log`. */
+export function scheduleJson(row: ScheduleRow): Record<string, unknown> {
+  return {
+    ...row.def,
+    installed: row.installed,
+    lastRun: row.lastRun,
+    nextRun: row.nextRun ? localIso(row.nextRun) : null,
+    log: row.log,
+  };
+}
+
+function scheduleList(rest: string[], deps: ScheduleDeps): number {
+  const { values, positionals } = parseArgs({ args: rest, allowPositionals: true, options: { json: { type: "boolean" } } });
+  if (positionals.length > 0) throw usage(`odw schedule list: unexpected argument '${positionals[0]}'`);
+  const rows = listSchedules(deps, (message) => process.stderr.write(`odw schedule list: ${message}\n`));
   if (values.json) {
-    const json = rows.map((row) => ({
-      ...row.def,
-      installed: row.installed,
-      lastRun: row.lastRun,
-      nextRun: row.nextRun ? localIso(row.nextRun) : null,
-      log: row.log,
-    }));
-    process.stdout.write(JSON.stringify(json, null, 2) + "\n");
+    process.stdout.write(JSON.stringify(rows.map(scheduleJson), null, 2) + "\n");
     return 0;
   }
   if (rows.length === 0) {
@@ -637,7 +654,7 @@ function runsRootFlags(store: RunStore): string[] {
 
 // --- helpers ---------------------------------------------------------------------
 
-function backendEnv(deps: ScheduleDeps): BackendEnv {
+function backendEnv(deps: Pick<ScheduleDeps, "exec">): BackendEnv {
   return { exec: deps.exec ?? runExecutor, home: homeDir(), uid: process.getuid?.() ?? 0 };
 }
 

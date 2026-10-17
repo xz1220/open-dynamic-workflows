@@ -44,6 +44,7 @@
  *   GET  /api/workflows/:name       WorkflowDetail (?provider=odw|claude picks a shadowed name)
  *   GET  /api/capabilities          { writable }: whether this bind accepts writes
  *   GET  /api/settings              runtime config summary (adapters, roots, Claude scope, notify)
+ *   GET  /api/schedules             [schedule]: `odw schedule list --json`, read only (ODW extension)
  *   *    /api/chat/sessions[/:id[/messages]]   the Chat Host (see ./chat-host)
  *
  * GET /api/activity?limit=N (default 40, clamped to 1..200; junk → 40) →
@@ -109,6 +110,7 @@ import {
   writeGuard,
   logServeError,
 } from "./http-util.js";
+import { listSchedules, scheduleJson } from "../schedule/command.js";
 import { webhookOrigin } from "./notify.js";
 import { OdwRunSource } from "./odw-run-source.js";
 import { RunFeed } from "./run-feed.js";
@@ -289,6 +291,10 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandleCont
     }
     if (method === "GET" && path === "/api/settings") {
       sendJson(res, 200, settingsView(store, config, cwd, configPath, boundHost));
+      return;
+    }
+    if (method === "GET" && path === "/api/schedules") {
+      sendJson(res, 200, listSchedules().map(scheduleJson));
       return;
     }
     if (path.startsWith("/api/chat/") && (await chatHost.route(req, res, method, path, boundHost))) return;
