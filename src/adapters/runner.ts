@@ -252,7 +252,7 @@ export const runCommand: CommandRunner = (command, options = {}) => {
         timedOut = true;
         clearTimeout(stallTimer); // one kill, one reason
         terminate();
-      }, options.timeout * 1000);
+      }, Math.min(options.timeout * 1000, 2 ** 31 - 1)); // setTimeout fires at once past 2^31-1 ms
     }
 
     // The stall watchdog wakes when the silence could first reach the limit

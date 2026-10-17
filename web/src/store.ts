@@ -351,11 +351,14 @@ class Store {
   async loadResult(id: string): Promise<void> {
     try {
       const r = await api.result(id);
+      if (this.focusedRunId !== id) return;
       this.result = r.value;
+      this.resultLoaded = true;
     } catch {
+      // Not written yet (or a transient error): stay "not loaded" so the next
+      // poll asks again, instead of rendering `undefined` as the result.
       this.result = undefined;
     }
-    this.resultLoaded = true;
     this.emit();
   }
 
