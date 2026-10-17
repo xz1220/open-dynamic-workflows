@@ -254,6 +254,19 @@ test("checkpoint is injected unless the script binds the name itself; validate()
   const run = (body: string, args: unknown = null) => loadWorkflowScript(META + body, "wf.js").run(globals, args);
   assert.deepEqual(await run("return (await checkpoint('Go?')).approved"), true);
   assert.deepEqual(seen, ["Go?"]);
+  // "checkpoint" is a common name: a nested binding of it leaves the global in place.
+  assert.equal(
+    await run(
+      "const r = await checkpoint('Nested?')\n" +
+        "for (const checkpoint of [1, 2]) log(checkpoint)\n" +
+        "function helper() { let checkpoint = 1; return checkpoint }\n" +
+        "return r.approved && helper() === 1",
+    ),
+    true,
+  );
+  assert.deepEqual(seen, ["Go?", "Nested?"]);
+  // The script's own top-level binding wins, whatever its kind.
+  assert.equal(await run("function checkpoint(t) { return 'fn:' + t }\nreturn checkpoint('x')"), "fn:x");
   assert.equal(await run("const checkpoint = (t) => 'own:' + t\nreturn checkpoint('x')"), "own:x");
   // A destructured binding the declaration pattern cannot see still wins (no duplicate-declaration error).
   assert.equal(await run("const { checkpoint } = args\nreturn checkpoint", { checkpoint: "epoch-3" }), "epoch-3");

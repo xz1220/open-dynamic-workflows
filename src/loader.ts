@@ -71,23 +71,25 @@ const CLAUDE_PARAM_NAMES = [
 // an extra formal parameter would make `const validate = …` in a body a
 // duplicate-declaration compile error — and Claude Code does NOT reserve these
 // names, so a perfectly valid Claude-authored script would break only on odw.
-// So each is injected only when the body does not declare its own binding of
-// that name (the script's own binding then wins, exactly as it would on Claude
-// Code).
+// So each is injected only when the body still compiles with it (see
+// {@link clashes}): the script's own top-level binding then wins, exactly as
+// it would on Claude Code, while a nested one (`for (const checkpoint of …)`)
+// leaves the global in place for the rest of the script.
 const EXTENSION_PARAM_NAMES = ["validate", "exec", "checkpoint"] as const;
 type ExtensionName = (typeof EXTENSION_PARAM_NAMES)[number];
 
-/** Whether masked code declares its own binding of an extension's name. */
+/** Whether masked code declares its own binding of an extension's name, at any depth (for the portability scan). */
 function declaresOwn(masked: string, name: ExtensionName): boolean {
   return new RegExp(`\\b(?:const|let|var|function|class)\\s+${name}\\b`).test(masked);
 }
 
 /**
- * Whether the body binds an extension's name in a way {@link declaresOwn}
- * cannot see — a destructuring such as `const { checkpoint } = args` — which
- * would clash with a parameter of that name. The compiler decides: the body
- * compiles without the parameter but not with it. Only a body that mentions
- * the name pays for the extra compiles.
+ * Whether the body binds an extension's name where a parameter of that name
+ * cannot coexist: a top-level `let`, `const` or `class`, destructurings
+ * included (`const { checkpoint } = args`). The compiler decides — the body
+ * compiles without the parameter but not with it. A nested binding, or a
+ * top-level `var` or `function` (which simply takes the parameter's place),
+ * does not clash. Only a body that mentions the name pays for the compiles.
  */
 function clashes(masked: string, name: ExtensionName, body: string): boolean {
   if (!new RegExp(`(?<![\\w$])${name}(?![\\w$])`).test(masked)) return false;
@@ -129,13 +131,11 @@ export function readWorkflowMeta(source: string, filename: string): WorkflowMeta
 export function loadWorkflowScript(source: string, filename: string): LoadedWorkflow {
   const { meta, body } = extractMeta(source, filename);
 
-  // Inject each extension only if the body does not bind that identifier
-  // itself. Check the masked body so a declaration inside a string/comment
-  // never counts.
+  // Inject each extension unless the body's own top-level binding of that
+  // name would clash with it. The masked body (strings and comments blanked)
+  // decides whether the name appears at all.
   const maskedBody = maskCode(body);
-  const extensions = EXTENSION_PARAM_NAMES.filter(
-    (name) => !declaresOwn(maskedBody, name) && !clashes(maskedBody, name, body),
-  );
+  const extensions = EXTENSION_PARAM_NAMES.filter((name) => !clashes(maskedBody, name, body));
   const paramNames = [...CLAUDE_PARAM_NAMES, ...extensions];
 
   let factory: (...callArgs: unknown[]) => Promise<unknown>;
