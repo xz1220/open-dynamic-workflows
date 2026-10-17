@@ -1,5 +1,22 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+/**
+ * The Chat Host's session store (L5): every session of `odw serve`'s local
+ * chat, persisted as one JSON file under the runs root
+ * (`<runsRoot>/_chat/sessions.json`).
+ *
+ * Sessions are served from memory. Structural changes (a new session, a
+ * message, a linked run, a deletion) are written through at once; a streaming
+ * reply's text changes many times a second, so those updates stay in memory
+ * and are persisted at most once per {@link STREAM_PERSIST_MS} — and at once
+ * when the message settles, or on {@link ChatStore.flush} (server shutdown).
+ * Objects handed out are never mutated afterwards (copy-on-write), so a caller
+ * may hold a session while the stream keeps updating it. If another process
+ * rewrites the file, the next read picks its version up.
+ */
+
+import { mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
+
+import { readJsonFile, statSig, writeJsonAtomic } from "./fs-util.js";
 
 export type ChatRole = "user" | "assistant" | "tool";
 export type ChatSessionState = "running" | "idle" | "done";
@@ -59,7 +76,16 @@ export interface ChatSessionSummary {
   linkedRuns: number;
 }
 
+export interface ChatStoreOptions {
+  /** How long streaming-text changes may stay unpersisted (ms). */
+  streamPersistMs?: number;
+  /** Where a failed background write is reported (it cannot be thrown to anyone). */
+  onError?: (err: unknown) => void;
+}
+
 const STORAGE_VERSION = 1;
+/** Streaming text is persisted at most this often. */
+const STREAM_PERSIST_MS = 1000;
 
 interface ChatFile {
   version: number;
@@ -78,6 +104,19 @@ function titleFrom(text: string): string {
   const clean = text.replace(/\s+/g, " ").trim();
   if (!clean) return "Untitled hosted turn";
   return clean.length > 54 ? `${clean.slice(0, 51)}...` : clean;
+}
+
+/** The sidebar row for a session (its stored state; callers may refine it). */
+export function sessionSummary(s: ChatSessionRecord): ChatSessionSummary {
+  return {
+    id: s.id,
+    title: s.title,
+    source: s.source,
+    state: s.state,
+    updatedAt: s.updatedAt,
+    lastMessage: summaryText(s.messages),
+    linkedRuns: s.linkedRuns.length,
+  };
 }
 
 function summaryText(messages: ChatMessage[]): string {
@@ -120,31 +159,44 @@ function validSession(value: unknown): value is ChatSessionRecord {
   );
 }
 
+/** Validate a parsed sessions file; anything unusable reads as no sessions. */
+function parseChatFile(parsed: unknown): ChatFile {
+  const sessions =
+    parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as { sessions?: unknown }).sessions
+      : undefined;
+  return { version: STORAGE_VERSION, sessions: Array.isArray(sessions) ? sessions.filter(validSession) : [] };
+}
+
 export class ChatStore {
   private readonly file: string;
+  private readonly streamPersistMs: number;
+  private readonly onError: (err: unknown) => void;
+  private data: ChatFile | null = null;
+  /** The file's signature as we last read or wrote it; anything else is someone else's write. */
+  private diskSig = "";
+  /** Memory holds changes the file does not (streaming text awaiting its write). */
+  private dirty = false;
+  private persistTimer: NodeJS.Timeout | null = null;
 
-  constructor(root: string, private readonly defaultSource: string) {
+  constructor(root: string, private readonly defaultSource: string, opts: ChatStoreOptions = {}) {
     this.file = join(root, "_chat", "sessions.json");
+    this.streamPersistMs = opts.streamPersistMs ?? STREAM_PERSIST_MS;
+    this.onError =
+      opts.onError ??
+      ((err) => process.stderr.write(`odw chat store: write failed: ${(err as Error)?.message ?? String(err)}\n`));
   }
 
   list(): ChatSessionSummary[] {
-    return this.read().sessions.map((s) => ({
-      id: s.id,
-      title: s.title,
-      source: s.source,
-      state: s.state,
-      updatedAt: s.updatedAt,
-      lastMessage: summaryText(s.messages),
-      linkedRuns: s.linkedRuns.length,
-    }));
+    return this.load().sessions.map(sessionSummary);
   }
 
   get(id: string): ChatSessionRecord | null {
-    return this.read().sessions.find((s) => s.id === id) ?? null;
+    return this.load().sessions.find((s) => s.id === id) ?? null;
   }
 
-  records(): ChatSessionRecord[] {
-    return this.read().sessions;
+  records(): readonly ChatSessionRecord[] {
+    return this.load().sessions;
   }
 
   create(source?: string): ChatSessionRecord {
@@ -166,22 +218,25 @@ export class ChatStore {
         },
       ],
     };
-    const data = this.read();
-    data.sessions.unshift(session);
-    this.write(data);
+    this.writeThrough(() => {
+      const data = this.load();
+      data.sessions = [session, ...data.sessions];
+    });
     return session;
   }
 
   appendUserMessage(id: string, text: string, kind?: ChatMessageKind): ChatSessionRecord {
-    const data = this.read();
-    const session = data.sessions.find((s) => s.id === id);
-    if (!session) throw new Error(`no such chat session: ${id}`);
-    const ts = now();
-    session.messages.push({ id: newId("msg"), role: "user", text, ts, ...(kind ? { kind } : {}) });
-    if (session.title === "Untitled hosted turn") session.title = titleFrom(text);
-    session.updatedAt = ts;
-    this.write(data);
-    return session;
+    return this.writeThrough(() =>
+      this.replace(id, (s) => {
+        const ts = now();
+        return {
+          ...s,
+          title: s.title === "Untitled hosted turn" ? titleFrom(text) : s.title,
+          updatedAt: ts,
+          messages: [...s.messages, { id: newId("msg"), role: "user", text, ts, ...(kind ? { kind } : {}) }],
+        };
+      }),
+    );
   }
 
   appendAssistantMessage(
@@ -190,99 +245,181 @@ export class ChatStore {
     kind?: ChatMessageKind,
     status?: ChatMessageStatus,
   ): ChatSessionRecord {
-    const data = this.read();
-    const session = data.sessions.find((s) => s.id === id);
-    if (!session) throw new Error(`no such chat session: ${id}`);
-    const ts = now();
-    session.messages.push({
-      id: newId("msg"),
-      role: "assistant",
-      text,
-      ts,
-      ...(kind ? { kind } : {}),
-      ...(status ? { status } : {}),
-    });
-    if (status === "streaming") session.state = "running";
-    session.updatedAt = ts;
-    this.write(data);
-    return session;
+    return this.writeThrough(() =>
+      this.replace(id, (s) => {
+        const ts = now();
+        const message: ChatMessage = {
+          id: newId("msg"),
+          role: "assistant",
+          text,
+          ts,
+          ...(kind ? { kind } : {}),
+          ...(status ? { status } : {}),
+        };
+        return {
+          ...s,
+          state: status === "streaming" ? "running" : s.state,
+          updatedAt: ts,
+          messages: [...s.messages, message],
+        };
+      }),
+    );
   }
 
+  /**
+   * Patch one message. A text-only patch (a streaming reply growing) is kept
+   * in memory and persisted within {@link STREAM_PERSIST_MS}; a status change
+   * (the reply settled) is written at once. Either way the in-memory session
+   * reflects the patch even if the write fails — a settled message must never
+   * stay "streaming" and block its session — and a failed write is retried.
+   */
   updateMessage(
     id: string,
     messageId: string,
     patch: { text?: string; status?: ChatMessageStatus },
   ): ChatSessionRecord | null {
-    const data = this.read();
-    const session = data.sessions.find((s) => s.id === id);
-    if (!session) return null;
-    const message = session.messages.find((m) => m.id === messageId);
-    if (!message) return null;
-    if (patch.text !== undefined) message.text = patch.text;
-    if (patch.status !== undefined) message.status = patch.status;
-    const ts = now();
-    session.updatedAt = ts;
-    const stillStreaming = session.messages.some((m) => m.status === "streaming");
-    if (!stillStreaming && session.state === "running") session.state = "idle";
-    this.write(data);
-    return session;
+    const data = this.load();
+    const index = data.sessions.findIndex((s) => s.id === id);
+    const session = data.sessions[index];
+    const at = session ? session.messages.findIndex((m) => m.id === messageId) : -1;
+    if (!session || at === -1) return null;
+    const messages = session.messages.slice();
+    messages[at] = {
+      ...messages[at]!,
+      ...(patch.text !== undefined ? { text: patch.text } : {}),
+      ...(patch.status !== undefined ? { status: patch.status } : {}),
+    };
+    const stillStreaming = messages.some((m) => m.status === "streaming");
+    const next: ChatSessionRecord = {
+      ...session,
+      messages,
+      updatedAt: now(),
+      state: !stillStreaming && session.state === "running" ? "idle" : session.state,
+    };
+    data.sessions = data.sessions.slice();
+    data.sessions[index] = next;
+    this.dirty = true;
+    if (patch.status === undefined) {
+      this.persistSoon();
+      return next;
+    }
+    try {
+      this.persist();
+    } catch (err) {
+      this.persistSoon(); // retry later; memory already holds the settled message
+      throw err;
+    }
+    return next;
   }
 
   appendToolRun(id: string, runId: string, workflow: string): ChatSessionRecord {
-    const data = this.read();
-    const session = data.sessions.find((s) => s.id === id);
-    if (!session) throw new Error(`no such chat session: ${id}`);
-    const ts = now();
-    session.linkedRuns.unshift({ runId, workflow });
-    session.messages.push({
-      id: newId("msg"),
-      role: "tool",
-      text: "ODW run requested by the local Chat Host.",
-      ts,
-      tool: {
-        name: "odw.run",
-        status: "running",
-        workflow,
-        runId,
-        progress: 0,
-        phase: "Starting",
-        events: [{ type: "run_started", label: "run requested", ts }],
-      },
-    });
-    session.state = "running";
-    session.updatedAt = ts;
-    this.write(data);
-    return session;
+    return this.writeThrough(() =>
+      this.replace(id, (s) => {
+        const ts = now();
+        return {
+          ...s,
+          state: "running",
+          updatedAt: ts,
+          linkedRuns: [{ runId, workflow }, ...s.linkedRuns],
+          messages: [
+            ...s.messages,
+            {
+              id: newId("msg"),
+              role: "tool",
+              text: "ODW run requested by the local Chat Host.",
+              ts,
+              tool: {
+                name: "odw.run",
+                status: "running",
+                workflow,
+                runId,
+                progress: 0,
+                phase: "Starting",
+                events: [{ type: "run_started", label: "run requested", ts }],
+              },
+            },
+          ],
+        };
+      }),
+    );
   }
 
   delete(id: string): boolean {
-    const data = this.read();
-    const next = data.sessions.filter((s) => s.id !== id);
-    if (next.length === data.sessions.length) return false;
-    data.sessions = next;
-    this.write(data);
+    if (!this.get(id)) return false;
+    this.writeThrough(() => {
+      const data = this.load();
+      data.sessions = data.sessions.filter((s) => s.id !== id);
+    });
     return true;
   }
 
-  private read(): ChatFile {
-    if (!existsSync(this.file)) return { version: STORAGE_VERSION, sessions: [] };
-    try {
-      const parsed = JSON.parse(readFileSync(this.file, "utf8")) as unknown;
-      if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-        return { version: STORAGE_VERSION, sessions: [] };
-      }
-      const sessions = (parsed as { sessions?: unknown }).sessions;
-      if (!Array.isArray(sessions)) return { version: STORAGE_VERSION, sessions: [] };
-      return { version: STORAGE_VERSION, sessions: sessions.filter(validSession) };
-    } catch {
-      return { version: STORAGE_VERSION, sessions: [] };
-    }
+  /** Persist pending streaming text now (server shutdown). */
+  flush(): void {
+    if (this.dirty) this.persist();
   }
 
-  private write(data: ChatFile): void {
+  /**
+   * Apply a structural change and write it through. On a failed write the
+   * change is rolled back and the error thrown, so a failed request leaves
+   * nothing behind (sessions arrays are never mutated in place, so the old
+   * array is exactly the previous state).
+   */
+  private writeThrough<T>(change: () => T): T {
+    const data = this.load();
+    const before = data.sessions;
+    const result = change();
+    try {
+      this.persist();
+    } catch (err) {
+      data.sessions = before;
+      throw err;
+    }
+    return result;
+  }
+
+  /** Swap session `id` for `fn(session)`; throws for an unknown id. */
+  private replace(id: string, fn: (s: ChatSessionRecord) => ChatSessionRecord): ChatSessionRecord {
+    const data = this.load();
+    const index = data.sessions.findIndex((s) => s.id === id);
+    if (index === -1) throw new Error(`no such chat session: ${id}`);
+    const next = fn(data.sessions[index]!);
+    data.sessions = data.sessions.slice();
+    data.sessions[index] = next;
+    return next;
+  }
+
+  /** The in-memory sessions, (re)read from disk on first use or after an outside write. */
+  private load(): ChatFile {
+    if (this.data && (this.dirty || statSig(this.file) === this.diskSig)) return this.data;
+    // Stat before reading: a write racing the read shows up as a new signature next time.
+    this.diskSig = statSig(this.file);
+    this.data = parseChatFile(readJsonFile<unknown>(this.file));
+    return this.data;
+  }
+
+  private persist(): void {
+    if (this.persistTimer) clearTimeout(this.persistTimer);
+    this.persistTimer = null;
+    // Write what is in memory — never re-load() here: an outside write landing
+    // between our change and this write would otherwise swallow the change.
+    const data = this.data ?? this.load();
     mkdirSync(dirname(this.file), { recursive: true });
-    const tmp = `${this.file}.tmp`;
-    writeFileSync(tmp, JSON.stringify(data, null, 2), "utf8");
-    renameSync(tmp, this.file);
+    writeJsonAtomic(this.file, data);
+    this.dirty = false;
+    this.diskSig = statSig(this.file);
+  }
+
+  private persistSoon(): void {
+    this.dirty = true;
+    if (this.persistTimer) return;
+    this.persistTimer = setTimeout(() => {
+      this.persistTimer = null;
+      try {
+        this.persist();
+      } catch (err) {
+        this.onError(err);
+      }
+    }, this.streamPersistMs);
+    this.persistTimer.unref?.();
   }
 }

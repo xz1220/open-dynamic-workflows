@@ -32,15 +32,14 @@ import {
   fstatSync,
   mkdirSync,
   openSync,
-  readdirSync,
   readFileSync,
   readSync,
-  renameSync,
   writeFileSync,
 } from "node:fs";
 import { basename, join } from "node:path";
 
 import type { EventSink, WorkflowEvent } from "../events.js";
+import { readdirSafe, readJsonFile, writeJsonAtomic } from "./fs-util.js";
 
 /** Terminal states: a run in one of these will not change again. */
 export const TERMINAL_STATES = new Set(["done", "failed", "stopped"]);
@@ -148,14 +147,12 @@ export class RunStore {
       return flat;
     }
     // Bucketed layout: <root>/<bucket>/<runId>/.
-    if (existsSync(this.root)) {
-      for (const entry of readdirSync(this.root, { withFileTypes: true })) {
-        if (!entry.isDirectory()) continue;
-        const candidate = join(this.root, entry.name, runId);
-        if (existsSync(join(candidate, META))) {
-          this.dirCache.set(runId, candidate);
-          return candidate;
-        }
+    for (const entry of readdirSafe(this.root)) {
+      if (!entry.isDirectory()) continue;
+      const candidate = join(this.root, entry.name, runId);
+      if (existsSync(join(candidate, META))) {
+        this.dirCache.set(runId, candidate);
+        return candidate;
       }
     }
     // Not found: the flat path, so existsSync(.../meta.json) stays false and the
@@ -178,10 +175,10 @@ export class RunStore {
   // --- meta & status ---------------------------------------------------------
 
   readMeta(runId: string): Record<string, unknown> {
-    return readJson(join(this.runDir(runId), META)) ?? {};
+    return readJsonFile(join(this.runDir(runId), META)) ?? {};
   }
   readStatus(runId: string): Record<string, unknown> {
-    return readJson(join(this.runDir(runId), STATUS)) ?? {};
+    return readJsonFile(join(this.runDir(runId), STATUS)) ?? {};
   }
   updateStatus(runId: string, fields: Record<string, unknown>): Record<string, unknown> {
     const status = { ...this.readStatus(runId), ...fields, updatedAt: now() };
@@ -218,17 +215,19 @@ export class RunStore {
    * prefix/boundary bytes also reset the cursor. These bounded checks assume an
    * append-only log; they are not an integrity check for arbitrary middle edits.
    * Window validation reads at most 256 old bytes, not the whole growing log.
+   * `reset` is true when such a replacement was detected and the read restarted
+   * from the top: the returned events then REPLACE everything read before.
    */
   readEventsSince(
     runId: string,
     cursor: EventsCursor,
-  ): { events: WorkflowEvent[]; cursor: EventsCursor } {
+  ): { events: WorkflowEvent[]; cursor: EventsCursor; reset: boolean } {
     const path = this.eventsPath(runId);
     let fd: number;
     try {
       fd = openSync(path, "r");
     } catch {
-      return { events: [], cursor }; // not written yet (or transiently unreadable)
+      return { events: [], cursor, reset: false }; // not written yet (or transiently unreadable)
     }
     try {
       const stat = fstatSync(fd);
@@ -240,6 +239,7 @@ export class RunStore {
         (cursor.boundary === undefined ||
           readWindow(fd, cursor.offset - windowSize, windowSize) === cursor.boundary);
       const offset = unchanged ? cursor.offset : 0;
+      const reset = offset !== cursor.offset;
       const nextCursor = (nextOffset: number): EventsCursor => {
         const length = Math.min(nextOffset, CURSOR_WINDOW_BYTES);
         return {
@@ -249,12 +249,12 @@ export class RunStore {
           boundary: readWindow(fd, nextOffset - length, length),
         };
       };
-      if (size === offset) return { events: [], cursor: nextCursor(offset) };
+      if (size === offset) return { events: [], cursor: nextCursor(offset), reset };
       const buf = Buffer.alloc(size - offset);
       const read = readSync(fd, buf, 0, buf.length, offset);
       const chunk = buf.subarray(0, read);
       const lastNl = chunk.lastIndexOf(0x0a);
-      if (lastNl === -1) return { events: [], cursor: nextCursor(offset) }; // torn tail only
+      if (lastNl === -1) return { events: [], cursor: nextCursor(offset), reset }; // torn tail only
       const events: WorkflowEvent[] = [];
       for (const line of chunk.subarray(0, lastNl + 1).toString("utf8").split("\n")) {
         const trimmed = line.trim();
@@ -265,7 +265,7 @@ export class RunStore {
           // Complete but unparsable line — skip it, same tolerance as readEvents.
         }
       }
-      return { events, cursor: nextCursor(offset + lastNl + 1) };
+      return { events, cursor: nextCursor(offset + lastNl + 1), reset };
     } finally {
       closeSync(fd);
     }
@@ -277,7 +277,7 @@ export class RunStore {
     writeJson(join(this.runDir(runId), RESULT), { value: value ?? null });
   }
   readResult(runId: string): unknown {
-    const payload = readJson(join(this.runDir(runId), RESULT));
+    const payload = readJsonFile(join(this.runDir(runId), RESULT));
     return payload === null ? null : payload.value;
   }
   hasResult(runId: string): boolean {
@@ -287,7 +287,7 @@ export class RunStore {
     writeJson(join(this.runDir(runId), ERROR), error);
   }
   readError(runId: string): Record<string, unknown> | null {
-    return readJson(join(this.runDir(runId), ERROR));
+    return readJsonFile(join(this.runDir(runId), ERROR));
   }
 
   // --- control ---------------------------------------------------------------
@@ -296,7 +296,7 @@ export class RunStore {
     writeJson(this.controlPath(runId), { action, at: now() });
   }
   readControl(runId: string): string | null {
-    const payload = readJson(this.controlPath(runId));
+    const payload = readJsonFile(this.controlPath(runId));
     return payload === null ? null : ((payload.action as string) ?? null);
   }
 
@@ -310,34 +310,26 @@ export class RunStore {
    * makes that reverse-chronological).
    */
   listRuns(): RunRef[] {
-    if (!existsSync(this.root)) return [];
     const out: RunRef[] = [];
-    for (const entry of readdirSync(this.root, { withFileTypes: true })) {
-      if (!entry.isDirectory()) continue;
-      const lvl1 = join(this.root, entry.name);
-      if (existsSync(join(lvl1, META))) {
-        // Legacy flat run: the directory name is the runId.
-        this.dirCache.set(entry.name, lvl1);
-        out.push({ runId: entry.name, workflowName: readWorkflowName(lvl1) });
-        continue;
-      }
-      // A bucket: descend exactly one level.
-      let subEntries;
-      try {
-        subEntries = readdirSync(lvl1, { withFileTypes: true });
-      } catch {
-        continue;
-      }
-      for (const sub of subEntries) {
-        if (!sub.isDirectory()) continue;
-        const dir = join(lvl1, sub.name);
-        if (!existsSync(join(dir, META))) continue;
-        this.dirCache.set(sub.name, dir);
-        out.push({ runId: sub.name, workflowName: readWorkflowName(dir) ?? entry.name });
-      }
-    }
+    this.walkRuns((runId, dir, bucket) => {
+      out.push({ runId, workflowName: readWorkflowName(dir) ?? bucket });
+    });
     out.sort(byRunIdDesc);
     return out;
+  }
+
+  /**
+   * Every known run id, newest first — {@link listRuns} without reading any
+   * meta.json, for pollers (the dashboard) that only need ids. A directory
+   * already known to be a run is not re-checked for its meta.json either, so a
+   * steady-state listing costs one readdir per bucket.
+   */
+  listRunIds(): string[] {
+    const out: string[] = [];
+    this.walkRuns((runId) => {
+      out.push(runId);
+    });
+    return out.sort().reverse();
   }
 
   /**
@@ -346,9 +338,8 @@ export class RunStore {
    */
   listRunsForWorkflow(name: string): RunRef[] {
     const dir = join(this.root, slugify(name));
-    if (!existsSync(dir)) return [];
     const out: RunRef[] = [];
-    for (const sub of readdirSync(dir, { withFileTypes: true })) {
+    for (const sub of readdirSafe(dir)) {
       if (!sub.isDirectory()) continue;
       const runDir = join(dir, sub.name);
       if (!existsSync(join(runDir, META))) continue;
@@ -357,6 +348,39 @@ export class RunStore {
     }
     out.sort(byRunIdDesc);
     return out;
+  }
+
+  /**
+   * Visit every run directory: at most two levels, so both the bucketed layout
+   * (`<bucket>/<runId>/`) and any legacy flat run (`<runId>/`) are found — a
+   * `meta.json` at level 1 marks a flat run, at level 2 a bucketed one.
+   * `bucket` is the level-1 directory name for a bucketed run, else null.
+   * Unreadable directories are skipped, never fatal.
+   */
+  private walkRuns(visit: (runId: string, dir: string, bucket: string | null) => void): void {
+    for (const entry of readdirSafe(this.root)) {
+      if (!entry.isDirectory()) continue;
+      const lvl1 = join(this.root, entry.name);
+      if (this.isRunDir(entry.name, lvl1)) {
+        // Legacy flat run: the directory name is the runId.
+        visit(entry.name, lvl1, null);
+        continue;
+      }
+      // A bucket: descend exactly one level.
+      for (const sub of readdirSafe(lvl1)) {
+        if (!sub.isDirectory()) continue;
+        const dir = join(lvl1, sub.name);
+        if (this.isRunDir(sub.name, dir)) visit(sub.name, dir, entry.name);
+      }
+    }
+  }
+
+  /** Does `dir` hold run `runId` (a meta.json)? Known run dirs skip the stat. */
+  private isRunDir(runId: string, dir: string): boolean {
+    if (this.dirCache.get(runId) === dir) return true;
+    if (!existsSync(join(dir, META))) return false;
+    this.dirCache.set(runId, dir);
+    return true;
   }
 }
 
@@ -398,7 +422,7 @@ function slugify(name: string): string {
 
 /** The recorded workflowName from a run directory's meta.json, or null. */
 function readWorkflowName(dir: string): string | null {
-  const meta = readJson(join(dir, META));
+  const meta = readJsonFile(join(dir, META));
   return meta && typeof meta.workflowName === "string" ? meta.workflowName : null;
 }
 
@@ -418,16 +442,7 @@ function newRunId(): string {
   return `${stamp}-${rand}`;
 }
 
+/** Run files are pretty-printed: they are meant to be read by people too. */
 function writeJson(path: string, payload: unknown): void {
-  const tmp = `${path}.${process.pid}.${Math.floor(Math.random() * 1e9).toString(36)}.tmp`;
-  writeFileSync(tmp, JSON.stringify(payload, null, 2), "utf8");
-  renameSync(tmp, path);
-}
-
-function readJson(path: string): Record<string, unknown> | null {
-  try {
-    return JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
-  } catch {
-    return null;
-  }
+  writeJsonAtomic(path, payload, 2);
 }

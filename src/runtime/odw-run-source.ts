@@ -1,68 +1,66 @@
 /**
  * The ODW run source: wraps the existing {@link RunStore} + {@link ./runs-view}
  * read-model behind the {@link RunSource} interface. This is the original
- * `odw serve` behavior, unchanged — including the {@link SummaryCache} that was
- * previously inlined in server.ts (it lives here now because its freshness
- * signal, status.json + events.jsonl, is ODW-specific).
+ * `odw serve` behavior — including the summary cache that was previously
+ * inlined in server.ts (it lives here now because its freshness signal,
+ * status.json + events.jsonl, is ODW-specific).
  */
 
-import { statSync } from "node:fs";
+import { join } from "node:path";
 
 import type { WorkflowEvent } from "../events.js";
-import { detail, summarize, type RunSummary } from "./runs-view.js";
+import { SigCache, statSig } from "./fs-util.js";
+import { detailFrom, EventFold, summaryFrom, type RunDetail, type RunFacts, type RunSummary } from "./runs-view.js";
 import type { RunSource } from "./run-source.js";
-import type { RunStore } from "./run-store.js";
+import { TERMINAL_STATES, type EventsCursor, type RunStore } from "./run-store.js";
 
+/** Full event streams kept in memory: the runs being viewed / tailed, not every run. */
+const EVENT_LOGS_KEPT = 64;
 /**
- * Summary cache keyed by the run's mutable artifacts. Folding events.jsonl on
- * every poll is O(events) per run; here we recompute a run's summary only when
- * its status.json or events.jsonl changed size/mtime, so steady-state polling of
- * many runs stays cheap.
+ * A terminal run never changes again (the worker writes its last event before
+ * the terminal status), so the run list trusts its cached facts for a while
+ * instead of stat'ing two files per run per tick — with thousands of finished
+ * runs those stats ARE the list's cost. Re-checked every ~30s (jittered, so the
+ * re-checks spread out) in case something rewrites a finished run by hand;
+ * detail() and summary() always re-check.
  */
-class SummaryCache {
-  private readonly entries = new Map<string, { sig: string; value: RunSummary }>();
+const TERMINAL_RECHECK_MS = 30_000;
 
-  list(store: RunStore): RunSummary[] {
-    const live = new Set(store.listRuns().map((r) => r.runId));
-    const out: RunSummary[] = [];
-    for (const runId of live) {
-      if (!store.exists(runId)) continue; // deleted between listRuns() and now
-      const sig = this.signature(store, runId);
-      const hit = this.entries.get(runId);
-      if (hit && hit.sig === sig) {
-        out.push(hit.value);
-        continue;
-      }
-      const value = summarize(store, runId);
-      this.entries.set(runId, { sig, value });
-      out.push(value);
-    }
-    for (const key of this.entries.keys()) if (!live.has(key)) this.entries.delete(key);
-    return out.sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0));
-  }
-
-  /** A cheap fingerprint of a run's mutable files; '' on the first miss. */
-  private signature(store: RunStore, runId: string): string {
-    const dir = store.runDir(runId);
-    return [statSig(`${dir}/status.json`), statSig(`${dir}/events.jsonl`)].join("|");
-  }
+/** One run's cached view of its files; liveness is NOT cached (see summaryFrom). */
+interface RunEntry {
+  statusSig: string;
+  status: Record<string, unknown>;
+  /** meta.json is immutable once written: read once. */
+  meta: Record<string, unknown> | null;
+  eventsSig: string;
+  /** Byte cursor into events.jsonl: only appended bytes are read and folded. */
+  cursor: EventsCursor;
+  fold: EventFold;
+  /** Epoch ms until which the run list trusts a terminal run without a stat (0: always check). */
+  trustUntil: number;
 }
 
-function statSig(path: string): string {
-  try {
-    const s = statSync(path);
-    return `${s.size}:${s.mtimeMs}`;
-  } catch {
-    return "-";
-  }
+/** A run's full event stream, read incrementally through the byte cursor. */
+interface EventLog {
+  cursor: EventsCursor;
+  events: WorkflowEvent[];
 }
 
 export class OdwRunSource implements RunSource {
   readonly provider = "odw" as const;
   readonly controlError = null;
-  private readonly cache = new SummaryCache();
+  /** Per-run facts for every listed run; small (folded agents, not events). */
+  private readonly runs = new Map<string, RunEntry>();
+  /** Whole event streams for the most recently read runs (LRU). */
+  private readonly logs = new SigCache<EventLog>(EVENT_LOGS_KEPT);
+  private readonly now: () => number;
 
-  constructor(private readonly store: RunStore) {}
+  constructor(
+    private readonly store: RunStore,
+    opts: { /** Injectable clock for tests (ms). */ now?: () => number } = {},
+  ) {
+    this.now = opts.now ?? Date.now;
+  }
 
   /** A Claude run is `cc-`-prefixed; everything else is ODW's. */
   owns(runId: string): boolean {
@@ -72,13 +70,38 @@ export class OdwRunSource implements RunSource {
     return this.store.exists(runId);
   }
   listSummaries(): RunSummary[] {
-    return this.cache.list(this.store);
+    // Ids only (no meta.json reads): the walk itself proved each run exists, and
+    // a run deleted mid-list just drops out of the next one.
+    const ids = this.store.listRunIds();
+    const now = this.now();
+    const out = ids.map((runId) => summaryFrom(runId, this.facts(runId, now)));
+    const live = new Set(ids);
+    for (const runId of this.runs.keys()) if (!live.has(runId)) this.runs.delete(runId);
+    return out.sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0));
   }
-  detail(runId: string) {
-    return this.store.exists(runId) ? detail(this.store, runId) : null;
+  summary(runId: string): RunSummary | null {
+    return this.store.exists(runId) ? summaryFrom(runId, this.facts(runId)) : null;
+  }
+  detail(runId: string): RunDetail | null {
+    if (!this.store.exists(runId)) return null;
+    return detailFrom(runId, this.facts(runId), {
+      hasResult: this.store.hasResult(runId),
+      error: this.store.readError(runId) as { error?: string; stack?: string } | null,
+    });
   }
   events(runId: string, since: number): WorkflowEvent[] {
-    return this.store.readEvents(runId).slice(Math.max(0, since));
+    return this.eventLog(runId).slice(Math.max(0, since));
+  }
+  eventLog(runId: string): readonly WorkflowEvent[] {
+    const sig = statSig(this.store.eventsPath(runId));
+    return this.logs.get(runId, sig, (prev) => {
+      const log = prev ?? { cursor: { offset: 0 }, events: [] };
+      const read = this.store.readEventsSince(runId, log.cursor);
+      if (read.reset) log.events = [];
+      for (const ev of read.events) log.events.push(ev);
+      log.cursor = read.cursor;
+      return log;
+    }).events;
   }
   result(runId: string): { has: boolean; value: unknown } {
     const has = this.store.hasResult(runId);
@@ -89,4 +112,55 @@ export class OdwRunSource implements RunSource {
     // worker's FileControl treats any non-pause/stop action as "carry on".
     this.store.writeControl(runId, action === "resume" ? "running" : action);
   }
+
+  /**
+   * The run's facts, refreshed from whatever changed on disk: status.json is
+   * re-read when its signature moved, events.jsonl is read only past the byte
+   * cursor and folded onto the cached agents. `listedAt` (the run list's clock)
+   * lets a recently checked terminal run skip the stats entirely.
+   */
+  private facts(runId: string, listedAt?: number): RunFacts {
+    let e = this.runs.get(runId);
+    if (e && listedAt !== undefined && listedAt < e.trustUntil) return factsOf(e);
+    if (!e) {
+      e = {
+        statusSig: "",
+        status: {},
+        meta: null,
+        eventsSig: "",
+        cursor: { offset: 0 },
+        fold: new EventFold(),
+        trustUntil: 0,
+      };
+      this.runs.set(runId, e);
+    }
+    // Stat BEFORE reading: a write racing the read then shows up as a changed
+    // signature next time instead of being masked by a too-new one.
+    const dir = this.store.runDir(runId);
+    const statusSig = statSig(join(dir, "status.json"));
+    if (statusSig !== e.statusSig) {
+      e.status = this.store.readStatus(runId);
+      e.statusSig = statusSig;
+    }
+    if (e.meta === null) {
+      const meta = this.store.readMeta(runId);
+      if (Object.keys(meta).length > 0) e.meta = meta;
+    }
+    const eventsSig = statSig(join(dir, "events.jsonl"));
+    if (eventsSig !== e.eventsSig) {
+      const read = this.store.readEventsSince(runId, e.cursor);
+      if (read.reset) e.fold = new EventFold();
+      e.fold.apply(read.events);
+      e.cursor = read.cursor;
+      e.eventsSig = eventsSig;
+    }
+    e.trustUntil = TERMINAL_STATES.has(String(e.status.state))
+      ? this.now() + TERMINAL_RECHECK_MS * (0.5 + Math.random())
+      : 0;
+    return factsOf(e);
+  }
+}
+
+function factsOf(e: RunEntry): RunFacts {
+  return { status: e.status, meta: e.meta ?? {}, fold: e.fold };
 }

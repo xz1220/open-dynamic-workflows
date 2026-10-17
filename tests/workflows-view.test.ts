@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -98,6 +98,36 @@ test("a shadowed entry does NOT claim the run-resolution winner's run history", 
     assert.equal(winnerDet?.runCount, 1);
     assert.equal(claudeDet?.runs.length, 0);
     assert.equal(claudeDet?.runCount, 0);
+  } finally {
+    rmSync(s.tmp, { recursive: true, force: true });
+  }
+});
+
+test("listing re-parses a workflow's meta only after the file changed", () => {
+  const s = scaffold();
+  try {
+    const path = join(s.globalWf, "cached.js");
+    const write = (desc: string) =>
+      writeFileSync(path, `export const meta = { name: "cached", description: "${desc}" }\nreturn 1\n`);
+    const describe = () => listWorkflowSummaries(s.project, s.config, s.store).find((w) => w.name === "cached")!.description;
+    const t = Math.floor(Date.now() / 1000) - 100; // whole seconds survive the utimes round-trip exactly
+    write("aaaa");
+    utimesSync(path, t, t);
+    assert.equal(describe(), "aaaa");
+
+    // Same inode, same size, same mtime: indistinguishable on stat, so the
+    // cached meta is served — proof the listing did not re-read the file.
+    const ino = statSync(path).ino;
+    write("bbbb");
+    utimesSync(path, t, t);
+    assert.equal(statSync(path).ino, ino);
+    assert.equal(describe(), "aaaa");
+
+    // A real edit moves the mtime (and usually the size): re-parsed.
+    utimesSync(path, t + 5, t + 5);
+    assert.equal(describe(), "bbbb");
+    write("a longer description");
+    assert.equal(describe(), "a longer description");
   } finally {
     rmSync(s.tmp, { recursive: true, force: true });
   }

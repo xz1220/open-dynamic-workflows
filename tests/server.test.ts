@@ -8,6 +8,7 @@ import { execPath } from "node:process";
 
 import { defaultConfig } from "../src/adapters/config.js";
 import { waitFor } from "../src/runtime/launcher.js";
+import { OdwRunSource } from "../src/runtime/odw-run-source.js";
 import { RunStore } from "../src/runtime/run-store.js";
 import {
   foldAgents,
@@ -15,7 +16,6 @@ import {
   reconcileState,
   summarize,
   detail,
-  listSummaries,
 } from "../src/runtime/runs-view.js";
 import { startServer, type ChatTurnRunner } from "../src/runtime/server.js";
 
@@ -39,6 +39,45 @@ async function waitForChat(
     await new Promise((r) => setTimeout(r, 50));
   }
   throw new Error(`chat did not reach expected state: ${JSON.stringify(last)}`);
+}
+
+/** One open `/api/stream` connection, read frame by frame. */
+async function openSse(url: string) {
+  const abort = new AbortController();
+  const res = await fetch(`${url}/api/stream`, { signal: abort.signal });
+  const reader = res.body!.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  return {
+    /** Resolve the next `event` frame whose parsed data passes `predicate`. */
+    async next(event: string, predicate: (data: any) => boolean = () => true, timeoutMs = 5000): Promise<any> {
+      const seen: string[] = [];
+      const deadline = setTimeout(() => abort.abort(), timeoutMs);
+      try {
+        for (;;) {
+          let cut: number;
+          while ((cut = buf.indexOf("\n\n")) !== -1) {
+            const frame = buf.slice(0, cut);
+            buf = buf.slice(cut + 2);
+            const name = /^event: (.*)$/m.exec(frame)?.[1];
+            const data = /^data: (.*)$/m.exec(frame)?.[1];
+            if (name !== event || data === undefined) continue;
+            seen.push(data.slice(0, 200));
+            const parsed = JSON.parse(data);
+            if (predicate(parsed)) return parsed;
+          }
+          const { value, done } = await reader.read();
+          if (done) throw new Error("stream ended");
+          buf += decoder.decode(value, { stream: true });
+        }
+      } catch (err) {
+        throw new Error(`no matching '${event}' frame (${(err as Error).message}); saw: ${seen.join(" | ")}`);
+      } finally {
+        clearTimeout(deadline);
+      }
+    },
+    close: () => abort.abort(),
+  };
 }
 
 /** Write a run directory: meta + status + a JSONL event stream. */
@@ -158,8 +197,8 @@ test("summarize/detail derive counts, progress, and phase order from events", ()
     assert.equal(d.agents.length, 3);
     assert.equal(d.args && (d.args as { q: string }).q, "hi");
 
-    // listSummaries returns everything, newest-first
-    assert.equal(listSummaries(store).length, 1);
+    // the run list (OdwRunSource) agrees with the uncached fold
+    assert.deepEqual(new OdwRunSource(store).listSummaries(), [s]);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -233,6 +272,82 @@ test("HTTP: serves dashboard, run list, detail, control, and 404s", async () => 
     });
     assert.equal(badCtl.status, 400);
   } finally {
+    await handle.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("HTTP: events ?since/?tail window, x-total-count, and ETag/304 on polled reads", async () => {
+  const root = tempRoot();
+  const store = new RunStore(root);
+  const id = seedRun(
+    store,
+    { name: "demo", state: "running", pid: process.pid },
+    [1, 2, 3, 4, 5].map((ts) => ({ ts, type: "log", message: `m${ts}` })),
+  );
+  const handle = await startServer({ store, port: 0, host: "127.0.0.1", claudeProjectsRoot: join(root, "no-claude") });
+  const base = `${handle.url}/api/runs/${id}/events`;
+  const messages = (evs: Array<{ message: string }>) => evs.map((e) => e.message);
+  try {
+    const all = await fetch(base);
+    assert.equal(all.headers.get("x-total-count"), "5");
+    assert.deepEqual(messages(await all.json()), ["m1", "m2", "m3", "m4", "m5"]);
+    // ?since stays an event index (backward compatible), junk/negative → 0.
+    assert.deepEqual(messages(await fetch(`${base}?since=3`).then((r) => r.json())), ["m4", "m5"]);
+    assert.equal((await fetch(`${base}?since=-2`).then((r) => r.json())).length, 5);
+    assert.equal((await fetch(`${base}?since=abc`).then((r) => r.json())).length, 5);
+    // ?tail keeps only the last N; it composes with ?since.
+    const tail = await fetch(`${base}?tail=2`);
+    assert.equal(tail.headers.get("x-total-count"), "5", "the total is the whole stream, for the next ?since=");
+    assert.deepEqual(messages(await tail.json()), ["m4", "m5"]);
+    assert.deepEqual(await fetch(`${base}?tail=0`).then((r) => r.json()), []);
+    assert.deepEqual(messages(await fetch(`${base}?since=1&tail=10`).then((r) => r.json())), ["m2", "m3", "m4", "m5"]);
+    assert.equal((await fetch(`${base}?tail=-1`)).status, 400);
+    assert.equal((await fetch(`${base}?tail=1.5`)).status, 400);
+
+    // ETag: an unchanged resource answers If-None-Match with a bodiless 304 …
+    for (const url of [base, `${handle.url}/api/runs/${id}`, `${handle.url}/api/runs`]) {
+      const first = await fetch(url);
+      const etag = first.headers.get("etag");
+      assert.ok(etag, `${url} carries an ETag`);
+      await first.arrayBuffer();
+      const again = await fetch(url, { headers: { "if-none-match": etag! } });
+      assert.equal(again.status, 304, url);
+      assert.equal((await again.text()).length, 0);
+    }
+    // … and a changed one gets a fresh 200 with the new body.
+    const etag = (await fetch(base)).headers.get("etag")!;
+    appendFileSync(store.eventsPath(id), JSON.stringify({ ts: 6, type: "log", message: "m6" }) + "\n");
+    const changed = await fetch(base, { headers: { "if-none-match": etag } });
+    assert.equal(changed.status, 200);
+    assert.equal(changed.headers.get("x-total-count"), "6");
+    assert.equal((await changed.json()).length, 6);
+  } finally {
+    await handle.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("HTTP: the SSE stream pushes a run turning stale when its worker is killed", async () => {
+  const root = tempRoot();
+  const store = new RunStore(root);
+  const worker = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+  const id = seedRun(store, { name: "demo", state: "running", pid: worker.pid! }, [A("agent_started", "alpha", "Research", 1)]);
+  const handle = await startServer({ store, port: 0, host: "127.0.0.1", claudeProjectsRoot: join(root, "no-claude") });
+  const sse = await openSse(handle.url);
+  try {
+    const first = await sse.next("runs");
+    assert.equal(first.find((r: any) => r.runId === id).state, "running");
+    await new Promise<void>((r) => {
+      worker.once("exit", () => r());
+      worker.kill("SIGKILL");
+    });
+    // Same connection: the server must PUSH the change (no file changed, only the pid died).
+    const runs = await sse.next("runs", (list) => list.some((r: any) => r.runId === id && r.state === "stale"));
+    assert.deepEqual(runs.find((r: any) => r.runId === id).counts, { agents: 1, running: 0, done: 0, failed: 0, stale: 1 });
+  } finally {
+    sse.close();
+    worker.kill("SIGKILL");
     await handle.close();
     rmSync(root, { recursive: true, force: true });
   }
