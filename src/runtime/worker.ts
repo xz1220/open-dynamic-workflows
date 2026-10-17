@@ -16,14 +16,21 @@ import { pathToFileURL } from "node:url";
 
 import { loadConfig } from "../adapters/config.js";
 import { buildContext, spentTokens, type RunContext } from "../context.js";
-import { RunStopped } from "../errors.js";
+import { RunStopped, WorkflowScriptError } from "../errors.js";
 import { LOG, RUN_FAILED, RUN_FINISHED, RUN_STARTED, RUN_STOPPED, event } from "../events.js";
 import { loadWorkflowScript } from "../loader.js";
 import { createPrimitives } from "../primitives.js";
 import { FileControl } from "./file-control.js";
 import { JsonlSink, RunStore } from "./run-store.js";
 
-/** Run the workflow described by `runDir`; return its terminal state. */
+/**
+ * Run the workflow described by `runDir`; return its terminal state.
+ *
+ * While the run executes, a stray rejection or exception from the workflow (a
+ * promise nobody handles, a throw inside a timer callback) fails the run
+ * instead of killing the process and leaving the run "running" forever. The
+ * listeners are process-wide, which is fine for the one run a worker executes.
+ */
 export async function executeRun(runDir: string): Promise<string> {
   const store = new RunStore(dirname(runDir));
   const runId = basename(runDir);
@@ -40,6 +47,7 @@ export async function executeRun(runDir: string): Promise<string> {
   const dispatched = () => ctx?.scheduler.dispatched ?? 0;
   const spent = () => (ctx ? spentTokens(ctx.usage) : 0);
 
+  const crashes = watchProcessCrashes();
   try {
     const baseConfig = loadConfig((meta.configPath as string | null) ?? null);
     // Run-level adapter override (meta.adapter): becomes this run's default for
@@ -91,7 +99,7 @@ export async function executeRun(runDir: string): Promise<string> {
       phases: loaded.meta.phases,
     });
     const primitives = createPrimitives(ctx);
-    const result = await loaded.run(primitives, args);
+    const result = await crashes.race(loaded.run(primitives, args));
 
     store.writeResult(runId, result);
     sink.emit(event(RUN_FINISHED, { runId }));
@@ -108,7 +116,38 @@ export async function executeRun(runDir: string): Promise<string> {
     store.writeError(runId, { error: e.message ?? String(err), stack: e.stack ?? null });
     store.updateStatus(runId, { state: "failed", dispatched: dispatched(), spentTokens: spent() });
     return "failed";
+  } finally {
+    crashes.dispose();
   }
+}
+
+/**
+ * Route process-level failures (unhandled rejections, uncaught exceptions) into
+ * a rejection the run can record: `race` settles with the first of `work` and
+ * a crash. Listening stops at `dispose`.
+ */
+function watchProcessCrashes(): { race<T>(work: Promise<T>): Promise<T>; dispose(): void } {
+  let fail!: (err: unknown) => void;
+  const crashed = new Promise<never>((_, reject) => (fail = reject));
+  crashed.catch(() => {}); // observed only through race()
+  const onRejection = (reason: unknown): void => fail(crashError("an unhandled promise rejection", reason));
+  const onException = (error: unknown): void => fail(crashError("an uncaught exception", error));
+  process.on("unhandledRejection", onRejection);
+  process.on("uncaughtException", onException);
+  return {
+    race: (work) => Promise.race([work, crashed]),
+    dispose: () => {
+      process.off("unhandledRejection", onRejection);
+      process.off("uncaughtException", onException);
+    },
+  };
+}
+
+function crashError(kind: string, cause: unknown): WorkflowScriptError {
+  const message = cause instanceof Error ? cause.message : String(cause);
+  const error = new WorkflowScriptError(`the workflow crashed with ${kind}: ${message}`);
+  if (cause instanceof Error && cause.stack) error.stack = cause.stack;
+  return error;
 }
 
 async function main(argv: string[]): Promise<number> {

@@ -301,7 +301,27 @@ export function createPrimitives(
     }
   };
 
-  return { agent, parallel, pipeline, phase, log, budget, workflow, validate };
+  return {
+    agent: (prompt, opts) => handled(agent(prompt, opts)),
+    parallel: (thunks) => handled(parallel(thunks)),
+    pipeline: (items, ...stages) => handled(pipeline(items, ...stages)),
+    phase,
+    log,
+    budget,
+    workflow: (nameOrRef, childArgs) => handled(workflow(nameOrRef, childArgs)),
+    validate,
+  };
+}
+
+/**
+ * Mark a primitive's promise as handled. Scripts start work early and await it
+ * later — `const p = agent(a); await agent(b); await p` — and if `p` fails in
+ * between, Node would report an unhandled rejection and kill the worker
+ * mid-run, leaving the run "running" forever. Awaiting `p` still throws.
+ */
+function handled<T>(promise: Promise<T>): Promise<T> {
+  promise.catch(() => {});
+  return promise;
 }
 
 /**

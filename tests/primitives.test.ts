@@ -169,6 +169,28 @@ test("pipeline: a stage that throws drops that item to null", async () => {
   assert.deepEqual(out, [null, 20]);
 });
 
+test("work started early and awaited later never surfaces as an unhandled rejection", async () => {
+  const unhandled: unknown[] = [];
+  const onUnhandled = (reason: unknown) => unhandled.push(reason);
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    const { ctx } = fakeContext(async (req) => outcome(req.prompt));
+    const p = createPrimitives(ctx);
+    const early = p.agent("a", { adapter: "nope" });
+    const earlyBatch = p.parallel("not thunks" as unknown as Array<() => string>);
+    const earlyPipeline = p.pipeline([1], 2 as unknown as (v: unknown) => unknown);
+    await p.agent("b");
+    // Cross a macrotask boundary: Node reports unhandled rejections there.
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    await assert.rejects(early, AdapterNotFound);
+    await assert.rejects(earlyBatch, WorkflowScriptError);
+    await assert.rejects(earlyPipeline, WorkflowScriptError);
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+  }
+  assert.deepEqual(unhandled, []);
+});
+
 test("parallel() rejects non-function elements with a fix-it message", async () => {
   const { ctx } = fakeContext(async () => outcome("x"));
   const p = createPrimitives(ctx);
