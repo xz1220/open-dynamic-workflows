@@ -60,6 +60,7 @@
 - **失败分类与退避（N6 前半）**：8 类失败原因，约 80 条各 CLI 原文样本；限流按 retry-after 或指数退避（带抖动、上限 `maxBackoff`）重试，等待中停止立即生效；额度/登录不重试而给出可操作的提示，同一适配器连续 3 次时告警；Claude 文本模式"以 0 退出的 API 错误"也能识别。
 - **worktree 环境（X5）**：`.worktreeinclude`（含 `symlink:`）、带超时的 `worktreeSetup`、每个 agent 独占的 `ODW_PORT` 及 `ODW_RUN_ID`/`ODW_AGENT_ID`。
 - 看板：「待你处理」提醒、失败原因旁显示限流/额度的解除时间、为 X1 准备好的改动审阅页；官网新增「为长任务而生」；两篇实用配方（恢复运行、运行通知）；删除无人使用的 skill 内嵌产物。
+- **审阅并应用改动（X1）**：worktree agent 的改动在 worktree 删除前落盘为 `agents/<id>.diff`（与 diff 解析器约定的 git 参数；`.worktreeinclude`/`worktreeSetup` 放进去的文件按内容哈希排除；超过 `maxDiffBytes` 在行边界截断并附说明，计数始终描述完整改动）；`keep: true` / `keepBranches` 把改动提交到 `odw/<runId>/<agentId>-<label>` 分支且不碰用户的 HEAD 和索引；`odw diff [--agent] [--stat]`、`odw apply --agent [--check] [--force]`（`git apply --3way`）；`GET /api/runs/:id/agents/:agentId/diff`；看板改动页端到端验证。
 - **真实用量与花费（N5）**：内置 `claude` 适配器改用 `stream-json`（逐轮输出，`result` 事件带回复、用量、花费与 `is_error`，错误走失败分类）；JSON / JSONL 输出格式可声明 `usagePath`/`costPath`/`errorPath`，解析不到文本时退回原始输出并记一条 LOG；用量按 agent 与运行汇总（含重试），`budget` 优先计真实输出 token；`odw status`、实时视图与看板显示 token 与花费；单次 `parallel()`/`pipeline()` 超过 `fanOutWarn`（默认 25）时提示。
 
 ---
