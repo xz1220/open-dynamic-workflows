@@ -903,7 +903,7 @@ An agent needs a run slot and a slot on its adapter, handed out together: it nev
 holds one while it waits for the other, each adapter's agents queue first come,
 first served, and a free run slot goes to the oldest agent whose adapter has room, so
 one throttled adapter never holds up the others. `odw doctor` shows the caps, and
-every run states them in its first log line
+`odw run` states them in its start banner, under the permissions line
 (`concurrency: 8 agents at once · per adapter: codex 4`).
 
 ```jsonc

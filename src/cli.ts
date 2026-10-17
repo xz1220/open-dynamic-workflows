@@ -54,7 +54,7 @@ import {
   type ApplyReport,
 } from "./runtime/changes-view.js";
 import { startRun, startRunFromSource, waitFor } from "./runtime/launcher.js";
-import { attachRun, checkpointCommands, formatEvent, formatUsage, resolveRunMode, type RunMode } from "./runtime/live-view.js";
+import { attachRun, bannerLines, checkpointCommands, formatEvent, formatUsage, resolveRunMode, type RunMode } from "./runtime/live-view.js";
 import { isRunActive, RunObserver } from "./runtime/run-liveness.js";
 import { RunStore, TERMINAL_STATES } from "./runtime/run-store.js";
 import { detail, type RunDetail } from "./runtime/runs-view.js";
@@ -63,6 +63,7 @@ import { printAgentLogs } from "./runtime/transcript-view.js";
 import { executeRun } from "./runtime/worker.js";
 import { cmdSchedule } from "./schedule/command.js";
 import { isSeaBinary } from "./sea.js";
+import { describeConcurrency } from "./throttle.js";
 import { detectCaps, glyphs, palette, sanitizeText } from "./tty.js";
 import { listWorkflows, resolveWorkflow } from "./workflows/resolve.js";
 
@@ -412,7 +413,7 @@ async function cmdRun(rest: string[]): Promise<number> {
   return afterStart(store, runId, mode, {
     timeoutMs,
     hint: "started run",
-    banner: permissionsLine(values.config ?? null, values.source ?? null, permissions),
+    banner: startBanner(values.config ?? null, values.source ?? null, permissions),
   });
 }
 
@@ -424,17 +425,21 @@ function parsePermissions(cmd: string, raw: string | undefined): PermissionTier 
 }
 
 /**
- * The start banner's permissions line (ODW extension): the run's tier and
- * what each installed adapter runs with — from the config the worker will
- * load, which resolves a project-local file against --source (see
- * warnIfNoDefaultAdapter). Undefined when that config cannot be read: the
- * launch itself reports that.
+ * The start banner (ODW extensions), a line each: the permissions line — the
+ * run's tier and what each installed adapter runs with — and the concurrency
+ * line, the caps the run's agents get (per adapter too). Both from the config
+ * the worker will load, which resolves a project-local file against --source
+ * (see warnIfNoDefaultAdapter). Undefined when that config cannot be read:
+ * the launch itself reports that.
  */
-function permissionsLine(configPath: string | null, source: string | null, permissions: PermissionTier | null): string | undefined {
+function startBanner(configPath: string | null, source: string | null, permissions: PermissionTier | null): string | undefined {
   try {
     const config = loadConfig(configPath, { quiet: true, ...(source ? { cwd: resolve(source) } : {}) });
     if (permissions) config.settings.permissions = permissions;
-    return permissionsBanner(config, (adapter) => isOnPath(adapter.command[0]!));
+    return [
+      permissionsBanner(config, (adapter) => isOnPath(adapter.command[0]!)),
+      `concurrency: ${describeConcurrency(config)}`,
+    ].join("\n");
   } catch {
     return undefined;
   }
@@ -517,9 +522,11 @@ async function afterStart(
   mode: RunMode,
   opts: { timeoutMs?: number; hint: string; banner?: string },
 ): Promise<number> {
-  // The permissions line goes to stderr in every mode — under the live
-  // view's header when attached.
-  const banner = opts.banner ? `${sanitizeText(opts.banner, 1000)}\n` : "";
+  // The start banner (permissions, concurrency) goes to stderr in every mode
+  // — under the live view's header when attached.
+  const banner = bannerLines(opts.banner)
+    .map((line) => `${line}\n`)
+    .join("");
   if (mode === "detach") {
     process.stdout.write(runId + "\n");
     process.stderr.write(`${opts.hint} ${runId} (use 'odw status ${runId}')\n${banner}`);
@@ -1192,7 +1199,7 @@ async function relaunch(
   return afterStart(started.store, started.runId, start.mode, {
     timeoutMs: start.timeoutMs,
     hint: cmd === "resume" ? `resuming ${runId} (${saved} saved agent result(s) to replay) as` : `re-running ${runId} as`,
-    banner: permissionsLine(opts.configPath, opts.source, opts.permissions),
+    banner: startBanner(opts.configPath, opts.source, opts.permissions),
   });
 }
 

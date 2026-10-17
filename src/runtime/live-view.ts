@@ -296,13 +296,13 @@ class LiveView {
     for (const l of lines) this.err.write(this.line(l) + "\n");
   }
 
-  /** The run's name and id, how to detach — and, for a run just started, its permissions line. */
+  /** The run's name and id, how to detach — and, for a run just started, its banner lines (permissions, concurrency). */
   header(banner?: string): void {
     const { p, g } = this;
     this.permanent([
       `${p.accent(g.header)} ${p.bold(this.name)}  ${p.dim(this.runId)}`,
       `  ${p.dim(`^C detaches (run keeps going) ${g.bullet} odw attach ${this.runId}`)}`,
-      ...(banner ? [`  ${p.dim(sanitizeText(banner, 1000))}`] : []),
+      ...bannerLines(banner).map((line) => `  ${p.dim(line)}`),
     ]);
   }
 
@@ -486,8 +486,19 @@ export interface AttachOptions {
   platform?: NodeJS.Platform;
   /** Flags the printed `odw approve|reject` commands need to find the run (e.g. `--runs-root <dir>`). */
   commandFlags?: string[];
-  /** A line about the run that just started (its permissions; ODW extension), printed before its events. */
+  /**
+   * Lines about the run that just started — its permissions, its concurrency
+   * (ODW extensions) — one per line of the string, printed before its events.
+   */
   banner?: string;
+}
+
+/** A start banner's lines, each sanitized for the terminal; none for no banner. */
+export function bannerLines(banner: string | undefined): string[] {
+  return (banner ?? "")
+    .split("\n")
+    .map((line) => sanitizeText(line, 1000))
+    .filter((line) => line !== "");
 }
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
@@ -588,8 +599,8 @@ export async function attachRun(
   if (view) {
     opts.err.write(cursor.hide);
     view.header(opts.banner);
-  } else if (opts.banner) {
-    opts.err.write(sanitizeText(opts.banner, 1000) + "\n");
+  } else {
+    for (const line of bannerLines(opts.banner)) opts.err.write(line + "\n");
   }
 
   const observer = new RunObserver(store, runId, now);

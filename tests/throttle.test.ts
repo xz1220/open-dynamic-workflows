@@ -14,11 +14,15 @@ import { MemoryControl } from "../src/control.js";
 import { runDoctor } from "../src/doctor.js";
 import { ConfigError, RunStopped } from "../src/errors.js";
 import { LOG, MemorySink } from "../src/events.js";
+import { main } from "../src/cli.js";
 import { createPrimitives } from "../src/primitives.js";
+import { waitFor } from "../src/runtime/launcher.js";
+import { attachRun, bannerLines } from "../src/runtime/live-view.js";
 import { RunStore } from "../src/runtime/run-store.js";
 import { executeRun } from "../src/runtime/worker.js";
 import { RESTORE_MS, Scheduler, type AdapterCapChange, type AgentSlot } from "../src/scheduler.js";
 import { capChangeMessage, describeConcurrency } from "../src/throttle.js";
+import { FakeTerm } from "./fake-term.js";
 
 // Per-adapter concurrency and adaptive back-pressure (ODW extensions): an
 // adapter's own cap inside the run-wide one, handed out fairly, lowered by
@@ -492,6 +496,94 @@ test("odw doctor shows the caps a run gets", async () => {
   }
 });
 
+// --- the start banner -------------------------------------------------------------
+
+/** Run the CLI with stdout/stderr captured (node:test's own buffer writes pass through). */
+async function cli(argv: string[]): Promise<{ code: number; out: string; err: string }> {
+  const out: string[] = [];
+  const err: string[] = [];
+  const so = process.stdout.write.bind(process.stdout);
+  const se = process.stderr.write.bind(process.stderr);
+  (process.stdout as { write: unknown }).write = (s: unknown) => {
+    if (Buffer.isBuffer(s)) return so(s);
+    out.push(String(s));
+    return true;
+  };
+  (process.stderr as { write: unknown }).write = (s: unknown) => {
+    if (Buffer.isBuffer(s)) return se(s);
+    err.push(String(s));
+    return true;
+  };
+  try {
+    const code = await main(argv);
+    return { code, out: out.join(""), err: err.join("") };
+  } finally {
+    process.stdout.write = so;
+    process.stderr.write = se;
+  }
+}
+
+test("odw run's start banner states the run's caps under its permissions line, waiting or detached", async () => {
+  const root = mkdtempSync(join(tmpdir(), "odw-throttle-banner-"));
+  try {
+    const configPath = join(root, "odw.config.json");
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        concurrency: 3,
+        defaultAdapter: "quick",
+        adapters: { quick: { command: [execPath, "-e", "process.stdout.write('ok')"], concurrency: 2 } },
+      }),
+    );
+    const script = join(root, "banner.js");
+    writeFileSync(script, "export const meta = { name: 'banner', description: 'd' }\nreturn await agent('hello')\n");
+    const runsRoot = join(root, "runs");
+    const flags = ["--config", configPath, "--runs-root", runsRoot, "--source", root];
+    const caps = "concurrency: 3 agents at once · per adapter: quick 2\n";
+
+    let r = await cli(["run", script, "--wait", ...flags]);
+    assert.equal(r.code, 0, r.err);
+    assert.equal(JSON.parse(r.out), "ok");
+    assert.match(r.err, /^running \S+ \.\.\.\npermissions: [^\n]+\nconcurrency: 3 agents at once · per adapter: quick 2\n/);
+
+    r = await cli(["run", script, "-d", ...flags]);
+    assert.equal(r.code, 0, r.err);
+    const id = r.out.trim();
+    assert.ok(r.err.startsWith(`started run ${id} (use 'odw status ${id}')\npermissions: `), r.err);
+    assert.ok(r.err.endsWith(`\n${caps}`), r.err);
+    assert.equal((await waitFor(new RunStore(runsRoot), id, { timeoutMs: 15_000, pollIntervalMs: 20 })).state, "done");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a start banner of several lines shows each: under the live view's header, first in the line stream", async () => {
+  assert.deepEqual(bannerLines(undefined), []);
+  assert.deepEqual(bannerLines("one\n\n\u001b[31mtwo\u001b[0m\n"), ["one", "two"], "each line sanitized, blank ones dropped");
+  const store = new RunStore(mkdtempSync(join(tmpdir(), "odw-throttle-live-")));
+  try {
+    const banner = "permissions: edit — quick edit\nconcurrency: 3 agents at once · per adapter: quick 2";
+    for (const live of [true, false]) {
+      const runId = store.create({ script: "/x/wf.js", args: null, source: process.cwd(), workflowName: "demo" });
+      store.updateStatus(runId, { state: "done", pid: process.pid, name: "demo" });
+      store.writeResult(runId, "ok");
+      const err = live ? new FakeTerm(200) : { chunks: [] as string[], isTTY: false, write(s: string) { this.chunks.push(s); } };
+      const out = { write: () => {} };
+      assert.equal(await attachRun(store, runId, { out, err, live, signals: false, env: { TERM: "xterm" }, banner }), 0);
+      if (err instanceof FakeTerm) {
+        assert.match(
+          err.lines.join("\n"),
+          /\^C detaches.*\n {2}permissions: edit — quick edit\n {2}concurrency: 3 agents at once · per adapter: quick 2\n/,
+        );
+      } else {
+        assert.deepEqual(err.chunks.slice(0, 2), ["permissions: edit — quick edit\n", "concurrency: 3 agents at once · per adapter: quick 2\n"]);
+      }
+    }
+  } finally {
+    rmSync(store.root, { recursive: true, force: true });
+  }
+});
+
 // --- end to end: the worker, mock CLIs that record how many run at once ----------
 
 /**
@@ -534,7 +626,7 @@ function peaks(log: string): { byName: Map<string, number>; total: number; order
   return { byName, total: peak, order };
 }
 
-test("end to end: an adapter's cap holds across a fan-out, other adapters run beside it, and the run says its caps", async () => {
+test("end to end: an adapter's cap holds across a fan-out, and other adapters run beside it", async () => {
   const root = mkdtempSync(join(tmpdir(), "odw-throttle-e2e-"));
   try {
     const log = join(root, "running.log");
@@ -568,9 +660,6 @@ test("end to end: an adapter's cap holds across a fan-out, other adapters run be
     assert.ok(total <= 4, `the run-wide cap holds: ${total} at once`);
     const thirdSlow = order.findIndex((name, i) => name === "slow" && order.slice(0, i + 1).filter((n) => n === "slow").length === 3);
     assert.ok(order.indexOf("fast") < thirdSlow, `fast did not wait behind slow's queue: ${order.join(" ")}`);
-
-    const logs = store.readEvents(id).filter((e) => e.type === "log");
-    assert.equal(logs[0]!.message, "concurrency: 4 agents at once · per adapter: slow 2", "the run's start banner");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -626,7 +715,6 @@ test("end to end: a fan-out rate-limited together halves its adapter's cap once,
           "one slot comes back for each minute without another",
       ],
     );
-    assert.equal(messages[0], "concurrency: 8 agents at once · per adapter: flaky 4");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
