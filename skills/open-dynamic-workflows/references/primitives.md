@@ -166,8 +166,8 @@ can become `null` when this call is inside `parallel`/`pipeline`.
 `validate(source)` loads a candidate workflow without running its body and
 returns `{ ok, meta?, errors, warnings }`. Loading parses `meta` as a pure
 literal (never evaluating it) and only compiles the body. Warnings flag selected portability
-hazards such as `Date.now()`, `Math.random()` and calls to the ODW-only `exec()`; they do not
-block execution.
+hazards such as `Date.now()`, `Math.random()` and calls to the ODW-only `exec()` and
+`checkpoint()`; they do not block execution.
 This helper is not part of the shared core surface. A script's own `validate`
 binding takes precedence over the injected helper.
 
@@ -183,7 +183,8 @@ with no adapter call, concurrency slot, dispatch count or budget, when its
 resume changes only the default, so calls that name no adapter still replay.
 Calls with the same key replay in call order (the n-th such call gets the n-th
 saved result); a call past them, or one whose prompt or options changed, runs
-normally. Nested `workflow()` calls replay the same way.
+normally. Nested `workflow()` calls replay the same way. A `checkpoint()` is
+never replayed: the resumed run asks it again.
 
 Replayed agents are marked `cached` (↺ in `odw agents` and the dashboard) and
 saved again, so a resume of a resume replays them too. Fix the failing step,
@@ -248,6 +249,68 @@ await exec(['git', 'diff', '--stat'], { check: true }) // throws ExecError unles
 The command runs with the worker's own permissions — the same trust as the
 script itself; `exec` adds no sandbox. The ODW repository's
 `examples/test-fix-loop.js` is this loop as a complete workflow.
+
+## checkpoint (ODW extension)
+
+```js
+checkpoint(title, opts?) -> Promise<{ approved, note, by }>
+```
+
+Pause the run until a person approves or rejects — before an expensive or
+hard-to-undo step, or to have a plan confirmed. It is not portable: Claude
+Code's workflows take no mid-run input and have no `checkpoint` global
+(`validate()` warns about it), and a script's own `checkpoint` binding takes
+precedence over the injected one.
+
+- **title** — the question, on one line (whitespace collapsed; events,
+  `status.json` and the dashboard keep 200 characters).
+- **opts.payload** — what the person should look at: any JSON value. It is
+  made JSON-safe (a BigInt becomes its digits, a cycle `"[Circular]"`) and kept
+  to 64 KiB; a larger one keeps its start, as text, and the event says
+  `truncated`.
+- **opts.timeout** — seconds to wait; no limit by default.
+- **opts.onTimeout** — what silence means: `"approve"` or `"reject"` resolve
+  with `by: "timeout"`; `"fail"` (the default) throws a `CheckpointTimeout` —
+  recoverable, like a failed agent: catch it, or let `parallel`/`pipeline` turn
+  it into `null`.
+
+The call resolves to `{ approved, note, by }`: `note` is the person's note or
+`null`; `by` is `"cli"` (`odw approve|reject`), `"dashboard"` (`odw serve`) or
+`"timeout"`. A rejection is an answer, not an error: the script decides what it
+means — stop, re-plan with the note, skip a step.
+
+Waiting is not work: a checkpoint takes no concurrency slot, counts toward
+neither the total-agent cap nor the budget, and is asked even while the run is
+paused; agents already running carry on. A stop — or any fatal error — ends the
+wait at once, and the run with it. Several checkpoints can wait at the same time
+(inside `parallel`), each numbered in call order (`checkpointId`, from 1).
+Misuse (an empty title, a non-positive timeout) throws before anything is asked.
+
+While one waits, the run's display state is `waiting`: `odw status` shows the
+question, the payload and the exact `odw approve|reject <run> --checkpoint N`
+commands, and the dashboard an Approve/Reject card. Without `--checkpoint` an
+answer goes to the oldest checkpoint waiting. Each checkpoint is recorded as
+`checkpoint_requested { checkpointId, title, payload, phase }`, then exactly one
+`checkpoint_resolved { checkpointId, approved, note, by }` (with an `error`, and
+`by: null`, when the run ended first). `odw resume` never replays a checkpoint:
+the resumed run asks again.
+
+```js
+phase('Plan')
+const plan = await agent(`Plan this as independent steps: ${task}`, { schema: PLAN })
+phase('Approve')
+const { approved, note } = await checkpoint(`Run this ${plan.steps.length}-step plan?`, {
+  payload: plan,
+  timeout: 3600,
+  onTimeout: 'reject', // nobody answered within the hour: change nothing
+})
+if (!approved) return { approved, note, plan }
+phase('Execute')
+await parallel(plan.steps.map((step) => () => agent(step.instructions)))
+```
+
+The ODW repository's `examples/plan-approve-execute.js` is this flow as a
+complete workflow, re-planning when a rejection comes with a note.
 
 ## Isolated worktrees and the agent environment
 
@@ -373,3 +436,5 @@ dispatch that depends on completion timing, does not match and runs again.
   1000). Exceeding it aborts the run, so a buggy loop cannot fan out forever.
 - `exec()` commands count toward neither limit; each is bounded by its own
   `timeout` and `maxOutputBytes`.
+- A waiting `checkpoint()` counts toward neither limit either; its own
+  `timeout`, if any, bounds the wait.

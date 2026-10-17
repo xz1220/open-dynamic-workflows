@@ -70,7 +70,8 @@ workflow,就成了你在任何 agent 上都能跑的资产。
 - **可靠的交接** —— JSON-Schema 结构化输出,自动校验与重试,让多阶段流水线稳定组合,而
   不是在自由文本上碰运气。
 - **后台运行、可观测** —— 每次运行都是一个 detached worker + run 目录:`status`、
-  `logs --follow`、`result`、`pause` / `stop`。
+  `logs --follow`、`result`、`pause` / `stop`,以及在人工 `checkpoint()` 处等待时的
+  `approve` / `reject`。
 - **无线程、零运行时依赖** —— 引擎是异步 TypeScript(`parallel` 就是 `Promise.all`);
   workflow 脚本保持纯 `.js`,并附带 `.d.ts` 类型供编辑器补全。
 
@@ -213,6 +214,7 @@ odw run examples/fan-out-reduce.js --wait --args '{"question": "Design a rate li
 | `workflow(ref, args?)` | 内联调用另一个 workflow(仅一层)。子 workflow 共享本次运行的并发上限、agent 计数与预算;其 phase 以独立泳道归组。 |
 | `validate(source)` | 解析并编译检查可信源码,不运行工作流正文;元数据按纯字面量解析,不会被求值。**ODW 扩展**(不属于 Claude Code 方言)。 |
 | `exec(command, opts?)` | 不启动模型直接运行一条命令——测试、构建、linter;返回 `{ stdout, stderr, exitCode, signal, timedOut, truncated, durationMs }`。字符串经 shell 执行,数组按 argv 执行。受 `timeout`(600 秒)和 `maxOutputBytes`(每个输出流 8 MiB)约束;停止会杀掉它。不占 agent 槽位。**ODW 扩展**(不属于 Claude Code 方言)。 |
+| `checkpoint(title, opts?)` | 暂停运行,直到有人批准或拒绝——用 `odw approve\|reject` 或看板——然后返回 `{ approved, note, by }`。`opts`:`payload`(要给人看的内容)、`timeout`(秒)和 `onTimeout`(`"approve"`、`"reject"`,或默认的 `"fail"`)。不占 agent 槽位;停止依然会结束运行。见[人工检查点](#人工检查点odw-扩展)。**ODW 扩展**(不属于 Claude Code 方言)。 |
 
 下一步需要"全量结果一次到位"(去重、计票、综合)时用 **`parallel`**;多阶段处理默认用
 **`pipeline`**。归并要保持顺序无关——按"谁先跑完"分支会破坏可复现性。完整参考见
@@ -233,8 +235,9 @@ ODW 已实现下列原语能力。依赖宿主私有运行机制的脚本,迁移
 | 脚本可信性 | 只运行可信脚本:运行工作流会把正文当作普通 JavaScript 执行。加载时元数据按纯字面量解析,不会被求值;编译检查和兼容性警告都不提供沙箱隔离。 |
 | 恢复 | 每个完成的 `agent()` 结果都会在完成时保存。`odw resume` 让已暂停且仍存活的 worker 原地继续;对已结束的运行(done、failed、stopped,或崩溃后的 stale)则启动一个新运行:prompt 和选项都没变的调用直接重放,其余照常执行。`rerun` 从头执行。见[恢复运行](#恢复运行odw-扩展)。 |
 
-原语名称一致不代表运行机制完全等价。`validate(source)` 和 `exec(command)` 是 ODW 扩展,
-迁移到未提供它们的宿主时需要去掉(`validate()` 会对 `exec()` 调用给出 warning)。可恢复失败产生的 `null` 需要显式处理：接受部分结果、重试,或在要求完整
+原语名称一致不代表运行机制完全等价。`validate(source)`、`exec(command)` 和 `checkpoint(title)`
+是 ODW 扩展,迁移到未提供它们的宿主时需要去掉(`validate()` 会对 `exec()` 和 `checkpoint()`
+调用给出 warning)。可恢复失败产生的 `null` 需要显式处理：接受部分结果、重试,或在要求完整
 交付时报告失败。
 
 ## 运行与观测
@@ -261,6 +264,7 @@ odw agents $RUN          # 每个 agent 及其已保存的结果,运行中也可
 odw logs $RUN --follow   # 流式输出原始进度事件
 odw result $RUN          # 最终值
 odw pause|resume|stop $RUN
+odw approve|reject $RUN  # 回答运行正在等待的 checkpoint()(--note TEXT、--checkpoint N)
 odw list
 ```
 
@@ -321,6 +325,48 @@ odw resume $RUN              # 启动一个新运行,重放每个未改动的 ag
 分步演练——读取已完成的部分、停掉卡住的、修复、再 resume:
 [`docs/recipes/recover-a-run.md`](docs/recipes/recover-a-run.md)。
 
+### 人工检查点(ODW 扩展)
+
+Claude Code 的 workflow 一旦启动就不再接受输入。`checkpoint()` 让运行停在需要人看一眼的
+地方——在昂贵的扇出之前批准计划,或叫停一次跑偏的运行——并持久地等待答复:
+
+```js
+const plan = await agent('Plan the migration as independent steps.', { schema: PLAN })
+const { approved, note } = await checkpoint('Run this migration plan?', { payload: plan })
+if (!approved) return { skipped: true, why: note }
+await parallel(plan.steps.map((step) => () => agent(step.instructions)))
+```
+
+等待期间,运行在 `odw status`、`odw list`、实时视图和看板里显示为 **waiting**。其他一切
+照常:已在运行的 agent 继续,等待中的检查点不占 agent 槽位、不耗预算,`odw stop` 依然
+可以结束运行。可以在任意 shell 里回答:
+
+```bash
+odw status $RUN       # 问题、它的 payload,以及回答它的确切命令
+odw approve $RUN      # 最早在等待的检查点;--checkpoint N 指定某一个
+odw reject $RUN --note "Keep the old table until the backfill is verified"
+```
+
+也可以在看板里该运行的页面上点 **Approve** / **Reject**(仅限 loopback 绑定;它向
+`POST /api/runs/:id/checkpoint` 发送 `{ action, checkpointId?, note? }`,
+`GET /api/runs/:id` 会列出 `pendingCheckpoints`)。调用返回 `{ approved, note, by }`
+——`by` 是 `cli`、`dashboard` 或 `timeout`——拒绝也是一个答复而不是错误:"不"意味着
+什么由脚本决定。
+
+- `payload` 可以是任意 JSON 值——计划、改动摘要——最多保留 64 KiB。
+- `timeout`(秒)为无人值守的运行限定等待时长;超时后由 `onTimeout` 批准、拒绝,或(默认
+  的 `"fail"`)抛出脚本可以捕获的 `CheckpointTimeout`。
+- 多个检查点可以同时等待(在 `parallel()` 里),各有自己的编号。
+- `odw resume` 永远不会重放检查点:恢复出来的运行会重新提问。
+- `odw run --wait` 会在检查点等待期间一直阻塞;它会把命令打印一次,请在另一个 shell
+  里回答(或用 `--timeout` 限定等待时长)。
+- 运行会记录 `checkpoint_requested` 和 `checkpoint_resolved` 事件,`status.json` 里的
+  `waiting` 指向最早一个仍在等待的检查点。在 [`notify.on`](#运行通知) 里加上
+  `"waiting"`,你的 hook 就会收到每一个检查点。
+
+[`examples/plan-approve-execute.js`](examples/plan-approve-execute.js) 是完整的
+计划 → 批准 → 执行循环,附带说明的拒绝会触发重新规划。
+
 ## 看板:观测、检查、对话
 
 看板的视觉像一张印刷品——纸、墨和一种信号色——也可以随时切换到夜间主题。它提供:
@@ -334,6 +380,8 @@ odw resume $RUN              # 启动一个新运行,重放每个未改动的 ag
   形式的**结果**,以及展示每个已完成 agent 自身输出的 **agent 抽屉**——输出在完成时
   就已保存,运行中即可查看;重放的 agent 标记为 ↺。`exec()` 命令步骤以终端风格的节点
   (带退出码)出现在同一张图和时间线里;运行的计数包含它们(它们不算 agent 派发)。
+  在 `checkpoint()` 处等待的运行会在图上方显示问题和它的 payload;看板可写时还提供
+  **Approve** / **Reject** 和附言。
 - **Workspace** —— 所有已保存的工作流:阶段的静态结构及每个阶段调用的原语、源码和最近的运行。
 - **Chat Host** —— 正常的 Codex 对话;提到 ODW 或 workflow 时,该回合会关联到一个真实的后台
   运行,工具卡片实时更新。
@@ -518,7 +566,7 @@ ODW 能识别的措辞——从每个内置 CLI 的源码和 issue 中收集而�
 "notify": {
   "command": ["/usr/local/bin/odw-notify"],        // 参数向量,不经过 shell 执行
   "webhook": "https://hooks.slack.com/services/…", // Slack、Discord 或任何接收 JSON 的端点
-  "on": ["done", "failed", "stopped"]              // 默认:所有终态
+  "on": ["done", "failed", "stopped"]              // 默认:所有终态;"waiting" 需显式加入
 }
 ```
 
@@ -546,6 +594,13 @@ ODW 能识别的措辞——从每个内置 CLI 的源码和 issue 中收集而�
 Slack 和 Discord 的 incoming webhook 能直接渲染(同时设置了 Discord 的
 `allowed_mentions`,一次运行永远不会 @ 到任何人)。看板的设置页会显示配置了哪些
 hook——webhook 只显示协议和主机,因为 URL 的其余部分就是密钥。
+
+在 `on` 里加上 `"waiting"`,就能在每个 [`checkpoint()`](#人工检查点odw-扩展) 开始等人
+回答时收到通知。此时 hook 会对每个检查点触发一次,运行照常等待:命令的环境变量带有
+`ODW_RUN_STATE=waiting`、`ODW_CHECKPOINT_ID` 和 `ODW_CHECKPOINT_TITLE`(没有
+`ODW_RESULT_FILE`);webhook 收到 `"state": "waiting"`、一个
+`"checkpoint": { "checkpointId", "title", "since" }` 字段(代替 `finishedAt`),以及一行
+写明回答命令的 `text`。
 
 Slack、Discord、ntfy 和桌面横幅的现成配置见
 [`docs/recipes/notify.md`](docs/recipes/notify.md)。
@@ -653,6 +708,7 @@ workflow 脚本始终是**纯 `.js`**、从不编译;引擎用 **TypeScript** �
 | [`codex-claude-loop.js`](examples/codex-claude-loop.js) | 两个对家 CLI 回合制对弈:Claude 实现,Codex 评审,循环直到签收 |
 | [`agent-daily-digest.js`](examples/agent-daily-digest.js) | 发现信息源 → 并行提取 → 综合 → 核查 |
 | [`test-fix-loop.js`](examples/test-fix-loop.js) | 用 `exec()` 跑测试 → agent 修复失败 → 重跑直到全绿(仅 ODW) |
+| [`plan-approve-execute.js`](examples/plan-approve-execute.js) | agent 起草计划 → 有人在 `checkpoint()` 处批准(附说明的拒绝会重新规划)→ 并行执行 → 汇报(仅 ODW) |
 
 ## 开发
 
