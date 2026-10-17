@@ -1,119 +1,209 @@
-/** Job detail — the live DAG (hero), plus Logs and Result tabs. Read-only. */
-import { renderDag } from "../dag";
+/** Job detail — header + phase stepper, then Graph (live DAG) · Timeline · Logs · Result. */
+import { glyph, pill } from "../components/glyph";
+import { renderJson } from "../components/json";
+import { renderTimeline } from "../components/timeline";
+import { reasonLabel, renderDag } from "../dag";
+import { icons } from "../icons";
 import { t } from "../i18n";
 import { store } from "../store";
 import type { AgentView, RunDetail, WorkflowEvent } from "../types";
-import { ACTIVE, TERMINAL, esc, fmtClock, fmtDurMs } from "../util";
+import { ACTIVE, TERMINAL, esc, fmtClock, fmtDurMs, fmtDurSec, fmtTokens, fmtUsd } from "../util";
+import { EVT_CLASS, commandDetail, emptyArt } from "./activity";
 
-export type JobTab = "graph" | "logs" | "result";
+export type JobTab = "graph" | "timeline" | "logs" | "result";
 
-const EVT_CLASS: Record<string, string> = {
-  run_started: "rstart",
-  run_finished: "rfin",
-  run_failed: "rfail",
-  run_stopped: "rstop",
-  phase_started: "phase",
-  agent_started: "astart",
-  agent_finished: "afin",
-  agent_failed: "afail",
-  log: "log",
-};
+export interface JobViewState {
+  /** Draft note for a checkpoint decision. */
+  cpNote: string;
+  tab: JobTab;
+  selectedAi: number | null;
+  zoom: number;
+  logQuery: string;
+  logTypes: Set<string>;
+  /** How many of the newest matching events the Logs tab paints. */
+  logLimit: number;
+  follow: boolean;
+  motion: boolean;
+}
 
-function stageHead(run: RunDetail, tab: JobTab): string {
+export const LOG_PAGE = 600;
+
+const LOG_GROUPS: Array<{ key: string; label: string; types: string[] }> = [
+  { key: "agent", label: "agents", types: ["agent_started", "agent_finished", "agent_failed"] },
+  { key: "command", label: "commands", types: ["command_started", "command_finished", "command_failed"] },
+  { key: "phase", label: "phases", types: ["phase_started"] },
+  { key: "log", label: "logs", types: ["log"] },
+  { key: "run", label: "run", types: ["run_started", "run_finished", "run_failed", "run_stopped"] },
+];
+
+/** The phase the run is in: the last one that started. */
+export function currentPhase(): string | null {
+  let cur: string | null = null;
+  for (const e of store.runEvents) if (e.type === "phase_started") cur = String(e.phase);
+  return cur;
+}
+
+function stepper(run: RunDetail): string {
   const order = run.phaseOrder.length ? run.phaseOrder : run.phases.map((p) => p.title);
-  // The "current" phase is the last one that has started (last in order seen in events).
-  const startedPhases = new Set(
-    store.runEvents.filter((e) => e.type === "phase_started").map((e) => String(e.phase)),
-  );
-  let curIdx = -1;
+  if (!order.length) return `<div class="stepper"></div>`;
+  const started = new Set(store.runEvents.filter((e) => e.type === "phase_started").map((e) => String(e.phase)));
+  let cur = -1;
   order.forEach((p, i) => {
-    if (startedPhases.has(p)) curIdx = i;
+    if (started.has(p)) cur = i;
   });
-  const stepper = order
-    .map((p, i) => {
-      const cls = i < curIdx ? "done" : i === curIdx ? "on" : "";
-      const arrow = i < order.length - 1 ? `<span class="ar">▸</span>` : "";
-      return `<span class="pp ${cls}">${esc(p)}</span>${arrow}`;
-    })
-    .join("");
-
   const terminal = TERMINAL.has(run.state);
-  const progClass = run.state === "failed" ? "failed" : run.state === "stopped" ? "stopped" : "";
-  const displayProgress = terminal ? Math.max(run.progress, 1) : run.progress;
-  const pct = Math.round(displayProgress * 100);
-  const beat = run.state === "running" ? `<span class="heartbeat"></span>` : "";
-
-  const subtabs =
-    `<div class="subtabs">` +
-    `<b class="${tab === "graph" ? "on" : ""}" data-tab="graph">${t("Graph")}</b>` +
-    `<b class="${tab === "logs" ? "on" : ""}" data-tab="logs">${t("Logs")}</b>` +
-    `<b class="${tab === "result" ? "on" : ""}" data-tab="result">${t("Result")}</b>` +
-    `</div>`;
-
+  const doneAll = run.state === "done";
   return (
-    `<div class="stagehead">` +
-    `<div class="row1"><span class="rtitle">${esc(run.name)}</span>` +
-    `<span class="badge ${run.state}"><span class="d"></span>${esc(t(run.state))}</span>` +
-    `<div class="phasestepper">${stepper}</div>` +
-    `<div style="margin-left:auto;">${subtabs}</div></div>` +
-    `<div class="progressbar"><i class="${progClass}" style="width:${Math.max(pct, run.state === "failed" || run.state === "stopped" ? 100 : 0)}%"></i></div>` +
-    `<div class="row3">` +
-    (run.provider === "claude"
-      ? `<span class="chip" title="${t("Claude Code workflow — observed read-only")}">Claude Code</span>`
-      : "") +
-    `<span class="chip"><b>${run.counts.agents}</b> ${t("agents")}</span>` +
-    `<span class="chip"><span class="em">●</span><b>${run.counts.running}</b> ${t("running")}</span>` +
-    `<span class="chip"><b>${run.counts.done}</b> ${t("done")}</span>` +
-    (run.counts.failed ? `<span class="chip"><span class="rd">✕</span><b>${run.counts.failed}</b> ${t("failed")}</span>` : "") +
-    (run.counts.stale ? `<span class="chip"><span class="am">●</span><b>${run.counts.stale}</b> ${t("stale")}</span>` : "") +
-    `<span class="chip"><b>${order.length}</b> ${t("phases")}</span>` +
-    (run.pid != null ? `<span class="chip">pid <b>${run.pid}</b></span>` : "") +
-    beat +
-    `<div class="readonly-actions">` +
-    // ODW runs can be stopped locally; Claude provider runs stay read-only.
-    (run.provider === "odw" && ACTIVE.has(run.state) && store.capabilities.writable
-      ? `<span class="btn danger sm" data-stop="${esc(run.runId)}">${t("⏹ Stop")}</span>`
-      : "") +
-    `<span class="btn ghost sm" data-copy="${esc(run.runId)}">${t("⧉ Copy run id")}</span>` +
-    // A Claude run has no ODW run directory to reveal — it lives under ~/.claude.
-    (terminal || run.provider === "claude" ? "" : `<span class="btn secondary sm" data-reveal="1">${t("⊞ Open run dir")}</span>`) +
-    `</div></div></div>`
+    `<div class="stepper">` +
+    order
+      .map((p, i) => {
+        const state = doneAll || i < cur || (terminal && i <= cur) ? "done" : i === cur ? "on" : "";
+        const link =
+          i < order.length - 1
+            ? `<i class="step-link ${i < cur || doneAll ? "done" : i === cur && !terminal ? "on" : ""}"></i>`
+            : "";
+        return (
+          `<span class="step ${state}" data-key="st-${i}"><span class="ix">${String(i + 1).padStart(2, "0")}</span>` +
+          `${state === "on" ? glyph(run.state === "running" ? "running" : run.state) : ""}${esc(p)}</span>${link}`
+        );
+      })
+      .join("") +
+    `</div>`
   );
 }
 
-function detailPanel(a: AgentView, provider: RunDetail["provider"]): string {
-  const errBlock =
-    a.state === "failed"
-      ? `<div class="dp-sec">${t("Error")}</div><div class="dp-out">${esc(a.error ?? t("(no message)"))}</div>`
+function runHead(run: RunDetail, nowSec: number): string {
+  const terminal = TERMINAL.has(run.state);
+  const elapsed =
+    run.createdAt != null ? fmtDurSec((terminal ? (run.updatedAt ?? run.createdAt) : nowSec) - run.createdAt) : "—";
+  const stop =
+    run.provider === "odw" && ACTIVE.has(run.state) && store.capabilities.writable
+      ? `<button class="btn danger" data-stop="${esc(run.runId)}">${icons.stop}${t("Stop")}</button>`
       : "";
-  const out =
-    a.state === "running"
-      ? `<div class="dp-sec">${t("Status")}</div><div class="dp-out">${t("running…")}<br>${t("started {t}", { t: fmtClock(a.startedAt) })}</div>`
-      : a.state === "done"
-        ? `<div class="dp-sec">${t("Outcome")}</div><div class="dp-out">${t("done in {d}", { d: fmtDurMs(a.durationMs) })}${a.attempts ? `<br>${t("attempts: {n}", { n: a.attempts })}` : ""}</div>`
-        : a.state === "stale"
-          ? `<div class="dp-sec">${t("Status")}</div><div class="dp-out">${provider === "claude" ? t("no recent signal") : t("worker lost contact")}<br>${t("started {t}", { t: fmtClock(a.startedAt) })}</div>`
-        : errBlock;
+  const cc = run.provider === "claude" ? `<span class="tag cc">Claude Code · ${t("read-only")}</span>` : "";
+  const c = run.counts;
+  const stat = (v: string | number, k: string, cls = "") =>
+    `<div class="rs ${cls}"><span class="v num">${v}</span><span class="k">${esc(k)}</span></div>`;
+  const total = Math.max(1, c.agents);
+  const w = (n: number) => `${((n / total) * 100).toFixed(2)}%`;
   return (
-    `<div class="detailpanel">` +
-    `<span class="close" data-close="1">esc ✕</span>` +
-    `<h4>${esc(a.label)}</h4>` +
-    `<div style="margin-top:8px;"><span class="badge ${a.state}"><span class="d"></span>${esc(t(a.state))}</span></div>` +
-    `<div class="dp-meta">` +
-    `<span class="k">${t("adapter")}</span><span class="v">${esc(a.adapter ?? "—")}</span>` +
-    `<span class="k">${t("phase")}</span><span class="v">${esc(a.phase ?? "—")}</span>` +
-    `<span class="k">${t("started")}</span><span class="v">${fmtClock(a.startedAt)}</span>` +
-    `<span class="k">${t("duration")}</span><span class="v">${a.state === "running" ? t("live") : fmtDurMs(a.durationMs)}</span>` +
+    `<header class="run-head">` +
+    `<div style="min-width:0"><div class="eyebrow"><span>${t("Run")}</span><span class="mono" style="text-transform:none;letter-spacing:0">${esc(run.runId)}</span>${cc}</div>` +
+    `<div class="title-row"><h1 class="display">${esc(run.name)}</h1>${pill(run.state)}</div>` +
+    (run.description ? `<p class="lede">${esc(run.description)}</p>` : "") +
     `</div>` +
-    out +
-    `<div class="dp-sec">${t("Read-only")}</div><div style="font-size:11.5px;color:var(--muted);">${t("Agents are never re-run from here. An ODW run can be stopped from the header; Claude Code runs stay read-only.")}</div>` +
-    `</div>`
+    `<div class="actions">${stop}` +
+    `<button class="btn" data-copy="odw logs ${esc(run.runId)} --follow" data-tip="${esc(t("copy a follow command"))}">${icons.terminal}${t("Follow in terminal")}</button>` +
+    `<button class="btn ghost" data-copy="${esc(run.runId)}">${icons.copy}${t("Copy id")}</button></div>` +
+    `</header>` +
+    `<div class="run-strip">${stepper(run)}<div class="runstats">` +
+    stat(c.agents, t("agents")) +
+    stat(c.running, t("running"), c.running ? "sig" : "") +
+    stat(c.done, t("done")) +
+    (c.failed ? stat(c.failed, t("failed"), "alarm") : "") +
+    (run.usage && (run.usage.inputTokens != null || run.usage.outputTokens != null)
+      ? stat(
+          `${fmtTokens((run.usage.inputTokens ?? 0) + (run.usage.outputTokens ?? 0))}${run.usage.estimated ? "~" : ""}`,
+          t("tokens"),
+        )
+      : "") +
+    (run.usage?.costUsd != null ? stat(fmtUsd(run.usage.costUsd), t("cost")) : "") +
+    stat(elapsed, t("elapsed")) +
+    `</div></div>` +
+    `<div class="run-prog"><div class="prog">` +
+    `<i class="p-done" style="width:${w(c.done)}"></i><i class="p-run" style="width:${w(c.running)}"></i>` +
+    `<i class="p-fail" style="width:${w(c.failed)}"></i><i class="p-stale" style="width:${w(c.stale)}"></i></div></div>`
+  );
+}
+
+function tabs(run: RunDetail, tab: JobTab): string {
+  const item = (key: JobTab, icon: string, label: string, n?: number) =>
+    `<a class="tab${tab === key ? " on" : ""}" href="#/job/${encodeURIComponent(run.runId)}/${key}" data-tab="${key}" data-key="tab-${key}" role="tab" aria-selected="${tab === key}">${icon}${esc(label)}${n != null ? `<span class="n">${n}</span>` : ""}</a>`;
+  return (
+    `<nav class="tabs" role="tablist">` +
+    item("graph", icons.graph, t("Graph"), run.agents.length) +
+    item("timeline", icons.timeline, t("Timeline")) +
+    item("logs", icons.logs, t("Logs"), store.runEvents.length) +
+    item("result", icons.result, t("Result")) +
+    `<i class="ink-bar"></i></nav>`
+  );
+}
+
+function agentEvents(a: AgentView): WorkflowEvent[] {
+  if (a.kind === "command") {
+    return store.runEvents.filter(
+      (e) => e.type.startsWith("command_") && (a.commandId != null ? e.commandId === a.commandId : e.label === a.label),
+    );
+  }
+  return store.runEvents.filter(
+    (e) =>
+      e.type.startsWith("agent_") &&
+      (a.agentId != null && typeof e.agentId === "number" ? e.agentId === a.agentId : e.label === a.label),
+  );
+}
+
+function drawer(run: RunDetail, ai: number, nowSec: number): string {
+  const a = run.agents[ai];
+  if (!a) return "";
+  const dur =
+    a.state === "running" && a.startedAt != null ? fmtDurSec(nowSec - a.startedAt) : fmtDurMs(a.durationMs);
+  const status =
+    a.state === "failed"
+      ? `<div class="drawer-sec">${t("Error")}</div><div class="outbox err">${esc(a.error ?? t("(no message)"))}</div>`
+      : a.state === "stale"
+        ? `<div class="drawer-sec">${t("Status")}</div><div class="outbox">${run.provider === "claude" ? t("no recent signal") : t("worker lost contact")}</div>`
+        : "";
+  const rec = a.agentId != null ? store.agentResults.get(`${run.runId}:${a.agentId}`) : undefined;
+  const output =
+    rec && rec.value !== undefined
+      ? `<div class="drawer-sec">${t("Output")}${rec.cached ? ` <span class="tag">${t("replayed")}</span>` : ""}` +
+        `<button class="iconbtn sm" data-copy="${esc(typeof rec.value === "string" ? rec.value : JSON.stringify(rec.value, null, 2))}" aria-label="${esc(t("Copy"))}">${icons.copy}</button></div>` +
+        `<div class="outbox json-out">${renderJson(rec.value)}</div>`
+      : rec === null && (a.state === "done" || a.state === "failed")
+        ? ""
+        : a.state === "done" && a.agentId != null
+          ? `<div class="drawer-sec">${t("Output")}</div><div class="outbox"><span class="skel" style="height:12px;width:70%"></span></div>`
+          : "";
+  const evs = agentEvents(a)
+    .map(
+      (e) =>
+        `<div><span class="ts">${fmtClock(e.ts)}</span>${glyph(/_started$/.test(e.type) ? "running" : /_failed$/.test(e.type) ? "failed" : "done")}` +
+        `<span>${esc(e.type.replace(/^(agent|command)_/, ""))}${e.attempts ? ` · ${t("attempt {n}", { n: Number(e.attempts) })}` : ""}${typeof e.exitCode === "number" ? ` · exit ${e.exitCode}` : ""}</span></div>`,
+    )
+    .join("");
+  return (
+    `<aside class="drawer" data-key="drawer-${ai}">` +
+    `<div class="drawer-head"><div class="row">${pill(a.state)}<span class="tag">${esc(a.kind === "command" ? t("command") : (a.adapter ?? "—"))}</span>` +
+    `<button class="iconbtn" data-close="1" aria-label="${esc(t("Close"))}">${icons.close}</button></div>` +
+    `<h4>${esc(a.label)}</h4></div>` +
+    `<div class="drawer-body">` +
+    `<div class="kv">` +
+    `<span class="k">${t("phase")}</span><span class="v">${esc(a.phase ?? "—")}</span>` +
+    (a.kind === "command" ? "" : `<span class="k">${t("adapter")}</span><span class="v">${esc(a.adapter ?? "—")}</span>`) +
+    `<span class="k">${t("started")}</span><span class="v">${fmtClock(a.startedAt)}</span>` +
+    `<span class="k">${t("finished")}</span><span class="v">${fmtClock(a.finishedAt)}</span>` +
+    `<span class="k">${t("duration")}</span><span class="v">${dur}</span>` +
+    (a.kind === "command"
+      ? `<span class="k">${t("exit code")}</span><span class="v">${a.exitCode ?? "—"}</span>`
+      : `<span class="k">${t("attempts")}</span><span class="v">${a.attempts ?? "—"}</span>`) +
+    (a.failureReason ? `<span class="k">${t("reason")}</span><span class="v"><span class="tag ${/rate_limit|quota|stalled|timeout/.test(a.failureReason) ? "warn" : ""}">${esc(reasonLabel(a.failureReason))}</span></span>` : "") +
+    (a.usage && (a.usage.inputTokens != null || a.usage.outputTokens != null)
+      ? `<span class="k">${t("tokens")}</span><span class="v">${fmtTokens(a.usage.inputTokens)} ${t("in")} · ${fmtTokens(a.usage.outputTokens)} ${t("out")}</span>`
+      : "") +
+    (a.usage?.costUsd != null ? `<span class="k">${t("cost")}</span><span class="v">${fmtUsd(a.usage.costUsd)}</span>` : "") +
+    `</div>` +
+    status +
+    output +
+    (evs ? `<div class="drawer-sec">${t("Events")}</div><div class="mini-events">${evs}</div>` : "") +
+    `</div></aside>`
   );
 }
 
 function ticker(run: RunDetail): string {
   const lastLog = [...store.runEvents].reverse().find((e) => e.type === "log");
-  const left = lastLog ? `▸ ${esc(String(lastLog.message ?? ""))}` : `▸ ${esc(run.description ?? run.name)}`;
+  const msg = lastLog
+    ? `<b>▸</b> ${esc(String(lastLog.message ?? ""))}`
+    : `<b>▸</b> ${esc(run.description ?? run.name)}`;
   const right =
     run.lastActivityTs != null
       ? t("last activity {t}", { t: fmtClock(run.lastActivityTs) })
@@ -122,81 +212,182 @@ function ticker(run: RunDetail): string {
           ? t("⚠ no recent signal")
           : t("⚠ worker lost contact")
         : "";
-  return `<div class="ticker"><span>${left}</span><span class="r">${right}</span></div>`;
+  return `<div class="ticker"><span class="msg">${msg}</span><span class="r">${right}</span></div>`;
 }
 
-function graphTab(run: RunDetail, selectedAi: number | null): string {
+function graphTab(run: RunDetail, s: JobViewState, nowSec: number): string {
   if (run.agents.length === 0) {
-    const planned = (run.phaseOrder.length ? run.phaseOrder : run.phases.map((p) => p.title))
-      .map((p, i) => `<span class="ppill"><span class="ix">${i + 1}</span>${esc(p)}</span>`)
-      .join(`<span class="ar" style="color:var(--faint)"> → </span>`);
     const terminal = TERMINAL.has(run.state);
+    const planned = (run.phaseOrder.length ? run.phaseOrder : run.phases.map((p) => p.title))
+      .map((p, i) => `<span class="op"><i></i>${String(i + 1).padStart(2, "0")} ${esc(p)}</span>`)
+      .join("");
     return (
-      `<div class="dagarea"><div class="empty">` +
-      `<div class="gh">${terminal ? t("No agent calls in this run") : t("Waiting for the first agent…")}</div>` +
-      `<div>${terminal ? t("This run only recorded phases and a result.") : t("Declared phases:")}</div>` +
-      `<div class="phasepills">${planned || "—"}</div>` +
-      `</div>${ticker(run)}</div>`
+      `<div class="graph-wrap">` +
+      emptyArt(
+        terminal ? t("No agent calls in this run") : t("Waiting for the first agent…"),
+        terminal ? t("This run only recorded phases and a result.") : t("Declared phases:"),
+        `<div class="ol-ops" style="justify-content:center">${planned}</div>`,
+      ) +
+      ticker(run) +
+      `</div>`
     );
   }
-  const { html } = renderDag(run, selectedAi);
-  const panel = selectedAi != null && run.agents[selectedAi] ? detailPanel(run.agents[selectedAi]!, run.provider) : "";
-  return `<div class="dagarea">${html}${panel}${ticker(run)}</div>`;
+  const dag = renderDag(run, s.selectedAi, {
+    nowSec,
+    zoom: s.zoom,
+    motion: s.motion,
+    currentPhase: TERMINAL.has(run.state) ? null : currentPhase(),
+  });
+  const legend =
+    `<div class="legend">` +
+    ["running", "done", "failed", "stale"].map((st) => `<span>${glyph(st)}${esc(t(st))}</span>`).join("") +
+    `</div>`;
+  const tools =
+    `<div class="canvas-tools">` +
+    `<button class="iconbtn" data-zoom="in" aria-label="${esc(t("Zoom in"))}">${icons.zoomIn}</button>` +
+    `<span class="zoom">${Math.round(s.zoom * 100)}%</span>` +
+    `<button class="iconbtn" data-zoom="out" aria-label="${esc(t("Zoom out"))}">${icons.zoomOut}</button>` +
+    `<button class="iconbtn" data-zoom="fit" aria-label="${esc(t("Fit to screen"))}">${icons.fit}</button>` +
+    `</div>`;
+  const panel = s.selectedAi != null ? drawer(run, s.selectedAi, nowSec) : "";
+  return (
+    `<div class="graph-wrap"><div class="canvas" data-canvas data-key="canvas">${dag.html}</div>` +
+    legend +
+    tools +
+    panel +
+    ticker(run) +
+    `</div>`
+  );
 }
 
-function logRow(e: WorkflowEvent): string {
+function logRow(e: WorkflowEvent, i: number): string {
   const cls = EVT_CLASS[e.type] ?? "log";
   const label =
     e.type === "phase_started"
       ? "PHASE"
       : e.type === "log"
         ? "LOG"
-        : e.type.replace(/^(agent|run)_/, "").toUpperCase();
+        : e.type.startsWith("command_")
+          ? `$ ${e.type.replace("command_", "").toUpperCase()}`
+          : e.type.replace(/^(agent|run)_/, "").toUpperCase();
   let msg = "";
   if (e.type === "phase_started") msg = `<b>${esc(String(e.phase ?? ""))}</b>`;
   else if (e.type === "log") msg = esc(String(e.message ?? ""));
-  else if (e.type === "agent_failed") msg = `<b>${esc(String(e.label ?? ""))}</b> <span class="er">${esc(String(e.error ?? ""))}</span>`;
-  else if (e.type.startsWith("agent_")) msg = `<b>${esc(String(e.label ?? ""))}</b>${e.adapter ? ` · ${esc(String(e.adapter))}` : ""}`;
-  else msg = esc(e.type);
+  else if (e.type === "agent_failed")
+    msg = `<b>${esc(String(e.label ?? ""))}</b> <span class="er">${esc(String(e.error ?? ""))}</span>`;
+  else if (e.type.startsWith("command_"))
+    msg = `<b>${esc(commandDetail(e))}</b>${e.type === "command_failed" && e.error ? ` <span class="er">${esc(String(e.error))}</span>` : ""}`;
+  else if (e.type.startsWith("agent_"))
+    msg = `<b>${esc(String(e.label ?? ""))}</b>${e.adapter ? ` · ${esc(String(e.adapter))}` : ""}${e.attempts && Number(e.attempts) > 1 ? ` · ×${esc(String(e.attempts))}` : ""}`;
+  else msg = esc(e.type.replace(/_/g, " "));
   return (
-    `<div class="logrow"><span class="ts">${fmtClock(e.ts)}</span>` +
-    `<span><span class="evt ${cls}">${label}</span></span>` +
-    `<span class="msg">${msg}</span></div>`
+    `<div class="logrow" data-key="lg-${i}"><span class="ts">${fmtClock(e.ts)}</span>` +
+    `<span><span class="evt ${cls}">${label}</span></span><span class="msg">${msg}</span></div>`
   );
 }
 
-function logsTab(): string {
-  const rows = store.runEvents.length
-    ? store.runEvents.map(logRow).join("")
-    : `<div style="color:var(--muted);padding:14px;">${t("No events yet.")}</div>`;
-  return `<div class="logwrap">${rows}</div>`;
+function logsTab(s: JobViewState): string {
+  const q = s.logQuery.trim().toLowerCase();
+  const allowed = new Set(LOG_GROUPS.filter((g) => s.logTypes.has(g.key)).flatMap((g) => g.types));
+  const matching: number[] = [];
+  store.runEvents.forEach((e, i) => {
+    const known = LOG_GROUPS.some((g) => g.types.includes(e.type));
+    if (known && !allowed.has(e.type)) return;
+    if (q && !JSON.stringify(e).toLowerCase().includes(q)) return;
+    matching.push(i);
+  });
+  // A long run's log is painted from the newest end; older events page in on demand.
+  const hidden = Math.max(0, matching.length - s.logLimit);
+  const rows = matching.slice(hidden).map((i) => logRow(store.runEvents[i]!, i));
+  if (hidden) {
+    rows.unshift(
+      `<div class="more-row" data-key="lg-more"><button class="btn sm" data-logs-more>${t("Show {n} earlier events", { n: Math.min(hidden, LOG_PAGE) })}</button><span class="dim">${t("{n} older events hidden", { n: hidden })}</span></div>`,
+    );
+  }
+  const chips = LOG_GROUPS.map(
+    (g) =>
+      `<button class="chip tog${s.logTypes.has(g.key) ? " on" : ""}" data-logtype="${g.key}">${esc(t(g.label))}</button>`,
+  ).join("");
+  return (
+    `<div class="logbar"><div class="chips">${chips}</div>` +
+    `<button class="chip${s.follow ? " on" : ""}" data-follow>${icons.follow}${t("Follow")}</button>` +
+    `<label class="field">${icons.search}<input id="log-q" placeholder="${esc(t("Filter events"))}" value="${esc(s.logQuery)}" autocomplete="off"/></label></div>` +
+    `<div class="loglist" data-loglist>${rows.join("") || `<div class="empty" style="min-height:160px"><p>${store.runEvents.length ? t("No events match.") : t("No events yet.")}</p></div>`}</div>`
+  );
 }
 
 function resultTab(run: RunDetail): string {
   if (run.error) {
     return (
-      `<div class="resultwrap"><div class="resultcard">` +
-      `<h4>error.json</h4><pre style="color:var(--red-deep)">${esc(run.error.error ?? "")}\n\n${esc(run.error.stack ?? "")}</pre>` +
-      `</div></div>`
+      `<div class="result"><div class="card result-card errcard">` +
+      `<div class="result-head">${glyph("failed")}<h4>error.json</h4>` +
+      `<button class="btn sm ghost" data-copy="${esc(`${run.error.error ?? ""}\n${run.error.stack ?? ""}`)}">${icons.copy}${t("Copy")}</button></div>` +
+      `<pre>${esc(run.error.error ?? "")}${run.error.stack ? `\n\n${esc(run.error.stack)}` : ""}</pre></div></div>`
     );
   }
   if (!run.hasResult) {
-    return `<div class="resultwrap"><div class="empty"><div class="gh">${t("No result yet")}</div><div>${t("A result is written when the run finishes successfully.")}</div></div></div>`;
+    return (
+      `<div class="result">` +
+      emptyArt(
+        TERMINAL.has(run.state) ? t("No result recorded") : t("No result yet"),
+        t("A result is written when the run finishes successfully."),
+      ) +
+      `</div>`
+    );
   }
   if (!store.resultLoaded) {
-    return `<div class="resultwrap"><div class="empty"><div class="spinner"></div><div>${t("Loading result…")}</div></div></div>`;
+    return `<div class="result"><div class="empty"><div class="spinner"></div><p>${t("Loading result…")}</p></div></div>`;
   }
-  const pretty =
-    typeof store.result === "string" ? store.result : JSON.stringify(store.result, null, 2);
-  return `<div class="resultwrap"><div class="resultcard"><h4>result.json</h4><pre>${esc(pretty)}</pre></div></div>`;
+  const raw = typeof store.result === "string" ? store.result : JSON.stringify(store.result, null, 2);
+  return (
+    `<div class="result"><div class="card result-card">` +
+    `<div class="result-head">${glyph("done")}<h4>result.json</h4>` +
+    `<button class="btn sm" data-copy="${esc(raw ?? "")}">${icons.copy}${t("Copy")}</button></div>` +
+    renderJson(store.result) +
+    `</div></div>`
+  );
 }
 
-export function renderJob(tab: JobTab, selectedAi: number | null): string {
+/** checkpoint() calls waiting for a person: what is asked, the payload, and the decision. */
+function checkpoints(run: RunDetail, s: JobViewState): string {
+  const pending = run.pendingCheckpoints ?? [];
+  if (!pending.length) return "";
+  const canDecide = run.provider === "odw" && store.capabilities.writable;
+  return pending
+    .map((cp, i) => {
+      const payload = cp.payload !== undefined && cp.payload !== null ? `<div class="cp-payload">${renderJson(cp.payload)}</div>` : "";
+      const actions = canDecide
+        ? `<div class="cp-actions">` +
+          (i === 0
+            ? `<input id="cp-note" class="cp-note" placeholder="${esc(t("Add a note for the workflow (optional)"))}" value="${esc(s.cpNote)}" autocomplete="off"/>`
+            : "") +
+          `<button class="btn primary" data-cp="approve" data-cp-id="${cp.checkpointId}">${t("Approve")}</button>` +
+          `<button class="btn danger" data-cp="reject" data-cp-id="${cp.checkpointId}">${t("Reject")}</button></div>`
+        : `<p class="dim" style="margin:10px 0 0">${t("Resolve it with {cmd}", { cmd: `<code>odw approve ${esc(run.runId)}</code>` })}</p>`;
+      return (
+        `<section class="card checkpoint marked" data-key="cp-${cp.checkpointId}">` +
+        `<div class="cp-head">${glyph("waiting")}<span class="eyebrow">${t("Checkpoint")} · ${t("waiting since {t}", { t: fmtClock(cp.since) })}</span></div>` +
+        `<h3 class="cp-title">${esc(cp.title)}</h3>${payload}${actions}</section>`
+      );
+    })
+    .join("");
+}
+
+export function renderJob(s: JobViewState, nowSec: number): string {
   const run = store.run;
   if (!run) {
-    return `<div class="job"><div class="empty"><div class="spinner"></div><div>${t("Loading run…")}</div></div></div>`;
+    return `<div class="job"><div class="empty"><div class="spinner"></div><p>${t("Loading run…")}</p></div></div>`;
   }
-  const head = stageHead(run, tab);
-  const body = tab === "graph" ? graphTab(run, selectedAi) : tab === "logs" ? logsTab() : resultTab(run);
-  return `<div class="job">${head}${body}</div>`;
+  const body =
+    s.tab === "graph"
+      ? graphTab(run, s, nowSec)
+      : s.tab === "timeline"
+        ? renderTimeline(run, s.selectedAi, nowSec) + (s.selectedAi != null ? drawer(run, s.selectedAi, nowSec) : "")
+        : s.tab === "logs"
+          ? logsTab(s)
+          : resultTab(run);
+  return (
+    `<div class="job" data-key="job-${esc(run.runId)}">${runHead(run, nowSec)}${checkpoints(run, s)}${tabs(run, s.tab)}` +
+    `<section class="tab-body" data-tabbody="${s.tab}" data-key="tb-${s.tab}">${body}</section></div>`
+  );
 }

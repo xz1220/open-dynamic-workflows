@@ -115,7 +115,8 @@ curl -fsSL https://raw.githubusercontent.com/xz1220/open-dynamic-workflows/main/
 `~/.claude/skills/`(没有就退到 `~/.codex/skills/`)。无需 Node。可用环境变量
 `ODW_BIN_DIR` 指定目录,或用 `ODW_VERSION=v0.4.0` 固定版本。`latest` 会先解析成一个
 确定的发布版本,二进制和 skill 都从该版本下载。所有下载与新二进制验证成功后才替换现有
-安装;替换失败会恢复旧文件。自定义部署可用 `ODW_REF` 显式指定 skill 的来源,默认与二进制一致。
+安装;替换失败会恢复旧文件。二进制必须与该版本发布的 `SHA256SUMS` 一致(v0.5.0 及更早的版本
+没有该文件,会带警告安装;更新的版本缺少它则中止,除非设置 `ODW_ALLOW_UNVERIFIED=1`)。自定义部署可用 `ODW_REF` 显式指定 skill 的来源,默认与二进制一致。
 
 ### 3. 手动安装
 
@@ -123,7 +124,8 @@ curl -fsSL https://raw.githubusercontent.com/xz1220/open-dynamic-workflows/main/
 [Releases](https://github.com/xz1220/open-dynamic-workflows/releases) 下对应 OS/arch 的资产,然后:
 
 ```bash
-# a) 二进制 —— 放到 PATH 上
+# a) 二进制 —— 先用该版本的 SHA256SUMS 校验,再放到 PATH 上
+grep ' odw-darwin-arm64.gz$' SHA256SUMS | shasum -a 256 -c   # 或: sha256sum -c
 gunzip odw-darwin-arm64.gz && chmod +x odw-darwin-arm64
 mv odw-darwin-arm64 ~/.local/bin/odw
 
@@ -149,7 +151,9 @@ cp -r "$skill_source" ~/.claude/skills/open-dynamic-workflows
 
 只装了一个 CLI(只有 `claude` 或只有 `codex`)?零配置,直接往下看。装了好几个?安装器
 已经让你选过默认了;`odw init` 随时可以重选(agent 则在问过你之后用
-`odw init --adapter <名字>` 写入)。
+`odw init --adapter <名字>` 写入)。`odw doctor` 会检查运行环境、配置、运行目录和每个适配器;
+`odw doctor --smoke` 还会给默认适配器发一条真实提示——能发现那些装得上、但在无头模式下卡在
+登录或审批提示上的 CLI。
 
 ODW 主要是**被你的 coding agent 驱动**的,不是手动跑。装好 skill 和二进制后,你只要把一个
 大任务丢给 agent——它会**自己写一个 workflow 并跑起来**,而且是在它自己的上下文之外:
@@ -207,7 +211,8 @@ odw run examples/fan-out-reduce.js --wait --args '{"question": "Design a rate li
 | `args` | workflow 的输入,原样注入。 |
 | `budget` | `{ total, spent(), remaining() }`——按 token 目标动态扩缩深度。 |
 | `workflow(ref, args?)` | 内联调用另一个 workflow(仅一层)。子 workflow 共享本次运行的并发上限、agent 计数与预算;其 phase 以独立泳道归组。 |
-| `validate(source)` | 解析并编译检查可信源码,不运行工作流正文;加载时会求值元数据。**ODW 扩展**(不属于 Claude Code 方言)。 |
+| `validate(source)` | 解析并编译检查可信源码,不运行工作流正文;元数据按纯字面量解析,不会被求值。**ODW 扩展**(不属于 Claude Code 方言)。 |
+| `exec(command, opts?)` | 不启动模型直接运行一条命令——测试、构建、linter;返回 `{ stdout, stderr, exitCode, signal, timedOut, truncated, durationMs }`。字符串经 shell 执行,数组按 argv 执行。受 `timeout`(600 秒)和 `maxOutputBytes`(每个输出流 8 MiB)约束;停止会杀掉它。不占 agent 槽位。**ODW 扩展**(不属于 Claude Code 方言)。 |
 
 下一步需要"全量结果一次到位"(去重、计票、综合)时用 **`parallel`**;多阶段处理默认用
 **`pipeline`**。归并要保持顺序无关——按"谁先跑完"分支会破坏可复现性。完整参考见
@@ -223,19 +228,19 @@ ODW 已实现下列原语能力。依赖宿主私有运行机制的脚本,迁移
 | 模型选择 | 在 `agent(..., {model})` 中传该 CLI 的模型 ID。`meta.model` 和阶段元数据不设置执行模型;适配器没有模型参数时会记录路由说明。 |
 | `agentType` | 将人设加入提示词,不会加载宿主的同名子 agent 配置或选择适配器。 |
 | 工作区隔离 | 从已保存的 HEAD 创建临时工作区,不含未保存修改,结束后清理。不会自动合并,`agent()` 返回回复而非 diff;需保留的交付物应放进回复或显式持久化。 |
-| 预算 | 按成功调用的最终回复字符数估算 token,不计输入、失败调用及重试中间回复。预算检查阻止后续派发;已经运行的调用可能使总量超过目标。 |
+| 预算 | 按 `ceil(字符数 / 4)` 估算所有回复的输出 token,包括 schema 重试(不计输入和失败调用)。每次派发和每次 schema 重试前都会检查;预算用尽时运行结束,仍在运行的 agent 会被停止。 |
 | JSON Schema | 只校验[已列出的子集](skills/open-dynamic-workflows/zh-CN/references/primitives.md#schema)。`$ref`、`const`、`oneOf` 等约束不会生效;请明确声明对象/数组类型并使用受支持的约束。 |
-| 脚本可信性 | 只运行可信脚本。加载器会执行 JavaScript 求值,包括元数据;编译检查和兼容性警告都不提供沙箱隔离。 |
-| 恢复 | `resume` 继续已暂停且仍存活的 worker。`rerun` 从头执行,崩溃后不会重放并复用已完成调用。 |
+| 脚本可信性 | 只运行可信脚本:运行工作流会把正文当作普通 JavaScript 执行。加载时元数据按纯字面量解析,不会被求值;编译检查和兼容性警告都不提供沙箱隔离。 |
+| 恢复 | 每个完成的 `agent()` 结果都会在完成时保存。`odw resume` 让已暂停且仍存活的 worker 原地继续;对已结束的运行(done、failed、stopped,或崩溃后的 stale)则启动一个新运行:prompt 和选项都没变的调用直接重放,其余照常执行。`rerun` 从头执行。见[恢复运行](#恢复运行odw-扩展)。 |
 
-原语名称一致不代表运行机制完全等价。`validate(source)` 是 ODW 扩展,迁移到未提供它的
-宿主时需要去掉。可恢复失败产生的 `null` 需要显式处理：接受部分结果、重试,或在要求完整
+原语名称一致不代表运行机制完全等价。`validate(source)` 和 `exec(command)` 是 ODW 扩展,
+迁移到未提供它们的宿主时需要去掉(`validate()` 会对 `exec()` 调用给出 warning)。可恢复失败产生的 `null` 需要显式处理：接受部分结果、重试,或在要求完整
 交付时报告失败。
 
 ## 运行与观测
 
-在交互式终端里,`odw run` 会附着一个**实时前台视图**——每个 agent 的启动、转轮、结算,
-按 phase 逐步展示,结束时打印结果。Ctrl-C 只是断开观察(运行继续);`odw attach <id>`
+在交互式终端里,`odw run` 会附着一个**实时前台视图**——每个 agent(以及带 `$` 提示符的
+`exec()` 命令步骤)的启动、转轮、结算,按 phase 逐步展示,结束时打印结果。Ctrl-C 只是断开观察(运行继续);`odw attach <id>`
 可随时重新附着。
 
 ```bash
@@ -252,6 +257,7 @@ odw run wf.js [--args JSON|@file]            # 终端里前台展示;运行本�
 RUN=$(odw run wf.js)     # 非 TTY:打印 run id 并立即返回
 odw attach $RUN          # 实时视图(被管道时为纯行输出);--timeout <s> 超时退出码 124
 odw status $RUN          # 状态 + agent 计数
+odw agents $RUN          # 每个 agent 及其已保存的结果,运行中也可看
 odw logs $RUN --follow   # 流式输出原始进度事件
 odw result $RUN          # 最终值
 odw pause|resume|stop $RUN
@@ -262,44 +268,100 @@ odw list
 提示)可显式指定模式;环境变量 `ODW_DETACH=1` 强制后台。
 
 一次运行在独立的 detached worker 进程里执行,并把一切持久化到一个 run 目录——所以它能
-比启动它的命令活得更久,也能从任何地方被观测。
+比启动它的命令活得更久,也能从任何地方被观测。向这个 worker 发送 SIGTERM、SIGINT 或
+SIGHUP,效果与 `odw stop` 相同:它的 agent 连同其启动的所有进程都会被杀掉、worktree 被
+清理,运行记为 stopped;第二个信号,或运行在 10 秒内没能结束,会让 worker 立即退出。
 
 保存好的 workflow 也可以直接按名字运行。ODW 会先找项目级、再找个人级,并同时读取自己
 的目录和 Claude Code 保存 workflow 的目录: `.odw/workflows`、`.claude/workflows`、
 `~/.odw/workflows`、`~/.claude/workflows`(遵循 `CLAUDE_CONFIG_DIR`)。
 
-**喜欢用浏览器?** `odw serve` 会对同一个 run 目录开一个零依赖的实时仪表盘——阶段分栏、
-每个 agent 的卡片(适配器 + 耗时)、运行状态都通过 SSE 实时更新。无需构建,不引入任何
-额外依赖。
+**喜欢用浏览器?** `odw serve` 会对同一个 run 目录开一个零依赖的实时看板——每次运行都是一张
+实时图,还有时间线、日志和结果,全部通过 SSE 推送。无需构建,不引入额外依赖,加载时不访问网络。
 
 ```bash
-odw serve [--open]                      # 实时仪表盘,默认 http://127.0.0.1:4317
+odw serve [--open]                      # 实时看板,默认 http://127.0.0.1:4317
 odw serve --port 8080 --host 0.0.0.0    # 自定义端口 / 绑定地址
 ```
 
-![odw serve —— 一次 deep-research 运行的实时看板:阶段分栏(Search → Extract → Vote → Report)、每个 agent 的卡片(适配器 + 耗时)、实时状态](assets/odw-dashboard.png)
+![odw serve —— 一次实时 deep-research 运行:五个阶段泳道(Plan → Search → Extract → Vote → Report)绘制成图,运行中的 agent 沿边传递信号,带运行计数与阶段步进条](assets/odw-dashboard.gif)
 
-看板的另外两个页面 —— **Activity**(实时事件流)与 **Job detail**(以实时 DAG 展示
-的运行):
+### 恢复运行(ODW 扩展)
+
+每个 `agent()` 的结果在该 agent 完成的那一刻就保存到 run 目录(`agents/<agentId>.json`),
+早于它的 `agent_finished` 事件——所以某条泳道卡住、运行被停止或 worker 死掉,都不会让你
+失去已完成的工作。运行的其余部分仍在进行时就能读取:
+
+```bash
+odw agents $RUN              # 每个 agent:id、状态、label、phase、适配器、耗时、↺ 重放、结果预览
+odw agents $RUN --json       # 同样的行,供脚本使用
+odw result $RUN --agent 3    # 某个 agent 已保存的值(JSON;按 id,或 --agent <label>)
+odw resume $RUN              # 启动一个新运行,重放每个未改动的 agent() 调用(见下)
+```
+
+`odw resume <run_id>` 依运行状态而定:
+
+- **已暂停**(worker 仍存活):原地继续——`odw pause|resume|stop` 这个控制动词不变;
+- **已结束**——done、failed、stopped,或 stale(worker 已死):用同样的脚本、args 和
+  适配器启动一个**新运行**(在它的 `meta.json` 里记为 `resumedFrom`)。prompt 和选项都
+  没变的 `agent()` 调用立即返回已保存的值——不调用适配器、不占并发槽位、不计入派发数、
+  不耗预算——并在事件、`odw agents` 和看板里标记为重放(↺)。改动过的和新增的调用照常
+  执行,所以修好出错的那一步再 resume,而不是为整个运行再付一次钱。resume 可以串联:
+  对 resume 出来的运行再 resume,两次的结果都会重放;
+- **仍在运行**:拒绝,因为那会重做仍在进行的工作——先停止它,或加 `--force` 在旁边启动
+  重放运行。
+
+调用按以下内容的 sha256 匹配:prompt、`schema`、`adapter`(调用里写的值——resume 时的
+`--adapter` 只切换默认值,所以没指定适配器的调用仍会重放)、`model`、`agentType`、
+`isolation` 和 `label`;`phase` 不计入。相同的调用按调用顺序重放,所以请保持 prompt
+确定。resume 接受与 rerun 相同的参数:`--wait`/`--fg`/`-d`/`--timeout`、`--adapter`、
+`--config`、`--runs-root`。看板通过 `GET /api/runs/:id/agents` 和
+`GET /api/runs/:id/agents/:agentId` 提供同样的记录。
+
+## 看板:观测、检查、对话
+
+看板的视觉像一张印刷品——纸、墨和一种信号色——也可以随时切换到夜间主题。它提供:
+
+- **Activity** —— 每个运行的事件密度"脉搏"山脊图、实时计数、按适配器统计的运行中 agent,
+  以及跨所有运行的事件流。
+- **Jobs** —— 进行中的运行以实时卡片展示(阶段条、agent 构成、耗时),外加可筛选、分页的历史
+  (`#/jobs/live|done|failed` 可直接链接到某个筛选)。
+- **单次运行** —— 图(扇出成扇、汇聚成漏斗;边会被"绘制"出来,对应 agent 运行时有信号流动;
+  可缩放、适应、拖拽)、显示时间花在哪里的**时间线**、可筛选并可跟随的**日志**、可折叠 JSON 树
+  形式的**结果**,以及展示每个已完成 agent 自身输出的 **agent 抽屉**——输出在完成时
+  就已保存,运行中即可查看;重放的 agent 标记为 ↺。`exec()` 命令步骤以终端风格的节点
+  (带退出码)出现在同一张图和时间线里;运行的计数包含它们(它们不算 agent 派发)。
+- **Workspace** —— 所有已保存的工作流:阶段的静态结构及每个阶段调用的原语、源码和最近的运行。
+- **Chat Host** —— 正常的 Codex 对话;提到 ODW 或 workflow 时,该回合会关联到一个真实的后台
+  运行,工具卡片实时更新。
 
 <table>
   <tr>
     <td width="50%">
       <strong>Activity</strong><br />
-      <img src="assets/app-screenshots/activity.png" alt="Activity 页面:实时事件流、活跃运行计数和按适配器统计的 agent 负载" />
+      <img src="assets/app-screenshots/activity.png" alt="Activity 页面:标题、实时计数、每个运行事件密度的脉搏山脊图、按适配器的机队和实时事件流" />
     </td>
     <td width="50%">
-      <strong>Job detail</strong><br />
-      <img src="assets/app-screenshots/job-detail.png" alt="Job detail 页面:按阶段展示实时 workflow 图和 agent 节点" />
+      <strong>时间线</strong><br />
+      <img src="assets/app-screenshots/timeline.png" alt="一次运行的时间线:每个 agent 是一根从开始到结束的条,按阶段分组,运行中带有当前时刻标记" />
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
+      <strong>Jobs</strong><br />
+      <img src="assets/app-screenshots/jobs.png" alt="Jobs 页面:带阶段条的实时运行卡片和按日期分组的历史表格" />
+    </td>
+    <td width="50%">
+      <strong>夜间主题</strong><br />
+      <img src="assets/app-screenshots/job-detail-dark.png" alt="夜间主题下的实时运行图,信号边带有发光效果" />
     </td>
   </tr>
 </table>
 
-## 看板:对话、观测、检查
-
-看板是观测台,也带一个本地 Chat Host。普通问题就像正常 Codex 对话一样使用;当某个回合
-提到 ODW 或 workflow,它会关联到真实的后台运行。CLI 发起的运行(`odw run <name>`)和
-Chat 关联的 ODW 任务都会出现在 Jobs 里,以实时 DAG、日志和最终结果展示。
+按 <kbd>⌘K</kbd> / <kbd>Ctrl K</kbd>(或 <kbd>/</kbd>)打开命令面板——跳转到任意运行或工作流、
+切换主题或语言、复制跟踪或重跑命令。<kbd>g</kbd> 再按 <kbd>a</kbd>/<kbd>j</kbd>/<kbd>w</kbd>/<kbd>c</kbd>/<kbd>s</kbd>
+切换页面,<kbd>1</kbd>–<kbd>4</kbd> 切换运行的标签页,<kbd>+</kbd>/<kbd>-</kbd>/<kbd>0</kbd> 缩放图。
+运行结束时看板会提示;如果在设置中开启,标签页在后台时还会发送桌面通知。
 
 ```bash
 odw run adversarial-verify --args '{"question":"review src/rate-limiter.js"}'
@@ -359,7 +421,7 @@ Codex、Claude Code、Gemini、Qwen、Kimi、Oh My Pi、Kilo Code、OpenCode、C
 }
 ```
 
-ODW 在运行诊断中保留原始 stdout/stderr,但只把解码后的最终响应交给 workflow。
+ODW 只把解码后的最终响应交给 workflow;JSONL 输出会边流式到达边逐行解码,stderr 只保留有限的尾部用于错误信息。
 Windows 下的可执行文件探测遵循 `PATHEXT`,所以 `agent.cmd`、`kilo.cmd`、`omp.exe`
 这类普通 shim 无需写完整路径也能识别。
 
@@ -367,6 +429,69 @@ Windows 下的可执行文件探测遵循 `PATHEXT`,所以 `agent.cmd`、`kilo.c
 在 stderr 上给出警告(附 did-you-mean 提示),而不是静默忽略。没设
 `defaultAdapter` 时,odw 会用唯一配置的 adapter——或在全新安装下,用 PATH 上
 唯一真实存在的那个 CLI;若装了多个,报错会列出它们并告诉你如何选择。
+
+### 卡死看门狗
+
+**ODW 扩展。** 一个卡住的 agent CLI 原本会一直占着并发槽位,直到 `timeout`(默认 30
+分钟)。设置 `stallTimeout` 后,若某个 agent 的 stdout *和* stderr 连续这么多秒都没有
+任何输出,ODW 会像超时一样杀掉它(连同整个进程组),再用同一个 prompt 重新启动,每次
+`agent()` 调用最多重启 `stallRestarts` 次(默认 1)。每次重启都会记一条日志
+(`search:3 went quiet for 120s — restarting (1/1)`);用完重启次数后,这次调用失败,
+错误信息会说明 agent 卡死(stalled)。停止、暂停或预算上限永远优先于重启。
+
+```jsonc
+{
+  "stallTimeout": 120, // 静默的秒数;null(默认)= 关闭
+  "stallRestarts": 1,
+  "adapters": {
+    // 按适配器设置:覆盖运行级的值;0 表示对这个适配器关闭看门狗
+    "my_wrapper": { "command": ["my-agent", "--stream", "{prompt}"], "stallTimeout": 300 }
+  }
+}
+```
+
+看门狗**对所有内置适配器默认关闭**:有些 CLI——比如文本模式的 `claude --print`——在
+结束前什么都不输出,任何卡死超时都会误杀正常工作。请只对会流式输出进度的适配器启用
+(例如 `kilo`、`opencode` 这类 JSONL 适配器,或会打印心跳的包装脚本),并把值设得高于
+健康 agent 最长的静默时段——工具调用里跑一轮很长的测试,同样不会有任何输出。
+
+### 运行通知
+
+**ODW 扩展。** `notify` 会在一次运行结束时执行一条命令和/或向一个 webhook 发送 POST,
+让通宵跑的 workflow 结束后主动告诉你结果:
+
+```jsonc
+"notify": {
+  "command": ["/usr/local/bin/odw-notify"],        // 参数向量,不经过 shell 执行
+  "webhook": "https://hooks.slack.com/services/…", // Slack、Discord 或任何接收 JSON 的端点
+  "on": ["done", "failed", "stopped"]              // 默认:所有终态
+}
+```
+
+这些 hook 只在运行的终态写入之后触发一次,所以既不会拖延、也不会改变终态;失败或卡住
+的 hook 只会记录到该运行的 `worker.log`。命令(30 秒后被杀)在运行的源目录里执行,环境
+变量里带有 `ODW_RUN_ID`、`ODW_RUN_STATE`、`ODW_WORKFLOW`、`ODW_RUN_DIR`、
+`ODW_RESULT_FILE`(仅当运行有结果时)、`ODW_DURATION_SEC`、`ODW_AGENTS` 和
+`ODW_FAILED_AGENTS`。webhook(10 秒时限)收到:
+
+```jsonc
+{
+  "runId": "20261017-041600-3fa2c1",
+  "workflow": "deep-research",
+  "state": "done", // done | failed | stopped
+  "createdAt": 1792210560.2, // Unix 秒
+  "finishedAt": 1792210812.5,
+  "durationSec": 252,
+  "counts": { "agents": 12, "done": 11, "failed": 1 },
+  "text": "odw · deep-research finished in 4m12s · 12 agents, 1 failed",
+  "content": "odw · deep-research finished in 4m12s · 12 agents, 1 failed"
+}
+```
+
+失败和被停止的运行还会多一个 `error` 字段。`text` 与 `content` 是同一行摘要,所以
+Slack 和 Discord 的 incoming webhook 能直接渲染(同时设置了 Discord 的
+`allowed_mentions`,一次运行永远不会 @ 到任何人)。看板的设置页会显示配置了哪些
+hook——webhook 只显示协议和主机,因为 URL 的其余部分就是密钥。
 
 ## 工作原理
 
@@ -415,12 +540,14 @@ workflow 脚本始终是**纯 `.js`**、从不编译;引擎用 **TypeScript** �
 | [`ultra-mode.js`](examples/ultra-mode.js) | 有纪律的深度工作循环:规划 → 并行攻坚 → 对抗评审 → 综合 |
 | [`fan-out-reduce.js`](examples/fan-out-reduce.js) | 并行起草 N 份 → 综合出最佳 |
 | [`adversarial-verify.js`](examples/adversarial-verify.js) | 产出发现 → 只保留扛住证伪的 |
+| [`review-swarm.js`](examples/review-swarm.js) | 梳理改动 → 按 N 个视角并行审查 → 逐条独立验证(可换另一个 CLI)→ 带证据的分级报告 |
 | [`loop-until-dry.js`](examples/loop-until-dry.js) | 循环扇出 finder,连续 K 轮无新发现才停 |
 | [`routing.js`](examples/routing.js) | 给请求分类 → 路由到对应专家 → 给结果打分 |
 | [`generate-and-filter.js`](examples/generate-and-filter.js) | 并行产出大量点子 → 去重 → 只留过 rubric 的 |
 | [`tournament.js`](examples/tournament.js) | N 种思路各自解题 → 两两评判晋级 → 决出唯一胜者 |
 | [`codex-claude-loop.js`](examples/codex-claude-loop.js) | 两个对家 CLI 回合制对弈:Claude 实现,Codex 评审,循环直到签收 |
 | [`agent-daily-digest.js`](examples/agent-daily-digest.js) | 发现信息源 → 并行提取 → 综合 → 核查 |
+| [`test-fix-loop.js`](examples/test-fix-loop.js) | 用 `exec()` 跑测试 → agent 修复失败 → 重跑直到全绿(仅 ODW) |
 
 ## 开发
 
@@ -430,6 +557,16 @@ npm run build         # tsc → dist/
 npm test              # node:test 测试套件,由 mock 适配器驱动(无需真实账号)
 npm run typecheck     # tsc --noEmit
 npm run build:binary  # 打包 + Node SEA + postject → 单个自包含的 ./build/odw
+```
+
+要开发看板:先生成一组持续推进的模拟运行,让一个 server 指向它,再启动开发服务器——它会在每次
+刷新页面时重新构建 `web/src`,并把 `/api`(含 SSE)代理到那个 server:
+
+```bash
+node web/demo-fixtures.mjs /tmp/odw-demo/runs /tmp/odw-demo/project --live &
+echo '{"runsRoot":"/tmp/odw-demo/runs"}' > /tmp/odw-demo/odw.config.json
+(cd /tmp/odw-demo/project && npx tsx "$OLDPWD/src/cli.ts" serve --config /tmp/odw-demo/odw.config.json --port 4317) &
+node web/dev.mjs --api http://127.0.0.1:4317     # → http://127.0.0.1:5173
 ```
 
 更新本地源码安装时,先构建更新后的目录,再运行 `npm install -g .`,并将同目录的
@@ -454,8 +591,33 @@ npm run build:binary  # 打包 + Node SEA + postject → 单个自包含的 ./bu
 
 ## 状态
 
+**`main` 上的新内容(2026 年 10 月):**
+- **可恢复的运行。** 每个 agent 完成时结果即落盘——运行中就能用 `odw agents` /
+  `odw result <run> --agent <id|label>` 或看板查看;`odw resume <run>` 会启动新运行并
+  重放所有未变的 `agent()` 调用,卡住或失败的运行只需重跑改动的部分(#24)。
+- **`exec()`** 不经模型直接在工作流里运行命令——测试、构建、lint——支持超时、输出上限
+  和停止(#31;ODW 扩展),并附 [`test-fix-loop.js`](examples/test-fix-loop.js) 与
+  [`review-swarm.js`](examples/review-swarm.js) 两个新示例。
+- **运行钩子与卡死看门狗。** 运行结束、失败或停止时触发 `notify` 命令或 webhook(兼容
+  Slack/Discord);可选的 `stallTimeout` 会终止并重启长时间无输出的 agent;worker 收到
+  SIGTERM 时会干净地停止运行。
+- **`odw doctor [--smoke]`** 检查运行环境、配置和每个适配器;加 `--smoke` 会发一条真实
+  提示,揪出那些无头模式下没有回答却以 0 退出的 CLI。
+- **可靠性。** 超时和停止会作用于 agent 的整个进程树(先 SIGTERM 再 SIGKILL),也能停下
+  已在运行的 agent;崩溃或被吞掉的致命错误不会再让运行卡在 `running`,停止的运行也不会被
+  记成 `done`;有歧义的结构化回复会重试而不是瞎猜;配置里的非法数字会直接报错。
+- **安全与规模。** 工作流 `meta` 只解析、绝不求值,列出工作流时也不编译正文;看板服务端
+  增量读取事件、只推送运行列表的变化,上千个运行也依然流畅;安装时校验 SHA256;CI 覆盖
+  Node 20/22/24、macOS 与 Windows。
+- **全新设计的看板**([见上文](#看板观测检查对话))与落地页。
+
 **0.5.0 开发版：**排队任务在真正启动前重新检查暂停、停止和预算;等待命令能识别后台进程
 已退出。升级时二进制与 skill 固定同一版本,替换失败恢复旧文件;源码构建显示具体修订号。
+
+**下一版(未发版):**每个已完成 agent 的结果都会**在完成时保存**——`odw agents`、
+`odw result --agent` 和看板在运行中即可读取——`odw resume` 则把已结束的运行变成一个新运行,
+**重放**每个未改动的 `agent()` 调用,卡住或失败的运行不必再从头开始
+([#24](https://github.com/xz1220/open-dynamic-workflows/issues/24))。
 
 **最新(`main` 上,未发版):**在交互式终端里,`odw run` 现在会直接挂上**前台实时视图**
 ——Ctrl-C 只脱离不杀任务,`odw attach` 随时挂回,管道/CI 下仍保持先拿 run id 再轮询的
@@ -478,12 +640,13 @@ npm run build:binary  # 打包 + Node SEA + postject → 单个自包含的 ./bu
 旗舰示例 [`examples/deep-research.js`](examples/deep-research.js) 端到端跑通
 (plan → search → extract → vote → report)。
 
-### 路线图(v1.5+)
+### 路线图
 
-`model` / `agentType` 富路由 · adapter 上报的真实 token
-用量(当前预算按估算计量)· resume / journaling · 用于可重放确定性的
-`Date.now`/`Math.random` 沙箱。
-完整方案见 [`docs/dynamic-workflows-tech-plan.md`](docs/dynamic-workflows-tech-plan.md);
+按并行 coding agent 用户反馈的需求排序([调研](docs/research/user-needs-2026-10.md)):
+adapter 上报的真实 token 用量与花费(当前预算按估算计量)· 感知限流/额度的重试与
+有类型的失败 · 无头运行的"成功证据" · 隔离 agent 改动的审阅与合并 · 人工 `checkpoint()` ·
+worktree 环境准备与每个 agent 的端口 · 调度与评测。完整规划见 [`docs/ROADMAP.md`](docs/ROADMAP.md);
+最初的设计见 [`docs/dynamic-workflows-tech-plan.md`](docs/dynamic-workflows-tech-plan.md);
 ODW 所对齐的 Claude Code 方言背景见
 [`docs/dynamic-workflows-research.md`](docs/dynamic-workflows-research.md)。
 

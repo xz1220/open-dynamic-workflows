@@ -6,9 +6,11 @@
  * - Recoverable errors (a single agent CLI failed, a schema never validated)
  *   are caught by the concurrency primitives and turned into a `null` slot, so
  *   one bad agent does not sink an entire `parallel` / `pipeline` batch.
- * - Fatal errors (the run-wide agent backstop is hit, or a stop was requested)
- *   must abort the whole run. They propagate through the primitives instead of
- *   being swallowed.
+ * - Fatal errors (a stop was requested, the budget or the dispatch backstop was
+ *   hit, the configuration is unusable) must abort the whole run. They
+ *   propagate through the primitives instead of being swallowed; the scheduler
+ *   records the first one, aborts the agents still running, and the worker
+ *   records it as the run's outcome even if the script catches it.
  *
  * `isFatalError` is the single source of truth the scheduler consults, so the
  * two categories never drift apart.
@@ -38,14 +40,14 @@ export class SchemaValidationError extends DynamicWorkflowError {}
 export class AgentLimitExceeded extends DynamicWorkflowError {}
 
 /**
- * The run's token budget (`budget.total`) was reached. A hard ceiling, not
- * advisory: once `spent() >= total` no further agent may dispatch. In v1
- * `spent()` is a stub (0), so this never fires; it is the gate that future
- * nested `workflow()` cost control hangs on.
+ * The run's token budget (`--budget`, `budget.total`) was reached. A hard
+ * ceiling, not advisory: once `spent() >= total` — tokens estimated as chars/4
+ * of every agent reply, schema retries included — no further agent dispatches
+ * and no schema retry starts.
  */
 export class BudgetExhausted extends DynamicWorkflowError {}
 
-/** A stop was requested; the run unwinds at the next safe point. */
+/** A stop was requested: running agents are killed and the run unwinds. */
 export class RunStopped extends DynamicWorkflowError {}
 
 /** The workflow script is malformed (bad `meta`, syntax error, no result). */
@@ -66,9 +68,4 @@ export function isFatalError(error: unknown): boolean {
     error instanceof BudgetExhausted ||
     error instanceof ConfigError
   );
-}
-
-/** Uniform placeholder for layers still being built out, milestone by milestone. */
-export function notImplemented(what: string): DynamicWorkflowError {
-  return new DynamicWorkflowError(`not implemented yet: ${what}`);
 }

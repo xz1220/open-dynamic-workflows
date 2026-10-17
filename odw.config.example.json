@@ -11,6 +11,17 @@
   "claudeWorkflowsRoot": "~/.claude/workflows",
   "claudeJobsScope": "all",
 
+  "//stallTimeout": "ODW extension. Seconds an agent may print nothing on stdout or stderr before it is killed (like a timeout) and restarted, at most stallRestarts times per agent call; null (the default) turns the watchdog off. It stays off for every built-in adapter because some CLIs (claude --print in text mode) print nothing until they finish: enable it for adapters that stream progress. An adapter's own \"stallTimeout\" overrides this value; 0 turns the watchdog off for that adapter.",
+  "stallTimeout": null,
+  "stallRestarts": 1,
+
+  "//notify": {
+    "$comment": "ODW extension: run-end hooks. Rename \"//notify\" to \"notify\" to turn them on. They fire once, after the run's final state is written, and can never change it; a failing or slow hook is only logged to the run's worker.log. command: an argv run WITHOUT a shell (killed after 30s), with ODW_RUN_ID, ODW_RUN_STATE, ODW_WORKFLOW, ODW_RUN_DIR, ODW_RESULT_FILE (only when the run has a result), ODW_DURATION_SEC, ODW_AGENTS and ODW_FAILED_AGENTS in its environment. webhook: an http(s) URL that receives a JSON POST (10s limit) whose text/content fields render as-is in Slack and Discord. on: which final states fire them (default: all three).",
+    "command": ["/usr/local/bin/odw-notify"],
+    "webhook": "https://hooks.slack.com/services/YOUR/WEBHOOK/PATH",
+    "on": ["done", "failed", "stopped"]
+  },
+
   "adapters": {
     "codex": {
       "label": "Codex CLI",

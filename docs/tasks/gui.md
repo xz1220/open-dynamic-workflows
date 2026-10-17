@@ -1,7 +1,8 @@
 # ② 客户端（只读展示层）— 任务拆解
 
 > 对应 [ROADMAP](../ROADMAP.md) 的 ②：`(a) Workspace` + `(b) Jobs` +（待定）`(c) 第三维`。
-> **视觉真相（visual source of truth）**：`docs/odw-client-mockup.html`（7 屏浅色 mockup，真实 mock 数据）、`docs/odw-client.html`（画廊索引 + 导入说明）、`assets/app-screenshots/*.png`（当前 App 截图）。深色「watch」主题已存档于 `docs/odw-client-mockup-v1-full.html`，本期不做、留待后续。
+> **视觉真相（2026-10 重设计后）**：设计令牌与组件以 `web/src/styles/`（`tokens.css` 为准，"纸、墨、信号"语言，含亮/暗双主题）为唯一来源；`assets/app-screenshots/*.png` 与 `assets/odw-dashboard.gif` 是当前 App 的截图/动图。本地开发用 `node web/demo-fixtures.mjs <runs> <proj> --live` + `node web/dev.mjs`。
+> 历史存档（已过时，仅供参考）：`docs/odw-client-mockup.html`（7 屏浅色 mockup）、`docs/odw-client.html`（画廊索引）、`docs/odw-client-mockup-v1-full.html`（早期深色「watch」主题）。
 > 每个任务带：目标 / 做法 / 文件锚点 / 完成标准（DoD）。可直接分配给 agent 开工。
 
 ---
@@ -224,7 +225,6 @@ open-dynamic-workflows/
 │   ├─ runtime/server.ts    # 仅加性扩端点 /api/workflows（G1）
 │   ├─ runtime/runs-view.ts # 派生 groups 树（G2）
 │   ├─ events.ts            # 加可选 groupId/kind/index（G2）
-│   ├─ dashboard.html       # 现役手写看板（被 SPA 产物取代后可删/留作 fallback）
 │   └─ dashboard.generated.ts  # embed 产物（改由 SPA 喂）
 ├─ web/                     # ✅ vanilla TS SPA（唯一前端）— build-only 依赖(esbuild)
 │   ├─ build.mjs            # esbuild：内联成单文件 dist/index.html
@@ -249,7 +249,7 @@ open-dynamic-workflows/
 1) web build:   npm run build:web  →  node web/build.mjs
                   → esbuild bundle src/main.ts(IIFE) + 内联 CSS/JS → web/dist/index.html
 2) embed:       node scripts/embed-dashboard.mjs
-                  → 优先读 web/dist/index.html（存在则取代 src/dashboard.html）
+                  → 只读 web/dist/index.html（缺失即报错退出，没有回退）
                   → 写 src/dashboard.generated.ts
 3) runtime:     tsc → dist/ ; build:binary → 单文件 `odw`（内嵌该 SPA）
 4) `odw serve`：浏览器里即「客户端 Web 版」
@@ -258,7 +258,7 @@ open-dynamic-workflows/
 ```
 
 - 根 `package.json` 已接好：`"build:web": "node web/build.mjs"`，`"prebuild": "npm run build:web && npm run embed"`——所以 `npm run build`/`build:binary` 会自动先打 SPA 再 embed。
-- `scripts/embed-dashboard.mjs` 只改**输入源**（优先 `web/dist/index.html`，回退 `src/dashboard.html`），输出与契约不变。开发期 `web` 可单独 `node build.mjs` 重打，`odw serve` 走已生成的 bundle；`web/demo-fixtures.mjs` 可播种真实 run/workflow 数据供本地对接验证。
+- `scripts/embed-dashboard.mjs` 只改**输入源**（只读 `web/dist/index.html`，缺失即失败；旧的 `src/dashboard.html` 回退已删除——它会在未构建 web 的检出里悄悄换掉已提交的看板），输出与契约不变。开发期 `web` 可单独 `node build.mjs` 重打，`odw serve` 走已生成的 bundle；`web/demo-fixtures.mjs` 可播种真实 run/workflow 数据供本地对接验证。
 
 ### 4.3 不可触碰 / 红线
 
@@ -353,9 +353,8 @@ open-dynamic-workflows/
 - `src/events.ts` — 9 类事件常量（`groupId/kind/index` 留作加性后续）
 - `src/primitives.ts` — `agent_started` 带 `adapter`（拓扑字段待后续）✅
 - `src/loader.ts` — `loadWorkflowScript().meta`（Workspace 只编译取 meta）
-- `src/dashboard.html` — 现役手写看板（被 SPA 取代，留作 fallback）
 - `src/dashboard.generated.ts` — embed 产物（改由 `web/dist` 喂）✅
-- `scripts/embed-dashboard.mjs` — 单 bundle 管线（优先读 `web/dist/index.html`）✅
+- `scripts/embed-dashboard.mjs` — 单 bundle 管线（只读 `web/dist/index.html`，缺失即失败）✅
 - `scripts/build-binary.mjs` — SEA 打包（不变）
 - `package.json` — 加 `workspaces: ["web"]` + `build:web` + `prebuild`；`dependencies` 保持空 ✅
 - `web/` — ✅ vanilla TS SPA（`build.mjs` + `src/` + `index.html` + `demo-fixtures.mjs`）

@@ -7,10 +7,13 @@ export type RunDisplayState =
   | "done"
   | "failed"
   | "stopped"
-  | "stale";
+  | "stale"
+  /** Paused at a checkpoint() until someone approves or rejects it. */
+  | "waiting";
 
 export type AgentState = "running" | "done" | "failed" | "stale";
 
+/** Tallies over every graph node: `agents` includes exec() command steps. */
 export interface RunCounts {
   agents: number;
   running: number;
@@ -36,9 +39,46 @@ export interface RunSummary {
   counts: RunCounts;
   progress: number;
   lastActivityTs: number | null;
+  /** Token/cost totals when adapters report them (`estimated` when some only had chars/4). */
+  usage?: UsageTotals | null;
+}
+
+/** Normalized usage, as adapters report it. */
+export interface Usage {
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+  costUsd?: number;
+}
+
+export interface UsageTotals extends Usage {
+  estimated?: boolean;
+}
+
+/** A checkpoint() waiting for a decision. */
+export interface PendingCheckpoint {
+  checkpointId: number;
+  title: string;
+  payload?: unknown;
+  since: number;
 }
 
 export interface AgentView {
+  /** Stable per-dispatch id from the engine (null for pre-agentId event files). */
+  agentId?: number | null;
+  /** The value was replayed from an earlier run by `odw resume`. */
+  cached?: boolean;
+  /** `exec()` steps fold into the same list as agents (ODW extension). */
+  kind?: "agent" | "command";
+  /** A command step's per-run id (its `agentId` is null). */
+  commandId?: number | null;
+  /** A command step's exit code once it settled. */
+  exitCode?: number | null;
+  /** Why an agent failed: rate_limit, quota, auth, timeout, stalled, not_found, permission, exit. */
+  failureReason?: string | null;
+  /** What the adapter reported spending on this agent. */
+  usage?: Usage | null;
   label: string;
   phase: string | null;
   state: AgentState;
@@ -63,6 +103,8 @@ export interface RunDetail extends RunSummary {
   adapter: string | null;
   /** The workflow identity recorded at create time (meta.workflowName). */
   workflowName: string | null;
+  /** checkpoint() calls waiting for approval (ODW extension). */
+  pendingCheckpoints?: PendingCheckpoint[];
 }
 
 /** One adapter row exposed in settings snapshots. */
@@ -87,6 +129,16 @@ export interface SettingsSnapshot {
     label: string;
     path: string;
   }>;
+  /**
+   * Run-completion hooks (ODW extension): whether a command is set, the
+   * webhook as scheme + host only (its path/query are secret), and which
+   * terminal states fire them.
+   */
+  notify: {
+    command: boolean;
+    webhook: string | null;
+    on: Array<"done" | "failed" | "stopped">;
+  };
 }
 
 export interface WorkflowSummary {
@@ -173,4 +225,34 @@ export interface ChatSessionSummary {
 export interface ChatSession extends Omit<ChatSessionSummary, "lastMessage" | "linkedRuns"> {
   messages: ChatMessage[];
   linkedRuns: ChatLinkedRun[];
+}
+
+/** One event in the cross-run activity stream (GET /api/activity). */
+export type ActivityEvent = WorkflowEvent & {
+  runId: string;
+  /** The run's workflow name. */
+  run: string;
+  adapter: string | null;
+  provider?: "odw" | "claude";
+};
+
+/** GET /api/activity — the newest events across runs + running agents per adapter. */
+export interface ActivitySnapshot {
+  events: ActivityEvent[];
+  fleet: Record<string, number>;
+}
+
+/** GET /api/runs/:id/agents/:agentId — a completed agent's persisted result. */
+export interface AgentResultRecord {
+  agentId: number;
+  label: string;
+  phase: string | null;
+  adapter: string | null;
+  attempts: number | null;
+  startedAt: number | null;
+  finishedAt: number | null;
+  value: unknown;
+  /** Replayed from an earlier run by `odw resume`. */
+  cached?: boolean;
+  sourceRunId?: string | null;
 }

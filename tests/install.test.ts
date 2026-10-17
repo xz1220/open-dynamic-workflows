@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync,
   readlinkSync, rmSync, symlinkSync, writeFileSync,
@@ -26,6 +27,8 @@ esac
 function executable(path: string, content: string) {
   writeFileSync(path, content, { mode: 0o755 });
 }
+
+const sha256 = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
 
 function fixture(t: TestContext) {
   const root = mkdtempSync(join(tmpdir(), "odw install test "));
@@ -69,6 +72,10 @@ esac
 case "$url" in
   ${repository}/releases/download/*/odw-linux-x64.gz)
     cp "$STUB_ARCHIVE" "$output" ;;
+  ${repository}/releases/download/*/SHA256SUMS)
+    [ -z "\${STUB_FAIL_SUMS:-}" ] || { printf 500; exit 22; }
+    [ -f "$STUB_SUMS" ] || { printf 404; exit 22; }
+    cp "$STUB_SUMS" "$output" ;;
   ${raw}/*/skills/open-dynamic-workflows/*.md|${raw}/*/skill/*.md)
     case "$url" in
       *"/\${STUB_FAIL_FILE:-not-a-file}") printf partial > "$output"; exit 22 ;;
@@ -103,16 +110,32 @@ if [ ! -e "$STUB_FAILED" ]; then
 fi
 exec /bin/mv "$@"
 `);
+  const sums = join(root, "SHA256SUMS");
   const env: NodeJS.ProcessEnv = {
     PATH: `${fakeBin}:/usr/bin:/bin`, HOME: testHome, TMPDIR: scratch,
-    CI: "1", ODW_BIN_DIR: binDir, STUB_ARCHIVE: archive,
+    CI: "1", ODW_BIN_DIR: binDir, STUB_ARCHIVE: archive, STUB_SUMS: sums,
     STUB_REQUESTS: requests, STUB_INIT_LOG: join(root, "init.log"),
     STUB_SKILL_DIR: skillDir, STUB_FAILED: join(root, "move-failed"),
   };
   const oldBinary = "#!/bin/sh\n# customized wrapper; never execute it during upgrade\nexit 91\n";
+  // The release's SHA256SUMS: by default derived from the archive as served at
+  // run time (so tests that swap the archive still reach the checks they target);
+  // a string serves that content verbatim, null makes the asset a 404.
+  let sumsContent: string | null | undefined;
   return {
-    root, testHome, binDir, skillDir, scratch, archive, requests, env, oldBinary,
+    root, testHome, binDir, skillDir, scratch, archive, requests, env, oldBinary, fakeBin,
+    sums(content: string | null) {
+      sumsContent = content;
+    },
     run(overrides: NodeJS.ProcessEnv = {}) {
+      if (sumsContent === null) rmSync(sums, { force: true });
+      else {
+        writeFileSync(sums, sumsContent ?? [
+          `${"0".repeat(64)}  odw-darwin-arm64.gz`,
+          `${sha256(readFileSync(archive))}  odw-linux-x64.gz`,
+          `${"f".repeat(64)}  odw-win-x64.exe.gz`,
+        ].join("\n") + "\n");
+      }
       return spawnSync("/bin/sh", [installer], {
         cwd: root, env: { ...env, ...overrides }, encoding: "utf8", timeout: 10_000,
       });
@@ -151,10 +174,99 @@ installTest("resolves latest once and installs matching skill without Node or jq
   assert.deepEqual(readFileSync(f.requests, "utf8").trim().split("\n"), [
     `${repository}/releases/latest`,
     `${repository}/releases/download/v1.2.3/odw-linux-x64.gz`,
+    `${repository}/releases/download/v1.2.3/SHA256SUMS`,
     ...documents.map((doc) => `${raw}/v1.2.3/skills/open-dynamic-workflows/${doc}`),
   ]);
+  assert.match(result.stdout, /verified SHA-256 of odw-linux-x64\.gz against SHA256SUMS/);
   assert.equal(readFileSync(join(f.binDir, "odw"), "utf8"), binary);
   assert.equal(readFileSync(f.env.STUB_INIT_LOG!, "utf8"), "init --check\n");
+  f.assertClean();
+});
+
+installTest("refuses a checksum mismatch or an unlisted asset before replacement, even when unverified installs are allowed", (t) => {
+  for (const sums of [
+    `${"0".repeat(64)}  odw-linux-x64.gz\n`,
+    `${"0".repeat(64)}  odw-darwin-arm64.gz\n`,
+    "",
+  ]) {
+    const f = fixture(t);
+    f.old();
+    f.sums(sums);
+    const result = f.run({ ODW_ALLOW_UNVERIFIED: "1" });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /Checksum mismatch for odw-linux-x64\.gz|does not list odw-linux-x64\.gz/);
+    assert.doesNotMatch(readFileSync(f.requests, "utf8"), /raw\.githubusercontent/, "nothing after the failed check");
+    f.assertOld();
+    f.assertClean();
+  }
+});
+
+installTest("accepts binary-mode and uppercase SHA256SUMS entries", (t) => {
+  const f = fixture(t);
+  f.sums(`${sha256(readFileSync(f.archive)).toUpperCase()} *odw-linux-x64.gz\n`);
+  const result = f.run();
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(readFileSync(join(f.binDir, "odw"), "utf8"), binary);
+  f.assertClean();
+});
+
+installTest("a release after v0.5.0 without SHA256SUMS fails closed unless ODW_ALLOW_UNVERIFIED=1", (t) => {
+  const f = fixture(t);
+  f.old();
+  f.sums(null);
+  let result = f.run();
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /v1\.2\.3 publishes no SHA256SUMS; refusing .*ODW_ALLOW_UNVERIFIED=1/);
+  f.assertOld();
+  f.assertClean();
+  result = f.run({ ODW_ALLOW_UNVERIFIED: "1" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stderr, /warning: release v1\.2\.3 publishes no SHA256SUMS; installing an UNVERIFIED binary/);
+  assert.equal(readFileSync(join(f.binDir, "odw"), "utf8"), binary);
+  f.assertClean();
+});
+
+installTest("releases up to v0.5.0 predate SHA256SUMS and install with a warning", (t) => {
+  for (const [version, predates] of [
+    ["0.5.0", true], ["0.4.9", true], ["0.5.0-rc.1", true], ["0.5.1", false], ["1.0.0", false],
+  ] as const) {
+    const f = fixture(t);
+    writeFileSync(f.archive, gzipSync(binary.replace("1.2.3", version)));
+    f.sums(null);
+    const result = f.run({ ODW_VERSION: version });
+    if (predates) {
+      assert.equal(result.status, 0, `${version}: ${result.stderr}`);
+      assert.match(result.stderr, new RegExp(`warning: v${version.replace(/\./g, "\\.")} predates published checksums`));
+    } else {
+      assert.notEqual(result.status, 0, version);
+      assert.match(result.stderr, /publishes no SHA256SUMS/, version);
+    }
+    f.assertClean();
+  }
+});
+
+installTest("a SHA256SUMS download failure aborts rather than skipping verification", (t) => {
+  const f = fixture(t);
+  f.old();
+  const result = f.run({ STUB_FAIL_SUMS: "1", ODW_ALLOW_UNVERIFIED: "1" });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /Could not download SHA256SUMS \(v1\.2\.3\)/);
+  f.assertOld();
+  f.assertClean();
+});
+
+installTest("without sha256sum or shasum the binary cannot be verified and needs the opt-out", (t) => {
+  const f = fixture(t);
+  // Shadow both digest tools with stand-ins that fail like a missing command.
+  for (const tool of ["sha256sum", "shasum"]) executable(join(f.fakeBin, tool), "#!/bin/sh\nexit 127\n");
+  f.old();
+  let result = f.run();
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /cannot compute SHA-256 here \(no sha256sum or shasum\); refusing/);
+  f.assertOld();
+  result = f.run({ ODW_ALLOW_UNVERIFIED: "1" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stderr, /installing an UNVERIFIED binary/);
   f.assertClean();
 });
 
@@ -177,16 +289,19 @@ installTest("supports legacy skill layouts for old releases and explicit refs", 
   for (const ref of [undefined, "old/custom-ref"]) {
     const f = fixture(t);
     writeFileSync(f.archive, gzipSync(binary.replace("1.2.3", "0.4.0").replace("echo 'odw init'", "echo 'odw run'")));
+    f.sums(null); // published before SHA256SUMS existed
     const result = f.run({
       STUB_LATEST_URL: `${repository}/releases/tag/v0.4.0`,
       STUB_LAYOUT: "legacy", ODW_REF: ref,
     });
     assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stderr, /v0\.4\.0 predates published checksums/);
     assert.doesNotMatch(result.stdout, /odw init/);
     assert.equal(existsSync(f.env.STUB_INIT_LOG!), false);
     assert.deepEqual(readFileSync(f.requests, "utf8").trim().split("\n"), [
       `${repository}/releases/latest`,
       `${repository}/releases/download/v0.4.0/odw-linux-x64.gz`,
+      `${repository}/releases/download/v0.4.0/SHA256SUMS`,
       `${raw}/${ref ?? "v0.4.0"}/skills/open-dynamic-workflows/SKILL.md`,
       ...documents.map((doc) => `${raw}/${ref ?? "v0.4.0"}/skill/${doc}`),
     ]);

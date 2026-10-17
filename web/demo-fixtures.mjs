@@ -3,16 +3,21 @@
  * Seed a throwaway runs root + managed workflow dir with realistic fixtures so
  * the client can be exercised without launching real agents.
  *
- *   node web/demo-fixtures.mjs <runsRoot> <projectDir>
+ *   node web/demo-fixtures.mjs <runsRoot> <projectDir> [--live]
  *
  * Writes runs in the real on-disk layout (runs/<workflow-slug>/<runId>/ with
  * meta.json + status.json + events.jsonl [+ result.json/error.json]) and a few
  * `.odw/workflows/*.js` scripts so /api/workflows has content. Pure fs — no deps.
+ *
+ * `--live` then keeps a small fleet of simulated runs moving — agents start,
+ * finish and occasionally fail, phases advance, runs complete and new ones
+ * begin — with this process's pid as the "worker", so the dashboard shows real
+ * running state (and, once you Ctrl-C, real staleness). For UI work and demos.
  */
 import { mkdirSync, writeFileSync, appendFileSync } from "node:fs";
 import { join } from "node:path";
 
-const [, , runsRoot, projDir] = process.argv;
+const [, , runsRoot, projDir, mode] = process.argv;
 if (!runsRoot || !projDir) {
   console.error("usage: demo-fixtures.mjs <runsRoot> <projectDir>");
   process.exit(2);
@@ -92,6 +97,7 @@ function descOf(name) {
     routing: "Classify the request, route it to the matching specialist, then grade the result.",
     "fan-out-reduce": "Draft N answers in parallel, then synthesize the single best one.",
     tournament: "N agents attempt a task with different approaches; a pairwise bracket picks a winner.",
+    "code-review-swarm": "Map a pull request, review it from several angles in parallel, verify each finding, then summarize.",
   }[name] ?? null;
 }
 
@@ -215,6 +221,12 @@ wf(
   `phase('Draft')\nconst drafts = await parallel(range(args.n).map((i) => () => agent(draftPrompt(i))))\n\nphase('Synthesize')\nreturn await agent(synthesizePrompt(drafts))`,
 );
 wf(
+  "code-review-swarm",
+  descOf("code-review-swarm"),
+  ["Map", "Review", "Verify", "Summarize"],
+  `phase('Map')\nconst map = await agent(mapPrompt(args.pr), { schema: MAP })\n\nphase('Review')\nconst findings = await parallel(LENSES.map((lens) => () =>\n  agent(reviewPrompt(map, lens), { schema: FINDINGS, label: \`review:\${lens}\` })))\n\nphase('Verify')\nconst verified = await pipeline(findings.flat(), (f) => agent(verifyPrompt(f), { schema: VERDICT }))\n\nphase('Summarize')\nlog(\`\${verified.filter((v) => v.real).length} findings confirmed\`)\nreturn await agent(summaryPrompt(verified))`,
+);
+wf(
   "tournament",
   descOf("tournament"),
   ["Compete", "Judge"],
@@ -222,3 +234,188 @@ wf(
 );
 
 console.error(`seeded demo fixtures → runs:${runsRoot}  project:${projDir}`);
+
+if (mode === "--live") startLive();
+
+// ---------------------------------------------------------------------------
+// --live: a deterministic-enough simulator writing the real on-disk layout.
+// ---------------------------------------------------------------------------
+function startLive() {
+  const now = () => Date.now() / 1000;
+  const pick = (xs) => xs[Math.floor(Math.random() * xs.length)];
+  const TEMPLATES = [
+    {
+      name: "deep-research",
+      args: { question: "Which battery chemistries will ship in 2027 EVs?" },
+      phases: [
+        ["Plan", 1, ["claude"]],
+        ["Search", 5, ["codex", "gemini"]],
+        ["Extract", 5, ["claude"]],
+        ["Vote", 3, ["claude", "codex"]],
+        ["Report", 1, ["claude"]],
+      ],
+      result: { report: "Sodium-ion for entry trims; LFP stays dominant; semi-solid-state in two flagships.", sources: 14 },
+    },
+    {
+      name: "code-review-swarm",
+      args: { pr: 482 },
+      phases: [
+        ["Map", 1, ["codex"]],
+        ["Review", 6, ["claude", "codex", "gemini"]],
+        ["Verify", 4, ["codex"], [{ label: "npm test", dur: 4, exit: 0 }]],
+        ["Summarize", 1, ["claude"]],
+      ],
+      result: { findings: 5, confirmed: 3, verdict: "request-changes" },
+    },
+    {
+      name: "fan-out-reduce",
+      args: { n: 8 },
+      phases: [
+        ["Draft", 8, ["gemini", "qwen"]],
+        ["Synthesize", 1, ["claude"]],
+      ],
+      result: { best: "Draft #5", drafts: 8 },
+    },
+    {
+      name: "tournament",
+      args: { approaches: ["risk-first", "speed-first", "cost-first", "simplest"] },
+      phases: [
+        ["Compete", 4, ["claude", "codex"]],
+        ["Judge", 3, ["claude"]],
+      ],
+      result: "Winner: risk-first (3–0 in the bracket).",
+    },
+  ];
+  const LOGS = [
+    "planner proposed 5 angles",
+    "dedup: 3 overlapping sources merged",
+    "schema ok after 1 retry",
+    "budget: 41% of cap used",
+    "worktree isolated · 3 files changed",
+    "cache hit for an unchanged prompt",
+  ];
+  const live = new Map();
+
+  /** A plausible saved value for an agent, by what its label says it did. */
+  function valueFor(a) {
+    const kind = a.label.split(":")[0];
+    switch (kind) {
+      case "plan":
+        return { angles: ["chemistry roadmaps", "OEM announcements", "supply chain", "cost curves", "regulation"] };
+      case "search":
+        return { sources: 3 + Math.floor(Math.random() * 6), claims: ["LFP share rises in entry trims", "sodium-ion pilots ship in 2027"] };
+      case "extract":
+        return { claims: [{ text: "Two flagships adopt semi-solid-state cells", source: "maker-briefing-2026" }] };
+      case "vote":
+        return { verdict: Math.random() < 0.8 ? "supported" : "disputed", votes: [true, true, Math.random() < 0.5] };
+      case "review":
+        return { findings: [{ title: "Unchecked error on retry path", severity: "medium", file: "src/client.ts", line: 88 }] };
+      case "verify":
+        return { real: Math.random() < 0.7, reason: "Reproduced by reading the retry loop" };
+      case "map":
+        return { summary: "Adds retries with backoff to the HTTP client", files: ["src/client.ts", "src/retry.ts"] };
+      default:
+        return `Draft from ${a.adapter}: a concise answer for ${a.label}.`;
+    }
+  }
+
+  function begin(tpl) {
+    const created = now();
+    const id = runId(created);
+    const dir = join(runsRoot, slug(tpl.name), id);
+    mkdirSync(dir, { recursive: true });
+    const phases = tpl.phases.map(([title]) => ({ title }));
+    writeJson(join(dir, "meta.json"), {
+      runId: id, script: `/demo/${tpl.name}.js`, args: tpl.args, source: projDir, workflowName: tpl.name, createdAt: created,
+    });
+    const run = {
+      tpl, id, dir, phases, phaseIx: -1, agents: [], nextAgentId: 0,
+      status: { runId: id, state: "running", name: tpl.name, description: descOf(tpl.name) ?? "A simulated live run.", phases, pid: process.pid, updatedAt: created },
+    };
+    writeJson(join(dir, "status.json"), run.status);
+    emit(run, { type: "run_started", name: tpl.name, args: tpl.args });
+    live.set(id, run);
+    enterPhase(run);
+  }
+
+  function emit(run, ev) {
+    appendFileSync(join(run.dir, "events.jsonl"), JSON.stringify({ ts: now(), ...ev }) + "\n");
+    run.status.updatedAt = now();
+    writeJson(join(run.dir, "status.json"), run.status);
+  }
+
+  function enterPhase(run) {
+    run.phaseIx++;
+    const spec = run.tpl.phases[run.phaseIx];
+    if (!spec) return finish(run);
+    const [title, n, adapters, commands = []] = spec;
+    emit(run, { type: "phase_started", phase: title });
+    // exec() steps: a command node that settles on its own clock.
+    for (const c of commands) {
+      const commandId = (run.nextCommandId = (run.nextCommandId ?? -1) + 1);
+      emit(run, { type: "command_started", commandId, label: c.label, phase: title, command: c.label });
+      setTimeout(() => {
+        const done = { commandId, label: c.label, phase: title, command: c.label, exitCode: c.exit, durationMs: c.dur * 1000 };
+        emit(run, c.exit === 0 ? { type: "command_finished", ...done } : { type: "command_failed", ...done, error: `exit ${c.exit}` });
+      }, c.dur * 1000);
+    }
+    const prefix = title.toLowerCase();
+    run.pending = Array.from({ length: n }, (_, i) => ({
+      label: n === 1 ? prefix : `${prefix}:${i + 1}`, phase: title, adapter: pick(adapters),
+    }));
+  }
+
+  function finish(run) {
+    const failed = run.agents.some((a) => a.state === "failed") && Math.random() < 0.25;
+    if (failed) {
+      writeJson(join(run.dir, "error.json"), { error: "synthesis rejected: 2 of 3 votes missing", stack: "WorkflowError: synthesis rejected\n    at Report (deep-research.js:41:9)" });
+      run.status.state = "failed";
+      emit(run, { type: "run_failed" });
+    } else {
+      writeJson(join(run.dir, "result.json"), { value: run.tpl.result });
+      run.status.state = "done";
+      emit(run, { type: "run_finished" });
+    }
+    live.delete(run.id);
+    setTimeout(() => begin(pick(TEMPLATES)), 4000 + Math.random() * 5000);
+  }
+
+  function step(run) {
+    const t = now();
+    for (const a of run.agents) {
+      if (a.state !== "running" || t < a.doneAt) continue;
+      if (Math.random() < 0.07) {
+        a.state = "failed";
+        emit(run, { type: "agent_failed", agentId: a.agentId, label: a.label, phase: a.phase, error: "exit 1 · malformed JSON under schema (2 attempts)" });
+      } else {
+        a.state = "done";
+        const attempts = Math.random() < 0.15 ? 2 : 1;
+        mkdirSync(join(run.dir, "agents"), { recursive: true });
+        writeJson(join(run.dir, "agents", `${a.agentId}.json`), {
+          agentId: a.agentId, key: `demo-${a.agentId}`, label: a.label, phase: a.phase, adapter: a.adapter,
+          attempts, startedAt: a.startedAt, finishedAt: now(), value: valueFor(a),
+        });
+        emit(run, { type: "agent_finished", agentId: a.agentId, label: a.label, phase: a.phase, adapter: a.adapter, attempts, saved: true });
+      }
+    }
+    const running = run.agents.filter((a) => a.state === "running").length;
+    if (run.pending.length && running < 4 && Math.random() < 0.65) {
+      const a = run.pending.shift();
+      Object.assign(a, { state: "running", agentId: run.nextAgentId++, startedAt: t, doneAt: t + 3 + Math.random() * 11 });
+      run.agents.push(a);
+      emit(run, { type: "agent_started", agentId: a.agentId, label: a.label, phase: a.phase, adapter: a.adapter });
+    }
+    if (Math.random() < 0.05) emit(run, { type: "log", message: pick(LOGS) });
+    const phase = run.tpl.phases[run.phaseIx]?.[0];
+    const inPhase = run.agents.filter((a) => a.phase === phase);
+    if (!run.pending.length && inPhase.length && inPhase.every((a) => a.state !== "running")) enterPhase(run);
+  }
+
+  begin(TEMPLATES[0]);
+  setTimeout(() => begin(TEMPLATES[1]), 2500);
+  setTimeout(() => begin(TEMPLATES[2]), 6000);
+  setInterval(() => {
+    for (const run of [...live.values()]) step(run);
+  }, 650);
+  console.error(`live simulation running (pid ${process.pid}) — Ctrl-C to stop`);
+}

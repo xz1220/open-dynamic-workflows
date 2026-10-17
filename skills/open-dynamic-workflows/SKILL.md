@@ -76,12 +76,27 @@ outright, never silently passed through as a string).
 | `args` | The workflow input (injected). |
 | `budget` | `{ total, spent(), remaining() }` — scale depth to a token target. |
 | `workflow(ref, args?)` | Run another workflow inline (one level deep). `ref` is a managed-directory name or `{ scriptPath }`; the child shares this run's concurrency cap, agent counter, and budget. |
-| `validate(source)` | Parse and compile-check trusted source without running its workflow body; metadata is evaluated. Returns `{ ok, meta?, errors, warnings }`. **ODW extension** — not part of Claude Code's dialect. |
+| `validate(source)` | Parse and compile-check source without running its workflow body; `meta` is parsed as a pure literal, never evaluated. Returns `{ ok, meta?, errors, warnings }`. **ODW extension** — not part of Claude Code's dialect. |
+| `exec(command, opts?)` | Run a command (tests, a build, a linter) without a model; resolves to `{ stdout, stderr, exitCode, signal, timedOut, truncated, durationMs }`. A string runs through the shell, an array as argv. **ODW extension** — not part of Claude Code's dialect. |
 
 `opts` for `agent`: `{ adapter?, schema?, label?, phase?, model?, agentType?, isolation? }`.
 `adapter` picks the CLI; `schema` is a raw JSON Schema object (an option, not
 a global); `agentType` is a **persona** injected into the prompt — *not* an
 adapter name.
+
+`opts` for `exec`: `{ cwd?, env?, timeout?, input?, maxOutputBytes?, label?, phase?, check? }`.
+It runs in the source directory by default, is killed after `timeout` seconds
+(600) with everything it started, and keeps 8 MiB per stream. A non-zero exit
+is a result to branch on, not an error — unless `check: true`, which throws a
+recoverable `ExecError`. It takes no agent slot, but pause and stop apply:
+
+```js
+let run = await exec('npm test')             // ODW extension
+for (let round = 1; run.exitCode !== 0 && round <= 3; round++) {
+  await agent(`Fix the failing tests:\n${run.stdout.slice(-4000)}\n${run.stderr.slice(-4000)}`)
+  run = await exec('npm test')
+}
+```
 
 **Rule of thumb:** use `parallel` when the next step needs the **whole batch**
 at once (dedup, tally, synthesis); default to `pipeline` for multi-stage work.
@@ -117,6 +132,31 @@ Saved workflows run by name (`odw run <name>`); lookup order:
 `.odw/workflows`, `.claude/workflows`, `~/.odw/workflows`,
 `~/.claude/workflows`.
 
+### Recover a stalled or failed run (ODW extension)
+
+Every `agent()` result is saved the moment that agent finishes, so a hung
+lane, a stop, or a dead worker never loses the work already done. Don't wait
+on a stuck run or start it over:
+
+```bash
+odw agents $RUN               # each agent: state, label, phase, time, value preview (↺ = replayed)
+odw result $RUN --agent 3     # one finished agent's value as JSON (id or label) — works mid-run
+odw stop $RUN                 # give up on the hung lane, then…
+odw resume $RUN --wait        # …a NEW run: unchanged agent() calls replay, only the rest run
+```
+
+- `odw result --agent` salvages partial results while the run is still going.
+- `odw resume` on an ended run (done, failed, stopped, or stale) starts a new
+  run with the same script, args and adapter. A call whose prompt and options
+  are unchanged (phase aside) returns its saved value for free — no adapter
+  call, slot or budget. Edit the script first to fix the failing step: only
+  edited and new calls run. `--adapter <name>` switches the default CLI; calls
+  that named no adapter still replay.
+- On a *paused* run, `odw resume` just continues it in place. A run that is
+  still running is refused: `odw stop` it first (or pass `--force`).
+- Keep prompts deterministic — one built from `Date.now()` or `Math.random()`
+  never matches, so it runs again.
+
 ## Adapters
 
 Codex, Claude Code, Gemini, Qwen, and Kimi work out of the box with no
@@ -131,6 +171,12 @@ your non-interactive shell it only reports, never prompts. Then **ask your
 user** which CLI to default to and persist their answer with
 `odw init --adapter <name>`. Do not pick for them silently; the default decides
 which vendor's CLI (and whose quota/permissions) every bare `agent()` call uses.
+
+If agents fail fast or come back empty, run `odw doctor`: it checks the
+runtime, config, run directory and every adapter, and prints what to fix.
+`odw doctor --smoke` additionally sends the default adapter one real prompt —
+ask your user first (it costs a model call) — and catches a CLI that exits 0
+without answering when headless (a login, trust or approval prompt).
 
 ## Behavior you must know
 
@@ -158,4 +204,6 @@ which vendor's CLI (and whose quota/permissions) every bare `agent()` call uses.
 | Variables, spreads, or function calls inside `meta` | `meta` must be a pure literal. |
 | Treating all failures in `parallel`/`pipeline` alike | Recoverable failures become `null`; stop, budget and dispatch-limit errors abort. Retry missing results or fail when every item is required; filter only when partial output is acceptable. |
 | Branching on which agent finished first | Breaks reproducibility; keep reductions order-independent. |
+| Re-running a stalled or failed run from scratch | Read finished agents with `odw result <run> --agent <id>`; `odw stop`, fix the script, then `odw resume` — finished calls replay for free. |
 | Using `validate()` and expecting the script to run on Claude Code | `validate` is an ODW extension and runs on odw only. |
+| Using `exec()` and expecting the script to run on Claude Code | `exec` is an ODW extension and runs on odw only; `validate()` warns about it. |

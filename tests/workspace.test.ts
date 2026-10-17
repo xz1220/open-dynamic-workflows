@@ -5,7 +5,11 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { execPath } from "node:process";
 
+import { ConfigError, isFatalError } from "../src/errors.js";
+import { RunStore } from "../src/runtime/run-store.js";
+import { executeRun } from "../src/runtime/worker.js";
 import { withWorkspace } from "../src/workspace.js";
 
 function git(dir: string, ...args: string[]): string {
@@ -85,13 +89,37 @@ test("a worktree the agent LOCKED is still cleaned up completely", async () => {
   }
 });
 
-test("worktree mode on a non-git directory fails with an actionable error", async () => {
+test("worktree mode on a non-git directory fails with an actionable, fatal ConfigError", async () => {
   const dir = mkdtempSync(join(tmpdir(), "odw-plain-"));
   try {
     await assert.rejects(
       withWorkspace(dir, "worktree", async () => "unreachable"),
-      /needs a git repository/,
+      (err: Error) => err instanceof ConfigError && isFatalError(err) && /needs a git repository/.test(err.message),
     );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("isolated agents on a non-git source fail the run instead of becoming silent nulls", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "odw-plain-"));
+  try {
+    const store = new RunStore(join(dir, "runs"));
+    const config = join(dir, "odw.config.json");
+    writeFileSync(
+      config,
+      JSON.stringify({ defaultAdapter: "mock", adapters: { mock: { command: [execPath, "-e", "process.stdout.write('ok')"] } } }),
+    );
+    const script = join(dir, "wf.js");
+    writeFileSync(
+      script,
+      "export const meta = { name: 'wf', description: 'd' }\n" +
+        "return await parallel([() => agent('a', { isolation: 'worktree' }), () => agent('b', { isolation: 'worktree' })])\n",
+    );
+    const id = store.create({ script, args: null, source: dir, configPath: config });
+    assert.equal(await executeRun(store.runDir(id)), "failed");
+    assert.match(String(store.readError(id)?.error), /needs a git repository/);
+    assert.equal(store.hasResult(id), false, "no [null, null] result is recorded");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

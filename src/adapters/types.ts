@@ -40,6 +40,11 @@ export interface Adapter {
   env?: Record<string, string>;
   /** Per-call timeout in seconds; falls back to the run-wide setting. */
   timeout?: number;
+  /**
+   * Stall timeout in seconds for this CLI; falls back to the run-wide setting.
+   * `0` turns the stall watchdog off for this adapter.
+   */
+  stallTimeout?: number;
   /** Human-friendly label for progress display. */
   label?: string;
   /** Capability declaration: which per-call options this CLI carries natively. */
@@ -58,6 +63,14 @@ export interface Settings {
   maxAgents: number;
   /** Per-agent CLI timeout in seconds; `null` => no timeout. */
   timeout: number | null;
+  /**
+   * Stall watchdog: seconds an agent CLI may go without writing to stdout or
+   * stderr before it is killed and restarted; `null` => off. Only for CLIs that
+   * stream progress — a text-mode CLI may print nothing until it is done.
+   */
+  stallTimeout: number | null;
+  /** How many times one agent call is restarted after stalling before it fails. */
+  stallRestarts: number;
   /** Extra attempts when a schema fails to validate. */
   schemaRetries: number;
   /** Directory runs are stored under; `null` => `~/.odw/runs`. */
@@ -73,6 +86,24 @@ export interface Settings {
    * broader — it exposes other projects' run names/results on this loopback server.
    */
   claudeJobsScope: "all" | "project";
+  /** Hooks fired when a run ends; `null` => none. */
+  notify: NotifySettings | null;
+}
+
+/** The terminal states a run can end in, and that notify hooks can fire on. */
+export type RunEndState = "done" | "failed" | "stopped";
+
+/**
+ * Run-completion hooks (an ODW extension), fired by the worker once a run's
+ * terminal state is on disk. They are bounded and can never change the outcome.
+ */
+export interface NotifySettings {
+  /** An argument vector spawned WITHOUT a shell; the run is described in `ODW_*` env vars. */
+  command: string[] | null;
+  /** An http(s) URL that receives a JSON POST describing the run. */
+  webhook: string | null;
+  /** Which terminal states fire the hooks (all three unless configured). */
+  on: RunEndState[];
 }
 
 export interface Config {
@@ -86,13 +117,15 @@ export interface CliResult {
   stdout: string;
   stderr: string;
   timedOut: boolean;
+  /** Killed by the stall watchdog: no output for the stall timeout. */
+  stalled?: boolean;
   /** Wall-clock seconds the process ran. */
   duration: number;
 }
 
-/** True when the process exited cleanly and did not time out. */
+/** True when the process exited cleanly and was not killed for time or silence. */
 export function cliOk(result: CliResult): boolean {
-  return result.returncode === 0 && !result.timedOut;
+  return result.returncode === 0 && !result.timedOut && !result.stalled;
 }
 
 /** The label to show for an adapter (its `label`, else its name). */

@@ -7,7 +7,8 @@
  *   1. {@link describeSchema} turns a schema into an instruction appended to the
  *      prompt ("return only JSON shaped like this").
  *   2. {@link extractJson} pulls the most likely JSON value out of a free-text
- *      reply (fenced block, then a balanced span, then the whole reply).
+ *      reply (the whole reply, fenced blocks, then balanced spans), preferring
+ *      the first candidate that actually satisfies the schema.
  *   3. {@link validate} checks the parsed value against the schema, returning a
  *      list of human-readable problems (empty == valid).
  *
@@ -49,52 +50,128 @@ export function describeSchema(schema: JsonSchema): string {
 
 // --- extraction --------------------------------------------------------------
 
-/** Best-effort recovery of a JSON value from a free-text agent reply. */
-export function extractJson(text: string): unknown {
-  for (const candidate of candidates(text)) {
-    try {
-      return JSON.parse(candidate);
-    } catch {
-      continue;
+/** What {@link pickJson} found in a reply. */
+export interface JsonPick {
+  /** The chosen value; `undefined` when nothing usable (see `problems`). */
+  value: unknown;
+  /** Empty when `value` satisfies the schema; otherwise what to tell the agent. */
+  problems: string[];
+}
+
+/**
+ * Choose the JSON value a free-text reply means, against a schema — without
+ * guessing. Candidates come in tiers, from the most to the least deliberate:
+ * the whole reply; ```json-tagged fenced blocks; other fenced blocks; every
+ * top-level balanced `{...}` / `[...]` span. The first tier holding any value
+ * that validates decides: exactly one distinct valid value is the answer, but
+ * two or more (an answer next to an example, a draft next to the final) are
+ * ambiguous — the caller asks for exactly one rather than silently keeping the
+ * wrong one. When nothing validates, the parsed candidate with the fewest
+ * problems is reported, so the retry feedback describes the closest attempt.
+ */
+export function pickJson(text: string, schema: JsonSchema): JsonPick {
+  let closest: { value: unknown; problems: string[] } | undefined;
+  for (const tier of candidateTiers(text)) {
+    const valid = new Map<string, unknown>();
+    for (const candidate of tier) {
+      let value: unknown;
+      try {
+        value = JSON.parse(candidate);
+      } catch {
+        continue;
+      }
+      const problems = validate(value, schema);
+      if (problems.length === 0) valid.set(JSON.stringify(value), value);
+      else if (!closest || problems.length < closest.problems.length) closest = { value, problems };
+    }
+    if (valid.size === 1) return { value: [...valid.values()][0], problems: [] };
+    if (valid.size > 1) {
+      return {
+        value: undefined,
+        problems: [
+          `the reply contains ${valid.size} different JSON values that each match the schema — reply with exactly one`,
+        ],
+      };
+    }
+  }
+  return closest ?? { value: undefined, problems: ["no JSON value found in the reply"] };
+}
+
+/**
+ * Best-effort recovery of a JSON value from a free-text agent reply. With a
+ * `schema` this is {@link pickJson}'s choice (or its closest candidate when
+ * none validates); without one, the most deliberate candidate that parses.
+ * `undefined` means nothing parsed at all (or the valid values were ambiguous).
+ */
+export function extractJson(text: string, schema?: JsonSchema): unknown {
+  if (schema) return pickJson(text, schema).value;
+  for (const tier of candidateTiers(text)) {
+    for (const candidate of tier) {
+      try {
+        return JSON.parse(candidate);
+      } catch {
+        /* next */
+      }
     }
   }
   return undefined;
 }
 
-function* candidates(text: string): Generator<string> {
+/** Candidate texts grouped from the most to the least deliberate. */
+function candidateTiers(text: string): string[][] {
   const stripped = text.trim();
-  // Try every fenced block (not just the first) so an inline ``` in prose
-  // ahead of the real answer doesn't mask it.
-  yield* fencedBlocks(stripped);
-  const span = balancedSpan(stripped);
-  if (span !== null) yield span;
-  yield stripped;
+  const fences = [...fencedBlocks(stripped)];
+  return [
+    [stripped],
+    fences.filter((f) => f.json).map((f) => f.body),
+    fences.filter((f) => !f.json).map((f) => f.body),
+    [...balancedSpans(stripped)],
+  ];
 }
 
-/** Contents of each ```json (or bare ```) fenced block, in order. */
-function* fencedBlocks(text: string): Generator<string> {
+/** Each ``` fenced block in order, flagged when its info string names JSON. */
+function* fencedBlocks(text: string): Generator<{ body: string; json: boolean }> {
   let from = 0;
   for (;;) {
     const fence = text.indexOf("```", from);
     if (fence === -1) return;
-    const after = text.slice(fence + 3);
-    const newline = after.indexOf("\n");
+    const newline = text.indexOf("\n", fence + 3);
     if (newline === -1) return;
-    const body = after.slice(newline + 1);
-    const close = body.indexOf("```");
+    const json = text.slice(fence + 3, newline).trim().toLowerCase().startsWith("json");
+    const close = text.indexOf("```", newline + 1);
     if (close === -1) {
-      yield body;
+      yield { body: text.slice(newline + 1), json };
       return;
     }
-    yield body.slice(0, close);
-    from = fence + 3 + newline + 1 + close + 3;
+    yield { body: text.slice(newline + 1, close), json };
+    from = close + 3;
   }
 }
 
-/** The first balanced {...} or [...] span, ignoring braces inside strings. */
-function balancedSpan(text: string): string | null {
-  const start = firstOf(text, "{[");
-  if (start === -1) return null;
+/**
+ * An opener that never closes costs a scan to the end of the text; give up
+ * after this many so a pathological reply stays cheap. Closed spans are
+ * disjoint, so scanning them is linear overall.
+ */
+const MAX_UNCLOSED_OPENERS = 8;
+
+/** Every top-level balanced {...} or [...] span, in order. */
+function* balancedSpans(text: string): Generator<string> {
+  const opener = /[{[]/g;
+  let unclosed = 0;
+  for (let match = opener.exec(text); match; match = opener.exec(text)) {
+    const end = matchingClose(text, match.index);
+    if (end === -1) {
+      if (++unclosed >= MAX_UNCLOSED_OPENERS) return;
+      continue; // resume right after this opener
+    }
+    yield text.slice(match.index, end + 1);
+    opener.lastIndex = end + 1; // spans nested inside this one are not top-level
+  }
+}
+
+/** Index of the bracket closing the one at `start`, ignoring brackets in strings; -1 if none. */
+function matchingClose(text: string, start: number): number {
   const open = text[start]!;
   const close = open === "{" ? "}" : "]";
   let depth = 0;
@@ -112,15 +189,10 @@ function balancedSpan(text: string): string | null {
     else if (ch === open) depth++;
     else if (ch === close) {
       depth--;
-      if (depth === 0) return text.slice(start, i + 1);
+      if (depth === 0) return i;
     }
   }
-  return null;
-}
-
-function firstOf(text: string, chars: string): number {
-  const positions = [...chars].map((c) => text.indexOf(c)).filter((p) => p !== -1);
-  return positions.length ? Math.min(...positions) : -1;
+  return -1;
 }
 
 // --- validation --------------------------------------------------------------

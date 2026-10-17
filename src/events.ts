@@ -16,6 +16,10 @@ export const LOG = "log";
 export const AGENT_STARTED = "agent_started";
 export const AGENT_FINISHED = "agent_finished";
 export const AGENT_FAILED = "agent_failed";
+// exec() command steps (ODW extension): finished means exit 0, failed anything else.
+export const COMMAND_STARTED = "command_started";
+export const COMMAND_FINISHED = "command_finished";
+export const COMMAND_FAILED = "command_failed";
 
 export interface WorkflowEvent {
   ts: number;

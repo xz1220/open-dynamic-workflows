@@ -3,10 +3,20 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="color-scheme" content="light dark" />
 <title>Open Dynamic Workflows</title>
-<link rel="preconnect" href="https://fonts.googleapis.com" />
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-<link href="https://fonts.googleapis.com/css2?family=Gaegu:wght@400;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
+<meta name="description" content="Open Dynamic Workflows — the live dashboard for your coding-agent fleet." />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='14' fill='%2300b26a'/%3E%3C/svg%3E" />
+<script>
+  // Resolve the theme before first paint so a dark preference never flashes paper.
+  (function () {
+    var d = document.documentElement, t = null, m = null;
+    try { t = localStorage.getItem("odw.theme"); m = localStorage.getItem("odw.motion"); } catch (e) {}
+    var mq = function (q) { return window.matchMedia && window.matchMedia(q).matches; };
+    d.dataset.theme = t === "light" || t === "dark" ? t : mq("(prefers-color-scheme: dark)") ? "dark" : "light";
+    d.dataset.motion = m === "full" || m === "reduced" ? m : mq("(prefers-reduced-motion: reduce)") ? "reduced" : "full";
+  })();
+</script>
 <style>/*INLINE_CSS*/</style>
 </head>
 <body>

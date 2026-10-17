@@ -1,7 +1,18 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { array, describeSchema, enumOf, extractJson, number, obj, string, validate } from "../src/schema.js";
+import {
+  array,
+  boolean,
+  describeSchema,
+  enumOf,
+  extractJson,
+  pickJson,
+  number,
+  obj,
+  string,
+  validate,
+} from "../src/schema.js";
 
 test("extractJson: a fenced ```json block", () => {
   assert.deepEqual(extractJson('here:\n```json\n{"a":1}\n```\ndone'), { a: 1 });
@@ -21,6 +32,63 @@ test("extractJson: no JSON -> undefined", () => {
 
 test("extractJson: braces inside strings don't break the span", () => {
   assert.deepEqual(extractJson('prefix {"s": "a } b { c"} suffix'), { s: "a } b { c" });
+});
+
+const OK_SCHEMA = obj({ ok: boolean() });
+
+test("extractJson: an inline {mention} ahead of the answer does not mask it", () => {
+  const reply = 'I edited `{config}` and `[section]` as asked. Result: {"ok": true}';
+  assert.deepEqual(extractJson(reply, OK_SCHEMA), { ok: true });
+  assert.deepEqual(extractJson(reply), { ok: true }, "every top-level span is a candidate, not just the first");
+});
+
+test("extractJson: a json-tagged block beats an earlier plain block", () => {
+  const reply = 'Count:\n```\n42\n```\nAnswer:\n```json\n{"ok": true}\n```';
+  assert.deepEqual(extractJson(reply, OK_SCHEMA), { ok: true });
+  assert.deepEqual(extractJson(reply), { ok: true });
+});
+
+test("extractJson: the first candidate that satisfies the schema wins, whatever its position", () => {
+  // The later span parses but is not the answer; the earlier one validates.
+  const reply = 'Answer: {"ok": false}. (Earlier I had sent {"draft": 1}.)';
+  assert.deepEqual(extractJson(reply, OK_SCHEMA), { ok: false });
+});
+
+test("pickJson: two different valid values are ambiguous — retried, never guessed", () => {
+  // An example next to the answer: neither position is a safe tiebreak.
+  const twoBlocks = 'Example:\n```json\n{"ok": false}\n```\nMine:\n```json\n{"ok": true}\n```';
+  const pick = pickJson(twoBlocks, OK_SCHEMA);
+  assert.equal(pick.value, undefined);
+  assert.match(pick.problems[0]!, /2 different JSON values .* exactly one/);
+  // The review's case: real findings first, then an inline illustration.
+  const findings = { type: "object", required: ["issues"], properties: { issues: { type: "array" } } };
+  const reply = 'Result: {"issues": ["race in retry"]} (a clean run would be {"issues": []})';
+  assert.equal(pickJson(reply, findings).value, undefined);
+  // The same value twice (a fence and its bare span) is not ambiguous.
+  const same = 'Here:\n```json\n{"ok": true}\n```';
+  assert.deepEqual(pickJson(same, OK_SCHEMA), { value: { ok: true }, problems: [] });
+  // A json-tagged fence outranks bare spans in the prose around it.
+  const tiered = 'Note {"ok": false} was wrong.\n```json\n{"ok": true}\n```';
+  assert.deepEqual(pickJson(tiered, OK_SCHEMA).value, { ok: true });
+});
+
+test("pickJson: with nothing valid, the closest candidate's problems are reported", () => {
+  const schema = { type: "object", required: ["answer", "confidence"], properties: { answer: { type: "string" }, confidence: { type: "number" } } };
+  const pick = pickJson('{"answer": "42"} — see [1]', schema);
+  assert.deepEqual(pick.value, { answer: "42" });
+  assert.ok(pick.problems.some((p) => /confidence/.test(p)), pick.problems.join("; "));
+});
+
+test("extractJson: with nothing valid, the best parsed candidate comes back for error reporting", () => {
+  assert.deepEqual(extractJson('Here: {"ok": "yes"}', OK_SCHEMA), { ok: "yes" });
+  assert.equal(extractJson("no json at all", OK_SCHEMA), undefined);
+});
+
+test("extractJson: pathological unclosed brackets stay cheap", () => {
+  const started = Date.now();
+  assert.equal(extractJson("{".repeat(500_000), OK_SCHEMA), undefined);
+  assert.deepEqual(extractJson("{}".repeat(100_000) + '{"ok": true}', OK_SCHEMA), { ok: true });
+  assert.ok(Date.now() - started < 2000, `extraction took ${Date.now() - started}ms`);
 });
 
 test("validate: object required + nested array of strings", () => {

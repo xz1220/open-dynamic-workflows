@@ -2,28 +2,73 @@
  * Workflow worker (L5): load one script and run it to completion.
  *
  * The back end. It runs in its own Node process (started by the launcher), so
- * the workflow holds its entire plan in local variables while only the final
- * return value is written back to the run directory. Exactly one run executes
- * per worker process.
+ * the workflow holds its entire plan in local variables; what is written back
+ * to the run directory is each completed agent's result (as it lands) and the
+ * final return value. A resumed run (meta.resumedFrom) first loads its source
+ * run's saved results, so unchanged agent() calls replay instead of running.
+ * Exactly one run executes per worker process.
  *
  * `executeRun` is also callable in-process (that is how tests exercise the full
  * stack without spawning a subprocess).
  */
 
 import { readFileSync } from "node:fs";
+import { constants } from "node:os";
 import { basename, dirname } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { loadConfig } from "../adapters/config.js";
+import { killAllAgentProcesses } from "../adapters/runner.js";
+import type { RunEndState } from "../adapters/types.js";
 import { buildContext, spentTokens, type RunContext } from "../context.js";
-import { RunStopped } from "../errors.js";
+import { RunStopped, WorkflowScriptError, isFatalError } from "../errors.js";
 import { LOG, RUN_FAILED, RUN_FINISHED, RUN_STARTED, RUN_STOPPED, event } from "../events.js";
+import { ReplayJournal } from "../journal.js";
 import { loadWorkflowScript } from "../loader.js";
 import { createPrimitives } from "../primitives.js";
+import type { Scheduler } from "../scheduler.js";
 import { FileControl } from "./file-control.js";
+import { notifyRunEnd } from "./notify.js";
 import { JsonlSink, RunStore } from "./run-store.js";
 
-/** Run the workflow described by `runDir`; return its terminal state. */
+/**
+ * Once a run has failed or stopped, how long its remaining agents get to die
+ * and remove their worktrees before the worker kills what is left and moves on.
+ */
+const ABORT_DRAIN_MS = 10_000;
+
+/** Signals that would otherwise kill the worker on the spot. */
+const STOP_SIGNALS = ["SIGTERM", "SIGINT", "SIGHUP"] as const;
+
+/**
+ * After a stop signal, how long the run gets to end on its own — agents
+ * killed, worktrees removed, the outcome recorded, the hooks run — before the
+ * worker kills what is left and exits.
+ */
+const SIGNAL_GRACE_MS = 10_000;
+
+/**
+ * Run the workflow described by `runDir`; return its terminal state.
+ *
+ * While the run executes, a stray rejection or exception from the workflow (a
+ * promise nobody handles, a throw inside a timer callback) fails the run
+ * instead of killing the process and leaving the run "running" forever. The
+ * listeners are process-wide, which is fine for the one run a worker executes.
+ *
+ * Agents still running when the run ends are aborted (or, after a normal
+ * return, awaited) before the outcome is recorded, and a process 'exit'
+ * listener kills any that remain while the run executes — an agent must never
+ * outlive its worker and keep editing the repository unsupervised.
+ *
+ * SIGTERM, SIGINT and SIGHUP are handled for the same reason: agents lead
+ * their own process groups, so a worker killed outright would orphan them. The
+ * first such signal stops the run like `odw stop`; a second one, or the run
+ * not ending within SIGNAL_GRACE_MS, kills every agent process, records the
+ * run stopped if it was not yet, and exits the process.
+ *
+ * Once the outcome is on disk, the configured run-end hooks (`notify`) fire;
+ * they are bounded and never throw, so they cannot change the returned state.
+ */
 export async function executeRun(runDir: string): Promise<string> {
   const store = new RunStore(dirname(runDir));
   const runId = basename(runDir);
@@ -40,6 +85,30 @@ export async function executeRun(runDir: string): Promise<string> {
   const dispatched = () => ctx?.scheduler.dispatched ?? 0;
   const spent = () => (ctx ? spentTokens(ctx.usage) : 0);
 
+  // Set right after the terminal state is written; the run then only has its hooks left.
+  let end: { state: RunEndState; error?: string } | undefined;
+  const crashes = watchProcessCrashes();
+  const signals = watchStopSignals({
+    stop: (signal) => {
+      if (end) return; // only the hooks are left; the grace period bounds them
+      const reason = new RunStopped(`worker received ${signal}`);
+      sink.emit(event(LOG, { message: `${reason.message} — stopping the run` }));
+      ctx?.scheduler.abort(reason);
+    },
+    force: (signal, why) => {
+      killAllAgentProcesses();
+      if (!end) {
+        sink.emit(event(LOG, { message: `${why} — killing the agents and exiting` }));
+        sink.emit(event(RUN_STOPPED, { runId }));
+        store.updateStatus(runId, { state: "stopped", dispatched: dispatched(), spentTokens: spent() });
+      } else {
+        // Nothing may follow the terminal event in events.jsonl: say it in worker.log.
+        process.stderr.write(`odw: ${why} — exiting before the run-end hooks finished\n`);
+      }
+      process.exit(128 + constants.signals[signal]);
+    },
+  });
+  process.on("exit", killAllAgentProcesses);
   try {
     const baseConfig = loadConfig((meta.configPath as string | null) ?? null);
     // Run-level adapter override (meta.adapter): becomes this run's default for
@@ -54,16 +123,28 @@ export async function executeRun(runDir: string): Promise<string> {
       readAction: () => store.readControl(runId),
       onState: (state) => store.updateStatus(runId, { state, dispatched: dispatched(), spentTokens: spent() }),
     });
+    const replay = replayJournal(meta);
     ctx = buildContext(config, {
       source: meta.source as string | undefined,
       args,
       sink,
       control,
       budgetTotal: (meta.budgetTotal as number | null) ?? null,
+      // Each completed agent's result lands in agents/<agentId>.json at once,
+      // so a run that stalls, is stopped, or dies keeps its finished work.
+      saveAgentResult: (rec) => store.writeAgentResult(runId, rec),
+      replay,
     });
 
     store.updateStatus(runId, { state: "running", pid: process.pid });
     sink.emit(event(RUN_STARTED, { runId }));
+    if (replay) {
+      sink.emit(
+        event(LOG, {
+          message: `resuming ${replay.sourceRunId}: unchanged agent() calls replay its ${replay.size} saved result(s)`,
+        }),
+      );
+    }
 
     const source = readFileSync(script, "utf8");
     const loaded = loadWorkflowScript(source, script);
@@ -91,24 +172,148 @@ export async function executeRun(runDir: string): Promise<string> {
       phases: loaded.meta.phases,
     });
     const primitives = createPrimitives(ctx);
-    const result = await loaded.run(primitives, args);
+    const result = await crashes.race(loaded.run(primitives, args));
+    // Agents the script started but never awaited are still this run's work:
+    // let them finish (and clean up their worktrees) before recording it.
+    await crashes.race(ctx.scheduler.drain());
+    // A fatal error (stop, budget, dispatch cap, config) decides the outcome
+    // even when the script caught it and returned anyway — a stopped run must
+    // not read "done". The return value is not kept: result.json is written
+    // for successful runs only.
+    const fatal = ctx.scheduler.fatalError;
+    if (fatal !== undefined) {
+      sink.emit(
+        event(LOG, {
+          message: `the workflow returned after the run ended (${errorMessage(fatal)}); its return value is discarded`,
+        }),
+      );
+      throw fatal;
+    }
 
     store.writeResult(runId, result);
     sink.emit(event(RUN_FINISHED, { runId }));
     store.updateStatus(runId, { state: "done", dispatched: dispatched(), spentTokens: spent() });
-    return "done";
+    end = { state: "done" };
   } catch (err) {
-    if (err instanceof RunStopped) {
+    // The first fatal error is the root cause, even when the script swallowed
+    // it and later failed for another reason (still worth a log line).
+    const outcome = ctx?.scheduler.fatalError ?? err;
+    if (outcome !== err) {
+      sink.emit(event(LOG, { message: `after the run ended, the workflow also failed: ${errorMessage(err)}` }));
+    }
+    if (ctx) await stopAgents(ctx.scheduler, outcome);
+    if (outcome instanceof RunStopped) {
       sink.emit(event(RUN_STOPPED, { runId }));
       store.updateStatus(runId, { state: "stopped", dispatched: dispatched(), spentTokens: spent() });
-      return "stopped";
+      end = { state: "stopped", error: outcome.message };
+    } else {
+      // A script may throw anything — `throw null` included — so never read
+      // properties off the outcome without checking what it is.
+      const message = errorMessage(outcome);
+      const stack = outcome instanceof Error ? (outcome.stack ?? null) : null;
+      sink.emit(event(RUN_FAILED, { runId, error: message }));
+      store.writeError(runId, { error: message, stack });
+      store.updateStatus(runId, { state: "failed", dispatched: dispatched(), spentTokens: spent() });
+      end = { state: "failed", error: message };
     }
-    const e = err as Error;
-    sink.emit(event(RUN_FAILED, { runId, error: e.message ?? String(err) }));
-    store.writeError(runId, { error: e.message ?? String(err), stack: e.stack ?? null });
-    store.updateStatus(runId, { state: "failed", dispatched: dispatched(), spentTokens: spent() });
-    return "failed";
+  } finally {
+    process.off("exit", killAllAgentProcesses);
+    crashes.dispose();
+    if (!end) signals.dispose(); // the run itself threw: no hooks follow
   }
+  // The outcome is on disk; only now do the run-end hooks fire.
+  try {
+    await notifyRunEnd(ctx?.config.settings.notify ?? null, { store, runId, ...end }, {
+      cwd: typeof meta.source === "string" ? meta.source : undefined,
+    });
+  } finally {
+    signals.dispose();
+  }
+  return end.state;
+}
+
+/**
+ * The run is over, but agents may still be in flight (siblings of the failure,
+ * agents the script never awaited). Abort them, give their worktree cleanup a
+ * bounded moment, then kill whatever is left.
+ */
+async function stopAgents(scheduler: Scheduler, err: unknown): Promise<void> {
+  scheduler.abort(isFatalError(err) ? err : new RunStopped(`the workflow failed: ${errorMessage(err)}`));
+  if (!(await scheduler.drain(ABORT_DRAIN_MS))) killAllAgentProcesses();
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * The saved agent results of the run this one resumes (meta.resumedFrom), read
+ * from that run's own directory; undefined for a run that resumes nothing.
+ */
+function replayJournal(meta: Record<string, unknown>): ReplayJournal | undefined {
+  if (typeof meta.resumedFrom !== "string" || meta.resumedFrom === "") return undefined;
+  const dir = typeof meta.resumedFromDir === "string" ? meta.resumedFromDir : null;
+  const records = dir ? new RunStore(dirname(dir)).listAgentResults(basename(dir)) : [];
+  return new ReplayJournal(meta.resumedFrom, records);
+}
+
+/**
+ * Route process-level failures (unhandled rejections, uncaught exceptions) into
+ * a rejection the run can record: `race` settles with the first of `work` and
+ * a crash. Listening stops at `dispose`.
+ */
+function watchProcessCrashes(): { race<T>(work: Promise<T>): Promise<T>; dispose(): void } {
+  let fail!: (err: unknown) => void;
+  const crashed = new Promise<never>((_, reject) => (fail = reject));
+  crashed.catch(() => {}); // observed only through race()
+  const onRejection = (reason: unknown): void => fail(crashError("an unhandled promise rejection", reason));
+  const onException = (error: unknown): void => fail(crashError("an uncaught exception", error));
+  process.on("unhandledRejection", onRejection);
+  process.on("uncaughtException", onException);
+  return {
+    race: (work) => Promise.race([work, crashed]),
+    dispose: () => {
+      process.off("unhandledRejection", onRejection);
+      process.off("uncaughtException", onException);
+    },
+  };
+}
+
+/**
+ * Handle the stop signals while a run executes (see executeRun): `stop` on the
+ * first; `force` on a second, or once SIGNAL_GRACE_MS have passed since the
+ * first. Listening ends at `dispose`.
+ */
+function watchStopSignals(handlers: {
+  stop(signal: NodeJS.Signals): void;
+  force(signal: NodeJS.Signals, why: string): void;
+}): { dispose(): void } {
+  let first: NodeJS.Signals | undefined;
+  let deadline: NodeJS.Timeout | undefined;
+  const onSignal = (signal: NodeJS.Signals): void => {
+    if (first) {
+      return handlers.force(signal, `worker received ${signal} ${signal === first ? "again" : `after ${first}`}`);
+    }
+    first = signal;
+    deadline = setTimeout(
+      () => handlers.force(signal, `the run did not stop within ${SIGNAL_GRACE_MS / 1000}s of ${signal}`),
+      SIGNAL_GRACE_MS,
+    );
+    handlers.stop(signal);
+  };
+  for (const signal of STOP_SIGNALS) process.on(signal, onSignal);
+  return {
+    dispose: () => {
+      clearTimeout(deadline);
+      for (const signal of STOP_SIGNALS) process.off(signal, onSignal);
+    },
+  };
+}
+
+function crashError(kind: string, cause: unknown): WorkflowScriptError {
+  const error = new WorkflowScriptError(`the workflow crashed with ${kind}: ${errorMessage(cause)}`);
+  if (cause instanceof Error && cause.stack) error.stack = cause.stack;
+  return error;
 }
 
 async function main(argv: string[]): Promise<number> {

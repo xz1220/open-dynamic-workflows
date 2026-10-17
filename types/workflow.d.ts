@@ -10,7 +10,9 @@
  *
  * Adjust the path for your script. The script still ships as untyped `.js`.
  * These types describe ODW's authoring surface, not full Claude runtime parity;
- * scripts run as trusted JavaScript, without a sandbox or crash-result replay.
+ * scripts run as trusted JavaScript, without a sandbox. Each completed agent()
+ * result is saved with its run, and `odw resume` replays the unchanged calls of
+ * an ended run instead of running them again (an ODW CLI extension).
  */
 
 export {};
@@ -48,7 +50,11 @@ declare global {
   /** The workflow's input value, injected verbatim. */
   const args: unknown;
 
-  /** Run one coding agent; returns reply text or a validated JSON value, not a worktree diff. */
+  /**
+   * Run one coding agent; returns reply text or a validated JSON value, not a worktree diff.
+   * Saved as soon as it completes; under `odw resume`, a call with the same prompt and
+   * options (phase aside) returns its saved value instead of running again.
+   */
   function agent(prompt: string, opts?: AgentOptions): Promise<any>;
 
   /** Ordered barrier: recoverable failures become null; fatal stop/budget/dispatch-cap/configuration errors propagate after all thunks settle. */
@@ -66,13 +72,59 @@ declare global {
   /** Emit a one-line progress message. */
   function log(message: unknown): void;
 
-  /** Estimated output budget; checked before dispatch, without killing calls already running. */
+  /** Estimated output budget; checked before each dispatch and schema retry — once spent, the run ends and running agents are stopped. */
   const budget: Budget;
 
   /** Inline child sharing scheduler, controls, and budget; only one level. scriptPath is relative to the run source. */
   function workflow(nameOrRef: string | { scriptPath: string }, args?: unknown): Promise<any>;
 
-  /** ODW extension for trusted source: loads/evaluates meta without running the body. Warnings are advisory; a script's own validate binding takes precedence. */
+  /** Options for {@link exec} (ODW extension). */
+  interface ExecOptions {
+    /** Working directory; a relative path resolves against the run's source directory, which is also the default. */
+    cwd?: string;
+    /** Extra environment variables, layered over the worker's environment. */
+    env?: Record<string, string>;
+    /** Seconds before the command and every process it started are killed (default 600); the result then has `timedOut`. */
+    timeout?: number;
+    /** Text written to the command's stdin; without it, stdin is closed at once. */
+    input?: string;
+    /** Bytes kept per stream, stdout and stderr each (default 8 MiB); the rest is dropped and `truncated` is set. Never fatal. */
+    maxOutputBytes?: number;
+    /** Short label for progress display; defaults to the first 40 characters of the command. */
+    label?: string;
+    /** Override the current phase for this one step (use inside parallel/pipeline). */
+    phase?: string;
+    /** Throw an `ExecError` (recoverable, carrying `.result`) unless the command exits 0. */
+    check?: boolean;
+  }
+
+  /** What {@link exec} resolves to. */
+  interface ExecResult {
+    stdout: string;
+    stderr: string;
+    /** The exit status; null when a signal ended the command (a timeout kill included). 127/126: it could not be launched. */
+    exitCode: number | null;
+    /** The signal that ended the command (e.g. "SIGKILL" after a timeout), else null. */
+    signal: string | null;
+    timedOut: boolean;
+    /** stdout or stderr went over `maxOutputBytes` and was cut. */
+    truncated: boolean;
+    durationMs: number;
+  }
+
+  /**
+   * ODW extension — not portable to Claude Code, whose Workflow tool has no such
+   * global. Runs a command without launching a model: a string through the
+   * platform shell (`/bin/sh -c`, or `cmd.exe /d /s /c` on Windows), an array
+   * as argv with no shell. Asynchronous; a non-zero exit is a result, not an
+   * error, unless `check` is set. Takes no agent slot and does not count toward
+   * maxAgents or the budget, but waits while the run is paused, and a stop kills
+   * it with every process it started. A script's own `exec` binding takes
+   * precedence over this one.
+   */
+  function exec(command: string | string[], opts?: ExecOptions): Promise<ExecResult>;
+
+  /** ODW extension: parses meta as a pure literal (never evaluated) and compile-checks the body without running it. Warnings are advisory; a script's own validate binding takes precedence. */
   function validate(source: string): {
     ok: boolean;
     meta?: {

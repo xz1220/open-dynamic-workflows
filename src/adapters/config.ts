@@ -22,9 +22,20 @@ import { dirname, join } from "node:path";
 import { AdapterNotFound, ConfigError } from "../errors.js";
 import { BUILTIN_ADAPTERS, DEFAULT_SETTINGS, type RawAdapter } from "./builtin.js";
 import { isOnPath } from "./executable.js";
-import type { Adapter, AdapterFlags, AdapterOutput, Config, Settings } from "./types.js";
+import type {
+  Adapter,
+  AdapterFlags,
+  AdapterOutput,
+  Config,
+  NotifySettings,
+  RunEndState,
+  Settings,
+} from "./types.js";
 
 export const CONFIG_ENV_VAR = "ODW_CONFIG";
+
+/** Every terminal run state, in display order: what `notify.on` defaults to. */
+export const RUN_END_STATES: readonly RunEndState[] = ["done", "failed", "stopped"];
 
 /**
  * Load configuration, merging any discovered file over the built-ins.
@@ -58,14 +69,19 @@ const KNOWN_TOP_KEYS = [
   "concurrency",
   "maxAgents",
   "timeout",
+  "stallTimeout",
+  "stallRestarts",
   "schemaRetries",
   "runsRoot",
   "workflowsRoot",
   "claudeWorkflowsRoot",
   "claudeJobsScope",
+  "notify",
 ] as const;
 
-const KNOWN_ADAPTER_KEYS = ["command", "stdin", "env", "timeout", "label", "flags", "output"] as const;
+const KNOWN_ADAPTER_KEYS = ["command", "stdin", "env", "timeout", "stallTimeout", "label", "flags", "output"] as const;
+
+const KNOWN_NOTIFY_KEYS = ["command", "webhook", "on"] as const;
 
 /**
  * Lint a parsed config object for keys odw would silently ignore.
@@ -96,18 +112,33 @@ export function collectConfigWarnings(raw: Record<string, unknown>): string[] {
     warnings.push(`unknown key "${key}" is ignored${guess ? ` — did you mean "${guess}"?` : ""}`);
   }
   const adapters = raw.adapters;
-  if (adapters !== null && typeof adapters === "object" && !Array.isArray(adapters)) {
-    for (const [name, spec] of Object.entries(adapters as Record<string, unknown>)) {
-      if (spec === null || typeof spec !== "object" || Array.isArray(spec)) continue;
-      for (const key of Object.keys(spec)) {
-        if ((KNOWN_ADAPTER_KEYS as readonly string[]).includes(key)) continue;
-        if (key.startsWith("$") || key.startsWith("//")) continue;
-        const guess = nearestKey(key, KNOWN_ADAPTER_KEYS);
-        warnings.push(
-          `adapter "${name}": unknown field "${key}" is ignored${guess ? ` — did you mean "${guess}"?` : ""}`,
-        );
-      }
+  if (isObject(adapters)) {
+    for (const [name, spec] of Object.entries(adapters)) {
+      if (isObject(spec)) warnings.push(...unknownFields(spec, KNOWN_ADAPTER_KEYS, `adapter "${name}"`));
     }
+  }
+  const notify = raw.notify;
+  if (isObject(notify)) {
+    warnings.push(...unknownFields(notify, KNOWN_NOTIFY_KEYS, "notify"));
+    if (notify.command == null && notify.webhook == null) {
+      warnings.push(`"notify" sets neither "command" nor "webhook", so no hook will fire`);
+    }
+  }
+  return warnings;
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+/** Warnings for the fields of a nested config object that odw would ignore. */
+function unknownFields(spec: Record<string, unknown>, known: readonly string[], where: string): string[] {
+  const warnings: string[] = [];
+  for (const key of Object.keys(spec)) {
+    if (known.includes(key)) continue;
+    if (key.startsWith("$") || key.startsWith("//")) continue;
+    const guess = nearestKey(key, known);
+    warnings.push(`${where}: unknown field "${key}" is ignored${guess ? ` — did you mean "${guess}"?` : ""}`);
   }
   return warnings;
 }
@@ -364,6 +395,15 @@ function expandHome(p: string): string {
   return p;
 }
 
+/**
+ * The config file `loadConfig` would read for these arguments — an explicit
+ * path, `$ODW_CONFIG`, then the discovered locations — or null for built-in
+ * defaults. Throws ConfigError when an explicit path or $ODW_CONFIG is missing.
+ */
+export function locateConfig(path?: string | null, cwd?: string): string | null {
+  return locate(path, cwd);
+}
+
 function readRaw(path?: string | null, cwd?: string): Record<string, unknown> {
   const located = locate(path, cwd);
   if (located === null) return {};
@@ -429,7 +469,22 @@ function buildAdapter(name: string, spec: RawAdapter): Adapter {
   if (spec.env !== undefined) {
     adapter.env = Object.fromEntries(Object.entries(spec.env).map(([k, v]) => [k, String(v)]));
   }
-  if (spec.timeout !== undefined) adapter.timeout = Number(spec.timeout);
+  // null means "not set": the adapter inherits the run-wide timeout.
+  if (spec.timeout !== undefined && spec.timeout !== null) {
+    adapter.timeout = numberSetting(`adapter '${name}' 'timeout'`, spec.timeout, "a positive number of seconds", {
+      min: 0,
+      exclusiveMin: true,
+    });
+  }
+  // Likewise for the stall watchdog; 0 turns it off for this CLI alone.
+  if (spec.stallTimeout !== undefined && spec.stallTimeout !== null) {
+    adapter.stallTimeout = numberSetting(
+      `adapter '${name}' 'stallTimeout'`,
+      spec.stallTimeout,
+      "a positive number of seconds, or 0 to turn the stall watchdog off",
+      { min: 0 },
+    );
+  }
   if (spec.label !== undefined) adapter.label = spec.label;
   if (spec.flags !== undefined) adapter.flags = buildFlags(name, spec.flags);
   if (spec.output !== undefined) adapter.output = buildOutput(name, spec.output);
@@ -483,25 +538,131 @@ function buildOutput(name: string, raw: unknown): AdapterOutput {
   };
 }
 
+/**
+ * Read a numeric config value: a JSON number or a numeric string ("8"), as
+ * before. Anything else — or a value out of range — is a {@link ConfigError}
+ * naming the key. Coercing blindly let `"concurrency": "auto"` become NaN,
+ * which deadlocked every dispatch; NaN timeouts and caps failed just as quietly.
+ */
+function numberSetting(
+  key: string,
+  raw: unknown,
+  expected: string,
+  rule: { min: number; exclusiveMin?: boolean; integer?: boolean },
+): number {
+  const value = typeof raw === "number" ? raw : typeof raw === "string" && raw.trim() ? Number(raw) : NaN;
+  const inRange = rule.exclusiveMin ? value > rule.min : value >= rule.min;
+  if (!Number.isFinite(value) || !inRange || (rule.integer && !Number.isInteger(value))) {
+    throw new ConfigError(`${key} must be ${expected}; got ${JSON.stringify(raw)}`);
+  }
+  return value;
+}
+
 function buildSettings(raw: Record<string, unknown>): Settings {
   const pick = <T>(key: keyof Settings, fallback: T): T =>
     raw[key as string] === undefined || raw[key as string] === null
       ? fallback
       : (raw[key as string] as T);
-  const numOrNull = (key: keyof Settings, fallback: number | null): number | null =>
-    raw[key as string] === undefined || raw[key as string] === null
-      ? fallback
-      : Number(raw[key as string]);
+  const num = <F extends number | null>(
+    key: keyof Settings,
+    fallback: F,
+    expected: string,
+    rule: { min: number; exclusiveMin?: boolean; integer?: boolean },
+  ): number | F => {
+    const value = raw[key as string];
+    return value === undefined || value === null ? fallback : numberSetting(`"${key}"`, value, expected, rule);
+  };
   return {
     defaultAdapter: pick("defaultAdapter", DEFAULT_SETTINGS.defaultAdapter),
-    concurrency: numOrNull("concurrency", DEFAULT_SETTINGS.concurrency),
-    maxAgents: Number(pick("maxAgents", DEFAULT_SETTINGS.maxAgents)),
-    timeout: numOrNull("timeout", DEFAULT_SETTINGS.timeout),
-    schemaRetries: Number(pick("schemaRetries", DEFAULT_SETTINGS.schemaRetries)),
+    concurrency: num("concurrency", DEFAULT_SETTINGS.concurrency, "a positive integer, or null for auto", {
+      min: 1,
+      integer: true,
+    }),
+    maxAgents: num("maxAgents", DEFAULT_SETTINGS.maxAgents, "a positive integer", { min: 1, integer: true }),
+    timeout: num("timeout", DEFAULT_SETTINGS.timeout, "a positive number of seconds, or null for no timeout", {
+      min: 0,
+      exclusiveMin: true,
+    }),
+    // 0 is accepted as "off", like null.
+    stallTimeout:
+      num(
+        "stallTimeout",
+        DEFAULT_SETTINGS.stallTimeout,
+        "a positive number of seconds, or null for no stall watchdog",
+        { min: 0 },
+      ) || null,
+    stallRestarts: num("stallRestarts", DEFAULT_SETTINGS.stallRestarts, "a non-negative integer", {
+      min: 0,
+      integer: true,
+    }),
+    schemaRetries: num("schemaRetries", DEFAULT_SETTINGS.schemaRetries, "a non-negative integer", {
+      min: 0,
+      integer: true,
+    }),
     runsRoot: pick("runsRoot", DEFAULT_SETTINGS.runsRoot),
     workflowsRoot: pick("workflowsRoot", DEFAULT_SETTINGS.workflowsRoot),
     claudeWorkflowsRoot: pick("claudeWorkflowsRoot", DEFAULT_SETTINGS.claudeWorkflowsRoot),
     // Only "project" narrows; anything else (incl. null/garbage) keeps the "all" default.
     claudeJobsScope: raw["claudeJobsScope"] === "project" ? "project" : DEFAULT_SETTINGS.claudeJobsScope,
+    notify: raw["notify"] == null ? DEFAULT_SETTINGS.notify : buildNotify(raw["notify"]),
   };
+}
+
+/**
+ * Validate and normalize the run-completion hooks (`notify`). Errors name the
+ * kind of a bad value rather than echoing it: hooks often carry a token.
+ */
+function buildNotify(raw: unknown): NotifySettings {
+  if (!isObject(raw)) {
+    throw new ConfigError(`"notify" must be an object with a "command" and/or a "webhook"; got ${kindOf(raw)}`);
+  }
+  const notify: NotifySettings = { command: null, webhook: null, on: [...RUN_END_STATES] };
+  const { command, webhook, on } = raw;
+  if (command != null) {
+    if (!Array.isArray(command) || !command.every((part) => typeof part === "string") || !command[0]) {
+      throw new ConfigError(
+        `"notify.command" must be a non-empty array of strings (an argv, run without a shell); got ${kindOf(command)}`,
+      );
+    }
+    notify.command = [...(command as string[])];
+  }
+  if (webhook != null) notify.webhook = buildWebhook(webhook);
+  if (on != null) {
+    if (!Array.isArray(on) || !on.every((state) => (RUN_END_STATES as readonly unknown[]).includes(state))) {
+      throw new ConfigError(`"notify.on" must be a list of "done", "failed", "stopped"; got ${JSON.stringify(on)}`);
+    }
+    notify.on = RUN_END_STATES.filter((state) => on.includes(state));
+  }
+  return notify;
+}
+
+/** Validate `notify.webhook`: an absolute http(s) URL that fetch() will accept. */
+function buildWebhook(raw: unknown): string {
+  let url: URL | null = null;
+  try {
+    url = typeof raw === "string" ? new URL(raw) : null;
+  } catch {
+    url = null;
+  }
+  if (!url || (url.protocol !== "http:" && url.protocol !== "https:")) {
+    const got = url
+      ? `a ${url.protocol} URL`
+      : typeof raw === "string"
+        ? "a string that is not an absolute URL"
+        : kindOf(raw);
+    throw new ConfigError(`"notify.webhook" must be an http(s) URL; got ${got}`);
+  }
+  if (url.username || url.password) {
+    // fetch() refuses such URLs outright: say so now, not when the first run ends.
+    throw new ConfigError(
+      `"notify.webhook" must not embed credentials (user:password@); keep a token in the path or query`,
+    );
+  }
+  return url.href;
+}
+
+/** The kind of a JSON value, for an error message that must not echo it. */
+function kindOf(raw: unknown): string {
+  if (Array.isArray(raw)) return raw.length ? "a list" : "an empty list";
+  return raw !== null && typeof raw === "object" ? "an object" : `a ${typeof raw}`;
 }

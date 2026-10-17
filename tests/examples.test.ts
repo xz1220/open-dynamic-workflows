@@ -7,7 +7,9 @@ import { join } from "node:path";
 import { execPath } from "node:process";
 import { fileURLToPath } from "node:url";
 
+import type { WorkflowEvent } from "../src/events.js";
 import { RunStore } from "../src/runtime/run-store.js";
+import { foldAgents } from "../src/runtime/runs-view.js";
 import { executeRun } from "../src/runtime/worker.js";
 
 const mockAgent = fileURLToPath(new URL("./fixtures/mock-agent.mjs", import.meta.url));
@@ -16,7 +18,8 @@ const exampleDir = fileURLToPath(new URL("../examples/", import.meta.url));
 async function runExample(
   file: string,
   args: unknown,
-): Promise<{ state: string; result: unknown; error: Record<string, unknown> | null }> {
+  agentCommand: string[] = [execPath, mockAgent],
+): Promise<{ state: string; result: unknown; error: Record<string, unknown> | null; events: WorkflowEvent[] }> {
   const root = mkdtempSync(join(tmpdir(), "odw-ex-"));
   // isolation:"worktree" (used by ultra-mode's lanes) needs a committed repo.
   execFileSync("git", ["-C", root, "init", "-q"]);
@@ -30,7 +33,7 @@ async function runExample(
         defaultAdapter: "mock",
         schemaRetries: 1,
         concurrency: 8,
-        adapters: { mock: { command: [execPath, mockAgent], stdin: "{prompt}" } },
+        adapters: { mock: { command: agentCommand, stdin: "{prompt}" } },
       }),
     );
     const store = new RunStore(root);
@@ -41,7 +44,7 @@ async function runExample(
       configPath: config,
     });
     const state = await executeRun(store.runDir(id));
-    return { state, result: store.readResult(id), error: store.readError(id) };
+    return { state, result: store.readResult(id), error: store.readError(id), events: store.readEvents(id) };
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -77,6 +80,53 @@ test("loop-until-dry.js runs bounded by maxRounds", async () => {
   const r = result as { rounds: number; discovered: unknown[] };
   assert.ok(r.rounds <= 2);
   assert.ok(Array.isArray(r.discovered));
+});
+
+// A suite that stays red until fixed.txt exists in the source dir, and a mock
+// fixer CLI that writes it only when its prompt carries the suite's failure.
+const SUITE =
+  "if(!require('fs').existsSync('fixed.txt')){console.error('1 failing: add() returns NaN');process.exit(1)}" +
+  "console.log('all green')";
+const FIXER =
+  "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{" +
+  "if(d.includes('add() returns NaN'))require('fs').writeFileSync('fixed.txt','1');" +
+  "process.stdout.write('patched add()')})";
+
+test("test-fix-loop.js runs the tests with exec(), fixes with an agent, and re-runs until green", async () => {
+  const { state, result, error, events } = await runExample(
+    "test-fix-loop.js",
+    { test: [execPath, "-e", SUITE], maxRounds: 3 },
+    [execPath, "-e", FIXER],
+  );
+  assert.equal(state, "done", JSON.stringify(error));
+  const r = result as { passed: boolean; rounds: number; history: Array<{ result: string; fix?: string }> };
+  assert.equal(r.passed, true, "the fixer saw the failure, and the re-run tested its edit");
+  assert.equal(r.rounds, 1, "one fix round, then green");
+  assert.deepEqual(r.history.map((h) => h.result), ["exit 1", "exit 0"]);
+  assert.equal(r.history[1]!.fix, "patched add()");
+  assert.deepEqual(
+    foldAgents(events).map((n) => [n.kind, n.label, n.state]),
+    [
+      ["command", "tests", "failed"],
+      ["agent", "fix r1", "done"],
+      ["command", "tests r1", "done"],
+    ],
+  );
+});
+
+test("test-fix-loop.js stops after maxRounds when the tests stay red", async () => {
+  const { state, result, error, events } = await runExample("test-fix-loop.js", {
+    test: [execPath, "-e", "console.error('still broken'); process.exit(1)"],
+    maxRounds: 2,
+  });
+  assert.equal(state, "done", JSON.stringify(error));
+  const r = result as { passed: boolean; rounds: number; history: unknown[] };
+  assert.equal(r.passed, false);
+  assert.equal(r.rounds, 2);
+  assert.equal(r.history.length, 3, "the first run plus one per fix round");
+  const nodes = foldAgents(events);
+  assert.equal(nodes.filter((n) => n.kind === "command").length, 3);
+  assert.equal(nodes.filter((n) => n.kind === "agent").length, 2);
 });
 
 test("routing.js classifies, routes, and grades", async () => {
@@ -153,4 +203,14 @@ test("agent-daily-digest.js runs end-to-end (discover -> extract -> synthesize -
   assert.ok(Array.isArray(r.digest.sections.progress), "digest has a progress section");
   assert.ok(Array.isArray(r.digest.sections.followups), "digest has a followups section");
   assert.ok(r.stats.sessions >= 1, "scanned at least one session");
+});
+
+test("review-swarm.js maps, reviews per lens, verifies every finding and summarizes", async () => {
+  const { state, result, error } = await runExample("review-swarm.js", { lenses: ["correctness", "security"] });
+  assert.equal(state, "done", JSON.stringify(error));
+  const r = result as { summary: unknown; confirmed: unknown[]; rejected: number; lenses: string[] };
+  assert.equal(typeof r.summary, "string");
+  assert.ok(Array.isArray(r.confirmed));
+  assert.equal(typeof r.rejected, "number");
+  assert.deepEqual(r.lenses, ["correctness", "security"]);
 });

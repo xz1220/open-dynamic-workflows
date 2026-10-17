@@ -14,6 +14,7 @@ import { Bridge } from "./bridge.js";
 import { NullControl, type Control } from "./control.js";
 import { BudgetExhausted } from "./errors.js";
 import { NullSink, type EventSink, type WorkflowEvent } from "./events.js";
+import type { AgentResultRecord, ReplayJournal } from "./journal.js";
 import { Scheduler } from "./scheduler.js";
 
 export interface RunContext {
@@ -40,7 +41,24 @@ export interface RunContext {
    * ids stay unique across the whole run.
    */
   seq: { value: number };
+  /**
+   * The same, for exec() command steps (the `commandId` event field): its own
+   * sequence, so agent ids keep numbering agent dispatches only.
+   */
+  commandSeq: { value: number };
   currentPhase: string | null;
+  /**
+   * Save a completed agent's record (the worker writes the run directory's
+   * `agents/<agentId>.json`). Absent where nothing is persisted (in-process
+   * runs). It may throw: the agent still succeeds, and the failure is logged.
+   */
+  saveAgentResult?: (rec: AgentResultRecord) => void;
+  /**
+   * `odw resume`: the source run's saved results, replayed by the agent()
+   * calls that are unchanged. Shared like `seq`, so a nested workflow()
+   * replays its calls too.
+   */
+  replay?: ReplayJournal;
   emit(ev: WorkflowEvent): void;
 }
 
@@ -55,12 +73,14 @@ export interface BuildContextOptions {
   sink?: EventSink;
   control?: Control;
   budgetTotal?: number | null;
+  saveAgentResult?: (rec: AgentResultRecord) => void;
+  replay?: ReplayJournal;
 }
 
 /** Wire a full run context from a config and the run's surroundings. */
 export function buildContext(config: Config, options: BuildContextOptions = {}): RunContext {
   const sink = options.sink ?? new NullSink();
-  const control = options.control ?? new NullControl();
+  const control: Control = options.control ?? new NullControl();
   const bridge = new Bridge(config, { source: options.source });
   const budgetTotal = options.budgetTotal ?? null;
   // The shared tally `budget.spent()` reads. Estimated (chars/4 of agent
@@ -69,7 +89,9 @@ export function buildContext(config: Config, options: BuildContextOptions = {}):
   const scheduler = new Scheduler({
     concurrency: resolveConcurrency(config.settings.concurrency),
     maxAgents: config.settings.maxAgents,
-    checkpoint: () => control.checkpoint(),
+    checkpoint: (signal) => control.checkpoint(signal),
+    // A stop must reach agents that are already running, not just the next dispatch.
+    watchStop: control.watchStop ? (onStop) => control.watchStop!(onStop) : undefined,
     budgetGuard: () => {
       if (budgetTotal !== null && spentTokens(usage) >= budgetTotal) {
         throw new BudgetExhausted(
@@ -89,7 +111,10 @@ export function buildContext(config: Config, options: BuildContextOptions = {}):
     budgetTotal,
     usage,
     seq: { value: 0 },
+    commandSeq: { value: 0 },
     currentPhase: null,
+    saveAgentResult: options.saveAgentResult,
+    replay: options.replay,
     emit(ev: WorkflowEvent): void {
       sink.emit(ev);
     },

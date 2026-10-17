@@ -9,7 +9,9 @@
       content="Open Dynamic Workflows is a TypeScript CLI runtime for Claude Code-style dynamic workflows across Codex, Claude Code, Gemini, Qwen, Kimi, and custom coding-agent CLIs. Open Dynamic Workflows 是面向 coding agent 的动态工作流运行时。"
     />
     <meta name="robots" content="index,follow" />
-    <meta name="theme-color" content="#FBFAF6" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" content="#f3f1ea" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#0d0e0c" media="(prefers-color-scheme: dark)" />
     <link rel="canonical" href="https://xz1220.github.io/open-dynamic-workflows/" />
 
     <meta property="og:type" content="website" />
@@ -45,116 +47,326 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=Gaegu:wght@400;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500&display=swap"
       rel="stylesheet"
     />
 
     <style>
       /* ==================================================================
-         Open Dynamic Workflows — landing page. Paper / blueprint theme.
-         Tokens + components ported from web/src/theme.css and the
-         approved odw-client-mockup.html (the shipped visual spec).
+         Open Dynamic Workflows — landing page.
+
+         "Paper, ink & signal", the dashboard's design language
+         (web/src/styles/tokens.css + friends) brought to the public site:
+         warm paper and near-black ink carry everything; one signal green
+         means alive, vermilion means broken, amber means waiting. Display
+         type is Instrument Serif (headlines, numerals); machine facts are
+         monospace. Night follows prefers-color-scheme: the same three inks
+         on carbon. No framework, no images: the hero is HTML/CSS/SVG.
          ================================================================== */
-      :root {
-        color-scheme: light;
-        --bg: #fbfaf6;
-        --surface: #ffffff;
-        --alt: #f4f4f1;
-        --sunken: #fcfcfc;
-        --ink: #111111;
-        --muted: #707070;
-        --faint: #b8b8b8;
-        --hair: #e8e8e8;
-        --soft: #f3f3f3;
-        --node-border: #d7d7d7;
-        --node-active: #111111;
-        --grid: rgba(0, 0, 0, 0.05);
-        --green: #10b981;
-        --green-deep: #0a7d57;
-        --green-bright: #22d89a;
-        --green-tint: #f0fbf6;
-        --green-tint-border: #bfe6d5;
-        --amber: #f59e0b;
-        --amber-ink: #92610c;
-        --amber-tint: #fdf8ee;
-        --amber-border: #f3e2bd;
-        --red: #ef4444;
-        --red-deep: #b42318;
-        --red-tint: #fdf1f0;
-        --red-border: #f4c7c2;
-        --orange: #f97316;
-        --orange-ink: #9a3412;
-        --orange-tint: #fdf1ea;
-        --orange-border: #f6d4bd;
-        --blue: #2563a8;
-        --done: #7e8d84;
-        --done-paper: #c0c0c0;
-        --cancel: #9aa0a6;
-        --stage-bg: #0e1311;
-        --stage-body: #c9d1cf;
-        --stage-muted: #9fb0a6;
-        --stage-comment: #5c6a62;
-        --max: 1200px;
-        --sans: "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-        --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-        --display: "Gaegu", "Inter", system-ui, sans-serif;
+
+      /* Instrument Serif stand-in while the web font loads (or if it never
+         does): a Times-metric face scaled to its advance widths, so headline
+         line breaks — and the layout under them — do not move on swap. */
+      @font-face {
+        font-family: "Instrument Serif Fallback";
+        src: local("Times New Roman"), local("TimesNewRomanPSMT"), local("Liberation Serif"), local("LiberationSerif"),
+          local("Tinos");
+        font-style: normal;
+        font-weight: 400;
+        size-adjust: 82.5%;
+        ascent-override: 120%;
+        descent-override: 37.58%;
+        line-gap-override: 0%;
+      }
+      @font-face {
+        font-family: "Instrument Serif Fallback";
+        src: local("Times New Roman Italic"), local("TimesNewRomanPS-ItalicMT"), local("Liberation Serif Italic"),
+          local("LiberationSerif-Italic"), local("Tinos Italic");
+        font-style: italic;
+        font-weight: 400;
+        size-adjust: 86.2%;
+        ascent-override: 114.85%;
+        descent-override: 35.96%;
+        line-gap-override: 0%;
       }
 
-      * {
+      /* ---------- tokens (mirrors web/src/styles/tokens.css) ---------- */
+      :root {
+        --f-display: "Instrument Serif", "Instrument Serif Fallback", "Iowan Old Style", "Songti SC", "Noto Serif CJK SC",
+          "Source Han Serif SC", Georgia, serif;
+        --f-ui: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, "Helvetica Neue", "PingFang SC",
+          "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+        --f-mono: "JetBrains Mono", "SF Mono", ui-monospace, "Cascadia Code", Menlo, Consolas, "Liberation Mono", monospace;
+
+        --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
+        --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+        --t-fast: 140ms;
+        --t-med: 260ms;
+        --t-slow: 520ms;
+
+        --r-xs: 6px;
+        --r-sm: 9px;
+        --r-md: 13px;
+        --r-lg: 18px;
+        --wide: 1376px;
+
+        --paper: #f3f1ea;
+        --paper-2: #ebe8df;
+        --card: #fdfcf9;
+        --card-2: #f8f6f1;
+        --ink: #131311;
+        --ink-2: #33322d;
+        --mute: #6e6b62;
+        --mute-on-2: #5f5c54;
+        --faint: #8c887c;
+        --line: #e0dcd1;
+        --line-2: #cdc8bb;
+        --grid: rgba(19, 19, 17, 0.055);
+        --shade: rgba(19, 19, 17, 0.06);
+        --shadow-1: 0 1px 0 rgba(19, 19, 17, 0.04), 0 1px 2px rgba(19, 19, 17, 0.05);
+        --shadow-2: 0 1px 0 rgba(19, 19, 17, 0.04), 0 8px 24px -10px rgba(19, 19, 17, 0.18);
+        --shadow-3: 0 24px 64px -18px rgba(19, 19, 17, 0.32), 0 2px 6px rgba(19, 19, 17, 0.06);
+
+        --sig: #00b26a;
+        --sig-ink: #057a4a;
+        --sig-soft: rgba(0, 178, 106, 0.11);
+        --sig-line: rgba(0, 178, 106, 0.38);
+        --sig-glow: rgba(0, 178, 106, 0.28);
+        --alarm: #ec4320;
+        --alarm-ink: #b02b10;
+        --alarm-soft: rgba(236, 67, 32, 0.09);
+        --alarm-line: rgba(236, 67, 32, 0.4);
+        --amber: #df930a;
+        --amber-ink: #87580a;
+        --amber-soft: rgba(223, 147, 10, 0.11);
+        --amber-line: rgba(223, 147, 10, 0.45);
+        --clay: #c2603c;
+        --clay-soft: rgba(194, 96, 60, 0.1);
+
+        --code-bg: #171815;
+        --code-edge: #171815;
+        --code-ink: #e7e6df;
+        --code-dim: #6f7268;
+        --code-note: #9b9c93;
+        --code-kw: #8fb6ff;
+        --code-str: #84e0a8;
+        --code-fn: #e2b4ff;
+        --code-num: #f5c46b;
+
+        --grain: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='180' height='180'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 .055 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
+        color-scheme: light;
+      }
+
+      /* Night: the same print, inverted onto carbon. */
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --paper: #0d0e0c;
+          --paper-2: #090a08;
+          --card: #141613;
+          --card-2: #181a17;
+          --ink: #edede6;
+          --ink-2: #c8c9c0;
+          --mute: #8b8e84;
+          --mute-on-2: #8b8e84;
+          --faint: #6c7066;
+          --line: #242722;
+          --line-2: #30342d;
+          --grid: rgba(237, 237, 230, 0.045);
+          --shade: rgba(237, 237, 230, 0.05);
+          --shadow-1: 0 1px 0 rgba(0, 0, 0, 0.4);
+          --shadow-2: 0 10px 30px -12px rgba(0, 0, 0, 0.7);
+          --shadow-3: 0 30px 80px -20px rgba(0, 0, 0, 0.85), 0 0 0 1px rgba(255, 255, 255, 0.04);
+
+          --sig: #2ee88e;
+          --sig-ink: #5cf5aa;
+          --sig-soft: rgba(46, 232, 142, 0.1);
+          --sig-line: rgba(46, 232, 142, 0.38);
+          --sig-glow: rgba(46, 232, 142, 0.35);
+          --alarm: #ff5b39;
+          --alarm-ink: #ff8a6e;
+          --alarm-soft: rgba(255, 91, 57, 0.1);
+          --alarm-line: rgba(255, 91, 57, 0.45);
+          --amber: #ffb224;
+          --amber-ink: #ffc964;
+          --amber-soft: rgba(255, 178, 36, 0.1);
+          --amber-line: rgba(255, 178, 36, 0.45);
+          --clay: #e08a63;
+          --clay-soft: rgba(224, 138, 99, 0.12);
+
+          --code-bg: #0a0b09;
+          --code-edge: #30342d;
+          --prog-done: #c8c9c0;
+          --grain: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='180' height='180'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 1  0 0 0 0 1  0 0 0 0 1  0 0 0 .045 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
+          color-scheme: dark;
+        }
+      }
+
+      /* ---------- document ---------- */
+      *,
+      *::before,
+      *::after {
         box-sizing: border-box;
       }
-
       html {
         scroll-behavior: smooth;
+        scroll-padding-top: 76px;
+        -webkit-text-size-adjust: 100%;
+        text-size-adjust: 100%;
       }
-
       body {
         margin: 0;
-        background: var(--bg);
+        font-family: var(--f-ui);
+        font-size: 15px;
+        line-height: 1.55;
         color: var(--ink);
-        font-family: var(--sans);
-        line-height: 1.5;
+        background-color: var(--paper);
+        background-image: var(--grain);
         -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
         text-rendering: optimizeLegibility;
       }
-
       a {
         color: inherit;
         text-decoration: none;
       }
-
       button {
         font: inherit;
+        color: inherit;
       }
-
+      h1,
+      h2,
+      h3,
+      p,
+      figure {
+        margin: 0;
+      }
+      code,
+      pre,
+      kbd {
+        font-family: var(--f-mono);
+        font-variant-ligatures: none;
+      }
+      ::selection {
+        background: var(--sig-soft);
+        color: var(--ink);
+      }
       :focus-visible {
-        outline: 2px solid var(--green-deep);
-        outline-offset: 2px;
-        border-radius: 4px;
+        outline: 2px solid var(--ink);
+        outline-offset: 3px;
+        border-radius: 6px;
+      }
+      * {
+        scrollbar-width: thin;
+        scrollbar-color: var(--line-2) transparent;
       }
 
-      /* ---------- skip link (CSS-only, hidden until focus) ---------- */
       .skip-link {
         position: absolute;
-        left: -9999px;
-        top: 0;
+        left: 12px;
+        top: -60px;
         z-index: 100;
-        background: var(--ink);
-        color: #fff;
         padding: 10px 16px;
-        border-radius: 0 0 8px 0;
+        border-radius: var(--r-sm);
+        background: var(--ink);
+        color: var(--paper);
         font-size: 13px;
         font-weight: 600;
+        transition: top var(--t-fast) var(--ease-out);
       }
       .skip-link:focus {
-        left: 0;
+        top: 12px;
+      }
+      main:focus {
+        outline: none;
       }
 
-      .grid-paper {
-        background:
-          linear-gradient(var(--grid) 1px, transparent 1px),
-          linear-gradient(90deg, var(--grid) 1px, transparent 1px), var(--bg);
-        background-size: 34px 34px;
+      /* ---------- type ---------- */
+      .display {
+        font-family: var(--f-display);
+        font-weight: 400;
+        letter-spacing: -0.012em;
+        line-height: 1.02;
+        font-synthesis: none;
+      }
+      .display em {
+        font-style: italic;
+        color: var(--sig-ink);
+      }
+      .eyebrow {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        font-family: var(--f-mono);
+        font-size: 11px;
+        font-weight: 500;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: var(--mute);
+      }
+      /* CJK: the serif has no Han glyphs and a synthetic slant reads as a typo,
+         so Chinese headlines keep the colour accent and drop the italic. */
+      :lang(zh-CN) .display em {
+        font-style: normal;
+      }
+      :lang(zh-CN) .display {
+        letter-spacing: 0.01em;
+        line-height: 1.2;
+        /* break at punctuation and spaces, not inside words like 上下文 */
+        word-break: keep-all;
+        overflow-wrap: break-word;
+        text-wrap: balance;
+      }
+      :lang(zh-CN) .eyebrow,
+      :lang(zh-CN) .seclabel .kick {
+        letter-spacing: 0.06em;
+      }
+
+      /* ---------- status glyphs (web/src/components/glyph.ts) ---------- */
+      .gly {
+        width: 15px;
+        height: 15px;
+        flex: none;
+        overflow: visible;
+      }
+      .gly .g-core {
+        fill: var(--sig);
+      }
+      .gly .g-orbit {
+        fill: none;
+        stroke: var(--sig);
+        stroke-width: 1.6;
+        stroke-linecap: round;
+        stroke-dasharray: 0.3 0.7;
+        transform-origin: 8px 8px;
+        animation: spin 1.15s linear infinite;
+      }
+      .gly .g-ring {
+        fill: none;
+        stroke: var(--faint);
+        stroke-width: 1.5;
+        stroke-dasharray: 2.2 2;
+        transform-origin: 8px 8px;
+        animation: spin 6s linear infinite;
+      }
+      .gly .g-disc {
+        fill: var(--ink);
+      }
+      .gly .g-tick {
+        fill: none;
+        stroke: var(--paper);
+        stroke-width: 1.8;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+      .gly.s-done .g-tick {
+        stroke-dasharray: 1;
+        animation: draw 0.5s 0.1s var(--ease-out) both;
+      }
+      .gly.s-failed .g-disc {
+        fill: var(--alarm);
+      }
+      .gly.s-failed .g-tick {
+        stroke: #fff;
       }
 
       /* ---------- top nav ---------- */
@@ -162,1542 +374,2032 @@
         position: sticky;
         top: 0;
         z-index: 40;
-        border-bottom: 1px solid var(--hair);
-        background: rgba(251, 250, 246, 0.86);
-        backdrop-filter: saturate(1.2) blur(10px);
+        border-bottom: 1px solid var(--line);
+        background: var(--paper);
+        background: color-mix(in srgb, var(--paper) 84%, transparent);
+        -webkit-backdrop-filter: saturate(1.4) blur(10px);
+        backdrop-filter: saturate(1.4) blur(10px);
       }
-
       .nav-inner {
         display: flex;
         align-items: center;
         justify-content: space-between;
         gap: 24px;
-        width: min(calc(100vw - 40px), var(--max));
-        min-height: 64px;
+        width: min(100% - 64px, var(--wide));
+        min-height: 60px;
         margin: 0 auto;
       }
-
       .brand {
         display: inline-flex;
-        min-width: 0;
-        align-items: center;
-        gap: 11px;
-      }
-
-      .brand .logo {
-        flex: 0 0 auto;
-        width: 38px;
-        height: 22px;
-      }
-
-      .brand .wm {
-        font-family: var(--display);
-        font-weight: 700;
-        font-size: 30px;
-        line-height: 0.8;
-        color: var(--ink);
-        letter-spacing: 0.5px;
-      }
-
-      .brand .full {
-        font-size: 13px;
-        font-weight: 600;
-        color: var(--muted);
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-        border-left: 1px solid var(--hair);
-        padding-left: 11px;
-        margin-left: 2px;
-      }
-
-      .nav-actions {
-        display: flex;
-        flex: 0 0 auto;
         align-items: center;
         gap: 10px;
+        min-width: 0;
+        border-radius: var(--r-sm);
       }
-
+      .logo {
+        flex: none;
+        width: 38px;
+        height: 21px;
+      }
+      .logo .lg-curve,
+      .logo .lg-branch {
+        stroke: var(--sig);
+      }
+      .logo .lg-ink {
+        fill: var(--ink);
+      }
+      .logo .lg-sig {
+        fill: var(--sig);
+        transform-origin: 55px 52px;
+      }
+      .logo.live .lg-sig {
+        animation: logo-beat 1.6s var(--ease-out) infinite;
+      }
+      .brand .wm,
+      .fbrand .wm {
+        font-family: var(--f-display);
+        font-style: italic;
+        font-size: 28px;
+        line-height: 1;
+        letter-spacing: -0.01em;
+        color: var(--ink);
+      }
+      .brand .full {
+        padding-left: 12px;
+        margin-left: 2px;
+        border-left: 1px solid var(--line-2);
+        font-size: 13px;
+        font-weight: 500;
+        color: var(--mute);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .nav-actions {
+        display: flex;
+        flex: none;
+        align-items: center;
+        gap: 12px;
+      }
       .nav-links {
         display: flex;
         align-items: center;
         gap: 2px;
       }
-
       .nav-links a {
-        min-height: 36px;
         display: inline-flex;
-        align-items: center;
-        padding: 8px 12px;
-        border-radius: 8px;
-        color: #343434;
+        align-items: baseline;
+        gap: 6px;
+        min-height: 36px;
+        padding: 8px 11px;
+        border-radius: var(--r-sm);
         font-size: 13.5px;
-        font-weight: 600;
+        font-weight: 500;
+        color: var(--ink-2);
+        transition: background var(--t-fast), color var(--t-fast);
       }
-
       .nav-links a:hover {
-        background: rgba(0, 0, 0, 0.04);
+        background: var(--shade);
+        color: var(--ink);
       }
-
+      .nav-links .ix {
+        font-family: var(--f-display);
+        font-style: italic;
+        font-size: 16px;
+        line-height: 1;
+        color: var(--faint);
+      }
+      .nav-links .gh {
+        align-items: center;
+      }
+      .nav-links .gh .ic {
+        width: 13px;
+        height: 13px;
+        color: var(--mute);
+        transition: transform var(--t-med) var(--ease-spring);
+      }
+      .nav-links .gh:hover .ic {
+        transform: translate(1px, -1px);
+      }
       .lang-toggle {
         display: inline-flex;
-        border: 1px solid var(--hair);
-        border-radius: 999px;
-        background: var(--surface);
+        gap: 2px;
         padding: 3px;
+        border-radius: 10px;
+        border: 1px solid var(--line);
+        background: var(--shade);
       }
-
       .lang-toggle button {
-        min-width: 40px;
-        min-height: 28px;
+        min-width: 34px;
+        height: 26px;
+        padding: 0 9px;
         border: 0;
-        border-radius: 999px;
+        border-radius: 7px;
         background: transparent;
-        color: #626262;
+        color: var(--mute);
         cursor: pointer;
-        font-family: var(--mono);
-        font-size: 11.5px;
-        font-weight: 600;
+        font-family: var(--f-mono);
+        font-size: 11px;
+        font-weight: 500;
+        transition: background var(--t-fast), color var(--t-fast), box-shadow var(--t-fast);
       }
-
+      .lang-toggle button:hover {
+        color: var(--ink);
+      }
       .lang-toggle button[aria-pressed="true"] {
-        background: var(--ink);
-        color: #ffffff;
-      }
-
-      /* ---------- shared section scaffolding ---------- */
-      .section {
-        border-top: 1px solid var(--hair);
-        padding: 80px 0;
-      }
-
-      /* alternating blueprint-tinted section: 34px grid over --alt */
-      .section.tint {
-        background:
-          linear-gradient(var(--grid) 1px, transparent 1px),
-          linear-gradient(90deg, var(--grid) 1px, transparent 1px), var(--alt);
-        background-size: 34px 34px;
-      }
-
-      .section-inner {
-        width: min(calc(100vw - 40px), var(--max));
-        margin: 0 auto;
-      }
-
-      /* section grammar: mono numbered kicker + hairline rule, Gaegu title, Inter lede */
-      .seclabel {
-        display: flex;
-        align-items: center;
-        gap: 12px;
-        margin-bottom: 18px;
-        font-family: var(--mono);
-        font-size: 11.5px;
-        font-weight: 500;
-        letter-spacing: 0.12em;
-        text-transform: uppercase;
-        color: var(--green-deep);
-      }
-
-      .seclabel .num {
+        background: var(--card);
         color: var(--ink);
-        font-weight: 700;
+        box-shadow: var(--shadow-1), 0 0 0 1px var(--line);
       }
 
-      .seclabel .rule {
-        flex: 1;
-        height: 1px;
-        background: var(--hair);
-      }
-
-      h1,
-      h2,
-      h3,
-      p {
-        margin-top: 0;
-      }
-
-      .sectitle {
-        font-family: var(--display);
-        font-weight: 700;
-        font-size: clamp(34px, 4.6vw, 54px);
-        line-height: 1.04;
-        max-width: 20ch;
-        color: var(--ink);
-        margin: 0;
-      }
-
-      .section-lede {
-        max-width: 64ch;
-        margin: 18px 0 0;
-        color: var(--muted);
-        font-size: 16.5px;
-        line-height: 1.6;
-      }
-
-      /* ---------- HERO ---------- */
-      .hero {
-        position: relative;
-        overflow: hidden;
-        padding: 56px 0 64px;
-      }
-
-      .hero-inner {
-        width: min(calc(100vw - 40px), 1320px);
-        margin: 0 auto;
-      }
-
-      .hero-watermark {
-        position: absolute;
-        top: -10px;
-        right: -2%;
-        font-family: var(--display);
-        font-weight: 700;
-        font-size: clamp(120px, 20vw, 300px);
-        line-height: 0.8;
-        color: rgba(17, 17, 17, 0.04);
-        pointer-events: none;
-        user-select: none;
-        z-index: 0;
-      }
-
-      .hero-grid {
-        position: relative;
-        z-index: 1;
-        display: grid;
-        grid-template-columns: minmax(0, 0.82fr) minmax(560px, 1.18fr);
-        gap: 46px;
-        align-items: center;
-      }
-
-      .eyebrow {
-        display: inline-flex;
-        align-items: center;
-        gap: 8px;
-        min-height: 28px;
-        padding: 3px 12px 3px 10px;
-        border: 1px solid var(--green-tint-border);
-        border-radius: 999px;
-        background: var(--green-tint);
-        color: var(--green-deep);
-        font-family: var(--mono);
-        font-size: 12px;
-        font-weight: 500;
-      }
-
-      .eyebrow .d {
-        width: 7px;
-        height: 7px;
-        border-radius: 50%;
-        background: var(--green);
-        box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.4);
-        animation: pulse 1.9s infinite;
-      }
-
-      h1 {
-        margin: 24px 0 0;
-        max-width: 14ch;
-        font-family: var(--display);
-        font-weight: 700;
-        font-size: clamp(46px, 6.6vw, 84px);
-        line-height: 0.94;
-        letter-spacing: 0;
-      }
-
-      h1 .accent {
-        color: var(--green-deep);
-      }
-
-      .hero-copy {
-        max-width: 46ch;
-        margin: 22px 0 0;
-        color: #45494b;
-        font-size: clamp(17px, 1.5vw, 20px);
-        line-height: 1.5;
-      }
-
+      /* ---------- buttons + chips ---------- */
       .actions {
         display: flex;
         flex-wrap: wrap;
-        gap: 11px;
-        margin-top: 28px;
+        gap: 10px;
       }
-
       .button {
         display: inline-flex;
         align-items: center;
-        gap: 8px;
         justify-content: center;
-        min-height: 46px;
-        padding: 0 18px;
-        border-radius: 9px;
+        gap: 9px;
+        height: 46px;
+        padding: 0 20px;
+        border-radius: var(--r-sm);
+        border: 1px solid var(--line-2);
         font-size: 14.5px;
         font-weight: 600;
-        transition:
-          transform 150ms ease,
-          border-color 150ms ease,
-          background 150ms ease;
         white-space: nowrap;
+        transition: background var(--t-fast), border-color var(--t-fast), box-shadow var(--t-fast),
+          transform var(--t-fast), color var(--t-fast);
       }
-
       .button svg {
         width: 17px;
         height: 17px;
+        flex: none;
       }
-
       .button:active {
-        transform: translateY(1px);
+        transform: translateY(1px) scale(0.985);
       }
-
       .button.primary {
-        border: 1px solid var(--green-deep);
-        background: #0f8f65;
-        color: #ffffff;
+        background: var(--ink);
+        border-color: var(--ink);
+        color: var(--paper);
+        box-shadow: var(--shadow-2);
       }
-
       .button.primary:hover {
-        background: var(--green-deep);
+        background: var(--ink-2);
+        border-color: var(--ink-2);
       }
-
       .button.secondary {
-        border: 1px solid var(--node-border);
-        background: var(--surface);
+        background: transparent;
         color: var(--ink);
       }
-
       .button.secondary:hover {
-        border-color: var(--node-active);
+        border-color: var(--ink);
+        background: var(--card);
+        box-shadow: var(--shadow-1);
+      }
+      .button .arr {
+        width: 15px;
+        height: 15px;
+        transition: transform var(--t-med) var(--ease-spring);
+      }
+      .button:hover .arr {
+        transform: translateX(3px);
+      }
+      .chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        height: 28px;
+        padding: 0 12px;
+        border-radius: 14px;
+        border: 1px solid var(--line);
+        background: var(--card);
+        background: color-mix(in srgb, var(--card) 55%, transparent);
+        font-family: var(--f-mono);
+        font-size: 11.5px;
+        color: var(--mute);
+        white-space: nowrap;
+      }
+      .chip b {
+        color: var(--ink);
+        font-weight: 500;
+      }
+      .chip.live {
+        color: var(--sig-ink);
+        border-color: var(--sig-line);
+        background: var(--sig-soft);
+      }
+      .chip.live b {
+        color: var(--sig-ink);
+      }
+      .chip .d {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: var(--sig);
+        animation: pulse-ring 1.8s var(--ease-out) infinite;
       }
 
+      /* Registration marks: hairline corners — the "printed sheet" signature. */
+      .marked {
+        position: relative;
+      }
+      .marked::before,
+      .marked::after {
+        content: "";
+        position: absolute;
+        width: 12px;
+        height: 12px;
+        pointer-events: none;
+        border-color: var(--faint);
+        border-style: solid;
+        opacity: 0.75;
+      }
+      .marked::before {
+        top: -8px;
+        left: -8px;
+        border-width: 1px 0 0 1px;
+      }
+      .marked::after {
+        right: -8px;
+        bottom: -8px;
+        border-width: 0 1px 1px 0;
+      }
+
+      /* ---------- hero ---------- */
+      .hero {
+        position: relative;
+        padding: clamp(40px, 6vw, 80px) 0 clamp(64px, 7vw, 96px);
+      }
+      .hero-inner {
+        display: grid;
+        grid-template-columns: minmax(0, clamp(330px, 26vw, 400px)) minmax(0, 1fr);
+        gap: clamp(40px, 3.9vw, 60px);
+        align-items: center;
+        width: min(100% - 64px, var(--wide));
+        margin: 0 auto;
+      }
+      .hero .eyebrow .gly {
+        width: 14px;
+        height: 14px;
+      }
+      .hero .eyebrow::after {
+        content: "";
+        width: 36px;
+        height: 1px;
+        background: var(--line-2);
+      }
+      .hero h1 em {
+        white-space: nowrap;
+      }
+      .hero h1 {
+        margin-top: 22px;
+        font-size: clamp(52px, 5.9vw, 86px);
+        line-height: 0.98;
+        letter-spacing: -0.018em;
+      }
+      :lang(zh-CN) .hero h1 {
+        font-size: clamp(40px, 3.9vw, 58px);
+        line-height: 1.16;
+        letter-spacing: 0.01em;
+        /* greedy, so the accent phrase lands on its own line */
+        text-wrap: wrap;
+      }
+      .hero-copy {
+        margin-top: 24px;
+        max-width: 40ch;
+        font-size: 17.5px;
+        line-height: 1.55;
+        color: var(--ink-2);
+      }
+      .hero .actions {
+        margin-top: 30px;
+      }
       .hero-meta {
         display: flex;
         flex-wrap: wrap;
         gap: 8px;
-        margin-top: 26px;
+        margin-top: 24px;
       }
 
-      /* ---------- chip / badge (from theme.css) ---------- */
-      .chip {
-        display: inline-flex;
-        align-items: center;
-        gap: 6px;
-        font-family: var(--mono);
-        font-size: 11.5px;
-        font-weight: 500;
-        padding: 3px 9px;
-        border-radius: 999px;
-        border: 1px solid var(--hair);
-        color: var(--muted);
-        background: var(--surface);
-      }
-
-      .chip b {
-        color: var(--ink);
-        font-weight: 700;
-      }
-
-      .chip .em {
-        color: var(--green);
-      }
-
-      .chip .rd {
-        color: var(--red);
-      }
-
-      .badge {
-        display: inline-flex;
-        align-items: center;
-        gap: 6px;
-        font-family: var(--mono);
-        font-size: 11px;
-        font-weight: 500;
-        letter-spacing: 0.02em;
-        padding: 3px 9px 3px 8px;
-        border-radius: 999px;
-        border: 1px solid;
-        white-space: nowrap;
-      }
-
-      .badge .d {
-        width: 7px;
-        height: 7px;
-        border-radius: 999px;
-      }
-
-      .badge.running {
-        color: var(--green-deep);
-        background: var(--green-tint);
-        border-color: var(--green-tint-border);
-      }
-      .badge.running .d {
-        background: var(--green);
-        animation: pulse 1.8s infinite;
-      }
-      .badge.pending,
-      .badge.paused {
-        color: var(--amber-ink);
-        background: var(--amber-tint);
-        border-color: var(--amber-border);
-      }
-      .badge.pending .d,
-      .badge.paused .d {
-        background: var(--amber);
-      }
-      .badge.done {
-        color: #555;
-        background: #f5f5f4;
-        border-color: #e2e2e0;
-      }
-      .badge.done .d {
-        background: var(--done-paper);
-      }
-      .badge.failed {
-        color: var(--red-deep);
-        background: var(--red-tint);
-        border-color: var(--red-border);
-      }
-      .badge.failed .d {
-        background: var(--red);
-      }
-      .badge.stale {
-        color: var(--orange-ink);
-        background: var(--orange-tint);
-        border-color: var(--orange-border);
-      }
-      .badge.stale .d {
-        background: var(--orange);
-      }
-
-      /* ===================================================================
-         APP WINDOW — the live observatory hero centerpiece
-         =================================================================== */
-      .appwin {
+      /* ==================================================================
+         The hero mockup — a miniature of the dashboard's run view, drawn in
+         "design units": every length is N × --u, where --u is 1/860 of the
+         figure's width (a container query unit), so the whole sheet scales
+         as one print. Narrow figures drop the rail, then crop the graph.
+         ================================================================== */
+      .mock-wrap {
         position: relative;
-        border: 1px solid var(--hair);
-        border-radius: 14px;
-        background: var(--surface);
-        box-shadow:
-          0 1px 0 rgba(255, 255, 255, 0.6),
-          0 40px 90px -34px rgba(0, 0, 0, 0.42),
-          0 0 0 1px rgba(0, 0, 0, 0.02);
-        overflow: hidden;
+        container: mock / inline-size;
       }
-
-      .appwin .grid {
+      .mock {
+        --u: 1px;
+        position: relative;
         display: grid;
-        grid-template-columns: 196px 1fr;
-        grid-template-rows: 48px 1fr 28px;
-      }
-
-      /* toolbar */
-      .toolbar {
-        grid-column: 1 / 3;
-        grid-row: 1;
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 12px;
-        padding: 0 16px;
-        border-bottom: 1px solid var(--hair);
-        background: rgba(255, 255, 255, 0.82);
-        backdrop-filter: saturate(1.2) blur(6px);
-      }
-
-      .tl {
-        display: flex;
-        gap: 7px;
-        align-items: center;
-      }
-
-      .tl i {
-        width: 11px;
-        height: 11px;
-        border-radius: 999px;
-        display: block;
-      }
-
-      .tl i.r {
-        background: #ff5f57;
-      }
-      .tl i.y {
-        background: #febc2e;
-      }
-      .tl i.g {
-        background: #28c840;
-      }
-
-      .crumb {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        margin-left: 14px;
-        font-size: 12.5px;
-        min-width: 0;
-      }
-
-      .crumb .s {
-        color: var(--muted);
-        font-weight: 500;
-      }
-      .crumb .cur {
+        grid-template-columns: calc(140 * var(--u)) minmax(0, 1fr);
+        grid-template-rows: calc(36 * var(--u)) auto calc(22 * var(--u));
+        grid-template-areas: "rail top" "rail main" "rail status";
+        border: 1px solid var(--line-2);
+        border-radius: calc(14 * var(--u));
+        background-color: var(--paper);
+        background-image: var(--grain);
+        box-shadow: var(--shadow-3);
+        overflow: hidden;
+        font-size: calc(10.5 * var(--u));
+        line-height: 1.35;
         color: var(--ink);
-        font-weight: 600;
+        text-align: left;
+        cursor: default;
+        -webkit-user-select: none;
+        user-select: none;
+        isolation: isolate;
       }
-      .crumb .sep {
-        color: var(--faint);
+      @supports (width: 1cqw) {
+        .mock {
+          --u: calc(100cqw / 860);
+        }
       }
-
-      .idchip {
-        font-family: var(--mono);
-        font-size: 10.5px;
-        color: var(--muted);
-        background: var(--alt);
-        border: 1px solid var(--hair);
-        padding: 3px 7px;
-        border-radius: 5px;
-        white-space: nowrap;
-      }
-
-      .tr {
-        display: flex;
-        align-items: center;
-        gap: 12px;
-      }
-
-      .conn {
-        display: inline-flex;
-        align-items: center;
-        gap: 6px;
-        font-size: 12px;
-        font-weight: 600;
-      }
-
-      .conn .d {
-        width: 8px;
-        height: 8px;
-        border-radius: 999px;
-      }
-
-      .conn.live {
-        color: var(--green-deep);
-      }
-      .conn.live .d {
-        background: var(--green);
-        animation: pulse 1.8s infinite;
+      .mock .ic,
+      .terminal-bar .ic {
+        flex: none;
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 1.75;
+        stroke-linecap: round;
+        stroke-linejoin: round;
       }
 
       /* rail */
-      .rail {
-        grid-column: 1;
-        grid-row: 2;
-        border-right: 1px solid var(--hair);
-        background: var(--alt);
-        padding: 18px 12px 14px;
+      .m-rail {
+        grid-area: rail;
         display: flex;
         flex-direction: column;
+        min-height: 0;
+        padding: calc(14 * var(--u)) calc(9 * var(--u)) calc(10 * var(--u));
+        border-right: 1px solid var(--line);
+        background: var(--paper-2);
         overflow: hidden;
       }
-
-      .rail .brandmini {
+      .m-brand {
         display: flex;
         align-items: center;
-        gap: 9px;
-        padding: 2px 6px 0;
+        gap: calc(8 * var(--u));
+        height: calc(24 * var(--u));
+        padding: 0 calc(7 * var(--u));
       }
-
-      .rail .brandmini .logo {
-        width: 30px;
-        height: 19px;
+      .m-brand .logo {
+        width: calc(31 * var(--u));
+        height: calc(17 * var(--u));
       }
-
-      .rail .brandmini .wm {
-        font-family: var(--display);
-        font-weight: 700;
-        font-size: 26px;
-        line-height: 0.8;
-        color: var(--ink);
-      }
-
-      .rail .tagline {
-        font-size: 11px;
-        color: var(--muted);
-        margin: 5px 6px 18px;
-      }
-
-      .navitem {
-        display: flex;
-        align-items: center;
-        gap: 10px;
-        padding: 8px 10px;
-        border-radius: 8px;
-        font-size: 13px;
-        color: var(--ink);
-        font-weight: 500;
-        margin-bottom: 2px;
-      }
-
-      .navitem .ic {
-        width: 16px;
-        height: 16px;
-        opacity: 0.8;
-        flex: 0 0 auto;
-      }
-
-      .navitem.on {
-        background: var(--surface);
-        color: var(--ink);
-        box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
-        font-weight: 600;
-      }
-
-      .navitem .count {
-        margin-left: auto;
-        font-family: var(--mono);
-        font-size: 10.5px;
-        color: #fff;
-        background: var(--green-deep);
-        border-radius: 999px;
-        padding: 1px 7px;
-        font-weight: 600;
-      }
-
-      .rail .spacer {
-        flex: 1;
-      }
-
-      .rail .divider {
-        height: 1px;
-        background: var(--hair);
-        margin: 12px 6px;
-      }
-
-      .rail .sl {
-        font-size: 11px;
-        font-weight: 600;
-        letter-spacing: 0.05em;
-        text-transform: uppercase;
-        color: var(--muted);
-        margin: 4px 8px 6px;
-        display: flex;
-        justify-content: space-between;
-      }
-
-      .rail .sl .n {
-        font-family: var(--mono);
-        color: var(--green-deep);
-      }
-
-      .minirun {
-        display: flex;
-        align-items: center;
-        gap: 9px;
-        padding: 7px 9px;
-        border-radius: 8px;
-        font-size: 12px;
-        color: var(--muted);
-      }
-
-      .minirun .dot {
-        width: 7px;
-        height: 7px;
-        border-radius: 999px;
-        background: var(--green);
-        animation: pulse 1.8s infinite;
-        flex: 0 0 auto;
-      }
-
-      .minirun .nm {
-        color: var(--ink);
-        font-weight: 500;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-
-      .minirun .ph {
-        margin-left: auto;
-        font-family: var(--mono);
-        font-size: 10.5px;
-        color: var(--faint);
-      }
-
-      /* main board */
-      .board {
-        grid-column: 2;
-        grid-row: 2;
-        position: relative;
-        overflow: hidden;
-        background:
-          linear-gradient(var(--grid) 1px, transparent 1px),
-          linear-gradient(90deg, var(--grid) 1px, transparent 1px), var(--bg);
-        background-size: 34px 34px;
-        display: flex;
-        flex-direction: column;
-      }
-
-      .stagehead {
-        padding: 16px 22px 12px;
-        border-bottom: 1px solid var(--hair);
-        background: linear-gradient(180deg, rgba(255, 255, 255, 0.62), rgba(255, 255, 255, 0));
-      }
-
-      .stagehead .row1 {
-        display: flex;
-        align-items: center;
-        gap: 12px;
-        flex-wrap: wrap;
-      }
-
-      .stagehead .rtitle {
-        font-family: var(--display);
-        font-weight: 700;
-        font-size: 25px;
-        color: var(--ink);
+      .m-wm {
+        font-family: var(--f-display);
+        font-style: italic;
+        font-size: calc(22 * var(--u));
         line-height: 1;
       }
-
-      .phasestepper {
+      .m-sub {
+        padding: calc(3 * var(--u)) calc(9 * var(--u)) calc(12 * var(--u));
+        font-family: var(--f-mono);
+        font-size: calc(7 * var(--u));
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--faint);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      :lang(zh-CN) .m-sub {
+        letter-spacing: 0.02em;
+        text-transform: none;
+      }
+      .m-nav {
+        display: flex;
+        flex-direction: column;
+        gap: calc(2 * var(--u));
+      }
+      .m-ni {
+        position: relative;
         display: flex;
         align-items: center;
-        gap: 6px;
+        gap: calc(8 * var(--u));
+        height: calc(27 * var(--u));
+        padding: 0 calc(8 * var(--u));
+        border-radius: calc(7 * var(--u));
+        font-size: calc(10.5 * var(--u));
+        font-weight: 500;
+        color: var(--ink-2);
+        white-space: nowrap;
       }
-
-      .phasestepper .pp {
-        font-size: 11.5px;
-        color: var(--faint);
-        font-weight: 600;
+      .m-ni .ic {
+        width: calc(13 * var(--u));
+        height: calc(13 * var(--u));
+        color: var(--mute);
       }
-      .phasestepper .pp.done {
-        color: var(--muted);
-      }
-      .phasestepper .pp.on {
-        color: var(--green-deep);
-      }
-      .phasestepper .ar {
-        color: var(--faint);
-        font-size: 10px;
-      }
-
-      .progressbar {
-        height: 6px;
-        border-radius: 999px;
-        background: var(--hair);
-        overflow: hidden;
-        margin: 12px 0 11px;
-        max-width: 100%;
-      }
-
-      .progressbar i {
-        display: block;
-        height: 100%;
-        width: 58%;
-        background: linear-gradient(90deg, var(--green-deep), var(--green));
-        border-radius: 999px;
-      }
-
-      .row3 {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        flex-wrap: wrap;
-      }
-
-      .heartbeat {
-        width: 8px;
-        height: 8px;
-        border-radius: 999px;
-        background: var(--green);
-        animation: pulse 1.8s infinite;
-      }
-
-      .dagarea {
-        position: relative;
-        flex: 1;
-        overflow: hidden;
-        min-height: 360px;
-      }
-
-      .dag {
-        position: relative;
-        width: 100%;
-        height: 100%;
-      }
-
-      .watermark {
-        position: absolute;
-        font-family: var(--display);
-        font-weight: 700;
-        font-size: 50px;
-        color: rgba(17, 17, 17, 0.045);
-        pointer-events: none;
-        top: 30px;
-        user-select: none;
-      }
-
-      .lanehead {
-        position: absolute;
-        top: 12px;
-        font-size: 12px;
-        font-weight: 700;
+      .m-ni.on {
+        background: var(--card);
         color: var(--ink);
-        display: flex;
-        align-items: center;
-        gap: 7px;
+        box-shadow: var(--shadow-1), inset 0 0 0 1px var(--line);
       }
-
-      .lanehead .ix {
-        font-family: var(--mono);
-        font-size: 10px;
-        color: var(--faint);
+      .m-ni.on .ic {
+        color: var(--ink);
+      }
+      .m-ni.on::before {
+        content: "";
+        position: absolute;
+        left: calc(-9 * var(--u));
+        top: calc(7 * var(--u));
+        bottom: calc(7 * var(--u));
+        width: calc(2.5 * var(--u));
+        border-radius: 0 2px 2px 0;
+        background: var(--sig);
+      }
+      .m-count {
+        margin-left: auto;
+        display: inline-grid;
+        place-items: center;
+        min-width: calc(15 * var(--u));
+        height: calc(15 * var(--u));
+        padding: 0 calc(4 * var(--u));
+        border-radius: calc(8 * var(--u));
+        background: var(--sig-ink);
+        color: var(--paper);
+        font-family: var(--f-mono);
+        font-size: calc(8 * var(--u));
+        font-style: normal;
         font-weight: 500;
       }
-
-      .lanehead .n {
-        font-family: var(--mono);
-        font-size: 10px;
-        color: var(--muted);
+      .m-label {
+        display: flex;
+        justify-content: space-between;
+        margin: calc(18 * var(--u)) calc(8 * var(--u)) calc(6 * var(--u));
+        font-family: var(--f-mono);
+        font-size: calc(7 * var(--u));
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: var(--faint);
+      }
+      .m-label b {
+        color: var(--sig-ink);
+        font-weight: 500;
+      }
+      .m-mini {
+        display: grid;
+        grid-template-columns: calc(13 * var(--u)) minmax(0, 1fr) auto;
+        align-items: center;
+        gap: calc(7 * var(--u));
+        height: calc(25 * var(--u));
+        padding: 0 calc(8 * var(--u));
+        border-radius: calc(7 * var(--u));
+      }
+      .m-mini.on {
+        background: var(--shade);
+      }
+      .m-mini .nm {
+        overflow: hidden;
+        white-space: nowrap;
+        text-overflow: ellipsis;
+        font-size: calc(9.5 * var(--u));
+        color: var(--ink-2);
+      }
+      .m-mini .pct {
+        font-family: var(--f-mono);
+        font-size: calc(8 * var(--u));
+        color: var(--faint);
+      }
+      .ring {
+        display: block;
+        width: calc(13 * var(--u));
+        height: calc(13 * var(--u));
+      }
+      .ring circle {
+        fill: none;
+        stroke-width: 2.4;
+      }
+      .ring .bg {
+        stroke: var(--line-2);
+      }
+      .ring .fg {
+        stroke: var(--sig);
+        stroke-linecap: round;
+        transform: rotate(-90deg);
+        transform-origin: 50% 50%;
+        animation: ring-fill 1.1s 0.25s var(--ease-out) both;
+      }
+      .m-spacer {
+        flex: 1;
+      }
+      .m-foot {
+        padding-top: calc(8 * var(--u));
+        border-top: 1px solid var(--line);
+      }
+      .m-tools {
+        display: flex;
+        gap: calc(4 * var(--u));
+        padding: calc(6 * var(--u)) calc(4 * var(--u)) 0;
+        color: var(--mute);
+      }
+      .m-tools .ic {
+        width: calc(22 * var(--u));
+        height: calc(22 * var(--u));
+        padding: calc(5 * var(--u));
       }
 
-      .lanehead .line {
-        position: absolute;
-        top: 22px;
-        left: 0;
+      /* topbar */
+      .m-top {
+        grid-area: top;
+        display: flex;
+        align-items: center;
+        gap: calc(12 * var(--u));
+        min-width: 0;
+        padding: 0 calc(14 * var(--u)) 0 calc(20 * var(--u));
+        border-bottom: 1px solid var(--line);
+      }
+      .m-crumbs {
+        display: flex;
+        align-items: center;
+        gap: calc(6 * var(--u));
+        min-width: 0;
+        font-size: calc(10 * var(--u));
+        color: var(--mute);
+        white-space: nowrap;
+      }
+      .m-crumbs i {
+        font-style: normal;
+        color: var(--faint);
+      }
+      .m-crumbs .lead,
+      .m-crumbs .tail {
+        display: inline-flex;
+        align-items: center;
+        gap: calc(6 * var(--u));
+        min-width: 0;
+      }
+      .m-crumbs .here {
+        color: var(--ink);
+        font-weight: 500;
+      }
+      .m-crumbs .id {
+        font-family: var(--f-mono);
+        font-size: calc(9 * var(--u));
+        color: var(--ink);
+      }
+      .m-search {
+        display: flex;
+        align-items: center;
+        gap: calc(7 * var(--u));
+        width: calc(196 * var(--u));
+        height: calc(23 * var(--u));
+        margin-left: auto;
+        padding: 0 calc(5 * var(--u)) 0 calc(8 * var(--u));
+        border: 1px solid var(--line);
+        border-radius: calc(7 * var(--u));
+        background: var(--card);
+        color: var(--faint);
+        font-size: calc(9 * var(--u));
+        white-space: nowrap;
+      }
+      .m-search .ic {
+        width: calc(11 * var(--u));
+        height: calc(11 * var(--u));
+      }
+      .m-search .t {
+        flex: 1;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .m-kbd {
+        display: inline-flex;
+        align-items: center;
+        height: calc(14 * var(--u));
+        padding: 0 calc(4 * var(--u));
+        border: 1px solid var(--line);
+        border-bottom-width: 2px;
+        border-radius: calc(4 * var(--u));
+        background: var(--card-2);
+        font-family: var(--f-mono);
+        font-size: calc(7 * var(--u));
+        color: var(--mute);
+      }
+      .m-conn {
+        display: inline-flex;
+        align-items: center;
+        gap: calc(6 * var(--u));
+        height: calc(20 * var(--u));
+        padding: 0 calc(8 * var(--u));
+        border-radius: calc(10 * var(--u));
+        border: 1px solid var(--sig-line);
+        background: var(--sig-soft);
+        color: var(--sig-ink);
+        font-family: var(--f-mono);
+        font-size: calc(8.5 * var(--u));
+        white-space: nowrap;
+      }
+      .m-conn i {
+        width: calc(5 * var(--u));
+        height: calc(5 * var(--u));
+        border-radius: 50%;
+        background: var(--sig);
+        animation: m-pulse 1.8s var(--ease-out) infinite;
+      }
+
+      /* run header */
+      .m-main {
+        grid-area: main;
+        display: flex;
+        flex-direction: column;
+        min-width: 0;
+      }
+      .m-head {
+        display: flex;
+        align-items: flex-end;
+        justify-content: space-between;
+        gap: calc(16 * var(--u));
+        height: calc(64 * var(--u));
+        padding: calc(14 * var(--u)) calc(20 * var(--u)) 0;
+      }
+      .m-eyebrow {
+        display: flex;
+        align-items: center;
+        gap: calc(6 * var(--u));
+        font-family: var(--f-mono);
+        font-size: calc(7.5 * var(--u));
+        line-height: 1.3;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: var(--mute);
+      }
+      .m-eyebrow .id {
+        letter-spacing: 0;
+        text-transform: none;
+        color: var(--faint);
+      }
+      .m-title-row {
+        display: flex;
+        align-items: center;
+        gap: calc(10 * var(--u));
+        height: calc(32 * var(--u));
+        margin-top: calc(4 * var(--u));
+      }
+      .m-title {
+        font-family: var(--f-display);
+        font-size: calc(31 * var(--u));
+        line-height: 1;
+        letter-spacing: -0.01em;
+        white-space: nowrap;
+      }
+      .m-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: calc(5 * var(--u));
+        height: calc(18 * var(--u));
+        padding: 0 calc(8 * var(--u)) 0 calc(5 * var(--u));
+        border-radius: calc(9 * var(--u));
+        border: 1px solid var(--sig-line);
+        background: var(--sig-soft);
+        color: var(--sig-ink);
+        font-size: calc(8.5 * var(--u));
+        font-weight: 500;
+        white-space: nowrap;
+      }
+      .m-pill .gly {
+        width: calc(10 * var(--u));
+        height: calc(10 * var(--u));
+      }
+      .m-stats {
+        display: flex;
+        gap: calc(14 * var(--u));
+        padding-bottom: calc(2 * var(--u));
+      }
+      .m-stats .rs {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-end;
+      }
+      .m-stats .rs.el {
+        min-width: calc(46 * var(--u));
+      }
+      .m-stats b {
+        font-family: var(--f-display);
+        font-size: calc(21 * var(--u));
+        font-weight: 400;
+        line-height: 1;
+        font-variant-numeric: tabular-nums lining-nums;
+      }
+      .m-stats .k {
+        margin-top: calc(3 * var(--u));
+        font-family: var(--f-mono);
+        font-size: calc(6.5 * var(--u));
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: var(--faint);
+        white-space: nowrap;
+      }
+      :lang(zh-CN) .m-stats .k {
+        letter-spacing: 0;
+        text-transform: none;
+      }
+      .m-stats .sig b {
+        color: var(--sig-ink);
+      }
+      .m-stats .alarm b {
+        color: var(--alarm-ink);
+      }
+
+      /* phase stepper */
+      .m-stepper {
+        display: flex;
+        align-items: center;
+        height: calc(40 * var(--u));
+        padding: 0 calc(20 * var(--u));
+      }
+      .m-st {
+        display: flex;
+        align-items: center;
+        gap: calc(6 * var(--u));
+        flex: none;
+        font-size: calc(9.5 * var(--u));
+        color: var(--faint);
+        white-space: nowrap;
+      }
+      .m-st i {
+        font-family: var(--f-display);
+        font-size: calc(17 * var(--u));
+        line-height: 1;
+        color: var(--faint);
+      }
+      .m-st.done,
+      .m-st.done i {
+        color: var(--ink-2);
+      }
+      .m-st.on {
+        color: var(--ink);
+        font-weight: 600;
+      }
+      .m-st.on i {
+        color: var(--sig-ink);
+      }
+      .m-st .gly {
+        width: calc(10 * var(--u));
+        height: calc(10 * var(--u));
+      }
+      .m-ln {
+        position: relative;
+        flex: 1 0 calc(16 * var(--u));
+        max-width: calc(64 * var(--u));
         height: 1px;
-        background: var(--hair);
+        margin: 0 calc(10 * var(--u));
+        background: var(--line-2);
+        overflow: hidden;
+      }
+      .m-ln.done {
+        background: var(--ink-2);
+      }
+      .m-ln.on::after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        background: linear-gradient(90deg, transparent, var(--sig), transparent);
+        background-size: 200% 100%;
+        animation: shimmer 1.6s linear infinite;
+      }
+      .m-prog {
+        display: flex;
+        height: calc(4 * var(--u));
+        margin: 0 calc(20 * var(--u));
+        border-radius: calc(2 * var(--u));
+        background: var(--shade);
+        overflow: hidden;
+        animation: wipe 1.1s 0.15s var(--ease-out) both;
+      }
+      .m-prog i {
+        display: block;
+        height: 100%;
+      }
+      .m-prog .p-done {
+        background: var(--prog-done, var(--ink));
+      }
+      .m-prog .p-run {
+        background: linear-gradient(90deg, var(--sig) 0%, var(--sig-ink) 50%, var(--sig) 100%);
+        background-size: 200% 100%;
+        animation: shimmer 1.8s linear infinite;
+      }
+      .m-prog .p-fail {
+        background: var(--alarm);
       }
 
-      .edges {
+      /* tabs */
+      .m-tabs {
+        display: flex;
+        align-items: flex-end;
+        gap: calc(2 * var(--u));
+        height: calc(38 * var(--u));
+        padding: 0 calc(12 * var(--u));
+        border-bottom: 1px solid var(--line);
+      }
+      .m-tab {
+        position: relative;
+        display: inline-flex;
+        align-items: center;
+        gap: calc(5 * var(--u));
+        height: calc(28 * var(--u));
+        padding: 0 calc(9 * var(--u));
+        font-size: calc(9.5 * var(--u));
+        font-weight: 500;
+        color: var(--mute);
+        white-space: nowrap;
+      }
+      .m-tab .ic {
+        width: calc(11 * var(--u));
+        height: calc(11 * var(--u));
+      }
+      .m-tab i {
+        font-family: var(--f-mono);
+        font-size: calc(7.5 * var(--u));
+        font-style: normal;
+        color: var(--faint);
+      }
+      .m-tab.on {
+        color: var(--ink);
+      }
+      .m-tab.on::after {
+        content: "";
+        position: absolute;
+        left: 0;
+        right: 0;
+        bottom: -1px;
+        height: 2px;
+        border-radius: 2px;
+        background: var(--ink);
+      }
+
+      /* graph canvas */
+      .m-canvas {
+        position: relative;
+        height: calc(264 * var(--u));
+        overflow: hidden;
+        background-image: radial-gradient(circle at 1px 1px, var(--grid) 1.1px, transparent 0);
+        background-size: calc(16 * var(--u)) calc(16 * var(--u));
+      }
+      .m-dag {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: calc(720 * var(--u));
+        height: 100%;
+      }
+      .m-edges {
         position: absolute;
         inset: 0;
         width: 100%;
         height: 100%;
-        pointer-events: none;
+        overflow: visible;
       }
-
-      .flowdot {
-        fill: var(--green-bright);
+      .m-edge {
+        fill: none;
+        stroke: var(--line-2);
+        stroke-width: 1.4;
+        stroke-dasharray: 1;
+        animation: draw 0.8s var(--ease-out) both;
+        animation-delay: calc(var(--d, 0) * 1ms);
       }
-
-      /* DAG node card (.node from theme.css) */
-      .node {
+      .m-edge.done {
+        stroke: var(--ink-2);
+        opacity: 0.5;
+      }
+      .m-edge.failed {
+        stroke: var(--alarm-line);
+      }
+      .m-edge.running {
+        stroke: var(--sig-line);
+        stroke-width: 1.9;
+      }
+      .m-flow {
+        fill: none;
+        stroke: var(--sig);
+        stroke-width: 2.1;
+        stroke-linecap: round;
+        stroke-dasharray: 3 6;
+        filter: drop-shadow(0 0 2px var(--sig-glow));
+        animation: fade 0.4s 1s var(--ease-out) both, flow 0.7s linear infinite;
+      }
+      .m-spark {
+        fill: var(--sig);
+        filter: drop-shadow(0 0 3px var(--sig));
+      }
+      .m-lh {
         position: absolute;
-        width: 142px;
-        background: var(--surface);
-        border: 1px solid var(--node-border);
-        border-left: 3px solid var(--node-border);
-        border-radius: 9px;
-        padding: 9px 11px;
-        box-shadow: 0 8px 20px rgba(0, 0, 0, 0.04);
-      }
-
-      .node .h {
-        font-family: var(--mono);
-        font-weight: 500;
-        font-size: 12px;
-        color: var(--ink);
-        padding-right: 14px;
-        line-height: 1.2;
-        letter-spacing: -0.2px;
-        word-break: break-word;
-      }
-
-      .node .sub {
-        font-family: var(--mono);
-        font-weight: 500;
-        font-size: 10px;
-        color: var(--muted);
-        margin-top: 4px;
-      }
-
-      .node .dot {
-        position: absolute;
-        top: 10px;
-        right: 10px;
-        width: 7px;
-        height: 7px;
-        border-radius: 999px;
-      }
-
-      .node .gl {
-        position: absolute;
-        top: 8px;
-        right: 9px;
-        font-size: 10px;
-      }
-
-      .node.running {
-        border-color: var(--green-tint-border);
-        border-left-color: var(--green);
-        box-shadow:
-          0 0 0 3px rgba(16, 185, 129, 0.07),
-          0 8px 20px rgba(0, 0, 0, 0.04);
-      }
-      .node.running .dot {
-        background: var(--green);
-        animation: pulse 1.8s infinite;
-      }
-      .node.running .sub {
-        color: var(--green-deep);
-      }
-
-      .node.done {
-        border-left-color: var(--done-paper);
-        opacity: 0.95;
-      }
-      .node.done .dot {
-        background: var(--done-paper);
-      }
-      .node.done .h {
-        color: var(--muted);
-      }
-
-      .node.failed {
-        background: var(--red-tint);
-        border-color: var(--red-border);
-        border-left-color: var(--red);
-        box-shadow:
-          0 0 0 3px rgba(239, 68, 68, 0.07),
-          0 8px 20px rgba(0, 0, 0, 0.04);
-      }
-      .node.failed .dot {
-        background: var(--red);
-      }
-
-      .node.queued {
-        border-style: dashed;
-        border-left: 3px solid var(--faint);
-        opacity: 0.72;
-      }
-      .node.queued .dot {
-        background: var(--faint);
-      }
-      .node.queued .h {
-        color: var(--muted);
-      }
-
-      .node .err {
-        font-family: var(--mono);
-        font-size: 9.5px;
-        color: var(--red-deep);
-        margin-top: 6px;
-        background: rgba(239, 68, 68, 0.07);
-        border-radius: 4px;
-        padding: 3px 5px;
-        line-height: 1.3;
-        word-break: break-word;
-      }
-
-      .groupcard {
-        position: absolute;
-        width: 142px;
-        border: 1px dashed var(--node-border);
-        border-radius: 9px;
-        padding: 8px 11px;
-        color: var(--muted);
-        font-family: var(--mono);
-        font-size: 11px;
-        background: var(--sunken);
-      }
-
-      .groupcard b {
-        color: var(--ink);
-      }
-
-      .ticker {
-        position: absolute;
-        left: 0;
-        right: 0;
-        bottom: 0;
-        height: 32px;
+        top: calc(10 * var(--u));
+        left: calc(var(--x) * var(--u));
         display: flex;
-        align-items: center;
-        justify-content: space-between;
-        padding: 0 18px;
-        border-top: 1px solid var(--hair);
-        background: rgba(255, 255, 255, 0.72);
-        font-family: var(--mono);
-        font-size: 11px;
-        color: var(--muted);
+        align-items: baseline;
+        gap: calc(6 * var(--u));
+        white-space: nowrap;
+        animation: fade 0.5s var(--ease-out) both;
+        animation-delay: calc(var(--d, 0) * 1ms);
       }
-
-      .ticker .r {
+      .m-lh i {
+        font-family: var(--f-display);
+        font-size: calc(19 * var(--u));
+        line-height: 1;
         color: var(--faint);
       }
-
-      .statusbar {
-        grid-column: 1 / 3;
-        grid-row: 3;
+      .m-lh b {
+        font-size: calc(9.5 * var(--u));
+        font-weight: 600;
+      }
+      .m-lh span {
+        font-family: var(--f-mono);
+        font-size: calc(7.5 * var(--u));
+        color: var(--faint);
+      }
+      .m-lh.on i {
+        color: var(--sig-ink);
+      }
+      .m-rule {
+        position: absolute;
+        top: calc(38 * var(--u));
+        bottom: 0;
+        left: calc(var(--x) * var(--u));
+        width: 0;
+        border-left: 1px dashed var(--line);
+      }
+      .m-node {
+        position: absolute;
+        left: calc(var(--x) * var(--u));
+        top: calc(var(--y) * var(--u));
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        gap: calc(2.5 * var(--u));
+        width: calc(110 * var(--u));
+        height: calc(36 * var(--u));
+        padding: 0 calc(8 * var(--u)) 0 calc(9 * var(--u));
+        border-radius: calc(8 * var(--u));
+        border: 1px solid var(--line-2);
+        background: var(--card);
+        box-shadow: var(--shadow-1);
+        animation: pop 0.5s var(--ease-spring) both;
+        animation-delay: calc(var(--d, 0) * 1ms);
+      }
+      .m-node .h {
         display: flex;
         align-items: center;
-        justify-content: space-between;
-        gap: 12px;
-        padding: 0 16px;
-        font-family: var(--mono);
-        font-size: 11px;
-        border-top: 1px solid var(--hair);
-        background: var(--alt);
-        color: var(--muted);
+        gap: calc(6 * var(--u));
+        min-width: 0;
+      }
+      .m-node .gly {
+        width: calc(11 * var(--u));
+        height: calc(11 * var(--u));
+      }
+      .m-node .gly.s-done .g-tick {
+        animation-delay: calc(var(--d, 0) * 1ms + 260ms);
+      }
+      .m-node .lbl {
+        flex: 1;
+        min-width: 0;
+        overflow: hidden;
+        white-space: nowrap;
+        text-overflow: ellipsis;
+        font-family: var(--f-mono);
+        font-size: calc(9.5 * var(--u));
+        font-weight: 500;
+      }
+      .m-node .sub {
+        padding-left: calc(17 * var(--u));
+        overflow: hidden;
+        white-space: nowrap;
+        text-overflow: ellipsis;
+        font-family: var(--f-mono);
+        font-size: calc(7.8 * var(--u));
+        color: var(--mute);
+      }
+      .m-node.done {
+        background: var(--card-2);
+      }
+      .m-node.done .lbl {
+        color: var(--ink-2);
+      }
+      .m-node.failed {
+        border-color: var(--alarm-line);
+        background: linear-gradient(var(--alarm-soft), var(--alarm-soft)), var(--card);
+        animation: pop 0.5s var(--ease-spring) both, shake 0.45s ease both;
+        animation-delay: calc(var(--d, 0) * 1ms), calc(var(--d, 0) * 1ms + 520ms);
+      }
+      .m-node.failed .sub {
+        color: var(--alarm-ink);
+      }
+      /* Running: a signal arc sweeps the border. */
+      .m-node.running {
+        border-color: transparent;
+        background: linear-gradient(var(--card), var(--card)) padding-box,
+          conic-gradient(from var(--sweep), var(--sig-line) 0deg, var(--sig) 50deg, var(--sig-line) 110deg, var(--line-2) 180deg, var(--line-2) 360deg)
+            border-box;
+        box-shadow: 0 0 0 calc(3.5 * var(--u)) var(--sig-soft), var(--shadow-1);
+        animation: pop 0.5s var(--ease-spring) both, sweep 2.2s linear infinite;
+        animation-delay: calc(var(--d, 0) * 1ms), calc(var(--d, 0) * -4ms);
+      }
+      .m-node.pending {
+        border-style: dashed;
+        background: transparent;
+        box-shadow: none;
+      }
+      .m-node.pending .lbl {
+        color: var(--mute);
+      }
+      .m-node.pending .sub {
+        color: var(--faint);
+      }
+      .m-group {
+        position: absolute;
+        left: calc(var(--x) * var(--u));
+        top: calc(var(--y) * var(--u));
+        display: grid;
+        place-items: center;
+        width: calc(110 * var(--u));
+        height: calc(26 * var(--u));
+        border-radius: calc(8 * var(--u));
+        border: 1px dashed var(--line-2);
+        font-size: calc(8.5 * var(--u));
+        color: var(--mute);
+        animation: fade 0.5s var(--ease-out) both;
+        animation-delay: calc(var(--d, 0) * 1ms);
+      }
+      .m-group b {
+        color: var(--ink-2);
+        font-weight: 600;
       }
 
-      .statusbar .live-dot {
-        width: 7px;
-        height: 7px;
-        border-radius: 999px;
-        background: var(--green);
+      /* Once the sheet has been plotted, only the live loops keep running. */
+      .mock.settled .m-node,
+      .mock.settled .m-lh,
+      .mock.settled .m-group,
+      .mock.settled .m-edge,
+      .mock.settled .m-prog,
+      .mock.settled .ring .fg,
+      .mock.settled .gly.s-done .g-tick {
+        animation: none;
+      }
+      .mock.settled .m-node.running {
+        animation: sweep 2.2s linear infinite;
+        animation-delay: calc(var(--d, 0) * -4ms);
+      }
+      .mock.settled .m-flow {
+        animation: flow 0.7s linear infinite;
+      }
+
+      /* ticker + statusbar */
+      .m-ticker {
+        display: flex;
+        align-items: center;
+        gap: calc(12 * var(--u));
+        height: calc(25 * var(--u));
+        padding: 0 calc(16 * var(--u));
+        border-top: 1px solid var(--line);
+        font-family: var(--f-mono);
+        font-size: calc(8.5 * var(--u));
+        color: var(--mute);
+        white-space: nowrap;
+      }
+      .m-ticker .msg {
+        flex: 1;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .m-ticker .msg b {
+        color: var(--sig-ink);
+        font-weight: 500;
+      }
+      .m-ticker .r {
+        color: var(--faint);
+      }
+      .m-status {
+        grid-area: status;
+        display: flex;
+        align-items: center;
+        gap: calc(14 * var(--u));
+        padding: 0 calc(16 * var(--u)) 0 calc(20 * var(--u));
+        border-top: 1px solid var(--line);
+        font-family: var(--f-mono);
+        font-size: calc(7.5 * var(--u));
+        color: var(--faint);
+        white-space: nowrap;
+      }
+      .m-status b {
+        color: var(--mute);
+        font-weight: 500;
+      }
+      .m-status .grow {
+        flex: 1;
+      }
+      .m-status .dot {
         display: inline-block;
-        box-shadow: 0 0 8px rgba(16, 185, 129, 0.6);
+        width: calc(5 * var(--u));
+        height: calc(5 * var(--u));
+        margin-right: calc(5 * var(--u));
+        border-radius: 50%;
+        background: var(--sig);
+        vertical-align: calc(0.5 * var(--u));
       }
 
-      .statusbar .seg {
+      /* A narrower figure: drop the rail, keep the run view whole. */
+      @container mock (max-width: 799px) {
+        .mock {
+          --u: calc(100cqw / 720);
+          grid-template-columns: minmax(0, 1fr);
+          grid-template-areas: "top" "main" "status";
+        }
+        .m-rail {
+          display: none;
+        }
+      }
+      /* A phone: a compact header and a crop of the graph around the live phase. */
+      @container mock (max-width: 559px) {
+        .mock {
+          --u: calc(100cqw / 300);
+        }
+        .m-search,
+        .m-crumbs .lead,
+        .m-crumbs .tail,
+        .m-status .path,
+        .m-l5,
+        .m-tab-x,
+        .m-st:not(.on) > span {
+          display: none;
+        }
+        .m-head {
+          flex-direction: column;
+          align-items: flex-start;
+          justify-content: flex-start;
+          gap: calc(12 * var(--u));
+          height: calc(104 * var(--u));
+        }
+        .m-stats {
+          gap: calc(18 * var(--u));
+        }
+        .m-stats .rs {
+          align-items: flex-start;
+        }
+        .m-ln {
+          margin: 0 calc(7 * var(--u));
+        }
+        .m-dag {
+          left: calc(-284 * var(--u));
+        }
+      }
+
+      /* ---------- sections ---------- */
+      .section {
+        --pad: clamp(80px, 9vw, 124px);
+        padding: var(--pad) 0;
+        border-top: 1px solid var(--line);
+        /* anchor jumps land with the section label just under the nav */
+        scroll-margin-top: calc(40px - var(--pad));
+      }
+      .section.tint {
+        --mute: var(--mute-on-2);
+        background-color: var(--paper-2);
+        background-image: var(--grain);
+      }
+      .section-inner {
+        width: min(100% - 64px, var(--wide));
+        margin: 0 auto;
+      }
+      .seclabel {
+        display: flex;
+        align-items: baseline;
+        gap: 14px;
+        margin-bottom: 26px;
+      }
+      .seclabel .num {
+        font-family: var(--f-display);
+        font-style: italic;
+        font-size: 46px;
+        line-height: 0.8;
+        color: var(--faint);
+      }
+      .seclabel .kick {
+        font-family: var(--f-mono);
+        font-size: 11px;
+        font-weight: 500;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: var(--mute);
+      }
+      .seclabel .rule {
+        flex: 1;
+        align-self: center;
+        height: 1px;
+        background: var(--line-2);
+      }
+      .sectitle {
+        max-width: 8em;
+        font-size: clamp(40px, 4.9vw, 66px);
+        line-height: 1.02;
+        letter-spacing: -0.016em;
+      }
+      :lang(zh-CN) .sectitle {
+        max-width: 24em;
+        font-size: clamp(30px, 3.3vw, 46px);
+        line-height: 1.24;
+        letter-spacing: 0.01em;
+      }
+      .section-lede {
+        max-width: 60ch;
+        margin-top: 22px;
+        font-size: 17.5px;
+        line-height: 1.6;
+        color: var(--mute);
+      }
+      /* Headline and lede share a row on wide screens: the lede sits on the
+         headline's last line, like a standfirst. */
+      .sechead {
+        display: grid;
+        grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+        gap: 22px 64px;
+        align-items: end;
+      }
+      .sechead .section-lede {
+        max-width: 46ch;
+        margin-top: 0;
+        padding-bottom: 6px;
+      }
+
+      /* ---------- 01 · why: three cards with line-drawn plates ---------- */
+      .signal-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 24px;
+        margin-top: 60px;
+      }
+      .card {
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: var(--r-md);
+        box-shadow: var(--shadow-1);
+      }
+      .signal {
+        display: flex;
+        flex-direction: column;
+        transition: transform var(--t-med) var(--ease-out), box-shadow var(--t-med), border-color var(--t-med);
+      }
+      .signal:hover {
+        transform: translateY(-3px);
+        box-shadow: var(--shadow-2);
+        border-color: var(--line-2);
+      }
+      .plate {
+        border-bottom: 1px solid var(--line);
+        border-radius: var(--r-md) var(--r-md) 0 0;
+        background-color: var(--paper);
+        background-image: radial-gradient(circle at 1px 1px, var(--grid) 1.1px, transparent 0);
+        background-size: 16px 16px;
+        background-position: 8px 8px;
+      }
+      .plate svg {
+        display: block;
+        width: 100%;
+        height: auto;
+        overflow: visible;
+      }
+      .signal-body {
+        padding: 22px 24px 26px;
+      }
+      .op {
         display: inline-flex;
         align-items: center;
         gap: 7px;
-        overflow: hidden;
-        text-overflow: ellipsis;
+        height: 24px;
+        padding: 0 10px;
+        border-radius: 12px;
+        border: 1px solid var(--line);
+        background: var(--card-2);
+        font-family: var(--f-mono);
+        font-size: 11px;
+        color: var(--ink-2);
         white-space: nowrap;
       }
-
-      /* ---------- WHY: signal cards ---------- */
-      .signal-grid {
-        display: grid;
-        grid-template-columns: repeat(3, 1fr);
-        gap: 14px;
-        margin-top: 36px;
+      .op i {
+        width: 7px;
+        height: 7px;
+        flex: none;
+        border-radius: 50%;
+        background: var(--ink-2);
       }
-
-      .signal {
-        position: relative;
-        border: 1px solid var(--node-border);
-        border-left: 3px solid var(--green);
-        border-radius: 9px;
-        background: var(--surface);
-        padding: 20px;
-        box-shadow: 0 8px 20px rgba(0, 0, 0, 0.03);
-        transition:
-          transform 150ms ease,
-          box-shadow 150ms ease;
+      .op.par i {
+        background: var(--sig);
+        box-shadow: 4px 0 0 var(--sig), 8px 0 0 var(--sig);
+        margin-right: 8px;
       }
-
-      .signal:hover {
-        transform: translateY(-2px);
-        box-shadow: 0 14px 28px rgba(0, 0, 0, 0.05);
+      .op.pipe i {
+        border-radius: 2px;
+        background: var(--amber);
       }
-
-      .signal .kd {
-        font-family: var(--mono);
-        font-size: 11px;
-        font-weight: 500;
-        color: var(--green-deep);
-        display: inline-flex;
-        align-items: center;
-        gap: 5px;
-        margin-bottom: 20px;
-        background: var(--green-tint);
-        border: 1px solid var(--green-tint-border);
-        border-radius: 6px;
-        padding: 3px 8px;
+      .op.wf i {
+        background: transparent;
+        border: 1.5px solid var(--clay);
       }
-
-      .signal h3 {
-        margin: 0 0 9px;
-        font-family: var(--display);
-        font-weight: 700;
-        font-size: 25px;
-        line-height: 1.1;
+      .op.cmd i {
+        border-radius: 1px;
+        background: var(--mute);
       }
-
+      .signal h3,
       .primitive h3 {
-        margin: 0 0 9px;
-        font-size: 16px;
-        font-weight: 700;
-        line-height: 1.2;
+        font-family: var(--f-display);
+        font-weight: 400;
+        letter-spacing: -0.005em;
+        font-synthesis: none;
+      }
+      .signal h3 {
+        margin-top: 16px;
+        font-size: 30px;
+        line-height: 1.05;
+      }
+      .signal p {
+        margin-top: 10px;
+        font-size: 15px;
+        line-height: 1.6;
+        color: var(--mute);
       }
 
-      .signal p,
-      .primitive p,
-      .install-copy p {
-        margin: 0;
-        color: var(--muted);
-        font-size: 14.5px;
-        line-height: 1.55;
+      /* plates: hairline line drawings in the dashboard's vocabulary */
+      .pl text {
+        font-family: var(--f-mono);
+        font-size: 10px;
+        fill: var(--mute);
+      }
+      .pl .pe {
+        fill: none;
+        stroke: var(--line-2);
+        stroke-width: 1.3;
+        stroke-dasharray: 1;
+      }
+      .pl .pe.done {
+        stroke: var(--ink-2);
+        opacity: 0.5;
+      }
+      .pl .pe.running {
+        stroke: var(--sig-line);
+        stroke-width: 1.7;
+      }
+      .pl .file {
+        fill: var(--card);
+        stroke: var(--line-2);
+        stroke-width: 1;
+      }
+      .pl .file-wf {
+        fill: none;
+        stroke: var(--clay);
+        stroke-width: 1.5;
+      }
+      .pl .fl {
+        fill: var(--ink-2);
+        font-size: 9.5px;
+      }
+      .pl-port .ad circle {
+        fill: var(--ink);
+        animation: port-dot 10s var(--ease-out) infinite backwards;
+        animation-delay: calc(var(--i) * 2s);
+      }
+      .pl-port .ad text {
+        animation: port-lab 10s var(--ease-out) infinite backwards;
+        animation-delay: calc(var(--i) * 2s);
+      }
+      .pl-port .ps {
+        fill: none;
+        stroke: var(--sig);
+        stroke-width: 1.8;
+        stroke-linecap: round;
+        stroke-dasharray: 1;
+        filter: drop-shadow(0 0 2px var(--sig-glow));
+        animation: port-cycle 10s var(--ease-out) infinite backwards;
+        animation-delay: calc(var(--i) * 2s);
+      }
+      .pl .core {
+        fill: var(--sig);
+      }
+      .pl .orbit {
+        fill: none;
+        stroke: var(--sig);
+        stroke-width: 1.5;
+        stroke-linecap: round;
+        stroke-dasharray: 0.3 0.7;
+        transform-box: fill-box;
+        transform-origin: center;
+        animation: spin 1.15s linear infinite;
+      }
+      .pl .disc {
+        fill: var(--ink);
+      }
+      .pl .tick {
+        fill: none;
+        stroke: var(--paper);
+        stroke-width: 1.8;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+      .pl .hollow {
+        fill: var(--paper);
+        stroke: var(--faint);
+        stroke-width: 1.4;
+        stroke-dasharray: 2.4 2.2;
+        transform-box: fill-box;
+        transform-origin: center;
+        animation: spin 8s linear infinite;
+      }
+      .pl .flow {
+        fill: none;
+        stroke: var(--sig);
+        stroke-width: 1.9;
+        stroke-linecap: round;
+        stroke-dasharray: 3 6;
+        animation: flow 0.7s linear infinite;
+      }
+      .pl .spark {
+        fill: var(--sig);
+        filter: drop-shadow(0 0 3px var(--sig));
+      }
+      .pl .ridge {
+        fill: var(--paper);
+        stroke: var(--ink-2);
+        stroke-width: 1.15;
+        stroke-linejoin: round;
+        stroke-dasharray: 1;
+      }
+      .pl .ridge.done {
+        stroke: var(--mute);
+      }
+      .pl .ridge.failed {
+        stroke: var(--alarm);
+      }
+      .pl .ridge.running {
+        stroke: var(--sig);
+        stroke-width: 1.6;
+      }
+      .pl .now {
+        stroke: var(--sig);
+        stroke-width: 1;
+        stroke-dasharray: 2 3;
+      }
+      .pl .nowlab {
+        fill: var(--sig-ink);
+        font-size: 8.5px;
+      }
+      .pl .scan {
+        animation: scan 6s linear infinite;
+      }
+      .pl stop {
+        stop-color: var(--sig);
+      }
+      /* Plotter draw-in when a plate scrolls into view (added by the script). */
+      .pl.draw .pe,
+      .pl.draw .ridge {
+        animation: draw 1.1s var(--ease-out) both;
+        animation-delay: calc(var(--i, 0) * 110ms);
       }
 
-      /* ---------- RUNTIME: phase pills + code + primitives ---------- */
+      /* ---------- 02 · runtime ---------- */
       .phasepills {
         display: flex;
-        flex-wrap: wrap;
-        gap: 8px;
         align-items: center;
-        margin-top: 24px;
+        margin: 52px 0 44px;
       }
-      .ppill {
-        display: inline-flex;
-        align-items: center;
-        gap: 6px;
-        font-size: 12px;
-        font-weight: 600;
+      .phasepills .step {
+        display: flex;
+        align-items: baseline;
+        gap: 10px;
+        flex: none;
+        font-size: 15.5px;
+        font-weight: 500;
         color: var(--ink);
-        background: var(--surface);
-        border: 1px solid var(--node-border);
-        border-radius: 999px;
-        padding: 4px 12px;
       }
-      .ppill .ix {
-        font-family: var(--mono);
-        font-size: 10px;
+      .phasepills .ix {
+        font-family: var(--f-display);
+        font-style: italic;
+        font-size: 32px;
+        line-height: 0.8;
         color: var(--faint);
       }
-      .phasepills .ar {
-        color: var(--faint);
-        font-size: 12px;
+      .phasepills .step-link {
+        position: relative;
+        flex: 1 1 32px;
+        height: 1px;
+        margin: 0 22px;
+        background: var(--line-2);
+        overflow: hidden;
       }
-
+      .phasepills .step-link::after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        background: linear-gradient(90deg, transparent, var(--sig), transparent);
+        background-size: 200% 100%;
+        animation: shimmer 3.6s linear infinite;
+        animation-delay: calc(var(--i) * 1.2s);
+      }
       .runtime-grid {
         display: grid;
-        grid-template-columns: minmax(340px, 1.04fr) minmax(0, 0.96fr);
-        gap: 26px;
-        align-items: start;
-        margin-top: 30px;
+        grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+        gap: 24px;
+        align-items: stretch;
       }
-
       .srcview {
-        border: 1px solid rgba(255, 255, 255, 0.06);
-        border-radius: 12px;
-        background: var(--stage-bg);
-        box-shadow: 0 22px 60px -24px rgba(0, 0, 0, 0.5);
-        overflow: hidden;
-      }
-
-      .srcview-bar {
         display: flex;
+        flex-direction: column;
+      }
+      .srcview .code {
+        flex: 1;
+      }
+      .src-outline {
+        display: flex;
+        flex-wrap: wrap;
         align-items: center;
         gap: 10px;
-        min-height: 40px;
-        padding: 0 14px;
-        border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-        color: #8a988f;
-        font-family: var(--mono);
-        font-size: 11.5px;
+        padding: 14px 18px 16px;
+        border-top: 1px solid rgba(255, 255, 255, 0.07);
       }
-
-      .srcview-bar .tl i {
-        width: 10px;
-        height: 10px;
-      }
-
-      .srcview pre {
-        margin: 0;
-        overflow-x: auto;
-        padding: 18px 20px;
-        font-family: var(--mono);
-        font-size: 12.5px;
-        line-height: 1.75;
-        color: #c9d1cf;
-      }
-
-      .srcview pre code {
-        white-space: pre;
-        overflow-wrap: anywhere;
-      }
-
-      .srcview .cm {
-        color: #5c6a62;
-      }
-      .srcview .kw {
-        color: #22d89a;
-      }
-      .srcview .fn {
-        color: #22d89a;
-      }
-      .srcview .st {
-        color: #9fb0a6;
-      }
-      .srcview .nm {
-        color: #c9d1cf;
-      }
-
-      .primitive-list {
-        display: grid;
-        gap: 11px;
-      }
-
-      .primitive {
-        border: 1px solid var(--node-border);
-        border-left: 3px solid var(--node-border);
-        border-radius: 9px;
-        background: var(--surface);
-        padding: 16px 18px;
-        box-shadow: 0 8px 20px rgba(0, 0, 0, 0.03);
-      }
-
-      .primitive.par {
-        border-left-color: var(--green);
-      }
-      .primitive.pipe {
-        border-left-color: var(--blue);
-      }
-      .primitive.agent {
-        border-left-color: var(--ink);
-      }
-
-      .primitive .kd {
-        display: block;
-        font-family: var(--mono);
-        font-size: 9.5px;
-        font-weight: 700;
-        letter-spacing: 0.04em;
+      .src-outline .lab {
+        margin-right: 6px;
+        font-family: var(--f-mono);
+        font-size: 10px;
+        letter-spacing: 0.14em;
         text-transform: uppercase;
-        color: var(--green-deep);
-        margin-bottom: 6px;
+        color: var(--code-note);
       }
-
-      .primitive.pipe .kd {
-        color: var(--blue);
+      .src-outline .op {
+        border-color: rgba(255, 255, 255, 0.1);
+        background: rgba(255, 255, 255, 0.04);
+        color: var(--code-ink);
       }
-      .primitive.agent .kd {
-        color: var(--ink);
+      .src-outline .op i {
+        background: var(--code-ink);
       }
-
-      .primitive code.sig {
-        display: inline-flex;
-        align-items: center;
-        min-height: 26px;
-        margin-bottom: 12px;
-        border-radius: 7px;
-        background: var(--alt);
-        border: 1px solid var(--hair);
-        padding: 0 9px;
-        color: var(--ink);
-        font-family: var(--mono);
-        font-size: 12px;
-        font-weight: 500;
+      .src-outline .op.par i {
+        background: var(--sig);
       }
-
-      /* ---------- INSTALL ---------- */
-      .install-panel {
-        display: grid;
-        grid-template-columns: minmax(0, 0.85fr) minmax(360px, 1fr);
-        gap: 28px;
-        align-items: center;
-        margin-top: 30px;
+      .src-outline .to {
+        width: 14px;
+        height: 14px;
+        color: var(--code-dim);
       }
-
-      .install-copy {
-        max-width: 50ch;
-      }
-
-      .install-copy p {
-        margin: 0;
-        color: var(--muted);
-        font-size: 16px;
-        line-height: 1.6;
-      }
-
-      .install-copy .actions {
-        margin-top: 24px;
-      }
-
-      /* CLI-hint chips next to the terminal */
-      .clihints {
-        display: grid;
-        gap: 10px;
-        margin-top: 24px;
-      }
-
-      .clihint {
-        display: inline-flex;
-        align-items: baseline;
-        gap: 9px;
-        background: var(--stage-bg);
-        border: 1px solid rgba(255, 255, 255, 0.06);
-        border-radius: 9px;
-        padding: 9px 13px;
-        font-family: var(--mono);
-        font-size: 12px;
-        color: var(--stage-muted);
-      }
-
-      .clihint .p {
-        color: var(--green-bright);
-        font-weight: 700;
-        flex: 0 0 auto;
-      }
-
-      .clihint .note {
-        color: var(--stage-comment);
-        margin-left: 2px;
-      }
-
+      .srcview,
       .terminal {
-        border: 1px solid rgba(255, 255, 255, 0.06);
-        border-radius: 12px;
-        background: var(--stage-bg);
-        box-shadow: 0 22px 60px -24px rgba(0, 0, 0, 0.5);
         overflow: hidden;
+        border: 1px solid var(--code-edge);
+        border-radius: var(--r-md);
+        background: var(--code-bg);
+        color: var(--code-ink);
+        box-shadow: var(--shadow-2);
       }
-
+      .srcview-bar,
       .terminal-bar {
         display: flex;
         align-items: center;
         gap: 10px;
-        min-height: 40px;
-        padding: 0 14px;
-        border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-        color: #8a988f;
-        font-family: var(--mono);
-        font-size: 11.5px;
+        height: 44px;
+        padding: 0 16px 0 18px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+        font-family: var(--f-mono);
+        font-size: 12px;
+        color: var(--code-note);
       }
-
-      .terminal-bar .tl i {
-        width: 10px;
-        height: 10px;
+      .srcview-bar .nm {
+        color: var(--code-ink);
       }
-
-      .terminal .body {
-        padding: 18px 20px;
-        font-family: var(--mono);
-        font-size: 12.5px;
-        line-height: 1.5;
+      .srcview-bar .wfm {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        border: 1.5px solid var(--clay);
       }
-
-      .cmd {
-        display: grid;
-        grid-template-columns: auto 1fr;
-        gap: 11px;
-        padding: 8px 0;
-        align-items: baseline;
+      .srcview-bar .lang,
+      .terminal-bar .lang {
+        margin-left: auto;
+        font-size: 10px;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: var(--code-note);
       }
-
-      .cmd:not(:last-child) {
-        border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+      .terminal-bar .ic {
+        width: 15px;
+        height: 15px;
       }
-
-      .cmd .p {
-        color: var(--green-bright);
-        font-weight: 700;
+      .code {
+        margin: 0;
+        padding: 16px 0 20px;
+        overflow-x: auto;
+        font-family: var(--f-mono);
+        font-size: 13px;
+        line-height: 1.8;
+        white-space: normal;
+        counter-reset: ln;
+        tab-size: 2;
+      }
+      .code code {
+        display: block;
+        min-width: max-content;
+      }
+      .code .ln {
+        display: block;
+        padding-right: 22px;
+        white-space: pre;
+      }
+      .code .ln::before {
+        counter-increment: ln;
+        content: counter(ln);
+        display: inline-block;
+        width: 50px;
+        padding-right: 20px;
+        text-align: right;
+        color: var(--code-dim);
+        -webkit-user-select: none;
         user-select: none;
       }
+      .code .ln:hover {
+        background: rgba(255, 255, 255, 0.035);
+      }
+      .tk-k {
+        color: var(--code-kw);
+      }
+      .tk-s {
+        color: var(--code-str);
+      }
+      .tk-f {
+        color: var(--code-fn);
+      }
+      .tk-n {
+        color: var(--code-num);
+      }
+      .primitive-list {
+        display: grid;
+        gap: 14px;
+      }
+      .primitive {
+        padding: 20px 22px 22px;
+        transition: transform var(--t-med) var(--ease-out), box-shadow var(--t-med), border-color var(--t-med);
+      }
+      .primitive:hover {
+        transform: translateY(-2px);
+        box-shadow: var(--shadow-2);
+        border-color: var(--line-2);
+      }
+      .ptop {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      .psig {
+        margin-left: auto;
+        padding: 3px 8px;
+        border-radius: var(--r-xs);
+        background: var(--shade);
+        font-size: 12.5px;
+        color: var(--ink);
+        white-space: nowrap;
+      }
+      .primitive h3 {
+        margin-top: 14px;
+        font-size: 25px;
+        line-height: 1.08;
+      }
+      .primitive p {
+        margin-top: 6px;
+        font-size: 14.5px;
+        line-height: 1.55;
+        color: var(--mute);
+      }
 
-      .cmd .c {
-        color: var(--stage-body);
+      /* ---------- 03 · install ---------- */
+      .install-panel {
+        display: grid;
+        grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.05fr);
+        gap: 64px;
+        align-items: center;
+      }
+      .install-copy > p {
+        max-width: 46ch;
+        margin-top: 24px;
+        font-size: 17.5px;
+        line-height: 1.6;
+        color: var(--ink-2);
+      }
+      .install-copy .actions {
+        margin-top: 28px;
+      }
+      .clihints {
+        display: grid;
+        gap: 10px;
+        margin-top: 30px;
+      }
+      .clihint {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 6px 12px;
+      }
+      .clihint .p {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        height: 32px;
+        padding: 0 12px;
+        border-radius: var(--r-sm);
+        border: 1px solid var(--code-edge);
+        background: var(--code-bg);
+        color: var(--code-ink);
+        font-family: var(--f-mono);
+        font-size: 12.5px;
+        white-space: nowrap;
+      }
+      .clihint .p b {
+        color: var(--sig);
+        font-weight: 500;
+      }
+      .clihint .note {
+        font-size: 13px;
+        color: var(--mute);
+      }
+      .terminal .body {
+        padding: 8px 10px 12px 20px;
+        font-family: var(--f-mono);
+        font-size: 13px;
+        line-height: 1.6;
+      }
+      .terminal .cmd {
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr) auto;
+        column-gap: 12px;
+        align-items: start;
+        padding: 12px 0;
+      }
+      .terminal .cmd + .cmd {
+        border-top: 1px dashed rgba(255, 255, 255, 0.08);
+      }
+      .terminal .cmd .p {
+        color: var(--sig);
+        font-weight: 500;
+        -webkit-user-select: none;
+        user-select: none;
+      }
+      .terminal .cmd .c {
+        color: var(--code-ink);
         overflow-wrap: anywhere;
       }
-
-      .cmd .c .fn {
-        color: var(--green-bright);
+      .terminal .cmd .c .fn {
+        color: var(--code-fn);
       }
-
-      .cmd .note {
+      .terminal .cmd .note {
         grid-column: 2;
-        color: var(--stage-comment);
-        font-size: 11.5px;
-        margin-top: 2px;
+        margin-top: 3px;
+        font-size: 12px;
+        font-style: italic;
+        color: var(--code-note);
+      }
+      .terminal .cmd .note::before {
+        content: "# ";
+      }
+      .copybtn {
+        grid-row: 1 / span 2;
+        grid-column: 3;
+        display: grid;
+        place-items: center;
+        width: 30px;
+        height: 30px;
+        margin-top: -4px;
+        padding: 0;
+        border: 0;
+        border-radius: 7px;
+        background: transparent;
+        color: var(--code-dim);
+        cursor: pointer;
+        transition: background var(--t-fast), color var(--t-fast), transform var(--t-fast);
+      }
+      .copybtn:hover {
+        background: rgba(255, 255, 255, 0.08);
+        color: var(--code-ink);
+      }
+      .copybtn:active {
+        transform: scale(0.94);
+      }
+      .copybtn:focus-visible {
+        outline-color: var(--code-ink);
+        outline-offset: 1px;
+      }
+      .copybtn svg {
+        width: 15px;
+        height: 15px;
+      }
+      .copybtn .ok-ic,
+      .copybtn.ok .cp-ic {
+        display: none;
+      }
+      .copybtn.ok .ok-ic {
+        display: block;
+      }
+      .copybtn.ok {
+        color: var(--sig);
       }
 
-      /* ---------- FOOTER ---------- */
+      /* ---------- footer ---------- */
       .footer {
-        border-top: 1px solid var(--hair);
-        background: var(--surface);
-        color: var(--muted);
+        --mute: var(--mute-on-2);
+        border-top: 1px solid var(--line);
+        background-color: var(--paper-2);
+        background-image: var(--grain);
+        color: var(--mute);
         font-size: 13.5px;
       }
-
       .footer-inner {
         display: flex;
         flex-wrap: wrap;
         align-items: center;
         justify-content: space-between;
-        gap: 16px;
-        width: min(calc(100vw - 40px), var(--max));
-        min-height: 80px;
+        gap: 16px 28px;
+        width: min(100% - 64px, var(--wide));
+        min-height: 96px;
         margin: 0 auto;
-        padding: 18px 0;
+        padding: 24px 0;
       }
-
-      .footer .fbrand {
+      .fbrand {
         display: inline-flex;
+        flex-wrap: wrap;
         align-items: center;
-        gap: 9px;
+        gap: 10px;
       }
-
-      .footer .fbrand .wm {
-        font-family: var(--display);
-        font-weight: 700;
-        font-size: 24px;
-        line-height: 0.8;
-        color: var(--ink);
+      .fbrand .wm {
+        font-size: 26px;
       }
-
       .footer a {
-        color: #353535;
-        font-family: var(--mono);
+        font-family: var(--f-mono);
         font-size: 12.5px;
+        color: var(--ink-2);
+        text-decoration: underline;
+        text-decoration-color: var(--line-2);
+        text-underline-offset: 4px;
+        transition: color var(--t-fast), text-decoration-color var(--t-fast);
       }
-
       .footer a:hover {
-        color: var(--green-deep);
+        color: var(--sig-ink);
+        text-decoration-color: var(--sig);
       }
 
       /* ---------- motion ---------- */
-      @keyframes pulse {
-        0% {
-          box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.45);
+      @property --sweep {
+        syntax: "<angle>";
+        initial-value: 0deg;
+        inherits: false;
+      }
+      @keyframes sweep {
+        to {
+          --sweep: 360deg;
         }
-        70% {
-          box-shadow: 0 0 0 8px rgba(16, 185, 129, 0);
+      }
+      @keyframes fade {
+        from {
+          opacity: 0;
+        }
+      }
+      @keyframes pop {
+        0% {
+          opacity: 0;
+          transform: scale(0.94);
+        }
+      }
+      @keyframes spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+      @keyframes pulse-ring {
+        0% {
+          box-shadow: 0 0 0 0 var(--sig-glow);
         }
         100% {
-          box-shadow: 0 0 0 0 rgba(16, 185, 129, 0);
+          box-shadow: 0 0 0 10px transparent;
         }
       }
-
-      /* ===================== RESPONSIVE ===================== */
-      @media (max-width: 1080px) {
-        .hero-grid {
-          grid-template-columns: 1fr;
-          gap: 34px;
+      @keyframes m-pulse {
+        0% {
+          box-shadow: 0 0 0 0 var(--sig-glow);
         }
-        .hero-inner {
-          width: calc(100vw - 36px);
-        }
-        .runtime-grid,
-        .install-panel {
-          grid-template-columns: 1fr;
-        }
-        .signal-grid {
-          grid-template-columns: 1fr;
+        100% {
+          box-shadow: 0 0 0 calc(6 * var(--u)) transparent;
         }
       }
-
-      @media (max-width: 720px) {
-        .nav-inner,
-        .section-inner,
-        .footer-inner {
-          width: calc(100vw - 28px);
-        }
-        .brand .full {
-          display: none;
-        }
-        .nav-links a:not(.gh) {
-          display: none;
-        }
-        .section {
-          padding: 54px 0;
-        }
-        .hero {
-          padding: 36px 0 44px;
-        }
-        h1 {
-          font-size: clamp(40px, 13vw, 60px);
-        }
-        .hero .actions .button {
-          flex: 1 1 auto;
-        }
-        .install-copy .actions {
-          flex-direction: column;
-        }
-        .install-copy .button {
-          width: 100%;
-        }
-
-        /* app window: stack toolbar / rail / board / statusbar */
-        .appwin .grid {
-          grid-template-columns: 1fr;
-          grid-template-rows: 44px auto auto 24px;
-        }
-        .rail {
-          grid-column: 1;
-          grid-row: 2;
-          flex-direction: row;
-          align-items: center;
-          gap: 4px;
-          overflow-x: auto;
-          padding: 8px 10px;
-          border-right: none;
-          border-bottom: 1px solid var(--hair);
-        }
-        .rail .brandmini,
-        .rail .tagline,
-        .rail .divider,
-        .rail .sl,
-        .rail .minirun,
-        .rail .spacer {
-          display: none;
-        }
-        .navitem {
-          margin-bottom: 0;
-          white-space: nowrap;
-          font-size: 12px;
-          padding: 7px 9px;
-        }
-        .navitem .ic {
-          display: none;
-        }
-        .board {
-          grid-column: 1;
-          grid-row: 3;
-        }
-        .statusbar {
-          grid-column: 1;
-          grid-row: 4;
-        }
-        .statusbar .seg.mid {
-          display: none;
-        }
-        .crumb .s,
-        .crumb .sep {
-          display: none;
-        }
-
-        /* DAG board: reflow absolute nodes into a stacked grid (no horizontal scroll) */
-        .dagarea {
-          overflow: visible;
-          min-height: 0;
-        }
-        .dag {
-          height: auto;
-          padding: 16px 14px 18px;
-          display: grid;
-          grid-template-columns: 1fr 1fr;
-          gap: 10px;
-        }
-        .dag .watermark,
-        .dag .lanehead,
-        .dag .edges,
-        .dag .flowdot {
-          display: none;
-        }
-        .dag .node,
-        .dag .groupcard {
-          position: static;
-          left: auto;
-          top: auto;
-          right: auto;
-          width: auto !important;
-        }
-        .ticker {
-          position: static;
-          height: auto;
-          gap: 8px;
-          padding: 8px 14px;
-          flex-wrap: wrap;
+      @keyframes draw {
+        from {
+          stroke-dashoffset: 1;
         }
       }
-
-      @media (max-width: 430px) {
-        .hero-watermark {
-          font-size: 110px;
-        }
-        .stagehead .phasestepper {
-          display: none;
-        }
-        .row3 .chip.opt {
-          display: none;
-        }
-        .dag {
-          grid-template-columns: 1fr;
+      @keyframes flow {
+        to {
+          stroke-dashoffset: -18;
         }
       }
+      @keyframes shimmer {
+        from {
+          background-position: -200% 0;
+        }
+        to {
+          background-position: 200% 0;
+        }
+      }
+      @keyframes shake {
+        20%,
+        60% {
+          transform: translateX(-3px);
+        }
+        40%,
+        80% {
+          transform: translateX(3px);
+        }
+      }
+      @keyframes wipe {
+        from {
+          clip-path: inset(0 100% 0 0);
+        }
+        to {
+          clip-path: inset(0 0 0 0);
+        }
+      }
+      @keyframes ring-fill {
+        from {
+          stroke-dashoffset: 43.98;
+        }
+      }
+      @keyframes logo-beat {
+        0%,
+        100% {
+          transform: scale(1);
+        }
+        30% {
+          transform: scale(1.35);
+        }
+      }
+      @keyframes scan {
+        from {
+          transform: translateX(-80px);
+        }
+        to {
+          transform: translateX(334px);
+        }
+      }
+      /* "Portable": the signal visits each adapter in turn. */
+      @keyframes port-cycle {
+        0% {
+          stroke-dashoffset: 1;
+          opacity: 1;
+        }
+        9%,
+        17% {
+          stroke-dashoffset: 0;
+          opacity: 1;
+        }
+        21%,
+        100% {
+          stroke-dashoffset: 0;
+          opacity: 0;
+        }
+      }
+      @keyframes port-dot {
+        0%,
+        6% {
+          fill: var(--ink);
+        }
+        9%,
+        18% {
+          fill: var(--sig);
+        }
+        22%,
+        100% {
+          fill: var(--ink);
+        }
+      }
+      @keyframes port-lab {
+        0%,
+        6% {
+          fill: var(--mute);
+        }
+        9%,
+        18% {
+          fill: var(--sig-ink);
+        }
+        22%,
+        100% {
+          fill: var(--mute);
+        }
+      }
+      /* Off-screen loops rest (set by the script). */
+      .is-paused *,
+      .is-paused *::before,
+      .is-paused *::after {
+        animation-play-state: paused !important;
+      }
 
+      /* Reduced motion: keep every state legible, drop the decoration. */
       @media (prefers-reduced-motion: reduce) {
         html {
           scroll-behavior: auto;
@@ -1705,41 +2407,197 @@
         *,
         *::before,
         *::after {
-          animation-duration: 0.01ms !important;
+          animation-duration: 0.001ms !important;
           animation-iteration-count: 1 !important;
-          transition-duration: 0.01ms !important;
+          animation-delay: 0s !important;
+          transition-duration: 0.001ms !important;
         }
-        /* SVG <animateMotion> is not stopped by CSS animation overrides:
-           hide the traveling flow dots entirely under reduced motion. */
-        .flowdot {
+        /* SMIL <animateMotion> ignores CSS: hide the travelling sparks. */
+        .m-spark,
+        .pl .spark,
+        .pl .scan {
           display: none;
+        }
+        /* The portable plate settles on one adapter instead of cycling. */
+        .pl-port .ps {
+          opacity: 0;
+        }
+        .pl-port .ps:nth-child(2) {
+          animation: none;
+          opacity: 1;
+          stroke-dashoffset: 0;
+        }
+        .pl-port .ad circle,
+        .pl-port .ad text {
+          animation: none;
+        }
+        .pl-port .ad .on circle {
+          fill: var(--sig);
+        }
+        .pl-port .ad .on text {
+          fill: var(--sig-ink);
+        }
+      }
+
+      /* ---------- responsive ---------- */
+      @media (max-width: 1239px) {
+        .hero-inner {
+          grid-template-columns: minmax(0, 1fr);
+          gap: 56px;
+        }
+        .mock-wrap {
+          max-width: 1040px;
+        }
+        .hero-copy {
+          max-width: 54ch;
+        }
+        .hero h1 {
+          font-size: clamp(48px, 7.4vw, 84px);
+        }
+      }
+      @media (max-width: 1023px) {
+        .runtime-grid,
+        .install-panel,
+        .sechead {
+          grid-template-columns: minmax(0, 1fr);
+        }
+        .sechead .section-lede {
+          max-width: 60ch;
+          padding-bottom: 0;
+        }
+        .install-panel {
+          gap: 40px;
+        }
+      }
+      @media (max-width: 919px) {
+        .signal-grid {
+          grid-template-columns: minmax(0, 1fr);
+          max-width: 560px;
+        }
+      }
+      @media (max-width: 760px) {
+        .nav-inner,
+        .section-inner,
+        .footer-inner {
+          width: calc(100% - 32px);
+        }
+        .hero-inner {
+          width: calc(100% - 32px);
+          gap: 44px;
+        }
+        .brand .full,
+        .nav-links a:not(.gh) {
+          display: none;
+        }
+        .nav-actions {
+          gap: 6px;
+        }
+        .hero h1 {
+          margin-top: 18px;
+          font-size: clamp(48px, 11.5vw, 80px);
+        }
+        :lang(zh-CN) .hero h1 {
+          font-size: clamp(36px, 10.6vw, 52px);
+        }
+        .hero-copy {
+          font-size: 16.5px;
+        }
+        .hero .actions .button {
+          flex: 1 1 auto;
+        }
+        .seclabel .num {
+          font-size: 40px;
+        }
+        .sectitle {
+          font-size: clamp(36px, 10.4vw, 48px);
+        }
+        :lang(zh-CN) .sectitle {
+          font-size: clamp(28px, 7.6vw, 36px);
+        }
+        .section-lede,
+        .install-copy > p {
+          font-size: 16.5px;
+        }
+        .signal-grid {
+          margin-top: 44px;
+        }
+        .phasepills {
+          flex-direction: column;
+          align-items: flex-start;
+          margin: 40px 0 36px;
+        }
+        .phasepills .step-link {
+          flex: none;
+          width: 1px;
+          height: 18px;
+          margin: 8px 0 8px 12px;
+        }
+        .phasepills .step-link::after {
+          background: linear-gradient(180deg, transparent, var(--sig), transparent);
+          background-size: 100% 200%;
+          animation-name: shimmer-y;
+        }
+        .install-copy .actions {
+          flex-direction: column;
+        }
+        .install-copy .button {
+          width: 100%;
+        }
+        .terminal .body {
+          padding-left: 16px;
+          font-size: 12.5px;
+        }
+        .code {
+          font-size: 11px;
+        }
+        .code .ln {
+          padding-right: 12px;
+        }
+        .code .ln::before {
+          width: 32px;
+          padding-right: 12px;
+        }
+      }
+      @media (max-width: 479px) {
+        .hero h1 {
+          font-size: clamp(44px, 14.6vw, 72px);
+        }
+      }
+      @keyframes shimmer-y {
+        from {
+          background-position: 0 -200%;
+        }
+        to {
+          background-position: 0 200%;
         }
       }
     </style>
   </head>
 
-  <body class="grid-paper">
+  <body>
     <a class="skip-link" href="#main" data-i18n="a11y.skip">Skip to content</a>
 
     <header class="nav" aria-label="Primary">
       <div class="nav-inner">
         <a class="brand" href="#main" aria-label="Open Dynamic Workflows home">
           <svg class="logo" viewBox="0 0 116 64" fill="none" aria-hidden="true">
-            <path d="M14 44 C44 44, 50 22, 78 22" stroke="#16C079" stroke-width="11" stroke-linecap="round" />
-            <path d="M62 30 L58 46" stroke="#16C079" stroke-width="9" stroke-linecap="round" />
-            <circle cx="14" cy="44" r="11" fill="#15110F" />
-            <circle cx="92" cy="22" r="11" fill="#15110F" />
-            <circle cx="55" cy="52" r="8" fill="#16C079" />
+            <path class="lg-curve" d="M14 44 C44 44, 50 22, 78 22" stroke-width="11" stroke-linecap="round" />
+            <path class="lg-branch" d="M62 30 L58 46" stroke-width="9" stroke-linecap="round" />
+            <circle class="lg-ink" cx="14" cy="44" r="11" />
+            <circle class="lg-ink" cx="92" cy="22" r="11" />
+            <circle class="lg-sig" cx="55" cy="52" r="8" />
           </svg>
           <span class="wm">odw</span>
           <span class="full">Open Dynamic Workflows</span>
         </a>
         <div class="nav-actions">
           <nav class="nav-links" aria-label="Site links">
-            <a href="#why" data-i18n="nav.why">Why</a>
-            <a href="#runtime" data-i18n="nav.runtime">Runtime</a>
-            <a href="#install" data-i18n="nav.install">Install</a>
-            <a class="gh" href="https://github.com/xz1220/open-dynamic-workflows">GitHub</a>
+            <a href="#why"><span class="ix" aria-hidden="true">01</span><span data-i18n="nav.why">Why</span></a>
+            <a href="#runtime"><span class="ix" aria-hidden="true">02</span><span data-i18n="nav.runtime">Runtime</span></a>
+            <a href="#install"><span class="ix" aria-hidden="true">03</span><span data-i18n="nav.install">Install</span></a>
+            <a class="gh" href="https://github.com/xz1220/open-dynamic-workflows"
+              >GitHub<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7.5 16.5 16.5 7.5M9 7.5h7.5V15" /></svg
+            ></a>
           </nav>
           <div class="lang-toggle" role="group" aria-label="Language / 语言">
             <button type="button" data-lang="en" aria-pressed="true" aria-label="English">EN</button>
@@ -1749,224 +2607,300 @@
       </div>
     </header>
 
-    <main id="main">
-      <!-- ============================ HERO — Live Observatory ============================ -->
+    <main id="main" tabindex="-1">
+      <!-- ============================ HERO ============================ -->
       <section class="hero" aria-labelledby="hero-title">
-        <span class="hero-watermark" aria-hidden="true">odw</span>
         <div class="hero-inner">
-          <div class="hero-grid">
-            <div>
-              <p class="eyebrow"><span class="d" aria-hidden="true"></span><span data-i18n="hero.eyebrow">Open workflow runtime</span></p>
-              <h1 id="hero-title"><span data-i18n="hero.title1">Run agent workflows</span> <span class="accent" data-i18n="hero.title2">anywhere.</span></h1>
-              <p class="hero-copy" data-i18n="hero.copy">
-                Write orchestration in JavaScript; dispatch Codex, Claude Code, Gemini, Qwen, Kimi, or any local CLI.
-              </p>
-              <div class="actions" aria-label="Primary actions">
-                <a class="button primary" href="https://github.com/xz1220/open-dynamic-workflows">
-                  <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .5C5.7.5.5 5.7.5 12a11.5 11.5 0 0 0 7.9 10.9c.6.1.8-.2.8-.5v-2c-3.2.7-3.9-1.4-3.9-1.4-.5-1.3-1.3-1.7-1.3-1.7-1.1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1 1.8 2.8 1.3 3.5 1 .1-.8.4-1.3.7-1.6-2.6-.3-5.3-1.3-5.3-5.7 0-1.3.4-2.3 1.2-3.1-.1-.3-.5-1.5.1-3.1 0 0 1-.3 3.2 1.2a11 11 0 0 1 5.8 0c2.2-1.5 3.2-1.2 3.2-1.2.6 1.6.2 2.8.1 3.1.8.8 1.2 1.8 1.2 3.1 0 4.4-2.7 5.4-5.3 5.7.4.4.8 1.1.8 2.2v3.3c0 .3.2.6.8.5A11.5 11.5 0 0 0 23.5 12C23.5 5.7 18.3.5 12 .5Z"/></svg>
-                  <span data-i18n="cta.github">View GitHub</span>
-                </a>
-                <a class="button secondary" href="https://github.com/xz1220/open-dynamic-workflows#readme">
-                  <span data-i18n="cta.readme">Read README</span>
-                </a>
+          <div class="hero-copy-col">
+            <p class="eyebrow">
+              <svg class="gly s-running" viewBox="0 0 16 16" aria-hidden="true"><circle class="g-core" cx="8" cy="8" r="2.6" /><circle class="g-orbit" cx="8" cy="8" r="6" pathLength="1" /></svg>
+              <span data-i18n="hero.eyebrow">Open workflow runtime</span>
+            </p>
+            <h1 id="hero-title" class="display"><span data-i18n="hero.title1">Run agent workflows</span> <em class="accent" data-i18n="hero.title2">anywhere.</em></h1>
+            <p class="hero-copy" data-i18n="hero.copy">
+              Write orchestration in JavaScript; dispatch Codex, Claude Code, Gemini, Qwen, Kimi, or any local CLI.
+            </p>
+            <div class="actions" role="group" aria-label="Primary actions">
+              <a class="button primary" href="https://github.com/xz1220/open-dynamic-workflows">
+                <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .5C5.7.5.5 5.7.5 12a11.5 11.5 0 0 0 7.9 10.9c.6.1.8-.2.8-.5v-2c-3.2.7-3.9-1.4-3.9-1.4-.5-1.3-1.3-1.7-1.3-1.7-1.1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1 1.8 2.8 1.3 3.5 1 .1-.8.4-1.3.7-1.6-2.6-.3-5.3-1.3-5.3-5.7 0-1.3.4-2.3 1.2-3.1-.1-.3-.5-1.5.1-3.1 0 0 1-.3 3.2 1.2a11 11 0 0 1 5.8 0c2.2-1.5 3.2-1.2 3.2-1.2.6 1.6.2 2.8.1 3.1.8.8 1.2 1.8 1.2 3.1 0 4.4-2.7 5.4-5.3 5.7.4.4.8 1.1.8 2.2v3.3c0 .3.2.6.8.5A11.5 11.5 0 0 0 23.5 12C23.5 5.7 18.3.5 12 .5Z"/></svg>
+                <span data-i18n="cta.github">View GitHub</span>
+              </a>
+              <a class="button secondary" href="https://github.com/xz1220/open-dynamic-workflows#readme">
+                <span data-i18n="cta.readme">Read README</span>
+                <svg class="arr" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6" /></svg>
+              </a>
+            </div>
+            <div class="hero-meta" aria-hidden="true">
+              <span class="chip live"><span class="d"></span><b data-i18n="hero.chip1b">3</b> <span data-i18n="hero.chip1k">runs live</span></span>
+              <span class="chip"><b data-i18n="hero.chip2b">18</b> <span data-i18n="hero.chip2k">agents</span></span>
+              <span class="chip"><b>5</b> <span data-i18n="hero.chip3k">adapters</span></span>
+            </div>
+          </div>
+
+          <!-- The run view, in miniature: pure HTML/CSS/SVG, drawn in design units (see .mock). -->
+          <figure
+            class="mock-wrap marked"
+            role="img"
+            aria-label="Open Dynamic Workflows dashboard showing a live deep-research run: the phase stepper is at Vote, and in the graph a finished plan agent fans out to five search agents (one failed), five extract agents feed three running vote agents, two more votes are queued, and the report is planned."
+            data-i18n-aria="hero.boardAlt"
+            data-live
+          >
+            <div class="mock">
+              <aside class="m-rail">
+                <div class="m-brand">
+                  <svg class="logo live" viewBox="0 0 116 64" fill="none"><path class="lg-curve" d="M14 44 C44 44, 50 22, 78 22" stroke-width="11" stroke-linecap="round" /><path class="lg-branch" d="M62 30 L58 46" stroke-width="9" stroke-linecap="round" /><circle class="lg-ink" cx="14" cy="44" r="11" /><circle class="lg-ink" cx="92" cy="22" r="11" /><circle class="lg-sig" cx="55" cy="52" r="8" /></svg>
+                  <span class="m-wm">odw</span>
+                </div>
+                <div class="m-sub" data-i18n="win.tagline">fan out coding agents</div>
+                <div class="m-nav">
+                  <span class="m-ni"><svg class="ic" viewBox="0 0 24 24"><path d="M3 12h3.5l2.5-7 4.5 14 2.5-7H21" /></svg><span data-i18n="win.navActivity">Activity</span></span>
+                  <span class="m-ni on"><svg class="ic" viewBox="0 0 24 24"><circle cx="6" cy="6" r="2.2" /><circle cx="6" cy="18" r="2.2" /><circle cx="18" cy="12" r="2.2" /><path d="M8.2 6h3a4.5 4.5 0 0 1 4.5 4.5M8.2 18h3a4.5 4.5 0 0 0 4.5-4.5" /></svg><span data-i18n="win.navJobs">Jobs</span><i class="m-count">3</i></span>
+                  <span class="m-ni"><svg class="ic" viewBox="0 0 24 24"><rect x="3.5" y="4" width="7" height="7" rx="1.5" /><rect x="13.5" y="4" width="7" height="7" rx="1.5" /><rect x="3.5" y="14" width="7" height="6" rx="1.5" /><path d="M13.5 17h7" /></svg><span data-i18n="win.navWorkspace">Workspace</span></span>
+                  <span class="m-ni"><svg class="ic" viewBox="0 0 24 24"><path d="M20 14.5a3.5 3.5 0 0 1-3.5 3.5H9l-4.5 3V7.5A3.5 3.5 0 0 1 8 4h8.5A3.5 3.5 0 0 1 20 7.5z" /><path d="M8.5 9.5h7M8.5 13h4.5" /></svg><span data-i18n="win.navChat">Chat</span></span>
+                </div>
+                <div class="m-label"><span data-i18n="win.liveNow">Live now</span><b>3</b></div>
+                <span class="m-mini on"><svg class="ring" viewBox="0 0 18 18"><circle class="bg" cx="9" cy="9" r="7" /><circle class="fg" cx="9" cy="9" r="7" stroke-dasharray="43.98" stroke-dashoffset="9.24" /></svg><span class="nm">deep-research</span><span class="pct">79%</span></span>
+                <span class="m-mini"><svg class="ring" viewBox="0 0 18 18"><circle class="bg" cx="9" cy="9" r="7" /><circle class="fg" cx="9" cy="9" r="7" stroke-dasharray="43.98" stroke-dashoffset="5.28" /></svg><span class="nm">fan-out-reduce</span><span class="pct">88%</span></span>
+                <span class="m-mini"><svg class="ring" viewBox="0 0 18 18"><circle class="bg" cx="9" cy="9" r="7" /><circle class="fg" cx="9" cy="9" r="7" stroke-dasharray="43.98" stroke-dashoffset="25.95" /></svg><span class="nm">tournament</span><span class="pct">41%</span></span>
+                <span class="m-spacer"></span>
+                <div class="m-foot">
+                  <span class="m-ni"><svg class="ic" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3" /><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M5.3 18.7l2.1-2.1M16.6 7.4l2.1-2.1" /></svg><span data-i18n="win.navSettings">Settings</span></span>
+                  <div class="m-tools">
+                    <svg class="ic" viewBox="0 0 24 24"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z" /></svg>
+                    <svg class="ic" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5" /><path d="M3.5 12h17M12 3.5c2.6 2.6 2.6 14.4 0 17M12 3.5c-2.6 2.6-2.6 14.4 0 17" /></svg>
+                  </div>
+                </div>
+              </aside>
+
+              <div class="m-top">
+                <div class="m-crumbs">
+                  <span class="lead"><span data-i18n="win.navJobs">Jobs</span><i>/</i></span>
+                  <span class="here">deep-research</span>
+                  <span class="tail"><i>/</i><span class="id">20260607-1442-a3f9c1</span></span>
+                </div>
+                <span class="m-search"><svg class="ic" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5" /><path d="M20.5 20.5 16 16" /></svg><span class="t" data-i18n="win.search">Search runs, workflows and commands…</span><span class="m-kbd">⌘ K</span></span>
+                <span class="m-conn"><i></i><span data-i18n="win.live">live</span></span>
               </div>
-              <div class="hero-meta" aria-hidden="true">
-                <span class="chip"><span class="em">●</span><b data-i18n="hero.chip1b">3</b> <span data-i18n="hero.chip1k">runs live</span></span>
-                <span class="chip"><b data-i18n="hero.chip2b">18</b> <span data-i18n="hero.chip2k">agents</span></span>
-                <span class="chip"><b>5</b> <span data-i18n="hero.chip3k">adapters</span></span>
+
+              <div class="m-main">
+                <div class="m-head">
+                  <div>
+                    <div class="m-eyebrow"><span data-i18n="win.crumbRun">run</span><span class="id">20260607-1442-a3f9c1</span></div>
+                    <div class="m-title-row">
+                      <span class="m-title">deep-research</span>
+                      <span class="m-pill"><svg class="gly s-running" viewBox="0 0 16 16"><circle class="g-core" cx="8" cy="8" r="2.6" /><circle class="g-orbit" cx="8" cy="8" r="6" pathLength="1" /></svg><span data-i18n="win.statRunning">running</span></span>
+                    </div>
+                  </div>
+                  <div class="m-stats">
+                    <span class="rs"><b>14</b><span class="k" data-i18n="win.cAgent">agents</span></span>
+                    <span class="rs sig"><b>3</b><span class="k" data-i18n="win.cRunning">running</span></span>
+                    <span class="rs"><b>10</b><span class="k" data-i18n="win.cDone">done</span></span>
+                    <span class="rs alarm"><b>1</b><span class="k" data-i18n="win.cFailed">failed</span></span>
+                    <span class="rs el"><b data-tick="47">0m47s</b><span class="k" data-i18n="win.cElapsed">elapsed</span></span>
+                  </div>
+                </div>
+
+                <div class="m-stepper">
+                  <span class="m-st done"><i>01</i><span data-i18n="win.phPlan">Plan</span></span><b class="m-ln done"></b>
+                  <span class="m-st done"><i>02</i><span data-i18n="win.phSearch">Search</span></span><b class="m-ln done"></b>
+                  <span class="m-st done"><i>03</i><span data-i18n="win.phExtract">Extract</span></span><b class="m-ln done"></b>
+                  <span class="m-st on"><i>04</i><svg class="gly s-running" viewBox="0 0 16 16"><circle class="g-core" cx="8" cy="8" r="2.6" /><circle class="g-orbit" cx="8" cy="8" r="6" pathLength="1" /></svg><span data-i18n="win.phVote">Vote</span></span><b class="m-ln on"></b>
+                  <span class="m-st"><i>05</i><span data-i18n="win.phReport">Report</span></span>
+                </div>
+                <div class="m-prog"><i class="p-done" style="width: 71.43%"></i><i class="p-run" style="width: 21.43%"></i><i class="p-fail" style="width: 7.14%"></i></div>
+
+                <div class="m-tabs">
+                  <span class="m-tab on"><svg class="ic" viewBox="0 0 24 24"><circle cx="5.5" cy="12" r="2" /><circle cx="18.5" cy="6" r="2" /><circle cx="18.5" cy="18" r="2" /><path d="M7.5 12c5 0 5-6 9-6M7.5 12c5 0 5 6 9 6" /></svg><span data-i18n="win.tabGraph">Graph</span><i>14</i></span>
+                  <span class="m-tab"><svg class="ic" viewBox="0 0 24 24"><path d="M4 6.5h9M8 12h11M4 17.5h7" /><path d="M4 3v18" opacity=".45" /></svg><span data-i18n="win.tabTimeline">Timeline</span></span>
+                  <span class="m-tab"><svg class="ic" viewBox="0 0 24 24"><path d="M8 6.5h12M8 12h12M8 17.5h8M4 6.5h.01M4 12h.01M4 17.5h.01" /></svg><span data-i18n="win.tabLogs">Logs</span><i>35</i></span>
+                  <span class="m-tab m-tab-x"><svg class="ic" viewBox="0 0 24 24"><path d="M7 4.5h7l4 4V19a1.5 1.5 0 0 1-1.5 1.5h-9.5A1.5 1.5 0 0 1 5.5 19V6A1.5 1.5 0 0 1 7 4.5z" /><path d="M13.5 4.5V9H18M9 13.5l2 2 4-4.5" /></svg><span data-i18n="win.tabResult">Result</span></span>
+                </div>
+
+                <div class="m-canvas">
+                  <div class="m-dag">
+                    <svg class="m-edges" viewBox="0 0 720 264">
+                      <path class="m-edge done" style="--d: 200" pathLength="1" d="M124 146C142 146 142 58 160 58" />
+                      <path class="m-edge done" style="--d: 225" pathLength="1" d="M124 146C142 146 142 102 160 102" />
+                      <path class="m-edge failed" style="--d: 250" pathLength="1" d="M124 146H160" />
+                      <path class="m-edge done" style="--d: 275" pathLength="1" d="M124 146C142 146 142 190 160 190" />
+                      <path class="m-edge done" style="--d: 300" pathLength="1" d="M124 146C142 146 142 234 160 234" />
+                      <path class="m-edge done" style="--d: 340" pathLength="1" d="M270 58H306" />
+                      <path class="m-edge done" style="--d: 365" pathLength="1" d="M270 102H306" />
+                      <path class="m-edge done" style="--d: 390" pathLength="1" d="M270 146H306" />
+                      <path class="m-edge done" style="--d: 415" pathLength="1" d="M270 190H306" />
+                      <path class="m-edge done" style="--d: 440" pathLength="1" d="M270 234H306" />
+                      <path class="m-edge running" style="--d: 460" pathLength="1" d="M416 58C434 58 434 102 452 102" />
+                      <path class="m-edge running" style="--d: 485" pathLength="1" d="M416 102C434 102 434 146 452 146" />
+                      <path class="m-edge running" style="--d: 510" pathLength="1" d="M416 146H452" />
+                      <path class="m-edge running" style="--d: 535" pathLength="1" d="M416 190H452" />
+                      <path class="m-edge running" style="--d: 560" pathLength="1" d="M416 234C434 234 434 190 452 190" />
+                      <path class="m-flow" d="M416 58C434 58 434 102 452 102" />
+                      <path class="m-flow" d="M416 102C434 102 434 146 452 146" />
+                      <path class="m-flow" d="M416 146H452" />
+                      <path class="m-flow" d="M416 190H452" />
+                      <path class="m-flow" d="M416 234C434 234 434 190 452 190" />
+                      <circle class="m-spark" r="2.6" opacity="0"><set attributeName="opacity" to="1" begin="1.3s" /><animateMotion dur="1.5s" begin="1.3s" repeatCount="indefinite" path="M416 58C434 58 434 102 452 102" /></circle>
+                      <circle class="m-spark" r="2.6" opacity="0"><set attributeName="opacity" to="1" begin="1.75s" /><animateMotion dur="1.6s" begin="1.75s" repeatCount="indefinite" path="M416 102C434 102 434 146 452 146" /></circle>
+                      <circle class="m-spark" r="2.6" opacity="0"><set attributeName="opacity" to="1" begin="1.5s" /><animateMotion dur="1.4s" begin="1.5s" repeatCount="indefinite" path="M416 146H452" /></circle>
+                      <circle class="m-spark" r="2.6" opacity="0"><set attributeName="opacity" to="1" begin="2s" /><animateMotion dur="1.5s" begin="2s" repeatCount="indefinite" path="M416 190H452" /></circle>
+                      <circle class="m-spark" r="2.6" opacity="0"><set attributeName="opacity" to="1" begin="1.6s" /><animateMotion dur="1.7s" begin="1.6s" repeatCount="indefinite" path="M416 234C434 234 434 190 452 190" /></circle>
+                    </svg>
+
+                    <i class="m-rule" style="--x: 142"></i><i class="m-rule" style="--x: 288"></i><i class="m-rule" style="--x: 434"></i><i class="m-rule" style="--x: 580"></i>
+
+                    <div class="m-lh" style="--x: 14; --d: 60"><i>01</i><b data-i18n="win.phPlan">Plan</b><span>1</span></div>
+                    <div class="m-lh" style="--x: 160; --d: 120"><i>02</i><b data-i18n="win.phSearch">Search</b><span>5</span></div>
+                    <div class="m-lh" style="--x: 306; --d: 180"><i>03</i><b data-i18n="win.phExtract">Extract</b><span>5</span></div>
+                    <div class="m-lh on" style="--x: 452; --d: 240"><i>04</i><b data-i18n="win.phVote">Vote</b><span>3</span></div>
+                    <div class="m-lh m-l5" style="--x: 598; --d: 300"><i>05</i><b data-i18n="win.phReport">Report</b></div>
+
+                    <div class="m-node done" style="--x: 14; --y: 128; --d: 80"><div class="h"><svg class="gly s-done" viewBox="0 0 16 16"><circle class="g-disc" cx="8" cy="8" r="6.4" /><path class="g-tick" d="M5.1 8.3l1.9 1.9 3.9-4.3" pathLength="1" /></svg><span class="lbl">plan</span></div><div class="sub">claude · 0m07s</div></div>
+
+                    <div class="m-node done" style="--x: 160; --y: 40; --d: 180"><div class="h"><svg class="gly s-done" viewBox="0 0 16 16"><circle class="g-disc" cx="8" cy="8" r="6.4" /><path class="g-tick" d="M5.1 8.3l1.9 1.9 3.9-4.3" pathLength="1" /></svg><span class="lbl">search:1</span></div><div class="sub">codex · 0m05s</div></div>
+                    <div class="m-node done" style="--x: 160; --y: 84; --d: 215"><div class="h"><svg class="gly s-done" viewBox="0 0 16 16"><circle class="g-disc" cx="8" cy="8" r="6.4" /><path class="g-tick" d="M5.1 8.3l1.9 1.9 3.9-4.3" pathLength="1" /></svg><span class="lbl">search:2</span></div><div class="sub">gemini · 0m04s</div></div>
+                    <div class="m-node failed" style="--x: 160; --y: 128; --d: 250"><div class="h"><svg class="gly s-failed" viewBox="0 0 16 16"><circle class="g-disc" cx="8" cy="8" r="6.4" /><path class="g-tick" d="M5.8 5.8l4.4 4.4M10.2 5.8l-4.4 4.4" /></svg><span class="lbl">search:3</span></div><div class="sub">exit 1 · malformed JSON</div></div>
+                    <div class="m-node done" style="--x: 160; --y: 172; --d: 285"><div class="h"><svg class="gly s-done" viewBox="0 0 16 16"><circle class="g-disc" cx="8" cy="8" r="6.4" /><path class="g-tick" d="M5.1 8.3l1.9 1.9 3.9-4.3" pathLength="1" /></svg><span class="lbl">search:4</span></div><div class="sub">gemini · 0m03s</div></div>
+                    <div class="m-node done" style="--x: 160; --y: 216; --d: 320"><div class="h"><svg class="gly s-done" viewBox="0 0 16 16"><circle class="g-disc" cx="8" cy="8" r="6.4" /><path class="g-tick" d="M5.1 8.3l1.9 1.9 3.9-4.3" pathLength="1" /></svg><span class="lbl">search:5</span></div><div class="sub">gemini · 0m11s</div></div>
+
+                    <div class="m-node done" style="--x: 306; --y: 40; --d: 300"><div class="h"><svg class="gly s-done" viewBox="0 0 16 16"><circle class="g-disc" cx="8" cy="8" r="6.4" /><path class="g-tick" d="M5.1 8.3l1.9 1.9 3.9-4.3" pathLength="1" /></svg><span class="lbl">extract:1</span></div><div class="sub">claude · 0m06s</div></div>
+                    <div class="m-node done" style="--x: 306; --y: 84; --d: 335"><div class="h"><svg class="gly s-done" viewBox="0 0 16 16"><circle class="g-disc" cx="8" cy="8" r="6.4" /><path class="g-tick" d="M5.1 8.3l1.9 1.9 3.9-4.3" pathLength="1" /></svg><span class="lbl">extract:2</span></div><div class="sub">claude · 0m06s</div></div>
+                    <div class="m-node done" style="--x: 306; --y: 128; --d: 370"><div class="h"><svg class="gly s-done" viewBox="0 0 16 16"><circle class="g-disc" cx="8" cy="8" r="6.4" /><path class="g-tick" d="M5.1 8.3l1.9 1.9 3.9-4.3" pathLength="1" /></svg><span class="lbl">extract:3</span></div><div class="sub">claude · 0m03s</div></div>
+                    <div class="m-node done" style="--x: 306; --y: 172; --d: 405"><div class="h"><svg class="gly s-done" viewBox="0 0 16 16"><circle class="g-disc" cx="8" cy="8" r="6.4" /><path class="g-tick" d="M5.1 8.3l1.9 1.9 3.9-4.3" pathLength="1" /></svg><span class="lbl">extract:4</span></div><div class="sub">claude · 0m08s</div></div>
+                    <div class="m-node done" style="--x: 306; --y: 216; --d: 440"><div class="h"><svg class="gly s-done" viewBox="0 0 16 16"><circle class="g-disc" cx="8" cy="8" r="6.4" /><path class="g-tick" d="M5.1 8.3l1.9 1.9 3.9-4.3" pathLength="1" /></svg><span class="lbl">extract:5</span></div><div class="sub">claude · 0m09s</div></div>
+
+                    <div class="m-node running" style="--x: 452; --y: 84; --d: 420"><div class="h"><svg class="gly s-running" viewBox="0 0 16 16"><circle class="g-core" cx="8" cy="8" r="2.6" /><circle class="g-orbit" cx="8" cy="8" r="6" pathLength="1" /></svg><span class="lbl">vote:1</span></div><div class="sub">claude · <span data-tick="4">0m04s</span></div></div>
+                    <div class="m-node running" style="--x: 452; --y: 128; --d: 465"><div class="h"><svg class="gly s-running" viewBox="0 0 16 16"><circle class="g-core" cx="8" cy="8" r="2.6" /><circle class="g-orbit" cx="8" cy="8" r="6" pathLength="1" /></svg><span class="lbl">vote:2</span></div><div class="sub">codex · <span data-tick="3">0m03s</span></div></div>
+                    <div class="m-node running" style="--x: 452; --y: 172; --d: 510"><div class="h"><svg class="gly s-running" viewBox="0 0 16 16"><circle class="g-core" cx="8" cy="8" r="2.6" /><circle class="g-orbit" cx="8" cy="8" r="6" pathLength="1" /></svg><span class="lbl">vote:3</span></div><div class="sub">claude · <span data-tick="2">0m02s</span></div></div>
+                    <div class="m-group" style="--x: 452; --y: 221; --d: 560"><span><b>+2</b> <span data-i18n="win.queuedShort">queued</span></span></div>
+
+                    <div class="m-node pending m-l5" style="--x: 598; --y: 128; --d: 600"><div class="h"><svg class="gly s-pending" viewBox="0 0 16 16"><circle class="g-ring" cx="8" cy="8" r="5.6" /></svg><span class="lbl">report</span></div><div class="sub" data-i18n="win.planned">planned</div></div>
+                  </div>
+                </div>
+
+                <div class="m-ticker"><span class="msg"><b>▸</b> <span data-i18n="win.ticker">Vote phase: 3 agents cross-checking cited claims…</span></span><span class="r" data-i18n="win.tickerR">last activity 2s</span></div>
+              </div>
+
+              <div class="m-status">
+                <span><b>3</b> <span data-i18n="win.sbActive">active</span> · <b>6</b> <span data-i18n="win.sbRunning">agents running</span></span>
+                <span class="grow"></span>
+                <span class="path">~/.odw/runs</span>
+                <span><i class="dot"></i><span data-i18n="win.sse">live · SSE</span></span>
               </div>
             </div>
-
-            <!-- the app-window centerpiece -->
-            <figure
-              class="appwin"
-              role="img"
-              aria-label="Open Dynamic Workflows dashboard — live deep-research run"
-              data-i18n-aria="hero.boardAlt"
-              style="margin:0;"
-            >
-              <div class="grid">
-                <!-- toolbar -->
-                <div class="toolbar">
-                  <div style="display:flex;align-items:center;min-width:0;">
-                    <div class="tl" aria-hidden="true"><i class="r"></i><i class="y"></i><i class="g"></i></div>
-                    <div class="crumb">
-                      <span class="s">odw</span><span class="sep">/</span>
-                      <span class="s">deep-research</span><span class="sep">/</span>
-                      <span class="cur" data-i18n="win.crumbRun">run</span>
-                    </div>
-                  </div>
-                  <div class="tr">
-                    <span class="idchip">20260607-1442-a3f9c1</span>
-                    <span class="conn live"><span class="d" aria-hidden="true"></span><span data-i18n="win.live">live</span></span>
-                  </div>
-                </div>
-
-                <!-- rail -->
-                <nav class="rail" aria-label="Client navigation">
-                  <div class="brandmini">
-                    <svg class="logo" viewBox="0 0 116 64" fill="none" aria-hidden="true">
-                      <path d="M14 44 C44 44, 50 22, 78 22" stroke="#16C079" stroke-width="11" stroke-linecap="round" />
-                      <path d="M62 30 L58 46" stroke="#16C079" stroke-width="9" stroke-linecap="round" />
-                      <circle cx="14" cy="44" r="11" fill="#15110F" />
-                      <circle cx="92" cy="22" r="11" fill="#15110F" />
-                      <circle cx="55" cy="52" r="8" fill="#16C079" />
-                    </svg>
-                    <span class="wm">odw</span>
-                  </div>
-                  <p class="tagline" data-i18n="win.tagline">fan out coding agents</p>
-
-                  <div class="navitem">
-                    <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 12h4l2-7 4 14 2-7h6" /></svg>
-                    <span data-i18n="win.navActivity">Activity</span>
-                  </div>
-                  <div class="navitem">
-                    <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16" /></svg>
-                    <span data-i18n="win.navWorkspace">Workspace</span>
-                  </div>
-                  <div class="navitem on">
-                    <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="6" cy="6" r="2" /><circle cx="6" cy="18" r="2" /><circle cx="18" cy="12" r="2" /><path d="M8 6h4a4 4 0 0 1 4 4M8 18h4a4 4 0 0 0 4-4" /></svg>
-                    <span data-i18n="win.navJobs">Jobs</span><span class="count">3</span>
-                  </div>
-
-                  <div class="divider"></div>
-                  <div class="sl"><span data-i18n="win.liveNow">Live now</span><span class="n">3</span></div>
-                  <div class="minirun"><span class="dot" aria-hidden="true"></span><span class="nm">deep-research</span><span class="ph">3/5</span></div>
-                  <div class="minirun"><span class="dot" aria-hidden="true"></span><span class="nm">agent-daily-digest</span><span class="ph">2/4</span></div>
-                  <div class="minirun"><span class="dot" aria-hidden="true"></span><span class="nm">generate-and-filter</span><span class="ph">1/2</span></div>
-
-                  <div class="spacer"></div>
-                  <div class="navitem">
-                    <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="3" /><path d="M12 2v3M12 19v3M2 12h3M19 12h3" /></svg>
-                    <span data-i18n="win.navSettings">Settings</span>
-                  </div>
-                </nav>
-
-                <!-- main DAG board -->
-                <div class="board">
-                  <div class="stagehead">
-                    <div class="row1">
-                      <span class="rtitle">deep-research</span>
-                      <span class="badge running"><span class="d" aria-hidden="true"></span><span data-i18n="win.statRunning">running</span></span>
-                      <div class="phasestepper" aria-hidden="true">
-                        <span class="pp done" data-i18n="win.phPlan">Plan</span><span class="ar">▸</span>
-                        <span class="pp done" data-i18n="win.phSearch">Search</span><span class="ar">▸</span>
-                        <span class="pp on" data-i18n="win.phExtract">Extract</span><span class="ar">▸</span>
-                        <span class="pp" data-i18n="win.phVote">Vote</span><span class="ar">▸</span>
-                        <span class="pp" data-i18n="win.phReport">Report</span>
-                      </div>
-                    </div>
-                    <div class="progressbar" aria-hidden="true"><i></i></div>
-                    <div class="row3">
-                      <span class="chip"><b>31</b> <span data-i18n="win.cAgent">agents</span></span>
-                      <span class="chip"><span class="em">●</span><b>18</b> <span data-i18n="win.cRunning">running</span></span>
-                      <span class="chip opt"><b>11</b> <span data-i18n="win.cDone">done</span></span>
-                      <span class="chip opt"><span class="rd">✕</span><b>1</b> <span data-i18n="win.cFailed">failed</span></span>
-                      <span class="chip opt"><b>2m41s</b></span>
-                      <span class="chip opt"><span data-i18n="win.cAdapter">adapter</span> <b>claude</b></span>
-                      <span class="heartbeat" aria-hidden="true"></span>
-                    </div>
-                  </div>
-
-                  <div class="dagarea">
-                    <div class="dag">
-                      <div class="watermark" style="left:1.5%;" aria-hidden="true" data-i18n="win.phPlan">Plan</div>
-                      <div class="watermark" style="left:21%;" aria-hidden="true" data-i18n="win.phSearch">Search</div>
-                      <div class="watermark" style="left:42%;" aria-hidden="true" data-i18n="win.phExtract">Extract</div>
-                      <div class="watermark" style="left:63%;" aria-hidden="true" data-i18n="win.phVote">Vote</div>
-                      <div class="watermark" style="left:83.5%;" aria-hidden="true" data-i18n="win.phReport">Report</div>
-
-                      <div class="lanehead" style="left:1.5%;width:148px;"><span class="ix">1/5</span> <span data-i18n="win.phPlan">Plan</span> <span class="n">1</span><span class="line" style="width:148px;"></span></div>
-                      <div class="lanehead" style="left:21%;width:148px;"><span class="ix">2/5</span> <span data-i18n="win.phSearch">Search</span> <span class="n">14</span><span class="line" style="width:148px;"></span></div>
-                      <div class="lanehead" style="left:42%;width:148px;"><span class="ix">3/5</span> <span data-i18n="win.phExtract">Extract</span> <span class="n">9</span><span class="line" style="width:148px;"></span></div>
-                      <div class="lanehead" style="left:63%;width:148px;"><span class="ix">4/5</span> <span data-i18n="win.phVote">Vote</span> <span class="n">10</span><span class="line" style="width:148px;"></span></div>
-                      <div class="lanehead" style="left:83.5%;width:120px;"><span class="ix">5/5</span> <span data-i18n="win.phReport">Report</span> <span class="n">1</span><span class="line" style="width:120px;"></span></div>
-
-                      <svg class="edges" viewBox="0 0 1000 470" preserveAspectRatio="none" fill="none" aria-hidden="true">
-                        <path d="M150 235 L196 235" stroke="#16C079" stroke-width="2.4" stroke-linecap="round" />
-                        <path d="M196 235 C220 235 214 86 240 86" stroke="#16C079" stroke-width="1.8" />
-                        <path d="M196 235 C220 235 214 156 240 156" stroke="#16C079" stroke-width="1.8" />
-                        <path d="M196 235 C220 235 214 226 240 226" stroke="#7E8D84" stroke-width="1.5" />
-                        <path d="M196 235 C220 235 214 296 240 296" stroke="#16C079" stroke-width="1.8" />
-                        <path d="M196 235 C220 250 214 366 240 366" stroke="#CFCFCF" stroke-width="1.3" />
-                        <path d="M390 86 C420 86 422 86 450 86" stroke="#16C079" stroke-width="1.8" />
-                        <path d="M390 156 C420 156 422 156 450 156" stroke="#ef4444" stroke-width="1.8" />
-                        <path d="M390 226 C420 226 422 226 450 226" stroke="#7E8D84" stroke-width="1.5" />
-                        <path d="M600 86 C630 86 632 86 660 86" stroke="#16C079" stroke-width="1.8" />
-                        <path d="M600 226 C634 226 636 156 660 156" stroke="#16C079" stroke-width="1.8" />
-                        <path d="M810 86 C840 86 842 110 870 110" stroke="#CFCFCF" stroke-width="1.5" stroke-dasharray="4 5" />
-                        <circle r="3.2" class="flowdot"><animateMotion dur="1.3s" repeatCount="indefinite" path="M196 235 C220 235 214 86 240 86" /></circle>
-                        <circle r="3.2" class="flowdot"><animateMotion dur="1.5s" repeatCount="indefinite" path="M196 235 C220 235 214 296 240 296" /></circle>
-                        <circle r="3.2" class="flowdot"><animateMotion dur="1.2s" repeatCount="indefinite" path="M390 86 C420 86 422 86 450 86" /></circle>
-                        <circle r="3.2" class="flowdot"><animateMotion dur="1.4s" repeatCount="indefinite" path="M600 86 C630 86 632 86 660 86" /></circle>
-                        <circle r="3.2" fill="#ef4444"><animateMotion dur="1.6s" repeatCount="indefinite" path="M390 156 C420 156 422 156 450 156" /></circle>
-                      </svg>
-
-                      <article class="node done" style="left:1.5%;top:212px;width:140px;"><div class="h">plan ✓</div><div class="sub">claude · 0m22s</div><span class="dot" aria-hidden="true"></span></article>
-                      <article class="node running" style="left:21%;top:62px;"><div class="h">search:angle-1</div><div class="sub">codex · ⏱ 2m17s</div><span class="dot" aria-hidden="true"></span></article>
-                      <article class="node running" style="left:21%;top:132px;"><div class="h">search:angle-2</div><div class="sub">codex · ⏱ 1m48s</div><span class="dot" aria-hidden="true"></span></article>
-                      <article class="node done" style="left:21%;top:202px;"><div class="h">search:angle-3</div><div class="sub">codex · 1m04s</div><span class="gl" style="color:var(--done)">✓</span></article>
-                      <article class="node running" style="left:21%;top:272px;"><div class="h">search:angle-4</div><div class="sub">gemini · ⏱ 0m51s</div><span class="dot" aria-hidden="true"></span></article>
-                      <div class="groupcard" style="left:21%;top:344px;"><b>+9</b> <span data-i18n="win.queued">queued · fan-out</span></div>
-                      <article class="node running" style="left:42%;top:62px;"><div class="h">extract:angle-1</div><div class="sub">claude · ⏱ 0m30s</div><span class="dot" aria-hidden="true"></span></article>
-                      <article class="node failed" style="left:42%;top:132px;"><div class="h">extract:angle-2</div><span class="gl" style="color:var(--red)">✕</span><div class="err">exit 1 · malformed JSON under schema</div></article>
-                      <article class="node running" style="left:42%;top:214px;"><div class="h">extract:angle-3</div><div class="sub">claude · ⏱ 0m18s</div><span class="dot" aria-hidden="true"></span></article>
-                      <div class="groupcard" style="left:42%;top:286px;"><b>+5</b> <span data-i18n="win.queuedShort">queued</span></div>
-                      <article class="node running" style="left:63%;top:62px;"><div class="h">vote:1</div><div class="sub">claude · ⏱ 0m12s</div><span class="dot" aria-hidden="true"></span></article>
-                      <article class="node running" style="left:63%;top:132px;"><div class="h">vote:2</div><div class="sub">claude · ⏱ 0m09s</div><span class="dot" aria-hidden="true"></span></article>
-                      <div class="groupcard" style="left:63%;top:204px;"><b>+8</b> <span data-i18n="win.queuedShort">queued</span></div>
-                      <article class="node queued" style="left:83.5%;top:86px;width:120px;"><div class="h">report</div><div class="sub" data-i18n="win.planned">planned</div><span class="dot" aria-hidden="true"></span></article>
-                    </div>
-
-                    <div class="ticker">
-                      <span data-i18n="win.ticker">▸ Extract phase: 9 agents pulling cited claims from 24 sources…</span>
-                      <span class="r" data-i18n="win.tickerR">last activity 2s</span>
-                    </div>
-                  </div>
-                </div>
-
-                <!-- status bar -->
-                <div class="statusbar">
-                  <span class="seg">deep-research · 20260607-1442-a3f9c1</span>
-                  <span class="seg mid">claude · sonnet · pid 48213</span>
-                  <span class="seg"><span class="live-dot" aria-hidden="true"></span> <span data-i18n="win.sse">live · SSE</span></span>
-                </div>
-              </div>
-            </figure>
-          </div>
+          </figure>
         </div>
       </section>
 
       <!-- ============================ 01 · WHY ODW ============================ -->
       <section class="section" id="why" aria-labelledby="why-title">
         <div class="section-inner">
-          <p class="seclabel"><span class="num">01</span> <span data-i18n="why.kicker">Why ODW</span> <span class="rule"></span></p>
-          <h2 class="sectitle" id="why-title" data-i18n="why.title">Keep the plan in code. Keep the agent context clean.</h2>
-          <p class="section-lede" data-i18n="why.copy">
-            ODW turns dynamic workflow scripts into portable artifacts: easy to inspect, run, pause, resume, and move between agent CLIs.
-          </p>
+          <p class="seclabel"><span class="num">01</span> <span class="kick" data-i18n="why.kicker">Why ODW</span> <span class="rule"></span></p>
+          <div class="sechead">
+            <h2 class="sectitle display" id="why-title" data-i18n="why.title" data-i18n-html>Keep the plan in code. Keep the agent context <em>clean</em>.</h2>
+            <p class="section-lede" data-i18n="why.copy">
+              ODW turns dynamic workflow scripts into portable artifacts: easy to inspect, run, pause, resume, and move between agent CLIs.
+            </p>
+          </div>
 
           <div class="signal-grid">
-            <article class="signal">
-              <span class="kd">workflow.js</span>
-              <h3 data-i18n="signals.portable.title">Portable scripts</h3>
-              <p data-i18n="signals.portable.copy">
-                The same Claude Code-style workflow can run on Codex, Gemini, Qwen, Kimi, or a custom shell adapter.
-              </p>
+            <article class="signal card marked">
+              <div class="plate" aria-hidden="true">
+                <svg class="pl pl-port" viewBox="0 0 360 132" data-live data-draw>
+                  <g>
+                    <path class="pe" style="--i: 0" pathLength="1" d="M136 66C202 66 202 20 268 20" />
+                    <path class="pe" style="--i: 1" pathLength="1" d="M136 66C202 66 202 43 268 43" />
+                    <path class="pe" style="--i: 2" pathLength="1" d="M136 66C202 66 202 66 268 66" />
+                    <path class="pe" style="--i: 3" pathLength="1" d="M136 66C202 66 202 89 268 89" />
+                    <path class="pe" style="--i: 4" pathLength="1" d="M136 66C202 66 202 112 268 112" />
+                  </g>
+                  <g>
+                    <path class="ps" style="--i: 0" pathLength="1" d="M136 66C202 66 202 20 268 20" />
+                    <path class="ps" style="--i: 1" pathLength="1" d="M136 66C202 66 202 43 268 43" />
+                    <path class="ps" style="--i: 2" pathLength="1" d="M136 66C202 66 202 66 268 66" />
+                    <path class="ps" style="--i: 3" pathLength="1" d="M136 66C202 66 202 89 268 89" />
+                    <path class="ps" style="--i: 4" pathLength="1" d="M136 66C202 66 202 112 268 112" />
+                  </g>
+                  <rect class="file" x="40" y="49" width="96" height="34" rx="7" />
+                  <circle class="file-wf" cx="55" cy="66" r="3.6" />
+                  <text class="fl" x="65" y="69.5">workflow.js</text>
+                  <g class="ad">
+                    <g style="--i: 0"><circle cx="272" cy="20" r="3.4" /><text x="283" y="23.5">codex</text></g>
+                    <g class="on" style="--i: 1"><circle cx="272" cy="43" r="3.4" /><text x="283" y="46.5">claude</text></g>
+                    <g style="--i: 2"><circle cx="272" cy="66" r="3.4" /><text x="283" y="69.5">gemini</text></g>
+                    <g style="--i: 3"><circle cx="272" cy="89" r="3.4" /><text x="283" y="92.5">qwen</text></g>
+                    <g style="--i: 4"><circle cx="272" cy="112" r="3.4" /><text x="283" y="115.5">kimi</text></g>
+                  </g>
+                </svg>
+              </div>
+              <div class="signal-body">
+                <span class="op wf"><i></i><span class="kd">workflow.js</span></span>
+                <h3 data-i18n="signals.portable.title">Portable scripts</h3>
+                <p data-i18n="signals.portable.copy">
+                  The same Claude Code-style workflow can run on Codex, Gemini, Qwen, Kimi, or a custom shell adapter.
+                </p>
+              </div>
             </article>
-            <article class="signal">
-              <span class="kd">parallel()</span>
-              <h3 data-i18n="signals.parallel.title">Parallel by design</h3>
-              <p data-i18n="signals.parallel.copy">
-                Fan out independent subtasks without filling the host agent's conversation with every intermediate step.
-              </p>
+            <article class="signal card marked">
+              <div class="plate" aria-hidden="true">
+                <svg class="pl pl-par" viewBox="0 0 360 132" data-live data-draw>
+                  <path class="pe done" style="--i: 0" pathLength="1" d="M52 66C112 66 112 24 170 24" />
+                  <path class="pe done" style="--i: 1" pathLength="1" d="M52 66C112 66 112 52 170 52" />
+                  <path class="pe done" style="--i: 2" pathLength="1" d="M52 66C112 66 112 80 170 80" />
+                  <path class="pe done" style="--i: 3" pathLength="1" d="M52 66C112 66 112 108 170 108" />
+                  <path class="pe running" style="--i: 4" pathLength="1" d="M190 24C250 24 250 66 308 66" />
+                  <path class="pe running" style="--i: 5" pathLength="1" d="M190 52C250 52 250 66 308 66" />
+                  <path class="pe running" style="--i: 6" pathLength="1" d="M190 80C250 80 250 66 308 66" />
+                  <path class="pe running" style="--i: 7" pathLength="1" d="M190 108C250 108 250 66 308 66" />
+                  <path class="flow" d="M190 24C250 24 250 66 308 66" />
+                  <path class="flow" d="M190 52C250 52 250 66 308 66" />
+                  <path class="flow" d="M190 80C250 80 250 66 308 66" />
+                  <path class="flow" d="M190 108C250 108 250 66 308 66" />
+                  <circle class="spark" r="2.6"><animateMotion dur="1.7s" repeatCount="indefinite" path="M190 24C250 24 250 66 308 66" /></circle>
+                  <circle class="spark" r="2.6"><animateMotion dur="1.5s" begin="-0.5s" repeatCount="indefinite" path="M190 80C250 80 250 66 308 66" /></circle>
+                  <circle class="spark" r="2.6"><animateMotion dur="1.8s" begin="-1.1s" repeatCount="indefinite" path="M190 108C250 108 250 66 308 66" /></circle>
+                  <circle class="disc" cx="44" cy="66" r="7.5" />
+                  <path class="tick" d="M40.6 66.3l2.2 2.2 4.4-4.9" />
+                  <g>
+                    <circle class="core" cx="180" cy="24" r="3" /><circle class="orbit" cx="180" cy="24" r="7.5" pathLength="1" />
+                    <circle class="core" cx="180" cy="52" r="3" /><circle class="orbit" cx="180" cy="52" r="7.5" pathLength="1" style="animation-delay: -0.3s" />
+                    <circle class="core" cx="180" cy="80" r="3" /><circle class="orbit" cx="180" cy="80" r="7.5" pathLength="1" style="animation-delay: -0.6s" />
+                    <circle class="core" cx="180" cy="108" r="3" /><circle class="orbit" cx="180" cy="108" r="7.5" pathLength="1" style="animation-delay: -0.9s" />
+                  </g>
+                  <circle class="hollow" cx="316" cy="66" r="7.5" />
+                </svg>
+              </div>
+              <div class="signal-body">
+                <span class="op par"><i></i><span class="kd">parallel()</span></span>
+                <h3 data-i18n="signals.parallel.title">Parallel by design</h3>
+                <p data-i18n="signals.parallel.copy">
+                  Fan out independent subtasks without filling the host agent's conversation with every intermediate step.
+                </p>
+              </div>
             </article>
-            <article class="signal">
-              <span class="kd">odw status</span>
-              <h3 data-i18n="signals.observe.title">Observable runs</h3>
-              <p data-i18n="signals.observe.copy">
-                Detached workers persist logs, state, and final results so long-running orchestration can be inspected later.
-              </p>
+            <article class="signal card marked">
+              <div class="plate" aria-hidden="true">
+                <svg class="pl pl-pulse" viewBox="0 0 360 132" data-live data-draw>
+                  <defs>
+                    <linearGradient id="pl-scan-grad" x1="0" x2="1"><stop offset="0" stop-opacity="0" /><stop offset="0.8" stop-opacity="0.1" /><stop offset="1" stop-opacity="0" /></linearGradient>
+                    <clipPath id="pl-scan-clip"><rect x="16" y="0" width="318" height="132" /></clipPath>
+                  </defs>
+                  <path class="ridge done" style="--i: 0" pathLength="1" d="M16 40C17.3 39.9 21.4 39.6 24.1 39.1 26.7 38.7 29.4 38.1 32.1 37.2 34.8 36.4 37.5 35.3 40.2 34 42.8 32.7 45.5 31 48.2 29.5 50.9 28 53.6 26.3 56.3 25 58.9 23.8 61.6 22.5 64.3 22.1 67 21.7 69.7 22.3 72.4 22.7 75 23.1 77.7 24.3 80.4 24.4 83.1 24.5 85.8 24.1 88.5 23.3 91.1 22.5 93.8 20.7 96.5 19.6 99.2 18.4 101.9 16.9 104.6 16.3 107.2 15.6 109.9 15.6 112.6 15.9 115.3 16.2 118 17.4 120.7 18.3 123.4 19.2 126 20.5 128.7 21.4 131.4 22.4 134.1 24 136.8 24.2 139.5 24.3 142.1 22.6 144.8 22.4 147.5 22.3 150.2 22.5 152.9 23.1 155.6 23.7 158.2 24.8 160.9 26.1 163.6 27.4 166.3 29.4 169 31.1 171.7 32.8 174.3 35.2 177 36.3 179.7 37.5 182.4 37.5 185.1 38 187.8 38.5 190.4 38.9 193.1 39.2 195.8 39.5 198.5 39.7 201.2 39.8 203.9 39.9 206.5 39.8 209.2 39.8 211.9 39.8 214.6 39.7 217.3 39.7 220 39.7 222.6 39.5 225.3 39.7 228 39.8 230.7 40.4 233.4 40.5 236.1 40.6 238.8 40.3 241.4 40.3 244.1 40.3 246.8 40.2 249.5 40.2 252.2 40.2 254.9 40.2 257.5 40.2 260.2 40.2 262.9 40.2 265.6 40.2 268.3 40.2 271 40.2 273.6 40.3 276.3 40.3 279 40.5 281.7 40.5 284.4 40.4 287.1 39.9 289.7 39.7 292.4 39.6 295.1 39.7 297.8 39.7 300.5 39.7 303.2 39.7 305.8 39.8 308.5 39.9 311.2 40.3 313.9 40.3 316.6 40.3 319.3 40 321.9 40 324.6 39.9 328.7 40 330 40" />
+                  <path class="ridge failed" style="--i: 1" pathLength="1" d="M16 58C17.3 58 21.4 58 24.1 58 26.7 58 29.4 58 32.1 58 34.8 58 37.5 57.9 40.2 57.8 42.8 57.8 45.5 57.9 48.2 57.9 50.9 57.9 53.6 57.9 56.3 57.8 58.9 57.7 61.6 57.5 64.3 57.2 67 56.9 69.7 56.4 72.4 55.9 75 55.5 77.7 55.3 80.4 54.6 83.1 54 85.8 53 88.5 52.1 91.1 51.1 93.8 50.3 96.5 49.1 99.2 48 101.9 46.3 104.6 45.2 107.2 44 109.9 43.1 112.6 42.1 115.3 41.1 118 39.8 120.7 39.3 123.4 38.8 126 38.9 128.7 39 131.4 39 134.1 39.2 136.8 39.7 139.5 40.1 142.1 41.1 144.8 41.9 147.5 42.7 150.2 44.1 152.9 44.6 155.6 45 158.2 45.2 160.9 44.7 163.6 44.1 166.3 42.7 169 41.4 171.7 40.1 174.3 38.2 177 36.9 179.7 35.5 182.4 33.9 185.1 33.3 187.8 32.7 190.4 32.7 193.1 33.4 195.8 34.1 198.5 35.9 201.2 37.5 203.9 39.1 206.5 39.6 209.2 43 211.9 46.4 214.6 55.4 217.3 57.9 220 60.4 222.6 57.9 225.3 58 228 58 230.7 58.2 233.4 58.2 236.1 58.3 238.8 58.1 241.4 58.1 244.1 58.1 246.8 58.1 249.5 58.2 252.2 58.2 254.9 58.3 257.5 58.2 260.2 58.1 262.9 57.7 265.6 57.7 268.3 57.7 271 58.3 273.6 58.4 276.3 58.4 279 58.1 281.7 58.1 284.4 58.1 287.1 58.3 289.7 58.3 292.4 58.4 295.1 58.5 297.8 58.4 300.5 58.3 303.2 57.6 305.8 57.5 308.5 57.4 311.2 57.8 313.9 57.9 316.6 58 319.3 58.1 321.9 58.2 324.6 58.2 328.7 58 330 58" />
+                  <path class="ridge done" style="--i: 2" pathLength="1" d="M16 76C17.3 76 21.4 76 24.1 75.9 26.7 75.9 29.4 75.9 32.1 75.6 34.8 75.4 37.5 75.2 40.2 74.5 42.8 73.8 45.5 72.7 48.2 71.5 50.9 70.3 53.6 68.9 56.3 67.1 58.9 65.4 61.6 62.4 64.3 61.2 67 59.9 69.7 59.7 72.4 59.6 75 59.6 77.7 59.9 80.4 60.8 83.1 61.6 85.8 63.3 88.5 64.7 91.1 66.1 93.8 67.8 96.5 68.9 99.2 70.1 101.9 71.4 104.6 71.8 107.2 72.1 109.9 71.7 112.6 71.2 115.3 70.7 118 69.6 120.7 68.8 123.4 67.9 126 67 128.7 65.9 131.4 64.8 134.1 63.6 136.8 62.4 139.5 61.3 142.1 60 144.8 58.9 147.5 57.8 150.2 56.6 152.9 55.8 155.6 55 158.2 54.4 160.9 54.1 163.6 53.7 166.3 53.6 169 53.8 171.7 54 174.3 54.8 177 55.3 179.7 55.8 182.4 56 185.1 56.9 187.8 57.8 190.4 59.8 193.1 60.8 195.8 61.9 198.5 62.6 201.2 63.1 203.9 63.6 206.5 64.2 209.2 64 211.9 63.8 214.6 63.1 217.3 62.2 220 61.2 222.6 58.8 225.3 58.3 228 57.8 230.7 58.5 233.4 59.2 236.1 59.8 238.8 60.8 241.4 62.3 244.1 63.9 246.8 66.8 249.5 68.4 252.2 70.1 254.9 71.4 257.5 72.3 260.2 73.3 262.9 73.8 265.6 74.3 268.3 74.9 271 75.3 273.6 75.6 276.3 75.8 279 75.8 281.7 75.8 284.4 75.9 287.1 75.8 289.7 75.8 292.4 75.8 295.1 75.8 297.8 75.8 300.5 75.8 303.2 76.1 305.8 76.1 308.5 76.1 311.2 75.8 313.9 75.8 316.6 75.9 319.3 76.1 321.9 76.2 324.6 76.2 328.7 76 330 76" />
+                  <path class="ridge running" style="--i: 3" pathLength="1" d="M16 94C17.3 94 21.4 94 24.1 94 26.7 94 29.4 94.1 32.1 94 34.8 94 37.5 93.8 40.2 93.8 42.8 93.8 45.5 93.9 48.2 93.9 50.9 93.8 53.6 93.6 56.3 93.5 58.9 93.4 61.6 93.2 64.3 93.3 67 93.3 69.7 93.7 72.4 93.9 75 94 77.7 94.2 80.4 94.2 83.1 94.3 85.8 94.3 88.5 94.2 91.1 94.1 93.8 93.6 96.5 93.5 99.2 93.4 101.9 93.5 104.6 93.6 107.2 93.7 109.9 94.1 112.6 94.2 115.3 94.3 118 94.2 120.7 94.3 123.4 94.4 126 94.6 128.7 94.6 131.4 94.5 134.1 94.1 136.8 94 139.5 93.8 142.1 93.7 144.8 93.7 147.5 93.6 150.2 93.6 152.9 93.6 155.6 93.6 158.2 93.6 160.9 93.7 163.6 93.9 166.3 94.5 169 94.4 171.7 94.2 174.3 94.5 177 93 179.7 91.6 182.4 88 185.1 85.8 187.8 83.5 190.4 81.4 193.1 79.6 195.8 77.8 198.5 75.5 201.2 74.8 203.9 74.1 206.5 74.4 209.2 75.2 211.9 76 214.6 79 217.3 79.7 220 80.5 222.6 80.6 225.3 80 228 79.4 230.7 77.7 233.4 76.1 236.1 74.5 238.8 71.6 241.4 70.6 244.1 69.5 246.8 69.7 249.5 69.9 252.2 70.1 254.9 71 257.5 71.8 260.2 72.6 262.9 74.5 265.6 74.7 268.3 74.9 271 73.8 273.6 72.9 276.3 71.9 279 70.1 281.7 69.1 284.4 68.1 287.1 66.9 289.7 67 292.4 67 295.1 68.5 297.8 69.5 300.5 70.4 303.2 71.2 305.8 72.8 308.5 74.3 311.2 76.8 313.9 79.1 316.6 81.3 319.3 83.7 321.9 86.2 324.6 88.6 328.7 92.7 330 94" />
+                  <path class="ridge running" style="--i: 4" pathLength="1" d="M16 112C17.3 112 21.4 112 24.1 111.9 26.7 111.9 29.4 111.8 32.1 111.8 34.8 111.7 37.5 111.5 40.2 111.6 42.8 111.8 45.5 112.4 48.2 112.4 50.9 112.5 53.6 111.9 56.3 111.8 58.9 111.8 61.6 112.2 64.3 112.2 67 112.1 69.7 111.4 72.4 111.4 75 111.4 77.7 111.8 80.4 111.9 83.1 112 85.8 112 88.5 112.2 91.1 112.3 93.8 112.8 96.5 112.9 99.2 112.9 101.9 112.7 104.6 112.5 107.2 112.4 109.9 112 112.6 112.1 115.3 112.2 118 113 120.7 113 123.4 113 126 112.2 128.7 112 131.4 111.9 134.1 112.1 136.8 112 139.5 111.9 142.1 111.4 144.8 111.5 147.5 111.5 150.2 112.2 152.9 112.3 155.6 112.4 158.2 112.3 160.9 112.1 163.6 112 166.3 111.3 169 111.5 171.7 111.6 174.3 112.8 177 113 179.7 113.1 182.4 112.6 185.1 112.5 187.8 112.4 190.4 112.5 193.1 112.4 195.8 112.3 198.5 111.9 201.2 111.8 203.9 111.8 206.5 112.1 209.2 112 211.9 111.9 214.6 110.9 217.3 111.1 220 111.2 222.6 112.6 225.3 112.7 228 112.9 230.7 113.7 233.4 111.9 236.1 110.2 238.8 104.7 241.4 102.1 244.1 99.5 246.8 98.1 249.5 96.4 252.2 94.7 254.9 92.4 257.5 91.8 260.2 91.1 262.9 91.8 265.6 92.4 268.3 93 271 94.5 273.6 95.5 276.3 96.5 279 98.7 281.7 98.6 284.4 98.4 287.1 96.2 289.7 94.7 292.4 93.2 295.1 90.8 297.8 89.4 300.5 88.1 303.2 85.3 305.8 86.8 308.5 88.2 311.2 94.7 313.9 98 316.6 101.3 319.3 104.2 321.9 106.6 324.6 108.9 328.7 111.1 330 112" />
+                  <g clip-path="url(#pl-scan-clip)"><rect class="scan" x="0" y="6" width="80" height="114" fill="url(#pl-scan-grad)" /></g>
+                  <line class="now" x1="334" x2="334" y1="8" y2="118" />
+                  <text class="nowlab" x="334" y="129" text-anchor="middle" data-i18n="plate.now">now</text>
+                </svg>
+              </div>
+              <div class="signal-body">
+                <span class="op cmd"><i></i><span class="kd">odw status</span></span>
+                <h3 data-i18n="signals.observe.title">Observable runs</h3>
+                <p data-i18n="signals.observe.copy">
+                  Detached workers persist logs, state, and final results so long-running orchestration can be inspected later.
+                </p>
+              </div>
             </article>
           </div>
         </div>
@@ -1975,58 +2909,60 @@
       <!-- ============================ 02 · RUNTIME SHAPE ============================ -->
       <section class="section tint" id="runtime" aria-labelledby="runtime-title">
         <div class="section-inner">
-          <p class="seclabel"><span class="num">02</span> <span data-i18n="runtime.kicker">Runtime shape</span> <span class="rule"></span></p>
-          <h2 class="sectitle" id="runtime-title" data-i18n="runtime.title">A small engine between workflow scripts and real agent CLIs.</h2>
-          <p class="section-lede" data-i18n="runtime.copy">
-            The loader wraps Claude-style JavaScript, the scheduler limits concurrency, and adapters shell out to the local agents you already use.
-          </p>
+          <p class="seclabel"><span class="num">02</span> <span class="kick" data-i18n="runtime.kicker">Runtime shape</span> <span class="rule"></span></p>
+          <div class="sechead">
+            <h2 class="sectitle display" id="runtime-title" data-i18n="runtime.title" data-i18n-html>A small engine between workflow scripts and <em>real agent CLIs</em>.</h2>
+            <p class="section-lede" data-i18n="runtime.copy">
+              The loader wraps Claude-style JavaScript, the scheduler limits concurrency, and adapters shell out to the local agents you already use.
+            </p>
+          </div>
 
           <div class="phasepills" aria-hidden="true">
-            <span class="ppill"><span class="ix">1</span><span data-i18n="phase.load">load</span></span>
-            <span class="ar">→</span>
-            <span class="ppill"><span class="ix">2</span><span data-i18n="phase.schedule">schedule</span></span>
-            <span class="ar">→</span>
-            <span class="ppill"><span class="ix">3</span><span data-i18n="phase.dispatch">dispatch</span></span>
-            <span class="ar">→</span>
-            <span class="ppill"><span class="ix">4</span><span data-i18n="phase.persist">persist</span></span>
+            <span class="step"><span class="ix">01</span><span data-i18n="phase.load">load</span></span>
+            <i class="step-link" style="--i: 0"></i>
+            <span class="step"><span class="ix">02</span><span data-i18n="phase.schedule">schedule</span></span>
+            <i class="step-link" style="--i: 1"></i>
+            <span class="step"><span class="ix">03</span><span data-i18n="phase.dispatch">dispatch</span></span>
+            <i class="step-link" style="--i: 2"></i>
+            <span class="step"><span class="ix">04</span><span data-i18n="phase.persist">persist</span></span>
           </div>
 
           <div class="runtime-grid">
-            <div class="srcview" aria-label="Example workflow: fan out, then reduce">
-              <div class="srcview-bar">
-                <div class="tl" aria-hidden="true"><i class="r"></i><i class="y"></i><i class="g"></i></div>
-                <span>fan-out-reduce.js</span>
+            <div class="srcview" role="group" aria-label="Example workflow: fan out, then reduce">
+              <div class="srcview-bar"><i class="wfm" aria-hidden="true"></i><span class="nm">fan-out-reduce.js</span><span class="lang">workflow</span></div>
+              <pre class="code"><code><span class="ln"><span class="tk-k">export</span> <span class="tk-k">const</span> <span class="tk-f">meta</span> = { name: <span class="tk-s">"fan-out-reduce"</span> }</span>
+<span class="ln"> </span>
+<span class="ln"><span class="tk-k">const</span> drafts = <span class="tk-k">await</span> <span class="tk-f">parallel</span>(</span>
+<span class="ln">  [<span class="tk-n">1</span>, <span class="tk-n">2</span>, <span class="tk-n">3</span>, <span class="tk-n">4</span>].map((i) =&gt; () =&gt;</span>
+<span class="ln">    <span class="tk-f">agent</span>(<span class="tk-s">`Draft #${i}: ${args.question}`</span>)</span>
+<span class="ln">  )</span>
+<span class="ln">)</span>
+<span class="ln"> </span>
+<span class="ln"><span class="tk-k">return</span> <span class="tk-k">await</span> <span class="tk-f">agent</span>(</span>
+<span class="ln">  <span class="tk-s">"Synthesize the best answer"</span>,</span>
+<span class="ln">  { schema }</span>
+<span class="ln">)</span></code></pre>
+              <div class="src-outline" aria-hidden="true">
+                <span class="lab" data-i18n="runtime.outline">outline</span>
+                <span class="op par"><i></i>parallel × 4</span>
+                <svg class="to" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6" /></svg>
+                <span class="op"><i></i>agent</span>
               </div>
-<pre><code><span class="kw">export const</span> meta = { name: <span class="st">"fan-out-reduce"</span> }
-
-<span class="kw">const</span> drafts = <span class="kw">await</span> <span class="fn">parallel</span>(
-  [<span class="nm">1</span>, <span class="nm">2</span>, <span class="nm">3</span>, <span class="nm">4</span>].map((i) =&gt; () =&gt;
-    <span class="fn">agent</span>(`Draft #${i}: ${args.question}`)
-  )
-)
-
-<span class="kw">return await</span> <span class="fn">agent</span>(
-  <span class="st">"Synthesize the best answer"</span>,
-  { schema }
-)</code></pre>
             </div>
 
             <div class="primitive-list">
-              <article class="primitive agent">
-                <span class="kd">agent</span>
-                <code class="sig">agent(prompt)</code>
+              <article class="primitive card agent">
+                <div class="ptop"><span class="op"><i></i><span class="kd">agent</span></span><code class="psig">agent(prompt)</code></div>
                 <h3 data-i18n="primitive.agent.title">Dispatch real work</h3>
                 <p data-i18n="primitive.agent.copy">Run one coding-agent CLI on a scoped subtask and collect text or schema-validated output.</p>
               </article>
-              <article class="primitive par">
-                <span class="kd">parallel</span>
-                <code class="sig">parallel(thunks)</code>
+              <article class="primitive card par">
+                <div class="ptop"><span class="op par"><i></i><span class="kd">parallel</span></span><code class="psig">parallel(thunks)</code></div>
                 <h3 data-i18n="primitive.parallel.title">Fan out safely</h3>
                 <p data-i18n="primitive.parallel.copy">Run independent branches concurrently when the next step needs the full batch.</p>
               </article>
-              <article class="primitive pipe">
-                <span class="kd">pipeline</span>
-                <code class="sig">pipeline(items)</code>
+              <article class="primitive card pipe">
+                <div class="ptop"><span class="op pipe"><i></i><span class="kd">pipeline</span></span><code class="psig">pipeline(items)</code></div>
                 <h3 data-i18n="primitive.pipeline.title">Stream stages</h3>
                 <p data-i18n="primitive.pipeline.copy">Move each item through review, verification, and synthesis without a global barrier.</p>
               </article>
@@ -2038,10 +2974,10 @@
       <!-- ============================ 03 · INSTALL ============================ -->
       <section class="section" id="install" aria-labelledby="install-title">
         <div class="section-inner">
-          <p class="seclabel"><span class="num">03</span> <span data-i18n="install.kicker">Start</span> <span class="rule"></span></p>
-          <h2 class="sectitle" id="install-title" data-i18n="install.title">Install the runtime or hack from source.</h2>
+          <p class="seclabel"><span class="num">03</span> <span class="kick" data-i18n="install.kicker">Start</span> <span class="rule"></span></p>
           <div class="install-panel">
             <div class="install-copy">
+              <h2 class="sectitle display" id="install-title" data-i18n="install.title" data-i18n-html>Install the runtime or <em>hack from source</em>.</h2>
               <p data-i18n="install.copy">
                 Use the single-file installer, install from npm, or clone the repository. ODW drives local agent CLIs; it does not call model APIs directly.
               </p>
@@ -2051,32 +2987,45 @@
                 </a>
                 <a class="button secondary" href="https://github.com/xz1220/open-dynamic-workflows#install">
                   <span data-i18n="cta.install">Install notes</span>
+                  <svg class="arr" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6" /></svg>
                 </a>
               </div>
               <div class="clihints" aria-hidden="true">
-                <span class="clihint"><span class="p">$ odw run deep-research</span><span class="note" data-i18n="install.hintRun">dispatched by your agent</span></span>
-                <span class="clihint"><span class="p">$ odw status</span><span class="note" data-i18n="install.hintStatus">inspect detached workers</span></span>
+                <span class="clihint"><span class="p"><b>$</b> odw run deep-research</span><span class="note" data-i18n="install.hintRun">dispatched by your agent</span></span>
+                <span class="clihint"><span class="p"><b>$</b> odw status</span><span class="note" data-i18n="install.hintStatus">inspect detached workers</span></span>
               </div>
             </div>
-            <div class="terminal" aria-label="Install commands">
+            <div class="terminal" role="group" aria-label="Install commands">
               <div class="terminal-bar">
-                <div class="tl" aria-hidden="true"><i class="r"></i><i class="y"></i><i class="g"></i></div>
-                <span>terminal</span>
+                <svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4.5" width="18" height="15" rx="2.5" /><path d="M7 9.5l3 2.5-3 2.5M12.5 15H17" /></svg>
+                <span>terminal</span><span class="lang">sh</span>
               </div>
               <div class="body">
                 <div class="cmd">
-                  <span class="p">$</span>
+                  <span class="p" aria-hidden="true">$</span>
                   <span class="c">curl -fsSL https://raw.githubusercontent.com/xz1220/open-dynamic-workflows/main/scripts/install.sh | sh</span>
+                  <button class="copybtn" type="button" aria-label="Copy command" data-i18n-aria="copy.copy" data-copy="curl -fsSL https://raw.githubusercontent.com/xz1220/open-dynamic-workflows/main/scripts/install.sh | sh">
+                    <svg class="cp-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8.5" y="8.5" width="11" height="11" rx="2" /><path d="M15.5 8.5V6.5a2 2 0 0 0-2-2h-7a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h2" /></svg>
+                    <svg class="ok-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5" /></svg>
+                  </button>
                   <span class="note" data-i18n="install.cmd1">one-file installer</span>
                 </div>
                 <div class="cmd">
-                  <span class="p">$</span>
+                  <span class="p" aria-hidden="true">$</span>
                   <span class="c">npm i -g open-dynamic-workflows</span>
+                  <button class="copybtn" type="button" aria-label="Copy command" data-i18n-aria="copy.copy" data-copy="npm i -g open-dynamic-workflows">
+                    <svg class="cp-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8.5" y="8.5" width="11" height="11" rx="2" /><path d="M15.5 8.5V6.5a2 2 0 0 0-2-2h-7a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h2" /></svg>
+                    <svg class="ok-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5" /></svg>
+                  </button>
                   <span class="note" data-i18n="install.cmd2">or from npm</span>
                 </div>
                 <div class="cmd">
-                  <span class="p">$</span>
+                  <span class="p" aria-hidden="true">$</span>
                   <span class="c">odw <span class="fn">run</span> examples/deep-research.js --wait</span>
+                  <button class="copybtn" type="button" aria-label="Copy command" data-i18n-aria="copy.copy" data-copy="odw run examples/deep-research.js --wait">
+                    <svg class="cp-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8.5" y="8.5" width="11" height="11" rx="2" /><path d="M15.5 8.5V6.5a2 2 0 0 0-2-2h-7a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h2" /></svg>
+                    <svg class="ok-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5" /></svg>
+                  </button>
                   <span class="note" data-i18n="install.cmd3">run your first workflow</span>
                 </div>
               </div>
@@ -2089,21 +3038,23 @@
     <footer class="footer">
       <div class="footer-inner">
         <span class="fbrand">
-          <svg class="logo" viewBox="0 0 116 64" fill="none" width="36" height="22" aria-hidden="true">
-            <path d="M14 44 C44 44, 50 22, 78 22" stroke="#16C079" stroke-width="11" stroke-linecap="round" />
-            <path d="M62 30 L58 46" stroke="#16C079" stroke-width="9" stroke-linecap="round" />
-            <circle cx="14" cy="44" r="11" fill="#15110F" />
-            <circle cx="92" cy="22" r="11" fill="#15110F" />
-            <circle cx="55" cy="52" r="8" fill="#16C079" />
+          <svg class="logo" viewBox="0 0 116 64" fill="none" aria-hidden="true">
+            <path class="lg-curve" d="M14 44 C44 44, 50 22, 78 22" stroke-width="11" stroke-linecap="round" />
+            <path class="lg-branch" d="M62 30 L58 46" stroke-width="9" stroke-linecap="round" />
+            <circle class="lg-ink" cx="14" cy="44" r="11" />
+            <circle class="lg-ink" cx="92" cy="22" r="11" />
+            <circle class="lg-sig" cx="55" cy="52" r="8" />
           </svg>
           <span class="wm">odw</span>
-          <span data-i18n="footer.copy" style="margin-left:6px;">MIT licensed. Built for portable dynamic workflows.</span>
+          <span data-i18n="footer.copy">MIT licensed. Built for portable dynamic workflows.</span>
         </span>
         <a href="https://github.com/xz1220/open-dynamic-workflows">github.com/xz1220/open-dynamic-workflows</a>
       </div>
     </footer>
 
     <script>
+      // Strings marked data-i18n-html carry a single <em> for the headline accent;
+      // everything else is set as plain text.
       const copy = {
         en: {
           "a11y.skip": "Skip to content",
@@ -2121,7 +3072,7 @@
           "hero.chip2k": "agents",
           "hero.chip3k": "adapters",
           "hero.boardAlt":
-            "Open Dynamic Workflows dashboard showing a live deep-research run as a directed graph: a done plan node fans out to running Codex, Claude Code and Gemini search agents, one failed extract node, queued fan-out groups, and a planned report.",
+            "Open Dynamic Workflows dashboard showing a live deep-research run: the phase stepper is at Vote, and in the graph a finished plan agent fans out to five search agents (one failed), five extract agents feed three running vote agents, two more votes are queued, and the report is planned.",
           "cta.github": "View GitHub",
           "cta.readme": "Read README",
           "cta.repo": "Open repository",
@@ -2132,8 +3083,10 @@
           "win.navActivity": "Activity",
           "win.navWorkspace": "Workspace",
           "win.navJobs": "Jobs",
+          "win.navChat": "Chat",
           "win.navSettings": "Settings",
           "win.liveNow": "Live now",
+          "win.search": "Search runs, workflows and commands…",
           "win.statRunning": "running",
           "win.phPlan": "Plan",
           "win.phSearch": "Search",
@@ -2144,15 +3097,22 @@
           "win.cRunning": "running",
           "win.cDone": "done",
           "win.cFailed": "failed",
+          "win.cElapsed": "elapsed",
           "win.cAdapter": "adapter",
+          "win.tabGraph": "Graph",
+          "win.tabTimeline": "Timeline",
+          "win.tabLogs": "Logs",
+          "win.tabResult": "Result",
           "win.queued": "queued · fan-out",
           "win.queuedShort": "queued",
           "win.planned": "planned",
-          "win.ticker": "▸ Extract phase: 9 agents pulling cited claims from 24 sources…",
+          "win.ticker": "Vote phase: 3 agents cross-checking cited claims…",
           "win.tickerR": "last activity 2s",
+          "win.sbActive": "active",
+          "win.sbRunning": "agents running",
           "win.sse": "live · SSE",
           "why.kicker": "Why ODW",
-          "why.title": "Keep the plan in code. Keep the agent context clean.",
+          "why.title": "Keep the plan in code. Keep the agent context <em>clean</em>.",
           "why.copy":
             "ODW turns dynamic workflow scripts into portable artifacts: easy to inspect, run, pause, resume, and move between agent CLIs.",
           "signals.portable.title": "Portable scripts",
@@ -2164,8 +3124,10 @@
           "signals.observe.title": "Observable runs",
           "signals.observe.copy":
             "Detached workers persist logs, state, and final results so long-running orchestration can be inspected later.",
+          "plate.now": "now",
           "runtime.kicker": "Runtime shape",
-          "runtime.title": "A small engine between workflow scripts and real agent CLIs.",
+          "runtime.outline": "outline",
+          "runtime.title": "A small engine between workflow scripts and <em>real agent CLIs</em>.",
           "runtime.copy":
             "The loader wraps Claude-style JavaScript, the scheduler limits concurrency, and adapters shell out to the local agents you already use.",
           "phase.load": "load",
@@ -2182,7 +3144,7 @@
           "primitive.pipeline.copy":
             "Move each item through review, verification, and synthesis without a global barrier.",
           "install.kicker": "Start",
-          "install.title": "Install the runtime or hack from source.",
+          "install.title": "Install the runtime or <em>hack from source</em>.",
           "install.copy":
             "Use the single-file installer, install from npm, or clone the repository. ODW drives local agent CLIs; it does not call model APIs directly.",
           "install.hintRun": "dispatched by your agent",
@@ -2190,6 +3152,8 @@
           "install.cmd1": "one-file installer",
           "install.cmd2": "or from npm",
           "install.cmd3": "run your first workflow",
+          "copy.copy": "Copy command",
+          "copy.done": "Copied",
           "footer.copy": "MIT licensed. Built for portable dynamic workflows.",
         },
         zh: {
@@ -2207,7 +3171,7 @@
           "hero.chip2k": "个 agent",
           "hero.chip3k": "个适配器",
           "hero.boardAlt":
-            "Open Dynamic Workflows 看板展示一次实时 deep-research 运行的有向图：已完成的 plan 节点 fan-out 到运行中的 Codex、Claude Code、Gemini 搜索 agent，其中一个 extract 节点失败，还有排队中的 fan-out 分组和待执行的 report。",
+            "Open Dynamic Workflows 看板展示一次实时 deep-research 运行：阶段进度停在「投票」；图中已完成的 plan agent fan-out 到五个搜索 agent（其中一个失败），五个抽取 agent 汇入三个运行中的投票 agent，另有两个投票在排队，report 已规划、尚未开始。",
           "cta.github": "查看 GitHub",
           "cta.readme": "读 README",
           "cta.repo": "打开仓库",
@@ -2218,8 +3182,10 @@
           "win.navActivity": "活动",
           "win.navWorkspace": "工作区",
           "win.navJobs": "任务",
+          "win.navChat": "对话",
           "win.navSettings": "设置",
           "win.liveNow": "正在运行",
+          "win.search": "搜索运行、工作流与命令…",
           "win.statRunning": "运行中",
           "win.phPlan": "规划",
           "win.phSearch": "搜索",
@@ -2230,15 +3196,22 @@
           "win.cRunning": "运行中",
           "win.cDone": "已完成",
           "win.cFailed": "失败",
+          "win.cElapsed": "耗时",
           "win.cAdapter": "适配器",
+          "win.tabGraph": "图",
+          "win.tabTimeline": "时间线",
+          "win.tabLogs": "日志",
+          "win.tabResult": "结果",
           "win.queued": "排队中 · fan-out",
           "win.queuedShort": "排队中",
           "win.planned": "已规划",
-          "win.ticker": "▸ 抽取阶段：9 个 agent 正从 24 个来源中提取被引用的论点…",
+          "win.ticker": "投票阶段：3 个 agent 正在交叉核对被引用的论点…",
           "win.tickerR": "最近活动 2s",
+          "win.sbActive": "个进行中",
+          "win.sbRunning": "个 agent 运行中",
           "win.sse": "实时 · SSE",
           "why.kicker": "为什么是 ODW",
-          "why.title": "计划留在代码里，主 agent 上下文保持干净。",
+          "why.title": "计划留在代码里，主 agent 上下文保持<em>干净</em>。",
           "why.copy":
             "ODW 把动态工作流脚本变成可迁移的产物：可检查、可运行、可暂停恢复，也能在不同 agent CLI 之间移动。",
           "signals.portable.title": "脚本可迁移",
@@ -2247,8 +3220,10 @@
           "signals.parallel.copy": "独立子任务可以 fan out，不需要把所有中间过程塞回主 agent 的对话上下文。",
           "signals.observe.title": "运行可观察",
           "signals.observe.copy": "后台 worker 会保存日志、状态和最终结果，长任务启动后也能继续查看。",
+          "plate.now": "现在",
           "runtime.kicker": "运行时结构",
-          "runtime.title": "一个夹在 workflow 脚本和真实 agent CLI 之间的小引擎。",
+          "runtime.outline": "结构",
+          "runtime.title": "一个夹在 workflow 脚本和<em>真实 agent CLI</em> 之间的小引擎。",
           "runtime.copy": "loader 包装 Claude 风格 JavaScript，scheduler 控制并发，adapter 调用你本地已经在用的 agent CLI。",
           "phase.load": "加载",
           "phase.schedule": "调度",
@@ -2261,13 +3236,15 @@
           "primitive.pipeline.title": "流式阶段",
           "primitive.pipeline.copy": "让每个 item 独立经过审阅、验证、综合，不必等待全局屏障。",
           "install.kicker": "开始使用",
-          "install.title": "安装运行时，或直接从源码改起。",
+          "install.title": "安装运行时，或直接<em>从源码改起</em>。",
           "install.copy": "可以用单文件安装器、npm 安装，或 clone 仓库。ODW 只驱动本地 agent CLI，不直接调用模型 API。",
           "install.hintRun": "由你的 agent 派发",
           "install.hintStatus": "查看后台 worker",
           "install.cmd1": "单文件安装器",
           "install.cmd2": "或从 npm 安装",
           "install.cmd3": "运行第一个 workflow",
+          "copy.copy": "复制命令",
+          "copy.done": "已复制",
           "footer.copy": "MIT 许可。为可迁移的动态工作流而构建。",
         },
       };
@@ -2275,20 +3252,24 @@
       const buttons = [...document.querySelectorAll("[data-lang]")];
       const textNodes = [...document.querySelectorAll("[data-i18n]")];
       const ariaNodes = [...document.querySelectorAll("[data-i18n-aria]")];
+      let currentLanguage = "en";
 
       function setLanguage(lang) {
         const dictionary = copy[lang] || copy.en;
-        document.documentElement.lang = lang === "zh" ? "zh-CN" : "en";
+        currentLanguage = copy[lang] ? lang : "en";
+        document.documentElement.lang = currentLanguage === "zh" ? "zh-CN" : "en";
         textNodes.forEach((node) => {
           const value = dictionary[node.dataset.i18n];
-          if (value !== undefined) node.textContent = value;
+          if (value === undefined) return;
+          if (node.hasAttribute("data-i18n-html")) node.innerHTML = value;
+          else node.textContent = value;
         });
         ariaNodes.forEach((node) => {
           const value = dictionary[node.dataset.i18nAria];
           if (value !== undefined) node.setAttribute("aria-label", value);
         });
         buttons.forEach((button) => {
-          button.setAttribute("aria-pressed", String(button.dataset.lang === lang));
+          button.setAttribute("aria-pressed", String(button.dataset.lang === currentLanguage));
         });
         try {
           localStorage.setItem("odw-language", lang);
@@ -2310,6 +3291,102 @@
       buttons.forEach((button) => {
         button.addEventListener("click", () => setLanguage(button.dataset.lang));
       });
+
+      // Copy buttons on the install commands. Falls back to selecting the
+      // command text where the async clipboard is unavailable (file://, old browsers).
+      document.querySelectorAll("[data-copy]").forEach((button) => {
+        let timer = 0;
+        button.addEventListener("click", async () => {
+          const text = button.getAttribute("data-copy") || "";
+          let ok = false;
+          try {
+            if (navigator.clipboard && window.isSecureContext) {
+              await navigator.clipboard.writeText(text);
+              ok = true;
+            }
+          } catch (e) {
+            ok = false;
+          }
+          if (!ok) {
+            const target = button.parentElement && button.parentElement.querySelector(".c");
+            const selection = window.getSelection();
+            if (target && selection) {
+              const range = document.createRange();
+              range.selectNodeContents(target);
+              selection.removeAllRanges();
+              selection.addRange(range);
+              try {
+                ok = document.execCommand("copy");
+              } catch (e) {
+                ok = false;
+              }
+            }
+          }
+          if (!ok) return;
+          const dictionary = copy[currentLanguage] || copy.en;
+          button.classList.add("ok");
+          button.setAttribute("aria-label", dictionary["copy.done"]);
+          clearTimeout(timer);
+          timer = setTimeout(() => {
+            button.classList.remove("ok");
+            button.setAttribute("aria-label", (copy[currentLanguage] || copy.en)["copy.copy"]);
+          }, 1600);
+        });
+      });
+
+      // Motion housekeeping: loops rest while off-screen, and line plates are
+      // plotted in once as they scroll into view (they stay drawn otherwise).
+      const reduceMotion = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      function setPaused(el, paused) {
+        el.classList.toggle("is-paused", paused);
+        const svgs = el instanceof SVGSVGElement ? [el] : [...el.querySelectorAll("svg")];
+        svgs.forEach((svg) => {
+          try {
+            if (paused) svg.pauseAnimations();
+            else svg.unpauseAnimations();
+          } catch (e) {
+            /* nested or unsupported */
+          }
+        });
+      }
+      if ("IntersectionObserver" in window) {
+        const observer = new IntersectionObserver(
+          (entries) => {
+            entries.forEach((entry) => {
+              const el = entry.target;
+              if (entry.isIntersecting) {
+                if (el.hasAttribute("data-draw") && !el.hasAttribute("data-drawn")) {
+                  el.setAttribute("data-drawn", "");
+                  if (!reduceMotion && entry.intersectionRatio < 0.35) el.classList.add("draw");
+                }
+                setPaused(el, false);
+              } else {
+                setPaused(el, true);
+              }
+            });
+          },
+          { threshold: [0, 0.35] },
+        );
+        document.querySelectorAll("[data-live]").forEach((el) => observer.observe(el));
+      }
+
+      // The sheet's entrance plays once; afterwards only the live loops run.
+      const sheet = document.querySelector(".mock");
+      if (sheet) setTimeout(() => sheet.classList.add("settled"), 1500);
+
+      // The mockup's clocks tick while it is on screen.
+      const ticks = [...document.querySelectorAll("[data-tick]")];
+      const mock = document.querySelector(".mock-wrap");
+      if (!reduceMotion && ticks.length && mock) {
+        setInterval(() => {
+          if (document.hidden || mock.classList.contains("is-paused")) return;
+          ticks.forEach((el) => {
+            const s = Number(el.getAttribute("data-tick")) + 1;
+            el.setAttribute("data-tick", String(s));
+            el.textContent = Math.floor(s / 60) + "m" + String(s % 60).padStart(2, "0") + "s";
+          });
+        }, 1000);
+      }
     </script>
   </body>
 </html>

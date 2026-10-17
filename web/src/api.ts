@@ -6,6 +6,8 @@
  * refuses control for them.
  */
 import type {
+  ActivitySnapshot,
+  AgentResultRecord,
   Capabilities,
   ChatSession,
   ChatSessionSummary,
@@ -54,7 +56,12 @@ export const api = {
   run: (id: string) => getJSON<RunDetail>(`/api/runs/${enc(id)}`),
   events: (id: string, since = 0) =>
     getJSON<WorkflowEvent[]>(`/api/runs/${enc(id)}/events?since=${since}`),
+  /** The newest events across runs plus running agents per adapter. */
+  activity: (limit = 200) => getJSON<ActivitySnapshot>(`/api/activity?limit=${limit}`),
   result: (id: string) => getJSON<{ value: unknown }>(`/api/runs/${enc(id)}/result`),
+  /** A completed agent's persisted output (404 when the server or run has none). */
+  agentResult: (id: string, agentId: number) =>
+    getJSON<AgentResultRecord>(`/api/runs/${enc(id)}/agents/${agentId}`),
   workflows: () => getJSON<WorkflowSummary[]>("/api/workflows"),
   workflow: (name: string, provider?: string) =>
     getJSON<WorkflowDetail>(`/api/workflows/${enc(name)}${provider ? `?provider=${enc(provider)}` : ""}`),
@@ -70,4 +77,7 @@ export const api = {
   deleteChatSession: (id: string) => deleteJSON<{ ok: true }>(`/api/chat/sessions/${enc(id)}`),
   control: (id: string, action: "pause" | "resume" | "stop") =>
     postJSON<{ ok: boolean }>(`/api/runs/${enc(id)}/control`, { action }),
+  /** Approve or reject a pending checkpoint() (ODW runs, loopback only). */
+  checkpoint: (id: string, body: { action: "approve" | "reject"; checkpointId?: number; note?: string }) =>
+    postJSON<{ ok: boolean }>(`/api/runs/${enc(id)}/checkpoint`, body),
 };

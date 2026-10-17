@@ -12,8 +12,40 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
-  check:
-    runs-on: ubuntu-latest
+  test:
+    name: test (${{ matrix.os }}, Node ${{ matrix.node }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # package.json engines says node >=20: test every supported line on Linux,
+        # plus macOS (the darwin-arm64 binary's platform) on the current one.
+        include:
+          - { os: ubuntu-latest, node: "20" }
+          - { os: ubuntu-latest, node: "22" }
+          - { os: ubuntu-latest, node: "24" }
+          - { os: macos-latest, node: "24" }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      # Builds the web client, re-embeds it and SKILL.md, then runs tsc over src
+      # (which is also the typecheck, so no separate `npm run typecheck`).
+      - run: npm run build
+      - name: Committed generated files match their sources
+        run: git diff --exit-code -- src/dashboard.generated.ts src/skill.generated.ts
+      - name: Typecheck the web client
+        run: npx tsc -p web/tsconfig.json
+      - run: npm test
+
+  # The full suite leans on POSIX shells (installer, worker, adapter stubs), so
+  # Windows gets a build plus a smoke check of the CLI the release ships.
+  windows-smoke:
+    name: smoke (windows-latest, Node 24)
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -22,5 +54,13 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
-      - run: npm run typecheck
-      - run: npm test
+      # The Windows release binary embeds what this runner generates.
+      - name: Committed generated files match their sources
+        run: git diff --exit-code -- src/dashboard.generated.ts src/skill.generated.ts
+      - name: CLI smoke check
+        shell: bash
+        run: |
+          version="$(node dist/cli.js --version)"
+          echo "$version"
+          case "$version" in "open-dynamic-workflows "*) ;; *) echo "unexpected --version output" >&2; exit 1 ;; esac
+          node dist/cli.js --help | grep "odw run <script.js|name>" > /dev/null

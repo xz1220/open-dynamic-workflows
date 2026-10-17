@@ -1,41 +1,16 @@
 #!/usr/bin/env node
 /**
- * Build the client SPA into ONE self-contained index.html.
- *
- * esbuild (a build-only devDependency of the root package — resolved up the tree)
- * bundles the vanilla-TS app to a single IIFE; the CSS and JS are inlined into
- * the HTML shell so the output is a zero-dependency file the existing
- * `scripts/embed-dashboard.mjs` pipeline can inline into `odw serve` and the SEA
- * binary — same promise as the rest of the engine: no runtime deps, no CDN.
+ * Build the client SPA into ONE self-contained web/dist/index.html (see
+ * bundle.mjs). `scripts/embed-dashboard.mjs` then inlines it into `odw serve`
+ * and the SEA binary.
  *
  * Usage: node web/build.mjs   (run from anywhere; paths are module-relative)
  */
-import { build } from "esbuild";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { bundleHtml, webRoot } from "./bundle.mjs";
 
-const root = fileURLToPath(new URL(".", import.meta.url));
-const outDir = `${root}dist`;
+const outDir = `${webRoot}dist`;
 mkdirSync(outDir, { recursive: true });
-
-const result = await build({
-  entryPoints: [`${root}src/main.ts`],
-  bundle: true,
-  format: "iife",
-  platform: "browser",
-  target: ["es2020"],
-  minify: true,
-  // Keep CJK (the zh i18n strings) as raw UTF-8 rather than \uXXXX escapes — the
-  // HTML shell is UTF-8, so this is smaller and readable in the inlined bundle.
-  charset: "utf8",
-  legalComments: "none",
-  write: false,
-});
-const js = result.outputFiles[0].text;
-const css = readFileSync(`${root}src/theme.css`, "utf8");
-const tmpl = readFileSync(`${root}index.html`, "utf8");
-
-// Function replacers so `$` sequences in the css/js are inserted verbatim.
-const html = tmpl.replace("/*INLINE_CSS*/", () => css).replace("/*INLINE_JS*/", () => js);
+const html = await bundleHtml({ minify: true });
 writeFileSync(`${outDir}/index.html`, html, "utf8");
 console.error(`built web client → ${outDir}/index.html (${html.length} bytes)`);

@@ -18,6 +18,7 @@ export interface RawAdapter {
   stdin?: string;
   env?: Record<string, string>;
   timeout?: number;
+  stallTimeout?: number;
   label?: string;
   flags?: AdapterFlags;
   output?: AdapterOutput;
@@ -138,9 +139,13 @@ export const DEFAULT_SETTINGS: Settings = {
   concurrency: null, // null => auto (min(16, cpus - 2))
   maxAgents: 1000, // runaway guard on total dispatches per run
   timeout: 1800, // per-agent CLI timeout, seconds
+  // Stall watchdog off: text-mode CLIs (claude --print, …) print nothing until done.
+  stallTimeout: null,
+  stallRestarts: 1, // restarts of a stalled agent before its call fails
   schemaRetries: 2, // extra attempts when a schema fails to validate
   runsRoot: null, // null => ~/.odw/runs
   workflowsRoot: null, // null => ~/.odw/workflows
   claudeWorkflowsRoot: null, // null => ~/.claude/workflows, honoring CLAUDE_CONFIG_DIR
   claudeJobsScope: "all", // observe every project's Claude runs; "project" narrows to the served repo + worktrees
+  notify: null, // no run-completion hooks
 };

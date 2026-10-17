@@ -28,9 +28,25 @@ test("loader: a block comment with a brace inside meta", () => {
   assert.equal(loadWorkflowScript(src, "x.js").meta.name, "n");
 });
 
-test("loader: a regex literal in a meta value does not derail the scan", () => {
+test("loader: a regex literal in a meta value is rejected as non-literal, not mis-scanned", () => {
+  // meta is parsed, never evaluated, so a regex (and `.source`) is not a pure literal.
   const src = "export const meta = { name: 'n', description: 'd', x: /it's }/.source }\nreturn 1";
-  assert.equal(loadWorkflowScript(src, "x.js").meta.name, "n");
+  assert.throws(
+    () => loadWorkflowScript(src, "x.js"),
+    (err: Error) =>
+      err instanceof WorkflowScriptError &&
+      err.message === "workflow x.js: meta must be a pure literal (found '/' at line 1:55)",
+  );
+});
+
+test("loader: a regex literal with a quote and a brace in the body does not derail the scan", () => {
+  const meta = "export const meta = { name: 'n', description: 'd' }\n";
+  assert.equal(loadWorkflowScript(meta + "const re = /it's }/\nreturn re.source", "x.js").meta.name, "n");
+  // ...so a stray export after it is still found (the regex was not read as a string).
+  assert.throws(
+    () => loadWorkflowScript(meta + "const re = /it's }/\nexport const x = 1\nreturn 1", "x.js"),
+    /may only 'export const meta'/,
+  );
 });
 
 test("loader: 'export const meta' inside a string is ignored, real one wins", () => {

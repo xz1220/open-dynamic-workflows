@@ -94,8 +94,26 @@ export function formatEvent(ev: WorkflowEvent): string {
   else if (type.startsWith("agent_")) {
     detail = sanitizeText(ev.label ?? "agent", 120);
     if (type === "agent_failed") detail += ` — ${sanitizeText(ev.error, 200)}`;
-  } else detail = sanitizeText(ev.error ?? ev.runId ?? "", 200);
+    if (type === "agent_finished" && ev.cached === true) detail += ` (replayed from ${sanitizeText(ev.sourceRunId, 80)})`;
+  } else if (type.startsWith("command_")) detail = commandDetail(ev, type);
+  else detail = sanitizeText(ev.error ?? ev.runId ?? "", 200);
   return `[${stamp}] ${type.padEnd(15)}${phase} ${detail}`.trimEnd();
+}
+
+/**
+ * An exec() step as a log detail: its label and command when it starts (just
+ * `$ command` when the label is the default, the command itself), then how it
+ * ended — `exit 0`, or command_failed's error — and how long it took.
+ */
+function commandDetail(ev: WorkflowEvent, type: string): string {
+  const command = sanitizeText(ev.command, 200);
+  const label = sanitizeText(ev.label ?? command, 120);
+  const labelIsCommand = label === command || (label.endsWith("…") && command.startsWith(label.slice(0, -1)));
+  const name = labelIsCommand ? `$ ${command}` : label;
+  if (type === "command_started") return labelIsCommand || command === "" ? name : `${name} — $ ${command}`;
+  const outcome = type === "command_finished" ? `exit ${String(ev.exitCode ?? 0)}` : sanitizeText(ev.error ?? "failed", 200);
+  const took = typeof ev.durationMs === "number" ? ` (${fmtDuration(ev.durationMs)})` : "";
+  return `${name} — ${outcome}${took}`;
 }
 
 // --- the live renderer -----------------------------------------------------------
@@ -109,6 +127,11 @@ interface StreamLike {
 /** Meta fragments joined with a separator dot; null/empty fragments drop out. */
 function metaJoin(g: Glyphs, parts: Array<string | null>): string {
   return parts.filter((x): x is string => x !== null && x !== "").join(` ${g.bullet} `);
+}
+
+/** A node's label in the terminal: exec() command steps get a shell prompt. */
+function nodeLabel(a: AgentView): string {
+  return a.kind === "command" ? `$ ${a.label}` : a.label;
 }
 
 class LiveView {
@@ -188,7 +211,7 @@ class LiveView {
       }
       const { opened, settled } = applyAgentEvent(this.agents, ev);
       if (opened) {
-        const w = sanitizeText(opened.label, 60).length;
+        const w = sanitizeText(nodeLabel(opened), 60).length;
         this.labelW = Math.max(this.labelW, Math.min(24, w));
       }
       if (settled) {
@@ -208,13 +231,14 @@ class LiveView {
 
   private settledLine(a: AgentView): string {
     const { p, g } = this;
-    const label = padEndWidth(sanitizeText(a.label, 60), this.labelW);
+    const label = padEndWidth(sanitizeText(nodeLabel(a), 60), this.labelW);
     const glyph = a.state === "done" ? p.ok(g.ok) : p.err(g.fail);
     const meta = metaJoin(g, [
       a.phase !== null && a.phase !== this.currentPhase ? sanitizeText(a.phase, 40) : null,
       a.adapter !== null ? sanitizeText(a.adapter, 40) : null,
-      a.durationMs !== null ? fmtDuration(a.durationMs) : null,
-      a.attempts !== null && a.attempts > 1 ? `${a.attempts} tries` : null,
+      // A replayed result (odw resume) took no time and ran nothing.
+      a.cached ? "replayed" : a.durationMs !== null ? fmtDuration(a.durationMs) : null,
+      !a.cached && a.attempts !== null && a.attempts > 1 ? `${a.attempts} tries` : null,
     ]);
     return `    ${glyph} ${label}  ${p.dim(meta)}`;
   }
@@ -229,7 +253,7 @@ class LiveView {
 
     const block: string[] = [""];
     for (const a of running) {
-      const label = padEndWidth(sanitizeText(a.label, 60), this.labelW);
+      const label = padEndWidth(sanitizeText(nodeLabel(a), 60), this.labelW);
       const meta = metaJoin(g, [
         a.phase !== null && a.phase !== this.currentPhase ? sanitizeText(a.phase, 40) : null,
         a.adapter !== null ? sanitizeText(a.adapter, 40) : null,
@@ -266,8 +290,10 @@ class LiveView {
     const nowSec = this.now() / 1000;
     const startSec = this.runStartTs ?? nowSec;
     const spent = typeof status.spentTokens === "number" ? status.spentTokens : 0;
+    const commands = this.agents.filter((a) => a.kind === "command").length;
     const meta = metaJoin(g, [
-      `${this.agents.length} agents`,
+      `${this.agents.length - commands} agents`,
+      commands > 0 ? `${commands} commands` : null,
       this.failed > 0 ? p.err(`${this.failed} failed`) : null,
       spent > 0 ? `~${spent} tok` : null,
       fmtElapsed((nowSec - startSec) * 1000),
@@ -303,6 +329,8 @@ export interface AttachOptions {
   now?: () => number;
   /** Install SIGINT/SIGTERM/SIGHUP handlers (default true; tests pass false). */
   signals?: boolean;
+  /** Platform override for tests (default process.platform). */
+  platform?: NodeJS.Platform;
 }
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
@@ -320,11 +348,13 @@ export async function attachRun(
   const env = opts.env ?? process.env;
   const now = opts.now ?? Date.now;
   // Live rendering needs real cursor control, not just a TTY: TERM=dumb (or no
-  // TERM at all) gets the plain line stream even under --fg.
+  // TERM at all) gets the plain line stream even under --fg. Windows consoles
+  // set no TERM yet handle VT sequences (Node enables them), like detectCaps.
+  const platform = opts.platform ?? process.platform;
   const cursorCapable =
-    opts.err.isTTY === true && env.TERM !== undefined && env.TERM !== "dumb";
+    opts.err.isTTY === true && (env.TERM === undefined ? platform === "win32" : env.TERM !== "dumb");
   const live = (opts.live ?? opts.err.isTTY === true) && cursorCapable;
-  const caps = detectCaps(opts.err, env);
+  const caps = detectCaps(opts.err, env, platform);
   const pollMs = opts.pollMs ?? (live ? 120 : 250);
   const attachStart = now();
   const deadline = opts.timeoutMs !== undefined ? attachStart + opts.timeoutMs : null;

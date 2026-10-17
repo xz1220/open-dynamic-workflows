@@ -21,11 +21,45 @@ test("NO_COLOR, TERM=dumb, and non-TTY streams all disable color", () => {
   assert.equal(detectCaps(tty, { TERM: "xterm-256color" }).color, true);
 });
 
+test("Windows consoles get color without TERM; elsewhere a missing TERM still means none", () => {
+  const tty = { isTTY: true };
+  assert.equal(detectCaps(tty, {}, "win32").color, true);
+  assert.equal(detectCaps(tty, {}, "linux").color, false);
+  assert.equal(detectCaps(tty, {}, "darwin").color, false);
+  // ...but an explicit dumb terminal, NO_COLOR, or a pipe still disables it there.
+  assert.equal(detectCaps(tty, { TERM: "dumb" }, "win32").color, false);
+  assert.equal(detectCaps(tty, { NO_COLOR: "1" }, "win32").color, false);
+  assert.equal(detectCaps({ isTTY: false }, {}, "win32").color, false);
+});
+
+test("FORCE_COLOR forces color on, even piped or TERM=dumb; 0/false force it off", () => {
+  const pipe = { isTTY: false };
+  const tty = { isTTY: true };
+  for (const value of ["", "1", "2", "3", "true"]) {
+    assert.equal(detectCaps(pipe, { FORCE_COLOR: value }, "linux").color, true, `FORCE_COLOR=${value}`);
+  }
+  assert.equal(detectCaps(tty, { TERM: "dumb", FORCE_COLOR: "1" }, "linux").color, true);
+  for (const value of ["0", "false", "FALSE"]) {
+    const caps = detectCaps(tty, { TERM: "xterm-256color", COLORTERM: "truecolor", FORCE_COLOR: value }, "linux");
+    assert.deepEqual([caps.color, caps.truecolor], [false, false], `FORCE_COLOR=${value}`);
+  }
+  // As in Node itself, an explicit FORCE_COLOR outranks NO_COLOR.
+  assert.equal(detectCaps(tty, { TERM: "xterm", NO_COLOR: "1", FORCE_COLOR: "1" }, "linux").color, true);
+  // FORCE_COLOR=3 asks for 24-bit; lower levels keep the 16-color set.
+  assert.equal(detectCaps(pipe, { FORCE_COLOR: "3" }, "linux").truecolor, true);
+  assert.equal(detectCaps(pipe, { FORCE_COLOR: "1" }, "linux").truecolor, false);
+  assert.match(palette(detectCaps(pipe, { FORCE_COLOR: "1" }, "linux")).ok("x"), /\x1b\[32m/);
+});
+
+test("an empty NO_COLOR does not disable color (no-color.org: present and non-empty)", () => {
+  assert.equal(detectCaps({ isTTY: true }, { TERM: "xterm", NO_COLOR: "" }, "linux").color, true);
+});
+
 test("truecolor needs COLORTERM; the palette upgrades to 24-bit codes", () => {
   const caps = detectCaps({ isTTY: true }, { TERM: "xterm", COLORTERM: "truecolor" });
   assert.equal(caps.truecolor, true);
   const p = palette(caps);
-  assert.match(p.ok("x"), /\x1b\[38;2;16;185;129m/); // emerald, web token --green
+  assert.match(p.ok("x"), /\x1b\[38;2;46;232;142m/); // the dashboard's signal green (night ink)
   const basic = palette(detectCaps({ isTTY: true }, { TERM: "xterm" }));
   assert.match(basic.ok("x"), /\x1b\[32m/);
 });

@@ -1,10 +1,13 @@
-/** Activity — the machine pulse: per-adapter fleet load + a live event firehose. */
+/** Activity — the machine's pulse: a headline, live counters, the ridgeline, the fleet and the event stream. */
+import { pill } from "../components/glyph";
+import { icons } from "../icons";
+import { renderPulse } from "../components/pulse";
 import { t } from "../i18n";
 import { store } from "../store";
-import type { RunDetail } from "../types";
+import type { ActivityEvent } from "../types";
 import { ACTIVE, esc, fmtClock } from "../util";
 
-const EVT_CLASS: Record<string, string> = {
+export const EVT_CLASS: Record<string, string> = {
   run_started: "rstart",
   run_finished: "rfin",
   run_failed: "rfail",
@@ -13,99 +16,178 @@ const EVT_CLASS: Record<string, string> = {
   agent_started: "astart",
   agent_finished: "afin",
   agent_failed: "afail",
+  command_started: "cstart",
+  command_finished: "cfin",
+  command_failed: "afail",
   log: "log",
 };
 // Machine event tokens — mirror events.jsonl; left untranslated by design.
-const EVT_LABEL: Record<string, string> = {
-  run_started: "RUN_STARTED",
-  run_finished: "RUN_FINISHED",
-  run_failed: "RUN_FAILED",
-  run_stopped: "RUN_STOPPED",
+export const EVT_LABEL: Record<string, string> = {
+  run_started: "RUN START",
+  run_finished: "RUN DONE",
+  run_failed: "RUN FAILED",
+  run_stopped: "RUN STOP",
   phase_started: "PHASE",
-  agent_started: "AGENT_STARTED",
-  agent_finished: "FINISHED",
-  agent_failed: "FAILED",
+  agent_started: "AGENT ▸",
+  agent_finished: "AGENT ✓",
+  agent_failed: "AGENT ✕",
+  command_started: "$ ▸",
+  command_finished: "$ ✓",
+  command_failed: "$ ✕",
   log: "LOG",
 };
 
-/** Count running agents per adapter across all active runs. */
-function fleet(details: RunDetail[]): Map<string, number> {
-  const m = new Map<string, number>();
-  for (const d of details) {
-    for (const a of d.agents) {
-      if (a.state !== "running") continue;
-      const key = a.adapter ?? "—";
-      m.set(key, (m.get(key) ?? 0) + 1);
-    }
-  }
-  return m;
+/** `$ npm test` · exit 1 · 4.2s — what a command step ran and how it ended. */
+export function commandDetail(e: { type: string; label?: unknown; command?: unknown; exitCode?: unknown; durationMs?: unknown }): string {
+  const what = String(e.label ?? e.command ?? "command");
+  if (e.type === "command_started") return what;
+  const code = typeof e.exitCode === "number" ? `exit ${e.exitCode}` : t("killed");
+  const secs = typeof e.durationMs === "number" ? ` · ${(e.durationMs / 1000).toFixed(1)}s` : "";
+  return `${what} · ${code}${secs}`;
 }
 
-function eventDetail(e: { type: string; phase?: unknown; message?: unknown; label?: unknown; error?: unknown }): string {
-  if (e.type === "phase_started") return e.phase != null ? `${e.phase}` : "";
+function eventDetail(e: ActivityEvent): string {
+  if (e.type === "phase_started") return e.phase != null ? String(e.phase) : "";
   if (e.type === "log") return e.message != null ? String(e.message) : "";
   if (e.type === "agent_failed") return [e.label, e.error].filter(Boolean).map(String).join(" · ");
+  if (e.type.startsWith("command_")) return commandDetail(e);
   if (e.type.startsWith("agent_")) return e.label != null ? String(e.label) : "";
   return "";
 }
 
-export function renderActivity(): string {
-  const runs = store.runs;
-  const activeRuns = runs.filter((r) => ACTIVE.has(r.state));
-  const activeCount = activeRuns.length;
-  const runningAgents = activeRuns.reduce((n, r) => n + r.counts.running, 0);
-  const doneAgents = runs.reduce((n, r) => n + r.counts.done, 0);
-  const failedAgents = runs.reduce((n, r) => n + r.counts.failed, 0);
+/** The headline sentence adapts to what the fleet is doing right now. */
+function headline(active: number, running: number, failedNow: number): { cls: string; html: string } {
+  if (failedNow > 0 && running === 0) {
+    return { cls: "alarm", html: t("Something <em>broke</em>.") };
+  }
+  if (running > 0) {
+    return {
+      cls: "",
+      html: running === 1 ? t("One agent is <em>working</em>.") : t("{n} agents are <em>working</em>.", { n: running }),
+    };
+  }
+  if (active > 0) return { cls: "", html: t("Runs are <em>in flight</em>.") };
+  return { cls: "idle", html: t("The fleet is <em>at rest</em>.") };
+}
 
-  const fl = fleet(store.activeDetails);
-  // Show known adapters even at zero so the fleet reads as a roster.
+function stat(v: number, k: string, href: string, cls = "", frac?: number): string {
+  const bar = frac != null ? `<i class="bar" style="width:${Math.round(frac * 100)}%"></i>` : "";
+  return `<a class="stat ${cls}" href="${href}" data-nav="${href}"><div class="v num">${v}</div><div class="k">${esc(k)}</div>${bar}</a>`;
+}
+
+export function renderActivity(nowSec: number): string {
+  const runs = store.runs;
+  const active = runs.filter((r) => ACTIVE.has(r.state));
+  const running = active.reduce((n, r) => n + r.counts.running, 0);
+  const totalAgents = runs.reduce((n, r) => n + r.counts.agents, 0);
+  const done = runs.reduce((n, r) => n + r.counts.done, 0);
+  const failed = runs.reduce((n, r) => n + r.counts.failed, 0);
+  const failedRecently = runs.filter((r) => r.state === "failed" && (r.updatedAt ?? 0) > nowSec - 3600).length;
+  const head = headline(active.length, running, failedRecently);
+  const adapters = [...new Set(Object.keys(store.fleet))].filter((a) => a !== "—");
+
+  const lede =
+    active.length > 0
+      ? t("{r} runs in flight{via}.", {
+          r: active.length,
+          via: adapters.length ? ` · ${adapters.join(", ")}` : "",
+        })
+      : runs.length
+        ? t("Nothing is running. {n} runs on record.", { n: runs.length })
+        : t("No runs yet — have your agent start one with odw run.");
+
+  const pulse = renderPulse(runs, store.activity, nowSec);
+  const pulseCard = store.runsLoaded && runs.length === 0
+    ? gettingStarted()
+    : pulse.rows
+    ? `<section class="card pulse marked" data-key="pulse">` +
+      `<div class="pulse-head"><h3>${t("Pulse")}</h3><span class="eyebrow">${t("events per run · last {s}", { s: pulse.span })}</span></div>` +
+      pulse.svg +
+      `</section>`
+    : `<section class="card pulse marked" data-key="pulse">${emptyArt(t("Quiet so far"), t("Every run you start draws a line here."))}</section>`;
+
+  // Fleet: known adapters stay listed at zero so it reads as a roster.
   const roster = ["claude", "codex", "gemini", "qwen", "kimi"];
-  for (const a of fl.keys()) if (!roster.includes(a) && a !== "—") roster.push(a);
-  const maxLoad = Math.max(4, ...[...fl.values()]);
+  for (const a of Object.keys(store.fleet)) if (!roster.includes(a) && a !== "—") roster.push(a);
   const fleetRows = roster
     .map((name) => {
-      const n = fl.get(name) ?? 0;
-      const pct = n === 0 ? 6 : Math.round((n / maxLoad) * 100);
+      const n = store.fleet[name] ?? 0;
+      const dots = n
+        ? Array.from({ length: Math.min(n, 24) }, (_, i) => `<i data-key="fd-${esc(name)}-${i}"></i>`).join("")
+        : `<i class="idle"></i>`;
       return (
-        `<div class="fleetrow"><span class="nm">${esc(name)}</span>` +
-        `<span class="track"><i class="${n === 0 ? "idle" : ""}" style="width:${pct}%"></i></span>` +
-        `<span class="ct">${t("{n} running", { n })}</span></div>`
+        `<div class="fleetrow${n ? "" : " zero"}" data-key="fl-${esc(name)}"><span class="nm">${esc(name)}</span>` +
+        `<span class="dots">${dots}</span><span class="ct">${n}</span></div>`
       );
     })
     .join("");
 
-  const rows =
-    store.activity.length === 0
-      ? `<div class="evrow"><span></span><span class="evt log">${t("idle")}</span><span class="where">${t("No recent events — start a run with {cmd}", { cmd: "<b>odw run &lt;name&gt;</b>" })}</span><span></span></div>`
-      : store.activity
-          .map((e) => {
-            const cls = EVT_CLASS[e.type] ?? "log";
-            const label = EVT_LABEL[e.type] ?? e.type.toUpperCase();
-            return (
-              `<div class="evrow">` +
-              `<span class="ts">${fmtClock(e.ts)}</span>` +
-              `<span><span class="evt ${cls}">${label}</span></span>` +
-              `<span class="where"><b>${esc(e._run)}</b>${eventDetail(e) ? " · " + esc(eventDetail(e)) : ""}</span>` +
-              `<span class="adp">${esc(e._adapter ?? "—")}</span>` +
-              `</div>`
-            );
-          })
-          .join("");
+  const rows = store.activity.slice(0, 60);
+  const seen = new Map<string, number>();
+  const stream = rows.length
+    ? rows
+        .map((e) => {
+          const base = `ev-${e.runId}-${e.ts}-${e.type}-${String(e.label ?? e.phase ?? "")}`;
+          const dup = seen.get(base) ?? 0;
+          seen.set(base, dup + 1);
+          const cls = EVT_CLASS[e.type] ?? "log";
+          const label = EVT_LABEL[e.type] ?? e.type.toUpperCase();
+          const detail = eventDetail(e);
+          return (
+            `<div class="evrow" data-run="${esc(e.runId)}" data-key="${esc(dup ? `${base}~${dup}` : base)}">` +
+            `<span class="ts">${fmtClock(e.ts)}</span>` +
+            `<span><span class="evt ${cls}">${label}</span></span>` +
+            `<span class="where"><b>${esc(e.run)}</b>${detail ? " · " + esc(detail) : ""}</span>` +
+            `<span class="adp">${esc(e.adapter ?? "")}</span></div>`
+          );
+        })
+        .join("")
+    : `<div class="empty" style="min-height:160px"><p>${t("No recent events.")}</p></div>`;
 
   return (
-    `<div class="act-top">` +
-    `<div class="counters">` +
-    `<div class="counter green"><div class="v">${activeCount}</div><div class="k">${t("runs active")}</div></div>` +
-    `<div class="counter green"><div class="v">${runningAgents}</div><div class="k">${t("agents running")}</div></div>` +
-    `<div class="counter"><div class="v">${doneAgents}</div><div class="k">${t("agents done")}</div></div>` +
-    `<div class="counter red"><div class="v">${failedAgents}</div><div class="k">${t("agents failed")}</div></div>` +
-    `</div>` +
-    `<div class="fleet"><h5>${t("Fleet — agents running, by adapter")}</h5>${fleetRows}</div>` +
-    `</div>` +
-    `<div class="firehose">` +
-    `<div class="fh-head"><span class="t">${t("Live event stream")}</span><span class="sub">${t("all runs · events.jsonl")}</span>` +
-    `<span class="legend"><span class="evt astart">AGENT_STARTED</span><span class="evt afin">FINISHED</span><span class="evt afail">FAILED</span><span class="evt phase">PHASE</span><span class="evt log">LOG</span></span></div>` +
-    rows +
-    `</div>`
+    `<div class="page activity">` +
+    `<section class="hero ${head.cls}">` +
+    `<div><div class="eyebrow">${pill(active.length ? "running" : "idle", active.length ? t("live") : t("idle"))}<span>${t("Activity")}</span></div>` +
+    `<h1 class="display">${head.html}</h1><p class="lede">${esc(lede)}</p></div>` +
+    `<div class="stats">` +
+    stat(active.length, t("runs in flight"), "#/jobs/live", "sig") +
+    stat(running, t("agents running"), "#/jobs/live", "sig") +
+    stat(done, t("agents done"), "#/jobs/done", "", totalAgents ? done / totalAgents : 0) +
+    stat(failed, t("agents failed"), "#/jobs/failed", failed ? "alarm" : "", totalAgents ? failed / totalAgents : 0) +
+    `</div></section>` +
+    pulseCard +
+    `<div class="act-grid">` +
+    `<section class="card fleet" data-key="fleet"><div class="card-head" style="padding:16px 0 8px"><h3>${t("Fleet")}</h3><span class="eyebrow">${t("agents running · by adapter")}</span></div>${fleetRows}</section>` +
+    `<section class="card stream" data-key="stream"><div class="card-head"><h3>${t("Live event stream")}</h3><span class="eyebrow">${t("all runs · events.jsonl")}</span></div><div class="stream-list">${stream}</div></section>` +
+    `</div></div>`
+  );
+}
+
+/** First run: three steps from a fresh install to a live graph on this page. */
+function gettingStarted(): string {
+  const step = (n: string, title: string, cmd: string, note: string) =>
+    `<li class="gs-step"><span class="ix">${n}</span><div><h4>${esc(title)}</h4>` +
+    `<span class="cmd" title="${esc(cmd)}"><span class="p">$</span><span class="t">${esc(cmd)}</span><button class="iconbtn" data-copy="${esc(cmd)}" aria-label="${esc(t("Copy"))}">${icons.copy}</button></span>` +
+    `<p class="dim">${esc(note)}</p></div></li>`;
+  return (
+    `<section class="card pulse marked gs" data-key="pulse">` +
+    `<div class="pulse-head"><h3>${t("Get started")}</h3><span class="eyebrow">${t("three steps to a live graph")}</span></div>` +
+    `<ol class="gs-steps">` +
+    step("01", t("Check the setup"), "odw doctor --smoke", t("Runtime, config and every adapter — plus one real prompt to the default.")) +
+    step("02", t("Run an example"), "odw run examples/fan-out-reduce.js --args '{\"question\":\"Design a rate limiter\"}'", t("Four drafts in parallel, then a synthesis. Watch it draw here.")) +
+    step("03", t("Hand it to your agent"), "odw run <name> --wait", t("With the ODW skill installed, your coding agent writes and runs workflows for you.")) +
+    `</ol></section>`
+  );
+}
+
+/** A small line-drawing used by empty states: a DAG being plotted. */
+export function emptyArt(title: string, body: string, extra = ""): string {
+  return (
+    `<div class="empty">` +
+    `<svg class="art" viewBox="0 0 160 90" aria-hidden="true">` +
+    `<path d="M20 45 C55 45 55 18 90 18 M20 45 C55 45 55 72 90 72 M90 18 C115 18 115 45 140 45 M90 72 C115 72 115 45 140 45"/>` +
+    `<path class="lit" pathLength="1" d="M20 45 C55 45 55 18 90 18 C115 18 115 45 140 45"/>` +
+    `<circle class="dot" cx="20" cy="45" r="5"/><circle class="dot" cx="90" cy="18" r="4.5"/><circle class="dot" cx="90" cy="72" r="4.5"/><circle class="dot sig" cx="140" cy="45" r="5"/></svg>` +
+    `<h3>${esc(title)}</h3><p>${body}</p>${extra}</div>`
   );
 }

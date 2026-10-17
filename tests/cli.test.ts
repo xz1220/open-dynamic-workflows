@@ -36,9 +36,22 @@ test("known-but-unwired command exits 1 (not yet implemented)", async () => {
 });
 
 test("COMMANDS covers the documented verbs", () => {
-  for (const command of ["run", "status", "logs", "result", "list", "pause", "resume", "stop"]) {
+  for (const command of ["run", "status", "logs", "agents", "result", "list", "rerun", "pause", "resume", "stop"]) {
     assert.ok((COMMANDS as readonly string[]).includes(command));
   }
+});
+
+test("help documents odw agents, result --agent, and both meanings of resume", () => {
+  const help = helpText();
+  assert.match(help, /odw agents <run_id> \[--json\]/);
+  assert.match(help, /odw result <run_id> \[--agent <id\|label>\]/);
+  assert.match(help, /odw resume <run_id> \[--force\]/);
+  const start = help.indexOf("\nResume (odw resume <run_id>)");
+  assert.notEqual(start, -1, "a Resume section");
+  const section = help.slice(start);
+  assert.match(section, /paused, worker alive\s+continues it in place/);
+  assert.match(section, /done \/ failed \/ stopped,\s+starts a NEW run/);
+  assert.match(section, /still running\s+refused .*--force/);
 });
 
 test("CLI entrypoint detection follows npm bin symlinks", () => {
@@ -51,6 +64,61 @@ test("CLI entrypoint detection follows npm bin symlinks", () => {
     assert.equal(isCliEntrypoint(linkedPath, pathToFileURL(cliPath).href), true);
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("help groups flags by section: serve flags and -h/-v are not listed as run modes", () => {
+  const help = helpText();
+  const section = (title: string): string => {
+    const start = help.indexOf(`\n${title}`);
+    assert.notEqual(start, -1, `missing section '${title}'`);
+    const end = help.indexOf("\n\n", start + 1);
+    return help.slice(start, end === -1 ? undefined : end);
+  };
+  const runModes = section("Run modes");
+  assert.doesNotMatch(runModes, /--port|--host|--open|--help|--version/);
+  const serve = section("Serve options");
+  for (const flag of ["--port <n>", "--host <addr>", "--open"]) assert.ok(serve.includes(flag), flag);
+  assert.match(section("Options:"), /-h, --help[\s\S]*-v, --version/);
+});
+
+/** Run the CLI capturing stderr (node:test's own buffer writes pass through). */
+async function cliErr(argv: string[]): Promise<{ code: number; err: string }> {
+  const chunks: string[] = [];
+  const write = process.stderr.write.bind(process.stderr);
+  (process.stderr as { write: unknown }).write = (s: unknown) => {
+    if (Buffer.isBuffer(s)) return write(s);
+    chunks.push(String(s));
+    return true;
+  };
+  try {
+    return { code: await main(argv), err: chunks.join("") };
+  } finally {
+    process.stderr.write = write;
+  }
+}
+
+test("run, rerun and resume validate --timeout and the run mode in the same order, before any lookup", async () => {
+  // Same flags → same first complaint for every command, and rerun/resume
+  // complain before they look for the run (no 'no such run' for a usage mistake).
+  for (const cmd of ["run", "rerun", "resume"]) {
+    const target = cmd === "run" ? "wf.js" : "no-such-run";
+    let r = await cliErr([cmd, target, "--fg", "--detach", "--timeout", "abc"]);
+    assert.deepEqual(r, { code: 2, err: `odw ${cmd}: --timeout must be a non-negative number of seconds\n` });
+    r = await cliErr([cmd, target, "--fg", "--detach"]);
+    assert.deepEqual(r, { code: 2, err: `odw ${cmd}: --fg and --detach are mutually exclusive\n` });
+    r = await cliErr([cmd, target, "--detach", "--timeout", "5"]);
+    assert.deepEqual(r, {
+      code: 2,
+      err: `odw ${cmd}: --timeout needs --wait or --fg (a detached start returns immediately)\n`,
+    });
+  }
+});
+
+test("attach rejects a bad --timeout as a usage error before looking up the run", async () => {
+  for (const bad of ["-1", "abc", "Infinity"]) {
+    const r = await cliErr(["attach", "no-such-run", `--timeout=${bad}`]);
+    assert.deepEqual(r, { code: 2, err: "odw attach: --timeout must be a non-negative number of seconds\n" });
   }
 });
 

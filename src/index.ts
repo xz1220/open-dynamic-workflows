@@ -32,9 +32,12 @@ export type {
   Stage,
 } from "./primitives.js";
 export type { JsonSchema } from "./schema.js";
+export { ExecError, type ExecOptions, type ExecResult } from "./exec.js";
 
 // Loader / transform (the crux) & meta shape
 export type { WorkflowMeta, WorkflowPhaseMeta, LoadedWorkflow } from "./loader.js";
 
 // L5 runtime
 export { RunStore, startRun, waitFor, executeRun } from "./runtime/index.js";
+// What each completed agent() leaves in its run directory (agents/<agentId>.json)
+export type { AgentResultRecord } from "./journal.js";

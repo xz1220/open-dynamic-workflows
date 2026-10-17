@@ -26,7 +26,7 @@ export const meta = { name: "...", description: "...", phases: [...] }
 // 之后是 body：可用顶层 await，顶层 return 即整个 workflow 的返回值
 ```
 
-- `meta` 必须是**纯字面量**：不允许变量、函数调用、展开、运算、模板插值。这是 Claude Code 侧的硬约束（它不执行 body、静态提取 meta）；odw 的 loader 对此宽容（eval 该片段也能跑），但宽容是兼容层不是许可——写纯字面量才可移植。
+- `meta` 必须是**纯字面量**：不允许变量、函数调用、展开、运算、模板插值。这是 Claude Code 侧的硬约束（它不执行 body、静态提取 meta）；odw 的 loader 也只按纯字面量解析 meta、从不求值（列出工作流不会执行任何文件里的代码），违反即在加载期报错并指出位置。
 - meta 字段：`name`（非空字符串）、`description`（字符串）必填；`whenToUse`、`phases[{title, detail?, model?}]`、`model` 可选。
 - `phases` 的 title 与 body 中 `phase()` 调用按**字符串精确匹配**关联；对不上不报错，只是各成一组。
 - 除 `export const meta` 外，**禁止任何其它顶层 `export` / `import`**（原语是注入的，不是导入的）；违反在加载期即报错。

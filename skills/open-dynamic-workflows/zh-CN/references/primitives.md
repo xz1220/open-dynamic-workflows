@@ -42,6 +42,12 @@ agent(prompt, opts?) -> Promise<unknown>
 这些可恢复失败在 `parallel`/`pipeline` 内变成 `null`。停止请求、估算预算耗尽和 agent
 总量上限以及无效的 adapter/运行配置属于 fatal 错误，会继续向上抛出并终止运行。
 
+每次完成的调用都会在发出 `agent_finished` 事件之前保存到运行目录
+（`agents/<agentId>.json`），所以某条泳道卡住、运行被停止或 worker 死掉，已完成的
+结果都不会丢。运行仍在进行时就可以用 `odw result <run> --agent <id|label>` 读取，
+或用 `odw agents <run>` 列出全部（ODW 扩展）。`odw resume` 会重放已保存的调用——见
+[resume](#resumeodw-扩展)。
+
 ## parallel
 
 ```js
@@ -135,9 +141,75 @@ agent 计数、控制和估算预算。其 phase 带 `▸ <name>` 前缀，不�
 ## validate（ODW 扩展）
 
 `validate(source)` 加载候选工作流但不执行其 body，返回 `{ ok, meta?, errors, warnings }`。
-加载时会把 `meta` 当作 JavaScript 求值，因此这个 helper 也只能处理可信 source。
-warnings 提示 `Date.now()`、`Math.random()` 等部分可移植性风险，不阻止执行。这个 helper
+加载时 `meta` 按纯字面量解析、从不求值，body 只编译不执行。
+warnings 提示 `Date.now()`、`Math.random()`、调用仅 ODW 提供的 `exec()` 等部分可移植性风险，
+不阻止执行。这个 helper
 不属于共享的核心原语；脚本自己声明的 `validate` 绑定优先于注入的 helper。
+
+## resume（ODW 扩展）
+
+对一个已结束的运行——done、failed、stopped，或 worker 死掉后变成 stale——执行
+`odw resume <run>`，会用同样的脚本、args 和 adapter 启动一个新运行。新运行里，当一次
+`agent()` 调用的*恢复键*与旧运行保存的调用一致时，它会**重放**：立即返回旧运行保存的值，
+不调用 adapter、不占并发槽位、不计入派发数、不消耗预算。恢复键是 prompt 加上
+`schema`、`adapter`（调用里写的值，而不是运行的默认值）、`model`、`agentType`、
+`isolation` 和 `label` 的 sha256。`phase` 不在键里；resume 时的 `--adapter` 只改默认值，
+所以没指定 adapter 的调用仍会重放。同一个键的多次调用按调用顺序重放（第 n 次这样的调用
+拿到第 n 个保存的结果）；超出的调用，以及 prompt 或选项改变的调用，照常执行。嵌套的
+`workflow()` 调用同样会重放。
+
+重放的 agent 在各处都标记为 `cached`（`odw agents` 和看板里显示 ↺），并会再次保存，
+所以对 resume 出来的运行再 resume，也会重放它们。修好出错的步骤或加上新步骤后 resume：
+只有改动的部分会执行。对仍存活且已暂停的运行，`odw resume` 保持原意（原地继续）；仍在
+运行的运行会被拒绝，除非加 `--force`。
+
+## exec（ODW 扩展）
+
+```js
+exec(command, opts?) -> Promise<{ stdout, stderr, exitCode, signal, timedOut, truncated, durationMs }>
+```
+
+**不启动模型**直接运行一条命令——测试套件、构建、linter——再按真实结果分支。它不可移植：
+Claude Code 的 Workflow 工具没有 `exec` 全局（`validate()` 会对此给出 warning）；脚本
+自己声明的 `exec` 绑定优先于注入的版本。
+
+- **command** —— 字符串交给平台 shell 执行（POSIX 上是 `/bin/sh -c`，Windows 上是
+  `cmd.exe /d /s /c`）；数组是 argv，不经 shell 直接执行，任何元素都不会被解释。在
+  Windows 上，`npm` 这类批处理文件只能经 shell 运行：请用字符串形式。
+- **opts.cwd** —— 工作目录。默认是本次运行的源目录（agent 运行的地方）；相对路径按它
+  解析。
+- **opts.env** —— 额外的环境变量，叠加在 worker 自身环境之上。
+- **opts.input** —— 写入 stdin 的文本；不传则 stdin 立即关闭。
+- **opts.timeout** —— 秒，默认 `600`。超时后命令连同它启动的所有进程一起被杀，结果里
+  `timedOut: true`（同时 `exitCode: null`、`signal: "SIGKILL"`）。
+- **opts.maxOutputBytes** —— 每个输出流保留的字节数，默认 8 MiB。超出部分照常读取后
+  丢弃，绝不致命；`truncated` 标明发生过截断。
+- **opts.label** / **opts.phase** —— 进度展示，与 `agent` 相同。label 默认取命令的前
+  40 个字符。
+- **opts.check** —— 命令没有以 0 退出时抛出 `ExecError`。
+
+非零退出码是结果，不是错误。无法启动的程序像 shell 一样报告退出码 `127`（找不到）或
+`126`。设了 `check: true` 时，失败会抛出携带 `.result` 的 `ExecError`——与 agent 失败
+一样可恢复：可以 catch，也可以交给 `parallel`/`pipeline` 变成 `null`。误用（`cwd`
+不存在、argv 元素不是字符串）会在任何东西运行之前就抛错。
+
+命令不是 agent：它不占并发槽位，也不计入 agent 总量上限和预算。但运行暂停时它同样
+等待；停止（或任何致命错误）会立刻杀掉它及其整个进程组，并以该错误拒绝这次调用。每一步
+都记录为 `command_started`，随后是 `command_finished`（退出码 0）或 `command_failed`
+（其他一切情况），并在 `odw logs`、实时视图和看板图中显示为命令节点。
+
+```js
+phase('Test')
+let run = await exec('npm test', { timeout: 900 })
+for (let round = 1; run.exitCode !== 0 && round <= 3; round++) {
+  await agent(`Fix the failing tests.\n\n${run.stdout.slice(-4000)}\n${run.stderr.slice(-4000)}`, { phase: 'Fix' })
+  run = await exec('npm test', { timeout: 900, label: `npm test r${round}` })
+}
+await exec(['git', 'diff', '--stat'], { check: true }) // 退出码不为 0 时抛出 ExecError
+```
+
+命令以 worker 自身的权限运行——与脚本本身同等的信任；`exec` 不提供沙箱。ODW 仓库里的
+`examples/test-fix-loop.js` 就是这个循环的完整 workflow。
 
 ## schema
 
@@ -198,9 +270,9 @@ const result = await agent('Review this diff.', { schema: FINDINGS }) // -> vali
 全局对象、文件系统和 shell 的访问。只运行可信脚本；可移植性 warnings 不证明脚本安全，
 也不保证它能在另一种运行时执行。
 
-`odw resume` 让仍存活的暂停 worker 在派发边界继续，不会在崩溃后重放已完成的调用。
-`odw rerun` 使用记录的输入创建新运行，重新执行工作；当前没有用于崩溃恢复的 agent
-结果日志重放机制。
+resume 依赖同一条规则：调用按 prompt 和选项、按调用顺序匹配，所以用
+`Date.now()`/`Math.random()` 拼出的 prompt，或依赖完成时机的派发，都匹配不上，会重新
+执行。`odw rerun` 从头开始，不重放任何调用。
 
 ## 限制
 
@@ -208,3 +280,5 @@ const result = await agent('Review this diff.', { schema: FINDINGS }) // -> vali
   `concurrency`）。多出来的调用排队。
 - **agent 总量兜底** —— 单次运行派发量的硬上限（默认 1000）。超过就中止运行，这样一个有
   bug 的循环不会无限扇出。
+- `exec()` 命令不计入以上任何一项限制；每条命令由它自己的 `timeout` 和
+  `maxOutputBytes` 约束。
