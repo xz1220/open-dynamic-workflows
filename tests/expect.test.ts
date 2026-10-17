@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { execPath } from "node:process";
@@ -425,7 +425,8 @@ test("in place: an agent's commits count, and paths are relative to the agent's 
       opts: { expect: { changes: true, files: ["src/*.ts"] } },
     });
     assert.deepEqual(committed.result, { value: "committed" });
-    assert.equal(committed.calls[0]!.cwd, source);
+    // The agent's process.cwd() is the real path (macOS: /var → /private/var).
+    assert.equal(committed.calls[0]!.cwd, realpathSync(source));
 
     const outside = await runAgent({
       root: root2,
