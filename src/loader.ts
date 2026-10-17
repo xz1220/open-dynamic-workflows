@@ -402,8 +402,9 @@ function regexAllowed(src: string, prev: number): boolean {
   if (!/[a-z]/.test(c)) return false; // `)`, `]`, `}`, digits, identifiers: division
   let start = prev;
   while (start > 0 && /[\w$]/.test(src[start - 1]!)) start--;
-  // `obj.return / 2` is a property, not the keyword.
-  return src[start - 1] !== "." && REGEX_AFTER_WORD.has(src.slice(start, prev + 1));
+  // `obj.return / 2` is a property and `this.#in / 2` a private name — not keywords.
+  const before = src[start - 1];
+  return before !== "." && before !== "#" && REGEX_AFTER_WORD.has(src.slice(start, prev + 1));
 }
 
 /** Index of the line break ending a `//` comment that starts before `from`. */
@@ -480,6 +481,13 @@ class MetaLiteralParser {
 
   parseMeta(): Record<string, unknown> {
     this.skipTrivia();
+    // `meta = ({ … })` is the same literal; accept a few balanced parentheses.
+    let parens = 0;
+    while (this.src[this.pos] === "(" && parens < 8) {
+      parens++;
+      this.pos++;
+      this.skipTrivia();
+    }
     const start = this.pos;
     const c = this.src[start];
     if (c !== "{") {
@@ -494,6 +502,11 @@ class MetaLiteralParser {
       throw this.fail(`found ${this.describe(start)}`, start);
     }
     const value = this.parseObject();
+    for (; parens > 0; parens--) {
+      this.skipTrivia();
+      if (this.src[this.pos] !== ")") throw this.fail(`found ${this.describe(this.pos)}, expected ")"`, this.pos);
+      this.pos++;
+    }
     this.checkEnd();
     return value;
   }

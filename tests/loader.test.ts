@@ -298,3 +298,17 @@ test("readWorkflowMeta reads meta without compiling the body", () => {
   assert.equal(readWorkflowMeta(src, "listed.js").name, "listed");
   assert.equal(g.__odwEscaped, undefined);
 });
+
+test("a division after a private name is not read as a regex", () => {
+  const src = [
+    "export const meta = { name: 'priv', description: 'd' }",
+    "class Box { #in = 4; half() { return this.#in / 2 } }",
+    "return new Box().half() / 1",
+  ].join("\n");
+  assert.equal(loadWorkflowScript(src, "priv.js").meta.name, "priv");
+});
+
+test("meta wrapped in parentheses is the same literal", () => {
+  assert.equal(readWorkflowMeta("export const meta = ({ name: 'paren', description: 'd' })\n", "p.js").name, "paren");
+  assert.throws(() => readWorkflowMeta("export const meta = ({ name: 'x', description: 'd' }\n", "p.js"), /expected "\)"/);
+});
