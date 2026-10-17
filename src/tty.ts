@@ -30,18 +30,35 @@ export interface TermCaps {
 
 const ESC = "\x1b";
 
-/** Detect capabilities for a stream. Pure given its inputs; call once. */
+/**
+ * Detect capabilities for a stream. Pure given its inputs; call once.
+ *
+ * Color, in precedence order:
+ *   1. FORCE_COLOR decides when set: `0`/`false` force it off; any other value
+ *      (including empty) forces it on — even for a pipe or TERM=dumb. As in
+ *      Node itself, it outranks NO_COLOR; `FORCE_COLOR=3` also means 24-bit.
+ *   2. A non-empty NO_COLOR turns it off (https://no-color.org).
+ *   3. Otherwise only a TTY whose terminal is not `dumb` gets color. A missing
+ *      TERM means no color, except on Windows, whose consoles (conhost, Windows
+ *      Terminal) render ANSI but do not set TERM — the same rule as init's
+ *      prompt gate.
+ */
 export function detectCaps(
   stream: { isTTY?: boolean },
   env: Record<string, string | undefined>,
+  platform: NodeJS.Platform = process.platform,
 ): TermCaps {
-  const isTTY = stream.isTTY === true;
+  const forced = env.FORCE_COLOR;
+  const termOk = env.TERM === undefined ? platform === "win32" : env.TERM !== "dumb";
   const color =
-    isTTY && env.NO_COLOR === undefined && env.TERM !== "dumb" && env.TERM !== undefined;
-  const truecolor = color && /^(truecolor|24bit)$/i.test(env.COLORTERM ?? "");
+    forced !== undefined
+      ? forced !== "0" && forced.toLowerCase() !== "false"
+      : !env.NO_COLOR && stream.isTTY === true && termOk;
+  const truecolor =
+    color && (/^(truecolor|24bit)$/i.test(env.COLORTERM ?? "") || forced === "3");
   const locale = env.LC_ALL || env.LC_CTYPE || env.LANG || "";
   // macOS terminals are UTF-8 even when the locale vars are unset.
-  const unicode = /utf-?8/i.test(locale) || (locale === "" && process.platform === "darwin");
+  const unicode = /utf-?8/i.test(locale) || (locale === "" && platform === "darwin");
   return { color, truecolor, unicode };
 }
 

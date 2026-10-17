@@ -115,7 +115,8 @@ curl -fsSL https://raw.githubusercontent.com/xz1220/open-dynamic-workflows/main/
 `~/.claude/skills/`(没有就退到 `~/.codex/skills/`)。无需 Node。可用环境变量
 `ODW_BIN_DIR` 指定目录,或用 `ODW_VERSION=v0.4.0` 固定版本。`latest` 会先解析成一个
 确定的发布版本,二进制和 skill 都从该版本下载。所有下载与新二进制验证成功后才替换现有
-安装;替换失败会恢复旧文件。自定义部署可用 `ODW_REF` 显式指定 skill 的来源,默认与二进制一致。
+安装;替换失败会恢复旧文件。二进制必须与该版本发布的 `SHA256SUMS` 一致(v0.5.0 及更早的版本
+没有该文件,会带警告安装;更新的版本缺少它则中止,除非设置 `ODW_ALLOW_UNVERIFIED=1`)。自定义部署可用 `ODW_REF` 显式指定 skill 的来源,默认与二进制一致。
 
 ### 3. 手动安装
 
@@ -123,7 +124,8 @@ curl -fsSL https://raw.githubusercontent.com/xz1220/open-dynamic-workflows/main/
 [Releases](https://github.com/xz1220/open-dynamic-workflows/releases) 下对应 OS/arch 的资产,然后:
 
 ```bash
-# a) 二进制 —— 放到 PATH 上
+# a) 二进制 —— 先用该版本的 SHA256SUMS 校验,再放到 PATH 上
+grep ' odw-darwin-arm64.gz$' SHA256SUMS | shasum -a 256 -c   # 或: sha256sum -c
 gunzip odw-darwin-arm64.gz && chmod +x odw-darwin-arm64
 mv odw-darwin-arm64 ~/.local/bin/odw
 
@@ -207,7 +209,7 @@ odw run examples/fan-out-reduce.js --wait --args '{"question": "Design a rate li
 | `args` | workflow 的输入,原样注入。 |
 | `budget` | `{ total, spent(), remaining() }`——按 token 目标动态扩缩深度。 |
 | `workflow(ref, args?)` | 内联调用另一个 workflow(仅一层)。子 workflow 共享本次运行的并发上限、agent 计数与预算;其 phase 以独立泳道归组。 |
-| `validate(source)` | 解析并编译检查可信源码,不运行工作流正文;加载时会求值元数据。**ODW 扩展**(不属于 Claude Code 方言)。 |
+| `validate(source)` | 解析并编译检查可信源码,不运行工作流正文;元数据按纯字面量解析,不会被求值。**ODW 扩展**(不属于 Claude Code 方言)。 |
 
 下一步需要"全量结果一次到位"(去重、计票、综合)时用 **`parallel`**;多阶段处理默认用
 **`pipeline`**。归并要保持顺序无关——按"谁先跑完"分支会破坏可复现性。完整参考见
@@ -225,7 +227,7 @@ ODW 已实现下列原语能力。依赖宿主私有运行机制的脚本,迁移
 | 工作区隔离 | 从已保存的 HEAD 创建临时工作区,不含未保存修改,结束后清理。不会自动合并,`agent()` 返回回复而非 diff;需保留的交付物应放进回复或显式持久化。 |
 | 预算 | 按成功调用的最终回复字符数估算 token,不计输入、失败调用及重试中间回复。预算检查阻止后续派发;已经运行的调用可能使总量超过目标。 |
 | JSON Schema | 只校验[已列出的子集](skills/open-dynamic-workflows/zh-CN/references/primitives.md#schema)。`$ref`、`const`、`oneOf` 等约束不会生效;请明确声明对象/数组类型并使用受支持的约束。 |
-| 脚本可信性 | 只运行可信脚本。加载器会执行 JavaScript 求值,包括元数据;编译检查和兼容性警告都不提供沙箱隔离。 |
+| 脚本可信性 | 只运行可信脚本:运行工作流会把正文当作普通 JavaScript 执行。加载时元数据按纯字面量解析,不会被求值;编译检查和兼容性警告都不提供沙箱隔离。 |
 | 恢复 | `resume` 继续已暂停且仍存活的 worker。`rerun` 从头执行,崩溃后不会重放并复用已完成调用。 |
 
 原语名称一致不代表运行机制完全等价。`validate(source)` 是 ODW 扩展,迁移到未提供它的

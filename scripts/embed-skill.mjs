@@ -28,5 +28,6 @@ const banner =
   " * Source: skills/open-dynamic-workflows/SKILL.md · regenerate: node scripts/embed-skill.mjs\n" +
   " */\n\n";
 
-writeFileSync(out, `${banner}export const SKILL_MD = ${JSON.stringify(md)};\n`, "utf8");
+// `: string`, so the .d.ts declares a string rather than the whole doc as a literal type.
+writeFileSync(out, `${banner}export const SKILL_MD: string = ${JSON.stringify(md)};\n`, "utf8");
 console.error(`embedded ${md.length} bytes from skills/open-dynamic-workflows/SKILL.md → src/skill.generated.ts`);

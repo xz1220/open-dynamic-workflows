@@ -124,9 +124,12 @@ Downloads the prebuilt binary for your platform (gzipped, ~35 MB) to
 to `~/.codex/skills/`). No Node required. `latest` resolves to one release tag;
 the binary and skill both come from that tag. All downloads and the new binary
 are validated before replacing an existing installation, with rollback if the
-replacement fails. Override the destination with `ODW_BIN_DIR`, or pin a release
-with `ODW_VERSION=v0.4.0`. `ODW_REF` explicitly overrides the skill's source ref
-for custom deployments; the default keeps it matched to the binary.
+replacement fails. The binary must match the release's `SHA256SUMS` (releases up
+to v0.5.0 predate it and install with a warning; for newer ones a missing list
+aborts unless `ODW_ALLOW_UNVERIFIED=1`). Override the destination with
+`ODW_BIN_DIR`, or pin a release with `ODW_VERSION=v0.4.0`. `ODW_REF` explicitly
+overrides the skill's source ref for custom deployments; the default keeps it
+matched to the binary.
 
 ### 3. Manual
 
@@ -134,7 +137,8 @@ Prefer not to pipe `curl` into `sh`? Grab the asset for your OS/arch from
 [Releases](https://github.com/xz1220/open-dynamic-workflows/releases), then:
 
 ```bash
-# a) the binary — onto your PATH
+# a) the binary — check it against the release's SHA256SUMS, then onto your PATH
+grep ' odw-darwin-arm64.gz$' SHA256SUMS | shasum -a 256 -c   # or: sha256sum -c
 gunzip odw-darwin-arm64.gz && chmod +x odw-darwin-arm64
 mv odw-darwin-arm64 ~/.local/bin/odw
 
@@ -225,7 +229,7 @@ control flow (loops, `if`, dedup) — no imports:
 | `args` | The workflow's input, injected verbatim. |
 | `budget` | `{ total, spent(), remaining() }` — scale depth to a token target. |
 | `workflow(ref, args?)` | Run another workflow inline (one level deep). The child shares this run's concurrency cap, agent counter, and budget; its phases group as their own DAG lanes. |
-| `validate(source)` | Parse and compile-check trusted source without running its workflow body. Metadata is evaluated during loading. **ODW extension** (not in Claude Code's dialect). |
+| `validate(source)` | Parse and compile-check trusted source without running its workflow body. Metadata is parsed as a pure literal, never evaluated. **ODW extension** (not in Claude Code's dialect). |
 
 Use **`parallel`** when the next step needs the whole batch at once (dedup,
 tally, synthesis); **`pipeline`** for multi-stage work (the default). Keep
@@ -245,7 +249,7 @@ private runtime behavior need the following checks before migration:
 | Worktree isolation | Starts from committed HEAD, excludes uncommitted edits, and cleans up afterward. Changes are not merged and `agent()` returns the reply, not a diff; put required deliverables in that reply or persist them explicitly. |
 | Budget | Estimates successful final reply tokens as `ceil(chars / 4)`. Inputs, failed calls and retry replies are not included. The guard stops later dispatches; already-running calls can exceed the target. |
 | JSON Schema | Supports the [documented subset](skills/open-dynamic-workflows/references/primitives.md#schema). Unknown constraints such as `$ref`, `const` and `oneOf` are not enforced. Use explicit object/array types and supported constraints. |
-| Script trust | Run trusted scripts only. The loader uses JavaScript evaluation, including metadata; validation and compatibility warnings are not a sandbox. |
+| Script trust | Run trusted scripts only: a run executes the workflow body as ordinary JavaScript. Loading parses metadata as a pure literal without evaluating it; validation and compatibility warnings are not a sandbox. |
 | Recovery | `resume` continues a paused live worker. `rerun` starts over; completed calls are not journaled and replayed after a crash. |
 
 The supported primitive names do not guarantee full runtime parity.

@@ -135,7 +135,7 @@ agent 计数、控制和估算预算。其 phase 带 `▸ <name>` 前缀，不�
 ## validate（ODW 扩展）
 
 `validate(source)` 加载候选工作流但不执行其 body，返回 `{ ok, meta?, errors, warnings }`。
-加载时会把 `meta` 当作 JavaScript 求值，因此这个 helper 也只能处理可信 source。
+加载时 `meta` 按纯字面量解析、从不求值，body 只编译不执行。
 warnings 提示 `Date.now()`、`Math.random()` 等部分可移植性风险，不阻止执行。这个 helper
 不属于共享的核心原语；脚本自己声明的 `validate` 绑定优先于注入的 helper。
 

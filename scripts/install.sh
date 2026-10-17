@@ -8,7 +8,14 @@
 #   curl -fsSL https://raw.githubusercontent.com/xz1220/open-dynamic-workflows/main/scripts/install.sh | sh
 #
 # Env overrides: ODW_VERSION (default: latest), ODW_BIN_DIR (default: ~/.local/bin),
-#                ODW_REF (skill source ref, default: the binary's release tag).
+#                ODW_REF (skill source ref, default: the binary's release tag),
+#                ODW_ALLOW_UNVERIFIED=1 (see below).
+#
+# Integrity: the binary is checked against the release's SHA256SUMS asset
+# before anything is installed. A checksum mismatch, or a SHA256SUMS that does
+# not list the binary, always aborts. Releases up to v0.5.0 predate SHA256SUMS
+# and install with a warning. For any newer release, a missing SHA256SUMS (or
+# no sha256sum/shasum on this machine) aborts unless ODW_ALLOW_UNVERIFIED=1.
 set -eu
 
 REPO="xz1220/open-dynamic-workflows"
@@ -108,9 +115,53 @@ trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
+# Releases up to v0.5.0 were published before SHA256SUMS existed.
+predates_checksums() {
+  core="${VERSION#v}"
+  core="${core%%[-+]*}"
+  case "$core" in
+    [0-9]*.[0-9]*.[0-9]*) ;;
+    *) return 1 ;;
+  esac
+  major="${core%%.*}"; rest="${core#*.}"; minor="${rest%%.*}"; patch="${rest#*.}"
+  case "$major$minor$patch" in *[!0-9]*) return 1 ;; esac
+  [ "$major" -eq 0 ] && { [ "$minor" -lt 5 ] || { [ "$minor" -eq 5 ] && [ "$patch" -eq 0 ]; }; }
+}
+# Verification is impossible here: abort, unless explicitly allowed.
+unverified() {
+  if [ "${ODW_ALLOW_UNVERIFIED:-}" = 1 ]; then
+    echo "  warning: $1; installing an UNVERIFIED binary (ODW_ALLOW_UNVERIFIED=1)" >&2
+  else
+    echo "$1; refusing to install an unverified binary (set ODW_ALLOW_UNVERIFIED=1 to override)" >&2
+    exit 1
+  fi
+}
+
 # --- stage the binary -------------------------------------------------------
 echo "→ downloading $ASSET ($VERSION)"
 curl -fSL "$BASE/$ASSET" -o "$TMP/odw.gz"
+# Only a missing SHA256SUMS counts as "no checksums"; transport failures fail.
+if SUMS_HTTP="$(curl -fSL -w '%{http_code}' "$BASE/SHA256SUMS" -o "$TMP/SHA256SUMS")"; then
+  EXPECTED="$(awk -v f="$ASSET" '$2 == f || $2 == "*" f { print tolower($1); exit }' "$TMP/SHA256SUMS")"
+  [ -n "$EXPECTED" ] || { echo "SHA256SUMS of $VERSION does not list $ASSET" >&2; exit 1; }
+  ACTUAL="$({ sha256sum "$TMP/odw.gz" 2>/dev/null || shasum -a 256 "$TMP/odw.gz" 2>/dev/null; } | awk '{ print tolower($1) }')"
+  if [ "${#ACTUAL}" -ne 64 ]; then
+    unverified "cannot compute SHA-256 here (no sha256sum or shasum)"
+  elif [ "$ACTUAL" != "$EXPECTED" ]; then
+    echo "Checksum mismatch for $ASSET ($VERSION): SHA256SUMS lists $EXPECTED, downloaded $ACTUAL" >&2
+    exit 1
+  else
+    echo "→ verified SHA-256 of $ASSET against SHA256SUMS"
+  fi
+elif [ "$SUMS_HTTP" = 404 ]; then
+  if predates_checksums; then
+    echo "  warning: $VERSION predates published checksums (SHA256SUMS); installing unverified" >&2
+  else
+    unverified "release $VERSION publishes no SHA256SUMS"
+  fi
+else
+  echo "Could not download SHA256SUMS ($VERSION)" >&2; exit 1
+fi
 gzip -dc "$TMP/odw.gz" > "$TMP/odw"
 chmod +x "$TMP/odw"
 
