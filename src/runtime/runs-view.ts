@@ -114,6 +114,12 @@ export interface AgentView {
    * failed last). Absent when it never left the adapter it started on.
    */
   fellBackFrom?: string[];
+  /**
+   * Agents only (ODW extension: quotaWait): while a running agent waits for
+   * `adapter`'s spent quota to reset — holding no slot — that adapter and when
+   * its CLI said the quota resets (epoch seconds). Absent otherwise.
+   */
+  quotaWait?: { adapter: string; resumeAt?: number };
 }
 
 export type RunDisplayState =
@@ -292,12 +298,20 @@ export function applyAgentEvent(
     return applyCommandEvent(agents, ev);
   }
   if (ev.type === "log") {
+    if (typeof ev.agentId !== "number" || typeof ev.adapter !== "string") return {};
+    const target = agents.find((a) => a.state === "running" && a.agentId === ev.agentId);
+    if (!target) return {};
+    // A call out of quota waits for a reset (ODW extension: quotaWait) until
+    // its log line says it goes on.
+    if (ev.quotaWait === "start") {
+      target.quotaWait = { adapter: ev.adapter, ...(typeof ev.resumeAt === "number" ? { resumeAt: ev.resumeAt } : {}) };
+    } else if (ev.quotaWait === "end") {
+      delete target.quotaWait;
+    }
     // A fallback (ODW extension) moves a running agent to another adapter:
     // its log line names the adapter and every one the agent has left.
     const from = adapterNames(ev.fellBackFrom);
-    if (!from || typeof ev.agentId !== "number" || typeof ev.adapter !== "string") return {};
-    const target = agents.find((a) => a.state === "running" && a.agentId === ev.agentId);
-    if (target) {
+    if (from) {
       target.adapter = ev.adapter;
       target.fellBackFrom = from;
     }
@@ -342,6 +356,7 @@ export function applyAgentEvent(
       );
     }
     if (!target) return {}; // a stray finish with no matching start — ignore
+    delete target.quotaWait;
     target.finishedAt = typeof ev.ts === "number" ? ev.ts : null;
     if (target.startedAt !== null && target.finishedAt !== null) {
       target.durationMs = Math.max(0, Math.round((target.finishedAt - target.startedAt) * 1000));
@@ -464,6 +479,7 @@ function copyAgents(agents: AgentView[], stale: boolean): AgentView[] {
     const copy: AgentView = stale && a.state === "running" ? { ...a, state: "stale" } : { ...a };
     if (a.usage) copy.usage = { ...a.usage };
     if (a.fellBackFrom) copy.fellBackFrom = [...a.fellBackFrom];
+    if (a.quotaWait) copy.quotaWait = { ...a.quotaWait };
     if (a.misses) copy.misses = [...a.misses];
     if (a.denied) copy.denied = [...a.denied];
     return copy;

@@ -116,6 +116,8 @@ export interface AgentView {
    * left the adapter it started on.
    */
   fellBackFrom?: string[] | null;
+  /** ODW extension (quotaWait): a running agent waiting for `adapter`'s spent quota to reset, holding no slot; when it resets. */
+  quotaWait?: { adapter: string; resumeAt?: number };
   label: string;
   phase: string | null;
   state: AgentState;

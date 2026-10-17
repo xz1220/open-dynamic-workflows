@@ -635,7 +635,7 @@ export function createPrimitives(
             // quotaWait) holding no slot — and says so — then takes a slot
             // again on the adapter it starts over on; a line that names the
             // adapters it left moves it, for every reader of the run.
-            onQuotaWait: ({ adapter: name }) => {
+            onQuotaWait: ({ adapter: name, resumeAt }) => {
               ctx.emit(
                 event(LOG, {
                   message: `${display}:${agentId} waits for ${name}'s quota to reset (quotaWait)`,
@@ -644,6 +644,9 @@ export function createPrimitives(
                   phase: activePhase,
                   adapter: name,
                   reason: "quota",
+                  // Structured for the run's views: this agent waits, holding no slot, until then.
+                  quotaWait: "start",
+                  resumeAt,
                 }),
               );
               slot.release();
@@ -658,6 +661,7 @@ export function createPrimitives(
                   label: display,
                   phase: activePhase,
                   adapter: name,
+                  quotaWait: "end",
                   ...(left.length > 0 ? { fellBackFrom: [...left] } : {}),
                 }),
               );

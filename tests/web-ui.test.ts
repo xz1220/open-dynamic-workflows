@@ -725,3 +725,27 @@ test("spend: the tokens and cost unfold a receipt by phase, adapter and agent", 
   assert.match(html, /data-spend-ai="1"[\s\S]*data-spend-ai="0"/, "top spenders biggest first");
   store.focusRun(null);
 });
+
+test("an agent waiting out a spent quota is drawn waiting — amber node, until when, and why in its drawer", () => {
+  const view: JobViewState = {
+    cpNote: "",
+    tab: "graph",
+    selectedAi: 0,
+    reviewAi: null,
+    zoom: 1,
+    logQuery: "",
+    logTypes: new Set(["agent"]),
+    logLimit: 600,
+    follow: true,
+    motion: false,
+  };
+  store.focusRun("20260101-000000-aaaaaa");
+  store.run = detail([agent("scan", "Plan", "running", { quotaWait: { adapter: "codex", resumeAt: NOW + 3600 } })], { state: "running" });
+  store.runEvents = [];
+  const html = renderJob(view, NOW);
+  assert.match(html, /class="node waiting qwait/);
+  assert.match(html, /waits for codex quota · /);
+  assert.match(html, /<span class="pill s-waiting">.*?quota wait/s);
+  assert.match(html, /Waiting for codex&#39;s quota to reset at .* \(in 1h00m\)|Waiting for codex's quota to reset at .* \(in 1h00m\)/);
+  store.focusRun(null);
+});

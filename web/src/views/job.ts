@@ -4,7 +4,7 @@ import { deltaHtml, diffBar, filePath, pathHtml, statusMark } from "../component
 import { glyph, pill } from "../components/glyph";
 import { renderJson } from "../components/json";
 import { renderTimeline } from "../components/timeline";
-import { reasonLabel, renderDag } from "../dag";
+import { reasonLabel, renderDag, shownState } from "../dag";
 import { icons } from "../icons";
 import { getLang, t, tn } from "../i18n";
 import { store } from "../store";
@@ -220,8 +220,20 @@ function drawer(run: RunDetail, ai: number, nowSec: number): string {
   if (a.kind === "checkpoint") return checkpointDrawer(run, a, ai, nowSec);
   const dur =
     a.state === "running" && a.startedAt != null ? fmtDurSec(nowSec - a.startedAt) : fmtDurMs(a.durationMs);
-  const status =
-    a.state === "failed"
+  const wait = a.state === "running" ? a.quotaWait : undefined;
+  const status = wait
+    ? `<div class="drawer-sec">${t("Status")}</div><div class="outbox wait">` +
+      esc(
+        wait.resumeAt != null
+          ? t("Waiting for {adapter}'s quota to reset at {t} (in {d}). It holds no slot: agents on other adapters keep running.", {
+              adapter: wait.adapter,
+              t: fmtHourMin(wait.resumeAt),
+              d: fmtDurSec(Math.max(0, wait.resumeAt - nowSec)),
+            })
+          : t("Waiting for {adapter}'s quota to reset. It holds no slot: agents on other adapters keep running.", { adapter: wait.adapter }),
+      ) +
+      `</div>`
+    : a.state === "failed"
       ? `<div class="drawer-sec">${t("Error")}</div><div class="outbox err">${markRedactions(esc(a.error ?? t("(no message)")))}</div>`
       : a.state === "stale"
         ? `<div class="drawer-sec">${t("Status")}</div><div class="outbox">${run.provider === "claude" ? t("no recent signal") : t("worker lost contact")}</div>`
@@ -246,7 +258,7 @@ function drawer(run: RunDetail, ai: number, nowSec: number): string {
     .join("");
   return (
     `<aside class="drawer" data-key="drawer-${ai}">` +
-    `<div class="drawer-head"><div class="row">${pill(a.state)}<span class="tag">${esc(a.kind === "command" ? t("command") : (a.adapter ?? "—"))}</span>` +
+    `<div class="drawer-head"><div class="row">${pill(shownState(a), wait ? t("quota wait") : undefined)}<span class="tag">${esc(a.kind === "command" ? t("command") : (a.adapter ?? "—"))}</span>` +
     `<button class="iconbtn" data-close="1" aria-label="${esc(t("Close"))}">${icons.close}</button></div>` +
     `<h4>${esc(a.label)}</h4></div>` +
     `<div class="drawer-body">` +

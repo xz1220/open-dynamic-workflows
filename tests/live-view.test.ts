@@ -269,6 +269,36 @@ test("attachRun (live): scrollback narrates phases/agents and pairing uses agent
   assert.deepEqual(JSON.parse(out.text()), { answer: 42 });
 });
 
+test("attachRun (live): an agent waiting out a spent quota says until when instead of spinning", async () => {
+  const store = freshStore();
+  const runId = makeRun(store, "qw-demo");
+  const term = new FakeTerm(120);
+  const out = new Collector();
+  emit(store, runId, { ts: 100, type: "run_started", runId });
+  emit(store, runId, { ts: 100, type: "agent_started", agentId: 1, label: "scan", adapter: "codex" });
+  emit(store, runId, {
+    ts: 101,
+    type: "log",
+    message: "scan:1 waits for codex's quota to reset (quotaWait)",
+    agentId: 1,
+    label: "scan",
+    adapter: "codex",
+    reason: "quota",
+    quotaWait: "start",
+    resumeAt: 4_000_000_000,
+  });
+  const done = attachRun(store, runId, { out, err: term, live: true, pollMs: 10, signals: false, env: ENV });
+  await sleep(60);
+  assert.match(term.text(), /scan\s+.*waits for codex quota until /);
+  emit(store, runId, { ts: 102, type: "log", message: "scan:1 goes on after the quota wait, on codex", agentId: 1, label: "scan", adapter: "codex", quotaWait: "end" });
+  await sleep(60);
+  assert.doesNotMatch(term.text(), /waits for codex quota until/);
+  emit(store, runId, { ts: 103, type: "agent_finished", agentId: 1, label: "scan", adapter: "codex", attempts: 1 });
+  emit(store, runId, { ts: 103, type: "run_finished", runId });
+  store.updateStatus(runId, { state: "done" });
+  assert.equal(await done, 0);
+});
+
 // --- live attach: failure -------------------------------------------------------------
 
 test("attachRun (live): a failed run paints the error and exits 1", async () => {

@@ -630,6 +630,14 @@ const ZH: Record<string, string> = {
   "Top spenders": "花费最多的 agent",
   "outside phases": "阶段之外",
   "not started": "未开始",
+  // An agent waiting out a spent quota (quotaWait).
+  "waits for {adapter} quota · {t}": "等待 {adapter} 额度 · {t}",
+  "waits for {adapter} quota": "等待 {adapter} 额度",
+  "quota wait": "等待额度",
+  "Waiting for {adapter}'s quota to reset at {t} (in {d}). It holds no slot: agents on other adapters keep running.":
+    "等待 {adapter} 的额度在 {t} 重置(还有 {d})。它不占槽位:其他适配器上的 agent 照常运行。",
+  "Waiting for {adapter}'s quota to reset. It holds no slot: agents on other adapters keep running.":
+    "等待 {adapter} 的额度重置。它不占槽位:其他适配器上的 agent 照常运行。",
   "partly estimated": "部分为估算",
   "Running agents add theirs when they finish.": "运行中的 agent 结束后才计入。",
   "Not every agent reported dollars, so shares are of tokens.": "并非每个 agent 都报告了金额,所以占比按 token 计算。",

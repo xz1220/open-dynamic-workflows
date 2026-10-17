@@ -331,6 +331,13 @@
   }
 }
 
+/* a drawer's status for an agent waiting out a spent quota */
+.outbox.wait {
+  border-color: var(--amber-line);
+  background: var(--amber-soft);
+  color: var(--amber-ink);
+}
+
 /* ---- spend: the run's tokens and dollars, and where they went ---- */
 .spend-btn {
   display: flex;

@@ -1017,6 +1017,15 @@
 .node.cp.waiting .sub {
   color: var(--amber-ink);
 }
+/* an agent waiting out a spent quota (quotaWait): amber and breathing, holding no slot */
+.node.qwait {
+  border-color: var(--amber-line);
+  background: linear-gradient(var(--amber-soft), var(--amber-soft)), var(--card);
+  animation: cp-breathe 2.4s ease-in-out infinite;
+}
+.node.qwait .sub {
+  color: var(--amber-ink);
+}
 .node.cp.stopped .lbl {
   text-decoration: line-through;
   text-decoration-color: var(--line-2);

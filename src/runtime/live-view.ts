@@ -41,7 +41,7 @@
 import { formatSeconds } from "../adapters/failures.js";
 import { addUsage, type Usage } from "../adapters/usage.js";
 import type { WorkflowEvent } from "../events.js";
-import { pausedForOf, pausedText } from "../quota-wait.js";
+import { clockTime, pausedForOf, pausedText } from "../quota-wait.js";
 import {
   cursor,
   detectCaps,
@@ -490,12 +490,18 @@ class LiveView {
     const block: string[] = [""];
     for (const a of running) {
       const label = padEndWidth(sanitizeText(nodeLabel(a), 60), this.labelW);
+      // One waiting out a spent quota (quotaWait) is not working: it says until when.
+      const wait = a.quotaWait;
       const meta = metaJoin(g, [
         a.phase !== null && a.phase !== this.currentPhase ? sanitizeText(a.phase, 40) : null,
         this.adapterText(a),
-        a.startedAt !== null ? fmtDuration((nowSec - a.startedAt) * 1000) : null,
+        wait
+          ? `waits for ${sanitizeText(wait.adapter, 40)} quota${wait.resumeAt !== undefined ? ` until ${clockTime(wait.resumeAt, this.now())}` : ""}`
+          : a.startedAt !== null
+            ? fmtDuration((nowSec - a.startedAt) * 1000)
+            : null,
       ]);
-      block.push(`    ${p.run(spin)} ${label}  ${p.dim(meta)}`);
+      block.push(`    ${wait ? p.run(g.wait) : p.run(spin)} ${label}  ${p.dim(meta)}`);
     }
     // Every question still open, with the command that answers it.
     for (const [id, title] of this.asked) {
