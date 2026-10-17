@@ -30,7 +30,7 @@ import {
 } from "./adapters/types.js";
 import { AdapterExecutionError, RunStopped, SchemaValidationError } from "./errors.js";
 import { LiteralRouter, type InvocationPlan, type OptionRouter } from "./router.js";
-import { describeSchema, extractJson, validate, type JsonSchema } from "./schema.js";
+import { describeSchema, pickJson, type JsonSchema } from "./schema.js";
 import { withWorkspace } from "./workspace.js";
 
 export const INDEPENDENCE_PREAMBLE =
@@ -194,14 +194,11 @@ export class Bridge {
         return { value: text, text, adapter: adapter.name, attempts: attempt, notes: plan.notes };
       }
 
-      // The schema steers extraction to the candidate that satisfies it.
-      const value = extractJson(text, request.schema);
-      // `undefined` is extractJson's only "nothing parsed" sentinel; a parsed
-      // JSON `null` is a real value — let validate() decide if the schema allows it.
-      problems =
-        value === undefined
-          ? ["no JSON value found in the reply"]
-          : validate(value, request.schema);
+      // The schema steers extraction to the one candidate that satisfies it;
+      // two different valid values are ambiguous and get retried, not guessed.
+      const pick = pickJson(text, request.schema);
+      const value = pick.value;
+      problems = pick.problems;
       if (problems.length === 0) {
         return { value, text, adapter: adapter.name, attempts: attempt, notes: plan.notes };
       }

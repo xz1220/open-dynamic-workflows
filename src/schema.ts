@@ -50,41 +50,83 @@ export function describeSchema(schema: JsonSchema): string {
 
 // --- extraction --------------------------------------------------------------
 
-/**
- * Best-effort recovery of a JSON value from a free-text agent reply.
- *
- * Candidates are tried from the most to the least deliberate: the whole reply,
- * then fenced blocks (```json-tagged before untagged, later before earlier —
- * an example tends to precede the answer), then every top-level balanced
- * `{...}` / `[...]` span (later first). With a `schema`, the first candidate
- * that parses AND validates wins, so an inline `{config}` mention or an
- * example block cannot mask the real answer; when none validates, the first
- * that parses is returned so the caller can report what is wrong with it.
- * Without a schema the first candidate that parses wins. `undefined` means
- * nothing parsed at all.
- */
-export function extractJson(text: string, schema?: JsonSchema): unknown {
-  let fallback: { value: unknown } | undefined;
-  for (const candidate of candidates(text)) {
-    let value: unknown;
-    try {
-      value = JSON.parse(candidate);
-    } catch {
-      continue;
-    }
-    if (!schema || validate(value, schema).length === 0) return value;
-    fallback ??= { value };
-  }
-  return fallback?.value;
+/** What {@link pickJson} found in a reply. */
+export interface JsonPick {
+  /** The chosen value; `undefined` when nothing usable (see `problems`). */
+  value: unknown;
+  /** Empty when `value` satisfies the schema; otherwise what to tell the agent. */
+  problems: string[];
 }
 
-function* candidates(text: string): Generator<string> {
+/**
+ * Choose the JSON value a free-text reply means, against a schema — without
+ * guessing. Candidates come in tiers, from the most to the least deliberate:
+ * the whole reply; ```json-tagged fenced blocks; other fenced blocks; every
+ * top-level balanced `{...}` / `[...]` span. The first tier holding any value
+ * that validates decides: exactly one distinct valid value is the answer, but
+ * two or more (an answer next to an example, a draft next to the final) are
+ * ambiguous — the caller asks for exactly one rather than silently keeping the
+ * wrong one. When nothing validates, the parsed candidate with the fewest
+ * problems is reported, so the retry feedback describes the closest attempt.
+ */
+export function pickJson(text: string, schema: JsonSchema): JsonPick {
+  let closest: { value: unknown; problems: string[] } | undefined;
+  for (const tier of candidateTiers(text)) {
+    const valid = new Map<string, unknown>();
+    for (const candidate of tier) {
+      let value: unknown;
+      try {
+        value = JSON.parse(candidate);
+      } catch {
+        continue;
+      }
+      const problems = validate(value, schema);
+      if (problems.length === 0) valid.set(JSON.stringify(value), value);
+      else if (!closest || problems.length < closest.problems.length) closest = { value, problems };
+    }
+    if (valid.size === 1) return { value: [...valid.values()][0], problems: [] };
+    if (valid.size > 1) {
+      return {
+        value: undefined,
+        problems: [
+          `the reply contains ${valid.size} different JSON values that each match the schema — reply with exactly one`,
+        ],
+      };
+    }
+  }
+  return closest ?? { value: undefined, problems: ["no JSON value found in the reply"] };
+}
+
+/**
+ * Best-effort recovery of a JSON value from a free-text agent reply. With a
+ * `schema` this is {@link pickJson}'s choice (or its closest candidate when
+ * none validates); without one, the most deliberate candidate that parses.
+ * `undefined` means nothing parsed at all (or the valid values were ambiguous).
+ */
+export function extractJson(text: string, schema?: JsonSchema): unknown {
+  if (schema) return pickJson(text, schema).value;
+  for (const tier of candidateTiers(text)) {
+    for (const candidate of tier) {
+      try {
+        return JSON.parse(candidate);
+      } catch {
+        /* next */
+      }
+    }
+  }
+  return undefined;
+}
+
+/** Candidate texts grouped from the most to the least deliberate. */
+function candidateTiers(text: string): string[][] {
   const stripped = text.trim();
-  yield stripped;
-  const fences = [...fencedBlocks(stripped)].reverse();
-  for (const fence of fences) if (fence.json) yield fence.body;
-  for (const fence of fences) if (!fence.json) yield fence.body;
-  yield* [...balancedSpans(stripped)].reverse();
+  const fences = [...fencedBlocks(stripped)];
+  return [
+    [stripped],
+    fences.filter((f) => f.json).map((f) => f.body),
+    fences.filter((f) => !f.json).map((f) => f.body),
+    [...balancedSpans(stripped)],
+  ];
 }
 
 /** Each ``` fenced block in order, flagged when its info string names JSON. */

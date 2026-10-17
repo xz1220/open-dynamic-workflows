@@ -7,6 +7,7 @@ import {
   describeSchema,
   enumOf,
   extractJson,
+  pickJson,
   number,
   obj,
   string,
@@ -51,9 +52,31 @@ test("extractJson: the first candidate that satisfies the schema wins, whatever 
   // The later span parses but is not the answer; the earlier one validates.
   const reply = 'Answer: {"ok": false}. (Earlier I had sent {"draft": 1}.)';
   assert.deepEqual(extractJson(reply, OK_SCHEMA), { ok: false });
-  // Among blocks that all validate, the later one (the answer, not the example) wins.
+});
+
+test("pickJson: two different valid values are ambiguous — retried, never guessed", () => {
+  // An example next to the answer: neither position is a safe tiebreak.
   const twoBlocks = 'Example:\n```json\n{"ok": false}\n```\nMine:\n```json\n{"ok": true}\n```';
-  assert.deepEqual(extractJson(twoBlocks, OK_SCHEMA), { ok: true });
+  const pick = pickJson(twoBlocks, OK_SCHEMA);
+  assert.equal(pick.value, undefined);
+  assert.match(pick.problems[0]!, /2 different JSON values .* exactly one/);
+  // The review's case: real findings first, then an inline illustration.
+  const findings = { type: "object", required: ["issues"], properties: { issues: { type: "array" } } };
+  const reply = 'Result: {"issues": ["race in retry"]} (a clean run would be {"issues": []})';
+  assert.equal(pickJson(reply, findings).value, undefined);
+  // The same value twice (a fence and its bare span) is not ambiguous.
+  const same = 'Here:\n```json\n{"ok": true}\n```';
+  assert.deepEqual(pickJson(same, OK_SCHEMA), { value: { ok: true }, problems: [] });
+  // A json-tagged fence outranks bare spans in the prose around it.
+  const tiered = 'Note {"ok": false} was wrong.\n```json\n{"ok": true}\n```';
+  assert.deepEqual(pickJson(tiered, OK_SCHEMA).value, { ok: true });
+});
+
+test("pickJson: with nothing valid, the closest candidate's problems are reported", () => {
+  const schema = { type: "object", required: ["answer", "confidence"], properties: { answer: { type: "string" }, confidence: { type: "number" } } };
+  const pick = pickJson('{"answer": "42"} — see [1]', schema);
+  assert.deepEqual(pick.value, { answer: "42" });
+  assert.ok(pick.problems.some((p) => /confidence/.test(p)), pick.problems.join("; "));
 });
 
 test("extractJson: with nothing valid, the best parsed candidate comes back for error reporting", () => {
