@@ -11,6 +11,7 @@
 import { resolveConcurrency } from "./adapters/config.js";
 import type { Config } from "./adapters/types.js";
 import { Bridge } from "./bridge.js";
+import type { WaitingCheckpoint } from "./checkpoint.js";
 import { NullControl, type Control } from "./control.js";
 import { BudgetExhausted } from "./errors.js";
 import { NullSink, type EventSink, type WorkflowEvent } from "./events.js";
@@ -48,6 +49,8 @@ export interface RunContext {
    * sequence, so agent ids keep numbering agent dispatches only.
    */
   commandSeq: { value: number };
+  /** The same, for checkpoint() calls (the `checkpointId` event field; ODW extension). */
+  checkpointSeq: { value: number };
   currentPhase: string | null;
   /**
    * Save a completed agent's record (the worker writes the run directory's
@@ -61,6 +64,13 @@ export interface RunContext {
    * replays its calls too.
    */
   replay?: ReplayJournal;
+  /**
+   * checkpoint() (ODW extension): told when a checkpoint starts waiting for a
+   * person (`waiting` true) and when it stops, so the worker can show it in
+   * status.json and fire the "waiting" hooks. Absent for in-process runs. It
+   * may throw: the checkpoint goes on, and the failure is logged.
+   */
+  onCheckpoint?: (cp: WaitingCheckpoint, waiting: boolean) => void;
   emit(ev: WorkflowEvent): void;
 }
 
@@ -78,6 +88,7 @@ export interface BuildContextOptions {
   budgetTotal?: number | null;
   saveAgentResult?: (rec: AgentResultRecord) => void;
   replay?: ReplayJournal;
+  onCheckpoint?: (cp: WaitingCheckpoint, waiting: boolean) => void;
 }
 
 /** Wire a full run context from a config and the run's surroundings. */
@@ -116,9 +127,11 @@ export function buildContext(config: Config, options: BuildContextOptions = {}):
     usage,
     seq: { value: 0 },
     commandSeq: { value: 0 },
+    checkpointSeq: { value: 0 },
     currentPhase: null,
     saveAgentResult: options.saveAgentResult,
     replay: options.replay,
+    onCheckpoint: options.onCheckpoint,
     emit(ev: WorkflowEvent): void {
       sink.emit(ev);
     },

@@ -67,14 +67,14 @@ const CLAUDE_PARAM_NAMES = [
   "budget",
   "workflow",
 ] as const;
-// `validate` and `exec` are ODW-only extensions. Injecting one as an extra
-// formal parameter would make `const validate = …` in a body a
+// `validate`, `exec` and `checkpoint` are ODW-only extensions. Injecting one as
+// an extra formal parameter would make `const validate = …` in a body a
 // duplicate-declaration compile error — and Claude Code does NOT reserve these
 // names, so a perfectly valid Claude-authored script would break only on odw.
 // So each is injected only when the body does not declare its own binding of
 // that name (the script's own binding then wins, exactly as it would on Claude
 // Code).
-const EXTENSION_PARAM_NAMES = ["validate", "exec"] as const;
+const EXTENSION_PARAM_NAMES = ["validate", "exec", "checkpoint"] as const;
 type ExtensionName = (typeof EXTENSION_PARAM_NAMES)[number];
 
 /** Whether masked code declares its own binding of an extension's name. */
@@ -82,8 +82,32 @@ function declaresOwn(masked: string, name: ExtensionName): boolean {
   return new RegExp(`\\b(?:const|let|var|function|class)\\s+${name}\\b`).test(masked);
 }
 
+/**
+ * Whether the body binds an extension's name in a way {@link declaresOwn}
+ * cannot see — a destructuring such as `const { checkpoint } = args` — which
+ * would clash with a parameter of that name. The compiler decides: the body
+ * compiles without the parameter but not with it. Only a body that mentions
+ * the name pays for the extra compiles.
+ */
+function clashes(masked: string, name: ExtensionName, body: string): boolean {
+  if (!new RegExp(`(?<![\\w$])${name}(?![\\w$])`).test(masked)) return false;
+  try {
+    new AsyncFunction(...CLAUDE_PARAM_NAMES, name, body);
+    return false;
+  } catch {
+    try {
+      new AsyncFunction(...CLAUDE_PARAM_NAMES, body);
+      return true;
+    } catch {
+      return false; // an error of the body's own: the real compile reports it
+    }
+  }
+}
+
 /** A call of the injected `exec` — not a member call such as `re.exec(text)`. */
 const CALLS_EXEC = /(?<![\w$])(?<!\.\s*)exec\s*\(/;
+/** The same for `checkpoint` — not `trainer.checkpoint(…)`. */
+const CALLS_CHECKPOINT = /(?<![\w$])(?<!\.\s*)checkpoint\s*\(/;
 
 
 const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor as new (
@@ -109,7 +133,9 @@ export function loadWorkflowScript(source: string, filename: string): LoadedWork
   // itself. Check the masked body so a declaration inside a string/comment
   // never counts.
   const maskedBody = maskCode(body);
-  const extensions = EXTENSION_PARAM_NAMES.filter((name) => !declaresOwn(maskedBody, name));
+  const extensions = EXTENSION_PARAM_NAMES.filter(
+    (name) => !declaresOwn(maskedBody, name) && !clashes(maskedBody, name, body),
+  );
   const paramNames = [...CLAUDE_PARAM_NAMES, ...extensions];
 
   let factory: (...callArgs: unknown[]) => Promise<unknown>;
@@ -159,9 +185,10 @@ export function loadWorkflowScript(source: string, filename: string): LoadedWork
  * the warning must catch it (the default mask, used for meta extraction, blanks
  * whole template literals and would miss it).
  *
- * It also flags calls to `exec()`, an ODW extension Claude Code does not
- * provide at all — unless the script declares its own `exec`, which is then the
- * one it calls (member calls such as `re.exec(text)` never count).
+ * It also flags calls to `exec()` and `checkpoint()`, ODW extensions Claude
+ * Code does not provide at all — unless the script declares its own binding,
+ * which is then the one it calls (member calls such as `re.exec(text)` never
+ * count).
  *
  * These come back as *warnings*, not errors — ODW itself executes them — so a
  * caller (the generate-workflow repair loop, a linter) can decide how hard to
@@ -181,6 +208,11 @@ export function scanDualCompat(source: string): string[] {
   if (CALLS_EXEC.test(masked) && !declaresOwn(masked, "exec")) {
     warnings.push(
       "exec() is an ODW extension, not portable to Claude Code — its Workflow tool has no exec global, so the script fails there",
+    );
+  }
+  if (CALLS_CHECKPOINT.test(masked) && !declaresOwn(masked, "checkpoint")) {
+    warnings.push(
+      "checkpoint() is an ODW extension, not portable to Claude Code — its Workflow tool takes no mid-run input and has no checkpoint global, so the script fails there",
     );
   }
   return warnings;

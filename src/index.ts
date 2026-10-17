@@ -33,6 +33,7 @@ export type {
 } from "./primitives.js";
 export type { JsonSchema } from "./schema.js";
 export { ExecError, type ExecOptions, type ExecResult } from "./exec.js";
+export { CheckpointTimeout, type CheckpointOptions, type CheckpointResult } from "./checkpoint.js";
 
 // Loader / transform (the crux) & meta shape
 export type { WorkflowMeta, WorkflowPhaseMeta, LoadedWorkflow } from "./loader.js";

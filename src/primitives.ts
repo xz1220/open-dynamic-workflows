@@ -14,6 +14,8 @@
  *   - workflow  — run another workflow inline (one level deep)
  *   - validate  — compile-check workflow source (ODW extension)
  *   - exec      — run a command without a model (ODW extension; see exec.ts)
+ *   - checkpoint — wait for a person to approve or reject (ODW extension; see
+ *                  checkpoint.ts)
  *
  * `args` is not here: it is run data injected alongside these globals.
  *
@@ -26,6 +28,7 @@ import { resolve } from "node:path";
 
 import { formatSeconds } from "./adapters/failures.js";
 import type { AgentRequest } from "./bridge.js";
+import { CheckpointTimeout, createCheckpoint, type CheckpointOptions, type CheckpointResult } from "./checkpoint.js";
 import { spentTokens, type RunContext } from "./context.js";
 import { AdapterExecutionError, WorkflowScriptError, isFatalError } from "./errors.js";
 import { AGENT_FAILED, AGENT_FINISHED, AGENT_STARTED, LOG, PHASE_STARTED, event } from "./events.js";
@@ -96,6 +99,12 @@ export interface WorkflowGlobals {
    * array as argv. See exec.ts for the contract.
    */
   exec(command: string | string[], opts?: ExecOptions): Promise<ExecResult>;
+  /**
+   * Wait for a person to approve or reject before the run goes on (ODW
+   * extension; not part of Claude Code's Workflow tool surface). See
+   * checkpoint.ts for the contract.
+   */
+  checkpoint(title: string, opts?: CheckpointOptions): Promise<CheckpointResult>;
 }
 
 /** Build the injected primitive set bound to a single run's context. */
@@ -310,6 +319,7 @@ export function createPrimitives(
     if (isFatalError(err)) return; // propagates out of gather; nothing is swallowed
     if (typeof err === "object" && err !== null && surfaced.has(err)) return;
     if (err instanceof ExecError) return; // its command_failed event reported it
+    if (err instanceof CheckpointTimeout) return; // its checkpoint_resolved event reported it
     ctx.emit(event(LOG, { message: `${where} failed and its result is null: ${describeError(err)}` }));
   };
 
@@ -451,6 +461,15 @@ export function createPrimitives(
   // its own, sharing the scheduler and the command id sequence.
   const exec = createExec(ctx);
 
+  // The same for checkpoint(), on the checkpoint id sequence. A stop noticed
+  // before the question is asked is fatal like any other: it ends the run.
+  const ask = createCheckpoint(ctx);
+  const checkpoint = (title: string, opts?: CheckpointOptions): Promise<CheckpointResult> =>
+    ask(title, opts).catch((err: unknown) => {
+      if (isFatalError(err)) ctx.scheduler.abort(err);
+      throw err;
+    });
+
   return {
     agent: (prompt, opts) => handled(agent(prompt, opts)),
     parallel: (thunks) => handled(parallel(thunks)),
@@ -461,6 +480,7 @@ export function createPrimitives(
     workflow: (nameOrRef, childArgs) => handled(workflow(nameOrRef, childArgs)),
     validate,
     exec: (command, opts) => handled(exec(command, opts)),
+    checkpoint: (title, opts) => handled(checkpoint(title, opts)),
   };
 }
 
