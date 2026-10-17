@@ -131,6 +131,7 @@ For long runs, fire-and-poll instead of blocking yourself:
 RUN=$(odw run wf.js)        # prints a run id and returns immediately
 odw status $RUN             # state, agent count, tokens and cost
 odw logs $RUN --follow      # stream progress events
+odw logs $RUN --agent 3     # what one agent did: tool calls, results, errors (ODW extension)
 odw result $RUN             # print the final value when done
 odw pause $RUN / resume $RUN / stop $RUN
 odw approve|reject $RUN     # answer a checkpoint() the run waits at — only on the user's say-so
@@ -156,10 +157,17 @@ on a stuck run or start it over:
 ```bash
 odw agents $RUN               # each agent: state, label, phase, time, value preview (↺ = replayed)
 odw result $RUN --agent 3     # one finished agent's value as JSON (id or label) — works mid-run
+odw logs $RUN --agent 4       # what a failed (or hung) agent did: every tool call, result, error
 odw stop $RUN                 # give up on the hung lane, then…
 odw resume $RUN --wait        # …a NEW run: unchanged agent() calls replay, only the rest run
 ```
 
+- Read a failed agent's transcript before you retry it (ODW extension):
+  `odw logs $RUN --agent <id|label>` prints its tool calls (`▸ Bash  npm test`),
+  their results (`✗ Bash error (exit 1, …)`), its retries and the end of its
+  stderr; `--follow` watches a running one, `--raw` prints the CLI's own events.
+  Fix what it shows — the prompt, a missing tool permission, the environment —
+  instead of resubmitting the same call. A replayed (↺) agent has none.
 - `odw result --agent` salvages partial results while the run is still going.
 - `odw resume` on an ended run (done, failed, stopped, or stale) starts a new
   run with the same script, args and adapter. A call whose prompt and options
@@ -307,6 +315,7 @@ without answering when headless (a login, trust or approval prompt).
 | Treating all failures in `parallel`/`pipeline` alike | Recoverable failures become `null`; stop, budget and dispatch-limit errors abort. Retry missing results or fail when every item is required; filter only when partial output is acceptable. |
 | Branching on which agent finished first | Breaks reproducibility; keep reductions order-independent. |
 | Re-running a stalled or failed run from scratch | Read finished agents with `odw result <run> --agent <id>`; `odw stop`, fix the script, then `odw resume` — finished calls replay for free. |
+| Retrying a failed agent without looking at what it did | Read its transcript first — `odw logs <run> --agent <id\|label>` shows its tool calls, results, errors and the end of its stderr (ODW extension) — and fix the cause. |
 | Looking for an isolated agent's edits in your files after the run | They are kept as diffs, not merged: `odw diff <run> --stat`, then `odw apply <run> --agent <id> --check` and `odw apply`. |
 | Using `validate()` and expecting the script to run on Claude Code | `validate` is an ODW extension and runs on odw only. |
 | Using `exec()` and expecting the script to run on Claude Code | `exec` is an ODW extension and runs on odw only; `validate()` warns about it. |

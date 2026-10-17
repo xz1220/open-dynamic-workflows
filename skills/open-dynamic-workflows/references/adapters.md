@@ -109,6 +109,7 @@ did-you-mean hint) instead of silently ignoring them.
 | `fanOutWarn` | **ODW extension.** When one `parallel()` or `pipeline()` call fans out more than this many tasks or items, the run logs one warning with the count (`large fan-out: …`); it never blocks. Default 25; `0` or `null` = off |
 | `maxDiffBytes` | **ODW extension.** Bytes of an isolated agent's diff kept in the run directory (`agents/<agentId>.diff`, read by `odw diff` / `odw apply`; default 2 MB). Past it the head is kept, cut at a line, with a `# odw: diff truncated …` note; the counts still describe the whole change |
 | `keepBranches` | **ODW extension.** `true`: every isolated agent's change is also committed to a branch `odw/<runId>/<agentId>-<label>` of the source repository, as `keep: true` does for one agent (`keep: false` opts one out). Default `false` |
+| `maxTranscriptBytes` | **ODW extension.** Bytes of each agent's transcript kept in the run directory — what its CLI printed on stdout, `agents/<agentId>.transcript.jsonl` (a JSONL adapter's events as received, other output as `{"kind":"text"}` lines), beside the end of its stderr in `agents/<agentId>.stderr.txt`; read with `odw logs <run> --agent <id\|label>` (default 5 MB). Past it one `{"kind":"truncated","bytes":N}` line ends the transcript; `0` keeps none |
 
 ### Adapter fields
 

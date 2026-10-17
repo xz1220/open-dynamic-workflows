@@ -262,6 +262,7 @@ odw attach $RUN          # 实时视图(被管道时为纯行输出);--timeout <
 odw status $RUN          # 状态、agent 计数、token 与花费
 odw agents $RUN          # 每个 agent 及其已保存的结果,运行中也可看
 odw logs $RUN --follow   # 流式输出原始进度事件
+odw logs $RUN --agent 3  # 某个 agent 做了什么:它的工具调用、结果和文字(见下文)
 odw result $RUN          # 最终值
 odw diff $RUN --stat     # 隔离 agent 改了什么;odw apply $RUN --agent N 应用其中一个
 odw pause|resume|stop $RUN
@@ -428,6 +429,44 @@ odw schedule remove digest     # 删除系统里的条目和定义(条目已被�
 表达式是 cron 的五个字段(数字、`*`、列表、范围、步长、`jan`-`dec`、`sun`-`sat`);
 `@daily`、`L`、`#` 之类会被拒绝并说明原因。完整说明,以及手写 cron 行这一手动替代方案:
 [`docs/recipes/cron.md`](docs/recipes/cron.md)。
+
+### Agent transcript(ODW 扩展)
+
+`agent()` 只返回最终回复,但运行会保留每个 agent 的 CLI 一路打印的内容——每次工具调用、
+每个结果、每次重试——所以"第 7 个 agent 到底做了什么?"有了答案,运行中和失败后都能看:
+
+```bash
+odw logs $RUN --agent 7              # 可读形式:它写的文字、▸ 工具调用、✓/✗ 结果、重试、如何结束
+odw logs $RUN --agent fix --follow   # 按 label;持续输出,直到该 agent 结束
+odw logs $RUN --agent 7 --raw        # transcript 原样保存的各行(JSONL)
+```
+
+```text
+I'll run the tests first.
+▸ Bash  npm test
+✗ Bash error (exit 1, 3 lines): not ok 1 - adds
+── attempt 2: rate-limit retry ──
+▸ Edit  src/add.ts
+✓ Edit result (1 line)
+■ done · 3 turns · $0.250
+```
+
+- agent 运行期间,它的 stdout 流式写入 run 目录下的 `agents/<agentId>.transcript.jsonl`:
+  JSONL 适配器的事件按 CLI 打印的原样每行一个(内置 `claude`——stream-json——、`kilo` 和
+  `opencode`),其他适配器的输出写成 `{"kind":"text","text":…}` 行。stderr 的结尾(最后
+  64 KB)写入 `agents/<agentId>.stderr.txt`;`odw logs --agent` 会在 transcript 之后显示它的最后几行。
+- schema 重试、卡死重启或限流重试都接着写在同一个文件里,前面先写一行
+  `{"kind":"attempt","n":2,"reason":"schema"|"stall"|"rate_limit"}`。
+- `maxTranscriptBytes`(默认每个 agent 5 MB)限制其大小:超出时以一行
+  `{"kind":"truncated","bytes":N}` 结束 transcript。transcript 包含 agent 读到和运行过的
+  一切;`"maxTranscriptBytes": 0` 则完全不保存。
+- 保存从不拖慢 agent:各行先在内存中缓冲,再异步追加到文件。
+- 被 `odw resume` 重放的 agent 没有运行任何 CLI,所以没有 transcript——请看原运行的。
+- 看板 API 提供规范化后的版本:
+  `GET /api/runs/:id/agents/:agentId/transcript?since=<i>` →
+  `{ entries, next, more, truncated, replayed }`,每个条目为
+  `{ i, kind: text|tool_call|tool_result|error|attempt|result|raw|truncated, text?, tool?, input?, output?, isError? }`,
+  长字段截断到 4 KB(`clipped: true`)。
 
 ## 看板:观测、检查、对话
 

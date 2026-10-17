@@ -46,7 +46,9 @@ call whose prompt and options are unchanged **replays** its saved value at once 
 no CLI call, no concurrency slot, no budget — and everything else runs normally.
 So the usual loop is:
 
-1. look at the failure (`odw logs $RUN`, the dashboard, `odw result --agent`);
+1. look at the failure (`odw logs $RUN`, the dashboard, `odw result --agent`) — and
+   at what the failed agent did: `odw logs $RUN --agent <id|label>` prints its tool
+   calls, their results and the end of its stderr (an ODW extension);
 2. fix the step that failed — the prompt, a schema, the adapter (`--adapter`),
    or the environment;
 3. `odw resume $RUN`: only the changed and the never-finished calls run again.

@@ -286,6 +286,7 @@ odw attach $RUN          # live view (or plain lines when piped); --timeout <s> 
 odw status $RUN          # state, agent count, tokens and cost
 odw agents $RUN          # each agent and its saved result, mid-run too
 odw logs $RUN --follow   # stream raw progress events
+odw logs $RUN --agent 3  # what one agent did: its tool calls, results and text (below)
 odw result $RUN          # final value
 odw diff $RUN --stat     # what isolated agents changed; odw apply $RUN --agent N applies one
 odw pause|resume|stop $RUN
@@ -467,6 +468,47 @@ odw schedule remove digest     # delete the OS entry and the definition (safe if
 The expression is cron's five fields (numbers, `*`, lists, ranges, steps, `jan`-`dec`,
 `sun`-`sat`); `@daily`, `L`, `#` and the like are refused with the reason. The full guide,
 and the raw cron line as the manual alternative: [`docs/recipes/cron.md`](docs/recipes/cron.md).
+
+### Agent transcripts (ODW extension)
+
+`agent()` hands back only the final reply, but the run keeps what each agent's CLI
+printed on the way — every tool call, every result, every retry — so "what did agent 7
+actually do?" has an answer, while it runs and after it failed:
+
+```bash
+odw logs $RUN --agent 7              # readable: its text, ▸ tool calls, ✓/✗ results, retries, how it ended
+odw logs $RUN --agent fix --follow   # by label; keeps printing until that agent settles
+odw logs $RUN --agent 7 --raw        # the transcript's lines exactly as kept (JSONL)
+```
+
+```text
+I'll run the tests first.
+▸ Bash  npm test
+✗ Bash error (exit 1, 3 lines): not ok 1 - adds
+── attempt 2: rate-limit retry ──
+▸ Edit  src/add.ts
+✓ Edit result (1 line)
+■ done · 3 turns · $0.250
+```
+
+- While an agent runs, its stdout streams to `agents/<agentId>.transcript.jsonl` in the
+  run directory: a JSONL adapter's events one per line, as its CLI printed them (the
+  built-in `claude` — stream-json — `kilo` and `opencode`), any other adapter's output as
+  `{"kind":"text","text":…}` lines. The end of its stderr (the last 64 KB) goes to
+  `agents/<agentId>.stderr.txt`; `odw logs --agent` shows its last lines after the transcript.
+- A schema retry, a stall restart or a rate-limit retry goes on in the same file after an
+  `{"kind":"attempt","n":2,"reason":"schema"|"stall"|"rate_limit"}` line.
+- `maxTranscriptBytes` (default 5 MB per agent) bounds it: past it, one
+  `{"kind":"truncated","bytes":N}` line ends the transcript. Transcripts hold whatever the
+  agents read and ran; `"maxTranscriptBytes": 0` keeps none.
+- Keeping it never slows an agent down: lines are buffered and appended asynchronously.
+- An agent replayed by `odw resume` ran no CLI, so it has no transcript — read the
+  original run's.
+- The dashboard's API serves it normalized:
+  `GET /api/runs/:id/agents/:agentId/transcript?since=<i>` →
+  `{ entries, next, more, truncated, replayed }`, each entry
+  `{ i, kind: text|tool_call|tool_result|error|attempt|result|raw|truncated, text?, tool?, input?, output?, isError? }`,
+  long fields clipped to 4 KB (`clipped: true`).
 
 ## Dashboard: observe, inspect, chat
 

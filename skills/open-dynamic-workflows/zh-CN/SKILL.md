@@ -118,6 +118,7 @@ odw run wf.js --wait --args '{"question": "Design a cache."}'   # 阻塞并打�
 RUN=$(odw run wf.js)        # 打印一个 run id 后立即返回
 odw status $RUN             # 状态、agent 计数、token 与花费
 odw logs $RUN --follow      # 流式输出进度事件
+odw logs $RUN --agent 3     # 某个 agent 做了什么：工具调用、结果、错误（ODW 扩展）
 odw result $RUN             # 完成后打印最终值
 odw pause $RUN / resume $RUN / stop $RUN
 odw approve|reject $RUN     # 回答运行正在等待的 checkpoint()——只在用户明确要求时
@@ -135,10 +136,16 @@ worker 死掉，都不会丢掉已经完成的工作。不要干等卡住的运�
 ```bash
 odw agents $RUN               # 每个 agent：状态、label、phase、耗时、结果预览（↺ = 重放）
 odw result $RUN --agent 3     # 某个已完成 agent 的值（JSON，按 id 或 label）——运行中也可用
+odw logs $RUN --agent 4       # 失败（或卡住）的 agent 做了什么：每次工具调用、结果、错误
 odw stop $RUN                 # 放弃卡住的泳道，然后……
 odw resume $RUN --wait        # ……启动一个新运行：未改动的 agent() 调用直接重放，只执行其余部分
 ```
 
+- 重试失败的 agent 之前，先读它的 transcript（ODW 扩展）：
+  `odw logs $RUN --agent <id|label>` 会列出它的工具调用（`▸ Bash  npm test`）、调用结果
+  （`✗ Bash error (exit 1, …)`）、重试，以及它 stderr 的结尾；`--follow` 可跟踪仍在运行的
+  agent，`--raw` 打印 CLI 自己的事件。按看到的问题去修——prompt、缺失的工具权限、环境——
+  而不是原样再提交一次。重放（↺）的 agent 没有 transcript。
 - 运行仍在进行时，就可以用 `odw result --agent` 取回部分结果。
 - 对已结束的运行（done、failed、stopped 或 stale）执行 `odw resume`，会用同样的脚本、
   args 和 adapter 启动新运行。prompt 和选项都没变（phase 除外）的调用免费返回已保存的值——
@@ -258,6 +265,7 @@ Codex、Claude Code、Gemini、Qwen、Kimi 开箱即用，无需配置。要换�
 | 将 `parallel`/`pipeline` 中所有失败等同处理 | 可恢复失败变 `null`；停止、预算耗尽和派发上限错误会中止。要求完整交付时须重试缺失结果或报告失败,仅允许部分结果时才过滤。 |
 | 按"哪个 agent 先跑完"来分支 | 破坏可复现性；归并要保持顺序无关。 |
 | 卡住或失败的运行从头重跑 | 用 `odw result <run> --agent <id>` 读出已完成的 agent；`odw stop`、修好脚本，再 `odw resume`——已完成的调用免费重放。 |
+| 不看失败的 agent 做了什么就重试 | 先读它的 transcript——`odw logs <run> --agent <id\|label>` 会显示它的工具调用、结果、错误和 stderr 的结尾（ODW 扩展）——再修原因。 |
 | 运行结束后在自己的文件里找隔离 agent 的修改 | 它们以 diff 保存，不会自动合并：先 `odw diff <run> --stat`，再 `odw apply <run> --agent <id> --check`，然后 `odw apply`。 |
 | 用了 `validate()` 还指望脚本跑在 Claude Code 上 | `validate` 是 ODW 扩展，只能在 odw 上运行。 |
 | 用了 `exec()` 还指望脚本跑在 Claude Code 上 | `exec` 是 ODW 扩展，只能在 odw 上运行；`validate()` 会对此给出 warning。 |
