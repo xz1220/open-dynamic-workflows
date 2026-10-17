@@ -86,6 +86,8 @@ export interface CreateRunInput {
   inlineSource?: string | null;
   /** Run-level adapter override: the default `agent()` adapter for this run. */
   adapter?: string | null;
+  /** Run-level permission tier override (`--permissions`; ODW extension), else the config's. */
+  permissions?: string | null;
   /** Where the run was initiated from (e.g. "chat" for Chat Host runs). */
   origin?: string | null;
   /**
@@ -148,6 +150,7 @@ export class RunStore {
       budgetTotal: input.budgetTotal ?? null,
       workflowName: input.workflowName ?? null,
       adapter: input.adapter ?? null,
+      permissions: input.permissions ?? null,
       origin: input.origin ?? null,
       resumedFrom: input.resumedFrom?.runId ?? null,
       resumedFromDir: input.resumedFrom?.dir ?? null,

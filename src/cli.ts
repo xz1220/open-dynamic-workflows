@@ -29,8 +29,9 @@ import { basename, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
-import { listAdapters, loadConfig, locateConfig, resolveAdapter, resolveRunsRoot } from "./adapters/config.js";
-import type { Config } from "./adapters/types.js";
+import { isOnPath, listAdapters, loadConfig, locateConfig, resolveAdapter, resolveRunsRoot } from "./adapters/config.js";
+import { isPermissionTier, permissionsBanner } from "./adapters/permissions.js";
+import type { Config, PermissionTier } from "./adapters/types.js";
 import { killAllAgentProcesses } from "./adapters/runner.js";
 import { CHECKPOINT_NOTE_MAX, isCheckpointId } from "./control.js";
 import { runDoctor, type CheckStatus } from "./doctor.js";
@@ -130,6 +131,7 @@ export function helpText(): string {
     "  --runs-root <dir>   directory runs are stored under",
     "  --source <dir>      run's working dir; also anchors a relative script path & project-name lookup",
     "  --adapter <name>    default agent() adapter for this run (explicit agent(p,{adapter}) still wins)",
+    "  --permissions <t>   read | edit | full: what this run's agents may do (default edit; ODW extension)",
     "  --fg                run in the foreground: live progress on a TTY, plain event lines otherwise",
     "  -d, --detach        start in the background and print the run id",
     "  --wait              block until the run finishes, then print the result (one run-id line on stderr)",
@@ -153,7 +155,7 @@ export function helpText(): string {
     "  done / failed / stopped,    starts a NEW run with the same script, args and adapter: every agent()",
     "  or stale (worker gone)      call unchanged since (same prompt and options) replays its saved result",
     "                              instead of running again; edited and new calls run. Takes the run",
-    "                              modes and --adapter/--config/--runs-root, like rerun",
+    "                              modes and --adapter/--permissions/--config/--runs-root, like rerun",
     "  still running               refused (it would redo work in flight); --force starts the new run anyway",
     "",
     "Schedules (odw schedule, ODW extension — no daemon: cron, launchd or a systemd timer calls odw back):",
@@ -369,6 +371,7 @@ async function cmdRun(rest: string[]): Promise<number> {
       "runs-root": { type: "string" },
       source: { type: "string" },
       adapter: { type: "string" },
+      permissions: { type: "string" },
       wait: { type: "boolean" },
       fg: { type: "boolean" },
       detach: { type: "boolean", short: "d" },
@@ -392,6 +395,7 @@ async function cmdRun(rest: string[]): Promise<number> {
   }
 
   const { mode, timeoutMs } = resolveStartMode("run", values);
+  const permissions = parsePermissions("run", values.permissions);
 
   warnIfNoDefaultAdapter(values.adapter ?? null, values.config ?? null, values.source ?? null, "run");
 
@@ -401,10 +405,39 @@ async function cmdRun(rest: string[]): Promise<number> {
     runsRoot: values["runs-root"] ?? null,
     source: values.source ?? null,
     adapter: values.adapter ?? null,
+    permissions,
     budgetTotal,
   });
 
-  return afterStart(store, runId, mode, { timeoutMs, hint: "started run" });
+  return afterStart(store, runId, mode, {
+    timeoutMs,
+    hint: "started run",
+    banner: permissionsLine(values.config ?? null, values.source ?? null, permissions),
+  });
+}
+
+/** `--permissions <tier>` (ODW extension), validated; null when absent. */
+function parsePermissions(cmd: string, raw: string | undefined): PermissionTier | null {
+  if (raw === undefined) return null;
+  if (isPermissionTier(raw)) return raw;
+  throw new UsageError(`odw ${cmd}: --permissions must be read, edit or full; got '${raw}'`);
+}
+
+/**
+ * The start banner's permissions line (ODW extension): the run's tier and
+ * what each installed adapter runs with — from the config the worker will
+ * load, which resolves a project-local file against --source (see
+ * warnIfNoDefaultAdapter). Undefined when that config cannot be read: the
+ * launch itself reports that.
+ */
+function permissionsLine(configPath: string | null, source: string | null, permissions: PermissionTier | null): string | undefined {
+  try {
+    const config = loadConfig(configPath, { quiet: true, ...(source ? { cwd: resolve(source) } : {}) });
+    if (permissions) config.settings.permissions = permissions;
+    return permissionsBanner(config, (adapter) => isOnPath(adapter.command[0]!));
+  } catch {
+    return undefined;
+  }
 }
 
 /** `--timeout <seconds>` as milliseconds (undefined when absent). */
@@ -482,15 +515,18 @@ async function afterStart(
   store: RunStore,
   runId: string,
   mode: RunMode,
-  opts: { timeoutMs?: number; hint: string },
+  opts: { timeoutMs?: number; hint: string; banner?: string },
 ): Promise<number> {
+  // The permissions line goes to stderr in every mode — under the live
+  // view's header when attached.
+  const banner = opts.banner ? `${sanitizeText(opts.banner, 1000)}\n` : "";
   if (mode === "detach") {
     process.stdout.write(runId + "\n");
-    process.stderr.write(`${opts.hint} ${runId} (use 'odw status ${runId}')\n`);
+    process.stderr.write(`${opts.hint} ${runId} (use 'odw status ${runId}')\n${banner}`);
     return 0;
   }
   if (mode === "wait") {
-    process.stderr.write(`running ${runId} ...\n`);
+    process.stderr.write(`running ${runId} ...\n${banner}`);
     // A checkpoint() holds the run until someone answers it: say so, and how, once each.
     const told = new Set<number>();
     let flags: string[] | undefined;
@@ -520,6 +556,7 @@ async function afterStart(
     err: process.stderr,
     timeoutMs: opts.timeoutMs,
     commandFlags: storeFlagsFor(store),
+    banner: opts.banner,
   });
 }
 
@@ -1006,6 +1043,7 @@ const RELAUNCH_OPTIONS = {
   config: { type: "string" },
   "runs-root": { type: "string" },
   adapter: { type: "string" },
+  permissions: { type: "string" },
   wait: { type: "boolean" },
   fg: { type: "boolean" },
   detach: { type: "boolean", short: "d" },
@@ -1021,12 +1059,13 @@ async function cmdRerun(rest: string[]): Promise<number> {
     return 2;
   }
   const start = resolveStartMode("rerun", values);
+  const permissions = parsePermissions("rerun", values.permissions);
   const store = storeFrom(values);
   if (!store.exists(runId)) {
     process.stderr.write(`no such run: ${runId}\n`);
     return 1;
   }
-  return relaunch("rerun", store, runId, values, start);
+  return relaunch("rerun", store, runId, { ...values, permissions }, start);
 }
 
 /**
@@ -1053,6 +1092,7 @@ async function cmdResume(rest: string[]): Promise<number> {
     return 2;
   }
   const start = resolveStartMode("resume", values);
+  const permissions = parsePermissions("resume", values.permissions);
   const store = storeFrom(values);
   if (!store.exists(runId)) {
     process.stderr.write(`no such run: ${runId}\n`);
@@ -1063,7 +1103,7 @@ async function cmdResume(rest: string[]): Promise<number> {
     const control = store.readControl(runId);
     if (state === "paused" || control === "pause") {
       const given = values as Record<string, unknown>;
-      const newRunFlag = ["adapter", "wait", "fg", "detach", "timeout"].find((f) => given[f] !== undefined);
+      const newRunFlag = ["adapter", "permissions", "wait", "fg", "detach", "timeout"].find((f) => given[f] !== undefined);
       if (newRunFlag) {
         throw new UsageError(
           `odw resume: run ${runId} is paused, so resume continues it in place — ` +
@@ -1087,21 +1127,22 @@ async function cmdResume(rest: string[]): Promise<number> {
     );
     return 1;
   }
-  return relaunch("resume", store, runId, values, start);
+  return relaunch("resume", store, runId, { ...values, permissions }, start);
 }
 
 /**
  * Start a new run from an existing run's recorded inputs — script, args,
- * source, config, budget and run-level adapter (`--adapter` overrides the
- * last) — and present it per the resolved mode. `rerun` starts over; `resume`
- * also records the source run, whose saved agent results the new run's worker
- * replays for every agent() call that is unchanged.
+ * source, config, budget, run-level adapter and permission tier (`--adapter`
+ * and `--permissions` override the last two) — and present it per the
+ * resolved mode. `rerun` starts over; `resume` also records the source run,
+ * whose saved agent results the new run's worker replays for every agent()
+ * call that is unchanged.
  */
 async function relaunch(
   cmd: "rerun" | "resume",
   store: RunStore,
   runId: string,
-  flags: { "runs-root"?: string; adapter?: string },
+  flags: { "runs-root"?: string; adapter?: string; permissions: PermissionTier | null },
   start: { mode: RunMode; timeoutMs: number | undefined },
 ): Promise<number> {
   const meta = store.readMeta(runId);
@@ -1116,6 +1157,7 @@ async function relaunch(
     runsRoot: flags["runs-root"] ?? null,
     source: (meta.source as string | undefined) ?? null,
     adapter: flags.adapter ?? (meta.adapter as string | null) ?? null,
+    permissions: flags.permissions ?? (isPermissionTier(meta.permissions) ? meta.permissions : null),
     budgetTotal: (meta.budgetTotal as number | null) ?? null,
     // The worker reads the saved results from the source run's own directory.
     resumedFrom: cmd === "resume" ? { runId, dir: store.runDir(runId) } : null,
@@ -1150,6 +1192,7 @@ async function relaunch(
   return afterStart(started.store, started.runId, start.mode, {
     timeoutMs: start.timeoutMs,
     hint: cmd === "resume" ? `resuming ${runId} (${saved} saved agent result(s) to replay) as` : `re-running ${runId} as`,
+    banner: permissionsLine(opts.configPath, opts.source, opts.permissions),
   });
 }
 

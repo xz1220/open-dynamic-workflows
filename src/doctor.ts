@@ -23,7 +23,7 @@ import {
   resolveWorkflowsRoot,
 } from "./adapters/config.js";
 import { runCommand, type CommandRunner } from "./adapters/runner.js";
-import type { Config } from "./adapters/types.js";
+import type { Config, PermissionTier } from "./adapters/types.js";
 import { Bridge } from "./bridge.js";
 
 export type CheckStatus = "ok" | "warn" | "fail" | "skip";
@@ -35,6 +35,8 @@ export interface DoctorCheck {
   detail: string;
   /** What to do about a warn/fail. */
   hint?: string;
+  /** Adapter checks: the permission tiers it declares flags for (ODW extension). */
+  tiers?: PermissionTier[];
 }
 
 export interface DoctorReport {
@@ -141,8 +143,11 @@ export async function runDoctor(opts: DoctorOptions): Promise<DoctorReport> {
   });
 
   for (const a of listing) {
+    // The permission tiers it can run (ODW extension): `odw run --permissions`
+    // refuses read on an adapter without it, and runs full as edit.
+    const tiers = a.tiers.length > 0 ? `tiers: ${a.tiers.join(", ")}` : "tiers: none declared (runs as configured)";
     if (!a.installed) {
-      add({ id: `adapter:${a.name}`, title: `Adapter ${a.name}`, status: "skip", detail: "not installed" });
+      add({ id: `adapter:${a.name}`, title: `Adapter ${a.name}`, status: "skip", detail: `not installed · ${tiers}`, tiers: a.tiers });
       continue;
     }
     const exe = config.adapters[a.name]!.command[0]!;
@@ -152,8 +157,9 @@ export async function runDoctor(opts: DoctorOptions): Promise<DoctorReport> {
       id: `adapter:${a.name}`,
       title: `Adapter ${a.name}`,
       status: res.returncode === 0 ? "ok" : "warn",
-      detail: `${res.returncode === 0 ? line || "installed" : `\`${exe} --version\` exited ${res.returncode}`} · ${a.permissionNote}`,
+      detail: `${res.returncode === 0 ? line || "installed" : `\`${exe} --version\` exited ${res.returncode}`} · ${a.permissionNote} · ${tiers}`,
       hint: res.returncode === 0 ? undefined : "the CLI is on PATH but did not answer --version; try running it once by hand",
+      tiers: a.tiers,
     });
   }
 

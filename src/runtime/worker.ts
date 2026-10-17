@@ -18,6 +18,7 @@ import { basename, dirname } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { loadConfig } from "../adapters/config.js";
+import { isPermissionTier } from "../adapters/permissions.js";
 import { killAllAgentProcesses } from "../adapters/runner.js";
 import type { RunEndState } from "../adapters/types.js";
 import type { WaitingCheckpoint } from "../checkpoint.js";
@@ -125,9 +126,17 @@ export async function executeRun(runDir: string): Promise<string> {
     // agent(p, { adapter }) > meta.adapter > config defaultAdapter > auto-pick.
     const adapterOverride =
       typeof meta.adapter === "string" && meta.adapter.length > 0 ? meta.adapter : null;
-    const config = adapterOverride
-      ? { ...baseConfig, settings: { ...baseConfig.settings, defaultAdapter: adapterOverride } }
-      : baseConfig;
+    // Run-level permission tier (meta.permissions: `--permissions` on run,
+    // rerun or resume; ODW extension): the run's tier in place of the config's.
+    const permissionsOverride = isPermissionTier(meta.permissions) ? meta.permissions : null;
+    const config = {
+      ...baseConfig,
+      settings: {
+        ...baseConfig.settings,
+        ...(adapterOverride ? { defaultAdapter: adapterOverride } : {}),
+        ...(permissionsOverride ? { permissions: permissionsOverride } : {}),
+      },
+    };
     const control = new FileControl({
       readAction: () => store.readControl(runId),
       // checkpoint() answers from `odw approve|reject` and the dashboard.

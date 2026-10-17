@@ -296,11 +296,13 @@ class LiveView {
     for (const l of lines) this.err.write(this.line(l) + "\n");
   }
 
-  header(): void {
+  /** The run's name and id, how to detach — and, for a run just started, its permissions line. */
+  header(banner?: string): void {
     const { p, g } = this;
     this.permanent([
       `${p.accent(g.header)} ${p.bold(this.name)}  ${p.dim(this.runId)}`,
       `  ${p.dim(`^C detaches (run keeps going) ${g.bullet} odw attach ${this.runId}`)}`,
+      ...(banner ? [`  ${p.dim(sanitizeText(banner, 1000))}`] : []),
     ]);
   }
 
@@ -484,6 +486,8 @@ export interface AttachOptions {
   platform?: NodeJS.Platform;
   /** Flags the printed `odw approve|reject` commands need to find the run (e.g. `--runs-root <dir>`). */
   commandFlags?: string[];
+  /** A line about the run that just started (its permissions; ODW extension), printed before its events. */
+  banner?: string;
 }
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
@@ -583,7 +587,9 @@ export async function attachRun(
 
   if (view) {
     opts.err.write(cursor.hide);
-    view.header();
+    view.header(opts.banner);
+  } else if (opts.banner) {
+    opts.err.write(sanitizeText(opts.banner, 1000) + "\n");
   }
 
   const observer = new RunObserver(store, runId, now);
