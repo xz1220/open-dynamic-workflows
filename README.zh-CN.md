@@ -838,9 +838,8 @@ ODW 能识别的措辞——从每个内置 CLI 的源码和 issue 中收集而�
 }
 ```
 
-配置里的适配器条目会整个替换同名的内置适配器,所以要给内置适配器(比如 `codex`)设上限,
-请从 [`odw.config.example.json`](odw.config.example.json) 复制它的条目,再加上
-`"concurrency"`。
+给内置适配器设上限时,只写要改的字段即可——`"codex": { "concurrency": 4 }` 会保留 codex
+原有的命令和参数(不写 `command` 的条目是在内置适配器上做调整;写了 `command` 才会整个替换)。
 
 **自适应降速。** 某个适配器撞上限流时——有 agent 即将退避等待,或有 agent 以
 `rate_limit` 失败——它的上限在本次运行余下的时间里减半,最低为 1(没有自己上限的适配器
@@ -870,7 +869,8 @@ staggered fan-out: 15 claude agents sharing a 3412-character prompt prefix waite
 ```
 
 如果你自己的适配器所用的 CLI 连接的是会缓存提示的 API,就给它声明 `"promptCache": true`;
-你自己写的 `claude` 条目也一样,因为它会替换内置的那个。
+自己写了 `command` 的 `claude` 条目也要声明,因为它会替换内置的那个(只写部分字段的条目,
+例如 `"claude": { "concurrency": 4 }`,会保留内置设置)。
 
 ### 运行通知
 
@@ -1126,6 +1126,9 @@ node web/dev.mjs --api http://127.0.0.1:4317     # → http://127.0.0.1:5173
 - **扛过限流。** 每次 agent 失败都会被分类(限流、额度、登录、超时、卡死……)。被限流的
   CLI 会按退避时间重试并遵守它给出的 retry-after;额度耗尽或登录失败则立即失败并说明该
   怎么做——`odw logs`、实时视图和看板里都能看到,连同恢复时间。
+- **会自我调节的限速。** 用 `"concurrency"` 给任意适配器设并发上限;撞上限流时,该适配器在本次
+  运行余下时间里上限减半,之后每平静一分钟归还一个名额;共享长提示前缀的 `claude` 扇出会先启动
+  一个 agent,让其余的读取它写入的提示缓存,而不是各付一份。
 - **看清每个 agent 做了什么。** 每个 agent 的 CLI 输出都会保存为执行记录——工具调用、结果、
   重试——可以用 `odw logs <run> --agent <id|label>` 查看(运行中加 `--follow`),也可以在看板的
   执行记录侧栏里实时跟随。

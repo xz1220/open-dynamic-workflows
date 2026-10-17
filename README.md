@@ -920,9 +920,9 @@ one throttled adapter never holds up the others. `odw doctor` shows the caps, an
 }
 ```
 
-An adapter entry in your config replaces the built-in of that name, so to cap a
-built-in one — `codex`, say — copy its entry from
-[`odw.config.example.json`](odw.config.example.json) and add `"concurrency"` to it.
+To cap a built-in adapter, name only what changes — `"codex": { "concurrency": 4 }`
+keeps codex's command and flags (an entry without `command` adjusts the built-in;
+one with `command` replaces it).
 
 **Adaptive back-pressure.** When an adapter hits a rate limit — an agent about to
 wait out a backoff, or one that failed with `rate_limit` — its cap is halved for the
@@ -956,7 +956,8 @@ staggered fan-out: 15 claude agents sharing a 3412-character prompt prefix waite
 ```
 
 Declare `"promptCache": true` on your own adapter when its CLI talks to an API that
-caches prompts — and on a `claude` entry of your own, which replaces the built-in.
+caches prompts — and on a `claude` entry with its own `command`, which replaces the
+built-in (a partial entry such as `"claude": { "concurrency": 4 }` keeps it).
 
 ### Run notifications
 
@@ -1245,6 +1246,10 @@ into the host's `node`, so each target is built on its own runner.
   login, timeout, stall, …). A rate-limited CLI is retried after a backoff that
   honors its retry-after; a spent quota or a failed login fails fast with what to do
   — in `odw logs`, the live view and the dashboard, with the reset time.
+- **Throttles that learn.** Cap any adapter with `"concurrency"`; a rate limit halves
+  that adapter's cap for the rest of the run and quiet minutes give slots back; and
+  a `claude` fan-out sharing a long prompt prefix starts one agent first so the rest
+  read its prompt cache instead of each paying for it.
 - **See what each agent did.** Every agent's CLI output is kept as a transcript —
   tool calls, results, retries — readable with `odw logs <run> --agent <id|label>`
   (`--follow` while it runs) or live in the dashboard's Transcript sheet.
