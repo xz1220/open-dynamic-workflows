@@ -7,9 +7,16 @@
  * pid, a Claude run going quiet — changes no file at all). A busy run appends
  * events many times a second, so watch events only schedule a refresh:
  * everything within {@link WATCH_COALESCE_MS} lands as one list computation,
- * not one per append. A frame is pushed only when a run's state, counts or
- * progress changed. Every callback is guarded: they run outside any request,
- * where a throw would take the whole server down.
+ * not one per append. A frame is pushed only when some run's state, counts,
+ * progress or last activity changed. Every callback is guarded: they run
+ * outside any request, where a throw would take the whole server down.
+ *
+ * Clients that open `/api/stream?delta=1` get the full list once and then only
+ * `runs-delta` frames — `{ upsert: RunSummary[], remove: runId[] }` — instead
+ * of the whole list on every change, which matters once a runs root holds
+ * thousands of runs (a full frame is ~500 bytes per run). Deltas are
+ * idempotent, so every delta client can share one baseline; when most of the
+ * list changed at once a full `runs` frame is sent instead.
  */
 
 import { watch, type FSWatcher } from "node:fs";
@@ -17,6 +24,7 @@ import type { ServerResponse } from "node:http";
 
 import { guarded, logServeError, openStream, safeWrite } from "./http-util.js";
 import { allSummaries, type RunSource } from "./run-source.js";
+import type { RunSummary } from "./runs-view.js";
 
 /** Liveness floor for the run list (and the fallback when fs.watch is unavailable). */
 const TICK_MS = 1000;
@@ -27,7 +35,12 @@ const CHAT_FILE_RE = /^_chat[\\/]sessions\.json/;
 
 export class RunFeed {
   private readonly clients = new Set<ServerResponse>();
-  private lastSig = "";
+  /** Clients that asked for `runs-delta` frames after their first full list. */
+  private readonly deltaClients = new Set<ServerResponse>();
+  /** runId → change signature of the list the delta clients were last sent. */
+  private last = new Map<string, string>();
+  /** The coarser signature full-list clients are pushed on (state, counts, progress). */
+  private lastFullSig = "";
   private tick: NodeJS.Timeout | null = null;
   private pending: NodeJS.Timeout | null = null;
   private watcher: FSWatcher | null = null;
@@ -62,20 +75,31 @@ export class RunFeed {
     this.tick = this.pending = null;
     this.watcher?.close();
     this.watcher = null;
-    for (const c of this.clients) c.end();
+    for (const c of [...this.clients, ...this.deltaClients]) c.end();
     this.clients.clear();
+    this.deltaClients.clear();
   }
 
-  /** Serve `GET /api/stream`: register the client and send it the current list. */
-  open(res: ServerResponse): void {
-    openStream(res, this.clients, frame("runs", allSummaries(this.sources)));
+  /**
+   * Serve `GET /api/stream`: register the client and send it the current list.
+   * `delta` clients then receive `runs-delta` frames instead of full lists.
+   */
+  open(res: ServerResponse, opts: { delta?: boolean } = {}): void {
+    const runs = allSummaries(this.sources);
+    // Nobody was listening, so the baseline is stale: restart it from what this
+    // client is about to receive.
+    if (this.clients.size === 0 && this.deltaClients.size === 0) {
+      this.last = signatures(runs);
+      this.lastFullSig = fullSignature(runs);
+    }
+    openStream(res, opts.delta ? this.deltaClients : this.clients, frame("runs", runs));
   }
 
   /** Push one event to every client (e.g. `chat` change notifications). */
   broadcast(event: string, data: unknown): void {
-    if (this.clients.size === 0) return;
     const f = frame(event, data);
     for (const c of this.clients) safeWrite(c, f, this.clients);
+    for (const c of this.deltaClients) safeWrite(c, f, this.deltaClients);
   }
 
   private changed(filename: string | Buffer | null): void {
@@ -90,13 +114,38 @@ export class RunFeed {
   }
 
   private push(): void {
-    if (this.clients.size === 0) return;
+    if (this.clients.size === 0 && this.deltaClients.size === 0) return;
     const runs = allSummaries(this.sources);
-    const sig = JSON.stringify(runs.map((r) => [r.runId, r.state, r.counts, r.progress]));
-    if (sig === this.lastSig) return;
-    this.lastSig = sig;
-    this.broadcast("runs", runs);
+    // Full-list clients keep the original contract: a new list only when a
+    // run's state, counts or progress moved — never per event at 1MB a frame.
+    const fullSig = fullSignature(runs);
+    if (this.clients.size && fullSig !== this.lastFullSig) {
+      const f = frame("runs", runs);
+      for (const c of this.clients) safeWrite(c, f, this.clients);
+    }
+    this.lastFullSig = fullSig;
+    const next = signatures(runs);
+    const upsert = runs.filter((r) => this.last.get(r.runId) !== next.get(r.runId));
+    const remove = [...this.last.keys()].filter((id) => !next.has(id));
+    if (upsert.length === 0 && remove.length === 0) return;
+    this.last = next;
+    if (this.deltaClients.size) {
+      const f =
+        upsert.length + remove.length > runs.length / 2 ? frame("runs", runs) : frame("runs-delta", { upsert, remove });
+      for (const c of this.deltaClients) safeWrite(c, f, this.deltaClients);
+    }
   }
+}
+
+function fullSignature(runs: RunSummary[]): string {
+  return JSON.stringify(runs.map((r) => [r.runId, r.state, r.counts, r.progress]));
+}
+
+/** What a delta client needs re-sent when it changes: state, counts, progress, activity. */
+function signatures(runs: RunSummary[]): Map<string, string> {
+  return new Map(
+    runs.map((r) => [r.runId, JSON.stringify([r.state, r.stale, r.counts, r.progress, r.lastActivityTs])]),
+  );
 }
 
 function frame(event: string, data: unknown): string {

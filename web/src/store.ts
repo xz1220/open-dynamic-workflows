@@ -92,7 +92,8 @@ class Store {
   connect(): void {
     try {
       this.es?.close();
-      const es = new EventSource("/api/stream");
+      // delta=1: after the first full list the server sends only what changed.
+      const es = new EventSource("/api/stream?delta=1");
       this.es = es;
       es.addEventListener("runs", (e) => {
         try {

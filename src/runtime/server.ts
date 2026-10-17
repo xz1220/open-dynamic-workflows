@@ -19,7 +19,8 @@
  *   GET  /api/runs/:id/result       { value } of a finished run; 404 when there is none
  *   POST /api/runs/:id/control      { action: pause|resume|stop } (ODW runs; Claude runs → 409)
  *   GET  /api/activity?limit=N      the Activity view (below)
- *   GET  /api/stream                text/event-stream: `runs` frames (the run list, on change)
+ *   GET  /api/stream                text/event-stream: `runs` frames (the run list, on change);
+ *                                   `?delta=1` → one `runs` frame, then `runs-delta` frames
  *                                   and `chat` frames ({ sessionId }, coalesced per 250ms)
  *   GET  /api/workflows             [WorkflowSummary] from the managed workflow dirs
  *   GET  /api/workflows/:name       WorkflowDetail (?provider=odw|claude picks a shadowed name)
@@ -246,7 +247,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandleCont
       return;
     }
     if (method === "GET" && path === "/api/stream") {
-      feed.open(res);
+      feed.open(res, { delta: url.searchParams.get("delta") === "1" });
       return;
     }
     if (method === "GET" && path === "/api/capabilities") {

@@ -160,3 +160,73 @@ test("a failing background refresh is logged and the server keeps serving", asyn
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+/** Open /api/stream?delta=1 and collect every `runs` / `runs-delta` frame. */
+async function collectFrames(url: string, query = "?delta=1") {
+  const abort = new AbortController();
+  const frames: Array<{ event: string; data: any }> = [];
+  const res = await fetch(`${url}/api/stream${query}`, { signal: abort.signal });
+  const reader = res.body!.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  const pump = (async () => {
+    try {
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) return;
+        buf += decoder.decode(value, { stream: true });
+        let cut: number;
+        while ((cut = buf.indexOf("\n\n")) !== -1) {
+          const raw = buf.slice(0, cut);
+          buf = buf.slice(cut + 2);
+          const m = /^event: (runs(?:-delta)?)\ndata: (.*)$/m.exec(raw);
+          if (m) frames.push({ event: m[1]!, data: JSON.parse(m[2]!) });
+        }
+      }
+    } catch {
+      /* aborted */
+    }
+  })();
+  return {
+    frames,
+    async close() {
+      abort.abort();
+      await pump;
+    },
+  };
+}
+
+test("delta clients get one full list, then only the runs that changed", async () => {
+  const root = tempRoot();
+  const store = new RunStore(root);
+  const ids = [0, 1, 2].map((i) => {
+    const id = store.create({ script: `/demo/wf${i}.js`, args: null, source: "/demo" });
+    store.updateStatus(id, { state: i === 0 ? "running" : "done", pid: process.pid, name: `wf${i}` });
+    return id;
+  });
+  const handle = await startServer({ store, port: 0, host: "127.0.0.1", claudeProjectsRoot: join(root, "no-claude") });
+  const delta = await collectFrames(handle.url);
+  const full = await collectFrames(handle.url, "");
+  try {
+    await until(() => delta.frames.length > 0 && full.frames.length > 0);
+    assert.equal(delta.frames[0]!.event, "runs");
+    assert.equal(delta.frames[0]!.data.length, 3);
+    const live = ids[0]!;
+    appendFileSync(store.eventsPath(live), JSON.stringify({ ts: 1, type: "agent_started", agentId: 0, label: "a" }) + "\n");
+    await until(() => delta.frames.some((f) => f.event === "runs-delta"));
+    const d = delta.frames.find((f) => f.event === "runs-delta")!.data;
+    assert.deepEqual(d.upsert.map((r: { runId: string }) => r.runId), [live]);
+    assert.deepEqual(d.remove, []);
+    assert.equal(d.upsert[0].counts.running, 1);
+    // Full-list clients never see a delta frame.
+    assert.ok(full.frames.every((f) => f.event === "runs"));
+    // A run that disappears is announced as a removal.
+    rmSync(join(store.runDir(ids[2]!)), { recursive: true, force: true });
+    await until(() => delta.frames.some((f) => f.event === "runs-delta" && f.data.remove.includes(ids[2])));
+  } finally {
+    await delta.close();
+    await full.close();
+    await handle.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
