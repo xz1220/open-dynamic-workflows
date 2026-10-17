@@ -258,6 +258,79 @@
   color: var(--ink-2);
 }
 
+/* ---- a run waiting out a spent quota ---- */
+.qpause {
+  position: relative;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 18px 24px;
+  margin: 14px 32px 0;
+  padding: 16px 20px;
+  overflow: hidden;
+  border-color: var(--amber-line);
+  background: linear-gradient(90deg, var(--amber-soft), transparent 70%), var(--card);
+}
+.qp-clock {
+  display: flex;
+  flex-direction: column;
+  padding-right: 22px;
+  border-right: 1px dashed var(--amber-line);
+}
+.qp-clock .t {
+  font-family: var(--f-display);
+  font-size: 40px;
+  line-height: 1;
+}
+.qp-clock .left {
+  margin-top: 4px;
+  font-family: var(--f-mono);
+  font-size: 11px;
+  color: var(--amber-ink);
+}
+.qp-text h3 {
+  margin: 0 0 4px;
+  font-size: 15px;
+}
+.qp-text p {
+  margin: 0;
+  font-size: 13px;
+  color: var(--mute);
+}
+/* a slow amber shimmer along the card's foot: waiting, not stuck */
+.qp-bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 3px;
+  background: linear-gradient(90deg, transparent, var(--amber), transparent);
+  background-size: 50% 100%;
+  background-repeat: no-repeat;
+  animation: qp-sweep 3.2s ease-in-out infinite;
+}
+@keyframes qp-sweep {
+  from {
+    background-position: -50% 0;
+  }
+  to {
+    background-position: 150% 0;
+  }
+}
+.ticket.paused::before {
+  background: var(--amber);
+}
+@media (max-width: 760px) {
+  .qpause {
+    grid-template-columns: minmax(0, 1fr);
+    margin: 12px 16px 0;
+  }
+  .qp-clock {
+    border-right: 0;
+    padding-right: 0;
+  }
+}
+
 /* ---- needs you: tickets for decisions and runs to pick up ---- */
 .needs {
   margin: 0 0 22px;

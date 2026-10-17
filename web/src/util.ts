@@ -164,6 +164,12 @@ export function cronWords(expr: string): string | null {
   return null;
 }
 
+/** "19:10" — the wall-clock minute of an epoch second. */
+export function fmtHourMin(tsSec: number): string {
+  const d = new Date(tsSec * 1000);
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+
 /** A line count: exact with separators (1,204) below 100k, then compact (240k). */
 export function fmtCount(n: number): string {
   return n < 100_000 ? n.toLocaleString("en-US") : fmtTokens(n);

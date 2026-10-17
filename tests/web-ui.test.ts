@@ -615,3 +615,33 @@ test("redaction markers render as ink bars, and redacted outputs are tagged", ()
   assert.match(tx, /<span class="redact" title="redacted">env:KEY<\/span>/);
   assert.match(tx, /<span class="tx-clip"[^>]*>redacted<\/span>/);
 });
+
+test("a run waiting out a spent quota says until when, and offers to go on now", () => {
+  const view: JobViewState = {
+    cpNote: "",
+    tab: "graph",
+    selectedAi: null,
+    reviewAi: null,
+    zoom: 1,
+    logQuery: "",
+    logTypes: new Set(["agent"]),
+    logLimit: 600,
+    follow: true,
+    motion: false,
+  };
+  const resumeAt = NOW + 3600 + 12 * 60;
+  const pausedFor = { reason: "quota" as const, adapter: "codex", resumeAt };
+  store.capabilities = { writable: true };
+  store.focusRun("20260101-000000-aaaaaa");
+  store.run = detail([agent("search:1", "Search", "running", { agentId: 1 })], { state: "paused", pausedFor });
+  const html = renderJob(view, NOW);
+  assert.match(html, /<section class="card qpause"/);
+  assert.match(html, /codex is out of quota/);
+  assert.match(html, /in 1h12m/);
+  assert.match(html, /data-resume-run="20260101-000000-aaaaaa"/);
+  const prev = store.runs;
+  store.runs = [summary({ runId: "r-q", name: "nightly", state: "paused", pausedFor })];
+  assert.match(renderActivity(NOW), /class="ticket paused"[\s\S]*?codex is out of quota — resumes at/);
+  store.runs = prev;
+  store.focusRun(null);
+});

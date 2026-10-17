@@ -5,7 +5,7 @@ import { t, tn } from "../i18n";
 import { activeRuns } from "../shell";
 import { store } from "../store";
 import type { RunSummary, ScheduleView } from "../types";
-import { ACTIVE, TERMINAL, cronWords, esc, fmtAgo, fmtClock, fmtDayGroup, fmtDurSec, fmtUsd, runDurationSec } from "../util";
+import { ACTIVE, TERMINAL, cronWords, esc, fmtAgo, fmtClock, fmtDayGroup, fmtDurSec, fmtHourMin, fmtUsd, runDurationSec } from "../util";
 import { emptyArt } from "./activity";
 
 export type JobsFilter = "all" | "active" | "done" | "failed";
@@ -121,7 +121,7 @@ function runCard(r: RunSummary, nowSec: number): string {
   const cur = n ? r.phases[Math.min(n - 1, Math.floor(r.progress * n))]!.title : null;
   return (
     `<article class="card runcard" data-run="${esc(r.runId)}" data-key="rc-${esc(r.runId)}" tabindex="0" role="link" aria-label="${esc(r.name)} · ${esc(t(r.state))}">` +
-    `<div class="top"><div><div class="nm">${esc(r.name)}</div><div class="rid">${esc(r.runId)}</div></div>${pill(r.state)}</div>` +
+    `<div class="top"><div><div class="nm">${esc(r.name)}</div><div class="rid">${esc(r.runId)}</div></div>${pill(r.state, r.pausedFor ? t("paused until {t}", { t: fmtHourMin(r.pausedFor.resumeAt) }) : undefined)}</div>` +
     phaseDots(r) +
     (cur ? `<div class="cur">${t("phase")} <b>${esc(cur)}</b> · ${Math.round(r.progress * 100)}%</div>` : "") +
     segProgress(r) +

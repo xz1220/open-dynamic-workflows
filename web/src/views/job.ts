@@ -9,7 +9,7 @@ import { icons } from "../icons";
 import { getLang, t, tn } from "../i18n";
 import { store } from "../store";
 import type { AgentView, RunDetail, WorkflowEvent } from "../types";
-import { ACTIVE, TERMINAL, esc, fmtClock, fmtDurMs, fmtDurSec, fmtTokens, fmtUsd, markRedactions } from "../util";
+import { ACTIVE, TERMINAL, esc, fmtClock, fmtDurMs, fmtDurSec, fmtHourMin, fmtTokens, fmtUsd, markRedactions } from "../util";
 import { EVT_CLASS, commandDetail, emptyArt } from "./activity";
 
 export type JobTab = "graph" | "timeline" | "logs" | "result" | "changes";
@@ -610,6 +610,24 @@ function changesTab(run: RunDetail, s: JobViewState): string {
   );
 }
 
+/** A run waiting out a spent quota (quotaWait): until when, why, and a way to go on now. */
+function quotaPause(run: RunDetail, nowSec: number): string {
+  const p = run.pausedFor;
+  if (!p) return "";
+  const left = Math.max(0, p.resumeAt - nowSec);
+  const canResume = run.provider === "odw" && store.capabilities.writable;
+  return (
+    `<section class="card qpause" data-key="qpause">` +
+    `<div class="qp-clock"><span class="eyebrow">${t("paused until")}</span><span class="t num">${fmtHourMin(p.resumeAt)}</span>` +
+    `<span class="left">${esc(t("in {d}", { d: fmtDurSec(left) }))}</span></div>` +
+    `<div class="qp-text"><h3>${esc(t("{adapter} is out of quota", { adapter: p.adapter }))}</h3>` +
+    `<p>${t("The run waits for the reset its CLI named, then picks up where it stopped. Agents on other adapters keep running.")}</p></div>` +
+    (canResume ? `<button class="btn" data-resume-run="${esc(run.runId)}">${t("Resume now")}</button>` : "") +
+    `<i class="qp-bar"></i>` +
+    `</section>`
+  );
+}
+
 export function renderJob(s: JobViewState, nowSec: number): string {
   // checkpoint() gates join the graph, the timeline and the drawer as nodes.
   const run = store.run ? withCheckpoints(store.run, store.runEvents) : null;
@@ -629,7 +647,7 @@ export function renderJob(s: JobViewState, nowSec: number): string {
             ? changesTab(run, s)
             : resultTab(run);
   return (
-    `<div class="job" data-key="job-${esc(run.runId)}">${runHead(run, nowSec)}${checkpoints(run, s)}${tabs(run, s.tab)}` +
+    `<div class="job" data-key="job-${esc(run.runId)}">${runHead(run, nowSec)}${quotaPause(run, nowSec)}${checkpoints(run, s)}${tabs(run, s.tab)}` +
     `<section class="tab-body" data-tabbody="${s.tab}" data-key="tb-${s.tab}">${body}</section></div>`
   );
 }
