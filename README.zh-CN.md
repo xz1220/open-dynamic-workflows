@@ -873,6 +873,9 @@ node web/dev.mjs --api http://127.0.0.1:4317     # → http://127.0.0.1:5173
 - **扛过限流。** 每次 agent 失败都会被分类(限流、额度、登录、超时、卡死……)。被限流的
   CLI 会按退避时间重试并遵守它给出的 retry-after;额度耗尽或登录失败则立即失败并说明该
   怎么做——`odw logs`、实时视图和看板里都能看到,连同恢复时间。
+- **审阅并应用隔离 agent 的改动。** worktree agent 的改动会在 worktree 删除前保存为 diff
+  (排除初始化时放进去的文件),也可以用 `keep` 保留到分支。在看板的**改动**标签页或用 `odw diff`
+  审阅,再用 `odw apply`(先加 `--check`)逐个落地。
 - **真实用量与花费。** 内置 `claude` 适配器改为读取 Claude Code 的 `stream-json`,每个 agent
   都会记录 CLI 上报的 token 与花费——`odw status`、实时视图和看板里都能看到——`--budget` 也按真实
   输出 token 计量。单次 fan-out 超过 `fanOutWarn`(25)时会提前提示。
@@ -927,7 +930,7 @@ node web/dev.mjs --api http://127.0.0.1:4317     # → http://127.0.0.1:5173
 ### 路线图
 
 按并行 coding agent 用户反馈的需求排序([调研](docs/research/user-needs-2026-10.md)):
-更多 CLI 上报的真实 token 用量与花费(目前 Claude Code 已上报,其余仍按估算)· 隔离 agent 改动的审阅与合并 ·
+更多 CLI 上报的真实 token 用量与花费(目前 Claude Code 已上报,其余仍按估算)·
 调度 · 无头运行的"成功证据" · 每个 agent 的 transcript · 只读/编辑/完全三档权限 ·
 原生结构化输出 · 按阶段指定适配器与回退链 · 评测。完整规划见 [`docs/ROADMAP.md`](docs/ROADMAP.md);
 最初的设计见 [`docs/dynamic-workflows-tech-plan.md`](docs/dynamic-workflows-tech-plan.md);

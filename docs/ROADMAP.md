@@ -83,7 +83,7 @@
 
 | # | 方向 | 需求 | 规模 | 状态 |
 | --- | --- | --- | --- | --- |
-| X1 | **diff 作为运行产物 + `odw apply`**：保留 worktree 的分支和 diff；合并前用 `git merge-tree` 预检，再跑校验命令，逐个合并；看板提供并排 diff 审阅 | #2 | M | 🚧 看板审阅页 ✅，后端进行中 |
+| X1 | **diff 作为运行产物 + `odw apply`**：保留 worktree 的分支和 diff；合并前用 `git merge-tree` 预检，再跑校验命令，逐个合并；看板提供并排 diff 审阅 | #2 | M | ✅ diff 落盘（排除初始化文件、可截断）、`keep` 分支、`odw diff`/`odw apply [--check]`、看板改动页；`git merge-tree` 预检与逐个合并后的校验命令待做 |
 | X2 | **权限档位**：read-only / edit / full 三档，映射到各 CLI 的对应参数，启动前展示；环境变量白名单 + 密钥引用脱敏；不受信任的仓库使用 `--bare` | #6 | M | ⏳ |
 | X3 | **agent transcript**：保存每个 agent 的 JSON 流（工具调用、重试）；看板和 `odw logs --agent` 可查看；导出 OpenTelemetry GenAI span | #8 | M | ⏳ |
 | X4 | **人工检查点** `checkpoint()`（ODW 扩展）：持久暂停，`odw approve/reject [--edit]` 继续；看板提供审批入口（依赖 N1） | #9 | M | ✅（`--edit` 待做） |
@@ -94,7 +94,7 @@
 ### Later — 0.8+「规模与生态」
 
 - 可选的容器运行器（默认断网）。（#6，L）
-- `odw eval`：用例 × 适配器 × 重复次数，输出通过率、成本和延迟；运行元数据记录 CLI 版本；提供 `odw diff runA runB`。（#15，L）
+- `odw eval`：用例 × 适配器 × 重复次数，输出通过率、成本和延迟；运行元数据记录 CLI 版本；提供 `odw compare runA runB`（`odw diff <run_id>` 已用于查看一次运行保留的改动）。（#15，L）
 - 可分享的脱敏运行包；看板远程只读访问（写操作必须带令牌鉴权）。（#11/#13，M）
 - 发布方言双兼容测试套件，作为社区工作流的兼容性标准。（#13）
 

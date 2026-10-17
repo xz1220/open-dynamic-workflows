@@ -972,6 +972,10 @@ into the host's `node`, so each target is built on its own runner.
   login, timeout, stall, …). A rate-limited CLI is retried after a backoff that
   honors its retry-after; a spent quota or a failed login fails fast with what to do
   — in `odw logs`, the live view and the dashboard, with the reset time.
+- **Review and apply what isolated agents changed.** A worktree agent's change
+  is kept as a diff when its worktree goes (setup files left out), optionally on
+  a `keep` branch. Read it in the dashboard's **Changes** tab or with `odw diff`,
+  and land it with `odw apply` (`--check` first) — one agent at a time.
 - **Real usage and cost.** The built-in `claude` adapter now reads Claude Code's
   `stream-json`, so every agent records the tokens and dollars its CLI reported —
   in `odw status`, the live view and the dashboard — and `--budget` meters real
@@ -1042,7 +1046,7 @@ runs end-to-end (plan → search → extract → vote → report).
 Ranked by what users of parallel coding agents report needing
 ([research](docs/research/user-needs-2026-10.md)): adapter-reported token usage and
 cost for more CLIs (Claude Code reports it today; the others are estimated) ·
-review-and-apply for isolated agents' diffs · scheduling · evidence of success for headless runs · per-agent transcripts ·
+scheduling · evidence of success for headless runs · per-agent transcripts ·
 read/edit/full permission tiers · native structured output · per-phase adapters
 and fallback chains · evaluation. Full plan: [`docs/ROADMAP.md`](docs/ROADMAP.md); the
 original design: [`docs/dynamic-workflows-tech-plan.md`](docs/dynamic-workflows-tech-plan.md).
