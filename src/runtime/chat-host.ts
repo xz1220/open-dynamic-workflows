@@ -132,7 +132,9 @@ export class ChatHost {
   private notifyTimer: NodeJS.Timeout | null = null;
 
   constructor(private readonly opts: ChatHostOptions) {
-    this.chat = new ChatStore(opts.store.root, opts.cwd);
+    this.chat = new ChatStore(opts.store.root, opts.cwd, {
+      onError: (err) => logServeError("chat store write", err),
+    });
     this.runtime = {
       runner: opts.runner ?? createDefaultChatRunner(),
       activeSessions: new Set(),
@@ -148,11 +150,13 @@ export class ChatHost {
     this.timer.unref?.();
   }
 
+  /** Stop the background work and persist any streaming text still in memory. */
   stop(): void {
     if (this.timer) clearInterval(this.timer);
     if (this.notifyTimer) clearTimeout(this.notifyTimer);
     this.timer = this.notifyTimer = null;
     this.changed.clear();
+    guarded("chat store flush", () => this.chat.flush());
   }
 
   /** Queue a change notification; one per session per coalescing window. */

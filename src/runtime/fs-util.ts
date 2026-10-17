@@ -4,7 +4,36 @@
  * missing or unreadable file — callers treat "can't read" as "nothing there".
  */
 
-import { statSync } from "node:fs";
+import { readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+
+/** Parse a JSON file; null when it is missing, unreadable or not valid JSON. */
+export function readJsonFile<T = Record<string, unknown>>(path: string): T | null {
+  try {
+    return JSON.parse(readFileSync(path, "utf8")) as T;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Write JSON atomically (temp file + rename), so a concurrent reader never sees
+ * a half-written file. The temp name is unique per process and call, so two
+ * writers can never clobber each other's temp file.
+ */
+export function writeJsonAtomic(path: string, payload: unknown, indent?: number): void {
+  const tmp = `${path}.${process.pid}.${Math.floor(Math.random() * 1e9).toString(36)}.tmp`;
+  try {
+    writeFileSync(tmp, JSON.stringify(payload, null, indent), "utf8");
+    renameSync(tmp, path);
+  } catch (err) {
+    try {
+      rmSync(tmp, { force: true }); // e.g. ENOSPC mid-write: leave no partial temp file behind
+    } catch {
+      /* the write error is the one worth reporting */
+    }
+    throw err;
+  }
+}
 
 /**
  * A cheap change fingerprint for one file: inode + size + mtime, or "-" when
