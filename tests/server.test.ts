@@ -8,6 +8,7 @@ import { execPath } from "node:process";
 
 import { defaultConfig } from "../src/adapters/config.js";
 import { waitFor } from "../src/runtime/launcher.js";
+import { OdwRunSource } from "../src/runtime/odw-run-source.js";
 import { RunStore } from "../src/runtime/run-store.js";
 import {
   foldAgents,
@@ -15,7 +16,6 @@ import {
   reconcileState,
   summarize,
   detail,
-  listSummaries,
 } from "../src/runtime/runs-view.js";
 import { startServer, type ChatTurnRunner } from "../src/runtime/server.js";
 
@@ -197,8 +197,8 @@ test("summarize/detail derive counts, progress, and phase order from events", ()
     assert.equal(d.agents.length, 3);
     assert.equal(d.args && (d.args as { q: string }).q, "hi");
 
-    // listSummaries returns everything, newest-first
-    assert.equal(listSummaries(store).length, 1);
+    // the run list (OdwRunSource) agrees with the uncached fold
+    assert.deepEqual(new OdwRunSource(store).listSummaries(), [s]);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

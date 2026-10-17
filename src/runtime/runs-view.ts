@@ -218,7 +218,8 @@ export function applyAgentEvent(
   return {};
 }
 
-function countAgents(agents: AgentView[]): RunCounts {
+/** Tally agents by state (shared by the ODW and Claude run sources). */
+export function countAgents(agents: AgentView[]): RunCounts {
   let running = 0;
   let done = 0;
   let failed = 0;
@@ -378,14 +379,6 @@ export function detail(store: RunStore, runId: string): RunDetail {
     hasResult: store.hasResult(runId),
     error: store.readError(runId) as { error?: string; stack?: string } | null,
   });
-}
-
-/** Summaries for every known run, newest first. */
-export function listSummaries(store: RunStore): RunSummary[] {
-  return store
-    .listRuns()
-    .map((ref) => summarize(store, ref.runId))
-    .sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0));
 }
 
 function baseName(path: string | undefined): string {

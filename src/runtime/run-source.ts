@@ -9,11 +9,14 @@
  * runs come from {@link ./odw-run-source}; Claude Code's from
  * {@link ./claude-run-source}.
  *
- * A source owns its own caching (ODW keys on status.json/events.jsonl; Claude on
- * the journal's mtime) because the freshness signal differs per provider. Every
- * method is read-only except `control`, and a read-only source advertises that
- * by returning a non-null {@link controlError} (the server then refuses control
- * with a 409 rather than silently no-op'ing).
+ * A source owns its own caching (ODW keys on status.json/events.jsonl and tails
+ * the event log by byte cursor; Claude keys on its journal + transcript
+ * signatures) because the freshness signal differs per provider. Liveness — a
+ * worker pid, a Claude run's freshness window — changes no file, so it is never
+ * cached: every read re-checks it. Every method is read-only except `control`,
+ * and a read-only source advertises that by returning a non-null
+ * {@link controlError} (the server then refuses control with a 409 rather than
+ * silently no-op'ing).
  */
 
 import type { WorkflowEvent } from "../events.js";

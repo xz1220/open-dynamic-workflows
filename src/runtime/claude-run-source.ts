@@ -16,19 +16,26 @@
  *     exists with NO sibling terminal `wf_<id>.json`.
  *
  * Everything is read-only, node:fs only, per-file try/catch (a foreign or
- * half-written journal is skipped, never fatal — same posture as RunStore.readJson
- * and workflows-view's readMetaSafe). Units: every journal epoch is MILLISECONDS;
+ * half-written journal is skipped, never fatal — same posture as the run store's
+ * reads and workflows-view's readMetaSafe). Units: every journal epoch is MILLISECONDS;
  * ODW uses seconds, so each timestamp is /1000 — EXCEPT `durationMs`, which is
  * already ms and maps 1:1 onto AgentView.durationMs.
  */
 
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 import type { WorkflowEvent } from "../events.js";
-import { SigCache, statSig } from "./fs-util.js";
-import type { RunSource } from "./run-source.js";
-import type { AgentView, RunCounts, RunDetail, RunDisplayState, RunSummary } from "./runs-view.js";
+import { readdirSafe, readJsonFile, SigCache, statSig } from "./fs-util.js";
+import { RUN_ID_RE, type RunSource } from "./run-source.js";
+import {
+  countAgents,
+  type AgentView,
+  type RunCounts,
+  type RunDetail,
+  type RunDisplayState,
+  type RunSummary,
+} from "./runs-view.js";
 
 /** Encode a working directory to its `~/.claude/projects` dir name. */
 export function encodeProjectDir(cwd: string): string {
@@ -48,7 +55,6 @@ export interface ClaudeRunSourceOptions {
   now?: () => number;
 }
 
-const RUN_ID = /^[A-Za-z0-9._-]+$/;
 const ID_PREFIX = "cc-";
 const DEFAULT_FRESH_MS = 90_000;
 /** Full terminal folds kept in memory (the runs being viewed), not every run's. */
@@ -157,7 +163,7 @@ export class ClaudeRunSource implements RunSource {
   private projectDirs(): string[] {
     const root = this.opts.projectsRoot;
     if (!existsSync(root)) return [];
-    const entries = safeReaddir(root).filter((e) => e.isDirectory());
+    const entries = readdirSafe(root).filter((e) => e.isDirectory());
     if ((this.opts.scope ?? "all") === "all") return entries.map((e) => join(root, e.name));
     const base = encodeProjectDir(this.opts.cwd);
     const worktreePrefix = `${base}--claude-worktrees-`;
@@ -174,16 +180,16 @@ export class ClaudeRunSource implements RunSource {
   protected discover(): Discovered[] {
     const out: Discovered[] = [];
     for (const projDir of this.projectDirs()) {
-      for (const sess of safeReaddir(projDir)) {
-        if (!sess.isDirectory() || !RUN_ID.test(sess.name)) continue;
+      for (const sess of readdirSafe(projDir)) {
+        if (!sess.isDirectory() || !RUN_ID_RE.test(sess.name)) continue;
         const sessDir = join(projDir, sess.name);
         // terminal journals
-        for (const f of safeReaddir(join(sessDir, "workflows"))) {
+        for (const f of readdirSafe(join(sessDir, "workflows"))) {
           if (!f.isFile() || !/^wf_.+\.json$/.test(f.name)) continue;
           out.push(terminalRun(sessDir, f.name.slice(0, -".json".length)));
         }
         // live dirs — running iff no terminal sibling exists yet
-        for (const d of safeReaddir(join(sessDir, "subagents", "workflows"))) {
+        for (const d of readdirSafe(join(sessDir, "subagents", "workflows"))) {
           if (!d.isDirectory() || !/^wf_/.test(d.name)) continue;
           const wid = d.name;
           if (existsSync(join(sessDir, "workflows", `${wid}.json`))) continue; // terminal wins
@@ -222,7 +228,7 @@ export class ClaudeRunSource implements RunSource {
   private signature(d: Discovered): string {
     if (d.kind === "terminal") return `T:${statSig(d.path)}`;
     const parts = [statSig(join(d.path, "journal.jsonl"))];
-    const agents = safeReaddir(d.path)
+    const agents = readdirSafe(d.path)
       .filter((f) => f.isFile() && f.name.startsWith("agent-"))
       .map((f) => f.name)
       .sort();
@@ -463,20 +469,6 @@ function mapAgentState(state: unknown): AgentView["state"] {
   return "stale";
 }
 
-function countAgents(agents: AgentView[]): RunCounts {
-  let running = 0,
-    done = 0,
-    failed = 0,
-    stale = 0;
-  for (const a of agents) {
-    if (a.state === "running") running++;
-    else if (a.state === "done") done++;
-    else if (a.state === "failed") failed++;
-    else stale++;
-  }
-  return { agents: agents.length, running, done, failed, stale };
-}
-
 /** Synthesize an ODW-shaped event stream so the Logs tab + phase stepper + DAG render. */
 function synthTerminalEvents(
   summary: RunSummary,
@@ -508,13 +500,13 @@ function synthTerminalEvents(
 }
 
 function liveName(sessDir: string, wid: string): string {
-  for (const e of safeReaddir(join(sessDir, "workflows", "scripts"))) {
+  for (const e of readdirSafe(join(sessDir, "workflows", "scripts"))) {
     if (e.isFile() && e.name.endsWith(`-${wid}.js`)) return e.name.slice(0, -`-${wid}.js`.length);
   }
   return "(claude workflow)";
 }
 function readScript(sessDir: string, wid: string): string | null {
-  for (const e of safeReaddir(join(sessDir, "workflows", "scripts"))) {
+  for (const e of readdirSafe(join(sessDir, "workflows", "scripts"))) {
     if (e.isFile() && e.name.endsWith(`-${wid}.js`)) {
       try {
         return readFileSync(join(sessDir, "workflows", "scripts", e.name), "utf8");
@@ -549,19 +541,9 @@ function num(v: unknown): number | null {
 
 // --- fs primitives (read-only, never throw) ----------------------------------
 
-function safeReaddir(p: string): import("node:fs").Dirent[] {
-  try {
-    return readdirSync(p, { withFileTypes: true });
-  } catch {
-    return [];
-  }
-}
+/** A Claude journal is foreign JSON with a loose shape: read it untyped. */
 function readJson(p: string): any | null {
-  try {
-    return JSON.parse(readFileSync(p, "utf8"));
-  } catch {
-    return null;
-  }
+  return readJsonFile<any>(p);
 }
 function readLines(p: string): Array<Record<string, any>> {
   let text: string;

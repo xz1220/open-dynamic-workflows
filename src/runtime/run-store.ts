@@ -32,16 +32,14 @@ import {
   fstatSync,
   mkdirSync,
   openSync,
-  readdirSync,
   readFileSync,
   readSync,
-  renameSync,
   writeFileSync,
-  type Dirent,
 } from "node:fs";
 import { basename, join } from "node:path";
 
 import type { EventSink, WorkflowEvent } from "../events.js";
+import { readdirSafe, readJsonFile, writeJsonAtomic } from "./fs-util.js";
 
 /** Terminal states: a run in one of these will not change again. */
 export const TERMINAL_STATES = new Set(["done", "failed", "stopped"]);
@@ -177,10 +175,10 @@ export class RunStore {
   // --- meta & status ---------------------------------------------------------
 
   readMeta(runId: string): Record<string, unknown> {
-    return readJson(join(this.runDir(runId), META)) ?? {};
+    return readJsonFile(join(this.runDir(runId), META)) ?? {};
   }
   readStatus(runId: string): Record<string, unknown> {
-    return readJson(join(this.runDir(runId), STATUS)) ?? {};
+    return readJsonFile(join(this.runDir(runId), STATUS)) ?? {};
   }
   updateStatus(runId: string, fields: Record<string, unknown>): Record<string, unknown> {
     const status = { ...this.readStatus(runId), ...fields, updatedAt: now() };
@@ -279,7 +277,7 @@ export class RunStore {
     writeJson(join(this.runDir(runId), RESULT), { value: value ?? null });
   }
   readResult(runId: string): unknown {
-    const payload = readJson(join(this.runDir(runId), RESULT));
+    const payload = readJsonFile(join(this.runDir(runId), RESULT));
     return payload === null ? null : payload.value;
   }
   hasResult(runId: string): boolean {
@@ -289,7 +287,7 @@ export class RunStore {
     writeJson(join(this.runDir(runId), ERROR), error);
   }
   readError(runId: string): Record<string, unknown> | null {
-    return readJson(join(this.runDir(runId), ERROR));
+    return readJsonFile(join(this.runDir(runId), ERROR));
   }
 
   // --- control ---------------------------------------------------------------
@@ -298,7 +296,7 @@ export class RunStore {
     writeJson(this.controlPath(runId), { action, at: now() });
   }
   readControl(runId: string): string | null {
-    const payload = readJson(this.controlPath(runId));
+    const payload = readJsonFile(this.controlPath(runId));
     return payload === null ? null : ((payload.action as string) ?? null);
   }
 
@@ -422,18 +420,9 @@ function slugify(name: string): string {
   return s.length ? s : "_workflow";
 }
 
-/** A directory's entries; [] when it is missing or unreadable (never throws). */
-function readdirSafe(dir: string): Dirent[] {
-  try {
-    return readdirSync(dir, { withFileTypes: true });
-  } catch {
-    return [];
-  }
-}
-
 /** The recorded workflowName from a run directory's meta.json, or null. */
 function readWorkflowName(dir: string): string | null {
-  const meta = readJson(join(dir, META));
+  const meta = readJsonFile(join(dir, META));
   return meta && typeof meta.workflowName === "string" ? meta.workflowName : null;
 }
 
@@ -453,16 +442,7 @@ function newRunId(): string {
   return `${stamp}-${rand}`;
 }
 
+/** Run files are pretty-printed: they are meant to be read by people too. */
 function writeJson(path: string, payload: unknown): void {
-  const tmp = `${path}.${process.pid}.${Math.floor(Math.random() * 1e9).toString(36)}.tmp`;
-  writeFileSync(tmp, JSON.stringify(payload, null, 2), "utf8");
-  renameSync(tmp, path);
-}
-
-function readJson(path: string): Record<string, unknown> | null {
-  try {
-    return JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
-  } catch {
-    return null;
-  }
+  writeJsonAtomic(path, payload, 2);
 }

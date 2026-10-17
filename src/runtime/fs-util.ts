@@ -4,7 +4,16 @@
  * missing or unreadable file — callers treat "can't read" as "nothing there".
  */
 
-import { readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, type Dirent } from "node:fs";
+
+/** A directory's entries; [] when it is missing or unreadable. */
+export function readdirSafe(dir: string): Dirent[] {
+  try {
+    return readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+}
 
 /** Parse a JSON file; null when it is missing, unreadable or not valid JSON. */
 export function readJsonFile<T = Record<string, unknown>>(path: string): T | null {
