@@ -1,7 +1,8 @@
 # ② 客户端（只读展示层）— 任务拆解
 
 > 对应 [ROADMAP](../ROADMAP.md) 的 ②：`(a) Workspace` + `(b) Jobs` +（待定）`(c) 第三维`。
-> **视觉真相（visual source of truth）**：`docs/odw-client-mockup.html`（7 屏浅色 mockup，真实 mock 数据）、`docs/odw-client.html`（画廊索引 + 导入说明）、`assets/app-screenshots/*.png`（当前 App 截图）。深色「watch」主题已存档于 `docs/odw-client-mockup-v1-full.html`，本期不做、留待后续。
+> **视觉真相（2026-10 重设计后）**：设计令牌与组件以 `web/src/styles/`（`tokens.css` 为准，"纸、墨、信号"语言，含亮/暗双主题）为唯一来源；`assets/app-screenshots/*.png` 与 `assets/odw-dashboard.gif` 是当前 App 的截图/动图。本地开发用 `node web/demo-fixtures.mjs <runs> <proj> --live` + `node web/dev.mjs`。
+> 历史存档（已过时，仅供参考）：`docs/odw-client-mockup.html`（7 屏浅色 mockup）、`docs/odw-client.html`（画廊索引）、`docs/odw-client-mockup-v1-full.html`（早期深色「watch」主题）。
 > 每个任务带：目标 / 做法 / 文件锚点 / 完成标准（DoD）。可直接分配给 agent 开工。
 
 ---
