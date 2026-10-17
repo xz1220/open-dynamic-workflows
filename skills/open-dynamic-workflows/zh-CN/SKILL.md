@@ -115,7 +115,7 @@ odw run wf.js --wait --args '{"question": "Design a cache."}'   # 阻塞并打�
 
 ```bash
 RUN=$(odw run wf.js)        # 打印一个 run id 后立即返回
-odw status $RUN             # 状态 + agent 计数
+odw status $RUN             # 状态、agent 计数、token 与花费
 odw logs $RUN --follow      # 流式输出进度事件
 odw result $RUN             # 完成后打印最终值
 odw pause $RUN / resume $RUN / stop $RUN
@@ -218,3 +218,4 @@ Codex、Claude Code、Gemini、Qwen、Kimi 开箱即用，无需配置。要换�
 | 用了 `exec()` 还指望脚本跑在 Claude Code 上 | `exec` 是 ODW 扩展，只能在 odw 上运行；`validate()` 会对此给出 warning。 |
 | 用了 `checkpoint()` 还指望脚本跑在 Claude Code 上 | `checkpoint` 是 ODW 扩展，只能在 odw 上运行；`validate()` 会对此给出 warning。 |
 | 看运行像是卡住了，就自己批准了检查点 | 等待中的检查点由用户决定：给用户看 `odw status $RUN`，只有用户明确同意后才运行 `odw approve`/`odw reject`。 |
+| 大规模扇出却不看它花了多少 | `odw status $RUN` 会显示运行到目前为止的 token 与花费，比 `fanOutWarn`（默认 25）更宽的 `parallel()`/`pipeline()` 会记一条警告（均为 ODW 扩展）。设了 `budget.total` 时按它决定扇出规模；`--budget` 限制输出 token。 |

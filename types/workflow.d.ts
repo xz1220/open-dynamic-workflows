@@ -39,9 +39,9 @@ declare global {
   }
 
   interface Budget {
-    /** Estimated output-token dispatch target, or null; not an actual usage or billing ceiling. */
+    /** Output-token dispatch target, or null; not a billing ceiling. */
     total: number | null;
-    /** ceil(successful final-reply characters / 4), shared with children; excludes input, failures, and intermediate retries. */
+    /** Output tokens spent, shared with children: the CLI's count where it reports usage (built-in claude does), else ceil(reply characters / 4); every attempt counts. */
     spent(): number;
     /** `max(0, total - spent())`, or Infinity if no target. */
     remaining(): number;
@@ -72,7 +72,7 @@ declare global {
   /** Emit a one-line progress message. */
   function log(message: unknown): void;
 
-  /** Estimated output budget; checked before each dispatch and schema retry — once spent, the run ends and running agents are stopped. */
+  /** Output-token budget; checked before each dispatch and schema retry — once spent, the run ends and running agents are stopped. */
   const budget: Budget;
 
   /** Inline child sharing scheduler, controls, and budget; only one level. scriptPath is relative to the run source. */

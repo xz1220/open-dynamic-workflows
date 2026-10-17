@@ -230,7 +230,7 @@ ODW 已实现下列原语能力。依赖宿主私有运行机制的脚本,迁移
 | 模型选择 | 在 `agent(..., {model})` 中传该 CLI 的模型 ID。`meta.model` 和阶段元数据不设置执行模型;适配器没有模型参数时会记录路由说明。 |
 | `agentType` | 将人设加入提示词,不会加载宿主的同名子 agent 配置或选择适配器。 |
 | 工作区隔离 | 从已保存的 HEAD 创建临时工作区,不含未保存修改,结束后清理。不会自动合并,`agent()` 返回回复而非 diff;需保留的交付物应放进回复或显式持久化。支持 `.worktreeinclude`(ODW 连未跟踪文件也复制,而不只是被 gitignore 的文件);其中的 `symlink:` 行、`worktreeSetup` 和 agent 的 `ODW_PORT` 是 ODW 扩展——见[隔离 worktree](#隔离-worktree-与-agent-端口)。 |
-| 预算 | 按 `ceil(字符数 / 4)` 估算所有回复的输出 token,包括 schema 重试(不计输入和失败调用)。每次派发和每次 schema 重试前都会检查;预算用尽时运行结束,仍在运行的 agent 会被停止。 |
+| 预算 | 计算输出 token:适配器上报用量时用 CLI 自己的计数(内置 `claude` 会上报——见[用量与花费](#用量与花费odw-扩展)),否则按每条回复的 `ceil(字符数 / 4)` 估算。每次 CLI 运行都计入:schema 重试、限流重试,以及上报了用量的失败运行。每次派发和每次 schema 重试前都会检查;预算用尽时运行结束,仍在运行的 agent 会被停止。 |
 | JSON Schema | 只校验[已列出的子集](skills/open-dynamic-workflows/zh-CN/references/primitives.md#schema)。`$ref`、`const`、`oneOf` 等约束不会生效;请明确声明对象/数组类型并使用受支持的约束。 |
 | 脚本可信性 | 只运行可信脚本:运行工作流会把正文当作普通 JavaScript 执行。加载时元数据按纯字面量解析,不会被求值;编译检查和兼容性警告都不提供沙箱隔离。 |
 | 恢复 | 每个完成的 `agent()` 结果都会在完成时保存。`odw resume` 让已暂停且仍存活的 worker 原地继续;对已结束的运行(done、failed、stopped,或崩溃后的 stale)则启动一个新运行:prompt 和选项都没变的调用直接重放,其余照常执行。`rerun` 从头执行。见[恢复运行](#恢复运行odw-扩展)。 |
@@ -259,7 +259,7 @@ odw run wf.js [--args JSON|@file]            # 终端里前台展示;运行本�
 ```bash
 RUN=$(odw run wf.js)     # 非 TTY:打印 run id 并立即返回
 odw attach $RUN          # 实时视图(被管道时为纯行输出);--timeout <s> 超时退出码 124
-odw status $RUN          # 状态 + agent 计数
+odw status $RUN          # 状态、agent 计数、token 与花费
 odw agents $RUN          # 每个 agent 及其已保存的结果,运行中也可看
 odw logs $RUN --follow   # 流式输出原始进度事件
 odw result $RUN          # 最终值
@@ -368,6 +368,33 @@ odw reject $RUN --note "Keep the old table until the backfill is verified"
 [`examples/plan-approve-execute.js`](examples/plan-approve-execute.js) 是完整的
 计划 → 批准 → 执行循环,附带说明的拒绝会触发重新规划。
 
+### 用量与花费(ODW 扩展)
+
+扇出很快就会烧掉额度,所以运行会边跑边显示花了多少。每个 `agent_finished`(以及
+`agent_failed`)事件都带着这个 agent 的 `usage`:`inputTokens`(含缓存命中的输入)、
+`outputTokens`、`cacheReadTokens`、`cacheWriteTokens` 和 `costUsd`,按 CLI 上报的数值
+在它所有的 CLI 运行上求和——内置 `claude` 适配器这些都会上报。CLI 不上报输出 token 时
+(文本模式的适配器),ODW 按回复的 `ceil(字符数 / 4)` 计数,并把这个数标记为
+`estimated`(估算)。
+
+```text
+$ odw status $RUN
+20261017-101500-ab12cd  [done]  review-swarm
+  dispatched: 9 agent(s)
+  usage: 1.4M tokens in (1.2M cache read, 96k cache write) · ~38k out · $2.871 (estimated in part: 1 of 9 agents reported no output tokens)
+```
+
+- 实时视图的汇总行显示输出 token(也就是 `--budget` 所计的数)和累计花费;每个已结束
+  agent 的那一行显示它自己的花费。
+- `GET /api/runs` 和 `GET /api/runs/:id` 以 `usage` 给出运行的合计(有 agent 的输出
+  token 是估算时带 `estimated: true`),`/api/runs/:id` 还给出每个 agent 自己的用量。
+- `budget.spent()` 用同样的方式计算输出 token:CLI 给了计数就用它的计数。
+- 单次 `parallel()` 或 `pipeline()` 调用扇出的任务或条目超过 `fanOutWarn`(默认 25;
+  `0` 或 `null` 关闭)时,会记一条带数量的警告——
+  `large fan-out: parallel() starts 40 tasks (over fanOutWarn: 25) — …`——然后照常运行。
+
+适配器在自己的 `output` 里声明 CLI 在哪里上报用量;见[配置适配器](#配置适配器)。
+
 ## 看板:观测、检查、对话
 
 看板的视觉像一张印刷品——纸、墨和一种信号色——也可以随时切换到夜间主题。它提供:
@@ -441,7 +468,7 @@ Codex、Claude Code、Gemini、Qwen、Kimi、Oh My Pi、Kilo Code、OpenCode、C
 | 适配器 | 本地 CLI | 非交互契约 |
 | --- | --- | --- |
 | `codex` | `codex` | stdout 文本;自带联网搜索 |
-| `claude` | `claude` | stdout 文本;放行 WebSearch/WebFetch |
+| `claude` | `claude` | stream-json 事件;回复、用量、花费和错误取自其 `result` 事件;放行 WebSearch/WebFetch |
 | `gemini` | `gemini` | stdout 文本 |
 | `qwen` | `qwen` | stdout 文本 |
 | `kimi` | `kimi` | stdout 文本 |
@@ -483,7 +510,31 @@ Codex、Claude Code、Gemini、Qwen、Kimi、Oh My Pi、Kilo Code、OpenCode、C
 }
 ```
 
-ODW 只把解码后的最终响应交给 workflow;JSONL 输出会边流式到达边逐行解码,stderr 只保留有限的尾部用于错误信息。
+**ODW 扩展:** JSON 输出还可以声明这次运行花了多少,以及 CLI 自己是否报告了失败。
+内置的 `claude` 适配器就是这样声明的:
+
+```jsonc
+"output": {
+  "format": "jsonl",
+  "eventType": "result",          // 回复所在的事件(以最后一个为准)
+  "textPath": ["result"],
+  "select": "last",
+  "usagePath": ["usage"],         // token 计数,位于 usageEvent 事件中(默认同 eventType)
+  "costPath": ["total_cost_usd"], // 美元花费,位于同一事件
+  "errorPath": ["is_error"]       // true、一条消息或一个错误对象:这次运行以它失败
+}
+```
+
+每个 `usageEvent` 事件的用量会累加;不同 CLI 的字段名(Anthropic、OpenAI、Codex)会被
+统一归一化——见 [`src/adapters/usage.ts`](src/adapters/usage.ts)。只打印一个 JSON 文档
+的 CLI 则用 `{ "format": "json", "textPath": […], "usagePath": […], "costPath": […],
+"errorPath": […] }`;路径里的整数用于索引数组(负数从末尾数)。`errorPath` 上报的失败
+会像任何失败的运行一样被归类——不论退出码——所以限流会被重试,额度用尽会说明何时重置。
+输出里找不到声明的文本时——CLI 的格式变了,或配置写错了——原始 stdout 就作为回复,运行
+日志会说明原因;agent 不会因此失败。
+
+ODW 只把解码后的最终响应交给 workflow;JSONL 输出会边流式到达边逐行解码(只保留最新文本
+和用量合计,而不是整段记录),stderr 只保留有限的尾部用于错误信息。
 Windows 下的可执行文件探测遵循 `PATHEXT`,所以 `agent.cmd`、`kilo.cmd`、`omp.exe`
 这类普通 shim 无需写完整路径也能识别。
 
@@ -512,9 +563,10 @@ Windows 下的可执行文件探测遵循 `PATHEXT`,所以 `agent.cmd`、`kilo.c
 }
 ```
 
-看门狗**对所有内置适配器默认关闭**:有些 CLI——比如文本模式的 `claude --print`——在
-结束前什么都不输出,任何卡死超时都会误杀正常工作。请只对会流式输出进度的适配器启用
-(例如 `kilo`、`opencode` 这类 JSONL 适配器,或会打印心跳的包装脚本),并把值设得高于
+看门狗**对所有内置适配器默认关闭**:有些 CLI——文本模式的那些(`gemini`、`qwen`、
+`kimi`……)——在结束前什么都不输出,任何卡死超时都会误杀正常工作。请只对会流式输出进度
+的适配器启用:`claude`(它的 stream-json 每一轮都会输出一个事件,所以现在可以放心对它
+启用)、`kilo` 和 `opencode` 这类 JSONL 适配器,或会打印心跳的包装脚本;并把值设得高于
 健康 agent 最长的静默时段——工具调用里跑一轮很长的测试,同样不会有任何输出。
 
 ### 限流、额度与登录
@@ -543,9 +595,11 @@ agent_failed    (Search) search — [quota, retry after 3h 22m] AdapterExecution
   的 agent。一分钟内就会恢复的"额度"(Gemini 免费档就是这样描述它的每分钟限额的)按它
   实际上的限流来处理。
 
-Claude Code 的文本模式会把某些 API 错误当作回复打印出来并以 0 退出
-(`API Error: Rate limit reached`):一条简短、内容只有这类限流、额度或登录错误的回复,
-会被算作对应的失败,而绝不会被当成 agent 的答案。
+Claude Code 会在输出里报告这类错误,而且常常以 0 退出:它的 stream-json `result` 事件
+带着 `is_error: true` 和错误消息(`API Error: Rate limit reached`、
+`Claude AI usage limit reached|…`),这会被算作消息所指的那种失败。在文本模式下(文本
+适配器,或回退到原始 stdout 的 JSON 输出),一条简短、内容只有这类限流、额度或登录错误
+的回复同样会被算作对应的失败——绝不会被当成 agent 的答案。
 
 ODW 能识别的措辞——从每个内置 CLI 的源码和 issue 中收集而来——集中在一张表里:
 [`src/adapters/failures.ts`](src/adapters/failures.ts)。用适配器的 `failures` 教它
@@ -821,7 +875,7 @@ node web/dev.mjs --api http://127.0.0.1:4317     # → http://127.0.0.1:5173
 ### 路线图
 
 按并行 coding agent 用户反馈的需求排序([调研](docs/research/user-needs-2026-10.md)):
-adapter 上报的真实 token 用量与花费(当前预算按估算计量)· 隔离 agent 改动的审阅与合并 ·
+更多 CLI 上报的真实 token 用量与花费(目前 Claude Code 已上报,其余仍按估算)· 隔离 agent 改动的审阅与合并 ·
 调度 · 无头运行的"成功证据" · 每个 agent 的 transcript · 只读/编辑/完全三档权限 ·
 原生结构化输出 · 按阶段指定适配器与回退链 · 评测。完整规划见 [`docs/ROADMAP.md`](docs/ROADMAP.md);
 最初的设计见 [`docs/dynamic-workflows-tech-plan.md`](docs/dynamic-workflows-tech-plan.md);

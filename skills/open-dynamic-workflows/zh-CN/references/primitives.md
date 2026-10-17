@@ -41,7 +41,7 @@ agent(prompt, opts?) -> Promise<unknown>
   [隔离 worktree](#隔离-worktree-与-agent-环境)。
 
 返回回复文本，设了 `schema` 则返回校验过的 JSON 值。CLI 出错或 schema 重试耗尽会抛错；
-这些可恢复失败在 `parallel`/`pipeline` 内变成 `null`。停止请求、估算预算耗尽和 agent
+这些可恢复失败在 `parallel`/`pipeline` 内变成 `null`。停止请求、预算耗尽和 agent
 总量上限以及无效的 adapter/运行配置属于 fatal 错误，会继续向上抛出并终止运行。
 
 每次完成的调用都会在发出 `agent_finished` 事件之前保存到运行目录
@@ -118,13 +118,15 @@ JSON 但解析失败的输入会被拒绝，不会悄悄按字符串传入）。
 是用 `odw run … --budget <tokens>` 设的 token 目标，否则为 `null`；按它扩缩深度，例如
 `budget.total ? Math.floor(budget.total / 120_000) : 5`。
 
-`spent()` 按本次运行所有成功调用的最终回复字符数总和除以 4 后向上取整，包含子工作流。
-输入 token、失败调用和 schema 重试的中间回复不计入。`remaining()` 为
-`max(0, total - spent())`；没设目标时为 `Infinity`。
+`spent()` 是本次运行到目前为止花掉的输出 token，包含子工作流：适配器上报用量时用 CLI
+自己的计数（内置 `claude` 会上报——ODW 扩展），否则这次 CLI 运行按 `ceil(回复字符数 / 4)`
+计。一次调用的每次 CLI 运行都计入——schema 重试、限流重试，以及上报了用量的失败运行；
+输入 token 不计入。`remaining()` 为 `max(0, total - spent())`；没设目标时为 `Infinity`。
 
-调度器拿到执行槽位并检查暂停/停止后，如果估算值已达到目标，就拒绝新的 agent 调用。
-已经运行的调用仍可完成并使估算值超过目标。因此它是按估算值限制后续派发，不是实际
-token 用量或费用的硬上限。
+调度器拿到执行槽位并检查暂停/停止后，如果 `spent()` 已达到目标，就拒绝新的 agent 调用。
+已经运行的调用仍可完成并超过目标。因此它是按输出 token 限制后续派发，不是费用的硬上限。
+每个 agent 和整个运行花了多少——输入与输出 token、缓存读写，以及 CLI 上报时的花费——会显示
+在 `odw status`、实时视图和看板里（ODW 扩展）。
 
 ## workflow
 
@@ -134,7 +136,7 @@ workflow(nameOrRef, args?) -> Promise<unknown>
 
 内联执行另一个 workflow，并返回它的最终值。字符串从受管工作流目录按名解析；
 `{ scriptPath }` 相对本次运行的 source 目录解析。子工作流共享父运行的调度器、并发上限、
-agent 计数、控制和估算预算。其 phase 带 `▸ <name>` 前缀，不创建独立 run id。
+agent 计数、控制和预算。其 phase 带 `▸ <name>` 前缀，不创建独立 run id。
 省略子工作流的 `args` 时传入 `null`，不会继承父运行的输入。
 
 只支持一层嵌套：子工作流再调用 `workflow()` 会抛错。文件不存在、名称无法解析或子脚本

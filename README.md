@@ -253,7 +253,7 @@ private runtime behavior need the following checks before migration:
 | Model selection | Pass `agent(..., {model})` using that CLI's model ID. `meta.model` and phase metadata do not set execution defaults; an adapter without model routing support emits a note. |
 | `agentType` | A persona added to the prompt. It does not load a host's named subagent configuration or select an adapter. |
 | Worktree isolation | Starts from committed HEAD, excludes uncommitted edits, and cleans up afterward. Changes are not merged and `agent()` returns the reply, not a diff; put required deliverables in that reply or persist them explicitly. `.worktreeinclude` is honored (ODW copies untracked files too, not only gitignored ones); its `symlink:` lines, `worktreeSetup` and the agents' `ODW_PORT` are ODW extensions — see [Isolated worktrees](#isolated-worktrees-and-agent-ports). |
-| Budget | Estimates output tokens as `ceil(chars / 4)` over every reply, schema retries included (inputs and failed calls are not). The guard runs before each dispatch and each schema retry; once the target is spent the run ends and agents still running are stopped. |
+| Budget | Counts output tokens: the CLI's own count where its adapter reports usage (the built-in `claude` does — see [Usage and cost](#usage-and-cost-odw-extension)), else `ceil(chars / 4)` of each reply. Every CLI run counts: schema and rate-limit retries, and failed runs that reported usage. The guard runs before each dispatch and each schema retry; once the target is spent the run ends and agents still running are stopped. |
 | JSON Schema | Supports the [documented subset](skills/open-dynamic-workflows/references/primitives.md#schema). Unknown constraints such as `$ref`, `const` and `oneOf` are not enforced. Use explicit object/array types and supported constraints. |
 | Script trust | Run trusted scripts only: a run executes the workflow body as ordinary JavaScript. Loading parses metadata as a pure literal without evaluating it; validation and compatibility warnings are not a sandbox. |
 | Recovery | Every completed `agent()` result is saved as it lands. `odw resume` continues a paused live worker in place; on an ended run (done, failed, stopped, or stale after a crash) it starts a new run that replays each call whose prompt and options are unchanged and runs the rest. `rerun` starts over. See [Resume a run](#resume-a-run-odw-extension). |
@@ -283,7 +283,7 @@ same command detaches and prints the run id, exactly as before (fire-and-poll):
 ```bash
 RUN=$(odw run wf.js)     # non-TTY: prints the run id and returns immediately
 odw attach $RUN          # live view (or plain lines when piped); --timeout <s> exits 124
-odw status $RUN          # state + agent count
+odw status $RUN          # state, agent count, tokens and cost
 odw agents $RUN          # each agent and its saved result, mid-run too
 odw logs $RUN --follow   # stream raw progress events
 odw result $RUN          # final value
@@ -404,6 +404,36 @@ is an answer, not an error: the script decides what "no" means.
 [`examples/plan-approve-execute.js`](examples/plan-approve-execute.js) is the full
 plan → approve → execute loop, re-planning when a rejection comes with a note.
 
+### Usage and cost (ODW extension)
+
+A fan-out spends quota fast, so a run shows what it spends as it goes. Every
+`agent_finished` (and `agent_failed`) event carries the agent's `usage`:
+`inputTokens` (cached input included), `outputTokens`, `cacheReadTokens`,
+`cacheWriteTokens` and `costUsd`, summed over all its CLI runs, as the CLI reported
+them — the built-in `claude` adapter reports them all. Where a CLI reports no output
+tokens (the text-mode adapters), ODW counts `ceil(chars / 4)` of the reply and marks
+the figure `estimated`.
+
+```text
+$ odw status $RUN
+20261017-101500-ab12cd  [done]  review-swarm
+  dispatched: 9 agent(s)
+  usage: 1.4M tokens in (1.2M cache read, 96k cache write) · ~38k out · $2.871 (estimated in part: 1 of 9 agents reported no output tokens)
+```
+
+- The live view's summary line shows output tokens (what `--budget` counts) and the
+  running cost; each settled agent's line shows its own cost.
+- `GET /api/runs` and `GET /api/runs/:id` carry the run's total as `usage`
+  (`estimated: true` when some agent's output tokens are an estimate), and
+  `/api/runs/:id` each agent's own.
+- `budget.spent()` counts output tokens the same way: the CLI's count where it gave one.
+- One `parallel()` or `pipeline()` call that fans out more than `fanOutWarn` tasks or
+  items (default 25; `0` or `null` turns it off) logs one warning with the count —
+  `large fan-out: parallel() starts 40 tasks (over fanOutWarn: 25) — …` — and goes on.
+
+Adapters declare where their CLI reports usage in their `output`; see
+[Configure adapters](#configure-adapters).
+
 ## Dashboard: observe, inspect, chat
 
 The dashboard reads like a printed sheet — paper, ink and one signal colour — and
@@ -484,7 +514,7 @@ Cursor work out of the box:
 | Adapter | Local CLI | Non-interactive contract |
 | --- | --- | --- |
 | `codex` | `codex` | text on stdout; web search enabled |
-| `claude` | `claude` | text on stdout; WebSearch/WebFetch allowed |
+| `claude` | `claude` | stream-json events; reply, usage, cost and errors from its `result` event; WebSearch/WebFetch allowed |
 | `gemini` | `gemini` | text on stdout |
 | `qwen` | `qwen` | text on stdout |
 | `kimi` | `kimi` | text on stdout |
@@ -528,9 +558,36 @@ the event and final-text path explicitly:
 }
 ```
 
+**ODW extension:** a JSON output can also say what a run spent and whether the
+CLI itself reported a failure. The built-in `claude` adapter is declared this way:
+
+```jsonc
+"output": {
+  "format": "jsonl",
+  "eventType": "result",          // the event the reply comes from (the last one wins)
+  "textPath": ["result"],
+  "select": "last",
+  "usagePath": ["usage"],         // token counts, in a usageEvent (default: eventType)
+  "costPath": ["total_cost_usd"], // US dollars, in the same event
+  "errorPath": ["is_error"]       // true, a message or an error object: the run failed with it
+}
+```
+
+Usage from every `usageEvent` adds up; it is normalized across the CLIs' field
+names (Anthropic's, OpenAI's, Codex's — see
+[`src/adapters/usage.ts`](src/adapters/usage.ts)). A CLI that prints one JSON
+document instead takes `{ "format": "json", "textPath": […], "usagePath": […],
+"costPath": […], "errorPath": […] }`; a whole number in a path indexes an array
+(negative: from its end). A failure reported at `errorPath` is classified like
+any failed run — whatever the exit status — so a rate limit is retried and a spent
+quota says when it resets. When the declared text is not in the output — a CLI
+whose format drifted, or a misconfiguration — the raw stdout becomes the reply and
+the run's log says why; the agent does not fail.
+
 ODW returns only the decoded final response to the workflow; JSONL output is
-decoded line by line as it streams, and only a bounded tail of stderr is kept for
-error messages. On Windows, executable discovery follows `PATHEXT`, so normal
+decoded line by line as it streams (keeping the latest text and a usage total, not
+the transcript), and only a bounded tail of stderr is kept for error messages. On
+Windows, executable discovery follows `PATHEXT`, so normal
 `agent.cmd`, `kilo.cmd`, and `omp.exe` shims are detected without full paths.
 
 Config keys live at the **top level** — there is no `"settings"` wrapper, and odw
@@ -562,12 +619,13 @@ wins over a restart.
 }
 ```
 
-The watchdog is **off by default for every built-in adapter**: some CLIs —
-`claude --print` in text mode among them — print nothing until they finish, so
+The watchdog is **off by default for every built-in adapter**: some CLIs — the
+text-mode ones (`gemini`, `qwen`, `kimi`, …) — print nothing until they finish, so
 any stall timeout would kill healthy work. Use it for adapters that stream
-progress (JSONL adapters such as `kilo` and `opencode`, or a wrapper that prints
-a heartbeat), with a value above the longest quiet stretch a healthy agent has —
-a long test run inside one tool call prints nothing either.
+progress: `claude` (its stream-json prints an event per turn, so it is now safe to
+enable for it), the JSONL adapters `kilo` and `opencode`, or a wrapper that prints
+a heartbeat — with a value above the longest quiet stretch a healthy agent has: a
+long test run inside one tool call prints nothing either.
 
 ### Rate limits, quotas and logins
 
@@ -600,10 +658,12 @@ agent_failed    (Search) search — [quota, retry after 3h 22m] AdapterExecution
   within a minute (Gemini's free tier words its per-minute limit that way) is
   treated as the rate limit it is.
 
-Claude Code's text mode prints some API errors as its reply and exits 0
-(`API Error: Rate limit reached`): a short reply that is nothing but such a
-rate-limit, quota or login error counts as that failure, never as the agent's
-answer.
+Claude Code reports such errors in its output, often with exit 0: its stream-json
+`result` event says `is_error: true` with the message (`API Error: Rate limit
+reached`, `Claude AI usage limit reached|…`), and that counts as the failure it
+names. In text mode (a text adapter, or JSON output that fell back to its raw
+stdout), a short reply that is nothing but such a rate-limit, quota or login error
+counts as that failure too — never as the agent's answer.
 
 The wording ODW recognizes — collected from each built-in CLI's source and issue
 tracker — lives in one table,
@@ -918,8 +978,8 @@ runs end-to-end (plan → search → extract → vote → report).
 
 Ranked by what users of parallel coding agents report needing
 ([research](docs/research/user-needs-2026-10.md)): adapter-reported token usage and
-cost (today's budget meters an estimate) · review-and-apply for isolated agents'
-diffs · scheduling · evidence of success for headless runs · per-agent transcripts ·
+cost for more CLIs (Claude Code reports it today; the others are estimated) ·
+review-and-apply for isolated agents' diffs · scheduling · evidence of success for headless runs · per-agent transcripts ·
 read/edit/full permission tiers · native structured output · per-phase adapters
 and fallback chains · evaluation. Full plan: [`docs/ROADMAP.md`](docs/ROADMAP.md); the
 original design: [`docs/dynamic-workflows-tech-plan.md`](docs/dynamic-workflows-tech-plan.md).

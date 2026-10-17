@@ -128,7 +128,7 @@ For long runs, fire-and-poll instead of blocking yourself:
 
 ```bash
 RUN=$(odw run wf.js)        # prints a run id and returns immediately
-odw status $RUN             # state + agent count
+odw status $RUN             # state, agent count, tokens and cost
 odw logs $RUN --follow      # stream progress events
 odw result $RUN             # print the final value when done
 odw pause $RUN / resume $RUN / stop $RUN
@@ -261,3 +261,4 @@ without answering when headless (a login, trust or approval prompt).
 | Using `exec()` and expecting the script to run on Claude Code | `exec` is an ODW extension and runs on odw only; `validate()` warns about it. |
 | Using `checkpoint()` and expecting the script to run on Claude Code | `checkpoint` is an ODW extension and runs on odw only; `validate()` warns about it. |
 | Approving a checkpoint yourself because the run looks stuck | A waiting checkpoint is the user's decision: show them `odw status $RUN`, and run `odw approve`/`odw reject` only on their explicit say-so. |
+| Fanning out wide without watching what it spends | `odw status $RUN` shows the run's tokens and cost so far, and a `parallel()`/`pipeline()` wider than `fanOutWarn` (default 25) logs a warning (ODW extensions). Size fan-outs to `budget.total` when one is set; `--budget` caps output tokens. |

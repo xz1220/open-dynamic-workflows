@@ -52,7 +52,7 @@ other primitive organizes calls to it.
 Returns the reply text, or the validated JSON value when `schema` is set. CLI
 errors and exhausted schema retries throw. Inside `parallel`/`pipeline`, these
 recoverable failures become `null`. Fatal errors — stop requests, exhausted
-estimated budgets, the total-agent cap, and invalid adapter/run configuration —
+budgets, the total-agent cap, and invalid adapter/run configuration —
 propagate and terminate the run.
 
 Every call that completes is saved in its run directory
@@ -134,15 +134,19 @@ JSON-looking input that fails to parse is rejected rather than silently passed
 through as a string). `budget.total` is the token target set with
 `odw run … --budget <tokens>`, else `null`; scale depth to it, e.g.
 `budget.total ? Math.floor(budget.total / 120_000) : 5`.
-`spent()` is `ceil(total successful final-reply characters / 4)` across this
-run, including nested workflows. Input tokens, failed calls, and intermediate
-schema-retry replies are not counted. `remaining()` is
+`spent()` is the output tokens spent so far across this run, nested workflows
+included: the CLI's own count wherever its adapter reports usage (the built-in
+`claude` does — an ODW extension), else `ceil(reply characters / 4)` for that
+CLI run. Every CLI run of a call counts — schema retries, rate-limit retries, and
+failed runs that reported usage; input tokens do not. `remaining()` is
 `max(0, total - spent())`, or `Infinity` without a target.
 
 After obtaining a dispatch slot and checking pause/stop, the scheduler rejects
-new agent calls when this estimate reaches the target. In-flight calls may
-finish and exceed it. This is a dispatch guard based on an estimate, not a
-limit on actual token usage or billing.
+new agent calls when `spent()` reaches the target. In-flight calls may finish
+and exceed it. This is a dispatch guard on output tokens, not a limit on
+billing. What each agent and the whole run spent — tokens in and out, cache
+reads and writes, and cost where the CLI reports it — shows in `odw status`, the
+live view and the dashboard (ODW extension).
 
 ## workflow
 
@@ -153,7 +157,7 @@ workflow(nameOrRef, args?) -> Promise<unknown>
 Run another workflow inline and return its final value. A string resolves a
 name from the managed workflow directories; `{ scriptPath }` resolves relative
 to the run's source directory. The child shares the parent's scheduler,
-concurrency cap, agent count, controls, and estimated budget. Its phases have
+concurrency cap, agent count, controls, and budget. Its phases have
 a `▸ <name>` prefix; it has no separate run id. Omitted child `args` becomes
 `null`, rather than inheriting the parent's input.
 
