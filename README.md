@@ -509,6 +509,65 @@ progress (JSONL adapters such as `kilo` and `opencode`, or a wrapper that prints
 a heartbeat), with a value above the longest quiet stretch a healthy agent has —
 a long test run inside one tool call prints nothing either.
 
+### Rate limits, quotas and logins
+
+**ODW extension.** Every failed agent is classified from its CLI's exit status
+and the end of its output: `rate_limit`, `quota`, `auth`, `timeout`, `stalled`,
+`not_found` (the CLI could not start), `permission` (a tool call or approval was
+refused) or `exit`. The class is the `reason` on the `agent_failed` event (with
+`retryAfter`, in seconds, when the CLI said when to come back), the agent's
+`failureReason` in the dashboard and `/api/runs/:id`, and it shows in the live
+view and `odw logs`:
+
+```text
+agent_failed    (Search) search — [quota, retry after 3h 22m] AdapterExecutionError: adapter 'codex' ran out of usage quota — wait for the window to reset (in 3h 22m) and resume the run, or switch adapter with --adapter <name>: You've hit your usage limit…
+```
+
+- **Rate limits** — HTTP 429/529, "too many requests", "overloaded", Gemini's
+  `RESOURCE_EXHAUSTED` — are ridden out: ODW waits, then runs the agent again,
+  up to `transientRetries` times per `agent()` call (default 3). The wait is the
+  retry-after the CLI printed (`Retry-After: 30`, "try again in 2 minutes",
+  "resets at 7:10pm") or else an exponential backoff (15s, 30s, 60s, …), plus up
+  to 20% jitter, and never more than `maxBackoff` seconds (default 300); a CLI
+  that asks to wait longer than that is not retried early. Each wait is logged
+  (`search:3 hit a rate limit on codex — retrying in 45s (2/3)`); a stop ends it
+  at once, and a paused run starts the retry only once resumed.
+- **Spent quotas and failed logins** are never retried. The error says what to
+  do — wait for the quota window, log in to the CLI, or switch adapter with
+  `--adapter` — and the run goes on, since its other adapters may be fine. When
+  three agents in a row fail this way on one adapter, the run logs one warning;
+  `odw resume` later replays every agent that finished. A "quota" that refills
+  within a minute (Gemini's free tier words its per-minute limit that way) is
+  treated as the rate limit it is.
+
+Claude Code's text mode prints some API errors as its reply and exits 0
+(`API Error: Rate limit reached`): a short reply that is nothing but such a
+rate-limit, quota or login error counts as that failure, never as the agent's
+answer.
+
+The wording ODW recognizes — collected from each built-in CLI's source and issue
+tracker — lives in one table,
+[`src/adapters/failures.ts`](src/adapters/failures.ts). Teach it your own CLI's
+with an adapter's `failures`: regular expressions per class, matched
+case-insensitively before the built-in table.
+
+```jsonc
+{
+  "transientRetries": 3, // retries per agent() call after a rate limit; 0 = never
+  "maxBackoff": 300, // longest single wait, in seconds
+  "adapters": {
+    "my_wrapper": {
+      "command": ["my-agent", "{prompt}"],
+      "failures": {
+        "rate_limit": ["server busy", "E_THROTTLED"],
+        "quota": ["monthly tokens? (used up|exhausted)"],
+        "auth": ["session expired"]
+      }
+    }
+  }
+}
+```
+
 ### Run notifications
 
 **ODW extension.** `notify` runs a command and/or POSTs to a webhook when a run

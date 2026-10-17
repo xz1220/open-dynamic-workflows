@@ -83,6 +83,8 @@ shell 出去执行一个本地命令，通过 stdin 或一个参数把拼好的 
 | `timeout` | 每个 agent CLI 的超时（秒） |
 | `stallTimeout` | **ODW 扩展。** agent 在 stdout 和 stderr 上都没有任何输出的最长秒数，超过即像超时一样被杀掉，并用同一个 prompt 重启；`null`（默认）= 关闭。所有内置适配器都默认关闭，因为有些 CLI（文本模式的 `claude --print`）在结束前什么都不输出——请只对会流式输出进度的适配器启用 |
 | `stallRestarts` | 每次 `agent()` 调用在卡死后最多重启几次，用完后调用以 “stalled” 错误失败（默认 1） |
+| `transientRetries` | **ODW 扩展。** CLI 撞上限流（429/529、overloaded）后，每次 `agent()` 调用最多重试几次；每次重试前按指数退避等待，并遵从 CLI 打印的 retry-after（默认 3；`0` = 从不重试）。额度用尽和登录失败从不重试：错误信息会说明该怎么做 |
+| `maxBackoff` | 单次退避等待的最长秒数（默认 300）；CLI 要求等待更久时，不会提前重试 |
 | `schemaRetries` | schema 校验失败时的额外重试次数 |
 | `runsRoot` | run 的存放位置（默认 `~/.odw/runs`） |
 | `workflowsRoot` | 按名字解析 workflow 的目录（默认 `~/.odw/workflows`） |
@@ -101,6 +103,7 @@ shell 出去执行一个本地命令，通过 stdin 或一个参数把拼好的 
 | `stallTimeout` | 这个 CLI 的卡死超时（秒）（覆盖运行级的 `stallTimeout`；`0` 表示对该适配器关闭看门狗） |
 | `label` | 进度显示用的友好名字 |
 | `flags` | 能力声明，如 `{ "model": ["--model"] }`——承载每次调用 `model` 的原生旗标。不声明它，`agent(..., { model })` 对该适配器就不生效（日志里会出现一条路由说明） |
+| `failures` | **ODW 扩展。** 这个 CLI 自己的失败措辞：`{ "rate_limit": [...], "quota": [...], "auth": [...] }`，正则表达式，先于内置表、不区分大小写地匹配失败运行输出的末尾 |
 
 ### 运行通知（`notify`）
 
@@ -131,4 +134,8 @@ hook 只会记录到该运行的 `worker.log`。
 | `{adapter}` / `{role}` | 适配器的名字 / 标签 |
 
 只要一个 CLI 能读取 prompt（经 stdin 或一个参数）并把回复打印到 stdout，它就能接入。非零
-退出、超时，或可执行文件缺失，都会表现为一次失败的 agent 调用。
+退出、超时，或可执行文件缺失，都会表现为一次失败的 agent 调用，并被归类为 `rate_limit`、
+`quota`、`auth`、`timeout`、`stalled`、`not_found`、`permission` 或 `exit`（即其
+`agent_failed` 事件上的 `reason`；只有 `rate_limit` 会重试——见 `transientRetries`）。
+干净退出、但简短回复的内容只是一条限流、额度或登录错误的情况（Claude Code 的文本模式就会这样
+打印，如 `API Error: Rate limit reached`）也一样算作失败。

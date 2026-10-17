@@ -458,6 +458,57 @@ Windows 下的可执行文件探测遵循 `PATHEXT`,所以 `agent.cmd`、`kilo.c
 (例如 `kilo`、`opencode` 这类 JSONL 适配器,或会打印心跳的包装脚本),并把值设得高于
 健康 agent 最长的静默时段——工具调用里跑一轮很长的测试,同样不会有任何输出。
 
+### 限流、额度与登录
+
+**ODW 扩展。** 每个失败的 agent 都会根据其 CLI 的退出状态和输出末尾被归类:`rate_limit`、
+`quota`、`auth`、`timeout`、`stalled`、`not_found`(CLI 无法启动)、`permission`(工具
+调用或审批被拒)或 `exit`。这个类别就是 `agent_failed` 事件上的 `reason`(CLI 说明了何时
+可以重试时,还带有以秒计的 `retryAfter`),也是看板和 `/api/runs/:id` 里该 agent 的
+`failureReason`,并显示在实时视图和 `odw logs` 中:
+
+```text
+agent_failed    (Search) search — [quota, retry after 3h 22m] AdapterExecutionError: adapter 'codex' ran out of usage quota — wait for the window to reset (in 3h 22m) and resume the run, or switch adapter with --adapter <name>: You've hit your usage limit…
+```
+
+- **限流**——HTTP 429/529、"too many requests"、"overloaded"、Gemini 的
+  `RESOURCE_EXHAUSTED`——会被扛过去:ODW 先等待,再重新运行这个 agent,每次 `agent()`
+  调用最多 `transientRetries` 次(默认 3)。等待时长取 CLI 打印的 retry-after
+  (`Retry-After: 30`、"try again in 2 minutes"、"resets at 7:10pm"),否则按指数退避
+  (15s、30s、60s……),再加最多 20% 的随机抖动,且单次绝不超过 `maxBackoff` 秒(默认
+  300);CLI 要求等得比这更久时,不会提前重试。每次等待都会记一条日志
+  (`search:3 hit a rate limit on codex — retrying in 45s (2/3)`);停止会立刻结束等待,
+  暂停的运行要等恢复后才开始重试。
+- **额度用尽和登录失败**从不重试。错误信息会说明该怎么做——等额度窗口重置、登录该 CLI,
+  或用 `--adapter` 换一个适配器——运行本身继续,因为其他适配器可能完全正常。同一个适配器
+  上连续三个 agent 都这样失败时,运行会记一条警告;之后用 `odw resume` 会重放所有已完成
+  的 agent。一分钟内就会恢复的"额度"(Gemini 免费档就是这样描述它的每分钟限额的)按它
+  实际上的限流来处理。
+
+Claude Code 的文本模式会把某些 API 错误当作回复打印出来并以 0 退出
+(`API Error: Rate limit reached`):一条简短、内容只有这类限流、额度或登录错误的回复,
+会被算作对应的失败,而绝不会被当成 agent 的答案。
+
+ODW 能识别的措辞——从每个内置 CLI 的源码和 issue 中收集而来——集中在一张表里:
+[`src/adapters/failures.ts`](src/adapters/failures.ts)。用适配器的 `failures` 教它
+认识你自己 CLI 的措辞:按类别给出正则表达式,先于内置表、不区分大小写地匹配。
+
+```jsonc
+{
+  "transientRetries": 3, // 限流后每次 agent() 调用的重试次数;0 = 从不重试
+  "maxBackoff": 300, // 单次等待的最长秒数
+  "adapters": {
+    "my_wrapper": {
+      "command": ["my-agent", "{prompt}"],
+      "failures": {
+        "rate_limit": ["server busy", "E_THROTTLED"],
+        "quota": ["monthly tokens? (used up|exhausted)"],
+        "auth": ["session expired"]
+      }
+    }
+  }
+}
+```
+
 ### 运行通知
 
 **ODW 扩展。** `notify` 会在一次运行结束时执行一条命令和/或向一个 webhook 发送 POST,

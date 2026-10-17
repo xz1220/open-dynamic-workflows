@@ -88,6 +88,8 @@ did-you-mean hint) instead of silently ignoring them.
 | `timeout` | per-agent CLI timeout in seconds |
 | `stallTimeout` | **ODW extension.** Seconds an agent may print nothing on stdout or stderr before it is killed (like a timeout) and restarted with the same prompt; `null` (default) = off. Off for every built-in because some CLIs (`claude --print` in text mode) print nothing until they finish — enable it for adapters that stream progress |
 | `stallRestarts` | restarts per `agent()` call after a stall before the call fails with a "stalled" error (default 1) |
+| `transientRetries` | **ODW extension.** Retries per `agent()` call after its CLI hit a rate limit (429/529, overloaded), each after an exponential backoff that honors a retry-after the CLI printed (default 3; `0` = never). A spent quota or a failed login is never retried: its error says what to do |
+| `maxBackoff` | the longest single backoff wait, in seconds (default 300); a CLI that asks to wait longer is not retried early |
 | `schemaRetries` | extra attempts when a schema fails to validate |
 | `runsRoot` | where runs are stored (default `~/.odw/runs`) |
 | `workflowsRoot` | where workflows are resolved by name (default `~/.odw/workflows`) |
@@ -106,6 +108,7 @@ did-you-mean hint) instead of silently ignoring them.
 | `stallTimeout` | stall timeout in seconds for this CLI (overrides the run-wide `stallTimeout`; `0` turns the watchdog off for this adapter) |
 | `label` | human-friendly name for progress display |
 | `flags` | capability declaration, e.g. `{ "model": ["--model"] }` — the native flag that carries a per-call `model`. Without it, `agent(..., { model })` is not honored for this adapter (a routing note appears in the logs) |
+| `failures` | **ODW extension.** This CLI's own failure wording: `{ "rate_limit": [...], "quota": [...], "auth": [...] }`, regular expressions matched case-insensitively against the end of a failed run's output before the built-in table |
 
 ### Run notifications (`notify`)
 
@@ -138,4 +141,8 @@ Expanded in `command` and `stdin` before each call:
 
 A CLI fits as long as it reads a prompt (via stdin or an argument) and prints its
 reply to stdout. Non-zero exit, a timeout, or a missing executable surface as a
-failed agent call.
+failed agent call, classified as `rate_limit`, `quota`, `auth`, `timeout`,
+`stalled`, `not_found`, `permission` or `exit` (the `reason` on its
+`agent_failed` event; only `rate_limit` is retried — see `transientRetries`).
+So does a clean exit whose short reply is nothing but a rate-limit, quota or
+login error, as Claude Code's text mode prints them (`API Error: Rate limit reached`).
