@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { renderJson } from "../web/src/components/json.ts";
+import { transcriptEntries } from "../web/src/components/transcript.ts";
 import { renderPulse } from "../web/src/components/pulse.ts";
 import { highlightSource, outlineSource } from "../web/src/components/source.ts";
 import { renderTimeline } from "../web/src/components/timeline.ts";
@@ -13,8 +14,9 @@ import { renderDag } from "../web/src/dag.ts";
 import { applyRunsDelta, store } from "../web/src/store.ts";
 import { renderActivity } from "../web/src/views/activity.ts";
 import { renderJob, type JobViewState } from "../web/src/views/job.ts";
+import { renderJobs } from "../web/src/views/jobs.ts";
 import type { ActivityEvent, AgentView, RunDetail, RunSummary } from "../web/src/types.ts";
-import { esc, fmtDurSec, fmtTokens, fmtUsd, fuzzy, markHits } from "../web/src/util.ts";
+import { cronWords, esc, fmtDurSec, fmtTokens, fmtUsd, fuzzy, markHits } from "../web/src/util.ts";
 
 const NOW = 1_800_000_000;
 
@@ -441,4 +443,107 @@ test("the outline and the highlighter know checkpoint()", () => {
   const phases = outlineSource(src, ["Plan", "Approve"]);
   assert.deepEqual(phases.find((p) => p.title === "Approve")?.ops, [{ kind: "checkpoint", n: 1 }]);
   assert.match(highlightSource(src), /<span class="tk-f">checkpoint<\/span>/);
+});
+
+test("cronWords says the common schedules in words and leaves the rest alone", () => {
+  assert.equal(cronWords("15 2 * * 1-5"), "02:15 on weekdays");
+  assert.equal(cronWords("*/30 * * * *"), "every 30 minutes");
+  assert.equal(cronWords("5 * * * *"), "hourly at :05");
+  assert.equal(cronWords("0 9 * * *"), "09:00 daily");
+  assert.equal(cronWords("0 9 * * 1,3"), "09:00 on Mon, Wed");
+  assert.equal(cronWords("0 9 * * 0,6"), "09:00 on weekends");
+  assert.equal(cronWords("0 9 1 * *"), null, "a day of month: shown as the expression");
+  assert.equal(cronWords("0 9-17 * * *"), null);
+});
+
+test("Jobs lists what odw schedule starts next, soonest first", () => {
+  const prevRuns = store.runs;
+  const prevSchedules = store.schedules;
+  store.runs = [summary({ runId: "r-old", state: "done" })];
+  const at = (sec: number) => new Date((NOW + sec) * 1000).toISOString();
+  store.schedules = [
+    { name: "weekly", workflow: "/p/digest.js", cron: "0 9 * * 1", backend: "cron", cwd: "/p", installed: false, lastRun: null, nextRun: at(3 * 86_400) },
+    { name: "triage", workflow: "/p/survey.js", cron: "*/30 * * * *", backend: "systemd", cwd: "/p", installed: true, lastRun: { runId: "20260101-000000-bbbbbb", state: "done", at: at(-600) }, nextRun: at(420) },
+  ];
+  const html = renderJobs({ filter: "all", query: "", limit: 100 }, NOW);
+  assert.match(html, /<h2>Upcoming<\/h2>/);
+  assert.ok(html.indexOf("sc-triage") < html.indexOf("sc-weekly"), "soonest first");
+  assert.match(html, /in 7m/);
+  assert.match(html, /every 30 minutes/);
+  assert.match(html, /href="#\/job\/20260101-000000-bbbbbb"/, "the last run links to its job");
+  assert.match(html, /class="card sched missing"[\s\S]*?Its cron entry is missing: odw schedule remove weekly/);
+  assert.match(html, /never ran/);
+  assert.ok(!renderJobs({ filter: "failed", query: "", limit: 100 }, NOW).includes("Upcoming"), "only on the All view");
+  assert.ok(!renderJobs({ filter: "all", query: "zzz", limit: 100 }, NOW).includes("Upcoming"), "the filter applies");
+  store.runs = [];
+  assert.match(renderJobs({ filter: "all", query: "", limit: 100 }, NOW), /<h2>Upcoming<\/h2>[\s\S]*No runs yet/, "schedules show before the first run");
+  store.runs = prevRuns;
+  store.schedules = prevSchedules;
+});
+
+test("transcript entries read as a log: prose, tool chips, results, retries", () => {
+  const html = transcriptEntries([
+    { i: 0, kind: "raw", text: "model x · 2 tools: Read, Bash" },
+    { i: 1, kind: "text", text: "Let me <check>.", thinking: true },
+    { i: 2, kind: "text", text: "Checking the tests." },
+    { i: 3, kind: "tool_call", tool: "Bash", text: "npm test", input: { command: "npm test", description: "run" } },
+    { i: 4, kind: "tool_result", tool: "Bash", text: "exit 1, 3 lines", output: "✗ 1 failing", isError: true },
+    { i: 5, kind: "attempt", n: 2, reason: "schema" },
+    { i: 6, kind: "result", turns: 4, costUsd: 0.0123 },
+    { i: 7, kind: "truncated", bytes: 5_000_000 },
+  ]);
+  assert.match(html, /class="tx tx-think"[\s\S]*?Let me &lt;check&gt;\./, "escaped, marked as thinking");
+  assert.match(html, /<span class="tx-tool">▸ Bash<\/span><code class="tx-what">npm test<\/code>/);
+  assert.match(html, /<details class="tx-fold"><summary>input<\/summary><pre>\{\n {2}&quot;command&quot;/, "the input is folded away");
+  assert.match(html, /class="tx tx-res err"[\s\S]*?<details class="tx-fold" open><summary>output/, "a failed tool's output starts open");
+  assert.match(html, /attempt 2 · schema retry/);
+  assert.match(html, /done · 4 turns · \$0\.012/);
+  assert.match(html, /maxTranscriptBytes/);
+});
+
+test("the transcript sheet opens over the graph and freezes its host for appends", () => {
+  const view: JobViewState = {
+    cpNote: "",
+    tab: "graph",
+    selectedAi: 0,
+    reviewAi: null,
+    transcriptAi: 0,
+    zoom: 1,
+    logQuery: "",
+    logTypes: new Set(["agent"]),
+    logLimit: 600,
+    follow: true,
+    motion: false,
+  };
+  store.focusRun("20260101-000000-aaaaaa");
+  store.run = detail([agent("search:1", "Search", "running", { agentId: 7 })], { state: "running" });
+  store.transcripts.set("20260101-000000-aaaaaa:7", { entries: [{ i: 0, kind: "text", text: "hi" }], next: 1, dropped: 0, truncated: false, replayed: false, missing: false });
+  const html = renderJob(view, NOW);
+  assert.match(html, /<button class="btn sm tx-open" data-transcript="0">/, "the drawer offers the transcript");
+  assert.match(html, /<aside class="sheet" data-key="tx-sheet"/);
+  assert.match(html, /1 entry · following/);
+  assert.match(html, /data-copy="odw logs 20260101-000000-aaaaaa --agent 7 --follow"/);
+  assert.match(html, /<div class="tx-host"[^>]*data-morph="skip"[^>]*data-tx="20260101-000000-aaaaaa:7"/);
+  assert.match(html, /class="tx-wait"/, "a live agent shows it is working");
+  store.transcripts.clear();
+  store.focusRun(null);
+});
+
+test("the drawer names an agent's permission tier", () => {
+  const view: JobViewState = {
+    cpNote: "",
+    tab: "graph",
+    selectedAi: 0,
+    reviewAi: null,
+    zoom: 1,
+    logQuery: "",
+    logTypes: new Set(["agent"]),
+    logLimit: 600,
+    follow: true,
+    motion: false,
+  };
+  store.focusRun("20260101-000000-aaaaaa");
+  store.run = detail([agent("review:1", "Review", "done", { agentId: 1, permissions: "read" })], { state: "done" });
+  assert.match(renderJob(view, NOW), /<span class="k">permissions<\/span><span class="v"><span class="tag perm-read" title="reads and searches; no edits, no commands">read<\/span>/);
+  store.focusRun(null);
 });

@@ -17,6 +17,9 @@
  *                    (an AgentResultRecord; `agent_finished` carries `saved: true`)
  *     agents/<agentId>.diff  what an isolated agent changed, as a unified diff
  *                    (ODW extension; its event and record carry `changes`)
+ *     agents/<agentId>.transcript.jsonl  what an agent's CLI printed on stdout, as it ran
+ *                    (ODW extension; see ../transcript), and agents/<agentId>.stderr.txt
+ *                    the end of its stderr — none for a replayed agent
  *     result.json    final return value (on success)
  *     error.json     message + stack (on failure)
  *     control.json   pause/resume/stop request written by the CLI
@@ -49,6 +52,7 @@ import { basename, join } from "node:path";
 import { isCheckpointRequest, type CheckpointRequest } from "../control.js";
 import type { EventSink, WorkflowEvent } from "../events.js";
 import type { AgentResultRecord } from "../journal.js";
+import type { TranscriptPaths } from "../transcript.js";
 import { readdirSafe, readJsonFile, writeJsonAtomic } from "./fs-util.js";
 
 /** Terminal states: a run in one of these will not change again. */
@@ -82,6 +86,8 @@ export interface CreateRunInput {
   inlineSource?: string | null;
   /** Run-level adapter override: the default `agent()` adapter for this run. */
   adapter?: string | null;
+  /** Run-level permission tier override (`--permissions`; ODW extension), else the config's. */
+  permissions?: string | null;
   /** Where the run was initiated from (e.g. "chat" for Chat Host runs). */
   origin?: string | null;
   /**
@@ -144,6 +150,7 @@ export class RunStore {
       budgetTotal: input.budgetTotal ?? null,
       workflowName: input.workflowName ?? null,
       adapter: input.adapter ?? null,
+      permissions: input.permissions ?? null,
       origin: input.origin ?? null,
       resumedFrom: input.resumedFrom?.runId ?? null,
       resumedFromDir: input.resumedFrom?.dir ?? null,
@@ -339,6 +346,16 @@ export class RunStore {
   agentDiffPath(runId: string, agentId: number): string {
     if (!isAgentId(agentId)) throw new Error(`invalid agentId ${String(agentId)}`);
     return join(this.runDir(runId), AGENTS, `${agentId}.diff`);
+  }
+  /**
+   * Where an agent's transcript is kept as it runs (ODW extension): what its
+   * CLI printed on stdout, `agents/<agentId>.transcript.jsonl`, and the end of
+   * its stderr, `agents/<agentId>.stderr.txt` (see ../transcript).
+   */
+  agentTranscriptPaths(runId: string, agentId: number): TranscriptPaths {
+    if (!isAgentId(agentId)) throw new Error(`invalid agentId ${String(agentId)}`);
+    const dir = join(this.runDir(runId), AGENTS);
+    return { transcript: join(dir, `${agentId}.transcript.jsonl`), stderr: join(dir, `${agentId}.stderr.txt`) };
   }
   /** Every saved agent result of a run, by agentId (call order). */
   listAgentResults(runId: string): AgentResultRecord[] {

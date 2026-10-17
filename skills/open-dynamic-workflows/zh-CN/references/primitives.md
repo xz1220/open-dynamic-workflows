@@ -42,6 +42,12 @@ agent(prompt, opts?) -> Promise<unknown>
 - **opts.keep**（**ODW 扩展**）—— 配合 `isolation: "worktree"`，还会把 agent 的改动提交到
   源仓库的分支 `odw/<runId>/<agentId>-<label>`。`false` 让单个 agent 不受 `keepBranches`
   设置影响。没有隔离时会被忽略（并记一行日志）；Claude Code 会忽略它。
+- **opts.permissions**（**ODW 扩展**）—— `"read"`、`"edit"` 或 `"full"`：让这个 agent 以比
+  运行（配置里的 `"permissions"`、`odw run --permissions`）更严格的权限档位运行。调研和审查
+  类 agent 请用 `"read"`：它们能看，不能改文件、不能跑命令。它只能降低档位（read < edit <
+  full）——请求更高档位会让调用以 `AgentError` 失败，报错写明两个档位——没有只读模式的适配器会
+  拒绝 `"read"`（调用在 CLI 启动前失败；`claude`、`codex` 和 `gemini` 有只读模式）。见
+  [适配器](adapters.md#权限每个内置适配器能做什么)。Claude Code 会忽略它。
 
 返回回复文本，设了 `schema` 则返回校验过的 JSON 值。CLI 出错或 schema 重试耗尽会抛错；
 这些可恢复失败在 `parallel`/`pipeline` 内变成 `null`。停止请求、预算耗尽和 agent
@@ -160,8 +166,8 @@ warnings 提示 `Date.now()`、`Math.random()`、调用仅 ODW 提供的 `exec()
 `agent()` 调用的*恢复键*与旧运行保存的调用一致时，它会**重放**：立即返回旧运行保存的值，
 不调用 adapter、不占并发槽位、不计入派发数、不消耗预算。恢复键是 prompt 加上
 `schema`、`adapter`（调用里写的值，而不是运行的默认值）、`model`、`agentType`、
-`isolation` 和 `label` 的 sha256。`phase` 不在键里；resume 时的 `--adapter` 只改默认值，
-所以没指定 adapter 的调用仍会重放。同一个键的多次调用按调用顺序重放（第 n 次这样的调用
+`isolation`、`label` 和 `permissions`（调用里写的值）的 sha256。`phase` 不在键里；resume
+时的 `--adapter` 或 `--permissions` 只改运行的默认值，所以没指定 adapter 或档位的调用仍会重放。同一个键的多次调用按调用顺序重放（第 n 次这样的调用
 拿到第 n 个保存的结果）；超出的调用，以及 prompt 或选项改变的调用，照常执行。嵌套的
 `workflow()` 调用同样会重放。`checkpoint()` 永远不会重放：恢复出来的运行会重新提问。
 
@@ -399,7 +405,9 @@ resume 依赖同一条规则：调用按 prompt 和选项、按调用顺序匹�
 ## 限制
 
 - **并发上限** —— 同时最多跑 N 个 agent CLI（默认 `min(16, cpus-2)`；在配置里设
-  `concurrency`）。多出来的调用排队。
+  `concurrency`）。多出来的调用排队。适配器自己的 `concurrency` 在此之内限制它的 agent，
+  一次限流会让它在本次运行中减半；在 `claude` 上，提示共享较长前缀的扇出会错开启动
+  （均为 ODW 扩展；见 `references/adapters.md`）。
 - **agent 总量兜底** —— 单次运行派发量的硬上限（默认 1000）。超过就中止运行，这样一个有
   bug 的循环不会无限扇出。
 - `exec()` 命令不计入以上任何一项限制；每条命令由它自己的 `timeout` 和

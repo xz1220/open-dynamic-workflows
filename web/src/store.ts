@@ -20,7 +20,9 @@ import type {
   Connection,
   RunDetail,
   RunSummary,
+  ScheduleView,
   SettingsSnapshot,
+  TranscriptEntry,
   WorkflowEvent,
   WorkflowSummary,
 } from "./types";
@@ -56,6 +58,11 @@ class Store {
   private activitySig = "";
   /** Persisted agent outputs by `${runId}:${agentId}`; null = none available. */
   agentResults = new Map<string, AgentResultRecord | null>();
+  /** Agent transcripts by `runId:agentId`, loaded page by page and kept growing while the agent runs. */
+  transcripts = new Map<string, TranscriptState>();
+  private transcriptsLoading = new Set<string>();
+  /** `odw schedule` entries for the Jobs page (empty until loaded, or from older servers). */
+  schedules: ScheduleView[] = [];
   /** Parsed diffs of worktree agents by `runId:agentId`; null = none to show. */
   agentDiffs = new Map<string, ParsedDiff | null>();
   private diffsLoading = new Set<string>();
@@ -383,6 +390,62 @@ class Store {
     if (this.run?.runId === runId) this.emit();
   }
 
+  /**
+   * Fetch what is new in one agent's transcript (from where the last load
+   * stopped, following `more`). The newest TRANSCRIPT_KEEP entries are kept;
+   * older ones are dropped and counted.
+   */
+  async loadTranscript(runId: string, agentId: number): Promise<void> {
+    const key = `${runId}:${agentId}`;
+    if (this.transcriptsLoading.has(key)) return;
+    if (!this.transcripts.has(key) && this.transcripts.size >= 12) this.transcripts.delete(this.transcripts.keys().next().value!);
+    this.transcriptsLoading.add(key);
+    let changed = false;
+    try {
+      for (let pages = 0; pages < 20; pages++) {
+        const cur = this.transcripts.get(key);
+        const page = await api.transcript(runId, agentId, cur?.next ?? 0);
+        if (page === null) {
+          if (!cur?.missing) this.transcripts.set(key, { entries: [], next: 0, dropped: 0, truncated: false, replayed: false, missing: true });
+          changed = !cur?.missing;
+          break;
+        }
+        if (page.entries.length || !cur || cur.truncated !== page.truncated || cur.replayed !== page.replayed) {
+          const entries = [...(cur?.entries ?? []), ...page.entries];
+          const over = Math.max(0, entries.length - TRANSCRIPT_KEEP);
+          this.transcripts.set(key, {
+            entries: over ? entries.slice(over) : entries,
+            next: page.next,
+            dropped: (cur?.dropped ?? 0) + over,
+            truncated: page.truncated,
+            replayed: page.replayed,
+            missing: false,
+          });
+          changed = true;
+        }
+        if (!page.more) break;
+      }
+    } catch {
+      /* a dropped request: the next poll tries again */
+    } finally {
+      this.transcriptsLoading.delete(key);
+    }
+    if (changed && this.run?.runId === runId) this.emit();
+  }
+
+  /** Refresh the scheduled runs; repaints only when something changed. */
+  async loadSchedules(): Promise<void> {
+    let next: ScheduleView[];
+    try {
+      next = await api.schedules();
+    } catch {
+      next = []; // an older server has no /api/schedules
+    }
+    if (JSON.stringify(next) === JSON.stringify(this.schedules)) return;
+    this.schedules = next;
+    this.emit();
+  }
+
   /** Fetch and parse one agent's diff once; diffs are immutable once the agent finished. */
   async loadAgentDiff(runId: string, agentId: number): Promise<void> {
     const key = `${runId}:${agentId}`;
@@ -468,6 +531,21 @@ class Store {
 }
 
 /** Merge an SSE delta into the run list, keeping newest-first order. */
+/** Transcript entries a page keeps in memory per agent; older ones are dropped (the CLI shows them all). */
+export const TRANSCRIPT_KEEP = 4000;
+
+export interface TranscriptState {
+  entries: TranscriptEntry[];
+  /** The `since` of the next load. */
+  next: number;
+  /** Entries dropped from the front to stay under TRANSCRIPT_KEEP. */
+  dropped: number;
+  truncated: boolean;
+  replayed: boolean;
+  /** The server kept no transcript for this agent (404). */
+  missing: boolean;
+}
+
 export function applyRunsDelta(runs: RunSummary[], upsert: RunSummary[], remove: string[]): RunSummary[] {
   const byId = new Map(runs.map((r) => [r.runId, r]));
   for (const id of remove) byId.delete(id);

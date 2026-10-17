@@ -13,7 +13,9 @@ import type {
   ChatSessionSummary,
   RunDetail,
   RunSummary,
+  ScheduleView,
   SettingsSnapshot,
+  TranscriptPage,
   WorkflowDetail,
   WorkflowEvent,
   WorkflowSummary,
@@ -69,6 +71,15 @@ export const api = {
     if (!r.ok) throw new Error(`diff of agent ${agentId} → ${r.status}`);
     return r.text();
   },
+  /** A page of an agent's transcript from `since`; null when the agent kept none (404). */
+  transcript: async (id: string, agentId: number, since: number): Promise<TranscriptPage | null> => {
+    const r = await fetch(`/api/runs/${enc(id)}/agents/${agentId}/transcript?since=${since}`, { headers: { accept: "application/json" } });
+    if (r.status === 404) return null;
+    if (!r.ok) throw new Error(`transcript of agent ${agentId} → ${r.status}`);
+    return (await r.json()) as TranscriptPage;
+  },
+  /** `odw schedule` entries; empty from servers without schedules. */
+  schedules: () => getJSON<ScheduleView[]>("/api/schedules"),
   workflows: () => getJSON<WorkflowSummary[]>("/api/workflows"),
   workflow: (name: string, provider?: string) =>
     getJSON<WorkflowDetail>(`/api/workflows/${enc(name)}${provider ? `?provider=${enc(provider)}` : ""}`),

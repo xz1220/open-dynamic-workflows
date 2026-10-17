@@ -30,6 +30,14 @@
  *                                   kept in the run directory (ODW extension): text/plain; 404 when
  *                                   it kept none (no change, not isolated, a Claude run); the same
  *                                   :agentId check. RunDetail.agents[] carry `changes` and `branch`
+ *   GET  /api/runs/:id/agents/:agentId/transcript?since=<i>   what the agent's CLI printed (ODW
+ *                                   extension), normalized: { entries, next, more, truncated,
+ *                                   replayed } — the entries from index `since` (lenient, as for
+ *                                   events), at most 1000; ask again with ?since=next while `more`.
+ *                                   An agent replayed by odw resume has none: entries [], replayed
+ *                                   true. 404 when it has none (not started, a run from before
+ *                                   transcripts or with maxTranscriptBytes 0, a Claude run); the
+ *                                   same :agentId check
  *   POST /api/runs/:id/control      { action: pause|resume|stop } (ODW runs; Claude runs → 409)
  *   POST /api/runs/:id/checkpoint   { action: approve|reject, checkpointId?, note? } answers a
  *                                   waiting checkpoint() (ODW extension) — the one named, else the
@@ -57,7 +65,7 @@
  * adapter counts as "claude" in a Claude Code run, else "unknown").
  *
  * The polled GETs (/api/runs, /api/runs/:id, …/events, …/result, …/agents[/:agentId],
- * /api/activity) carry an ETag (with cache-control: no-cache) and answer
+ * …/agents/:agentId/transcript, /api/activity) carry an ETag (with cache-control: no-cache) and answer
  * If-None-Match with 304.
  * Request bodies are capped at 128 KiB (413 past it); a malformed %-escape in a
  * path id is a 400.
@@ -91,6 +99,7 @@ import {
   resolveWorkflowsRoot,
   RUN_END_STATES,
 } from "../adapters/config.js";
+import { commandAt, runTier } from "../adapters/permissions.js";
 import type { Config } from "../adapters/types.js";
 import { CHECKPOINT_NOTE_MAX, isCheckpointId } from "../control.js";
 import { DASHBOARD_HTML } from "../dashboard.generated.js";
@@ -322,7 +331,9 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandleCont
       return;
     }
 
-    const runMatch = path.match(/^\/api\/runs\/([^/]+)(\/events|\/control|\/checkpoint|\/result|\/agents(?:\/[^/]+(?:\/diff)?)?)?$/);
+    const runMatch = path.match(
+      /^\/api\/runs\/([^/]+)(\/events|\/control|\/checkpoint|\/result|\/agents(?:\/[^/]+(?:\/diff|\/transcript)?)?)?$/,
+    );
     if (runMatch) {
       const sub = runMatch[2];
       // Writes are gated before any run lookup: an off-loopback bind refuses
@@ -381,12 +392,23 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandleCont
       }
       if (method === "GET" && sub?.startsWith("/agents/")) {
         const rest = sub.slice("/agents/".length);
-        const wantsDiff = rest.endsWith("/diff");
+        const artifact = /\/(diff|transcript)$/.exec(rest)?.[1];
+        const wantsDiff = artifact === "diff";
         // The id names a file: only a non-negative integer may reach the store.
-        const raw = decodeSegment(wantsDiff ? rest.slice(0, -"/diff".length) : rest);
+        const raw = decodeSegment(artifact ? rest.slice(0, -(artifact.length + 1)) : rest);
         const agentId = raw !== null && /^\d+$/.test(raw) ? Number(raw) : NaN;
         if (!Number.isSafeInteger(agentId)) {
           sendJson(res, 400, { error: "agentId must be a non-negative integer" });
+          return;
+        }
+        if (artifact === "transcript") {
+          // What the agent's CLI printed (ODW extension), normalized, a page from entry `since` on.
+          const page = src.agentTranscript(runId, agentId, sinceParam(url.searchParams));
+          if (!page) {
+            sendJson(res, 404, { error: `agent ${agentId} has no transcript` });
+            return;
+          }
+          sendJsonCached(req, res, page);
           return;
         }
         if (wantsDiff) {
@@ -446,10 +468,11 @@ function settingsView(
     runsRoot: store.root,
     writable: isLoopbackBind(boundHost),
     claudeJobsScope: config.settings.claudeJobsScope,
-    adapters: listAdapters(config).map((a) => ({
-      ...a,
-      command: config.adapters[a.name]?.command.join(" ") ?? "",
-    })),
+    adapters: listAdapters(config).map((a) => {
+      // The argv it runs with at the configured permission tier (ODW extension).
+      const adapter = config.adapters[a.name];
+      return { ...a, command: adapter ? commandAt(adapter, runTier(config)).join(" ") : "" };
+    }),
     workflowRoots: [
       { provider: "odw", scope: "project", label: ".odw/workflows", path: join(cwd, ".odw", "workflows") },
       { provider: "claude", scope: "project", label: ".claude/workflows", path: join(cwd, ".claude", "workflows") },
@@ -555,6 +578,12 @@ function agentListing(rec: AgentResultRecord): Record<string, unknown> {
     cached: rec.cached === true,
     finishedAt: rec.finishedAt ?? null,
   };
+}
+
+/** `?since=N` as an index: junk or negative means 0, as it always has for events. */
+function sinceParam(params: URLSearchParams): number {
+  const since = Math.floor(Number(params.get("since") ?? "0") || 0);
+  return Math.min(Math.max(0, since), Number.MAX_SAFE_INTEGER);
 }
 
 /**

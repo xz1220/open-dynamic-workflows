@@ -25,13 +25,28 @@
  * What each agent spent travels on its agent_finished (or agent_failed) event
  * as `usage` (an ODW extension, adapters/usage.ts): what its CLI reported, or
  * — where it reported no output tokens — chars/4 of its replies, `estimated`.
+ *
+ * What each agent's CLI printed is kept as it runs, as the agent's transcript
+ * (an ODW extension; see ./transcript) — complete before its terminal event.
+ *
+ * Every agent_started event carries the agent's permission tier (an ODW
+ * extension, adapters/permissions.ts); an adapter that runs another tier than
+ * its agents ask for is logged once per run.
+ *
+ * An agent runs on its adapter's own concurrency cap when it has one, and its
+ * rate limits lower that cap (ODW extensions; see ./scheduler); in a
+ * parallel() or pipeline() call on a prompt-caching adapter, agents sharing a
+ * long prompt prefix start staggered (an ODW extension; see ./throttle).
  */
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import { readFileSync } from "node:fs";
 import { copyFile, mkdir } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 
 import { formatSeconds } from "./adapters/failures.js";
+import { isPermissionTier, planPermissions, runTier } from "./adapters/permissions.js";
+import type { Adapter, PermissionTier } from "./adapters/types.js";
 import { addUsage, estimatedUsage, type Usage } from "./adapters/usage.js";
 import type { AgentRequest } from "./bridge.js";
 import { branchName, ChangeRecorder, type AgentChanges, type KeptChanges } from "./changes.js";
@@ -45,6 +60,8 @@ import { resumeKey, type AgentResultRecord } from "./journal.js";
 // the module cycle is erased at compile time and never exists at runtime.
 import { loadWorkflowScript, scanDualCompat, type WorkflowMeta } from "./loader.js";
 import type { JsonSchema } from "./schema.js";
+import { FanOut } from "./throttle.js";
+import { TranscriptRecorder } from "./transcript.js";
 import { resolveWorkflow } from "./workflows/resolve.js";
 
 export interface AgentOptions {
@@ -68,6 +85,12 @@ export interface AgentOptions {
    * one agent out of the `keepBranches` setting. No effect without isolation.
    */
   keep?: boolean;
+  /**
+   * ODW extension: run this agent at a stricter permission tier than the
+   * run's — `"read"` for research and review. It may only lower the tier
+   * (read < edit < full): asking for more than the run allows fails the call.
+   */
+  permissions?: PermissionTier;
 }
 
 export interface Budget {
@@ -127,6 +150,9 @@ export function createPrimitives(
 ): WorkflowGlobals {
   const depth = internal.depth ?? 0;
   const phasePrefix = internal.phasePrefix ?? "";
+  // Adapters whose permissions note the run has logged: once per adapter per
+  // run, shared with nested workflow()s (their contexts are copies of this one).
+  const notedPermissions = (ctx.permissionNotes ??= new Set<string>());
 
   /**
    * Save a completed agent's record before its agent_finished event, so an
@@ -174,7 +200,9 @@ export function createPrimitives(
       // The run whose agent actually produced the value, across chained resumes.
       sourceRunId: recorded.cached && recorded.sourceRunId ? recorded.sourceRunId : ctx.replay!.sourceRunId,
     };
-    const startedEv = event(AGENT_STARTED, { agentId, label, phase, adapter, ...marks });
+    // The tier the value was produced at, when the record says (ODW extension).
+    const tier = permissionField(recorded.permissions);
+    const startedEv = event(AGENT_STARTED, { agentId, label, phase, adapter, ...tier, ...marks });
     ctx.emit(startedEv);
     const kept = await carryChanges(recorded, agentId, (message) =>
       ctx.emit(event(LOG, { message: `${label}:${agentId}: ${message}`, agentId, label, phase })),
@@ -183,7 +211,7 @@ export function createPrimitives(
     const startedAt = startedEv.ts;
     const finishedAt = finished.ts;
     const value = recorded.value;
-    if (save({ agentId, key, label, phase, adapter, attempts, startedAt, finishedAt, value, ...marks, ...changeFields(kept) })) {
+    if (save({ agentId, key, label, phase, adapter, attempts, startedAt, finishedAt, value, ...tier, ...marks, ...changeFields(kept) })) {
       finished.saved = true;
     }
     ctx.emit(finished);
@@ -239,6 +267,26 @@ export function createPrimitives(
     });
   };
 
+  /**
+   * What keeps an agent's transcript as it runs (ODW extension; see
+   * ./transcript) — only in a persisted run, and unless `maxTranscriptBytes`
+   * is 0. A JSONL adapter's events are kept as they come; anything else as text.
+   */
+  const transcriptRecorder = (
+    agentId: number,
+    adapter: Adapter,
+    note: (message: string) => void,
+  ): TranscriptRecorder | undefined => {
+    const maxBytes = ctx.config.settings.maxTranscriptBytes;
+    if (!ctx.agentTranscriptPaths || !maxBytes) return undefined;
+    return new TranscriptRecorder({
+      ...ctx.agentTranscriptPaths(agentId),
+      format: adapter.output?.format === "jsonl" ? "jsonl" : "text",
+      maxBytes,
+      onNote: note,
+    });
+  };
+
   /** Settle a call's kept change, or drop it when the run ended under the call. Never throws. */
   const keepChanges = async (
     recorder: ChangeRecorder | undefined,
@@ -272,6 +320,17 @@ export function createPrimitives(
     // that never ran as running.
     const adapter = ctx.bridge.adapterFor(opts.adapter);
     const display = opts.label ?? opts.adapter ?? opts.agentType ?? adapter.name;
+    // The agent's permission tier, for its events and the run's log. The
+    // bridge reaches the same decision and enforces it: an agent that may not
+    // have its tier, or whose CLI cannot enforce it, fails before it starts.
+    const permissions = planPermissions(adapter, runTier(ctx.config), opts.permissions);
+    // A staggered fan-out (ODW extension): in a parallel() or pipeline() call,
+    // an agent on a prompt-caching adapter whose prompt shares a long prefix
+    // with an earlier one's — on the same model and persona, so the same
+    // cache — waits, holding no slot, until that one has warmed the cache.
+    const fanOut = adapter.promptCache && typeof prompt === "string" ? fanOutScope.getStore() : undefined;
+    const cache = [adapter.name, opts.model ?? "", opts.agentType ?? ""].join("\u0000");
+    const turn = fanOut?.enter(adapter.name, cache, prompt);
     const request: AgentRequest = {
       prompt,
       adapter: opts.adapter,
@@ -280,6 +339,7 @@ export function createPrimitives(
       model: opts.model,
       agentType: opts.agentType,
       isolation: opts.isolation,
+      permissions: opts.permissions,
     };
     // What this call spends, from every CLI run it makes: the usage the CLI
     // reported, plus the characters of replies it reported no output tokens for.
@@ -319,12 +379,25 @@ export function createPrimitives(
       // while it holds its slot: once runAgent settles, the agent is fully
       // accounted for (the run's drain relies on it), and the next queued
       // dispatch sees the updated budget.
-      return await ctx.scheduler.runAgent(async (signal) => {
+      return await ctx.scheduler.runAgent(async (signal, slot) => {
         // Record the adapter only once the scheduler has handed out a real
         // dispatch slot, so queued work is not presented as running.
         started = true;
-        const startedEv = event(AGENT_STARTED, { agentId, label: display, phase: activePhase, adapter: adapter.name });
+        turn?.started();
+        const startedEv = event(AGENT_STARTED, {
+          agentId,
+          label: display,
+          phase: activePhase,
+          adapter: adapter.name,
+          ...permissionField(permissions.tier ?? permissions.requested),
+        });
         ctx.emit(startedEv);
+        // An adapter that runs another tier than asked, or one ODW cannot
+        // enforce on it, is said once per run — never silently.
+        if (permissions.note && !notedPermissions.has(adapter.name)) {
+          notedPermissions.add(adapter.name);
+          ctx.emit(event(LOG, { message: permissions.note, adapter: adapter.name, ...permissionField(permissions.tier) }));
+        }
         // What preparing the call noted (no free port, a file .worktreeinclude
         // left out) and what keeping its change did not manage is logged against it.
         const note = (message: string): void =>
@@ -333,6 +406,7 @@ export function createPrimitives(
           note('keep: true has no effect without isolation: "worktree" — this agent works in the source tree');
         }
         const changes = changeRecorder(agentId, display, opts, signal, note);
+        const transcript = transcriptRecorder(agentId, adapter, note);
         let outcome;
         try {
           outcome = await ctx.bridge.run(request, {
@@ -358,7 +432,7 @@ export function createPrimitives(
                 }),
               ),
             // A rate-limited CLI is retried after a backoff: say so, and for how long.
-            onRateLimit: ({ adapter: name, waitSeconds, retry, maxRetries }) =>
+            onRateLimit: ({ adapter: name, waitSeconds, retry, maxRetries }) => {
               ctx.emit(
                 event(LOG, {
                   message: `${display}:${agentId} hit a rate limit on ${name} — retrying in ${formatSeconds(waitSeconds)} (${retry}/${maxRetries})`,
@@ -366,21 +440,33 @@ export function createPrimitives(
                   label: display,
                   phase: activePhase,
                 }),
-              ),
+              );
+              // Adaptive back-pressure (ODW extension): the limit lowers its adapter's cap.
+              slot.rateLimited();
+            },
+            // A staggered fan-out's held agents go once this one's CLI answers (ODW extension).
+            onOutput: turn?.output,
             // An adapter's quota or login failed several agents in a row: warn, once.
             onAdapterWarning: ({ message, adapter: name, reason }) =>
               ctx.emit(event(LOG, { message, adapter: name, reason, agentId, label: display, phase: activePhase })),
             // An isolated agent's change is kept as it lands (ODW extension).
             changes,
+            // So is what its CLI prints (ODW extension).
+            transcript,
           });
         } catch (err) {
+          // Out of rate-limit retries (or allowed none): that lowers its adapter's cap too.
+          if (err instanceof AdapterExecutionError && err.reason === "rate_limit") slot.rateLimited();
           // A started agent always gets a terminal event, even when the error
           // is fatal (stop, budget, a config error raised inside the slot) —
           // else observers show it running forever. A failed agent's change
           // is kept too (the work of one that timed out); a stop keeps none.
+          // Its transcript is kept either way, complete before the event.
+          await transcript?.close();
           failed(err, await keepChanges(changes, isFatalError(err) || signal.aborted, note));
           throw err;
         }
+        await transcript?.close();
         const kept = await keepChanges(changes, false, note);
         // No option is dropped silently: surface each routing note as a LOG event
         // (visible in `odw logs` and the dashboard).
@@ -406,17 +492,21 @@ export function createPrimitives(
           startedAt: startedEv.ts,
           finishedAt: finished.ts,
           value: outcome.value,
+          ...permissionField(permissions.tier),
           ...changeFields(kept),
         });
         if (persisted) finished.saved = true;
         ctx.emit(finished);
         return outcome.value;
-      });
+      }, { adapter: adapter.name, gate: turn?.gate });
     } catch (err) {
       // A fatal error before the start (stop or budget at dispatch) concerns
       // the run, not this agent; anything else is still this agent's failure.
       if (!started && !isFatalError(err)) failed(err);
       throw err;
+    } finally {
+      // However a leader of a staggered fan-out ended, the agents it held may go.
+      turn?.settled();
     }
   };
 
@@ -462,6 +552,21 @@ export function createPrimitives(
     );
   };
 
+  /**
+   * Run one parallel() or pipeline() call's batch as one fan-out, which every
+   * agent() its thunks or stages call — through any await — belongs to: on a
+   * prompt-caching adapter, its agents may start staggered (an ODW extension;
+   * see ./throttle). A nested parallel() or pipeline() is a fan-out of its own.
+   */
+  const asFanOut = <T>(batch: () => Promise<T>): Promise<T> => {
+    const stagger = ctx.config.settings.staggerFanOut;
+    if (!stagger) return batch();
+    const fanOut = new FanOut(stagger, ctx.scheduler.signal, (message, fields) =>
+      ctx.emit(event(LOG, { message, ...fields })),
+    );
+    return fanOutScope.run(fanOut, batch);
+  };
+
   const parallel = async <T>(thunks: Array<Thunk<T>>): Promise<Array<T | null>> => {
     if (!Array.isArray(thunks)) {
       throw new WorkflowScriptError(`parallel() takes an array of functions (thunks); got ${describeValue(thunks)}`);
@@ -475,7 +580,7 @@ export function createPrimitives(
       }
     });
     warnFanOut("parallel()", thunks.length);
-    return ctx.scheduler.gather(
+    return asFanOut(() => ctx.scheduler.gather(
       thunks.map((thunk, i) => async () => {
         try {
           return await thunk();
@@ -484,7 +589,7 @@ export function createPrimitives(
           throw err;
         }
       }),
-    );
+    ));
   };
 
   const pipeline = async (items: unknown[], ...stages: Stage[]): Promise<unknown[]> => {
@@ -512,7 +617,7 @@ export function createPrimitives(
       }
       return value;
     });
-    return ctx.scheduler.gather(chains) as Promise<unknown[]>;
+    return asFanOut(() => ctx.scheduler.gather(chains) as Promise<unknown[]>);
   };
 
   const phase = (title: string): void => {
@@ -642,6 +747,19 @@ function handled<T>(promise: Promise<T>): Promise<T> {
  * workflow()'s agents can fail inside the parent's parallel().
  */
 const surfaced = new WeakSet<object>();
+
+/** The `permissions` field an agent's start event and record carry: its tier, when it has one (ODW extension). */
+function permissionField(tier: unknown): { permissions?: PermissionTier } {
+  return isPermissionTier(tier) ? { permissions: tier } : {};
+}
+
+/**
+ * The parallel() or pipeline() call an agent() runs in, if any: carried
+ * through every await of its thunk or stage, so a staggered fan-out (an ODW
+ * extension) knows its agents. Module-wide like `surfaced`, so a nested
+ * workflow()'s agents belong to the fan-out that called it.
+ */
+const fanOutScope = new AsyncLocalStorage<FanOut>();
 
 /** The `changes` and `branch` an agent's terminal event and record carry when it kept a change (ODW extension). */
 function changeFields(kept: KeptChanges | null): { changes?: AgentChanges; branch?: string | null } {

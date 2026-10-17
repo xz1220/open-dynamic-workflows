@@ -8,15 +8,17 @@
  * place that wires the layers together from a {@link Config}.
  */
 
-import { resolveConcurrency } from "./adapters/config.js";
+import { resolveAdapterConcurrency, resolveConcurrency } from "./adapters/config.js";
 import type { Config } from "./adapters/types.js";
 import { Bridge } from "./bridge.js";
 import type { WaitingCheckpoint } from "./checkpoint.js";
 import { NullControl, type Control } from "./control.js";
 import { BudgetExhausted } from "./errors.js";
-import { NullSink, type EventSink, type WorkflowEvent } from "./events.js";
+import { LOG, NullSink, event, type EventSink, type WorkflowEvent } from "./events.js";
 import type { AgentResultRecord, ReplayJournal } from "./journal.js";
 import { Scheduler } from "./scheduler.js";
+import { capChangeMessage } from "./throttle.js";
+import type { TranscriptPaths } from "./transcript.js";
 
 export interface RunContext {
   config: Config;
@@ -52,6 +54,11 @@ export interface RunContext {
   commandSeq: { value: number };
   /** The same, for checkpoint() calls (the `checkpointId` event field; ODW extension). */
   checkpointSeq: { value: number };
+  /**
+   * Adapters whose permissions note (a tier they cannot run as asked) the run
+   * has logged, so each is said once per run (ODW extension). Shared like `seq`.
+   */
+  permissionNotes?: Set<string>;
   currentPhase: string | null;
   /**
    * Save a completed agent's record (the worker writes the run directory's
@@ -65,6 +72,12 @@ export interface RunContext {
    * persisted (in-process runs): such a run keeps no diffs and no branches.
    */
   agentDiffPath?: (agentId: number) => string;
+  /**
+   * Where each agent's transcript is kept as it runs (ODW extension): the run
+   * directory's `agents/<agentId>.transcript.jsonl` and `.stderr.txt`. Absent
+   * where nothing is persisted (in-process runs): such a run keeps none.
+   */
+  agentTranscriptPaths?: (agentId: number) => TranscriptPaths;
   /**
    * `odw resume`: the source run's saved results, replayed by the agent()
    * calls that are unchanged. Shared like `seq`, so a nested workflow()
@@ -98,6 +111,7 @@ export interface BuildContextOptions {
   budgetTotal?: number | null;
   saveAgentResult?: (rec: AgentResultRecord) => void;
   agentDiffPath?: (agentId: number) => string;
+  agentTranscriptPaths?: (agentId: number) => TranscriptPaths;
   replay?: ReplayJournal;
   onCheckpoint?: (cp: WaitingCheckpoint, waiting: boolean) => void;
 }
@@ -114,6 +128,14 @@ export function buildContext(config: Config, options: BuildContextOptions = {}):
   const scheduler = new Scheduler({
     concurrency: resolveConcurrency(config.settings.concurrency),
     maxAgents: config.settings.maxAgents,
+    // Per-adapter caps, lowered by rate limits while adaptive (ODW extensions):
+    // a cut, and the slot that brings a cap back in full, are logged.
+    adapterConcurrency: resolveAdapterConcurrency(config),
+    adaptive: config.settings.adaptiveConcurrency,
+    onAdapterCap: (change) => {
+      const message = capChangeMessage(change);
+      if (message) sink.emit(event(LOG, { message, adapter: change.adapter, concurrency: change.limit }));
+    },
     checkpoint: (signal) => control.checkpoint(signal),
     // A stop must reach agents that are already running, not just the next dispatch.
     watchStop: control.watchStop ? (onStop) => control.watchStop!(onStop) : undefined,
@@ -139,9 +161,11 @@ export function buildContext(config: Config, options: BuildContextOptions = {}):
     seq: { value: 0 },
     commandSeq: { value: 0 },
     checkpointSeq: { value: 0 },
+    permissionNotes: new Set(),
     currentPhase: null,
     saveAgentResult: options.saveAgentResult,
     agentDiffPath: options.agentDiffPath,
+    agentTranscriptPaths: options.agentTranscriptPaths,
     replay: options.replay,
     onCheckpoint: options.onCheckpoint,
     emit(ev: WorkflowEvent): void {

@@ -65,6 +65,13 @@ export class AdapterOutputDecoder {
   /** Whether any stdout has been written. */
   received = false;
   /**
+   * Whether the stream shows more than the CLI starting up: any output, or —
+   * for JSONL — an event other than a `system` one (Claude Code prints its
+   * `init` before the model has read the prompt). What a staggered fan-out
+   * waits for (an ODW extension; see ../throttle.ts).
+   */
+  answering = false;
+  /**
    * Set when a line outgrows `maxLineChars`: the stream can no longer be
    * decoded, so whoever feeds it may as well stop the process.
    */
@@ -104,6 +111,7 @@ export class AdapterOutputDecoder {
     if (!chunk) return;
     this.received = true;
     if (this.output.format !== "jsonl") {
+      this.answering = true;
       this.text += chunk;
       return;
     }
@@ -210,6 +218,7 @@ export class AdapterOutputDecoder {
     }
     this.events++;
     if (!isRecord(event)) return;
+    if (event.type !== "system") this.answering = true;
     if (event.type === (output.usageEvent ?? output.eventType) && (output.usagePath || output.costPath)) {
       const usage = normalizeUsage(output.usagePath && walk(event, output.usagePath), output.costPath && walk(event, output.costPath));
       this.usage = addUsage(this.usage, usage);

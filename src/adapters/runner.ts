@@ -57,6 +57,11 @@ export interface RunCommandOptions {
    * process if the output becomes unusable (reported like an output overrun).
    */
   onStdout?: (chunk: string, terminate: (reason: string) => void) => void;
+  /**
+   * Observe stdout as it arrives — buffered or streamed to `onStdout`, it is
+   * kept exactly as without an observer (an agent's transcript watches it).
+   */
+  observeStdout?: (chunk: string) => void;
   /** Observe stderr as it arrives; the result still carries its tail. */
   onStderr?: (chunk: string) => void;
   /**
@@ -294,6 +299,7 @@ export const runCommand: CommandRunner = (command, options = {}) => {
     const appendStdout = (d: string): void => {
       lastOutputAt = Date.now();
       if (overrun) return;
+      options.observeStdout?.(d);
       if (options.onStdout) {
         streamedTail!.push(d);
         options.onStdout(d, refuseOutput);

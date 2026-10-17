@@ -21,6 +21,8 @@ export interface JobViewState {
   selectedAi: number | null;
   /** The agent whose diff the Changes tab shows (index into run.agents). */
   reviewAi: number | null;
+  /** The agent whose transcript sheet is open (index into run.agents). */
+  transcriptAi?: number | null;
   zoom: number;
   logQuery: string;
   logTypes: Set<string>;
@@ -156,6 +158,13 @@ function agentEvents(a: AgentView): WorkflowEvent[] {
   );
 }
 
+/** What each permission tier lets an agent do (ODW extension). */
+const PERM_HINT: Record<string, string> = {
+  read: "reads and searches; no edits, no commands",
+  edit: "edits files in its workspace",
+  full: "no approval checks at all",
+};
+
 /** When a rate limit or spent quota lifts, as the CLI said (`retryAfter` on its agent_failed event). */
 function resetNote(a: AgentView, nowSec: number): string {
   const failed = agentEvents(a).filter((e) => e.type === "agent_failed").pop();
@@ -239,12 +248,18 @@ function drawer(run: RunDetail, ai: number, nowSec: number): string {
     (a.kind === "command"
       ? `<span class="k">${t("exit code")}</span><span class="v">${a.exitCode ?? "—"}</span>`
       : `<span class="k">${t("attempts")}</span><span class="v">${a.attempts ?? "—"}</span>`) +
+    (a.permissions
+      ? `<span class="k">${t("permissions")}</span><span class="v"><span class="tag perm-${esc(a.permissions)}" title="${esc(t(PERM_HINT[a.permissions] ?? ""))}">${esc(t(a.permissions))}</span></span>`
+      : "") +
     (a.failureReason ? `<span class="k">${t("reason")}</span><span class="v"><span class="tag ${/rate_limit|quota|stalled|timeout/.test(a.failureReason) ? "warn" : ""}">${esc(reasonLabel(a.failureReason))}</span>${resetNote(a, nowSec)}</span>` : "") +
     (a.usage && (a.usage.inputTokens != null || a.usage.outputTokens != null)
       ? `<span class="k">${t("tokens")}</span><span class="v">${fmtTokens(a.usage.inputTokens)} ${t("in")} · ${fmtTokens(a.usage.outputTokens)} ${t("out")}</span>`
       : "") +
     (a.usage?.costUsd != null ? `<span class="k">${t("cost")}</span><span class="v">${fmtUsd(a.usage.costUsd)}</span>` : "") +
     `</div>` +
+    (a.kind !== "command" && a.agentId != null && !a.cached && run.provider === "odw"
+      ? `<button class="btn sm tx-open" data-transcript="${ai}">${icons.logs}${t("Transcript")}</button>`
+      : "") +
     status +
     changesSection(run, a, ai, rec?.branch) +
     output +
@@ -303,7 +318,9 @@ function graphTab(run: RunDetail, s: JobViewState, nowSec: number): string {
     `<button class="iconbtn" data-zoom="out" aria-label="${esc(t("Zoom out"))}">${icons.zoomOut}</button>` +
     `<button class="iconbtn" data-zoom="fit" aria-label="${esc(t("Fit to screen"))}">${icons.fit}</button>` +
     `</div>`;
-  const panel = s.selectedAi != null ? drawer(run, s.selectedAi, nowSec) : "";
+  const panel =
+    (s.selectedAi != null ? drawer(run, s.selectedAi, nowSec) : "") +
+    (s.transcriptAi != null ? transcriptSheet(run, s.transcriptAi) : "");
   return (
     `<div class="graph-wrap"><div class="canvas" data-canvas data-key="canvas">${dag.html}</div>` +
     legend +
@@ -425,6 +442,37 @@ function checkpoints(run: RunDetail, s: JobViewState): string {
       );
     })
     .join("");
+}
+
+// --- transcript: what one agent's CLI did, turn by turn ---
+
+/** The transcript sheet over the graph: header, then a frozen host main.ts fills and appends to. */
+function transcriptSheet(run: RunDetail, ai: number): string {
+  const a = run.agents[ai];
+  if (!a || a.agentId == null) return "";
+  const key = `${run.runId}:${a.agentId}`;
+  const tx = store.transcripts.get(key);
+  const live = a.state === "running";
+  const status = !tx
+    ? t("Loading transcript…")
+    : tx.missing
+      ? t("No transcript kept for this agent.")
+      : tx.replayed
+        ? t("Replayed from an earlier run — no CLI ran, so there is no transcript.")
+        : `${tn(tx.entries.length + tx.dropped, "{n} entry", "{n} entries")}${live ? ` · ${t("following")}` : ""}`;
+  const version = `${key}|${getLang()}|${tx ? (tx.missing ? "missing" : tx.replayed ? "replayed" : "ok") : "loading"}|${tx?.dropped ?? 0}`;
+  return (
+    `<aside class="sheet" data-key="tx-sheet" role="dialog" aria-label="${esc(t("Transcript"))}">` +
+    `<div class="sheet-head">${glyph(a.state)}<div class="sheet-title"><span class="eyebrow">${t("Transcript")} · ${t("agent")} #${a.agentId}${a.adapter ? ` · ${esc(a.adapter)}` : ""}</span>` +
+    `<h4>${esc(a.label)}</h4></div>` +
+    `<button class="btn sm ghost" data-copy="odw logs ${esc(run.runId)} --agent ${a.agentId}${live ? " --follow" : ""}" data-tip="${esc(t("copy the same view for a terminal"))}">${icons.terminal}${t("In terminal")}</button>` +
+    `<button class="iconbtn" data-close-sheet="1" aria-label="${esc(t("Close"))}">${icons.close}</button></div>` +
+    `<div class="sheet-status${live ? " live" : ""}">${esc(status)}${tx?.dropped ? ` · ${esc(t("{n} earlier entries not shown", { n: tx.dropped }))}` : ""}${tx?.truncated ? ` · ${esc(t("cut at maxTranscriptBytes"))}` : ""}</div>` +
+    `<div class="sheet-body" data-sheet-body><div class="tx-host" data-key="txh-${esc(key)}" data-morph="skip" data-v="${esc(version)}" data-tx="${esc(key)}"></div>` +
+    (live ? `<div class="tx-wait" data-key="txw" aria-label="${esc(t("working"))}"><i></i><i></i><i></i></div>` : "") +
+    `</div>` +
+    `</aside>`
+  );
 }
 
 // --- changes: what worktree agents changed, to review and apply ---
@@ -556,7 +604,9 @@ export function renderJob(s: JobViewState, nowSec: number): string {
     s.tab === "graph"
       ? graphTab(run, s, nowSec)
       : s.tab === "timeline"
-        ? renderTimeline(run, s.selectedAi, nowSec) + (s.selectedAi != null ? drawer(run, s.selectedAi, nowSec) : "")
+        ? renderTimeline(run, s.selectedAi, nowSec) +
+          (s.selectedAi != null ? drawer(run, s.selectedAi, nowSec) : "") +
+          (s.transcriptAi != null ? transcriptSheet(run, s.transcriptAi) : "")
         : s.tab === "logs"
           ? logsTab(s)
           : s.tab === "changes"

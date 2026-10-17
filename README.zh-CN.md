@@ -249,6 +249,7 @@ ODW 已实现下列原语能力。依赖宿主私有运行机制的脚本,迁移
 ```bash
 odw run wf.js [--args JSON|@file]            # 终端里前台展示;运行本体仍是独立 worker
                                              #   --adapter <name> 指定这次运行的默认 agent
+                                             #   --permissions read|edit|full:agent 能做什么
                                              #   --budget <tokens> 设置 budget.total
 ```
 
@@ -262,6 +263,7 @@ odw attach $RUN          # 实时视图(被管道时为纯行输出);--timeout <
 odw status $RUN          # 状态、agent 计数、token 与花费
 odw agents $RUN          # 每个 agent 及其已保存的结果,运行中也可看
 odw logs $RUN --follow   # 流式输出原始进度事件
+odw logs $RUN --agent 3  # 某个 agent 做了什么:它的工具调用、结果和文字(见下文)
 odw result $RUN          # 最终值
 odw diff $RUN --stat     # 隔离 agent 改了什么;odw apply $RUN --agent N 应用其中一个
 odw pause|resume|stop $RUN
@@ -429,6 +431,44 @@ odw schedule remove digest     # 删除系统里的条目和定义(条目已被�
 `@daily`、`L`、`#` 之类会被拒绝并说明原因。完整说明,以及手写 cron 行这一手动替代方案:
 [`docs/recipes/cron.md`](docs/recipes/cron.md)。
 
+### Agent transcript(ODW 扩展)
+
+`agent()` 只返回最终回复,但运行会保留每个 agent 的 CLI 一路打印的内容——每次工具调用、
+每个结果、每次重试——所以"第 7 个 agent 到底做了什么?"有了答案,运行中和失败后都能看:
+
+```bash
+odw logs $RUN --agent 7              # 可读形式:它写的文字、▸ 工具调用、✓/✗ 结果、重试、如何结束
+odw logs $RUN --agent fix --follow   # 按 label;持续输出,直到该 agent 结束
+odw logs $RUN --agent 7 --raw        # transcript 原样保存的各行(JSONL)
+```
+
+```text
+I'll run the tests first.
+▸ Bash  npm test
+✗ Bash error (exit 1, 3 lines): not ok 1 - adds
+── attempt 2: rate-limit retry ──
+▸ Edit  src/add.ts
+✓ Edit result (1 line)
+■ done · 3 turns · $0.250
+```
+
+- agent 运行期间,它的 stdout 流式写入 run 目录下的 `agents/<agentId>.transcript.jsonl`:
+  JSONL 适配器的事件按 CLI 打印的原样每行一个(内置 `claude`——stream-json——、`kilo` 和
+  `opencode`),其他适配器的输出写成 `{"kind":"text","text":…}` 行。stderr 的结尾(最后
+  64 KB)写入 `agents/<agentId>.stderr.txt`;`odw logs --agent` 会在 transcript 之后显示它的最后几行。
+- schema 重试、卡死重启或限流重试都接着写在同一个文件里,前面先写一行
+  `{"kind":"attempt","n":2,"reason":"schema"|"stall"|"rate_limit"}`。
+- `maxTranscriptBytes`(默认每个 agent 5 MB)限制其大小:超出时以一行
+  `{"kind":"truncated","bytes":N}` 结束 transcript。transcript 包含 agent 读到和运行过的
+  一切;`"maxTranscriptBytes": 0` 则完全不保存。
+- 保存从不拖慢 agent:各行先在内存中缓冲,再异步追加到文件。
+- 被 `odw resume` 重放的 agent 没有运行任何 CLI,所以没有 transcript——请看原运行的。
+- 看板 API 提供规范化后的版本:
+  `GET /api/runs/:id/agents/:agentId/transcript?since=<i>` →
+  `{ entries, next, more, truncated, replayed }`,每个条目为
+  `{ i, kind: text|tool_call|tool_result|error|attempt|result|raw|truncated, text?, tool?, input?, output?, isError? }`,
+  长字段截断到 4 KB(`clipped: true`)。
+
 ## 看板:观测、检查、对话
 
 看板的视觉像一张印刷品——纸、墨和一种信号色——也可以随时切换到夜间主题。它提供:
@@ -578,6 +618,123 @@ Windows 下的可执行文件探测遵循 `PATHEXT`,所以 `agent.cmd`、`kilo.c
 `defaultAdapter` 时,odw 会用唯一配置的 adapter——或在全新安装下,用 PATH 上
 唯一真实存在的那个 CLI;若装了多个,报错会列出它们并告诉你如何选择。
 
+### 权限档位(ODW 扩展)
+
+ODW 让每个 agent 在一个**权限档位**下运行:
+
+- **`read`**——只看,不改文件、不跑命令:用于调研与审查类的 fan-out。
+- **`edit`**——默认档位,与各内置适配器一直以来的姿态完全一致。
+- **`full`**——无沙箱、无审批:必须显式开启,只用于隔离的机器。
+
+在配置里设定运行的档位(`"permissions": "read"`),或按次指定
+`odw run|rerun|resume --permissions read`(不指定时 rerun 和 resume 沿用源运行的档位)。
+适配器自己的 `permissions` 和 `agent()` 调用的 `permissions` 只能**降低**它——agent
+实际运行在三者中最低的那一档:
+
+```js
+// 在允许编辑的运行里,审查者碰不到工作树。
+const reviews = await parallel(files.map((f) => () =>
+  agent(`Review ${f} for bugs; report, do not fix`, { permissions: 'read', label: f })))
+```
+
+请求高于运行所允许档位的 agent 会在启动前失败,报错同时写明两个档位
+(`agent() asked for permissions "full", but the run allows only "edit" …`);在
+`parallel()` 里它的位置是 `null`,与任何失败的 agent 一样。各档位的参数替换适配器命令中
+`{permission_args}` 那一项。只有 CLI 官方文档确认在无头模式下成立的映射才会填上:
+
+| 适配器 | `read` | `edit`(默认) | `full` |
+| --- | --- | --- | --- |
+| `claude` | `--permission-mode dontAsk --tools Read,Glob,Grep,WebSearch,WebFetch --allowedTools WebSearch WebFetch --strict-mcp-config` | `--permission-mode acceptEdits --allowedTools WebSearch WebFetch` | `--permission-mode bypassPermissions` |
+| `codex` | `--sandbox read-only` | `--sandbox workspace-write` | `--sandbox danger-full-access` |
+| `gemini` | `--approval-mode default` | `--approval-mode auto_edit` | `--approval-mode yolo` |
+| `qwen` | 拒绝 | `--approval-mode auto-edit` | `--approval-mode yolo` |
+| `kimi` | 拒绝 | print 模式本身(无参数) | 按 `edit` 运行 |
+| `omp` | 拒绝 | `--approval-mode yolo` | 按 `edit` 运行 |
+| `kilo`、`opencode` | 拒绝 | `--auto` | 按 `edit` 运行 |
+| `cursor` | 拒绝 | `--force` | 按 `edit` 运行 |
+
+- **`read`。** 在 `claude` 上,`dontAsk` 会拒绝一切需要询问的调用,`--tools` 只留下只读的
+  内置工具——根本没有 Edit、Write 或 Bash,你设置里的 allow 规则也加不回来——外加联网
+  工具;不启动任何 MCP server。`codex` 运行在只读沙箱里:能读文件,不能改,也不能运行需要
+  审批的命令(`codex exec` 不向任何人询问)。`gemini` 在 `default` 模式下会在写入和 shell
+  工具前询问,无头模式下这等同于拒绝。
+- **拒绝。** 没有经过验证的只读模式的 CLI,agent 会在启动前失败:
+  `kimi cannot run read-only (…); use an adapter that can (--adapter claude, …), or
+  run with --permissions edit`。Qwen 的文档没有说明其 `default` 模式在无头下的行为,所以它
+  也没有 `read`。
+- **按 `edit` 运行。** 没有单独完全权限模式的 CLI 会用它的 `edit` 参数运行,每次运行对每个
+  适配器只记一条日志。注意:对 `kimi`、`omp`、`kilo`、`opencode` 和 `cursor` 来说,
+  `edit` 在无头模式下本来就会批准所有工具调用——把仓库交给它们之前请想清楚。
+- **自己的适配器** 用同样的方式声明参数。没有 `permissionArgs` 的适配器按配置的命令原样
+  运行,视为 `edit`;在其他档位下,运行会记一条日志,说明 ODW 无法强制执行。
+
+```jsonc
+{
+  "permissions": "read", // 运行的档位;odw run --permissions 可覆盖
+  "adapters": {
+    // 给某个内置适配器封顶:不写 "command" 的条目只改它写出的字段
+    "codex": { "permissions": "read" },
+    "my_wrapper": {
+      "command": ["my-agent", "{permission_args}", "--cwd", "{workspace}"],
+      "permissionArgs": { "read": ["--read-only"], "edit": [], "full": ["--yolo"] } // "edit" 必填
+    }
+  }
+}
+```
+
+每次启动都会打印每个已安装适配器实际运行的档位——
+`permissions: read — claude read, codex read, kimi refused (no read mode)`——出现在实时
+视图里、`--wait` 的第一行之后,以及 detached 运行的 run id 之后。每个 `agent_started`
+事件(以及 `odw agents --json`)都带有该 agent 的 `permissions`,`odw doctor` 会列出每个
+适配器支持的档位。档位只约束 agent 能做什么:`exec()` 命令属于 workflow 自身,不受影响。
+`read` 也不是运行不受信任代码的沙箱——比如 Claude Code 在 `-p` 下仍会执行仓库自带的 hooks。
+
+**Codex 与需要审批的 MCP 工具**([#23](https://github.com/xz1220/open-dynamic-workflows/issues/23))。
+没有哪个档位能让 `codex exec` 批准 MCP 工具调用。它不向任何人询问,所以需要审批的工具
+调用——比如一次 Figma 写入——会被取消(`user cancelled MCP tool call`);`full` 解除了
+沙箱(`--sandbox danger-full-access`),但文档没有说它会批准 MCP 调用
+([openai/codex#24135](https://github.com/openai/codex/issues/24135))。请改在 Codex 自己
+的配置里预先批准那一个工具([Codex MCP 文档](https://developers.openai.com/codex/mcp)):
+
+```toml
+# ~/.codex/config.toml
+[mcp_servers.figma.tools.use_figma]
+approval_mode = "approve"
+```
+
+或者,仅在隔离的机器上,把 codex 的 `full` 换成跳过一切审批和沙箱的参数,再用
+`--permissions full` 运行(`permissionArgs` 会整体替换内置的那份,所以其他档位要一并写出):
+
+```jsonc
+"adapters": {
+  "codex": {
+    "permissionArgs": {
+      "read": ["--sandbox", "read-only"],
+      "edit": ["--sandbox", "workspace-write"],
+      "full": ["--dangerously-bypass-approvals-and-sandbox"]
+    }
+  }
+}
+```
+
+在 `claude` 上,`full`(`bypassPermissions`)执行工具调用时不会询问。
+
+**agent 能看到你的哪些环境变量。** 默认情况下,agent CLI 继承 ODW 的全部环境变量。
+`"agentEnv": "minimal"` 只传递 CLI 启动所需的变量(`PATH`、`HOME`、`USER`、`LOGNAME`、
+`SHELL`、`LANG`、`LC_*`、`TERM`、`TMPDIR`、`TZ`,以及 Windows 的系统变量)、内置 CLI 文档
+中列出的认证与配置变量(`ANTHROPIC_*`、`CLAUDE_*`、`OPENAI_*`、`CODEX_*`、`GEMINI_*`、
+`GOOGLE_*`、`DASHSCOPE_*`、`QWEN_*`、`MOONSHOT_*`、`KIMI_*`、`CURSOR_*`、`OPENCODE_*`、
+代理变量和 `NODE_EXTRA_CA_CERTS`)、适配器的 `env`、`ODW_*`,以及你在 `agentEnvPass`
+里列出的名字或 `*` 通配——这样 shell 里的云凭据或仓库令牌就不会传给每一个 agent:
+
+```jsonc
+{ "agentEnv": "minimal", "agentEnvPass": ["AWS_*"] } // 例如在 Bedrock 上用 Claude Code
+```
+
+如果某个 CLI 在 `minimal` 下无法登录,把它需要的变量加进 `agentEnvPass`
+(`odw doctor --smoke` 会发一次真实调用来检验)。`exec()` 命令、`worktreeSetup` 和
+`notify` 钩子仍拿到完整的环境变量。
+
 ### 卡死看门狗
 
 **ODW 扩展。** 一个卡住的 agent CLI 原本会一直占着并发槽位,直到 `timeout`(默认 30
@@ -656,6 +813,64 @@ ODW 能识别的措辞——从每个内置 CLI 的源码和 issue 中收集而�
   }
 }
 ```
+
+### 按适配器限制并发与错开扇出
+
+**ODW 扩展。** `concurrency` 限制一次运行同时有多少个 agent;适配器自己的 `concurrency`
+限制其中最多有多少个跑在这个 CLI 上——于是 16 个 codex 调用的扇出每次只跑 4 个,运行
+剩下的槽位留给其他适配器。一个 agent 需要一个运行槽位和一个该适配器的槽位,两者同时
+发放:它绝不会占着一个去等另一个;每个适配器的 agent 先到先得地排队,空出的运行槽位
+交给最早到达、且其适配器还有余量的 agent,因此一个被限住的适配器不会挡住其他适配器。
+`odw doctor` 会列出这些上限,`odw run` 也会在启动横幅里、权限那一行下面写明
+(`concurrency: 8 agents at once · per adapter: codex 4`)。
+
+```jsonc
+{
+  "concurrency": 8,
+  "adaptiveConcurrency": true, // 默认值;false 让所有上限保持不变
+  "staggerFanOut": { "first": 1, "delayMs": 2500 }, // 默认值;false 关闭
+  "adapters": {
+    "my_wrapper": {
+      "command": ["my-agent", "--cwd", "{workspace}", "--prompt-file", "{prompt_file}"],
+      "concurrency": 4 // 在运行的 8 个之内,同时最多 4 个
+    }
+  }
+}
+```
+
+给内置适配器设上限时,只写要改的字段即可——`"codex": { "concurrency": 4 }` 会保留 codex
+原有的命令和参数(不写 `command` 的条目是在内置适配器上做调整;写了 `command` 才会整个替换)。
+
+**自适应降速。** 某个适配器撞上限流时——有 agent 即将退避等待,或有 agent 以
+`rate_limit` 失败——它的上限在本次运行余下的时间里减半,最低为 1(没有自己上限的适配器
+从运行级上限开始算);此后每过一分钟没有再被限流,就还回一个槽位。同一批扇出一起撞上
+限流时,上限只减一次,而不是每个 agent 减一次。已经在跑的 agent 保留它们的槽位——被限流
+的 agent 原地等待退避——所以降低后的上限约束的是接下来启动的 agent。减半,以及让上限完全
+恢复的那一个槽位,都会记日志:
+
+```text
+adaptive concurrency: codex hit a rate limit — at most 4 of its agents at once now (was 8); one slot comes back for each minute without another
+adaptive concurrency: no rate limit on codex for 4m — back to 8 of its agents at once
+```
+
+**为提示缓存错开扇出。** 内置 `claude` 适配器背后的 Anthropic API 会缓存提示的前缀:第一个
+发送它的请求写入缓存,之后的请求只需很小一部分费用即可读取——但前提是第一个请求已经被读完。
+所有 agent 同时启动的扇出,每个 agent 都要为完整前缀付费。因此在一次 `parallel()` 或
+`pipeline()` 调用中,运行在声明了 `"promptCache": true` 的适配器上(内置 `claude` 就是)、
+且提示的前 1,024 个字符相同的 agent,每次先启动 `first` 个;其余的在第一个 agent 的 CLI
+产生输出后启动——对 `claude` 这样的 JSONL 适配器而言,是它越过 CLI 启动时那些 `system`
+事件之后的第一个事件——或在 `delayMs` 之后启动,以先到者为准。把共享的说明
+放在前面、每项不同的部分放在最后,就能从中受益。单独的 agent、提示更短或不同(或用了别的
+模型、别的角色)的 agent,以及重放的 agent 从不等待;等待中的 agent 不占任何槽位,停止会
+立刻结束等待。每次错开的扇出记一行日志:
+
+```text
+staggered fan-out: 15 claude agents sharing a 3412-character prompt prefix waited 2.1s while the first warmed the prompt cache, until it produced output
+```
+
+如果你自己的适配器所用的 CLI 连接的是会缓存提示的 API,就给它声明 `"promptCache": true`;
+自己写了 `command` 的 `claude` 条目也要声明,因为它会替换内置的那个(只写部分字段的条目,
+例如 `"claude": { "concurrency": 4 }`,会保留内置设置)。
 
 ### 运行通知
 
@@ -900,12 +1115,23 @@ node web/dev.mjs --api http://127.0.0.1:4317     # → http://127.0.0.1:5173
 ## 状态
 
 **`main` 上的新内容(2026 年 10 月):**
+- **权限档位。** 每个 agent 以 `read`、`edit`(默认,与以往一致)或 `full` 运行,映射到各
+  CLI 自己的参数:审查与调研类 fan-out 碰不到工作树(`--permissions read`、
+  `agent(…, { permissions: 'read' })`),完全权限必须显式开启,无法强制执行某档位的 CLI 会被
+  拒绝或记录日志——绝不静默降级。`agentEnv: "minimal"` 让无关的密钥不进入 agent
+  (ODW 扩展;见[权限档位](#权限档位odw-扩展))。
 - **人工检查点。** `checkpoint()` 会让运行暂停,直到有人批准或拒绝——通过
   `odw approve|reject`、看板,或可选的 `waiting` 钩子——让计划在昂贵的 fan-out 之前先
   得到一个"可以"(ODW 扩展;见 [`plan-approve-execute.js`](examples/plan-approve-execute.js))。
 - **扛过限流。** 每次 agent 失败都会被分类(限流、额度、登录、超时、卡死……)。被限流的
   CLI 会按退避时间重试并遵守它给出的 retry-after;额度耗尽或登录失败则立即失败并说明该
   怎么做——`odw logs`、实时视图和看板里都能看到,连同恢复时间。
+- **会自我调节的限速。** 用 `"concurrency"` 给任意适配器设并发上限;撞上限流时,该适配器在本次
+  运行余下时间里上限减半,之后每平静一分钟归还一个名额;共享长提示前缀的 `claude` 扇出会先启动
+  一个 agent,让其余的读取它写入的提示缓存,而不是各付一份。
+- **看清每个 agent 做了什么。** 每个 agent 的 CLI 输出都会保存为执行记录——工具调用、结果、
+  重试——可以用 `odw logs <run> --agent <id|label>` 查看(运行中加 `--follow`),也可以在看板的
+  执行记录侧栏里实时跟随。
 - **无需常驻进程的定时运行。** `odw schedule add <name> <workflow> --cron "15 2 * * 1-5"`
   会写入一条 cron、launchd 或 systemd 定时项,由它回调 odw——带防重叠锁、每个定时任务各自的日志,
   `odw schedule list` 里能看到上一次运行([配方](docs/recipes/cron.md))。
@@ -967,7 +1193,7 @@ node web/dev.mjs --api http://127.0.0.1:4317     # → http://127.0.0.1:5173
 
 按并行 coding agent 用户反馈的需求排序([调研](docs/research/user-needs-2026-10.md)):
 更多 CLI 上报的真实 token 用量与花费(目前 Claude Code 已上报,其余仍按估算)·
-无头运行的"成功证据" · 每个 agent 的 transcript · 只读/编辑/完全三档权限 ·
+无头运行的"成功证据" ·
 原生结构化输出 · 按阶段指定适配器与回退链 · 评测。完整规划见 [`docs/ROADMAP.md`](docs/ROADMAP.md);
 最初的设计见 [`docs/dynamic-workflows-tech-plan.md`](docs/dynamic-workflows-tech-plan.md);
 ODW 所对齐的 Claude Code 方言背景见

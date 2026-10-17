@@ -96,6 +96,8 @@ export interface AgentView {
   changes?: AgentChanges | null;
   /** The branch its changes were kept on (`keep: true`), when any. */
   branch?: string | null;
+  /** The permission tier its CLI runs at (ODW extension); absent for older runs. */
+  permissions?: PermissionTier | null;
   label: string;
   phase: string | null;
   state: AgentState;
@@ -106,6 +108,23 @@ export interface AgentView {
   finishedAt: number | null;
   durationMs: number | null;
 }
+
+/** One `odw schedule` entry as `GET /api/schedules` serves it (ODW extension). */
+export interface ScheduleView {
+  name: string;
+  workflow: string;
+  cron: string;
+  backend: "cron" | "launchd" | "systemd";
+  cwd: string;
+  /** The OS entry is in place; null when that cannot be told. */
+  installed: boolean | null;
+  lastRun: { runId: string | null; state: string; at: string } | null;
+  /** Local ISO time of the next fire, or null when the expression never fires. */
+  nextRun: string | null;
+}
+
+/** How much an agent may do (ODW extension): read < edit < full. */
+export type PermissionTier = "read" | "edit" | "full";
 
 /** The diffstat of a worktree agent's changes (ODW extension). */
 export interface AgentChanges {
@@ -140,6 +159,8 @@ export interface AdapterListing {
   installed: boolean;
   isDefault: boolean;
   permissionNote: string;
+  /** The permission tiers it declares flags for (ODW extension); empty: none, it runs as configured. */
+  tiers?: PermissionTier[];
 }
 
 export interface SettingsSnapshot {
@@ -283,4 +304,53 @@ export interface AgentResultRecord {
   sourceRunId?: string | null;
   changes?: AgentChanges | null;
   branch?: string | null;
+  /** The permission tier it ran at (ODW extension). */
+  permissions?: PermissionTier;
+}
+
+/** One step of an agent's transcript, normalized (ODW extension; src/runtime/transcript-view.ts). */
+export interface TranscriptEntry {
+  /** Its place in the transcript, from 0: what `?since=` counts. */
+  i: number;
+  kind: "text" | "tool_call" | "tool_result" | "error" | "attempt" | "result" | "raw" | "truncated";
+  /**
+   * text: what the agent wrote; tool_call: what the call is about (the command,
+   * the file, …); tool_result: its exit code and size ("exit 1, 12 lines"); the
+   * other kinds: what happened, in a sentence (raw: the line itself).
+   */
+  text?: string;
+  /** tool_call, tool_result (and a refused permission): the tool. */
+  tool?: string;
+  /** tool_call: the tool's input — as JSON text, cut, when it is longer than 4 KB. */
+  input?: unknown;
+  /** tool_result: what the tool returned. */
+  output?: string;
+  /** tool_result, result: the tool, or the whole session, failed. */
+  isError?: boolean;
+  /** A field was cut at 4 KB. */
+  clipped?: true;
+  /** text: the agent's thinking, not its reply. */
+  thinking?: true;
+  /** attempt: which CLI run of the call begins (2 = the first one more), and why: schema | stall | rate_limit. */
+  n?: number;
+  reason?: string;
+  /** truncated: the bytes kept before maxTranscriptBytes cut the transcript. */
+  bytes?: number;
+  /** result: the turns the session took and what it cost, as its CLI reported. */
+  turns?: number;
+  costUsd?: number;
+}
+
+/** GET /api/runs/:id/agents/:agentId/transcript?since=<i> — 404 when the agent has no transcript. */
+export interface TranscriptPage {
+  /** The entries from `since` on, at most 1000. */
+  entries: TranscriptEntry[];
+  /** The `since` of the next page: one past the last entry here. */
+  next: number;
+  /** More entries are on disk already: ask for `next` at once. */
+  more: boolean;
+  /** The transcript reached maxTranscriptBytes: the agent's later output was not kept. */
+  truncated: boolean;
+  /** The agent was replayed by `odw resume`: no CLI ran, so it has no transcript (no entries). */
+  replayed: boolean;
 }

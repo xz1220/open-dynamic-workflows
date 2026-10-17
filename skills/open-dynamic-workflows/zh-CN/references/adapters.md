@@ -13,29 +13,66 @@ shell 出去执行一个本地命令，通过 stdin 或一个参数把拼好的 
 
 ### 权限：每个内置适配器能做什么
 
-命令模板刻意保守，而且内置适配器之间**权限并不相同**：
+命令模板刻意保守，而且内置适配器之间**权限并不相同**。每个 agent 都在一个**权限档位**下
+运行（ODW 扩展）：`read`、`edit`（默认）或 `full`——运行的档位来自配置里的
+`"permissions"` 或 `odw run|rerun|resume --permissions <档位>`，适配器自己的
+`"permissions"` 和 `agent()` 调用的 `permissions` 只能降低它。在默认的 `edit` 档位下：
 
 - `codex` 以 `--sandbox workspace-write` 运行：开箱即可在其工作区内**编辑文件并执行
   命令**。它还带着 `--search`，可以**原生搜索网页**。
 - `claude` 以 `--permission-mode acceptEdits` 加 `--allowedTools WebSearch WebFetch`
   运行：**能编辑文件、能用网页工具，但不能执行命令**（要求它运行什么的 prompt 会卡住
   或被拒绝）。网页白名单很关键：headless 的 acceptEdits 否则会静默拒绝
-  WebSearch/WebFetch，`examples/deep-research.js` 这类调研 workflow 会直接跑不通。要让 Claude 也能跑命令，用
-  `--dangerously-skip-permissions` 覆盖该适配器——它**没有任何沙箱**，所以只能对着一个
-  用完即弃的 `--source` 目录这么干，绝不要指向你的真实仓库。覆盖会替换整个适配器：像下面
-  这样保留 stream-json 旗标和 `output` 块，才能继续拿到用量、花费和错误上报：
+  WebSearch/WebFetch，`examples/deep-research.js` 这类调研 workflow 会直接跑不通。要让 Claude 也能跑命令，
+  以 `full` 档位运行（`--permissions full`：`--permission-mode bypassPermissions`）——它
+  **没有任何沙箱**，所以只能对着一个用完即弃的 `--source` 目录这么干，绝不要指向你的真实仓库。
+
+档位的参数替换适配器命令中 `{permission_args}` 那一项（来自它的 `permissionArgs`）。只有
+CLI 官方文档确认在无头模式下成立的映射才会填上：
+
+| 适配器 | `read` | `edit`（默认） | `full` |
+| --- | --- | --- | --- |
+| `claude` | `--permission-mode dontAsk --tools Read,Glob,Grep,WebSearch,WebFetch --allowedTools WebSearch WebFetch --strict-mcp-config` | `--permission-mode acceptEdits --allowedTools WebSearch WebFetch` | `--permission-mode bypassPermissions` |
+| `codex` | `--sandbox read-only` | `--sandbox workspace-write` | `--sandbox danger-full-access` |
+| `gemini` | `--approval-mode default` | `--approval-mode auto_edit` | `--approval-mode yolo` |
+| `qwen` | 拒绝 | `--approval-mode auto-edit` | `--approval-mode yolo` |
+| `kimi` | 拒绝 | print 模式本身（无参数） | 按 `edit` 运行 |
+| `omp` | 拒绝 | `--approval-mode yolo` | 按 `edit` 运行 |
+| `kilo`、`opencode` | 拒绝 | `--auto` | 按 `edit` 运行 |
+| `cursor` | 拒绝 | `--force` | 按 `edit` 运行 |
+
+- 请求高于运行（或其适配器）所允许档位的 agent 会在启动前失败，报错同时写明两个档位。
+- **拒绝**：对没有 read 参数的 CLI 请求 `read`，agent 会在启动前失败，并说明哪个适配器可以、
+  以及如何解除只读。
+- **按 `edit` 运行**：对没有 full 参数的 CLI 请求 `full`，会用它的 `edit` 参数运行；每次运行
+  对每个适配器只记一条日志。对 `kimi`、`omp`、`kilo`、`opencode` 和 `cursor` 来说，`edit`
+  在无头模式下本来就会批准所有工具调用。
+- 没有 `permissionArgs` 的适配器（你自己的 CLI）按配置的命令原样运行，视为 `edit`；在其他
+  档位下，运行会记一条日志，说明 ODW 无法强制执行。
+- `codex` 在任何档位下都无法批准需要审批的 MCP 工具调用：请在 `~/.codex/config.toml` 里
+  预先批准该工具（`[mcp_servers.<server>.tools.<tool>] approval_mode = "approve"`）——见
+  README 的"权限档位"一节。
+
+每次 `odw run` 都会打印各已安装适配器将以哪个档位运行；每个 `agent_started` 事件都带有该
+agent 的 `permissions`；`odw doctor` 会列出每个适配器支持的档位。
 
 ```json
 {
+  "permissions": "read",
   "adapters": {
-    "claude": {
-      "command": ["claude", "--print", "--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions", "--no-session-persistence"],
-      "stdin": "{prompt}",
-      "output": { "format": "jsonl", "eventType": "result", "textPath": ["result"], "select": "last", "usagePath": ["usage"], "costPath": ["total_cost_usd"], "errorPath": ["is_error"] }
+    "codex": { "permissions": "read" },
+    "my_wrapper": {
+      "command": ["my-agent", "{permission_args}", "--cwd", "{workspace}"],
+      "permissionArgs": { "read": ["--read-only"], "edit": [], "full": ["--yolo"] }
     }
   }
 }
 ```
+
+不写 `command` 的条目只修改同名内置适配器中它写出的字段（如上面的
+`"codex": { "permissions": "read" }`）。写了 `command` 的条目会整体替换内置适配器——对
+`claude` 来说，请像 `odw.config.example.json` 那样保留 stream-json 旗标、`output` 块和它的
+`permissionArgs`。
 
 内置的 `claude` 以 Claude Code 的 `--output-format stream-json --verbose` 运行：每一轮
 输出一个事件，最后是一个 `result` 事件，带着回复、这次运行的用量和花费，失败时还带
@@ -101,8 +138,14 @@ shell 出去执行一个本地命令，通过 stdin 或一个参数把拼好的 
 | `worktreeSetupTimeout` | worktree setup 被杀掉之前最多运行的秒数（默认 600） |
 | `portRange` | **ODW 扩展。** `[first, last]`：每个正在运行的 agent 的 `ODW_PORT` 从这个范围分配（默认 `[41000, 41999]`）；请让它比 `concurrency` 更宽 |
 | `fanOutWarn` | **ODW 扩展。** 单次 `parallel()` 或 `pipeline()` 调用扇出的任务或条目超过这个数时，运行记一条带数量的警告（`large fan-out: …`）；从不阻塞。默认 25；`0` 或 `null` = 关闭 |
+| `adaptiveConcurrency` | **ODW 扩展。** `true`（默认）：一次限流会让它所在适配器的上限（该适配器自己的 `concurrency`，否则为运行级上限）在本次运行余下的时间里减半，最低为 1——同一批扇出一起撞上时只减一次——此后每过一分钟没有再被限流就还回一个槽位；两者都会记日志（`adaptive concurrency: …`）。`false` 让所有上限保持不变 |
+| `staggerFanOut` | **ODW 扩展。** `{ "first": 1, "delayMs": 2500 }`（默认）：在一次 `parallel()` 或 `pipeline()` 调用中，运行在声明了 `promptCache` 的适配器上、提示前 1,024 个字符相同的 agent 每次先启动 `first` 个，其余的在第一个 agent 的 CLI 产生输出后（JSONL：越过启动时 `system` 事件之后的第一个事件）或 `delayMs` 之后启动，从而读取提示缓存；单独的、提示较短的和重放的 agent 从不等待，停止会结束等待，每次错开的扇出记一行日志。`false` 或 `null` = 关闭 |
 | `maxDiffBytes` | **ODW 扩展。** run 目录里保存的单个隔离 agent 的 diff 最多多少字节（`agents/<agentId>.diff`，由 `odw diff` / `odw apply` 读取；默认 2 MB）。超出时保留开头（在行边界截断）并加一行 `# odw: diff truncated …`；计数仍描述完整改动 |
 | `keepBranches` | **ODW 扩展。** `true`：每个隔离 agent 的改动也都提交到源仓库的分支 `odw/<runId>/<agentId>-<label>`，就像对单个 agent 用 `keep: true`（`keep: false` 可让某个 agent 不受影响）。默认 `false` |
+| `maxTranscriptBytes` | **ODW 扩展。** run 目录里为每个 agent 保存的 transcript 最多多少字节——它的 CLI 在 stdout 上打印的内容写入 `agents/<agentId>.transcript.jsonl`（JSONL 适配器的事件按原样保存，其他输出写成 `{"kind":"text"}` 行），stderr 的结尾写入旁边的 `agents/<agentId>.stderr.txt`；用 `odw logs <run> --agent <id\|label>` 查看（默认 5 MB）。超出时以一行 `{"kind":"truncated","bytes":N}` 结束 transcript；`0` = 不保存 |
+| `permissions` | **ODW 扩展。** 运行的权限档位：`"read"`、`"edit"`（默认）或 `"full"`——见[权限](#权限每个内置适配器能做什么)。`odw run\|rerun\|resume --permissions` 可覆盖 |
+| `agentEnv` | **ODW 扩展。** `"inherit"`（默认）：agent CLI 拿到 ODW 的全部环境变量。`"minimal"`：只传 `PATH`、`HOME`、`USER`、`LOGNAME`、`SHELL`、`LANG`、`LC_*`、`TERM`、`TMPDIR`、`TZ`（以及 Windows 系统变量）、内置 CLI 文档中列出的认证与配置变量（`ANTHROPIC_*`、`CLAUDE_*`、`OPENAI_*`、`CODEX_*`、`GEMINI_*`、`GOOGLE_*`、`DASHSCOPE_*`、`QWEN_*`、`MOONSHOT_*`、`KIMI_*`、`CURSOR_*`、`OPENCODE_*`、代理变量、`NODE_EXTRA_CA_CERTS`）、`ODW_*`、`agentEnvPass` 和适配器的 `env`。`exec()` 命令、`worktreeSetup` 和 `notify` 仍拿到完整环境 |
+| `agentEnvPass` | **ODW 扩展。** `"minimal"` 环境下额外放行的变量名或 `*` 通配（如在 Bedrock 上用 Claude Code 时的 `["AWS_*"]`） |
 
 ### 适配器字段
 
@@ -113,10 +156,14 @@ shell 出去执行一个本地命令，通过 stdin 或一个参数把拼好的 
 | `env` | 叠加在进程环境之上的额外环境变量（ODW 自己的 `ODW_RUN_ID`、`ODW_AGENT_ID` 和 `ODW_PORT` 优先于它们） |
 | `timeout` | 每次调用的超时（秒）（覆盖运行级的 `timeout`） |
 | `stallTimeout` | 这个 CLI 的卡死超时（秒）（覆盖运行级的 `stallTimeout`；`0` 表示对该适配器关闭看门狗） |
+| `concurrency` | **ODW 扩展。** 在运行级 `concurrency` 之内，这个 CLI 上同时最多运行多少个 agent：一个 agent 需要两边各一个槽位，每个适配器先到先得地排队，被限住的适配器不会挡住其他适配器。不设置：只受运行级上限约束 |
+| `promptCache` | **ODW 扩展。** `true`：这个 CLI 背后的模型 API 会缓存提示前缀，所以它的扇出会错开启动（见 `staggerFanOut`）。内置 `claude` 声明了它 |
 | `label` | 进度显示用的友好名字 |
 | `flags` | 能力声明，如 `{ "model": ["--model"] }`——承载每次调用 `model` 的原生旗标。不声明它，`agent(..., { model })` 对该适配器就不生效（日志里会出现一条路由说明） |
 | `failures` | **ODW 扩展。** 这个 CLI 自己的失败措辞：`{ "rate_limit": [...], "quota": [...], "auth": [...] }`，正则表达式，先于内置表、不区分大小写地匹配失败运行输出的末尾 |
 | `output` | stdout 如何变成回复（默认：去掉首尾空白的文本）——见下文 |
+| `permissionArgs` | **ODW 扩展。** 各档位的参数：`{ "read"?: [...], "edit": [...], "full"?: [...] }`（`edit` 必填，没有参数写 `[]`），放在命令中 `{permission_args}` 那一项的位置——设置了它，命令就必须恰好有这一项 |
+| `permissions` | **ODW 扩展。** 把该适配器的档位封顶在运行档位之下：它的 agent 取两者中较低的一档 |
 
 ### 输出格式
 
@@ -161,6 +208,7 @@ hook 只会记录到该运行的 `worker.log`。
 | `{workspace}` | agent 运行所在的目录（隔离时是它的 git worktree） |
 | `{source}` | 原始的工作树 |
 | `{adapter}` / `{role}` | 适配器的名字 / 标签 |
+| `{permission_args}` | **ODW 扩展。** agent 所在档位的参数（来自 `permissionArgs`），各自作为独立的 argv 元素（仅限 command，且该元素只能是这个占位符本身） |
 
 只要一个 CLI 能读取 prompt（经 stdin 或一个参数）并把回复打印到 stdout，它就能接入。非零
 退出、超时，或可执行文件缺失，都会表现为一次失败的 agent 调用，并被归类为 `rate_limit`、

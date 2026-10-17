@@ -14,7 +14,9 @@ import { execPath } from "node:process";
 import { fileURLToPath } from "node:url";
 
 import { loadConfig, resolveAdapter, resolveRunsRoot } from "../adapters/config.js";
-import type { Config } from "../adapters/types.js";
+import { isPermissionTier } from "../adapters/permissions.js";
+import type { Config, PermissionTier } from "../adapters/types.js";
+import { ConfigError } from "../errors.js";
 import { loadWorkflowScript } from "../loader.js";
 import { isSeaBinary } from "../sea.js";
 import { resolveWorkflow } from "../workflows/resolve.js";
@@ -34,6 +36,11 @@ export interface StartRunOptions {
    * detached worker.
    */
   adapter?: string | null;
+  /**
+   * Run-level permission tier (an ODW extension): the run's tier for every
+   * agent, in place of the config's `permissions`.
+   */
+  permissions?: PermissionTier | null;
   /** Where the run was initiated from (e.g. "chat" for Chat Host runs). */
   origin?: string | null;
   /**
@@ -54,6 +61,9 @@ function prepare(options: StartRunOptions): { config: Config; source: string; st
   const config = loadConfig(options.configPath ?? null); // validates config & resolves defaults
   const source = options.source ? resolve(options.source) : process.cwd();
   if (options.adapter) resolveAdapter(config, options.adapter); // fail fast on unknown names
+  if (options.permissions != null && !isPermissionTier(options.permissions)) {
+    throw new ConfigError(`permissions must be "read", "edit" or "full"; got ${JSON.stringify(options.permissions)}`);
+  }
   const store = new RunStore(options.runsRoot ?? resolveRunsRoot(config.settings.runsRoot));
   return { config, source, store };
 }
@@ -67,6 +77,7 @@ function commonCreateInput(options: StartRunOptions, source: string, workflowNam
     budgetTotal: options.budgetTotal ?? null,
     workflowName,
     adapter: options.adapter ?? null,
+    permissions: options.permissions ?? null,
     origin: options.origin ?? null,
     resumedFrom: options.resumedFrom ?? null,
   };

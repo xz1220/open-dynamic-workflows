@@ -273,6 +273,7 @@ settles, phase by phase, with the result printed at the end. Ctrl-C detaches (th
 ```bash
 odw run wf.js [--args JSON|@file]            # foreground in a terminal; run keeps its own worker
                                              #   --adapter <name> sets this run's default agent
+                                             #   --permissions read|edit|full: what its agents may do
                                              #   --budget <tokens> sets budget.total
 ```
 
@@ -286,6 +287,7 @@ odw attach $RUN          # live view (or plain lines when piped); --timeout <s> 
 odw status $RUN          # state, agent count, tokens and cost
 odw agents $RUN          # each agent and its saved result, mid-run too
 odw logs $RUN --follow   # stream raw progress events
+odw logs $RUN --agent 3  # what one agent did: its tool calls, results and text (below)
 odw result $RUN          # final value
 odw diff $RUN --stat     # what isolated agents changed; odw apply $RUN --agent N applies one
 odw pause|resume|stop $RUN
@@ -468,6 +470,47 @@ The expression is cron's five fields (numbers, `*`, lists, ranges, steps, `jan`-
 `sun`-`sat`); `@daily`, `L`, `#` and the like are refused with the reason. The full guide,
 and the raw cron line as the manual alternative: [`docs/recipes/cron.md`](docs/recipes/cron.md).
 
+### Agent transcripts (ODW extension)
+
+`agent()` hands back only the final reply, but the run keeps what each agent's CLI
+printed on the way — every tool call, every result, every retry — so "what did agent 7
+actually do?" has an answer, while it runs and after it failed:
+
+```bash
+odw logs $RUN --agent 7              # readable: its text, ▸ tool calls, ✓/✗ results, retries, how it ended
+odw logs $RUN --agent fix --follow   # by label; keeps printing until that agent settles
+odw logs $RUN --agent 7 --raw        # the transcript's lines exactly as kept (JSONL)
+```
+
+```text
+I'll run the tests first.
+▸ Bash  npm test
+✗ Bash error (exit 1, 3 lines): not ok 1 - adds
+── attempt 2: rate-limit retry ──
+▸ Edit  src/add.ts
+✓ Edit result (1 line)
+■ done · 3 turns · $0.250
+```
+
+- While an agent runs, its stdout streams to `agents/<agentId>.transcript.jsonl` in the
+  run directory: a JSONL adapter's events one per line, as its CLI printed them (the
+  built-in `claude` — stream-json — `kilo` and `opencode`), any other adapter's output as
+  `{"kind":"text","text":…}` lines. The end of its stderr (the last 64 KB) goes to
+  `agents/<agentId>.stderr.txt`; `odw logs --agent` shows its last lines after the transcript.
+- A schema retry, a stall restart or a rate-limit retry goes on in the same file after an
+  `{"kind":"attempt","n":2,"reason":"schema"|"stall"|"rate_limit"}` line.
+- `maxTranscriptBytes` (default 5 MB per agent) bounds it: past it, one
+  `{"kind":"truncated","bytes":N}` line ends the transcript. Transcripts hold whatever the
+  agents read and ran; `"maxTranscriptBytes": 0` keeps none.
+- Keeping it never slows an agent down: lines are buffered and appended asynchronously.
+- An agent replayed by `odw resume` ran no CLI, so it has no transcript — read the
+  original run's.
+- The dashboard's API serves it normalized:
+  `GET /api/runs/:id/agents/:agentId/transcript?since=<i>` →
+  `{ entries, next, more, truncated, replayed }`, each entry
+  `{ i, kind: text|tool_call|tool_result|error|attempt|result|raw|truncated, text?, tool?, input?, output?, isError? }`,
+  long fields clipped to 4 KB (`clipped: true`).
+
 ## Dashboard: observe, inspect, chat
 
 The dashboard reads like a printed sheet — paper, ink and one signal colour — and
@@ -633,6 +676,133 @@ configured adapter — or, on a fresh install, the sole adapter whose CLI it
 actually finds on PATH; if several are installed, the error lists them and shows
 how to pick one.
 
+### Permissions (ODW extension)
+
+ODW runs every agent at a **permission tier**:
+
+- **`read`** — look, never edit or run commands: for research and review fan-outs.
+- **`edit`** — the default, and exactly what each built-in has always run with.
+- **`full`** — no sandbox and no approvals: an explicit opt-in, for isolated machines.
+
+Set the run's tier in the config (`"permissions": "read"`) or per run with
+`odw run|rerun|resume --permissions read` (rerun and resume otherwise keep the source
+run's). An adapter's own `permissions` and an `agent()` call's `permissions` can only
+**lower** it — an agent runs at the lowest of the three:
+
+```js
+// Reviewers that cannot touch the tree, in a run that may edit.
+const reviews = await parallel(files.map((f) => () =>
+  agent(`Review ${f} for bugs; report, do not fix`, { permissions: 'read', label: f })))
+```
+
+An agent that asks for more than its run allows fails before it starts, naming both
+tiers (`agent() asked for permissions "full", but the run allows only "edit" …`); in a
+`parallel()` its slot is `null`, like any failed agent. Each tier's flags take the place
+of the `{permission_args}` element of the adapter's command. Only mappings a CLI's own
+docs confirm for headless runs are filled in:
+
+| Adapter | `read` | `edit` (default) | `full` |
+| --- | --- | --- | --- |
+| `claude` | `--permission-mode dontAsk --tools Read,Glob,Grep,WebSearch,WebFetch --allowedTools WebSearch WebFetch --strict-mcp-config` | `--permission-mode acceptEdits --allowedTools WebSearch WebFetch` | `--permission-mode bypassPermissions` |
+| `codex` | `--sandbox read-only` | `--sandbox workspace-write` | `--sandbox danger-full-access` |
+| `gemini` | `--approval-mode default` | `--approval-mode auto_edit` | `--approval-mode yolo` |
+| `qwen` | refused | `--approval-mode auto-edit` | `--approval-mode yolo` |
+| `kimi` | refused | its print mode (no flag) | runs `edit` |
+| `omp` | refused | `--approval-mode yolo` | runs `edit` |
+| `kilo`, `opencode` | refused | `--auto` | runs `edit` |
+| `cursor` | refused | `--force` | runs `edit` |
+
+- **`read`.** On `claude`, `dontAsk` denies anything that would prompt and `--tools`
+  leaves only read-only built-in tools — there is no Edit, Write or Bash for an allow
+  rule in your settings to bring back — plus the web; no MCP server starts. `codex`
+  runs in its read-only sandbox: it can read files, not edit them or run commands
+  that need an approval (`codex exec` asks nobody). `gemini` asks before write and
+  shell tools in `default` mode, and headless that is a deny.
+- **refused.** A CLI with no verified read-only mode fails the agent before it starts:
+  `kimi cannot run read-only (…); use an adapter that can (--adapter claude, …), or
+  run with --permissions edit`. Qwen's docs do not say what its `default` mode does
+  headless, so it has no `read` either.
+- **runs `edit`.** A CLI with no separate full mode runs its `edit` flags, and the run
+  logs that once per adapter. For `kimi`, `omp`, `kilo`, `opencode` and `cursor`,
+  `edit` already approves every tool call headless — mind that before handing them a
+  repository.
+- **Your own adapters** declare their flags the same way. One without `permissionArgs`
+  runs its command as configured, treated as `edit`; under another tier the run logs
+  once that ODW cannot enforce it.
+
+```jsonc
+{
+  "permissions": "read", // the run's tier; odw run --permissions overrides it
+  "adapters": {
+    // cap one built-in: an entry without "command" changes only the fields it sets
+    "codex": { "permissions": "read" },
+    "my_wrapper": {
+      "command": ["my-agent", "{permission_args}", "--cwd", "{workspace}"],
+      "permissionArgs": { "read": ["--read-only"], "edit": [], "full": ["--yolo"] } // "edit" is required
+    }
+  }
+}
+```
+
+Every start prints the tier each installed adapter runs with —
+`permissions: read — claude read, codex read, kimi refused (no read mode)` — in the
+live view, after `--wait`'s first line and after a detached run's id. Each
+`agent_started` event (and `odw agents --json`) carries the agent's `permissions`, and
+`odw doctor` lists every adapter's tiers. A tier governs what agents may do: `exec()`
+commands are the workflow's own and are not affected. `read` is not a sandbox for code
+you do not trust either — Claude Code, for one, still runs a repository's hooks under
+`-p`.
+
+**Codex and MCP tools that ask for approval** ([#23](https://github.com/xz1220/open-dynamic-workflows/issues/23)).
+No tier makes `codex exec` approve an MCP tool call. It asks nobody, so a tool call that
+needs an approval — a Figma write, say — is cancelled (`user cancelled MCP tool call`),
+and `full` lifts the sandbox (`--sandbox danger-full-access`) but is not documented to
+approve MCP calls ([openai/codex#24135](https://github.com/openai/codex/issues/24135)).
+Pre-approve that one tool in Codex's own config instead
+([Codex MCP docs](https://developers.openai.com/codex/mcp)):
+
+```toml
+# ~/.codex/config.toml
+[mcp_servers.figma.tools.use_figma]
+approval_mode = "approve"
+```
+
+Or, only on an isolated machine, make codex's `full` the flag that skips every approval
+and the sandbox, and run with `--permissions full` (`permissionArgs` replaces the
+built-in's whole, so repeat the other tiers):
+
+```jsonc
+"adapters": {
+  "codex": {
+    "permissionArgs": {
+      "read": ["--sandbox", "read-only"],
+      "edit": ["--sandbox", "workspace-write"],
+      "full": ["--dangerously-bypass-approvals-and-sandbox"]
+    }
+  }
+}
+```
+
+On `claude`, `full` (`bypassPermissions`) runs tool calls without asking.
+
+**What agents see of your environment.** Agent CLIs inherit ODW's whole environment
+by default. `"agentEnv": "minimal"` passes only what a CLI needs to start (`PATH`,
+`HOME`, `USER`, `LOGNAME`, `SHELL`, `LANG`, `LC_*`, `TERM`, `TMPDIR`, `TZ`, and the
+Windows system variables), the auth and config variables the built-in CLIs document
+(`ANTHROPIC_*`, `CLAUDE_*`, `OPENAI_*`, `CODEX_*`, `GEMINI_*`, `GOOGLE_*`,
+`DASHSCOPE_*`, `QWEN_*`, `MOONSHOT_*`, `KIMI_*`, `CURSOR_*`, `OPENCODE_*`, the proxy
+variables and `NODE_EXTRA_CA_CERTS`), the adapter's `env`, `ODW_*`, and the names or
+`*` globs you list in `agentEnvPass` — so a cloud key or a registry token in your shell
+does not reach every agent:
+
+```jsonc
+{ "agentEnv": "minimal", "agentEnvPass": ["AWS_*"] } // e.g. Claude Code on Bedrock
+```
+
+If a CLI cannot log in under `minimal`, add what it needs to `agentEnvPass`
+(`odw doctor --smoke` makes one real call to check). `exec()` commands, `worktreeSetup`
+and the `notify` hooks keep the whole environment.
+
 ### Stall watchdog
 
 **ODW extension.** A hung agent CLI otherwise holds its slot until `timeout`
@@ -723,6 +893,71 @@ case-insensitively before the built-in table.
   }
 }
 ```
+
+### Concurrency per adapter and staggered fan-outs
+
+**ODW extension.** `concurrency` caps how many agents a run has going at once; an
+adapter's own `concurrency` caps how many of them run on that CLI — so a fan-out of
+16 codex calls runs 4 at a time while other adapters use the rest of the run's slots.
+An agent needs a run slot and a slot on its adapter, handed out together: it never
+holds one while it waits for the other, each adapter's agents queue first come,
+first served, and a free run slot goes to the oldest agent whose adapter has room, so
+one throttled adapter never holds up the others. `odw doctor` shows the caps, and
+`odw run` states them in its start banner, under the permissions line
+(`concurrency: 8 agents at once · per adapter: codex 4`).
+
+```jsonc
+{
+  "concurrency": 8,
+  "adaptiveConcurrency": true, // the default; false keeps every cap fixed
+  "staggerFanOut": { "first": 1, "delayMs": 2500 }, // the default; false turns it off
+  "adapters": {
+    "my_wrapper": {
+      "command": ["my-agent", "--cwd", "{workspace}", "--prompt-file", "{prompt_file}"],
+      "concurrency": 4 // at most 4 of its agents at once, inside the run's 8
+    }
+  }
+}
+```
+
+To cap a built-in adapter, name only what changes — `"codex": { "concurrency": 4 }`
+keeps codex's command and flags (an entry without `command` adjusts the built-in;
+one with `command` replaces it).
+
+**Adaptive back-pressure.** When an adapter hits a rate limit — an agent about to
+wait out a backoff, or one that failed with `rate_limit` — its cap is halved for the
+rest of the run, never below 1 (an adapter without a cap of its own starts from the
+run-wide one), and each minute without another rate limit gives one slot back. A
+fan-out that hit the limit together cuts the cap once, not once per agent. Agents
+already running keep their slots — a rate-limited one waits out its backoff in place
+— so the lower cap holds back the agents that start next. The cut, and the slot that
+brings the cap back in full, are logged:
+
+```text
+adaptive concurrency: codex hit a rate limit — at most 4 of its agents at once now (was 8); one slot comes back for each minute without another
+adaptive concurrency: no rate limit on codex for 4m — back to 8 of its agents at once
+```
+
+**Staggered fan-outs for the prompt cache.** Anthropic's API, behind the built-in
+`claude` adapter, caches a prompt's prefix: the first request that sends it writes
+it, and later ones read it for a fraction of the price — but only once the first has
+been read. A fan-out that starts every agent at once pays the full prefix in each.
+So in one `parallel()` or `pipeline()` call, agents on an adapter that declares
+`"promptCache": true` (the built-in `claude` does) whose prompts share at least their
+first 1,024 characters start `first` at a time; the rest start once the first one's
+CLI has produced output — for a JSONL adapter such as `claude`, its first event past
+the CLI's start-up `system` events — or `delayMs` later, whichever comes first. Put the shared instructions first and the per-item
+part last to benefit. A lone agent, an agent whose prompt is shorter or different (or
+on another model or persona), and a replayed one never wait; a held agent holds no
+slot, and a stop ends the wait at once. Each staggered fan-out logs one line:
+
+```text
+staggered fan-out: 15 claude agents sharing a 3412-character prompt prefix waited 2.1s while the first warmed the prompt cache, until it produced output
+```
+
+Declare `"promptCache": true` on your own adapter when its CLI talks to an API that
+caches prompts — and on a `claude` entry with its own `command`, which replaces the
+built-in (a partial entry such as `"claude": { "concurrency": 4 }` keeps it).
 
 ### Run notifications
 
@@ -997,6 +1232,12 @@ into the host's `node`, so each target is built on its own runner.
 ## Status
 
 **What's new on `main` (October 2026):**
+- **Permission tiers.** Every agent runs `read`, `edit` (the default, unchanged) or
+  `full`, mapped to each CLI's own flags: review and research fan-outs that cannot
+  touch the tree (`--permissions read`, `agent(…, { permissions: 'read' })`), full
+  access only by explicit opt-in, and a CLI that cannot enforce a tier refused or
+  logged — never silently downgraded. `agentEnv: "minimal"` keeps unrelated secrets
+  out of agents (ODW extensions; see [Permissions](#permissions-odw-extension)).
 - **Human checkpoints.** `checkpoint()` pauses a run until a person approves or
   rejects — with `odw approve|reject`, the dashboard, or an opt-in `waiting` hook —
   so a plan gets a yes before the expensive fan-out (ODW extension; see
@@ -1005,6 +1246,13 @@ into the host's `node`, so each target is built on its own runner.
   login, timeout, stall, …). A rate-limited CLI is retried after a backoff that
   honors its retry-after; a spent quota or a failed login fails fast with what to do
   — in `odw logs`, the live view and the dashboard, with the reset time.
+- **Throttles that learn.** Cap any adapter with `"concurrency"`; a rate limit halves
+  that adapter's cap for the rest of the run and quiet minutes give slots back; and
+  a `claude` fan-out sharing a long prompt prefix starts one agent first so the rest
+  read its prompt cache instead of each paying for it.
+- **See what each agent did.** Every agent's CLI output is kept as a transcript —
+  tool calls, results, retries — readable with `odw logs <run> --agent <id|label>`
+  (`--follow` while it runs) or live in the dashboard's Transcript sheet.
 - **Scheduled runs without a daemon.** `odw schedule add <name> <workflow> --cron
   "15 2 * * 1-5"` writes a cron, launchd or systemd entry that calls back into odw —
   with an overlap lock, a per-schedule log and the last run in `odw schedule list`
@@ -1083,8 +1331,8 @@ runs end-to-end (plan → search → extract → vote → report).
 Ranked by what users of parallel coding agents report needing
 ([research](docs/research/user-needs-2026-10.md)): adapter-reported token usage and
 cost for more CLIs (Claude Code reports it today; the others are estimated) ·
-evidence of success for headless runs · per-agent transcripts ·
-read/edit/full permission tiers · native structured output · per-phase adapters
+evidence of success for headless runs ·
+native structured output · per-phase adapters
 and fallback chains · evaluation. Full plan: [`docs/ROADMAP.md`](docs/ROADMAP.md); the
 original design: [`docs/dynamic-workflows-tech-plan.md`](docs/dynamic-workflows-tech-plan.md).
 Background on the Claude Code dialect ODW aligns with:

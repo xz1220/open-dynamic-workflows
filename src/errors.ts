@@ -49,6 +49,13 @@ export class AdapterExecutionError extends DynamicWorkflowError {
 /** An agent never produced output matching the requested schema. */
 export class SchemaValidationError extends DynamicWorkflowError {}
 
+/**
+ * An agent() call cannot run as asked — an option it may not use, an adapter
+ * that cannot honour it — so it fails before its CLI starts. Recoverable: it
+ * concerns that one agent, which `parallel`/`pipeline` turn into a `null` slot.
+ */
+export class AgentError extends DynamicWorkflowError {}
+
 /** The run-wide cap on total agent dispatches was hit (a runaway guard). */
 export class AgentLimitExceeded extends DynamicWorkflowError {}
 

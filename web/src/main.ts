@@ -12,6 +12,7 @@
  */
 import { api } from "./api";
 import { renderDiff } from "./components/diff";
+import { transcriptEntries } from "./components/transcript";
 import { glyph } from "./components/glyph";
 import { closePalette, isPaletteOpen, openPalette, setPaletteSource, type PaletteItem } from "./components/palette";
 import { closeShortcuts, shortcutsOpen, toggleShortcuts } from "./components/shortcuts";
@@ -57,6 +58,7 @@ const job: JobViewState = {
   tab: "graph",
   selectedAi: null,
   reviewAi: null,
+  transcriptAi: null,
   zoom: 1,
   logQuery: "",
   logTypes: new Set(["agent", "command", "phase", "log", "run"]),
@@ -193,8 +195,54 @@ function afterRender(route: Route, followLogs: boolean): void {
       void store.loadAgentResult(store.run.runId, target.a.agentId!);
     }
   }
+  if (store.run && route.view === "job" && job.transcriptAi != null) {
+    const a = store.run.agents[job.transcriptAi];
+    if (a?.agentId != null) {
+      const key = `${store.run.runId}:${a.agentId}`;
+      // Once on open, and once more after the agent settled (its last lines).
+      if (!store.transcripts.has(key)) void store.loadTranscript(store.run.runId, a.agentId);
+      else if (a.state !== "running" && !transcriptSettled.has(key)) {
+        transcriptSettled.add(key);
+        void store.loadTranscript(store.run.runId, a.agentId);
+      }
+    }
+  }
   fillDiffs();
+  fillTranscripts();
   updateChrome();
+}
+
+const transcriptSettled = new Set<string>();
+
+/**
+ * Paint each transcript host once per version, then only append: a live
+ * transcript grows by its new entries, and the sheet keeps following the end
+ * while the reader is at the end.
+ */
+function fillTranscripts(): void {
+  for (const host of root.querySelectorAll<HTMLElement>("[data-tx]")) {
+    const tx = store.transcripts.get(host.dataset.tx!);
+    const body = host.closest<HTMLElement>("[data-sheet-body]");
+    const atEnd = body ? body.scrollHeight - body.scrollTop - body.clientHeight < 80 : false;
+    const entries = tx?.entries ?? [];
+    if (host.dataset.filled !== host.dataset.v) {
+      host.innerHTML = entries.length
+        ? transcriptEntries(entries)
+        : `<p class="tx-empty">${tx && !tx.missing && !tx.replayed ? tr("Waiting for output…") : ""}</p>`;
+      host.dataset.n = String(entries.length);
+      host.dataset.filled = host.dataset.v;
+      const a = job.transcriptAi != null ? store.run?.agents[job.transcriptAi] : undefined;
+      if (body && a?.state === "running") body.scrollTop = body.scrollHeight;
+      continue;
+    }
+    const n = Number(host.dataset.n ?? 0);
+    if (entries.length > n) {
+      if (n === 0) host.innerHTML = "";
+      host.insertAdjacentHTML("beforeend", transcriptEntries(entries.slice(n)));
+      host.dataset.n = String(entries.length);
+      if (body && atEnd) body.scrollTop = body.scrollHeight;
+    }
+  }
 }
 
 /**
@@ -428,6 +476,11 @@ async function enterRoute(): Promise<void> {
     const want = route.param ?? wfActive ?? (first ? wfKey(first) : null);
     if (want && (want !== wfActive || !wfDetail)) await selectWorkflow(want, false, token);
     else render();
+  } else if (route.view === "jobs") {
+    render();
+    await store.loadSchedules();
+    // Schedules change on the minute at most: last runs land, next fires move on.
+    if (live()) every(60_000, token, () => store.loadSchedules());
   } else if (route.view === "settings") {
     render();
     await store.loadSettings();
@@ -436,6 +489,7 @@ async function enterRoute(): Promise<void> {
     if (store.focusedRunId !== id) {
       job.selectedAi = null;
       job.reviewAi = null;
+      job.transcriptAi = null;
       job.zoom = 1;
       job.logLimit = LOG_PAGE;
       store.focusRun(id);
@@ -451,6 +505,8 @@ async function enterRoute(): Promise<void> {
       if (run && TERMINAL.has(run.state)) return stopPolling();
       await store.loadRun(id);
       if (job.tab === "result" && store.run?.hasResult && !store.resultLoaded) await store.loadResult(id);
+      const tx = job.transcriptAi != null ? store.run?.agents[job.transcriptAi] : undefined;
+      if (tx?.agentId != null && tx.state === "running") await store.loadTranscript(id, tx.agentId);
     });
   } else {
     render();
@@ -741,6 +797,15 @@ root.addEventListener("click", (ev) => {
   if (tabEl) return selectTab(tabEl.dataset.tab as JobTab);
   const reviewEl = t.closest<HTMLElement>("[data-review]");
   if (reviewEl) return review(Number(reviewEl.dataset.review));
+  const txEl = t.closest<HTMLElement>("[data-transcript]");
+  if (txEl) {
+    job.transcriptAi = Number(txEl.dataset.transcript);
+    return render();
+  }
+  if (t.closest("[data-close-sheet]")) {
+    job.transcriptAi = null;
+    return render();
+  }
   const nodeEl = t.closest<HTMLElement>("[data-ai]");
   if (nodeEl) {
     const ai = Number(nodeEl.dataset.ai);
@@ -851,6 +916,10 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "/") {
     e.preventDefault();
     return openPalette();
+  }
+  if (e.key === "Escape" && job.transcriptAi != null) {
+    job.transcriptAi = null;
+    return render();
   }
   if (e.key === "Escape" && job.selectedAi != null) {
     job.selectedAi = null;

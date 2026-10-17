@@ -10,7 +10,9 @@
  * conforms or the retry budget is spent. A CLI the stall watchdog killed for
  * going quiet is started again, up to `stallRestarts` times per call. Each
  * isolated CLI run's worktree is handed to the call's change sink before it is
- * removed, so what the agent changed can be kept (an ODW extension).
+ * removed, so what the agent changed can be kept (an ODW extension). What every
+ * CLI run of the call prints goes to its transcript sink as it arrives, each
+ * run after the first introduced with why it ran (an ODW extension).
  *
  * Every failed CLI run is classified (adapters/failures.ts). A rate-limited
  * one is ridden out: retried after an exponential backoff that honors the
@@ -23,6 +25,12 @@
  * adapter declares where (adapters/usage.ts) — is handed to the caller as the
  * run ends, schema retries, rate-limit retries and failed runs included.
  *
+ * Every CLI run carries its permission tier's flags (an ODW extension; see
+ * adapters/permissions.ts): an agent that may not have the tier it asked for,
+ * or whose CLI cannot enforce it, fails with an AgentError before anything is
+ * spawned. Under `agentEnv: "minimal"` the CLI starts with only the variables
+ * adapters/agent-env.ts lets through.
+ *
  * The command runner is injectable, so the bridge unit-tests with a fake runner
  * and no real agent account; so are the backoff's sleep, clock and jitter.
  */
@@ -31,7 +39,8 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { resolveAdapter } from "./adapters/config.js";
+import { agentBaseEnv } from "./adapters/agent-env.js";
+import { isOnPath, resolveAdapter } from "./adapters/config.js";
 import {
   backoffSeconds,
   classifyErrorReply,
@@ -39,6 +48,7 @@ import {
   formatSeconds,
   type FailureClass,
 } from "./adapters/failures.js";
+import { planPermissions, readCapableAdapter, runTier, spliceArgs, type PermissionPlan } from "./adapters/permissions.js";
 import { expand, expandAll, type PlaceholderContext } from "./adapters/placeholders.js";
 import { AdapterOutputDecoder, decodeOutput, type DecodedOutput } from "./adapters/output.js";
 import { runCommand, type CommandRunner } from "./adapters/runner.js";
@@ -49,11 +59,13 @@ import {
   type Adapter,
   type CliResult,
   type Config,
+  type PermissionTier,
 } from "./adapters/types.js";
-import { AdapterExecutionError, RunStopped, SchemaValidationError, isFatalError } from "./errors.js";
+import { AdapterExecutionError, AgentError, RunStopped, SchemaValidationError, isFatalError } from "./errors.js";
 import { PortPool } from "./ports.js";
 import { LiteralRouter, type InvocationPlan, type OptionRouter } from "./router.js";
 import { describeSchema, pickJson, type JsonSchema } from "./schema.js";
+import type { AttemptReason } from "./transcript.js";
 import { withWorkspace, type Workspace } from "./workspace.js";
 
 export const INDEPENDENCE_PREAMBLE =
@@ -72,6 +84,11 @@ export interface AgentRequest {
   agentType?: string;
   /** `"worktree"`: run this agent in a throwaway git worktree (as in Claude Code). */
   isolation?: "worktree";
+  /**
+   * ODW extension: run this agent at a stricter permission tier than the
+   * run's (it may only lower it). Unvalidated: a bad value fails the call.
+   */
+  permissions?: PermissionTier;
 }
 
 /** The persona framing injected for `agentType`, on top of the independence preamble. */
@@ -156,6 +173,13 @@ export interface RunOptions {
   /** Called before the backoff wait of a rate-limited CLI, so the run can say how long it waits. */
   onRateLimit?: (retry: RateLimitRetry) => void;
   /**
+   * Called when a CLI run of the call starts answering, as its output
+   * streams — a JSONL event past the CLI's start-up `system` events, any
+   * other format's first output — so a staggered fan-out can let the agents
+   * waiting on this one go (an ODW extension; see ./throttle).
+   */
+  onOutput?: () => void;
+  /**
    * Called once when an adapter's quota or login has failed
    * {@link ADAPTER_WARNING_STREAK} calls in a row: its other agents will likely
    * fail the same way, though the run goes on (other adapters may be fine).
@@ -168,12 +192,26 @@ export interface RunOptions {
    * attempt's last run is in.
    */
   changes?: ChangeSink;
+  /**
+   * Keeps what the call's CLI runs print (an ODW extension; see ./transcript):
+   * told when each run starts — and why, after the first — fed its stdout and
+   * stderr as they arrive, and given its result when it ends.
+   */
+  transcript?: TranscriptSink;
 }
 
 /** Where the bridge reports an isolated call's worktrees: a ChangeRecorder (./changes). */
 export interface ChangeSink {
   capture(ws: Workspace): Promise<void>;
   endAttempt(): Promise<void>;
+}
+
+/** Where the bridge reports what a call's CLI runs print: a TranscriptRecorder (./transcript). */
+export interface TranscriptSink {
+  beginRun(reason?: AttemptReason): void;
+  stdout(chunk: string): void;
+  stderr(chunk: string): void;
+  endRun(cli: CliResult): void;
 }
 
 /** A CLI the stall watchdog killed, about to be started again. */
@@ -248,6 +286,20 @@ export class Bridge {
     return (this.autoPicked ??= resolveAdapter(this.config, null));
   }
 
+  /**
+   * The tier an agent on `adapter` runs with, and its flags (ODW extension;
+   * see adapters/permissions.ts): `option` is the call's own `permissions`.
+   * A refusal's advice names an adapter that can run read-only, preferring
+   * one whose CLI is installed.
+   */
+  permissionsFor(adapter: Adapter, option?: unknown): PermissionPlan {
+    const run = runTier(this.config);
+    const plan = planPermissions(adapter, run, option);
+    if (!plan.error || plan.requested !== "read") return plan;
+    const alternative = readCapableAdapter(this.config, adapter.name, (other) => isOnPath(other.command[0]!));
+    return planPermissions(adapter, run, option, alternative);
+  }
+
   async run(request: AgentRequest, options: RunOptions = {}): Promise<AgentOutcome> {
     // The agent's ids and port, the same for every CLI run (and worktree setup)
     // of the call; no other agent of the run gets the port until the call settles.
@@ -263,7 +315,13 @@ export class Bridge {
     if (options.agentId !== undefined) env.ODW_AGENT_ID = String(options.agentId);
     if (port !== null) env.ODW_PORT = String(port);
     try {
-      return await this.runCall(request, options, { env, onNote: options.onNote, changes: options.changes });
+      return await this.runCall(request, options, {
+        env,
+        onNote: options.onNote,
+        changes: options.changes,
+        transcript: options.transcript,
+        onOutput: options.onOutput,
+      });
     } finally {
       if (port !== null) this.ports.release(port);
     }
@@ -281,9 +339,14 @@ export class Bridge {
     }
   }
 
-  private async callOn(adapter: Adapter, request: AgentRequest, options: RunOptions, call: CallEnv): Promise<AgentOutcome> {
+  private async callOn(adapter: Adapter, request: AgentRequest, options: RunOptions, shared: CallEnv): Promise<AgentOutcome> {
     const { signal } = options;
     const settings = this.config.settings;
+    // The tier is settled before anything starts: an agent that may not have
+    // it, or whose CLI cannot enforce it, never reaches a workspace or a process.
+    const permissions = this.permissionsFor(adapter, request.permissions);
+    if (permissions.error) throw new AgentError(permissions.error);
+    const call: CallEnv = { ...shared, permissionArgs: permissions.args };
     const limits: CliLimits = {
       timeout: adapter.timeout ?? settings.timeout ?? undefined,
       // An adapter's 0 opts it out of a run-wide stall timeout; null is off.
@@ -304,7 +367,8 @@ export class Bridge {
       throwIfAborted(signal);
       if (attempt > 1) await options.beforeRetry?.();
       const prompt = attempt > 1 ? `${basePrompt}\n\n${retryFeedback(previous, problems)}` : basePrompt;
-      const { cli, output, failure } = await this.invokeUntilFinal(adapter, plan, prompt, limits, options, reruns, call);
+      const why = attempt > 1 ? "schema" : undefined;
+      const { cli, output, failure } = await this.invokeUntilFinal(adapter, plan, prompt, limits, options, reruns, call, why);
       await call.changes?.endAttempt();
       // Killed by a stop (or by a fatal error elsewhere in the run): report
       // the run's reason, not a misleading CLI failure.
@@ -353,7 +417,8 @@ export class Bridge {
    * rate-limit, quota or login error included, as is a failure the CLI
    * reported in its output — so the caller need not read the output twice.
    * Every run decodes its output once, here; a run that ends without a reply
-   * reports what it spent through `onUsage`.
+   * reports what it spent through `onUsage`. `why` is why the first of these
+   * runs happens (a schema retry); each one after says why it ran again.
    */
   private async invokeUntilFinal(
     adapter: Adapter,
@@ -363,13 +428,14 @@ export class Bridge {
     options: RunOptions,
     reruns: Reruns,
     call: CallEnv,
+    why?: AttemptReason,
   ): Promise<{ cli: CliResult; output: DecodedOutput; failure?: FailureClass }> {
     const { signal } = options;
     const settings = this.config.settings;
     const classify = { patterns: adapter.failures, prompt };
     const structured = (adapter.output?.format ?? "text") !== "text";
     for (;;) {
-      const { cli, decoder } = await this.invoke(adapter, plan, prompt, limits, signal, call);
+      const { cli, decoder } = await this.invoke(adapter, plan, prompt, limits, signal, call, why);
       // A runner that streams stdout fed the decoder and kept only a tail; an
       // injected runner that does not stream returns the whole stdout instead.
       const output = decoder?.received ? decoder.finish() : decodeOutput(adapter, cli.stdout);
@@ -383,6 +449,7 @@ export class Bridge {
           restart: reruns.stalls,
           maxRestarts: settings.stallRestarts,
         });
+        why = "stall";
       } else {
         // A failure the CLI reported in its output (Claude Code's `is_error`
         // result) is the verdict whatever the exit status, and its message is
@@ -414,6 +481,7 @@ export class Bridge {
         });
         await this.sleep(wait * 1000, signal);
         throwIfAborted(signal);
+        why = "rate_limit";
       }
       await options.beforeRetry?.();
     }
@@ -506,17 +574,28 @@ export class Bridge {
     limits: CliLimits,
     signal: AbortSignal | undefined,
     call: CallEnv,
+    why: AttemptReason | undefined,
   ): Promise<{ cli: CliResult; decoder: AdapterOutputDecoder | null }> {
     // JSONL transcripts are decoded while they stream, so only the final text
     // is retained (and a verbose session is never cut off at the stdout cap);
     // text replies are buffered by the runner under its cap, as before.
     const decoder = adapter.output?.format === "jsonl" ? new AdapterOutputDecoder(adapter) : null;
+    // Told once the CLI starts answering: a JSONL stream past its start-up
+    // events, else its first output (see RunOptions.onOutput).
+    let answering = false;
+    const answered = (): void => {
+      if (answering) return;
+      answering = true;
+      call.onOutput?.();
+    };
     const onStdout = decoder
       ? (chunk: string, terminate: (reason: string) => void) => {
           decoder.write(chunk);
           if (decoder.overflow) terminate(decoder.overflow);
+          if (decoder.answering) answered();
         }
       : undefined;
+    const watch = !decoder && call.onOutput ? answered : undefined;
     const { worktreeSetup, worktreeSetupTimeout } = this.config.settings;
     const setup = {
       command: worktreeSetup,
@@ -545,9 +624,15 @@ export class Bridge {
           // Option-derived tokens (the model token this phase) win over the base.
           ...plan.context,
         };
-        const command = [...expandAll(adapter.command, context), ...plan.extraArgs];
+        // The tier's flags take the place of `{permission_args}`, then every
+        // placeholder (theirs too) is expanded.
+        const template = spliceArgs(adapter.command, call.permissionArgs ?? []);
+        const command = [...expandAll(template, context), ...plan.extraArgs];
         const stdin = adapter.stdin ? expand(adapter.stdin, context) : undefined;
-        const env = withAgentVars({ ...process.env, ...adapter.env }, call.env);
+        const env = withAgentVars({ ...agentBaseEnv(process.env, this.config.settings), ...adapter.env }, call.env);
+        // What the CLI prints is kept as it arrives (ODW extension; see ./transcript).
+        const transcript = call.transcript;
+        transcript?.beginRun(why);
         const cli = await this.runner(command, {
           stdin,
           cwd: ws.path,
@@ -555,8 +640,17 @@ export class Bridge {
           timeout: limits.timeout,
           stallTimeout: limits.stallTimeout,
           onStdout,
+          observeStdout:
+            transcript || watch
+              ? (chunk) => {
+                  transcript?.stdout(chunk);
+                  watch?.();
+                }
+              : undefined,
+          onStderr: transcript && ((chunk) => transcript.stderr(chunk)),
           signal,
         });
+        transcript?.endRun(cli);
         // agent() returns the reply; what an isolated run changed is kept
         // beside it, before its worktree goes (ODW extension; see ./changes).
         if (call.changes && plan.workspaceMode === "worktree" && !signal?.aborted) await call.changes.capture(ws);
@@ -568,11 +662,19 @@ export class Bridge {
   }
 }
 
-/** What every CLI run of one agent call shares: its `ODW_*` variables, where its notes go, what keeps its changes. */
+/**
+ * What every CLI run of one agent call shares: its `ODW_*` variables, where
+ * its notes go, what keeps its changes and its transcript, and its permission
+ * tier's flags.
+ */
 interface CallEnv {
   env: Record<string, string>;
   onNote?: (message: string) => void;
   changes?: ChangeSink;
+  transcript?: TranscriptSink;
+  permissionArgs?: string[];
+  /** Told when a CLI run starts answering (see RunOptions.onOutput). */
+  onOutput?: () => void;
 }
 
 /** The variables an agent's processes get from ODW: only ever this call's, never inherited. */

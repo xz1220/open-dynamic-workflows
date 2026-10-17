@@ -80,11 +80,13 @@ outright, never silently passed through as a string).
 | `exec(command, opts?)` | Run a command (tests, a build, a linter) without a model; resolves to `{ stdout, stderr, exitCode, signal, timedOut, truncated, durationMs }`. A string runs through the shell, an array as argv. **ODW extension** — not part of Claude Code's dialect. |
 | `checkpoint(title, opts?)` | Pause the run until a person approves or rejects; resolves to `{ approved, note, by }`. **ODW extension** — not part of Claude Code's dialect. |
 
-`opts` for `agent`: `{ adapter?, schema?, label?, phase?, model?, agentType?, isolation?, keep? }`.
+`opts` for `agent`: `{ adapter?, schema?, label?, phase?, model?, agentType?, isolation?, keep?, permissions? }`.
 `adapter` picks the CLI; `schema` is a raw JSON Schema object (an option, not
 a global); `agentType` is a **persona** injected into the prompt — *not* an
 adapter name. `keep: true` (**ODW extension**) also commits an isolated agent's
-change to a branch `odw/<runId>/<agentId>-<label>`.
+change to a branch `odw/<runId>/<agentId>-<label>`. `permissions: "read"`
+(**ODW extension**) runs the agent at a stricter tier than the run's — see
+[permission tiers](#permission-tiers-odw-extension).
 
 `opts` for `exec`: `{ cwd?, env?, timeout?, input?, maxOutputBytes?, label?, phase?, check? }`.
 It runs in the source directory by default, is killed after `timeout` seconds
@@ -131,6 +133,7 @@ For long runs, fire-and-poll instead of blocking yourself:
 RUN=$(odw run wf.js)        # prints a run id and returns immediately
 odw status $RUN             # state, agent count, tokens and cost
 odw logs $RUN --follow      # stream progress events
+odw logs $RUN --agent 3     # what one agent did: tool calls, results, errors (ODW extension)
 odw result $RUN             # print the final value when done
 odw pause $RUN / resume $RUN / stop $RUN
 odw approve|reject $RUN     # answer a checkpoint() the run waits at — only on the user's say-so
@@ -156,10 +159,17 @@ on a stuck run or start it over:
 ```bash
 odw agents $RUN               # each agent: state, label, phase, time, value preview (↺ = replayed)
 odw result $RUN --agent 3     # one finished agent's value as JSON (id or label) — works mid-run
+odw logs $RUN --agent 4       # what a failed (or hung) agent did: every tool call, result, error
 odw stop $RUN                 # give up on the hung lane, then…
 odw resume $RUN --wait        # …a NEW run: unchanged agent() calls replay, only the rest run
 ```
 
+- Read a failed agent's transcript before you retry it (ODW extension):
+  `odw logs $RUN --agent <id|label>` prints its tool calls (`▸ Bash  npm test`),
+  their results (`✗ Bash error (exit 1, …)`), its retries and the end of its
+  stderr; `--follow` watches a running one, `--raw` prints the CLI's own events.
+  Fix what it shows — the prompt, a missing tool permission, the environment —
+  instead of resubmitting the same call. A replayed (↺) agent has none.
 - `odw result --agent` salvages partial results while the run is still going.
 - `odw resume` on an ended run (done, failed, stopped, or stale) starts a new
   run with the same script, args and adapter. A call whose prompt and options
@@ -192,6 +202,30 @@ odw apply $RUN --agent <id>           # git apply --3way into this working tree 
   commit or stash first; use `--force` only when the user agrees.
 - A diff cut at `maxDiffBytes` cannot be applied: use the agent's branch
   (`keep: true`, or `"keepBranches": true` in the config).
+
+### Permission tiers (ODW extension)
+
+Every agent runs at a tier: `read` (look — never edit or run commands), `edit`
+(the default: what each CLI always ran with), or `full` (no sandbox, no
+approvals).
+
+- **Research, review, audit and verification fan-outs: use `read`.** Give those
+  agents `{ permissions: 'read' }`, or start the whole run read-only with
+  `odw run wf.js --permissions read` when no step needs to write. A reviewer that
+  can edit may "fix" what it should only report.
+- An agent may only lower its run's tier; asking for more fails that agent
+  (`agent() asked for permissions "full", but the run allows only "edit"`).
+- `read` works on `claude`, `codex` and `gemini`. Other CLIs refuse it: the agent
+  fails before it starts, saying which adapter can. Name one of those for read-only
+  agents (`adapter: 'claude'`); `odw doctor` lists each adapter's tiers, and every
+  `odw run` prints the tier each installed adapter will run with.
+- **Never choose `full` on your own.** It removes the sandbox and every approval:
+  use it only when the user asks for it, on a machine they treat as disposable.
+
+```js
+const findings = await parallel(files.map((f) => () =>
+  agent(`Review ${f}: list bugs with evidence; change nothing`, { permissions: 'read', label: f })))  // ODW extension
+```
 
 ### Human checkpoints (ODW extension)
 
@@ -291,6 +325,11 @@ without answering when headless (a login, trust or approval prompt).
   retry-after); a spent quota or a failed login is not retried — the agent fails
   with what to do, and `odw logs` names the reason. Switch adapter with
   `--adapter` rather than retrying a quota failure.
+- **Throttling and the prompt cache** (ODW extensions): an adapter's own
+  `concurrency` caps its agents inside the run's, and a rate limit halves that cap
+  for the run; on `claude`, a `parallel()`/`pipeline()` whose prompts share their
+  first 1,024+ characters starts staggered so the rest read the prompt cache — put
+  the shared instructions first and the per-item part last.
 - **Cost**: concurrency is capped (default `min(16, cpus - 2)`) and total
   dispatches per run have a hard guard; use `odw pause` / `odw stop` when a
   run exceeds expectations.
@@ -307,10 +346,13 @@ without answering when headless (a login, trust or approval prompt).
 | Treating all failures in `parallel`/`pipeline` alike | Recoverable failures become `null`; stop, budget and dispatch-limit errors abort. Retry missing results or fail when every item is required; filter only when partial output is acceptable. |
 | Branching on which agent finished first | Breaks reproducibility; keep reductions order-independent. |
 | Re-running a stalled or failed run from scratch | Read finished agents with `odw result <run> --agent <id>`; `odw stop`, fix the script, then `odw resume` — finished calls replay for free. |
+| Retrying a failed agent without looking at what it did | Read its transcript first — `odw logs <run> --agent <id\|label>` shows its tool calls, results, errors and the end of its stderr (ODW extension) — and fix the cause. |
 | Looking for an isolated agent's edits in your files after the run | They are kept as diffs, not merged: `odw diff <run> --stat`, then `odw apply <run> --agent <id> --check` and `odw apply`. |
 | Using `validate()` and expecting the script to run on Claude Code | `validate` is an ODW extension and runs on odw only. |
 | Using `exec()` and expecting the script to run on Claude Code | `exec` is an ODW extension and runs on odw only; `validate()` warns about it. |
 | Using `checkpoint()` and expecting the script to run on Claude Code | `checkpoint` is an ODW extension and runs on odw only; `validate()` warns about it. |
 | Approving a checkpoint yourself because the run looks stuck | A waiting checkpoint is the user's decision: show them `odw status $RUN`, and run `odw approve`/`odw reject` only on their explicit say-so. |
+| Fanning out research or review agents that can edit | `{ permissions: 'read' }` on those agents, or `odw run --permissions read`: they read and report, and cannot change the tree (ODW extension; claude, codex or gemini). |
+| Reaching for `--permissions full` when an agent was refused or denied | `full` drops the sandbox and every approval — ask the user. A refused `read` agent needs a read-capable adapter instead. |
 | Fanning out wide without watching what it spends | `odw status $RUN` shows the run's tokens and cost so far, and a `parallel()`/`pipeline()` wider than `fanOutWarn` (default 25) logs a warning (ODW extensions). Size fan-outs to `budget.total` when one is set; `--budget` caps output tokens. |
 | Hand-writing a cron line around `odw run` | `odw schedule add` writes it with an overlap lock, a log and a pinned `PATH` — and only on the user's request: it edits their crontab or LaunchAgents. |

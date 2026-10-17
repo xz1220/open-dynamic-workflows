@@ -11,6 +11,7 @@
  *   odw list
  *   odw status <run_id>
  *   odw logs <run_id> [--follow]
+ *   odw logs <run_id> --agent <id|label> [--raw] [--follow]
  *   odw agents <run_id> [--json]
  *   odw result <run_id> [--agent <id|label>]
  *   odw diff <run_id> [--agent <id|label>] [--stat]
@@ -28,8 +29,9 @@ import { basename, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
-import { listAdapters, loadConfig, locateConfig, resolveAdapter, resolveRunsRoot } from "./adapters/config.js";
-import type { Config } from "./adapters/types.js";
+import { isOnPath, listAdapters, loadConfig, locateConfig, resolveAdapter, resolveRunsRoot } from "./adapters/config.js";
+import { isPermissionTier, permissionsBanner } from "./adapters/permissions.js";
+import type { Config, PermissionTier } from "./adapters/types.js";
 import { killAllAgentProcesses } from "./adapters/runner.js";
 import { CHECKPOINT_NOTE_MAX, isCheckpointId } from "./control.js";
 import { runDoctor, type CheckStatus } from "./doctor.js";
@@ -52,14 +54,16 @@ import {
   type ApplyReport,
 } from "./runtime/changes-view.js";
 import { startRun, startRunFromSource, waitFor } from "./runtime/launcher.js";
-import { attachRun, checkpointCommands, formatEvent, formatUsage, resolveRunMode, type RunMode } from "./runtime/live-view.js";
+import { attachRun, bannerLines, checkpointCommands, formatEvent, formatUsage, resolveRunMode, type RunMode } from "./runtime/live-view.js";
 import { isRunActive, RunObserver } from "./runtime/run-liveness.js";
 import { RunStore, TERMINAL_STATES } from "./runtime/run-store.js";
 import { detail, type RunDetail } from "./runtime/runs-view.js";
 import { startServer } from "./runtime/server.js";
+import { printAgentLogs } from "./runtime/transcript-view.js";
 import { executeRun } from "./runtime/worker.js";
 import { cmdSchedule } from "./schedule/command.js";
 import { isSeaBinary } from "./sea.js";
+import { describeConcurrency } from "./throttle.js";
 import { detectCaps, glyphs, palette, sanitizeText } from "./tty.js";
 import { listWorkflows, resolveWorkflow } from "./workflows/resolve.js";
 
@@ -108,6 +112,7 @@ export function helpText(): string {
     "  odw resume <run_id> [--force]                      unpause a paused run, or replay an ended one (below)",
     "  odw status <run_id>                                show a run's current state, tokens and cost",
     "  odw logs <run_id|--workflow name> [--follow]       print a run's progress events",
+    "  odw logs <run_id> --agent <id|label> [--raw]       one agent's transcript: its tool calls, results, text (--follow)",
     "  odw agents <run_id> [--json]                       list a run's agents with their saved results",
     "  odw result <run_id> [--agent <id|label>]           print a finished run's result, or one agent's (mid-run too)",
     "  odw diff <run_id> [--agent <id|label>] [--stat]    print what isolated agents changed (their kept diffs)",
@@ -127,6 +132,7 @@ export function helpText(): string {
     "  --runs-root <dir>   directory runs are stored under",
     "  --source <dir>      run's working dir; also anchors a relative script path & project-name lookup",
     "  --adapter <name>    default agent() adapter for this run (explicit agent(p,{adapter}) still wins)",
+    "  --permissions <t>   read | edit | full: what this run's agents may do (default edit; ODW extension)",
     "  --fg                run in the foreground: live progress on a TTY, plain event lines otherwise",
     "  -d, --detach        start in the background and print the run id",
     "  --wait              block until the run finishes, then print the result (one run-id line on stderr)",
@@ -150,7 +156,7 @@ export function helpText(): string {
     "  done / failed / stopped,    starts a NEW run with the same script, args and adapter: every agent()",
     "  or stale (worker gone)      call unchanged since (same prompt and options) replays its saved result",
     "                              instead of running again; edited and new calls run. Takes the run",
-    "                              modes and --adapter/--config/--runs-root, like rerun",
+    "                              modes and --adapter/--permissions/--config/--runs-root, like rerun",
     "  still running               refused (it would redo work in flight); --force starts the new run anyway",
     "",
     "Schedules (odw schedule, ODW extension — no daemon: cron, launchd or a systemd timer calls odw back):",
@@ -366,6 +372,7 @@ async function cmdRun(rest: string[]): Promise<number> {
       "runs-root": { type: "string" },
       source: { type: "string" },
       adapter: { type: "string" },
+      permissions: { type: "string" },
       wait: { type: "boolean" },
       fg: { type: "boolean" },
       detach: { type: "boolean", short: "d" },
@@ -389,6 +396,7 @@ async function cmdRun(rest: string[]): Promise<number> {
   }
 
   const { mode, timeoutMs } = resolveStartMode("run", values);
+  const permissions = parsePermissions("run", values.permissions);
 
   warnIfNoDefaultAdapter(values.adapter ?? null, values.config ?? null, values.source ?? null, "run");
 
@@ -398,10 +406,43 @@ async function cmdRun(rest: string[]): Promise<number> {
     runsRoot: values["runs-root"] ?? null,
     source: values.source ?? null,
     adapter: values.adapter ?? null,
+    permissions,
     budgetTotal,
   });
 
-  return afterStart(store, runId, mode, { timeoutMs, hint: "started run" });
+  return afterStart(store, runId, mode, {
+    timeoutMs,
+    hint: "started run",
+    banner: startBanner(values.config ?? null, values.source ?? null, permissions),
+  });
+}
+
+/** `--permissions <tier>` (ODW extension), validated; null when absent. */
+function parsePermissions(cmd: string, raw: string | undefined): PermissionTier | null {
+  if (raw === undefined) return null;
+  if (isPermissionTier(raw)) return raw;
+  throw new UsageError(`odw ${cmd}: --permissions must be read, edit or full; got '${raw}'`);
+}
+
+/**
+ * The start banner (ODW extensions), a line each: the permissions line — the
+ * run's tier and what each installed adapter runs with — and the concurrency
+ * line, the caps the run's agents get (per adapter too). Both from the config
+ * the worker will load, which resolves a project-local file against --source
+ * (see warnIfNoDefaultAdapter). Undefined when that config cannot be read:
+ * the launch itself reports that.
+ */
+function startBanner(configPath: string | null, source: string | null, permissions: PermissionTier | null): string | undefined {
+  try {
+    const config = loadConfig(configPath, { quiet: true, ...(source ? { cwd: resolve(source) } : {}) });
+    if (permissions) config.settings.permissions = permissions;
+    return [
+      permissionsBanner(config, (adapter) => isOnPath(adapter.command[0]!)),
+      `concurrency: ${describeConcurrency(config)}`,
+    ].join("\n");
+  } catch {
+    return undefined;
+  }
 }
 
 /** `--timeout <seconds>` as milliseconds (undefined when absent). */
@@ -479,15 +520,20 @@ async function afterStart(
   store: RunStore,
   runId: string,
   mode: RunMode,
-  opts: { timeoutMs?: number; hint: string },
+  opts: { timeoutMs?: number; hint: string; banner?: string },
 ): Promise<number> {
+  // The start banner (permissions, concurrency) goes to stderr in every mode
+  // — under the live view's header when attached.
+  const banner = bannerLines(opts.banner)
+    .map((line) => `${line}\n`)
+    .join("");
   if (mode === "detach") {
     process.stdout.write(runId + "\n");
-    process.stderr.write(`${opts.hint} ${runId} (use 'odw status ${runId}')\n`);
+    process.stderr.write(`${opts.hint} ${runId} (use 'odw status ${runId}')\n${banner}`);
     return 0;
   }
   if (mode === "wait") {
-    process.stderr.write(`running ${runId} ...\n`);
+    process.stderr.write(`running ${runId} ...\n${banner}`);
     // A checkpoint() holds the run until someone answers it: say so, and how, once each.
     const told = new Set<number>();
     let flags: string[] | undefined;
@@ -517,6 +563,7 @@ async function afterStart(
     err: process.stderr,
     timeoutMs: opts.timeoutMs,
     commandFlags: storeFlagsFor(store),
+    banner: opts.banner,
   });
 }
 
@@ -881,7 +928,8 @@ function findAgent(rows: AgentRow[], runId: string, ref: string, cmd: string): (
   }
   const row = matches[0]!;
   if (row.agentId === null) {
-    process.stderr.write(`that agent of run ${runId} has no id (a run from before agent ids): it kept no diff\n`);
+    const kept = cmd === "logs" ? "transcript" : "diff";
+    process.stderr.write(`that agent of run ${runId} has no id (a run from before agent ids): it kept no ${kept}\n`);
     return null;
   }
   return row as AgentRow & { agentId: number };
@@ -893,6 +941,12 @@ function noDiffReason(row: AgentRow): string {
   return 'it changed nothing, or it did not run with isolation: "worktree"';
 }
 
+/**
+ * `odw logs <run_id> [--follow]` prints a run's progress events; with `--agent
+ * <id|label>` one agent's transcript instead — what its CLI printed (ODW
+ * extension; see runtime/transcript-view): readable, or its lines as kept
+ * with `--raw`, and with `--follow` until that agent settles.
+ */
 async function cmdLogs(rest: string[]): Promise<number> {
   const { values, positionals } = parseArgs({
     args: rest,
@@ -902,8 +956,13 @@ async function cmdLogs(rest: string[]): Promise<number> {
       "runs-root": { type: "string" },
       follow: { type: "boolean" },
       workflow: { type: "string" },
+      agent: { type: "string" },
+      raw: { type: "boolean" },
     },
   });
+  if (values.raw && values.agent === undefined) {
+    throw new UsageError("odw logs: --raw prints an agent's transcript as kept — name the agent with --agent <id|label>");
+  }
   const store = storeFrom(values);
   let runId = positionals[0];
   // --workflow with no explicit id targets that workflow's most recent run,
@@ -923,6 +982,20 @@ async function cmdLogs(rest: string[]): Promise<number> {
   if (!store.exists(runId)) {
     process.stderr.write(`no such run: ${runId}\n`);
     return 1;
+  }
+  if (values.agent !== undefined) {
+    const row = findAgent(agentRows(store, runId), runId, values.agent, "logs");
+    if (!row) return 1;
+    const caps = detectCaps(process.stdout, process.env);
+    const width = process.stdout.isTTY && process.stdout.columns ? process.stdout.columns : 120;
+    return printAgentLogs(store, runId, row, {
+      raw: values.raw === true,
+      follow: values.follow === true,
+      out: process.stdout,
+      err: process.stderr,
+      caps,
+      width,
+    });
   }
   const observer = new RunObserver(store, runId);
   for (;;) {
@@ -977,6 +1050,7 @@ const RELAUNCH_OPTIONS = {
   config: { type: "string" },
   "runs-root": { type: "string" },
   adapter: { type: "string" },
+  permissions: { type: "string" },
   wait: { type: "boolean" },
   fg: { type: "boolean" },
   detach: { type: "boolean", short: "d" },
@@ -992,12 +1066,13 @@ async function cmdRerun(rest: string[]): Promise<number> {
     return 2;
   }
   const start = resolveStartMode("rerun", values);
+  const permissions = parsePermissions("rerun", values.permissions);
   const store = storeFrom(values);
   if (!store.exists(runId)) {
     process.stderr.write(`no such run: ${runId}\n`);
     return 1;
   }
-  return relaunch("rerun", store, runId, values, start);
+  return relaunch("rerun", store, runId, { ...values, permissions }, start);
 }
 
 /**
@@ -1024,6 +1099,7 @@ async function cmdResume(rest: string[]): Promise<number> {
     return 2;
   }
   const start = resolveStartMode("resume", values);
+  const permissions = parsePermissions("resume", values.permissions);
   const store = storeFrom(values);
   if (!store.exists(runId)) {
     process.stderr.write(`no such run: ${runId}\n`);
@@ -1034,7 +1110,7 @@ async function cmdResume(rest: string[]): Promise<number> {
     const control = store.readControl(runId);
     if (state === "paused" || control === "pause") {
       const given = values as Record<string, unknown>;
-      const newRunFlag = ["adapter", "wait", "fg", "detach", "timeout"].find((f) => given[f] !== undefined);
+      const newRunFlag = ["adapter", "permissions", "wait", "fg", "detach", "timeout"].find((f) => given[f] !== undefined);
       if (newRunFlag) {
         throw new UsageError(
           `odw resume: run ${runId} is paused, so resume continues it in place — ` +
@@ -1058,21 +1134,22 @@ async function cmdResume(rest: string[]): Promise<number> {
     );
     return 1;
   }
-  return relaunch("resume", store, runId, values, start);
+  return relaunch("resume", store, runId, { ...values, permissions }, start);
 }
 
 /**
  * Start a new run from an existing run's recorded inputs — script, args,
- * source, config, budget and run-level adapter (`--adapter` overrides the
- * last) — and present it per the resolved mode. `rerun` starts over; `resume`
- * also records the source run, whose saved agent results the new run's worker
- * replays for every agent() call that is unchanged.
+ * source, config, budget, run-level adapter and permission tier (`--adapter`
+ * and `--permissions` override the last two) — and present it per the
+ * resolved mode. `rerun` starts over; `resume` also records the source run,
+ * whose saved agent results the new run's worker replays for every agent()
+ * call that is unchanged.
  */
 async function relaunch(
   cmd: "rerun" | "resume",
   store: RunStore,
   runId: string,
-  flags: { "runs-root"?: string; adapter?: string },
+  flags: { "runs-root"?: string; adapter?: string; permissions: PermissionTier | null },
   start: { mode: RunMode; timeoutMs: number | undefined },
 ): Promise<number> {
   const meta = store.readMeta(runId);
@@ -1087,6 +1164,7 @@ async function relaunch(
     runsRoot: flags["runs-root"] ?? null,
     source: (meta.source as string | undefined) ?? null,
     adapter: flags.adapter ?? (meta.adapter as string | null) ?? null,
+    permissions: flags.permissions ?? (isPermissionTier(meta.permissions) ? meta.permissions : null),
     budgetTotal: (meta.budgetTotal as number | null) ?? null,
     // The worker reads the saved results from the source run's own directory.
     resumedFrom: cmd === "resume" ? { runId, dir: store.runDir(runId) } : null,
@@ -1121,6 +1199,7 @@ async function relaunch(
   return afterStart(started.store, started.runId, start.mode, {
     timeoutMs: start.timeoutMs,
     hint: cmd === "resume" ? `resuming ${runId} (${saved} saved agent result(s) to replay) as` : `re-running ${runId} as`,
+    banner: startBanner(opts.configPath, opts.source, opts.permissions),
   });
 }
 

@@ -23,6 +23,14 @@ import { AdapterNotFound, ConfigError } from "../errors.js";
 import { BUILTIN_ADAPTERS, DEFAULT_SETTINGS, type RawAdapter } from "./builtin.js";
 import { isOnPath } from "./executable.js";
 import { CONFIGURABLE_REASONS } from "./failures.js";
+import {
+  PERMISSION_ARGS_TOKEN,
+  commandAt,
+  declaredTiers,
+  isPermissionTier,
+  planPermissions,
+  runTier,
+} from "./permissions.js";
 import type {
   Adapter,
   AdapterFailures,
@@ -31,8 +39,11 @@ import type {
   Config,
   NotifySettings,
   NotifyTrigger,
+  PermissionArgs,
+  PermissionTier,
   RunEndState,
   Settings,
+  StaggerFanOut,
 } from "./types.js";
 
 export const CONFIG_ENV_VAR = "ODW_CONFIG";
@@ -89,11 +100,17 @@ const KNOWN_TOP_KEYS = [
   "worktreeSetupTimeout",
   "portRange",
   "fanOutWarn",
+  "adaptiveConcurrency",
+  "staggerFanOut",
   "maxDiffBytes",
   "keepBranches",
+  "maxTranscriptBytes",
+  "permissions",
+  "agentEnv",
+  "agentEnvPass",
 ] as const;
 
-const KNOWN_ADAPTER_KEYS = ["command", "stdin", "env", "timeout", "stallTimeout", "label", "flags", "output", "failures"] as const;
+const KNOWN_ADAPTER_KEYS = ["command", "stdin", "env", "timeout", "stallTimeout", "concurrency", "promptCache", "label", "flags", "output", "failures", "permissionArgs", "permissions"] as const;
 
 /** The fields of an adapter's `output`, per format. */
 const KNOWN_OUTPUT_KEYS: Record<string, readonly string[]> = {
@@ -103,6 +120,8 @@ const KNOWN_OUTPUT_KEYS: Record<string, readonly string[]> = {
 };
 
 const KNOWN_NOTIFY_KEYS = ["command", "webhook", "on"] as const;
+
+const KNOWN_STAGGER_KEYS = ["first", "delayMs"] as const;
 
 /**
  * Lint a parsed config object for keys odw would silently ignore.
@@ -139,7 +158,19 @@ export function collectConfigWarnings(raw: Record<string, unknown>): string[] {
       const output = isObject(spec) ? spec.output : undefined;
       const knownOutput = isObject(output) ? KNOWN_OUTPUT_KEYS[String(output.format)] : undefined;
       if (knownOutput) warnings.push(...unknownFields(output as Record<string, unknown>, knownOutput, `adapter "${name}" output`));
+      // A cap ODW cannot enforce: an adapter of the user's own (or a built-in
+      // replaced whole) that declares no tier flags runs as configured.
+      const replaced = isObject(spec) && (spec.command != null || !(name in BUILTIN_ADAPTERS));
+      if (replaced && spec.permissions != null && spec.permissionArgs == null) {
+        warnings.push(
+          `adapter "${name}" sets "permissions" but declares no "permissionArgs", so ODW cannot enforce it: ` +
+            `its agents run with its command as configured`,
+        );
+      }
     }
+  }
+  if (raw.agentEnvPass != null && raw.agentEnv !== "minimal") {
+    warnings.push(`"agentEnvPass" has no effect unless "agentEnv" is "minimal" (agents get the whole environment)`);
   }
   const notify = raw.notify;
   if (isObject(notify)) {
@@ -148,6 +179,7 @@ export function collectConfigWarnings(raw: Record<string, unknown>): string[] {
       warnings.push(`"notify" sets neither "command" nor "webhook", so no hook will fire`);
     }
   }
+  if (isObject(raw.staggerFanOut)) warnings.push(...unknownFields(raw.staggerFanOut, KNOWN_STAGGER_KEYS, "staggerFanOut"));
   return warnings;
 }
 
@@ -199,7 +231,7 @@ function editDistance(a: string, b: string): number {
 
 /** Config from built-ins only — handy for tests and programmatic use. */
 export function defaultConfig(): Config {
-  return { adapters: buildAdapters({}), settings: { ...DEFAULT_SETTINGS } };
+  return { adapters: buildAdapters({}), settings: { ...DEFAULT_SETTINGS, staggerFanOut: defaultStagger() } };
 }
 
 /**
@@ -306,9 +338,15 @@ export interface AdapterListing {
   isDefault: boolean;
   /**
    * The adapter's permission posture in one human-readable line, derived from
-   * its command flags — shown before a user lets it loose on a directory.
+   * its command flags at the configured tier — shown before a user lets it
+   * loose on a directory.
    */
   permissionNote: string;
+  /**
+   * The permission tiers it declares flags for, strictest first (ODW
+   * extension); empty when it declares none and runs as configured.
+   */
+  tiers: PermissionTier[];
 }
 
 /** Every configured adapter with install/default/permission info, sorted by name. */
@@ -322,9 +360,17 @@ export function listAdapters(config: Config): AdapterListing[] {
         label: a.label ?? name,
         installed: isOnPath(a.command[0]!),
         isDefault: config.settings.defaultAdapter === name,
-        permissionNote: permissionNote(a.command),
+        permissionNote: postureNote(a, runTier(config)),
+        tiers: declaredTiers(a),
       };
     });
+}
+
+/** The posture an adapter runs with at `tier`, in one line — or why it cannot run at all. */
+function postureNote(adapter: Adapter, tier: PermissionTier): string {
+  const plan = planPermissions(adapter, tier);
+  if (plan.error) return `refused at permissions "${plan.requested}" (no ${plan.requested} mode)`;
+  return permissionNote(commandAt(adapter, tier));
 }
 
 /**
@@ -369,6 +415,21 @@ export function resolveConcurrency(concurrency: number | null): number {
   if (concurrency !== null) return Math.max(1, concurrency);
   const n = cpus().length || 4;
   return Math.max(1, Math.min(16, n - 2));
+}
+
+/**
+ * The per-adapter caps in force (an ODW extension): each adapter that sets
+ * `concurrency`, at most the run-wide cap — an adapter cannot run more agents
+ * than the run. Adapters without one are absent: the run-wide cap alone holds them.
+ */
+export function resolveAdapterConcurrency(config: Config): Record<string, number> {
+  const run = resolveConcurrency(config.settings.concurrency);
+  const caps: Record<string, number> = {};
+  for (const name of Object.keys(config.adapters).sort()) {
+    const cap = config.adapters[name]!.concurrency;
+    if (cap !== undefined) caps[name] = Math.min(cap, run);
+  }
+  return caps;
 }
 
 /** Directory runs are stored under; defaults to `~/.odw/runs`. */
@@ -471,7 +532,18 @@ function locate(path?: string | null, cwd?: string): string | null {
 }
 
 function buildAdapters(user: Record<string, RawAdapter>): Record<string, Adapter> {
-  const merged: Record<string, RawAdapter> = { ...BUILTIN_ADAPTERS, ...user };
+  const merged: Record<string, RawAdapter> = { ...BUILTIN_ADAPTERS };
+  for (const [name, spec] of Object.entries(user)) {
+    // An entry that leaves out `command` changes only the fields it sets on
+    // the built-in of its name (`"codex": { "permissions": "read" }`); one with
+    // a command replaces the built-in whole.
+    const builtin = BUILTIN_ADAPTERS[name];
+    if (builtin && isObject(spec) && spec.command == null) {
+      merged[name] = { ...builtin, ...spec, command: builtin.command };
+    } else {
+      merged[name] = spec;
+    }
+  }
   const out: Record<string, Adapter> = {};
   for (const [name, spec] of Object.entries(merged)) {
     out[name] = buildAdapter(name, spec);
@@ -509,11 +581,97 @@ function buildAdapter(name: string, spec: RawAdapter): Adapter {
       { min: 0 },
     );
   }
+  // Per-adapter concurrency and prompt caching (ODW extensions); null is "not set".
+  if (spec.concurrency !== undefined && spec.concurrency !== null) {
+    adapter.concurrency = numberSetting(`adapter '${name}' 'concurrency'`, spec.concurrency, "a positive integer", {
+      min: 1,
+      integer: true,
+    });
+  }
+  if (spec.promptCache != null) {
+    if (typeof spec.promptCache !== "boolean") {
+      throw new ConfigError(`adapter '${name}' 'promptCache' must be true or false; got ${JSON.stringify(spec.promptCache)}`);
+    }
+    adapter.promptCache = spec.promptCache;
+  }
   if (spec.label !== undefined) adapter.label = spec.label;
   if (spec.flags !== undefined) adapter.flags = buildFlags(name, spec.flags);
   if (spec.output !== undefined) adapter.output = buildOutput(name, spec.output);
   if (spec.failures != null) adapter.failures = buildFailures(name, spec.failures);
+  if (spec.permissionArgs != null) adapter.permissionArgs = buildPermissionArgs(name, spec.permissionArgs);
+  checkPermissionToken(name, adapter, spec.stdin);
+  if (spec.permissions != null) {
+    if (!isPermissionTier(spec.permissions)) {
+      throw new ConfigError(
+        `adapter '${name}' 'permissions' must be "read", "edit" or "full"; got ${JSON.stringify(spec.permissions)}`,
+      );
+    }
+    adapter.permissions = spec.permissions;
+  }
   return adapter;
+}
+
+/**
+ * Validate an adapter's tier flags: `edit` (what it runs with by default, `[]`
+ * for none) and optionally `read` and `full`, each a list of argv elements.
+ */
+function buildPermissionArgs(name: string, raw: unknown): PermissionArgs {
+  if (!isObject(raw)) {
+    throw new ConfigError(
+      `adapter '${name}' 'permissionArgs' must be an object of flag lists: { "read"?: [...], "edit": [...], "full"?: [...] }`,
+    );
+  }
+  const out: Partial<PermissionArgs> = {};
+  for (const [key, value] of Object.entries(raw)) {
+    if (key.startsWith("$") || key.startsWith("//")) continue; // comment conventions
+    if (!isPermissionTier(key)) {
+      throw new ConfigError(`adapter '${name}' 'permissionArgs' may set "read", "edit", "full"; got "${key}"`);
+    }
+    if (value == null) continue; // a tier left undeclared
+    if (!Array.isArray(value) || !value.every((part) => typeof part === "string")) {
+      throw new ConfigError(`adapter '${name}' 'permissionArgs.${key}' must be an array of strings (argv elements)`);
+    }
+    if (value.includes(PERMISSION_ARGS_TOKEN)) {
+      throw new ConfigError(`adapter '${name}' 'permissionArgs.${key}' cannot hold ${PERMISSION_ARGS_TOKEN} itself`);
+    }
+    out[key] = [...(value as string[])];
+  }
+  if (!out.edit) {
+    throw new ConfigError(
+      `adapter '${name}' 'permissionArgs' must set "edit": the flags it runs with by default ([] for none)`,
+    );
+  }
+  return out as PermissionArgs;
+}
+
+/**
+ * `{permission_args}` is where a tier's flags go: one element of the command
+ * of its own, after the executable, exactly when the adapter declares
+ * `permissionArgs` — flags with nowhere to go, or a token with nothing to
+ * fill it, would otherwise be dropped silently.
+ */
+function checkPermissionToken(name: string, adapter: Adapter, stdin: string | undefined): void {
+  const holding = adapter.command.filter((part) => part.includes(PERMISSION_ARGS_TOKEN));
+  if (
+    holding.length > 1 ||
+    holding.some((part) => part !== PERMISSION_ARGS_TOKEN) ||
+    adapter.command[0] === PERMISSION_ARGS_TOKEN
+  ) {
+    throw new ConfigError(
+      `adapter '${name}' 'command' may hold ${PERMISSION_ARGS_TOKEN} once, as an element of its own after the executable`,
+    );
+  }
+  if (typeof stdin === "string" && stdin.includes(PERMISSION_ARGS_TOKEN)) {
+    throw new ConfigError(`adapter '${name}' 'stdin' cannot hold ${PERMISSION_ARGS_TOKEN}: tier flags go in its command`);
+  }
+  if (holding.length === 1 && !adapter.permissionArgs) {
+    throw new ConfigError(`adapter '${name}' has ${PERMISSION_ARGS_TOKEN} in its command but no "permissionArgs" to put there`);
+  }
+  if (holding.length === 0 && adapter.permissionArgs) {
+    throw new ConfigError(
+      `adapter '${name}' declares "permissionArgs" but its command has no ${PERMISSION_ARGS_TOKEN} element to put them in`,
+    );
+  }
 }
 
 /**
@@ -701,18 +859,88 @@ function buildSettings(raw: Record<string, unknown>): Settings {
             min: 0,
             integer: true,
           }) || null,
+    adaptiveConcurrency:
+      raw["adaptiveConcurrency"] == null
+        ? DEFAULT_SETTINGS.adaptiveConcurrency
+        : buildFlag("adaptiveConcurrency", raw["adaptiveConcurrency"]),
+    // Absent keeps the default; false or null turns it off.
+    staggerFanOut: raw["staggerFanOut"] === undefined ? defaultStagger() : buildStagger(raw["staggerFanOut"]),
     maxDiffBytes: num("maxDiffBytes", DEFAULT_SETTINGS.maxDiffBytes, "a positive whole number of bytes", {
       min: 1,
       integer: true,
     }),
     keepBranches: raw["keepBranches"] == null ? DEFAULT_SETTINGS.keepBranches : buildFlag("keepBranches", raw["keepBranches"]),
+    maxTranscriptBytes: num(
+      "maxTranscriptBytes",
+      DEFAULT_SETTINGS.maxTranscriptBytes,
+      "a whole number of bytes, or 0 to keep no transcripts",
+      { min: 0, integer: true },
+    ),
+    permissions: raw["permissions"] == null ? DEFAULT_SETTINGS.permissions : buildTier(raw["permissions"]),
+    agentEnv: raw["agentEnv"] == null ? DEFAULT_SETTINGS.agentEnv : buildAgentEnv(raw["agentEnv"]),
+    agentEnvPass: raw["agentEnvPass"] == null ? [...DEFAULT_SETTINGS.agentEnvPass] : buildEnvPass(raw["agentEnvPass"]),
   };
+}
+
+/** Validate the run's permission tier. */
+function buildTier(raw: unknown): PermissionTier {
+  if (isPermissionTier(raw)) return raw;
+  throw new ConfigError(`"permissions" must be "read", "edit" or "full"; got ${JSON.stringify(raw)}`);
+}
+
+/** Validate `agentEnv`: which environment agent CLIs start with. */
+function buildAgentEnv(raw: unknown): Settings["agentEnv"] {
+  if (raw === "inherit" || raw === "minimal") return raw;
+  throw new ConfigError(`"agentEnv" must be "inherit" or "minimal"; got ${JSON.stringify(raw)}`);
+}
+
+/** Validate `agentEnvPass`: variable names, or globs in which `*` matches any run of characters. */
+function buildEnvPass(raw: unknown): string[] {
+  if (Array.isArray(raw) && raw.every((name) => typeof name === "string" && /^[^=\0]+$/.test(name))) {
+    return [...(raw as string[])];
+  }
+  throw new ConfigError(
+    `"agentEnvPass" must be a list of variable names or globs (e.g. ["AWS_*", "GH_TOKEN"]); got ${JSON.stringify(raw)}`,
+  );
 }
 
 /** Validate a true/false setting such as `keepBranches`. */
 function buildFlag(key: string, raw: unknown): boolean {
   if (typeof raw === "boolean") return raw;
   throw new ConfigError(`"${key}" must be true or false; got ${JSON.stringify(raw)}`);
+}
+
+/** The default `staggerFanOut`, as a fresh object. */
+function defaultStagger(): StaggerFanOut | null {
+  return DEFAULT_SETTINGS.staggerFanOut && { ...DEFAULT_SETTINGS.staggerFanOut };
+}
+
+/**
+ * Validate `staggerFanOut`: `{ "first": n, "delayMs": ms }` (a field left out
+ * keeps its default), `true` for the defaults, `false` or `null` for off.
+ */
+function buildStagger(raw: unknown): StaggerFanOut | null {
+  if (raw === false || raw === null) return null;
+  const defaults = DEFAULT_SETTINGS.staggerFanOut ?? { first: 1, delayMs: 2500 };
+  if (raw === true) return { ...defaults };
+  if (!isObject(raw)) {
+    throw new ConfigError(
+      `"staggerFanOut" must be { "first": n, "delayMs": ms }, or false to turn it off; got ${JSON.stringify(raw)}`,
+    );
+  }
+  return {
+    first:
+      raw.first == null
+        ? defaults.first
+        : numberSetting(`"staggerFanOut.first"`, raw.first, "a positive integer", { min: 1, integer: true }),
+    delayMs:
+      raw.delayMs == null
+        ? defaults.delayMs
+        : numberSetting(`"staggerFanOut.delayMs"`, raw.delayMs, "a positive number of milliseconds", {
+            min: 0,
+            exclusiveMin: true,
+          }),
+  };
 }
 
 /** Validate `worktreeSetup`: a command line for the shell, or an argv run without one. */

@@ -42,6 +42,13 @@ declare global {
      * (HEAD and the index are never touched); `false` opts out of the `keepBranches` setting.
      */
     keep?: boolean;
+    /**
+     * ODW extension — Claude Code ignores it. Run this agent at a stricter permission tier
+     * than the run's: `"read"` (no edits, no commands) for research and review fan-outs. It
+     * may only lower the run's tier (read < edit < full); asking for more fails the call, as
+     * does `"read"` on a CLI with no read-only mode.
+     */
+    permissions?: "read" | "edit" | "full";
   }
 
   interface Budget {

@@ -70,6 +70,25 @@ export interface AdapterFailures {
   auth?: string[];
 }
 
+/**
+ * How much an agent may do (an ODW extension), loosest last: `read` — look,
+ * never edit or run commands; `edit` — what every built-in did before tiers
+ * existed; `full` — no sandbox, no approvals (an explicit opt-in).
+ */
+export type PermissionTier = "read" | "edit" | "full";
+
+/**
+ * The argv flags that put one CLI in each tier, spliced where its command has
+ * a `{permission_args}` element (ODW extension). `edit` is required; a tier
+ * left out is one the CLI cannot be trusted to enforce headless, so ODW
+ * refuses it (`read`) or runs the CLI with its `edit` flags and says so (`full`).
+ */
+export interface PermissionArgs {
+  read?: string[];
+  edit: string[];
+  full?: string[];
+}
+
 /** How to invoke one coding-agent CLI. */
 export interface Adapter {
   name: string;
@@ -86,6 +105,17 @@ export interface Adapter {
    * `0` turns the stall watchdog off for this adapter.
    */
   stallTimeout?: number;
+  /**
+   * At most this many agents at once on this CLI, inside the run-wide
+   * `concurrency` (an ODW extension); unset, only the run-wide cap applies.
+   */
+  concurrency?: number;
+  /**
+   * This CLI's model API caches a prompt's prefix (an ODW extension): a
+   * fan-out of its agents whose prompts share one starts staggered, so the
+   * rest read what the first wrote (see `staggerFanOut`).
+   */
+  promptCache?: boolean;
   /** Human-friendly label for progress display. */
   label?: string;
   /** Capability declaration: which per-call options this CLI carries natively. */
@@ -94,6 +124,10 @@ export interface Adapter {
   output?: AdapterOutput;
   /** Extra failure wording for this CLI, matched before the built-in table. */
   failures?: AdapterFailures;
+  /** Each tier's flags (ODW extension); without them the CLI runs as configured, treated as `edit`. */
+  permissionArgs?: PermissionArgs;
+  /** Caps this CLI's tier below the run's (ODW extension): an agent on it gets the lower of the two. */
+  permissions?: PermissionTier;
 }
 
 /** Run-wide knobs independent of any single adapter. */
@@ -154,6 +188,19 @@ export interface Settings {
    */
   fanOutWarn: number | null;
   /**
+   * Adaptive back-pressure (an ODW extension): a rate limit halves its
+   * adapter's concurrency for the rest of the run, never below 1, and each
+   * minute without another gives one slot back; `false` keeps the caps fixed.
+   */
+  adaptiveConcurrency: boolean;
+  /**
+   * Staggered fan-outs (an ODW extension), on adapters that declare
+   * `promptCache`: in one parallel() or pipeline() call, agents whose prompts
+   * share a long prefix start `first` at a time, and the rest once the first
+   * has produced output or `delayMs` later, whichever is sooner; `null` => off.
+   */
+  staggerFanOut: StaggerFanOut | null;
+  /**
    * Bytes of an isolated agent's diff kept in the run directory (an ODW
    * extension); past it the head is kept, cut at a line, with a note.
    */
@@ -163,6 +210,34 @@ export interface Settings {
    * of the source repository, as `keep: true` does for one agent (an ODW extension).
    */
   keepBranches: boolean;
+  /**
+   * Bytes of each agent's transcript — what its CLI printed — kept in the run
+   * directory (an ODW extension); past it, one truncation line. `0` keeps none.
+   */
+  maxTranscriptBytes: number;
+  /**
+   * The run's permission tier (an ODW extension; `odw run --permissions`
+   * overrides it): an adapter's `permissions` and an agent()'s `permissions`
+   * may only lower it.
+   */
+  permissions: PermissionTier;
+  /**
+   * The environment agent CLIs start with (an ODW extension): `"inherit"`
+   * passes ODW's whole environment; `"minimal"` only the basics a CLI needs,
+   * the built-ins' documented auth and config variables, `agentEnvPass`,
+   * the adapter's `env` and the `ODW_*` run variables.
+   */
+  agentEnv: "inherit" | "minimal";
+  /** Names or `*` globs of more variables a `"minimal"` agent environment passes through. */
+  agentEnvPass: string[];
+}
+
+/** How a fan-out on a prompt-caching adapter is staggered (see `Settings.staggerFanOut`). */
+export interface StaggerFanOut {
+  /** How many of its agents start at once, before the rest wait. */
+  first: number;
+  /** The longest the rest wait for the first one's output, in milliseconds. */
+  delayMs: number;
 }
 
 /** The terminal states a run can end in, and that notify hooks can fire on. */

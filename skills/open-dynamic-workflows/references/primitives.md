@@ -52,6 +52,15 @@ other primitive organizes calls to it.
   the agent's change to a branch `odw/<runId>/<agentId>-<label>` of the source
   repository. `false` opts one agent out of the `keepBranches` setting. Ignored
   (with a log line) without isolation; Claude Code ignores it.
+- **opts.permissions** (**ODW extension**) — `"read"`, `"edit"` or `"full"`: run
+  this agent at a stricter permission tier than the run's (`"permissions"` in the
+  config, `odw run --permissions`). Use `"read"` for research and review agents:
+  they can look but not edit or run commands. It may only lower the tier (read <
+  edit < full) — asking for more fails the call with an `AgentError` naming both
+  tiers — and an adapter with no read-only mode refuses `"read"` (the call fails
+  before its CLI starts; `claude`, `codex` and `gemini` have one). See
+  [adapters](adapters.md#permissions-what-each-built-in-may-do). Claude Code
+  ignores it.
 
 Returns the reply text, or the validated JSON value when `schema` is set. CLI
 errors and exhausted schema retries throw. Inside `parallel`/`pipeline`, these
@@ -187,8 +196,9 @@ an `agent()` call **replays**: it returns the value the old run saved, at once,
 with no adapter call, concurrency slot, dispatch count or budget, when its
 *resume key* matches — the sha256 of its prompt plus its `schema`, `adapter`
 (as written in the call, not the run's default), `model`, `agentType`,
-`isolation` and `label`. `phase` is not part of the key, and `--adapter` on the
-resume changes only the default, so calls that name no adapter still replay.
+`isolation`, `label` and `permissions` (as written in the call). `phase` is not
+part of the key, and `--adapter` or `--permissions` on the resume change only
+the run's defaults, so calls that name no adapter or tier still replay.
 Calls with the same key replay in call order (the n-th such call gets the n-th
 saved result); a call past them, or one whose prompt or options changed, runs
 normally. Nested `workflow()` calls replay the same way. A `checkpoint()` is
@@ -469,7 +479,10 @@ dispatch that depends on completion timing, does not match and runs again.
 ## Limits
 
 - **Concurrency cap** — at most N agent CLIs run at once (`min(16, cpus-2)` by
-  default; set `concurrency` in config). Excess calls queue.
+  default; set `concurrency` in config). Excess calls queue. An adapter's own
+  `concurrency` caps its agents inside that, a rate limit halves it for the run,
+  and a fan-out on `claude` whose prompts share a long prefix starts staggered
+  (ODW extensions; see `references/adapters.md`).
 - **Total-agent backstop** — a hard ceiling on dispatches per run (default
   1000). Exceeding it aborts the run, so a buggy loop cannot fan out forever.
 - `exec()` commands count toward neither limit; each is bounded by its own
