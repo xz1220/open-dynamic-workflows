@@ -8,6 +8,7 @@
 
 import { join } from "node:path";
 
+import type { CheckpointRequest } from "../control.js";
 import type { WorkflowEvent } from "../events.js";
 import type { AgentResultRecord } from "../journal.js";
 import { SigCache, statSig } from "./fs-util.js";
@@ -118,6 +119,9 @@ export class OdwRunSource implements RunSource {
     // resume clears the control file by writing a benign "running" request; the
     // worker's FileControl treats any non-pause/stop action as "carry on".
     this.store.writeControl(runId, action === "resume" ? "running" : action);
+  }
+  decide(runId: string, request: CheckpointRequest): void {
+    this.store.requestCheckpointDecision(runId, request);
   }
 
   /**

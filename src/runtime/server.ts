@@ -26,6 +26,11 @@
  *                                   it has none (still running, failed, a Claude run); 400 unless
  *                                   :agentId is a non-negative integer
  *   POST /api/runs/:id/control      { action: pause|resume|stop } (ODW runs; Claude runs → 409)
+ *   POST /api/runs/:id/checkpoint   { action: approve|reject, checkpointId?, note? } answers a
+ *                                   waiting checkpoint() (ODW extension) — the one named, else the
+ *                                   oldest; → { ok, runId, action, checkpointId }. 409 when that
+ *                                   checkpoint (or any) is not waiting, and for Claude runs; 400
+ *                                   on a bad body. RunDetail.pendingCheckpoints lists what waits.
  *   GET  /api/activity?limit=N      the Activity view (below)
  *   GET  /api/stream                text/event-stream: `runs` frames (the run list, on change);
  *                                   `?delta=1` → one `runs` frame, then `runs-delta` frames
@@ -81,6 +86,7 @@ import {
   RUN_END_STATES,
 } from "../adapters/config.js";
 import type { Config } from "../adapters/types.js";
+import { CHECKPOINT_NOTE_MAX, isCheckpointId } from "../control.js";
 import { DASHBOARD_HTML } from "../dashboard.generated.js";
 import type { WorkflowEvent } from "../events.js";
 import type { AgentResultRecord } from "../journal.js";
@@ -304,12 +310,13 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandleCont
       return;
     }
 
-    const runMatch = path.match(/^\/api\/runs\/([^/]+)(\/events|\/control|\/result|\/agents(?:\/[^/]+)?)?$/);
+    const runMatch = path.match(/^\/api\/runs\/([^/]+)(\/events|\/control|\/checkpoint|\/result|\/agents(?:\/[^/]+)?)?$/);
     if (runMatch) {
       const sub = runMatch[2];
       // Writes are gated before any run lookup: an off-loopback bind refuses
       // outright (no run-existence oracle), and CSRF posture comes first.
-      if (method === "POST" && sub === "/control" && !writeGuard(req, res, boundHost)) return;
+      const write = sub === "/control" || sub === "/checkpoint";
+      if (method === "POST" && write && !writeGuard(req, res, boundHost)) return;
       const runId = decodeSegment(runMatch[1]!);
       if (runId === null) {
         sendJson(res, 400, { error: "malformed URL escape in run id" });
@@ -385,6 +392,15 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandleCont
         await controlRun(req, res, src, runId);
         return;
       }
+      if (method === "POST" && sub === "/checkpoint") {
+        // Claude runs are read-only, and have no checkpoint() to answer anyway.
+        if (src.controlError) {
+          sendJson(res, 409, { error: src.controlError });
+          return;
+        }
+        await decideCheckpoint(req, res, src, runId);
+        return;
+      }
     }
 
     sendJson(res, 404, { error: "not found" });
@@ -455,6 +471,56 @@ async function controlRun(
   // The source applies the action (ODW maps resume→"running" for FileControl).
   src.control(runId, action);
   sendJson(res, 200, { ok: true, runId, action });
+}
+
+/**
+ * Answer a waiting checkpoint() (ODW extension): `{ action: approve|reject,
+ * checkpointId?, note? }`. The answer is checked against what the run waits
+ * for now — and always sent for an explicit id — so it can never land on a
+ * question asked after the person decided.
+ */
+async function decideCheckpoint(
+  req: IncomingMessage,
+  res: ServerResponse,
+  src: RunSource,
+  runId: string,
+): Promise<void> {
+  // CSRF posture (Content-Type + same-origin) is enforced by writeGuard upstream.
+  const body = await jsonBodyOrReply(req, res);
+  if (!body) return;
+  const { action, note } = body;
+  const checkpointId = body.checkpointId ?? undefined;
+  if (action !== "approve" && action !== "reject") {
+    sendJson(res, 400, { error: "action must be one of approve, reject" });
+    return;
+  }
+  if (checkpointId !== undefined && !isCheckpointId(checkpointId)) {
+    sendJson(res, 400, { error: "checkpointId must be a positive integer" });
+    return;
+  }
+  if (note !== undefined && note !== null && typeof note !== "string") {
+    sendJson(res, 400, { error: "note must be a string" });
+    return;
+  }
+  if (typeof note === "string" && note.length > CHECKPOINT_NOTE_MAX) {
+    sendJson(res, 400, { error: `note must be at most ${CHECKPOINT_NOTE_MAX} characters` });
+    return;
+  }
+  const pending = src.detail(runId)?.pendingCheckpoints ?? [];
+  const target = checkpointId === undefined ? pending[0] : pending.find((cp) => cp.checkpointId === checkpointId);
+  if (!target) {
+    const which = checkpointId === undefined ? "no checkpoint is" : `checkpoint #${checkpointId} is not`;
+    const open = pending.length ? ` (waiting: ${pending.map((cp) => `#${cp.checkpointId}`).join(", ")})` : "";
+    sendJson(res, 409, { error: `${which} waiting for an answer in run ${runId}${open}` });
+    return;
+  }
+  src.decide(runId, {
+    action,
+    checkpointId: target.checkpointId,
+    ...(typeof note === "string" && note.trim() !== "" ? { note } : {}),
+    by: "dashboard",
+  });
+  sendJson(res, 200, { ok: true, runId, action, checkpointId: target.checkpointId });
 }
 
 /** A saved agent result as listed: which agent and when — the value stays behind its own route. */
