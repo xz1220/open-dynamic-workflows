@@ -137,7 +137,9 @@ test("stop prevents queued agents from starting and releases every waiting slot"
   control.stop();
   finish.release();
 
-  assert.equal(await first, "first", "stop does not interrupt an agent already running");
+  // No stop watcher is wired here, so the running agent is not aborted; see
+  // "a stop aborts agents that are already running" for the wired behaviour.
+  assert.equal(await first, "first", "without a watcher the stop is seen only at the next dispatch");
   for (const result of await settled) {
     assert.equal(result.status, "rejected");
     if (result.status === "rejected") assert.ok(result.reason instanceof RunStopped);

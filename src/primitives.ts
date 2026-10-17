@@ -5,13 +5,14 @@
  * {@link createPrimitives} builds a fresh set bound to one run's context and the
  * loader injects them into the script's scope.
  *
- *   - agent     — run one coding agent on a subtask (the only verb that works)
+ *   - agent     — run one coding agent on a subtask
  *   - parallel  — fan out a batch and wait for all of it (barrier)
  *   - pipeline  — stream items through stages independently (no barrier)
  *   - phase     — label the following work for progress display
  *   - log       — surface a progress message
- *   - budget    — token/agent budget exposed to the script (stub in v1)
- *   - workflow  — run another workflow inline (deferred; throws clearly for now)
+ *   - budget    — the run's token budget: total, estimated spend, remaining
+ *   - workflow  — run another workflow inline (one level deep)
+ *   - validate  — compile-check workflow source (ODW extension)
  *
  * `args` is not here: it is run data injected alongside these globals.
  */
