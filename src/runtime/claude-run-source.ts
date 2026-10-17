@@ -165,6 +165,9 @@ export class ClaudeRunSource implements RunSource {
   agentResult(): null {
     return null;
   }
+  agentDiff(): null {
+    return null; // nor the diffs of its isolated agents
+  }
 
   // --- discovery -------------------------------------------------------------
 

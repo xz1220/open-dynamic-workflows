@@ -26,6 +26,10 @@
  *                                   sourceRunId), readable while the run is still going; 404 when
  *                                   it has none (still running, failed, a Claude run); 400 unless
  *                                   :agentId is a non-negative integer
+ *   GET  /api/runs/:id/agents/:agentId/diff   what an isolated agent changed, as the unified diff
+ *                                   kept in the run directory (ODW extension): text/plain; 404 when
+ *                                   it kept none (no change, not isolated, a Claude run); the same
+ *                                   :agentId check. RunDetail.agents[] carry `changes` and `branch`
  *   POST /api/runs/:id/control      { action: pause|resume|stop } (ODW runs; Claude runs → 409)
  *   POST /api/runs/:id/checkpoint   { action: approve|reject, checkpointId?, note? } answers a
  *                                   waiting checkpoint() (ODW extension) — the one named, else the
@@ -99,6 +103,7 @@ import {
   isAllowedHost,
   isLoopbackBind,
   jsonBodyOrReply,
+  sendFileCached,
   sendJson,
   sendJsonCached,
   writeGuard,
@@ -311,7 +316,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandleCont
       return;
     }
 
-    const runMatch = path.match(/^\/api\/runs\/([^/]+)(\/events|\/control|\/checkpoint|\/result|\/agents(?:\/[^/]+)?)?$/);
+    const runMatch = path.match(/^\/api\/runs\/([^/]+)(\/events|\/control|\/checkpoint|\/result|\/agents(?:\/[^/]+(?:\/diff)?)?)?$/);
     if (runMatch) {
       const sub = runMatch[2];
       // Writes are gated before any run lookup: an off-loopback bind refuses
@@ -369,11 +374,21 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandleCont
         return;
       }
       if (method === "GET" && sub?.startsWith("/agents/")) {
+        const rest = sub.slice("/agents/".length);
+        const wantsDiff = rest.endsWith("/diff");
         // The id names a file: only a non-negative integer may reach the store.
-        const raw = decodeSegment(sub.slice("/agents/".length));
+        const raw = decodeSegment(wantsDiff ? rest.slice(0, -"/diff".length) : rest);
         const agentId = raw !== null && /^\d+$/.test(raw) ? Number(raw) : NaN;
         if (!Number.isSafeInteger(agentId)) {
           sendJson(res, 400, { error: "agentId must be a non-negative integer" });
+          return;
+        }
+        if (wantsDiff) {
+          // What an isolated agent changed (ODW extension), as kept: diffs can be megabytes.
+          const file = src.agentDiff(runId, agentId);
+          if (!file || !sendFileCached(req, res, file, "text/plain; charset=utf-8")) {
+            sendJson(res, 404, { error: `agent ${agentId} kept no diff` });
+          }
           return;
         }
         const rec = src.agentResult(runId, agentId);

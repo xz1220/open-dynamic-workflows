@@ -6,6 +6,7 @@
  * status.json + events.jsonl, is ODW-specific).
  */
 
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 
 import type { CheckpointRequest } from "../control.js";
@@ -114,6 +115,10 @@ export class OdwRunSource implements RunSource {
   }
   agentResult(runId: string, agentId: number): AgentResultRecord | null {
     return this.store.readAgentResult(runId, agentId);
+  }
+  agentDiff(runId: string, agentId: number): string | null {
+    const path = this.store.agentDiffPath(runId, agentId);
+    return existsSync(path) ? path : null;
   }
   control(runId: string, action: string): void {
     // resume clears the control file by writing a benign "running" request; the
