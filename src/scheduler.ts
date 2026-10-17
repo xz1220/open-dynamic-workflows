@@ -16,7 +16,7 @@
  * surrounding workflow. `parallel` and `pipeline` both build on it.
  */
 
-import { AgentLimitExceeded, isFatalError } from "./errors.js";
+import { AgentLimitExceeded, ConfigError, isFatalError } from "./errors.js";
 
 export interface SchedulerOptions {
   concurrency: number;
@@ -41,6 +41,13 @@ export class Scheduler {
   private readonly waiters: Array<() => void> = [];
 
   constructor(options: SchedulerOptions) {
+    // NaN slips through Math.max and every comparison: a NaN cap would park
+    // every acquire() forever, a NaN backstop would never fire. Fail loudly.
+    if (Number.isNaN(options.concurrency) || Number.isNaN(options.maxAgents)) {
+      throw new ConfigError(
+        `scheduler limits must be numbers (concurrency=${options.concurrency}, maxAgents=${options.maxAgents})`,
+      );
+    }
     this.concurrency = Math.max(1, options.concurrency);
     this.maxAgents = options.maxAgents;
     this.checkpoint = options.checkpoint ?? (() => {});

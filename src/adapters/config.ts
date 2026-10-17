@@ -429,7 +429,13 @@ function buildAdapter(name: string, spec: RawAdapter): Adapter {
   if (spec.env !== undefined) {
     adapter.env = Object.fromEntries(Object.entries(spec.env).map(([k, v]) => [k, String(v)]));
   }
-  if (spec.timeout !== undefined) adapter.timeout = Number(spec.timeout);
+  // null means "not set": the adapter inherits the run-wide timeout.
+  if (spec.timeout !== undefined && spec.timeout !== null) {
+    adapter.timeout = numberSetting(`adapter '${name}' 'timeout'`, spec.timeout, "a positive number of seconds", {
+      min: 0,
+      exclusiveMin: true,
+    });
+  }
   if (spec.label !== undefined) adapter.label = spec.label;
   if (spec.flags !== undefined) adapter.flags = buildFlags(name, spec.flags);
   if (spec.output !== undefined) adapter.output = buildOutput(name, spec.output);
@@ -483,21 +489,55 @@ function buildOutput(name: string, raw: unknown): AdapterOutput {
   };
 }
 
+/**
+ * Read a numeric config value: a JSON number or a numeric string ("8"), as
+ * before. Anything else — or a value out of range — is a {@link ConfigError}
+ * naming the key. Coercing blindly let `"concurrency": "auto"` become NaN,
+ * which deadlocked every dispatch; NaN timeouts and caps failed just as quietly.
+ */
+function numberSetting(
+  key: string,
+  raw: unknown,
+  expected: string,
+  rule: { min: number; exclusiveMin?: boolean; integer?: boolean },
+): number {
+  const value = typeof raw === "number" ? raw : typeof raw === "string" && raw.trim() ? Number(raw) : NaN;
+  const inRange = rule.exclusiveMin ? value > rule.min : value >= rule.min;
+  if (!Number.isFinite(value) || !inRange || (rule.integer && !Number.isInteger(value))) {
+    throw new ConfigError(`${key} must be ${expected}; got ${JSON.stringify(raw)}`);
+  }
+  return value;
+}
+
 function buildSettings(raw: Record<string, unknown>): Settings {
   const pick = <T>(key: keyof Settings, fallback: T): T =>
     raw[key as string] === undefined || raw[key as string] === null
       ? fallback
       : (raw[key as string] as T);
-  const numOrNull = (key: keyof Settings, fallback: number | null): number | null =>
-    raw[key as string] === undefined || raw[key as string] === null
-      ? fallback
-      : Number(raw[key as string]);
+  const num = <F extends number | null>(
+    key: keyof Settings,
+    fallback: F,
+    expected: string,
+    rule: { min: number; exclusiveMin?: boolean; integer?: boolean },
+  ): number | F => {
+    const value = raw[key as string];
+    return value === undefined || value === null ? fallback : numberSetting(`"${key}"`, value, expected, rule);
+  };
   return {
     defaultAdapter: pick("defaultAdapter", DEFAULT_SETTINGS.defaultAdapter),
-    concurrency: numOrNull("concurrency", DEFAULT_SETTINGS.concurrency),
-    maxAgents: Number(pick("maxAgents", DEFAULT_SETTINGS.maxAgents)),
-    timeout: numOrNull("timeout", DEFAULT_SETTINGS.timeout),
-    schemaRetries: Number(pick("schemaRetries", DEFAULT_SETTINGS.schemaRetries)),
+    concurrency: num("concurrency", DEFAULT_SETTINGS.concurrency, "a positive integer, or null for auto", {
+      min: 1,
+      integer: true,
+    }),
+    maxAgents: num("maxAgents", DEFAULT_SETTINGS.maxAgents, "a positive integer", { min: 1, integer: true }),
+    timeout: num("timeout", DEFAULT_SETTINGS.timeout, "a positive number of seconds, or null for no timeout", {
+      min: 0,
+      exclusiveMin: true,
+    }),
+    schemaRetries: num("schemaRetries", DEFAULT_SETTINGS.schemaRetries, "a non-negative integer", {
+      min: 0,
+      integer: true,
+    }),
     runsRoot: pick("runsRoot", DEFAULT_SETTINGS.runsRoot),
     workflowsRoot: pick("workflowsRoot", DEFAULT_SETTINGS.workflowsRoot),
     claudeWorkflowsRoot: pick("claudeWorkflowsRoot", DEFAULT_SETTINGS.claudeWorkflowsRoot),
