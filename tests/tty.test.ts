@@ -59,7 +59,7 @@ test("truecolor needs COLORTERM; the palette upgrades to 24-bit codes", () => {
   const caps = detectCaps({ isTTY: true }, { TERM: "xterm", COLORTERM: "truecolor" });
   assert.equal(caps.truecolor, true);
   const p = palette(caps);
-  assert.match(p.ok("x"), /\x1b\[38;2;16;185;129m/); // emerald, web token --green
+  assert.match(p.ok("x"), /\x1b\[38;2;46;232;142m/); // the dashboard's signal green (night ink)
   const basic = palette(detectCaps({ isTTY: true }, { TERM: "xterm" }));
   assert.match(basic.ok("x"), /\x1b\[32m/);
 });

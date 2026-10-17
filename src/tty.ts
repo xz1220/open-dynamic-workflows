@@ -91,11 +91,12 @@ export interface Palette {
 /** Build the palette for a capability set (plain passthrough when color off). */
 export function palette(caps: TermCaps): Palette {
   return {
-    accent: style(caps, "32", [16, 185, 129]), // --green:#10b981
-    ok: style(caps, "32", [16, 185, 129]),
-    run: style(caps, "33", [245, 158, 11]), // --amber:#f59e0b
-    err: style(caps, "31", [239, 68, 68]), // --red:#ef4444
-    dim: style(caps, "90", [112, 112, 112]), // --muted:#707070
+    // The dashboard's inks (web/src/styles/tokens.css), tuned for dark terminals.
+    accent: style(caps, "32", [46, 232, 142]), // --sig (night):#2ee88e
+    ok: style(caps, "32", [46, 232, 142]),
+    run: style(caps, "33", [255, 178, 36]), // --amber (night):#ffb224
+    err: style(caps, "31", [255, 91, 57]), // --alarm (night):#ff5b39
+    dim: style(caps, "90", [139, 142, 132]), // --mute (night):#8b8e84
     bold: caps.color ? (s: string) => `${ESC}[1m${s}${RESET}` : (s: string) => s,
   };
 }
