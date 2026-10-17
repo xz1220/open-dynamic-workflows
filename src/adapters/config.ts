@@ -88,6 +88,7 @@ const KNOWN_TOP_KEYS = [
   "worktreeSetup",
   "worktreeSetupTimeout",
   "portRange",
+  "fanOutWarn",
 ] as const;
 
 const KNOWN_ADAPTER_KEYS = ["command", "stdin", "env", "timeout", "stallTimeout", "label", "flags", "output", "failures"] as const;
@@ -690,6 +691,14 @@ function buildSettings(raw: Record<string, unknown>): Settings {
       exclusiveMin: true,
     }),
     portRange: raw["portRange"] == null ? [...DEFAULT_SETTINGS.portRange] : buildPortRange(raw["portRange"]),
+    // null (unlike for the keys above, where it means "the default") and 0 both mean "never".
+    fanOutWarn:
+      raw["fanOutWarn"] === null
+        ? null
+        : num("fanOutWarn", DEFAULT_SETTINGS.fanOutWarn, "a positive integer, or 0/null to never warn", {
+            min: 0,
+            integer: true,
+          }) || null,
   };
 }
 

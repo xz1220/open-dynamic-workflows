@@ -323,6 +323,26 @@ export function createPrimitives(
     ctx.emit(event(LOG, { message: `${where} failed and its result is null: ${describeError(err)}` }));
   };
 
+  /**
+   * One LOG event — a warning, never a block — when a single parallel() or
+   * pipeline() call fans out wider than `fanOutWarn` (an ODW extension, after
+   * Claude Code's warning before a large workflow): every one of those agents
+   * spends tokens, and nothing else says how many are on their way.
+   */
+  const warnFanOut = (call: "parallel()" | "pipeline()", width: number, stages = 0): void => {
+    const limit = ctx.config.settings.fanOutWarn;
+    if (!limit || width <= limit) return;
+    const what = call === "parallel()" ? `${width} tasks` : `${width} items through ${stages} stage${stages === 1 ? "" : "s"}`;
+    ctx.emit(
+      event(LOG, {
+        message:
+          `large fan-out: ${call} starts ${what} (over fanOutWarn: ${limit}) — each agent spends tokens; ` +
+          "odw status shows what the run has spent, odw run --budget caps it",
+        fanOut: width,
+      }),
+    );
+  };
+
   const parallel = async <T>(thunks: Array<Thunk<T>>): Promise<Array<T | null>> => {
     if (!Array.isArray(thunks)) {
       throw new WorkflowScriptError(`parallel() takes an array of functions (thunks); got ${describeValue(thunks)}`);
@@ -335,6 +355,7 @@ export function createPrimitives(
         );
       }
     });
+    warnFanOut("parallel()", thunks.length);
     return ctx.scheduler.gather(
       thunks.map((thunk, i) => async () => {
         try {
@@ -360,6 +381,7 @@ export function createPrimitives(
         );
       }
     });
+    warnFanOut("pipeline()", items.length, stages.length);
     const chains = items.map((item, index) => async (): Promise<unknown> => {
       let value: unknown = item;
       let s = 0;

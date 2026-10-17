@@ -148,6 +148,11 @@ export interface Settings {
   worktreeSetupTimeout: number;
   /** Where each running agent's `ODW_PORT` comes from: `[first, last]`, inclusive (an ODW extension). */
   portRange: [number, number];
+  /**
+   * Log a warning when one parallel() or pipeline() call fans out wider than
+   * this — more thunks, or more items (an ODW extension); `null` => never.
+   */
+  fanOutWarn: number | null;
 }
 
 /** The terminal states a run can end in, and that notify hooks can fire on. */

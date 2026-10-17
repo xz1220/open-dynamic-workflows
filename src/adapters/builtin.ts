@@ -173,4 +173,5 @@ export const DEFAULT_SETTINGS: Settings = {
   worktreeSetup: null, // nothing runs in a new isolated worktree but the agent
   worktreeSetupTimeout: 600, // seconds
   portRange: [41000, 41999], // ODW_PORT, unique among a run's running agents
+  fanOutWarn: 25, // log a warning when one parallel()/pipeline() call fans out wider
 };
