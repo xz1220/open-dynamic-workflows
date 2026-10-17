@@ -10,6 +10,7 @@ import { renderPulse } from "../web/src/components/pulse.ts";
 import { highlightSource, outlineSource } from "../web/src/components/source.ts";
 import { renderTimeline } from "../web/src/components/timeline.ts";
 import { renderDag } from "../web/src/dag.ts";
+import { applyRunsDelta } from "../web/src/store.ts";
 import type { ActivityEvent, AgentView, RunDetail, RunSummary } from "../web/src/types.ts";
 import { esc, fmtDurSec, fuzzy, markHits } from "../web/src/util.ts";
 
@@ -187,4 +188,18 @@ test("renderJson builds a collapsible, escaped tree and reads strings as prose",
   assert.match(html, /data-preserve="open"/);
   assert.match(html, /&lt;x&gt;/);
   assert.match(renderJson("plain text"), /class="prose"/);
+});
+
+test("applyRunsDelta upserts, removes and keeps newest-first order", () => {
+  const a = summary({ runId: "a", createdAt: 10 });
+  const b = summary({ runId: "b", createdAt: 20 });
+  const c = summary({ runId: "c", createdAt: 30 });
+  const next = applyRunsDelta([b, a], [c, { ...a, state: "done" }], ["b"]);
+  assert.deepEqual(
+    next.map((r) => [r.runId, r.state]),
+    [
+      ["c", "running"],
+      ["a", "done"],
+    ],
+  );
 });

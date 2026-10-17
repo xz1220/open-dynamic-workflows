@@ -101,6 +101,18 @@ class Store {
         this.backoff = 1000;
         this.emit();
       });
+      // Servers that diff the run list push only what changed after the first
+      // full `runs` frame: upserted summaries and removed run ids.
+      es.addEventListener("runs-delta", (e) => {
+        try {
+          const d = JSON.parse((e as MessageEvent).data) as { upsert?: RunSummary[]; remove?: string[] };
+          this.setRuns(applyRunsDelta(this.runs, d.upsert ?? [], d.remove ?? []));
+        } catch {
+          return; // a torn delta: the next full frame (or reconnect) resyncs
+        }
+        this.conn = "live";
+        this.emit();
+      });
       es.addEventListener("chat", (e) => {
         let sessionId: string | null = null;
         try {
@@ -373,6 +385,16 @@ class Store {
     }
     this.fleet = fleet;
   }
+}
+
+/** Merge an SSE delta into the run list, keeping newest-first order. */
+export function applyRunsDelta(runs: RunSummary[], upsert: RunSummary[], remove: string[]): RunSummary[] {
+  const byId = new Map(runs.map((r) => [r.runId, r]));
+  for (const id of remove) byId.delete(id);
+  for (const r of upsert) byId.set(r.runId, r);
+  return [...byId.values()].sort(
+    (a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0) || (a.runId < b.runId ? 1 : a.runId > b.runId ? -1 : 0),
+  );
 }
 
 export const store = new Store();
