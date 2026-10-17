@@ -17,7 +17,7 @@
  *
  * Known properties of the git mechanism (shared with Claude Code's worktrees):
  *   - the source must be a git repository with at least one commit; asking for
- *     isolation elsewhere fails that agent call with an actionable error
+ *     isolation elsewhere fails the run with an actionable ConfigError
  *   - the worktree is a clean checkout of the base commit — the agent sees the
  *     last commit, not any uncommitted edits in the source tree
  *   - submodules are NOT initialised (their directories are empty), and
@@ -30,6 +30,8 @@ import { mkdtemp, open, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
+
+import { ConfigError } from "./errors.js";
 
 const run = promisify(execFile);
 
@@ -97,7 +99,10 @@ export async function withWorkspace<T>(
     top = (await git(source, ["rev-parse", "--show-toplevel"])).trim();
     base = (await git(source, ["rev-parse", "--verify", "HEAD"])).trim();
   } catch (err) {
-    throw new Error(
+    // A ConfigError is fatal: every isolated agent of the run would fail the
+    // same way, and swallowing each as a null result would turn a setup
+    // problem into a "successful" run full of empty slots.
+    throw new ConfigError(
       `isolation "worktree" needs a git repository with at least one commit at '${source}' ` +
         `(agents are isolated via git worktrees, as in Claude Code). ` +
         `Run without isolation, or initialise the repo first. git said: ${gitDetail(err)}`,
