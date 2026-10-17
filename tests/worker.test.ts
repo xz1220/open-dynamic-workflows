@@ -328,6 +328,84 @@ test("a failing script kills the agents it left running", async () => {
   }
 });
 
+/** A run whose agents reply with 40 characters (10 estimated tokens) each. */
+function swallowRun(root: string, store: RunStore, body: string, options: { maxAgents?: number; budgetTotal?: number; slow?: boolean } = {}) {
+  const config = join(root, "odw.config.json");
+  const reply = options.slow ? "setTimeout(() => {}, 30000)" : "process.stdout.write('x'.repeat(40))";
+  writeFileSync(
+    config,
+    JSON.stringify({
+      defaultAdapter: "mock",
+      ...(options.maxAgents ? { maxAgents: options.maxAgents } : {}),
+      adapters: { mock: { command: [execPath, "-e", reply] } },
+    }),
+  );
+  const script = join(root, `wf-${Math.random().toString(36).slice(2)}.js`);
+  writeFileSync(script, `export const meta = { name: 'wf', description: 'd' }\n${body}`);
+  const id = store.create({ script, args: null, source: root, configPath: config, budgetTotal: options.budgetTotal ?? null });
+  return id;
+}
+
+const discardedNote = (store: RunStore, id: string) =>
+  store.readEvents(id).some((e) => e.type === "log" && /returned after the run ended.*discarded/.test(String(e.message)));
+
+test("a swallowed budget or cap error still fails the run, without a result", async () => {
+  const { root, store } = setup();
+  try {
+    const budget = swallowRun(root, store, "await agent('one')\ntry { await agent('two') } catch {}\nreturn 'partial'", {
+      budgetTotal: 1,
+    });
+    assert.equal(await executeRun(store.runDir(budget)), "failed");
+    assert.match(String(store.readError(budget)?.error), /budget ceiling/);
+    assert.equal(store.hasResult(budget), false, "result.json is for successful runs only");
+    assert.ok(discardedNote(store, budget));
+
+    const cap = swallowRun(root, store, "await agent('a')\ntry { await agent('b') } catch {}\nreturn 'x'", { maxAgents: 1 });
+    assert.equal(await executeRun(store.runDir(cap)), "failed");
+    assert.match(String(store.readError(cap)?.error), /cap of 1 agent dispatches/);
+    assert.equal(store.readStatus(cap).state, "failed");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a swallowed stop still ends the run stopped", async () => {
+  const { root, store } = setup();
+  try {
+    const id = swallowRun(root, store, "try { await agent('slow') } catch {}\nreturn 'swallowed'", { slow: true });
+    const run = executeRun(store.runDir(id));
+    const started = () => store.readEvents(id).some((e) => e.type === "agent_started");
+    assert.ok(await waitUntil(started, 10_000), "the agent should be running");
+    store.writeControl(id, "stop");
+    assert.equal(await run, "stopped");
+    assert.equal(store.readStatus(id).state, "stopped");
+    assert.equal(store.hasResult(id), false);
+    assert.ok(discardedNote(store, id));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("the first fatal error stays the outcome when the script then fails differently", async () => {
+  const { root, store } = setup();
+  try {
+    const id = swallowRun(
+      root,
+      store,
+      "await agent('a')\ntry { await agent('b') } catch {}\nthrow new TypeError('later bug')",
+      { maxAgents: 1 },
+    );
+    assert.equal(await executeRun(store.runDir(id)), "failed");
+    assert.match(String(store.readError(id)?.error), /cap of 1 agent dispatches/);
+    assert.ok(
+      store.readEvents(id).some((e) => e.type === "log" && /also failed: later bug/.test(String(e.message))),
+      "the script's own error is still reported",
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("executeRun stays quiet when meta.name matches the filename stem", async () => {
   const { root, store } = setup();
   try {

@@ -117,21 +117,40 @@ export async function executeRun(runDir: string): Promise<string> {
     // Agents the script started but never awaited are still this run's work:
     // let them finish (and clean up their worktrees) before recording it.
     await crashes.race(ctx.scheduler.drain());
+    // A fatal error (stop, budget, dispatch cap, config) decides the outcome
+    // even when the script caught it and returned anyway — a stopped run must
+    // not read "done". The return value is not kept: result.json is written
+    // for successful runs only.
+    const fatal = ctx.scheduler.fatalError;
+    if (fatal !== undefined) {
+      sink.emit(
+        event(LOG, {
+          message: `the workflow returned after the run ended (${errorMessage(fatal)}); its return value is discarded`,
+        }),
+      );
+      throw fatal;
+    }
 
     store.writeResult(runId, result);
     sink.emit(event(RUN_FINISHED, { runId }));
     store.updateStatus(runId, { state: "done", dispatched: dispatched(), spentTokens: spent() });
     return "done";
   } catch (err) {
-    if (ctx) await stopAgents(ctx.scheduler, err);
-    if (err instanceof RunStopped) {
+    // The first fatal error is the root cause, even when the script swallowed
+    // it and later failed for another reason (still worth a log line).
+    const outcome = ctx?.scheduler.fatalError ?? err;
+    if (outcome !== err) {
+      sink.emit(event(LOG, { message: `after the run ended, the workflow also failed: ${errorMessage(err)}` }));
+    }
+    if (ctx) await stopAgents(ctx.scheduler, outcome);
+    if (outcome instanceof RunStopped) {
       sink.emit(event(RUN_STOPPED, { runId }));
       store.updateStatus(runId, { state: "stopped", dispatched: dispatched(), spentTokens: spent() });
       return "stopped";
     }
-    const e = err as Error;
-    sink.emit(event(RUN_FAILED, { runId, error: e.message ?? String(err) }));
-    store.writeError(runId, { error: e.message ?? String(err), stack: e.stack ?? null });
+    const e = outcome as Error;
+    sink.emit(event(RUN_FAILED, { runId, error: e.message ?? String(outcome) }));
+    store.writeError(runId, { error: e.message ?? String(outcome), stack: e.stack ?? null });
     store.updateStatus(runId, { state: "failed", dispatched: dispatched(), spentTokens: spent() });
     return "failed";
   } finally {
@@ -146,9 +165,12 @@ export async function executeRun(runDir: string): Promise<string> {
  * bounded moment, then kill whatever is left.
  */
 async function stopAgents(scheduler: Scheduler, err: unknown): Promise<void> {
-  const message = err instanceof Error ? err.message : String(err);
-  scheduler.abort(isFatalError(err) ? err : new RunStopped(`the workflow failed: ${message}`));
+  scheduler.abort(isFatalError(err) ? err : new RunStopped(`the workflow failed: ${errorMessage(err)}`));
   if (!(await scheduler.drain(ABORT_DRAIN_MS))) killAllAgentProcesses();
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
 
 /**
@@ -174,8 +196,7 @@ function watchProcessCrashes(): { race<T>(work: Promise<T>): Promise<T>; dispose
 }
 
 function crashError(kind: string, cause: unknown): WorkflowScriptError {
-  const message = cause instanceof Error ? cause.message : String(cause);
-  const error = new WorkflowScriptError(`the workflow crashed with ${kind}: ${message}`);
+  const error = new WorkflowScriptError(`the workflow crashed with ${kind}: ${errorMessage(cause)}`);
   if (cause instanceof Error && cause.stack) error.stack = cause.stack;
   return error;
 }
