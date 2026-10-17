@@ -5,7 +5,8 @@
   display: grid;
   grid-template-columns: var(--rail-w) minmax(0, 1fr);
   grid-template-rows: 56px minmax(0, 1fr) 30px;
-  background: var(--paper);
+  background-color: var(--paper);
+  background-image: var(--grain);
 }
 
 /* ---- rail ---- */
