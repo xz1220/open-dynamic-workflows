@@ -761,6 +761,11 @@
   background: transparent;
   border: 1.5px solid var(--clay);
 }
+.op.gate i {
+  border-radius: 999px;
+  width: 11px;
+  background: var(--amber);
+}
 .op.cmd i {
   border-radius: 1px;
   background: var(--mute);
