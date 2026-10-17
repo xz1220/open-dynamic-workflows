@@ -31,11 +31,13 @@
 import { execFile } from "node:child_process";
 import { mkdtemp, readFile, realpath, rm, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, join, relative, resolve } from "node:path";
+import { basename, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 
 import {
   captureChanges,
+  listChanges,
+  relativeToDir,
   snapshotWorktree,
   type CaptureOptions,
   type CapturedChanges,
@@ -61,6 +63,14 @@ export interface Workspace {
    * file written, when it changed nothing, and always for inplace.
    */
   captureChanges(options: CaptureOptions): Promise<CapturedChanges | null>;
+  /**
+   * The paths the agent changed — the files of the diff {@link captureChanges}
+   * keeps — relative to {@link path}, with forward slashes (ODW extension: an
+   * `expect` check reads them). Null for inplace: the source tree is shared,
+   * so what one agent changed there is told against a snapshot of it instead
+   * (see `snapshotTree` in ./changes).
+   */
+  changedPaths(signal?: AbortSignal): Promise<string[] | null>;
 }
 
 /** Everything the runner captures from git directly is small; diffs go to a file. */
@@ -93,7 +103,7 @@ export async function withWorkspace<T>(
   setup: WorktreeSetupOptions = {},
 ): Promise<T> {
   if (mode === "inplace") {
-    return fn({ path: source, source, diff: async () => "", captureChanges: async () => null });
+    return fn({ path: source, source, diff: async () => "", captureChanges: async () => null, changedPaths: async () => null });
   }
   if (mode !== "worktree") {
     throw new Error(`unknown workspace mode '${mode}'; use 'inplace' or 'worktree'`);
@@ -135,16 +145,19 @@ export async function withWorkspace<T>(
   // reports the resolved toplevel while `source` may arrive through a symlink
   // (macOS /tmp, /var), and a mismatched `relative()` would escape the worktree.
   const rel = relative(await realpath(top), await realpath(resolve(source)));
-  const wsPath = rel === "" || rel.startsWith("..") ? work : join(work, rel);
+  const inRoot = rel === "" || rel.startsWith("..");
+  const wsPath = inRoot ? work : join(work, rel);
 
   // What the worktree holds before the agent starts is not the agent's change.
   let baseline: WorktreeBaseline | Error = new Error("the worktree was never made ready");
-  const capture = (options: CaptureOptions): Promise<CapturedChanges | null> => {
+  const known = (): WorktreeBaseline => {
     if (baseline instanceof Error) {
-      return Promise.reject(new Error(`what was in the worktree before the agent started is unknown: ${baseline.message}`));
+      throw new Error(`what was in the worktree before the agent started is unknown: ${baseline.message}`);
     }
-    return captureChanges({ top, work, base, scratch: tmp }, baseline, options);
+    return baseline;
   };
+  const capture = async (options: CaptureOptions): Promise<CapturedChanges | null> =>
+    captureChanges({ top, work, base, scratch: tmp }, known(), options);
   const ws: Workspace = {
     path: wsPath,
     source,
@@ -154,6 +167,10 @@ export async function withWorkspace<T>(
       return (await capture({ path: out, maxDiffBytes: DIFF_CAP_BYTES })) ? readFile(out, "utf8") : "";
     },
     captureChanges: capture,
+    changedPaths: async (signal) => {
+      const paths = await listChanges({ top, work, base, scratch: tmp }, known(), signal);
+      return inRoot ? paths : paths.map((path) => relativeToDir(rel.split(sep).join("/"), path));
+    },
   };
   // The links .worktreeinclude made to the source tree go first, so removing
   // the worktree can never reach through one into the source.
