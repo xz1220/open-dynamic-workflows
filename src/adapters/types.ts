@@ -264,12 +264,11 @@ export interface Settings {
   /**
    * What happens to JSON Schema in an agent()'s schema that ODW's validator
    * does not check (an ODW extension): `"warn"` — the call runs, ODW checks
-   * the rest, and the run logs once which keywords and where; `"strict"` —
-   * the call fails before it starts; `"native"` — on an adapter that takes
-   * schemas natively (`flags.schema`) they are left to its CLI, elsewhere as
-   * `"warn"`. A malformed schema fails in every mode.
+   * the rest, and the run logs once which keywords, where, and who enforces
+   * them (a CLI that takes schemas natively, else nobody); `"strict"` — the
+   * call fails before it starts. A malformed schema fails in either mode.
    */
-  schemaKeywords: "warn" | "strict" | "native";
+  schemaKeywords: "warn" | "strict";
   /**
    * When an agent's prompt describes its schema (an ODW extension): `"auto"` —
    * only when the CLI does not take the schema natively; `"always"`.

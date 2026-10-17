@@ -925,7 +925,7 @@ function buildSettings(raw: Record<string, unknown>): Settings {
     schemaKeywords:
       raw["schemaKeywords"] == null
         ? DEFAULT_SETTINGS.schemaKeywords
-        : buildChoice("schemaKeywords", raw["schemaKeywords"], ["warn", "strict", "native"] as const),
+        : buildChoice("schemaKeywords", raw["schemaKeywords"], ["warn", "strict"] as const),
     schemaPrompt:
       raw["schemaPrompt"] == null
         ? DEFAULT_SETTINGS.schemaPrompt

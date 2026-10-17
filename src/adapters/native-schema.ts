@@ -7,10 +7,10 @@
  * AgentError. JSON Schema ODW's validator does not check (`oneOf`, `$ref`,
  * `const`, …) is never left silently unchecked, as `schemaKeywords` says:
  * `"warn"` (the default) — the call runs, ODW validates the part it checks
- * (`checkedSubset`), and the run logs once which keywords it does not check
- * and where; `"strict"` — the call fails with an AgentError naming each one;
- * `"native"` — on a CLI that validates the schema itself they are left to it
- * (logged once too), elsewhere as `"warn"`.
+ * (`checkedSubset`), and the run logs once which keywords it does not check,
+ * where, and who enforces them (the CLI when it got the schema natively,
+ * otherwise nobody); `"strict"` — the call fails with an AgentError naming
+ * each one.
  *
  * A CLI that validates schemas itself declares how it takes one
  * (`flags.schema`): ODW passes it the whole schema — inline as one argv
@@ -84,8 +84,8 @@ export function planSchema(
     return plan;
   }
   if (settings.schemaKeywords === "strict") return refuse(uncheckedError(adapter, unchecked, flag, unstrict));
-  // "warn" and "native": the call runs, ODW checks what it can, and the run says what it does not.
-  return { native, check: checkedSubset(schema), describe, note: uncheckedNote(adapter, unchecked, flag, unstrict, settings) };
+  // "warn": the call runs, ODW checks what it can, and the run says what it does not.
+  return { native, check: checkedSubset(schema), describe, note: uncheckedNote(adapter, unchecked, flag, unstrict) };
 }
 
 /** Why a schema with keywords ODW does not check cannot run under "strict", and what would let it. */
@@ -96,13 +96,13 @@ function uncheckedError(adapter: Adapter, unchecked: SchemaIssue[], flag: Schema
   if (!flag) {
     how =
       `adapter '${adapter.name}' does not validate schemas itself, so nothing would enforce ${it}: ${remove}, ` +
-      `or run this agent on an adapter that does (one with "flags.schema", like the built-in claude) and set "schemaKeywords": "native"`;
+      `or run this agent on an adapter that does (one with "flags.schema", like the built-in claude) and set "schemaKeywords": "warn"`;
   } else if (unstrict) {
     how =
       `adapter '${adapter.name}' validates only strict schemas itself (${STRICT_RULES}), and this one is not: ` +
-      `${remove}, or make the schema strict and set "schemaKeywords": "native"`;
+      `${remove}, or make the schema strict and set "schemaKeywords": "warn"`;
   } else {
-    how = `${remove}, or set "schemaKeywords": "native" to leave ${it} to adapter '${adapter.name}', which validates the schema itself`;
+    how = `${remove}, or set "schemaKeywords": "warn" to leave ${it} to adapter '${adapter.name}', which validates the schema itself`;
   }
   return (
     `agent() schema uses JSON Schema that ODW's validator does not check ("schemaKeywords": "strict"): ` +
@@ -112,28 +112,21 @@ function uncheckedError(adapter: Adapter, unchecked: SchemaIssue[], flag: Schema
 
 /**
  * What the run logs, once, about keywords ODW does not check in a call it lets
- * run: who enforces them, if anyone, and how to make them count.
+ * run: who enforces them — the CLI when it got the schema natively, otherwise
+ * nobody — and how to make them count.
  */
-function uncheckedNote(
-  adapter: Adapter,
-  unchecked: SchemaIssue[],
-  flag: SchemaFlag | undefined,
-  unstrict: boolean,
-  settings: Pick<Settings, "schemaKeywords">,
-): string {
+function uncheckedNote(adapter: Adapter, unchecked: SchemaIssue[], flag: SchemaFlag | undefined, unstrict: boolean): string {
   const listed = listIssues(unchecked);
   if (flag && !unstrict) {
-    const mode = settings.schemaKeywords === "native" ? ` ("schemaKeywords": "native")` : "";
-    const strict = settings.schemaKeywords === "native" ? "" : `; "schemaKeywords": "strict" refuses such calls`;
     return (
-      `schema keywords ODW does not check are left to adapter '${adapter.name}', which validates the schema itself${mode}: ` +
-      `${listed} — ODW checks the rest${strict}`
+      `schema keywords ODW does not check are left to adapter '${adapter.name}', which validates the schema itself: ` +
+      `${listed} — ODW checks the rest; "schemaKeywords": "strict" refuses such calls`
     );
   }
   const why = flag
     ? `adapter '${adapter.name}' validates only strict schemas itself (${STRICT_RULES}), and this one is not`
     : `adapter '${adapter.name}' does not validate schemas itself`;
-  // An adapter that validates schemas is handed this one whole, whatever the mode.
+  // An adapter that validates schemas is handed this one whole.
   const count = flag
     ? `make the schema strict so adapter '${adapter.name}' takes it natively`
     : `run the agent on an adapter that validates schemas itself (one with "flags.schema", like the built-in claude)`;
