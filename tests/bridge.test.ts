@@ -157,7 +157,9 @@ test("JSONL replies are decoded while the runner streams them; text replies are 
   assert.equal(out.text, "streamed answer");
 
   let textStreamed: unknown = "unset";
-  const textBridge = new Bridge(inplaceConfig(), {
+  const textConfig = defaultConfig();
+  textConfig.settings.defaultAdapter = "codex"; // a text adapter (claude streams stream-json)
+  const textBridge = new Bridge(textConfig, {
     runner: async (_command, options) => {
       textStreamed = options?.onStdout;
       return ok("plain answer");
@@ -671,6 +673,116 @@ test("Claude's text mode: an exit-0 reply that is only an API error is a failure
     runner: async () => ok(JSON.stringify({ type: "text", part: { type: "text", text: "API Error: Rate limit reached" } })),
   });
   assert.equal((await jsonl.run({ prompt: "x" })).text, "API Error: Rate limit reached");
+});
+
+/** What `claude --print --output-format stream-json --verbose` prints: an init event, then the result event. */
+function streamJson(result: Record<string, unknown>, returncode = 0, stderr = ""): CliResult {
+  const events = [
+    { type: "system", subtype: "init", session_id: "s1", model: "claude-sonnet-4-5", permissionMode: "acceptEdits" },
+    {
+      type: "result",
+      subtype: "success",
+      is_error: false,
+      num_turns: 1,
+      session_id: "s1",
+      total_cost_usd: 0,
+      usage: { input_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 0 },
+      ...result,
+    },
+  ];
+  return { returncode, stdout: events.map((e) => JSON.stringify(e)).join("\n") + "\n", stderr, timedOut: false, duration: 0.1 };
+}
+
+const NOTHING_SPENT = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0 };
+
+test("Claude stream-json: an is_error rate limit is ridden out like any, and every run's usage is reported", async () => {
+  const limited = streamJson({ is_error: true, result: "API Error: Rate limit reached" });
+  const answer = streamJson({
+    result: "the answer",
+    total_cost_usd: 0.0123,
+    usage: { input_tokens: 10, cache_read_input_tokens: 90, output_tokens: 40 },
+  });
+  const replies = [limited, limited, answer];
+  const { bridge, slept } = backoffBridge(async () => replies.shift()!);
+  const replied: Array<[string, unknown]> = [];
+  const spent: unknown[] = [];
+  const waits: number[] = [];
+  const out = await bridge.run(
+    { prompt: "x" },
+    {
+      onReply: (text, usage) => replied.push([text, usage]),
+      onUsage: (usage) => spent.push(usage),
+      onRateLimit: (retry) => waits.push(retry.waitSeconds),
+    },
+  );
+  assert.equal(out.text, "the answer");
+  assert.deepEqual(waits, [15, 30], "the exit-0 error result is retried with backoff");
+  assert.deepEqual(slept, [15_000, 30_000]);
+  assert.deepEqual(replied, [["the answer", { inputTokens: 100, outputTokens: 40, cacheReadTokens: 90, costUsd: 0.0123 }]]);
+  assert.deepEqual(spent, [NOTHING_SPENT, NOTHING_SPENT], "the limited runs reported what they spent: nothing");
+});
+
+test("Claude stream-json: an is_error usage limit is a spent quota — not retried, and its error says when it resets", async () => {
+  const T = Date.UTC(2026, 9, 17, 12, 0, 0);
+  const resets = Math.floor(T / 1000) + 3 * 3600;
+  let calls = 0;
+  const bridge = new Bridge(inplaceConfig(), {
+    runner: async () => {
+      calls++;
+      return streamJson({ is_error: true, result: `Claude AI usage limit reached|${resets}` });
+    },
+    sleep: async () => assert.fail("a spent quota is not waited out"),
+    now: () => T,
+  });
+  await assert.rejects(
+    () => bridge.run({ prompt: "x" }),
+    (err: AdapterExecutionError) =>
+      err.reason === "quota" &&
+      err.retryAfter === 3 * 3600 &&
+      err.message ===
+        "adapter 'claude' ran out of usage quota — wait for the window to reset (in 3h) and resume the run, " +
+          `or switch adapter with --adapter <name>: Claude AI usage limit reached|${resets}`,
+  );
+  assert.equal(calls, 1, "a quota is never retried");
+});
+
+test("Claude stream-json: the result's own words decide a failed run, not the transcript or stderr", async () => {
+  // A login failure with exit 1: the message is the result text, not a JSON tail.
+  const loggedOut = new Bridge(inplaceConfig(), {
+    runner: async () => streamJson({ is_error: true, result: "Invalid API key · Please run /login" }, 1, "some stderr chatter"),
+  });
+  await assert.rejects(
+    () => loggedOut.run({ prompt: "x" }),
+    (err: AdapterExecutionError) =>
+      err.reason === "auth" &&
+      err.message ===
+        "adapter 'claude' could not authenticate — log in to Claude Code and resume the run, " +
+          "or switch adapter with --adapter <name>: Invalid API key · Please run /login",
+  );
+  // An error result no failure class knows (max turns, no text): "reported an error", quoting it.
+  const maxTurns = new Bridge(inplaceConfig(), {
+    runner: async () => streamJson({ subtype: "error_max_turns", is_error: true }),
+  });
+  await assert.rejects(
+    () => maxTurns.run({ prompt: "x" }),
+    (err: AdapterExecutionError) =>
+      err.reason === "exit" &&
+      err.message.startsWith('adapter \'claude\' reported an error: {"type":"result","subtype":"error_max_turns","is_error":true'),
+  );
+  // A successful result is the reply even when the transcript quotes an API error.
+  const fine = new Bridge(inplaceConfig(), {
+    runner: async () => streamJson({ result: "API Error: Rate limit reached — that is what the README documents." }),
+  });
+  assert.equal((await fine.run({ prompt: "x" })).text, "API Error: Rate limit reached — that is what the README documents.");
+});
+
+test("stdout that does not match a structured adapter's format is still the reply, with a note for the run's log", async () => {
+  const notes: string[] = [];
+  const bridge = new Bridge(inplaceConfig(), { runner: async () => ok("plain text from an old claude") });
+  const out = await bridge.run({ prompt: "x" }, { onNote: (note) => notes.push(note) });
+  assert.equal(out.text, "plain text from an old claude");
+  assert.equal(notes.length, 1);
+  assert.match(notes[0]!, /^adapter 'claude': stdout did not match its 'jsonl' output format \(stdout is not JSONL: line 1: /);
 });
 
 test("a CLI that echoes its prompt is judged by its own words, not the task's", async () => {

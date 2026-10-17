@@ -359,3 +359,87 @@ test("a misspelled or misplaced output field is warned about, not silently ignor
     'adapter "misplaced" output: unknown field "eventType" is ignored',
   ]);
 });
+
+// --- Claude Code's stream-json (the built-in claude adapter) ----------------------
+
+/** Claude Code `--print --output-format stream-json --verbose`, as https://code.claude.com/docs/en/headless shows it. */
+const claudeStream = (result: Record<string, unknown>): string =>
+  [
+    { type: "system", subtype: "init", cwd: "/repo", session_id: "8f1c…", tools: ["Read", "Edit", "WebSearch"], model: "claude-sonnet-4-5", permissionMode: "acceptEdits" },
+    {
+      type: "assistant",
+      message: {
+        id: "msg_01",
+        type: "message",
+        role: "assistant",
+        content: [{ type: "tool_use", id: "toolu_01", name: "Read", input: { file_path: "README.md" } }],
+        usage: { input_tokens: 3, cache_creation_input_tokens: 5133, cache_read_input_tokens: 12737, output_tokens: 2 },
+      },
+      parent_tool_use_id: null,
+      session_id: "8f1c…",
+    },
+    {
+      type: "user",
+      message: { role: "user", content: [{ tool_use_id: "toolu_01", type: "tool_result", content: "# odw\nAPI Error: Rate limit reached (a line in the README)" }] },
+      parent_tool_use_id: null,
+      session_id: "8f1c…",
+    },
+    {
+      type: "result",
+      subtype: "success",
+      is_error: false,
+      duration_ms: 2771,
+      duration_api_ms: 2721,
+      num_turns: 2,
+      session_id: "8f1c…",
+      total_cost_usd: 0.0387,
+      usage: {
+        input_tokens: 4,
+        cache_creation_input_tokens: 5133,
+        cache_read_input_tokens: 12737,
+        output_tokens: 7,
+        server_tool_use: { web_search_requests: 0 },
+        service_tier: "standard",
+      },
+      permission_denials: [],
+      ...result,
+    },
+  ]
+    .map((event) => JSON.stringify(event))
+    .join("\n") + "\n";
+
+test("the built-in claude adapter streams stream-json and decodes its result event", () => {
+  const claude = defaultConfig().adapters.claude!;
+  assert.deepEqual(claude.command.slice(0, 5), ["claude", "--print", "--output-format", "stream-json", "--verbose"]);
+  assert.deepEqual(claude.output, {
+    format: "jsonl",
+    eventType: "result",
+    textPath: ["result"],
+    select: "last",
+    usagePath: ["usage"],
+    costPath: ["total_cost_usd"],
+    errorPath: ["is_error"],
+  });
+  assert.deepEqual(decodeOutput(claude, claudeStream({ result: "The README says hello." })), {
+    text: "The README says hello.",
+    usage: {
+      // Anthropic's input_tokens leaves the cache out: normalized input is all of it.
+      inputTokens: 4 + 5133 + 12737,
+      outputTokens: 7,
+      cacheReadTokens: 12737,
+      cacheWriteTokens: 5133,
+      costUsd: 0.0387,
+    },
+  });
+});
+
+test("claude's is_error result is the run's own failure report, with its result text as the message", () => {
+  const claude = defaultConfig().adapters.claude!;
+  const decoded = decodeOutput(claude, claudeStream({ is_error: true, result: "API Error: Rate limit reached", total_cost_usd: 0 }));
+  assert.equal(decoded.error, "API Error: Rate limit reached");
+  assert.equal(decoded.usage?.costUsd, 0);
+
+  // An error subtype with no result text quotes the event instead.
+  const turns = decodeOutput(claude, claudeStream({ subtype: "error_max_turns", is_error: true, result: undefined }));
+  assert.match(String(turns.error), /^\{"type":"result","subtype":"error_max_turns","is_error":true/);
+});
