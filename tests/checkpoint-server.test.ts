@@ -28,6 +28,8 @@ test("HTTP: GET exposes pendingCheckpoints; POST /checkpoint answers it (by: das
     assert.equal(typeof det.pendingCheckpoints[0].since, "number");
     const runs = await fetch(`${handle.url}/api/runs`).then((r) => r.json());
     assert.equal(runs[0].state, "waiting");
+    // What the dashboard's "Needs you" strip reads off the run list.
+    assert.deepEqual(runs[0].waiting, { checkpointId: 1, title: "Merge the plan?", since: det.pendingCheckpoints[0].since });
 
     // What the dashboard's approval card sends.
     const res = await fetch(`${handle.url}/api/runs/${id}/checkpoint`, {
@@ -42,6 +44,52 @@ test("HTTP: GET exposes pendingCheckpoints; POST /checkpoint answers it (by: das
   } finally {
     await handle.close();
     await p.cleanup();
+  }
+});
+
+test("SSE: the run list is pushed again when the checkpoint a waiting run shows changes", async () => {
+  const root = mkdtempSync(join(tmpdir(), "odw-cp-sse-"));
+  const store = new RunStore(join(root, "runs"));
+  const id = store.create({ script: "/demo/wf.js", args: null, source: "/demo" });
+  store.updateStatus(id, { state: "running", pid: process.pid, name: "demo" });
+  const emit = (ev: Record<string, unknown>) => appendFileSync(store.eventsPath(id), JSON.stringify(ev) + "\n");
+  emit({ ts: 1, type: "checkpoint_requested", checkpointId: 1, title: "First?", payload: null });
+  emit({ ts: 2, type: "checkpoint_requested", checkpointId: 2, title: "Second?", payload: null });
+  const handle = await startServer({ store, port: 0, host: "127.0.0.1", claudeProjectsRoot: join(root, "no-claude") });
+  const abort = new AbortController();
+  try {
+    const res = await fetch(`${handle.url}/api/stream`, { signal: abort.signal });
+    const reader = res.body!.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    /** The `waiting` of each `runs` frame, until one passes `done`. */
+    const nextList = async (done: (waiting: { checkpointId: number } | null) => boolean) => {
+      const deadline = setTimeout(() => abort.abort(), 8000);
+      try {
+        for (;;) {
+          let cut: number;
+          while ((cut = buf.indexOf("\n\n")) !== -1) {
+            const frame = buf.slice(0, cut);
+            buf = buf.slice(cut + 2);
+            const data = /^event: runs\ndata: (.*)$/m.exec(frame)?.[1];
+            if (data && done(JSON.parse(data)[0].waiting)) return;
+          }
+          const { value, done: ended } = await reader.read();
+          if (ended) throw new Error("stream ended");
+          buf += decoder.decode(value, { stream: true });
+        }
+      } finally {
+        clearTimeout(deadline);
+      }
+    };
+    await nextList((w) => w?.checkpointId === 1);
+    // #1 is answered: still "waiting", same counts and progress — but a new question shows.
+    emit({ ts: 3, type: "checkpoint_resolved", checkpointId: 1, approved: true, note: null, by: "cli" });
+    await nextList((w) => w?.checkpointId === 2);
+  } finally {
+    abort.abort();
+    await handle.close();
+    rmSync(root, { recursive: true, force: true });
   }
 });
 

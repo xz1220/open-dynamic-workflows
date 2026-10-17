@@ -348,8 +348,9 @@ odw reject $RUN --note "Keep the old table until the backfill is verified"
 ```
 
 也可以在看板里该运行的页面上点 **Approve** / **Reject**(仅限 loopback 绑定;它向
-`POST /api/runs/:id/checkpoint` 发送 `{ action, checkpointId?, note? }`,
-`GET /api/runs/:id` 会列出 `pendingCheckpoints`)。调用返回 `{ approved, note, by }`
+`POST /api/runs/:id/checkpoint` 发送 `{ action, checkpointId?, note? }`;
+`GET /api/runs/:id` 会列出 `pendingCheckpoints`,运行列表则用 `waiting` 标出每个等待中
+运行最早的那个问题)。调用返回 `{ approved, note, by }`
 ——`by` 是 `cli`、`dashboard` 或 `timeout`——拒绝也是一个答复而不是错误:"不"意味着
 什么由脚本决定。
 

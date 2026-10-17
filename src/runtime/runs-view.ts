@@ -24,6 +24,7 @@
  *      settled/observed agents — a fraction of work *seen*, never invented.
  */
 
+import type { WaitingCheckpoint } from "../checkpoint.js";
 import type { WorkflowEvent } from "../events.js";
 import { RunStore, TERMINAL_STATES } from "./run-store.js";
 
@@ -121,6 +122,12 @@ export interface RunSummary {
   /** settled (done+failed) / agents, in [0,1]; 0 when no agents seen yet. Commands included. */
   progress: number;
   lastActivityTs: number | null;
+  /**
+   * The oldest checkpoint() waiting for a person while the run is "waiting"
+   * (ODW extension) — what the dashboard's "Needs you" strip shows; null
+   * otherwise, and absent for Claude Code runs.
+   */
+  waiting?: WaitingCheckpoint | null;
 }
 
 export interface RunDetail extends RunSummary {
@@ -481,7 +488,15 @@ export function summaryFrom(runId: string, facts: RunFacts): RunSummary {
     counts,
     progress,
     lastActivityTs: fold.lastActivityTs,
+    waiting: state === "waiting" ? oldestWaiting(fold) : null,
   };
+}
+
+/** The oldest checkpoint a fold has waiting, as status.json's `waiting` names it. */
+function oldestWaiting(fold: EventFold): WaitingCheckpoint | null {
+  let oldest: PendingCheckpoint | undefined;
+  for (const cp of fold.checkpoints.values()) if (!oldest || cp.checkpointId < oldest.checkpointId) oldest = cp;
+  return oldest ? { checkpointId: oldest.checkpointId, title: oldest.title, since: oldest.since } : null;
 }
 
 /** Reconcile liveness and build the full detail from cached or fresh facts. */

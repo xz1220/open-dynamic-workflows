@@ -181,16 +181,23 @@ test("state folding: 'waiting' only for a live running run; paused and stale kee
     const asked = { ts: 10, type: "checkpoint_requested", checkpointId: 1, title: "Go?", payload: { a: 1 }, phase: null };
     const answered = { ts: 11, type: "checkpoint_resolved", checkpointId: 1, approved: true, note: null, by: "cli" };
 
-    const waiting = seed("running", process.pid, [{ ts: 9, type: "run_started" }, asked]);
+    const later = { ...asked, ts: 13, checkpointId: 2, title: "And this?" };
+    const waiting = seed("running", process.pid, [{ ts: 9, type: "run_started" }, later, asked]);
     assert.equal(summarize(store, waiting).state, "waiting");
-    assert.deepEqual(detail(store, waiting).pendingCheckpoints, [{ checkpointId: 1, title: "Go?", payload: { a: 1 }, since: 10 }]);
+    assert.deepEqual(summarize(store, waiting).waiting, { checkpointId: 1, title: "Go?", since: 10 }, "the oldest, on the run list");
+    assert.deepEqual(detail(store, waiting).pendingCheckpoints, [
+      { checkpointId: 1, title: "Go?", payload: { a: 1 }, since: 10 },
+      { checkpointId: 2, title: "And this?", payload: { a: 1 }, since: 13 },
+    ]);
 
     const cleared = seed("running", process.pid, [asked, answered]);
     assert.equal(summarize(store, cleared).state, "running");
+    assert.equal(summarize(store, cleared).waiting, null);
     assert.deepEqual(detail(store, cleared).pendingCheckpoints, []);
 
     const paused = seed("paused", process.pid, [asked]);
     assert.equal(summarize(store, paused).state, "paused", "a paused run reads paused");
+    assert.equal(summarize(store, paused).waiting, null);
     assert.equal(detail(store, paused).pendingCheckpoints!.length, 1, "…and its question can still be answered");
 
     const stale = seed("running", null, [asked]);

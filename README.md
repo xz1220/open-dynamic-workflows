@@ -384,8 +384,9 @@ odw reject $RUN --note "Keep the old table until the backfill is verified"
 ```
 
 or with **Approve** / **Reject** on the run's page in the dashboard (loopback binds
-only; it posts `{ action, checkpointId?, note? }` to `POST /api/runs/:id/checkpoint`,
-and `GET /api/runs/:id` lists `pendingCheckpoints`). The call resolves to
+only; it posts `{ action, checkpointId?, note? }` to `POST /api/runs/:id/checkpoint`;
+`GET /api/runs/:id` lists `pendingCheckpoints`, and the run list names each waiting
+run's oldest question as `waiting`). The call resolves to
 `{ approved, note, by }` — `by` is `cli`, `dashboard` or `timeout` — and a rejection
 is an answer, not an error: the script decides what "no" means.
 

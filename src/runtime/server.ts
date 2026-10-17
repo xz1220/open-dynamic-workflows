@@ -10,7 +10,8 @@
  *
  * Endpoints:
  *   GET  /                          the dashboard HTML
- *   GET  /api/runs                  [RunSummary], newest first (ODW + Claude Code runs)
+ *   GET  /api/runs                  [RunSummary], newest first (ODW + Claude Code runs); a run
+ *                                   waiting at a checkpoint() names the oldest one as `waiting`
  *   GET  /api/runs/:id              RunDetail
  *   GET  /api/runs/:id/events       raw events (synthesized for Claude runs):
  *                                     ?since=N  skip the first N (N is an event index)
