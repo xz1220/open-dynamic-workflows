@@ -88,18 +88,23 @@ export function helpText(): string {
     "  --wait              block until the run finishes, then print the result (one run-id line on stderr)",
     "  --timeout <s>       with --fg/--wait/attach: give up after s seconds, exit 124 (run continues)",
     "  --budget <tokens>   token target exposed to the script as budget.total",
+    "  -h, --help          show this help",
+    "  -v, --version       show the version",
+    "",
+    "Serve options (odw serve):",
+    "  --port <n>          dashboard port (default 4317)",
+    "  --host <addr>       dashboard bind address (default 127.0.0.1)",
+    "  --open              open the dashboard in the default browser",
     "",
     "Run modes (odw run / rerun):",
     "  interactive terminal        attaches in the foreground (Ctrl-C detaches; the run keeps going)",
     "  piped / captured / CI       detaches and prints the run id — `RUN=$(odw run wf.js)` stays correct",
     "  ODW_DETACH=1                forces detach; explicit --fg/--wait/--detach always win",
-    "  --port <n>          dashboard port (serve; default 4317)",
-    "  --host <addr>       dashboard bind address (serve; default 127.0.0.1)",
-    "  --open              open the dashboard in the default browser (serve)",
-    "  -h, --help          show this help",
-    "  -v, --version       show the version",
   ].join("\n");
 }
+
+/** A command-line mistake: its message is printed as-is and the exit code is 2. */
+class UsageError extends Error {}
 
 /** Parse and dispatch a CLI invocation. Returns the process exit code. */
 export async function main(argv: string[]): Promise<number> {
@@ -149,6 +154,10 @@ export async function main(argv: string[]): Promise<number> {
         return 2;
     }
   } catch (err) {
+    if (err instanceof UsageError) {
+      process.stderr.write(`${err.message}\n`);
+      return 2;
+    }
     const e = err as NodeJS.ErrnoException;
     process.stderr.write(`odw: ${e.message}\n`);
     // A parseArgs usage error (unknown flag, missing value) is a usage error → 2.
@@ -218,31 +227,7 @@ async function cmdRun(rest: string[]): Promise<number> {
     }
   }
 
-  let timeoutMs: number | undefined;
-  if (values.timeout !== undefined) {
-    const seconds = Number(values.timeout);
-    if (!Number.isFinite(seconds) || seconds < 0) {
-      process.stderr.write("odw run: --timeout must be a non-negative number of seconds\n");
-      return 2;
-    }
-    timeoutMs = seconds * 1000;
-  }
-
-  const resolved = resolveRunMode(
-    { fg: values.fg === true, detach: values.detach === true, wait: values.wait === true },
-    { stdoutTTY: process.stdout.isTTY === true, stderrTTY: process.stderr.isTTY === true },
-    process.env,
-  );
-  if ("usageError" in resolved) {
-    process.stderr.write(`odw run: ${resolved.usageError}\n`);
-    return 2;
-  }
-  if (values.timeout !== undefined && resolved.mode === "detach") {
-    process.stderr.write(
-      "odw run: --timeout needs --wait or --fg (a detached start returns immediately)\n",
-    );
-    return 2;
-  }
+  const { mode, timeoutMs } = resolveStartMode("run", values);
 
   warnIfNoDefaultAdapter(values.adapter ?? null, values.config ?? null, values.source ?? null, "run");
 
@@ -255,7 +240,42 @@ async function cmdRun(rest: string[]): Promise<number> {
     budgetTotal,
   });
 
-  return afterStart(store, runId, resolved.mode, { timeoutMs, hint: "started run" });
+  return afterStart(store, runId, mode, { timeoutMs, hint: "started run" });
+}
+
+/** `--timeout <seconds>` as milliseconds (undefined when absent). */
+function parseTimeout(cmd: string, raw: string | undefined): number | undefined {
+  if (raw === undefined) return undefined;
+  const seconds = Number(raw);
+  if (!Number.isFinite(seconds) || seconds < 0) {
+    throw new UsageError(`odw ${cmd}: --timeout must be a non-negative number of seconds`);
+  }
+  return seconds * 1000;
+}
+
+/**
+ * How `run` and `rerun` present the run they start: the --fg/--wait/--detach
+ * mode (or the TTY/CI default) and the --timeout that bounds the viewer. One
+ * resolver, so both commands validate in the same order: the --timeout value,
+ * then conflicting mode flags, then a --timeout a detached start cannot honor.
+ */
+function resolveStartMode(
+  cmd: "run" | "rerun",
+  flags: { fg?: boolean; detach?: boolean; wait?: boolean; timeout?: string },
+): { mode: RunMode; timeoutMs: number | undefined } {
+  const timeoutMs = parseTimeout(cmd, flags.timeout);
+  const resolved = resolveRunMode(
+    { fg: flags.fg === true, detach: flags.detach === true, wait: flags.wait === true },
+    { stdoutTTY: process.stdout.isTTY === true, stderrTTY: process.stderr.isTTY === true },
+    process.env,
+  );
+  if ("usageError" in resolved) throw new UsageError(`odw ${cmd}: ${resolved.usageError}`);
+  if (timeoutMs !== undefined && resolved.mode === "detach") {
+    throw new UsageError(
+      `odw ${cmd}: --timeout needs --wait or --fg (a detached start returns immediately)`,
+    );
+  }
+  return { mode: resolved.mode, timeoutMs };
 }
 
 /**
@@ -337,19 +357,11 @@ async function cmdAttach(rest: string[]): Promise<number> {
     process.stderr.write("odw attach: missing <run_id>\n");
     return 2;
   }
+  const timeoutMs = parseTimeout("attach", values.timeout);
   const store = storeFrom(values);
   if (!store.exists(runId)) {
     process.stderr.write(`no such run: ${runId}\n`);
     return 1;
-  }
-  let timeoutMs: number | undefined;
-  if (values.timeout !== undefined) {
-    const seconds = Number(values.timeout);
-    if (!Number.isFinite(seconds) || seconds < 0) {
-      process.stderr.write("odw attach: --timeout must be a non-negative number of seconds\n");
-      return 2;
-    }
-    timeoutMs = seconds * 1000;
   }
   return attachRun(store, runId, {
     out: process.stdout,
@@ -475,30 +487,7 @@ async function cmdRerun(rest: string[]): Promise<number> {
     process.stderr.write("odw rerun: missing <run_id>\n");
     return 2;
   }
-  const resolved = resolveRunMode(
-    { fg: values.fg === true, detach: values.detach === true, wait: values.wait === true },
-    { stdoutTTY: process.stdout.isTTY === true, stderrTTY: process.stderr.isTTY === true },
-    process.env,
-  );
-  if ("usageError" in resolved) {
-    process.stderr.write(`odw rerun: ${resolved.usageError}\n`);
-    return 2;
-  }
-  if (values.timeout !== undefined && resolved.mode === "detach") {
-    process.stderr.write(
-      "odw rerun: --timeout needs --wait or --fg (a detached start returns immediately)\n",
-    );
-    return 2;
-  }
-  let timeoutMs: number | undefined;
-  if (values.timeout !== undefined) {
-    const seconds = Number(values.timeout);
-    if (!Number.isFinite(seconds) || seconds < 0) {
-      process.stderr.write("odw rerun: --timeout must be a non-negative number of seconds\n");
-      return 2;
-    }
-    timeoutMs = seconds * 1000;
-  }
+  const { mode, timeoutMs } = resolveStartMode("rerun", values);
   const store = storeFrom(values);
   if (!store.exists(runId)) {
     process.stderr.write(`no such run: ${runId}\n`);
@@ -544,7 +533,7 @@ async function cmdRerun(rest: string[]): Promise<number> {
   } else {
     started = startRun(script, opts);
   }
-  return afterStart(started.store, started.runId, resolved.mode, {
+  return afterStart(started.store, started.runId, mode, {
     timeoutMs,
     hint: `re-running ${runId} as`,
   });
