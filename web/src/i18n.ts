@@ -411,4 +411,7 @@ const ZH: Record<string, string> = {
   "{n} runs": "{n} 次运行",
   "{r} runs in flight{via}.": "{r} 个运行进行中{via}。",
   logs: "日志",
+  "Show {n} more": "再显示 {n} 条",
+  "Copy a rerun command": "复制重跑命令",
+  "{n} older runs": "还有 {n} 条更早的运行",
 };

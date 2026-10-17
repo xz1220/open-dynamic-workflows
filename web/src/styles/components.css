@@ -316,8 +316,14 @@
 }
 .stat {
   position: relative;
+  display: block;
   padding: 16px 18px 15px;
   border-right: 1px solid var(--line);
+  cursor: pointer;
+  transition: background var(--t-fast);
+}
+.stat:hover {
+  background: var(--card-2);
 }
 .stat:last-child {
   border-right: 0;

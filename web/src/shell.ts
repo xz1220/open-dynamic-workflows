@@ -18,7 +18,7 @@ function navItem(view: string, route: Route, icon: string, label: string, key: s
   const on = route.view === view || (view === "jobs" && route.view === "job");
   const badge = count ? `<span class="count">${count}</span>` : `<kbd>g ${key}</kbd>`;
   return (
-    `<a class="${clsx("navitem", on && "on")}" data-nav="#/${view}" data-key="nav-${view}"` +
+    `<a class="${clsx("navitem", on && "on")}" href="#/${view}" data-nav="#/${view}" data-key="nav-${view}"` +
     `${on ? ' aria-current="page"' : ""}>${icon}<span>${esc(label)}</span>${badge}</a>`
   );
 }
@@ -40,21 +40,21 @@ export function rail(route: Route): string {
     .map((r) => {
       const on = route.view === "job" && route.param === r.runId;
       return (
-        `<a class="minirun ${esc(r.state)}${on ? " on" : ""}" data-run="${esc(r.runId)}" data-key="mr-${esc(r.runId)}" title="${esc(r.name)} · ${esc(r.runId)}">` +
+        `<a class="minirun ${esc(r.state)}${on ? " on" : ""}" href="#/job/${encodeURIComponent(r.runId)}" data-run="${esc(r.runId)}" data-key="mr-${esc(r.runId)}" title="${esc(r.name)} · ${esc(r.runId)}">` +
         `${ring(r.progress)}<span class="nm">${esc(r.name)}</span>` +
         `<span class="pct mono faint">${Math.round(r.progress * 100)}%</span></a>`
       );
     })
     .join("");
   const more =
-    active.length > 7 ? `<a class="rail-more" data-nav="#/jobs">${t("+{n} more", { n: active.length - 7 })}</a>` : "";
+    active.length > 7 ? `<a class="rail-more" href="#/jobs/live" data-nav="#/jobs/live">${t("+{n} more", { n: active.length - 7 })}</a>` : "";
   const live = active.length
     ? `<div class="rail-label"><span>${t("Live now")}</span><span class="num">${active.length}</span></div>${mini}${more}`
     : "";
   const dark = resolvedTheme() === "dark";
   return (
     `<aside class="rail">` +
-    `<a class="brand" data-nav="#/activity" aria-label="odw">${logoSvg(active.length > 0)}<span class="wordmark">odw</span></a>` +
+    `<a class="brand" href="#/activity" data-nav="#/activity" aria-label="odw">${logoSvg(active.length > 0)}<span class="wordmark">odw</span></a>` +
     `<div class="brand-sub">${t("dynamic workflows")}</div>` +
     `<nav class="nav">` +
     navItem("activity", route, icons.activity, t("Activity"), "a") +
@@ -76,7 +76,7 @@ export function rail(route: Route): string {
 
 function crumbs(route: Route): string {
   const sep = `<span class="sep">/</span>`;
-  const link = (hash: string, label: string) => `<a data-nav="${hash}">${esc(label)}</a>`;
+  const link = (hash: string, label: string) => `<a href="${hash}" data-nav="${hash}">${esc(label)}</a>`;
   switch (route.view) {
     case "job": {
       const run = store.run?.runId === route.param ? store.run : store.runs.find((r) => r.runId === route.param);

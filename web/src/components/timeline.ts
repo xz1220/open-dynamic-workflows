@@ -79,7 +79,7 @@ export function renderTimeline(run: RunDetail, selectedAi: number | null, nowSec
             : `<span class="tl-dur" style="left:${pct(Math.max(e, s))}">${fmtDurSec(dur)}</span>`);
       }
       body.push(
-        `<div class="tl-row${sel}" data-ai="${ai}" data-key="tlr-${ai}">` +
+        `<div class="tl-row${sel}" data-ai="${ai}" data-key="tlr-${ai}" tabindex="0" role="button">` +
           `<div class="nm">${glyph(a.state)}<span>${esc(a.label)}</span></div>` +
           `<div class="tl-track">${gridHtml}${bar}</div></div>`,
       );

@@ -146,7 +146,7 @@ export function renderDag(
       const sel = selectedAi === p.ai ? " selected" : "";
       const dim = selectedAi != null && selectedAi !== p.ai ? " dim" : "";
       parts.push(
-        `<div class="node ${esc(a.state)}${sel}${dim}" data-ai="${p.ai}" data-key="n-${p.ai}" ` +
+        `<div class="node ${esc(a.state)}${sel}${dim}" data-ai="${p.ai}" data-key="n-${p.ai}" tabindex="0" role="button" aria-pressed="${selectedAi === p.ai}" ` +
           `style="left:${p.x}px;top:${p.y}px;width:${NODE_W}px" title="${esc(a.label)}">` +
           `<div class="h">${glyph(a.state)}<span class="lbl">${esc(a.label)}</span></div>` +
           `<div class="sub">${esc(subLine(a, opts.nowSec))}</div></div>`,

@@ -36,7 +36,7 @@ import { ACTIVE, TERMINAL, fmtDurSec, runDurationSec } from "./util";
 import { renderActivity } from "./views/activity";
 import { renderChat } from "./views/chat";
 import { renderJob, type JobTab, type JobViewState } from "./views/job";
-import { renderJobs, type JobsFilter, type JobsState } from "./views/jobs";
+import { HISTORY_PAGE, renderJobs, type JobsFilter, type JobsState } from "./views/jobs";
 import { renderSettings } from "./views/settings";
 import { orderedWorkflows, renderWorkspace, wfKey } from "./views/workspace";
 
@@ -49,7 +49,7 @@ const root = document.getElementById("app")!;
 const nowSec = () => Date.now() / 1000;
 
 // --- view-local UI state (not in the store) ---
-const jobs: JobsState = { filter: "all", query: "" };
+const jobs: JobsState = { filter: "all", query: "", limit: HISTORY_PAGE };
 const job: JobViewState = {
   tab: "graph",
   selectedAi: null,
@@ -84,8 +84,12 @@ function parseHash(): Route {
       return { view: "chat", param: rest.length ? decodeURIComponent(rest[0]!) : null };
     case "workspace":
       return { view: "workspace", param: rest.length ? decodeURIComponent(rest[0]!) : null };
-    case "jobs":
+    case "jobs": {
+      // #/jobs[/<filter>] — the filter is part of the URL so a view can be shared.
+      const f = rest[0];
+      jobs.filter = f === "live" ? "active" : f === "done" || f === "failed" ? f : "all";
       return { view: "jobs", param: null };
+    }
     case "job": {
       // #/job/<runId>[/<tab>] — the trailing tab segment is optional.
       const last = rest[rest.length - 1] as JobTab | undefined;
@@ -171,7 +175,27 @@ function afterRender(route: Route, followLogs: boolean): void {
     const body = root.querySelector<HTMLElement>(".tab-body");
     if (body) body.scrollTop = body.scrollHeight;
   }
+  followLane();
   updateChrome();
+}
+
+/**
+ * Keep the phase that is running in view on wide graphs — unless the user has
+ * panned recently, in which case their viewport wins.
+ */
+let followedLane = "";
+let lastPanAt = 0;
+function followLane(): void {
+  const canvas = root.querySelector<HTMLElement>("[data-canvas]");
+  const lane = root.querySelector<HTMLElement>(".lanehead.on");
+  if (!canvas || !lane) return;
+  const key = `${store.run?.runId}:${lane.dataset.key}`;
+  if (key === followedLane) return;
+  followedLane = key;
+  if (Date.now() - lastPanAt < 8000) return;
+  const x = lane.offsetLeft * job.zoom;
+  if (x > canvas.scrollLeft && x + 220 < canvas.scrollLeft + canvas.clientWidth) return;
+  canvas.scrollTo({ left: Math.max(0, x - canvas.clientWidth / 3), behavior: reducedMotion() ? "auto" : "smooth" });
 }
 
 function logsAtBottom(): boolean {
@@ -473,6 +497,7 @@ root.addEventListener("pointerdown", (ev) => {
   if (!canvas || ev.button !== 0) return;
   if ((ev.target as HTMLElement).closest(".node, .drawer, .canvas-tools, .legend")) return;
   drag = { x: ev.clientX, y: ev.clientY, left: canvas.scrollLeft, top: canvas.scrollTop, el: canvas };
+  lastPanAt = Date.now();
   canvas.classList.add("dragging");
 });
 window.addEventListener("pointermove", (ev) => {
@@ -490,6 +515,7 @@ root.addEventListener(
     if (!(ev.ctrlKey || ev.metaKey)) return;
     if (!(ev.target as HTMLElement).closest("[data-canvas]")) return;
     ev.preventDefault();
+    lastPanAt = Date.now();
     zoomTo(job.zoom * (ev.deltaY < 0 ? 1.08 : 1 / 1.08));
   },
   { passive: false },
@@ -528,6 +554,12 @@ function switchLang(next: Lang): void {
 
 root.addEventListener("click", (ev) => {
   const t = ev.target as HTMLElement;
+  // Real links: let modified clicks open a new tab; route plain clicks ourselves.
+  const link = t.closest<HTMLAnchorElement>("a[href]");
+  if (link) {
+    if (ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.altKey || ev.button !== 0) return;
+    ev.preventDefault();
+  }
   if (t.closest("[data-palette]")) return openPalette();
   const nav = t.closest<HTMLElement>("[data-nav]");
   if (nav) return go(nav.dataset.nav!);
@@ -567,6 +599,13 @@ root.addEventListener("click", (ev) => {
   const filterEl = t.closest<HTMLElement>("[data-jobs-filter]");
   if (filterEl) {
     jobs.filter = filterEl.dataset.jobsFilter as JobsFilter;
+    jobs.limit = HISTORY_PAGE;
+    const slug = jobs.filter === "active" ? "live" : jobs.filter;
+    history.replaceState(null, "", slug === "all" ? "#/jobs" : `#/jobs/${slug}`);
+    return render();
+  }
+  if (t.closest("[data-jobs-more]")) {
+    jobs.limit += HISTORY_PAGE * 2;
     return render();
   }
   const zoomEl = t.closest<HTMLElement>("[data-zoom]");
@@ -670,6 +709,7 @@ root.addEventListener("input", (ev) => {
       return;
     case "jobs-q":
       jobs.query = el.value;
+      jobs.limit = HISTORY_PAGE;
       return render();
     case "log-q":
       job.logQuery = el.value;
@@ -695,6 +735,12 @@ root.addEventListener("compositionend", (ev) => {
 
 root.addEventListener("keydown", (ev) => {
   const el = ev.target as HTMLElement;
+  // Focusable rows, cards and graph nodes act like buttons from the keyboard.
+  if ((ev.key === "Enter" || ev.key === " ") && el.getAttribute?.("tabindex") === "0" && el.getAttribute("role")) {
+    ev.preventDefault();
+    el.click();
+    return;
+  }
   if (el.id === "chat-input" && ev.key === "Enter" && (ev.metaKey || ev.ctrlKey)) {
     ev.preventDefault();
     void sendChat();
@@ -820,6 +866,14 @@ setPaletteSource((): PaletteItem[] => {
   const run = currentRoute().view === "job" ? store.run : null;
   if (run) {
     items.push({ id: "copy-id", group: act, title: tr("Copy run id"), icon: icons.copy, hint: run.runId, run: () => copy(run.runId) });
+    items.push({
+      id: "copy-rerun",
+      group: act,
+      title: tr("Copy a rerun command"),
+      icon: icons.terminal,
+      hint: "odw rerun",
+      run: () => copy(`odw rerun ${run.runId}`),
+    });
     items.push({
       id: "copy-follow",
       group: act,

@@ -53,9 +53,9 @@ function headline(active: number, running: number, failedNow: number): { cls: st
   return { cls: "idle", html: t("The fleet is <em>at rest</em>.") };
 }
 
-function stat(v: number, k: string, cls = "", frac?: number): string {
+function stat(v: number, k: string, href: string, cls = "", frac?: number): string {
   const bar = frac != null ? `<i class="bar" style="width:${Math.round(frac * 100)}%"></i>` : "";
-  return `<div class="stat ${cls}"><div class="v num">${v}</div><div class="k">${esc(k)}</div>${bar}</div>`;
+  return `<a class="stat ${cls}" href="${href}" data-nav="${href}"><div class="v num">${v}</div><div class="k">${esc(k)}</div>${bar}</a>`;
 }
 
 export function renderActivity(nowSec: number): string {
@@ -127,10 +127,10 @@ export function renderActivity(nowSec: number): string {
     `<div><div class="eyebrow">${pill(active.length ? "running" : "idle", active.length ? t("live") : t("idle"))}<span>${t("Activity")}</span></div>` +
     `<h1 class="display">${head.html}</h1><p class="lede">${esc(lede)}</p></div>` +
     `<div class="stats">` +
-    stat(active.length, t("runs in flight"), "sig") +
-    stat(running, t("agents running"), "sig") +
-    stat(done, t("agents done"), "", totalAgents ? done / totalAgents : 0) +
-    stat(failed, t("agents failed"), failed ? "alarm" : "", totalAgents ? failed / totalAgents : 0) +
+    stat(active.length, t("runs in flight"), "#/jobs/live", "sig") +
+    stat(running, t("agents running"), "#/jobs/live", "sig") +
+    stat(done, t("agents done"), "#/jobs/done", "", totalAgents ? done / totalAgents : 0) +
+    stat(failed, t("agents failed"), "#/jobs/failed", failed ? "alarm" : "", totalAgents ? failed / totalAgents : 0) +
     `</div></section>` +
     pulseCard +
     `<div class="act-grid">` +

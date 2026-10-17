@@ -38,7 +38,7 @@ function listItem(w: WorkflowSummary, activeKey: string | null): string {
     ? `<span class="tag warn" title="${esc(t("name shadowed — odw run {name} runs a higher-precedence workflow", { name: w.name }))}">${t("shadowed")}</span>`
     : "";
   return (
-    `<a class="wf-item${key === activeKey ? " on" : ""}" data-wf="${esc(key)}" data-key="wf-${esc(key)}">` +
+    `<a class="wf-item${key === activeKey ? " on" : ""}" href="#/workspace/${encodeURIComponent(key)}" data-wf="${esc(key)}" data-key="wf-${esc(key)}">` +
     `<h4>${esc(w.name)}</h4>` +
     (w.description ? `<div class="ds">${esc(w.description)}</div>` : "") +
     `<div class="mini"><span class="tag${w.provider === "claude" ? " cc" : ""}">${esc(w.rootLabel)}</span>` +
@@ -85,7 +85,7 @@ function detailPane(d: WorkflowDetail): string {
     const summary = store.runs.find((x) => x.runId === r.runId);
     const state = summary?.state ?? "done";
     return (
-      `<a class="wf-run" data-run="${esc(r.runId)}" data-key="wr-${esc(r.runId)}">${glyph(state)}<span>${esc(r.runId)}</span>` +
+      `<a class="wf-run" href="#/job/${encodeURIComponent(r.runId)}" data-run="${esc(r.runId)}" data-key="wr-${esc(r.runId)}">${glyph(state)}<span>${esc(r.runId)}</span>` +
       `<span class="faint">${summary ? fmtAgo(summary.createdAt) : ""}</span>${icons.arrow}</a>`
     );
   });

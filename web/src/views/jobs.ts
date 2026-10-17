@@ -13,7 +13,11 @@ export type JobsFilter = "all" | "active" | "done" | "failed";
 export interface JobsState {
   filter: JobsFilter;
   query: string;
+  /** History rows shown; long histories page in on demand instead of painting thousands of rows. */
+  limit: number;
 }
+
+export const HISTORY_PAGE = 100;
 
 function provTag(r: RunSummary): string {
   return r.provider === "claude" ? `<span class="tag cc" title="${t("Claude Code workflow — observed read-only")}">Claude Code</span>` : "";
@@ -50,7 +54,7 @@ function runCard(r: RunSummary, nowSec: number): string {
   const n = r.phases.length;
   const cur = n ? r.phases[Math.min(n - 1, Math.floor(r.progress * n))]!.title : null;
   return (
-    `<article class="card runcard" data-run="${esc(r.runId)}" data-key="rc-${esc(r.runId)}">` +
+    `<article class="card runcard" data-run="${esc(r.runId)}" data-key="rc-${esc(r.runId)}" tabindex="0" role="link" aria-label="${esc(r.name)} · ${esc(t(r.state))}">` +
     `<div class="top"><div><div class="nm">${esc(r.name)}</div><div class="rid">${esc(r.runId)}</div></div>${pill(r.state)}</div>` +
     phaseDots(r) +
     (cur ? `<div class="cur">${t("phase")} <b>${esc(cur)}</b> · ${Math.round(r.progress * 100)}%</div>` : "") +
@@ -108,7 +112,7 @@ export function renderJobs(state: JobsState, nowSec: number): string {
   );
   let lastDay = "";
   const rows: string[] = [];
-  for (const r of ended) {
+  for (const r of ended.slice(0, state.limit)) {
     const day = fmtDayGroup(r.createdAt);
     if (day !== lastDay) {
       rows.push(`<tr class="day" data-key="d-${esc(day)}"><td colspan="5">${esc(day)}</td></tr>`);
@@ -116,7 +120,7 @@ export function renderJobs(state: JobsState, nowSec: number): string {
     }
     const dur = runDurationSec(r.createdAt, r.updatedAt, TERMINAL.has(r.state));
     rows.push(
-      `<tr class="run" data-run="${esc(r.runId)}" data-key="h-${esc(r.runId)}">` +
+      `<tr class="run" data-run="${esc(r.runId)}" data-key="h-${esc(r.runId)}" tabindex="0" role="link">` +
         `<td><div class="wf">${esc(r.name)} ${provTag(r)}</div><div class="rid">${esc(r.runId)}</div></td>` +
         `<td>${pill(r.state)}</td>` +
         `<td class="when">${fmtClock(r.createdAt)}<span>${fmtAgo(r.createdAt)}</span></td>` +
@@ -125,8 +129,12 @@ export function renderJobs(state: JobsState, nowSec: number): string {
         `</tr>`,
     );
   }
+  const rest = ended.length - Math.min(ended.length, state.limit);
+  const more = rest
+    ? `<div class="more-row"><button class="btn" data-jobs-more>${t("Show {n} more", { n: Math.min(rest, HISTORY_PAGE * 2) })}</button><span class="dim">${t("{n} older runs", { n: rest })}</span></div>`
+    : "";
   const history = ended.length
-    ? `<table class="htable"><thead><tr><th>${t("workflow")}</th><th>${t("status")}</th><th>${t("started")}</th><th>${t("duration")}</th><th>${t("agents")}</th></tr></thead><tbody>${rows.join("")}</tbody></table>`
+    ? `<table class="htable"><thead><tr><th>${t("workflow")}</th><th>${t("status")}</th><th>${t("started")}</th><th>${t("duration")}</th><th>${t("agents")}</th></tr></thead><tbody>${rows.join("")}</tbody></table>${more}`
     : `<div class="empty" style="min-height:140px"><p>${state.query || state.filter !== "all" ? t("No runs match.") : t("No finished runs yet.")}</p></div>`;
 
   return (

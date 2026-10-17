@@ -104,7 +104,7 @@ function runHead(run: RunDetail, nowSec: number): string {
 
 function tabs(run: RunDetail, tab: JobTab): string {
   const item = (key: JobTab, icon: string, label: string, n?: number) =>
-    `<a class="tab${tab === key ? " on" : ""}" data-tab="${key}" data-key="tab-${key}">${icon}${esc(label)}${n != null ? `<span class="n">${n}</span>` : ""}</a>`;
+    `<a class="tab${tab === key ? " on" : ""}" href="#/job/${encodeURIComponent(run.runId)}/${key}" data-tab="${key}" data-key="tab-${key}" role="tab" aria-selected="${tab === key}">${icon}${esc(label)}${n != null ? `<span class="n">${n}</span>` : ""}</a>`;
   return (
     `<nav class="tabs" role="tablist">` +
     item("graph", icons.graph, t("Graph"), run.agents.length) +

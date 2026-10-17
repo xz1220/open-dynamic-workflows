@@ -383,6 +383,13 @@
   font-size: 19px;
   color: var(--mute);
 }
+.more-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 18px 14px;
+  font-size: 12px;
+}
 .htable .when {
   font-family: var(--f-mono);
   font-size: 11.5px;
