@@ -13,13 +13,16 @@
  *   odw logs <run_id> [--follow]
  *   odw agents <run_id> [--json]
  *   odw result <run_id> [--agent <id|label>]
+ *   odw diff <run_id> [--agent <id|label>] [--stat]
+ *   odw apply <run_id> --agent <id|label> [--check] [--force]
  *   odw rerun|resume <run_id>
  *   odw pause|resume|stop <run_id>
  *   odw approve|reject <run_id> [--note TEXT] [--checkpoint N]
  */
 
 import { spawn } from "node:child_process";
-import { readFileSync, realpathSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { basename, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
@@ -33,7 +36,20 @@ import { AdapterNotFound } from "./errors.js";
 import type { WorkflowEvent } from "./events.js";
 import { VERSION } from "./index.js";
 import { cmdInit } from "./init.js";
-import { agentRowJson, agentRows, formatAgentTable, matchAgents } from "./runtime/agents-view.js";
+import type { AgentChanges } from "./changes.js";
+import { agentRowJson, agentRows, formatAgentTable, matchAgents, type AgentRow } from "./runtime/agents-view.js";
+import {
+  applyDiff,
+  changedAgents,
+  colorDiff,
+  countChanges,
+  diffFiles,
+  fileLabel,
+  formatChangeTable,
+  formatFileList,
+  truncationNoteOf,
+  type ApplyReport,
+} from "./runtime/changes-view.js";
 import { startRun, startRunFromSource, waitFor } from "./runtime/launcher.js";
 import { attachRun, checkpointCommands, formatEvent, formatUsage, resolveRunMode, type RunMode } from "./runtime/live-view.js";
 import { isRunActive, RunObserver } from "./runtime/run-liveness.js";
@@ -63,6 +79,8 @@ export const COMMANDS = [
   "stop",
   "approve",
   "reject",
+  "diff",
+  "apply",
 ] as const;
 
 export type Command = (typeof COMMANDS)[number];
@@ -89,6 +107,8 @@ export function helpText(): string {
     "  odw logs <run_id|--workflow name> [--follow]       print a run's progress events",
     "  odw agents <run_id> [--json]                       list a run's agents with their saved results",
     "  odw result <run_id> [--agent <id|label>]           print a finished run's result, or one agent's (mid-run too)",
+    "  odw diff <run_id> [--agent <id|label>] [--stat]    print what isolated agents changed (their kept diffs)",
+    "  odw apply <run_id> --agent <id|label> [--check]    apply one agent's kept diff to this working tree (--force)",
     "  odw list [--workflow <name>]                       list known runs",
     "  odw serve [--port N] [--host H] [--open]           open the live dashboard in a browser",
     "  odw workflows list [--project|--global|--all]      list workflows runnable by name",
@@ -184,6 +204,10 @@ export async function main(argv: string[]): Promise<number> {
       case "approve":
       case "reject":
         return cmdDecide(command, rest);
+      case "diff":
+        return await cmdDiff(rest);
+      case "apply":
+        return await cmdApply(rest);
       default:
         process.stderr.write(`odw: unknown command '${command}'\n\n${helpText()}\n`);
         return 2;
@@ -658,6 +682,199 @@ function cmdAgents(rest: string[]): number {
   const replayed = rows.some((r) => r.cached) ? `${caps.unicode ? "↺" : "(r)"} replayed by odw resume · ` : "";
   process.stderr.write(`${replayed}full value: odw result ${runId} --agent <id|label>\n`);
   return 0;
+}
+
+/**
+ * `odw diff <run_id> [--agent <id|label>] [--stat]` (ODW extension) — what the
+ * run's isolated agents changed, as the diffs kept in its directory: every
+ * agent that kept one, each under a `# odw: agent …` line, or `--agent`'s
+ * alone, verbatim. `--stat` prints a table instead (and `--agent`'s files).
+ */
+async function cmdDiff(rest: string[]): Promise<number> {
+  const { values, positionals } = parseArgs({
+    args: rest,
+    allowPositionals: true,
+    options: {
+      config: { type: "string" },
+      "runs-root": { type: "string" },
+      agent: { type: "string" },
+      stat: { type: "boolean" },
+    },
+  });
+  const runId = positionals[0];
+  if (!runId) throw new UsageError("odw diff: missing <run_id>");
+  const store = storeFrom(values);
+  if (!store.exists(runId)) {
+    process.stderr.write(`no such run: ${runId}\n`);
+    return 1;
+  }
+  const rows = agentRows(store, runId);
+  let agents = changedAgents(store, runId, rows);
+  if (values.agent !== undefined) {
+    const row = findAgent(rows, runId, values.agent, "diff");
+    if (!row) return 1;
+    agents = agents.filter((a) => a.row.agentId === row.agentId);
+    if (agents.length === 0) {
+      process.stderr.write(`agent ${row.agentId} (${sanitizeText(row.label, 80)}) kept no diff: ${noDiffReason(row)}\n`);
+      return 0;
+    }
+  } else if (agents.length === 0) {
+    process.stderr.write(
+      `run ${runId} kept no changes: agents that run with isolation: "worktree" keep a diff of what they changed\n`,
+    );
+    return 0;
+  }
+  const caps = detectCaps(process.stdout, process.env);
+  const width = process.stdout.isTTY && process.stdout.columns ? process.stdout.columns : 120;
+  if (values.stat) {
+    const counted: Array<{ row: AgentRow; changes: AgentChanges; text?: string }> = [];
+    for (const { row, file } of agents) {
+      // The event's counts describe the whole change; the diff's own, a kept diff whose event is gone.
+      const text = row.changes && values.agent === undefined ? undefined : await readFile(file, "utf8");
+      counted.push({ row, changes: row.changes ?? countChanges(text!), text });
+    }
+    for (const line of formatChangeTable(counted, { width, caps })) process.stdout.write(line + "\n");
+    const one = counted.length === 1 && values.agent !== undefined ? counted[0]! : undefined;
+    if (one?.text !== undefined) {
+      for (const line of formatFileList(diffFiles(one.text), { width, caps })) process.stdout.write(line + "\n");
+      const cut = truncationNoteOf(one.text);
+      if (cut) process.stdout.write(`  ${sanitizeText(cut, width)}\n`);
+    }
+    process.stderr.write(`full diff: odw diff ${runId} --agent <id|label> · apply one: odw apply ${runId} --agent <id|label>\n`);
+    return 0;
+  }
+  // Colour only for a terminal: a diff piped or saved stays a patch git can read.
+  const paint = process.stdout.isTTY === true && caps.color;
+  for (const { row, file } of agents) {
+    const text = await readFile(file, "utf8");
+    if (values.agent === undefined) {
+      const c = row.changes ?? countChanges(text);
+      const kept = row.branch ? ` · branch ${row.branch}` : "";
+      const head = `# odw: agent ${row.agentId} · ${sanitizeText(row.label, 80)} · ${c.files} file(s) +${c.insertions} -${c.deletions}${kept}`;
+      process.stdout.write((paint ? colorDiff(head, caps) : head) + "\n");
+    }
+    process.stdout.write(paint ? colorDiff(text, caps) : text);
+  }
+  return 0;
+}
+
+/**
+ * `odw apply <run_id> --agent <id|label> [--check] [--force]` (ODW extension)
+ * — apply one isolated agent's kept diff to the git working tree you are in,
+ * with `git apply --3way` (it stages what it applies). Refused while a path
+ * the diff touches has uncommitted changes, unless `--force`; `--check` says
+ * what would apply and what would conflict, and changes nothing. Exit 0 when
+ * everything applies cleanly, 1 otherwise (conflicts are left marked).
+ */
+async function cmdApply(rest: string[]): Promise<number> {
+  const { values, positionals } = parseArgs({
+    args: rest,
+    allowPositionals: true,
+    options: {
+      config: { type: "string" },
+      "runs-root": { type: "string" },
+      agent: { type: "string" },
+      check: { type: "boolean" },
+      force: { type: "boolean" },
+    },
+  });
+  const runId = positionals[0];
+  if (!runId) throw new UsageError("odw apply: missing <run_id>");
+  if (values.agent === undefined) {
+    throw new UsageError(`odw apply: --agent <id|label> is required — which agent's change to apply (odw diff ${runId} --stat lists them)`);
+  }
+  const store = storeFrom(values);
+  if (!store.exists(runId)) {
+    process.stderr.write(`no such run: ${runId}\n`);
+    return 1;
+  }
+  const row = findAgent(agentRows(store, runId), runId, values.agent, "apply");
+  if (!row) return 1;
+  const who = `agent ${row.agentId} (${sanitizeText(row.label, 80)}) of run ${runId}`;
+  const file = store.agentDiffPath(runId, row.agentId);
+  if (!existsSync(file)) {
+    process.stderr.write(`odw apply: ${who} kept no diff: ${noDiffReason(row)}\n`);
+    return 1;
+  }
+  const text = await readFile(file, "utf8");
+  const cut = truncationNoteOf(text);
+  if (cut) {
+    process.stderr.write(
+      `odw apply: the diff ${who} kept was cut at maxDiffBytes, so it cannot be applied:\n  ${sanitizeText(cut, 300)}\n` +
+        (row.branch
+          ? `  The whole change is on branch ${row.branch}: merge or cherry-pick it, or check it out.\n`
+          : `  To keep the whole change next time, give the agent keep: true (or set keepBranches), or raise maxDiffBytes.\n`),
+    );
+    return 1;
+  }
+  const check = values.check === true;
+  const force = values.force === true;
+  let report: ApplyReport;
+  try {
+    report = await applyDiff(process.cwd(), file, text, { check, force });
+  } catch (err) {
+    const source = store.readMeta(runId).source;
+    const where = typeof source === "string" ? ` (the run worked in ${source})` : "";
+    process.stderr.write(`odw apply: run it inside the git repository to apply the change to${where}: ${(err as Error).message}\n`);
+    return 1;
+  }
+  const caps = detectCaps(process.stdout, process.env);
+  if (report.blocked.length > 0) {
+    const listed = report.blocked.map((b) => `  ${sanitizeText(b.path, 200)} (${b.how})`).join("\n");
+    if (!force) {
+      process.stderr.write(
+        `odw apply: uncommitted changes in the way of the diff ${who} — commit or stash them, or pass --force:\n${listed}\n`,
+      );
+      return 1;
+    }
+    process.stderr.write(`odw apply: --force: ${check ? "checking" : "applying"} over uncommitted changes in:\n${listed}\n`);
+  }
+  if (report.error) {
+    const said = report.error.split("\n").map((line) => `  ${line}`).join("\n");
+    process.stderr.write(`odw apply: git could not apply the diff ${who}${check ? "" : "; nothing was changed"}:\n${said}\n`);
+    return 1;
+  }
+  const conflicts = report.files.filter((f) => f.conflicted).length;
+  const lines = report.files.map((f) => `  ${fileLabel(f, caps)}${f.conflicted ? "   CONFLICT" : ""}`).join("\n");
+  if (check) {
+    const verdict = conflicts ? `would apply with ${conflicts} conflict(s)` : "applies cleanly";
+    process.stdout.write(`${who} ${verdict} to ${report.repo}:\n${lines}\n`);
+    return conflicts ? 1 : 0;
+  }
+  process.stdout.write(`applied ${who} to ${report.repo} (staged, as git apply --3way does):\n${lines}\n`);
+  if (conflicts) {
+    process.stdout.write(`${conflicts} file(s) conflicted: resolve the <<<<<<< markers, then git add them\n`);
+    return 1;
+  }
+  return 0;
+}
+
+/** The one agent `ref` names (an id or a label), or null once the reason it is none is printed. */
+function findAgent(rows: AgentRow[], runId: string, ref: string, cmd: string): (AgentRow & { agentId: number }) | null {
+  const matches = matchAgents(rows, ref);
+  if (matches.length === 0) {
+    process.stderr.write(`run ${runId} has no agent '${ref}' (see odw agents ${runId})\n`);
+    return null;
+  }
+  if (matches.length > 1) {
+    const ids = matches.map((r) => `${r.agentId ?? "?"} (${r.state})`).join(", ");
+    process.stderr.write(
+      `label '${ref}' matches ${matches.length} agents of run ${runId}: ${ids} — pick one: odw ${cmd} ${runId} --agent <id>\n`,
+    );
+    return null;
+  }
+  const row = matches[0]!;
+  if (row.agentId === null) {
+    process.stderr.write(`that agent of run ${runId} has no id (a run from before agent ids): it kept no diff\n`);
+    return null;
+  }
+  return row as AgentRow & { agentId: number };
+}
+
+/** Why an agent has no kept diff. */
+function noDiffReason(row: AgentRow): string {
+  if (row.state === "running") return "it is still running";
+  return 'it changed nothing, or it did not run with isolation: "worktree"';
 }
 
 async function cmdLogs(rest: string[]): Promise<number> {
