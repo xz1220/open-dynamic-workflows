@@ -396,6 +396,39 @@ $ odw status $RUN
 
 适配器在自己的 `output` 里声明 CLI 在哪里上报用量;见[配置适配器](#配置适配器)。
 
+### 定时运行(ODW 扩展)
+
+每晚的摘要、分诊、审计:`odw schedule` 按 cron 表达式、借助操作系统自带的调度器定时运行
+workflow。ODW 不常驻任何 daemon——`add` 写入一条 cron 行、一个 launchd agent 或一个
+systemd timer,到点由它回调 odw。
+
+```bash
+odw schedule add digest digest --cron "0 8 * * 1-5" --cwd ~/work/news --args '{"since":"yesterday"}'
+odw schedule list              # 后端、上次运行(id、状态、时间)、按本地时间计算的下次运行
+odw schedule run digest        # 立即运行一次,和调度器触发时完全相同
+odw schedule remove digest     # 删除系统里的条目和定义(条目已被手动删掉也没关系)
+```
+
+- **后端:** macOS 默认 launchd(`~/Library/LaunchAgents/dev.odw.schedule.<name>.plist`),
+  其他系统默认 cron(在你的 crontab 里写入 `# odw:begin <name>` … `# odw:end <name>`
+  标记块,其余行原样保留),也可以 `--backend systemd`(用户级 `.service` + `.timer`,带
+  `Persistent=true`:关机期间错过的那次会在开机后补跑——cron 会直接跳过;launchd 会在 Mac
+  从睡眠中唤醒后补跑一次)。`--dry-run` 原样打印将要写入的内容。Windows 暂不支持:`add`
+  会改为打印一条可用的 `schtasks` 命令。
+- **每次运行**(`odw schedule run <name>`,即系统条目调用的命令)先拿到该定时任务的锁——
+  上一次运行还没结束时,新的一次会被跳过而不是叠加——然后像 `odw run --wait` 那样运行
+  workflow,向 `~/.local/state/odw/schedules/<name>.log` 追加一行结果;运行没有以 `done`
+  结束时退出码非零。
+- **`add` 立即校验** workflow、适配器和配置能否加载,并记录 node/odw 的绝对路径和你当前的
+  `PATH`,让 agent CLI 在调度器的环境里也能像在你的 shell 里一样被找到。定义保存在
+  `~/.config/odw/schedules.json`。
+- **失败通知**走现有的 [`notify`](#运行通知) 钩子:定时运行就是一次普通运行(只关心失败时
+  用 `"on": ["failed", "stopped"]`)。
+
+表达式是 cron 的五个字段(数字、`*`、列表、范围、步长、`jan`-`dec`、`sun`-`sat`);
+`@daily`、`L`、`#` 之类会被拒绝并说明原因。完整说明,以及手写 cron 行这一手动替代方案:
+[`docs/recipes/cron.md`](docs/recipes/cron.md)。
+
 ## 看板:观测、检查、对话
 
 看板的视觉像一张印刷品——纸、墨和一种信号色——也可以随时切换到夜间主题。它提供:

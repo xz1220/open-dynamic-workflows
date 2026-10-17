@@ -220,6 +220,31 @@ checkpoints detached (`RUN=$(odw run wf.js)`) and poll `odw status $RUN`, or
 bound the wait with `--wait --timeout <s>`. `odw resume` replays finished
 agents but asks every checkpoint again.
 
+### Schedule runs (ODW extension)
+
+Set up a recurring run only when the user asks for one: `odw schedule add`
+writes into their crontab, LaunchAgents or systemd user units. Show them the
+`--dry-run` output first.
+
+```bash
+odw schedule add digest digest --cron "0 8 * * 1-5" --cwd ~/work/news --dry-run   # what it would write
+odw schedule add digest digest --cron "0 8 * * 1-5" --cwd ~/work/news             # same flags as odw run: --args, --adapter, --config
+odw schedule list              # each schedule's backend, last run, next run (local time)
+odw schedule run digest        # run it now, as the scheduler will: exit 0 = done (or skipped)
+odw schedule remove digest     # delete the OS entry and the definition
+```
+
+- odw runs no daemon: `add` writes a cron block (Linux), a launchd agent
+  (macOS) or, with `--backend systemd`, a user timer that calls
+  `odw schedule run <name>` — which skips a start while the previous run is
+  still going, logs one line per run to
+  `~/.local/state/odw/schedules/<name>.log`, and fires the `notify` hooks like
+  any run.
+- The workflow, adapter and config must load when you add the schedule; the
+  expression is cron's five fields (`@daily`, `L`, `#` are refused).
+- A scheduled run that reaches a `checkpoint()` holds back the next ones until
+  it is answered: give unattended checkpoints a `timeout`.
+
 ## Adapters
 
 Codex, Claude Code, Gemini, Qwen, and Kimi work out of the box with no
@@ -288,3 +313,4 @@ without answering when headless (a login, trust or approval prompt).
 | Using `checkpoint()` and expecting the script to run on Claude Code | `checkpoint` is an ODW extension and runs on odw only; `validate()` warns about it. |
 | Approving a checkpoint yourself because the run looks stuck | A waiting checkpoint is the user's decision: show them `odw status $RUN`, and run `odw approve`/`odw reject` only on their explicit say-so. |
 | Fanning out wide without watching what it spends | `odw status $RUN` shows the run's tokens and cost so far, and a `parallel()`/`pipeline()` wider than `fanOutWarn` (default 25) logs a warning (ODW extensions). Size fan-outs to `budget.total` when one is set; `--budget` caps output tokens. |
+| Hand-writing a cron line around `odw run` | `odw schedule add` writes it with an overlap lock, a log and a pinned `PATH` — and only on the user's request: it edits their crontab or LaunchAgents. |

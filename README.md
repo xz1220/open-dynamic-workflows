@@ -435,6 +435,39 @@ $ odw status $RUN
 Adapters declare where their CLI reports usage in their `output`; see
 [Configure adapters](#configure-adapters).
 
+### Schedule runs (ODW extension)
+
+Nightly digests, triage, audits: `odw schedule` runs a workflow on a cron
+expression through your operating system's own scheduler. ODW runs no daemon —
+`add` writes a cron line, a launchd agent or a systemd timer that calls odw back.
+
+```bash
+odw schedule add digest digest --cron "0 8 * * 1-5" --cwd ~/work/news --args '{"since":"yesterday"}'
+odw schedule list              # backend, last run (id, state, when), next run in local time
+odw schedule run digest        # run it now, exactly as the scheduler will
+odw schedule remove digest     # delete the OS entry and the definition (safe if it is gone already)
+```
+
+- **Backends:** launchd on macOS (`~/Library/LaunchAgents/dev.odw.schedule.<name>.plist`),
+  cron elsewhere (a `# odw:begin <name>` … `# odw:end <name>` block in your crontab;
+  every other line stays as it is), or `--backend systemd` (a user `.service` + `.timer`
+  with `Persistent=true`, so a start missed while the machine was off runs when it is back —
+  cron skips it; launchd runs it once the Mac wakes from sleep). `--dry-run` prints exactly
+  what would be written. Windows is not supported yet: `add` prints a `schtasks` line instead.
+- **Each run** (`odw schedule run <name>`, what the entry calls) takes the schedule's lock — a
+  start that finds the previous run still going is skipped, not stacked — runs the workflow
+  like `odw run --wait`, appends one line to `~/.local/state/odw/schedules/<name>.log`, and
+  exits non-zero unless the run finished `done`.
+- **`add` fails fast** on a workflow, adapter or config that does not load, and records the
+  absolute node/odw paths and your `PATH`, so the agent CLIs resolve under the scheduler as
+  they do in your shell. Definitions live in `~/.config/odw/schedules.json`.
+- **Failures** reach you through the usual [`notify`](#run-notifications) hooks: a scheduled
+  run is an ordinary run (`"on": ["failed", "stopped"]` for failures only).
+
+The expression is cron's five fields (numbers, `*`, lists, ranges, steps, `jan`-`dec`,
+`sun`-`sat`); `@daily`, `L`, `#` and the like are refused with the reason. The full guide,
+and the raw cron line as the manual alternative: [`docs/recipes/cron.md`](docs/recipes/cron.md).
+
 ## Dashboard: observe, inspect, chat
 
 The dashboard reads like a printed sheet — paper, ink and one signal colour — and

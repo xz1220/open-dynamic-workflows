@@ -188,6 +188,28 @@ odw status $RUN     # 问题、它的 payload，以及回答它的确切命令
 （`RUN=$(odw run wf.js)`）并轮询 `odw status $RUN`，或用 `--wait --timeout <秒>` 限定
 等待时长。`odw resume` 会重放已完成的 agent，但每个检查点都会重新提问。
 
+### 定时运行（ODW 扩展）
+
+只有用户要求定期运行时才设置：`odw schedule add` 会写入用户的 crontab、LaunchAgents
+或 systemd 用户单元。先把 `--dry-run` 的输出给用户看。
+
+```bash
+odw schedule add digest digest --cron "0 8 * * 1-5" --cwd ~/work/news --dry-run   # 将要写入什么
+odw schedule add digest digest --cron "0 8 * * 1-5" --cwd ~/work/news             # 参数同 odw run：--args、--adapter、--config
+odw schedule list              # 每个定时任务的后端、上次运行、下次运行（本地时间）
+odw schedule run digest        # 立即按调度器的方式跑一次：退出码 0 = done（或被跳过）
+odw schedule remove digest     # 删除系统条目和定义
+```
+
+- odw 不常驻 daemon：`add` 写入 cron 标记块（Linux）、launchd agent（macOS），或在
+  `--backend systemd` 时写入用户级 timer，由它调用 `odw schedule run <name>`——上一次
+  运行未结束时跳过本次，每次运行向 `~/.local/state/odw/schedules/<name>.log` 追加一行，
+  并像普通运行一样触发 `notify` 钩子。
+- 添加时 workflow、适配器和配置必须能加载；表达式是 cron 的五个字段（`@daily`、`L`、`#`
+  会被拒绝）。
+- 定时运行遇到 `checkpoint()` 时，在得到答复前会挡住后续的运行：无人值守的检查点要设
+  `timeout`。
+
 ## 适配器
 
 Codex、Claude Code、Gemini、Qwen、Kimi 开箱即用，无需配置。要换默认 CLI、调旗标或
@@ -242,3 +264,4 @@ Codex、Claude Code、Gemini、Qwen、Kimi 开箱即用，无需配置。要换�
 | 用了 `checkpoint()` 还指望脚本跑在 Claude Code 上 | `checkpoint` 是 ODW 扩展，只能在 odw 上运行；`validate()` 会对此给出 warning。 |
 | 看运行像是卡住了，就自己批准了检查点 | 等待中的检查点由用户决定：给用户看 `odw status $RUN`，只有用户明确同意后才运行 `odw approve`/`odw reject`。 |
 | 大规模扇出却不看它花了多少 | `odw status $RUN` 会显示运行到目前为止的 token 与花费，比 `fanOutWarn`（默认 25）更宽的 `parallel()`/`pipeline()` 会记一条警告（均为 ODW 扩展）。设了 `budget.total` 时按它决定扇出规模；`--budget` 限制输出 token。 |
+| 自己手写一条包着 `odw run` 的 cron 行 | `odw schedule add` 会带上防重叠锁、日志和固定的 `PATH` 写好它——且只在用户要求时使用：它会改动用户的 crontab 或 LaunchAgents。 |
