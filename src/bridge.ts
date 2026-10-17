@@ -4,7 +4,8 @@
  * Given an {@link AgentRequest} it: resolves the adapter, composes a
  * self-contained prompt (independence framing + optional schema instructions),
  * runs the adapter in its workspace (the source tree by default, a throwaway
- * git worktree when isolation is requested), and — when a schema is requested —
+ * git worktree when isolation is requested) with the agent's `ODW_RUN_ID`,
+ * `ODW_AGENT_ID` and `ODW_PORT` in its environment, and — when a schema is requested —
  * extracts/validates the reply and retries with corrective feedback until it
  * conforms or the retry budget is spent. A CLI the stall watchdog killed for
  * going quiet is started again, up to `stallRestarts` times per call.
@@ -29,6 +30,7 @@ import {
   type Config,
 } from "./adapters/types.js";
 import { AdapterExecutionError, RunStopped, SchemaValidationError } from "./errors.js";
+import { PortPool } from "./ports.js";
 import { LiteralRouter, type InvocationPlan, type OptionRouter } from "./router.js";
 import { describeSchema, pickJson, type JsonSchema } from "./schema.js";
 import { withWorkspace } from "./workspace.js";
@@ -81,6 +83,8 @@ export interface BridgeOptions {
   runner?: CommandRunner;
   /** How `agent` options map to a CLI invocation; defaults to {@link LiteralRouter}. */
   router?: OptionRouter;
+  /** The run's id, given to every agent process as `ODW_RUN_ID`. */
+  runId?: string;
 }
 
 /** What the scheduler hands one call; all optional, so a bare `run(request)` works. */
@@ -91,6 +95,10 @@ export interface RunOptions {
    * error — so it propagates instead of becoming a null slot.
    */
   signal?: AbortSignal;
+  /** The call's agent id (its events' `agentId`), given to its processes as `ODW_AGENT_ID`. */
+  agentId?: number;
+  /** Called with a note on preparing the call (no port left for `ODW_PORT`), so the run can log it. */
+  onNote?: (message: string) => void;
   /**
    * Called with every attempt's decoded reply as soon as it arrives — schema
    * retries included — so the run's usage tally counts all the output it paid
@@ -120,6 +128,9 @@ export class Bridge {
   private readonly source: string;
   private readonly runner: CommandRunner;
   private readonly router: OptionRouter;
+  private readonly runId: string | undefined;
+  /** This run's agent ports: one per call in flight. */
+  private readonly ports: PortPool;
   private autoPicked: Adapter | undefined;
 
   constructor(
@@ -129,6 +140,8 @@ export class Bridge {
     this.source = options.source ?? process.cwd();
     this.runner = options.runner ?? runCommand;
     this.router = options.router ?? new LiteralRouter();
+    this.runId = options.runId;
+    this.ports = new PortPool(...config.settings.portRange);
   }
 
   /**
@@ -143,6 +156,27 @@ export class Bridge {
   }
 
   async run(request: AgentRequest, options: RunOptions = {}): Promise<AgentOutcome> {
+    // The agent's ids and port, the same for every CLI run of the call; no
+    // other agent of the run gets the port until the call settles.
+    const port = await this.ports.acquire();
+    if (port === null) {
+      const [first, last] = this.config.settings.portRange;
+      options.onNote?.(
+        `no ODW_PORT for this agent: every port of portRange [${first}, ${last}] is held by another running agent of this run`,
+      );
+    }
+    const env: Record<string, string> = {};
+    if (this.runId !== undefined) env.ODW_RUN_ID = this.runId;
+    if (options.agentId !== undefined) env.ODW_AGENT_ID = String(options.agentId);
+    if (port !== null) env.ODW_PORT = String(port);
+    try {
+      return await this.runCall(request, options, { env, onNote: options.onNote });
+    } finally {
+      if (port !== null) this.ports.release(port);
+    }
+  }
+
+  private async runCall(request: AgentRequest, options: RunOptions, call: CallEnv): Promise<AgentOutcome> {
     const { signal } = options;
     const adapter = this.adapterFor(request.adapter);
     const settings = this.config.settings;
@@ -164,7 +198,7 @@ export class Bridge {
       throwIfAborted(signal);
       if (attempt > 1) await options.beforeRetry?.();
       const prompt = attempt > 1 ? `${basePrompt}\n\n${retryFeedback(previous, problems)}` : basePrompt;
-      let invoked = await this.invoke(adapter, plan, prompt, limits, signal);
+      let invoked = await this.invoke(adapter, plan, prompt, limits, signal, call);
       // The stall watchdog killed a CLI that went quiet: start the same attempt
       // again, at most stallRestarts times over the whole call.
       while (invoked.cli.stalled && !signal?.aborted && restarts < settings.stallRestarts) {
@@ -175,7 +209,7 @@ export class Bridge {
           maxRestarts: settings.stallRestarts,
         });
         await options.beforeRetry?.();
-        invoked = await this.invoke(adapter, plan, prompt, limits, signal);
+        invoked = await this.invoke(adapter, plan, prompt, limits, signal, call);
       }
       const { cli, decoder } = invoked;
       // Killed by a stop (or by a fatal error elsewhere in the run): report
@@ -229,6 +263,7 @@ export class Bridge {
     prompt: string,
     limits: CliLimits,
     signal: AbortSignal | undefined,
+    call: CallEnv,
   ): Promise<{ cli: CliResult; decoder: AdapterOutputDecoder | null }> {
     // JSONL transcripts are decoded while they stream, so only the final text
     // is retained (and a verbose session is never cut off at the stdout cap);
@@ -262,9 +297,7 @@ export class Bridge {
         };
         const command = [...expandAll(adapter.command, context), ...plan.extraArgs];
         const stdin = adapter.stdin ? expand(adapter.stdin, context) : undefined;
-        const env = adapter.env
-          ? ({ ...process.env, ...adapter.env } as Record<string, string>)
-          : undefined;
+        const env = withAgentVars({ ...process.env, ...adapter.env }, call.env);
         // No ws.diff() here: agent() returns the reply, never a diff, so
         // computing one per worktree attempt was pure overhead.
         const cli = await this.runner(command, {
@@ -282,6 +315,26 @@ export class Bridge {
       }
     });
   }
+}
+
+/** What every CLI run of one agent call shares: its `ODW_*` variables, and where its notes go. */
+interface CallEnv {
+  env: Record<string, string>;
+  onNote?: (message: string) => void;
+}
+
+/** The variables an agent's processes get from ODW: only ever this call's, never inherited. */
+const AGENT_VARS = ["ODW_RUN_ID", "ODW_AGENT_ID", "ODW_PORT"];
+
+/**
+ * `base` with the call's agent variables over it — and none of their values
+ * from `base` (a worker started by another run's agent inherits that agent's),
+ * so an agent without a port has no `ODW_PORT` rather than someone else's.
+ */
+function withAgentVars(base: Record<string, string | undefined>, vars: Record<string, string>): Record<string, string> {
+  const env = { ...base };
+  for (const name of AGENT_VARS) delete env[name];
+  return { ...env, ...vars } as Record<string, string>;
 }
 
 /**

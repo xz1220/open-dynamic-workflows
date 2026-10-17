@@ -77,6 +77,7 @@ const KNOWN_TOP_KEYS = [
   "claudeWorkflowsRoot",
   "claudeJobsScope",
   "notify",
+  "portRange",
 ] as const;
 
 const KNOWN_ADAPTER_KEYS = ["command", "stdin", "env", "timeout", "stallTimeout", "label", "flags", "output"] as const;
@@ -605,7 +606,20 @@ function buildSettings(raw: Record<string, unknown>): Settings {
     // Only "project" narrows; anything else (incl. null/garbage) keeps the "all" default.
     claudeJobsScope: raw["claudeJobsScope"] === "project" ? "project" : DEFAULT_SETTINGS.claudeJobsScope,
     notify: raw["notify"] == null ? DEFAULT_SETTINGS.notify : buildNotify(raw["notify"]),
+    portRange: raw["portRange"] == null ? [...DEFAULT_SETTINGS.portRange] : buildPortRange(raw["portRange"]),
   };
+}
+
+/** Validate `portRange`: `[first, last]`, two whole port numbers with first <= last. */
+function buildPortRange(raw: unknown): [number, number] {
+  const port = (value: unknown): value is number =>
+    typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= 65535;
+  if (Array.isArray(raw) && raw.length === 2 && port(raw[0]) && port(raw[1]) && raw[0] <= raw[1]) {
+    return [raw[0], raw[1]];
+  }
+  throw new ConfigError(
+    `"portRange" must be [first, last]: two whole port numbers from 1 to 65535, first <= last; got ${JSON.stringify(raw)}`,
+  );
 }
 
 /**

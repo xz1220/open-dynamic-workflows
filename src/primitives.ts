@@ -209,6 +209,13 @@ export function createPrimitives(
         try {
           outcome = await ctx.bridge.run(request, {
             signal,
+            // The agent process's ODW_AGENT_ID; what preparing it noted (no free
+            // port) is logged against it.
+            agentId,
+            onNote: (message) =>
+              ctx.emit(
+                event(LOG, { message: `${display}:${agentId}: ${message}`, agentId, label: display, phase: activePhase }),
+              ),
             // Feed the shared budget tally from every attempt, schema retries
             // included (estimated tokens ≈ chars/4 of each reply).
             onReply: (text) => {

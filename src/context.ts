@@ -26,6 +26,8 @@ export interface RunContext {
   args: unknown;
   /** The run's working directory; anchors nested workflow() name resolution. */
   source: string;
+  /** The run's id (`ODW_RUN_ID` for its processes); absent where no run is persisted. */
+  runId?: string;
   /** The run's token target (for `budget`), or null when none was set. */
   budgetTotal: number | null;
   /**
@@ -69,6 +71,7 @@ export function spentTokens(usage: { outputChars: number }): number {
 
 export interface BuildContextOptions {
   source?: string;
+  runId?: string;
   args?: unknown;
   sink?: EventSink;
   control?: Control;
@@ -81,7 +84,7 @@ export interface BuildContextOptions {
 export function buildContext(config: Config, options: BuildContextOptions = {}): RunContext {
   const sink = options.sink ?? new NullSink();
   const control: Control = options.control ?? new NullControl();
-  const bridge = new Bridge(config, { source: options.source });
+  const bridge = new Bridge(config, { source: options.source, runId: options.runId });
   const budgetTotal = options.budgetTotal ?? null;
   // The shared tally `budget.spent()` reads. Estimated (chars/4 of agent
   // replies); the guard makes --budget a real ceiling, not advisory.
@@ -108,6 +111,7 @@ export function buildContext(config: Config, options: BuildContextOptions = {}):
     sink,
     args: options.args ?? null,
     source: options.source ?? process.cwd(),
+    runId: options.runId,
     budgetTotal,
     usage,
     seq: { value: 0 },

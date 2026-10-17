@@ -88,6 +88,8 @@ export interface Settings {
   claudeJobsScope: "all" | "project";
   /** Hooks fired when a run ends; `null` => none. */
   notify: NotifySettings | null;
+  /** Where each running agent's `ODW_PORT` comes from: `[first, last]`, inclusive (an ODW extension). */
+  portRange: [number, number];
 }
 
 /** The terminal states a run can end in, and that notify hooks can fire on. */

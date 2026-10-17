@@ -148,4 +148,5 @@ export const DEFAULT_SETTINGS: Settings = {
   claudeWorkflowsRoot: null, // null => ~/.claude/workflows, honoring CLAUDE_CONFIG_DIR
   claudeJobsScope: "all", // observe every project's Claude runs; "project" narrows to the served repo + worktrees
   notify: null, // no run-completion hooks
+  portRange: [41000, 41999], // ODW_PORT, unique among a run's running agents
 };
