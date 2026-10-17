@@ -8,8 +8,11 @@ import { collectConfigWarnings, defaultConfig, loadConfig } from "../src/adapter
 import type { CommandRunner } from "../src/adapters/runner.js";
 import type { CliResult, Config, Settings } from "../src/adapters/types.js";
 import { Bridge, type QuotaResume, type TranscriptSink } from "../src/bridge.js";
+import { buildContext, type BuildContextOptions } from "../src/context.js";
 import { MemoryControl } from "../src/control.js";
 import { AdapterExecutionError, ConfigError, RunStopped } from "../src/errors.js";
+import { AGENT_FAILED, AGENT_FINISHED, AGENT_STARTED, LOG, MemorySink } from "../src/events.js";
+import { createPrimitives } from "../src/primitives.js";
 import {
   clockTime,
   pausedText,
@@ -20,6 +23,7 @@ import {
   type QuotaPauseChange,
 } from "../src/quota-wait.js";
 import { FileControl } from "../src/runtime/file-control.js";
+import { EventFold } from "../src/runtime/runs-view.js";
 import { Scheduler } from "../src/scheduler.js";
 
 // Pause for a spent quota (ODW extension: quotaWait): a call whose chain is out
@@ -99,6 +103,25 @@ function fakeCli(replies: Record<string, CliResult[]> = {}) {
   };
   return { runner, calls };
 }
+
+/** A run context, built as a run builds it, on the fake CLI and the test clock. */
+function pausing(config: Config, replies: Record<string, CliResult[]> = {}, options: BuildContextOptions = {}) {
+  const sink = new MemorySink();
+  const control = new MemoryControl();
+  const clock = testClock();
+  const { runner, calls } = fakeCli(replies);
+  const changes: QuotaPauseChange[] = [];
+  const ctx = buildContext(config, {
+    sink,
+    control,
+    bridge: { runner, sleep: clock.sleep, now: clock.now, random: () => 0 },
+    onQuotaPause: (change) => changes.push(change),
+    ...options,
+  });
+  return { ctx, sink, control, clock, calls, changes, p: createPrimitives(ctx) };
+}
+
+const logs = (sink: MemorySink): string[] => sink.ofType(LOG).map((e) => String(e.message));
 
 async function until(check: () => boolean, ms = 10_000): Promise<void> {
   const deadline = Date.now() + ms;
@@ -548,4 +571,114 @@ test("bridge: a resume ends the wait at once and the quota breaker forgets the a
   const reason = new RunStopped("run was stopped");
   run.abort(reason);
   await assert.rejects(waiting, (err) => err === reason);
+});
+
+// --- agent() --------------------------------------------------------------------------------
+
+test("agent(): a call out of quota waits holding no slot — another adapter's agent runs meanwhile — and goes on at its reset", async () => {
+  const { ctx, sink, clock, calls, changes, p } = pausing(quotaConfig({ concurrency: 1 }), { a: [failing(QUOTA)] });
+  const first = p.agent("on a", { label: "x" });
+  await until(() => clock.sleeping === 1);
+  const resumeAt = T0 / 1000 + 12_120;
+  assert.equal(await p.agent("on b", { adapter: "b", label: "y" }), "b answered", "the run's one slot was free");
+  const pause = sink.ofType(LOG).find((e) => e.quotaPause === "started")!;
+  assert.equal(
+    pause.message,
+    `quota pause: a is out of usage quota until ${clockTime(resumeAt, T0)} (in 3h 22m) — its agents wait, ` +
+      "holding no slot, and go on then (quotaWait); odw resume goes on now",
+  );
+  assert.deepEqual([pause.adapter, pause.reason, pause.resumeAt], ["a", "quota", resumeAt]);
+  const waits = sink.ofType(LOG).find((e) => e.agentId === 1)!;
+  assert.deepEqual([waits.message, waits.adapter, waits.reason], ["x:1 waits for a's quota to reset (quotaWait)", "a", "quota"]);
+  clock.advance(RESET_MS);
+  assert.equal(await first, "a answered");
+  assert.deepEqual(calls, ["a", "b", "a"]);
+  assert.deepEqual(logs(sink).slice(-2), ["quota pause over: a's quota reset — its agents go on", "x:1 goes on after the quota wait, on a"]);
+  assert.deepEqual(sink.ofType(AGENT_FINISHED).map((e) => e.label), ["y", "x"]);
+  assert.deepEqual(changes.map((c) => c.change), ["started", "reset"]);
+  assert.equal(ctx.scheduler.dispatched, 2, "a wait is no dispatch");
+});
+
+test("agent(): a call with no adapter left waits before it is dispatched — no agent shows, no slot is held — then runs", async () => {
+  const { ctx, sink, clock, calls, p } = pausing(quotaConfig({ concurrency: 1 }), { a: [failing(QUOTA)] });
+  const one = p.agent("one", { label: "one" });
+  await until(() => clock.sleeping === 1);
+  const two = p.agent("two", { label: "two" });
+  await until(() => clock.sleeping === 2);
+  assert.deepEqual(sink.ofType(AGENT_STARTED).map((e) => e.label), ["one"], "no agent shows for a call that cannot start");
+  assert.equal(ctx.scheduler.dispatched, 1);
+  assert.equal(await p.agent("three", { adapter: "b", label: "three" }), "b answered", "nor does it hold a slot");
+  clock.advance(RESET_MS);
+  assert.deepEqual(await Promise.all([one, two]), ["a answered", "a answered"]);
+  assert.deepEqual(calls, ["a", "b", "a", "a"]);
+  assert.deepEqual(
+    sink.ofType(AGENT_STARTED).map((e) => [e.label, e.adapter]),
+    [
+      ["one", "a"],
+      ["three", "b"],
+      ["two", "a"],
+    ],
+  );
+  assert.equal(ctx.scheduler.dispatched, 3);
+  assert.equal(logs(sink).filter((m) => m.startsWith("quota pause:")).length, 1, "one pause: the second call joined it");
+});
+
+test("agent(): a call with a fallback moves on — the run passes over the spent adapter until its reset — and one without waits", async () => {
+  const { sink, clock, calls, p } = pausing(quotaConfig({ fallback: { a: ["b"] } }), { a: [failing(QUOTA)] });
+  assert.equal(await p.agent("one", { label: "one" }), "b answered");
+  assert.equal(await p.agent("two", { label: "two" }), "b answered");
+  assert.deepEqual(calls, ["a", "b", "b"], "the second never tried a: its reset is ahead");
+  assert.deepEqual(
+    sink.ofType(AGENT_FINISHED).map((e) => [e.label, e.adapter, e.fellBackFrom]),
+    [
+      ["one", "b", ["a"]],
+      ["two", "b", undefined],
+    ],
+  );
+  assert.equal(sink.ofType(LOG).filter((e) => e.quotaPause !== undefined).length, 0, "nothing waited: no pause");
+  const own = p.agent("three", { adapter: ["a"], label: "three" });
+  await until(() => clock.sleeping === 1);
+  assert.ok(logs(sink).some((m) => m.startsWith("quota pause: a is out of usage quota until ")));
+  clock.advance(RESET_MS);
+  assert.equal(await own, "a answered");
+});
+
+test("agent(): odw resume ends the wait at once; odw stop ends it, and the run", async () => {
+  {
+    const { sink, control, clock, changes, p } = pausing(quotaConfig(), { a: [failing(QUOTA)] });
+    const waiting = p.agent("x", { label: "x" });
+    await until(() => clock.sleeping === 1);
+    control.resume();
+    assert.equal(await waiting, "a answered");
+    assert.equal(clock.now(), T0, "at once");
+    assert.deepEqual(changes.map((c) => c.change), ["started", "resumed"]);
+    assert.ok(logs(sink).includes("quota pause over: the run was resumed — a's agents go on now"));
+  }
+  const { ctx, sink, control, clock, changes, p } = pausing(quotaConfig({ concurrency: 1 }), { a: [failing(QUOTA)] });
+  const started = p.agent("x", { label: "x" });
+  await until(() => clock.sleeping === 1);
+  const held = p.agent("y", { label: "y" });
+  await until(() => clock.sleeping === 2);
+  control.stop();
+  await assert.rejects(started, RunStopped);
+  await assert.rejects(held, RunStopped);
+  assert.deepEqual(sink.ofType(AGENT_FAILED).map((e) => [e.label, e.reason]), [["x", undefined]], "the agent that started ends; the other never showed");
+  assert.match(String(sink.ofType(AGENT_FAILED)[0]!.error), /^RunStopped: run was stopped/);
+  assert.deepEqual(changes.map((c) => c.change), ["started", "withdrawn"]);
+  assert.ok(ctx.scheduler.fatalError instanceof RunStopped);
+  assert.equal(await ctx.scheduler.drain(1000), true);
+});
+
+test("agent(): readers follow a call that starts over on another adapter after its wait", async () => {
+  const { sink, clock, p } = pausing(quotaConfig({ fallback: { a: ["b"] } }), { a: [failing(QUOTA)], b: [failing(QUOTA_1H)] });
+  const run = p.agent("x", { label: "x" });
+  await until(() => clock.sleeping === 1);
+  clock.advance(RESET_MS); // past both resets: the call starts over on a
+  assert.equal(await run, "a answered");
+  const moved = sink.ofType(LOG).find((e) => /goes on after the quota wait/.test(String(e.message)))!;
+  assert.deepEqual([moved.message, moved.adapter, moved.fellBackFrom], ["x:1 goes on after the quota wait, on a", "a", ["a", "b"]]);
+  const fold = new EventFold().apply(sink.events.filter((e) => e.type !== AGENT_FINISHED));
+  assert.deepEqual([fold.agents[0]!.adapter, fold.agents[0]!.fellBackFrom], ["a", ["a", "b"]], "the running agent moved back to a");
+  const finished = sink.ofType(AGENT_FINISHED)[0]!;
+  assert.deepEqual([finished.adapter, finished.fellBackFrom], ["a", ["a", "b"]]);
 });

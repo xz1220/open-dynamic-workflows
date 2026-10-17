@@ -10,12 +10,13 @@
 
 import { resolveAdapterConcurrency, resolveConcurrency } from "./adapters/config.js";
 import type { Config } from "./adapters/types.js";
-import { Bridge } from "./bridge.js";
+import { Bridge, type BridgeOptions } from "./bridge.js";
 import type { WaitingCheckpoint } from "./checkpoint.js";
 import { NullControl, type Control } from "./control.js";
 import { BudgetExhausted } from "./errors.js";
 import { LOG, NullSink, event, type EventSink, type WorkflowEvent } from "./events.js";
 import type { AgentResultRecord, ReplayJournal } from "./journal.js";
+import { quotaPauseMessage, type QuotaPauseChange } from "./quota-wait.js";
 import { redactorFor, type Redactor } from "./redact.js";
 import type { PhaseDefaults } from "./routing.js";
 import { Scheduler } from "./scheduler.js";
@@ -140,6 +141,15 @@ export interface BuildContextOptions {
   agentSchemaPath?: (agentId: number) => string;
   /** The run's redactor; built from the config's `redact` when absent. */
   redactor?: Redactor;
+  /**
+   * quotaWait (ODW extension): told whenever the run's pause for an adapter's
+   * spent quota starts, moves or ends — after the run's log has said so — so
+   * the worker can show it in status.json and fire the "paused" hooks. It
+   * may throw: the pause goes on.
+   */
+  onQuotaPause?: (change: QuotaPauseChange) => void;
+  /** Test seams for the run's bridge: the command runner, and the clock, sleep and jitter its waits run on. */
+  bridge?: Pick<BridgeOptions, "runner" | "sleep" | "now" | "random">;
 }
 
 /** Wire a full run context from a config and the run's surroundings. */
@@ -148,7 +158,24 @@ export function buildContext(config: Config, options: BuildContextOptions = {}):
   const control: Control = options.control ?? new NullControl();
   // Compiled once for the whole run (ODW extension; see ./redact).
   const redactor = options.redactor ?? redactorFor(config);
-  const bridge = new Bridge(config, { source: options.source, runId: options.runId, agentSchemaPath: options.agentSchemaPath, redactor });
+  const bridge = new Bridge(config, {
+    source: options.source,
+    runId: options.runId,
+    agentSchemaPath: options.agentSchemaPath,
+    redactor,
+    ...options.bridge,
+    // quotaWait (ODW extension): a pause for a spent quota is logged and
+    // shown, and `odw resume` ends it at once.
+    onQuotaPause: (change) => {
+      const message = quotaPauseMessage(change, (options.bridge?.now ?? Date.now)());
+      if (message) {
+        const { adapter, resumeAt } = change.pause;
+        sink.emit(event(LOG, { message, adapter, reason: "quota", resumeAt, quotaPause: change.change }));
+      }
+      options.onQuotaPause?.(change);
+    },
+    watchResume: control.watchResume ? (onResume) => control.watchResume!(onResume) : undefined,
+  });
   const budgetTotal = options.budgetTotal ?? null;
   // The shared tally `budget.spent()` reads: reported output tokens, else
   // chars/4 of the reply; the guard makes --budget a real ceiling, not advisory.
