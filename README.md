@@ -250,7 +250,7 @@ private runtime behavior need the following checks before migration:
 | Model selection | Pass `agent(..., {model})` using that CLI's model ID. `meta.model` and phase metadata do not set execution defaults; an adapter without model routing support emits a note. |
 | `agentType` | A persona added to the prompt. It does not load a host's named subagent configuration or select an adapter. |
 | Worktree isolation | Starts from committed HEAD, excludes uncommitted edits, and cleans up afterward. Changes are not merged and `agent()` returns the reply, not a diff; put required deliverables in that reply or persist them explicitly. |
-| Budget | Estimates successful final reply tokens as `ceil(chars / 4)`. Inputs, failed calls and retry replies are not included. The guard stops later dispatches; already-running calls can exceed the target. |
+| Budget | Estimates output tokens as `ceil(chars / 4)` over every reply, schema retries included (inputs and failed calls are not). The guard runs before each dispatch and each schema retry; once the target is spent the run ends and agents still running are stopped. |
 | JSON Schema | Supports the [documented subset](skills/open-dynamic-workflows/references/primitives.md#schema). Unknown constraints such as `$ref`, `const` and `oneOf` are not enforced. Use explicit object/array types and supported constraints. |
 | Script trust | Run trusted scripts only: a run executes the workflow body as ordinary JavaScript. Loading parses metadata as a pure literal without evaluating it; validation and compatibility warnings are not a sandbox. |
 | Recovery | `resume` continues a paused live worker. `rerun` starts over; completed calls are not journaled and replayed after a crash. |
@@ -419,8 +419,9 @@ the event and final-text path explicitly:
 }
 ```
 
-ODW keeps raw stdout/stderr in run diagnostics while returning only the decoded
-final response. On Windows, executable discovery follows `PATHEXT`, so normal
+ODW returns only the decoded final response to the workflow; JSONL output is
+decoded line by line as it streams, and only a bounded tail of stderr is kept for
+error messages. On Windows, executable discovery follows `PATHEXT`, so normal
 `agent.cmd`, `kilo.cmd`, and `omp.exe` shims are detected without full paths.
 
 Config keys live at the **top level** — there is no `"settings"` wrapper, and odw

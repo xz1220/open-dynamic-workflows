@@ -66,13 +66,13 @@ declare global {
   /** Emit a one-line progress message. */
   function log(message: unknown): void;
 
-  /** Estimated output budget; checked before dispatch, without killing calls already running. */
+  /** Estimated output budget; checked before each dispatch and schema retry — once spent, the run ends and running agents are stopped. */
   const budget: Budget;
 
   /** Inline child sharing scheduler, controls, and budget; only one level. scriptPath is relative to the run source. */
   function workflow(nameOrRef: string | { scriptPath: string }, args?: unknown): Promise<any>;
 
-  /** ODW extension for trusted source: loads/evaluates meta without running the body. Warnings are advisory; a script's own validate binding takes precedence. */
+  /** ODW extension: parses meta as a pure literal (never evaluated) and compile-checks the body without running it. Warnings are advisory; a script's own validate binding takes precedence. */
   function validate(source: string): {
     ok: boolean;
     meta?: {

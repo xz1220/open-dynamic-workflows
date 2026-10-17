@@ -227,7 +227,7 @@ ODW 已实现下列原语能力。依赖宿主私有运行机制的脚本,迁移
 | 模型选择 | 在 `agent(..., {model})` 中传该 CLI 的模型 ID。`meta.model` 和阶段元数据不设置执行模型;适配器没有模型参数时会记录路由说明。 |
 | `agentType` | 将人设加入提示词,不会加载宿主的同名子 agent 配置或选择适配器。 |
 | 工作区隔离 | 从已保存的 HEAD 创建临时工作区,不含未保存修改,结束后清理。不会自动合并,`agent()` 返回回复而非 diff;需保留的交付物应放进回复或显式持久化。 |
-| 预算 | 按成功调用的最终回复字符数估算 token,不计输入、失败调用及重试中间回复。预算检查阻止后续派发;已经运行的调用可能使总量超过目标。 |
+| 预算 | 按 `ceil(字符数 / 4)` 估算所有回复的输出 token,包括 schema 重试(不计输入和失败调用)。每次派发和每次 schema 重试前都会检查;预算用尽时运行结束,仍在运行的 agent 会被停止。 |
 | JSON Schema | 只校验[已列出的子集](skills/open-dynamic-workflows/zh-CN/references/primitives.md#schema)。`$ref`、`const`、`oneOf` 等约束不会生效;请明确声明对象/数组类型并使用受支持的约束。 |
 | 脚本可信性 | 只运行可信脚本:运行工作流会把正文当作普通 JavaScript 执行。加载时元数据按纯字面量解析,不会被求值;编译检查和兼容性警告都不提供沙箱隔离。 |
 | 恢复 | `resume` 继续已暂停且仍存活的 worker。`rerun` 从头执行,崩溃后不会重放并复用已完成调用。 |
@@ -383,7 +383,7 @@ Codex、Claude Code、Gemini、Qwen、Kimi、Oh My Pi、Kilo Code、OpenCode、C
 }
 ```
 
-ODW 在运行诊断中保留原始 stdout/stderr,但只把解码后的最终响应交给 workflow。
+ODW 只把解码后的最终响应交给 workflow;JSONL 输出会边流式到达边逐行解码,stderr 只保留有限的尾部用于错误信息。
 Windows 下的可执行文件探测遵循 `PATHEXT`,所以 `agent.cmd`、`kilo.cmd`、`omp.exe`
 这类普通 shim 无需写完整路径也能识别。
 
