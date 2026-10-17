@@ -293,38 +293,63 @@ workflow directories: `.odw/workflows`, `.claude/workflows`, `~/.odw/workflows`,
 and `~/.claude/workflows` (honoring `CLAUDE_CONFIG_DIR`).
 
 **Prefer a browser?** `odw serve` opens a zero-dependency live dashboard onto the same
-run directory — phase columns, per-agent cards (adapter + elapsed time), and run status
-stream in real time over SSE. No build step, no extra deps.
+run directory — every run as a live graph, its timeline, logs and result, streamed over
+SSE. No build step, no extra deps, no network access on load.
 
 ```bash
 odw serve [--open]                      # live dashboard at http://127.0.0.1:4317
 odw serve --port 8080 --host 0.0.0.0    # custom port / bind address
 ```
 
-![odw serve — a live board of a deep-research run: phase columns (Search → Extract → Vote → Report), per-agent cards with adapter and elapsed time, and live status](assets/odw-dashboard.png)
+![odw serve — a live deep-research run: five phase lanes (Plan → Search → Extract → Vote → Report) drawn as a graph, running agents tracing signal along their edges, per-run counters and a phase stepper](assets/odw-dashboard.png)
 
-Two more of its views — **Activity** (live event stream) and **Job detail**
-(the run as a live DAG):
+## Dashboard: observe, inspect, chat
+
+The dashboard reads like a printed sheet — paper, ink and one signal colour — and
+switches to a night theme on demand. What it gives you:
+
+- **Activity** — a ridgeline *pulse* of event density per run, live counters, the
+  fleet of running agents per adapter, and a firehose of events across all runs.
+- **Jobs** — runs in flight as live cards (phase rail, agent mix, elapsed time),
+  plus a filterable, paged history (`#/jobs/live|done|failed` links straight to a filter).
+- **A run** — the graph (fan-outs fan, reduces funnel; edges draw in and carry a
+  marching signal while their agent runs; zoom, fit and pan), a **timeline** that
+  shows where the time went, filterable **logs** with follow, the **result** as a
+  collapsible JSON tree, and an **agent drawer** with each finished agent's own output.
+- **Workspace** — every saved workflow with a static outline of its phases and the
+  primitives each one calls, its source, and its recent runs.
+- **Chat Host** — ordinary Codex conversation; mention ODW or workflow and the turn
+  is attached to a real background run whose tool card updates live.
 
 <table>
   <tr>
     <td width="50%">
       <strong>Activity</strong><br />
-      <img src="assets/app-screenshots/activity.png" alt="Activity view showing live event stream, active run counters, and per-adapter agent load" />
+      <img src="assets/app-screenshots/activity.png" alt="Activity view: a headline, live counters, a ridgeline pulse of event density per run, the fleet by adapter and the live event stream" />
     </td>
     <td width="50%">
-      <strong>Job detail</strong><br />
-      <img src="assets/app-screenshots/job-detail.png" alt="Job detail view showing a live workflow graph with phase columns and agent nodes" />
+      <strong>Timeline</strong><br />
+      <img src="assets/app-screenshots/timeline.png" alt="A run's timeline: every agent as a bar from start to finish, grouped by phase, with a now marker while it runs" />
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
+      <strong>Jobs</strong><br />
+      <img src="assets/app-screenshots/jobs.png" alt="Jobs view: live run cards with phase rails and a day-grouped history table" />
+    </td>
+    <td width="50%">
+      <strong>Night theme</strong><br />
+      <img src="assets/app-screenshots/job-detail-dark.png" alt="A live run graph in the night theme, with glowing signal edges" />
     </td>
   </tr>
 </table>
 
-## Dashboard: chat, observe, inspect
-
-The dashboard is an observatory plus a local Chat Host. Use Chat for ordinary
-Codex conversation; mention ODW or workflow when a turn should be attached to a
-real background run. Runs started from the CLI (`odw run <name>`) and Chat-linked
-ODW tasks show up in Jobs as live DAGs with logs and final results.
+Press <kbd>⌘K</kbd> / <kbd>Ctrl K</kbd> (or <kbd>/</kbd>) for the command palette —
+jump to any run or workflow, switch theme or language, copy a follow or rerun command.
+<kbd>g</kbd> then <kbd>a</kbd>/<kbd>j</kbd>/<kbd>w</kbd>/<kbd>c</kbd>/<kbd>s</kbd> moves
+between views, <kbd>1</kbd>–<kbd>4</kbd> switch a run's tabs, and <kbd>+</kbd>/<kbd>-</kbd>/<kbd>0</kbd>
+zoom the graph. When a run finishes the dashboard says so, and — if you opt in under
+Settings — sends a desktop notification while the tab is in the background.
 
 ```bash
 odw run adversarial-verify --args '{"question":"review src/rate-limiter.js"}'
@@ -464,6 +489,17 @@ npm run build         # tsc → dist/
 npm test              # node:test suite, driven by a mock adapter (no real accounts)
 npm run typecheck     # tsc --noEmit
 npm run build:binary  # bundle + Node SEA + postject → a single self-contained ./build/odw
+```
+
+Working on the dashboard? Seed a simulated fleet that keeps moving, point a server
+at it, and run the dev server — it rebuilds `web/src` on every page load and proxies
+`/api` (SSE included) to that server:
+
+```bash
+node web/demo-fixtures.mjs /tmp/odw-demo/runs /tmp/odw-demo/project --live &
+echo '{"runsRoot":"/tmp/odw-demo/runs"}' > /tmp/odw-demo/odw.config.json
+(cd /tmp/odw-demo/project && npx tsx "$OLDPWD/src/cli.ts" serve --config /tmp/odw-demo/odw.config.json --port 4317) &
+node web/dev.mjs --api http://127.0.0.1:4317     # → http://127.0.0.1:5173
 ```
 
 To update a local source installation, build the updated checkout and run

@@ -268,38 +268,58 @@ odw list
 的目录和 Claude Code 保存 workflow 的目录: `.odw/workflows`、`.claude/workflows`、
 `~/.odw/workflows`、`~/.claude/workflows`(遵循 `CLAUDE_CONFIG_DIR`)。
 
-**喜欢用浏览器?** `odw serve` 会对同一个 run 目录开一个零依赖的实时仪表盘——阶段分栏、
-每个 agent 的卡片(适配器 + 耗时)、运行状态都通过 SSE 实时更新。无需构建,不引入任何
-额外依赖。
+**喜欢用浏览器?** `odw serve` 会对同一个 run 目录开一个零依赖的实时看板——每次运行都是一张
+实时图,还有时间线、日志和结果,全部通过 SSE 推送。无需构建,不引入额外依赖,加载时不访问网络。
 
 ```bash
-odw serve [--open]                      # 实时仪表盘,默认 http://127.0.0.1:4317
+odw serve [--open]                      # 实时看板,默认 http://127.0.0.1:4317
 odw serve --port 8080 --host 0.0.0.0    # 自定义端口 / 绑定地址
 ```
 
-![odw serve —— 一次 deep-research 运行的实时看板:阶段分栏(Search → Extract → Vote → Report)、每个 agent 的卡片(适配器 + 耗时)、实时状态](assets/odw-dashboard.png)
+![odw serve —— 一次实时 deep-research 运行:五个阶段泳道(Plan → Search → Extract → Vote → Report)绘制成图,运行中的 agent 沿边传递信号,带运行计数与阶段步进条](assets/odw-dashboard.png)
 
-看板的另外两个页面 —— **Activity**(实时事件流)与 **Job detail**(以实时 DAG 展示
-的运行):
+## 看板:观测、检查、对话
+
+看板的视觉像一张印刷品——纸、墨和一种信号色——也可以随时切换到夜间主题。它提供:
+
+- **Activity** —— 每个运行的事件密度"脉搏"山脊图、实时计数、按适配器统计的运行中 agent,
+  以及跨所有运行的事件流。
+- **Jobs** —— 进行中的运行以实时卡片展示(阶段条、agent 构成、耗时),外加可筛选、分页的历史
+  (`#/jobs/live|done|failed` 可直接链接到某个筛选)。
+- **单次运行** —— 图(扇出成扇、汇聚成漏斗;边会被"绘制"出来,对应 agent 运行时有信号流动;
+  可缩放、适应、拖拽)、显示时间花在哪里的**时间线**、可筛选并可跟随的**日志**、可折叠 JSON 树
+  形式的**结果**,以及展示每个已完成 agent 自身输出的 **agent 抽屉**。
+- **Workspace** —— 所有已保存的工作流:阶段的静态结构及每个阶段调用的原语、源码和最近的运行。
+- **Chat Host** —— 正常的 Codex 对话;提到 ODW 或 workflow 时,该回合会关联到一个真实的后台
+  运行,工具卡片实时更新。
 
 <table>
   <tr>
     <td width="50%">
       <strong>Activity</strong><br />
-      <img src="assets/app-screenshots/activity.png" alt="Activity 页面:实时事件流、活跃运行计数和按适配器统计的 agent 负载" />
+      <img src="assets/app-screenshots/activity.png" alt="Activity 页面:标题、实时计数、每个运行事件密度的脉搏山脊图、按适配器的机队和实时事件流" />
     </td>
     <td width="50%">
-      <strong>Job detail</strong><br />
-      <img src="assets/app-screenshots/job-detail.png" alt="Job detail 页面:按阶段展示实时 workflow 图和 agent 节点" />
+      <strong>时间线</strong><br />
+      <img src="assets/app-screenshots/timeline.png" alt="一次运行的时间线:每个 agent 是一根从开始到结束的条,按阶段分组,运行中带有当前时刻标记" />
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
+      <strong>Jobs</strong><br />
+      <img src="assets/app-screenshots/jobs.png" alt="Jobs 页面:带阶段条的实时运行卡片和按日期分组的历史表格" />
+    </td>
+    <td width="50%">
+      <strong>夜间主题</strong><br />
+      <img src="assets/app-screenshots/job-detail-dark.png" alt="夜间主题下的实时运行图,信号边带有发光效果" />
     </td>
   </tr>
 </table>
 
-## 看板:对话、观测、检查
-
-看板是观测台,也带一个本地 Chat Host。普通问题就像正常 Codex 对话一样使用;当某个回合
-提到 ODW 或 workflow,它会关联到真实的后台运行。CLI 发起的运行(`odw run <name>`)和
-Chat 关联的 ODW 任务都会出现在 Jobs 里,以实时 DAG、日志和最终结果展示。
+按 <kbd>⌘K</kbd> / <kbd>Ctrl K</kbd>(或 <kbd>/</kbd>)打开命令面板——跳转到任意运行或工作流、
+切换主题或语言、复制跟踪或重跑命令。<kbd>g</kbd> 再按 <kbd>a</kbd>/<kbd>j</kbd>/<kbd>w</kbd>/<kbd>c</kbd>/<kbd>s</kbd>
+切换页面,<kbd>1</kbd>–<kbd>4</kbd> 切换运行的标签页,<kbd>+</kbd>/<kbd>-</kbd>/<kbd>0</kbd> 缩放图。
+运行结束时看板会提示;如果在设置中开启,标签页在后台时还会发送桌面通知。
 
 ```bash
 odw run adversarial-verify --args '{"question":"review src/rate-limiter.js"}'
@@ -430,6 +450,16 @@ npm run build         # tsc → dist/
 npm test              # node:test 测试套件,由 mock 适配器驱动(无需真实账号)
 npm run typecheck     # tsc --noEmit
 npm run build:binary  # 打包 + Node SEA + postject → 单个自包含的 ./build/odw
+```
+
+要开发看板:先生成一组持续推进的模拟运行,让一个 server 指向它,再启动开发服务器——它会在每次
+刷新页面时重新构建 `web/src`,并把 `/api`(含 SSE)代理到那个 server:
+
+```bash
+node web/demo-fixtures.mjs /tmp/odw-demo/runs /tmp/odw-demo/project --live &
+echo '{"runsRoot":"/tmp/odw-demo/runs"}' > /tmp/odw-demo/odw.config.json
+(cd /tmp/odw-demo/project && npx tsx "$OLDPWD/src/cli.ts" serve --config /tmp/odw-demo/odw.config.json --port 4317) &
+node web/dev.mjs --api http://127.0.0.1:4317     # → http://127.0.0.1:5173
 ```
 
 更新本地源码安装时,先构建更新后的目录,再运行 `npm install -g .`,并将同目录的
