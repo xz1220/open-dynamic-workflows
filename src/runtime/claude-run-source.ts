@@ -26,6 +26,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 import type { WorkflowEvent } from "../events.js";
+import { SigCache, statSig } from "./fs-util.js";
 import type { RunSource } from "./run-source.js";
 import type { AgentView, RunCounts, RunDetail, RunDisplayState, RunSummary } from "./runs-view.js";
 
@@ -61,13 +62,39 @@ interface Discovered {
   path: string;
 }
 
+/**
+ * What a live run's files say, independent of the clock. Whether the run is
+ * still RUNNING depends on `now`, so it is decided per read from
+ * `aliveUntilMs` — never cached (a crashed Claude session writes nothing, yet
+ * its run must turn stale once the freshness window passes).
+ */
+interface LiveScan {
+  kind: "live";
+  /** Agents whose last journal line is "started". */
+  running: Array<{ key: string; agentId?: string }>;
+  done: number;
+  created: number | null;
+  updatedAt: number | null;
+  name: string;
+  /** Epoch ms until which the freshest journal/transcript write keeps the run alive. */
+  aliveUntilMs: number;
+}
+
+interface TerminalSummary {
+  kind: "terminal";
+  summary: RunSummary;
+}
+
+type Folded = { summary: RunSummary; detail: RunDetail; events: WorkflowEvent[] };
+
 export class ClaudeRunSource implements RunSource {
   readonly provider = "claude" as const;
   readonly controlError = "Claude Code runs are read-only here — observe only.";
 
   private readonly freshMs: number;
   private readonly now: () => number;
-  private readonly cache = new Map<string, { sig: string; value: RunSummary }>();
+  /** Per-run fold keyed by the run's file signatures (terminal: final; live: clock-free scan). */
+  private readonly cache = new SigCache<TerminalSummary | LiveScan>();
 
   constructor(private readonly opts: ClaudeRunSourceOptions) {
     this.freshMs = opts.freshMs ?? DEFAULT_FRESH_MS;
@@ -86,18 +113,12 @@ export class ClaudeRunSource implements RunSource {
     const live = new Set<string>();
     for (const d of this.discover()) {
       live.add(d.runId);
-      const sig = this.signature(d);
-      const hit = this.cache.get(d.runId);
-      if (hit && hit.sig === sig) {
-        out.push(hit.value);
-        continue;
-      }
-      const value = this.summary(d);
-      if (!value) continue;
-      this.cache.set(d.runId, { sig, value });
-      out.push(value);
+      const entry = this.cache.get(d.runId, this.signature(d), () =>
+        d.kind === "terminal" ? { kind: "terminal", summary: this.foldTerminal(d).summary } : this.scanLive(d),
+      );
+      out.push(entry.kind === "terminal" ? entry.summary : this.foldLive(d, entry).summary);
     }
-    for (const key of this.cache.keys()) if (!live.has(key)) this.cache.delete(key);
+    this.cache.retain(live);
     return out;
   }
 
@@ -167,29 +188,30 @@ export class ClaudeRunSource implements RunSource {
     return this.discover().find((d) => d.runId === runId) ?? null;
   }
 
-  /** Cheap freshness fingerprint: terminal keys on the journal file; live on the dir's newest mtime. */
+  /**
+   * Cheap change fingerprint: terminal keys on the journal file; live on the
+   * journal plus EVERY agent transcript (any of them can be the one keeping
+   * the run fresh). Joined, not "newest wins": picking a max by comparing
+   * "size:mtime" strings lexicographically ranks "950:…" above "1200:…".
+   */
   private signature(d: Discovered): string {
     if (d.kind === "terminal") return `T:${statSig(d.path)}`;
-    let newest = statSig(join(d.path, "journal.jsonl"));
-    for (const f of safeReaddir(d.path)) {
-      if (f.isFile() && f.name.startsWith("agent-")) {
-        const s = statSig(join(d.path, f.name));
-        if (s > newest) newest = s;
-      }
-    }
-    return `L:${newest}`;
+    const parts = [statSig(join(d.path, "journal.jsonl"))];
+    const agents = safeReaddir(d.path)
+      .filter((f) => f.isFile() && f.name.startsWith("agent-"))
+      .map((f) => f.name)
+      .sort();
+    for (const name of agents) parts.push(`${name}=${statSig(join(d.path, name))}`);
+    return `L:${parts.join("|")}`;
   }
 
   // --- folding ---------------------------------------------------------------
 
-  private summary(d: Discovered): RunSummary | null {
-    return d.kind === "terminal" ? this.foldTerminal(d).summary : this.foldLive(d).summary;
-  }
-  private fold(d: Discovered): { summary: RunSummary; detail: RunDetail; events: WorkflowEvent[] } {
-    return d.kind === "terminal" ? this.foldTerminal(d) : this.foldLive(d);
+  private fold(d: Discovered): Folded {
+    return d.kind === "terminal" ? this.foldTerminal(d) : this.foldLive(d, this.scanLive(d), true);
   }
 
-  private foldTerminal(d: Discovered): { summary: RunSummary; detail: RunDetail; events: WorkflowEvent[] } {
+  private foldTerminal(d: Discovered): Folded {
     const j = readJson(d.path) ?? {};
     const progress: any[] = Array.isArray(j.workflowProgress) ? j.workflowProgress : [];
     const phaseEntries = progress.filter((e: any) => e?.type === "workflow_phase");
@@ -255,8 +277,10 @@ export class ClaudeRunSource implements RunSource {
     return { summary, detail, events };
   }
 
-  private foldLive(d: Discovered): { summary: RunSummary; detail: RunDetail; events: WorkflowEvent[] } {
-    const lines = readLines(join(d.path, "journal.jsonl"));
+  /** Read a live run's journal and the mtimes that decide its freshness. */
+  private scanLive(d: Discovered): LiveScan {
+    const journal = join(d.path, "journal.jsonl");
+    const lines = readLines(journal);
     // Pair by `key` (the stable v2 prompt-hash); an agent is RUNNING iff its LAST line is "started".
     const last = new Map<string, Record<string, any>>();
     for (const l of lines) if (l && typeof l.key === "string") last.set(l.key, l);
@@ -266,12 +290,29 @@ export class ClaudeRunSource implements RunSource {
       if (l.type === "started") running.push({ key, agentId: l.agentId });
       else done++;
     }
-    const nowMs = this.now();
-    const journalFresh = nowMs - mtimeMs(join(d.path, "journal.jsonl")) < this.freshMs;
-    const anyAgentFresh = running.some(
-      (r) => r.agentId != null && nowMs - mtimeMs(join(d.path, `agent-${r.agentId}.jsonl`)) < this.freshMs,
-    );
-    const alive = running.length > 0 ? anyAgentFresh || journalFresh : journalFresh;
+    // Alive while the journal, or the transcript of an agent still running, was
+    // written within the freshness window; a missing file (mtime 0) never is.
+    const journalMs = mtimeMs(journal);
+    let freshestMs = journalMs;
+    for (const r of running) {
+      if (r.agentId != null) freshestMs = Math.max(freshestMs, mtimeMs(join(d.path, `agent-${r.agentId}.jsonl`)));
+    }
+    const created = birthSec(d.path);
+    return {
+      kind: "live",
+      running,
+      done,
+      created,
+      updatedAt: journalMs / 1000 || created,
+      name: liveName(d.sessDir, d.wid),
+      aliveUntilMs: freshestMs + this.freshMs,
+    };
+  }
+
+  /** Build a live run's views as of now. `withScript` reads the script for the detail view. */
+  private foldLive(d: Discovered, scan: LiveScan, withScript = false): Folded {
+    const { running, done, created, updatedAt } = scan;
+    const alive = this.now() < scan.aliveUntilMs;
     const state: RunDisplayState = alive ? "running" : "stale";
 
     const agents: AgentView[] = [
@@ -309,8 +350,6 @@ export class ClaudeRunSource implements RunSource {
       failed: 0,
       stale: alive ? 0 : running.length,
     };
-    const created = birthSec(d.path);
-    const updatedAt = mtimeMs(join(d.path, "journal.jsonl")) / 1000 || created;
 
     const summary: RunSummary = {
       runId: d.runId,
@@ -318,7 +357,7 @@ export class ClaudeRunSource implements RunSource {
       state,
       rawState: "running",
       stale: state === "stale",
-      name: liveName(d.sessDir, d.wid),
+      name: scan.name,
       description: null,
       phases: [],
       source: null,
@@ -331,7 +370,7 @@ export class ClaudeRunSource implements RunSource {
     };
     const detail: RunDetail = {
       ...summary,
-      script: readScript(d.sessDir, d.wid),
+      script: withScript ? readScript(d.sessDir, d.wid) : null,
       args: null,
       agents,
       phaseOrder: [],
@@ -486,14 +525,6 @@ function readLines(p: string): Array<Record<string, any>> {
     }
   }
   return out;
-}
-function statSig(p: string): string {
-  try {
-    const s = statSync(p);
-    return `${s.size}:${s.mtimeMs}`;
-  } catch {
-    return "-";
-  }
 }
 function mtimeMs(p: string): number {
   try {

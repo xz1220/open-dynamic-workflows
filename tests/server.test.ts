@@ -41,6 +41,45 @@ async function waitForChat(
   throw new Error(`chat did not reach expected state: ${JSON.stringify(last)}`);
 }
 
+/** One open `/api/stream` connection, read frame by frame. */
+async function openSse(url: string) {
+  const abort = new AbortController();
+  const res = await fetch(`${url}/api/stream`, { signal: abort.signal });
+  const reader = res.body!.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  return {
+    /** Resolve the next `event` frame whose parsed data passes `predicate`. */
+    async next(event: string, predicate: (data: any) => boolean = () => true, timeoutMs = 5000): Promise<any> {
+      const seen: string[] = [];
+      const deadline = setTimeout(() => abort.abort(), timeoutMs);
+      try {
+        for (;;) {
+          let cut: number;
+          while ((cut = buf.indexOf("\n\n")) !== -1) {
+            const frame = buf.slice(0, cut);
+            buf = buf.slice(cut + 2);
+            const name = /^event: (.*)$/m.exec(frame)?.[1];
+            const data = /^data: (.*)$/m.exec(frame)?.[1];
+            if (name !== event || data === undefined) continue;
+            seen.push(data.slice(0, 200));
+            const parsed = JSON.parse(data);
+            if (predicate(parsed)) return parsed;
+          }
+          const { value, done } = await reader.read();
+          if (done) throw new Error("stream ended");
+          buf += decoder.decode(value, { stream: true });
+        }
+      } catch (err) {
+        throw new Error(`no matching '${event}' frame (${(err as Error).message}); saw: ${seen.join(" | ")}`);
+      } finally {
+        clearTimeout(deadline);
+      }
+    },
+    close: () => abort.abort(),
+  };
+}
+
 /** Write a run directory: meta + status + a JSONL event stream. */
 function seedRun(
   store: RunStore,
@@ -233,6 +272,31 @@ test("HTTP: serves dashboard, run list, detail, control, and 404s", async () => 
     });
     assert.equal(badCtl.status, 400);
   } finally {
+    await handle.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("HTTP: the SSE stream pushes a run turning stale when its worker is killed", async () => {
+  const root = tempRoot();
+  const store = new RunStore(root);
+  const worker = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+  const id = seedRun(store, { name: "demo", state: "running", pid: worker.pid! }, [A("agent_started", "alpha", "Research", 1)]);
+  const handle = await startServer({ store, port: 0, host: "127.0.0.1", claudeProjectsRoot: join(root, "no-claude") });
+  const sse = await openSse(handle.url);
+  try {
+    const first = await sse.next("runs");
+    assert.equal(first.find((r: any) => r.runId === id).state, "running");
+    await new Promise<void>((r) => {
+      worker.once("exit", () => r());
+      worker.kill("SIGKILL");
+    });
+    // Same connection: the server must PUSH the change (no file changed, only the pid died).
+    const runs = await sse.next("runs", (list) => list.some((r: any) => r.runId === id && r.state === "stale"));
+    assert.deepEqual(runs.find((r: any) => r.runId === id).counts, { agents: 1, running: 0, done: 0, failed: 0, stale: 1 });
+  } finally {
+    sse.close();
+    worker.kill("SIGKILL");
     await handle.close();
     rmSync(root, { recursive: true, force: true });
   }

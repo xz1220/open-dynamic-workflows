@@ -232,18 +232,13 @@ function countAgents(agents: AgentView[]): RunCounts {
   return { agents: agents.length, running, done, failed, stale };
 }
 
-function staleOpenAgents(agents: AgentView[]): AgentView[] {
-  return agents.map((a) => (a.state === "running" ? { ...a, state: "stale" } : a));
+/** Copies of `agents` (folds are cached, so never hand out their nodes), open ones marked stale if asked. */
+function copyAgents(agents: AgentView[], stale: boolean): AgentView[] {
+  return agents.map((a) => (stale && a.state === "running" ? { ...a, state: "stale" } : { ...a }));
 }
 
-function phaseOrderFrom(events: WorkflowEvent[], declared: Array<{ title: string }>): string[] {
-  const order: string[] = [];
-  for (const ev of events) {
-    if (ev.type === "phase_started" && ev.phase != null) {
-      const p = String(ev.phase);
-      if (!order.includes(p)) order.push(p);
-    }
-  }
+function phaseOrderFrom(started: string[], declared: Array<{ title: string }>): string[] {
+  const order = [...started];
   for (const d of declared) {
     if (d?.title && !order.includes(d.title)) order.push(d.title);
   }
@@ -255,30 +250,78 @@ function asNumber(v: unknown): number | null {
 }
 
 /**
- * Build the lightweight summary used for the run list / sidebar.
- *
- * `events` may be passed in by a caller that already read them (e.g. detail())
- * so the JSONL file isn't read and parsed twice on one request.
+ * What a run's summary/detail is derived from, BEFORE liveness reconciliation:
+ * the on-disk status + meta and the agents folded from events.jsonl. These are
+ * pure functions of the run's files, so a reader may cache them keyed by file
+ * signatures — but the pid probe in {@link reconcileState} is not, so it is
+ * re-applied by {@link summaryFrom}/{@link detailFrom} on every read (a
+ * `kill -9`'d worker changes no file, yet must turn the run stale).
  */
-export function summarize(store: RunStore, runId: string, events?: WorkflowEvent[]): RunSummary {
-  const status = store.readStatus(runId);
-  const meta = store.readMeta(runId);
-  const evs = events ?? store.readEvents(runId);
+export interface RunFacts {
+  status: Record<string, unknown>;
+  meta: Record<string, unknown>;
+  /** What the event stream folds to (see {@link EventFold}). */
+  fold: EventFold;
+}
+
+/**
+ * Everything the read-model needs from events.jsonl, folded one event at a
+ * time so a reader that tails the file (byte cursor) can keep folding where it
+ * left off instead of re-reading the whole stream. Liveness-free: open agents
+ * stay "running" here; reconciliation happens per read.
+ */
+export class EventFold {
+  /** Agents in start order, open ones still "running". */
+  readonly agents: AgentView[] = [];
+  /** Phases in the order their phase_started fired. */
+  readonly startedPhases: string[] = [];
+  /** ts of the last event folded, or null for an empty stream. */
+  lastActivityTs: number | null = null;
+
+  apply(events: WorkflowEvent[]): this {
+    for (const ev of events) {
+      applyAgentEvent(this.agents, ev);
+      if (ev.type === "phase_started" && ev.phase != null) {
+        const p = String(ev.phase);
+        if (!this.startedPhases.includes(p)) this.startedPhases.push(p);
+      }
+    }
+    if (events.length > 0) this.lastActivityTs = asNumber(events[events.length - 1]!.ts);
+    return this;
+  }
+}
+
+/** Read a run's facts from the store (one read of each file). */
+export function readFacts(store: RunStore, runId: string, events?: WorkflowEvent[]): RunFacts {
+  return {
+    status: store.readStatus(runId),
+    meta: store.readMeta(runId),
+    fold: new EventFold().apply(events ?? store.readEvents(runId)),
+  };
+}
+
+/**
+ * Reconcile liveness and build the run-list summary from cached or fresh
+ * facts. Cheap enough to run on every list: one pid probe for a non-terminal
+ * run, and a count over the folded agents.
+ */
+export function summaryFrom(runId: string, facts: RunFacts): RunSummary {
+  const { status, meta, fold } = facts;
   const rawState = String(status.state ?? "pending");
   const pid = asNumber(status.pid);
   const { state, stale } = reconcileState(rawState, pid);
-  const agents = stale ? staleOpenAgents(foldAgents(evs)) : foldAgents(evs);
-  const counts = countAgents(agents);
+  const folded = countAgents(fold.agents);
+  // A stale run's open agents will never settle: count them stale, not running.
+  const counts = stale ? { ...folded, running: 0, stale: folded.stale + folded.running } : folded;
 
   const name =
     (status.name as string) || baseName(meta.script as string | undefined) || runId;
   const settled = counts.done + counts.failed;
   const progress = counts.agents > 0 ? settled / counts.agents : 0;
-  const lastActivityTs = evs.length > 0 ? asNumber(evs[evs.length - 1]!.ts) : null;
 
   return {
     runId,
-    // summarize() reads the ODW RunStore; a Claude run is built by ClaudeRunSource,
+    // Facts come from the ODW RunStore; a Claude run is built by ClaudeRunSource,
     // never here, so this is always "odw".
     provider: "odw",
     state,
@@ -293,28 +336,48 @@ export function summarize(store: RunStore, runId: string, events?: WorkflowEvent
     updatedAt: asNumber(status.updatedAt),
     counts,
     progress,
-    lastActivityTs,
+    lastActivityTs: fold.lastActivityTs,
   };
 }
 
-/** Build the full per-run detail (summary + folded agents + phase order). */
-export function detail(store: RunStore, runId: string): RunDetail {
-  const events = store.readEvents(runId);
-  const base = summarize(store, runId, events);
-  const meta = store.readMeta(runId);
-  const agents = base.stale ? staleOpenAgents(foldAgents(events)) : foldAgents(events);
+/** Reconcile liveness and build the full detail from cached or fresh facts. */
+export function detailFrom(
+  runId: string,
+  facts: RunFacts,
+  extra: { hasResult: boolean; error: { error?: string; stack?: string } | null },
+): RunDetail {
+  const summary = summaryFrom(runId, facts);
+  const { meta, fold } = facts;
   return {
-    ...base,
+    ...summary,
     script: (meta.script as string) ?? null,
     args: meta.args ?? null,
-    agents,
-    phaseOrder: phaseOrderFrom(events, base.phases),
-    hasResult: store.hasResult(runId),
-    error: store.readError(runId) as { error?: string; stack?: string } | null,
+    agents: copyAgents(fold.agents, summary.stale),
+    phaseOrder: phaseOrderFrom(fold.startedPhases, summary.phases),
+    hasResult: extra.hasResult,
+    error: extra.error,
     origin: (meta.origin as string) ?? null,
     adapter: (meta.adapter as string) ?? null,
     workflowName: (meta.workflowName as string) ?? null,
   };
+}
+
+/**
+ * Build the lightweight summary used for the run list / sidebar.
+ *
+ * `events` may be passed in by a caller that already read them so the JSONL
+ * file isn't read and parsed twice on one request.
+ */
+export function summarize(store: RunStore, runId: string, events?: WorkflowEvent[]): RunSummary {
+  return summaryFrom(runId, readFacts(store, runId, events));
+}
+
+/** Build the full per-run detail (summary + folded agents + phase order). */
+export function detail(store: RunStore, runId: string): RunDetail {
+  return detailFrom(runId, readFacts(store, runId), {
+    hasResult: store.hasResult(runId),
+    error: store.readError(runId) as { error?: string; stack?: string } | null,
+  });
 }
 
 /** Summaries for every known run, newest first. */

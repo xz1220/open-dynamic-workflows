@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -146,6 +146,45 @@ test("a live run with no fresh signal folds to STALE, never 'failed'", () => {
     assert.equal(live!.state, "stale");
     assert.equal(live!.stale, true);
     assert.deepEqual(live!.counts, { agents: 3, running: 0, done: 1, failed: 0, stale: 2 });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("one source instance: a cached live run turns stale once the freshness window passes", () => {
+  const root = fixture();
+  try {
+    let nowMs = Date.now();
+    const src = new ClaudeRunSource({ projectsRoot: root, cwd: CWD, scope: "all", now: () => nowMs });
+    const live = () => src.listSummaries().find((r) => r.runId === "cc-wf_live1")!;
+    assert.equal(live().state, "running");
+
+    nowMs += 600_000; // no file changes at all — only the clock moves
+    assert.equal(live().state, "stale", "a cached 'running' must not outlive the freshness window");
+    assert.deepEqual(live().counts, { agents: 3, running: 0, done: 1, failed: 0, stale: 2 });
+    assert.equal(src.detail("cc-wf_live1")!.state, "stale", "list and detail agree");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("one source instance: a write to ANY running agent's transcript revives a stale live run", () => {
+  const root = fixture();
+  try {
+    const live1 = join(root, encodeProjectDir(CWD), "5fe06326-session", "subagents", "workflows", "wf_live1");
+    // Sizes chosen so the old "newest signature wins" lexicographic compare
+    // ("950:…" > "1200:…") would have ignored every change to the transcript.
+    writeFileSync(join(live1, "journal.jsonl"), readFileSync(join(live1, "journal.jsonl"), "utf8").padEnd(950, " "));
+    writeFileSync(join(live1, "agent-a2.jsonl"), "x".repeat(1200));
+    const old = Date.now() / 1000 - 600;
+    for (const f of ["journal.jsonl", "agent-a2.jsonl"]) utimesSync(join(live1, f), old, old);
+
+    const src = new ClaudeRunSource({ projectsRoot: root, cwd: CWD, scope: "all" });
+    const live = () => src.listSummaries().find((r) => r.runId === "cc-wf_live1")!;
+    assert.equal(live().state, "stale");
+
+    appendFileSync(join(live1, "agent-a2.jsonl"), "{}\n"); // agent a2 is still working
+    assert.equal(live().state, "running");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
