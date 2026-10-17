@@ -1,11 +1,11 @@
 /** Activity — the machine's pulse: a headline, live counters, the ridgeline, the fleet and the event stream. */
-import { pill } from "../components/glyph";
+import { glyph, pill } from "../components/glyph";
 import { icons } from "../icons";
 import { renderPulse } from "../components/pulse";
 import { t } from "../i18n";
 import { store } from "../store";
-import type { ActivityEvent } from "../types";
-import { ACTIVE, esc, fmtClock } from "../util";
+import type { ActivityEvent, RunSummary } from "../types";
+import { ACTIVE, esc, fmtAgo, fmtClock } from "../util";
 
 export const EVT_CLASS: Record<string, string> = {
   run_started: "rstart",
@@ -155,11 +155,65 @@ export function renderActivity(nowSec: number): string {
     stat(done, t("agents done"), "#/jobs/done", "", totalAgents ? done / totalAgents : 0) +
     stat(failed, t("agents failed"), "#/jobs/failed", failed ? "alarm" : "", totalAgents ? failed / totalAgents : 0) +
     `</div></section>` +
+    needsYou(nowSec) +
     pulseCard +
     `<div class="act-grid">` +
     `<section class="card fleet" data-key="fleet"><div class="card-head" style="padding:16px 0 8px"><h3>${t("Fleet")}</h3><span class="eyebrow">${t("agents running · by adapter")}</span></div>${fleetRows}</section>` +
     `<section class="card stream" data-key="stream"><div class="card-head"><h3>${t("Live event stream")}</h3><span class="eyebrow">${t("all runs · events.jsonl")}</span></div><div class="stream-list">${stream}</div></section>` +
     `</div></div>`
+  );
+}
+
+/**
+ * What a person has to act on: checkpoints waiting for a decision first, then
+ * the last day's failed or stranded ODW runs, each with the command that picks
+ * it up again. Nothing to do, nothing drawn.
+ */
+function needsYou(nowSec: number): string {
+  const waiting = store.runs.filter((r) => r.state === "waiting");
+  const allBroken = store.runs.filter(
+    (r) => r.provider === "odw" && (r.state === "failed" || r.state === "stale") && (r.updatedAt ?? 0) > nowSec - 86_400,
+  );
+  const broken = allBroken.slice(0, 3);
+  if (!waiting.length && !broken.length) return "";
+  const href = (r: RunSummary) => `#/job/${encodeURIComponent(r.runId)}`;
+  const ticket = (r: RunSummary, kind: string, what: string, action: string) =>
+    `<div class="ticket ${kind}" data-key="nt-${esc(r.runId)}">` +
+    `<a class="tk-main" href="${href(r)}">${glyph(kind)}<span class="tk-text"><b>${esc(r.name)}</b><span title="${what}">${what}</span></span></a>` +
+    `<div class="tk-side"><span class="tk-when">${esc(fmtAgo(r.waiting?.since ?? r.updatedAt))}</span>${action}</div></div>`;
+  const resume = (r: RunSummary) =>
+    `<button class="btn sm" data-copy="odw resume ${esc(r.runId)}" data-tip="${esc(t("copies a command that replays finished agents"))}">${icons.terminal}${t("Copy resume")}</button>`;
+  const tickets = [
+    ...waiting.map((r) =>
+      ticket(
+        r,
+        "waiting",
+        r.waiting?.title ? t("asks: {q}", { q: esc(r.waiting.title) }) : t("is waiting for your decision"),
+        `<a class="btn sm primary" href="${href(r)}">${t("Review")}</a>`,
+      ),
+    ),
+    ...broken.map((r) =>
+      ticket(
+        r,
+        r.state,
+        r.state === "stale"
+          ? t("lost its worker")
+          : r.counts.failed
+            ? t("failed · {n} of {m} agents failed", { n: r.counts.failed, m: r.counts.agents })
+            : t("failed"),
+        resume(r),
+      ),
+    ),
+  ];
+  return (
+    `<section class="needs" data-key="needs" aria-label="${esc(t("Needs you"))}">` +
+    `<div class="needs-head"><h3>${t("Needs you")}</h3><span class="n">${waiting.length + allBroken.length}</span>` +
+    `<span class="eyebrow">${t("decisions and runs to pick up")}</span></div>` +
+    `<div class="tickets">${tickets.join("")}</div>` +
+    (allBroken.length > broken.length
+      ? `<a class="needs-more" href="#/jobs/failed" data-key="needs-more">${t("+{n} more failed in the last day", { n: allBroken.length - broken.length })} →</a>`
+      : "") +
+    `</section>`
   );
 }
 

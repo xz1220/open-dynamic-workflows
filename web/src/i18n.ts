@@ -469,6 +469,16 @@ const ZH: Record<string, string> = {
   replayed: "重放",
   "replayed from an earlier run": "从之前的运行重放",
   "{n} older runs": "还有 {n} 条更早的运行",
+  // Activity — what needs a person.
+  "Needs you": "待你处理",
+  "decisions and runs to pick up": "等你决定的检查点,和可以接着跑的运行",
+  "asks: {q}": "在问:{q}",
+  "is waiting for your decision": "正在等你的决定",
+  "lost its worker": "失去了 worker",
+  "failed · {n} of {m} agents failed": "失败 · {m} 个 agent 中 {n} 个失败",
+  "Copy resume": "复制 resume 命令",
+  "+{n} more failed in the last day": "过去一天还有 {n} 个失败的运行",
+  Review: "审阅",
   // Changes — worktree agents' diffs.
   Changes: "改动",
   Agent: "Agent",

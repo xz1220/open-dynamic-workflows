@@ -147,6 +147,154 @@
     grid-template-columns: 1fr;
   }
 }
+/* ---- needs you: tickets for decisions and runs to pick up ---- */
+.needs {
+  margin: 0 0 22px;
+}
+.needs-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin: 0 2px 12px;
+}
+.needs-head h3 {
+  margin: 0;
+  font-family: var(--f-display);
+  font-size: 24px;
+  font-weight: 400;
+  letter-spacing: -0.005em;
+}
+.needs-head .n {
+  padding: 1px 7px;
+  border-radius: 10px;
+  background: var(--ink);
+  color: var(--paper);
+  font-family: var(--f-mono);
+  font-size: 11px;
+}
+.needs-head .eyebrow {
+  margin-left: auto;
+}
+.tickets {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(320px, 100%), 1fr));
+  gap: 12px;
+}
+.ticket {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 14px 14px 20px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--line);
+  background: var(--card);
+  box-shadow: var(--shadow-1);
+  overflow: hidden;
+  animation: tk-in var(--t-slow) var(--ease-spring) both;
+  transition:
+    transform var(--t-fast) var(--ease-out),
+    box-shadow var(--t-fast) var(--ease-out);
+}
+.ticket:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-2);
+}
+.ticket::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: var(--faint);
+}
+.ticket.waiting {
+  border-color: var(--amber-line);
+  background: linear-gradient(90deg, var(--amber-soft), transparent 70%), var(--card);
+}
+.ticket.waiting::before {
+  background: var(--amber);
+  animation: tk-breathe 2.4s ease-in-out infinite;
+}
+.ticket.failed::before {
+  background: var(--alarm);
+}
+.ticket.stale::before {
+  background: var(--amber-line);
+}
+@keyframes tk-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+@keyframes tk-breathe {
+  50% {
+    opacity: 0.35;
+  }
+}
+.tk-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  color: inherit;
+  text-decoration: none;
+}
+.tk-main .gly {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+.tk-text {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.tk-text b,
+.tk-text span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tk-text b {
+  font-family: var(--f-mono);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.tk-text span {
+  font-size: 12.5px;
+  color: var(--mute);
+}
+/* the ticket's stub: a perforation, then when and what to do */
+.tk-side {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 7px;
+  flex-shrink: 0;
+  padding-left: 14px;
+  border-left: 1px dashed var(--line-2);
+}
+.tk-when {
+  font-family: var(--f-mono);
+  font-size: 10.5px;
+  color: var(--faint);
+}
+.needs-more {
+  display: inline-block;
+  margin: 10px 2px 0;
+  font-family: var(--f-mono);
+  font-size: 11.5px;
+  color: var(--mute);
+  text-decoration: none;
+}
+.needs-more:hover {
+  color: var(--ink);
+}
 .act-grid {
   display: grid;
   grid-template-columns: minmax(280px, 0.8fr) minmax(0, 1.6fr);
@@ -1186,6 +1334,26 @@
    Phones and narrow windows: stack what sits side by side.
    ================================================================== */
 @media (max-width: 760px) {
+  .needs-head {
+    flex-wrap: wrap;
+  }
+  .needs-head .eyebrow {
+    flex-basis: 100%;
+    margin-left: 0;
+  }
+  .ticket {
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+  .tk-side {
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    width: 100%;
+    padding: 10px 0 0;
+    border-left: 0;
+    border-top: 1px dashed var(--line-2);
+  }
   .topbar {
     gap: 10px;
     padding: 0 12px;

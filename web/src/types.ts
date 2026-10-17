@@ -41,6 +41,8 @@ export interface RunSummary {
   lastActivityTs: number | null;
   /** Token/cost totals when adapters report them (`estimated` when some only had chars/4). */
   usage?: UsageTotals | null;
+  /** The oldest checkpoint() waiting for a person, while the run is `waiting`. */
+  waiting?: { checkpointId: number; title: string; since: number } | null;
 }
 
 /** Normalized usage, as adapters report it. */

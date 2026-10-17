@@ -11,6 +11,7 @@ import { highlightSource, outlineSource } from "../web/src/components/source.ts"
 import { renderTimeline } from "../web/src/components/timeline.ts";
 import { renderDag } from "../web/src/dag.ts";
 import { applyRunsDelta, store } from "../web/src/store.ts";
+import { renderActivity } from "../web/src/views/activity.ts";
 import { renderJob, type JobViewState } from "../web/src/views/job.ts";
 import type { ActivityEvent, AgentView, RunDetail, RunSummary } from "../web/src/types.ts";
 import { esc, fmtDurSec, fmtTokens, fmtUsd, fuzzy, markHits } from "../web/src/util.ts";
@@ -343,4 +344,33 @@ test("the Changes tab lists agents that left a diff and freezes a host for the d
   view.tab = "changes";
   assert.match(renderJob(view, NOW), /No changes recorded/);
   store.focusRun(null);
+});
+
+test("Activity puts waiting checkpoints and the day's failures in front of the person", () => {
+  const prev = store.runs;
+  const counts = { agents: 4, running: 0, done: 2, failed: 2, stale: 0 };
+  const failed = (id: string, ago: number, over: Partial<RunSummary> = {}) =>
+    summary({ runId: id, name: `wf-${id}`, state: "failed", updatedAt: NOW - ago, counts, ...over });
+  store.runs = [
+    summary({ runId: "r-wait", name: "plan-approve", state: "waiting", waiting: { checkpointId: 1, title: "Ship <it>?", since: NOW - 60 } }),
+    failed("r-f1", 100),
+    failed("r-f2", 200),
+    summary({ runId: "r-st", name: "wf-stale", state: "stale", stale: true, updatedAt: NOW - 300 }),
+    failed("r-f3", 400),
+    failed("r-old", 200_000),
+    failed("r-cc", 10, { provider: "claude" }),
+  ];
+  const html = renderActivity(NOW);
+  assert.match(html, /<section class="needs"/);
+  assert.match(html, /class="ticket waiting"[\s\S]*?asks: Ship &lt;it&gt;\?/, "the checkpoint question is shown, escaped");
+  assert.equal(count(html, /class="ticket /g), 4, "the waiting run and the three newest of the day's failures");
+  assert.match(html, /data-copy="odw resume r-f1"/);
+  assert.match(html, /class="ticket stale"[\s\S]*?lost its worker/);
+  assert.ok(!/nt-r-old|nt-r-cc/.test(html), "old failures and Claude runs are not offered for resume");
+  assert.match(html, /\+1 more failed in the last day/);
+  assert.match(html, /<span class="n">5<\/span>/, "the count covers everything that needs a person");
+
+  store.runs = [summary({ state: "done" })];
+  assert.ok(!renderActivity(NOW).includes('class="needs"'), "nothing to do, nothing drawn");
+  store.runs = prev;
 });
