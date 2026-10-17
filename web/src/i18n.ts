@@ -413,5 +413,8 @@ const ZH: Record<string, string> = {
   logs: "日志",
   "Show {n} more": "再显示 {n} 条",
   "Copy a rerun command": "复制重跑命令",
+  Output: "输出",
+  replayed: "重放",
+  "replayed from an earlier run": "从之前的运行重放",
   "{n} older runs": "还有 {n} 条更早的运行",
 };

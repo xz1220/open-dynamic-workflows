@@ -39,6 +39,10 @@ export interface RunSummary {
 }
 
 export interface AgentView {
+  /** Stable per-dispatch id from the engine (null for pre-agentId event files). */
+  agentId?: number | null;
+  /** The value was replayed from an earlier run by `odw resume`. */
+  cached?: boolean;
   label: string;
   phase: string | null;
   state: AgentState;
@@ -188,4 +192,19 @@ export type ActivityEvent = WorkflowEvent & {
 export interface ActivitySnapshot {
   events: ActivityEvent[];
   fleet: Record<string, number>;
+}
+
+/** GET /api/runs/:id/agents/:agentId — a completed agent's persisted result. */
+export interface AgentResultRecord {
+  agentId: number;
+  label: string;
+  phase: string | null;
+  adapter: string | null;
+  attempts: number | null;
+  startedAt: number | null;
+  finishedAt: number | null;
+  value: unknown;
+  /** Replayed from an earlier run by `odw resume`. */
+  cached?: boolean;
+  sourceRunId?: string | null;
 }

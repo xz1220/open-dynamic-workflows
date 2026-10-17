@@ -176,6 +176,9 @@ function afterRender(route: Route, followLogs: boolean): void {
     if (body) body.scrollTop = body.scrollHeight;
   }
   followLane();
+  // The drawer's agent finished (or was just opened): fetch its persisted output once.
+  const sel = route.view === "job" && job.selectedAi != null ? store.run?.agents[job.selectedAi] : undefined;
+  if (store.run && sel?.agentId != null && sel.state !== "running") void store.loadAgentResult(store.run.runId, sel.agentId);
   updateChrome();
 }
 

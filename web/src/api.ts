@@ -7,6 +7,7 @@
  */
 import type {
   ActivitySnapshot,
+  AgentResultRecord,
   Capabilities,
   ChatSession,
   ChatSessionSummary,
@@ -58,6 +59,9 @@ export const api = {
   /** The newest events across runs plus running agents per adapter. */
   activity: (limit = 200) => getJSON<ActivitySnapshot>(`/api/activity?limit=${limit}`),
   result: (id: string) => getJSON<{ value: unknown }>(`/api/runs/${enc(id)}/result`),
+  /** A completed agent's persisted output (404 when the server or run has none). */
+  agentResult: (id: string, agentId: number) =>
+    getJSON<AgentResultRecord>(`/api/runs/${enc(id)}/agents/${agentId}`),
   workflows: () => getJSON<WorkflowSummary[]>("/api/workflows"),
   workflow: (name: string, provider?: string) =>
     getJSON<WorkflowDetail>(`/api/workflows/${enc(name)}${provider ? `?provider=${enc(provider)}` : ""}`),

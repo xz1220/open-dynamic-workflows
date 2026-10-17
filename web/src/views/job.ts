@@ -116,7 +116,11 @@ function tabs(run: RunDetail, tab: JobTab): string {
 }
 
 function agentEvents(a: AgentView): WorkflowEvent[] {
-  return store.runEvents.filter((e) => e.type.startsWith("agent_") && e.label === a.label);
+  return store.runEvents.filter(
+    (e) =>
+      e.type.startsWith("agent_") &&
+      (a.agentId != null && typeof e.agentId === "number" ? e.agentId === a.agentId : e.label === a.label),
+  );
 }
 
 function drawer(run: RunDetail, ai: number, nowSec: number): string {
@@ -130,6 +134,17 @@ function drawer(run: RunDetail, ai: number, nowSec: number): string {
       : a.state === "stale"
         ? `<div class="drawer-sec">${t("Status")}</div><div class="outbox">${run.provider === "claude" ? t("no recent signal") : t("worker lost contact")}</div>`
         : "";
+  const rec = a.agentId != null ? store.agentResults.get(`${run.runId}:${a.agentId}`) : undefined;
+  const output =
+    rec && rec.value !== undefined
+      ? `<div class="drawer-sec">${t("Output")}${rec.cached ? ` <span class="tag">${t("replayed")}</span>` : ""}` +
+        `<button class="iconbtn sm" data-copy="${esc(typeof rec.value === "string" ? rec.value : JSON.stringify(rec.value, null, 2))}" aria-label="${esc(t("Copy"))}">${icons.copy}</button></div>` +
+        `<div class="outbox json-out">${renderJson(rec.value)}</div>`
+      : rec === null && (a.state === "done" || a.state === "failed")
+        ? ""
+        : a.state === "done" && a.agentId != null
+          ? `<div class="drawer-sec">${t("Output")}</div><div class="outbox"><span class="skel" style="height:12px;width:70%"></span></div>`
+          : "";
   const evs = agentEvents(a)
     .map(
       (e) =>
@@ -151,6 +166,7 @@ function drawer(run: RunDetail, ai: number, nowSec: number): string {
     `<span class="k">${t("attempts")}</span><span class="v">${a.attempts ?? "—"}</span>` +
     `</div>` +
     status +
+    output +
     (evs ? `<div class="drawer-sec">${t("Events")}</div><div class="mini-events">${evs}</div>` : "") +
     `</div></aside>`
   );

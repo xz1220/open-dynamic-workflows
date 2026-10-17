@@ -12,6 +12,7 @@
 import { api } from "./api";
 import type {
   ActivityEvent,
+  AgentResultRecord,
   Capabilities,
   ChatSession,
   ChatSessionSummary,
@@ -51,6 +52,8 @@ class Store {
   activity: ActivityEvent[] = [];
   fleet: Record<string, number> = {};
   activityLoaded = false;
+  /** Persisted agent outputs by `${runId}:${agentId}`; null = none available. */
+  agentResults = new Map<string, AgentResultRecord | null>();
 
   private listeners = new Set<Listener>();
   private transitions = new Set<TransitionListener>();
@@ -323,6 +326,20 @@ class Store {
     }
     this.resultLoaded = true;
     this.emit();
+  }
+
+  /** Fetch one completed agent's output once; later calls are cache hits. */
+  async loadAgentResult(runId: string, agentId: number): Promise<void> {
+    const key = `${runId}:${agentId}`;
+    if (this.agentResults.has(key)) return;
+    if (this.agentResults.size > 400) this.agentResults.clear();
+    this.agentResults.set(key, null);
+    try {
+      this.agentResults.set(key, await api.agentResult(runId, agentId));
+    } catch {
+      return; // not persisted (older server, Claude run, still running) — stays null
+    }
+    if (this.run?.runId === runId) this.emit();
   }
 
   clearRun(): void {
