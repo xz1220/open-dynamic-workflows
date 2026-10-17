@@ -164,6 +164,86 @@ test(
   },
 );
 
+test(
+  "a stall timeout kills a silent agent's whole process group and flags stalled",
+  { skip: process.platform === "win32" },
+  async () => {
+    const started = Date.now();
+    // One line (the grandchild's pid), then silence while the grandchild runs.
+    const r = await runCommand(["sh", "-c", "sleep 30 & echo $!; wait"], { stallTimeout: 0.3, timeout: 20 });
+    const took = Date.now() - started;
+    assert.equal(r.stalled, true);
+    assert.equal(r.timedOut, false, "a stall is not reported as a timeout");
+    assert.equal(r.returncode, -1);
+    assert.ok(took >= 250 && took < 5000, `runCommand returned after ${took}ms`);
+    const grandchild = Number(r.stdout.trim());
+    assert.ok(grandchild > 0, `expected the grandchild pid on stdout, got ${JSON.stringify(r.stdout)}`);
+    assert.ok(await eventually(() => !isRunning(grandchild)), `grandchild ${grandchild} survived the stall kill`);
+  },
+);
+
+/** A node process writing '.' to `stream` at once and then every 50ms. */
+const heartbeat = (stream: "stdout" | "stderr", then = "") => [
+  execPath,
+  "-e",
+  `process.${stream}.write('.'); const beat = setInterval(() => process.${stream}.write('.'), 50);${then}`,
+];
+
+test("output on stdout or stderr keeps the stall watchdog at bay", async () => {
+  // Alive for 2s in total — well past the 0.8s stall timeout — but never
+  // silent for long, then a clean exit. Each stream alone must count.
+  const done = "setTimeout(() => { clearInterval(beat); process.stdout.write('done'); }, 2000)";
+  const results = await Promise.all(
+    (["stdout", "stderr"] as const).map((stream) => runCommand(heartbeat(stream, done), { stallTimeout: 0.8 })),
+  );
+  for (const [i, r] of results.entries()) {
+    assert.equal(r.returncode, 0, `heartbeat #${i} should keep the agent alive: ${r.stderr}`);
+    assert.equal(r.stalled, false);
+    assert.match(r.stdout, /done$/);
+  }
+});
+
+test("the stall watchdog and the timeout are independent; the first to fire names the kill", async () => {
+  const silent = [execPath, "-e", "setTimeout(() => {}, 30000)"];
+
+  // Output keeps the stall away but never resets the overall timeout.
+  let r = await runCommand(heartbeat("stderr"), { timeout: 1.6, stallTimeout: 0.8 });
+  assert.equal(r.timedOut, true);
+  assert.equal(r.stalled, false);
+
+  // A timeout shorter than the stall timeout fires first …
+  r = await runCommand(silent, { timeout: 0.2, stallTimeout: 5 });
+  assert.equal(r.timedOut, true);
+  assert.equal(r.stalled, false);
+
+  // … and a stall timeout shorter than the timeout does.
+  r = await runCommand(silent, { timeout: 5, stallTimeout: 0.2 });
+  assert.equal(r.stalled, true);
+  assert.equal(r.timedOut, false);
+  assert.equal(r.returncode, -1);
+});
+
+test("without a stall timeout a silent agent is left alone", async () => {
+  const r = await runCommand([execPath, "-e", "setTimeout(() => process.stdout.write('late'), 600)"]);
+  assert.equal(r.returncode, 0);
+  assert.equal(r.stalled, false);
+  assert.equal(r.stdout, "late");
+});
+
+test(
+  "silence after the agent exited is not a stall",
+  { skip: process.platform === "win32" },
+  async () => {
+    // The shell exits at once; a silent straggler holds the pipes through the
+    // 2s drain grace, long past the stall timeout.
+    const r = await runCommand(["sh", "-c", "sleep 30 & echo $!"], { stallTimeout: 0.5 });
+    assert.equal(r.returncode, 0, "the agent itself exited cleanly");
+    assert.equal(r.stalled, false);
+    const straggler = Number(r.stdout.trim());
+    assert.ok(await eventually(() => !isRunning(straggler)), `straggler ${straggler} was left running`);
+  },
+);
+
 test("an already-aborted signal never spawns the process", async () => {
   const controller = new AbortController();
   controller.abort(new Error("stopped"));

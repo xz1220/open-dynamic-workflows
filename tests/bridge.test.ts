@@ -303,3 +303,124 @@ test("Gemini runs headlessly with an expanded --prompt argument", async () => {
   assert.ok(modelFlag >= 0, `expected --model in ${JSON.stringify(command)}`);
   assert.equal(command[modelFlag + 1], "gemini-3");
 });
+
+// --- the stall watchdog: restarts --------------------------------------------
+
+function stalled(): CliResult {
+  return { returncode: -1, stdout: "", stderr: "", timedOut: false, stalled: true, duration: 120 };
+}
+
+function stallConfig(stallRestarts: number) {
+  const cfg = inplaceConfig();
+  cfg.settings.stallTimeout = 120;
+  cfg.settings.stallRestarts = stallRestarts;
+  return cfg;
+}
+
+test("a stalled CLI is restarted with the same prompt, announced before each restart", async () => {
+  const prompts: string[] = [];
+  const bridge = new Bridge(stallConfig(2), {
+    runner: async (_command, options) => {
+      prompts.push(options?.stdin ?? "");
+      return prompts.length <= 2 ? stalled() : ok("finally");
+    },
+  });
+  const stalls: unknown[] = [];
+  let guards = 0;
+  const out = await bridge.run(
+    { prompt: "slow task" },
+    { onStall: (stall) => stalls.push(stall), beforeRetry: () => void guards++ },
+  );
+  assert.equal(out.text, "finally");
+  assert.equal(out.attempts, 1, "a restart is not a schema attempt");
+  assert.equal(prompts.length, 3);
+  assert.ok(prompts.every((p) => p === prompts[0]), "every restart re-runs the same prompt");
+  assert.deepEqual(stalls, [
+    { quietSeconds: 120, restart: 1, maxRestarts: 2 },
+    { quietSeconds: 120, restart: 2, maxRestarts: 2 },
+  ]);
+  assert.equal(guards, 2, "each restart passes the stop/budget guards first");
+});
+
+test("a CLI that keeps stalling fails the call once stallRestarts is spent", async () => {
+  for (const cap of [1, 0]) {
+    let calls = 0;
+    const stalls: number[] = [];
+    const bridge = new Bridge(stallConfig(cap), {
+      runner: async () => {
+        calls++;
+        return { ...stalled(), stderr: "waiting for the model…" };
+      },
+    });
+    await assert.rejects(
+      () => bridge.run({ prompt: "x" }, { onStall: (s) => stalls.push(s.restart) }),
+      (err: Error) =>
+        err instanceof AdapterExecutionError &&
+        err.message.startsWith("adapter 'claude' stalled — no output for 120s") &&
+        (cap === 0 ? !/again/.test(err.message) : /, and again after 1 restart:/.test(err.message)) &&
+        /waiting for the model…$/.test(err.message),
+    );
+    assert.equal(calls, cap + 1);
+    assert.deepEqual(stalls, cap ? [1] : []);
+  }
+});
+
+test("stall restarts are capped per call, across schema retries", async () => {
+  const replies = [stalled(), ok("not json"), stalled(), ok('{"n":1}')];
+  const bridge = new Bridge(stallConfig(1), { runner: async () => replies.shift()! });
+  await assert.rejects(
+    () => bridge.run({ prompt: "x", schema: { type: "object", properties: { n: { type: "number" } } } }),
+    (err: Error) => err instanceof AdapterExecutionError && /stalled/.test(err.message),
+  );
+  assert.equal(replies.length, 1, "the second stall (attempt 2) ended the call: no restart was left");
+});
+
+test("a stop wins over a stall: no restart, the run's reason propagates", async () => {
+  const reason = new RunStopped("run was stopped");
+  // The stop lands while the stalled CLI is being killed.
+  const controller = new AbortController();
+  let calls = 0;
+  const bridge = new Bridge(stallConfig(3), {
+    runner: async () => {
+      calls++;
+      controller.abort(reason);
+      return stalled();
+    },
+  });
+  await assert.rejects(() => bridge.run({ prompt: "x" }, { signal: controller.signal }), (err) => err === reason);
+  assert.equal(calls, 1);
+
+  // The stop arrives at the restart's guard (e.g. the run was stopped while paused).
+  calls = 0;
+  const guarded = new Bridge(stallConfig(3), {
+    runner: async () => {
+      calls++;
+      return stalled();
+    },
+  });
+  await assert.rejects(
+    () => guarded.run({ prompt: "x" }, { beforeRetry: () => Promise.reject(reason) }),
+    (err) => err === reason,
+  );
+  assert.equal(calls, 1, "no CLI starts once the guard refuses the restart");
+});
+
+test("the stall timeout is off by default, run-wide when set, and per adapter (0 opts out)", async () => {
+  const seen: Array<number | undefined> = [];
+  const runner = async (_command: string[], options?: { stallTimeout?: number }) => {
+    seen.push(options?.stallTimeout);
+    return ok("hi");
+  };
+  const cfg = inplaceConfig();
+  assert.equal(cfg.settings.stallTimeout, null, "off by default");
+  for (const adapter of Object.values(cfg.adapters)) assert.equal(adapter.stallTimeout, undefined, adapter.name);
+  await new Bridge(cfg, { runner }).run({ prompt: "x" });
+
+  cfg.settings.stallTimeout = 60;
+  await new Bridge(cfg, { runner }).run({ prompt: "x" });
+  cfg.adapters.claude!.stallTimeout = 5;
+  await new Bridge(cfg, { runner }).run({ prompt: "x" });
+  cfg.adapters.claude!.stallTimeout = 0;
+  await new Bridge(cfg, { runner }).run({ prompt: "x" });
+  assert.deepEqual(seen, [undefined, 60, 5, undefined]);
+});

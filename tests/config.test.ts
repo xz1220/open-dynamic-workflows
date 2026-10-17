@@ -252,6 +252,78 @@ test("valid numeric settings still load, including numeric strings and null", ()
   }
 });
 
+test("the stall watchdog is off by default; its settings load run-wide and per adapter", () => {
+  const defaults = defaultConfig();
+  assert.equal(defaults.settings.stallTimeout, null);
+  assert.equal(defaults.settings.stallRestarts, 1);
+  const dir = mkdtempSync(join(tmpdir(), "odw-cfg-"));
+  try {
+    const p = join(dir, "odw.config.json");
+    writeFileSync(
+      p,
+      JSON.stringify({
+        stallTimeout: "90",
+        stallRestarts: 0,
+        adapters: {
+          mine: { command: ["x"], stallTimeout: 30 },
+          quiet: { command: ["y"], stallTimeout: 0 },
+          inherit: { command: ["z"], stallTimeout: null },
+        },
+      }),
+    );
+    const cfg = loadConfig(p, { quiet: true });
+    assert.equal(cfg.settings.stallTimeout, 90);
+    assert.equal(cfg.settings.stallRestarts, 0);
+    assert.equal(cfg.adapters.mine!.stallTimeout, 30);
+    assert.equal(cfg.adapters.quiet!.stallTimeout, 0, "0 opts one adapter out of a run-wide stall timeout");
+    assert.equal(cfg.adapters.inherit!.stallTimeout, undefined, "null inherits the run-wide setting");
+    writeFileSync(p, JSON.stringify({ stallTimeout: 0 }));
+    assert.equal(loadConfig(p, { quiet: true }).settings.stallTimeout, null, "0 means off, like null");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("malformed stall settings are rejected with a ConfigError naming the key", () => {
+  const dir = mkdtempSync(join(tmpdir(), "odw-cfg-"));
+  try {
+    const p = join(dir, "odw.config.json");
+    const cases: Array<[Record<string, unknown>, RegExp]> = [
+      [{ stallTimeout: "soon" }, /"stallTimeout" must be a positive number of seconds, or null for no stall watchdog/],
+      [{ stallTimeout: -5 }, /"stallTimeout"/],
+      [{ stallRestarts: 1.5 }, /"stallRestarts" must be a non-negative integer/],
+      [{ stallRestarts: -1 }, /"stallRestarts"/],
+      [
+        { adapters: { mine: { command: ["x"], stallTimeout: "abc" } } },
+        /adapter 'mine' 'stallTimeout' must be a positive number of seconds, or 0 to turn the stall watchdog off/,
+      ],
+    ];
+    for (const [raw, message] of cases) {
+      writeFileSync(p, JSON.stringify(raw));
+      assert.throws(
+        () => loadConfig(p, { quiet: true }),
+        (err: Error) => err instanceof ConfigError && message.test(err.message),
+        JSON.stringify(raw),
+      );
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("collectConfigWarnings knows the stall keys, top-level and per adapter", () => {
+  assert.deepEqual(
+    collectConfigWarnings({
+      stallTimeout: 120,
+      stallRestarts: 2,
+      adapters: { mine: { command: ["x"], stallTimeout: 0 } },
+    }),
+    [],
+  );
+  const [typo] = collectConfigWarnings({ stalTimeout: 120 });
+  assert.match(typo!, /did you mean "stallTimeout"/);
+});
+
 test("a scheduler refuses NaN limits instead of deadlocking", () => {
   assert.throws(() => new Scheduler({ concurrency: NaN, maxAgents: 10 }), ConfigError);
   assert.throws(() => new Scheduler({ concurrency: 2, maxAgents: NaN }), ConfigError);

@@ -8,7 +8,9 @@
  *
  * A timeout or a missing executable is reported *through the result*
  * (`timedOut` / a non-zero `returncode` with the reason on stderr) rather than
- * as a thrown error, so the caller has one uniform thing to inspect.
+ * as a thrown error, so the caller has one uniform thing to inspect. So is a
+ * stall: with a stall timeout, a process that writes nothing to stdout or
+ * stderr for that long is killed like a timeout and reported `stalled`.
  *
  * Agent CLIs start processes of their own (shells, test runners, language
  * servers). On POSIX each agent therefore leads its own process group, and a
@@ -31,6 +33,12 @@ export interface RunCommandOptions {
   env?: Record<string, string>;
   /** Seconds before the process is killed; omit for no timeout. */
   timeout?: number;
+  /**
+   * Seconds the process may go without writing a byte to stdout or stderr
+   * before it is killed (like a timeout, reported as `stalled`); omit for no
+   * stall watchdog. Silence after the process exited does not count.
+   */
+  stallTimeout?: number;
   /**
    * Stdout bytes to retain before killing; omit for a safe default. Stderr is
    * diagnostic only: just its last {@link TAIL_CHARS} characters are kept, and
@@ -153,12 +161,16 @@ export const runCommand: CommandRunner = (command, options = {}) => {
     const stderr = new Tail(TAIL_CHARS);
     const streamedTail = options.onStdout ? new Tail(TAIL_CHARS) : null;
     let timedOut = false;
+    let stalled = false;
     let aborted = false;
     let outputBytes = 0;
+    /** When the process last wrote to stdout or stderr (or started). */
+    let lastOutputAt = Date.now();
     /** Why the output was refused (the stdout cap, or the stream consumer). */
     let overrun: string | null = null;
     let settled = false;
     let timer: NodeJS.Timeout | undefined;
+    let stallTimer: NodeJS.Timeout | undefined;
     let drainTimer: NodeJS.Timeout | undefined;
     let killTimer: NodeJS.Timeout | undefined;
 
@@ -166,6 +178,7 @@ export const runCommand: CommandRunner = (command, options = {}) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      clearTimeout(stallTimer);
       clearTimeout(drainTimer);
       clearTimeout(killTimer);
       options.signal?.removeEventListener("abort", onAbort);
@@ -179,12 +192,12 @@ export const runCommand: CommandRunner = (command, options = {}) => {
       // OOM SIGKILL, …) so a crash is never mistaken for a clean exit (0).
       let returncode: number;
       if (overrun) returncode = 1;
-      else if (timedOut || aborted) returncode = -1;
+      else if (timedOut || stalled || aborted) returncode = -1;
       else if (code !== null) returncode = code;
       else returncode = signal ? 128 : 1;
       const note = aborted
         ? "\n[aborted; process terminated]"
-        : signal && !timedOut
+        : signal && !timedOut && !stalled
           ? `\n[process terminated by signal ${signal}]`
           : "";
       const outputNote = overrun ? `\n[${overrun}; terminated]` : "";
@@ -193,6 +206,7 @@ export const runCommand: CommandRunner = (command, options = {}) => {
         stdout: streamedTail ? streamedTail.toString() : stdout,
         stderr: stderr.toString() + note + outputNote,
         timedOut,
+        stalled,
         duration: elapsed(),
       });
     };
@@ -214,9 +228,26 @@ export const runCommand: CommandRunner = (command, options = {}) => {
     if (options.timeout != null) {
       timer = setTimeout(() => {
         timedOut = true;
+        clearTimeout(stallTimer); // one kill, one reason
         terminate();
       }, options.timeout * 1000);
     }
+
+    // The stall watchdog wakes when the silence could first reach the limit
+    // and re-arms from the latest output, instead of resetting on every chunk.
+    const stallMs = (options.stallTimeout ?? 0) * 1000;
+    const watchStall = (delay: number): void => {
+      // setTimeout fires at once past 2^31-1 ms; a shorter wake just re-arms.
+      stallTimer = setTimeout(() => {
+        if (killTimer) return; // already being killed (abort, output overrun)
+        const quiet = Date.now() - lastOutputAt;
+        if (quiet < stallMs) return watchStall(stallMs - quiet);
+        stalled = true;
+        clearTimeout(timer);
+        terminate();
+      }, Math.min(delay, 2 ** 31 - 1));
+    };
+    if (stallMs > 0) watchStall(stallMs);
 
     function onAbort(): void {
       aborted = true;
@@ -231,6 +262,7 @@ export const runCommand: CommandRunner = (command, options = {}) => {
     };
 
     const appendStdout = (d: string): void => {
+      lastOutputAt = Date.now();
       if (overrun) return;
       if (options.onStdout) {
         streamedTail!.push(d);
@@ -254,8 +286,12 @@ export const runCommand: CommandRunner = (command, options = {}) => {
     child.stderr.setEncoding("utf8");
     child.stdout.on("data", appendStdout);
     // Chatty stderr (progress, debug logs) must neither exhaust memory nor
-    // count as runaway output: keep the tail, where the final error lands.
-    child.stderr.on("data", (d: string) => stderr.push(d));
+    // count as runaway output: keep the tail, where the final error lands. It
+    // is still a sign of life to the stall watchdog.
+    child.stderr.on("data", (d: string) => {
+      lastOutputAt = Date.now();
+      stderr.push(d);
+    });
 
     child.on("error", (err) => {
       // After a successful spawn, 'error' only reports a failed kill; the real
@@ -272,6 +308,8 @@ export const runCommand: CommandRunner = (command, options = {}) => {
 
     child.on("exit", (code, signal) => {
       if (settled) return;
+      // The agent is gone; silence while its pipes drain is not a stall.
+      clearTimeout(stallTimer);
       // 'close' (all pipes drained) normally follows at once. A descendant that
       // outlived the agent can hold the pipes open indefinitely: give it a
       // grace period, then kill what is left of the agent's group and settle.

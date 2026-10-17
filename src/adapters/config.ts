@@ -58,6 +58,8 @@ const KNOWN_TOP_KEYS = [
   "concurrency",
   "maxAgents",
   "timeout",
+  "stallTimeout",
+  "stallRestarts",
   "schemaRetries",
   "runsRoot",
   "workflowsRoot",
@@ -65,7 +67,7 @@ const KNOWN_TOP_KEYS = [
   "claudeJobsScope",
 ] as const;
 
-const KNOWN_ADAPTER_KEYS = ["command", "stdin", "env", "timeout", "label", "flags", "output"] as const;
+const KNOWN_ADAPTER_KEYS = ["command", "stdin", "env", "timeout", "stallTimeout", "label", "flags", "output"] as const;
 
 /**
  * Lint a parsed config object for keys odw would silently ignore.
@@ -445,6 +447,15 @@ function buildAdapter(name: string, spec: RawAdapter): Adapter {
       exclusiveMin: true,
     });
   }
+  // Likewise for the stall watchdog; 0 turns it off for this CLI alone.
+  if (spec.stallTimeout !== undefined && spec.stallTimeout !== null) {
+    adapter.stallTimeout = numberSetting(
+      `adapter '${name}' 'stallTimeout'`,
+      spec.stallTimeout,
+      "a positive number of seconds, or 0 to turn the stall watchdog off",
+      { min: 0 },
+    );
+  }
   if (spec.label !== undefined) adapter.label = spec.label;
   if (spec.flags !== undefined) adapter.flags = buildFlags(name, spec.flags);
   if (spec.output !== undefined) adapter.output = buildOutput(name, spec.output);
@@ -542,6 +553,18 @@ function buildSettings(raw: Record<string, unknown>): Settings {
     timeout: num("timeout", DEFAULT_SETTINGS.timeout, "a positive number of seconds, or null for no timeout", {
       min: 0,
       exclusiveMin: true,
+    }),
+    // 0 is accepted as "off", like null.
+    stallTimeout:
+      num(
+        "stallTimeout",
+        DEFAULT_SETTINGS.stallTimeout,
+        "a positive number of seconds, or null for no stall watchdog",
+        { min: 0 },
+      ) || null,
+    stallRestarts: num("stallRestarts", DEFAULT_SETTINGS.stallRestarts, "a non-negative integer", {
+      min: 0,
+      integer: true,
     }),
     schemaRetries: num("schemaRetries", DEFAULT_SETTINGS.schemaRetries, "a non-negative integer", {
       min: 0,
