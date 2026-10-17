@@ -32,6 +32,7 @@ export type {
   Stage,
 } from "./primitives.js";
 export type { JsonSchema } from "./schema.js";
+export type { AdapterChoice, PhaseDefaults } from "./routing.js";
 export { ExecError, type ExecOptions, type ExecResult } from "./exec.js";
 export { CheckpointTimeout, type CheckpointOptions, type CheckpointResult } from "./checkpoint.js";
 

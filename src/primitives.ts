@@ -37,6 +37,14 @@
  * rate limits lower that cap (ODW extensions; see ./scheduler); in a
  * parallel() or pipeline() call on a prompt-caching adapter, agents sharing a
  * long prompt prefix start staggered (an ODW extension; see ./throttle).
+ *
+ * A phase may give its agents an adapter and a model (`meta.phases`,
+ * phase(title, opts)); an agent may name a list of adapters, and fall back
+ * along it — or the `fallback` setting's chain — when its CLI's quota is
+ * spent or its login refused, taking a slot on each adapter it moves to; and
+ * `model: "@fast"` picks a tier's model for the adapter it runs on (ODW
+ * extensions; see ./routing). Its agent_finished event names the adapter that
+ * produced the value, and `fellBackFrom` the ones it left.
  */
 
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -45,7 +53,7 @@ import { copyFile, mkdir } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 
 import { formatSeconds } from "./adapters/failures.js";
-import { isPermissionTier, planPermissions, runTier } from "./adapters/permissions.js";
+import { isPermissionTier } from "./adapters/permissions.js";
 import type { Adapter, PermissionTier } from "./adapters/types.js";
 import { addUsage, estimatedUsage, type Usage } from "./adapters/usage.js";
 import type { AgentRequest } from "./bridge.js";
@@ -59,21 +67,30 @@ import { resumeKey, type AgentResultRecord } from "./journal.js";
 // Value import of the loader is safe: loader.ts only type-imports from here, so
 // the module cycle is erased at compile time and never exists at runtime.
 import { loadWorkflowScript, scanDualCompat, type WorkflowMeta } from "./loader.js";
+import { firstAdapter, phaseDefaultsOf, type AdapterChoice, type PhaseDefaults } from "./routing.js";
 import type { JsonSchema } from "./schema.js";
 import { FanOut } from "./throttle.js";
 import { TranscriptRecorder } from "./transcript.js";
 import { resolveWorkflow } from "./workflows/resolve.js";
 
 export interface AgentOptions {
-  /** Which configured adapter/CLI to use; falls back to the default. */
-  adapter?: string;
+  /**
+   * Which configured adapter/CLI to use; falls back to the phase's default
+   * (ODW extension), then the run's. ODW extension: a list of adapters, in
+   * order of preference — a fallback chain (see ./routing).
+   */
+  adapter?: AdapterChoice;
   /** When set, the reply is validated against it and returned as an object. */
   schema?: JsonSchema;
   /** Short label for progress display. */
   label?: string;
   /** Override the current phase for this one call (use inside parallel/pipeline). */
   phase?: string;
-  /** Select a model; routed to the adapter's declared model flag (else logged). */
+  /**
+   * Select a model; routed to the adapter's declared model flag (else logged).
+   * ODW extension: `"@<tier>"` picks the adapter's model of a `models` tier,
+   * and a phase may give a default.
+   */
   model?: string;
   /** Persona to take on; injected into the prompt so it works on every CLI. */
   agentType?: string;
@@ -119,7 +136,8 @@ export interface WorkflowGlobals {
   agent(prompt: string, opts?: AgentOptions): Promise<unknown>;
   parallel<T>(thunks: Array<Thunk<T>>): Promise<Array<T | null>>;
   pipeline(items: unknown[], ...stages: Stage[]): Promise<unknown[]>;
-  phase(title: string): void;
+  /** ODW extension: `opts` gives the phase's agents an adapter and a model (see ./routing). */
+  phase(title: string, opts?: PhaseDefaults): void;
   log(message: unknown): void;
   budget: Budget;
   workflow(nameOrRef: string | { scriptPath: string }, args?: unknown): Promise<unknown>;
@@ -143,16 +161,30 @@ export interface WorkflowGlobals {
   checkpoint(title: string, opts?: CheckpointOptions): Promise<CheckpointResult>;
 }
 
-/** Build the injected primitive set bound to a single run's context. */
+/**
+ * Build the injected primitive set bound to a single run's context. `phases`
+ * is the workflow's `meta.phases`: the defaults its entries give their
+ * phases' agents (an ODW extension) hold from the start.
+ */
 export function createPrimitives(
   ctx: RunContext,
-  internal: { depth?: number; phasePrefix?: string } = {},
+  internal: { depth?: number; phasePrefix?: string; phases?: WorkflowMeta["phases"] } = {},
 ): WorkflowGlobals {
   const depth = internal.depth ?? 0;
   const phasePrefix = internal.phasePrefix ?? "";
   // Adapters whose permissions note the run has logged: once per adapter per
   // run, shared with nested workflow()s (their contexts are copies of this one).
   const notedPermissions = (ctx.permissionNotes ??= new Set<string>());
+  // Each phase's defaults for its agents (ODW extension), by its (prefixed)
+  // title — shared with nested workflow()s like the notes above.
+  const phaseDefaults = (ctx.phaseDefaults ??= new Map<string, PhaseDefaults>());
+  for (const [i, entry] of (internal.phases ?? []).entries()) {
+    if (entry === null || typeof entry !== "object" || typeof entry.title !== "string") continue;
+    const defaults = phaseDefaultsOf(entry, `meta.phases[${i}]`);
+    const title = phasePrefix + entry.title;
+    if (defaults.adapter !== undefined || defaults.model !== undefined) phaseDefaults.set(title, defaults);
+    else phaseDefaults.delete(title);
+  }
 
   /**
    * Save a completed agent's record before its agent_finished event, so an
@@ -193,8 +225,10 @@ export function createPrimitives(
   ): Promise<unknown> => {
     // Once the run has ended, every later call fails with its reason.
     if (ctx.scheduler.fatalError !== undefined) throw ctx.scheduler.fatalError;
-    const label = opts.label ?? opts.adapter ?? opts.agentType ?? recorded.label;
+    const label = opts.label ?? firstAdapter(opts.adapter) ?? opts.agentType ?? recorded.label;
     const { adapter, attempts } = recorded;
+    // Where the value came from, fallbacks included (ODW extension) — a replay walks no chain.
+    const moved = fallbackField(recorded.fellBackFrom);
     const marks = {
       cached: true,
       // The run whose agent actually produced the value, across chained resumes.
@@ -207,11 +241,11 @@ export function createPrimitives(
     const kept = await carryChanges(recorded, agentId, (message) =>
       ctx.emit(event(LOG, { message: `${label}:${agentId}: ${message}`, agentId, label, phase })),
     );
-    const finished = event(AGENT_FINISHED, { agentId, label, phase, adapter, attempts, ...marks, ...changeFields(kept) });
+    const finished = event(AGENT_FINISHED, { agentId, label, phase, adapter, ...moved, attempts, ...marks, ...changeFields(kept) });
     const startedAt = startedEv.ts;
     const finishedAt = finished.ts;
     const value = recorded.value;
-    if (save({ agentId, key, label, phase, adapter, attempts, startedAt, finishedAt, value, ...tier, ...marks, ...changeFields(kept) })) {
+    if (save({ agentId, key, label, phase, adapter, ...moved, attempts, startedAt, finishedAt, value, ...tier, ...marks, ...changeFields(kept) })) {
       finished.saved = true;
     }
     ctx.emit(finished);
@@ -309,38 +343,53 @@ export function createPrimitives(
     // observers pair started/finished exactly even when several concurrent
     // agents share a label+phase (the pre-agentId pairing was heuristic).
     const agentId = ++ctx.seq.value;
-    // What a resume matches this call by; saved with its result.
+    // What a resume matches this call by; saved with its result. The call's
+    // own options only: a phase's defaults stay out of it (see ./journal).
     const key = resumeKey(prompt, opts);
     const recorded = ctx.replay?.take(key);
     if (recorded) return replay(agentId, key, recorded, opts, activePhase);
-    // Adapter selection honours ONLY opts.adapter. agentType is a persona (it is
-    // forwarded to the bridge and injected into the prompt), never an adapter name.
-    // Resolve it before asking for a slot: an unknown or ambiguous adapter is a
-    // (fatal) config error that must not consume a dispatch or show an agent
-    // that never ran as running.
-    const adapter = ctx.bridge.adapterFor(opts.adapter);
-    const display = opts.label ?? opts.adapter ?? opts.agentType ?? adapter.name;
-    // The agent's permission tier, for its events and the run's log. The
-    // bridge reaches the same decision and enforces it: an agent that may not
-    // have its tier, or whose CLI cannot enforce it, fails before it starts.
-    const permissions = planPermissions(adapter, runTier(ctx.config), opts.permissions);
+    // The adapter and model its phase gives a call that names neither (ODW extension).
+    const defaults = activePhase !== null ? phaseDefaults.get(activePhase) : undefined;
+    const adapterChoice = opts.adapter ?? defaults?.adapter;
+    const model = opts.model ?? defaults?.model;
+    // Adapter selection honours ONLY opts.adapter (or its phase's default).
+    // agentType is a persona (it is forwarded to the bridge and injected into
+    // the prompt), never an adapter name. Resolve it before asking for a slot:
+    // an unknown or ambiguous adapter is a (fatal) config error that must not
+    // consume a dispatch or show an agent that never ran as running. The call
+    // starts on the first adapter of its chain (ODW extension) the run's
+    // quota breaker has not taken out.
+    const route = ctx.bridge.route(adapterChoice, opts.permissions);
+    const adapter = route.chain[Math.max(0, route.start)]!;
+    const display = opts.label ?? firstAdapter(opts.adapter) ?? opts.agentType ?? adapter.name;
+    // The agent's permission tier, for its events and the run's log — its
+    // first adapter's, which every fallback runs too. The bridge enforces it:
+    // an agent that may not have its tier, or whose CLI cannot enforce it,
+    // fails before it starts.
+    const permissions = route.permissions;
     // A staggered fan-out (ODW extension): in a parallel() or pipeline() call,
     // an agent on a prompt-caching adapter whose prompt shares a long prefix
     // with an earlier one's — on the same model and persona, so the same
     // cache — waits, holding no slot, until that one has warmed the cache.
     const fanOut = adapter.promptCache && typeof prompt === "string" ? fanOutScope.getStore() : undefined;
-    const cache = [adapter.name, opts.model ?? "", opts.agentType ?? ""].join("\u0000");
+    const cache = [adapter.name, model ?? "", opts.agentType ?? ""].join("\u0000");
     const turn = fanOut?.enter(adapter.name, cache, prompt);
     const request: AgentRequest = {
       prompt,
-      adapter: opts.adapter,
+      adapter: adapterChoice,
       schema: opts.schema,
       label: opts.label,
-      model: opts.model,
+      model,
       agentType: opts.agentType,
       isolation: opts.isolation,
       permissions: opts.permissions,
     };
+    // The adapters it left down its chain, and the one it is on (ODW extension).
+    const fellBackFrom: string[] = [];
+    let onAdapter = adapter.name;
+    /** A failed agent's `adapter` and `fellBackFrom` when it fell back: the adapter its last CLI ran on. */
+    const movedFields = (): { adapter?: string; fellBackFrom?: string[] } =>
+      fellBackFrom.length > 0 ? { adapter: onAdapter, fellBackFrom: [...fellBackFrom] } : {};
     // What this call spends, from every CLI run it makes: the usage the CLI
     // reported, plus the characters of replies it reported no output tokens for.
     let reported: Usage | undefined;
@@ -367,6 +416,7 @@ export function createPrimitives(
           phase: activePhase,
           error: String(err),
           ...failureFields(err),
+          ...movedFields(),
           ...usageField(),
           ...changeFields(kept),
         }),
@@ -393,10 +443,12 @@ export function createPrimitives(
         });
         ctx.emit(startedEv);
         // An adapter that runs another tier than asked, or one ODW cannot
-        // enforce on it, is said once per run — never silently.
-        if (permissions.note && !notedPermissions.has(adapter.name)) {
-          notedPermissions.add(adapter.name);
-          ctx.emit(event(LOG, { message: permissions.note, adapter: adapter.name, ...permissionField(permissions.tier) }));
+        // enforce on it, is said once per run — never silently. (The plan is
+        // the chain's first adapter's: see ./routing.)
+        const planned = route.chain[0]!.name;
+        if (permissions.note && !notedPermissions.has(planned)) {
+          notedPermissions.add(planned);
+          ctx.emit(event(LOG, { message: permissions.note, adapter: planned, ...permissionField(permissions.tier) }));
         }
         // What preparing the call noted (no free port, a file .worktreeinclude
         // left out) and what keeping its change did not manage is logged against it.
@@ -446,13 +498,46 @@ export function createPrimitives(
             },
             // A staggered fan-out's held agents go once this one's CLI answers (ODW extension).
             onOutput: turn?.output,
-            // An adapter's quota or login failed several agents in a row: warn, once.
-            onAdapterWarning: ({ message, adapter: name, reason }) =>
-              ctx.emit(event(LOG, { message, adapter: name, reason, agentId, label: display, phase: activePhase })),
+            // An adapter's quota or login failed several agents in a row: warn, once —
+            // and say so when the run's quota breaker took it out (ODW extension).
+            onAdapterWarning: ({ message, adapter: name, reason, tripped }) =>
+              ctx.emit(
+                event(LOG, {
+                  message,
+                  adapter: name,
+                  reason,
+                  ...(tripped ? { tripped: true } : {}),
+                  agentId,
+                  label: display,
+                  phase: activePhase,
+                }),
+              ),
             // An isolated agent's change is kept as it lands (ODW extension).
             changes,
             // So is what its CLI prints (ODW extension).
             transcript,
+            // Where it runs, as routed at dispatch: the adapter its slot is on (ODW extension).
+            route,
+            // A spent quota or a refused login moved it down its chain (ODW
+            // extension): say so — the line also moves it, for every reader of
+            // the run (runtime/runs-view) — and take a slot on the new adapter,
+            // the old one's let go first.
+            onFallback: async ({ from, reason, to }) => {
+              fellBackFrom.push(from);
+              onAdapter = to;
+              ctx.emit(
+                event(LOG, {
+                  message: `${display}:${agentId} → ${to} after ${from} ${reason}`,
+                  agentId,
+                  label: display,
+                  phase: activePhase,
+                  adapter: to,
+                  fellBackFrom: [...fellBackFrom],
+                  reason,
+                }),
+              );
+              await slot.moveTo(to);
+            },
           });
         } catch (err) {
           // Out of rate-limit retries (or allowed none): that lowers its adapter's cap too.
@@ -478,6 +563,7 @@ export function createPrimitives(
           label: display,
           phase: activePhase,
           adapter: outcome.adapter,
+          ...fallbackField(outcome.fellBackFrom),
           attempts: outcome.attempts,
           ...usageField(),
           ...changeFields(kept),
@@ -488,6 +574,7 @@ export function createPrimitives(
           label: display,
           phase: activePhase,
           adapter: outcome.adapter,
+          ...fallbackField(outcome.fellBackFrom),
           attempts: outcome.attempts,
           startedAt: startedEv.ts,
           finishedAt: finished.ts,
@@ -620,8 +707,13 @@ export function createPrimitives(
     return asFanOut(() => ctx.scheduler.gather(chains) as Promise<unknown[]>);
   };
 
-  const phase = (title: string): void => {
+  const phase = (title: string, opts?: PhaseDefaults): void => {
     const labelled = phasePrefix + title;
+    // Defaults for the phase's agents (ODW extension), in place of its
+    // meta.phases entry's; phase(title) alone keeps whatever it has.
+    if (opts != null) {
+      phaseDefaults.set(labelled, phaseDefaultsOf(opts, `phase(${JSON.stringify(title)}) options`, { strict: true }));
+    }
     ctx.currentPhase = labelled;
     ctx.emit(event(PHASE_STARTED, { phase: labelled }));
   };
@@ -679,6 +771,7 @@ export function createPrimitives(
     const childGlobals = createPrimitives(childCtx, {
       depth: depth + 1,
       phasePrefix: `▸ ${name} · `,
+      phases: loaded.meta.phases,
     });
     ctx.emit(event(LOG, { message: `▸ entering workflow ${name} (${scriptPath})` }));
     // Open the child's entry lane as a real phase, so a child that dispatches
@@ -760,6 +853,11 @@ function permissionField(tier: unknown): { permissions?: PermissionTier } {
  * workflow()'s agents belong to the fan-out that called it.
  */
 const fanOutScope = new AsyncLocalStorage<FanOut>();
+
+/** The `fellBackFrom` an agent's agent_finished event and record carry when it fell back (ODW extension). */
+function fallbackField(fellBackFrom: string[] | undefined): { fellBackFrom?: string[] } {
+  return Array.isArray(fellBackFrom) && fellBackFrom.length > 0 ? { fellBackFrom: [...fellBackFrom] } : {};
+}
 
 /** The `changes` and `branch` an agent's terminal event and record carry when it kept a change (ODW extension). */
 function changeFields(kept: KeptChanges | null): { changes?: AgentChanges; branch?: string | null } {

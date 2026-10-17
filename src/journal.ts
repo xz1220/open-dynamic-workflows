@@ -32,6 +32,12 @@ export interface AgentResultRecord {
   phase: string | null;
   /** The adapter that produced the value. */
   adapter: string | null;
+  /**
+   * The adapters it fell back from, in order, before `adapter` produced the
+   * value (ODW extension): their quota was spent or their login refused.
+   * Absent when the adapter it started on produced it.
+   */
+  fellBackFrom?: string[];
   /** CLI runs it took (>1: schema retries). */
   attempts: number | null;
   /** Epoch seconds, like event `ts`. */
@@ -65,8 +71,18 @@ export interface AgentResultRecord {
  *   - adapter    the CLI AS REQUESTED (`opts.adapter`), not the resolved
  *                default: switching the run's default (`odw resume --adapter`,
  *                say after the first CLI stalled or ran out of quota) must
- *                still replay every call that did not name an adapter.
- *   - model      a different model is a different producer.
+ *                still replay every call that did not name an adapter. For
+ *                the same reason a phase's default adapter (`meta.phases`,
+ *                phase(title, {…}); an ODW extension) stays out: it is a
+ *                default like the run's, so re-routing a phase — to another
+ *                CLI after one ran out of quota, say — still replays every
+ *                call that names none. A list (a fallback chain, an ODW
+ *                extension) keys in its order: another order is another
+ *                preference. Where a call fell back to is no input at all: a
+ *                replayed call returns its value and never walks its chain.
+ *   - model      a different model is a different producer. As requested,
+ *                like `adapter`: a tier (`"@fast"`) keys as the tier, and a
+ *                phase's default model stays out.
  *   - agentType  the persona is part of the effective prompt.
  *   - isolation  a worktree agent sees HEAD only and its edits stay in its
  *                kept diff; in place it sees, and edits, the working tree.

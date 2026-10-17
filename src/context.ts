@@ -16,6 +16,7 @@ import { NullControl, type Control } from "./control.js";
 import { BudgetExhausted } from "./errors.js";
 import { LOG, NullSink, event, type EventSink, type WorkflowEvent } from "./events.js";
 import type { AgentResultRecord, ReplayJournal } from "./journal.js";
+import type { PhaseDefaults } from "./routing.js";
 import { Scheduler } from "./scheduler.js";
 import { capChangeMessage } from "./throttle.js";
 import type { TranscriptPaths } from "./transcript.js";
@@ -59,6 +60,13 @@ export interface RunContext {
    * has logged, so each is said once per run (ODW extension). Shared like `seq`.
    */
   permissionNotes?: Set<string>;
+  /**
+   * Each phase's defaults (ODW extension; see ./routing): the adapter and
+   * model its agents run with when they name none — from `meta.phases` and
+   * phase(title, {…}), by phase title. Shared like `seq`: a nested
+   * workflow()'s phases are there under their prefixed titles.
+   */
+  phaseDefaults?: Map<string, PhaseDefaults>;
   currentPhase: string | null;
   /**
    * Save a completed agent's record (the worker writes the run directory's
@@ -164,6 +172,7 @@ export function buildContext(config: Config, options: BuildContextOptions = {}):
     commandSeq: { value: 0 },
     checkpointSeq: { value: 0 },
     permissionNotes: new Set(),
+    phaseDefaults: new Map(),
     currentPhase: null,
     saveAgentResult: options.saveAgentResult,
     agentDiffPath: options.agentDiffPath,

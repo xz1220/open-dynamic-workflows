@@ -314,3 +314,485 @@ test("bridge: route() starts a call past the adapters the quota breaker took out
   );
   assert.deepEqual(calls.map((c) => c.adapter), ["b"]);
 });
+
+// --- phase defaults ---------------------------------------------------------------------
+
+test("phase defaults: a phase's adapter and model reach its agents that name neither; an agent()'s own option always wins", async () => {
+  const { ctx, sink, calls } = routed(routingConfig());
+  const p = createPrimitives(ctx, { phases: [{ title: "Search", adapter: "b", model: "m-search" }, { title: "Report" }] });
+  p.phase("Search");
+  await p.agent("one");
+  await p.agent("two", { adapter: "c" });
+  await p.agent("three", { model: "m-own" });
+  p.phase("Report");
+  await p.agent("four");
+  p.phase("Synthesize", { adapter: "c", model: "m-strong" });
+  await p.agent("five");
+  // A call's own phase (inside parallel/pipeline) brings that phase's defaults.
+  await p.agent("six", { phase: "Search" });
+  assert.deepEqual(
+    calls.map((c) => [c.adapter, c.model]),
+    [
+      ["b", "m-search"],
+      ["c", "m-search"],
+      ["b", "m-own"],
+      ["a", null],
+      ["c", "m-strong"],
+      ["b", "m-search"],
+    ],
+  );
+  assert.deepEqual(
+    sink.ofType(AGENT_STARTED).map((e) => [e.label, e.adapter]),
+    [
+      ["b", "b"],
+      ["c", "c"],
+      ["b", "b"],
+      ["a", "a"],
+      ["c", "c"],
+      ["b", "b"],
+    ],
+    "an agent is labelled with the adapter it asked for, else the one it runs on",
+  );
+});
+
+test("phase(title, opts) replaces its meta.phases defaults; phase(title) keeps them; a nested workflow's phases have their own", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "odw-routing-phases-"));
+  try {
+    writeFileSync(
+      join(dir, "child.js"),
+      "export const meta = { name: 'child', description: 'd', phases: [{ title: 'Inner', adapter: 'c', model: 'm-inner' }] }\n" +
+        "phase('Inner')\nreturn await agent('inside')\n",
+    );
+    const { ctx, sink, calls } = routed(routingConfig(), {}, { source: dir });
+    const p = createPrimitives(ctx, { phases: [{ title: "Search", adapter: "b", model: "m-search" }] });
+    p.phase("Search", { model: "m-other" });
+    await p.agent("replaced");
+    p.phase("Search", {});
+    await p.agent("cleared");
+    p.phase("Search");
+    await p.agent("kept");
+    assert.equal(await p.workflow({ scriptPath: "child.js" }), "c answered");
+    // The parent's phases are its own: back in Search, the child's defaults do not apply.
+    p.phase("Search");
+    await p.agent("after");
+    assert.deepEqual(
+      calls.map((c) => [c.adapter, c.model]),
+      [
+        ["a", "m-other"],
+        ["a", null],
+        ["a", null],
+        ["c", "m-inner"],
+        ["a", null],
+      ],
+    );
+    assert.equal(sink.ofType(AGENT_STARTED)[3]!.phase, "▸ child · Inner");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("phase defaults are checked: bad phase() options throw, a bad meta.phases entry fails the load, a string phase is a title", async () => {
+  const { ctx } = routed(routingConfig());
+  const p = createPrimitives(ctx);
+  const scriptError = (pattern: RegExp) => (err: Error) => err instanceof WorkflowScriptError && pattern.test(err.message);
+  assert.throws(() => p.phase("X", { adaptor: "b" } as never), scriptError(/^phase\("X"\) options takes adapter and model only; got "adaptor"$/));
+  assert.throws(() => p.phase("X", { adapter: [] }), scriptError(/adapter must be an adapter name or a non-empty list of them; got \[\]$/));
+  assert.throws(() => p.phase("X", { model: 7 } as never), scriptError(/model must be a model id or a tier such as "@fast"; got 7$/));
+  assert.throws(() => p.phase("X", "b" as never), scriptError(/must be an object/));
+
+  const bad = "export const meta = { name: 'x', description: 'd', phases: [{ title: 'A' }, { title: 'B', adapter: 42 }] }\nreturn 1";
+  assert.throws(() => loadWorkflowScript(bad, "bad.js"), scriptError(/^workflow bad\.js: meta\.phases\[1\]\.adapter must be an adapter name/));
+  const report = p.validate(bad);
+  assert.equal(report.ok, false);
+  assert.match(report.errors[0]!, /meta\.phases\[1\]\.adapter/);
+  assert.deepEqual(
+    readWorkflowMeta(bad, "bad.js").phases?.map((phase) => phase.title),
+    ["A", "B"],
+    "a listing reads the titles only: a bad default does not hide the workflow",
+  );
+
+  const strings =
+    "export const meta = { name: 'x', description: 'd', phases: ['Plan', { title: 'Build', adapter: ['b', 'a'], model: '@fast' }] }\nreturn 1";
+  assert.deepEqual(loadWorkflowScript(strings, "s.js").meta.phases, [
+    { title: "Plan" },
+    { title: "Build", adapter: ["b", "a"], model: "@fast" },
+  ]);
+
+  // An adapter a phase names that does not exist fails like any unknown adapter: the run's config is wrong.
+  const unknown = routed(routingConfig());
+  const q = createPrimitives(unknown.ctx);
+  q.phase("X", { adapter: "nope" });
+  await assert.rejects(q.agent("x"), AdapterNotFound);
+});
+
+test("a phase's string entry stays a title everywhere a run shows its phases", async () => {
+  const root = mkdtempSync(join(tmpdir(), "odw-routing-titles-"));
+  try {
+    mkdirSync(join(root, "runs"));
+    const configPath = join(root, "odw.config.json");
+    writeFileSync(configPath, JSON.stringify({ defaultAdapter: "echo", adapters: { echo: { command: [execPath, "-e", "process.stdout.write('ok')"] } } }));
+    const script = join(root, "titles.js");
+    writeFileSync(script, "export const meta = { name: 'titles', description: 'd', phases: ['Plan', { title: 'Build' }] }\nphase('Plan')\nreturn await agent('go')\n");
+    const store = new RunStore(join(root, "runs"));
+    const id = store.create({ script, args: null, source: root, configPath });
+    assert.equal(await executeRun(store.runDir(id)), "done");
+    assert.deepEqual(store.readStatus(id).phases, [{ title: "Plan" }, { title: "Build" }]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// --- resume keys ------------------------------------------------------------------------
+
+test("resume keys: a phase default changes no call's key, so a resume replays what finished however its phases route now", async () => {
+  const saved: AgentResultRecord[] = [];
+  const first = routed(routingConfig(), {}, { saveAgentResult: (rec) => void saved.push(rec) });
+  const p1 = createPrimitives(first.ctx, { phases: [{ title: "Search", adapter: "b", model: "m-1" }] });
+  p1.phase("Search");
+  assert.equal(await p1.agent("find it", { label: "finder" }), "b answered");
+  assert.equal(saved[0]!.key, resumeKey("find it", { label: "finder" }), "the call's own options");
+  assert.notEqual(saved[0]!.key, resumeKey("find it", { label: "finder", adapter: "b", model: "m-1" }));
+
+  const second = routed(routingConfig(), {}, { replay: new ReplayJournal("run-1", saved) });
+  const p2 = createPrimitives(second.ctx, { phases: [{ title: "Search", adapter: "c", model: "m-2" }] });
+  p2.phase("Search");
+  assert.equal(await p2.agent("find it", { label: "finder" }), "b answered");
+  assert.deepEqual(second.calls, [], "replayed: no CLI ran");
+  const [finished] = second.sink.ofType(AGENT_FINISHED);
+  assert.deepEqual([finished!.cached, finished!.adapter], [true, "b"]);
+});
+
+test("resume keys: an adapter list keys stably, in its order; a replayed fallback keeps its path and walks no chain", async () => {
+  const chain = resumeKey("p", { adapter: ["codex", "claude"] });
+  assert.equal(chain, resumeKey("p", { adapter: ["codex", "claude"] }));
+  assert.notEqual(chain, resumeKey("p", { adapter: ["claude", "codex"] }), "another order is another preference");
+  assert.notEqual(chain, resumeKey("p", { adapter: "codex" }));
+  assert.equal(stableJson({ adapter: ["codex", "claude"] }), '{"adapter":["codex","claude"]}');
+
+  const saved: AgentResultRecord[] = [];
+  const first = routed(routingConfig(), { a: [failing(QUOTA)] }, { saveAgentResult: (rec) => void saved.push(rec) });
+  assert.equal(await createPrimitives(first.ctx).agent("p", { adapter: ["a", "b"] }), "b answered");
+  assert.deepEqual([saved[0]!.key, saved[0]!.adapter, saved[0]!.fellBackFrom], [resumeKey("p", { adapter: ["a", "b"] }), "b", ["a"]]);
+
+  // The resume runs nothing — not even the adapter that ran out of quota.
+  const second = routed(routingConfig(), { a: [failing(QUOTA)] }, { replay: new ReplayJournal("run-1", saved) });
+  assert.equal(await createPrimitives(second.ctx).agent("p", { adapter: ["a", "b"] }), "b answered");
+  assert.deepEqual(second.calls, []);
+  assert.deepEqual(second.sink.ofType(LOG), []);
+  const [finished] = second.sink.ofType(AGENT_FINISHED);
+  assert.deepEqual([finished!.label, finished!.adapter, finished!.fellBackFrom, finished!.cached], ["a", "b", ["a"], true]);
+});
+
+// --- fallback chains in agent() ---------------------------------------------------------
+
+test("a spent quota or a refused login moves the call down its chain — a fresh prompt, the same options — logged, the producer recorded", async () => {
+  const saved: AgentResultRecord[] = [];
+  const { ctx, sink, calls } = routed(
+    routingConfig({ fallback: { a: ["b", "c"] } }),
+    { a: [failing(QUOTA)], b: [failing(AUTH)] },
+    { saveAgentResult: (rec) => void saved.push(rec) },
+  );
+  assert.equal(await createPrimitives(ctx).agent("find the bug", { label: "search", model: "m" }), "c answered");
+  assert.deepEqual(
+    calls.map((c) => [c.adapter, c.model]),
+    [
+      ["a", "m"],
+      ["b", "m"],
+      ["c", "m"],
+    ],
+  );
+  assert.equal(new Set(calls.map((c) => c.prompt)).size, 1, "every adapter gets the same, fresh prompt");
+  assert.deepEqual(logs(sink), ["search:1 → b after a quota", "search:1 → c after b auth"]);
+  const [hop, next] = sink.ofType(LOG);
+  assert.deepEqual([hop!.agentId, hop!.adapter, hop!.fellBackFrom, hop!.reason], [1, "b", ["a"], "quota"]);
+  assert.deepEqual([next!.adapter, next!.fellBackFrom, next!.reason], ["c", ["a", "b"], "auth"]);
+  assert.equal(sink.ofType(AGENT_STARTED)[0]!.adapter, "a");
+  const [finished] = sink.ofType(AGENT_FINISHED);
+  assert.deepEqual([finished!.adapter, finished!.fellBackFrom, finished!.attempts], ["c", ["a", "b"], 1]);
+  assert.deepEqual([saved[0]!.adapter, saved[0]!.fellBackFrom], ["c", ["a", "b"]]);
+});
+
+test("only a spent quota or a refused login falls back: a rate limit is ridden out in place, any other failure is the call's", async () => {
+  const chain = { fallback: { a: ["b"] } };
+  {
+    const { ctx, calls } = routed(routingConfig(chain), { a: [failing(RATE), ok("a, after waiting")] });
+    assert.equal(await createPrimitives(ctx).agent("x"), "a, after waiting");
+    assert.deepEqual(calls.map((c) => c.adapter), ["a", "a"]);
+  }
+  {
+    const { ctx, calls } = routed(routingConfig({ ...chain, transientRetries: 0 }), { a: [failing(RATE)] });
+    await assert.rejects(createPrimitives(ctx).agent("x"), (err: Error) => err instanceof AdapterExecutionError && err.reason === "rate_limit");
+    assert.deepEqual(calls.map((c) => c.adapter), ["a"], "out of rate-limit retries: still not moved");
+  }
+  {
+    const { ctx, calls } = routed(routingConfig(chain), { a: [failing("fatal: something else entirely")] });
+    await assert.rejects(createPrimitives(ctx).agent("x"), (err: Error) => err instanceof AdapterExecutionError && err.reason === "exit");
+    assert.deepEqual(calls.map((c) => c.adapter), ["a"]);
+  }
+  // At the chain's end, the last adapter's error is the call's; agent_failed says where it was.
+  const { ctx, sink, calls } = routed(routingConfig(chain), { a: [failing(QUOTA)], b: [failing(QUOTA)] });
+  await assert.rejects(
+    createPrimitives(ctx).agent("x", { label: "x" }),
+    (err: Error) => err instanceof AdapterExecutionError && err.reason === "quota" && /^adapter 'b' ran out of usage quota/.test(err.message),
+  );
+  assert.deepEqual(calls.map((c) => c.adapter), ["a", "b"]);
+  const [failed] = sink.ofType(AGENT_FAILED);
+  assert.deepEqual([failed!.adapter, failed!.fellBackFrom, failed!.reason], ["b", ["a"], "quota"]);
+});
+
+test("an agent()'s own adapter list is its whole chain, in place of the fallback setting; a malformed list is a config error", async () => {
+  const config = () => routingConfig({ fallback: { a: ["b"] } });
+  const { ctx, calls } = routed(config(), { a: [failing(QUOTA)] });
+  assert.equal(await createPrimitives(ctx).agent("x", { adapter: ["a", "c"] }), "c answered");
+  assert.deepEqual(calls.map((c) => c.adapter), ["a", "c"]);
+
+  const twice = routed(config(), { a: [failing(QUOTA)] });
+  assert.equal(await createPrimitives(twice.ctx).agent("x", { adapter: ["a", "a", "b"] }), "b answered");
+  assert.deepEqual(twice.calls.map((c) => c.adapter), ["a", "b"], "an adapter listed twice runs once");
+
+  await assert.rejects(createPrimitives(routed(config()).ctx).agent("x", { adapter: [] }), (err: Error) =>
+    err instanceof ConfigError && /adapter must be an adapter name or a non-empty list of them; got \[\]/.test(err.message),
+  );
+  await assert.rejects(createPrimitives(routed(config()).ctx).agent("x", { adapter: ["a", "nope"] }), AdapterNotFound);
+});
+
+test("a fallback runs the call's permission tier: one that cannot is skipped with a log line, and none is ever run at another", async () => {
+  // stream-json, as the built-in claude adapter reads it.
+  const claudeReply = (result: string) => ok(JSON.stringify({ type: "result", subtype: "success", is_error: false, result }) + "\n");
+  const config = defaultConfig();
+  config.settings.defaultAdapter = "codex";
+  const saved: AgentResultRecord[] = [];
+  const read = routed(config, { codex: [failing(QUOTA)], claude: [claudeReply("read it")] }, { saveAgentResult: (rec) => void saved.push(rec) });
+  const review = createPrimitives(read.ctx).agent("review it", { adapter: ["codex", "qwen", "claude"], permissions: "read", label: "review" });
+  assert.equal(await review, "read it");
+  assert.deepEqual(read.calls.map((c) => c.adapter), ["codex", "claude"], "qwen has no read-only mode: never run");
+  assert.ok(read.calls[1]!.command.includes("dontAsk"), "claude runs read-only");
+  assert.deepEqual(logs(read.sink), [
+    `review:1: skipped fallback 'qwen': it cannot run this agent's permissions "read" — a fallback never runs at another tier`,
+    "review:1 → claude after codex quota",
+  ]);
+  assert.equal(saved[0]!.permissions, "read");
+
+  // A run at "full" whose first adapter has no full mode runs "edit": its fallback runs "edit" too, never "full".
+  const full = defaultConfig();
+  full.settings.permissions = "full";
+  const edit = routed(full, { kimi: [failing(QUOTA)], claude: [claudeReply("edited")] });
+  assert.equal(await createPrimitives(edit.ctx).agent("fix it", { adapter: ["kimi", "claude"] }), "edited");
+  assert.deepEqual(edit.calls.map((c) => c.adapter), ["kimi", "claude"]);
+  assert.ok(edit.calls[1]!.command.includes("acceptEdits"));
+  assert.ok(!edit.calls[1]!.command.includes("bypassPermissions"), "not escalated to full");
+  assert.equal(edit.sink.ofType(AGENT_STARTED)[0]!.permissions, "edit");
+});
+
+test("a fallback's transcript goes on after an attempt line naming the next adapter, kept as it prints; the failed run's usage counts", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "odw-routing-transcript-"));
+  try {
+    const config = routingConfig({ fallback: { claude: ["b"] } });
+    config.settings.defaultAdapter = "claude";
+    const reset = Math.floor(Date.now() / 1000) + 3 * 3600;
+    const spent = ok(
+      [
+        { type: "system", subtype: "init", session_id: "s1", model: "claude-sonnet-4-5" },
+        {
+          type: "result",
+          subtype: "success",
+          is_error: true,
+          result: `Claude AI usage limit reached|${reset}`,
+          usage: { input_tokens: 120, output_tokens: 7 },
+          total_cost_usd: 0.002,
+        },
+      ]
+        .map((e) => JSON.stringify(e))
+        .join("\n") + "\n",
+    );
+    const paths = (agentId: number) => ({ transcript: join(dir, `${agentId}.transcript.jsonl`), stderr: join(dir, `${agentId}.stderr.txt`) });
+    const { ctx, sink } = routed(config, { claude: [spent], b: [ok("line one\nline two\n")] }, { agentTranscriptPaths: paths });
+    assert.equal(await createPrimitives(ctx).agent("x", { label: "x" }), "line one\nline two");
+
+    const text = readFileSync(paths(1).transcript, "utf8");
+    const lines = text.trimEnd().split("\n").map((line) => JSON.parse(line) as Record<string, unknown>);
+    assert.deepEqual(lines.map((line) => line.type ?? line.kind), ["system", "result", "attempt", "text", "text"]);
+    assert.deepEqual(lines[2], { kind: "attempt", n: 2, reason: "fallback", adapter: "b" });
+    assert.deepEqual(lines[3], { kind: "text", text: "line one\n" }, "b's output kept as text: its own format");
+    const attempt = normalizeTranscript(text).find((entry) => entry.kind === "attempt")!;
+    assert.deepEqual([attempt.text, attempt.reason, attempt.adapter], ["attempt 2: fallback to b", "fallback", "b"]);
+
+    const usage = sink.ofType(AGENT_FINISHED)[0]!.usage as Usage;
+    assert.deepEqual([usage.inputTokens, usage.costUsd], [120, 0.002], "what the spent quota's run reported still counts");
+    assert.equal(ctx.usage.outputTokens, 7, "toward the run's budget too");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a fallback takes a slot on its new adapter — the old one's let go first — and waits for it like a dispatch", async () => {
+  const config = routingConfig({ fallback: { a: ["b"] } });
+  config.adapters.a!.concurrency = 1;
+  config.adapters.b!.concurrency = 1;
+  const sink = new MemorySink();
+  const ctx = buildContext(config, { sink });
+  const order: string[] = [];
+  let releaseY!: () => void;
+  const yHolds = new Promise<void>((resolve) => (releaseY = resolve));
+  ctx.bridge = new Bridge(config, {
+    runner: async (command, opts) => {
+      const adapter = command[0]!.replace(/-cli$/, "");
+      const who = /\bTASK-(\w)\b/.exec(String(opts?.stdin))?.[1] ?? "?";
+      order.push(`${who}@${adapter}`);
+      if (who === "Y") await yHolds;
+      return who === "X" && adapter === "a" ? failing(QUOTA) : ok(`${who} on ${adapter}`);
+    },
+  });
+  const p = createPrimitives(ctx);
+  const y = p.agent("TASK-Y", { adapter: "b" });
+  await until(() => order.includes("Y@b"));
+  const x = p.agent("TASK-X"); // on a; falls back to b, whose one slot Y holds
+  const z = p.agent("TASK-Z"); // on a: it starts once X has let go of a's slot
+  await until(() => order.includes("Z@a"));
+  assert.deepEqual(order, ["Y@b", "X@a", "Z@a"], "X waits for b holding nothing on a");
+  assert.equal(await z, "Z on a");
+  releaseY();
+  assert.equal(await y, "Y on b");
+  assert.equal(await x, "X on b");
+  assert.deepEqual(order, ["Y@b", "X@a", "Z@a", "X@b"]);
+  assert.equal(ctx.scheduler.dispatched, 3, "a fallback is no new dispatch");
+  assert.ok(logs(sink).includes("a:2 → b after a quota"));
+});
+
+// --- the quota breaker ------------------------------------------------------------------
+
+test("the quota breaker: three quota failures in a row take an adapter out of the run with one log line; later calls start past it", async () => {
+  const { ctx, sink, calls } = routed(routingConfig({ fallback: { a: ["b"] } }), { a: [failing(QUOTA), failing(QUOTA), failing(QUOTA)] });
+  const p = createPrimitives(ctx);
+  for (const label of ["one", "two", "three"]) assert.equal(await p.agent(label, { label }), "b answered");
+  const tripped = sink.ofType(LOG).filter((e) => e.tripped === true);
+  assert.equal(tripped.length, 1);
+  assert.equal(tripped[0]!.adapter, "a");
+  assert.match(
+    String(tripped[0]!.message),
+    /^warning: 3 agents in a row failed on adapter 'a' \(usage quota\) — the run's later agents skip it: each starts on the next adapter of its fallback chain, or fails at once without one\./,
+  );
+  assert.equal(logs(sink).filter((m) => /will likely fail too/.test(m)).length, 0, "one warning, not two");
+
+  calls.length = 0;
+  assert.equal(await p.agent("four", { label: "four" }), "b answered");
+  assert.deepEqual(calls.map((c) => c.adapter), ["b"], "a runs no more");
+  assert.equal(sink.ofType(AGENT_STARTED).at(-1)!.adapter, "b", "the agent starts on b: its slot and events say so");
+  assert.equal(sink.ofType(AGENT_FINISHED).at(-1)!.fellBackFrom, undefined, "it never ran on a");
+
+  // With nowhere else to go, a call fails at once, its CLI never started.
+  await assert.rejects(
+    p.agent("five", { adapter: ["a"] }),
+    (err: Error) =>
+      err instanceof AdapterExecutionError &&
+      err.reason === "quota" &&
+      /^adapter 'a' is out of usage quota for the rest of this run \(the quota breaker skips it\) — wait/.test(err.message),
+  );
+  assert.deepEqual(calls.map((c) => c.adapter), ["b"]);
+  assert.equal(sink.ofType(AGENT_FAILED).at(-1)!.reason, "quota");
+
+  // A fallback passes over an adapter the breaker took out, silently: its warning said so once.
+  const hop = routed(routingConfig(), { b: [failing(QUOTA), failing(QUOTA), failing(QUOTA)], a: [failing(QUOTA)] });
+  const q = createPrimitives(hop.ctx);
+  for (let i = 0; i < 3; i++) await assert.rejects(q.agent(`b ${i}`, { adapter: ["b"] }));
+  assert.equal(await q.agent("x", { adapter: ["a", "b", "c"], label: "x" }), "c answered");
+  assert.deepEqual(hop.calls.map((c) => c.adapter), ["b", "b", "b", "a", "c"]);
+  assert.equal(logs(hop.sink).at(-1), "x:4 → c after a quota");
+});
+
+test("an agent whose adapter the breaker took out while it waited for a slot moves on at once, without running it", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "odw-routing-waited-"));
+  try {
+    const paths = (agentId: number) => ({ transcript: join(dir, `${agentId}.transcript.jsonl`), stderr: join(dir, `${agentId}.stderr.txt`) });
+    const config = routingConfig({ concurrency: 1, quotaBreaker: 1, fallback: { a: ["b"] } });
+    const { ctx, sink, calls } = routed(config, { a: [failing(QUOTA)] }, { agentTranscriptPaths: paths });
+    const p = createPrimitives(ctx);
+    // Both are routed to a at once; the second waits for the only slot while the first trips the breaker.
+    assert.deepEqual(await p.parallel([() => p.agent("one", { label: "one" }), () => p.agent("two", { label: "two" })]), [
+      "b answered",
+      "b answered",
+    ]);
+    assert.deepEqual(calls.map((c) => c.adapter), ["a", "b", "b"], "a ran once: for the first agent only");
+    assert.deepEqual(
+      sink.ofType(AGENT_STARTED).map((e) => [e.label, e.adapter]),
+      [
+        ["one", "a"],
+        ["two", "a"],
+      ],
+    );
+    assert.ok(logs(sink).includes("two:2 → b after a quota"));
+    const two = sink.ofType(AGENT_FINISHED).find((e) => e.label === "two")!;
+    assert.deepEqual([two.adapter, two.fellBackFrom], ["b", ["a"]]);
+    const first = JSON.parse(readFileSync(paths(2).transcript, "utf8").split("\n")[0]!);
+    assert.deepEqual(first, { kind: "attempt", n: 1, reason: "fallback", adapter: "b" }, "its transcript says why it starts on b");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("quotaBreaker: a success on the adapter starts its count over; null never skips one", async () => {
+  {
+    const { ctx, sink, calls } = routed(routingConfig({ quotaBreaker: 2 }), {
+      a: [failing(QUOTA), ok("fine"), failing(QUOTA), failing(QUOTA)],
+    });
+    const p = createPrimitives(ctx);
+    await assert.rejects(p.agent("1"));
+    assert.equal(await p.agent("2"), "fine");
+    await assert.rejects(p.agent("3"));
+    assert.equal(sink.ofType(LOG).filter((e) => e.tripped === true).length, 0, "quota, success, quota: no two in a row");
+    await assert.rejects(p.agent("4"));
+    assert.equal(sink.ofType(LOG).filter((e) => e.tripped === true).length, 1);
+    await assert.rejects(p.agent("5"), /out of usage quota for the rest of this run/);
+    assert.equal(calls.length, 4, "the fifth never started a CLI");
+  }
+  const { ctx, calls } = routed(routingConfig({ quotaBreaker: null }), { a: Array.from({ length: 5 }, () => failing(QUOTA)) });
+  const p = createPrimitives(ctx);
+  for (let i = 0; i < 5; i++) await assert.rejects(p.agent(String(i)));
+  assert.equal(calls.length, 5, "every call still tries its adapter");
+});
+
+// --- model tiers ------------------------------------------------------------------------
+
+test("model tiers: '@fast' is the model the adapter a call runs on has for it — after a fallback, the next one's", async () => {
+  const config = routingConfig({
+    fallback: { a: ["b", "c"] },
+    models: { fast: { a: "a-mini", b: "b-flash" }, strong: { a: "a-max" } },
+  });
+  const { ctx, sink, calls } = routed(config, { a: [failing(QUOTA)], b: [failing(QUOTA)] });
+  const p = createPrimitives(ctx);
+  assert.equal(await p.agent("x", { model: "@fast", label: "x" }), "c answered");
+  assert.deepEqual(
+    calls.map((c) => [c.adapter, c.model]),
+    [
+      ["a", "a-mini"],
+      ["b", "b-flash"],
+      ["c", null],
+    ],
+  );
+  assert.ok(logs(sink).includes("model tier '@fast' has no model for adapter 'c' — the CLI's own default model is used"));
+
+  calls.length = 0;
+  p.phase("Deep", { model: "@strong" });
+  await p.agent("y");
+  await p.agent("z", { model: "@cf/meta/llama-3" });
+  assert.deepEqual(
+    calls.map((c) => [c.adapter, c.model]),
+    [
+      ["a", "a-max"],
+      ["a", "@cf/meta/llama-3"],
+    ],
+    "a tier as a phase default; a model id that only starts with '@' is a model id",
+  );
+});
+
+test("an unknown model tier fails the agent before its CLI starts, naming the tiers there are", async () => {
+  const { ctx, sink, calls } = routed(routingConfig({ models: { fast: { a: "a-mini" }, strong: { a: "a-max" } } }));
+  await assert.rejects(
+    createPrimitives(ctx).agent("x", { model: "@fsat" }),
+    (err: Error) => err instanceof AgentError && err.message === "agent() model '@fsat' names no model tier: the tiers are @fast, @strong",
+  );
+  assert.deepEqual(calls, []);
+  assert.equal(sink.ofType(AGENT_FAILED).length, 1);
+  assert.equal(ctx.scheduler.fatalError, undefined, "one agent's mistake, not the run's");
+  await assert.rejects(createPrimitives(routed(routingConfig()).ctx).agent("x", { model: "@fast" }), /none is configured \(set "models" in the config\)/);
+});
