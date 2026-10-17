@@ -15,6 +15,7 @@
  *   odw result <run_id> [--agent <id|label>]
  *   odw rerun|resume <run_id>
  *   odw pause|resume|stop <run_id>
+ *   odw approve|reject <run_id> [--note TEXT] [--checkpoint N]
  */
 
 import { spawn } from "node:child_process";
@@ -26,6 +27,7 @@ import { parseArgs } from "node:util";
 import { listAdapters, loadConfig, locateConfig, resolveAdapter, resolveRunsRoot } from "./adapters/config.js";
 import type { Config } from "./adapters/types.js";
 import { killAllAgentProcesses } from "./adapters/runner.js";
+import { CHECKPOINT_NOTE_MAX, isCheckpointId } from "./control.js";
 import { runDoctor, type CheckStatus } from "./doctor.js";
 import { AdapterNotFound } from "./errors.js";
 import type { WorkflowEvent } from "./events.js";
@@ -33,13 +35,14 @@ import { VERSION } from "./index.js";
 import { cmdInit } from "./init.js";
 import { agentRowJson, agentRows, formatAgentTable, matchAgents } from "./runtime/agents-view.js";
 import { startRun, startRunFromSource, waitFor } from "./runtime/launcher.js";
-import { attachRun, formatEvent, resolveRunMode, type RunMode } from "./runtime/live-view.js";
+import { attachRun, checkpointCommands, formatEvent, resolveRunMode, type RunMode } from "./runtime/live-view.js";
 import { isRunActive, RunObserver } from "./runtime/run-liveness.js";
 import { RunStore, TERMINAL_STATES } from "./runtime/run-store.js";
+import { detail } from "./runtime/runs-view.js";
 import { startServer } from "./runtime/server.js";
 import { executeRun } from "./runtime/worker.js";
 import { isSeaBinary } from "./sea.js";
-import { detectCaps, glyphs, palette } from "./tty.js";
+import { detectCaps, glyphs, palette, sanitizeText } from "./tty.js";
 import { listWorkflows, resolveWorkflow } from "./workflows/resolve.js";
 
 export const COMMANDS = [
@@ -58,6 +61,8 @@ export const COMMANDS = [
   "pause",
   "resume",
   "stop",
+  "approve",
+  "reject",
 ] as const;
 
 export type Command = (typeof COMMANDS)[number];
@@ -89,6 +94,7 @@ export function helpText(): string {
     "  odw workflows list [--project|--global|--all]      list workflows runnable by name",
     "  odw workflows where <name>                         show the file a name resolves to",
     "  odw pause|resume|stop <run_id>                     control a running workflow",
+    "  odw approve|reject <run_id> [--checkpoint N]       answer a checkpoint() the run waits at (--note TEXT)",
     "",
     "Options:",
     "  --args JSON|@file   workflow input (JSON, @file.json, or a raw string)",
@@ -175,6 +181,9 @@ export async function main(argv: string[]): Promise<number> {
       case "pause":
       case "stop":
         return cmdControl(command, rest);
+      case "approve":
+      case "reject":
+        return cmdDecide(command, rest);
       default:
         process.stderr.write(`odw: unknown command '${command}'\n\n${helpText()}\n`);
         return 2;
@@ -439,7 +448,22 @@ async function afterStart(
   }
   if (mode === "wait") {
     process.stderr.write(`running ${runId} ...\n`);
-    const status = await waitFor(store, runId, { timeoutMs: opts.timeoutMs });
+    // A checkpoint() holds the run until someone answers it: say so, and how, once each.
+    const told = new Set<number>();
+    let flags: string[] | undefined;
+    const status = await waitFor(store, runId, {
+      timeoutMs: opts.timeoutMs,
+      onStatus: ({ waiting }) => {
+        const cp = waiting as { checkpointId?: unknown; title?: unknown } | null | undefined;
+        if (!cp || !isCheckpointId(cp.checkpointId) || told.has(cp.checkpointId)) return;
+        told.add(cp.checkpointId);
+        const { approve, reject } = checkpointCommands(runId, cp.checkpointId, (flags ??= storeFlagsFor(store)));
+        process.stderr.write(
+          `waiting for a decision — checkpoint #${cp.checkpointId}: ${sanitizeText(cp.title, 200)}\n` +
+            `  approve: ${approve}\n  reject:  ${reject}\n`,
+        );
+      },
+    });
     if (!TERMINAL_STATES.has(String(status.state))) {
       process.stderr.write(
         `timed out waiting for ${runId} — run continues (odw attach ${runId})\n`,
@@ -452,6 +476,7 @@ async function afterStart(
     out: process.stdout,
     err: process.stderr,
     timeoutMs: opts.timeoutMs,
+    commandFlags: storeFlagsFor(store),
   });
 }
 
@@ -481,6 +506,7 @@ async function cmdAttach(rest: string[]): Promise<number> {
     out: process.stdout,
     err: process.stderr,
     timeoutMs,
+    commandFlags: storeFlagsFor(store),
   });
 }
 
@@ -491,14 +517,37 @@ function cmdStatus(rest: string[]): number {
   const meta = store.readMeta(runId);
   const events = store.readEvents(runId);
   const name = (status.name as string) || baseName(meta.script as string | undefined);
-  process.stdout.write(`${runId}  [${status.state ?? "?"}]  ${name}\n`);
+  // What waits for a person (checkpoint(), ODW extension): only a live run can be answered.
+  const run = detail(store, runId);
+  const pending = run.pendingCheckpoints ?? [];
+  process.stdout.write(`${runId}  [${run.state === "waiting" ? "waiting" : (status.state ?? "?")}]  ${name}\n`);
   if (status.description) process.stdout.write(`  ${status.description as string}\n`);
   process.stdout.write(`  dispatched: ${dispatchedCount(events, status)} agent(s)\n`);
   if (typeof meta.resumedFrom === "string") {
     const replayed = events.filter((e) => e.type === "agent_finished" && e.cached === true).length;
     process.stdout.write(`  resumed from: ${meta.resumedFrom} (${replayed} agent result(s) replayed)\n`);
   }
+  const flags = pending.length > 0 ? storeFlagsFor(store) : [];
+  for (const cp of pending) {
+    const since = new Date(cp.since * 1000).toLocaleTimeString();
+    const { approve, reject } = checkpointCommands(runId, cp.checkpointId, flags);
+    process.stdout.write(`  waiting for a decision since ${since} — checkpoint #${cp.checkpointId}: ${sanitizeText(cp.title, 200)}\n`);
+    for (const line of payloadPreview(cp.payload)) process.stdout.write(`    ${line}\n`);
+    process.stdout.write(`    approve: ${approve}\n    reject:  ${reject}\n`);
+  }
+  if (pending.length > 0) process.stdout.write("    (--note TEXT tells the workflow why)\n");
   return 0;
+}
+
+/** Lines of a checkpoint's payload a terminal shows: the start of it; the dashboard has it whole. */
+function payloadPreview(payload: unknown, maxLines = 20): string[] {
+  if (payload === null || payload === undefined) return [];
+  const text = typeof payload === "string" ? payload : JSON.stringify(payload, null, 2);
+  // Workflow-controlled text: sanitized, but keeping its indentation (the JSON's nesting).
+  const lines = text.split("\n").map((line) => /^ */.exec(line)![0] + sanitizeText(line, 160));
+  const shown = lines.slice(0, maxLines);
+  if (lines.length > maxLines) shown.push(`… ${lines.length - maxLines} more line(s): the dashboard (odw serve) shows it all`);
+  return ["payload:", ...shown.map((line) => `  ${line}`)];
 }
 
 /** Real dispatches: replayed agents (odw resume) never took one. */
@@ -668,7 +717,9 @@ function cmdList(rest: string[]): number {
   for (const ref of runs) {
     const status = store.readStatus(ref.runId);
     const name = (status.name as string) || ref.workflowName || "";
-    process.stdout.write(`${ref.runId}  ${String(status.state ?? "?").padEnd(8)}  ${name}\n`);
+    // status.json names the checkpoint() a running run waits at (ODW extension).
+    const state = status.state === "running" && status.waiting ? "waiting" : String(status.state ?? "?");
+    process.stdout.write(`${ref.runId}  ${state.padEnd(8)}  ${name}\n`);
   }
   return 0;
 }
@@ -749,8 +800,15 @@ async function cmdResume(rest: string[]): Promise<number> {
       process.stderr.write(`resume requested for ${runId}\n`);
       return 0;
     }
+    // A run waiting at a checkpoint() goes on once someone answers it, not by resume.
+    const waiting = store.readStatus(runId).waiting as { checkpointId?: unknown } | null | undefined;
+    const answer =
+      waiting && isCheckpointId(waiting.checkpointId)
+        ? `  It waits for a decision at checkpoint #${waiting.checkpointId}: odw approve|reject ${runId} (see odw status ${runId}).\n`
+        : "";
     process.stderr.write(
       `odw resume: run ${runId} is still ${control === "stop" ? "stopping" : state} — only a paused run continues in place.\n` +
+        answer +
         `  To replay its finished agents in a new run, let it end first (odw stop ${runId}), or pass --force.\n`,
     );
     return 1;
@@ -899,6 +957,66 @@ function cmdControl(action: Command, rest: string[]): number {
   return 0;
 }
 
+/**
+ * `odw approve|reject <run_id> [--note TEXT] [--checkpoint N]` — answer a
+ * checkpoint() the run waits at (ODW extension): checkpoint N, else the
+ * oldest one waiting. The answer always names the checkpoint the person saw,
+ * so it can never land on a question asked after they decided; the run picks
+ * it up from its control file within a fraction of a second.
+ */
+function cmdDecide(action: "approve" | "reject", rest: string[]): number {
+  const { values, positionals } = parseArgs({
+    args: rest,
+    allowPositionals: true,
+    options: {
+      config: { type: "string" },
+      "runs-root": { type: "string" },
+      note: { type: "string" },
+      checkpoint: { type: "string" },
+    },
+  });
+  const runId = positionals[0];
+  if (!runId) throw new UsageError(`odw ${action}: missing <run_id>`);
+  let checkpointId: number | undefined;
+  if (values.checkpoint !== undefined) {
+    checkpointId = /^\d+$/.test(values.checkpoint) ? Number(values.checkpoint) : NaN;
+    if (!isCheckpointId(checkpointId)) {
+      throw new UsageError(`odw ${action}: --checkpoint must be a checkpoint number (1, 2, …)`);
+    }
+  }
+  const note = values.note;
+  if (note !== undefined && note.length > CHECKPOINT_NOTE_MAX) {
+    throw new UsageError(`odw ${action}: --note must be at most ${CHECKPOINT_NOTE_MAX} characters`);
+  }
+  const store = storeFrom(values);
+  if (!store.exists(runId)) {
+    process.stderr.write(`no such run: ${runId}\n`);
+    return 1;
+  }
+  const run = detail(store, runId);
+  const pending = run.pendingCheckpoints ?? [];
+  const target = checkpointId === undefined ? pending[0] : pending.find((cp) => cp.checkpointId === checkpointId);
+  if (!target) {
+    const open = pending.map((cp) => `#${cp.checkpointId} ${JSON.stringify(sanitizeText(cp.title, 80))}`).join(", ");
+    process.stderr.write(
+      pending.length === 0
+        ? `run ${runId} has no checkpoint waiting for a decision (it is ${run.state})\n`
+        : `checkpoint #${checkpointId} of run ${runId} is not waiting for a decision; waiting: ${open}\n`,
+    );
+    return 1;
+  }
+  store.requestCheckpointDecision(runId, {
+    action,
+    checkpointId: target.checkpointId,
+    ...(note !== undefined && note.trim() !== "" ? { note } : {}),
+    by: "cli",
+  });
+  process.stderr.write(
+    `${action} requested for checkpoint #${target.checkpointId} ${JSON.stringify(sanitizeText(target.title, 120))} of ${runId}\n`,
+  );
+  return 0;
+}
+
 /** `odw workflows <list|where>` — inspect the workflows runnable by name. */
 function cmdWorkflows(rest: string[]): number {
   const [sub, ...subRest] = rest;
@@ -1001,6 +1119,21 @@ function storeAndRun(rest: string[]): { store: RunStore | null; runId: string } 
     return { store: null, runId };
   }
   return { store, runId };
+}
+
+/**
+ * What a printed `odw …` command needs to find a run in `store` from here:
+ * `--runs-root` unless the store is the one a bare command resolves to.
+ */
+function storeFlagsFor(store: RunStore): string[] {
+  try {
+    if (resolve(resolveRunsRoot(loadConfig(null, { quiet: true }).settings.runsRoot)) === resolve(store.root)) {
+      return [];
+    }
+  } catch {
+    // An unreadable default config: name the runs root outright.
+  }
+  return ["--runs-root", resolve(store.root)];
 }
 
 function reportTerminal(store: RunStore, runId: string, status: Record<string, unknown>): number {
