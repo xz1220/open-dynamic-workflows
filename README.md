@@ -482,6 +482,7 @@ Runnable, plain-JS workflows in [`examples/`](examples/):
 | [`ultra-mode.js`](examples/ultra-mode.js) | disciplined deep-work loop: plan → parallel attack → adversarial review → synthesize |
 | [`fan-out-reduce.js`](examples/fan-out-reduce.js) | draft N in parallel → synthesize the best |
 | [`adversarial-verify.js`](examples/adversarial-verify.js) | surface findings → keep only those that survive refutation |
+| [`review-swarm.js`](examples/review-swarm.js) | map a change set → review it through N lenses in parallel → verify every finding (optionally on another CLI) → ranked, evidenced report |
 | [`loop-until-dry.js`](examples/loop-until-dry.js) | loop fanning out finders until K dry rounds |
 | [`routing.js`](examples/routing.js) | classify the request → route to a specialist → grade the result |
 | [`generate-and-filter.js`](examples/generate-and-filter.js) | generate many ideas in parallel → dedupe → keep only rubric-passers |

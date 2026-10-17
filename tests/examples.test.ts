@@ -154,3 +154,13 @@ test("agent-daily-digest.js runs end-to-end (discover -> extract -> synthesize -
   assert.ok(Array.isArray(r.digest.sections.followups), "digest has a followups section");
   assert.ok(r.stats.sessions >= 1, "scanned at least one session");
 });
+
+test("review-swarm.js maps, reviews per lens, verifies every finding and summarizes", async () => {
+  const { state, result, error } = await runExample("review-swarm.js", { lenses: ["correctness", "security"] });
+  assert.equal(state, "done", JSON.stringify(error));
+  const r = result as { summary: unknown; confirmed: unknown[]; rejected: number; lenses: string[] };
+  assert.equal(typeof r.summary, "string");
+  assert.ok(Array.isArray(r.confirmed));
+  assert.equal(typeof r.rejected, "number");
+  assert.deepEqual(r.lenses, ["correctness", "security"]);
+});
