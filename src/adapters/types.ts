@@ -18,7 +18,14 @@ export interface AdapterFlags {
   model?: string[];
 }
 
-/** How stdout from an adapter becomes the agent's final response. */
+/**
+ * How stdout from an adapter becomes the agent's final response — and, for the
+ * JSON formats, what the run spent and whether the CLI itself reported it
+ * failed (`usagePath`, `costPath`, `errorPath`: ODW extensions). A path is a
+ * list of object keys; a whole number in it indexes an array (negative: from
+ * its end). When the declared text is not there, the raw stdout is the reply
+ * and the run's log says why (see adapters/output.ts).
+ */
 export type AdapterOutput =
   | { format: "text" }
   | {
@@ -27,6 +34,26 @@ export type AdapterOutput =
       eventType: string;
       textPath: string[];
       select: "last";
+      /** The events usage and cost are read from (default: `eventType`); every one adds up. */
+      usageEvent?: string;
+      /** Path, in a usage event, to its token counts (normalized by adapters/usage.ts). */
+      usagePath?: string[];
+      /** Path, in a usage event, to its cost in US dollars. */
+      costPath?: string[];
+      /**
+       * Path, in a text event, to the CLI's own failure report: `true`, a
+       * message, or an error object. When the last text event has one, the
+       * run failed with it (classified like any failure), whatever its exit.
+       */
+      errorPath?: string[];
+    }
+  | {
+      /** One JSON document on stdout: the paths are read from it. */
+      format: "json";
+      textPath: string[];
+      usagePath?: string[];
+      costPath?: string[];
+      errorPath?: string[];
     };
 
 /**

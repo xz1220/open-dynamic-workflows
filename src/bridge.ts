@@ -14,6 +14,12 @@
  * one is ridden out: retried after an exponential backoff that honors the
  * retry-after it printed, up to `transientRetries` times per call. A spent
  * quota or a refused login is not retried; its error says what to do instead.
+ * A run whose CLI reports its own failure in its output (`errorPath`: Claude
+ * Code's `is_error` result, often with exit 0) is classified the same way.
+ *
+ * What each CLI run spent — the usage and cost its CLI reported, when its
+ * adapter declares where (adapters/usage.ts) — is handed to the caller as the
+ * run ends, schema retries, rate-limit retries and failed runs included.
  *
  * The command runner is injectable, so the bridge unit-tests with a fake runner
  * and no real agent account; so are the backoff's sleep, clock and jitter.
@@ -32,8 +38,9 @@ import {
   type FailureClass,
 } from "./adapters/failures.js";
 import { expand, expandAll, type PlaceholderContext } from "./adapters/placeholders.js";
-import { AdapterOutputDecoder, decodeAdapterOutput } from "./adapters/output.js";
+import { AdapterOutputDecoder, decodeOutput, type DecodedOutput } from "./adapters/output.js";
 import { runCommand, type CommandRunner } from "./adapters/runner.js";
+import type { Usage } from "./adapters/usage.js";
 import {
   adapterDisplayName,
   cliOk,
@@ -126,9 +133,16 @@ export interface RunOptions {
   /**
    * Called with every attempt's decoded reply as soon as it arrives — schema
    * retries included — so the run's usage tally counts all the output it paid
-   * for, not just the reply that finally validated.
+   * for, not just the reply that finally validated. `usage` is what that CLI
+   * run reported spending, when its adapter reads usage and it reported some.
    */
-  onReply?: (text: string) => void;
+  onReply?: (text: string, usage?: Usage) => void;
+  /**
+   * Called with what a CLI run that ended WITHOUT a reply reported spending —
+   * a failed run, a rate-limited one about to be retried, a stalled one — so
+   * that is counted too. Runs with a reply report theirs through `onReply`.
+   */
+  onUsage?: (usage: Usage) => void;
   /**
    * Run before each extra CLI run of the call — a schema retry or a stall
    * restart — so it passes the same stop/budget guards as a dispatch. Throw to
@@ -275,7 +289,7 @@ export class Bridge {
       throwIfAborted(signal);
       if (attempt > 1) await options.beforeRetry?.();
       const prompt = attempt > 1 ? `${basePrompt}\n\n${retryFeedback(previous, problems)}` : basePrompt;
-      const { cli, decoder, failure } = await this.invokeUntilFinal(adapter, plan, prompt, limits, options, reruns, call);
+      const { cli, output, failure } = await this.invokeUntilFinal(adapter, plan, prompt, limits, options, reruns, call);
       // Killed by a stop (or by a fatal error elsewhere in the run): report
       // the run's reason, not a misleading CLI failure.
       throwIfAborted(signal);
@@ -287,10 +301,11 @@ export class Bridge {
         );
       }
 
-      // A runner that streams stdout fed the decoder and kept only a tail; an
-      // injected runner that does not stream returns the whole stdout instead.
-      const text = decoder?.received ? decoder.finish() : decodeAdapterOutput(adapter, cli.stdout);
-      options.onReply?.(text);
+      // Stdout that did not match the adapter's declared format is the reply
+      // as it stands — never a failed agent — and the run's log says why.
+      if (output.fallback) call.onNote?.(output.fallback);
+      const text = output.text;
+      options.onReply?.(text, output.usage);
       if (!request.schema) {
         return { value: text, text, adapter: adapter.name, attempts: attempt, notes: plan.notes };
       }
@@ -319,8 +334,10 @@ export class Bridge {
    * `maxBackoff`). Every extra run passes the stop/budget guards first, and a
    * stop during a backoff ends the wait at once. A failure that ends the loop
    * comes back classified — a clean exit whose reply is only the CLI's own
-   * rate-limit, quota or login error included — so the caller need not read
-   * the output twice.
+   * rate-limit, quota or login error included, as is a failure the CLI
+   * reported in its output — so the caller need not read the output twice.
+   * Every run decodes its output once, here; a run that ends without a reply
+   * reports what it spent through `onUsage`.
    */
   private async invokeUntilFinal(
     adapter: Adapter,
@@ -330,16 +347,20 @@ export class Bridge {
     options: RunOptions,
     reruns: Reruns,
     call: CallEnv,
-  ): Promise<{ cli: CliResult; decoder: AdapterOutputDecoder | null; failure?: FailureClass }> {
+  ): Promise<{ cli: CliResult; output: DecodedOutput; failure?: FailureClass }> {
     const { signal } = options;
     const settings = this.config.settings;
     const classify = { patterns: adapter.failures, prompt };
+    const structured = (adapter.output?.format ?? "text") !== "text";
     for (;;) {
-      const invoked = await this.invoke(adapter, plan, prompt, limits, signal, call);
-      const { cli } = invoked;
-      if (signal?.aborted) return invoked;
+      const { cli, decoder } = await this.invoke(adapter, plan, prompt, limits, signal, call);
+      // A runner that streams stdout fed the decoder and kept only a tail; an
+      // injected runner that does not stream returns the whole stdout instead.
+      const output = decoder?.received ? decoder.finish() : decodeOutput(adapter, cli.stdout);
+      if (signal?.aborted) return { cli, output };
       if (cli.stalled) {
-        if (reruns.stalls >= settings.stallRestarts) return invoked;
+        if (output.usage) options.onUsage?.(output.usage);
+        if (reruns.stalls >= settings.stallRestarts) return { cli, output };
         reruns.stalls++;
         options.onStall?.({
           quietSeconds: limits.stallTimeout ?? 0,
@@ -347,19 +368,27 @@ export class Bridge {
           maxRestarts: settings.stallRestarts,
         });
       } else {
-        // Claude Code's text mode prints some API errors as its reply and exits
-        // 0; JSONL adapters report theirs as events, with a non-zero exit.
-        const failure = !cliOk(cli)
-          ? classifyFailure(cli, { ...classify, now: this.now() })
-          : adapter.output?.format === "jsonl"
-            ? null
-            : classifyErrorReply(cli.stdout, { ...classify, now: this.now() });
-        if (!failure) return invoked; // a real reply
+        // A failure the CLI reported in its output (Claude Code's `is_error`
+        // result) is the verdict whatever the exit status, and its message is
+        // the evidence: classified like any failure, so a rate limit is ridden
+        // out and a spent quota or a login says what to do.
+        const judged = output.error !== undefined ? { ...cli, stdout: output.error, stderr: "" } : cli;
+        // A text reply — or a structured one that fell back to its raw stdout —
+        // may be nothing but the CLI's own error, printed with exit 0 (Claude
+        // Code's text mode does that); a decoded JSON reply is just its reply.
+        const failure =
+          output.error !== undefined || !cliOk(cli)
+            ? classifyFailure(judged, { ...classify, now: this.now() })
+            : !structured || output.fallback !== undefined
+              ? classifyErrorReply(output.text, { ...classify, now: this.now() })
+              : null;
+        if (!failure) return { cli, output }; // a real reply
+        if (output.usage) options.onUsage?.(output.usage);
         if (failure.reason !== "rate_limit" || reruns.rateLimits >= settings.transientRetries) {
-          return { ...invoked, failure };
+          return { cli: judged, output, failure };
         }
         const wait = backoffSeconds(reruns.rateLimits + 1, failure.retryAfter, settings.maxBackoff, this.random);
-        if (wait === null) return { ...invoked, failure }; // the CLI asked for longer than maxBackoff
+        if (wait === null) return { cli: judged, output, failure }; // the CLI asked for longer than maxBackoff
         reruns.rateLimits++;
         options.onRateLimit?.({
           adapter: adapter.name,
@@ -405,7 +434,8 @@ export class Bridge {
       case "permission":
         return `was refused a permission it needed — allow it in the adapter's command flags, ${switchAdapter}`;
       default:
-        return `exited with code ${cli.returncode}`;
+        // An exit-0 run fails this way only when its CLI reported the failure in its output.
+        return cli.returncode === 0 ? "reported an error" : `exited with code ${cli.returncode}`;
     }
   }
 

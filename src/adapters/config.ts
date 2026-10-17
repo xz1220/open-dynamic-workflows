@@ -92,6 +92,13 @@ const KNOWN_TOP_KEYS = [
 
 const KNOWN_ADAPTER_KEYS = ["command", "stdin", "env", "timeout", "stallTimeout", "label", "flags", "output", "failures"] as const;
 
+/** The fields of an adapter's `output`, per format. */
+const KNOWN_OUTPUT_KEYS: Record<string, readonly string[]> = {
+  text: ["format"],
+  jsonl: ["format", "eventType", "textPath", "select", "usageEvent", "usagePath", "costPath", "errorPath"],
+  json: ["format", "textPath", "usagePath", "costPath", "errorPath"],
+};
+
 const KNOWN_NOTIFY_KEYS = ["command", "webhook", "on"] as const;
 
 /**
@@ -126,6 +133,9 @@ export function collectConfigWarnings(raw: Record<string, unknown>): string[] {
   if (isObject(adapters)) {
     for (const [name, spec] of Object.entries(adapters)) {
       if (isObject(spec)) warnings.push(...unknownFields(spec, KNOWN_ADAPTER_KEYS, `adapter "${name}"`));
+      const output = isObject(spec) ? spec.output : undefined;
+      const knownOutput = isObject(output) ? KNOWN_OUTPUT_KEYS[String(output.format)] : undefined;
+      if (knownOutput) warnings.push(...unknownFields(output as Record<string, unknown>, knownOutput, `adapter "${name}" output`));
     }
   }
   const notify = raw.notify;
@@ -560,28 +570,43 @@ function buildOutput(name: string, raw: unknown): AdapterOutput {
   }
   const value = raw as Record<string, unknown>;
   if (value.format === "text") return { format: "text" };
-  if (value.format !== "jsonl") {
-    throw new ConfigError(`adapter '${name}' 'output.format' must be 'text' or 'jsonl'`);
+  if (value.format !== "jsonl" && value.format !== "json") {
+    throw new ConfigError(`adapter '${name}' 'output.format' must be 'text', 'jsonl' or 'json'`);
   }
-  if (typeof value.eventType !== "string" || !value.eventType.trim()) {
+  if (value.format === "jsonl" && (typeof value.eventType !== "string" || !value.eventType.trim())) {
     throw new ConfigError(`adapter '${name}' 'output.eventType' must be a non-empty string`);
   }
-  if (
-    !Array.isArray(value.textPath) ||
-    value.textPath.length === 0 ||
-    !value.textPath.every((segment) => typeof segment === "string" && segment.length > 0)
-  ) {
-    throw new ConfigError(`adapter '${name}' 'output.textPath' must be a non-empty array of strings`);
+  const textPath = buildPath(name, "textPath", value.textPath)!;
+  // Usage, cost and the CLI's own error report (ODW extensions): set only when declared.
+  const extras: { usagePath?: string[]; costPath?: string[]; errorPath?: string[] } = {};
+  for (const key of ["usagePath", "costPath", "errorPath"] as const) {
+    const path = buildPath(name, key, value[key], { optional: true });
+    if (path) extras[key] = path;
   }
+  if (value.format === "json") return { format: "json", textPath, ...extras };
   if (value.select !== "last") {
     throw new ConfigError(`adapter '${name}' 'output.select' must be 'last'`);
   }
+  if (value.usageEvent != null && (typeof value.usageEvent !== "string" || !value.usageEvent.trim())) {
+    throw new ConfigError(`adapter '${name}' 'output.usageEvent' must be a non-empty string`);
+  }
   return {
     format: "jsonl",
-    eventType: value.eventType,
-    textPath: [...(value.textPath as string[])],
+    eventType: value.eventType as string,
+    textPath,
     select: "last",
+    ...(value.usageEvent != null ? { usageEvent: value.usageEvent as string } : {}),
+    ...extras,
   };
+}
+
+/** Validate a path into a JSON value: a non-empty array of non-empty strings (absent is fine when optional). */
+function buildPath(name: string, key: string, raw: unknown, opts: { optional?: boolean } = {}): string[] | undefined {
+  if (raw == null && opts.optional) return undefined;
+  if (!Array.isArray(raw) || raw.length === 0 || !raw.every((segment) => typeof segment === "string" && segment.length > 0)) {
+    throw new ConfigError(`adapter '${name}' 'output.${key}' must be a non-empty array of strings`);
+  }
+  return [...(raw as string[])];
 }
 
 /**
