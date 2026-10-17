@@ -448,6 +448,16 @@ switches to a night theme on demand. What it gives you:
       <img src="assets/app-screenshots/job-detail-dark.png" alt="A live run graph in the night theme, with glowing signal edges" />
     </td>
   </tr>
+  <tr>
+    <td width="50%">
+      <strong>Needs you</strong><br />
+      <img src="assets/app-screenshots/needs-you.png" alt="Activity view with a Needs you strip: a run waiting at a checkpoint with a Review button, and a failed run with a Copy resume button" />
+    </td>
+    <td width="50%">
+      <strong>Checkpoints</strong><br />
+      <img src="assets/app-screenshots/checkpoint.png" alt="A run waiting at a checkpoint: the question and its payload in an approval card with Approve and Reject, and an amber gate node in the graph's Approve lane" />
+    </td>
+  </tr>
 </table>
 
 Press <kbd>⌘K</kbd> / <kbd>Ctrl K</kbd> (or <kbd>/</kbd>) for the command palette —

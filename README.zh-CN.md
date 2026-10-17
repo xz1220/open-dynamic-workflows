@@ -408,6 +408,16 @@ odw reject $RUN --note "Keep the old table until the backfill is verified"
       <img src="assets/app-screenshots/job-detail-dark.png" alt="夜间主题下的实时运行图,信号边带有发光效果" />
     </td>
   </tr>
+  <tr>
+    <td width="50%">
+      <strong>待你处理</strong><br />
+      <img src="assets/app-screenshots/needs-you.png" alt="Activity 页面的待你处理:一个停在检查点等待审阅的运行,以及一个可以复制 resume 命令的失败运行" />
+    </td>
+    <td width="50%">
+      <strong>检查点</strong><br />
+      <img src="assets/app-screenshots/checkpoint.png" alt="停在检查点的运行:审批卡片里是问题和附带内容,带批准与拒绝按钮;图中 Approve 泳道里是一个琥珀色的关卡节点" />
+    </td>
+  </tr>
 </table>
 
 按 <kbd>⌘K</kbd> / <kbd>Ctrl K</kbd>(或 <kbd>/</kbd>)打开命令面板——跳转到任意运行或工作流、

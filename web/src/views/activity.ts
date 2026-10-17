@@ -2,7 +2,7 @@
 import { glyph, pill } from "../components/glyph";
 import { icons } from "../icons";
 import { renderPulse } from "../components/pulse";
-import { t } from "../i18n";
+import { t, tn } from "../i18n";
 import { store } from "../store";
 import type { ActivityEvent, RunSummary } from "../types";
 import { ACTIVE, esc, fmtAgo, fmtClock } from "../util";
@@ -88,12 +88,11 @@ export function renderActivity(nowSec: number): string {
 
   const lede =
     active.length > 0
-      ? t("{r} runs in flight{via}.", {
-          r: active.length,
+      ? tn(active.length, "{n} run in flight{via}.", "{n} runs in flight{via}.", {
           via: adapters.length ? ` · ${adapters.join(", ")}` : "",
         })
       : runs.length
-        ? t("Nothing is running. {n} runs on record.", { n: runs.length })
+        ? tn(runs.length, "Nothing is running. {n} run on record.", "Nothing is running. {n} runs on record.")
         : t("No runs yet — have your agent start one with odw run.");
 
   const pulse = renderPulse(runs, store.activity, nowSec);
