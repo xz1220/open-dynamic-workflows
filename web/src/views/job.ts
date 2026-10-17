@@ -2,17 +2,19 @@
 import { glyph, pill } from "../components/glyph";
 import { renderJson } from "../components/json";
 import { renderTimeline } from "../components/timeline";
-import { renderDag } from "../dag";
+import { reasonLabel, renderDag } from "../dag";
 import { icons } from "../icons";
 import { t } from "../i18n";
 import { store } from "../store";
 import type { AgentView, RunDetail, WorkflowEvent } from "../types";
-import { ACTIVE, TERMINAL, esc, fmtClock, fmtDurMs, fmtDurSec } from "../util";
+import { ACTIVE, TERMINAL, esc, fmtClock, fmtDurMs, fmtDurSec, fmtTokens, fmtUsd } from "../util";
 import { EVT_CLASS, emptyArt } from "./activity";
 
 export type JobTab = "graph" | "timeline" | "logs" | "result";
 
 export interface JobViewState {
+  /** Draft note for a checkpoint decision. */
+  cpNote: string;
   tab: JobTab;
   selectedAi: number | null;
   zoom: number;
@@ -94,6 +96,13 @@ function runHead(run: RunDetail, nowSec: number): string {
     stat(c.running, t("running"), c.running ? "sig" : "") +
     stat(c.done, t("done")) +
     (c.failed ? stat(c.failed, t("failed"), "alarm") : "") +
+    (run.usage && (run.usage.inputTokens != null || run.usage.outputTokens != null)
+      ? stat(
+          `${fmtTokens((run.usage.inputTokens ?? 0) + (run.usage.outputTokens ?? 0))}${run.usage.estimated ? "~" : ""}`,
+          t("tokens"),
+        )
+      : "") +
+    (run.usage?.costUsd != null ? stat(fmtUsd(run.usage.costUsd), t("cost")) : "") +
     stat(elapsed, t("elapsed")) +
     `</div></div>` +
     `<div class="run-prog"><div class="prog">` +
@@ -164,6 +173,11 @@ function drawer(run: RunDetail, ai: number, nowSec: number): string {
     `<span class="k">${t("finished")}</span><span class="v">${fmtClock(a.finishedAt)}</span>` +
     `<span class="k">${t("duration")}</span><span class="v">${dur}</span>` +
     `<span class="k">${t("attempts")}</span><span class="v">${a.attempts ?? "—"}</span>` +
+    (a.failureReason ? `<span class="k">${t("reason")}</span><span class="v"><span class="tag ${/rate_limit|quota|stalled|timeout/.test(a.failureReason) ? "warn" : ""}">${esc(reasonLabel(a.failureReason))}</span></span>` : "") +
+    (a.usage && (a.usage.inputTokens != null || a.usage.outputTokens != null)
+      ? `<span class="k">${t("tokens")}</span><span class="v">${fmtTokens(a.usage.inputTokens)} ${t("in")} · ${fmtTokens(a.usage.outputTokens)} ${t("out")}</span>`
+      : "") +
+    (a.usage?.costUsd != null ? `<span class="k">${t("cost")}</span><span class="v">${fmtUsd(a.usage.costUsd)}</span>` : "") +
     `</div>` +
     status +
     output +
@@ -305,6 +319,31 @@ function resultTab(run: RunDetail): string {
   );
 }
 
+/** checkpoint() calls waiting for a person: what is asked, the payload, and the decision. */
+function checkpoints(run: RunDetail, s: JobViewState): string {
+  const pending = run.pendingCheckpoints ?? [];
+  if (!pending.length) return "";
+  const canDecide = run.provider === "odw" && store.capabilities.writable;
+  return pending
+    .map((cp, i) => {
+      const payload = cp.payload !== undefined && cp.payload !== null ? `<div class="cp-payload">${renderJson(cp.payload)}</div>` : "";
+      const actions = canDecide
+        ? `<div class="cp-actions">` +
+          (i === 0
+            ? `<input id="cp-note" class="cp-note" placeholder="${esc(t("Add a note for the workflow (optional)"))}" value="${esc(s.cpNote)}" autocomplete="off"/>`
+            : "") +
+          `<button class="btn primary" data-cp="approve" data-cp-id="${cp.checkpointId}">${t("Approve")}</button>` +
+          `<button class="btn danger" data-cp="reject" data-cp-id="${cp.checkpointId}">${t("Reject")}</button></div>`
+        : `<p class="dim" style="margin:10px 0 0">${t("Resolve it with {cmd}", { cmd: `<code>odw approve ${esc(run.runId)}</code>` })}</p>`;
+      return (
+        `<section class="card checkpoint marked" data-key="cp-${cp.checkpointId}">` +
+        `<div class="cp-head">${glyph("waiting")}<span class="eyebrow">${t("Checkpoint")} · ${t("waiting since {t}", { t: fmtClock(cp.since) })}</span></div>` +
+        `<h3 class="cp-title">${esc(cp.title)}</h3>${payload}${actions}</section>`
+      );
+    })
+    .join("");
+}
+
 export function renderJob(s: JobViewState, nowSec: number): string {
   const run = store.run;
   if (!run) {
@@ -319,7 +358,7 @@ export function renderJob(s: JobViewState, nowSec: number): string {
           ? logsTab(s)
           : resultTab(run);
   return (
-    `<div class="job" data-key="job-${esc(run.runId)}">${runHead(run, nowSec)}${tabs(run, s.tab)}` +
+    `<div class="job" data-key="job-${esc(run.runId)}">${runHead(run, nowSec)}${checkpoints(run, s)}${tabs(run, s.tab)}` +
     `<section class="tab-body" data-tabbody="${s.tab}" data-key="tb-${s.tab}">${body}</section></div>`
   );
 }

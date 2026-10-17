@@ -124,8 +124,12 @@
 .gly.s-stopped .g-disc {
   fill: var(--mute);
 }
-.gly.s-stale .g-ring {
+.gly.s-stale .g-ring,
+.gly.s-waiting .g-ring {
   stroke: var(--amber);
+}
+.gly.s-waiting .g-bar {
+  animation: breathe 1.4s ease-in-out infinite;
 }
 .gly.s-stale .g-core {
   fill: var(--amber);
@@ -166,7 +170,8 @@
   background: var(--alarm-soft);
 }
 .pill.s-stale,
-.pill.s-paused {
+.pill.s-paused,
+.pill.s-waiting {
   color: var(--amber-ink);
   border-color: var(--amber-line);
   background: var(--amber-soft);

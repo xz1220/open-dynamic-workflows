@@ -9,6 +9,7 @@
  *   failed   a vermilion disc with a cross
  *   stopped  a rounded square
  *   stale    an amber dashed ring around a dot — alive on disk, silent in time
+ *   waiting  an amber ring holding a square — paused at a checkpoint for a person
  */
 import { t } from "../i18n";
 import { esc } from "../util";
@@ -24,6 +25,7 @@ const MARKS: Record<string, string> = {
   stopped: `<rect class="g-disc" x="3.4" y="3.4" width="9.2" height="9.2" rx="2.4"/>`,
   stale: `<circle class="g-ring" cx="8" cy="8" r="5.6"/><circle class="g-core" cx="8" cy="8" r="1.8"/>`,
   idle: `<circle class="g-ring" cx="8" cy="8" r="5.6"/>`,
+  waiting: `<circle class="g-ring" cx="8" cy="8" r="5.6"/><rect class="g-bar" x="5.2" y="5.2" width="5.6" height="5.6" rx="1.2"/>`,
 };
 
 /** The bare glyph for `state` (unknown states render as pending). */

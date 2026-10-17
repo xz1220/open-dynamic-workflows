@@ -7,7 +7,9 @@ export type RunDisplayState =
   | "done"
   | "failed"
   | "stopped"
-  | "stale";
+  | "stale"
+  /** Paused at a checkpoint() until someone approves or rejects it. */
+  | "waiting";
 
 export type AgentState = "running" | "done" | "failed" | "stale";
 
@@ -36,6 +38,29 @@ export interface RunSummary {
   counts: RunCounts;
   progress: number;
   lastActivityTs: number | null;
+  /** Token/cost totals when adapters report them (`estimated` when some only had chars/4). */
+  usage?: UsageTotals | null;
+}
+
+/** Normalized usage, as adapters report it. */
+export interface Usage {
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+  costUsd?: number;
+}
+
+export interface UsageTotals extends Usage {
+  estimated?: boolean;
+}
+
+/** A checkpoint() waiting for a decision. */
+export interface PendingCheckpoint {
+  checkpointId: number;
+  title: string;
+  payload?: unknown;
+  since: number;
 }
 
 export interface AgentView {
@@ -47,6 +72,10 @@ export interface AgentView {
   kind?: "agent" | "command";
   /** A command step's exit code once it settled. */
   exitCode?: number | null;
+  /** Why an agent failed: rate_limit, quota, auth, timeout, stalled, not_found, permission, exit. */
+  failureReason?: string | null;
+  /** What the adapter reported spending on this agent. */
+  usage?: Usage | null;
   label: string;
   phase: string | null;
   state: AgentState;
@@ -71,6 +100,8 @@ export interface RunDetail extends RunSummary {
   adapter: string | null;
   /** The workflow identity recorded at create time (meta.workflowName). */
   workflowName: string | null;
+  /** checkpoint() calls waiting for approval (ODW extension). */
+  pendingCheckpoints?: PendingCheckpoint[];
 }
 
 /** One adapter row exposed in settings snapshots. */

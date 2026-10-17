@@ -77,4 +77,7 @@ export const api = {
   deleteChatSession: (id: string) => deleteJSON<{ ok: true }>(`/api/chat/sessions/${enc(id)}`),
   control: (id: string, action: "pause" | "resume" | "stop") =>
     postJSON<{ ok: boolean }>(`/api/runs/${enc(id)}/control`, { action }),
+  /** Approve or reject a pending checkpoint() (ODW runs, loopback only). */
+  checkpoint: (id: string, body: { action: "approve" | "reject"; checkpointId?: number; note?: string }) =>
+    postJSON<{ ok: boolean }>(`/api/runs/${enc(id)}/checkpoint`, body),
 };

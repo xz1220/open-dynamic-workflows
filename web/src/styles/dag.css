@@ -867,6 +867,54 @@
   margin-right: 20px;
 }
 
+/* ---- checkpoints ---- */
+.checkpoint {
+  margin: 16px 32px 0;
+  padding: 16px 20px 18px;
+  border-color: var(--amber-line);
+  box-shadow: 0 0 0 4px var(--amber-soft), var(--shadow-1);
+  animation: rise var(--t-med) var(--ease-out) both;
+}
+.cp-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.cp-title {
+  margin: 8px 0 0;
+  font-family: var(--f-display);
+  font-weight: 400;
+  font-size: 26px;
+  line-height: 1.15;
+}
+.cp-payload {
+  margin-top: 12px;
+  padding: 10px 14px;
+  max-height: 220px;
+  overflow: auto;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--line);
+  background: var(--card-2);
+}
+.cp-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 14px;
+}
+.cp-note {
+  flex: 1;
+  height: 34px;
+  padding: 0 12px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--line-2);
+  background: var(--card);
+  outline: 0;
+}
+.cp-note:focus {
+  border-color: var(--ink);
+}
+
 /* ---- result ---- */
 .result {
   padding: 24px 32px 48px;

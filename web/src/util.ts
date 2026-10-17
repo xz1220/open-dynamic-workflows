@@ -88,7 +88,7 @@ export function fmtDayGroup(tsSec: number | null): string {
 export const TERMINAL = new Set(["done", "failed", "stopped"]);
 
 /** States that should count as live/active in the shell. */
-export const ACTIVE = new Set(["running", "paused", "pending"]);
+export const ACTIVE = new Set(["running", "paused", "pending", "waiting"]);
 
 /**
  * Subsequence match for the command palette: every query character must appear
@@ -121,6 +121,20 @@ export function markHits(text: string, hits: number[]): string {
   let out = "";
   for (let i = 0; i < text.length; i++) out += set.has(i) ? `<mark>${esc(text[i])}</mark>` : esc(text[i]);
   return out;
+}
+
+/** Compact token count: 812 · 12.4k · 3.1M. */
+export function fmtTokens(n: number | null | undefined): string {
+  if (n == null || !Number.isFinite(n)) return "—";
+  if (n < 1000) return String(Math.round(n));
+  if (n < 1_000_000) return `${(n / 1000).toFixed(n < 10_000 ? 1 : 0)}k`;
+  return `${(n / 1_000_000).toFixed(1)}M`;
+}
+
+/** Dollars with sensible precision for agent-sized spend. */
+export function fmtUsd(n: number | null | undefined): string {
+  if (n == null || !Number.isFinite(n)) return "—";
+  return n < 0.01 ? `$${n.toFixed(4)}` : n < 10 ? `$${n.toFixed(3)}` : `$${n.toFixed(2)}`;
 }
 
 /** Clamp to [0, 1]. */

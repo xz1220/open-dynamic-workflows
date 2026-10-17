@@ -49,7 +49,10 @@ function subLine(a: AgentView, nowSec: number): string {
     const code = a.state === "running" ? t("running") : a.exitCode != null ? `exit ${a.exitCode}` : "";
     return [t("command"), code, dur].filter(Boolean).join(" · ");
   }
-  if (a.state === "failed" && a.error) return a.error.split("\n")[0]!.slice(0, 80);
+  if (a.state === "failed" && a.error) {
+    const why = a.failureReason ? `${reasonLabel(a.failureReason)} · ` : "";
+    return why + a.error.split("\n")[0]!.slice(0, 80);
+  }
   if (a.state === "running") {
     const elapsed = a.startedAt != null ? fmtDurSec(nowSec - a.startedAt) : "";
     return [a.adapter, elapsed].filter(Boolean).join(" · ") || t("running");
@@ -58,6 +61,21 @@ function subLine(a: AgentView, nowSec: number): string {
   const dur = a.durationMs != null ? fmtDurSec(a.durationMs / 1000) : "";
   const tries = a.attempts && a.attempts > 1 ? `×${a.attempts}` : "";
   return [a.adapter, dur, tries].filter(Boolean).join(" · ");
+}
+
+/** Human words for the engine's failure classes. */
+export function reasonLabel(reason: string): string {
+  const labels: Record<string, string> = {
+    rate_limit: t("rate limit"),
+    quota: t("quota"),
+    auth: t("login needed"),
+    timeout: t("timed out"),
+    stalled: t("stalled"),
+    not_found: t("CLI not found"),
+    permission: t("permission denied"),
+    exit: t("exit"),
+  };
+  return labels[reason] ?? reason.replace(/_/g, " ");
 }
 
 export interface DagLayout {

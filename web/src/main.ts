@@ -51,6 +51,7 @@ const nowSec = () => Date.now() / 1000;
 // --- view-local UI state (not in the store) ---
 const jobs: JobsState = { filter: "all", query: "", limit: HISTORY_PAGE };
 const job: JobViewState = {
+  cpNote: "",
   tab: "graph",
   selectedAi: null,
   zoom: 1,
@@ -309,7 +310,7 @@ function restoreChatScroll(snap: ChatScrollSnapshot | null, route: Route): void 
 }
 
 // --- focus (morph keeps focused nodes; this covers re-created ones) ---
-const FOCUSABLE_IDS = new Set(["chat-input", "jobs-q", "log-q", "wf-q"]);
+const FOCUSABLE_IDS = new Set(["chat-input", "jobs-q", "log-q", "wf-q", "cp-note"]);
 type FocusSnapshot = { id: string; start: number | null; end: number | null } | null;
 
 function captureFocus(): FocusSnapshot {
@@ -587,6 +588,22 @@ root.addEventListener("click", (ev) => {
   }
   const copyEl = t.closest<HTMLElement>("[data-copy]");
   if (copyEl) return copy(copyEl.dataset.copy!);
+  const cpEl = t.closest<HTMLElement>("[data-cp]");
+  if (cpEl && store.run) {
+    const id = store.run.runId;
+    const action = cpEl.dataset.cp as "approve" | "reject";
+    const checkpointId = Number(cpEl.dataset.cpId);
+    const note = job.cpNote.trim() || undefined;
+    void api
+      .checkpoint(id, { action, checkpointId, note })
+      .then(() => {
+        job.cpNote = "";
+        toast({ state: action === "approve" ? "done" : "stopped", title: action === "approve" ? tr("Approved") : tr("Rejected"), body: id, ttlMs: 2400 });
+        return store.loadRun(id);
+      })
+      .catch((err: Error) => toast({ state: "failed", title: tr("Could not resolve the checkpoint"), body: err.message }));
+    return;
+  }
   const stopEl = t.closest<HTMLElement>("[data-stop]");
   if (stopEl) {
     const id = stopEl.dataset.stop!;
@@ -720,6 +737,9 @@ root.addEventListener("input", (ev) => {
     case "wf-q":
       wfQuery = el.value;
       return render();
+    case "cp-note":
+      job.cpNote = el.value;
+      return;
   }
 });
 

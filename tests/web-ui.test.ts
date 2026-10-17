@@ -10,9 +10,10 @@ import { renderPulse } from "../web/src/components/pulse.ts";
 import { highlightSource, outlineSource } from "../web/src/components/source.ts";
 import { renderTimeline } from "../web/src/components/timeline.ts";
 import { renderDag } from "../web/src/dag.ts";
-import { applyRunsDelta } from "../web/src/store.ts";
+import { applyRunsDelta, store } from "../web/src/store.ts";
+import { renderJob, type JobViewState } from "../web/src/views/job.ts";
 import type { ActivityEvent, AgentView, RunDetail, RunSummary } from "../web/src/types.ts";
-import { esc, fmtDurSec, fuzzy, markHits } from "../web/src/util.ts";
+import { esc, fmtDurSec, fmtTokens, fmtUsd, fuzzy, markHits } from "../web/src/util.ts";
 
 const NOW = 1_800_000_000;
 
@@ -213,4 +214,46 @@ test("renderDag draws exec() steps as terminal cards with their exit code", () =
   assert.match(html, /class="node done cmd/);
   assert.match(html, /<span class="prompt">\$<\/span> npm test/);
   assert.match(html, /command · exit 1/);
+});
+
+test("token and dollar formatting stay compact", () => {
+  assert.equal(fmtTokens(812), "812");
+  assert.equal(fmtTokens(12_400), "12k");
+  assert.equal(fmtTokens(3_100_000), "3.1M");
+  assert.equal(fmtUsd(0.0042), "$0.0042");
+  assert.equal(fmtUsd(1.23456), "$1.235");
+  assert.equal(fmtTokens(undefined), "—");
+});
+
+test("a run view shows pending checkpoints, usage and failure reasons when the server reports them", () => {
+  const view: JobViewState = {
+    cpNote: "",
+    tab: "graph",
+    selectedAi: 1,
+    zoom: 1,
+    logQuery: "",
+    logTypes: new Set(["agent"]),
+    follow: true,
+    motion: false,
+  };
+  store.focusRun("20260101-000000-aaaaaa");
+  store.run = detail(
+    [
+      agent("plan", "Plan", "done", { usage: { inputTokens: 1200, outputTokens: 300, costUsd: 0.012 } }),
+      agent("search:1", "Search", "failed", { failureReason: "rate_limit", error: "429 too many requests" }),
+    ],
+    {
+      state: "waiting",
+      usage: { inputTokens: 1200, outputTokens: 300, costUsd: 0.012 },
+      pendingCheckpoints: [{ checkpointId: 0, title: "Approve the plan?", payload: { angles: 4 }, since: NOW - 30 }],
+    },
+  );
+  const html = renderJob(view, NOW);
+  assert.match(html, /class="card checkpoint/);
+  assert.match(html, /Approve the plan\?/);
+  assert.match(html, /data-cp="approve" data-cp-id="0"/);
+  assert.match(html, /1\.5k<\/span><span class="k">tokens/);
+  assert.match(html, /\$0\.012/);
+  assert.match(html, /rate limit/); // the failed node and the drawer name the class
+  store.focusRun(null);
 });
