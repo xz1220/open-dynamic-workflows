@@ -16,6 +16,12 @@
  * dependency-free subset of JSON Schema; workflow scripts usually write the
  * objects by hand (the Claude dialect), but the constructors below are offered
  * as optional sugar.
+ *
+ * {@link auditSchema} finds what in a schema that subset does not check, so a
+ * call can be refused before it starts rather than leave a constraint
+ * silently unchecked; {@link checkedSubset} is the part it does check, for a
+ * CLI that enforces the rest natively (an ODW extension, see
+ * adapters/native-schema.ts), whose own value {@link pickStructured} prefers.
  */
 
 export type JsonSchema = Record<string, unknown>;
@@ -95,6 +101,25 @@ export function pickJson(text: string, schema: JsonSchema): JsonPick {
     }
   }
   return closest ?? { value: undefined, problems: ["no JSON value found in the reply"] };
+}
+
+/**
+ * {@link pickJson} for a reply whose CLI also handed over the value itself
+ * (natively validated structured output, e.g. Claude Code's
+ * `structured_output`; `undefined` when it did not). That value is the most
+ * deliberate candidate, so it comes first — a JSON string there is read like a
+ * reply — and the reply text is searched only when it does not satisfy the
+ * schema. With nothing valid, the problems are the handed-over value's.
+ */
+export function pickStructured(structured: unknown, text: string, schema: JsonSchema): JsonPick {
+  if (structured === undefined) return pickJson(text, schema);
+  const problems = validate(structured, schema);
+  if (problems.length === 0) return { value: structured, problems };
+  const inner = typeof structured === "string" ? pickJson(structured, schema) : undefined;
+  if (inner && inner.problems.length === 0) return inner;
+  const fromText = pickJson(text, schema);
+  if (fromText.problems.length === 0) return fromText;
+  return inner && inner.value !== undefined ? inner : { value: structured, problems };
 }
 
 /**
@@ -296,4 +321,340 @@ function typeName(value: unknown): string {
   if (t === "number") return Number.isInteger(value as number) ? "integer" : "number";
   if (t === "object") return "object";
   return t; // string | boolean | etc.
+}
+
+// --- what the validator checks -----------------------------------------------
+
+/** Something in a schema {@link validate} would not check, as {@link auditSchema} reports it. */
+export interface SchemaIssue {
+  /** Where: a JSON Pointer into the schema (`#/properties/status`; `#` is the root). */
+  at: string;
+  /** What, in a few words: `"oneOf"`, `a type union ["string","null"]`, `unknown keyword "requird"`. */
+  what: string;
+  /**
+   * `"unchecked"`: JSON Schema the validator does not check — a CLI that
+   * validates the schema itself may. `"invalid"`: nothing would check it — a
+   * malformed keyword, or a key JSON Schema does not have (a typo).
+   */
+  kind: "unchecked" | "invalid";
+}
+
+/**
+ * The keywords {@link validate} checks, and the explicit `type` each needs
+ * (`null`: none): object and array keywords are checked only under theirs.
+ */
+const CHECKED_KEYWORDS: Record<string, "object" | "array" | null> = {
+  type: null,
+  enum: null,
+  properties: "object",
+  required: "object",
+  additionalProperties: "object",
+  items: "array",
+  minItems: "array",
+};
+
+/** Keywords that describe or organize a schema but constrain no value: nothing needs to check them. */
+const ANNOTATION_KEYWORDS = new Set([
+  "$schema",
+  "$id",
+  "$anchor",
+  "$dynamicAnchor",
+  "$recursiveAnchor",
+  "$vocabulary",
+  "$comment",
+  "$defs",
+  "definitions",
+  "title",
+  "description",
+  "default",
+  "examples",
+  "deprecated",
+  "readOnly",
+  "writeOnly",
+]);
+
+/** JSON Schema keywords {@link validate} does not check: only a CLI that validates the schema natively enforces them. */
+const UNCHECKED_KEYWORDS = new Set([
+  "allOf",
+  "anyOf",
+  "oneOf",
+  "not",
+  "if",
+  "then",
+  "else",
+  "$ref",
+  "$dynamicRef",
+  "$recursiveRef",
+  "const",
+  "multipleOf",
+  "minimum",
+  "maximum",
+  "exclusiveMinimum",
+  "exclusiveMaximum",
+  "minLength",
+  "maxLength",
+  "pattern",
+  "format",
+  "contentEncoding",
+  "contentMediaType",
+  "contentSchema",
+  "prefixItems",
+  "additionalItems",
+  "unevaluatedItems",
+  "contains",
+  "minContains",
+  "maxContains",
+  "maxItems",
+  "uniqueItems",
+  "patternProperties",
+  "propertyNames",
+  "unevaluatedProperties",
+  "minProperties",
+  "maxProperties",
+  "dependentRequired",
+  "dependentSchemas",
+  "dependencies",
+]);
+
+/** Where keywords hold subschemas: one, a list, or a map of them (`items` may also be a list: a tuple). */
+const SUBSCHEMAS: Record<string, "one" | "list" | "map"> = {
+  properties: "map",
+  patternProperties: "map",
+  dependentSchemas: "map",
+  dependencies: "map",
+  $defs: "map",
+  definitions: "map",
+  allOf: "list",
+  anyOf: "list",
+  oneOf: "list",
+  prefixItems: "list",
+  items: "one",
+  additionalProperties: "one",
+  additionalItems: "one",
+  unevaluatedItems: "one",
+  unevaluatedProperties: "one",
+  contains: "one",
+  propertyNames: "one",
+  contentSchema: "one",
+  not: "one",
+  if: "one",
+  then: "one",
+  else: "one",
+};
+
+/**
+ * Everything in a schema that {@link validate} would not check (empty: it
+ * checks it all). A keyword outside the documented subset — `oneOf`, `$ref`,
+ * `const`, `pattern`, `maxItems`, a type union, an object keyword with no
+ * `type: "object"` — is `unchecked`: a CLI that validates the schema itself
+ * may enforce it. A malformed keyword, or a key that is no JSON Schema keyword
+ * at all, is `invalid`. Annotations (`description`, `title`, `default`, …)
+ * constrain nothing and pass.
+ */
+export function auditSchema(schema: unknown): SchemaIssue[] {
+  const issues: SchemaIssue[] = [];
+  auditNode(schema, "#", issues, false);
+  return issues;
+}
+
+/**
+ * Audit one schema node and what it holds. `quiet`: the node sits inside
+ * something already reported unchecked (a `oneOf` branch, a tuple, `$defs`) —
+ * removing that removes it, so only what is invalid in it is reported.
+ */
+function auditNode(node: unknown, at: string, issues: SchemaIssue[], quiet: boolean): void {
+  const unchecked = (what: string): void => void (quiet || issues.push({ at, what, kind: "unchecked" }));
+  const invalid = (what: string): void => void issues.push({ at, what, kind: "invalid" });
+  if (typeof node === "boolean") return unchecked(`a boolean schema (${node})`);
+  if (!isRecord(node)) return invalid(`a schema that is ${kindOf(node)}, not an object`);
+  const type = typeof node.type === "string" ? node.type : undefined;
+  const union = Array.isArray(node.type);
+  for (const [key, value] of Object.entries(node)) {
+    // A key set to undefined (`minItems: cond ? 2 : undefined`) is absent: JSON drops it.
+    if (value === undefined) continue;
+    let nested = quiet;
+    if (key === "type") {
+      auditType(value, unchecked, invalid);
+    } else if (Object.hasOwn(CHECKED_KEYWORDS, key)) {
+      const shape = checkedShape(key, value);
+      const needs = CHECKED_KEYWORDS[key];
+      if (shape) invalid(`"${key}" that is not ${shape}`);
+      else if (key === "additionalProperties" && isRecord(value)) {
+        unchecked(`a schema-valued "additionalProperties"`);
+        nested = true;
+      } else if (key === "items" && Array.isArray(value)) {
+        unchecked(`"items" as a list (a tuple)`);
+        nested = true;
+      } else if (needs && type === undefined && !union && !(key === "additionalProperties" && value === true)) {
+        // Checked only under its own explicit type; under another single type
+        // it applies to no value anyway, and a type union is reported itself.
+        unchecked(`"${key}" without "type": "${needs}"`);
+      }
+    } else if (UNCHECKED_KEYWORDS.has(key)) {
+      unchecked(`"${key}"`);
+      nested = true;
+    } else if (ANNOTATION_KEYWORDS.has(key)) {
+      nested = true; // `$defs`: reached only through a `$ref`, itself unchecked
+    } else {
+      const guess = nearestWord(key, [...Object.keys(CHECKED_KEYWORDS), ...ANNOTATION_KEYWORDS, ...UNCHECKED_KEYWORDS]);
+      invalid(`unknown keyword "${key}"${guess ? ` (did you mean "${guess}"?)` : ""}`);
+      continue; // what an unknown key holds is no schema
+    }
+    for (const [where, sub] of subschemasOf(key, value)) auditNode(sub, `${at}/${where}`, issues, nested);
+  }
+}
+
+/** Type names from other languages, for a did-you-mean the edit distance would miss. */
+const TYPE_ALIASES: Record<string, string> = {
+  int: "integer",
+  float: "number",
+  double: "number",
+  bool: "boolean",
+  str: "string",
+  dict: "object",
+  map: "object",
+  list: "array",
+};
+
+function auditType(value: unknown, unchecked: (what: string) => void, invalid: (what: string) => void): void {
+  const known = Object.keys(CHECKERS);
+  if (typeof value === "string") {
+    if (known.includes(value)) return;
+    const alias = value.toLowerCase();
+    const guess = Object.hasOwn(TYPE_ALIASES, alias) ? TYPE_ALIASES[alias] : nearestWord(value, known);
+    return invalid(`unknown type "${value}"${guess ? ` (did you mean "${guess}"?)` : ""}`);
+  }
+  if (Array.isArray(value) && value.length > 0 && value.every((t) => typeof t === "string" && known.includes(t))) {
+    return unchecked(`a type union ${JSON.stringify(value)}`);
+  }
+  invalid(`"type" that is not one of ${known.join(", ")} (or a list of them)`);
+}
+
+/** What a checked keyword's value should be, when it is not that; null when it is. */
+function checkedShape(key: string, value: unknown): string | null {
+  switch (key) {
+    case "enum":
+      return Array.isArray(value) ? null : "a list";
+    case "properties":
+      return isRecord(value) ? null : "an object of schemas";
+    case "required":
+      return Array.isArray(value) && value.every((name) => typeof name === "string") ? null : "a list of property names";
+    case "additionalProperties":
+      return typeof value === "boolean" || isRecord(value) ? null : "true, false or a schema";
+    case "items":
+      return typeof value === "boolean" || isRecord(value) || Array.isArray(value) ? null : "a schema or a list of schemas";
+    case "minItems":
+      return typeof value === "number" && Number.isInteger(value) && value >= 0 ? null : "a whole number of 0 or more";
+    default:
+      return null;
+  }
+}
+
+/** The subschemas a keyword holds, each with its JSON Pointer step(s) from the schema holding it. */
+function subschemasOf(key: string, value: unknown): Array<[string, unknown]> {
+  if (!Object.hasOwn(SUBSCHEMAS, key)) return [];
+  const shape = SUBSCHEMAS[key];
+  const step = escapePointer(key);
+  if (shape === "map") {
+    if (!isRecord(value)) return [];
+    // `dependencies` may map a property to a list of names: only its schemas are schemas.
+    return Object.entries(value)
+      .filter(([, sub]) => key !== "dependencies" || !Array.isArray(sub))
+      .map(([name, sub]) => [`${step}/${escapePointer(name)}`, sub]);
+  }
+  if (Array.isArray(value)) return shape === "list" || key === "items" ? value.map((sub, i) => [`${step}/${i}`, sub]) : [];
+  // A boolean `additionalProperties` (true, or the checked false) is no subschema.
+  if (shape === "one" && (isRecord(value) || (typeof value === "boolean" && key !== "additionalProperties"))) {
+    return [[step, value]];
+  }
+  return [];
+}
+
+/**
+ * The part of a schema {@link validate} checks: every keyword it does not
+ * check dropped, as are a type union and the object/array keywords it would
+ * govern, and a boolean subschema becomes `{}`. What ODW validates a reply
+ * against when the CLI enforces the whole schema natively.
+ */
+export function checkedSubset(schema: unknown): JsonSchema {
+  if (!isRecord(schema)) return {};
+  const out: JsonSchema = {};
+  if (typeof schema.type === "string") out.type = schema.type;
+  if (Array.isArray(schema.enum)) out.enum = schema.enum;
+  if (out.type === "object") {
+    if (isRecord(schema.properties)) {
+      out.properties = Object.fromEntries(Object.entries(schema.properties).map(([key, sub]) => [key, checkedSubset(sub)]));
+    }
+    if (Array.isArray(schema.required)) out.required = schema.required;
+    if (schema.additionalProperties === false) out.additionalProperties = false;
+  }
+  if (out.type === "array") {
+    if (isRecord(schema.items)) out.items = checkedSubset(schema.items);
+    if (typeof schema.minItems === "number") out.minItems = schema.minItems;
+  }
+  return out;
+}
+
+/**
+ * Whether a schema is one OpenAI's strict structured outputs accept, as Codex
+ * sends its `--output-schema`: an object at the root, and every object closed
+ * (`"additionalProperties": false`) with every one of its properties in
+ * `required`. Which other keywords strict mode allows is for the CLI to say.
+ */
+export function isStrictSchema(schema: unknown): boolean {
+  return isRecord(schema) && schema.type === "object" && strictNode(schema);
+}
+
+function strictNode(node: unknown): boolean {
+  if (!isRecord(node)) return true;
+  const types = Array.isArray(node.type) ? node.type : [node.type];
+  if (types.includes("object") || "properties" in node) {
+    const names = isRecord(node.properties) ? Object.keys(node.properties) : [];
+    const required = Array.isArray(node.required) ? node.required : [];
+    if (node.additionalProperties !== false || !names.every((name) => required.includes(name))) return false;
+  }
+  return Object.entries(node).every(([key, value]) => subschemasOf(key, value).every(([, sub]) => strictNode(sub)));
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** The kind of a JSON value, for a message: "a string", "a list", "null". */
+function kindOf(value: unknown): string {
+  if (value === null || value === undefined) return String(value);
+  if (Array.isArray(value)) return "a list";
+  return `a ${typeof value}`;
+}
+
+/** One step of a JSON Pointer: `~` and `/` escaped (RFC 6901). */
+function escapePointer(step: string): string {
+  return step.replace(/~/g, "~0").replace(/\//g, "~1");
+}
+
+/** The closest of `words` within an edit distance of 2 (case-insensitive), for a did-you-mean; null when none is. */
+function nearestWord(word: string, words: Iterable<string>): string | null {
+  const lower = word.toLowerCase();
+  let best: string | null = null;
+  let bestDistance = 3;
+  for (const candidate of words) {
+    const distance = editDistance(lower, candidate.toLowerCase());
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      best = candidate;
+    }
+  }
+  return best;
+}
+
+function editDistance(a: string, b: string): number {
+  let previous = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    const current = [i];
+    for (let j = 1; j <= b.length; j++) {
+      current[j] = Math.min(previous[j]! + 1, current[j - 1]! + 1, previous[j - 1]! + (a[i - 1] === b[j - 1] ? 0 : 1));
+    }
+    previous = current;
+  }
+  return previous[b.length]!;
 }
