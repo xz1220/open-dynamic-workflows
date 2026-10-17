@@ -324,6 +324,88 @@ test("collectConfigWarnings knows the stall keys, top-level and per adapter", ()
   assert.match(typo!, /did you mean "stallTimeout"/);
 });
 
+test("notify is off by default and loads normalized", () => {
+  assert.equal(defaultConfig().settings.notify, null);
+  const dir = mkdtempSync(join(tmpdir(), "odw-cfg-"));
+  try {
+    const p = join(dir, "odw.config.json");
+    const load = (notify: unknown) => {
+      writeFileSync(p, JSON.stringify({ notify }));
+      return loadConfig(p, { quiet: true }).settings.notify;
+    };
+    assert.equal(load(null), null);
+    assert.deepEqual(
+      load({
+        command: ["/usr/local/bin/odw-notify", "--channel", "ops"],
+        webhook: "https://hooks.slack.com/services/T0/B0/XYZ",
+        on: ["stopped", "failed", "failed"],
+      }),
+      {
+        command: ["/usr/local/bin/odw-notify", "--channel", "ops"],
+        webhook: "https://hooks.slack.com/services/T0/B0/XYZ",
+        on: ["failed", "stopped"],
+      },
+    );
+    assert.deepEqual(load({ webhook: "http://127.0.0.1:9000/hook" }), {
+      command: null,
+      webhook: "http://127.0.0.1:9000/hook",
+      on: ["done", "failed", "stopped"],
+    });
+    assert.deepEqual(load({ command: ["say", "done"], on: [] }).on, [], "an empty list mutes the hooks");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a malformed notify block is a ConfigError that never echoes a secret", () => {
+  const dir = mkdtempSync(join(tmpdir(), "odw-cfg-"));
+  try {
+    const p = join(dir, "odw.config.json");
+    const cases: Array<[unknown, RegExp]> = [
+      ["https://hooks.slack.com/services/SECRET", /"notify" must be an object .*; got a string$/],
+      [["say"], /"notify" must be an object/],
+      [
+        { command: "notify-send --token SECRET" },
+        /"notify.command" must be a non-empty array of strings \(an argv, run without a shell\); got a string$/,
+      ],
+      [{ command: [] }, /"notify.command" .*; got an empty list$/],
+      [{ command: [""] }, /"notify.command"/],
+      [{ command: ["say", 1] }, /"notify.command"/],
+      [
+        { webhook: "hooks.slack.com/services/SECRET" },
+        /"notify.webhook" must be an http\(s\) URL; got a string that is not an absolute URL$/,
+      ],
+      [{ webhook: "ftp://example.com/SECRET" }, /"notify.webhook" must be an http\(s\) URL; got a ftp: URL$/],
+      [{ webhook: 42 }, /"notify.webhook" must be an http\(s\) URL; got a number$/],
+      [{ webhook: "https://user:SECRET@example.com/hook" }, /"notify.webhook" must not embed credentials/],
+      [
+        { webhook: "https://example.com/h", on: ["done", "finished"] },
+        /"notify.on" must be a list of "done", "failed", "stopped"; got \["done","finished"\]/,
+      ],
+      [{ webhook: "https://example.com/h", on: "failed" }, /"notify.on"/],
+    ];
+    for (const [notify, message] of cases) {
+      writeFileSync(p, JSON.stringify({ notify }));
+      assert.throws(
+        () => loadConfig(p, { quiet: true }),
+        (err: Error) => err instanceof ConfigError && message.test(err.message) && !/SECRET/.test(err.message),
+        JSON.stringify(notify),
+      );
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("collectConfigWarnings knows notify, flags its typos, and a notify with no hook", () => {
+  const valid = { command: ["x"], webhook: "https://example.com/h", on: ["done"], $comment: "ok" };
+  assert.deepEqual(collectConfigWarnings({ notify: valid }), []);
+  const [typo] = collectConfigWarnings({ notify: { comand: ["x"], webhook: "https://example.com/h" } });
+  assert.match(typo!, /^notify: unknown field "comand" is ignored — did you mean "command"\?$/);
+  const [idle] = collectConfigWarnings({ notify: { on: ["failed"] } });
+  assert.match(idle!, /neither "command" nor "webhook", so no hook will fire/);
+});
+
 test("a scheduler refuses NaN limits instead of deadlocking", () => {
   assert.throws(() => new Scheduler({ concurrency: NaN, maxAgents: 10 }), ConfigError);
   assert.throws(() => new Scheduler({ concurrency: 2, maxAgents: NaN }), ConfigError);

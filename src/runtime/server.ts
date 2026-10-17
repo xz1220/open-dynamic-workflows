@@ -24,7 +24,7 @@
  *   GET  /api/workflows             [WorkflowSummary] from the managed workflow dirs
  *   GET  /api/workflows/:name       WorkflowDetail (?provider=odw|claude picks a shadowed name)
  *   GET  /api/capabilities          { writable }: whether this bind accepts writes
- *   GET  /api/settings              runtime config summary (adapters, roots, Claude scope)
+ *   GET  /api/settings              runtime config summary (adapters, roots, Claude scope, notify)
  *   *    /api/chat/sessions[/:id[/messages]]   the Chat Host (see ./chat-host)
  *
  * GET /api/activity?limit=N (default 40, clamped to 1..200; junk → 40) →
@@ -68,6 +68,7 @@ import {
   resolveClaudeProjectsRoot,
   resolveClaudeWorkflowsRoot,
   resolveWorkflowsRoot,
+  RUN_END_STATES,
 } from "../adapters/config.js";
 import type { Config } from "../adapters/types.js";
 import { DASHBOARD_HTML } from "../dashboard.generated.js";
@@ -84,6 +85,7 @@ import {
   sendJsonCached,
   writeGuard,
 } from "./http-util.js";
+import { webhookOrigin } from "./notify.js";
 import { OdwRunSource } from "./odw-run-source.js";
 import { RunFeed } from "./run-feed.js";
 import { allSummaries, sourceForRun, type RunSource } from "./run-source.js";
@@ -383,6 +385,13 @@ function settingsView(
         path: resolveClaudeWorkflowsRoot(config.settings.claudeWorkflowsRoot),
       },
     ],
+    // Whether hooks are set, not what they are: a command's arguments and a
+    // webhook's path/query routinely carry tokens. The webhook shows as scheme + host.
+    notify: {
+      command: config.settings.notify?.command != null,
+      webhook: config.settings.notify?.webhook ? webhookOrigin(config.settings.notify.webhook) : null,
+      on: config.settings.notify?.on ?? [...RUN_END_STATES],
+    },
   };
 }
 

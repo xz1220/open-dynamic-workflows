@@ -86,6 +86,24 @@ export interface Settings {
    * broader — it exposes other projects' run names/results on this loopback server.
    */
   claudeJobsScope: "all" | "project";
+  /** Hooks fired when a run ends; `null` => none. */
+  notify: NotifySettings | null;
+}
+
+/** The terminal states a run can end in, and that notify hooks can fire on. */
+export type RunEndState = "done" | "failed" | "stopped";
+
+/**
+ * Run-completion hooks (an ODW extension), fired by the worker once a run's
+ * terminal state is on disk. They are bounded and can never change the outcome.
+ */
+export interface NotifySettings {
+  /** An argument vector spawned WITHOUT a shell; the run is described in `ODW_*` env vars. */
+  command: string[] | null;
+  /** An http(s) URL that receives a JSON POST describing the run. */
+  webhook: string | null;
+  /** Which terminal states fire the hooks (all three unless configured). */
+  on: RunEndState[];
 }
 
 export interface Config {

@@ -16,6 +16,7 @@ import { pathToFileURL } from "node:url";
 
 import { loadConfig } from "../adapters/config.js";
 import { killAllAgentProcesses } from "../adapters/runner.js";
+import type { RunEndState } from "../adapters/types.js";
 import { buildContext, spentTokens, type RunContext } from "../context.js";
 import { RunStopped, WorkflowScriptError, isFatalError } from "../errors.js";
 import { LOG, RUN_FAILED, RUN_FINISHED, RUN_STARTED, RUN_STOPPED, event } from "../events.js";
@@ -23,6 +24,7 @@ import { loadWorkflowScript } from "../loader.js";
 import { createPrimitives } from "../primitives.js";
 import type { Scheduler } from "../scheduler.js";
 import { FileControl } from "./file-control.js";
+import { notifyRunEnd } from "./notify.js";
 import { JsonlSink, RunStore } from "./run-store.js";
 
 /**
@@ -43,6 +45,9 @@ const ABORT_DRAIN_MS = 10_000;
  * return, awaited) before the outcome is recorded, and a process 'exit'
  * listener kills any that remain while the run executes — an agent must never
  * outlive its worker and keep editing the repository unsupervised.
+ *
+ * Once the outcome is on disk, the configured run-end hooks (`notify`) fire;
+ * they are bounded and never throw, so they cannot change the returned state.
  */
 export async function executeRun(runDir: string): Promise<string> {
   const store = new RunStore(dirname(runDir));
@@ -62,6 +67,7 @@ export async function executeRun(runDir: string): Promise<string> {
 
   const crashes = watchProcessCrashes();
   process.on("exit", killAllAgentProcesses);
+  let end: { state: RunEndState; error?: string };
   try {
     const baseConfig = loadConfig((meta.configPath as string | null) ?? null);
     // Run-level adapter override (meta.adapter): becomes this run's default for
@@ -134,7 +140,7 @@ export async function executeRun(runDir: string): Promise<string> {
     store.writeResult(runId, result);
     sink.emit(event(RUN_FINISHED, { runId }));
     store.updateStatus(runId, { state: "done", dispatched: dispatched(), spentTokens: spent() });
-    return "done";
+    end = { state: "done" };
   } catch (err) {
     // The first fatal error is the root cause, even when the script swallowed
     // it and later failed for another reason (still worth a log line).
@@ -146,17 +152,24 @@ export async function executeRun(runDir: string): Promise<string> {
     if (outcome instanceof RunStopped) {
       sink.emit(event(RUN_STOPPED, { runId }));
       store.updateStatus(runId, { state: "stopped", dispatched: dispatched(), spentTokens: spent() });
-      return "stopped";
+      end = { state: "stopped", error: outcome.message };
+    } else {
+      const e = outcome as Error;
+      const message = e.message ?? String(outcome);
+      sink.emit(event(RUN_FAILED, { runId, error: message }));
+      store.writeError(runId, { error: message, stack: e.stack ?? null });
+      store.updateStatus(runId, { state: "failed", dispatched: dispatched(), spentTokens: spent() });
+      end = { state: "failed", error: message };
     }
-    const e = outcome as Error;
-    sink.emit(event(RUN_FAILED, { runId, error: e.message ?? String(outcome) }));
-    store.writeError(runId, { error: e.message ?? String(outcome), stack: e.stack ?? null });
-    store.updateStatus(runId, { state: "failed", dispatched: dispatched(), spentTokens: spent() });
-    return "failed";
   } finally {
     process.off("exit", killAllAgentProcesses);
     crashes.dispose();
   }
+  // The outcome is on disk; only now do the run-end hooks fire.
+  await notifyRunEnd(ctx?.config.settings.notify ?? null, { store, runId, ...end }, {
+    cwd: typeof meta.source === "string" ? meta.source : undefined,
+  });
+  return end.state;
 }
 
 /**
