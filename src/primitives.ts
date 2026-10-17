@@ -216,6 +216,16 @@ export function createPrimitives(
             },
             // A retry is another CLI run: it passes the stop/budget guards first.
             beforeRetry: () => ctx.scheduler.recheck(),
+            // The stall watchdog (opt-in) restarts a CLI that went quiet: say so.
+            onStall: ({ quietSeconds, restart, maxRestarts }) =>
+              ctx.emit(
+                event(LOG, {
+                  message: `${display}:${agentId} went quiet for ${quietSeconds}s — restarting (${restart}/${maxRestarts})`,
+                  agentId,
+                  label: display,
+                  phase: activePhase,
+                }),
+              ),
           });
         } catch (err) {
           // A started agent always gets a terminal event, even when the error

@@ -86,11 +86,14 @@ did-you-mean hint) instead of silently ignoring them.
 | `concurrency` | max agent CLIs running at once; omit for auto (`min(16, cpus-2)`) |
 | `maxAgents` | hard cap on total dispatches per run (runaway guard) |
 | `timeout` | per-agent CLI timeout in seconds |
+| `stallTimeout` | **ODW extension.** Seconds an agent may print nothing on stdout or stderr before it is killed (like a timeout) and restarted with the same prompt; `null` (default) = off. Off for every built-in because some CLIs (`claude --print` in text mode) print nothing until they finish — enable it for adapters that stream progress |
+| `stallRestarts` | restarts per `agent()` call after a stall before the call fails with a "stalled" error (default 1) |
 | `schemaRetries` | extra attempts when a schema fails to validate |
 | `runsRoot` | where runs are stored (default `~/.odw/runs`) |
 | `workflowsRoot` | where workflows are resolved by name (default `~/.odw/workflows`) |
 | `claudeWorkflowsRoot` | where Claude Code saved workflows are picked up (default `~/.claude/workflows`, honors `CLAUDE_CONFIG_DIR`) |
 | `claudeJobsScope` | which Claude Code runs the dashboard shows: `"all"` (default) or `"project"` |
+| `notify` | **ODW extension.** Run-end hooks: `{ "command": [argv], "webhook": "https://…", "on": ["done", "failed", "stopped"] }` — see below |
 
 ### Adapter fields
 
@@ -100,8 +103,26 @@ did-you-mean hint) instead of silently ignoring them.
 | `stdin` | optional template fed to the process's stdin (e.g. `"{prompt}"`) |
 | `env` | extra environment variables layered over the process environment |
 | `timeout` | per-call timeout in seconds (overrides the run-wide `timeout`) |
+| `stallTimeout` | stall timeout in seconds for this CLI (overrides the run-wide `stallTimeout`; `0` turns the watchdog off for this adapter) |
 | `label` | human-friendly name for progress display |
 | `flags` | capability declaration, e.g. `{ "model": ["--model"] }` — the native flag that carries a per-call `model`. Without it, `agent(..., { model })` is not honored for this adapter (a routing note appears in the logs) |
+
+### Run notifications (`notify`)
+
+The hooks fire once per run, after its final state is written, so they can
+neither delay nor change it; a hook that fails or hangs is only logged to the
+run's `worker.log`.
+
+- `command` — an argv run **without** a shell (killed after 30s), in the run's
+  source directory, with `ODW_RUN_ID`, `ODW_RUN_STATE`, `ODW_WORKFLOW`,
+  `ODW_RUN_DIR`, `ODW_RESULT_FILE` (only when the run has a result),
+  `ODW_DURATION_SEC`, `ODW_AGENTS` and `ODW_FAILED_AGENTS` in its environment.
+- `webhook` — an http(s) URL that receives a JSON POST (10s limit):
+  `{ runId, workflow, state, createdAt, finishedAt, durationSec,
+  counts: { agents, done, failed }, error?, text, content }`. `text` and
+  `content` carry one summary line ("odw · deep-research finished in 4m12s ·
+  12 agents, 1 failed"), so Slack and Discord incoming webhooks render it as is.
+- `on` — which final states fire the hooks (default: all three).
 
 ### Placeholders
 

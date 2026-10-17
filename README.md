@@ -295,7 +295,10 @@ background from the environment.
 
 A run executes in a detached worker process and persists everything to a run
 directory, so it outlives the command that started it and can be observed from
-anywhere.
+anywhere. Sending that worker SIGTERM, SIGINT or SIGHUP stops the run just like
+`odw stop` — its agents and everything they started are killed, their worktrees
+removed, and the run is recorded stopped; a second signal, or the run not ending
+within 10 seconds, makes the worker exit at once.
 
 Saved workflows can also be run by name. ODW searches project workflows first,
 then personal workflows, across both its own directories and Claude Code's saved
@@ -473,6 +476,76 @@ silently ignoring them. With no `defaultAdapter` set, odw uses the sole
 configured adapter — or, on a fresh install, the sole adapter whose CLI it
 actually finds on PATH; if several are installed, the error lists them and shows
 how to pick one.
+
+### Stall watchdog
+
+**ODW extension.** A hung agent CLI otherwise holds its slot until `timeout`
+(30 minutes by default). Set `stallTimeout` and ODW kills an agent whose stdout
+*and* stderr have both been silent that many seconds — its whole process group,
+exactly like a timeout — then starts it again with the same prompt, up to
+`stallRestarts` times per `agent()` call (default 1). Each restart is logged
+(`search:3 went quiet for 120s — restarting (1/1)`); past the cap the call fails
+with an error saying the agent stalled. A stop, pause or budget ceiling always
+wins over a restart.
+
+```jsonc
+{
+  "stallTimeout": 120, // seconds of silence; null (the default) = off
+  "stallRestarts": 1,
+  "adapters": {
+    // per adapter: overrides the run-wide value; 0 turns the watchdog off for it
+    "my_wrapper": { "command": ["my-agent", "--stream", "{prompt}"], "stallTimeout": 300 }
+  }
+}
+```
+
+The watchdog is **off by default for every built-in adapter**: some CLIs —
+`claude --print` in text mode among them — print nothing until they finish, so
+any stall timeout would kill healthy work. Use it for adapters that stream
+progress (JSONL adapters such as `kilo` and `opencode`, or a wrapper that prints
+a heartbeat), with a value above the longest quiet stretch a healthy agent has —
+a long test run inside one tool call prints nothing either.
+
+### Run notifications
+
+**ODW extension.** `notify` runs a command and/or POSTs to a webhook when a run
+ends, so an overnight run can tell you how it went:
+
+```jsonc
+"notify": {
+  "command": ["/usr/local/bin/odw-notify"],        // an argv, run WITHOUT a shell
+  "webhook": "https://hooks.slack.com/services/…", // Slack, Discord, or any JSON endpoint
+  "on": ["done", "failed", "stopped"]              // the default: every final state
+}
+```
+
+The hooks fire once, after the run's final state is written, so they can neither
+delay nor change it; a hook that fails or hangs is only logged to the run's
+`worker.log`. The command (killed after 30s) runs in the run's source directory
+with `ODW_RUN_ID`, `ODW_RUN_STATE`, `ODW_WORKFLOW`, `ODW_RUN_DIR`,
+`ODW_RESULT_FILE` (only when the run has a result), `ODW_DURATION_SEC`,
+`ODW_AGENTS` and `ODW_FAILED_AGENTS` in its environment. The webhook (10s limit)
+receives:
+
+```jsonc
+{
+  "runId": "20261017-041600-3fa2c1",
+  "workflow": "deep-research",
+  "state": "done", // done | failed | stopped
+  "createdAt": 1792210560.2, // Unix seconds
+  "finishedAt": 1792210812.5,
+  "durationSec": 252,
+  "counts": { "agents": 12, "done": 11, "failed": 1 },
+  "text": "odw · deep-research finished in 4m12s · 12 agents, 1 failed",
+  "content": "odw · deep-research finished in 4m12s · 12 agents, 1 failed"
+}
+```
+
+Failed and stopped runs add an `error` field. `text` and `content` carry the
+same line, so Slack and Discord incoming webhooks render it as is (Discord's
+`allowed_mentions` is set too, so a run never pings anyone). The dashboard's
+settings show which hooks are configured — the webhook as scheme and host only,
+since the rest of its URL is the secret.
 
 ## How it works
 

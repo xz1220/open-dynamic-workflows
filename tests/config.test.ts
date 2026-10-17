@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -68,6 +68,30 @@ test("config example preserves every built-in adapter contract", () => {
   const config = loadConfig(join(process.cwd(), "odw.config.example.json"));
   for (const [name, adapter] of Object.entries(defaultConfig().adapters)) {
     assert.deepEqual(config.adapters[name], adapter, `example adapter '${name}' must match its built-in`);
+  }
+});
+
+test("config example lints clean, and its commented-out notify block is valid once enabled", () => {
+  const example = JSON.parse(readFileSync(join(process.cwd(), "odw.config.example.json"), "utf8"));
+  assert.deepEqual(collectConfigWarnings(example), []);
+  const stall = loadConfig(join(process.cwd(), "odw.config.example.json"), { quiet: true }).settings;
+  assert.equal(stall.stallTimeout, null, "the example keeps the watchdog off");
+  assert.equal(stall.stallRestarts, 1);
+
+  const { "//notify": notify, ...rest } = example;
+  const enabled = { ...rest, notify };
+  assert.deepEqual(collectConfigWarnings(enabled), []);
+  const dir = mkdtempSync(join(tmpdir(), "odw-cfg-"));
+  try {
+    const p = join(dir, "odw.config.json");
+    writeFileSync(p, JSON.stringify(enabled));
+    assert.deepEqual(loadConfig(p, { quiet: true }).settings.notify, {
+      command: notify.command,
+      webhook: notify.webhook,
+      on: ["done", "failed", "stopped"],
+    });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });
 
@@ -250,6 +274,160 @@ test("valid numeric settings still load, including numeric strings and null", ()
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("the stall watchdog is off by default; its settings load run-wide and per adapter", () => {
+  const defaults = defaultConfig();
+  assert.equal(defaults.settings.stallTimeout, null);
+  assert.equal(defaults.settings.stallRestarts, 1);
+  const dir = mkdtempSync(join(tmpdir(), "odw-cfg-"));
+  try {
+    const p = join(dir, "odw.config.json");
+    writeFileSync(
+      p,
+      JSON.stringify({
+        stallTimeout: "90",
+        stallRestarts: 0,
+        adapters: {
+          mine: { command: ["x"], stallTimeout: 30 },
+          quiet: { command: ["y"], stallTimeout: 0 },
+          inherit: { command: ["z"], stallTimeout: null },
+        },
+      }),
+    );
+    const cfg = loadConfig(p, { quiet: true });
+    assert.equal(cfg.settings.stallTimeout, 90);
+    assert.equal(cfg.settings.stallRestarts, 0);
+    assert.equal(cfg.adapters.mine!.stallTimeout, 30);
+    assert.equal(cfg.adapters.quiet!.stallTimeout, 0, "0 opts one adapter out of a run-wide stall timeout");
+    assert.equal(cfg.adapters.inherit!.stallTimeout, undefined, "null inherits the run-wide setting");
+    writeFileSync(p, JSON.stringify({ stallTimeout: 0 }));
+    assert.equal(loadConfig(p, { quiet: true }).settings.stallTimeout, null, "0 means off, like null");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("malformed stall settings are rejected with a ConfigError naming the key", () => {
+  const dir = mkdtempSync(join(tmpdir(), "odw-cfg-"));
+  try {
+    const p = join(dir, "odw.config.json");
+    const cases: Array<[Record<string, unknown>, RegExp]> = [
+      [{ stallTimeout: "soon" }, /"stallTimeout" must be a positive number of seconds, or null for no stall watchdog/],
+      [{ stallTimeout: -5 }, /"stallTimeout"/],
+      [{ stallRestarts: 1.5 }, /"stallRestarts" must be a non-negative integer/],
+      [{ stallRestarts: -1 }, /"stallRestarts"/],
+      [
+        { adapters: { mine: { command: ["x"], stallTimeout: "abc" } } },
+        /adapter 'mine' 'stallTimeout' must be a positive number of seconds, or 0 to turn the stall watchdog off/,
+      ],
+    ];
+    for (const [raw, message] of cases) {
+      writeFileSync(p, JSON.stringify(raw));
+      assert.throws(
+        () => loadConfig(p, { quiet: true }),
+        (err: Error) => err instanceof ConfigError && message.test(err.message),
+        JSON.stringify(raw),
+      );
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("collectConfigWarnings knows the stall keys, top-level and per adapter", () => {
+  assert.deepEqual(
+    collectConfigWarnings({
+      stallTimeout: 120,
+      stallRestarts: 2,
+      adapters: { mine: { command: ["x"], stallTimeout: 0 } },
+    }),
+    [],
+  );
+  const [typo] = collectConfigWarnings({ stalTimeout: 120 });
+  assert.match(typo!, /did you mean "stallTimeout"/);
+});
+
+test("notify is off by default and loads normalized", () => {
+  assert.equal(defaultConfig().settings.notify, null);
+  const dir = mkdtempSync(join(tmpdir(), "odw-cfg-"));
+  try {
+    const p = join(dir, "odw.config.json");
+    const load = (notify: unknown) => {
+      writeFileSync(p, JSON.stringify({ notify }));
+      return loadConfig(p, { quiet: true }).settings.notify;
+    };
+    assert.equal(load(null), null);
+    assert.deepEqual(
+      load({
+        command: ["/usr/local/bin/odw-notify", "--channel", "ops"],
+        webhook: "https://hooks.slack.com/services/T0/B0/XYZ",
+        on: ["stopped", "failed", "failed"],
+      }),
+      {
+        command: ["/usr/local/bin/odw-notify", "--channel", "ops"],
+        webhook: "https://hooks.slack.com/services/T0/B0/XYZ",
+        on: ["failed", "stopped"],
+      },
+    );
+    assert.deepEqual(load({ webhook: "http://127.0.0.1:9000/hook" }), {
+      command: null,
+      webhook: "http://127.0.0.1:9000/hook",
+      on: ["done", "failed", "stopped"],
+    });
+    assert.deepEqual(load({ command: ["say", "done"], on: [] }).on, [], "an empty list mutes the hooks");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a malformed notify block is a ConfigError that never echoes a secret", () => {
+  const dir = mkdtempSync(join(tmpdir(), "odw-cfg-"));
+  try {
+    const p = join(dir, "odw.config.json");
+    const cases: Array<[unknown, RegExp]> = [
+      ["https://hooks.slack.com/services/SECRET", /"notify" must be an object .*; got a string$/],
+      [["say"], /"notify" must be an object/],
+      [
+        { command: "notify-send --token SECRET" },
+        /"notify.command" must be a non-empty array of strings \(an argv, run without a shell\); got a string$/,
+      ],
+      [{ command: [] }, /"notify.command" .*; got an empty list$/],
+      [{ command: [""] }, /"notify.command"/],
+      [{ command: ["say", 1] }, /"notify.command"/],
+      [
+        { webhook: "hooks.slack.com/services/SECRET" },
+        /"notify.webhook" must be an http\(s\) URL; got a string that is not an absolute URL$/,
+      ],
+      [{ webhook: "ftp://example.com/SECRET" }, /"notify.webhook" must be an http\(s\) URL; got a ftp: URL$/],
+      [{ webhook: 42 }, /"notify.webhook" must be an http\(s\) URL; got a number$/],
+      [{ webhook: "https://user:SECRET@example.com/hook" }, /"notify.webhook" must not embed credentials/],
+      [
+        { webhook: "https://example.com/h", on: ["done", "finished"] },
+        /"notify.on" must be a list of "done", "failed", "stopped"; got \["done","finished"\]/,
+      ],
+      [{ webhook: "https://example.com/h", on: "failed" }, /"notify.on"/],
+    ];
+    for (const [notify, message] of cases) {
+      writeFileSync(p, JSON.stringify({ notify }));
+      assert.throws(
+        () => loadConfig(p, { quiet: true }),
+        (err: Error) => err instanceof ConfigError && message.test(err.message) && !/SECRET/.test(err.message),
+        JSON.stringify(notify),
+      );
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("collectConfigWarnings knows notify, flags its typos, and a notify with no hook", () => {
+  const valid = { command: ["x"], webhook: "https://example.com/h", on: ["done"], $comment: "ok" };
+  assert.deepEqual(collectConfigWarnings({ notify: valid }), []);
+  const [typo] = collectConfigWarnings({ notify: { comand: ["x"], webhook: "https://example.com/h" } });
+  assert.match(typo!, /^notify: unknown field "comand" is ignored — did you mean "command"\?$/);
+  const [idle] = collectConfigWarnings({ notify: { on: ["failed"] } });
+  assert.match(idle!, /neither "command" nor "webhook", so no hook will fire/);
 });
 
 test("a scheduler refuses NaN limits instead of deadlocking", () => {

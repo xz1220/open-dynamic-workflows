@@ -129,6 +129,16 @@ export interface SettingsSnapshot {
     label: string;
     path: string;
   }>;
+  /**
+   * Run-completion hooks (ODW extension): whether a command is set, the
+   * webhook as scheme + host only (its path/query are secret), and which
+   * terminal states fire them.
+   */
+  notify: {
+    command: boolean;
+    webhook: string | null;
+    on: Array<"done" | "failed" | "stopped">;
+  };
 }
 
 export interface WorkflowSummary {

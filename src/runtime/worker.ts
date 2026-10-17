@@ -13,11 +13,13 @@
  */
 
 import { readFileSync } from "node:fs";
+import { constants } from "node:os";
 import { basename, dirname } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { loadConfig } from "../adapters/config.js";
 import { killAllAgentProcesses } from "../adapters/runner.js";
+import type { RunEndState } from "../adapters/types.js";
 import { buildContext, spentTokens, type RunContext } from "../context.js";
 import { RunStopped, WorkflowScriptError, isFatalError } from "../errors.js";
 import { LOG, RUN_FAILED, RUN_FINISHED, RUN_STARTED, RUN_STOPPED, event } from "../events.js";
@@ -26,6 +28,7 @@ import { loadWorkflowScript } from "../loader.js";
 import { createPrimitives } from "../primitives.js";
 import type { Scheduler } from "../scheduler.js";
 import { FileControl } from "./file-control.js";
+import { notifyRunEnd } from "./notify.js";
 import { JsonlSink, RunStore } from "./run-store.js";
 
 /**
@@ -33,6 +36,16 @@ import { JsonlSink, RunStore } from "./run-store.js";
  * and remove their worktrees before the worker kills what is left and moves on.
  */
 const ABORT_DRAIN_MS = 10_000;
+
+/** Signals that would otherwise kill the worker on the spot. */
+const STOP_SIGNALS = ["SIGTERM", "SIGINT", "SIGHUP"] as const;
+
+/**
+ * After a stop signal, how long the run gets to end on its own — agents
+ * killed, worktrees removed, the outcome recorded, the hooks run — before the
+ * worker kills what is left and exits.
+ */
+const SIGNAL_GRACE_MS = 10_000;
 
 /**
  * Run the workflow described by `runDir`; return its terminal state.
@@ -46,6 +59,15 @@ const ABORT_DRAIN_MS = 10_000;
  * return, awaited) before the outcome is recorded, and a process 'exit'
  * listener kills any that remain while the run executes — an agent must never
  * outlive its worker and keep editing the repository unsupervised.
+ *
+ * SIGTERM, SIGINT and SIGHUP are handled for the same reason: agents lead
+ * their own process groups, so a worker killed outright would orphan them. The
+ * first such signal stops the run like `odw stop`; a second one, or the run
+ * not ending within SIGNAL_GRACE_MS, kills every agent process, records the
+ * run stopped if it was not yet, and exits the process.
+ *
+ * Once the outcome is on disk, the configured run-end hooks (`notify`) fire;
+ * they are bounded and never throw, so they cannot change the returned state.
  */
 export async function executeRun(runDir: string): Promise<string> {
   const store = new RunStore(dirname(runDir));
@@ -63,7 +85,29 @@ export async function executeRun(runDir: string): Promise<string> {
   const dispatched = () => ctx?.scheduler.dispatched ?? 0;
   const spent = () => (ctx ? spentTokens(ctx.usage) : 0);
 
+  // Set right after the terminal state is written; the run then only has its hooks left.
+  let end: { state: RunEndState; error?: string } | undefined;
   const crashes = watchProcessCrashes();
+  const signals = watchStopSignals({
+    stop: (signal) => {
+      if (end) return; // only the hooks are left; the grace period bounds them
+      const reason = new RunStopped(`worker received ${signal}`);
+      sink.emit(event(LOG, { message: `${reason.message} — stopping the run` }));
+      ctx?.scheduler.abort(reason);
+    },
+    force: (signal, why) => {
+      killAllAgentProcesses();
+      if (!end) {
+        sink.emit(event(LOG, { message: `${why} — killing the agents and exiting` }));
+        sink.emit(event(RUN_STOPPED, { runId }));
+        store.updateStatus(runId, { state: "stopped", dispatched: dispatched(), spentTokens: spent() });
+      } else {
+        // Nothing may follow the terminal event in events.jsonl: say it in worker.log.
+        process.stderr.write(`odw: ${why} — exiting before the run-end hooks finished\n`);
+      }
+      process.exit(128 + constants.signals[signal]);
+    },
+  });
   process.on("exit", killAllAgentProcesses);
   try {
     const baseConfig = loadConfig((meta.configPath as string | null) ?? null);
@@ -149,7 +193,7 @@ export async function executeRun(runDir: string): Promise<string> {
     store.writeResult(runId, result);
     sink.emit(event(RUN_FINISHED, { runId }));
     store.updateStatus(runId, { state: "done", dispatched: dispatched(), spentTokens: spent() });
-    return "done";
+    end = { state: "done" };
   } catch (err) {
     // The first fatal error is the root cause, even when the script swallowed
     // it and later failed for another reason (still worth a log line).
@@ -161,17 +205,29 @@ export async function executeRun(runDir: string): Promise<string> {
     if (outcome instanceof RunStopped) {
       sink.emit(event(RUN_STOPPED, { runId }));
       store.updateStatus(runId, { state: "stopped", dispatched: dispatched(), spentTokens: spent() });
-      return "stopped";
+      end = { state: "stopped", error: outcome.message };
+    } else {
+      const e = outcome as Error;
+      const message = e.message ?? String(outcome);
+      sink.emit(event(RUN_FAILED, { runId, error: message }));
+      store.writeError(runId, { error: message, stack: e.stack ?? null });
+      store.updateStatus(runId, { state: "failed", dispatched: dispatched(), spentTokens: spent() });
+      end = { state: "failed", error: message };
     }
-    const e = outcome as Error;
-    sink.emit(event(RUN_FAILED, { runId, error: e.message ?? String(outcome) }));
-    store.writeError(runId, { error: e.message ?? String(outcome), stack: e.stack ?? null });
-    store.updateStatus(runId, { state: "failed", dispatched: dispatched(), spentTokens: spent() });
-    return "failed";
   } finally {
     process.off("exit", killAllAgentProcesses);
     crashes.dispose();
+    if (!end) signals.dispose(); // the run itself threw: no hooks follow
   }
+  // The outcome is on disk; only now do the run-end hooks fire.
+  try {
+    await notifyRunEnd(ctx?.config.settings.notify ?? null, { store, runId, ...end }, {
+      cwd: typeof meta.source === "string" ? meta.source : undefined,
+    });
+  } finally {
+    signals.dispose();
+  }
+  return end.state;
 }
 
 /**
@@ -217,6 +273,37 @@ function watchProcessCrashes(): { race<T>(work: Promise<T>): Promise<T>; dispose
     dispose: () => {
       process.off("unhandledRejection", onRejection);
       process.off("uncaughtException", onException);
+    },
+  };
+}
+
+/**
+ * Handle the stop signals while a run executes (see executeRun): `stop` on the
+ * first; `force` on a second, or once SIGNAL_GRACE_MS have passed since the
+ * first. Listening ends at `dispose`.
+ */
+function watchStopSignals(handlers: {
+  stop(signal: NodeJS.Signals): void;
+  force(signal: NodeJS.Signals, why: string): void;
+}): { dispose(): void } {
+  let first: NodeJS.Signals | undefined;
+  let deadline: NodeJS.Timeout | undefined;
+  const onSignal = (signal: NodeJS.Signals): void => {
+    if (first) {
+      return handlers.force(signal, `worker received ${signal} ${signal === first ? "again" : `after ${first}`}`);
+    }
+    first = signal;
+    deadline = setTimeout(
+      () => handlers.force(signal, `the run did not stop within ${SIGNAL_GRACE_MS / 1000}s of ${signal}`),
+      SIGNAL_GRACE_MS,
+    );
+    handlers.stop(signal);
+  };
+  for (const signal of STOP_SIGNALS) process.on(signal, onSignal);
+  return {
+    dispose: () => {
+      clearTimeout(deadline);
+      for (const signal of STOP_SIGNALS) process.off(signal, onSignal);
     },
   };
 }

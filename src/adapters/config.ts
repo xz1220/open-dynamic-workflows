@@ -22,9 +22,20 @@ import { dirname, join } from "node:path";
 import { AdapterNotFound, ConfigError } from "../errors.js";
 import { BUILTIN_ADAPTERS, DEFAULT_SETTINGS, type RawAdapter } from "./builtin.js";
 import { isOnPath } from "./executable.js";
-import type { Adapter, AdapterFlags, AdapterOutput, Config, Settings } from "./types.js";
+import type {
+  Adapter,
+  AdapterFlags,
+  AdapterOutput,
+  Config,
+  NotifySettings,
+  RunEndState,
+  Settings,
+} from "./types.js";
 
 export const CONFIG_ENV_VAR = "ODW_CONFIG";
+
+/** Every terminal run state, in display order: what `notify.on` defaults to. */
+export const RUN_END_STATES: readonly RunEndState[] = ["done", "failed", "stopped"];
 
 /**
  * Load configuration, merging any discovered file over the built-ins.
@@ -58,14 +69,19 @@ const KNOWN_TOP_KEYS = [
   "concurrency",
   "maxAgents",
   "timeout",
+  "stallTimeout",
+  "stallRestarts",
   "schemaRetries",
   "runsRoot",
   "workflowsRoot",
   "claudeWorkflowsRoot",
   "claudeJobsScope",
+  "notify",
 ] as const;
 
-const KNOWN_ADAPTER_KEYS = ["command", "stdin", "env", "timeout", "label", "flags", "output"] as const;
+const KNOWN_ADAPTER_KEYS = ["command", "stdin", "env", "timeout", "stallTimeout", "label", "flags", "output"] as const;
+
+const KNOWN_NOTIFY_KEYS = ["command", "webhook", "on"] as const;
 
 /**
  * Lint a parsed config object for keys odw would silently ignore.
@@ -96,18 +112,33 @@ export function collectConfigWarnings(raw: Record<string, unknown>): string[] {
     warnings.push(`unknown key "${key}" is ignored${guess ? ` — did you mean "${guess}"?` : ""}`);
   }
   const adapters = raw.adapters;
-  if (adapters !== null && typeof adapters === "object" && !Array.isArray(adapters)) {
-    for (const [name, spec] of Object.entries(adapters as Record<string, unknown>)) {
-      if (spec === null || typeof spec !== "object" || Array.isArray(spec)) continue;
-      for (const key of Object.keys(spec)) {
-        if ((KNOWN_ADAPTER_KEYS as readonly string[]).includes(key)) continue;
-        if (key.startsWith("$") || key.startsWith("//")) continue;
-        const guess = nearestKey(key, KNOWN_ADAPTER_KEYS);
-        warnings.push(
-          `adapter "${name}": unknown field "${key}" is ignored${guess ? ` — did you mean "${guess}"?` : ""}`,
-        );
-      }
+  if (isObject(adapters)) {
+    for (const [name, spec] of Object.entries(adapters)) {
+      if (isObject(spec)) warnings.push(...unknownFields(spec, KNOWN_ADAPTER_KEYS, `adapter "${name}"`));
     }
+  }
+  const notify = raw.notify;
+  if (isObject(notify)) {
+    warnings.push(...unknownFields(notify, KNOWN_NOTIFY_KEYS, "notify"));
+    if (notify.command == null && notify.webhook == null) {
+      warnings.push(`"notify" sets neither "command" nor "webhook", so no hook will fire`);
+    }
+  }
+  return warnings;
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+/** Warnings for the fields of a nested config object that odw would ignore. */
+function unknownFields(spec: Record<string, unknown>, known: readonly string[], where: string): string[] {
+  const warnings: string[] = [];
+  for (const key of Object.keys(spec)) {
+    if (known.includes(key)) continue;
+    if (key.startsWith("$") || key.startsWith("//")) continue;
+    const guess = nearestKey(key, known);
+    warnings.push(`${where}: unknown field "${key}" is ignored${guess ? ` — did you mean "${guess}"?` : ""}`);
   }
   return warnings;
 }
@@ -445,6 +476,15 @@ function buildAdapter(name: string, spec: RawAdapter): Adapter {
       exclusiveMin: true,
     });
   }
+  // Likewise for the stall watchdog; 0 turns it off for this CLI alone.
+  if (spec.stallTimeout !== undefined && spec.stallTimeout !== null) {
+    adapter.stallTimeout = numberSetting(
+      `adapter '${name}' 'stallTimeout'`,
+      spec.stallTimeout,
+      "a positive number of seconds, or 0 to turn the stall watchdog off",
+      { min: 0 },
+    );
+  }
   if (spec.label !== undefined) adapter.label = spec.label;
   if (spec.flags !== undefined) adapter.flags = buildFlags(name, spec.flags);
   if (spec.output !== undefined) adapter.output = buildOutput(name, spec.output);
@@ -543,6 +583,18 @@ function buildSettings(raw: Record<string, unknown>): Settings {
       min: 0,
       exclusiveMin: true,
     }),
+    // 0 is accepted as "off", like null.
+    stallTimeout:
+      num(
+        "stallTimeout",
+        DEFAULT_SETTINGS.stallTimeout,
+        "a positive number of seconds, or null for no stall watchdog",
+        { min: 0 },
+      ) || null,
+    stallRestarts: num("stallRestarts", DEFAULT_SETTINGS.stallRestarts, "a non-negative integer", {
+      min: 0,
+      integer: true,
+    }),
     schemaRetries: num("schemaRetries", DEFAULT_SETTINGS.schemaRetries, "a non-negative integer", {
       min: 0,
       integer: true,
@@ -552,5 +604,65 @@ function buildSettings(raw: Record<string, unknown>): Settings {
     claudeWorkflowsRoot: pick("claudeWorkflowsRoot", DEFAULT_SETTINGS.claudeWorkflowsRoot),
     // Only "project" narrows; anything else (incl. null/garbage) keeps the "all" default.
     claudeJobsScope: raw["claudeJobsScope"] === "project" ? "project" : DEFAULT_SETTINGS.claudeJobsScope,
+    notify: raw["notify"] == null ? DEFAULT_SETTINGS.notify : buildNotify(raw["notify"]),
   };
+}
+
+/**
+ * Validate and normalize the run-completion hooks (`notify`). Errors name the
+ * kind of a bad value rather than echoing it: hooks often carry a token.
+ */
+function buildNotify(raw: unknown): NotifySettings {
+  if (!isObject(raw)) {
+    throw new ConfigError(`"notify" must be an object with a "command" and/or a "webhook"; got ${kindOf(raw)}`);
+  }
+  const notify: NotifySettings = { command: null, webhook: null, on: [...RUN_END_STATES] };
+  const { command, webhook, on } = raw;
+  if (command != null) {
+    if (!Array.isArray(command) || !command.every((part) => typeof part === "string") || !command[0]) {
+      throw new ConfigError(
+        `"notify.command" must be a non-empty array of strings (an argv, run without a shell); got ${kindOf(command)}`,
+      );
+    }
+    notify.command = [...(command as string[])];
+  }
+  if (webhook != null) notify.webhook = buildWebhook(webhook);
+  if (on != null) {
+    if (!Array.isArray(on) || !on.every((state) => (RUN_END_STATES as readonly unknown[]).includes(state))) {
+      throw new ConfigError(`"notify.on" must be a list of "done", "failed", "stopped"; got ${JSON.stringify(on)}`);
+    }
+    notify.on = RUN_END_STATES.filter((state) => on.includes(state));
+  }
+  return notify;
+}
+
+/** Validate `notify.webhook`: an absolute http(s) URL that fetch() will accept. */
+function buildWebhook(raw: unknown): string {
+  let url: URL | null = null;
+  try {
+    url = typeof raw === "string" ? new URL(raw) : null;
+  } catch {
+    url = null;
+  }
+  if (!url || (url.protocol !== "http:" && url.protocol !== "https:")) {
+    const got = url
+      ? `a ${url.protocol} URL`
+      : typeof raw === "string"
+        ? "a string that is not an absolute URL"
+        : kindOf(raw);
+    throw new ConfigError(`"notify.webhook" must be an http(s) URL; got ${got}`);
+  }
+  if (url.username || url.password) {
+    // fetch() refuses such URLs outright: say so now, not when the first run ends.
+    throw new ConfigError(
+      `"notify.webhook" must not embed credentials (user:password@); keep a token in the path or query`,
+    );
+  }
+  return url.href;
+}
+
+/** The kind of a JSON value, for an error message that must not echo it. */
+function kindOf(raw: unknown): string {
+  if (Array.isArray(raw)) return raw.length ? "a list" : "an empty list";
+  return raw !== null && typeof raw === "object" ? "an object" : `a ${typeof raw}`;
 }

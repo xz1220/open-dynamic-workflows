@@ -6,7 +6,8 @@
  * runs the adapter in its workspace (the source tree by default, a throwaway
  * git worktree when isolation is requested), and — when a schema is requested —
  * extracts/validates the reply and retries with corrective feedback until it
- * conforms or the retry budget is spent.
+ * conforms or the retry budget is spent. A CLI the stall watchdog killed for
+ * going quiet is started again, up to `stallRestarts` times per call.
  *
  * The command runner is injectable, so the bridge unit-tests with a fake runner
  * and no real agent account.
@@ -97,10 +98,22 @@ export interface RunOptions {
    */
   onReply?: (text: string) => void;
   /**
-   * Run before each schema retry: a retry is another CLI run, so it must pass
-   * the same stop/budget guards as a dispatch. Throw to abandon the call.
+   * Run before each extra CLI run of the call — a schema retry or a stall
+   * restart — so it passes the same stop/budget guards as a dispatch. Throw to
+   * abandon the call.
    */
   beforeRetry?: () => void | Promise<void>;
+  /** Called before a stalled CLI is restarted, so the run can say so. */
+  onStall?: (stall: StallRestart) => void;
+}
+
+/** A CLI the stall watchdog killed, about to be started again. */
+export interface StallRestart {
+  /** The stall timeout it hit: seconds without a byte on stdout or stderr. */
+  quietSeconds: number;
+  /** Which restart this is (1-based), and how many the call may make (`stallRestarts`). */
+  restart: number;
+  maxRestarts: number;
 }
 
 export class Bridge {
@@ -133,7 +146,11 @@ export class Bridge {
     const { signal } = options;
     const adapter = this.adapterFor(request.adapter);
     const settings = this.config.settings;
-    const timeout = adapter.timeout ?? settings.timeout ?? undefined;
+    const limits: CliLimits = {
+      timeout: adapter.timeout ?? settings.timeout ?? undefined,
+      // An adapter's 0 opts it out of a run-wide stall timeout; null is off.
+      stallTimeout: (adapter.stallTimeout ?? settings.stallTimeout) || undefined,
+    };
     // Plan the invocation once: workspace mode, the model token/flag, and the
     // routing notes do not change across schema retries — only the prompt does.
     const plan = this.router.plan({ request, adapter, settings });
@@ -142,14 +159,31 @@ export class Bridge {
 
     let problems: string[] = [];
     let previous = "";
+    let restarts = 0;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       throwIfAborted(signal);
       if (attempt > 1) await options.beforeRetry?.();
       const prompt = attempt > 1 ? `${basePrompt}\n\n${retryFeedback(previous, problems)}` : basePrompt;
-      const { cli, decoder } = await this.invoke(adapter, plan, prompt, timeout, signal);
+      let invoked = await this.invoke(adapter, plan, prompt, limits, signal);
+      // The stall watchdog killed a CLI that went quiet: start the same attempt
+      // again, at most stallRestarts times over the whole call.
+      while (invoked.cli.stalled && !signal?.aborted && restarts < settings.stallRestarts) {
+        restarts++;
+        options.onStall?.({
+          quietSeconds: limits.stallTimeout ?? 0,
+          restart: restarts,
+          maxRestarts: settings.stallRestarts,
+        });
+        await options.beforeRetry?.();
+        invoked = await this.invoke(adapter, plan, prompt, limits, signal);
+      }
+      const { cli, decoder } = invoked;
       // Killed by a stop (or by a fatal error elsewhere in the run): report
       // the run's reason, not a misleading CLI failure.
       throwIfAborted(signal);
+      if (cli.stalled) {
+        throw new AdapterExecutionError(cliFailureMessage(adapter, cli, stallReason(limits.stallTimeout, restarts)));
+      }
       if (!cliOk(cli)) throw new AdapterExecutionError(cliFailureMessage(adapter, cli));
 
       // A runner that streams stdout fed the decoder and kept only a tail; an
@@ -196,7 +230,7 @@ export class Bridge {
     adapter: Adapter,
     plan: InvocationPlan,
     prompt: string,
-    timeout: number | undefined,
+    limits: CliLimits,
     signal: AbortSignal | undefined,
   ): Promise<{ cli: CliResult; decoder: AdapterOutputDecoder | null }> {
     // JSONL transcripts are decoded while they stream, so only the final text
@@ -236,7 +270,15 @@ export class Bridge {
           : undefined;
         // No ws.diff() here: agent() returns the reply, never a diff, so
         // computing one per worktree attempt was pure overhead.
-        const cli = await this.runner(command, { stdin, cwd: ws.path, env, timeout, onStdout, signal });
+        const cli = await this.runner(command, {
+          stdin,
+          cwd: ws.path,
+          env,
+          timeout: limits.timeout,
+          stallTimeout: limits.stallTimeout,
+          onStdout,
+          signal,
+        });
         return { cli, decoder };
       } finally {
         if (cleanup) await cleanup();
@@ -252,6 +294,12 @@ export class Bridge {
 function throwIfAborted(signal: AbortSignal | undefined): void {
   if (!signal?.aborted) return;
   throw signal.reason instanceof Error ? signal.reason : new RunStopped("run was stopped");
+}
+
+/** The kill limits of one CLI run, in seconds (undefined: none). */
+interface CliLimits {
+  timeout?: number;
+  stallTimeout?: number;
 }
 
 function usesPromptFile(adapter: Adapter): boolean {
@@ -288,8 +336,15 @@ function retryFeedback(previous: string, problems: string[]): string {
   );
 }
 
-function cliFailureMessage(adapter: Adapter, cli: CliResult): string {
-  const reason = cli.timedOut ? "timed out" : `exited with code ${cli.returncode}`;
+/** How a call whose CLI kept stalling failed, after `restarts` restarts. */
+function stallReason(stallTimeout: number | undefined, restarts: number): string {
+  const quiet = stallTimeout ? `no output for ${stallTimeout}s` : "no output";
+  const again = restarts ? `, and again after ${restarts} restart${restarts === 1 ? "" : "s"}` : "";
+  return `stalled — ${quiet}${again}`;
+}
+
+function cliFailureMessage(adapter: Adapter, cli: CliResult, reason?: string): string {
+  reason ??= cli.timedOut ? "timed out" : `exited with code ${cli.returncode}`;
   const text = cli.stderr.trim() || cli.stdout.trim();
   // Keep both ends of a long diagnostic: the head usually names the error, the
   // tail holds the final message and the runner's own notes (kill reasons).
