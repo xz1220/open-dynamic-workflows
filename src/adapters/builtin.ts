@@ -174,4 +174,6 @@ export const DEFAULT_SETTINGS: Settings = {
   worktreeSetupTimeout: 600, // seconds
   portRange: [41000, 41999], // ODW_PORT, unique among a run's running agents
   fanOutWarn: 25, // log a warning when one parallel()/pipeline() call fans out wider
+  maxDiffBytes: 2 * 1024 * 1024, // an isolated agent's kept diff; past it, the head and a note
+  keepBranches: false, // keep: true per agent still commits its change to a branch
 };

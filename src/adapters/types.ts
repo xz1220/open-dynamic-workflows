@@ -153,6 +153,16 @@ export interface Settings {
    * this — more thunks, or more items (an ODW extension); `null` => never.
    */
   fanOutWarn: number | null;
+  /**
+   * Bytes of an isolated agent's diff kept in the run directory (an ODW
+   * extension); past it the head is kept, cut at a line, with a note.
+   */
+  maxDiffBytes: number;
+  /**
+   * Commit every isolated agent's change to a branch `odw/<runId>/<agentId>-<label>`
+   * of the source repository, as `keep: true` does for one agent (an ODW extension).
+   */
+  keepBranches: boolean;
 }
 
 /** The terminal states a run can end in, and that notify hooks can fire on. */

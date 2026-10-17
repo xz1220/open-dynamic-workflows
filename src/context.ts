@@ -60,6 +60,12 @@ export interface RunContext {
    */
   saveAgentResult?: (rec: AgentResultRecord) => void;
   /**
+   * Where an isolated agent's change is kept as a diff (ODW extension): the
+   * run directory's `agents/<agentId>.diff`. Absent where nothing is
+   * persisted (in-process runs): such a run keeps no diffs and no branches.
+   */
+  agentDiffPath?: (agentId: number) => string;
+  /**
    * `odw resume`: the source run's saved results, replayed by the agent()
    * calls that are unchanged. Shared like `seq`, so a nested workflow()
    * replays its calls too.
@@ -91,6 +97,7 @@ export interface BuildContextOptions {
   control?: Control;
   budgetTotal?: number | null;
   saveAgentResult?: (rec: AgentResultRecord) => void;
+  agentDiffPath?: (agentId: number) => string;
   replay?: ReplayJournal;
   onCheckpoint?: (cp: WaitingCheckpoint, waiting: boolean) => void;
 }
@@ -134,6 +141,7 @@ export function buildContext(config: Config, options: BuildContextOptions = {}):
     checkpointSeq: { value: 0 },
     currentPhase: null,
     saveAgentResult: options.saveAgentResult,
+    agentDiffPath: options.agentDiffPath,
     replay: options.replay,
     onCheckpoint: options.onCheckpoint,
     emit(ev: WorkflowEvent): void {

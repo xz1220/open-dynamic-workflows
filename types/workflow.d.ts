@@ -34,8 +34,14 @@ declare global {
     model?: string;
     /** Prompt persona, not an adapter name or a loader for Claude roles, tools, permissions, or project subagent definitions. */
     agentType?: string;
-    /** Throwaway git worktree at HEAD (needs a committed repo; no uncommitted edits). Cleaned up without merging; agent() does not return its diff. */
+    /** Throwaway git worktree at HEAD (needs a committed repo; no uncommitted edits). Cleaned up without merging; agent() does not return its diff, but the run keeps it (`odw diff`, `odw apply`). */
     isolation?: "worktree";
+    /**
+     * ODW extension — Claude Code ignores it. With `isolation: "worktree"`, also commit the
+     * agent's change to a branch `odw/<runId>/<agentId>-<label>` of the source repository
+     * (HEAD and the index are never touched); `false` opts out of the `keepBranches` setting.
+     */
+    keep?: boolean;
   }
 
   interface Budget {
@@ -53,7 +59,8 @@ declare global {
   /**
    * Run one coding agent; returns reply text or a validated JSON value, not a worktree diff.
    * Saved as soon as it completes; under `odw resume`, a call with the same prompt and
-   * options (phase aside) returns its saved value instead of running again.
+   * options (phase aside) returns its saved value instead of running again. What an isolated
+   * agent changed is kept with the run as a diff to review and apply (ODW extension).
    */
   function agent(prompt: string, opts?: AgentOptions): Promise<any>;
 

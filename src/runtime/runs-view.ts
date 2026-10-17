@@ -27,6 +27,7 @@
  */
 
 import { addUsage, readUsage, type Usage } from "../adapters/usage.js";
+import type { AgentChanges } from "../changes.js";
 import type { WaitingCheckpoint } from "../checkpoint.js";
 import type { WorkflowEvent } from "../events.js";
 import { RunStore, TERMINAL_STATES } from "./run-store.js";
@@ -73,6 +74,14 @@ export interface AgentView {
    * chars/4 of its replies. Absent while running and for older event files.
    */
   usage?: Usage;
+  /**
+   * Agents only (ODW extension): what an isolated agent changed — the diffstat
+   * of its kept diff, `GET /api/runs/:id/agents/:agentId/diff` — once it
+   * settled; null when it kept none.
+   */
+  changes?: AgentChanges | null;
+  /** Agents only: the branch its change was kept on (`keep: true`, `keepBranches`), else null. */
+  branch?: string | null;
 }
 
 export type RunDisplayState =
@@ -257,6 +266,8 @@ export function applyAgentEvent(
       finishedAt: null,
       durationMs: null,
       cached: ev.cached === true,
+      changes: null,
+      branch: null,
     };
     agents.push(opened);
     return { opened };
@@ -285,6 +296,9 @@ export function applyAgentEvent(
     }
     const usage = readUsage(ev.usage);
     if (usage) target.usage = usage;
+    // What an isolated agent changed, finished or failed (ODW extension).
+    target.changes = agentChanges(ev.changes);
+    target.branch = typeof ev.branch === "string" && ev.branch !== "" ? ev.branch : null;
     if (ev.type === "agent_failed") {
       target.state = "failed";
       target.error = ev.error != null ? String(ev.error) : null;
@@ -350,6 +364,15 @@ function applyCommandEvent(
     target.state = "done";
   }
   return { settled: target };
+}
+
+/** An event's `changes`, when it is a diffstat; null otherwise. */
+function agentChanges(raw: unknown): AgentChanges | null {
+  if (raw === null || typeof raw !== "object") return null;
+  const { files, insertions, deletions, truncated } = raw as Record<string, unknown>;
+  const count = (n: unknown): number => (typeof n === "number" && Number.isFinite(n) && n >= 0 ? n : 0);
+  if (count(files) === 0) return null;
+  return { files: count(files), insertions: count(insertions), deletions: count(deletions), truncated: truncated === true };
 }
 
 /** Tally nodes — agents and commands alike — by state (shared by the ODW and Claude run sources). */

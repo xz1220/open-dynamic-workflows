@@ -89,6 +89,8 @@ const KNOWN_TOP_KEYS = [
   "worktreeSetupTimeout",
   "portRange",
   "fanOutWarn",
+  "maxDiffBytes",
+  "keepBranches",
 ] as const;
 
 const KNOWN_ADAPTER_KEYS = ["command", "stdin", "env", "timeout", "stallTimeout", "label", "flags", "output", "failures"] as const;
@@ -699,7 +701,18 @@ function buildSettings(raw: Record<string, unknown>): Settings {
             min: 0,
             integer: true,
           }) || null,
+    maxDiffBytes: num("maxDiffBytes", DEFAULT_SETTINGS.maxDiffBytes, "a positive whole number of bytes", {
+      min: 1,
+      integer: true,
+    }),
+    keepBranches: raw["keepBranches"] == null ? DEFAULT_SETTINGS.keepBranches : buildFlag("keepBranches", raw["keepBranches"]),
   };
+}
+
+/** Validate a true/false setting such as `keepBranches`. */
+function buildFlag(key: string, raw: unknown): boolean {
+  if (typeof raw === "boolean") return raw;
+  throw new ConfigError(`"${key}" must be true or false; got ${JSON.stringify(raw)}`);
 }
 
 /** Validate `worktreeSetup`: a command line for the shell, or an argv run without one. */

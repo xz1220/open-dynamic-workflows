@@ -8,7 +8,9 @@
  * `ODW_AGENT_ID` and `ODW_PORT` in its environment, and — when a schema is requested —
  * extracts/validates the reply and retries with corrective feedback until it
  * conforms or the retry budget is spent. A CLI the stall watchdog killed for
- * going quiet is started again, up to `stallRestarts` times per call.
+ * going quiet is started again, up to `stallRestarts` times per call. Each
+ * isolated CLI run's worktree is handed to the call's change sink before it is
+ * removed, so what the agent changed can be kept (an ODW extension).
  *
  * Every failed CLI run is classified (adapters/failures.ts). A rate-limited
  * one is ridden out: retried after an exponential backoff that honors the
@@ -52,7 +54,7 @@ import { AdapterExecutionError, RunStopped, SchemaValidationError, isFatalError 
 import { PortPool } from "./ports.js";
 import { LiteralRouter, type InvocationPlan, type OptionRouter } from "./router.js";
 import { describeSchema, pickJson, type JsonSchema } from "./schema.js";
-import { withWorkspace } from "./workspace.js";
+import { withWorkspace, type Workspace } from "./workspace.js";
 
 export const INDEPENDENCE_PREAMBLE =
   "You are one agent in an automated multi-agent workflow. Work independently " +
@@ -159,6 +161,19 @@ export interface RunOptions {
    * fail the same way, though the run goes on (other adapters may be fine).
    */
   onAdapterWarning?: (warning: AdapterWarning) => void;
+  /**
+   * Keeps what an isolated agent changed (an ODW extension; see ./changes):
+   * given each CLI run's worktree once the CLI has exited, before the
+   * worktree is removed — not when the run was stopped — and told when each
+   * attempt's last run is in.
+   */
+  changes?: ChangeSink;
+}
+
+/** Where the bridge reports an isolated call's worktrees: a ChangeRecorder (./changes). */
+export interface ChangeSink {
+  capture(ws: Workspace): Promise<void>;
+  endAttempt(): Promise<void>;
 }
 
 /** A CLI the stall watchdog killed, about to be started again. */
@@ -248,7 +263,7 @@ export class Bridge {
     if (options.agentId !== undefined) env.ODW_AGENT_ID = String(options.agentId);
     if (port !== null) env.ODW_PORT = String(port);
     try {
-      return await this.runCall(request, options, { env, onNote: options.onNote });
+      return await this.runCall(request, options, { env, onNote: options.onNote, changes: options.changes });
     } finally {
       if (port !== null) this.ports.release(port);
     }
@@ -290,6 +305,7 @@ export class Bridge {
       if (attempt > 1) await options.beforeRetry?.();
       const prompt = attempt > 1 ? `${basePrompt}\n\n${retryFeedback(previous, problems)}` : basePrompt;
       const { cli, output, failure } = await this.invokeUntilFinal(adapter, plan, prompt, limits, options, reruns, call);
+      await call.changes?.endAttempt();
       // Killed by a stop (or by a fatal error elsewhere in the run): report
       // the run's reason, not a misleading CLI failure.
       throwIfAborted(signal);
@@ -532,8 +548,6 @@ export class Bridge {
         const command = [...expandAll(adapter.command, context), ...plan.extraArgs];
         const stdin = adapter.stdin ? expand(adapter.stdin, context) : undefined;
         const env = withAgentVars({ ...process.env, ...adapter.env }, call.env);
-        // No ws.diff() here: agent() returns the reply, never a diff, so
-        // computing one per worktree attempt was pure overhead.
         const cli = await this.runner(command, {
           stdin,
           cwd: ws.path,
@@ -543,6 +557,9 @@ export class Bridge {
           onStdout,
           signal,
         });
+        // agent() returns the reply; what an isolated run changed is kept
+        // beside it, before its worktree goes (ODW extension; see ./changes).
+        if (call.changes && plan.workspaceMode === "worktree" && !signal?.aborted) await call.changes.capture(ws);
         return { cli, decoder };
       } finally {
         if (cleanup) await cleanup();
@@ -551,10 +568,11 @@ export class Bridge {
   }
 }
 
-/** What every CLI run of one agent call shares: its `ODW_*` variables, and where its notes go. */
+/** What every CLI run of one agent call shares: its `ODW_*` variables, where its notes go, what keeps its changes. */
 interface CallEnv {
   env: Record<string, string>;
   onNote?: (message: string) => void;
+  changes?: ChangeSink;
 }
 
 /** The variables an agent's processes get from ODW: only ever this call's, never inherited. */

@@ -10,10 +10,11 @@
  *     mechanism Claude Code uses. Worktrees share the repo's object store, so
  *     setup is near-free regardless of tree size. The worktree is removed
  *     afterwards and nothing is merged back: `agent()` returns the reply.
- *     {@link Workspace.diff} can capture the agent's changes as a unified diff
- *     against the commit the worktree started from (staging or even committing
- *     inside the worktree does not hide work), but only on demand — it costs
- *     an index walk and a file read, so the bridge does not call it.
+ *     Before it goes, {@link Workspace.captureChanges} can keep the agent's
+ *     change as a unified diff against the commit the worktree started from
+ *     (staging or even committing inside the worktree does not hide work),
+ *     leaving out what was placed there before the agent started — the bridge
+ *     does so for a persisted run (an ODW extension; see ./changes).
  *
  * Known properties of the git mechanism (shared with Claude Code's worktrees):
  *   - the source must be a git repository with at least one commit; asking for
@@ -28,11 +29,18 @@
  */
 
 import { execFile } from "node:child_process";
-import { mkdtemp, open, realpath, rm, unlink } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rm, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
 
+import {
+  captureChanges,
+  snapshotWorktree,
+  type CaptureOptions,
+  type CapturedChanges,
+  type WorktreeBaseline,
+} from "./changes.js";
 import { ConfigError } from "./errors.js";
 import { prepareWorktree, type WorktreeSetupOptions } from "./worktree-setup.js";
 
@@ -47,11 +55,17 @@ export interface Workspace {
   source: string;
   /** Unified diff of the agent's changes, computed on demand (empty for inplace). */
   diff(): Promise<string>;
+  /**
+   * Write the agent's change to `options.path` as a unified diff — and commit
+   * it, when asked — before the worktree goes (see ./changes). Null, with no
+   * file written, when it changed nothing, and always for inplace.
+   */
+  captureChanges(options: CaptureOptions): Promise<CapturedChanges | null>;
 }
 
 /** Everything the runner captures from git directly is small; diffs go to a file. */
 const GIT_MAX_BUFFER = 4 * 1024 * 1024;
-/** Diffs beyond this are truncated with a marker (nothing downstream wants 1 GiB). */
+/** {@link Workspace.diff} keeps at most this much of a diff (nothing downstream wants 1 GiB). */
 const DIFF_CAP_BYTES = 32 * 1024 * 1024;
 
 async function git(dir: string, args: string[]): Promise<string> {
@@ -64,20 +78,6 @@ async function git(dir: string, args: string[]): Promise<string> {
 
 function gitDetail(err: unknown): string {
   return (err as { stderr?: string }).stderr?.trim() || (err as Error).message;
-}
-
-/** Read at most `cap` bytes of `path`, appending a truncation marker if cut. */
-async function readCapped(path: string, cap: number): Promise<string> {
-  const file = await open(path, "r");
-  try {
-    const { size } = await file.stat();
-    const buf = Buffer.alloc(Math.min(size, cap));
-    const { bytesRead } = await file.read(buf, 0, buf.length, 0);
-    const text = buf.subarray(0, bytesRead).toString("utf8");
-    return size <= cap ? text : `${text}\n... [diff truncated: ${size} bytes total, first ${cap} shown]\n`;
-  } finally {
-    await file.close();
-  }
 }
 
 /**
@@ -93,7 +93,7 @@ export async function withWorkspace<T>(
   setup: WorktreeSetupOptions = {},
 ): Promise<T> {
   if (mode === "inplace") {
-    return fn({ path: source, source, diff: async () => "" });
+    return fn({ path: source, source, diff: async () => "", captureChanges: async () => null });
   }
   if (mode !== "worktree") {
     throw new Error(`unknown workspace mode '${mode}'; use 'inplace' or 'worktree'`);
@@ -137,25 +137,33 @@ export async function withWorkspace<T>(
   const rel = relative(await realpath(top), await realpath(resolve(source)));
   const wsPath = rel === "" || rel.startsWith("..") ? work : join(work, rel);
 
+  // What the worktree holds before the agent starts is not the agent's change.
+  let baseline: WorktreeBaseline | Error = new Error("the worktree was never made ready");
+  const capture = (options: CaptureOptions): Promise<CapturedChanges | null> => {
+    if (baseline instanceof Error) {
+      return Promise.reject(new Error(`what was in the worktree before the agent started is unknown: ${baseline.message}`));
+    }
+    return captureChanges({ top, work, base, scratch: tmp }, baseline, options);
+  };
   const ws: Workspace = {
     path: wsPath,
     source,
     diff: async () => {
-      // Intent-to-add stages the *paths* of brand-new files (respecting
-      // .gitignore) so they appear in the diff; diffing against the pinned
-      // base commit keeps staged and even committed work visible.
-      await git(work, ["add", "--all", "--intent-to-add", "."]);
+      // Diffed against the pinned base commit: staged and even committed work stays visible.
       const out = join(tmp, "odw-diff.patch");
-      // --output writes to a file: no stdout buffer to overflow, any size.
-      await git(work, ["diff", base, `--output=${out}`]);
-      return readCapped(out, DIFF_CAP_BYTES);
+      return (await capture({ path: out, maxDiffBytes: DIFF_CAP_BYTES })) ? readFile(out, "utf8") : "";
     },
+    captureChanges: capture,
   };
   // The links .worktreeinclude made to the source tree go first, so removing
   // the worktree can never reach through one into the source.
   const links: string[] = [];
   try {
-    await prepareWorktree(top, work, wsPath, setup, links);
+    const placed = await prepareWorktree(top, work, wsPath, setup, links);
+    // Just before the agent starts: what the include step and the setup left here.
+    baseline = await snapshotWorktree(work, placed, setup.signal).catch((err: unknown) =>
+      err instanceof Error ? err : new Error(String(err)),
+    );
     return await fn(ws);
   } finally {
     for (const link of links) await unlink(link).catch(() => {});
