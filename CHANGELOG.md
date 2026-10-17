@@ -73,6 +73,12 @@ changed, and run on a schedule — and a dashboard redesigned to watch them.
   once (`schemaKeywords`: `"warn"` by default; `"strict"` refuses such calls)
   (**ODW extension**; adapters declare native support with `flags.schema` and
   `output.structuredPath`).
+- Per-phase adapters and models, model tiers and fallback chains (**ODW extension**):
+  `meta.phases: [{ title, adapter, model }]` or `phase(title, { adapter, model })`;
+  `model: "@fast"` picks each CLI's own model from the `models` setting; an agent whose
+  CLI ran out of quota or is logged out moves down its chain (`adapter: ["codex",
+  "claude"]`, or `fallback` in the config) instead of failing, at the same permission
+  tier — and `odw status`, the live view and the dashboard's data say where it went.
 
 ### Use the CLI and the dashboard
 - `odw run` attaches a live foreground view in interactive terminals (Ctrl-C detaches;
@@ -111,5 +117,10 @@ changed, and run on a schedule — and a dashboard redesigned to watch them.
   their CLI takes it natively (`"schemaPrompt": "always"` keeps the description). An
   entry that gives either its own `command` replaces the built-in: copy `flags.schema`
   (and `claude`'s `output.structuredPath`) from the example config to keep native schemas.
+- A `meta.phases` entry's `model` now sets the model of that phase's agents (it was
+  metadata only): use a tier (`"@fast"`) when they may run on more than one CLI.
+- After 3 quota failures in a row on one adapter (`quotaBreaker`), a run's later agents
+  skip it — and fail at once when they have no fallback chain; `"quotaBreaker": null`
+  keeps trying the adapter every time.
 - Config errors are fatal instead of producing a "done" run full of nulls.
 - The desktop (Tauri) app is retired in favor of `odw serve`.
