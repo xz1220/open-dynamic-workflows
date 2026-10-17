@@ -106,9 +106,10 @@ export function renderJobs(state: JobsState, nowSec: number): string {
       `<div class="runcards">${liveCards.map((r) => runCard(r, nowSec)).join("")}</div>`
     : "";
 
+  // Stale runs never ended, so their "duration" would flatten every other bar.
   const longest = Math.max(
     1,
-    ...ended.map((r) => runDurationSec(r.createdAt, r.updatedAt, TERMINAL.has(r.state)) ?? 0),
+    ...ended.filter((r) => TERMINAL.has(r.state)).map((r) => runDurationSec(r.createdAt, r.updatedAt, true) ?? 0),
   );
   let lastDay = "";
   const rows: string[] = [];
@@ -124,7 +125,7 @@ export function renderJobs(state: JobsState, nowSec: number): string {
         `<td><div class="wf">${esc(r.name)} ${provTag(r)}</div><div class="rid">${esc(r.runId)}</div></td>` +
         `<td>${pill(r.state)}</td>` +
         `<td class="when">${fmtClock(r.createdAt)}<span>${fmtAgo(r.createdAt)}</span></td>` +
-        `<td><div class="dur"><i style="width:${Math.max(3, Math.round(((dur ?? 0) / longest) * 90))}px"></i>${fmtDurSec(dur)}</div></td>` +
+        `<td><div class="dur"><i style="width:${Math.max(3, Math.round(Math.sqrt(Math.min(1, (dur ?? 0) / longest)) * 90))}px"></i>${fmtDurSec(dur)}</div></td>` +
         `<td class="agents">${r.counts.agents}${r.counts.failed ? ` · <span class="f">${r.counts.failed} ✕</span>` : ""}</td>` +
         `</tr>`,
     );

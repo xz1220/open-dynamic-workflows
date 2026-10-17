@@ -52,6 +52,7 @@ class Store {
   activity: ActivityEvent[] = [];
   fleet: Record<string, number> = {};
   activityLoaded = false;
+  private activitySig = "";
   /** Persisted agent outputs by `${runId}:${agentId}`; null = none available. */
   agentResults = new Map<string, AgentResultRecord | null>();
 
@@ -359,6 +360,10 @@ class Store {
   async loadActivity(): Promise<void> {
     try {
       const snap = await api.activity(200);
+      // An idle fleet answers the poll with the same snapshot: skip the repaint.
+      const sig = `${snap.events.length}:${snap.events[0]?.ts}:${snap.events[0]?.type}:${JSON.stringify(snap.fleet)}`;
+      if (this.activityLoaded && sig === this.activitySig) return;
+      this.activitySig = sig;
       this.activity = snap.events;
       this.fleet = snap.fleet;
     } catch {
