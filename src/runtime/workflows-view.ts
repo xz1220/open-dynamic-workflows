@@ -8,8 +8,9 @@
  *
  * Like the rest of `odw serve`, it is strictly read-only and never executes a
  * workflow body: `listWorkflows` is a pure readdir, and `loadWorkflowScript` only
- * extracts (and `new Function`-evaluates) the `meta` *literal* — the body is
- * transformed but never run. A malformed neighbour is skipped, never fatal.
+ * extracts the `meta` *literal* — the body is never run. A malformed neighbour
+ * is skipped, never fatal. Parsed metas are cached by file signature, so the
+ * Workspace re-reads a script only after it changed.
  */
 
 import { readFileSync } from "node:fs";
@@ -17,6 +18,7 @@ import { readFileSync } from "node:fs";
 import type { Config } from "../adapters/types.js";
 import { loadWorkflowScript, type WorkflowMeta } from "../loader.js";
 import { listWorkflows } from "../workflows/resolve.js";
+import { SigCache, statSig } from "./fs-util.js";
 import type { RunStore } from "./run-store.js";
 
 export interface WorkflowSummary {
@@ -47,13 +49,18 @@ export interface WorkflowDetail extends WorkflowSummary {
   runs: Array<{ runId: string }>;
 }
 
+/** Parsed metas by script path, valid while the file's signature (inode/size/mtime) holds. */
+const metaCache = new SigCache<WorkflowMeta | null>();
+
 /** Extract a workflow's `meta` literal without running its body; null on error. */
 function readMetaSafe(path: string): WorkflowMeta | null {
-  try {
-    return loadWorkflowScript(readFileSync(path, "utf8"), path).meta;
-  } catch {
-    return null; // unreadable or malformed neighbour: skip, don't break the list
-  }
+  return metaCache.get(path, statSig(path), () => {
+    try {
+      return loadWorkflowScript(readFileSync(path, "utf8"), path).meta;
+    } catch {
+      return null; // unreadable or malformed neighbour: skip, don't break the list
+    }
+  });
 }
 
 /**
@@ -70,7 +77,9 @@ export function listWorkflowSummaries(
 ): WorkflowSummary[] {
   const out: WorkflowSummary[] = [];
   const seen = new Set<string>(); // `${provider}:${name}` — top root per provider+name wins
-  for (const w of listWorkflows(cwd, config)) {
+  const listed = listWorkflows(cwd, config);
+  metaCache.retain(new Set(listed.map((w) => w.path))); // forget deleted scripts
+  for (const w of listed) {
     const key = `${w.provider}:${w.name}`;
     if (seen.has(key)) continue; // a higher-precedence root of the SAME provider already won this name
     seen.add(key);
