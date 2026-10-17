@@ -71,10 +71,11 @@ return await agent(
 | `exec(command, opts?)` | 不启动模型直接运行一条命令（测试、构建、linter）；返回 `{ stdout, stderr, exitCode, signal, timedOut, truncated, durationMs }`。字符串经 shell 执行，数组按 argv 执行。**ODW 扩展**——不属于 Claude Code 方言。 |
 | `checkpoint(title, opts?)` | 暂停运行，直到有人批准或拒绝；返回 `{ approved, note, by }`。**ODW 扩展**——不属于 Claude Code 方言。 |
 
-`agent` 的 `opts`：`{ adapter?, schema?, label?, phase?, model?, agentType?, isolation?, keep? }`。
+`agent` 的 `opts`：`{ adapter?, schema?, label?, phase?, model?, agentType?, isolation?, keep?, permissions? }`。
 `adapter` 选择用哪个 CLI；`schema` 是一个原始 JSON Schema 对象（选项，不是全局）；
 `agentType` 是注入进 prompt 的**人设**，*不是* adapter 名。`keep: true`（**ODW 扩展**）
-还会把隔离 agent 的改动提交到分支 `odw/<runId>/<agentId>-<label>`。
+还会把隔离 agent 的改动提交到分支 `odw/<runId>/<agentId>-<label>`。`permissions: "read"`
+（**ODW 扩展**）让该 agent 以比运行更严格的档位运行——见[权限档位](#权限档位odw-扩展)。
 
 `exec` 的 `opts`：`{ cwd?, env?, timeout?, input?, maxOutputBytes?, label?, phase?, check? }`。
 默认在源目录中运行，超过 `timeout` 秒（600）后连同它启动的所有进程一起被杀，每个输出流
@@ -174,6 +175,27 @@ odw apply $RUN --agent <id>           # 用 git apply --3way 应用到当前工�
 - 超过 `maxDiffBytes` 被截断的 diff 无法应用：改用该 agent 的分支（`keep: true`，或在
   配置里设 `"keepBranches": true`）。
 
+### 权限档位（ODW 扩展）
+
+每个 agent 都在一个档位下运行：`read`（只看——不改文件、不跑命令）、`edit`（默认：各 CLI
+一直以来的姿态）或 `full`（无沙箱、无审批）。
+
+- **调研、审查、审计和核验类的扇出：用 `read`。** 给这些 agent 传 `{ permissions: 'read' }`；
+  没有任何步骤需要写入时，用 `odw run wf.js --permissions read` 让整个运行只读。能改文件
+  的审查者可能会去"修复"它本该只报告的问题。
+- agent 只能降低运行的档位；请求更高档位的 agent 会失败
+  （`agent() asked for permissions "full", but the run allows only "edit"`）。
+- `read` 在 `claude`、`codex` 和 `gemini` 上可用。其他 CLI 会拒绝：agent 在启动前失败，并说明
+  哪个适配器可以。只读 agent 请指定其中之一（`adapter: 'claude'`）；`odw doctor` 会列出每个
+  适配器支持的档位，每次 `odw run` 也会打印各已安装适配器将以哪个档位运行。
+- **绝不要自己决定用 `full`。** 它去掉了沙箱和所有审批：只在用户明确要求、且是在用户视为
+  可丢弃的机器上时才用。
+
+```js
+const findings = await parallel(files.map((f) => () =>
+  agent(`Review ${f}: list bugs with evidence; change nothing`, { permissions: 'read', label: f })))  // ODW 扩展
+```
+
 ### 人工检查点（ODW 扩展）
 
 只在值得等人判断的地方加 `checkpoint()`：昂贵或难以撤销的步骤之前（大规模扇出、横跨
@@ -271,5 +293,7 @@ Codex、Claude Code、Gemini、Qwen、Kimi 开箱即用，无需配置。要换�
 | 用了 `exec()` 还指望脚本跑在 Claude Code 上 | `exec` 是 ODW 扩展，只能在 odw 上运行；`validate()` 会对此给出 warning。 |
 | 用了 `checkpoint()` 还指望脚本跑在 Claude Code 上 | `checkpoint` 是 ODW 扩展，只能在 odw 上运行；`validate()` 会对此给出 warning。 |
 | 看运行像是卡住了，就自己批准了检查点 | 等待中的检查点由用户决定：给用户看 `odw status $RUN`，只有用户明确同意后才运行 `odw approve`/`odw reject`。 |
+| 扇出的调研或审查 agent 能改文件 | 给这些 agent 传 `{ permissions: 'read' }`，或用 `odw run --permissions read`：它们只读取和报告，改不了工作树（ODW 扩展；claude、codex 或 gemini）。 |
+| agent 被拒绝或被拦下时，转而用 `--permissions full` | `full` 去掉了沙箱和所有审批——先问用户。被拒绝的 `read` agent 需要的是一个支持只读的适配器。 |
 | 大规模扇出却不看它花了多少 | `odw status $RUN` 会显示运行到目前为止的 token 与花费，比 `fanOutWarn`（默认 25）更宽的 `parallel()`/`pipeline()` 会记一条警告（均为 ODW 扩展）。设了 `budget.total` 时按它决定扇出规模；`--budget` 限制输出 token。 |
 | 自己手写一条包着 `odw run` 的 cron 行 | `odw schedule add` 会带上防重叠锁、日志和固定的 `PATH` 写好它——且只在用户要求时使用：它会改动用户的 crontab 或 LaunchAgents。 |

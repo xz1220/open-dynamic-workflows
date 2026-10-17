@@ -273,6 +273,7 @@ settles, phase by phase, with the result printed at the end. Ctrl-C detaches (th
 ```bash
 odw run wf.js [--args JSON|@file]            # foreground in a terminal; run keeps its own worker
                                              #   --adapter <name> sets this run's default agent
+                                             #   --permissions read|edit|full: what its agents may do
                                              #   --budget <tokens> sets budget.total
 ```
 
@@ -674,6 +675,133 @@ silently ignoring them. With no `defaultAdapter` set, odw uses the sole
 configured adapter — or, on a fresh install, the sole adapter whose CLI it
 actually finds on PATH; if several are installed, the error lists them and shows
 how to pick one.
+
+### Permissions (ODW extension)
+
+ODW runs every agent at a **permission tier**:
+
+- **`read`** — look, never edit or run commands: for research and review fan-outs.
+- **`edit`** — the default, and exactly what each built-in has always run with.
+- **`full`** — no sandbox and no approvals: an explicit opt-in, for isolated machines.
+
+Set the run's tier in the config (`"permissions": "read"`) or per run with
+`odw run|rerun|resume --permissions read` (rerun and resume otherwise keep the source
+run's). An adapter's own `permissions` and an `agent()` call's `permissions` can only
+**lower** it — an agent runs at the lowest of the three:
+
+```js
+// Reviewers that cannot touch the tree, in a run that may edit.
+const reviews = await parallel(files.map((f) => () =>
+  agent(`Review ${f} for bugs; report, do not fix`, { permissions: 'read', label: f })))
+```
+
+An agent that asks for more than its run allows fails before it starts, naming both
+tiers (`agent() asked for permissions "full", but the run allows only "edit" …`); in a
+`parallel()` its slot is `null`, like any failed agent. Each tier's flags take the place
+of the `{permission_args}` element of the adapter's command. Only mappings a CLI's own
+docs confirm for headless runs are filled in:
+
+| Adapter | `read` | `edit` (default) | `full` |
+| --- | --- | --- | --- |
+| `claude` | `--permission-mode dontAsk --tools Read,Glob,Grep,WebSearch,WebFetch --allowedTools WebSearch WebFetch --strict-mcp-config` | `--permission-mode acceptEdits --allowedTools WebSearch WebFetch` | `--permission-mode bypassPermissions` |
+| `codex` | `--sandbox read-only` | `--sandbox workspace-write` | `--sandbox danger-full-access` |
+| `gemini` | `--approval-mode default` | `--approval-mode auto_edit` | `--approval-mode yolo` |
+| `qwen` | refused | `--approval-mode auto-edit` | `--approval-mode yolo` |
+| `kimi` | refused | its print mode (no flag) | runs `edit` |
+| `omp` | refused | `--approval-mode yolo` | runs `edit` |
+| `kilo`, `opencode` | refused | `--auto` | runs `edit` |
+| `cursor` | refused | `--force` | runs `edit` |
+
+- **`read`.** On `claude`, `dontAsk` denies anything that would prompt and `--tools`
+  leaves only read-only built-in tools — there is no Edit, Write or Bash for an allow
+  rule in your settings to bring back — plus the web; no MCP server starts. `codex`
+  runs in its read-only sandbox: it can read files, not edit them or run commands
+  that need an approval (`codex exec` asks nobody). `gemini` asks before write and
+  shell tools in `default` mode, and headless that is a deny.
+- **refused.** A CLI with no verified read-only mode fails the agent before it starts:
+  `kimi cannot run read-only (…); use an adapter that can (--adapter claude, …), or
+  run with --permissions edit`. Qwen's docs do not say what its `default` mode does
+  headless, so it has no `read` either.
+- **runs `edit`.** A CLI with no separate full mode runs its `edit` flags, and the run
+  logs that once per adapter. For `kimi`, `omp`, `kilo`, `opencode` and `cursor`,
+  `edit` already approves every tool call headless — mind that before handing them a
+  repository.
+- **Your own adapters** declare their flags the same way. One without `permissionArgs`
+  runs its command as configured, treated as `edit`; under another tier the run logs
+  once that ODW cannot enforce it.
+
+```jsonc
+{
+  "permissions": "read", // the run's tier; odw run --permissions overrides it
+  "adapters": {
+    // cap one built-in: an entry without "command" changes only the fields it sets
+    "codex": { "permissions": "read" },
+    "my_wrapper": {
+      "command": ["my-agent", "{permission_args}", "--cwd", "{workspace}"],
+      "permissionArgs": { "read": ["--read-only"], "edit": [], "full": ["--yolo"] } // "edit" is required
+    }
+  }
+}
+```
+
+Every start prints the tier each installed adapter runs with —
+`permissions: read — claude read, codex read, kimi refused (no read mode)` — in the
+live view, after `--wait`'s first line and after a detached run's id. Each
+`agent_started` event (and `odw agents --json`) carries the agent's `permissions`, and
+`odw doctor` lists every adapter's tiers. A tier governs what agents may do: `exec()`
+commands are the workflow's own and are not affected. `read` is not a sandbox for code
+you do not trust either — Claude Code, for one, still runs a repository's hooks under
+`-p`.
+
+**Codex and MCP tools that ask for approval** ([#23](https://github.com/xz1220/open-dynamic-workflows/issues/23)).
+No tier makes `codex exec` approve an MCP tool call. It asks nobody, so a tool call that
+needs an approval — a Figma write, say — is cancelled (`user cancelled MCP tool call`),
+and `full` lifts the sandbox (`--sandbox danger-full-access`) but is not documented to
+approve MCP calls ([openai/codex#24135](https://github.com/openai/codex/issues/24135)).
+Pre-approve that one tool in Codex's own config instead
+([Codex MCP docs](https://developers.openai.com/codex/mcp)):
+
+```toml
+# ~/.codex/config.toml
+[mcp_servers.figma.tools.use_figma]
+approval_mode = "approve"
+```
+
+Or, only on an isolated machine, make codex's `full` the flag that skips every approval
+and the sandbox, and run with `--permissions full` (`permissionArgs` replaces the
+built-in's whole, so repeat the other tiers):
+
+```jsonc
+"adapters": {
+  "codex": {
+    "permissionArgs": {
+      "read": ["--sandbox", "read-only"],
+      "edit": ["--sandbox", "workspace-write"],
+      "full": ["--dangerously-bypass-approvals-and-sandbox"]
+    }
+  }
+}
+```
+
+On `claude`, `full` (`bypassPermissions`) runs tool calls without asking.
+
+**What agents see of your environment.** Agent CLIs inherit ODW's whole environment
+by default. `"agentEnv": "minimal"` passes only what a CLI needs to start (`PATH`,
+`HOME`, `USER`, `LOGNAME`, `SHELL`, `LANG`, `LC_*`, `TERM`, `TMPDIR`, `TZ`, and the
+Windows system variables), the auth and config variables the built-in CLIs document
+(`ANTHROPIC_*`, `CLAUDE_*`, `OPENAI_*`, `CODEX_*`, `GEMINI_*`, `GOOGLE_*`,
+`DASHSCOPE_*`, `QWEN_*`, `MOONSHOT_*`, `KIMI_*`, `CURSOR_*`, `OPENCODE_*`, the proxy
+variables and `NODE_EXTRA_CA_CERTS`), the adapter's `env`, `ODW_*`, and the names or
+`*` globs you list in `agentEnvPass` — so a cloud key or a registry token in your shell
+does not reach every agent:
+
+```jsonc
+{ "agentEnv": "minimal", "agentEnvPass": ["AWS_*"] } // e.g. Claude Code on Bedrock
+```
+
+If a CLI cannot log in under `minimal`, add what it needs to `agentEnvPass`
+(`odw doctor --smoke` makes one real call to check). `exec()` commands, `worktreeSetup`
+and the `notify` hooks keep the whole environment.
 
 ### Stall watchdog
 

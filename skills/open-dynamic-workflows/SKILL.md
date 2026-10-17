@@ -80,11 +80,13 @@ outright, never silently passed through as a string).
 | `exec(command, opts?)` | Run a command (tests, a build, a linter) without a model; resolves to `{ stdout, stderr, exitCode, signal, timedOut, truncated, durationMs }`. A string runs through the shell, an array as argv. **ODW extension** — not part of Claude Code's dialect. |
 | `checkpoint(title, opts?)` | Pause the run until a person approves or rejects; resolves to `{ approved, note, by }`. **ODW extension** — not part of Claude Code's dialect. |
 
-`opts` for `agent`: `{ adapter?, schema?, label?, phase?, model?, agentType?, isolation?, keep? }`.
+`opts` for `agent`: `{ adapter?, schema?, label?, phase?, model?, agentType?, isolation?, keep?, permissions? }`.
 `adapter` picks the CLI; `schema` is a raw JSON Schema object (an option, not
 a global); `agentType` is a **persona** injected into the prompt — *not* an
 adapter name. `keep: true` (**ODW extension**) also commits an isolated agent's
-change to a branch `odw/<runId>/<agentId>-<label>`.
+change to a branch `odw/<runId>/<agentId>-<label>`. `permissions: "read"`
+(**ODW extension**) runs the agent at a stricter tier than the run's — see
+[permission tiers](#permission-tiers-odw-extension).
 
 `opts` for `exec`: `{ cwd?, env?, timeout?, input?, maxOutputBytes?, label?, phase?, check? }`.
 It runs in the source directory by default, is killed after `timeout` seconds
@@ -200,6 +202,30 @@ odw apply $RUN --agent <id>           # git apply --3way into this working tree 
   commit or stash first; use `--force` only when the user agrees.
 - A diff cut at `maxDiffBytes` cannot be applied: use the agent's branch
   (`keep: true`, or `"keepBranches": true` in the config).
+
+### Permission tiers (ODW extension)
+
+Every agent runs at a tier: `read` (look — never edit or run commands), `edit`
+(the default: what each CLI always ran with), or `full` (no sandbox, no
+approvals).
+
+- **Research, review, audit and verification fan-outs: use `read`.** Give those
+  agents `{ permissions: 'read' }`, or start the whole run read-only with
+  `odw run wf.js --permissions read` when no step needs to write. A reviewer that
+  can edit may "fix" what it should only report.
+- An agent may only lower its run's tier; asking for more fails that agent
+  (`agent() asked for permissions "full", but the run allows only "edit"`).
+- `read` works on `claude`, `codex` and `gemini`. Other CLIs refuse it: the agent
+  fails before it starts, saying which adapter can. Name one of those for read-only
+  agents (`adapter: 'claude'`); `odw doctor` lists each adapter's tiers, and every
+  `odw run` prints the tier each installed adapter will run with.
+- **Never choose `full` on your own.** It removes the sandbox and every approval:
+  use it only when the user asks for it, on a machine they treat as disposable.
+
+```js
+const findings = await parallel(files.map((f) => () =>
+  agent(`Review ${f}: list bugs with evidence; change nothing`, { permissions: 'read', label: f })))  // ODW extension
+```
 
 ### Human checkpoints (ODW extension)
 
@@ -321,5 +347,7 @@ without answering when headless (a login, trust or approval prompt).
 | Using `exec()` and expecting the script to run on Claude Code | `exec` is an ODW extension and runs on odw only; `validate()` warns about it. |
 | Using `checkpoint()` and expecting the script to run on Claude Code | `checkpoint` is an ODW extension and runs on odw only; `validate()` warns about it. |
 | Approving a checkpoint yourself because the run looks stuck | A waiting checkpoint is the user's decision: show them `odw status $RUN`, and run `odw approve`/`odw reject` only on their explicit say-so. |
+| Fanning out research or review agents that can edit | `{ permissions: 'read' }` on those agents, or `odw run --permissions read`: they read and report, and cannot change the tree (ODW extension; claude, codex or gemini). |
+| Reaching for `--permissions full` when an agent was refused or denied | `full` drops the sandbox and every approval — ask the user. A refused `read` agent needs a read-capable adapter instead. |
 | Fanning out wide without watching what it spends | `odw status $RUN` shows the run's tokens and cost so far, and a `parallel()`/`pipeline()` wider than `fanOutWarn` (default 25) logs a warning (ODW extensions). Size fan-outs to `budget.total` when one is set; `--budget` caps output tokens. |
 | Hand-writing a cron line around `odw run` | `odw schedule add` writes it with an overlap lock, a log and a pinned `PATH` — and only on the user's request: it edits their crontab or LaunchAgents. |

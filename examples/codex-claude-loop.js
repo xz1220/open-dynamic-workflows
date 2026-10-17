@@ -5,18 +5,15 @@
 // silently ignored and you fall back to the built-in defaults):
 //   {
 //     "defaultAdapter": "claude",
-//     "adapters": {
-//       "claude": {
-//         "command": ["claude", "--print", "--dangerously-skip-permissions", "--no-session-persistence"],
-//         "stdin": "{prompt}"
-//       }
-//     }
+//     "permissions": "full",
+//     "adapters": { "codex": { "permissions": "edit" } }
 //   }
-// The claude override lets the IMPLEMENTER run commands (self-test with node),
-// not just edit files. Drop the adapters block to keep Claude write-only
-// (acceptEdits). The codex checker can already run commands with no flag change.
-// --dangerously-skip-permissions has NO sandbox: safe ONLY because --source is a
-// throwaway dir; never point it at a real repo.
+// The "full" permission tier (an ODW extension) lets the IMPLEMENTER run
+// commands (self-test with node), not just edit files: claude runs with
+// --permission-mode bypassPermissions. The codex checker stays capped at "edit"
+// — its workspace-write sandbox already runs commands. Drop "permissions" to
+// keep Claude write-only (acceptEdits). "full" has NO sandbox: safe ONLY because
+// --source is a throwaway dir; never point it at a real repo.
 //
 // Run (point --source at a scratch dir, NEVER your real repo — agents edit it):
 //   mkdir -p /tmp/odw-cc-loop && cp odw.config.json /tmp/odw-cc-loop/

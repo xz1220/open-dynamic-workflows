@@ -12,7 +12,11 @@ Five ship out of the box, usable with no config file: `codex`, `claude`,
 ### Permissions: what each built-in may do
 
 The templates are intentionally conservative, and the built-ins are **not**
-equally privileged:
+equally privileged. Each agent runs at a **permission tier** (an ODW extension):
+`read`, `edit` (the default) or `full` — the run's comes from `"permissions"` in
+the config or `odw run|rerun|resume --permissions <tier>`, and an adapter's own
+`"permissions"` and an `agent()` call's `permissions` may only lower it. At the
+default `edit` tier:
 
 - `codex` runs with `--sandbox workspace-write`: it can **edit files and run
   commands** inside its workspace out of the box. It also carries `--search`,
@@ -22,23 +26,62 @@ equally privileged:
   but **not run commands** (a prompt that asks it to execute something will
   stall or be refused). The web allowlist matters: headless acceptEdits
   silently denies WebSearch/WebFetch otherwise, which breaks research
-  workflows like `examples/deep-research.js`. To let Claude run commands too, override the adapter with
-  `--dangerously-skip-permissions` — which has **no sandbox**, so do that only
-  against a throwaway `--source` directory, never your real repo. An override
-  replaces the whole adapter: keep the stream-json flags and the `output` block
-  (as below) to keep its usage, cost and error reporting:
+  workflows like `examples/deep-research.js`. To let Claude run commands too,
+  run it at `full` (`--permissions full`: `--permission-mode bypassPermissions`)
+  — which has **no sandbox**, so do that only against a throwaway `--source`
+  directory, never your real repo.
+
+A tier's flags take the place of the `{permission_args}` element of the
+adapter's command (its `permissionArgs`). Only mappings a CLI's own docs
+confirm for headless runs are filled in:
+
+| Adapter | `read` | `edit` (default) | `full` |
+| --- | --- | --- | --- |
+| `claude` | `--permission-mode dontAsk --tools Read,Glob,Grep,WebSearch,WebFetch --allowedTools WebSearch WebFetch --strict-mcp-config` | `--permission-mode acceptEdits --allowedTools WebSearch WebFetch` | `--permission-mode bypassPermissions` |
+| `codex` | `--sandbox read-only` | `--sandbox workspace-write` | `--sandbox danger-full-access` |
+| `gemini` | `--approval-mode default` | `--approval-mode auto_edit` | `--approval-mode yolo` |
+| `qwen` | refused | `--approval-mode auto-edit` | `--approval-mode yolo` |
+| `kimi` | refused | its print mode (no flag) | runs `edit` |
+| `omp` | refused | `--approval-mode yolo` | runs `edit` |
+| `kilo`, `opencode` | refused | `--auto` | runs `edit` |
+| `cursor` | refused | `--force` | runs `edit` |
+
+- An agent that asks for more than its run (or its adapter) allows fails before
+  it starts, naming both tiers.
+- **refused**: `read` on a CLI with no read flags fails the agent before it
+  starts, naming an adapter that can and how to lift the read.
+- **runs `edit`**: `full` on a CLI with no full flags runs its `edit` flags; the
+  run logs that once per adapter. For `kimi`, `omp`, `kilo`, `opencode` and
+  `cursor`, `edit` already approves every tool call headless.
+- An adapter without `permissionArgs` (your own CLI) runs its command as
+  configured, treated as `edit`; under another tier the run logs once that ODW
+  cannot enforce it.
+- `codex` at any tier cannot approve an MCP tool call that asks for approval:
+  pre-approve the tool in `~/.codex/config.toml`
+  (`[mcp_servers.<server>.tools.<tool>] approval_mode = "approve"`) — see
+  "Permissions" in the README.
+
+Every `odw run` prints the tier each installed adapter runs with; each
+`agent_started` event carries the agent's `permissions`; `odw doctor` lists every
+adapter's tiers.
 
 ```json
 {
+  "permissions": "read",
   "adapters": {
-    "claude": {
-      "command": ["claude", "--print", "--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions", "--no-session-persistence"],
-      "stdin": "{prompt}",
-      "output": { "format": "jsonl", "eventType": "result", "textPath": ["result"], "select": "last", "usagePath": ["usage"], "costPath": ["total_cost_usd"], "errorPath": ["is_error"] }
+    "codex": { "permissions": "read" },
+    "my_wrapper": {
+      "command": ["my-agent", "{permission_args}", "--cwd", "{workspace}"],
+      "permissionArgs": { "read": ["--read-only"], "edit": [], "full": ["--yolo"] }
     }
   }
 }
 ```
+
+An entry without `command` changes only the fields it sets on the built-in of
+its name (`"codex": { "permissions": "read" }` above). One with a `command`
+replaces the built-in whole — for `claude`, keep the stream-json flags, the
+`output` block and its `permissionArgs`, as `odw.config.example.json` does.
 
 The built-in `claude` runs Claude Code's `--output-format stream-json --verbose`:
 an event per turn, ending in a `result` event that carries the reply, the run's
@@ -110,6 +153,9 @@ did-you-mean hint) instead of silently ignoring them.
 | `maxDiffBytes` | **ODW extension.** Bytes of an isolated agent's diff kept in the run directory (`agents/<agentId>.diff`, read by `odw diff` / `odw apply`; default 2 MB). Past it the head is kept, cut at a line, with a `# odw: diff truncated …` note; the counts still describe the whole change |
 | `keepBranches` | **ODW extension.** `true`: every isolated agent's change is also committed to a branch `odw/<runId>/<agentId>-<label>` of the source repository, as `keep: true` does for one agent (`keep: false` opts one out). Default `false` |
 | `maxTranscriptBytes` | **ODW extension.** Bytes of each agent's transcript kept in the run directory — what its CLI printed on stdout, `agents/<agentId>.transcript.jsonl` (a JSONL adapter's events as received, other output as `{"kind":"text"}` lines), beside the end of its stderr in `agents/<agentId>.stderr.txt`; read with `odw logs <run> --agent <id\|label>` (default 5 MB). Past it one `{"kind":"truncated","bytes":N}` line ends the transcript; `0` keeps none |
+| `permissions` | **ODW extension.** The run's permission tier: `"read"`, `"edit"` (default) or `"full"` — see [permissions](#permissions-what-each-built-in-may-do). `odw run\|rerun\|resume --permissions` overrides it |
+| `agentEnv` | **ODW extension.** `"inherit"` (default): agent CLIs get ODW's whole environment. `"minimal"`: only `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `LANG`, `LC_*`, `TERM`, `TMPDIR`, `TZ` (and the Windows system variables), the auth and config variables the built-in CLIs document (`ANTHROPIC_*`, `CLAUDE_*`, `OPENAI_*`, `CODEX_*`, `GEMINI_*`, `GOOGLE_*`, `DASHSCOPE_*`, `QWEN_*`, `MOONSHOT_*`, `KIMI_*`, `CURSOR_*`, `OPENCODE_*`, the proxy variables, `NODE_EXTRA_CA_CERTS`), `ODW_*`, `agentEnvPass` and the adapter's `env`. `exec()` commands, `worktreeSetup` and `notify` keep the whole environment |
+| `agentEnvPass` | **ODW extension.** More names, or `*` globs, a `"minimal"` agent environment passes (e.g. `["AWS_*"]` for Claude Code on Bedrock) |
 
 ### Adapter fields
 
@@ -124,6 +170,8 @@ did-you-mean hint) instead of silently ignoring them.
 | `flags` | capability declaration, e.g. `{ "model": ["--model"] }` — the native flag that carries a per-call `model`. Without it, `agent(..., { model })` is not honored for this adapter (a routing note appears in the logs) |
 | `failures` | **ODW extension.** This CLI's own failure wording: `{ "rate_limit": [...], "quota": [...], "auth": [...] }`, regular expressions matched case-insensitively against the end of a failed run's output before the built-in table |
 | `output` | how stdout becomes the reply (default: trimmed text) — see below |
+| `permissionArgs` | **ODW extension.** Each tier's flags: `{ "read"?: [...], "edit": [...], "full"?: [...] }` (`edit` required, `[]` for none), put where the command has a `{permission_args}` element — which it must have exactly when this is set |
+| `permissions` | **ODW extension.** Caps this adapter's tier below the run's: its agents get the lower of the two |
 
 ### Output formats
 
@@ -171,6 +219,7 @@ Expanded in `command` and `stdin` before each call:
 | `{workspace}` | the directory the agent runs in (its git worktree when it is isolated) |
 | `{source}` | the original working tree |
 | `{adapter}` / `{role}` | the adapter's name / label |
+| `{permission_args}` | **ODW extension.** The agent's tier flags from `permissionArgs`, as argv elements of their own (command only; the element must be the token alone) |
 
 A CLI fits as long as it reads a prompt (via stdin or an argument) and prints its
 reply to stdout. Non-zero exit, a timeout, or a missing executable surface as a

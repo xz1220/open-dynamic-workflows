@@ -249,6 +249,7 @@ ODW 已实现下列原语能力。依赖宿主私有运行机制的脚本,迁移
 ```bash
 odw run wf.js [--args JSON|@file]            # 终端里前台展示;运行本体仍是独立 worker
                                              #   --adapter <name> 指定这次运行的默认 agent
+                                             #   --permissions read|edit|full:agent 能做什么
                                              #   --budget <tokens> 设置 budget.total
 ```
 
@@ -616,6 +617,123 @@ Windows 下的可执行文件探测遵循 `PATHEXT`,所以 `agent.cmd`、`kilo.c
 在 stderr 上给出警告(附 did-you-mean 提示),而不是静默忽略。没设
 `defaultAdapter` 时,odw 会用唯一配置的 adapter——或在全新安装下,用 PATH 上
 唯一真实存在的那个 CLI;若装了多个,报错会列出它们并告诉你如何选择。
+
+### 权限档位(ODW 扩展)
+
+ODW 让每个 agent 在一个**权限档位**下运行:
+
+- **`read`**——只看,不改文件、不跑命令:用于调研与审查类的 fan-out。
+- **`edit`**——默认档位,与各内置适配器一直以来的姿态完全一致。
+- **`full`**——无沙箱、无审批:必须显式开启,只用于隔离的机器。
+
+在配置里设定运行的档位(`"permissions": "read"`),或按次指定
+`odw run|rerun|resume --permissions read`(不指定时 rerun 和 resume 沿用源运行的档位)。
+适配器自己的 `permissions` 和 `agent()` 调用的 `permissions` 只能**降低**它——agent
+实际运行在三者中最低的那一档:
+
+```js
+// 在允许编辑的运行里,审查者碰不到工作树。
+const reviews = await parallel(files.map((f) => () =>
+  agent(`Review ${f} for bugs; report, do not fix`, { permissions: 'read', label: f })))
+```
+
+请求高于运行所允许档位的 agent 会在启动前失败,报错同时写明两个档位
+(`agent() asked for permissions "full", but the run allows only "edit" …`);在
+`parallel()` 里它的位置是 `null`,与任何失败的 agent 一样。各档位的参数替换适配器命令中
+`{permission_args}` 那一项。只有 CLI 官方文档确认在无头模式下成立的映射才会填上:
+
+| 适配器 | `read` | `edit`(默认) | `full` |
+| --- | --- | --- | --- |
+| `claude` | `--permission-mode dontAsk --tools Read,Glob,Grep,WebSearch,WebFetch --allowedTools WebSearch WebFetch --strict-mcp-config` | `--permission-mode acceptEdits --allowedTools WebSearch WebFetch` | `--permission-mode bypassPermissions` |
+| `codex` | `--sandbox read-only` | `--sandbox workspace-write` | `--sandbox danger-full-access` |
+| `gemini` | `--approval-mode default` | `--approval-mode auto_edit` | `--approval-mode yolo` |
+| `qwen` | 拒绝 | `--approval-mode auto-edit` | `--approval-mode yolo` |
+| `kimi` | 拒绝 | print 模式本身(无参数) | 按 `edit` 运行 |
+| `omp` | 拒绝 | `--approval-mode yolo` | 按 `edit` 运行 |
+| `kilo`、`opencode` | 拒绝 | `--auto` | 按 `edit` 运行 |
+| `cursor` | 拒绝 | `--force` | 按 `edit` 运行 |
+
+- **`read`。** 在 `claude` 上,`dontAsk` 会拒绝一切需要询问的调用,`--tools` 只留下只读的
+  内置工具——根本没有 Edit、Write 或 Bash,你设置里的 allow 规则也加不回来——外加联网
+  工具;不启动任何 MCP server。`codex` 运行在只读沙箱里:能读文件,不能改,也不能运行需要
+  审批的命令(`codex exec` 不向任何人询问)。`gemini` 在 `default` 模式下会在写入和 shell
+  工具前询问,无头模式下这等同于拒绝。
+- **拒绝。** 没有经过验证的只读模式的 CLI,agent 会在启动前失败:
+  `kimi cannot run read-only (…); use an adapter that can (--adapter claude, …), or
+  run with --permissions edit`。Qwen 的文档没有说明其 `default` 模式在无头下的行为,所以它
+  也没有 `read`。
+- **按 `edit` 运行。** 没有单独完全权限模式的 CLI 会用它的 `edit` 参数运行,每次运行对每个
+  适配器只记一条日志。注意:对 `kimi`、`omp`、`kilo`、`opencode` 和 `cursor` 来说,
+  `edit` 在无头模式下本来就会批准所有工具调用——把仓库交给它们之前请想清楚。
+- **自己的适配器** 用同样的方式声明参数。没有 `permissionArgs` 的适配器按配置的命令原样
+  运行,视为 `edit`;在其他档位下,运行会记一条日志,说明 ODW 无法强制执行。
+
+```jsonc
+{
+  "permissions": "read", // 运行的档位;odw run --permissions 可覆盖
+  "adapters": {
+    // 给某个内置适配器封顶:不写 "command" 的条目只改它写出的字段
+    "codex": { "permissions": "read" },
+    "my_wrapper": {
+      "command": ["my-agent", "{permission_args}", "--cwd", "{workspace}"],
+      "permissionArgs": { "read": ["--read-only"], "edit": [], "full": ["--yolo"] } // "edit" 必填
+    }
+  }
+}
+```
+
+每次启动都会打印每个已安装适配器实际运行的档位——
+`permissions: read — claude read, codex read, kimi refused (no read mode)`——出现在实时
+视图里、`--wait` 的第一行之后,以及 detached 运行的 run id 之后。每个 `agent_started`
+事件(以及 `odw agents --json`)都带有该 agent 的 `permissions`,`odw doctor` 会列出每个
+适配器支持的档位。档位只约束 agent 能做什么:`exec()` 命令属于 workflow 自身,不受影响。
+`read` 也不是运行不受信任代码的沙箱——比如 Claude Code 在 `-p` 下仍会执行仓库自带的 hooks。
+
+**Codex 与需要审批的 MCP 工具**([#23](https://github.com/xz1220/open-dynamic-workflows/issues/23))。
+没有哪个档位能让 `codex exec` 批准 MCP 工具调用。它不向任何人询问,所以需要审批的工具
+调用——比如一次 Figma 写入——会被取消(`user cancelled MCP tool call`);`full` 解除了
+沙箱(`--sandbox danger-full-access`),但文档没有说它会批准 MCP 调用
+([openai/codex#24135](https://github.com/openai/codex/issues/24135))。请改在 Codex 自己
+的配置里预先批准那一个工具([Codex MCP 文档](https://developers.openai.com/codex/mcp)):
+
+```toml
+# ~/.codex/config.toml
+[mcp_servers.figma.tools.use_figma]
+approval_mode = "approve"
+```
+
+或者,仅在隔离的机器上,把 codex 的 `full` 换成跳过一切审批和沙箱的参数,再用
+`--permissions full` 运行(`permissionArgs` 会整体替换内置的那份,所以其他档位要一并写出):
+
+```jsonc
+"adapters": {
+  "codex": {
+    "permissionArgs": {
+      "read": ["--sandbox", "read-only"],
+      "edit": ["--sandbox", "workspace-write"],
+      "full": ["--dangerously-bypass-approvals-and-sandbox"]
+    }
+  }
+}
+```
+
+在 `claude` 上,`full`(`bypassPermissions`)执行工具调用时不会询问。
+
+**agent 能看到你的哪些环境变量。** 默认情况下,agent CLI 继承 ODW 的全部环境变量。
+`"agentEnv": "minimal"` 只传递 CLI 启动所需的变量(`PATH`、`HOME`、`USER`、`LOGNAME`、
+`SHELL`、`LANG`、`LC_*`、`TERM`、`TMPDIR`、`TZ`,以及 Windows 的系统变量)、内置 CLI 文档
+中列出的认证与配置变量(`ANTHROPIC_*`、`CLAUDE_*`、`OPENAI_*`、`CODEX_*`、`GEMINI_*`、
+`GOOGLE_*`、`DASHSCOPE_*`、`QWEN_*`、`MOONSHOT_*`、`KIMI_*`、`CURSOR_*`、`OPENCODE_*`、
+代理变量和 `NODE_EXTRA_CA_CERTS`)、适配器的 `env`、`ODW_*`,以及你在 `agentEnvPass`
+里列出的名字或 `*` 通配——这样 shell 里的云凭据或仓库令牌就不会传给每一个 agent:
+
+```jsonc
+{ "agentEnv": "minimal", "agentEnvPass": ["AWS_*"] } // 例如在 Bedrock 上用 Claude Code
+```
+
+如果某个 CLI 在 `minimal` 下无法登录,把它需要的变量加进 `agentEnvPass`
+(`odw doctor --smoke` 会发一次真实调用来检验)。`exec()` 命令、`worktreeSetup` 和
+`notify` 钩子仍拿到完整的环境变量。
 
 ### 卡死看门狗
 
