@@ -98,9 +98,16 @@ export interface AgentView {
   branch?: string | null;
   /** The permission tier its CLI runs at (ODW extension); absent for older runs. */
   permissions?: PermissionTier | null;
+  /**
+   * The adapters it fell back from, in order — their quota was spent or their
+   * login refused — before `adapter` (ODW extension). Absent when it never
+   * left the adapter it started on.
+   */
+  fellBackFrom?: string[] | null;
   label: string;
   phase: string | null;
   state: AgentState;
+  /** The adapter it runs on — after a fallback, the one it moved to; once settled, the one that produced its value (or failed last). */
   adapter: string | null;
   attempts: number | null;
   error: string | null;
@@ -306,6 +313,8 @@ export interface AgentResultRecord {
   branch?: string | null;
   /** The permission tier it ran at (ODW extension). */
   permissions?: PermissionTier;
+  /** The adapters it fell back from before `adapter` produced the value (ODW extension). */
+  fellBackFrom?: string[];
 }
 
 /** One step of an agent's transcript, normalized (ODW extension; src/runtime/transcript-view.ts). */
@@ -331,9 +340,11 @@ export interface TranscriptEntry {
   clipped?: true;
   /** text: the agent's thinking, not its reply. */
   thinking?: true;
-  /** attempt: which CLI run of the call begins (2 = the first one more), and why: schema | stall | rate_limit. */
+  /** attempt: which CLI run of the call begins (2 = the first one more), and why: schema | stall | rate_limit | fallback. */
   n?: number;
   reason?: string;
+  /** attempt, for a fallback (ODW extension): the adapter the call moved to. */
+  adapter?: string;
   /** truncated: the bytes kept before maxTranscriptBytes cut the transcript. */
   bytes?: number;
   /** result: the turns the session took and what it cost, as its CLI reported. */

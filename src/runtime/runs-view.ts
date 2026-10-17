@@ -89,6 +89,13 @@ export interface AgentView {
    * agent_started's `permissions`. Absent for older event files.
    */
   permissions?: PermissionTier;
+  /**
+   * Agents only (ODW extension): the adapters it fell back from, in order —
+   * their quota was spent or their login refused — before `adapter`, the one
+   * it runs on now and, once settled, the one that produced its value (or
+   * failed last). Absent when it never left the adapter it started on.
+   */
+  fellBackFrom?: string[];
 }
 
 export type RunDisplayState =
@@ -259,6 +266,18 @@ export function applyAgentEvent(
   if (ev.type === "command_started" || ev.type === "command_finished" || ev.type === "command_failed") {
     return applyCommandEvent(agents, ev);
   }
+  if (ev.type === "log") {
+    // A fallback (ODW extension) moves a running agent to another adapter:
+    // its log line names the adapter and every one the agent has left.
+    const from = adapterNames(ev.fellBackFrom);
+    if (!from || typeof ev.agentId !== "number" || typeof ev.adapter !== "string") return {};
+    const target = agents.find((a) => a.state === "running" && a.agentId === ev.agentId);
+    if (target) {
+      target.adapter = ev.adapter;
+      target.fellBackFrom = from;
+    }
+    return {};
+  }
   if (ev.type === "agent_started") {
     const opened: AgentView = {
       agentId: typeof ev.agentId === "number" ? ev.agentId : null,
@@ -307,10 +326,15 @@ export function applyAgentEvent(
     // What an isolated agent changed, finished or failed (ODW extension).
     target.changes = agentChanges(ev.changes);
     target.branch = typeof ev.branch === "string" && ev.branch !== "" ? ev.branch : null;
+    // The adapters it fell back from, finished or failed (ODW extension).
+    const from = adapterNames(ev.fellBackFrom);
+    if (from) target.fellBackFrom = from;
     if (ev.type === "agent_failed") {
       target.state = "failed";
       target.error = ev.error != null ? String(ev.error) : null;
       if (typeof ev.reason === "string" && ev.reason !== "") target.failureReason = ev.reason;
+      // One that fell back failed on the adapter its event names.
+      if (from && typeof ev.adapter === "string") target.adapter = ev.adapter;
     } else {
       target.state = "done";
       target.adapter = ev.adapter != null ? String(ev.adapter) : null;
@@ -374,6 +398,12 @@ function applyCommandEvent(
   return { settled: target };
 }
 
+/** An event's `fellBackFrom`, when it lists adapters (ODW extension); undefined otherwise. */
+function adapterNames(raw: unknown): string[] | undefined {
+  if (!Array.isArray(raw) || raw.length === 0 || !raw.every((name) => typeof name === "string")) return undefined;
+  return [...(raw as string[])];
+}
+
 /** An event's `changes`, when it is a diffstat; null otherwise. */
 function agentChanges(raw: unknown): AgentChanges | null {
   if (raw === null || typeof raw !== "object") return null;
@@ -403,6 +433,7 @@ function copyAgents(agents: AgentView[], stale: boolean): AgentView[] {
   return agents.map((a) => {
     const copy: AgentView = stale && a.state === "running" ? { ...a, state: "stale" } : { ...a };
     if (a.usage) copy.usage = { ...a.usage };
+    if (a.fellBackFrom) copy.fellBackFrom = [...a.fellBackFrom];
     return copy;
   });
 }

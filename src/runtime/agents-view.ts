@@ -43,6 +43,8 @@ export interface AgentRow {
   branch: string | null;
   /** The permission tier it runs at (ODW extension); null for runs from before tiers. */
   permissions: PermissionTier | null;
+  /** The adapters it fell back from before `adapter` (ODW extension); null when it did not. */
+  fellBackFrom: string[] | null;
 }
 
 /** A run's agents in call (agentId) order, each with its saved result if it has one. */
@@ -67,6 +69,7 @@ export function agentRows(store: RunStore, runId: string): AgentRow[] {
       changes: a.changes ?? record?.changes ?? null,
       branch: a.branch ?? record?.branch ?? null,
       permissions: a.permissions ?? record?.permissions ?? null,
+      fellBackFrom: a.fellBackFrom ?? record?.fellBackFrom ?? null,
     };
   });
   // A saved result whose events were lost (a truncated log) is still listed.
@@ -92,6 +95,7 @@ function rowFromRecord(rec: AgentResultRecord): AgentRow {
     changes: rec.changes ?? null,
     branch: rec.branch ?? null,
     permissions: rec.permissions ?? null,
+    fellBackFrom: rec.fellBackFrom ?? null,
   };
 }
 
@@ -126,6 +130,8 @@ export function agentRowJson(row: AgentRow): Record<string, unknown> {
     sourceRunId: row.record?.sourceRunId ?? null,
     // The tier it ran at (ODW extension), for runs that record one.
     ...(row.permissions ? { permissions: row.permissions } : {}),
+    // The adapters it fell back from (ODW extension), when it did.
+    ...(row.fellBackFrom ? { fellBackFrom: row.fellBackFrom } : {}),
     saved: row.record !== null,
     error: row.error,
     preview: row.record ? previewValue(row.record.value, 120) : null,

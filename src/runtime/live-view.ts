@@ -29,6 +29,10 @@
  * What the run spends (ODW extension) shows in the summary line: output
  * tokens — what `--budget` counts — and the running cost once agents that
  * report it have settled; each settled agent's line carries its own cost.
+ *
+ * An agent that fell back to another adapter (an ODW extension) shows the
+ * adapters it went through — `codex → claude` — while it runs and once it
+ * settled.
  */
 
 import { formatSeconds } from "../adapters/failures.js";
@@ -104,7 +108,7 @@ export function formatEvent(ev: WorkflowEvent): string {
   if (type === "log") detail = sanitizeText(ev.message, 300);
   else if (type === "phase_started") detail = `phase: ${sanitizeText(ev.phase, 80)}`;
   else if (type.startsWith("agent_")) {
-    detail = sanitizeText(ev.label ?? "agent", 120);
+    detail = sanitizeText(ev.label ?? "agent", 120) + fallbackTag(ev);
     if (type === "agent_failed") detail += ` — ${failureTag(ev)}${sanitizeText(ev.error, 200)}`;
     if (type === "agent_finished" && ev.cached === true) detail += ` (replayed from ${sanitizeText(ev.sourceRunId, 80)})`;
   } else if (type.startsWith("command_")) detail = commandDetail(ev, type);
@@ -123,6 +127,45 @@ function failureTag(ev: WorkflowEvent): string {
   if (typeof ev.reason !== "string" || ev.reason === "") return "";
   const after = typeof ev.retryAfter === "number" ? `, retry after ${formatSeconds(ev.retryAfter)}` : "";
   return `[${sanitizeText(ev.reason, 40)}${after}] `;
+}
+
+/** The adapters an agent fell back through, after its label: " (codex → claude)"; "" when it did not (ODW extension). */
+function fallbackTag(ev: WorkflowEvent): string {
+  const from = Array.isArray(ev.fellBackFrom) ? ev.fellBackFrom.filter((name) => typeof name === "string") : [];
+  if (from.length === 0 || typeof ev.adapter !== "string") return "";
+  return ` (${adapterPath(from, ev.adapter, "→")})`;
+}
+
+/** "codex → claude": the adapters an agent left, then the one it is on — each sanitized. */
+function adapterPath(fellBackFrom: readonly string[], adapter: string, arrow: string): string {
+  return [...fellBackFrom, adapter].map((name) => sanitizeText(name, 40)).join(` ${arrow} `);
+}
+
+/** How many agents that fell back `odw status` names; past them, a count. */
+const FALLBACKS_NAMED = 5;
+
+/**
+ * What `odw status` says about fallbacks (ODW extensions): the agents that
+ * moved down their fallback chain — "search:3 codex → claude" — and the
+ * adapters the run's quota breaker took out. No lines for a run without either.
+ */
+export function fallbackLines(agents: AgentView[], events: WorkflowEvent[]): string[] {
+  const lines: string[] = [];
+  const moved = agents.filter((a) => a.kind === "agent" && a.adapter !== null && (a.fellBackFrom?.length ?? 0) > 0);
+  if (moved.length > 0) {
+    const named = moved
+      .slice(0, FALLBACKS_NAMED)
+      .map((a) => `${sanitizeText(a.label, 40)}:${a.agentId ?? "?"} ${adapterPath(a.fellBackFrom!, a.adapter!, "→")}`);
+    const more = moved.length > FALLBACKS_NAMED ? `, and ${moved.length - FALLBACKS_NAMED} more` : "";
+    lines.push(`fell back: ${moved.length} agent${moved.length === 1 ? "" : "s"} — ${named.join(", ")}${more}`);
+  }
+  const tripped = new Set<string>();
+  for (const e of events) if (e.type === "log" && e.tripped === true && typeof e.adapter === "string") tripped.add(e.adapter);
+  if (tripped.size > 0) {
+    const names = [...tripped].map((name) => sanitizeText(name, 40)).join(", ");
+    lines.push(`quota breaker: ${names} out of usage quota — the run's later agents skip ${tripped.size === 1 ? "it" : "them"}`);
+  }
+  return lines;
 }
 
 /**
@@ -321,6 +364,8 @@ class LiveView {
       }
       if (ev.type === "log") {
         out.push(`    ${p.dim(`${g.bullet} ${sanitizeText(ev.message, 300)}`)}`);
+        // A fallback's line moves its running agent to the next adapter (ODW extension).
+        applyAgentEvent(this.agents, ev);
         continue;
       }
       if (ev.type === "checkpoint_requested" && typeof ev.checkpointId === "number") {
@@ -361,13 +406,19 @@ class LiveView {
     }
   }
 
+  /** The adapter a node runs (or ran) on, after any it fell back from (ODW extension): "codex → claude". */
+  private adapterText(a: AgentView): string | null {
+    if (a.adapter === null) return null;
+    return adapterPath(a.fellBackFrom ?? [], a.adapter, this.g.arrow);
+  }
+
   private settledLine(a: AgentView): string {
     const { p, g } = this;
     const label = padEndWidth(sanitizeText(nodeLabel(a), 60), this.labelW);
     const glyph = a.state === "done" ? p.ok(g.ok) : p.err(g.fail);
     const meta = metaJoin(g, [
       a.phase !== null && a.phase !== this.currentPhase ? sanitizeText(a.phase, 40) : null,
-      a.adapter !== null ? sanitizeText(a.adapter, 40) : null,
+      this.adapterText(a),
       a.state === "failed" ? reasonText(a.failureReason) : null,
       // A replayed result (odw resume) took no time and ran nothing.
       a.cached ? "replayed" : a.durationMs !== null ? fmtDuration(a.durationMs) : null,
@@ -405,7 +456,7 @@ class LiveView {
       const label = padEndWidth(sanitizeText(nodeLabel(a), 60), this.labelW);
       const meta = metaJoin(g, [
         a.phase !== null && a.phase !== this.currentPhase ? sanitizeText(a.phase, 40) : null,
-        a.adapter !== null ? sanitizeText(a.adapter, 40) : null,
+        this.adapterText(a),
         a.startedAt !== null ? fmtDuration((nowSec - a.startedAt) * 1000) : null,
       ]);
       block.push(`    ${p.run(spin)} ${label}  ${p.dim(meta)}`);

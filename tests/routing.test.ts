@@ -17,7 +17,7 @@ import { AGENT_FAILED, AGENT_FINISHED, AGENT_STARTED, LOG, MemorySink } from "..
 import { ReplayJournal, resumeKey, stableJson, type AgentResultRecord } from "../src/journal.js";
 import { loadWorkflowScript, readWorkflowMeta } from "../src/loader.js";
 import { createPrimitives } from "../src/primitives.js";
-import { attachRun, formatEvent } from "../src/runtime/live-view.js";
+import { attachRun, fallbackLines, formatEvent } from "../src/runtime/live-view.js";
 import { RunStore } from "../src/runtime/run-store.js";
 import { detailFrom, EventFold } from "../src/runtime/runs-view.js";
 import { normalizeTranscript } from "../src/runtime/transcript-view.js";
@@ -795,4 +795,164 @@ test("an unknown model tier fails the agent before its CLI starts, naming the ti
   assert.equal(sink.ofType(AGENT_FAILED).length, 1);
   assert.equal(ctx.scheduler.fatalError, undefined, "one agent's mistake, not the run's");
   await assert.rejects(createPrimitives(routed(routingConfig()).ctx).agent("x", { model: "@fast" }), /none is configured \(set "models" in the config\)/);
+});
+
+// --- what readers show ------------------------------------------------------------------
+
+test("readers follow a fallback: the running agent moves with its log line, and settled agents keep the adapters they left", () => {
+  const events = [
+    { ts: 1, type: "run_started", runId: "r" },
+    { ts: 1, type: "agent_started", agentId: 1, label: "search", phase: null, adapter: "codex" },
+    { ts: 2, type: "log", message: "search:1 → claude after codex quota", agentId: 1, label: "search", adapter: "claude", fellBackFrom: ["codex"], reason: "quota" },
+  ];
+  const fold = new EventFold().apply(events);
+  assert.deepEqual([fold.agents[0]!.state, fold.agents[0]!.adapter, fold.agents[0]!.fellBackFrom], ["running", "claude", ["codex"]]);
+  fold.apply([
+    { ts: 3, type: "agent_finished", agentId: 1, label: "search", adapter: "claude", fellBackFrom: ["codex"], attempts: 1 },
+    { ts: 4, type: "agent_started", agentId: 2, label: "write", adapter: "codex" },
+    { ts: 5, type: "agent_failed", agentId: 2, label: "write", error: "AdapterExecutionError: …", reason: "quota", adapter: "gemini", fellBackFrom: ["codex", "claude"] },
+    { ts: 6, type: "agent_started", agentId: 3, label: "plain", adapter: "codex" },
+    // Other lines that name an agent and an adapter move nothing.
+    { ts: 7, type: "log", message: "warning: …", agentId: 3, adapter: "claude", reason: "quota", tripped: true },
+    { ts: 8, type: "agent_failed", agentId: 3, label: "plain", error: "boom", reason: "exit" },
+  ]);
+  assert.deepEqual(
+    fold.agents.map((a) => [a.state, a.adapter, a.fellBackFrom]),
+    [
+      ["done", "claude", ["codex"]],
+      ["failed", "gemini", ["codex", "claude"]],
+      ["failed", "codex", undefined],
+    ],
+  );
+  const facts = { status: { state: "running", pid: process.pid }, meta: {}, fold };
+  const copy = detailFrom("r", facts, { hasResult: false, error: null });
+  copy.agents[0]!.fellBackFrom!.push("x");
+  assert.deepEqual(fold.agents[0]!.fellBackFrom, ["codex"], "a reader's copy is its own");
+
+  assert.match(
+    formatEvent({ ts: 3, type: "agent_finished", label: "search", adapter: "claude", fellBackFrom: ["codex"] }),
+    /agent_finished\s+search \(codex → claude\)$/,
+  );
+  const agents = detailFrom("r", facts, { hasResult: false, error: null }).agents;
+  assert.deepEqual(fallbackLines(agents, [{ ts: 7, type: "log", message: "warning: …", adapter: "claude", tripped: true }]), [
+    "fell back: 2 agents — search:1 codex → claude, write:2 codex → claude → gemini",
+    "quota breaker: claude out of usage quota — the run's later agents skip it",
+  ]);
+  assert.deepEqual(fallbackLines([], []), [], "nothing to say about a run without either");
+});
+
+test("the live view shows where a running agent moved, and a settled one's path", async () => {
+  const root = mkdtempSync(join(tmpdir(), "odw-routing-live-"));
+  try {
+    const store = new RunStore(root);
+    const id = store.create({ script: "/tmp/never-read/wf.js", args: null, source: root, workflowName: "routes" });
+    store.updateStatus(id, { state: "running", pid: process.pid, name: "routes" });
+    const emit = (ev: Record<string, unknown>) => appendFileSync(store.eventsPath(id), JSON.stringify(ev) + "\n");
+    const term = new FakeTerm(120);
+    const out = { isTTY: false, write: (_chunk: string) => {} };
+    emit({ ts: 10, type: "run_started", runId: id });
+    emit({ ts: 10, type: "agent_started", agentId: 1, label: "search", adapter: "codex" });
+    const done = attachRun(store, id, { out, err: term, live: true, pollMs: 10, signals: false, env: { TERM: "xterm", LANG: "en_US.UTF-8" } });
+    emit({ ts: 11, type: "log", message: "search:1 → claude after codex quota", agentId: 1, label: "search", adapter: "claude", fellBackFrom: ["codex"] });
+    // Still running: only its line in the active block can say so yet.
+    await until(() => /search\s+codex → claude/.test(term.text()));
+    emit({ ts: 12, type: "agent_finished", agentId: 1, label: "search", adapter: "claude", fellBackFrom: ["codex"], attempts: 1 });
+    emit({ ts: 12, type: "run_failed", runId: id, error: "done here" });
+    store.updateStatus(id, { state: "failed" });
+    assert.equal(await done, 1);
+    assert.match(term.text(), /✔ search\s+codex → claude · 2\.0s/);
+    assert.match(term.text(), /search:1 → claude after codex quota/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// --- end to end -------------------------------------------------------------------------
+
+/** Run the CLI with stdout/stderr captured. */
+async function cli(argv: string[]): Promise<{ code: number; out: string; err: string }> {
+  const out: string[] = [];
+  const err: string[] = [];
+  const so = process.stdout.write.bind(process.stdout);
+  const se = process.stderr.write.bind(process.stderr);
+  (process.stdout as { write: unknown }).write = (s: unknown) => (out.push(String(s)), true);
+  (process.stderr as { write: unknown }).write = (s: unknown) => (err.push(String(s)), true);
+  try {
+    const code = await main(argv);
+    return { code, out: out.join(""), err: err.join("") };
+  } finally {
+    process.stdout.write = so;
+    process.stderr.write = se;
+  }
+}
+
+const WORKFLOW = `export const meta = {
+  name: 'routes',
+  description: 'search on a CLI whose quota is spent, then report',
+  phases: [{ title: 'Search', adapter: 'spent', model: '@fast' }, 'Report'],
+}
+phase('Search')
+const found = await agent('find it', { label: 'search' })
+phase('Report')
+const report = await agent('write it up: ' + found, { label: 'report' })
+return { found, report }
+`;
+
+test("end to end: a phase routes its agents, a spent quota falls back with the next CLI's tier model, and odw resume walks no chain", async () => {
+  const root = mkdtempSync(join(tmpdir(), "odw-routing-e2e-"));
+  try {
+    const counter = join(root, "spent-runs");
+    // `spent` counts its runs and is always out of quota; `good` answers with the model it was given.
+    const spent = `require('fs').appendFileSync(${JSON.stringify(counter)}, '.'); process.stderr.write(${JSON.stringify(QUOTA)}); process.exit(1)`;
+    const good =
+      "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{const a=process.argv;const i=a.indexOf('--model');" +
+      "process.stdout.write('good:'+(i===-1?'default':a[i+1]))})";
+    const configPath = join(root, "odw.config.json");
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        defaultAdapter: "good",
+        adapters: {
+          spent: { command: [execPath, "-e", spent, "--"], stdin: "{prompt}", flags: { model: ["--model"] } },
+          good: { command: [execPath, "-e", good, "--"], stdin: "{prompt}", flags: { model: ["--model"] } },
+        },
+        fallback: { spent: ["good"] },
+        models: { fast: { spent: "s-mini", good: "g-mini" } },
+      }),
+    );
+    const script = join(root, "routes.js");
+    writeFileSync(script, WORKFLOW);
+    const store = new RunStore(join(root, "runs"));
+    const id = store.create({ script, args: null, source: root, configPath });
+    assert.equal(await executeRun(store.runDir(id)), "done");
+    assert.deepEqual(store.readResult(id), { found: "good:g-mini", report: "good:default" });
+    assert.equal(readFileSync(counter, "utf8").length, 1, "spent ran once");
+
+    const events = store.readEvents(id);
+    assert.ok(events.some((e) => e.type === "log" && e.message === "search:1 → good after spent quota"));
+    const search = events.find((e) => e.type === "agent_finished" && e.label === "search")!;
+    assert.deepEqual([search.adapter, search.fellBackFrom], ["good", ["spent"]]);
+    const record = store.listAgentResults(id).find((rec) => rec.label === "search")!;
+    assert.deepEqual([record.adapter, record.fellBackFrom], ["good", ["spent"]]);
+    const transcript = readFileSync(store.agentTranscriptPaths(id, 1).transcript, "utf8");
+    assert.ok(transcript.includes('{"kind":"attempt","n":2,"reason":"fallback","adapter":"good"}'));
+    const status = await cli(["status", id, "--runs-root", join(root, "runs")]);
+    assert.match(status.out, /^ {2}fell back: 1 agent — search:1 spent → good$/m);
+
+    // Resumed: both calls replay — spent never runs again, and the record keeps its path.
+    const resumed = store.create({ script, args: null, source: root, configPath, resumedFrom: { runId: id, dir: store.runDir(id) } });
+    assert.equal(await executeRun(store.runDir(resumed)), "done");
+    assert.deepEqual(store.readResult(resumed), { found: "good:g-mini", report: "good:default" });
+    assert.equal(readFileSync(counter, "utf8").length, 1, "no chain was walked again");
+    const replayed = store.readEvents(resumed).filter((e) => e.type === "agent_finished");
+    assert.deepEqual(
+      replayed.map((e) => [e.label, e.cached, e.adapter, e.fellBackFrom]),
+      [
+        ["search", true, "good", ["spent"]],
+        ["report", true, "good", undefined],
+      ],
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
