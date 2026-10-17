@@ -8,7 +8,8 @@
  *   - events: a merged, newest-first tail of the newest runs' event streams,
  *     each event tagged with the run it came from;
  *   - fleet: how many agents are running right now, per adapter, across every
- *     active run (stale runs' agents are not running, so they do not count).
+ *     active run (stale runs' agents are not running, so they do not count;
+ *     neither do exec() command steps, which are not agents).
  */
 
 import type { WorkflowEvent } from "../events.js";
@@ -73,7 +74,7 @@ export function activityView(sources: RunSource[], runs: RunSummary[], limit: nu
   for (const run of runs) {
     if (!ACTIVE_STATES.has(run.state) || run.counts.running === 0) continue;
     for (const agent of sourceOf(run.runId)?.detail(run.runId)?.agents ?? []) {
-      if (agent.state !== "running") continue;
+      if (agent.state !== "running" || agent.kind === "command") continue;
       const key = agent.adapter ?? (run.provider === "claude" ? "claude" : "unknown");
       fleet[key] = (fleet[key] ?? 0) + 1;
     }
