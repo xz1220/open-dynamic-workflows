@@ -32,6 +32,12 @@ export interface RunContext {
   source: string;
   /** The run's id (`ODW_RUN_ID` for its processes); absent where no run is persisted. */
   runId?: string;
+  /**
+   * The run's directory; absent where no run is persisted. ODW writes there
+   * while agents work, so an in-place `expect` check leaves it out of what an
+   * agent changed when it lies in the source tree (ODW extension).
+   */
+  runDir?: string;
   /** The run's token target (for `budget`), or null when none was set. */
   budgetTotal: number | null;
   /**
@@ -113,6 +119,7 @@ export function spentTokens(usage: { outputChars: number; outputTokens?: number 
 export interface BuildContextOptions {
   source?: string;
   runId?: string;
+  runDir?: string;
   args?: unknown;
   sink?: EventSink;
   control?: Control;
@@ -166,6 +173,7 @@ export function buildContext(config: Config, options: BuildContextOptions = {}):
     args: options.args ?? null,
     source: options.source ?? process.cwd(),
     runId: options.runId,
+    runDir: options.runDir,
     budgetTotal,
     usage,
     seq: { value: 0 },

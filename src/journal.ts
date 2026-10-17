@@ -92,11 +92,17 @@ export interface AgentResultRecord {
  *   - permissions the tier the call asked for (ODW extension): an agent held
  *                to read cannot make the change an edit one would. Like
  *                `adapter`, as requested — the run's tier is not in the key.
+ *   - expect     the checks the work had to pass (ODW extension): like a
+ *                schema, they decide which outcome is accepted, and a value
+ *                saved under other checks was never held to these.
+ *   - allowEmpty whether an empty reply was accepted as the value — only
+ *                when true, so `false` keys like an absent option.
  *
  * `phase` is left out on purpose: it is display only (often ambient, from
  * phase(), and prefixed inside a nested workflow()), and regrouping progress
  * must not invalidate finished work. So is `keep`: it only decides whether an
- * isolated agent's change is also committed to a branch. An option left
+ * isolated agent's change is also committed to a branch; and `expectRetries`:
+ * it only decides how often missed work is tried again. An option left
  * undefined keys exactly like an absent one. Should this derivation ever
  * change, old records simply stop matching and their calls run again — the
  * safe direction.
@@ -111,6 +117,8 @@ export function resumeKey(prompt: string, opts: AgentOptions): string {
     isolation: opts.isolation,
     label: opts.label,
     permissions: opts.permissions,
+    expect: opts.expect,
+    allowEmpty: opts.allowEmpty === true ? true : undefined,
   };
   return createHash("sha256").update(stableJson(inputs)).digest("hex");
 }

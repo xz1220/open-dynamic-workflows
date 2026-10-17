@@ -117,6 +117,7 @@ const KNOWN_TOP_KEYS = [
   "fallback",
   "models",
   "quotaBreaker",
+  "expectRetries",
 ] as const;
 
 const KNOWN_ADAPTER_KEYS = ["command", "stdin", "env", "timeout", "stallTimeout", "concurrency", "promptCache", "label", "flags", "output", "failures", "permissionArgs", "permissions"] as const;
@@ -124,8 +125,8 @@ const KNOWN_ADAPTER_KEYS = ["command", "stdin", "env", "timeout", "stallTimeout"
 /** The fields of an adapter's `output`, per format. */
 const KNOWN_OUTPUT_KEYS: Record<string, readonly string[]> = {
   text: ["format"],
-  jsonl: ["format", "eventType", "textPath", "select", "usageEvent", "usagePath", "costPath", "errorPath", "structuredPath"],
-  json: ["format", "textPath", "usagePath", "costPath", "errorPath", "structuredPath"],
+  jsonl: ["format", "eventType", "textPath", "select", "usageEvent", "usagePath", "costPath", "errorPath", "structuredPath", "deniedPath"],
+  json: ["format", "textPath", "usagePath", "costPath", "errorPath", "structuredPath", "deniedPath"],
 };
 
 /** The fields of an adapter's `flags`, and of its `flags.schema`. */
@@ -789,10 +790,16 @@ function buildOutput(name: string, raw: unknown): AdapterOutput {
     throw new ConfigError(`adapter '${name}' 'output.eventType' must be a non-empty string`);
   }
   const textPath = buildPath(name, "textPath", value.textPath)!;
-  // Usage, cost, the CLI's own error report and its natively validated value
-  // (ODW extensions): set only when declared.
-  const extras: { usagePath?: string[]; costPath?: string[]; errorPath?: string[]; structuredPath?: string[] } = {};
-  for (const key of ["usagePath", "costPath", "errorPath", "structuredPath"] as const) {
+  // Usage, cost, the CLI's own error report, its natively validated value and
+  // what it refused (ODW extensions): set only when declared.
+  const extras: {
+    usagePath?: string[];
+    costPath?: string[];
+    errorPath?: string[];
+    structuredPath?: string[];
+    deniedPath?: string[];
+  } = {};
+  for (const key of ["usagePath", "costPath", "errorPath", "structuredPath", "deniedPath"] as const) {
     const path = buildPath(name, key, value[key], { optional: true });
     if (path) extras[key] = path;
   }
@@ -951,6 +958,10 @@ function buildSettings(raw: Record<string, unknown>): Settings {
             min: 0,
             integer: true,
           }) || null,
+    expectRetries: num("expectRetries", DEFAULT_SETTINGS.expectRetries, "a non-negative integer", {
+      min: 0,
+      integer: true,
+    }),
   };
 }
 

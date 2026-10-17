@@ -149,6 +149,7 @@ export async function executeRun(runDir: string): Promise<string> {
     ctx = buildContext(config, {
       source: meta.source as string | undefined,
       runId,
+      runDir: store.runDir(runId),
       args,
       sink,
       control,

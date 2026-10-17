@@ -88,8 +88,12 @@ export interface AgentView {
   commandId?: number | null;
   /** A command step's exit code once it settled. */
   exitCode?: number | null;
-  /** Why an agent failed: rate_limit, quota, auth, timeout, stalled, not_found, permission, exit. */
+  /** A command step that is an agent's `expect.command` check: that agent's id (ODW extension). */
+  forAgentId?: number;
+  /** Why an agent failed: rate_limit, quota, auth, timeout, stalled, not_found, permission, exit, empty_reply, unmet_expectation. */
   failureReason?: string | null;
+  /** With `unmet_expectation`: the `expect` checks its work did not meet, one line each (ODW extension). */
+  misses?: string[];
   /** What the adapter reported spending on this agent. */
   usage?: Usage | null;
   /** What an isolated (worktree) agent changed; its diff is served separately. */
@@ -340,7 +344,7 @@ export interface TranscriptEntry {
   clipped?: true;
   /** text: the agent's thinking, not its reply. */
   thinking?: true;
-  /** attempt: which CLI run of the call begins (2 = the first one more), and why: schema | stall | rate_limit | fallback. */
+  /** attempt: which CLI run of the call begins (2 = the first one more), and why: schema | stall | rate_limit | expect | fallback. */
   n?: number;
   reason?: string;
   /** attempt, for a fallback (ODW extension): the adapter the call moved to. */

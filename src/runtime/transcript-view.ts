@@ -62,7 +62,7 @@ export interface TranscriptEntry {
   clipped?: true;
   /** text: the agent's thinking (a thinking block, a reasoning event), not its reply. */
   thinking?: true;
-  /** attempt: which CLI run of the call begins (2 = the first one more) and why: schema, stall, rate_limit, fallback. */
+  /** attempt: which CLI run of the call begins (2 = the first one more) and why: schema, stall, rate_limit, expect, fallback. */
   n?: number;
   reason?: string;
   /** attempt, for a fallback (an ODW extension): the adapter the call moved to. */

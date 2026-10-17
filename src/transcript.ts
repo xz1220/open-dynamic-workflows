@@ -16,8 +16,9 @@
  *   agents/<agentId>.stderr.txt         the end of its stderr (the last 64 KB)
  *
  * Every further CLI run of the call — a schema retry, a stall restart, a
- * rate-limit retry — goes on in the same files, after an
- * {"kind":"attempt","n":2,"reason":"schema"|"stall"|"rate_limit"} line; a
+ * rate-limit retry, a retry of work that missed its `expect` checks — goes on
+ * in the same files, after an
+ * {"kind":"attempt","n":2,"reason":"schema"|"stall"|"rate_limit"|"expect"} line; a
  * call that falls back to another adapter (an ODW extension) goes on after
  * {"kind":"attempt","n":2,"reason":"fallback","adapter":"<next>"}, its output
  * kept as that adapter prints it from there on. Past
@@ -40,10 +41,10 @@ import type { Adapter, CliResult } from "./adapters/types.js";
 
 /**
  * Why a call ran a CLI once more: its reply failed the schema, the CLI
- * stalled, it was rate-limited, or — an ODW extension — the call fell back to
- * the next adapter of its chain.
+ * stalled, it was rate-limited, or — ODW extensions — its work missed its
+ * `expect` checks, or the call fell back to the next adapter of its chain.
  */
-export type AttemptReason = "schema" | "stall" | "rate_limit" | "fallback";
+export type AttemptReason = "schema" | "stall" | "rate_limit" | "expect" | "fallback";
 
 /** Where one agent's transcript is kept: its stdout, and the end of its stderr. */
 export interface TranscriptPaths {
@@ -72,6 +73,8 @@ export function attemptLabel(reason: string | undefined, adapter?: string): stri
       return "stall restart";
     case "rate_limit":
       return "rate-limit retry";
+    case "expect":
+      return "expectation retry";
     case "fallback":
       return adapter ? `fallback to ${adapter}` : "fallback";
     default:

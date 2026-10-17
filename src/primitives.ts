@@ -45,6 +45,13 @@
  * `model: "@fast"` picks a tier's model for the adapter it runs on (ODW
  * extensions; see ./routing). Its agent_finished event names the adapter that
  * produced the value, and `fellBackFrom` the ones it left.
+ *
+ * An agent's work is checked, not taken at its word, when its call says what
+ * must hold (`expect`, an ODW extension; see ./expect): a check's command is
+ * an exec() step of the run carrying the agent's id (`forAgentId`), a retry is
+ * logged, and an agent that still misses fails with reason
+ * "unmet_expectation" and its `misses` on agent_failed. An empty reply fails
+ * with reason "empty_reply" unless the call sets `allowEmpty`.
  */
 
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -60,9 +67,10 @@ import type { AgentRequest } from "./bridge.js";
 import { branchName, ChangeRecorder, type AgentChanges, type KeptChanges } from "./changes.js";
 import { CheckpointTimeout, createCheckpoint, type CheckpointOptions, type CheckpointResult } from "./checkpoint.js";
 import { spentTokens, type RunContext } from "./context.js";
-import { AdapterExecutionError, WorkflowScriptError, isFatalError } from "./errors.js";
+import { AdapterExecutionError, UnmetExpectationError, WorkflowScriptError, isFatalError } from "./errors.js";
 import { AGENT_FAILED, AGENT_FINISHED, AGENT_STARTED, LOG, PHASE_STARTED, event } from "./events.js";
-import { ExecError, createExec, type ExecOptions, type ExecResult } from "./exec.js";
+import { ExecError, createExec, execStep, type ExecOptions, type ExecResult } from "./exec.js";
+import { Expectations, planChecks, type AgentChecks, type ExpectOptions } from "./expect.js";
 import { resumeKey, type AgentResultRecord } from "./journal.js";
 // Value import of the loader is safe: loader.ts only type-imports from here, so
 // the module cycle is erased at compile time and never exists at runtime.
@@ -108,6 +116,16 @@ export interface AgentOptions {
    * (read < edit < full): asking for more than the run allows fails the call.
    */
   permissions?: PermissionTier;
+  /**
+   * ODW extension: what must hold once the agent replied — files changed (or
+   * not), files matching globs changed or created, a command exiting 0 in its
+   * workspace, the reply matching a regular expression. See ./expect.
+   */
+  expect?: ExpectOptions;
+  /** ODW extension: retries of work that missed `expect`, told what it missed (else the `expectRetries` setting). */
+  expectRetries?: number;
+  /** ODW extension: an empty reply is the answer, not an "empty_reply" failure. */
+  allowEmpty?: boolean;
 }
 
 export interface Budget {
@@ -321,6 +339,36 @@ export function createPrimitives(
     });
   };
 
+  /**
+   * What checks a call's work against its `expect` (ODW extension; see
+   * ./expect). Its command runs as an exec() step of the run — in the agent's
+   * phase, carrying the agent's id — so it shows under the agent and a stop
+   * kills it.
+   */
+  const expectations = (
+    checks: AgentChecks,
+    agentId: number,
+    label: string,
+    phase: string | null,
+    signal: AbortSignal,
+  ): Expectations | undefined => {
+    if (!checks.expect) return undefined;
+    const retries = checks.expectRetries ?? ctx.config.settings.expectRetries ?? 1;
+    return new Expectations(checks.expect, retries, {
+      signal,
+      // ODW writes the run's directory while the agent works: never its change.
+      ignore: ctx.runDir ? [ctx.runDir] : [],
+      exec: (command, opts) =>
+        execStep(
+          ctx,
+          command,
+          { ...opts, label: `${label}: expect`, env: { ODW_AGENT_ID: String(agentId) } },
+          // The agent's own phase (null included), whatever the script's is by now.
+          { phase, forAgentId: agentId },
+        ),
+    });
+  };
+
   /** Settle a call's kept change, or drop it when the run ended under the call. Never throws. */
   const keepChanges = async (
     recorder: ChangeRecorder | undefined,
@@ -338,6 +386,9 @@ export function createPrimitives(
   };
 
   const dispatch = async (prompt: string, opts: AgentOptions): Promise<unknown> => {
+    // The output checks a call asks for are checked before anything starts:
+    // a misuse is a recoverable error that costs no dispatch (ODW extension).
+    const checks = planChecks(opts);
     const activePhase = opts.phase !== undefined ? opts.phase : ctx.currentPhase;
     // Stable per-dispatch identity. Events for THIS dispatch all carry it, so
     // observers pair started/finished exactly even when several concurrent
@@ -383,6 +434,7 @@ export function createPrimitives(
       agentType: opts.agentType,
       isolation: opts.isolation,
       permissions: opts.permissions,
+      ...(checks.allowEmpty ? { allowEmpty: true } : {}),
     };
     // The adapters it left down its chain, and the one it is on (ODW extension).
     const fellBackFrom: string[] = [];
@@ -459,6 +511,7 @@ export function createPrimitives(
         }
         const changes = changeRecorder(agentId, display, opts, signal, note);
         const transcript = transcriptRecorder(agentId, adapter, note);
+        const expect = expectations(checks, agentId, display, activePhase, signal);
         let outcome;
         try {
           outcome = await ctx.bridge.run(request, {
@@ -538,6 +591,21 @@ export function createPrimitives(
               );
               await slot.moveTo(to);
             },
+            // Its work is checked against its `expect` (ODW extension), and a
+            // miss that earns a retry is logged with what it missed.
+            expect,
+            onExpectRetry: ({ misses, retry, maxRetries }) =>
+              ctx.emit(
+                event(LOG, {
+                  message:
+                    `${display}:${agentId} did not meet its expectations — running it again, told what it missed ` +
+                    `(${retry}/${maxRetries}): ${misses.join("; ")}`,
+                  misses,
+                  agentId,
+                  label: display,
+                  phase: activePhase,
+                }),
+              ),
           });
         } catch (err) {
           // Out of rate-limit retries (or allowed none): that lowers its adapter's cap too.
@@ -866,11 +934,13 @@ function changeFields(kept: KeptChanges | null): { changes?: AgentChanges; branc
 
 /**
  * Why an agent CLI failed, for its agent_failed event: the failure class and,
- * when the CLI said, seconds until a retry may work. Nothing for other errors
- * (a schema that never validated, a stop).
+ * when the CLI said, seconds until a retry may work — or, for work that missed
+ * its `expect` checks, what it missed. Nothing for other errors (a schema that
+ * never validated, a stop).
  */
-function failureFields(err: unknown): { reason?: string; retryAfter?: number } {
+function failureFields(err: unknown): { reason?: string; retryAfter?: number; misses?: string[] } {
   if (!(err instanceof AdapterExecutionError)) return {};
+  if (err instanceof UnmetExpectationError) return { reason: err.reason, misses: [...err.misses] };
   if (err.retryAfter === undefined) return { reason: err.reason };
   return { reason: err.reason, retryAfter: Math.ceil(err.retryAfter) };
 }

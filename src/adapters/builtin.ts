@@ -48,7 +48,8 @@ const KILO_OPENCODE_OUTPUT: AdapterOutput = {
 // event also carries the validated value as `structured_output` (the Agent
 // SDK's result message, which is this event: `structured_output?: unknown`);
 // a run that produced none has it absent or null, and its `result` text is
-// read instead.
+// read instead. Its `permission_denials` list the tool calls headless mode
+// refused, under a reply that may claim success.
 const CLAUDE_OUTPUT: AdapterOutput = {
   format: "jsonl",
   eventType: "result",
@@ -58,6 +59,7 @@ const CLAUDE_OUTPUT: AdapterOutput = {
   costPath: ["total_cost_usd"],
   errorPath: ["is_error"],
   structuredPath: ["structured_output"],
+  deniedPath: ["permission_denials"],
 };
 
 // Native structured output (ODW extension; see native-schema.ts). Claude Code
@@ -285,4 +287,5 @@ export const DEFAULT_SETTINGS: Settings = {
   fallback: {}, // no fallback chains: a spent quota or a refused login fails the agent
   models: {}, // no model tiers: model: "@<tier>" names none
   quotaBreaker: 3, // quota failures in a row before the run's later agents skip an adapter
+  expectRetries: 1, // reruns of an agent whose work missed its expect checks, told what it missed
 };

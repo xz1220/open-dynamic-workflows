@@ -19,7 +19,17 @@
  * retry-after it printed, up to `transientRetries` times per call. A spent
  * quota or a refused login is not retried; its error says what to do instead.
  * A run whose CLI reports its own failure in its output (`errorPath`: Claude
- * Code's `is_error` result, often with exit 0) is classified the same way.
+ * Code's `is_error` result, often with exit 0) is classified the same way; so
+ * is one whose CLI refused the agent tool calls under a reply that claims
+ * success (`deniedPath`: Claude Code's `permission_denials`) — a `permission`
+ * failure. An empty reply fails the call with reason `empty_reply`, unless the
+ * request allows one (ODW extensions).
+ *
+ * A call with `expect` checks (an ODW extension; see ./expect) has its work
+ * checked once its reply satisfies the schema — an isolated run's worktree is
+ * looked at before it goes. Work that missed is run again with what it missed
+ * appended to the prompt, up to the checks' `retries`; then the call fails
+ * with reason `unmet_expectation` and the list of misses.
  *
  * What each CLI run spent — the usage and cost its CLI reported, when its
  * adapter declares where (adapters/usage.ts) — is handed to the caller as the
@@ -76,7 +86,16 @@ import {
   type PermissionTier,
   type SchemaFlag,
 } from "./adapters/types.js";
-import { AdapterExecutionError, AgentError, ConfigError, RunStopped, SchemaValidationError, isFatalError } from "./errors.js";
+import {
+  AdapterExecutionError,
+  AgentError,
+  ConfigError,
+  RunStopped,
+  SchemaValidationError,
+  UnmetExpectationError,
+  isFatalError,
+} from "./errors.js";
+import type { ExpectationSink } from "./expect.js";
 import { PortPool } from "./ports.js";
 import { LiteralRouter, type InvocationPlan, type OptionRouter } from "./router.js";
 import { isAdapterChoice, type AdapterChoice } from "./routing.js";
@@ -109,6 +128,8 @@ export interface AgentRequest {
    * run's (it may only lower it). Unvalidated: a bad value fails the call.
    */
   permissions?: PermissionTier;
+  /** An empty reply is the answer; otherwise the call fails with reason "empty_reply" (ODW extension). */
+  allowEmpty?: boolean;
 }
 
 /** The persona framing injected for `agentType`, on top of the independence preamble. */
@@ -132,7 +153,7 @@ export interface AgentOutcome {
    * Absent when the adapter it started on produced the value.
    */
   fellBackFrom?: string[];
-  /** How many CLI calls it took (>1 means schema retries happened). */
+  /** How many CLI calls it took on `adapter` (>1 means schema or expectation retries happened). */
   attempts: number;
   /**
    * Notes from option routing: options accepted but not honoured natively, and
@@ -243,6 +264,17 @@ export interface RunOptions {
    * the time to take a slot on the new adapter (see scheduler AgentSlot.moveTo).
    */
   onFallback?: (fallback: AdapterFallback) => void | Promise<void>;
+  /**
+   * Checks the call's work against its `expect` (an ODW extension; see
+   * ./expect): told where the work happens before the first CLI run on each
+   * adapter of its chain, given each isolated run that ended with a reply
+   * before its worktree goes, and asked what the work missed once a reply
+   * satisfies the schema. A miss is retried on the adapter that produced it;
+   * a fallback hop to another adapter keeps the checks.
+   */
+  expect?: ExpectationSink;
+  /** Called before work that missed its `expect` checks runs again, so the run can say so. */
+  onExpectRetry?: (retry: ExpectRetry) => void;
 }
 
 /** Where the bridge reports an isolated call's worktrees: a ChangeRecorder (./changes). */
@@ -251,6 +283,8 @@ export interface ChangeSink {
   endAttempt(): Promise<void>;
   /** Keep nothing captured so far: a fallback starts the work over on another adapter. */
   discard(): Promise<void>;
+  /** The next attempt starts the work over (an `expect` retry): its change supersedes the earlier ones. */
+  redo?(): void;
 }
 
 /** Where the bridge reports what a call's CLI runs print: a TranscriptRecorder (./transcript). */
@@ -301,6 +335,15 @@ export interface RateLimitRetry {
   /** How long the call waits before the retry, in seconds. */
   waitSeconds: number;
   /** Which retry this is (1-based), and how many the call may make (`transientRetries`). */
+  retry: number;
+  maxRetries: number;
+}
+
+/** Work that missed its `expect` checks, about to run again with what it missed. */
+export interface ExpectRetry {
+  /** What it missed, one line each. */
+  misses: string[];
+  /** Which retry this is (1-based), and how many the call may make (`expectRetries`). */
   retry: number;
   maxRetries: number;
 }
@@ -573,57 +616,99 @@ export class Bridge {
     const plan = this.router.plan({ request, adapter, settings });
     const basePrompt = this.composePrompt(request, schema?.describe ?? false);
     const maxAttempts = request.schema ? settings.schemaRetries + 1 : 1;
+    // The call's `expect` checks (ODW extension) learn where the work happens
+    // before it starts; an isolated run's worktree is looked at before it goes.
+    const expect = options.expect;
+    if (expect) await unlessStopped(signal, () => expect.begin(plan.workspaceMode, this.source));
+    const inspect =
+      expect && plan.workspaceMode === "worktree"
+        ? async (ws: Workspace, output: DecodedOutput): Promise<void> => {
+            const empty = output.text.trim() === "" && output.structured === undefined;
+            if (request.allowEmpty || !empty) await unlessStopped(signal, () => expect.inspect(ws));
+          }
+        : undefined;
 
-    let problems: string[] = [];
-    let previous = "";
     // Stall restarts and rate-limit retries re-run one attempt's prompt; each
     // is capped over the whole call, schema attempts included.
     const reruns: Reruns = { stalls: 0, rateLimits: 0 };
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      throwIfAborted(signal);
-      if (attempt > 1) await options.beforeRetry?.();
-      const prompt = attempt > 1 ? `${basePrompt}\n\n${retryFeedback(previous, problems)}` : basePrompt;
-      const why = attempt > 1 ? "schema" : first;
-      const { cli, output, failure } = await this.invokeUntilFinal(adapter, plan, prompt, limits, options, reruns, call, why);
-      await call.changes?.endAttempt();
-      // Killed by a stop (or by a fatal error elsewhere in the run): report
-      // the run's reason, not a misleading CLI failure.
-      throwIfAborted(signal);
-      if (failure || !cliOk(cli)) {
-        const verdict = failure ?? classifyFailure(cli, { patterns: adapter.failures, prompt, now: this.now() });
-        throw new AdapterExecutionError(
-          cliFailureMessage(adapter, cli, this.whatFailed(adapter, cli, verdict, limits, reruns)),
-          verdict,
+    let attempts = 0;
+    // What the work missed last round, told to the next one.
+    let missed = "";
+    for (let round = 0; ; round++) {
+      let problems: string[] = [];
+      let previous = "";
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        throwIfAborted(signal);
+        if (++attempts > 1) await options.beforeRetry?.();
+        const task = missed ? `${basePrompt}\n\n${missed}` : basePrompt;
+        const prompt = attempt > 1 ? `${task}\n\n${retryFeedback(previous, problems)}` : task;
+        // The first run on a fallback adapter says so; an `expect` retry stays on this one.
+        const why = attempt > 1 ? "schema" : round > 0 ? "expect" : first;
+        const { cli, output, failure } = await this.invokeUntilFinal(adapter, plan, prompt, limits, options, reruns, call, why, inspect);
+        await call.changes?.endAttempt();
+        // Killed by a stop (or by a fatal error elsewhere in the run): report
+        // the run's reason, not a misleading CLI failure.
+        throwIfAborted(signal);
+        if (failure || !cliOk(cli)) {
+          const verdict = failure ?? classifyFailure(cli, { patterns: adapter.failures, prompt, now: this.now() });
+          throw new AdapterExecutionError(
+            cliFailureMessage(adapter, cli, this.whatFailed(adapter, cli, verdict, limits, reruns)),
+            verdict,
+          );
+        }
+
+        // Stdout that did not match the adapter's declared format is the reply
+        // as it stands — never a failed agent — and the run's log says why.
+        if (output.fallback) call.onNote?.(output.fallback);
+        const text = output.text;
+        options.onReply?.(text, output.usage);
+        // A CLI that exits cleanly with nothing to say did not do the task (ODW
+        // extension) — unless it gave the value it validated natively.
+        if (!request.allowEmpty && text.trim() === "" && output.structured === undefined) {
+          throw new AdapterExecutionError(cliFailureMessage(adapter, cli, EMPTY_REPLY), { reason: "empty_reply" });
+        }
+        let value: unknown = text;
+        if (schema) {
+          // The schema steers extraction to the one candidate that satisfies it;
+          // two different valid values are ambiguous and get retried, not guessed.
+          // A value the CLI validated natively comes first, and is checked too.
+          const pick = pickStructured(output.structured, text, schema.check);
+          problems = pick.problems;
+          if (problems.length > 0) {
+            // A retry quotes what failed: the CLI's own value, when it gave one.
+            const structured = output.structured;
+            previous = structured === undefined ? text : typeof structured === "string" ? structured : JSON.stringify(structured);
+            continue;
+          }
+          value = pick.value;
+        }
+        if (!expect) return { value, text, adapter: adapter.name, attempts, notes: plan.notes };
+
+        // The work is checked, not taken at its word (ODW extension; see ./expect).
+        const misses = await unlessStopped(signal, () => expect.check(text));
+        if (misses.length === 0) return { value, text, adapter: adapter.name, attempts, notes: plan.notes };
+        const lines = misses.map((miss) => miss.text);
+        if (round >= expect.retries) {
+          const after = round > 0 ? ` after ${round} ${round === 1 ? "retry" : "retries"}` : "";
+          throw new UnmetExpectationError(
+            `adapter '${adapter.name}' did not meet its expectations${after}: ${lines.join("; ")}`,
+            lines,
+          );
+        }
+        options.onExpectRetry?.({ misses: lines, retry: round + 1, maxRetries: expect.retries });
+        // The next round starts the work over, told what this one missed.
+        missed = expect.feedback(misses);
+        expect.retry();
+        call.changes?.redo?.();
+        break;
+      }
+      if (problems.length > 0) {
+        throw new SchemaValidationError(
+          `adapter '${adapter.name}' did not satisfy the schema after ${maxAttempts} attempt(s); ` +
+            `last problems: ${problems.join("; ")}`,
         );
       }
-
-      // Stdout that did not match the adapter's declared format is the reply
-      // as it stands — never a failed agent — and the run's log says why.
-      if (output.fallback) call.onNote?.(output.fallback);
-      const text = output.text;
-      options.onReply?.(text, output.usage);
-      if (!schema) {
-        return { value: text, text, adapter: adapter.name, attempts: attempt, notes: plan.notes };
-      }
-
-      // The schema steers extraction to the one candidate that satisfies it;
-      // two different valid values are ambiguous and get retried, not guessed.
-      // A value the CLI validated natively comes first, and is checked too.
-      const pick = pickStructured(output.structured, text, schema.check);
-      const value = pick.value;
-      problems = pick.problems;
-      if (problems.length === 0) {
-        return { value, text, adapter: adapter.name, attempts: attempt, notes: plan.notes };
-      }
-      // A retry quotes what failed: the CLI's own value, when it gave one.
-      const structured = output.structured;
-      previous = structured === undefined ? text : typeof structured === "string" ? structured : JSON.stringify(structured);
     }
-
-    throw new SchemaValidationError(
-      `adapter '${adapter.name}' did not satisfy the schema after ${maxAttempts} attempt(s); ` +
-        `last problems: ${problems.join("; ")}`,
-    );
   }
 
   /**
@@ -638,6 +723,8 @@ export class Bridge {
    * Every run decodes its output once, here; a run that ends without a reply
    * reports what it spent through `onUsage`. `why` is why the first of these
    * runs happens (a schema retry); each one after says why it ran again.
+   * `inspect` is handed the workspace of a run that ended with a real reply,
+   * before the workspace goes (an `expect` check; ODW extension).
    */
   private async invokeUntilFinal(
     adapter: Adapter,
@@ -648,16 +735,22 @@ export class Bridge {
     reruns: Reruns,
     call: CallEnv,
     why?: AttemptReason,
+    inspect?: (ws: Workspace, output: DecodedOutput) => Promise<void>,
   ): Promise<{ cli: CliResult; output: DecodedOutput; failure?: FailureClass }> {
     const { signal } = options;
     const settings = this.config.settings;
-    const classify = { patterns: adapter.failures, prompt };
-    const structured = (adapter.output?.format ?? "text") !== "text";
     for (;;) {
-      const { cli, decoder } = await this.invoke(adapter, plan, prompt, limits, signal, call, why);
-      // A runner that streams stdout fed the decoder and kept only a tail; an
-      // injected runner that does not stream returns the whole stdout instead.
-      const output = decoder?.received ? decoder.finish() : decodeOutput(adapter, cli.stdout);
+      // How the run ended is judged while its workspace is still there.
+      const { cli, output, failure } = await this.invoke(adapter, plan, prompt, limits, signal, call, why, async (ws, cli, decoder) => {
+        // A runner that streams stdout fed the decoder and kept only a tail; an
+        // injected runner that does not stream returns the whole stdout instead.
+        const output = decoder?.received ? decoder.finish() : decodeOutput(adapter, cli.stdout);
+        if (signal?.aborted || cli.stalled) return { cli, output };
+        const failed = this.failureOf(adapter, cli, output, prompt);
+        if (failed) return { cli: failed.cli, output, failure: failed.failure };
+        await inspect?.(ws, output);
+        return { cli, output };
+      });
       if (signal?.aborted) return { cli, output };
       if (cli.stalled) {
         if (output.usage) options.onUsage?.(output.usage);
@@ -670,27 +763,13 @@ export class Bridge {
         });
         why = "stall";
       } else {
-        // A failure the CLI reported in its output (Claude Code's `is_error`
-        // result) is the verdict whatever the exit status, and its message is
-        // the evidence: classified like any failure, so a rate limit is ridden
-        // out and a spent quota or a login says what to do.
-        const judged = output.error !== undefined ? { ...cli, stdout: output.error, stderr: "" } : cli;
-        // A text reply — or a structured one that fell back to its raw stdout —
-        // may be nothing but the CLI's own error, printed with exit 0 (Claude
-        // Code's text mode does that); a decoded JSON reply is just its reply.
-        const failure =
-          output.error !== undefined || !cliOk(cli)
-            ? classifyFailure(judged, { ...classify, now: this.now() })
-            : !structured || output.fallback !== undefined
-              ? classifyErrorReply(output.text, { ...classify, now: this.now() })
-              : null;
         if (!failure) return { cli, output }; // a real reply
         if (output.usage) options.onUsage?.(output.usage);
         if (failure.reason !== "rate_limit" || reruns.rateLimits >= settings.transientRetries) {
-          return { cli: judged, output, failure };
+          return { cli, output, failure };
         }
         const wait = backoffSeconds(reruns.rateLimits + 1, failure.retryAfter, settings.maxBackoff, this.random);
-        if (wait === null) return { cli: judged, output, failure }; // the CLI asked for longer than maxBackoff
+        if (wait === null) return { cli, output, failure }; // the CLI asked for longer than maxBackoff
         reruns.rateLimits++;
         options.onRateLimit?.({
           adapter: adapter.name,
@@ -704,6 +783,40 @@ export class Bridge {
       }
       await options.beforeRetry?.();
     }
+  }
+
+  /**
+   * How a CLI run that was neither stopped nor stalled failed — its verdict,
+   * and the result whose output is the evidence — or null for a real reply.
+   */
+  private failureOf(
+    adapter: Adapter,
+    cli: CliResult,
+    output: DecodedOutput,
+    prompt: string,
+  ): { cli: CliResult; failure: FailureClass } | null {
+    const classify = { patterns: adapter.failures, prompt, now: this.now() };
+    // A failure the CLI reported in its output (Claude Code's `is_error`
+    // result) is the verdict whatever the exit status, and its message is
+    // the evidence: classified like any failure, so a rate limit is ridden
+    // out and a spent quota or a login says what to do.
+    if (output.error !== undefined) {
+      const judged = { ...cli, stdout: output.error, stderr: "" };
+      return { cli: judged, failure: classifyFailure(judged, classify) };
+    }
+    if (!cliOk(cli)) return { cli, failure: classifyFailure(cli, classify) };
+    // A text reply — or a structured one that fell back to its raw stdout —
+    // may be nothing but the CLI's own error, printed with exit 0 (Claude
+    // Code's text mode does that); a decoded JSON reply is just its reply.
+    const structured = (adapter.output?.format ?? "text") !== "text";
+    const errorReply = !structured || output.fallback !== undefined ? classifyErrorReply(output.text, classify) : null;
+    if (errorReply) return { cli, failure: errorReply };
+    // A reply that claims success while the CLI refused the agent tool calls
+    // (Claude Code's `permission_denials`) did the task without them.
+    if (output.denied) {
+      return { cli: { ...cli, stdout: `denied: ${output.denied.join("; ")}`, stderr: "" }, failure: { reason: "permission" } };
+    }
+    return null;
   }
 
   /** How a failed CLI run is summed up in its error: what happened and, when the user can act, what to do. */
@@ -735,7 +848,7 @@ export class Bridge {
       case "auth":
         return `could not authenticate — log in to ${adapterDisplayName(adapter)} and resume the run, ${switchAdapter}`;
       case "permission":
-        return `was refused a permission it needed — allow it in the adapter's command flags, ${switchAdapter}`;
+        return `was refused a permission it needed — allow it in the adapter's permissionArgs for its tier, ${switchAdapter}`;
       default:
         // An exit-0 run fails this way only when its CLI reported the failure in its output.
         return cli.returncode === 0 ? "reported an error" : `exited with code ${cli.returncode}`;
@@ -817,7 +930,7 @@ export class Bridge {
     return parts.join("\n\n");
   }
 
-  private async invoke(
+  private async invoke<T>(
     adapter: Adapter,
     plan: InvocationPlan,
     prompt: string,
@@ -825,7 +938,8 @@ export class Bridge {
     signal: AbortSignal | undefined,
     call: CallEnv,
     why: AttemptReason | undefined,
-  ): Promise<{ cli: CliResult; decoder: AdapterOutputDecoder | null }> {
+    settle: (ws: Workspace, cli: CliResult, decoder: AdapterOutputDecoder | null) => Promise<T>,
+  ): Promise<T> {
     // JSONL transcripts are decoded while they stream, so only the final text
     // is retained (and a verbose session is never cut off at the stdout cap);
     // text replies are buffered by the runner under its cap, as before.
@@ -908,7 +1022,9 @@ export class Bridge {
         // agent() returns the reply; what an isolated run changed is kept
         // beside it, before its worktree goes (ODW extension; see ./changes).
         if (call.changes && plan.workspaceMode === "worktree" && !signal?.aborted) await call.changes.capture(ws);
-        return { cli, decoder };
+        // Then how the run ended is settled — while its worktree is still
+        // there, for an `expect` check to look at (ODW extension; see ./expect).
+        return await settle(ws, cli, decoder);
       } finally {
         if (cleanup) await cleanup();
         await schema?.cleanup();
@@ -957,6 +1073,19 @@ function throwIfAborted(signal: AbortSignal | undefined): void {
   throw signal.reason instanceof Error ? signal.reason : new RunStopped("run was stopped");
 }
 
+/**
+ * Run `work`; when the run was stopped under it, end with the run's reason
+ * rather than with whatever the abort made it throw (a git listing's AbortError).
+ */
+async function unlessStopped<T>(signal: AbortSignal | undefined, work: () => Promise<T>): Promise<T> {
+  try {
+    return await work();
+  } catch (err) {
+    throwIfAborted(signal);
+    throw err;
+  }
+}
+
 /** The kill limits of one CLI run, in seconds (undefined: none). */
 interface CliLimits {
   timeout?: number;
@@ -992,6 +1121,11 @@ function usesPromptFile(adapter: Adapter): boolean {
   const token = "{prompt_file}";
   return adapter.command.some((part) => part.includes(token)) || (adapter.stdin?.includes(token) ?? false);
 }
+
+/** How a call whose CLI exited cleanly with an empty reply failed. */
+const EMPTY_REPLY =
+  "replied with nothing — it did not answer (odw doctor --smoke checks a CLI headless); " +
+  "pass allowEmpty: true if an empty reply is a valid answer";
 
 /** Characters of the previous reply quoted back in a schema-retry prompt. */
 const RETRY_EXCERPT_CHARS = 4000;

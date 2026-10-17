@@ -56,10 +56,17 @@ export interface AgentView {
   error: string | null;
   /**
    * Why a failed agent's CLI failed (agent_failed's `reason`): rate_limit,
-   * quota, auth, timeout, stalled, not_found, permission or exit. Absent while
-   * running, for other failures (schema, stop) and for older event files.
+   * quota, auth, timeout, stalled, not_found, permission or exit — or, ODW
+   * extensions, empty_reply and unmet_expectation. Absent while running, for
+   * other failures (schema, stop) and for older event files.
    */
   failureReason?: string;
+  /**
+   * Agents only (ODW extension): the `expect` checks a failed agent's work did
+   * not meet (agent_failed's `misses`, with reason "unmet_expectation"), one
+   * line each. Absent otherwise.
+   */
+  misses?: string[];
   startedAt: number | null;
   finishedAt: number | null;
   /** Wall-clock from agent_started to agent_finished/failed, in ms (a command's own measurement). */
@@ -70,6 +77,11 @@ export interface AgentView {
   commandId?: number | null;
   /** Commands only: the exit status once settled; null while running or when a signal ended it. */
   exitCode?: number | null;
+  /**
+   * Commands only (ODW extension): the agent whose `expect.command` check
+   * this step is — it belongs under that agent. Absent for exec() steps.
+   */
+  forAgentId?: number;
   /**
    * What a settled agent spent (its event's `usage`; ODW extension): tokens
    * and cost as its CLI reported them, `estimated` where output tokens are
@@ -335,6 +347,10 @@ export function applyAgentEvent(
       if (typeof ev.reason === "string" && ev.reason !== "") target.failureReason = ev.reason;
       // One that fell back failed on the adapter its event names.
       if (from && typeof ev.adapter === "string") target.adapter = ev.adapter;
+      if (Array.isArray(ev.misses)) {
+        const misses = ev.misses.filter((miss): miss is string => typeof miss === "string");
+        if (misses.length > 0) target.misses = misses;
+      }
     } else {
       target.state = "done";
       target.adapter = ev.adapter != null ? String(ev.adapter) : null;
@@ -369,6 +385,7 @@ function applyCommandEvent(
       commandId,
       exitCode: null,
     };
+    if (typeof ev.forAgentId === "number") opened.forAgentId = ev.forAgentId;
     agents.push(opened);
     return { opened };
   }
@@ -434,6 +451,7 @@ function copyAgents(agents: AgentView[], stale: boolean): AgentView[] {
     const copy: AgentView = stale && a.state === "running" ? { ...a, state: "stale" } : { ...a };
     if (a.usage) copy.usage = { ...a.usage };
     if (a.fellBackFrom) copy.fellBackFrom = [...a.fellBackFrom];
+    if (a.misses) copy.misses = [...a.misses];
     return copy;
   });
 }

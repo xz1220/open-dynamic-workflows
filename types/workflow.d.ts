@@ -69,6 +69,35 @@ declare global {
      * does `"read"` on a CLI with no read-only mode.
      */
     permissions?: "read" | "edit" | "full";
+    /**
+     * ODW extension — Claude Code ignores it. What must hold once the agent replied (after
+     * `schema` validation), checked by ODW instead of asking the model. Work that misses runs
+     * again with what it missed appended to its prompt (`expectRetries`), then the call throws
+     * (recoverable) with reason `"unmet_expectation"` and the list of misses.
+     */
+    expect?: ExpectOptions;
+    /** ODW extension: how many times work that missed `expect` runs again (default: the `expectRetries` setting, 1). */
+    expectRetries?: number;
+    /** ODW extension: accept an empty or whitespace-only reply; without it the call throws with reason `"empty_reply"`. */
+    allowEmpty?: boolean;
+  }
+
+  /** What {@link AgentOptions.expect} checks (ODW extension). */
+  interface ExpectOptions {
+    /**
+     * `true`: the agent must change some file; `false`: it must change none. Read from git: in
+     * place, against the source tree as it was before the agent started (edits a concurrent
+     * in-place agent makes count too); with isolation, the change its worktree leaves.
+     */
+    changes?: boolean;
+    /** Globs (`*`, `**`, `?`, `[…]`, `{a,b}`) relative to the agent's workspace: each must match a file it changed or created. */
+    files?: string[];
+    /** Must exit 0 in the agent's workspace: a string through the shell, an array as argv. Runs as a command step under the agent; a stop kills it. */
+    command?: string | string[];
+    /** A regular expression (its source, no flags) the reply must match. */
+    match?: string;
+    /** Seconds `command` may run before it is killed, which is a miss (default 600). */
+    timeout?: number;
   }
 
   interface Budget {

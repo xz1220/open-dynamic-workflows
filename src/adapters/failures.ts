@@ -14,6 +14,13 @@
  * that change what ODW does (`failures` in its config); those patterns are
  * matched first, so they can also re-class a message the table reads otherwise.
  *
+ * Two classes are not read from a failed run but from one that "succeeded"
+ * without the evidence (ODW extensions): an empty reply (`empty_reply`), and
+ * work that missed the call's `expect` checks after its retries
+ * (`unmet_expectation`, see ../expect). A run whose CLI refused the agent a
+ * tool call while it reported success (Claude Code's `permission_denials`) is
+ * a `permission` failure like any other.
+ *
  * The HTTP status alone does not decide a class: providers send a spent quota
  * as 429, 401 or 403, and a per-minute limit under the word "quota". So the
  * table reads the words, quota first, and a "quota" that refills within a
@@ -38,7 +45,11 @@ export type FailureReason =
   /** A tool call or approval the agent needed was refused. */
   | "permission"
   /** Any other non-zero exit. */
-  | "exit";
+  | "exit"
+  /** A clean exit with an empty or whitespace-only reply (ODW extension; `allowEmpty: true` accepts one). */
+  | "empty_reply"
+  /** The agent's work missed its `expect` checks, retries included (ODW extension). */
+  | "unmet_expectation";
 
 /** The classes an adapter's `failures` config may add patterns to. */
 export const CONFIGURABLE_REASONS = ["rate_limit", "quota", "auth"] as const;

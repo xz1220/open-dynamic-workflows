@@ -44,8 +44,9 @@ export interface SchemaFlag {
 
 /**
  * How stdout from an adapter becomes the agent's final response — and, for the
- * JSON formats, what the run spent and whether the CLI itself reported it
- * failed (`usagePath`, `costPath`, `errorPath`: ODW extensions). A path is a
+ * JSON formats, what the run spent, whether the CLI itself reported it failed,
+ * and what it refused the agent (`usagePath`, `costPath`, `errorPath`,
+ * `deniedPath`: ODW extensions). A path is a
  * list of object keys; a whole number in it indexes an array (negative: from
  * its end). When the declared text is not there, the raw stdout is the reply
  * and the run's log says why (see adapters/output.ts).
@@ -76,6 +77,12 @@ export type AdapterOutput =
        * last text event has one (not null), it is the reply's value.
        */
       structuredPath?: string[];
+      /**
+       * Path, in a text event, to the tool calls the CLI refused the agent
+       * (Claude Code's `permission_denials`). When the last text event lists
+       * any, the run failed for want of a permission, whatever it replied.
+       */
+      deniedPath?: string[];
     }
   | {
       /** One JSON document on stdout: the paths are read from it. */
@@ -85,6 +92,7 @@ export type AdapterOutput =
       costPath?: string[];
       errorPath?: string[];
       structuredPath?: string[];
+      deniedPath?: string[];
     };
 
 /**
@@ -290,6 +298,12 @@ export interface Settings {
    * failures in a row on one adapter, the run's later calls skip it; `null` => never.
    */
   quotaBreaker: number | null;
+  /**
+   * How many times an agent whose work missed its `expect` checks is run again,
+   * told what it missed, before it fails (an ODW extension; `expectRetries`
+   * on one agent() call overrides it).
+   */
+  expectRetries: number;
 }
 
 /** How a fan-out on a prompt-caching adapter is staggered (see `Settings.staggerFanOut`). */
