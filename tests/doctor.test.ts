@@ -65,6 +65,17 @@ test("doctor: --smoke tells an answering CLI from one that exits 0 without answe
   assert.ok(SMOKE_TOKEN.length > 0);
 });
 
+test("doctor: --smoke reports a rate-limited CLI at once instead of waiting it out", async () => {
+  const limited = "process.stdin.resume();process.stdin.on('end',()=>{process.stderr.write('429 Too Many Requests');process.exit(1)})";
+  const { dir, path, config } = setup({ adapters: { limited: { command: [execPath, "-e", limited], stdin: "{prompt}" } } });
+  const started = Date.now();
+  const report = await runDoctor({ config, configPath: path, cwd: dir, smoke: ["limited"] });
+  const smoke = byId(report, "smoke:limited");
+  assert.equal(smoke.status, "fail");
+  assert.match(smoke.detail, /^adapter 'limited' hit a rate limit: 429 Too Many Requests/);
+  assert.ok(Date.now() - started < 10_000, "no backoff in a smoke check");
+});
+
 test("doctor: a broken config fails fast with the loader's message", async () => {
   const report = await runDoctor({ config: new Error("could not parse config x.json"), configPath: null, cwd: tmpdir(), smoke: [] });
   assert.equal(report.ok, false);

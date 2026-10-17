@@ -6,7 +6,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { defaultConfig } from "../src/adapters/config.js";
-import { Bridge } from "../src/bridge.js";
+import type { CommandRunner } from "../src/adapters/runner.js";
+import { Bridge, type AdapterWarning, type RateLimitRetry } from "../src/bridge.js";
 import type { CliResult } from "../src/adapters/types.js";
 import { AdapterExecutionError, RunStopped } from "../src/errors.js";
 
@@ -423,4 +424,321 @@ test("the stall timeout is off by default, run-wide when set, and per adapter (0
   cfg.adapters.claude!.stallTimeout = 0;
   await new Bridge(cfg, { runner }).run({ prompt: "x" });
   assert.deepEqual(seen, [undefined, 60, 5, undefined]);
+});
+
+// --- failure classes and rate-limit retries ------------------------------------
+
+function failing(stderr: string, returncode = 1): CliResult {
+  return { returncode, stdout: "", stderr, timedOut: false, duration: 0.1 };
+}
+
+const RATE_LIMITED = "API Error: 429 Too Many Requests";
+
+/** A bridge whose backoff sleeps on a fake clock, with fixed jitter. */
+function backoffBridge(runner: CommandRunner, config = inplaceConfig(), random = 0) {
+  const slept: number[] = [];
+  const bridge = new Bridge(config, {
+    runner,
+    sleep: async (ms) => void slept.push(ms),
+    random: () => random,
+  });
+  return { bridge, slept };
+}
+
+test("a rate-limited CLI is retried after an exponential backoff, then succeeds", async () => {
+  const replies = [failing(RATE_LIMITED), failing(RATE_LIMITED), ok("finally")];
+  const prompts: string[] = [];
+  const { bridge, slept } = backoffBridge(async (_command, options) => {
+    prompts.push(options?.stdin ?? "");
+    return replies.shift()!;
+  });
+  const waits: RateLimitRetry[] = [];
+  let guards = 0;
+  const started = Date.now();
+  const out = await bridge.run(
+    { prompt: "busy task" },
+    { onRateLimit: (retry) => waits.push(retry), beforeRetry: () => void guards++ },
+  );
+  assert.equal(out.text, "finally");
+  assert.equal(out.attempts, 1, "a retry is not a schema attempt");
+  assert.equal(prompts.length, 3, "two retries, then the answer");
+  assert.ok(prompts.every((p) => p === prompts[0]), "every retry re-runs the same prompt");
+  assert.deepEqual(waits, [
+    { adapter: "claude", waitSeconds: 15, retry: 1, maxRetries: 3 },
+    { adapter: "claude", waitSeconds: 30, retry: 2, maxRetries: 3 },
+  ]);
+  assert.deepEqual(slept, [15_000, 30_000], "each wait is announced, then slept");
+  assert.equal(guards, 2, "each retry passes the stop/budget guards first");
+  assert.ok(Date.now() - started < 1000, "the waits ran on the injected clock");
+});
+
+test("backoff jitter stays within 20%, and maxBackoff caps every wait", async () => {
+  const cfg = inplaceConfig();
+  cfg.settings.maxBackoff = 40;
+  const { bridge, slept } = backoffBridge(async () => failing(RATE_LIMITED), cfg, 0.999);
+  await assert.rejects(() => bridge.run({ prompt: "x" }), AdapterExecutionError);
+  assert.equal(slept.length, 3);
+  assert.ok(slept[0]! >= 15_000 && slept[0]! < 18_000, `first wait ${slept[0]}`);
+  assert.ok(slept[1]! >= 30_000 && slept[1]! < 36_000, `second wait ${slept[1]}`);
+  assert.equal(slept[2], 40_000, "60s doubled past maxBackoff is cut to it");
+  assert.ok(slept.reduce((a, b) => a + b, 0) <= 3 * 40_000, "a call never waits longer than retries × maxBackoff");
+});
+
+test("a retry-after the CLI printed replaces the exponential wait", async () => {
+  const replies = [failing("Rate limit reached for requests. Please try again in 45s."), ok("done")];
+  const { bridge, slept } = backoffBridge(async () => replies.shift()!);
+  const waits: number[] = [];
+  await bridge.run({ prompt: "x" }, { onRateLimit: (r) => waits.push(r.waitSeconds) });
+  assert.deepEqual(waits, [45], "the CLI's 45s, not the first exponential step (15s)");
+  assert.deepEqual(slept, [45_000]);
+});
+
+test("a rate limit that outlasts maxBackoff is not retried, and its error says why", async () => {
+  let calls = 0;
+  const { bridge, slept } = backoffBridge(async () => {
+    calls++;
+    return failing("429 Too Many Requests: retry after 600 seconds");
+  });
+  await assert.rejects(
+    () => bridge.run({ prompt: "x" }),
+    (err: AdapterExecutionError) =>
+      err instanceof AdapterExecutionError &&
+      err.reason === "rate_limit" &&
+      err.retryAfter === 600 &&
+      err.message.startsWith(
+        "adapter 'claude' hit a rate limit and asked to wait 10m, longer than maxBackoff (300s) — " +
+          "retry later, or raise maxBackoff: 429",
+      ),
+  );
+  assert.equal(calls, 1);
+  assert.deepEqual(slept, []);
+});
+
+test("rate-limit retries stop at transientRetries; the error counts them", async () => {
+  for (const [retries, message] of [
+    [3, "adapter 'claude' hit a rate limit and was still limited after 3 retries: API Error: 429"],
+    [1, "adapter 'claude' hit a rate limit and was still limited after 1 retry: API Error: 429"],
+    [0, "adapter 'claude' hit a rate limit: API Error: 429"],
+  ] as const) {
+    const cfg = inplaceConfig();
+    cfg.settings.transientRetries = retries;
+    let calls = 0;
+    const { bridge } = backoffBridge(async () => {
+      calls++;
+      return failing(RATE_LIMITED);
+    }, cfg);
+    await assert.rejects(
+      () => bridge.run({ prompt: "x" }),
+      (err: AdapterExecutionError) => err.reason === "rate_limit" && err.message.startsWith(message),
+    );
+    assert.equal(calls, retries + 1);
+  }
+});
+
+test("rate-limit retries are capped per call, across schema attempts", async () => {
+  const replies = [failing(RATE_LIMITED), ok("not json"), failing(RATE_LIMITED), ok('{"n":1}')];
+  const cfg = inplaceConfig();
+  cfg.settings.transientRetries = 1;
+  const { bridge } = backoffBridge(async () => replies.shift()!, cfg);
+  await assert.rejects(
+    () => bridge.run({ prompt: "x", schema: { type: "object", properties: { n: { type: "number" } } } }),
+    (err: AdapterExecutionError) => err.reason === "rate_limit" && /after 1 retry/.test(err.message),
+  );
+  assert.equal(replies.length, 1, "the second rate limit (attempt 2) ended the call: no retry was left");
+});
+
+test("a stop during a backoff ends the call at once with the run's reason", async () => {
+  const reason = new RunStopped("run was stopped");
+  const controller = new AbortController();
+  let calls = 0;
+  // The real (default) sleep: the CLI asked for two minutes.
+  const bridge = new Bridge(inplaceConfig(), {
+    runner: async () => {
+      calls++;
+      return failing("429 Too Many Requests. Retry-After: 120");
+    },
+  });
+  const started = Date.now();
+  await assert.rejects(
+    () =>
+      bridge.run(
+        { prompt: "x" },
+        { signal: controller.signal, onRateLimit: () => setImmediate(() => controller.abort(reason)) },
+      ),
+    (err) => err === reason,
+  );
+  assert.ok(Date.now() - started < 2000, `the wait ended with the stop (${Date.now() - started}ms)`);
+  assert.equal(calls, 1, "no retry once stopped");
+
+  // An injected sleep gets the run's signal, so it can end early too.
+  let seen: AbortSignal | undefined;
+  const injected = new AbortController();
+  const withSleep = new Bridge(inplaceConfig(), {
+    runner: async () => failing(RATE_LIMITED),
+    sleep: async (_ms, signal) => {
+      seen = signal;
+      injected.abort(reason);
+    },
+  });
+  await assert.rejects(() => withSleep.run({ prompt: "x" }, { signal: injected.signal }), (err) => err === reason);
+  assert.equal(seen, injected.signal);
+});
+
+test("quota and auth failures are never retried; their errors say what to do", async () => {
+  const cases = [
+    {
+      stderr: "You've hit your usage limit. Try again in 3h 22m.",
+      reason: "quota",
+      retryAfter: 3 * 3600 + 22 * 60,
+      message:
+        "adapter 'claude' ran out of usage quota — wait for the window to reset (in 3h 22m) and resume the run, " +
+        "or switch adapter with --adapter <name>: You've hit your usage limit.",
+    },
+    {
+      stderr: "Invalid API key · Please run /login",
+      reason: "auth",
+      retryAfter: undefined,
+      message:
+        "adapter 'claude' could not authenticate — log in to Claude Code and resume the run, " +
+        "or switch adapter with --adapter <name>: Invalid API key",
+    },
+  ];
+  for (const { stderr, reason, retryAfter, message } of cases) {
+    let calls = 0;
+    const { bridge, slept } = backoffBridge(async () => {
+      calls++;
+      return failing(stderr);
+    });
+    await assert.rejects(
+      () => bridge.run({ prompt: "x" }),
+      (err: AdapterExecutionError) =>
+        err instanceof AdapterExecutionError &&
+        err.reason === reason &&
+        err.retryAfter === retryAfter &&
+        err.message.startsWith(message),
+    );
+    assert.equal(calls, 1, `${reason} is not retried`);
+    assert.deepEqual(slept, []);
+  }
+});
+
+test("every failed CLI run is classified: stalled, timeout, not_found, permission, exit", async () => {
+  const cases: Array<[CliResult, string, RegExp]> = [
+    [stalled(), "stalled", /^adapter 'claude' stalled — no output for 120s/],
+    [{ ...failing("still thinking"), returncode: -1, timedOut: true }, "timeout", /^adapter 'claude' timed out: still thinking$/],
+    [
+      failing("failed to launch 'claude': spawn claude ENOENT", 127),
+      "not_found",
+      /^adapter 'claude' could not start its CLI — install it or fix the adapter's command/,
+    ],
+    [failing("ERROR: user cancelled MCP tool call"), "permission", /^adapter 'claude' was refused a permission it needed/],
+    [failing("boom"), "exit", /^adapter 'claude' exited with code 1: boom$/],
+  ];
+  for (const [result, reason, message] of cases) {
+    const bridge = new Bridge(stallConfig(0), { runner: async () => result });
+    await assert.rejects(
+      () => bridge.run({ prompt: "x" }),
+      (err: AdapterExecutionError) => err.reason === reason && message.test(err.message),
+      reason,
+    );
+  }
+});
+
+test("Claude's text mode: an exit-0 reply that is only an API error is a failure, ridden out or reported", async () => {
+  // `claude -p` prints "API Error: Rate limit reached" and exits 0 (anthropics/claude-code#79500).
+  const replies = [ok("API Error: Rate limit reached"), ok("API Error: Rate limit reached"), ok("the answer")];
+  const seen: string[] = [];
+  const { bridge, slept } = backoffBridge(async () => replies.shift()!);
+  const out = await bridge.run({ prompt: "x" }, { onReply: (text) => seen.push(text) });
+  assert.equal(out.value, "the answer", "never the error line as the agent's answer");
+  assert.deepEqual(slept, [15_000, 30_000]);
+  assert.deepEqual(seen, ["the answer"], "an error line is not output the run paid for");
+
+  const { bridge: loggedOut } = backoffBridge(async () => ok("Not logged in · Please run /login"));
+  await assert.rejects(
+    () => loggedOut.run({ prompt: "x" }),
+    (err: AdapterExecutionError) =>
+      err.reason === "auth" &&
+      err.message ===
+        "adapter 'claude' could not authenticate — log in to Claude Code and resume the run, " +
+          "or switch adapter with --adapter <name>: Not logged in · Please run /login",
+  );
+
+  // A JSONL adapter reports errors as events with a non-zero exit: its reply is just its reply.
+  const config = defaultConfig();
+  config.settings.defaultAdapter = "opencode";
+  const jsonl = new Bridge(config, {
+    runner: async () => ok(JSON.stringify({ type: "text", part: { type: "text", text: "API Error: Rate limit reached" } })),
+  });
+  assert.equal((await jsonl.run({ prompt: "x" })).text, "API Error: Rate limit reached");
+});
+
+test("a CLI that echoes its prompt is judged by its own words, not the task's", async () => {
+  let calls = 0;
+  const { bridge, slept } = backoffBridge(async (_command, options) => {
+    calls++;
+    return failing(`User instructions:\n${options?.stdin}\n\nERROR: stream disconnected before completion`);
+  });
+  await assert.rejects(
+    () => bridge.run({ prompt: "Handle 429 Too Many Requests from the billing API: retry with backoff." }),
+    (err: AdapterExecutionError) => err.reason === "exit" && /exited with code 1/.test(err.message),
+  );
+  assert.equal(calls, 1, "the task's words are not a rate limit");
+  assert.deepEqual(slept, []);
+});
+
+test("an adapter's own failure wording is matched first, and can make a failure retryable", async () => {
+  const cfg = inplaceConfig();
+  cfg.adapters.claude!.failures = { rate_limit: ["upstream is busy"] };
+  const replies = [failing("upstream is busy, come back soon"), ok("served")];
+  const { bridge, slept } = backoffBridge(async () => replies.shift()!, cfg);
+  assert.equal((await bridge.run({ prompt: "x" })).text, "served");
+  assert.deepEqual(slept, [15_000]);
+});
+
+test("three quota or auth failures in a row on one adapter warn once; anything else resets the count", async () => {
+  let reply: CliResult = failing(`Claude AI usage limit reached|${Math.floor(Date.now() / 1000) + 3 * 3600}`);
+  const bridge = new Bridge(inplaceConfig(), { runner: async () => reply });
+  const warnings: AdapterWarning[] = [];
+  const onAdapterWarning = (w: AdapterWarning) => warnings.push(w);
+  const fail = () => assert.rejects(() => bridge.run({ prompt: "x" }, { onAdapterWarning }), AdapterExecutionError);
+  for (let i = 0; i < 5; i++) await fail();
+  assert.equal(warnings.length, 1, "one warning per streak, not one per failure");
+  assert.deepEqual(
+    { adapter: warnings[0]!.adapter, reason: warnings[0]!.reason, streak: warnings[0]!.streak },
+    { adapter: "claude", reason: "quota", streak: 3 },
+  );
+  assert.equal(
+    warnings[0]!.message,
+    "warning: 3 agents in a row failed on adapter 'claude' (usage quota) — its other agents in this run will likely " +
+      "fail too. Wait for its quota window to reset and resume the run (odw resume), or switch adapter with --adapter <name>.",
+  );
+
+  // Another adapter's failures are its own; a success on this one ends its streak.
+  await assert.rejects(() => bridge.run({ prompt: "x", adapter: "codex" }, { onAdapterWarning }));
+  reply = ok("back");
+  await bridge.run({ prompt: "x" }, { onAdapterWarning });
+  reply = failing("Error: not logged in. Run `claude` to log in.");
+  await fail();
+  await fail();
+  reply = failing("boom"); // an ordinary failure breaks a run of quota/auth failures
+  await fail();
+  reply = failing("Error: not logged in. Run `claude` to log in.");
+  for (let i = 0; i < 3; i++) await fail();
+  assert.equal(warnings.length, 2);
+  assert.equal(warnings[1]!.reason, "auth");
+  assert.match(warnings[1]!.message, /\(not logged in\) — .*Log in to Claude Code and resume the run/);
+});
+
+test("a stopped call is no verdict on its adapter", async () => {
+  const bridge = new Bridge(inplaceConfig(), { runner: async () => failing("Invalid API key · Please run /login") });
+  const warnings: AdapterWarning[] = [];
+  const onAdapterWarning = (w: AdapterWarning) => warnings.push(w);
+  for (let i = 0; i < 2; i++) await assert.rejects(() => bridge.run({ prompt: "x" }, { onAdapterWarning }));
+  const controller = new AbortController();
+  controller.abort(new RunStopped("run was stopped"));
+  await assert.rejects(() => bridge.run({ prompt: "x" }, { signal: controller.signal, onAdapterWarning }), RunStopped);
+  assert.deepEqual(warnings, [], "two failures and a stop are not three in a row");
+  await assert.rejects(() => bridge.run({ prompt: "x" }, { onAdapterWarning }));
+  assert.equal(warnings.length, 1);
 });

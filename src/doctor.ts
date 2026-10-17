@@ -167,9 +167,10 @@ export async function runDoctor(opts: DoctorOptions): Promise<DoctorReport> {
       add({ id: `smoke:${name}`, title: `Smoke ${name}`, status: "skip", detail: "not installed" });
       continue;
     }
+    // One try: a smoke check reports a rate limit, it does not wait one out.
     const smokeConfig: Config = {
       ...config,
-      settings: { ...config.settings, timeout: opts.smokeTimeout ?? 180, schemaRetries: 0 },
+      settings: { ...config.settings, timeout: opts.smokeTimeout ?? 180, schemaRetries: 0, transientRetries: 0 },
     };
     const bridge = new Bridge(smokeConfig, { source: opts.cwd, runner });
     const started = Date.now();

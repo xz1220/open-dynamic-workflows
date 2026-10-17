@@ -24,9 +24,10 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
+import { formatSeconds } from "./adapters/failures.js";
 import type { AgentRequest } from "./bridge.js";
 import { spentTokens, type RunContext } from "./context.js";
-import { WorkflowScriptError, isFatalError } from "./errors.js";
+import { AdapterExecutionError, WorkflowScriptError, isFatalError } from "./errors.js";
 import { AGENT_FAILED, AGENT_FINISHED, AGENT_STARTED, LOG, PHASE_STARTED, event } from "./events.js";
 import { ExecError, createExec, type ExecOptions, type ExecResult } from "./exec.js";
 import { resumeKey, type AgentResultRecord } from "./journal.js";
@@ -190,7 +191,9 @@ export function createPrimitives(
       isolation: opts.isolation,
     };
     const failed = (err: unknown): void => {
-      ctx.emit(event(AGENT_FAILED, { agentId, label: display, phase: activePhase, error: String(err) }));
+      ctx.emit(
+        event(AGENT_FAILED, { agentId, label: display, phase: activePhase, error: String(err), ...failureFields(err) }),
+      );
       if (typeof err === "object" && err !== null) surfaced.add(err);
     };
     let started = false;
@@ -226,6 +229,19 @@ export function createPrimitives(
                   phase: activePhase,
                 }),
               ),
+            // A rate-limited CLI is retried after a backoff: say so, and for how long.
+            onRateLimit: ({ adapter: name, waitSeconds, retry, maxRetries }) =>
+              ctx.emit(
+                event(LOG, {
+                  message: `${display}:${agentId} hit a rate limit on ${name} — retrying in ${formatSeconds(waitSeconds)} (${retry}/${maxRetries})`,
+                  agentId,
+                  label: display,
+                  phase: activePhase,
+                }),
+              ),
+            // An adapter's quota or login failed several agents in a row: warn, once.
+            onAdapterWarning: ({ message, adapter: name, reason }) =>
+              ctx.emit(event(LOG, { message, adapter: name, reason, agentId, label: display, phase: activePhase })),
           });
         } catch (err) {
           // A started agent always gets a terminal event, even when the error
@@ -458,6 +474,17 @@ function handled<T>(promise: Promise<T>): Promise<T> {
  * workflow()'s agents can fail inside the parent's parallel().
  */
 const surfaced = new WeakSet<object>();
+
+/**
+ * Why an agent CLI failed, for its agent_failed event: the failure class and,
+ * when the CLI said, seconds until a retry may work. Nothing for other errors
+ * (a schema that never validated, a stop).
+ */
+function failureFields(err: unknown): { reason?: string; retryAfter?: number } {
+  if (!(err instanceof AdapterExecutionError)) return {};
+  if (err.retryAfter === undefined) return { reason: err.reason };
+  return { reason: err.reason, retryAfter: Math.ceil(err.retryAfter) };
+}
 
 /** A short description of a misused argument, for error messages. */
 function describeValue(value: unknown): string {
