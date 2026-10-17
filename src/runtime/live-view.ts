@@ -23,6 +23,7 @@
  * the live view.
  */
 
+import { formatSeconds } from "../adapters/failures.js";
 import type { WorkflowEvent } from "../events.js";
 import {
   cursor,
@@ -93,11 +94,36 @@ export function formatEvent(ev: WorkflowEvent): string {
   else if (type === "phase_started") detail = `phase: ${sanitizeText(ev.phase, 80)}`;
   else if (type.startsWith("agent_")) {
     detail = sanitizeText(ev.label ?? "agent", 120);
-    if (type === "agent_failed") detail += ` — ${sanitizeText(ev.error, 200)}`;
+    if (type === "agent_failed") detail += ` — ${failureTag(ev)}${sanitizeText(ev.error, 200)}`;
     if (type === "agent_finished" && ev.cached === true) detail += ` (replayed from ${sanitizeText(ev.sourceRunId, 80)})`;
   } else if (type.startsWith("command_")) detail = commandDetail(ev, type);
   else detail = sanitizeText(ev.error ?? ev.runId ?? "", 200);
   return `[${stamp}] ${type.padEnd(15)}${phase} ${detail}`.trimEnd();
+}
+
+/**
+ * Why an agent failed, ahead of its (truncated) error: `[rate_limit] `, or
+ * `[quota, retry after 3h 22m] ` when the CLI said when; "" without a reason.
+ */
+function failureTag(ev: WorkflowEvent): string {
+  if (typeof ev.reason !== "string" || ev.reason === "") return "";
+  const after = typeof ev.retryAfter === "number" ? `, retry after ${formatSeconds(ev.retryAfter)}` : "";
+  return `[${sanitizeText(ev.reason, 40)}${after}] `;
+}
+
+/** A failure class in the live view's words; "exit" says no more than the error line below it. */
+function reasonText(reason: string | undefined): string | null {
+  if (!reason || reason === "exit") return null;
+  const words: Record<string, string> = {
+    rate_limit: "rate limited",
+    quota: "out of quota",
+    auth: "not logged in",
+    timeout: "timed out",
+    stalled: "stalled",
+    not_found: "CLI not found",
+    permission: "permission denied",
+  };
+  return words[reason] ?? sanitizeText(reason.replace(/_/g, " "), 40);
 }
 
 /**
@@ -236,6 +262,7 @@ class LiveView {
     const meta = metaJoin(g, [
       a.phase !== null && a.phase !== this.currentPhase ? sanitizeText(a.phase, 40) : null,
       a.adapter !== null ? sanitizeText(a.adapter, 40) : null,
+      a.state === "failed" ? reasonText(a.failureReason) : null,
       // A replayed result (odw resume) took no time and ran nothing.
       a.cached ? "replayed" : a.durationMs !== null ? fmtDuration(a.durationMs) : null,
       !a.cached && a.attempts !== null && a.attempts > 1 ? `${a.attempts} tries` : null,

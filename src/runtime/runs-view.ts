@@ -47,6 +47,12 @@ export interface AgentView {
   adapter: string | null;
   attempts: number | null;
   error: string | null;
+  /**
+   * Why a failed agent's CLI failed (agent_failed's `reason`): rate_limit,
+   * quota, auth, timeout, stalled, not_found, permission or exit. Absent while
+   * running, for other failures (schema, stop) and for older event files.
+   */
+  failureReason?: string;
   startedAt: number | null;
   finishedAt: number | null;
   /** Wall-clock from agent_started to agent_finished/failed, in ms (a command's own measurement). */
@@ -239,6 +245,7 @@ export function applyAgentEvent(
     if (ev.type === "agent_failed") {
       target.state = "failed";
       target.error = ev.error != null ? String(ev.error) : null;
+      if (typeof ev.reason === "string" && ev.reason !== "") target.failureReason = ev.reason;
     } else {
       target.state = "done";
       target.adapter = ev.adapter != null ? String(ev.adapter) : null;
