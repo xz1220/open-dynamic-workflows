@@ -10,7 +10,9 @@
  * conforms or the retry budget is spent. A CLI the stall watchdog killed for
  * going quiet is started again, up to `stallRestarts` times per call. Each
  * isolated CLI run's worktree is handed to the call's change sink before it is
- * removed, so what the agent changed can be kept (an ODW extension).
+ * removed, so what the agent changed can be kept (an ODW extension). What every
+ * CLI run of the call prints goes to its transcript sink as it arrives, each
+ * run after the first introduced with why it ran (an ODW extension).
  *
  * Every failed CLI run is classified (adapters/failures.ts). A rate-limited
  * one is ridden out: retried after an exponential backoff that honors the
@@ -54,6 +56,7 @@ import { AdapterExecutionError, RunStopped, SchemaValidationError, isFatalError 
 import { PortPool } from "./ports.js";
 import { LiteralRouter, type InvocationPlan, type OptionRouter } from "./router.js";
 import { describeSchema, pickJson, type JsonSchema } from "./schema.js";
+import type { AttemptReason } from "./transcript.js";
 import { withWorkspace, type Workspace } from "./workspace.js";
 
 export const INDEPENDENCE_PREAMBLE =
@@ -168,12 +171,26 @@ export interface RunOptions {
    * attempt's last run is in.
    */
   changes?: ChangeSink;
+  /**
+   * Keeps what the call's CLI runs print (an ODW extension; see ./transcript):
+   * told when each run starts — and why, after the first — fed its stdout and
+   * stderr as they arrive, and given its result when it ends.
+   */
+  transcript?: TranscriptSink;
 }
 
 /** Where the bridge reports an isolated call's worktrees: a ChangeRecorder (./changes). */
 export interface ChangeSink {
   capture(ws: Workspace): Promise<void>;
   endAttempt(): Promise<void>;
+}
+
+/** Where the bridge reports what a call's CLI runs print: a TranscriptRecorder (./transcript). */
+export interface TranscriptSink {
+  beginRun(reason?: AttemptReason): void;
+  stdout(chunk: string): void;
+  stderr(chunk: string): void;
+  endRun(cli: CliResult): void;
 }
 
 /** A CLI the stall watchdog killed, about to be started again. */
@@ -263,7 +280,12 @@ export class Bridge {
     if (options.agentId !== undefined) env.ODW_AGENT_ID = String(options.agentId);
     if (port !== null) env.ODW_PORT = String(port);
     try {
-      return await this.runCall(request, options, { env, onNote: options.onNote, changes: options.changes });
+      return await this.runCall(request, options, {
+        env,
+        onNote: options.onNote,
+        changes: options.changes,
+        transcript: options.transcript,
+      });
     } finally {
       if (port !== null) this.ports.release(port);
     }
@@ -304,7 +326,8 @@ export class Bridge {
       throwIfAborted(signal);
       if (attempt > 1) await options.beforeRetry?.();
       const prompt = attempt > 1 ? `${basePrompt}\n\n${retryFeedback(previous, problems)}` : basePrompt;
-      const { cli, output, failure } = await this.invokeUntilFinal(adapter, plan, prompt, limits, options, reruns, call);
+      const why = attempt > 1 ? "schema" : undefined;
+      const { cli, output, failure } = await this.invokeUntilFinal(adapter, plan, prompt, limits, options, reruns, call, why);
       await call.changes?.endAttempt();
       // Killed by a stop (or by a fatal error elsewhere in the run): report
       // the run's reason, not a misleading CLI failure.
@@ -353,7 +376,8 @@ export class Bridge {
    * rate-limit, quota or login error included, as is a failure the CLI
    * reported in its output — so the caller need not read the output twice.
    * Every run decodes its output once, here; a run that ends without a reply
-   * reports what it spent through `onUsage`.
+   * reports what it spent through `onUsage`. `why` is why the first of these
+   * runs happens (a schema retry); each one after says why it ran again.
    */
   private async invokeUntilFinal(
     adapter: Adapter,
@@ -363,13 +387,14 @@ export class Bridge {
     options: RunOptions,
     reruns: Reruns,
     call: CallEnv,
+    why?: AttemptReason,
   ): Promise<{ cli: CliResult; output: DecodedOutput; failure?: FailureClass }> {
     const { signal } = options;
     const settings = this.config.settings;
     const classify = { patterns: adapter.failures, prompt };
     const structured = (adapter.output?.format ?? "text") !== "text";
     for (;;) {
-      const { cli, decoder } = await this.invoke(adapter, plan, prompt, limits, signal, call);
+      const { cli, decoder } = await this.invoke(adapter, plan, prompt, limits, signal, call, why);
       // A runner that streams stdout fed the decoder and kept only a tail; an
       // injected runner that does not stream returns the whole stdout instead.
       const output = decoder?.received ? decoder.finish() : decodeOutput(adapter, cli.stdout);
@@ -383,6 +408,7 @@ export class Bridge {
           restart: reruns.stalls,
           maxRestarts: settings.stallRestarts,
         });
+        why = "stall";
       } else {
         // A failure the CLI reported in its output (Claude Code's `is_error`
         // result) is the verdict whatever the exit status, and its message is
@@ -414,6 +440,7 @@ export class Bridge {
         });
         await this.sleep(wait * 1000, signal);
         throwIfAborted(signal);
+        why = "rate_limit";
       }
       await options.beforeRetry?.();
     }
@@ -506,6 +533,7 @@ export class Bridge {
     limits: CliLimits,
     signal: AbortSignal | undefined,
     call: CallEnv,
+    why: AttemptReason | undefined,
   ): Promise<{ cli: CliResult; decoder: AdapterOutputDecoder | null }> {
     // JSONL transcripts are decoded while they stream, so only the final text
     // is retained (and a verbose session is never cut off at the stdout cap);
@@ -548,6 +576,9 @@ export class Bridge {
         const command = [...expandAll(adapter.command, context), ...plan.extraArgs];
         const stdin = adapter.stdin ? expand(adapter.stdin, context) : undefined;
         const env = withAgentVars({ ...process.env, ...adapter.env }, call.env);
+        // What the CLI prints is kept as it arrives (ODW extension; see ./transcript).
+        const transcript = call.transcript;
+        transcript?.beginRun(why);
         const cli = await this.runner(command, {
           stdin,
           cwd: ws.path,
@@ -555,8 +586,11 @@ export class Bridge {
           timeout: limits.timeout,
           stallTimeout: limits.stallTimeout,
           onStdout,
+          observeStdout: transcript && ((chunk) => transcript.stdout(chunk)),
+          onStderr: transcript && ((chunk) => transcript.stderr(chunk)),
           signal,
         });
+        transcript?.endRun(cli);
         // agent() returns the reply; what an isolated run changed is kept
         // beside it, before its worktree goes (ODW extension; see ./changes).
         if (call.changes && plan.workspaceMode === "worktree" && !signal?.aborted) await call.changes.capture(ws);
@@ -568,11 +602,12 @@ export class Bridge {
   }
 }
 
-/** What every CLI run of one agent call shares: its `ODW_*` variables, where its notes go, what keeps its changes. */
+/** What every CLI run of one agent call shares: its `ODW_*` variables, where its notes go, what keeps its changes and its transcript. */
 interface CallEnv {
   env: Record<string, string>;
   onNote?: (message: string) => void;
   changes?: ChangeSink;
+  transcript?: TranscriptSink;
 }
 
 /** The variables an agent's processes get from ODW: only ever this call's, never inherited. */

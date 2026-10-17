@@ -149,6 +149,8 @@ export async function executeRun(runDir: string): Promise<string> {
       saveAgentResult: (rec) => store.writeAgentResult(runId, rec),
       // What an isolated agent changed is kept beside it, as agents/<agentId>.diff.
       agentDiffPath: (agentId) => store.agentDiffPath(runId, agentId),
+      // What each agent's CLI prints, as agents/<agentId>.transcript.jsonl and .stderr.txt.
+      agentTranscriptPaths: (agentId) => store.agentTranscriptPaths(runId, agentId),
       replay,
       onCheckpoint: (cp, isWaiting) => {
         if (isWaiting) {

@@ -145,7 +145,7 @@ test("an isolated agent's change is kept as a diff: edits, new, deleted, renamed
     // The source tree is untouched, the worktree gone, nothing left beside the diff — and it applies.
     assert.equal(git(src, "status", "--porcelain"), "");
     assert.equal(worktrees(src), 1);
-    assert.deepEqual(readdirSync(dirname(file)).sort(), ["1.diff", "1.json"]);
+    assert.deepEqual(readdirSync(dirname(file)).sort(), ["1.diff", "1.json", "1.transcript.jsonl"]);
     git(src, "apply", "--check", file);
   } finally {
     cleanup(root, src);

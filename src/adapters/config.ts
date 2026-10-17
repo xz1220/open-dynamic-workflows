@@ -91,6 +91,7 @@ const KNOWN_TOP_KEYS = [
   "fanOutWarn",
   "maxDiffBytes",
   "keepBranches",
+  "maxTranscriptBytes",
 ] as const;
 
 const KNOWN_ADAPTER_KEYS = ["command", "stdin", "env", "timeout", "stallTimeout", "label", "flags", "output", "failures"] as const;
@@ -706,6 +707,12 @@ function buildSettings(raw: Record<string, unknown>): Settings {
       integer: true,
     }),
     keepBranches: raw["keepBranches"] == null ? DEFAULT_SETTINGS.keepBranches : buildFlag("keepBranches", raw["keepBranches"]),
+    maxTranscriptBytes: num(
+      "maxTranscriptBytes",
+      DEFAULT_SETTINGS.maxTranscriptBytes,
+      "a whole number of bytes, or 0 to keep no transcripts",
+      { min: 0, integer: true },
+    ),
   };
 }
 

@@ -163,6 +163,11 @@ export interface Settings {
    * of the source repository, as `keep: true` does for one agent (an ODW extension).
    */
   keepBranches: boolean;
+  /**
+   * Bytes of each agent's transcript — what its CLI printed — kept in the run
+   * directory (an ODW extension); past it, one truncation line. `0` keeps none.
+   */
+  maxTranscriptBytes: number;
 }
 
 /** The terminal states a run can end in, and that notify hooks can fire on. */

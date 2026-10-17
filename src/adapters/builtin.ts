@@ -176,4 +176,5 @@ export const DEFAULT_SETTINGS: Settings = {
   fanOutWarn: 25, // log a warning when one parallel()/pipeline() call fans out wider
   maxDiffBytes: 2 * 1024 * 1024, // an isolated agent's kept diff; past it, the head and a note
   keepBranches: false, // keep: true per agent still commits its change to a branch
+  maxTranscriptBytes: 5 * 1024 * 1024, // each agent's transcript; past it, one truncation line (0: none)
 };

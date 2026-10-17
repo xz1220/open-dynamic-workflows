@@ -33,6 +33,9 @@
   "maxDiffBytes": 2097152,
   "keepBranches": false,
 
+  "//maxTranscriptBytes": "ODW extension. While each agent runs, what its CLI prints is kept in the run directory as its transcript: agents/<agentId>.transcript.jsonl (a JSONL adapter's events as received, other adapters' output as text lines) and agents/<agentId>.stderr.txt (the end of its stderr). odw logs <run> --agent <id|label> prints it readably (--raw as kept, --follow while it runs). Past maxTranscriptBytes per agent one truncation line ends it; 0 keeps no transcripts.",
+  "maxTranscriptBytes": 5242880,
+
   "//notify": {
     "$comment": "ODW extension: run-end hooks. Rename \"//notify\" to \"notify\" to turn them on. They fire once, after the run's final state is written, and can never change it; a failing or slow hook is only logged to the run's worker.log. command: an argv run WITHOUT a shell (killed after 30s), with ODW_RUN_ID, ODW_RUN_STATE, ODW_WORKFLOW, ODW_RUN_DIR, ODW_RESULT_FILE (only when the run has a result), ODW_DURATION_SEC, ODW_AGENTS and ODW_FAILED_AGENTS in its environment. webhook: an http(s) URL that receives a JSON POST (10s limit) whose text/content fields render as-is in Slack and Discord. on: which final states fire them (default: all three).",
     "command": ["/usr/local/bin/odw-notify"],

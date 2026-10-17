@@ -25,6 +25,9 @@
  * What each agent spent travels on its agent_finished (or agent_failed) event
  * as `usage` (an ODW extension, adapters/usage.ts): what its CLI reported, or
  * — where it reported no output tokens — chars/4 of its replies, `estimated`.
+ *
+ * What each agent's CLI printed is kept as it runs, as the agent's transcript
+ * (an ODW extension; see ./transcript) — complete before its terminal event.
  */
 
 import { readFileSync } from "node:fs";
@@ -32,6 +35,7 @@ import { copyFile, mkdir } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 
 import { formatSeconds } from "./adapters/failures.js";
+import type { Adapter } from "./adapters/types.js";
 import { addUsage, estimatedUsage, type Usage } from "./adapters/usage.js";
 import type { AgentRequest } from "./bridge.js";
 import { branchName, ChangeRecorder, type AgentChanges, type KeptChanges } from "./changes.js";
@@ -45,6 +49,7 @@ import { resumeKey, type AgentResultRecord } from "./journal.js";
 // the module cycle is erased at compile time and never exists at runtime.
 import { loadWorkflowScript, scanDualCompat, type WorkflowMeta } from "./loader.js";
 import type { JsonSchema } from "./schema.js";
+import { TranscriptRecorder } from "./transcript.js";
 import { resolveWorkflow } from "./workflows/resolve.js";
 
 export interface AgentOptions {
@@ -239,6 +244,26 @@ export function createPrimitives(
     });
   };
 
+  /**
+   * What keeps an agent's transcript as it runs (ODW extension; see
+   * ./transcript) — only in a persisted run, and unless `maxTranscriptBytes`
+   * is 0. A JSONL adapter's events are kept as they come; anything else as text.
+   */
+  const transcriptRecorder = (
+    agentId: number,
+    adapter: Adapter,
+    note: (message: string) => void,
+  ): TranscriptRecorder | undefined => {
+    const maxBytes = ctx.config.settings.maxTranscriptBytes;
+    if (!ctx.agentTranscriptPaths || !maxBytes) return undefined;
+    return new TranscriptRecorder({
+      ...ctx.agentTranscriptPaths(agentId),
+      format: adapter.output?.format === "jsonl" ? "jsonl" : "text",
+      maxBytes,
+      onNote: note,
+    });
+  };
+
   /** Settle a call's kept change, or drop it when the run ended under the call. Never throws. */
   const keepChanges = async (
     recorder: ChangeRecorder | undefined,
@@ -333,6 +358,7 @@ export function createPrimitives(
           note('keep: true has no effect without isolation: "worktree" — this agent works in the source tree');
         }
         const changes = changeRecorder(agentId, display, opts, signal, note);
+        const transcript = transcriptRecorder(agentId, adapter, note);
         let outcome;
         try {
           outcome = await ctx.bridge.run(request, {
@@ -372,15 +398,20 @@ export function createPrimitives(
               ctx.emit(event(LOG, { message, adapter: name, reason, agentId, label: display, phase: activePhase })),
             // An isolated agent's change is kept as it lands (ODW extension).
             changes,
+            // So is what its CLI prints (ODW extension).
+            transcript,
           });
         } catch (err) {
           // A started agent always gets a terminal event, even when the error
           // is fatal (stop, budget, a config error raised inside the slot) —
           // else observers show it running forever. A failed agent's change
           // is kept too (the work of one that timed out); a stop keeps none.
+          // Its transcript is kept either way, complete before the event.
+          await transcript?.close();
           failed(err, await keepChanges(changes, isFatalError(err) || signal.aborted, note));
           throw err;
         }
+        await transcript?.close();
         const kept = await keepChanges(changes, false, note);
         // No option is dropped silently: surface each routing note as a LOG event
         // (visible in `odw logs` and the dashboard).

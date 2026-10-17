@@ -17,6 +17,7 @@ import { BudgetExhausted } from "./errors.js";
 import { NullSink, type EventSink, type WorkflowEvent } from "./events.js";
 import type { AgentResultRecord, ReplayJournal } from "./journal.js";
 import { Scheduler } from "./scheduler.js";
+import type { TranscriptPaths } from "./transcript.js";
 
 export interface RunContext {
   config: Config;
@@ -66,6 +67,12 @@ export interface RunContext {
    */
   agentDiffPath?: (agentId: number) => string;
   /**
+   * Where each agent's transcript is kept as it runs (ODW extension): the run
+   * directory's `agents/<agentId>.transcript.jsonl` and `.stderr.txt`. Absent
+   * where nothing is persisted (in-process runs): such a run keeps none.
+   */
+  agentTranscriptPaths?: (agentId: number) => TranscriptPaths;
+  /**
    * `odw resume`: the source run's saved results, replayed by the agent()
    * calls that are unchanged. Shared like `seq`, so a nested workflow()
    * replays its calls too.
@@ -98,6 +105,7 @@ export interface BuildContextOptions {
   budgetTotal?: number | null;
   saveAgentResult?: (rec: AgentResultRecord) => void;
   agentDiffPath?: (agentId: number) => string;
+  agentTranscriptPaths?: (agentId: number) => TranscriptPaths;
   replay?: ReplayJournal;
   onCheckpoint?: (cp: WaitingCheckpoint, waiting: boolean) => void;
 }
@@ -142,6 +150,7 @@ export function buildContext(config: Config, options: BuildContextOptions = {}):
     currentPhase: null,
     saveAgentResult: options.saveAgentResult,
     agentDiffPath: options.agentDiffPath,
+    agentTranscriptPaths: options.agentTranscriptPaths,
     replay: options.replay,
     onCheckpoint: options.onCheckpoint,
     emit(ev: WorkflowEvent): void {
