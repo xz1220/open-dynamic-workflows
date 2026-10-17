@@ -86,6 +86,8 @@ export function reasonLabel(reason: string): string {
     not_found: t("CLI not found"),
     permission: t("permission denied"),
     exit: t("exit"),
+    empty_reply: t("empty reply"),
+    unmet_expectation: t("unmet expectation"),
   };
   return labels[reason] ?? reason.replace(/_/g, " ");
 }
@@ -188,7 +190,7 @@ export function renderDag(
       parts.push(
         `<div class="node ${esc(a.state)}${a.kind === "command" ? " cmd" : a.kind === "checkpoint" ? " cp" : ""}${sel}${dim}" data-ai="${p.ai}" data-key="n-${p.ai}" tabindex="0" role="button" aria-pressed="${selectedAi === p.ai}" ` +
           `style="left:${p.x}px;top:${p.y}px;width:${NODE_W}px" title="${esc(a.label)}">` +
-          `<div class="h">${glyph(a.state)}<span class="lbl">${a.kind === "command" ? `<span class="prompt">$</span> ` : ""}${esc(a.label)}</span>${a.changes?.files ? `<span class="ndelta" title="${esc(t("lines changed"))}"><b class="ins">+${fmtTokens(a.changes.insertions)}</b><b class="del">−${fmtTokens(a.changes.deletions)}</b></span>` : ""}${a.cached ? `<span class="cached" title="${esc(t("replayed from an earlier run"))}">↺</span>` : ""}</div>` +
+          `<div class="h">${glyph(a.state)}<span class="lbl">${a.kind === "command" ? `<span class="prompt">$</span> ` : ""}${esc(a.label)}</span>${a.changes?.files ? `<span class="ndelta" title="${esc(t("lines changed"))}"><b class="ins">+${fmtTokens(a.changes.insertions)}</b><b class="del">−${fmtTokens(a.changes.deletions)}</b></span>` : ""}${a.denied?.length ? `<span class="ndeny" title="${esc(t("{n} tool calls refused", { n: a.denied.length }))}">⚠${a.denied.length}</span>` : ""}${a.cached ? `<span class="cached" title="${esc(t("replayed from an earlier run"))}">↺</span>` : ""}</div>` +
           `<div class="sub">${esc(subLine(a, opts.nowSec))}</div></div>`,
       );
     }

@@ -569,3 +569,37 @@ test("an agent that fell back shows its chain in the graph, the drawer and the t
   assert.match(transcriptEntries([{ i: 4, kind: "attempt", n: 2, reason: "fallback", adapter: "claude" }]), /class="tx tx-sep fallback"[^>]*><span>attempt 2 · fallback → claude<\/span>/);
   store.focusRun(null);
 });
+
+test("the drawer shows what an agent's work missed and the tool calls its CLI refused", () => {
+  const view: JobViewState = {
+    cpNote: "",
+    tab: "graph",
+    selectedAi: 0,
+    reviewAi: null,
+    zoom: 1,
+    logQuery: "",
+    logTypes: new Set(["agent"]),
+    logLimit: 600,
+    follow: true,
+    motion: false,
+  };
+  store.focusRun("20260101-000000-aaaaaa");
+  store.run = detail(
+    [
+      agent("fix", "Fix", "failed", { agentId: 1, failureReason: "unmet_expectation", misses: ["command failed: npm test (exit 1)", "no files changed"] }),
+      agent("review", "Fix", "done", { agentId: 2, denied: ["Bash (npm test)", "Bash (pnpm lint)"] }),
+      agent("npm test", "Fix", "failed", { kind: "command", commandId: 1, agentId: null, forAgentId: 1, exitCode: 1 }),
+    ],
+    { state: "failed" },
+  );
+  let html = renderJob(view, NOW);
+  assert.match(html, /unmet expectation/);
+  assert.match(html, /<ul class="misses"><li>command failed: npm test \(exit 1\)<\/li><li>no files changed<\/li><\/ul>/);
+  view.selectedAi = 1;
+  html = renderJob(view, NOW);
+  assert.match(html, /<ul class="denied"><li>Bash \(npm test\)<\/li><li>Bash \(pnpm lint\)<\/li><\/ul>/);
+  assert.match(html, /<span class="ndeny" title="2 tool calls refused">⚠2<\/span>/, "the node carries the warning");
+  view.selectedAi = 2;
+  assert.match(renderJob(view, NOW), /<span class="k">checks<\/span><span class="v">agent #1's work<\/span>/);
+  store.focusRun(null);
+});
