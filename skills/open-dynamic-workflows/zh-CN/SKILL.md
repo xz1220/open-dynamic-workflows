@@ -78,11 +78,11 @@ return await agent(
 （**ODW 扩展**）让该 agent 以比运行更严格的档位运行——见[权限档位](#权限档位odw-扩展)。
 
 `schema` 请只用 ODW 会检查的子集——`type`（单个类型名）、`enum`、`properties`、`required`、
-`additionalProperties: false`、`items`（单个 schema）、`minItems`，外加 `description` 等注解。
-其他关键字（`oneOf`、`$ref`、`const`、`pattern`、`maxItems`、类型联合……）会让调用在启动前以
-`AgentError` 失败，除非它的 CLI 自己校验 schema 且配置里设了 `"schemaKeywords": "native"`
-（**ODW 扩展**）。ODW 检查不了的限制请写进 `description`。在 `claude` 和 `codex` 上 schema 会
-原生交给 CLI；无论哪种，ODW 都会校验回复——见
+`additionalProperties: false`、`items`（单个 schema）、`minItems`，外加 `description`、
+`format` 等注解。其他关键字（`oneOf`、`$ref`、`const`、`pattern`、`maxItems`、类型联合……）
+ODW 不检查：运行日志会连同位置说明一次，调用照常运行——设 `"schemaKeywords": "strict"` 时则在
+启动前以 `AgentError` 失败（**ODW 扩展**）。ODW 检查不了的限制请写进 `description`。在
+`claude` 和 `codex` 上 schema 会原生交给 CLI，由它强制执行；无论哪种，ODW 都会校验回复——见
 [`references/primitives.md`](references/primitives.md#schema)。
 
 `exec` 的 `opts`：`{ cwd?, env?, timeout?, input?, maxOutputBytes?, label?, phase?, check? }`。

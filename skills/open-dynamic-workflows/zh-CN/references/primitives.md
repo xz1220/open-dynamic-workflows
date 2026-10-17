@@ -20,8 +20,8 @@ agent(prompt, opts?) -> Promise<unknown>
 
 - **opts.schema** —— 一个 JSON Schema 对象。给了它，回复就会被解析并校验，并带着纠正反馈
   重试 agent，直到符合契约或重试预算耗尽（届时这次调用抛错）。不给，则返回原始回复文本。
-  用了 ODW 检查不了的内容的 schema 会让调用在启动前失败；会校验 schema 的 CLI 直接原生拿到
-  它——见 [schema](#schema)。
+  schema 里 ODW 检查不了的内容会记入运行日志（设 `"schemaKeywords": "strict"` 时则让调用在
+  启动前失败）；会校验 schema 的 CLI 直接原生拿到它——见 [schema](#schema)。
 - **opts.label** —— 进度显示用的短名字。
 - **opts.phase** —— 为这一次调用覆盖当前 phase。在 `parallel`/`pipeline` 里优先用它，那里
   全局 phase 是共享的。
@@ -372,26 +372,31 @@ const result = await agent('Review this diff.', { schema: FINDINGS }) // -> vali
 | `type: "array"` | `items` 为一个 schema 对象，以及 `minItems` |
 | `enum` | 按 JSON 结构比较成员，独立于 `type` 生效 |
 
-对象和数组约束需要显式 `type`。`description`、`title`、`default`、`examples`、
-`$comment`、`$schema` 等注解不构成约束，放在哪里都可以。
+对象和数组约束需要显式 `type`。`description`、`title`、`default`、`examples`、`format`、
+`$comment`、`$schema` 等注解不构成约束，放在哪里都可以（自 JSON Schema 2019-09 起 `format`
+默认只是注解；Claude Code 也不强制执行它）。
 
 **子集之外的内容不会被悄悄放过（ODW 扩展）。** agent 启动前，会检查它的 schema 里有没有
 校验器不会强制执行的内容：`const`、`$ref`、`oneOf`/`anyOf`/`allOf`、`minimum`/`maximum`、
-`pattern`、`format`、`maxItems` 等关键字，schema 对象形式的 `additionalProperties`，元组或
-布尔 schema，`["string", "null"]` 这样的类型联合，以及缺少对应 `type` 的对象或数组关键字。
-任何一项都会让调用以 `AgentError` 失败，逐个写明它们及其位置——`"pattern" at
-#/properties/id`；拼写错误（`requird`、未知的 `type`）同样失败，并附 did-you-mean 提示。
-请把 schema 改写进支持的子集：ODW 检查不了的限制写进 `description`（agent 仍会读到），
-或在工作流里自行检查。
+`pattern`、`maxItems` 等关键字，schema 对象形式的 `additionalProperties`，元组或布尔 schema，
+`["string", "null"]` 这样的类型联合，以及缺少对应 `type` 的对象或数组关键字。由配置里的
+`schemaKeywords` 决定怎么处理：
 
-**原生 schema（ODW 扩展）。** 自己会校验 schema 的 CLI 还会直接拿到 schema——`claude` 通过
-`--json-schema`（值取自 `structured_output`），`codex` 在 schema 为 strict（根为对象；每个
-对象都设 `"additionalProperties": false` 并把全部属性列进 `required`）时通过
-`--output-schema`——ODW 依旧校验每一次回复并照常重试。只有不接收原生 schema 的 CLI 才会在
-提示词里看到 schema 描述（`"schemaPrompt": "always"` 则全部附上）。配置里设
-`"schemaKeywords": "native"` 后，这类 CLI 上可以使用子集之外的关键字：由它强制执行，ODW 检查
-子集，运行只记录一次哪些关键字交给了 CLI。Claude Code 把 `format` 当作注解，所以连它也不会
-强制执行 `format`。见[适配器](adapters.md#原生结构化输出)。
+- `"warn"`（默认）——调用照常运行，ODW 校验其余部分；运行日志只说一次哪些关键字它不检查、
+  位于何处（`"pattern" at #/properties/id`），以及有没有谁会强制执行它们。
+- `"strict"`——在任何东西启动前，调用以 `AgentError` 失败，逐个写明它们。
+- `"native"`——在自己校验 schema 的 CLI 上交给它（同样记录一次）；其他情况同 `"warn"`。
+
+拼写错误（`requird`、未知的 `type`）或其他格式错误的 schema 在任何模式下都会让调用失败，并附
+did-you-mean 提示。想让某个限制处处生效，就写进 `description`（agent 仍会读到），并在工作流里
+自行检查。
+
+**原生 schema（ODW 扩展）。** 自己会校验 schema 的 CLI 还会直接拿到完整 schema——`claude`
+通过 `--json-schema`（值取自 `structured_output`），`codex` 在 schema 为 strict（根为对象；
+每个对象都设 `"additionalProperties": false` 并把全部属性列进 `required`）时通过
+`--output-schema`——由它强制执行 ODW 不检查的部分；ODW 依旧校验每一次回复并照常重试。只有不
+接收原生 schema 的 CLI 才会在提示词里看到 schema 描述（`"schemaPrompt": "always"` 则全部附上）。
+见[适配器](adapters.md#原生结构化输出)。
 
 ## 组合模式
 

@@ -68,9 +68,10 @@ changed, and run on a schedule — and a dashboard redesigned to watch them.
 - Native structured output: `claude` (`--json-schema`) and `codex` (`--output-schema`,
   for strict schemas) are handed an `agent()`'s schema and enforce it themselves, and
   ODW still validates every reply. Before an agent starts, its schema is checked for
-  keywords nothing would enforce; `"schemaKeywords": "native"` leaves them to a CLI that
-  does (**ODW extension**; adapters declare it with `flags.schema` and
-  `output.structuredPath`).
+  keywords ODW's validator does not check: the run's log names each one and where it
+  is, once (`schemaKeywords`: `"warn"` by default, `"strict"` refuses such calls,
+  `"native"` leaves them to a CLI that enforces them) (**ODW extension**; adapters
+  declare native support with `flags.schema` and `output.structuredPath`).
 
 ### Use the CLI and the dashboard
 - `odw run` attaches a live foreground view in interactive terminals (Ctrl-C detaches;
@@ -100,10 +101,11 @@ changed, and run on a schedule — and a dashboard redesigned to watch them.
   (`staggerFanOut: false`).
 - `budget.spent()` counts real output tokens where the adapter reports them.
 - A schema keyword ODW's validator does not check (`oneOf`, `anyOf`, `$ref`, `const`,
-  `pattern`, `format`, `minimum`, `maxItems`, a type union, …) now fails its `agent()`
-  call before it starts, naming the keyword and where it is; before, it was silently
-  unchecked. Remove it (a `description` can still ask for it), or on `claude` — and
-  `codex`, for a strict schema — set `"schemaKeywords": "native"`.
+  `pattern`, `minimum`, `maxItems`, a type union, …) is now reported in the run's log,
+  once, with where it is; before, it was skipped without a word. The call still runs
+  unless `"schemaKeywords": "strict"`, which refuses it. `format` is an annotation and
+  is not reported. A malformed schema (a typo such as `requird`, an unknown `type`)
+  now fails its call in every mode.
 - `claude` and `codex` agents no longer get their schema described in the prompt when
   their CLI takes it natively (`"schemaPrompt": "always"` keeps the description). An
   entry that gives either its own `command` replaces the built-in: copy `flags.schema`

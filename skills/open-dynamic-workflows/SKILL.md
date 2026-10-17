@@ -90,13 +90,13 @@ change to a branch `odw/<runId>/<agentId>-<label>`. `permissions: "read"`
 
 Write `schema` in the subset ODW checks — `type` (one name), `enum`, `properties`,
 `required`, `additionalProperties: false`, `items` (one schema), `minItems`, plus
-annotations like `description`. Any other keyword (`oneOf`, `$ref`, `const`,
-`pattern`, `maxItems`, a type union, …) fails the call with an `AgentError` before
-it starts, unless its CLI enforces schemas itself and the config sets
-`"schemaKeywords": "native"` (**ODW extension**). Put a limit ODW cannot check in a
-`description` instead. On `claude` and `codex` the schema is passed to the CLI
-natively; ODW validates the reply either way — see
-[`references/primitives.md`](references/primitives.md#schema).
+annotations like `description` and `format`. Any other keyword (`oneOf`, `$ref`,
+`const`, `pattern`, `maxItems`, a type union, …) is not checked by ODW: the run's log
+says so once, with where it is, and the call runs — or, under `"schemaKeywords":
+"strict"`, fails with an `AgentError` before it starts (**ODW extension**). Put a
+limit ODW cannot check in a `description`. On `claude` and `codex` the schema is
+passed to the CLI natively, which enforces it; ODW validates the reply either way —
+see [`references/primitives.md`](references/primitives.md#schema).
 
 `opts` for `exec`: `{ cwd?, env?, timeout?, input?, maxOutputBytes?, label?, phase?, check? }`.
 It runs in the source directory by default, is killed after `timeout` seconds

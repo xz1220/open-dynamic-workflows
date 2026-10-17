@@ -158,7 +158,7 @@ did-you-mean hint) instead of silently ignoring them.
 | `permissions` | **ODW extension.** The run's permission tier: `"read"`, `"edit"` (default) or `"full"` — see [permissions](#permissions-what-each-built-in-may-do). `odw run\|rerun\|resume --permissions` overrides it |
 | `agentEnv` | **ODW extension.** `"inherit"` (default): agent CLIs get ODW's whole environment. `"minimal"`: only `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `LANG`, `LC_*`, `TERM`, `TMPDIR`, `TZ` (and the Windows system variables), the auth and config variables the built-in CLIs document (`ANTHROPIC_*`, `CLAUDE_*`, `OPENAI_*`, `CODEX_*`, `GEMINI_*`, `GOOGLE_*`, `DASHSCOPE_*`, `QWEN_*`, `MOONSHOT_*`, `KIMI_*`, `CURSOR_*`, `OPENCODE_*`, the proxy variables, `NODE_EXTRA_CA_CERTS`), `ODW_*`, `agentEnvPass` and the adapter's `env`. `exec()` commands, `worktreeSetup` and `notify` keep the whole environment |
 | `agentEnvPass` | **ODW extension.** More names, or `*` globs, a `"minimal"` agent environment passes (e.g. `["AWS_*"]` for Claude Code on Bedrock) |
-| `schemaKeywords` | **ODW extension.** Which JSON Schema an `agent()` schema may use. `"odw"` (default): only what ODW's validator checks — any other keyword fails the call before it starts. `"native"`: on an adapter that takes schemas natively (`flags.schema`), the rest too — its CLI enforces them, ODW checks the subset, and the run logs which keywords it left to the CLI. See [native structured output](#native-structured-output) |
+| `schemaKeywords` | **ODW extension.** What happens to keywords in an `agent()` schema that ODW's validator does not check. `"warn"` (default): the call runs, ODW checks the rest, and the run logs once which keywords and where. `"strict"`: the call fails before it starts, naming each one. `"native"`: on an adapter that takes schemas natively (`flags.schema`) they are left to its CLI (logged once too); elsewhere as `"warn"`. A malformed schema fails in every mode. See [native structured output](#native-structured-output) |
 | `schemaPrompt` | **ODW extension.** `"auto"` (default): the prompt describes the schema only to a CLI that does not take it natively; `"always"`: to every CLI |
 
 ### Adapter fields
@@ -224,12 +224,13 @@ prompt describes the schema only to CLIs that do not take it (`schemaPrompt`).
 | `codex` | `{ "args": ["--output-schema"], "mode": "file", "strict": true }` | its final message on stdout |
 
 Before an agent starts, its schema is checked against the subset ODW's validator
-enforces ([primitives](primitives.md#schema)): anything else fails the call with an
-`AgentError` naming each keyword and where it is. With `"schemaKeywords": "native"`
-such keywords are allowed on an adapter that takes the schema natively (on a `strict`
-one, only in a strict schema), and ODW checks the part it can. A malformed schema or
-an unknown keyword fails in every mode. To turn native schemas off for a built-in,
-give its `flags` without `schema`: `"claude": { "flags": { "model": ["--model"] } }`.
+enforces ([primitives](primitives.md#schema)). Anything else is named in the run's
+log, once, with where it is — left to the CLI when the adapter takes the schema
+natively (on a `strict` one, only a strict schema), enforced by nobody otherwise —
+and ODW checks the part it can; under `"schemaKeywords": "strict"` the call fails
+with an `AgentError` instead. A malformed schema or an unknown keyword fails in every
+mode. To turn native schemas off for a built-in, give its `flags` without `schema`:
+`"claude": { "flags": { "model": ["--model"] } }`.
 
 ### Run notifications (`notify`)
 

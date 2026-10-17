@@ -19,9 +19,9 @@ export {};
 
 declare global {
   /**
-   * ODW's JSON Schema subset. A keyword outside it fails the agent() call before
-   * it starts, unless the adapter's CLI enforces schemas itself and the config
-   * sets `schemaKeywords: "native"`. See the primitive reference.
+   * ODW's JSON Schema subset. A keyword outside it is named in the run's log
+   * (the config's `schemaKeywords: "strict"` fails the call instead), and a
+   * CLI that validates schemas itself enforces it. See the primitive reference.
    */
   type JsonSchema = Record<string, unknown>;
 

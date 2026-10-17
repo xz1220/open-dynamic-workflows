@@ -208,7 +208,7 @@ odw run examples/fan-out-reduce.js --wait --args '{"question": "Design a rate li
 | `parallel(thunks)` | 一组任务并发执行、**等全部完成**(屏障)。可恢复失败变 `null`;停止、预算耗尽和派发上限错误会中止运行。 |
 | `pipeline(items, ...stages)` | 每个条目独立穿过各 stage(**无屏障**)。每个 stage 收 `(prev, item, index)`。 |
 | `phase(title)` / `log(msg)` | 把进度归入某阶段 / 发一行进度消息。 |
-| `schema`(JSON Schema) | 给 `agent` 的输出定一个类型契约;回复会被校验,不符就重试。ODW 无法检查的关键字会让调用在启动前失败;会校验 schema 的 CLI(`claude`、`codex`)直接原生强制执行——见[结构化输出](#结构化输出odw-扩展)。 |
+| `schema`(JSON Schema) | 给 `agent` 的输出定一个类型契约;回复会被校验,不符就重试。ODW 无法检查的关键字会记入运行日志(设 `"schemaKeywords": "strict"` 则让调用失败);会校验 schema 的 CLI(`claude`、`codex`)直接原生强制执行——见[结构化输出](#结构化输出odw-扩展)。 |
 | `args` | workflow 的输入,原样注入。 |
 | `budget` | `{ total, spent(), remaining() }`——按 token 目标动态扩缩深度。 |
 | `workflow(ref, args?)` | 内联调用另一个 workflow(仅一层)。子 workflow 共享本次运行的并发上限、agent 计数与预算;其 phase 以独立泳道归组。 |
@@ -231,7 +231,7 @@ ODW 已实现下列原语能力。依赖宿主私有运行机制的脚本,迁移
 | `agentType` | 将人设加入提示词,不会加载宿主的同名子 agent 配置或选择适配器。 |
 | 工作区隔离 | 从已保存的 HEAD 创建临时工作区,不含未保存修改,结束后清理。不会自动合并,`agent()` 返回回复而非 diff;ODW 会把每个隔离 agent 的改动保存为 diff,供审阅和应用(`odw diff`、`odw apply`、`keep` 分支——均为 ODW 扩展;见[审阅并应用](#审阅并应用隔离-agent-的改动odw-扩展))。支持 `.worktreeinclude`(ODW 连未跟踪文件也复制,而不只是被 gitignore 的文件);其中的 `symlink:` 行、`worktreeSetup` 和 agent 的 `ODW_PORT` 是 ODW 扩展——见[隔离 worktree](#隔离-worktree-与-agent-端口)。 |
 | 预算 | 计算输出 token:适配器上报用量时用 CLI 自己的计数(内置 `claude` 会上报——见[用量与花费](#用量与花费odw-扩展)),否则按每条回复的 `ceil(字符数 / 4)` 估算。每次 CLI 运行都计入:schema 重试、限流重试,以及上报了用量的失败运行。每次派发和每次 schema 重试前都会检查;预算用尽时运行结束,仍在运行的 agent 会被停止。 |
-| JSON Schema | ODW 只检查[已列出的子集](skills/open-dynamic-workflows/zh-CN/references/primitives.md#schema)。含其他关键字(`$ref`、`const`、`oneOf`、`maxItems` 等)的 schema 会让调用在启动前失败,而不是放过不查——除非适配器的 CLI 自己校验 schema 并设了 `"schemaKeywords": "native"`(ODW 扩展;见[结构化输出](#结构化输出odw-扩展))。请明确声明对象/数组类型并使用受支持的约束。 |
+| JSON Schema | ODW 只检查[已列出的子集](skills/open-dynamic-workflows/zh-CN/references/primitives.md#schema);`format` 是注解。其他关键字(`$ref`、`const`、`oneOf`、`maxItems` 等)照常运行:运行日志会写明关键字及其位置,自己校验 schema 的 CLI(`claude`、`codex`)会强制执行它们。设 `"schemaKeywords": "strict"` 则改为拒绝这类调用(ODW 扩展;见[结构化输出](#结构化输出odw-扩展))。请明确声明对象/数组类型并使用受支持的约束。 |
 | 脚本可信性 | 只运行可信脚本:运行工作流会把正文当作普通 JavaScript 执行。加载时元数据按纯字面量解析,不会被求值;编译检查和兼容性警告都不提供沙箱隔离。 |
 | 恢复 | 每个完成的 `agent()` 结果都会在完成时保存。`odw resume` 让已暂停且仍存活的 worker 原地继续;对已结束的运行(done、failed、stopped,或崩溃后的 stale)则启动一个新运行:prompt 和选项都没变的调用直接重放,其余照常执行。`rerun` 从头执行。见[恢复运行](#恢复运行odw-扩展)。 |
 
@@ -622,14 +622,15 @@ Windows 下的可执行文件探测遵循 `PATHEXT`,所以 `agent.cmd`、`kilo.c
 
 `agent(prompt, { schema })` 返回的值要么满足它的 JSON Schema,要么调用失败。背后有两层保障:
 
-- **没有约束会被悄悄放过。** agent 启动前,ODW 会把 schema 对照自己校验器真正检查的内容
-  过一遍——`type`(单个类型名)、`enum`、`properties`、`required`、
-  `additionalProperties: false`、`items`(单个 schema)和 `minItems`,外加 `description`、
-  `title` 这类注解。其他关键字(`oneOf`、`anyOf`、`allOf`、`$ref`、`const`、`pattern`、
-  `format`、`minimum`、`maxItems`、`["string", "null"]` 这样的类型联合、没有
-  `"type": "object"` 的对象关键字)会让调用以 `AgentError` 失败,逐个写明关键字及其位置——
-  `"oneOf" at #/properties/status`——此时什么都还没启动。拼错的关键字(`requird`)同样失败,
-  并附 did-you-mean 提示。
+- **没有约束会被悄悄放过。** ODW 的校验器检查 `type`(单个类型名)、`enum`、`properties`、
+  `required`、`additionalProperties: false`、`items`(单个 schema)和 `minItems`;
+  `description`、`title`、`format` 这类注解不构成约束。agent 启动前,ODW 会找出其他内容——
+  `oneOf`、`anyOf`、`allOf`、`$ref`、`const`、`pattern`、`minimum`、`maxItems`、
+  `["string", "null"]` 这样的类型联合、没有 `"type": "object"` 的对象关键字——并在运行日志里
+  只说一次哪些关键字它不检查、位于何处(`"oneOf" at #/properties/status`)。调用照常运行,
+  ODW 校验其余部分。设 `"schemaKeywords": "strict"` 则改为在任何东西启动前以 `AgentError`
+  拒绝这类调用。拼错的关键字(`requird`,附 did-you-mean 提示)或其他格式错误的 schema 在任何
+  模式下都会让调用失败。
 - **会校验 schema 的 CLI 直接拿到 schema。** 内置 `claude` 通过 `--json-schema` 拿到
   schema,值取自其 `result` 事件的 `structured_output`;`codex` 拿到
   `--output-schema <file>`,该文件(run 目录下的 `agents/<agentId>.schema.json`)只在它的
@@ -640,10 +641,9 @@ Codex 以 OpenAI 的 strict 模式发送 `--output-schema`,它只接受根为对
 `"additionalProperties": false` 并把全部属性列进 `required` 的 schema。其他 schema 仍像以前
 一样放在提示词里交给 codex,运行会提示一次。
 
-想用 ODW 不检查的关键字,就交给 CLI 去强制执行:设 `"schemaKeywords": "native"` 后,接收原生
-schema 的适配器可以使用它们。该 CLI 拿到完整 schema,ODW 校验自己能检查的部分,并只记录一次
-哪些关键字交给了 CLI。在其他适配器上它们仍会被拒绝——没有谁会检查它们。Claude Code 把
-`format` 当作注解,所以即使走原生也不会强制执行。
+想让这类关键字真正生效,就把 agent 放到会强制执行它们的 CLI 上:无论哪种模式它都拿到完整
+schema,运行日志会说明这些关键字交给了它。`"schemaKeywords": "native"` 表明你依赖这类 CLI;
+在不接收原生 schema 的适配器上,它与默认的 `"warn"` 相同。
 
 自定义 CLI 在 `flags.schema` 里声明它如何接收 schema——`"inline"`(schema 的 JSON 作为下一个
 参数)或 `"file"`(一个保存 schema 的文件路径),只接受 OpenAI strict schema 的 CLI 再加
@@ -1160,9 +1160,9 @@ node web/dev.mjs --api http://127.0.0.1:4317     # → http://127.0.0.1:5173
 **`main` 上的新内容(2026 年 10 月)**——完整清单以及升级前需要留意的变化见
 [`CHANGELOG.md`](CHANGELOG.md):
 - **原生结构化输出。** `claude`(`--json-schema`)和 `codex`(`--output-schema`,限 strict
-  schema)直接拿到 agent 的 schema 并自行强制执行;ODW 依旧校验每一次回复。没有谁会检查的
-  schema 关键字会让调用在启动前失败,并写明关键字及其位置——`"schemaKeywords": "native"`
-  把这类关键字交给会强制执行它们的 CLI(ODW 扩展;见[结构化输出](#结构化输出odw-扩展))。
+  schema)直接拿到 agent 的 schema 并自行强制执行;ODW 依旧校验每一次回复。ODW 校验器不检查
+  的 schema 关键字会连同位置写进运行日志,绝不悄悄跳过——`"schemaKeywords": "strict"` 则拒绝
+  这类调用(ODW 扩展;见[结构化输出](#结构化输出odw-扩展))。
 - **权限档位。** 每个 agent 以 `read`、`edit`(默认,与以往一致)或 `full` 运行,映射到各
   CLI 自己的参数:审查与调研类 fan-out 碰不到工作树(`--permissions read`、
   `agent(…, { permissions: 'read' })`),完全权限必须显式开启,无法强制执行某档位的 CLI 会被

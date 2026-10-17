@@ -22,8 +22,9 @@ other primitive organizes calls to it.
 - **opts.schema** — a JSON Schema object. When given, the reply is parsed and
   validated, and the agent is retried with corrective feedback until it conforms
   or the retry budget runs out (then the call throws). Without it, the raw reply
-  text is returned. A schema that uses what ODW cannot check fails the call before
-  it starts; CLIs that validate schemas get it natively — see [schema](#schema).
+  text is returned. What ODW cannot check in a schema is named in the run's log (or,
+  under `"schemaKeywords": "strict"`, fails the call before it starts); CLIs that
+  validate schemas get it natively — see [schema](#schema).
 - **opts.label** — a short name for progress display.
 - **opts.phase** — overrides the current phase for this one call. Prefer this
   inside `parallel`/`pipeline`, where the global phase is shared.
@@ -440,31 +441,37 @@ The validator implements this subset, not the full JSON Schema standard:
 | `enum` | Structural membership, independently of `type` |
 
 Object and array constraints need their explicit `type`. Annotations —
-`description`, `title`, `default`, `examples`, `$comment`, `$schema` — constrain
-nothing and are fine anywhere.
+`description`, `title`, `default`, `examples`, `format`, `$comment`, `$schema` —
+constrain nothing and are fine anywhere (`format` is an annotation by default since
+JSON Schema 2019-09; Claude Code does not enforce it either).
 
-**Nothing outside the subset goes unchecked (ODW extension).** Before the agent
-starts, its schema is checked for anything the validator would not enforce:
+**Nothing outside the subset goes silently unchecked (ODW extension).** Before the
+agent starts, its schema is checked for anything the validator would not enforce:
 keywords such as `const`, `$ref`, `oneOf`/`anyOf`/`allOf`, `minimum`/`maximum`,
-`pattern`, `format` and `maxItems`, schema-valued `additionalProperties`, tuple or
-boolean schemas, type unions like `["string", "null"]`, and an object or array
-keyword without its `type`. Any of them fails the call with an `AgentError` that
-names each one and where it is — `"pattern" at #/properties/id` — and a typo
-(`requird`, an unknown `type`) fails it the same way, with a did-you-mean. Rewrite
-the schema into the subset: put a limit ODW cannot check in a `description` (the
-agent still reads it), or check it in the workflow.
+`pattern` and `maxItems`, schema-valued `additionalProperties`, tuple or boolean
+schemas, type unions like `["string", "null"]`, and an object or array keyword
+without its `type`. The config's `schemaKeywords` decides what happens:
+
+- `"warn"` (the default) — the call runs and ODW validates the rest; the run's log
+  says once which keywords it does not check and where (`"pattern" at
+  #/properties/id`), and who, if anyone, enforces them.
+- `"strict"` — the call fails with an `AgentError` naming each one, before anything
+  is spawned.
+- `"native"` — on a CLI that validates schemas itself they are left to it (logged
+  once too); elsewhere, as `"warn"`.
+
+A typo (`requird`, an unknown `type`) or another malformed schema fails the call in
+every mode, with a did-you-mean. To make a limit count everywhere, put it in a
+`description` (the agent still reads it) and check it in the workflow.
 
 **Native schemas (ODW extension).** A CLI that validates schemas itself is handed
-the schema as well — `claude` with `--json-schema` (its value comes from
+the whole schema as well — `claude` with `--json-schema` (its value comes from
 `structured_output`), `codex` with `--output-schema` when the schema is strict (an
 object at the root; every object `"additionalProperties": false` and all its
-properties `required`) — and ODW still validates every reply and retries as usual.
-The prompt describes the schema only to a CLI that does not take it
-(`"schemaPrompt": "always"` describes it everywhere). With `"schemaKeywords":
-"native"` in the config, keywords outside the subset are allowed on such a CLI: it
-enforces them, ODW checks the subset, and the run logs once which keywords it left
-to the CLI. Claude Code treats `format` as an annotation, so not even it enforces
-that one. See [adapters](adapters.md#native-structured-output).
+properties `required`) — and it enforces what ODW does not check; ODW still
+validates every reply and retries as usual. The prompt describes the schema only to
+a CLI that does not take it (`"schemaPrompt": "always"` describes it everywhere).
+See [adapters](adapters.md#native-structured-output).
 
 ## Composition patterns
 
