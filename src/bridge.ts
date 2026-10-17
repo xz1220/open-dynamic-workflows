@@ -29,9 +29,10 @@
  *
  * A call with `expect` checks (an ODW extension; see ./expect) has its work
  * checked once its reply satisfies the schema — an isolated run's worktree is
- * looked at before it goes. Work that missed is run again with what it missed
- * appended to the prompt, up to the checks' `retries`; then the call fails
- * with reason `unmet_expectation` and the list of misses.
+ * looked at before it goes. Work that missed is run again, on the adapter
+ * that did it, with what it missed appended to the prompt, up to the checks'
+ * `retries`; then the call fails with reason `unmet_expectation` and the list
+ * of misses.
  *
  * What each CLI run spent — the usage and cost its CLI reported, when its
  * adapter declares where (adapters/usage.ts) — is handed to the caller as the
@@ -52,9 +53,9 @@
  * A call may have a fallback chain (an ODW extension; see ./routing): an
  * adapter list of its own, or the `fallback` setting's for its adapter. A
  * spent quota or a refused login moves it to the next adapter that can run
- * its permission tier — a fresh prompt, the same options — and the run's
- * quota breaker takes an adapter whose quota failed `quotaBreaker` times in a
- * row out of the run, so later calls start past it.
+ * its permission tier — a fresh prompt, the same options, `expect` checks
+ * included — and the run's quota breaker takes an adapter whose quota failed
+ * `quotaBreaker` times in a row out of the run, so later calls start past it.
  *
  * The command runner is injectable, so the bridge unit-tests with a fake runner
  * and no real agent account; so are the backoff's sleep, clock and jitter.
@@ -278,8 +279,10 @@ export interface RunOptions {
    * ./expect): told where the work happens before the first CLI run on each
    * adapter of its chain, given each isolated run that ended with a reply
    * before its worktree goes, and asked what the work missed once a reply
-   * satisfies the schema. A miss is retried on the adapter that produced it;
-   * a fallback hop to another adapter keeps the checks.
+   * satisfies the schema. A miss is retried on the adapter that produced it,
+   * never a reason to fall back; a fallback hop (a spent quota, a refused
+   * login) starts the work over on the next adapter, with the same checks and
+   * retries.
    */
   expect?: ExpectationSink;
   /** Called before work that missed its `expect` checks runs again, so the run can say so. */
@@ -629,7 +632,8 @@ export class Bridge {
     const basePrompt = this.composePrompt(request, schema?.describe ?? false);
     const maxAttempts = request.schema ? settings.schemaRetries + 1 : 1;
     // The call's `expect` checks (ODW extension) learn where the work happens
-    // before it starts; an isolated run's worktree is looked at before it goes.
+    // before it starts on this adapter — a fallback hop starts it over; an
+    // isolated run's worktree is looked at before it goes.
     const expect = options.expect;
     if (expect) await unlessStopped(signal, () => expect.begin(plan.workspaceMode, this.source));
     const inspect =

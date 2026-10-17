@@ -72,9 +72,10 @@ declare global {
     /**
      * ODW extension — Claude Code ignores it. What must hold once the agent replied (after
      * `schema` validation), checked by ODW instead of asking the model; tool calls its CLI
-     * refused count as a miss too. Work that misses runs again with what it missed appended
-     * to its prompt (`expectRetries`), then the call throws (recoverable) with `misses` and
-     * reason `"unmet_expectation"` — `"permission"` when refused calls are among them.
+     * refused count as a miss too. Work that misses runs again, on the same adapter, with what
+     * it missed appended to its prompt (`expectRetries`), then the call throws (recoverable)
+     * with `misses` and reason `"unmet_expectation"` — `"permission"` when refused calls are
+     * among them. A call that falls back to another adapter keeps its checks.
      */
     expect?: ExpectOptions;
     /** ODW extension: how many times work that missed `expect` runs again (default: the `expectRetries` setting, 1). */

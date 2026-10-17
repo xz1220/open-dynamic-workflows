@@ -109,7 +109,10 @@ export function refusedMiss(refused: string[]): ExpectMiss {
 export interface ExpectationSink {
   /** How many times work that missed may run again, told what it missed. */
   readonly retries: number;
-  /** Before the call's first CLI run: where its work happens. */
+  /**
+   * Before the first CLI run on each adapter of the call's chain — the one it
+   * starts on, then each one it falls back to: where its work happens.
+   */
   begin(mode: WorkspaceMode, source: string): Promise<void>;
   /** An isolated CLI run that ended with a reply, in its worktree before the worktree goes. */
   inspect(ws: Workspace): Promise<void>;
@@ -330,7 +333,12 @@ export class Expectations implements ExpectationSink {
   async begin(mode: WorkspaceMode, source: string): Promise<void> {
     this.isolated = mode === "worktree";
     this.source = source;
-    if (this.isolated || !this.readsChanges) return;
+    // A fallback hop starts the work over on another adapter: isolated, in a
+    // fresh worktree — the change an earlier hop left was dropped, and so is
+    // what its worktree showed. In place, the tree keeps what every hop did:
+    // the work is judged against the tree as it was before the call's first run.
+    this.kept = null;
+    if (this.isolated || !this.readsChanges || this.snapshot) return;
     try {
       this.snapshot = await snapshotTree(source, this.deps.signal);
       const root = await realpath(this.snapshot.root);

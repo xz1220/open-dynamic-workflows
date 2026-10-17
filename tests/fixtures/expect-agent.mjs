@@ -18,10 +18,11 @@
  * instead of plain text: an init event, then a `result` event whose `result`
  * is the reply and whose `permission_denials` are the step's `denied`.
  *
- * Each invocation appends one JSON line to the log — its number, its working
- * directory, and the `expect` feedback its prompt carried (from the feedback's
- * first line on), and whether it was a schema retry — so a test can tell what
- * the agent was told. Used only by the test suite.
+ * Each invocation appends one JSON line to the log — its number, the adapter
+ * that ran it (its EXPECT_AGENT_ADAPTER variable), its working directory, the
+ * `expect` feedback its prompt carried (from the feedback's first line on),
+ * and whether it was a schema retry — so a test can tell what the agent was
+ * told, and where. Used only by the test suite.
  */
 
 import { execFileSync } from "node:child_process";
@@ -45,6 +46,7 @@ process.stdin.on("end", () => {
     log,
     JSON.stringify({
       n,
+      adapter: process.env.EXPECT_AGENT_ADAPTER ?? null,
       cwd: process.cwd(),
       feedback: feedback === -1 ? null : input.slice(feedback),
       schemaRetry: input.includes("did not satisfy the required schema"),

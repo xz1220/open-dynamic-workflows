@@ -55,6 +55,8 @@ function makeRepo(committed: Record<string, string>, dirty: Record<string, strin
 /** One invocation of the scripted agent, as it logged it. */
 interface Call {
   n: number;
+  /** The adapter that ran it. */
+  adapter: string;
   cwd: string;
   /** The `expect` feedback its prompt carried, from its first line on; null on a first attempt. */
   feedback: string | null;
@@ -83,6 +85,7 @@ async function runAgent(opts: {
   config?: Record<string, unknown>;
   claude?: boolean;
   adapter?: Record<string, unknown>;
+  more?: Record<string, Record<string, unknown> & { claude?: boolean }>;
 }): Promise<Flow> {
   const body =
     "try { return { value: await agent('Fix the bug. PLAN: ' + JSON.stringify(args.plan), args.opts) } }\n" +
@@ -102,18 +105,27 @@ async function runFlow(opts: {
   claude?: boolean;
   /** More fields of the scripted adapter's entry. */
   adapter?: Record<string, unknown>;
+  /**
+   * More adapters, by name, that run the scripted agent too — on the same
+   * plan, counted in the same log — with more fields of their entries.
+   */
+  more?: Record<string, Record<string, unknown> & { claude?: boolean }>;
 }): Promise<Flow> {
   const log = join(opts.root, "calls.jsonl");
   const configPath = join(opts.root, "odw.config.json");
-  const scripted = opts.claude
-    ? { command: [execPath, EXPECT_AGENT, log, "--claude"], stdin: "{prompt}", output: CLAUDE_LIKE }
-    : { command: [execPath, EXPECT_AGENT, log], stdin: "{prompt}" };
+  const scripted = (name: string, claude?: boolean): Record<string, unknown> => ({
+    command: claude ? [execPath, EXPECT_AGENT, log, "--claude"] : [execPath, EXPECT_AGENT, log],
+    stdin: "{prompt}",
+    env: { EXPECT_AGENT_ADAPTER: name },
+    ...(claude ? { output: CLAUDE_LIKE } : {}),
+  });
+  const more = Object.entries(opts.more ?? {}).map(([name, { claude, ...fields }]) => [name, { ...scripted(name, claude), ...fields }]);
   writeFileSync(
     configPath,
     JSON.stringify({
       defaultAdapter: "scripted",
       ...opts.config,
-      adapters: { scripted: { ...scripted, ...opts.adapter } },
+      adapters: { scripted: { ...scripted("scripted", opts.claude), ...opts.adapter }, ...Object.fromEntries(more) },
     }),
   );
   const script = join(opts.root, "wf.js");
@@ -692,6 +704,150 @@ test("isolated: a retry starts over in a fresh worktree, and the change it leave
   }
 });
 
+// --- with a fallback chain: a hop keeps the checks, a retry keeps its adapter --------------
+
+/** What a CLI prints when its usage quota is spent, as tests/failures.test.ts samples it. */
+const QUOTA = "You've hit your usage limit. Upgrade to Pro or try again in 3h 22m.";
+
+/** The `attempt` lines of an agent's transcript: why each CLI run after the first ran, and where. */
+function attemptsOf(flow: Flow, agentId = 1): Array<[unknown, unknown]> {
+  const transcript = readFileSync(flow.store.agentTranscriptPaths(flow.id, agentId).transcript, "utf8");
+  return transcript
+    .split("\n")
+    .filter((line) => line.startsWith('{"kind":"attempt"'))
+    .map((line) => JSON.parse(line) as Record<string, unknown>)
+    .map((attempt) => [attempt.reason, attempt.adapter]);
+}
+
+test("a fallback hop keeps the call's expect, and a miss is retried on the adapter that produced it", async () => {
+  const src = makeRepo({ "a.txt": "a\n" });
+  const src2 = makeRepo({ "a.txt": "a\n" });
+  const root = mkdtempSync(join(tmpdir(), "odw-expect-run-"));
+  const root2 = mkdtempSync(join(tmpdir(), "odw-expect-run-"));
+  try {
+    // Out of quota on its first adapter, the call starts over on the next one,
+    // whose work is checked as the first one's would have been — and retried there.
+    const flow = await runAgent({
+      root,
+      source: src,
+      more: { backup: {} },
+      config: { fallback: { scripted: ["backup"] } },
+      plan: [{ reply: QUOTA, exit: 1 }, { reply: "nothing to do" }, { write: { "b.txt": "b\n" }, reply: "fixed" }],
+      opts: { expect: { changes: true } },
+    });
+    assert.deepEqual(flow.result, { value: "fixed" });
+    assert.deepEqual(flow.calls.map((c) => c.adapter), ["scripted", "backup", "backup"]);
+    assert.equal(flow.calls[1]!.feedback, null, "the hop starts the work over, with a fresh prompt");
+    assert.match(flow.calls[2]!.feedback!, /^- a file must change, and none did$/m);
+    assert.deepEqual(attemptsOf(flow), [
+      ["fallback", "backup"],
+      ["expect", undefined],
+    ]);
+    const logs = ofType(flow.events, "log").map((e) => String(e.message));
+    assert.deepEqual(logs.slice(0, 2), [
+      "fixer:1 → backup after scripted quota",
+      "fixer:1 did not meet its expectations — running it again, told what it missed (1/1): a file must change, and none did",
+    ]);
+    const finished = ofType(flow.events, "agent_finished")[0]!;
+    assert.deepEqual([finished.adapter, finished.fellBackFrom, finished.attempts], ["backup", ["scripted"], 2]);
+
+    // A retry whose CLI then runs out of quota falls back like any run: the
+    // next adapter starts the work over, judged against the tree as it was
+    // before the call began.
+    const moved = await runAgent({
+      root: root2,
+      source: src2,
+      more: { backup: {} },
+      config: { fallback: { scripted: ["backup"] } },
+      plan: [{ reply: "nothing to do" }, { reply: QUOTA, exit: 1 }, { write: { "b.txt": "b\n" }, reply: "fixed" }],
+      opts: { expect: { changes: true } },
+    });
+    assert.deepEqual(moved.result, { value: "fixed" });
+    assert.deepEqual(moved.calls.map((c) => c.adapter), ["scripted", "scripted", "backup"]);
+    assert.match(moved.calls[1]!.feedback!, /^- a file must change, and none did$/m);
+    assert.equal(moved.calls[2]!.feedback, null);
+    assert.deepEqual(attemptsOf(moved), [
+      ["expect", undefined],
+      ["fallback", "backup"],
+    ]);
+    const done = ofType(moved.events, "agent_finished")[0]!;
+    assert.deepEqual([done.adapter, done.fellBackFrom, done.attempts], ["backup", ["scripted"], 1]);
+  } finally {
+    cleanup(src, src2, root, root2);
+  }
+});
+
+test("in place: what an adapter changed before it ran out of quota stays in the tree, and counts as the call's change", async () => {
+  const src = makeRepo({ "a.txt": "a\n" }, { "notes.txt": "the user's own edit\n" });
+  const root = mkdtempSync(join(tmpdir(), "odw-expect-run-"));
+  try {
+    const flow = await runAgent({
+      root,
+      source: src,
+      more: { backup: {} },
+      config: { fallback: { scripted: ["backup"] } },
+      plan: [{ write: { "b.txt": "b\n" }, reply: QUOTA, exit: 1 }, { reply: "b.txt is already there" }],
+      opts: { expect: { changes: true, files: ["b.txt"] } },
+    });
+    assert.deepEqual(flow.result, { value: "b.txt is already there" });
+    assert.deepEqual(flow.calls.map((c) => [c.adapter, c.feedback]), [
+      ["scripted", null],
+      ["backup", null],
+    ]);
+  } finally {
+    cleanup(src, root);
+  }
+});
+
+test("isolated: each hop is judged on its own worktree — what the adapter that ran out of quota changed does not count", async () => {
+  const src = makeRepo({ "a.txt": "bug\n" });
+  const root = mkdtempSync(join(tmpdir(), "odw-expect-run-"));
+  try {
+    const flow = await runAgent({
+      root,
+      source: src,
+      more: { backup: {} },
+      config: { fallback: { scripted: ["backup"] } },
+      plan: [
+        // The first adapter fixes a.txt but replies off-schema; its schema retry runs out of quota.
+        { write: { "a.txt": "first\n" }, reply: "I fixed a.txt" },
+        { reply: QUOTA, exit: 1 },
+        // The next one starts in a fresh worktree, without that change, and replies without doing the work…
+        { reply: '{"fixed": true}' },
+        // …so it is told, and does it.
+        { write: { "a.txt": "second\n" }, reply: '{"fixed": true}' },
+      ],
+      opts: {
+        isolation: "worktree",
+        schema: { type: "object", required: ["fixed"], properties: { fixed: { type: "boolean" } } },
+        expect: { changes: true, files: ["a.txt"] },
+      },
+    });
+    assert.deepEqual(flow.result, { value: { fixed: true } });
+    assert.deepEqual(
+      flow.calls.map((c) => [c.adapter, c.schemaRetry]),
+      [
+        ["scripted", false],
+        ["scripted", true],
+        ["backup", false],
+        ["backup", false],
+      ],
+    );
+    assert.notEqual(flow.calls[2]!.cwd, flow.calls[0]!.cwd);
+    assert.equal(flow.calls[2]!.feedback, null);
+    assert.match(flow.calls[3]!.feedback!, /^- a file must change, and none did$/m);
+    assert.match(flow.calls[3]!.feedback!, /^- a file matching "a\.txt" must change or be created, and none did$/m);
+    const finished = ofType(flow.events, "agent_finished")[0]!;
+    assert.deepEqual([finished.adapter, finished.fellBackFrom], ["backup", ["scripted"]]);
+    assert.deepEqual(finished.changes, { files: 1, insertions: 1, deletions: 1, truncated: false });
+    const diff = readFileSync(flow.store.agentDiffPath(flow.id, 1), "utf8");
+    assert.match(diff, /^\+second$/m);
+    assert.doesNotMatch(diff, /first/, "the change the first adapter left went with its worktree");
+  } finally {
+    cleanup(src, root);
+  }
+});
+
 // --- stop ----------------------------------------------------------------------------------
 
 /** Whether `pid` is a live (non-zombie) process. POSIX only. */
@@ -1013,6 +1169,42 @@ test("the whole stack: with expect, a refusal is handed back to the agent once, 
     assert.equal(failed.reason, "permission");
     assert.deepEqual(failed.misses, ["no tool call may be refused, and 1 was: Bash (npm test)"]);
     assert.equal(refused.calls.length, 2, "one retry, as for any miss");
+  } finally {
+    cleanup(root, root2);
+  }
+});
+
+test("after a fallback, refused tool calls are said of the adapter that produced the reply, under its own permissionDenials", async () => {
+  const root = mkdtempSync(join(tmpdir(), "odw-expect-run-"));
+  const root2 = mkdtempSync(join(tmpdir(), "odw-expect-run-"));
+  try {
+    const plan = [{ reply: QUOTA, exit: 1 }, { reply: "Fixed it.", denied: DENIALS.slice(0, 1) }];
+    const flow = await runAgent({
+      root,
+      source: root,
+      adapter: { label: "Primary CLI" },
+      more: { backup: { claude: true, label: "Backup CLI" } },
+      config: { fallback: { scripted: ["backup"] } },
+      plan,
+    });
+    assert.deepEqual(flow.result, { value: "Fixed it." });
+    const notes = ofType(flow.events, "log").filter((e) => Array.isArray(e.denied));
+    assert.equal(notes.length, 1);
+    assert.match(String(notes[0]!.message), /^fixer:1: Backup CLI refused 1 tool call — Bash \(npm test\); its reply may rest on/);
+    const finished = ofType(flow.events, "agent_finished")[0]!;
+    assert.deepEqual([finished.adapter, finished.fellBackFrom, finished.denied], ["backup", ["scripted"], ["Bash (npm test)"]]);
+
+    // The adapter it moved to fails refused calls: so does the call, there.
+    const failed = await runAgent({
+      root: root2,
+      source: root2,
+      more: { backup: { claude: true, permissionDenials: "fail" } },
+      config: { fallback: { scripted: ["backup"] } },
+      plan,
+    });
+    const event = ofType(failed.events, "agent_failed")[0]!;
+    assert.deepEqual([event.reason, event.adapter, event.fellBackFrom], ["permission", "backup", ["scripted"]]);
+    assert.match(String(failed.result.error), /adapter 'backup' was refused a permission it needed .*: denied: Bash \(npm test\)$/);
   } finally {
     cleanup(root, root2);
   }

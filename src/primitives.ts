@@ -632,11 +632,13 @@ export function createPrimitives(
           ctx.emit(event(LOG, { message: routing, label: display, phase: activePhase }));
         }
         // Tool calls its CLI refused under a reply that stands (ODW extension):
-        // said once, and kept with the agent — its work may lack them.
+        // said once, and kept with the agent — its work may lack them. The CLI
+        // named is the one that produced the reply, after any fallback.
         if (outcome.denied?.length) {
+          const producer = ctx.config.adapters[outcome.adapter] ?? adapter;
           ctx.emit(
             event(LOG, {
-              message: refusedNote(`${display}:${agentId}`, adapterDisplayName(adapter), outcome.denied),
+              message: refusedNote(`${display}:${agentId}`, adapterDisplayName(producer), outcome.denied),
               denied: outcome.denied,
               agentId,
               label: display,
