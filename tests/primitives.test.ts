@@ -31,7 +31,7 @@ function fakeContext(
     args: null,
     source: process.cwd(),
     budgetTotal: null,
-    usage: { outputChars: 0 },
+    usage: { outputChars: 0, outputTokens: 0 },
     seq: { value: 0 },
     currentPhase: null,
     emit(ev) {
@@ -144,7 +144,7 @@ function bridgedContext(runner: CommandRunner, options: { budgetTotal?: number; 
   config.settings.defaultAdapter = "claude";
   config.settings.schemaRetries = 2;
   const sink = new MemorySink();
-  const usage = { outputChars: 0 };
+  const usage = { outputChars: 0, outputTokens: 0 };
   const control = options.control ?? new MemoryControl();
   const scheduler = new Scheduler({
     concurrency: 2,

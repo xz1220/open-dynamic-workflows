@@ -54,9 +54,9 @@ export class AgentLimitExceeded extends DynamicWorkflowError {}
 
 /**
  * The run's token budget (`--budget`, `budget.total`) was reached. A hard
- * ceiling, not advisory: once `spent() >= total` — tokens estimated as chars/4
- * of every agent reply, schema retries included — no further agent dispatches
- * and no schema retry starts.
+ * ceiling, not advisory: once `spent() >= total` — output tokens, as the CLI
+ * reported them or else estimated as chars/4 of the reply, over every attempt
+ * — no further agent dispatches and no schema retry starts.
  */
 export class BudgetExhausted extends DynamicWorkflowError {}
 

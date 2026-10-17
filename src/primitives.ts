@@ -10,7 +10,7 @@
  *   - pipeline  — stream items through stages independently (no barrier)
  *   - phase     — label the following work for progress display
  *   - log       — surface a progress message
- *   - budget    — the run's token budget: total, estimated spend, remaining
+ *   - budget    — the run's token budget: total, output tokens spent, remaining
  *   - workflow  — run another workflow inline (one level deep)
  *   - validate  — compile-check workflow source (ODW extension)
  *   - exec      — run a command without a model (ODW extension; see exec.ts)
@@ -21,12 +21,17 @@
  *
  * Every completed agent() is saved as it lands, and a resumed run replays the
  * calls it already completed instead of running them again (see ./journal).
+ *
+ * What each agent spent travels on its agent_finished (or agent_failed) event
+ * as `usage` (an ODW extension, adapters/usage.ts): what its CLI reported, or
+ * — where it reported no output tokens — chars/4 of its replies, `estimated`.
  */
 
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 import { formatSeconds } from "./adapters/failures.js";
+import { addUsage, estimatedUsage, type Usage } from "./adapters/usage.js";
 import type { AgentRequest } from "./bridge.js";
 import { CheckpointTimeout, createCheckpoint, type CheckpointOptions, type CheckpointResult } from "./checkpoint.js";
 import { spentTokens, type RunContext } from "./context.js";
@@ -199,9 +204,34 @@ export function createPrimitives(
       agentType: opts.agentType,
       isolation: opts.isolation,
     };
+    // What this call spends, from every CLI run it makes: the usage the CLI
+    // reported, plus the characters of replies it reported no output tokens for.
+    let reported: Usage | undefined;
+    let estimatedChars = 0;
+    const spend = (usage: Usage | undefined, reply?: string): void => {
+      reported = addUsage(reported, usage);
+      // The run's budget tally: real output tokens when reported, else chars/4.
+      if (usage?.outputTokens !== undefined) ctx.usage.outputTokens += usage.outputTokens;
+      else if (reply !== undefined) {
+        estimatedChars += reply.length;
+        ctx.usage.outputChars += reply.length;
+      }
+    };
+    /** This agent's `usage` event field: absent when it spent nothing anyone can tell. */
+    const usageField = (): { usage?: Usage } => {
+      const usage = estimatedChars > 0 ? addUsage(reported, estimatedUsage(estimatedChars)) : reported;
+      return usage ? { usage } : {};
+    };
     const failed = (err: unknown): void => {
       ctx.emit(
-        event(AGENT_FAILED, { agentId, label: display, phase: activePhase, error: String(err), ...failureFields(err) }),
+        event(AGENT_FAILED, {
+          agentId,
+          label: display,
+          phase: activePhase,
+          error: String(err),
+          ...failureFields(err),
+          ...usageField(),
+        }),
       );
       if (typeof err === "object" && err !== null) surfaced.add(err);
     };
@@ -228,11 +258,11 @@ export function createPrimitives(
               ctx.emit(
                 event(LOG, { message: `${display}:${agentId}: ${message}`, agentId, label: display, phase: activePhase }),
               ),
-            // Feed the shared budget tally from every attempt, schema retries
-            // included (estimated tokens ≈ chars/4 of each reply).
-            onReply: (text) => {
-              ctx.usage.outputChars += text.length;
-            },
+            // Feed the shared budget tally and this agent's usage from every
+            // CLI run: replies (schema retries included), and runs that failed
+            // or were retried but still reported what they spent.
+            onReply: (text, usage) => spend(usage, text),
+            onUsage: (usage) => spend(usage),
             // A retry is another CLI run: it passes the stop/budget guards first.
             beforeRetry: () => ctx.scheduler.recheck(),
             // The stall watchdog (opt-in) restarts a CLI that went quiet: say so.
@@ -277,6 +307,7 @@ export function createPrimitives(
           phase: activePhase,
           adapter: outcome.adapter,
           attempts: outcome.attempts,
+          ...usageField(),
         });
         const persisted = save({
           agentId,
@@ -408,7 +439,7 @@ export function createPrimitives(
 
   const budget: Budget = {
     total: ctx.budgetTotal,
-    // Estimated output tokens (chars/4 of every agent reply) — see RunContext.usage.
+    // Output tokens: reported by the CLI, else chars/4 of the reply — see RunContext.usage.
     spent: () => spentTokens(ctx.usage),
     remaining: () =>
       ctx.budgetTotal === null ? Infinity : Math.max(0, ctx.budgetTotal - spentTokens(ctx.usage)),

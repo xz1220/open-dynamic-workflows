@@ -19,11 +19,14 @@
  *      We count agents by folding events instead — and exec() command steps
  *      with them, as nodes of their own kind (see {@link RunCounts}).
  *
- *   3. No fabricated progress. There is no token/cost accounting (budget.spent
- *      is a stub) and no declared agent total, so "progress" here is strictly
- *      settled/observed agents — a fraction of work *seen*, never invented.
+ *   3. No fabricated progress. There is no declared agent total, so "progress"
+ *      here is strictly settled/observed agents — a fraction of work *seen*,
+ *      never invented. Likewise usage: a run's tokens and cost are the sum of
+ *      what its settled agents' events carry (an ODW extension) — what their
+ *      CLIs reported, or chars/4 estimates that stay marked `estimated`.
  */
 
+import { addUsage, readUsage, type Usage } from "../adapters/usage.js";
 import type { WaitingCheckpoint } from "../checkpoint.js";
 import type { WorkflowEvent } from "../events.js";
 import { RunStore, TERMINAL_STATES } from "./run-store.js";
@@ -64,6 +67,12 @@ export interface AgentView {
   commandId?: number | null;
   /** Commands only: the exit status once settled; null while running or when a signal ended it. */
   exitCode?: number | null;
+  /**
+   * What a settled agent spent (its event's `usage`; ODW extension): tokens
+   * and cost as its CLI reported them, `estimated` where output tokens are
+   * chars/4 of its replies. Absent while running and for older event files.
+   */
+  usage?: Usage;
 }
 
 export type RunDisplayState =
@@ -122,6 +131,13 @@ export interface RunSummary {
   /** settled (done+failed) / agents, in [0,1]; 0 when no agents seen yet. Commands included. */
   progress: number;
   lastActivityTs: number | null;
+  /**
+   * The run's tokens and cost so far (ODW extension): the sum of its settled
+   * agents' usage — a field only some reported is the sum of theirs — with
+   * `estimated` when some agent's output tokens are a chars/4 estimate. Null
+   * before any agent settled with usage; absent for Claude Code runs.
+   */
+  usage?: Usage | null;
   /**
    * The oldest checkpoint() waiting for a person while the run is "waiting"
    * (ODW extension) — what the dashboard's "Needs you" strip shows; null
@@ -267,6 +283,8 @@ export function applyAgentEvent(
     if (target.startedAt !== null && target.finishedAt !== null) {
       target.durationMs = Math.max(0, Math.round((target.finishedAt - target.startedAt) * 1000));
     }
+    const usage = readUsage(ev.usage);
+    if (usage) target.usage = usage;
     if (ev.type === "agent_failed") {
       target.state = "failed";
       target.error = ev.error != null ? String(ev.error) : null;
@@ -351,7 +369,11 @@ export function countAgents(agents: AgentView[]): RunCounts {
 
 /** Copies of `agents` (folds are cached, so never hand out their nodes), open ones marked stale if asked. */
 function copyAgents(agents: AgentView[], stale: boolean): AgentView[] {
-  return agents.map((a) => (stale && a.state === "running" ? { ...a, state: "stale" } : { ...a }));
+  return agents.map((a) => {
+    const copy: AgentView = stale && a.state === "running" ? { ...a, state: "stale" } : { ...a };
+    if (a.usage) copy.usage = { ...a.usage };
+    return copy;
+  });
 }
 
 function phaseOrderFrom(started: string[], declared: Array<{ title: string }>): string[] {
@@ -398,10 +420,13 @@ export class EventFold {
   lastActivityTs: number | null = null;
   /** The run's own terminal event (run_finished/failed/stopped) has been folded. */
   ended = false;
+  /** What the settled agents spent, summed as they settle (see RunSummary.usage). */
+  usage: Usage | undefined;
 
   apply(events: WorkflowEvent[]): this {
     for (const ev of events) {
-      applyAgentEvent(this.agents, ev);
+      const { settled } = applyAgentEvent(this.agents, ev);
+      if (settled?.usage) this.usage = addUsage(this.usage, settled.usage);
       applyCheckpointEvent(this.checkpoints, ev);
       if (ev.type === "run_finished" || ev.type === "run_failed" || ev.type === "run_stopped") {
         this.ended = true;
@@ -488,6 +513,7 @@ export function summaryFrom(runId: string, facts: RunFacts): RunSummary {
     counts,
     progress,
     lastActivityTs: fold.lastActivityTs,
+    usage: fold.usage ? { ...fold.usage } : null,
     waiting: state === "waiting" ? oldestWaiting(fold) : null,
   };
 }
