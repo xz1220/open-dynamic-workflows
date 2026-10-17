@@ -254,4 +254,6 @@ export const DEFAULT_SETTINGS: Settings = {
   keepBranches: false, // keep: true per agent still commits its change to a branch
   maxTranscriptBytes: 5 * 1024 * 1024, // each agent's transcript; past it, one truncation line (0: none)
   permissions: "edit", // the tier every built-in ran with before tiers existed
+  agentEnv: "inherit", // agent CLIs see ODW's whole environment
+  agentEnvPass: [], // more variables a "minimal" agent environment passes through
 };

@@ -28,7 +28,8 @@
  * Every CLI run carries its permission tier's flags (an ODW extension; see
  * adapters/permissions.ts): an agent that may not have the tier it asked for,
  * or whose CLI cannot enforce it, fails with an AgentError before anything is
- * spawned.
+ * spawned. Under `agentEnv: "minimal"` the CLI starts with only the variables
+ * adapters/agent-env.ts lets through.
  *
  * The command runner is injectable, so the bridge unit-tests with a fake runner
  * and no real agent account; so are the backoff's sleep, clock and jitter.
@@ -38,6 +39,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { agentBaseEnv } from "./adapters/agent-env.js";
 import { isOnPath, resolveAdapter } from "./adapters/config.js";
 import {
   backoffSeconds,
@@ -609,7 +611,7 @@ export class Bridge {
         const template = spliceArgs(adapter.command, call.permissionArgs ?? []);
         const command = [...expandAll(template, context), ...plan.extraArgs];
         const stdin = adapter.stdin ? expand(adapter.stdin, context) : undefined;
-        const env = withAgentVars({ ...process.env, ...adapter.env }, call.env);
+        const env = withAgentVars({ ...agentBaseEnv(process.env, this.config.settings), ...adapter.env }, call.env);
         // What the CLI prints is kept as it arrives (ODW extension; see ./transcript).
         const transcript = call.transcript;
         transcript?.beginRun(why);

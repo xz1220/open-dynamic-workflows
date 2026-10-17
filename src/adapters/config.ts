@@ -103,6 +103,8 @@ const KNOWN_TOP_KEYS = [
   "keepBranches",
   "maxTranscriptBytes",
   "permissions",
+  "agentEnv",
+  "agentEnvPass",
 ] as const;
 
 const KNOWN_ADAPTER_KEYS = ["command", "stdin", "env", "timeout", "stallTimeout", "label", "flags", "output", "failures", "permissionArgs", "permissions"] as const;
@@ -161,6 +163,9 @@ export function collectConfigWarnings(raw: Record<string, unknown>): string[] {
         );
       }
     }
+  }
+  if (raw.agentEnvPass != null && raw.agentEnv !== "minimal") {
+    warnings.push(`"agentEnvPass" has no effect unless "agentEnv" is "minimal" (agents get the whole environment)`);
   }
   const notify = raw.notify;
   if (isObject(notify)) {
@@ -832,6 +837,8 @@ function buildSettings(raw: Record<string, unknown>): Settings {
       { min: 0, integer: true },
     ),
     permissions: raw["permissions"] == null ? DEFAULT_SETTINGS.permissions : buildTier(raw["permissions"]),
+    agentEnv: raw["agentEnv"] == null ? DEFAULT_SETTINGS.agentEnv : buildAgentEnv(raw["agentEnv"]),
+    agentEnvPass: raw["agentEnvPass"] == null ? [...DEFAULT_SETTINGS.agentEnvPass] : buildEnvPass(raw["agentEnvPass"]),
   };
 }
 
@@ -839,6 +846,22 @@ function buildSettings(raw: Record<string, unknown>): Settings {
 function buildTier(raw: unknown): PermissionTier {
   if (isPermissionTier(raw)) return raw;
   throw new ConfigError(`"permissions" must be "read", "edit" or "full"; got ${JSON.stringify(raw)}`);
+}
+
+/** Validate `agentEnv`: which environment agent CLIs start with. */
+function buildAgentEnv(raw: unknown): Settings["agentEnv"] {
+  if (raw === "inherit" || raw === "minimal") return raw;
+  throw new ConfigError(`"agentEnv" must be "inherit" or "minimal"; got ${JSON.stringify(raw)}`);
+}
+
+/** Validate `agentEnvPass`: variable names, or globs in which `*` matches any run of characters. */
+function buildEnvPass(raw: unknown): string[] {
+  if (Array.isArray(raw) && raw.every((name) => typeof name === "string" && /^[^=\0]+$/.test(name))) {
+    return [...(raw as string[])];
+  }
+  throw new ConfigError(
+    `"agentEnvPass" must be a list of variable names or globs (e.g. ["AWS_*", "GH_TOKEN"]); got ${JSON.stringify(raw)}`,
+  );
 }
 
 /** Validate a true/false setting such as `keepBranches`. */

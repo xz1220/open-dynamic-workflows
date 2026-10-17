@@ -197,6 +197,15 @@ export interface Settings {
    * may only lower it.
    */
   permissions: PermissionTier;
+  /**
+   * The environment agent CLIs start with (an ODW extension): `"inherit"`
+   * passes ODW's whole environment; `"minimal"` only the basics a CLI needs,
+   * the built-ins' documented auth and config variables, `agentEnvPass`,
+   * the adapter's `env` and the `ODW_*` run variables.
+   */
+  agentEnv: "inherit" | "minimal";
+  /** Names or `*` globs of more variables a `"minimal"` agent environment passes through. */
+  agentEnvPass: string[];
 }
 
 /** The terminal states a run can end in, and that notify hooks can fire on. */
