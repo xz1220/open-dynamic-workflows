@@ -59,8 +59,7 @@
  *   3. Off-loopback binds (--host) refuse every write with 409.
  */
 
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { watch, type FSWatcher } from "node:fs";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { join } from "node:path";
 
 import {
@@ -78,18 +77,15 @@ import { ChatHost, type ChatTurnRunner } from "./chat-host.js";
 import { ClaudeRunSource } from "./claude-run-source.js";
 import {
   decodeSegment,
-  guarded,
   isAllowedHost,
   isLoopbackBind,
   jsonBodyOrReply,
-  logServeError,
-  openStream,
-  safeWrite,
   sendJson,
   sendJsonCached,
   writeGuard,
 } from "./http-util.js";
 import { OdwRunSource } from "./odw-run-source.js";
+import { RunFeed } from "./run-feed.js";
 import { allSummaries, sourceForRun, type RunSource } from "./run-source.js";
 import { RunStore } from "./run-store.js";
 import { listWorkflowSummaries, workflowDetail } from "./workflows-view.js";
@@ -125,12 +121,6 @@ export interface ServeHandle {
 const DEFAULT_PORT = 4317;
 const DEFAULT_HOST = "127.0.0.1";
 const CONTROL_ACTIONS = new Set(["pause", "resume", "stop"]);
-/** Liveness floor for the SSE run list (and the fallback when fs.watch is unavailable). */
-const TICK_MS = 1000;
-/** Watch events within this window are folded into one run-list refresh. */
-const WATCH_COALESCE_MS = 150;
-/** The chat store's file (and its temp files), relative to the watched runs root. */
-const CHAT_FILE_RE = /^_chat[\\/]sessions\.json/;
 
 /** Start the dashboard server. Resolves once it is listening. */
 export function startServer(options: ServeOptions): Promise<ServeHandle> {
@@ -151,7 +141,8 @@ export function startServer(options: ServeOptions): Promise<ServeHandle> {
       scope: options.claudeJobsScope ?? config.settings.claudeJobsScope,
     }),
   ];
-  const clients = new Set<ServerResponse>();
+  // The live feed: SSE clients + the run-list push loop (see ./run-feed).
+  const feed = new RunFeed(store.root, sources);
   const chatHost = new ChatHost({
     store,
     sources,
@@ -159,11 +150,11 @@ export function startServer(options: ServeOptions): Promise<ServeHandle> {
     config,
     configPath,
     runner: options.chatRunner,
-    notify: (sessionId) => broadcastChat(clients, sessionId),
+    notify: (sessionId) => feed.broadcast("chat", { sessionId }),
   });
 
   const server = createServer((req, res) => {
-    handle(req, res, { sources, store, chatHost, clients, cwd, config, configPath, boundHost: host }).catch((err) => {
+    handle(req, res, { sources, store, chatHost, feed, cwd, config, configPath, boundHost: host }).catch((err) => {
       try {
         sendJson(res, 500, { error: (err as Error).message ?? "internal error" });
       } catch {
@@ -172,54 +163,10 @@ export function startServer(options: ServeOptions): Promise<ServeHandle> {
     });
   });
 
-  // Push the run list to every SSE client when the runs root changes, and on a
-  // 1s tick as a floor (fs.watch recursion is platform-spotty, and liveness —
-  // a dead worker pid, a Claude run going quiet — changes no file at all).
-  // A busy run appends events many times a second, so watch events only
-  // schedule a refresh: everything within WATCH_COALESCE_MS lands as one list
-  // computation, not one per append. Every callback is guarded: these run
-  // outside any request, where a throw would take the whole server down.
-  let lastSig = "";
-  const pushRuns = () => {
-    if (clients.size === 0) return;
-    const runs = allSummaries(sources);
-    const sig = JSON.stringify(runs.map((r) => [r.runId, r.state, r.counts, r.progress]));
-    if (sig === lastSig) return;
-    lastSig = sig;
-    const frame = `event: runs\ndata: ${JSON.stringify(runs)}\n\n`;
-    for (const c of clients) safeWrite(c, frame, clients);
-  };
-  const tick = setInterval(() => guarded("run list refresh", pushRuns), TICK_MS);
-  tick.unref?.();
-  let pending: NodeJS.Timeout | null = null;
-  const onRunsChanged = (_event: string, filename: string | Buffer | null) => {
-    // The chat store lives under the runs root but never changes the run list.
-    if (filename && CHAT_FILE_RE.test(String(filename))) return;
-    if (pending) return;
-    pending = setTimeout(() => {
-      pending = null;
-      guarded("run list refresh", pushRuns);
-    }, WATCH_COALESCE_MS);
-    pending.unref?.();
-  };
-  let watcher: FSWatcher | null = null;
-  try {
-    watcher = watch(store.root, { recursive: true }, onRunsChanged);
-    // An unhandled 'error' event (the root deleted, EPERM) would crash the
-    // process; drop the watcher instead — the tick still covers us.
-    watcher.on("error", (err) => {
-      logServeError("runs watcher stopped", err);
-      watcher?.close();
-      watcher = null;
-    });
-  } catch {
-    watcher = null; // no recursive watch on this platform — the 1s tick covers us
-  }
+  feed.start();
   chatHost.start();
   const stopBackground = () => {
-    clearInterval(tick);
-    if (pending) clearTimeout(pending);
-    watcher?.close();
+    feed.stop();
     chatHost.stop();
   };
 
@@ -241,25 +188,19 @@ export function startServer(options: ServeOptions): Promise<ServeHandle> {
         port: boundPort,
         host,
         close: () => {
-          stopBackground();
-          return closeServer(server, clients);
+          stopBackground(); // also ends the SSE streams, so server.close() can finish
+          return new Promise<void>((done) => server.close(() => done()));
         },
       });
     });
   });
 }
 
-function closeServer(server: Server, clients: Set<ServerResponse>): Promise<void> {
-  for (const c of clients) c.end();
-  clients.clear();
-  return new Promise<void>((resolve) => server.close(() => resolve()));
-}
-
 interface HandleContext {
   sources: RunSource[];
   store: RunStore;
   chatHost: ChatHost;
-  clients: Set<ServerResponse>;
+  feed: RunFeed;
   cwd: string;
   config: Config;
   configPath: string | null;
@@ -268,7 +209,7 @@ interface HandleContext {
 }
 
 async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandleContext): Promise<void> {
-  const { sources, store, chatHost, clients, cwd, config, configPath, boundHost } = ctx;
+  const { sources, store, chatHost, feed, cwd, config, configPath, boundHost } = ctx;
   const method = req.method ?? "GET";
 
   try {
@@ -305,7 +246,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandleCont
       return;
     }
     if (method === "GET" && path === "/api/stream") {
-      openStream(res, clients, `event: runs\ndata: ${JSON.stringify(allSummaries(sources))}\n\n`);
+      feed.open(res);
       return;
     }
     if (method === "GET" && path === "/api/capabilities") {
@@ -477,10 +418,4 @@ function eventsWindow(log: readonly WorkflowEvent[], params: URLSearchParams): W
   const tail = Number(tailParam);
   if (tailParam.trim() === "" || !Number.isInteger(tail) || tail < 0) return null;
   return tail === 0 ? [] : events.slice(-tail);
-}
-
-function broadcastChat(clients: Set<ServerResponse>, sessionId: string): void {
-  if (clients.size === 0) return;
-  const frame = `event: chat\ndata: ${JSON.stringify({ sessionId })}\n\n`;
-  for (const c of clients) safeWrite(c, frame, clients);
 }
