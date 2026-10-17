@@ -33,7 +33,7 @@ import {
   type ChatSessionSummary,
   type ChatToolCall,
 } from "./chat-store.js";
-import { guarded, logServeError, readJsonBody, sendJson, writeGuard } from "./http-util.js";
+import { guarded, jsonBodyOrReply, logServeError, sendJson, writeGuard } from "./http-util.js";
 import { startRunFromSource } from "./launcher.js";
 import { sourceForRun, type RunSource } from "./run-source.js";
 import { TERMINAL_STATES, type RunStore } from "./run-store.js";
@@ -554,11 +554,8 @@ async function postChatSession(
   sources: RunSource[],
   cwd: string,
 ): Promise<void> {
-  const body = await readJsonBody(req);
-  if (!body) {
-    sendJson(res, 400, { error: "body must be a JSON object" });
-    return;
-  }
+  const body = await jsonBodyOrReply(req, res);
+  if (!body) return;
   const source = typeof body.source === "string" && body.source.trim() ? body.source.trim() : cwd;
   const session = chat.create(source);
   sendJson(res, 200, hydrateChatSession(session, sources));
@@ -570,11 +567,8 @@ async function deleteChatSession(
   chat: ChatStore,
   sessionId: string,
 ): Promise<void> {
-  const body = await readJsonBody(req);
-  if (!body) {
-    sendJson(res, 400, { error: "body must be a JSON object" });
-    return;
-  }
+  const body = await jsonBodyOrReply(req, res);
+  if (!body) return;
   if (!chat.delete(sessionId)) {
     sendJson(res, 404, { error: `no such chat session: ${sessionId}` });
     return;
@@ -591,11 +585,8 @@ async function postChatMessage(
   sessionId: string,
 ): Promise<void> {
   const { sources, store, config, configPath } = opts;
-  const body = await readJsonBody(req);
-  if (!body) {
-    sendJson(res, 400, { error: "body must be a JSON object" });
-    return;
-  }
+  const body = await jsonBodyOrReply(req, res);
+  if (!body) return;
   const text = typeof body.text === "string" ? body.text.trim() : "";
   if (!text) {
     sendJson(res, 400, { error: "text must be a non-empty string" });

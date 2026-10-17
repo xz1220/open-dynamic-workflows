@@ -59,9 +59,9 @@ import {
   guarded,
   isAllowedHost,
   isLoopbackBind,
+  jsonBodyOrReply,
   logServeError,
   openStream,
-  readJsonBody,
   safeWrite,
   sendJson,
   sendJsonCached,
@@ -406,8 +406,9 @@ async function controlRun(
   runId: string,
 ): Promise<void> {
   // CSRF posture (Content-Type + same-origin) is enforced by writeGuard upstream.
-  const body = await readJsonBody(req);
-  const action = body && typeof body.action === "string" ? body.action : undefined;
+  const body = await jsonBodyOrReply(req, res);
+  if (!body) return;
+  const action = typeof body.action === "string" ? body.action : undefined;
   if (!action || !CONTROL_ACTIONS.has(action)) {
     sendJson(res, 400, { error: "action must be one of pause, resume, stop" });
     return;

@@ -156,13 +156,13 @@ test("GET /api/capabilities reports writable=false on an off-loopback bind", asy
   }
 });
 
-// #3 — an oversized body settles (400) instead of hanging the handler.
+// #3 — an oversized body settles (413) instead of hanging the handler.
 test("an over-cap request body is rejected, not left hanging", async () => {
   const root = mkdtempSync(join(tmpdir(), "odw-rf-"));
   const { handle } = await boot(root);
   try {
-    const huge = "x".repeat(600 * 1024); // > MAX_BODY_BYTES (512KB)
-    const status = await new Promise<number>((resolvePromise, reject) => {
+    const huge = "x".repeat(600 * 1024); // > MAX_BODY_BYTES (128KB)
+    const status = await new Promise<number>((resolvePromise) => {
       const req = request(
         { host: "127.0.0.1", port: handle.port, path: "/api/chat/sessions", method: "POST", headers: { "content-type": "application/json" } },
         (res) => {
@@ -170,12 +170,12 @@ test("an over-cap request body is rejected, not left hanging", async () => {
           res.on("end", () => resolvePromise(res.statusCode ?? 0));
         },
       );
-      // The server destroys the socket past the cap; either a 400 lands first or
-      // the socket errors — both prove the handler did not hang silently.
+      // The server answers 413 and drains the rest, so the client reads the
+      // answer instead of a connection reset.
       req.on("error", () => resolvePromise(-1));
       req.end(JSON.stringify({ script: huge }));
     });
-    assert.ok(status === 400 || status === -1, `got ${status}`);
+    assert.equal(status, 413);
   } finally {
     await handle.close();
     rmSync(root, { recursive: true, force: true });

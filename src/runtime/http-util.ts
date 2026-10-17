@@ -8,8 +8,12 @@
 import { createHash } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
-/** Body cap for write endpoints; inline scripts are the largest legitimate payload. */
-export const MAX_BODY_BYTES = 512 * 1024;
+/**
+ * Body cap for write endpoints, in bytes. The largest legitimate payload is a
+ * chat message (the other writes are a few fields), so 128 KiB leaves ample
+ * room for pasted logs/code while bounding what a request can make us buffer.
+ */
+export const MAX_BODY_BYTES = 128 * 1024;
 
 const LOOPBACK_BINDS = new Set(["127.0.0.1", "localhost", "::1"]);
 const LOOPBACK_HOST_NAMES = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
@@ -68,50 +72,85 @@ export function writeGuard(req: IncomingMessage, res: ServerResponse, boundHost:
   return true;
 }
 
+export type JsonBody =
+  | { ok: true; value: Record<string, unknown> }
+  | { ok: false; status: 400 | 413; error: string };
+
 /**
- * Read and JSON-parse a request body. Resolves `undefined` on invalid/empty
- * JSON OR when the body exceeds {@link MAX_BODY_BYTES} (the caller turns that
- * into a 400). Settling exactly once is guaranteed even on `destroy()`, whose
- * abort emits neither `end` nor `error` — a `close` listener catches it, so the
- * awaiting handler never hangs and the oversized buffer is dropped.
+ * Read and JSON-parse a request body (empty → `{}`). The raw chunks are kept
+ * as Buffers and decoded once at the end — decoding chunk by chunk mangles a
+ * multi-byte UTF-8 character split across two chunks — and the cap counts
+ * bytes, not UTF-16 units.
+ *
+ * Past `maxBytes` it settles at once with a 413 and keeps DRAINING the rest
+ * without buffering it: destroying the socket instead would make the client
+ * see a connection reset rather than the answer. Settles exactly once, even
+ * if the client aborts (a `close` with neither `end` nor `error`).
  */
-export function readJsonBody(req: IncomingMessage): Promise<Record<string, unknown> | undefined> {
+export function readJsonBody(req: IncomingMessage, maxBytes = MAX_BODY_BYTES): Promise<JsonBody> {
   return new Promise((resolvePromise) => {
-    let body = "";
+    const chunks: Buffer[] = [];
+    let size = 0;
     let settled = false;
-    const settle = (value: Record<string, unknown> | undefined): void => {
+    const settle = (value: JsonBody): void => {
       if (settled) return;
       settled = true;
+      chunks.length = 0;
       resolvePromise(value);
     };
-    req.on("data", (chunk) => {
-      if (settled) return;
-      body += chunk;
-      if (body.length > MAX_BODY_BYTES) {
-        settle(undefined); // too large → caller responds 400; stop buffering
-        req.destroy();
+    const invalid = (): JsonBody => ({ ok: false, status: 400, error: "body must be a JSON object" });
+    req.on("data", (chunk: Buffer | string) => {
+      if (settled) return; // over the cap: drain, never buffer
+      const buf = typeof chunk === "string" ? Buffer.from(chunk) : chunk;
+      size += buf.length;
+      if (size > maxBytes) {
+        settle({ ok: false, status: 413, error: `request body exceeds ${maxBytes} bytes` });
+        return;
       }
+      chunks.push(buf);
     });
-    req.on("error", () => settle(undefined));
-    req.on("close", () => settle(undefined)); // covers destroy() with no error
+    req.on("error", () => settle(invalid()));
+    req.on("close", () => settle(invalid())); // an aborted upload
     req.on("end", () => {
       try {
-        const parsed = JSON.parse(body || "{}") as unknown;
+        const text = Buffer.concat(chunks).toString("utf8");
+        const parsed = JSON.parse(text || "{}") as unknown;
         settle(
           parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
-            ? (parsed as Record<string, unknown>)
-            : undefined,
+            ? { ok: true, value: parsed as Record<string, unknown> }
+            : invalid(),
         );
       } catch {
-        settle(undefined);
+        settle(invalid());
       }
     });
   });
 }
 
-export function sendJson(res: ServerResponse, status: number, payload: unknown): void {
+/**
+ * The request's JSON-object body, or null once a 400 (not a JSON object) or
+ * 413 (too large; `connection: close`, as the rest is only drained) has been
+ * sent.
+ */
+export async function jsonBodyOrReply(
+  req: IncomingMessage,
+  res: ServerResponse,
+): Promise<Record<string, unknown> | null> {
+  const body = await readJsonBody(req);
+  if (body.ok) return body.value;
+  sendJson(res, body.status, { error: body.error }, body.status === 413 ? { connection: "close" } : {});
+  return null;
+}
+
+export function sendJson(
+  res: ServerResponse,
+  status: number,
+  payload: unknown,
+  headers: Record<string, string> = {},
+): void {
   const body = JSON.stringify(payload);
   res.writeHead(status, {
+    ...headers,
     "content-type": "application/json; charset=utf-8",
     "content-length": Buffer.byteLength(body),
   });
