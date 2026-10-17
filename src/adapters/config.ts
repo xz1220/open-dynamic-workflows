@@ -20,6 +20,7 @@ import { cpus, homedir } from "node:os";
 import { dirname, join } from "node:path";
 
 import { AdapterNotFound, ConfigError } from "../errors.js";
+import { extraProblem } from "../redact.js";
 import { TIER_NAME } from "../routing.js";
 import { BUILTIN_ADAPTERS, DEFAULT_SETTINGS, type RawAdapter } from "./builtin.js";
 import { isOnPath } from "./executable.js";
@@ -42,6 +43,7 @@ import type {
   NotifyTrigger,
   PermissionArgs,
   PermissionTier,
+  RedactSettings,
   RunEndState,
   SchemaFlag,
   Settings,
@@ -119,6 +121,7 @@ const KNOWN_TOP_KEYS = [
   "quotaBreaker",
   "expectRetries",
   "permissionDenials",
+  "redact",
 ] as const;
 
 const KNOWN_ADAPTER_KEYS = ["command", "stdin", "env", "timeout", "stallTimeout", "concurrency", "promptCache", "label", "flags", "output", "failures", "permissionArgs", "permissions", "permissionDenials"] as const;
@@ -137,6 +140,8 @@ const KNOWN_SCHEMA_FLAG_KEYS = ["args", "mode", "strict"] as const;
 const KNOWN_NOTIFY_KEYS = ["command", "webhook", "on"] as const;
 
 const KNOWN_STAGGER_KEYS = ["first", "delayMs"] as const;
+
+const KNOWN_REDACT_KEYS = ["env", "patterns", "extra"] as const;
 
 /**
  * Lint a parsed config object for keys odw would silently ignore.
@@ -201,6 +206,7 @@ export function collectConfigWarnings(raw: Record<string, unknown>): string[] {
     }
   }
   if (isObject(raw.staggerFanOut)) warnings.push(...unknownFields(raw.staggerFanOut, KNOWN_STAGGER_KEYS, "staggerFanOut"));
+  if (isObject(raw.redact)) warnings.push(...unknownFields(raw.redact, KNOWN_REDACT_KEYS, "redact"));
   return warnings;
 }
 
@@ -975,6 +981,8 @@ function buildSettings(raw: Record<string, unknown>): Settings {
       raw["permissionDenials"] == null
         ? DEFAULT_SETTINGS.permissionDenials
         : buildChoice("permissionDenials", raw["permissionDenials"], ["warn", "fail"] as const),
+    // Absent or null keeps the default (on); only false turns it off.
+    redact: buildRedact(raw["redact"]),
   };
 }
 
@@ -1071,6 +1079,33 @@ function buildEnvPass(raw: unknown): string[] {
 function buildFlag(key: string, raw: unknown): boolean {
   if (typeof raw === "boolean") return raw;
   throw new ConfigError(`"${key}" must be true or false; got ${JSON.stringify(raw)}`);
+}
+
+/**
+ * Validate `redact`: `{ "env": bool, "patterns": bool, "extra": [regex, …] }`
+ * (a field left out keeps its default), `true` for the defaults, `false` for
+ * none; absent or null keeps the defaults.
+ */
+function buildRedact(raw: unknown): RedactSettings | false {
+  const defaults = DEFAULT_SETTINGS.redact || { env: true, patterns: true, extra: [] };
+  if (raw === false) return false;
+  if (raw == null || raw === true) return { ...defaults, extra: [...defaults.extra] };
+  if (!isObject(raw)) {
+    throw new ConfigError(
+      `"redact" must be { "env": true|false, "patterns": true|false, "extra": ["<regex>", …] }, or false to keep everything as printed; got ${JSON.stringify(raw)}`,
+    );
+  }
+  const extra = raw.extra == null ? [...defaults.extra] : raw.extra;
+  if (!Array.isArray(extra)) throw new ConfigError(`"redact.extra" must be a list of regular expressions; got ${JSON.stringify(extra)}`);
+  extra.forEach((source, i) => {
+    const problem = extraProblem(source);
+    if (problem) throw new ConfigError(`"redact.extra[${i}]" ${problem}; got ${JSON.stringify(source)}`);
+  });
+  return {
+    env: raw.env == null ? defaults.env : buildFlag("redact.env", raw.env),
+    patterns: raw.patterns == null ? defaults.patterns : buildFlag("redact.patterns", raw.patterns),
+    extra: [...(extra as string[])],
+  };
 }
 
 /** The default `staggerFanOut`, as a fresh object. */

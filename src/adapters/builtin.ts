@@ -290,4 +290,5 @@ export const DEFAULT_SETTINGS: Settings = {
   quotaBreaker: 3, // quota failures in a row before the run's later agents skip an adapter
   expectRetries: 1, // reruns of an agent whose work missed its expect checks, told what it missed
   permissionDenials: "warn", // a reply whose CLI refused tool calls stands, recorded and logged ("fail": it fails)
+  redact: { env: true, patterns: true, extra: [] }, // likely secrets out of what odw keeps and serves (false: none)
 };

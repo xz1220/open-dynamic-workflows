@@ -321,6 +321,27 @@ export interface Settings {
    * `permissionDenials` overrides it.
    */
   permissionDenials: DenialPolicy;
+  /**
+   * What odw keeps and serves of its agents — transcripts, saved results,
+   * events, the run's error and result, webhook payloads — has its likely
+   * secrets replaced by `«redacted:<kind>»` (an ODW extension; see ../redact);
+   * `false` keeps it all as printed.
+   */
+  redact: RedactSettings | false;
+}
+
+/** What redaction looks for (see `Settings.redact`). */
+export interface RedactSettings {
+  /**
+   * The values (8 characters or more) of the secret-named variables of the
+   * environment odw starts agents and commands with, wherever they appear —
+   * and of any `NAME=value` of such a name printed.
+   */
+  env: boolean;
+  /** Well-known token shapes: API keys, access tokens, JWTs, private-key blocks, `Bearer` tokens. */
+  patterns: boolean;
+  /** More regular expressions (JavaScript sources) whose matches are secrets. */
+  extra: readonly string[];
 }
 
 /** How a fan-out on a prompt-caching adapter is staggered (see `Settings.staggerFanOut`). */
