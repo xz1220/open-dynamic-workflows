@@ -188,6 +188,7 @@ test("auditSchema: the supported subset and annotations pass clean", () => {
           required: ["title"],
           properties: {
             title: { type: "string", examples: ["race in retry"], $comment: "one line" },
+            source: { type: "string", format: "uri" },
             severity: { type: "string", enum: ["low", "medium", "high"], default: "low" },
             line: { type: "integer" },
             fixed: { type: "boolean", deprecated: true },
@@ -203,6 +204,8 @@ test("auditSchema: the supported subset and annotations pass clean", () => {
   assert.deepEqual(auditSchema({ additionalProperties: true }), [], "true is the default: nothing to check");
   assert.deepEqual(auditSchema({ type: "array", items: { type: "string" }, minItems: undefined }), [], "a key set to undefined is absent");
   assert.deepEqual(auditSchema({ type: "string", required: ["x"] }), [], "an object keyword under another type applies to no value");
+  // format is an annotation (JSON Schema 2019-09+; Claude Code does not enforce it either).
+  assert.deepEqual(auditSchema({ type: "array", items: { type: "string", format: "date-time" } }), []);
 });
 
 // Every keyword the validator ignores, reported where it sits.
@@ -215,7 +218,6 @@ const UNCHECKED: Array<[string, unknown]> = [
   ['"not"', { not: { enum: ["x"] } }],
   ['"if"', { if: { type: "string" } }],
   ['"pattern"', { type: "string", pattern: "^[a-z]+$" }],
-  ['"format"', { type: "string", format: "email" }],
   ['"minLength"', { type: "string", minLength: 1 }],
   ['"maxLength"', { type: "string", maxLength: 80 }],
   ['"minimum"', { type: "number", minimum: 0 }],
@@ -251,7 +253,7 @@ test("auditSchema: inside something unchecked only a typo is reported again; und
     'unchecked "oneOf" at #',
     'invalid unknown keyword "requird" (did you mean "required"?) at #/oneOf/1',
   ]);
-  assert.deepEqual(issuesOf({ type: "array", items: [{ format: "uri" }] }), ['unchecked "items" as a list (a tuple) at #']);
+  assert.deepEqual(issuesOf({ type: "array", items: [{ pattern: "^x" }] }), ['unchecked "items" as a list (a tuple) at #']);
   // A union's object keywords still apply once the union is a single type: what they hold is reported.
   assert.deepEqual(issuesOf({ type: ["object", "null"], properties: { id: { type: "string", pattern: "^x" } } }), [
     'unchecked a type union ["object","null"] at #',

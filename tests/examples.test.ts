@@ -223,8 +223,9 @@ test("agent-daily-digest.js runs end-to-end (discover -> extract -> synthesize -
 test("deep-research-verified.js runs end-to-end, every schema within what ODW checks", async () => {
   const { state, result, error, events } = await runExample("deep-research-verified.js", "Is the sky blue?");
   assert.equal(state, "done", JSON.stringify(error));
-  // A schema keyword ODW does not check fails its call before it starts: none did.
+  // A schema keyword ODW does not check would be logged (or, under "strict", refused): none is.
   assert.deepEqual(events.filter((e) => e.type === "agent_failed"), []);
+  assert.deepEqual(events.filter((e) => e.type === "log" && /schema keywords ODW does not check/.test(String(e.message))), []);
   const r = result as { question: string; stats: { angles: number; sourcesFetched: number; claimsVerified: number } };
   assert.equal(r.question, "Is the sky blue?");
   assert.ok(r.stats.angles >= 3 && r.stats.sourcesFetched > 0 && r.stats.claimsVerified > 0, JSON.stringify(r.stats));

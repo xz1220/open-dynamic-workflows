@@ -280,6 +280,6 @@ export const DEFAULT_SETTINGS: Settings = {
   permissions: "edit", // the tier every built-in ran with before tiers existed
   agentEnv: "inherit", // agent CLIs see ODW's whole environment
   agentEnvPass: [], // more variables a "minimal" agent environment passes through
-  schemaKeywords: "odw", // a schema may use only what ODW's validator checks
+  schemaKeywords: "warn", // what ODW's validator does not check is logged once per run, not refused
   schemaPrompt: "auto", // the prompt describes a schema only to a CLI that does not take it natively
 };

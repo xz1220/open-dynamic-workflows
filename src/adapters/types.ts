@@ -262,13 +262,14 @@ export interface Settings {
   /** Names or `*` globs of more variables a `"minimal"` agent environment passes through. */
   agentEnvPass: string[];
   /**
-   * Which JSON Schema an agent()'s schema may use (an ODW extension):
-   * `"odw"` — only what ODW's validator checks, anything else fails the call
-   * before it starts; `"native"` — on an adapter that takes schemas natively
-   * (`flags.schema`), the rest too: its CLI enforces it, ODW checks the subset
-   * it knows, and the run logs which keywords it left to the CLI.
+   * What happens to JSON Schema in an agent()'s schema that ODW's validator
+   * does not check (an ODW extension): `"warn"` — the call runs, ODW checks
+   * the rest, and the run logs once which keywords and where; `"strict"` —
+   * the call fails before it starts; `"native"` — on an adapter that takes
+   * schemas natively (`flags.schema`) they are left to its CLI, elsewhere as
+   * `"warn"`. A malformed schema fails in every mode.
    */
-  schemaKeywords: "odw" | "native";
+  schemaKeywords: "warn" | "strict" | "native";
   /**
    * When an agent's prompt describes its schema (an ODW extension): `"auto"` —
    * only when the CLI does not take the schema natively; `"always"`.

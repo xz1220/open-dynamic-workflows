@@ -18,10 +18,11 @@
  * as optional sugar.
  *
  * {@link auditSchema} finds what in a schema that subset does not check, so a
- * call can be refused before it starts rather than leave a constraint
- * silently unchecked; {@link checkedSubset} is the part it does check, for a
- * CLI that enforces the rest natively (an ODW extension, see
- * adapters/native-schema.ts), whose own value {@link pickStructured} prefers.
+ * call can say so — or be refused — before it starts rather than leave a
+ * constraint silently unchecked; {@link checkedSubset} is the part it does
+ * check, what a reply is validated against when it holds more (an ODW
+ * extension, see adapters/native-schema.ts). A CLI that enforces the rest
+ * natively hands back its own value, which {@link pickStructured} prefers.
  */
 
 export type JsonSchema = Record<string, unknown>;
@@ -353,8 +354,13 @@ const CHECKED_KEYWORDS: Record<string, "object" | "array" | null> = {
   minItems: "array",
 };
 
-/** Keywords that describe or organize a schema but constrain no value: nothing needs to check them. */
+/**
+ * Keywords that describe or organize a schema but constrain no value: nothing
+ * needs to check them. `format` is one — an annotation by default since JSON
+ * Schema 2019-09, and Claude Code accepts it without enforcing it.
+ */
 const ANNOTATION_KEYWORDS = new Set([
+  "format",
   "$schema",
   "$id",
   "$anchor",
@@ -394,7 +400,6 @@ const UNCHECKED_KEYWORDS = new Set([
   "minLength",
   "maxLength",
   "pattern",
-  "format",
   "contentEncoding",
   "contentMediaType",
   "contentSchema",
@@ -448,8 +453,8 @@ const SUBSCHEMAS: Record<string, "one" | "list" | "map"> = {
  * `const`, `pattern`, `maxItems`, a type union, an object keyword with no
  * `type: "object"` — is `unchecked`: a CLI that validates the schema itself
  * may enforce it. A malformed keyword, or a key that is no JSON Schema keyword
- * at all, is `invalid`. Annotations (`description`, `title`, `default`, …)
- * constrain nothing and pass.
+ * at all, is `invalid`. Annotations (`description`, `title`, `default`,
+ * `format`, …) constrain nothing and pass.
  */
 export function auditSchema(schema: unknown): SchemaIssue[] {
   const issues: SchemaIssue[] = [];

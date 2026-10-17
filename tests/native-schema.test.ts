@@ -110,30 +110,49 @@ test("planSchema: a schema ODW checks whole goes natively to a CLI that takes it
   );
 });
 
-// The keywords tests/schema.test.ts documents as the portability boundary: each
-// one fails the call, precisely, before anything is spawned.
-const UNCHECKED_FIELDS: Array<[string, Record<string, unknown>]> = [
-  ['"oneOf"', { oneOf: [{ const: "a" }, { const: "b" }] }],
-  ['"anyOf"', { anyOf: [{ type: "string" }, { type: "null" }] }],
-  ['"allOf"', { allOf: [{ type: "string" }] }],
-  ['"$ref"', { $ref: "#/$defs/s", $defs: { s: { type: "string" } } }],
-  ['"const"', { const: "a" }],
-  ['"pattern"', { type: "string", pattern: "^a" }],
-  ['"format"', { type: "string", format: "date-time" }],
-  ['"minimum"', { type: "number", minimum: 0 }],
-  ['"maxItems"', { type: "array", items: { type: "string" }, maxItems: 2 }],
-  ['a type union ["string","null"]', { type: ["string", "null"] }],
+// The keywords tests/schema.test.ts documents as the portability boundary
+// (`format` is an annotation, and passes), each with a value it rules out. By
+// default each is reported once and not enforced; under "strict" each fails the
+// call, precisely, before anything is spawned.
+const UNCHECKED_FIELDS: Array<[string, Record<string, unknown>, unknown]> = [
+  ['"oneOf"', { oneOf: [{ const: "a" }, { const: "b" }] }, "c"],
+  ['"anyOf"', { anyOf: [{ type: "string" }, { type: "null" }] }, 5],
+  ['"allOf"', { allOf: [{ type: "string" }] }, 5],
+  ['"$ref"', { $ref: "#/$defs/s", $defs: { s: { type: "string" } } }, 5],
+  ['"const"', { const: "a" }, "b"],
+  ['"pattern"', { type: "string", pattern: "^a" }, "zzz"],
+  ['"minimum"', { type: "number", minimum: 0 }, -1],
+  ['"maxItems"', { type: "array", items: { type: "string" }, maxItems: 2 }, ["a", "b", "c"]],
+  ['a type union ["string","null"]', { type: ["string", "null"] }, 5],
 ];
-for (const [what, field] of UNCHECKED_FIELDS) {
-  test(`preflight: ${what} fails the call before its CLI starts, saying where it is and what would let it run`, async () => {
-    const { runs, bridge } = recording(configFor("claude"), () => claudeStream({}));
+for (const [what, field, ruledOut] of UNCHECKED_FIELDS) {
+  test(`${what}: by default the call runs, ODW checks the rest, and the run says once that nothing checks it`, async () => {
+    const config = configFor("mine");
+    config.adapters.mine = { name: "mine", command: ["mine"], stdin: "{prompt}" };
+    const notes: string[] = [];
+    const { runs, bridge } = recording(config, () => JSON.stringify({ field: ruledOut }));
+    const schema = { type: "object", required: ["field"], properties: { field } };
+    for (const prompt of ["one", "two"]) {
+      const out = await bridge.run({ prompt, schema }, { onNote: (message) => notes.push(message) });
+      assert.deepEqual(out.value, { field: ruledOut }, "what ODW does not check, it does not enforce");
+    }
+    assert.match(runs[0]!.stdin, DESCRIBED, "the agent still reads the whole schema");
+    assert.deepEqual(notes, [
+      `schema keywords ODW does not check, and nothing else will (adapter 'mine' does not validate schemas itself): ` +
+        `${what} at #/properties/field — ODW checks the rest; to make them count, run the agent on an adapter that ` +
+        `validates schemas itself (one with "flags.schema", like the built-in claude), or set "schemaKeywords": "strict" to refuse such calls`,
+    ]);
+  });
+
+  test(`${what}: "schemaKeywords": "strict" fails the call before its CLI starts, saying where and what would let it run`, async () => {
+    const { runs, bridge } = recording(configFor("claude", { schemaKeywords: "strict" }), () => claudeStream({}));
     const schema = { type: "object", required: ["field"], properties: { field } };
     await assert.rejects(
       () => bridge.run({ prompt: "p", schema }),
       (err: unknown) =>
         err instanceof AgentError &&
         err.message ===
-          `agent() schema uses JSON Schema that ODW's validator does not check: ${what} at #/properties/field — ` +
+          `agent() schema uses JSON Schema that ODW's validator does not check ("schemaKeywords": "strict"): ${what} at #/properties/field — ` +
             `remove it (a "description" can still ask the agent for it), or set "schemaKeywords": "native" ` +
             `to leave it to adapter 'claude', which validates the schema itself`,
     );
@@ -141,35 +160,62 @@ for (const [what, field] of UNCHECKED_FIELDS) {
   });
 }
 
-test("preflight: the advice fits the adapter — one without native schemas, or one that takes only strict ones", () => {
+test("the note and the error fit the adapter and the mode: native, without native schemas, or taking only strict ones", () => {
   const { adapters } = defaultConfig();
   const pattern = { type: "object", properties: { id: { type: "string", pattern: "^x" } } };
-  const native = { schemaKeywords: "native", schemaPrompt: "auto" } as const;
+  const listed = '"pattern" at #/properties/id';
+  const mode = (schemaKeywords: "warn" | "strict" | "native") => ({ schemaKeywords, schemaPrompt: "auto" }) as const;
+  // claude is handed the whole schema either way; the note says so, and how to refuse instead.
+  const warned = planSchema(adapters.claude!, pattern, mode("warn"));
+  assert.deepEqual([warned.error, warned.native?.mode, warned.describe], [undefined, "inline", false]);
+  assert.deepEqual(warned.check, { type: "object", properties: { id: { type: "string" } } });
+  assert.equal(
+    warned.note,
+    `schema keywords ODW does not check are left to adapter 'claude', which validates the schema itself: ${listed} — ` +
+      `ODW checks the rest; "schemaKeywords": "strict" refuses such calls`,
+  );
+  assert.equal(
+    planSchema(adapters.claude!, pattern, mode("native")).note,
+    `schema keywords ODW does not check are left to adapter 'claude', which validates the schema itself ("schemaKeywords": "native"): ` +
+      `${listed} — ODW checks the rest`,
+  );
+  // An adapter without native schemas, or codex with a schema strict mode refuses: "native" is "warn".
+  for (const schemaKeywords of ["warn", "native"] as const) {
+    const gemini = planSchema(adapters.gemini!, pattern, mode(schemaKeywords));
+    assert.deepEqual([gemini.error, gemini.native, gemini.describe], [undefined, null, true], schemaKeywords);
+    assert.match(gemini.note!, /^schema keywords ODW does not check, and nothing else will \(adapter 'gemini' does not validate schemas itself\): "pattern" at #\/properties\/id — /);
+    const codex = planSchema(adapters.codex!, pattern, mode(schemaKeywords));
+    assert.deepEqual([codex.error, codex.native, codex.describe], [undefined, null, true], schemaKeywords);
+    assert.match(
+      codex.note!,
+      /^schema keywords ODW does not check, and nothing else will \(adapter 'codex' validates only strict schemas itself \(an object at the root, .*\), and this one is not\): .* to make them count, make the schema strict so adapter 'codex' takes it natively, or set "schemaKeywords": "strict" to refuse such calls$/,
+    );
+  }
   assert.match(
-    planSchema(adapters.gemini!, pattern, native).error!,
-    /: "pattern" at #\/properties\/id — adapter 'gemini' does not validate schemas itself, so nothing would enforce it: remove it .*, or run this agent on an adapter that does \(one with "flags\.schema", like the built-in claude\) and set "schemaKeywords": "native"$/,
+    planSchema(adapters.gemini!, pattern, mode("strict")).error!,
+    /\("schemaKeywords": "strict"\): "pattern" at #\/properties\/id — adapter 'gemini' does not validate schemas itself, so nothing would enforce it: remove it .*, or run this agent on an adapter that does \(one with "flags\.schema", like the built-in claude\) and set "schemaKeywords": "native"$/,
   );
   assert.match(
-    planSchema(adapters.codex!, pattern, native).error!,
-    /— adapter 'codex' validates only strict schemas itself \(an object at the root, .*\), and this one is not: remove it .*, or make the schema strict$/,
+    planSchema(adapters.codex!, pattern, mode("strict")).error!,
+    /— adapter 'codex' validates only strict schemas itself \(an object at the root, .*\), and this one is not: remove it .*, or make the schema strict and set "schemaKeywords": "native"$/,
   );
-  assert.match(
-    planSchema(adapters.codex!, pattern, { ...native, schemaKeywords: "odw" }).error!,
-    /or make the schema strict and set "schemaKeywords": "native"$/,
-  );
-  // A strict schema runs natively on codex, which enforces its pattern; ODW checks the rest.
+  // A strict schema goes to codex natively, which enforces its pattern; ODW checks the rest.
   const strict = { type: "object", additionalProperties: false, required: ["id"], properties: { id: { type: "string", pattern: "^x" } } };
-  const plan = planSchema(adapters.codex!, strict, native);
-  assert.deepEqual([plan.error, plan.native?.mode, plan.describe], [undefined, "file", false]);
-  assert.deepEqual(plan.check, { type: "object", additionalProperties: false, required: ["id"], properties: { id: { type: "string" } } });
+  for (const schemaKeywords of ["warn", "native"] as const) {
+    const plan = planSchema(adapters.codex!, strict, mode(schemaKeywords));
+    assert.deepEqual([plan.error, plan.native?.mode, plan.describe], [undefined, "file", false]);
+    assert.deepEqual(plan.check, { type: "object", additionalProperties: false, required: ["id"], properties: { id: { type: "string" } } });
+  }
+  assert.ok(planSchema(adapters.codex!, strict, mode("strict")).error, '"strict" refuses even what the CLI would enforce');
   // Many keywords: the first eight, then how many more.
   const many = { type: "object", properties: Object.fromEntries([...Array(10).keys()].map((i) => [`f${i}`, { const: i }])) };
-  assert.match(planSchema(adapters.claude!, many, { ...native, schemaKeywords: "odw" }).error!, /"const" at #\/properties\/f7; and 2 more — /);
+  assert.match(planSchema(adapters.claude!, many, mode("strict")).error!, /"const" at #\/properties\/f7; and 2 more — /);
+  assert.match(planSchema(adapters.claude!, many, mode("warn")).note!, /"const" at #\/properties\/f7; and 2 more — /);
 });
 
 test("preflight: what no validator could check fails in every mode, and a schema must be an object", async () => {
   const typo = { type: "object", properties: { a: { type: "string" } }, requird: ["a"] };
-  for (const schemaKeywords of ["odw", "native"] as const) {
+  for (const schemaKeywords of ["warn", "strict", "native"] as const) {
     assert.equal(
       planSchema(defaultConfig().adapters.claude!, typo, { schemaKeywords, schemaPrompt: "auto" }).error,
       'agent() schema is not JSON Schema ODW can check: unknown keyword "requird" (did you mean "required"?) at # — fix it',
@@ -404,39 +450,55 @@ test('"schemaKeywords": "native" leaves what ODW does not check to a CLI that do
 
 // --- through the engine ----------------------------------------------------------------
 
-test("through the engine: a refused schema is its agent's failure, and the run logs a native-keywords note once", async () => {
-  const config = configFor("claude", { schemaKeywords: "native", staggerFanOut: null });
-  config.adapters.mine = { name: "mine", command: ["mine"], stdin: "{prompt}" };
-  const sink = new MemorySink();
-  const spawned: string[][] = [];
-  const runner: CommandRunner = async (command) => {
-    spawned.push(command);
-    return ok(claudeStream({ structured_output: { pick: "left" } }));
-  };
-  const ctx = buildContext(config, { sink, source: "/repo" });
-  ctx.bridge = new Bridge(config, { source: "/repo", runner });
-  const p = createPrimitives(ctx);
+test("through the engine: unchecked keywords are logged once per run, and under \"strict\" their agents fail on their own", async () => {
   const PICK = { type: "object", required: ["pick"], properties: { pick: { const: "left" } } };
-  const results = await p.parallel([
-    () => p.agent("TASK a", { label: "a", schema: PICK }),
-    () => p.agent("TASK b", { label: "b", schema: PICK }),
-    () => p.agent("TASK c", { label: "c", adapter: "mine", schema: PICK }),
-  ]);
-  assert.deepEqual(results, [{ pick: "left" }, { pick: "left" }, null], "a recoverable failure: the batch goes on");
-  assert.equal(ctx.scheduler.fatalError, undefined);
-  assert.equal(spawned.length, 2, "the refused agent never spawned");
-  const failed = sink.ofType(AGENT_FAILED);
-  assert.deepEqual(
-    failed.map((e) => e.label),
-    ["c"],
-  );
+  const CHECKED = { type: "object", required: ["pick"], properties: { pick: { enum: ["left"] } } };
+  const engine = async (schemaKeywords: "warn" | "strict") => {
+    const config = configFor("claude", { schemaKeywords, staggerFanOut: null });
+    config.adapters.mine = { name: "mine", command: ["mine"], stdin: "{prompt}" };
+    const sink = new MemorySink();
+    const spawned: string[][] = [];
+    const runner: CommandRunner = async (command) => {
+      spawned.push(command);
+      return ok(command[0] === "mine" ? '{"pick": "right"}' : claudeStream({ structured_output: { pick: "left" } }));
+    };
+    const ctx = buildContext(config, { sink, source: "/repo" });
+    ctx.bridge = new Bridge(config, { source: "/repo", runner });
+    const p = createPrimitives(ctx);
+    const results = await p.parallel([
+      () => p.agent("TASK a", { label: "a", schema: PICK }),
+      () => p.agent("TASK b", { label: "b", schema: PICK }),
+      () => p.agent("TASK c", { label: "c", adapter: "mine", schema: PICK }),
+      () => p.agent("TASK d", { label: "d", schema: CHECKED }),
+    ]);
+    const notes = sink
+      .ofType(LOG)
+      .map((e) => String(e.message))
+      .filter((message) => message.includes("schema keywords ODW does not check"));
+    return { ctx, sink, spawned, results, notes };
+  };
+
+  // By default every agent runs — on 'mine', where nothing enforces the const,
+  // "right" comes back — and the run says so once per adapter, not per agent.
+  const warned = await engine("warn");
+  assert.deepEqual(warned.results, [{ pick: "left" }, { pick: "left" }, { pick: "right" }, { pick: "left" }]);
+  assert.deepEqual(warned.sink.ofType(AGENT_FAILED), []);
+  assert.equal(warned.notes.length, 2, JSON.stringify(warned.notes));
+  assert.ok(warned.notes.some((m) => /^[ab]:\d+: schema keywords ODW does not check are left to adapter 'claude'/.test(m)));
+  assert.ok(warned.notes.some((m) => /^c:\d+: schema keywords ODW does not check, and nothing else will \(adapter 'mine'/.test(m)));
+
+  // Under "strict" those agents fail before they spawn — recoverable, so the batch goes on.
+  const strict = await engine("strict");
+  assert.deepEqual(strict.results, [null, null, null, { pick: "left" }]);
+  assert.equal(strict.ctx.scheduler.fatalError, undefined);
+  assert.equal(strict.spawned.length, 1, "only the agent whose schema ODW checks whole spawned");
+  assert.deepEqual(strict.notes, []);
+  const failed = strict.sink.ofType(AGENT_FAILED);
+  assert.deepEqual(failed.map((e) => e.label).sort(), ["a", "b", "c"]);
   assert.match(
-    String(failed[0]!.error),
-    /^AgentError: agent\(\) schema uses JSON Schema that ODW's validator does not check: "const" at #\/properties\/pick — adapter 'mine' does not validate schemas itself/,
+    String(failed.find((e) => e.label === "c")!.error),
+    /^AgentError: agent\(\) schema uses JSON Schema that ODW's validator does not check \("schemaKeywords": "strict"\): "const" at #\/properties\/pick — adapter 'mine' does not validate schemas itself/,
   );
-  const notes = sink.ofType(LOG).filter((e) => /left to adapter 'claude'/.test(String(e.message)));
-  assert.equal(notes.length, 1);
-  assert.match(String(notes[0]!.message), /^[ab]:\d+: schema keywords ODW does not check are left to adapter 'claude'/);
 });
 
 const nativeAgent = fileURLToPath(new URL("./fixtures/native-schema-agent.mjs", import.meta.url));
@@ -485,18 +547,22 @@ const inline = await agent('Judge it.', { adapter: 'inline', schema: VERDICT, la
 const file = await agent('Judge it.', { adapter: 'file', schema: VERDICT, label: 'file' })
 const picked = await agent('Pick one.', { adapter: 'inline', schema: PICK, label: 'picked' })
 const plain = await agent('Judge it.', { adapter: 'plain', schema: VERDICT, label: 'plain' })
-const [refused] = await parallel([() => agent('Pick one.', { adapter: 'plain', schema: PICK, label: 'refused' })])
-return { inline, file, picked, plain, refused }
+const unchecked = await agent('Pick one.', { adapter: 'plain', schema: PICK, label: 'unchecked' })
+const [refused] = await parallel([() => agent('Pick one.', { adapter: 'plain', schema: { type: 'object', requird: ['pick'] }, label: 'refused' })])
+return { inline, file, picked, plain, unchecked, refused }
 `,
     );
     const store = new RunStore(join(root, "runs"));
     const id = store.create({ script, args: null, source: root, configPath });
     assert.equal(await executeRun(store.runDir(id)), "done", JSON.stringify(store.readError(id)));
-    assert.deepEqual(store.readResult(id), {
+    const result = store.readResult(id) as Record<string, unknown> & { unchecked: { pick: unknown } };
+    assert.match(String(result.unchecked.pick), /^mock-/, "on 'plain' nothing enforces the const: the mock's string comes back");
+    assert.deepEqual(result, {
       inline: { verdict: "pass" },
       file: { verdict: "pass" },
       picked: { pick: "left" },
       plain: { verdict: "pass" },
+      unchecked: result.unchecked,
       refused: null,
     });
     // The file agent (2) read its schema from the run directory, which keeps none once it ran.
@@ -507,12 +573,17 @@ return { inline, file, picked, plain, refused }
       [],
     );
     const events = store.readEvents(id);
-    const notes = events.filter((e) => e.type === "log" && /left to adapter 'inline'/.test(String(e.message)));
-    assert.equal(notes.length, 1);
-    assert.match(String(notes[0]!.message), /"const" at #\/properties\/pick/);
+    const logged = (pattern: RegExp) => events.filter((e) => e.type === "log" && pattern.test(String(e.message)));
+    const left = logged(/left to adapter 'inline'/);
+    assert.equal(left.length, 1);
+    assert.match(String(left[0]!.message), /^picked:3: .*\("schemaKeywords": "native"\): "const" at #\/properties\/pick/);
+    const nobody = logged(/nothing else will \(adapter 'plain'/);
+    assert.equal(nobody.length, 1, '"native" on an adapter without native schemas is "warn"');
+    assert.match(String(nobody[0]!.message), /^unchecked:5: .*"const" at #\/properties\/pick/);
+    // A malformed schema fails its call in every mode.
     const refused = events.find((e) => e.type === "agent_failed");
     assert.equal(refused?.label, "refused");
-    assert.match(String(refused?.error), /^AgentError: .*adapter 'plain' does not validate schemas itself/);
+    assert.match(String(refused?.error), /^AgentError: agent\(\) schema is not JSON Schema ODW can check: unknown keyword "requird"/);
     // The native agents' usage still came from their result events.
     const finished = events.filter((e) => e.type === "agent_finished" && e.adapter === "inline");
     assert.ok(finished.every((e) => (e.usage as { outputTokens?: number } | undefined)?.outputTokens === 5), JSON.stringify(finished));
@@ -577,12 +648,15 @@ test("flags.schema loads, is off when left out, and a malformed one fails the lo
   );
 });
 
-test("schemaKeywords and schemaPrompt load, default to odw and auto, and refuse anything else", () => {
+test("schemaKeywords and schemaPrompt load, default to warn and auto, and refuse anything else", () => {
   const defaults = defaultConfig().settings;
-  assert.deepEqual([defaults.schemaKeywords, defaults.schemaPrompt], ["odw", "auto"]);
+  assert.deepEqual([defaults.schemaKeywords, defaults.schemaPrompt], ["warn", "auto"]);
+  for (const schemaKeywords of ["warn", "strict", "native"]) {
+    assert.equal(loadFrom({ schemaKeywords }).settings.schemaKeywords, schemaKeywords);
+  }
   const { settings } = loadFrom({ schemaKeywords: "native", schemaPrompt: "always" });
   assert.deepEqual([settings.schemaKeywords, settings.schemaPrompt], ["native", "always"]);
-  assert.throws(() => loadFrom({ schemaKeywords: "all" }), /"schemaKeywords" must be "odw" or "native"; got "all"/);
+  assert.throws(() => loadFrom({ schemaKeywords: "odw" }), /"schemaKeywords" must be "warn", "strict" or "native"; got "odw"/);
   assert.throws(() => loadFrom({ schemaPrompt: true }), /"schemaPrompt" must be "auto" or "always"; got true/);
   assert.deepEqual(collectConfigWarnings({ schemaKeywords: "native", schemaPrompt: "auto" }), []);
   assert.deepEqual(collectConfigWarnings({ schemaKeyword: "native" }), ['unknown key "schemaKeyword" is ignored — did you mean "schemaKeywords"?']);

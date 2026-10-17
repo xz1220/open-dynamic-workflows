@@ -15,9 +15,9 @@ const MAX_FETCH = 15
 const MAX_VERIFY_CLAIMS = 25
 
 // ─── Schemas ───
-// Upper bounds are descriptions, not maxItems: ODW refuses a schema keyword its
-// validator does not check (references/primitives.md#schema), and the prompts
-// below ask for these counts anyway.
+// Upper bounds are descriptions, not maxItems: ODW's validator does not check
+// maxItems (references/primitives.md#schema), and the prompts below ask for
+// these counts anyway.
 const SCOPE_SCHEMA = {
   type: "object", required: ["question", "angles", "summary"],
   properties: {

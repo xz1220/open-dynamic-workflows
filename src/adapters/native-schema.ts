@@ -2,21 +2,25 @@
  * Native structured output (an ODW extension): how one agent call's JSON
  * Schema reaches its CLI, decided before the CLI starts.
  *
- * Every schema is audited first (schema.ts `auditSchema`). One that uses JSON
- * Schema ODW's validator does not check fails the call with an AgentError
- * naming each keyword and where it sits — a constraint is never silently left
- * unchecked. A CLI that validates schemas itself declares how it takes one
- * (`flags.schema`): ODW passes it the schema — inline as one argv element, or
- * as the path of a file written for the CLI run and removed after it — and
- * still validates every reply itself. The prompt describes the schema only to
- * a CLI that does not take it (`schemaPrompt: "always"`: to every CLI).
+ * Every schema is audited first (schema.ts `auditSchema`). A malformed one —
+ * a typo, a keyword JSON Schema does not have — fails the call with an
+ * AgentError. JSON Schema ODW's validator does not check (`oneOf`, `$ref`,
+ * `const`, …) is never left silently unchecked, as `schemaKeywords` says:
+ * `"warn"` (the default) — the call runs, ODW validates the part it checks
+ * (`checkedSubset`), and the run logs once which keywords it does not check
+ * and where; `"strict"` — the call fails with an AgentError naming each one;
+ * `"native"` — on a CLI that validates the schema itself they are left to it
+ * (logged once too), elsewhere as `"warn"`.
  *
- * With `schemaKeywords: "native"`, a schema on such a CLI may use what ODW does
- * not check: the CLI enforces it, ODW validates the part it knows
- * (`checkedSubset`), and the run says so once. A CLI that takes only strict
- * schemas (`flags.schema.strict`: Codex sends `--output-schema` in OpenAI's
- * strict mode) is handed one only when it is strict; any other goes in the
- * prompt, as on a CLI without native support, and the run says so once.
+ * A CLI that validates schemas itself declares how it takes one
+ * (`flags.schema`): ODW passes it the whole schema — inline as one argv
+ * element, or as the path of a file written for the CLI run and removed after
+ * it — and still validates every reply itself. The prompt describes the
+ * schema only to a CLI that does not take it (`schemaPrompt: "always"`: to
+ * every CLI). A CLI that takes only strict schemas (`flags.schema.strict`:
+ * Codex sends `--output-schema` in OpenAI's strict mode) is handed one only
+ * when it is strict; any other goes in the prompt, as on a CLI without native
+ * support, and the run says so once.
  */
 
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -68,10 +72,10 @@ export function planSchema(
   const flag = adapter.flags?.schema;
   const unstrict = flag?.strict === true && !isStrictSchema(schema);
   const native = flag && !unstrict ? flag : null;
-  const always = settings.schemaPrompt === "always";
+  const describe = !native || settings.schemaPrompt === "always";
   const unchecked = issues.filter((issue) => issue.kind === "unchecked");
   if (unchecked.length === 0) {
-    const plan: SchemaPlan = { native, check: schema as JsonSchema, describe: !native || always };
+    const plan: SchemaPlan = { native, check: schema as JsonSchema, describe };
     if (unstrict) {
       plan.note =
         `adapter '${adapter.name}' takes only strict schemas natively (${STRICT_RULES}): ` +
@@ -79,27 +83,13 @@ export function planSchema(
     }
     return plan;
   }
-  if (native && settings.schemaKeywords === "native") {
-    return {
-      native,
-      check: checkedSubset(schema),
-      describe: always,
-      note:
-        `schema keywords ODW does not check are left to adapter '${adapter.name}', which validates the schema itself ` +
-        `("schemaKeywords": "native"): ${listIssues(unchecked)} — ODW checks the rest`,
-    };
-  }
-  return refuse(uncheckedError(adapter, unchecked, flag, unstrict, settings));
+  if (settings.schemaKeywords === "strict") return refuse(uncheckedError(adapter, unchecked, flag, unstrict));
+  // "warn" and "native": the call runs, ODW checks what it can, and the run says what it does not.
+  return { native, check: checkedSubset(schema), describe, note: uncheckedNote(adapter, unchecked, flag, unstrict, settings) };
 }
 
-/** Why a schema with keywords ODW does not check cannot run on `adapter`, and what would let it. */
-function uncheckedError(
-  adapter: Adapter,
-  unchecked: SchemaIssue[],
-  flag: SchemaFlag | undefined,
-  unstrict: boolean,
-  settings: Pick<Settings, "schemaKeywords">,
-): string {
+/** Why a schema with keywords ODW does not check cannot run under "strict", and what would let it. */
+function uncheckedError(adapter: Adapter, unchecked: SchemaIssue[], flag: SchemaFlag | undefined, unstrict: boolean): string {
   const it = pronoun(unchecked);
   const remove = `remove ${it} (a "description" can still ask the agent for ${it})`;
   let how: string;
@@ -108,14 +98,49 @@ function uncheckedError(
       `adapter '${adapter.name}' does not validate schemas itself, so nothing would enforce ${it}: ${remove}, ` +
       `or run this agent on an adapter that does (one with "flags.schema", like the built-in claude) and set "schemaKeywords": "native"`;
   } else if (unstrict) {
-    const setting = settings.schemaKeywords === "native" ? "" : ` and set "schemaKeywords": "native"`;
     how =
       `adapter '${adapter.name}' validates only strict schemas itself (${STRICT_RULES}), and this one is not: ` +
-      `${remove}, or make the schema strict${setting}`;
+      `${remove}, or make the schema strict and set "schemaKeywords": "native"`;
   } else {
     how = `${remove}, or set "schemaKeywords": "native" to leave ${it} to adapter '${adapter.name}', which validates the schema itself`;
   }
-  return `agent() schema uses JSON Schema that ODW's validator does not check: ${listIssues(unchecked)} — ${how}`;
+  return (
+    `agent() schema uses JSON Schema that ODW's validator does not check ("schemaKeywords": "strict"): ` +
+    `${listIssues(unchecked)} — ${how}`
+  );
+}
+
+/**
+ * What the run logs, once, about keywords ODW does not check in a call it lets
+ * run: who enforces them, if anyone, and how to make them count.
+ */
+function uncheckedNote(
+  adapter: Adapter,
+  unchecked: SchemaIssue[],
+  flag: SchemaFlag | undefined,
+  unstrict: boolean,
+  settings: Pick<Settings, "schemaKeywords">,
+): string {
+  const listed = listIssues(unchecked);
+  if (flag && !unstrict) {
+    const mode = settings.schemaKeywords === "native" ? ` ("schemaKeywords": "native")` : "";
+    const strict = settings.schemaKeywords === "native" ? "" : `; "schemaKeywords": "strict" refuses such calls`;
+    return (
+      `schema keywords ODW does not check are left to adapter '${adapter.name}', which validates the schema itself${mode}: ` +
+      `${listed} — ODW checks the rest${strict}`
+    );
+  }
+  const why = flag
+    ? `adapter '${adapter.name}' validates only strict schemas itself (${STRICT_RULES}), and this one is not`
+    : `adapter '${adapter.name}' does not validate schemas itself`;
+  // An adapter that validates schemas is handed this one whole, whatever the mode.
+  const count = flag
+    ? `make the schema strict so adapter '${adapter.name}' takes it natively`
+    : `run the agent on an adapter that validates schemas itself (one with "flags.schema", like the built-in claude)`;
+  return (
+    `schema keywords ODW does not check, and nothing else will (${why}): ${listed} — ODW checks the rest; ` +
+    `to make them count, ${count}, or set "schemaKeywords": "strict" to refuse such calls`
+  );
 }
 
 /** The argv that hands a CLI its schema, and what removes what was written for it. */

@@ -925,7 +925,7 @@ function buildSettings(raw: Record<string, unknown>): Settings {
     schemaKeywords:
       raw["schemaKeywords"] == null
         ? DEFAULT_SETTINGS.schemaKeywords
-        : buildChoice("schemaKeywords", raw["schemaKeywords"], ["odw", "native"] as const),
+        : buildChoice("schemaKeywords", raw["schemaKeywords"], ["warn", "strict", "native"] as const),
     schemaPrompt:
       raw["schemaPrompt"] == null
         ? DEFAULT_SETTINGS.schemaPrompt
@@ -936,7 +936,9 @@ function buildSettings(raw: Record<string, unknown>): Settings {
 /** Validate a setting that takes one of a few words, such as `schemaKeywords`. */
 function buildChoice<T extends string>(key: string, raw: unknown, choices: readonly T[]): T {
   if ((choices as readonly unknown[]).includes(raw)) return raw as T;
-  throw new ConfigError(`"${key}" must be ${choices.map((choice) => `"${choice}"`).join(" or ")}; got ${JSON.stringify(raw)}`);
+  const quoted = choices.map((choice) => `"${choice}"`);
+  const listed = quoted.length > 1 ? `${quoted.slice(0, -1).join(", ")} or ${quoted.at(-1)}` : quoted.join("");
+  throw new ConfigError(`"${key}" must be ${listed}; got ${JSON.stringify(raw)}`);
 }
 
 /** Validate the run's permission tier. */

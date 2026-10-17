@@ -31,10 +31,11 @@
  * spawned. Under `agentEnv: "minimal"` the CLI starts with only the variables
  * adapters/agent-env.ts lets through.
  *
- * So does a schema nothing would fully check (an ODW extension; see
- * adapters/native-schema.ts). A CLI that validates schemas itself is handed
- * the call's schema on every run — its own validated value is the reply's —
- * and ODW validates the reply all the same.
+ * So does a malformed schema (an ODW extension; see adapters/native-schema.ts),
+ * and — under `schemaKeywords: "strict"` — one with keywords ODW's validator
+ * does not check, which otherwise the run logs once. A CLI that validates
+ * schemas itself is handed the call's schema on every run — its own validated
+ * value is the reply's — and ODW validates the reply all the same.
  *
  * The command runner is injectable, so the bridge unit-tests with a fake runner
  * and no real agent account; so are the backoff's sleep, clock and jitter.
@@ -363,9 +364,10 @@ export class Bridge {
     // it, or whose CLI cannot enforce it, never reaches a workspace or a process.
     const permissions = this.permissionsFor(adapter, request.permissions);
     if (permissions.error) throw new AgentError(permissions.error);
-    // So is the schema (ODW extension; see adapters/native-schema.ts): one
-    // nothing would fully check never starts; a CLI that validates schemas
-    // itself is handed it on every run of the call.
+    // So is the schema (ODW extension; see adapters/native-schema.ts): a
+    // malformed one never starts, nor, under "strict", one with keywords ODW
+    // does not check (else logged once); a CLI that validates schemas itself
+    // is handed it on every run of the call.
     const schema = request.schema ? planSchema(adapter, request.schema, settings) : undefined;
     if (schema?.error) throw new AgentError(schema.error);
     if (schema?.note && !this.schemaNotes.has(schema.note)) {
