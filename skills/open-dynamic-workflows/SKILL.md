@@ -132,6 +132,12 @@ user** which CLI to default to and persist their answer with
 `odw init --adapter <name>`. Do not pick for them silently; the default decides
 which vendor's CLI (and whose quota/permissions) every bare `agent()` call uses.
 
+If agents fail fast or come back empty, run `odw doctor`: it checks the
+runtime, config, run directory and every adapter, and prints what to fix.
+`odw doctor --smoke` additionally sends the default adapter one real prompt —
+ask your user first (it costs a model call) — and catches a CLI that exits 0
+without answering when headless (a login, trust or approval prompt).
+
 ## Behavior you must know
 
 - **Context**: each agent receives its own prompt. Agents using the default
