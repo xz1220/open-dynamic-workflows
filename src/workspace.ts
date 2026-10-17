@@ -8,10 +8,12 @@
  *   - `worktree` (per-agent opt-in via `isolation: "worktree"`): the agent runs
  *     in a throwaway `git worktree` of the source repository — again the same
  *     mechanism Claude Code uses. Worktrees share the repo's object store, so
- *     setup is near-free regardless of tree size. The agent's changes come back
- *     as a unified diff against the commit the worktree started from — staging
- *     or even committing inside the worktree does not hide work — and the
- *     worktree is removed afterwards; the diff is the artifact.
+ *     setup is near-free regardless of tree size. The worktree is removed
+ *     afterwards and nothing is merged back: `agent()` returns the reply.
+ *     {@link Workspace.diff} can capture the agent's changes as a unified diff
+ *     against the commit the worktree started from (staging or even committing
+ *     inside the worktree does not hide work), but only on demand — it costs
+ *     an index walk and a file read, so the bridge does not call it.
  *
  * Known properties of the git mechanism (shared with Claude Code's worktrees):
  *   - the source must be a git repository with at least one commit; asking for
@@ -24,8 +26,7 @@
  */
 
 import { execFile } from "node:child_process";
-import { closeSync, openSync, readSync } from "node:fs";
-import { mkdtemp, realpath, rm, stat } from "node:fs/promises";
+import { mkdtemp, open, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
@@ -39,7 +40,7 @@ export interface Workspace {
   path: string;
   /** The original source tree. */
   source: string;
-  /** Unified diff of the agent's changes (empty for inplace). */
+  /** Unified diff of the agent's changes, computed on demand (empty for inplace). */
   diff(): Promise<string>;
 }
 
@@ -62,27 +63,15 @@ function gitDetail(err: unknown): string {
 
 /** Read at most `cap` bytes of `path`, appending a truncation marker if cut. */
 async function readCapped(path: string, cap: number): Promise<string> {
-  const info = await stat(path);
-  if (info.size <= cap) {
-    const fd = openSync(path, "r");
-    try {
-      const buf = Buffer.alloc(info.size);
-      const n = readSync(fd, buf, 0, buf.length, 0);
-      return buf.subarray(0, n).toString("utf8");
-    } finally {
-      closeSync(fd);
-    }
-  }
-  const fd = openSync(path, "r");
+  const file = await open(path, "r");
   try {
-    const buf = Buffer.alloc(cap);
-    const n = readSync(fd, buf, 0, cap, 0);
-    return (
-      buf.subarray(0, n).toString("utf8") +
-      `\n... [diff truncated: ${info.size} bytes total, first ${cap} shown]\n`
-    );
+    const { size } = await file.stat();
+    const buf = Buffer.alloc(Math.min(size, cap));
+    const { bytesRead } = await file.read(buf, 0, buf.length, 0);
+    const text = buf.subarray(0, bytesRead).toString("utf8");
+    return size <= cap ? text : `${text}\n... [diff truncated: ${size} bytes total, first ${cap} shown]\n`;
   } finally {
-    closeSync(fd);
+    await file.close();
   }
 }
 

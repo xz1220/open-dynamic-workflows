@@ -43,8 +43,6 @@ const outcome = (value: unknown) => ({
   text: String(value),
   adapter: "claude",
   attempts: 1,
-  diff: "",
-  cli: null,
 });
 
 function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
@@ -172,8 +170,6 @@ test("T5: routing notes on the outcome are emitted as LOG events", async () => {
     text: "v",
     adapter: "claude",
     attempts: 1,
-    diff: "",
-    cli: null,
     notes: ["note-A", "note-B"],
   }));
   const p = createPrimitives(ctx);

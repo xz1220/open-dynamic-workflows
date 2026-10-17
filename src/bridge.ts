@@ -67,9 +67,6 @@ export interface AgentOutcome {
   adapter: string;
   /** How many CLI calls it took (>1 means schema retries happened). */
   attempts: number;
-  /** Workspace diff (empty for inplace mode / no changes). */
-  diff: string;
-  cli: CliResult | null;
   /**
    * Notes from option routing: options accepted but not honoured natively, and
    * what was done instead. The caller surfaces these as LOG events so no option
@@ -112,14 +109,14 @@ export class Bridge {
     let problems: string[] = [];
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       const prompt = problems.length ? `${basePrompt}\n\n${retryFeedback(problems)}` : basePrompt;
-      const { cli, diff, decoder } = await this.invoke(adapter, plan, prompt, timeout);
+      const { cli, decoder } = await this.invoke(adapter, plan, prompt, timeout);
       if (!cliOk(cli)) throw new AdapterExecutionError(cliFailureMessage(adapter, cli));
 
       // A runner that streams stdout fed the decoder and kept only a tail; an
       // injected runner that does not stream returns the whole stdout instead.
       const text = decoder?.received ? decoder.finish() : decodeAdapterOutput(adapter, cli.stdout);
       if (!request.schema) {
-        return { value: text, text, adapter: adapter.name, attempts: attempt, diff, cli, notes: plan.notes };
+        return { value: text, text, adapter: adapter.name, attempts: attempt, notes: plan.notes };
       }
 
       const value = extractJson(text);
@@ -130,7 +127,7 @@ export class Bridge {
           ? ["no JSON value found in the reply"]
           : validate(value, request.schema);
       if (problems.length === 0) {
-        return { value, text, adapter: adapter.name, attempts: attempt, diff, cli, notes: plan.notes };
+        return { value, text, adapter: adapter.name, attempts: attempt, notes: plan.notes };
       }
     }
 
@@ -157,7 +154,7 @@ export class Bridge {
     plan: InvocationPlan,
     prompt: string,
     timeout: number | undefined,
-  ): Promise<{ cli: CliResult; diff: string; decoder: AdapterOutputDecoder | null }> {
+  ): Promise<{ cli: CliResult; decoder: AdapterOutputDecoder | null }> {
     // JSONL transcripts are decoded while they stream, so only the final text
     // is retained (and a verbose session is never cut off at the stdout cap);
     // text replies are buffered by the runner under its cap, as before.
@@ -193,9 +190,10 @@ export class Bridge {
         const env = adapter.env
           ? ({ ...process.env, ...adapter.env } as Record<string, string>)
           : undefined;
+        // No ws.diff() here: agent() returns the reply, never a diff, so
+        // computing one per worktree attempt was pure overhead.
         const cli = await this.runner(command, { stdin, cwd: ws.path, env, timeout, onStdout });
-        const diff = await ws.diff();
-        return { cli, diff, decoder };
+        return { cli, decoder };
       } finally {
         if (cleanup) await cleanup();
       }

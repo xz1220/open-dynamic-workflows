@@ -1,5 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { defaultConfig } from "../src/adapters/config.js";
 import { Bridge } from "../src/bridge.js";
@@ -121,7 +125,6 @@ test("new harness adapters send prompts on stdin and route workspace and model f
 
     const out = await bridge.run({ prompt: `ask ${name}`, model: `${name}/model` });
     assert.equal(out.text, `${name} answer`);
-    assert.equal(out.cli?.stdout, raw);
     assert.match(stdin, new RegExp(`ask ${name}`));
     assert.equal(command.includes("{prompt}"), false);
     assert.ok(command.includes("/repo"), `expected workspace in ${JSON.stringify(command)}`);
@@ -162,6 +165,48 @@ test("JSONL replies are decoded while the runner streams them; text replies are 
   assert.equal((await textBridge.run({ prompt: "p" })).text, "plain answer");
   assert.equal(textStreamed, undefined, "text adapters keep the runner's capped buffer");
 });
+
+test(
+  "a worktree-isolated agent never computes the (discarded) workspace diff",
+  { skip: process.platform === "win32" },
+  async () => {
+    const dir = mkdtempSync(join(tmpdir(), "odw-gitspy-"));
+    const oldPath = process.env.PATH;
+    try {
+      const realGit = execFileSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).trim();
+      const repo = join(dir, "repo");
+      mkdirSync(repo);
+      writeFileSync(join(repo, "a.txt"), "a\n");
+      const git = (...args: string[]) => execFileSync(realGit, ["-C", repo, ...args], { encoding: "utf8" });
+      git("init", "-q");
+      git("add", "-A");
+      git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--no-gpg-sign", "-m", "init");
+      // A logging git first on PATH records every call the workspace makes.
+      const log = join(dir, "git.log");
+      mkdirSync(join(dir, "bin"));
+      writeFileSync(join(dir, "bin", "git"), `#!/bin/sh\necho "$*" >> '${log}'\nexec '${realGit}' "$@"\n`);
+      chmodSync(join(dir, "bin", "git"), 0o755);
+      process.env.PATH = `${join(dir, "bin")}:${oldPath}`;
+
+      const bridge = new Bridge(inplaceConfig(), {
+        source: repo,
+        runner: async (_command, options) => {
+          writeFileSync(join(options!.cwd!, "agent-output.txt"), "edited\n");
+          return ok("done");
+        },
+      });
+      const out = await bridge.run({ prompt: "edit", isolation: "worktree" });
+      assert.equal(out.text, "done");
+      assert.equal("diff" in out, false, "the outcome carries no diff field");
+      const calls = readFileSync(log, "utf8");
+      assert.match(calls, /worktree add/, "the agent did run in a worktree");
+      assert.doesNotMatch(calls, /(^|\s)diff\s|intent-to-add/m, `unexpected diff work:\n${calls}`);
+    } finally {
+      process.env.PATH = oldPath;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  },
+);
 
 test("a failure message keeps both ends of a long diagnostic", async () => {
   const stderr = `Error: the real cause\n${"noise ".repeat(500)}\n[process output exceeded 10 bytes; terminated]`;
