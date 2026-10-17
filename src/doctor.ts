@@ -25,6 +25,7 @@ import {
 import { runCommand, type CommandRunner } from "./adapters/runner.js";
 import type { Config, PermissionTier } from "./adapters/types.js";
 import { Bridge } from "./bridge.js";
+import { describeConcurrency } from "./throttle.js";
 
 export type CheckStatus = "ok" | "warn" | "fail" | "skip";
 
@@ -141,6 +142,9 @@ export async function runDoctor(opts: DoctorOptions): Promise<DoctorReport> {
         ? undefined
         : "install that CLI, or run `odw init` to choose an installed one",
   });
+
+  // The caps a run's agents get, per adapter too, and how rate limits and fan-outs move them (ODW extensions).
+  add({ id: "concurrency", title: "Concurrency", status: "ok", detail: describeConcurrency(config, { details: true }) });
 
   for (const a of listing) {
     // The permission tiers it can run (ODW extension): `odw run --permissions`

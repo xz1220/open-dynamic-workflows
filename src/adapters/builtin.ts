@@ -19,6 +19,7 @@ export interface RawAdapter {
   env?: Record<string, string>;
   timeout?: number;
   stallTimeout?: number;
+  concurrency?: number;
   label?: string;
   flags?: AdapterFlags;
   output?: AdapterOutput;
@@ -250,6 +251,7 @@ export const DEFAULT_SETTINGS: Settings = {
   worktreeSetupTimeout: 600, // seconds
   portRange: [41000, 41999], // ODW_PORT, unique among a run's running agents
   fanOutWarn: 25, // log a warning when one parallel()/pipeline() call fans out wider
+  adaptiveConcurrency: true, // a rate limit halves its adapter's cap; a quiet minute gives a slot back
   maxDiffBytes: 2 * 1024 * 1024, // an isolated agent's kept diff; past it, the head and a note
   keepBranches: false, // keep: true per agent still commits its change to a branch
   maxTranscriptBytes: 5 * 1024 * 1024, // each agent's transcript; past it, one truncation line (0: none)

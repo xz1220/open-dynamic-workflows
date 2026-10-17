@@ -99,6 +99,7 @@ const KNOWN_TOP_KEYS = [
   "worktreeSetupTimeout",
   "portRange",
   "fanOutWarn",
+  "adaptiveConcurrency",
   "maxDiffBytes",
   "keepBranches",
   "maxTranscriptBytes",
@@ -107,7 +108,7 @@ const KNOWN_TOP_KEYS = [
   "agentEnvPass",
 ] as const;
 
-const KNOWN_ADAPTER_KEYS = ["command", "stdin", "env", "timeout", "stallTimeout", "label", "flags", "output", "failures", "permissionArgs", "permissions"] as const;
+const KNOWN_ADAPTER_KEYS = ["command", "stdin", "env", "timeout", "stallTimeout", "concurrency", "label", "flags", "output", "failures", "permissionArgs", "permissions"] as const;
 
 /** The fields of an adapter's `output`, per format. */
 const KNOWN_OUTPUT_KEYS: Record<string, readonly string[]> = {
@@ -411,6 +412,21 @@ export function resolveConcurrency(concurrency: number | null): number {
   return Math.max(1, Math.min(16, n - 2));
 }
 
+/**
+ * The per-adapter caps in force (an ODW extension): each adapter that sets
+ * `concurrency`, at most the run-wide cap — an adapter cannot run more agents
+ * than the run. Adapters without one are absent: the run-wide cap alone holds them.
+ */
+export function resolveAdapterConcurrency(config: Config): Record<string, number> {
+  const run = resolveConcurrency(config.settings.concurrency);
+  const caps: Record<string, number> = {};
+  for (const name of Object.keys(config.adapters).sort()) {
+    const cap = config.adapters[name]!.concurrency;
+    if (cap !== undefined) caps[name] = Math.min(cap, run);
+  }
+  return caps;
+}
+
 /** Directory runs are stored under; defaults to `~/.odw/runs`. */
 export function resolveRunsRoot(runsRoot: string | null): string {
   return runsRoot ? expandHome(runsRoot) : join(homeDir(), ".odw", "runs");
@@ -559,6 +575,13 @@ function buildAdapter(name: string, spec: RawAdapter): Adapter {
       "a positive number of seconds, or 0 to turn the stall watchdog off",
       { min: 0 },
     );
+  }
+  // Per-adapter concurrency (an ODW extension); null is "not set".
+  if (spec.concurrency !== undefined && spec.concurrency !== null) {
+    adapter.concurrency = numberSetting(`adapter '${name}' 'concurrency'`, spec.concurrency, "a positive integer", {
+      min: 1,
+      integer: true,
+    });
   }
   if (spec.label !== undefined) adapter.label = spec.label;
   if (spec.flags !== undefined) adapter.flags = buildFlags(name, spec.flags);
@@ -825,6 +848,10 @@ function buildSettings(raw: Record<string, unknown>): Settings {
             min: 0,
             integer: true,
           }) || null,
+    adaptiveConcurrency:
+      raw["adaptiveConcurrency"] == null
+        ? DEFAULT_SETTINGS.adaptiveConcurrency
+        : buildFlag("adaptiveConcurrency", raw["adaptiveConcurrency"]),
     maxDiffBytes: num("maxDiffBytes", DEFAULT_SETTINGS.maxDiffBytes, "a positive whole number of bytes", {
       min: 1,
       integer: true,

@@ -8,15 +8,16 @@
  * place that wires the layers together from a {@link Config}.
  */
 
-import { resolveConcurrency } from "./adapters/config.js";
+import { resolveAdapterConcurrency, resolveConcurrency } from "./adapters/config.js";
 import type { Config } from "./adapters/types.js";
 import { Bridge } from "./bridge.js";
 import type { WaitingCheckpoint } from "./checkpoint.js";
 import { NullControl, type Control } from "./control.js";
 import { BudgetExhausted } from "./errors.js";
-import { NullSink, type EventSink, type WorkflowEvent } from "./events.js";
+import { LOG, NullSink, event, type EventSink, type WorkflowEvent } from "./events.js";
 import type { AgentResultRecord, ReplayJournal } from "./journal.js";
 import { Scheduler } from "./scheduler.js";
+import { capChangeMessage } from "./throttle.js";
 import type { TranscriptPaths } from "./transcript.js";
 
 export interface RunContext {
@@ -127,6 +128,14 @@ export function buildContext(config: Config, options: BuildContextOptions = {}):
   const scheduler = new Scheduler({
     concurrency: resolveConcurrency(config.settings.concurrency),
     maxAgents: config.settings.maxAgents,
+    // Per-adapter caps, lowered by rate limits while adaptive (ODW extensions):
+    // a cut, and the slot that brings a cap back in full, are logged.
+    adapterConcurrency: resolveAdapterConcurrency(config),
+    adaptive: config.settings.adaptiveConcurrency,
+    onAdapterCap: (change) => {
+      const message = capChangeMessage(change);
+      if (message) sink.emit(event(LOG, { message, adapter: change.adapter, concurrency: change.limit }));
+    },
     checkpoint: (signal) => control.checkpoint(signal),
     // A stop must reach agents that are already running, not just the next dispatch.
     watchStop: control.watchStop ? (onStop) => control.watchStop!(onStop) : undefined,

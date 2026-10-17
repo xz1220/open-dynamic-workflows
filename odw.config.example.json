@@ -29,6 +29,9 @@
   "//fanOutWarn": "ODW extension. When one parallel() or pipeline() call fans out more than this many tasks or items, the run logs one warning with the count (it never blocks); 0 or null turns it off. What a run spends — tokens and cost as adapters report them (the built-in claude does), else output tokens estimated as chars/4 — shows in odw status, the live view and the dashboard.",
   "fanOutWarn": 25,
 
+  "//adaptiveConcurrency": "ODW extension. An adapter's own \"concurrency\" (my_wrapper below sets 2) caps how many of its agents run at once, inside the run-wide concurrency (an agent needs a slot in both; each adapter queues first come, first served, and a throttled adapter never holds up the others). With adaptiveConcurrency, a rate limit halves its adapter's cap — that of an adapter without one starts at the run-wide cap — for the rest of the run, never below 1, and each minute without another gives one slot back; both are logged. false keeps every cap fixed. odw doctor and each run's first log line show the caps.",
+  "adaptiveConcurrency": true,
+
   "//maxDiffBytes": "ODW extension. An agent that runs with isolation: \"worktree\" leaves what it changed as a unified diff in the run directory (agents/<agentId>.diff): odw diff prints it, odw apply applies it, and the dashboard's Changes tab shows it. Past maxDiffBytes the diff keeps its head, cut at a line, and a note; its counts still describe the whole change. keepBranches also commits every isolated agent's change to a branch odw/<runId>/<agentId>-<label> of the source repository (keep: true does that for one agent; keep: false opts one out).",
   "maxDiffBytes": 2097152,
   "keepBranches": false,
@@ -130,7 +133,8 @@
       "label": "My custom wrapper (example)",
       "command": ["my-agent-wrapper", "--cwd", "{workspace}", "--prompt-file", "{prompt_file}"],
       "flags": { "model": ["--model"] },
-      "failures": { "rate_limit": ["server busy"], "quota": ["monthly tokens? (used up|exhausted)"], "auth": ["session expired"] }
+      "failures": { "rate_limit": ["server busy"], "quota": ["monthly tokens? (used up|exhausted)"], "auth": ["session expired"] },
+      "concurrency": 2
     }
   }
 }

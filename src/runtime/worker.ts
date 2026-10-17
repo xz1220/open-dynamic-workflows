@@ -30,6 +30,7 @@ import { ReplayJournal } from "../journal.js";
 import { loadWorkflowScript } from "../loader.js";
 import { createPrimitives } from "../primitives.js";
 import type { Scheduler } from "../scheduler.js";
+import { describeConcurrency } from "../throttle.js";
 import { FileControl } from "./file-control.js";
 import { notifyCheckpoint, notifyRunEnd } from "./notify.js";
 import { JsonlSink, RunStore } from "./run-store.js";
@@ -179,6 +180,8 @@ export async function executeRun(runDir: string): Promise<string> {
 
     store.updateStatus(runId, { state: "running", pid: process.pid });
     sink.emit(event(RUN_STARTED, { runId }));
+    // The run's start banner: how many agents it runs at once, per adapter too (an ODW extension).
+    sink.emit(event(LOG, { message: `concurrency: ${describeConcurrency(config)}` }));
     if (replay) {
       sink.emit(
         event(LOG, {

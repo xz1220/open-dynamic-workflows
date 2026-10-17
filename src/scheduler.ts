@@ -6,10 +6,19 @@
  * not by OS threads. Two limits are enforced here and only here:
  *
  *   - **Concurrency cap** — at most N agent CLIs run at once. A free slot is
- *     handed *directly* to the next waiter on release, so the cap can never be
- *     over-subscribed by a racing acquire.
+ *     handed to the next waiter in the same step that frees it, so the cap can
+ *     never be over-subscribed by a racing acquire.
  *   - **Total-agent backstop** — a hard ceiling on total dispatches per run, so
  *     a buggy loop cannot fan out forever.
+ *
+ * Inside the run-wide cap, an adapter may have a cap of its own (an ODW
+ * extension): an agent then needs a run slot and a slot on its adapter, both
+ * handed out together — it never holds one while it waits for the other. The
+ * queue is first come, first served per adapter, and a run slot goes to the
+ * oldest request whose adapter has room, so one throttled adapter never holds
+ * up the others. With adaptive back-pressure, a rate limit (which a running
+ * agent reports through its {@link AgentSlot}) halves its adapter's cap, and
+ * each minute without another gives one slot back.
  *
  * The scheduler also owns the run's abort signal. The first fatal error (stop,
  * budget, backstop, configuration) is recorded as the run's outcome and aborts
@@ -53,6 +62,78 @@ export interface SchedulerOptions {
    * not poll. Without it, a stop takes effect at the next dispatch only.
    */
   watchStop?: (onStop: () => void) => () => void;
+  /**
+   * Per-adapter caps (an ODW extension): adapter name → at most this many of
+   * its agents at once, inside `concurrency`. An adapter not listed is held
+   * to the run-wide cap alone.
+   */
+  adapterConcurrency?: Record<string, number>;
+  /**
+   * Adaptive back-pressure (an ODW extension): a rate limit an agent reports
+   * through its {@link AgentSlot} halves its adapter's cap for the rest of the
+   * run (never below 1), and every {@link RESTORE_MS} without another gives
+   * one slot back. Off unless set.
+   */
+  adaptive?: boolean;
+  /** Told whenever adaptive back-pressure changes an adapter's cap, so the run can say so. */
+  onAdapterCap?: (change: AdapterCapChange) => void;
+  /** The clock adaptive back-pressure measures its quiet minutes on, in ms; defaults to Date.now. */
+  now?: () => number;
+}
+
+/** How long an adapter must go without a rate limit to get one slot of its cap back, in ms. */
+export const RESTORE_MS = 60_000;
+
+/**
+ * What a running agent holds: a run slot and, when its adapter is throttled,
+ * a slot on its adapter. Handed to the agent's work by {@link Scheduler.runAgent}.
+ */
+export interface AgentSlot {
+  /**
+   * Report that this agent's CLI hit a rate limit: with adaptive
+   * back-pressure, its adapter's cap is halved — once per wave: the agents
+   * dispatched before the latest cut report the limit that caused it — and
+   * its quiet minute starts over.
+   */
+  rateLimited(): void;
+}
+
+/** An adapter's cap changed under adaptive back-pressure (an ODW extension). */
+export interface AdapterCapChange {
+  adapter: string;
+  /** The cap now in force, and the one before. */
+  limit: number;
+  previous: number;
+  /** Its full cap: where giving slots back stops. */
+  max: number;
+  /** A rate limit cut it, or a quiet minute gave a slot back. */
+  reason: "rate_limit" | "restored";
+  /** How long ago its last rate limit was, in ms. */
+  quietMs: number;
+}
+
+/** One adapter's share of the run: its cap, and its agents holding a slot. */
+interface Lane {
+  readonly adapter: string;
+  /** Its configured cap, at most the run-wide one. */
+  readonly max: number;
+  /** The cap in force: `max`, or less while adaptive back-pressure holds it down. */
+  limit: number;
+  /** Its agents holding a slot. */
+  active: number;
+  /** Bumped by every cut; an agent remembers the wave it was dispatched in. */
+  wave: number;
+  /** When its quiet minute started: its latest rate limit, or the latest slot given back. */
+  since: number;
+  /** When it last hit a rate limit. */
+  limitedAt: number;
+}
+
+/** A request waiting for its slots, in arrival order. */
+interface Waiter {
+  lane: Lane | undefined;
+  resolve: () => void;
+  reject: (reason: unknown) => void;
 }
 
 export class Scheduler {
@@ -61,11 +142,19 @@ export class Scheduler {
   private readonly checkpoint: (signal: AbortSignal) => void | Promise<void>;
   private readonly budgetGuard: () => void;
   private readonly watchStop: ((onStop: () => void) => () => void) | undefined;
+  private readonly adapterConcurrency: Record<string, number>;
+  private readonly adaptive: boolean;
+  private readonly onAdapterCap: ((change: AdapterCapChange) => void) | undefined;
+  private readonly now: () => number;
   private readonly controller = new AbortController();
   private fatal: { error: unknown } | undefined;
   private dispatchedCount = 0;
   private active = 0;
-  private readonly waiters: Array<{ resolve: () => void; reject: (reason: unknown) => void }> = [];
+  private readonly waiters: Waiter[] = [];
+  /** Per-adapter lanes, made as each adapter is first used: throttled adapters, or all with adaptive back-pressure. */
+  private readonly lanes = new Map<string, Lane>();
+  /** Wakes the queue when a held-down adapter is due a slot back. */
+  private restoreTimer: NodeJS.Timeout | undefined;
   /** runAgent/runCommand/runWait calls not yet settled: queued, paused at the checkpoint, running, or waiting. */
   private pending = 0;
   /** Agents and commands whose work is in flight, and checkpoint() waits: the stop watch is armed while any is. */
@@ -81,11 +170,18 @@ export class Scheduler {
         `scheduler limits must be numbers (concurrency=${options.concurrency}, maxAgents=${options.maxAgents})`,
       );
     }
+    for (const [adapter, cap] of Object.entries(options.adapterConcurrency ?? {})) {
+      if (Number.isNaN(cap)) throw new ConfigError(`scheduler limits must be numbers (adapter '${adapter}' concurrency=${cap})`);
+    }
     this.concurrency = Math.max(1, options.concurrency);
     this.maxAgents = options.maxAgents;
     this.checkpoint = options.checkpoint ?? (() => {});
     this.budgetGuard = options.budgetGuard ?? (() => {});
     this.watchStop = options.watchStop;
+    this.adapterConcurrency = { ...options.adapterConcurrency };
+    this.adaptive = options.adaptive ?? false;
+    this.onAdapterCap = options.onAdapterCap;
+    this.now = options.now ?? Date.now;
     // Every running agent listens on the signal; a high concurrency cap must
     // not trip Node's listener-leak warning.
     setMaxListeners(0, this.controller.signal);
@@ -94,6 +190,17 @@ export class Scheduler {
   /** How many agents have been dispatched so far in this run. */
   get dispatched(): number {
     return this.dispatchedCount;
+  }
+
+  /**
+   * How many of an adapter's agents may run at once now (an ODW extension):
+   * its cap, as adaptive back-pressure has lowered it; undefined when only
+   * the run-wide cap holds it.
+   */
+  adapterLimit(adapter: string): number | undefined {
+    const lane = this.laneFor(adapter);
+    if (lane) this.pump(); // a slot due back is given — to a waiting agent too
+    return lane?.limit;
   }
 
   /** Aborted, with the run's fatal error as its reason, once the run must end. */
@@ -119,17 +226,24 @@ export class Scheduler {
     this.fatal = { error: reason };
     this.controller.abort(reason);
     for (const waiter of this.waiters.splice(0)) waiter.reject(reason);
+    clearTimeout(this.restoreTimer);
   }
 
   /**
-   * Run one agent unit under the concurrency cap and total backstop. `fn`
-   * receives the run's abort signal and must stop its agent when it fires.
+   * Run one agent unit under the concurrency cap and total backstop — and,
+   * when `adapter` names it, under that adapter's cap too (an ODW extension).
+   * `fn` receives the run's abort signal, and must stop its agent when it
+   * fires, and the agent's {@link AgentSlot}.
    */
-  async runAgent<T>(fn: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  async runAgent<T>(
+    fn: (signal: AbortSignal, slot: AgentSlot) => Promise<T>,
+    options: { adapter?: string } = {},
+  ): Promise<T> {
     this.pending++;
     try {
       this.throwIfAborted();
-      await this.acquire();
+      const lane = options.adapter !== undefined ? this.laneFor(options.adapter) : undefined;
+      await this.acquire(lane);
       try {
         // Control and usage can change while this request waits for a slot.
         // Check at the actual dispatch boundary; a paused request holds its slot
@@ -143,10 +257,11 @@ export class Scheduler {
           throw new AgentLimitExceeded(`run reached its cap of ${this.maxAgents} agent dispatches`);
         }
         this.dispatchedCount++;
-        return await this.track(fn);
+        const slot = this.slotIn(lane);
+        return await this.track((signal) => fn(signal, slot));
       } finally {
         // Guard failures must also hand the slot to the next queued request.
-        this.release();
+        this.release(lane);
       }
     } catch (err) {
       // One fatal error ends the run: stop the other agents now instead of
@@ -279,27 +394,131 @@ export class Scheduler {
   }
 
   private notifyIdle(): void {
+    // Nothing is left to wake: a slot due back is given at the next dispatch.
+    clearTimeout(this.restoreTimer);
+    this.restoreTimer = undefined;
     const waiters = this.idleWaiters;
     this.idleWaiters = [];
     for (const idle of waiters) idle();
   }
 
-  private async acquire(): Promise<void> {
-    if (this.active < this.concurrency) {
-      this.active++;
-      return;
-    }
-    // Park until a slot is handed to us (ownership transfers without a
-    // re-count), or until the run is aborted.
-    await new Promise<void>((resolve, reject) => this.waiters.push({ resolve, reject }));
+  /**
+   * Park until {@link pump} hands this request a run slot — together with a
+   * slot on its adapter, when it has a lane — or until the run is aborted.
+   */
+  private acquire(lane: Lane | undefined): Promise<void> {
+    const granted = new Promise<void>((resolve, reject) => this.waiters.push({ lane, resolve, reject }));
+    this.pump();
+    return granted;
   }
 
-  private release(): void {
-    const next = this.waiters.shift();
-    if (next) {
-      next.resolve(); // hand our slot directly to the next waiter; `active` is unchanged
-    } else {
-      this.active--;
+  private release(lane: Lane | undefined): void {
+    this.active--;
+    if (lane) lane.active--;
+    this.pump();
+  }
+
+  /**
+   * Hand free slots out, oldest request first: a request whose adapter is at
+   * its cap is passed over — it keeps its place, and its adapter's later
+   * requests stay behind it — so it never blocks the run slot from another
+   * adapter. Run after every change, so no waiting request could ever take a
+   * free slot: a new one never jumps ahead, and the cap can never be exceeded.
+   */
+  private pump(): void {
+    if (this.lanes.size > 0 && !this.fatal) this.giveBack(this.now());
+    for (let i = 0; i < this.waiters.length && this.active < this.concurrency; ) {
+      const waiter = this.waiters[i]!;
+      const lane = waiter.lane;
+      if (lane && lane.active >= lane.limit) {
+        i++;
+        continue;
+      }
+      this.waiters.splice(i, 1);
+      this.active++;
+      if (lane) lane.active++;
+      waiter.resolve();
     }
+  }
+
+  /** The lane an adapter's agents queue in, or none when nothing limits that adapter but the run. */
+  private laneFor(adapter: string): Lane | undefined {
+    let lane = this.lanes.get(adapter);
+    if (lane) return lane;
+    const own = Object.prototype.hasOwnProperty.call(this.adapterConcurrency, adapter)
+      ? this.adapterConcurrency[adapter]!
+      : undefined;
+    if (own === undefined && !this.adaptive) return undefined;
+    const max = Math.max(1, Math.min(this.concurrency, own ?? this.concurrency));
+    lane = { adapter, max, limit: max, active: 0, wave: 0, since: 0, limitedAt: 0 };
+    this.lanes.set(adapter, lane);
+    return lane;
+  }
+
+  /** The slot handle of an agent dispatched in `lane` now: its rate limits count against this wave. */
+  private slotIn(lane: Lane | undefined): AgentSlot {
+    const wave = lane?.wave ?? 0;
+    return { rateLimited: () => this.rateLimited(lane, wave) };
+  }
+
+  /**
+   * Adaptive back-pressure: halve the adapter's cap (never below 1) and start
+   * its quiet minute over. An agent dispatched before the latest cut reports
+   * the same wave of rate limits — a fan-out that hit the limit together
+   * cuts once, not once per agent — so it only restarts the quiet minute.
+   */
+  private rateLimited(lane: Lane | undefined, wave: number): void {
+    if (!lane || !this.adaptive || this.fatal) return;
+    const now = this.now();
+    this.giveBack(now);
+    lane.since = now;
+    lane.limitedAt = now;
+    if (wave !== lane.wave || lane.limit <= 1) return;
+    const previous = lane.limit;
+    lane.limit = Math.max(1, Math.floor(previous / 2));
+    lane.wave++;
+    this.onAdapterCap?.({ adapter: lane.adapter, limit: lane.limit, previous, max: lane.max, reason: "rate_limit", quietMs: 0 });
+    this.armRestore();
+  }
+
+  /** Give each held-down lane one slot back per quiet minute that has passed. */
+  private giveBack(now: number): void {
+    for (const lane of this.lanes.values()) {
+      if (lane.limit >= lane.max) continue;
+      const minutes = Math.floor((now - lane.since) / RESTORE_MS);
+      if (minutes <= 0) continue;
+      const previous = lane.limit;
+      lane.limit = Math.min(lane.max, previous + minutes);
+      lane.since += minutes * RESTORE_MS;
+      this.onAdapterCap?.({
+        adapter: lane.adapter,
+        limit: lane.limit,
+        previous,
+        max: lane.max,
+        reason: "restored",
+        quietMs: now - lane.limitedAt,
+      });
+    }
+  }
+
+  /**
+   * Wake the queue when the next held-down lane is due a slot back, while
+   * there is work to wake (a slot due once the run is idle is given at its
+   * next dispatch). Unref'd: a running agent is what keeps the run alive.
+   */
+  private armRestore(): void {
+    if (this.restoreTimer || this.fatal || this.pending === 0) return;
+    let due = Infinity;
+    for (const lane of this.lanes.values()) {
+      if (lane.limit < lane.max) due = Math.min(due, lane.since + RESTORE_MS);
+    }
+    if (due === Infinity) return;
+    const delay = Math.min(RESTORE_MS, Math.max(0, due - this.now()));
+    this.restoreTimer = setTimeout(() => {
+      this.restoreTimer = undefined;
+      this.pump();
+      this.armRestore();
+    }, delay);
+    this.restoreTimer.unref();
   }
 }

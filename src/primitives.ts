@@ -32,6 +32,9 @@
  * Every agent_started event carries the agent's permission tier (an ODW
  * extension, adapters/permissions.ts); an adapter that runs another tier than
  * its agents ask for is logged once per run.
+ *
+ * An agent runs on its adapter's own concurrency cap when it has one, and its
+ * rate limits lower that cap (ODW extensions; see ./scheduler).
  */
 
 import { readFileSync } from "node:fs";
@@ -365,7 +368,7 @@ export function createPrimitives(
       // while it holds its slot: once runAgent settles, the agent is fully
       // accounted for (the run's drain relies on it), and the next queued
       // dispatch sees the updated budget.
-      return await ctx.scheduler.runAgent(async (signal) => {
+      return await ctx.scheduler.runAgent(async (signal, slot) => {
         // Record the adapter only once the scheduler has handed out a real
         // dispatch slot, so queued work is not presented as running.
         started = true;
@@ -417,7 +420,7 @@ export function createPrimitives(
                 }),
               ),
             // A rate-limited CLI is retried after a backoff: say so, and for how long.
-            onRateLimit: ({ adapter: name, waitSeconds, retry, maxRetries }) =>
+            onRateLimit: ({ adapter: name, waitSeconds, retry, maxRetries }) => {
               ctx.emit(
                 event(LOG, {
                   message: `${display}:${agentId} hit a rate limit on ${name} — retrying in ${formatSeconds(waitSeconds)} (${retry}/${maxRetries})`,
@@ -425,7 +428,10 @@ export function createPrimitives(
                   label: display,
                   phase: activePhase,
                 }),
-              ),
+              );
+              // Adaptive back-pressure (ODW extension): the limit lowers its adapter's cap.
+              slot.rateLimited();
+            },
             // An adapter's quota or login failed several agents in a row: warn, once.
             onAdapterWarning: ({ message, adapter: name, reason }) =>
               ctx.emit(event(LOG, { message, adapter: name, reason, agentId, label: display, phase: activePhase })),
@@ -435,6 +441,8 @@ export function createPrimitives(
             transcript,
           });
         } catch (err) {
+          // Out of rate-limit retries (or allowed none): that lowers its adapter's cap too.
+          if (err instanceof AdapterExecutionError && err.reason === "rate_limit") slot.rateLimited();
           // A started agent always gets a terminal event, even when the error
           // is fatal (stop, budget, a config error raised inside the slot) —
           // else observers show it running forever. A failed agent's change
@@ -476,7 +484,7 @@ export function createPrimitives(
         if (persisted) finished.saved = true;
         ctx.emit(finished);
         return outcome.value;
-      });
+      }, { adapter: adapter.name });
     } catch (err) {
       // A fatal error before the start (stop or budget at dispatch) concerns
       // the run, not this agent; anything else is still this agent's failure.

@@ -105,6 +105,11 @@ export interface Adapter {
    * `0` turns the stall watchdog off for this adapter.
    */
   stallTimeout?: number;
+  /**
+   * At most this many agents at once on this CLI, inside the run-wide
+   * `concurrency` (an ODW extension); unset, only the run-wide cap applies.
+   */
+  concurrency?: number;
   /** Human-friendly label for progress display. */
   label?: string;
   /** Capability declaration: which per-call options this CLI carries natively. */
@@ -176,6 +181,12 @@ export interface Settings {
    * this — more thunks, or more items (an ODW extension); `null` => never.
    */
   fanOutWarn: number | null;
+  /**
+   * Adaptive back-pressure (an ODW extension): a rate limit halves its
+   * adapter's concurrency for the rest of the run, never below 1, and each
+   * minute without another gives one slot back; `false` keeps the caps fixed.
+   */
+  adaptiveConcurrency: boolean;
   /**
    * Bytes of an isolated agent's diff kept in the run directory (an ODW
    * extension); past it the head is kept, cut at a line, with a note.
