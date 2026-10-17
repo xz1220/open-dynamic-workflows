@@ -415,6 +415,13 @@ const ZH: Record<string, string> = {
   "Copy a rerun command": "复制重跑命令",
   Output: "输出",
   command: "命令",
+  "Run hooks": "运行钩子",
+  "Command hook": "命令钩子",
+  Webhook: "Webhook",
+  "runs on {on}": "触发于 {on}",
+  on: "开",
+  "No hooks configured. Add a notify block to odw.config.json to run a command or post to a webhook when a run finishes.":
+    "尚未配置钩子。在 odw.config.json 中加入 notify 配置,即可在运行结束时执行命令或推送到 webhook。",
   replayed: "重放",
   "replayed from an earlier run": "从之前的运行重放",
   "{n} older runs": "还有 {n} 条更早的运行",

@@ -29,6 +29,28 @@ function seg(attr: string, current: string, options: Array<[string, string, stri
   );
 }
 
+/**
+ * Run-completion hooks from the config's `notify` key, as the server reports
+ * them (a webhook is shown as scheme + host only — never its token-bearing path).
+ */
+function hooksCard(settings: SettingsSnapshot | null): string {
+  if (!settings) return "";
+  const notify = (settings as SettingsSnapshot & { notify?: NotifyView | null }).notify;
+  const on = notify?.on?.length ? notify.on.map((s) => t(s)).join(" · ") : "";
+  const body = notify && (notify.command || notify.webhook)
+    ? (notify.command ? row(t("Command hook"), t("runs on {on}", { on }), `<span class="tag sig">${t("on")}</span>`) : "") +
+      (notify.webhook ? row(t("Webhook"), `${notify.webhook} · ${t("runs on {on}", { on })}`, `<span class="tag sig">${t("on")}</span>`) : "")
+    : `<p class="dim" style="margin:6px 0 14px;font-size:12.5px">${t("No hooks configured. Add a notify block to odw.config.json to run a command or post to a webhook when a run finishes.")}</p>` +
+      `<pre class="code" style="padding:12px 16px;font-size:11.5px">{ "notify": { "webhook": "https://hooks.example/…", "on": ["done", "failed"] } }</pre>`;
+  return `<section class="card setcard"><div class="card-head"><h3>${t("Run hooks")}</h3><span class="eyebrow">notify</span></div>${body}</section>`;
+}
+
+interface NotifyView {
+  command: boolean;
+  webhook: string | null;
+  on: string[];
+}
+
 export function renderSettings(settings: SettingsSnapshot | null): string {
   const adapters = (settings?.adapters ?? [])
     .map((a) =>
@@ -61,6 +83,7 @@ export function renderSettings(settings: SettingsSnapshot | null): string {
     row(t("Language"), t("switch the interface language"), seg("lang", getLang(), [["en", "EN"], ["zh", "中文"]])) +
     row(t("Run notifications"), t("A system notification when a run finishes while this tab is in the background."), notify) +
     `</section>` +
+    hooksCard(settings) +
     `<section class="card setcard"><div class="card-head"><h3>${t("Paths")}</h3></div>` +
     (settings
       ? row(t("Run directory"), settings.runsRoot) +
