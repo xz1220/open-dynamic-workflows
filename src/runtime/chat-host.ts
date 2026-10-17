@@ -31,10 +31,10 @@ import {
   type ChatSessionState,
   type ChatToolCall,
 } from "./chat-store.js";
-import { readJsonBody, sendJson, writeGuard } from "./http-util.js";
+import { guarded, logServeError, readJsonBody, sendJson, writeGuard } from "./http-util.js";
 import { startRunFromSource } from "./launcher.js";
 import { sourceForRun, type RunSource } from "./run-source.js";
-import type { RunStore } from "./run-store.js";
+import { TERMINAL_STATES, type RunStore } from "./run-store.js";
 import type { RunDisplayState } from "./runs-view.js";
 
 export interface ChatTurnRequest {
@@ -87,8 +87,6 @@ phase("Return")
 return answer
 `;
 
-const TERMINAL_RUN_STATES = new Set<RunDisplayState>(["done", "failed", "stopped"]);
-
 const ODW_INTENT_RE = /\bodw\b|workflow|agent|fan[- ]?out|并行|工作流|智能体/i;
 const NEGATED_ODW_RE = [
   /(?:不|别|不要|无需|不用|禁止).{0,12}(?:触发|启动|运行|创建|发起|调用)?\s*(?:odw|workflow|agent|fan[- ]?out|工作流|智能体)/i,
@@ -109,9 +107,19 @@ interface ChatRuntime {
   notify(sessionId: string): void;
 }
 
+/** How often linked runs are checked for completion (also checked on chat reads). */
+const SYNC_MS = 1000;
+
 export class ChatHost {
   readonly chat: ChatStore;
   private readonly runtime: ChatRuntime;
+  /**
+   * Linked runs that need no more checking: their completion was posted, they
+   * predate this server (posting those is not our job), or they are gone.
+   * Keeps the per-second sync from re-reading old runs forever.
+   */
+  private readonly settledRuns = new Set<string>();
+  private timer: NodeJS.Timeout | null = null;
 
   constructor(private readonly opts: ChatHostOptions) {
     this.chat = new ChatStore(opts.store.root, opts.cwd);
@@ -121,6 +129,23 @@ export class ChatHost {
       serverStartedAt: Math.floor(Date.now() / 1000),
       notify: opts.notify ?? (() => {}),
     };
+  }
+
+  /** Start the background completion sync (independent of SSE clients). */
+  start(): void {
+    if (this.timer) return;
+    this.timer = setInterval(() => guarded("chat run sync", () => this.syncCompletedRuns()), SYNC_MS);
+    this.timer.unref?.();
+  }
+
+  stop(): void {
+    if (this.timer) clearInterval(this.timer);
+    this.timer = null;
+  }
+
+  /** An on-demand sync before serving a read; its failure must not fail the read. */
+  private syncBeforeRead(): void {
+    guarded("chat run sync", () => this.syncCompletedRuns());
   }
 
   /**
@@ -137,7 +162,7 @@ export class ChatHost {
     const { chat } = this;
     const { sources } = this.opts;
     if (method === "GET" && path === "/api/chat/sessions") {
-      this.syncCompletedRuns();
+      this.syncBeforeRead();
       sendJson(
         res,
         200,
@@ -155,7 +180,7 @@ export class ChatHost {
     const sessionId = decodeURIComponent(chatMatch[1]!);
     const sub = chatMatch[2];
     if (method === "GET" && !sub) {
-      this.syncCompletedRuns();
+      this.syncBeforeRead();
       const session = chat.get(sessionId);
       if (!session) {
         sendJson(res, 404, { error: `no such chat session: ${sessionId}` });
@@ -177,9 +202,47 @@ export class ChatHost {
     return false;
   }
 
-  /** Post a completion message (and a Codex follow-up) for chat-linked runs that settled. */
+  /**
+   * Post a completion message (and a Codex follow-up) for chat-linked runs
+   * that settled. Cheap by construction: settled runs are remembered, and the
+   * rest are checked through the sources' cached summaries (a couple of stats)
+   * — the full detail/result is read only for a run that just finished.
+   */
   syncCompletedRuns(): void {
-    syncCompletedChatRuns(this.chat, this.opts.sources, this.runtime);
+    const { chat, runtime, settledRuns } = this;
+    const { sources } = this.opts;
+    for (const session of chat.records()) {
+      if (hasStreamingAssistant(session) || runtime.activeSessions.has(session.id)) continue;
+      for (const link of session.linkedRuns) {
+        if (settledRuns.has(link.runId)) continue;
+        if (hasRunResultMessage(session, link.runId)) {
+          settledRuns.add(link.runId);
+          continue;
+        }
+        const src = sourceForRun(sources, link.runId);
+        const summary = src?.summary(link.runId) ?? null;
+        if (!src || !summary || (summary.createdAt ?? 0) < runtime.serverStartedAt) {
+          settledRuns.add(link.runId);
+          continue;
+        }
+        if (!TERMINAL_STATES.has(summary.state)) continue;
+        const detail = src.detail(link.runId);
+        const result = src.result(link.runId);
+        const value = result.has ? resultText(result.value) : undefined;
+        const title = detail?.workflowName ?? summary.name ?? link.workflow;
+        const text = [
+          `ODW run ${link.runId} (${title}) finished with state "${summary.state}".`,
+          value ? `Result:\n${value}` : "",
+          detail?.error ? `Error:\n${resultText(detail.error)}` : "",
+        ]
+          .filter(Boolean)
+          .join("\n\n");
+        chat.appendUserMessage(session.id, text, "chat.odw_result");
+        settledRuns.add(link.runId);
+        startChatCodexTurn(chat, session.id, runtime, session.source);
+        break;
+      }
+    }
   }
 }
 
@@ -284,22 +347,35 @@ function startChatCodexTurn(
 ): ChatSessionRecord | null {
   const current = chat.get(sessionId);
   if (!current || hasStreamingAssistant(current) || runtime.activeSessions.has(sessionId)) return current;
+  // Resolve the working dir first: it can throw (creating the scratch dir), and
+  // must not strand a "streaming" placeholder that would block the session.
+  const cwd = chatWorkingDir(current, fallbackCwd);
   const withPlaceholder = chat.appendAssistantMessage(sessionId, "", undefined, "streaming");
   runtime.notify(sessionId);
   const placeholder = withPlaceholder.messages[withPlaceholder.messages.length - 1]!;
   const prompt = buildCodexChatPrompt(withPlaceholder, placeholder.id);
-  const cwd = chatWorkingDir(withPlaceholder, fallbackCwd);
   let text = "";
   let flushTimer: NodeJS.Timeout | null = null;
+  // These run from timers and promise callbacks: a store write failing (disk
+  // full, EACCES) is logged, never allowed to crash the server.
+  const update = (patch: { text: string; status?: "done" | "failed" }) =>
+    guarded("chat message update", () => {
+      chat.updateMessage(sessionId, placeholder.id, patch);
+    });
   const flush = () => {
     flushTimer = null;
-    chat.updateMessage(sessionId, placeholder.id, { text });
+    update({ text });
     runtime.notify(sessionId);
   };
   const queueFlush = () => {
     if (flushTimer) return;
     flushTimer = setTimeout(flush, 80);
     flushTimer.unref?.();
+  };
+
+  const cancelFlush = () => {
+    if (flushTimer) clearTimeout(flushTimer);
+    flushTimer = null;
   };
 
   runtime.activeSessions.add(sessionId);
@@ -311,31 +387,23 @@ function startChatCodexTurn(
         queueFlush();
       }),
     )
-    .then(() => {
-      if (flushTimer) {
-        clearTimeout(flushTimer);
-        flushTimer = null;
-      }
-      const finalText = text.trimEnd() || "Codex finished without producing text.";
-      chat.updateMessage(sessionId, placeholder.id, { text: finalText, status: "done" });
-      runtime.notify(sessionId);
-    })
-    .catch((err) => {
-      if (flushTimer) {
-        clearTimeout(flushTimer);
-        flushTimer = null;
-      }
-      const existing = text.trimEnd();
-      const errorText = `Codex stream failed: ${(err as Error).message ?? String(err)}`;
-      chat.updateMessage(sessionId, placeholder.id, {
-        text: existing ? `${existing}\n\n${errorText}` : errorText,
-        status: "failed",
-      });
-      runtime.notify(sessionId);
-    })
+    .then(
+      () => {
+        cancelFlush();
+        update({ text: text.trimEnd() || "Codex finished without producing text.", status: "done" });
+      },
+      (err) => {
+        cancelFlush();
+        const existing = text.trimEnd();
+        const errorText = `Codex stream failed: ${(err as Error)?.message ?? String(err)}`;
+        update({ text: existing ? `${existing}\n\n${errorText}` : errorText, status: "failed" });
+      },
+    )
     .finally(() => {
       runtime.activeSessions.delete(sessionId);
-    });
+      runtime.notify(sessionId);
+    })
+    .catch((err) => logServeError("chat turn", err)); // nothing may escape as an unhandled rejection
   return chat.get(sessionId);
 }
 
@@ -377,32 +445,6 @@ function resultText(value: unknown): string | undefined {
 
 function hasRunResultMessage(session: ChatSessionRecord, runId: string): boolean {
   return session.messages.some((m) => m.kind === "chat.odw_result" && m.text.includes(runId));
-}
-
-function syncCompletedChatRuns(chat: ChatStore, sources: RunSource[], runtime: ChatRuntime): void {
-  for (const session of chat.records()) {
-    if (hasStreamingAssistant(session) || runtime.activeSessions.has(session.id)) continue;
-    for (const link of session.linkedRuns) {
-      if (hasRunResultMessage(session, link.runId)) continue;
-      const src = sourceForRun(sources, link.runId);
-      const detail = src?.detail(link.runId) ?? null;
-      if (!detail || !TERMINAL_RUN_STATES.has(detail.state)) continue;
-      if ((detail.createdAt ?? 0) < runtime.serverStartedAt) continue;
-      const result = src?.result(link.runId);
-      const value = result?.has ? resultText(result.value) : undefined;
-      const title = detail.workflowName ?? detail.name ?? link.workflow;
-      const text = [
-        `ODW run ${link.runId} (${title}) finished with state "${detail.state}".`,
-        value ? `Result:\n${value}` : "",
-        detail.error ? `Error:\n${resultText(detail.error)}` : "",
-      ]
-        .filter(Boolean)
-        .join("\n\n");
-      chat.appendUserMessage(session.id, text, "chat.odw_result");
-      startChatCodexTurn(chat, session.id, runtime, session.source);
-      break;
-    }
-  }
 }
 
 function hydrateTool(tool: ChatToolCall, sources: RunSource[]): ChatToolCall {

@@ -176,6 +176,37 @@ export function openStream(res: ServerResponse, clients: Set<ServerResponse>, fi
   safeWrite(res, firstFrame, clients);
 }
 
+const lastLogged = new Map<string, number>();
+const LOG_REPEAT_MS = 30_000;
+
+/**
+ * Log a background failure (timer, fs watcher, stream flush) to stderr instead
+ * of letting it crash `odw serve`: one EACCES/ENOSPC must not take the
+ * dashboard down. A repeat of the same message is muted for 30s so a
+ * persistent fault (a full disk) logs once, not every tick.
+ */
+export function logServeError(context: string, err: unknown): void {
+  const message = `odw serve: ${context}: ${(err as Error)?.message ?? String(err)}`;
+  const now = Date.now();
+  if (now - (lastLogged.get(message) ?? -Infinity) < LOG_REPEAT_MS) return;
+  lastLogged.set(message, now);
+  if (lastLogged.size > 100) lastLogged.delete(lastLogged.keys().next().value!);
+  try {
+    process.stderr.write(`${message}\n`);
+  } catch {
+    /* stderr gone: nothing left to tell */
+  }
+}
+
+/** Run `fn` for a background caller; a throw is logged, never propagated. */
+export function guarded(context: string, fn: () => void): void {
+  try {
+    fn();
+  } catch (err) {
+    logServeError(context, err);
+  }
+}
+
 /** Write to an SSE client; on failure drop it from the pool. Never throws. */
 export function safeWrite(res: ServerResponse, data: string, clients: Set<ServerResponse>): void {
   try {

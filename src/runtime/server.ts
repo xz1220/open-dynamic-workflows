@@ -56,8 +56,10 @@ import type { WorkflowEvent } from "../events.js";
 import { ChatHost, type ChatTurnRunner } from "./chat-host.js";
 import { ClaudeRunSource } from "./claude-run-source.js";
 import {
+  guarded,
   isAllowedHost,
   isLoopbackBind,
+  logServeError,
   openStream,
   readJsonBody,
   safeWrite,
@@ -101,6 +103,12 @@ export interface ServeHandle {
 const DEFAULT_PORT = 4317;
 const DEFAULT_HOST = "127.0.0.1";
 const CONTROL_ACTIONS = new Set(["pause", "resume", "stop"]);
+/** Liveness floor for the SSE run list (and the fallback when fs.watch is unavailable). */
+const TICK_MS = 1000;
+/** Watch events within this window are folded into one run-list refresh. */
+const WATCH_COALESCE_MS = 150;
+/** The chat store's file (and its temp files), relative to the watched runs root. */
+const CHAT_FILE_RE = /^_chat[\\/]sessions\.json/;
 
 /** Start the dashboard server. Resolves once it is listening. */
 export function startServer(options: ServeOptions): Promise<ServeHandle> {
@@ -143,27 +151,49 @@ export function startServer(options: ServeOptions): Promise<ServeHandle> {
   });
 
   // Push the run list to every SSE client when the runs root changes, and on a
-  // 1s tick as a floor (fs.watch recursion is platform-spotty; the tick keeps
-  // liveness correct everywhere without hammering — folding is cache-gated).
-  let watcher: FSWatcher | null = null;
+  // 1s tick as a floor (fs.watch recursion is platform-spotty, and liveness —
+  // a dead worker pid, a Claude run going quiet — changes no file at all).
+  // A busy run appends events many times a second, so watch events only
+  // schedule a refresh: everything within WATCH_COALESCE_MS lands as one list
+  // computation, not one per append. Every callback is guarded: these run
+  // outside any request, where a throw would take the whole server down.
   let lastSig = "";
-  const broadcast = (force = false) => {
-    chatHost.syncCompletedRuns();
+  const pushRuns = () => {
     if (clients.size === 0) return;
     const runs = allSummaries(sources);
     const sig = JSON.stringify(runs.map((r) => [r.runId, r.state, r.counts, r.progress]));
-    if (!force && sig === lastSig) return;
+    if (sig === lastSig) return;
     lastSig = sig;
     const frame = `event: runs\ndata: ${JSON.stringify(runs)}\n\n`;
     for (const c of clients) safeWrite(c, frame, clients);
   };
-  const tick = setInterval(() => broadcast(false), 1000);
+  const tick = setInterval(() => guarded("run list refresh", pushRuns), TICK_MS);
   tick.unref?.();
+  let pending: NodeJS.Timeout | null = null;
+  const onRunsChanged = (_event: string, filename: string | Buffer | null) => {
+    // The chat store lives under the runs root but never changes the run list.
+    if (filename && CHAT_FILE_RE.test(String(filename))) return;
+    if (pending) return;
+    pending = setTimeout(() => {
+      pending = null;
+      guarded("run list refresh", pushRuns);
+    }, WATCH_COALESCE_MS);
+    pending.unref?.();
+  };
+  let watcher: FSWatcher | null = null;
   try {
-    watcher = watch(store.root, { recursive: true }, () => broadcast(false));
+    watcher = watch(store.root, { recursive: true }, onRunsChanged);
+    // An unhandled 'error' event (the root deleted, EPERM) would crash the
+    // process; drop the watcher instead — the tick still covers us.
+    watcher.on("error", (err) => {
+      logServeError("runs watcher stopped", err);
+      watcher?.close();
+      watcher = null;
+    });
   } catch {
     watcher = null; // no recursive watch on this platform — the 1s tick covers us
   }
+  chatHost.start();
 
   return new Promise<ServeHandle>((resolve, reject) => {
     server.on("error", (err: NodeJS.ErrnoException) => {
@@ -181,20 +211,19 @@ export function startServer(options: ServeOptions): Promise<ServeHandle> {
         url: `http://${shown}:${boundPort}`,
         port: boundPort,
         host,
-        close: () => closeServer(server, clients, tick, watcher),
+        close: () => {
+          clearInterval(tick);
+          if (pending) clearTimeout(pending);
+          watcher?.close();
+          chatHost.stop();
+          return closeServer(server, clients);
+        },
       });
     });
   });
 }
 
-function closeServer(
-  server: Server,
-  clients: Set<ServerResponse>,
-  tick: NodeJS.Timeout,
-  watcher: FSWatcher | null,
-): Promise<void> {
-  clearInterval(tick);
-  watcher?.close();
+function closeServer(server: Server, clients: Set<ServerResponse>): Promise<void> {
   for (const c of clients) c.end();
   clients.clear();
   return new Promise<void>((resolve) => server.close(() => resolve()));
