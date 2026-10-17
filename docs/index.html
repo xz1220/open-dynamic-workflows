@@ -276,6 +276,9 @@
       .skip-link:focus {
         top: 12px;
       }
+      main:focus {
+        outline: none;
+      }
 
       /* ---------- type ---------- */
       .display {
@@ -372,6 +375,7 @@
         top: 0;
         z-index: 40;
         border-bottom: 1px solid var(--line);
+        background: var(--paper);
         background: color-mix(in srgb, var(--paper) 84%, transparent);
         -webkit-backdrop-filter: saturate(1.4) blur(10px);
         backdrop-filter: saturate(1.4) blur(10px);
@@ -572,6 +576,7 @@
         padding: 0 12px;
         border-radius: 14px;
         border: 1px solid var(--line);
+        background: var(--card);
         background: color-mix(in srgb, var(--card) 55%, transparent);
         font-family: var(--f-mono);
         font-size: 11.5px;
@@ -2602,7 +2607,7 @@
       </div>
     </header>
 
-    <main id="main">
+    <main id="main" tabindex="-1">
       <!-- ============================ HERO ============================ -->
       <section class="hero" aria-labelledby="hero-title">
         <div class="hero-inner">
