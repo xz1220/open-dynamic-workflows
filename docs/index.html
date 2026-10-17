@@ -2072,7 +2072,183 @@
         color: var(--mute);
       }
 
-      /* ---------- 03 · install ---------- */
+      /* ---------- 03 · long runs ---------- */
+      .long-grid {
+        display: grid;
+        grid-template-columns: minmax(0, 1.08fr) minmax(0, 1fr);
+        gap: 24px;
+        align-items: start;
+        margin-top: 56px;
+      }
+      .rec-card {
+        position: sticky;
+        top: 96px;
+        overflow: hidden;
+      }
+      .rec-card .plate {
+        border-bottom: 1px solid var(--line);
+      }
+      .rec-cap {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px 16px;
+        padding: 16px 22px 18px;
+        font-family: var(--f-mono);
+        font-size: 12px;
+        color: var(--mute);
+      }
+      .rec-cap code {
+        padding: 3px 8px;
+        border-radius: var(--r-xs);
+        background: var(--shade);
+        color: var(--ink);
+      }
+      .lr-list {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 14px;
+      }
+      .lr {
+        padding: 18px 20px 20px;
+        transition: transform var(--t-med) var(--ease-out), box-shadow var(--t-med), border-color var(--t-med);
+      }
+      .lr:hover {
+        transform: translateY(-2px);
+        box-shadow: var(--shadow-2);
+        border-color: var(--line-2);
+      }
+      .lr h3 {
+        margin-top: 14px;
+        font-family: var(--f-display);
+        font-weight: 400;
+        font-size: 23px;
+        line-height: 1.08;
+        letter-spacing: -0.005em;
+        font-synthesis: none;
+      }
+      .lr p {
+        margin-top: 6px;
+        font-size: 14px;
+        line-height: 1.55;
+        color: var(--mute);
+      }
+      .op.rp i {
+        background: transparent;
+        border: 1.5px dashed var(--mute);
+      }
+      .op.bell i {
+        background: var(--amber);
+      }
+      .op.ok i {
+        background: var(--sig);
+      }
+      /* the recovery plate: a run that failed, then `odw resume` */
+      .pl-rec .lane {
+        fill: var(--faint);
+        font-size: 9px;
+        letter-spacing: 0.08em;
+      }
+      .pl-rec .nd rect {
+        fill: var(--card);
+        stroke: var(--line-2);
+        stroke-width: 1;
+      }
+      .pl-rec .nd text {
+        fill: var(--ink-2);
+        font-size: 9px;
+      }
+      .pl-rec .nd.failed rect {
+        fill: var(--alarm-soft);
+        stroke: var(--alarm-line);
+      }
+      .pl-rec .nd.skip rect {
+        fill: var(--paper);
+        stroke-dasharray: 3 3;
+      }
+      .pl-rec .nd.skip text,
+      .pl-rec .nd.replay text {
+        fill: var(--mute);
+      }
+      .pl-rec .nd.replay rect {
+        fill: var(--card-2);
+        stroke-dasharray: 3 2.5;
+      }
+      .pl-rec .nd.ran rect {
+        fill: var(--sig-soft);
+        stroke: var(--sig-line);
+      }
+      .pl-rec .g-ok {
+        fill: var(--ink);
+      }
+      .pl-rec .ran .g-ok {
+        fill: var(--sig);
+      }
+      .pl-rec .g-bad {
+        fill: var(--alarm);
+      }
+      .pl-rec .g-mark {
+        fill: none;
+        stroke: var(--paper);
+        stroke-width: 1.6;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+      .pl-rec .g-skip {
+        fill: none;
+        stroke: var(--faint);
+        stroke-width: 1.2;
+        stroke-dasharray: 2 2;
+      }
+      .pl-rec .nd .g-rp {
+        fill: var(--mute);
+        font-size: 12px;
+      }
+      .pl-rec .cn {
+        fill: none;
+        stroke: var(--line-2);
+        stroke-width: 1.2;
+        stroke-dasharray: 1;
+      }
+      .pl-rec .cn.rp {
+        stroke: var(--mute);
+        opacity: 0.45;
+      }
+      .pl-rec .cn.hot {
+        stroke: var(--sig-line);
+        stroke-width: 1.7;
+      }
+      .pl-rec .chip rect {
+        fill: var(--ink);
+      }
+      .pl-rec .chip text {
+        fill: var(--paper);
+        font-size: 10.5px;
+      }
+      .pl-rec.draw .cn {
+        animation: draw 0.9s var(--ease-out) both;
+        animation-delay: calc(0.25s + var(--i, 0) * 90ms);
+      }
+      .pl-rec.draw .r2 {
+        animation: rec-pop 0.5s var(--ease-spring) both;
+        animation-delay: calc(1.05s + var(--i, 0) * 70ms);
+      }
+      .pl-rec.draw .r2.ran {
+        animation-delay: calc(1.5s + var(--i, 0) * 200ms);
+      }
+      .pl-rec .r2 {
+        transform-box: fill-box;
+        transform-origin: center;
+      }
+      @keyframes rec-pop {
+        from {
+          opacity: 0;
+          transform: translateY(-6px) scale(0.96);
+        }
+      }
+
+      /* ---------- 04 · install ---------- */
       .install-panel {
         display: grid;
         grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.05fr);
@@ -2457,9 +2633,14 @@
       }
       @media (max-width: 1023px) {
         .runtime-grid,
+        .long-grid,
         .install-panel,
         .sechead {
           grid-template-columns: minmax(0, 1fr);
+        }
+        .rec-card {
+          position: relative;
+          top: 0;
         }
         .sechead .section-lede {
           max-width: 60ch;
@@ -2473,6 +2654,11 @@
         .signal-grid {
           grid-template-columns: minmax(0, 1fr);
           max-width: 560px;
+        }
+      }
+      @media (max-width: 600px) {
+        .lr-list {
+          grid-template-columns: minmax(0, 1fr);
         }
       }
       @media (max-width: 760px) {
@@ -2594,7 +2780,8 @@
           <nav class="nav-links" aria-label="Site links">
             <a href="#why"><span class="ix" aria-hidden="true">01</span><span data-i18n="nav.why">Why</span></a>
             <a href="#runtime"><span class="ix" aria-hidden="true">02</span><span data-i18n="nav.runtime">Runtime</span></a>
-            <a href="#install"><span class="ix" aria-hidden="true">03</span><span data-i18n="nav.install">Install</span></a>
+            <a href="#long"><span class="ix" aria-hidden="true">03</span><span data-i18n="nav.long">Long runs</span></a>
+            <a href="#install"><span class="ix" aria-hidden="true">04</span><span data-i18n="nav.install">Install</span></a>
             <a class="gh" href="https://github.com/xz1220/open-dynamic-workflows"
               >GitHub<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7.5 16.5 16.5 7.5M9 7.5h7.5V15" /></svg
             ></a>
@@ -2971,10 +3158,93 @@
         </div>
       </section>
 
-      <!-- ============================ 03 · INSTALL ============================ -->
+      <!-- ============================ 03 · LONG RUNS ============================ -->
+      <section class="section" id="long" aria-labelledby="long-title">
+        <div class="section-inner">
+          <p class="seclabel"><span class="num">03</span> <span class="kick" data-i18n="long.kicker">Built for long runs</span> <span class="rule"></span></p>
+          <div class="sechead">
+            <h2 class="sectitle display" id="long-title" data-i18n="long.title" data-i18n-html>Runs that <em>survive</em> the night.</h2>
+            <p class="section-lede" data-i18n="long.copy">
+              Every finished agent is saved the moment it lands. A failure costs one step, not the run: fix it, resume, and only the unfinished work runs again.
+            </p>
+          </div>
+
+          <div class="long-grid">
+            <figure class="rec-card card marked">
+              <div class="plate" aria-hidden="true">
+                <svg class="pl pl-rec" viewBox="0 0 520 252" data-live data-draw>
+                  <text class="lane" x="16" y="57" data-i18n="long.lane1">first run</text>
+                  <text class="lane" x="16" y="207" data-i18n="long.lane2">resumed</text>
+                    <path class="cn rp" style="--i: 0" pathLength="1" d="M130 68C130 92 260 88 260 113" />
+                    <path class="cn rp" style="--i: 1" pathLength="1" d="M214 68C214 92 260 88 260 113" />
+                    <path class="cn" style="--i: 2" pathLength="1" d="M298 68C298 92 260 88 260 113" />
+                    <path class="cn rp" style="--i: 3" pathLength="1" d="M382 68C382 92 260 88 260 113" />
+                    <path class="cn" style="--i: 4" pathLength="1" d="M466 68C466 92 260 88 260 113" />
+                    <path class="cn rp" style="--i: 5" pathLength="1" d="M260 137C260 162 130 158 130 190" />
+                    <path class="cn rp" style="--i: 6" pathLength="1" d="M260 137C260 162 214 158 214 190" />
+                    <path class="cn hot" style="--i: 7" pathLength="1" d="M260 137C260 162 298 158 298 190" />
+                    <path class="cn rp" style="--i: 8" pathLength="1" d="M260 137C260 162 382 158 382 190" />
+                    <path class="cn hot" style="--i: 9" pathLength="1" d="M260 137C260 162 466 158 466 190" />
+                    <path class="flow" d="M260 137C260 162 298 158 298 190" />
+                    <path class="flow" d="M260 137C260 162 466 158 466 190" />
+                    <circle class="spark" r="2.6"><animateMotion dur="1.6s" begin="0s" repeatCount="indefinite" path="M260 137C260 162 298 158 298 190" /></circle>
+                    <circle class="spark" r="2.6"><animateMotion dur="1.9s" begin="-0.7s" repeatCount="indefinite" path="M260 137C260 162 466 158 466 190" /></circle>
+                    <g class="nd done"><rect x="92" y="40" width="76" height="28" rx="7" /><circle class="g-ok" cx="105" cy="54" r="5" /><path class="g-mark" d="M102.6 54.2l1.7 1.7 3.2-3.6" /><text x="116" y="57.2">plan</text></g>
+                    <g class="nd done"><rect x="176" y="40" width="76" height="28" rx="7" /><circle class="g-ok" cx="189" cy="54" r="5" /><path class="g-mark" d="M186.6 54.2l1.7 1.7 3.2-3.6" /><text x="200" y="57.2">search:1</text></g>
+                    <g class="nd failed"><rect x="260" y="40" width="76" height="28" rx="7" /><circle class="g-bad" cx="273" cy="54" r="5" /><path class="g-mark" d="M271.1 52.1l3.8 3.8M274.9 52.1l-3.8 3.8" /><text x="284" y="57.2">search:2</text></g>
+                    <g class="nd done"><rect x="344" y="40" width="76" height="28" rx="7" /><circle class="g-ok" cx="357" cy="54" r="5" /><path class="g-mark" d="M354.6 54.2l1.7 1.7 3.2-3.6" /><text x="368" y="57.2">search:3</text></g>
+                    <g class="nd skip"><rect x="428" y="40" width="76" height="28" rx="7" /><circle class="g-skip" cx="441" cy="54" r="4.5" /><text x="452" y="57.2">report</text></g>
+                    <g class="chip"><rect x="200" y="113" width="120" height="24" rx="12" /><text x="260" y="128.6" text-anchor="middle">$ odw resume</text></g>
+                    <g class="nd replay r2" style="--i: 0"><rect x="92" y="190" width="76" height="28" rx="7" /><text class="g-rp" x="105" y="208" text-anchor="middle">↺</text><text x="116" y="207.2">plan</text></g>
+                    <g class="nd replay r2" style="--i: 1"><rect x="176" y="190" width="76" height="28" rx="7" /><text class="g-rp" x="189" y="208" text-anchor="middle">↺</text><text x="200" y="207.2">search:1</text></g>
+                    <g class="nd ran r2" style="--i: 2"><rect x="260" y="190" width="76" height="28" rx="7" /><circle class="g-ok" cx="273" cy="204" r="5" /><path class="g-mark" d="M270.6 204.2l1.7 1.7 3.2-3.6" /><text x="284" y="207.2">search:2</text></g>
+                    <g class="nd replay r2" style="--i: 3"><rect x="344" y="190" width="76" height="28" rx="7" /><text class="g-rp" x="357" y="208" text-anchor="middle">↺</text><text x="368" y="207.2">search:3</text></g>
+                    <g class="nd ran r2" style="--i: 4"><rect x="428" y="190" width="76" height="28" rx="7" /><circle class="g-ok" cx="441" cy="204" r="5" /><path class="g-mark" d="M438.6 204.2l1.7 1.7 3.2-3.6" /><text x="452" y="207.2">report</text></g>
+                </svg>
+              </div>
+              <figcaption class="rec-cap"><code>odw resume $RUN</code><span data-i18n="long.tally">3 replayed from disk · 2 ran again</span></figcaption>
+            </figure>
+
+            <div class="lr-list">
+              <article class="lr card">
+                <span class="op rp"><i></i><span class="kd">odw resume</span></span>
+                <h3 data-i18n="long.resume.title">Resume, don't restart</h3>
+                <p data-i18n="long.resume.copy">Finished agents replay from disk at no cost; only edited or unfinished calls run again.</p>
+              </article>
+              <article class="lr card">
+                <span class="op cmd"><i></i><span class="kd">odw agents</span></span>
+                <h3 data-i18n="long.agents.title">Read results mid-run</h3>
+                <p data-i18n="long.agents.copy">Each lane's output is on disk as soon as it finishes — for you, a script, or another agent.</p>
+              </article>
+              <article class="lr card">
+                <span class="op bell"><i></i><span class="kd">notify</span></span>
+                <h3 data-i18n="long.notify.title">Hear when it ends</h3>
+                <p data-i18n="long.notify.copy">Slack or Discord webhooks, ntfy, or any command — when a run finishes, fails or stops.</p>
+              </article>
+              <article class="lr card">
+                <span class="op pipe"><i></i><span class="kd">stallTimeout</span></span>
+                <h3 data-i18n="long.stall.title">No silent hangs</h3>
+                <p data-i18n="long.stall.copy">An agent that stops printing is killed and retried, a bounded number of times.</p>
+              </article>
+              <article class="lr card">
+                <span class="op cmd"><i></i><span class="kd">exec()</span></span>
+                <h3 data-i18n="long.exec.title">Checks without a model</h3>
+                <p data-i18n="long.exec.copy">Run tests and linters as steps of the graph, with exit codes and output caps.</p>
+              </article>
+              <article class="lr card">
+                <span class="op ok"><i></i><span class="kd">odw doctor</span></span>
+                <h3 data-i18n="long.doctor.title">Know it works first</h3>
+                <p data-i18n="long.doctor.copy">Checks your config and agent CLIs, then sends each a real smoke prompt.</p>
+              </article>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================ 04 · INSTALL ============================ -->
       <section class="section" id="install" aria-labelledby="install-title">
         <div class="section-inner">
-          <p class="seclabel"><span class="num">03</span> <span class="kick" data-i18n="install.kicker">Start</span> <span class="rule"></span></p>
+          <p class="seclabel"><span class="num">04</span> <span class="kick" data-i18n="install.kicker">Start</span> <span class="rule"></span></p>
           <div class="install-panel">
             <div class="install-copy">
               <h2 class="sectitle display" id="install-title" data-i18n="install.title" data-i18n-html>Install the runtime or <em>hack from source</em>.</h2>
@@ -3143,6 +3413,26 @@
           "primitive.pipeline.title": "Stream stages",
           "primitive.pipeline.copy":
             "Move each item through review, verification, and synthesis without a global barrier.",
+          "nav.long": "Long runs",
+          "long.kicker": "Built for long runs",
+          "long.title": "Runs that <em>survive</em> the night.",
+          "long.copy":
+            "Every finished agent is saved the moment it lands. A failure costs one step, not the run: fix it, resume, and only the unfinished work runs again.",
+          "long.lane1": "first run",
+          "long.lane2": "resumed",
+          "long.tally": "3 replayed from disk · 2 ran again",
+          "long.resume.title": "Resume, don't restart",
+          "long.resume.copy": "Finished agents replay from disk at no cost; only edited or unfinished calls run again.",
+          "long.agents.title": "Read results mid-run",
+          "long.agents.copy": "Each lane's output is on disk as soon as it finishes — for you, a script, or another agent.",
+          "long.notify.title": "Hear when it ends",
+          "long.notify.copy": "Slack or Discord webhooks, ntfy, or any command — when a run finishes, fails or stops.",
+          "long.stall.title": "No silent hangs",
+          "long.stall.copy": "An agent that stops printing is killed and retried, a bounded number of times.",
+          "long.exec.title": "Checks without a model",
+          "long.exec.copy": "Run tests and linters as steps of the graph, with exit codes and output caps.",
+          "long.doctor.title": "Know it works first",
+          "long.doctor.copy": "Checks your config and agent CLIs, then sends each a real smoke prompt.",
           "install.kicker": "Start",
           "install.title": "Install the runtime or <em>hack from source</em>.",
           "install.copy":
@@ -3235,6 +3525,25 @@
           "primitive.parallel.copy": "当下一步需要完整批次时，并发运行相互独立的分支。",
           "primitive.pipeline.title": "流式阶段",
           "primitive.pipeline.copy": "让每个 item 独立经过审阅、验证、综合，不必等待全局屏障。",
+          "nav.long": "长任务",
+          "long.kicker": "为长任务而生",
+          "long.title": "能<em>熬过一整夜</em>的运行。",
+          "long.copy": "每个 agent 一完成，结果就落盘。一次失败只损失一步，而不是整个运行：修好它、resume，只有没完成的部分会重跑。",
+          "long.lane1": "第一次运行",
+          "long.lane2": "恢复后",
+          "long.tally": "3 个从磁盘重放 · 2 个重新执行",
+          "long.resume.title": "接着跑，而不是重来",
+          "long.resume.copy": "已完成的 agent 直接从磁盘重放、零成本；只有改过的或没跑完的调用会重新执行。",
+          "long.agents.title": "运行中就能取结果",
+          "long.agents.copy": "每条泳道一结束，输出就已落盘——你、脚本或另一个 agent 都能马上读取。",
+          "long.notify.title": "结束时通知你",
+          "long.notify.copy": "Slack、Discord webhook、ntfy 或任意命令——在运行完成、失败或停止时触发。",
+          "long.stall.title": "不再无声卡死",
+          "long.stall.copy": "长时间没有输出的 agent 会被终止并重试，重试次数有上限。",
+          "long.exec.title": "不经模型的检查",
+          "long.exec.copy": "把测试和 lint 作为图中的步骤来运行，带退出码与输出上限。",
+          "long.doctor.title": "先确认能跑",
+          "long.doctor.copy": "检查你的配置和各个 agent CLI，再给每个 CLI 发一次真实的冒烟提示。",
           "install.kicker": "开始使用",
           "install.title": "安装运行时，或直接<em>从源码改起</em>。",
           "install.copy": "可以用单文件安装器、npm 安装，或 clone 仓库。ODW 只驱动本地 agent CLI，不直接调用模型 API。",
