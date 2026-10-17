@@ -76,6 +76,9 @@ export const TAIL_CHARS = 64 * 1024;
  */
 const STREAM_GRACE_MS = 2000;
 
+/** How long a terminated agent gets (after SIGTERM) before its group is SIGKILLed. */
+const TERM_GRACE_MS = 1500;
+
 const IS_WINDOWS = process.platform === "win32";
 
 /** Agent processes spawned here that have not settled yet. */
@@ -185,6 +188,7 @@ export const runCommand: CommandRunner = (command, options = {}) => {
     let stallTimer: NodeJS.Timeout | undefined;
     let drainTimer: NodeJS.Timeout | undefined;
     let killTimer: NodeJS.Timeout | undefined;
+    let termTimer: NodeJS.Timeout | undefined;
 
     const finish = (result: CliResult): void => {
       if (settled) return;
@@ -193,6 +197,7 @@ export const runCommand: CommandRunner = (command, options = {}) => {
       clearTimeout(stallTimer);
       clearTimeout(drainTimer);
       clearTimeout(killTimer);
+      clearTimeout(termTimer);
       options.signal?.removeEventListener("abort", onAbort);
       live.delete(child);
       resolve(result);
@@ -231,10 +236,15 @@ export const runCommand: CommandRunner = (command, options = {}) => {
     };
 
     const terminate = (): void => {
-      killProcessTree(child);
+      if (termTimer || killTimer) return; // already on its way down
+      // SIGTERM first: an agent CLI gets a moment to stop the tools it started
+      // in process groups of their own (out of reach of our group kill), then
+      // the whole group is SIGKILLed.
+      signalProcessTree(child, "SIGTERM");
+      termTimer = setTimeout(() => killProcessTree(child), TERM_GRACE_MS);
       // SIGKILL is not always deliverable (a setuid descendant, a process stuck
       // in the kernel): never let an unkillable process stall the run.
-      killTimer ??= setTimeout(() => abandonStreams(null, "SIGKILL"), STREAM_GRACE_MS * 2);
+      killTimer = setTimeout(() => abandonStreams(null, "SIGKILL"), TERM_GRACE_MS + STREAM_GRACE_MS * 2);
     };
 
     if (options.timeout != null) {
@@ -365,6 +375,21 @@ class Tail {
     if (excess <= 0) return;
     this.dropped += excess;
     this.text = this.text.slice(excess);
+  }
+}
+
+/**
+ * Ask an agent and its process group to stop (POSIX `SIGTERM` to the group).
+ * Windows has no group signal or graceful console stop, so it kills the tree.
+ */
+function signalProcessTree(child: ChildProcess, signal: NodeJS.Signals): void {
+  const pid = child.pid;
+  if (pid === undefined) return;
+  if (IS_WINDOWS) return killProcessTree(child);
+  try {
+    process.kill(-pid, signal);
+  } catch {
+    child.kill(signal); // ESRCH: the group is gone; make sure the agent is too
   }
 }
 

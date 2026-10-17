@@ -311,3 +311,26 @@ test("a stdout consumer can terminate the process, reported like an output overr
   assert.equal(r.timedOut, false);
   assert.match(r.stderr, /\[stdout line 1 is unusable; terminated\]/);
 });
+
+test("a terminated agent gets SIGTERM first, so it can stop the tools it started", { skip: process.platform === "win32" }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), "odw-term-"));
+  const marker = join(dir, "cleaned-up");
+  try {
+    // Like an agent CLI whose tools run in process groups of their own: on
+    // SIGTERM it cleans up (here: writes a marker) and exits.
+    const script = `process.on("SIGTERM", () => { require("fs").writeFileSync(${JSON.stringify(marker)}, "ok"); process.exit(0) }); setInterval(() => {}, 1000)`;
+    const res = await runCommand([execPath, "-e", script], { timeout: 0.5 });
+    assert.equal(res.timedOut, true);
+    assert.ok(existsSync(marker), "the agent's SIGTERM handler ran before any SIGKILL");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("an agent that ignores SIGTERM is SIGKILLed after the grace period", { skip: process.platform === "win32" }, async () => {
+  const started = Date.now();
+  const res = await runCommand([execPath, "-e", `process.on("SIGTERM", () => {}); setInterval(() => {}, 1000)`], { timeout: 0.5 });
+  assert.equal(res.timedOut, true);
+  const took = Date.now() - started;
+  assert.ok(took < 5000, `settled ${took}ms after start`);
+});
