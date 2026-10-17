@@ -9,17 +9,37 @@
  * project shows up here with no coupling between the two processes.
  *
  * Endpoints:
- *   GET  /                       the dashboard HTML
- *   GET  /api/runs               [RunSummary] (newest first)
- *   GET  /api/runs/:id           RunDetail
- *   GET  /api/runs/:id/events    raw events; ?since=N (event index) skips the first N,
- *                                ?tail=M keeps only the last M; header x-total-count
- *                                is the run's event count (the next ?since=)
+ *   GET  /                          the dashboard HTML
+ *   GET  /api/runs                  [RunSummary], newest first (ODW + Claude Code runs)
+ *   GET  /api/runs/:id              RunDetail
+ *   GET  /api/runs/:id/events       raw events (synthesized for Claude runs):
+ *                                     ?since=N  skip the first N (N is an event index)
+ *                                     ?tail=M   only the last M, after since (400 unless an integer ≥ 0)
+ *                                     header x-total-count: the run's event count, i.e. the next ?since=
+ *   GET  /api/runs/:id/result       { value } of a finished run; 404 when there is none
+ *   POST /api/runs/:id/control      { action: pause|resume|stop } (ODW runs; Claude runs → 409)
+ *   GET  /api/activity?limit=N      the Activity view (below)
+ *   GET  /api/stream                text/event-stream: `runs` frames (the run list, on change)
+ *                                   and `chat` frames ({ sessionId }, coalesced per 250ms)
+ *   GET  /api/workflows             [WorkflowSummary] from the managed workflow dirs
+ *   GET  /api/workflows/:name       WorkflowDetail (?provider=odw|claude picks a shadowed name)
+ *   GET  /api/capabilities          { writable }: whether this bind accepts writes
+ *   GET  /api/settings              runtime config summary (adapters, roots, Claude scope)
+ *   *    /api/chat/sessions[/:id[/messages]]   the Chat Host (see ./chat-host)
  *
- * The polled GETs (/api/runs, /api/runs/:id, …/events, …/result) carry an ETag
- * and answer If-None-Match with 304.
- *   GET  /api/stream             text/event-stream; pushes the run list on change
- *   POST /api/runs/:id/control   { action: pause|resume|stop } → writeControl
+ * GET /api/activity?limit=N (default 40, clamped to 1..200; junk → 40) →
+ *   { events: Array<WorkflowEvent & { runId, run, adapter, provider }>,
+ *     fleet: Record<adapter, runningCount> }
+ * `events` merges the last N events of each of the 12 newest runs, newest first
+ * by ts, cut to N: `run` is the run's display name, `adapter` the event's adapter
+ * (agent events) or null, `provider` "odw" | "claude". `fleet` counts the agents
+ * running right now per adapter across active runs (an agent with no recorded
+ * adapter counts as "claude" in a Claude Code run, else "unknown").
+ *
+ * The polled GETs (/api/runs, /api/runs/:id, …/events, …/result, /api/activity)
+ * carry an ETag (with cache-control: no-cache) and answer If-None-Match with 304.
+ * Request bodies are capped at 128 KiB (413 past it); a malformed %-escape in a
+ * path id is a 400.
  *
  * Security: binds 127.0.0.1 by default. The run list aggregates every project's
  * runs (prompts, results) — both ODW's own runs root AND, with the default
@@ -53,6 +73,7 @@ import {
 import type { Config } from "../adapters/types.js";
 import { DASHBOARD_HTML } from "../dashboard.generated.js";
 import type { WorkflowEvent } from "../events.js";
+import { activityLimit, activityView } from "./activity-view.js";
 import { ChatHost, type ChatTurnRunner } from "./chat-host.js";
 import { ClaudeRunSource } from "./claude-run-source.js";
 import {
@@ -272,6 +293,11 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandleCont
     }
     if (method === "GET" && path === "/api/runs") {
       sendJsonCached(req, res, allSummaries(sources));
+      return;
+    }
+    if (method === "GET" && path === "/api/activity") {
+      const view = activityView(sources, allSummaries(sources), activityLimit(url.searchParams.get("limit")));
+      sendJsonCached(req, res, view);
       return;
     }
     if (method === "GET" && path === "/api/stream") {
