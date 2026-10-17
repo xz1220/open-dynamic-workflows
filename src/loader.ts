@@ -80,6 +80,9 @@ function declaresOwn(masked: string, name: ExtensionName): boolean {
   return new RegExp(`\\b(?:const|let|var|function|class)\\s+${name}\\b`).test(masked);
 }
 
+/** A call of the injected `exec` — not a member call such as `re.exec(text)`. */
+const CALLS_EXEC = /(?<![\w$])(?<!\.\s*)exec\s*\(/;
+
 const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor as new (
   ...args: string[]
 ) => (...callArgs: unknown[]) => Promise<unknown>;
@@ -135,6 +138,10 @@ export function loadWorkflowScript(source: string, filename: string): LoadedWork
  * the warning must catch it (the default mask, used for meta extraction, blanks
  * whole template literals and would miss it).
  *
+ * It also flags calls to `exec()`, an ODW extension Claude Code does not
+ * provide at all — unless the script declares its own `exec`, which is then the
+ * one it calls (member calls such as `re.exec(text)` never count).
+ *
  * These come back as *warnings*, not errors — ODW itself executes them — so a
  * caller (the generate-workflow repair loop, a linter) can decide how hard to
  * push for dual-compatibility.
@@ -149,6 +156,11 @@ export function scanDualCompat(source: string): string[] {
   ];
   for (const [re, message] of rules) {
     if (re.test(masked)) warnings.push(message);
+  }
+  if (CALLS_EXEC.test(masked) && !declaresOwn(masked, "exec")) {
+    warnings.push(
+      "exec() is an ODW extension, not portable to Claude Code — its Workflow tool has no exec global, so the script fails there",
+    );
   }
   return warnings;
 }

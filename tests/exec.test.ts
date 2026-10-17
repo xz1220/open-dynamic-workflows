@@ -25,7 +25,7 @@ import { MemoryControl } from "../src/control.js";
 import { RunStopped, WorkflowScriptError, isFatalError } from "../src/errors.js";
 import { COMMAND_FAILED, COMMAND_FINISHED, COMMAND_STARTED, LOG, MemorySink, type WorkflowEvent } from "../src/events.js";
 import { ExecError, type ExecOptions, type ExecResult } from "../src/exec.js";
-import { loadWorkflowScript, maskCode } from "../src/loader.js";
+import { loadWorkflowScript, maskCode, scanDualCompat } from "../src/loader.js";
 import { createPrimitives, type WorkflowGlobals } from "../src/primitives.js";
 import { activityView } from "../src/runtime/activity-view.js";
 import { attachRun, formatEvent } from "../src/runtime/live-view.js";
@@ -650,6 +650,28 @@ test("exec is injected unless the script declares its own (which then wins, as o
     "wf.js",
   );
   assert.equal(await mixed.run(globals, null), "mine:OUT");
+});
+
+test("the dual-compat scan flags exec() as not portable to Claude Code", () => {
+  const flagged = (body: string) => scanDualCompat(META + body).filter((w) => /exec\(\)/.test(w));
+  assert.equal(flagged("await exec('npm test')\nreturn 1").length, 1);
+  assert.equal(flagged("const r = await exec(['npm', 'test'], { check: true })").length, 1);
+  assert.equal(flagged("log(`${(await exec('date')).stdout}`)").length, 1, "an interpolation is still code");
+  for (const portable of [
+    "const m = /a(b)/.exec('ab')\nreturn m",
+    "const m = re . exec('ab')",
+    "const m = re?.exec('ab')",
+    "// await exec('npm test')\nreturn 1",
+    "log('exec(npm test)')",
+    "myexec(1); $exec(2)",
+    "const exec = (c) => c\nreturn exec('mine')",
+    "function exec(c) { return c }\nreturn exec('mine')",
+  ]) {
+    assert.deepEqual(flagged(portable), [], portable);
+  }
+  const report = createPrimitives(buildContext(defaultConfig())).validate(META + "return await exec('npm test')");
+  assert.equal(report.ok, true, "a warning, not an error: odw runs it");
+  assert.match(report.warnings.join("\n"), /exec\(\) is an ODW extension, not portable to Claude Code/);
 });
 
 test("SEA-safe: child_process is only ever imported statically", () => {
