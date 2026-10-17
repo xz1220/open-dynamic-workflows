@@ -137,3 +137,28 @@ test("a failed write rolls a request's change back; a failed stream write is rep
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("two servers sharing sessions.json merge their writes instead of wiping each other's sessions", async () => {
+  const root = mkdtempSync(join(tmpdir(), "odw-chat-merge-"));
+  try {
+    const a = new ChatStore(root, "/a", { streamPersistMs: 20 });
+    const b = new ChatStore(root, "/b", { streamPersistMs: 20 });
+    const sa = a.create();
+    const msg = a.appendAssistantMessage(sa.id, "", undefined, "streaming").messages.at(-1)!;
+    a.updateMessage(sa.id, msg.id, { text: "partial…" }); // A is mid-stream, its memory dirty
+    await new Promise((r) => setTimeout(r, 5));
+    const sb = b.create(); // B writes a new session meanwhile
+    a.updateMessage(sa.id, msg.id, { text: "done", status: "done" }); // A's write lands after B's
+    const fresh = new ChatStore(root, "/c");
+    const ids = fresh.list().map((s) => s.id);
+    assert.ok(ids.includes(sa.id), "A's session survives");
+    assert.ok(ids.includes(sb.id), "B's session survives A's later write");
+    assert.equal(fresh.get(sa.id)!.messages.at(-1)!.text, "done");
+    // A deletion merges the same way.
+    b.delete(sb.id);
+    a.updateMessage(sa.id, msg.id, { text: "done again", status: "done" });
+    assert.deepEqual(new ChatStore(root, "/c").list().map((s) => s.id), [sa.id]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

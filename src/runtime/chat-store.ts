@@ -177,6 +177,9 @@ export class ChatStore {
   private diskSig = "";
   /** Memory holds changes the file does not (streaming text awaiting its write). */
   private dirty = false;
+  /** Sessions this process changed (or created) / deleted since it last wrote. */
+  private readonly touched = new Set<string>();
+  private readonly deleted = new Set<string>();
   private persistTimer: NodeJS.Timeout | null = null;
 
   constructor(root: string, private readonly defaultSource: string, opts: ChatStoreOptions = {}) {
@@ -221,6 +224,7 @@ export class ChatStore {
     this.writeThrough(() => {
       const data = this.load();
       data.sessions = [session, ...data.sessions];
+      this.touched.add(session.id);
     });
     return session;
   }
@@ -298,6 +302,7 @@ export class ChatStore {
     };
     data.sessions = data.sessions.slice();
     data.sessions[index] = next;
+    this.touched.add(id);
     this.dirty = true;
     if (patch.status === undefined) {
       this.persistSoon();
@@ -349,6 +354,8 @@ export class ChatStore {
     this.writeThrough(() => {
       const data = this.load();
       data.sessions = data.sessions.filter((s) => s.id !== id);
+      this.touched.delete(id);
+      this.deleted.add(id);
     });
     return true;
   }
@@ -385,6 +392,7 @@ export class ChatStore {
     const next = fn(data.sessions[index]!);
     data.sessions = data.sessions.slice();
     data.sessions[index] = next;
+    this.touched.add(id);
     return next;
   }
 
@@ -400,12 +408,28 @@ export class ChatStore {
   private persist(): void {
     if (this.persistTimer) clearTimeout(this.persistTimer);
     this.persistTimer = null;
-    // Write what is in memory — never re-load() here: an outside write landing
-    // between our change and this write would otherwise swallow the change.
-    const data = this.data ?? this.load();
+    // Write what is in memory — never a plain re-load() here: an outside write
+    // landing between our change and this write would swallow the change. But
+    // another `odw serve` sharing the file may have written since we last
+    // synced: then merge — its sessions, with ours replacing the ones we
+    // touched and dropping the ones we deleted — instead of clobbering them.
+    let data = this.data ?? this.load();
+    if (this.data && statSig(this.file) !== this.diskSig) {
+      const disk = parseChatFile(readJsonFile<unknown>(this.file));
+      const ours = new Map(data.sessions.map((s) => [s.id, s]));
+      const onDisk = new Set(disk.sessions.map((s) => s.id));
+      const sessions = disk.sessions
+        .filter((s) => !this.deleted.has(s.id))
+        .map((s) => (this.touched.has(s.id) ? (ours.get(s.id) ?? s) : s));
+      for (const s of data.sessions) if (this.touched.has(s.id) && !onDisk.has(s.id)) sessions.unshift(s);
+      data = { ...disk, sessions };
+    }
     mkdirSync(dirname(this.file), { recursive: true });
     writeJsonAtomic(this.file, data);
+    this.data = data; // only once written: a failed write leaves memory for the caller to roll back
     this.dirty = false;
+    this.touched.clear();
+    this.deleted.clear();
     this.diskSig = statSig(this.file);
   }
 
