@@ -273,3 +273,44 @@ test("a transcript marks a fallback with an attempt line naming the next adapter
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// --- the bridge -------------------------------------------------------------------------
+
+test("bridge: a spent quota moves the call down its chain, told through onFallback; a model tier resolves per adapter", async () => {
+  const config = routingConfig({ fallback: { a: ["b"] }, models: { fast: { a: "a-mini", b: "b-flash" } } });
+  const { runner, calls } = fakeCli({ a: [failing(QUOTA)] });
+  const moves: AdapterFallback[] = [];
+  const out = await new Bridge(config, { runner }).run({ prompt: "x", model: "@fast" }, { onFallback: (move) => void moves.push(move) });
+  assert.deepEqual([out.value, out.adapter, out.fellBackFrom], ["b answered", "b", ["a"]]);
+  assert.deepEqual(
+    calls.map((c) => [c.adapter, c.model]),
+    [
+      ["a", "a-mini"],
+      ["b", "b-flash"],
+    ],
+  );
+  assert.deepEqual(moves, [{ from: "a", reason: "quota", to: "b", fellBackFrom: ["a"] }]);
+  // With nowhere to go, the call fails with its adapter's own error.
+  await assert.rejects(
+    new Bridge(config, { runner: async () => failing(QUOTA) }).run({ prompt: "x", adapter: ["a"] }),
+    (err: Error) => err instanceof AdapterExecutionError && err.reason === "quota" && /^adapter 'a' ran out of usage quota/.test(err.message),
+  );
+});
+
+test("bridge: route() starts a call past the adapters the quota breaker took out; with none left, the call fails at once", async () => {
+  const { runner, calls } = fakeCli({ a: [failing(QUOTA), failing(QUOTA)] });
+  const bridge = new Bridge(routingConfig({ fallback: { a: ["b"] }, quotaBreaker: 2 }), { runner });
+  assert.equal(bridge.route("a").start, 0);
+  for (let i = 0; i < 2; i++) assert.equal((await bridge.run({ prompt: "x" })).adapter, "b");
+  const route = bridge.route("a");
+  assert.deepEqual([route.chain.map((adapter) => adapter.name), route.start], [["a", "b"], 1]);
+  calls.length = 0;
+  assert.equal((await bridge.run({ prompt: "x" })).adapter, "b");
+  assert.deepEqual(calls.map((c) => c.adapter), ["b"], "a never ran");
+  assert.equal(bridge.route(["a"]).start, -1);
+  await assert.rejects(
+    bridge.run({ prompt: "x", adapter: ["a"] }),
+    (err: Error) => err instanceof AdapterExecutionError && err.reason === "quota" && /out of usage quota for the rest of this run/.test(err.message),
+  );
+  assert.deepEqual(calls.map((c) => c.adapter), ["b"]);
+});

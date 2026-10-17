@@ -810,7 +810,9 @@ test("an adapter's own failure wording is matched first, and can make a failure 
 
 test("three quota or auth failures in a row on one adapter warn once; anything else resets the count", async () => {
   let reply: CliResult = failing(`Claude AI usage limit reached|${Math.floor(Date.now() / 1000) + 3 * 3600}`);
-  const bridge = new Bridge(inplaceConfig(), { runner: async () => reply });
+  const cfg = inplaceConfig();
+  cfg.settings.quotaBreaker = null; // the warning alone: the quota breaker has tests of its own (routing.test.ts)
+  const bridge = new Bridge(cfg, { runner: async () => reply });
   const warnings: AdapterWarning[] = [];
   const onAdapterWarning = (w: AdapterWarning) => warnings.push(w);
   const fail = () => assert.rejects(() => bridge.run({ prompt: "x" }, { onAdapterWarning }), AdapterExecutionError);

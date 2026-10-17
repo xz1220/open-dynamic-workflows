@@ -449,7 +449,8 @@ interface Pending extends CapturedChanges {
  * to reformat its reply, so an attempt that changed nothing leaves the earlier
  * attempt's change standing; one that did change files replaces it. When the
  * call settles, {@link settle} keeps the winner as `agents/<agentId>.diff` and
- * creates its branch; {@link discard} drops everything (a stop).
+ * creates its branch; {@link discard} drops everything (a stop, or a fallback
+ * that starts the work over on another adapter).
  */
 export class ChangeRecorder {
   private kept: Pending | null = null;
@@ -509,7 +510,11 @@ export class ChangeRecorder {
     return { changes: kept.changes, branch };
   }
 
-  /** The call ended with the run (a stop): keep nothing. */
+  /**
+   * Keep nothing captured so far: the call ended with the run (a stop), or it
+   * starts its work over on another adapter (a fallback, an ODW extension) —
+   * whose runs the recorder goes on capturing.
+   */
   async discard(): Promise<void> {
     await this.drop(this.latest);
     await this.drop(this.kept);

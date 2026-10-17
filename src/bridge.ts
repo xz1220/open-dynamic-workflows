@@ -37,6 +37,13 @@
  * schemas itself is handed the call's schema on every run — its own validated
  * value is the reply's — and ODW validates the reply all the same.
  *
+ * A call may have a fallback chain (an ODW extension; see ./routing): an
+ * adapter list of its own, or the `fallback` setting's for its adapter. A
+ * spent quota or a refused login moves it to the next adapter that can run
+ * its permission tier — a fresh prompt, the same options — and the run's
+ * quota breaker takes an adapter whose quota failed `quotaBreaker` times in a
+ * row out of the run, so later calls start past it.
+ *
  * The command runner is injectable, so the bridge unit-tests with a fake runner
  * and no real agent account; so are the backoff's sleep, clock and jitter.
  */
@@ -69,9 +76,10 @@ import {
   type PermissionTier,
   type SchemaFlag,
 } from "./adapters/types.js";
-import { AdapterExecutionError, AgentError, RunStopped, SchemaValidationError, isFatalError } from "./errors.js";
+import { AdapterExecutionError, AgentError, ConfigError, RunStopped, SchemaValidationError, isFatalError } from "./errors.js";
 import { PortPool } from "./ports.js";
 import { LiteralRouter, type InvocationPlan, type OptionRouter } from "./router.js";
+import { isAdapterChoice, type AdapterChoice } from "./routing.js";
 import { describeSchema, pickStructured, type JsonSchema } from "./schema.js";
 import type { AttemptReason } from "./transcript.js";
 import { withWorkspace, type Workspace } from "./workspace.js";
@@ -83,7 +91,11 @@ export const INDEPENDENCE_PREAMBLE =
 
 export interface AgentRequest {
   prompt: string;
-  adapter?: string;
+  /**
+   * The adapter to run on, or — an ODW extension — a list of them in order of
+   * preference: a fallback chain. Unset: the run's default (see {@link Bridge.route}).
+   */
+  adapter?: AdapterChoice;
   schema?: JsonSchema;
   label?: string;
   /** Select a model; routed to the adapter's declared model flag (or noted). */
@@ -114,6 +126,12 @@ export interface AgentOutcome {
   text: string;
   /** Adapter name actually used. */
   adapter: string;
+  /**
+   * The adapters the call left before `adapter`, in order, when it fell back
+   * (an ODW extension): each one's quota was spent or its login refused.
+   * Absent when the adapter it started on produced the value.
+   */
+  fellBackFrom?: string[];
   /** How many CLI calls it took (>1 means schema retries happened). */
   attempts: number;
   /**
@@ -212,20 +230,59 @@ export interface RunOptions {
    * stderr as they arrive, and given its result when it ends.
    */
   transcript?: TranscriptSink;
+  /**
+   * Where the call runs (an ODW extension): what {@link Bridge.route} decided
+   * when it was dispatched — the adapter its slot and its events name.
+   * Routed afresh when absent.
+   */
+  route?: AgentRoute;
+  /**
+   * Called when the call falls back to the next adapter of its chain (an ODW
+   * extension) — its CLI's quota was spent or its login refused — before that
+   * adapter's first CLI run, which waits until the returned promise settles:
+   * the time to take a slot on the new adapter (see scheduler AgentSlot.moveTo).
+   */
+  onFallback?: (fallback: AdapterFallback) => void | Promise<void>;
 }
 
 /** Where the bridge reports an isolated call's worktrees: a ChangeRecorder (./changes). */
 export interface ChangeSink {
   capture(ws: Workspace): Promise<void>;
   endAttempt(): Promise<void>;
+  /** Keep nothing captured so far: a fallback starts the work over on another adapter. */
+  discard(): Promise<void>;
 }
 
 /** Where the bridge reports what a call's CLI runs print: a TranscriptRecorder (./transcript). */
 export interface TranscriptSink {
-  beginRun(reason?: AttemptReason): void;
+  /** A CLI run starts on `adapter` — after a fallback (an ODW extension), another one than before. */
+  beginRun(reason?: AttemptReason, adapter?: Adapter): void;
   stdout(chunk: string): void;
   stderr(chunk: string): void;
   endRun(cli: CliResult): void;
+}
+
+/** Where one agent() call runs (an ODW extension; see {@link Bridge.route}). */
+export interface AgentRoute {
+  /** The adapters it may run on, in order: its own (or the run's default) first, then its fallbacks. */
+  chain: Adapter[];
+  /** Its first adapter's permission plan: the tier the whole chain runs (an adapter that cannot is passed over). */
+  permissions: PermissionPlan;
+  /** Where in `chain` it starts: past the adapters the run's quota breaker took out; -1 when none is left. */
+  start: number;
+  /** Why adapters before `start` were passed over for their tier, for the run's log. */
+  skipped: string[];
+}
+
+/** A call moving to the next adapter of its fallback chain (an ODW extension). */
+export interface AdapterFallback {
+  /** The adapter it leaves, and why: its quota is spent, or its login was refused. */
+  from: string;
+  reason: "quota" | "auth";
+  /** The adapter it moves to. */
+  to: string;
+  /** Every adapter the call has left so far, in order (`from` last). */
+  fellBackFrom: string[];
 }
 
 /** A CLI the stall watchdog killed, about to be started again. */
@@ -256,6 +313,8 @@ export interface AdapterWarning {
   streak: number;
   /** What happened and what the user can do, ready to log. */
   message: string;
+  /** The run's quota breaker (an ODW extension) took the adapter out of the run: later calls skip it. */
+  tripped?: boolean;
 }
 
 /** Calls in a row an adapter's quota or login may fail before the run warns about it. */
@@ -277,6 +336,10 @@ export class Bridge {
   private readonly agentSchemaPath: ((agentId: number) => string) | undefined;
   /** What this run has said about how schemas reach their CLIs: each note once. */
   private readonly schemaNotes = new Set<string>();
+  /** Per adapter: its quota failures in a row — what the run's quota breaker counts (an ODW extension). */
+  private readonly quotaStreaks = new Map<string, number>();
+  /** Adapters the quota breaker took out of the run: later calls start past them. */
+  private readonly tripped = new Set<string>();
 
   constructor(
     private readonly config: Config,
@@ -318,6 +381,72 @@ export class Bridge {
     return planPermissions(adapter, run, option, alternative);
   }
 
+  /**
+   * The adapters a call may run on, in order (an ODW extension): a list it
+   * names, as it is; else the adapter it names (or the run's default) and the
+   * `fallback` setting's chain for it. An adapter listed twice runs once.
+   * Throws a ConfigError — fatal, like an unknown adapter — for a malformed list.
+   */
+  chainFor(choice?: AdapterChoice | null): Adapter[] {
+    let chain: Adapter[];
+    if (Array.isArray(choice)) {
+      if (!isAdapterChoice(choice)) {
+        throw new ConfigError(
+          `agent() option adapter must be an adapter name or a non-empty list of them; got ${JSON.stringify(choice)}`,
+        );
+      }
+      chain = choice.map((name) => resolveAdapter(this.config, name));
+    } else {
+      const first = this.adapterFor(choice);
+      const fallback = this.config.settings.fallback ?? {};
+      const next = Object.prototype.hasOwnProperty.call(fallback, first.name) ? fallback[first.name]! : [];
+      chain = [first, ...next.map((name) => resolveAdapter(this.config, name))];
+    }
+    return chain.filter((adapter, i) => chain.findIndex((other) => other.name === adapter.name) === i);
+  }
+
+  /**
+   * Where a call runs (an ODW extension): its chain (see {@link chainFor}),
+   * and where in it it starts — the first adapter the run's quota breaker has
+   * not taken out. Its first adapter's permission plan settles the tier the
+   * whole chain runs: a later adapter that cannot run exactly that tier is
+   * passed over with a note, never given another. A call its first adapter
+   * may not run fails as it is (see {@link run}).
+   */
+  route(choice?: AdapterChoice | null, permissions?: unknown): AgentRoute {
+    const chain = this.chainFor(choice);
+    const plan = this.permissionsFor(chain[0]!, permissions);
+    const skipped: string[] = [];
+    const start = plan.error ? 0 : this.nextAdapter(chain, -1, plan.tier!, skipped);
+    return { chain, permissions: plan, start, skipped };
+  }
+
+  /**
+   * The first adapter of `chain` past `after` a call can move to: one the
+   * quota breaker has not taken out (passed over silently: its warning said
+   * so once) and — past the first — that runs `tier` exactly. Why one could
+   * not goes to `skipped`. -1 when none is left.
+   */
+  private nextAdapter(chain: Adapter[], after: number, tier: PermissionTier, skipped: string[]): number {
+    for (let i = after + 1; i < chain.length; i++) {
+      const adapter = chain[i]!;
+      if (this.tripped.has(adapter.name)) continue;
+      if (i > 0) {
+        const plan = planPermissions(adapter, runTier(this.config), tier);
+        if (plan.error || plan.tier !== tier) {
+          const runs = plan.tier ? ` (it would run "${plan.tier}")` : "";
+          skipped.push(
+            `skipped fallback '${adapter.name}': it cannot run this agent's permissions "${tier}"${runs} — ` +
+              `a fallback never runs at another tier`,
+          );
+          continue;
+        }
+      }
+      return i;
+    }
+    return -1;
+  }
+
   async run(request: AgentRequest, options: RunOptions = {}): Promise<AgentOutcome> {
     // The agent's ids and port, the same for every CLI run (and worktree setup)
     // of the call; no other agent of the run gets the port until the call settles.
@@ -345,19 +474,73 @@ export class Bridge {
     }
   }
 
+  /**
+   * Run the call down its route (see {@link route}): on its start adapter,
+   * then — when that CLI's quota is spent or its login refused (a rate limit
+   * was ridden out in place; any other failure is the call's) — on the next
+   * adapter of its chain that can take it, with a fresh prompt and the same
+   * options, until one produces the value or none is left. An adapter the
+   * quota breaker took out while the call waited for its slot is left at
+   * once, as if its quota had just failed it.
+   */
   private async runCall(request: AgentRequest, options: RunOptions, call: CallEnv): Promise<AgentOutcome> {
-    const adapter = this.adapterFor(request.adapter);
-    try {
-      const outcome = await this.callOn(adapter, request, options, call);
-      this.blockedStreaks.delete(adapter.name);
-      return outcome;
-    } catch (err) {
-      this.noteFailure(adapter, err, options);
-      throw err;
+    const route = options.route ?? this.route(request.adapter, request.permissions);
+    for (const note of route.skipped) options.onNote?.(note);
+    if (route.start < 0) throw this.outOfQuota(route);
+    const fellBackFrom: string[] = [];
+    for (let at = route.start; ; ) {
+      const adapter = route.chain[at]!;
+      let err: unknown = this.tripped.has(adapter.name) ? this.outOfQuota({ ...route, chain: [adapter] }) : undefined;
+      if (err === undefined) {
+        // A fallback runs the tier the call's first adapter settled, never another (see route()).
+        const hop = at === 0 ? request : { ...request, permissions: route.permissions.tier };
+        try {
+          const outcome = await this.callOn(adapter, hop, options, call, fellBackFrom.length > 0 ? "fallback" : undefined);
+          this.blockedStreaks.delete(adapter.name);
+          this.quotaStreaks.delete(adapter.name);
+          return fellBackFrom.length > 0 ? { ...outcome, fellBackFrom } : outcome;
+        } catch (failure) {
+          this.noteFailure(adapter, failure, options);
+          err = failure;
+        }
+      }
+      const reason = err instanceof AdapterExecutionError && !options.signal?.aborted ? err.reason : null;
+      if (reason !== "quota" && reason !== "auth") throw err;
+      const skipped: string[] = [];
+      const next = this.nextAdapter(route.chain, at, route.permissions.tier!, skipped);
+      for (const note of skipped) options.onNote?.(note);
+      if (next < 0) throw err;
+      fellBackFrom.push(adapter.name);
+      // The next adapter starts the work over: what this one changed is not the agent's change.
+      await call.changes?.discard();
+      await options.onFallback?.({ from: adapter.name, reason, to: route.chain[next]!.name, fellBackFrom: [...fellBackFrom] });
+      // Another CLI run: it passes the stop/budget guards first.
+      await options.beforeRetry?.();
+      at = next;
     }
   }
 
-  private async callOn(adapter: Adapter, request: AgentRequest, options: RunOptions, shared: CallEnv): Promise<AgentOutcome> {
+  /** Why a call cannot start: the quota breaker took out its adapters — and the rest of its chain cannot run its tier. */
+  private outOfQuota(route: AgentRoute): AdapterExecutionError {
+    const out = route.chain.filter((adapter) => this.tripped.has(adapter.name)).map((adapter) => `'${adapter.name}'`);
+    const one = out.length === 1;
+    const rest =
+      out.length < route.chain.length ? `, and the rest of its chain cannot run its permissions "${route.permissions.tier}"` : "";
+    return new AdapterExecutionError(
+      `adapter${one ? "" : "s"} ${out.join(", ")} ${one ? "is" : "are"} out of usage quota for the rest of this run ` +
+        `(the quota breaker skips ${one ? "it" : "them"})${rest} — wait for the quota window to reset and resume the run ` +
+        `(odw resume), or switch adapter with --adapter <name>`,
+      { reason: "quota" },
+    );
+  }
+
+  private async callOn(
+    adapter: Adapter,
+    request: AgentRequest,
+    options: RunOptions,
+    shared: CallEnv,
+    first?: AttemptReason,
+  ): Promise<AgentOutcome> {
     const { signal } = options;
     const settings = this.config.settings;
     // The tier is settled before anything starts: an agent that may not have
@@ -400,7 +583,7 @@ export class Bridge {
       throwIfAborted(signal);
       if (attempt > 1) await options.beforeRetry?.();
       const prompt = attempt > 1 ? `${basePrompt}\n\n${retryFeedback(previous, problems)}` : basePrompt;
-      const why = attempt > 1 ? "schema" : undefined;
+      const why = attempt > 1 ? "schema" : first;
       const { cli, output, failure } = await this.invokeUntilFinal(adapter, plan, prompt, limits, options, reruns, call, why);
       await call.changes?.endAttempt();
       // Killed by a stop (or by a fatal error elsewhere in the run): report
@@ -565,17 +748,24 @@ export class Bridge {
    * streak reaching {@link ADAPTER_WARNING_STREAK} earns one warning: the rest
    * of that adapter's agents will likely fail the same way. Any other outcome
    * on the adapter ends the streak; a stop or a run-ending error says nothing.
+   * The run's quota breaker (an ODW extension) counts quota failures alone:
+   * `quotaBreaker` of them in a row take the adapter out of the run, and its
+   * warning — the one — says so.
    */
   private noteFailure(adapter: Adapter, err: unknown, options: RunOptions): void {
     if (options.signal?.aborted || isFatalError(err)) return;
     const reason = err instanceof AdapterExecutionError ? err.reason : null;
+    const quota = reason === "quota" ? (this.quotaStreaks.get(adapter.name) ?? 0) + 1 : 0;
+    if (quota > 0) this.quotaStreaks.set(adapter.name, quota);
+    else this.quotaStreaks.delete(adapter.name);
     if (reason !== "quota" && reason !== "auth") {
       this.blockedStreaks.delete(adapter.name);
       return;
     }
     const streak = (this.blockedStreaks.get(adapter.name) ?? 0) + 1;
     this.blockedStreaks.set(adapter.name, streak);
-    if (streak !== ADAPTER_WARNING_STREAK) return;
+    if (this.tripQuotaBreaker(adapter, quota, options)) return;
+    if (streak !== ADAPTER_WARNING_STREAK || this.tripped.has(adapter.name)) return;
     const fix =
       reason === "quota"
         ? "Wait for its quota window to reset and resume the run (odw resume)"
@@ -589,6 +779,29 @@ export class Bridge {
         `(${reason === "quota" ? "usage quota" : "not logged in"}) — its other agents in this run will likely fail too. ` +
         `${fix}, or switch adapter with --adapter <name>.`,
     });
+  }
+
+  /**
+   * The run's quota breaker (an ODW extension): the `quotaBreaker`-th quota
+   * failure in a row on an adapter takes it out of the run — later calls
+   * start past it in their chain, and a call with nowhere else to go fails at
+   * once — and logs one warning. True when this failure tripped it.
+   */
+  private tripQuotaBreaker(adapter: Adapter, streak: number, options: RunOptions): boolean {
+    const limit = this.config.settings.quotaBreaker;
+    if (!limit || streak < limit || this.tripped.has(adapter.name)) return false;
+    this.tripped.add(adapter.name);
+    options.onAdapterWarning?.({
+      adapter: adapter.name,
+      reason: "quota",
+      streak,
+      tripped: true,
+      message:
+        `warning: ${streak} agents in a row failed on adapter '${adapter.name}' (usage quota) — the run's later agents ` +
+        `skip it: each starts on the next adapter of its fallback chain, or fails at once without one. ` +
+        `Wait for its quota window to reset and resume the run (odw resume), or switch adapter with --adapter <name>.`,
+    });
+    return true;
   }
 
   // --- internals -------------------------------------------------------------
@@ -673,7 +886,7 @@ export class Bridge {
         const env = withAgentVars({ ...agentBaseEnv(process.env, this.config.settings), ...adapter.env }, call.env);
         // What the CLI prints is kept as it arrives (ODW extension; see ./transcript).
         const transcript = call.transcript;
-        transcript?.beginRun(why);
+        transcript?.beginRun(why, adapter);
         const cli = await this.runner(command, {
           stdin,
           cwd: ws.path,
