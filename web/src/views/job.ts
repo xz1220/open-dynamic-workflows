@@ -8,7 +8,7 @@ import { t } from "../i18n";
 import { store } from "../store";
 import type { AgentView, RunDetail, WorkflowEvent } from "../types";
 import { ACTIVE, TERMINAL, esc, fmtClock, fmtDurMs, fmtDurSec, fmtTokens, fmtUsd } from "../util";
-import { EVT_CLASS, emptyArt } from "./activity";
+import { EVT_CLASS, commandDetail, emptyArt } from "./activity";
 
 export type JobTab = "graph" | "timeline" | "logs" | "result";
 
@@ -30,6 +30,7 @@ export const LOG_PAGE = 600;
 
 const LOG_GROUPS: Array<{ key: string; label: string; types: string[] }> = [
   { key: "agent", label: "agents", types: ["agent_started", "agent_finished", "agent_failed"] },
+  { key: "command", label: "commands", types: ["command_started", "command_finished", "command_failed"] },
   { key: "phase", label: "phases", types: ["phase_started"] },
   { key: "log", label: "logs", types: ["log"] },
   { key: "run", label: "run", types: ["run_started", "run_finished", "run_failed", "run_stopped"] },
@@ -129,6 +130,11 @@ function tabs(run: RunDetail, tab: JobTab): string {
 }
 
 function agentEvents(a: AgentView): WorkflowEvent[] {
+  if (a.kind === "command") {
+    return store.runEvents.filter(
+      (e) => e.type.startsWith("command_") && (a.commandId != null ? e.commandId === a.commandId : e.label === a.label),
+    );
+  }
   return store.runEvents.filter(
     (e) =>
       e.type.startsWith("agent_") &&
@@ -161,22 +167,25 @@ function drawer(run: RunDetail, ai: number, nowSec: number): string {
   const evs = agentEvents(a)
     .map(
       (e) =>
-        `<div><span class="ts">${fmtClock(e.ts)}</span>${glyph(e.type === "agent_started" ? "running" : e.type === "agent_failed" ? "failed" : "done")}<span>${esc(e.type.replace("agent_", ""))}${e.attempts ? ` · ${t("attempt {n}", { n: Number(e.attempts) })}` : ""}</span></div>`,
+        `<div><span class="ts">${fmtClock(e.ts)}</span>${glyph(/_started$/.test(e.type) ? "running" : /_failed$/.test(e.type) ? "failed" : "done")}` +
+        `<span>${esc(e.type.replace(/^(agent|command)_/, ""))}${e.attempts ? ` · ${t("attempt {n}", { n: Number(e.attempts) })}` : ""}${typeof e.exitCode === "number" ? ` · exit ${e.exitCode}` : ""}</span></div>`,
     )
     .join("");
   return (
     `<aside class="drawer" data-key="drawer-${ai}">` +
-    `<div class="drawer-head"><div class="row">${pill(a.state)}<span class="tag">${esc(a.adapter ?? "—")}</span>` +
+    `<div class="drawer-head"><div class="row">${pill(a.state)}<span class="tag">${esc(a.kind === "command" ? t("command") : (a.adapter ?? "—"))}</span>` +
     `<button class="iconbtn" data-close="1" aria-label="${esc(t("Close"))}">${icons.close}</button></div>` +
     `<h4>${esc(a.label)}</h4></div>` +
     `<div class="drawer-body">` +
     `<div class="kv">` +
     `<span class="k">${t("phase")}</span><span class="v">${esc(a.phase ?? "—")}</span>` +
-    `<span class="k">${t("adapter")}</span><span class="v">${esc(a.adapter ?? "—")}</span>` +
+    (a.kind === "command" ? "" : `<span class="k">${t("adapter")}</span><span class="v">${esc(a.adapter ?? "—")}</span>`) +
     `<span class="k">${t("started")}</span><span class="v">${fmtClock(a.startedAt)}</span>` +
     `<span class="k">${t("finished")}</span><span class="v">${fmtClock(a.finishedAt)}</span>` +
     `<span class="k">${t("duration")}</span><span class="v">${dur}</span>` +
-    `<span class="k">${t("attempts")}</span><span class="v">${a.attempts ?? "—"}</span>` +
+    (a.kind === "command"
+      ? `<span class="k">${t("exit code")}</span><span class="v">${a.exitCode ?? "—"}</span>`
+      : `<span class="k">${t("attempts")}</span><span class="v">${a.attempts ?? "—"}</span>`) +
     (a.failureReason ? `<span class="k">${t("reason")}</span><span class="v"><span class="tag ${/rate_limit|quota|stalled|timeout/.test(a.failureReason) ? "warn" : ""}">${esc(reasonLabel(a.failureReason))}</span></span>` : "") +
     (a.usage && (a.usage.inputTokens != null || a.usage.outputTokens != null)
       ? `<span class="k">${t("tokens")}</span><span class="v">${fmtTokens(a.usage.inputTokens)} ${t("in")} · ${fmtTokens(a.usage.outputTokens)} ${t("out")}</span>`
@@ -254,12 +263,20 @@ function graphTab(run: RunDetail, s: JobViewState, nowSec: number): string {
 function logRow(e: WorkflowEvent, i: number): string {
   const cls = EVT_CLASS[e.type] ?? "log";
   const label =
-    e.type === "phase_started" ? "PHASE" : e.type === "log" ? "LOG" : e.type.replace(/^(agent|run)_/, "").toUpperCase();
+    e.type === "phase_started"
+      ? "PHASE"
+      : e.type === "log"
+        ? "LOG"
+        : e.type.startsWith("command_")
+          ? `$ ${e.type.replace("command_", "").toUpperCase()}`
+          : e.type.replace(/^(agent|run)_/, "").toUpperCase();
   let msg = "";
   if (e.type === "phase_started") msg = `<b>${esc(String(e.phase ?? ""))}</b>`;
   else if (e.type === "log") msg = esc(String(e.message ?? ""));
   else if (e.type === "agent_failed")
     msg = `<b>${esc(String(e.label ?? ""))}</b> <span class="er">${esc(String(e.error ?? ""))}</span>`;
+  else if (e.type.startsWith("command_"))
+    msg = `<b>${esc(commandDetail(e))}</b>${e.type === "command_failed" && e.error ? ` <span class="er">${esc(String(e.error))}</span>` : ""}`;
   else if (e.type.startsWith("agent_"))
     msg = `<b>${esc(String(e.label ?? ""))}</b>${e.adapter ? ` · ${esc(String(e.adapter))}` : ""}${e.attempts && Number(e.attempts) > 1 ? ` · ×${esc(String(e.attempts))}` : ""}`;
   else msg = esc(e.type.replace(/_/g, " "));

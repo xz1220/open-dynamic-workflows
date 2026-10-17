@@ -57,7 +57,7 @@ const job: JobViewState = {
   selectedAi: null,
   zoom: 1,
   logQuery: "",
-  logTypes: new Set(["agent", "phase", "log", "run"]),
+  logTypes: new Set(["agent", "command", "phase", "log", "run"]),
   logLimit: LOG_PAGE,
   follow: true,
   motion: !reducedMotion(),

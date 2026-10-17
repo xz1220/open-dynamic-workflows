@@ -262,7 +262,7 @@ function startLive() {
       phases: [
         ["Map", 1, ["codex"]],
         ["Review", 6, ["claude", "codex", "gemini"]],
-        ["Verify", 4, ["codex"]],
+        ["Verify", 4, ["codex"], [{ label: "npm test", dur: 4, exit: 0 }]],
         ["Summarize", 1, ["claude"]],
       ],
       result: { findings: 5, confirmed: 3, verdict: "request-changes" },
@@ -296,6 +296,29 @@ function startLive() {
   ];
   const live = new Map();
 
+  /** A plausible saved value for an agent, by what its label says it did. */
+  function valueFor(a) {
+    const kind = a.label.split(":")[0];
+    switch (kind) {
+      case "plan":
+        return { angles: ["chemistry roadmaps", "OEM announcements", "supply chain", "cost curves", "regulation"] };
+      case "search":
+        return { sources: 3 + Math.floor(Math.random() * 6), claims: ["LFP share rises in entry trims", "sodium-ion pilots ship in 2027"] };
+      case "extract":
+        return { claims: [{ text: "Two flagships adopt semi-solid-state cells", source: "maker-briefing-2026" }] };
+      case "vote":
+        return { verdict: Math.random() < 0.8 ? "supported" : "disputed", votes: [true, true, Math.random() < 0.5] };
+      case "review":
+        return { findings: [{ title: "Unchecked error on retry path", severity: "medium", file: "src/client.ts", line: 88 }] };
+      case "verify":
+        return { real: Math.random() < 0.7, reason: "Reproduced by reading the retry loop" };
+      case "map":
+        return { summary: "Adds retries with backoff to the HTTP client", files: ["src/client.ts", "src/retry.ts"] };
+      default:
+        return `Draft from ${a.adapter}: a concise answer for ${a.label}.`;
+    }
+  }
+
   function begin(tpl) {
     const created = now();
     const id = runId(created);
@@ -325,8 +348,17 @@ function startLive() {
     run.phaseIx++;
     const spec = run.tpl.phases[run.phaseIx];
     if (!spec) return finish(run);
-    const [title, n, adapters] = spec;
+    const [title, n, adapters, commands = []] = spec;
     emit(run, { type: "phase_started", phase: title });
+    // exec() steps: a command node that settles on its own clock.
+    for (const c of commands) {
+      const commandId = (run.nextCommandId = (run.nextCommandId ?? -1) + 1);
+      emit(run, { type: "command_started", commandId, label: c.label, phase: title, command: c.label });
+      setTimeout(() => {
+        const done = { commandId, label: c.label, phase: title, command: c.label, exitCode: c.exit, durationMs: c.dur * 1000 };
+        emit(run, c.exit === 0 ? { type: "command_finished", ...done } : { type: "command_failed", ...done, error: `exit ${c.exit}` });
+      }, c.dur * 1000);
+    }
     const prefix = title.toLowerCase();
     run.pending = Array.from({ length: n }, (_, i) => ({
       label: n === 1 ? prefix : `${prefix}:${i + 1}`, phase: title, adapter: pick(adapters),
@@ -357,13 +389,19 @@ function startLive() {
         emit(run, { type: "agent_failed", agentId: a.agentId, label: a.label, phase: a.phase, error: "exit 1 · malformed JSON under schema (2 attempts)" });
       } else {
         a.state = "done";
-        emit(run, { type: "agent_finished", agentId: a.agentId, label: a.label, phase: a.phase, adapter: a.adapter, attempts: Math.random() < 0.15 ? 2 : 1 });
+        const attempts = Math.random() < 0.15 ? 2 : 1;
+        mkdirSync(join(run.dir, "agents"), { recursive: true });
+        writeJson(join(run.dir, "agents", `${a.agentId}.json`), {
+          agentId: a.agentId, key: `demo-${a.agentId}`, label: a.label, phase: a.phase, adapter: a.adapter,
+          attempts, startedAt: a.startedAt, finishedAt: now(), value: valueFor(a),
+        });
+        emit(run, { type: "agent_finished", agentId: a.agentId, label: a.label, phase: a.phase, adapter: a.adapter, attempts, saved: true });
       }
     }
     const running = run.agents.filter((a) => a.state === "running").length;
     if (run.pending.length && running < 4 && Math.random() < 0.65) {
       const a = run.pending.shift();
-      Object.assign(a, { state: "running", agentId: run.nextAgentId++, doneAt: t + 3 + Math.random() * 11 });
+      Object.assign(a, { state: "running", agentId: run.nextAgentId++, startedAt: t, doneAt: t + 3 + Math.random() * 11 });
       run.agents.push(a);
       emit(run, { type: "agent_started", agentId: a.agentId, label: a.label, phase: a.phase, adapter: a.adapter });
     }

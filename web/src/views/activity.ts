@@ -16,6 +16,9 @@ export const EVT_CLASS: Record<string, string> = {
   agent_started: "astart",
   agent_finished: "afin",
   agent_failed: "afail",
+  command_started: "cstart",
+  command_finished: "cfin",
+  command_failed: "afail",
   log: "log",
 };
 // Machine event tokens — mirror events.jsonl; left untranslated by design.
@@ -28,13 +31,26 @@ export const EVT_LABEL: Record<string, string> = {
   agent_started: "AGENT ▸",
   agent_finished: "AGENT ✓",
   agent_failed: "AGENT ✕",
+  command_started: "$ ▸",
+  command_finished: "$ ✓",
+  command_failed: "$ ✕",
   log: "LOG",
 };
+
+/** `$ npm test` · exit 1 · 4.2s — what a command step ran and how it ended. */
+export function commandDetail(e: { type: string; label?: unknown; command?: unknown; exitCode?: unknown; durationMs?: unknown }): string {
+  const what = String(e.label ?? e.command ?? "command");
+  if (e.type === "command_started") return what;
+  const code = typeof e.exitCode === "number" ? `exit ${e.exitCode}` : t("killed");
+  const secs = typeof e.durationMs === "number" ? ` · ${(e.durationMs / 1000).toFixed(1)}s` : "";
+  return `${what} · ${code}${secs}`;
+}
 
 function eventDetail(e: ActivityEvent): string {
   if (e.type === "phase_started") return e.phase != null ? String(e.phase) : "";
   if (e.type === "log") return e.message != null ? String(e.message) : "";
   if (e.type === "agent_failed") return [e.label, e.error].filter(Boolean).map(String).join(" · ");
+  if (e.type.startsWith("command_")) return commandDetail(e);
   if (e.type.startsWith("agent_")) return e.label != null ? String(e.label) : "";
   return "";
 }

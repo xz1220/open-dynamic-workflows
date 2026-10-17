@@ -54,9 +54,10 @@ const OP_LABEL: Record<string, string> = {
   parallel: "parallel",
   pipeline: "pipeline",
   workflow: "workflow",
+  exec: "exec",
   log: "log",
 };
-const OP_CLASS: Record<string, string> = { parallel: "par", pipeline: "pipe", workflow: "wf", log: "cmd", agent: "" };
+const OP_CLASS: Record<string, string> = { parallel: "par", pipeline: "pipe", workflow: "wf", exec: "cmd", log: "cmd", agent: "" };
 
 function outline(d: WorkflowDetail): string {
   const phases = outlineSource(d.source, d.phases.map((p) => p.title));

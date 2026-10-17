@@ -312,6 +312,10 @@
 .node.cmd .sub {
   color: var(--code-dim);
 }
+.node.cmd .lbl,
+.node.cmd.done .lbl {
+  color: var(--code-ink);
+}
 .node.cmd .lbl .prompt {
   color: var(--sig);
 }
@@ -852,6 +856,11 @@
   color: var(--sig-ink);
   background: transparent;
   box-shadow: inset 0 0 0 1px var(--sig-line);
+}
+.evt.cstart,
+.evt.cfin {
+  color: var(--code-ink);
+  background: var(--code-bg);
 }
 .evt.rstop {
   color: var(--amber-ink);

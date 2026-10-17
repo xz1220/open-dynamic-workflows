@@ -282,3 +282,12 @@ test("the Logs tab paints the newest events and pages older ones in", () => {
   assert.match(html, /900 older events hidden/);
   store.focusRun(null);
 });
+
+test("exec() steps read as commands in the outline, the logs and the drawer", async () => {
+  const { commandDetail } = await import("../web/src/views/activity.ts");
+  assert.equal(commandDetail({ type: "command_started", label: "npm test" }), "npm test");
+  assert.equal(commandDetail({ type: "command_failed", label: "npm test", exitCode: 1, durationMs: 4200 }), "npm test · exit 1 · 4.2s");
+  const outline = outlineSource("phase('Test')\nconst r = await exec('npm test')\nawait agent('fix')\n", ["Test"]);
+  assert.deepEqual(outline[0]!.ops.map((o) => o.kind), ["agent", "exec"]);
+  assert.match(highlightSource("await exec('ls')"), /class="tk-f">exec/);
+});

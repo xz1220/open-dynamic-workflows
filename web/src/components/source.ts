@@ -8,7 +8,7 @@ import { t } from "../i18n";
 import { esc } from "../util";
 
 const TOKEN =
-  /(\/\/[^\n]*|\/\*[\s\S]*?\*\/)|('(?:\\.|[^'\\\n])*'|"(?:\\.|[^"\\\n])*"|`(?:\\[\s\S]|[^`\\])*`)|\b(export|const|let|var|await|async|return|for|of|in|if|else|function|new|while|try|catch|finally|throw|import|from|default|class|break|continue|switch|case|typeof|null|undefined|true|false|this)\b|\b(agent|parallel|pipeline|phase|log|workflow|validate|budget|args|meta)\b|\b(\d[\d_]*(?:\.\d+)?)\b/g;
+  /(\/\/[^\n]*|\/\*[\s\S]*?\*\/)|('(?:\\.|[^'\\\n])*'|"(?:\\.|[^"\\\n])*"|`(?:\\[\s\S]|[^`\\])*`)|\b(export|const|let|var|await|async|return|for|of|in|if|else|function|new|while|try|catch|finally|throw|import|from|default|class|break|continue|switch|case|typeof|null|undefined|true|false|this)\b|\b(agent|parallel|pipeline|phase|log|workflow|validate|budget|args|meta|exec)\b|\b(\d[\d_]*(?:\.\d+)?)\b/g;
 const CLASS = ["", "tk-c", "tk-s", "tk-k", "tk-f", "tk-n"];
 
 /** Highlighted source, one `.ln` span per line (the gutter numbers come from CSS counters). */
@@ -41,7 +41,7 @@ export function highlightSource(src: string): string {
 }
 
 export interface OutlineOp {
-  kind: "agent" | "parallel" | "pipeline" | "workflow" | "log";
+  kind: "agent" | "parallel" | "pipeline" | "workflow" | "exec" | "log";
   n: number;
 }
 export interface OutlinePhase {
@@ -49,7 +49,7 @@ export interface OutlinePhase {
   ops: OutlineOp[];
 }
 
-const KINDS: OutlineOp["kind"][] = ["parallel", "pipeline", "agent", "workflow", "log"];
+const KINDS: OutlineOp["kind"][] = ["parallel", "pipeline", "agent", "exec", "workflow", "log"];
 
 /** Mask comments and string contents so primitive names inside them don't count. */
 function codeOnly(src: string): string {
