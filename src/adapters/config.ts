@@ -43,6 +43,7 @@ import type {
   NotifyTrigger,
   PermissionArgs,
   PermissionTier,
+  QuotaWaitSettings,
   RedactSettings,
   RunEndState,
   SchemaFlag,
@@ -122,6 +123,7 @@ const KNOWN_TOP_KEYS = [
   "expectRetries",
   "permissionDenials",
   "redact",
+  "quotaWait",
 ] as const;
 
 const KNOWN_ADAPTER_KEYS = ["command", "stdin", "env", "timeout", "stallTimeout", "concurrency", "promptCache", "label", "flags", "output", "failures", "permissionArgs", "permissions", "permissionDenials"] as const;
@@ -142,6 +144,8 @@ const KNOWN_NOTIFY_KEYS = ["command", "webhook", "on"] as const;
 const KNOWN_STAGGER_KEYS = ["first", "delayMs"] as const;
 
 const KNOWN_REDACT_KEYS = ["env", "patterns", "extra"] as const;
+
+const KNOWN_QUOTA_WAIT_KEYS = ["max"] as const;
 
 /**
  * Lint a parsed config object for keys odw would silently ignore.
@@ -207,6 +211,7 @@ export function collectConfigWarnings(raw: Record<string, unknown>): string[] {
   }
   if (isObject(raw.staggerFanOut)) warnings.push(...unknownFields(raw.staggerFanOut, KNOWN_STAGGER_KEYS, "staggerFanOut"));
   if (isObject(raw.redact)) warnings.push(...unknownFields(raw.redact, KNOWN_REDACT_KEYS, "redact"));
+  if (isObject(raw.quotaWait)) warnings.push(...unknownFields(raw.quotaWait, KNOWN_QUOTA_WAIT_KEYS, "quotaWait"));
   return warnings;
 }
 
@@ -983,7 +988,25 @@ function buildSettings(raw: Record<string, unknown>): Settings {
         : buildChoice("permissionDenials", raw["permissionDenials"], ["warn", "fail"] as const),
     // Absent or null keeps the default (on); only false turns it off.
     redact: buildRedact(raw["redact"]),
+    quotaWait: raw["quotaWait"] == null ? DEFAULT_SETTINGS.quotaWait : buildQuotaWait(raw["quotaWait"]),
   };
+}
+
+/**
+ * Validate `quotaWait` (an ODW extension): `false` (or null) fails a call whose
+ * chain is out of quota, as before; `{ "max": <seconds> }` lets the run wait
+ * that long at most for the quota to reset. No default `max`: a run that waits
+ * for hours should be one someone asked to.
+ */
+function buildQuotaWait(raw: unknown): QuotaWaitSettings | false {
+  if (raw === false) return false;
+  if (!isObject(raw) || raw.max == null) {
+    throw new ConfigError(
+      `"quotaWait" must be false, or { "max": <seconds> }: the longest a run waits for a spent quota to reset; ` +
+        `got ${JSON.stringify(raw)}`,
+    );
+  }
+  return { max: numberSetting(`"quotaWait.max"`, raw.max, "a positive number of seconds", { min: 0, exclusiveMin: true }) };
 }
 
 /** Validate a setting that takes one of a few words, such as `schemaKeywords`. */

@@ -328,6 +328,12 @@ export interface Settings {
    * `false` keeps it all as printed.
    */
   redact: RedactSettings | false;
+  /**
+   * Pause for a spent quota (an ODW extension): a call whose fallback chain is
+   * out of usage quota waits for the quota to reset — when its CLI said when,
+   * at most `max` seconds away — instead of failing; `false` fails it.
+   */
+  quotaWait: QuotaWaitSettings | false;
 }
 
 /** What redaction looks for (see `Settings.redact`). */
@@ -342,6 +348,12 @@ export interface RedactSettings {
   patterns: boolean;
   /** More regular expressions (JavaScript sources) whose matches are secrets. */
   extra: readonly string[];
+}
+
+/** How long a run waits for a spent quota to reset (see `Settings.quotaWait`). */
+export interface QuotaWaitSettings {
+  /** The longest wait, in seconds: a quota that resets later fails its calls as before. */
+  max: number;
 }
 
 /** How a fan-out on a prompt-caching adapter is staggered (see `Settings.staggerFanOut`). */
