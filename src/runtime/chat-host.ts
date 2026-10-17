@@ -26,9 +26,11 @@ import { listAdapters } from "../adapters/config.js";
 import type { Config } from "../adapters/types.js";
 import {
   ChatStore,
+  sessionSummary,
   type ChatMessage,
   type ChatSessionRecord,
   type ChatSessionState,
+  type ChatSessionSummary,
   type ChatToolCall,
 } from "./chat-store.js";
 import { guarded, logServeError, readJsonBody, sendJson, writeGuard } from "./http-util.js";
@@ -109,6 +111,12 @@ interface ChatRuntime {
 
 /** How often linked runs are checked for completion (also checked on chat reads). */
 const SYNC_MS = 1000;
+/**
+ * Change notifications are coalesced per window: a streaming reply changes
+ * its session every 80ms, and each `chat` SSE frame makes every client refetch
+ * the session list and the open session.
+ */
+const NOTIFY_COALESCE_MS = 250;
 
 export class ChatHost {
   readonly chat: ChatStore;
@@ -120,6 +128,8 @@ export class ChatHost {
    */
   private readonly settledRuns = new Set<string>();
   private timer: NodeJS.Timeout | null = null;
+  private readonly changed = new Set<string>();
+  private notifyTimer: NodeJS.Timeout | null = null;
 
   constructor(private readonly opts: ChatHostOptions) {
     this.chat = new ChatStore(opts.store.root, opts.cwd);
@@ -127,7 +137,7 @@ export class ChatHost {
       runner: opts.runner ?? createDefaultChatRunner(),
       activeSessions: new Set(),
       serverStartedAt: Math.floor(Date.now() / 1000),
-      notify: opts.notify ?? (() => {}),
+      notify: (sessionId) => this.notifySoon(sessionId),
     };
   }
 
@@ -140,7 +150,40 @@ export class ChatHost {
 
   stop(): void {
     if (this.timer) clearInterval(this.timer);
-    this.timer = null;
+    if (this.notifyTimer) clearTimeout(this.notifyTimer);
+    this.timer = this.notifyTimer = null;
+    this.changed.clear();
+  }
+
+  /** Queue a change notification; one per session per coalescing window. */
+  private notifySoon(sessionId: string): void {
+    this.changed.add(sessionId);
+    if (this.notifyTimer) return;
+    this.notifyTimer = setTimeout(() => {
+      this.notifyTimer = null;
+      const ids = [...this.changed];
+      this.changed.clear();
+      for (const id of ids) guarded("chat notify", () => this.opts.notify?.(id));
+    }, NOTIFY_COALESCE_MS);
+    this.notifyTimer.unref?.();
+  }
+
+  /**
+   * The session list: stored rows with the state folded from linked runs'
+   * CACHED summaries (no per-session re-read, no tool hydration — the list
+   * only ever shows a state and a count).
+   */
+  private sessionList(): ChatSessionSummary[] {
+    const { sources } = this.opts;
+    return this.chat.records().map((s) => ({
+      ...sessionSummary(s),
+      state: hasStreamingAssistant(s)
+        ? "running"
+        : chatStateFrom(
+            s.linkedRuns.map((l) => sourceForRun(sources, l.runId)?.summary(l.runId)?.state ?? "stale"),
+            s.state,
+          ),
+    }));
   }
 
   /** An on-demand sync before serving a read; its failure must not fail the read. */
@@ -163,11 +206,7 @@ export class ChatHost {
     const { sources } = this.opts;
     if (method === "GET" && path === "/api/chat/sessions") {
       this.syncBeforeRead();
-      sendJson(
-        res,
-        200,
-        chat.list().map((s) => hydrateChatSummary(s, chat.get(s.id), sources)),
-      );
+      sendJson(res, 200, this.sessionList());
       return true;
     }
     if (method === "POST" && path === "/api/chat/sessions") {
@@ -452,22 +491,21 @@ function hydrateTool(tool: ChatToolCall, sources: RunSource[]): ChatToolCall {
   if (!src) return tool;
   const detail = src.detail(tool.runId);
   if (!detail) return tool;
-  const events = src.events(tool.runId, 0);
-  const lastPhase =
-    [...events]
-      .reverse()
-      .map((ev) => (typeof ev.phase === "string" ? ev.phase : null))
-      .find((phase): phase is string => phase !== null) ??
-    detail.phaseOrder[detail.phaseOrder.length - 1] ??
-    detail.state;
+  // The cached log is shared and read-only: scan it from the end, copy only the tail.
+  const log = src.eventLog(tool.runId);
+  let lastPhase: string | null = null;
+  for (let i = log.length - 1; i >= 0 && lastPhase === null; i--) {
+    const phase = log[i]!.phase;
+    if (typeof phase === "string") lastPhase = phase;
+  }
   const result = src.result(tool.runId);
   return {
     ...tool,
     status: toolStatus(detail.state),
     workflow: detail.workflowName ?? detail.name ?? tool.workflow,
     progress: displayProgress(detail.state, detail.progress),
-    phase: lastPhase,
-    events: events.slice(-8).map((ev) => ({
+    phase: lastPhase ?? detail.phaseOrder[detail.phaseOrder.length - 1] ?? detail.state,
+    events: log.slice(-8).map((ev) => ({
       type: ev.type,
       label: eventLabel(ev),
       ts: ev.ts,
@@ -503,19 +541,6 @@ function hydrateChatSession(session: ChatSessionRecord, sources: RunSource[]): R
     linkedRuns,
     messages,
   };
-}
-
-function hydrateChatSummary(
-  summary: ReturnType<ChatStore["list"]>[number],
-  session: ChatSessionRecord | null,
-  sources: RunSource[],
-): Record<string, unknown> {
-  if (!session) return { ...summary };
-  const view = hydrateChatSession(session, sources) as {
-    state: ChatSessionState;
-    linkedRuns: Array<Record<string, unknown>>;
-  };
-  return { ...summary, state: view.state, linkedRuns: view.linkedRuns.length };
 }
 
 async function postChatSession(

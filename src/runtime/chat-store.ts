@@ -80,6 +80,19 @@ function titleFrom(text: string): string {
   return clean.length > 54 ? `${clean.slice(0, 51)}...` : clean;
 }
 
+/** The sidebar row for a session (its stored state; callers may refine it). */
+export function sessionSummary(s: ChatSessionRecord): ChatSessionSummary {
+  return {
+    id: s.id,
+    title: s.title,
+    source: s.source,
+    state: s.state,
+    updatedAt: s.updatedAt,
+    lastMessage: summaryText(s.messages),
+    linkedRuns: s.linkedRuns.length,
+  };
+}
+
 function summaryText(messages: ChatMessage[]): string {
   for (let i = messages.length - 1; i >= 0; i--) {
     const text = messages[i]!.text.trim();
@@ -128,15 +141,7 @@ export class ChatStore {
   }
 
   list(): ChatSessionSummary[] {
-    return this.read().sessions.map((s) => ({
-      id: s.id,
-      title: s.title,
-      source: s.source,
-      state: s.state,
-      updatedAt: s.updatedAt,
-      lastMessage: summaryText(s.messages),
-      linkedRuns: s.linkedRuns.length,
-    }));
+    return this.read().sessions.map(sessionSummary);
   }
 
   get(id: string): ChatSessionRecord | null {
