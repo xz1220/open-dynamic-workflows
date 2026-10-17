@@ -31,7 +31,7 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { copyFile, lstat, mkdir, open, readlink, rename, rm, type FileHandle } from "node:fs/promises";
+import { copyFile, lstat, mkdir, open, readlink, rename, rm, stat, utimes, type FileHandle } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 
 import type { Workspace } from "./workspace.js";
@@ -265,11 +265,22 @@ async function withAgentIndex<T>(
   const { work, base } = tree;
   const index = join(tree.scratch, `changes-${process.pid}-${++captures}.index`);
   // A copy of the worktree's own index carries git's stat cache: staging the
-  // tree then reads only what changed.
+  // tree then reads only what changed. The copy keeps the index's mtime: git
+  // re-reads any entry not older than its index file ("racily clean"), and a
+  // fresh mtime would make it trust the cache for a same-size edit made in
+  // the second the worktree was checked out — and miss it.
   const own = resolve(work, (await git(work, ["rev-parse", "--git-path", "index"], { signal })).trim());
-  await copyFile(own, index).catch((err: NodeJS.ErrnoException) => {
-    if (err.code !== "ENOENT") throw err;
-  });
+  const copied = await copyFile(own, index).then(
+    () => true,
+    (err: NodeJS.ErrnoException) => {
+      if (err.code !== "ENOENT") throw err;
+      return false;
+    },
+  );
+  if (copied) {
+    const times = await stat(own);
+    await utimes(index, times.atime, times.mtime);
+  }
   const env = { ...process.env, GIT_INDEX_FILE: index };
   try {
     await git(work, ["add", "--all", "--", "."], { env, signal });
