@@ -362,10 +362,13 @@ export class EventFold {
   readonly startedPhases: string[] = [];
   /** ts of the last event folded, or null for an empty stream. */
   lastActivityTs: number | null = null;
+  /** The run's own terminal event (run_finished/failed/stopped) has been folded. */
+  ended = false;
 
   apply(events: WorkflowEvent[]): this {
     for (const ev of events) {
       applyAgentEvent(this.agents, ev);
+      if (ev.type === "run_finished" || ev.type === "run_failed" || ev.type === "run_stopped") this.ended = true;
       if (ev.type === "phase_started" && ev.phase != null) {
         const p = String(ev.phase);
         if (!this.startedPhases.includes(p)) this.startedPhases.push(p);

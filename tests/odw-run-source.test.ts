@@ -162,6 +162,7 @@ test("finished runs are not re-stat'ed on every list, but are re-checked after a
   try {
     const store = new CountingStore(root);
     const id = store.create({ script: "/demo/wf.js", args: null, source: "/demo" });
+    appendFileSync(store.eventsPath(id), ev(1, "run_started") + ev(2, "run_finished"));
     store.updateStatus(id, { state: "done", name: "demo" });
     let nowMs = 1_000_000;
     const src = new OdwRunSource(store, { now: () => nowMs });
@@ -190,6 +191,30 @@ test("cached facts never leak: mutating a returned detail does not corrupt the c
     src.detail(id)!.agents[0]!.state = "failed";
     assert.equal(src.detail(id)!.agents[0]!.state, "running");
     assert.equal(src.listSummaries()[0]!.counts.running, 1);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a stop's status lands before its agents settle: the list is not cached until the run's end event", () => {
+  const root = tempRoot();
+  try {
+    const store = new RunStore(root);
+    const id = store.create({ script: "/demo/wf.js", args: null, source: "/demo" });
+    appendFileSync(store.eventsPath(id), ev(1, "run_started") + ev(2, "agent_started", { agentId: 1, label: "a" }));
+    store.updateStatus(id, { state: "running", pid: process.pid, name: "demo" });
+    let nowMs = 1_000_000;
+    const src = new OdwRunSource(store, { now: () => nowMs });
+    assert.equal(src.listSummaries()[0]!.counts.running, 1);
+    // The worker records "stopped" at its checkpoint first …
+    store.updateStatus(id, { state: "stopped" });
+    assert.equal(src.listSummaries()[0]!.state, "stopped");
+    // … and only then do the aborted agents' failures and the run's end event land.
+    nowMs += 100;
+    appendFileSync(store.eventsPath(id), ev(3, "agent_failed", { agentId: 1, label: "a", error: "stopped" }) + ev(4, "run_stopped"));
+    const s = src.listSummaries()[0]!;
+    assert.equal(s.counts.running, 0, "the list shows the agents settled at once, not after a trust window");
+    assert.equal(s.counts.failed, 1);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

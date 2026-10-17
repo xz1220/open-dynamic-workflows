@@ -161,9 +161,13 @@ export class OdwRunSource implements RunSource {
       e.cursor = read.cursor;
       e.eventsSig = eventsSig;
     }
-    e.trustUntil = TERMINAL_STATES.has(String(e.status.state))
-      ? this.now() + TERMINAL_RECHECK_MS * (0.5 + Math.random())
-      : 0;
+    // Trust a finished run's files only once its terminal event is folded:
+    // a stop records "stopped" before the aborted agents' failure events land,
+    // and caching that half-written picture would show them running for a while.
+    e.trustUntil =
+      TERMINAL_STATES.has(String(e.status.state)) && e.fold.ended
+        ? this.now() + TERMINAL_RECHECK_MS * (0.5 + Math.random())
+        : 0;
     return factsOf(e);
   }
 }
