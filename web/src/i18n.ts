@@ -413,6 +413,7 @@ const ZH: Record<string, string> = {
   logs: "日志",
   "Show {n} more": "再显示 {n} 条",
   "Show {n} earlier events": "再显示 {n} 条更早的事件",
+  "+{n} more agents in this phase": "本阶段还有 {n} 个智能体",
   "{n} older events hidden": "还有 {n} 条更早的事件未显示",
   "Copy a rerun command": "复制重跑命令",
   Output: "输出",

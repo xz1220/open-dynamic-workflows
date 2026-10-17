@@ -9,6 +9,8 @@ import { TERMINAL, esc, fmtDurSec } from "../util";
 import { glyph } from "./glyph";
 
 const STEPS = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 14400];
+/** Bars painted per phase; the rest are summarized so a 1,000-agent run stays light. */
+const MAX_ROWS_PER_PHASE = 80;
 
 function tickLabel(sec: number): string {
   if (sec === 0) return "0";
@@ -65,7 +67,8 @@ export function renderTimeline(run: RunDetail, selectedAi: number | null, nowSec
       `<div class="tl-phase" data-key="tlp-${esc(phase)}"><div class="nm"><span class="ix">${String(pi).padStart(2, "0")}</span>${esc(phase)}</div>` +
         `<div class="span"><i style="left:${pct(pStart)};width:${pct(pEnd - pStart)}"></i></div></div>`,
     );
-    for (const { a, ai } of items) {
+    const overflow = items.length - MAX_ROWS_PER_PHASE;
+    for (const { a, ai } of items.slice(0, MAX_ROWS_PER_PHASE)) {
       const sel = selectedAi === ai ? " selected" : "";
       let bar = "";
       if (a.startedAt != null) {
@@ -82,6 +85,11 @@ export function renderTimeline(run: RunDetail, selectedAi: number | null, nowSec
         `<div class="tl-row${sel}" data-ai="${ai}" data-key="tlr-${ai}" tabindex="0" role="button">` +
           `<div class="nm">${glyph(a.state)}<span>${esc(a.label)}</span></div>` +
           `<div class="tl-track">${gridHtml}${bar}</div></div>`,
+      );
+    }
+    if (overflow > 0) {
+      body.push(
+        `<div class="tl-row" data-key="tlo-${esc(phase)}"><div class="nm dim">${t("+{n} more agents in this phase", { n: overflow })}</div><div class="tl-track">${gridHtml}</div></div>`,
       );
     }
   }
