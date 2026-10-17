@@ -334,3 +334,17 @@ export function fmtDuration(ms: number): string {
   const clamped = Math.max(0, ms);
   return clamped < 60_000 ? `${(clamped / 1000).toFixed(1)}s` : fmtElapsed(clamped);
 }
+
+/** A token count, compact as the dashboard shows it: "940", "12.3k", "45k", "1.2M". */
+export function fmtTokens(n: number): string {
+  if (!Number.isFinite(n)) return "?";
+  if (n < 1000) return String(Math.round(n));
+  if (n < 1_000_000) return `${(n / 1000).toFixed(n < 10_000 ? 1 : 0)}k`;
+  return `${(n / 1_000_000).toFixed(1)}M`;
+}
+
+/** Dollars with the precision agent-sized spend needs: "$0.0042", "$0.387", "$12.40". */
+export function fmtUsd(n: number): string {
+  if (!Number.isFinite(n)) return "$?";
+  return n < 0.01 ? `$${n.toFixed(4)}` : n < 10 ? `$${n.toFixed(3)}` : `$${n.toFixed(2)}`;
+}

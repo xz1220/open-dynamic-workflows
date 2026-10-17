@@ -7,6 +7,35 @@
 
 ---
 
+## 现状补记（2026-10）
+
+> 2026-06 的规划稿之后，看板经历了一次完整重设计（"纸、墨、信号"），并随运行时能力扩展。下表是**当前**的视图与组件地图；§6 的设计稿映射仅作历史对照。
+
+| 视图 / 组件 | 位置 | 要点 |
+|---|---|---|
+| Activity | `views/activity.ts` | 自适应标题、四个计数、**待你处理**（等待决定的检查点 + 过去一天失败/失联的运行，附 `odw resume`）、脉搏山脊图、按适配器的机队、实时事件流 |
+| Jobs | `views/jobs.ts` | 实时运行卡片（阶段条）、按日分组且分页的历史、花费列 |
+| Job 头部 | `views/job.ts` | Stop / Resume in terminal / Follow / Copy id；阶段步进条；计数（token、花费、改动行数）；检查点审批卡片（问题、payload、备注、批准/拒绝） |
+| Graph | `dag.ts` | 按 phase 分泳道；节点三类：agent、`exec()` 命令（终端样式）、`checkpoint()` 关卡（胶囊形，等待时琥珀呼吸，答复后显示结论与备注，拒绝时划线）；边按状态着色、运行中有流动与火花，等待中为琥珀虚线；节点上的 `+N −M` 改动角标 |
+| Timeline | `components/timeline.ts` | 每个节点一根条（检查点的条是等待时长） |
+| Drawer | `views/job.ts` | 按节点类型分支：agent（输出 JSON、失败原因与限流/额度解除时间、用量、改动摘要）、命令（退出码、输出）、检查点（问题、payload、答复人、备注、等待时长） |
+| Changes | `views/job.ts` · `components/diff.ts` | worktree agent 的 diff 审阅：解析 `git diff`（重命名、引号/UTF-8 路径、二进制、权限位、无换行标记、截断）、文件卡片吸顶可折叠、新旧行号由 CSS 从属性绘制（复制只得代码）、替换行按词标记、锁文件/删除默认折叠、行数预算；`j`/`k` 切换 agent |
+| Logs / Result | `views/job.ts` | 事件分组过滤、跟随、分页；`result.json` / `error.json` |
+| Workspace | `views/workspace.ts` · `components/source.ts` | 按 `phase()` 切分的大纲（含 `exec`、`checkpoint`）、源码高亮、最近运行 |
+| Settings | `views/settings.ts` | 外观（主题、动效、语言、运行通知）、运行钩子（webhook 只显示协议与主机）、路径 |
+| 全局 | `main.ts` · `store.ts` · `morph.ts` | 命令面板（⌘K）、快捷键速查（?）、运行结束与"开始等待"的提示和桌面通知、SSE 增量推送 |
+
+**渲染约定（改动前先读）：**
+
+- 视图是 `state → HTML` 的纯函数，`morph.ts` 把新 HTML 协调进现有 DOM：按 `data-key` 匹配，`data-preserve="open"` 保留用户展开状态，`data-morph="skip"` + `data-v` 冻结由所有者自行绘制的子树（大 diff 只在版本变化时绘制一次，见 `main.ts` 的 `fillDiffs`）。
+- 点击统一委托在 `main.ts`：带 `data-*` 的元素由对应分支处理；**未被认领的站内 `#` 链接按 href 跳转**，站外链接交给浏览器。新链接不必再配 `data-nav`。
+- 检查点关卡节点由客户端从 `checkpoint_requested/resolved` 事件折叠（`checkpoints.ts`），追加在 agent 之后，保证选中索引稳定。
+- 所有新文案走 `i18n.ts`（英文原文即 key，补中文）；新颜色只用 `tokens.css` 里的令牌；动效要在 `[data-motion="reduced"]` 下退化。
+
+**测试：** `tests/web-ui.test.ts`（视图与组件的纯渲染断言）、`tests/web-diff.test.ts`（用真实 `git diff` 输出测解析器）。视觉验收用无头 Chromium 截图（亮/暗、中/英、桌面/手机宽度）。
+
+---
+
 ## 实现状态（2026-06-05）
 
 > 本文档原是规划稿；下半部分（§5 任务清单）已落地，状态如下。**两处与原规划的偏离**已在正文就地更新：

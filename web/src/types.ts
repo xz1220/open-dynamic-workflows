@@ -46,13 +46,19 @@ export interface RunSummary {
   waiting?: { checkpointId: number; title: string; since: number } | null;
 }
 
-/** Normalized usage, as adapters report it. */
+/**
+ * Normalized usage, as adapters report it (src/adapters/usage.ts): `inputTokens`
+ * counts every input token, cached or not; the cache fields say how many of them
+ * the prompt cache served or stored.
+ */
 export interface Usage {
   inputTokens?: number;
   outputTokens?: number;
   cacheReadTokens?: number;
   cacheWriteTokens?: number;
   costUsd?: number;
+  /** `outputTokens` is (partly) a chars/4 estimate: the CLI reported no output tokens. */
+  estimated?: boolean;
 }
 
 export interface UsageTotals extends Usage {

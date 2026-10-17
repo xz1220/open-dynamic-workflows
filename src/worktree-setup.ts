@@ -107,7 +107,9 @@ export function parseWorktreeInclude(text: string): WorktreeInclude {
  * names, then run the setup command. `top` is the source repository's root,
  * `work` the new worktree's, and `path` the agent's workspace inside it. Each
  * link is pushed onto `links` as it is made, so the caller can remove the
- * links before the worktree, whatever happens here.
+ * links before the worktree, whatever happens here. Resolves to what the
+ * include step placed — the copied and linked entries, relative to the root
+ * and "/"-separated — which is not the agent's change (see ./changes).
  */
 export async function prepareWorktree(
   top: string,
@@ -115,19 +117,20 @@ export async function prepareWorktree(
   path: string,
   options: WorktreeSetupOptions,
   links: string[],
-): Promise<void> {
-  await includeFiles(top, work, options, links);
+): Promise<string[]> {
+  const placed = await includeFiles(top, work, options, links);
   if (options.command) await runSetup(options.command, path, options);
+  return placed;
 }
 
 // --- .worktreeinclude ------------------------------------------------------------
 
-async function includeFiles(top: string, work: string, options: WorktreeSetupOptions, links: string[]): Promise<void> {
+async function includeFiles(top: string, work: string, options: WorktreeSetupOptions, links: string[]): Promise<string[]> {
   let text: string;
   try {
     text = await readFile(join(top, WORKTREE_INCLUDE_FILE), "utf8");
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return;
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
     throw new WorktreeSetupError(`could not read ${WORKTREE_INCLUDE_FILE}: ${(err as Error).message}`);
   }
   const patterns = parseWorktreeInclude(text);
@@ -140,6 +143,12 @@ async function includeFiles(top: string, work: string, options: WorktreeSetupOpt
   for (const path of linked) await copier.linkEntry(path, links);
   throwIfAborted(options.signal);
   for (const note of copier.notes()) options.onNote?.(`${WORKTREE_INCLUDE_FILE} ${note}`);
+  // What is there now was placed here: an entry left out (too big, not a regular file) is not.
+  const placed: string[] = [];
+  for (const path of [...copied, ...linked]) {
+    if (await lstat(join(work, path)).then(() => true, () => false)) placed.push(path);
+  }
+  return placed;
 }
 
 /**

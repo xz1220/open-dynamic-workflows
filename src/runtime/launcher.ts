@@ -179,7 +179,7 @@ function nodeWorkerArgv(runDir: string): string[] {
   return [jsWorker, runDir];
 }
 
-function tsxLoaderArgv(): string[] {
+export function tsxLoaderArgv(): string[] {
   const out: string[] = [];
   for (let i = 0; i < process.execArgv.length; i++) {
     const arg = process.execArgv[i]!;

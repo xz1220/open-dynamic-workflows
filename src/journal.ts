@@ -13,6 +13,7 @@
 
 import { createHash } from "node:crypto";
 
+import type { AgentChanges } from "./changes.js";
 import type { AgentOptions } from "./primitives.js";
 
 /**
@@ -41,6 +42,13 @@ export interface AgentResultRecord {
   cached?: boolean;
   /** For a replayed record: the run whose agent actually produced the value. */
   sourceRunId?: string | null;
+  /**
+   * What an isolated agent changed, when it changed anything (ODW extension):
+   * the diffstat of its kept diff, `agents/<agentId>.diff`.
+   */
+  changes?: AgentChanges | null;
+  /** The branch that change was committed to (`keep: true`, `keepBranches`), else null. */
+  branch?: string | null;
 }
 
 /**
@@ -57,17 +65,19 @@ export interface AgentResultRecord {
  *                still replay every call that did not name an adapter.
  *   - model      a different model is a different producer.
  *   - agentType  the persona is part of the effective prompt.
- *   - isolation  a worktree agent sees HEAD only and its edits are discarded;
- *                in place it sees, and edits, the working tree.
+ *   - isolation  a worktree agent sees HEAD only and its edits stay in its
+ *                kept diff; in place it sees, and edits, the working tree.
  *   - label      the author's name for the call: it tells otherwise identical
  *                calls apart (one prompt sampled as voter-1…voter-N), and a
  *                replayed record keeps the label `--agent <label>` looks up.
  *
  * `phase` is left out on purpose: it is display only (often ambient, from
  * phase(), and prefixed inside a nested workflow()), and regrouping progress
- * must not invalidate finished work. An option left undefined keys exactly
- * like an absent one. Should this derivation ever change, old records simply
- * stop matching and their calls run again — the safe direction.
+ * must not invalidate finished work. So is `keep`: it only decides whether an
+ * isolated agent's change is also committed to a branch. An option left
+ * undefined keys exactly like an absent one. Should this derivation ever
+ * change, old records simply stop matching and their calls run again — the
+ * safe direction.
  */
 export function resumeKey(prompt: string, opts: AgentOptions): string {
   const inputs = {
@@ -123,6 +133,8 @@ export class ReplayJournal {
     /** The run being resumed (`meta.resumedFrom`). */
     readonly sourceRunId: string,
     records: Iterable<AgentResultRecord>,
+    /** Where that run kept an agent's diff: a replayed isolated call brings it along. */
+    readonly sourceDiffPath: ((agentId: number) => string) | null = null,
   ) {
     const usable = [...records].filter(isReplayable).sort((a, b) => a.agentId - b.agentId);
     for (const rec of usable) {

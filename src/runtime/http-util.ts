@@ -6,6 +6,7 @@
  */
 
 import { createHash } from "node:crypto";
+import { closeSync, createReadStream, fstatSync, openSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 /**
@@ -198,6 +199,37 @@ export function sendJsonCached(
     "content-length": Buffer.byteLength(body),
   });
   res.end(body);
+}
+
+/**
+ * Stream a file as a 200 with an ETag from its inode, size and mtime, or a
+ * bodiless 304 when If-None-Match already holds it — for a large artifact (an
+ * agent's diff) a client fetches whole and keeps. The file is opened first, so
+ * one replaced meanwhile is still served whole. False when there is no such
+ * file: the caller answers 404.
+ */
+export function sendFileCached(req: IncomingMessage, res: ServerResponse, path: string, contentType: string): boolean {
+  let fd: number;
+  try {
+    fd = openSync(path, "r");
+  } catch {
+    return false;
+  }
+  const info = fstatSync(fd);
+  const etag = `W/"${createHash("sha1").update(`${info.ino}:${info.size}:${info.mtimeMs}`).digest("base64url")}"`;
+  // nosniff: a diff is whatever the agent wrote, HTML included — it is never rendered.
+  const common = { etag, "cache-control": "no-cache", "x-content-type-options": "nosniff" };
+  if (etagMatches(req.headers["if-none-match"], etag)) {
+    closeSync(fd);
+    res.writeHead(304, common);
+    res.end();
+    return true;
+  }
+  res.writeHead(200, { ...common, "content-type": contentType, "content-length": info.size });
+  const stream = createReadStream(path, { fd, autoClose: true }); // reads the descriptor, not the path
+  stream.on("error", () => res.destroy());
+  stream.pipe(res);
+  return true;
 }
 
 /** If-None-Match semantics: `*` or any listed tag, compared weakly. */

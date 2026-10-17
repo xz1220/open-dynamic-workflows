@@ -32,11 +32,12 @@ export interface RunContext {
   /** The run's token target (for `budget`), or null when none was set. */
   budgetTotal: number | null;
   /**
-   * Shared usage tally behind `budget.spent()`. Tokens are ESTIMATED from agent
-   * reply text (chars/4) — adapters do not report real usage uniformly — so the
-   * budget is an honest approximation, shared across nested workflow() calls.
+   * Shared usage tally behind `budget.spent()`, shared across nested
+   * workflow() calls: the output tokens CLIs reported (`outputTokens`), plus
+   * the characters of replies whose CLI reported none (`outputChars`, counted
+   * as chars/4 — not every adapter reports usage).
    */
-  usage: { outputChars: number };
+  usage: { outputChars: number; outputTokens: number };
   /**
    * Monotonic per-run agent-dispatch counter behind the `agentId` event field.
    * A shared object (not a number) so nested workflow() children — built by
@@ -59,6 +60,12 @@ export interface RunContext {
    */
   saveAgentResult?: (rec: AgentResultRecord) => void;
   /**
+   * Where an isolated agent's change is kept as a diff (ODW extension): the
+   * run directory's `agents/<agentId>.diff`. Absent where nothing is
+   * persisted (in-process runs): such a run keeps no diffs and no branches.
+   */
+  agentDiffPath?: (agentId: number) => string;
+  /**
    * `odw resume`: the source run's saved results, replayed by the agent()
    * calls that are unchanged. Shared like `seq`, so a nested workflow()
    * replays its calls too.
@@ -74,9 +81,12 @@ export interface RunContext {
   emit(ev: WorkflowEvent): void;
 }
 
-/** Estimated tokens spent so far (chars/4 of every agent reply in this run). */
-export function spentTokens(usage: { outputChars: number }): number {
-  return Math.ceil(usage.outputChars / 4);
+/**
+ * Output tokens spent so far in this run: what the CLIs reported, plus chars/4
+ * of the replies whose CLI reported none.
+ */
+export function spentTokens(usage: { outputChars: number; outputTokens?: number }): number {
+  return (usage.outputTokens ?? 0) + Math.ceil(usage.outputChars / 4);
 }
 
 export interface BuildContextOptions {
@@ -87,6 +97,7 @@ export interface BuildContextOptions {
   control?: Control;
   budgetTotal?: number | null;
   saveAgentResult?: (rec: AgentResultRecord) => void;
+  agentDiffPath?: (agentId: number) => string;
   replay?: ReplayJournal;
   onCheckpoint?: (cp: WaitingCheckpoint, waiting: boolean) => void;
 }
@@ -97,9 +108,9 @@ export function buildContext(config: Config, options: BuildContextOptions = {}):
   const control: Control = options.control ?? new NullControl();
   const bridge = new Bridge(config, { source: options.source, runId: options.runId });
   const budgetTotal = options.budgetTotal ?? null;
-  // The shared tally `budget.spent()` reads. Estimated (chars/4 of agent
-  // replies); the guard makes --budget a real ceiling, not advisory.
-  const usage = { outputChars: 0 };
+  // The shared tally `budget.spent()` reads: reported output tokens, else
+  // chars/4 of the reply; the guard makes --budget a real ceiling, not advisory.
+  const usage = { outputChars: 0, outputTokens: 0 };
   const scheduler = new Scheduler({
     concurrency: resolveConcurrency(config.settings.concurrency),
     maxAgents: config.settings.maxAgents,
@@ -109,7 +120,7 @@ export function buildContext(config: Config, options: BuildContextOptions = {}):
     budgetGuard: () => {
       if (budgetTotal !== null && spentTokens(usage) >= budgetTotal) {
         throw new BudgetExhausted(
-          `run reached its budget ceiling of ${budgetTotal} estimated tokens (spent ~${spentTokens(usage)})`,
+          `run reached its budget ceiling of ${budgetTotal} output tokens (spent ${usage.outputChars > 0 ? "~" : ""}${spentTokens(usage)})`,
         );
       }
     },
@@ -130,6 +141,7 @@ export function buildContext(config: Config, options: BuildContextOptions = {}):
     checkpointSeq: { value: 0 },
     currentPhase: null,
     saveAgentResult: options.saveAgentResult,
+    agentDiffPath: options.agentDiffPath,
     replay: options.replay,
     onCheckpoint: options.onCheckpoint,
     emit(ev: WorkflowEvent): void {

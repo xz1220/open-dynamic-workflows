@@ -15,6 +15,8 @@
  *     events.jsonl   append-only progress stream
  *     agents/<agentId>.json  each completed agent()'s result, saved as it lands
  *                    (an AgentResultRecord; `agent_finished` carries `saved: true`)
+ *     agents/<agentId>.diff  what an isolated agent changed, as a unified diff
+ *                    (ODW extension; its event and record carry `changes`)
  *     result.json    final return value (on success)
  *     error.json     message + stack (on failure)
  *     control.json   pause/resume/stop request written by the CLI
@@ -329,6 +331,14 @@ export class RunStore {
     if (!isAgentId(agentId)) return null;
     const rec = readJsonFile<AgentResultRecord>(join(this.runDir(runId), AGENTS, `${agentId}.json`));
     return isAgentRecord(rec) ? rec : null;
+  }
+  /**
+   * Where an isolated agent's change is kept as a unified diff (ODW
+   * extension): `agents/<agentId>.diff`, there only when it changed anything.
+   */
+  agentDiffPath(runId: string, agentId: number): string {
+    if (!isAgentId(agentId)) throw new Error(`invalid agentId ${String(agentId)}`);
+    return join(this.runDir(runId), AGENTS, `${agentId}.diff`);
   }
   /** Every saved agent result of a run, by agentId (call order). */
   listAgentResults(runId: string): AgentResultRecord[] {

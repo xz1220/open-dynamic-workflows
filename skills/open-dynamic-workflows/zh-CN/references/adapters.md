@@ -22,18 +22,24 @@ shell 出去执行一个本地命令，通过 stdin 或一个参数把拼好的 
   或被拒绝）。网页白名单很关键：headless 的 acceptEdits 否则会静默拒绝
   WebSearch/WebFetch，`examples/deep-research.js` 这类调研 workflow 会直接跑不通。要让 Claude 也能跑命令，用
   `--dangerously-skip-permissions` 覆盖该适配器——它**没有任何沙箱**，所以只能对着一个
-  用完即弃的 `--source` 目录这么干，绝不要指向你的真实仓库：
+  用完即弃的 `--source` 目录这么干，绝不要指向你的真实仓库。覆盖会替换整个适配器：像下面
+  这样保留 stream-json 旗标和 `output` 块，才能继续拿到用量、花费和错误上报：
 
 ```json
 {
   "adapters": {
     "claude": {
-      "command": ["claude", "--print", "--dangerously-skip-permissions", "--no-session-persistence"],
-      "stdin": "{prompt}"
+      "command": ["claude", "--print", "--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions", "--no-session-persistence"],
+      "stdin": "{prompt}",
+      "output": { "format": "jsonl", "eventType": "result", "textPath": ["result"], "select": "last", "usagePath": ["usage"], "costPath": ["total_cost_usd"], "errorPath": ["is_error"] }
     }
   }
 }
 ```
+
+内置的 `claude` 以 Claude Code 的 `--output-format stream-json --verbose` 运行：每一轮
+输出一个事件，最后是一个 `result` 事件，带着回复、这次运行的用量和花费，失败时还带
+`is_error`。
 
 一种实用的最小权限分工：让 `claude` 写代码（acceptEdits）、让 `codex` 运行/验证
 （workspace-write 沙箱）——见 `examples/codex-claude-loop.js`。
@@ -81,7 +87,7 @@ shell 出去执行一个本地命令，通过 stdin 或一个参数把拼好的 
 | `concurrency` | 同时运行的 agent CLI 上限；省略则自动（`min(16, cpus-2)`） |
 | `maxAgents` | 单次运行总派发量的硬上限（防失控兜底） |
 | `timeout` | 每个 agent CLI 的超时（秒） |
-| `stallTimeout` | **ODW 扩展。** agent 在 stdout 和 stderr 上都没有任何输出的最长秒数，超过即像超时一样被杀掉，并用同一个 prompt 重启；`null`（默认）= 关闭。所有内置适配器都默认关闭，因为有些 CLI（文本模式的 `claude --print`）在结束前什么都不输出——请只对会流式输出进度的适配器启用 |
+| `stallTimeout` | **ODW 扩展。** agent 在 stdout 和 stderr 上都没有任何输出的最长秒数，超过即像超时一样被杀掉，并用同一个 prompt 重启；`null`（默认）= 关闭。所有内置适配器都默认关闭，因为有些 CLI（文本模式的 `gemini`、`qwen`、`kimi`）在结束前什么都不输出——请只对会流式输出进度的适配器启用：`claude`（stream-json，每一轮一个事件）、`kilo`、`opencode`，并把值设得高于最长的单次工具调用 |
 | `stallRestarts` | 每次 `agent()` 调用在卡死后最多重启几次，用完后调用以 “stalled” 错误失败（默认 1） |
 | `transientRetries` | **ODW 扩展。** CLI 撞上限流（429/529、overloaded）后，每次 `agent()` 调用最多重试几次；每次重试前按指数退避等待，并遵从 CLI 打印的 retry-after（默认 3；`0` = 从不重试）。额度用尽和登录失败从不重试：错误信息会说明该怎么做 |
 | `maxBackoff` | 单次退避等待的最长秒数（默认 300）；CLI 要求等待更久时，不会提前重试 |
@@ -94,6 +100,9 @@ shell 出去执行一个本地命令，通过 stdin 或一个参数把拼好的 
 | `worktreeSetup` | **ODW 扩展。** 在每个新建的隔离 worktree 里、`.worktreeinclude` 生效之后、agent 启动之前运行的命令：字符串交给平台 shell，数组作为不经 shell 的 argv。它在 agent 的工作区里运行，带着该 agent 的 `ODW_RUN_ID`、`ODW_AGENT_ID` 和 `ODW_PORT`；失败或超时会让这个 agent（而不是整个运行）失败，错误里引用它输出的结尾。`null`（默认）= 不运行 |
 | `worktreeSetupTimeout` | worktree setup 被杀掉之前最多运行的秒数（默认 600） |
 | `portRange` | **ODW 扩展。** `[first, last]`：每个正在运行的 agent 的 `ODW_PORT` 从这个范围分配（默认 `[41000, 41999]`）；请让它比 `concurrency` 更宽 |
+| `fanOutWarn` | **ODW 扩展。** 单次 `parallel()` 或 `pipeline()` 调用扇出的任务或条目超过这个数时，运行记一条带数量的警告（`large fan-out: …`）；从不阻塞。默认 25；`0` 或 `null` = 关闭 |
+| `maxDiffBytes` | **ODW 扩展。** run 目录里保存的单个隔离 agent 的 diff 最多多少字节（`agents/<agentId>.diff`，由 `odw diff` / `odw apply` 读取；默认 2 MB）。超出时保留开头（在行边界截断）并加一行 `# odw: diff truncated …`；计数仍描述完整改动 |
+| `keepBranches` | **ODW 扩展。** `true`：每个隔离 agent 的改动也都提交到源仓库的分支 `odw/<runId>/<agentId>-<label>`，就像对单个 agent 用 `keep: true`（`keep: false` 可让某个 agent 不受影响）。默认 `false` |
 
 ### 适配器字段
 
@@ -107,6 +116,23 @@ shell 出去执行一个本地命令，通过 stdin 或一个参数把拼好的 
 | `label` | 进度显示用的友好名字 |
 | `flags` | 能力声明，如 `{ "model": ["--model"] }`——承载每次调用 `model` 的原生旗标。不声明它，`agent(..., { model })` 对该适配器就不生效（日志里会出现一条路由说明） |
 | `failures` | **ODW 扩展。** 这个 CLI 自己的失败措辞：`{ "rate_limit": [...], "quota": [...], "auth": [...] }`，正则表达式，先于内置表、不区分大小写地匹配失败运行输出的末尾 |
+| `output` | stdout 如何变成回复（默认：去掉首尾空白的文本）——见下文 |
+
+### 输出格式
+
+- `{ "format": "text" }`——默认：去掉首尾空白的 stdout 就是回复。
+- `{ "format": "jsonl", "eventType": "text", "textPath": ["part", "text"], "select": "last" }`
+  ——换行分隔的 JSON 事件，边流式到达边解码；回复是 `type` 为 `eventType` 的最后一个
+  事件里 `textPath` 处的文本。
+- `{ "format": "json", "textPath": ["response"] }`——stdout 上的一个 JSON 文档。
+
+**ODW 扩展：** 两种 JSON 格式都可以加上 `usagePath`（token 计数）、`costPath`（美元）和
+`errorPath`（`true`、一条消息或一个错误对象：这次运行以它失败，不论退出码都像任何失败一样
+被归类）；`jsonl` 从 `usageEvent` 事件（默认同 `eventType`）读取用量和花费并累加。用量会在
+不同 CLI 的字段名（Anthropic、OpenAI、Codex）之间归一化为：`inputTokens`（含缓存命中的
+输入）、`outputTokens`、`cacheReadTokens`、`cacheWriteTokens`、`costUsd`。路径里的整数
+用于索引数组（负数从末尾数）。stdout 里找不到声明的文本时，原始 stdout 就作为回复，运行
+日志会说明原因——agent 不会因此失败。
 
 ### 运行通知（`notify`）
 
@@ -140,5 +166,6 @@ hook 只会记录到该运行的 `worker.log`。
 退出、超时，或可执行文件缺失，都会表现为一次失败的 agent 调用，并被归类为 `rate_limit`、
 `quota`、`auth`、`timeout`、`stalled`、`not_found`、`permission` 或 `exit`（即其
 `agent_failed` 事件上的 `reason`；只有 `rate_limit` 会重试——见 `transientRetries`）。
-干净退出、但简短回复的内容只是一条限流、额度或登录错误的情况（Claude Code 的文本模式就会这样
-打印，如 `API Error: Rate limit reached`）也一样算作失败。
+CLI 在输出里报告的失败（`errorPath`：Claude Code stream-json 的 `is_error` 结果，常常以 0
+退出）也一样，干净退出、但简短的文本回复只是一条限流、额度或登录错误的情况（如
+`API Error: Rate limit reached`）同样算作失败。

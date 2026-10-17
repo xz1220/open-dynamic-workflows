@@ -8,6 +8,7 @@
  * stays there after the run stalls, is stopped, or its worker dies.
  */
 
+import type { AgentChanges } from "../changes.js";
 import type { AgentResultRecord } from "../journal.js";
 import {
   displayWidth,
@@ -36,6 +37,9 @@ export interface AgentRow {
   error: string | null;
   /** The saved result, once the agent completed. */
   record: AgentResultRecord | null;
+  /** What an isolated agent changed — its diff is agents/<agentId>.diff — and the branch it was kept on (ODW extension). */
+  changes: AgentChanges | null;
+  branch: string | null;
 }
 
 /** A run's agents in call (agentId) order, each with its saved result if it has one. */
@@ -57,6 +61,8 @@ export function agentRows(store: RunStore, runId: string): AgentRow[] {
       cached: a.cached || record?.cached === true,
       error: a.error,
       record,
+      changes: a.changes ?? record?.changes ?? null,
+      branch: a.branch ?? record?.branch ?? null,
     };
   });
   // A saved result whose events were lost (a truncated log) is still listed.
@@ -79,6 +85,8 @@ function rowFromRecord(rec: AgentResultRecord): AgentRow {
     cached: rec.cached === true,
     error: null,
     record: rec,
+    changes: rec.changes ?? null,
+    branch: rec.branch ?? null,
   };
 }
 

@@ -37,6 +37,19 @@ const KILO_OPENCODE_OUTPUT: AdapterOutput = {
   textPath: ["part", "text"],
   select: "last",
 };
+// Claude Code's stream-json (https://code.claude.com/docs/en/headless): one
+// event per message, ending in a `result` event with the reply, the session's
+// usage and cost, and `is_error` when it failed — rate limits, spent quotas
+// and logins arrive that way, often with exit 0.
+const CLAUDE_OUTPUT: AdapterOutput = {
+  format: "jsonl",
+  eventType: "result",
+  textPath: ["result"],
+  select: "last",
+  usagePath: ["usage"],
+  costPath: ["total_cost_usd"],
+  errorPath: ["is_error"],
+};
 export const BUILTIN_ADAPTERS: Record<string, RawAdapter> = {
   codex: {
     label: "Codex CLI",
@@ -58,10 +71,15 @@ export const BUILTIN_ADAPTERS: Record<string, RawAdapter> = {
   claude: {
     label: "Claude Code",
     // headless acceptEdits silently DENIES WebSearch/WebFetch unless allowlisted,
-    // which breaks research workflows (e.g. examples/deep-research.js)
+    // which breaks research workflows (e.g. examples/deep-research.js).
+    // stream-json (print mode needs --verbose for it) prints an event per turn,
+    // so stdout is not silent until the end, and reports usage and cost.
     command: [
       "claude",
       "--print",
+      "--output-format",
+      "stream-json",
+      "--verbose",
       "--permission-mode",
       "acceptEdits",
       "--allowedTools",
@@ -71,6 +89,7 @@ export const BUILTIN_ADAPTERS: Record<string, RawAdapter> = {
     ],
     stdin: "{prompt}",
     flags: { model: ["--model"] },
+    output: CLAUDE_OUTPUT,
   },
   gemini: {
     label: "Gemini CLI",
@@ -140,7 +159,7 @@ export const DEFAULT_SETTINGS: Settings = {
   concurrency: null, // null => auto (min(16, cpus - 2))
   maxAgents: 1000, // runaway guard on total dispatches per run
   timeout: 1800, // per-agent CLI timeout, seconds
-  // Stall watchdog off: text-mode CLIs (claude --print, …) print nothing until done.
+  // Stall watchdog off: text-mode CLIs (gemini, qwen, …) print nothing until done.
   stallTimeout: null,
   stallRestarts: 1, // restarts of a stalled agent before its call fails
   transientRetries: 3, // retries of a rate-limited agent, with backoff
@@ -154,4 +173,7 @@ export const DEFAULT_SETTINGS: Settings = {
   worktreeSetup: null, // nothing runs in a new isolated worktree but the agent
   worktreeSetupTimeout: 600, // seconds
   portRange: [41000, 41999], // ODW_PORT, unique among a run's running agents
+  fanOutWarn: 25, // log a warning when one parallel()/pipeline() call fans out wider
+  maxDiffBytes: 2 * 1024 * 1024, // an isolated agent's kept diff; past it, the head and a note
+  keepBranches: false, // keep: true per agent still commits its change to a branch
 };

@@ -435,3 +435,10 @@ test("the store announces a run that starts waiting, and a run that ends", () =>
   assert.deepEqual(seen, ["r1:running→waiting", "r2:pending→waiting", "r1:waiting→done", "r2:running→waiting"]);
   store.runs = prev;
 });
+
+test("the outline and the highlighter know checkpoint()", () => {
+  const src = "phase('Plan')\nconst p = await agent('plan')\nphase('Approve')\nconst ok = await checkpoint('Run it?', { payload: p })\n// checkpoint('in a comment')\n";
+  const phases = outlineSource(src, ["Plan", "Approve"]);
+  assert.deepEqual(phases.find((p) => p.title === "Approve")?.ops, [{ kind: "checkpoint", n: 1 }]);
+  assert.match(highlightSource(src), /<span class="tk-f">checkpoint<\/span>/);
+});

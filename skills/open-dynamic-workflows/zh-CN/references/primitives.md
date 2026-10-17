@@ -35,13 +35,16 @@ agent(prompt, opts?) -> Promise<unknown>
 - **opts.isolation** —— `"worktree"` 给这个 agent 一个一次性 **git worktree**（默认工作区
   就是 source 目录本身）。要求 source 是有提交的 git 仓库；agent 看到 HEAD，不包含
   未提交改动。调用结束后清理 worktree，不把改动合入 source。`agent()` 只返回回复，
-  不返回 diff 或可保留的 worktree 路径；需要保留的交付物应进入回复，或显式保存到临时
-  worktree 之外。agent 启动前，`.worktreeinclude` 会补上检出缺少的文件（`.env`、
-  `node_modules` 等），然后运行 `worktreeSetup`——见
+  不返回 diff 或可保留的 worktree 路径；运行会把 agent 的改动保存为 diff，供审阅和应用
+  ——见[保存的改动](#隔离-agent-的改动odw-扩展)。agent 启动前，`.worktreeinclude` 会补上
+  检出缺少的文件（`.env`、`node_modules` 等），然后运行 `worktreeSetup`——见
   [隔离 worktree](#隔离-worktree-与-agent-环境)。
+- **opts.keep**（**ODW 扩展**）—— 配合 `isolation: "worktree"`，还会把 agent 的改动提交到
+  源仓库的分支 `odw/<runId>/<agentId>-<label>`。`false` 让单个 agent 不受 `keepBranches`
+  设置影响。没有隔离时会被忽略（并记一行日志）；Claude Code 会忽略它。
 
 返回回复文本，设了 `schema` 则返回校验过的 JSON 值。CLI 出错或 schema 重试耗尽会抛错；
-这些可恢复失败在 `parallel`/`pipeline` 内变成 `null`。停止请求、估算预算耗尽和 agent
+这些可恢复失败在 `parallel`/`pipeline` 内变成 `null`。停止请求、预算耗尽和 agent
 总量上限以及无效的 adapter/运行配置属于 fatal 错误，会继续向上抛出并终止运行。
 
 每次完成的调用都会在发出 `agent_finished` 事件之前保存到运行目录
@@ -118,13 +121,15 @@ JSON 但解析失败的输入会被拒绝，不会悄悄按字符串传入）。
 是用 `odw run … --budget <tokens>` 设的 token 目标，否则为 `null`；按它扩缩深度，例如
 `budget.total ? Math.floor(budget.total / 120_000) : 5`。
 
-`spent()` 按本次运行所有成功调用的最终回复字符数总和除以 4 后向上取整，包含子工作流。
-输入 token、失败调用和 schema 重试的中间回复不计入。`remaining()` 为
-`max(0, total - spent())`；没设目标时为 `Infinity`。
+`spent()` 是本次运行到目前为止花掉的输出 token，包含子工作流：适配器上报用量时用 CLI
+自己的计数（内置 `claude` 会上报——ODW 扩展），否则这次 CLI 运行按 `ceil(回复字符数 / 4)`
+计。一次调用的每次 CLI 运行都计入——schema 重试、限流重试，以及上报了用量的失败运行；
+输入 token 不计入。`remaining()` 为 `max(0, total - spent())`；没设目标时为 `Infinity`。
 
-调度器拿到执行槽位并检查暂停/停止后，如果估算值已达到目标，就拒绝新的 agent 调用。
-已经运行的调用仍可完成并使估算值超过目标。因此它是按估算值限制后续派发，不是实际
-token 用量或费用的硬上限。
+调度器拿到执行槽位并检查暂停/停止后，如果 `spent()` 已达到目标，就拒绝新的 agent 调用。
+已经运行的调用仍可完成并超过目标。因此它是按输出 token 限制后续派发，不是费用的硬上限。
+每个 agent 和整个运行花了多少——输入与输出 token、缓存读写，以及 CLI 上报时的花费——会显示
+在 `odw status`、实时视图和看板里（ODW 扩展）。
 
 ## workflow
 
@@ -134,7 +139,7 @@ workflow(nameOrRef, args?) -> Promise<unknown>
 
 内联执行另一个 workflow，并返回它的最终值。字符串从受管工作流目录按名解析；
 `{ scriptPath }` 相对本次运行的 source 目录解析。子工作流共享父运行的调度器、并发上限、
-agent 计数、控制和估算预算。其 phase 带 `▸ <name>` 前缀，不创建独立 run id。
+agent 计数、控制和预算。其 phase 带 `▸ <name>` 前缀，不创建独立 run id。
 省略子工作流的 `args` 时传入 `null`，不会继承父运行的输入。
 
 只支持一层嵌套：子工作流再调用 `workflow()` 会抛错。文件不存在、名称无法解析或子脚本
@@ -302,6 +307,31 @@ await parallel(['grid', 'list'].map((layout) => () =>
 当本次运行中正在运行的 agent 占满了整个端口范围，下一个 agent 就不带 `ODW_PORT` 运行，
 运行日志会说明这一点：请让 `portRange` 比 `concurrency` 更宽。worktree setup 拿到同样的
 三个变量；`exec()` 命令拿到 `ODW_RUN_ID`。
+
+## 隔离 agent 的改动（ODW 扩展）
+
+在隔离 agent 的 worktree 被删除之前，ODW 会保存它的改动：相对它开始时那个提交的一切
+差异——修改、新增、删除、重命名和二进制文件，不论是否暂存或提交——以统一 diff 的形式存进
+run 目录（`agents/<agentId>.diff`），并把 `changes: { files, insertions, deletions,
+truncated }` 记在它的 `agent_finished` 事件（或 `agent_failed`：失败的 agent 同样保留它的
+工作）和已保存结果上。`.worktreeinclude` 放进来的、`worktreeSetup` 生成的东西不算在内，
+除非 agent 之后又改了它们；被 git 忽略的文件从不计入，符号链接也从不被跟随。什么都没改的
+agent 不保留 diff；被停止的运行也不保留。
+
+```bash
+odw diff <run> --stat                    # 每个 agent：文件数、增删行数、保留的分支
+odw diff <run> --agent <id|label>        # 某个 agent 的 diff，原样输出
+odw apply <run> --agent <id|label> --check
+odw apply <run> --agent <id|label>       # 用 git apply --3way 应用到你所在的工作树
+```
+
+`odw apply` 会暂存能应用的部分，在 hunk 冲突处留下冲突标记（退出码 1）；只要 diff 涉及的
+路径上有未提交改动它就拒绝，除非加 `--force`。改动不同文件的多个 agent 可以依次应用。超过
+`maxDiffBytes`（默认 2 MB）的 diff 只保留开头，并以一行 `# odw: diff truncated …` 结尾；
+计数仍描述完整改动，但 `odw apply` 会拒绝它——请改用该 agent 的分支（`keep: true` 或
+`keepBranches`）。一次调用的每次尝试都在新的 worktree 里进行：只重排回复格式的 schema
+重试会保留之前那次尝试的改动；卡死重启或限流重试会重做工作，所以它的改动取代之前的。
+`odw resume` 会把重放 agent 的 diff 复制到新运行里。
 
 ## schema
 

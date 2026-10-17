@@ -42,7 +42,7 @@ function fakeContext(
     args: null,
     source: process.cwd(),
     budgetTotal: null,
-    usage: { outputChars: 0 },
+    usage: { outputChars: 0, outputTokens: 0 },
     seq: { value: 0 },
     currentPhase: null,
     saveAgentResult: options.save,

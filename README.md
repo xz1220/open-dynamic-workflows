@@ -252,8 +252,8 @@ private runtime behavior need the following checks before migration:
 | Nested `workflow()` | Implemented for one level, sharing the parent's scheduler, control and budget. Flatten deeper nesting. |
 | Model selection | Pass `agent(..., {model})` using that CLI's model ID. `meta.model` and phase metadata do not set execution defaults; an adapter without model routing support emits a note. |
 | `agentType` | A persona added to the prompt. It does not load a host's named subagent configuration or select an adapter. |
-| Worktree isolation | Starts from committed HEAD, excludes uncommitted edits, and cleans up afterward. Changes are not merged and `agent()` returns the reply, not a diff; put required deliverables in that reply or persist them explicitly. `.worktreeinclude` is honored (ODW copies untracked files too, not only gitignored ones); its `symlink:` lines, `worktreeSetup` and the agents' `ODW_PORT` are ODW extensions — see [Isolated worktrees](#isolated-worktrees-and-agent-ports). |
-| Budget | Estimates output tokens as `ceil(chars / 4)` over every reply, schema retries included (inputs and failed calls are not). The guard runs before each dispatch and each schema retry; once the target is spent the run ends and agents still running are stopped. |
+| Worktree isolation | Starts from committed HEAD, excludes uncommitted edits, and cleans up afterward. Changes are not merged and `agent()` returns the reply, not a diff; ODW keeps each isolated agent's change as a diff to review and apply (`odw diff`, `odw apply`, `keep` branches — ODW extensions; see [Review and apply](#review-and-apply-what-isolated-agents-changed-odw-extension)). `.worktreeinclude` is honored (ODW copies untracked files too, not only gitignored ones); its `symlink:` lines, `worktreeSetup` and the agents' `ODW_PORT` are ODW extensions — see [Isolated worktrees](#isolated-worktrees-and-agent-ports). |
+| Budget | Counts output tokens: the CLI's own count where its adapter reports usage (the built-in `claude` does — see [Usage and cost](#usage-and-cost-odw-extension)), else `ceil(chars / 4)` of each reply. Every CLI run counts: schema and rate-limit retries, and failed runs that reported usage. The guard runs before each dispatch and each schema retry; once the target is spent the run ends and agents still running are stopped. |
 | JSON Schema | Supports the [documented subset](skills/open-dynamic-workflows/references/primitives.md#schema). Unknown constraints such as `$ref`, `const` and `oneOf` are not enforced. Use explicit object/array types and supported constraints. |
 | Script trust | Run trusted scripts only: a run executes the workflow body as ordinary JavaScript. Loading parses metadata as a pure literal without evaluating it; validation and compatibility warnings are not a sandbox. |
 | Recovery | Every completed `agent()` result is saved as it lands. `odw resume` continues a paused live worker in place; on an ended run (done, failed, stopped, or stale after a crash) it starts a new run that replays each call whose prompt and options are unchanged and runs the rest. `rerun` starts over. See [Resume a run](#resume-a-run-odw-extension). |
@@ -283,10 +283,11 @@ same command detaches and prints the run id, exactly as before (fire-and-poll):
 ```bash
 RUN=$(odw run wf.js)     # non-TTY: prints the run id and returns immediately
 odw attach $RUN          # live view (or plain lines when piped); --timeout <s> exits 124
-odw status $RUN          # state + agent count
+odw status $RUN          # state, agent count, tokens and cost
 odw agents $RUN          # each agent and its saved result, mid-run too
 odw logs $RUN --follow   # stream raw progress events
 odw result $RUN          # final value
+odw diff $RUN --stat     # what isolated agents changed; odw apply $RUN --agent N applies one
 odw pause|resume|stop $RUN
 odw approve|reject $RUN  # answer a checkpoint() the run waits at (--note TEXT, --checkpoint N)
 odw list
@@ -404,6 +405,69 @@ is an answer, not an error: the script decides what "no" means.
 [`examples/plan-approve-execute.js`](examples/plan-approve-execute.js) is the full
 plan → approve → execute loop, re-planning when a rejection comes with a note.
 
+### Usage and cost (ODW extension)
+
+A fan-out spends quota fast, so a run shows what it spends as it goes. Every
+`agent_finished` (and `agent_failed`) event carries the agent's `usage`:
+`inputTokens` (cached input included), `outputTokens`, `cacheReadTokens`,
+`cacheWriteTokens` and `costUsd`, summed over all its CLI runs, as the CLI reported
+them — the built-in `claude` adapter reports them all. Where a CLI reports no output
+tokens (the text-mode adapters), ODW counts `ceil(chars / 4)` of the reply and marks
+the figure `estimated`.
+
+```text
+$ odw status $RUN
+20261017-101500-ab12cd  [done]  review-swarm
+  dispatched: 9 agent(s)
+  usage: 1.4M tokens in (1.2M cache read, 96k cache write) · ~38k out · $2.871 (estimated in part: 1 of 9 agents reported no output tokens)
+```
+
+- The live view's summary line shows output tokens (what `--budget` counts) and the
+  running cost; each settled agent's line shows its own cost.
+- `GET /api/runs` and `GET /api/runs/:id` carry the run's total as `usage`
+  (`estimated: true` when some agent's output tokens are an estimate), and
+  `/api/runs/:id` each agent's own.
+- `budget.spent()` counts output tokens the same way: the CLI's count where it gave one.
+- One `parallel()` or `pipeline()` call that fans out more than `fanOutWarn` tasks or
+  items (default 25; `0` or `null` turns it off) logs one warning with the count —
+  `large fan-out: parallel() starts 40 tasks (over fanOutWarn: 25) — …` — and goes on.
+
+Adapters declare where their CLI reports usage in their `output`; see
+[Configure adapters](#configure-adapters).
+
+### Schedule runs (ODW extension)
+
+Nightly digests, triage, audits: `odw schedule` runs a workflow on a cron
+expression through your operating system's own scheduler. ODW runs no daemon —
+`add` writes a cron line, a launchd agent or a systemd timer that calls odw back.
+
+```bash
+odw schedule add digest digest --cron "0 8 * * 1-5" --cwd ~/work/news --args '{"since":"yesterday"}'
+odw schedule list              # backend, last run (id, state, when), next run in local time
+odw schedule run digest        # run it now, exactly as the scheduler will
+odw schedule remove digest     # delete the OS entry and the definition (safe if it is gone already)
+```
+
+- **Backends:** launchd on macOS (`~/Library/LaunchAgents/dev.odw.schedule.<name>.plist`),
+  cron elsewhere (a `# odw:begin <name>` … `# odw:end <name>` block in your crontab;
+  every other line stays as it is), or `--backend systemd` (a user `.service` + `.timer`
+  with `Persistent=true`, so a start missed while the machine was off runs when it is back —
+  cron skips it; launchd runs it once the Mac wakes from sleep). `--dry-run` prints exactly
+  what would be written. Windows is not supported yet: `add` prints a `schtasks` line instead.
+- **Each run** (`odw schedule run <name>`, what the entry calls) takes the schedule's lock — a
+  start that finds the previous run still going is skipped, not stacked — runs the workflow
+  like `odw run --wait`, appends one line to `~/.local/state/odw/schedules/<name>.log`, and
+  exits non-zero unless the run finished `done`.
+- **`add` fails fast** on a workflow, adapter or config that does not load, and records the
+  absolute node/odw paths and your `PATH`, so the agent CLIs resolve under the scheduler as
+  they do in your shell. Definitions live in `~/.config/odw/schedules.json`.
+- **Failures** reach you through the usual [`notify`](#run-notifications) hooks: a scheduled
+  run is an ordinary run (`"on": ["failed", "stopped"]` for failures only).
+
+The expression is cron's five fields (numbers, `*`, lists, ranges, steps, `jan`-`dec`,
+`sun`-`sat`); `@daily`, `L`, `#` and the like are refused with the reason. The full guide,
+and the raw cron line as the manual alternative: [`docs/recipes/cron.md`](docs/recipes/cron.md).
+
 ## Dashboard: observe, inspect, chat
 
 The dashboard reads like a printed sheet — paper, ink and one signal colour — and
@@ -422,6 +486,8 @@ switches to a night theme on demand. What it gives you:
   with their exit code; a run's counts include them (they are not agent dispatches).
   A run waiting at a `checkpoint()` shows the question and its payload above the
   graph, with **Approve** / **Reject** and a note when the dashboard can write.
+  A **Changes** tab reviews what each isolated agent changed, file by file, with
+  the `odw apply` command (and the kept branch) to copy.
 - **Workspace** — every saved workflow with a static outline of its phases and the
   primitives each one calls, its source, and its recent runs.
 - **Chat Host** — ordinary Codex conversation; mention ODW or workflow and the turn
@@ -484,7 +550,7 @@ Cursor work out of the box:
 | Adapter | Local CLI | Non-interactive contract |
 | --- | --- | --- |
 | `codex` | `codex` | text on stdout; web search enabled |
-| `claude` | `claude` | text on stdout; WebSearch/WebFetch allowed |
+| `claude` | `claude` | stream-json events; reply, usage, cost and errors from its `result` event; WebSearch/WebFetch allowed |
 | `gemini` | `gemini` | text on stdout |
 | `qwen` | `qwen` | text on stdout |
 | `kimi` | `kimi` | text on stdout |
@@ -528,9 +594,36 @@ the event and final-text path explicitly:
 }
 ```
 
+**ODW extension:** a JSON output can also say what a run spent and whether the
+CLI itself reported a failure. The built-in `claude` adapter is declared this way:
+
+```jsonc
+"output": {
+  "format": "jsonl",
+  "eventType": "result",          // the event the reply comes from (the last one wins)
+  "textPath": ["result"],
+  "select": "last",
+  "usagePath": ["usage"],         // token counts, in a usageEvent (default: eventType)
+  "costPath": ["total_cost_usd"], // US dollars, in the same event
+  "errorPath": ["is_error"]       // true, a message or an error object: the run failed with it
+}
+```
+
+Usage from every `usageEvent` adds up; it is normalized across the CLIs' field
+names (Anthropic's, OpenAI's, Codex's — see
+[`src/adapters/usage.ts`](src/adapters/usage.ts)). A CLI that prints one JSON
+document instead takes `{ "format": "json", "textPath": […], "usagePath": […],
+"costPath": […], "errorPath": […] }`; a whole number in a path indexes an array
+(negative: from its end). A failure reported at `errorPath` is classified like
+any failed run — whatever the exit status — so a rate limit is retried and a spent
+quota says when it resets. When the declared text is not in the output — a CLI
+whose format drifted, or a misconfiguration — the raw stdout becomes the reply and
+the run's log says why; the agent does not fail.
+
 ODW returns only the decoded final response to the workflow; JSONL output is
-decoded line by line as it streams, and only a bounded tail of stderr is kept for
-error messages. On Windows, executable discovery follows `PATHEXT`, so normal
+decoded line by line as it streams (keeping the latest text and a usage total, not
+the transcript), and only a bounded tail of stderr is kept for error messages. On
+Windows, executable discovery follows `PATHEXT`, so normal
 `agent.cmd`, `kilo.cmd`, and `omp.exe` shims are detected without full paths.
 
 Config keys live at the **top level** — there is no `"settings"` wrapper, and odw
@@ -562,12 +655,13 @@ wins over a restart.
 }
 ```
 
-The watchdog is **off by default for every built-in adapter**: some CLIs —
-`claude --print` in text mode among them — print nothing until they finish, so
+The watchdog is **off by default for every built-in adapter**: some CLIs — the
+text-mode ones (`gemini`, `qwen`, `kimi`, …) — print nothing until they finish, so
 any stall timeout would kill healthy work. Use it for adapters that stream
-progress (JSONL adapters such as `kilo` and `opencode`, or a wrapper that prints
-a heartbeat), with a value above the longest quiet stretch a healthy agent has —
-a long test run inside one tool call prints nothing either.
+progress: `claude` (its stream-json prints an event per turn, so it is now safe to
+enable for it), the JSONL adapters `kilo` and `opencode`, or a wrapper that prints
+a heartbeat — with a value above the longest quiet stretch a healthy agent has: a
+long test run inside one tool call prints nothing either.
 
 ### Rate limits, quotas and logins
 
@@ -600,10 +694,12 @@ agent_failed    (Search) search — [quota, retry after 3h 22m] AdapterExecution
   within a minute (Gemini's free tier words its per-minute limit that way) is
   treated as the rate limit it is.
 
-Claude Code's text mode prints some API errors as its reply and exits 0
-(`API Error: Rate limit reached`): a short reply that is nothing but such a
-rate-limit, quota or login error counts as that failure, never as the agent's
-answer.
+Claude Code reports such errors in its output, often with exit 0: its stream-json
+`result` event says `is_error: true` with the message (`API Error: Rate limit
+reached`, `Claude AI usage limit reached|…`), and that counts as the failure it
+names. In text mode (a text adapter, or JSON output that fell back to its raw
+stdout), a short reply that is nothing but such a rate-limit, quota or login error
+counts as that failure too — never as the agent's answer.
 
 The wording ODW recognizes — collected from each built-in CLI's source and issue
 tracker — lives in one table,
@@ -729,11 +825,66 @@ await parallel(['grid', 'list'].map((layout) => () =>
     { isolation: 'worktree', label: layout })))
 ```
 
+Ask such agents to stop the servers they start before they finish: an agent
+CLI may wait for its own background commands before it exits (`claude -p`
+does), which holds the agent — and its port — until the stall watchdog or the
+timeout ends it.
+
 The setup command gets the same three variables, and `exec()` commands get
 `ODW_RUN_ID`. Keep `portRange` wider than `concurrency`: an agent started while
 the others hold every port runs without `ODW_PORT`, and the run's log says so.
 Each attempt of a call (a schema retry, a stall restart, a rate-limit retry)
 starts from a fresh worktree, prepared the same way.
+
+### Review and apply what isolated agents changed (ODW extension)
+
+An isolated agent's worktree is removed when its call settles, but its work is
+not lost: before the worktree goes, ODW keeps what the agent changed — edits,
+new, deleted, renamed and binary files, staged, committed or not — as a unified
+diff in the run directory (`agents/<agentId>.diff`), and records its size,
+`changes: { files, insertions, deletions, truncated }`, on the agent's
+`agent_finished` event and saved result. `agent()` still returns the reply.
+What `.worktreeinclude` placed and `worktreeSetup` produced is not the agent's
+change and stays out, unless the agent edited it afterwards.
+
+```bash
+odw diff $RUN --stat               # who changed what: files, +/- lines, kept branch
+odw diff $RUN --agent fix:auth     # one agent's diff, by label or id — a patch git can read
+odw apply $RUN --agent 3 --check   # would it apply here, and what would conflict?
+odw apply $RUN --agent 3           # apply it to this working tree (git apply --3way)
+```
+
+`odw apply` applies one agent's diff to the git working tree you run it in with
+`git apply --3way`: what applies is staged, and a hunk that clashes with your
+own change is merged three-way and left with conflict markers (exit 1). It
+refuses while a path the diff touches has uncommitted changes — commit or stash
+them, or pass `--force`. Agents that changed different files apply one after
+another. The dashboard shows the same diffs in a run's **Changes** tab and serves
+them at `GET /api/runs/:id/agents/:agentId/diff`.
+
+- **`keep: true`** (an `agent()` option) or **`keepBranches: true`** (config) also
+  commits the change to a branch `odw/<runId>/<agentId>-<label>` of the source
+  repository — by `odw <odw@localhost>`, on top of the commit the agent started
+  from — to check out, merge or cherry-pick. ODW only creates that branch: your
+  HEAD, index and other branches are never touched. `keep: false` opts one agent
+  out of `keepBranches`.
+- **`maxDiffBytes`** (default 2 MB) caps a stored diff: past it, the head is kept,
+  cut at a line, with one final `# odw: diff truncated …` line. The counts still
+  describe the whole change; `odw apply` refuses a cut diff — use the branch.
+- A binary file is named in the diff by its object id, not carried in it; git
+  applies it from the repository's object store, where ODW wrote it (a kept
+  branch pins it for good).
+- A failed agent keeps its diff too (the work of one that timed out), and `odw
+  resume` brings a replayed agent's diff into the new run. A stopped run keeps none.
+
+```jsonc
+{
+  "maxDiffBytes": 2097152, // bytes of one agent's diff kept in the run directory
+  "keepBranches": false    // true: every isolated agent's change also goes on a branch
+}
+```
+
+Step by step: [`docs/recipes/review-and-apply.md`](docs/recipes/review-and-apply.md).
 
 ## How it works
 
@@ -769,6 +920,7 @@ Two design points are worth calling out:
 | `src/runtime/` | L5 — background worker, run directory, control |
 | `src/cli.ts` | L6 — the `odw` command |
 | `src/workspace.ts` | cross-cutting — workspace isolation and diff |
+| `src/changes.ts` | cross-cutting — what isolated agents changed, kept as diffs and branches |
 
 Workflow scripts stay **plain `.js`** and are never compiled; the engine is
 written in **TypeScript** (compiled to ESM, **zero runtime dependencies**) and
@@ -853,6 +1005,18 @@ into the host's `node`, so each target is built on its own runner.
   login, timeout, stall, …). A rate-limited CLI is retried after a backoff that
   honors its retry-after; a spent quota or a failed login fails fast with what to do
   — in `odw logs`, the live view and the dashboard, with the reset time.
+- **Scheduled runs without a daemon.** `odw schedule add <name> <workflow> --cron
+  "15 2 * * 1-5"` writes a cron, launchd or systemd entry that calls back into odw —
+  with an overlap lock, a per-schedule log and the last run in `odw schedule list`
+  ([recipe](docs/recipes/cron.md)).
+- **Review and apply what isolated agents changed.** A worktree agent's change
+  is kept as a diff when its worktree goes (setup files left out), optionally on
+  a `keep` branch. Read it in the dashboard's **Changes** tab or with `odw diff`,
+  and land it with `odw apply` (`--check` first) — one agent at a time.
+- **Real usage and cost.** The built-in `claude` adapter now reads Claude Code's
+  `stream-json`, so every agent records the tokens and dollars its CLI reported —
+  in `odw status`, the live view and the dashboard — and `--budget` meters real
+  output tokens. A single fan-out wider than `fanOutWarn` (25) says so up front.
 - **Ready-to-work worktrees.** `.worktreeinclude` copies or links `.env`,
   `node_modules` and the like into isolated agents' worktrees, `worktreeSetup` runs
   your bootstrap command, and every agent gets its own `$ODW_PORT`.
@@ -918,8 +1082,8 @@ runs end-to-end (plan → search → extract → vote → report).
 
 Ranked by what users of parallel coding agents report needing
 ([research](docs/research/user-needs-2026-10.md)): adapter-reported token usage and
-cost (today's budget meters an estimate) · review-and-apply for isolated agents'
-diffs · scheduling · evidence of success for headless runs · per-agent transcripts ·
+cost for more CLIs (Claude Code reports it today; the others are estimated) ·
+evidence of success for headless runs · per-agent transcripts ·
 read/edit/full permission tiers · native structured output · per-phase adapters
 and fallback chains · evaluation. Full plan: [`docs/ROADMAP.md`](docs/ROADMAP.md); the
 original design: [`docs/dynamic-workflows-tech-plan.md`](docs/dynamic-workflows-tech-plan.md).

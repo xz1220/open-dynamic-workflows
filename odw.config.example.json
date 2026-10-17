@@ -11,7 +11,7 @@
   "claudeWorkflowsRoot": "~/.claude/workflows",
   "claudeJobsScope": "all",
 
-  "//stallTimeout": "ODW extension. Seconds an agent may print nothing on stdout or stderr before it is killed (like a timeout) and restarted, at most stallRestarts times per agent call; null (the default) turns the watchdog off. It stays off for every built-in adapter because some CLIs (claude --print in text mode) print nothing until they finish: enable it for adapters that stream progress. An adapter's own \"stallTimeout\" overrides this value; 0 turns the watchdog off for that adapter.",
+  "//stallTimeout": "ODW extension. Seconds an agent may print nothing on stdout or stderr before it is killed (like a timeout) and restarted, at most stallRestarts times per agent call; null (the default) turns the watchdog off. It stays off for every built-in adapter because some CLIs (gemini, qwen, kimi in text mode) print nothing until they finish: enable it for adapters that stream progress — claude (stream-json: an event per turn), kilo, opencode — with a value above the longest single tool call. An adapter's own \"stallTimeout\" overrides this value; 0 turns the watchdog off for that adapter.",
   "stallTimeout": null,
   "stallRestarts": 1,
 
@@ -25,6 +25,13 @@
 
   "//portRange": "ODW extension. Every agent process gets ODW_PORT: a port from this inclusive range that no other running agent of the run holds (ports something already listens on are passed over), kept until its call settles, so a workflow can say \"start your dev server on $ODW_PORT\". Keep the range wider than concurrency.",
   "portRange": [41000, 41999],
+
+  "//fanOutWarn": "ODW extension. When one parallel() or pipeline() call fans out more than this many tasks or items, the run logs one warning with the count (it never blocks); 0 or null turns it off. What a run spends — tokens and cost as adapters report them (the built-in claude does), else output tokens estimated as chars/4 — shows in odw status, the live view and the dashboard.",
+  "fanOutWarn": 25,
+
+  "//maxDiffBytes": "ODW extension. An agent that runs with isolation: \"worktree\" leaves what it changed as a unified diff in the run directory (agents/<agentId>.diff): odw diff prints it, odw apply applies it, and the dashboard's Changes tab shows it. Past maxDiffBytes the diff keeps its head, cut at a line, and a note; its counts still describe the whole change. keepBranches also commits every isolated agent's change to a branch odw/<runId>/<agentId>-<label> of the source repository (keep: true does that for one agent; keep: false opts one out).",
+  "maxDiffBytes": 2097152,
+  "keepBranches": false,
 
   "//notify": {
     "$comment": "ODW extension: run-end hooks. Rename \"//notify\" to \"notify\" to turn them on. They fire once, after the run's final state is written, and can never change it; a failing or slow hook is only logged to the run's worker.log. command: an argv run WITHOUT a shell (killed after 30s), with ODW_RUN_ID, ODW_RUN_STATE, ODW_WORKFLOW, ODW_RUN_DIR, ODW_RESULT_FILE (only when the run has a result), ODW_DURATION_SEC, ODW_AGENTS and ODW_FAILED_AGENTS in its environment. webhook: an http(s) URL that receives a JSON POST (10s limit) whose text/content fields render as-is in Slack and Discord. on: which final states fire them (default: all three).",
@@ -42,9 +49,10 @@
     },
     "claude": {
       "label": "Claude Code",
-      "command": ["claude", "--print", "--permission-mode", "acceptEdits", "--allowedTools", "WebSearch", "WebFetch", "--no-session-persistence"],
+      "command": ["claude", "--print", "--output-format", "stream-json", "--verbose", "--permission-mode", "acceptEdits", "--allowedTools", "WebSearch", "WebFetch", "--no-session-persistence"],
       "stdin": "{prompt}",
-      "flags": { "model": ["--model"] }
+      "flags": { "model": ["--model"] },
+      "output": { "format": "jsonl", "eventType": "result", "textPath": ["result"], "select": "last", "usagePath": ["usage"], "costPath": ["total_cost_usd"], "errorPath": ["is_error"] }
     },
     "gemini": {
       "label": "Gemini CLI",

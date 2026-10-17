@@ -43,16 +43,20 @@ other primitive organizes calls to it.
   itself). Needs a repo with at least one commit; the agent sees HEAD without
   uncommitted changes. The worktree is cleaned up after the call and changes
   are not merged into the source. `agent()` returns only the reply, not a diff
-  or a persistent worktree path: include required deliverables in the reply or
-  explicitly save them outside the temporary worktree. Before the agent starts,
-  `.worktreeinclude` brings in what a checkout lacks (`.env`, `node_modules`, …)
-  and `worktreeSetup` runs — see
+  or a persistent worktree path; the run keeps what the agent changed as a diff
+  to review and apply — see [kept changes](#what-an-isolated-agent-changed-odw-extension).
+  Before the agent starts, `.worktreeinclude` brings in what a checkout lacks
+  (`.env`, `node_modules`, …) and `worktreeSetup` runs — see
   [isolated worktrees](#isolated-worktrees-and-the-agent-environment).
+- **opts.keep** (**ODW extension**) — with `isolation: "worktree"`, also commit
+  the agent's change to a branch `odw/<runId>/<agentId>-<label>` of the source
+  repository. `false` opts one agent out of the `keepBranches` setting. Ignored
+  (with a log line) without isolation; Claude Code ignores it.
 
 Returns the reply text, or the validated JSON value when `schema` is set. CLI
 errors and exhausted schema retries throw. Inside `parallel`/`pipeline`, these
 recoverable failures become `null`. Fatal errors — stop requests, exhausted
-estimated budgets, the total-agent cap, and invalid adapter/run configuration —
+budgets, the total-agent cap, and invalid adapter/run configuration —
 propagate and terminate the run.
 
 Every call that completes is saved in its run directory
@@ -134,15 +138,19 @@ JSON-looking input that fails to parse is rejected rather than silently passed
 through as a string). `budget.total` is the token target set with
 `odw run … --budget <tokens>`, else `null`; scale depth to it, e.g.
 `budget.total ? Math.floor(budget.total / 120_000) : 5`.
-`spent()` is `ceil(total successful final-reply characters / 4)` across this
-run, including nested workflows. Input tokens, failed calls, and intermediate
-schema-retry replies are not counted. `remaining()` is
+`spent()` is the output tokens spent so far across this run, nested workflows
+included: the CLI's own count wherever its adapter reports usage (the built-in
+`claude` does — an ODW extension), else `ceil(reply characters / 4)` for that
+CLI run. Every CLI run of a call counts — schema retries, rate-limit retries, and
+failed runs that reported usage; input tokens do not. `remaining()` is
 `max(0, total - spent())`, or `Infinity` without a target.
 
 After obtaining a dispatch slot and checking pause/stop, the scheduler rejects
-new agent calls when this estimate reaches the target. In-flight calls may
-finish and exceed it. This is a dispatch guard based on an estimate, not a
-limit on actual token usage or billing.
+new agent calls when `spent()` reaches the target. In-flight calls may finish
+and exceed it. This is a dispatch guard on output tokens, not a limit on
+billing. What each agent and the whole run spent — tokens in and out, cache
+reads and writes, and cost where the CLI reports it — shows in `odw status`, the
+live view and the dashboard (ODW extension).
 
 ## workflow
 
@@ -153,7 +161,7 @@ workflow(nameOrRef, args?) -> Promise<unknown>
 Run another workflow inline and return its final value. A string resolves a
 name from the managed workflow directories; `{ scriptPath }` resolves relative
 to the run's source directory. The child shares the parent's scheduler,
-concurrency cap, agent count, controls, and estimated budget. Its phases have
+concurrency cap, agent count, controls, and budget. Its phases have
 a `▸ <name>` prefix; it has no separate run id. Omitted child `args` becomes
 `null`, rather than inheriting the parent's input.
 
@@ -358,6 +366,36 @@ When this run's running agents hold every port of the range, the next one runs
 without `ODW_PORT` and the run's log says so: keep `portRange` wider than
 `concurrency`. The worktree setup gets the same three variables; `exec()`
 commands get `ODW_RUN_ID`.
+
+## What an isolated agent changed (ODW extension)
+
+Before an isolated agent's worktree is removed, ODW keeps its change: everything
+that differs from the commit it started from — edits, new, deleted, renamed and
+binary files, staged, committed or not — as a unified diff in the run directory
+(`agents/<agentId>.diff`), with `changes: { files, insertions, deletions,
+truncated }` on its `agent_finished` event (or `agent_failed`: a failed agent
+keeps its work too) and its saved result. What `.worktreeinclude` placed and
+`worktreeSetup` produced is left out unless the agent changed it afterwards; git
+ignored files never count, and symlinks are never followed. An agent that changed
+nothing keeps no diff; a stopped run keeps none.
+
+```bash
+odw diff <run> --stat                    # per agent: files, +/- lines, kept branch
+odw diff <run> --agent <id|label>        # one agent's diff, verbatim
+odw apply <run> --agent <id|label> --check
+odw apply <run> --agent <id|label>       # git apply --3way into the working tree you are in
+```
+
+`odw apply` stages what applies and leaves conflict markers where a hunk clashes
+(exit 1); it refuses while a path the diff touches has uncommitted changes, unless
+`--force`. Several agents that changed different files apply one after another.
+A diff past `maxDiffBytes` (default 2 MB) keeps its head and ends with a
+`# odw: diff truncated …` line; its counts still describe the whole change, and
+`odw apply` refuses it — use the agent's branch (`keep: true`, or
+`keepBranches`). Each attempt of a call works in a fresh worktree: a schema retry
+that only reformats its reply keeps the earlier attempt's change, while a stall
+restart or a rate-limit retry redoes the work, so its change replaces the
+earlier one. `odw resume` copies a replayed agent's diff into the new run.
 
 ## schema
 

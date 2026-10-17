@@ -147,6 +147,8 @@ export async function executeRun(runDir: string): Promise<string> {
       // Each completed agent's result lands in agents/<agentId>.json at once,
       // so a run that stalls, is stopped, or dies keeps its finished work.
       saveAgentResult: (rec) => store.writeAgentResult(runId, rec),
+      // What an isolated agent changed is kept beside it, as agents/<agentId>.diff.
+      agentDiffPath: (agentId) => store.agentDiffPath(runId, agentId),
       replay,
       onCheckpoint: (cp, isWaiting) => {
         if (isWaiting) {
@@ -290,8 +292,12 @@ function errorMessage(err: unknown): string {
 function replayJournal(meta: Record<string, unknown>): ReplayJournal | undefined {
   if (typeof meta.resumedFrom !== "string" || meta.resumedFrom === "") return undefined;
   const dir = typeof meta.resumedFromDir === "string" ? meta.resumedFromDir : null;
-  const records = dir ? new RunStore(dirname(dir)).listAgentResults(basename(dir)) : [];
-  return new ReplayJournal(meta.resumedFrom, records);
+  if (!dir) return new ReplayJournal(meta.resumedFrom, []);
+  const source = new RunStore(dirname(dir));
+  const sourceId = basename(dir);
+  return new ReplayJournal(meta.resumedFrom, source.listAgentResults(sourceId), (agentId) =>
+    source.agentDiffPath(sourceId, agentId),
+  );
 }
 
 /**

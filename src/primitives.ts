@@ -10,7 +10,7 @@
  *   - pipeline  — stream items through stages independently (no barrier)
  *   - phase     — label the following work for progress display
  *   - log       — surface a progress message
- *   - budget    — the run's token budget: total, estimated spend, remaining
+ *   - budget    — the run's token budget: total, output tokens spent, remaining
  *   - workflow  — run another workflow inline (one level deep)
  *   - validate  — compile-check workflow source (ODW extension)
  *   - exec      — run a command without a model (ODW extension; see exec.ts)
@@ -21,13 +21,20 @@
  *
  * Every completed agent() is saved as it lands, and a resumed run replays the
  * calls it already completed instead of running them again (see ./journal).
+ *
+ * What each agent spent travels on its agent_finished (or agent_failed) event
+ * as `usage` (an ODW extension, adapters/usage.ts): what its CLI reported, or
+ * — where it reported no output tokens — chars/4 of its replies, `estimated`.
  */
 
 import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { copyFile, mkdir } from "node:fs/promises";
+import { dirname, resolve } from "node:path";
 
 import { formatSeconds } from "./adapters/failures.js";
+import { addUsage, estimatedUsage, type Usage } from "./adapters/usage.js";
 import type { AgentRequest } from "./bridge.js";
+import { branchName, ChangeRecorder, type AgentChanges, type KeptChanges } from "./changes.js";
 import { CheckpointTimeout, createCheckpoint, type CheckpointOptions, type CheckpointResult } from "./checkpoint.js";
 import { spentTokens, type RunContext } from "./context.js";
 import { AdapterExecutionError, WorkflowScriptError, isFatalError } from "./errors.js";
@@ -55,6 +62,12 @@ export interface AgentOptions {
   agentType?: string;
   /** `"worktree"`: run this agent in a throwaway git worktree (as in Claude Code). */
   isolation?: "worktree";
+  /**
+   * ODW extension: also commit an isolated agent's change to a branch
+   * `odw/<runId>/<agentId>-<label>` of the source repository; `false` opts
+   * one agent out of the `keepBranches` setting. No effect without isolation.
+   */
+  keep?: boolean;
 }
 
 export interface Budget {
@@ -145,13 +158,13 @@ export function createPrimitives(
    * and finished events and a saved record, all marked `cached` — so a
    * resume of this run can replay it in turn.
    */
-  const replay = (
+  const replay = async (
     agentId: number,
     key: string,
     recorded: AgentResultRecord,
     opts: AgentOptions,
     phase: string | null,
-  ): unknown => {
+  ): Promise<unknown> => {
     // Once the run has ended, every later call fails with its reason.
     if (ctx.scheduler.fatalError !== undefined) throw ctx.scheduler.fatalError;
     const label = opts.label ?? opts.adapter ?? opts.agentType ?? recorded.label;
@@ -163,14 +176,83 @@ export function createPrimitives(
     };
     const startedEv = event(AGENT_STARTED, { agentId, label, phase, adapter, ...marks });
     ctx.emit(startedEv);
-    const finished = event(AGENT_FINISHED, { agentId, label, phase, adapter, attempts, ...marks });
+    const kept = await carryChanges(recorded, agentId, (message) =>
+      ctx.emit(event(LOG, { message: `${label}:${agentId}: ${message}`, agentId, label, phase })),
+    );
+    const finished = event(AGENT_FINISHED, { agentId, label, phase, adapter, attempts, ...marks, ...changeFields(kept) });
     const startedAt = startedEv.ts;
     const finishedAt = finished.ts;
-    if (save({ agentId, key, label, phase, adapter, attempts, startedAt, finishedAt, value: recorded.value, ...marks })) {
+    const value = recorded.value;
+    if (save({ agentId, key, label, phase, adapter, attempts, startedAt, finishedAt, value, ...marks, ...changeFields(kept) })) {
       finished.saved = true;
     }
     ctx.emit(finished);
     return structuredClone(recorded.value);
+  };
+
+  /**
+   * A replayed isolated call brings its kept change along (ODW extension): the
+   * source run's diff is copied into this run, so `odw diff`, `odw apply` and
+   * the dashboard find it here. Its branch, if it had one, is the source run's.
+   */
+  const carryChanges = async (
+    recorded: AgentResultRecord,
+    agentId: number,
+    note: (message: string) => void,
+  ): Promise<KeptChanges | null> => {
+    const from = ctx.replay?.sourceDiffPath;
+    if (!recorded.changes || !from || !ctx.agentDiffPath) return null;
+    try {
+      const to = ctx.agentDiffPath(agentId);
+      await mkdir(dirname(to), { recursive: true });
+      await copyFile(from(recorded.agentId), to);
+      return { changes: recorded.changes, branch: recorded.branch ?? null };
+    } catch (err) {
+      note(`could not bring its kept change along: ${err instanceof Error ? err.message : String(err)}`);
+      return null;
+    }
+  };
+
+  /**
+   * What keeps an isolated agent's change (ODW extension; see ./changes) —
+   * only in a persisted run, where its diff has somewhere to go. `keep`
+   * (else the `keepBranches` setting) also commits it to a branch.
+   */
+  const changeRecorder = (
+    agentId: number,
+    label: string,
+    opts: AgentOptions,
+    signal: AbortSignal,
+    note: (message: string) => void,
+  ): ChangeRecorder | undefined => {
+    if (opts.isolation !== "worktree" || !ctx.agentDiffPath) return undefined;
+    const { keepBranches, maxDiffBytes } = ctx.config.settings;
+    const runId = ctx.runId ?? "run";
+    const keep = typeof opts.keep === "boolean" ? opts.keep : keepBranches;
+    return new ChangeRecorder({
+      path: ctx.agentDiffPath(agentId),
+      maxDiffBytes,
+      branch: keep ? branchName(runId, agentId, label) : null,
+      message: `${label}\n\nodw run ${runId}, agent ${agentId}`,
+      signal,
+      onNote: note,
+    });
+  };
+
+  /** Settle a call's kept change, or drop it when the run ended under the call. Never throws. */
+  const keepChanges = async (
+    recorder: ChangeRecorder | undefined,
+    drop: boolean,
+    note: (message: string) => void,
+  ): Promise<KeptChanges | null> => {
+    if (!recorder) return null;
+    try {
+      if (!drop) return await recorder.settle();
+      await recorder.discard();
+    } catch (err) {
+      note(`could not keep what it changed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    return null;
   };
 
   const dispatch = async (prompt: string, opts: AgentOptions): Promise<unknown> => {
@@ -199,9 +281,35 @@ export function createPrimitives(
       agentType: opts.agentType,
       isolation: opts.isolation,
     };
-    const failed = (err: unknown): void => {
+    // What this call spends, from every CLI run it makes: the usage the CLI
+    // reported, plus the characters of replies it reported no output tokens for.
+    let reported: Usage | undefined;
+    let estimatedChars = 0;
+    const spend = (usage: Usage | undefined, reply?: string): void => {
+      reported = addUsage(reported, usage);
+      // The run's budget tally: real output tokens when reported, else chars/4.
+      if (usage?.outputTokens !== undefined) ctx.usage.outputTokens += usage.outputTokens;
+      else if (reply !== undefined) {
+        estimatedChars += reply.length;
+        ctx.usage.outputChars += reply.length;
+      }
+    };
+    /** This agent's `usage` event field: absent when it spent nothing anyone can tell. */
+    const usageField = (): { usage?: Usage } => {
+      const usage = estimatedChars > 0 ? addUsage(reported, estimatedUsage(estimatedChars)) : reported;
+      return usage ? { usage } : {};
+    };
+    const failed = (err: unknown, kept: KeptChanges | null = null): void => {
       ctx.emit(
-        event(AGENT_FAILED, { agentId, label: display, phase: activePhase, error: String(err), ...failureFields(err) }),
+        event(AGENT_FAILED, {
+          agentId,
+          label: display,
+          phase: activePhase,
+          error: String(err),
+          ...failureFields(err),
+          ...usageField(),
+          ...changeFields(kept),
+        }),
       );
       if (typeof err === "object" && err !== null) surfaced.add(err);
     };
@@ -217,22 +325,26 @@ export function createPrimitives(
         started = true;
         const startedEv = event(AGENT_STARTED, { agentId, label: display, phase: activePhase, adapter: adapter.name });
         ctx.emit(startedEv);
+        // What preparing the call noted (no free port, a file .worktreeinclude
+        // left out) and what keeping its change did not manage is logged against it.
+        const note = (message: string): void =>
+          ctx.emit(event(LOG, { message: `${display}:${agentId}: ${message}`, agentId, label: display, phase: activePhase }));
+        if (opts.keep === true && opts.isolation !== "worktree") {
+          note('keep: true has no effect without isolation: "worktree" — this agent works in the source tree');
+        }
+        const changes = changeRecorder(agentId, display, opts, signal, note);
         let outcome;
         try {
           outcome = await ctx.bridge.run(request, {
             signal,
-            // The agent process's ODW_AGENT_ID; what preparing it noted (no free
-            // port, a file .worktreeinclude left out) is logged against it.
+            // The agent process's ODW_AGENT_ID.
             agentId,
-            onNote: (message) =>
-              ctx.emit(
-                event(LOG, { message: `${display}:${agentId}: ${message}`, agentId, label: display, phase: activePhase }),
-              ),
-            // Feed the shared budget tally from every attempt, schema retries
-            // included (estimated tokens ≈ chars/4 of each reply).
-            onReply: (text) => {
-              ctx.usage.outputChars += text.length;
-            },
+            onNote: note,
+            // Feed the shared budget tally and this agent's usage from every
+            // CLI run: replies (schema retries included), and runs that failed
+            // or were retried but still reported what they spent.
+            onReply: (text, usage) => spend(usage, text),
+            onUsage: (usage) => spend(usage),
             // A retry is another CLI run: it passes the stop/budget guards first.
             beforeRetry: () => ctx.scheduler.recheck(),
             // The stall watchdog (opt-in) restarts a CLI that went quiet: say so.
@@ -258,18 +370,22 @@ export function createPrimitives(
             // An adapter's quota or login failed several agents in a row: warn, once.
             onAdapterWarning: ({ message, adapter: name, reason }) =>
               ctx.emit(event(LOG, { message, adapter: name, reason, agentId, label: display, phase: activePhase })),
+            // An isolated agent's change is kept as it lands (ODW extension).
+            changes,
           });
         } catch (err) {
           // A started agent always gets a terminal event, even when the error
           // is fatal (stop, budget, a config error raised inside the slot) —
-          // else observers show it running forever.
-          failed(err);
+          // else observers show it running forever. A failed agent's change
+          // is kept too (the work of one that timed out); a stop keeps none.
+          failed(err, await keepChanges(changes, isFatalError(err) || signal.aborted, note));
           throw err;
         }
+        const kept = await keepChanges(changes, false, note);
         // No option is dropped silently: surface each routing note as a LOG event
         // (visible in `odw logs` and the dashboard).
-        for (const note of outcome.notes ?? []) {
-          ctx.emit(event(LOG, { message: note, label: display, phase: activePhase }));
+        for (const routing of outcome.notes ?? []) {
+          ctx.emit(event(LOG, { message: routing, label: display, phase: activePhase }));
         }
         const finished = event(AGENT_FINISHED, {
           agentId,
@@ -277,6 +393,8 @@ export function createPrimitives(
           phase: activePhase,
           adapter: outcome.adapter,
           attempts: outcome.attempts,
+          ...usageField(),
+          ...changeFields(kept),
         });
         const persisted = save({
           agentId,
@@ -288,6 +406,7 @@ export function createPrimitives(
           startedAt: startedEv.ts,
           finishedAt: finished.ts,
           value: outcome.value,
+          ...changeFields(kept),
         });
         if (persisted) finished.saved = true;
         ctx.emit(finished);
@@ -323,6 +442,26 @@ export function createPrimitives(
     ctx.emit(event(LOG, { message: `${where} failed and its result is null: ${describeError(err)}` }));
   };
 
+  /**
+   * One LOG event — a warning, never a block — when a single parallel() or
+   * pipeline() call fans out wider than `fanOutWarn` (an ODW extension, after
+   * Claude Code's warning before a large workflow): every one of those agents
+   * spends tokens, and nothing else says how many are on their way.
+   */
+  const warnFanOut = (call: "parallel()" | "pipeline()", width: number, stages = 0): void => {
+    const limit = ctx.config.settings.fanOutWarn;
+    if (!limit || width <= limit) return;
+    const what = call === "parallel()" ? `${width} tasks` : `${width} items through ${stages} stage${stages === 1 ? "" : "s"}`;
+    ctx.emit(
+      event(LOG, {
+        message:
+          `large fan-out: ${call} starts ${what} (over fanOutWarn: ${limit}) — each agent spends tokens; ` +
+          "odw status shows what the run has spent, odw run --budget caps it",
+        fanOut: width,
+      }),
+    );
+  };
+
   const parallel = async <T>(thunks: Array<Thunk<T>>): Promise<Array<T | null>> => {
     if (!Array.isArray(thunks)) {
       throw new WorkflowScriptError(`parallel() takes an array of functions (thunks); got ${describeValue(thunks)}`);
@@ -335,6 +474,7 @@ export function createPrimitives(
         );
       }
     });
+    warnFanOut("parallel()", thunks.length);
     return ctx.scheduler.gather(
       thunks.map((thunk, i) => async () => {
         try {
@@ -360,6 +500,7 @@ export function createPrimitives(
         );
       }
     });
+    warnFanOut("pipeline()", items.length, stages.length);
     const chains = items.map((item, index) => async (): Promise<unknown> => {
       let value: unknown = item;
       let s = 0;
@@ -386,7 +527,7 @@ export function createPrimitives(
 
   const budget: Budget = {
     total: ctx.budgetTotal,
-    // Estimated output tokens (chars/4 of every agent reply) — see RunContext.usage.
+    // Output tokens: reported by the CLI, else chars/4 of the reply — see RunContext.usage.
     spent: () => spentTokens(ctx.usage),
     remaining: () =>
       ctx.budgetTotal === null ? Infinity : Math.max(0, ctx.budgetTotal - spentTokens(ctx.usage)),
@@ -501,6 +642,11 @@ function handled<T>(promise: Promise<T>): Promise<T> {
  * workflow()'s agents can fail inside the parent's parallel().
  */
 const surfaced = new WeakSet<object>();
+
+/** The `changes` and `branch` an agent's terminal event and record carry when it kept a change (ODW extension). */
+function changeFields(kept: KeptChanges | null): { changes?: AgentChanges; branch?: string | null } {
+  return kept ? { changes: kept.changes, branch: kept.branch } : {};
+}
 
 /**
  * Why an agent CLI failed, for its agent_failed event: the failure class and,

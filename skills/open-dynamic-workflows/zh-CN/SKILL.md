@@ -71,9 +71,10 @@ return await agent(
 | `exec(command, opts?)` | 不启动模型直接运行一条命令（测试、构建、linter）；返回 `{ stdout, stderr, exitCode, signal, timedOut, truncated, durationMs }`。字符串经 shell 执行，数组按 argv 执行。**ODW 扩展**——不属于 Claude Code 方言。 |
 | `checkpoint(title, opts?)` | 暂停运行，直到有人批准或拒绝；返回 `{ approved, note, by }`。**ODW 扩展**——不属于 Claude Code 方言。 |
 
-`agent` 的 `opts`：`{ adapter?, schema?, label?, phase?, model?, agentType?, isolation? }`。
+`agent` 的 `opts`：`{ adapter?, schema?, label?, phase?, model?, agentType?, isolation?, keep? }`。
 `adapter` 选择用哪个 CLI；`schema` 是一个原始 JSON Schema 对象（选项，不是全局）；
-`agentType` 是注入进 prompt 的**人设**，*不是* adapter 名。
+`agentType` 是注入进 prompt 的**人设**，*不是* adapter 名。`keep: true`（**ODW 扩展**）
+还会把隔离 agent 的改动提交到分支 `odw/<runId>/<agentId>-<label>`。
 
 `exec` 的 `opts`：`{ cwd?, env?, timeout?, input?, maxOutputBytes?, label?, phase?, check? }`。
 默认在源目录中运行，超过 `timeout` 秒（600）后连同它启动的所有进程一起被杀，每个输出流
@@ -115,7 +116,7 @@ odw run wf.js --wait --args '{"question": "Design a cache."}'   # 阻塞并打�
 
 ```bash
 RUN=$(odw run wf.js)        # 打印一个 run id 后立即返回
-odw status $RUN             # 状态 + agent 计数
+odw status $RUN             # 状态、agent 计数、token 与花费
 odw logs $RUN --follow      # 流式输出进度事件
 odw result $RUN             # 完成后打印最终值
 odw pause $RUN / resume $RUN / stop $RUN
@@ -147,6 +148,25 @@ odw resume $RUN --wait        # ……启动一个新运行：未改动的 agent
   （或加 `--force`）。
 - 保持 prompt 确定：用 `Date.now()` 或 `Math.random()` 拼出的 prompt 永远匹配不上，会重新执行。
 
+### 审阅并应用隔离 agent 的改动（ODW 扩展）
+
+带 `isolation: "worktree"` 的 agent 改的是一次性 worktree，从不碰你的文件。它的改动会以
+diff 形式随运行保存（`agents/<agentId>.diff`）——`agent()` 返回的仍然只是回复：
+
+```bash
+odw diff $RUN --stat                  # 哪些 agent 改了哪些文件，增删多少行
+odw diff $RUN --agent <id|label>      # 某个 agent 的 diff——应用前先读
+odw apply $RUN --agent <id> --check   # 能否应用到这里？哪些文件会冲突？
+odw apply $RUN --agent <id>           # 用 git apply --3way 应用到当前工作树（会暂存）
+```
+
+- 按任务需要逐个应用，并告诉用户应用了什么、哪里冲突了（退出码 1：有待解决的冲突标记）。
+  请在本次运行所针对的仓库里执行。
+- 只要 diff 涉及的路径上有未提交的改动，`odw apply` 就会拒绝——先提交或 stash；只有用户
+  同意时才用 `--force`。
+- 超过 `maxDiffBytes` 被截断的 diff 无法应用：改用该 agent 的分支（`keep: true`，或在
+  配置里设 `"keepBranches": true`）。
+
 ### 人工检查点（ODW 扩展）
 
 只在值得等人判断的地方加 `checkpoint()`：昂贵或难以撤销的步骤之前（大规模扇出、横跨
@@ -167,6 +187,28 @@ odw status $RUN     # 问题、它的 payload，以及回答它的确切命令
 检查点等待期间 `odw run --wait` 会一直阻塞。带检查点的 workflow 请以后台方式启动
 （`RUN=$(odw run wf.js)`）并轮询 `odw status $RUN`，或用 `--wait --timeout <秒>` 限定
 等待时长。`odw resume` 会重放已完成的 agent，但每个检查点都会重新提问。
+
+### 定时运行（ODW 扩展）
+
+只有用户要求定期运行时才设置：`odw schedule add` 会写入用户的 crontab、LaunchAgents
+或 systemd 用户单元。先把 `--dry-run` 的输出给用户看。
+
+```bash
+odw schedule add digest digest --cron "0 8 * * 1-5" --cwd ~/work/news --dry-run   # 将要写入什么
+odw schedule add digest digest --cron "0 8 * * 1-5" --cwd ~/work/news             # 参数同 odw run：--args、--adapter、--config
+odw schedule list              # 每个定时任务的后端、上次运行、下次运行（本地时间）
+odw schedule run digest        # 立即按调度器的方式跑一次：退出码 0 = done（或被跳过）
+odw schedule remove digest     # 删除系统条目和定义
+```
+
+- odw 不常驻 daemon：`add` 写入 cron 标记块（Linux）、launchd agent（macOS），或在
+  `--backend systemd` 时写入用户级 timer，由它调用 `odw schedule run <name>`——上一次
+  运行未结束时跳过本次，每次运行向 `~/.local/state/odw/schedules/<name>.log` 追加一行，
+  并像普通运行一样触发 `notify` 钩子。
+- 添加时 workflow、适配器和配置必须能加载；表达式是 cron 的五个字段（`@daily`、`L`、`#`
+  会被拒绝）。
+- 定时运行遇到 `checkpoint()` 时，在得到答复前会挡住后续的运行：无人值守的检查点要设
+  `timeout`。
 
 ## 适配器
 
@@ -192,18 +234,20 @@ Codex、Claude Code、Gemini、Qwen、Kimi 开箱即用，无需配置。要换�
   工作——与 Claude Code 自带 Workflow 工具同语义。需要隔离时按 agent 传
   `isolation: "worktree"`：agent 获得一个一次性 **git worktree**（要求 source
   是有至少一次提交的 git 仓库；agent 看到的是 HEAD，不含未提交改动）。临时工作区
-  随后会被删除,改动不会自动合并。`agent()` 返回回复而非 diff；需要保留的交付物应放进
-  回复,或在清理前显式持久化。新 worktree 不含未跟踪文件：仓库根目录的 `.worktreeinclude`
+  随后会被删除,改动不会自动合并。`agent()` 返回回复而非 diff；运行会把 agent 的改动保存为
+  diff，供审阅和应用（`odw diff`、`odw apply`；ODW 扩展——见上文）。新 worktree 不含未跟踪文件：仓库根目录的 `.worktreeinclude`
   （gitignore 语法；`symlink: node_modules` 表示链接而非复制）会把 `.env` 等带进去，
   配置里的 `worktreeSetup` 命令会在 agent 启动前运行（均为 ODW 扩展）。
 - **端口**：每个 agent 进程都有唯一的 `$ODW_PORT`（以及 `$ODW_RUN_ID`、`$ODW_AGENT_ID`）——
-  让并行的 agent "在 `$ODW_PORT` 上启动开发服务器"，它们就不会冲突（ODW 扩展）。
+  让并行的 agent "在 `$ODW_PORT` 上启动开发服务器"，它们就不会冲突；并让它们在结束前停掉服务
+  （agent CLI 退出前可能会等待自己的后台命令）（ODW 扩展）。
 - **限流**：被限流的 CLI 会按退避时间重试（遵守它给出的 retry-after）；额度耗尽或登录失败
   不会重试——agent 会失败并说明该怎么做，`odw logs` 会写明原因。遇到额度耗尽，用
   `--adapter` 换一个适配器，而不是反复重试。
 - **成本**：并发有上限（默认 `min(16, cpu核数-2)`），单次运行总派发量有硬兜底；超出
   预期时用 `odw pause` / `odw stop`。
-- **结果**：引擎不会替你 commit、push 或应用 diff。先检视 `return` 值，再决定下一步。
+- **结果**：引擎不会替你 commit、push 或应用 diff。先检视 `return` 值，再决定下一步——对隔离
+  agent 而言，这包括审阅它们保存下来的 diff 并运行 `odw apply`。
 
 ## 常见错误
 
@@ -214,7 +258,10 @@ Codex、Claude Code、Gemini、Qwen、Kimi 开箱即用，无需配置。要换�
 | 将 `parallel`/`pipeline` 中所有失败等同处理 | 可恢复失败变 `null`；停止、预算耗尽和派发上限错误会中止。要求完整交付时须重试缺失结果或报告失败,仅允许部分结果时才过滤。 |
 | 按"哪个 agent 先跑完"来分支 | 破坏可复现性；归并要保持顺序无关。 |
 | 卡住或失败的运行从头重跑 | 用 `odw result <run> --agent <id>` 读出已完成的 agent；`odw stop`、修好脚本，再 `odw resume`——已完成的调用免费重放。 |
+| 运行结束后在自己的文件里找隔离 agent 的修改 | 它们以 diff 保存，不会自动合并：先 `odw diff <run> --stat`，再 `odw apply <run> --agent <id> --check`，然后 `odw apply`。 |
 | 用了 `validate()` 还指望脚本跑在 Claude Code 上 | `validate` 是 ODW 扩展，只能在 odw 上运行。 |
 | 用了 `exec()` 还指望脚本跑在 Claude Code 上 | `exec` 是 ODW 扩展，只能在 odw 上运行；`validate()` 会对此给出 warning。 |
 | 用了 `checkpoint()` 还指望脚本跑在 Claude Code 上 | `checkpoint` 是 ODW 扩展，只能在 odw 上运行；`validate()` 会对此给出 warning。 |
 | 看运行像是卡住了，就自己批准了检查点 | 等待中的检查点由用户决定：给用户看 `odw status $RUN`，只有用户明确同意后才运行 `odw approve`/`odw reject`。 |
+| 大规模扇出却不看它花了多少 | `odw status $RUN` 会显示运行到目前为止的 token 与花费，比 `fanOutWarn`（默认 25）更宽的 `parallel()`/`pipeline()` 会记一条警告（均为 ODW 扩展）。设了 `budget.total` 时按它决定扇出规模；`--budget` 限制输出 token。 |
+| 自己手写一条包着 `odw run` 的 cron 行 | `odw schedule add` 会带上防重叠锁、日志和固定的 `PATH` 写好它——且只在用户要求时使用：它会改动用户的 crontab 或 LaunchAgents。 |

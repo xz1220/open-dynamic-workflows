@@ -80,10 +80,11 @@ outright, never silently passed through as a string).
 | `exec(command, opts?)` | Run a command (tests, a build, a linter) without a model; resolves to `{ stdout, stderr, exitCode, signal, timedOut, truncated, durationMs }`. A string runs through the shell, an array as argv. **ODW extension** — not part of Claude Code's dialect. |
 | `checkpoint(title, opts?)` | Pause the run until a person approves or rejects; resolves to `{ approved, note, by }`. **ODW extension** — not part of Claude Code's dialect. |
 
-`opts` for `agent`: `{ adapter?, schema?, label?, phase?, model?, agentType?, isolation? }`.
+`opts` for `agent`: `{ adapter?, schema?, label?, phase?, model?, agentType?, isolation?, keep? }`.
 `adapter` picks the CLI; `schema` is a raw JSON Schema object (an option, not
 a global); `agentType` is a **persona** injected into the prompt — *not* an
-adapter name.
+adapter name. `keep: true` (**ODW extension**) also commits an isolated agent's
+change to a branch `odw/<runId>/<agentId>-<label>`.
 
 `opts` for `exec`: `{ cwd?, env?, timeout?, input?, maxOutputBytes?, label?, phase?, check? }`.
 It runs in the source directory by default, is killed after `timeout` seconds
@@ -128,7 +129,7 @@ For long runs, fire-and-poll instead of blocking yourself:
 
 ```bash
 RUN=$(odw run wf.js)        # prints a run id and returns immediately
-odw status $RUN             # state + agent count
+odw status $RUN             # state, agent count, tokens and cost
 odw logs $RUN --follow      # stream progress events
 odw result $RUN             # print the final value when done
 odw pause $RUN / resume $RUN / stop $RUN
@@ -171,6 +172,27 @@ odw resume $RUN --wait        # …a NEW run: unchanged agent() calls replay, on
 - Keep prompts deterministic — one built from `Date.now()` or `Math.random()`
   never matches, so it runs again.
 
+### Review and apply isolated agents' changes (ODW extension)
+
+An agent with `isolation: "worktree"` edits a throwaway worktree, never your
+files. Its change is kept with the run as a diff (`agents/<agentId>.diff`) —
+`agent()` still returns only the reply:
+
+```bash
+odw diff $RUN --stat                  # which agents changed which files, +/- lines
+odw diff $RUN --agent <id|label>      # one agent's diff — read it before applying
+odw apply $RUN --agent <id> --check   # would it apply here? which files would conflict?
+odw apply $RUN --agent <id>           # git apply --3way into this working tree (staged)
+```
+
+- Apply what the task calls for, one agent at a time, and tell the user what you
+  applied and what conflicted (exit 1: conflict markers to resolve). Run it inside
+  the repository the run worked on.
+- `odw apply` refuses while a path the diff touches has uncommitted changes —
+  commit or stash first; use `--force` only when the user agrees.
+- A diff cut at `maxDiffBytes` cannot be applied: use the agent's branch
+  (`keep: true`, or `"keepBranches": true` in the config).
+
 ### Human checkpoints (ODW extension)
 
 Add a `checkpoint()` only where a person's judgment is worth the wait: before
@@ -197,6 +219,31 @@ with Approve/Reject in the dashboard (`odw serve`).
 checkpoints detached (`RUN=$(odw run wf.js)`) and poll `odw status $RUN`, or
 bound the wait with `--wait --timeout <s>`. `odw resume` replays finished
 agents but asks every checkpoint again.
+
+### Schedule runs (ODW extension)
+
+Set up a recurring run only when the user asks for one: `odw schedule add`
+writes into their crontab, LaunchAgents or systemd user units. Show them the
+`--dry-run` output first.
+
+```bash
+odw schedule add digest digest --cron "0 8 * * 1-5" --cwd ~/work/news --dry-run   # what it would write
+odw schedule add digest digest --cron "0 8 * * 1-5" --cwd ~/work/news             # same flags as odw run: --args, --adapter, --config
+odw schedule list              # each schedule's backend, last run, next run (local time)
+odw schedule run digest        # run it now, as the scheduler will: exit 0 = done (or skipped)
+odw schedule remove digest     # delete the OS entry and the definition
+```
+
+- odw runs no daemon: `add` writes a cron block (Linux), a launchd agent
+  (macOS) or, with `--backend systemd`, a user timer that calls
+  `odw schedule run <name>` — which skips a start while the previous run is
+  still going, logs one line per run to
+  `~/.local/state/odw/schedules/<name>.log`, and fires the `notify` hooks like
+  any run.
+- The workflow, adapter and config must load when you add the schedule; the
+  expression is cron's five fields (`@daily`, `L`, `#` are refused).
+- A scheduled run that reaches a `checkpoint()` holds back the next ones until
+  it is answered: give unattended checkpoints a `timeout`.
 
 ## Adapters
 
@@ -229,15 +276,17 @@ without answering when headless (a login, trust or approval prompt).
   agent gets a throwaway **git worktree** (needs the source to be a git repo
   with at least one commit; the agent sees HEAD, not uncommitted edits).
   The temporary worktree is removed afterward and changes are not merged.
-  `agent()` returns the reply, not a diff; include required deliverables in the
-  reply or persist them explicitly before cleanup. A fresh worktree lacks
+  `agent()` returns the reply, not a diff; the run keeps the agent's change as
+  a diff to review and apply (`odw diff`, `odw apply`; ODW extensions — see
+  above). A fresh worktree lacks
   untracked files: a `.worktreeinclude` at the repository root (gitignore
   syntax; `symlink: node_modules` links instead of copying) brings in `.env`
   and the like, and a `worktreeSetup` command in the config runs before the
   agent (both ODW extensions).
 - **Ports**: every agent process gets a unique `$ODW_PORT` (with `$ODW_RUN_ID`
   and `$ODW_AGENT_ID`) — tell parallel agents "start the dev server on
-  `$ODW_PORT`" so they never collide (ODW extension).
+  `$ODW_PORT`" so they never collide, and to stop the server before finishing
+  (an agent CLI may wait for its background commands before exiting) (ODW extension).
 - **Rate limits**: a rate-limited CLI is retried after a backoff (honoring its
   retry-after); a spent quota or a failed login is not retried — the agent fails
   with what to do, and `odw logs` names the reason. Switch adapter with
@@ -246,7 +295,8 @@ without answering when headless (a login, trust or approval prompt).
   dispatches per run have a hard guard; use `odw pause` / `odw stop` when a
   run exceeds expectations.
 - **Results**: the engine never commits, pushes, or applies diffs for you.
-  Inspect the `return` value first, then decide the next step.
+  Inspect the `return` value first, then decide the next step — for isolated
+  agents, that includes reviewing their kept diffs and running `odw apply`.
 
 ## Common mistakes
 
@@ -257,7 +307,10 @@ without answering when headless (a login, trust or approval prompt).
 | Treating all failures in `parallel`/`pipeline` alike | Recoverable failures become `null`; stop, budget and dispatch-limit errors abort. Retry missing results or fail when every item is required; filter only when partial output is acceptable. |
 | Branching on which agent finished first | Breaks reproducibility; keep reductions order-independent. |
 | Re-running a stalled or failed run from scratch | Read finished agents with `odw result <run> --agent <id>`; `odw stop`, fix the script, then `odw resume` — finished calls replay for free. |
+| Looking for an isolated agent's edits in your files after the run | They are kept as diffs, not merged: `odw diff <run> --stat`, then `odw apply <run> --agent <id> --check` and `odw apply`. |
 | Using `validate()` and expecting the script to run on Claude Code | `validate` is an ODW extension and runs on odw only. |
 | Using `exec()` and expecting the script to run on Claude Code | `exec` is an ODW extension and runs on odw only; `validate()` warns about it. |
 | Using `checkpoint()` and expecting the script to run on Claude Code | `checkpoint` is an ODW extension and runs on odw only; `validate()` warns about it. |
 | Approving a checkpoint yourself because the run looks stuck | A waiting checkpoint is the user's decision: show them `odw status $RUN`, and run `odw approve`/`odw reject` only on their explicit say-so. |
+| Fanning out wide without watching what it spends | `odw status $RUN` shows the run's tokens and cost so far, and a `parallel()`/`pipeline()` wider than `fanOutWarn` (default 25) logs a warning (ODW extensions). Size fan-outs to `budget.total` when one is set; `--budget` caps output tokens. |
+| Hand-writing a cron line around `odw run` | `odw schedule add` writes it with an overlap lock, a log and a pinned `PATH` — and only on the user's request: it edits their crontab or LaunchAgents. |

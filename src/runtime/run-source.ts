@@ -61,6 +61,11 @@ export interface RunSource {
   /** One agent's saved result; null when it has none or the provider saves none. */
   agentResult(runId: string, agentId: number): AgentResultRecord | null;
   /**
+   * The file holding what an isolated agent changed, as a unified diff (ODW
+   * extension); null when it kept none, or the provider keeps none.
+   */
+  agentDiff(runId: string, agentId: number): string | null;
+  /**
    * Null when this source can pause/resume/stop a run; otherwise a human reason
    * the server returns (409) for any control attempt. Claude runs are read-only.
    */

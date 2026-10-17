@@ -34,14 +34,20 @@ declare global {
     model?: string;
     /** Prompt persona, not an adapter name or a loader for Claude roles, tools, permissions, or project subagent definitions. */
     agentType?: string;
-    /** Throwaway git worktree at HEAD (needs a committed repo; no uncommitted edits). Cleaned up without merging; agent() does not return its diff. */
+    /** Throwaway git worktree at HEAD (needs a committed repo; no uncommitted edits). Cleaned up without merging; agent() does not return its diff, but the run keeps it (`odw diff`, `odw apply`). */
     isolation?: "worktree";
+    /**
+     * ODW extension — Claude Code ignores it. With `isolation: "worktree"`, also commit the
+     * agent's change to a branch `odw/<runId>/<agentId>-<label>` of the source repository
+     * (HEAD and the index are never touched); `false` opts out of the `keepBranches` setting.
+     */
+    keep?: boolean;
   }
 
   interface Budget {
-    /** Estimated output-token dispatch target, or null; not an actual usage or billing ceiling. */
+    /** Output-token dispatch target, or null; not a billing ceiling. */
     total: number | null;
-    /** ceil(successful final-reply characters / 4), shared with children; excludes input, failures, and intermediate retries. */
+    /** Output tokens spent, shared with children: the CLI's count where it reports usage (built-in claude does), else ceil(reply characters / 4); every attempt counts. */
     spent(): number;
     /** `max(0, total - spent())`, or Infinity if no target. */
     remaining(): number;
@@ -53,7 +59,8 @@ declare global {
   /**
    * Run one coding agent; returns reply text or a validated JSON value, not a worktree diff.
    * Saved as soon as it completes; under `odw resume`, a call with the same prompt and
-   * options (phase aside) returns its saved value instead of running again.
+   * options (phase aside) returns its saved value instead of running again. What an isolated
+   * agent changed is kept with the run as a diff to review and apply (ODW extension).
    */
   function agent(prompt: string, opts?: AgentOptions): Promise<any>;
 
@@ -72,7 +79,7 @@ declare global {
   /** Emit a one-line progress message. */
   function log(message: unknown): void;
 
-  /** Estimated output budget; checked before each dispatch and schema retry — once spent, the run ends and running agents are stopped. */
+  /** Output-token budget; checked before each dispatch and schema retry — once spent, the run ends and running agents are stopped. */
   const budget: Budget;
 
   /** Inline child sharing scheduler, controls, and budget; only one level. scriptPath is relative to the run source. */
