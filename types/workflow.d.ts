@@ -10,7 +10,9 @@
  *
  * Adjust the path for your script. The script still ships as untyped `.js`.
  * These types describe ODW's authoring surface, not full Claude runtime parity;
- * scripts run as trusted JavaScript, without a sandbox or crash-result replay.
+ * scripts run as trusted JavaScript, without a sandbox. Each completed agent()
+ * result is saved with its run, and `odw resume` replays the unchanged calls of
+ * an ended run instead of running them again (an ODW CLI extension).
  */
 
 export {};
@@ -48,7 +50,11 @@ declare global {
   /** The workflow's input value, injected verbatim. */
   const args: unknown;
 
-  /** Run one coding agent; returns reply text or a validated JSON value, not a worktree diff. */
+  /**
+   * Run one coding agent; returns reply text or a validated JSON value, not a worktree diff.
+   * Saved as soon as it completes; under `odw resume`, a call with the same prompt and
+   * options (phase aside) returns its saved value instead of running again.
+   */
   function agent(prompt: string, opts?: AgentOptions): Promise<any>;
 
   /** Ordered barrier: recoverable failures become null; fatal stop/budget/dispatch-cap/configuration errors propagate after all thunks settle. */

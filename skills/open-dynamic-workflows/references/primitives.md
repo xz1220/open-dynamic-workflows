@@ -52,6 +52,13 @@ recoverable failures become `null`. Fatal errors — stop requests, exhausted
 estimated budgets, the total-agent cap, and invalid adapter/run configuration —
 propagate and terminate the run.
 
+Every call that completes is saved in its run directory
+(`agents/<agentId>.json`) before its `agent_finished` event, so a finished
+result survives a lane that hangs, a stop, or a dead worker. Read it while the
+run is still going with `odw result <run> --agent <id|label>`, or list them all
+with `odw agents <run>` (ODW extension). `odw resume` replays saved calls — see
+[resume](#resume-odw-extension).
+
 ## parallel
 
 ```js
@@ -160,6 +167,26 @@ hazards such as `Date.now()` and `Math.random()`; they do not block execution.
 This helper is not part of the shared core surface. A script's own `validate`
 binding takes precedence over the injected helper.
 
+## resume (ODW extension)
+
+`odw resume <run>` on an ended run — done, failed, stopped, or stale after its
+worker died — starts a new run with the same script, args and adapter. There,
+an `agent()` call **replays**: it returns the value the old run saved, at once,
+with no adapter call, concurrency slot, dispatch count or budget, when its
+*resume key* matches — the sha256 of its prompt plus its `schema`, `adapter`
+(as written in the call, not the run's default), `model`, `agentType`,
+`isolation` and `label`. `phase` is not part of the key, and `--adapter` on the
+resume changes only the default, so calls that name no adapter still replay.
+Calls with the same key replay in call order (the n-th such call gets the n-th
+saved result); a call past them, or one whose prompt or options changed, runs
+normally. Nested `workflow()` calls replay the same way.
+
+Replayed agents are marked `cached` (↺ in `odw agents` and the dashboard) and
+saved again, so a resume of a resume replays them too. Fix the failing step,
+or add steps, then resume: only what changed runs. On a paused live run,
+`odw resume` keeps its old meaning (continue in place); a still-running run is
+refused unless `--force`.
+
 ## schema
 
 A schema is a plain **JSON Schema object** passed to `agent`:
@@ -224,10 +251,10 @@ These are authoring guidelines, not a sandbox. ODW executes JavaScript with
 and shell access. Run only trusted scripts. Portability warnings do not prove
 that a script is safe or will run in another runtime.
 
-`odw resume` releases a paused live worker at the next dispatch boundary. It
-does not replay completed calls after a crash. `odw rerun` creates a new run
-from the recorded inputs and executes its work again; agent results are not
-journaled for crash recovery.
+Resume depends on the same rule: a call is matched by its prompt and options,
+in call order, so a prompt built from `Date.now()`/`Math.random()`, or a
+dispatch that depends on completion timing, does not match and runs again.
+`odw rerun` starts over without replaying anything.
 
 ## Limits
 

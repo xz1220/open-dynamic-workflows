@@ -253,7 +253,7 @@ private runtime behavior need the following checks before migration:
 | Budget | Estimates output tokens as `ceil(chars / 4)` over every reply, schema retries included (inputs and failed calls are not). The guard runs before each dispatch and each schema retry; once the target is spent the run ends and agents still running are stopped. |
 | JSON Schema | Supports the [documented subset](skills/open-dynamic-workflows/references/primitives.md#schema). Unknown constraints such as `$ref`, `const` and `oneOf` are not enforced. Use explicit object/array types and supported constraints. |
 | Script trust | Run trusted scripts only: a run executes the workflow body as ordinary JavaScript. Loading parses metadata as a pure literal without evaluating it; validation and compatibility warnings are not a sandbox. |
-| Recovery | `resume` continues a paused live worker. `rerun` starts over; completed calls are not journaled and replayed after a crash. |
+| Recovery | Every completed `agent()` result is saved as it lands. `odw resume` continues a paused live worker in place; on an ended run (done, failed, stopped, or stale after a crash) it starts a new run that replays each call whose prompt and options are unchanged and runs the rest. `rerun` starts over. See [Resume a run](#resume-a-run-odw-extension). |
 
 The supported primitive names do not guarantee full runtime parity.
 `validate(source)` is an ODW extension and must be removed when targeting a host
@@ -280,6 +280,7 @@ same command detaches and prints the run id, exactly as before (fire-and-poll):
 RUN=$(odw run wf.js)     # non-TTY: prints the run id and returns immediately
 odw attach $RUN          # live view (or plain lines when piped); --timeout <s> exits 124
 odw status $RUN          # state + agent count
+odw agents $RUN          # each agent and its saved result, mid-run too
 odw logs $RUN --follow   # stream raw progress events
 odw result $RUN          # final value
 odw pause|resume|stop $RUN
@@ -310,6 +311,43 @@ odw serve --port 8080 --host 0.0.0.0    # custom port / bind address
 
 ![odw serve — a live deep-research run: five phase lanes (Plan → Search → Extract → Vote → Report) drawn as a graph, running agents tracing signal along their edges, per-run counters and a phase stepper](assets/odw-dashboard.gif)
 
+### Resume a run (ODW extension)
+
+Each `agent()` result is saved to the run directory (`agents/<agentId>.json`)
+the moment that agent finishes — before its `agent_finished` event — so a lane
+that hangs, a stop, or a dead worker never costs you the work already done. Read
+it while the rest of the run is still going:
+
+```bash
+odw agents $RUN              # every agent: id, state, label, phase, adapter, time, ↺ replayed, value preview
+odw agents $RUN --json       # the same rows for scripts
+odw result $RUN --agent 3    # one agent's saved value as JSON (by id, or --agent <label>)
+odw resume $RUN              # a new run that replays every unchanged agent() call (below)
+```
+
+`odw resume <run_id>` acts on the run's state:
+
+- **paused** (its worker alive): it continues in place — the
+  `odw pause|resume|stop` control verb is unchanged;
+- **ended** — done, failed, stopped, or stale (the worker died): it starts a
+  **new run** with the same script, args and adapter (recorded as `resumedFrom`
+  in its `meta.json`). Every `agent()` call whose prompt and options are
+  unchanged returns its saved value at once — no adapter call, no concurrency
+  slot, no dispatch count, no budget — and is marked replayed (↺) in the events,
+  `odw agents` and the dashboard. Edited and new calls run normally, so fix the
+  failing step and resume instead of paying for the whole run again. Resumes
+  chain: a resume of a resume replays both;
+- **still running**: refused, since it would redo the work in flight — stop it
+  first, or pass `--force` to start the replaying run alongside.
+
+A call matches by the sha256 of its prompt, `schema`, `adapter` (as written in
+the call — `--adapter` on the resume switches only the default, so calls that
+name none still replay), `model`, `agentType`, `isolation` and `label`;
+`phase` is left out. Identical calls replay in call order, so keep prompts
+deterministic. Resume takes rerun's flags: `--wait`/`--fg`/`-d`/`--timeout`,
+`--adapter`, `--config`, `--runs-root`. The dashboard serves the same records:
+`GET /api/runs/:id/agents` and `GET /api/runs/:id/agents/:agentId`.
+
 ## Dashboard: observe, inspect, chat
 
 The dashboard reads like a printed sheet — paper, ink and one signal colour — and
@@ -322,7 +360,8 @@ switches to a night theme on demand. What it gives you:
 - **A run** — the graph (fan-outs fan, reduces funnel; edges draw in and carry a
   marching signal while their agent runs; zoom, fit and pan), a **timeline** that
   shows where the time went, filterable **logs** with follow, the **result** as a
-  collapsible JSON tree, and an **agent drawer** with each finished agent's own output.
+  collapsible JSON tree, and an **agent drawer** with each finished agent's own output
+  — saved as it lands, so it is there mid-run; replayed agents are marked ↺.
 - **Workspace** — every saved workflow with a static outline of its phases and the
   primitives each one calls, its source, and its recent runs.
 - **Chat Host** — ordinary Codex conversation; mention ODW or workflow and the turn
@@ -542,6 +581,12 @@ starting. Waiting commands detect a vanished worker instead of waiting forever.
 Upgrades keep the binary and skill on the same release and roll back replacement
 failures; source builds now report their revision.
 
+**Next (unreleased):** every finished agent's result is **saved as it lands** —
+`odw agents`, `odw result --agent` and the dashboard read it mid-run — and
+`odw resume` turns an ended run into a new one that **replays** every unchanged
+`agent()` call, so a stalled or failed run no longer starts over
+([#24](https://github.com/xz1220/open-dynamic-workflows/issues/24)).
+
 **What's new (unreleased, on `main`):** `odw run` now attaches a **live
 foreground view** in interactive terminals — Ctrl-C detaches, `odw attach`
 re-attaches, and pipes/CI keep the fire-and-poll contract. First-run
@@ -573,7 +618,7 @@ runs end-to-end (plan → search → extract → vote → report).
 ### Roadmap (v1.5+)
 
 `model` / `agentType` rich routing · adapter-reported
-token usage (today's budget meters an estimate) · resume / journaling · a
+token usage (today's budget meters an estimate) · a
 `Date.now`/`Math.random` sandbox for replay-determinism. Full plan:
 [`docs/dynamic-workflows-tech-plan.md`](docs/dynamic-workflows-tech-plan.md).
 Background on the Claude Code dialect ODW aligns with:

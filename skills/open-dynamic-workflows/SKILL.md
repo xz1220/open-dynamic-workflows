@@ -117,6 +117,31 @@ Saved workflows run by name (`odw run <name>`); lookup order:
 `.odw/workflows`, `.claude/workflows`, `~/.odw/workflows`,
 `~/.claude/workflows`.
 
+### Recover a stalled or failed run (ODW extension)
+
+Every `agent()` result is saved the moment that agent finishes, so a hung
+lane, a stop, or a dead worker never loses the work already done. Don't wait
+on a stuck run or start it over:
+
+```bash
+odw agents $RUN               # each agent: state, label, phase, time, value preview (↺ = replayed)
+odw result $RUN --agent 3     # one finished agent's value as JSON (id or label) — works mid-run
+odw stop $RUN                 # give up on the hung lane, then…
+odw resume $RUN --wait        # …a NEW run: unchanged agent() calls replay, only the rest run
+```
+
+- `odw result --agent` salvages partial results while the run is still going.
+- `odw resume` on an ended run (done, failed, stopped, or stale) starts a new
+  run with the same script, args and adapter. A call whose prompt and options
+  are unchanged (phase aside) returns its saved value for free — no adapter
+  call, slot or budget. Edit the script first to fix the failing step: only
+  edited and new calls run. `--adapter <name>` switches the default CLI; calls
+  that named no adapter still replay.
+- On a *paused* run, `odw resume` just continues it in place. A run that is
+  still running is refused: `odw stop` it first (or pass `--force`).
+- Keep prompts deterministic — one built from `Date.now()` or `Math.random()`
+  never matches, so it runs again.
+
 ## Adapters
 
 Codex, Claude Code, Gemini, Qwen, and Kimi work out of the box with no
@@ -158,4 +183,5 @@ which vendor's CLI (and whose quota/permissions) every bare `agent()` call uses.
 | Variables, spreads, or function calls inside `meta` | `meta` must be a pure literal. |
 | Treating all failures in `parallel`/`pipeline` alike | Recoverable failures become `null`; stop, budget and dispatch-limit errors abort. Retry missing results or fail when every item is required; filter only when partial output is acceptable. |
 | Branching on which agent finished first | Breaks reproducibility; keep reductions order-independent. |
+| Re-running a stalled or failed run from scratch | Read finished agents with `odw result <run> --agent <id>`; `odw stop`, fix the script, then `odw resume` — finished calls replay for free. |
 | Using `validate()` and expecting the script to run on Claude Code | `validate` is an ODW extension and runs on odw only. |
