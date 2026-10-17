@@ -140,6 +140,7 @@ test("renderDiff stops at its line budget and folds lock files and deletions", (
   assert.equal((html.match(/<tr class="add">/g) ?? []).length, 50, "no more rows than the budget");
   assert.match(html, /20 more lines in this file are not shown/);
   assert.match(html, /1 more files are not drawn here — the full diff: <code>odw diff RUN --agent 3<\/code>/);
+  assert.match(html, /<details class="dfile" data-file="3">/, "a file past the budget is listed, folded");
 });
 
 test("diffBar splits five cells and always shows a side that changed", () => {

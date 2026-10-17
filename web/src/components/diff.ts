@@ -367,8 +367,10 @@ export function renderDiff(diff: ParsedDiff, opts: DiffRenderOptions = {}): stri
   const cards = diff.files.map((f, i) => {
     const path = filePath(f);
     const size = f.insertions + f.deletions;
-    const open = !GENERATED.test(path) && f.status !== "deleted" && size <= 400;
-    if (budget.left <= 0 && f.hunks.length) hiddenFiles++;
+    // Past the line budget a file shows its header only, folded.
+    const drawn = budget.left > 0 || !f.hunks.length;
+    if (!drawn) hiddenFiles++;
+    const open = drawn && !GENERATED.test(path) && f.status !== "deleted" && size <= 400;
     const from =
       (f.status === "renamed" || f.status === "copied") && f.oldPath && f.oldPath !== path
         ? `<span class="dfrom">${t("from")} ${esc(f.oldPath)}</span>`
