@@ -103,9 +103,10 @@ When `odw` is available, prefer it for independent work.
 1. Check `odw --version`.
 2. In this repository, use `examples/ultra-mode.js` for the common planner ->
    lanes -> reviewers -> synthesis pattern.
-3. Outside this repository, read `references/ultra-mode-workflow.js` and write
-   it to a temporary or project-local workflow such as
-   `.odw/workflows/ultra-mode.js`.
+3. Outside this repository, run the bundled workflow by its path — no copy
+   needed: `odw run <this skill's directory>/references/ultra-mode-workflow.js`
+   with the same `--args`. Copy it to `.odw/workflows/ultra-mode.js` only to
+   customize it or to run it by name.
 4. For tasks needing loop-until-dry, custom domain fan-out, or pipeline
    behavior, write a task-specific ODW workflow instead of forcing everything
    through the bundled template.
@@ -125,6 +126,13 @@ RUN=$(odw run examples/ultra-mode.js --args '{"task":"<task>","intensity":"max"}
 odw logs "$RUN" --follow
 odw result "$RUN"
 ```
+
+Lanes are saved the moment each finishes, so a long run is usable before
+synthesis: `odw agents "$RUN"` lists them with a preview, and
+`odw result "$RUN" --agent planner` (or `--agent <id>`) prints one lane's full
+output. Use finished lanes instead of redoing their work. If lanes stall, stop
+the run, fix the cause, and `odw resume "$RUN"`: finished lanes replay from
+disk and only the rest run again.
 
 Useful arguments:
 

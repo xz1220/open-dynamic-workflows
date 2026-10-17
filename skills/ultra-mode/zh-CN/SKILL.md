@@ -72,8 +72,10 @@ Ultracode 是一种行为模式，不绑定某个具体工具。激活后，只�
 
 1. 先检查 `odw --version`。
 2. 在本仓库里，常规“规划者 -> 多分支 -> 评审者 -> 综合”用 `examples/ultra-mode.js`。
-3. 离开本仓库时，读取 `../references/ultra-mode-workflow.js`，写入临时或项目本地 workflow，
-   例如 `.odw/workflows/ultra-mode.js`。
+3. 离开本仓库时，直接按路径运行随 skill 附带的 workflow，无需复制：
+   `odw run <skill 根目录>/references/ultra-mode-workflow.js`（即本文件上一级的 `references/`），
+   `--args` 不变。只有想定制它，
+   或想按名字运行时，才复制到 `.odw/workflows/ultra-mode.js`。
 4. 如果任务需要挖到干为止、自定义领域 fan-out 或 pipeline，不要硬塞进内置模板；
    写一个任务专用 ODW workflow。
 5. 检查返回的 `final`、`lanes`、`reviews`，把它们视为辅助素材。真实编辑、测试、提交和最终判断
@@ -92,6 +94,11 @@ RUN=$(odw run examples/ultra-mode.js --args '{"task":"<任务>","intensity":"max
 odw logs "$RUN" --follow
 odw result "$RUN"
 ```
+
+每条分支一完成就会落盘，所以长运行在综合之前就能用：`odw agents "$RUN"` 列出已完成的分支和
+预览，`odw result "$RUN" --agent planner`（或 `--agent <id>`）输出某一条分支的完整结果。直接
+使用已完成的分支，不要重做它们的工作。如果分支卡住，先停止运行、修好原因，再
+`odw resume "$RUN"`：已完成的分支从磁盘重放，只有其余部分会重新执行。
 
 常用参数：
 
