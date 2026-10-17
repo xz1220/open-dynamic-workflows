@@ -256,24 +256,25 @@ async function wait(
     : untilAborted(asked.signal);
   answered.catch(() => {}); // a timeout ends the wait on purpose: never an unhandled rejection
 
-  const requested = event(CHECKPOINT_REQUESTED, {
-    checkpointId,
-    title,
-    payload: cp.payload,
-    ...(cp.truncated ? { truncated: true } : {}),
-    phase: cp.phase,
-  });
-  ctx.emit(requested);
-  const waiting: WaitingCheckpoint = { checkpointId, title, since: requested.ts };
-  report(ctx, waiting, true);
-
+  let waiting: WaitingCheckpoint | undefined;
   let timer: NodeJS.Timeout | undefined;
-  const timedOut = new Promise<"timeout">((resolve) => {
-    if (cp.timeoutMs !== null) timer = setTimeout(() => resolve("timeout"), cp.timeoutMs);
-  });
   const resolved = (fields: Record<string, unknown>): void =>
     ctx.emit(event(CHECKPOINT_RESOLVED, { checkpointId, ...fields }));
   try {
+    const requested = event(CHECKPOINT_REQUESTED, {
+      checkpointId,
+      title,
+      payload: cp.payload,
+      ...(cp.truncated ? { truncated: true } : {}),
+      phase: cp.phase,
+    });
+    ctx.emit(requested);
+    waiting = { checkpointId, title, since: requested.ts };
+    report(ctx, waiting, true);
+
+    const timedOut = new Promise<"timeout">((resolve) => {
+      if (cp.timeoutMs !== null) timer = setTimeout(() => resolve("timeout"), cp.timeoutMs);
+    });
     let outcome: CheckpointDecision | "timeout";
     try {
       outcome = await Promise.race([answered, timedOut]);
@@ -288,7 +289,6 @@ async function wait(
       resolved({ ...result });
       return result;
     }
-    asked.abort(new Error("timed out")); // stop listening for an answer
     if (cp.onTimeout === "fail") {
       const message = `checkpoint #${checkpointId} '${title}' got no answer within ${cp.timeout}s`;
       resolved({ approved: false, note: null, by: "timeout", error: message });
@@ -300,7 +300,10 @@ async function wait(
   } finally {
     clearTimeout(timer);
     signal.removeEventListener("abort", onRunAbort);
-    report(ctx, waiting, false);
+    // However the wait ended — a timeout, or an event that could not be
+    // written — stop listening for an answer (a no-op once one arrived).
+    asked.abort(new Error("the checkpoint is no longer waiting"));
+    if (waiting) report(ctx, waiting, false);
   }
 }
 

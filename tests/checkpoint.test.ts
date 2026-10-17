@@ -173,6 +173,18 @@ test("parallel checkpoints wait side by side; an answer without an id goes to th
   assert.equal(control.decide({ action: "approve" }), false, "nothing waits any more");
 });
 
+test("a checkpoint whose question cannot be recorded stops listening for an answer", async () => {
+  const control = new MemoryControl();
+  const sink = {
+    emit(ev: WorkflowEvent): void {
+      if (ev.type === "checkpoint_requested") throw new Error("ENOSPC: no space left on device");
+    },
+  };
+  const prims = createPrimitives(buildContext(defaultConfig(), { control, sink }));
+  await assert.rejects(prims.checkpoint("Go?"), /ENOSPC/);
+  assert.deepEqual(control.waiting(), [], "no answer channel left open (it would keep a worker polling)");
+});
+
 test("without a decision channel a checkpoint needs a timeout", async () => {
   const ctx = buildContext(defaultConfig(), { control: new NullControl() });
   const prims = createPrimitives(ctx);
