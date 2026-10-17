@@ -36,7 +36,9 @@ agent(prompt, opts?) -> Promise<unknown>
   就是 source 目录本身）。要求 source 是有提交的 git 仓库；agent 看到 HEAD，不包含
   未提交改动。调用结束后清理 worktree，不把改动合入 source。`agent()` 只返回回复，
   不返回 diff 或可保留的 worktree 路径；需要保留的交付物应进入回复，或显式保存到临时
-  worktree 之外。
+  worktree 之外。agent 启动前，`.worktreeinclude` 会补上检出缺少的文件（`.env`、
+  `node_modules` 等），然后运行 `worktreeSetup`——见
+  [隔离 worktree](#隔离-worktree-与-agent-环境)。
 
 返回回复文本，设了 `schema` 则返回校验过的 JSON 值。CLI 出错或 schema 重试耗尽会抛错；
 这些可恢复失败在 `parallel`/`pipeline` 内变成 `null`。停止请求、估算预算耗尽和 agent
@@ -142,7 +144,7 @@ agent 计数、控制和估算预算。其 phase 带 `▸ <name>` 前缀，不�
 
 `validate(source)` 加载候选工作流但不执行其 body，返回 `{ ok, meta?, errors, warnings }`。
 加载时 `meta` 按纯字面量解析、从不求值，body 只编译不执行。
-warnings 提示 `Date.now()`、`Math.random()`、调用仅 ODW 提供的 `exec()` 等部分可移植性风险，
+warnings 提示 `Date.now()`、`Math.random()`、调用仅 ODW 提供的 `exec()` 和 `checkpoint()` 等部分可移植性风险，
 不阻止执行。这个 helper
 不属于共享的核心原语；脚本自己声明的 `validate` 绑定优先于注入的 helper。
 
@@ -156,7 +158,7 @@ warnings 提示 `Date.now()`、`Math.random()`、调用仅 ODW 提供的 `exec()
 `isolation` 和 `label` 的 sha256。`phase` 不在键里；resume 时的 `--adapter` 只改默认值，
 所以没指定 adapter 的调用仍会重放。同一个键的多次调用按调用顺序重放（第 n 次这样的调用
 拿到第 n 个保存的结果）；超出的调用，以及 prompt 或选项改变的调用，照常执行。嵌套的
-`workflow()` 调用同样会重放。
+`workflow()` 调用同样会重放。`checkpoint()` 永远不会重放：恢复出来的运行会重新提问。
 
 重放的 agent 在各处都标记为 `cached`（`odw agents` 和看板里显示 ↺），并会再次保存，
 所以对 resume 出来的运行再 resume，也会重放它们。修好出错的步骤或加上新步骤后 resume：
@@ -178,7 +180,7 @@ Claude Code 的 Workflow 工具没有 `exec` 全局（`validate()` 会对此给�
   Windows 上，`npm` 这类批处理文件只能经 shell 运行：请用字符串形式。
 - **opts.cwd** —— 工作目录。默认是本次运行的源目录（agent 运行的地方）；相对路径按它
   解析。
-- **opts.env** —— 额外的环境变量，叠加在 worker 自身环境之上。
+- **opts.env** —— 额外的环境变量，叠加在 worker 自身环境和本次运行的 `ODW_RUN_ID` 之上。
 - **opts.input** —— 写入 stdin 的文本；不传则 stdin 立即关闭。
 - **opts.timeout** —— 秒，默认 `600`。超时后命令连同它启动的所有进程一起被杀，结果里
   `timedOut: true`（同时 `exitCode: null`、`signal: "SIGKILL"`）。
@@ -210,6 +212,96 @@ await exec(['git', 'diff', '--stat'], { check: true }) // 退出码不为 0 时�
 
 命令以 worker 自身的权限运行——与脚本本身同等的信任；`exec` 不提供沙箱。ODW 仓库里的
 `examples/test-fix-loop.js` 就是这个循环的完整 workflow。
+
+## checkpoint（ODW 扩展）
+
+```js
+checkpoint(title, opts?) -> Promise<{ approved, note, by }>
+```
+
+暂停运行，直到有人批准或拒绝——用在昂贵或难以撤销的步骤之前，或让人确认一份计划。它
+不可移植：Claude Code 的 workflow 运行中不接受输入，也没有 `checkpoint` 全局
+（`validate()` 会对此给出 warning）；脚本自己声明的 `checkpoint` 绑定优先于注入的版本。
+
+- **title** —— 问题，单行（空白会被合并；事件、`status.json` 和看板保留 200 个字符）。
+- **opts.payload** —— 要给人看的内容：任意 JSON 值。它会被转成 JSON 安全的形式（BigInt
+  变成数字字符串，循环引用变成 `"[Circular]"`），最多保留 64 KiB；更大的只保留开头一段
+  文本，事件里会标注 `truncated`。
+- **opts.timeout** —— 等待的秒数；默认不限。
+- **opts.onTimeout** —— 无人回答时的含义：`"approve"` 或 `"reject"` 以 `by: "timeout"`
+  返回；`"fail"`（默认）抛出 `CheckpointTimeout`——与 agent 失败一样可恢复：可以 catch，
+  也可以交给 `parallel`/`pipeline` 变成 `null`。
+
+调用返回 `{ approved, note, by }`：`note` 是对方的附言或 `null`；`by` 是 `"cli"`
+（`odw approve|reject`）、`"dashboard"`（`odw serve`）或 `"timeout"`。拒绝也是一个答复，
+不是错误：它意味着什么由脚本决定——停止、带着附言重新规划、跳过某一步。
+
+等待不是工作：检查点不占并发槽位，不计入 agent 总量上限和预算，运行暂停时也照样提问；
+已在运行的 agent 继续运行。停止（或任何致命错误）会立刻结束等待，运行也随之结束。多个
+检查点可以同时等待（在 `parallel` 里），按调用顺序编号（`checkpointId`，从 1 开始）。
+误用（空标题、非正数的 timeout）会在提问之前就抛错。
+
+等待期间，运行的展示状态是 `waiting`：`odw status` 会显示问题、payload，以及确切的
+`odw approve|reject <run> --checkpoint N` 命令，看板则显示一张 Approve/Reject 卡片。
+不带 `--checkpoint` 的答复会交给最早在等待的检查点。每个检查点都记录为
+`checkpoint_requested { checkpointId, title, payload, phase }`，随后恰好一个
+`checkpoint_resolved { checkpointId, approved, note, by }`（运行先结束时带 `error`，且
+`by: null`）。`odw resume` 永远不会重放检查点：恢复出来的运行会重新提问。
+
+```js
+phase('Plan')
+const plan = await agent(`Plan this as independent steps: ${task}`, { schema: PLAN })
+phase('Approve')
+const { approved, note } = await checkpoint(`Run this ${plan.steps.length}-step plan?`, {
+  payload: plan,
+  timeout: 3600,
+  onTimeout: 'reject', // 一小时内没人回答：什么都不改
+})
+if (!approved) return { approved, note, plan }
+phase('Execute')
+await parallel(plan.steps.map((step) => () => agent(step.instructions)))
+```
+
+ODW 仓库里的 `examples/plan-approve-execute.js` 就是这个流程的完整 workflow，附带说明
+的拒绝会触发重新规划。
+
+## 隔离 worktree 与 agent 环境
+
+隔离的 agent（`isolation: "worktree"`）从 HEAD 的干净检出开始，所以 git 不跟踪的东西——
+`.env`、`.venv`、`node_modules`——在那里都不存在。agent 启动前分两步把 worktree 准备好：
+
+1. **`.worktreeinclude`**：放在仓库根目录，用 `.gitignore` 语法（模式相对根目录，`#`
+   注释，`!` 取反）列出要带进来的东西：git 不跟踪、且被某一行匹配到的每个文件或目录，都会
+   复制进 worktree。Claude Code 也读这个文件，但只复制被 gitignore 的文件；ODW 连单纯
+   未跟踪的文件也复制。以 `symlink:` 开头的行（**ODW 扩展**）把匹配到的东西链接到源目录
+   而不是复制——对大目录（`symlink: node_modules`）瞬间完成，但它是共享的：agent 往里写
+   的东西会落到源目录。`.git` 永远不复制；超过 100 MB 的文件会被跳过，并在日志里点名。
+2. **`worktreeSetup`**（**ODW 扩展**；见适配器参考）在 agent 的工作区里运行——字符串
+   交给平台 shell，数组作为 argv——超过 `worktreeSetupTimeout` 秒（默认 600）就被杀掉。
+   setup 失败或超时，会像 CLI 出错一样让这个 agent 失败（可恢复：在 `parallel`/`pipeline`
+   里变成 `null`），错误里带着它输出的结尾。
+
+一次调用的每次尝试（schema 重试、卡死重启）都会得到一个新的 worktree，并以同样方式准备。
+
+每个 agent 进程——不论是否隔离——都会拿到三个变量（**ODW 扩展**）：
+
+| 变量 | 值 |
+| --- | --- |
+| `ODW_RUN_ID` | 本次运行的 id |
+| `ODW_AGENT_ID` | 这个 agent 的 id，与它的事件和 `odw agents` 里的一致 |
+| `ODW_PORT` | 来自 `portRange`（默认 41000–41999）的一个端口，本次运行中没有其他正在运行的 agent 占用它——已经有程序在监听的端口会被跳过——直到这次调用结束都归它所有 |
+
+这样并行的 agent 各自起服务也不会冲突：
+
+```js
+await parallel(['grid', 'list'].map((layout) => () =>
+  agent(`Build the ${layout} layout, start the dev server on port $ODW_PORT and check that the page renders.`,
+    { isolation: 'worktree', label: layout })))
+```
+
+当本次运行中正在运行的 agent 占满了整个端口范围，下一个 agent 就不带 `ODW_PORT` 运行，
+运行日志会说明这一点：请让 `portRange` 比 `concurrency` 更宽。worktree setup 拿到同样的
+三个变量；`exec()` 命令拿到 `ODW_RUN_ID`。
 
 ## schema
 
@@ -282,3 +374,4 @@ resume 依赖同一条规则：调用按 prompt 和选项、按调用顺序匹�
   bug 的循环不会无限扇出。
 - `exec()` 命令不计入以上任何一项限制；每条命令由它自己的 `timeout` 和
   `maxOutputBytes` 约束。
+- 等待中的 `checkpoint()` 同样不计入任何一项限制；如果设了 `timeout`，等待时长由它限定。

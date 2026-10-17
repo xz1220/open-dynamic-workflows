@@ -22,12 +22,15 @@ import { dirname, join } from "node:path";
 import { AdapterNotFound, ConfigError } from "../errors.js";
 import { BUILTIN_ADAPTERS, DEFAULT_SETTINGS, type RawAdapter } from "./builtin.js";
 import { isOnPath } from "./executable.js";
+import { CONFIGURABLE_REASONS } from "./failures.js";
 import type {
   Adapter,
+  AdapterFailures,
   AdapterFlags,
   AdapterOutput,
   Config,
   NotifySettings,
+  NotifyTrigger,
   RunEndState,
   Settings,
 } from "./types.js";
@@ -36,6 +39,9 @@ export const CONFIG_ENV_VAR = "ODW_CONFIG";
 
 /** Every terminal run state, in display order: what `notify.on` defaults to. */
 export const RUN_END_STATES: readonly RunEndState[] = ["done", "failed", "stopped"];
+
+/** Everything `notify.on` may list: the terminal states, and the opt-in "waiting" (a checkpoint() waits). */
+export const NOTIFY_TRIGGERS: readonly NotifyTrigger[] = [...RUN_END_STATES, "waiting"];
 
 /**
  * Load configuration, merging any discovered file over the built-ins.
@@ -71,15 +77,20 @@ const KNOWN_TOP_KEYS = [
   "timeout",
   "stallTimeout",
   "stallRestarts",
+  "transientRetries",
+  "maxBackoff",
   "schemaRetries",
   "runsRoot",
   "workflowsRoot",
   "claudeWorkflowsRoot",
   "claudeJobsScope",
   "notify",
+  "worktreeSetup",
+  "worktreeSetupTimeout",
+  "portRange",
 ] as const;
 
-const KNOWN_ADAPTER_KEYS = ["command", "stdin", "env", "timeout", "stallTimeout", "label", "flags", "output"] as const;
+const KNOWN_ADAPTER_KEYS = ["command", "stdin", "env", "timeout", "stallTimeout", "label", "flags", "output", "failures"] as const;
 
 const KNOWN_NOTIFY_KEYS = ["command", "webhook", "on"] as const;
 
@@ -488,7 +499,42 @@ function buildAdapter(name: string, spec: RawAdapter): Adapter {
   if (spec.label !== undefined) adapter.label = spec.label;
   if (spec.flags !== undefined) adapter.flags = buildFlags(name, spec.flags);
   if (spec.output !== undefined) adapter.output = buildOutput(name, spec.output);
+  if (spec.failures != null) adapter.failures = buildFailures(name, spec.failures);
   return adapter;
+}
+
+/**
+ * Validate an adapter's own failure wording: per class, a list of regular
+ * expressions (matched case-insensitively). A typo'd class or a pattern that
+ * does not compile fails the load: it would otherwise never match, silently.
+ */
+function buildFailures(name: string, raw: unknown): AdapterFailures {
+  if (!isObject(raw)) {
+    throw new ConfigError(`adapter '${name}' 'failures' must be an object of regular-expression lists`);
+  }
+  const out: AdapterFailures = {};
+  for (const [key, value] of Object.entries(raw)) {
+    if (key.startsWith("$") || key.startsWith("//")) continue; // comment conventions
+    if (!(CONFIGURABLE_REASONS as readonly string[]).includes(key)) {
+      throw new ConfigError(
+        `adapter '${name}' 'failures' may set ${CONFIGURABLE_REASONS.map((k) => `"${k}"`).join(", ")}; got "${key}"`,
+      );
+    }
+    if (!Array.isArray(value) || !value.every((p) => typeof p === "string" && p.length > 0)) {
+      throw new ConfigError(`adapter '${name}' 'failures.${key}' must be an array of non-empty regular-expression strings`);
+    }
+    for (const source of value as string[]) {
+      try {
+        new RegExp(source, "i");
+      } catch (err) {
+        throw new ConfigError(
+          `adapter '${name}' 'failures.${key}' has an invalid regular expression ${JSON.stringify(source)}: ${(err as Error).message}`,
+        );
+      }
+    }
+    out[key as keyof AdapterFailures] = [...(value as string[])];
+  }
+  return out;
 }
 
 /** Validate and normalise an adapter's capability declaration. */
@@ -595,6 +641,14 @@ function buildSettings(raw: Record<string, unknown>): Settings {
       min: 0,
       integer: true,
     }),
+    transientRetries: num("transientRetries", DEFAULT_SETTINGS.transientRetries, "a non-negative integer", {
+      min: 0,
+      integer: true,
+    }),
+    maxBackoff: num("maxBackoff", DEFAULT_SETTINGS.maxBackoff, "a positive number of seconds", {
+      min: 0,
+      exclusiveMin: true,
+    }),
     schemaRetries: num("schemaRetries", DEFAULT_SETTINGS.schemaRetries, "a non-negative integer", {
       min: 0,
       integer: true,
@@ -605,7 +659,36 @@ function buildSettings(raw: Record<string, unknown>): Settings {
     // Only "project" narrows; anything else (incl. null/garbage) keeps the "all" default.
     claudeJobsScope: raw["claudeJobsScope"] === "project" ? "project" : DEFAULT_SETTINGS.claudeJobsScope,
     notify: raw["notify"] == null ? DEFAULT_SETTINGS.notify : buildNotify(raw["notify"]),
+    worktreeSetup: raw["worktreeSetup"] == null ? DEFAULT_SETTINGS.worktreeSetup : buildWorktreeSetup(raw["worktreeSetup"]),
+    worktreeSetupTimeout: num("worktreeSetupTimeout", DEFAULT_SETTINGS.worktreeSetupTimeout, "a positive number of seconds", {
+      min: 0,
+      exclusiveMin: true,
+    }),
+    portRange: raw["portRange"] == null ? [...DEFAULT_SETTINGS.portRange] : buildPortRange(raw["portRange"]),
   };
+}
+
+/** Validate `worktreeSetup`: a command line for the shell, or an argv run without one. */
+function buildWorktreeSetup(raw: unknown): string | string[] {
+  if (typeof raw === "string" && raw.trim()) return raw;
+  if (Array.isArray(raw) && raw.every((part) => typeof part === "string") && raw[0]) return [...(raw as string[])];
+  // The kind only: a setup command may carry a token.
+  throw new ConfigError(
+    `"worktreeSetup" must be a command string (run by the platform shell) or a non-empty array of strings ` +
+      `(an argv, run without a shell); got ${kindOf(raw)}`,
+  );
+}
+
+/** Validate `portRange`: `[first, last]`, two whole port numbers with first <= last. */
+function buildPortRange(raw: unknown): [number, number] {
+  const port = (value: unknown): value is number =>
+    typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= 65535;
+  if (Array.isArray(raw) && raw.length === 2 && port(raw[0]) && port(raw[1]) && raw[0] <= raw[1]) {
+    return [raw[0], raw[1]];
+  }
+  throw new ConfigError(
+    `"portRange" must be [first, last]: two whole port numbers from 1 to 65535, first <= last; got ${JSON.stringify(raw)}`,
+  );
 }
 
 /**
@@ -628,10 +711,12 @@ function buildNotify(raw: unknown): NotifySettings {
   }
   if (webhook != null) notify.webhook = buildWebhook(webhook);
   if (on != null) {
-    if (!Array.isArray(on) || !on.every((state) => (RUN_END_STATES as readonly unknown[]).includes(state))) {
-      throw new ConfigError(`"notify.on" must be a list of "done", "failed", "stopped"; got ${JSON.stringify(on)}`);
+    if (!Array.isArray(on) || !on.every((trigger) => (NOTIFY_TRIGGERS as readonly unknown[]).includes(trigger))) {
+      throw new ConfigError(
+        `"notify.on" must be a list of "done", "failed", "stopped", "waiting"; got ${JSON.stringify(on)}`,
+      );
     }
-    notify.on = RUN_END_STATES.filter((state) => on.includes(state));
+    notify.on = NOTIFY_TRIGGERS.filter((trigger) => on.includes(trigger));
   }
   return notify;
 }

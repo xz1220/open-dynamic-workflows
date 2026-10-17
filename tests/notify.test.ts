@@ -56,7 +56,8 @@ async function receiver(respond: (req: IncomingMessage, res: ServerResponse) => 
   };
 }
 
-const HOOK_VARS = /^ODW_(RUN_ID|RUN_STATE|WORKFLOW|RUN_DIR|RESULT_FILE|DURATION_SEC|AGENTS|FAILED_AGENTS)$/;
+const HOOK_VARS =
+  /^ODW_(RUN_ID|RUN_STATE|WORKFLOW|RUN_DIR|RESULT_FILE|DURATION_SEC|AGENTS|FAILED_AGENTS|CHECKPOINT_ID|CHECKPOINT_TITLE)$/;
 
 /** A notify command that appends its ODW_* environment to `file`, one JSON line per call. */
 function recordingCommand(file: string): string[] {
@@ -215,6 +216,74 @@ test("notify.on narrows which terminal states fire the hooks", async () => {
     assert.equal(await executeRun(store.runDir(failed)), "failed");
     assert.equal(hook.posts.length, 1);
     assert.equal(hook.posts[0]!.body.runId, failed);
+  } finally {
+    await hook.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("'waiting' (opt-in) fires the hooks once per checkpoint() while the run waits on", async () => {
+  const hook = await receiver();
+  const envFile = join(tmpdir(), `odw-notify-wait-${process.pid}-${Date.now()}`);
+  const { root, store, create } = project({ command: recordingCommand(envFile), webhook: hook.url, on: ["waiting", "done"] });
+  const id = create("await checkpoint('First?')\nawait checkpoint('Second?')\nreturn 'ok'");
+  const run = executeRun(store.runDir(id));
+  try {
+    const asked = (n: number) => store.readEvents(id).some((e) => e.type === "checkpoint_requested" && e.checkpointId === n);
+    assert.ok(await waitUntil(() => asked(1), 10_000));
+    store.requestCheckpointDecision(id, { action: "approve", checkpointId: 1, by: "cli" });
+    assert.ok(await waitUntil(() => asked(2), 10_000));
+    store.requestCheckpointDecision(id, { action: "approve", checkpointId: 2, by: "cli" });
+    assert.equal(await run, "done");
+
+    assert.deepEqual(hook.posts.map((p) => p.body.state).sort(), ["done", "waiting", "waiting"], "once per checkpoint, plus the end");
+    const first = hook.posts.find((p) => p.body.state === "waiting" && p.body.checkpoint.checkpointId === 1)!.body;
+    assert.deepEqual(Object.keys(first), [
+      "runId",
+      "workflow",
+      "state",
+      "createdAt",
+      "durationSec",
+      "counts",
+      "checkpoint",
+      "text",
+      "content",
+      "allowed_mentions",
+    ]);
+    assert.equal(first.runId, id);
+    assert.equal(first.workflow, "nightly");
+    assert.deepEqual(Object.keys(first.checkpoint).sort(), ["checkpointId", "since", "title"]);
+    assert.equal(first.checkpoint.title, "First?");
+    assert.equal(first.text, `odw · nightly waits for a decision: First? · odw approve|reject ${id} --checkpoint 1`);
+    assert.equal(first.content, first.text);
+
+    const envs = readLines(envFile);
+    const waiting = envs.filter((e) => e.ODW_RUN_STATE === "waiting");
+    assert.deepEqual(waiting.map((e) => [e.ODW_CHECKPOINT_ID, e.ODW_CHECKPOINT_TITLE]).sort(), [
+      ["1", "First?"],
+      ["2", "Second?"],
+    ]);
+    assert.ok(waiting.every((e) => e.ODW_RUN_ID === id && e.ODW_RESULT_FILE === undefined));
+    const end = envs.find((e) => e.ODW_RUN_STATE === "done")!;
+    assert.equal(end.ODW_CHECKPOINT_ID, undefined, "the end hook carries no checkpoint");
+    const events = store.readEvents(id);
+    assert.equal(events[events.length - 1]!.type, "run_finished", "hooks never write to events.jsonl");
+  } finally {
+    store.writeControl(id, "stop"); // a failed assertion must not leave the run waiting forever
+    await run.catch(() => {});
+    await hook.close();
+    rmSync(envFile, { force: true });
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("without 'waiting' in notify.on, a checkpoint fires no hook", async () => {
+  const hook = await receiver();
+  const { root, store, create } = project({ webhook: hook.url });
+  try {
+    const id = create("return await checkpoint('Nobody told?', { timeout: 0.05, onTimeout: 'approve' })");
+    assert.equal(await executeRun(store.runDir(id)), "done");
+    assert.deepEqual(hook.posts.map((p) => p.body.state), ["done"]);
   } finally {
     await hook.close();
     rmSync(root, { recursive: true, force: true });

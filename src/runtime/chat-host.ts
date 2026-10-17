@@ -460,7 +460,9 @@ function startChatCodexTurn(
 }
 
 function chatStateFrom(states: RunDisplayState[], fallback: ChatSessionState): ChatSessionState {
-  if (states.some((s) => s === "pending" || s === "running" || s === "paused" || s === "stale")) return "running";
+  if (states.some((s) => s === "pending" || s === "running" || s === "paused" || s === "waiting" || s === "stale")) {
+    return "running";
+  }
   if (states.length > 0 && states.every((s) => s === "done" || s === "failed" || s === "stopped")) return "done";
   return fallback;
 }

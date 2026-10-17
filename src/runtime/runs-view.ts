@@ -24,6 +24,7 @@
  *      settled/observed agents — a fraction of work *seen*, never invented.
  */
 
+import type { WaitingCheckpoint } from "../checkpoint.js";
 import type { WorkflowEvent } from "../events.js";
 import { RunStore, TERMINAL_STATES } from "./run-store.js";
 
@@ -47,6 +48,12 @@ export interface AgentView {
   adapter: string | null;
   attempts: number | null;
   error: string | null;
+  /**
+   * Why a failed agent's CLI failed (agent_failed's `reason`): rate_limit,
+   * quota, auth, timeout, stalled, not_found, permission or exit. Absent while
+   * running, for other failures (schema, stop) and for older event files.
+   */
+  failureReason?: string;
   startedAt: number | null;
   finishedAt: number | null;
   /** Wall-clock from agent_started to agent_finished/failed, in ms (a command's own measurement). */
@@ -66,7 +73,19 @@ export type RunDisplayState =
   | "done"
   | "failed"
   | "stopped"
-  | "stale";
+  | "stale"
+  /** Running, and a checkpoint() waits for a person to approve or reject (ODW extension). */
+  | "waiting";
+
+/** A checkpoint() waiting for a person's answer (ODW extension), as folded from its request. */
+export interface PendingCheckpoint {
+  checkpointId: number;
+  title: string;
+  /** What the person should look at: JSON-safe, at most 64 KiB (null when none was given). */
+  payload: unknown;
+  /** When it started waiting (epoch seconds). */
+  since: number;
+}
 
 /**
  * Tallies over every node of the run's graph. exec() command steps count like
@@ -103,6 +122,12 @@ export interface RunSummary {
   /** settled (done+failed) / agents, in [0,1]; 0 when no agents seen yet. Commands included. */
   progress: number;
   lastActivityTs: number | null;
+  /**
+   * The oldest checkpoint() waiting for a person while the run is "waiting"
+   * (ODW extension) — what the dashboard's "Needs you" strip shows; null
+   * otherwise, and absent for Claude Code runs.
+   */
+  waiting?: WaitingCheckpoint | null;
 }
 
 export interface RunDetail extends RunSummary {
@@ -119,6 +144,12 @@ export interface RunDetail extends RunSummary {
   adapter: string | null;
   /** The workflow identity recorded at create time (meta.workflowName). */
   workflowName: string | null;
+  /**
+   * checkpoint() calls waiting for an answer, oldest first (ODW extension):
+   * what `POST /api/runs/:id/checkpoint` can approve or reject. Empty unless
+   * the run is live (neither ended nor stale); absent for Claude Code runs.
+   */
+  pendingCheckpoints?: PendingCheckpoint[];
 }
 
 /** Is `pid` a live process on this host? null when unknowable (no pid). */
@@ -239,6 +270,7 @@ export function applyAgentEvent(
     if (ev.type === "agent_failed") {
       target.state = "failed";
       target.error = ev.error != null ? String(ev.error) : null;
+      if (typeof ev.reason === "string" && ev.reason !== "") target.failureReason = ev.reason;
     } else {
       target.state = "done";
       target.adapter = ev.adapter != null ? String(ev.adapter) : null;
@@ -360,6 +392,8 @@ export class EventFold {
   readonly agents: AgentView[] = [];
   /** Phases in the order their phase_started fired. */
   readonly startedPhases: string[] = [];
+  /** checkpoint() calls requested and not resolved yet, by id; cleared when the run ends. */
+  readonly checkpoints = new Map<number, PendingCheckpoint>();
   /** ts of the last event folded, or null for an empty stream. */
   lastActivityTs: number | null = null;
   /** The run's own terminal event (run_finished/failed/stopped) has been folded. */
@@ -368,7 +402,11 @@ export class EventFold {
   apply(events: WorkflowEvent[]): this {
     for (const ev of events) {
       applyAgentEvent(this.agents, ev);
-      if (ev.type === "run_finished" || ev.type === "run_failed" || ev.type === "run_stopped") this.ended = true;
+      applyCheckpointEvent(this.checkpoints, ev);
+      if (ev.type === "run_finished" || ev.type === "run_failed" || ev.type === "run_stopped") {
+        this.ended = true;
+        this.checkpoints.clear(); // nobody waits on a run that ended
+      }
       if (ev.type === "phase_started" && ev.phase != null) {
         const p = String(ev.phase);
         if (!this.startedPhases.includes(p)) this.startedPhases.push(p);
@@ -377,6 +415,26 @@ export class EventFold {
     if (events.length > 0) this.lastActivityTs = asNumber(events[events.length - 1]!.ts);
     return this;
   }
+}
+
+/** checkpoint_requested opens a pending checkpoint; checkpoint_resolved closes it. */
+function applyCheckpointEvent(pending: Map<number, PendingCheckpoint>, ev: WorkflowEvent): void {
+  if (typeof ev.checkpointId !== "number") return;
+  if (ev.type === "checkpoint_requested") {
+    pending.set(ev.checkpointId, {
+      checkpointId: ev.checkpointId,
+      title: String(ev.title ?? ""),
+      payload: ev.payload ?? null,
+      since: asNumber(ev.ts) ?? 0,
+    });
+  } else if (ev.type === "checkpoint_resolved") {
+    pending.delete(ev.checkpointId);
+  }
+}
+
+/** The pending checkpoints of a fold, oldest first, as copies (folds are cached). */
+export function pendingCheckpoints(fold: EventFold): PendingCheckpoint[] {
+  return [...fold.checkpoints.values()].sort((a, b) => a.checkpointId - b.checkpointId).map((cp) => ({ ...cp }));
 }
 
 /** Read a run's facts from the store (one read of each file). */
@@ -397,7 +455,12 @@ export function summaryFrom(runId: string, facts: RunFacts): RunSummary {
   const { status, meta, fold } = facts;
   const rawState = String(status.state ?? "pending");
   const pid = asNumber(status.pid);
-  const { state, stale } = reconcileState(rawState, pid);
+  const reconciled = reconcileState(rawState, pid);
+  const { stale } = reconciled;
+  // A live, running run that waits at a checkpoint() shows as "waiting"; every
+  // other mapping (paused included) stands as reconciled.
+  const state: RunDisplayState =
+    reconciled.state === "running" && fold.checkpoints.size > 0 ? "waiting" : reconciled.state;
   const folded = countAgents(fold.agents);
   // A stale run's open agents will never settle: count them stale, not running.
   const counts = stale ? { ...folded, running: 0, stale: folded.stale + folded.running } : folded;
@@ -425,7 +488,15 @@ export function summaryFrom(runId: string, facts: RunFacts): RunSummary {
     counts,
     progress,
     lastActivityTs: fold.lastActivityTs,
+    waiting: state === "waiting" ? oldestWaiting(fold) : null,
   };
+}
+
+/** The oldest checkpoint a fold has waiting, as status.json's `waiting` names it. */
+function oldestWaiting(fold: EventFold): WaitingCheckpoint | null {
+  let oldest: PendingCheckpoint | undefined;
+  for (const cp of fold.checkpoints.values()) if (!oldest || cp.checkpointId < oldest.checkpointId) oldest = cp;
+  return oldest ? { checkpointId: oldest.checkpointId, title: oldest.title, since: oldest.since } : null;
 }
 
 /** Reconcile liveness and build the full detail from cached or fresh facts. */
@@ -436,6 +507,8 @@ export function detailFrom(
 ): RunDetail {
   const summary = summaryFrom(runId, facts);
   const { meta, fold } = facts;
+  // Only a live run can still be answered: a stale one's worker is gone.
+  const live = !summary.stale && !TERMINAL_STATES.has(summary.rawState);
   return {
     ...summary,
     script: (meta.script as string) ?? null,
@@ -447,6 +520,7 @@ export function detailFrom(
     origin: (meta.origin as string) ?? null,
     adapter: (meta.adapter as string) ?? null,
     workflowName: (meta.workflowName as string) ?? null,
+    pendingCheckpoints: live ? pendingCheckpoints(fold) : [],
   };
 }
 

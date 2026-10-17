@@ -59,7 +59,7 @@ export function renderTimeline(run: RunDetail, selectedAi: number | null, nowSec
     const starts = items.filter((x) => x.a.startedAt != null).map((x) => x.a.startedAt! - t0);
     const stops = items.map((x) => {
       const e = ends[x.ai];
-      return e != null ? e - t0 : x.a.state === "running" ? lastEnd - t0 : null;
+      return e != null ? e - t0 : x.a.state === "running" || x.a.state === "waiting" ? lastEnd - t0 : null;
     });
     const pStart = starts.length ? Math.min(...starts) : 0;
     const pEnd = Math.max(pStart, ...stops.filter((s): s is number => s != null));
@@ -73,7 +73,7 @@ export function renderTimeline(run: RunDetail, selectedAi: number | null, nowSec
       let bar = "";
       if (a.startedAt != null) {
         const s = a.startedAt - t0;
-        const e = (ends[ai] ?? (a.state === "running" ? lastEnd : a.startedAt)) - t0;
+        const e = (ends[ai] ?? (a.state === "running" || a.state === "waiting" ? lastEnd : a.startedAt)) - t0;
         const dur = a.durationMs != null ? a.durationMs / 1000 : e - s;
         bar =
           `<i class="tl-bar ${esc(a.state)}" style="left:${pct(s)};width:${pct(Math.max(e - s, 0))}"></i>` +

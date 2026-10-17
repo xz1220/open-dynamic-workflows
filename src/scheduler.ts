@@ -24,7 +24,8 @@
  *
  * Command steps (`exec()`) are not agents: they bypass both limits, but share
  * the checkpoint, the abort signal, the stop watch and the drain (see
- * {@link Scheduler.runCommand}).
+ * {@link Scheduler.runCommand}). A person's answer to a `checkpoint()` call is
+ * waited for outside the dispatch gate too (see {@link Scheduler.runWait}).
  */
 
 import { setMaxListeners } from "node:events";
@@ -65,9 +66,9 @@ export class Scheduler {
   private dispatchedCount = 0;
   private active = 0;
   private readonly waiters: Array<{ resolve: () => void; reject: (reason: unknown) => void }> = [];
-  /** runAgent/runCommand calls not yet settled: queued, paused at the checkpoint, or running. */
+  /** runAgent/runCommand/runWait calls not yet settled: queued, paused at the checkpoint, running, or waiting. */
   private pending = 0;
-  /** Agents and commands whose work is in flight. */
+  /** Agents and commands whose work is in flight, and checkpoint() waits: the stop watch is armed while any is. */
   private running = 0;
   private stopWatching: (() => void) | undefined;
   private idleWaiters: Array<() => void> = [];
@@ -181,6 +182,27 @@ export class Scheduler {
   }
 
   /**
+   * Wait for a person — a `checkpoint()` call (ODW extension) — outside the
+   * agent limits AND the dispatch gate: waiting is not work, so it takes no
+   * slot, counts toward neither the backstop nor the budget, and is asked even
+   * while the run is paused. It is still pending work for {@link drain}, and
+   * the stop watch stays armed while it waits, so a stop (or any fatal error)
+   * aborts `fn`'s signal at once. `fn` receives the run's abort signal.
+   */
+  async runWait<T>(fn: (signal: AbortSignal) => Promise<T>): Promise<T> {
+    this.pending++;
+    try {
+      this.throwIfAborted();
+      return await this.track(fn);
+    } catch (err) {
+      if (isFatalError(err)) this.abort(err);
+      throw err;
+    } finally {
+      if (--this.pending === 0) this.notifyIdle();
+    }
+  }
+
+  /**
    * Re-run the dispatch guards (pause/stop, budget) before an extra CLI
    * attempt inside an agent that already holds its slot — a schema retry. A
    * retry is not a new dispatch, so it does not count toward the backstop; a
@@ -241,7 +263,7 @@ export class Scheduler {
     if (this.fatal) throw this.fatal.error;
   }
 
-  /** Run an agent's (or command's) work, watching for a stop while any is in flight. */
+  /** Run an agent's (or command's, or checkpoint wait's) work, watching for a stop while any is in flight. */
   private async track<T>(fn: (signal: AbortSignal) => Promise<T>): Promise<T> {
     if (this.running++ === 0 && this.watchStop) {
       this.stopWatching = this.watchStop(() => this.abort(new RunStopped("run was stopped")));

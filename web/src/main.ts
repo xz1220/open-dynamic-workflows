@@ -11,6 +11,7 @@
  * animations survive every repaint. One click layer delegates all actions.
  */
 import { api } from "./api";
+import { renderDiff } from "./components/diff";
 import { glyph } from "./components/glyph";
 import { closePalette, isPaletteOpen, openPalette, setPaletteSource, type PaletteItem } from "./components/palette";
 import { closeShortcuts, shortcutsOpen, toggleShortcuts } from "./components/shortcuts";
@@ -36,7 +37,7 @@ import type { RunSummary, WorkflowDetail } from "./types";
 import { ACTIVE, TERMINAL, fmtDurSec, runDurationSec } from "./util";
 import { renderActivity } from "./views/activity";
 import { renderChat } from "./views/chat";
-import { LOG_PAGE, renderJob, type JobTab, type JobViewState } from "./views/job";
+import { LOG_PAGE, changedAgents, renderJob, reviewTarget, type JobTab, type JobViewState } from "./views/job";
 import { HISTORY_PAGE, renderJobs, type JobsFilter, type JobsState } from "./views/jobs";
 import { renderSettings } from "./views/settings";
 import { orderedWorkflows, renderWorkspace, wfKey } from "./views/workspace";
@@ -55,6 +56,7 @@ const job: JobViewState = {
   cpNote: "",
   tab: "graph",
   selectedAi: null,
+  reviewAi: null,
   zoom: 1,
   logQuery: "",
   logTypes: new Set(["agent", "command", "phase", "log", "run"]),
@@ -77,7 +79,7 @@ let poll: number | null = null;
 let routeToken = 0;
 
 const CHAT_STICKY_BOTTOM_PX = 32;
-const JOB_TABS: JobTab[] = ["graph", "timeline", "logs", "result"];
+const JOB_TABS: JobTab[] = ["graph", "timeline", "logs", "result", "changes"];
 
 function parseHash(): Route {
   const h = location.hash.replace(/^#\/?/, "");
@@ -182,7 +184,44 @@ function afterRender(route: Route, followLogs: boolean): void {
   // The drawer's agent finished (or was just opened): fetch its persisted output once.
   const sel = route.view === "job" && job.selectedAi != null ? store.run?.agents[job.selectedAi] : undefined;
   if (store.run && sel?.agentId != null && sel.state !== "running") void store.loadAgentResult(store.run.runId, sel.agentId);
+  // Diffs: the drawer's agent's (for its file list) and the one under review.
+  if (store.run && route.view === "job") {
+    if (sel?.agentId != null && sel.changes?.files) void store.loadAgentDiff(store.run.runId, sel.agentId);
+    const target = job.tab === "changes" ? reviewTarget(store.run, job.reviewAi) : null;
+    if (target) {
+      void store.loadAgentDiff(store.run.runId, target.a.agentId!);
+      void store.loadAgentResult(store.run.runId, target.a.agentId!);
+    }
+  }
+  fillDiffs();
   updateChrome();
+}
+
+/**
+ * Paint each diff host once per version. A diff can run to thousands of rows,
+ * so it is drawn here — not in the view's HTML, which is re-parsed on every
+ * live tick — and its host is frozen against morph (`data-morph="skip"`).
+ */
+function fillDiffs(): void {
+  for (const host of root.querySelectorAll<HTMLElement>("[data-diff]")) {
+    if (host.dataset.filled === host.dataset.v) continue;
+    const parsed = store.agentDiffs.get(host.dataset.diff!);
+    host.innerHTML =
+      parsed === undefined
+        ? `<div class="diff-loading"><span class="skel"></span><span class="skel"></span><span class="skel"></span></div>`
+        : parsed === null
+          ? `<p class="dnote">${tr("This agent's diff is not available.")}</p>`
+          : renderDiff(parsed, { fullCmd: host.dataset.full });
+    host.dataset.filled = host.dataset.v;
+  }
+}
+
+/** Show another agent's changes in the Changes tab. */
+function review(ai: number): void {
+  job.reviewAi = ai;
+  if (job.tab !== "changes") return selectTab("changes");
+  render();
+  root.querySelector<HTMLElement>(".tab-body")?.scrollTo({ top: 0 });
 }
 
 /**
@@ -396,6 +435,7 @@ async function enterRoute(): Promise<void> {
     const id = route.param;
     if (store.focusedRunId !== id) {
       job.selectedAi = null;
+      job.reviewAi = null;
       job.zoom = 1;
       job.logLimit = LOG_PAGE;
       store.focusRun(id);
@@ -561,10 +601,12 @@ function switchLang(next: Lang): void {
 
 root.addEventListener("click", (ev) => {
   const t = ev.target as HTMLElement;
-  // Real links: let modified clicks open a new tab; route plain clicks ourselves.
+  // Real links: let modified clicks open a new tab, and links that leave the
+  // app (docs, GitHub) navigate as usual; route plain in-app clicks ourselves.
   const link = t.closest<HTMLAnchorElement>("a[href]");
   if (link) {
     if (ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.altKey || ev.button !== 0) return;
+    if (!link.getAttribute("href")!.startsWith("#")) return;
     ev.preventDefault();
   }
   if (t.closest("[data-palette]")) return openPalette();
@@ -697,6 +739,8 @@ root.addEventListener("click", (ev) => {
   if (t.closest("[data-chat-send]")) return void sendChat();
   const tabEl = t.closest<HTMLElement>("[data-tab]");
   if (tabEl) return selectTab(tabEl.dataset.tab as JobTab);
+  const reviewEl = t.closest<HTMLElement>("[data-review]");
+  if (reviewEl) return review(Number(reviewEl.dataset.review));
   const nodeEl = t.closest<HTMLElement>("[data-ai]");
   if (nodeEl) {
     const ai = Number(nodeEl.dataset.ai);
@@ -707,6 +751,8 @@ root.addEventListener("click", (ev) => {
     job.selectedAi = null;
     return render();
   }
+  // An in-app link no handler above claimed goes where its href says.
+  if (link) go(link.getAttribute("href")!);
 });
 
 function selectTab(next: JobTab): void {
@@ -817,7 +863,14 @@ document.addEventListener("keydown", (e) => {
   }
   gPending = e.key === "g" ? now : 0;
   const route = currentRoute();
-  if (route.view === "job" && /^[1-4]$/.test(e.key)) selectTab(JOB_TABS[Number(e.key) - 1]!);
+  if (route.view === "job" && /^[1-5]$/.test(e.key)) selectTab(JOB_TABS[Number(e.key) - 1]!);
+  // j / k step through the agents with changes.
+  if (route.view === "job" && job.tab === "changes" && store.run && (e.key === "j" || e.key === "k")) {
+    const changed = changedAgents(store.run);
+    const at = changed.findIndex((c) => c.ai === reviewTarget(store.run!, job.reviewAi)?.ai);
+    const next = changed[at + (e.key === "j" ? 1 : -1)];
+    if (next) review(next.ai);
+  }
   if (route.view === "job" && job.tab === "graph") {
     if (e.key === "+" || e.key === "=") zoomTo(job.zoom * 1.15);
     else if (e.key === "-") zoomTo(job.zoom / 1.15);
@@ -903,6 +956,16 @@ setPaletteSource((): PaletteItem[] => {
   const run = currentRoute().view === "job" ? store.run : null;
   if (run) {
     items.push({ id: "copy-id", group: act, title: tr("Copy run id"), icon: icons.copy, hint: run.runId, run: () => copy(run.runId) });
+    if (run.provider === "odw" && TERMINAL.has(run.state) && run.state !== "done") {
+      items.push({
+        id: "copy-resume",
+        group: act,
+        title: tr("Copy a resume command"),
+        icon: icons.terminal,
+        hint: "odw resume",
+        run: () => copy(`odw resume ${run.runId}`),
+      });
+    }
     items.push({
       id: "copy-rerun",
       group: act,
@@ -924,6 +987,18 @@ setPaletteSource((): PaletteItem[] => {
 
 // --- run transitions → toasts + desktop notifications ---
 store.onTransition((r: RunSummary) => {
+  if (r.state === "waiting") {
+    const ask = {
+      state: "waiting",
+      title: tr("{name} is waiting for you", { name: r.name }),
+      body: r.waiting?.title ?? tr("A checkpoint needs your decision."),
+      href: runHash(r.runId),
+      ttlMs: 12_000,
+    };
+    toast(ask);
+    notifyDesktop(ask);
+    return;
+  }
   const dur = fmtDurSec(runDurationSec(r.createdAt, r.updatedAt, true));
   const title =
     r.state === "done"

@@ -74,7 +74,8 @@ mode you have probably met; each mechanism is a runnable pattern in this repo:
 - **Reliable hand-offs** — JSON-Schema structured outputs, validated and retried,
   so multi-stage pipelines compose instead of guessing on free text.
 - **Background & observable** — every run is a detached worker backed by a run
-  directory: `status`, `logs --follow`, `result`, `pause` / `stop`.
+  directory: `status`, `logs --follow`, `result`, `pause` / `stop`, and
+  `approve` / `reject` for a run that waits at a human `checkpoint()`.
 - **No threads, zero runtime dependencies** — the engine is async TypeScript
   (`parallel` is `Promise.all`); workflow scripts stay plain `.js` and ship with
   `.d.ts` authoring types for editor autocomplete.
@@ -234,6 +235,7 @@ control flow (loops, `if`, dedup) — no imports:
 | `workflow(ref, args?)` | Run another workflow inline (one level deep). The child shares this run's concurrency cap, agent counter, and budget; its phases group as their own DAG lanes. |
 | `validate(source)` | Parse and compile-check trusted source without running its workflow body. Metadata is parsed as a pure literal, never evaluated. **ODW extension** (not in Claude Code's dialect). |
 | `exec(command, opts?)` | Run a command — tests, a build, a linter — without launching a model; resolves to `{ stdout, stderr, exitCode, signal, timedOut, truncated, durationMs }`. A string runs through the shell, an array as argv. Bounded by `timeout` (600 s) and `maxOutputBytes` (8 MiB per stream); a stop kills it. Takes no agent slot. **ODW extension** (not in Claude Code's dialect). |
+| `checkpoint(title, opts?)` | Pause the run until a person approves or rejects — from `odw approve\|reject` or the dashboard — and resolve to `{ approved, note, by }`. `opts`: `payload` (what to look at), `timeout` (seconds) and `onTimeout` (`"approve"`, `"reject"`, or the default `"fail"`). Takes no agent slot; a stop still ends the run. See [Human checkpoints](#human-checkpoints-odw-extension). **ODW extension** (not in Claude Code's dialect). |
 
 Use **`parallel`** when the next step needs the whole batch at once (dedup,
 tally, synthesis); **`pipeline`** for multi-stage work (the default). Keep
@@ -250,16 +252,16 @@ private runtime behavior need the following checks before migration:
 | Nested `workflow()` | Implemented for one level, sharing the parent's scheduler, control and budget. Flatten deeper nesting. |
 | Model selection | Pass `agent(..., {model})` using that CLI's model ID. `meta.model` and phase metadata do not set execution defaults; an adapter without model routing support emits a note. |
 | `agentType` | A persona added to the prompt. It does not load a host's named subagent configuration or select an adapter. |
-| Worktree isolation | Starts from committed HEAD, excludes uncommitted edits, and cleans up afterward. Changes are not merged and `agent()` returns the reply, not a diff; put required deliverables in that reply or persist them explicitly. |
+| Worktree isolation | Starts from committed HEAD, excludes uncommitted edits, and cleans up afterward. Changes are not merged and `agent()` returns the reply, not a diff; put required deliverables in that reply or persist them explicitly. `.worktreeinclude` is honored (ODW copies untracked files too, not only gitignored ones); its `symlink:` lines, `worktreeSetup` and the agents' `ODW_PORT` are ODW extensions — see [Isolated worktrees](#isolated-worktrees-and-agent-ports). |
 | Budget | Estimates output tokens as `ceil(chars / 4)` over every reply, schema retries included (inputs and failed calls are not). The guard runs before each dispatch and each schema retry; once the target is spent the run ends and agents still running are stopped. |
 | JSON Schema | Supports the [documented subset](skills/open-dynamic-workflows/references/primitives.md#schema). Unknown constraints such as `$ref`, `const` and `oneOf` are not enforced. Use explicit object/array types and supported constraints. |
 | Script trust | Run trusted scripts only: a run executes the workflow body as ordinary JavaScript. Loading parses metadata as a pure literal without evaluating it; validation and compatibility warnings are not a sandbox. |
 | Recovery | Every completed `agent()` result is saved as it lands. `odw resume` continues a paused live worker in place; on an ended run (done, failed, stopped, or stale after a crash) it starts a new run that replays each call whose prompt and options are unchanged and runs the rest. `rerun` starts over. See [Resume a run](#resume-a-run-odw-extension). |
 
 The supported primitive names do not guarantee full runtime parity.
-`validate(source)` and `exec(command)` are ODW extensions and must be removed when
-targeting a host that does not provide them (`validate()` warns about `exec()`
-calls). Recoverable `null` results require an explicit choice: accept a partial
+`validate(source)`, `exec(command)` and `checkpoint(title)` are ODW extensions and
+must be removed when targeting a host that does not provide them (`validate()`
+warns about `exec()` and `checkpoint()` calls). Recoverable `null` results require an explicit choice: accept a partial
 result, retry, or fail when the task requires every item.
 
 ## Run and observe
@@ -286,6 +288,7 @@ odw agents $RUN          # each agent and its saved result, mid-run too
 odw logs $RUN --follow   # stream raw progress events
 odw result $RUN          # final value
 odw pause|resume|stop $RUN
+odw approve|reject $RUN  # answer a checkpoint() the run waits at (--note TEXT, --checkpoint N)
 odw list
 ```
 
@@ -353,6 +356,54 @@ deterministic. Resume takes rerun's flags: `--wait`/`--fg`/`-d`/`--timeout`,
 `--adapter`, `--config`, `--runs-root`. The dashboard serves the same records:
 `GET /api/runs/:id/agents` and `GET /api/runs/:id/agents/:agentId`.
 
+A step-by-step walkthrough — read what finished, stop what is stuck, fix, resume:
+[`docs/recipes/recover-a-run.md`](docs/recipes/recover-a-run.md).
+
+### Human checkpoints (ODW extension)
+
+Claude Code's workflows take no input once they start. `checkpoint()` lets a run
+stop where a person should look — approve the plan before the expensive fan-out,
+or end a run that went off the rails — and wait, durably, for the answer:
+
+```js
+const plan = await agent('Plan the migration as independent steps.', { schema: PLAN })
+const { approved, note } = await checkpoint('Run this migration plan?', { payload: plan })
+if (!approved) return { skipped: true, why: note }
+await parallel(plan.steps.map((step) => () => agent(step.instructions)))
+```
+
+While it waits, the run shows as **waiting** in `odw status`, `odw list`, the live
+view and the dashboard. Nothing else is held up: agents already running carry on, a
+waiting checkpoint takes no agent slot and spends no budget, and `odw stop` still
+ends the run. Answer it from any shell:
+
+```bash
+odw status $RUN       # the question, its payload, and the exact commands that answer it
+odw approve $RUN      # the oldest checkpoint waiting; --checkpoint N picks one
+odw reject $RUN --note "Keep the old table until the backfill is verified"
+```
+
+or with **Approve** / **Reject** on the run's page in the dashboard (loopback binds
+only; it posts `{ action, checkpointId?, note? }` to `POST /api/runs/:id/checkpoint`;
+`GET /api/runs/:id` lists `pendingCheckpoints`, and the run list names each waiting
+run's oldest question as `waiting`). The call resolves to
+`{ approved, note, by }` — `by` is `cli`, `dashboard` or `timeout` — and a rejection
+is an answer, not an error: the script decides what "no" means.
+
+- `payload` is any JSON value — a plan, a summary of the changes — kept up to 64 KiB.
+- `timeout` (seconds) bounds the wait for unattended runs; `onTimeout` then approves,
+  rejects, or (the default, `"fail"`) throws a `CheckpointTimeout` the script can catch.
+- Several checkpoints can wait at once (inside `parallel()`), each with its own number.
+- `odw resume` never replays a checkpoint: a resumed run asks again.
+- `odw run --wait` blocks while a checkpoint waits; it prints the commands once, so
+  answer from another shell (or bound the wait with `--timeout`).
+- The run records `checkpoint_requested` and `checkpoint_resolved` events, and
+  `status.json` names the oldest open checkpoint as `waiting`. With `"waiting"` in
+  [`notify.on`](#run-notifications) your hooks hear about each one.
+
+[`examples/plan-approve-execute.js`](examples/plan-approve-execute.js) is the full
+plan → approve → execute loop, re-planning when a rejection comes with a note.
+
 ## Dashboard: observe, inspect, chat
 
 The dashboard reads like a printed sheet — paper, ink and one signal colour — and
@@ -369,6 +420,8 @@ switches to a night theme on demand. What it gives you:
   — saved as it lands, so it is there mid-run; replayed agents are marked ↺.
   `exec()` command steps sit in the same graph and timeline as terminal-style nodes
   with their exit code; a run's counts include them (they are not agent dispatches).
+  A run waiting at a `checkpoint()` shows the question and its payload above the
+  graph, with **Approve** / **Reject** and a note when the dashboard can write.
 - **Workspace** — every saved workflow with a static outline of its phases and the
   primitives each one calls, its source, and its recent runs.
 - **Chat Host** — ordinary Codex conversation; mention ODW or workflow and the turn
@@ -393,6 +446,16 @@ switches to a night theme on demand. What it gives you:
     <td width="50%">
       <strong>Night theme</strong><br />
       <img src="assets/app-screenshots/job-detail-dark.png" alt="A live run graph in the night theme, with glowing signal edges" />
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
+      <strong>Needs you</strong><br />
+      <img src="assets/app-screenshots/needs-you.png" alt="Activity view with a Needs you strip: a run waiting at a checkpoint with a Review button, and a failed run with a Copy resume button" />
+    </td>
+    <td width="50%">
+      <strong>Checkpoints</strong><br />
+      <img src="assets/app-screenshots/checkpoint.png" alt="A run waiting at a checkpoint: the question and its payload in an approval card with Approve and Reject, and an amber gate node in the graph's Approve lane" />
     </td>
   </tr>
 </table>
@@ -506,6 +569,65 @@ progress (JSONL adapters such as `kilo` and `opencode`, or a wrapper that prints
 a heartbeat), with a value above the longest quiet stretch a healthy agent has —
 a long test run inside one tool call prints nothing either.
 
+### Rate limits, quotas and logins
+
+**ODW extension.** Every failed agent is classified from its CLI's exit status
+and the end of its output: `rate_limit`, `quota`, `auth`, `timeout`, `stalled`,
+`not_found` (the CLI could not start), `permission` (a tool call or approval was
+refused) or `exit`. The class is the `reason` on the `agent_failed` event (with
+`retryAfter`, in seconds, when the CLI said when to come back), the agent's
+`failureReason` in the dashboard and `/api/runs/:id`, and it shows in the live
+view and `odw logs`:
+
+```text
+agent_failed    (Search) search — [quota, retry after 3h 22m] AdapterExecutionError: adapter 'codex' ran out of usage quota — wait for the window to reset (in 3h 22m) and resume the run, or switch adapter with --adapter <name>: You've hit your usage limit…
+```
+
+- **Rate limits** — HTTP 429/529, "too many requests", "overloaded", Gemini's
+  `RESOURCE_EXHAUSTED` — are ridden out: ODW waits, then runs the agent again,
+  up to `transientRetries` times per `agent()` call (default 3). The wait is the
+  retry-after the CLI printed (`Retry-After: 30`, "try again in 2 minutes",
+  "resets at 7:10pm") or else an exponential backoff (15s, 30s, 60s, …), plus up
+  to 20% jitter, and never more than `maxBackoff` seconds (default 300); a CLI
+  that asks to wait longer than that is not retried early. Each wait is logged
+  (`search:3 hit a rate limit on codex — retrying in 45s (2/3)`); a stop ends it
+  at once, and a paused run starts the retry only once resumed.
+- **Spent quotas and failed logins** are never retried. The error says what to
+  do — wait for the quota window, log in to the CLI, or switch adapter with
+  `--adapter` — and the run goes on, since its other adapters may be fine. When
+  three agents in a row fail this way on one adapter, the run logs one warning;
+  `odw resume` later replays every agent that finished. A "quota" that refills
+  within a minute (Gemini's free tier words its per-minute limit that way) is
+  treated as the rate limit it is.
+
+Claude Code's text mode prints some API errors as its reply and exits 0
+(`API Error: Rate limit reached`): a short reply that is nothing but such a
+rate-limit, quota or login error counts as that failure, never as the agent's
+answer.
+
+The wording ODW recognizes — collected from each built-in CLI's source and issue
+tracker — lives in one table,
+[`src/adapters/failures.ts`](src/adapters/failures.ts). Teach it your own CLI's
+with an adapter's `failures`: regular expressions per class, matched
+case-insensitively before the built-in table.
+
+```jsonc
+{
+  "transientRetries": 3, // retries per agent() call after a rate limit; 0 = never
+  "maxBackoff": 300, // longest single wait, in seconds
+  "adapters": {
+    "my_wrapper": {
+      "command": ["my-agent", "{prompt}"],
+      "failures": {
+        "rate_limit": ["server busy", "E_THROTTLED"],
+        "quota": ["monthly tokens? (used up|exhausted)"],
+        "auth": ["session expired"]
+      }
+    }
+  }
+}
+```
+
 ### Run notifications
 
 **ODW extension.** `notify` runs a command and/or POSTs to a webhook when a run
@@ -515,7 +637,7 @@ ends, so an overnight run can tell you how it went:
 "notify": {
   "command": ["/usr/local/bin/odw-notify"],        // an argv, run WITHOUT a shell
   "webhook": "https://hooks.slack.com/services/…", // Slack, Discord, or any JSON endpoint
-  "on": ["done", "failed", "stopped"]              // the default: every final state
+  "on": ["done", "failed", "stopped"]              // the default: every final state; "waiting" is opt-in
 }
 ```
 
@@ -546,6 +668,72 @@ same line, so Slack and Discord incoming webhooks render it as is (Discord's
 `allowed_mentions` is set too, so a run never pings anyone). The dashboard's
 settings show which hooks are configured — the webhook as scheme and host only,
 since the rest of its URL is the secret.
+
+Add `"waiting"` to `on` to hear about every
+[`checkpoint()`](#human-checkpoints-odw-extension) that starts waiting for a person.
+The hooks then fire once per checkpoint, while the run waits on: the command with
+`ODW_RUN_STATE=waiting`, `ODW_CHECKPOINT_ID` and `ODW_CHECKPOINT_TITLE` (and no
+`ODW_RESULT_FILE`), the webhook with `"state": "waiting"`, a
+`"checkpoint": { "checkpointId", "title", "since" }` field in place of `finishedAt`,
+and a `text` line naming the command that answers it.
+
+Ready-made setups for Slack, Discord, ntfy and desktop banners:
+[`docs/recipes/notify.md`](docs/recipes/notify.md).
+
+### Isolated worktrees and agent ports
+
+`agent(prompt, { isolation: "worktree" })` runs that agent in a throwaway git
+worktree: a clean checkout of HEAD, without the `.env`, `.venv` or
+`node_modules` your source tree has. Two things make it ready before the agent
+starts:
+
+- **`.worktreeinclude`** at the repository root — the file Claude Code reads
+  too — lists what to bring in, in `.gitignore` syntax. Every file or directory
+  git does not track that a line matches is copied into the worktree (Claude
+  Code copies only gitignored files; ODW copies merely untracked ones as well).
+  `.git` is never copied, and a file over 100 MB is left out with a log line. A
+  `symlink:` prefix (**ODW extension**) links what the line matches instead of
+  copying it: instant for a heavy directory, but shared — what an agent writes
+  there lands in your source tree.
+- **`worktreeSetup`** (**ODW extension**) runs in the agent's workspace once the
+  files are in: a string through the platform shell, an array as an argv. It is
+  killed after `worktreeSetupTimeout` seconds (600 by default); a setup that
+  fails or times out fails that agent — not the run — with the end of its
+  output in the error.
+
+```gitignore
+# .worktreeinclude
+.env
+.env.local
+config/secrets.json
+symlink: node_modules
+```
+
+```jsonc
+{
+  "worktreeSetup": "npm run codegen", // or an argv, e.g. ["uv", "sync"]
+  "worktreeSetupTimeout": 600,
+  "portRange": [41000, 41999]
+}
+```
+
+Every agent process — isolated or not — also gets `ODW_RUN_ID`, `ODW_AGENT_ID`
+and `ODW_PORT` (**ODW extension**). `ODW_PORT` comes from `portRange`; no other
+running agent of the run holds it (ports something already listens on are
+passed over), and it stays the agent's until its call settles. So agents
+running side by side can each start a dev server:
+
+```js
+await parallel(['grid', 'list'].map((layout) => () =>
+  agent(`Build the ${layout} layout, start the dev server on port $ODW_PORT and check that the page renders.`,
+    { isolation: 'worktree', label: layout })))
+```
+
+The setup command gets the same three variables, and `exec()` commands get
+`ODW_RUN_ID`. Keep `portRange` wider than `concurrency`: an agent started while
+the others hold every port runs without `ODW_PORT`, and the run's log says so.
+Each attempt of a call (a schema retry, a stall restart, a rate-limit retry)
+starts from a fresh worktree, prepared the same way.
 
 ## How it works
 
@@ -606,6 +794,7 @@ Runnable, plain-JS workflows in [`examples/`](examples/):
 | [`codex-claude-loop.js`](examples/codex-claude-loop.js) | two rival CLIs in a turn-based duel: Claude implements, Codex reviews, repeat until sign-off |
 | [`agent-daily-digest.js`](examples/agent-daily-digest.js) | discover sources → extract in parallel → synthesize → verify |
 | [`test-fix-loop.js`](examples/test-fix-loop.js) | run the tests with `exec()` → an agent fixes the failures → re-run until green (ODW only) |
+| [`plan-approve-execute.js`](examples/plan-approve-execute.js) | an agent drafts a plan → a person approves it at a `checkpoint()` (a rejection with a note re-plans) → parallel execution → report (ODW only) |
 
 ## Develop
 
@@ -656,6 +845,19 @@ into the host's `node`, so each target is built on its own runner.
 ## Status
 
 **What's new on `main` (October 2026):**
+- **Human checkpoints.** `checkpoint()` pauses a run until a person approves or
+  rejects — with `odw approve|reject`, the dashboard, or an opt-in `waiting` hook —
+  so a plan gets a yes before the expensive fan-out (ODW extension; see
+  [`plan-approve-execute.js`](examples/plan-approve-execute.js)).
+- **Rate limits ridden out.** Every agent failure is classified (rate limit, quota,
+  login, timeout, stall, …). A rate-limited CLI is retried after a backoff that
+  honors its retry-after; a spent quota or a failed login fails fast with what to do
+  — in `odw logs`, the live view and the dashboard, with the reset time.
+- **Ready-to-work worktrees.** `.worktreeinclude` copies or links `.env`,
+  `node_modules` and the like into isolated agents' worktrees, `worktreeSetup` runs
+  your bootstrap command, and every agent gets its own `$ODW_PORT`.
+- **"Needs you"** on the dashboard's Activity page: runs waiting for a decision, and
+  the day's failed runs with the `odw resume` command that picks them up.
 - **Recoverable runs.** Every finished agent's result is saved as it lands — read it
   mid-run with `odw agents` / `odw result <run> --agent <id|label>` or in the
   dashboard — and `odw resume <run>` starts a new run that replays every unchanged
@@ -683,12 +885,6 @@ into the host's `node`, so each target is built on its own runner.
 starting. Waiting commands detect a vanished worker instead of waiting forever.
 Upgrades keep the binary and skill on the same release and roll back replacement
 failures; source builds now report their revision.
-
-**Next (unreleased):** every finished agent's result is **saved as it lands** —
-`odw agents`, `odw result --agent` and the dashboard read it mid-run — and
-`odw resume` turns an ended run into a new one that **replays** every unchanged
-`agent()` call, so a stalled or failed run no longer starts over
-([#24](https://github.com/xz1220/open-dynamic-workflows/issues/24)).
 
 **What's new (unreleased, on `main`):** `odw run` now attaches a **live
 foreground view** in interactive terminals — Ctrl-C detaches, `odw attach`
@@ -722,10 +918,10 @@ runs end-to-end (plan → search → extract → vote → report).
 
 Ranked by what users of parallel coding agents report needing
 ([research](docs/research/user-needs-2026-10.md)): adapter-reported token usage and
-cost (today's budget meters an estimate) · rate-limit/quota-aware retries and
-typed failures · evidence of success for headless runs · review-and-apply for
-isolated agents' diffs · human `checkpoint()`s · worktree setup and per-agent ports ·
-scheduling and evaluation. Full plan: [`docs/ROADMAP.md`](docs/ROADMAP.md); the
+cost (today's budget meters an estimate) · review-and-apply for isolated agents'
+diffs · scheduling · evidence of success for headless runs · per-agent transcripts ·
+read/edit/full permission tiers · native structured output · per-phase adapters
+and fallback chains · evaluation. Full plan: [`docs/ROADMAP.md`](docs/ROADMAP.md); the
 original design: [`docs/dynamic-workflows-tech-plan.md`](docs/dynamic-workflows-tech-plan.md).
 Background on the Claude Code dialect ODW aligns with:
 [`docs/dynamic-workflows-research.md`](docs/dynamic-workflows-research.md).

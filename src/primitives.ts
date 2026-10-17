@@ -14,6 +14,8 @@
  *   - workflow  — run another workflow inline (one level deep)
  *   - validate  — compile-check workflow source (ODW extension)
  *   - exec      — run a command without a model (ODW extension; see exec.ts)
+ *   - checkpoint — wait for a person to approve or reject (ODW extension; see
+ *                  checkpoint.ts)
  *
  * `args` is not here: it is run data injected alongside these globals.
  *
@@ -24,9 +26,11 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
+import { formatSeconds } from "./adapters/failures.js";
 import type { AgentRequest } from "./bridge.js";
+import { CheckpointTimeout, createCheckpoint, type CheckpointOptions, type CheckpointResult } from "./checkpoint.js";
 import { spentTokens, type RunContext } from "./context.js";
-import { WorkflowScriptError, isFatalError } from "./errors.js";
+import { AdapterExecutionError, WorkflowScriptError, isFatalError } from "./errors.js";
 import { AGENT_FAILED, AGENT_FINISHED, AGENT_STARTED, LOG, PHASE_STARTED, event } from "./events.js";
 import { ExecError, createExec, type ExecOptions, type ExecResult } from "./exec.js";
 import { resumeKey, type AgentResultRecord } from "./journal.js";
@@ -95,6 +99,12 @@ export interface WorkflowGlobals {
    * array as argv. See exec.ts for the contract.
    */
   exec(command: string | string[], opts?: ExecOptions): Promise<ExecResult>;
+  /**
+   * Wait for a person to approve or reject before the run goes on (ODW
+   * extension; not part of Claude Code's Workflow tool surface). See
+   * checkpoint.ts for the contract.
+   */
+  checkpoint(title: string, opts?: CheckpointOptions): Promise<CheckpointResult>;
 }
 
 /** Build the injected primitive set bound to a single run's context. */
@@ -190,7 +200,9 @@ export function createPrimitives(
       isolation: opts.isolation,
     };
     const failed = (err: unknown): void => {
-      ctx.emit(event(AGENT_FAILED, { agentId, label: display, phase: activePhase, error: String(err) }));
+      ctx.emit(
+        event(AGENT_FAILED, { agentId, label: display, phase: activePhase, error: String(err), ...failureFields(err) }),
+      );
       if (typeof err === "object" && err !== null) surfaced.add(err);
     };
     let started = false;
@@ -209,6 +221,13 @@ export function createPrimitives(
         try {
           outcome = await ctx.bridge.run(request, {
             signal,
+            // The agent process's ODW_AGENT_ID; what preparing it noted (no free
+            // port, a file .worktreeinclude left out) is logged against it.
+            agentId,
+            onNote: (message) =>
+              ctx.emit(
+                event(LOG, { message: `${display}:${agentId}: ${message}`, agentId, label: display, phase: activePhase }),
+              ),
             // Feed the shared budget tally from every attempt, schema retries
             // included (estimated tokens ≈ chars/4 of each reply).
             onReply: (text) => {
@@ -226,6 +245,19 @@ export function createPrimitives(
                   phase: activePhase,
                 }),
               ),
+            // A rate-limited CLI is retried after a backoff: say so, and for how long.
+            onRateLimit: ({ adapter: name, waitSeconds, retry, maxRetries }) =>
+              ctx.emit(
+                event(LOG, {
+                  message: `${display}:${agentId} hit a rate limit on ${name} — retrying in ${formatSeconds(waitSeconds)} (${retry}/${maxRetries})`,
+                  agentId,
+                  label: display,
+                  phase: activePhase,
+                }),
+              ),
+            // An adapter's quota or login failed several agents in a row: warn, once.
+            onAdapterWarning: ({ message, adapter: name, reason }) =>
+              ctx.emit(event(LOG, { message, adapter: name, reason, agentId, label: display, phase: activePhase })),
           });
         } catch (err) {
           // A started agent always gets a terminal event, even when the error
@@ -287,6 +319,7 @@ export function createPrimitives(
     if (isFatalError(err)) return; // propagates out of gather; nothing is swallowed
     if (typeof err === "object" && err !== null && surfaced.has(err)) return;
     if (err instanceof ExecError) return; // its command_failed event reported it
+    if (err instanceof CheckpointTimeout) return; // its checkpoint_resolved event reported it
     ctx.emit(event(LOG, { message: `${where} failed and its result is null: ${describeError(err)}` }));
   };
 
@@ -428,6 +461,15 @@ export function createPrimitives(
   // its own, sharing the scheduler and the command id sequence.
   const exec = createExec(ctx);
 
+  // The same for checkpoint(), on the checkpoint id sequence. A stop noticed
+  // before the question is asked is fatal like any other: it ends the run.
+  const ask = createCheckpoint(ctx);
+  const checkpoint = (title: string, opts?: CheckpointOptions): Promise<CheckpointResult> =>
+    ask(title, opts).catch((err: unknown) => {
+      if (isFatalError(err)) ctx.scheduler.abort(err);
+      throw err;
+    });
+
   return {
     agent: (prompt, opts) => handled(agent(prompt, opts)),
     parallel: (thunks) => handled(parallel(thunks)),
@@ -438,6 +480,7 @@ export function createPrimitives(
     workflow: (nameOrRef, childArgs) => handled(workflow(nameOrRef, childArgs)),
     validate,
     exec: (command, opts) => handled(exec(command, opts)),
+    checkpoint: (title, opts) => handled(checkpoint(title, opts)),
   };
 }
 
@@ -458,6 +501,17 @@ function handled<T>(promise: Promise<T>): Promise<T> {
  * workflow()'s agents can fail inside the parent's parallel().
  */
 const surfaced = new WeakSet<object>();
+
+/**
+ * Why an agent CLI failed, for its agent_failed event: the failure class and,
+ * when the CLI said, seconds until a retry may work. Nothing for other errors
+ * (a schema that never validated, a stop).
+ */
+function failureFields(err: unknown): { reason?: string; retryAfter?: number } {
+  if (!(err instanceof AdapterExecutionError)) return {};
+  if (err.retryAfter === undefined) return { reason: err.reason };
+  return { reason: err.reason, retryAfter: Math.ceil(err.retryAfter) };
+}
 
 /** A short description of a misused argument, for error messages. */
 function describeValue(value: unknown): string {

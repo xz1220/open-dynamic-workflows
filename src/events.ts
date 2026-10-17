@@ -20,6 +20,9 @@ export const AGENT_FAILED = "agent_failed";
 export const COMMAND_STARTED = "command_started";
 export const COMMAND_FINISHED = "command_finished";
 export const COMMAND_FAILED = "command_failed";
+// checkpoint() waits for a person (ODW extension): every request gets one resolution.
+export const CHECKPOINT_REQUESTED = "checkpoint_requested";
+export const CHECKPOINT_RESOLVED = "checkpoint_resolved";
 
 export interface WorkflowEvent {
   ts: number;

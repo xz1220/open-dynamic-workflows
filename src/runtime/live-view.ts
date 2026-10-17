@@ -21,8 +21,13 @@
  * Stream discipline: ALL narration goes to stderr; stdout carries only the
  * final result JSON (on success), so `odw run … | jq .` keeps working even in
  * the live view.
+ *
+ * A checkpoint() waiting for a person (ODW extension) is narrated with the
+ * exact `odw approve|reject` commands that answer it, and stays in the live
+ * view's active block until it is answered.
  */
 
+import { formatSeconds } from "../adapters/failures.js";
 import type { WorkflowEvent } from "../events.js";
 import {
   cursor,
@@ -93,11 +98,67 @@ export function formatEvent(ev: WorkflowEvent): string {
   else if (type === "phase_started") detail = `phase: ${sanitizeText(ev.phase, 80)}`;
   else if (type.startsWith("agent_")) {
     detail = sanitizeText(ev.label ?? "agent", 120);
-    if (type === "agent_failed") detail += ` — ${sanitizeText(ev.error, 200)}`;
+    if (type === "agent_failed") detail += ` — ${failureTag(ev)}${sanitizeText(ev.error, 200)}`;
     if (type === "agent_finished" && ev.cached === true) detail += ` (replayed from ${sanitizeText(ev.sourceRunId, 80)})`;
   } else if (type.startsWith("command_")) detail = commandDetail(ev, type);
+  else if (type === "checkpoint_requested") {
+    detail = `#${String(ev.checkpointId)} ${sanitizeText(ev.title, 200)}${ev.truncated === true ? " (payload truncated)" : ""}`;
+  } else if (type === "checkpoint_resolved") detail = `#${String(ev.checkpointId)} ${answerText(ev)}`;
   else detail = sanitizeText(ev.error ?? ev.runId ?? "", 200);
   return `[${stamp}] ${type.padEnd(15)}${phase} ${detail}`.trimEnd();
+}
+
+/**
+ * Why an agent failed, ahead of its (truncated) error: `[rate_limit] `, or
+ * `[quota, retry after 3h 22m] ` when the CLI said when; "" without a reason.
+ */
+function failureTag(ev: WorkflowEvent): string {
+  if (typeof ev.reason !== "string" || ev.reason === "") return "";
+  const after = typeof ev.retryAfter === "number" ? `, retry after ${formatSeconds(ev.retryAfter)}` : "";
+  return `[${sanitizeText(ev.reason, 40)}${after}] `;
+}
+
+/** A failure class in the live view's words; "exit" says no more than the error line below it. */
+function reasonText(reason: string | undefined): string | null {
+  if (!reason || reason === "exit") return null;
+  const words: Record<string, string> = {
+    rate_limit: "rate limited",
+    quota: "out of quota",
+    auth: "not logged in",
+    timeout: "timed out",
+    stalled: "stalled",
+    not_found: "CLI not found",
+    permission: "permission denied",
+  };
+  return words[reason] ?? sanitizeText(reason.replace(/_/g, " "), 40);
+}
+
+/**
+ * How a checkpoint was answered: "approved by cli — note", "rejected by
+ * timeout", or — no answer — "not answered: <why>".
+ */
+function answerText(ev: WorkflowEvent): string {
+  if (ev.error != null) return `not answered: ${sanitizeText(ev.error, 200)}`;
+  const note = typeof ev.note === "string" && ev.note !== "" ? ` — ${sanitizeText(ev.note, 200)}` : "";
+  return `${ev.approved === true ? "approved" : "rejected"} by ${sanitizeText(ev.by ?? "?", 20)}${note}`;
+}
+
+/**
+ * The exact commands that answer checkpoint `checkpointId` of a run; `flags`
+ * (e.g. `--runs-root <dir>`) make them find the run from where they are printed.
+ */
+export function checkpointCommands(
+  runId: string,
+  checkpointId: number,
+  flags: string[] = [],
+): { approve: string; reject: string } {
+  const args = [runId, "--checkpoint", String(checkpointId), ...flags].map(shellArg).join(" ");
+  return { approve: `odw approve ${args}`, reject: `odw reject ${args}` };
+}
+
+/** One argument as a POSIX shell would need it typed. */
+function shellArg(arg: string): string {
+  return /^[\w@%+=:,./-]+$/.test(arg) ? arg : `'${arg.replace(/'/g, "'\\''")}'`;
 }
 
 /**
@@ -136,6 +197,8 @@ function nodeLabel(a: AgentView): string {
 
 class LiveView {
   private readonly agents: AgentView[] = [];
+  /** checkpoint() calls waiting for an answer: id → title (sanitized). */
+  private readonly asked = new Map<number, string>();
   private blockLines = 0;
   private tick = 0;
   private labelW = 8;
@@ -150,6 +213,8 @@ class LiveView {
     caps: TermCaps,
     private readonly err: StreamLike,
     private readonly now: () => number,
+    /** What the printed `odw approve|reject` commands need to find the run (`--runs-root`). */
+    private readonly commandFlags: string[] = [],
     private readonly p: Palette = palette(caps),
     private readonly g: Glyphs = glyphs(caps),
   ) {}
@@ -209,6 +274,23 @@ class LiveView {
         out.push(`    ${p.dim(`${g.bullet} ${sanitizeText(ev.message, 300)}`)}`);
         continue;
       }
+      if (ev.type === "checkpoint_requested" && typeof ev.checkpointId === "number") {
+        const title = sanitizeText(ev.title, 120);
+        this.asked.set(ev.checkpointId, title);
+        const { approve, reject } = checkpointCommands(this.runId, ev.checkpointId, this.commandFlags);
+        out.push(
+          `    ${p.run(g.wait)} ${p.bold(title)}  ${p.dim(`checkpoint #${ev.checkpointId} ${g.bullet} waiting for a decision`)}`,
+          `      ${p.dim(`approve: ${approve}`)}`,
+          `      ${p.dim(`reject:  ${reject}`)}`,
+        );
+        continue;
+      }
+      if (ev.type === "checkpoint_resolved" && typeof ev.checkpointId === "number") {
+        const title = this.asked.get(ev.checkpointId) ?? `checkpoint #${ev.checkpointId}`;
+        this.asked.delete(ev.checkpointId);
+        out.push(this.answeredLine(title, ev));
+        continue;
+      }
       const { opened, settled } = applyAgentEvent(this.agents, ev);
       if (opened) {
         const w = sanitizeText(nodeLabel(opened), 60).length;
@@ -236,11 +318,27 @@ class LiveView {
     const meta = metaJoin(g, [
       a.phase !== null && a.phase !== this.currentPhase ? sanitizeText(a.phase, 40) : null,
       a.adapter !== null ? sanitizeText(a.adapter, 40) : null,
+      a.state === "failed" ? reasonText(a.failureReason) : null,
       // A replayed result (odw resume) took no time and ran nothing.
       a.cached ? "replayed" : a.durationMs !== null ? fmtDuration(a.durationMs) : null,
       !a.cached && a.attempts !== null && a.attempts > 1 ? `${a.attempts} tries` : null,
     ]);
     return `    ${glyph} ${label}  ${p.dim(meta)}`;
+  }
+
+  /** A checkpoint's answer in the scrollback: approved, rejected, or not answered (the run ended first). */
+  private answeredLine(title: string, ev: WorkflowEvent): string {
+    const { p, g } = this;
+    if (ev.error != null) {
+      return `    ${p.err(g.fail)} ${title}  ${p.dim(`not answered ${g.bullet} ${sanitizeText(ev.error, 160)}`)}`;
+    }
+    const approved = ev.approved === true;
+    const meta = metaJoin(g, [
+      approved ? "approved" : "rejected",
+      `by ${sanitizeText(ev.by ?? "?", 20)}`,
+      typeof ev.note === "string" && ev.note !== "" ? `"${sanitizeText(ev.note, 120)}"` : null,
+    ]);
+    return `    ${approved ? p.ok(g.ok) : p.run(g.stop)} ${title}  ${p.dim(meta)}`;
   }
 
   /** Redraw the active block (running agents + footer). Call every frame. */
@@ -261,6 +359,11 @@ class LiveView {
       ]);
       block.push(`    ${p.run(spin)} ${label}  ${p.dim(meta)}`);
     }
+    // Every question still open, with the command that answers it.
+    for (const [id, title] of this.asked) {
+      const { approve } = checkpointCommands(this.runId, id, this.commandFlags);
+      block.push(`    ${p.run(g.wait)} ${title}  ${p.dim(`#${id} ${g.bullet} ${approve}`)}`);
+    }
 
     const paused = status.state === "paused";
     const stopping = control === "stop" && !TERMINAL_STATES.has(String(status.state));
@@ -270,12 +373,13 @@ class LiveView {
       `${running.length} running`,
       `${this.done} done`,
       this.failed > 0 ? p.err(`${this.failed} failed`) : null,
+      this.asked.size > 0 ? p.run(`${this.asked.size} waiting for a decision`) : null,
       spent > 0 ? `~${spent} tok` : null,
       fmtElapsed((nowSec - startSec) * 1000),
       stopping ? p.run("stopping…") : null,
       paused ? p.run("paused") : null,
     ]);
-    const head = paused ? p.run(g.stop) : p.run(spin);
+    const head = paused ? p.run(g.stop) : running.length === 0 && this.asked.size > 0 ? p.run(g.wait) : p.run(spin);
     block.push(`  ${head} ${p.dim(parts)}`);
 
     this.eraseBlock();
@@ -331,6 +435,8 @@ export interface AttachOptions {
   signals?: boolean;
   /** Platform override for tests (default process.platform). */
   platform?: NodeJS.Platform;
+  /** Flags the printed `odw approve|reject` commands need to find the run (e.g. `--runs-root <dir>`). */
+  commandFlags?: string[];
 }
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
@@ -372,7 +478,7 @@ export async function attachRun(
     80,
   );
 
-  const view = live ? new LiveView(runId, name, caps, opts.err, now) : null;
+  const view = live ? new LiveView(runId, name, caps, opts.err, now, opts.commandFlags) : null;
 
   let interrupted = false;
   const onSigint = () => {
@@ -449,7 +555,13 @@ export async function attachRun(
       const observed = observer.read();
       if (view) view.applyEvents(observed.events);
       else {
-        for (const ev of observed.events) opts.err.write(formatEvent(ev) + "\n");
+        for (const ev of observed.events) {
+          opts.err.write(formatEvent(ev) + "\n");
+          if (ev.type === "checkpoint_requested" && typeof ev.checkpointId === "number") {
+            const { approve, reject } = checkpointCommands(runId, ev.checkpointId, opts.commandFlags);
+            opts.err.write(`  approve: ${approve}\n  reject:  ${reject}\n`);
+          }
+        }
       }
       const status = observed.status;
       const state = String(status.state ?? "");

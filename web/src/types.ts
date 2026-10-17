@@ -11,7 +11,8 @@ export type RunDisplayState =
   /** Paused at a checkpoint() until someone approves or rejects it. */
   | "waiting";
 
-export type AgentState = "running" | "done" | "failed" | "stale";
+/** `waiting` and `stopped` only occur on checkpoint() nodes the client folds in (checkpoints.ts). */
+export type AgentState = "running" | "done" | "failed" | "stale" | "waiting" | "stopped";
 
 /** Tallies over every graph node: `agents` includes exec() command steps. */
 export interface RunCounts {
@@ -41,6 +42,8 @@ export interface RunSummary {
   lastActivityTs: number | null;
   /** Token/cost totals when adapters report them (`estimated` when some only had chars/4). */
   usage?: UsageTotals | null;
+  /** The oldest checkpoint() waiting for a person, while the run is `waiting`. */
+  waiting?: { checkpointId: number; title: string; since: number } | null;
 }
 
 /** Normalized usage, as adapters report it. */
@@ -69,8 +72,12 @@ export interface AgentView {
   agentId?: number | null;
   /** The value was replayed from an earlier run by `odw resume`. */
   cached?: boolean;
-  /** `exec()` steps fold into the same list as agents (ODW extension). */
-  kind?: "agent" | "command";
+  /** `exec()` steps fold into the same list as agents, and the client adds checkpoint() gates (ODW extensions). */
+  kind?: "agent" | "command" | "checkpoint";
+  /** A checkpoint node's id, its payload and the person's answer once given. */
+  checkpointId?: number | null;
+  payload?: unknown;
+  decision?: { approved: boolean; note: string | null; by: string | null } | null;
   /** A command step's per-run id (its `agentId` is null). */
   commandId?: number | null;
   /** A command step's exit code once it settled. */
@@ -79,6 +86,10 @@ export interface AgentView {
   failureReason?: string | null;
   /** What the adapter reported spending on this agent. */
   usage?: Usage | null;
+  /** What an isolated (worktree) agent changed; its diff is served separately. */
+  changes?: AgentChanges | null;
+  /** The branch its changes were kept on (`keep: true`), when any. */
+  branch?: string | null;
   label: string;
   phase: string | null;
   state: AgentState;
@@ -88,6 +99,15 @@ export interface AgentView {
   startedAt: number | null;
   finishedAt: number | null;
   durationMs: number | null;
+}
+
+/** The diffstat of a worktree agent's changes (ODW extension). */
+export interface AgentChanges {
+  files: number;
+  insertions: number;
+  deletions: number;
+  /** The stored diff was cut at the size cap. */
+  truncated?: boolean;
 }
 
 export interface RunDetail extends RunSummary {
@@ -131,13 +151,13 @@ export interface SettingsSnapshot {
   }>;
   /**
    * Run-completion hooks (ODW extension): whether a command is set, the
-   * webhook as scheme + host only (its path/query are secret), and which
-   * terminal states fire them.
+   * webhook as scheme + host only (its path/query are secret), and what fires
+   * them — terminal states, and (opt-in) "waiting": a checkpoint() waits.
    */
   notify: {
     command: boolean;
     webhook: string | null;
-    on: Array<"done" | "failed" | "stopped">;
+    on: Array<"done" | "failed" | "stopped" | "waiting">;
   };
 }
 
@@ -255,4 +275,6 @@ export interface AgentResultRecord {
   /** Replayed from an earlier run by `odw resume`. */
   cached?: boolean;
   sourceRunId?: string | null;
+  changes?: AgentChanges | null;
+  branch?: string | null;
 }

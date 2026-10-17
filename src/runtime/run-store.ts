@@ -18,6 +18,9 @@
  *     result.json    final return value (on success)
  *     error.json     message + stack (on failure)
  *     control.json   pause/resume/stop request written by the CLI
+ *     decisions.jsonl  answers to checkpoint() calls, appended by `odw approve|reject` and
+ *                    the dashboard: one { action: approve|reject, checkpointId?, note?,
+ *                    by, at } per line
  *     worker.log     the worker process's stdout/stderr
  *
  * A `runId` is globally unique, so it stays the public handle: `runDir(runId)`
@@ -41,6 +44,7 @@ import {
 } from "node:fs";
 import { basename, join } from "node:path";
 
+import { isCheckpointRequest, type CheckpointRequest } from "../control.js";
 import type { EventSink, WorkflowEvent } from "../events.js";
 import type { AgentResultRecord } from "../journal.js";
 import { readdirSafe, readJsonFile, writeJsonAtomic } from "./fs-util.js";
@@ -54,6 +58,7 @@ const EVENTS = "events.jsonl";
 const RESULT = "result.json";
 const ERROR = "error.json";
 const CONTROL = "control.json";
+const DECISIONS = "decisions.jsonl";
 const LOG = "worker.log";
 const AGENTS = "agents";
 const AGENT_FILE = /^(\d+)\.json$/;
@@ -184,6 +189,9 @@ export class RunStore {
   }
   controlPath(runId: string): string {
     return join(this.runDir(runId), CONTROL);
+  }
+  decisionsPath(runId: string): string {
+    return join(this.runDir(runId), DECISIONS);
   }
 
   // --- meta & status ---------------------------------------------------------
@@ -343,6 +351,36 @@ export class RunStore {
   readControl(runId: string): string | null {
     const payload = readJsonFile(this.controlPath(runId));
     return payload === null ? null : ((payload.action as string) ?? null);
+  }
+  /**
+   * Answer a waiting checkpoint() (ODW extension): one line appended to the
+   * run's decisions.jsonl, stamped with `at`. Appending rewrites nothing, so
+   * neither a stop or pause written to control.json at the same moment nor
+   * another answer can be lost to it. The worker takes each request once (see
+   * FileControl).
+   */
+  requestCheckpointDecision(runId: string, request: Omit<CheckpointRequest, "at">): void {
+    appendFileSync(this.decisionsPath(runId), JSON.stringify({ ...request, at: now() }) + "\n");
+  }
+  /** The checkpoint answers written so far, oldest first; a malformed line, or one mid-append, is left out. */
+  readCheckpointRequests(runId: string): CheckpointRequest[] {
+    let text: string;
+    try {
+      text = readFileSync(this.decisionsPath(runId), "utf8");
+    } catch {
+      return []; // none written yet
+    }
+    const out: CheckpointRequest[] = [];
+    for (const line of text.split("\n")) {
+      if (!line.trim()) continue;
+      try {
+        const request = JSON.parse(line) as unknown;
+        if (isCheckpointRequest(request)) out.push(request);
+      } catch {
+        // A line still being appended: the next read sees it whole.
+      }
+    }
+    return out;
   }
 
   // --- listing ---------------------------------------------------------------

@@ -106,6 +106,8 @@ export interface Glyphs {
   ok: string;
   fail: string;
   stop: string;
+  /** A checkpoint() waiting for a person. */
+  wait: string;
   bullet: string;
   header: string;
   rule: string;
@@ -118,6 +120,7 @@ export function glyphs(caps: TermCaps): Glyphs {
         ok: "✔",
         fail: "✖",
         stop: "■",
+        wait: "◇",
         bullet: "·",
         header: "◆",
         rule: "─",
@@ -127,6 +130,7 @@ export function glyphs(caps: TermCaps): Glyphs {
         ok: "ok",
         fail: "x",
         stop: "#",
+        wait: "?",
         bullet: "-",
         header: "*",
         rule: "-",

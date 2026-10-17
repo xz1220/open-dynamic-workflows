@@ -14,7 +14,7 @@
 import { glyph } from "./components/glyph";
 import { t } from "./i18n";
 import type { AgentView, RunDetail } from "./types";
-import { esc, fmtDurSec } from "./util";
+import { esc, fmtDurSec, fmtTokens } from "./util";
 
 export const NODE_W = 196;
 const NODE_H = 58;
@@ -39,6 +39,16 @@ function laneTitles(run: RunDetail): string[] {
 }
 
 function subLine(a: AgentView, nowSec: number): string {
+  if (a.kind === "checkpoint") {
+    if (a.state === "waiting") {
+      return [t("waiting for a person"), a.startedAt != null ? fmtDurSec(nowSec - a.startedAt) : ""].filter(Boolean).join(" · ");
+    }
+    if (a.decision) {
+      const verdict = a.decision.approved ? t("approved") : t("rejected");
+      return [verdict, a.decision.by ? t(a.decision.by) : "", a.decision.note ? `“${a.decision.note}”` : ""].filter(Boolean).join(" · ");
+    }
+    return a.error ? a.error.split("\n")[0]!.slice(0, 80) : t("not answered");
+  }
   if (a.kind === "command") {
     const dur =
       a.state === "running" && a.startedAt != null
@@ -144,9 +154,9 @@ export function renderDag(
       const path = `M${x1} ${y1} C${mx} ${y1} ${mx} ${y2} ${x2} ${y2}`;
       const key = `e-${s.ai}-${d.ai}`;
       edges.push(`<path class="edge ${esc(d.state)}" data-key="${key}" d="${path}" pathLength="1"/>`);
-      if (d.state === "running") {
-        flows.push(`<path class="flow" data-key="f-${key}" d="${path}" pathLength="1"/>`);
-        if (opts.motion) {
+      if (d.state === "running" || d.state === "waiting") {
+        flows.push(`<path class="flow${d.state === "waiting" ? " wait" : ""}" data-key="f-${key}" d="${path}" pathLength="1"/>`);
+        if (opts.motion && d.state === "running") {
           flows.push(
             `<circle class="spark" data-key="s-${key}" r="3"><animateMotion dur="1.6s" repeatCount="indefinite" path="${path}"/></circle>`,
           );
@@ -174,9 +184,9 @@ export function renderDag(
       const sel = selectedAi === p.ai ? " selected" : "";
       const dim = selectedAi != null && selectedAi !== p.ai ? " dim" : "";
       parts.push(
-        `<div class="node ${esc(a.state)}${a.kind === "command" ? " cmd" : ""}${sel}${dim}" data-ai="${p.ai}" data-key="n-${p.ai}" tabindex="0" role="button" aria-pressed="${selectedAi === p.ai}" ` +
+        `<div class="node ${esc(a.state)}${a.kind === "command" ? " cmd" : a.kind === "checkpoint" ? " cp" : ""}${sel}${dim}" data-ai="${p.ai}" data-key="n-${p.ai}" tabindex="0" role="button" aria-pressed="${selectedAi === p.ai}" ` +
           `style="left:${p.x}px;top:${p.y}px;width:${NODE_W}px" title="${esc(a.label)}">` +
-          `<div class="h">${glyph(a.state)}<span class="lbl">${a.kind === "command" ? `<span class="prompt">$</span> ` : ""}${esc(a.label)}</span>${a.cached ? `<span class="cached" title="${esc(t("replayed from an earlier run"))}">↺</span>` : ""}</div>` +
+          `<div class="h">${glyph(a.state)}<span class="lbl">${a.kind === "command" ? `<span class="prompt">$</span> ` : ""}${esc(a.label)}</span>${a.changes?.files ? `<span class="ndelta" title="${esc(t("lines changed"))}"><b class="ins">+${fmtTokens(a.changes.insertions)}</b><b class="del">−${fmtTokens(a.changes.deletions)}</b></span>` : ""}${a.cached ? `<span class="cached" title="${esc(t("replayed from an earlier run"))}">↺</span>` : ""}</div>` +
           `<div class="sub">${esc(subLine(a, opts.nowSec))}</div></div>`,
       );
     }

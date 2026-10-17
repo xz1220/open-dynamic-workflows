@@ -38,7 +38,8 @@ export const ACTIVITY_MAX_LIMIT = 200;
 /** How many of the newest runs feed the event firehose. */
 export const ACTIVITY_RECENT_RUNS = 12;
 
-const ACTIVE_STATES = new Set(["pending", "running", "paused"]);
+// "waiting": a checkpoint() waits for a person, while other agents may run on.
+const ACTIVE_STATES = new Set(["pending", "running", "paused", "waiting"]);
 
 /** `?limit=` → [1, ACTIVITY_MAX_LIMIT]; junk or absent → the default. */
 export function activityLimit(param: string | null): number {

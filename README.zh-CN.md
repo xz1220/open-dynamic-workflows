@@ -70,7 +70,8 @@ workflow,就成了你在任何 agent 上都能跑的资产。
 - **可靠的交接** —— JSON-Schema 结构化输出,自动校验与重试,让多阶段流水线稳定组合,而
   不是在自由文本上碰运气。
 - **后台运行、可观测** —— 每次运行都是一个 detached worker + run 目录:`status`、
-  `logs --follow`、`result`、`pause` / `stop`。
+  `logs --follow`、`result`、`pause` / `stop`,以及在人工 `checkpoint()` 处等待时的
+  `approve` / `reject`。
 - **无线程、零运行时依赖** —— 引擎是异步 TypeScript(`parallel` 就是 `Promise.all`);
   workflow 脚本保持纯 `.js`,并附带 `.d.ts` 类型供编辑器补全。
 
@@ -213,6 +214,7 @@ odw run examples/fan-out-reduce.js --wait --args '{"question": "Design a rate li
 | `workflow(ref, args?)` | 内联调用另一个 workflow(仅一层)。子 workflow 共享本次运行的并发上限、agent 计数与预算;其 phase 以独立泳道归组。 |
 | `validate(source)` | 解析并编译检查可信源码,不运行工作流正文;元数据按纯字面量解析,不会被求值。**ODW 扩展**(不属于 Claude Code 方言)。 |
 | `exec(command, opts?)` | 不启动模型直接运行一条命令——测试、构建、linter;返回 `{ stdout, stderr, exitCode, signal, timedOut, truncated, durationMs }`。字符串经 shell 执行,数组按 argv 执行。受 `timeout`(600 秒)和 `maxOutputBytes`(每个输出流 8 MiB)约束;停止会杀掉它。不占 agent 槽位。**ODW 扩展**(不属于 Claude Code 方言)。 |
+| `checkpoint(title, opts?)` | 暂停运行,直到有人批准或拒绝——用 `odw approve\|reject` 或看板——然后返回 `{ approved, note, by }`。`opts`:`payload`(要给人看的内容)、`timeout`(秒)和 `onTimeout`(`"approve"`、`"reject"`,或默认的 `"fail"`)。不占 agent 槽位;停止依然会结束运行。见[人工检查点](#人工检查点odw-扩展)。**ODW 扩展**(不属于 Claude Code 方言)。 |
 
 下一步需要"全量结果一次到位"(去重、计票、综合)时用 **`parallel`**;多阶段处理默认用
 **`pipeline`**。归并要保持顺序无关——按"谁先跑完"分支会破坏可复现性。完整参考见
@@ -227,14 +229,15 @@ ODW 已实现下列原语能力。依赖宿主私有运行机制的脚本,迁移
 | 嵌套 `workflow()` | 已实现一层嵌套,共享父任务的调度器、控制和预算。更深层的调用需要展平。 |
 | 模型选择 | 在 `agent(..., {model})` 中传该 CLI 的模型 ID。`meta.model` 和阶段元数据不设置执行模型;适配器没有模型参数时会记录路由说明。 |
 | `agentType` | 将人设加入提示词,不会加载宿主的同名子 agent 配置或选择适配器。 |
-| 工作区隔离 | 从已保存的 HEAD 创建临时工作区,不含未保存修改,结束后清理。不会自动合并,`agent()` 返回回复而非 diff;需保留的交付物应放进回复或显式持久化。 |
+| 工作区隔离 | 从已保存的 HEAD 创建临时工作区,不含未保存修改,结束后清理。不会自动合并,`agent()` 返回回复而非 diff;需保留的交付物应放进回复或显式持久化。支持 `.worktreeinclude`(ODW 连未跟踪文件也复制,而不只是被 gitignore 的文件);其中的 `symlink:` 行、`worktreeSetup` 和 agent 的 `ODW_PORT` 是 ODW 扩展——见[隔离 worktree](#隔离-worktree-与-agent-端口)。 |
 | 预算 | 按 `ceil(字符数 / 4)` 估算所有回复的输出 token,包括 schema 重试(不计输入和失败调用)。每次派发和每次 schema 重试前都会检查;预算用尽时运行结束,仍在运行的 agent 会被停止。 |
 | JSON Schema | 只校验[已列出的子集](skills/open-dynamic-workflows/zh-CN/references/primitives.md#schema)。`$ref`、`const`、`oneOf` 等约束不会生效;请明确声明对象/数组类型并使用受支持的约束。 |
 | 脚本可信性 | 只运行可信脚本:运行工作流会把正文当作普通 JavaScript 执行。加载时元数据按纯字面量解析,不会被求值;编译检查和兼容性警告都不提供沙箱隔离。 |
 | 恢复 | 每个完成的 `agent()` 结果都会在完成时保存。`odw resume` 让已暂停且仍存活的 worker 原地继续;对已结束的运行(done、failed、stopped,或崩溃后的 stale)则启动一个新运行:prompt 和选项都没变的调用直接重放,其余照常执行。`rerun` 从头执行。见[恢复运行](#恢复运行odw-扩展)。 |
 
-原语名称一致不代表运行机制完全等价。`validate(source)` 和 `exec(command)` 是 ODW 扩展,
-迁移到未提供它们的宿主时需要去掉(`validate()` 会对 `exec()` 调用给出 warning)。可恢复失败产生的 `null` 需要显式处理：接受部分结果、重试,或在要求完整
+原语名称一致不代表运行机制完全等价。`validate(source)`、`exec(command)` 和 `checkpoint(title)`
+是 ODW 扩展,迁移到未提供它们的宿主时需要去掉(`validate()` 会对 `exec()` 和 `checkpoint()`
+调用给出 warning)。可恢复失败产生的 `null` 需要显式处理：接受部分结果、重试,或在要求完整
 交付时报告失败。
 
 ## 运行与观测
@@ -261,6 +264,7 @@ odw agents $RUN          # 每个 agent 及其已保存的结果,运行中也可
 odw logs $RUN --follow   # 流式输出原始进度事件
 odw result $RUN          # 最终值
 odw pause|resume|stop $RUN
+odw approve|reject $RUN  # 回答运行正在等待的 checkpoint()(--note TEXT、--checkpoint N)
 odw list
 ```
 
@@ -318,6 +322,52 @@ odw resume $RUN              # 启动一个新运行,重放每个未改动的 ag
 `--config`、`--runs-root`。看板通过 `GET /api/runs/:id/agents` 和
 `GET /api/runs/:id/agents/:agentId` 提供同样的记录。
 
+分步演练——读取已完成的部分、停掉卡住的、修复、再 resume:
+[`docs/recipes/recover-a-run.md`](docs/recipes/recover-a-run.md)。
+
+### 人工检查点(ODW 扩展)
+
+Claude Code 的 workflow 一旦启动就不再接受输入。`checkpoint()` 让运行停在需要人看一眼的
+地方——在昂贵的扇出之前批准计划,或叫停一次跑偏的运行——并持久地等待答复:
+
+```js
+const plan = await agent('Plan the migration as independent steps.', { schema: PLAN })
+const { approved, note } = await checkpoint('Run this migration plan?', { payload: plan })
+if (!approved) return { skipped: true, why: note }
+await parallel(plan.steps.map((step) => () => agent(step.instructions)))
+```
+
+等待期间,运行在 `odw status`、`odw list`、实时视图和看板里显示为 **waiting**。其他一切
+照常:已在运行的 agent 继续,等待中的检查点不占 agent 槽位、不耗预算,`odw stop` 依然
+可以结束运行。可以在任意 shell 里回答:
+
+```bash
+odw status $RUN       # 问题、它的 payload,以及回答它的确切命令
+odw approve $RUN      # 最早在等待的检查点;--checkpoint N 指定某一个
+odw reject $RUN --note "Keep the old table until the backfill is verified"
+```
+
+也可以在看板里该运行的页面上点 **Approve** / **Reject**(仅限 loopback 绑定;它向
+`POST /api/runs/:id/checkpoint` 发送 `{ action, checkpointId?, note? }`;
+`GET /api/runs/:id` 会列出 `pendingCheckpoints`,运行列表则用 `waiting` 标出每个等待中
+运行最早的那个问题)。调用返回 `{ approved, note, by }`
+——`by` 是 `cli`、`dashboard` 或 `timeout`——拒绝也是一个答复而不是错误:"不"意味着
+什么由脚本决定。
+
+- `payload` 可以是任意 JSON 值——计划、改动摘要——最多保留 64 KiB。
+- `timeout`(秒)为无人值守的运行限定等待时长;超时后由 `onTimeout` 批准、拒绝,或(默认
+  的 `"fail"`)抛出脚本可以捕获的 `CheckpointTimeout`。
+- 多个检查点可以同时等待(在 `parallel()` 里),各有自己的编号。
+- `odw resume` 永远不会重放检查点:恢复出来的运行会重新提问。
+- `odw run --wait` 会在检查点等待期间一直阻塞;它会把命令打印一次,请在另一个 shell
+  里回答(或用 `--timeout` 限定等待时长)。
+- 运行会记录 `checkpoint_requested` 和 `checkpoint_resolved` 事件,`status.json` 里的
+  `waiting` 指向最早一个仍在等待的检查点。在 [`notify.on`](#运行通知) 里加上
+  `"waiting"`,你的 hook 就会收到每一个检查点。
+
+[`examples/plan-approve-execute.js`](examples/plan-approve-execute.js) 是完整的
+计划 → 批准 → 执行循环,附带说明的拒绝会触发重新规划。
+
 ## 看板:观测、检查、对话
 
 看板的视觉像一张印刷品——纸、墨和一种信号色——也可以随时切换到夜间主题。它提供:
@@ -331,6 +381,8 @@ odw resume $RUN              # 启动一个新运行,重放每个未改动的 ag
   形式的**结果**,以及展示每个已完成 agent 自身输出的 **agent 抽屉**——输出在完成时
   就已保存,运行中即可查看;重放的 agent 标记为 ↺。`exec()` 命令步骤以终端风格的节点
   (带退出码)出现在同一张图和时间线里;运行的计数包含它们(它们不算 agent 派发)。
+  在 `checkpoint()` 处等待的运行会在图上方显示问题和它的 payload;看板可写时还提供
+  **Approve** / **Reject** 和附言。
 - **Workspace** —— 所有已保存的工作流:阶段的静态结构及每个阶段调用的原语、源码和最近的运行。
 - **Chat Host** —— 正常的 Codex 对话;提到 ODW 或 workflow 时,该回合会关联到一个真实的后台
   运行,工具卡片实时更新。
@@ -354,6 +406,16 @@ odw resume $RUN              # 启动一个新运行,重放每个未改动的 ag
     <td width="50%">
       <strong>夜间主题</strong><br />
       <img src="assets/app-screenshots/job-detail-dark.png" alt="夜间主题下的实时运行图,信号边带有发光效果" />
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
+      <strong>待你处理</strong><br />
+      <img src="assets/app-screenshots/needs-you.png" alt="Activity 页面的待你处理:一个停在检查点等待审阅的运行,以及一个可以复制 resume 命令的失败运行" />
+    </td>
+    <td width="50%">
+      <strong>检查点</strong><br />
+      <img src="assets/app-screenshots/checkpoint.png" alt="停在检查点的运行:审批卡片里是问题和附带内容,带批准与拒绝按钮;图中 Approve 泳道里是一个琥珀色的关卡节点" />
     </td>
   </tr>
 </table>
@@ -455,6 +517,57 @@ Windows 下的可执行文件探测遵循 `PATHEXT`,所以 `agent.cmd`、`kilo.c
 (例如 `kilo`、`opencode` 这类 JSONL 适配器,或会打印心跳的包装脚本),并把值设得高于
 健康 agent 最长的静默时段——工具调用里跑一轮很长的测试,同样不会有任何输出。
 
+### 限流、额度与登录
+
+**ODW 扩展。** 每个失败的 agent 都会根据其 CLI 的退出状态和输出末尾被归类:`rate_limit`、
+`quota`、`auth`、`timeout`、`stalled`、`not_found`(CLI 无法启动)、`permission`(工具
+调用或审批被拒)或 `exit`。这个类别就是 `agent_failed` 事件上的 `reason`(CLI 说明了何时
+可以重试时,还带有以秒计的 `retryAfter`),也是看板和 `/api/runs/:id` 里该 agent 的
+`failureReason`,并显示在实时视图和 `odw logs` 中:
+
+```text
+agent_failed    (Search) search — [quota, retry after 3h 22m] AdapterExecutionError: adapter 'codex' ran out of usage quota — wait for the window to reset (in 3h 22m) and resume the run, or switch adapter with --adapter <name>: You've hit your usage limit…
+```
+
+- **限流**——HTTP 429/529、"too many requests"、"overloaded"、Gemini 的
+  `RESOURCE_EXHAUSTED`——会被扛过去:ODW 先等待,再重新运行这个 agent,每次 `agent()`
+  调用最多 `transientRetries` 次(默认 3)。等待时长取 CLI 打印的 retry-after
+  (`Retry-After: 30`、"try again in 2 minutes"、"resets at 7:10pm"),否则按指数退避
+  (15s、30s、60s……),再加最多 20% 的随机抖动,且单次绝不超过 `maxBackoff` 秒(默认
+  300);CLI 要求等得比这更久时,不会提前重试。每次等待都会记一条日志
+  (`search:3 hit a rate limit on codex — retrying in 45s (2/3)`);停止会立刻结束等待,
+  暂停的运行要等恢复后才开始重试。
+- **额度用尽和登录失败**从不重试。错误信息会说明该怎么做——等额度窗口重置、登录该 CLI,
+  或用 `--adapter` 换一个适配器——运行本身继续,因为其他适配器可能完全正常。同一个适配器
+  上连续三个 agent 都这样失败时,运行会记一条警告;之后用 `odw resume` 会重放所有已完成
+  的 agent。一分钟内就会恢复的"额度"(Gemini 免费档就是这样描述它的每分钟限额的)按它
+  实际上的限流来处理。
+
+Claude Code 的文本模式会把某些 API 错误当作回复打印出来并以 0 退出
+(`API Error: Rate limit reached`):一条简短、内容只有这类限流、额度或登录错误的回复,
+会被算作对应的失败,而绝不会被当成 agent 的答案。
+
+ODW 能识别的措辞——从每个内置 CLI 的源码和 issue 中收集而来——集中在一张表里:
+[`src/adapters/failures.ts`](src/adapters/failures.ts)。用适配器的 `failures` 教它
+认识你自己 CLI 的措辞:按类别给出正则表达式,先于内置表、不区分大小写地匹配。
+
+```jsonc
+{
+  "transientRetries": 3, // 限流后每次 agent() 调用的重试次数;0 = 从不重试
+  "maxBackoff": 300, // 单次等待的最长秒数
+  "adapters": {
+    "my_wrapper": {
+      "command": ["my-agent", "{prompt}"],
+      "failures": {
+        "rate_limit": ["server busy", "E_THROTTLED"],
+        "quota": ["monthly tokens? (used up|exhausted)"],
+        "auth": ["session expired"]
+      }
+    }
+  }
+}
+```
+
 ### 运行通知
 
 **ODW 扩展。** `notify` 会在一次运行结束时执行一条命令和/或向一个 webhook 发送 POST,
@@ -464,7 +577,7 @@ Windows 下的可执行文件探测遵循 `PATHEXT`,所以 `agent.cmd`、`kilo.c
 "notify": {
   "command": ["/usr/local/bin/odw-notify"],        // 参数向量,不经过 shell 执行
   "webhook": "https://hooks.slack.com/services/…", // Slack、Discord 或任何接收 JSON 的端点
-  "on": ["done", "failed", "stopped"]              // 默认:所有终态
+  "on": ["done", "failed", "stopped"]              // 默认:所有终态;"waiting" 需显式加入
 }
 ```
 
@@ -492,6 +605,64 @@ Windows 下的可执行文件探测遵循 `PATHEXT`,所以 `agent.cmd`、`kilo.c
 Slack 和 Discord 的 incoming webhook 能直接渲染(同时设置了 Discord 的
 `allowed_mentions`,一次运行永远不会 @ 到任何人)。看板的设置页会显示配置了哪些
 hook——webhook 只显示协议和主机,因为 URL 的其余部分就是密钥。
+
+在 `on` 里加上 `"waiting"`,就能在每个 [`checkpoint()`](#人工检查点odw-扩展) 开始等人
+回答时收到通知。此时 hook 会对每个检查点触发一次,运行照常等待:命令的环境变量带有
+`ODW_RUN_STATE=waiting`、`ODW_CHECKPOINT_ID` 和 `ODW_CHECKPOINT_TITLE`(没有
+`ODW_RESULT_FILE`);webhook 收到 `"state": "waiting"`、一个
+`"checkpoint": { "checkpointId", "title", "since" }` 字段(代替 `finishedAt`),以及一行
+写明回答命令的 `text`。
+
+Slack、Discord、ntfy 和桌面横幅的现成配置见
+[`docs/recipes/notify.md`](docs/recipes/notify.md)。
+
+### 隔离 worktree 与 agent 端口
+
+`agent(prompt, { isolation: "worktree" })` 让这个 agent 在一个一次性的 git worktree 里
+运行:它是 HEAD 的干净检出,没有你源目录里的 `.env`、`.venv` 或 `node_modules`。agent
+启动前,有两样东西把它准备好:
+
+- **`.worktreeinclude`**:放在仓库根目录(Claude Code 也读这个文件),用 `.gitignore`
+  语法列出要带进来的东西。git 不跟踪、且被某一行匹配到的每个文件或目录都会复制进
+  worktree(Claude Code 只复制被 gitignore 的文件;ODW 连单纯未跟踪的文件也复制)。
+  `.git` 永远不复制,超过 100 MB 的文件会被跳过并记一行日志。`symlink:` 前缀(**ODW
+  扩展**)把该行匹配到的东西链接过去而不是复制:对大目录瞬间完成,但它是共享的——agent
+  往里写的东西会落到你的源目录。
+- **`worktreeSetup`**(**ODW 扩展**):文件就位后在 agent 的工作区里运行,字符串交给
+  平台 shell,数组作为 argv。超过 `worktreeSetupTimeout` 秒(默认 600)就会被杀掉;
+  setup 失败或超时,失败的是这个 agent 而不是整个运行,错误里带着它输出的结尾。
+
+```gitignore
+# .worktreeinclude
+.env
+.env.local
+config/secrets.json
+symlink: node_modules
+```
+
+```jsonc
+{
+  "worktreeSetup": "npm run codegen", // 或一个 argv,例如 ["uv", "sync"]
+  "worktreeSetupTimeout": 600,
+  "portRange": [41000, 41999]
+}
+```
+
+每个 agent 进程——不论是否隔离——还会拿到 `ODW_RUN_ID`、`ODW_AGENT_ID` 和 `ODW_PORT`
+(**ODW 扩展**)。`ODW_PORT` 来自 `portRange`:本次运行中没有其他正在运行的 agent 占用
+它(已经有程序在监听的端口会被跳过),并且直到这次调用结束都归这个 agent 所有。所以并排
+运行的 agent 可以各自起一个 dev server:
+
+```js
+await parallel(['grid', 'list'].map((layout) => () =>
+  agent(`Build the ${layout} layout, start the dev server on port $ODW_PORT and check that the page renders.`,
+    { isolation: 'worktree', label: layout })))
+```
+
+setup 命令拿到同样的三个变量,`exec()` 命令拿到 `ODW_RUN_ID`。请让 `portRange` 比
+`concurrency` 更宽:如果其他 agent 占满了所有端口,新启动的 agent 就不带 `ODW_PORT`
+运行,运行日志里会说明。一次调用的每次尝试(schema 重试、卡死重启、限流重试)都从一个新的
+worktree 开始,并以同样方式准备。
 
 ## 工作原理
 
@@ -548,6 +719,7 @@ workflow 脚本始终是**纯 `.js`**、从不编译;引擎用 **TypeScript** �
 | [`codex-claude-loop.js`](examples/codex-claude-loop.js) | 两个对家 CLI 回合制对弈:Claude 实现,Codex 评审,循环直到签收 |
 | [`agent-daily-digest.js`](examples/agent-daily-digest.js) | 发现信息源 → 并行提取 → 综合 → 核查 |
 | [`test-fix-loop.js`](examples/test-fix-loop.js) | 用 `exec()` 跑测试 → agent 修复失败 → 重跑直到全绿(仅 ODW) |
+| [`plan-approve-execute.js`](examples/plan-approve-execute.js) | agent 起草计划 → 有人在 `checkpoint()` 处批准(附说明的拒绝会重新规划)→ 并行执行 → 汇报(仅 ODW) |
 
 ## 开发
 
@@ -592,6 +764,17 @@ node web/dev.mjs --api http://127.0.0.1:4317     # → http://127.0.0.1:5173
 ## 状态
 
 **`main` 上的新内容(2026 年 10 月):**
+- **人工检查点。** `checkpoint()` 会让运行暂停,直到有人批准或拒绝——通过
+  `odw approve|reject`、看板,或可选的 `waiting` 钩子——让计划在昂贵的 fan-out 之前先
+  得到一个"可以"(ODW 扩展;见 [`plan-approve-execute.js`](examples/plan-approve-execute.js))。
+- **扛过限流。** 每次 agent 失败都会被分类(限流、额度、登录、超时、卡死……)。被限流的
+  CLI 会按退避时间重试并遵守它给出的 retry-after;额度耗尽或登录失败则立即失败并说明该
+  怎么做——`odw logs`、实时视图和看板里都能看到,连同恢复时间。
+- **开箱即用的 worktree。** `.worktreeinclude` 会把 `.env`、`node_modules` 等复制或链接
+  进隔离 agent 的 worktree,`worktreeSetup` 运行你的初始化命令,每个 agent 都有自己的
+  `$ODW_PORT`。
+- 看板 Activity 页新增 **"待你处理"**:等待决定的运行,以及过去一天失败的运行和接着跑的
+  `odw resume` 命令。
 - **可恢复的运行。** 每个 agent 完成时结果即落盘——运行中就能用 `odw agents` /
   `odw result <run> --agent <id|label>` 或看板查看;`odw resume <run>` 会启动新运行并
   重放所有未变的 `agent()` 调用,卡住或失败的运行只需重跑改动的部分(#24)。
@@ -613,11 +796,6 @@ node web/dev.mjs --api http://127.0.0.1:4317     # → http://127.0.0.1:5173
 
 **0.5.0 开发版：**排队任务在真正启动前重新检查暂停、停止和预算;等待命令能识别后台进程
 已退出。升级时二进制与 skill 固定同一版本,替换失败恢复旧文件;源码构建显示具体修订号。
-
-**下一版(未发版):**每个已完成 agent 的结果都会**在完成时保存**——`odw agents`、
-`odw result --agent` 和看板在运行中即可读取——`odw resume` 则把已结束的运行变成一个新运行,
-**重放**每个未改动的 `agent()` 调用,卡住或失败的运行不必再从头开始
-([#24](https://github.com/xz1220/open-dynamic-workflows/issues/24))。
 
 **最新(`main` 上,未发版):**在交互式终端里,`odw run` 现在会直接挂上**前台实时视图**
 ——Ctrl-C 只脱离不杀任务,`odw attach` 随时挂回,管道/CI 下仍保持先拿 run id 再轮询的
@@ -643,9 +821,9 @@ node web/dev.mjs --api http://127.0.0.1:4317     # → http://127.0.0.1:5173
 ### 路线图
 
 按并行 coding agent 用户反馈的需求排序([调研](docs/research/user-needs-2026-10.md)):
-adapter 上报的真实 token 用量与花费(当前预算按估算计量)· 感知限流/额度的重试与
-有类型的失败 · 无头运行的"成功证据" · 隔离 agent 改动的审阅与合并 · 人工 `checkpoint()` ·
-worktree 环境准备与每个 agent 的端口 · 调度与评测。完整规划见 [`docs/ROADMAP.md`](docs/ROADMAP.md);
+adapter 上报的真实 token 用量与花费(当前预算按估算计量)· 隔离 agent 改动的审阅与合并 ·
+调度 · 无头运行的"成功证据" · 每个 agent 的 transcript · 只读/编辑/完全三档权限 ·
+原生结构化输出 · 按阶段指定适配器与回退链 · 评测。完整规划见 [`docs/ROADMAP.md`](docs/ROADMAP.md);
 最初的设计见 [`docs/dynamic-workflows-tech-plan.md`](docs/dynamic-workflows-tech-plan.md);
 ODW 所对齐的 Claude Code 方言背景见
 [`docs/dynamic-workflows-research.md`](docs/dynamic-workflows-research.md)。

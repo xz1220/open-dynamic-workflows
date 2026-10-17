@@ -62,6 +62,13 @@ export const api = {
   /** A completed agent's persisted output (404 when the server or run has none). */
   agentResult: (id: string, agentId: number) =>
     getJSON<AgentResultRecord>(`/api/runs/${enc(id)}/agents/${agentId}`),
+  /** An isolated agent's unified diff as text; null when it changed nothing (or the server keeps no diffs). */
+  agentDiff: async (id: string, agentId: number): Promise<string | null> => {
+    const r = await fetch(`/api/runs/${enc(id)}/agents/${agentId}/diff`, { headers: { accept: "text/plain" } });
+    if (r.status === 404) return null;
+    if (!r.ok) throw new Error(`diff of agent ${agentId} → ${r.status}`);
+    return r.text();
+  },
   workflows: () => getJSON<WorkflowSummary[]>("/api/workflows"),
   workflow: (name: string, provider?: string) =>
     getJSON<WorkflowDetail>(`/api/workflows/${enc(name)}${provider ? `?provider=${enc(provider)}` : ""}`),

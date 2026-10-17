@@ -48,7 +48,7 @@ import { COMMAND_FAILED, COMMAND_FINISHED, COMMAND_STARTED, event } from "./even
 export interface ExecOptions {
   /** Working directory; a relative path resolves against the run's source directory (the default). */
   cwd?: string;
-  /** Extra environment variables, layered over the worker's environment. */
+  /** Extra environment variables, layered over the worker's environment and the run's `ODW_RUN_ID`. */
   env?: Record<string, string>;
   /** Seconds before the command and everything it started are killed (default 600). */
   timeout?: number;
@@ -118,7 +118,7 @@ const IS_WINDOWS = process.platform === "win32";
 /** Build the exec() primitive bound to one run's context. */
 export function createExec(ctx: RunContext): ExecPrimitive {
   return async (command, opts = {}) => {
-    const step = planStep(command, opts, ctx.source);
+    const step = planStep(command, opts, ctx.source, ctx.runId);
     const phase = opts.phase !== undefined ? opts.phase : ctx.currentPhase;
     // Ids follow call order, as agent ids do, on the run's command sequence.
     const commandId = ++ctx.commandSeq.value;
@@ -165,7 +165,7 @@ interface Step {
 }
 
 /** Check exec()'s arguments; a misuse is a (recoverable) WorkflowScriptError, before anything starts. */
-function planStep(command: unknown, opts: ExecOptions, source: string): Step {
+function planStep(command: unknown, opts: ExecOptions, source: string, runId: string | undefined): Step {
   if (opts === null || typeof opts !== "object") {
     throw misuse(`options must be an object; got ${describeValue(opts)}`);
   }
@@ -231,7 +231,8 @@ function planStep(command: unknown, opts: ExecOptions, source: string): Step {
     display,
     label: opts.label ?? clip(display, LABEL_CHARS),
     cwd,
-    env: opts.env ? { ...process.env, ...opts.env } : process.env,
+    // The run's id, as its agents get it (a command is not an agent: no ODW_AGENT_ID, no ODW_PORT).
+    env: { ...process.env, ...(runId === undefined ? {} : { ODW_RUN_ID: runId }), ...opts.env },
     timeout,
     timeoutMs: timeout * 1000 <= MAX_TIMER_MS ? timeout * 1000 : null,
     input: opts.input,

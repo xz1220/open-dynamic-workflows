@@ -201,7 +201,12 @@ function tsxLoaderArgv(): string[] {
 export async function waitFor(
   store: RunStore,
   runId: string,
-  options: { timeoutMs?: number; pollIntervalMs?: number } = {},
+  options: {
+    timeoutMs?: number;
+    pollIntervalMs?: number;
+    /** Sees the run's status on every poll while it is not finished (e.g. a checkpoint it waits at). */
+    onStatus?: (status: Record<string, unknown>) => void;
+  } = {},
 ): Promise<Record<string, unknown>> {
   // `!== undefined` (not truthiness): `--timeout 0` means "time out immediately",
   // never "wait forever".
@@ -212,6 +217,7 @@ export async function waitFor(
     const observed = observer.read();
     if (observed.terminal) return observed.status;
     if (observed.error) return { ...observed.status, state: "failed", error: observed.error };
+    options.onStatus?.(observed.status);
     if (deadline !== null && Date.now() >= deadline) return observed.status;
     await new Promise<void>((r) => setTimeout(r, poll));
   }

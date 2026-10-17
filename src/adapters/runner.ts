@@ -31,6 +31,11 @@ export interface RunCommandOptions {
   stdin?: string;
   cwd?: string;
   env?: Record<string, string>;
+  /**
+   * Run `command[0]` as a command line through the platform shell (`/bin/sh -c`
+   * on POSIX, `cmd.exe /d /s /c` on Windows) instead of as a program.
+   */
+  shell?: boolean;
   /** Seconds before the process is killed; omit for no timeout. */
   timeout?: number;
   /**
@@ -52,6 +57,8 @@ export interface RunCommandOptions {
    * process if the output becomes unusable (reported like an output overrun).
    */
   onStdout?: (chunk: string, terminate: (reason: string) => void) => void;
+  /** Observe stderr as it arrives; the result still carries its tail. */
+  onStderr?: (chunk: string) => void;
   /**
    * Abort the run: the process (and everything it started) is killed and the
    * result settles at once. The caller owns the signal, so it knows why; the
@@ -126,7 +133,7 @@ export const runCommand: CommandRunner = (command, options = {}) => {
     let executable = cmd;
     let spawnArgs = args;
     const env = options.env ?? process.env;
-    if (process.platform === "win32") {
+    if (process.platform === "win32" && !options.shell) {
       const resolved = resolveExecutable(cmd, env, "win32");
       const extension = resolved ? extname(resolved).toLowerCase() : "";
       if (extension === ".cmd" || extension === ".bat") {
@@ -164,6 +171,7 @@ export const runCommand: CommandRunner = (command, options = {}) => {
     const child = spawn(executable, spawnArgs, {
       cwd: options.cwd,
       env,
+      shell: options.shell,
       windowsHide: true,
       // POSIX: lead a new process group so a kill reaches every process the
       // agent started, not just the direct child (see killProcessTree).
@@ -313,6 +321,7 @@ export const runCommand: CommandRunner = (command, options = {}) => {
     child.stderr.on("data", (d: string) => {
       lastOutputAt = Date.now();
       stderr.push(d);
+      options.onStderr?.(d);
     });
 
     child.on("error", (err) => {

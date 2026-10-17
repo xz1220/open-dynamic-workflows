@@ -124,6 +124,36 @@ declare global {
    */
   function exec(command: string | string[], opts?: ExecOptions): Promise<ExecResult>;
 
+  /** Options for {@link checkpoint} (ODW extension). */
+  interface CheckpointOptions {
+    /** What the person should look at (a plan, a summary of the changes): any JSON value, kept up to 64 KiB. */
+    payload?: unknown;
+    /** Seconds to wait for an answer; no limit by default. */
+    timeout?: number;
+    /** What a timeout means: approve, reject, or (the default) "fail" — throw a recoverable `CheckpointTimeout`. */
+    onTimeout?: "approve" | "reject" | "fail";
+  }
+
+  /** What {@link checkpoint} resolves to. */
+  interface CheckpointResult {
+    approved: boolean;
+    /** The note given with the answer, or null. */
+    note: string | null;
+    /** Who answered: `odw approve|reject`, the dashboard (`odw serve`), or the timeout. */
+    by: "cli" | "dashboard" | "timeout";
+  }
+
+  /**
+   * ODW extension — not portable to Claude Code, whose workflows take no
+   * mid-run input. Pauses the run until a person approves or rejects (`odw
+   * approve|reject <run> [--note TEXT] [--checkpoint N]`, or the dashboard);
+   * meanwhile the run shows as "waiting". A rejection resolves too — branch on
+   * `approved`. Takes no agent slot and counts toward neither maxAgents nor the
+   * budget; a stop ends the wait and the run. `odw resume` asks it again. A
+   * script's own `checkpoint` binding takes precedence over this one.
+   */
+  function checkpoint(title: string, opts?: CheckpointOptions): Promise<CheckpointResult>;
+
   /** ODW extension: parses meta as a pure literal (never evaluated) and compile-checks the body without running it. Warnings are advisory; a script's own validate binding takes precedence. */
   function validate(source: string): {
     ok: boolean;

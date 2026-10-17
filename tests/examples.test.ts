@@ -15,10 +15,14 @@ import { executeRun } from "../src/runtime/worker.js";
 const mockAgent = fileURLToPath(new URL("./fixtures/mock-agent.mjs", import.meta.url));
 const exampleDir = fileURLToPath(new URL("../examples/", import.meta.url));
 
+/** A person's answer to the next checkpoint() a run asks (sent through its decision log, as `odw approve|reject` does). */
+type Answer = { action: "approve" | "reject"; note?: string };
+
 async function runExample(
   file: string,
   args: unknown,
   agentCommand: string[] = [execPath, mockAgent],
+  answers: Answer[] = [],
 ): Promise<{ state: string; result: unknown; error: Record<string, unknown> | null; events: WorkflowEvent[] }> {
   const root = mkdtempSync(join(tmpdir(), "odw-ex-"));
   // isolation:"worktree" (used by ultra-mode's lanes) needs a committed repo.
@@ -43,7 +47,18 @@ async function runExample(
       source: root,
       configPath: config,
     });
-    const state = await executeRun(store.runDir(id));
+    const run = executeRun(store.runDir(id));
+    // A run left waiting for an answer the test never gives would wait forever: stop it.
+    const guard = answers.length > 0 ? setTimeout(() => store.writeControl(id, "stop"), 30_000) : undefined;
+    let ended = false;
+    void run.finally(() => (ended = true));
+    for (const [i, answer] of answers.entries()) {
+      const asked = () => store.readEvents(id).some((e) => e.type === "checkpoint_requested" && e.checkpointId === i + 1);
+      while (!asked() && !ended) await new Promise<void>((resolve) => setTimeout(resolve, 20));
+      if (ended) break;
+      store.requestCheckpointDecision(id, { ...answer, checkpointId: i + 1, by: "cli" });
+    }
+    const state = await run.finally(() => clearTimeout(guard));
     return { state, result: store.readResult(id), error: store.readError(id), events: store.readEvents(id) };
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -213,4 +228,62 @@ test("review-swarm.js maps, reviews per lens, verifies every finding and summari
   assert.ok(Array.isArray(r.confirmed));
   assert.equal(typeof r.rejected, "number");
   assert.deepEqual(r.lenses, ["correctness", "security"]);
+});
+
+// plan-approve-execute.js: a person answers its checkpoint() through the decision log.
+const PLAN_TASK = { task: "Add rate limiting to the public API" };
+
+test("plan-approve-execute.js executes the plan only once a person approves it", async () => {
+  const { state, result, error, events } = await runExample("plan-approve-execute.js", PLAN_TASK, undefined, [
+    { action: "approve", note: "go ahead" },
+  ]);
+  assert.equal(state, "done", JSON.stringify(error));
+  const r = result as {
+    approved: boolean;
+    by: string;
+    note: string;
+    plan: { steps: unknown[] };
+    steps: { total: number; done: number };
+    report: string;
+  };
+  assert.equal(r.approved, true);
+  assert.equal(r.by, "cli");
+  assert.equal(r.note, "go ahead");
+  assert.deepEqual(r.steps, { total: r.plan.steps.length, done: r.plan.steps.length });
+  assert.equal(typeof r.report, "string");
+  const asked = events.filter((e) => e.type === "checkpoint_requested");
+  assert.equal(asked.length, 1);
+  assert.deepEqual(asked[0]!.payload, r.plan, "the person saw the plan that ran");
+  // Nothing executed before the approval.
+  const answeredAt = events.findIndex((e) => e.type === "checkpoint_resolved");
+  assert.ok(events.findIndex((e) => e.type === "agent_started" && String(e.label).startsWith("step")) > answeredAt);
+});
+
+test("plan-approve-execute.js re-plans after a rejection with a note, and stops on a bare rejection", async () => {
+  const replanned = await runExample("plan-approve-execute.js", PLAN_TASK, undefined, [
+    { action: "reject", note: "leave the admin routes alone" },
+    { action: "approve" },
+  ]);
+  assert.equal(replanned.state, "done", JSON.stringify(replanned.error));
+  assert.equal((replanned.result as { approved: boolean }).approved, true);
+  assert.deepEqual(
+    foldAgents(replanned.events)
+      .filter((n) => n.phase === "Plan")
+      .map((n) => n.label),
+    ["plan 1", "plan 2"],
+  );
+  assert.equal(replanned.events.filter((e) => e.type === "checkpoint_requested").length, 2);
+
+  const rejected = await runExample("plan-approve-execute.js", PLAN_TASK, undefined, [{ action: "reject" }]);
+  assert.equal(rejected.state, "done", JSON.stringify(rejected.error));
+  const r = rejected.result as { approved: boolean; by: string; note: string | null };
+  assert.deepEqual([r.approved, r.by, r.note], [false, "cli", null]);
+  assert.equal(foldAgents(rejected.events).some((n) => n.phase === "Execute"), false, "nothing ran");
+});
+
+test("plan-approve-execute.js treats silence as a rejection once its timeout passes", async () => {
+  const { state, result, error } = await runExample("plan-approve-execute.js", { ...PLAN_TASK, timeout: 0.05 });
+  assert.equal(state, "done", JSON.stringify(error));
+  const r = result as { approved: boolean; by: string };
+  assert.deepEqual([r.approved, r.by], [false, "timeout"]);
 });

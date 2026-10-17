@@ -11,6 +11,7 @@ import { highlightSource, outlineSource } from "../web/src/components/source.ts"
 import { renderTimeline } from "../web/src/components/timeline.ts";
 import { renderDag } from "../web/src/dag.ts";
 import { applyRunsDelta, store } from "../web/src/store.ts";
+import { renderActivity } from "../web/src/views/activity.ts";
 import { renderJob, type JobViewState } from "../web/src/views/job.ts";
 import type { ActivityEvent, AgentView, RunDetail, RunSummary } from "../web/src/types.ts";
 import { esc, fmtDurSec, fmtTokens, fmtUsd, fuzzy, markHits } from "../web/src/util.ts";
@@ -230,6 +231,7 @@ test("a run view shows pending checkpoints, usage and failure reasons when the s
     cpNote: "",
     tab: "graph",
     selectedAi: 1,
+    reviewAi: null,
     zoom: 1,
     logQuery: "",
     logTypes: new Set(["agent"]),
@@ -249,7 +251,10 @@ test("a run view shows pending checkpoints, usage and failure reasons when the s
       pendingCheckpoints: [{ checkpointId: 0, title: "Approve the plan?", payload: { angles: 4 }, since: NOW - 30 }],
     },
   );
+  store.runEvents = [{ type: "agent_failed", ts: NOW - 30, label: "search:1", reason: "rate_limit", retryAfter: 630 }];
   const html = renderJob(view, NOW);
+  assert.match(html, /lifts in 10m00s · /, "the drawer says when the limit lifts");
+  store.runEvents = [];
   assert.match(html, /class="card checkpoint/);
   assert.match(html, /Approve the plan\?/);
   assert.match(html, /data-cp="approve" data-cp-id="0"/);
@@ -264,6 +269,7 @@ test("the Logs tab paints the newest events and pages older ones in", () => {
     cpNote: "",
     tab: "logs",
     selectedAi: null,
+    reviewAi: null,
     zoom: 1,
     logQuery: "",
     logTypes: new Set(["agent", "phase", "log", "run"]),
@@ -290,4 +296,142 @@ test("exec() steps read as commands in the outline, the logs and the drawer", as
   const outline = outlineSource("phase('Test')\nconst r = await exec('npm test')\nawait agent('fix')\n", ["Test"]);
   assert.deepEqual(outline[0]!.ops.map((o) => o.kind), ["agent", "exec"]);
   assert.match(highlightSource("await exec('ls')"), /class="tk-f">exec/);
+});
+
+test("the Changes tab lists agents that left a diff and freezes a host for the diff itself", () => {
+  const view: JobViewState = {
+    cpNote: "",
+    tab: "changes",
+    selectedAi: 0,
+    reviewAi: null,
+    zoom: 1,
+    logQuery: "",
+    logTypes: new Set(["agent"]),
+    logLimit: 600,
+    follow: true,
+    motion: false,
+  };
+  store.focusRun("20260101-000000-aaaaaa");
+  store.run = detail(
+    [
+      agent("fix:auth", "Fix", "done", { agentId: 1, changes: { files: 2, insertions: 40, deletions: 3 }, branch: "odw/r/1-fix-auth" }),
+      agent("survey", "Plan", "done", { agentId: 2 }),
+      agent("fix:cache", "Fix", "done", { agentId: 3, changes: { files: 1, insertions: 0, deletions: 12, truncated: true } }),
+    ],
+    { state: "done" },
+  );
+  const html = renderJob(view, NOW);
+  assert.match(html, /data-tab="changes"[^>]*>.*?<span class="n">2<\/span>/, "the tab counts agents with changes");
+  assert.equal(count(html, /class="rv-item/g), 2, "an agent that changed nothing is not listed");
+  assert.match(html, /class="rv-item on" data-review="0"/, "the first agent with changes is reviewed by default");
+  assert.match(html, /data-copy="odw apply 20260101-000000-aaaaaa --agent 1"/);
+  assert.match(html, /data-copy="git switch odw\/r\/1-fix-auth"/, "a kept branch can be checked out");
+  assert.match(html, /<div class="diff-host"[^>]*data-morph="skip" data-v="20260101-000000-aaaaaa:1\|loading\|en"/);
+  assert.match(html, /<b class="ins">\+40<\/b><b class="del">−15<\/b><\/span><span class="k">lines changed/);
+
+  view.reviewAi = 2;
+  const second = renderJob(view, NOW);
+  assert.match(second, /class="rv-item on" data-review="2"/);
+  assert.match(second, /class="tag warn">truncated/);
+
+  // The drawer, on the graph, summarizes and links to the review.
+  view.tab = "graph";
+  const drawer = renderJob(view, NOW);
+  assert.match(drawer, /<button class="btn sm chg-go" data-review="0">/);
+  assert.match(drawer, /class="ndelta"/, "graph nodes carry their diffstat");
+
+  // A run with no diffs keeps the tab out of the way.
+  store.run = detail([agent("survey", "Plan", "done", { agentId: 2 })], { state: "done" });
+  view.tab = "graph";
+  assert.ok(!renderJob(view, NOW).includes('data-tab="changes"'));
+  view.tab = "changes";
+  assert.match(renderJob(view, NOW), /No changes recorded/);
+  store.focusRun(null);
+});
+
+test("Activity puts waiting checkpoints and the day's failures in front of the person", () => {
+  const prev = store.runs;
+  const counts = { agents: 4, running: 0, done: 2, failed: 2, stale: 0 };
+  const failed = (id: string, ago: number, over: Partial<RunSummary> = {}) =>
+    summary({ runId: id, name: `wf-${id}`, state: "failed", updatedAt: NOW - ago, counts, ...over });
+  store.runs = [
+    summary({ runId: "r-wait", name: "plan-approve", state: "waiting", waiting: { checkpointId: 1, title: "Ship <it>?", since: NOW - 60 } }),
+    failed("r-f1", 100),
+    failed("r-f2", 200),
+    summary({ runId: "r-st", name: "wf-stale", state: "stale", stale: true, updatedAt: NOW - 300 }),
+    failed("r-f3", 400),
+    failed("r-old", 200_000),
+    failed("r-cc", 10, { provider: "claude" }),
+  ];
+  const html = renderActivity(NOW);
+  assert.match(html, /<section class="needs"/);
+  assert.match(html, /class="ticket waiting"[\s\S]*?asks: Ship &lt;it&gt;\?/, "the checkpoint question is shown, escaped");
+  assert.equal(count(html, /class="ticket /g), 4, "the waiting run and the three newest of the day's failures");
+  assert.match(html, /data-copy="odw resume r-f1"/);
+  assert.match(html, /class="ticket stale"[\s\S]*?lost its worker/);
+  assert.ok(!/nt-r-old|nt-r-cc/.test(html), "old failures and Claude runs are not offered for resume");
+  assert.match(html, /\+1 more failed in the last day/);
+  assert.match(html, /<span class="n">5<\/span>/, "the count covers everything that needs a person");
+
+  store.runs = [summary({ state: "done" })];
+  assert.ok(!renderActivity(NOW).includes('class="needs"'), "nothing to do, nothing drawn");
+  store.runs = prev;
+});
+
+test("checkpoint() gates join the graph, the timeline and the drawer", () => {
+  const view: JobViewState = {
+    cpNote: "",
+    tab: "graph",
+    selectedAi: null,
+    reviewAi: null,
+    zoom: 1,
+    logQuery: "",
+    logTypes: new Set(["agent"]),
+    logLimit: 600,
+    follow: true,
+    motion: false,
+  };
+  store.focusRun("20260101-000000-aaaaaa");
+  store.run = detail([agent("planner", "Plan", "done", { agentId: 1 })], {
+    state: "waiting",
+    phaseOrder: ["Plan", "Approve", "Execute"],
+  });
+  store.runEvents = [
+    { type: "checkpoint_requested", ts: NOW - 90, checkpointId: 1, title: "Ship <it>?", payload: { steps: 3 }, phase: "Approve" },
+  ];
+  let html = renderJob(view, NOW);
+  assert.match(html, /<div class="node waiting cp" data-ai="1"/, "the gate follows the agents, so their indexes stay put");
+  assert.match(html, /Ship &lt;it&gt;\?/);
+  assert.match(html, /waiting for a person · 1m30s/);
+  assert.match(html, /class="flow wait"/, "the edge into a waiting gate marches in amber");
+
+  store.runEvents = [
+    ...store.runEvents,
+    { type: "checkpoint_resolved", ts: NOW - 30, checkpointId: 1, approved: false, note: "scope it down", by: "dashboard" },
+  ];
+  store.run = { ...store.run!, state: "done" };
+  view.selectedAi = 1;
+  html = renderJob(view, NOW);
+  assert.match(html, /<div class="node stopped cp/);
+  assert.match(html, /rejected · dashboard · “scope it down”/);
+  assert.match(html, /class="pill s-stopped">[\s\S]*?<span>rejected<\/span>/, "the drawer names the answer");
+  assert.match(html, /<span class="k">waited<\/span><span class="v">1m00s<\/span>/);
+  view.tab = "timeline";
+  assert.match(renderJob(view, NOW), /class="tl-bar stopped"/);
+  store.runEvents = [];
+  store.focusRun(null);
+});
+
+test("the store announces a run that starts waiting, and a run that ends", () => {
+  const seen: string[] = [];
+  store.onTransition((r, prev) => seen.push(`${r.runId}:${prev}→${r.state}`));
+  const setRuns = (runs: RunSummary[]) => (store as unknown as { setRuns(r: RunSummary[]): void }).setRuns(runs);
+  const prev = store.runs;
+  setRuns([summary({ runId: "r1", state: "running" })]);
+  setRuns([summary({ runId: "r1", state: "running" })]);
+  setRuns([summary({ runId: "r1", state: "waiting" }), summary({ runId: "r2", state: "waiting" })]);
+  setRuns([summary({ runId: "r1", state: "waiting" }), summary({ runId: "r2", state: "running" })]);
+  setRuns([summary({ runId: "r1", state: "done" }), summary({ runId: "r2", state: "waiting" })]);
+  assert.deepEqual(seen, ["r1:running→waiting", "r2:pending→waiting", "r1:waiting→done", "r2:running→waiting"]);
+  store.runs = prev;
 });

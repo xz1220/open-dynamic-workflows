@@ -13,12 +13,13 @@
  * the event log by byte cursor; Claude keys on its journal + transcript
  * signatures) because the freshness signal differs per provider. Liveness — a
  * worker pid, a Claude run's freshness window — changes no file, so it is never
- * cached: every read re-checks it. Every method is read-only except `control`,
- * and a read-only source advertises that by returning a non-null
+ * cached: every read re-checks it. Every method is read-only except `control`
+ * and `decide`, and a read-only source advertises that by returning a non-null
  * {@link controlError} (the server then refuses control with a 409 rather than
  * silently no-op'ing).
  */
 
+import type { CheckpointRequest } from "../control.js";
 import type { WorkflowEvent } from "../events.js";
 import type { AgentResultRecord } from "../journal.js";
 import type { RunDetail, RunSummary } from "./runs-view.js";
@@ -66,6 +67,8 @@ export interface RunSource {
   readonly controlError: string | null;
   /** Apply a control action (pause|resume|stop). Only called when controlError is null. */
   control(runId: string, action: string): void;
+  /** Answer a waiting checkpoint() (ODW extension). Only called when controlError is null. */
+  decide(runId: string, request: CheckpointRequest): void;
 }
 
 /** Every source's summaries, merged and sorted newest-first (the unified run list). */

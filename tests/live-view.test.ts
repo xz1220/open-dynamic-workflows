@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-import { attachRun, resolveRunMode } from "../src/runtime/live-view.js";
+import { attachRun, formatEvent, resolveRunMode } from "../src/runtime/live-view.js";
 import { RunStore } from "../src/runtime/run-store.js";
 import { FakeTerm } from "./fake-term.js";
 
@@ -292,6 +292,63 @@ test("attachRun (live): a failed run paints the error and exits 1", async () => 
   assert.match(screen, /exploded badly/);
   assert.match(screen, /✖ failed/);
   assert.equal(out.text(), ""); // no result JSON on stdout for a failed run
+});
+
+test("attachRun (live): a failed agent says why it failed; a plain exit adds nothing", async () => {
+  const store = freshStore();
+  const runId = makeRun(store, "limits");
+  const term = new FakeTerm(120);
+  const out = new Collector();
+
+  emit(store, runId, { ts: 10, type: "run_started", runId });
+  emit(store, runId, { ts: 10, type: "agent_started", agentId: 1, label: "search", adapter: "codex" });
+  emit(store, runId, { ts: 10, type: "agent_started", agentId: 2, label: "write", adapter: "codex" });
+  const done = attachRun(store, runId, { out, err: term, live: true, pollMs: 10, signals: false, env: ENV });
+  await sleep(40);
+  emit(store, runId, {
+    ts: 12,
+    type: "agent_failed",
+    agentId: 1,
+    label: "search",
+    reason: "quota",
+    retryAfter: 600,
+    error: "AdapterExecutionError: adapter 'codex' ran out of usage quota",
+  });
+  emit(store, runId, {
+    ts: 13,
+    type: "agent_failed",
+    agentId: 2,
+    label: "write",
+    reason: "exit",
+    error: "AdapterExecutionError: adapter 'codex' exited with code 1: boom",
+  });
+  emit(store, runId, { ts: 13, type: "run_failed", runId });
+  store.updateStatus(runId, { state: "failed" });
+
+  assert.equal(await done, 1);
+  const screen = term.text();
+  assert.match(screen, /✖ search\s+codex · out of quota · 2\.0s/);
+  assert.match(screen, /ran out of usage quota/);
+  assert.match(screen, /✖ write\s+codex · 3\.0s/, "exit is the error line's job");
+});
+
+test("formatEvent: a failed agent's reason, and when to retry, lead its error", () => {
+  const failed = (fields: Record<string, unknown>) =>
+    formatEvent({ ts: 0, type: "agent_failed", agentId: 3, label: "search", phase: "Search", ...fields });
+  assert.match(
+    failed({ reason: "rate_limit", error: "AdapterExecutionError: adapter 'codex' hit a rate limit" }),
+    /agent_failed\s+\(Search\) search — \[rate_limit\] AdapterExecutionError: adapter 'codex' hit a rate limit$/,
+  );
+  assert.match(
+    failed({ reason: "quota", retryAfter: 12_120, error: "AdapterExecutionError: out of quota" }),
+    / search — \[quota, retry after 3h 22m\] AdapterExecutionError: out of quota$/,
+  );
+  assert.match(failed({ error: "RunStopped: run was stopped" }), / search — RunStopped: run was stopped$/, "no reason, no tag");
+  assert.match(
+    failed({ reason: "\x1b]0;pwn\x07auth", error: "x" }),
+    / search — \[auth\] x$/,
+    "a reason is event text: sanitized like the rest",
+  );
 });
 
 test("attachRun: a run_finished event with a stuck status still settles as done", async () => {

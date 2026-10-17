@@ -10,7 +10,7 @@
  * explains how to tune them rather than baking opinions in here.
  */
 
-import type { AdapterFlags, AdapterOutput, Settings } from "./types.js";
+import type { AdapterFailures, AdapterFlags, AdapterOutput, Settings } from "./types.js";
 
 /** A built-in adapter spec — same shape as a config entry, minus its name. */
 export interface RawAdapter {
@@ -22,6 +22,7 @@ export interface RawAdapter {
   label?: string;
   flags?: AdapterFlags;
   output?: AdapterOutput;
+  failures?: AdapterFailures;
 }
 
 // `flags` only DECLARES which native flag carries a model — the router appends
@@ -142,10 +143,15 @@ export const DEFAULT_SETTINGS: Settings = {
   // Stall watchdog off: text-mode CLIs (claude --print, …) print nothing until done.
   stallTimeout: null,
   stallRestarts: 1, // restarts of a stalled agent before its call fails
+  transientRetries: 3, // retries of a rate-limited agent, with backoff
+  maxBackoff: 300, // longest single backoff wait, seconds
   schemaRetries: 2, // extra attempts when a schema fails to validate
   runsRoot: null, // null => ~/.odw/runs
   workflowsRoot: null, // null => ~/.odw/workflows
   claudeWorkflowsRoot: null, // null => ~/.claude/workflows, honoring CLAUDE_CONFIG_DIR
   claudeJobsScope: "all", // observe every project's Claude runs; "project" narrows to the served repo + worktrees
   notify: null, // no run-completion hooks
+  worktreeSetup: null, // nothing runs in a new isolated worktree but the agent
+  worktreeSetupTimeout: 600, // seconds
+  portRange: [41000, 41999], // ODW_PORT, unique among a run's running agents
 };

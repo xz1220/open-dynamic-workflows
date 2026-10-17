@@ -131,6 +131,11 @@ export function fmtTokens(n: number | null | undefined): string {
   return `${(n / 1_000_000).toFixed(1)}M`;
 }
 
+/** A line count: exact with separators (1,204) below 100k, then compact (240k). */
+export function fmtCount(n: number): string {
+  return n < 100_000 ? n.toLocaleString("en-US") : fmtTokens(n);
+}
+
 /** Dollars with sensible precision for agent-sized spend. */
 export function fmtUsd(n: number | null | undefined): string {
   if (n == null || !Number.isFinite(n)) return "—";

@@ -156,6 +156,9 @@ export class ClaudeRunSource implements RunSource {
   control(): void {
     // Never called: controlError is non-null, so the server refuses with 409.
   }
+  decide(): void {
+    // Never called either: a Claude Code run has no checkpoint() to answer.
+  }
   agentResults(): null {
     return null; // Claude Code keeps no per-agent result records ODW can serve
   }

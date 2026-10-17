@@ -15,6 +15,17 @@
   "stallTimeout": null,
   "stallRestarts": 1,
 
+  "//transientRetries": "ODW extension. A failed agent is classified from its CLI's exit status and output: rate_limit, quota, auth, timeout, stalled, not_found, permission or exit. A rate-limited one is run again after a backoff (the retry-after its CLI printed, else 15s doubling per retry, plus up to 20% jitter), at most transientRetries times per agent call and never waiting more than maxBackoff seconds at once. A spent quota or a failed login is never retried: its error says what to do, and the run goes on. An adapter's own \"failures\" patterns (regular expressions per class: rate_limit, quota, auth) are matched before the built-in table.",
+  "transientRetries": 3,
+  "maxBackoff": 300,
+
+  "//worktreeSetup": "ODW extension. A command run in every new isolated worktree (agent(…, { isolation: \"worktree\" })) once .worktreeinclude has brought files in, before the agent starts: a string runs through the platform shell, an array as an argv without one. It runs in the agent's workspace with ODW_RUN_ID, ODW_AGENT_ID and ODW_PORT set, and is killed after worktreeSetupTimeout seconds; one that fails or times out fails that agent (not the run), quoting the end of its output. null (the default) runs nothing.",
+  "worktreeSetup": null,
+  "worktreeSetupTimeout": 600,
+
+  "//portRange": "ODW extension. Every agent process gets ODW_PORT: a port from this inclusive range that no other running agent of the run holds (ports something already listens on are passed over), kept until its call settles, so a workflow can say \"start your dev server on $ODW_PORT\". Keep the range wider than concurrency.",
+  "portRange": [41000, 41999],
+
   "//notify": {
     "$comment": "ODW extension: run-end hooks. Rename \"//notify\" to \"notify\" to turn them on. They fire once, after the run's final state is written, and can never change it; a failing or slow hook is only logged to the run's worker.log. command: an argv run WITHOUT a shell (killed after 30s), with ODW_RUN_ID, ODW_RUN_STATE, ODW_WORKFLOW, ODW_RUN_DIR, ODW_RESULT_FILE (only when the run has a result), ODW_DURATION_SEC, ODW_AGENTS and ODW_FAILED_AGENTS in its environment. webhook: an http(s) URL that receives a JSON POST (10s limit) whose text/content fields render as-is in Slack and Discord. on: which final states fire them (default: all three).",
     "command": ["/usr/local/bin/odw-notify"],
@@ -80,7 +91,8 @@
     "my_wrapper": {
       "label": "My custom wrapper (example)",
       "command": ["my-agent-wrapper", "--cwd", "{workspace}", "--prompt-file", "{prompt_file}"],
-      "flags": { "model": ["--model"] }
+      "flags": { "model": ["--model"] },
+      "failures": { "rate_limit": ["server busy"], "quota": ["monthly tokens? (used up|exhausted)"], "auth": ["session expired"] }
     }
   }
 }

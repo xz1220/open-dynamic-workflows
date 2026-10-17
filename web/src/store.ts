@@ -10,6 +10,7 @@
  * window, it just leaves the last-known state and flips `conn`.
  */
 import { api } from "./api";
+import { parseDiff, type ParsedDiff } from "./components/diff";
 import type {
   ActivityEvent,
   AgentResultRecord,
@@ -55,6 +56,9 @@ class Store {
   private activitySig = "";
   /** Persisted agent outputs by `${runId}:${agentId}`; null = none available. */
   agentResults = new Map<string, AgentResultRecord | null>();
+  /** Parsed diffs of worktree agents by `runId:agentId`; null = none to show. */
+  agentDiffs = new Map<string, ParsedDiff | null>();
+  private diffsLoading = new Set<string>();
 
   private listeners = new Set<Listener>();
   private transitions = new Set<TransitionListener>();
@@ -80,8 +84,11 @@ class Store {
       const before = new Map(this.runs.map((r) => [r.runId, r.state]));
       for (const r of next) {
         const prev = before.get(r.runId);
-        if (prev && ACTIVE.has(prev) && (TERMINAL.has(r.state) || r.state === "stale")) {
-          for (const l of this.transitions) l(r, prev);
+        const ended = prev && ACTIVE.has(prev) && (TERMINAL.has(r.state) || r.state === "stale");
+        // A run that starts waiting at a checkpoint() needs a person: say so too.
+        const asks = r.state === "waiting" && prev !== "waiting";
+        if (ended || asks) {
+          for (const l of this.transitions) l(r, prev ?? "pending");
         }
       }
     }
@@ -372,6 +379,24 @@ class Store {
       this.agentResults.set(key, await api.agentResult(runId, agentId));
     } catch {
       return; // not persisted (older server, Claude run, still running) — stays null
+    }
+    if (this.run?.runId === runId) this.emit();
+  }
+
+  /** Fetch and parse one agent's diff once; diffs are immutable once the agent finished. */
+  async loadAgentDiff(runId: string, agentId: number): Promise<void> {
+    const key = `${runId}:${agentId}`;
+    if (this.agentDiffs.has(key) || this.diffsLoading.has(key)) return;
+    // Diffs can be large: keep only the latest few parsed.
+    if (this.agentDiffs.size >= 24) this.agentDiffs.delete(this.agentDiffs.keys().next().value!);
+    this.diffsLoading.add(key);
+    try {
+      const text = await api.agentDiff(runId, agentId);
+      this.agentDiffs.set(key, text == null ? null : parseDiff(text));
+    } catch {
+      this.agentDiffs.set(key, null);
+    } finally {
+      this.diffsLoading.delete(key);
     }
     if (this.run?.runId === runId) this.emit();
   }

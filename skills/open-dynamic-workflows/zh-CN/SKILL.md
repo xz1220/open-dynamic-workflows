@@ -69,6 +69,7 @@ return await agent(
 | `workflow(ref, args?)` | 内联调用另一个 workflow（仅一层）。`ref` 是受管目录中的名字或 `{ scriptPath }`；子 workflow 共享本次运行的并发上限、agent 计数和预算。 |
 | `validate(source)` | 解析并编译检查源码,不运行工作流正文;`meta` 按纯字面量解析,绝不求值。返回 `{ ok, meta?, errors, warnings }`。**ODW 扩展**——不属于 Claude Code 方言。 |
 | `exec(command, opts?)` | 不启动模型直接运行一条命令（测试、构建、linter）；返回 `{ stdout, stderr, exitCode, signal, timedOut, truncated, durationMs }`。字符串经 shell 执行，数组按 argv 执行。**ODW 扩展**——不属于 Claude Code 方言。 |
+| `checkpoint(title, opts?)` | 暂停运行，直到有人批准或拒绝；返回 `{ approved, note, by }`。**ODW 扩展**——不属于 Claude Code 方言。 |
 
 `agent` 的 `opts`：`{ adapter?, schema?, label?, phase?, model?, agentType?, isolation? }`。
 `adapter` 选择用哪个 CLI；`schema` 是一个原始 JSON Schema 对象（选项，不是全局）；
@@ -85,6 +86,17 @@ for (let round = 1; run.exitCode !== 0 && round <= 3; round++) {
   await agent(`Fix the failing tests:\n${run.stdout.slice(-4000)}\n${run.stderr.slice(-4000)}`)
   run = await exec('npm test')
 }
+```
+
+`checkpoint` 的 `opts`：`{ payload?, timeout?, onTimeout? }`。`payload` 是要给人看的
+内容（计划、改动摘要）；`timeout` 是等待的秒数，超时后由 `onTimeout` 批准、拒绝，或
+（默认的 `"fail"`）抛出可恢复的 `CheckpointTimeout`。拒绝也是一个答复而不是错误：按
+`approved` 分支，并利用对方的 `note`：
+
+```js
+const plan = await agent(`Plan this as independent steps: ${task}`, { schema: PLAN })
+const { approved, note } = await checkpoint('Run this plan?', { payload: plan })   // ODW 扩展
+if (!approved) return { approved, note, plan }
 ```
 
 **选择法则：** 下一步需要**一整批**结果一次到位（去重、计票、综合）时用 `parallel`；
@@ -107,6 +119,7 @@ odw status $RUN             # 状态 + agent 计数
 odw logs $RUN --follow      # 流式输出进度事件
 odw result $RUN             # 完成后打印最终值
 odw pause $RUN / resume $RUN / stop $RUN
+odw approve|reject $RUN     # 回答运行正在等待的 checkpoint()——只在用户明确要求时
 odw list                    # 所有运行
 ```
 
@@ -134,6 +147,27 @@ odw resume $RUN --wait        # ……启动一个新运行：未改动的 agent
   （或加 `--force`）。
 - 保持 prompt 确定：用 `Date.now()` 或 `Math.random()` 拼出的 prompt 永远匹配不上，会重新执行。
 
+### 人工检查点（ODW 扩展）
+
+只在值得等人判断的地方加 `checkpoint()`：昂贵或难以撤销的步骤之前（大规模扇出、横跨
+仓库的修改、任何部署、删除或花钱的操作），或者让用户确认一份你生成的计划。不要给例行
+步骤加检查点；无人值守的运行（cron、CI）要给检查点设 `timeout` 并明确 `onTimeout`。
+
+运行到达检查点后会持久地等待——要多久就等多久——并显示为 `waiting`：
+
+```bash
+odw status $RUN     # 问题、它的 payload，以及回答它的确切命令
+```
+
+**绝不要自己回答检查点。** 它存在的意义就是让用户来决定。把问题和 payload 展示给用户，
+只有在用户明确告诉你之后，才运行 `odw approve $RUN` 或 `odw reject $RUN --note "…"`
+（有多个在等待时加 `--checkpoint N`）——把用户的理由写进 `--note`。如果用户不在，就让它
+继续等：用户之后可以在任意 shell 里回答，或在看板（`odw serve`）里点 Approve/Reject。
+
+检查点等待期间 `odw run --wait` 会一直阻塞。带检查点的 workflow 请以后台方式启动
+（`RUN=$(odw run wf.js)`）并轮询 `odw status $RUN`，或用 `--wait --timeout <秒>` 限定
+等待时长。`odw resume` 会重放已完成的 agent，但每个检查点都会重新提问。
+
 ## 适配器
 
 Codex、Claude Code、Gemini、Qwen、Kimi 开箱即用，无需配置。要换默认 CLI、调旗标或
@@ -159,7 +193,14 @@ Codex、Claude Code、Gemini、Qwen、Kimi 开箱即用，无需配置。要换�
   `isolation: "worktree"`：agent 获得一个一次性 **git worktree**（要求 source
   是有至少一次提交的 git 仓库；agent 看到的是 HEAD，不含未提交改动）。临时工作区
   随后会被删除,改动不会自动合并。`agent()` 返回回复而非 diff；需要保留的交付物应放进
-  回复,或在清理前显式持久化。
+  回复,或在清理前显式持久化。新 worktree 不含未跟踪文件：仓库根目录的 `.worktreeinclude`
+  （gitignore 语法；`symlink: node_modules` 表示链接而非复制）会把 `.env` 等带进去，
+  配置里的 `worktreeSetup` 命令会在 agent 启动前运行（均为 ODW 扩展）。
+- **端口**：每个 agent 进程都有唯一的 `$ODW_PORT`（以及 `$ODW_RUN_ID`、`$ODW_AGENT_ID`）——
+  让并行的 agent "在 `$ODW_PORT` 上启动开发服务器"，它们就不会冲突（ODW 扩展）。
+- **限流**：被限流的 CLI 会按退避时间重试（遵守它给出的 retry-after）；额度耗尽或登录失败
+  不会重试——agent 会失败并说明该怎么做，`odw logs` 会写明原因。遇到额度耗尽，用
+  `--adapter` 换一个适配器，而不是反复重试。
 - **成本**：并发有上限（默认 `min(16, cpu核数-2)`），单次运行总派发量有硬兜底；超出
   预期时用 `odw pause` / `odw stop`。
 - **结果**：引擎不会替你 commit、push 或应用 diff。先检视 `return` 值，再决定下一步。
@@ -175,3 +216,5 @@ Codex、Claude Code、Gemini、Qwen、Kimi 开箱即用，无需配置。要换�
 | 卡住或失败的运行从头重跑 | 用 `odw result <run> --agent <id>` 读出已完成的 agent；`odw stop`、修好脚本，再 `odw resume`——已完成的调用免费重放。 |
 | 用了 `validate()` 还指望脚本跑在 Claude Code 上 | `validate` 是 ODW 扩展，只能在 odw 上运行。 |
 | 用了 `exec()` 还指望脚本跑在 Claude Code 上 | `exec` 是 ODW 扩展，只能在 odw 上运行；`validate()` 会对此给出 warning。 |
+| 用了 `checkpoint()` 还指望脚本跑在 Claude Code 上 | `checkpoint` 是 ODW 扩展，只能在 odw 上运行；`validate()` 会对此给出 warning。 |
+| 看运行像是卡住了，就自己批准了检查点 | 等待中的检查点由用户决定：给用户看 `odw status $RUN`，只有用户明确同意后才运行 `odw approve`/`odw reject`。 |

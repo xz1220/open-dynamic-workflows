@@ -71,6 +71,7 @@ class FakeSource implements RunSource {
     return { has: true, value: "the answer" };
   }
   control(): void {}
+  decide(): void {}
 }
 
 function host(root: string, source: FakeSource, prompts: string[] = []) {
