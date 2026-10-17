@@ -33,7 +33,7 @@ import {
   type ChatSessionSummary,
   type ChatToolCall,
 } from "./chat-store.js";
-import { guarded, jsonBodyOrReply, logServeError, sendJson, writeGuard } from "./http-util.js";
+import { decodeSegment, guarded, jsonBodyOrReply, logServeError, sendJson, writeGuard } from "./http-util.js";
 import { startRunFromSource } from "./launcher.js";
 import { sourceForRun, type RunSource } from "./run-source.js";
 import { TERMINAL_STATES, type RunStore } from "./run-store.js";
@@ -220,9 +220,18 @@ export class ChatHost {
     }
     const chatMatch = path.match(/^\/api\/chat\/sessions\/([^/]+)(\/messages)?$/);
     if (!chatMatch) return false;
-    const sessionId = decodeURIComponent(chatMatch[1]!);
     const sub = chatMatch[2];
-    if (method === "GET" && !sub) {
+    const read = method === "GET" && !sub;
+    const write = (method === "DELETE" && !sub) || (method === "POST" && sub === "/messages");
+    if (!read && !write) return false;
+    // The write guard comes first, before the id is even looked at.
+    if (write && !writeGuard(req, res, boundHost)) return true;
+    const sessionId = decodeSegment(chatMatch[1]!);
+    if (sessionId === null) {
+      sendJson(res, 400, { error: "malformed URL escape in session id" });
+      return true;
+    }
+    if (read) {
       this.syncBeforeRead();
       const session = chat.get(sessionId);
       if (!session) {
@@ -230,19 +239,12 @@ export class ChatHost {
         return true;
       }
       sendJson(res, 200, hydrateChatSession(session, sources));
-      return true;
-    }
-    if (method === "DELETE" && !sub) {
-      if (!writeGuard(req, res, boundHost)) return true;
+    } else if (method === "DELETE") {
       await deleteChatSession(req, res, chat, sessionId);
-      return true;
-    }
-    if (method === "POST" && sub === "/messages") {
-      if (!writeGuard(req, res, boundHost)) return true;
+    } else {
       await postChatMessage(req, res, chat, this.runtime, this.opts, sessionId);
-      return true;
     }
-    return false;
+    return true;
   }
 
   /**

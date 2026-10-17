@@ -56,6 +56,7 @@ import type { WorkflowEvent } from "../events.js";
 import { ChatHost, type ChatTurnRunner } from "./chat-host.js";
 import { ClaudeRunSource } from "./claude-run-source.js";
 import {
+  decodeSegment,
   guarded,
   isAllowedHost,
   isLoopbackBind,
@@ -244,10 +245,17 @@ interface HandleContext {
 async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandleContext): Promise<void> {
   const { sources, store, chatHost, clients, cwd, config, configPath, boundHost } = ctx;
   const method = req.method ?? "GET";
-  const url = new URL(req.url ?? "/", "http://localhost");
-  const path = url.pathname;
 
   try {
+    let url: URL;
+    try {
+      url = new URL(req.url ?? "/", "http://localhost");
+    } catch {
+      sendJson(res, 400, { error: "malformed request URL" });
+      return;
+    }
+    const path = url.pathname;
+
     // DNS-rebinding guard: on a loopback bind, a browser reaching this server
     // through a hostile DNS name carries that name in Host — refuse it outright
     // (reads too: the run list is sensitive). Off-loopback binds are explicit
@@ -288,7 +296,11 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandleCont
     }
     const wfMatch = path.match(/^\/api\/workflows\/([^/]+)$/);
     if (method === "GET" && wfMatch) {
-      const name = decodeURIComponent(wfMatch[1]!);
+      const name = decodeSegment(wfMatch[1]!);
+      if (name === null) {
+        sendJson(res, 400, { error: "malformed URL escape in workflow name" });
+        return;
+      }
       // Optional ?provider= disambiguates a cross-provider name collision (so a
       // shadowed Claude workflow's source is reachable); ignored if not odw|claude.
       const p = url.searchParams.get("provider");
@@ -304,11 +316,15 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandleCont
 
     const runMatch = path.match(/^\/api\/runs\/([^/]+)(\/events|\/control|\/result)?$/);
     if (runMatch) {
-      const runId = decodeURIComponent(runMatch[1]!);
       const sub = runMatch[2];
       // Writes are gated before any run lookup: an off-loopback bind refuses
       // outright (no run-existence oracle), and CSRF posture comes first.
       if (method === "POST" && sub === "/control" && !writeGuard(req, res, boundHost)) return;
+      const runId = decodeSegment(runMatch[1]!);
+      if (runId === null) {
+        sendJson(res, 400, { error: "malformed URL escape in run id" });
+        return;
+      }
       // Route to the source that owns this id (ODW's RunStore, or Claude Code's).
       const src = sourceForRun(sources, runId);
       if (!src) {

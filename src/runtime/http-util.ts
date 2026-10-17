@@ -30,6 +30,19 @@ export function hostHeaderName(header: string): string {
   return h.replace(/:\d+$/, "");
 }
 
+/**
+ * A percent-decoded path segment, or null when its escapes are malformed
+ * (`%E0%A4%A`, `%ZZ`): decodeURIComponent throws on those, which is the
+ * client's error (400), not the server's (500).
+ */
+export function decodeSegment(raw: string): string | null {
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return null;
+  }
+}
+
 /** DNS-rebinding guard: on a loopback bind, only a loopback Host header may pass. */
 export function isAllowedHost(boundHost: string, header: string | undefined): boolean {
   if (!isLoopbackBind(boundHost) || !header) return true;

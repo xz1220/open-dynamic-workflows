@@ -103,6 +103,41 @@ test("HTTP: a chat message split mid-character over the wire is stored intact", 
   }
 });
 
+test("HTTP: malformed percent-escapes in path ids are a 400, not a 500", async () => {
+  const { root, handle } = await boot();
+  try {
+    for (const path of [
+      "/api/runs/%E0%A4%A",
+      "/api/runs/%ZZ/events",
+      "/api/runs/%E0%A4%A/result",
+      "/api/workflows/%E0%A4%A",
+      "/api/chat/sessions/%E0%A4%A",
+    ]) {
+      const res = await fetch(`${handle.url}${path}`);
+      assert.equal(res.status, 400, path);
+      assert.match((await res.json()).error, /malformed URL escape/, path);
+    }
+    // Writes keep their guard order: CSRF posture is checked before the id.
+    const crossSite = await fetch(`${handle.url}/api/runs/%ZZ/control`, {
+      method: "POST",
+      headers: { "content-type": "text/plain" },
+      body: "{}",
+    });
+    assert.equal(crossSite.status, 415);
+    const badId = await fetch(`${handle.url}/api/chat/sessions/%ZZ/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text: "hi" }),
+    });
+    assert.equal(badId.status, 400);
+    // A well-formed escape still decodes as before.
+    assert.equal((await fetch(`${handle.url}/api/runs/${encodeURIComponent("no such")}`)).status, 404);
+  } finally {
+    await handle.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("HTTP: an over-cap body gets a 413 with connection: close, and the server carries on", async () => {
   const { root, handle } = await boot();
   try {
