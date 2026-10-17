@@ -216,9 +216,16 @@ export function startServer(options: ServeOptions): Promise<ServeHandle> {
     watcher = null; // no recursive watch on this platform — the 1s tick covers us
   }
   chatHost.start();
+  const stopBackground = () => {
+    clearInterval(tick);
+    if (pending) clearTimeout(pending);
+    watcher?.close();
+    chatHost.stop();
+  };
 
   return new Promise<ServeHandle>((resolve, reject) => {
     server.on("error", (err: NodeJS.ErrnoException) => {
+      stopBackground(); // a server that never listened must not leave its watcher behind
       if (err.code === "EADDRINUSE") {
         reject(new Error(`port ${port} is already in use — try \`odw serve --port <n>\``));
       } else {
@@ -234,10 +241,7 @@ export function startServer(options: ServeOptions): Promise<ServeHandle> {
         port: boundPort,
         host,
         close: () => {
-          clearInterval(tick);
-          if (pending) clearTimeout(pending);
-          watcher?.close();
-          chatHost.stop();
+          stopBackground();
           return closeServer(server, clients);
         },
       });

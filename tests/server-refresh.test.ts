@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { appendFileSync, mkdtempSync, rmSync } from "node:fs";
+import { createRequire, syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -93,6 +94,38 @@ test("a burst of event appends is coalesced into a few run-list refreshes, not o
   } finally {
     await sse.close();
     await handle.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a server that fails to listen rejects cleanly and closes its fs watcher", async () => {
+  const root = tempRoot();
+  const first = await startServer({ store: new RunStore(root), port: 0, host: "127.0.0.1", claudeProjectsRoot: join(root, "no-claude") });
+  // Count watchers opened/closed through node:fs (synced into ESM imports).
+  const fs = createRequire(import.meta.url)("node:fs") as typeof import("node:fs");
+  const realWatch = fs.watch;
+  let open = 0;
+  fs.watch = ((...args: Parameters<typeof realWatch>) => {
+    const watcher = realWatch(...args);
+    open++;
+    const close = watcher.close.bind(watcher);
+    watcher.close = () => {
+      open--;
+      close();
+    };
+    return watcher;
+  }) as typeof realWatch;
+  syncBuiltinESMExports();
+  try {
+    await assert.rejects(
+      startServer({ store: new RunStore(root), port: first.port, host: "127.0.0.1", claudeProjectsRoot: join(root, "no-claude") }),
+      /already in use/,
+    );
+    assert.equal(open, 0, "the server that never listened closed its runs watcher");
+  } finally {
+    fs.watch = realWatch;
+    syncBuiltinESMExports();
+    await first.close();
     rmSync(root, { recursive: true, force: true });
   }
 });

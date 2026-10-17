@@ -10,7 +10,7 @@ import { join } from "node:path";
 
 import type { WorkflowEvent } from "../events.js";
 import { SigCache, statSig } from "./fs-util.js";
-import { detailFrom, EventFold, summaryFrom, type RunFacts, type RunSummary } from "./runs-view.js";
+import { detailFrom, EventFold, summaryFrom, type RunDetail, type RunFacts, type RunSummary } from "./runs-view.js";
 import type { RunSource } from "./run-source.js";
 import { TERMINAL_STATES, type EventsCursor, type RunStore } from "./run-store.js";
 
@@ -82,7 +82,7 @@ export class OdwRunSource implements RunSource {
   summary(runId: string): RunSummary | null {
     return this.store.exists(runId) ? summaryFrom(runId, this.facts(runId)) : null;
   }
-  detail(runId: string) {
+  detail(runId: string): RunDetail | null {
     if (!this.store.exists(runId)) return null;
     return detailFrom(runId, this.facts(runId), {
       hasResult: this.store.hasResult(runId),
