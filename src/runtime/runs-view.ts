@@ -26,6 +26,8 @@
  *      CLIs reported, or chars/4 estimates that stay marked `estimated`.
  */
 
+import { isPermissionTier } from "../adapters/permissions.js";
+import type { PermissionTier } from "../adapters/types.js";
 import { addUsage, readUsage, type Usage } from "../adapters/usage.js";
 import type { AgentChanges } from "../changes.js";
 import type { WaitingCheckpoint } from "../checkpoint.js";
@@ -82,6 +84,11 @@ export interface AgentView {
   changes?: AgentChanges | null;
   /** Agents only: the branch its change was kept on (`keep: true`, `keepBranches`), else null. */
   branch?: string | null;
+  /**
+   * Agents only (ODW extension): the permission tier its CLI runs at —
+   * agent_started's `permissions`. Absent for older event files.
+   */
+  permissions?: PermissionTier;
 }
 
 export type RunDisplayState =
@@ -269,6 +276,7 @@ export function applyAgentEvent(
       changes: null,
       branch: null,
     };
+    if (isPermissionTier(ev.permissions)) opened.permissions = ev.permissions;
     agents.push(opened);
     return { opened };
   }

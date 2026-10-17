@@ -36,6 +36,9 @@
   "//maxTranscriptBytes": "ODW extension. While each agent runs, what its CLI prints is kept in the run directory as its transcript: agents/<agentId>.transcript.jsonl (a JSONL adapter's events as received, other adapters' output as text lines) and agents/<agentId>.stderr.txt (the end of its stderr). odw logs <run> --agent <id|label> prints it readably (--raw as kept, --follow while it runs). Past maxTranscriptBytes per agent one truncation line ends it; 0 keeps no transcripts.",
   "maxTranscriptBytes": 5242880,
 
+  "//permissions": "ODW extension. What the run's agents may do: \"read\" (look, never edit or run commands — for research and review fan-outs), \"edit\" (the default: what every built-in always ran with) or \"full\" (no sandbox, no approvals). odw run|rerun|resume --permissions overrides it per run; an adapter's own \"permissions\" and an agent()'s { permissions } may only lower it. Each adapter's flags per tier are its \"permissionArgs\", spliced where its command has \"{permission_args}\". An agent that asks a CLI with no read flags for \"read\" fails before it starts; one that asks for \"full\" where the CLI declares none runs with its \"edit\" flags, logged once. To cap one built-in without redefining it, give only the fields you change: \"adapters\": { \"codex\": { \"permissions\": \"read\" } }.",
+  "permissions": "edit",
+
   "//notify": {
     "$comment": "ODW extension: run-end hooks. Rename \"//notify\" to \"notify\" to turn them on. They fire once, after the run's final state is written, and can never change it; a failing or slow hook is only logged to the run's worker.log. command: an argv run WITHOUT a shell (killed after 30s), with ODW_RUN_ID, ODW_RUN_STATE, ODW_WORKFLOW, ODW_RUN_DIR, ODW_RESULT_FILE (only when the run has a result), ODW_DURATION_SEC, ODW_AGENTS and ODW_FAILED_AGENTS in its environment. webhook: an http(s) URL that receives a JSON POST (10s limit) whose text/content fields render as-is in Slack and Discord. on: which final states fire them (default: all three).",
     "command": ["/usr/local/bin/odw-notify"],
@@ -46,58 +49,79 @@
   "adapters": {
     "codex": {
       "label": "Codex CLI",
-      "command": ["codex", "--search", "exec", "--skip-git-repo-check", "--sandbox", "workspace-write", "--cd", "{workspace}", "-"],
+      "command": ["codex", "--search", "exec", "--skip-git-repo-check", "{permission_args}", "--cd", "{workspace}", "-"],
       "stdin": "{prompt}",
-      "flags": { "model": ["--model"] }
+      "flags": { "model": ["--model"] },
+      "permissionArgs": {
+        "read": ["--sandbox", "read-only"],
+        "edit": ["--sandbox", "workspace-write"],
+        "full": ["--sandbox", "danger-full-access"]
+      }
     },
     "claude": {
       "label": "Claude Code",
-      "command": ["claude", "--print", "--output-format", "stream-json", "--verbose", "--permission-mode", "acceptEdits", "--allowedTools", "WebSearch", "WebFetch", "--no-session-persistence"],
+      "command": ["claude", "--print", "--output-format", "stream-json", "--verbose", "{permission_args}", "--no-session-persistence"],
       "stdin": "{prompt}",
       "flags": { "model": ["--model"] },
-      "output": { "format": "jsonl", "eventType": "result", "textPath": ["result"], "select": "last", "usagePath": ["usage"], "costPath": ["total_cost_usd"], "errorPath": ["is_error"] }
+      "output": { "format": "jsonl", "eventType": "result", "textPath": ["result"], "select": "last", "usagePath": ["usage"], "costPath": ["total_cost_usd"], "errorPath": ["is_error"] },
+      "permissionArgs": {
+        "read": ["--permission-mode", "dontAsk", "--tools", "Read,Glob,Grep,WebSearch,WebFetch", "--allowedTools", "WebSearch", "WebFetch", "--strict-mcp-config"],
+        "edit": ["--permission-mode", "acceptEdits", "--allowedTools", "WebSearch", "WebFetch"],
+        "full": ["--permission-mode", "bypassPermissions"]
+      }
     },
     "gemini": {
       "label": "Gemini CLI",
-      "command": ["gemini", "--approval-mode", "auto_edit", "--prompt", "{prompt}"],
-      "flags": { "model": ["--model"] }
+      "command": ["gemini", "{permission_args}", "--prompt", "{prompt}"],
+      "flags": { "model": ["--model"] },
+      "permissionArgs": {
+        "read": ["--approval-mode", "default"],
+        "edit": ["--approval-mode", "auto_edit"],
+        "full": ["--approval-mode", "yolo"]
+      }
     },
     "qwen": {
       "label": "Qwen Code",
-      "command": ["qwen", "--approval-mode", "auto-edit", "--output-format", "text", "{prompt}"],
-      "flags": { "model": ["--model"] }
+      "command": ["qwen", "{permission_args}", "--output-format", "text", "{prompt}"],
+      "flags": { "model": ["--model"] },
+      "permissionArgs": { "edit": ["--approval-mode", "auto-edit"], "full": ["--approval-mode", "yolo"] }
     },
     "kimi": {
       "label": "Kimi CLI",
-      "command": ["kimi", "--work-dir", "{workspace}", "--print", "--input-format", "text", "--output-format", "text"],
+      "command": ["kimi", "--work-dir", "{workspace}", "--print", "{permission_args}", "--input-format", "text", "--output-format", "text"],
       "stdin": "{prompt}",
-      "flags": { "model": ["--model"] }
+      "flags": { "model": ["--model"] },
+      "permissionArgs": { "edit": [] }
     },
     "omp": {
       "label": "Oh My Pi",
-      "command": ["omp", "--print", "--no-session", "--approval-mode", "yolo", "--cwd", "{workspace}"],
+      "command": ["omp", "--print", "--no-session", "{permission_args}", "--cwd", "{workspace}"],
       "stdin": "{prompt}",
-      "flags": { "model": ["--model"] }
+      "flags": { "model": ["--model"] },
+      "permissionArgs": { "edit": ["--approval-mode", "yolo"] }
     },
     "kilo": {
       "label": "Kilo Code",
-      "command": ["kilo", "run", "--format", "json", "--auto", "--dir", "{workspace}"],
+      "command": ["kilo", "run", "--format", "json", "{permission_args}", "--dir", "{workspace}"],
       "stdin": "{prompt}",
       "flags": { "model": ["--model"] },
-      "output": { "format": "jsonl", "eventType": "text", "textPath": ["part", "text"], "select": "last" }
+      "output": { "format": "jsonl", "eventType": "text", "textPath": ["part", "text"], "select": "last" },
+      "permissionArgs": { "edit": ["--auto"] }
     },
     "opencode": {
       "label": "OpenCode",
-      "command": ["opencode", "run", "--format", "json", "--auto", "--dir", "{workspace}"],
+      "command": ["opencode", "run", "--format", "json", "{permission_args}", "--dir", "{workspace}"],
       "stdin": "{prompt}",
       "flags": { "model": ["--model"] },
-      "output": { "format": "jsonl", "eventType": "text", "textPath": ["part", "text"], "select": "last" }
+      "output": { "format": "jsonl", "eventType": "text", "textPath": ["part", "text"], "select": "last" },
+      "permissionArgs": { "edit": ["--auto"] }
     },
     "cursor": {
       "label": "Cursor Agent CLI",
-      "command": ["agent", "--print", "--force", "--trust", "--output-format", "text", "--workspace", "{workspace}"],
+      "command": ["agent", "--print", "{permission_args}", "--trust", "--output-format", "text", "--workspace", "{workspace}"],
       "stdin": "{prompt}",
-      "flags": { "model": ["--model"] }
+      "flags": { "model": ["--model"] },
+      "permissionArgs": { "edit": ["--force"] }
     },
     "my_wrapper": {
       "label": "My custom wrapper (example)",

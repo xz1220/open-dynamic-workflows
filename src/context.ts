@@ -53,6 +53,11 @@ export interface RunContext {
   commandSeq: { value: number };
   /** The same, for checkpoint() calls (the `checkpointId` event field; ODW extension). */
   checkpointSeq: { value: number };
+  /**
+   * Adapters whose permissions note (a tier they cannot run as asked) the run
+   * has logged, so each is said once per run (ODW extension). Shared like `seq`.
+   */
+  permissionNotes?: Set<string>;
   currentPhase: string | null;
   /**
    * Save a completed agent's record (the worker writes the run directory's
@@ -147,6 +152,7 @@ export function buildContext(config: Config, options: BuildContextOptions = {}):
     seq: { value: 0 },
     commandSeq: { value: 0 },
     checkpointSeq: { value: 0 },
+    permissionNotes: new Set(),
     currentPhase: null,
     saveAgentResult: options.saveAgentResult,
     agentDiffPath: options.agentDiffPath,

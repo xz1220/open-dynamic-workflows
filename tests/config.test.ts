@@ -13,6 +13,7 @@ import {
   resolveConcurrency,
   resolveRunsRoot,
 } from "../src/adapters/config.js";
+import { commandAt } from "../src/adapters/permissions.js";
 import { AdapterNotFound, ConfigError } from "../src/errors.js";
 import { Scheduler } from "../src/scheduler.js";
 
@@ -25,8 +26,10 @@ test("defaultConfig ships all nine built-in adapters", () => {
 
 test("new built-ins declare their automation, model, workspace, and output contracts", () => {
   const { adapters } = defaultConfig();
+  // The default (edit) tier's argv: what each built-in has always run.
+  const edit = (name: string) => commandAt(adapters[name]!, "edit");
   assert.deepEqual(adapters.omp!.flags?.model, ["--model"]);
-  assert.deepEqual(adapters.omp!.command, [
+  assert.deepEqual(edit("omp"), [
     "omp",
     "--print",
     "--no-session",
@@ -36,7 +39,7 @@ test("new built-ins declare their automation, model, workspace, and output contr
     "{workspace}",
   ]);
   assert.equal(adapters.omp!.stdin, "{prompt}");
-  assert.deepEqual(adapters.gemini!.command, [
+  assert.deepEqual(edit("gemini"), [
     "gemini",
     "--approval-mode",
     "auto_edit",
@@ -52,13 +55,13 @@ test("new built-ins declare their automation, model, workspace, and output contr
       textPath: ["part", "text"],
       select: "last",
     });
-    assert.ok(adapter.command.includes("--auto"));
+    assert.ok(edit(name).includes("--auto"));
     assert.ok(adapter.command.includes("--dir"));
     assert.ok(adapter.command.includes("{workspace}"));
     assert.equal(adapter.stdin, "{prompt}");
   }
 
-  assert.ok(adapters.cursor!.command.includes("--force"));
+  assert.ok(edit("cursor").includes("--force"));
   assert.ok(adapters.cursor!.command.includes("--trust"));
   assert.ok(adapters.cursor!.command.includes("{workspace}"));
   assert.equal(adapters.cursor!.stdin, "{prompt}");

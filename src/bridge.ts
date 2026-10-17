@@ -25,6 +25,11 @@
  * adapter declares where (adapters/usage.ts) — is handed to the caller as the
  * run ends, schema retries, rate-limit retries and failed runs included.
  *
+ * Every CLI run carries its permission tier's flags (an ODW extension; see
+ * adapters/permissions.ts): an agent that may not have the tier it asked for,
+ * or whose CLI cannot enforce it, fails with an AgentError before anything is
+ * spawned.
+ *
  * The command runner is injectable, so the bridge unit-tests with a fake runner
  * and no real agent account; so are the backoff's sleep, clock and jitter.
  */
@@ -33,7 +38,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { resolveAdapter } from "./adapters/config.js";
+import { isOnPath, resolveAdapter } from "./adapters/config.js";
 import {
   backoffSeconds,
   classifyErrorReply,
@@ -41,6 +46,7 @@ import {
   formatSeconds,
   type FailureClass,
 } from "./adapters/failures.js";
+import { planPermissions, readCapableAdapter, runTier, spliceArgs, type PermissionPlan } from "./adapters/permissions.js";
 import { expand, expandAll, type PlaceholderContext } from "./adapters/placeholders.js";
 import { AdapterOutputDecoder, decodeOutput, type DecodedOutput } from "./adapters/output.js";
 import { runCommand, type CommandRunner } from "./adapters/runner.js";
@@ -51,8 +57,9 @@ import {
   type Adapter,
   type CliResult,
   type Config,
+  type PermissionTier,
 } from "./adapters/types.js";
-import { AdapterExecutionError, RunStopped, SchemaValidationError, isFatalError } from "./errors.js";
+import { AdapterExecutionError, AgentError, RunStopped, SchemaValidationError, isFatalError } from "./errors.js";
 import { PortPool } from "./ports.js";
 import { LiteralRouter, type InvocationPlan, type OptionRouter } from "./router.js";
 import { describeSchema, pickJson, type JsonSchema } from "./schema.js";
@@ -75,6 +82,11 @@ export interface AgentRequest {
   agentType?: string;
   /** `"worktree"`: run this agent in a throwaway git worktree (as in Claude Code). */
   isolation?: "worktree";
+  /**
+   * ODW extension: run this agent at a stricter permission tier than the
+   * run's (it may only lower it). Unvalidated: a bad value fails the call.
+   */
+  permissions?: PermissionTier;
 }
 
 /** The persona framing injected for `agentType`, on top of the independence preamble. */
@@ -265,6 +277,20 @@ export class Bridge {
     return (this.autoPicked ??= resolveAdapter(this.config, null));
   }
 
+  /**
+   * The tier an agent on `adapter` runs with, and its flags (ODW extension;
+   * see adapters/permissions.ts): `option` is the call's own `permissions`.
+   * A refusal's advice names an adapter that can run read-only, preferring
+   * one whose CLI is installed.
+   */
+  permissionsFor(adapter: Adapter, option?: unknown): PermissionPlan {
+    const run = runTier(this.config);
+    const plan = planPermissions(adapter, run, option);
+    if (!plan.error || plan.requested !== "read") return plan;
+    const alternative = readCapableAdapter(this.config, adapter.name, (other) => isOnPath(other.command[0]!));
+    return planPermissions(adapter, run, option, alternative);
+  }
+
   async run(request: AgentRequest, options: RunOptions = {}): Promise<AgentOutcome> {
     // The agent's ids and port, the same for every CLI run (and worktree setup)
     // of the call; no other agent of the run gets the port until the call settles.
@@ -303,9 +329,14 @@ export class Bridge {
     }
   }
 
-  private async callOn(adapter: Adapter, request: AgentRequest, options: RunOptions, call: CallEnv): Promise<AgentOutcome> {
+  private async callOn(adapter: Adapter, request: AgentRequest, options: RunOptions, shared: CallEnv): Promise<AgentOutcome> {
     const { signal } = options;
     const settings = this.config.settings;
+    // The tier is settled before anything starts: an agent that may not have
+    // it, or whose CLI cannot enforce it, never reaches a workspace or a process.
+    const permissions = this.permissionsFor(adapter, request.permissions);
+    if (permissions.error) throw new AgentError(permissions.error);
+    const call: CallEnv = { ...shared, permissionArgs: permissions.args };
     const limits: CliLimits = {
       timeout: adapter.timeout ?? settings.timeout ?? undefined,
       // An adapter's 0 opts it out of a run-wide stall timeout; null is off.
@@ -573,7 +604,10 @@ export class Bridge {
           // Option-derived tokens (the model token this phase) win over the base.
           ...plan.context,
         };
-        const command = [...expandAll(adapter.command, context), ...plan.extraArgs];
+        // The tier's flags take the place of `{permission_args}`, then every
+        // placeholder (theirs too) is expanded.
+        const template = spliceArgs(adapter.command, call.permissionArgs ?? []);
+        const command = [...expandAll(template, context), ...plan.extraArgs];
         const stdin = adapter.stdin ? expand(adapter.stdin, context) : undefined;
         const env = withAgentVars({ ...process.env, ...adapter.env }, call.env);
         // What the CLI prints is kept as it arrives (ODW extension; see ./transcript).
@@ -602,12 +636,17 @@ export class Bridge {
   }
 }
 
-/** What every CLI run of one agent call shares: its `ODW_*` variables, where its notes go, what keeps its changes and its transcript. */
+/**
+ * What every CLI run of one agent call shares: its `ODW_*` variables, where
+ * its notes go, what keeps its changes and its transcript, and its permission
+ * tier's flags.
+ */
 interface CallEnv {
   env: Record<string, string>;
   onNote?: (message: string) => void;
   changes?: ChangeSink;
   transcript?: TranscriptSink;
+  permissionArgs?: string[];
 }
 
 /** The variables an agent's processes get from ODW: only ever this call's, never inherited. */

@@ -96,6 +96,8 @@ export interface AgentView {
   changes?: AgentChanges | null;
   /** The branch its changes were kept on (`keep: true`), when any. */
   branch?: string | null;
+  /** The permission tier its CLI runs at (ODW extension); absent for older runs. */
+  permissions?: PermissionTier | null;
   label: string;
   phase: string | null;
   state: AgentState;
@@ -120,6 +122,9 @@ export interface ScheduleView {
   /** Local ISO time of the next fire, or null when the expression never fires. */
   nextRun: string | null;
 }
+
+/** How much an agent may do (ODW extension): read < edit < full. */
+export type PermissionTier = "read" | "edit" | "full";
 
 /** The diffstat of a worktree agent's changes (ODW extension). */
 export interface AgentChanges {
@@ -154,6 +159,8 @@ export interface AdapterListing {
   installed: boolean;
   isDefault: boolean;
   permissionNote: string;
+  /** The permission tiers it declares flags for (ODW extension); empty: none, it runs as configured. */
+  tiers?: PermissionTier[];
 }
 
 export interface SettingsSnapshot {
@@ -297,6 +304,8 @@ export interface AgentResultRecord {
   sourceRunId?: string | null;
   changes?: AgentChanges | null;
   branch?: string | null;
+  /** The permission tier it ran at (ODW extension). */
+  permissions?: PermissionTier;
 }
 
 /** One step of an agent's transcript, normalized (ODW extension; src/runtime/transcript-view.ts). */

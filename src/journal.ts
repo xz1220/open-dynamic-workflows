@@ -13,6 +13,7 @@
 
 import { createHash } from "node:crypto";
 
+import type { PermissionTier } from "./adapters/types.js";
 import type { AgentChanges } from "./changes.js";
 import type { AgentOptions } from "./primitives.js";
 
@@ -49,6 +50,8 @@ export interface AgentResultRecord {
   changes?: AgentChanges | null;
   /** The branch that change was committed to (`keep: true`, `keepBranches`), else null. */
   branch?: string | null;
+  /** The permission tier its CLI ran at (ODW extension); absent in records from before tiers. */
+  permissions?: PermissionTier;
 }
 
 /**
@@ -70,6 +73,9 @@ export interface AgentResultRecord {
  *   - label      the author's name for the call: it tells otherwise identical
  *                calls apart (one prompt sampled as voter-1…voter-N), and a
  *                replayed record keeps the label `--agent <label>` looks up.
+ *   - permissions the tier the call asked for (ODW extension): an agent held
+ *                to read cannot make the change an edit one would. Like
+ *                `adapter`, as requested — the run's tier is not in the key.
  *
  * `phase` is left out on purpose: it is display only (often ambient, from
  * phase(), and prefixed inside a nested workflow()), and regrouping progress
@@ -88,6 +94,7 @@ export function resumeKey(prompt: string, opts: AgentOptions): string {
     agentType: opts.agentType,
     isolation: opts.isolation,
     label: opts.label,
+    permissions: opts.permissions,
   };
   return createHash("sha256").update(stableJson(inputs)).digest("hex");
 }

@@ -28,6 +28,10 @@
  *
  * What each agent's CLI printed is kept as it runs, as the agent's transcript
  * (an ODW extension; see ./transcript) — complete before its terminal event.
+ *
+ * Every agent_started event carries the agent's permission tier (an ODW
+ * extension, adapters/permissions.ts); an adapter that runs another tier than
+ * its agents ask for is logged once per run.
  */
 
 import { readFileSync } from "node:fs";
@@ -35,7 +39,8 @@ import { copyFile, mkdir } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 
 import { formatSeconds } from "./adapters/failures.js";
-import type { Adapter } from "./adapters/types.js";
+import { isPermissionTier, planPermissions, runTier } from "./adapters/permissions.js";
+import type { Adapter, PermissionTier } from "./adapters/types.js";
 import { addUsage, estimatedUsage, type Usage } from "./adapters/usage.js";
 import type { AgentRequest } from "./bridge.js";
 import { branchName, ChangeRecorder, type AgentChanges, type KeptChanges } from "./changes.js";
@@ -73,6 +78,12 @@ export interface AgentOptions {
    * one agent out of the `keepBranches` setting. No effect without isolation.
    */
   keep?: boolean;
+  /**
+   * ODW extension: run this agent at a stricter permission tier than the
+   * run's — `"read"` for research and review. It may only lower the tier
+   * (read < edit < full): asking for more than the run allows fails the call.
+   */
+  permissions?: PermissionTier;
 }
 
 export interface Budget {
@@ -132,6 +143,9 @@ export function createPrimitives(
 ): WorkflowGlobals {
   const depth = internal.depth ?? 0;
   const phasePrefix = internal.phasePrefix ?? "";
+  // Adapters whose permissions note the run has logged: once per adapter per
+  // run, shared with nested workflow()s (their contexts are copies of this one).
+  const notedPermissions = (ctx.permissionNotes ??= new Set<string>());
 
   /**
    * Save a completed agent's record before its agent_finished event, so an
@@ -179,7 +193,9 @@ export function createPrimitives(
       // The run whose agent actually produced the value, across chained resumes.
       sourceRunId: recorded.cached && recorded.sourceRunId ? recorded.sourceRunId : ctx.replay!.sourceRunId,
     };
-    const startedEv = event(AGENT_STARTED, { agentId, label, phase, adapter, ...marks });
+    // The tier the value was produced at, when the record says (ODW extension).
+    const tier = permissionField(recorded.permissions);
+    const startedEv = event(AGENT_STARTED, { agentId, label, phase, adapter, ...tier, ...marks });
     ctx.emit(startedEv);
     const kept = await carryChanges(recorded, agentId, (message) =>
       ctx.emit(event(LOG, { message: `${label}:${agentId}: ${message}`, agentId, label, phase })),
@@ -188,7 +204,7 @@ export function createPrimitives(
     const startedAt = startedEv.ts;
     const finishedAt = finished.ts;
     const value = recorded.value;
-    if (save({ agentId, key, label, phase, adapter, attempts, startedAt, finishedAt, value, ...marks, ...changeFields(kept) })) {
+    if (save({ agentId, key, label, phase, adapter, attempts, startedAt, finishedAt, value, ...tier, ...marks, ...changeFields(kept) })) {
       finished.saved = true;
     }
     ctx.emit(finished);
@@ -297,6 +313,10 @@ export function createPrimitives(
     // that never ran as running.
     const adapter = ctx.bridge.adapterFor(opts.adapter);
     const display = opts.label ?? opts.adapter ?? opts.agentType ?? adapter.name;
+    // The agent's permission tier, for its events and the run's log. The
+    // bridge reaches the same decision and enforces it: an agent that may not
+    // have its tier, or whose CLI cannot enforce it, fails before it starts.
+    const permissions = planPermissions(adapter, runTier(ctx.config), opts.permissions);
     const request: AgentRequest = {
       prompt,
       adapter: opts.adapter,
@@ -305,6 +325,7 @@ export function createPrimitives(
       model: opts.model,
       agentType: opts.agentType,
       isolation: opts.isolation,
+      permissions: opts.permissions,
     };
     // What this call spends, from every CLI run it makes: the usage the CLI
     // reported, plus the characters of replies it reported no output tokens for.
@@ -348,8 +369,20 @@ export function createPrimitives(
         // Record the adapter only once the scheduler has handed out a real
         // dispatch slot, so queued work is not presented as running.
         started = true;
-        const startedEv = event(AGENT_STARTED, { agentId, label: display, phase: activePhase, adapter: adapter.name });
+        const startedEv = event(AGENT_STARTED, {
+          agentId,
+          label: display,
+          phase: activePhase,
+          adapter: adapter.name,
+          ...permissionField(permissions.tier ?? permissions.requested),
+        });
         ctx.emit(startedEv);
+        // An adapter that runs another tier than asked, or one ODW cannot
+        // enforce on it, is said once per run — never silently.
+        if (permissions.note && !notedPermissions.has(adapter.name)) {
+          notedPermissions.add(adapter.name);
+          ctx.emit(event(LOG, { message: permissions.note, adapter: adapter.name, ...permissionField(permissions.tier) }));
+        }
         // What preparing the call noted (no free port, a file .worktreeinclude
         // left out) and what keeping its change did not manage is logged against it.
         const note = (message: string): void =>
@@ -437,6 +470,7 @@ export function createPrimitives(
           startedAt: startedEv.ts,
           finishedAt: finished.ts,
           value: outcome.value,
+          ...permissionField(permissions.tier),
           ...changeFields(kept),
         });
         if (persisted) finished.saved = true;
@@ -673,6 +707,11 @@ function handled<T>(promise: Promise<T>): Promise<T> {
  * workflow()'s agents can fail inside the parent's parallel().
  */
 const surfaced = new WeakSet<object>();
+
+/** The `permissions` field an agent's start event and record carry: its tier, when it has one (ODW extension). */
+function permissionField(tier: unknown): { permissions?: PermissionTier } {
+  return isPermissionTier(tier) ? { permissions: tier } : {};
+}
 
 /** The `changes` and `branch` an agent's terminal event and record carry when it kept a change (ODW extension). */
 function changeFields(kept: KeptChanges | null): { changes?: AgentChanges; branch?: string | null } {

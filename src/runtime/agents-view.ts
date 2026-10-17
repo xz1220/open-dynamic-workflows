@@ -8,6 +8,7 @@
  * stays there after the run stalls, is stopped, or its worker dies.
  */
 
+import type { PermissionTier } from "../adapters/types.js";
 import type { AgentChanges } from "../changes.js";
 import type { AgentResultRecord } from "../journal.js";
 import {
@@ -40,6 +41,8 @@ export interface AgentRow {
   /** What an isolated agent changed — its diff is agents/<agentId>.diff — and the branch it was kept on (ODW extension). */
   changes: AgentChanges | null;
   branch: string | null;
+  /** The permission tier it runs at (ODW extension); null for runs from before tiers. */
+  permissions: PermissionTier | null;
 }
 
 /** A run's agents in call (agentId) order, each with its saved result if it has one. */
@@ -63,6 +66,7 @@ export function agentRows(store: RunStore, runId: string): AgentRow[] {
       record,
       changes: a.changes ?? record?.changes ?? null,
       branch: a.branch ?? record?.branch ?? null,
+      permissions: a.permissions ?? record?.permissions ?? null,
     };
   });
   // A saved result whose events were lost (a truncated log) is still listed.
@@ -87,6 +91,7 @@ function rowFromRecord(rec: AgentResultRecord): AgentRow {
     record: rec,
     changes: rec.changes ?? null,
     branch: rec.branch ?? null,
+    permissions: rec.permissions ?? null,
   };
 }
 
@@ -119,6 +124,8 @@ export function agentRowJson(row: AgentRow): Record<string, unknown> {
     durationMs: row.durationMs,
     cached: row.cached,
     sourceRunId: row.record?.sourceRunId ?? null,
+    // The tier it ran at (ODW extension), for runs that record one.
+    ...(row.permissions ? { permissions: row.permissions } : {}),
     saved: row.record !== null,
     error: row.error,
     preview: row.record ? previewValue(row.record.value, 120) : null,

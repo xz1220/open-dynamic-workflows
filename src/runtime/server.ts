@@ -99,6 +99,7 @@ import {
   resolveWorkflowsRoot,
   RUN_END_STATES,
 } from "../adapters/config.js";
+import { commandAt, runTier } from "../adapters/permissions.js";
 import type { Config } from "../adapters/types.js";
 import { CHECKPOINT_NOTE_MAX, isCheckpointId } from "../control.js";
 import { DASHBOARD_HTML } from "../dashboard.generated.js";
@@ -467,10 +468,11 @@ function settingsView(
     runsRoot: store.root,
     writable: isLoopbackBind(boundHost),
     claudeJobsScope: config.settings.claudeJobsScope,
-    adapters: listAdapters(config).map((a) => ({
-      ...a,
-      command: config.adapters[a.name]?.command.join(" ") ?? "",
-    })),
+    adapters: listAdapters(config).map((a) => {
+      // The argv it runs with at the configured permission tier (ODW extension).
+      const adapter = config.adapters[a.name];
+      return { ...a, command: adapter ? commandAt(adapter, runTier(config)).join(" ") : "" };
+    }),
     workflowRoots: [
       { provider: "odw", scope: "project", label: ".odw/workflows", path: join(cwd, ".odw", "workflows") },
       { provider: "claude", scope: "project", label: ".claude/workflows", path: join(cwd, ".claude", "workflows") },

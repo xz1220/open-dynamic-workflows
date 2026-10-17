@@ -208,6 +208,7 @@ test("agent() saves its record before agent_finished, which then says saved: tru
       startedAt: started!.ts,
       finishedAt: finished!.ts,
       value: "R:hi",
+      permissions: "edit",
     },
   ]);
   assert.equal(finished!.saved, true);

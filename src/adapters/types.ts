@@ -70,6 +70,25 @@ export interface AdapterFailures {
   auth?: string[];
 }
 
+/**
+ * How much an agent may do (an ODW extension), loosest last: `read` — look,
+ * never edit or run commands; `edit` — what every built-in did before tiers
+ * existed; `full` — no sandbox, no approvals (an explicit opt-in).
+ */
+export type PermissionTier = "read" | "edit" | "full";
+
+/**
+ * The argv flags that put one CLI in each tier, spliced where its command has
+ * a `{permission_args}` element (ODW extension). `edit` is required; a tier
+ * left out is one the CLI cannot be trusted to enforce headless, so ODW
+ * refuses it (`read`) or runs the CLI with its `edit` flags and says so (`full`).
+ */
+export interface PermissionArgs {
+  read?: string[];
+  edit: string[];
+  full?: string[];
+}
+
 /** How to invoke one coding-agent CLI. */
 export interface Adapter {
   name: string;
@@ -94,6 +113,10 @@ export interface Adapter {
   output?: AdapterOutput;
   /** Extra failure wording for this CLI, matched before the built-in table. */
   failures?: AdapterFailures;
+  /** Each tier's flags (ODW extension); without them the CLI runs as configured, treated as `edit`. */
+  permissionArgs?: PermissionArgs;
+  /** Caps this CLI's tier below the run's (ODW extension): an agent on it gets the lower of the two. */
+  permissions?: PermissionTier;
 }
 
 /** Run-wide knobs independent of any single adapter. */
@@ -168,6 +191,12 @@ export interface Settings {
    * directory (an ODW extension); past it, one truncation line. `0` keeps none.
    */
   maxTranscriptBytes: number;
+  /**
+   * The run's permission tier (an ODW extension; `odw run --permissions`
+   * overrides it): an adapter's `permissions` and an agent()'s `permissions`
+   * may only lower it.
+   */
+  permissions: PermissionTier;
 }
 
 /** The terminal states a run can end in, and that notify hooks can fire on. */
