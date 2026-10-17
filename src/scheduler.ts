@@ -20,7 +20,9 @@
  * agent reports through its {@link AgentSlot}) halves its adapter's cap, and
  * each minute without another gives one slot back. An agent that falls back
  * to another adapter (an ODW extension) moves its slots there the same way:
- * it lets go of both, then waits for the pair on the new adapter.
+ * it lets go of both, then waits for the pair on the new adapter. One that
+ * waits for its adapter's spent quota to reset (an ODW extension: quotaWait)
+ * lets go of both while it waits, and takes a pair again to go on.
  *
  * The scheduler also owns the run's abort signal. The first fatal error (stop,
  * budget, backstop, configuration) is recorded as the run's outcome and aborts
@@ -104,9 +106,17 @@ export interface AgentSlot {
    * waits — ahead of every agent that has not started — for a run slot and a
    * slot on the new adapter, handed out together as at dispatch. It never
    * holds two adapters' slots. Rejects with the run's reason when the run
-   * ends meanwhile. Not a dispatch: the backstop does not count it.
+   * ends meanwhile. Not a dispatch: the backstop does not count it. After
+   * {@link release}, it takes a pair again — on `adapter` — the same way.
    */
   moveTo(adapter: string): Promise<void>;
+  /**
+   * Let go of both slots while the agent waits for something that is not
+   * work — its adapter's spent quota to reset (an ODW extension: quotaWait) —
+   * so other agents may have them; {@link moveTo} takes a pair back. The
+   * agent is still the run's pending work, and a stop still reaches it.
+   */
+  release(): void;
 }
 
 /** An adapter's cap changed under adaptive back-pressure (an ODW extension). */
@@ -176,7 +186,7 @@ export class Scheduler {
   private restoreTimer: NodeJS.Timeout | undefined;
   /** runAgent/runCommand/runWait calls not yet settled: queued, paused at the checkpoint, running, or waiting. */
   private pending = 0;
-  /** Agents and commands whose work is in flight, and checkpoint() waits: the stop watch is armed while any is. */
+  /** Agents and commands whose work is in flight, requests held at their gate, and checkpoint() waits: the stop watch is armed while any is. */
   private running = 0;
   private stopWatching: (() => void) | undefined;
   private idleWaiters: Array<() => void> = [];
@@ -254,8 +264,9 @@ export class Scheduler {
    * `fn` receives the run's abort signal, and must stop its agent when it
    * fires, and the agent's {@link AgentSlot}. A `gate` holds the request
    * back before it asks for any slot — a staggered fan-out's later agents
-   * wait there (see ./throttle) — yet it is pending work all along, so the
-   * run's drain waits for it, and an abort ends it.
+   * wait there (see ./throttle), and so does a call waiting for a spent quota
+   * to reset (quotaWait) — yet it is pending work all along: the run's drain
+   * waits for it, the stop watch is armed while it waits, and an abort ends it.
    */
   async runAgent<T>(
     fn: (signal: AbortSignal, slot: AgentSlot) => Promise<T>,
@@ -265,7 +276,8 @@ export class Scheduler {
     try {
       this.throwIfAborted();
       if (options.gate) {
-        await options.gate(this.signal);
+        // A stop must reach a request held here: it may be all the run has left (a quota wait).
+        await this.track(options.gate);
         this.throwIfAborted();
       }
       const lane = options.adapter !== undefined ? this.laneFor(options.adapter) : undefined;
@@ -407,7 +419,7 @@ export class Scheduler {
     if (this.fatal) throw this.fatal.error;
   }
 
-  /** Run an agent's (or command's, or checkpoint wait's) work, watching for a stop while any is in flight. */
+  /** Run an agent's (or command's, or gate's, or checkpoint wait's) work, watching for a stop while any is in flight. */
   private async track<T>(fn: (signal: AbortSignal) => Promise<T>): Promise<T> {
     if (this.running++ === 0 && this.watchStop) {
       this.stopWatching = this.watchStop(() => this.abort(new RunStopped("run was stopped")));
@@ -490,6 +502,7 @@ export class Scheduler {
     return {
       rateLimited: () => this.rateLimited(held.lane, held.wave),
       moveTo: (adapter) => this.move(held, adapter),
+      release: () => this.letGo(held),
     };
   }
 
@@ -497,21 +510,31 @@ export class Scheduler {
    * Move a running agent to `adapter`'s lane (see AgentSlot.moveTo): both its
    * slots go back in the same step that queues it, first, for the new pair —
    * so it never holds one while it waits for the other, and a free pair goes
-   * to it before any agent that has not started.
+   * to it before any agent that has not started. An agent that let go of its
+   * slots (AgentSlot.release) queues for a pair the same way.
    */
   private async move(held: Held, adapter: string): Promise<void> {
     const lane = this.laneFor(adapter);
-    if (!held.slotted || lane === held.lane) return; // nothing but the run limits either adapter, or the same lane
+    if (held.slotted && lane === held.lane) return; // nothing but the run limits either adapter, or the same lane
     this.throwIfAborted();
-    held.slotted = false;
-    this.active--;
-    if (held.lane) held.lane.active--;
+    if (held.slotted) {
+      held.slotted = false;
+      this.active--;
+      if (held.lane) held.lane.active--;
+    }
     held.lane = lane;
     const granted = new Promise<void>((resolve, reject) => this.waiters.unshift({ lane, resolve, reject }));
     this.pump();
     await granted;
     held.slotted = true;
     held.wave = lane?.wave ?? 0;
+  }
+
+  /** Let go of a running agent's slots while it waits (see AgentSlot.release): the next request has them at once. */
+  private letGo(held: Held): void {
+    if (!held.slotted) return;
+    held.slotted = false;
+    this.release(held.lane);
   }
 
   /**
