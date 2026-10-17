@@ -19,6 +19,9 @@
 import type { WorkflowEvent } from "../events.js";
 import type { RunDetail, RunSummary } from "./runs-view.js";
 
+/** A run id (or Claude session dir name) is one safe path segment: `[A-Za-z0-9._-]`. */
+export const RUN_ID_RE = /^[A-Za-z0-9._-]+$/;
+
 export interface RunSource {
   /** Which engine this source reads. Stamped onto every summary/detail it emits. */
   readonly provider: "odw" | "claude";
@@ -45,4 +48,18 @@ export interface RunSource {
   readonly controlError: string | null;
   /** Apply a control action (pause|resume|stop). Only called when controlError is null. */
   control(runId: string, action: string): void;
+}
+
+/** Every source's summaries, merged and sorted newest-first (the unified run list). */
+export function allSummaries(sources: RunSource[]): RunSummary[] {
+  return sources.flatMap((s) => s.listSummaries()).sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0));
+}
+
+/**
+ * The source that owns + has this run, or null. Ids are disjoint, so at most one
+ * matches; a malformed id is refused before any filesystem lookup.
+ */
+export function sourceForRun(sources: RunSource[], runId: string): RunSource | null {
+  if (!RUN_ID_RE.test(runId)) return null;
+  return sources.find((s) => s.owns(runId) && s.exists(runId)) ?? null;
 }
