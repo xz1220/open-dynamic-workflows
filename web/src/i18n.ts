@@ -507,6 +507,8 @@ const ZH: Record<string, string> = {
   "rate-limit retry": "限流重试",
   "expectation retry": "未达预期重试",
   "empty reply": "空回复",
+  redacted: "已脱敏",
+  "secrets in it were replaced before it was saved": "保存前其中的密钥已被替换",
   "unmet expectation": "未达预期",
   "{n} tool calls refused": "{n} 次工具调用被拒",
   Missed: "未达成",

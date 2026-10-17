@@ -9,7 +9,7 @@ import { icons } from "../icons";
 import { getLang, t, tn } from "../i18n";
 import { store } from "../store";
 import type { AgentView, RunDetail, WorkflowEvent } from "../types";
-import { ACTIVE, TERMINAL, esc, fmtClock, fmtDurMs, fmtDurSec, fmtTokens, fmtUsd } from "../util";
+import { ACTIVE, TERMINAL, esc, fmtClock, fmtDurMs, fmtDurSec, fmtTokens, fmtUsd, markRedactions } from "../util";
 import { EVT_CLASS, commandDetail, emptyArt } from "./activity";
 
 export type JobTab = "graph" | "timeline" | "logs" | "result" | "changes";
@@ -211,14 +211,14 @@ function drawer(run: RunDetail, ai: number, nowSec: number): string {
     a.state === "running" && a.startedAt != null ? fmtDurSec(nowSec - a.startedAt) : fmtDurMs(a.durationMs);
   const status =
     a.state === "failed"
-      ? `<div class="drawer-sec">${t("Error")}</div><div class="outbox err">${esc(a.error ?? t("(no message)"))}</div>`
+      ? `<div class="drawer-sec">${t("Error")}</div><div class="outbox err">${markRedactions(esc(a.error ?? t("(no message)")))}</div>`
       : a.state === "stale"
         ? `<div class="drawer-sec">${t("Status")}</div><div class="outbox">${run.provider === "claude" ? t("no recent signal") : t("worker lost contact")}</div>`
         : "";
   const rec = a.agentId != null ? store.agentResults.get(`${run.runId}:${a.agentId}`) : undefined;
   const output =
     rec && rec.value !== undefined
-      ? `<div class="drawer-sec">${t("Output")}${rec.cached ? ` <span class="tag">${t("replayed")}</span>` : ""}` +
+      ? `<div class="drawer-sec">${t("Output")}${rec.cached ? ` <span class="tag">${t("replayed")}</span>` : ""}${rec.redacted ? ` <span class="tag warn" title="${esc(t("secrets in it were replaced before it was saved"))}">${t("redacted")}</span>` : ""}` +
         `<button class="iconbtn sm" data-copy="${esc(typeof rec.value === "string" ? rec.value : JSON.stringify(rec.value, null, 2))}" aria-label="${esc(t("Copy"))}">${icons.copy}</button></div>` +
         `<div class="outbox json-out">${renderJson(rec.value)}</div>`
       : rec === null && (a.state === "done" || a.state === "failed")

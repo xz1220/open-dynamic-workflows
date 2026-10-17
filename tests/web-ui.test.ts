@@ -16,7 +16,7 @@ import { renderActivity } from "../web/src/views/activity.ts";
 import { renderJob, type JobViewState } from "../web/src/views/job.ts";
 import { renderJobs } from "../web/src/views/jobs.ts";
 import type { ActivityEvent, AgentView, RunDetail, RunSummary } from "../web/src/types.ts";
-import { cronWords, esc, fmtDurSec, fmtTokens, fmtUsd, fuzzy, markHits } from "../web/src/util.ts";
+import { cronWords, esc, fmtDurSec, fmtTokens, fmtUsd, fuzzy, markHits, markRedactions } from "../web/src/util.ts";
 
 const NOW = 1_800_000_000;
 
@@ -602,4 +602,16 @@ test("the drawer shows what an agent's work missed and the tool calls its CLI re
   view.selectedAi = 2;
   assert.match(renderJob(view, NOW), /<span class="k">checks<\/span><span class="v">agent #1's work<\/span>/);
   store.focusRun(null);
+});
+
+test("redaction markers render as ink bars, and redacted outputs are tagged", () => {
+  assert.equal(
+    markRedactions(esc("key=«redacted:env:OPENAI_API_KEY» <b>")),
+    'key=<span class="redact" title="redacted">env:OPENAI_API_KEY</span> &lt;b&gt;',
+  );
+  assert.match(renderJson({ token: "Bearer «redacted:bearer»" }), /<span class="redact" title="redacted">bearer<\/span>/);
+  assert.match(renderJson({ "«redacted:x»": 1 }), /data-key="j\$"/, "attributes never carry markup");
+  const tx = transcriptEntries([{ i: 0, kind: "text", text: "export KEY=«redacted:env:KEY»", redacted: true }]);
+  assert.match(tx, /<span class="redact" title="redacted">env:KEY<\/span>/);
+  assert.match(tx, /<span class="tx-clip"[^>]*>redacted<\/span>/);
 });

@@ -14,6 +14,14 @@ export function esc(v: unknown): string {
   return String(v ?? "").replace(/[&<>"']/g, (c) => ESC[c]!);
 }
 
+/**
+ * Draw odw's `«redacted:<kind>»` markers in already-escaped HTML as ink bars
+ * that name what was blanked (`esc` leaves « » alone).
+ */
+export function markRedactions(html: string): string {
+  return html.replace(/«redacted:([^«»<>]{1,60})»/g, (_m, kind: string) => `<span class="redact" title="redacted">${kind}</span>`);
+}
+
 /** Join truthy class fragments. */
 export function clsx(...parts: Array<string | false | null | undefined>): string {
   return parts.filter(Boolean).join(" ");

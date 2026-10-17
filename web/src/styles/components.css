@@ -649,6 +649,25 @@
   border-top-color: var(--ink);
   animation: spin 0.8s linear infinite;
 }
+/* a blanked secret: an ink bar that names what it hides */
+.redact {
+  display: inline-block;
+  padding: 0 6px;
+  border-radius: 3px;
+  background: var(--ink);
+  color: var(--paper);
+  font-family: var(--f-mono);
+  font-size: 0.82em;
+  font-style: normal;
+  letter-spacing: 0.04em;
+  line-height: 1.5;
+  vertical-align: 0.05em;
+  user-select: all;
+}
+.redact::before {
+  content: "▮ ";
+  opacity: 0.6;
+}
 .skel {
   display: block;
   border-radius: 6px;
