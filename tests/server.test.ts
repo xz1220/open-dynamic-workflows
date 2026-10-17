@@ -265,6 +265,16 @@ test("HTTP: serves dashboard, run list, detail, control, and 404s", async () => 
     assert.equal(ctl.status, 200);
     assert.equal(store.readControl(id), "stop");
 
+    // Resume is written as `odw resume` writes it, so a run paused for a spent
+    // quota (quotaWait) hears it as "go on now" — the dashboard's Resume now.
+    const resumed = await fetch(`${handle.url}/api/runs/${id}/control`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action: "resume" }),
+    });
+    assert.equal(resumed.status, 200);
+    assert.equal(store.readControl(id), "resume");
+
     const badCtl = await fetch(`${handle.url}/api/runs/${id}/control`, {
       method: "POST",
       headers: { "content-type": "application/json" },

@@ -140,9 +140,10 @@ export class OdwRunSource implements RunSource {
     return log.page(since, replayed);
   }
   control(runId: string, action: string): void {
-    // resume clears the control file by writing a benign "running" request; the
-    // worker's FileControl treats any non-pause/stop action as "carry on".
-    this.store.writeControl(runId, action === "resume" ? "running" : action);
+    // Written as `odw resume` writes it: the worker's FileControl treats any
+    // non-pause/stop action as "carry on", and a run paused for a spent quota
+    // (quotaWait) hears "resume" as "go on now" — the dashboard's Resume now.
+    this.store.writeControl(runId, action);
   }
   decide(runId: string, request: CheckpointRequest): void {
     this.store.requestCheckpointDecision(runId, request);
