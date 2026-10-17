@@ -7,8 +7,8 @@
  * phases, source text, and which runs belong to each.
  *
  * Like the rest of `odw serve`, it is strictly read-only and never executes a
- * workflow body: `listWorkflows` is a pure readdir, and `loadWorkflowScript` only
- * extracts the `meta` *literal* — the body is never run. A malformed neighbour
+ * workflow body: `listWorkflows` is a pure readdir, and `readWorkflowMeta` only
+ * parses the `meta` *literal* — the body is neither compiled nor run. A malformed neighbour
  * is skipped, never fatal. Parsed metas are cached by file signature, so the
  * Workspace re-reads a script only after it changed.
  */
@@ -16,7 +16,7 @@
 import { readFileSync } from "node:fs";
 
 import type { Config } from "../adapters/types.js";
-import { loadWorkflowScript, type WorkflowMeta } from "../loader.js";
+import { readWorkflowMeta, type WorkflowMeta } from "../loader.js";
 import { listWorkflows } from "../workflows/resolve.js";
 import { SigCache, statSig } from "./fs-util.js";
 import type { RunStore } from "./run-store.js";
@@ -56,7 +56,7 @@ const metaCache = new SigCache<WorkflowMeta | null>();
 function readMetaSafe(path: string): WorkflowMeta | null {
   return metaCache.get(path, statSig(path), () => {
     try {
-      return loadWorkflowScript(readFileSync(path, "utf8"), path).meta;
+      return readWorkflowMeta(readFileSync(path, "utf8"), path);
     } catch {
       return null; // unreadable or malformed neighbour: skip, don't break the list
     }

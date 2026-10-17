@@ -77,7 +77,20 @@ const VALIDATE_PARAM = "validate";
 const DECLARES_VALIDATE = /\b(?:const|let|var|function|class)\s+validate\b/;
 
 
+const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor as new (
+  ...args: string[]
+) => (...callArgs: unknown[]) => Promise<unknown>;
+
 const EXPORT_META = /\bexport\s+const\s+meta\s*=/;
+
+/**
+ * A workflow's validated `meta` alone — parsed as a pure literal; the body is
+ * neither compiled nor run. For listings (dashboard, `odw workflows`), which
+ * read every file they find and must never execute any of them.
+ */
+export function readWorkflowMeta(source: string, filename: string): WorkflowMeta {
+  return extractMeta(source, filename).meta;
+}
 
 /** Parse + transform a workflow script's source into a runnable form. */
 export function loadWorkflowScript(source: string, filename: string): LoadedWorkflow {
@@ -90,9 +103,14 @@ export function loadWorkflowScript(source: string, filename: string): LoadedWork
 
   let factory: (...callArgs: unknown[]) => Promise<unknown>;
   try {
-    // An async function expression whose body starts on line 2, compiled with
-    // lineOffset -1 so stack traces and log frames point at the script's own
-    // line numbers (`new AsyncFunction` would put every frame two lines off).
+    // First compile the body on its own: the AsyncFunction constructor accepts
+    // only a self-contained function body, so a body containing `})` cannot
+    // close the wrapper below early and run code at load time. This compiles;
+    // it never runs anything.
+    new AsyncFunction(...paramNames, body);
+    // Then the real compile: an async function expression whose body starts on
+    // line 2, with lineOffset -1 so stack traces and log frames point at the
+    // script's own line numbers (the AsyncFunction would put them two lines off).
     const wrapped = `(async function (${paramNames.join(", ")}) {\n${body}\n})`;
     factory = new Script(wrapped, { filename, lineOffset: -1 }).runInThisContext() as typeof factory;
   } catch (err) {

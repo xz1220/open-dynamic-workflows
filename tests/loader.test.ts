@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
-import { loadWorkflowScript, maskCode, MetaLiteralError, readMetaLiteral } from "../src/loader.js";
+import { readWorkflowMeta, loadWorkflowScript, maskCode, MetaLiteralError, readMetaLiteral } from "../src/loader.js";
 import { WorkflowScriptError } from "../src/errors.js";
 import type { WorkflowGlobals } from "../src/primitives.js";
 
@@ -276,4 +276,25 @@ test("a syntax error is reported against the script's file name", () => {
     () => loadWorkflowScript("export const meta = { name: 'bad', description: 'd' }\nconst = 1\n", "bad.js"),
     /failed to compile workflow bad\.js/,
   );
+});
+
+test("a body that tries to close the function wrapper early is rejected without running", () => {
+  const g = globalThis as { __odwEscaped?: boolean };
+  delete g.__odwEscaped;
+  const src = [
+    "export const meta = { name: 'escape', description: 'd' }",
+    "});",
+    "globalThis.__odwEscaped = true;",
+    "(async function () {",
+  ].join("\n");
+  assert.throws(() => loadWorkflowScript(src, "escape.js"), /failed to compile workflow escape\.js/);
+  assert.equal(g.__odwEscaped, undefined, "nothing in the body ran at load time");
+});
+
+test("readWorkflowMeta reads meta without compiling the body", () => {
+  const g = globalThis as { __odwEscaped?: boolean };
+  delete g.__odwEscaped;
+  const src = "export const meta = { name: 'listed', description: 'd' }\n}); globalThis.__odwEscaped = true; (function(){\n";
+  assert.equal(readWorkflowMeta(src, "listed.js").name, "listed");
+  assert.equal(g.__odwEscaped, undefined);
 });
