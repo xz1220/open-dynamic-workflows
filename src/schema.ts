@@ -7,7 +7,8 @@
  *   1. {@link describeSchema} turns a schema into an instruction appended to the
  *      prompt ("return only JSON shaped like this").
  *   2. {@link extractJson} pulls the most likely JSON value out of a free-text
- *      reply (fenced block, then a balanced span, then the whole reply).
+ *      reply (the whole reply, fenced blocks, then balanced spans), preferring
+ *      the first candidate that actually satisfies the schema.
  *   3. {@link validate} checks the parsed value against the schema, returning a
  *      list of human-readable problems (empty == valid).
  *
@@ -49,52 +50,86 @@ export function describeSchema(schema: JsonSchema): string {
 
 // --- extraction --------------------------------------------------------------
 
-/** Best-effort recovery of a JSON value from a free-text agent reply. */
-export function extractJson(text: string): unknown {
+/**
+ * Best-effort recovery of a JSON value from a free-text agent reply.
+ *
+ * Candidates are tried from the most to the least deliberate: the whole reply,
+ * then fenced blocks (```json-tagged before untagged, later before earlier —
+ * an example tends to precede the answer), then every top-level balanced
+ * `{...}` / `[...]` span (later first). With a `schema`, the first candidate
+ * that parses AND validates wins, so an inline `{config}` mention or an
+ * example block cannot mask the real answer; when none validates, the first
+ * that parses is returned so the caller can report what is wrong with it.
+ * Without a schema the first candidate that parses wins. `undefined` means
+ * nothing parsed at all.
+ */
+export function extractJson(text: string, schema?: JsonSchema): unknown {
+  let fallback: { value: unknown } | undefined;
   for (const candidate of candidates(text)) {
+    let value: unknown;
     try {
-      return JSON.parse(candidate);
+      value = JSON.parse(candidate);
     } catch {
       continue;
     }
+    if (!schema || validate(value, schema).length === 0) return value;
+    fallback ??= { value };
   }
-  return undefined;
+  return fallback?.value;
 }
 
 function* candidates(text: string): Generator<string> {
   const stripped = text.trim();
-  // Try every fenced block (not just the first) so an inline ``` in prose
-  // ahead of the real answer doesn't mask it.
-  yield* fencedBlocks(stripped);
-  const span = balancedSpan(stripped);
-  if (span !== null) yield span;
   yield stripped;
+  const fences = [...fencedBlocks(stripped)].reverse();
+  for (const fence of fences) if (fence.json) yield fence.body;
+  for (const fence of fences) if (!fence.json) yield fence.body;
+  yield* [...balancedSpans(stripped)].reverse();
 }
 
-/** Contents of each ```json (or bare ```) fenced block, in order. */
-function* fencedBlocks(text: string): Generator<string> {
+/** Each ``` fenced block in order, flagged when its info string names JSON. */
+function* fencedBlocks(text: string): Generator<{ body: string; json: boolean }> {
   let from = 0;
   for (;;) {
     const fence = text.indexOf("```", from);
     if (fence === -1) return;
-    const after = text.slice(fence + 3);
-    const newline = after.indexOf("\n");
+    const newline = text.indexOf("\n", fence + 3);
     if (newline === -1) return;
-    const body = after.slice(newline + 1);
-    const close = body.indexOf("```");
+    const json = text.slice(fence + 3, newline).trim().toLowerCase().startsWith("json");
+    const close = text.indexOf("```", newline + 1);
     if (close === -1) {
-      yield body;
+      yield { body: text.slice(newline + 1), json };
       return;
     }
-    yield body.slice(0, close);
-    from = fence + 3 + newline + 1 + close + 3;
+    yield { body: text.slice(newline + 1, close), json };
+    from = close + 3;
   }
 }
 
-/** The first balanced {...} or [...] span, ignoring braces inside strings. */
-function balancedSpan(text: string): string | null {
-  const start = firstOf(text, "{[");
-  if (start === -1) return null;
+/**
+ * An opener that never closes costs a scan to the end of the text; give up
+ * after this many so a pathological reply stays cheap. Closed spans are
+ * disjoint, so scanning them is linear overall.
+ */
+const MAX_UNCLOSED_OPENERS = 8;
+
+/** Every top-level balanced {...} or [...] span, in order. */
+function* balancedSpans(text: string): Generator<string> {
+  const opener = /[{[]/g;
+  let unclosed = 0;
+  for (let match = opener.exec(text); match; match = opener.exec(text)) {
+    const end = matchingClose(text, match.index);
+    if (end === -1) {
+      if (++unclosed >= MAX_UNCLOSED_OPENERS) return;
+      continue; // resume right after this opener
+    }
+    yield text.slice(match.index, end + 1);
+    opener.lastIndex = end + 1; // spans nested inside this one are not top-level
+  }
+}
+
+/** Index of the bracket closing the one at `start`, ignoring brackets in strings; -1 if none. */
+function matchingClose(text: string, start: number): number {
   const open = text[start]!;
   const close = open === "{" ? "}" : "]";
   let depth = 0;
@@ -112,15 +147,10 @@ function balancedSpan(text: string): string | null {
     else if (ch === open) depth++;
     else if (ch === close) {
       depth--;
-      if (depth === 0) return text.slice(start, i + 1);
+      if (depth === 0) return i;
     }
   }
-  return null;
-}
-
-function firstOf(text: string, chars: string): number {
-  const positions = [...chars].map((c) => text.indexOf(c)).filter((p) => p !== -1);
-  return positions.length ? Math.min(...positions) : -1;
+  return -1;
 }
 
 // --- validation --------------------------------------------------------------

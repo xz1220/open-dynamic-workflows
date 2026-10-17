@@ -18,7 +18,7 @@ import { join } from "node:path";
 
 import { resolveAdapter } from "./adapters/config.js";
 import { expand, expandAll, type PlaceholderContext } from "./adapters/placeholders.js";
-import { decodeAdapterOutput } from "./adapters/output.js";
+import { AdapterOutputDecoder, decodeAdapterOutput } from "./adapters/output.js";
 import { runCommand, type CommandRunner } from "./adapters/runner.js";
 import {
   adapterDisplayName,
@@ -27,7 +27,7 @@ import {
   type CliResult,
   type Config,
 } from "./adapters/types.js";
-import { AdapterExecutionError, SchemaValidationError } from "./errors.js";
+import { AdapterExecutionError, RunStopped, SchemaValidationError } from "./errors.js";
 import { LiteralRouter, type InvocationPlan, type OptionRouter } from "./router.js";
 import { describeSchema, extractJson, validate, type JsonSchema } from "./schema.js";
 import { withWorkspace } from "./workspace.js";
@@ -67,9 +67,6 @@ export interface AgentOutcome {
   adapter: string;
   /** How many CLI calls it took (>1 means schema retries happened). */
   attempts: number;
-  /** Workspace diff (empty for inplace mode / no changes). */
-  diff: string;
-  cli: CliResult | null;
   /**
    * Notes from option routing: options accepted but not honoured natively, and
    * what was done instead. The caller surfaces these as LOG events so no option
@@ -85,10 +82,32 @@ export interface BridgeOptions {
   router?: OptionRouter;
 }
 
+/** What the scheduler hands one call; all optional, so a bare `run(request)` works. */
+export interface RunOptions {
+  /**
+   * The run's abort signal. Aborting kills the CLI process (and everything it
+   * started) and ends the call with the signal's reason — the run's fatal
+   * error — so it propagates instead of becoming a null slot.
+   */
+  signal?: AbortSignal;
+  /**
+   * Called with every attempt's decoded reply as soon as it arrives — schema
+   * retries included — so the run's usage tally counts all the output it paid
+   * for, not just the reply that finally validated.
+   */
+  onReply?: (text: string) => void;
+  /**
+   * Run before each schema retry: a retry is another CLI run, so it must pass
+   * the same stop/budget guards as a dispatch. Throw to abandon the call.
+   */
+  beforeRetry?: () => void | Promise<void>;
+}
+
 export class Bridge {
   private readonly source: string;
   private readonly runner: CommandRunner;
   private readonly router: OptionRouter;
+  private autoPicked: Adapter | undefined;
 
   constructor(
     private readonly config: Config,
@@ -99,8 +118,20 @@ export class Bridge {
     this.router = options.router ?? new LiteralRouter();
   }
 
-  async run(request: AgentRequest): Promise<AgentOutcome> {
-    const adapter = resolveAdapter(this.config, request.adapter);
+  /**
+   * The adapter a call runs on: the named one, else the configured default,
+   * else the zero-config auto-pick; throws AdapterNotFound (a ConfigError). The
+   * auto-pick scans PATH, so it happens once per bridge (one run) and is then
+   * reused: every agent of a run gets the same CLI, even if PATH changes.
+   */
+  adapterFor(name?: string | null): Adapter {
+    if (name || this.config.settings.defaultAdapter) return resolveAdapter(this.config, name);
+    return (this.autoPicked ??= resolveAdapter(this.config, null));
+  }
+
+  async run(request: AgentRequest, options: RunOptions = {}): Promise<AgentOutcome> {
+    const { signal } = options;
+    const adapter = this.adapterFor(request.adapter);
     const settings = this.config.settings;
     const timeout = adapter.timeout ?? settings.timeout ?? undefined;
     // Plan the invocation once: workspace mode, the model token/flag, and the
@@ -110,17 +141,27 @@ export class Bridge {
     const maxAttempts = request.schema ? settings.schemaRetries + 1 : 1;
 
     let problems: string[] = [];
+    let previous = "";
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      const prompt = problems.length ? `${basePrompt}\n\n${retryFeedback(problems)}` : basePrompt;
-      const { cli, diff } = await this.invoke(adapter, plan, prompt, timeout);
+      throwIfAborted(signal);
+      if (attempt > 1) await options.beforeRetry?.();
+      const prompt = attempt > 1 ? `${basePrompt}\n\n${retryFeedback(previous, problems)}` : basePrompt;
+      const { cli, decoder } = await this.invoke(adapter, plan, prompt, timeout, signal);
+      // Killed by a stop (or by a fatal error elsewhere in the run): report
+      // the run's reason, not a misleading CLI failure.
+      throwIfAborted(signal);
       if (!cliOk(cli)) throw new AdapterExecutionError(cliFailureMessage(adapter, cli));
 
-      const text = decodeAdapterOutput(adapter, cli.stdout);
+      // A runner that streams stdout fed the decoder and kept only a tail; an
+      // injected runner that does not stream returns the whole stdout instead.
+      const text = decoder?.received ? decoder.finish() : decodeAdapterOutput(adapter, cli.stdout);
+      options.onReply?.(text);
       if (!request.schema) {
-        return { value: text, text, adapter: adapter.name, attempts: attempt, diff, cli, notes: plan.notes };
+        return { value: text, text, adapter: adapter.name, attempts: attempt, notes: plan.notes };
       }
 
-      const value = extractJson(text);
+      // The schema steers extraction to the candidate that satisfies it.
+      const value = extractJson(text, request.schema);
       // `undefined` is extractJson's only "nothing parsed" sentinel; a parsed
       // JSON `null` is a real value — let validate() decide if the schema allows it.
       problems =
@@ -128,8 +169,9 @@ export class Bridge {
           ? ["no JSON value found in the reply"]
           : validate(value, request.schema);
       if (problems.length === 0) {
-        return { value, text, adapter: adapter.name, attempts: attempt, diff, cli, notes: plan.notes };
+        return { value, text, adapter: adapter.name, attempts: attempt, notes: plan.notes };
       }
+      previous = text;
     }
 
     throw new SchemaValidationError(
@@ -155,7 +197,18 @@ export class Bridge {
     plan: InvocationPlan,
     prompt: string,
     timeout: number | undefined,
-  ): Promise<{ cli: CliResult; diff: string }> {
+    signal: AbortSignal | undefined,
+  ): Promise<{ cli: CliResult; decoder: AdapterOutputDecoder | null }> {
+    // JSONL transcripts are decoded while they stream, so only the final text
+    // is retained (and a verbose session is never cut off at the stdout cap);
+    // text replies are buffered by the runner under its cap, as before.
+    const decoder = adapter.output?.format === "jsonl" ? new AdapterOutputDecoder(adapter) : null;
+    const onStdout = decoder
+      ? (chunk: string, terminate: (reason: string) => void) => {
+          decoder.write(chunk);
+          if (decoder.overflow) terminate(decoder.overflow);
+        }
+      : undefined;
     return withWorkspace(this.source, plan.workspaceMode, async (ws) => {
       let promptFile = "";
       let cleanup: (() => Promise<void>) | undefined;
@@ -181,9 +234,10 @@ export class Bridge {
         const env = adapter.env
           ? ({ ...process.env, ...adapter.env } as Record<string, string>)
           : undefined;
-        const cli = await this.runner(command, { stdin, cwd: ws.path, env, timeout });
-        const diff = await ws.diff();
-        return { cli, diff };
+        // No ws.diff() here: agent() returns the reply, never a diff, so
+        // computing one per worktree attempt was pure overhead.
+        const cli = await this.runner(command, { stdin, cwd: ws.path, env, timeout, onStdout, signal });
+        return { cli, decoder };
       } finally {
         if (cleanup) await cleanup();
       }
@@ -191,26 +245,55 @@ export class Bridge {
   }
 }
 
+/**
+ * End an aborted call with the run's reason: a fatal error, so it propagates
+ * through parallel/pipeline instead of becoming a null slot.
+ */
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (!signal?.aborted) return;
+  throw signal.reason instanceof Error ? signal.reason : new RunStopped("run was stopped");
+}
+
 function usesPromptFile(adapter: Adapter): boolean {
   const token = "{prompt_file}";
   return adapter.command.some((part) => part.includes(token)) || (adapter.stdin?.includes(token) ?? false);
 }
 
-function retryFeedback(problems: string[]): string {
+/** Characters of the previous reply quoted back in a schema-retry prompt. */
+const RETRY_EXCERPT_CHARS = 4000;
+
+/**
+ * The correction appended to a retry prompt. Each attempt is a fresh CLI run
+ * with no memory of the last one, so the reply that failed is quoted back
+ * (head and tail when long) along with what was wrong with it, and the agent
+ * is asked to reformat it rather than redo the whole task.
+ */
+function retryFeedback(previous: string, problems: string[]): string {
   const listed = problems
     .slice(0, 10)
     .map((p) => `- ${p}`)
     .join("\n");
+  const half = RETRY_EXCERPT_CHARS / 2;
+  const quoted =
+    previous.length > RETRY_EXCERPT_CHARS
+      ? `${previous.slice(0, half)}\n[… ${previous.length - 2 * half} characters omitted …]\n${previous.slice(-half)}`
+      : previous;
   return (
     "Your previous reply did not satisfy the required schema:\n" +
-    `${listed}\n` +
-    "Return corrected JSON only, with no surrounding text."
+    `${listed}\n\n` +
+    "Your previous reply was:\n" +
+    `<<<\n${quoted}\n>>>\n\n` +
+    "Reformat only: do not redo the work. Express the answer from that reply as JSON " +
+    "that satisfies the schema, and return only that JSON, with no surrounding text."
   );
 }
 
 function cliFailureMessage(adapter: Adapter, cli: CliResult): string {
   const reason = cli.timedOut ? "timed out" : `exited with code ${cli.returncode}`;
-  const detail = (cli.stderr.trim() || cli.stdout.trim()).slice(0, 500);
+  const text = cli.stderr.trim() || cli.stdout.trim();
+  // Keep both ends of a long diagnostic: the head usually names the error, the
+  // tail holds the final message and the runner's own notes (kill reasons).
+  const detail = text.length > 500 ? `${text.slice(0, 250)} … ${text.slice(-250)}` : text;
   const suffix = detail ? `: ${detail}` : "";
   return `adapter '${adapter.name}' ${reason}${suffix}`;
 }

@@ -13,7 +13,8 @@ import {
   resolveConcurrency,
   resolveRunsRoot,
 } from "../src/adapters/config.js";
-import { AdapterNotFound } from "../src/errors.js";
+import { AdapterNotFound, ConfigError } from "../src/errors.js";
+import { Scheduler } from "../src/scheduler.js";
 
 test("defaultConfig ships all nine built-in adapters", () => {
   const cfg = defaultConfig();
@@ -190,6 +191,70 @@ test("invalid adapter output declarations are rejected", () => {
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// A NaN setting used to slip through silently: "auto" concurrency deadlocked
+// every dispatch, a NaN maxAgents disabled the runaway guard, NaN schemaRetries
+// never called the CLI, and a NaN adapter timeout timed every agent out at once.
+test("malformed numeric settings are rejected with a ConfigError naming the key", () => {
+  const dir = mkdtempSync(join(tmpdir(), "odw-cfg-"));
+  try {
+    const p = join(dir, "odw.config.json");
+    const load = (raw: Record<string, unknown>) => {
+      writeFileSync(p, JSON.stringify(raw));
+      return loadConfig(p, { quiet: true });
+    };
+    const cases: Array<[Record<string, unknown>, RegExp]> = [
+      [{ concurrency: "auto" }, /"concurrency" must be a positive integer, or null for auto; got "auto"/],
+      [{ concurrency: 0 }, /"concurrency"/],
+      [{ concurrency: 2.5 }, /"concurrency"/],
+      [{ maxAgents: "lots" }, /"maxAgents" must be a positive integer/],
+      [{ maxAgents: true }, /"maxAgents"/],
+      [{ timeout: "soon" }, /"timeout" must be a positive number of seconds/],
+      [{ timeout: 0 }, /"timeout"/],
+      [{ schemaRetries: "x" }, /"schemaRetries" must be a non-negative integer/],
+      [{ schemaRetries: -1 }, /"schemaRetries"/],
+      [{ adapters: { mine: { command: ["x"], timeout: "abc" } } }, /adapter 'mine' 'timeout' must be a positive number/],
+    ];
+    for (const [raw, message] of cases) {
+      assert.throws(() => load(raw), (err: Error) => err instanceof ConfigError && message.test(err.message));
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("valid numeric settings still load, including numeric strings and null", () => {
+  const dir = mkdtempSync(join(tmpdir(), "odw-cfg-"));
+  try {
+    const p = join(dir, "odw.config.json");
+    writeFileSync(
+      p,
+      JSON.stringify({
+        concurrency: "4",
+        maxAgents: 7,
+        timeout: null,
+        schemaRetries: 0,
+        adapters: { mine: { command: ["x"], timeout: 0.5 }, inherit: { command: ["y"], timeout: null } },
+      }),
+    );
+    const cfg = loadConfig(p, { quiet: true });
+    assert.equal(cfg.settings.concurrency, 4);
+    assert.equal(cfg.settings.maxAgents, 7);
+    assert.equal(cfg.settings.timeout, 1800, "a null setting keeps its default");
+    assert.equal(cfg.settings.schemaRetries, 0);
+    assert.equal(cfg.adapters.mine!.timeout, 0.5);
+    assert.equal(cfg.adapters.inherit!.timeout, undefined, "a null adapter timeout inherits the run-wide one");
+    writeFileSync(p, JSON.stringify({ concurrency: null }));
+    assert.equal(loadConfig(p, { quiet: true }).settings.concurrency, null, "null still means auto");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a scheduler refuses NaN limits instead of deadlocking", () => {
+  assert.throws(() => new Scheduler({ concurrency: NaN, maxAgents: 10 }), ConfigError);
+  assert.throws(() => new Scheduler({ concurrency: 2, maxAgents: NaN }), ConfigError);
 });
 
 test("Windows executable candidates honor PATHEXT without duplicating extensions", () => {

@@ -1,7 +1,17 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { array, describeSchema, enumOf, extractJson, number, obj, string, validate } from "../src/schema.js";
+import {
+  array,
+  boolean,
+  describeSchema,
+  enumOf,
+  extractJson,
+  number,
+  obj,
+  string,
+  validate,
+} from "../src/schema.js";
 
 test("extractJson: a fenced ```json block", () => {
   assert.deepEqual(extractJson('here:\n```json\n{"a":1}\n```\ndone'), { a: 1 });
@@ -21,6 +31,41 @@ test("extractJson: no JSON -> undefined", () => {
 
 test("extractJson: braces inside strings don't break the span", () => {
   assert.deepEqual(extractJson('prefix {"s": "a } b { c"} suffix'), { s: "a } b { c" });
+});
+
+const OK_SCHEMA = obj({ ok: boolean() });
+
+test("extractJson: an inline {mention} ahead of the answer does not mask it", () => {
+  const reply = 'I edited `{config}` and `[section]` as asked. Result: {"ok": true}';
+  assert.deepEqual(extractJson(reply, OK_SCHEMA), { ok: true });
+  assert.deepEqual(extractJson(reply), { ok: true }, "every top-level span is a candidate, not just the first");
+});
+
+test("extractJson: a json-tagged block beats an earlier plain block", () => {
+  const reply = 'Count:\n```\n42\n```\nAnswer:\n```json\n{"ok": true}\n```';
+  assert.deepEqual(extractJson(reply, OK_SCHEMA), { ok: true });
+  assert.deepEqual(extractJson(reply), { ok: true });
+});
+
+test("extractJson: the first candidate that satisfies the schema wins, whatever its position", () => {
+  // The later span parses but is not the answer; the earlier one validates.
+  const reply = 'Answer: {"ok": false}. (Earlier I had sent {"draft": 1}.)';
+  assert.deepEqual(extractJson(reply, OK_SCHEMA), { ok: false });
+  // Among blocks that all validate, the later one (the answer, not the example) wins.
+  const twoBlocks = 'Example:\n```json\n{"ok": false}\n```\nMine:\n```json\n{"ok": true}\n```';
+  assert.deepEqual(extractJson(twoBlocks, OK_SCHEMA), { ok: true });
+});
+
+test("extractJson: with nothing valid, the best parsed candidate comes back for error reporting", () => {
+  assert.deepEqual(extractJson('Here: {"ok": "yes"}', OK_SCHEMA), { ok: "yes" });
+  assert.equal(extractJson("no json at all", OK_SCHEMA), undefined);
+});
+
+test("extractJson: pathological unclosed brackets stay cheap", () => {
+  const started = Date.now();
+  assert.equal(extractJson("{".repeat(500_000), OK_SCHEMA), undefined);
+  assert.deepEqual(extractJson("{}".repeat(100_000) + '{"ok": true}', OK_SCHEMA), { ok: true });
+  assert.ok(Date.now() - started < 2000, `extraction took ${Date.now() - started}ms`);
 });
 
 test("validate: object required + nested array of strings", () => {

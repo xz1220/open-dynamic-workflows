@@ -5,13 +5,14 @@
  * {@link createPrimitives} builds a fresh set bound to one run's context and the
  * loader injects them into the script's scope.
  *
- *   - agent     — run one coding agent on a subtask (the only verb that works)
+ *   - agent     — run one coding agent on a subtask
  *   - parallel  — fan out a batch and wait for all of it (barrier)
  *   - pipeline  — stream items through stages independently (no barrier)
  *   - phase     — label the following work for progress display
  *   - log       — surface a progress message
- *   - budget    — token/agent budget exposed to the script (stub in v1)
- *   - workflow  — run another workflow inline (deferred; throws clearly for now)
+ *   - budget    — the run's token budget: total, estimated spend, remaining
+ *   - workflow  — run another workflow inline (one level deep)
+ *   - validate  — compile-check workflow source (ODW extension)
  *
  * `args` is not here: it is run data injected alongside these globals.
  */
@@ -92,7 +93,7 @@ export function createPrimitives(
   const depth = internal.depth ?? 0;
   const phasePrefix = internal.phasePrefix ?? "";
 
-  const agent = async (prompt: string, opts: AgentOptions = {}): Promise<unknown> => {
+  const dispatch = async (prompt: string, opts: AgentOptions): Promise<unknown> => {
     const activePhase = opts.phase !== undefined ? opts.phase : ctx.currentPhase;
     // Stable per-dispatch identity. Events for THIS dispatch all carry it, so
     // observers pair started/finished exactly even when several concurrent
@@ -100,8 +101,11 @@ export function createPrimitives(
     const agentId = ++ctx.seq.value;
     // Adapter selection honours ONLY opts.adapter. agentType is a persona (it is
     // forwarded to the bridge and injected into the prompt), never an adapter name.
-    const display =
-      opts.label ?? opts.adapter ?? opts.agentType ?? ctx.config.settings.defaultAdapter ?? "agent";
+    // Resolve it before asking for a slot: an unknown or ambiguous adapter is a
+    // (fatal) config error that must not consume a dispatch or show an agent
+    // that never ran as running.
+    const adapter = ctx.bridge.adapterFor(opts.adapter);
+    const display = opts.label ?? opts.adapter ?? opts.agentType ?? adapter.name;
     const request: AgentRequest = {
       prompt,
       adapter: opts.adapter,
@@ -111,53 +115,131 @@ export function createPrimitives(
       agentType: opts.agentType,
       isolation: opts.isolation,
     };
-    let outcome;
+    const failed = (err: unknown): void => {
+      ctx.emit(event(AGENT_FAILED, { agentId, label: display, phase: activePhase, error: String(err) }));
+      if (typeof err === "object" && err !== null) surfaced.add(err);
+    };
+    let started = false;
     try {
-      outcome = await ctx.scheduler.runAgent(async () => {
+      // Everything an agent records — its terminal event, its usage — happens
+      // while it holds its slot: once runAgent settles, the agent is fully
+      // accounted for (the run's drain relies on it), and the next queued
+      // dispatch sees the updated budget.
+      return await ctx.scheduler.runAgent(async (signal) => {
         // Record the adapter only once the scheduler has handed out a real
         // dispatch slot, so queued work is not presented as running.
+        started = true;
         ctx.emit(
-          event(AGENT_STARTED, {
+          event(AGENT_STARTED, { agentId, label: display, phase: activePhase, adapter: adapter.name }),
+        );
+        let outcome;
+        try {
+          outcome = await ctx.bridge.run(request, {
+            signal,
+            // Feed the shared budget tally from every attempt, schema retries
+            // included (estimated tokens ≈ chars/4 of each reply).
+            onReply: (text) => {
+              ctx.usage.outputChars += text.length;
+            },
+            // A retry is another CLI run: it passes the stop/budget guards first.
+            beforeRetry: () => ctx.scheduler.recheck(),
+          });
+        } catch (err) {
+          // A started agent always gets a terminal event, even when the error
+          // is fatal (stop, budget, a config error raised inside the slot) —
+          // else observers show it running forever.
+          failed(err);
+          throw err;
+        }
+        // No option is dropped silently: surface each routing note as a LOG event
+        // (visible in `odw logs` and the dashboard).
+        for (const note of outcome.notes ?? []) {
+          ctx.emit(event(LOG, { message: note, label: display, phase: activePhase }));
+        }
+        ctx.emit(
+          event(AGENT_FINISHED, {
             agentId,
             label: display,
             phase: activePhase,
-            adapter: opts.adapter ?? ctx.config.settings.defaultAdapter ?? null,
+            adapter: outcome.adapter,
+            attempts: outcome.attempts,
           }),
         );
-        return ctx.bridge.run(request);
+        return outcome.value;
       });
     } catch (err) {
-      if (isFatalError(err)) throw err; // budget exhausted / stop: abort the run
-      ctx.emit(event(AGENT_FAILED, { agentId, label: display, phase: activePhase, error: String(err) }));
+      // A fatal error before the start (stop or budget at dispatch) concerns
+      // the run, not this agent; anything else is still this agent's failure.
+      if (!started && !isFatalError(err)) failed(err);
       throw err;
     }
-    // No option is dropped silently: surface each routing note as a LOG event
-    // (visible in `odw logs` and the dashboard).
-    for (const note of outcome.notes ?? []) {
-      ctx.emit(event(LOG, { message: note, label: display, phase: activePhase }));
-    }
-    ctx.emit(
-      event(AGENT_FINISHED, {
-        agentId,
-        label: display,
-        phase: activePhase,
-        adapter: outcome.adapter,
-        attempts: outcome.attempts,
-      }),
-    );
-    // Feed the shared budget tally (estimated tokens ≈ chars/4 of the reply).
-    ctx.usage.outputChars += outcome.text.length;
-    return outcome.value;
   };
 
-  const parallel = <T>(thunks: Array<Thunk<T>>): Promise<Array<T | null>> =>
-    ctx.scheduler.gather(thunks.map((t) => async () => t()));
+  const agent = (prompt: string, opts: AgentOptions = {}): Promise<unknown> =>
+    dispatch(prompt, opts).catch((err: unknown) => {
+      // A fatal error ends the run wherever it arose — in the slot or before
+      // it (an unknown adapter): the scheduler records it as the outcome and
+      // aborts the agents still running.
+      if (isFatalError(err)) ctx.scheduler.abort(err);
+      throw err;
+    });
 
-  const pipeline = (items: unknown[], ...stages: Stage[]): Promise<unknown[]> => {
+  /**
+   * gather turns a recoverable failure into a `null` slot; never let one vanish
+   * silently. Agent failures already have their AGENT_FAILED event; anything
+   * else (a TypeError in a stage, a misused primitive) gets a LOG event.
+   */
+  const noteSwallowed = (err: unknown, where: string): void => {
+    if (isFatalError(err)) return; // propagates out of gather; nothing is swallowed
+    if (typeof err === "object" && err !== null && surfaced.has(err)) return;
+    ctx.emit(event(LOG, { message: `${where} failed and its result is null: ${describeError(err)}` }));
+  };
+
+  const parallel = async <T>(thunks: Array<Thunk<T>>): Promise<Array<T | null>> => {
+    if (!Array.isArray(thunks)) {
+      throw new WorkflowScriptError(`parallel() takes an array of functions (thunks); got ${describeValue(thunks)}`);
+    }
+    thunks.forEach((thunk, i) => {
+      if (typeof thunk !== "function") {
+        throw new WorkflowScriptError(
+          `parallel() takes functions (thunks), but element ${i} is ${describeValue(thunk)} — ` +
+            "wrap each call as () => agent(...) so parallel() can schedule it",
+        );
+      }
+    });
+    return ctx.scheduler.gather(
+      thunks.map((thunk, i) => async () => {
+        try {
+          return await thunk();
+        } catch (err) {
+          noteSwallowed(err, `parallel() thunk ${i}`);
+          throw err;
+        }
+      }),
+    );
+  };
+
+  const pipeline = async (items: unknown[], ...stages: Stage[]): Promise<unknown[]> => {
+    if (!Array.isArray(items)) {
+      throw new WorkflowScriptError(
+        `pipeline() takes an array of items, then stage functions; got ${describeValue(items)} as the items`,
+      );
+    }
+    stages.forEach((stage, i) => {
+      if (typeof stage !== "function") {
+        throw new WorkflowScriptError(
+          `pipeline() stages must be functions (previous, item, index) => …; stage ${i} is ${describeValue(stage)}`,
+        );
+      }
+    });
     const chains = items.map((item, index) => async (): Promise<unknown> => {
       let value: unknown = item;
-      for (const stage of stages) {
-        value = await stage(value, item, index);
+      let s = 0;
+      try {
+        for (; s < stages.length; s++) value = await stages[s]!(value, item, index);
+      } catch (err) {
+        noteSwallowed(err, `pipeline() item ${index} at stage ${s}`);
+        throw err;
       }
       return value;
     });
@@ -247,5 +329,47 @@ export function createPrimitives(
     }
   };
 
-  return { agent, parallel, pipeline, phase, log, budget, workflow, validate };
+  return {
+    agent: (prompt, opts) => handled(agent(prompt, opts)),
+    parallel: (thunks) => handled(parallel(thunks)),
+    pipeline: (items, ...stages) => handled(pipeline(items, ...stages)),
+    phase,
+    log,
+    budget,
+    workflow: (nameOrRef, childArgs) => handled(workflow(nameOrRef, childArgs)),
+    validate,
+  };
+}
+
+/**
+ * Mark a primitive's promise as handled. Scripts start work early and await it
+ * later — `const p = agent(a); await agent(b); await p` — and if `p` fails in
+ * between, Node would report an unhandled rejection and kill the worker
+ * mid-run, leaving the run "running" forever. Awaiting `p` still throws.
+ */
+function handled<T>(promise: Promise<T>): Promise<T> {
+  promise.catch(() => {});
+  return promise;
+}
+
+/**
+ * Errors an agent() call already reported as AGENT_FAILED, so parallel() and
+ * pipeline() do not log them a second time. Module-wide because a nested
+ * workflow()'s agents can fail inside the parent's parallel().
+ */
+const surfaced = new WeakSet<object>();
+
+/** A short description of a misused argument, for error messages. */
+function describeValue(value: unknown): string {
+  if (value === null || value === undefined) return String(value);
+  if (Array.isArray(value)) return "an array";
+  if (typeof (value as { then?: unknown }).then === "function") return "a promise (that call has already started)";
+  return typeof value === "object" ? "an object" : `a ${typeof value}`;
+}
+
+/** The error plus where it was thrown — the frame that points into the script. */
+function describeError(err: unknown): string {
+  if (!(err instanceof Error)) return String(err);
+  const frame = err.stack?.split("\n").find((line) => line.trimStart().startsWith("at "));
+  return frame ? `${String(err)} (${frame.trim()})` : String(err);
 }

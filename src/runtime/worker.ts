@@ -15,15 +15,35 @@ import { basename, dirname } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { loadConfig } from "../adapters/config.js";
+import { killAllAgentProcesses } from "../adapters/runner.js";
 import { buildContext, spentTokens, type RunContext } from "../context.js";
-import { RunStopped } from "../errors.js";
+import { RunStopped, WorkflowScriptError, isFatalError } from "../errors.js";
 import { LOG, RUN_FAILED, RUN_FINISHED, RUN_STARTED, RUN_STOPPED, event } from "../events.js";
 import { loadWorkflowScript } from "../loader.js";
 import { createPrimitives } from "../primitives.js";
+import type { Scheduler } from "../scheduler.js";
 import { FileControl } from "./file-control.js";
 import { JsonlSink, RunStore } from "./run-store.js";
 
-/** Run the workflow described by `runDir`; return its terminal state. */
+/**
+ * Once a run has failed or stopped, how long its remaining agents get to die
+ * and remove their worktrees before the worker kills what is left and moves on.
+ */
+const ABORT_DRAIN_MS = 10_000;
+
+/**
+ * Run the workflow described by `runDir`; return its terminal state.
+ *
+ * While the run executes, a stray rejection or exception from the workflow (a
+ * promise nobody handles, a throw inside a timer callback) fails the run
+ * instead of killing the process and leaving the run "running" forever. The
+ * listeners are process-wide, which is fine for the one run a worker executes.
+ *
+ * Agents still running when the run ends are aborted (or, after a normal
+ * return, awaited) before the outcome is recorded, and a process 'exit'
+ * listener kills any that remain while the run executes — an agent must never
+ * outlive its worker and keep editing the repository unsupervised.
+ */
 export async function executeRun(runDir: string): Promise<string> {
   const store = new RunStore(dirname(runDir));
   const runId = basename(runDir);
@@ -40,6 +60,8 @@ export async function executeRun(runDir: string): Promise<string> {
   const dispatched = () => ctx?.scheduler.dispatched ?? 0;
   const spent = () => (ctx ? spentTokens(ctx.usage) : 0);
 
+  const crashes = watchProcessCrashes();
+  process.on("exit", killAllAgentProcesses);
   try {
     const baseConfig = loadConfig((meta.configPath as string | null) ?? null);
     // Run-level adapter override (meta.adapter): becomes this run's default for
@@ -91,24 +113,92 @@ export async function executeRun(runDir: string): Promise<string> {
       phases: loaded.meta.phases,
     });
     const primitives = createPrimitives(ctx);
-    const result = await loaded.run(primitives, args);
+    const result = await crashes.race(loaded.run(primitives, args));
+    // Agents the script started but never awaited are still this run's work:
+    // let them finish (and clean up their worktrees) before recording it.
+    await crashes.race(ctx.scheduler.drain());
+    // A fatal error (stop, budget, dispatch cap, config) decides the outcome
+    // even when the script caught it and returned anyway — a stopped run must
+    // not read "done". The return value is not kept: result.json is written
+    // for successful runs only.
+    const fatal = ctx.scheduler.fatalError;
+    if (fatal !== undefined) {
+      sink.emit(
+        event(LOG, {
+          message: `the workflow returned after the run ended (${errorMessage(fatal)}); its return value is discarded`,
+        }),
+      );
+      throw fatal;
+    }
 
     store.writeResult(runId, result);
     sink.emit(event(RUN_FINISHED, { runId }));
     store.updateStatus(runId, { state: "done", dispatched: dispatched(), spentTokens: spent() });
     return "done";
   } catch (err) {
-    if (err instanceof RunStopped) {
+    // The first fatal error is the root cause, even when the script swallowed
+    // it and later failed for another reason (still worth a log line).
+    const outcome = ctx?.scheduler.fatalError ?? err;
+    if (outcome !== err) {
+      sink.emit(event(LOG, { message: `after the run ended, the workflow also failed: ${errorMessage(err)}` }));
+    }
+    if (ctx) await stopAgents(ctx.scheduler, outcome);
+    if (outcome instanceof RunStopped) {
       sink.emit(event(RUN_STOPPED, { runId }));
       store.updateStatus(runId, { state: "stopped", dispatched: dispatched(), spentTokens: spent() });
       return "stopped";
     }
-    const e = err as Error;
-    sink.emit(event(RUN_FAILED, { runId, error: e.message ?? String(err) }));
-    store.writeError(runId, { error: e.message ?? String(err), stack: e.stack ?? null });
+    const e = outcome as Error;
+    sink.emit(event(RUN_FAILED, { runId, error: e.message ?? String(outcome) }));
+    store.writeError(runId, { error: e.message ?? String(outcome), stack: e.stack ?? null });
     store.updateStatus(runId, { state: "failed", dispatched: dispatched(), spentTokens: spent() });
     return "failed";
+  } finally {
+    process.off("exit", killAllAgentProcesses);
+    crashes.dispose();
   }
+}
+
+/**
+ * The run is over, but agents may still be in flight (siblings of the failure,
+ * agents the script never awaited). Abort them, give their worktree cleanup a
+ * bounded moment, then kill whatever is left.
+ */
+async function stopAgents(scheduler: Scheduler, err: unknown): Promise<void> {
+  scheduler.abort(isFatalError(err) ? err : new RunStopped(`the workflow failed: ${errorMessage(err)}`));
+  if (!(await scheduler.drain(ABORT_DRAIN_MS))) killAllAgentProcesses();
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * Route process-level failures (unhandled rejections, uncaught exceptions) into
+ * a rejection the run can record: `race` settles with the first of `work` and
+ * a crash. Listening stops at `dispose`.
+ */
+function watchProcessCrashes(): { race<T>(work: Promise<T>): Promise<T>; dispose(): void } {
+  let fail!: (err: unknown) => void;
+  const crashed = new Promise<never>((_, reject) => (fail = reject));
+  crashed.catch(() => {}); // observed only through race()
+  const onRejection = (reason: unknown): void => fail(crashError("an unhandled promise rejection", reason));
+  const onException = (error: unknown): void => fail(crashError("an uncaught exception", error));
+  process.on("unhandledRejection", onRejection);
+  process.on("uncaughtException", onException);
+  return {
+    race: (work) => Promise.race([work, crashed]),
+    dispose: () => {
+      process.off("unhandledRejection", onRejection);
+      process.off("uncaughtException", onException);
+    },
+  };
+}
+
+function crashError(kind: string, cause: unknown): WorkflowScriptError {
+  const error = new WorkflowScriptError(`the workflow crashed with ${kind}: ${errorMessage(cause)}`);
+  if (cause instanceof Error && cause.stack) error.stack = cause.stack;
+  return error;
 }
 
 async function main(argv: string[]): Promise<number> {

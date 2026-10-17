@@ -137,7 +137,9 @@ test("stop prevents queued agents from starting and releases every waiting slot"
   control.stop();
   finish.release();
 
-  assert.equal(await first, "first", "stop does not interrupt an agent already running");
+  // No stop watcher is wired here, so the running agent is not aborted; see
+  // "a stop aborts agents that are already running" for the wired behaviour.
+  assert.equal(await first, "first", "without a watcher the stop is seen only at the next dispatch");
   for (const result of await settled) {
     assert.equal(result.status, "rejected");
     if (result.status === "rejected") assert.ok(result.reason instanceof RunStopped);
@@ -217,9 +219,13 @@ test("budget spent while queued prevents dispatch and returns the slot", { timeo
 
   assert.equal(queuedStarted, false);
   assert.equal(s.dispatched, 1);
-  spent = 0; // A later admitted call proves that the rejected one released its slot.
-  assert.equal(await s.runAgent(async () => "next"), "next");
-  assert.equal(s.dispatched, 2);
+  // The budget is fatal, so it ends the run: a later request fails fast with
+  // the same error (even if the guard would pass now) instead of queueing
+  // behind a leaked slot, and nothing is left pending.
+  spent = 0;
+  await assert.rejects(() => s.runAgent(async () => "next"), BudgetExhausted);
+  assert.equal(s.dispatched, 1);
+  assert.equal(await s.drain(50), true);
 });
 
 test("queued requests do not consume the dispatch cap and cap failures drain the queue", { timeout: 1000 }, async () => {
@@ -240,4 +246,110 @@ test("queued requests do not consume the dispatch cap and cap failures drain the
   }
   assert.equal(queuedStarts, 0);
   assert.equal(s.dispatched, 1);
+});
+
+// --- abort: a stop or a fatal error reaches agents that are already running ---
+
+/** An agent body that runs until the run is aborted, then fails with the reason. */
+const untilAborted = (signal: AbortSignal) =>
+  new Promise<never>((_, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }));
+
+function watchedScheduler(control: MemoryControl, options: { concurrency?: number } = {}) {
+  let watching = 0;
+  let watches = 0;
+  const s = new Scheduler({
+    concurrency: options.concurrency ?? 2,
+    maxAgents: 1000,
+    checkpoint: (signal) => control.checkpoint(signal),
+    watchStop: (onStop) => {
+      watching++;
+      watches++;
+      const unwatch = control.watchStop(onStop);
+      return () => {
+        watching--;
+        unwatch();
+      };
+    },
+  });
+  return { s, watching: () => watching, watches: () => watches };
+}
+
+test("a stop aborts agents that are already running and releases the queue", { timeout: 1000 }, async () => {
+  const control = new MemoryControl();
+  const { s } = watchedScheduler(control);
+  const running = [s.runAgent(untilAborted), s.runAgent(untilAborted)];
+  let queuedStarted = false;
+  const queued = s.runAgent(async () => { queuedStarted = true; });
+  await nextTurn();
+  control.stop();
+  for (const outcome of await Promise.allSettled([...running, queued])) {
+    assert.equal(outcome.status, "rejected");
+    if (outcome.status === "rejected") assert.ok(outcome.reason instanceof RunStopped);
+  }
+  assert.equal(queuedStarted, false);
+  assert.ok(s.fatalError instanceof RunStopped, "the stop is recorded as the run's outcome");
+  assert.equal(await s.drain(100), true, "nothing is left queued or running");
+});
+
+test("one fatal error aborts its running siblings, so gather settles at once", { timeout: 1000 }, async () => {
+  const s = new Scheduler({ concurrency: 4, maxAgents: 1000 });
+  const doomed = new BudgetExhausted("over budget");
+  await assert.rejects(
+    s.gather([() => s.runAgent(untilAborted), () => s.runAgent(async () => { throw doomed; })]),
+    (err) => err === doomed,
+  );
+  assert.equal(s.fatalError, doomed);
+  assert.ok(s.signal.aborted);
+  await assert.rejects(() => s.runAgent(async () => "late"), (err) => err === doomed, "later dispatches fail fast");
+});
+
+test("a recoverable failure neither aborts the run nor leaks its slot", { timeout: 1000 }, async () => {
+  const s = new Scheduler({ concurrency: 1, maxAgents: 1000 });
+  await assert.rejects(() => s.runAgent(async () => { throw new Error("one agent failed"); }));
+  assert.equal(s.fatalError, undefined);
+  assert.equal(s.signal.aborted, false);
+  assert.equal(await s.runAgent(async () => "next"), "next");
+});
+
+test("an abort ends a dispatch that is paused at the checkpoint", { timeout: 1000 }, async () => {
+  const control = new MemoryControl();
+  const { s } = watchedScheduler(control);
+  control.pause();
+  let started = false;
+  const paused = s.runAgent(async () => { started = true; });
+  await nextTurn();
+  const reason = new BudgetExhausted("spent elsewhere");
+  s.abort(reason);
+  await assert.rejects(paused, (err) => err === reason);
+  assert.equal(started, false);
+});
+
+test("the stop watcher runs only while agents are in flight", { timeout: 1000 }, async () => {
+  const control = new MemoryControl();
+  const { s, watching, watches } = watchedScheduler(control);
+  assert.equal(watching(), 0, "an idle run does not watch");
+  const first = gate();
+  const second = gate();
+  const a = s.runAgent(async () => { await first.promise; });
+  const b = s.runAgent(async () => { await second.promise; });
+  await nextTurn();
+  assert.equal(watching(), 1, "one watcher covers every running agent");
+  first.release();
+  await a;
+  assert.equal(watching(), 1, "still watching while an agent runs");
+  second.release();
+  await b;
+  assert.equal(watching(), 0);
+  assert.equal(watches(), 1);
+});
+
+test("drain waits for agents nobody awaited, or reports a timeout", { timeout: 1000 }, async () => {
+  const s = new Scheduler({ concurrency: 2, maxAgents: 1000 });
+  const finish = gate();
+  let done = false;
+  void s.runAgent(async () => { await finish.promise; done = true; });
+  assert.equal(await s.drain(20), false, "an agent is still running");
+  setTimeout(() => finish.release(), 10);
+  assert.equal(await s.drain(), true);
+  assert.equal(done, true);
 });
