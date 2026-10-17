@@ -22,6 +22,11 @@ changed, and run on a schedule — and a dashboard redesigned to watch them.
   permission, exit). Rate limits are retried after the wait the CLI asked for
   (`transientRetries`, `maxBackoff`); quota and login failures fail fast and say what to
   do — and when the limit lifts.
+- Evidence of success: `agent(…, { expect })` checks an agent's work instead of taking
+  its word — `command` exits 0 in its workspace, `changes`, `files` (globs), `match` —
+  and hands misses back (`expectRetries`, default 1) before failing with
+  `unmet_expectation` and the list of misses; `examples/fix-until-green.js`
+  (**ODW extension**).
 
 ### Ask a person, tell a person
 - `checkpoint(title, { payload, timeout, onTimeout })` pauses a run until someone
@@ -122,5 +127,9 @@ changed, and run on a schedule — and a dashboard redesigned to watch them.
 - After 3 quota failures in a row on one adapter (`quotaBreaker`), a run's later agents
   skip it — and fail at once when they have no fallback chain; `"quotaBreaker": null`
   keeps trying the adapter every time.
+- An empty reply fails the agent (`empty_reply`; `allowEmpty: true` accepts one), and
+  a `claude` reply that claims success while its `result` lists `permission_denials`
+  fails it with `permission`, naming the refused calls — allow them in the adapter's
+  `permissionArgs`, or re-declare its `output` without `deniedPath`.
 - Config errors are fatal instead of producing a "done" run full of nulls.
 - The desktop (Tauri) app is retired in favor of `odw serve`.
