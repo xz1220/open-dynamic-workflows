@@ -138,6 +138,8 @@ agent 的 `permissions`；`odw doctor` 会列出每个适配器支持的档位�
 | `worktreeSetupTimeout` | worktree setup 被杀掉之前最多运行的秒数（默认 600） |
 | `portRange` | **ODW 扩展。** `[first, last]`：每个正在运行的 agent 的 `ODW_PORT` 从这个范围分配（默认 `[41000, 41999]`）；请让它比 `concurrency` 更宽 |
 | `fanOutWarn` | **ODW 扩展。** 单次 `parallel()` 或 `pipeline()` 调用扇出的任务或条目超过这个数时，运行记一条带数量的警告（`large fan-out: …`）；从不阻塞。默认 25；`0` 或 `null` = 关闭 |
+| `adaptiveConcurrency` | **ODW 扩展。** `true`（默认）：一次限流会让它所在适配器的上限（该适配器自己的 `concurrency`，否则为运行级上限）在本次运行余下的时间里减半，最低为 1——同一批扇出一起撞上时只减一次——此后每过一分钟没有再被限流就还回一个槽位；两者都会记日志（`adaptive concurrency: …`）。`false` 让所有上限保持不变 |
+| `staggerFanOut` | **ODW 扩展。** `{ "first": 1, "delayMs": 2500 }`（默认）：在一次 `parallel()` 或 `pipeline()` 调用中，运行在声明了 `promptCache` 的适配器上、提示前 1,024 个字符相同的 agent 每次先启动 `first` 个，其余的在第一个 agent 的 CLI 产生输出后（JSONL：越过启动时 `system` 事件之后的第一个事件）或 `delayMs` 之后启动，从而读取提示缓存；单独的、提示较短的和重放的 agent 从不等待，停止会结束等待，每次错开的扇出记一行日志。`false` 或 `null` = 关闭 |
 | `maxDiffBytes` | **ODW 扩展。** run 目录里保存的单个隔离 agent 的 diff 最多多少字节（`agents/<agentId>.diff`，由 `odw diff` / `odw apply` 读取；默认 2 MB）。超出时保留开头（在行边界截断）并加一行 `# odw: diff truncated …`；计数仍描述完整改动 |
 | `keepBranches` | **ODW 扩展。** `true`：每个隔离 agent 的改动也都提交到源仓库的分支 `odw/<runId>/<agentId>-<label>`，就像对单个 agent 用 `keep: true`（`keep: false` 可让某个 agent 不受影响）。默认 `false` |
 | `maxTranscriptBytes` | **ODW 扩展。** run 目录里为每个 agent 保存的 transcript 最多多少字节——它的 CLI 在 stdout 上打印的内容写入 `agents/<agentId>.transcript.jsonl`（JSONL 适配器的事件按原样保存，其他输出写成 `{"kind":"text"}` 行），stderr 的结尾写入旁边的 `agents/<agentId>.stderr.txt`；用 `odw logs <run> --agent <id\|label>` 查看（默认 5 MB）。超出时以一行 `{"kind":"truncated","bytes":N}` 结束 transcript；`0` = 不保存 |
@@ -154,6 +156,8 @@ agent 的 `permissions`；`odw doctor` 会列出每个适配器支持的档位�
 | `env` | 叠加在进程环境之上的额外环境变量（ODW 自己的 `ODW_RUN_ID`、`ODW_AGENT_ID` 和 `ODW_PORT` 优先于它们） |
 | `timeout` | 每次调用的超时（秒）（覆盖运行级的 `timeout`） |
 | `stallTimeout` | 这个 CLI 的卡死超时（秒）（覆盖运行级的 `stallTimeout`；`0` 表示对该适配器关闭看门狗） |
+| `concurrency` | **ODW 扩展。** 在运行级 `concurrency` 之内，这个 CLI 上同时最多运行多少个 agent：一个 agent 需要两边各一个槽位，每个适配器先到先得地排队，被限住的适配器不会挡住其他适配器。不设置：只受运行级上限约束 |
+| `promptCache` | **ODW 扩展。** `true`：这个 CLI 背后的模型 API 会缓存提示前缀，所以它的扇出会错开启动（见 `staggerFanOut`）。内置 `claude` 声明了它 |
 | `label` | 进度显示用的友好名字 |
 | `flags` | 能力声明，如 `{ "model": ["--model"] }`——承载每次调用 `model` 的原生旗标。不声明它，`agent(..., { model })` 对该适配器就不生效（日志里会出现一条路由说明） |
 | `failures` | **ODW 扩展。** 这个 CLI 自己的失败措辞：`{ "rate_limit": [...], "quota": [...], "auth": [...] }`，正则表达式，先于内置表、不区分大小写地匹配失败运行输出的末尾 |

@@ -325,6 +325,11 @@ without answering when headless (a login, trust or approval prompt).
   retry-after); a spent quota or a failed login is not retried — the agent fails
   with what to do, and `odw logs` names the reason. Switch adapter with
   `--adapter` rather than retrying a quota failure.
+- **Throttling and the prompt cache** (ODW extensions): an adapter's own
+  `concurrency` caps its agents inside the run's, and a rate limit halves that cap
+  for the run; on `claude`, a `parallel()`/`pipeline()` whose prompts share their
+  first 1,024+ characters starts staggered so the rest read the prompt cache — put
+  the shared instructions first and the per-item part last.
 - **Cost**: concurrency is capped (default `min(16, cpus - 2)`) and total
   dispatches per run have a hard guard; use `odw pause` / `odw stop` when a
   run exceeds expectations.

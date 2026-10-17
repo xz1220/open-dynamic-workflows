@@ -479,7 +479,10 @@ dispatch that depends on completion timing, does not match and runs again.
 ## Limits
 
 - **Concurrency cap** — at most N agent CLIs run at once (`min(16, cpus-2)` by
-  default; set `concurrency` in config). Excess calls queue.
+  default; set `concurrency` in config). Excess calls queue. An adapter's own
+  `concurrency` caps its agents inside that, a rate limit halves it for the run,
+  and a fan-out on `claude` whose prompts share a long prefix starts staggered
+  (ODW extensions; see `references/adapters.md`).
 - **Total-agent backstop** — a hard ceiling on dispatches per run (default
   1000). Exceeding it aborts the run, so a buggy loop cannot fan out forever.
 - `exec()` commands count toward neither limit; each is bounded by its own

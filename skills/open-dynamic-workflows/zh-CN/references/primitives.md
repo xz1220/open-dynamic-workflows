@@ -405,7 +405,9 @@ resume 依赖同一条规则：调用按 prompt 和选项、按调用顺序匹�
 ## 限制
 
 - **并发上限** —— 同时最多跑 N 个 agent CLI（默认 `min(16, cpus-2)`；在配置里设
-  `concurrency`）。多出来的调用排队。
+  `concurrency`）。多出来的调用排队。适配器自己的 `concurrency` 在此之内限制它的 agent，
+  一次限流会让它在本次运行中减半；在 `claude` 上，提示共享较长前缀的扇出会错开启动
+  （均为 ODW 扩展；见 `references/adapters.md`）。
 - **agent 总量兜底** —— 单次运行派发量的硬上限（默认 1000）。超过就中止运行，这样一个有
   bug 的循环不会无限扇出。
 - `exec()` 命令不计入以上任何一项限制；每条命令由它自己的 `timeout` 和

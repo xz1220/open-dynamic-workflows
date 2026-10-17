@@ -814,6 +814,64 @@ ODW 能识别的措辞——从每个内置 CLI 的源码和 issue 中收集而�
 }
 ```
 
+### 按适配器限制并发与错开扇出
+
+**ODW 扩展。** `concurrency` 限制一次运行同时有多少个 agent;适配器自己的 `concurrency`
+限制其中最多有多少个跑在这个 CLI 上——于是 16 个 codex 调用的扇出每次只跑 4 个,运行
+剩下的槽位留给其他适配器。一个 agent 需要一个运行槽位和一个该适配器的槽位,两者同时
+发放:它绝不会占着一个去等另一个;每个适配器的 agent 先到先得地排队,空出的运行槽位
+交给最早到达、且其适配器还有余量的 agent,因此一个被限住的适配器不会挡住其他适配器。
+`odw doctor` 会列出这些上限,每次运行的第一条日志也会写明
+(`concurrency: 8 agents at once · per adapter: codex 4`)。
+
+```jsonc
+{
+  "concurrency": 8,
+  "adaptiveConcurrency": true, // 默认值;false 让所有上限保持不变
+  "staggerFanOut": { "first": 1, "delayMs": 2500 }, // 默认值;false 关闭
+  "adapters": {
+    "my_wrapper": {
+      "command": ["my-agent", "--cwd", "{workspace}", "--prompt-file", "{prompt_file}"],
+      "concurrency": 4 // 在运行的 8 个之内,同时最多 4 个
+    }
+  }
+}
+```
+
+配置里的适配器条目会整个替换同名的内置适配器,所以要给内置适配器(比如 `codex`)设上限,
+请从 [`odw.config.example.json`](odw.config.example.json) 复制它的条目,再加上
+`"concurrency"`。
+
+**自适应降速。** 某个适配器撞上限流时——有 agent 即将退避等待,或有 agent 以
+`rate_limit` 失败——它的上限在本次运行余下的时间里减半,最低为 1(没有自己上限的适配器
+从运行级上限开始算);此后每过一分钟没有再被限流,就还回一个槽位。同一批扇出一起撞上
+限流时,上限只减一次,而不是每个 agent 减一次。已经在跑的 agent 保留它们的槽位——被限流
+的 agent 原地等待退避——所以降低后的上限约束的是接下来启动的 agent。减半,以及让上限完全
+恢复的那一个槽位,都会记日志:
+
+```text
+adaptive concurrency: codex hit a rate limit — at most 4 of its agents at once now (was 8); one slot comes back for each minute without another
+adaptive concurrency: no rate limit on codex for 4m — back to 8 of its agents at once
+```
+
+**为提示缓存错开扇出。** 内置 `claude` 适配器背后的 Anthropic API 会缓存提示的前缀:第一个
+发送它的请求写入缓存,之后的请求只需很小一部分费用即可读取——但前提是第一个请求已经被读完。
+所有 agent 同时启动的扇出,每个 agent 都要为完整前缀付费。因此在一次 `parallel()` 或
+`pipeline()` 调用中,运行在声明了 `"promptCache": true` 的适配器上(内置 `claude` 就是)、
+且提示的前 1,024 个字符相同的 agent,每次先启动 `first` 个;其余的在第一个 agent 的 CLI
+产生输出后启动——对 JSONL 适配器而言,是它越过 CLI 启动时那些 `system` 事件之后的第一个
+事件;其他格式要等 CLI 退出才读取——或在 `delayMs` 之后启动,以先到者为准。把共享的说明
+放在前面、每项不同的部分放在最后,就能从中受益。单独的 agent、提示更短或不同(或用了别的
+模型、别的角色)的 agent,以及重放的 agent 从不等待;等待中的 agent 不占任何槽位,停止会
+立刻结束等待。每次错开的扇出记一行日志:
+
+```text
+staggered fan-out: 15 claude agents sharing a 3412-character prompt prefix waited 2.1s while the first warmed the prompt cache, until it produced output
+```
+
+如果你自己的适配器所用的 CLI 连接的是会缓存提示的 API,就给它声明 `"promptCache": true`;
+你自己写的 `claude` 条目也一样,因为它会替换内置的那个。
+
 ### 运行通知
 
 **ODW 扩展。** `notify` 会在一次运行结束时执行一条命令和/或向一个 webhook 发送 POST,

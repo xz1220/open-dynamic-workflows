@@ -894,6 +894,71 @@ case-insensitively before the built-in table.
 }
 ```
 
+### Concurrency per adapter and staggered fan-outs
+
+**ODW extension.** `concurrency` caps how many agents a run has going at once; an
+adapter's own `concurrency` caps how many of them run on that CLI — so a fan-out of
+16 codex calls runs 4 at a time while other adapters use the rest of the run's slots.
+An agent needs a run slot and a slot on its adapter, handed out together: it never
+holds one while it waits for the other, each adapter's agents queue first come,
+first served, and a free run slot goes to the oldest agent whose adapter has room, so
+one throttled adapter never holds up the others. `odw doctor` shows the caps, and
+every run states them in its first log line
+(`concurrency: 8 agents at once · per adapter: codex 4`).
+
+```jsonc
+{
+  "concurrency": 8,
+  "adaptiveConcurrency": true, // the default; false keeps every cap fixed
+  "staggerFanOut": { "first": 1, "delayMs": 2500 }, // the default; false turns it off
+  "adapters": {
+    "my_wrapper": {
+      "command": ["my-agent", "--cwd", "{workspace}", "--prompt-file", "{prompt_file}"],
+      "concurrency": 4 // at most 4 of its agents at once, inside the run's 8
+    }
+  }
+}
+```
+
+An adapter entry in your config replaces the built-in of that name, so to cap a
+built-in one — `codex`, say — copy its entry from
+[`odw.config.example.json`](odw.config.example.json) and add `"concurrency"` to it.
+
+**Adaptive back-pressure.** When an adapter hits a rate limit — an agent about to
+wait out a backoff, or one that failed with `rate_limit` — its cap is halved for the
+rest of the run, never below 1 (an adapter without a cap of its own starts from the
+run-wide one), and each minute without another rate limit gives one slot back. A
+fan-out that hit the limit together cuts the cap once, not once per agent. Agents
+already running keep their slots — a rate-limited one waits out its backoff in place
+— so the lower cap holds back the agents that start next. The cut, and the slot that
+brings the cap back in full, are logged:
+
+```text
+adaptive concurrency: codex hit a rate limit — at most 4 of its agents at once now (was 8); one slot comes back for each minute without another
+adaptive concurrency: no rate limit on codex for 4m — back to 8 of its agents at once
+```
+
+**Staggered fan-outs for the prompt cache.** Anthropic's API, behind the built-in
+`claude` adapter, caches a prompt's prefix: the first request that sends it writes
+it, and later ones read it for a fraction of the price — but only once the first has
+been read. A fan-out that starts every agent at once pays the full prefix in each.
+So in one `parallel()` or `pipeline()` call, agents on an adapter that declares
+`"promptCache": true` (the built-in `claude` does) whose prompts share at least their
+first 1,024 characters start `first` at a time; the rest start once the first one's
+CLI has produced output — for a JSONL adapter, its first event past the CLI's
+start-up `system` events; other formats are read when the CLI exits — or `delayMs`
+later, whichever comes first. Put the shared instructions first and the per-item
+part last to benefit. A lone agent, an agent whose prompt is shorter or different (or
+on another model or persona), and a replayed one never wait; a held agent holds no
+slot, and a stop ends the wait at once. Each staggered fan-out logs one line:
+
+```text
+staggered fan-out: 15 claude agents sharing a 3412-character prompt prefix waited 2.1s while the first warmed the prompt cache, until it produced output
+```
+
+Declare `"promptCache": true` on your own adapter when its CLI talks to an API that
+caches prompts — and on a `claude` entry of your own, which replaces the built-in.
+
 ### Run notifications
 
 **ODW extension.** `notify` runs a command and/or POSTs to a webhook when a run
