@@ -84,8 +84,16 @@ jobs:
           pattern: odw-*
           path: artifacts
           merge-multiple: true
+      # scripts/install.sh verifies the downloaded binary against this list.
+      - name: Write SHA256SUMS
+        working-directory: artifacts
+        run: |
+          sha256sum odw-*.gz > SHA256SUMS
+          cat SHA256SUMS
       - uses: softprops/action-gh-release@v2
         with:
-          files: artifacts/odw-*.gz
+          files: |
+            artifacts/odw-*.gz
+            artifacts/SHA256SUMS
           fail_on_unmatched_files: true
           generate_release_notes: true

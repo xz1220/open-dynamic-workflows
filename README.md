@@ -124,9 +124,12 @@ Downloads the prebuilt binary for your platform (gzipped, ~35 MB) to
 to `~/.codex/skills/`). No Node required. `latest` resolves to one release tag;
 the binary and skill both come from that tag. All downloads and the new binary
 are validated before replacing an existing installation, with rollback if the
-replacement fails. Override the destination with `ODW_BIN_DIR`, or pin a release
-with `ODW_VERSION=v0.4.0`. `ODW_REF` explicitly overrides the skill's source ref
-for custom deployments; the default keeps it matched to the binary.
+replacement fails. The binary must match the release's `SHA256SUMS` (releases up
+to v0.5.0 predate it and install with a warning; for newer ones a missing list
+aborts unless `ODW_ALLOW_UNVERIFIED=1`). Override the destination with
+`ODW_BIN_DIR`, or pin a release with `ODW_VERSION=v0.4.0`. `ODW_REF` explicitly
+overrides the skill's source ref for custom deployments; the default keeps it
+matched to the binary.
 
 ### 3. Manual
 
@@ -134,7 +137,8 @@ Prefer not to pipe `curl` into `sh`? Grab the asset for your OS/arch from
 [Releases](https://github.com/xz1220/open-dynamic-workflows/releases), then:
 
 ```bash
-# a) the binary — onto your PATH
+# a) the binary — check it against the release's SHA256SUMS, then onto your PATH
+grep ' odw-darwin-arm64.gz$' SHA256SUMS | shasum -a 256 -c   # or: sha256sum -c
 gunzip odw-darwin-arm64.gz && chmod +x odw-darwin-arm64
 mv odw-darwin-arm64 ~/.local/bin/odw
 

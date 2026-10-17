@@ -115,7 +115,8 @@ curl -fsSL https://raw.githubusercontent.com/xz1220/open-dynamic-workflows/main/
 `~/.claude/skills/`(没有就退到 `~/.codex/skills/`)。无需 Node。可用环境变量
 `ODW_BIN_DIR` 指定目录,或用 `ODW_VERSION=v0.4.0` 固定版本。`latest` 会先解析成一个
 确定的发布版本,二进制和 skill 都从该版本下载。所有下载与新二进制验证成功后才替换现有
-安装;替换失败会恢复旧文件。自定义部署可用 `ODW_REF` 显式指定 skill 的来源,默认与二进制一致。
+安装;替换失败会恢复旧文件。二进制必须与该版本发布的 `SHA256SUMS` 一致(v0.5.0 及更早的版本
+没有该文件,会带警告安装;更新的版本缺少它则中止,除非设置 `ODW_ALLOW_UNVERIFIED=1`)。自定义部署可用 `ODW_REF` 显式指定 skill 的来源,默认与二进制一致。
 
 ### 3. 手动安装
 
@@ -123,7 +124,8 @@ curl -fsSL https://raw.githubusercontent.com/xz1220/open-dynamic-workflows/main/
 [Releases](https://github.com/xz1220/open-dynamic-workflows/releases) 下对应 OS/arch 的资产,然后:
 
 ```bash
-# a) 二进制 —— 放到 PATH 上
+# a) 二进制 —— 先用该版本的 SHA256SUMS 校验,再放到 PATH 上
+grep ' odw-darwin-arm64.gz$' SHA256SUMS | shasum -a 256 -c   # 或: sha256sum -c
 gunzip odw-darwin-arm64.gz && chmod +x odw-darwin-arm64
 mv odw-darwin-arm64 ~/.local/bin/odw
 
