@@ -37,13 +37,11 @@ export class OdwRunSource implements RunSource {
     return this.store.exists(runId);
   }
   listSummaries(): RunSummary[] {
-    const live = new Set(this.store.listRuns().map((r) => r.runId));
-    const out: RunSummary[] = [];
-    for (const runId of live) {
-      if (!this.store.exists(runId)) continue; // deleted between listRuns() and now
-      out.push(summaryFrom(runId, this.cachedFacts(runId)));
-    }
-    this.facts.retain(live);
+    // Ids only (no meta.json reads): the walk itself proved each run exists, and
+    // a run deleted mid-list just drops out of the next one.
+    const ids = this.store.listRunIds();
+    const out = ids.map((runId) => summaryFrom(runId, this.cachedFacts(runId)));
+    this.facts.retain(new Set(ids));
     return out.sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0));
   }
   detail(runId: string) {

@@ -96,6 +96,67 @@ test("R2: listRuns walks two levels, newest first, and tolerates a legacy flat r
   }
 });
 
+test("listRunIds lists bucketed + legacy runs newest-first without reading meta.json", () => {
+  const root = tempRoot();
+  try {
+    const store = new RunStore(root);
+    const a = store.create({ script: "a.js", args: null, source: "/s", workflowName: "alpha" });
+    const legacyId = "20200101-000000-aaaaaa";
+    mkdirSync(join(root, legacyId), { recursive: true });
+    writeFileSync(join(root, legacyId, "meta.json"), JSON.stringify({ runId: legacyId }));
+    mkdirSync(join(root, "alpha", "not-a-run"), { recursive: true }); // no meta.json → skipped
+
+    const fresh = new RunStore(root);
+    assert.deepEqual(fresh.listRunIds(), [a, legacyId]);
+    // Corrupt meta.json contents must not matter: ids come from the tree alone.
+    writeFileSync(join(root, "alpha", a, "meta.json"), "{ not json");
+    assert.deepEqual(fresh.listRunIds(), [a, legacyId]);
+    assert.deepEqual(fresh.listRunIds(), fresh.listRuns().map((r) => r.runId));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("listing and lookup survive an unreadable or missing runs root", () => {
+  const root = tempRoot();
+  try {
+    // A file where the root directory should be: every readdir fails (ENOTDIR).
+    const notADir = join(root, "runs-file");
+    writeFileSync(notADir, "x");
+    const store = new RunStore(notADir);
+    assert.deepEqual(store.listRunIds(), []);
+    assert.deepEqual(store.listRuns(), []);
+    assert.deepEqual(store.listRunsForWorkflow("alpha"), []);
+    assert.equal(store.exists("20260101-000000-abcdef"), false);
+    assert.deepEqual(new RunStore(join(root, "missing")).listRunIds(), []);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("readEventsSince flags a replaced log so incremental readers start over", () => {
+  const root = tempRoot();
+  try {
+    const store = new RunStore(root);
+    const id = store.create({ script: "wf.js", args: null, source: "/src" });
+    const sink = new JsonlSink(store.eventsPath(id));
+    sink.emit({ ts: 1, type: "log", message: "a" });
+    const first = store.readEventsSince(id, { offset: 0 });
+    assert.equal(first.reset, false);
+    sink.emit({ ts: 2, type: "log", message: "b" });
+    const second = store.readEventsSince(id, first.cursor);
+    assert.equal(second.reset, false);
+    assert.deepEqual(second.events.map((e) => e.message), ["b"]);
+    // Rewrite the log from scratch (rotation): the next read restarts from the top.
+    writeFileSync(store.eventsPath(id), JSON.stringify({ ts: 3, type: "log", message: "z" }) + "\n");
+    const third = store.readEventsSince(id, second.cursor);
+    assert.equal(third.reset, true);
+    assert.deepEqual(third.events.map((e) => e.message), ["z"]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("R3: listRunsForWorkflow reads only that workflow's bucket", () => {
   const root = tempRoot();
   try {
