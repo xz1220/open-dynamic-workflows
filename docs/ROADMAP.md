@@ -60,6 +60,7 @@
 - **失败分类与退避（N6 前半）**：8 类失败原因，约 80 条各 CLI 原文样本；限流按 retry-after 或指数退避（带抖动、上限 `maxBackoff`）重试，等待中停止立即生效；额度/登录不重试而给出可操作的提示，同一适配器连续 3 次时告警；Claude 文本模式"以 0 退出的 API 错误"也能识别。
 - **worktree 环境（X5）**：`.worktreeinclude`（含 `symlink:`）、带超时的 `worktreeSetup`、每个 agent 独占的 `ODW_PORT` 及 `ODW_RUN_ID`/`ODW_AGENT_ID`。
 - 看板：「待你处理」提醒、失败原因旁显示限流/额度的解除时间、为 X1 准备好的改动审阅页；官网新增「为长任务而生」；两篇实用配方（恢复运行、运行通知）；删除无人使用的 skill 内嵌产物。
+- **真实用量与花费（N5）**：内置 `claude` 适配器改用 `stream-json`（逐轮输出，`result` 事件带回复、用量、花费与 `is_error`，错误走失败分类）；JSON / JSONL 输出格式可声明 `usagePath`/`costPath`/`errorPath`，解析不到文本时退回原始输出并记一条 LOG；用量按 agent 与运行汇总（含重试），`budget` 优先计真实输出 token；`odw status`、实时视图与看板显示 token 与花费；单次 `parallel()`/`pipeline()` 超过 `fanOutWarn`（默认 25）时提示。
 
 ---
 
@@ -73,7 +74,7 @@
 | N2 | **完成通知钩子**：`notify` 配置支持 command 和 webhook（兼容 Slack/Discord），覆盖运行结束、失败、停止；看板侧有提示和桌面通知 | #11 | S | ✅ |
 | N3 | **卡死看门狗**：agent 输出长时间没有动静（`stallTimeout`）就终止并重启，重启次数有上限（`stallRestarts`）并记录事件；worker 收到 SIGTERM/SIGINT/SIGHUP 时干净地停止运行 | #5 | S | ✅ |
 | N4 | **命令原语** `exec()`（ODW 扩展）：异步执行，支持参数、cwd、超时、输出上限，可被取消，返回 stdout/stderr/退出码，并在 DAG 中可见；附 `test-fix-loop.js` 示例 | [#31](https://github.com/xz1220/open-dynamic-workflows/issues/31) | M | ✅ |
-| N5 | **用量与成本**：适配器改用各 CLI 的 JSON 输出模式（`claude --output-format json` 的 `total_cost_usd`、`codex exec --json` 的 usage），按 agent 和阶段记录真实用量，`budget` 改用真实计量；大规模 fan-out 启动前给出预警 | #1 | M | ⏳ |
+| N5 | **用量与成本**：适配器改用各 CLI 的 JSON 输出模式（`claude --output-format json` 的 `total_cost_usd`、`codex exec --json` 的 usage），按 agent 和阶段记录真实用量，`budget` 改用真实计量；大规模 fan-out 启动前给出预警 | #1 | M | ✅ claude 改用 stream-json，按 agent / 运行记录 token 与花费，`budget` 用真实输出 token，`fanOutWarn`；codex 仍为文本模式 |
 | N6 | **失败分类与退避**：区分限流、过载、额度耗尽、鉴权四类失败；按适配器节流，遵守 retry-after；额度耗尽时整体暂停，到重置时间自动恢复；支持回退适配器链 | #3 | M | 🚧 分类、退避重试、可操作的报错 ✅；额度暂停与回退链待做（回退链并入 X7） |
 | N7 | **有证据的成功**：读取 CLI 报告的成功信号（`is_error`、`permission_denials`、MCP 状态），转成有类型的失败；`agent()` 可声明后置条件（"有文件改动"、"某命令通过"）。`odw doctor --smoke` 已交付 | #7（[#23](https://github.com/xz1220/open-dynamic-workflows/issues/23)） | M | 🚧 部分 |
 | N8 | **原生结构化输出**：优先使用 `codex --output-schema` / `claude --json-schema`；启动前拒绝不受支持的 schema 关键字 | #12 | S–M | ⏳ |
