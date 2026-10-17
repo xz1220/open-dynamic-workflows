@@ -152,6 +152,7 @@ agent 的 `permissions`；`odw doctor` 会列出每个适配器支持的档位�
 | `quotaBreaker` | **ODW 扩展。** 同一个适配器上连续这么多次额度失败后，本次运行之后的 agent 都会跳过它——各自从回退链上的下一个适配器开始，没有回退链的则立即失败——并记一条警告。默认 3；`0` 或 `null` 表示从不跳过 |
 | `models` | **ODW 扩展。** 模型层级：`{ "fast": { "claude": "haiku", "codex": "gpt-5-mini" }, … }`。`model: "@fast"`（写在 `agent()`、`phase()` 或 `meta.phases` 里）让 agent 使用其适配器在该层级下的 ID——回退之后用下一个适配器的；层级没给某适配器 ID 时使用其 CLI 的默认模型（记日志），未知层级会让 agent 失败。层级名由字母、数字、`_`、`-` 和 `.` 组成；列出的每个适配器都必须已配置。默认 `{}` |
 | `expectRetries` | **ODW 扩展。** 工作没达到 `expect` 检查的 agent 带着缺失项重跑的次数，之后以 `unmet_expectation` 失败（默认 1；`agent()` 调用自己的 `expectRetries` 优先）——见 [expect](primitives.md#expectodw-扩展) |
+| `permissionDenials` | **ODW 扩展。** CLI 拒绝了 agent 的工具调用（`deniedPath`）、而回复声称成功时怎么办：`"warn"`（默认）保留回复——这些调用记为 agent 上的 `denied` 并记一次日志——`"fail"` 让 agent 以 `permission` 失败。适配器自己的 `permissionDenials` 优先；设了 `expect` 的调用无论如何都把被拒绝的调用算作缺失 |
 
 ### 适配器字段
 
@@ -170,6 +171,7 @@ agent 的 `permissions`；`odw doctor` 会列出每个适配器支持的档位�
 | `output` | stdout 如何变成回复（默认：去掉首尾空白的文本）——见下文 |
 | `permissionArgs` | **ODW 扩展。** 各档位的参数：`{ "read"?: [...], "edit": [...], "full"?: [...] }`（`edit` 必填，没有参数写 `[]`），放在命令中 `{permission_args}` 那一项的位置——设置了它，命令就必须恰好有这一项 |
 | `permissions` | **ODW 扩展。** 把该适配器的档位封顶在运行档位之下：它的 agent 取两者中较低的一档 |
+| `permissionDenials` | **ODW 扩展。** `"warn"` 或 `"fail"`：这个 CLI 自己的 `permissionDenials`，优先于运行级设置 |
 
 ### 输出格式
 
@@ -181,9 +183,9 @@ agent 的 `permissions`；`odw doctor` 会列出每个适配器支持的档位�
 
 **ODW 扩展：** 两种 JSON 格式都可以加上 `usagePath`（token 计数）、`costPath`（美元）、
 `errorPath`（`true`、一条消息或一个错误对象：这次运行以它失败，不论退出码都像任何失败一样
-被归类）和 `deniedPath`（CLI 拒绝了 agent 的哪些工具调用：声称成功的回复只要列出一条就以
-`permission` 失败，并写明是哪些——内置 `claude` 读取 `permission_denials`；适配器条目的
-`output` 里不写它，就会接受这样的回复）；`jsonl` 从 `usageEvent` 事件（默认同 `eventType`）读取用量和花费并累加。用量会在
+被归类）和 `deniedPath`（CLI 拒绝了 agent 的哪些工具调用，回复可能仍声称成功：记为 agent
+上的 `denied` 并写入日志，或在 `permissionDenials: "fail"` 下算作 `permission` 失败——内置
+`claude` 读取 `permission_denials`）；`jsonl` 从 `usageEvent` 事件（默认同 `eventType`）读取用量和花费并累加。用量会在
 不同 CLI 的字段名（Anthropic、OpenAI、Codex）之间归一化为：`inputTokens`（含缓存命中的
 输入）、`outputTokens`、`cacheReadTokens`、`cacheWriteTokens`、`costUsd`。路径里的整数
 用于索引数组（负数从末尾数）。stdout 里找不到声明的文本时，原始 stdout 就作为回复，运行
@@ -253,6 +255,7 @@ hook 只会记录到该运行的 `worker.log`。
 `agent_failed` 事件上的 `reason`；只有 `rate_limit` 会重试——见 `transientRetries`）。
 CLI 在输出里报告的失败（`errorPath`：Claude Code stream-json 的 `is_error` 结果，常常以 0
 退出）也一样，干净退出、但简短的文本回复只是一条限流、额度或登录错误的情况（如
-`API Error: Rate limit reached`）同样算作失败。干净退出也可能失败（ODW 扩展）：CLI 拒绝了
-工具调用时（`deniedPath`）为 `permission`，回复为空时为 `empty_reply`（除非调用设了
-`allowEmpty`），工作没达到调用的 `expect` 检查时为 `unmet_expectation`。
+`API Error: Rate limit reached`）同样算作失败。干净退出也可能失败（ODW 扩展）：回复为空时
+为 `empty_reply`（除非调用设了 `allowEmpty`），工作没达到调用的 `expect` 检查时为
+`unmet_expectation`，CLI 拒绝了工具调用（`deniedPath`）且 `permissionDenials` 为 `"fail"`
+或调用设了 `expect` 时为 `permission`。

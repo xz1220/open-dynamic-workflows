@@ -58,7 +58,8 @@ agent(prompt, opts?) -> Promise<unknown>
 - **opts.expectRetries**（**ODW 扩展**）—— 没达到 `expect` 的工作带着缺失项重跑的次数
   （默认取 `expectRetries` 设置，即 1）。
 - **opts.allowEmpty**（**ODW 扩展**）—— 接受空回复或只有空白的回复作为答案。不设时，空回复
-  会让调用以 `"empty_reply"` 失败。
+  会让调用以 `"empty_reply"` 失败。（CLI 拒绝工具调用默认不会让调用失败：它们会记为
+  `denied`——见 [expect](#expectodw-扩展)。）
 
 返回回复文本，设了 `schema` 则返回校验过的 JSON 值。CLI 出错、schema 重试耗尽、工作没达到
 `expect`、空回复都会抛错；这些可恢复失败在 `parallel`/`pipeline` 内变成 `null`。停止请求、
@@ -431,10 +432,15 @@ try {
 }
 ```
 
-无需开启就有类型的失败：空回复或只有空白的回复会以 `"empty_reply"` 抛错，除非设了
-`allowEmpty: true`；声称成功、但 CLI 拒绝了工具调用的回复——Claude Code 的
-`permission_denials`，经适配器的 `output.deniedPath` 读取——会以 `"permission"` 抛错，并列出
-被拒绝的调用。两者都不重试。`expect` 属于调用的 resume key；Claude Code 会忽略它，在那里检查
+CLI 拒绝的工具调用——Claude Code 的 `permission_denials`，经适配器的 `output.deniedPath`
+读取——算作一项缺失：重试时会告诉 agent 是哪些，重试之后仍被拒绝的调用会以 `"permission"`
+抛错，`misses` 里列出这次拒绝以及工作的其他缺失。
+
+没设 `expect` 时：空回复或只有空白的回复会以 `"empty_reply"` 抛错，除非设了
+`allowEmpty: true`。声称成功、但 CLI 拒绝了工具调用的回复照常成立——这些调用作为 `denied`
+记在 agent 的 `agent_finished` 事件和保存的结果上，运行也会记一行日志——除非设了
+`"permissionDenials": "fail"`（运行级，或写在适配器条目里），此时以 `"permission"` 抛错并
+列出它们。两种失败都不重试。`expect` 属于调用的 resume key；Claude Code 会忽略它，在那里检查
 不会执行。
 
 ## schema

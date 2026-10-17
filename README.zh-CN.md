@@ -254,9 +254,17 @@ agent_failed    (Fix) fixer — [unmet_expectation] did not meet: `npm test` mus
   它的改动取代先前的改动。
 - **命令**作为 agent 名下的一个 `exec()` 步骤运行(它的事件带 `forAgentId`),在读取改动
   之后执行,所以它写出的文件绝不会被算成 agent 的工作;停止会杀掉它。
-- **无需开启就有类型的静默失败:**空回复以 `reason: "empty_reply"` 失败(`allowEmpty: true`
-  接受空回复);Claude Code 的回复声称成功、但其 `result` 列出了 `permission_denials` 时,
-  以 `reason: "permission"` 失败,并列出被拒绝的调用。
+- **被拒绝的工具调用算作一项缺失。** 在默认的 `edit` 档位下,Claude Code 无头运行时会拒绝
+  所有不在允许列表里的 shell 命令;设了 `expect` 时,`result` 里列出 `permission_denials`
+  的回复会像任何缺失一样交还给 agent,之后以 `reason: "permission"` 失败,并列出被拒绝的
+  调用。没设 `expect` 时回复照常成立——见下一条。
+- **无需开启:**空回复以 `reason: "empty_reply"` 失败(`allowEmpty: true` 接受空回复)。
+  CLI 拒绝了工具调用、但回复照常成立的 agent,会把它们作为 `denied` 记在它的
+  `agent_finished` 事件、保存的结果和 `/api/runs/:id` 上,运行还会记一行日志:
+  `search:3: Claude Code refused 2 tool calls — Bash (npm test); …; its reply may rest on
+  work it could not do (raise its tier with --permissions or allowlist the tool)`。
+  `"permissionDenials": "fail"`(或适配器自己的 `permissionDenials`)则让这样的 agent 以
+  `reason: "permission"` 失败。
 
 Claude Code 的 Workflow 工具会忽略 `expect`,在那里检查不会执行。
 [`examples/fix-until-green.js`](examples/fix-until-green.js) 用 `expect` 驱动一个
@@ -639,14 +647,16 @@ agent 的哪些工具调用。内置的 `claude` 适配器就是这样声明的:
   "usagePath": ["usage"],         // token 计数,位于 usageEvent 事件中(默认同 eventType)
   "costPath": ["total_cost_usd"], // 美元花费,位于同一事件
   "errorPath": ["is_error"],      // true、一条消息或一个错误对象:这次运行以它失败
-  "deniedPath": ["permission_denials"] // 被拒绝的工具调用:声称成功的回复只要带着一条就失败("permission")
+  "deniedPath": ["permission_denials"] // CLI 拒绝的工具调用:记在 agent 上并写入日志
 }
 ```
 
 在 `acceptEdits` 下,Claude Code 无头运行时会直接拒绝本该询问的操作——比如没在允许列表里
-的 shell 命令——而回复仍可能声称成功;`deniedPath` 读的就是这些拒绝。在适配器对应档位的
-`permissionArgs` 里放行 agent 需要的操作;若仍想接受这样的回复,就在重新声明该适配器的
-`output` 时去掉 `deniedPath`。
+的 shell 命令——而回复仍可能声称成功;`deniedPath` 读的就是这些拒绝。默认情况下回复照常
+成立,被拒绝的调用作为 `denied` 记在 agent 上,并写一行日志;`"permissionDenials": "fail"`
+(运行级,或写在适配器条目里)让这样的 agent 以 `permission` 失败,而设了 `expect` 的
+`agent()` 调用会把它们算作一项缺失。在适配器对应档位的 `permissionArgs` 里放行 agent 需要
+的操作。
 
 每个 `usageEvent` 事件的用量会累加;不同 CLI 的字段名(Anthropic、OpenAI、Codex)会被
 统一归一化——见 [`src/adapters/usage.ts`](src/adapters/usage.ts)。只打印一个 JSON 文档
@@ -883,9 +893,10 @@ Claude Code 会在输出里报告这类错误,而且常常以 0 退出:它的 st
 带着 `is_error: true` 和错误消息(`API Error: Rate limit reached`、
 `Claude AI usage limit reached|…`),这会被算作消息所指的那种失败。在文本模式下(文本
 适配器,或回退到原始 stdout 的 JSON 输出),一条简短、内容只有这类限流、额度或登录错误
-的回复同样会被算作对应的失败——绝不会被当成 agent 的答案。声称成功、但 `permission_denials`
-列出了被无头模式拒绝的工具调用的 `result`,算作 `permission` 失败并列出这些调用;空回复
-算作 `empty_reply` 失败;两者都不重试。
+的回复同样会被算作对应的失败——绝不会被当成 agent 的答案。空回复算作 `empty_reply` 失败,
+不重试。声称成功、但 `permission_denials` 列出了被无头模式拒绝的工具调用的 `result` 照常
+成立,这些调用被记录并写入日志——只有在 `"permissionDenials": "fail"` 下,或调用设了
+`expect` 时,才算作 `permission` 失败并列出它们。
 
 ODW 能识别的措辞——从每个内置 CLI 的源码和 issue 中收集而来——集中在一张表里:
 [`src/adapters/failures.ts`](src/adapters/failures.ts)。用适配器的 `failures` 教它
@@ -1288,8 +1299,9 @@ node web/dev.mjs --api http://127.0.0.1:4317     # → http://127.0.0.1:5173
   这类调用(ODW 扩展;见[结构化输出](#结构化输出odw-扩展))。
 - **有证据的成功。** `agent(…, { expect })` 检查 agent 的工作,而不是听它怎么说——某条命令
   以 0 退出、有文件改动、回复匹配——没达到就把缺失项交还给它一次,之后以
-  `reason: "unmet_expectation"` 和缺失项失败。空回复和 Claude Code 的 `permission_denials`
-  也成了有类型的失败(ODW 扩展;见[检查 agent 的工作](#检查-agent-的工作odw-扩展))。
+  `reason: "unmet_expectation"` 和缺失项失败。空回复以 `empty_reply` 失败;Claude Code
+  拒绝的工具调用会记在 agent 上并写入日志——并计入 `expect`(ODW 扩展;见
+  [检查 agent 的工作](#检查-agent-的工作odw-扩展))。
 - **权限档位。** 每个 agent 以 `read`、`edit`(默认,与以往一致)或 `full` 运行,映射到各
   CLI 自己的参数:审查与调研类 fan-out 碰不到工作树(`--permissions read`、
   `agent(…, { permissions: 'read' })`),完全权限必须显式开启,无法强制执行某档位的 CLI 会被

@@ -73,7 +73,8 @@ other primitive organizes calls to it.
   setting, 1).
 - **opts.allowEmpty** (**ODW extension**) — accept an empty or whitespace-only
   reply as the answer. Without it, an empty reply fails the call with reason
-  `"empty_reply"`.
+  `"empty_reply"`. (Tool calls the CLI refused do not fail a call by default:
+  they are recorded as `denied` — see [expect](#expect-odw-extension).)
 
 Returns the reply text, or the validated JSON value when `schema` is set. CLI
 errors, exhausted schema retries, work that missed its `expect` checks and an
@@ -524,12 +525,19 @@ try {
 }
 ```
 
-Typed without opting in: an empty or whitespace-only reply throws with reason
-`"empty_reply"` unless `allowEmpty: true`; a reply that claims success while the
-CLI refused tool calls — Claude Code's `permission_denials`, read through the
-adapter's `output.deniedPath` — throws with reason `"permission"`, naming them.
-Neither is retried. `expect` is part of the call's resume key; Claude Code
-ignores it, so there the checks do not run.
+Tool calls the CLI refused — Claude Code's `permission_denials`, read through the
+adapter's `output.deniedPath` — count as a miss: the retry is told which, and a
+call still refused after its retries throws with reason `"permission"`, its
+`misses` listing the refusal and anything else the work missed.
+
+Without `expect`: an empty or whitespace-only reply throws with reason
+`"empty_reply"` unless `allowEmpty: true`. A reply that claims success while the
+CLI refused tool calls stands — they are kept as `denied` on the agent's
+`agent_finished` event and saved result, and the run logs one line — unless
+`"permissionDenials": "fail"` (run-wide, or in the adapter's entry), which throws
+with reason `"permission"`, naming them. Neither failure is retried. `expect` is
+part of the call's resume key; Claude Code ignores it, so there the checks do not
+run.
 
 ## schema
 

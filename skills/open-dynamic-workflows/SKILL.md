@@ -109,10 +109,12 @@ did), `files` (globs, each matching a file it changed or created), `command`
 (must exit 0 in the agent's workspace; `timeout` seconds, default 600) and
 `match` (a regular expression the reply must match). Work that misses runs
 again with what it missed in its prompt (`expectRetries`, default 1), then
-throws — recoverable — with `reason: "unmet_expectation"` and `misses`. Without
-any opt-in, an empty reply throws `reason: "empty_reply"` (`allowEmpty: true`
-accepts one), and a claude reply whose result lists `permission_denials` throws
-`reason: "permission"`, naming the refused calls:
+throws — recoverable — with `reason: "unmet_expectation"` and `misses`. Tool
+calls the CLI refused (claude's `permission_denials`) count as a miss too, and
+then the reason is `"permission"`. Without `expect`, such a reply stands: the
+refused calls are kept as `denied` on the agent and logged once
+(`"permissionDenials": "fail"` fails it instead). An empty reply always throws
+`reason: "empty_reply"` (`allowEmpty: true` accepts one):
 
 ```js
 const fix = await agent('Fix the failing parser tests.', {   // ODW extension: expect
@@ -412,7 +414,7 @@ without answering when headless (a login, trust or approval prompt).
 | Re-running a stalled or failed run from scratch | Read finished agents with `odw result <run> --agent <id>`; `odw stop`, fix the script, then `odw resume` — finished calls replay for free. |
 | Retrying a failed agent without looking at what it did | Read its transcript first — `odw logs <run> --agent <id\|label>` shows its tool calls, results, errors and the end of its stderr (ODW extension) — and fix the cause. |
 | Asking an agent whether it did the work, or trusting a reply that says so | State it with `expect` — `{ command: 'npm test', changes: true }`: odw checks it after the reply, hands misses back once, and fails the agent with `unmet_expectation` and what it missed (ODW extension; `examples/fix-until-green.js`). |
-| Retrying an agent that failed with reason `permission` as if it were flaky | Its error names the tool calls headless mode refused (`denied: Bash (npm test)`): ask the user to allow exactly those in the adapter's `permissionArgs` for its tier, or give the agent work it can do without them. |
+| Retrying an agent that failed with reason `permission` as if it were flaky, or ignoring a finished agent's `denied` | Both name the tool calls headless mode refused (`denied: Bash (npm test)`) — its reply may rest on work it could not do: ask the user to allow exactly those in the adapter's `permissionArgs` for its tier, or give the agent work it can do without them. |
 | Looking for an isolated agent's edits in your files after the run | They are kept as diffs, not merged: `odw diff <run> --stat`, then `odw apply <run> --agent <id> --check` and `odw apply`. |
 | Using `validate()` and expecting the script to run on Claude Code | `validate` is an ODW extension and runs on odw only. |
 | Using `exec()` and expecting the script to run on Claude Code | `exec` is an ODW extension and runs on odw only; `validate()` warns about it. |

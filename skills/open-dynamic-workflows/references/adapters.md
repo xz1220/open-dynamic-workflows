@@ -164,6 +164,7 @@ did-you-mean hint) instead of silently ignoring them.
 | `quotaBreaker` | **ODW extension.** After this many quota failures in a row on one adapter, the run's later agents skip it — each starts on the next adapter of its chain, or fails at once without one — with one warning. Default 3; `0` or `null` = never |
 | `models` | **ODW extension.** Model tiers: `{ "fast": { "claude": "haiku", "codex": "gpt-5-mini" }, … }`. `model: "@fast"` (in `agent()`, `phase()` or `meta.phases`) runs an agent with its adapter's id for the tier — after a fallback, the next adapter's; an adapter the tier names no id for runs its CLI's default (logged), and an unknown tier fails the agent. Tier names are letters, digits, `_`, `-` and `.`; every adapter named must be configured. Default `{}` |
 | `expectRetries` | **ODW extension.** How many times an agent whose work missed its `expect` checks runs again, told what it missed, before it fails with reason `unmet_expectation` (default 1; an `agent()` call's own `expectRetries` wins) — see [expect](primitives.md#expect-odw-extension) |
+| `permissionDenials` | **ODW extension.** What a reply that claims success does when the CLI refused the agent tool calls (`deniedPath`): `"warn"` (default) keeps it — the calls are recorded as `denied` on the agent and logged once — and `"fail"` fails the agent with reason `permission`. An adapter's own `permissionDenials` wins; a call with `expect` counts refused calls as a miss either way |
 
 ### Adapter fields
 
@@ -182,6 +183,7 @@ did-you-mean hint) instead of silently ignoring them.
 | `output` | how stdout becomes the reply (default: trimmed text) — see below |
 | `permissionArgs` | **ODW extension.** Each tier's flags: `{ "read"?: [...], "edit": [...], "full"?: [...] }` (`edit` required, `[]` for none), put where the command has a `{permission_args}` element — which it must have exactly when this is set |
 | `permissions` | **ODW extension.** Caps this adapter's tier below the run's: its agents get the lower of the two |
+| `permissionDenials` | **ODW extension.** `"warn"` or `"fail"`: this CLI's own `permissionDenials`, over the run-wide setting |
 
 ### Output formats
 
@@ -194,10 +196,10 @@ did-you-mean hint) instead of silently ignoring them.
 **ODW extension:** both JSON formats may add `usagePath` (the token counts), `costPath`
 (US dollars), `errorPath` (`true`, a message or an error object: the run failed
 with it, classified like any failure whatever its exit status) and `deniedPath`
-(the tool calls the CLI refused the agent: a reply that claims success while it
-lists any fails with reason `permission`, naming them — the built-in `claude`
-reads `permission_denials`; an adapter entry whose `output` leaves it out accepts
-such replies); `jsonl` reads usage
+(the tool calls the CLI refused the agent, under a reply that may claim success:
+recorded as `denied` on the agent and logged, or a `permission` failure under
+`permissionDenials: "fail"` — the built-in `claude` reads `permission_denials`);
+`jsonl` reads usage
 and cost from `usageEvent` events (default: `eventType`) and adds them up. Usage is
 normalized across the CLIs' field names (Anthropic's, OpenAI's, Codex's):
 `inputTokens` (cached input included), `outputTokens`, `cacheReadTokens`,
@@ -279,6 +281,7 @@ So does a failure the CLI reports in its output (`errorPath`: Claude Code's
 stream-json `is_error` result, often with exit 0), and a clean exit whose short
 text reply is nothing but a rate-limit, quota or login error (`API Error: Rate
 limit reached`). A clean exit can still fail (ODW extensions): with reason
-`permission` when the CLI refused tool calls (`deniedPath`), `empty_reply` when
-the reply is empty (unless the call sets `allowEmpty`), and `unmet_expectation`
-when the work missed the call's `expect` checks.
+`empty_reply` when the reply is empty (unless the call sets `allowEmpty`),
+`unmet_expectation` when the work missed the call's `expect` checks, and
+`permission` when the CLI refused tool calls (`deniedPath`) and either
+`permissionDenials` is `"fail"` or the call has `expect`.

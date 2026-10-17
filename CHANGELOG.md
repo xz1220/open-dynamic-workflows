@@ -26,7 +26,10 @@ changed, and run on a schedule — and a dashboard redesigned to watch them.
   its word — `command` exits 0 in its workspace, `changes`, `files` (globs), `match` —
   and hands misses back (`expectRetries`, default 1) before failing with
   `unmet_expectation` and the list of misses; `examples/fix-until-green.js`
-  (**ODW extension**).
+  (**ODW extension**). Tool calls Claude Code refused (`permission_denials`) are kept
+  as `denied` on the agent and logged once, while its reply stands (the default
+  `"permissionDenials": "warn"`); with `expect` they count as a miss, and
+  `"permissionDenials": "fail"` fails such agents with reason `permission`.
 
 ### Ask a person, tell a person
 - `checkpoint(title, { payload, timeout, onTimeout })` pauses a run until someone
@@ -127,9 +130,7 @@ changed, and run on a schedule — and a dashboard redesigned to watch them.
 - After 3 quota failures in a row on one adapter (`quotaBreaker`), a run's later agents
   skip it — and fail at once when they have no fallback chain; `"quotaBreaker": null`
   keeps trying the adapter every time.
-- An empty reply fails the agent (`empty_reply`; `allowEmpty: true` accepts one), and
-  a `claude` reply that claims success while its `result` lists `permission_denials`
-  fails it with `permission`, naming the refused calls — allow them in the adapter's
-  `permissionArgs`, or re-declare its `output` without `deniedPath`.
+- An empty or whitespace-only reply fails the agent with reason `empty_reply`;
+  `agent(…, { allowEmpty: true })` accepts one.
 - Config errors are fatal instead of producing a "done" run full of nulls.
 - The desktop (Tauri) app is retired in favor of `odw serve`.

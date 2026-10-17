@@ -282,10 +282,19 @@ agent_failed    (Fix) fixer — [unmet_expectation] did not meet: `npm test` mus
 - **The command** runs as an `exec()` step under the agent (its events carry
   `forAgentId`), after the change is read, so what it writes is never the
   agent's work; a stop kills it.
-- **Silent failures are typed without opting in:** an empty reply fails with
-  `reason: "empty_reply"` (`allowEmpty: true` accepts one), and a Claude Code
-  reply that claims success while its `result` lists `permission_denials` fails
-  with `reason: "permission"`, naming the refused calls.
+- **Refused tool calls count as a miss.** Under the default `edit` tier, Claude
+  Code refuses headless every shell command that is not allowlisted; with
+  `expect` set, a reply whose `result` lists `permission_denials` is handed back
+  like any miss, then fails with `reason: "permission"`, naming the refused
+  calls. Without `expect` the reply stands — see below.
+- **Without opting in:** an empty reply fails with `reason: "empty_reply"`
+  (`allowEmpty: true` accepts one). A reply that stood though the CLI refused it
+  tool calls keeps them as `denied` on the agent's `agent_finished` event, its
+  saved result and `/api/runs/:id`, and the run logs one line:
+  `search:3: Claude Code refused 2 tool calls — Bash (npm test); …; its reply may
+  rest on work it could not do (raise its tier with --permissions or allowlist
+  the tool)`. `"permissionDenials": "fail"` (or an adapter's own
+  `permissionDenials`) fails such agents with `reason: "permission"` instead.
 
 Claude Code's Workflow tool ignores `expect`, so there the checks do not run.
 [`examples/fix-until-green.js`](examples/fix-until-green.js) lets `expect` run a
@@ -699,15 +708,18 @@ built-in `claude` adapter is declared this way:
   "usagePath": ["usage"],         // token counts, in a usageEvent (default: eventType)
   "costPath": ["total_cost_usd"], // US dollars, in the same event
   "errorPath": ["is_error"],      // true, a message or an error object: the run failed with it
-  "deniedPath": ["permission_denials"] // refused tool calls: a reply that claims success with any fails ("permission")
+  "deniedPath": ["permission_denials"] // tool calls the CLI refused: kept on the agent, logged
 }
 ```
 
 Under `acceptEdits`, Claude Code refuses headless what it would have asked about —
 a shell command that is not allowlisted, say — and the reply may still claim
-success; the refusals are what `deniedPath` reads. Allow what your agents need in
-the adapter's `permissionArgs` for their tier; to accept such replies after all,
-re-declare the adapter's `output` without `deniedPath`.
+success; the refusals are what `deniedPath` reads. By default the reply stands,
+with the refused calls recorded as `denied` on the agent and one log line;
+`"permissionDenials": "fail"` (run-wide, or in an adapter's entry) fails such
+agents with reason `permission`, and an `agent()` call with `expect` counts them
+as a miss. Allow what your agents need in the adapter's `permissionArgs` for
+their tier.
 
 Usage from every `usageEvent` adds up; it is normalized across the CLIs' field
 names (Anthropic's, OpenAI's, Codex's — see
@@ -981,10 +993,11 @@ Claude Code reports such errors in its output, often with exit 0: its stream-jso
 reached`, `Claude AI usage limit reached|…`), and that counts as the failure it
 names. In text mode (a text adapter, or JSON output that fell back to its raw
 stdout), a short reply that is nothing but such a rate-limit, quota or login error
-counts as that failure too — never as the agent's answer. A `result` that claims
-success while its `permission_denials` list tool calls headless mode refused is a
-`permission` failure naming them, and an empty reply is an `empty_reply` one;
-neither is retried.
+counts as that failure too — never as the agent's answer. An empty reply is an
+`empty_reply` failure, not retried. A `result` that claims success while its
+`permission_denials` list tool calls headless mode refused stands, the calls
+recorded and logged — a `permission` failure naming them only under
+`"permissionDenials": "fail"`, or for a call with `expect`.
 
 The wording ODW recognizes — collected from each built-in CLI's source and issue
 tracker — lives in one table,
@@ -1438,8 +1451,9 @@ upgrading, is in [`CHANGELOG.md`](CHANGELOG.md):
 - **Evidence of success.** `agent(…, { expect })` checks an agent's work instead of
   taking its word — a command exits 0, files changed, the reply matches — and hands
   misses back once before failing with `reason: "unmet_expectation"` and what it
-  missed. Empty replies and Claude Code's `permission_denials` are typed failures
-  too (ODW extensions; see [Check an agent's work](#check-an-agents-work-odw-extension)).
+  missed. An empty reply fails as `empty_reply`; tool calls Claude Code refused are
+  recorded on the agent and logged — and count against `expect` (ODW extensions;
+  see [Check an agent's work](#check-an-agents-work-odw-extension)).
 - **Permission tiers.** Every agent runs `read`, `edit` (the default, unchanged) or
   `full`, mapped to each CLI's own flags: review and research fan-outs that cannot
   touch the tree (`--permissions read`, `agent(…, { permissions: 'read' })`), full

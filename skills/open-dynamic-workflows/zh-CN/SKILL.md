@@ -92,9 +92,10 @@ ODW 不检查：运行日志会连同位置说明一次，调用照常运行—�
 有改动）、`files`（glob 列表，每个都要匹配到一个被改动或新建的文件）、`command`（必须在
 agent 的工作区里以 0 退出；`timeout` 秒，默认 600）和 `match`（回复必须匹配的正则）。没
 达到要求的工作会带着缺失项重跑（`expectRetries`，默认 1），之后抛出可恢复的错误，带
-`reason: "unmet_expectation"` 和 `misses`。无需开启：空回复抛出 `reason: "empty_reply"`
-（`allowEmpty: true` 接受空回复）；claude 的结果里列出 `permission_denials` 时抛出
-`reason: "permission"`，并列出被拒绝的调用：
+`reason: "unmet_expectation"` 和 `misses`。CLI 拒绝的工具调用（claude 的
+`permission_denials`）也算作缺失，此时原因为 `"permission"`。没设 `expect` 时，这样的回复
+照常成立：被拒绝的调用作为 `denied` 记在 agent 上，并记一次日志（`"permissionDenials":
+"fail"` 则让它失败）。空回复总会抛出 `reason: "empty_reply"`（`allowEmpty: true` 接受空回复）：
 
 ```js
 const fix = await agent('Fix the failing parser tests.', {   // ODW 扩展：expect
@@ -344,7 +345,7 @@ Codex、Claude Code、Gemini、Qwen、Kimi 开箱即用，无需配置。要换�
 | 卡住或失败的运行从头重跑 | 用 `odw result <run> --agent <id>` 读出已完成的 agent；`odw stop`、修好脚本，再 `odw resume`——已完成的调用免费重放。 |
 | 不看失败的 agent 做了什么就重试 | 先读它的 transcript——`odw logs <run> --agent <id\|label>` 会显示它的工具调用、结果、错误和 stderr 的结尾（ODW 扩展）——再修原因。 |
 | 问 agent 是否完成了工作，或相信一个这么说的回复 | 用 `expect` 写明——`{ command: 'npm test', changes: true }`：odw 在回复后检查，把缺失项交还一次，仍未达到就以 `unmet_expectation` 和缺失项让该 agent 失败（ODW 扩展；`examples/fix-until-green.js`）。 |
-| 把以 `permission` 失败的 agent 当成偶发问题重试 | 它的错误列出了无头模式拒绝的工具调用（`denied: Bash (npm test)`）：请用户在适配器对应档位的 `permissionArgs` 里只放行这些，或给 agent 不需要它们的工作。 |
+| 把以 `permission` 失败的 agent 当成偶发问题重试，或忽略已完成 agent 上的 `denied` | 两者都列出了无头模式拒绝的工具调用（`denied: Bash (npm test)`）——它的回复可能建立在没能完成的工作上：请用户在适配器对应档位的 `permissionArgs` 里只放行这些，或给 agent 不需要它们的工作。 |
 | 运行结束后在自己的文件里找隔离 agent 的修改 | 它们以 diff 保存，不会自动合并：先 `odw diff <run> --stat`，再 `odw apply <run> --agent <id> --check`，然后 `odw apply`。 |
 | 用了 `validate()` 还指望脚本跑在 Claude Code 上 | `validate` 是 ODW 扩展，只能在 odw 上运行。 |
 | 用了 `exec()` 还指望脚本跑在 Claude Code 上 | `exec` 是 ODW 扩展，只能在 odw 上运行；`validate()` 会对此给出 warning。 |
