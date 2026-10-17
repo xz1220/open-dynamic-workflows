@@ -277,6 +277,57 @@ test("HTTP: serves dashboard, run list, detail, control, and 404s", async () => 
   }
 });
 
+test("HTTP: events ?since/?tail window, x-total-count, and ETag/304 on polled reads", async () => {
+  const root = tempRoot();
+  const store = new RunStore(root);
+  const id = seedRun(
+    store,
+    { name: "demo", state: "running", pid: process.pid },
+    [1, 2, 3, 4, 5].map((ts) => ({ ts, type: "log", message: `m${ts}` })),
+  );
+  const handle = await startServer({ store, port: 0, host: "127.0.0.1", claudeProjectsRoot: join(root, "no-claude") });
+  const base = `${handle.url}/api/runs/${id}/events`;
+  const messages = (evs: Array<{ message: string }>) => evs.map((e) => e.message);
+  try {
+    const all = await fetch(base);
+    assert.equal(all.headers.get("x-total-count"), "5");
+    assert.deepEqual(messages(await all.json()), ["m1", "m2", "m3", "m4", "m5"]);
+    // ?since stays an event index (backward compatible), junk/negative → 0.
+    assert.deepEqual(messages(await fetch(`${base}?since=3`).then((r) => r.json())), ["m4", "m5"]);
+    assert.equal((await fetch(`${base}?since=-2`).then((r) => r.json())).length, 5);
+    assert.equal((await fetch(`${base}?since=abc`).then((r) => r.json())).length, 5);
+    // ?tail keeps only the last N; it composes with ?since.
+    const tail = await fetch(`${base}?tail=2`);
+    assert.equal(tail.headers.get("x-total-count"), "5", "the total is the whole stream, for the next ?since=");
+    assert.deepEqual(messages(await tail.json()), ["m4", "m5"]);
+    assert.deepEqual(await fetch(`${base}?tail=0`).then((r) => r.json()), []);
+    assert.deepEqual(messages(await fetch(`${base}?since=1&tail=10`).then((r) => r.json())), ["m2", "m3", "m4", "m5"]);
+    assert.equal((await fetch(`${base}?tail=-1`)).status, 400);
+    assert.equal((await fetch(`${base}?tail=1.5`)).status, 400);
+
+    // ETag: an unchanged resource answers If-None-Match with a bodiless 304 …
+    for (const url of [base, `${handle.url}/api/runs/${id}`, `${handle.url}/api/runs`]) {
+      const first = await fetch(url);
+      const etag = first.headers.get("etag");
+      assert.ok(etag, `${url} carries an ETag`);
+      await first.arrayBuffer();
+      const again = await fetch(url, { headers: { "if-none-match": etag! } });
+      assert.equal(again.status, 304, url);
+      assert.equal((await again.text()).length, 0);
+    }
+    // … and a changed one gets a fresh 200 with the new body.
+    const etag = (await fetch(base)).headers.get("etag")!;
+    appendFileSync(store.eventsPath(id), JSON.stringify({ ts: 6, type: "log", message: "m6" }) + "\n");
+    const changed = await fetch(base, { headers: { "if-none-match": etag } });
+    assert.equal(changed.status, 200);
+    assert.equal(changed.headers.get("x-total-count"), "6");
+    assert.equal((await changed.json()).length, 6);
+  } finally {
+    await handle.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("HTTP: the SSE stream pushes a run turning stale when its worker is killed", async () => {
   const root = tempRoot();
   const store = new RunStore(root);

@@ -5,6 +5,7 @@
  * their security model.
  */
 
+import { createHash } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 /** Body cap for write endpoints; inline scripts are the largest legitimate payload. */
@@ -115,6 +116,43 @@ export function sendJson(res: ServerResponse, status: number, payload: unknown):
     "content-length": Buffer.byteLength(body),
   });
   res.end(body);
+}
+
+/**
+ * A 200 JSON response with a content-hash ETag, or a bodiless 304 when the
+ * request's If-None-Match already holds it — for the polled read endpoints,
+ * where most polls find nothing new. `cache-control: no-cache` makes browsers
+ * revalidate every time, so a poller transparently gets 304s and its cached
+ * body. `headers` take part in the tag (a 304 must not hide a changed header).
+ */
+export function sendJsonCached(
+  req: IncomingMessage,
+  res: ServerResponse,
+  payload: unknown,
+  headers: Record<string, string> = {},
+): void {
+  const body = JSON.stringify(payload);
+  const hash = createHash("sha1").update(body).update(JSON.stringify(headers)).digest("base64url");
+  const etag = `W/"${hash}"`;
+  const common = { ...headers, etag, "cache-control": "no-cache" };
+  if (etagMatches(req.headers["if-none-match"], etag)) {
+    res.writeHead(304, common);
+    res.end();
+    return;
+  }
+  res.writeHead(200, {
+    ...common,
+    "content-type": "application/json; charset=utf-8",
+    "content-length": Buffer.byteLength(body),
+  });
+  res.end(body);
+}
+
+/** If-None-Match semantics: `*` or any listed tag, compared weakly. */
+function etagMatches(header: string | undefined, etag: string): boolean {
+  if (!header) return false;
+  const bare = (t: string) => t.trim().replace(/^W\//, "");
+  return header.split(",").some((t) => t.trim() === "*" || bare(t) === bare(etag));
 }
 
 /** Register `res` as an SSE client and send it `firstFrame`. */

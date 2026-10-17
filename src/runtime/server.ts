@@ -12,7 +12,12 @@
  *   GET  /                       the dashboard HTML
  *   GET  /api/runs               [RunSummary] (newest first)
  *   GET  /api/runs/:id           RunDetail
- *   GET  /api/runs/:id/events    raw events (optionally ?since=N for the tail)
+ *   GET  /api/runs/:id/events    raw events; ?since=N (event index) skips the first N,
+ *                                ?tail=M keeps only the last M; header x-total-count
+ *                                is the run's event count (the next ?since=)
+ *
+ * The polled GETs (/api/runs, /api/runs/:id, …/events, …/result) carry an ETag
+ * and answer If-None-Match with 304.
  *   GET  /api/stream             text/event-stream; pushes the run list on change
  *   POST /api/runs/:id/control   { action: pause|resume|stop } → writeControl
  *
@@ -47,6 +52,7 @@ import {
 } from "../adapters/config.js";
 import type { Config } from "../adapters/types.js";
 import { DASHBOARD_HTML } from "../dashboard.generated.js";
+import type { WorkflowEvent } from "../events.js";
 import { ChatHost, type ChatTurnRunner } from "./chat-host.js";
 import { ClaudeRunSource } from "./claude-run-source.js";
 import {
@@ -56,6 +62,7 @@ import {
   readJsonBody,
   safeWrite,
   sendJson,
+  sendJsonCached,
   writeGuard,
 } from "./http-util.js";
 import { OdwRunSource } from "./odw-run-source.js";
@@ -227,7 +234,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandleCont
       return;
     }
     if (method === "GET" && path === "/api/runs") {
-      sendJson(res, 200, allSummaries(sources));
+      sendJsonCached(req, res, allSummaries(sources));
       return;
     }
     if (method === "GET" && path === "/api/stream") {
@@ -285,12 +292,18 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandleCont
           sendJson(res, 404, { error: `no such run: ${runId}` });
           return;
         }
-        sendJson(res, 200, det);
+        sendJsonCached(req, res, det);
         return;
       }
       if (method === "GET" && sub === "/events") {
-        const since = Number(url.searchParams.get("since") ?? "0") || 0;
-        sendJson(res, 200, src.events(runId, since));
+        const log = src.eventLog(runId);
+        const events = eventsWindow(log, url.searchParams);
+        if (!events) {
+          sendJson(res, 400, { error: "tail must be a non-negative integer" });
+          return;
+        }
+        // The total is the `since` to pass next time to get only newer events.
+        sendJsonCached(req, res, events, { "x-total-count": String(log.length) });
         return;
       }
       if (method === "GET" && sub === "/result") {
@@ -299,7 +312,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandleCont
           sendJson(res, 404, { error: "no result for this run" });
           return;
         }
-        sendJson(res, 200, { value });
+        sendJsonCached(req, res, { value });
         return;
       }
       if (method === "POST" && sub === "/control") {
@@ -373,6 +386,21 @@ async function controlRun(
   // The source applies the action (ODW maps resume→"running" for FileControl).
   src.control(runId, action);
   sendJson(res, 200, { ok: true, runId, action });
+}
+
+/**
+ * `?since=N&tail=M` over a run's event log: events from index N (lenient, as
+ * it always was: junk or negative means 0), then only the last M. Null when
+ * `tail` is present but not a non-negative integer.
+ */
+function eventsWindow(log: readonly WorkflowEvent[], params: URLSearchParams): WorkflowEvent[] | null {
+  const since = Math.max(0, Math.floor(Number(params.get("since") ?? "0") || 0));
+  const events = log.slice(since);
+  const tailParam = params.get("tail");
+  if (tailParam === null) return events;
+  const tail = Number(tailParam);
+  if (tailParam.trim() === "" || !Number.isInteger(tail) || tail < 0) return null;
+  return tail === 0 ? [] : events.slice(-tail);
 }
 
 function broadcastChat(clients: Set<ServerResponse>, sessionId: string): void {

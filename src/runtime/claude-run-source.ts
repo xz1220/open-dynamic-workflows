@@ -113,23 +113,26 @@ export class ClaudeRunSource implements RunSource {
     const live = new Set<string>();
     for (const d of this.discover()) {
       live.add(d.runId);
-      const entry = this.cache.get(d.runId, this.signature(d), () =>
-        d.kind === "terminal" ? { kind: "terminal", summary: this.foldTerminal(d).summary } : this.scanLive(d),
-      );
-      out.push(entry.kind === "terminal" ? entry.summary : this.foldLive(d, entry).summary);
+      out.push(this.summaryOf(d));
     }
     this.cache.retain(live);
     return out;
   }
 
+  summary(runId: string): RunSummary | null {
+    const d = this.find(runId);
+    return d ? this.summaryOf(d) : null;
+  }
   detail(runId: string): RunDetail | null {
     const d = this.find(runId);
     return d ? this.fold(d).detail : null;
   }
   events(runId: string, since: number): WorkflowEvent[] {
+    return this.eventLog(runId).slice(Math.max(0, since));
+  }
+  eventLog(runId: string): readonly WorkflowEvent[] {
     const d = this.find(runId);
-    if (!d) return [];
-    return this.fold(d).events.slice(Math.max(0, since));
+    return d ? this.fold(d).events : [];
   }
   result(runId: string): { has: boolean; value: unknown } {
     const d = this.find(runId);
@@ -206,6 +209,14 @@ export class ClaudeRunSource implements RunSource {
   }
 
   // --- folding ---------------------------------------------------------------
+
+  /** The run's summary as of now, from the signature-gated cache. */
+  private summaryOf(d: Discovered): RunSummary {
+    const entry = this.cache.get(d.runId, this.signature(d), () =>
+      d.kind === "terminal" ? { kind: "terminal", summary: this.foldTerminal(d).summary } : this.scanLive(d),
+    );
+    return entry.kind === "terminal" ? entry.summary : this.foldLive(d, entry).summary;
+  }
 
   private fold(d: Discovered): Folded {
     return d.kind === "terminal" ? this.foldTerminal(d) : this.foldLive(d, this.scanLive(d), true);

@@ -35,10 +35,17 @@ export interface RunSource {
   exists(runId: string): boolean;
   /** Every run this source can see (internally cached); the server sorts the union. */
   listSummaries(): RunSummary[];
+  /** One run's summary (same cache as the list, liveness re-checked), or null if absent. */
+  summary(runId: string): RunSummary | null;
   /** Full detail for one run, or null if absent. */
   detail(runId: string): RunDetail | null;
   /** The run's event stream from `since` (an index), synthesized if the provider has no real one. */
   events(runId: string, since: number): WorkflowEvent[];
+  /**
+   * The run's whole event stream ([] if absent) — the source's cached copy,
+   * so callers must treat it as read-only and slice what they keep.
+   */
+  eventLog(runId: string): readonly WorkflowEvent[];
   /** The run's final result, if any. */
   result(runId: string): { has: boolean; value: unknown };
   /**
