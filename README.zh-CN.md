@@ -514,14 +514,15 @@ I'll run the tests first.
   `{"kind":"attempt","n":2,"reason":"schema"|"stall"|"rate_limit"}`。
 - `maxTranscriptBytes`(默认每个 agent 5 MB)限制其大小:超出时以一行
   `{"kind":"truncated","bytes":N}` 结束 transcript。transcript 包含 agent 读到和运行过的
-  一切;`"maxTranscriptBytes": 0` 则完全不保存。
+  一切——疑似密钥在流式写入时即被脱敏(见 [ODW 所保存内容中的密钥](#odw-所保存内容中的密钥odw-扩展));
+  `"maxTranscriptBytes": 0` 则完全不保存。
 - 保存从不拖慢 agent:各行先在内存中缓冲,再异步追加到文件。
 - 被 `odw resume` 重放的 agent 没有运行任何 CLI,所以没有 transcript——请看原运行的。
 - 看板 API 提供规范化后的版本:
   `GET /api/runs/:id/agents/:agentId/transcript?since=<i>` →
   `{ entries, next, more, truncated, replayed }`,每个条目为
   `{ i, kind: text|tool_call|tool_result|error|attempt|result|raw|truncated, text?, tool?, input?, output?, isError? }`,
-  长字段截断到 4 KB(`clipped: true`)。
+  长字段截断到 4 KB(`clipped: true`),有密钥被拦下的条目带 `redacted: true`。
 
 ## 看板:观测、检查、对话
 
@@ -587,7 +588,9 @@ odw logs --workflow adversarial-verify --follow
 ```
 
 看板可以在非 loopback 地址上查看,但本地写操作(例如 Chat 消息和停止 ODW 自己的运行)
-仍由 loopback server 保护。Claude Code 自己的运行始终严格只读。
+仍由 loopback server 保护。Claude Code 自己的运行始终严格只读。看板提供的 ODW agent
+内容——transcript、结果、日志——在写下之前已对疑似密钥脱敏
+(见 [ODW 所保存内容中的密钥](#odw-所保存内容中的密钥odw-扩展))。
 
 ## 配置适配器
 
@@ -838,6 +841,62 @@ approval_mode = "approve"
 如果某个 CLI 在 `minimal` 下无法登录,把它需要的变量加进 `agentEnvPass`
 (`odw doctor --smoke` 会发一次真实调用来检验)。`exec()` 命令、`worktreeSetup` 和
 `notify` 钩子仍拿到完整的环境变量。
+
+### ODW 所保存内容中的密钥(ODW 扩展)
+
+agent 读到什么就会打印什么——包括 `cat .env`——而 ODW 会保存这些输出:它的 transcript
+和 stderr 结尾、它的回复(保存的结果)、运行的日志与错误、发给 webhook 的内容。看板会
+提供这一切,在非 loopback 地址上也一样。所以在写下任何内容之前,ODW 会把每个疑似密钥
+替换成一个说明其类型的标记:
+
+```text
+the key is «redacted:env:STRIPE_SECRET_KEY»
+Authorization: Bearer «redacted:bearer»
+cloning with «redacted:github»
+```
+
+- **`env`** —— ODW 启动 agent 和 `exec()` 命令时所用环境(它自己的,以及每个适配器的
+  `env`)中,名字看起来像密钥的变量(`*_KEY`、`*_API_KEY`、`*TOKEN`、`*SECRET*`、
+  `*PASSWORD*`、`*_PWD`、`*_PAT`、`AUTHORIZATION`、`AWS_ACCESS_KEY_ID` 和
+  `*CONNECTION_STRING` 等云凭据、webhook URL)的值,无论出现在哪里(8 个字符及以上,
+  精确匹配),记为 `«redacted:env:NAME»`;以及任何打印出来的、`NAME` 看起来像密钥的
+  `NAME=value` 中的值(`.env` 文件、`env` 输出)。
+- **`patterns`** —— 常见令牌形态:Anthropic(`sk-ant-…`)、OpenAI(`sk-…`、
+  `sk-proj-…`)、GitHub(`ghp_…`、`gho_…`、`ghs_…`、`github_pat_…`)、Slack(`xoxb-…`
+  及同类)、AWS access key id、Google API key、JWT、PEM 私钥块和 `Bearer` 令牌——记为
+  `«redacted:anthropic»`、`«redacted:openai»`……
+- **`extra`** —— 你自己的正则表达式(JavaScript 写法),记为 `«redacted:extra»`。
+
+```jsonc
+// 默认值,再加一条自己的规则:
+{ "redact": { "env": true, "patterns": true, "extra": ["corp-[0-9a-f]{32}"] } }
+// 一切按打印原样保存:
+{ "redact": false }
+```
+
+会被脱敏的:transcript(在流式写入时进行——跨两段输出的密钥同样会被处理)和 stderr
+结尾;保存的 agent 结果(`odw result --agent`、看板的 agent 抽屉);运行的事件——
+`odw logs`、日志行、`agent_failed` 的错误(失败时引用的输出先脱敏再截断,所以不会留下
+半个密钥)、`exec()` 步骤显示的命令行以及失败的 `check` 引用的输出;运行的错误;
+`status.json` 中等待中的检查点;以及 webhook 负载。被脱敏过的内容会以 `redacted: true`
+标明——保存的结果、事件、transcript 行及其在 API 中的条目、`result.json`、
+`error.json`、webhook 负载——`odw doctor` 会说明脱敏是否开启、覆盖了哪些变量。脱敏随
+输出到达而进行,不会囤积输出:一行等到行尾,一个私钥等到它的最后一行。
+
+不会被脱敏的:
+- **agent 拿到的内容。** 提示词和 agent 的环境变量从不改动,`agent()` 和 `exec()` 交回
+  给工作流的内容也不改:脱敏只针对写下来的东西。
+- **运行的结果** 是工作流自己的数据——它可能有意返回读到的配置——所以 `result.json`
+  只应用 `patterns` 和 `extra`,从不应用 `env`。
+- **保存的 diff**(`agents/<id>.diff`)是 agent 对你代码的改动:也就是 `odw apply` 要应用、
+  保留分支要提交的内容,标记会损坏你的文件。agent 写进代码里的密钥,应在审阅时发现
+  (`odw diff`、看板的 Changes 标签页)。
+- 运行的 `args`(你传入的内容)、`worker.log`(worker 自己的输出,包括工作流的
+  `console.log`)以及 Chat Host 的会话。
+- **恢复的运行** 会按保存时的样子(已脱敏)重放 agent 的结果,并在日志中说明。
+
+脱敏是安全网,不是保险库:形态未知、变量名又不像密钥的秘密会按原样保存。用
+`agentEnv: "minimal"` 可以让 agent 从一开始就看不到它不需要的东西。
 
 ### 卡死看门狗
 
@@ -1313,6 +1372,10 @@ node web/dev.mjs --api http://127.0.0.1:4317     # → http://127.0.0.1:5173
   `agent(…, { permissions: 'read' })`),完全权限必须显式开启,无法强制执行某档位的 CLI 会被
   拒绝或记录日志——绝不静默降级。`agentEnv: "minimal"` 让无关的密钥不进入 agent
   (ODW 扩展;见[权限档位](#权限档位odw-扩展))。
+- **ODW 保存的内容里不留密钥。** agent 打印的任何东西——包括 `cat .env`——在写入它的
+  transcript、保存的结果、运行的日志与错误或 webhook 之前都会脱敏:名字像密钥的变量的值和
+  常见令牌形态都变成 `«redacted:<kind>»`(ODW 扩展;见
+  [ODW 所保存内容中的密钥](#odw-所保存内容中的密钥odw-扩展))。
 - **人工检查点。** `checkpoint()` 会让运行暂停,直到有人批准或拒绝——通过
   `odw approve|reject`、看板,或可选的 `waiting` 钩子——让计划在昂贵的 fan-out 之前先
   得到一个"可以"(ODW 扩展;见 [`plan-approve-execute.js`](examples/plan-approve-execute.js))。

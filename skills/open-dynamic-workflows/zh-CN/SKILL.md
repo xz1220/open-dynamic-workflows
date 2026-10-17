@@ -334,6 +334,12 @@ Codex、Claude Code、Gemini、Qwen、Kimi 开箱即用，无需配置。要换�
   预期时用 `odw pause` / `odw stop`。
 - **结果**：引擎不会替你 commit、push 或应用 diff。先检视 `return` 值，再决定下一步——对隔离
   agent 而言，这包括审阅它们保存下来的 diff 并运行 `odw apply`。
+- **密钥**（ODW 扩展）：odw 保存和提供的内容——transcript、`odw logs`、保存的结果
+  （`odw result --agent`）、运行的错误、webhook——会把疑似密钥显示为 `«redacted:<kind>»`
+  （名字像密钥的变量的值记为 `env:NAME`，否则记为令牌类型）。agent 和工作流拿到的仍是原文；
+  只有写下来的内容被脱敏，所以 `odw logs` 里出现标记并不是 agent 出错。恢复的运行会按保存
+  时的样子重放已脱敏的结果：别让后续步骤依赖 agent 打印出来的密钥——从环境变量读取。运行
+  自身的结果保留变量的值（那里只脱敏令牌形态）；`"redact": false` 可关闭脱敏。
 
 ## 常见错误
 

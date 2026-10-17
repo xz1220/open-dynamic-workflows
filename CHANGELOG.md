@@ -54,6 +54,15 @@ changed, and run on a schedule — and a dashboard redesigned to watch them.
 - Permission tiers `read` / `edit` / `full` (`--permissions`, per adapter, per call; a
   call can only lower its tier), mapped to each CLI's documented flags; `agentEnv:
   "minimal"` starts agents with only the environment they need (**ODW extension**).
+- Secrets stay out of what odw keeps and serves: whatever an agent prints — `cat .env`
+  included — is redacted before it reaches its transcript and stderr tail, its saved
+  result, the run's events and error or a webhook. The values of secret-named variables
+  (`*_KEY`, `*TOKEN`, `*SECRET*`, `*PASSWORD*`, …) of the environment agents and
+  commands start with, `NAME=value` of such names, and well-known token shapes
+  (Anthropic, OpenAI, GitHub, Slack, AWS, Google keys, JWTs, private keys, `Bearer`)
+  become `«redacted:<kind>»`, marked `redacted: true`; `redact.extra` adds patterns of
+  your own and `odw doctor` reports it (**ODW extension**). Prompts, what agents see and
+  kept diffs are never redacted; the run's result only of token shapes.
 - Per-adapter `concurrency` caps; a rate limit halves that adapter's cap for the rest of
   the run; `claude` fan-outs sharing a long prompt prefix stagger their start so the
   rest read the prompt cache.
@@ -133,5 +142,9 @@ changed, and run on a schedule — and a dashboard redesigned to watch them.
   keeps trying the adapter every time.
 - An empty or whitespace-only reply fails the agent with reason `empty_reply`;
   `agent(…, { allowEmpty: true })` accepts one.
+- Redaction is on by default: transcripts, saved agent results, events, `error.json`
+  and webhook payloads show likely secrets as `«redacted:<kind>»`, and `result.json`
+  token shapes; a resumed run replays a redacted agent result as kept. `"redact": false`
+  keeps everything as printed.
 - Config errors are fatal instead of producing a "done" run full of nulls.
 - The desktop (Tauri) app is retired in favor of `odw serve`.

@@ -565,7 +565,9 @@ I'll run the tests first.
   `{"kind":"attempt","n":2,"reason":"schema"|"stall"|"rate_limit"}` line.
 - `maxTranscriptBytes` (default 5 MB per agent) bounds it: past it, one
   `{"kind":"truncated","bytes":N}` line ends the transcript. Transcripts hold whatever the
-  agents read and ran; `"maxTranscriptBytes": 0` keeps none.
+  agents read and ran — with likely secrets redacted as they stream
+  (see [Secrets in what ODW keeps](#secrets-in-what-odw-keeps-odw-extension));
+  `"maxTranscriptBytes": 0` keeps none.
 - Keeping it never slows an agent down: lines are buffered and appended asynchronously.
 - An agent replayed by `odw resume` ran no CLI, so it has no transcript — read the
   original run's.
@@ -573,7 +575,8 @@ I'll run the tests first.
   `GET /api/runs/:id/agents/:agentId/transcript?since=<i>` →
   `{ entries, next, more, truncated, replayed }`, each entry
   `{ i, kind: text|tool_call|tool_result|error|attempt|result|raw|truncated, text?, tool?, input?, output?, isError? }`,
-  long fields clipped to 4 KB (`clipped: true`).
+  long fields clipped to 4 KB (`clipped: true`), and `redacted: true` on one a secret
+  was kept out of.
 
 ## Dashboard: observe, inspect, chat
 
@@ -647,7 +650,9 @@ odw logs --workflow adversarial-verify --follow
 
 The dashboard can be viewed off-loopback, but local write operations such as
 Chat messages and stopping ODW-owned runs stay guarded by the loopback server.
-Claude Code's own runs stay strictly read-only.
+Claude Code's own runs stay strictly read-only. What it serves of ODW's agents —
+transcripts, results, logs — had its likely secrets redacted before it was written
+(see [Secrets in what ODW keeps](#secrets-in-what-odw-keeps-odw-extension)).
 
 ## Configure adapters
 
@@ -928,6 +933,71 @@ does not reach every agent:
 If a CLI cannot log in under `minimal`, add what it needs to `agentEnvPass`
 (`odw doctor --smoke` makes one real call to check). `exec()` commands, `worktreeSetup`
 and the `notify` hooks keep the whole environment.
+
+### Secrets in what ODW keeps (ODW extension)
+
+An agent prints whatever it reads — `cat .env` included — and ODW keeps that output:
+its transcript and the end of its stderr, its reply (its saved result), the run's log
+and error, what a webhook is told. The dashboard serves all of it, off-loopback too. So
+before any of it is written, ODW replaces each likely secret with a marker that says
+what it was:
+
+```text
+the key is «redacted:env:STRIPE_SECRET_KEY»
+Authorization: Bearer «redacted:bearer»
+cloning with «redacted:github»
+```
+
+- **`env`** — the value of every variable whose name looks secret (`*_KEY`, `*_API_KEY`,
+  `*TOKEN`, `*SECRET*`, `*PASSWORD*`, `*_PWD`, `*_PAT`, `AUTHORIZATION`, cloud
+  credentials such as `AWS_ACCESS_KEY_ID` and `*CONNECTION_STRING`, webhook URLs) in the
+  environment ODW starts agents and `exec()` commands with — its own, and each adapter's
+  `env` — wherever it appears (values of 8 characters or more, matched exactly), as
+  `«redacted:env:NAME»`; and the value of any `NAME=value` printed whose `NAME` looks
+  secret (a `.env` file, `env` output).
+- **`patterns`** — well-known token shapes: Anthropic (`sk-ant-…`), OpenAI (`sk-…`,
+  `sk-proj-…`), GitHub (`ghp_…`, `gho_…`, `ghs_…`, `github_pat_…`), Slack (`xoxb-…` and
+  its kin), AWS access key ids, Google API keys, JWTs, PEM private-key blocks and
+  `Bearer` tokens — as `«redacted:anthropic»`, `«redacted:openai»`, …
+- **`extra`** — regular expressions of your own (JavaScript sources), as `«redacted:extra»`.
+
+```jsonc
+// The default, plus a pattern of your own:
+{ "redact": { "env": true, "patterns": true, "extra": ["corp-[0-9a-f]{32}"] } }
+// Keep everything as printed:
+{ "redact": false }
+```
+
+Redacted: transcripts (as they stream — a secret split across two chunks of output
+included) and stderr tails; saved agent results (`odw result --agent`, the dashboard's
+agent drawer); the run's events — `odw logs`, log lines, `agent_failed` errors (a
+failure's quoted output is redacted before it is cut, so no secret is kept in half),
+the command lines `exec()` steps show and the output a failed `check` quotes; the
+run's error; the waiting checkpoint in `status.json`; and webhook payloads. What had
+anything redacted says so with `redacted: true` — a saved result, an event, a
+transcript line and its entry in the API, `result.json`, `error.json`, a webhook
+payload — and `odw doctor` says whether redaction is on and which variables it covers.
+It runs as output arrives, without holding it: a line waits for its end, and a private
+key for its last line.
+
+Not redacted:
+- **What agents get.** Prompts and an agent's environment are never touched, nor what
+  `agent()` and `exec()` hand back to the workflow: redaction is about what is written
+  down.
+- **The run's result** is the workflow's own data — it may return a config it read on
+  purpose — so `result.json` gets `patterns` and `extra` only, never `env`.
+- **Kept diffs** (`agents/<id>.diff`) are an agent's change to your code: what
+  `odw apply` applies and a kept branch commits, where a marker would corrupt your
+  files. A secret an agent wrote into code is there to be caught in review (`odw diff`,
+  the dashboard's Changes tab).
+- The run's `args` (what you passed in), `worker.log` (the worker's own output, a
+  workflow's `console.log` included) and the Chat Host's sessions.
+- **A resumed run** replays an agent's saved result as it was kept — redacted — and its
+  log says so.
+
+Redaction is a safety net, not a vault: a secret of a shape it does not know, under a
+name that does not look secret, is kept as printed. With `agentEnv: "minimal"`, agents
+never see what they do not need in the first place.
 
 ### Stall watchdog
 
@@ -1469,6 +1539,11 @@ upgrading, is in [`CHANGELOG.md`](CHANGELOG.md):
   access only by explicit opt-in, and a CLI that cannot enforce a tier refused or
   logged — never silently downgraded. `agentEnv: "minimal"` keeps unrelated secrets
   out of agents (ODW extensions; see [Permissions](#permissions-odw-extension)).
+- **Secrets kept out of what ODW keeps.** Whatever an agent prints — `cat .env`
+  included — is redacted before it reaches its transcript, its saved result, the run's
+  log and error or a webhook: the values of secret-named variables and well-known token
+  shapes become `«redacted:<kind>»` (ODW extension; see
+  [Secrets in what ODW keeps](#secrets-in-what-odw-keeps-odw-extension)).
 - **Human checkpoints.** `checkpoint()` pauses a run until a person approves or
   rejects — with `odw approve|reject`, the dashboard, or an opt-in `waiting` hook —
   so a plan gets a yes before the expensive fan-out (ODW extension; see

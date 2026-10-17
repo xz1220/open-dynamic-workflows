@@ -404,6 +404,15 @@ without answering when headless (a login, trust or approval prompt).
 - **Results**: the engine never commits, pushes, or applies diffs for you.
   Inspect the `return` value first, then decide the next step — for isolated
   agents, that includes reviewing their kept diffs and running `odw apply`.
+- **Secrets** (ODW extension): what odw keeps and serves — transcripts,
+  `odw logs`, saved results (`odw result --agent`), the run's error, webhooks —
+  shows likely secrets as `«redacted:<kind>»` (`env:NAME` for a secret-named
+  variable's value, else the token's kind). The agents and the workflow still
+  got the real text; only what was written down is redacted, so a marker in
+  `odw logs` is not the agent's mistake. A resumed run replays a redacted
+  result as kept: never let a later step depend on a secret an agent printed —
+  read it from the environment. The run's own result keeps variables' values
+  (only token shapes are redacted there); `"redact": false` turns it off.
 
 ## Common mistakes
 
