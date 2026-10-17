@@ -13,6 +13,7 @@ import type {
   ChatSessionSummary,
   RunDetail,
   RunSummary,
+  ScheduleView,
   SettingsSnapshot,
   WorkflowDetail,
   WorkflowEvent,
@@ -69,6 +70,8 @@ export const api = {
     if (!r.ok) throw new Error(`diff of agent ${agentId} → ${r.status}`);
     return r.text();
   },
+  /** `odw schedule` entries; empty from servers without schedules. */
+  schedules: () => getJSON<ScheduleView[]>("/api/schedules"),
   workflows: () => getJSON<WorkflowSummary[]>("/api/workflows"),
   workflow: (name: string, provider?: string) =>
     getJSON<WorkflowDetail>(`/api/workflows/${enc(name)}${provider ? `?provider=${enc(provider)}` : ""}`),

@@ -131,6 +131,31 @@ export function fmtTokens(n: number | null | undefined): string {
   return `${(n / 1_000_000).toFixed(1)}M`;
 }
 
+const DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+/**
+ * The common cron shapes in words — "02:15 on weekdays", "every 15 minutes",
+ * "hourly at :05" — or null for anything else (shown as the raw expression).
+ */
+export function cronWords(expr: string): string | null {
+  const f = expr.trim().split(/\s+/);
+  if (f.length !== 5) return null;
+  const [min, hour, dom, mon, dow] = f as [string, string, string, string, string];
+  const num = (s: string) => /^\d+$/.test(s);
+  if (dom !== "*" || mon !== "*") return null;
+  const every = /^\*\/(\d+)$/.exec(min);
+  if (every && hour === "*" && dow === "*") return t("every {n} minutes", { n: Number(every[1]) });
+  if (num(min) && hour === "*" && dow === "*") return t("hourly at :{m}", { m: min.padStart(2, "0") });
+  if (!num(min) || !num(hour)) return null;
+  const at = `${hour.padStart(2, "0")}:${min.padStart(2, "0")}`;
+  if (dow === "*") return t("{at} daily", { at });
+  if (dow === "1-5") return t("{at} on weekdays", { at });
+  if (dow === "0,6" || dow === "6,0") return t("{at} on weekends", { at });
+  const days = dow.split(",");
+  if (days.every((d) => /^[0-7]$/.test(d))) return t("{at} on {days}", { at, days: days.map((d) => t(DOW[Number(d) % 7]!)).join(", ") });
+  return null;
+}
+
 /** A line count: exact with separators (1,204) below 100k, then compact (240k). */
 export function fmtCount(n: number): string {
   return n < 100_000 ? n.toLocaleString("en-US") : fmtTokens(n);

@@ -13,8 +13,9 @@ import { renderDag } from "../web/src/dag.ts";
 import { applyRunsDelta, store } from "../web/src/store.ts";
 import { renderActivity } from "../web/src/views/activity.ts";
 import { renderJob, type JobViewState } from "../web/src/views/job.ts";
+import { renderJobs } from "../web/src/views/jobs.ts";
 import type { ActivityEvent, AgentView, RunDetail, RunSummary } from "../web/src/types.ts";
-import { esc, fmtDurSec, fmtTokens, fmtUsd, fuzzy, markHits } from "../web/src/util.ts";
+import { cronWords, esc, fmtDurSec, fmtTokens, fmtUsd, fuzzy, markHits } from "../web/src/util.ts";
 
 const NOW = 1_800_000_000;
 
@@ -441,4 +442,40 @@ test("the outline and the highlighter know checkpoint()", () => {
   const phases = outlineSource(src, ["Plan", "Approve"]);
   assert.deepEqual(phases.find((p) => p.title === "Approve")?.ops, [{ kind: "checkpoint", n: 1 }]);
   assert.match(highlightSource(src), /<span class="tk-f">checkpoint<\/span>/);
+});
+
+test("cronWords says the common schedules in words and leaves the rest alone", () => {
+  assert.equal(cronWords("15 2 * * 1-5"), "02:15 on weekdays");
+  assert.equal(cronWords("*/30 * * * *"), "every 30 minutes");
+  assert.equal(cronWords("5 * * * *"), "hourly at :05");
+  assert.equal(cronWords("0 9 * * *"), "09:00 daily");
+  assert.equal(cronWords("0 9 * * 1,3"), "09:00 on Mon, Wed");
+  assert.equal(cronWords("0 9 * * 0,6"), "09:00 on weekends");
+  assert.equal(cronWords("0 9 1 * *"), null, "a day of month: shown as the expression");
+  assert.equal(cronWords("0 9-17 * * *"), null);
+});
+
+test("Jobs lists what odw schedule starts next, soonest first", () => {
+  const prevRuns = store.runs;
+  const prevSchedules = store.schedules;
+  store.runs = [summary({ runId: "r-old", state: "done" })];
+  const at = (sec: number) => new Date((NOW + sec) * 1000).toISOString();
+  store.schedules = [
+    { name: "weekly", workflow: "/p/digest.js", cron: "0 9 * * 1", backend: "cron", cwd: "/p", installed: false, lastRun: null, nextRun: at(3 * 86_400) },
+    { name: "triage", workflow: "/p/survey.js", cron: "*/30 * * * *", backend: "systemd", cwd: "/p", installed: true, lastRun: { runId: "20260101-000000-bbbbbb", state: "done", at: at(-600) }, nextRun: at(420) },
+  ];
+  const html = renderJobs({ filter: "all", query: "", limit: 100 }, NOW);
+  assert.match(html, /<h2>Upcoming<\/h2>/);
+  assert.ok(html.indexOf("sc-triage") < html.indexOf("sc-weekly"), "soonest first");
+  assert.match(html, /in 7m/);
+  assert.match(html, /every 30 minutes/);
+  assert.match(html, /href="#\/job\/20260101-000000-bbbbbb"/, "the last run links to its job");
+  assert.match(html, /class="card sched missing"[\s\S]*?Its cron entry is missing: odw schedule remove weekly/);
+  assert.match(html, /never ran/);
+  assert.ok(!renderJobs({ filter: "failed", query: "", limit: 100 }, NOW).includes("Upcoming"), "only on the All view");
+  assert.ok(!renderJobs({ filter: "all", query: "zzz", limit: 100 }, NOW).includes("Upcoming"), "the filter applies");
+  store.runs = [];
+  assert.match(renderJobs({ filter: "all", query: "", limit: 100 }, NOW), /<h2>Upcoming<\/h2>[\s\S]*No runs yet/, "schedules show before the first run");
+  store.runs = prevRuns;
+  store.schedules = prevSchedules;
 });

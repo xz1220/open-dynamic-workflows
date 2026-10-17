@@ -20,6 +20,7 @@ import type {
   Connection,
   RunDetail,
   RunSummary,
+  ScheduleView,
   SettingsSnapshot,
   WorkflowEvent,
   WorkflowSummary,
@@ -56,6 +57,8 @@ class Store {
   private activitySig = "";
   /** Persisted agent outputs by `${runId}:${agentId}`; null = none available. */
   agentResults = new Map<string, AgentResultRecord | null>();
+  /** `odw schedule` entries for the Jobs page (empty until loaded, or from older servers). */
+  schedules: ScheduleView[] = [];
   /** Parsed diffs of worktree agents by `runId:agentId`; null = none to show. */
   agentDiffs = new Map<string, ParsedDiff | null>();
   private diffsLoading = new Set<string>();
@@ -381,6 +384,19 @@ class Store {
       return; // not persisted (older server, Claude run, still running) — stays null
     }
     if (this.run?.runId === runId) this.emit();
+  }
+
+  /** Refresh the scheduled runs; repaints only when something changed. */
+  async loadSchedules(): Promise<void> {
+    let next: ScheduleView[];
+    try {
+      next = await api.schedules();
+    } catch {
+      next = []; // an older server has no /api/schedules
+    }
+    if (JSON.stringify(next) === JSON.stringify(this.schedules)) return;
+    this.schedules = next;
+    this.emit();
   }
 
   /** Fetch and parse one agent's diff once; diffs are immutable once the agent finished. */

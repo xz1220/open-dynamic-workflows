@@ -428,6 +428,11 @@ async function enterRoute(): Promise<void> {
     const want = route.param ?? wfActive ?? (first ? wfKey(first) : null);
     if (want && (want !== wfActive || !wfDetail)) await selectWorkflow(want, false, token);
     else render();
+  } else if (route.view === "jobs") {
+    render();
+    await store.loadSchedules();
+    // Schedules change on the minute at most: last runs land, next fires move on.
+    if (live()) every(60_000, token, () => store.loadSchedules());
   } else if (route.view === "settings") {
     render();
     await store.loadSettings();

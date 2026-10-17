@@ -107,6 +107,20 @@ export interface AgentView {
   durationMs: number | null;
 }
 
+/** One `odw schedule` entry as `GET /api/schedules` serves it (ODW extension). */
+export interface ScheduleView {
+  name: string;
+  workflow: string;
+  cron: string;
+  backend: "cron" | "launchd" | "systemd";
+  cwd: string;
+  /** The OS entry is in place; null when that cannot be told. */
+  installed: boolean | null;
+  lastRun: { runId: string | null; state: string; at: string } | null;
+  /** Local ISO time of the next fire, or null when the expression never fires. */
+  nextRun: string | null;
+}
+
 /** The diffstat of a worktree agent's changes (ODW extension). */
 export interface AgentChanges {
   files: number;

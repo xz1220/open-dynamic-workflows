@@ -4,8 +4,8 @@ import { icons } from "../icons";
 import { t, tn } from "../i18n";
 import { activeRuns } from "../shell";
 import { store } from "../store";
-import type { RunSummary } from "../types";
-import { ACTIVE, TERMINAL, esc, fmtAgo, fmtClock, fmtDayGroup, fmtDurSec, fmtUsd, runDurationSec } from "../util";
+import type { RunSummary, ScheduleView } from "../types";
+import { ACTIVE, TERMINAL, cronWords, esc, fmtAgo, fmtClock, fmtDayGroup, fmtDurSec, fmtUsd, runDurationSec } from "../util";
 import { emptyArt } from "./activity";
 
 export type JobsFilter = "all" | "active" | "done" | "failed";
@@ -49,6 +49,72 @@ function segProgress(r: RunSummary): string {
   );
 }
 
+const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+/** "in 3h 20m" — coarse, the way a person reads a countdown. */
+function fmtUntil(sec: number): string {
+  const s = Math.max(0, Math.round(sec));
+  const d = Math.floor(s / 86_400);
+  const h = Math.floor((s % 86_400) / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const text = d ? `${d}d ${h}h` : h ? `${h}h ${m}m` : m ? `${m}m` : `${s}s`;
+  return t("in {d}", { d: text });
+}
+
+/** One scheduled workflow: when it fires next (large), what it runs, and how its last run went. */
+function scheduleCard(s: ScheduleView, nowSec: number): string {
+  const next = s.nextRun ? Date.parse(s.nextRun) : NaN;
+  let when = `<span class="clock">—</span><span class="day">${t("never")}</span>`;
+  if (Number.isFinite(next)) {
+    const at = new Date(next);
+    const today = new Date(nowSec * 1000);
+    const dayDiff = Math.round(
+      (new Date(at.getFullYear(), at.getMonth(), at.getDate()).getTime() -
+        new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime()) /
+        86_400_000,
+    );
+    const day = dayDiff === 0 ? t("today") : dayDiff === 1 ? t("tomorrow") : t(DAY_NAMES[at.getDay()]!);
+    const clock = `${String(at.getHours()).padStart(2, "0")}:${String(at.getMinutes()).padStart(2, "0")}`;
+    when = `<span class="clock num">${clock}</span><span class="day">${esc(day)} · ${esc(fmtUntil(next / 1000 - nowSec))}</span>`;
+  }
+  const words = cronWords(s.cron);
+  const lastAt = s.lastRun ? Date.parse(s.lastRun.at) / 1000 : NaN;
+  const last = s.lastRun
+    ? `${pill(s.lastRun.state)}` +
+      (s.lastRun.runId
+        ? `<a class="rid" href="#/job/${encodeURIComponent(s.lastRun.runId)}">${esc(s.lastRun.runId)}</a>`
+        : "") +
+      (Number.isFinite(lastAt) ? `<span class="dim">${esc(fmtAgo(lastAt))}</span>` : "")
+    : `<span class="dim">${t("never ran")}</span>`;
+  const workflow = s.workflow.split(/[\\/]/).pop() ?? s.workflow;
+  return (
+    `<article class="card sched${s.installed === false ? " missing" : ""}" data-key="sc-${esc(s.name)}">` +
+    `<div class="sched-when">${when}</div>` +
+    `<div class="sched-main"><div class="nm"><span class="n" title="${esc(s.name)}">${esc(s.name)}</span><span class="tag">${esc(s.backend)}</span>` +
+    `</div><div class="cron"><code>${esc(s.cron)}</code>${words ? `<span>${esc(words)}</span>` : ""}</div>` +
+    `<div class="wf" title="${esc(s.workflow)}">${esc(workflow)}</div>` +
+    (s.installed === false
+      ? `<div class="miss">${t("Its {backend} entry is missing: odw schedule remove {name}, then add it again.", { backend: esc(s.backend), name: esc(s.name) })}</div>`
+      : "") +
+    `</div>` +
+    `<div class="sched-last"><span class="k">${t("last run")}</span>${last}</div>` +
+    `</article>`
+  );
+}
+
+/** What `odw schedule` will start next, soonest first. */
+function upcoming(nowSec: number, query: string): string {
+  const q = query.trim().toLowerCase();
+  const list = store.schedules
+    .filter((s) => !q || s.name.toLowerCase().includes(q) || s.workflow.toLowerCase().includes(q))
+    .sort((a, b) => (a.nextRun ? Date.parse(a.nextRun) : Infinity) - (b.nextRun ? Date.parse(b.nextRun) : Infinity));
+  if (!list.length) return "";
+  return (
+    `<div class="section-title"><h2>${t("Upcoming")}</h2><span class="eyebrow">${tn(list.length, "{n} schedule", "{n} schedules")}</span></div>` +
+    `<div class="sched-list">${list.map((s) => scheduleCard(s, nowSec)).join("")}</div>`
+  );
+}
+
 function runCard(r: RunSummary, nowSec: number): string {
   const elapsed = r.createdAt != null ? fmtDurSec(nowSec - r.createdAt) : "—";
   const n = r.phases.length;
@@ -78,8 +144,10 @@ function matches(r: RunSummary, s: JobsState): boolean {
 export function renderJobs(state: JobsState, nowSec: number): string {
   const runs = store.runs;
   if (runs.length === 0) {
+    // Nothing has run yet — but what is scheduled to run is worth showing.
     return (
-      `<div class="page">` +
+      `<div class="page jobs">` +
+      upcoming(nowSec, "") +
       emptyArt(
         store.runsLoaded ? t("No runs yet") : t("Loading runs…"),
         t("Have your agent start one with the CLI."),
@@ -147,6 +215,7 @@ export function renderJobs(state: JobsState, nowSec: number): string {
     `<label class="field">${icons.search}<input id="jobs-q" placeholder="${esc(t("Filter by name or run id"))}" value="${esc(state.query)}" autocomplete="off"/></label>` +
     `</div></header>` +
     cards +
+    (state.filter === "all" ? upcoming(nowSec, state.query) : "") +
     `<div class="section-title"><h2>${t("History")}</h2><span class="eyebrow">${tn(ended.length, "{n} run", "{n} runs")}</span></div>` +
     history +
     `</div>`
