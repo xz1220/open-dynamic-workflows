@@ -133,6 +133,7 @@ export function createPrimitives(
       // (stop or budget at dispatch) concerns the run, not this agent.
       if (started || !isFatalError(err)) {
         ctx.emit(event(AGENT_FAILED, { agentId, label: display, phase: activePhase, error: String(err) }));
+        if (typeof err === "object" && err !== null) surfaced.add(err);
       }
       throw err;
     }
@@ -155,14 +156,62 @@ export function createPrimitives(
     return outcome.value;
   };
 
-  const parallel = <T>(thunks: Array<Thunk<T>>): Promise<Array<T | null>> =>
-    ctx.scheduler.gather(thunks.map((t) => async () => t()));
+  /**
+   * gather turns a recoverable failure into a `null` slot; never let one vanish
+   * silently. Agent failures already have their AGENT_FAILED event; anything
+   * else (a TypeError in a stage, a misused primitive) gets a LOG event.
+   */
+  const noteSwallowed = (err: unknown, where: string): void => {
+    if (isFatalError(err)) return; // propagates out of gather; nothing is swallowed
+    if (typeof err === "object" && err !== null && surfaced.has(err)) return;
+    ctx.emit(event(LOG, { message: `${where} failed and its result is null: ${describeError(err)}` }));
+  };
 
-  const pipeline = (items: unknown[], ...stages: Stage[]): Promise<unknown[]> => {
+  const parallel = async <T>(thunks: Array<Thunk<T>>): Promise<Array<T | null>> => {
+    if (!Array.isArray(thunks)) {
+      throw new WorkflowScriptError(`parallel() takes an array of functions (thunks); got ${describeValue(thunks)}`);
+    }
+    thunks.forEach((thunk, i) => {
+      if (typeof thunk !== "function") {
+        throw new WorkflowScriptError(
+          `parallel() takes functions (thunks), but element ${i} is ${describeValue(thunk)} — ` +
+            "wrap each call as () => agent(...) so parallel() can schedule it",
+        );
+      }
+    });
+    return ctx.scheduler.gather(
+      thunks.map((thunk, i) => async () => {
+        try {
+          return await thunk();
+        } catch (err) {
+          noteSwallowed(err, `parallel() thunk ${i}`);
+          throw err;
+        }
+      }),
+    );
+  };
+
+  const pipeline = async (items: unknown[], ...stages: Stage[]): Promise<unknown[]> => {
+    if (!Array.isArray(items)) {
+      throw new WorkflowScriptError(
+        `pipeline() takes an array of items, then stage functions; got ${describeValue(items)} as the items`,
+      );
+    }
+    stages.forEach((stage, i) => {
+      if (typeof stage !== "function") {
+        throw new WorkflowScriptError(
+          `pipeline() stages must be functions (previous, item, index) => …; stage ${i} is ${describeValue(stage)}`,
+        );
+      }
+    });
     const chains = items.map((item, index) => async (): Promise<unknown> => {
       let value: unknown = item;
-      for (const stage of stages) {
-        value = await stage(value, item, index);
+      let s = 0;
+      try {
+        for (; s < stages.length; s++) value = await stages[s]!(value, item, index);
+      } catch (err) {
+        noteSwallowed(err, `pipeline() item ${index} at stage ${s}`);
+        throw err;
       }
       return value;
     });
@@ -253,4 +302,26 @@ export function createPrimitives(
   };
 
   return { agent, parallel, pipeline, phase, log, budget, workflow, validate };
+}
+
+/**
+ * Errors an agent() call already reported as AGENT_FAILED, so parallel() and
+ * pipeline() do not log them a second time. Module-wide because a nested
+ * workflow()'s agents can fail inside the parent's parallel().
+ */
+const surfaced = new WeakSet<object>();
+
+/** A short description of a misused argument, for error messages. */
+function describeValue(value: unknown): string {
+  if (value === null || value === undefined) return String(value);
+  if (Array.isArray(value)) return "an array";
+  if (typeof (value as { then?: unknown }).then === "function") return "a promise (that call has already started)";
+  return typeof value === "object" ? "an object" : `a ${typeof value}`;
+}
+
+/** The error plus where it was thrown — the frame that points into the script. */
+function describeError(err: unknown): string {
+  if (!(err instanceof Error)) return String(err);
+  const frame = err.stack?.split("\n").find((line) => line.trimStart().startsWith("at "));
+  return frame ? `${String(err)} (${frame.trim()})` : String(err);
 }

@@ -5,7 +5,7 @@ import { defaultConfig, resolveAdapter } from "../src/adapters/config.js";
 import type { Bridge } from "../src/bridge.js";
 import type { RunContext } from "../src/context.js";
 import { NullControl } from "../src/control.js";
-import { AdapterNotFound, ConfigError } from "../src/errors.js";
+import { AdapterNotFound, ConfigError, WorkflowScriptError } from "../src/errors.js";
 import { AGENT_FAILED, AGENT_FINISHED, AGENT_STARTED, LOG, MemorySink } from "../src/events.js";
 import { createPrimitives } from "../src/primitives.js";
 import { Scheduler } from "../src/scheduler.js";
@@ -167,6 +167,64 @@ test("pipeline: a stage that throws drops that item to null", async () => {
     return (v as number) * 10;
   });
   assert.deepEqual(out, [null, 20]);
+});
+
+test("parallel() rejects non-function elements with a fix-it message", async () => {
+  const { ctx } = fakeContext(async () => outcome("x"));
+  const p = createPrimitives(ctx);
+  await assert.rejects(
+    () => p.parallel([() => "ok", "oops" as unknown as () => string]),
+    (err: Error) =>
+      err instanceof WorkflowScriptError && /element 1 is a string/.test(err.message) && /\(\) => agent\(\.\.\.\)/.test(err.message),
+  );
+  const started = Promise.resolve("already running");
+  await assert.rejects(
+    () => p.parallel([started as unknown as () => Promise<string>]),
+    (err: Error) => err instanceof WorkflowScriptError && /a promise/.test(err.message),
+  );
+  await assert.rejects(() => p.parallel("nope" as unknown as Array<() => string>), WorkflowScriptError);
+});
+
+test("pipeline() rejects non-array items and non-function stages", async () => {
+  const { ctx } = fakeContext(async () => outcome("x"));
+  const p = createPrimitives(ctx);
+  await assert.rejects(
+    () => p.pipeline([1], (v) => v, 42 as unknown as (v: unknown) => unknown),
+    (err: Error) => err instanceof WorkflowScriptError && /stage 1 is a number/.test(err.message),
+  );
+  await assert.rejects(() => p.pipeline({ length: 1 } as unknown as unknown[], (v) => v), WorkflowScriptError);
+});
+
+test("a script bug swallowed into a null slot is surfaced as a log event", async () => {
+  const { ctx, sink } = fakeContext(async () => outcome("x"));
+  const p = createPrimitives(ctx);
+  const out = await p.pipeline(
+    [1, 2],
+    (v) => v,
+    (v) => {
+      if (v === 2) (undefined as unknown as { field: number }).field;
+      return v;
+    },
+  );
+  assert.deepEqual(out, [1, null]);
+  const messages = sink.ofType(LOG).map((e) => String(e.message));
+  assert.ok(
+    messages.some((m) => /pipeline\(\) item 1 at stage 1 failed/.test(m) && /TypeError/.test(m)),
+    `expected a log for the swallowed TypeError, got ${JSON.stringify(messages)}`,
+  );
+
+  await p.parallel([() => "a", () => Promise.reject(new RangeError("bad thunk"))]);
+  assert.ok(sink.ofType(LOG).some((e) => /parallel\(\) thunk 1 failed.*RangeError: bad thunk/.test(String(e.message))));
+});
+
+test("an agent failure inside parallel is reported once (agent_failed), not logged again", async () => {
+  const { ctx, sink } = fakeContext(async () => {
+    throw new Error("cli failed");
+  });
+  const p = createPrimitives(ctx);
+  assert.deepEqual(await p.parallel([() => p.agent("x")]), [null]);
+  assert.equal(sink.ofType(AGENT_FAILED).length, 1);
+  assert.equal(sink.ofType(LOG).filter((e) => /failed and its result is null/.test(String(e.message))).length, 0);
 });
 
 test("agent failures inside parallel isolate to null", async () => {
