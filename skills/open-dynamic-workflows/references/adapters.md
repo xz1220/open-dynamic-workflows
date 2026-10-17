@@ -94,6 +94,9 @@ did-you-mean hint) instead of silently ignoring them.
 | `claudeWorkflowsRoot` | where Claude Code saved workflows are picked up (default `~/.claude/workflows`, honors `CLAUDE_CONFIG_DIR`) |
 | `claudeJobsScope` | which Claude Code runs the dashboard shows: `"all"` (default) or `"project"` |
 | `notify` | **ODW extension.** Run-end hooks: `{ "command": [argv], "webhook": "https://…", "on": ["done", "failed", "stopped"] }` — see below |
+| `worktreeSetup` | **ODW extension.** A command run in each new isolated worktree after `.worktreeinclude` has been applied and before its agent starts: a string through the platform shell, or an argv array run without one. It runs in the agent's workspace with the agent's `ODW_RUN_ID`, `ODW_AGENT_ID` and `ODW_PORT`; one that fails or times out fails that agent (not the run), quoting the end of its output. `null` (default) = none |
+| `worktreeSetupTimeout` | seconds the worktree setup may run before it is killed (default 600) |
+| `portRange` | **ODW extension.** `[first, last]`: the ports each running agent's `ODW_PORT` comes from (default `[41000, 41999]`); keep it wider than `concurrency` |
 
 ### Adapter fields
 
@@ -101,7 +104,7 @@ did-you-mean hint) instead of silently ignoring them.
 | --- | --- |
 | `command` | argument vector; `{placeholder}` tokens are expanded per call (required) |
 | `stdin` | optional template fed to the process's stdin (e.g. `"{prompt}"`) |
-| `env` | extra environment variables layered over the process environment |
+| `env` | extra environment variables layered over the process environment (ODW's own `ODW_RUN_ID`, `ODW_AGENT_ID` and `ODW_PORT` win over them) |
 | `timeout` | per-call timeout in seconds (overrides the run-wide `timeout`) |
 | `stallTimeout` | stall timeout in seconds for this CLI (overrides the run-wide `stallTimeout`; `0` turns the watchdog off for this adapter) |
 | `label` | human-friendly name for progress display |
@@ -132,7 +135,7 @@ Expanded in `command` and `stdin` before each call:
 | --- | --- |
 | `{prompt}` | the full composed prompt (independence framing + task + any schema instruction) |
 | `{prompt_file}` | path to a temp file holding the prompt (written only when referenced) |
-| `{workspace}` | the directory the agent runs in (an isolated copy in `copy` mode) |
+| `{workspace}` | the directory the agent runs in (its git worktree when it is isolated) |
 | `{source}` | the original working tree |
 | `{adapter}` / `{role}` | the adapter's name / label |
 

@@ -89,6 +89,9 @@ shell 出去执行一个本地命令，通过 stdin 或一个参数把拼好的 
 | `claudeWorkflowsRoot` | 读取 Claude Code 已保存 workflow 的目录（默认 `~/.claude/workflows`，遵循 `CLAUDE_CONFIG_DIR`） |
 | `claudeJobsScope` | dashboard 显示哪些 Claude Code 运行：`"all"`（默认）或 `"project"` |
 | `notify` | **ODW 扩展。** 运行结束时的 hook：`{ "command": [argv], "webhook": "https://…", "on": ["done", "failed", "stopped"] }`——见下文 |
+| `worktreeSetup` | **ODW 扩展。** 在每个新建的隔离 worktree 里、`.worktreeinclude` 生效之后、agent 启动之前运行的命令：字符串交给平台 shell，数组作为不经 shell 的 argv。它在 agent 的工作区里运行，带着该 agent 的 `ODW_RUN_ID`、`ODW_AGENT_ID` 和 `ODW_PORT`；失败或超时会让这个 agent（而不是整个运行）失败，错误里引用它输出的结尾。`null`（默认）= 不运行 |
+| `worktreeSetupTimeout` | worktree setup 被杀掉之前最多运行的秒数（默认 600） |
+| `portRange` | **ODW 扩展。** `[first, last]`：每个正在运行的 agent 的 `ODW_PORT` 从这个范围分配（默认 `[41000, 41999]`）；请让它比 `concurrency` 更宽 |
 
 ### 适配器字段
 
@@ -96,7 +99,7 @@ shell 出去执行一个本地命令，通过 stdin 或一个参数把拼好的 
 | --- | --- |
 | `command` | 参数向量；`{placeholder}` 占位符每次调用时展开（必填） |
 | `stdin` | 喂给进程 stdin 的可选模板（如 `"{prompt}"`） |
-| `env` | 叠加在进程环境之上的额外环境变量 |
+| `env` | 叠加在进程环境之上的额外环境变量（ODW 自己的 `ODW_RUN_ID`、`ODW_AGENT_ID` 和 `ODW_PORT` 优先于它们） |
 | `timeout` | 每次调用的超时（秒）（覆盖运行级的 `timeout`） |
 | `stallTimeout` | 这个 CLI 的卡死超时（秒）（覆盖运行级的 `stallTimeout`；`0` 表示对该适配器关闭看门狗） |
 | `label` | 进度显示用的友好名字 |
@@ -126,7 +129,7 @@ hook 只会记录到该运行的 `worker.log`。
 | --- | --- |
 | `{prompt}` | 完整拼好的 prompt（独立性引导语 + 任务 + 任何 schema 指令） |
 | `{prompt_file}` | 存放 prompt 的临时文件路径（仅在被引用时才写） |
-| `{workspace}` | agent 运行所在的目录（`copy` 模式下是一个隔离副本） |
+| `{workspace}` | agent 运行所在的目录（隔离时是它的 git worktree） |
 | `{source}` | 原始的工作树 |
 | `{adapter}` / `{role}` | 适配器的名字 / 标签 |
 

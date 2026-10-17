@@ -227,7 +227,7 @@ ODW 已实现下列原语能力。依赖宿主私有运行机制的脚本,迁移
 | 嵌套 `workflow()` | 已实现一层嵌套,共享父任务的调度器、控制和预算。更深层的调用需要展平。 |
 | 模型选择 | 在 `agent(..., {model})` 中传该 CLI 的模型 ID。`meta.model` 和阶段元数据不设置执行模型;适配器没有模型参数时会记录路由说明。 |
 | `agentType` | 将人设加入提示词,不会加载宿主的同名子 agent 配置或选择适配器。 |
-| 工作区隔离 | 从已保存的 HEAD 创建临时工作区,不含未保存修改,结束后清理。不会自动合并,`agent()` 返回回复而非 diff;需保留的交付物应放进回复或显式持久化。 |
+| 工作区隔离 | 从已保存的 HEAD 创建临时工作区,不含未保存修改,结束后清理。不会自动合并,`agent()` 返回回复而非 diff;需保留的交付物应放进回复或显式持久化。支持 `.worktreeinclude`(ODW 连未跟踪文件也复制,而不只是被 gitignore 的文件);其中的 `symlink:` 行、`worktreeSetup` 和 agent 的 `ODW_PORT` 是 ODW 扩展——见[隔离 worktree](#隔离-worktree-与-agent-端口)。 |
 | 预算 | 按 `ceil(字符数 / 4)` 估算所有回复的输出 token,包括 schema 重试(不计输入和失败调用)。每次派发和每次 schema 重试前都会检查;预算用尽时运行结束,仍在运行的 agent 会被停止。 |
 | JSON Schema | 只校验[已列出的子集](skills/open-dynamic-workflows/zh-CN/references/primitives.md#schema)。`$ref`、`const`、`oneOf` 等约束不会生效;请明确声明对象/数组类型并使用受支持的约束。 |
 | 脚本可信性 | 只运行可信脚本:运行工作流会把正文当作普通 JavaScript 执行。加载时元数据按纯字面量解析,不会被求值;编译检查和兼容性警告都不提供沙箱隔离。 |
@@ -492,6 +492,54 @@ Windows 下的可执行文件探测遵循 `PATHEXT`,所以 `agent.cmd`、`kilo.c
 Slack 和 Discord 的 incoming webhook 能直接渲染(同时设置了 Discord 的
 `allowed_mentions`,一次运行永远不会 @ 到任何人)。看板的设置页会显示配置了哪些
 hook——webhook 只显示协议和主机,因为 URL 的其余部分就是密钥。
+
+### 隔离 worktree 与 agent 端口
+
+`agent(prompt, { isolation: "worktree" })` 让这个 agent 在一个一次性的 git worktree 里
+运行:它是 HEAD 的干净检出,没有你源目录里的 `.env`、`.venv` 或 `node_modules`。agent
+启动前,有两样东西把它准备好:
+
+- **`.worktreeinclude`**:放在仓库根目录(Claude Code 也读这个文件),用 `.gitignore`
+  语法列出要带进来的东西。git 不跟踪、且被某一行匹配到的每个文件或目录都会复制进
+  worktree(Claude Code 只复制被 gitignore 的文件;ODW 连单纯未跟踪的文件也复制)。
+  `.git` 永远不复制,超过 100 MB 的文件会被跳过并记一行日志。`symlink:` 前缀(**ODW
+  扩展**)把该行匹配到的东西链接过去而不是复制:对大目录瞬间完成,但它是共享的——agent
+  往里写的东西会落到你的源目录。
+- **`worktreeSetup`**(**ODW 扩展**):文件就位后在 agent 的工作区里运行,字符串交给
+  平台 shell,数组作为 argv。超过 `worktreeSetupTimeout` 秒(默认 600)就会被杀掉;
+  setup 失败或超时,失败的是这个 agent 而不是整个运行,错误里带着它输出的结尾。
+
+```gitignore
+# .worktreeinclude
+.env
+.env.local
+config/secrets.json
+symlink: node_modules
+```
+
+```jsonc
+{
+  "worktreeSetup": "npm run codegen", // 或一个 argv,例如 ["uv", "sync"]
+  "worktreeSetupTimeout": 600,
+  "portRange": [41000, 41999]
+}
+```
+
+每个 agent 进程——不论是否隔离——还会拿到 `ODW_RUN_ID`、`ODW_AGENT_ID` 和 `ODW_PORT`
+(**ODW 扩展**)。`ODW_PORT` 来自 `portRange`:本次运行中没有其他正在运行的 agent 占用
+它(已经有程序在监听的端口会被跳过),并且直到这次调用结束都归这个 agent 所有。所以并排
+运行的 agent 可以各自起一个 dev server:
+
+```js
+await parallel(['grid', 'list'].map((layout) => () =>
+  agent(`Build the ${layout} layout, start the dev server on port $ODW_PORT and check that the page renders.`,
+    { isolation: 'worktree', label: layout })))
+```
+
+setup 命令拿到同样的三个变量,`exec()` 命令拿到 `ODW_RUN_ID`。请让 `portRange` 比
+`concurrency` 更宽:如果其他 agent 占满了所有端口,新启动的 agent 就不带 `ODW_PORT`
+运行,运行日志里会说明。一次调用的每次尝试(schema 重试、卡死重启)都从一个新的
+worktree 开始,并以同样方式准备。
 
 ## 工作原理
 
