@@ -454,14 +454,13 @@ without its `type`. The config's `schemaKeywords` decides what happens:
 
 - `"warn"` (the default) — the call runs and ODW validates the rest; the run's log
   says once which keywords it does not check and where (`"pattern" at
-  #/properties/id`), and who, if anyone, enforces them.
+  #/properties/id`), and who enforces them: a CLI that validates schemas itself
+  (it got the whole schema), otherwise nobody.
 - `"strict"` — the call fails with an `AgentError` naming each one, before anything
   is spawned.
-- `"native"` — on a CLI that validates schemas itself they are left to it (logged
-  once too); elsewhere, as `"warn"`.
 
 A typo (`requird`, an unknown `type`) or another malformed schema fails the call in
-every mode, with a did-you-mean. To make a limit count everywhere, put it in a
+either mode, with a did-you-mean. To make a limit count everywhere, put it in a
 `description` (the agent still reads it) and check it in the workflow.
 
 **Native schemas (ODW extension).** A CLI that validates schemas itself is handed

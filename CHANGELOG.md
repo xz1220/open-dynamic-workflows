@@ -68,10 +68,11 @@ changed, and run on a schedule — and a dashboard redesigned to watch them.
 - Native structured output: `claude` (`--json-schema`) and `codex` (`--output-schema`,
   for strict schemas) are handed an `agent()`'s schema and enforce it themselves, and
   ODW still validates every reply. Before an agent starts, its schema is checked for
-  keywords ODW's validator does not check: the run's log names each one and where it
-  is, once (`schemaKeywords`: `"warn"` by default, `"strict"` refuses such calls,
-  `"native"` leaves them to a CLI that enforces them) (**ODW extension**; adapters
-  declare native support with `flags.schema` and `output.structuredPath`).
+  keywords ODW's validator does not check: the run's log names each one, where it is
+  and who enforces it — the CLI when it got the schema natively, otherwise nobody —
+  once (`schemaKeywords`: `"warn"` by default; `"strict"` refuses such calls)
+  (**ODW extension**; adapters declare native support with `flags.schema` and
+  `output.structuredPath`).
 
 ### Use the CLI and the dashboard
 - `odw run` attaches a live foreground view in interactive terminals (Ctrl-C detaches;
@@ -105,7 +106,7 @@ changed, and run on a schedule — and a dashboard redesigned to watch them.
   once, with where it is; before, it was skipped without a word. The call still runs
   unless `"schemaKeywords": "strict"`, which refuses it. `format` is an annotation and
   is not reported. A malformed schema (a typo such as `requird`, an unknown `type`)
-  now fails its call in every mode.
+  now fails its call in either mode.
 - `claude` and `codex` agents no longer get their schema described in the prompt when
   their CLI takes it natively (`"schemaPrompt": "always"` keeps the description). An
   entry that gives either its own `command` replaces the built-in: copy `flags.schema`

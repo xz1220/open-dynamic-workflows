@@ -146,7 +146,7 @@ agent 的 `permissions`；`odw doctor` 会列出每个适配器支持的档位�
 | `permissions` | **ODW 扩展。** 运行的权限档位：`"read"`、`"edit"`（默认）或 `"full"`——见[权限](#权限每个内置适配器能做什么)。`odw run\|rerun\|resume --permissions` 可覆盖 |
 | `agentEnv` | **ODW 扩展。** `"inherit"`（默认）：agent CLI 拿到 ODW 的全部环境变量。`"minimal"`：只传 `PATH`、`HOME`、`USER`、`LOGNAME`、`SHELL`、`LANG`、`LC_*`、`TERM`、`TMPDIR`、`TZ`（以及 Windows 系统变量）、内置 CLI 文档中列出的认证与配置变量（`ANTHROPIC_*`、`CLAUDE_*`、`OPENAI_*`、`CODEX_*`、`GEMINI_*`、`GOOGLE_*`、`DASHSCOPE_*`、`QWEN_*`、`MOONSHOT_*`、`KIMI_*`、`CURSOR_*`、`OPENCODE_*`、代理变量、`NODE_EXTRA_CA_CERTS`）、`ODW_*`、`agentEnvPass` 和适配器的 `env`。`exec()` 命令、`worktreeSetup` 和 `notify` 仍拿到完整环境 |
 | `agentEnvPass` | **ODW 扩展。** `"minimal"` 环境下额外放行的变量名或 `*` 通配（如在 Bedrock 上用 Claude Code 时的 `["AWS_*"]`） |
-| `schemaKeywords` | **ODW 扩展。** `agent()` 的 schema 里 ODW 校验器不检查的关键字如何处理。`"warn"`（默认）：调用照常运行，ODW 检查其余部分，运行日志只说一次哪些关键字、位于何处。`"strict"`：调用在启动前失败，逐个写明。`"native"`：在接收原生 schema 的适配器（`flags.schema`）上交给它的 CLI（同样记录一次）；其他情况同 `"warn"`。格式错误的 schema 在任何模式下都会失败。见[原生结构化输出](#原生结构化输出) |
+| `schemaKeywords` | **ODW 扩展。** `agent()` 的 schema 里 ODW 校验器不检查的关键字如何处理。`"warn"`（默认）：调用照常运行，ODW 检查其余部分，运行日志只说一次哪些关键字、位于何处、由谁强制执行（接收原生 schema 的适配器 CLI，即 `flags.schema`，否则无人）。`"strict"`：调用在启动前失败，逐个写明。格式错误的 schema 在两种模式下都会失败。见[原生结构化输出](#原生结构化输出) |
 | `schemaPrompt` | **ODW 扩展。** `"auto"`（默认）：只有不接收原生 schema 的 CLI 才在提示词里看到 schema 描述；`"always"`：所有 CLI 都附上 |
 
 ### 适配器字段
@@ -209,7 +209,7 @@ agent 启动前，会对照 ODW 校验器支持的子集检查它的 schema（[�
 其他内容会连同位置在运行日志里写明一次——适配器接收原生 schema 时（`strict` 的适配器上只限
 strict schema）交给 CLI，否则没有谁会强制执行——ODW 检查它能检查的部分；设
 `"schemaKeywords": "strict"` 时则改为让调用以 `AgentError` 失败。格式错误的 schema 或未知关键字
-在任何模式下都会失败。要为某个内置适配器关闭原生 schema，给它不含 `schema` 的 `flags`：
+在两种模式下都会失败。要为某个内置适配器关闭原生 schema，给它不含 `schema` 的 `flags`：
 `"claude": { "flags": { "model": ["--model"] } }`。
 
 ### 运行通知（`notify`）

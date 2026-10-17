@@ -383,11 +383,11 @@ const result = await agent('Review this diff.', { schema: FINDINGS }) // -> vali
 `schemaKeywords` 决定怎么处理：
 
 - `"warn"`（默认）——调用照常运行，ODW 校验其余部分；运行日志只说一次哪些关键字它不检查、
-  位于何处（`"pattern" at #/properties/id`），以及有没有谁会强制执行它们。
+  位于何处（`"pattern" at #/properties/id`），以及由谁强制执行：自己校验 schema 的 CLI（它拿到
+  了完整 schema），否则无人。
 - `"strict"`——在任何东西启动前，调用以 `AgentError` 失败，逐个写明它们。
-- `"native"`——在自己校验 schema 的 CLI 上交给它（同样记录一次）；其他情况同 `"warn"`。
 
-拼写错误（`requird`、未知的 `type`）或其他格式错误的 schema 在任何模式下都会让调用失败，并附
+拼写错误（`requird`、未知的 `type`）或其他格式错误的 schema 在两种模式下都会让调用失败，并附
 did-you-mean 提示。想让某个限制处处生效，就写进 `description`（agent 仍会读到），并在工作流里
 自行检查。
 

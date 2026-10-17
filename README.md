@@ -691,7 +691,7 @@ call fails. Two things back that up:
   #/properties/status`). The call still runs, and ODW validates the rest.
   `"schemaKeywords": "strict"` refuses such a call instead, with an `AgentError`,
   before anything is spawned. A typo (`requird`, with a did-you-mean) or another
-  malformed schema fails the call in every mode.
+  malformed schema fails the call in either mode.
 - **CLIs that validate schemas get them natively.** The built-in `claude` is handed
   the schema with `--json-schema`, and the value comes from the `structured_output`
   of its `result` event; `codex` gets `--output-schema <file>`, a file
@@ -706,9 +706,8 @@ all its properties in `required`. Any other schema goes to codex in the prompt, 
 before, and the run says so once.
 
 To make such keywords count, run the agent on an adapter whose CLI enforces them:
-it is handed the whole schema in every mode, and the run's log says the keywords are
-left to it. `"schemaKeywords": "native"` records that you rely on such CLIs; on an
-adapter without native schemas it behaves as `"warn"`, the default.
+it is handed the whole schema, and the run's log says the keywords are left to it.
+`schemaKeywords` is `"warn"` (the default) or `"strict"`.
 
 A CLI of your own declares how it takes a schema in `flags.schema` — `"inline"`
 (the schema's JSON is the next argument) or `"file"` (the path of a file holding it),

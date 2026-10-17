@@ -79,7 +79,7 @@
 | N5 | **用量与成本**：适配器改用各 CLI 的 JSON 输出模式（`claude --output-format json` 的 `total_cost_usd`、`codex exec --json` 的 usage），按 agent 和阶段记录真实用量，`budget` 改用真实计量；大规模 fan-out 启动前给出预警 | #1 | M | ✅ claude 改用 stream-json，按 agent / 运行记录 token 与花费，`budget` 用真实输出 token，`fanOutWarn`；codex 仍为文本模式 |
 | N6 | **失败分类与退避**：区分限流、过载、额度耗尽、鉴权四类失败；按适配器节流，遵守 retry-after；额度耗尽时整体暂停，到重置时间自动恢复；支持回退适配器链 | #3 | M | 🚧 分类、退避重试、可操作的报错 ✅；按适配器的并发上限、限流后自适应减半、为提示缓存错开扇出 ✅；额度暂停与回退链待做（回退链并入 X7） |
 | N7 | **有证据的成功**：读取 CLI 报告的成功信号（`is_error`、`permission_denials`、MCP 状态），转成有类型的失败；`agent()` 可声明后置条件（"有文件改动"、"某命令通过"）。`odw doctor --smoke` 已交付 | #7（[#23](https://github.com/xz1220/open-dynamic-workflows/issues/23)） | M | 🚧 部分 |
-| N8 | **原生结构化输出**：优先使用 `codex --output-schema` / `claude --json-schema`；校验器不检查的 schema 关键字默认在运行日志里大声报告，设 `schemaKeywords: "strict"` 则启动前拒绝 | #12 | S–M | ✅ `claude --json-schema`（取 `result` 事件的 `structured_output`）、`codex --output-schema`（仅 strict schema，文件放在 run 目录、用完即删），本地仍校验每次回复；启动前逐个找出校验器不检查的关键字与位置：默认（`"warn"`）每次运行记录一次 LOG，`"strict"` 以 `AgentError` 拒绝，`"native"` 交给原生校验的 CLI；`format` 视为注解；格式错误的 schema 一律拒绝；`schemaPrompt` |
+| N8 | **原生结构化输出**：优先使用 `codex --output-schema` / `claude --json-schema`；校验器不检查的 schema 关键字默认在运行日志里大声报告，设 `schemaKeywords: "strict"` 则启动前拒绝 | #12 | S–M | ✅ `claude --json-schema`（取 `result` 事件的 `structured_output`）、`codex --output-schema`（仅 strict schema，文件放在 run 目录、用完即删），本地仍校验每次回复；启动前逐个找出校验器不检查的关键字与位置：默认（`"warn"`）每次运行记录一次 LOG，写明由谁强制执行（拿到原生 schema 的 CLI，否则无人），`"strict"` 以 `AgentError` 拒绝；`format` 视为注解；格式错误的 schema 一律拒绝；`schemaPrompt` |
 
 ### Next — 0.7「审阅与掌控」
 

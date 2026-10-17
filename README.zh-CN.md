@@ -629,7 +629,7 @@ Windows 下的可执行文件探测遵循 `PATHEXT`,所以 `agent.cmd`、`kilo.c
   `["string", "null"]` 这样的类型联合、没有 `"type": "object"` 的对象关键字——并在运行日志里
   只说一次哪些关键字它不检查、位于何处(`"oneOf" at #/properties/status`)。调用照常运行,
   ODW 校验其余部分。设 `"schemaKeywords": "strict"` 则改为在任何东西启动前以 `AgentError`
-  拒绝这类调用。拼错的关键字(`requird`,附 did-you-mean 提示)或其他格式错误的 schema 在任何
+  拒绝这类调用。拼错的关键字(`requird`,附 did-you-mean 提示)或其他格式错误的 schema 在两种
   模式下都会让调用失败。
 - **会校验 schema 的 CLI 直接拿到 schema。** 内置 `claude` 通过 `--json-schema` 拿到
   schema,值取自其 `result` 事件的 `structured_output`;`codex` 拿到
@@ -641,9 +641,8 @@ Codex 以 OpenAI 的 strict 模式发送 `--output-schema`,它只接受根为对
 `"additionalProperties": false` 并把全部属性列进 `required` 的 schema。其他 schema 仍像以前
 一样放在提示词里交给 codex,运行会提示一次。
 
-想让这类关键字真正生效,就把 agent 放到会强制执行它们的 CLI 上:无论哪种模式它都拿到完整
-schema,运行日志会说明这些关键字交给了它。`"schemaKeywords": "native"` 表明你依赖这类 CLI;
-在不接收原生 schema 的适配器上,它与默认的 `"warn"` 相同。
+想让这类关键字真正生效,就把 agent 放到会强制执行它们的 CLI 上:它拿到完整 schema,运行日志
+会说明这些关键字交给了它。`schemaKeywords` 取 `"warn"`(默认)或 `"strict"`。
 
 自定义 CLI 在 `flags.schema` 里声明它如何接收 schema——`"inline"`(schema 的 JSON 作为下一个
 参数)或 `"file"`(一个保存 schema 的文件路径),只接受 OpenAI strict schema 的 CLI 再加
