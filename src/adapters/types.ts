@@ -369,9 +369,10 @@ export type RunEndState = "done" | "failed" | "stopped";
 
 /**
  * What can fire the notify hooks: a terminal state, or — opt-in — "waiting":
- * a checkpoint() starts waiting for a person (once per checkpoint).
+ * a checkpoint() starts waiting for a person (once per checkpoint), or
+ * "paused": the run pauses for an adapter's spent quota (once per pause).
  */
-export type NotifyTrigger = RunEndState | "waiting";
+export type NotifyTrigger = RunEndState | "waiting" | "paused";
 
 /**
  * Run-completion hooks (an ODW extension), fired by the worker once a run's
@@ -382,7 +383,7 @@ export interface NotifySettings {
   command: string[] | null;
   /** An http(s) URL that receives a JSON POST describing the run. */
   webhook: string | null;
-  /** What fires the hooks: the three terminal states unless configured; "waiting" only when listed. */
+  /** What fires the hooks: the three terminal states unless configured; "waiting" and "paused" only when listed. */
   on: NotifyTrigger[];
 }
 

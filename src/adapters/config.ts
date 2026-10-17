@@ -56,8 +56,11 @@ export const CONFIG_ENV_VAR = "ODW_CONFIG";
 /** Every terminal run state, in display order: what `notify.on` defaults to. */
 export const RUN_END_STATES: readonly RunEndState[] = ["done", "failed", "stopped"];
 
-/** Everything `notify.on` may list: the terminal states, and the opt-in "waiting" (a checkpoint() waits). */
-export const NOTIFY_TRIGGERS: readonly NotifyTrigger[] = [...RUN_END_STATES, "waiting"];
+/**
+ * Everything `notify.on` may list: the terminal states, and the opt-in
+ * "waiting" (a checkpoint() waits) and "paused" (the run pauses for a spent quota).
+ */
+export const NOTIFY_TRIGGERS: readonly NotifyTrigger[] = [...RUN_END_STATES, "waiting", "paused"];
 
 /**
  * Load configuration, merging any discovered file over the built-ins.
@@ -1209,7 +1212,7 @@ function buildNotify(raw: unknown): NotifySettings {
   if (on != null) {
     if (!Array.isArray(on) || !on.every((trigger) => (NOTIFY_TRIGGERS as readonly unknown[]).includes(trigger))) {
       throw new ConfigError(
-        `"notify.on" must be a list of "done", "failed", "stopped", "waiting"; got ${JSON.stringify(on)}`,
+        `"notify.on" must be a list of "done", "failed", "stopped", "waiting", "paused"; got ${JSON.stringify(on)}`,
       );
     }
     notify.on = NOTIFY_TRIGGERS.filter((trigger) => on.includes(trigger));

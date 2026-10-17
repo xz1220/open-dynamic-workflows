@@ -33,7 +33,7 @@ import type { QuotaPause } from "../quota-wait.js";
 import { redactorFor, type Redactor } from "../redact.js";
 import type { Scheduler } from "../scheduler.js";
 import { FileControl } from "./file-control.js";
-import { notifyCheckpoint, notifyRunEnd } from "./notify.js";
+import { notifyCheckpoint, notifyQuotaPause, notifyRunEnd } from "./notify.js";
 import { JsonlSink, RunStore } from "./run-store.js";
 
 /**
@@ -85,7 +85,8 @@ const SIGNAL_GRACE_MS = 10_000;
  *
  * While agents wait for an adapter's spent quota to reset (an ODW extension:
  * quotaWait), status.json shows the run `paused`, with `pausedFor: { reason:
- * "quota", adapter, resumeAt }` — the soonest reset. The wait lives in this
+ * "quota", adapter, resumeAt }` — the soonest reset — and, when `notify.on`
+ * lists "paused", each pause fires the hooks once. The wait lives in this
  * process: a worker that dies leaves the run stale, and `odw resume` replays
  * it. A new `odw resume` ends the wait at once.
  */
@@ -112,6 +113,8 @@ export async function executeRun(runDir: string): Promise<string> {
   let end: { state: RunEndState; error?: string } | undefined;
   // "waiting" hooks of checkpoints, awaited (they are bounded) before the worker returns.
   const checkpointHooks: Array<Promise<void>> = [];
+  // …and "paused" hooks of quota pauses (ODW extension: quotaWait).
+  const pauseHooks: Array<Promise<void>> = [];
   const crashes = watchProcessCrashes();
   const signals = watchStopSignals({
     stop: (signal) => {
@@ -214,6 +217,14 @@ export async function executeRun(runDir: string): Promise<string> {
       onQuotaPause: ({ pause, change }) => {
         if (change === "started" || change === "extended") quotaPauses.set(pause.adapter, pause);
         else quotaPauses.delete(pause.adapter);
+        if (change === "started") {
+          pauseHooks.push(
+            notifyQuotaPause(config.settings.notify, { store, runId, pause }, {
+              cwd: typeof meta.source === "string" ? meta.source : undefined,
+              redactor: runRedactor,
+            }),
+          );
+        }
         // The soonest reset: when the run goes on. A run ending under its
         // pause only drops it — its final state comes next.
         const soonest = [...quotaPauses.values()].sort((a, b) => a.resumeAt - b.resumeAt)[0];
@@ -319,6 +330,7 @@ export async function executeRun(runDir: string): Promise<string> {
     });
     // A checkpoint's hooks may still be on their way (a quick answer): let them finish.
     await Promise.all(checkpointHooks);
+    await Promise.all(pauseHooks);
   } finally {
     signals.dispose();
   }

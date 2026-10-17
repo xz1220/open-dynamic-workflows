@@ -1,12 +1,18 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execPath } from "node:process";
 
+import { defaultConfig } from "../src/adapters/config.js";
+import type { NotifySettings } from "../src/adapters/types.js";
 import { pausedText, type PausedFor } from "../src/quota-wait.js";
+import { redactorFor } from "../src/redact.js";
 import { attachRun } from "../src/runtime/live-view.js";
+import { describePaused, notifyQuotaPause, pausedEnv, pausedLine, pausedPayload } from "../src/runtime/notify.js";
 import { RunStore, TERMINAL_STATES } from "../src/runtime/run-store.js";
 import { detail, summarize } from "../src/runtime/runs-view.js";
 import { startServer } from "../src/runtime/server.js";
@@ -17,7 +23,7 @@ import { FakeTerm } from "./fake-term.js";
 // Pause for a spent quota (ODW extension: quotaWait), end to end: the worker
 // runs mock CLIs out of quota; status.json, the run views, odw status, odw list,
 // odw run --wait, the live view and the API say until when; odw resume ends the
-// wait at once and odw stop stops the run.
+// wait at once and odw stop stops the run; the "paused" hooks fire once a pause.
 
 // What the CLIs print, as tests/failures.test.ts samples them.
 const QUOTA = "You've hit your usage limit. Upgrade to Pro or try again in 3h 22m."; // resets in 12,120s
@@ -31,6 +37,8 @@ async function until(check: () => boolean, ms = 10_000): Promise<void> {
     await new Promise<void>((resolve) => setTimeout(resolve, 5));
   }
 }
+
+const settle = (): Promise<void> => new Promise<void>((resolve) => setTimeout(resolve, 20));
 
 // --- end to end: the worker, the run directory, mock CLIs -------------------------------------
 
@@ -243,6 +251,150 @@ test("odw run --wait says until when a run is paused for a quota, once, and how 
       store.writeControl(runId, "stop");
       await until(() => TERMINAL_STATES.has(String(store.readStatus(runId).state)), 15_000).catch(() => {});
     }
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+/** A local webhook endpoint that records every POST. */
+async function receiver() {
+  const posts: Array<Record<string, any>> = [];
+  const server = createServer((req: IncomingMessage, res: ServerResponse) => {
+    let data = "";
+    req.setEncoding("utf8");
+    req.on("data", (chunk: string) => (data += chunk));
+    req.on("end", () => {
+      posts.push(JSON.parse(data));
+      res.end("ok");
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address() as AddressInfo;
+  return {
+    url: `http://127.0.0.1:${port}/hooks/YOUR/PATH`,
+    posts,
+    close: () =>
+      new Promise<void>((resolve) => {
+        server.closeAllConnections();
+        server.close(() => resolve());
+      }),
+  };
+}
+
+/** A notify command that appends its ODW_* environment to `file`, one JSON line per call. */
+function recordingCommand(file: string): string[] {
+  return [
+    execPath,
+    "-e",
+    "const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => k.startsWith('ODW_')));" +
+      `require('fs').appendFileSync(${JSON.stringify(file)}, JSON.stringify(env) + '\\n')`,
+  ];
+}
+
+const readLines = (file: string): Array<Record<string, string>> =>
+  existsSync(file) ? readFileSync(file, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line)) : [];
+
+test("end to end: 'paused' in notify.on fires the hooks once per quota pause — a pause never fires the run-end ones", async () => {
+  const hook = await receiver();
+  const envFile = join(tmpdir(), `odw-quota-notify-${process.pid}-${Date.now()}`);
+  const r = quotaRun("return await agent('TASK:one', { label: 'one' })\n", {
+    notify: { command: recordingCommand(envFile), webhook: hook.url, on: ["paused", "done"] },
+  });
+  try {
+    await until(r.paused);
+    await until(() => hook.posts.length === 1 && readLines(envFile).length === 1);
+    const pausedFor = r.store.readStatus(r.id).pausedFor as PausedFor;
+    const body = hook.posts[0]!;
+    assert.deepEqual(Object.keys(body), [
+      "runId",
+      "workflow",
+      "state",
+      "createdAt",
+      "durationSec",
+      "counts",
+      "pausedFor",
+      "text",
+      "content",
+      "allowed_mentions",
+    ]);
+    assert.deepEqual([body.runId, body.workflow, body.state, body.pausedFor], [r.id, "nightly", "paused", pausedFor]);
+    assert.deepEqual(body.counts, { agents: 1, done: 0, failed: 0 });
+    assert.equal(body.text, `odw · nightly ${pausedText(pausedFor)} · odw resume ${r.id} goes on now`);
+    assert.equal(body.content, body.text);
+    const env = readLines(envFile)[0]!;
+    assert.deepEqual(
+      [env.ODW_RUN_ID, env.ODW_RUN_STATE, env.ODW_WORKFLOW, env.ODW_PAUSED_ADAPTER, env.ODW_RESUME_AT],
+      [r.id, "paused", "nightly", "spent", String(Math.round(pausedFor.resumeAt))],
+    );
+    assert.equal(env.ODW_RESULT_FILE, undefined);
+    r.store.writeControl(r.id, "resume");
+    assert.equal(await r.run, "done");
+    assert.deepEqual(hook.posts.map((post) => post.state), ["paused", "done"], "once for the pause, once at the end: its end fires nothing");
+    const end = readLines(envFile).find((e) => e.ODW_RUN_STATE === "done")!;
+    assert.equal(end.ODW_PAUSED_ADAPTER, undefined, "the end hook carries no pause");
+  } finally {
+    await r.cleanup();
+    await hook.close();
+    rmSync(envFile, { force: true });
+  }
+
+  // Without "paused" in notify.on, a pause fires nothing; the end does, as always.
+  const quiet = await receiver();
+  const q = quotaRun("return await agent('TASK:one', { label: 'one' })\n", { notify: { webhook: quiet.url } });
+  try {
+    await until(q.paused);
+    await settle();
+    assert.equal(quiet.posts.length, 0);
+    q.store.writeControl(q.id, "resume");
+    assert.equal(await q.run, "done");
+    assert.deepEqual(quiet.posts.map((post) => post.state), ["done"]);
+  } finally {
+    await q.cleanup();
+    await quiet.close();
+  }
+});
+
+test("the 'paused' hooks: what a command and a webhook are told", () => {
+  const root = mkdtempSync(join(tmpdir(), "odw-quota-hooks-"));
+  try {
+    const store = new RunStore(root);
+    const id = store.create({ script: "/demo/nightly.js", args: null, source: "/demo", workflowName: "nightly" });
+    const createdAt = store.readMeta(id).createdAt as number;
+    const pause = { adapter: "codex", resumeAt: createdAt + 4 * HOUR };
+    const paused = describePaused(store, id, pause, (createdAt + 600) * 1000);
+    assert.deepEqual(paused, {
+      runId: id,
+      runDir: store.runDir(id),
+      workflow: "nightly",
+      state: "paused",
+      createdAt,
+      durationSec: 600,
+      counts: { agents: 0, done: 0, failed: 0 },
+      pausedFor: { reason: "quota", adapter: "codex", resumeAt: createdAt + 4 * HOUR },
+    });
+    assert.equal(pausedEnv(paused).ODW_RESUME_AT, String(Math.round(createdAt + 4 * HOUR)));
+    assert.equal(pausedLine(paused), `odw · nightly ${pausedText(pause)} · odw resume ${id} goes on now`);
+    assert.deepEqual(pausedPayload(paused).allowed_mentions, { parse: [] }, "a run's text never pings anyone");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("the 'paused' hooks: a webhook is sent the pause redacted, like every payload, marked redacted", async () => {
+  const hook = await receiver();
+  const root = mkdtempSync(join(tmpdir(), "odw-quota-redact-"));
+  try {
+    // A token of a well-known shape, built at runtime: a workflow named after a secret by mistake.
+    const token = "gh" + "p_" + "0123456789abcdefghijklmnopqrstuvwxyz";
+    const store = new RunStore(root);
+    const id = store.create({ script: "/demo/nightly.js", args: null, source: "/demo", workflowName: `deploy ${token}` });
+    const notify: NotifySettings = { command: null, webhook: hook.url, on: ["paused"] };
+    const pause = { adapter: "codex", resumeAt: Date.now() / 1000 + HOUR };
+    await notifyQuotaPause(notify, { store, runId: id, pause }, { redactor: redactorFor(defaultConfig()) });
+    assert.equal(hook.posts.length, 1);
+    assert.deepEqual([hook.posts[0]!.state, hook.posts[0]!.redacted], ["paused", true]);
+    assert.equal(JSON.stringify(hook.posts).includes(token), false);
+  } finally {
+    await hook.close();
     rmSync(root, { recursive: true, force: true });
   }
 });

@@ -23,6 +23,13 @@
  * result, and the checkpoint (`ODW_CHECKPOINT_ID`, `ODW_CHECKPOINT_TITLE`; the
  * webhook's `checkpoint: { checkpointId, title, since }`).
  *
+ * With "paused" in `notify.on` (opt-in), they fire once per pause for an
+ * adapter's spent quota (an ODW extension: quotaWait) — not when it ends: the
+ * run goes on by itself — with state "paused" and what it waits for
+ * (`ODW_PAUSED_ADAPTER`, `ODW_RESUME_AT` in Unix seconds; the webhook's
+ * `pausedFor: { reason: "quota", adapter, resumeAt }`). A pause never fires
+ * the run-end hooks.
+ *
  * A webhook's payload leaves the machine: its likely secrets are redacted
  * first (an ODW extension; see ../redact) — an error quoting an agent's output
  * included — and a payload that had any carries `redacted: true`.
@@ -34,6 +41,7 @@ import { join } from "node:path";
 import { runCommand } from "../adapters/runner.js";
 import { cliOk, type NotifySettings, type RunEndState } from "../adapters/types.js";
 import type { WaitingCheckpoint } from "../checkpoint.js";
+import { pausedText, type PausedFor, type QuotaPause } from "../quota-wait.js";
 import type { Redactor } from "../redact.js";
 import type { RunStore } from "./run-store.js";
 import { countAgents, foldAgents } from "./runs-view.js";
@@ -71,6 +79,19 @@ export interface RunWaiting {
   durationSec: number;
   counts: { agents: number; done: number; failed: number };
   checkpoint: WaitingCheckpoint;
+}
+
+/** What the hooks are told about a run that pauses for an adapter's spent quota ("paused"; ODW extension: quotaWait). */
+export interface RunPaused {
+  runId: string;
+  runDir: string;
+  workflow: string;
+  state: "paused";
+  createdAt: number | null;
+  /** Whole seconds from creation to the pause. */
+  durationSec: number;
+  counts: { agents: number; done: number; failed: number };
+  pausedFor: PausedFor;
 }
 
 export interface NotifyOptions {
@@ -131,6 +152,30 @@ export async function notifyCheckpoint(
   }
 }
 
+/**
+ * Fire the hooks for a run that just paused for an adapter's spent quota
+ * (ODW extension: quotaWait), when `notify.on` includes "paused" (opt-in).
+ * Resolves once every hook has finished or hit its time limit; never
+ * rejects. The worker does not wait for it to go on.
+ */
+export async function notifyQuotaPause(
+  notify: NotifySettings | null,
+  run: { store: RunStore; runId: string; pause: QuotaPause },
+  options: NotifyOptions = {},
+): Promise<void> {
+  if (!notify || !notify.on.includes("paused") || (!notify.command && !notify.webhook)) return;
+  const log = options.log ?? defaultLog;
+  try {
+    const paused = describePaused(run.store, run.runId, run.pause);
+    const hooks: Array<Promise<void>> = [];
+    if (notify.command) hooks.push(runHookCommand(notify.command, pausedEnv(paused), options, log));
+    if (notify.webhook) hooks.push(postWebhook(notify.webhook, redacted(pausedPayload(paused), options), options, log));
+    await Promise.all(hooks);
+  } catch (err) {
+    log(`notify: hooks for the ${run.pause.adapter} quota pause of run ${run.runId} failed: ${errorMessage(err)}`);
+  }
+}
+
 /** Read what the hooks report about a run whose terminal state is on disk. */
 export function describeRunEnd(store: RunStore, runId: string, state: RunEndState, error?: string): RunEnd {
   const runDir = store.runDir(runId);
@@ -170,6 +215,65 @@ export function describeWaiting(store: RunStore, runId: string, checkpoint: Wait
     counts: { agents, done, failed },
     checkpoint: { ...checkpoint },
   };
+}
+
+/** Read what the hooks report about a run that just paused for an adapter's spent quota. */
+export function describePaused(store: RunStore, runId: string, pause: QuotaPause, now: number = Date.now()): RunPaused {
+  const meta = store.readMeta(runId);
+  const status = store.readStatus(runId);
+  const createdAt = seconds(meta.createdAt);
+  const { agents, done, failed } = countAgents(foldAgents(store.readEvents(runId)));
+  return {
+    runId,
+    runDir: store.runDir(runId),
+    workflow: workflowName(runId, meta, status),
+    state: "paused",
+    createdAt,
+    durationSec: createdAt === null ? 0 : Math.max(0, Math.round(now / 1000 - createdAt)),
+    counts: { agents, done, failed },
+    pausedFor: { reason: "quota", adapter: pause.adapter, resumeAt: pause.resumeAt },
+  };
+}
+
+/** The environment a notify command gets for a quota pause: the run so far, and what it waits for. */
+export function pausedEnv(paused: RunPaused): Record<string, string> {
+  return {
+    ODW_RUN_ID: paused.runId,
+    ODW_RUN_STATE: "paused",
+    ODW_WORKFLOW: paused.workflow,
+    ODW_RUN_DIR: paused.runDir,
+    ODW_DURATION_SEC: String(paused.durationSec),
+    ODW_AGENTS: String(paused.counts.agents),
+    ODW_FAILED_AGENTS: String(paused.counts.failed),
+    ODW_PAUSED_ADAPTER: paused.pausedFor.adapter,
+    ODW_RESUME_AT: String(Math.round(paused.pausedFor.resumeAt)),
+  };
+}
+
+/** The JSON body a webhook receives for a quota pause. */
+export function pausedPayload(paused: RunPaused): Record<string, unknown> {
+  const text = pausedLine(paused);
+  return {
+    runId: paused.runId,
+    workflow: paused.workflow,
+    state: "paused",
+    createdAt: paused.createdAt,
+    durationSec: paused.durationSec,
+    counts: paused.counts,
+    pausedFor: paused.pausedFor,
+    text,
+    content: text,
+    allowed_mentions: { parse: [] },
+  };
+}
+
+/**
+ * The one-line human summary of a quota pause, with the command that ends
+ * it early, e.g. "odw · nightly paused until 19:10 (codex quota) · odw
+ * resume 20261017-041600-3fa2c1 goes on now". The time is the worker's local time.
+ */
+export function pausedLine(paused: RunPaused): string {
+  return `odw · ${paused.workflow} ${pausedText(paused.pausedFor)} · odw resume ${paused.runId} goes on now`;
 }
 
 /** The environment a notify command gets on top of the worker's own. */
@@ -295,7 +399,7 @@ function redacted(payload: Record<string, unknown>, options: NotifyOptions): Rec
 // --- the hooks ----------------------------------------------------------------
 
 /** The hook variables that are set only when they apply, whatever the worker itself inherited. */
-const OPTIONAL_HOOK_VARS = ["ODW_RESULT_FILE", "ODW_CHECKPOINT_ID", "ODW_CHECKPOINT_TITLE"];
+const OPTIONAL_HOOK_VARS = ["ODW_RESULT_FILE", "ODW_CHECKPOINT_ID", "ODW_CHECKPOINT_TITLE", "ODW_PAUSED_ADAPTER", "ODW_RESUME_AT"];
 
 async function runHookCommand(
   command: string[],
