@@ -364,6 +364,15 @@ function expandHome(p: string): string {
   return p;
 }
 
+/**
+ * The config file `loadConfig` would read for these arguments — an explicit
+ * path, `$ODW_CONFIG`, then the discovered locations — or null for built-in
+ * defaults. Throws ConfigError when an explicit path or $ODW_CONFIG is missing.
+ */
+export function locateConfig(path?: string | null, cwd?: string): string | null {
+  return locate(path, cwd);
+}
+
 function readRaw(path?: string | null, cwd?: string): Record<string, unknown> {
   const located = locate(path, cwd);
   if (located === null) return {};

@@ -151,7 +151,9 @@ cp -r "$skill_source" ~/.claude/skills/open-dynamic-workflows
 
 只装了一个 CLI(只有 `claude` 或只有 `codex`)?零配置,直接往下看。装了好几个?安装器
 已经让你选过默认了;`odw init` 随时可以重选(agent 则在问过你之后用
-`odw init --adapter <名字>` 写入)。
+`odw init --adapter <名字>` 写入)。`odw doctor` 会检查运行环境、配置、运行目录和每个适配器;
+`odw doctor --smoke` 还会给默认适配器发一条真实提示——能发现那些装得上、但在无头模式下卡在
+登录或审批提示上的 CLI。
 
 ODW 主要是**被你的 coding agent 驱动**的,不是手动跑。装好 skill 和二进制后,你只要把一个
 大任务丢给 agent——它会**自己写一个 workflow 并跑起来**,而且是在它自己的上下文之外:

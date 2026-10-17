@@ -21,7 +21,9 @@ import { basename, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
-import { loadConfig, resolveAdapter, resolveRunsRoot } from "./adapters/config.js";
+import { listAdapters, loadConfig, locateConfig, resolveAdapter, resolveRunsRoot } from "./adapters/config.js";
+import type { Config } from "./adapters/types.js";
+import { runDoctor, type CheckStatus } from "./doctor.js";
 import { AdapterNotFound } from "./errors.js";
 import { VERSION } from "./index.js";
 import { cmdInit } from "./init.js";
@@ -32,10 +34,12 @@ import { RunStore, TERMINAL_STATES } from "./runtime/run-store.js";
 import { startServer } from "./runtime/server.js";
 import { executeRun } from "./runtime/worker.js";
 import { isSeaBinary } from "./sea.js";
+import { detectCaps, glyphs, palette } from "./tty.js";
 import { listWorkflows, resolveWorkflow } from "./workflows/resolve.js";
 
 export const COMMANDS = [
   "init",
+  "doctor",
   "run",
   "attach",
   "rerun",
@@ -65,6 +69,7 @@ export function helpText(): string {
     "",
     "Usage:",
     "  odw init [--adapter <name>] [--check]              pick the default agent CLI (first-time setup)",
+    "  odw doctor [--smoke] [--adapter <name>|all]        check this machine is ready to run workflows",
     "  odw run <script.js|name> [--args JSON|@file]       start a workflow (see modes below)",
     "  odw attach <run_id>                                attach the live foreground view to a run",
     "  odw rerun <run_id>                                 start a fresh run with the same inputs",
@@ -127,6 +132,8 @@ export async function main(argv: string[]): Promise<number> {
         return await cmdWorker(rest);
       case "init":
         return await cmdInitCli(rest);
+      case "doctor":
+        return await cmdDoctor(rest);
       case "run":
         return await cmdRun(rest);
       case "attach":
@@ -166,6 +173,78 @@ export async function main(argv: string[]): Promise<number> {
 }
 
 // --- commands ----------------------------------------------------------------
+
+/**
+ * `odw doctor` — a readiness checklist (see doctor.ts). `--smoke` also sends one
+ * real prompt to the default adapter (or each `--adapter`, or `all` installed).
+ * Exit 0 when nothing failed, 1 otherwise; `--json` for machines.
+ */
+async function cmdDoctor(rest: string[]): Promise<number> {
+  const { values } = parseArgs({
+    args: rest,
+    options: {
+      config: { type: "string" },
+      smoke: { type: "boolean" },
+      adapter: { type: "string", multiple: true },
+      timeout: { type: "string" },
+      json: { type: "boolean" },
+    },
+  });
+  const timeoutMs = parseTimeout("doctor", values.timeout);
+  const cwd = process.cwd();
+  let config: Config | Error;
+  let configPath: string | null = null;
+  try {
+    configPath = locateConfig(values.config ?? null, cwd);
+    config = loadConfig(values.config ?? null, { cwd, quiet: true });
+  } catch (err) {
+    config = err as Error;
+  }
+  let smoke: string[] = [];
+  if (values.smoke && !(config instanceof Error)) {
+    const wanted = values.adapter ?? [];
+    if (wanted.includes("all")) smoke = listAdapters(config).filter((a) => a.installed).map((a) => a.name);
+    else if (wanted.length) smoke = wanted;
+    else if (config.settings.defaultAdapter) smoke = [config.settings.defaultAdapter];
+  }
+  const report = await runDoctor({
+    config,
+    configPath,
+    cwd,
+    smoke,
+    smokeTimeout: timeoutMs !== undefined ? timeoutMs / 1000 : undefined,
+  });
+  if (values.json) {
+    process.stdout.write(JSON.stringify(report, null, 2) + "\n");
+    return report.ok ? 0 : 1;
+  }
+  const caps = detectCaps(process.stdout, process.env);
+  const p = palette(caps);
+  const g = glyphs(caps);
+  const mark: Record<CheckStatus, string> = {
+    ok: p.ok(g.ok),
+    warn: p.run("!"),
+    fail: p.err(g.fail),
+    skip: p.dim(g.bullet),
+  };
+  const width = Math.max(...report.checks.map((c) => c.title.length));
+  const lines = [p.bold(`odw doctor · v${VERSION}`), ""];
+  for (const c of report.checks) {
+    lines.push(`  ${mark[c.status]} ${c.title.padEnd(width)}  ${c.status === "skip" ? p.dim(c.detail) : c.detail}`);
+    if (c.hint && c.status !== "ok") lines.push(`    ${" ".repeat(width)}  ${p.dim(`→ ${c.hint}`)}`);
+  }
+  const failed = report.checks.filter((c) => c.status === "fail").length;
+  const warned = report.checks.filter((c) => c.status === "warn").length;
+  lines.push("");
+  lines.push(
+    failed
+      ? p.err(`${failed} check(s) failed`) + (warned ? p.dim(`, ${warned} warning(s)`) : "")
+      : p.ok("ready") + (warned ? p.dim(` — ${warned} warning(s)`) : "") +
+          (values.smoke ? "" : p.dim(" · add --smoke to send each adapter a real prompt")),
+  );
+  process.stdout.write(lines.join("\n") + "\n");
+  return report.ok ? 0 : 1;
+}
 
 /** Hidden worker entrypoint: execute a run in this (SEA-re-exec'd) process. */
 async function cmdWorker(rest: string[]): Promise<number> {

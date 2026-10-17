@@ -167,6 +167,9 @@ under [Develop](#develop).
 One CLI installed (just `claude`, or just `codex`)? Zero config — skip ahead.
 Several? The installer already asked you to pick a default; `odw init` re-opens
 that choice anytime (agents use `odw init --adapter <name>` after asking you).
+`odw doctor` checks the setup — runtime, config, run directory, every adapter —
+and `odw doctor --smoke` sends your default adapter one real prompt, catching a
+CLI that installs fine but blocks on a login or approval prompt when headless.
 
 ODW is mostly driven **by your coding agent**, not by hand. With the skill and
 binary installed, just ask your agent for something big — it writes a workflow and
