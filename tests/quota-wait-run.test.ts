@@ -435,6 +435,30 @@ test("state folding: pausedFor shows for a live paused run only; odw status and 
   }
 });
 
+test("state folding: a checkpoint() waits beside a quota pause — the run reads paused, and the question can still be answered", async () => {
+  const root = mkdtempSync(join(tmpdir(), "odw-quota-cp-"));
+  try {
+    const store = new RunStore(root);
+    const id = store.create({ script: "/demo/nightly.js", args: null, source: "/demo", workflowName: "nightly" });
+    const pausedFor = { reason: "quota", adapter: "codex", resumeAt: Date.now() / 1000 + HOUR };
+    store.updateStatus(id, { name: "nightly", state: "paused", pid: process.pid, pausedFor });
+    appendFileSync(
+      store.eventsPath(id),
+      JSON.stringify({ ts: 10, type: "checkpoint_requested", checkpointId: 1, title: "Ship it?", payload: null, phase: null }) + "\n",
+    );
+    const summary = summarize(store, id);
+    assert.deepEqual([summary.state, summary.pausedFor, summary.waiting], ["paused", pausedFor, null]);
+    assert.deepEqual(detail(store, id).pendingCheckpoints, [{ checkpointId: 1, title: "Ship it?", payload: null, since: 10 }]);
+    const status = (await cli(["status", id, "--runs-root", root])).out;
+    assert.ok(status.includes(`  ${pausedText(pausedFor)} — its agents go on then; odw resume ${id} goes on now\n`), status);
+    assert.ok(status.includes("checkpoint #1: Ship it?"), status);
+    const approved = await cli(["approve", id, "--runs-root", root]);
+    assert.equal(approved.code, 0, approved.err);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("SSE: the run list is pushed again when what a paused run waits for changes", async () => {
   const root = mkdtempSync(join(tmpdir(), "odw-quota-sse-"));
   const store = new RunStore(join(root, "runs"));

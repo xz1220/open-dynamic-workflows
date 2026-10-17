@@ -697,3 +697,16 @@ test("agent(): readers follow a call that starts over on another adapter after i
   const finished = sink.ofType(AGENT_FINISHED)[0]!;
   assert.deepEqual([finished.adapter, finished.fellBackFrom], ["a", ["a", "b"]]);
 });
+
+test("agent(): a checkpoint() waits beside a quota pause — answered meanwhile, it goes on while the agent still waits", async () => {
+  const { control, clock, changes, p } = pausing(quotaConfig({ concurrency: 1 }), { a: [failing(QUOTA)] });
+  const waiting = p.agent("x", { label: "x" });
+  await until(() => clock.sleeping === 1);
+  const asked = p.checkpoint("Ship it?");
+  await until(() => control.waiting().length === 1);
+  assert.equal(control.decide({ action: "approve", note: "go", by: "cli" }), true);
+  assert.deepEqual(await asked, { approved: true, note: "go", by: "cli" });
+  assert.deepEqual([clock.sleeping, changes.map((c) => c.change)], [1, ["started"]], "the pause goes on");
+  clock.advance(RESET_MS);
+  assert.equal(await waiting, "a answered");
+});
