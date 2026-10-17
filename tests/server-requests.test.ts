@@ -138,6 +138,43 @@ test("HTTP: malformed percent-escapes in path ids are a 400, not a 500", async (
   }
 });
 
+test("HTTP: a refused chat turn persists nothing, so a retry does not duplicate the message", async () => {
+  const { root, handle, store } = await boot();
+  try {
+    const created = await fetch(`${handle.url}/api/chat/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    }).then((r) => r.json());
+    const post = (body: unknown) =>
+      fetch(`${handle.url}/api/chat/sessions/${created.id}/messages`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    const text = "run an odw workflow for this";
+    const users = async () =>
+      (await fetch(`${handle.url}/api/chat/sessions/${created.id}`).then((r) => r.json())).messages.filter(
+        (m: { role: string }) => m.role === "user",
+      );
+
+    const badAdapter = await post({ text, adapter: "no-such-adapter" });
+    assert.equal(badAdapter.status, 400);
+    assert.match((await badAdapter.json()).error, /unknown adapter/);
+    const badSource = await post({ text, source: join(root, "missing-dir") });
+    assert.equal(badSource.status, 400);
+    assert.deepEqual(await users(), [], "refused turns left no user message behind");
+    assert.equal(store.listRuns().length, 0, "and started no run");
+
+    const plain = await post({ text: "plain hello" });
+    assert.equal(plain.status, 200);
+    assert.deepEqual((await users()).map((m: { text: string }) => m.text), ["plain hello"]);
+  } finally {
+    await handle.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("HTTP: an over-cap body gets a 413 with connection: close, and the server carries on", async () => {
   const { root, handle } = await boot();
   try {

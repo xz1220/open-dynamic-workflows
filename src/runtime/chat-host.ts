@@ -282,9 +282,12 @@ export class ChatHost {
         ]
           .filter(Boolean)
           .join("\n\n");
+        // Resolve the follow-up's working dir BEFORE posting: if it throws, nothing
+        // is posted and the next sync retries the whole thing.
+        const cwd = chatWorkingDir(session);
         chat.appendUserMessage(session.id, text, "chat.odw_result");
         settledRuns.add(link.runId);
-        startChatCodexTurn(chat, session.id, runtime, session.source);
+        startChatCodexTurn(chat, session.id, runtime, cwd);
         break;
       }
     }
@@ -346,8 +349,13 @@ function existingDir(path: string): string | null {
   }
 }
 
-function chatWorkingDir(session: ChatSessionRecord, fallback: string): string {
-  return existingDir(session.source) ?? existingDir(fallback) ?? scratchSourceDir();
+/**
+ * Where a Codex turn runs: the session's source if it still exists, else the
+ * scratch dir. Can throw (creating the scratch dir), so callers resolve it
+ * BEFORE persisting anything for the turn.
+ */
+function chatWorkingDir(session: ChatSessionRecord): string {
+  return existingDir(session.source) ?? scratchSourceDir();
 }
 
 function formatTranscriptMessage(message: ChatMessage): string | null {
@@ -384,17 +392,15 @@ function buildCodexChatPrompt(session: ChatSessionRecord, assistantMessageId: st
   ].join("\n");
 }
 
+/** Stream a Codex reply into the session; `cwd` comes from {@link chatWorkingDir}. */
 function startChatCodexTurn(
   chat: ChatStore,
   sessionId: string,
   runtime: ChatRuntime,
-  fallbackCwd: string,
+  cwd: string,
 ): ChatSessionRecord | null {
   const current = chat.get(sessionId);
   if (!current || hasStreamingAssistant(current) || runtime.activeSessions.has(sessionId)) return current;
-  // Resolve the working dir first: it can throw (creating the scratch dir), and
-  // must not strand a "streaming" placeholder that would block the session.
-  const cwd = chatWorkingDir(current, fallbackCwd);
   const withPlaceholder = chat.appendAssistantMessage(sessionId, "", undefined, "streaming");
   runtime.notify(sessionId);
   const placeholder = withPlaceholder.messages[withPlaceholder.messages.length - 1]!;
@@ -603,7 +609,9 @@ async function postChatMessage(
     sendJson(res, 409, { error: "Codex is still responding in this chat session" });
     return;
   }
-  chat.appendUserMessage(sessionId, text);
+  // Everything that can refuse the turn (a 400 for a bad adapter/source, a
+  // failing launch or scratch dir) runs BEFORE the user message is persisted:
+  // a refused turn must leave no orphan message for a retry to duplicate.
   if (wantsOdw(text)) {
     const launchBody = {
       adapter: typeof body.adapter === "string" ? body.adapter : undefined,
@@ -619,9 +627,12 @@ async function postChatMessage(
       configPath,
       origin: "chat",
     });
+    chat.appendUserMessage(sessionId, text);
     chat.appendToolRun(sessionId, runId, CHAT_HOST_WORKFLOW_NAME);
   } else {
-    startChatCodexTurn(chat, sessionId, chatRuntime, existing.source);
+    const cwd = chatWorkingDir(existing);
+    chat.appendUserMessage(sessionId, text);
+    startChatCodexTurn(chat, sessionId, chatRuntime, cwd);
   }
   const updated = chat.get(sessionId);
   if (!updated) {
