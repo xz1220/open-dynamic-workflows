@@ -212,6 +212,7 @@ odw run examples/fan-out-reduce.js --wait --args '{"question": "Design a rate li
 | `budget` | `{ total, spent(), remaining() }`——按 token 目标动态扩缩深度。 |
 | `workflow(ref, args?)` | 内联调用另一个 workflow(仅一层)。子 workflow 共享本次运行的并发上限、agent 计数与预算;其 phase 以独立泳道归组。 |
 | `validate(source)` | 解析并编译检查可信源码,不运行工作流正文;元数据按纯字面量解析,不会被求值。**ODW 扩展**(不属于 Claude Code 方言)。 |
+| `exec(command, opts?)` | 不启动模型直接运行一条命令——测试、构建、linter;返回 `{ stdout, stderr, exitCode, signal, timedOut, truncated, durationMs }`。字符串经 shell 执行,数组按 argv 执行。受 `timeout`(600 秒)和 `maxOutputBytes`(每个输出流 8 MiB)约束;停止会杀掉它。不占 agent 槽位。**ODW 扩展**(不属于 Claude Code 方言)。 |
 
 下一步需要"全量结果一次到位"(去重、计票、综合)时用 **`parallel`**;多阶段处理默认用
 **`pipeline`**。归并要保持顺序无关——按"谁先跑完"分支会破坏可复现性。完整参考见
@@ -232,14 +233,14 @@ ODW 已实现下列原语能力。依赖宿主私有运行机制的脚本,迁移
 | 脚本可信性 | 只运行可信脚本:运行工作流会把正文当作普通 JavaScript 执行。加载时元数据按纯字面量解析,不会被求值;编译检查和兼容性警告都不提供沙箱隔离。 |
 | 恢复 | 每个完成的 `agent()` 结果都会在完成时保存。`odw resume` 让已暂停且仍存活的 worker 原地继续;对已结束的运行(done、failed、stopped,或崩溃后的 stale)则启动一个新运行:prompt 和选项都没变的调用直接重放,其余照常执行。`rerun` 从头执行。见[恢复运行](#恢复运行odw-扩展)。 |
 
-原语名称一致不代表运行机制完全等价。`validate(source)` 是 ODW 扩展,迁移到未提供它的
-宿主时需要去掉。可恢复失败产生的 `null` 需要显式处理：接受部分结果、重试,或在要求完整
+原语名称一致不代表运行机制完全等价。`validate(source)` 和 `exec(command)` 是 ODW 扩展,
+迁移到未提供它们的宿主时需要去掉(`validate()` 会对 `exec()` 调用给出 warning)。可恢复失败产生的 `null` 需要显式处理：接受部分结果、重试,或在要求完整
 交付时报告失败。
 
 ## 运行与观测
 
-在交互式终端里,`odw run` 会附着一个**实时前台视图**——每个 agent 的启动、转轮、结算,
-按 phase 逐步展示,结束时打印结果。Ctrl-C 只是断开观察(运行继续);`odw attach <id>`
+在交互式终端里,`odw run` 会附着一个**实时前台视图**——每个 agent(以及带 `$` 提示符的
+`exec()` 命令步骤)的启动、转轮、结算,按 phase 逐步展示,结束时打印结果。Ctrl-C 只是断开观察(运行继续);`odw attach <id>`
 可随时重新附着。
 
 ```bash
@@ -326,7 +327,8 @@ odw resume $RUN              # 启动一个新运行,重放每个未改动的 ag
 - **单次运行** —— 图(扇出成扇、汇聚成漏斗;边会被"绘制"出来,对应 agent 运行时有信号流动;
   可缩放、适应、拖拽)、显示时间花在哪里的**时间线**、可筛选并可跟随的**日志**、可折叠 JSON 树
   形式的**结果**,以及展示每个已完成 agent 自身输出的 **agent 抽屉**——输出在完成时
-  就已保存,运行中即可查看;重放的 agent 标记为 ↺。
+  就已保存,运行中即可查看;重放的 agent 标记为 ↺。`exec()` 命令步骤以终端风格的节点
+  (带退出码)出现在同一张图和时间线里;运行的计数包含它们(它们不算 agent 派发)。
 - **Workspace** —— 所有已保存的工作流:阶段的静态结构及每个阶段调用的原语、源码和最近的运行。
 - **Chat Host** —— 正常的 Codex 对话;提到 ODW 或 workflow 时,该回合会关联到一个真实的后台
   运行,工具卡片实时更新。
@@ -480,6 +482,7 @@ workflow 脚本始终是**纯 `.js`**、从不编译;引擎用 **TypeScript** �
 | [`tournament.js`](examples/tournament.js) | N 种思路各自解题 → 两两评判晋级 → 决出唯一胜者 |
 | [`codex-claude-loop.js`](examples/codex-claude-loop.js) | 两个对家 CLI 回合制对弈:Claude 实现,Codex 评审,循环直到签收 |
 | [`agent-daily-digest.js`](examples/agent-daily-digest.js) | 发现信息源 → 并行提取 → 综合 → 核查 |
+| [`test-fix-loop.js`](examples/test-fix-loop.js) | 用 `exec()` 跑测试 → agent 修复失败 → 重跑直到全绿(仅 ODW) |
 
 ## 开发
 

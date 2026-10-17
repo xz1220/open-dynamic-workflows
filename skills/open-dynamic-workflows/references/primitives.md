@@ -163,7 +163,8 @@ can become `null` when this call is inside `parallel`/`pipeline`.
 `validate(source)` loads a candidate workflow without running its body and
 returns `{ ok, meta?, errors, warnings }`. Loading parses `meta` as a pure
 literal (never evaluating it) and only compiles the body. Warnings flag selected portability
-hazards such as `Date.now()` and `Math.random()`; they do not block execution.
+hazards such as `Date.now()`, `Math.random()` and calls to the ODW-only `exec()`; they do not
+block execution.
 This helper is not part of the shared core surface. A script's own `validate`
 binding takes precedence over the injected helper.
 
@@ -186,6 +187,63 @@ saved again, so a resume of a resume replays them too. Fix the failing step,
 or add steps, then resume: only what changed runs. On a paused live run,
 `odw resume` keeps its old meaning (continue in place); a still-running run is
 refused unless `--force`.
+
+## exec (ODW extension)
+
+```js
+exec(command, opts?) -> Promise<{ stdout, stderr, exitCode, signal, timedOut, truncated, durationMs }>
+```
+
+Run a command **without launching a model** — the test suite, a build, a
+linter — and branch on its real result. It is not portable: Claude Code's
+Workflow tool has no `exec` global (`validate()` warns about it), and a
+script's own `exec` binding takes precedence over the injected one.
+
+- **command** — a string runs through the platform shell (`/bin/sh -c` on
+  POSIX, `cmd.exe /d /s /c` on Windows); an array is an argv run directly,
+  without a shell, so no element is interpreted. On Windows, batch files such
+  as `npm` run only through the shell: use the string form.
+- **opts.cwd** — the working directory. Defaults to the run's source directory
+  (where agents run); a relative path resolves against it.
+- **opts.env** — extra variables, layered over the worker's environment.
+- **opts.input** — text written to stdin; without it, stdin is closed at once.
+- **opts.timeout** — seconds, default `600`. On expiry the command is killed
+  together with every process it started; the result has `timedOut: true`
+  (and `exitCode: null`, `signal: "SIGKILL"`).
+- **opts.maxOutputBytes** — bytes kept per stream, default 8 MiB. Output past
+  the cap is read and dropped, never fatal; `truncated` says it happened.
+- **opts.label** / **opts.phase** — progress display, as for `agent`. The label
+  defaults to the first 40 characters of the command.
+- **opts.check** — throw an `ExecError` unless the command exits 0.
+
+A non-zero exit is a result, not an error. A program that cannot be launched
+reports exit `127` (not found) or `126`, as a shell would. With `check: true`
+the failure throws an `ExecError` carrying `.result` — recoverable, like a
+failed agent: catch it, or let `parallel`/`pipeline` turn it into `null`.
+Misuse (a `cwd` that does not exist, a non-string argv element) throws before
+anything runs.
+
+A command is not an agent: it takes no concurrency slot and does not count
+toward the total-agent cap or the budget. It still waits while the run is
+paused, and a stop (or any fatal error) kills it at once, process group and
+all, rejecting the call with that error. Each step is recorded as
+`command_started`, then `command_finished` (exit 0) or `command_failed`
+(anything else), and shows in `odw logs`, the live view and the dashboard
+graph as a command node.
+
+```js
+phase('Test')
+let run = await exec('npm test', { timeout: 900 })
+for (let round = 1; run.exitCode !== 0 && round <= 3; round++) {
+  await agent(`Fix the failing tests.\n\n${run.stdout.slice(-4000)}\n${run.stderr.slice(-4000)}`, { phase: 'Fix' })
+  run = await exec('npm test', { timeout: 900, label: `npm test r${round}` })
+}
+await exec(['git', 'diff', '--stat'], { check: true }) // throws ExecError unless exit 0
+```
+
+The command runs with the worker's own permissions — the same trust as the
+script itself; `exec` adds no sandbox. The ODW repository's
+`examples/test-fix-loop.js` is this loop as a complete workflow.
 
 ## schema
 
@@ -262,3 +320,5 @@ dispatch that depends on completion timing, does not match and runs again.
   default; set `concurrency` in config). Excess calls queue.
 - **Total-agent backstop** — a hard ceiling on dispatches per run (default
   1000). Exceeding it aborts the run, so a buggy loop cannot fan out forever.
+- `exec()` commands count toward neither limit; each is bounded by its own
+  `timeout` and `maxOutputBytes`.

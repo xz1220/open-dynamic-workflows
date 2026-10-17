@@ -83,6 +83,18 @@ export function killAllAgentProcesses(): void {
   for (const child of live) killProcessTree(child);
 }
 
+/**
+ * Count a process spawned outside {@link runCommand} — an exec() command — as
+ * live until the returned function is called, so the backstop above kills it
+ * too.
+ */
+export function trackProcess(child: ChildProcess): () => void {
+  live.add(child);
+  return () => {
+    live.delete(child);
+  };
+}
+
 export const runCommand: CommandRunner = (command, options = {}) => {
   const started = Date.now();
   const elapsed = (): number => (Date.now() - started) / 1000;
@@ -327,7 +339,7 @@ class Tail {
  * after the leader itself has exited). Windows has no process groups to
  * signal; `taskkill /T` kills the tree rooted at the agent instead.
  */
-function killProcessTree(child: ChildProcess): void {
+export function killProcessTree(child: ChildProcess): void {
   const pid = child.pid;
   if (pid === undefined) return;
   if (IS_WINDOWS) {

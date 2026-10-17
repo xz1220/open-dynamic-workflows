@@ -41,6 +41,11 @@ export interface RunContext {
    * ids stay unique across the whole run.
    */
   seq: { value: number };
+  /**
+   * The same, for exec() command steps (the `commandId` event field): its own
+   * sequence, so agent ids keep numbering agent dispatches only.
+   */
+  commandSeq: { value: number };
   currentPhase: string | null;
   /**
    * Save a completed agent's record (the worker writes the run directory's
@@ -106,6 +111,7 @@ export function buildContext(config: Config, options: BuildContextOptions = {}):
     budgetTotal,
     usage,
     seq: { value: 0 },
+    commandSeq: { value: 0 },
     currentPhase: null,
     saveAgentResult: options.saveAgentResult,
     replay: options.replay,

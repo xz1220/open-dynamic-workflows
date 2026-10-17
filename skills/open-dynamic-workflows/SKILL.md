@@ -77,11 +77,26 @@ outright, never silently passed through as a string).
 | `budget` | `{ total, spent(), remaining() }` — scale depth to a token target. |
 | `workflow(ref, args?)` | Run another workflow inline (one level deep). `ref` is a managed-directory name or `{ scriptPath }`; the child shares this run's concurrency cap, agent counter, and budget. |
 | `validate(source)` | Parse and compile-check source without running its workflow body; `meta` is parsed as a pure literal, never evaluated. Returns `{ ok, meta?, errors, warnings }`. **ODW extension** — not part of Claude Code's dialect. |
+| `exec(command, opts?)` | Run a command (tests, a build, a linter) without a model; resolves to `{ stdout, stderr, exitCode, signal, timedOut, truncated, durationMs }`. A string runs through the shell, an array as argv. **ODW extension** — not part of Claude Code's dialect. |
 
 `opts` for `agent`: `{ adapter?, schema?, label?, phase?, model?, agentType?, isolation? }`.
 `adapter` picks the CLI; `schema` is a raw JSON Schema object (an option, not
 a global); `agentType` is a **persona** injected into the prompt — *not* an
 adapter name.
+
+`opts` for `exec`: `{ cwd?, env?, timeout?, input?, maxOutputBytes?, label?, phase?, check? }`.
+It runs in the source directory by default, is killed after `timeout` seconds
+(600) with everything it started, and keeps 8 MiB per stream. A non-zero exit
+is a result to branch on, not an error — unless `check: true`, which throws a
+recoverable `ExecError`. It takes no agent slot, but pause and stop apply:
+
+```js
+let run = await exec('npm test')             // ODW extension
+for (let round = 1; run.exitCode !== 0 && round <= 3; round++) {
+  await agent(`Fix the failing tests:\n${run.stdout.slice(-4000)}\n${run.stderr.slice(-4000)}`)
+  run = await exec('npm test')
+}
+```
 
 **Rule of thumb:** use `parallel` when the next step needs the **whole batch**
 at once (dedup, tally, synthesis); default to `pipeline` for multi-stage work.
@@ -191,3 +206,4 @@ without answering when headless (a login, trust or approval prompt).
 | Branching on which agent finished first | Breaks reproducibility; keep reductions order-independent. |
 | Re-running a stalled or failed run from scratch | Read finished agents with `odw result <run> --agent <id>`; `odw stop`, fix the script, then `odw resume` — finished calls replay for free. |
 | Using `validate()` and expecting the script to run on Claude Code | `validate` is an ODW extension and runs on odw only. |
+| Using `exec()` and expecting the script to run on Claude Code | `exec` is an ODW extension and runs on odw only; `validate()` warns about it. |

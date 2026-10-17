@@ -16,7 +16,8 @@
  *
  *   2. Live counts. status.dispatched is only persisted at terminal states
  *      (worker.ts), so a running run reports 0 dispatched for its whole life.
- *      We count agents by folding events instead.
+ *      We count agents by folding events instead — and exec() command steps
+ *      with them, as nodes of their own kind (see {@link RunCounts}).
  *
  *   3. No fabricated progress. There is no token/cost accounting (budget.spent
  *      is a stub) and no declared agent total, so "progress" here is strictly
@@ -28,10 +29,17 @@ import { RunStore, TERMINAL_STATES } from "./run-store.js";
 
 export type AgentState = "running" | "done" | "failed" | "stale";
 
+/**
+ * One node of a run's graph: an agent() dispatch or, with `kind: "command"`,
+ * an exec() step (ODW extension). A command has no agent id, adapter or
+ * attempts; it carries its `commandId` and, once settled, its `exitCode`.
+ */
 export interface AgentView {
-  /** Stable per-dispatch id from the engine (null for pre-agentId event files). */
+  /** Stable per-dispatch id from the engine (null for pre-agentId event files, and for commands). */
   agentId: number | null;
-  /** Display label (the `label`/adapter/`agent` passed to agent()). */
+  /** "command" for an exec() step; "agent" for everything else (Claude Code runs included). */
+  kind: "agent" | "command";
+  /** Display label (the `label`/adapter/`agent` passed to agent(); for a command, its label or command). */
   label: string;
   /** Phase the call was made under, or null if none was active. */
   phase: string | null;
@@ -41,10 +49,14 @@ export interface AgentView {
   error: string | null;
   startedAt: number | null;
   finishedAt: number | null;
-  /** Wall-clock from agent_started to agent_finished/failed, in ms. */
+  /** Wall-clock from agent_started to agent_finished/failed, in ms (a command's own measurement). */
   durationMs: number | null;
   /** Replayed from an earlier run's saved result by `odw resume` (no agent ran). */
   cached: boolean;
+  /** Commands only: the per-run step id that pairs its events. */
+  commandId?: number | null;
+  /** Commands only: the exit status once settled; null while running or when a signal ended it. */
+  exitCode?: number | null;
 }
 
 export type RunDisplayState =
@@ -56,6 +68,13 @@ export type RunDisplayState =
   | "stopped"
   | "stale";
 
+/**
+ * Tallies over every node of the run's graph. exec() command steps count like
+ * agents here — `agents` is the node total, so `running + done + failed +
+ * stale === agents` holds and progress covers them — but they are not agent
+ * dispatches: `status.dispatched`, `odw status` and the maxAgents backstop
+ * count agents only.
+ */
 export interface RunCounts {
   agents: number;
   running: number;
@@ -81,7 +100,7 @@ export interface RunSummary {
   createdAt: number | null;
   updatedAt: number | null;
   counts: RunCounts;
-  /** settled (done+failed) / agents, in [0,1]; 0 when no agents seen yet. */
+  /** settled (done+failed) / agents, in [0,1]; 0 when no agents seen yet. Commands included. */
   progress: number;
   lastActivityTs: number | null;
 }
@@ -150,6 +169,10 @@ export function reconcileState(rawState: string, pid: number | null): {
  * label+phase match. Opening a fresh node per start (rather than keying by
  * label) keeps loop-until-dry workflows honest — the same label dispatched
  * across rounds shows as distinct runs.
+ *
+ * exec() steps fold the same way into `kind: "command"` nodes: command_started
+ * opens one, command_finished/failed settles the open one with the same
+ * `commandId`.
  */
 export function foldAgents(events: WorkflowEvent[]): AgentView[] {
   const agents: AgentView[] = [];
@@ -164,15 +187,19 @@ const pairKey = (label: unknown, phase: unknown) =>
  * Apply one event to a growing agent list — the incremental form of
  * {@link foldAgents}, shared with the CLI's live view so every observer pairs
  * events identically. Returns what changed: the node a start opened, or the
- * node a finish/fail settled; `{}` for non-agent events and stray finishes.
+ * node a finish/fail settled; `{}` for other events and stray finishes.
  */
 export function applyAgentEvent(
   agents: AgentView[],
   ev: WorkflowEvent,
 ): { opened?: AgentView; settled?: AgentView } {
+  if (ev.type === "command_started" || ev.type === "command_finished" || ev.type === "command_failed") {
+    return applyCommandEvent(agents, ev);
+  }
   if (ev.type === "agent_started") {
     const opened: AgentView = {
       agentId: typeof ev.agentId === "number" ? ev.agentId : null,
+      kind: "agent",
       label: String(ev.label ?? "agent"),
       phase: ev.phase != null ? String(ev.phase) : null,
       state: "running",
@@ -200,7 +227,8 @@ export function applyAgentEvent(
       // is best-effort, not exact.
       const k = pairKey(ev.label, ev.phase);
       target = agents.find(
-        (a) => a.state === "running" && a.agentId === null && pairKey(a.label, a.phase) === k,
+        (a) =>
+          a.kind === "agent" && a.state === "running" && a.agentId === null && pairKey(a.label, a.phase) === k,
       );
     }
     if (!target) return {}; // a stray finish with no matching start — ignore
@@ -222,7 +250,59 @@ export function applyAgentEvent(
   return {};
 }
 
-/** Tally agents by state (shared by the ODW and Claude run sources). */
+/** The exec() half of {@link applyAgentEvent}: command_* events open and settle command nodes. */
+function applyCommandEvent(
+  agents: AgentView[],
+  ev: WorkflowEvent,
+): { opened?: AgentView; settled?: AgentView } {
+  const commandId = typeof ev.commandId === "number" ? ev.commandId : null;
+  if (ev.type === "command_started") {
+    const opened: AgentView = {
+      agentId: null,
+      kind: "command",
+      cached: false,
+      label: String(ev.label ?? ev.command ?? "command"),
+      phase: ev.phase != null ? String(ev.phase) : null,
+      state: "running",
+      adapter: null,
+      attempts: null,
+      error: null,
+      startedAt: typeof ev.ts === "number" ? ev.ts : null,
+      finishedAt: null,
+      durationMs: null,
+      commandId,
+      exitCode: null,
+    };
+    agents.push(opened);
+    return { opened };
+  }
+  // The engine always sends commandId; without one, pair by label+phase as for legacy agents.
+  const k = pairKey(ev.label, ev.phase);
+  const target = agents.find(
+    (a) =>
+      a.kind === "command" &&
+      a.state === "running" &&
+      (commandId !== null ? a.commandId === commandId : pairKey(a.label, a.phase) === k),
+  );
+  if (!target) return {};
+  target.finishedAt = typeof ev.ts === "number" ? ev.ts : null;
+  // The command measured itself; the event timestamps are the fallback.
+  if (typeof ev.durationMs === "number" && Number.isFinite(ev.durationMs)) {
+    target.durationMs = Math.max(0, Math.round(ev.durationMs));
+  } else if (target.startedAt !== null && target.finishedAt !== null) {
+    target.durationMs = Math.max(0, Math.round((target.finishedAt - target.startedAt) * 1000));
+  }
+  target.exitCode = typeof ev.exitCode === "number" ? ev.exitCode : null;
+  if (ev.type === "command_failed") {
+    target.state = "failed";
+    target.error = ev.error != null ? String(ev.error) : null;
+  } else {
+    target.state = "done";
+  }
+  return { settled: target };
+}
+
+/** Tally nodes — agents and commands alike — by state (shared by the ODW and Claude run sources). */
 export function countAgents(agents: AgentView[]): RunCounts {
   let running = 0;
   let done = 0;

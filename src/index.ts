@@ -32,6 +32,7 @@ export type {
   Stage,
 } from "./primitives.js";
 export type { JsonSchema } from "./schema.js";
+export { ExecError, type ExecOptions, type ExecResult } from "./exec.js";
 
 // Loader / transform (the crux) & meta shape
 export type { WorkflowMeta, WorkflowPhaseMeta, LoadedWorkflow } from "./loader.js";

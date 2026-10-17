@@ -13,6 +13,7 @@ export type RunDisplayState =
 
 export type AgentState = "running" | "done" | "failed" | "stale";
 
+/** Tallies over every graph node: `agents` includes exec() command steps. */
 export interface RunCounts {
   agents: number;
   running: number;
@@ -70,6 +71,8 @@ export interface AgentView {
   cached?: boolean;
   /** `exec()` steps fold into the same list as agents (ODW extension). */
   kind?: "agent" | "command";
+  /** A command step's per-run id (its `agentId` is null). */
+  commandId?: number | null;
   /** A command step's exit code once it settled. */
   exitCode?: number | null;
   /** Why an agent failed: rate_limit, quota, auth, timeout, stalled, not_found, permission, exit. */
