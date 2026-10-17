@@ -20,9 +20,13 @@ export interface JobViewState {
   zoom: number;
   logQuery: string;
   logTypes: Set<string>;
+  /** How many of the newest matching events the Logs tab paints. */
+  logLimit: number;
   follow: boolean;
   motion: boolean;
 }
+
+export const LOG_PAGE = 600;
 
 const LOG_GROUPS: Array<{ key: string; label: string; types: string[] }> = [
   { key: "agent", label: "agents", types: ["agent_started", "agent_finished", "agent_failed"] },
@@ -268,13 +272,21 @@ function logRow(e: WorkflowEvent, i: number): string {
 function logsTab(s: JobViewState): string {
   const q = s.logQuery.trim().toLowerCase();
   const allowed = new Set(LOG_GROUPS.filter((g) => s.logTypes.has(g.key)).flatMap((g) => g.types));
-  const rows: string[] = [];
+  const matching: number[] = [];
   store.runEvents.forEach((e, i) => {
     const known = LOG_GROUPS.some((g) => g.types.includes(e.type));
     if (known && !allowed.has(e.type)) return;
     if (q && !JSON.stringify(e).toLowerCase().includes(q)) return;
-    rows.push(logRow(e, i));
+    matching.push(i);
   });
+  // A long run's log is painted from the newest end; older events page in on demand.
+  const hidden = Math.max(0, matching.length - s.logLimit);
+  const rows = matching.slice(hidden).map((i) => logRow(store.runEvents[i]!, i));
+  if (hidden) {
+    rows.unshift(
+      `<div class="more-row" data-key="lg-more"><button class="btn sm" data-logs-more>${t("Show {n} earlier events", { n: Math.min(hidden, LOG_PAGE) })}</button><span class="dim">${t("{n} older events hidden", { n: hidden })}</span></div>`,
+    );
+  }
   const chips = LOG_GROUPS.map(
     (g) =>
       `<button class="chip tog${s.logTypes.has(g.key) ? " on" : ""}" data-logtype="${g.key}">${esc(t(g.label))}</button>`,

@@ -233,6 +233,7 @@ test("a run view shows pending checkpoints, usage and failure reasons when the s
     zoom: 1,
     logQuery: "",
     logTypes: new Set(["agent"]),
+    logLimit: 600,
     follow: true,
     motion: false,
   };
@@ -255,5 +256,29 @@ test("a run view shows pending checkpoints, usage and failure reasons when the s
   assert.match(html, /1\.5k<\/span><span class="k">tokens/);
   assert.match(html, /\$0\.012/);
   assert.match(html, /rate limit/); // the failed node and the drawer name the class
+  store.focusRun(null);
+});
+
+test("the Logs tab paints the newest events and pages older ones in", () => {
+  const view: JobViewState = {
+    cpNote: "",
+    tab: "logs",
+    selectedAi: null,
+    zoom: 1,
+    logQuery: "",
+    logTypes: new Set(["agent", "phase", "log", "run"]),
+    logLimit: 600,
+    follow: true,
+    motion: false,
+  };
+  store.focusRun("20260101-000000-aaaaaa");
+  store.run = detail([]);
+  store.runEvents = Array.from({ length: 1500 }, (_, i) => ({ ts: NOW - 1500 + i, type: "log", message: `line ${i}` }));
+  const html = renderJob(view, NOW);
+  assert.equal((html.match(/class="logrow"/g) ?? []).length, 600);
+  assert.match(html, /line 1499/);
+  assert.doesNotMatch(html, /line 899</);
+  assert.match(html, /data-logs-more/);
+  assert.match(html, /900 older events hidden/);
   store.focusRun(null);
 });

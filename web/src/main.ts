@@ -36,7 +36,7 @@ import type { RunSummary, WorkflowDetail } from "./types";
 import { ACTIVE, TERMINAL, fmtDurSec, runDurationSec } from "./util";
 import { renderActivity } from "./views/activity";
 import { renderChat } from "./views/chat";
-import { renderJob, type JobTab, type JobViewState } from "./views/job";
+import { LOG_PAGE, renderJob, type JobTab, type JobViewState } from "./views/job";
 import { HISTORY_PAGE, renderJobs, type JobsFilter, type JobsState } from "./views/jobs";
 import { renderSettings } from "./views/settings";
 import { orderedWorkflows, renderWorkspace, wfKey } from "./views/workspace";
@@ -58,6 +58,7 @@ const job: JobViewState = {
   zoom: 1,
   logQuery: "",
   logTypes: new Set(["agent", "phase", "log", "run"]),
+  logLimit: LOG_PAGE,
   follow: true,
   motion: !reducedMotion(),
 };
@@ -396,6 +397,7 @@ async function enterRoute(): Promise<void> {
     if (store.focusedRunId !== id) {
       job.selectedAi = null;
       job.zoom = 1;
+      job.logLimit = LOG_PAGE;
       store.focusRun(id);
     }
     render();
@@ -640,6 +642,11 @@ root.addEventListener("click", (ev) => {
     const k = logType.dataset.logtype!;
     if (job.logTypes.has(k)) job.logTypes.delete(k);
     else job.logTypes.add(k);
+    return render();
+  }
+  if (t.closest("[data-logs-more]")) {
+    job.logLimit += LOG_PAGE;
+    job.follow = false; // reading history: don't yank the view back to the tail
     return render();
   }
   if (t.closest("[data-follow]")) {
