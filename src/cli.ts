@@ -25,6 +25,7 @@ import { parseArgs } from "node:util";
 
 import { listAdapters, loadConfig, locateConfig, resolveAdapter, resolveRunsRoot } from "./adapters/config.js";
 import type { Config } from "./adapters/types.js";
+import { killAllAgentProcesses } from "./adapters/runner.js";
 import { runDoctor, type CheckStatus } from "./doctor.js";
 import { AdapterNotFound } from "./errors.js";
 import type { WorkflowEvent } from "./events.js";
@@ -225,13 +226,27 @@ async function cmdDoctor(rest: string[]): Promise<number> {
     else if (wanted.length) smoke = wanted;
     else if (config.settings.defaultAdapter) smoke = [config.settings.defaultAdapter];
   }
-  const report = await runDoctor({
-    config,
-    configPath,
-    cwd,
-    smoke,
-    smokeTimeout: timeoutMs !== undefined ? timeoutMs / 1000 : undefined,
-  });
+  // Smoke agents lead their own process groups, out of the terminal's reach:
+  // on Ctrl-C (or a kill) take them down first, then die by the same signal.
+  const signals: NodeJS.Signals[] = ["SIGINT", "SIGTERM", "SIGHUP"];
+  const onSignal = (signal: NodeJS.Signals) => {
+    killAllAgentProcesses();
+    for (const s of signals) process.off(s, onSignal);
+    process.kill(process.pid, signal);
+  };
+  for (const s of signals) process.on(s, onSignal);
+  let report;
+  try {
+    report = await runDoctor({
+      config,
+      configPath,
+      cwd,
+      smoke,
+      smokeTimeout: timeoutMs !== undefined ? timeoutMs / 1000 : undefined,
+    });
+  } finally {
+    for (const s of signals) process.off(s, onSignal);
+  }
   if (values.json) {
     process.stdout.write(JSON.stringify(report, null, 2) + "\n");
     return report.ok ? 0 : 1;
