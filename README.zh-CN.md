@@ -591,6 +591,26 @@ node web/dev.mjs --api http://127.0.0.1:4317     # → http://127.0.0.1:5173
 
 ## 状态
 
+**`main` 上的新内容(2026 年 10 月):**
+- **可恢复的运行。** 每个 agent 完成时结果即落盘——运行中就能用 `odw agents` /
+  `odw result <run> --agent <id|label>` 或看板查看;`odw resume <run>` 会启动新运行并
+  重放所有未变的 `agent()` 调用,卡住或失败的运行只需重跑改动的部分(#24)。
+- **`exec()`** 不经模型直接在工作流里运行命令——测试、构建、lint——支持超时、输出上限
+  和停止(#31;ODW 扩展),并附 [`test-fix-loop.js`](examples/test-fix-loop.js) 与
+  [`review-swarm.js`](examples/review-swarm.js) 两个新示例。
+- **运行钩子与卡死看门狗。** 运行结束、失败或停止时触发 `notify` 命令或 webhook(兼容
+  Slack/Discord);可选的 `stallTimeout` 会终止并重启长时间无输出的 agent;worker 收到
+  SIGTERM 时会干净地停止运行。
+- **`odw doctor [--smoke]`** 检查运行环境、配置和每个适配器;加 `--smoke` 会发一条真实
+  提示,揪出那些无头模式下没有回答却以 0 退出的 CLI。
+- **可靠性。** 超时和停止会作用于 agent 的整个进程树(先 SIGTERM 再 SIGKILL),也能停下
+  已在运行的 agent;崩溃或被吞掉的致命错误不会再让运行卡在 `running`,停止的运行也不会被
+  记成 `done`;有歧义的结构化回复会重试而不是瞎猜;配置里的非法数字会直接报错。
+- **安全与规模。** 工作流 `meta` 只解析、绝不求值,列出工作流时也不编译正文;看板服务端
+  增量读取事件、只推送运行列表的变化,上千个运行也依然流畅;安装时校验 SHA256;CI 覆盖
+  Node 20/22/24、macOS 与 Windows。
+- **全新设计的看板**([见上文](#看板观测检查对话))与落地页。
+
 **0.5.0 开发版：**排队任务在真正启动前重新检查暂停、停止和预算;等待命令能识别后台进程
 已退出。升级时二进制与 skill 固定同一版本,替换失败恢复旧文件;源码构建显示具体修订号。
 
@@ -620,12 +640,13 @@ node web/dev.mjs --api http://127.0.0.1:4317     # → http://127.0.0.1:5173
 旗舰示例 [`examples/deep-research.js`](examples/deep-research.js) 端到端跑通
 (plan → search → extract → vote → report)。
 
-### 路线图(v1.5+)
+### 路线图
 
-`model` / `agentType` 富路由 · adapter 上报的真实 token
-用量(当前预算按估算计量)· 用于可重放确定性的
-`Date.now`/`Math.random` 沙箱。
-完整方案见 [`docs/dynamic-workflows-tech-plan.md`](docs/dynamic-workflows-tech-plan.md);
+按并行 coding agent 用户反馈的需求排序([调研](docs/research/user-needs-2026-10.md)):
+adapter 上报的真实 token 用量与花费(当前预算按估算计量)· 感知限流/额度的重试与
+有类型的失败 · 无头运行的"成功证据" · 隔离 agent 改动的审阅与合并 · 人工 `checkpoint()` ·
+worktree 环境准备与每个 agent 的端口 · 调度与评测。完整规划见 [`docs/ROADMAP.md`](docs/ROADMAP.md);
+最初的设计见 [`docs/dynamic-workflows-tech-plan.md`](docs/dynamic-workflows-tech-plan.md);
 ODW 所对齐的 Claude Code 方言背景见
 [`docs/dynamic-workflows-research.md`](docs/dynamic-workflows-research.md)。
 

@@ -30,7 +30,7 @@
 
 ---
 
-## 2. 已交付（截至 2026-10）
+## 2. 已交付（截至 2026-10-17）
 
 | 模块 | 内容 |
 | --- | --- |
@@ -50,6 +50,8 @@
 - 诊断：新增 `odw doctor [--smoke]`，检查运行环境、配置、运行目录和各适配器；`--smoke` 会发一条真实提示，揪出"以 0 退出却没回答"的无头 CLI。
 - 运行列表推送改为增量（`/api/stream?delta=1`）；脚本报错的行号与源文件一致；Windows 终端也能显示实时视图。
 - 新示例 `review-swarm.js`：先梳理改动，再按多个视角并行审查，每条发现独立验证，最后输出带证据的分级报告。
+- 独立代码复审发现的 15 个问题全部修复：工作流加载阶段的代码注入、停止时先 SIGTERM 再 SIGKILL、schema 歧义不再靠猜、聊天会话与多进程写入、缓存与增量推送的竞态、Windows 实时视图等。
+- GitHub Pages 落地页按同一套设计语言重做。
 - **看板重新设计**（"纸、墨、信号"）：脉搏图、带走线动画的 DAG、甘特时间线、agent 抽屉、可过滤可跟随的日志、JSON 结果树、命令面板、快捷键、运行结束提示与桌面通知、亮/暗主题、减弱动效、增量渲染（不再重置滚动位置）。
 
 ---
@@ -60,10 +62,10 @@
 
 | # | 方向 | 需求 | 规模 | 状态 |
 | --- | --- | --- | --- | --- |
-| N1 | **每个 agent 的结果落盘 + `odw resume`**：已完成的 agent 结果原子写入 run 目录，可以按运行和按 agent 查询（CLI、API、看板抽屉）；`resume` 重放 `(prompt, opts)` 未变的调用，只重跑变化或失败的部分 | #4 恢复（[#24](https://github.com/xz1220/open-dynamic-workflows/issues/24)） | M | 🚧 |
-| N2 | **完成通知钩子**：`notify` 配置支持 command 和 webhook，覆盖运行结束、失败、停止；看板侧已有提示和桌面通知 | #11 | S | 🚧 |
-| N3 | **卡死看门狗**：agent 输出长时间没有动静（`stallMs`）就触发重启，重启次数有上限，并记录 stall 事件 | #5 | S | 🚧 |
-| N4 | **命令原语** `exec()`（ODW 扩展）：异步执行，支持参数、cwd、超时、输出上限，可被取消，返回 stdout/stderr/退出码，并在 DAG 中可见 | [#31](https://github.com/xz1220/open-dynamic-workflows/issues/31) | M | 🚧 |
+| N1 | **每个 agent 的结果落盘 + `odw resume`**：已完成的 agent 结果原子写入 run 目录，可以按运行和按 agent 查询（`odw agents`、`odw result --agent`、API、看板抽屉）；`resume` 重放 `(prompt, opts)` 未变的调用，只重跑变化或失败的部分 | #4 恢复（[#24](https://github.com/xz1220/open-dynamic-workflows/issues/24)） | M | ✅ |
+| N2 | **完成通知钩子**：`notify` 配置支持 command 和 webhook（兼容 Slack/Discord），覆盖运行结束、失败、停止；看板侧有提示和桌面通知 | #11 | S | ✅ |
+| N3 | **卡死看门狗**：agent 输出长时间没有动静（`stallTimeout`）就终止并重启，重启次数有上限（`stallRestarts`）并记录事件；worker 收到 SIGTERM/SIGINT/SIGHUP 时干净地停止运行 | #5 | S | ✅ |
+| N4 | **命令原语** `exec()`（ODW 扩展）：异步执行，支持参数、cwd、超时、输出上限，可被取消，返回 stdout/stderr/退出码，并在 DAG 中可见；附 `test-fix-loop.js` 示例 | [#31](https://github.com/xz1220/open-dynamic-workflows/issues/31) | M | ✅ |
 | N5 | **用量与成本**：适配器改用各 CLI 的 JSON 输出模式（`claude --output-format json` 的 `total_cost_usd`、`codex exec --json` 的 usage），按 agent 和阶段记录真实用量，`budget` 改用真实计量；大规模 fan-out 启动前给出预警 | #1 | M | ⏳ |
 | N6 | **失败分类与退避**：区分限流、过载、额度耗尽、鉴权四类失败；按适配器节流，遵守 retry-after；额度耗尽时整体暂停，到重置时间自动恢复；支持回退适配器链 | #3 | M | ⏳ |
 | N7 | **有证据的成功**：读取 CLI 报告的成功信号（`is_error`、`permission_denials`、MCP 状态），转成有类型的失败；`agent()` 可声明后置条件（"有文件改动"、"某命令通过"）。`odw doctor --smoke` 已交付 | #7（[#23](https://github.com/xz1220/open-dynamic-workflows/issues/23)） | M | 🚧 部分 |
@@ -97,7 +99,7 @@
 | 阶段 | 内容 |
 | --- | --- |
 | ✅ 本轮 | 增量渲染（morph）；脉搏图；带绘制与流动动画的 DAG（缩放、适应、拖拽、自动跟随当前阶段）；甘特时间线；agent 抽屉；日志过滤与跟随；JSON 树；命令面板（⌘K）与快捷键速查（?）；运行结束提示 + 桌面通知；首次使用引导；主题、动效、语言偏好；键盘可达与对比度；手机与窄屏布局；增量推送运行列表 |
-| 🚧 随 N1、N4 | 抽屉内显示 agent 的实际输出；DAG 中显示 `exec()` 步骤（前端已就绪，等待后端） |
+| ✅ 随 N1、N4 | 抽屉内显示 agent 的实际输出（运行中即可查看）；DAG、时间线、日志中显示 `exec()` 命令步骤 |
 | ✅ 前端已就绪 | 检查点审批卡片（X4）、token 与花费（N5）、失败原因标签（N6）、运行钩子配置（N2）——后端数据一到即可显示 |
 | ⏳ 随 N5、X1、X3、X4 | 按 agent 和阶段的成本视图；并排 diff 审阅；transcript 回放；检查点审批 |
 

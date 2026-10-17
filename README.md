@@ -655,6 +655,30 @@ into the host's `node`, so each target is built on its own runner.
 
 ## Status
 
+**What's new on `main` (October 2026):**
+- **Recoverable runs.** Every finished agent's result is saved as it lands — read it
+  mid-run with `odw agents` / `odw result <run> --agent <id|label>` or in the
+  dashboard — and `odw resume <run>` starts a new run that replays every unchanged
+  `agent()` call, so a stalled or failed run costs only the work that changed (#24).
+- **`exec()`** runs a command from a workflow without a model — tests, builds,
+  linters — with timeouts, output caps and stop handling (#31; ODW extension), and
+  the new [`test-fix-loop.js`](examples/test-fix-loop.js) and
+  [`review-swarm.js`](examples/review-swarm.js) examples.
+- **Run hooks and a stall watchdog.** A `notify` command or webhook (Slack/Discord-
+  ready) fires when a run finishes, fails or stops; an opt-in `stallTimeout` kills
+  and restarts agents that go quiet; a SIGTERM to the worker stops the run cleanly.
+- **`odw doctor [--smoke]`** checks the runtime, config and every adapter — and with
+  `--smoke` sends one real prompt to catch CLIs that exit 0 without answering.
+- **Reliability.** Timeouts and stops reach an agent's whole process tree (SIGTERM,
+  then SIGKILL) and agents already running; crashes and swallowed fatal errors can no
+  longer leave a run `running` or call a stopped run `done`; ambiguous structured
+  replies are retried instead of guessed; malformed config numbers fail loudly.
+- **Safety and scale.** Workflow `meta` is parsed, never evaluated, and listings never
+  compile a body; the dashboard server reads events incrementally, pushes only run-list
+  deltas and stays responsive with thousands of runs; installs verify SHA256 checksums;
+  CI covers Node 20/22/24, macOS and Windows.
+- **A redesigned dashboard** ([above](#dashboard-observe-inspect-chat)) and landing page.
+
 **0.5.0 development:** queued tasks recheck pause, stop, and budget before
 starting. Waiting commands detect a vanished worker instead of waiting forever.
 Upgrades keep the binary and skill on the same release and roll back replacement
@@ -694,12 +718,15 @@ loader/transform, the JSON-Schema engine, the background runtime, and the `odw`
 CLI. The regression suite runs in [CI](https://github.com/xz1220/open-dynamic-workflows/actions/workflows/ci.yml), and the flagship [`examples/deep-research.js`](examples/deep-research.js)
 runs end-to-end (plan → search → extract → vote → report).
 
-### Roadmap (v1.5+)
+### Roadmap
 
-`model` / `agentType` rich routing · adapter-reported
-token usage (today's budget meters an estimate) · a
-`Date.now`/`Math.random` sandbox for replay-determinism. Full plan:
-[`docs/dynamic-workflows-tech-plan.md`](docs/dynamic-workflows-tech-plan.md).
+Ranked by what users of parallel coding agents report needing
+([research](docs/research/user-needs-2026-10.md)): adapter-reported token usage and
+cost (today's budget meters an estimate) · rate-limit/quota-aware retries and
+typed failures · evidence of success for headless runs · review-and-apply for
+isolated agents' diffs · human `checkpoint()`s · worktree setup and per-agent ports ·
+scheduling and evaluation. Full plan: [`docs/ROADMAP.md`](docs/ROADMAP.md); the
+original design: [`docs/dynamic-workflows-tech-plan.md`](docs/dynamic-workflows-tech-plan.md).
 Background on the Claude Code dialect ODW aligns with:
 [`docs/dynamic-workflows-research.md`](docs/dynamic-workflows-research.md).
 
