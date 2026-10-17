@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execPath } from "node:process";
 
-import { runCommand } from "../src/adapters/runner.js";
+import { runCommand, TAIL_CHARS } from "../src/adapters/runner.js";
 
 test("captures stdout and a clean exit", async () => {
   const r = await runCommand([execPath, "-e", "process.stdout.write('hello')"]);
@@ -153,4 +153,45 @@ test("runaway output is capped before it can exhaust the worker heap", async () 
   assert.equal(r.timedOut, false);
   assert.ok(Buffer.byteLength(r.stdout) <= 4096);
   assert.match(r.stderr, /process output exceeded 4096 bytes/);
+});
+
+test("chatty stderr is kept as a bounded tail and never counts as runaway output", async () => {
+  const r = await runCommand(
+    [
+      execPath,
+      "-e",
+      "for (let i = 0; i < 2000; i++) process.stderr.write('progress ' + i + ' ' + 'x'.repeat(100) + '\\n');" +
+        "process.stderr.write('FINAL ERROR LINE\\n'); process.stdout.write('ok')",
+    ],
+    { maxOutputBytes: 4096 },
+  );
+  assert.equal(r.returncode, 0, "stderr beyond the stdout cap must not kill the agent");
+  assert.equal(r.stdout, "ok");
+  assert.ok(r.stderr.length <= TAIL_CHARS + 100, `stderr kept ${r.stderr.length} chars`);
+  assert.match(r.stderr, /^\[… \d+ earlier characters omitted\]\n/);
+  assert.match(r.stderr, /FINAL ERROR LINE\n$/, "the tail, where the final error lands, is kept");
+});
+
+test("streamed stdout reaches the consumer whole and is not cut off at the stdout cap", async () => {
+  let received = "";
+  const r = await runCommand(
+    [execPath, "-e", "for (let i = 0; i < 64; i++) process.stdout.write('y'.repeat(1023) + '\\n')"],
+    { maxOutputBytes: 4096, onStdout: (chunk) => void (received += chunk) },
+  );
+  assert.equal(r.returncode, 0);
+  assert.equal(received.length, 64 * 1024, "the consumer saw every byte");
+  assert.ok(r.stdout.length <= TAIL_CHARS, "only a diagnostic tail is retained on the result");
+  assert.ok(received.endsWith(r.stdout));
+});
+
+test("a stdout consumer can terminate the process, reported like an output overrun", async () => {
+  const started = Date.now();
+  const r = await runCommand(
+    [execPath, "-e", "process.stdout.write('first chunk\\n'); setTimeout(() => {}, 30000)"],
+    { onStdout: (_chunk, terminate) => terminate("stdout line 1 is unusable") },
+  );
+  assert.ok(Date.now() - started < 5000, "the consumer's kill was not honoured promptly");
+  assert.equal(r.returncode, 1);
+  assert.equal(r.timedOut, false);
+  assert.match(r.stderr, /\[stdout line 1 is unusable; terminated\]/);
 });

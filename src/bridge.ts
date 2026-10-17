@@ -18,7 +18,7 @@ import { join } from "node:path";
 
 import { resolveAdapter } from "./adapters/config.js";
 import { expand, expandAll, type PlaceholderContext } from "./adapters/placeholders.js";
-import { decodeAdapterOutput } from "./adapters/output.js";
+import { AdapterOutputDecoder, decodeAdapterOutput } from "./adapters/output.js";
 import { runCommand, type CommandRunner } from "./adapters/runner.js";
 import {
   adapterDisplayName,
@@ -112,10 +112,12 @@ export class Bridge {
     let problems: string[] = [];
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       const prompt = problems.length ? `${basePrompt}\n\n${retryFeedback(problems)}` : basePrompt;
-      const { cli, diff } = await this.invoke(adapter, plan, prompt, timeout);
+      const { cli, diff, decoder } = await this.invoke(adapter, plan, prompt, timeout);
       if (!cliOk(cli)) throw new AdapterExecutionError(cliFailureMessage(adapter, cli));
 
-      const text = decodeAdapterOutput(adapter, cli.stdout);
+      // A runner that streams stdout fed the decoder and kept only a tail; an
+      // injected runner that does not stream returns the whole stdout instead.
+      const text = decoder?.received ? decoder.finish() : decodeAdapterOutput(adapter, cli.stdout);
       if (!request.schema) {
         return { value: text, text, adapter: adapter.name, attempts: attempt, diff, cli, notes: plan.notes };
       }
@@ -155,7 +157,17 @@ export class Bridge {
     plan: InvocationPlan,
     prompt: string,
     timeout: number | undefined,
-  ): Promise<{ cli: CliResult; diff: string }> {
+  ): Promise<{ cli: CliResult; diff: string; decoder: AdapterOutputDecoder | null }> {
+    // JSONL transcripts are decoded while they stream, so only the final text
+    // is retained (and a verbose session is never cut off at the stdout cap);
+    // text replies are buffered by the runner under its cap, as before.
+    const decoder = adapter.output?.format === "jsonl" ? new AdapterOutputDecoder(adapter) : null;
+    const onStdout = decoder
+      ? (chunk: string, terminate: (reason: string) => void) => {
+          decoder.write(chunk);
+          if (decoder.overflow) terminate(decoder.overflow);
+        }
+      : undefined;
     return withWorkspace(this.source, plan.workspaceMode, async (ws) => {
       let promptFile = "";
       let cleanup: (() => Promise<void>) | undefined;
@@ -181,9 +193,9 @@ export class Bridge {
         const env = adapter.env
           ? ({ ...process.env, ...adapter.env } as Record<string, string>)
           : undefined;
-        const cli = await this.runner(command, { stdin, cwd: ws.path, env, timeout });
+        const cli = await this.runner(command, { stdin, cwd: ws.path, env, timeout, onStdout });
         const diff = await ws.diff();
-        return { cli, diff };
+        return { cli, diff, decoder };
       } finally {
         if (cleanup) await cleanup();
       }
@@ -210,7 +222,10 @@ function retryFeedback(problems: string[]): string {
 
 function cliFailureMessage(adapter: Adapter, cli: CliResult): string {
   const reason = cli.timedOut ? "timed out" : `exited with code ${cli.returncode}`;
-  const detail = (cli.stderr.trim() || cli.stdout.trim()).slice(0, 500);
+  const text = cli.stderr.trim() || cli.stdout.trim();
+  // Keep both ends of a long diagnostic: the head usually names the error, the
+  // tail holds the final message and the runner's own notes (kill reasons).
+  const detail = text.length > 500 ? `${text.slice(0, 250)} … ${text.slice(-250)}` : text;
   const suffix = detail ? `: ${detail}` : "";
   return `adapter '${adapter.name}' ${reason}${suffix}`;
 }

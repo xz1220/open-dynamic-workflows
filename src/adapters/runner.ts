@@ -31,14 +31,28 @@ export interface RunCommandOptions {
   env?: Record<string, string>;
   /** Seconds before the process is killed; omit for no timeout. */
   timeout?: number;
-  /** Combined stdout+stderr bytes to retain before killing; omit for a safe default. */
+  /**
+   * Stdout bytes to retain before killing; omit for a safe default. Stderr is
+   * diagnostic only: just its last {@link TAIL_CHARS} characters are kept, and
+   * it never counts toward this cap.
+   */
   maxOutputBytes?: number;
+  /**
+   * Stream stdout to a consumer instead of buffering it. The result's `stdout`
+   * then holds only a diagnostic tail, and `maxOutputBytes` does not apply: the
+   * consumer bounds its own memory, and calls `terminate(reason)` to kill the
+   * process if the output becomes unusable (reported like an output overrun).
+   */
+  onStdout?: (chunk: string, terminate: (reason: string) => void) => void;
 }
 
 /** The injectable contract for executing a command. */
 export type CommandRunner = (command: string[], options?: RunCommandOptions) => Promise<CliResult>;
 
 export const DEFAULT_MAX_OUTPUT_BYTES = 32 * 1024 * 1024;
+
+/** Characters of stderr (and of streamed stdout) kept for diagnostics. */
+export const TAIL_CHARS = 64 * 1024;
 
 /**
  * After the agent exits (or is killed), how long its stdout/stderr may take to
@@ -111,10 +125,12 @@ export const runCommand: CommandRunner = (command, options = {}) => {
     });
 
     let stdout = "";
-    let stderr = "";
+    const stderr = new Tail(TAIL_CHARS);
+    const streamedTail = options.onStdout ? new Tail(TAIL_CHARS) : null;
     let timedOut = false;
     let outputBytes = 0;
-    let outputExceeded = false;
+    /** Why the output was refused (the stdout cap, or the stream consumer). */
+    let overrun: string | null = null;
     let settled = false;
     let timer: NodeJS.Timeout | undefined;
     let drainTimer: NodeJS.Timeout | undefined;
@@ -134,15 +150,19 @@ export const runCommand: CommandRunner = (command, options = {}) => {
       // timeout kill (already flagged) from an external/crash signal (SIGSEGV,
       // OOM SIGKILL, …) so a crash is never mistaken for a clean exit (0).
       let returncode: number;
-      if (outputExceeded) returncode = 1;
+      if (overrun) returncode = 1;
       else if (timedOut) returncode = -1;
       else if (code !== null) returncode = code;
       else returncode = signal ? 128 : 1;
       const note = signal && !timedOut ? `\n[process terminated by signal ${signal}]` : "";
-      const outputNote = outputExceeded
-        ? `\n[process output exceeded ${maxOutputBytes} bytes; terminated]`
-        : "";
-      finish({ returncode, stdout, stderr: stderr + note + outputNote, timedOut, duration: elapsed() });
+      const outputNote = overrun ? `\n[${overrun}; terminated]` : "";
+      finish({
+        returncode,
+        stdout: streamedTail ? streamedTail.toString() : stdout,
+        stderr: stderr.toString() + note + outputNote,
+        timedOut,
+        duration: elapsed(),
+      });
     };
 
     /** Stop listening to the pipes and settle with what was captured. */
@@ -166,35 +186,38 @@ export const runCommand: CommandRunner = (command, options = {}) => {
       }, options.timeout * 1000);
     }
 
-    const appendLimited = (stream: "stdout" | "stderr", d: string): void => {
-      if (outputExceeded) return;
+    const refuseOutput = (reason: string): void => {
+      if (overrun) return;
+      overrun = reason;
+      terminate();
+    };
+
+    const appendStdout = (d: string): void => {
+      if (overrun) return;
+      if (options.onStdout) {
+        streamedTail!.push(d);
+        options.onStdout(d, refuseOutput);
+        return;
+      }
       if (!hasOutputLimit) {
-        if (stream === "stdout") stdout += d;
-        else stderr += d;
+        stdout += d;
         return;
       }
       const bytes = Buffer.byteLength(d);
       const remaining = Math.max(0, maxOutputBytes - outputBytes);
       if (remaining > 0) {
-        const chunk = bytes <= remaining ? d : Buffer.from(d).subarray(0, remaining).toString("utf8");
-        if (stream === "stdout") stdout += chunk;
-        else stderr += chunk;
+        stdout += bytes <= remaining ? d : Buffer.from(d).subarray(0, remaining).toString("utf8");
       }
       outputBytes += bytes;
-      if (bytes > remaining) {
-        outputExceeded = true;
-        terminate();
-      }
+      if (bytes > remaining) refuseOutput(`process output exceeded ${maxOutputBytes} bytes`);
     };
 
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (d: string) => {
-      appendLimited("stdout", d);
-    });
-    child.stderr.on("data", (d: string) => {
-      appendLimited("stderr", d);
-    });
+    child.stdout.on("data", appendStdout);
+    // Chatty stderr (progress, debug logs) must neither exhaust memory nor
+    // count as runaway output: keep the tail, where the final error lands.
+    child.stderr.on("data", (d: string) => stderr.push(d));
 
     child.on("error", (err) => {
       // After a successful spawn, 'error' only reports a failed kill; the real
@@ -230,6 +253,32 @@ export const runCommand: CommandRunner = (command, options = {}) => {
     child.stdin.end();
   });
 };
+
+/** The last `limit` characters of a stream, with a marker when earlier text was dropped. */
+class Tail {
+  private text = "";
+  private dropped = 0;
+
+  constructor(private readonly limit: number) {}
+
+  push(chunk: string): void {
+    this.text += chunk;
+    // Trim lazily (at twice the limit) so a stream of small chunks stays linear.
+    if (this.text.length > this.limit * 2) this.trim();
+  }
+
+  toString(): string {
+    this.trim();
+    return this.dropped ? `[… ${this.dropped} earlier characters omitted]\n${this.text}` : this.text;
+  }
+
+  private trim(): void {
+    const excess = this.text.length - this.limit;
+    if (excess <= 0) return;
+    this.dropped += excess;
+    this.text = this.text.slice(excess);
+  }
+}
 
 /**
  * Kill an agent and every process it started. Best-effort and idempotent: any

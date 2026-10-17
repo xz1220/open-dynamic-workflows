@@ -6,7 +6,7 @@ export { expand, expandAll, PLACEHOLDERS } from "./placeholders.js";
 export type { PlaceholderName, PlaceholderContext } from "./placeholders.js";
 export { BUILTIN_ADAPTERS, DEFAULT_SETTINGS } from "./builtin.js";
 export type { RawAdapter } from "./builtin.js";
-export { decodeAdapterOutput } from "./output.js";
+export { AdapterOutputDecoder, decodeAdapterOutput } from "./output.js";
 export {
   loadConfig,
   defaultConfig,

@@ -131,6 +131,52 @@ test("new harness adapters send prompts on stdin and route workspace and model f
   }
 });
 
+test("JSONL replies are decoded while the runner streams them; text replies are not streamed", async () => {
+  const lines = [
+    JSON.stringify({ type: "step_start", part: {} }),
+    JSON.stringify({ type: "text", part: { type: "text", text: "draft" } }),
+    JSON.stringify({ type: "text", part: { type: "text", text: "streamed answer" } }),
+  ].join("\n");
+  const config = defaultConfig();
+  config.settings.defaultAdapter = "opencode";
+  let streamedTo: unknown;
+  const bridge = new Bridge(config, {
+    runner: async (_command, options) => {
+      streamedTo = options?.onStdout;
+      // Like runCommand with a consumer: feed it in pieces, keep only a tail.
+      for (let at = 0; at < lines.length; at += 5) options!.onStdout!(lines.slice(at, at + 5), () => {});
+      return ok("");
+    },
+  });
+  const out = await bridge.run({ prompt: "p" });
+  assert.equal(typeof streamedTo, "function");
+  assert.equal(out.text, "streamed answer");
+
+  let textStreamed: unknown = "unset";
+  const textBridge = new Bridge(inplaceConfig(), {
+    runner: async (_command, options) => {
+      textStreamed = options?.onStdout;
+      return ok("plain answer");
+    },
+  });
+  assert.equal((await textBridge.run({ prompt: "p" })).text, "plain answer");
+  assert.equal(textStreamed, undefined, "text adapters keep the runner's capped buffer");
+});
+
+test("a failure message keeps both ends of a long diagnostic", async () => {
+  const stderr = `Error: the real cause\n${"noise ".repeat(500)}\n[process output exceeded 10 bytes; terminated]`;
+  const bridge = new Bridge(inplaceConfig(), {
+    runner: async () => ({ returncode: 1, stdout: "", stderr, timedOut: false, duration: 0 }),
+  });
+  await assert.rejects(
+    () => bridge.run({ prompt: "x" }),
+    (err: Error) =>
+      err instanceof AdapterExecutionError &&
+      /Error: the real cause/.test(err.message) &&
+      /process output exceeded 10 bytes; terminated\]$/.test(err.message),
+  );
+});
+
 test("Gemini runs headlessly with an expanded --prompt argument", async () => {
   const config = defaultConfig();
   config.settings.defaultAdapter = "gemini";
