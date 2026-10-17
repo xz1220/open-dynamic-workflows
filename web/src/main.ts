@@ -987,6 +987,18 @@ setPaletteSource((): PaletteItem[] => {
 
 // --- run transitions → toasts + desktop notifications ---
 store.onTransition((r: RunSummary) => {
+  if (r.state === "waiting") {
+    const ask = {
+      state: "waiting",
+      title: tr("{name} is waiting for you", { name: r.name }),
+      body: r.waiting?.title ?? tr("A checkpoint needs your decision."),
+      href: runHash(r.runId),
+      ttlMs: 12_000,
+    };
+    toast(ask);
+    notifyDesktop(ask);
+    return;
+  }
   const dur = fmtDurSec(runDurationSec(r.createdAt, r.updatedAt, true));
   const title =
     r.state === "done"

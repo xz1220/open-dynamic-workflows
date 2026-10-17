@@ -421,3 +421,17 @@ test("checkpoint() gates join the graph, the timeline and the drawer", () => {
   store.runEvents = [];
   store.focusRun(null);
 });
+
+test("the store announces a run that starts waiting, and a run that ends", () => {
+  const seen: string[] = [];
+  store.onTransition((r, prev) => seen.push(`${r.runId}:${prev}→${r.state}`));
+  const setRuns = (runs: RunSummary[]) => (store as unknown as { setRuns(r: RunSummary[]): void }).setRuns(runs);
+  const prev = store.runs;
+  setRuns([summary({ runId: "r1", state: "running" })]);
+  setRuns([summary({ runId: "r1", state: "running" })]);
+  setRuns([summary({ runId: "r1", state: "waiting" }), summary({ runId: "r2", state: "waiting" })]);
+  setRuns([summary({ runId: "r1", state: "waiting" }), summary({ runId: "r2", state: "running" })]);
+  setRuns([summary({ runId: "r1", state: "done" }), summary({ runId: "r2", state: "waiting" })]);
+  assert.deepEqual(seen, ["r1:running→waiting", "r2:pending→waiting", "r1:waiting→done", "r2:running→waiting"]);
+  store.runs = prev;
+});

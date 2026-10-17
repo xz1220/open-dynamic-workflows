@@ -18,7 +18,8 @@ Add a `notify` block to your config. ODW reads the first config it finds —
 file your runs actually use (`odw doctor` names it). Hooks fire once per run,
 after its final state is on disk; they can neither delay nor change it, and a
 failing hook is only logged to the run's `worker.log`. `on` picks the states
-that fire (`done`, `failed`, `stopped`; all three by default).
+that fire (`done`, `failed`, `stopped`; all three by default — plus the opt-in
+`waiting`, below).
 
 ### Slack or Discord
 
@@ -84,6 +85,27 @@ A desktop banner — macOS (AppleScript reads the environment itself), then Linu
 `sh -c` is there only because those one-liners expand variables; a plain
 argv such as `["/usr/local/bin/odw-notify"]` needs no shell, and a script of
 your own is the easiest place for anything longer.
+
+## When a run needs a decision
+
+A workflow that calls [`checkpoint()`](../../README.md#human-checkpoints-odw-extension)
+waits for a person. Add `"waiting"` to `on` and the same hooks fire once per
+checkpoint as it starts waiting — the command with `ODW_RUN_STATE=waiting`,
+`ODW_CHECKPOINT_ID` and `ODW_CHECKPOINT_TITLE`, the webhook with
+`"state": "waiting"` and a `text` line naming the command that answers it:
+
+```json
+{
+  "notify": {
+    "webhook": "https://hooks.example.com/YOUR/WEBHOOK/PATH",
+    "on": ["waiting", "failed"]
+  }
+}
+```
+
+Answer from any shell with `odw approve <run> --note "…"` (or `odw reject`), or
+with Approve/Reject in the dashboard, which also raises a toast — and, with Run
+notifications on, a system notification — the moment a run starts waiting.
 
 ## From a script or cron: the exit code
 

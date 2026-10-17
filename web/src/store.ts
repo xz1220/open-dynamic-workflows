@@ -84,8 +84,11 @@ class Store {
       const before = new Map(this.runs.map((r) => [r.runId, r.state]));
       for (const r of next) {
         const prev = before.get(r.runId);
-        if (prev && ACTIVE.has(prev) && (TERMINAL.has(r.state) || r.state === "stale")) {
-          for (const l of this.transitions) l(r, prev);
+        const ended = prev && ACTIVE.has(prev) && (TERMINAL.has(r.state) || r.state === "stale");
+        // A run that starts waiting at a checkpoint() needs a person: say so too.
+        const asks = r.state === "waiting" && prev !== "waiting";
+        if (ended || asks) {
+          for (const l of this.transitions) l(r, prev ?? "pending");
         }
       }
     }

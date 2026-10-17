@@ -471,6 +471,8 @@ const ZH: Record<string, string> = {
   "{n} older runs": "还有 {n} 条更早的运行",
   "lifted at {t}": "已于 {t} 解除",
   "lifts in {d} · {t}": "{d} 后解除 · {t}",
+  "{name} is waiting for you": "{name} 正在等你",
+  "A checkpoint needs your decision.": "有一个检查点需要你决定。",
   // checkpoint() gates in the graph and drawer.
   "waiting for a person": "等待人工决定",
   approved: "已批准",
