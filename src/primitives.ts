@@ -13,6 +13,7 @@
  *   - budget    — the run's token budget: total, estimated spend, remaining
  *   - workflow  — run another workflow inline (one level deep)
  *   - validate  — compile-check workflow source (ODW extension)
+ *   - exec      — run a command without a model (ODW extension; see exec.ts)
  *
  * `args` is not here: it is run data injected alongside these globals.
  */
@@ -24,6 +25,7 @@ import type { AgentRequest } from "./bridge.js";
 import { spentTokens, type RunContext } from "./context.js";
 import { WorkflowScriptError, isFatalError } from "./errors.js";
 import { AGENT_FAILED, AGENT_FINISHED, AGENT_STARTED, LOG, PHASE_STARTED, event } from "./events.js";
+import { ExecError, createExec, type ExecOptions, type ExecResult } from "./exec.js";
 // Value import of the loader is safe: loader.ts only type-imports from here, so
 // the module cycle is erased at compile time and never exists at runtime.
 import { loadWorkflowScript, scanDualCompat, type WorkflowMeta } from "./loader.js";
@@ -83,6 +85,12 @@ export interface WorkflowGlobals {
    * lets a workflow generate and verify other workflows.
    */
   validate(source: string): ValidationReport;
+  /**
+   * Run a command without launching a model (ODW extension; not part of
+   * Claude Code's Workflow tool surface): a string through the shell, an
+   * array as argv. See exec.ts for the contract.
+   */
+  exec(command: string | string[], opts?: ExecOptions): Promise<ExecResult>;
 }
 
 /** Build the injected primitive set bound to a single run's context. */
@@ -192,6 +200,7 @@ export function createPrimitives(
   const noteSwallowed = (err: unknown, where: string): void => {
     if (isFatalError(err)) return; // propagates out of gather; nothing is swallowed
     if (typeof err === "object" && err !== null && surfaced.has(err)) return;
+    if (err instanceof ExecError) return; // its command_failed event reported it
     ctx.emit(event(LOG, { message: `${where} failed and its result is null: ${describeError(err)}` }));
   };
 
@@ -329,6 +338,10 @@ export function createPrimitives(
     }
   };
 
+  // Bound to this context's phase cursor; a nested workflow()'s child builds
+  // its own, sharing the scheduler and the command id sequence.
+  const exec = createExec(ctx);
+
   return {
     agent: (prompt, opts) => handled(agent(prompt, opts)),
     parallel: (thunks) => handled(parallel(thunks)),
@@ -338,6 +351,7 @@ export function createPrimitives(
     budget,
     workflow: (nameOrRef, childArgs) => handled(workflow(nameOrRef, childArgs)),
     validate,
+    exec: (command, opts) => handled(exec(command, opts)),
   };
 }
 
