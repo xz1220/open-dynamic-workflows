@@ -403,7 +403,8 @@ odw resume $RUN              # a new run that replays every unchanged agent() ca
 `odw resume <run_id>` acts on the run's state:
 
 - **paused** (its worker alive): it continues in place — the
-  `odw pause|resume|stop` control verb is unchanged;
+  `odw pause|resume|stop` control verb is unchanged; a run
+  [paused for a spent quota](#pause-for-a-spent-quota-odw-extension) goes on at once;
 - **ended** — done, failed, stopped, or stale (the worker died): it starts a
   **new run** with the same script, args and adapter (recorded as `resumedFrom`
   in its `meta.json`). Every `agent()` call whose prompt and options are
@@ -1062,7 +1063,8 @@ agent_failed    (Search) search — [quota, retry after 3h 22m] AdapterExecution
   within a minute (Gemini's free tier words its per-minute limit that way) is
   treated as the rate limit it is. With a [fallback chain](#per-phase-adapters-model-tiers-and-fallback-chains-odw-extension),
   the agent moves to the next CLI instead, and after three quota failures in a row
-  the run's later agents skip that adapter.
+  the run's later agents skip that adapter. With [`quotaWait`](#pause-for-a-spent-quota-odw-extension),
+  an agent with no CLI left waits for the quota to reset instead of failing.
 
 Claude Code reports such errors in its output, often with exit 0: its stream-json
 `result` event says `is_error: true` with the message (`API Error: Rate limit
@@ -1097,6 +1099,53 @@ case-insensitively before the built-in table.
   }
 }
 ```
+
+### Pause for a spent quota (ODW extension)
+
+**ODW extension.** A long run whose every usable CLI is out of quota fails its
+remaining agents — fast, thanks to the quota breaker. Left running overnight, you would
+rather it waited for the reset and carried on. `quotaWait` makes it do that:
+
+```jsonc
+{
+  "quotaWait": { "max": 21600 } // wait up to 6 hours for a spent quota to reset; false (the default) fails as above
+}
+```
+
+When an agent has run out of CLIs on a spent quota — its last adapter's quota failed,
+or the quota breaker skipped every one — and a CLI said when its quota resets ("try
+again in 3h 22m", "resets 7pm", Claude Code's `usage limit reached|<epoch>`) no more
+than `max` seconds away, the run **pauses** instead of failing it:
+
+- The agent waits holding no slot, so agents on CLIs with quota left keep running.
+  Until the reset a CLI named, the run passes over that CLI: an agent with a fallback
+  moves on, and one with nowhere else to go waits too — before it starts, so it shows
+  no agent and takes no slot meanwhile.
+- The run shows `paused` and what it waits for: `odw status`, `odw list` and the live
+  view say `paused until 19:10 (codex quota)`, `odw run --wait` says it once, and
+  `status.json` and `GET /api/runs[/:id]` carry
+  `pausedFor: { "reason": "quota", "adapter", "resumeAt" }` (`resumeAt` in Unix seconds).
+- At the reset — plus up to 30 seconds of jitter, so the waiting agents do not all come
+  back in the same second — each starts over from the start of its chain, and the
+  quota breaker forgets the CLI. `odw resume <run>` goes on at once; `odw stop` stops
+  the run as always. A `checkpoint()` can wait at the same time.
+- A quota failure that names no reset, or one past `max`, still fails the agent as
+  above, and the run's log says why
+  (`quotaWait: not waiting — codex did not say when its quota resets, so the agent fails`).
+- A pause never fires the run-end hooks; add `"paused"` to
+  [`notify.on`](#run-notifications) to hear about each one.
+
+```text
+quota pause: codex is out of usage quota until 19:10 (in 3h 22m) — its agents wait, holding no slot, and go on then (quotaWait); odw resume goes on now
+search:3 waits for codex's quota to reset (quotaWait)
+quota pause over: codex's quota reset — its agents go on
+search:3 goes on after the quota wait, on codex
+```
+
+It is off by default because a run that silently waits for hours would surprise anyone
+who did not ask for it. The wait lives in the worker process: if the worker dies, the
+run is `stale`, and `odw resume` replays it like any run that ended — its finished
+agents come back without running again.
 
 ### Per-phase adapters, model tiers and fallback chains (ODW extension)
 
@@ -1248,7 +1297,7 @@ ends, so an overnight run can tell you how it went:
 "notify": {
   "command": ["/usr/local/bin/odw-notify"],        // an argv, run WITHOUT a shell
   "webhook": "https://hooks.slack.com/services/…", // Slack, Discord, or any JSON endpoint
-  "on": ["done", "failed", "stopped"]              // the default: every final state; "waiting" is opt-in
+  "on": ["done", "failed", "stopped"]              // the default: every final state; "waiting" and "paused" are opt-in
 }
 ```
 
@@ -1287,6 +1336,12 @@ The hooks then fire once per checkpoint, while the run waits on: the command wit
 `ODW_RESULT_FILE`), the webhook with `"state": "waiting"`, a
 `"checkpoint": { "checkpointId", "title", "since" }` field in place of `finishedAt`,
 and a `text` line naming the command that answers it.
+
+Add `"paused"` to hear when a run [pauses for a spent quota](#pause-for-a-spent-quota-odw-extension)
+— once per pause, not when it goes on: the command with `ODW_RUN_STATE=paused`,
+`ODW_PAUSED_ADAPTER` and `ODW_RESUME_AT` (Unix seconds), the webhook with
+`"state": "paused"`, a `"pausedFor": { "reason": "quota", "adapter", "resumeAt" }` field,
+and a `text` line such as `odw · nightly paused until 19:10 (codex quota) · odw resume <run> goes on now`.
 
 Ready-made setups for Slack, Discord, ntfy and desktop banners:
 [`docs/recipes/notify.md`](docs/recipes/notify.md).
@@ -1521,6 +1576,12 @@ upgrading, is in [`CHANGELOG.md`](CHANGELOG.md):
   `fallback` in the config) instead of failing — with a quota breaker that stops
   trying a spent CLI (ODW extensions; see
   [Per-phase adapters](#per-phase-adapters-model-tiers-and-fallback-chains-odw-extension)).
+- **Pause for a spent quota.** With `"quotaWait": { "max": 21600 }`, an overnight run
+  whose CLIs are out of quota waits for the reset they named — holding no slot, other
+  CLIs working on — and carries on, instead of failing its agents. It shows
+  `paused until 19:10 (codex quota)`; `odw resume` goes on at once, and
+  `notify.on: ["paused"]` tells you (ODW extensions; see
+  [Pause for a spent quota](#pause-for-a-spent-quota-odw-extension)).
 - **Native structured output.** `claude` (`--json-schema`) and `codex`
   (`--output-schema`, for strict schemas) are handed an agent's schema and enforce it
   themselves; ODW still validates every reply. A schema keyword ODW's validator does

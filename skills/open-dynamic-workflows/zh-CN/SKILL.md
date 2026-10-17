@@ -179,8 +179,8 @@ odw resume $RUN --wait        # ……启动一个新运行：未改动的 agent
   args 和 adapter 启动新运行。prompt 和选项都没变（phase 除外）的调用免费返回已保存的值——
   不调用 adapter、不占槽位、不耗预算。先改好脚本里出错的那一步：只有改动过的和新增的调用
   会执行。`--adapter <名字>` 切换默认 CLI；没有指定 adapter 的调用仍会重放。
-- 对*已暂停*的运行，`odw resume` 只是原地继续。仍在运行的运行会被拒绝：先 `odw stop`
-  （或加 `--force`）。
+- 对*已暂停*的运行——因 `odw pause`，或在等用尽的额度重置（`quotaWait`）——`odw resume`
+  只是原地继续。仍在运行的运行会被拒绝：先 `odw stop`（或加 `--force`）。
 - 保持 prompt 确定：用 `Date.now()` 或 `Math.random()` 拼出的 prompt 永远匹配不上，会重新执行。
 
 ### 审阅并应用隔离 agent 的改动（ODW 扩展）
@@ -241,6 +241,10 @@ CLI 额度用尽时让长时间运行继续下去。
   会写明产出每个结果的 CLI（`adapter`）以及它离开过的那些（`fellBackFrom`）。
 - 只写用户装好的适配器（`odw doctor` 会列出），并尊重用户选定的默认 CLI：长时间运行总因
   额度停下时，建议用户加回退链，不要擅自加。
+- **额度用尽时暂停。** 配置里写上 `"quotaWait": { "max": <秒数> }`（默认关闭）后，无 CLI
+  可用的 agent 会等到它的 CLI 报出的重置时间，而不是失败——等待时不占槽位——运行显示为
+  `paused until 19:10 (codex quota)`。无人值守的通宵运行可以建议开启，并说明运行可能因此
+  停上几个小时；`odw resume <run>` 立即继续。
 
 ```js
 phase('Extract', { model: '@fast' })   // ODW 扩展
@@ -326,6 +330,7 @@ Codex、Claude Code、Gemini、Qwen、Kimi 开箱即用，无需配置。要换�
 - **限流**：被限流的 CLI 会按退避时间重试（遵守它给出的 retry-after）；额度耗尽或登录失败
   不会重试——agent 会失败并说明该怎么做，`odw logs` 会写明原因——除非它有回退链，那样它会
   换到下一个 CLI（ODW 扩展）。遇到额度耗尽，用 `--adapter` 换一个适配器，而不是反复重试。
+  开启 `quotaWait`（ODW 扩展）后，它会改为等额度重置（见上文的路由）。
 - **限速与提示缓存**（ODW 扩展）：适配器自己的 `concurrency` 在运行级上限之内限制它的
   agent 数，一次限流会让这个上限在本次运行中减半；在 `claude` 上，提示的前 1,024 个以上
   字符相同的 `parallel()`/`pipeline()` 会错开启动，让其余 agent 读取提示缓存——把共享的

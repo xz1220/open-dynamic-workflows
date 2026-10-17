@@ -213,7 +213,8 @@ odw resume $RUN --wait        # …a NEW run: unchanged agent() calls replay, on
   call, slot or budget. Edit the script first to fix the failing step: only
   edited and new calls run. `--adapter <name>` switches the default CLI; calls
   that named no adapter still replay.
-- On a *paused* run, `odw resume` just continues it in place. A run that is
+- On a *paused* run — by `odw pause`, or waiting for a spent quota to reset
+  (`quotaWait`) — `odw resume` just continues it in place. A run that is
   still running is refused: `odw stop` it first (or pass `--force`).
 - Keep prompts deterministic — one built from `Date.now()` or `Math.random()`
   never matches, so it runs again.
@@ -286,6 +287,11 @@ when one CLI runs out of quota.
 - Only name adapters the user has installed (`odw doctor` lists them), and keep
   the user's choice of default CLI: suggest a chain when long runs keep stopping
   on quota, don't add one silently.
+- **Pause for a spent quota.** With `"quotaWait": { "max": <seconds> }` in the
+  config (off by default), an agent with no CLI left waits for the reset its CLI
+  named instead of failing — holding no slot — and the run shows
+  `paused until 19:10 (codex quota)`. Suggest it for unattended overnight runs, and
+  say the run may then sit for hours; `odw resume <run>` goes on at once.
 
 ```js
 phase('Extract', { model: '@fast' })   // ODW extension
@@ -392,7 +398,8 @@ without answering when headless (a login, trust or approval prompt).
   retry-after); a spent quota or a failed login is not retried — the agent fails
   with what to do, and `odw logs` names the reason — unless it has a fallback
   chain, which moves it to the next CLI (ODW extension). Switch adapter with
-  `--adapter` rather than retrying a quota failure.
+  `--adapter` rather than retrying a quota failure. Under `quotaWait` (ODW
+  extension) it waits for the quota to reset instead (see routing above).
 - **Throttling and the prompt cache** (ODW extensions): an adapter's own
   `concurrency` caps its agents inside the run's, and a rate limit halves that cap
   for the run; on `claude`, a `parallel()`/`pipeline()` whose prompts share their

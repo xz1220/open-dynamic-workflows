@@ -363,6 +363,7 @@ odw resume $RUN              # 启动一个新运行,重放每个未改动的 ag
 `odw resume <run_id>` 依运行状态而定:
 
 - **已暂停**(worker 仍存活):原地继续——`odw pause|resume|stop` 这个控制动词不变;
+  [因额度用尽而暂停](#额度用尽时暂停odw-扩展)的运行会立即继续;
 - **已结束**——done、failed、stopped,或 stale(worker 已死):用同样的脚本、args 和
   适配器启动一个**新运行**(在它的 `meta.json` 里记为 `resumedFrom`)。prompt 和选项都
   没变的 `agent()` 调用立即返回已保存的值——不调用适配器、不占并发槽位、不计入派发数、
@@ -950,7 +951,8 @@ agent_failed    (Search) search — [quota, retry after 3h 22m] AdapterExecution
   上连续三个 agent 都这样失败时,运行会记一条警告;之后用 `odw resume` 会重放所有已完成
   的 agent。一分钟内就会恢复的"额度"(Gemini 免费档就是这样描述它的每分钟限额的)按它
   实际上的限流来处理。配置了[回退链](#按阶段路由与回退链odw-扩展)时,agent 会换到下一个
-  CLI;同一适配器连续三次额度失败后,本次运行之后的 agent 会跳过它。
+  CLI;同一适配器连续三次额度失败后,本次运行之后的 agent 会跳过它。开启
+  [`quotaWait`](#额度用尽时暂停odw-扩展) 后,没有 CLI 可换的 agent 会等额度重置,而不是失败。
 
 Claude Code 会在输出里报告这类错误,而且常常以 0 退出:它的 stream-json `result` 事件
 带着 `is_error: true` 和错误消息(`API Error: Rate limit reached`、
@@ -981,6 +983,48 @@ ODW 能识别的措辞——从每个内置 CLI 的源码和 issue 中收集而�
   }
 }
 ```
+
+### 额度用尽时暂停(ODW 扩展)
+
+**ODW 扩展。** 一个长时间运行的 workflow,如果所有可用的 CLI 都用完了额度,剩下的 agent
+都会失败——有额度熔断时还失败得很快。通宵跑的时候,你更希望它等到额度重置再接着跑。
+`quotaWait` 就是做这个的:
+
+```jsonc
+{
+  "quotaWait": { "max": 21600 } // 最多等 6 小时让用尽的额度重置;false(默认)则如上直接失败
+}
+```
+
+当一个 agent 因额度用尽而无 CLI 可用——链上最后一个适配器额度失败,或额度熔断跳过了每一个
+——且某个 CLI 说明了额度何时重置("try again in 3h 22m"、"resets 7pm"、Claude Code 的
+`usage limit reached|<epoch>`)、距今不超过 `max` 秒时,运行会**暂停**而不是让它失败:
+
+- 这个 agent 等待时不占任何槽位,所以还有额度的 CLI 上的 agent 照常运行。在 CLI 报出的
+  重置时间之前,运行会跳过那个 CLI:有回退链的 agent 换下一个,无处可去的 agent 也一起
+  等——而且是在启动之前等,所以等待期间既不显示为 agent,也不占槽位。
+- 运行显示为 `paused` 并写明在等什么:`odw status`、`odw list` 和实时视图显示
+  `paused until 19:10 (codex quota)`,`odw run --wait` 会提示一次;`status.json` 与
+  `GET /api/runs[/:id]` 带有 `pausedFor: { "reason": "quota", "adapter", "resumeAt" }`
+  (`resumeAt` 为 Unix 秒)。
+- 到了重置时间——再加最多 30 秒随机抖动,免得等待的 agent 在同一秒全部回来——每个 agent
+  都从它的链首重新开始,额度熔断也会忘掉这个 CLI。`odw resume <run>` 立即继续;
+  `odw stop` 照常停止运行。期间可以同时有 `checkpoint()` 在等待。
+- 没有给出重置时间的额度失败,或重置时间超过 `max` 的,仍按上文直接失败,运行日志会说明
+  原因(`quotaWait: not waiting — codex did not say when its quota resets, so the agent fails`)。
+- 暂停从不触发运行结束的 hook;在 [`notify.on`](#运行通知) 里加上 `"paused"`,即可在
+  每次暂停时收到通知。
+
+```text
+quota pause: codex is out of usage quota until 19:10 (in 3h 22m) — its agents wait, holding no slot, and go on then (quotaWait); odw resume goes on now
+search:3 waits for codex's quota to reset (quotaWait)
+quota pause over: codex's quota reset — its agents go on
+search:3 goes on after the quota wait, on codex
+```
+
+默认关闭,因为一个悄无声息地等上几个小时的运行,会让没有主动要求的人感到意外。等待发生在
+worker 进程里:worker 死掉时,运行会变成 `stale`,`odw resume` 会像对待任何已结束的运行
+一样重放它——已完成的 agent 直接取回结果,不会再跑一遍。
 
 ### 按阶段路由与回退链(ODW 扩展)
 
@@ -1117,7 +1161,7 @@ staggered fan-out: 15 claude agents sharing a 3412-character prompt prefix waite
 "notify": {
   "command": ["/usr/local/bin/odw-notify"],        // 参数向量,不经过 shell 执行
   "webhook": "https://hooks.slack.com/services/…", // Slack、Discord 或任何接收 JSON 的端点
-  "on": ["done", "failed", "stopped"]              // 默认:所有终态;"waiting" 需显式加入
+  "on": ["done", "failed", "stopped"]              // 默认:所有终态;"waiting" 和 "paused" 需显式加入
 }
 ```
 
@@ -1152,6 +1196,12 @@ hook——webhook 只显示协议和主机,因为 URL 的其余部分就是密�
 `ODW_RESULT_FILE`);webhook 收到 `"state": "waiting"`、一个
 `"checkpoint": { "checkpointId", "title", "since" }` 字段(代替 `finishedAt`),以及一行
 写明回答命令的 `text`。
+
+加上 `"paused"`,就能在运行[因额度用尽而暂停](#额度用尽时暂停odw-扩展)时收到通知——每次
+暂停一次,继续时不再通知:命令的环境变量带有 `ODW_RUN_STATE=paused`、`ODW_PAUSED_ADAPTER`
+和 `ODW_RESUME_AT`(Unix 秒);webhook 收到 `"state": "paused"`、一个
+`"pausedFor": { "reason": "quota", "adapter", "resumeAt" }` 字段,以及一行类似
+`odw · nightly paused until 19:10 (codex quota) · odw resume <run> goes on now` 的 `text`。
 
 Slack、Discord、ntfy 和桌面横幅的现成配置见
 [`docs/recipes/notify.md`](docs/recipes/notify.md)。
@@ -1358,6 +1408,10 @@ node web/dev.mjs --api http://127.0.0.1:4317     # → http://127.0.0.1:5173
   按 CLI 选出某层级的模型;CLI 额度用尽或登录失效的 agent 会沿回退链换到下一个 CLI
   (`adapter: ["codex", "claude"]`,或配置里的 `fallback`),而不是失败——额度熔断会让运行
   不再尝试已经用尽的 CLI(ODW 扩展;见[按阶段路由](#按阶段路由与回退链odw-扩展))。
+- **额度用尽时暂停。** 配置 `"quotaWait": { "max": 21600 }` 后,CLI 额度用尽的通宵运行会
+  等到 CLI 报出的重置时间——等待时不占槽位,其他 CLI 照常工作——然后继续,而不是让 agent
+  失败。运行显示 `paused until 19:10 (codex quota)`;`odw resume` 立即继续,
+  `notify.on: ["paused"]` 会通知你(ODW 扩展;见[额度用尽时暂停](#额度用尽时暂停odw-扩展))。
 - **原生结构化输出。** `claude`(`--json-schema`)和 `codex`(`--output-schema`,限 strict
   schema)直接拿到 agent 的 schema 并自行强制执行;ODW 依旧校验每一次回复。ODW 校验器不检查
   的 schema 关键字会连同位置写进运行日志,绝不悄悄跳过——`"schemaKeywords": "strict"` 则拒绝

@@ -22,6 +22,12 @@ changed, and run on a schedule — and a dashboard redesigned to watch them.
   permission, exit). Rate limits are retried after the wait the CLI asked for
   (`transientRetries`, `maxBackoff`); quota and login failures fail fast and say what to
   do — and when the limit lifts.
+- Pause for a spent quota (`"quotaWait": { "max": <seconds> }`, off by default; **ODW
+  extension**): an overnight run whose CLIs are out of quota waits for the reset they
+  named — holding no slot, while CLIs with quota left keep working — and carries on
+  instead of failing its agents. It shows `paused until 19:10 (codex quota)` in
+  `odw status`, `odw list`, the live view and the API (`pausedFor`); `odw resume` goes
+  on at once. A quota that names no reset, or one past `max`, still fails, saying why.
 - Evidence of success: `agent(…, { expect })` checks an agent's work instead of taking
   its word — `command` exits 0 in its workspace, `changes`, `files` (globs), `match` —
   and hands misses back (`expectRetries`, default 1) before failing with
@@ -38,7 +44,8 @@ changed, and run on a schedule — and a dashboard redesigned to watch them.
   `POST /api/runs/:id/checkpoint` (**ODW extension**). Runs show a `waiting` state
   everywhere.
 - Run-end hooks: a `notify` command or webhook (Slack/Discord/ntfy-ready) when a run
-  finishes, fails, stops — or, opt-in, starts waiting.
+  finishes, fails, stops — or, opt-in, starts waiting, or pauses for a spent quota
+  (`"paused"`).
 
 ### Know what it costs and what it changed
 - Real usage and cost: the built-in `claude` adapter reads Claude Code's `stream-json`;

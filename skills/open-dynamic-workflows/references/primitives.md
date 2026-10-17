@@ -190,6 +190,15 @@ take it. Claude Code ignores all of it.
   on one adapter, the run's later calls skip it: each starts on the next
   adapter of its chain, or fails at once (reason `quota`) without one. One
   warning says so.
+- **Pause for a spent quota.** With the `quotaWait` setting (`{ "max":
+  <seconds> }`; off by default), a call with no adapter left on a spent quota
+  does not fail: it waits, holding no slot, for the reset its CLI named — when
+  that is within `max` — then starts over from its chain's start, its
+  transcript going on after an `{"kind":"attempt","reason":"quota_wait"}` line.
+  Until that reset the run passes over the adapter, and a call with nowhere
+  else to go waits before it is dispatched. Your `agent()` call just takes
+  longer to return; a quota that names no reset, or one past `max`, fails it
+  with reason `quota` as above.
 
 ```js
 export const meta = {

@@ -162,6 +162,7 @@ did-you-mean hint) instead of silently ignoring them.
 | `schemaPrompt` | **ODW extension.** `"auto"` (default): the prompt describes the schema only to a CLI that does not take it natively; `"always"`: to every CLI |
 | `fallback` | **ODW extension.** Fallback chains: `{ "codex": ["claude"], … }` — when an agent's CLI has spent its usage quota or its login is refused, the agent runs again on the next adapter listed for the one it was on (a fresh prompt, the same options, the same permission tier: an adapter that cannot run that tier is skipped). A rate limit is still retried in place. An `agent()` call's own list, `adapter: ["codex", "claude"]`, takes its place. Every adapter named must be configured. Default `{}` — see [routing](primitives.md#routing-phase-defaults-model-tiers-fallback-chains-odw-extension) |
 | `quotaBreaker` | **ODW extension.** After this many quota failures in a row on one adapter, the run's later agents skip it — each starts on the next adapter of its chain, or fails at once without one — with one warning. Default 3; `0` or `null` = never |
+| `quotaWait` | **ODW extension.** Pause for a spent quota: `{ "max": <seconds> }` makes an agent with no adapter left on a spent quota wait — holding no slot — for the reset its CLI named ("try again in 3h 22m", "resets 7pm", `usage limit reached\|<epoch>`), when that is at most `max` seconds away, then start over from its chain's start (plus up to 30s of jitter). Until that reset the run passes over the adapter; one with nowhere else to go waits before it is dispatched. The run shows `paused` with `pausedFor: { reason: "quota", adapter, resumeAt }` ("paused until 19:10 (codex quota)" in `odw status`, `odw list`, the live view); `odw resume` goes on at once, `odw stop` stops it. A quota that names no reset, or one past `max`, still fails the agent (logged). The wait lives in the worker: if it dies, the run is stale and `odw resume` replays it. Default `false` — a run that waits for hours should be one someone asked for |
 | `models` | **ODW extension.** Model tiers: `{ "fast": { "claude": "haiku", "codex": "gpt-5-mini" }, … }`. `model: "@fast"` (in `agent()`, `phase()` or `meta.phases`) runs an agent with its adapter's id for the tier — after a fallback, the next adapter's; an adapter the tier names no id for runs its CLI's default (logged), and an unknown tier fails the agent. Tier names are letters, digits, `_`, `-` and `.`; every adapter named must be configured. Default `{}` |
 | `expectRetries` | **ODW extension.** How many times an agent whose work missed its `expect` checks runs again, told what it missed, before it fails with reason `unmet_expectation` (default 1; an `agent()` call's own `expectRetries` wins) — see [expect](primitives.md#expect-odw-extension) |
 | `permissionDenials` | **ODW extension.** What a reply that claims success does when the CLI refused the agent tool calls (`deniedPath`): `"warn"` (default) keeps it — the calls are recorded as `denied` on the agent and logged once — and `"fail"` fails the agent with reason `permission`. An adapter's own `permissionDenials` wins; a call with `expect` counts refused calls as a miss either way |
@@ -258,7 +259,12 @@ run's `worker.log`.
   counts: { agents, done, failed }, error?, text, content }`. `text` and
   `content` carry one summary line ("odw · deep-research finished in 4m12s ·
   12 agents, 1 failed"), so Slack and Discord incoming webhooks render it as is.
-- `on` — which final states fire the hooks (default: all three).
+- `on` — which final states fire the hooks (default: all three). Opt-in, also
+  `"waiting"` — once per `checkpoint()` that starts waiting for a person — and
+  `"paused"` — once per pause for a spent quota (`quotaWait`), with
+  `ODW_RUN_STATE=paused`, `ODW_PAUSED_ADAPTER` and `ODW_RESUME_AT` (Unix seconds)
+  for the command, `state: "paused"` and `pausedFor: { reason, adapter, resumeAt }`
+  for the webhook. A pause never fires the run-end hooks.
 
 ### Placeholders
 

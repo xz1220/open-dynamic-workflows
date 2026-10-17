@@ -150,6 +150,7 @@ agent 的 `permissions`；`odw doctor` 会列出每个适配器支持的档位�
 | `schemaPrompt` | **ODW 扩展。** `"auto"`（默认）：只有不接收原生 schema 的 CLI 才在提示词里看到 schema 描述；`"always"`：所有 CLI 都附上 |
 | `fallback` | **ODW 扩展。** 回退链：`{ "codex": ["claude"], … }`——agent 的 CLI 额度用尽或登录被拒时，它会在为其所在适配器列出的下一个适配器上重新运行（全新的提示词、相同的选项、相同的权限档位：不能运行该档位的适配器会被跳过）。限流仍在原地重试。`agent()` 调用自己的列表 `adapter: ["codex", "claude"]` 会取代它。列出的每个适配器都必须已配置。默认 `{}`——见[路由](primitives.md#路由阶段默认值模型分层回退链odw-扩展) |
 | `quotaBreaker` | **ODW 扩展。** 同一个适配器上连续这么多次额度失败后，本次运行之后的 agent 都会跳过它——各自从回退链上的下一个适配器开始，没有回退链的则立即失败——并记一条警告。默认 3；`0` 或 `null` 表示从不跳过 |
+| `quotaWait` | **ODW 扩展。** 额度用尽时暂停：`{ "max": <秒数> }` 让因额度用尽而无适配器可用的 agent 不占槽位地等到它的 CLI 报出的重置时间（"try again in 3h 22m"、"resets 7pm"、`usage limit reached\|<epoch>`），只要不超过 `max` 秒，然后从链首重新开始（加最多 30 秒抖动）。在那个重置时间之前，运行会跳过该适配器；无处可去的 agent 在派发前就等待。运行显示为 `paused`，带 `pausedFor: { reason: "quota", adapter, resumeAt }`（`odw status`、`odw list` 和实时视图显示 "paused until 19:10 (codex quota)"）；`odw resume` 立即继续，`odw stop` 照常停止。没有重置时间或超过 `max` 的额度失败仍让 agent 失败（日志会说明）。等待发生在 worker 里：worker 死掉时运行变为 stale，`odw resume` 会重放它。默认 `false`——一个会等上几个小时的运行，应当是有人主动要求的 |
 | `models` | **ODW 扩展。** 模型层级：`{ "fast": { "claude": "haiku", "codex": "gpt-5-mini" }, … }`。`model: "@fast"`（写在 `agent()`、`phase()` 或 `meta.phases` 里）让 agent 使用其适配器在该层级下的 ID——回退之后用下一个适配器的；层级没给某适配器 ID 时使用其 CLI 的默认模型（记日志），未知层级会让 agent 失败。层级名由字母、数字、`_`、`-` 和 `.` 组成；列出的每个适配器都必须已配置。默认 `{}` |
 | `expectRetries` | **ODW 扩展。** 工作没达到 `expect` 检查的 agent 带着缺失项重跑的次数，之后以 `unmet_expectation` 失败（默认 1；`agent()` 调用自己的 `expectRetries` 优先）——见 [expect](primitives.md#expectodw-扩展) |
 | `permissionDenials` | **ODW 扩展。** CLI 拒绝了 agent 的工具调用（`deniedPath`）、而回复声称成功时怎么办：`"warn"`（默认）保留回复——这些调用记为 agent 上的 `denied` 并记一次日志——`"fail"` 让 agent 以 `permission` 失败。适配器自己的 `permissionDenials` 优先；设了 `expect` 的调用无论如何都把被拒绝的调用算作缺失 |
@@ -235,7 +236,11 @@ hook 只会记录到该运行的 `worker.log`。
   counts: { agents, done, failed }, error?, text, content }`。`text` 和 `content`
   是同一行摘要（“odw · deep-research finished in 4m12s · 12 agents, 1 failed”），
   所以 Slack 和 Discord 的 incoming webhook 能直接渲染。
-- `on`——哪些终态会触发 hook（默认：全部三种）。
+- `on`——哪些终态会触发 hook（默认：全部三种）。还可显式加入 `"waiting"`——每个开始等人
+  回答的 `checkpoint()` 触发一次——以及 `"paused"`——每次因额度用尽而暂停（`quotaWait`）
+  触发一次：命令拿到 `ODW_RUN_STATE=paused`、`ODW_PAUSED_ADAPTER` 和 `ODW_RESUME_AT`
+  （Unix 秒），webhook 收到 `state: "paused"` 与 `pausedFor: { reason, adapter, resumeAt }`。
+  暂停从不触发运行结束的 hook。
 
 ### 占位符
 

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -162,6 +162,21 @@ test("config: quotaWait is off unless set — { max } turns it on — and anythi
     assert.deepEqual(collectConfigWarnings({ quotaWait: { max: 60, maxx: 1 } }), [
       'quotaWait: unknown field "maxx" is ignored — did you mean "max"?',
     ]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("the example config shows quotaWait off and how to turn it on", () => {
+  const example = JSON.parse(readFileSync(join(process.cwd(), "odw.config.example.json"), "utf8"));
+  assert.equal(example.quotaWait, false);
+  assert.match(example["//quotaWait"], /\{ "max": 21600 \}/);
+  assert.deepEqual(collectConfigWarnings(example), []);
+  const dir = mkdtempSync(join(tmpdir(), "odw-quota-example-"));
+  try {
+    const path = join(dir, "odw.config.json");
+    writeFileSync(path, JSON.stringify({ ...example, quotaWait: { max: 21600 } }));
+    assert.deepEqual(loadConfig(path, { quiet: true }).settings.quotaWait, { max: 21600 });
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
