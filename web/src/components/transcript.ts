@@ -12,7 +12,13 @@ import { esc, fmtUsd } from "../util";
 
 import type { TranscriptEntry } from "../types";
 
-const REASON: Record<string, string> = { schema: "schema retry", stall: "stall restart", rate_limit: "rate-limit retry" };
+const REASON: Record<string, string> = {
+  schema: "schema retry",
+  stall: "stall restart",
+  rate_limit: "rate-limit retry",
+  expect: "expectation retry",
+  fallback: "fallback",
+};
 
 function inputText(input: unknown): string {
   if (input === undefined || input === null) return "";
@@ -53,7 +59,10 @@ export function transcriptEntry(e: TranscriptEntry): string {
         `</div>`
       );
     case "attempt":
-      return `<div class="tx tx-sep" data-i="${e.i}"><span>${esc(t("attempt {n}", { n: e.n ?? 2 }))}${e.reason ? ` · ${esc(t(REASON[e.reason] ?? e.reason))}` : ""}</span></div>`;
+      return (
+        `<div class="tx tx-sep${e.reason === "fallback" ? " fallback" : ""}" data-i="${e.i}"><span>${esc(t("attempt {n}", { n: e.n ?? 2 }))}` +
+        `${e.reason ? ` · ${esc(t(REASON[e.reason] ?? e.reason))}` : ""}${e.reason === "fallback" && e.adapter ? ` → ${esc(e.adapter)}` : ""}</span></div>`
+      );
     case "result": {
       const bits = [e.isError ? t("ended with an error") : t("done")];
       if (e.turns != null) bits.push(t("{n} turns", { n: e.turns }));

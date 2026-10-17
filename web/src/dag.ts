@@ -63,14 +63,16 @@ function subLine(a: AgentView, nowSec: number): string {
     const why = a.failureReason ? `${reasonLabel(a.failureReason)} · ` : "";
     return why + a.error.split("\n")[0]!.slice(0, 80);
   }
+  // An agent that fell back shows the chain it walked: codex → claude.
+  const via = a.fellBackFrom?.length && a.adapter ? `${a.fellBackFrom.join(" → ")} → ${a.adapter}` : a.adapter;
   if (a.state === "running") {
     const elapsed = a.startedAt != null ? fmtDurSec(nowSec - a.startedAt) : "";
-    return [a.adapter, elapsed].filter(Boolean).join(" · ") || t("running");
+    return [via, elapsed].filter(Boolean).join(" · ") || t("running");
   }
   if (a.state === "stale") return [a.adapter, t("no signal")].filter(Boolean).join(" · ");
   const dur = a.durationMs != null ? fmtDurSec(a.durationMs / 1000) : "";
   const tries = a.attempts && a.attempts > 1 ? `×${a.attempts}` : "";
-  return [a.adapter, dur, tries].filter(Boolean).join(" · ");
+  return [via, dur, tries].filter(Boolean).join(" · ");
 }
 
 /** Human words for the engine's failure classes. */

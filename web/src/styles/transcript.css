@@ -218,6 +218,14 @@
   height: 1px;
   background: var(--amber-line);
 }
+.tx-sep.fallback {
+  color: var(--clay);
+}
+.tx-sep.fallback::before,
+.tx-sep.fallback::after {
+  background: var(--clay-soft);
+  height: 2px;
+}
 .tx-result {
   display: flex;
   align-items: center;

@@ -547,3 +547,25 @@ test("the drawer names an agent's permission tier", () => {
   assert.match(renderJob(view, NOW), /<span class="k">permissions<\/span><span class="v"><span class="tag perm-read" title="reads and searches; no edits, no commands">read<\/span>/);
   store.focusRun(null);
 });
+
+test("an agent that fell back shows its chain in the graph, the drawer and the transcript", () => {
+  const view: JobViewState = {
+    cpNote: "",
+    tab: "graph",
+    selectedAi: 0,
+    reviewAi: null,
+    zoom: 1,
+    logQuery: "",
+    logTypes: new Set(["agent"]),
+    logLimit: 600,
+    follow: true,
+    motion: false,
+  };
+  store.focusRun("20260101-000000-aaaaaa");
+  store.run = detail([agent("search:3", "Search", "done", { agentId: 3, adapter: "claude", fellBackFrom: ["codex"] })], { state: "done" });
+  const html = renderJob(view, NOW);
+  assert.match(html, /<div class="sub">codex → claude · 1m00s<\/div>/, "the node names the chain");
+  assert.match(html, /<span class="v">claude <span class="tag warn"[^>]*>after codex<\/span><\/span>/, "the drawer names what it replaced");
+  assert.match(transcriptEntries([{ i: 4, kind: "attempt", n: 2, reason: "fallback", adapter: "claude" }]), /class="tx tx-sep fallback"[^>]*><span>attempt 2 · fallback → claude<\/span>/);
+  store.focusRun(null);
+});

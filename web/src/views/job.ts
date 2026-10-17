@@ -241,7 +241,13 @@ function drawer(run: RunDetail, ai: number, nowSec: number): string {
     `<div class="drawer-body">` +
     `<div class="kv">` +
     `<span class="k">${t("phase")}</span><span class="v">${esc(a.phase ?? "—")}</span>` +
-    (a.kind === "command" ? "" : `<span class="k">${t("adapter")}</span><span class="v">${esc(a.adapter ?? "—")}</span>`) +
+    (a.kind === "command"
+      ? ""
+      : `<span class="k">${t("adapter")}</span><span class="v">${esc(a.adapter ?? "—")}` +
+        (a.fellBackFrom?.length
+          ? ` <span class="tag warn" title="${esc(t("its earlier adapters ran out of quota or refused the login"))}">${esc(t("after {chain}", { chain: a.fellBackFrom.join(" → ") }))}</span>`
+          : "") +
+        `</span>`) +
     `<span class="k">${t("started")}</span><span class="v">${fmtClock(a.startedAt)}</span>` +
     `<span class="k">${t("finished")}</span><span class="v">${fmtClock(a.finishedAt)}</span>` +
     `<span class="k">${t("duration")}</span><span class="v">${dur}</span>` +
