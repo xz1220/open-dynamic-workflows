@@ -81,6 +81,12 @@ function runHead(run: RunDetail, nowSec: number): string {
       ? `<button class="btn danger" data-stop="${esc(run.runId)}">${icons.stop}${t("Stop")}</button>`
       : "";
   const cc = run.provider === "claude" ? `<span class="tag cc">Claude Code · ${t("read-only")}</span>` : "";
+  // An ended ODW run can be picked up again from the terminal: `odw resume`
+  // replays every agent call that already finished (the dashboard starts nothing).
+  const resumable = run.provider === "odw" && (run.state === "failed" || run.state === "stopped" || run.state === "stale");
+  const resume = resumable
+    ? `<button class="btn" data-copy="odw resume ${esc(run.runId)}" data-tip="${esc(t("copies a command that replays finished agents"))}">${icons.terminal}${t("Resume in terminal")}</button>`
+    : "";
   const c = run.counts;
   const stat = (v: string | number, k: string, cls = "") =>
     `<div class="rs ${cls}"><span class="v num">${v}</span><span class="k">${esc(k)}</span></div>`;
@@ -92,7 +98,7 @@ function runHead(run: RunDetail, nowSec: number): string {
     `<div class="title-row"><h1 class="display">${esc(run.name)}</h1>${pill(run.state)}</div>` +
     (run.description ? `<p class="lede">${esc(run.description)}</p>` : "") +
     `</div>` +
-    `<div class="actions">${stop}` +
+    `<div class="actions">${stop}${resume}` +
     `<button class="btn" data-copy="odw logs ${esc(run.runId)} --follow" data-tip="${esc(t("copy a follow command"))}">${icons.terminal}${t("Follow in terminal")}</button>` +
     `<button class="btn ghost" data-copy="${esc(run.runId)}">${icons.copy}${t("Copy id")}</button></div>` +
     `</header>` +

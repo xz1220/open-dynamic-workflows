@@ -903,6 +903,16 @@ setPaletteSource((): PaletteItem[] => {
   const run = currentRoute().view === "job" ? store.run : null;
   if (run) {
     items.push({ id: "copy-id", group: act, title: tr("Copy run id"), icon: icons.copy, hint: run.runId, run: () => copy(run.runId) });
+    if (run.provider === "odw" && TERMINAL.has(run.state) && run.state !== "done") {
+      items.push({
+        id: "copy-resume",
+        group: act,
+        title: tr("Copy a resume command"),
+        icon: icons.terminal,
+        hint: "odw resume",
+        run: () => copy(`odw resume ${run.runId}`),
+      });
+    }
     items.push({
       id: "copy-rerun",
       group: act,
