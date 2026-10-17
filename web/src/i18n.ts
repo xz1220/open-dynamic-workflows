@@ -475,6 +475,13 @@ const ZH: Record<string, string> = {
   "lifts in {d} · {t}": "{d} 后解除 · {t}",
   "{name} is waiting for you": "{name} 正在等你",
   "A checkpoint needs your decision.": "有一个检查点需要你决定。",
+  permissions: "权限",
+  read: "只读",
+  edit: "编辑",
+  full: "完全",
+  "reads and searches; no edits, no commands": "只能读取和搜索;不能编辑,不能运行命令",
+  "edits files in its workspace": "可以编辑工作区内的文件",
+  "no approval checks at all": "完全不做审批检查",
   // Transcript sheet.
   Transcript: "执行记录",
   "Loading transcript…": "正在载入执行记录…",

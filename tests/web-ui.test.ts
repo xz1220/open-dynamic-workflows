@@ -528,3 +528,22 @@ test("the transcript sheet opens over the graph and freezes its host for appends
   store.transcripts.clear();
   store.focusRun(null);
 });
+
+test("the drawer names an agent's permission tier", () => {
+  const view: JobViewState = {
+    cpNote: "",
+    tab: "graph",
+    selectedAi: 0,
+    reviewAi: null,
+    zoom: 1,
+    logQuery: "",
+    logTypes: new Set(["agent"]),
+    logLimit: 600,
+    follow: true,
+    motion: false,
+  };
+  store.focusRun("20260101-000000-aaaaaa");
+  store.run = detail([agent("review:1", "Review", "done", { agentId: 1, permissions: "read" })], { state: "done" });
+  assert.match(renderJob(view, NOW), /<span class="k">permissions<\/span><span class="v"><span class="tag perm-read" title="reads and searches; no edits, no commands">read<\/span>/);
+  store.focusRun(null);
+});

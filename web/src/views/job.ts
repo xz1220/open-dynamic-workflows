@@ -158,6 +158,13 @@ function agentEvents(a: AgentView): WorkflowEvent[] {
   );
 }
 
+/** What each permission tier lets an agent do (ODW extension). */
+const PERM_HINT: Record<string, string> = {
+  read: "reads and searches; no edits, no commands",
+  edit: "edits files in its workspace",
+  full: "no approval checks at all",
+};
+
 /** When a rate limit or spent quota lifts, as the CLI said (`retryAfter` on its agent_failed event). */
 function resetNote(a: AgentView, nowSec: number): string {
   const failed = agentEvents(a).filter((e) => e.type === "agent_failed").pop();
@@ -241,6 +248,9 @@ function drawer(run: RunDetail, ai: number, nowSec: number): string {
     (a.kind === "command"
       ? `<span class="k">${t("exit code")}</span><span class="v">${a.exitCode ?? "—"}</span>`
       : `<span class="k">${t("attempts")}</span><span class="v">${a.attempts ?? "—"}</span>`) +
+    (a.permissions
+      ? `<span class="k">${t("permissions")}</span><span class="v"><span class="tag perm-${esc(a.permissions)}" title="${esc(t(PERM_HINT[a.permissions] ?? ""))}">${esc(t(a.permissions))}</span></span>`
+      : "") +
     (a.failureReason ? `<span class="k">${t("reason")}</span><span class="v"><span class="tag ${/rate_limit|quota|stalled|timeout/.test(a.failureReason) ? "warn" : ""}">${esc(reasonLabel(a.failureReason))}</span>${resetNote(a, nowSec)}</span>` : "") +
     (a.usage && (a.usage.inputTokens != null || a.usage.outputTokens != null)
       ? `<span class="k">${t("tokens")}</span><span class="v">${fmtTokens(a.usage.inputTokens)} ${t("in")} · ${fmtTokens(a.usage.outputTokens)} ${t("out")}</span>`
