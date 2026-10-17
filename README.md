@@ -1167,6 +1167,12 @@ into the host's `node`, so each target is built on its own runner.
 ## Status
 
 **What's new on `main` (October 2026):**
+- **Permission tiers.** Every agent runs `read`, `edit` (the default, unchanged) or
+  `full`, mapped to each CLI's own flags: review and research fan-outs that cannot
+  touch the tree (`--permissions read`, `agent(…, { permissions: 'read' })`), full
+  access only by explicit opt-in, and a CLI that cannot enforce a tier refused or
+  logged — never silently downgraded. `agentEnv: "minimal"` keeps unrelated secrets
+  out of agents (ODW extensions; see [Permissions](#permissions-odw-extension)).
 - **Human checkpoints.** `checkpoint()` pauses a run until a person approves or
   rejects — with `odw approve|reject`, the dashboard, or an opt-in `waiting` hook —
   so a plan gets a yes before the expensive fan-out (ODW extension; see
@@ -1257,7 +1263,7 @@ Ranked by what users of parallel coding agents report needing
 ([research](docs/research/user-needs-2026-10.md)): adapter-reported token usage and
 cost for more CLIs (Claude Code reports it today; the others are estimated) ·
 evidence of success for headless runs ·
-read/edit/full permission tiers · native structured output · per-phase adapters
+native structured output · per-phase adapters
 and fallback chains · evaluation. Full plan: [`docs/ROADMAP.md`](docs/ROADMAP.md); the
 original design: [`docs/dynamic-workflows-tech-plan.md`](docs/dynamic-workflows-tech-plan.md).
 Background on the Claude Code dialect ODW aligns with:

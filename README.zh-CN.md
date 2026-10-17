@@ -1057,6 +1057,11 @@ node web/dev.mjs --api http://127.0.0.1:4317     # → http://127.0.0.1:5173
 ## 状态
 
 **`main` 上的新内容(2026 年 10 月):**
+- **权限档位。** 每个 agent 以 `read`、`edit`(默认,与以往一致)或 `full` 运行,映射到各
+  CLI 自己的参数:审查与调研类 fan-out 碰不到工作树(`--permissions read`、
+  `agent(…, { permissions: 'read' })`),完全权限必须显式开启,无法强制执行某档位的 CLI 会被
+  拒绝或记录日志——绝不静默降级。`agentEnv: "minimal"` 让无关的密钥不进入 agent
+  (ODW 扩展;见[权限档位](#权限档位odw-扩展))。
 - **人工检查点。** `checkpoint()` 会让运行暂停,直到有人批准或拒绝——通过
   `odw approve|reject`、看板,或可选的 `waiting` 钩子——让计划在昂贵的 fan-out 之前先
   得到一个"可以"(ODW 扩展;见 [`plan-approve-execute.js`](examples/plan-approve-execute.js))。
@@ -1127,7 +1132,7 @@ node web/dev.mjs --api http://127.0.0.1:4317     # → http://127.0.0.1:5173
 
 按并行 coding agent 用户反馈的需求排序([调研](docs/research/user-needs-2026-10.md)):
 更多 CLI 上报的真实 token 用量与花费(目前 Claude Code 已上报,其余仍按估算)·
-无头运行的"成功证据" · 只读/编辑/完全三档权限 ·
+无头运行的"成功证据" ·
 原生结构化输出 · 按阶段指定适配器与回退链 · 评测。完整规划见 [`docs/ROADMAP.md`](docs/ROADMAP.md);
 最初的设计见 [`docs/dynamic-workflows-tech-plan.md`](docs/dynamic-workflows-tech-plan.md);
 ODW 所对齐的 Claude Code 方言背景见

@@ -61,6 +61,7 @@
 - **worktree 环境（X5）**：`.worktreeinclude`（含 `symlink:`）、带超时的 `worktreeSetup`、每个 agent 独占的 `ODW_PORT` 及 `ODW_RUN_ID`/`ODW_AGENT_ID`。
 - 看板：「待你处理」提醒、失败原因旁显示限流/额度的解除时间、为 X1 准备好的改动审阅页；官网新增「为长任务而生」；两篇实用配方（恢复运行、运行通知）；删除无人使用的 skill 内嵌产物。
 - **审阅并应用改动（X1）**：worktree agent 的改动在 worktree 删除前落盘为 `agents/<id>.diff`（与 diff 解析器约定的 git 参数；`.worktreeinclude`/`worktreeSetup` 放进去的文件按内容哈希排除；超过 `maxDiffBytes` 在行边界截断并附说明，计数始终描述完整改动）；`keep: true` / `keepBranches` 把改动提交到 `odw/<runId>/<agentId>-<label>` 分支且不碰用户的 HEAD 和索引；`odw diff [--agent] [--stat]`、`odw apply --agent [--check] [--force]`（`git apply --3way`）；`GET /api/runs/:id/agents/:agentId/diff`；看板改动页端到端验证。
+- **权限档位（X2 前半）**：`read` / `edit` / `full` 三档（ODW 扩展），运行档位来自配置 `permissions` 或 `odw run|rerun|resume --permissions`，适配器自己的 `permissions` 与 `agent(…, { permissions })` 只能降档，越权的调用以写明两个档位的 `AgentError` 失败；各内置适配器的姿态参数移入 `permissionArgs`、在命令的 `{permission_args}` 处展开，默认 `edit` 与原 argv 逐字节一致；只填各 CLI 文档证实的映射（claude、codex、gemini 三档，qwen 有 full），不支持只读的 CLI 在启动前拒绝、没有 full 的按 edit 运行并每个适配器记一次 LOG；启动横幅逐个适配器列出实际档位，`agent_started` 与保存的结果带上档位，`odw doctor` 列出各适配器支持的档位；`agentEnv: "minimal"` 只把必要变量与各 CLI 文档列出的认证变量传给 agent（`agentEnvPass` 追加）。Codex 的 MCP 写工具审批（#23）不由任何档位解决，文档给出 `approval_mode = "approve"` 的做法。
 - **真实用量与花费（N5）**：内置 `claude` 适配器改用 `stream-json`（逐轮输出，`result` 事件带回复、用量、花费与 `is_error`，错误走失败分类）；JSON / JSONL 输出格式可声明 `usagePath`/`costPath`/`errorPath`，解析不到文本时退回原始输出并记一条 LOG；用量按 agent 与运行汇总（含重试），`budget` 优先计真实输出 token；`odw status`、实时视图与看板显示 token 与花费；单次 `parallel()`/`pipeline()` 超过 `fanOutWarn`（默认 25）时提示。
 
 ---
@@ -85,7 +86,7 @@
 | # | 方向 | 需求 | 规模 | 状态 |
 | --- | --- | --- | --- | --- |
 | X1 | **diff 作为运行产物 + `odw apply`**：保留 worktree 的分支和 diff；合并前用 `git merge-tree` 预检，再跑校验命令，逐个合并；看板提供并排 diff 审阅 | #2 | M | ✅ diff 落盘（排除初始化文件、可截断）、`keep` 分支、`odw diff`/`odw apply [--check]`、看板改动页；`git merge-tree` 预检与逐个合并后的校验命令待做 |
-| X2 | **权限档位**：read-only / edit / full 三档，映射到各 CLI 的对应参数，启动前展示；环境变量白名单 + 密钥引用脱敏；不受信任的仓库使用 `--bare` | #6 | M | ⏳ |
+| X2 | **权限档位**：read-only / edit / full 三档，映射到各 CLI 的对应参数，启动前展示；环境变量白名单 + 密钥引用脱敏；不受信任的仓库使用 `--bare` | #6 | M | 🚧 三档 + 按 CLI 映射（只填文档证实的）、`--permissions`、`agent()` 只能降档、启动横幅、`odw doctor` 档位、`agentEnv: "minimal"` 白名单 ✅；密钥引用脱敏与 `--bare` 待做 |
 | X3 | **agent transcript**：保存每个 agent 的 JSON 流（工具调用、重试）；看板和 `odw logs --agent` 可查看；导出 OpenTelemetry GenAI span | #8 | M | ✅ 记录与回看（`odw logs --agent [--raw] [--follow]`、API、看板实时侧栏）；OpenTelemetry 导出待做 |
 | X4 | **人工检查点** `checkpoint()`（ODW 扩展）：持久暂停，`odw approve/reject [--edit]` 继续；看板提供审批入口（依赖 N1） | #9 | M | ✅（`--edit` 待做） |
 | X5 | **worktree 环境**：支持 `.worktreeinclude`、带超时的 setup 命令、为每个 agent 分配 `ODW_PORT` | #10 | S | ✅ |
