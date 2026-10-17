@@ -233,6 +233,7 @@ control flow (loops, `if`, dedup) — no imports:
 | `budget` | `{ total, spent(), remaining() }` — scale depth to a token target. |
 | `workflow(ref, args?)` | Run another workflow inline (one level deep). The child shares this run's concurrency cap, agent counter, and budget; its phases group as their own DAG lanes. |
 | `validate(source)` | Parse and compile-check trusted source without running its workflow body. Metadata is parsed as a pure literal, never evaluated. **ODW extension** (not in Claude Code's dialect). |
+| `exec(command, opts?)` | Run a command — tests, a build, a linter — without launching a model; resolves to `{ stdout, stderr, exitCode, signal, timedOut, truncated, durationMs }`. A string runs through the shell, an array as argv. Bounded by `timeout` (600 s) and `maxOutputBytes` (8 MiB per stream); a stop kills it. Takes no agent slot. **ODW extension** (not in Claude Code's dialect). |
 
 Use **`parallel`** when the next step needs the whole batch at once (dedup,
 tally, synthesis); **`pipeline`** for multi-stage work (the default). Keep
@@ -256,15 +257,16 @@ private runtime behavior need the following checks before migration:
 | Recovery | `resume` continues a paused live worker. `rerun` starts over; completed calls are not journaled and replayed after a crash. |
 
 The supported primitive names do not guarantee full runtime parity.
-`validate(source)` is an ODW extension and must be removed when targeting a host
-that does not provide it. Recoverable `null` results require an explicit choice:
-accept a partial result, retry, or fail when the task requires every item.
+`validate(source)` and `exec(command)` are ODW extensions and must be removed when
+targeting a host that does not provide them (`validate()` warns about `exec()`
+calls). Recoverable `null` results require an explicit choice: accept a partial
+result, retry, or fail when the task requires every item.
 
 ## Run and observe
 
 In an interactive terminal, `odw run` attaches a **live foreground view** — every
-agent as it starts, spins, and settles, phase by phase, with the result printed
-at the end. Ctrl-C detaches (the run keeps going); `odw attach <id>` re-attaches.
+agent (and `exec()` command step, shown with a `$` prompt) as it starts, spins, and
+settles, phase by phase, with the result printed at the end. Ctrl-C detaches (the run keeps going); `odw attach <id>` re-attaches.
 
 ```bash
 odw run wf.js [--args JSON|@file]            # foreground in a terminal; run keeps its own worker
@@ -323,6 +325,8 @@ switches to a night theme on demand. What it gives you:
   marching signal while their agent runs; zoom, fit and pan), a **timeline** that
   shows where the time went, filterable **logs** with follow, the **result** as a
   collapsible JSON tree, and an **agent drawer** with each finished agent's own output.
+  `exec()` command steps sit in the same graph and timeline as terminal-style nodes
+  with their exit code; a run's counts include them (they are not agent dispatches).
 - **Workspace** — every saved workflow with a static outline of its phases and the
   primitives each one calls, its source, and its recent runs.
 - **Chat Host** — ordinary Codex conversation; mention ODW or workflow and the turn
@@ -488,6 +492,7 @@ Runnable, plain-JS workflows in [`examples/`](examples/):
 | [`tournament.js`](examples/tournament.js) | N approaches attempt the task → pairwise judging bracket → one winner |
 | [`codex-claude-loop.js`](examples/codex-claude-loop.js) | two rival CLIs in a turn-based duel: Claude implements, Codex reviews, repeat until sign-off |
 | [`agent-daily-digest.js`](examples/agent-daily-digest.js) | discover sources → extract in parallel → synthesize → verify |
+| [`test-fix-loop.js`](examples/test-fix-loop.js) | run the tests with `exec()` → an agent fixes the failures → re-run until green (ODW only) |
 
 ## Develop
 

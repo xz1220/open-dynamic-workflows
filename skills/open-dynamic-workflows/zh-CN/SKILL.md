@@ -68,10 +68,24 @@ return await agent(
 | `budget` | `{ total, spent(), remaining() }`——按 token 目标扩缩深度。 |
 | `workflow(ref, args?)` | 内联调用另一个 workflow（仅一层）。`ref` 是受管目录中的名字或 `{ scriptPath }`；子 workflow 共享本次运行的并发上限、agent 计数和预算。 |
 | `validate(source)` | 解析并编译检查源码,不运行工作流正文;`meta` 按纯字面量解析,绝不求值。返回 `{ ok, meta?, errors, warnings }`。**ODW 扩展**——不属于 Claude Code 方言。 |
+| `exec(command, opts?)` | 不启动模型直接运行一条命令（测试、构建、linter）；返回 `{ stdout, stderr, exitCode, signal, timedOut, truncated, durationMs }`。字符串经 shell 执行，数组按 argv 执行。**ODW 扩展**——不属于 Claude Code 方言。 |
 
 `agent` 的 `opts`：`{ adapter?, schema?, label?, phase?, model?, agentType?, isolation? }`。
 `adapter` 选择用哪个 CLI；`schema` 是一个原始 JSON Schema 对象（选项，不是全局）；
 `agentType` 是注入进 prompt 的**人设**，*不是* adapter 名。
+
+`exec` 的 `opts`：`{ cwd?, env?, timeout?, input?, maxOutputBytes?, label?, phase?, check? }`。
+默认在源目录中运行，超过 `timeout` 秒（600）后连同它启动的所有进程一起被杀，每个输出流
+保留 8 MiB。非零退出码是用来分支的结果，不是错误——除非设了 `check: true`，此时抛出
+可恢复的 `ExecError`。它不占 agent 槽位，但暂停和停止对它同样生效：
+
+```js
+let run = await exec('npm test')             // ODW 扩展
+for (let round = 1; run.exitCode !== 0 && round <= 3; round++) {
+  await agent(`Fix the failing tests:\n${run.stdout.slice(-4000)}\n${run.stderr.slice(-4000)}`)
+  run = await exec('npm test')
+}
+```
 
 **选择法则：** 下一步需要**一整批**结果一次到位（去重、计票、综合）时用 `parallel`；
 多阶段处理默认用 `pipeline`。
@@ -133,3 +147,4 @@ Codex、Claude Code、Gemini、Qwen、Kimi 开箱即用，无需配置。要换�
 | 将 `parallel`/`pipeline` 中所有失败等同处理 | 可恢复失败变 `null`；停止、预算耗尽和派发上限错误会中止。要求完整交付时须重试缺失结果或报告失败,仅允许部分结果时才过滤。 |
 | 按"哪个 agent 先跑完"来分支 | 破坏可复现性；归并要保持顺序无关。 |
 | 用了 `validate()` 还指望脚本跑在 Claude Code 上 | `validate` 是 ODW 扩展，只能在 odw 上运行。 |
+| 用了 `exec()` 还指望脚本跑在 Claude Code 上 | `exec` 是 ODW 扩展，只能在 odw 上运行；`validate()` 会对此给出 warning。 |
