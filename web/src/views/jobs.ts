@@ -5,7 +5,7 @@ import { t, tn } from "../i18n";
 import { activeRuns } from "../shell";
 import { store } from "../store";
 import type { RunSummary } from "../types";
-import { ACTIVE, TERMINAL, esc, fmtAgo, fmtClock, fmtDayGroup, fmtDurSec, runDurationSec } from "../util";
+import { ACTIVE, TERMINAL, esc, fmtAgo, fmtClock, fmtDayGroup, fmtDurSec, fmtUsd, runDurationSec } from "../util";
 import { emptyArt } from "./activity";
 
 export type JobsFilter = "all" | "active" | "done" | "failed";
@@ -61,7 +61,7 @@ function runCard(r: RunSummary, nowSec: number): string {
     segProgress(r) +
     `<div class="foot"><span>${t("{n} running", { n: r.counts.running })} · ${t("{n} done", { n: r.counts.done })}` +
     (r.counts.failed ? ` · <span class="alarm">${t("{n} failed", { n: r.counts.failed })}</span>` : "") +
-    `</span>${provTag(r)}<span class="el">${elapsed}</span></div>` +
+    `</span>${provTag(r)}${r.usage?.costUsd != null ? `<span class="tag">${fmtUsd(r.usage.costUsd)}</span>` : ""}<span class="el">${elapsed}</span></div>` +
     `</article>`
   );
 }
@@ -126,7 +126,8 @@ export function renderJobs(state: JobsState, nowSec: number): string {
         `<td>${pill(r.state)}</td>` +
         `<td class="when">${fmtClock(r.createdAt)}<span>${fmtAgo(r.createdAt)}</span></td>` +
         `<td><div class="dur"><i style="width:${Math.max(3, Math.round(Math.sqrt(Math.min(1, (dur ?? 0) / longest)) * 90))}px"></i>${fmtDurSec(dur)}</div></td>` +
-        `<td class="agents">${r.counts.agents}${r.counts.failed ? ` · <span class="f">${r.counts.failed} ✕</span>` : ""}</td>` +
+        `<td class="agents">${r.counts.agents}${r.counts.failed ? ` · <span class="f">${r.counts.failed} ✕</span>` : ""}` +
+        `${r.usage?.costUsd != null ? ` · <span class="usd">${fmtUsd(r.usage.costUsd)}</span>` : ""}</td>` +
         `</tr>`,
     );
   }

@@ -420,6 +420,9 @@
 .htable .agents .f {
   color: var(--alarm-ink);
 }
+.htable .agents .usd {
+  color: var(--ink-2);
+}
 .htable tr.day td {
   height: 44px;
   padding-top: 14px;
