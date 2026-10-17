@@ -53,7 +53,13 @@ changed, and run on a schedule — and a dashboard redesigned to watch them.
   dashboard; `--budget` meters real output tokens; wide fan-outs warn up front.
 - Isolated (`worktree`) agents keep their change as a diff (setup files excluded),
   optionally on a `keep` branch. Review with `odw diff` or the dashboard's Changes tab;
-  land with `odw apply [--check]`.
+  land with `odw apply`, which previews every file first — clean, conflicting (with the
+  conflicting lines) or already applied — and stops there with `--check`; it never
+  writes over a file git does not track, and puts back what git wrote when it gives
+  up halfway. `--all` applies every finished agent in order, up to the first that
+  would conflict; `--verify "npm test"` (or `applyVerify`) runs a check after each
+  apply and rolls an apply that fails it back exactly, leaving the rest of your
+  uncommitted work alone (**ODW extension**).
 - Transcripts: every agent's CLI output is kept — `odw logs <run> --agent <id|label>
   [--follow]`, or live in the dashboard's Transcript sheet.
 

@@ -191,12 +191,19 @@ diff 形式随运行保存（`agents/<agentId>.diff`）——`agent()` 返回的
 ```bash
 odw diff $RUN --stat                  # 哪些 agent 改了哪些文件，增删多少行
 odw diff $RUN --agent <id|label>      # 某个 agent 的 diff——应用前先读
-odw apply $RUN --agent <id> --check   # 能否应用到这里？哪些文件会冲突？
+odw apply $RUN --agent <id> --check   # 预览：每个文件是 clean、CONFLICT（附冲突行）还是 already applied
 odw apply $RUN --agent <id>           # 用 git apply --3way 应用到当前工作树（会暂存）
+odw apply $RUN --all --check          # 预览所有已完成的 agent，每个都叠在前面的之上
+odw apply $RUN --all --verify "<测试命令>"   # 按顺序应用；校验失败的那次应用被回滚
 ```
 
-- 按任务需要逐个应用，并告诉用户应用了什么、哪里冲突了（退出码 1：有待解决的冲突标记）。
-  请在本次运行所针对的仓库里执行。
+- 先预览（`--check`，有冲突时退出码 1），按任务需要应用，并告诉用户应用了什么、哪里冲突了
+  （退出码 1：有待解决的冲突标记，位置与预览一致）。请在本次运行所针对的仓库里执行。
+- `--all` 按 agentId 顺序应用所有已完成的 agent，在第一个会冲突的之前停下，并说明哪些应用了、
+  哪些没有。失败的 agent 的 diff 只能用 `--agent` 单独应用。
+- `--verify "<cmd>"`（或配置 `applyVerify`）在每次应用后于仓库根目录运行该命令，失败时把这次
+  应用原样回滚——只动 diff 涉及的路径，绝不碰用户的其他改动。项目有测试或构建命令时就用它。
+  `--verify` 下会冲突的改动不会被应用。
 - 只要 diff 涉及的路径上有未提交的改动，`odw apply` 就会拒绝——先提交或 stash；只有用户
   同意时才用 `--force`。
 - 超过 `maxDiffBytes` 被截断的 diff 无法应用：改用该 agent 的分支（`keep: true`，或在

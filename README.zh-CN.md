@@ -319,7 +319,7 @@ odw agents $RUN          # 每个 agent 及其已保存的结果,运行中也可
 odw logs $RUN --follow   # 流式输出原始进度事件
 odw logs $RUN --agent 3  # 某个 agent 做了什么:它的工具调用、结果和文字(见下文)
 odw result $RUN          # 最终值
-odw diff $RUN --stat     # 隔离 agent 改了什么;odw apply $RUN --agent N 应用其中一个
+odw diff $RUN --stat     # 隔离 agent 改了什么;odw apply $RUN --agent N(或 --all)落地
 odw pause|resume|stop $RUN
 odw approve|reject $RUN  # 回答运行正在等待的 checkpoint()(--note TEXT、--checkpoint N)
 odw list
@@ -1269,15 +1269,28 @@ worktree 开始,并以同样方式准备。
 ```bash
 odw diff $RUN --stat               # 谁改了什么:文件数、增删行数、保留的分支
 odw diff $RUN --agent fix:auth     # 某个 agent 的 diff(按 label 或 id)——git 能读的补丁
-odw apply $RUN --agent 3 --check   # 能否应用到这里?哪些文件会冲突?
+odw apply $RUN --agent 3 --check   # 预览:每个文件是 clean、CONFLICT(附冲突行)还是 already applied
 odw apply $RUN --agent 3           # 用 git apply --3way 应用到当前工作树
+odw apply $RUN --all --check       # 预览所有已完成的 agent,每个都叠在前面的之上
+odw apply $RUN --all --verify "npm test"   # 按顺序应用;校验失败的那个回滚
 ```
 
-`odw apply` 在你所在的 git 工作树里用 `git apply --3way` 应用一个 agent 的 diff:能应用的
-部分会被暂存,与你自己的改动冲突的 hunk 做三方合并并留下冲突标记(退出码 1)。只要 diff
-涉及的路径上有未提交的改动,它就拒绝执行——先提交或 stash,或者加 `--force`。改动不同
-文件的多个 agent 可以依次应用。看板在运行的 **Changes** 标签页里展示同样的 diff,并通过
+`odw apply` 在你所在的 git 工作树里用 `git apply --3way` 应用一个 agent 的 diff——加
+`--all` 则按 agentId 顺序应用所有已完成 agent 的 diff:能应用的部分会被暂存。动手之前,它先在
+索引的临时副本上做同样的应用,逐个文件给出 `clean`、`CONFLICT`(附上合并后会留在文件里的冲突行,
+或无法合并的原因:`deleted here`、`binary`,或挡在那里、git 会直接覆盖的未跟踪/被忽略文件)或
+`already applied`;`--check` 到此为止
+(有冲突时退出码 1)。单个 agent 随后被应用,冲突处留下标记(退出码 1)。`--all` 把每个 agent
+叠在前面的之上预览,依次应用到第一个会冲突的为止,并说明哪些应用了、哪些没有;失败的 agent 的
+diff 只能用 `--agent` 单独应用。只要 diff 涉及的路径上有未提交的改动,它就拒绝执行——先提交或
+stash,或者加 `--force`。看板在运行的 **Changes** 标签页里展示同样的 diff,并通过
 `GET /api/runs/:id/agents/:agentId/diff` 提供。
+
+`--verify "<cmd>"`——或配置 `applyVerify`(`--no-verify` 跳过一次)——在每次应用之后于仓库
+根目录通过 shell 运行一条命令,受 `timeout` 配置约束。命令失败或超时时,这次应用会被回滚:它涉及
+的路径恢复成应用前的样子,内容和索引项都分毫不差,odw 以退出码 1 结束并给出命令输出的末尾;按下
+Ctrl-C 也会同样回滚。命令运行期间这些文件若被改动,改动后的版本会先另存一份,odw 会说明存在哪里。其他东西一概不碰——不 stash、不 reset——你其余的未提交改动保持原样。`--verify` 下
+会冲突的改动不会被应用。
 
 - **`keep: true`**(`agent()` 选项)或 **`keepBranches: true`**(配置)还会把改动提交到源
   仓库的分支 `odw/<runId>/<agentId>-<label>` 上——作者是 `odw <odw@localhost>`,父提交是
@@ -1294,7 +1307,8 @@ odw apply $RUN --agent 3           # 用 git apply --3way 应用到当前工作�
 ```jsonc
 {
   "maxDiffBytes": 2097152, // run 目录中单个 agent 的 diff 最多保留的字节数
-  "keepBranches": false    // true:每个隔离 agent 的改动也都提交到一个分支
+  "keepBranches": false,   // true:每个隔离 agent 的改动也都提交到一个分支
+  "applyVerify": null      // 例如 "npm test":每次 odw apply 之后运行,失败则回滚这次应用
 }
 ```
 
@@ -1447,7 +1461,9 @@ node web/dev.mjs --api http://127.0.0.1:4317     # → http://127.0.0.1:5173
   `odw schedule list` 里能看到上一次运行([配方](docs/recipes/cron.md))。
 - **审阅并应用隔离 agent 的改动。** worktree agent 的改动会在 worktree 删除前保存为 diff
   (排除初始化时放进去的文件),也可以用 `keep` 保留到分支。在看板的**改动**标签页或用 `odw diff`
-  审阅,再用 `odw apply`(先加 `--check`)逐个落地。
+  审阅,再用 `odw apply` 落地:动手之前它会逐个文件预览——干净、冲突(附冲突行)还是已应用——
+  `--all` 按顺序应用所有 agent,加上 `--verify "npm test"` 时,把弄坏构建的那次应用回滚,
+  你其余的未提交改动不受影响。
 - **真实用量与花费。** 内置 `claude` 适配器改为读取 Claude Code 的 `stream-json`,每个 agent
   都会记录 CLI 上报的 token 与花费——`odw status`、实时视图和看板里都能看到——`--budget` 也按真实
   输出 token 计量。单次 fan-out 超过 `fanOutWarn`(25)时会提前提示。

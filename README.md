@@ -353,7 +353,7 @@ odw agents $RUN          # each agent and its saved result, mid-run too
 odw logs $RUN --follow   # stream raw progress events
 odw logs $RUN --agent 3  # what one agent did: its tool calls, results and text (below)
 odw result $RUN          # final value
-odw diff $RUN --stat     # what isolated agents changed; odw apply $RUN --agent N applies one
+odw diff $RUN --stat     # what isolated agents changed; odw apply $RUN --agent N (or --all) lands it
 odw pause|resume|stop $RUN
 odw approve|reject $RUN  # answer a checkpoint() the run waits at (--note TEXT, --checkpoint N)
 odw list
@@ -1420,17 +1420,37 @@ change and stays out, unless the agent edited it afterwards.
 ```bash
 odw diff $RUN --stat               # who changed what: files, +/- lines, kept branch
 odw diff $RUN --agent fix:auth     # one agent's diff, by label or id — a patch git can read
-odw apply $RUN --agent 3 --check   # would it apply here, and what would conflict?
+odw apply $RUN --agent 3 --check   # preview: each file clean, CONFLICT (with its lines) or already applied
 odw apply $RUN --agent 3           # apply it to this working tree (git apply --3way)
+odw apply $RUN --all --check       # preview every finished agent, each on top of the ones before it
+odw apply $RUN --all --verify "npm test"   # apply them in order; roll back one that fails the check
 ```
 
-`odw apply` applies one agent's diff to the git working tree you run it in with
-`git apply --3way`: what applies is staged, and a hunk that clashes with your
-own change is merged three-way and left with conflict markers (exit 1). It
-refuses while a path the diff touches has uncommitted changes — commit or stash
-them, or pass `--force`. Agents that changed different files apply one after
-another. The dashboard shows the same diffs in a run's **Changes** tab and serves
-them at `GET /api/runs/:id/agents/:agentId/diff`.
+`odw apply` applies one agent's diff — or, with `--all`, every finished agent's,
+in agentId order — to the git working tree you run it in, with
+`git apply --3way`: what applies is staged. Before it touches anything it runs
+the same apply against a scratch copy of the index and prints each file as
+`clean`, `CONFLICT` — with the conflicting lines as the merge would leave them
+in the file, or why it cannot be merged (`deleted here`, `binary`, or an
+untracked or ignored file in the way, which git would write over) — or
+`already applied`; `--check` stops there (exit 1 on a conflict). A single agent
+is then applied, a hunk that clashes left with conflict markers (exit 1).
+`--all` previews each agent on top of the ones before it, applies them up to the
+first that would conflict, and says which applied and which did not; a failed
+agent's diff goes in only by `--agent`. It refuses while a path a diff touches
+has uncommitted changes — commit or stash them, or pass `--force`. The dashboard
+shows the same diffs in a run's **Changes** tab and serves them at
+`GET /api/runs/:id/agents/:agentId/diff`.
+
+`--verify "<cmd>"` — or the `applyVerify` setting, which `--no-verify` skips
+once — runs a command at the repository root after each apply, through the
+shell and within the `timeout` setting. When it fails or times out, that apply
+is rolled back — the paths it touched get back exactly what they held, content
+and index entries — and odw exits 1 with the end of the command's output; Ctrl-C
+rolls it back the same way. An edit made to those files while the command ran is
+set aside first, where odw says. Nothing else is touched — no stash, no reset —
+so your other uncommitted work stays as it is. A change that would conflict is
+not applied under `--verify`.
 
 - **`keep: true`** (an `agent()` option) or **`keepBranches: true`** (config) also
   commits the change to a branch `odw/<runId>/<agentId>-<label>` of the source
@@ -1450,7 +1470,8 @@ them at `GET /api/runs/:id/agents/:agentId/diff`.
 ```jsonc
 {
   "maxDiffBytes": 2097152, // bytes of one agent's diff kept in the run directory
-  "keepBranches": false    // true: every isolated agent's change also goes on a branch
+  "keepBranches": false,   // true: every isolated agent's change also goes on a branch
+  "applyVerify": null      // e.g. "npm test": run after each odw apply, which is rolled back if it fails
 }
 ```
 
@@ -1627,7 +1648,10 @@ upgrading, is in [`CHANGELOG.md`](CHANGELOG.md):
 - **Review and apply what isolated agents changed.** A worktree agent's change
   is kept as a diff when its worktree goes (setup files left out), optionally on
   a `keep` branch. Read it in the dashboard's **Changes** tab or with `odw diff`,
-  and land it with `odw apply` (`--check` first) — one agent at a time.
+  and land it with `odw apply`: it previews every file — clean, conflicting (with
+  the lines) or already applied — before it touches the tree, takes `--all`
+  agents in order, and with `--verify "npm test"` rolls back an apply that breaks
+  the build, leaving your other uncommitted work alone.
 - **Real usage and cost.** The built-in `claude` adapter now reads Claude Code's
   `stream-json`, so every agent records the tokens and dollars its CLI reported —
   in `odw status`, the live view and the dashboard — and `--budget` meters real

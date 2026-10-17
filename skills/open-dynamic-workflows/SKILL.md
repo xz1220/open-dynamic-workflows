@@ -228,13 +228,24 @@ files. Its change is kept with the run as a diff (`agents/<agentId>.diff`) —
 ```bash
 odw diff $RUN --stat                  # which agents changed which files, +/- lines
 odw diff $RUN --agent <id|label>      # one agent's diff — read it before applying
-odw apply $RUN --agent <id> --check   # would it apply here? which files would conflict?
+odw apply $RUN --agent <id> --check   # preview: each file clean, CONFLICT (with its lines) or already applied
 odw apply $RUN --agent <id>           # git apply --3way into this working tree (staged)
+odw apply $RUN --all --check          # preview every finished agent, each on top of the ones before it
+odw apply $RUN --all --verify "<test command>"   # apply them in order; roll back one that fails the check
 ```
 
-- Apply what the task calls for, one agent at a time, and tell the user what you
-  applied and what conflicted (exit 1: conflict markers to resolve). Run it inside
-  the repository the run worked on.
+- Preview first (`--check`, exit 1 when anything conflicts), apply what the task
+  calls for, and tell the user what you applied and what conflicted (exit 1:
+  conflict markers to resolve, where the preview showed them). Run it inside the
+  repository the run worked on.
+- `--all` applies every finished agent in agentId order, stops before the first
+  that would conflict, and says which applied and which did not. A failed
+  agent's diff goes in only by `--agent`.
+- `--verify "<cmd>"` (or the `applyVerify` setting) runs the command at the
+  repository root after each apply and rolls that apply back, exactly, when it
+  fails — only the paths the diff touched, never the user's other work. Use the
+  project's test or build command when it has one. A change that would conflict
+  is not applied under `--verify`.
 - `odw apply` refuses while a path the diff touches has uncommitted changes —
   commit or stash first; use `--force` only when the user agrees.
 - A diff cut at `maxDiffBytes` cannot be applied: use the agent's branch

@@ -39,6 +39,9 @@
   "maxDiffBytes": 2097152,
   "keepBranches": false,
 
+  "//applyVerify": "ODW extension. A command line odw apply runs at the repository root after each apply, through the shell and within \"timeout\" — e.g. \"npm test\". When it fails, times out or is interrupted, that apply is rolled back exactly: the paths the diff touched get back their content and index entries, and nothing else is touched (no stash, no reset). odw apply --verify \"<cmd>\" overrides it for one apply, --no-verify skips it, --check never runs it. null (the default): no command.",
+  "applyVerify": null,
+
   "//maxTranscriptBytes": "ODW extension. While each agent runs, what its CLI prints is kept in the run directory as its transcript: agents/<agentId>.transcript.jsonl (a JSONL adapter's events as received, other adapters' output as text lines) and agents/<agentId>.stderr.txt (the end of its stderr). odw logs <run> --agent <id|label> prints it readably (--raw as kept, --follow while it runs). Past maxTranscriptBytes per agent one truncation line ends it; 0 keeps no transcripts.",
   "maxTranscriptBytes": 5242880,
 
