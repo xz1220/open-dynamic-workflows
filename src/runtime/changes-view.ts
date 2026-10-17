@@ -1,22 +1,16 @@
 /**
  * The review side of what isolated agents changed (L5, an ODW extension):
- * what `odw diff` and `odw apply` do with the diffs a run kept.
+ * what `odw diff` and `odw apply` read of the diffs a run kept.
  *
  * An isolated agent that changed anything left a unified diff in the run
  * directory, `agents/<agentId>.diff` (see ../changes). `odw diff` prints them,
- * or a table of who changed how much; `odw apply` applies one to the working
- * tree it is run in with `git apply --3way` — once it has made sure no
- * uncommitted change is in the way of the paths the diff touches — and says
- * what applied and what conflicted. `--check` finds that out on a scratch copy
- * of the index, changing nothing.
+ * or a table of who changed how much; `odw apply` previews and applies them
+ * to the working tree it is run in (see ./apply), reading their files here.
  */
 
 import { existsSync } from "node:fs";
-import { copyFile, mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
 
-import { git, runGit, splitNul, TRUNCATION_NOTE, type AgentChanges } from "../changes.js";
+import { TRUNCATION_NOTE, type AgentChanges } from "../changes.js";
 import { displayWidth, padEndWidth, palette, sanitizeText, truncateToWidth, type TermCaps } from "../tty.js";
 import { agentRows, type AgentRow } from "./agents-view.js";
 import type { RunStore } from "./run-store.js";
@@ -269,93 +263,4 @@ export function colorDiff(text: string, caps: TermCaps): string {
       return line;
     })
     .join("\n");
-}
-
-// --- applying it -------------------------------------------------------------------
-
-export interface ApplyReport {
-  /** The repository's root, where the diff was (or would be) applied. */
-  repo: string;
-  /** Uncommitted changes in the paths the diff touches: refused unless forced. */
-  blocked: Array<{ path: string; how: string }>;
-  /** The diff's files; `conflicted` when the three-way merge left conflict markers in it. */
-  files: Array<DiffFile & { conflicted: boolean }>;
-  /** What git said when it applied nothing at all. */
-  error: string | null;
-}
-
-/**
- * Apply a kept diff (its text and its file) to the git working tree `cwd` is
- * in, at its root, with `git apply --3way`: a hunk that does not apply as is
- * is merged three-way against the blob it was made from, and one that clashes
- * is left with conflict markers (and an unmerged index entry). git stages
- * what it applies. Refused — nothing touched — while a path the diff touches
- * has uncommitted changes, unless `force`. `check` runs the same apply
- * against a scratch copy of the index (`--cached`): it reports, changes nothing.
- */
-export async function applyDiff(
-  cwd: string,
-  file: string,
-  text: string,
-  opts: { check: boolean; force: boolean },
-): Promise<ApplyReport> {
-  const repo = (await git(cwd, ["rev-parse", "--show-toplevel"])).trim();
-  const files = diffFiles(text);
-  const touched = new Set<string>();
-  for (const f of files) {
-    if (f.oldPath !== null) touched.add(f.oldPath);
-    if (f.newPath !== null) touched.add(f.newPath);
-  }
-  const blocked = statusEntries(await git(repo, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]))
-    .filter((entry) => touched.has(entry.path))
-    .map(({ path, xy }) => ({ path, how: describeStatus(xy) }));
-  const report: ApplyReport = { repo, blocked, files: files.map((f) => ({ ...f, conflicted: false })), error: null };
-  if (blocked.length > 0 && !opts.force) return report;
-
-  let scratch: string | null = null;
-  let env: NodeJS.ProcessEnv | undefined;
-  if (opts.check) {
-    // A dry run that sees conflicts too: apply to a copy of the index, never to the tree.
-    scratch = await mkdtemp(join(tmpdir(), "odw-apply-"));
-    const index = join(scratch, "index");
-    const own = resolve(repo, (await git(repo, ["rev-parse", "--git-path", "index"])).trim());
-    await copyFile(own, index).catch((err: NodeJS.ErrnoException) => {
-      if (err.code !== "ENOENT") throw err;
-    });
-    env = { ...process.env, GIT_INDEX_FILE: index };
-  }
-  try {
-    const applied = await runGit(repo, ["apply", "--3way", ...(opts.check ? ["--cached"] : []), file], { env });
-    const unmerged = new Set(
-      splitNul(await git(repo, ["ls-files", "--unmerged", "-z"], { env })).map((entry) => entry.slice(entry.indexOf("\t") + 1)),
-    );
-    for (const f of report.files) f.conflicted = unmerged.has(f.newPath ?? f.oldPath ?? "");
-    if (applied.code !== 0 && !report.files.some((f) => f.conflicted)) {
-      report.error = applied.stderr.trim() || `git apply exited with code ${applied.code}`;
-    }
-  } finally {
-    if (scratch) await rm(scratch, { recursive: true, force: true }).catch(() => {});
-  }
-  return report;
-}
-
-/** The entries of `git status --porcelain=v1 -z`: each path with its two-letter state (a rename's source too). */
-function statusEntries(out: string): Array<{ path: string; xy: string }> {
-  const entries: Array<{ path: string; xy: string }> = [];
-  const fields = out.split("\0");
-  for (let i = 0; i < fields.length; i++) {
-    const field = fields[i]!;
-    if (field.length < 4) continue;
-    const xy = field.slice(0, 2);
-    entries.push({ path: field.slice(3).replace(/\/$/, ""), xy });
-    if (/[RC]/.test(xy) && fields[i + 1]) entries.push({ path: fields[++i]!, xy });
-  }
-  return entries;
-}
-
-function describeStatus(xy: string): string {
-  if (xy === "??") return "untracked";
-  if (xy.includes("U") || xy === "AA" || xy === "DD") return "unmerged";
-  if (xy[1] !== " ") return "changed, not staged";
-  return "staged";
 }

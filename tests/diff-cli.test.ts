@@ -202,12 +202,13 @@ test("odw apply --check changes nothing; apply stages the change; several agents
   const src = fx.src;
   const check = await cli(["apply", fx.id, "--agent", "one", "--check", ...fx.flags], src);
   assert.equal(check.code, 0, check.err);
-  assert.equal(check.out, `agent 1 (one) of run ${fx.id} applies cleanly to ${realpathSync(src)}:\n  M a.txt\n`);
+  const preview = `agent 1 (one) of run ${fx.id} applies cleanly to ${realpathSync(src)}:\n  M a.txt  clean\n`;
+  assert.equal(check.out, preview);
   assert.equal(git(src, "status", "--porcelain"), "", "a check changes nothing");
 
   const applied = await cli(["apply", fx.id, "--agent", "one", ...fx.flags], src);
   assert.equal(applied.code, 0, applied.err);
-  assert.equal(applied.out, `applied agent 1 (one) of run ${fx.id} to ${realpathSync(src)} (staged, as git apply --3way does):\n  M a.txt\n`);
+  assert.equal(applied.out, `${preview}applied agent 1 (one) of run ${fx.id} to ${realpathSync(src)} (staged, as git apply --3way does)\n`);
   assert.equal(readFileSync(join(src, "a.txt"), "utf8"), ten("1", "TEN"));
   assert.equal(git(src, "diff", "--cached", "--name-only"), "a.txt\n");
 
@@ -232,13 +233,23 @@ test("odw apply reports conflicts with a check first, then leaves them marked; -
 
   const check = await cli(["apply", fx.id, "--agent", "clash", "--check", ...fx.flags], src);
   assert.equal(check.code, 1);
-  assert.equal(check.out, `agent 4 (clash) of run ${fx.id} would apply with 1 conflict(s) to ${realpathSync(src)}:\n  M c.txt   CONFLICT\n`);
+  const preview =
+    `agent 4 (clash) of run ${fx.id} would apply with 1 conflict(s) to ${realpathSync(src)}:\n` +
+    "  M c.txt  CONFLICT\n" +
+    "      at line 1:\n" +
+    "      <<<<<<< ours\n      c1, by the user\n      =======\n      c1, by the agent\n      >>>>>>> theirs\n" +
+    "  (ours: what this tree holds · theirs: the agent's change)\n";
+  assert.equal(check.out, preview, "the conflicting lines, as the merge would leave them");
   assert.equal(readFileSync(join(src, "c.txt"), "utf8"), "c1, by the user\nc2\nc3\n", "a check changes nothing");
   assert.equal(git(src, "ls-files", "--unmerged"), "");
 
   const clash = await cli(["apply", fx.id, "--agent", "4", ...fx.flags], src);
   assert.equal(clash.code, 1);
-  assert.match(clash.out, /\n {2}M c\.txt {3}CONFLICT\n1 file\(s\) conflicted: resolve the <<<<<<< markers, then git add them\n$/);
+  assert.equal(
+    clash.out,
+    `${preview}applied agent 4 (clash) of run ${fx.id} to ${realpathSync(src)} (staged, as git apply --3way does)\n` +
+      "1 file(s) conflicted: resolve the <<<<<<< markers, then git add them\n",
+  );
   const marked = readFileSync(join(src, "c.txt"), "utf8");
   assert.match(marked, /^<<<<<<< .*\nc1, by the user\n=======\nc1, by the agent\n>>>>>>> /m);
   assert.notEqual(git(src, "ls-files", "--unmerged", "--", "c.txt"), "");
@@ -263,7 +274,7 @@ test("odw apply refuses a cut diff, a missing --agent, an agent with no diff, an
 
   const missing = await cli(["apply", fx.id, ...fx.flags], fx.src);
   assert.equal(missing.code, 2);
-  assert.match(missing.err, /--agent <id\|label> is required/);
+  assert.match(missing.err, /--agent <id\|label> or --all is required/);
 
   const none = await cli(["apply", fx.id, "--agent", "here", ...fx.flags], fx.src);
   assert.equal(none.code, 1);

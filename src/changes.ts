@@ -142,7 +142,7 @@ function statusPaths(out: string): string[] {
  * the content hash and executable bit for a file, "dir" for a directory (a
  * nested repository), null when nothing is there.
  */
-async function fingerprint(path: string): Promise<string | null> {
+export async function fingerprint(path: string): Promise<string | null> {
   const info = await lstat(path).catch(() => null);
   if (!info) return null;
   if (info.isSymbolicLink()) return `link:${await readlink(path).catch(() => "?")}`;
@@ -675,6 +675,8 @@ export interface GitOptions {
   signal?: AbortSignal;
   /** Exit codes that are not a failure (default: 0). */
   okCodes?: number[];
+  /** POSIX: run git in a process group of its own, out of reach of the terminal's Ctrl-C. */
+  detached?: boolean;
 }
 
 /** How a git command ended: its exit code (null: killed), stdout, and the end of its stderr. */
@@ -692,6 +694,7 @@ export function runGit(cwd: string, args: string[], opts: GitOptions = {}): Prom
       signal: opts.signal,
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
+      detached: opts.detached === true && process.platform !== "win32",
     });
     const out: Buffer[] = [];
     let size = 0;
