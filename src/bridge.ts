@@ -86,6 +86,7 @@ export class Bridge {
   private readonly source: string;
   private readonly runner: CommandRunner;
   private readonly router: OptionRouter;
+  private autoPicked: Adapter | undefined;
 
   constructor(
     private readonly config: Config,
@@ -96,8 +97,19 @@ export class Bridge {
     this.router = options.router ?? new LiteralRouter();
   }
 
+  /**
+   * The adapter a call runs on: the named one, else the configured default,
+   * else the zero-config auto-pick; throws AdapterNotFound (a ConfigError). The
+   * auto-pick scans PATH, so it happens once per bridge (one run) and is then
+   * reused: every agent of a run gets the same CLI, even if PATH changes.
+   */
+  adapterFor(name?: string | null): Adapter {
+    if (name || this.config.settings.defaultAdapter) return resolveAdapter(this.config, name);
+    return (this.autoPicked ??= resolveAdapter(this.config, null));
+  }
+
   async run(request: AgentRequest): Promise<AgentOutcome> {
-    const adapter = resolveAdapter(this.config, request.adapter);
+    const adapter = this.adapterFor(request.adapter);
     const settings = this.config.settings;
     const timeout = adapter.timeout ?? settings.timeout ?? undefined;
     // Plan the invocation once: workspace mode, the model token/flag, and the

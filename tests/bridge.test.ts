@@ -208,6 +208,38 @@ test(
   },
 );
 
+test("the zero-config adapter auto-pick scans PATH once per run and then sticks", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "odw-autopick-"));
+  const oldPath = process.env.PATH;
+  try {
+    for (const name of ["claude", "codex"]) {
+      mkdirSync(join(dir, name));
+      writeFileSync(join(dir, name, name), "#!/bin/sh\n");
+      chmodSync(join(dir, name, name), 0o755);
+    }
+    const config = defaultConfig(); // nine built-ins, no defaultAdapter
+    const used: string[] = [];
+    const bridge = new Bridge(config, {
+      runner: async (command) => {
+        used.push(command[0]!);
+        return ok("hi");
+      },
+    });
+    process.env.PATH = join(dir, "claude");
+    assert.equal(bridge.adapterFor().name, "claude");
+    // PATH changes mid-run: this run keeps the CLI it picked.
+    process.env.PATH = join(dir, "codex");
+    assert.equal((await bridge.run({ prompt: "x" })).adapter, "claude");
+    assert.deepEqual(used, ["claude"]);
+    // An explicit name is still honoured, and a new run picks afresh.
+    assert.equal(bridge.adapterFor("codex").name, "codex");
+    assert.equal(new Bridge(config).adapterFor().name, "codex");
+  } finally {
+    process.env.PATH = oldPath;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("a failure message keeps both ends of a long diagnostic", async () => {
   const stderr = `Error: the real cause\n${"noise ".repeat(500)}\n[process output exceeded 10 bytes; terminated]`;
   const bridge = new Bridge(inplaceConfig(), {

@@ -100,8 +100,11 @@ export function createPrimitives(
     const agentId = ++ctx.seq.value;
     // Adapter selection honours ONLY opts.adapter. agentType is a persona (it is
     // forwarded to the bridge and injected into the prompt), never an adapter name.
-    const display =
-      opts.label ?? opts.adapter ?? opts.agentType ?? ctx.config.settings.defaultAdapter ?? "agent";
+    // Resolve it before asking for a slot: an unknown or ambiguous adapter is a
+    // (fatal) config error that must not consume a dispatch or show an agent
+    // that never ran as running.
+    const adapter = ctx.bridge.adapterFor(opts.adapter);
+    const display = opts.label ?? opts.adapter ?? opts.agentType ?? adapter.name;
     const request: AgentRequest = {
       prompt,
       adapter: opts.adapter,
@@ -112,23 +115,25 @@ export function createPrimitives(
       isolation: opts.isolation,
     };
     let outcome;
+    let started = false;
     try {
       outcome = await ctx.scheduler.runAgent(async () => {
         // Record the adapter only once the scheduler has handed out a real
         // dispatch slot, so queued work is not presented as running.
+        started = true;
         ctx.emit(
-          event(AGENT_STARTED, {
-            agentId,
-            label: display,
-            phase: activePhase,
-            adapter: opts.adapter ?? ctx.config.settings.defaultAdapter ?? null,
-          }),
+          event(AGENT_STARTED, { agentId, label: display, phase: activePhase, adapter: adapter.name }),
         );
         return ctx.bridge.run(request);
       });
     } catch (err) {
-      if (isFatalError(err)) throw err; // budget exhausted / stop: abort the run
-      ctx.emit(event(AGENT_FAILED, { agentId, label: display, phase: activePhase, error: String(err) }));
+      // A started agent always gets a terminal event, even when the error is
+      // fatal (stop, budget, a config error raised inside the slot) — else
+      // observers show it running forever. A fatal error before the start
+      // (stop or budget at dispatch) concerns the run, not this agent.
+      if (started || !isFatalError(err)) {
+        ctx.emit(event(AGENT_FAILED, { agentId, label: display, phase: activePhase, error: String(err) }));
+      }
       throw err;
     }
     // No option is dropped silently: surface each routing note as a LOG event

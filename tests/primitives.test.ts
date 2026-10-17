@@ -1,11 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { defaultConfig } from "../src/adapters/config.js";
+import { defaultConfig, resolveAdapter } from "../src/adapters/config.js";
 import type { Bridge } from "../src/bridge.js";
 import type { RunContext } from "../src/context.js";
 import { NullControl } from "../src/control.js";
-import { AGENT_FINISHED, AGENT_STARTED, LOG, MemorySink } from "../src/events.js";
+import { AdapterNotFound, ConfigError } from "../src/errors.js";
+import { AGENT_FAILED, AGENT_FINISHED, AGENT_STARTED, LOG, MemorySink } from "../src/events.js";
 import { createPrimitives } from "../src/primitives.js";
 import { Scheduler } from "../src/scheduler.js";
 
@@ -21,7 +22,7 @@ function fakeContext(
   config.settings.defaultAdapter = "claude";
   const ctx: RunContext = {
     config,
-    bridge: { run } as unknown as Bridge,
+    bridge: { run, adapterFor: (name?: string | null) => resolveAdapter(config, name) } as unknown as Bridge,
     scheduler: new Scheduler({ concurrency: options.concurrency ?? 4, maxAgents: 1000 }),
     control: new NullControl(),
     sink,
@@ -95,6 +96,44 @@ test("agent_started is emitted only after a scheduler slot is acquired", async (
 
   second.resolve(outcome("two"));
   assert.deepEqual(await run, ["one", "two"]);
+});
+
+test("an unknown adapter fails before dispatch: no slot, no dispatch, no phantom running agent", async () => {
+  let ran = 0;
+  const { ctx, sink } = fakeContext(async () => {
+    ran++;
+    return outcome("x");
+  });
+  const p = createPrimitives(ctx);
+  await assert.rejects(() => p.agent("hi", { adapter: "nope" }), AdapterNotFound);
+  assert.equal(ran, 0);
+  assert.equal(ctx.scheduler.dispatched, 0, "the failed call consumed no dispatch");
+  assert.equal(sink.ofType(AGENT_STARTED).length, 0);
+});
+
+test("a fatal error inside the slot still settles the started agent with agent_failed", async () => {
+  const { ctx, sink } = fakeContext(async () => {
+    throw new ConfigError("isolation needs a git repository");
+  });
+  const p = createPrimitives(ctx);
+  await assert.rejects(() => p.agent("hi", { label: "iso" }), ConfigError);
+  const [started] = sink.ofType(AGENT_STARTED);
+  const failed = sink.ofType(AGENT_FAILED);
+  assert.ok(started, "the agent did start");
+  assert.equal(failed.length, 1, "a started agent must not be left running");
+  assert.equal(failed[0]!.agentId, started.agentId);
+  assert.match(String(failed[0]!.error), /git repository/);
+});
+
+test("agent_started names the resolved adapter", async () => {
+  const { ctx, sink } = fakeContext(async () => outcome("x"));
+  const p = createPrimitives(ctx);
+  await p.agent("hi");
+  await p.agent("hi", { adapter: "codex" });
+  assert.deepEqual(
+    sink.ofType(AGENT_STARTED).map((e) => e.adapter),
+    ["claude", "codex"],
+  );
 });
 
 test("parallel is a barrier; a thrown thunk becomes null", async () => {
