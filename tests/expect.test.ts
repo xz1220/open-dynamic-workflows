@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { execPath } from "node:process";
@@ -15,9 +15,11 @@ import { AdapterExecutionError, AgentError } from "../src/errors.js";
 import type { WorkflowEvent } from "../src/events.js";
 import { globToRegExp, planChecks } from "../src/expect.js";
 import { resumeKey } from "../src/journal.js";
+import { attachRun, formatEvent } from "../src/runtime/live-view.js";
 import { RunStore } from "../src/runtime/run-store.js";
 import { detail, foldAgents } from "../src/runtime/runs-view.js";
 import { executeRun } from "../src/runtime/worker.js";
+import { FakeTerm } from "./fake-term.js";
 
 // Evidence of success (ODW extension): `expect` checks on agent() — each kind
 // passing, missing, retried into a pass and retried into a typed failure, in
@@ -905,7 +907,57 @@ test("the whole stack: permission denials fail the agent with reason permission"
   }
 });
 
-// --- surfaces: resume, config ----------------------------------------------------------------
+// --- surfaces: logs, live view, resume, config ---------------------------------------------
+
+test("odw logs and the live view show what a failed agent's work missed", async () => {
+  const misses = ["a file must change, and none did", "`npm test` must exit 0, and it exited with code 1"];
+  const failed: WorkflowEvent = {
+    ts: 3,
+    type: "agent_failed",
+    agentId: 1,
+    label: "fixer",
+    phase: "Fix",
+    error: `UnmetExpectationError: adapter 'claude' did not meet its expectations after 1 retry: ${misses.join("; ")}`,
+    reason: "unmet_expectation",
+    misses,
+  };
+  assert.equal(
+    formatEvent(failed).replace(/^\[[^\]]*\] /, ""),
+    "agent_failed    (Fix) fixer — [unmet_expectation] did not meet: a file must change, and none did; `npm test` must exit 0, and it exited with code 1",
+  );
+  assert.equal(
+    formatEvent({ ...failed, reason: "empty_reply", misses: undefined, error: "AdapterExecutionError: adapter 'claude' replied with nothing" }).replace(/^\[[^\]]*\] /, ""),
+    "agent_failed    (Fix) fixer — [empty_reply] AdapterExecutionError: adapter 'claude' replied with nothing",
+  );
+
+  const store = new RunStore(mkdtempSync(join(tmpdir(), "odw-expect-live-")));
+  try {
+    const runId = store.create({ script: "/tmp/never-read/wf.js", args: null, source: process.cwd(), workflowName: "fix" });
+    store.updateStatus(runId, { state: "running", pid: process.pid, name: "fix" });
+    for (const ev of [
+      { ts: 1, type: "run_started", runId },
+      { ts: 1, type: "phase_started", phase: "Fix" },
+      { ts: 1, type: "agent_started", agentId: 1, label: "fixer", phase: "Fix", adapter: "claude" },
+      { ts: 2, type: "command_started", commandId: 1, label: "fixer: expect", phase: "Fix", command: "npm test", forAgentId: 1 },
+      { ts: 2.5, type: "command_failed", commandId: 1, label: "fixer: expect", phase: "Fix", command: "npm test", forAgentId: 1, exitCode: 1, durationMs: 500, error: "exited with code 1" },
+      failed,
+      { ts: 4, type: "run_finished", runId },
+    ]) {
+      appendFileSync(store.eventsPath(runId), JSON.stringify(ev) + "\n");
+    }
+    store.writeResult(runId, null);
+    store.updateStatus(runId, { state: "done" });
+    const term = new FakeTerm(120);
+    const out = { text: "", isTTY: false, write(s: string) { this.text += s; } };
+    const env = { TERM: "xterm", LANG: "en_US.UTF-8" };
+    assert.equal(await attachRun(store, runId, { out, err: term, live: true, pollMs: 10, signals: false, env }), 0);
+    const screen = term.text();
+    assert.match(screen, /✖ fixer\s+claude · expectations not met · 2\.0s\n\s+✖ a file must change, and none did\n\s+✖ `npm test` must exit 0, and it exited with code 1\n/);
+    assert.doesNotMatch(screen, /UnmetExpectationError/, "the misses say it, one a line");
+  } finally {
+    rmSync(store.root, { recursive: true, force: true });
+  }
+});
 
 test("the resume key covers expect and allowEmpty (true only), not expectRetries", () => {
   const base = resumeKey("p", {});

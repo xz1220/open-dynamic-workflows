@@ -109,7 +109,10 @@ export function formatEvent(ev: WorkflowEvent): string {
   else if (type === "phase_started") detail = `phase: ${sanitizeText(ev.phase, 80)}`;
   else if (type.startsWith("agent_")) {
     detail = sanitizeText(ev.label ?? "agent", 120) + fallbackTag(ev);
-    if (type === "agent_failed") detail += ` — ${failureTag(ev)}${sanitizeText(ev.error, 200)}`;
+    if (type === "agent_failed") {
+      const misses = missesOf(ev);
+      detail += ` — ${failureTag(ev)}${misses ? sanitizeText(`did not meet: ${misses.join("; ")}`, 300) : sanitizeText(ev.error, 200)}`;
+    }
     if (type === "agent_finished" && ev.cached === true) detail += ` (replayed from ${sanitizeText(ev.sourceRunId, 80)})`;
   } else if (type.startsWith("command_")) detail = commandDetail(ev, type);
   else if (type === "checkpoint_requested") {
@@ -168,6 +171,16 @@ export function fallbackLines(agents: AgentView[], events: WorkflowEvent[]): str
   return lines;
 }
 
+/** The `expect` checks a failed agent's work missed (agent_failed's `misses`; ODW extension), or null. */
+function missesOf(ev: WorkflowEvent): string[] | null {
+  if (!Array.isArray(ev.misses)) return null;
+  const misses = ev.misses.filter((miss): miss is string => typeof miss === "string");
+  return misses.length > 0 ? misses : null;
+}
+
+/** Misses listed under a failed agent in the live view, at most. */
+const MAX_MISS_LINES = 5;
+
 /**
  * What a run (or an agent) spent, in one line for people: "17.9k tokens in
  * (12.7k cache read, 5.1k cache write) · 812 out · $0.0387"; a `~` marks
@@ -217,6 +230,8 @@ function reasonText(reason: string | undefined): string | null {
     stalled: "stalled",
     not_found: "CLI not found",
     permission: "permission denied",
+    empty_reply: "empty reply",
+    unmet_expectation: "expectations not met",
   };
   return words[reason] ?? sanitizeText(reason.replace(/_/g, " "), 40);
 }
@@ -395,7 +410,14 @@ class LiveView {
         else this.failed++;
         if (settled.usage) this.usage = addUsage(this.usage, settled.usage);
         out.push(this.settledLine(settled));
-        if (settled.state === "failed" && settled.error) {
+        if (settled.state === "failed" && settled.misses?.length) {
+          // What its work missed, one check a line, says more than the error that lists them.
+          for (const miss of settled.misses.slice(0, MAX_MISS_LINES)) {
+            out.push(`      ${p.err(`${g.fail} ${sanitizeText(miss, 200)}`)}`);
+          }
+          const more = settled.misses.length - MAX_MISS_LINES;
+          if (more > 0) out.push(`      ${p.dim(`… ${more} more`)}`);
+        } else if (settled.state === "failed" && settled.error) {
           out.push(`      ${p.err(sanitizeText(settled.error, 200))}`);
         }
       }
