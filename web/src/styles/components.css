@@ -855,6 +855,7 @@
 /* ---- code + source + json ---- */
 .code {
   margin: 0;
+  border: 1px solid var(--line-2);
   padding: 16px 0;
   border-radius: var(--r-md);
   background: var(--code-bg);

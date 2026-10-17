@@ -787,6 +787,7 @@
   gap: 6px;
 }
 .chat-head-tags span {
+  white-space: nowrap;
   font-family: var(--f-mono);
   font-size: 10.5px;
   color: var(--mute);
@@ -888,6 +889,18 @@
   border: 1px solid var(--sig-line);
   background: var(--card);
   box-shadow: 0 0 0 4px var(--sig-soft);
+}
+.tool-card.s-failed {
+  border-color: var(--alarm-line);
+  box-shadow: 0 0 0 4px var(--alarm-soft);
+}
+.tool-card.s-done {
+  border-color: var(--line-2);
+  box-shadow: var(--shadow-1);
+}
+.tool-card.s-stale {
+  border-color: var(--amber-line);
+  box-shadow: 0 0 0 4px var(--amber-soft);
 }
 .tool-head {
   display: flex;
@@ -1088,6 +1101,7 @@
   color: var(--faint);
 }
 .chat-side pre {
+  border: 1px solid var(--line-2);
   margin: 0;
   padding: 12px;
   border-radius: var(--r-sm);

@@ -99,7 +99,7 @@ function toolCard(m: ChatMessage): string {
   return (
     `<div class="chat-msg tool" data-key="m-${esc(m.id)}">` +
     `<div class="chat-avatar">o</div>` +
-    `<div class="tool-card">` +
+    `<div class="tool-card s-${esc(tool.status)}">` +
     `<div class="tool-head"><span class="tool-name">${esc(tool.name)}</span>${stateBadge(tool.status)}</div>` +
     `<div class="tool-title">${esc(tool.workflow)}</div>` +
     `<div class="tool-sub"><span class="mono" data-run="${esc(tool.runId)}">${esc(tool.runId)} ↗</span><span>${t("phase")}: ${esc(tool.phase)}</span><span>${pct}%</span></div>` +
