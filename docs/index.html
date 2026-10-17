@@ -108,7 +108,6 @@
         --r-sm: 9px;
         --r-md: 13px;
         --r-lg: 18px;
-        --max: 1200px;
         --wide: 1376px;
 
         --paper: #f3f1ea;
@@ -382,7 +381,7 @@
         align-items: center;
         justify-content: space-between;
         gap: 24px;
-        width: min(100% - 48px, var(--wide));
+        width: min(100% - 64px, var(--wide));
         min-height: 60px;
         margin: 0 auto;
       }
@@ -661,6 +660,8 @@
         font-size: clamp(40px, 3.9vw, 58px);
         line-height: 1.16;
         letter-spacing: 0.01em;
+        /* greedy, so the accent phrase lands on its own line */
+        text-wrap: wrap;
       }
       .hero-copy {
         margin-top: 24px;
@@ -1547,8 +1548,11 @@
 
       /* ---------- sections ---------- */
       .section {
-        padding: clamp(80px, 9vw, 124px) 0;
+        --pad: clamp(80px, 9vw, 124px);
+        padding: var(--pad) 0;
         border-top: 1px solid var(--line);
+        /* anchor jumps land with the section label just under the nav */
+        scroll-margin-top: calc(40px - var(--pad));
       }
       .section.tint {
         --mute: var(--mute-on-2);
@@ -1556,7 +1560,7 @@
         background-image: var(--grain);
       }
       .section-inner {
-        width: min(100% - 48px, var(--max));
+        width: min(100% - 64px, var(--wide));
         margin: 0 auto;
       }
       .seclabel {
@@ -2209,7 +2213,7 @@
         align-items: center;
         justify-content: space-between;
         gap: 16px 28px;
-        width: min(100% - 48px, var(--max));
+        width: min(100% - 64px, var(--wide));
         min-height: 96px;
         margin: 0 auto;
         padding: 24px 0;
@@ -2435,7 +2439,9 @@
         .hero-inner {
           grid-template-columns: minmax(0, 1fr);
           gap: 56px;
-          width: min(100% - 48px, 1040px);
+        }
+        .mock-wrap {
+          max-width: 1040px;
         }
         .hero-copy {
           max-width: 54ch;
@@ -2468,10 +2474,10 @@
         .nav-inner,
         .section-inner,
         .footer-inner {
-          width: min(100% - 32px, var(--max));
+          width: calc(100% - 32px);
         }
         .hero-inner {
-          width: min(100% - 32px, 1040px);
+          width: calc(100% - 32px);
           gap: 44px;
         }
         .brand .full,
@@ -2486,7 +2492,7 @@
           font-size: clamp(48px, 11.5vw, 80px);
         }
         :lang(zh-CN) .hero h1 {
-          font-size: clamp(34px, 9.6vw, 46px);
+          font-size: clamp(36px, 10.6vw, 52px);
         }
         .hero-copy {
           font-size: 16.5px;
