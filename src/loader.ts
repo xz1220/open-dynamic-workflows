@@ -29,6 +29,8 @@
  * body is only compiled here; it runs when, and only when, the workflow does.
  */
 
+import { Script } from "node:vm";
+
 import { WorkflowScriptError } from "./errors.js";
 import type { WorkflowGlobals } from "./primitives.js";
 
@@ -74,9 +76,6 @@ const CLAUDE_PARAM_NAMES = [
 const VALIDATE_PARAM = "validate";
 const DECLARES_VALIDATE = /\b(?:const|let|var|function|class)\s+validate\b/;
 
-const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor as new (
-  ...args: string[]
-) => (...callArgs: unknown[]) => Promise<unknown>;
 
 const EXPORT_META = /\bexport\s+const\s+meta\s*=/;
 
@@ -91,7 +90,11 @@ export function loadWorkflowScript(source: string, filename: string): LoadedWork
 
   let factory: (...callArgs: unknown[]) => Promise<unknown>;
   try {
-    factory = new AsyncFunction(...paramNames, `${body}\n//# sourceURL=${filename}`);
+    // An async function expression whose body starts on line 2, compiled with
+    // lineOffset -1 so stack traces and log frames point at the script's own
+    // line numbers (`new AsyncFunction` would put every frame two lines off).
+    const wrapped = `(async function (${paramNames.join(", ")}) {\n${body}\n})`;
+    factory = new Script(wrapped, { filename, lineOffset: -1 }).runInThisContext() as typeof factory;
   } catch (err) {
     throw new WorkflowScriptError(`failed to compile workflow ${filename}: ${(err as Error).message}`);
   }

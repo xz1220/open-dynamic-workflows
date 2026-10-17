@@ -256,3 +256,24 @@ test("maskCode: a stray quote never swallows the next line", () => {
   const masked = maskCode('const s = "unterminated\nexport const x = 1');
   assert.equal(masked.split("\n")[1], "export const x = 1");
 });
+
+test("stack traces point at the script's own line numbers", async () => {
+  const src = [
+    "export const meta = { name: 'lines', description: 'd' }",
+    "phase('One')",
+    "",
+    "throw new Error('boom on line 4')",
+  ].join("\n");
+  const wf = loadWorkflowScript(src, "lines.js");
+  await assert.rejects(wf.run(fakeGlobals(), null), (err: Error) => {
+    assert.match(err.stack ?? "", /lines\.js:4:7/);
+    return true;
+  });
+});
+
+test("a syntax error is reported against the script's file name", () => {
+  assert.throws(
+    () => loadWorkflowScript("export const meta = { name: 'bad', description: 'd' }\nconst = 1\n", "bad.js"),
+    /failed to compile workflow bad\.js/,
+  );
+});
