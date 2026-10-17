@@ -118,9 +118,10 @@ const KNOWN_TOP_KEYS = [
   "models",
   "quotaBreaker",
   "expectRetries",
+  "permissionDenials",
 ] as const;
 
-const KNOWN_ADAPTER_KEYS = ["command", "stdin", "env", "timeout", "stallTimeout", "concurrency", "promptCache", "label", "flags", "output", "failures", "permissionArgs", "permissions"] as const;
+const KNOWN_ADAPTER_KEYS = ["command", "stdin", "env", "timeout", "stallTimeout", "concurrency", "promptCache", "label", "flags", "output", "failures", "permissionArgs", "permissions", "permissionDenials"] as const;
 
 /** The fields of an adapter's `output`, per format. */
 const KNOWN_OUTPUT_KEYS: Record<string, readonly string[]> = {
@@ -631,6 +632,14 @@ function buildAdapter(name: string, spec: RawAdapter): Adapter {
     }
     adapter.permissions = spec.permissions;
   }
+  if (spec.permissionDenials != null) {
+    if (spec.permissionDenials !== "warn" && spec.permissionDenials !== "fail") {
+      throw new ConfigError(
+        `adapter '${name}' 'permissionDenials' must be "warn" or "fail"; got ${JSON.stringify(spec.permissionDenials)}`,
+      );
+    }
+    adapter.permissionDenials = spec.permissionDenials;
+  }
   return adapter;
 }
 
@@ -962,6 +971,10 @@ function buildSettings(raw: Record<string, unknown>): Settings {
       min: 0,
       integer: true,
     }),
+    permissionDenials:
+      raw["permissionDenials"] == null
+        ? DEFAULT_SETTINGS.permissionDenials
+        : buildChoice("permissionDenials", raw["permissionDenials"], ["warn", "fail"] as const),
   };
 }
 

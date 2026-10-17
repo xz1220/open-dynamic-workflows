@@ -67,6 +67,11 @@ export interface AgentView {
    * line each. Absent otherwise.
    */
   misses?: string[];
+  /**
+   * Agents only (ODW extension): the tool calls its CLI refused under a reply
+   * that stood anyway (agent_finished's `denied`), one line each. Absent otherwise.
+   */
+  denied?: string[];
   startedAt: number | null;
   finishedAt: number | null;
   /** Wall-clock from agent_started to agent_finished/failed, in ms (a command's own measurement). */
@@ -347,11 +352,11 @@ export function applyAgentEvent(
       if (typeof ev.reason === "string" && ev.reason !== "") target.failureReason = ev.reason;
       // One that fell back failed on the adapter its event names.
       if (from && typeof ev.adapter === "string") target.adapter = ev.adapter;
-      if (Array.isArray(ev.misses)) {
-        const misses = ev.misses.filter((miss): miss is string => typeof miss === "string");
-        if (misses.length > 0) target.misses = misses;
-      }
+      const misses = strings(ev.misses);
+      if (misses) target.misses = misses;
     } else {
+      const denied = strings(ev.denied);
+      if (denied) target.denied = denied;
       target.state = "done";
       target.adapter = ev.adapter != null ? String(ev.adapter) : null;
       target.attempts = typeof ev.attempts === "number" ? ev.attempts : null;
@@ -452,8 +457,16 @@ function copyAgents(agents: AgentView[], stale: boolean): AgentView[] {
     if (a.usage) copy.usage = { ...a.usage };
     if (a.fellBackFrom) copy.fellBackFrom = [...a.fellBackFrom];
     if (a.misses) copy.misses = [...a.misses];
+    if (a.denied) copy.denied = [...a.denied];
     return copy;
   });
+}
+
+/** An event's list of lines (`misses`, `denied`), when it has any. */
+function strings(raw: unknown): string[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const lines = raw.filter((line): line is string => typeof line === "string");
+  return lines.length > 0 ? lines : undefined;
 }
 
 function phaseOrderFrom(started: string[], declared: Array<{ title: string }>): string[] {

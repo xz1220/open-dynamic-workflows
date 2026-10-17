@@ -51,7 +51,9 @@
  * an exec() step of the run carrying the agent's id (`forAgentId`), a retry is
  * logged, and an agent that still misses fails with reason
  * "unmet_expectation" and its `misses` on agent_failed. An empty reply fails
- * with reason "empty_reply" unless the call sets `allowEmpty`.
+ * with reason "empty_reply" unless the call sets `allowEmpty`. Tool calls its
+ * CLI refused under a reply that stood are logged once and kept as `denied`
+ * on its agent_finished event and saved record.
  */
 
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -61,7 +63,7 @@ import { dirname, resolve } from "node:path";
 
 import { formatSeconds } from "./adapters/failures.js";
 import { isPermissionTier } from "./adapters/permissions.js";
-import type { Adapter, PermissionTier } from "./adapters/types.js";
+import { adapterDisplayName, type Adapter, type PermissionTier } from "./adapters/types.js";
 import { addUsage, estimatedUsage, type Usage } from "./adapters/usage.js";
 import type { AgentRequest } from "./bridge.js";
 import { branchName, ChangeRecorder, type AgentChanges, type KeptChanges } from "./changes.js";
@@ -259,11 +261,14 @@ export function createPrimitives(
     const kept = await carryChanges(recorded, agentId, (message) =>
       ctx.emit(event(LOG, { message: `${label}:${agentId}: ${message}`, agentId, label, phase })),
     );
-    const finished = event(AGENT_FINISHED, { agentId, label, phase, adapter, ...moved, attempts, ...marks, ...changeFields(kept) });
+    // What its CLI refused when the value was produced travels with it (ODW extension).
+    const denied = deniedField(recorded.denied);
+    const changed = changeFields(kept);
+    const finished = event(AGENT_FINISHED, { agentId, label, phase, adapter, ...moved, attempts, ...marks, ...changed, ...denied });
     const startedAt = startedEv.ts;
     const finishedAt = finished.ts;
     const value = recorded.value;
-    if (save({ agentId, key, label, phase, adapter, ...moved, attempts, startedAt, finishedAt, value, ...tier, ...marks, ...changeFields(kept) })) {
+    if (save({ agentId, key, label, phase, adapter, ...moved, attempts, startedAt, finishedAt, value, ...tier, ...marks, ...changed, ...denied })) {
       finished.saved = true;
     }
     ctx.emit(finished);
@@ -626,6 +631,19 @@ export function createPrimitives(
         for (const routing of outcome.notes ?? []) {
           ctx.emit(event(LOG, { message: routing, label: display, phase: activePhase }));
         }
+        // Tool calls its CLI refused under a reply that stands (ODW extension):
+        // said once, and kept with the agent — its work may lack them.
+        if (outcome.denied?.length) {
+          ctx.emit(
+            event(LOG, {
+              message: refusedNote(`${display}:${agentId}`, adapterDisplayName(adapter), outcome.denied),
+              denied: outcome.denied,
+              agentId,
+              label: display,
+              phase: activePhase,
+            }),
+          );
+        }
         const finished = event(AGENT_FINISHED, {
           agentId,
           label: display,
@@ -635,6 +653,7 @@ export function createPrimitives(
           attempts: outcome.attempts,
           ...usageField(),
           ...changeFields(kept),
+          ...deniedField(outcome.denied),
         });
         const persisted = save({
           agentId,
@@ -649,6 +668,7 @@ export function createPrimitives(
           value: outcome.value,
           ...permissionField(permissions.tier),
           ...changeFields(kept),
+          ...deniedField(outcome.denied),
         });
         if (persisted) finished.saved = true;
         ctx.emit(finished);
@@ -930,6 +950,30 @@ function fallbackField(fellBackFrom: string[] | undefined): { fellBackFrom?: str
 /** The `changes` and `branch` an agent's terminal event and record carry when it kept a change (ODW extension). */
 function changeFields(kept: KeptChanges | null): { changes?: AgentChanges; branch?: string | null } {
   return kept ? { changes: kept.changes, branch: kept.branch } : {};
+}
+
+/** The `denied` an agent's agent_finished event and record carry: the tool calls its CLI refused, when any (ODW extension). */
+function deniedField(denied: unknown): { denied?: string[] } {
+  if (!Array.isArray(denied)) return {};
+  const calls = denied.filter((call): call is string => typeof call === "string");
+  return calls.length > 0 ? { denied: calls } : {};
+}
+
+/** Refused calls a log line names, at most; the event carries them all. */
+const REFUSED_SHOWN = 5;
+
+/**
+ * The one line a run logs for an agent whose reply stood though its CLI
+ * refused it tool calls (`permissionDenials: "warn"`; ODW extension).
+ */
+function refusedNote(who: string, cli: string, denied: string[]): string {
+  const calls = denied.length === 1 ? "1 tool call" : `${denied.length} tool calls`;
+  const shown = denied.slice(0, REFUSED_SHOWN).join("; ");
+  const more = denied.length > REFUSED_SHOWN ? `; and ${denied.length - REFUSED_SHOWN} more` : "";
+  return (
+    `${who}: ${cli} refused ${calls} — ${shown}${more}; its reply may rest on work it could not do ` +
+    "(raise its tier with --permissions or allowlist the tool)"
+  );
 }
 
 /**

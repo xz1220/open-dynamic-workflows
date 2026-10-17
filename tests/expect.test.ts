@@ -11,9 +11,9 @@ import { collectConfigWarnings, defaultConfig, loadConfig } from "../src/adapter
 import { decodeOutput } from "../src/adapters/output.js";
 import type { Adapter, CliResult } from "../src/adapters/types.js";
 import { Bridge } from "../src/bridge.js";
-import { AdapterExecutionError, AgentError } from "../src/errors.js";
+import { AdapterExecutionError, AgentError, UnmetExpectationError } from "../src/errors.js";
 import type { WorkflowEvent } from "../src/events.js";
-import { globToRegExp, planChecks } from "../src/expect.js";
+import { Expectations, globToRegExp, planChecks } from "../src/expect.js";
 import { resumeKey } from "../src/journal.js";
 import { attachRun, formatEvent } from "../src/runtime/live-view.js";
 import { RunStore } from "../src/runtime/run-store.js";
@@ -81,6 +81,8 @@ async function runAgent(opts: {
   plan: unknown[];
   opts?: Record<string, unknown>;
   config?: Record<string, unknown>;
+  claude?: boolean;
+  adapter?: Record<string, unknown>;
 }): Promise<Flow> {
   const body =
     "try { return { value: await agent('Fix the bug. PLAN: ' + JSON.stringify(args.plan), args.opts) } }\n" +
@@ -96,15 +98,22 @@ async function runFlow(opts: {
   config?: Record<string, unknown>;
   /** Where the run store keeps its runs (default: under `root`). */
   runsIn?: string;
+  /** The scripted agent speaks Claude Code's stream-json, refusals included. */
+  claude?: boolean;
+  /** More fields of the scripted adapter's entry. */
+  adapter?: Record<string, unknown>;
 }): Promise<Flow> {
   const log = join(opts.root, "calls.jsonl");
   const configPath = join(opts.root, "odw.config.json");
+  const scripted = opts.claude
+    ? { command: [execPath, EXPECT_AGENT, log, "--claude"], stdin: "{prompt}", output: CLAUDE_LIKE }
+    : { command: [execPath, EXPECT_AGENT, log], stdin: "{prompt}" };
   writeFileSync(
     configPath,
     JSON.stringify({
       defaultAdapter: "scripted",
       ...opts.config,
-      adapters: { scripted: { command: [execPath, EXPECT_AGENT, log], stdin: "{prompt}" } },
+      adapters: { scripted: { ...scripted, ...opts.adapter } },
     }),
   );
   const script = join(opts.root, "wf.js");
@@ -121,6 +130,16 @@ async function runFlow(opts: {
     calls: calls(log),
   };
 }
+
+/** The output declaration of the built-in claude adapter, for the scripted agent's --claude mode. */
+const CLAUDE_LIKE = {
+  format: "jsonl",
+  eventType: "result",
+  textPath: ["result"],
+  select: "last",
+  errorPath: ["is_error"],
+  deniedPath: ["permission_denials"],
+};
 
 function calls(log: string): Call[] {
   return existsSync(log) ? readFileSync(log, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line) as Call) : [];
@@ -845,28 +864,49 @@ test("the decoder reads the tool calls a CLI refused from its result event (deni
   });
 });
 
-test("a reply that claims success while the CLI refused tool calls fails with reason permission, saying which", async () => {
+/** The permission failure of a claude agent refused `Bash (npm test)`, as its error says it. */
+const REFUSED_NPM_TEST =
+  "adapter 'claude' was refused a permission it needed — allow it in the adapter's permissionArgs for its tier, or switch adapter with " +
+  "--adapter <name>: denied: Bash (npm test)";
+
+test("refused tool calls: by default the reply stands and reports them; permissionDenials \"fail\", run-wide or per adapter, fails it", async () => {
   let runs = 0;
-  const bridge = new Bridge(config("claude"), {
-    runner: async () => {
-      runs++;
-      return ok(claudeStream({ permission_denials: DENIALS }));
-    },
-  });
+  const runner = async (): Promise<CliResult> => {
+    runs++;
+    return ok(claudeStream({ permission_denials: DENIALS }));
+  };
+  const warned = await new Bridge(config("claude"), { runner }).run({ prompt: "fix the bug" });
+  assert.equal(warned.value, "Fixed the bug; the tests should pass now.");
+  assert.deepEqual(warned.denied, ["Bash (npm test)", "WebFetch (https://example.com/spec)", "mcp__github__create_issue"]);
+  assert.equal(runs, 1);
+
+  const strict = config("claude");
+  strict.settings.permissionDenials = "fail";
+  runs = 0;
   await assert.rejects(
-    bridge.run({ prompt: "fix the bug" }),
+    new Bridge(strict, { runner }).run({ prompt: "fix the bug" }),
     (err: unknown) =>
       err instanceof AdapterExecutionError &&
       err.reason === "permission" &&
-      err.message ===
-        "adapter 'claude' was refused a permission it needed — allow it in the adapter's permissionArgs for its tier, or switch adapter with " +
-          "--adapter <name>: denied: Bash (npm test); WebFetch (https://example.com/spec); mcp__github__create_issue",
+      err.message === `${REFUSED_NPM_TEST}; WebFetch (https://example.com/spec); mcp__github__create_issue`,
   );
   assert.equal(runs, 1, "a refused permission is not retried");
 
-  // No refusals: the reply stands.
-  const fine = new Bridge(config("claude"), { runner: async () => ok(claudeStream({})) });
-  assert.equal((await fine.run({ prompt: "x" })).value, "Fixed the bug; the tests should pass now.");
+  // An adapter's own policy wins over the run's, either way.
+  const strictAdapter = config("claude");
+  strictAdapter.adapters.claude = { ...strictAdapter.adapters.claude!, permissionDenials: "fail" };
+  await assert.rejects(
+    new Bridge(strictAdapter, { runner }).run({ prompt: "x" }),
+    (err: unknown) => err instanceof AdapterExecutionError && err.reason === "permission",
+  );
+  const lenientAdapter = config("claude");
+  lenientAdapter.settings.permissionDenials = "fail";
+  lenientAdapter.adapters.claude = { ...lenientAdapter.adapters.claude!, permissionDenials: "warn" };
+  assert.equal((await new Bridge(lenientAdapter, { runner }).run({ prompt: "x" })).denied?.length, 3);
+
+  // No refusals: nothing to report.
+  const fine = await new Bridge(config("claude"), { runner: async () => ok(claudeStream({})) }).run({ prompt: "x" });
+  assert.equal(fine.denied, undefined);
 
   // A failure the CLI reported itself is still that failure, whatever it refused on the way.
   const loggedOut = new Bridge(config("claude"), {
@@ -875,35 +915,106 @@ test("a reply that claims success while the CLI refused tool calls fails with re
   await assert.rejects(loggedOut.run({ prompt: "x" }), (err: unknown) => err instanceof AdapterExecutionError && err.reason === "auth");
 });
 
-test("the whole stack: permission denials fail the agent with reason permission", async () => {
+test("with expect, refused tool calls are a miss: retried with them named, then a permission failure with what else was missed", async () => {
+  const plan = planChecks({ expect: { match: "^Fixed" } }).expect!;
+  const checks = () => new Expectations(plan, 1, { exec: async () => assert.fail("no command to run") });
+  const prompts: string[] = [];
+  const once = new Bridge(config("claude"), {
+    runner: async (_command, options) => {
+      prompts.push(options?.stdin ?? "");
+      return ok(claudeStream(prompts.length === 1 ? { permission_denials: DENIALS.slice(0, 1) } : {}));
+    },
+  });
+  const out = await once.run({ prompt: "fix it" }, { expect: checks() });
+  assert.equal(out.attempts, 2);
+  assert.equal(out.denied, undefined, "the work that passed went without refusals");
+  assert.match(
+    prompts[1]!,
+    /^- no tool call may be refused, and 1 was: Bash \(npm test\)\. Those calls are not allowed here: do the task without them\.$/m,
+  );
+
+  // Still refused after its retries: a permission failure, with the rest of what it missed.
+  const always = new Bridge(config("claude"), {
+    runner: async () => ok(claudeStream({ permission_denials: DENIALS.slice(0, 1), result: "Working on it" })),
+  });
+  await assert.rejects(always.run({ prompt: "fix it" }, { expect: checks() }), (err: unknown) => {
+    assert.ok(err instanceof UnmetExpectationError);
+    assert.equal(err.reason, "permission");
+    assert.equal(err.message, `${REFUSED_NPM_TEST} — and its work did not meet: the reply must match /^Fixed/, and it does not`);
+    assert.deepEqual(err.misses, ["no tool call may be refused, and 1 was: Bash (npm test)", "the reply must match /^Fixed/, and it does not"]);
+    return true;
+  });
+});
+
+test("the whole stack: an agent whose CLI refused tool calls finishes — the calls on its event, record and view, said once in the log", async () => {
   const root = mkdtempSync(join(tmpdir(), "odw-expect-run-"));
+  const root2 = mkdtempSync(join(tmpdir(), "odw-expect-run-"));
   try {
-    const stream = claudeStream({ permission_denials: DENIALS.slice(0, 1) });
-    const printer = `process.stdin.resume();process.stdin.on('end',()=>process.stdout.write(${JSON.stringify(stream)}))`;
-    const configPath = join(root, "odw.config.json");
-    writeFileSync(
-      configPath,
-      JSON.stringify({
-        defaultAdapter: "fake_claude",
-        adapters: {
-          fake_claude: {
-            command: [execPath, "-e", printer],
-            stdin: "{prompt}",
-            output: { format: "jsonl", eventType: "result", textPath: ["result"], select: "last", errorPath: ["is_error"], deniedPath: ["permission_denials"] },
-          },
-        },
-      }),
+    const flow = await runAgent({
+      root,
+      source: root,
+      claude: true,
+      adapter: { label: "Claude Code" },
+      plan: [{ reply: "Fixed it.", denied: DENIALS.slice(0, 2) }],
+    });
+    assert.deepEqual(flow.result, { value: "Fixed it." });
+    const denied = ["Bash (npm test)", "WebFetch (https://example.com/spec)"];
+    assert.deepEqual(ofType(flow.events, "agent_finished")[0]!.denied, denied);
+    assert.deepEqual(flow.store.readAgentResult(flow.id, 1)?.denied, denied);
+    assert.deepEqual(detail(flow.store, flow.id).agents[0]!.denied, denied);
+    const notes = ofType(flow.events, "log").filter((e) => Array.isArray(e.denied));
+    assert.equal(notes.length, 1, "one log line for the agent");
+    assert.equal(
+      notes[0]!.message,
+      "fixer:1: Claude Code refused 2 tool calls — Bash (npm test); WebFetch (https://example.com/spec); " +
+        "its reply may rest on work it could not do (raise its tier with --permissions or allowlist the tool)",
     );
-    const script = join(root, "wf.js");
-    writeFileSync(script, "export const meta = { name: 'wf', description: 'd' }\ntry { return await agent('fix it') } catch (err) { return String(err) }\n");
-    const store = new RunStore(join(root, "runs"));
-    const id = store.create({ script, args: null, source: root, configPath });
-    assert.equal(await executeRun(store.runDir(id)), "done");
-    assert.match(String(store.readResult(id)), /was refused a permission it needed .*: denied: Bash \(npm test\)$/);
-    const failed = ofType(store.readEvents(id), "agent_failed")[0]!;
-    assert.equal(failed.reason, "permission");
+    assert.deepEqual(notes[0]!.denied, denied);
+
+    // permissionDenials "fail" in the config fails the agent instead.
+    const failed = await runAgent({
+      root: root2,
+      source: root2,
+      claude: true,
+      plan: [{ reply: "Fixed it.", denied: DENIALS.slice(0, 1) }],
+      config: { permissionDenials: "fail" },
+    });
+    assert.match(String(failed.result.error), /was refused a permission it needed .*: denied: Bash \(npm test\)$/);
+    assert.equal(ofType(failed.events, "agent_failed")[0]!.reason, "permission");
+    assert.equal(ofType(failed.events, "log").filter((e) => Array.isArray(e.denied)).length, 0);
   } finally {
-    cleanup(root);
+    cleanup(root, root2);
+  }
+});
+
+test("the whole stack: with expect, a refusal is handed back to the agent once, then fails it with reason permission", async () => {
+  const root = mkdtempSync(join(tmpdir(), "odw-expect-run-"));
+  const root2 = mkdtempSync(join(tmpdir(), "odw-expect-run-"));
+  try {
+    const fixed = await runAgent({
+      root,
+      source: root,
+      claude: true,
+      plan: [{ reply: "Fixed it.", denied: DENIALS.slice(0, 1) }, { reply: "Fixed it, without the shell." }],
+      opts: { expect: { match: "^Fixed" } },
+    });
+    assert.deepEqual(fixed.result, { value: "Fixed it, without the shell." });
+    assert.match(fixed.calls[1]!.feedback!, /^- no tool call may be refused, and 1 was: Bash \(npm test\)\. Those calls are not allowed here/m);
+    assert.equal(ofType(fixed.events, "agent_finished")[0]!.denied, undefined);
+
+    const refused = await runAgent({
+      root: root2,
+      source: root2,
+      claude: true,
+      plan: [{ reply: "Fixed it.", denied: DENIALS.slice(0, 1) }],
+      opts: { expect: { match: "^Fixed" } },
+    });
+    const failed = ofType(refused.events, "agent_failed")[0]!;
+    assert.equal(failed.reason, "permission");
+    assert.deepEqual(failed.misses, ["no tool call may be refused, and 1 was: Bash (npm test)"]);
+    assert.equal(refused.calls.length, 2, "one retry, as for any miss");
+  } finally {
+    cleanup(root, root2);
   }
 });
 
@@ -929,6 +1040,21 @@ test("odw logs and the live view show what a failed agent's work missed", async 
     formatEvent({ ...failed, reason: "empty_reply", misses: undefined, error: "AdapterExecutionError: adapter 'claude' replied with nothing" }).replace(/^\[[^\]]*\] /, ""),
     "agent_failed    (Fix) fixer — [empty_reply] AdapterExecutionError: adapter 'claude' replied with nothing",
   );
+  // A finished agent whose CLI refused tool calls says which.
+  const refused: WorkflowEvent = {
+    ts: 3.5,
+    type: "agent_finished",
+    agentId: 2,
+    label: "search",
+    phase: "Fix",
+    adapter: "claude",
+    attempts: 1,
+    denied: ["Bash (npm test)", "WebFetch (https://example.com/spec)"],
+  };
+  assert.equal(
+    formatEvent(refused).replace(/^\[[^\]]*\] /, ""),
+    "agent_finished  (Fix) search — refused: Bash (npm test); WebFetch (https://example.com/spec)",
+  );
 
   const store = new RunStore(mkdtempSync(join(tmpdir(), "odw-expect-live-")));
   try {
@@ -941,6 +1067,8 @@ test("odw logs and the live view show what a failed agent's work missed", async 
       { ts: 2, type: "command_started", commandId: 1, label: "fixer: expect", phase: "Fix", command: "npm test", forAgentId: 1 },
       { ts: 2.5, type: "command_failed", commandId: 1, label: "fixer: expect", phase: "Fix", command: "npm test", forAgentId: 1, exitCode: 1, durationMs: 500, error: "exited with code 1" },
       failed,
+      { ts: 3, type: "agent_started", agentId: 2, label: "search", phase: "Fix", adapter: "claude" },
+      refused,
       { ts: 4, type: "run_finished", runId },
     ]) {
       appendFileSync(store.eventsPath(runId), JSON.stringify(ev) + "\n");
@@ -954,6 +1082,7 @@ test("odw logs and the live view show what a failed agent's work missed", async 
     const screen = term.text();
     assert.match(screen, /✖ fixer\s+claude · expectations not met · 2\.0s\n\s+✖ a file must change, and none did\n\s+✖ `npm test` must exit 0, and it exited with code 1\n/);
     assert.doesNotMatch(screen, /UnmetExpectationError/, "the misses say it, one a line");
+    assert.match(screen, /✔ search\s+claude · 0\.5s · 2 tool calls refused\n/);
   } finally {
     rmSync(store.root, { recursive: true, force: true });
   }
@@ -970,7 +1099,7 @@ test("the resume key covers expect and allowEmpty (true only), not expectRetries
   assert.notEqual(resumeKey("p", { expect: { command: "npm test", changes: true } }), checked);
 });
 
-test("expectRetries and an output's deniedPath load, default, and reject malformed values", async () => {
+test("expectRetries, permissionDenials and an output's deniedPath load, default, and reject malformed values", async () => {
   const dir = mkdtempSync(join(tmpdir(), "odw-expect-cfg-"));
   try {
     const load = (raw: Record<string, unknown>) => {
@@ -985,6 +1114,17 @@ test("expectRetries and an output's deniedPath load, default, and reject malform
     assert.throws(() => load({ expectRetries: "twice" }), /"expectRetries" must be a non-negative integer/);
     assert.deepEqual(collectConfigWarnings({ expectRetries: 2 }), []);
 
+    assert.equal(defaultConfig().settings.permissionDenials, "warn");
+    assert.equal(load({ permissionDenials: "fail" }).settings.permissionDenials, "fail");
+    assert.equal(load({ permissionDenials: null }).settings.permissionDenials, "warn");
+    assert.throws(() => load({ permissionDenials: "error" }), /"permissionDenials" must be "warn" or "fail"; got "error"/);
+    assert.equal(load({ adapters: { claude: { permissionDenials: "fail" } } }).adapters.claude!.permissionDenials, "fail");
+    assert.throws(
+      () => load({ adapters: { claude: { permissionDenials: true } } }),
+      /adapter 'claude' 'permissionDenials' must be "warn" or "fail"; got true/,
+    );
+    assert.deepEqual(collectConfigWarnings({ permissionDenials: "warn", adapters: { claude: { permissionDenials: "fail" } } }), []);
+
     const output = { format: "jsonl", eventType: "result", textPath: ["result"], select: "last", deniedPath: ["permission_denials"] };
     assert.deepEqual(load({ adapters: { mine: { command: ["x"], output } } }).adapters.mine!.output, output);
     assert.deepEqual(collectConfigWarnings({ adapters: { mine: { command: ["x"], output } } }), []);
@@ -994,8 +1134,9 @@ test("expectRetries and an output's deniedPath load, default, and reject malform
     );
     const example = loadConfig(join(process.cwd(), "odw.config.example.json"), { quiet: true });
     assert.equal(example.settings.expectRetries, 1);
+    assert.equal(example.settings.permissionDenials, "warn");
 
-    // The way out of the denial check: re-declare the built-in's output without deniedPath.
+    // Not even recording refusals: re-declare the built-in's output without deniedPath.
     const builtin = defaultConfig().adapters.claude!;
     const { deniedPath: _denied, ...lenient } = builtin.output as Extract<Adapter["output"], { format: "jsonl" }>;
     const adjusted = load({ adapters: { claude: { output: lenient } } }).adapters.claude!;
@@ -1005,7 +1146,9 @@ test("expectRetries and an output's deniedPath load, default, and reject malform
       { ...defaultConfig(), adapters: { claude: adjusted }, settings: { ...defaultConfig().settings, defaultAdapter: "claude" } },
       { runner: async () => ok(claudeStream({ permission_denials: DENIALS })) },
     );
-    assert.equal((await accepted.run({ prompt: "x" })).value, "Fixed the bug; the tests should pass now.");
+    const unread = await accepted.run({ prompt: "x" });
+    assert.equal(unread.value, "Fixed the bug; the tests should pass now.");
+    assert.equal(unread.denied, undefined);
   } finally {
     cleanup(dir);
   }

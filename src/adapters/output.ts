@@ -36,8 +36,9 @@ export interface DecodedOutput {
   error?: string;
   /**
    * The tool calls the CLI refused the agent (`deniedPath`), one line each
-   * ("Bash (npm test)"); absent when it refused none. A run that reports
-   * success with any is no success: it lacked a permission it asked for.
+   * ("Bash (npm test)"); absent when it refused none. A reply that claims
+   * success with some may rest on work the agent could not do: the bridge
+   * records them, or fails the run (`permissionDenials`, `expect`).
    */
   denied?: string[];
   /** Set when stdout did not match the declared format and `text` is the raw stdout: why, for the run's log. */

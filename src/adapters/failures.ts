@@ -18,8 +18,9 @@
  * without the evidence (ODW extensions): an empty reply (`empty_reply`), and
  * work that missed the call's `expect` checks after its retries
  * (`unmet_expectation`, see ../expect). A run whose CLI refused the agent a
- * tool call while it reported success (Claude Code's `permission_denials`) is
- * a `permission` failure like any other.
+ * tool call while it reported success (Claude Code's `permission_denials`)
+ * is a `permission` failure when `permissionDenials` is "fail", or when the
+ * call's `expect` still misses because of it; by default it stands.
  *
  * The HTTP status alone does not decide a class: providers send a spent quota
  * as 429, 401 or 403, and a per-minute limit under the word "quota". So the

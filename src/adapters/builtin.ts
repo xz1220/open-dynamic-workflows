@@ -10,7 +10,7 @@
  * explains how to tune them rather than baking opinions in here.
  */
 
-import type { AdapterFailures, AdapterFlags, AdapterOutput, PermissionArgs, PermissionTier, SchemaFlag, Settings } from "./types.js";
+import type { AdapterFailures, AdapterFlags, AdapterOutput, DenialPolicy, PermissionArgs, PermissionTier, SchemaFlag, Settings } from "./types.js";
 
 /** A built-in adapter spec — same shape as a config entry, minus its name. */
 export interface RawAdapter {
@@ -27,6 +27,7 @@ export interface RawAdapter {
   failures?: AdapterFailures;
   permissionArgs?: PermissionArgs;
   permissions?: PermissionTier;
+  permissionDenials?: DenialPolicy;
 }
 
 // `flags` only DECLARES which native flag carries a model — the router appends
@@ -288,4 +289,5 @@ export const DEFAULT_SETTINGS: Settings = {
   models: {}, // no model tiers: model: "@<tier>" names none
   quotaBreaker: 3, // quota failures in a row before the run's later agents skip an adapter
   expectRetries: 1, // reruns of an agent whose work missed its expect checks, told what it missed
+  permissionDenials: "warn", // a reply whose CLI refused tool calls stands, recorded and logged ("fail": it fails)
 };

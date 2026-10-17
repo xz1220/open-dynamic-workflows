@@ -71,9 +71,10 @@ declare global {
     permissions?: "read" | "edit" | "full";
     /**
      * ODW extension — Claude Code ignores it. What must hold once the agent replied (after
-     * `schema` validation), checked by ODW instead of asking the model. Work that misses runs
-     * again with what it missed appended to its prompt (`expectRetries`), then the call throws
-     * (recoverable) with reason `"unmet_expectation"` and the list of misses.
+     * `schema` validation), checked by ODW instead of asking the model; tool calls its CLI
+     * refused count as a miss too. Work that misses runs again with what it missed appended
+     * to its prompt (`expectRetries`), then the call throws (recoverable) with `misses` and
+     * reason `"unmet_expectation"` — `"permission"` when refused calls are among them.
      */
     expect?: ExpectOptions;
     /** ODW extension: how many times work that missed `expect` runs again (default: the `expectRetries` setting, 1). */

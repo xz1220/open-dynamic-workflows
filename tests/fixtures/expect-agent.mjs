@@ -11,7 +11,12 @@
  *     "remove": ["<path>"],              delete files
  *     "commit": "<message>",             then commit everything (git add -A)
  *     "reply": "<text>",                 what to print (default "done"; "" prints nothing)
+ *     "denied": [ … ],                   with --claude: the result event's permission_denials
  *     "exit": 3 }                        exit with this code
+ *
+ * With `--claude` after the log path, it prints Claude Code's stream-json
+ * instead of plain text: an init event, then a `result` event whose `result`
+ * is the reply and whose `permission_denials` are the step's `denied`.
  *
  * Each invocation appends one JSON line to the log — its number, its working
  * directory, and the `expect` feedback its prompt carried (from the feedback's
@@ -24,6 +29,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileS
 import { dirname } from "node:path";
 
 const log = process.argv[2];
+const claude = process.argv[3] === "--claude";
 let input = "";
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", (chunk) => {
@@ -54,6 +60,12 @@ process.stdin.on("end", () => {
     execFileSync("git", ["add", "-A"], { env });
     execFileSync("git", ["commit", "-q", "--no-gpg-sign", "-m", step.commit], { env });
   }
-  process.stdout.write(step.reply ?? "done");
+  const reply = step.reply ?? "done";
+  if (claude) {
+    const result = { type: "result", subtype: "success", is_error: false, result: reply, permission_denials: step.denied ?? [] };
+    process.stdout.write(`${JSON.stringify({ type: "system", subtype: "init" })}\n${JSON.stringify(result)}\n`);
+  } else {
+    process.stdout.write(reply);
+  }
   if (step.exit) process.exitCode = step.exit;
 });

@@ -24,9 +24,14 @@
  * count too: isolate for an exact answer. Paths, and the globs that match
  * them, are relative to the agent's workspace, with forward slashes.
  *
+ * Tool calls the agent's CLI refused (`deniedPath`) are a miss of their own
+ * here, whatever `permissionDenials` says: work that went without them is not
+ * the evidence asked for.
+ *
  * Work that misses runs again with what it missed appended to its prompt, up
  * to `expectRetries` times (default 1); then the call fails with reason
- * "unmet_expectation" and the list of misses (the bridge's loop, ./bridge).
+ * "unmet_expectation" — "permission" when refused calls are among what it
+ * missed — and the list of misses (the bridge's loop, ./bridge).
  * An isolated retry starts over in a fresh worktree, and the change it leaves
  * replaces the earlier one (ChangeRecorder.redo).
  */
@@ -79,6 +84,20 @@ export interface ExpectMiss {
   text: string;
   /** What the agent needs to see to fix it — the end of a failed command's output — for its retry prompt. */
   detail?: string;
+  /** What the agent should do about it, for its retry prompt. */
+  advice?: string;
+}
+
+/**
+ * The miss of work whose CLI refused it tool calls (`deniedPath`): with
+ * `expect`, refused calls count against the work — it went without them.
+ */
+export function refusedMiss(refused: string[]): ExpectMiss {
+  const count = refused.length === 1 ? "1 was" : `${refused.length} were`;
+  return {
+    text: `no tool call may be refused, and ${count}: ${refused.join("; ")}`,
+    advice: "Those calls are not allowed here: do the task without them.",
+  };
 }
 
 /**
@@ -372,7 +391,10 @@ export class Expectations implements ExpectationSink {
 
   feedback(misses: ExpectMiss[]): string {
     const listed = misses
-      .map((miss) => (miss.detail ? `- ${miss.text}. Its output ended with:\n<<<\n${miss.detail}\n>>>` : `- ${miss.text}`))
+      .map((miss) => {
+        if (miss.detail) return `- ${miss.text}. Its output ended with:\n<<<\n${miss.detail}\n>>>`;
+        return miss.advice ? `- ${miss.text}. ${miss.advice}` : `- ${miss.text}`;
+      })
       .join("\n");
     const start = this.isolated
       ? "You start again in a fresh checkout: the previous attempt's changes are not in it, so do the whole task."

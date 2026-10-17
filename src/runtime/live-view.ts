@@ -114,6 +114,9 @@ export function formatEvent(ev: WorkflowEvent): string {
       detail += ` — ${failureTag(ev)}${misses ? sanitizeText(`did not meet: ${misses.join("; ")}`, 300) : sanitizeText(ev.error, 200)}`;
     }
     if (type === "agent_finished" && ev.cached === true) detail += ` (replayed from ${sanitizeText(ev.sourceRunId, 80)})`;
+    // Tool calls its CLI refused under a reply that stood (ODW extension).
+    const denied = type === "agent_finished" ? linesOf(ev.denied) : null;
+    if (denied) detail += ` — refused: ${sanitizeText(denied.join("; "), 200)}`;
   } else if (type.startsWith("command_")) detail = commandDetail(ev, type);
   else if (type === "checkpoint_requested") {
     detail = `#${String(ev.checkpointId)} ${sanitizeText(ev.title, 200)}${ev.truncated === true ? " (payload truncated)" : ""}`;
@@ -173,9 +176,14 @@ export function fallbackLines(agents: AgentView[], events: WorkflowEvent[]): str
 
 /** The `expect` checks a failed agent's work missed (agent_failed's `misses`; ODW extension), or null. */
 function missesOf(ev: WorkflowEvent): string[] | null {
-  if (!Array.isArray(ev.misses)) return null;
-  const misses = ev.misses.filter((miss): miss is string => typeof miss === "string");
-  return misses.length > 0 ? misses : null;
+  return linesOf(ev.misses);
+}
+
+/** An event's list of lines (`misses`, `denied`), or null when it has none. */
+function linesOf(raw: unknown): string[] | null {
+  if (!Array.isArray(raw)) return null;
+  const lines = raw.filter((line): line is string => typeof line === "string");
+  return lines.length > 0 ? lines : null;
 }
 
 /** Misses listed under a failed agent in the live view, at most. */
@@ -446,6 +454,8 @@ class LiveView {
       a.cached ? "replayed" : a.durationMs !== null ? fmtDuration(a.durationMs) : null,
       !a.cached && a.attempts !== null && a.attempts > 1 ? `${a.attempts} tries` : null,
       a.usage?.costUsd !== undefined ? fmtUsd(a.usage.costUsd) : null,
+      // Its reply stood though its CLI refused tool calls (ODW extension): the log line before says which.
+      a.state === "done" && a.denied?.length ? `${a.denied.length === 1 ? "1 tool call" : `${a.denied.length} tool calls`} refused` : null,
     ]);
     return `    ${glyph} ${label}  ${p.dim(meta)}`;
   }

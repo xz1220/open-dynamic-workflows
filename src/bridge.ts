@@ -19,11 +19,13 @@
  * retry-after it printed, up to `transientRetries` times per call. A spent
  * quota or a refused login is not retried; its error says what to do instead.
  * A run whose CLI reports its own failure in its output (`errorPath`: Claude
- * Code's `is_error` result, often with exit 0) is classified the same way; so
- * is one whose CLI refused the agent tool calls under a reply that claims
- * success (`deniedPath`: Claude Code's `permission_denials`) — a `permission`
- * failure. An empty reply fails the call with reason `empty_reply`, unless the
- * request allows one (ODW extensions).
+ * Code's `is_error` result, often with exit 0) is classified the same way. A
+ * reply that claims success while the CLI refused the agent tool calls
+ * (`deniedPath`: Claude Code's `permission_denials`) stands, the refused calls
+ * reported with it (`permissionDenials: "warn"`, the default) — or is a
+ * `permission` failure (`"fail"`); with `expect`, they are a miss. An empty
+ * reply fails the call with reason `empty_reply`, unless the request allows
+ * one (ODW extensions).
  *
  * A call with `expect` checks (an ODW extension; see ./expect) has its work
  * checked once its reply satisfies the schema — an isolated run's worktree is
@@ -95,7 +97,7 @@ import {
   UnmetExpectationError,
   isFatalError,
 } from "./errors.js";
-import type { ExpectationSink } from "./expect.js";
+import { refusedMiss, type ExpectationSink } from "./expect.js";
 import { PortPool } from "./ports.js";
 import { LiteralRouter, type InvocationPlan, type OptionRouter } from "./router.js";
 import { isAdapterChoice, type AdapterChoice } from "./routing.js";
@@ -161,6 +163,13 @@ export interface AgentOutcome {
    * is dropped silently. Empty when every set option mapped cleanly.
    */
   notes: string[];
+  /**
+   * The tool calls the CLI refused while it did the work the value rests on
+   * (`deniedPath`; an ODW extension), one line each, when it refused any: the
+   * reply stood anyway (`permissionDenials: "warn"`), so the caller records
+   * and logs them.
+   */
+  denied?: string[];
 }
 
 export interface BridgeOptions {
@@ -605,6 +614,9 @@ export class Bridge {
       ...shared,
       permissionArgs: permissions.args,
       schema: schema?.native ? { flag: schema.native, value: request.schema!, file: schemaFile } : undefined,
+      // Tool calls the CLI refused fail a run at once only under "fail", and
+      // not with `expect`, which counts them as a miss (ODW extensions).
+      refusalFails: (adapter.permissionDenials ?? settings.permissionDenials) === "fail" && !options.expect,
     };
     const limits: CliLimits = {
       timeout: adapter.timeout ?? settings.timeout ?? undefined,
@@ -634,9 +646,19 @@ export class Bridge {
     let attempts = 0;
     // What the work missed last round, told to the next one.
     let missed = "";
+    const done = (value: unknown, text: string, refused: string[]): AgentOutcome => ({
+      value,
+      text,
+      adapter: adapter.name,
+      attempts,
+      notes: plan.notes,
+      ...(refused.length > 0 ? { denied: refused } : {}),
+    });
     for (let round = 0; ; round++) {
       let problems: string[] = [];
       let previous = "";
+      // The tool calls the CLI refused while doing this round's work (ODW extension).
+      const refused: string[] = [];
       for (let attempt = 1; attempt <= maxAttempts; attempt++) {
         throwIfAborted(signal);
         if (++attempts > 1) await options.beforeRetry?.();
@@ -667,6 +689,7 @@ export class Bridge {
         if (!request.allowEmpty && text.trim() === "" && output.structured === undefined) {
           throw new AdapterExecutionError(cliFailureMessage(adapter, cli, EMPTY_REPLY), { reason: "empty_reply" });
         }
+        for (const denial of output.denied ?? []) if (!refused.includes(denial)) refused.push(denial);
         let value: unknown = text;
         if (schema) {
           // The schema steers extraction to the one candidate that satisfies it;
@@ -682,13 +705,17 @@ export class Bridge {
           }
           value = pick.value;
         }
-        if (!expect) return { value, text, adapter: adapter.name, attempts, notes: plan.notes };
+        // Without `expect`, a reply stands though tool calls were refused: they are recorded.
+        if (!expect) return done(value, text, refused);
 
-        // The work is checked, not taken at its word (ODW extension; see ./expect).
-        const misses = await unlessStopped(signal, () => expect.check(text));
-        if (misses.length === 0) return { value, text, adapter: adapter.name, attempts, notes: plan.notes };
+        // The work is checked, not taken at its word (ODW extension; see ./expect),
+        // and a refused tool call is a miss of its own: the work went without it.
+        const checked = await unlessStopped(signal, () => expect.check(text));
+        const misses = refused.length > 0 ? [refusedMiss(refused), ...checked] : checked;
+        if (misses.length === 0) return done(value, text, refused);
         const lines = misses.map((miss) => miss.text);
         if (round >= expect.retries) {
+          if (refused.length > 0) throw this.refusedFailure(adapter, cli, refused, lines, limits, reruns);
           const after = round > 0 ? ` after ${round} ${round === 1 ? "retry" : "retries"}` : "";
           throw new UnmetExpectationError(
             `adapter '${adapter.name}' did not meet its expectations${after}: ${lines.join("; ")}`,
@@ -746,7 +773,7 @@ export class Bridge {
         // injected runner that does not stream returns the whole stdout instead.
         const output = decoder?.received ? decoder.finish() : decodeOutput(adapter, cli.stdout);
         if (signal?.aborted || cli.stalled) return { cli, output };
-        const failed = this.failureOf(adapter, cli, output, prompt);
+        const failed = this.failureOf(adapter, cli, output, prompt, call);
         if (failed) return { cli: failed.cli, output, failure: failed.failure };
         await inspect?.(ws, output);
         return { cli, output };
@@ -794,6 +821,7 @@ export class Bridge {
     cli: CliResult,
     output: DecodedOutput,
     prompt: string,
+    call: CallEnv,
   ): { cli: CliResult; failure: FailureClass } | null {
     const classify = { patterns: adapter.failures, prompt, now: this.now() };
     // A failure the CLI reported in its output (Claude Code's `is_error`
@@ -812,11 +840,34 @@ export class Bridge {
     const errorReply = !structured || output.fallback !== undefined ? classifyErrorReply(output.text, classify) : null;
     if (errorReply) return { cli, failure: errorReply };
     // A reply that claims success while the CLI refused the agent tool calls
-    // (Claude Code's `permission_denials`) did the task without them.
-    if (output.denied) {
-      return { cli: { ...cli, stdout: `denied: ${output.denied.join("; ")}`, stderr: "" }, failure: { reason: "permission" } };
-    }
+    // (Claude Code's `permission_denials`) fails here only under
+    // `permissionDenials: "fail"`; else the caller records them, or — with
+    // `expect` — counts them as a miss.
+    if (output.denied && call.refusalFails) return { cli: refusedEvidence(cli, output.denied), failure: { reason: "permission" } };
     return null;
+  }
+
+  /**
+   * How a call with `expect` fails when the tool calls its CLI refused are
+   * still among what its work missed after its retries: a `permission`
+   * failure naming them, with the rest of what it missed.
+   */
+  private refusedFailure(
+    adapter: Adapter,
+    cli: CliResult,
+    refused: string[],
+    misses: string[],
+    limits: CliLimits,
+    reruns: Reruns,
+  ): UnmetExpectationError {
+    const why = this.whatFailed(adapter, cli, { reason: "permission" }, limits, reruns);
+    const message = cliFailureMessage(adapter, refusedEvidence(cli, refused), why);
+    const others = misses.slice(1);
+    return new UnmetExpectationError(
+      others.length > 0 ? `${message} — and its work did not meet: ${others.join("; ")}` : message,
+      misses,
+      "permission",
+    );
   }
 
   /** How a failed CLI run is summed up in its error: what happened and, when the user can act, what to do. */
@@ -1048,6 +1099,8 @@ interface CallEnv {
   onOutput?: () => void;
   /** The schema the CLI takes natively (ODW extension), and where its file goes in `file` mode. */
   schema?: { flag: SchemaFlag; value: JsonSchema; file?: string };
+  /** A run whose CLI refused the agent tool calls fails as `permission` (ODW extension; see failureOf). */
+  refusalFails?: boolean;
 }
 
 /** The variables an agent's processes get from ODW: only ever this call's, never inherited. */
@@ -1171,4 +1224,9 @@ function cliFailureMessage(adapter: Adapter, cli: CliResult, what: string): stri
   const detail = text.length > 500 ? `${text.slice(0, 250)} … ${text.slice(-250)}` : text;
   const suffix = detail ? `: ${detail}` : "";
   return `adapter '${adapter.name}' ${what}${suffix}`;
+}
+
+/** A run whose CLI refused tool calls, with them as its diagnostic: what a `permission` failure quotes. */
+function refusedEvidence(cli: CliResult, refused: string[]): CliResult {
+  return { ...cli, stdout: `denied: ${refused.join("; ")}`, stderr: "" };
 }

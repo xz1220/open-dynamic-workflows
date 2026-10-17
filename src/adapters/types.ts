@@ -79,8 +79,8 @@ export type AdapterOutput =
       structuredPath?: string[];
       /**
        * Path, in a text event, to the tool calls the CLI refused the agent
-       * (Claude Code's `permission_denials`). When the last text event lists
-       * any, the run failed for want of a permission, whatever it replied.
+       * (Claude Code's `permission_denials`). What the last text event lists
+       * is recorded on the agent, or fails it (`permissionDenials`, `expect`).
        */
       deniedPath?: string[];
     }
@@ -167,7 +167,17 @@ export interface Adapter {
   permissionArgs?: PermissionArgs;
   /** Caps this CLI's tier below the run's (ODW extension): an agent on it gets the lower of the two. */
   permissions?: PermissionTier;
+  /** What tool calls this CLI refused do to a reply that claims success; overrides `permissionDenials` (ODW extension). */
+  permissionDenials?: DenialPolicy;
 }
+
+/**
+ * What a reply that claims success does when its CLI refused the agent tool
+ * calls (`deniedPath`; an ODW extension): `"warn"` keeps it — the refused calls
+ * are recorded on the agent and logged — and `"fail"` fails the agent with
+ * reason "permission". A call with `expect` counts them as a miss either way.
+ */
+export type DenialPolicy = "warn" | "fail";
 
 /** Run-wide knobs independent of any single adapter. */
 export interface Settings {
@@ -304,6 +314,13 @@ export interface Settings {
    * on one agent() call overrides it).
    */
   expectRetries: number;
+  /**
+   * A reply that claims success while its CLI refused tool calls (an ODW
+   * extension): `"warn"` keeps it, recording and logging the refusals;
+   * `"fail"` fails the agent with reason "permission". An adapter's own
+   * `permissionDenials` overrides it.
+   */
+  permissionDenials: DenialPolicy;
 }
 
 /** How a fan-out on a prompt-caching adapter is staggered (see `Settings.staggerFanOut`). */

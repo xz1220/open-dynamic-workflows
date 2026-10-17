@@ -58,6 +58,11 @@ export interface AgentResultRecord {
   branch?: string | null;
   /** The permission tier its CLI ran at (ODW extension); absent in records from before tiers. */
   permissions?: PermissionTier;
+  /**
+   * The tool calls its CLI refused while it did the work, under a reply that
+   * stood anyway (ODW extension; `permissionDenials: "warn"`), when it refused any.
+   */
+  denied?: string[];
 }
 
 /**

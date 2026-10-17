@@ -94,6 +94,8 @@ export interface AgentView {
   failureReason?: string | null;
   /** With `unmet_expectation`: the `expect` checks its work did not meet, one line each (ODW extension). */
   misses?: string[];
+  /** A finished agent's tool calls its CLI refused (its reply stood anyway), one line each (ODW extension). */
+  denied?: string[];
   /** What the adapter reported spending on this agent. */
   usage?: Usage | null;
   /** What an isolated (worktree) agent changed; its diff is served separately. */
@@ -319,6 +321,8 @@ export interface AgentResultRecord {
   permissions?: PermissionTier;
   /** The adapters it fell back from before `adapter` produced the value (ODW extension). */
   fellBackFrom?: string[];
+  /** The tool calls its CLI refused while it did the work (ODW extension). */
+  denied?: string[];
 }
 
 /** One step of an agent's transcript, normalized (ODW extension; src/runtime/transcript-view.ts). */
