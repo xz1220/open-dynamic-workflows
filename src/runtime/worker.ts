@@ -20,7 +20,9 @@ import { pathToFileURL } from "node:url";
 import { loadConfig } from "../adapters/config.js";
 import { killAllAgentProcesses } from "../adapters/runner.js";
 import type { RunEndState } from "../adapters/types.js";
+import type { WaitingCheckpoint } from "../checkpoint.js";
 import { buildContext, spentTokens, type RunContext } from "../context.js";
+import type { CheckpointRequest } from "../control.js";
 import { RunStopped, WorkflowScriptError, isFatalError } from "../errors.js";
 import { LOG, RUN_FAILED, RUN_FINISHED, RUN_STARTED, RUN_STOPPED, event } from "../events.js";
 import { ReplayJournal } from "../journal.js";
@@ -68,6 +70,9 @@ const SIGNAL_GRACE_MS = 10_000;
  *
  * Once the outcome is on disk, the configured run-end hooks (`notify`) fire;
  * they are bounded and never throw, so they cannot change the returned state.
+ *
+ * A checkpoint() waiting for a person is shown in status.json as `waiting`
+ * (the oldest one, which `odw approve` answers by default).
  */
 export async function executeRun(runDir: string): Promise<string> {
   const store = new RunStore(dirname(runDir));
@@ -100,7 +105,8 @@ export async function executeRun(runDir: string): Promise<string> {
       if (!end) {
         sink.emit(event(LOG, { message: `${why} — killing the agents and exiting` }));
         sink.emit(event(RUN_STOPPED, { runId }));
-        store.updateStatus(runId, { state: "stopped", dispatched: dispatched(), spentTokens: spent() });
+        // No checkpoint gets to withdraw itself here: nothing waits any more.
+        store.updateStatus(runId, { state: "stopped", dispatched: dispatched(), spentTokens: spent(), waiting: null });
       } else {
         // Nothing may follow the terminal event in events.jsonl: say it in worker.log.
         process.stderr.write(`odw: ${why} — exiting before the run-end hooks finished\n`);
@@ -121,9 +127,13 @@ export async function executeRun(runDir: string): Promise<string> {
       : baseConfig;
     const control = new FileControl({
       readAction: () => store.readControl(runId),
+      // checkpoint() answers from `odw approve|reject` and the dashboard.
+      readDecisions: () => store.readCheckpointRequests(runId),
+      onUnmatchedDecision: (request) => sink.emit(event(LOG, { message: unmatchedDecision(request) })),
       onState: (state) => store.updateStatus(runId, { state, dispatched: dispatched(), spentTokens: spent() }),
     });
     const replay = replayJournal(meta);
+    const waiting = new Map<number, WaitingCheckpoint>();
     ctx = buildContext(config, {
       source: meta.source as string | undefined,
       runId,
@@ -135,6 +145,13 @@ export async function executeRun(runDir: string): Promise<string> {
       // so a run that stalls, is stopped, or dies keeps its finished work.
       saveAgentResult: (rec) => store.writeAgentResult(runId, rec),
       replay,
+      onCheckpoint: (cp, isWaiting) => {
+        if (isWaiting) waiting.set(cp.checkpointId, cp);
+        else waiting.delete(cp.checkpointId);
+        // The oldest question still open: the one `odw approve <run>` answers.
+        const oldest = [...waiting.values()].sort((a, b) => a.checkpointId - b.checkpointId)[0];
+        store.updateStatus(runId, { waiting: oldest ?? null });
+      },
     });
 
     store.updateStatus(runId, { state: "running", pid: process.pid });
@@ -231,6 +248,13 @@ export async function executeRun(runDir: string): Promise<string> {
     signals.dispose();
   }
   return end.state;
+}
+
+/** The log line for a checkpoint answer that found nothing waiting for it. */
+function unmatchedDecision(request: CheckpointRequest): string {
+  const which = request.checkpointId !== undefined ? `checkpoint #${request.checkpointId}` : "a checkpoint";
+  const from = request.by === "dashboard" ? "the dashboard" : "the cli";
+  return `ignored "${request.action}" for ${which} from ${from}: no such checkpoint is waiting for an answer`;
 }
 
 /**

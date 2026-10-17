@@ -17,7 +17,9 @@
  *                    (an AgentResultRecord; `agent_finished` carries `saved: true`)
  *     result.json    final return value (on success)
  *     error.json     message + stack (on failure)
- *     control.json   pause/resume/stop request written by the CLI
+ *     control.json   pause/resume/stop request written by the CLI (`action`), and the
+ *                    answers to checkpoint() calls (`checkpoints`: a list of
+ *                    { action: approve|reject, checkpointId?, note?, by, at })
  *     worker.log     the worker process's stdout/stderr
  *
  * A `runId` is globally unique, so it stays the public handle: `runDir(runId)`
@@ -41,6 +43,7 @@ import {
 } from "node:fs";
 import { basename, join } from "node:path";
 
+import { isCheckpointRequest, type CheckpointRequest } from "../control.js";
 import type { EventSink, WorkflowEvent } from "../events.js";
 import type { AgentResultRecord } from "../journal.js";
 import { readdirSafe, readJsonFile, writeJsonAtomic } from "./fs-util.js";
@@ -338,11 +341,28 @@ export class RunStore {
   // --- control ---------------------------------------------------------------
 
   writeControl(runId: string, action: string): void {
-    writeJson(this.controlPath(runId), { action, at: now() });
+    // A pause or a stop must not drop a checkpoint answer the run has yet to read.
+    const checkpoints = readJsonFile(this.controlPath(runId))?.checkpoints;
+    writeJson(this.controlPath(runId), { action, at: now(), ...(Array.isArray(checkpoints) ? { checkpoints } : {}) });
   }
   readControl(runId: string): string | null {
     const payload = readJsonFile(this.controlPath(runId));
     return payload === null ? null : ((payload.action as string) ?? null);
+  }
+  /**
+   * Answer a waiting checkpoint() (ODW extension): the request is appended to
+   * the control file's `checkpoints`, stamped with `at`, keeping the run-level
+   * `action` as it is. The worker takes each request once (see FileControl).
+   */
+  requestCheckpointDecision(runId: string, request: Omit<CheckpointRequest, "at">): void {
+    const control = readJsonFile(this.controlPath(runId)) ?? {};
+    const checkpoints = Array.isArray(control.checkpoints) ? control.checkpoints : [];
+    writeJson(this.controlPath(runId), { ...control, checkpoints: [...checkpoints, { ...request, at: now() }] });
+  }
+  /** The checkpoint answers in the control file, oldest first; malformed entries are left out. */
+  readCheckpointRequests(runId: string): CheckpointRequest[] {
+    const checkpoints = readJsonFile(this.controlPath(runId))?.checkpoints;
+    return Array.isArray(checkpoints) ? checkpoints.filter(isCheckpointRequest) : [];
   }
 
   // --- listing ---------------------------------------------------------------
