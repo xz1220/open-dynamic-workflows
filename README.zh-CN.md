@@ -254,6 +254,10 @@ agent_failed    (Fix) fixer — [unmet_expectation] did not meet: `npm test` mus
   它的改动取代先前的改动。
 - **命令**作为 agent 名下的一个 `exec()` 步骤运行(它的事件带 `forAgentId`),在读取改动
   之后执行,所以它写出的文件绝不会被算成 agent 的工作;停止会杀掉它。
+- **有[回退链](#按阶段路由与回退链odw-扩展)时,**缺失项在做出这份工作的
+  适配器上重试——缺失绝不会触发回退。因额度用尽或登录被拒而换到下一个适配器的调用会带着
+  它的 `expect`:下一个适配器从头开始这项工作,有自己的 `expectRetries`——隔离运行时在全新的
+  worktree 里;原地运行时,对照调用开始之前的源码树来判断。
 - **被拒绝的工具调用算作一项缺失。** 在默认的 `edit` 档位下,Claude Code 无头运行时会拒绝
   所有不在允许列表里的 shell 命令;设了 `expect` 时,`result` 里列出 `permission_denials`
   的回复会像任何缺失一样交还给 agent,之后以 `reason: "permission"` 失败,并列出被拒绝的
@@ -964,6 +968,8 @@ search:3 → claude after codex quota
 
 - 回退时沿用 agent 自己的权限档位:不能恰好运行该档位的适配器会被跳过并记一条日志——
   绝不换成别的档位运行。
+- 调用的 `expect` 检查随它一起走:下一个适配器的工作按同样的方式检查,也在那里重试;没达到
+  检查的工作绝不会回退(见[检查 agent 的工作](#检查-agent-的工作odw-扩展))。
 - `agent_finished` 记录产出结果的适配器,并用 `fellBackFrom` 记录 agent 离开过的那些;保存
   的结果也一样。`odw status`、实时视图(`codex → claude`)和 `/api/runs/:id` 都会显示。
 - **额度熔断。** 同一个适配器上连续 `quotaBreaker`(默认 3)次额度失败后,本次运行之后的

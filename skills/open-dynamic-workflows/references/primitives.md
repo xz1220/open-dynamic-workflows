@@ -175,8 +175,9 @@ take it. Claude Code ignores all of it.
 - **Fallback chains.** `adapter: ["codex", "claude"]`, or the `fallback`
   setting for the adapter a call runs on: when its CLI's quota is spent or its
   login is refused, the call runs again on the next adapter — a fresh prompt,
-  the same options. A rate limit is retried in place (`transientRetries`); any
-  other failure is the call's. Each move is a log line
+  the same options, its [`expect`](#expect-odw-extension) checks included. A
+  rate limit is retried in place (`transientRetries`); any other failure — an
+  unmet expectation too — is the call's. Each move is a log line
   (`search:3 → claude after codex quota`); the call takes a slot on its new
   adapter, letting the old one's go first; its transcript goes on after an
   `{"kind":"attempt","reason":"fallback","adapter":"claude"}` line; and what
@@ -512,7 +513,11 @@ Work that misses runs again — `expectRetries` times (default 1, or the
 `expectRetries` setting) — with what it missed appended to its prompt, a failed
 command's output included; an isolated retry starts over in a fresh worktree.
 Each retry is logged, and the transcript marks it `{"kind":"attempt","reason":"expect"}`.
-If the work still misses, the call throws (recoverable) with `reason:
+A retry runs on the adapter whose work missed: a miss never falls back. A call
+that falls back (a spent quota, a refused login) keeps its `expect`, and the
+next adapter starts the work over with its own retries — isolated, in a fresh
+worktree; in place, judged against the tree as it was before the call's first
+CLI run. If the work still misses, the call throws (recoverable) with `reason:
 "unmet_expectation"` and `misses` — one line per check — on the error and on its
 `agent_failed` event:
 

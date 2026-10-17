@@ -145,8 +145,9 @@ log(message)           // emit a one-line progress event
   会让调用以 `AgentError` 失败并列出已有层级。不带 `@` 的模型（或含有层级名不允许的字符，
   如 `@cf/…`）就是模型 ID，原样传给每个适配器。
 - **回退链。** `adapter: ["codex", "claude"]`，或调用所在适配器在 `fallback` 设置里的回退链：
-  CLI 额度用尽或登录被拒时，调用会在下一个适配器上重新运行——全新的提示词、相同的选项。限流
-  仍在原地重试（`transientRetries`）；其他失败都算调用自己的。每次切换记一行日志
+  CLI 额度用尽或登录被拒时，调用会在下一个适配器上重新运行——全新的提示词、相同的选项，
+  [`expect`](#expectodw-扩展) 检查也一样。限流仍在原地重试（`transientRetries`）；其他失败
+  ——包括没达到 expect 检查——都算调用自己的。每次切换记一行日志
   （`search:3 → claude after codex quota`）；调用会在新适配器上取得槽位，先释放旧适配器的；
   它的 transcript 在一行 `{"kind":"attempt","reason":"fallback","adapter":"claude"}` 之后
   继续；失败的那些运行花掉的用量照样计入。回退时沿用调用自己的权限档位——不能恰好运行该档位
@@ -419,7 +420,10 @@ agent 第一次 CLI 运行前的源码树相比的差异：你自己未提交的
 
 没达到要求的工作会重跑——`expectRetries` 次（默认 1，或取 `expectRetries` 设置）——并把缺失
 项追加到提示词里，失败命令的输出也一并附上；隔离的重试会在全新的 worktree 里从头开始。每次重试
-都会记日志，transcript 里标为 `{"kind":"attempt","reason":"expect"}`。仍未达到时，调用抛出
+都会记日志，transcript 里标为 `{"kind":"attempt","reason":"expect"}`。重试在做出这份工作的
+适配器上进行：缺失绝不会触发回退。回退的调用（额度用尽、登录被拒）会带着它的 `expect`，下一个
+适配器从头开始这项工作，有自己的重试次数——隔离运行时在全新的 worktree 里；原地运行时，对照
+调用第一次 CLI 运行前的源码树来判断。仍未达到时，调用抛出
 可恢复的错误，错误和它的 `agent_failed` 事件上都带有 `reason: "unmet_expectation"` 和逐条的
 `misses`：
 

@@ -108,8 +108,10 @@ trusting a reply that says so. `changes: true|false` (some file changed / none
 did), `files` (globs, each matching a file it changed or created), `command`
 (must exit 0 in the agent's workspace; `timeout` seconds, default 600) and
 `match` (a regular expression the reply must match). Work that misses runs
-again with what it missed in its prompt (`expectRetries`, default 1), then
-throws — recoverable — with `reason: "unmet_expectation"` and `misses`. Tool
+again, on the same adapter, with what it missed in its prompt (`expectRetries`,
+default 1), then throws — recoverable — with `reason: "unmet_expectation"` and
+`misses`; a miss never falls back, and a call that does fall back keeps its
+`expect`. Tool
 calls the CLI refused (claude's `permission_denials`) count as a miss too, and
 then the reason is `"permission"`. Without `expect`, such a reply stands: the
 refused calls are kept as `denied` on the agent and logged once

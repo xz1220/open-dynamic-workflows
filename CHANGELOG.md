@@ -26,10 +26,11 @@ changed, and run on a schedule — and a dashboard redesigned to watch them.
   its word — `command` exits 0 in its workspace, `changes`, `files` (globs), `match` —
   and hands misses back (`expectRetries`, default 1) before failing with
   `unmet_expectation` and the list of misses; `examples/fix-until-green.js`
-  (**ODW extension**). Tool calls Claude Code refused (`permission_denials`) are kept
-  as `denied` on the agent and logged once, while its reply stands (the default
-  `"permissionDenials": "warn"`); with `expect` they count as a miss, and
-  `"permissionDenials": "fail"` fails such agents with reason `permission`.
+  (**ODW extension**). A miss is retried on the adapter that produced it; a call that
+  falls back keeps its `expect` on the next one. Tool calls Claude Code refused
+  (`permission_denials`) are kept as `denied` on the agent and logged once, while its
+  reply stands (the default `"permissionDenials": "warn"`); with `expect` they count as
+  a miss, and `"permissionDenials": "fail"` fails such agents with reason `permission`.
 
 ### Ask a person, tell a person
 - `checkpoint(title, { payload, timeout, onTimeout })` pauses a run until someone

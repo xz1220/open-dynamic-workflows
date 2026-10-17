@@ -282,6 +282,12 @@ agent_failed    (Fix) fixer — [unmet_expectation] did not meet: `npm test` mus
 - **The command** runs as an `exec()` step under the agent (its events carry
   `forAgentId`), after the change is read, so what it writes is never the
   agent's work; a stop kills it.
+- **With a [fallback chain](#per-phase-adapters-model-tiers-and-fallback-chains-odw-extension),**
+  a miss is retried on the adapter whose work missed — never a reason to fall
+  back. A call that moves on (a spent quota, a refused login) keeps its `expect`:
+  the next adapter starts the work over with its own `expectRetries` — isolated,
+  in a fresh worktree; in place, judged against the tree as it was before the
+  call began.
 - **Refused tool calls count as a miss.** Under the default `edit` tier, Claude
   Code refuses headless every shell command that is not allowlisted; with
   `expect` set, a reply whose `result` lists `permission_denials` is handed back
@@ -1072,6 +1078,9 @@ search:3 → claude after codex quota
 
 - A fallback runs at the agent's own permission tier: an adapter that cannot run
   exactly that tier is skipped, with a log line — never run at another.
+- A call's `expect` checks go with it: the next adapter's work is checked the same
+  way, and retried there; work that misses never falls back (see
+  [Check an agent's work](#check-an-agents-work-odw-extension)).
 - `agent_finished` names the adapter that produced the value and, as `fellBackFrom`,
   the ones the agent left; so does its saved result. `odw status`, the live view
   (`codex → claude`) and `/api/runs/:id` show them.
