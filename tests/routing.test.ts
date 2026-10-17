@@ -1,0 +1,158 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { execPath } from "node:process";
+
+import { collectConfigWarnings, defaultConfig, loadConfig } from "../src/adapters/config.js";
+import type { CommandRunner } from "../src/adapters/runner.js";
+import type { CliResult, Config, Settings } from "../src/adapters/types.js";
+import type { Usage } from "../src/adapters/usage.js";
+import { Bridge, type AdapterFallback } from "../src/bridge.js";
+import { main } from "../src/cli.js";
+import { buildContext, type BuildContextOptions } from "../src/context.js";
+import { AdapterExecutionError, AdapterNotFound, AgentError, ConfigError, RunStopped, WorkflowScriptError } from "../src/errors.js";
+import { AGENT_FAILED, AGENT_FINISHED, AGENT_STARTED, LOG, MemorySink } from "../src/events.js";
+import { ReplayJournal, resumeKey, stableJson, type AgentResultRecord } from "../src/journal.js";
+import { loadWorkflowScript, readWorkflowMeta } from "../src/loader.js";
+import { createPrimitives } from "../src/primitives.js";
+import { attachRun, formatEvent } from "../src/runtime/live-view.js";
+import { RunStore } from "../src/runtime/run-store.js";
+import { detailFrom, EventFold } from "../src/runtime/runs-view.js";
+import { normalizeTranscript } from "../src/runtime/transcript-view.js";
+import { executeRun } from "../src/runtime/worker.js";
+import { Scheduler } from "../src/scheduler.js";
+import { TranscriptRecorder } from "../src/transcript.js";
+import { FakeTerm } from "./fake-term.js";
+
+// Routing (ODW extensions): per-phase adapters and models, model tiers, and
+// fallback chains with the run's quota breaker — in the config, in agent()
+// over a fake CLI, in the scheduler, in what readers show, and end to end
+// through the worker with mock CLIs, resume included.
+
+const ok = (stdout: string): CliResult => ({ returncode: 0, stdout, stderr: "", timedOut: false, duration: 0.1 });
+const failing = (stderr: string): CliResult => ({ returncode: 1, stdout: "", stderr, timedOut: false, duration: 0.1 });
+
+// What the CLIs print, as tests/failures.test.ts samples them.
+const QUOTA = "You've hit your usage limit. Upgrade to Pro or try again in 3h 22m.";
+const AUTH = "Error: not logged in. Run `claude` to log in.";
+const RATE = "ERROR: exceeded retry limit, last status: 429 Too Many Requests";
+
+/** Adapters of the user's own — `a`, `b`, `c` — each with a model flag; with no permission flags, each runs "edit". */
+function routingConfig(settings: Partial<Settings> = {}): Config {
+  const config = defaultConfig();
+  for (const name of ["a", "b", "c"]) {
+    config.adapters[name] = { name, command: [`${name}-cli`], stdin: "{prompt}", flags: { model: ["--model"] } };
+  }
+  config.settings.defaultAdapter = "a";
+  config.settings.concurrency = 4;
+  Object.assign(config.settings, settings);
+  return config;
+}
+
+interface Call {
+  adapter: string;
+  model: string | null;
+  prompt: string;
+  command: string[];
+}
+
+/**
+ * A fake CLI: each adapter answers from its queue of replies — `<adapter>
+ * answered` once that is empty — and every run is recorded with the model it
+ * was given.
+ */
+function fakeCli(replies: Record<string, CliResult[]> = {}) {
+  const calls: Call[] = [];
+  const runner: CommandRunner = async (command, opts) => {
+    const adapter = command[0]!.replace(/-cli$/, "");
+    const at = command.indexOf("--model");
+    calls.push({ adapter, model: at === -1 ? null : command[at + 1]!, prompt: String(opts?.stdin ?? ""), command });
+    return replies[adapter]?.shift() ?? ok(`${adapter} answered`);
+  };
+  return { runner, calls };
+}
+
+/** A run context, built as a run builds it, whose bridge runs the {@link fakeCli}. */
+function routed(config: Config, replies: Record<string, CliResult[]> = {}, options: BuildContextOptions = {}) {
+  const sink = new MemorySink();
+  const ctx = buildContext(config, { sink, ...options });
+  const { runner, calls } = fakeCli(replies);
+  ctx.bridge = new Bridge(config, { runner, sleep: async () => {}, random: () => 0 });
+  return { ctx, sink, calls };
+}
+
+const logs = (sink: MemorySink): string[] => sink.ofType(LOG).map((e) => String(e.message));
+
+async function until(check: () => boolean, ms = 2000): Promise<void> {
+  const deadline = Date.now() + ms;
+  while (!check()) {
+    if (Date.now() > deadline) throw new Error("condition did not become true");
+    await new Promise<void>((resolve) => setTimeout(resolve, 5));
+  }
+}
+
+// --- config -----------------------------------------------------------------------------
+
+test("config: fallback, models and quotaBreaker load, default and validate; every adapter they name must exist", () => {
+  const dir = mkdtempSync(join(tmpdir(), "odw-routing-config-"));
+  const load = (raw: unknown): Config => {
+    const path = join(dir, "odw.config.json");
+    writeFileSync(path, JSON.stringify(raw));
+    return loadConfig(path, { quiet: true });
+  };
+  try {
+    for (const settings of [defaultConfig().settings, load({}).settings]) {
+      assert.deepEqual([settings.fallback, settings.models, settings.quotaBreaker], [{}, {}, 3]);
+    }
+    const loaded = load({
+      fallback: { codex: ["claude", "gemini"], $comment: "codex first" },
+      models: { fast: { claude: "haiku", codex: "gpt-5-mini", "//": "per CLI" }, "deep.v2": { claude: "opus" } },
+      quotaBreaker: 0,
+    }).settings;
+    assert.deepEqual(loaded.fallback, { codex: ["claude", "gemini"] });
+    assert.deepEqual(loaded.models, { fast: { claude: "haiku", codex: "gpt-5-mini" }, "deep.v2": { claude: "opus" } });
+    assert.equal(loaded.quotaBreaker, null, "0 never skips, like null");
+    assert.equal(load({ quotaBreaker: null }).settings.quotaBreaker, null);
+    assert.equal(load({ quotaBreaker: 5 }).settings.quotaBreaker, 5);
+    const own = load({ adapters: { mine: { command: ["mine"] } }, fallback: { mine: ["codex"] } });
+    assert.deepEqual(own.settings.fallback, { mine: ["codex"] }, "an adapter of the user's own can head a chain");
+    const refused: Array<[unknown, RegExp]> = [
+      [{ fallback: ["claude"] }, /^"fallback" must be an object/],
+      [{ fallback: { codex: "claude" } }, /^"fallback\.codex" must be a list of adapter names; got "claude"$/],
+      [{ fallback: { codex: ["claud"] } }, /^"fallback\.codex" names unknown adapter 'claud'; available: .*\bclaude\b/],
+      [{ fallback: { codx: ["claude"] } }, /^"fallback\.codx" names unknown adapter 'codx'/],
+      [{ models: { fast: "haiku" } }, /^"models\.fast" must be an object/],
+      [{ models: { "fa st": { claude: "haiku" } } }, /^"models" tier names are letters, digits/],
+      [{ models: { fast: { claude: "" } } }, /^"models\.fast\.claude" must be a model id/],
+      [{ models: { fast: { claud: "haiku" } } }, /^"models\.fast" names unknown adapter 'claud'/],
+      [{ quotaBreaker: -1 }, /^"quotaBreaker" must be a positive integer, or 0\/null to never skip an adapter/],
+      [{ quotaBreaker: 1.5 }, /^"quotaBreaker" must be/],
+    ];
+    for (const [raw, error] of refused) {
+      assert.throws(() => load(raw), (err: Error) => err instanceof ConfigError && error.test(err.message), JSON.stringify(raw));
+    }
+    assert.deepEqual(collectConfigWarnings({ fallback: {}, models: {}, quotaBreaker: 3 }), [], "known keys");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("the example config lints clean, and its commented-out fallback and models blocks are valid once enabled", () => {
+  const example = JSON.parse(readFileSync(join(process.cwd(), "odw.config.example.json"), "utf8"));
+  assert.deepEqual(collectConfigWarnings(example), []);
+  const { "//fallback": fallback, "//models": models, ...rest } = example;
+  assert.ok(fallback && models, "the example shows both");
+  const dir = mkdtempSync(join(tmpdir(), "odw-routing-example-"));
+  try {
+    const path = join(dir, "odw.config.json");
+    writeFileSync(path, JSON.stringify({ ...rest, fallback, models }));
+    const settings = loadConfig(path, { quiet: true }).settings;
+    assert.ok(Object.keys(settings.fallback).length > 0);
+    assert.ok(Object.keys(settings.models).length > 0);
+    assert.equal(settings.quotaBreaker, 3);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

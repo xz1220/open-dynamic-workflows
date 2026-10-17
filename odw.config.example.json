@@ -52,6 +52,19 @@
   "schemaKeywords": "warn",
   "schemaPrompt": "auto",
 
+  "//fallback": {
+    "$comment": "ODW extension: fallback chains. Rename \"//fallback\" to \"fallback\" to turn them on. When an agent's CLI has spent its usage quota or its login is refused (not a rate limit: that is retried in place, see transientRetries), the agent runs again on the next adapter listed for the one it was on — a fresh prompt, the same options, at the same permission tier (an adapter that cannot run that tier is skipped, with a log line) — and the run's log, odw status, the live view and the dashboard say where it went: \"search:3 → claude after codex quota\". An agent() call's own list, agent(prompt, { adapter: [\"codex\", \"claude\"] }), takes the place of these. Every adapter named must be configured.",
+    "codex": ["claude"],
+    "claude": ["codex"]
+  },
+  "//quotaBreaker": "ODW extension. After this many quota failures in a row on one adapter, the run's later agents skip it — each starts on the next adapter of its fallback chain, or fails at once without one — and the run logs it once. 0 or null never skips an adapter.",
+  "quotaBreaker": 3,
+  "//models": {
+    "$comment": "ODW extension: model tiers. Rename \"//models\" to \"models\" to turn them on. agent(prompt, { model: \"@fast\" }) — or a phase's model — runs each adapter with its own id for the tier: the one the agent runs on, or after a fallback the next one's. An adapter a tier names no model for runs its CLI's default (logged); an unknown tier fails the agent. A model without the @ is a model id, passed to every adapter as it is.",
+    "fast": { "claude": "haiku", "codex": "gpt-5-mini", "gemini": "gemini-2.5-flash" },
+    "strong": { "claude": "opus", "codex": "gpt-5", "gemini": "gemini-2.5-pro" }
+  },
+
   "//notify": {
     "$comment": "ODW extension: run-end hooks. Rename \"//notify\" to \"notify\" to turn them on. They fire once, after the run's final state is written, and can never change it; a failing or slow hook is only logged to the run's worker.log. command: an argv run WITHOUT a shell (killed after 30s), with ODW_RUN_ID, ODW_RUN_STATE, ODW_WORKFLOW, ODW_RUN_DIR, ODW_RESULT_FILE (only when the run has a result), ODW_DURATION_SEC, ODW_AGENTS and ODW_FAILED_AGENTS in its environment. webhook: an http(s) URL that receives a JSON POST (10s limit) whose text/content fields render as-is in Slack and Discord. on: which final states fire them (default: all three).",
     "command": ["/usr/local/bin/odw-notify"],

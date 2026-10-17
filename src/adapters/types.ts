@@ -274,6 +274,22 @@ export interface Settings {
    * only when the CLI does not take the schema natively; `"always"`.
    */
   schemaPrompt: "auto" | "always";
+  /**
+   * Fallback chains (an ODW extension): adapter name → the adapters a call on
+   * it moves to, in order, when its CLI's quota is spent or its login is
+   * refused. An agent() call that lists its own adapters uses that list instead.
+   */
+  fallback: Record<string, string[]>;
+  /**
+   * Model tiers (an ODW extension): tier name → adapter name → that CLI's
+   * model id. `model: "@<tier>"` picks the id for the adapter a call runs on.
+   */
+  models: Record<string, Record<string, string>>;
+  /**
+   * The run's quota breaker (an ODW extension): after this many quota
+   * failures in a row on one adapter, the run's later calls skip it; `null` => never.
+   */
+  quotaBreaker: number | null;
 }
 
 /** How a fan-out on a prompt-caching adapter is staggered (see `Settings.staggerFanOut`). */

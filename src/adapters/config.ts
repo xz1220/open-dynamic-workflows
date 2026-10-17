@@ -20,6 +20,7 @@ import { cpus, homedir } from "node:os";
 import { dirname, join } from "node:path";
 
 import { AdapterNotFound, ConfigError } from "../errors.js";
+import { TIER_NAME } from "../routing.js";
 import { BUILTIN_ADAPTERS, DEFAULT_SETTINGS, type RawAdapter } from "./builtin.js";
 import { isOnPath } from "./executable.js";
 import { CONFIGURABLE_REASONS } from "./failures.js";
@@ -73,10 +74,12 @@ export function loadConfig(
       process.stderr.write(`odw: config warning: ${w}\n`);
     }
   }
-  return {
+  const config = {
     adapters: buildAdapters((raw.adapters as Record<string, RawAdapter>) ?? {}),
     settings: buildSettings(raw),
   };
+  checkRouting(config);
+  return config;
 }
 
 // Every key buildSettings reads, plus the adapters map. Anything else in a
@@ -111,6 +114,9 @@ const KNOWN_TOP_KEYS = [
   "agentEnvPass",
   "schemaKeywords",
   "schemaPrompt",
+  "fallback",
+  "models",
+  "quotaBreaker",
 ] as const;
 
 const KNOWN_ADAPTER_KEYS = ["command", "stdin", "env", "timeout", "stallTimeout", "concurrency", "promptCache", "label", "flags", "output", "failures", "permissionArgs", "permissions"] as const;
@@ -244,7 +250,10 @@ function editDistance(a: string, b: string): number {
 
 /** Config from built-ins only — handy for tests and programmatic use. */
 export function defaultConfig(): Config {
-  return { adapters: buildAdapters({}), settings: { ...DEFAULT_SETTINGS, staggerFanOut: defaultStagger() } };
+  return {
+    adapters: buildAdapters({}),
+    settings: { ...DEFAULT_SETTINGS, staggerFanOut: defaultStagger(), fallback: {}, models: {} },
+  };
 }
 
 /**
@@ -930,6 +939,18 @@ function buildSettings(raw: Record<string, unknown>): Settings {
       raw["schemaPrompt"] == null
         ? DEFAULT_SETTINGS.schemaPrompt
         : buildChoice("schemaPrompt", raw["schemaPrompt"], ["auto", "always"] as const),
+    // Fallback chains and model tiers (ODW extensions): the adapters they name
+    // are checked against the configured ones once both are built (checkRouting).
+    fallback: raw["fallback"] == null ? {} : buildFallback(raw["fallback"]),
+    models: raw["models"] == null ? {} : buildModels(raw["models"]),
+    // Like fanOutWarn: null and 0 both mean "never".
+    quotaBreaker:
+      raw["quotaBreaker"] === null
+        ? null
+        : num("quotaBreaker", DEFAULT_SETTINGS.quotaBreaker, "a positive integer, or 0/null to never skip an adapter", {
+            min: 0,
+            integer: true,
+          }) || null,
   };
 }
 
@@ -939,6 +960,65 @@ function buildChoice<T extends string>(key: string, raw: unknown, choices: reado
   const quoted = choices.map((choice) => `"${choice}"`);
   const listed = quoted.length > 1 ? `${quoted.slice(0, -1).join(", ")} or ${quoted.at(-1)}` : quoted.join("");
   throw new ConfigError(`"${key}" must be ${listed}; got ${JSON.stringify(raw)}`);
+}
+
+/** Validate `fallback`: adapter name → the adapters its calls fall back to, in order. */
+function buildFallback(raw: unknown): Record<string, string[]> {
+  if (!isObject(raw)) {
+    throw new ConfigError(`"fallback" must be an object: { "<adapter>": ["<next adapter>", …] }; got ${kindOf(raw)}`);
+  }
+  const out: Record<string, string[]> = {};
+  for (const [name, chain] of Object.entries(raw)) {
+    if (name.startsWith("$") || name.startsWith("//")) continue; // comment conventions
+    if (!Array.isArray(chain) || !chain.every((next) => typeof next === "string" && next !== "")) {
+      throw new ConfigError(`"fallback.${name}" must be a list of adapter names; got ${JSON.stringify(chain)}`);
+    }
+    out[name] = [...(chain as string[])];
+  }
+  return out;
+}
+
+/** Validate `models`: tier name → adapter name → that CLI's model id. */
+function buildModels(raw: unknown): Record<string, Record<string, string>> {
+  const shape = `{ "<tier>": { "<adapter>": "<model id>", … }, … }`;
+  if (!isObject(raw)) throw new ConfigError(`"models" must be an object of tiers: ${shape}; got ${kindOf(raw)}`);
+  const out: Record<string, Record<string, string>> = {};
+  for (const [tier, ids] of Object.entries(raw)) {
+    if (tier.startsWith("$") || tier.startsWith("//")) continue; // comment conventions
+    if (!TIER_NAME.test(tier)) {
+      throw new ConfigError(`"models" tier names are letters, digits, "_", "-" and "."; got ${JSON.stringify(tier)}`);
+    }
+    if (!isObject(ids)) throw new ConfigError(`"models.${tier}" must be an object: { "<adapter>": "<model id>", … }; got ${kindOf(ids)}`);
+    const tierIds: Record<string, string> = {};
+    for (const [adapter, id] of Object.entries(ids)) {
+      if (adapter.startsWith("$") || adapter.startsWith("//")) continue;
+      if (typeof id !== "string" || id.trim() === "") {
+        throw new ConfigError(`"models.${tier}.${adapter}" must be a model id; got ${JSON.stringify(id)}`);
+      }
+      tierIds[adapter] = id;
+    }
+    out[tier] = tierIds;
+  }
+  return out;
+}
+
+/**
+ * Every adapter `fallback` and `models` name must be configured: a typo'd
+ * name would otherwise never take effect, silently.
+ */
+function checkRouting(config: Config): void {
+  const known = (name: string): boolean => Object.prototype.hasOwnProperty.call(config.adapters, name);
+  const available = (): string => Object.keys(config.adapters).sort().join(", ");
+  for (const [name, chain] of Object.entries(config.settings.fallback)) {
+    for (const adapter of [name, ...chain]) {
+      if (!known(adapter)) throw new ConfigError(`"fallback.${name}" names unknown adapter '${adapter}'; available: ${available()}`);
+    }
+  }
+  for (const [tier, ids] of Object.entries(config.settings.models)) {
+    for (const adapter of Object.keys(ids)) {
+      if (!known(adapter)) throw new ConfigError(`"models.${tier}" names unknown adapter '${adapter}'; available: ${available()}`);
+    }
+  }
 }
 
 /** Validate the run's permission tier. */

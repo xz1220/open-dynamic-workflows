@@ -282,4 +282,7 @@ export const DEFAULT_SETTINGS: Settings = {
   agentEnvPass: [], // more variables a "minimal" agent environment passes through
   schemaKeywords: "warn", // what ODW's validator does not check is logged once per run, not refused
   schemaPrompt: "auto", // the prompt describes a schema only to a CLI that does not take it natively
+  fallback: {}, // no fallback chains: a spent quota or a refused login fails the agent
+  models: {}, // no model tiers: model: "@<tier>" names none
+  quotaBreaker: 3, // quota failures in a row before the run's later agents skip an adapter
 };
