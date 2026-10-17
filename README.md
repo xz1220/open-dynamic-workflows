@@ -301,7 +301,7 @@ odw serve [--open]                      # live dashboard at http://127.0.0.1:431
 odw serve --port 8080 --host 0.0.0.0    # custom port / bind address
 ```
 
-![odw serve — a live deep-research run: five phase lanes (Plan → Search → Extract → Vote → Report) drawn as a graph, running agents tracing signal along their edges, per-run counters and a phase stepper](assets/odw-dashboard.png)
+![odw serve — a live deep-research run: five phase lanes (Plan → Search → Extract → Vote → Report) drawn as a graph, running agents tracing signal along their edges, per-run counters and a phase stepper](assets/odw-dashboard.gif)
 
 ## Dashboard: observe, inspect, chat
 

@@ -276,7 +276,7 @@ odw serve [--open]                      # 实时看板,默认 http://127.0.0.1:4
 odw serve --port 8080 --host 0.0.0.0    # 自定义端口 / 绑定地址
 ```
 
-![odw serve —— 一次实时 deep-research 运行:五个阶段泳道(Plan → Search → Extract → Vote → Report)绘制成图,运行中的 agent 沿边传递信号,带运行计数与阶段步进条](assets/odw-dashboard.png)
+![odw serve —— 一次实时 deep-research 运行:五个阶段泳道(Plan → Search → Extract → Vote → Report)绘制成图,运行中的 agent 沿边传递信号,带运行计数与阶段步进条](assets/odw-dashboard.gif)
 
 ## 看板:观测、检查、对话
 
