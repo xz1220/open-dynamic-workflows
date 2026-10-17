@@ -158,6 +158,8 @@ did-you-mean hint) instead of silently ignoring them.
 | `permissions` | **ODW extension.** The run's permission tier: `"read"`, `"edit"` (default) or `"full"` — see [permissions](#permissions-what-each-built-in-may-do). `odw run\|rerun\|resume --permissions` overrides it |
 | `agentEnv` | **ODW extension.** `"inherit"` (default): agent CLIs get ODW's whole environment. `"minimal"`: only `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `LANG`, `LC_*`, `TERM`, `TMPDIR`, `TZ` (and the Windows system variables), the auth and config variables the built-in CLIs document (`ANTHROPIC_*`, `CLAUDE_*`, `OPENAI_*`, `CODEX_*`, `GEMINI_*`, `GOOGLE_*`, `DASHSCOPE_*`, `QWEN_*`, `MOONSHOT_*`, `KIMI_*`, `CURSOR_*`, `OPENCODE_*`, the proxy variables, `NODE_EXTRA_CA_CERTS`), `ODW_*`, `agentEnvPass` and the adapter's `env`. `exec()` commands, `worktreeSetup` and `notify` keep the whole environment |
 | `agentEnvPass` | **ODW extension.** More names, or `*` globs, a `"minimal"` agent environment passes (e.g. `["AWS_*"]` for Claude Code on Bedrock) |
+| `schemaKeywords` | **ODW extension.** Which JSON Schema an `agent()` schema may use. `"odw"` (default): only what ODW's validator checks — any other keyword fails the call before it starts. `"native"`: on an adapter that takes schemas natively (`flags.schema`), the rest too — its CLI enforces them, ODW checks the subset, and the run logs which keywords it left to the CLI. See [native structured output](#native-structured-output) |
+| `schemaPrompt` | **ODW extension.** `"auto"` (default): the prompt describes the schema only to a CLI that does not take it natively; `"always"`: to every CLI |
 
 ### Adapter fields
 
@@ -171,7 +173,7 @@ did-you-mean hint) instead of silently ignoring them.
 | `concurrency` | **ODW extension.** At most this many agents at once on this CLI, inside the run-wide `concurrency`: an agent needs a slot in both, each adapter queues first come, first served, and a throttled adapter never holds up the others. Unset: the run-wide cap alone |
 | `promptCache` | **ODW extension.** `true`: this CLI's model API caches a prompt's prefix, so its fan-outs start staggered (see `staggerFanOut`). The built-in `claude` declares it |
 | `label` | human-friendly name for progress display |
-| `flags` | capability declaration, e.g. `{ "model": ["--model"] }` — the native flag that carries a per-call `model`. Without it, `agent(..., { model })` is not honored for this adapter (a routing note appears in the logs) |
+| `flags` | capability declaration, e.g. `{ "model": ["--model"] }` — the native flag that carries a per-call `model`. Without it, `agent(..., { model })` is not honored for this adapter (a routing note appears in the logs). **ODW extension:** `"schema": { "args": [...], "mode": "inline" \| "file", "strict"?: true }` says the CLI validates a call's JSON Schema itself — see [native structured output](#native-structured-output) |
 | `failures` | **ODW extension.** This CLI's own failure wording: `{ "rate_limit": [...], "quota": [...], "auth": [...] }`, regular expressions matched case-insensitively against the end of a failed run's output before the built-in table |
 | `output` | how stdout becomes the reply (default: trimmed text) — see below |
 | `permissionArgs` | **ODW extension.** Each tier's flags: `{ "read"?: [...], "edit": [...], "full"?: [...] }` (`edit` required, `[]` for none), put where the command has a `{permission_args}` element — which it must have exactly when this is set |
@@ -193,7 +195,41 @@ normalized across the CLIs' field names (Anthropic's, OpenAI's, Codex's):
 `inputTokens` (cached input included), `outputTokens`, `cacheReadTokens`,
 `cacheWriteTokens`, `costUsd`. A whole number in a path indexes an array (negative:
 from its end). When stdout does not have the declared text, the raw stdout is the
-reply and the run's log says why — the agent does not fail.
+reply and the run's log says why — the agent does not fail. A `structuredPath`
+points at the value the CLI validated against a schema it was handed natively (see
+below).
+
+### Native structured output
+
+**ODW extension.** `flags.schema` declares that a CLI validates a JSON Schema itself,
+and how it takes one:
+
+| Field | Meaning |
+| --- | --- |
+| `args` | the flag(s) before the schema, e.g. `["--json-schema"]` |
+| `mode` | `"inline"`: the schema's compact JSON is the next argument. `"file"`: the path of a file holding it — `agents/<agentId>.schema.json` in the run directory (a temp directory outside a run), written before each CLI run and removed after it |
+| `strict` | `true` for a CLI that takes only OpenAI strict-mode schemas (codex): any other schema — one whose root is not an object, or with an object that is not `"additionalProperties": false` with all its properties `required` — goes in the prompt instead, and the run says so once |
+
+The schema goes after every other argument, where a model flag goes, and is not
+placeholder-expanded; a call without a schema runs the command exactly as
+configured. When the CLI's output carries the validated value apart from its text,
+`output.structuredPath` says where; a value there (not null) is the reply's value,
+else the reply text is searched for the JSON, as for any adapter. ODW validates the
+value either way and retries with feedback when it does not satisfy the schema; the
+prompt describes the schema only to CLIs that do not take it (`schemaPrompt`).
+
+| Built-in | `flags.schema` | The value comes from |
+| --- | --- | --- |
+| `claude` | `{ "args": ["--json-schema"], "mode": "inline" }` | `structured_output` in its `result` event (`"structuredPath": ["structured_output"]`), else the `result` text |
+| `codex` | `{ "args": ["--output-schema"], "mode": "file", "strict": true }` | its final message on stdout |
+
+Before an agent starts, its schema is checked against the subset ODW's validator
+enforces ([primitives](primitives.md#schema)): anything else fails the call with an
+`AgentError` naming each keyword and where it is. With `"schemaKeywords": "native"`
+such keywords are allowed on an adapter that takes the schema natively (on a `strict`
+one, only in a strict schema), and ODW checks the part it can. A malformed schema or
+an unknown keyword fails in every mode. To turn native schemas off for a built-in,
+give its `flags` without `schema`: `"claude": { "flags": { "model": ["--model"] } }`.
 
 ### Run notifications (`notify`)
 

@@ -65,6 +65,12 @@ changed, and run on a schedule — and a dashboard redesigned to watch them.
   [@lzehrung](https://github.com/lzehrung), #32 and #34); the built-in `codex` and
   `claude` adapters get web access out of the box.
 - The battle-tested `deep-research-verified.js` with a cron-ready wrapper.
+- Native structured output: `claude` (`--json-schema`) and `codex` (`--output-schema`,
+  for strict schemas) are handed an `agent()`'s schema and enforce it themselves, and
+  ODW still validates every reply. Before an agent starts, its schema is checked for
+  keywords nothing would enforce; `"schemaKeywords": "native"` leaves them to a CLI that
+  does (**ODW extension**; adapters declare it with `flags.schema` and
+  `output.structuredPath`).
 
 ### Use the CLI and the dashboard
 - `odw run` attaches a live foreground view in interactive terminals (Ctrl-C detaches;
@@ -93,5 +99,14 @@ changed, and run on a schedule — and a dashboard redesigned to watch them.
   `claude` fan-outs with long shared prompts may wait up to 2.5s to stagger
   (`staggerFanOut: false`).
 - `budget.spent()` counts real output tokens where the adapter reports them.
+- A schema keyword ODW's validator does not check (`oneOf`, `anyOf`, `$ref`, `const`,
+  `pattern`, `format`, `minimum`, `maxItems`, a type union, …) now fails its `agent()`
+  call before it starts, naming the keyword and where it is; before, it was silently
+  unchecked. Remove it (a `description` can still ask for it), or on `claude` — and
+  `codex`, for a strict schema — set `"schemaKeywords": "native"`.
+- `claude` and `codex` agents no longer get their schema described in the prompt when
+  their CLI takes it natively (`"schemaPrompt": "always"` keeps the description). An
+  entry that gives either its own `command` replaces the built-in: copy `flags.schema`
+  (and `claude`'s `output.structuredPath`) from the example config to keep native schemas.
 - Config errors are fatal instead of producing a "done" run full of nulls.
 - The desktop (Tauri) app is retired in favor of `odw serve`.

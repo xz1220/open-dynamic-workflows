@@ -88,6 +88,16 @@ change to a branch `odw/<runId>/<agentId>-<label>`. `permissions: "read"`
 (**ODW extension**) runs the agent at a stricter tier than the run's — see
 [permission tiers](#permission-tiers-odw-extension).
 
+Write `schema` in the subset ODW checks — `type` (one name), `enum`, `properties`,
+`required`, `additionalProperties: false`, `items` (one schema), `minItems`, plus
+annotations like `description`. Any other keyword (`oneOf`, `$ref`, `const`,
+`pattern`, `maxItems`, a type union, …) fails the call with an `AgentError` before
+it starts, unless its CLI enforces schemas itself and the config sets
+`"schemaKeywords": "native"` (**ODW extension**). Put a limit ODW cannot check in a
+`description` instead. On `claude` and `codex` the schema is passed to the CLI
+natively; ODW validates the reply either way — see
+[`references/primitives.md`](references/primitives.md#schema).
+
 `opts` for `exec`: `{ cwd?, env?, timeout?, input?, maxOutputBytes?, label?, phase?, check? }`.
 It runs in the source directory by default, is killed after `timeout` seconds
 (600) with everything it started, and keeps 8 MiB per stream. A non-zero exit

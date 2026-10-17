@@ -146,6 +146,8 @@ agent 的 `permissions`；`odw doctor` 会列出每个适配器支持的档位�
 | `permissions` | **ODW 扩展。** 运行的权限档位：`"read"`、`"edit"`（默认）或 `"full"`——见[权限](#权限每个内置适配器能做什么)。`odw run\|rerun\|resume --permissions` 可覆盖 |
 | `agentEnv` | **ODW 扩展。** `"inherit"`（默认）：agent CLI 拿到 ODW 的全部环境变量。`"minimal"`：只传 `PATH`、`HOME`、`USER`、`LOGNAME`、`SHELL`、`LANG`、`LC_*`、`TERM`、`TMPDIR`、`TZ`（以及 Windows 系统变量）、内置 CLI 文档中列出的认证与配置变量（`ANTHROPIC_*`、`CLAUDE_*`、`OPENAI_*`、`CODEX_*`、`GEMINI_*`、`GOOGLE_*`、`DASHSCOPE_*`、`QWEN_*`、`MOONSHOT_*`、`KIMI_*`、`CURSOR_*`、`OPENCODE_*`、代理变量、`NODE_EXTRA_CA_CERTS`）、`ODW_*`、`agentEnvPass` 和适配器的 `env`。`exec()` 命令、`worktreeSetup` 和 `notify` 仍拿到完整环境 |
 | `agentEnvPass` | **ODW 扩展。** `"minimal"` 环境下额外放行的变量名或 `*` 通配（如在 Bedrock 上用 Claude Code 时的 `["AWS_*"]`） |
+| `schemaKeywords` | **ODW 扩展。** `agent()` 的 schema 可以用哪些 JSON Schema。`"odw"`（默认）：只能用 ODW 校验器检查的部分——其他关键字会让调用在启动前失败。`"native"`：在接收原生 schema 的适配器（`flags.schema`）上其余关键字也可用——由它的 CLI 强制执行，ODW 检查子集，运行会记录哪些关键字交给了 CLI。见[原生结构化输出](#原生结构化输出) |
+| `schemaPrompt` | **ODW 扩展。** `"auto"`（默认）：只有不接收原生 schema 的 CLI 才在提示词里看到 schema 描述；`"always"`：所有 CLI 都附上 |
 
 ### 适配器字段
 
@@ -159,7 +161,7 @@ agent 的 `permissions`；`odw doctor` 会列出每个适配器支持的档位�
 | `concurrency` | **ODW 扩展。** 在运行级 `concurrency` 之内，这个 CLI 上同时最多运行多少个 agent：一个 agent 需要两边各一个槽位，每个适配器先到先得地排队，被限住的适配器不会挡住其他适配器。不设置：只受运行级上限约束 |
 | `promptCache` | **ODW 扩展。** `true`：这个 CLI 背后的模型 API 会缓存提示前缀，所以它的扇出会错开启动（见 `staggerFanOut`）。内置 `claude` 声明了它 |
 | `label` | 进度显示用的友好名字 |
-| `flags` | 能力声明，如 `{ "model": ["--model"] }`——承载每次调用 `model` 的原生旗标。不声明它，`agent(..., { model })` 对该适配器就不生效（日志里会出现一条路由说明） |
+| `flags` | 能力声明，如 `{ "model": ["--model"] }`——承载每次调用 `model` 的原生旗标。不声明它，`agent(..., { model })` 对该适配器就不生效（日志里会出现一条路由说明）。**ODW 扩展：**`"schema": { "args": [...], "mode": "inline" \| "file", "strict"?: true }` 声明该 CLI 会自己校验调用的 JSON Schema——见[原生结构化输出](#原生结构化输出) |
 | `failures` | **ODW 扩展。** 这个 CLI 自己的失败措辞：`{ "rate_limit": [...], "quota": [...], "auth": [...] }`，正则表达式，先于内置表、不区分大小写地匹配失败运行输出的末尾 |
 | `output` | stdout 如何变成回复（默认：去掉首尾空白的文本）——见下文 |
 | `permissionArgs` | **ODW 扩展。** 各档位的参数：`{ "read"?: [...], "edit": [...], "full"?: [...] }`（`edit` 必填，没有参数写 `[]`），放在命令中 `{permission_args}` 那一项的位置——设置了它，命令就必须恰好有这一项 |
@@ -179,7 +181,35 @@ agent 的 `permissions`；`odw doctor` 会列出每个适配器支持的档位�
 不同 CLI 的字段名（Anthropic、OpenAI、Codex）之间归一化为：`inputTokens`（含缓存命中的
 输入）、`outputTokens`、`cacheReadTokens`、`cacheWriteTokens`、`costUsd`。路径里的整数
 用于索引数组（负数从末尾数）。stdout 里找不到声明的文本时，原始 stdout 就作为回复，运行
-日志会说明原因——agent 不会因此失败。
+日志会说明原因——agent 不会因此失败。`structuredPath` 指向 CLI 按原生拿到的 schema 校验过的
+值（见下文）。
+
+### 原生结构化输出
+
+**ODW 扩展。** `flags.schema` 声明某个 CLI 会自己校验 JSON Schema，以及它如何接收 schema：
+
+| 字段 | 含义 |
+| --- | --- |
+| `args` | schema 前面的旗标，如 `["--json-schema"]` |
+| `mode` | `"inline"`：schema 的紧凑 JSON 作为下一个参数。`"file"`：一个保存 schema 的文件路径——run 目录下的 `agents/<agentId>.schema.json`（不在运行中时用临时目录），每次 CLI 运行前写入、运行后删除 |
+| `strict` | `true` 表示该 CLI 只接受 OpenAI strict 模式的 schema（codex）：其他 schema——根不是对象，或某个对象没有设 `"additionalProperties": false` 并把全部属性列进 `required`——改为写进提示词，运行会提示一次 |
+
+schema 参数排在所有其他参数之后（与模型参数同处），且不做占位符展开；没有 schema 的调用完全
+按配置的命令运行。若 CLI 的输出把校验后的值与文本分开放，用 `output.structuredPath` 指出位置；
+那里有值（非 null）就是回复的值，否则像任何适配器一样在回复文本里找 JSON。无论哪种，ODW 都会
+校验这个值，不满足 schema 时带反馈重试；只有不接收原生 schema 的 CLI 才会在提示词里看到 schema
+描述（`schemaPrompt`）。
+
+| 内置适配器 | `flags.schema` | 值的来源 |
+| --- | --- | --- |
+| `claude` | `{ "args": ["--json-schema"], "mode": "inline" }` | `result` 事件里的 `structured_output`（`"structuredPath": ["structured_output"]`），否则用 `result` 文本 |
+| `codex` | `{ "args": ["--output-schema"], "mode": "file", "strict": true }` | stdout 上的最终消息 |
+
+agent 启动前，会对照 ODW 校验器支持的子集检查它的 schema（[原语](primitives.md#schema)）：
+其他内容都会让调用以 `AgentError` 失败，并逐个写明关键字及其位置。设 `"schemaKeywords": "native"`
+后，这类关键字可以用在接收原生 schema 的适配器上（`strict` 的适配器上只限 strict schema），ODW
+检查它能检查的部分。格式错误的 schema 或未知关键字在任何模式下都会失败。要为某个内置适配器关闭
+原生 schema，给它不含 `schema` 的 `flags`：`"claude": { "flags": { "model": ["--model"] } }`。
 
 ### 运行通知（`notify`）
 

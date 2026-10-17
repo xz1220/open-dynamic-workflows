@@ -18,13 +18,21 @@
 export {};
 
 declare global {
-  /** ODW's JSON Schema subset; unsupported keywords are not enforced. See the primitive reference. */
+  /**
+   * ODW's JSON Schema subset. A keyword outside it fails the agent() call before
+   * it starts, unless the adapter's CLI enforces schemas itself and the config
+   * sets `schemaKeywords: "native"`. See the primitive reference.
+   */
   type JsonSchema = Record<string, unknown>;
 
   interface AgentOptions {
     /** Which configured adapter/CLI to use; falls back to the default. */
     adapter?: string;
-    /** When set, the reply is checked against ODW's schema subset and returned as a JSON value. */
+    /**
+     * When set, the reply is checked against ODW's schema subset and returned as
+     * a JSON value. A CLI that validates schemas (claude, codex) is also handed it
+     * natively (an ODW extension).
+     */
     schema?: JsonSchema;
     /** Short label for progress display. */
     label?: string;

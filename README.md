@@ -229,7 +229,7 @@ control flow (loops, `if`, dedup) — no imports:
 | `parallel(thunks)` | Run a batch concurrently and wait for all of it (**barrier**). Recoverable failures become `null`; stop, budget, and dispatch-limit errors abort the run. |
 | `pipeline(items, ...stages)` | Stream each item through the stages independently (**no barrier**). Each stage gets `(prev, item, index)`. |
 | `phase(title)` / `log(msg)` | Group progress under a phase / emit a progress line. |
-| `schema` (JSON Schema) | A typed output contract for `agent`; the reply is validated and retried until it conforms. |
+| `schema` (JSON Schema) | A typed output contract for `agent`; the reply is validated and retried until it conforms. A keyword ODW cannot check fails the call before it starts, and CLIs that validate schemas (`claude`, `codex`) enforce it natively — see [Structured output](#structured-output-odw-extension). |
 | `args` | The workflow's input, injected verbatim. |
 | `budget` | `{ total, spent(), remaining() }` — scale depth to a token target. |
 | `workflow(ref, args?)` | Run another workflow inline (one level deep). The child shares this run's concurrency cap, agent counter, and budget; its phases group as their own DAG lanes. |
@@ -254,7 +254,7 @@ private runtime behavior need the following checks before migration:
 | `agentType` | A persona added to the prompt. It does not load a host's named subagent configuration or select an adapter. |
 | Worktree isolation | Starts from committed HEAD, excludes uncommitted edits, and cleans up afterward. Changes are not merged and `agent()` returns the reply, not a diff; ODW keeps each isolated agent's change as a diff to review and apply (`odw diff`, `odw apply`, `keep` branches — ODW extensions; see [Review and apply](#review-and-apply-what-isolated-agents-changed-odw-extension)). `.worktreeinclude` is honored (ODW copies untracked files too, not only gitignored ones); its `symlink:` lines, `worktreeSetup` and the agents' `ODW_PORT` are ODW extensions — see [Isolated worktrees](#isolated-worktrees-and-agent-ports). |
 | Budget | Counts output tokens: the CLI's own count where its adapter reports usage (the built-in `claude` does — see [Usage and cost](#usage-and-cost-odw-extension)), else `ceil(chars / 4)` of each reply. Every CLI run counts: schema and rate-limit retries, and failed runs that reported usage. The guard runs before each dispatch and each schema retry; once the target is spent the run ends and agents still running are stopped. |
-| JSON Schema | Supports the [documented subset](skills/open-dynamic-workflows/references/primitives.md#schema). Unknown constraints such as `$ref`, `const` and `oneOf` are not enforced. Use explicit object/array types and supported constraints. |
+| JSON Schema | ODW checks the [documented subset](skills/open-dynamic-workflows/references/primitives.md#schema). A schema with any other keyword (`$ref`, `const`, `oneOf`, `maxItems`, …) fails its call before it starts rather than go unchecked — unless the adapter's CLI enforces schemas itself and `"schemaKeywords": "native"` is set (ODW extension; see [Structured output](#structured-output-odw-extension)). Use explicit object/array types and supported constraints. |
 | Script trust | Run trusted scripts only: a run executes the workflow body as ordinary JavaScript. Loading parses metadata as a pure literal without evaluating it; validation and compatibility warnings are not a sandbox. |
 | Recovery | Every completed `agent()` result is saved as it lands. `odw resume` continues a paused live worker in place; on an ended run (done, failed, stopped, or stale after a crash) it starts a new run that replays each call whose prompt and options are unchanged and runs the rest. `rerun` starts over. See [Resume a run](#resume-a-run-odw-extension). |
 
@@ -592,8 +592,8 @@ Cursor work out of the box:
 
 | Adapter | Local CLI | Non-interactive contract |
 | --- | --- | --- |
-| `codex` | `codex` | text on stdout; web search enabled |
-| `claude` | `claude` | stream-json events; reply, usage, cost and errors from its `result` event; WebSearch/WebFetch allowed |
+| `codex` | `codex` | text on stdout; web search enabled; strict schemas natively (`--output-schema`) |
+| `claude` | `claude` | stream-json events; reply, usage, cost and errors from its `result` event; WebSearch/WebFetch allowed; schemas natively (`--json-schema`) |
 | `gemini` | `gemini` | text on stdout |
 | `qwen` | `qwen` | text on stdout |
 | `kimi` | `kimi` | text on stdout |
@@ -675,6 +675,58 @@ silently ignoring them. With no `defaultAdapter` set, odw uses the sole
 configured adapter — or, on a fresh install, the sole adapter whose CLI it
 actually finds on PATH; if several are installed, the error lists them and shows
 how to pick one.
+
+### Structured output (ODW extension)
+
+`agent(prompt, { schema })` returns a value that satisfies its JSON Schema, or the
+call fails. Two things back that up:
+
+- **No constraint goes unchecked.** Before an agent starts, ODW checks its schema
+  against what its validator enforces — `type` (one name), `enum`, `properties`,
+  `required`, `additionalProperties: false`, `items` (one schema) and `minItems`,
+  plus annotations such as `description` and `title`. Anything else (`oneOf`,
+  `anyOf`, `allOf`, `$ref`, `const`, `pattern`, `format`, `minimum`, `maxItems`, a
+  type union like `["string", "null"]`, an object keyword without `"type":
+  "object"`) fails the call with an `AgentError` that names each keyword and where it
+  is — `"oneOf" at #/properties/status` — before anything is spawned. So does a typo
+  (`requird`, with a did-you-mean).
+- **CLIs that validate schemas get them natively.** The built-in `claude` is handed
+  the schema with `--json-schema`, and the value comes from the `structured_output`
+  of its `result` event; `codex` gets `--output-schema <file>`, a file
+  (`agents/<agentId>.schema.json` in the run directory) that exists only while its
+  CLI runs. ODW still validates every reply and retries with feedback, and it
+  describes the schema in the prompt only to CLIs that do not take it natively
+  (`"schemaPrompt": "always"`: to every CLI).
+
+Codex sends `--output-schema` in OpenAI's strict mode, which refuses a schema unless
+its root is an object and every object sets `"additionalProperties": false` and lists
+all its properties in `required`. Any other schema goes to codex in the prompt, as
+before, and the run says so once.
+
+To use keywords ODW does not check, let the CLI enforce them: with `"schemaKeywords":
+"native"` they are allowed on an adapter that takes schemas natively. Its CLI gets
+the whole schema, ODW validates the part it checks, and the run logs once which
+keywords it left to the CLI. On any other adapter they are still refused — nothing
+would check them. Claude Code treats `format` as an annotation, so even natively it
+is not enforced.
+
+A CLI of your own declares how it takes a schema in `flags.schema` — `"inline"`
+(the schema's JSON is the next argument) or `"file"` (the path of a file holding it),
+plus `"strict": true` for a CLI that takes only OpenAI strict schemas — and, when its
+JSON output carries the validated value apart from its text, where:
+
+```jsonc
+"my_cli": {
+  "command": ["my-cli", "--print"],
+  "stdin": "{prompt}",
+  "flags": { "schema": { "args": ["--schema"], "mode": "inline" } },
+  "output": { "format": "json", "textPath": ["text"], "structuredPath": ["data"] }
+}
+```
+
+The schema goes after every other argument, where a model flag goes, and is never
+placeholder-expanded. Without `flags.schema` the prompt describes the schema and
+only ODW checks the reply.
 
 ### Permissions (ODW extension)
 
@@ -1233,6 +1285,12 @@ into the host's `node`, so each target is built on its own runner.
 
 **What's new on `main` (October 2026)** — the full list, with what to check before
 upgrading, is in [`CHANGELOG.md`](CHANGELOG.md):
+- **Native structured output.** `claude` (`--json-schema`) and `codex`
+  (`--output-schema`, for strict schemas) are handed an agent's schema and enforce it
+  themselves; ODW still validates every reply. A schema keyword nothing would check
+  fails its call before it starts, naming the keyword and where it is —
+  `"schemaKeywords": "native"` leaves such keywords to a CLI that enforces them (ODW
+  extensions; see [Structured output](#structured-output-odw-extension)).
 - **Permission tiers.** Every agent runs `read`, `edit` (the default, unchanged) or
   `full`, mapped to each CLI's own flags: review and research fan-outs that cannot
   touch the tree (`--permissions read`, `agent(…, { permissions: 'read' })`), full
@@ -1332,8 +1390,7 @@ runs end-to-end (plan → search → extract → vote → report).
 Ranked by what users of parallel coding agents report needing
 ([research](docs/research/user-needs-2026-10.md)): adapter-reported token usage and
 cost for more CLIs (Claude Code reports it today; the others are estimated) ·
-evidence of success for headless runs ·
-native structured output · per-phase adapters
+evidence of success for headless runs · per-phase adapters
 and fallback chains · evaluation. Full plan: [`docs/ROADMAP.md`](docs/ROADMAP.md); the
 original design: [`docs/dynamic-workflows-tech-plan.md`](docs/dynamic-workflows-tech-plan.md).
 Background on the Claude Code dialect ODW aligns with:
