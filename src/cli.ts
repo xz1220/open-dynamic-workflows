@@ -18,6 +18,7 @@
  *   odw rerun|resume <run_id>
  *   odw pause|resume|stop <run_id>
  *   odw approve|reject <run_id> [--note TEXT] [--checkpoint N]
+ *   odw schedule add|list|remove|run …   (recurring runs via the OS scheduler, src/schedule/)
  */
 
 import { spawn } from "node:child_process";
@@ -57,6 +58,7 @@ import { RunStore, TERMINAL_STATES } from "./runtime/run-store.js";
 import { detail, type RunDetail } from "./runtime/runs-view.js";
 import { startServer } from "./runtime/server.js";
 import { executeRun } from "./runtime/worker.js";
+import { cmdSchedule } from "./schedule/command.js";
 import { isSeaBinary } from "./sea.js";
 import { detectCaps, glyphs, palette, sanitizeText } from "./tty.js";
 import { listWorkflows, resolveWorkflow } from "./workflows/resolve.js";
@@ -81,6 +83,7 @@ export const COMMANDS = [
   "reject",
   "diff",
   "apply",
+  "schedule",
 ] as const;
 
 export type Command = (typeof COMMANDS)[number];
@@ -115,6 +118,8 @@ export function helpText(): string {
     "  odw workflows where <name>                         show the file a name resolves to",
     "  odw pause|resume|stop <run_id>                     control a running workflow",
     "  odw approve|reject <run_id> [--checkpoint N]       answer a checkpoint() the run waits at (--note TEXT)",
+    "  odw schedule add <name> <workflow> --cron EXPR     run a workflow on a timer via cron/launchd/systemd (below)",
+    "  odw schedule list [--json] | remove|run <name>     list schedules; delete one; run one now",
     "",
     "Options:",
     "  --args JSON|@file   workflow input (JSON, @file.json, or a raw string)",
@@ -147,6 +152,15 @@ export function helpText(): string {
     "                              instead of running again; edited and new calls run. Takes the run",
     "                              modes and --adapter/--config/--runs-root, like rerun",
     "  still running               refused (it would redo work in flight); --force starts the new run anyway",
+    "",
+    "Schedules (odw schedule, ODW extension — no daemon: cron, launchd or a systemd timer calls odw back):",
+    "  add <name> <workflow> --cron \"0 8 * * *\" [--args JSON|@file] [--adapter X] [--config P] [--cwd DIR]",
+    "      [--backend cron|launchd|systemd] [--dry-run]     default: launchd on macOS, cron elsewhere",
+    "  list [--json]               each schedule's backend, last run and next run (local time)",
+    "  remove <name>               delete its OS entry and its definition (fine if the entry is gone already)",
+    "  run <name>                  what the OS entry calls: runs it like run --wait, skipped while the previous",
+    "                              run still goes on; a line per run in ~/.local/state/odw/schedules/<name>.log;",
+    "                              exit 0 when done or skipped, 1 otherwise",
   ].join("\n");
 }
 
@@ -208,6 +222,8 @@ export async function main(argv: string[]): Promise<number> {
         return await cmdDiff(rest);
       case "apply":
         return await cmdApply(rest);
+      case "schedule":
+        return await cmdSchedule(rest, { parseArgsValue });
       default:
         process.stderr.write(`odw: unknown command '${command}'\n\n${helpText()}\n`);
         return 2;

@@ -409,7 +409,7 @@ export function resolveClaudeProjectsRoot(claudeProjectsRoot?: string | null): s
 
 // --- internals ---------------------------------------------------------------
 
-function homeDir(): string {
+export function homeDir(): string {
   return process.env.HOME?.trim() || homedir();
 }
 
