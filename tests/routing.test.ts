@@ -220,3 +220,56 @@ test("AgentSlot.moveTo: a stop while it waits ends the wait; the agent leaves ho
   const free = new Scheduler({ concurrency: 1, maxAgents: 10 });
   assert.equal(await free.runAgent(async (_signal, slot) => (await slot.moveTo("b"), "stayed")), "stayed");
 });
+
+// --- transcripts ------------------------------------------------------------------------
+
+test("a transcript marks a fallback with an attempt line naming the next adapter, and keeps its output as that adapter prints", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "odw-routing-recorder-"));
+  try {
+    const ended: CliResult = { returncode: 0, stdout: "", stderr: "", timedOut: false, duration: 0 };
+    const claude = { name: "claude", output: { format: "jsonl", eventType: "result", textPath: ["result"], select: "last" } } as const;
+    const recorder = new TranscriptRecorder({ transcript: join(dir, "t.jsonl"), stderr: join(dir, "t.txt"), format: "jsonl", maxBytes: 1 << 20 });
+    recorder.beginRun(undefined, claude);
+    recorder.stdout('{"type":"result","result":"spent"}\n');
+    recorder.endRun({ ...ended, returncode: 1 });
+    recorder.beginRun("fallback", { name: "codex" });
+    recorder.stdout("one\ntwo\n");
+    recorder.endRun(ended);
+    await recorder.close();
+    const text = readFileSync(join(dir, "t.jsonl"), "utf8");
+    assert.deepEqual(
+      text
+        .trimEnd()
+        .split("\n")
+        .map((line) => JSON.parse(line)),
+      [
+        { type: "result", result: "spent" },
+        { kind: "attempt", n: 2, reason: "fallback", adapter: "codex" },
+        { kind: "text", text: "one\n" },
+        { kind: "text", text: "two\n" },
+      ],
+      "codex's output kept as text: its own format",
+    );
+    const attempt = normalizeTranscript(text).find((entry) => entry.kind === "attempt")!;
+    assert.deepEqual([attempt.text, attempt.reason, attempt.adapter], ["attempt 2: fallback to codex", "fallback", "codex"]);
+
+    // A call that left its adapter before any CLI ran there starts its transcript with the line.
+    const moved = new TranscriptRecorder({ transcript: join(dir, "m.jsonl"), stderr: join(dir, "m.txt"), format: "jsonl", maxBytes: 1 << 20 });
+    moved.beginRun("fallback", { name: "codex" });
+    moved.stdout("done\n");
+    moved.endRun(ended);
+    await moved.close();
+    assert.deepEqual(
+      readFileSync(join(dir, "m.jsonl"), "utf8")
+        .trimEnd()
+        .split("\n")
+        .map((line) => JSON.parse(line)),
+      [
+        { kind: "attempt", n: 1, reason: "fallback", adapter: "codex" },
+        { kind: "text", text: "done\n" },
+      ],
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

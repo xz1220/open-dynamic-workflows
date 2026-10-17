@@ -17,7 +17,10 @@
  *
  * Every further CLI run of the call — a schema retry, a stall restart, a
  * rate-limit retry — goes on in the same files, after an
- * {"kind":"attempt","n":2,"reason":"schema"|"stall"|"rate_limit"} line. Past
+ * {"kind":"attempt","n":2,"reason":"schema"|"stall"|"rate_limit"} line; a
+ * call that falls back to another adapter (an ODW extension) goes on after
+ * {"kind":"attempt","n":2,"reason":"fallback","adapter":"<next>"}, its output
+ * kept as that adapter prints it from there on. Past
  * `maxTranscriptBytes` nothing more is kept but one
  * {"kind":"truncated","bytes":N} line, N being the bytes kept. ODW's own lines
  * carry a `kind` and no `type`, so they never pass for an adapter's events.
@@ -33,10 +36,14 @@
 import { mkdir, open, rename, writeFile, type FileHandle } from "node:fs/promises";
 import { dirname } from "node:path";
 
-import type { CliResult } from "./adapters/types.js";
+import type { Adapter, CliResult } from "./adapters/types.js";
 
-/** Why a call ran its CLI once more: its reply failed the schema, the CLI stalled, or it was rate-limited. */
-export type AttemptReason = "schema" | "stall" | "rate_limit";
+/**
+ * Why a call ran a CLI once more: its reply failed the schema, the CLI
+ * stalled, it was rate-limited, or — an ODW extension — the call fell back to
+ * the next adapter of its chain.
+ */
+export type AttemptReason = "schema" | "stall" | "rate_limit" | "fallback";
 
 /** Where one agent's transcript is kept: its stdout, and the end of its stderr. */
 export interface TranscriptPaths {
@@ -56,8 +63,8 @@ export const STDERR_TAIL_CHARS = 64 * 1024;
 /** How often, at most, a running agent's stderr file is rewritten. */
 const STDERR_FLUSH_MS = 1000;
 
-/** How a further CLI run reads, by why it ran. */
-export function attemptLabel(reason: string | undefined): string {
+/** How a further CLI run reads, by why it ran — and, for a fallback, the adapter it moved to. */
+export function attemptLabel(reason: string | undefined, adapter?: string): string {
   switch (reason) {
     case "schema":
       return "schema retry";
@@ -65,9 +72,16 @@ export function attemptLabel(reason: string | undefined): string {
       return "stall restart";
     case "rate_limit":
       return "rate-limit retry";
+    case "fallback":
+      return adapter ? `fallback to ${adapter}` : "fallback";
     default:
       return "retry";
   }
+}
+
+/** How a transcript keeps what an adapter's CLI prints: a JSONL adapter's events as they come, anything else as text. */
+export function transcriptFormat(adapter: Pick<Adapter, "output">): "jsonl" | "text" {
+  return adapter.output?.format === "jsonl" ? "jsonl" : "text";
 }
 
 const encoder = new TextEncoder();
@@ -117,6 +131,8 @@ export class TranscriptRecorder {
   private runs = 0;
   /** This CLI run printed on stdout as it went (else the result's stdout is what it printed). */
   private heard = false;
+  /** How this CLI run's stdout is kept: the format of the adapter it runs on (a fallback may change it). */
+  private format: "jsonl" | "text";
   private file: FileHandle | null = null;
   private writing: Promise<void> | null = null;
   private broken = false;
@@ -131,21 +147,30 @@ export class TranscriptRecorder {
   private stderrBroken = false;
 
   constructor(private readonly opts: TranscriptRecorderOptions) {
+    this.format = opts.format;
     // The transcript is there from the agent's start — before its CLI prints a
     // byte, or when it fails before its CLI could start.
     this.kick();
   }
 
-  /** A CLI run of the call starts: the first one, or one more for `reason`. */
-  beginRun(reason?: AttemptReason): void {
+  /**
+   * A CLI run of the call starts: the first one, or one more for `reason`.
+   * `adapter` is the one it runs on: after a fallback (an ODW extension) its
+   * line names it, and its output is kept as that adapter prints it.
+   */
+  beginRun(reason?: AttemptReason, adapter?: Pick<Adapter, "name" | "output">): void {
     if (this.closed) return;
     this.flushPartial(); // a run whose end never came (its runner threw) still ends its line
+    if (adapter) this.format = transcriptFormat(adapter);
     this.runs++;
     this.heard = false;
     this.stderrNow = "";
-    if (this.runs === 1) return;
-    this.accept(JSON.stringify({ kind: "attempt", n: this.runs, reason }) + "\n");
-    this.stderrHead = `--- attempt ${this.runs}: ${attemptLabel(reason)} ---\n`;
+    // The first run needs no line — unless it is a fallback's: the call left its
+    // adapter before any CLI ran there (the quota breaker took it out).
+    if (this.runs === 1 && reason === undefined) return;
+    const moved = reason === "fallback" && adapter ? { adapter: adapter.name } : {};
+    this.accept(JSON.stringify({ kind: "attempt", n: this.runs, reason, ...moved }) + "\n");
+    this.stderrHead = `--- attempt ${this.runs}: ${attemptLabel(reason, adapter?.name)} ---\n`;
   }
 
   /** What the CLI printed on stdout, as it arrives. Never waits. */
@@ -162,7 +187,7 @@ export class TranscriptRecorder {
     }
     if (this.cut) return;
     this.partial += chunk.slice(from);
-    if (this.opts.format === "text") {
+    if (this.format === "text") {
       // A long line is kept in pieces as it arrives, never held whole.
       let at = 0;
       while ((this.partial.length - at) * 3 > TRANSCRIPT_FIELD_BYTES && !this.cut) {
@@ -226,7 +251,7 @@ export class TranscriptRecorder {
 
   /** One whole line of stdout, its newline included (the last one of a run may have none). */
   private line(text: string): void {
-    if (this.opts.format === "jsonl") {
+    if (this.format === "jsonl") {
       // An event, as received; a blank line carries none.
       if (text.trim() !== "") this.accept(text.endsWith("\n") ? text : `${text}\n`);
       return;

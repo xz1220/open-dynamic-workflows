@@ -19,7 +19,8 @@
  *   kilo / opencode          text → text; reasoning → text (`thinking`);
  *                            tool_use → tool_call and tool_result; error →
  *                            error; step_start / step_finish → nothing
- *   ODW's own lines          {"kind":"text"} → text; attempt; truncated
+ *   ODW's own lines          {"kind":"text"} → text; attempt (with the
+ *                            adapter a fallback moved to); truncated
  *   anything else            raw: the line itself
  *
  * Long fields — text, output, input — are clipped to 4 KB and the entry
@@ -61,9 +62,11 @@ export interface TranscriptEntry {
   clipped?: true;
   /** text: the agent's thinking (a thinking block, a reasoning event), not its reply. */
   thinking?: true;
-  /** attempt: which CLI run of the call begins (2 = the first one more) and why: schema, stall, rate_limit. */
+  /** attempt: which CLI run of the call begins (2 = the first one more) and why: schema, stall, rate_limit, fallback. */
   n?: number;
   reason?: string;
+  /** attempt, for a fallback (an ODW extension): the adapter the call moved to. */
+  adapter?: string;
   /** truncated: the bytes kept before the cut. */
   bytes?: number;
   /** result: the turns the session took and what it cost, as its CLI reported. */
@@ -168,9 +171,11 @@ function odwLine(line: Record<string, unknown>, text: string): Draft[] {
     case "attempt": {
       const n = typeof line.n === "number" ? line.n : undefined;
       const reason = typeof line.reason === "string" ? line.reason : undefined;
-      const draft: Draft = { kind: "attempt", text: `attempt ${n ?? "?"}: ${attemptLabel(reason)}` };
+      const adapter = typeof line.adapter === "string" ? line.adapter : undefined;
+      const draft: Draft = { kind: "attempt", text: `attempt ${n ?? "?"}: ${attemptLabel(reason, adapter)}` };
       if (n !== undefined) draft.n = n;
       if (reason !== undefined) draft.reason = reason;
+      if (adapter !== undefined) draft.adapter = adapter;
       return [draft];
     }
     case "truncated": {
