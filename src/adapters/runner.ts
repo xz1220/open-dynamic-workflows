@@ -9,9 +9,16 @@
  * A timeout or a missing executable is reported *through the result*
  * (`timedOut` / a non-zero `returncode` with the reason on stderr) rather than
  * as a thrown error, so the caller has one uniform thing to inspect.
+ *
+ * Agent CLIs start processes of their own (shells, test runners, language
+ * servers). On POSIX each agent therefore leads its own process group, and a
+ * kill (timeout, output overrun) takes down the whole group; on Windows
+ * `taskkill /T` walks the process tree instead. The result settles when the
+ * agent exits, after a short grace period for its output to drain — a
+ * descendant still holding the pipes cannot stall the run.
  */
 
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import { extname, join } from "node:path";
 
@@ -32,6 +39,16 @@ export interface RunCommandOptions {
 export type CommandRunner = (command: string[], options?: RunCommandOptions) => Promise<CliResult>;
 
 export const DEFAULT_MAX_OUTPUT_BYTES = 32 * 1024 * 1024;
+
+/**
+ * After the agent exits (or is killed), how long its stdout/stderr may take to
+ * drain before the result settles anyway. 'close' normally follows 'exit' at
+ * once; only a descendant that outlived the agent and still holds the pipes
+ * makes it wait, and such a straggler is killed when the grace period ends.
+ */
+const STREAM_GRACE_MS = 2000;
+
+const IS_WINDOWS = process.platform === "win32";
 
 export const runCommand: CommandRunner = (command, options = {}) => {
   const started = Date.now();
@@ -88,6 +105,9 @@ export const runCommand: CommandRunner = (command, options = {}) => {
       cwd: options.cwd,
       env,
       windowsHide: true,
+      // POSIX: lead a new process group so a kill reaches every process the
+      // agent started, not just the direct child (see killProcessTree).
+      detached: !IS_WINDOWS,
     });
 
     let stdout = "";
@@ -97,18 +117,52 @@ export const runCommand: CommandRunner = (command, options = {}) => {
     let outputExceeded = false;
     let settled = false;
     let timer: NodeJS.Timeout | undefined;
+    let drainTimer: NodeJS.Timeout | undefined;
+    let killTimer: NodeJS.Timeout | undefined;
 
     const finish = (result: CliResult): void => {
       if (settled) return;
       settled = true;
-      if (timer) clearTimeout(timer);
+      clearTimeout(timer);
+      clearTimeout(drainTimer);
+      clearTimeout(killTimer);
       resolve(result);
+    };
+
+    const settle = (code: number | null, signal: NodeJS.Signals | null): void => {
+      // A process killed by a signal reports code===null. Distinguish our own
+      // timeout kill (already flagged) from an external/crash signal (SIGSEGV,
+      // OOM SIGKILL, …) so a crash is never mistaken for a clean exit (0).
+      let returncode: number;
+      if (outputExceeded) returncode = 1;
+      else if (timedOut) returncode = -1;
+      else if (code !== null) returncode = code;
+      else returncode = signal ? 128 : 1;
+      const note = signal && !timedOut ? `\n[process terminated by signal ${signal}]` : "";
+      const outputNote = outputExceeded
+        ? `\n[process output exceeded ${maxOutputBytes} bytes; terminated]`
+        : "";
+      finish({ returncode, stdout, stderr: stderr + note + outputNote, timedOut, duration: elapsed() });
+    };
+
+    /** Stop listening to the pipes and settle with what was captured. */
+    const abandonStreams = (code: number | null, signal: NodeJS.Signals | null): void => {
+      child.stdout.destroy();
+      child.stderr.destroy();
+      settle(code, signal);
+    };
+
+    const terminate = (): void => {
+      killProcessTree(child);
+      // SIGKILL is not always deliverable (a setuid descendant, a process stuck
+      // in the kernel): never let an unkillable process stall the run.
+      killTimer ??= setTimeout(() => abandonStreams(null, "SIGKILL"), STREAM_GRACE_MS * 2);
     };
 
     if (options.timeout != null) {
       timer = setTimeout(() => {
         timedOut = true;
-        child.kill("SIGKILL");
+        terminate();
       }, options.timeout * 1000);
     }
 
@@ -129,7 +183,7 @@ export const runCommand: CommandRunner = (command, options = {}) => {
       outputBytes += bytes;
       if (bytes > remaining) {
         outputExceeded = true;
-        child.kill("SIGKILL");
+        terminate();
       }
     };
 
@@ -143,6 +197,9 @@ export const runCommand: CommandRunner = (command, options = {}) => {
     });
 
     child.on("error", (err) => {
+      // After a successful spawn, 'error' only reports a failed kill; the real
+      // outcome still arrives through 'exit'/'close'.
+      if (child.pid !== undefined) return;
       finish({
         returncode: 127,
         stdout: "",
@@ -152,27 +209,62 @@ export const runCommand: CommandRunner = (command, options = {}) => {
       });
     });
 
-    child.on("close", (code, signal) => {
-      // A process killed by a signal reports code===null. Distinguish our own
-      // timeout kill (already flagged) from an external/crash signal (SIGSEGV,
-      // OOM SIGKILL, …) so a crash is never mistaken for a clean exit (0).
-      let returncode: number;
-      if (outputExceeded) returncode = 1;
-      else if (timedOut) returncode = -1;
-      else if (code !== null) returncode = code;
-      else returncode = signal ? 128 : 1;
-      const note = signal && !timedOut ? `\n[process terminated by signal ${signal}]` : "";
-      const outputNote = outputExceeded
-        ? `\n[process output exceeded ${maxOutputBytes} bytes; terminated]`
-        : "";
-      finish({ returncode, stdout, stderr: stderr + note + outputNote, timedOut, duration: elapsed() });
+    child.on("exit", (code, signal) => {
+      if (settled) return;
+      // 'close' (all pipes drained) normally follows at once. A descendant that
+      // outlived the agent can hold the pipes open indefinitely: give it a
+      // grace period, then kill what is left of the agent's group and settle.
+      drainTimer = setTimeout(() => {
+        killProcessTree(child);
+        abandonStreams(code, signal);
+      }, STREAM_GRACE_MS);
     });
+
+    child.on("close", settle);
 
     // The child may close stdin before consuming all input; an unhandled EPIPE
     // on the write would otherwise crash the whole process. Swallow it — the
-    // real outcome arrives via the 'close'/'error' handlers above.
+    // real outcome arrives via the 'exit'/'close'/'error' handlers above.
     child.stdin.on("error", () => {});
     if (options.stdin != null) child.stdin.write(options.stdin);
     child.stdin.end();
   });
 };
+
+/**
+ * Kill an agent and every process it started. Best-effort and idempotent: any
+ * of them may already be gone.
+ *
+ * POSIX: the agent was spawned `detached`, so it leads a process group that its
+ * descendants inherit; signalling the negative pid reaches all of them (even
+ * after the leader itself has exited). Windows has no process groups to
+ * signal; `taskkill /T` kills the tree rooted at the agent instead.
+ */
+function killProcessTree(child: ChildProcess): void {
+  const pid = child.pid;
+  if (pid === undefined) return;
+  if (IS_WINDOWS) {
+    const systemRoot = process.env.SystemRoot || process.env.SYSTEMROOT || "C:\\Windows";
+    try {
+      const killer = spawn(join(systemRoot, "System32", "taskkill.exe"), ["/T", "/F", "/PID", String(pid)], {
+        windowsHide: true,
+        stdio: "ignore",
+      });
+      // taskkill needs the root alive to find the tree; if it cannot do its
+      // job, at least terminate the direct child.
+      killer.once("error", () => child.kill("SIGKILL"));
+      killer.once("exit", (code) => {
+        if (code !== 0) child.kill("SIGKILL");
+      });
+    } catch {
+      child.kill("SIGKILL");
+    }
+    return;
+  }
+  try {
+    process.kill(-pid, "SIGKILL");
+  } catch {
+    // ESRCH: the whole group is gone already. Make sure the agent is, too.
+    child.kill("SIGKILL");
+  }
+}

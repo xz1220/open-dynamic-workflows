@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { copyFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -79,6 +80,65 @@ test("a timeout kills the process and flags timedOut", async () => {
   const r = await runCommand([execPath, "-e", "setTimeout(() => {}, 10000)"], { timeout: 0.2 });
   assert.equal(r.timedOut, true);
 });
+
+/** Whether `pid` is a live (non-zombie) process. POSIX only. */
+function isRunning(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+  } catch {
+    return false;
+  }
+  try {
+    // A killed process can linger as a zombie until its new parent reaps it.
+    return !execFileSync("ps", ["-o", "stat=", "-p", String(pid)], { encoding: "utf8" }).trim().startsWith("Z");
+  } catch {
+    return false; // ps exits non-zero once the pid is gone
+  }
+}
+
+async function eventually(check: () => boolean, ms = 2000): Promise<boolean> {
+  const deadline = Date.now() + ms;
+  while (!check()) {
+    if (Date.now() > deadline) return false;
+    await new Promise<void>((resolve) => setTimeout(resolve, 25));
+  }
+  return true;
+}
+
+test(
+  "a timeout kills the agent's whole process group, grandchildren included",
+  { skip: process.platform === "win32" },
+  async () => {
+    const started = Date.now();
+    // The shell waits on a background grandchild that shares its stdout pipe:
+    // killing only the shell used to leave the pipe open until `sleep` exited.
+    const r = await runCommand(["sh", "-c", "sleep 30 & echo $!; wait"], { timeout: 0.3 });
+    const took = Date.now() - started;
+    assert.equal(r.timedOut, true);
+    assert.equal(r.returncode, -1);
+    assert.ok(took < 5000, `runCommand returned after ${took}ms; the grandchild kept it waiting`);
+    const grandchild = Number(r.stdout.trim());
+    assert.ok(grandchild > 0, `expected the grandchild pid on stdout, got ${JSON.stringify(r.stdout)}`);
+    assert.ok(await eventually(() => !isRunning(grandchild)), `grandchild ${grandchild} survived the timeout`);
+  },
+);
+
+test(
+  "a descendant still holding the pipes after the agent exits cannot stall the result",
+  { skip: process.platform === "win32" },
+  async () => {
+    const started = Date.now();
+    // The shell exits at once; its background child inherits stdout and never closes it.
+    const r = await runCommand(["sh", "-c", "sleep 30 & echo $!"]);
+    const took = Date.now() - started;
+    assert.equal(r.returncode, 0, "the agent itself exited cleanly");
+    assert.equal(r.timedOut, false);
+    assert.ok(took < 6000, `runCommand returned after ${took}ms; it waited on the straggler`);
+    const straggler = Number(r.stdout.trim());
+    assert.ok(straggler > 0);
+    assert.ok(await eventually(() => !isRunning(straggler)), `straggler ${straggler} was left running`);
+  },
+);
 
 test("runaway output is capped before it can exhaust the worker heap", async () => {
   const r = await runCommand(
