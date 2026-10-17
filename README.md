@@ -60,7 +60,8 @@ mode you have probably met; each mechanism is a runnable pattern in this repo:
 ## Highlights
 
 - **Portable** — run the *same* workflow script on Codex, Claude Code, Gemini,
-  Qwen, Kimi, OMP, Kilo, OpenCode, Cursor, or your own CLI. Switch adapters.
+  Qwen, Kimi, OMP, Kilo, OpenCode, Cursor, or your own CLI. Switch adapters — or
+  mix them per phase, and fall back to another CLI when one runs out of quota.
 - **Claude-style workflow primitives** — `export const meta` + injected
   `agent` / `parallel` / `pipeline` / `phase` / `log` / `args` / `budget` /
   `workflow` globals (nested workflows included), with top-level `await` and
@@ -228,7 +229,7 @@ control flow (loops, `if`, dedup) — no imports:
 | `agent(prompt, opts?)` | Run one coding agent on a subtask. The only verb that does work. Returns its text, or a validated object when `opts.schema` is set. |
 | `parallel(thunks)` | Run a batch concurrently and wait for all of it (**barrier**). Recoverable failures become `null`; stop, budget, and dispatch-limit errors abort the run. |
 | `pipeline(items, ...stages)` | Stream each item through the stages independently (**no barrier**). Each stage gets `(prev, item, index)`. |
-| `phase(title)` / `log(msg)` | Group progress under a phase / emit a progress line. |
+| `phase(title, opts?)` / `log(msg)` | Group progress under a phase / emit a progress line. `opts` — `{ adapter, model }` — gives the phase's agents an adapter and a model (**ODW extension**; see [per-phase adapters](#per-phase-adapters-model-tiers-and-fallback-chains-odw-extension)). |
 | `schema` (JSON Schema) | A typed output contract for `agent`; the reply is validated and retried until it conforms. A keyword ODW cannot check is reported in the run's log (or, with `"schemaKeywords": "strict"`, fails the call), and CLIs that validate schemas (`claude`, `codex`) enforce it natively — see [Structured output](#structured-output-odw-extension). |
 | `args` | The workflow's input, injected verbatim. |
 | `budget` | `{ total, spent(), remaining() }` — scale depth to a token target. |
@@ -250,7 +251,7 @@ private runtime behavior need the following checks before migration:
 | Feature | ODW behavior and migration check |
 | --- | --- |
 | Nested `workflow()` | Implemented for one level, sharing the parent's scheduler, control and budget. Flatten deeper nesting. |
-| Model selection | Pass `agent(..., {model})` using that CLI's model ID. `meta.model` and phase metadata do not set execution defaults; an adapter without model routing support emits a note. |
+| Model selection | Pass `agent(..., {model})` using that CLI's model ID; an adapter without model routing support emits a note. A `meta.phases` entry's `model` (and `adapter`) is the default for its phase's agents, and `model: "@fast"` picks a tier's model per CLI — **ODW extensions** (see [per-phase adapters](#per-phase-adapters-model-tiers-and-fallback-chains-odw-extension)); a phase's model is a model ID like any other, so use a tier when its agents may run on more than one CLI. `meta.model` stays metadata. |
 | `agentType` | A persona added to the prompt. It does not load a host's named subagent configuration or select an adapter. |
 | Worktree isolation | Starts from committed HEAD, excludes uncommitted edits, and cleans up afterward. Changes are not merged and `agent()` returns the reply, not a diff; ODW keeps each isolated agent's change as a diff to review and apply (`odw diff`, `odw apply`, `keep` branches — ODW extensions; see [Review and apply](#review-and-apply-what-isolated-agents-changed-odw-extension)). `.worktreeinclude` is honored (ODW copies untracked files too, not only gitignored ones); its `symlink:` lines, `worktreeSetup` and the agents' `ODW_PORT` are ODW extensions — see [Isolated worktrees](#isolated-worktrees-and-agent-ports). |
 | Budget | Counts output tokens: the CLI's own count where its adapter reports usage (the built-in `claude` does — see [Usage and cost](#usage-and-cost-odw-extension)), else `ceil(chars / 4)` of each reply. Every CLI run counts: schema and rate-limit retries, and failed runs that reported usage. The guard runs before each dispatch and each schema retry; once the target is spent the run ends and agents still running are stopped. |
@@ -913,7 +914,9 @@ agent_failed    (Search) search — [quota, retry after 3h 22m] AdapterExecution
   three agents in a row fail this way on one adapter, the run logs one warning;
   `odw resume` later replays every agent that finished. A "quota" that refills
   within a minute (Gemini's free tier words its per-minute limit that way) is
-  treated as the rate limit it is.
+  treated as the rate limit it is. With a [fallback chain](#per-phase-adapters-model-tiers-and-fallback-chains-odw-extension),
+  the agent moves to the next CLI instead, and after three quota failures in a row
+  the run's later agents skip that adapter.
 
 Claude Code reports such errors in its output, often with exit 0: its stream-json
 `result` event says `is_error: true` with the message (`API Error: Rate limit
@@ -944,6 +947,79 @@ case-insensitively before the built-in table.
   }
 }
 ```
+
+### Per-phase adapters, model tiers and fallback chains (ODW extension)
+
+**ODW extension.** Mix CLIs and models per stage — a cheap model for the search
+fan-out, a strong one for the synthesis — and keep a run going on another CLI when
+one runs out of quota.
+
+**Phase defaults.** A `meta.phases` entry may give its phase's agents an adapter and
+a model: `{ title, adapter?, model? }` (a plain string entry is still just a title).
+`phase(title, { adapter, model })` sets them for the agents that follow, in place of
+the phase's entry; `phase(title)` alone keeps what the phase has. An option the
+`agent()` call sets always wins, and a call's own `phase` option brings that phase's
+defaults.
+
+```js
+export const meta = {
+  name: 'research',
+  description: 'Search cheaply, synthesize carefully.',
+  phases: [
+    { title: 'Search', adapter: 'codex', model: '@fast' },
+    { title: 'Synthesize', adapter: ['claude', 'codex'], model: '@strong' },
+  ],
+}
+phase('Search')
+const notes = await parallel(angles.map((a) => () => agent(`Research ${a}; cite sources.`)))
+phase('Synthesize')
+return await agent(`Synthesize:\n${notes.filter(Boolean).join('\n---\n')}`)
+```
+
+**Model tiers.** The `models` setting names tiers, each with a model id per adapter.
+`model: "@fast"` — in `agent()`, `phase()` or `meta.phases` — runs an agent with the
+id its adapter has for the tier; after a fallback, the next adapter's. An adapter the
+tier names no model for runs its CLI's default (a log line says so); an unknown tier
+fails the agent with an `AgentError` that lists the tiers. A model without the `@` is
+a model id, passed to every adapter as it is — so give a fallback chain a tier.
+
+**Fallback chains.** The `fallback` setting gives each adapter the ones to try after
+it, in order; `agent(prompt, { adapter: ["codex", "claude"] })` names the chain for one
+call, in place of the setting. When an agent's CLI has spent its usage quota or its
+login is refused, the agent runs again on the next adapter — a fresh prompt, the same
+options — instead of failing (a rate limit is still ridden out in place). Each move is
+logged, the agent takes a slot on its new adapter (letting the old one's go first),
+its transcript goes on after an `{"kind":"attempt","reason":"fallback","adapter":"claude"}`
+line, and what the failed runs spent still counts:
+
+```text
+search:3 → claude after codex quota
+```
+
+- A fallback runs at the agent's own permission tier: an adapter that cannot run
+  exactly that tier is skipped, with a log line — never run at another.
+- `agent_finished` names the adapter that produced the value and, as `fellBackFrom`,
+  the ones the agent left; so does its saved result. `odw status`, the live view
+  (`codex → claude`) and `/api/runs/:id` show them.
+- **Quota breaker.** After `quotaBreaker` (default 3) quota failures in a row on one
+  adapter, the run's later agents skip it: each starts on the next adapter of its
+  chain, or fails at once without one. One warning says so, and `odw status` names it.
+
+```jsonc
+{
+  "fallback": { "codex": ["claude"], "claude": ["codex"] },
+  "quotaBreaker": 3, // the default; 0 or null never skips an adapter
+  "models": {
+    "fast": { "claude": "haiku", "codex": "gpt-5-mini" },
+    "strong": { "claude": "opus", "codex": "gpt-5" }
+  }
+}
+```
+
+`odw resume` replays a call that fell back like any other, and walks no chain. A
+call's resume key is its prompt and options as written: a phase's defaults stay out of
+it, like the run's default adapter, so routing a phase elsewhere — say, off a CLI that
+ran out of quota — still replays every call that finished.
 
 ### Concurrency per adapter and staggered fan-outs
 
@@ -1284,6 +1360,13 @@ into the host's `node`, so each target is built on its own runner.
 
 **What's new on `main` (October 2026)** — the full list, with what to check before
 upgrading, is in [`CHANGELOG.md`](CHANGELOG.md):
+- **Per-phase adapters and fallback chains.** A phase can run its agents on its own
+  CLI and model (`meta.phases: [{ title, adapter, model }]`, `phase(title, { … })`),
+  `model: "@fast"` picks each CLI's model for a tier, and an agent whose CLI ran out of
+  quota or is logged out moves down its chain (`adapter: ["codex", "claude"]`, or
+  `fallback` in the config) instead of failing — with a quota breaker that stops
+  trying a spent CLI (ODW extensions; see
+  [Per-phase adapters](#per-phase-adapters-model-tiers-and-fallback-chains-odw-extension)).
 - **Native structured output.** `claude` (`--json-schema`) and `codex`
   (`--output-schema`, for strict schemas) are handed an agent's schema and enforce it
   themselves; ODW still validates every reply. A schema keyword ODW's validator does
@@ -1389,8 +1472,8 @@ runs end-to-end (plan → search → extract → vote → report).
 Ranked by what users of parallel coding agents report needing
 ([research](docs/research/user-needs-2026-10.md)): adapter-reported token usage and
 cost for more CLIs (Claude Code reports it today; the others are estimated) ·
-evidence of success for headless runs · per-phase adapters
-and fallback chains · evaluation. Full plan: [`docs/ROADMAP.md`](docs/ROADMAP.md); the
+evidence of success for headless runs · running Claude plugin
+workflows · evaluation. Full plan: [`docs/ROADMAP.md`](docs/ROADMAP.md); the
 original design: [`docs/dynamic-workflows-tech-plan.md`](docs/dynamic-workflows-tech-plan.md).
 Background on the Claude Code dialect ODW aligns with:
 [`docs/dynamic-workflows-research.md`](docs/dynamic-workflows-research.md).

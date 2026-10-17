@@ -26,8 +26,14 @@ declare global {
   type JsonSchema = Record<string, unknown>;
 
   interface AgentOptions {
-    /** Which configured adapter/CLI to use; falls back to the default. */
-    adapter?: string;
+    /**
+     * Which configured adapter/CLI to use; falls back to the phase's default, then the run's.
+     * ODW extension — Claude Code ignores it: a list such as `["codex", "claude"]` is a
+     * fallback chain, in order of preference — when an adapter's quota is spent or its login
+     * refused, the call runs again on the next one (fresh prompt, same options, same
+     * permission tier), in place of the `fallback` setting's chain.
+     */
+    adapter?: string | string[];
     /**
      * When set, the reply is checked against ODW's schema subset and returned as
      * a JSON value. A CLI that validates schemas (claude, codex) is also handed it
@@ -38,7 +44,13 @@ declare global {
     label?: string;
     /** Override the current phase for this one call (use inside parallel/pipeline). */
     phase?: string;
-    /** CLI-specific model id via `{model}` or flags.model; otherwise ignored with a routing note. Metadata model fields do not supply a default. */
+    /**
+     * CLI-specific model id via `{model}` or flags.model; otherwise ignored with a routing note.
+     * ODW extension: `"@fast"` names a tier of the `models` setting — each adapter's own model
+     * id for it, picked for the adapter the call runs on (after a fallback, the next one's); an
+     * unknown tier fails the call. A `meta.phases` entry's `model` (or `phase(title, { model })`)
+     * is the default for the phase's agents; `meta.model` is metadata only.
+     */
     model?: string;
     /** Prompt persona, not an adapter name or a loader for Claude roles, tools, permissions, or project subagent definitions. */
     agentType?: string;
@@ -74,7 +86,8 @@ declare global {
   /**
    * Run one coding agent; returns reply text or a validated JSON value, not a worktree diff.
    * Saved as soon as it completes; under `odw resume`, a call with the same prompt and
-   * options (phase aside) returns its saved value instead of running again. What an isolated
+   * options as written (phase, and the defaults a phase gives, aside) returns its saved value
+   * instead of running again — without walking a fallback chain. What an isolated
    * agent changed is kept with the run as a diff to review and apply (ODW extension).
    */
   function agent(prompt: string, opts?: AgentOptions): Promise<any>;
@@ -88,8 +101,20 @@ declare global {
     ...stages: Array<(previous: any, item: any, index: number) => any>
   ): Promise<any[]>;
 
-  /** Start a new named phase for progress grouping. */
-  function phase(title: string): void;
+  /** Defaults a phase gives its agents (ODW extension — Claude Code ignores them). */
+  interface PhaseOptions {
+    /** The adapter, or fallback chain, of the phase's agents that name none. */
+    adapter?: string | string[];
+    /** The model (or `"@tier"`) of the phase's agents that name none. */
+    model?: string;
+  }
+
+  /**
+   * Start a new named phase for progress grouping. ODW extension: `opts` gives the phase's
+   * agents an adapter and a model, in place of its `meta.phases` entry's (`{ title, adapter?,
+   * model? }`); an option an agent() call sets always wins.
+   */
+  function phase(title: string, opts?: PhaseOptions): void;
 
   /** Emit a one-line progress message. */
   function log(message: unknown): void;
@@ -183,7 +208,7 @@ declare global {
       name: string;
       description: string;
       whenToUse?: string;
-      phases?: Array<{ title: string; detail?: string; model?: string }>;
+      phases?: Array<{ title: string; detail?: string; model?: string; adapter?: string | string[] }>;
       model?: string;
     };
     errors: string[];

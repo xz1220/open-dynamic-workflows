@@ -58,7 +58,8 @@ workflow,就成了你在任何 agent 上都能跑的资产。
 ## 亮点
 
 - **可移植** —— 同一份 workflow 脚本可跑在 Codex、Claude Code、Gemini、Qwen、Kimi、
-  OMP、Kilo、OpenCode、Cursor 或你自己的 CLI 上;换底层 agent 只需换适配器。
+  OMP、Kilo、OpenCode、Cursor 或你自己的 CLI 上;换底层 agent 只需换适配器——也可以按阶段
+  混用,并在某个 CLI 额度用尽时回退到另一个。
 - **Claude 风格的工作流原语** —— `export const meta` + 注入的 `agent` / `parallel` /
   `pipeline` / `phase` / `log` / `args` / `budget` / `workflow` 全局(含嵌套
   workflow),支持顶层 `await` 和 `return`。迁移脚本前请核对下方的[兼容性检查表](#兼容性与迁移)。
@@ -207,7 +208,7 @@ odw run examples/fan-out-reduce.js --wait --args '{"question": "Design a rate li
 | `agent(prompt, opts?)` | 让一个 coding agent 跑一个子任务。唯一真正"产出工作"的原语。返回文本;设了 `opts.schema` 则返回校验过的对象。 |
 | `parallel(thunks)` | 一组任务并发执行、**等全部完成**(屏障)。可恢复失败变 `null`;停止、预算耗尽和派发上限错误会中止运行。 |
 | `pipeline(items, ...stages)` | 每个条目独立穿过各 stage(**无屏障**)。每个 stage 收 `(prev, item, index)`。 |
-| `phase(title)` / `log(msg)` | 把进度归入某阶段 / 发一行进度消息。 |
+| `phase(title, opts?)` / `log(msg)` | 把进度归入某阶段 / 发一行进度消息。`opts`——`{ adapter, model }`——为该阶段的 agent 指定适配器和模型(**ODW 扩展**;见[按阶段路由](#按阶段路由与回退链odw-扩展))。 |
 | `schema`(JSON Schema) | 给 `agent` 的输出定一个类型契约;回复会被校验,不符就重试。ODW 无法检查的关键字会记入运行日志(设 `"schemaKeywords": "strict"` 则让调用失败);会校验 schema 的 CLI(`claude`、`codex`)直接原生强制执行——见[结构化输出](#结构化输出odw-扩展)。 |
 | `args` | workflow 的输入,原样注入。 |
 | `budget` | `{ total, spent(), remaining() }`——按 token 目标动态扩缩深度。 |
@@ -227,7 +228,7 @@ ODW 已实现下列原语能力。依赖宿主私有运行机制的脚本,迁移
 | 功能 | ODW 的行为与迁移要求 |
 | --- | --- |
 | 嵌套 `workflow()` | 已实现一层嵌套,共享父任务的调度器、控制和预算。更深层的调用需要展平。 |
-| 模型选择 | 在 `agent(..., {model})` 中传该 CLI 的模型 ID。`meta.model` 和阶段元数据不设置执行模型;适配器没有模型参数时会记录路由说明。 |
+| 模型选择 | 在 `agent(..., {model})` 中传该 CLI 的模型 ID;适配器没有模型参数时会记录路由说明。`meta.phases` 条目里的 `model`(以及 `adapter`)是该阶段 agent 的默认值,`model: "@fast"` 按 CLI 选出某层级的模型——都是 **ODW 扩展**(见[按阶段路由](#按阶段路由与回退链odw-扩展));阶段的模型和其他模型 ID 一样,其 agent 可能跑在多个 CLI 上时请用层级。`meta.model` 仍只是元数据。 |
 | `agentType` | 将人设加入提示词,不会加载宿主的同名子 agent 配置或选择适配器。 |
 | 工作区隔离 | 从已保存的 HEAD 创建临时工作区,不含未保存修改,结束后清理。不会自动合并,`agent()` 返回回复而非 diff;ODW 会把每个隔离 agent 的改动保存为 diff,供审阅和应用(`odw diff`、`odw apply`、`keep` 分支——均为 ODW 扩展;见[审阅并应用](#审阅并应用隔离-agent-的改动odw-扩展))。支持 `.worktreeinclude`(ODW 连未跟踪文件也复制,而不只是被 gitignore 的文件);其中的 `symlink:` 行、`worktreeSetup` 和 agent 的 `ODW_PORT` 是 ODW 扩展——见[隔离 worktree](#隔离-worktree-与-agent-端口)。 |
 | 预算 | 计算输出 token:适配器上报用量时用 CLI 自己的计数(内置 `claude` 会上报——见[用量与花费](#用量与花费odw-扩展)),否则按每条回复的 `ceil(字符数 / 4)` 估算。每次 CLI 运行都计入:schema 重试、限流重试,以及上报了用量的失败运行。每次派发和每次 schema 重试前都会检查;预算用尽时运行结束,仍在运行的 agent 会被停止。 |
@@ -827,7 +828,8 @@ agent_failed    (Search) search — [quota, retry after 3h 22m] AdapterExecution
   或用 `--adapter` 换一个适配器——运行本身继续,因为其他适配器可能完全正常。同一个适配器
   上连续三个 agent 都这样失败时,运行会记一条警告;之后用 `odw resume` 会重放所有已完成
   的 agent。一分钟内就会恢复的"额度"(Gemini 免费档就是这样描述它的每分钟限额的)按它
-  实际上的限流来处理。
+  实际上的限流来处理。配置了[回退链](#按阶段路由与回退链odw-扩展)时,agent 会换到下一个
+  CLI;同一适配器连续三次额度失败后,本次运行之后的 agent 会跳过它。
 
 Claude Code 会在输出里报告这类错误,而且常常以 0 退出:它的 stream-json `result` 事件
 带着 `is_error: true` 和错误消息(`API Error: Rate limit reached`、
@@ -855,6 +857,72 @@ ODW 能识别的措辞——从每个内置 CLI 的源码和 issue 中收集而�
   }
 }
 ```
+
+### 按阶段路由与回退链(ODW 扩展)
+
+**ODW 扩展。** 按阶段混用 CLI 和模型——搜索扇出用便宜的模型,综合用强的——并在某个 CLI
+额度用尽时让运行换到另一个 CLI 上继续。
+
+**阶段默认值。** `meta.phases` 的条目可以为该阶段的 agent 指定适配器和模型:
+`{ title, adapter?, model? }`(纯字符串条目仍然只是标题)。`phase(title, { adapter, model })`
+为其后的 agent 设置它们,取代该阶段在 meta 里的条目;只写 `phase(title)` 则保留该阶段已有
+的设置。`agent()` 调用自己给出的选项永远优先;调用自带的 `phase` 选项会带上那个阶段的默认值。
+
+```js
+export const meta = {
+  name: 'research',
+  description: 'Search cheaply, synthesize carefully.',
+  phases: [
+    { title: 'Search', adapter: 'codex', model: '@fast' },
+    { title: 'Synthesize', adapter: ['claude', 'codex'], model: '@strong' },
+  ],
+}
+phase('Search')
+const notes = await parallel(angles.map((a) => () => agent(`Research ${a}; cite sources.`)))
+phase('Synthesize')
+return await agent(`Synthesize:\n${notes.filter(Boolean).join('\n---\n')}`)
+```
+
+**模型分层。** 配置里的 `models` 定义若干层级,每层为每个适配器给出一个模型 ID。
+`model: "@fast"`——写在 `agent()`、`phase()` 或 `meta.phases` 里——让 agent 使用其适配器
+在该层级下的模型;回退之后用下一个适配器的。某层级没给该适配器模型时,使用其 CLI 的默认模型
+(记一条日志);未知层级会让该 agent 以 `AgentError` 失败,并列出已有的层级。不带 `@` 的
+模型就是模型 ID,原样传给每个适配器——所以有回退链时请用层级。
+
+**回退链。** 配置里的 `fallback` 为每个适配器按顺序列出之后要尝试的适配器;
+`agent(prompt, { adapter: ["codex", "claude"] })` 为单次调用指定回退链,取代该设置。当
+agent 的 CLI 额度用尽或登录被拒时,它会在下一个适配器上重新运行——全新的提示词、相同的
+选项——而不是失败(限流仍然在原适配器上扛过去)。每次切换都会记日志,agent 会在新适配器
+上取得一个槽位(先释放旧适配器的),它的 transcript 在一行
+`{"kind":"attempt","reason":"fallback","adapter":"claude"}` 之后继续,失败的那些运行花掉的
+用量照样计入:
+
+```text
+search:3 → claude after codex quota
+```
+
+- 回退时沿用 agent 自己的权限档位:不能恰好运行该档位的适配器会被跳过并记一条日志——
+  绝不换成别的档位运行。
+- `agent_finished` 记录产出结果的适配器,并用 `fellBackFrom` 记录 agent 离开过的那些;保存
+  的结果也一样。`odw status`、实时视图(`codex → claude`)和 `/api/runs/:id` 都会显示。
+- **额度熔断。** 同一个适配器上连续 `quotaBreaker`(默认 3)次额度失败后,本次运行之后的
+  agent 都会跳过它:各自从回退链上的下一个适配器开始,没有回退链的则立即失败。只记一条
+  警告,`odw status` 也会列出它。
+
+```jsonc
+{
+  "fallback": { "codex": ["claude"], "claude": ["codex"] },
+  "quotaBreaker": 3, // 默认值;0 或 null 表示从不跳过适配器
+  "models": {
+    "fast": { "claude": "haiku", "codex": "gpt-5-mini" },
+    "strong": { "claude": "opus", "codex": "gpt-5" }
+  }
+}
+```
+
+`odw resume` 像重放其他调用一样重放发生过回退的调用,不会再走一遍回退链。一次调用的 resume
+key 是它写下的提示词和选项:阶段默认值和运行的默认适配器一样不在其中,所以把某个阶段改到
+别处——比如离开额度用尽的 CLI——仍会重放所有已完成的调用。
 
 ### 按适配器限制并发与错开扇出
 
@@ -1158,6 +1226,11 @@ node web/dev.mjs --api http://127.0.0.1:4317     # → http://127.0.0.1:5173
 
 **`main` 上的新内容(2026 年 10 月)**——完整清单以及升级前需要留意的变化见
 [`CHANGELOG.md`](CHANGELOG.md):
+- **按阶段指定适配器,以及回退链。** 阶段可以让自己的 agent 跑在指定的 CLI 和模型上
+  (`meta.phases: [{ title, adapter, model }]`、`phase(title, { … })`),`model: "@fast"`
+  按 CLI 选出某层级的模型;CLI 额度用尽或登录失效的 agent 会沿回退链换到下一个 CLI
+  (`adapter: ["codex", "claude"]`,或配置里的 `fallback`),而不是失败——额度熔断会让运行
+  不再尝试已经用尽的 CLI(ODW 扩展;见[按阶段路由](#按阶段路由与回退链odw-扩展))。
 - **原生结构化输出。** `claude`(`--json-schema`)和 `codex`(`--output-schema`,限 strict
   schema)直接拿到 agent 的 schema 并自行强制执行;ODW 依旧校验每一次回复。ODW 校验器不检查
   的 schema 关键字会连同位置写进运行日志,绝不悄悄跳过——`"schemaKeywords": "strict"` 则拒绝
@@ -1241,7 +1314,7 @@ node web/dev.mjs --api http://127.0.0.1:4317     # → http://127.0.0.1:5173
 按并行 coding agent 用户反馈的需求排序([调研](docs/research/user-needs-2026-10.md)):
 更多 CLI 上报的真实 token 用量与花费(目前 Claude Code 已上报,其余仍按估算)·
 无头运行的"成功证据" ·
-按阶段指定适配器与回退链 · 评测。完整规划见 [`docs/ROADMAP.md`](docs/ROADMAP.md);
+运行 Claude plugin 工作流 · 评测。完整规划见 [`docs/ROADMAP.md`](docs/ROADMAP.md);
 最初的设计见 [`docs/dynamic-workflows-tech-plan.md`](docs/dynamic-workflows-tech-plan.md);
 ODW 所对齐的 Claude Code 方言背景见
 [`docs/dynamic-workflows-research.md`](docs/dynamic-workflows-research.md)。

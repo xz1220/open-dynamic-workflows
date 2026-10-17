@@ -25,12 +25,14 @@ agent(prompt, opts?) -> Promise<unknown>
 - **opts.label** —— 进度显示用的短名字。
 - **opts.phase** —— 为这一次调用覆盖当前 phase。在 `parallel`/`pipeline` 里优先用它，那里
   全局 phase 是共享的。
-- **opts.adapter** —— 用哪个配置好的 CLI（如 `"codex"`）；默认用配置里的 `defaultAdapter`。
+- **opts.adapter** —— 用哪个配置好的 CLI（如 `"codex"`）；默认先用阶段的适配器（见下文），
+  再用配置里的 `defaultAdapter`。**ODW 扩展：** 写成列表 `["codex", "claude"]` 就是按偏好
+  排序的回退链——见[路由](#路由阶段默认值模型分层回退链odw-扩展)。
 - **opts.model** —— 一个 model id，通过 adapter 的 `{model}` 模板占位符或
   `flags.model`（如 `claude --model …`）转发。两者都没有时，使用 CLI 自己的默认模型，
-  并记录该选项被忽略的路由说明。model id 不能跨 CLI 通用。`meta.model` 和
-  `meta.phases[].model` 可作为元数据读取，但不决定执行模型；需要指定模型的每次
-  `agent()` 调用都应显式传 `{ model }`。
+  并记录该选项被忽略的路由说明。model id 不能跨 CLI 通用。**ODW 扩展：** `"@fast"`
+  指定一个模型层级——各 CLI 用自己在该层级下的 ID——阶段也可以给出默认模型；`meta.model`
+  仍只是元数据。
 - **opts.agentType** —— 注入进 prompt 的**人设**（如 `"code-reviewer"`），因此在任何 CLI
   上都生效。它**不是** adapter 名，永远不影响 adapter 选择——只有 `opts.adapter` 才会。
   它不会加载 Claude 内置角色的权限、工具或项目里的子 agent 定义。
@@ -110,12 +112,50 @@ stage 的可恢复失败会把那个条目降为 `null` 并跳过它剩下的 st
 ## phase / log
 
 ```js
-phase(title)    // group following agent calls under a named phase
-log(message)    // emit a one-line progress event
+phase(title, opts?)    // group following agent calls under a named phase
+log(message)           // emit a one-line progress event
 ```
 
-两者都只用于观测。`phase` 设置一个运行级的全局当前 phase；在并发段落里改为给 `agent` 传
+两者都只用于观测——`opts` 除外（见下文）。`phase` 设置一个运行级的全局当前 phase；在并发段落里改为给 `agent` 传
 `{ phase }`，因为那个全局是共享的。
+
+## 路由：阶段默认值、模型分层、回退链（ODW 扩展）
+
+每个 agent 跑在哪个 CLI、用哪个模型，以及那个 CLI 接不了时去哪里。Claude Code 会忽略这些。
+
+- **阶段默认值。** `meta.phases` 的条目 `{ title, adapter?, model? }`（纯字符串条目只是
+  标题）为该阶段的 agent 指定适配器和模型；`phase(title, { adapter?, model? })` 为其后的
+  agent 设置它们，取代该条目（只写 `phase(title)` 保留阶段已有的设置；传 `{}` 则清空）。
+  `agent()` 调用自己给出的选项永远优先，调用自带的 `phase` 选项会带上那个阶段的默认值。
+  `meta.phases` 里写错的 `adapter` 或 `model` 会让工作流加载失败（`validate()` 也会报出）；
+  写错的 `phase()` 选项会抛错。
+- **模型分层。** `model: "@fast"` 选用 `models` 设置为 agent 所在适配器给出的 ID——回退之后
+  用下一个适配器的。该层级没给这个适配器 ID 时，使用其 CLI 的默认模型（记日志）；未知层级
+  会让调用以 `AgentError` 失败并列出已有层级。不带 `@` 的模型（或含有层级名不允许的字符，
+  如 `@cf/…`）就是模型 ID，原样传给每个适配器。
+- **回退链。** `adapter: ["codex", "claude"]`，或调用所在适配器在 `fallback` 设置里的回退链：
+  CLI 额度用尽或登录被拒时，调用会在下一个适配器上重新运行——全新的提示词、相同的选项。限流
+  仍在原地重试（`transientRetries`）；其他失败都算调用自己的。每次切换记一行日志
+  （`search:3 → claude after codex quota`）；调用会在新适配器上取得槽位，先释放旧适配器的；
+  它的 transcript 在一行 `{"kind":"attempt","reason":"fallback","adapter":"claude"}` 之后
+  继续；失败的那些运行花掉的用量照样计入。回退时沿用调用自己的权限档位——不能恰好运行该档位
+  的适配器会被跳过并记一行日志。`agent_finished` 和保存的结果会写明产出结果的适配器
+  （`adapter`）和离开过的那些（`fellBackFrom`）；发生过回退的 `agent_failed` 也会写明。
+- **额度熔断。** 同一个适配器上连续 `quotaBreaker`（默认 3）次额度失败后，本次运行之后的
+  调用都会跳过它：各自从回退链上的下一个适配器开始，没有回退链的则立即失败（原因为 `quota`）。
+  只记一条警告。
+
+```js
+export const meta = {
+  name: 'triage',
+  description: 'Map cheaply, judge carefully.',
+  phases: [{ title: 'Map', model: '@fast' }, { title: 'Judge', adapter: ['claude', 'codex'], model: '@strong' }],
+}
+phase('Map')
+const areas = await agent('List the modules touched by HEAD~5..HEAD, one per line.')
+phase('Judge')
+return await agent(`Which of these needs a careful review first, and why?\n${areas}`)
+```
 
 ## args / budget
 
@@ -169,7 +209,7 @@ warnings 提示 `Date.now()`、`Math.random()`、调用仅 ODW 提供的 `exec()
 不调用 adapter、不占并发槽位、不计入派发数、不消耗预算。恢复键是 prompt 加上
 `schema`、`adapter`（调用里写的值，而不是运行的默认值）、`model`、`agentType`、
 `isolation`、`label` 和 `permissions`（调用里写的值）的 sha256。`phase` 不在键里；resume
-时的 `--adapter` 或 `--permissions` 只改运行的默认值，所以没指定 adapter 或档位的调用仍会重放。同一个键的多次调用按调用顺序重放（第 n 次这样的调用
+时的 `--adapter` 或 `--permissions` 只改运行的默认值，所以没指定 adapter 或档位的调用仍会重放。阶段的默认适配器和模型（ODW 扩展）同样不在键里，所以把阶段改到别处后仍会重放；适配器列表按其顺序计入键，模型层级按层级名计入。发生过回退的调用会重放它的值，不会再走一遍回退链。同一个键的多次调用按调用顺序重放（第 n 次这样的调用
 拿到第 n 个保存的结果）；超出的调用，以及 prompt 或选项改变的调用，照常执行。嵌套的
 `workflow()` 调用同样会重放。`checkpoint()` 永远不会重放：恢复出来的运行会重新提问。
 

@@ -29,13 +29,15 @@ other primitive organizes calls to it.
 - **opts.phase** — overrides the current phase for this one call. Prefer this
   inside `parallel`/`pipeline`, where the global phase is shared.
 - **opts.adapter** — which configured CLI to use (e.g. `"codex"`); defaults to
-  the config's `defaultAdapter`.
+  the phase's adapter (below), then the config's `defaultAdapter`. **ODW
+  extension:** a list, `["codex", "claude"]`, is a fallback chain in order of
+  preference — see [routing](#routing-phase-defaults-model-tiers-fallback-chains-odw-extension).
 - **opts.model** — a model id forwarded through the adapter's `{model}` template
   token or declared `flags.model` (e.g. `claude --model …`). Without either
   carrier, the CLI's default model is used and a routing note records the
-  ignored option. Model ids are CLI-specific. `meta.model` and
-  `meta.phases[].model` are accepted metadata, but do not select execution
-  models; pass `{ model }` to each `agent()` call that needs one.
+  ignored option. Model ids are CLI-specific. **ODW extension:** `"@fast"`
+  names a model tier — each CLI's own id for it — and a phase may give a
+  default model; `meta.model` stays metadata.
 - **opts.agentType** — a **persona** injected into the prompt (e.g.
   `"code-reviewer"`), so it works on every CLI. It is **not** an adapter name and
   never affects adapter selection — only `opts.adapter` does. It does not load
@@ -129,13 +131,62 @@ concurrently" — handy when each step itself fans out with `parallel`.
 ## phase / log
 
 ```js
-phase(title)    // group following agent calls under a named phase
-log(message)    // emit a one-line progress event
+phase(title, opts?)    // group following agent calls under a named phase
+log(message)           // emit a one-line progress event
 ```
 
-Both are observation only. `phase` sets a run-global current phase; inside
-concurrent sections pass `{ phase }` to `agent` instead, since the global is
-shared.
+Both are observation only — save `opts` (below). `phase` sets a run-global
+current phase; inside concurrent sections pass `{ phase }` to `agent` instead,
+since the global is shared.
+
+## Routing: phase defaults, model tiers, fallback chains (ODW extension)
+
+Which CLI and model each agent runs on, and where it goes when that CLI cannot
+take it. Claude Code ignores all of it.
+
+- **Phase defaults.** A `meta.phases` entry `{ title, adapter?, model? }` (a
+  plain string entry is just a title) gives its phase's agents an adapter and a
+  model; `phase(title, { adapter?, model? })` sets them for the agents that
+  follow, in place of the entry (`phase(title)` alone keeps what the phase has;
+  `{}` clears it). An option the `agent()` call sets always wins, and a call's
+  own `phase` option brings that phase's defaults. A bad `adapter` or `model`
+  in `meta.phases` fails the workflow's load (and `validate()`); bad `phase()`
+  options throw.
+- **Model tiers.** `model: "@fast"` picks the id the `models` setting gives the
+  adapter the agent runs on — after a fallback, the next adapter's. A tier
+  with no id for that adapter leaves its CLI's default model (logged); an
+  unknown tier fails the call with an `AgentError` listing the tiers. A model
+  without the `@` (or with characters a tier name cannot have, such as
+  `@cf/…`) is a model id, passed to every adapter as is.
+- **Fallback chains.** `adapter: ["codex", "claude"]`, or the `fallback`
+  setting for the adapter a call runs on: when its CLI's quota is spent or its
+  login is refused, the call runs again on the next adapter — a fresh prompt,
+  the same options. A rate limit is retried in place (`transientRetries`); any
+  other failure is the call's. Each move is a log line
+  (`search:3 → claude after codex quota`); the call takes a slot on its new
+  adapter, letting the old one's go first; its transcript goes on after an
+  `{"kind":"attempt","reason":"fallback","adapter":"claude"}` line; and what
+  the failed runs spent still counts. A fallback runs at the call's own
+  permission tier — an adapter that cannot run exactly that tier is skipped,
+  with a log line. `agent_finished` and the saved result name the adapter that
+  produced the value (`adapter`) and the ones left (`fellBackFrom`);
+  `agent_failed` names them too when the call fell back.
+- **Quota breaker.** After `quotaBreaker` (default 3) quota failures in a row
+  on one adapter, the run's later calls skip it: each starts on the next
+  adapter of its chain, or fails at once (reason `quota`) without one. One
+  warning says so.
+
+```js
+export const meta = {
+  name: 'triage',
+  description: 'Map cheaply, judge carefully.',
+  phases: [{ title: 'Map', model: '@fast' }, { title: 'Judge', adapter: ['claude', 'codex'], model: '@strong' }],
+}
+phase('Map')
+const areas = await agent('List the modules touched by HEAD~5..HEAD, one per line.')
+phase('Judge')
+return await agent(`Which of these needs a careful review first, and why?\n${areas}`)
+```
 
 ## args / budget
 
@@ -200,7 +251,10 @@ with no adapter call, concurrency slot, dispatch count or budget, when its
 (as written in the call, not the run's default), `model`, `agentType`,
 `isolation`, `label` and `permissions` (as written in the call). `phase` is not
 part of the key, and `--adapter` or `--permissions` on the resume change only
-the run's defaults, so calls that name no adapter or tier still replay.
+the run's defaults, so calls that name no adapter or tier still replay. Nor
+are a phase's default adapter and model (ODW extension), so a phase routed
+elsewhere still replays; an adapter list keys in its order, and a model tier
+as the tier. A call that fell back replays its value and walks no chain.
 Calls with the same key replay in call order (the n-th such call gets the n-th
 saved result); a call past them, or one whose prompt or options changed, runs
 normally. Nested `workflow()` calls replay the same way. A `checkpoint()` is
