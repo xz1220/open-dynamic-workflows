@@ -52,7 +52,7 @@ export interface CheckpointRequest {
 /** Characters of a decision's note kept; the CLI and the server refuse longer ones. */
 export const CHECKPOINT_NOTE_MAX = 4000;
 
-/** Whether a value read from a control file is a well-formed {@link CheckpointRequest}. */
+/** Whether a value read from a run's decision log is a well-formed {@link CheckpointRequest}. */
 export function isCheckpointRequest(value: unknown): value is CheckpointRequest {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
   const r = value as Record<string, unknown>;

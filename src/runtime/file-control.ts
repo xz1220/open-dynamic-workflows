@@ -8,15 +8,16 @@
  * {@link RunStore} through callbacks so it has no knowledge of the directory
  * layout.
  *
- * The same file carries the answers to `checkpoint()` calls (ODW extension):
- * next to the run-level `action`, a list of requests
+ * The answers to `checkpoint()` calls (ODW extension) arrive next to it, in
+ * the run's append-only decision log: requests
  * `{ action: "approve" | "reject", checkpointId?, note?, by, at }` that the
- * CLI and the server append to. While any checkpoint waits, the file is read
- * on the poll interval and each request is taken once: it answers the
+ * CLI and the server append — never rewriting the control file, so an answer
+ * and a stop can never undo each other. While any checkpoint waits, the log
+ * is read on the poll interval and each request is taken once: it answers the
  * checkpoint it names — or, without an id, the oldest one waiting — if that
  * checkpoint is still waiting; otherwise it is reported and dropped, so an
  * answer can never carry over to a later question. Requests already in the
- * file when a first checkpoint starts waiting predate it and are skipped.
+ * log when a first checkpoint starts waiting predate it and are skipped.
  */
 
 import {
@@ -32,12 +33,12 @@ import { RunStopped } from "../errors.js";
 
 export interface FileControlOptions {
   readAction: () => string | null;
-  /** The checkpoint answers in the control file, oldest first (malformed ones left out). */
+  /** The checkpoint answers in the decision log, oldest first (malformed ones left out). */
   readDecisions?: () => CheckpointRequest[];
   /** A request that answered nothing: its checkpoint was not (or no longer) waiting. */
   onUnmatchedDecision?: (request: CheckpointRequest) => void;
   onState?: (state: string) => void;
-  /** How often a paused checkpoint — or a checkpoint() waiting for an answer — re-reads the control file. */
+  /** How often a paused checkpoint re-reads the control file — and a checkpoint() waiting for an answer, the decision log. */
   pollIntervalMs?: number;
   /** How often {@link FileControl.watchStop} re-reads it while agents run. */
   watchIntervalMs?: number;

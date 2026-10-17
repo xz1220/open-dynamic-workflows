@@ -962,7 +962,7 @@ function cmdControl(action: Command, rest: string[]): number {
  * checkpoint() the run waits at (ODW extension): checkpoint N, else the
  * oldest one waiting. The answer always names the checkpoint the person saw,
  * so it can never land on a question asked after they decided; the run picks
- * it up from its control file within a fraction of a second.
+ * it up from its decision log within a fraction of a second.
  */
 function cmdDecide(action: "approve" | "reject", rest: string[]): number {
   const { values, positionals } = parseArgs({

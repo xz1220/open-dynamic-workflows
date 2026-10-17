@@ -13,7 +13,7 @@
  *
  *   - `odw approve|reject <run> [--note TEXT] [--checkpoint N]`,
  *   - the dashboard (`POST /api/runs/:id/checkpoint`),
- *   - or the run's control file itself (see runtime/file-control.ts).
+ *   - or the run's decision log itself (see runtime/file-control.ts).
  *
  * The answer resolves the call to `{ approved, note, by }` and is recorded as
  * `checkpoint_resolved`. A rejection is an answer, not an error: the script

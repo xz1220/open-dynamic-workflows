@@ -13,13 +13,13 @@ import { RunStore } from "../src/runtime/run-store.js";
 import { detail, summarize } from "../src/runtime/runs-view.js";
 import { META, callsOf, pendingIds, project, stopProcessRun, until } from "./checkpoint-project.js";
 
-// checkpoint() through the run directory: answers arrive in the control file,
+// checkpoint() through the run directory: answers arrive in its decision log,
 // status.json shows what waits, and the run views fold it into "waiting".
 
 const POSIX_ONLY = { skip: process.platform === "win32" };
 const ofType = (events: WorkflowEvent[], type: string) => events.filter((e) => e.type === type);
 
-test("FileControl answers from the control file: each request once, stale ones skipped", async () => {
+test("FileControl answers from the decision log: each request once, stale ones skipped", async () => {
   let requests: CheckpointRequest[] = [{ action: "approve", at: 1 }]; // written before anything waited
   const unmatched: CheckpointRequest[] = [];
   const fc = new FileControl({
@@ -58,15 +58,20 @@ test("FileControl answers from the control file: each request once, stale ones s
   await assert.rejects(four, (err) => err === reason);
 });
 
-test("the control file keeps checkpoint answers and the run-level action side by side", () => {
+test("checkpoint answers are appended to their own log: an answer and a stop never undo each other", () => {
   const root = mkdtempSync(join(tmpdir(), "odw-cp-store-"));
   try {
     const store = new RunStore(root);
     const id = store.create({ script: join(root, "wf.js"), args: null, source: root });
+    assert.deepEqual(store.readCheckpointRequests(id), [], "no log yet");
     store.requestCheckpointDecision(id, { action: "approve", checkpointId: 1, note: "go", by: "cli" });
-    store.writeControl(id, "pause");
+    store.writeControl(id, "stop");
+    const control = readFileSync(store.controlPath(id), "utf8");
     store.requestCheckpointDecision(id, { action: "reject", by: "dashboard" });
-    assert.equal(store.readControl(id), "pause", "an answer keeps the pause");
+    // Nothing reads and rewrites a file another writer may be writing: a
+    // stop can never be lost to an answer written at the same moment.
+    assert.equal(readFileSync(store.controlPath(id), "utf8"), control, "an answer never rewrites control.json");
+    assert.equal(store.readControl(id), "stop");
     const requests = store.readCheckpointRequests(id);
     assert.deepEqual(
       requests.map(({ at: _at, ...r }) => r),
@@ -74,14 +79,14 @@ test("the control file keeps checkpoint answers and the run-level action side by
         { action: "approve", checkpointId: 1, note: "go", by: "cli" },
         { action: "reject", by: "dashboard" },
       ],
-      "a pause keeps the answers",
+      "a stop keeps the answers",
     );
     assert.ok(requests.every((r) => typeof r.at === "number"));
-    // Hand-edited garbage is left out.
-    const control = JSON.parse(readFileSync(store.controlPath(id), "utf8"));
-    control.checkpoints.push({ action: "maybe" }, { action: "approve", checkpointId: 0 }, "approve", null);
-    writeFileSync(store.controlPath(id), JSON.stringify(control));
+    // Hand-written garbage and a line still being appended are left out.
+    appendFileSync(store.decisionsPath(id), '{"action":"maybe"}\n{"action":"approve","checkpointId":0}\n"approve"\nnull\n{"action":"appr');
     assert.equal(store.readCheckpointRequests(id).length, 2);
+    writeFileSync(store.decisionsPath(id), readFileSync(store.decisionsPath(id), "utf8") + 'ove","checkpointId":2}\n');
+    assert.deepEqual(store.readCheckpointRequests(id)[2], { action: "approve", checkpointId: 2 }, "…and read once it is whole");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -106,7 +111,7 @@ test("worker: the run shows 'waiting' while a checkpoint waits, and goes on once
       { checkpointId: 1, title: "Ship it?", payload: { plan: "done:plan" }, since: (status.waiting as { since: number }).since },
     ]);
 
-    // Answered through the control file, as `odw approve` and the dashboard do.
+    // Answered through the decision log, as `odw approve` and the dashboard do.
     p.store.requestCheckpointDecision(id, { action: "approve", checkpointId: 1, note: "go", by: "cli" });
     await until(() => pendingIds(p.store, id).join() === "2");
     assert.equal(summarize(p.store, id).state, "waiting");

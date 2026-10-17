@@ -15,7 +15,7 @@ import { executeRun } from "../src/runtime/worker.js";
 const mockAgent = fileURLToPath(new URL("./fixtures/mock-agent.mjs", import.meta.url));
 const exampleDir = fileURLToPath(new URL("../examples/", import.meta.url));
 
-/** A person's answer to the next checkpoint() a run asks (sent through its control file, as `odw approve|reject` does). */
+/** A person's answer to the next checkpoint() a run asks (sent through its decision log, as `odw approve|reject` does). */
 type Answer = { action: "approve" | "reject"; note?: string };
 
 async function runExample(
@@ -230,7 +230,7 @@ test("review-swarm.js maps, reviews per lens, verifies every finding and summari
   assert.deepEqual(r.lenses, ["correctness", "security"]);
 });
 
-// plan-approve-execute.js: a person answers its checkpoint() through the control file.
+// plan-approve-execute.js: a person answers its checkpoint() through the decision log.
 const PLAN_TASK = { task: "Add rate limiting to the public API" };
 
 test("plan-approve-execute.js executes the plan only once a person approves it", async () => {
