@@ -2,13 +2,15 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import { defaultConfig, resolveAdapter } from "../src/adapters/config.js";
-import type { Bridge } from "../src/bridge.js";
-import type { RunContext } from "../src/context.js";
-import { NullControl } from "../src/control.js";
-import { AdapterNotFound, ConfigError, WorkflowScriptError } from "../src/errors.js";
+import type { CommandRunner } from "../src/adapters/runner.js";
+import { Bridge } from "../src/bridge.js";
+import { spentTokens, type RunContext } from "../src/context.js";
+import { MemoryControl, NullControl } from "../src/control.js";
+import { AdapterNotFound, BudgetExhausted, ConfigError, RunStopped, WorkflowScriptError } from "../src/errors.js";
 import { AGENT_FAILED, AGENT_FINISHED, AGENT_STARTED, LOG, MemorySink } from "../src/events.js";
 import { createPrimitives } from "../src/primitives.js";
 import { Scheduler } from "../src/scheduler.js";
+import { number, obj } from "../src/schema.js";
 
 function fakeContext(
   run: (req: { prompt: string }) => Promise<unknown>,
@@ -134,6 +136,86 @@ test("agent_started names the resolved adapter", async () => {
     sink.ofType(AGENT_STARTED).map((e) => e.adapter),
     ["claude", "codex"],
   );
+});
+
+/** A context with a real Bridge (fake runner) and a guarded Scheduler, as buildContext wires them. */
+function bridgedContext(runner: CommandRunner, options: { budgetTotal?: number; control?: MemoryControl } = {}) {
+  const config = defaultConfig();
+  config.settings.defaultAdapter = "claude";
+  config.settings.schemaRetries = 2;
+  const sink = new MemorySink();
+  const usage = { outputChars: 0 };
+  const control = options.control ?? new MemoryControl();
+  const scheduler = new Scheduler({
+    concurrency: 2,
+    maxAgents: 100,
+    checkpoint: (signal) => control.checkpoint(signal),
+    budgetGuard: () => {
+      if (options.budgetTotal !== undefined && spentTokens(usage) >= options.budgetTotal) {
+        throw new BudgetExhausted("budget spent");
+      }
+    },
+  });
+  const ctx: RunContext = {
+    config,
+    bridge: new Bridge(config, { runner }),
+    scheduler,
+    control,
+    sink,
+    args: null,
+    source: process.cwd(),
+    budgetTotal: options.budgetTotal ?? null,
+    usage,
+    seq: { value: 0 },
+    currentPhase: null,
+    emit(ev) {
+      sink.emit(ev);
+    },
+  };
+  return { ctx, usage };
+}
+
+const cliOk = (stdout: string) => ({ returncode: 0, stdout, stderr: "", timedOut: false, duration: 0 });
+
+test("a schema retry is refused once the budget is spent, and the failed attempt still counts", async () => {
+  let calls = 0;
+  const { ctx, usage } = bridgedContext(
+    async () => {
+      calls++;
+      return cliOk("x".repeat(400)); // 100 estimated tokens, and no JSON at all
+    },
+    { budgetTotal: 50 },
+  );
+  const p = createPrimitives(ctx);
+  await assert.rejects(() => p.agent("p", { schema: obj({ n: number() }) }), BudgetExhausted);
+  assert.equal(calls, 1, "the retry would have overrun the budget");
+  assert.equal(usage.outputChars, 400, "the rejected attempt's output is in the tally");
+  assert.ok(ctx.scheduler.fatalError instanceof BudgetExhausted, "the budget ends the run");
+});
+
+test("every schema attempt's output counts toward usage, not just the one that validated", async () => {
+  let calls = 0;
+  const { ctx, usage } = bridgedContext(async () => cliOk(++calls < 3 ? "nope".repeat(10) : '{"n": 1}'));
+  const p = createPrimitives(ctx);
+  assert.deepEqual(await p.agent("p", { schema: obj({ n: number() }) }), { n: 1 });
+  assert.equal(usage.outputChars, 40 + 40 + '{"n": 1}'.length);
+});
+
+test("a stop that lands during an attempt prevents the schema retry", async () => {
+  const control = new MemoryControl();
+  let calls = 0;
+  // No watchStop wired here, so only the retry's own guard can notice the stop.
+  const { ctx } = bridgedContext(
+    async () => {
+      calls++;
+      control.stop();
+      return cliOk("not json");
+    },
+    { control },
+  );
+  const p = createPrimitives(ctx);
+  await assert.rejects(() => p.agent("p", { schema: obj({ n: number() }) }), RunStopped);
+  assert.equal(calls, 1);
 });
 
 test("parallel is a barrier; a thrown thunk becomes null", async () => {

@@ -153,6 +153,24 @@ export class Scheduler {
     }
   }
 
+  /**
+   * Re-run the dispatch guards (pause/stop, budget) before an extra CLI
+   * attempt inside an agent that already holds its slot — a schema retry. A
+   * retry is not a new dispatch, so it does not count toward the backstop; a
+   * guard failure is fatal and ends the run, exactly as at dispatch.
+   */
+  async recheck(): Promise<void> {
+    try {
+      this.throwIfAborted();
+      await this.checkpoint(this.signal);
+      this.throwIfAborted();
+      this.budgetGuard();
+    } catch (err) {
+      if (isFatalError(err)) this.abort(err);
+      throw err;
+    }
+  }
+
   /** Run thunks concurrently; results in input order, `null` for a recoverable failure. */
   async gather<T>(thunks: Array<() => Promise<T>>): Promise<Array<T | null>> {
     const settled = await Promise.allSettled(thunks.map((t) => t()));

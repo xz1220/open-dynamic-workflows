@@ -133,7 +133,16 @@ export function createPrimitives(
         );
         let outcome;
         try {
-          outcome = await ctx.bridge.run(request, { signal });
+          outcome = await ctx.bridge.run(request, {
+            signal,
+            // Feed the shared budget tally from every attempt, schema retries
+            // included (estimated tokens ≈ chars/4 of each reply).
+            onReply: (text) => {
+              ctx.usage.outputChars += text.length;
+            },
+            // A retry is another CLI run: it passes the stop/budget guards first.
+            beforeRetry: () => ctx.scheduler.recheck(),
+          });
         } catch (err) {
           // A started agent always gets a terminal event, even when the error
           // is fatal (stop, budget, a config error raised inside the slot) —
@@ -155,8 +164,6 @@ export function createPrimitives(
             attempts: outcome.attempts,
           }),
         );
-        // Feed the shared budget tally (estimated tokens ≈ chars/4 of the reply).
-        ctx.usage.outputChars += outcome.text.length;
         return outcome.value;
       });
     } catch (err) {

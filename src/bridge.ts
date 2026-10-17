@@ -90,6 +90,17 @@ export interface RunOptions {
    * error — so it propagates instead of becoming a null slot.
    */
   signal?: AbortSignal;
+  /**
+   * Called with every attempt's decoded reply as soon as it arrives — schema
+   * retries included — so the run's usage tally counts all the output it paid
+   * for, not just the reply that finally validated.
+   */
+  onReply?: (text: string) => void;
+  /**
+   * Run before each schema retry: a retry is another CLI run, so it must pass
+   * the same stop/budget guards as a dispatch. Throw to abandon the call.
+   */
+  beforeRetry?: () => void | Promise<void>;
 }
 
 export class Bridge {
@@ -130,9 +141,11 @@ export class Bridge {
     const maxAttempts = request.schema ? settings.schemaRetries + 1 : 1;
 
     let problems: string[] = [];
+    let previous = "";
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       throwIfAborted(signal);
-      const prompt = problems.length ? `${basePrompt}\n\n${retryFeedback(problems)}` : basePrompt;
+      if (attempt > 1) await options.beforeRetry?.();
+      const prompt = attempt > 1 ? `${basePrompt}\n\n${retryFeedback(previous, problems)}` : basePrompt;
       const { cli, decoder } = await this.invoke(adapter, plan, prompt, timeout, signal);
       // Killed by a stop (or by a fatal error elsewhere in the run): report
       // the run's reason, not a misleading CLI failure.
@@ -142,6 +155,7 @@ export class Bridge {
       // A runner that streams stdout fed the decoder and kept only a tail; an
       // injected runner that does not stream returns the whole stdout instead.
       const text = decoder?.received ? decoder.finish() : decodeAdapterOutput(adapter, cli.stdout);
+      options.onReply?.(text);
       if (!request.schema) {
         return { value: text, text, adapter: adapter.name, attempts: attempt, notes: plan.notes };
       }
@@ -157,6 +171,7 @@ export class Bridge {
       if (problems.length === 0) {
         return { value, text, adapter: adapter.name, attempts: attempt, notes: plan.notes };
       }
+      previous = text;
     }
 
     throw new SchemaValidationError(
@@ -244,15 +259,32 @@ function usesPromptFile(adapter: Adapter): boolean {
   return adapter.command.some((part) => part.includes(token)) || (adapter.stdin?.includes(token) ?? false);
 }
 
-function retryFeedback(problems: string[]): string {
+/** Characters of the previous reply quoted back in a schema-retry prompt. */
+const RETRY_EXCERPT_CHARS = 4000;
+
+/**
+ * The correction appended to a retry prompt. Each attempt is a fresh CLI run
+ * with no memory of the last one, so the reply that failed is quoted back
+ * (head and tail when long) along with what was wrong with it, and the agent
+ * is asked to reformat it rather than redo the whole task.
+ */
+function retryFeedback(previous: string, problems: string[]): string {
   const listed = problems
     .slice(0, 10)
     .map((p) => `- ${p}`)
     .join("\n");
+  const half = RETRY_EXCERPT_CHARS / 2;
+  const quoted =
+    previous.length > RETRY_EXCERPT_CHARS
+      ? `${previous.slice(0, half)}\n[… ${previous.length - 2 * half} characters omitted …]\n${previous.slice(-half)}`
+      : previous;
   return (
     "Your previous reply did not satisfy the required schema:\n" +
-    `${listed}\n` +
-    "Return corrected JSON only, with no surrounding text."
+    `${listed}\n\n` +
+    "Your previous reply was:\n" +
+    `<<<\n${quoted}\n>>>\n\n` +
+    "Reformat only: do not redo the work. Express the answer from that reply as JSON " +
+    "that satisfies the schema, and return only that JSON, with no surrounding text."
   );
 }
 
