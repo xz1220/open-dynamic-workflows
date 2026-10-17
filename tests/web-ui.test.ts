@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { renderJson } from "../web/src/components/json.ts";
+import { transcriptEntries } from "../web/src/components/transcript.ts";
 import { renderPulse } from "../web/src/components/pulse.ts";
 import { highlightSource, outlineSource } from "../web/src/components/source.ts";
 import { renderTimeline } from "../web/src/components/timeline.ts";
@@ -478,4 +479,52 @@ test("Jobs lists what odw schedule starts next, soonest first", () => {
   assert.match(renderJobs({ filter: "all", query: "", limit: 100 }, NOW), /<h2>Upcoming<\/h2>[\s\S]*No runs yet/, "schedules show before the first run");
   store.runs = prevRuns;
   store.schedules = prevSchedules;
+});
+
+test("transcript entries read as a log: prose, tool chips, results, retries", () => {
+  const html = transcriptEntries([
+    { i: 0, kind: "raw", text: "model x · 2 tools: Read, Bash" },
+    { i: 1, kind: "text", text: "Let me <check>.", thinking: true },
+    { i: 2, kind: "text", text: "Checking the tests." },
+    { i: 3, kind: "tool_call", tool: "Bash", text: "npm test", input: { command: "npm test", description: "run" } },
+    { i: 4, kind: "tool_result", tool: "Bash", text: "exit 1, 3 lines", output: "✗ 1 failing", isError: true },
+    { i: 5, kind: "attempt", n: 2, reason: "schema" },
+    { i: 6, kind: "result", turns: 4, costUsd: 0.0123 },
+    { i: 7, kind: "truncated", bytes: 5_000_000 },
+  ]);
+  assert.match(html, /class="tx tx-think"[\s\S]*?Let me &lt;check&gt;\./, "escaped, marked as thinking");
+  assert.match(html, /<span class="tx-tool">▸ Bash<\/span><code class="tx-what">npm test<\/code>/);
+  assert.match(html, /<details class="tx-fold"><summary>input<\/summary><pre>\{\n {2}&quot;command&quot;/, "the input is folded away");
+  assert.match(html, /class="tx tx-res err"[\s\S]*?<details class="tx-fold" open><summary>output/, "a failed tool's output starts open");
+  assert.match(html, /attempt 2 · schema retry/);
+  assert.match(html, /done · 4 turns · \$0\.012/);
+  assert.match(html, /maxTranscriptBytes/);
+});
+
+test("the transcript sheet opens over the graph and freezes its host for appends", () => {
+  const view: JobViewState = {
+    cpNote: "",
+    tab: "graph",
+    selectedAi: 0,
+    reviewAi: null,
+    transcriptAi: 0,
+    zoom: 1,
+    logQuery: "",
+    logTypes: new Set(["agent"]),
+    logLimit: 600,
+    follow: true,
+    motion: false,
+  };
+  store.focusRun("20260101-000000-aaaaaa");
+  store.run = detail([agent("search:1", "Search", "running", { agentId: 7 })], { state: "running" });
+  store.transcripts.set("20260101-000000-aaaaaa:7", { entries: [{ i: 0, kind: "text", text: "hi" }], next: 1, dropped: 0, truncated: false, replayed: false, missing: false });
+  const html = renderJob(view, NOW);
+  assert.match(html, /<button class="btn sm tx-open" data-transcript="0">/, "the drawer offers the transcript");
+  assert.match(html, /<aside class="sheet" data-key="tx-sheet"/);
+  assert.match(html, /1 entry · following/);
+  assert.match(html, /data-copy="odw logs 20260101-000000-aaaaaa --agent 7 --follow"/);
+  assert.match(html, /<div class="tx-host"[^>]*data-morph="skip"[^>]*data-tx="20260101-000000-aaaaaa:7"/);
+  assert.match(html, /class="tx-wait"/, "a live agent shows it is working");
+  store.transcripts.clear();
+  store.focusRun(null);
 });
