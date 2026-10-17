@@ -419,6 +419,7 @@ test("the built-in claude adapter streams stream-json and decodes its result eve
     usagePath: ["usage"],
     costPath: ["total_cost_usd"],
     errorPath: ["is_error"],
+    structuredPath: ["structured_output"],
   });
   assert.deepEqual(decodeOutput(claude, claudeStream({ result: "The README says hello." })), {
     text: "The README says hello.",
@@ -442,4 +443,96 @@ test("claude's is_error result is the run's own failure report, with its result 
   // An error subtype with no result text quotes the event instead.
   const turns = decodeOutput(claude, claudeStream({ subtype: "error_max_turns", is_error: true, result: undefined }));
   assert.match(String(turns.error), /^\{"type":"result","subtype":"error_max_turns","is_error":true/);
+});
+
+// --- natively validated values (`structuredPath`, ODW extension) -------------------
+
+test("claude's result event hands over its --json-schema value as structured_output, beside its text", () => {
+  const claude = defaultConfig().adapters.claude!;
+  const value = { verdict: "pass", issues: [] };
+  const decoded = decodeOutput(claude, claudeStream({ result: "Reviewed: it looks right.", structured_output: value }));
+  assert.equal(decoded.text, "Reviewed: it looks right.");
+  assert.deepEqual(decoded.structured, value);
+  assert.equal(decoded.usage?.costUsd, 0.0387, "usage and cost still come along");
+
+  // Claude Code sets the result text to the value's JSON when the final turn has no text.
+  const bare = decodeOutput(claude, claudeStream({ result: JSON.stringify(value), structured_output: value }));
+  assert.deepEqual([bare.text, bare.structured], [JSON.stringify(value), value]);
+
+  // A run that produced none reports it absent or null: the result text is all there is.
+  for (const none of [{}, { structured_output: null }]) {
+    const plain = decodeOutput(claude, claudeStream({ result: '{"verdict": "fail"}', ...none }));
+    assert.equal("structured" in plain, false, JSON.stringify(none));
+    assert.equal(plain.text, '{"verdict": "fail"}');
+  }
+
+  // Falsy values are values: only absent and null mean none.
+  for (const falsy of [false, 0, "", []]) {
+    assert.deepEqual(decodeOutput(claude, claudeStream({ result: "", structured_output: falsy })).structured, falsy);
+  }
+
+  // A failed run's error wins; error_max_structured_output_retries has no result text.
+  const exhausted = decodeOutput(
+    claude,
+    claudeStream({ subtype: "error_max_structured_output_retries", is_error: true, result: undefined, errors: ["no valid output"] }),
+  );
+  assert.match(String(exhausted.error), /"subtype":"error_max_structured_output_retries"/);
+  assert.equal("structured" in exhausted, false);
+});
+
+test("the latest text event decides the structured value, incrementally as in one go", () => {
+  const adapter: Adapter = {
+    name: "s",
+    command: ["s"],
+    output: { format: "jsonl", eventType: "done", textPath: ["text"], select: "last", structuredPath: ["data", "value"] },
+  };
+  const stream =
+    [
+      { type: "done", text: "draft", data: { value: { n: 1 } } },
+      { type: "done", text: "final", data: { value: { n: 2 } } },
+    ]
+      .map((event) => JSON.stringify(event))
+      .join("\n") + "\n";
+  assert.deepEqual(decodeOutput(adapter, stream), { text: "final", structured: { n: 2 } });
+  const decoder = new AdapterOutputDecoder(adapter);
+  for (let i = 0; i < stream.length; i += 7) decoder.write(stream.slice(i, i + 7));
+  assert.deepEqual(decoder.finish(), { text: "final", structured: { n: 2 } });
+
+  // A later event without one clears it; an event with a value but no text is no fallback.
+  const cleared = stream + JSON.stringify({ type: "done", text: "again" }) + "\n";
+  assert.deepEqual(decodeOutput(adapter, cleared), { text: "again" });
+  const valueOnly = JSON.stringify({ type: "done", data: { value: [1, 2] } }) + "\n";
+  assert.deepEqual(decodeOutput(adapter, valueOnly), { text: "", structured: [1, 2] });
+});
+
+test("the json format reads a structured value from its document, and config validates the path", () => {
+  const adapter: Adapter = {
+    name: "doc",
+    command: ["d"],
+    output: { format: "json", textPath: ["result"], structuredPath: ["structured_output"], errorPath: ["is_error"] },
+  };
+  assert.deepEqual(decodeOutput(adapter, JSON.stringify({ result: "ok", structured_output: { a: 1 } })), {
+    text: "ok",
+    structured: { a: 1 },
+  });
+  assert.deepEqual(decodeOutput(adapter, JSON.stringify({ structured_output: { a: 1 } })), { text: "", structured: { a: 1 } });
+  assert.deepEqual(decodeOutput(adapter, JSON.stringify({ result: "ok", structured_output: null })), { text: "ok" });
+  assert.equal(decodeOutput(adapter, JSON.stringify({ result: "boom", is_error: true, structured_output: { a: 1 } })).error, "boom");
+
+  const { adapters } = loadRaw({
+    adapters: {
+      doc: { command: ["d"], output: { format: "json", textPath: ["r"], structuredPath: ["s"] } },
+      lines: { command: ["l"], output: { format: "jsonl", eventType: "e", textPath: ["t"], select: "last", structuredPath: ["s", "0"] } },
+    },
+  });
+  assert.deepEqual(adapters.doc!.output, { format: "json", textPath: ["r"], structuredPath: ["s"] });
+  assert.deepEqual(adapters.lines!.output, { format: "jsonl", eventType: "e", textPath: ["t"], select: "last", structuredPath: ["s", "0"] });
+  assert.throws(
+    () => loadRaw({ adapters: { bad: { command: ["b"], output: { format: "json", textPath: ["r"], structuredPath: "s" } } } }),
+    /'output\.structuredPath' must be a non-empty array of strings/,
+  );
+  assert.deepEqual(
+    collectConfigWarnings({ adapters: { typo: { command: ["t"], output: { format: "json", textPath: ["r"], structurePath: ["s"] } } } }),
+    ['adapter "typo" output: unknown field "structurePath" is ignored — did you mean "structuredPath"?'],
+  );
 });

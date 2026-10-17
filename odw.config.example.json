@@ -48,6 +48,10 @@
   "//agentEnv": "ODW extension. \"inherit\" (the default) starts agent CLIs with ODW's whole environment. \"minimal\" passes only PATH, HOME, USER, LOGNAME, SHELL, LANG, LC_*, TERM, TMPDIR, TZ (and the Windows system variables), the auth and config variables the built-in CLIs document (ANTHROPIC_*, CLAUDE_*, OPENAI_*, CODEX_*, GEMINI_*, GOOGLE_*, DASHSCOPE_*, QWEN_*, MOONSHOT_*, KIMI_*, CURSOR_*, OPENCODE_*, the proxy variables, NODE_EXTRA_CA_CERTS), the adapter's env, ODW_* and the names or globs in \"agentEnvPass\" (e.g. [\"AWS_*\"] for Claude Code on Bedrock).",
   "agentEnv": "inherit",
 
+  "//schemaKeywords": "ODW extension. Which JSON Schema an agent()'s schema may use. \"odw\" (the default): only what ODW's validator checks — type (one name), enum, properties, required, additionalProperties: false, items (one schema) and minItems, plus annotations such as description and title; anything else (oneOf/anyOf/allOf, $ref, const, pattern, minimum, maxItems, format, type unions, …) fails the call before it starts, naming each keyword and where it is, so no constraint is silently left unchecked. \"native\": on an adapter whose CLI validates schemas itself (\"flags.schema\" — the built-in claude, and codex for strict schemas) those keywords are allowed: the CLI enforces them, ODW checks the part it knows, and the run logs which it left to the CLI. Such an adapter is handed every schema (claude --json-schema, codex --output-schema) and ODW still validates each reply. schemaPrompt \"auto\" describes the schema in the prompt only for a CLI that does not take it natively; \"always\" for every CLI.",
+  "schemaKeywords": "odw",
+  "schemaPrompt": "auto",
+
   "//notify": {
     "$comment": "ODW extension: run-end hooks. Rename \"//notify\" to \"notify\" to turn them on. They fire once, after the run's final state is written, and can never change it; a failing or slow hook is only logged to the run's worker.log. command: an argv run WITHOUT a shell (killed after 30s), with ODW_RUN_ID, ODW_RUN_STATE, ODW_WORKFLOW, ODW_RUN_DIR, ODW_RESULT_FILE (only when the run has a result), ODW_DURATION_SEC, ODW_AGENTS and ODW_FAILED_AGENTS in its environment. webhook: an http(s) URL that receives a JSON POST (10s limit) whose text/content fields render as-is in Slack and Discord. on: which final states fire them (default: all three).",
     "command": ["/usr/local/bin/odw-notify"],
@@ -60,7 +64,7 @@
       "label": "Codex CLI",
       "command": ["codex", "--search", "exec", "--skip-git-repo-check", "{permission_args}", "--cd", "{workspace}", "-"],
       "stdin": "{prompt}",
-      "flags": { "model": ["--model"] },
+      "flags": { "model": ["--model"], "schema": { "args": ["--output-schema"], "mode": "file", "strict": true } },
       "permissionArgs": {
         "read": ["--sandbox", "read-only"],
         "edit": ["--sandbox", "workspace-write"],
@@ -71,8 +75,8 @@
       "label": "Claude Code",
       "command": ["claude", "--print", "--output-format", "stream-json", "--verbose", "{permission_args}", "--no-session-persistence"],
       "stdin": "{prompt}",
-      "flags": { "model": ["--model"] },
-      "output": { "format": "jsonl", "eventType": "result", "textPath": ["result"], "select": "last", "usagePath": ["usage"], "costPath": ["total_cost_usd"], "errorPath": ["is_error"] },
+      "flags": { "model": ["--model"], "schema": { "args": ["--json-schema"], "mode": "inline" } },
+      "output": { "format": "jsonl", "eventType": "result", "textPath": ["result"], "select": "last", "usagePath": ["usage"], "costPath": ["total_cost_usd"], "errorPath": ["is_error"], "structuredPath": ["structured_output"] },
       "permissionArgs": {
         "read": ["--permission-mode", "dontAsk", "--tools", "Read,Glob,Grep,WebSearch,WebFetch", "--allowedTools", "WebSearch", "WebFetch", "--strict-mcp-config"],
         "edit": ["--permission-mode", "acceptEdits", "--allowedTools", "WebSearch", "WebFetch"],

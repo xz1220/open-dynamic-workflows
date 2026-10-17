@@ -160,6 +160,8 @@ export async function executeRun(runDir: string): Promise<string> {
       agentDiffPath: (agentId) => store.agentDiffPath(runId, agentId),
       // What each agent's CLI prints, as agents/<agentId>.transcript.jsonl and .stderr.txt.
       agentTranscriptPaths: (agentId) => store.agentTranscriptPaths(runId, agentId),
+      // A schema handed to a CLI as a file, as agents/<agentId>.schema.json while it runs.
+      agentSchemaPath: (agentId) => store.agentSchemaPath(runId, agentId),
       replay,
       onCheckpoint: (cp, isWaiting) => {
         if (isWaiting) {

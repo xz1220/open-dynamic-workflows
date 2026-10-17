@@ -114,13 +114,15 @@ export interface BuildContextOptions {
   agentTranscriptPaths?: (agentId: number) => TranscriptPaths;
   replay?: ReplayJournal;
   onCheckpoint?: (cp: WaitingCheckpoint, waiting: boolean) => void;
+  /** Where an agent's schema file goes for a CLI that reads one (the bridge's `agentSchemaPath`). */
+  agentSchemaPath?: (agentId: number) => string;
 }
 
 /** Wire a full run context from a config and the run's surroundings. */
 export function buildContext(config: Config, options: BuildContextOptions = {}): RunContext {
   const sink = options.sink ?? new NullSink();
   const control: Control = options.control ?? new NullControl();
-  const bridge = new Bridge(config, { source: options.source, runId: options.runId });
+  const bridge = new Bridge(config, { source: options.source, runId: options.runId, agentSchemaPath: options.agentSchemaPath });
   const budgetTotal = options.budgetTotal ?? null;
   // The shared tally `budget.spent()` reads: reported output tokens, else
   // chars/4 of the reply; the guard makes --budget a real ceiling, not advisory.

@@ -1,6 +1,7 @@
 /**
  * Decode an adapter's stdout into the agent's reply — and, for the JSON
- * formats, what the run spent and whether the CLI itself reported a failure.
+ * formats, what the run spent, whether the CLI itself reported a failure, and
+ * the value it validated against a schema it was handed natively.
  *
  * A structured decode that cannot find its text never fails the agent: the
  * raw stdout becomes the reply and {@link DecodedOutput.fallback} says why, for
@@ -34,6 +35,12 @@ export interface DecodedOutput {
   error?: string;
   /** Set when stdout did not match the declared format and `text` is the raw stdout: why, for the run's log. */
   fallback?: string;
+  /**
+   * The value the CLI validated against a schema it was handed natively — at
+   * `structuredPath` in the latest text event — when it has one: absent, or
+   * null (a run that produced none), leaves this unset.
+   */
+  structured?: unknown;
 }
 
 type JsonlOutput = Extract<AdapterOutput, { format: "jsonl" }>;
@@ -92,6 +99,8 @@ export class AdapterOutputDecoder {
   private found = false;
   /** What the latest matching event reported at `errorPath`, when it reported a failure. */
   private error: string | undefined;
+  /** What the latest matching event had at `structuredPath` (null: nothing). */
+  private structured: unknown;
   private usage: Usage | undefined;
   /** The first line that was not JSON, for the fallback note. */
   private badLine: string | undefined;
@@ -149,7 +158,7 @@ export class AdapterOutputDecoder {
     }
     const usage = this.usage;
     if (this.error !== undefined) return withUsage({ text: this.error, error: this.error }, usage);
-    if (this.found) return withUsage({ text: this.last ?? "" }, usage);
+    if (this.found) return withUsage(withStructured({ text: this.last ?? "" }, this.structured), usage);
     const why = this.overflow
       ? this.overflow
       : this.matching > 0
@@ -176,8 +185,9 @@ export class AdapterOutputDecoder {
     const value = walk(doc, output.textPath);
     const text = typeof value === "string" ? value.trim() : undefined;
     const error = output.errorPath ? reportedError(doc, output.errorPath, text) : undefined;
+    const structured = output.structuredPath ? walk(doc, output.structuredPath) : undefined;
     if (error !== undefined) return withUsage({ text: error, error }, usage);
-    if (text !== undefined) return withUsage({ text }, usage);
+    if (text !== undefined || isPresent(structured)) return withUsage(withStructured({ text: text ?? "" }, structured), usage);
     return withUsage(this.fallback(raw, `it has no text at '${output.textPath.join(".")}'`), usage);
   }
 
@@ -228,18 +238,30 @@ export class AdapterOutputDecoder {
 
     const value = walk(event, output.textPath);
     const text = typeof value === "string" ? value.trim() : undefined;
-    if (text !== undefined) {
+    // The latest text event decides whether the CLI reported a failure, and
+    // what value it validated natively.
+    this.structured = output.structuredPath ? walk(event, output.structuredPath) : undefined;
+    if (text !== undefined || isPresent(this.structured)) {
       this.found = true;
       this.raw = ""; // the fallback is no longer needed
       if (text) this.last = text;
     }
-    // The latest text event decides whether the CLI reported a failure.
     this.error = output.errorPath ? reportedError(event, output.errorPath, text) : undefined;
   }
 }
 
 function withUsage(decoded: DecodedOutput, usage: Usage | undefined): DecodedOutput {
   return usage ? { ...decoded, usage } : decoded;
+}
+
+/** `decoded` with the CLI's natively validated value, when it has one. */
+function withStructured(decoded: DecodedOutput, structured: unknown): DecodedOutput {
+  return isPresent(structured) ? { ...decoded, structured } : decoded;
+}
+
+/** A value at `structuredPath`: anything but absent, or null (a run that produced none). */
+function isPresent(value: unknown): boolean {
+  return value !== undefined && value !== null;
 }
 
 /**

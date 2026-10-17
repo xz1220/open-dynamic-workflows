@@ -16,6 +16,30 @@
 export interface AdapterFlags {
   /** The flag(s) that select a model, e.g. `["--model"]` or `["-m"]`. */
   model?: string[];
+  /**
+   * How this CLI takes a call's JSON Schema to enforce itself (an ODW
+   * extension; see adapters/native-schema.ts). Without it the schema is
+   * described in the prompt, and only ODW validates the reply.
+   */
+  schema?: SchemaFlag;
+}
+
+/**
+ * How a CLI takes a JSON Schema natively (an ODW extension): `args`, then the
+ * schema — `inline`, its JSON as the next argv element (Claude Code's
+ * `--json-schema`); `file`, the path of a file holding it, written for each
+ * CLI run and removed after it (Codex's `--output-schema`). They go after
+ * every other argument, as a model flag does.
+ */
+export interface SchemaFlag {
+  args: string[];
+  mode: "inline" | "file";
+  /**
+   * The CLI takes only OpenAI strict-mode schemas (Codex): an object at the
+   * root, and every object `"additionalProperties": false` with all its
+   * properties `required`. Any other schema goes in the prompt instead.
+   */
+  strict?: boolean;
 }
 
 /**
@@ -46,6 +70,12 @@ export type AdapterOutput =
        * run failed with it (classified like any failure), whatever its exit.
        */
       errorPath?: string[];
+      /**
+       * Path, in a text event, to the value the CLI validated against a schema
+       * it was handed natively (Claude Code's `structured_output`). When the
+       * last text event has one (not null), it is the reply's value.
+       */
+      structuredPath?: string[];
     }
   | {
       /** One JSON document on stdout: the paths are read from it. */
@@ -54,6 +84,7 @@ export type AdapterOutput =
       usagePath?: string[];
       costPath?: string[];
       errorPath?: string[];
+      structuredPath?: string[];
     };
 
 /**
@@ -230,6 +261,19 @@ export interface Settings {
   agentEnv: "inherit" | "minimal";
   /** Names or `*` globs of more variables a `"minimal"` agent environment passes through. */
   agentEnvPass: string[];
+  /**
+   * Which JSON Schema an agent()'s schema may use (an ODW extension):
+   * `"odw"` — only what ODW's validator checks, anything else fails the call
+   * before it starts; `"native"` — on an adapter that takes schemas natively
+   * (`flags.schema`), the rest too: its CLI enforces it, ODW checks the subset
+   * it knows, and the run logs which keywords it left to the CLI.
+   */
+  schemaKeywords: "odw" | "native";
+  /**
+   * When an agent's prompt describes its schema (an ODW extension): `"auto"` —
+   * only when the CLI does not take the schema natively; `"always"`.
+   */
+  schemaPrompt: "auto" | "always";
 }
 
 /** How a fan-out on a prompt-caching adapter is staggered (see `Settings.staggerFanOut`). */

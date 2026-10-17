@@ -31,6 +31,11 @@
  * spawned. Under `agentEnv: "minimal"` the CLI starts with only the variables
  * adapters/agent-env.ts lets through.
  *
+ * So does a schema nothing would fully check (an ODW extension; see
+ * adapters/native-schema.ts). A CLI that validates schemas itself is handed
+ * the call's schema on every run — its own validated value is the reply's —
+ * and ODW validates the reply all the same.
+ *
  * The command runner is injectable, so the bridge unit-tests with a fake runner
  * and no real agent account; so are the backoff's sleep, clock and jitter.
  */
@@ -49,6 +54,7 @@ import {
   type FailureClass,
 } from "./adapters/failures.js";
 import { planPermissions, readCapableAdapter, runTier, spliceArgs, type PermissionPlan } from "./adapters/permissions.js";
+import { nativeSchemaArgs, planSchema, type NativeSchemaArgs } from "./adapters/native-schema.js";
 import { expand, expandAll, type PlaceholderContext } from "./adapters/placeholders.js";
 import { AdapterOutputDecoder, decodeOutput, type DecodedOutput } from "./adapters/output.js";
 import { runCommand, type CommandRunner } from "./adapters/runner.js";
@@ -60,11 +66,12 @@ import {
   type CliResult,
   type Config,
   type PermissionTier,
+  type SchemaFlag,
 } from "./adapters/types.js";
 import { AdapterExecutionError, AgentError, RunStopped, SchemaValidationError, isFatalError } from "./errors.js";
 import { PortPool } from "./ports.js";
 import { LiteralRouter, type InvocationPlan, type OptionRouter } from "./router.js";
-import { describeSchema, pickJson, type JsonSchema } from "./schema.js";
+import { describeSchema, pickStructured, type JsonSchema } from "./schema.js";
 import type { AttemptReason } from "./transcript.js";
 import { withWorkspace, type Workspace } from "./workspace.js";
 
@@ -132,6 +139,12 @@ export interface BridgeOptions {
   random?: () => number;
   /** The run's id, given to every agent process (and worktree setup) as `ODW_RUN_ID`. */
   runId?: string;
+  /**
+   * Where a call writes the schema file of a CLI that reads its schema from
+   * one (`flags.schema.mode: "file"`): the run directory's
+   * `agents/<agentId>.schema.json`. Absent, it goes in a temp directory.
+   */
+  agentSchemaPath?: (agentId: number) => string;
 }
 
 /** What the scheduler hands one call; all optional, so a bare `run(request)` works. */
@@ -260,6 +273,9 @@ export class Bridge {
   private autoPicked: Adapter | undefined;
   /** Per adapter: how many calls in a row its quota or login failed. */
   private readonly blockedStreaks = new Map<string, number>();
+  private readonly agentSchemaPath: ((agentId: number) => string) | undefined;
+  /** What this run has said about how schemas reach their CLIs: each note once. */
+  private readonly schemaNotes = new Set<string>();
 
   constructor(
     private readonly config: Config,
@@ -272,6 +288,7 @@ export class Bridge {
     this.now = options.now ?? Date.now;
     this.random = options.random ?? Math.random;
     this.runId = options.runId;
+    this.agentSchemaPath = options.agentSchemaPath;
     this.ports = new PortPool(...config.settings.portRange);
   }
 
@@ -346,7 +363,21 @@ export class Bridge {
     // it, or whose CLI cannot enforce it, never reaches a workspace or a process.
     const permissions = this.permissionsFor(adapter, request.permissions);
     if (permissions.error) throw new AgentError(permissions.error);
-    const call: CallEnv = { ...shared, permissionArgs: permissions.args };
+    // So is the schema (ODW extension; see adapters/native-schema.ts): one
+    // nothing would fully check never starts; a CLI that validates schemas
+    // itself is handed it on every run of the call.
+    const schema = request.schema ? planSchema(adapter, request.schema, settings) : undefined;
+    if (schema?.error) throw new AgentError(schema.error);
+    if (schema?.note && !this.schemaNotes.has(schema.note)) {
+      this.schemaNotes.add(schema.note);
+      shared.onNote?.(schema.note);
+    }
+    const schemaFile = options.agentId !== undefined ? this.agentSchemaPath?.(options.agentId) : undefined;
+    const call: CallEnv = {
+      ...shared,
+      permissionArgs: permissions.args,
+      schema: schema?.native ? { flag: schema.native, value: request.schema!, file: schemaFile } : undefined,
+    };
     const limits: CliLimits = {
       timeout: adapter.timeout ?? settings.timeout ?? undefined,
       // An adapter's 0 opts it out of a run-wide stall timeout; null is off.
@@ -355,7 +386,7 @@ export class Bridge {
     // Plan the invocation once: workspace mode, the model token/flag, and the
     // routing notes do not change across schema retries — only the prompt does.
     const plan = this.router.plan({ request, adapter, settings });
-    const basePrompt = this.composePrompt(request);
+    const basePrompt = this.composePrompt(request, schema?.describe ?? false);
     const maxAttempts = request.schema ? settings.schemaRetries + 1 : 1;
 
     let problems: string[] = [];
@@ -386,19 +417,22 @@ export class Bridge {
       if (output.fallback) call.onNote?.(output.fallback);
       const text = output.text;
       options.onReply?.(text, output.usage);
-      if (!request.schema) {
+      if (!schema) {
         return { value: text, text, adapter: adapter.name, attempts: attempt, notes: plan.notes };
       }
 
       // The schema steers extraction to the one candidate that satisfies it;
       // two different valid values are ambiguous and get retried, not guessed.
-      const pick = pickJson(text, request.schema);
+      // A value the CLI validated natively comes first, and is checked too.
+      const pick = pickStructured(output.structured, text, schema.check);
       const value = pick.value;
       problems = pick.problems;
       if (problems.length === 0) {
         return { value, text, adapter: adapter.name, attempts: attempt, notes: plan.notes };
       }
-      previous = text;
+      // A retry quotes what failed: the CLI's own value, when it gave one.
+      const structured = output.structured;
+      previous = structured === undefined ? text : typeof structured === "string" ? structured : JSON.stringify(structured);
     }
 
     throw new SchemaValidationError(
@@ -557,13 +591,14 @@ export class Bridge {
 
   // --- internals -------------------------------------------------------------
 
-  private composePrompt(request: AgentRequest): string {
+  /** The call's prompt; `describe`: with its schema's description (not for a CLI handed the schema natively). */
+  private composePrompt(request: AgentRequest, describe: boolean): string {
     const parts = [INDEPENDENCE_PREAMBLE];
     // Persona (agentType) is universal prompt text — it works on every CLI,
     // which native system-prompt flags do not. See LiteralRouter.noteAgentType.
     if (request.agentType) parts.push(personaPreamble(request.agentType));
     parts.push(request.prompt);
-    if (request.schema) parts.push(describeSchema(request.schema));
+    if (request.schema && describe) parts.push(describeSchema(request.schema));
     return parts.join("\n\n");
   }
 
@@ -613,7 +648,11 @@ export class Bridge {
         await writeFile(promptFile, prompt, "utf8");
         cleanup = () => rm(dir, { recursive: true, force: true });
       }
+      let schema: NativeSchemaArgs | undefined;
       try {
+        // A schema the CLI takes natively (ODW extension): inline, or in a
+        // file written for this run and removed after it.
+        if (call.schema) schema = await nativeSchemaArgs(call.schema.flag, call.schema.value, call.schema.file);
         const context: PlaceholderContext = {
           prompt,
           prompt_file: promptFile,
@@ -625,9 +664,9 @@ export class Bridge {
           ...plan.context,
         };
         // The tier's flags take the place of `{permission_args}`, then every
-        // placeholder (theirs too) is expanded.
+        // placeholder (theirs too) is expanded. The schema comes last, as is.
         const template = spliceArgs(adapter.command, call.permissionArgs ?? []);
-        const command = [...expandAll(template, context), ...plan.extraArgs];
+        const command = [...expandAll(template, context), ...plan.extraArgs, ...(schema?.args ?? [])];
         const stdin = adapter.stdin ? expand(adapter.stdin, context) : undefined;
         const env = withAgentVars({ ...agentBaseEnv(process.env, this.config.settings), ...adapter.env }, call.env);
         // What the CLI prints is kept as it arrives (ODW extension; see ./transcript).
@@ -657,6 +696,7 @@ export class Bridge {
         return { cli, decoder };
       } finally {
         if (cleanup) await cleanup();
+        await schema?.cleanup();
       }
     }, setup);
   }
@@ -675,6 +715,8 @@ interface CallEnv {
   permissionArgs?: string[];
   /** Told when a CLI run starts answering (see RunOptions.onOutput). */
   onOutput?: () => void;
+  /** The schema the CLI takes natively (ODW extension), and where its file goes in `file` mode. */
+  schema?: { flag: SchemaFlag; value: JsonSchema; file?: string };
 }
 
 /** The variables an agent's processes get from ODW: only ever this call's, never inherited. */

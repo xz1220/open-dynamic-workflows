@@ -42,6 +42,7 @@ import type {
   PermissionArgs,
   PermissionTier,
   RunEndState,
+  SchemaFlag,
   Settings,
   StaggerFanOut,
 } from "./types.js";
@@ -108,6 +109,8 @@ const KNOWN_TOP_KEYS = [
   "permissions",
   "agentEnv",
   "agentEnvPass",
+  "schemaKeywords",
+  "schemaPrompt",
 ] as const;
 
 const KNOWN_ADAPTER_KEYS = ["command", "stdin", "env", "timeout", "stallTimeout", "concurrency", "promptCache", "label", "flags", "output", "failures", "permissionArgs", "permissions"] as const;
@@ -115,9 +118,13 @@ const KNOWN_ADAPTER_KEYS = ["command", "stdin", "env", "timeout", "stallTimeout"
 /** The fields of an adapter's `output`, per format. */
 const KNOWN_OUTPUT_KEYS: Record<string, readonly string[]> = {
   text: ["format"],
-  jsonl: ["format", "eventType", "textPath", "select", "usageEvent", "usagePath", "costPath", "errorPath"],
-  json: ["format", "textPath", "usagePath", "costPath", "errorPath"],
+  jsonl: ["format", "eventType", "textPath", "select", "usageEvent", "usagePath", "costPath", "errorPath", "structuredPath"],
+  json: ["format", "textPath", "usagePath", "costPath", "errorPath", "structuredPath"],
 };
+
+/** The fields of an adapter's `flags`, and of its `flags.schema`. */
+const KNOWN_FLAG_KEYS = ["model", "schema"] as const;
+const KNOWN_SCHEMA_FLAG_KEYS = ["args", "mode", "strict"] as const;
 
 const KNOWN_NOTIFY_KEYS = ["command", "webhook", "on"] as const;
 
@@ -158,6 +165,12 @@ export function collectConfigWarnings(raw: Record<string, unknown>): string[] {
       const output = isObject(spec) ? spec.output : undefined;
       const knownOutput = isObject(output) ? KNOWN_OUTPUT_KEYS[String(output.format)] : undefined;
       if (knownOutput) warnings.push(...unknownFields(output as Record<string, unknown>, knownOutput, `adapter "${name}" output`));
+      // A misspelled capability would quietly leave the CLI's native support unused.
+      const flags = isObject(spec) ? spec.flags : undefined;
+      if (isObject(flags)) {
+        warnings.push(...unknownFields(flags, KNOWN_FLAG_KEYS, `adapter "${name}" flags`));
+        if (isObject(flags.schema)) warnings.push(...unknownFields(flags.schema, KNOWN_SCHEMA_FLAG_KEYS, `adapter "${name}" flags.schema`));
+      }
       // A cap ODW cannot enforce: an adapter of the user's own (or a built-in
       // replaced whole) that declares no tier flags runs as configured.
       const replaced = isObject(spec) && (spec.command != null || !(name in BUILTIN_ADAPTERS));
@@ -721,7 +734,36 @@ function buildFlags(name: string, raw: unknown): AdapterFlags {
     }
     out.model = [...(model as string[])];
   }
+  // null, like leaving it out, means the CLI takes no schema natively.
+  const schema = (raw as Record<string, unknown>).schema;
+  if (schema != null) out.schema = buildSchemaFlag(name, schema);
   return out;
+}
+
+/**
+ * Validate how a CLI takes a JSON Schema natively (ODW extension): the flag(s)
+ * before it, `inline` or `file`, and whether it takes only strict schemas.
+ */
+function buildSchemaFlag(name: string, raw: unknown): SchemaFlag {
+  if (!isObject(raw)) {
+    throw new ConfigError(
+      `adapter '${name}' 'flags.schema' must be an object: { "args": ["--json-schema"], "mode": "inline" | "file", "strict"?: true }`,
+    );
+  }
+  const { args, mode, strict } = raw;
+  if (!Array.isArray(args) || args.length === 0 || !args.every((part) => typeof part === "string" && part.length > 0)) {
+    throw new ConfigError(`adapter '${name}' 'flags.schema.args' must be a non-empty array of strings: the flag(s) before the schema`);
+  }
+  if (mode !== "inline" && mode !== "file") {
+    throw new ConfigError(
+      `adapter '${name}' 'flags.schema.mode' must be "inline" (the schema's JSON is the next argument) ` +
+        `or "file" (the path of a file holding it); got ${JSON.stringify(mode)}`,
+    );
+  }
+  if (strict != null && typeof strict !== "boolean") {
+    throw new ConfigError(`adapter '${name}' 'flags.schema.strict' must be true or false; got ${JSON.stringify(strict)}`);
+  }
+  return { args: [...(args as string[])], mode, ...(strict ? { strict: true } : {}) };
 }
 
 /** Validate and normalize an adapter's stdout decoding declaration. */
@@ -738,9 +780,10 @@ function buildOutput(name: string, raw: unknown): AdapterOutput {
     throw new ConfigError(`adapter '${name}' 'output.eventType' must be a non-empty string`);
   }
   const textPath = buildPath(name, "textPath", value.textPath)!;
-  // Usage, cost and the CLI's own error report (ODW extensions): set only when declared.
-  const extras: { usagePath?: string[]; costPath?: string[]; errorPath?: string[] } = {};
-  for (const key of ["usagePath", "costPath", "errorPath"] as const) {
+  // Usage, cost, the CLI's own error report and its natively validated value
+  // (ODW extensions): set only when declared.
+  const extras: { usagePath?: string[]; costPath?: string[]; errorPath?: string[]; structuredPath?: string[] } = {};
+  for (const key of ["usagePath", "costPath", "errorPath", "structuredPath"] as const) {
     const path = buildPath(name, key, value[key], { optional: true });
     if (path) extras[key] = path;
   }
@@ -879,7 +922,21 @@ function buildSettings(raw: Record<string, unknown>): Settings {
     permissions: raw["permissions"] == null ? DEFAULT_SETTINGS.permissions : buildTier(raw["permissions"]),
     agentEnv: raw["agentEnv"] == null ? DEFAULT_SETTINGS.agentEnv : buildAgentEnv(raw["agentEnv"]),
     agentEnvPass: raw["agentEnvPass"] == null ? [...DEFAULT_SETTINGS.agentEnvPass] : buildEnvPass(raw["agentEnvPass"]),
+    schemaKeywords:
+      raw["schemaKeywords"] == null
+        ? DEFAULT_SETTINGS.schemaKeywords
+        : buildChoice("schemaKeywords", raw["schemaKeywords"], ["odw", "native"] as const),
+    schemaPrompt:
+      raw["schemaPrompt"] == null
+        ? DEFAULT_SETTINGS.schemaPrompt
+        : buildChoice("schemaPrompt", raw["schemaPrompt"], ["auto", "always"] as const),
   };
+}
+
+/** Validate a setting that takes one of a few words, such as `schemaKeywords`. */
+function buildChoice<T extends string>(key: string, raw: unknown, choices: readonly T[]): T {
+  if ((choices as readonly unknown[]).includes(raw)) return raw as T;
+  throw new ConfigError(`"${key}" must be ${choices.map((choice) => `"${choice}"`).join(" or ")}; got ${JSON.stringify(raw)}`);
 }
 
 /** Validate the run's permission tier. */

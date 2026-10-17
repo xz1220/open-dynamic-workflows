@@ -10,7 +10,7 @@
  * explains how to tune them rather than baking opinions in here.
  */
 
-import type { AdapterFailures, AdapterFlags, AdapterOutput, PermissionArgs, PermissionTier, Settings } from "./types.js";
+import type { AdapterFailures, AdapterFlags, AdapterOutput, PermissionArgs, PermissionTier, SchemaFlag, Settings } from "./types.js";
 
 /** A built-in adapter spec — same shape as a config entry, minus its name. */
 export interface RawAdapter {
@@ -44,7 +44,11 @@ const KILO_OPENCODE_OUTPUT: AdapterOutput = {
 // Claude Code's stream-json (https://code.claude.com/docs/en/headless): one
 // event per message, ending in a `result` event with the reply, the session's
 // usage and cost, and `is_error` when it failed — rate limits, spent quotas
-// and logins arrive that way, often with exit 0.
+// and logins arrive that way, often with exit 0. Given --json-schema, that
+// event also carries the validated value as `structured_output` (the Agent
+// SDK's result message, which is this event: `structured_output?: unknown`);
+// a run that produced none has it absent or null, and its `result` text is
+// read instead.
 const CLAUDE_OUTPUT: AdapterOutput = {
   format: "jsonl",
   eventType: "result",
@@ -53,7 +57,20 @@ const CLAUDE_OUTPUT: AdapterOutput = {
   usagePath: ["usage"],
   costPath: ["total_cost_usd"],
   errorPath: ["is_error"],
+  structuredPath: ["structured_output"],
 };
+
+// Native structured output (ODW extension; see native-schema.ts). Claude Code
+// 2.1.302 `--json-schema <schema>` takes the schema's JSON as its value and
+// rejects an invalid one before the run starts ("Error: --json-schema is not
+// a valid JSON Schema"); it treats `format` as an annotation.
+const CLAUDE_SCHEMA: SchemaFlag = { args: ["--json-schema"], mode: "inline" };
+// `codex exec --output-schema <file>` (https://developers.openai.com/codex/noninteractive)
+// is an exec option declared `global = true` beside an optional PROMPT
+// positional, so it parses after `-` as `--model` does. Codex sends the schema
+// in OpenAI's strict mode, which refuses (HTTP 400, before the model runs) a
+// schema whose objects are not all closed with every property required.
+const CODEX_SCHEMA: SchemaFlag = { args: ["--output-schema"], mode: "file", strict: true };
 
 // Permission tiers (ODW extension). Each built-in's posture flags sit in
 // `permissionArgs` and are spliced where its command has `{permission_args}`;
@@ -140,7 +157,7 @@ export const BUILTIN_ADAPTERS: Record<string, RawAdapter> = {
       "-",
     ],
     stdin: "{prompt}",
-    flags: { model: ["--model"] },
+    flags: { model: ["--model"], schema: CODEX_SCHEMA },
     permissionArgs: CODEX_PERMISSIONS,
   },
   claude: {
@@ -157,7 +174,7 @@ export const BUILTIN_ADAPTERS: Record<string, RawAdapter> = {
       "--no-session-persistence",
     ],
     stdin: "{prompt}",
-    flags: { model: ["--model"] },
+    flags: { model: ["--model"], schema: CLAUDE_SCHEMA },
     output: CLAUDE_OUTPUT,
     permissionArgs: CLAUDE_PERMISSIONS,
     // Anthropic's API caches a prompt's prefix: a fan-out sharing one starts
@@ -263,4 +280,6 @@ export const DEFAULT_SETTINGS: Settings = {
   permissions: "edit", // the tier every built-in ran with before tiers existed
   agentEnv: "inherit", // agent CLIs see ODW's whole environment
   agentEnvPass: [], // more variables a "minimal" agent environment passes through
+  schemaKeywords: "odw", // a schema may use only what ODW's validator checks
+  schemaPrompt: "auto", // the prompt describes a schema only to a CLI that does not take it natively
 };
