@@ -1,149 +1,113 @@
-# Open Dynamic Workflows — 模块路线图
+# Open Dynamic Workflows — 路线图
 
-> 组织方式：先说清「项目是什么」，再按「提供哪些模块」展开成一棵树。
-> 本期主线只有三件事：**运行引擎 → 运行记录 → 客户端观测 / Chat Host**。
-> 分发、参数表单、机器可读参数契约等，明确不在本期（见 §5）。
-> 重写日期：2026-06-05
-
----
-
-## 0. 项目是什么
-
-**ODW 是一个动态工作流的运行时**：用 Claude Code 方言（`export const meta` + 注入 `agent / parallel / pipeline / ...`）写一次工作流脚本，既能在 Claude Code 本体跑，也能经 `odw` 在 Codex / Gemini / Qwen / Kimi / 自定义 CLI 上**原样跑**；再配一个客户端，看这些工作流和它们的运行，并承载本地 Chat Host。
-
-两条贯穿全局的事实——它们决定了下面所有取舍：
-
-- **通用 workflow 发起仍由 Agent / CLI 负责。** 没有 Launch 表单，也不接受浏览器直接提交 inline workflow。
-- **客户端写能力保持窄口径。** 允许本地 Chat Host 会话/消息、App 偏好、适配器配置，以及 ODW 自己 run 的控制；Claude provider 仍只读。
-
-根基（也是与单纯「换个 CLI 跑」的区别）：**Claude Code 方言的忠实保真 + 工作流可移植**。
+> 重写日期：2026-10-16（2026-10-17 更新状态）。上一版（2026-06-05）的主线——运行引擎 → 运行记录 → Web 观测 / Chat Host——已基本交付，本版按**用户需求**重新排序。
+> 需求依据见 [`docs/research/user-needs-2026-10.md`](research/user-needs-2026-10.md)（15 条排序后的痛点，均附来源）。
+> 状态标记：✅ 已交付 · 🚧 本轮进行中 · ⏳ 规划中 · 💤 暂缓。
 
 ---
 
-## 1. 模块总览
+## 0. 定位
 
-```
-Open Dynamic Workflows (ODW)
-│
-├─ ① CLI（核心层）── odw 运行时 · 纯 Node · 零运行时依赖
-│   │
-│   ├─ (a) 运行层  Runtime ──── 翻译 / 运行 / 执行工作流，对接不同 CLI
-│   │       · 原语    agent · parallel · pipeline · phase · log · args · budget · workflow
-│   │       · 加载器  meta 解析 + 源变换 + Claude Code 方言双兼容
-│   │       · 调度器  信号量并发 + 1000-agent 兜底 + 预算钩子
-│   │       · 适配器  claude · codex · gemini · qwen · kimi · 自定义
-│   │
-│   └─ (b) 运行记录  Runs ───── 让每次运行可观测、可追溯、可被定时触发
-│           · 来源    Agent 经 SKILL.md 写入管理目录（.odw/workflows）
-│           · 运行    odw run <name> 按名跑（resolveWorkflow）
-│           · 记录    run 目录 + JSONL 事件 + job↔workflow 关联
-│           · 退出码  odw run --wait 终态非零
-│           · 定时    OS-cron 配方（无新调度模块）
-│
-└─ ② 客户端（只读展示层）── macOS 原生应用 · 基于 ODW 套件
-    │
-    ├─ (a) Workspace   有哪些 workflow + 它们的结构
-    ├─ (b) Jobs        在跑/历史的 job + 各属于哪个 workflow + 实时进展（活 DAG）
-    └─ (c) 待定        （第三个展示维度，暂留空位）
-```
+**ODW 是动态工作流的可移植运行时，外加一个本地观测台。**
+
+一份 Claude Code 方言的脚本（`export const meta` + 注入的 `agent / parallel / pipeline / phase / log / budget / workflow`），可以原样跑在 Claude Code、Codex、Gemini、Qwen、Kimi、OpenCode、Kilo、Cursor、Oh My Pi 或自定义 CLI 上。每次运行都是一个脱离宿主会话的后台 worker，加一个可查询、可追溯的 run 目录。
+
+调研结论里，ODW 有三点别人难以复制的差异，后面的取舍都围绕它们：
+
+1. **一份脚本，九种以上 CLI。** 直接回应"被单一供应商锁定"和"模型一换，工作流就作废"的抱怨，也让跨供应商互审成为可能。
+2. **运行独立于宿主会话。** worker + run 目录的结构意味着：只要把每个 agent 的结果落盘，ODW 就能在 Claude Code 做不到的地方续跑（跨会话、`claude -p` 下）。
+3. **本地优先、零运行时依赖、复用用户已经付费的 CLI 订阅。** 还能只读地观测 Claude Code 自己的 workflow 运行。
 
 ---
 
-## 2. ① CLI（核心层）
+## 1. 设计原则（不随版本变化）
 
-### (a) 运行层 Runtime — 翻译 / 运行 / 执行 + 对接不同 CLI
-
-**现状（已有）**：`agent / parallel / pipeline / phase / log / args` 全实现并测试；schema 校验 + 重试管线完整；loader 源变换正确、`meta` 纯字面量解析；scheduler 信号量并发 + `dispatchedCount >= maxAgents` 的 1000-agent 兜底（scheduler.ts:52）；5 个内置适配器 + 自定义。
-
-**要做**：
-- **消除三处方言级「沉默 no-op」**：`agent.model`、`agentType`（primitives.ts:66 实为 adapter 名 fallback，语义含混）、`isolation:'worktree'`（走 copy fallback）——被接受却未生效时**响亮发 `LOG`，绝不沉默丢弃**。
-- **预算硬上限钩子**：`budget.spent()` 暂留桩（primitives.ts:115），但在 scheduler 兜底前先植入 `spent >= total` 钩子（桩态恒不触发、零行为变化），用途是日后给嵌套 `workflow()` 做成本门控。
-- **双兼容做成 CI 护栏**：把 Claude Code 方言双兼容从口头约束变成**静态审计 + fixtures**（oracle：`meta` 字面量 eval 出的值 deep-equal 同 span 的 `JSON.parse`）。这是「方言保真」这条命根子的护栏——**做成测试，不做成用户命令**。
-- **`meta` 维持 Claude Code 那份**：`name / description / phases`，本期**不加任何字段**。
-
-**择机（非本期）**：`workflow(nameOrRef)` 经同一个 `resolveWorkflow`（resolve.ts:14-16）跑本地工作流（须先有上面的预算硬上限）；`agentType` → role 映射；`isolation` 真 git-worktree。
-
-### (b) 运行记录 Runs — 可观测、可追溯、可定时
-
-**现状（已有）**：detached worker（launcher.ts spawn + unref，fire-and-forget）+ 文件化 run 目录（原子写）；JSONL 9 类事件；`resolveWorkflow` 命名解析；`odw list` 默认输出已含 name（cli.ts:268）；`--wait` 终态退出码已在 reportTerminal 映射（cli.ts:439-451）；Agent 经 SKILL.md 写入 `.odw/workflows`（管理目录已就位）。
-
-**要做**：
-- **job ↔ workflow 关联**（客户端 Jobs 的命根子）：`workflowName` 在**创建时**写入 `CreateRunInput`（run-store.ts:45）——目前只在运行中写（worker.ts:74）；并提供 `odw list --workflow <name>` / `odw logs --workflow <name>` 反查，不扫描全部 meta.json。
-- **退出码保证**：非 `--wait` 路径目前 spawn 即返回 0（cli.ts:196）；补齐 `--wait` 对 `failed`/`stopped` 返回非零（已映射，加测试覆盖）。
-- **OS-cron 配方**：文档 + shell 模板，**强制 `--wait`**，无 daemon、无新调度模块。
-- **SKILL.md 复核**：核对组合模式 ↔ 8 个 example 对齐、原语签名现行、确定性规则成文。
-
-**择机**：`odw cleanup` 按龄清理；dead-pid 标记 `interrupted`。
+- **零运行时依赖。** 运行时是纯 Node；看板是由内嵌二进制直接服务的单文件 bundle，不访问任何 CDN。
+- **方言保真优先。** 能在 Claude Code 跑的脚本，在 ODW 也必须能跑；ODW 独有的能力一律以**显式扩展**的形式提供，并在文档中标明。
+- **不做静默降级。** 接受了但没生效的选项要发出响亮的 `LOG`；失败要有类型、有证据，不能被当成成功放过去。
+- **状态必须真实。** 进程死了就显示 `stale`，不是 `running`；被停止的运行就是 `stopped`，不是 `done`。
+- **写能力保持窄口径。** 看板只能写 Chat Host 会话、偏好设置，以及对 ODW 自己的运行发起控制；Claude provider 永远只读；绑定到非回环地址时一律拒绝写入。
 
 ---
 
-## 3. ② 客户端（只读展示层）
+## 2. 已交付（截至 2026-10）
 
-**定位**：基于 ODW 套件的**只读窗口**。当前看板是 `web/` 下的单页应用（构建为 `web/dist/index.html` 后内嵌；旧的单文件 `src/dashboard.html` 已删除），待升级为数据驱动的 DAG。
+| 模块 | 内容 |
+| --- | --- |
+| 运行层 | 全部原语（含嵌套 `workflow()`）、schema 校验与重试、`budget` 估算上限、9 个内置适配器 + 自定义、worktree 隔离、loader 源变换、方言双兼容审计 |
+| 运行记录 | detached worker + run 目录（原子写）、JSONL 事件、`workflowName` 创建时写入、`--wait` 终态退出码、`rerun`、`pause/resume/stop`、OS-cron 配方 |
+| 看板 | `odw serve`：Activity / Jobs / Job（活 DAG）/ Workspace / Settings / Chat Host，SSE 实时推送，Claude Code 运行只读观测 |
+| 分发 | SEA 单文件二进制 + 事务式安装脚本 + skill |
 
-**技术选型（2026-07-09 更新）**：客户端形态收敛为**纯 Web**——`odw serve` 的浏览器看板是唯一客户端；此前的 Tauri 原生外壳（`apps/desktop`）已退役删除。运行时永远纯 Node 零依赖；前端经 `scripts/embed-dashboard.mjs` 产出**唯一一份 bundle**，由内嵌二进制直接服务。
+**本轮（2026-10）的可靠性与体验修复：** ✅
 
-**需运行时先行暴露的（小）契约**：拓扑事件（`agent/parallel/pipeline` 在 `AGENT_STARTED` 上发可选 `groupId/kind/index`，`RunDetail` 派生 groups 树，向后兼容，旧 events.jsonl 仍可折叠）+ SSE `/api/stream?since=` 增量。
-
-### (a) Workspace — 有哪些 workflow + 它们的结构
-- 数据：管理目录的脚本列表 + `meta`(name/description/phases)。「结构」先用 `meta.phases` 给泳道层级，更细的 DAG 来自运行时拓扑事件。
-- 纯只读，不发起运行。
-
-### (b) Jobs — 在跑/历史的 job + 各属于哪个 workflow + 实时进展
-- 数据：run 记录（由 §2(b) 的 `workflowName` 关联）+ events.jsonl 流。
-- **活 DAG**：phase 泳道、**单层** parallel fan-out、**单层** pipeline 链、节点按状态变色；SSE 实时 + 断线重连显示缓存 + stale badge，再经 `?since=` 追平。
-- **嵌套渲染**（parallel 嵌在 pipeline 内）作为**后续独立交付**渲染为可折叠子图，**绝不降级回 lane**（lane 正是别人已有的）。
-
-### (c) 待定 — 第三个展示维度
-暂留空位（此前的候选如 Hub 画廊都依赖分发，本期不适用；待定下真正的第三维再补）。
-
----
-
-## 3.5 ③ Chat Host 与 Launch 退役（2026-07-03）
-
-> 早期的 Launch / 发射台路线已从前后端删除：不再提供 `#/launch`、`GET /api/adapters`、`POST /api/generate`、`POST /api/runs`、`POST /api/workflows`。当前 App 入口收敛为 Chat Host + Jobs / Workspace / Activity 观测；Claude provider 仍严格只读。
-
-- **当前用户流**：在 Chat 中正常和 Codex 对话；提到 ODW 或 workflow 时，Chat Host 将该回合关联到真实异步 ODW run，run 完成后以 user message 形式恢复会话并触发下一轮 Codex 工作。
-- **保留的引擎能力（CLI 同样受益）**：`validate(source)` 原语；run 级 adapter 覆盖（`odw run --adapter <name>`）；`startRunFromSource`（内联脚本随 run 留档于 run 目录）。
-- **方言完备性**：嵌套 `workflow()` 已实现（单层、共享调度与预算，Claude Code 对齐）；`budget.spent()` 从桩升级为估算计量（chars/4），`--budget` 成为真上限。
-- **安全面**：本地写能力仅保留 Chat 会话/消息、ODW run 控制与配置类接口，继续通过 `writeGuard`（Content-Type + same-origin）+ Host 头校验（防 DNS rebinding）收敛。
+- 进程生命周期：超时或停止时按进程组整体 kill（包括孙进程）；停止会中断已在运行的 agent；未处理的 rejection 会把运行记为 failed，而不是让 worker 默默死掉；被脚本吞掉的致命错误不再被误报为 `done`。
+- 配置：非法数值（如 `"concurrency": "auto"`）直接报 `ConfigError`，不再带着 NaN 继续运行。
+- 结构化输出：从所有候选片段中选出第一个**通过 schema 校验**的 JSON；重试时附上上一次的回复，且每次重试都计入预算。
+- 安全：workflow 的 `meta` 改为纯字面量解析，列出工作流时不再执行文件里的任何代码。
+- 服务端：缓存命中时同样重新判断进程存活；文件监听加了防抖；事件改为增量读取（`?since` / `?tail`，带 ETag）；新增 `/api/activity` 聚合接口；修复请求体多字节字符在分块边界被截断的问题，超限返回 413；非法转义返回 400；`server.ts` 按职责拆分。
+- 构建与 CI：typecheck 不会再悄悄换掉内嵌看板；生成文件做漂移检查；CI 覆盖 Node 20/22/24 和 macOS/Windows；安装脚本校验 SHA256。
+- 诊断：新增 `odw doctor [--smoke]`，检查运行环境、配置、运行目录和各适配器；`--smoke` 会发一条真实提示，揪出"以 0 退出却没回答"的无头 CLI。
+- 运行列表推送改为增量（`/api/stream?delta=1`）；脚本报错的行号与源文件一致；Windows 终端也能显示实时视图。
+- 新示例 `review-swarm.js`：先梳理改动，再按多个视角并行审查，每条发现独立验证，最后输出带证据的分级报告。
+- **看板重新设计**（"纸、墨、信号"）：脉搏图、带走线动画的 DAG、甘特时间线、agent 抽屉、可过滤可跟随的日志、JSON 结果树、命令面板、快捷键、运行结束提示与桌面通知、亮/暗主题、减弱动效、增量渲染（不再重置滚动位置）。
 
 ---
 
-## 4. 推进顺序（按依赖，不绑版本号）
+## 3. 路线：按需求排序
 
-1. **`workflowName` 创建时写入 + 反查**（run-store / cli）——客户端 Jobs 的最小前置。
-2. **拓扑事件（加性）**——客户端活 DAG 的数据前置；旧 events.jsonl 仍折叠。
-3. **客户端 Web 版**：Workspace + Jobs，先在浏览器把 DAG 体验跑通。
-4. **退出码保证 + OS-cron 配方**——让运行可被定时触发并判定成败（与 1–3 相对独立）。
-5. **运行层补强**：消除沉默 no-op + 预算硬上限钩子 + 双兼容 CI 审计 + SKILL.md 复核（持续）。
-6. ~~**Tauri 原生外壳**~~（2026-07-09 取消：桌面外壳已退役，Web 看板是唯一客户端，不再套原生壳）。
+### Now — 0.6「可靠与可控的成本」
+
+| # | 方向 | 需求 | 规模 | 状态 |
+| --- | --- | --- | --- | --- |
+| N1 | **每个 agent 的结果落盘 + `odw resume`**：已完成的 agent 结果原子写入 run 目录，可以按运行和按 agent 查询（CLI、API、看板抽屉）；`resume` 重放 `(prompt, opts)` 未变的调用，只重跑变化或失败的部分 | #4 恢复（[#24](https://github.com/xz1220/open-dynamic-workflows/issues/24)） | M | 🚧 |
+| N2 | **完成通知钩子**：`notify` 配置支持 command 和 webhook，覆盖运行结束、失败、停止；看板侧已有提示和桌面通知 | #11 | S | 🚧 |
+| N3 | **卡死看门狗**：agent 输出长时间没有动静（`stallMs`）就触发重启，重启次数有上限，并记录 stall 事件 | #5 | S | 🚧 |
+| N4 | **命令原语** `exec()`（ODW 扩展）：异步执行，支持参数、cwd、超时、输出上限，可被取消，返回 stdout/stderr/退出码，并在 DAG 中可见 | [#31](https://github.com/xz1220/open-dynamic-workflows/issues/31) | M | 🚧 |
+| N5 | **用量与成本**：适配器改用各 CLI 的 JSON 输出模式（`claude --output-format json` 的 `total_cost_usd`、`codex exec --json` 的 usage），按 agent 和阶段记录真实用量，`budget` 改用真实计量；大规模 fan-out 启动前给出预警 | #1 | M | ⏳ |
+| N6 | **失败分类与退避**：区分限流、过载、额度耗尽、鉴权四类失败；按适配器节流，遵守 retry-after；额度耗尽时整体暂停，到重置时间自动恢复；支持回退适配器链 | #3 | M | ⏳ |
+| N7 | **有证据的成功**：读取 CLI 报告的成功信号（`is_error`、`permission_denials`、MCP 状态），转成有类型的失败；`agent()` 可声明后置条件（"有文件改动"、"某命令通过"）。`odw doctor --smoke` 已交付 | #7（[#23](https://github.com/xz1220/open-dynamic-workflows/issues/23)） | M | 🚧 部分 |
+| N8 | **原生结构化输出**：优先使用 `codex --output-schema` / `claude --json-schema`；启动前拒绝不受支持的 schema 关键字 | #12 | S–M | ⏳ |
+
+### Next — 0.7「审阅与掌控」
+
+| # | 方向 | 需求 | 规模 |
+| --- | --- | --- | --- |
+| X1 | **diff 作为运行产物 + `odw apply`**：保留 worktree 的分支和 diff；合并前用 `git merge-tree` 预检，再跑校验命令，逐个合并；看板提供并排 diff 审阅 | #2 | M |
+| X2 | **权限档位**：read-only / edit / full 三档，映射到各 CLI 的对应参数，启动前展示；环境变量白名单 + 密钥引用脱敏；不受信任的仓库使用 `--bare` | #6 | M |
+| X3 | **agent transcript**：保存每个 agent 的 JSON 流（工具调用、重试）；看板和 `odw logs --agent` 可查看；导出 OpenTelemetry GenAI span | #8 | M |
+| X4 | **人工检查点** `checkpoint()`（ODW 扩展）：持久暂停，`odw approve/reject [--edit]` 继续；看板提供审批入口（依赖 N1） | #9 | M |
+| X5 | **worktree 环境**：支持 `.worktreeinclude`、带超时的 setup 命令、为每个 agent 分配 `ODW_PORT` | #10 | S |
+| X6 | **调度**：`odw schedule add` 写入 cron/launchd/systemd，带防重叠锁、错过运行的处理策略和失败通知（不引入 daemon） | #14 | S |
+| X7 | **按阶段指定适配器和模型**：设置默认值、模型分层和回退链；解析 Claude plugin 工作流 | #13 | M |
+
+### Later — 0.8+「规模与生态」
+
+- 可选的容器运行器（默认断网）。（#6，L）
+- `odw eval`：用例 × 适配器 × 重复次数，输出通过率、成本和延迟；运行元数据记录 CLI 版本；提供 `odw diff runA runB`。（#15，L）
+- 可分享的脱敏运行包；看板远程只读访问（写操作必须带令牌鉴权）。（#11/#13，M）
+- 发布方言双兼容测试套件，作为社区工作流的兼容性标准。（#13）
 
 ---
 
-## 5. 本期明确不做
+## 4. 看板（Web 客户端）路线
 
-把范围钉死，避免边界蔓延：
+当前形态：`odw serve` 内嵌的单文件 SPA（vanilla TS + esbuild，零依赖）。视觉语言是"纸、墨、信号"：暖纸色底、近黑的墨色、一种代表"活着"的信号绿、朱红表示失败、琥珀表示等待；衬线体用于标题和数字，等宽体用于机器信息；暗色模式即墨与纸互换。
 
-- **分发 / Hub / install / publish / upgrade**：整条链推迟到未来；连带 `meta` 的 `args / author / version / license / repository` 一并挂起——**哪天真做分发，再回来加这些字段**。
-- **GUI 发起工作流 / 参数表单渲染**：客户端只读，发起永远在 Agent + CLI。
-- **`odw describe` / `check` / `new`**：describe、表单的影子；`new` 是前 Agentic 时代的人类脚手架——都不做。
-- **自研调度器**：走 OS cron，不写 daemon、不加新模块。
-- **真 token 计量、Date/Math.random replay 沙箱、第一方领域模板广度**：均不做。
+| 阶段 | 内容 |
+| --- | --- |
+| ✅ 本轮 | 增量渲染（morph）；脉搏图；带绘制与流动动画的 DAG（缩放、适应、拖拽、自动跟随当前阶段）；甘特时间线；agent 抽屉；日志过滤与跟随；JSON 树；命令面板（⌘K）与快捷键速查（?）；运行结束提示 + 桌面通知；首次使用引导；主题、动效、语言偏好；键盘可达与对比度；手机与窄屏布局；增量推送运行列表 |
+| 🚧 随 N1、N4 | 抽屉内显示 agent 的实际输出；DAG 中显示 `exec()` 步骤（前端已就绪，等待后端） |
+| ✅ 前端已就绪 | 检查点审批卡片（X4）、token 与花费（N5）、失败原因标签（N6）、运行钩子配置（N2）——后端数据一到即可显示 |
+| ⏳ 随 N5、X1、X3、X4 | 按 agent 和阶段的成本视图；并排 diff 审阅；transcript 回放；检查点审批 |
+
+开发方式：`node web/demo-fixtures.mjs <runs> <proj> --live` 生成实时模拟数据，`node web/dev.mjs --api http://127.0.0.1:4317` 启动开发服务器（每次刷新都会重新构建）。
 
 ---
 
-## 附录 · 关键文件锚点
+## 5. 明确不做
 
-- `src/loader.ts` — `WorkflowMeta`（本期不扩字段）；`assertMeta`
-- `src/primitives.ts` — `agentType` fallback:66；`spent` 桩:115；`workflow` 抛错:119-120
-- `src/scheduler.ts` — 1000-agent 兜底:52（`spent>=total` 钩子落点）
-- `src/runtime/run-store.ts` — `CreateRunInput`:45（待加 `workflowName`）
-- `src/runtime/worker.ts` — name 写入:74（仅运行中，待提前到创建时）
-- `src/runtime/launcher.ts` — fire-and-forget spawn:60-66
-- `src/cli.ts` — list 已含 name:268；reportTerminal 退出码:439-451；非 --wait spawn 即 0:196
-- `src/workflows/resolve.ts` — 命名解析 resolver:14-16
-- `src/runtime/server.ts` — API 端点（拓扑事件 / SSE）
-- `web/` — 看板 SPA，经 `scripts/embed-dashboard.mjs` 内嵌为单一 bundle 工件（待升级为数据驱动 DAG）
-- `skills/open-dynamic-workflows/SKILL.md` — 待复核
-- `tests/` — 待加双兼容静态审计 + fixtures
+- **GUI 发起通用工作流 / 参数表单**：工作流由 Agent 或 CLI 发起；看板只负责观测和控制 ODW 自己的运行。
+- **自研常驻调度 daemon**：调度交给操作系统（X6 只负责写入系统定时任务）。
+- **托管执行策略 / 根级授权体系**（见 2026-09 triage 中的 PR #30）：等有了具体的托管用户和经过独立评审的威胁模型再议。
+- **分发 Hub / 市场**：先做可分享的运行包和兼容性套件，Hub 暂缓。💤
