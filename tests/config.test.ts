@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -68,6 +68,30 @@ test("config example preserves every built-in adapter contract", () => {
   const config = loadConfig(join(process.cwd(), "odw.config.example.json"));
   for (const [name, adapter] of Object.entries(defaultConfig().adapters)) {
     assert.deepEqual(config.adapters[name], adapter, `example adapter '${name}' must match its built-in`);
+  }
+});
+
+test("config example lints clean, and its commented-out notify block is valid once enabled", () => {
+  const example = JSON.parse(readFileSync(join(process.cwd(), "odw.config.example.json"), "utf8"));
+  assert.deepEqual(collectConfigWarnings(example), []);
+  const stall = loadConfig(join(process.cwd(), "odw.config.example.json"), { quiet: true }).settings;
+  assert.equal(stall.stallTimeout, null, "the example keeps the watchdog off");
+  assert.equal(stall.stallRestarts, 1);
+
+  const { "//notify": notify, ...rest } = example;
+  const enabled = { ...rest, notify };
+  assert.deepEqual(collectConfigWarnings(enabled), []);
+  const dir = mkdtempSync(join(tmpdir(), "odw-cfg-"));
+  try {
+    const p = join(dir, "odw.config.json");
+    writeFileSync(p, JSON.stringify(enabled));
+    assert.deepEqual(loadConfig(p, { quiet: true }).settings.notify, {
+      command: notify.command,
+      webhook: notify.webhook,
+      on: ["done", "failed", "stopped"],
+    });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });
 

@@ -266,7 +266,9 @@ odw list
 提示)可显式指定模式;环境变量 `ODW_DETACH=1` 强制后台。
 
 一次运行在独立的 detached worker 进程里执行,并把一切持久化到一个 run 目录——所以它能
-比启动它的命令活得更久,也能从任何地方被观测。
+比启动它的命令活得更久,也能从任何地方被观测。向这个 worker 发送 SIGTERM、SIGINT 或
+SIGHUP,效果与 `odw stop` 相同:它的 agent 连同其启动的所有进程都会被杀掉、worktree 被
+清理,运行记为 stopped;第二个信号,或运行在 10 秒内没能结束,会让 worker 立即退出。
 
 保存好的 workflow 也可以直接按名字运行。ODW 会先找项目级、再找个人级,并同时读取自己
 的目录和 Claude Code 保存 workflow 的目录: `.odw/workflows`、`.claude/workflows`、
@@ -391,6 +393,69 @@ Windows 下的可执行文件探测遵循 `PATHEXT`,所以 `agent.cmd`、`kilo.c
 在 stderr 上给出警告(附 did-you-mean 提示),而不是静默忽略。没设
 `defaultAdapter` 时,odw 会用唯一配置的 adapter——或在全新安装下,用 PATH 上
 唯一真实存在的那个 CLI;若装了多个,报错会列出它们并告诉你如何选择。
+
+### 卡死看门狗
+
+**ODW 扩展。** 一个卡住的 agent CLI 原本会一直占着并发槽位,直到 `timeout`(默认 30
+分钟)。设置 `stallTimeout` 后,若某个 agent 的 stdout *和* stderr 连续这么多秒都没有
+任何输出,ODW 会像超时一样杀掉它(连同整个进程组),再用同一个 prompt 重新启动,每次
+`agent()` 调用最多重启 `stallRestarts` 次(默认 1)。每次重启都会记一条日志
+(`search:3 went quiet for 120s — restarting (1/1)`);用完重启次数后,这次调用失败,
+错误信息会说明 agent 卡死(stalled)。停止、暂停或预算上限永远优先于重启。
+
+```jsonc
+{
+  "stallTimeout": 120, // 静默的秒数;null(默认)= 关闭
+  "stallRestarts": 1,
+  "adapters": {
+    // 按适配器设置:覆盖运行级的值;0 表示对这个适配器关闭看门狗
+    "my_wrapper": { "command": ["my-agent", "--stream", "{prompt}"], "stallTimeout": 300 }
+  }
+}
+```
+
+看门狗**对所有内置适配器默认关闭**:有些 CLI——比如文本模式的 `claude --print`——在
+结束前什么都不输出,任何卡死超时都会误杀正常工作。请只对会流式输出进度的适配器启用
+(例如 `kilo`、`opencode` 这类 JSONL 适配器,或会打印心跳的包装脚本),并把值设得高于
+健康 agent 最长的静默时段——工具调用里跑一轮很长的测试,同样不会有任何输出。
+
+### 运行通知
+
+**ODW 扩展。** `notify` 会在一次运行结束时执行一条命令和/或向一个 webhook 发送 POST,
+让通宵跑的 workflow 结束后主动告诉你结果:
+
+```jsonc
+"notify": {
+  "command": ["/usr/local/bin/odw-notify"],        // 参数向量,不经过 shell 执行
+  "webhook": "https://hooks.slack.com/services/…", // Slack、Discord 或任何接收 JSON 的端点
+  "on": ["done", "failed", "stopped"]              // 默认:所有终态
+}
+```
+
+这些 hook 只在运行的终态写入之后触发一次,所以既不会拖延、也不会改变终态;失败或卡住
+的 hook 只会记录到该运行的 `worker.log`。命令(30 秒后被杀)在运行的源目录里执行,环境
+变量里带有 `ODW_RUN_ID`、`ODW_RUN_STATE`、`ODW_WORKFLOW`、`ODW_RUN_DIR`、
+`ODW_RESULT_FILE`(仅当运行有结果时)、`ODW_DURATION_SEC`、`ODW_AGENTS` 和
+`ODW_FAILED_AGENTS`。webhook(10 秒时限)收到:
+
+```jsonc
+{
+  "runId": "20261017-041600-3fa2c1",
+  "workflow": "deep-research",
+  "state": "done", // done | failed | stopped
+  "createdAt": 1792210560.2, // Unix 秒
+  "finishedAt": 1792210812.5,
+  "durationSec": 252,
+  "counts": { "agents": 12, "done": 11, "failed": 1 },
+  "text": "odw · deep-research finished in 4m12s · 12 agents, 1 failed",
+  "content": "odw · deep-research finished in 4m12s · 12 agents, 1 failed"
+}
+```
+
+失败和被停止的运行还会多一个 `error` 字段。`text` 与 `content` 是同一行摘要,所以
+Slack 和 Discord 的 incoming webhook 能直接渲染(同时设置了 Discord 的
+`allowed_mentions`,一次运行永远不会 @ 到任何人)。看板的设置页会显示配置了哪些
+hook——webhook 只显示协议和主机,因为 URL 的其余部分就是密钥。
 
 ## 工作原理
 

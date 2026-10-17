@@ -81,11 +81,14 @@ shell 出去执行一个本地命令，通过 stdin 或一个参数把拼好的 
 | `concurrency` | 同时运行的 agent CLI 上限；省略则自动（`min(16, cpus-2)`） |
 | `maxAgents` | 单次运行总派发量的硬上限（防失控兜底） |
 | `timeout` | 每个 agent CLI 的超时（秒） |
+| `stallTimeout` | **ODW 扩展。** agent 在 stdout 和 stderr 上都没有任何输出的最长秒数，超过即像超时一样被杀掉，并用同一个 prompt 重启；`null`（默认）= 关闭。所有内置适配器都默认关闭，因为有些 CLI（文本模式的 `claude --print`）在结束前什么都不输出——请只对会流式输出进度的适配器启用 |
+| `stallRestarts` | 每次 `agent()` 调用在卡死后最多重启几次，用完后调用以 “stalled” 错误失败（默认 1） |
 | `schemaRetries` | schema 校验失败时的额外重试次数 |
 | `runsRoot` | run 的存放位置（默认 `~/.odw/runs`） |
 | `workflowsRoot` | 按名字解析 workflow 的目录（默认 `~/.odw/workflows`） |
 | `claudeWorkflowsRoot` | 读取 Claude Code 已保存 workflow 的目录（默认 `~/.claude/workflows`，遵循 `CLAUDE_CONFIG_DIR`） |
 | `claudeJobsScope` | dashboard 显示哪些 Claude Code 运行：`"all"`（默认）或 `"project"` |
+| `notify` | **ODW 扩展。** 运行结束时的 hook：`{ "command": [argv], "webhook": "https://…", "on": ["done", "failed", "stopped"] }`——见下文 |
 
 ### 适配器字段
 
@@ -95,8 +98,25 @@ shell 出去执行一个本地命令，通过 stdin 或一个参数把拼好的 
 | `stdin` | 喂给进程 stdin 的可选模板（如 `"{prompt}"`） |
 | `env` | 叠加在进程环境之上的额外环境变量 |
 | `timeout` | 每次调用的超时（秒）（覆盖运行级的 `timeout`） |
+| `stallTimeout` | 这个 CLI 的卡死超时（秒）（覆盖运行级的 `stallTimeout`；`0` 表示对该适配器关闭看门狗） |
 | `label` | 进度显示用的友好名字 |
 | `flags` | 能力声明，如 `{ "model": ["--model"] }`——承载每次调用 `model` 的原生旗标。不声明它，`agent(..., { model })` 对该适配器就不生效（日志里会出现一条路由说明） |
+
+### 运行通知（`notify`）
+
+每次运行在终态写入之后触发一次 hook，所以 hook 既不会拖延、也不会改变终态；失败或卡住的
+hook 只会记录到该运行的 `worker.log`。
+
+- `command`——一个**不经过** shell 执行的参数向量（30 秒后被杀），在运行的源目录里执行，
+  环境变量里带有 `ODW_RUN_ID`、`ODW_RUN_STATE`、`ODW_WORKFLOW`、`ODW_RUN_DIR`、
+  `ODW_RESULT_FILE`（仅当运行有结果时）、`ODW_DURATION_SEC`、`ODW_AGENTS` 和
+  `ODW_FAILED_AGENTS`。
+- `webhook`——一个 http(s) URL，接收一个 JSON POST（10 秒时限）：
+  `{ runId, workflow, state, createdAt, finishedAt, durationSec,
+  counts: { agents, done, failed }, error?, text, content }`。`text` 和 `content`
+  是同一行摘要（“odw · deep-research finished in 4m12s · 12 agents, 1 failed”），
+  所以 Slack 和 Discord 的 incoming webhook 能直接渲染。
+- `on`——哪些终态会触发 hook（默认：全部三种）。
 
 ### 占位符
 
