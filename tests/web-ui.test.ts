@@ -327,6 +327,9 @@ test("the Changes tab lists agents that left a diff and freezes a host for the d
   assert.equal(count(html, /class="rv-item/g), 2, "an agent that changed nothing is not listed");
   assert.match(html, /class="rv-item on" data-review="0"/, "the first agent with changes is reviewed by default");
   assert.match(html, /data-copy="odw apply 20260101-000000-aaaaaa --agent 1"/);
+  assert.match(html, /data-copy="odw apply 20260101-000000-aaaaaa --agent 1 --check"/, "a preview that changes nothing");
+  assert.match(html, /data-copy="odw apply 20260101-000000-aaaaaa --all --check"/, "every agent previewed, stacked");
+  assert.match(html, /data-copy="odw apply 20260101-000000-aaaaaa --all"/);
   assert.match(html, /data-copy="git switch odw\/r\/1-fix-auth"/, "a kept branch can be checked out");
   assert.match(html, /<div class="diff-host"[^>]*data-morph="skip" data-v="20260101-000000-aaaaaa:1\|loading\|en"/);
   assert.match(html, /<b class="ins">\+40<\/b><b class="del">−15<\/b><\/span><span class="k">lines changed/);

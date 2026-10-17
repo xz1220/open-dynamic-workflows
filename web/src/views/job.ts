@@ -594,6 +594,7 @@ function changesTab(run: RunDetail, s: JobViewState): string {
     `</div></div>` +
     `<div class="rv-actions">` +
     `<button class="btn primary" data-copy="${esc(applyCmd(run, a))}" data-tip="${esc(t("applies this diff to your working tree"))}">${icons.terminal}${t("Copy apply command")}</button>` +
+    `<button class="btn" data-copy="${esc(`${applyCmd(run, a)} --check`)}" data-tip="${esc(t("previews each file — clean, conflict or already applied — and changes nothing"))}">${t("Copy preview")}</button>` +
     (branch
       ? `<button class="btn ghost" data-copy="git switch ${esc(branch)}" data-tip="${esc(t("copy a checkout command"))}">${icons.branch}<span class="mono">${esc(branch)}</span></button>`
       : "") +
@@ -601,7 +602,12 @@ function changesTab(run: RunDetail, s: JobViewState): string {
   return (
     `<div class="review">` +
     `<aside class="rv-list" aria-label="${esc(t("Agents with changes"))}">` +
-    `<div class="rv-total"><span class="v num">${changed.length}</span><span class="k">${tn(changed.length, "agent changed files", "agents changed files")}</span>${deltaHtml(ins, del)}</div>` +
+    `<div class="rv-total"><span class="v num">${changed.length}</span><span class="k">${tn(changed.length, "agent changed files", "agents changed files")}</span>${deltaHtml(ins, del)}` +
+    (changed.length > 1
+      ? `<div class="rv-all"><button class="btn sm" data-copy="${esc(`odw apply ${run.runId} --all --check`)}" data-tip="${esc(t("previews every agent's diff stacked in order"))}">${t("Preview all")}</button>` +
+        `<button class="btn sm ghost" data-copy="${esc(`odw apply ${run.runId} --all`)}" data-tip="${esc(t("applies them in order, stopping at the first conflict"))}">${t("Apply all")}</button></div>`
+      : "") +
+    `</div>` +
     list +
     `</aside>` +
     `<section class="rv-main" data-key="rvm-${esc(key)}">${head}` +

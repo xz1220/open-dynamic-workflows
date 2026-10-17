@@ -239,6 +239,12 @@
 .rv-total .dn {
   width: 100%;
 }
+.rv-all {
+  display: flex;
+  gap: 6px;
+  width: 100%;
+  margin-top: 8px;
+}
 .rv-item {
   position: relative;
   display: flex;
