@@ -39,6 +39,10 @@ export interface RunSummary {
 }
 
 export interface AgentView {
+  /** Stable per-dispatch id from the engine (null for pre-agentId event files). */
+  agentId?: number | null;
+  /** The value was replayed from an earlier run by `odw resume`. */
+  cached?: boolean;
   label: string;
   phase: string | null;
   state: AgentState;
@@ -173,4 +177,34 @@ export interface ChatSessionSummary {
 export interface ChatSession extends Omit<ChatSessionSummary, "lastMessage" | "linkedRuns"> {
   messages: ChatMessage[];
   linkedRuns: ChatLinkedRun[];
+}
+
+/** One event in the cross-run activity stream (GET /api/activity). */
+export type ActivityEvent = WorkflowEvent & {
+  runId: string;
+  /** The run's workflow name. */
+  run: string;
+  adapter: string | null;
+  provider?: "odw" | "claude";
+};
+
+/** GET /api/activity — the newest events across runs + running agents per adapter. */
+export interface ActivitySnapshot {
+  events: ActivityEvent[];
+  fleet: Record<string, number>;
+}
+
+/** GET /api/runs/:id/agents/:agentId — a completed agent's persisted result. */
+export interface AgentResultRecord {
+  agentId: number;
+  label: string;
+  phase: string | null;
+  adapter: string | null;
+  attempts: number | null;
+  startedAt: number | null;
+  finishedAt: number | null;
+  value: unknown;
+  /** Replayed from an earlier run by `odw resume`. */
+  cached?: boolean;
+  sourceRunId?: string | null;
 }

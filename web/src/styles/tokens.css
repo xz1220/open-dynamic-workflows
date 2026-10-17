@@ -1,0 +1,116 @@
+/* ==================================================================
+   Open Dynamic Workflows — design tokens.
+
+   "Paper, ink & signal": an editorial-technical language. Warm paper and
+   near-black ink carry everything; a single signal green means *alive*, a
+   vermilion means *broken*, amber means *waiting or silent*. Display type is
+   an italic-capable serif (numerals, titles); machine facts are monospace.
+   Night mode inverts the print: the same three inks on carbon.
+   ================================================================== */
+:root {
+  /* type */
+  --f-display: "Instrument Serif", "Iowan Old Style", "Songti SC", "Noto Serif CJK SC", "Source Han Serif SC", Georgia, serif;
+  --f-ui: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, "Helvetica Neue", "PingFang SC",
+    "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+  --f-mono: "JetBrains Mono", "SF Mono", ui-monospace, "Cascadia Code", Menlo, Consolas, "Liberation Mono", monospace;
+
+  /* motion */
+  --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --t-fast: 140ms;
+  --t-med: 260ms;
+  --t-slow: 520ms;
+
+  /* shape */
+  --r-xs: 6px;
+  --r-sm: 9px;
+  --r-md: 13px;
+  --r-lg: 18px;
+  --rail-w: 244px;
+}
+
+:root,
+[data-theme="light"] {
+  --paper: #f3f1ea;
+  --paper-2: #ebe8df;
+  --card: #fdfcf9;
+  --card-2: #f8f6f1;
+  --ink: #131311;
+  --ink-2: #33322d;
+  --mute: #6e6b62;
+  --faint: #a8a497;
+  --line: #e0dcd1;
+  --line-2: #cdc8bb;
+  --grid: rgba(19, 19, 17, 0.055);
+  --shade: rgba(19, 19, 17, 0.06);
+  --shadow-1: 0 1px 0 rgba(19, 19, 17, 0.04), 0 1px 2px rgba(19, 19, 17, 0.05);
+  --shadow-2: 0 1px 0 rgba(19, 19, 17, 0.04), 0 8px 24px -10px rgba(19, 19, 17, 0.18);
+  --shadow-3: 0 24px 64px -18px rgba(19, 19, 17, 0.32), 0 2px 6px rgba(19, 19, 17, 0.06);
+
+  --sig: #00b26a;
+  --sig-ink: #057a4a;
+  --sig-soft: rgba(0, 178, 106, 0.11);
+  --sig-line: rgba(0, 178, 106, 0.38);
+  --sig-glow: rgba(0, 178, 106, 0.28);
+  --alarm: #ec4320;
+  --alarm-ink: #b02b10;
+  --alarm-soft: rgba(236, 67, 32, 0.09);
+  --alarm-line: rgba(236, 67, 32, 0.4);
+  --amber: #df930a;
+  --amber-ink: #87580a;
+  --amber-soft: rgba(223, 147, 10, 0.11);
+  --amber-line: rgba(223, 147, 10, 0.45);
+  --clay: #c2603c; /* Claude Code provenance */
+  --clay-soft: rgba(194, 96, 60, 0.1);
+
+  --code-bg: #171815;
+  --code-ink: #e7e6df;
+  --code-dim: #6f7268;
+  --code-kw: #8fb6ff;
+  --code-str: #84e0a8;
+  --code-fn: #e2b4ff;
+  --code-num: #f5c46b;
+
+  /* The paper grain: a static, almost subliminal fractal-noise texture painted
+     once behind the page (cards stay smooth sheets on top of it). */
+  --grain: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='180' height='180'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 .055 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
+  color-scheme: light;
+}
+
+[data-theme="dark"] {
+  --paper: #0d0e0c;
+  --paper-2: #090a08;
+  --card: #141613;
+  --card-2: #181a17;
+  --ink: #edede6;
+  --ink-2: #c8c9c0;
+  --mute: #8b8e84;
+  --faint: #565a51;
+  --line: #242722;
+  --line-2: #30342d;
+  --grid: rgba(237, 237, 230, 0.045);
+  --shade: rgba(237, 237, 230, 0.05);
+  --shadow-1: 0 1px 0 rgba(0, 0, 0, 0.4);
+  --shadow-2: 0 10px 30px -12px rgba(0, 0, 0, 0.7);
+  --shadow-3: 0 30px 80px -20px rgba(0, 0, 0, 0.85), 0 0 0 1px rgba(255, 255, 255, 0.04);
+
+  --sig: #2ee88e;
+  --sig-ink: #5cf5aa;
+  --sig-soft: rgba(46, 232, 142, 0.1);
+  --sig-line: rgba(46, 232, 142, 0.38);
+  --sig-glow: rgba(46, 232, 142, 0.35);
+  --alarm: #ff5b39;
+  --alarm-ink: #ff8a6e;
+  --alarm-soft: rgba(255, 91, 57, 0.1);
+  --alarm-line: rgba(255, 91, 57, 0.45);
+  --amber: #ffb224;
+  --amber-ink: #ffc964;
+  --amber-soft: rgba(255, 178, 36, 0.1);
+  --amber-line: rgba(255, 178, 36, 0.45);
+  --clay: #e08a63;
+  --clay-soft: rgba(224, 138, 99, 0.12);
+
+  --code-bg: #0a0b09;
+  --grain: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='180' height='180'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 1  0 0 0 0 1  0 0 0 0 1  0 0 0 .045 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
+  color-scheme: dark;
+}

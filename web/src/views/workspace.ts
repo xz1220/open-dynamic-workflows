@@ -1,22 +1,12 @@
-/** Workspace — managed-dir workflows: list + phases + structure + source. Read-only. */
-import { t } from "../i18n";
+/** Workspace — the managed workflows: a searchable list, and per workflow its outline, source and runs. */
+import { glyph } from "../components/glyph";
+import { highlightSource, outlineSource } from "../components/source";
+import { icons } from "../icons";
+import { t, tn } from "../i18n";
 import { store } from "../store";
 import type { WorkflowDetail, WorkflowSummary } from "../types";
-import { esc } from "../util";
-
-// Very light source highlighting for the dark source view (string/keyword/comment).
-// Exported: the Job view's generated-script preview uses the same treatment.
-export function highlight(src: string): string {
-  const escaped = esc(src);
-  return escaped
-    .replace(/(\/\/[^\n]*)/g, '<span style="color:#5c6a62">$1</span>')
-    .replace(/(&#39;[^&]*?&#39;|&quot;[^&]*?&quot;)/g, '<span style="color:#7ee787">$1</span>')
-    .replace(
-      /\b(export|const|let|await|async|return|for|of|if|else|function|new)\b/g,
-      '<span style="color:#79c0ff">$1</span>',
-    )
-    .replace(/\b(agent|parallel|pipeline|phase|log)\b(?=\()/g, '<span style="color:#d2a8ff">$1</span>');
-}
+import { esc, fmtAgo } from "../util";
+import { emptyArt } from "./activity";
 
 /**
  * A workflow's stable identity for selection + detail routing. Two providers can
@@ -25,81 +15,6 @@ export function highlight(src: string): string {
  */
 export function wfKey(w: { provider: string; name: string }): string {
   return `${w.provider}:${w.name}`;
-}
-
-function listItem(w: WorkflowSummary, activeKey: string | null): string {
-  const key = wfKey(w);
-  const badgeClass = w.origin === "global" ? "srcbadge global" : "srcbadge";
-  const badge = `<span class="${badgeClass}">${esc(w.rootLabel)}</span>`;
-  const shadow = w.shadowed
-    ? `<span class="shadow" title="${t("name shadowed — odw run {name} runs a higher-precedence workflow", { name: esc(w.name) })}">${t("shadowed")}</span>`
-    : "";
-  return (
-    `<div class="wfitem ${key === activeKey ? "on" : ""}" data-wf="${esc(key)}">` +
-    `<h4>${esc(w.name)}</h4>` +
-    (w.description ? `<div class="ds">${esc(w.description)}</div>` : "") +
-    `<div class="mini">${badge}<span>${t("{n} phases", { n: w.phases.length })}</span>${w.runCount ? `<span>${t("· {n} runs", { n: w.runCount })}</span>` : ""}${shadow}</div>` +
-    `</div>`
-  );
-}
-
-/** Infer a coarse structure row per phase, by name heuristic (display-only). */
-function structureLane(title: string, i: number): string {
-  const tl = title.toLowerCase();
-  const fanout = /search|extract|vote|draft|generate|compete|verify|find|discover|map/.test(tl);
-  const pipe = /filter|judge|grade|handle|route|synth|report|reduce|rank/.test(tl);
-  const kind = fanout ? "par" : pipe ? "pipe" : "";
-  const kindLabel = fanout ? t("parallel · fan-out") : pipe ? t("pipeline") : t("agent");
-  const group = fanout ? `<div class="sgroup">× N</div>` : "";
-  return (
-    `<div class="slane"><div class="sh"><span class="ix">${i + 1}</span>${esc(title)}</div>` +
-    `<div class="snode ${kind}"><span class="kd">${kindLabel}</span>${esc(title.toLowerCase())}</div>${group}</div>`
-  );
-}
-
-function detailPane(d: WorkflowDetail): string {
-  const phasePills = d.phases.length
-    ? d.phases
-        .map((p, i) => `<span class="ppill"><span class="ix">${i + 1}</span>${esc(p.title)}</span>`)
-        .join(`<span class="ar"> → </span>`)
-    : `<span style="color:var(--muted)">${t("no declared phases")}</span>`;
-
-  const structure = d.phases.length
-    ? `<div class="rsec">${t("Structure")}</div><div class="structure">${d.phases
-        .map((p, i) => structureLane(p.title, i))
-        .join("")}</div>`
-    : "";
-
-  const runs = d.runs.length
-    ? `<div class="rsec">${t("Recent runs")}</div>` +
-      d.runs
-        .slice(0, 6)
-        .map(
-          (r) =>
-            `<div class="runmini" data-run="${esc(r.runId)}"><span class="rid">${esc(r.runId)}</span><span class="when">${t("view →")}</span></div>`,
-        )
-        .join("")
-    : "";
-
-  const badgeClass = d.origin === "global" ? "srcbadge global" : "srcbadge";
-  const runNote = d.shadowed
-    ? `<span class="note">${t("— shadowed; this runs a higher-precedence {name}", { name: esc(d.name) })}</span>`
-    : `<span class="note">${t("— started by your agent, not here")}</span>`;
-
-  return (
-    `<div class="wfdetail">` +
-    `<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px;">` +
-    `<div><h1 class="page-h1">${esc(d.name)}</h1>` +
-    `<div class="wfmeta"><span class="${badgeClass}">${esc(d.rootLabel)}</span>${d.shadowed ? `<span class="shadow">${t("shadowed")}</span>` : ""}</div>` +
-    (d.description ? `<p class="page-sub" style="max-width:64ch;">${esc(d.description)}</p>` : "") +
-    `</div></div>` +
-    `<div style="margin-top:14px;"><span class="clihint"><span class="p">$</span> odw run ${esc(d.name)}${runNote}</span></div>` +
-    `<div class="rsec">${t("Phases")}</div><div class="phasepills">${phasePills}</div>` +
-    structure +
-    `<div class="rsec">${t("Source — {name}.js", { name: esc(d.name) })}</div><div class="srcview">${highlight(d.source)}</div>` +
-    runs +
-    `</div>`
-  );
 }
 
 /** Provider sections, in display order. A provider with no workflows is dropped. */
@@ -117,38 +32,124 @@ export function orderedWorkflows(list: WorkflowSummary[]): WorkflowSummary[] {
   return PROVIDER_GROUPS.flatMap((g) => list.filter((w) => w.provider === g.provider));
 }
 
-export function renderWorkspace(activeKey: string | null, detail: WorkflowDetail | null): string {
+function listItem(w: WorkflowSummary, activeKey: string | null): string {
+  const key = wfKey(w);
+  const shadow = w.shadowed
+    ? `<span class="tag warn" title="${esc(t("name shadowed — odw run {name} runs a higher-precedence workflow", { name: w.name }))}">${t("shadowed")}</span>`
+    : "";
+  return (
+    `<a class="wf-item${key === activeKey ? " on" : ""}" href="#/workspace/${encodeURIComponent(key)}" data-wf="${esc(key)}" data-key="wf-${esc(key)}">` +
+    `<h4>${esc(w.name)}</h4>` +
+    (w.description ? `<div class="ds">${esc(w.description)}</div>` : "") +
+    `<div class="mini"><span class="tag${w.provider === "claude" ? " cc" : ""}">${esc(w.rootLabel)}</span>` +
+    `<span class="tag">${tn(w.phases.length, "{n} phase", "{n} phases")}</span>` +
+    (w.runCount ? `<span class="tag sig">${tn(w.runCount, "{n} run", "{n} runs")}</span>` : "") +
+    shadow +
+    `</div></a>`
+  );
+}
+
+const OP_LABEL: Record<string, string> = {
+  agent: "agent",
+  parallel: "parallel",
+  pipeline: "pipeline",
+  workflow: "workflow",
+  log: "log",
+};
+const OP_CLASS: Record<string, string> = { parallel: "par", pipeline: "pipe", workflow: "wf", log: "cmd", agent: "" };
+
+function outline(d: WorkflowDetail): string {
+  const phases = outlineSource(d.source, d.phases.map((p) => p.title));
+  if (!phases.length) return `<p class="dim">${t("no declared phases")}</p>`;
+  return (
+    `<div class="outline">` +
+    phases
+      .map(
+        (p, i) =>
+          `<div class="ol-phase" data-key="ol-${i}" style="animation-delay:${i * 45}ms"><span class="ix">${String(i + 1).padStart(2, "0")}</span><div>` +
+          `<h4>${esc(p.title)}</h4><div class="ol-ops">` +
+          (p.ops.length
+            ? p.ops
+                .map((o) => `<span class="op ${OP_CLASS[o.kind] ?? ""}"><i></i>${OP_LABEL[o.kind]}()${o.n > 1 ? ` ×${o.n}` : ""}</span>`)
+                .join("")
+            : `<span class="dim" style="font-size:12px">${t("declared — no calls found in this phase")}</span>`) +
+          `</div></div></div>`,
+      )
+      .join("") +
+    `</div>`
+  );
+}
+
+function detailPane(d: WorkflowDetail): string {
+  const runs = d.runs.slice(0, 12).map((r) => {
+    const summary = store.runs.find((x) => x.runId === r.runId);
+    const state = summary?.state ?? "done";
+    return (
+      `<a class="wf-run" href="#/job/${encodeURIComponent(r.runId)}" data-run="${esc(r.runId)}" data-key="wr-${esc(r.runId)}">${glyph(state)}<span>${esc(r.runId)}</span>` +
+      `<span class="faint">${summary ? fmtAgo(summary.createdAt) : ""}</span>${icons.arrow}</a>`
+    );
+  });
+  const runNote = d.shadowed
+    ? t("Shadowed: odw run {name} runs a higher-precedence workflow.", { name: d.name })
+    : t("Runs start from your agent or terminal — not from here.");
+  return (
+    `<div class="page" data-key="wfd-${esc(wfKey(d))}">` +
+    `<div class="eyebrow"><span class="tag${d.provider === "claude" ? " cc" : ""}">${esc(d.rootLabel)}</span><span class="mono" style="text-transform:none;letter-spacing:0">${esc(d.path)}</span></div>` +
+    `<h1 class="display">${esc(d.name)}</h1>` +
+    (d.description ? `<p class="lede">${esc(d.description)}</p>` : "") +
+    `<div style="display:flex;align-items:center;gap:14px;margin-top:20px;flex-wrap:wrap">` +
+    `<span class="cmd"><span class="p">$</span>odw run ${esc(d.name)}<button class="iconbtn" data-copy="odw run ${esc(d.name)}" aria-label="${esc(t("Copy"))}">${icons.copy}</button></span>` +
+    `<span class="dim" style="font-size:12.5px">${esc(runNote)}</span></div>` +
+    `<div class="section-title"><h2>${t("Outline")}</h2><span class="eyebrow">${t("read statically from the source")}</span></div>` +
+    outline(d) +
+    (runs.length
+      ? `<div class="section-title"><h2>${t("Recent runs")}</h2><span class="eyebrow">${tn(d.runs.length, "{n} run", "{n} runs")}</span></div><div class="wf-runs">${runs.join("")}</div>`
+      : "") +
+    `<div class="section-title"><h2>${t("Source")}</h2><span class="eyebrow">${esc(d.name)}.js</span></div>` +
+    `<pre class="code">${highlightSource(d.source)}</pre>` +
+    `</div>`
+  );
+}
+
+export function renderWorkspace(activeKey: string | null, detail: WorkflowDetail | null, query: string): string {
   const list = store.workflows;
   if (list === null) {
-    return `<div class="empty"><div class="spinner"></div><div>${t("Loading workflows…")}</div></div>`;
+    return `<div class="empty" style="height:100%"><div class="spinner"></div><p>${t("Loading workflows…")}</p></div>`;
   }
   if (list.length === 0) {
     return (
-      `<div class="empty"><div class="gh">${t("No workflows yet")}</div>` +
-      `<div>${t("Have your agent write one into the managed directories.")}</div>` +
-      `<div class="codehint">.odw/workflows · .claude/workflows · ~/.odw/workflows · ~/.claude/workflows</div></div>`
+      `<div class="page">` +
+      emptyArt(
+        t("No workflows yet"),
+        t("Have your agent write one into the managed directories."),
+        `<div class="cmd">.odw/workflows · .claude/workflows · ~/.odw/workflows</div>`,
+      ) +
+      `</div>`
     );
   }
-  // Group by provider so Claude Code's saved workflows read as their own section,
-  // visible even when a name collides with an ODW workflow.
-  const sections = PROVIDER_GROUPS.map((g) => ({
-    ...g,
-    items: list.filter((w) => w.provider === g.provider),
-  }))
+  const q = query.trim().toLowerCase();
+  const filtered = q
+    ? list.filter((w) => w.name.toLowerCase().includes(q) || (w.description ?? "").toLowerCase().includes(q))
+    : list;
+  const sections = PROVIDER_GROUPS.map((g) => ({ ...g, items: filtered.filter((w) => w.provider === g.provider) }))
     .filter((g) => g.items.length > 0)
     .map(
       (g) =>
-        `<div class="wfgroup"><span class="gt">${esc(g.title)}</span><span class="gc">${g.items.length}</span></div>` +
+        `<div class="wf-group" data-key="wg-${g.provider}"><span>${esc(g.title)}</span><span>${g.items.length}</span></div>` +
         g.items.map((w) => listItem(w, activeKey)).join(""),
     )
     .join("");
   const pane = detail
     ? detailPane(detail)
-    : `<div class="wfdetail"><div class="empty"><div>${t("Select a workflow to see its structure and source.")}</div></div></div>`;
+    : activeKey
+      ? `<div class="empty" style="height:100%"><div class="spinner"></div></div>`
+      : `<div class="empty" style="height:100%"><p>${t("Select a workflow to see its structure and source.")}</p></div>`;
   return (
-    `<div class="wsplit">` +
-    `<div class="wflist"><div class="lh"><span class="t">${t("Workflows")}</span><span class="c">${t("{n} · managed dirs", { n: list.length })}</span></div>${sections}</div>` +
-    pane +
+    `<div class="split">` +
+    `<aside class="wf-list"><div class="wf-list-head"><div class="eyebrow">${t("Workspace")}</div><h2 class="display">${t("Workflows")}</h2>` +
+    `<label class="field">${icons.search}<input id="wf-q" placeholder="${esc(t("Filter workflows"))}" value="${esc(query)}" autocomplete="off"/></label></div>` +
+    `<div class="wf-items">${sections || `<p class="dim" style="padding:12px">${t("No workflows match.")}</p>`}</div></aside>` +
+    `<section class="wf-detail">${pane}</section>` +
     `</div>`
   );
 }

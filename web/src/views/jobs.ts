@@ -1,87 +1,152 @@
-/** Jobs — the run monitor: an active strip + a date-grouped history table. */
-import { t } from "../i18n";
+/** Jobs — the run monitor: live run cards + a filterable, day-grouped history. */
+import { pill } from "../components/glyph";
+import { icons } from "../icons";
+import { t, tn } from "../i18n";
 import { activeRuns } from "../shell";
 import { store } from "../store";
 import type { RunSummary } from "../types";
-import { TERMINAL, esc, fmtClock, fmtDayGroup, fmtDurSec, runDurationSec } from "../util";
+import { ACTIVE, TERMINAL, esc, fmtAgo, fmtClock, fmtDayGroup, fmtDurSec, runDurationSec } from "../util";
+import { emptyArt } from "./activity";
 
-function spark(seed: string, paused: boolean): string {
-  // Deterministic little bar silhouette from the runId, so it's stable per run.
-  let h = 0;
-  for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) >>> 0;
-  const bars: string[] = [];
-  for (let i = 0; i < 6; i++) {
-    h = (h * 1103515245 + 12345) >>> 0;
-    const ht = 6 + (h % 18);
-    const on = h % 3 === 0;
-    bars.push(`<i class="${on ? (paused ? "am" : "a") : ""}" style="height:${ht}px"></i>`);
-  }
-  return bars.join("");
+export type JobsFilter = "all" | "active" | "done" | "failed";
+
+export interface JobsState {
+  filter: JobsFilter;
+  query: string;
+  /** History rows shown; long histories page in on demand instead of painting thousands of rows. */
+  limit: number;
 }
 
-/** A small "Claude Code" tag for runs ODW only observes (its own runs stay unbadged). */
-function provBadge(r: RunSummary): string {
-  return r.provider === "claude"
-    ? ` <span class="srcbadge" title="${t("Claude Code workflow — observed read-only")}">Claude Code</span>`
-    : "";
+export const HISTORY_PAGE = 100;
+
+function provTag(r: RunSummary): string {
+  return r.provider === "claude" ? `<span class="tag cc" title="${t("Claude Code workflow — observed read-only")}">Claude Code</span>` : "";
 }
 
-function runCard(r: RunSummary): string {
-  const paused = r.state === "paused";
+/** Phase rail from summary data: phases before the progress point are done. */
+function phaseDots(r: RunSummary): string {
+  const n = r.phases.length;
+  if (!n) return "";
+  const cur = Math.min(n - 1, Math.floor(r.progress * n));
   return (
-    `<div class="runcard ${paused ? "" : "run"}" data-run="${esc(r.runId)}">` +
-    `<div class="top"><span><span class="nm">${esc(r.name)}</span>${provBadge(r)}<div class="wf">${esc(r.runId)}</div></span>` +
-    `<span class="badge ${r.state}"><span class="d"></span>${esc(t(r.state))}</span></div>` +
-    `<div class="spark">${spark(r.runId, paused)}</div>` +
-    `<div class="strip"><i style="width:${Math.round(r.progress * 100)}%"></i></div>` +
-    `<div class="meta">${t("{n} running", { n: r.counts.running })} · ${t("{n} done", { n: r.counts.done })}${r.counts.failed ? ` · ${t("{n} failed", { n: r.counts.failed })}` : ""}</div>` +
+    `<div class="phase-dots">` +
+    r.phases
+      .map((p, i) => `<i class="${i < cur ? "done" : i === cur ? "on" : ""}" title="${esc(p.title)}"></i>`)
+      .join("") +
     `</div>`
   );
 }
 
-function historyRow(r: RunSummary): string {
-  const dur = fmtDurSec(runDurationSec(r.createdAt, r.updatedAt, TERMINAL.has(r.state)));
-  const adapter = r.counts.agents ? "" : ""; // adapter lives per-agent; column shown from detail
-  void adapter;
+function segProgress(r: RunSummary): string {
+  const total = Math.max(1, r.counts.agents);
+  const w = (n: number) => `${((n / total) * 100).toFixed(2)}%`;
   return (
-    `<tr class="run" data-run="${esc(r.runId)}">` +
-    `<td style="font-weight:600;">${esc(r.name)}${provBadge(r)}</td>` +
-    `<td class="mono">${esc(r.runId)}</td>` +
-    `<td><span class="badge ${r.state}"><span class="d"></span>${esc(t(r.state))}</span></td>` +
-    `<td class="mono">${fmtClock(r.createdAt)}</td>` +
-    `<td class="mono">${dur}</td>` +
-    `<td class="mono">${r.counts.agents}</td>` +
-    `</tr>`
+    `<div class="prog thin">` +
+    `<i class="p-done" style="width:${w(r.counts.done)}"></i>` +
+    `<i class="p-run" style="width:${w(r.counts.running)}"></i>` +
+    `<i class="p-fail" style="width:${w(r.counts.failed)}"></i>` +
+    `<i class="p-stale" style="width:${w(r.counts.stale)}"></i></div>`
   );
 }
 
-export function renderJobs(): string {
-  const active = activeRuns();
-  const ended = store.runs.filter((r) => TERMINAL.has(r.state) || r.state === "stale");
+function runCard(r: RunSummary, nowSec: number): string {
+  const elapsed = r.createdAt != null ? fmtDurSec(nowSec - r.createdAt) : "—";
+  const n = r.phases.length;
+  const cur = n ? r.phases[Math.min(n - 1, Math.floor(r.progress * n))]!.title : null;
+  return (
+    `<article class="card runcard" data-run="${esc(r.runId)}" data-key="rc-${esc(r.runId)}" tabindex="0" role="link" aria-label="${esc(r.name)} · ${esc(t(r.state))}">` +
+    `<div class="top"><div><div class="nm">${esc(r.name)}</div><div class="rid">${esc(r.runId)}</div></div>${pill(r.state)}</div>` +
+    phaseDots(r) +
+    (cur ? `<div class="cur">${t("phase")} <b>${esc(cur)}</b> · ${Math.round(r.progress * 100)}%</div>` : "") +
+    segProgress(r) +
+    `<div class="foot"><span>${t("{n} running", { n: r.counts.running })} · ${t("{n} done", { n: r.counts.done })}` +
+    (r.counts.failed ? ` · <span class="alarm">${t("{n} failed", { n: r.counts.failed })}</span>` : "") +
+    `</span>${provTag(r)}<span class="el">${elapsed}</span></div>` +
+    `</article>`
+  );
+}
 
-  const strip = active.length
-    ? `<div class="activestrip"><div class="lbl">${t("Active now")}</div><div class="runcards">${active.map(runCard).join("")}</div></div>`
+function matches(r: RunSummary, s: JobsState): boolean {
+  if (s.filter === "active" && !ACTIVE.has(r.state)) return false;
+  if (s.filter === "done" && r.state !== "done") return false;
+  if (s.filter === "failed" && !(r.state === "failed" || r.state === "stopped" || r.state === "stale")) return false;
+  const q = s.query.trim().toLowerCase();
+  if (q && !r.name.toLowerCase().includes(q) && !r.runId.toLowerCase().includes(q)) return false;
+  return true;
+}
+
+export function renderJobs(state: JobsState, nowSec: number): string {
+  const runs = store.runs;
+  if (runs.length === 0) {
+    return (
+      `<div class="page">` +
+      emptyArt(
+        store.runsLoaded ? t("No runs yet") : t("Loading runs…"),
+        t("Have your agent start one with the CLI."),
+        `<div class="cmd"><span class="p">$</span>odw run &lt;name&gt;</div>`,
+      ) +
+      `</div>`
+    );
+  }
+  const active = activeRuns();
+  const shown = runs.filter((r) => matches(r, state));
+  const ended = shown.filter((r) => !ACTIVE.has(r.state));
+  const counts = {
+    all: runs.length,
+    active: active.length,
+    done: runs.filter((r) => r.state === "done").length,
+    failed: runs.filter((r) => r.state === "failed" || r.state === "stopped" || r.state === "stale").length,
+  };
+  const chip = (f: JobsFilter, label: string) =>
+    `<button class="chip${state.filter === f ? " on" : ""}" data-jobs-filter="${f}">${esc(label)}<span class="n">${counts[f]}</span></button>`;
+
+  const liveCards = shown.filter((r) => ACTIVE.has(r.state));
+  const cards = liveCards.length
+    ? `<div class="section-title"><h2>${t("In flight")}</h2><span class="eyebrow">${t("{n} live", { n: liveCards.length })}</span></div>` +
+      `<div class="runcards">${liveCards.map((r) => runCard(r, nowSec)).join("")}</div>`
     : "";
 
-  // Group history rows by day.
+  const longest = Math.max(
+    1,
+    ...ended.map((r) => runDurationSec(r.createdAt, r.updatedAt, TERMINAL.has(r.state)) ?? 0),
+  );
   let lastDay = "";
-  const histRows: string[] = [];
-  for (const r of ended) {
+  const rows: string[] = [];
+  for (const r of ended.slice(0, state.limit)) {
     const day = fmtDayGroup(r.createdAt);
     if (day !== lastDay) {
-      histRows.push(`<tr class="daterow"><td colspan="6">${esc(day)}</td></tr>`);
+      rows.push(`<tr class="day" data-key="d-${esc(day)}"><td colspan="5">${esc(day)}</td></tr>`);
       lastDay = day;
     }
-    histRows.push(historyRow(r));
+    const dur = runDurationSec(r.createdAt, r.updatedAt, TERMINAL.has(r.state));
+    rows.push(
+      `<tr class="run" data-run="${esc(r.runId)}" data-key="h-${esc(r.runId)}" tabindex="0" role="link">` +
+        `<td><div class="wf">${esc(r.name)} ${provTag(r)}</div><div class="rid">${esc(r.runId)}</div></td>` +
+        `<td>${pill(r.state)}</td>` +
+        `<td class="when">${fmtClock(r.createdAt)}<span>${fmtAgo(r.createdAt)}</span></td>` +
+        `<td><div class="dur"><i style="width:${Math.max(3, Math.round(((dur ?? 0) / longest) * 90))}px"></i>${fmtDurSec(dur)}</div></td>` +
+        `<td class="agents">${r.counts.agents}${r.counts.failed ? ` · <span class="f">${r.counts.failed} ✕</span>` : ""}</td>` +
+        `</tr>`,
+    );
   }
+  const rest = ended.length - Math.min(ended.length, state.limit);
+  const more = rest
+    ? `<div class="more-row"><button class="btn" data-jobs-more>${t("Show {n} more", { n: Math.min(rest, HISTORY_PAGE * 2) })}</button><span class="dim">${t("{n} older runs", { n: rest })}</span></div>`
+    : "";
+  const history = ended.length
+    ? `<table class="htable"><thead><tr><th>${t("workflow")}</th><th>${t("status")}</th><th>${t("started")}</th><th>${t("duration")}</th><th>${t("agents")}</th></tr></thead><tbody>${rows.join("")}</tbody></table>${more}`
+    : `<div class="empty" style="min-height:140px"><p>${state.query || state.filter !== "all" ? t("No runs match.") : t("No finished runs yet.")}</p></div>`;
 
-  const body =
-    store.runs.length === 0
-      ? `<div class="empty"><div class="gh">${t("No runs yet")}</div><div>${t("Have your agent start one with the CLI.")}</div><div class="codehint">odw run &lt;name&gt;</div></div>`
-      : strip +
-        `<div class="histwrap"><table class="histtable">` +
-        `<thead><tr><th>${t("workflow")}</th><th>${t("run id")}</th><th>${t("status")}</th><th>${t("started")}</th><th>${t("duration")}</th><th>${t("agents")}</th></tr></thead>` +
-        `<tbody>${histRows.join("") || `<tr><td colspan="6" style="color:var(--muted);padding:18px 14px;">${t("No finished runs yet.")}</td></tr>`}</tbody></table></div>`;
-
-  return `<div class="jobs">${body}</div>`;
+  return (
+    `<div class="page jobs">` +
+    `<header class="page-head"><div><div class="eyebrow">${t("Jobs")}</div><h1 class="display">${t("Every <em>run</em>, live and past.")}</h1></div>` +
+    `<div class="jobs-tools">` +
+    `<div class="chips">${chip("all", t("All"))}${chip("active", t("Live"))}${chip("done", t("Done"))}${chip("failed", t("Failed"))}</div>` +
+    `<label class="field">${icons.search}<input id="jobs-q" placeholder="${esc(t("Filter by name or run id"))}" value="${esc(state.query)}" autocomplete="off"/></label>` +
+    `</div></header>` +
+    cards +
+    `<div class="section-title"><h2>${t("History")}</h2><span class="eyebrow">${tn(ended.length, "{n} run", "{n} runs")}</span></div>` +
+    history +
+    `</div>`
+  );
 }
