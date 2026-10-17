@@ -857,6 +857,45 @@
   color: var(--mute);
 }
 
+/* ---- keyboard cheat sheet (shares the palette card) ---- */
+#keys {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: none;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 12vh;
+  background: color-mix(in srgb, var(--paper-2) 55%, transparent);
+  backdrop-filter: blur(6px) saturate(1.2);
+}
+#keys.open {
+  display: flex;
+  animation: fade var(--t-fast) var(--ease-out);
+}
+.keys-title {
+  flex: 1;
+  font-family: var(--f-display);
+  font-size: 24px;
+}
+.keys-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  height: 36px;
+  padding: 0 10px;
+  border-radius: var(--r-sm);
+  font-size: 13px;
+  color: var(--ink-2);
+}
+.keys-row:hover {
+  background: var(--shade);
+}
+.keys-row kbd {
+  margin-left: 2px;
+}
+
 /* ---- code + source + json ---- */
 .code {
   margin: 0;

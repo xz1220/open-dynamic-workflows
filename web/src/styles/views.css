@@ -101,6 +101,52 @@
 .pulsar-row:hover .ridge {
   stroke-width: 2;
 }
+.gs-steps {
+  list-style: none;
+  margin: 8px 0 6px;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 24px;
+}
+.gs-step {
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr);
+  gap: 10px;
+}
+.gs-step .ix {
+  font-family: var(--f-display);
+  font-style: italic;
+  font-size: 38px;
+  line-height: 1;
+  color: var(--sig-ink);
+}
+.gs-step h4 {
+  margin: 4px 0 10px;
+  font-size: 14px;
+}
+.gs-step .cmd {
+  display: flex;
+  max-width: 100%;
+}
+.gs-step .cmd .iconbtn {
+  margin-left: auto;
+}
+.gs-step .cmd .t {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.gs-step p {
+  margin: 10px 0 0;
+  font-size: 12.5px;
+}
+@media (max-width: 1080px) {
+  .gs-steps {
+    grid-template-columns: 1fr;
+  }
+}
 .act-grid {
   display: grid;
   grid-template-columns: minmax(280px, 0.8fr) minmax(0, 1.6fr);

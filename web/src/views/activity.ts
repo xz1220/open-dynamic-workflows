@@ -1,5 +1,6 @@
 /** Activity — the machine's pulse: a headline, live counters, the ridgeline, the fleet and the event stream. */
 import { pill } from "../components/glyph";
+import { icons } from "../icons";
 import { renderPulse } from "../components/pulse";
 import { t } from "../i18n";
 import { store } from "../store";
@@ -80,7 +81,9 @@ export function renderActivity(nowSec: number): string {
         : t("No runs yet — have your agent start one with odw run.");
 
   const pulse = renderPulse(runs, store.activity, nowSec);
-  const pulseCard = pulse.rows
+  const pulseCard = store.runsLoaded && runs.length === 0
+    ? gettingStarted()
+    : pulse.rows
     ? `<section class="card pulse marked" data-key="pulse">` +
       `<div class="pulse-head"><h3>${t("Pulse")}</h3><span class="eyebrow">${t("events per run · last {s}", { s: pulse.span })}</span></div>` +
       pulse.svg +
@@ -137,6 +140,23 @@ export function renderActivity(nowSec: number): string {
     `<section class="card fleet" data-key="fleet"><div class="card-head" style="padding:16px 0 8px"><h3>${t("Fleet")}</h3><span class="eyebrow">${t("agents running · by adapter")}</span></div>${fleetRows}</section>` +
     `<section class="card stream" data-key="stream"><div class="card-head"><h3>${t("Live event stream")}</h3><span class="eyebrow">${t("all runs · events.jsonl")}</span></div><div class="stream-list">${stream}</div></section>` +
     `</div></div>`
+  );
+}
+
+/** First run: three steps from a fresh install to a live graph on this page. */
+function gettingStarted(): string {
+  const step = (n: string, title: string, cmd: string, note: string) =>
+    `<li class="gs-step"><span class="ix">${n}</span><div><h4>${esc(title)}</h4>` +
+    `<span class="cmd" title="${esc(cmd)}"><span class="p">$</span><span class="t">${esc(cmd)}</span><button class="iconbtn" data-copy="${esc(cmd)}" aria-label="${esc(t("Copy"))}">${icons.copy}</button></span>` +
+    `<p class="dim">${esc(note)}</p></div></li>`;
+  return (
+    `<section class="card pulse marked gs" data-key="pulse">` +
+    `<div class="pulse-head"><h3>${t("Get started")}</h3><span class="eyebrow">${t("three steps to a live graph")}</span></div>` +
+    `<ol class="gs-steps">` +
+    step("01", t("Check the setup"), "odw doctor --smoke", t("Runtime, config and every adapter — plus one real prompt to the default.")) +
+    step("02", t("Run an example"), "odw run examples/fan-out-reduce.js --args '{\"question\":\"Design a rate limiter\"}'", t("Four drafts in parallel, then a synthesis. Watch it draw here.")) +
+    step("03", t("Hand it to your agent"), "odw run <name> --wait", t("With the ODW skill installed, your coding agent writes and runs workflows for you.")) +
+    `</ol></section>`
   );
 }
 

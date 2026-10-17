@@ -13,6 +13,7 @@
 import { api } from "./api";
 import { glyph } from "./components/glyph";
 import { closePalette, isPaletteOpen, openPalette, setPaletteSource, type PaletteItem } from "./components/palette";
+import { closeShortcuts, shortcutsOpen, toggleShortcuts } from "./components/shortcuts";
 import { notifyDesktop, toast } from "./components/toast";
 import { icons } from "./icons";
 import { getLang, setLang, t as tr, tn, type Lang } from "./i18n";
@@ -788,7 +789,12 @@ document.addEventListener("keydown", (e) => {
     e.preventDefault();
     return isPaletteOpen() ? closePalette() : openPalette();
   }
+  if (shortcutsOpen() && e.key === "Escape") return closeShortcuts();
   if (isPaletteOpen() || typing(e.target) || e.metaKey || e.ctrlKey || e.altKey) return;
+  if (e.key === "?") {
+    e.preventDefault();
+    return toggleShortcuts();
+  }
   if (e.key === "/") {
     e.preventDefault();
     return openPalette();
@@ -853,6 +859,7 @@ setPaletteSource((): PaletteItem[] => {
     });
   }
   const act = tr("Commands");
+  items.push({ id: "keys", group: act, title: tr("Keyboard shortcuts"), icon: icons.search, hint: "?", run: () => toggleShortcuts() });
   const dark = resolvedTheme() === "dark";
   items.push({
     id: "theme",
@@ -945,6 +952,7 @@ store.subscribe(render);
 
 window.addEventListener("hashchange", () => {
   closePalette(false);
+  closeShortcuts();
   void enterRoute();
 });
 
