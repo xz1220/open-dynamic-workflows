@@ -47,8 +47,10 @@ async function until(check: () => boolean, ms: number): Promise<boolean> {
   return true;
 }
 
+/** Adds the test schedule; cron unless a test names a backend (the platform default is launchd on macOS). */
 function add(box: Sandbox, ...extra: string[]) {
-  return odw(["schedule", "add", "nightly", "nightly", "--cron", "0 8 * * *", "--cwd", box.proj, ...extra]);
+  const backend = extra.includes("--backend") ? [] : ["--backend", "cron"];
+  return odw(["schedule", "add", "nightly", "nightly", "--cron", "0 8 * * *", "--cwd", box.proj, ...backend, ...extra]);
 }
 
 function lastRun(box: Sandbox, name = "nightly"): Record<string, unknown> {

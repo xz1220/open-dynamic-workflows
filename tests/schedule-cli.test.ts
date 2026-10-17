@@ -18,8 +18,10 @@ const posix = { skip: process.platform === "win32" ? "the fake schedulers are /b
 
 const FOREIGN = "MAILTO=me@example.com\n# nightly backup\n15 3 * * * /usr/bin/backup --quiet %not-ours\n";
 
+/** Adds the test schedule; cron unless a test names a backend (the platform default is launchd on macOS). */
 function add(box: Sandbox, ...extra: string[]) {
-  return odw(["schedule", "add", "nightly", "nightly", "--cron", "0 8 * * 1-5", "--cwd", box.proj, ...extra]);
+  const backend = extra.includes("--backend") ? [] : ["--backend", "cron"];
+  return odw(["schedule", "add", "nightly", "nightly", "--cron", "0 8 * * 1-5", "--cwd", box.proj, ...backend, ...extra]);
 }
 
 test("help and COMMANDS cover odw schedule", () => {
@@ -334,5 +336,27 @@ test("Windows: not supported yet — prints a schtasks line, writes nothing", po
     assert.deepEqual(box.calls(), []);
     const dry = await capture(() => cmdSchedule([...args, "--dry-run"], { parseArgsValue, platform: "win32" }));
     assert.equal(dry.code, 0);
+  }),
+);
+
+test("GET /api/schedules serves what odw schedule list --json prints", { skip: process.platform === "win32" }, () =>
+  withSandbox(async (box) => {
+    const add = await odw(["schedule", "add", "nightly", "nightly", "--cron", "15 2 * * 1-5", "--cwd", box.proj, "--backend", "cron"]);
+    assert.equal(add.code, 0, add.err);
+    const { startServer } = await import("../src/runtime/server.js");
+    const { RunStore } = await import("../src/runtime/run-store.js");
+    const handle = await startServer({ store: new RunStore(join(box.root, "runs")), port: 0, host: "127.0.0.1", claudeProjectsRoot: join(box.root, "no-claude") });
+    try {
+      const body = (await (await fetch(`http://127.0.0.1:${handle.port}/api/schedules`)).json()) as Array<Record<string, unknown>>;
+      const listed = JSON.parse((await odw(["schedule", "list", "--json"])).out) as Array<Record<string, unknown>>;
+      assert.equal(body.length, 1);
+      assert.equal(body[0]!.name, "nightly");
+      assert.equal(body[0]!.cron, "15 2 * * 1-5");
+      assert.equal(body[0]!.installed, true, "the fake crontab holds its block");
+      assert.equal(body[0]!.nextRun, listed[0]!.nextRun);
+      assert.equal(body[0]!.lastRun, null);
+    } finally {
+      await handle.close();
+    }
   }),
 );
