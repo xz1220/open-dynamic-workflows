@@ -34,9 +34,12 @@
  * its agents ask for is logged once per run.
  *
  * An agent runs on its adapter's own concurrency cap when it has one, and its
- * rate limits lower that cap (ODW extensions; see ./scheduler).
+ * rate limits lower that cap (ODW extensions; see ./scheduler); in a
+ * parallel() or pipeline() call on a prompt-caching adapter, agents sharing a
+ * long prompt prefix start staggered (an ODW extension; see ./throttle).
  */
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import { readFileSync } from "node:fs";
 import { copyFile, mkdir } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
@@ -57,6 +60,7 @@ import { resumeKey, type AgentResultRecord } from "./journal.js";
 // the module cycle is erased at compile time and never exists at runtime.
 import { loadWorkflowScript, scanDualCompat, type WorkflowMeta } from "./loader.js";
 import type { JsonSchema } from "./schema.js";
+import { FanOut } from "./throttle.js";
 import { TranscriptRecorder } from "./transcript.js";
 import { resolveWorkflow } from "./workflows/resolve.js";
 
@@ -320,6 +324,13 @@ export function createPrimitives(
     // bridge reaches the same decision and enforces it: an agent that may not
     // have its tier, or whose CLI cannot enforce it, fails before it starts.
     const permissions = planPermissions(adapter, runTier(ctx.config), opts.permissions);
+    // A staggered fan-out (ODW extension): in a parallel() or pipeline() call,
+    // an agent on a prompt-caching adapter whose prompt shares a long prefix
+    // with an earlier one's — on the same model and persona, so the same
+    // cache — waits, holding no slot, until that one has warmed the cache.
+    const fanOut = adapter.promptCache && typeof prompt === "string" ? fanOutScope.getStore() : undefined;
+    const cache = [adapter.name, opts.model ?? "", opts.agentType ?? ""].join("\u0000");
+    const turn = fanOut?.enter(adapter.name, cache, prompt);
     const request: AgentRequest = {
       prompt,
       adapter: opts.adapter,
@@ -372,6 +383,7 @@ export function createPrimitives(
         // Record the adapter only once the scheduler has handed out a real
         // dispatch slot, so queued work is not presented as running.
         started = true;
+        turn?.started();
         const startedEv = event(AGENT_STARTED, {
           agentId,
           label: display,
@@ -432,6 +444,8 @@ export function createPrimitives(
               // Adaptive back-pressure (ODW extension): the limit lowers its adapter's cap.
               slot.rateLimited();
             },
+            // A staggered fan-out's held agents go once this one's CLI answers (ODW extension).
+            onOutput: turn?.output,
             // An adapter's quota or login failed several agents in a row: warn, once.
             onAdapterWarning: ({ message, adapter: name, reason }) =>
               ctx.emit(event(LOG, { message, adapter: name, reason, agentId, label: display, phase: activePhase })),
@@ -484,12 +498,15 @@ export function createPrimitives(
         if (persisted) finished.saved = true;
         ctx.emit(finished);
         return outcome.value;
-      }, { adapter: adapter.name });
+      }, { adapter: adapter.name, gate: turn?.gate });
     } catch (err) {
       // A fatal error before the start (stop or budget at dispatch) concerns
       // the run, not this agent; anything else is still this agent's failure.
       if (!started && !isFatalError(err)) failed(err);
       throw err;
+    } finally {
+      // However a leader of a staggered fan-out ended, the agents it held may go.
+      turn?.settled();
     }
   };
 
@@ -535,6 +552,21 @@ export function createPrimitives(
     );
   };
 
+  /**
+   * Run one parallel() or pipeline() call's batch as one fan-out, which every
+   * agent() its thunks or stages call — through any await — belongs to: on a
+   * prompt-caching adapter, its agents may start staggered (an ODW extension;
+   * see ./throttle). A nested parallel() or pipeline() is a fan-out of its own.
+   */
+  const asFanOut = <T>(batch: () => Promise<T>): Promise<T> => {
+    const stagger = ctx.config.settings.staggerFanOut;
+    if (!stagger) return batch();
+    const fanOut = new FanOut(stagger, ctx.scheduler.signal, (message, fields) =>
+      ctx.emit(event(LOG, { message, ...fields })),
+    );
+    return fanOutScope.run(fanOut, batch);
+  };
+
   const parallel = async <T>(thunks: Array<Thunk<T>>): Promise<Array<T | null>> => {
     if (!Array.isArray(thunks)) {
       throw new WorkflowScriptError(`parallel() takes an array of functions (thunks); got ${describeValue(thunks)}`);
@@ -548,7 +580,7 @@ export function createPrimitives(
       }
     });
     warnFanOut("parallel()", thunks.length);
-    return ctx.scheduler.gather(
+    return asFanOut(() => ctx.scheduler.gather(
       thunks.map((thunk, i) => async () => {
         try {
           return await thunk();
@@ -557,7 +589,7 @@ export function createPrimitives(
           throw err;
         }
       }),
-    );
+    ));
   };
 
   const pipeline = async (items: unknown[], ...stages: Stage[]): Promise<unknown[]> => {
@@ -585,7 +617,7 @@ export function createPrimitives(
       }
       return value;
     });
-    return ctx.scheduler.gather(chains) as Promise<unknown[]>;
+    return asFanOut(() => ctx.scheduler.gather(chains) as Promise<unknown[]>);
   };
 
   const phase = (title: string): void => {
@@ -720,6 +752,14 @@ const surfaced = new WeakSet<object>();
 function permissionField(tier: unknown): { permissions?: PermissionTier } {
   return isPermissionTier(tier) ? { permissions: tier } : {};
 }
+
+/**
+ * The parallel() or pipeline() call an agent() runs in, if any: carried
+ * through every await of its thunk or stage, so a staggered fan-out (an ODW
+ * extension) knows its agents. Module-wide like `surfaced`, so a nested
+ * workflow()'s agents belong to the fan-out that called it.
+ */
+const fanOutScope = new AsyncLocalStorage<FanOut>();
 
 /** The `changes` and `branch` an agent's terminal event and record carry when it kept a change (ODW extension). */
 function changeFields(kept: KeptChanges | null): { changes?: AgentChanges; branch?: string | null } {

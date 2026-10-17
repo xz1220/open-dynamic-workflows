@@ -32,6 +32,9 @@
   "//adaptiveConcurrency": "ODW extension. An adapter's own \"concurrency\" (my_wrapper below sets 2) caps how many of its agents run at once, inside the run-wide concurrency (an agent needs a slot in both; each adapter queues first come, first served, and a throttled adapter never holds up the others). With adaptiveConcurrency, a rate limit halves its adapter's cap — that of an adapter without one starts at the run-wide cap — for the rest of the run, never below 1, and each minute without another gives one slot back; both are logged. false keeps every cap fixed. odw doctor and each run's first log line show the caps.",
   "adaptiveConcurrency": true,
 
+  "//staggerFanOut": "ODW extension. On adapters that declare \"promptCache\": true (the built-in claude does), one parallel() or pipeline() call whose agents' prompts share at least their first 1024 characters starts `first` of them, and the rest once the first one's CLI has produced output or delayMs later, whichever is sooner — so they read the prefix from the prompt cache instead of each paying for it. A lone agent, an agent with a shorter or different prompt, and a replayed one never wait; a stop ends the wait at once; each staggered fan-out logs one line. false or null turns it off.",
+  "staggerFanOut": { "first": 1, "delayMs": 2500 },
+
   "//maxDiffBytes": "ODW extension. An agent that runs with isolation: \"worktree\" leaves what it changed as a unified diff in the run directory (agents/<agentId>.diff): odw diff prints it, odw apply applies it, and the dashboard's Changes tab shows it. Past maxDiffBytes the diff keeps its head, cut at a line, and a note; its counts still describe the whole change. keepBranches also commits every isolated agent's change to a branch odw/<runId>/<agentId>-<label> of the source repository (keep: true does that for one agent; keep: false opts one out).",
   "maxDiffBytes": 2097152,
   "keepBranches": false,
@@ -74,7 +77,8 @@
         "read": ["--permission-mode", "dontAsk", "--tools", "Read,Glob,Grep,WebSearch,WebFetch", "--allowedTools", "WebSearch", "WebFetch", "--strict-mcp-config"],
         "edit": ["--permission-mode", "acceptEdits", "--allowedTools", "WebSearch", "WebFetch"],
         "full": ["--permission-mode", "bypassPermissions"]
-      }
+      },
+      "promptCache": true
     },
     "gemini": {
       "label": "Gemini CLI",

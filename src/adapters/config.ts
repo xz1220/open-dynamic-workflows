@@ -43,6 +43,7 @@ import type {
   PermissionTier,
   RunEndState,
   Settings,
+  StaggerFanOut,
 } from "./types.js";
 
 export const CONFIG_ENV_VAR = "ODW_CONFIG";
@@ -100,6 +101,7 @@ const KNOWN_TOP_KEYS = [
   "portRange",
   "fanOutWarn",
   "adaptiveConcurrency",
+  "staggerFanOut",
   "maxDiffBytes",
   "keepBranches",
   "maxTranscriptBytes",
@@ -108,7 +110,7 @@ const KNOWN_TOP_KEYS = [
   "agentEnvPass",
 ] as const;
 
-const KNOWN_ADAPTER_KEYS = ["command", "stdin", "env", "timeout", "stallTimeout", "concurrency", "label", "flags", "output", "failures", "permissionArgs", "permissions"] as const;
+const KNOWN_ADAPTER_KEYS = ["command", "stdin", "env", "timeout", "stallTimeout", "concurrency", "promptCache", "label", "flags", "output", "failures", "permissionArgs", "permissions"] as const;
 
 /** The fields of an adapter's `output`, per format. */
 const KNOWN_OUTPUT_KEYS: Record<string, readonly string[]> = {
@@ -118,6 +120,8 @@ const KNOWN_OUTPUT_KEYS: Record<string, readonly string[]> = {
 };
 
 const KNOWN_NOTIFY_KEYS = ["command", "webhook", "on"] as const;
+
+const KNOWN_STAGGER_KEYS = ["first", "delayMs"] as const;
 
 /**
  * Lint a parsed config object for keys odw would silently ignore.
@@ -175,6 +179,7 @@ export function collectConfigWarnings(raw: Record<string, unknown>): string[] {
       warnings.push(`"notify" sets neither "command" nor "webhook", so no hook will fire`);
     }
   }
+  if (isObject(raw.staggerFanOut)) warnings.push(...unknownFields(raw.staggerFanOut, KNOWN_STAGGER_KEYS, "staggerFanOut"));
   return warnings;
 }
 
@@ -226,7 +231,7 @@ function editDistance(a: string, b: string): number {
 
 /** Config from built-ins only — handy for tests and programmatic use. */
 export function defaultConfig(): Config {
-  return { adapters: buildAdapters({}), settings: { ...DEFAULT_SETTINGS } };
+  return { adapters: buildAdapters({}), settings: { ...DEFAULT_SETTINGS, staggerFanOut: defaultStagger() } };
 }
 
 /**
@@ -576,12 +581,18 @@ function buildAdapter(name: string, spec: RawAdapter): Adapter {
       { min: 0 },
     );
   }
-  // Per-adapter concurrency (an ODW extension); null is "not set".
+  // Per-adapter concurrency and prompt caching (ODW extensions); null is "not set".
   if (spec.concurrency !== undefined && spec.concurrency !== null) {
     adapter.concurrency = numberSetting(`adapter '${name}' 'concurrency'`, spec.concurrency, "a positive integer", {
       min: 1,
       integer: true,
     });
+  }
+  if (spec.promptCache != null) {
+    if (typeof spec.promptCache !== "boolean") {
+      throw new ConfigError(`adapter '${name}' 'promptCache' must be true or false; got ${JSON.stringify(spec.promptCache)}`);
+    }
+    adapter.promptCache = spec.promptCache;
   }
   if (spec.label !== undefined) adapter.label = spec.label;
   if (spec.flags !== undefined) adapter.flags = buildFlags(name, spec.flags);
@@ -852,6 +863,8 @@ function buildSettings(raw: Record<string, unknown>): Settings {
       raw["adaptiveConcurrency"] == null
         ? DEFAULT_SETTINGS.adaptiveConcurrency
         : buildFlag("adaptiveConcurrency", raw["adaptiveConcurrency"]),
+    // Absent keeps the default; false or null turns it off.
+    staggerFanOut: raw["staggerFanOut"] === undefined ? defaultStagger() : buildStagger(raw["staggerFanOut"]),
     maxDiffBytes: num("maxDiffBytes", DEFAULT_SETTINGS.maxDiffBytes, "a positive whole number of bytes", {
       min: 1,
       integer: true,
@@ -895,6 +908,39 @@ function buildEnvPass(raw: unknown): string[] {
 function buildFlag(key: string, raw: unknown): boolean {
   if (typeof raw === "boolean") return raw;
   throw new ConfigError(`"${key}" must be true or false; got ${JSON.stringify(raw)}`);
+}
+
+/** The default `staggerFanOut`, as a fresh object. */
+function defaultStagger(): StaggerFanOut | null {
+  return DEFAULT_SETTINGS.staggerFanOut && { ...DEFAULT_SETTINGS.staggerFanOut };
+}
+
+/**
+ * Validate `staggerFanOut`: `{ "first": n, "delayMs": ms }` (a field left out
+ * keeps its default), `true` for the defaults, `false` or `null` for off.
+ */
+function buildStagger(raw: unknown): StaggerFanOut | null {
+  if (raw === false || raw === null) return null;
+  const defaults = DEFAULT_SETTINGS.staggerFanOut ?? { first: 1, delayMs: 2500 };
+  if (raw === true) return { ...defaults };
+  if (!isObject(raw)) {
+    throw new ConfigError(
+      `"staggerFanOut" must be { "first": n, "delayMs": ms }, or false to turn it off; got ${JSON.stringify(raw)}`,
+    );
+  }
+  return {
+    first:
+      raw.first == null
+        ? defaults.first
+        : numberSetting(`"staggerFanOut.first"`, raw.first, "a positive integer", { min: 1, integer: true }),
+    delayMs:
+      raw.delayMs == null
+        ? defaults.delayMs
+        : numberSetting(`"staggerFanOut.delayMs"`, raw.delayMs, "a positive number of milliseconds", {
+            min: 0,
+            exclusiveMin: true,
+          }),
+  };
 }
 
 /** Validate `worktreeSetup`: a command line for the shell, or an argv run without one. */

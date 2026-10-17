@@ -233,15 +233,22 @@ export class Scheduler {
    * Run one agent unit under the concurrency cap and total backstop — and,
    * when `adapter` names it, under that adapter's cap too (an ODW extension).
    * `fn` receives the run's abort signal, and must stop its agent when it
-   * fires, and the agent's {@link AgentSlot}.
+   * fires, and the agent's {@link AgentSlot}. A `gate` holds the request
+   * back before it asks for any slot — a staggered fan-out's later agents
+   * wait there (see ./throttle) — yet it is pending work all along, so the
+   * run's drain waits for it, and an abort ends it.
    */
   async runAgent<T>(
     fn: (signal: AbortSignal, slot: AgentSlot) => Promise<T>,
-    options: { adapter?: string } = {},
+    options: { adapter?: string; gate?: (signal: AbortSignal) => Promise<void> } = {},
   ): Promise<T> {
     this.pending++;
     try {
       this.throwIfAborted();
+      if (options.gate) {
+        await options.gate(this.signal);
+        this.throwIfAborted();
+      }
       const lane = options.adapter !== undefined ? this.laneFor(options.adapter) : undefined;
       await this.acquire(lane);
       try {

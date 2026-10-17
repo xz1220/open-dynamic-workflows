@@ -173,6 +173,13 @@ export interface RunOptions {
   /** Called before the backoff wait of a rate-limited CLI, so the run can say how long it waits. */
   onRateLimit?: (retry: RateLimitRetry) => void;
   /**
+   * Called when a CLI run of the call starts answering, as its output
+   * streams — a JSONL event past the CLI's start-up `system` events — so a
+   * staggered fan-out can let the agents waiting on this one go (an ODW
+   * extension; see ./throttle). Other formats are read once the CLI exits.
+   */
+  onOutput?: () => void;
+  /**
    * Called once when an adapter's quota or login has failed
    * {@link ADAPTER_WARNING_STREAK} calls in a row: its other agents will likely
    * fail the same way, though the run goes on (other adapters may be fine).
@@ -313,6 +320,7 @@ export class Bridge {
         onNote: options.onNote,
         changes: options.changes,
         transcript: options.transcript,
+        onOutput: options.onOutput,
       });
     } finally {
       if (port !== null) this.ports.release(port);
@@ -572,10 +580,15 @@ export class Bridge {
     // is retained (and a verbose session is never cut off at the stdout cap);
     // text replies are buffered by the runner under its cap, as before.
     const decoder = adapter.output?.format === "jsonl" ? new AdapterOutputDecoder(adapter) : null;
+    let answering = false;
     const onStdout = decoder
       ? (chunk: string, terminate: (reason: string) => void) => {
           decoder.write(chunk);
           if (decoder.overflow) terminate(decoder.overflow);
+          if (!answering && decoder.answering) {
+            answering = true;
+            call.onOutput?.();
+          }
         }
       : undefined;
     const { worktreeSetup, worktreeSetupTimeout } = this.config.settings;
@@ -649,6 +662,8 @@ interface CallEnv {
   changes?: ChangeSink;
   transcript?: TranscriptSink;
   permissionArgs?: string[];
+  /** Told when a CLI run starts answering (see RunOptions.onOutput). */
+  onOutput?: () => void;
 }
 
 /** The variables an agent's processes get from ODW: only ever this call's, never inherited. */

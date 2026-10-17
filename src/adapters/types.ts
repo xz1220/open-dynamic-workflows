@@ -110,6 +110,12 @@ export interface Adapter {
    * `concurrency` (an ODW extension); unset, only the run-wide cap applies.
    */
   concurrency?: number;
+  /**
+   * This CLI's model API caches a prompt's prefix (an ODW extension): a
+   * fan-out of its agents whose prompts share one starts staggered, so the
+   * rest read what the first wrote (see `staggerFanOut`).
+   */
+  promptCache?: boolean;
   /** Human-friendly label for progress display. */
   label?: string;
   /** Capability declaration: which per-call options this CLI carries natively. */
@@ -188,6 +194,13 @@ export interface Settings {
    */
   adaptiveConcurrency: boolean;
   /**
+   * Staggered fan-outs (an ODW extension), on adapters that declare
+   * `promptCache`: in one parallel() or pipeline() call, agents whose prompts
+   * share a long prefix start `first` at a time, and the rest once the first
+   * has produced output or `delayMs` later, whichever is sooner; `null` => off.
+   */
+  staggerFanOut: StaggerFanOut | null;
+  /**
    * Bytes of an isolated agent's diff kept in the run directory (an ODW
    * extension); past it the head is kept, cut at a line, with a note.
    */
@@ -217,6 +230,14 @@ export interface Settings {
   agentEnv: "inherit" | "minimal";
   /** Names or `*` globs of more variables a `"minimal"` agent environment passes through. */
   agentEnvPass: string[];
+}
+
+/** How a fan-out on a prompt-caching adapter is staggered (see `Settings.staggerFanOut`). */
+export interface StaggerFanOut {
+  /** How many of its agents start at once, before the rest wait. */
+  first: number;
+  /** The longest the rest wait for the first one's output, in milliseconds. */
+  delayMs: number;
 }
 
 /** The terminal states a run can end in, and that notify hooks can fire on. */
