@@ -3,7 +3,10 @@
  * `data-preserve="open"` keeps the user's toggles across live re-renders.
  * Objects and arrays open by default down to depth 2.
  */
-import { esc } from "../util";
+import { esc as plain, markRedactions } from "../util";
+
+/** Escape, and draw redaction markers as ink bars. */
+const esc = (v: unknown): string => markRedactions(plain(v));
 
 const OPEN_DEPTH = 2;
 const MAX_CHILDREN = 400;
@@ -35,7 +38,7 @@ function node(key: string | null, v: unknown, path: string, depth: number): stri
   const kids = shown.map(([k, x]) => node(isArr ? null : k, x, `${path}.${k}`, depth + 1)).join("");
   const count = `<span class="meta">${entries.length} ${isArr ? "items" : "keys"}</span>`;
   return (
-    `<details data-key="j${esc(path)}" data-preserve="open"${depth < OPEN_DEPTH ? " open" : ""}>` +
+    `<details data-key="j${plain(path)}" data-preserve="open"${depth < OPEN_DEPTH ? " open" : ""}>` +
     `<summary>${label}${open} ${count}</summary>` +
     `<div class="kids">${kids}${more}</div><div class="row" style="padding-left:6px">${close}</div></details>`
   );

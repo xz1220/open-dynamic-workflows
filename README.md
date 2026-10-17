@@ -353,7 +353,7 @@ odw agents $RUN          # each agent and its saved result, mid-run too
 odw logs $RUN --follow   # stream raw progress events
 odw logs $RUN --agent 3  # what one agent did: its tool calls, results and text (below)
 odw result $RUN          # final value
-odw diff $RUN --stat     # what isolated agents changed; odw apply $RUN --agent N applies one
+odw diff $RUN --stat     # what isolated agents changed; odw apply $RUN --agent N (or --all) lands it
 odw pause|resume|stop $RUN
 odw approve|reject $RUN  # answer a checkpoint() the run waits at (--note TEXT, --checkpoint N)
 odw list
@@ -403,7 +403,8 @@ odw resume $RUN              # a new run that replays every unchanged agent() ca
 `odw resume <run_id>` acts on the run's state:
 
 - **paused** (its worker alive): it continues in place — the
-  `odw pause|resume|stop` control verb is unchanged;
+  `odw pause|resume|stop` control verb is unchanged; a run
+  [paused for a spent quota](#pause-for-a-spent-quota-odw-extension) goes on at once;
 - **ended** — done, failed, stopped, or stale (the worker died): it starts a
   **new run** with the same script, args and adapter (recorded as `resumedFrom`
   in its `meta.json`). Every `agent()` call whose prompt and options are
@@ -565,7 +566,9 @@ I'll run the tests first.
   `{"kind":"attempt","n":2,"reason":"schema"|"stall"|"rate_limit"}` line.
 - `maxTranscriptBytes` (default 5 MB per agent) bounds it: past it, one
   `{"kind":"truncated","bytes":N}` line ends the transcript. Transcripts hold whatever the
-  agents read and ran; `"maxTranscriptBytes": 0` keeps none.
+  agents read and ran — with likely secrets redacted as they stream
+  (see [Secrets in what ODW keeps](#secrets-in-what-odw-keeps-odw-extension));
+  `"maxTranscriptBytes": 0` keeps none.
 - Keeping it never slows an agent down: lines are buffered and appended asynchronously.
 - An agent replayed by `odw resume` ran no CLI, so it has no transcript — read the
   original run's.
@@ -573,7 +576,8 @@ I'll run the tests first.
   `GET /api/runs/:id/agents/:agentId/transcript?since=<i>` →
   `{ entries, next, more, truncated, replayed }`, each entry
   `{ i, kind: text|tool_call|tool_result|error|attempt|result|raw|truncated, text?, tool?, input?, output?, isError? }`,
-  long fields clipped to 4 KB (`clipped: true`).
+  long fields clipped to 4 KB (`clipped: true`), and `redacted: true` on one a secret
+  was kept out of.
 
 ## Dashboard: observe, inspect, chat
 
@@ -647,7 +651,9 @@ odw logs --workflow adversarial-verify --follow
 
 The dashboard can be viewed off-loopback, but local write operations such as
 Chat messages and stopping ODW-owned runs stay guarded by the loopback server.
-Claude Code's own runs stay strictly read-only.
+Claude Code's own runs stay strictly read-only. What it serves of ODW's agents —
+transcripts, results, logs — had its likely secrets redacted before it was written
+(see [Secrets in what ODW keeps](#secrets-in-what-odw-keeps-odw-extension)).
 
 ## Configure adapters
 
@@ -929,6 +935,71 @@ If a CLI cannot log in under `minimal`, add what it needs to `agentEnvPass`
 (`odw doctor --smoke` makes one real call to check). `exec()` commands, `worktreeSetup`
 and the `notify` hooks keep the whole environment.
 
+### Secrets in what ODW keeps (ODW extension)
+
+An agent prints whatever it reads — `cat .env` included — and ODW keeps that output:
+its transcript and the end of its stderr, its reply (its saved result), the run's log
+and error, what a webhook is told. The dashboard serves all of it, off-loopback too. So
+before any of it is written, ODW replaces each likely secret with a marker that says
+what it was:
+
+```text
+the key is «redacted:env:STRIPE_SECRET_KEY»
+Authorization: Bearer «redacted:bearer»
+cloning with «redacted:github»
+```
+
+- **`env`** — the value of every variable whose name looks secret (`*_KEY`, `*_API_KEY`,
+  `*TOKEN`, `*SECRET*`, `*PASSWORD*`, `*_PWD`, `*_PAT`, `AUTHORIZATION`, cloud
+  credentials such as `AWS_ACCESS_KEY_ID` and `*CONNECTION_STRING`, webhook URLs) in the
+  environment ODW starts agents and `exec()` commands with — its own, and each adapter's
+  `env` — wherever it appears (values of 8 characters or more, matched exactly), as
+  `«redacted:env:NAME»`; and the value of any `NAME=value` printed whose `NAME` looks
+  secret (a `.env` file, `env` output).
+- **`patterns`** — well-known token shapes: Anthropic (`sk-ant-…`), OpenAI (`sk-…`,
+  `sk-proj-…`), GitHub (`ghp_…`, `gho_…`, `ghs_…`, `github_pat_…`), Slack (`xoxb-…` and
+  its kin), AWS access key ids, Google API keys, JWTs, PEM private-key blocks and
+  `Bearer` tokens — as `«redacted:anthropic»`, `«redacted:openai»`, …
+- **`extra`** — regular expressions of your own (JavaScript sources), as `«redacted:extra»`.
+
+```jsonc
+// The default, plus a pattern of your own:
+{ "redact": { "env": true, "patterns": true, "extra": ["corp-[0-9a-f]{32}"] } }
+// Keep everything as printed:
+{ "redact": false }
+```
+
+Redacted: transcripts (as they stream — a secret split across two chunks of output
+included) and stderr tails; saved agent results (`odw result --agent`, the dashboard's
+agent drawer); the run's events — `odw logs`, log lines, `agent_failed` errors (a
+failure's quoted output is redacted before it is cut, so no secret is kept in half),
+the command lines `exec()` steps show and the output a failed `check` quotes; the
+run's error; the waiting checkpoint in `status.json`; and webhook payloads. What had
+anything redacted says so with `redacted: true` — a saved result, an event, a
+transcript line and its entry in the API, `result.json`, `error.json`, a webhook
+payload — and `odw doctor` says whether redaction is on and which variables it covers.
+It runs as output arrives, without holding it: a line waits for its end, and a private
+key for its last line.
+
+Not redacted:
+- **What agents get.** Prompts and an agent's environment are never touched, nor what
+  `agent()` and `exec()` hand back to the workflow: redaction is about what is written
+  down.
+- **The run's result** is the workflow's own data — it may return a config it read on
+  purpose — so `result.json` gets `patterns` and `extra` only, never `env`.
+- **Kept diffs** (`agents/<id>.diff`) are an agent's change to your code: what
+  `odw apply` applies and a kept branch commits, where a marker would corrupt your
+  files. A secret an agent wrote into code is there to be caught in review (`odw diff`,
+  the dashboard's Changes tab).
+- The run's `args` (what you passed in), `worker.log` (the worker's own output, a
+  workflow's `console.log` included) and the Chat Host's sessions.
+- **A resumed run** replays an agent's saved result as it was kept — redacted — and its
+  log says so.
+
+Redaction is a safety net, not a vault: a secret of a shape it does not know, under a
+name that does not look secret, is kept as printed. With `agentEnv: "minimal"`, agents
+never see what they do not need in the first place.
+
 ### Stall watchdog
 
 **ODW extension.** A hung agent CLI otherwise holds its slot until `timeout`
@@ -992,7 +1063,8 @@ agent_failed    (Search) search — [quota, retry after 3h 22m] AdapterExecution
   within a minute (Gemini's free tier words its per-minute limit that way) is
   treated as the rate limit it is. With a [fallback chain](#per-phase-adapters-model-tiers-and-fallback-chains-odw-extension),
   the agent moves to the next CLI instead, and after three quota failures in a row
-  the run's later agents skip that adapter.
+  the run's later agents skip that adapter. With [`quotaWait`](#pause-for-a-spent-quota-odw-extension),
+  an agent with no CLI left waits for the quota to reset instead of failing.
 
 Claude Code reports such errors in its output, often with exit 0: its stream-json
 `result` event says `is_error: true` with the message (`API Error: Rate limit
@@ -1027,6 +1099,53 @@ case-insensitively before the built-in table.
   }
 }
 ```
+
+### Pause for a spent quota (ODW extension)
+
+**ODW extension.** A long run whose every usable CLI is out of quota fails its
+remaining agents — fast, thanks to the quota breaker. Left running overnight, you would
+rather it waited for the reset and carried on. `quotaWait` makes it do that:
+
+```jsonc
+{
+  "quotaWait": { "max": 21600 } // wait up to 6 hours for a spent quota to reset; false (the default) fails as above
+}
+```
+
+When an agent has run out of CLIs on a spent quota — its last adapter's quota failed,
+or the quota breaker skipped every one — and a CLI said when its quota resets ("try
+again in 3h 22m", "resets 7pm", Claude Code's `usage limit reached|<epoch>`) no more
+than `max` seconds away, the run **pauses** instead of failing it:
+
+- The agent waits holding no slot, so agents on CLIs with quota left keep running.
+  Until the reset a CLI named, the run passes over that CLI: an agent with a fallback
+  moves on, and one with nowhere else to go waits too — before it starts, so it shows
+  no agent and takes no slot meanwhile.
+- The run shows `paused` and what it waits for: `odw status`, `odw list` and the live
+  view say `paused until 19:10 (codex quota)`, `odw run --wait` says it once, and
+  `status.json` and `GET /api/runs[/:id]` carry
+  `pausedFor: { "reason": "quota", "adapter", "resumeAt" }` (`resumeAt` in Unix seconds).
+- At the reset — plus up to 30 seconds of jitter, so the waiting agents do not all come
+  back in the same second — each starts over from the start of its chain, and the
+  quota breaker forgets the CLI. `odw resume <run>` goes on at once; `odw stop` stops
+  the run as always. A `checkpoint()` can wait at the same time.
+- A quota failure that names no reset, or one past `max`, still fails the agent as
+  above, and the run's log says why
+  (`quotaWait: not waiting — codex did not say when its quota resets, so the agent fails`).
+- A pause never fires the run-end hooks; add `"paused"` to
+  [`notify.on`](#run-notifications) to hear about each one.
+
+```text
+quota pause: codex is out of usage quota until 19:10 (in 3h 22m) — its agents wait, holding no slot, and go on then (quotaWait); odw resume goes on now
+search:3 waits for codex's quota to reset (quotaWait)
+quota pause over: codex's quota reset — its agents go on
+search:3 goes on after the quota wait, on codex
+```
+
+It is off by default because a run that silently waits for hours would surprise anyone
+who did not ask for it. The wait lives in the worker process: if the worker dies, the
+run is `stale`, and `odw resume` replays it like any run that ended — its finished
+agents come back without running again.
 
 ### Per-phase adapters, model tiers and fallback chains (ODW extension)
 
@@ -1178,7 +1297,7 @@ ends, so an overnight run can tell you how it went:
 "notify": {
   "command": ["/usr/local/bin/odw-notify"],        // an argv, run WITHOUT a shell
   "webhook": "https://hooks.slack.com/services/…", // Slack, Discord, or any JSON endpoint
-  "on": ["done", "failed", "stopped"]              // the default: every final state; "waiting" is opt-in
+  "on": ["done", "failed", "stopped"]              // the default: every final state; "waiting" and "paused" are opt-in
 }
 ```
 
@@ -1217,6 +1336,12 @@ The hooks then fire once per checkpoint, while the run waits on: the command wit
 `ODW_RESULT_FILE`), the webhook with `"state": "waiting"`, a
 `"checkpoint": { "checkpointId", "title", "since" }` field in place of `finishedAt`,
 and a `text` line naming the command that answers it.
+
+Add `"paused"` to hear when a run [pauses for a spent quota](#pause-for-a-spent-quota-odw-extension)
+— once per pause, not when it goes on: the command with `ODW_RUN_STATE=paused`,
+`ODW_PAUSED_ADAPTER` and `ODW_RESUME_AT` (Unix seconds), the webhook with
+`"state": "paused"`, a `"pausedFor": { "reason": "quota", "adapter", "resumeAt" }` field,
+and a `text` line such as `odw · nightly paused until 19:10 (codex quota) · odw resume <run> goes on now`.
 
 Ready-made setups for Slack, Discord, ntfy and desktop banners:
 [`docs/recipes/notify.md`](docs/recipes/notify.md).
@@ -1295,17 +1420,37 @@ change and stays out, unless the agent edited it afterwards.
 ```bash
 odw diff $RUN --stat               # who changed what: files, +/- lines, kept branch
 odw diff $RUN --agent fix:auth     # one agent's diff, by label or id — a patch git can read
-odw apply $RUN --agent 3 --check   # would it apply here, and what would conflict?
+odw apply $RUN --agent 3 --check   # preview: each file clean, CONFLICT (with its lines) or already applied
 odw apply $RUN --agent 3           # apply it to this working tree (git apply --3way)
+odw apply $RUN --all --check       # preview every finished agent, each on top of the ones before it
+odw apply $RUN --all --verify "npm test"   # apply them in order; roll back one that fails the check
 ```
 
-`odw apply` applies one agent's diff to the git working tree you run it in with
-`git apply --3way`: what applies is staged, and a hunk that clashes with your
-own change is merged three-way and left with conflict markers (exit 1). It
-refuses while a path the diff touches has uncommitted changes — commit or stash
-them, or pass `--force`. Agents that changed different files apply one after
-another. The dashboard shows the same diffs in a run's **Changes** tab and serves
-them at `GET /api/runs/:id/agents/:agentId/diff`.
+`odw apply` applies one agent's diff — or, with `--all`, every finished agent's,
+in agentId order — to the git working tree you run it in, with
+`git apply --3way`: what applies is staged. Before it touches anything it runs
+the same apply against a scratch copy of the index and prints each file as
+`clean`, `CONFLICT` — with the conflicting lines as the merge would leave them
+in the file, or why it cannot be merged (`deleted here`, `binary`, or an
+untracked or ignored file in the way, which git would write over) — or
+`already applied`; `--check` stops there (exit 1 on a conflict). A single agent
+is then applied, a hunk that clashes left with conflict markers (exit 1).
+`--all` previews each agent on top of the ones before it, applies them up to the
+first that would conflict, and says which applied and which did not; a failed
+agent's diff goes in only by `--agent`. It refuses while a path a diff touches
+has uncommitted changes — commit or stash them, or pass `--force`. The dashboard
+shows the same diffs in a run's **Changes** tab and serves them at
+`GET /api/runs/:id/agents/:agentId/diff`.
+
+`--verify "<cmd>"` — or the `applyVerify` setting, which `--no-verify` skips
+once — runs a command at the repository root after each apply, through the
+shell and within the `timeout` setting. When it fails or times out, that apply
+is rolled back — the paths it touched get back exactly what they held, content
+and index entries — and odw exits 1 with the end of the command's output; Ctrl-C
+rolls it back the same way. An edit made to those files while the command ran is
+set aside first, where odw says. Nothing else is touched — no stash, no reset —
+so your other uncommitted work stays as it is. A change that would conflict is
+not applied under `--verify`.
 
 - **`keep: true`** (an `agent()` option) or **`keepBranches: true`** (config) also
   commits the change to a branch `odw/<runId>/<agentId>-<label>` of the source
@@ -1325,7 +1470,8 @@ them at `GET /api/runs/:id/agents/:agentId/diff`.
 ```jsonc
 {
   "maxDiffBytes": 2097152, // bytes of one agent's diff kept in the run directory
-  "keepBranches": false    // true: every isolated agent's change also goes on a branch
+  "keepBranches": false,   // true: every isolated agent's change also goes on a branch
+  "applyVerify": null      // e.g. "npm test": run after each odw apply, which is rolled back if it fails
 }
 ```
 
@@ -1451,6 +1597,12 @@ upgrading, is in [`CHANGELOG.md`](CHANGELOG.md):
   `fallback` in the config) instead of failing — with a quota breaker that stops
   trying a spent CLI (ODW extensions; see
   [Per-phase adapters](#per-phase-adapters-model-tiers-and-fallback-chains-odw-extension)).
+- **Pause for a spent quota.** With `"quotaWait": { "max": 21600 }`, an overnight run
+  whose CLIs are out of quota waits for the reset they named — holding no slot, other
+  CLIs working on — and carries on, instead of failing its agents. It shows
+  `paused until 19:10 (codex quota)`; `odw resume` goes on at once, and
+  `notify.on: ["paused"]` tells you (ODW extensions; see
+  [Pause for a spent quota](#pause-for-a-spent-quota-odw-extension)).
 - **Native structured output.** `claude` (`--json-schema`) and `codex`
   (`--output-schema`, for strict schemas) are handed an agent's schema and enforce it
   themselves; ODW still validates every reply. A schema keyword ODW's validator does
@@ -1469,6 +1621,11 @@ upgrading, is in [`CHANGELOG.md`](CHANGELOG.md):
   access only by explicit opt-in, and a CLI that cannot enforce a tier refused or
   logged — never silently downgraded. `agentEnv: "minimal"` keeps unrelated secrets
   out of agents (ODW extensions; see [Permissions](#permissions-odw-extension)).
+- **Secrets kept out of what ODW keeps.** Whatever an agent prints — `cat .env`
+  included — is redacted before it reaches its transcript, its saved result, the run's
+  log and error or a webhook: the values of secret-named variables and well-known token
+  shapes become `«redacted:<kind>»` (ODW extension; see
+  [Secrets in what ODW keeps](#secrets-in-what-odw-keeps-odw-extension)).
 - **Human checkpoints.** `checkpoint()` pauses a run until a person approves or
   rejects — with `odw approve|reject`, the dashboard, or an opt-in `waiting` hook —
   so a plan gets a yes before the expensive fan-out (ODW extension; see
@@ -1491,7 +1648,10 @@ upgrading, is in [`CHANGELOG.md`](CHANGELOG.md):
 - **Review and apply what isolated agents changed.** A worktree agent's change
   is kept as a diff when its worktree goes (setup files left out), optionally on
   a `keep` branch. Read it in the dashboard's **Changes** tab or with `odw diff`,
-  and land it with `odw apply` (`--check` first) — one agent at a time.
+  and land it with `odw apply`: it previews every file — clean, conflicting (with
+  the lines) or already applied — before it touches the tree, takes `--all`
+  agents in order, and with `--verify "npm test"` rolls back an apply that breaks
+  the build, leaving your other uncommitted work alone.
 - **Real usage and cost.** The built-in `claude` adapter now reads Claude Code's
   `stream-json`, so every agent records the tokens and dollars its CLI reported —
   in `odw status`, the live view and the dashboard — and `--budget` meters real

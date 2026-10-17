@@ -22,6 +22,12 @@ changed, and run on a schedule — and a dashboard redesigned to watch them.
   permission, exit). Rate limits are retried after the wait the CLI asked for
   (`transientRetries`, `maxBackoff`); quota and login failures fail fast and say what to
   do — and when the limit lifts.
+- Pause for a spent quota (`"quotaWait": { "max": <seconds> }`, off by default; **ODW
+  extension**): an overnight run whose CLIs are out of quota waits for the reset they
+  named — holding no slot, while CLIs with quota left keep working — and carries on
+  instead of failing its agents. It shows `paused until 19:10 (codex quota)` in
+  `odw status`, `odw list`, the live view and the API (`pausedFor`); `odw resume` goes
+  on at once. A quota that names no reset, or one past `max`, still fails, saying why.
 - Evidence of success: `agent(…, { expect })` checks an agent's work instead of taking
   its word — `command` exits 0 in its workspace, `changes`, `files` (globs), `match` —
   and hands misses back (`expectRetries`, default 1) before failing with
@@ -38,7 +44,8 @@ changed, and run on a schedule — and a dashboard redesigned to watch them.
   `POST /api/runs/:id/checkpoint` (**ODW extension**). Runs show a `waiting` state
   everywhere.
 - Run-end hooks: a `notify` command or webhook (Slack/Discord/ntfy-ready) when a run
-  finishes, fails, stops — or, opt-in, starts waiting.
+  finishes, fails, stops — or, opt-in, starts waiting, or pauses for a spent quota
+  (`"paused"`).
 
 ### Know what it costs and what it changed
 - Real usage and cost: the built-in `claude` adapter reads Claude Code's `stream-json`;
@@ -46,7 +53,13 @@ changed, and run on a schedule — and a dashboard redesigned to watch them.
   dashboard; `--budget` meters real output tokens; wide fan-outs warn up front.
 - Isolated (`worktree`) agents keep their change as a diff (setup files excluded),
   optionally on a `keep` branch. Review with `odw diff` or the dashboard's Changes tab;
-  land with `odw apply [--check]`.
+  land with `odw apply`, which previews every file first — clean, conflicting (with the
+  conflicting lines) or already applied — and stops there with `--check`; it never
+  writes over a file git does not track, and puts back what git wrote when it gives
+  up halfway. `--all` applies every finished agent in order, up to the first that
+  would conflict; `--verify "npm test"` (or `applyVerify`) runs a check after each
+  apply and rolls an apply that fails it back exactly, leaving the rest of your
+  uncommitted work alone (**ODW extension**).
 - Transcripts: every agent's CLI output is kept — `odw logs <run> --agent <id|label>
   [--follow]`, or live in the dashboard's Transcript sheet.
 
@@ -54,6 +67,15 @@ changed, and run on a schedule — and a dashboard redesigned to watch them.
 - Permission tiers `read` / `edit` / `full` (`--permissions`, per adapter, per call; a
   call can only lower its tier), mapped to each CLI's documented flags; `agentEnv:
   "minimal"` starts agents with only the environment they need (**ODW extension**).
+- Secrets stay out of what odw keeps and serves: whatever an agent prints — `cat .env`
+  included — is redacted before it reaches its transcript and stderr tail, its saved
+  result, the run's events and error or a webhook. The values of secret-named variables
+  (`*_KEY`, `*TOKEN`, `*SECRET*`, `*PASSWORD*`, …) of the environment agents and
+  commands start with, `NAME=value` of such names, and well-known token shapes
+  (Anthropic, OpenAI, GitHub, Slack, AWS, Google keys, JWTs, private keys, `Bearer`)
+  become `«redacted:<kind>»`, marked `redacted: true`; `redact.extra` adds patterns of
+  your own and `odw doctor` reports it (**ODW extension**). Prompts, what agents see and
+  kept diffs are never redacted; the run's result only of token shapes.
 - Per-adapter `concurrency` caps; a rate limit halves that adapter's cap for the rest of
   the run; `claude` fan-outs sharing a long prompt prefix stagger their start so the
   rest read the prompt cache.
@@ -133,5 +155,9 @@ changed, and run on a schedule — and a dashboard redesigned to watch them.
   keeps trying the adapter every time.
 - An empty or whitespace-only reply fails the agent with reason `empty_reply`;
   `agent(…, { allowEmpty: true })` accepts one.
+- Redaction is on by default: transcripts, saved agent results, events, `error.json`
+  and webhook payloads show likely secrets as `«redacted:<kind>»`, and `result.json`
+  token shapes; a resumed run replays a redacted agent result as kept. `"redact": false`
+  keeps everything as printed.
 - Config errors are fatal instead of producing a "done" run full of nulls.
 - The desktop (Tauri) app is retired in favor of `odw serve`.

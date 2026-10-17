@@ -19,7 +19,7 @@ file your runs actually use (`odw doctor` names it). Hooks fire once per run,
 after its final state is on disk; they can neither delay nor change it, and a
 failing hook is only logged to the run's `worker.log`. `on` picks the states
 that fire (`done`, `failed`, `stopped`; all three by default — plus the opt-in
-`waiting`, below).
+`waiting` and `paused`, below).
 
 ### Slack or Discord
 
@@ -106,6 +106,29 @@ checkpoint as it starts waiting — the command with `ODW_RUN_STATE=waiting`,
 Answer from any shell with `odw approve <run> --note "…"` (or `odw reject`), or
 with Approve/Reject in the dashboard, which also raises a toast — and, with Run
 notifications on, a system notification — the moment a run starts waiting.
+
+## When a run pauses for a spent quota
+
+With [`quotaWait`](../../README.md#pause-for-a-spent-quota-odw-extension) on, a run
+whose CLIs are out of quota waits for the reset instead of failing. Add `"paused"`
+to `on` to hear about each pause — once, not when the run goes on, which it does by
+itself: the command with `ODW_RUN_STATE=paused`, `ODW_PAUSED_ADAPTER` and
+`ODW_RESUME_AT` (Unix seconds), the webhook with `"state": "paused"`,
+`"pausedFor": { "reason": "quota", "adapter", "resumeAt" }` and a `text` line such
+as `odw · nightly paused until 19:10 (codex quota) · odw resume <run> goes on now`:
+
+```json
+{
+  "quotaWait": { "max": 21600 },
+  "notify": {
+    "webhook": "https://hooks.example.com/YOUR/WEBHOOK/PATH",
+    "on": ["paused", "done", "failed"]
+  }
+}
+```
+
+Top up the account (or switch plans) and run `odw resume <run>` to go on before the
+reset.
 
 ## From a script or cron: the exit code
 

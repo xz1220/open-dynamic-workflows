@@ -15,7 +15,7 @@
  *   odw agents <run_id> [--json]
  *   odw result <run_id> [--agent <id|label>]
  *   odw diff <run_id> [--agent <id|label>] [--stat]
- *   odw apply <run_id> --agent <id|label> [--check] [--force]
+ *   odw apply <run_id> --agent <id|label>|--all [--check] [--force] [--verify CMD|--no-verify]
  *   odw rerun|resume <run_id>
  *   odw pause|resume|stop <run_id>
  *   odw approve|reject <run_id> [--note TEXT] [--checkpoint N]
@@ -41,17 +41,15 @@ import { VERSION } from "./index.js";
 import { cmdInit } from "./init.js";
 import type { AgentChanges } from "./changes.js";
 import { agentRowJson, agentRows, formatAgentTable, matchAgents, type AgentRow } from "./runtime/agents-view.js";
+import { applyAgents, type AgentDiff } from "./runtime/apply.js";
 import {
-  applyDiff,
   changedAgents,
   colorDiff,
   countChanges,
   diffFiles,
-  fileLabel,
   formatChangeTable,
   formatFileList,
   truncationNoteOf,
-  type ApplyReport,
 } from "./runtime/changes-view.js";
 import { startRun, startRunFromSource, waitFor } from "./runtime/launcher.js";
 import { attachRun, bannerLines, checkpointCommands, fallbackLines, formatEvent, formatUsage, resolveRunMode, type RunMode } from "./runtime/live-view.js";
@@ -61,6 +59,7 @@ import { detail, type RunDetail } from "./runtime/runs-view.js";
 import { startServer } from "./runtime/server.js";
 import { printAgentLogs } from "./runtime/transcript-view.js";
 import { executeRun } from "./runtime/worker.js";
+import { pausedForOf, pausedText } from "./quota-wait.js";
 import { cmdSchedule } from "./schedule/command.js";
 import { isSeaBinary } from "./sea.js";
 import { describeConcurrency } from "./throttle.js";
@@ -116,7 +115,8 @@ export function helpText(): string {
     "  odw agents <run_id> [--json]                       list a run's agents with their saved results",
     "  odw result <run_id> [--agent <id|label>]           print a finished run's result, or one agent's (mid-run too)",
     "  odw diff <run_id> [--agent <id|label>] [--stat]    print what isolated agents changed (their kept diffs)",
-    "  odw apply <run_id> --agent <id|label> [--check]    apply one agent's kept diff to this working tree (--force)",
+    "  odw apply <run_id> --agent <id|label>|--all        preview, then apply kept diffs to this working tree (--force)",
+    "                                                     --check previews only; --verify CMD rolls an apply back if CMD fails",
     "  odw list [--workflow <name>]                       list known runs",
     "  odw serve [--port N] [--host H] [--open]           open the live dashboard in a browser",
     "  odw workflows list [--project|--global|--all]      list workflows runnable by name",
@@ -536,10 +536,17 @@ async function afterStart(
     process.stderr.write(`running ${runId} ...\n${banner}`);
     // A checkpoint() holds the run until someone answers it: say so, and how, once each.
     const told = new Set<number>();
+    // A pause for a spent quota (ODW extension: quotaWait) ends by itself: say until when, once each.
+    const toldPauses = new Set<string>();
     let flags: string[] | undefined;
     const status = await waitFor(store, runId, {
       timeoutMs: opts.timeoutMs,
-      onStatus: ({ waiting }) => {
+      onStatus: ({ waiting, state, pausedFor }) => {
+        const pause = state === "paused" ? pausedForOf(pausedFor) : null;
+        if (pause && !toldPauses.has(`${pause.adapter}@${pause.resumeAt}`)) {
+          toldPauses.add(`${pause.adapter}@${pause.resumeAt}`);
+          process.stderr.write(`${sanitizeText(pausedText(pause), 120)} — odw resume ${runId} goes on now\n`);
+        }
         const cp = waiting as { checkpointId?: unknown; title?: unknown } | null | undefined;
         if (!cp || !isCheckpointId(cp.checkpointId) || told.has(cp.checkpointId)) return;
         told.add(cp.checkpointId);
@@ -609,6 +616,10 @@ function cmdStatus(rest: string[]): number {
   const pending = run.pendingCheckpoints ?? [];
   process.stdout.write(`${runId}  [${run.state === "waiting" ? "waiting" : (status.state ?? "?")}]  ${name}\n`);
   if (status.description) process.stdout.write(`  ${status.description as string}\n`);
+  // What a run paused for a spent quota waits for (ODW extension: quotaWait).
+  if (run.pausedFor) {
+    process.stdout.write(`  ${sanitizeText(pausedText(run.pausedFor), 120)} — its agents go on then; odw resume ${runId} goes on now\n`);
+  }
   process.stdout.write(`  dispatched: ${dispatchedCount(events, status)} agent(s)\n`);
   // What its agents spent (ODW extension): as their CLIs reported it, or chars/4 estimates.
   if (run.usage) process.stdout.write(`  usage: ${formatUsage(run.usage)}${estimateNote(run)}\n`);
@@ -824,12 +835,15 @@ async function cmdDiff(rest: string[]): Promise<number> {
 }
 
 /**
- * `odw apply <run_id> --agent <id|label> [--check] [--force]` (ODW extension)
- * — apply one isolated agent's kept diff to the git working tree you are in,
- * with `git apply --3way` (it stages what it applies). Refused while a path
- * the diff touches has uncommitted changes, unless `--force`; `--check` says
- * what would apply and what would conflict, and changes nothing. Exit 0 when
- * everything applies cleanly, 1 otherwise (conflicts are left marked).
+ * `odw apply <run_id> (--agent <id|label> | --all) [--check] [--force]
+ * [--verify CMD | --no-verify]` (ODW extension) — preview, then apply, what
+ * isolated agents changed to the git working tree you are in (see
+ * runtime/apply): one agent's kept diff, or every finished agent's in agentId
+ * order up to the first that would conflict. `--check` previews only;
+ * `--verify` (else the `applyVerify` setting) runs a command after each apply
+ * and rolls the apply back when it fails. Exit 0 when everything applied
+ * cleanly (and passed), 1 otherwise. A signal during a verify rolls its apply
+ * back, then ends odw by that signal.
  */
 async function cmdApply(rest: string[]): Promise<number> {
   const { values, positionals } = parseArgs({
@@ -839,79 +853,89 @@ async function cmdApply(rest: string[]): Promise<number> {
       config: { type: "string" },
       "runs-root": { type: "string" },
       agent: { type: "string" },
+      all: { type: "boolean" },
       check: { type: "boolean" },
       force: { type: "boolean" },
+      verify: { type: "string" },
+      "no-verify": { type: "boolean" },
     },
   });
   const runId = positionals[0];
   if (!runId) throw new UsageError("odw apply: missing <run_id>");
-  if (values.agent === undefined) {
-    throw new UsageError(`odw apply: --agent <id|label> is required — which agent's change to apply (odw diff ${runId} --stat lists them)`);
+  if (values.agent === undefined && !values.all) {
+    throw new UsageError(
+      `odw apply: --agent <id|label> or --all is required — which agent's change to apply (odw diff ${runId} --stat lists them)`,
+    );
+  }
+  if (values.agent !== undefined && values.all) throw new UsageError("odw apply: --agent and --all exclude each other");
+  if (values.verify !== undefined && values["no-verify"]) throw new UsageError("odw apply: --verify and --no-verify exclude each other");
+  if (values.verify !== undefined && values.verify.trim() === "") {
+    throw new UsageError('odw apply: --verify needs a command to run, e.g. --verify "npm test"');
   }
   const store = storeFrom(values);
   if (!store.exists(runId)) {
     process.stderr.write(`no such run: ${runId}\n`);
     return 1;
   }
-  const row = findAgent(agentRows(store, runId), runId, values.agent, "apply");
-  if (!row) return 1;
-  const who = `agent ${row.agentId} (${sanitizeText(row.label, 80)}) of run ${runId}`;
-  const file = store.agentDiffPath(runId, row.agentId);
-  if (!existsSync(file)) {
-    process.stderr.write(`odw apply: ${who} kept no diff: ${noDiffReason(row)}\n`);
-    return 1;
-  }
-  const text = await readFile(file, "utf8");
-  const cut = truncationNoteOf(text);
-  if (cut) {
-    process.stderr.write(
-      `odw apply: the diff ${who} kept was cut at maxDiffBytes, so it cannot be applied:\n  ${sanitizeText(cut, 300)}\n` +
-        (row.branch
-          ? `  The whole change is on branch ${row.branch}: merge or cherry-pick it, or check it out.\n`
-          : `  To keep the whole change next time, give the agent keep: true (or set keepBranches), or raise maxDiffBytes.\n`),
-    );
-    return 1;
-  }
-  const check = values.check === true;
-  const force = values.force === true;
-  let report: ApplyReport;
-  try {
-    report = await applyDiff(process.cwd(), file, text, { check, force });
-  } catch (err) {
-    const source = store.readMeta(runId).source;
-    const where = typeof source === "string" ? ` (the run worked in ${source})` : "";
-    process.stderr.write(`odw apply: run it inside the git repository to apply the change to${where}: ${(err as Error).message}\n`);
-    return 1;
-  }
-  const caps = detectCaps(process.stdout, process.env);
-  if (report.blocked.length > 0) {
-    const listed = report.blocked.map((b) => `  ${sanitizeText(b.path, 200)} (${b.how})`).join("\n");
-    if (!force) {
-      process.stderr.write(
-        `odw apply: uncommitted changes in the way of the diff ${who} — commit or stash them, or pass --force:\n${listed}\n`,
-      );
+  const rows = agentRows(store, runId);
+  let agents: AgentDiff[];
+  if (values.all) {
+    agents = changedAgents(store, runId, rows);
+    if (agents.length === 0) {
+      process.stderr.write(`run ${runId} kept no changes: agents that run with isolation: "worktree" keep a diff of what they changed\n`);
+      return 0;
+    }
+  } else {
+    const row = findAgent(rows, runId, values.agent!, "apply");
+    if (!row) return 1;
+    const file = store.agentDiffPath(runId, row.agentId);
+    if (!existsSync(file)) {
+      process.stderr.write(`odw apply: agent ${row.agentId} (${sanitizeText(row.label, 80)}) of run ${runId} kept no diff: ${noDiffReason(row)}\n`);
       return 1;
     }
-    process.stderr.write(`odw apply: --force: ${check ? "checking" : "applying"} over uncommitted changes in:\n${listed}\n`);
+    agents = [{ row, file }];
   }
-  if (report.error) {
-    const said = report.error.split("\n").map((line) => `  ${line}`).join("\n");
-    process.stderr.write(`odw apply: git could not apply the diff ${who}${check ? "" : "; nothing was changed"}:\n${said}\n`);
-    return 1;
+  const check = values.check === true;
+  // --check applies nothing, so it verifies nothing; --no-verify skips the applyVerify setting once.
+  const settings = check || values["no-verify"] ? null : loadConfig(values.config ?? null, { quiet: true }).settings;
+  const verify = settings ? (values.verify ?? settings.applyVerify) : null;
+  const source = store.readMeta(runId).source;
+  // A signal while an apply is verified stops the command; the apply is rolled back before odw ends by it.
+  const interrupt = new AbortController();
+  let caught: NodeJS.Signals | null = null;
+  const signals: NodeJS.Signals[] = ["SIGINT", "SIGTERM", "SIGHUP"];
+  const onSignal = (signal: NodeJS.Signals): void => {
+    caught ??= signal;
+    interrupt.abort();
+  };
+  if (verify) for (const s of signals) process.on(s, onSignal);
+  // A pipe or terminal that goes away (EPIPE, EIO) must not end odw between an apply and its rollback.
+  const unheard = (): void => {};
+  process.stdout.on("error", unheard);
+  process.stderr.on("error", unheard);
+  try {
+    return await applyAgents({
+      cwd: process.cwd(),
+      runId,
+      agents,
+      all: values.all === true,
+      check,
+      force: values.force === true,
+      verify,
+      timeout: settings?.timeout ?? null,
+      interrupt: interrupt.signal,
+      source: typeof source === "string" ? source : undefined,
+      out: process.stdout,
+      err: process.stderr,
+      caps: detectCaps(process.stdout, process.env),
+      width: process.stdout.isTTY && process.stdout.columns ? process.stdout.columns : 120,
+    });
+  } finally {
+    process.stdout.off("error", unheard);
+    process.stderr.off("error", unheard);
+    for (const s of signals) process.off(s, onSignal);
+    if (caught) process.kill(process.pid, caught);
   }
-  const conflicts = report.files.filter((f) => f.conflicted).length;
-  const lines = report.files.map((f) => `  ${fileLabel(f, caps)}${f.conflicted ? "   CONFLICT" : ""}`).join("\n");
-  if (check) {
-    const verdict = conflicts ? `would apply with ${conflicts} conflict(s)` : "applies cleanly";
-    process.stdout.write(`${who} ${verdict} to ${report.repo}:\n${lines}\n`);
-    return conflicts ? 1 : 0;
-  }
-  process.stdout.write(`applied ${who} to ${report.repo} (staged, as git apply --3way does):\n${lines}\n`);
-  if (conflicts) {
-    process.stdout.write(`${conflicts} file(s) conflicted: resolve the <<<<<<< markers, then git add them\n`);
-    return 1;
-  }
-  return 0;
 }
 
 /** The one agent `ref` names (an id or a label), or null once the reason it is none is printed. */
@@ -1039,7 +1063,10 @@ function cmdList(rest: string[]): number {
     const name = (status.name as string) || ref.workflowName || "";
     // status.json names the checkpoint() a running run waits at (ODW extension).
     const state = status.state === "running" && status.waiting ? "waiting" : String(status.state ?? "?");
-    process.stdout.write(`${ref.runId}  ${state.padEnd(8)}  ${name}\n`);
+    // …and what a run paused for a spent quota waits for (ODW extension: quotaWait).
+    const pausedFor = status.state === "paused" ? pausedForOf(status.pausedFor) : null;
+    const until = pausedFor ? `  ${sanitizeText(pausedText(pausedFor), 120)}` : "";
+    process.stdout.write(`${ref.runId}  ${state.padEnd(8)}  ${name}${until}\n`);
   }
   return 0;
 }
@@ -1120,7 +1147,10 @@ async function cmdResume(rest: string[]): Promise<number> {
         );
       }
       store.writeControl(runId, "resume");
-      process.stderr.write(`resume requested for ${runId}\n`);
+      // A pause for a spent quota (ODW extension: quotaWait) ends at once: its agents retry now.
+      const pausedFor = pausedForOf(store.readStatus(runId).pausedFor);
+      const quota = pausedFor ? ` — it was ${sanitizeText(pausedText(pausedFor), 120)}; its agents go on now` : "";
+      process.stderr.write(`resume requested for ${runId}${quota}\n`);
       return 0;
     }
     // A run waiting at a checkpoint() goes on once someone answers it, not by resume.

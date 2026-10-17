@@ -139,14 +139,16 @@ export class RunFeed {
 }
 
 function fullSignature(runs: RunSummary[]): string {
-  // The checkpoint a waiting run shows changes without its state moving.
-  return JSON.stringify(runs.map((r) => [r.runId, r.state, r.counts, r.progress, r.waiting?.checkpointId ?? null]));
+  // The checkpoint a waiting run shows changes without its state moving — and so does what a paused run waits for.
+  return JSON.stringify(
+    runs.map((r) => [r.runId, r.state, r.counts, r.progress, r.waiting?.checkpointId ?? null, r.pausedFor ?? null]),
+  );
 }
 
 /** What a delta client needs re-sent when it changes: state, counts, progress, activity. */
 function signatures(runs: RunSummary[]): Map<string, string> {
   return new Map(
-    runs.map((r) => [r.runId, JSON.stringify([r.state, r.stale, r.counts, r.progress, r.lastActivityTs])]),
+    runs.map((r) => [r.runId, JSON.stringify([r.state, r.stale, r.counts, r.progress, r.lastActivityTs, r.pausedFor ?? null])]),
   );
 }
 

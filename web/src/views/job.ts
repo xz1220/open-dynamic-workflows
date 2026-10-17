@@ -9,7 +9,7 @@ import { icons } from "../icons";
 import { getLang, t, tn } from "../i18n";
 import { store } from "../store";
 import type { AgentView, RunDetail, WorkflowEvent } from "../types";
-import { ACTIVE, TERMINAL, esc, fmtClock, fmtDurMs, fmtDurSec, fmtTokens, fmtUsd } from "../util";
+import { ACTIVE, TERMINAL, esc, fmtClock, fmtDurMs, fmtDurSec, fmtHourMin, fmtTokens, fmtUsd, markRedactions } from "../util";
 import { EVT_CLASS, commandDetail, emptyArt } from "./activity";
 
 export type JobTab = "graph" | "timeline" | "logs" | "result" | "changes";
@@ -211,14 +211,14 @@ function drawer(run: RunDetail, ai: number, nowSec: number): string {
     a.state === "running" && a.startedAt != null ? fmtDurSec(nowSec - a.startedAt) : fmtDurMs(a.durationMs);
   const status =
     a.state === "failed"
-      ? `<div class="drawer-sec">${t("Error")}</div><div class="outbox err">${esc(a.error ?? t("(no message)"))}</div>`
+      ? `<div class="drawer-sec">${t("Error")}</div><div class="outbox err">${markRedactions(esc(a.error ?? t("(no message)")))}</div>`
       : a.state === "stale"
         ? `<div class="drawer-sec">${t("Status")}</div><div class="outbox">${run.provider === "claude" ? t("no recent signal") : t("worker lost contact")}</div>`
         : "";
   const rec = a.agentId != null ? store.agentResults.get(`${run.runId}:${a.agentId}`) : undefined;
   const output =
     rec && rec.value !== undefined
-      ? `<div class="drawer-sec">${t("Output")}${rec.cached ? ` <span class="tag">${t("replayed")}</span>` : ""}` +
+      ? `<div class="drawer-sec">${t("Output")}${rec.cached ? ` <span class="tag">${t("replayed")}</span>` : ""}${rec.redacted ? ` <span class="tag warn" title="${esc(t("secrets in it were replaced before it was saved"))}">${t("redacted")}</span>` : ""}` +
         `<button class="iconbtn sm" data-copy="${esc(typeof rec.value === "string" ? rec.value : JSON.stringify(rec.value, null, 2))}" aria-label="${esc(t("Copy"))}">${icons.copy}</button></div>` +
         `<div class="outbox json-out">${renderJson(rec.value)}</div>`
       : rec === null && (a.state === "done" || a.state === "failed")
@@ -594,6 +594,7 @@ function changesTab(run: RunDetail, s: JobViewState): string {
     `</div></div>` +
     `<div class="rv-actions">` +
     `<button class="btn primary" data-copy="${esc(applyCmd(run, a))}" data-tip="${esc(t("applies this diff to your working tree"))}">${icons.terminal}${t("Copy apply command")}</button>` +
+    `<button class="btn" data-copy="${esc(`${applyCmd(run, a)} --check`)}" data-tip="${esc(t("previews each file — clean, conflict or already applied — and changes nothing"))}">${t("Copy preview")}</button>` +
     (branch
       ? `<button class="btn ghost" data-copy="git switch ${esc(branch)}" data-tip="${esc(t("copy a checkout command"))}">${icons.branch}<span class="mono">${esc(branch)}</span></button>`
       : "") +
@@ -601,12 +602,35 @@ function changesTab(run: RunDetail, s: JobViewState): string {
   return (
     `<div class="review">` +
     `<aside class="rv-list" aria-label="${esc(t("Agents with changes"))}">` +
-    `<div class="rv-total"><span class="v num">${changed.length}</span><span class="k">${tn(changed.length, "agent changed files", "agents changed files")}</span>${deltaHtml(ins, del)}</div>` +
+    `<div class="rv-total"><span class="v num">${changed.length}</span><span class="k">${tn(changed.length, "agent changed files", "agents changed files")}</span>${deltaHtml(ins, del)}` +
+    (changed.length > 1
+      ? `<div class="rv-all"><button class="btn sm" data-copy="${esc(`odw apply ${run.runId} --all --check`)}" data-tip="${esc(t("previews every agent's diff stacked in order"))}">${t("Preview all")}</button>` +
+        `<button class="btn sm ghost" data-copy="${esc(`odw apply ${run.runId} --all`)}" data-tip="${esc(t("applies them in order, stopping at the first conflict"))}">${t("Apply all")}</button></div>`
+      : "") +
+    `</div>` +
     list +
     `</aside>` +
     `<section class="rv-main" data-key="rvm-${esc(key)}">${head}` +
     `<div class="diff-host" data-key="dh-${esc(key)}" data-morph="skip" data-v="${esc(version)}" data-diff="${esc(key)}" data-full="${esc(`odw diff ${run.runId} --agent ${a.agentId}`)}"></div>` +
     `</section></div>`
+  );
+}
+
+/** A run waiting out a spent quota (quotaWait): until when, why, and a way to go on now. */
+function quotaPause(run: RunDetail, nowSec: number): string {
+  const p = run.pausedFor;
+  if (!p) return "";
+  const left = Math.max(0, p.resumeAt - nowSec);
+  const canResume = run.provider === "odw" && store.capabilities.writable;
+  return (
+    `<section class="card qpause" data-key="qpause">` +
+    `<div class="qp-clock"><span class="eyebrow">${t("paused until")}</span><span class="t num">${fmtHourMin(p.resumeAt)}</span>` +
+    `<span class="left">${esc(t("in {d}", { d: fmtDurSec(left) }))}</span></div>` +
+    `<div class="qp-text"><h3>${esc(t("{adapter} is out of quota", { adapter: p.adapter }))}</h3>` +
+    `<p>${t("The run waits for the reset its CLI named, then picks up where it stopped. Agents on other adapters keep running.")}</p></div>` +
+    (canResume ? `<button class="btn" data-resume-run="${esc(run.runId)}">${t("Resume now")}</button>` : "") +
+    `<i class="qp-bar"></i>` +
+    `</section>`
   );
 }
 
@@ -629,7 +653,7 @@ export function renderJob(s: JobViewState, nowSec: number): string {
             ? changesTab(run, s)
             : resultTab(run);
   return (
-    `<div class="job" data-key="job-${esc(run.runId)}">${runHead(run, nowSec)}${checkpoints(run, s)}${tabs(run, s.tab)}` +
+    `<div class="job" data-key="job-${esc(run.runId)}">${runHead(run, nowSec)}${quotaPause(run, nowSec)}${checkpoints(run, s)}${tabs(run, s.tab)}` +
     `<section class="tab-body" data-tabbody="${s.tab}" data-key="tb-${s.tab}">${body}</section></div>`
   );
 }

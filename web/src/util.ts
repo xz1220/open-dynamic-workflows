@@ -14,6 +14,14 @@ export function esc(v: unknown): string {
   return String(v ?? "").replace(/[&<>"']/g, (c) => ESC[c]!);
 }
 
+/**
+ * Draw odw's `«redacted:<kind>»` markers in already-escaped HTML as ink bars
+ * that name what was blanked (`esc` leaves « » alone).
+ */
+export function markRedactions(html: string): string {
+  return html.replace(/«redacted:([^«»<>]{1,60})»/g, (_m, kind: string) => `<span class="redact" title="redacted">${kind}</span>`);
+}
+
 /** Join truthy class fragments. */
 export function clsx(...parts: Array<string | false | null | undefined>): string {
   return parts.filter(Boolean).join(" ");
@@ -154,6 +162,12 @@ export function cronWords(expr: string): string | null {
   const days = dow.split(",");
   if (days.every((d) => /^[0-7]$/.test(d))) return t("{at} on {days}", { at, days: days.map((d) => t(DOW[Number(d) % 7]!)).join(", ") });
   return null;
+}
+
+/** "19:10" — the wall-clock minute of an epoch second. */
+export function fmtHourMin(tsSec: number): string {
+  const d = new Date(tsSec * 1000);
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 }
 
 /** A line count: exact with separators (1,204) below 100k, then compact (240k). */

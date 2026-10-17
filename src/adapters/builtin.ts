@@ -279,6 +279,7 @@ export const DEFAULT_SETTINGS: Settings = {
   staggerFanOut: { first: 1, delayMs: 2500 }, // on adapters that declare promptCache
   maxDiffBytes: 2 * 1024 * 1024, // an isolated agent's kept diff; past it, the head and a note
   keepBranches: false, // keep: true per agent still commits its change to a branch
+  applyVerify: null, // odw apply runs no command after an apply (--verify still does)
   maxTranscriptBytes: 5 * 1024 * 1024, // each agent's transcript; past it, one truncation line (0: none)
   permissions: "edit", // the tier every built-in ran with before tiers existed
   agentEnv: "inherit", // agent CLIs see ODW's whole environment
@@ -290,4 +291,6 @@ export const DEFAULT_SETTINGS: Settings = {
   quotaBreaker: 3, // quota failures in a row before the run's later agents skip an adapter
   expectRetries: 1, // reruns of an agent whose work missed its expect checks, told what it missed
   permissionDenials: "warn", // a reply whose CLI refused tool calls stands, recorded and logged ("fail": it fails)
+  redact: { env: true, patterns: true, extra: [] }, // likely secrets out of what odw keeps and serves (false: none)
+  quotaWait: false, // an agent whose chain is out of quota fails; { max: <s> } waits for the reset instead
 };

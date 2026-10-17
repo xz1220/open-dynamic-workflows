@@ -705,6 +705,18 @@ root.addEventListener("click", (ev) => {
       .catch((err: Error) => toast({ state: "failed", title: tr("Could not resolve the checkpoint"), body: err.message }));
     return;
   }
+  const resumeEl = t.closest<HTMLElement>("[data-resume-run]");
+  if (resumeEl) {
+    const id = resumeEl.dataset.resumeRun!;
+    void api
+      .control(id, "resume")
+      .then(() => {
+        toast({ state: "running", title: tr("Resume requested"), body: id, ttlMs: 2600 });
+        return store.focusedRunId === id ? store.loadRun(id) : undefined;
+      })
+      .catch((err: Error) => toast({ state: "failed", title: tr("Could not resume the run"), body: err.message }));
+    return;
+  }
   const stopEl = t.closest<HTMLElement>("[data-stop]");
   if (stopEl) {
     const id = stopEl.dataset.stop!;

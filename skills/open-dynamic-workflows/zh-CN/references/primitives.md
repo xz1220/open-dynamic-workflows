@@ -156,6 +156,11 @@ log(message)           // emit a one-line progress event
 - **额度熔断。** 同一个适配器上连续 `quotaBreaker`（默认 3）次额度失败后，本次运行之后的
   调用都会跳过它：各自从回退链上的下一个适配器开始，没有回退链的则立即失败（原因为 `quota`）。
   只记一条警告。
+- **额度用尽时暂停。** 配置了 `quotaWait`（`{ "max": <秒数> }`；默认关闭）时，因额度用尽而无
+  适配器可用的调用不会失败：它不占槽位地等到 CLI 报出的重置时间——只要在 `max` 之内——然后从
+  链首重新开始，transcript 在 `{"kind":"attempt","reason":"quota_wait"}` 一行之后继续。在那个
+  重置时间之前，运行会跳过该适配器，无处可去的调用在派发前就等待。你的 `agent()` 只是返回得更
+  晚；没有重置时间或超过 `max` 的额度失败照上文以原因 `quota` 失败。
 
 ```js
 export const meta = {
@@ -381,15 +386,24 @@ agent 不保留 diff；被停止的运行也不保留。
 ```bash
 odw diff <run> --stat                    # 每个 agent：文件数、增删行数、保留的分支
 odw diff <run> --agent <id|label>        # 某个 agent 的 diff，原样输出
-odw apply <run> --agent <id|label> --check
+odw apply <run> --agent <id|label> --check   # 只预览
 odw apply <run> --agent <id|label>       # 用 git apply --3way 应用到你所在的工作树
+odw apply <run> --all [--check]          # 所有已完成的 agent，按 agentId 顺序
+odw apply <run> --agent <id|label> --verify "<cmd>"   # <cmd> 失败则回滚这次应用
 ```
 
-`odw apply` 会暂存能应用的部分，在 hunk 冲突处留下冲突标记（退出码 1）；只要 diff 涉及的
-路径上有未提交改动它就拒绝，除非加 `--force`。改动不同文件的多个 agent 可以依次应用。超过
-`maxDiffBytes`（默认 2 MB）的 diff 只保留开头，并以一行 `# odw: diff truncated …` 结尾；
-计数仍描述完整改动，但 `odw apply` 会拒绝它——请改用该 agent 的分支（`keep: true` 或
-`keepBranches`）。一次调用的每次尝试都在新的 worktree 里进行：只重排回复格式的 schema
+动手之前，`odw apply` 先在索引的临时副本上做同样的应用，逐个文件给出 `clean`、`CONFLICT`
+（附上合并后会留在文件里的冲突行，或无法合并的原因：`deleted here`、`binary: …`、挡在那里的未跟踪或被忽略文件）或
+`already applied`（不再应用）；`--check` 到此为止，有冲突时退出码 1。它会暂存能应用的部分，
+在 hunk 冲突处留下冲突标记（退出码 1）；只要 diff 涉及的路径上有未提交改动它就拒绝，除非加
+`--force`。`--all` 按 agentId 顺序把所有已完成的 agent 叠起来预览（会冲突的那个不进入叠加），
+并依次应用到第一个会冲突的为止；失败的 agent 的 diff 只能用 `--agent` 应用。`--verify "<cmd>"`
+或配置 `applyVerify`（`--no-verify` 跳过）在每次应用后于仓库根目录运行 `<cmd>`，受 `timeout`
+约束；命令失败或超时时，这次应用会被原样回滚——只恢复涉及路径的内容和索引项，其他一概不动——
+odw 以退出码 1 结束并给出命令输出的末尾（被信号中断时同样回滚，然后 odw 随该信号结束）。`--verify` 下会冲突的改动不会被应用。
+超过 `maxDiffBytes`（默认 2 MB）的 diff 只保留开头，并以一行 `# odw: diff truncated …` 结尾；
+计数仍描述完整改动，但 `odw apply` 会拒绝它（`--all` 在此停下）——请改用该 agent 的分支
+（`keep: true` 或 `keepBranches`）。一次调用的每次尝试都在新的 worktree 里进行：只重排回复格式的 schema
 重试会保留之前那次尝试的改动；卡死重启、限流重试或 `expect` 重试会重做工作，所以它的改动
 取代之前的。`odw resume` 会把重放 agent 的 diff 复制到新运行里。
 

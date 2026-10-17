@@ -213,7 +213,8 @@ odw resume $RUN --wait        # …a NEW run: unchanged agent() calls replay, on
   call, slot or budget. Edit the script first to fix the failing step: only
   edited and new calls run. `--adapter <name>` switches the default CLI; calls
   that named no adapter still replay.
-- On a *paused* run, `odw resume` just continues it in place. A run that is
+- On a *paused* run — by `odw pause`, or waiting for a spent quota to reset
+  (`quotaWait`) — `odw resume` just continues it in place. A run that is
   still running is refused: `odw stop` it first (or pass `--force`).
 - Keep prompts deterministic — one built from `Date.now()` or `Math.random()`
   never matches, so it runs again.
@@ -227,13 +228,24 @@ files. Its change is kept with the run as a diff (`agents/<agentId>.diff`) —
 ```bash
 odw diff $RUN --stat                  # which agents changed which files, +/- lines
 odw diff $RUN --agent <id|label>      # one agent's diff — read it before applying
-odw apply $RUN --agent <id> --check   # would it apply here? which files would conflict?
+odw apply $RUN --agent <id> --check   # preview: each file clean, CONFLICT (with its lines) or already applied
 odw apply $RUN --agent <id>           # git apply --3way into this working tree (staged)
+odw apply $RUN --all --check          # preview every finished agent, each on top of the ones before it
+odw apply $RUN --all --verify "<test command>"   # apply them in order; roll back one that fails the check
 ```
 
-- Apply what the task calls for, one agent at a time, and tell the user what you
-  applied and what conflicted (exit 1: conflict markers to resolve). Run it inside
-  the repository the run worked on.
+- Preview first (`--check`, exit 1 when anything conflicts), apply what the task
+  calls for, and tell the user what you applied and what conflicted (exit 1:
+  conflict markers to resolve, where the preview showed them). Run it inside the
+  repository the run worked on.
+- `--all` applies every finished agent in agentId order, stops before the first
+  that would conflict, and says which applied and which did not. A failed
+  agent's diff goes in only by `--agent`.
+- `--verify "<cmd>"` (or the `applyVerify` setting) runs the command at the
+  repository root after each apply and rolls that apply back, exactly, when it
+  fails — only the paths the diff touched, never the user's other work. Use the
+  project's test or build command when it has one. A change that would conflict
+  is not applied under `--verify`.
 - `odw apply` refuses while a path the diff touches has uncommitted changes —
   commit or stash first; use `--force` only when the user agrees.
 - A diff cut at `maxDiffBytes` cannot be applied: use the agent's branch
@@ -286,6 +298,11 @@ when one CLI runs out of quota.
 - Only name adapters the user has installed (`odw doctor` lists them), and keep
   the user's choice of default CLI: suggest a chain when long runs keep stopping
   on quota, don't add one silently.
+- **Pause for a spent quota.** With `"quotaWait": { "max": <seconds> }` in the
+  config (off by default), an agent with no CLI left waits for the reset its CLI
+  named instead of failing — holding no slot — and the run shows
+  `paused until 19:10 (codex quota)`. Suggest it for unattended overnight runs, and
+  say the run may then sit for hours; `odw resume <run>` goes on at once.
 
 ```js
 phase('Extract', { model: '@fast' })   // ODW extension
@@ -392,7 +409,8 @@ without answering when headless (a login, trust or approval prompt).
   retry-after); a spent quota or a failed login is not retried — the agent fails
   with what to do, and `odw logs` names the reason — unless it has a fallback
   chain, which moves it to the next CLI (ODW extension). Switch adapter with
-  `--adapter` rather than retrying a quota failure.
+  `--adapter` rather than retrying a quota failure. Under `quotaWait` (ODW
+  extension) it waits for the quota to reset instead (see routing above).
 - **Throttling and the prompt cache** (ODW extensions): an adapter's own
   `concurrency` caps its agents inside the run's, and a rate limit halves that cap
   for the run; on `claude`, a `parallel()`/`pipeline()` whose prompts share their
@@ -404,6 +422,15 @@ without answering when headless (a login, trust or approval prompt).
 - **Results**: the engine never commits, pushes, or applies diffs for you.
   Inspect the `return` value first, then decide the next step — for isolated
   agents, that includes reviewing their kept diffs and running `odw apply`.
+- **Secrets** (ODW extension): what odw keeps and serves — transcripts,
+  `odw logs`, saved results (`odw result --agent`), the run's error, webhooks —
+  shows likely secrets as `«redacted:<kind>»` (`env:NAME` for a secret-named
+  variable's value, else the token's kind). The agents and the workflow still
+  got the real text; only what was written down is redacted, so a marker in
+  `odw logs` is not the agent's mistake. A resumed run replays a redacted
+  result as kept: never let a later step depend on a secret an agent printed —
+  read it from the environment. The run's own result keeps variables' values
+  (only token shapes are redacted there); `"redact": false` turns it off.
 
 ## Common mistakes
 

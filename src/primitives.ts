@@ -27,7 +27,9 @@
  * — where it reported no output tokens — chars/4 of its replies, `estimated`.
  *
  * What each agent's CLI printed is kept as it runs, as the agent's transcript
- * (an ODW extension; see ./transcript) — complete before its terminal event.
+ * (an ODW extension; see ./transcript) — complete before its terminal event —
+ * with its likely secrets redacted, like its saved result (an ODW extension;
+ * see ./redact); a resume replays a redacted result as saved, and says so.
  *
  * Every agent_started event carries the agent's permission tier (an ODW
  * extension, adapters/permissions.ts); an adapter that runs another tier than
@@ -44,7 +46,10 @@
  * spent or its login refused, taking a slot on each adapter it moves to; and
  * `model: "@fast"` picks a tier's model for the adapter it runs on (ODW
  * extensions; see ./routing). Its agent_finished event names the adapter that
- * produced the value, and `fellBackFrom` the ones it left.
+ * produced the value, and `fellBackFrom` the ones it left. Under `quotaWait`
+ * (an ODW extension; see ./quota-wait) an agent whose chain is out of quota
+ * waits for the reset instead of failing — holding no slot, and before it is
+ * dispatched when no adapter of its chain has quota left.
  *
  * An agent's work is checked, not taken at its word, when its call says what
  * must hold (`expect`, an ODW extension; see ./expect): a check's command is
@@ -264,11 +269,23 @@ export function createPrimitives(
     // What its CLI refused when the value was produced travels with it (ODW extension).
     const denied = deniedField(recorded.denied);
     const changed = changeFields(kept);
+    // A value saved with its secrets redacted replays as saved, and says so (ODW extension; see ./redact).
+    const redacted = recorded.redacted === true ? { redacted: true } : {};
+    if (recorded.redacted === true) {
+      ctx.emit(
+        event(LOG, {
+          message: `${label}:${agentId}: replays a saved result whose secrets were redacted when it was kept — the workflow gets it redacted`,
+          agentId,
+          label,
+          phase,
+        }),
+      );
+    }
     const finished = event(AGENT_FINISHED, { agentId, label, phase, adapter, ...moved, attempts, ...marks, ...changed, ...denied });
     const startedAt = startedEv.ts;
     const finishedAt = finished.ts;
     const value = recorded.value;
-    if (save({ agentId, key, label, phase, adapter, ...moved, attempts, startedAt, finishedAt, value, ...tier, ...marks, ...changed, ...denied })) {
+    if (save({ agentId, key, label, phase, adapter, ...moved, attempts, startedAt, finishedAt, value, ...tier, ...marks, ...changed, ...denied, ...redacted })) {
       finished.saved = true;
     }
     ctx.emit(finished);
@@ -341,6 +358,8 @@ export function createPrimitives(
       format: adapter.output?.format === "jsonl" ? "jsonl" : "text",
       maxBytes,
       onNote: note,
+      // Likely secrets are kept redacted (ODW extension; see ./redact).
+      redactor: ctx.redactor,
     });
   };
 
@@ -414,9 +433,10 @@ export function createPrimitives(
     // an unknown or ambiguous adapter is a (fatal) config error that must not
     // consume a dispatch or show an agent that never ran as running. The call
     // starts on the first adapter of its chain (ODW extension) the run's
-    // quota breaker has not taken out.
-    const route = ctx.bridge.route(adapterChoice, opts.permissions);
-    const adapter = route.chain[Math.max(0, route.start)]!;
+    // quota breaker has not taken out — nor, under quotaWait, whose quota is
+    // spent until a reset its CLI named.
+    let route = ctx.bridge.route(adapterChoice, opts.permissions);
+    let adapter = route.chain[Math.max(0, route.start)]!;
     const display = opts.label ?? firstAdapter(opts.adapter) ?? opts.agentType ?? adapter.name;
     // The agent's permission tier, for its events and the run's log — its
     // first adapter's, which every fallback runs too. The bridge enforces it:
@@ -430,6 +450,13 @@ export function createPrimitives(
     const fanOut = adapter.promptCache && typeof prompt === "string" ? fanOutScope.getStore() : undefined;
     const cache = [adapter.name, model ?? "", opts.agentType ?? ""].join("\u0000");
     const turn = fanOut?.enter(adapter.name, cache, prompt);
+    // A call none of whose adapters has quota left waits for the first reset
+    // before it is dispatched (ODW extension: quotaWait) — holding no slot,
+    // showing no agent — and is routed again once it can run.
+    const ready = async (signal: AbortSignal): Promise<void> => {
+      while (await ctx.bridge.awaitQuota(route, signal)) route = ctx.bridge.route(adapterChoice, opts.permissions);
+      await turn?.gate?.(signal);
+    };
     const request: AgentRequest = {
       prompt,
       adapter: adapterChoice,
@@ -487,6 +514,14 @@ export function createPrimitives(
       // accounted for (the run's drain relies on it), and the next queued
       // dispatch sees the updated budget.
       return await ctx.scheduler.runAgent(async (signal, slot) => {
+        // Routed again after a wait for a spent quota, a call may start on
+        // another adapter of its chain: its slot goes there first.
+        const start = route.chain[Math.max(0, route.start)]!;
+        if (start.name !== adapter.name) {
+          await slot.moveTo(start.name);
+          adapter = start;
+          onAdapter = start.name;
+        }
         // Record the adapter only once the scheduler has handed out a real
         // dispatch slot, so queued work is not presented as running.
         started = true;
@@ -596,6 +631,38 @@ export function createPrimitives(
               );
               await slot.moveTo(to);
             },
+            // Its chain out of quota, it waits for a reset (ODW extension:
+            // quotaWait) holding no slot — and says so — then takes a slot
+            // again on the adapter it starts over on; a line that names the
+            // adapters it left moves it, for every reader of the run.
+            onQuotaWait: ({ adapter: name }) => {
+              ctx.emit(
+                event(LOG, {
+                  message: `${display}:${agentId} waits for ${name}'s quota to reset (quotaWait)`,
+                  agentId,
+                  label: display,
+                  phase: activePhase,
+                  adapter: name,
+                  reason: "quota",
+                }),
+              );
+              slot.release();
+            },
+            onQuotaResume: async ({ adapter: name, fellBackFrom: left }) => {
+              fellBackFrom.splice(0, fellBackFrom.length, ...left);
+              onAdapter = name;
+              ctx.emit(
+                event(LOG, {
+                  message: `${display}:${agentId} goes on after the quota wait, on ${name}`,
+                  agentId,
+                  label: display,
+                  phase: activePhase,
+                  adapter: name,
+                  ...(left.length > 0 ? { fellBackFrom: [...left] } : {}),
+                }),
+              );
+              await slot.moveTo(name);
+            },
             // Its work is checked against its `expect` (ODW extension), and a
             // miss that earns a retry is logged with what it missed.
             expect,
@@ -675,7 +742,7 @@ export function createPrimitives(
         if (persisted) finished.saved = true;
         ctx.emit(finished);
         return outcome.value;
-      }, { adapter: adapter.name, gate: turn?.gate });
+      }, { adapter: adapter.name, gate: route.start < 0 || turn?.gate ? ready : undefined });
     } catch (err) {
       // A fatal error before the start (stop or budget at dispatch) concerns
       // the run, not this agent; anything else is still this agent's failure.

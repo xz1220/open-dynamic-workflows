@@ -23,15 +23,17 @@ import { killAllAgentProcesses } from "../adapters/runner.js";
 import type { RunEndState } from "../adapters/types.js";
 import type { WaitingCheckpoint } from "../checkpoint.js";
 import { buildContext, spentTokens, type RunContext } from "../context.js";
-import type { CheckpointRequest } from "../control.js";
+import { PAUSED, RUNNING, type CheckpointRequest } from "../control.js";
 import { RunStopped, WorkflowScriptError, isFatalError } from "../errors.js";
 import { LOG, RUN_FAILED, RUN_FINISHED, RUN_STARTED, RUN_STOPPED, event } from "../events.js";
 import { ReplayJournal } from "../journal.js";
 import { loadWorkflowScript } from "../loader.js";
 import { createPrimitives } from "../primitives.js";
+import type { QuotaPause } from "../quota-wait.js";
+import { redactorFor, type Redactor } from "../redact.js";
 import type { Scheduler } from "../scheduler.js";
 import { FileControl } from "./file-control.js";
-import { notifyCheckpoint, notifyRunEnd } from "./notify.js";
+import { notifyCheckpoint, notifyQuotaPause, notifyRunEnd } from "./notify.js";
 import { JsonlSink, RunStore } from "./run-store.js";
 
 /**
@@ -72,9 +74,21 @@ const SIGNAL_GRACE_MS = 10_000;
  * Once the outcome is on disk, the configured run-end hooks (`notify`) fire;
  * they are bounded and never throw, so they cannot change the returned state.
  *
+ * What the run writes down has its likely secrets redacted (an ODW extension;
+ * see ../redact): its events, each saved agent result, its error, a webhook's
+ * payload — and its result, but there only the token shapes, never the values
+ * of variables: a workflow's return value is the user's data.
+ *
  * A checkpoint() waiting for a person is shown in status.json as `waiting`
  * (the oldest one, which `odw approve` answers by default) and, when
  * `notify.on` lists "waiting", fires the hooks at once — the run waits on.
+ *
+ * While agents wait for an adapter's spent quota to reset (an ODW extension:
+ * quotaWait), status.json shows the run `paused`, with `pausedFor: { reason:
+ * "quota", adapter, resumeAt }` — the soonest reset — and, when `notify.on`
+ * lists "paused", each pause fires the hooks once. The wait lives in this
+ * process: a worker that dies leaves the run stale, and `odw resume` replays
+ * it. A new `odw resume` ends the wait at once.
  */
 export async function executeRun(runDir: string): Promise<string> {
   const store = new RunStore(dirname(runDir));
@@ -89,6 +103,9 @@ export async function executeRun(runDir: string): Promise<string> {
   // ctx is created inside the try so that a config or context-build failure is
   // still recorded as a failed run rather than leaving it stuck in "pending".
   let ctx: RunContext | undefined;
+  // Built once the config is loaded: what the run writes down goes through it.
+  let redactor: Redactor | undefined;
+  const redact = <T extends object>(record: T): T => redactor?.record(record) ?? record;
   const dispatched = () => ctx?.scheduler.dispatched ?? 0;
   const spent = () => (ctx ? spentTokens(ctx.usage) : 0);
 
@@ -96,6 +113,8 @@ export async function executeRun(runDir: string): Promise<string> {
   let end: { state: RunEndState; error?: string } | undefined;
   // "waiting" hooks of checkpoints, awaited (they are bounded) before the worker returns.
   const checkpointHooks: Array<Promise<void>> = [];
+  // …and "paused" hooks of quota pauses (ODW extension: quotaWait).
+  const pauseHooks: Array<Promise<void>> = [];
   const crashes = watchProcessCrashes();
   const signals = watchStopSignals({
     stop: (signal) => {
@@ -109,8 +128,8 @@ export async function executeRun(runDir: string): Promise<string> {
       if (!end) {
         sink.emit(event(LOG, { message: `${why} — killing the agents and exiting` }));
         sink.emit(event(RUN_STOPPED, { runId }));
-        // No checkpoint gets to withdraw itself here: nothing waits any more.
-        store.updateStatus(runId, { state: "stopped", dispatched: dispatched(), spentTokens: spent(), waiting: null });
+        // No checkpoint (nor quota pause) gets to withdraw itself here: nothing waits any more.
+        store.updateStatus(runId, { state: "stopped", dispatched: dispatched(), spentTokens: spent(), waiting: null, pausedFor: null });
       } else {
         // Nothing may follow the terminal event in events.jsonl: say it in worker.log.
         process.stderr.write(`odw: ${why} — exiting before the run-end hooks finished\n`);
@@ -137,12 +156,26 @@ export async function executeRun(runDir: string): Promise<string> {
         ...(permissionsOverride ? { permissions: permissionsOverride } : {}),
       },
     };
+    const runRedactor = redactorFor(config);
+    redactor = runRedactor;
+    sink.redactor = runRedactor;
+    // The state status.json shows: the control's (odw pause|resume|stop) —
+    // and "paused" while agents wait for a spent quota to reset (ODW
+    // extension: quotaWait), whose soonest reset is the run's `pausedFor`.
+    let controlState = RUNNING;
+    const quotaPauses = new Map<string, QuotaPause>();
+    const shownState = (): string => (controlState === RUNNING && quotaPauses.size > 0 ? PAUSED : controlState);
     const control = new FileControl({
       readAction: () => store.readControl(runId),
+      // A new `odw resume` — not one already there — ends a quota pause at once.
+      readRequest: () => store.readControlRequest(runId),
       // checkpoint() answers from `odw approve|reject` and the dashboard.
       readDecisions: () => store.readCheckpointRequests(runId),
       onUnmatchedDecision: (request) => sink.emit(event(LOG, { message: unmatchedDecision(request) })),
-      onState: (state) => store.updateStatus(runId, { state, dispatched: dispatched(), spentTokens: spent() }),
+      onState: (state) => {
+        controlState = state;
+        store.updateStatus(runId, { state: shownState(), dispatched: dispatched(), spentTokens: spent() });
+      },
     });
     const replay = replayJournal(meta);
     const waiting = new Map<number, WaitingCheckpoint>();
@@ -155,8 +188,10 @@ export async function executeRun(runDir: string): Promise<string> {
       control,
       budgetTotal: (meta.budgetTotal as number | null) ?? null,
       // Each completed agent's result lands in agents/<agentId>.json at once,
-      // so a run that stalls, is stopped, or dies keeps its finished work.
-      saveAgentResult: (rec) => store.writeAgentResult(runId, rec),
+      // so a run that stalls, is stopped, or dies keeps its finished work —
+      // its likely secrets redacted (ODW extension).
+      saveAgentResult: (rec) => store.writeAgentResult(runId, runRedactor.record(rec)),
+      redactor: runRedactor,
       // What an isolated agent changed is kept beside it, as agents/<agentId>.diff.
       agentDiffPath: (agentId) => store.agentDiffPath(runId, agentId),
       // What each agent's CLI prints, as agents/<agentId>.transcript.jsonl and .stderr.txt.
@@ -169,6 +204,7 @@ export async function executeRun(runDir: string): Promise<string> {
           waiting.set(cp.checkpointId, cp);
           const hooks = notifyCheckpoint(config.settings.notify, { store, runId, checkpoint: cp }, {
             cwd: typeof meta.source === "string" ? meta.source : undefined,
+            redactor: runRedactor,
           });
           checkpointHooks.push(hooks);
         } else {
@@ -176,7 +212,24 @@ export async function executeRun(runDir: string): Promise<string> {
         }
         // The oldest question still open: the one `odw approve <run>` answers.
         const oldest = [...waiting.values()].sort((a, b) => a.checkpointId - b.checkpointId)[0];
-        store.updateStatus(runId, { waiting: oldest ?? null });
+        store.updateStatus(runId, { waiting: oldest ? { ...oldest, title: runRedactor.text(oldest.title) } : null });
+      },
+      onQuotaPause: ({ pause, change }) => {
+        if (change === "started" || change === "extended") quotaPauses.set(pause.adapter, pause);
+        else quotaPauses.delete(pause.adapter);
+        if (change === "started") {
+          pauseHooks.push(
+            notifyQuotaPause(config.settings.notify, { store, runId, pause }, {
+              cwd: typeof meta.source === "string" ? meta.source : undefined,
+              redactor: runRedactor,
+            }),
+          );
+        }
+        // The soonest reset: when the run goes on. A run ending under its
+        // pause only drops it — its final state comes next.
+        const soonest = [...quotaPauses.values()].sort((a, b) => a.resumeAt - b.resumeAt)[0];
+        const pausedFor = soonest ? { reason: "quota", ...soonest } : null;
+        store.updateStatus(runId, change === "withdrawn" ? { pausedFor } : { state: shownState(), pausedFor });
       },
     });
 
@@ -235,7 +288,9 @@ export async function executeRun(runDir: string): Promise<string> {
       throw fatal;
     }
 
-    store.writeResult(runId, result);
+    // The workflow's own value: token shapes are redacted, the values of variables are not (ODW extension).
+    const kept = runRedactor.shapes.record({ value: result });
+    store.writeResult(runId, kept.value, "redacted" in kept);
     sink.emit(event(RUN_FINISHED, { runId }));
     store.updateStatus(runId, { state: "done", dispatched: dispatched(), spentTokens: spent() });
     end = { state: "done" };
@@ -253,11 +308,12 @@ export async function executeRun(runDir: string): Promise<string> {
       end = { state: "stopped", error: outcome.message };
     } else {
       // A script may throw anything — `throw null` included — so never read
-      // properties off the outcome without checking what it is.
-      const message = errorMessage(outcome);
-      const stack = outcome instanceof Error ? (outcome.stack ?? null) : null;
+      // properties off the outcome without checking what it is. What it says
+      // may quote an agent's or a command's output: redacted (ODW extension).
+      const failure = redact({ error: errorMessage(outcome), stack: outcome instanceof Error ? (outcome.stack ?? null) : null });
+      const message = failure.error;
       sink.emit(event(RUN_FAILED, { runId, error: message }));
-      store.writeError(runId, { error: message, stack });
+      store.writeError(runId, failure);
       store.updateStatus(runId, { state: "failed", dispatched: dispatched(), spentTokens: spent() });
       end = { state: "failed", error: message };
     }
@@ -270,9 +326,11 @@ export async function executeRun(runDir: string): Promise<string> {
   try {
     await notifyRunEnd(ctx?.config.settings.notify ?? null, { store, runId, ...end }, {
       cwd: typeof meta.source === "string" ? meta.source : undefined,
+      redactor,
     });
     // A checkpoint's hooks may still be on their way (a quick answer): let them finish.
     await Promise.all(checkpointHooks);
+    await Promise.all(pauseHooks);
   } finally {
     signals.dispose();
   }

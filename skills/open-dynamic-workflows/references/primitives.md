@@ -190,6 +190,15 @@ take it. Claude Code ignores all of it.
   on one adapter, the run's later calls skip it: each starts on the next
   adapter of its chain, or fails at once (reason `quota`) without one. One
   warning says so.
+- **Pause for a spent quota.** With the `quotaWait` setting (`{ "max":
+  <seconds> }`; off by default), a call with no adapter left on a spent quota
+  does not fail: it waits, holding no slot, for the reset its CLI named — when
+  that is within `max` — then starts over from its chain's start, its
+  transcript going on after an `{"kind":"attempt","reason":"quota_wait"}` line.
+  Until that reset the run passes over the adapter, and a call with nowhere
+  else to go waits before it is dispatched. Your `agent()` call just takes
+  longer to return; a quota that names no reset, or one past `max`, fails it
+  with reason `quota` as above.
 
 ```js
 export const meta = {
@@ -463,17 +472,32 @@ nothing keeps no diff; a stopped run keeps none.
 ```bash
 odw diff <run> --stat                    # per agent: files, +/- lines, kept branch
 odw diff <run> --agent <id|label>        # one agent's diff, verbatim
-odw apply <run> --agent <id|label> --check
+odw apply <run> --agent <id|label> --check   # preview only
 odw apply <run> --agent <id|label>       # git apply --3way into the working tree you are in
+odw apply <run> --all [--check]          # every finished agent, in agentId order
+odw apply <run> --agent <id|label> --verify "<cmd>"   # roll the apply back if <cmd> fails
 ```
 
-`odw apply` stages what applies and leaves conflict markers where a hunk clashes
-(exit 1); it refuses while a path the diff touches has uncommitted changes, unless
-`--force`. Several agents that changed different files apply one after another.
+Before it touches the tree, `odw apply` runs the same apply against a scratch
+copy of the index and prints each file as `clean`, `CONFLICT` (with the
+conflicting lines as the merge would leave them, or why it cannot be merged:
+`deleted here`, `binary: …`, an untracked or ignored file in the way) or
+`already applied` (left out of the apply);
+`--check` stops there, exit 1 on a conflict. It stages what applies and leaves
+conflict markers where a hunk clashes (exit 1); it refuses while a path the diff
+touches has uncommitted changes, unless `--force`. `--all` previews every
+finished agent stacked in agentId order (one that would conflict is left out of
+the stack) and applies them up to the first that would conflict; a failed
+agent's diff goes in only by `--agent`. `--verify "<cmd>"`, or the
+`applyVerify` setting (`--no-verify` skips it), runs `<cmd>` at the repository
+root after each apply, within `timeout`; when it fails or times out, that apply
+is rolled back exactly — the touched paths' content and index entries, nothing
+else — and odw exits 1 with the end of its output (a signal rolls it back too,
+then ends odw). A change that would conflict is not applied under `--verify`.
 A diff past `maxDiffBytes` (default 2 MB) keeps its head and ends with a
 `# odw: diff truncated …` line; its counts still describe the whole change, and
-`odw apply` refuses it — use the agent's branch (`keep: true`, or
-`keepBranches`). Each attempt of a call works in a fresh worktree: a schema retry
+`odw apply` refuses it (`--all` stops there) — use the agent's branch
+(`keep: true`, or `keepBranches`). Each attempt of a call works in a fresh worktree: a schema retry
 that only reformats its reply keeps the earlier attempt's change, while a stall
 restart, a rate-limit retry or an `expect` retry redoes the work, so its change
 replaces the earlier one. `odw resume` copies a replayed agent's diff into the new run.

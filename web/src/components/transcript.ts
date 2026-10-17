@@ -8,7 +8,10 @@
  * (main.ts adds the new ones to a frozen host) instead of repainting.
  */
 import { t } from "../i18n";
-import { esc, fmtUsd } from "../util";
+import { esc as plain, fmtUsd, markRedactions } from "../util";
+
+/** Escape, and draw redaction markers as ink bars. */
+const esc = (v: unknown): string => markRedactions(plain(v));
 
 import type { TranscriptEntry } from "../types";
 
@@ -36,7 +39,9 @@ function folded(label: string, body: string, open = false): string {
 
 /** One entry's HTML. */
 export function transcriptEntry(e: TranscriptEntry): string {
-  const clipped = e.clipped ? `<span class="tx-clip">${t("clipped")}</span>` : "";
+  const clipped =
+    (e.clipped ? `<span class="tx-clip">${t("clipped")}</span>` : "") +
+    (e.redacted ? `<span class="tx-clip" title="${t("secrets in it were replaced before it was saved")}">${t("redacted")}</span>` : "");
   switch (e.kind) {
     case "text":
       return e.thinking

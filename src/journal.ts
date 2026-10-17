@@ -63,6 +63,11 @@ export interface AgentResultRecord {
    * stood anyway (ODW extension; `permissionDenials: "warn"`), when it refused any.
    */
   denied?: string[];
+  /**
+   * Likely secrets in it were replaced by `«redacted:<kind>»` before it was
+   * saved (ODW extension; see ./redact) — a resume replays it as saved.
+   */
+  redacted?: boolean;
 }
 
 /**

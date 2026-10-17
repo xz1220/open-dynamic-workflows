@@ -36,6 +36,11 @@
  *
  * All JSON writes are atomic (temp file + rename) so a concurrent reader never
  * sees a half-written file.
+ *
+ * What the worker writes here of its agents — events, saved results, the
+ * transcripts, the error and the result — has its likely secrets redacted
+ * first (ODW extension; see ../redact). Kept diffs are not: they are the
+ * agents' changes to the code, what `odw apply` applies.
  */
 
 import {
@@ -54,6 +59,7 @@ import { basename, join } from "node:path";
 import { isCheckpointRequest, type CheckpointRequest } from "../control.js";
 import type { EventSink, WorkflowEvent } from "../events.js";
 import type { AgentResultRecord } from "../journal.js";
+import type { Redactor } from "../redact.js";
 import type { TranscriptPaths } from "../transcript.js";
 import { readdirSafe, readJsonFile, writeJsonAtomic } from "./fs-util.js";
 
@@ -306,8 +312,9 @@ export class RunStore {
 
   // --- result & error --------------------------------------------------------
 
-  writeResult(runId: string, value: unknown): void {
-    writeJson(join(this.runDir(runId), RESULT), { value: value ?? null });
+  /** `redacted`: secrets in it were redacted (ODW extension), and result.json says so. */
+  writeResult(runId: string, value: unknown, redacted = false): void {
+    writeJson(join(this.runDir(runId), RESULT), { value: value ?? null, ...(redacted ? { redacted: true } : {}) });
   }
   readResult(runId: string): unknown {
     const payload = readJsonFile(join(this.runDir(runId), RESULT));
@@ -389,6 +396,15 @@ export class RunStore {
   readControl(runId: string): string | null {
     const payload = readJsonFile(this.controlPath(runId));
     return payload === null ? null : ((payload.action as string) ?? null);
+  }
+  /** The control request whole: its action and when it was written (epoch seconds); null when none was. */
+  readControlRequest(runId: string): { action: string | null; at: number | null } | null {
+    const payload = readJsonFile(this.controlPath(runId));
+    if (payload === null) return null;
+    return {
+      action: typeof payload.action === "string" ? payload.action : null,
+      at: typeof payload.at === "number" ? payload.at : null,
+    };
   }
   /**
    * Answer a waiting checkpoint() (ODW extension): one line appended to the
@@ -505,11 +521,16 @@ export class RunStore {
   }
 }
 
-/** An {@link EventSink} that appends each event to events.jsonl. */
+/**
+ * An {@link EventSink} that appends each event to events.jsonl — its likely
+ * secrets redacted, and the event marked `redacted: true`, once the worker has
+ * given it the run's redactor (ODW extension; see ../redact).
+ */
 export class JsonlSink implements EventSink {
+  redactor: Redactor | undefined;
   constructor(private readonly path: string) {}
   emit(ev: WorkflowEvent): void {
-    appendFileSync(this.path, JSON.stringify(ev) + "\n");
+    appendFileSync(this.path, JSON.stringify(this.redactor ? this.redactor.record(ev) : ev) + "\n");
   }
 }
 

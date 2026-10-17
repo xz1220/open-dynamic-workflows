@@ -179,8 +179,8 @@ odw resume $RUN --wait        # ……启动一个新运行：未改动的 agent
   args 和 adapter 启动新运行。prompt 和选项都没变（phase 除外）的调用免费返回已保存的值——
   不调用 adapter、不占槽位、不耗预算。先改好脚本里出错的那一步：只有改动过的和新增的调用
   会执行。`--adapter <名字>` 切换默认 CLI；没有指定 adapter 的调用仍会重放。
-- 对*已暂停*的运行，`odw resume` 只是原地继续。仍在运行的运行会被拒绝：先 `odw stop`
-  （或加 `--force`）。
+- 对*已暂停*的运行——因 `odw pause`，或在等用尽的额度重置（`quotaWait`）——`odw resume`
+  只是原地继续。仍在运行的运行会被拒绝：先 `odw stop`（或加 `--force`）。
 - 保持 prompt 确定：用 `Date.now()` 或 `Math.random()` 拼出的 prompt 永远匹配不上，会重新执行。
 
 ### 审阅并应用隔离 agent 的改动（ODW 扩展）
@@ -191,12 +191,19 @@ diff 形式随运行保存（`agents/<agentId>.diff`）——`agent()` 返回的
 ```bash
 odw diff $RUN --stat                  # 哪些 agent 改了哪些文件，增删多少行
 odw diff $RUN --agent <id|label>      # 某个 agent 的 diff——应用前先读
-odw apply $RUN --agent <id> --check   # 能否应用到这里？哪些文件会冲突？
+odw apply $RUN --agent <id> --check   # 预览：每个文件是 clean、CONFLICT（附冲突行）还是 already applied
 odw apply $RUN --agent <id>           # 用 git apply --3way 应用到当前工作树（会暂存）
+odw apply $RUN --all --check          # 预览所有已完成的 agent，每个都叠在前面的之上
+odw apply $RUN --all --verify "<测试命令>"   # 按顺序应用；校验失败的那次应用被回滚
 ```
 
-- 按任务需要逐个应用，并告诉用户应用了什么、哪里冲突了（退出码 1：有待解决的冲突标记）。
-  请在本次运行所针对的仓库里执行。
+- 先预览（`--check`，有冲突时退出码 1），按任务需要应用，并告诉用户应用了什么、哪里冲突了
+  （退出码 1：有待解决的冲突标记，位置与预览一致）。请在本次运行所针对的仓库里执行。
+- `--all` 按 agentId 顺序应用所有已完成的 agent，在第一个会冲突的之前停下，并说明哪些应用了、
+  哪些没有。失败的 agent 的 diff 只能用 `--agent` 单独应用。
+- `--verify "<cmd>"`（或配置 `applyVerify`）在每次应用后于仓库根目录运行该命令，失败时把这次
+  应用原样回滚——只动 diff 涉及的路径，绝不碰用户的其他改动。项目有测试或构建命令时就用它。
+  `--verify` 下会冲突的改动不会被应用。
 - 只要 diff 涉及的路径上有未提交的改动，`odw apply` 就会拒绝——先提交或 stash；只有用户
   同意时才用 `--force`。
 - 超过 `maxDiffBytes` 被截断的 diff 无法应用：改用该 agent 的分支（`keep: true`，或在
@@ -241,6 +248,10 @@ CLI 额度用尽时让长时间运行继续下去。
   会写明产出每个结果的 CLI（`adapter`）以及它离开过的那些（`fellBackFrom`）。
 - 只写用户装好的适配器（`odw doctor` 会列出），并尊重用户选定的默认 CLI：长时间运行总因
   额度停下时，建议用户加回退链，不要擅自加。
+- **额度用尽时暂停。** 配置里写上 `"quotaWait": { "max": <秒数> }`（默认关闭）后，无 CLI
+  可用的 agent 会等到它的 CLI 报出的重置时间，而不是失败——等待时不占槽位——运行显示为
+  `paused until 19:10 (codex quota)`。无人值守的通宵运行可以建议开启，并说明运行可能因此
+  停上几个小时；`odw resume <run>` 立即继续。
 
 ```js
 phase('Extract', { model: '@fast' })   // ODW 扩展
@@ -326,6 +337,7 @@ Codex、Claude Code、Gemini、Qwen、Kimi 开箱即用，无需配置。要换�
 - **限流**：被限流的 CLI 会按退避时间重试（遵守它给出的 retry-after）；额度耗尽或登录失败
   不会重试——agent 会失败并说明该怎么做，`odw logs` 会写明原因——除非它有回退链，那样它会
   换到下一个 CLI（ODW 扩展）。遇到额度耗尽，用 `--adapter` 换一个适配器，而不是反复重试。
+  开启 `quotaWait`（ODW 扩展）后，它会改为等额度重置（见上文的路由）。
 - **限速与提示缓存**（ODW 扩展）：适配器自己的 `concurrency` 在运行级上限之内限制它的
   agent 数，一次限流会让这个上限在本次运行中减半；在 `claude` 上，提示的前 1,024 个以上
   字符相同的 `parallel()`/`pipeline()` 会错开启动，让其余 agent 读取提示缓存——把共享的
@@ -334,6 +346,12 @@ Codex、Claude Code、Gemini、Qwen、Kimi 开箱即用，无需配置。要换�
   预期时用 `odw pause` / `odw stop`。
 - **结果**：引擎不会替你 commit、push 或应用 diff。先检视 `return` 值，再决定下一步——对隔离
   agent 而言，这包括审阅它们保存下来的 diff 并运行 `odw apply`。
+- **密钥**（ODW 扩展）：odw 保存和提供的内容——transcript、`odw logs`、保存的结果
+  （`odw result --agent`）、运行的错误、webhook——会把疑似密钥显示为 `«redacted:<kind>»`
+  （名字像密钥的变量的值记为 `env:NAME`，否则记为令牌类型）。agent 和工作流拿到的仍是原文；
+  只有写下来的内容被脱敏，所以 `odw logs` 里出现标记并不是 agent 出错。恢复的运行会按保存
+  时的样子重放已脱敏的结果：别让后续步骤依赖 agent 打印出来的密钥——从环境变量读取。运行
+  自身的结果保留变量的值（那里只脱敏令牌形态）；`"redact": false` 可关闭脱敏。
 
 ## 常见错误
 

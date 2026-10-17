@@ -319,7 +319,7 @@ odw agents $RUN          # 每个 agent 及其已保存的结果,运行中也可
 odw logs $RUN --follow   # 流式输出原始进度事件
 odw logs $RUN --agent 3  # 某个 agent 做了什么:它的工具调用、结果和文字(见下文)
 odw result $RUN          # 最终值
-odw diff $RUN --stat     # 隔离 agent 改了什么;odw apply $RUN --agent N 应用其中一个
+odw diff $RUN --stat     # 隔离 agent 改了什么;odw apply $RUN --agent N(或 --all)落地
 odw pause|resume|stop $RUN
 odw approve|reject $RUN  # 回答运行正在等待的 checkpoint()(--note TEXT、--checkpoint N)
 odw list
@@ -363,6 +363,7 @@ odw resume $RUN              # 启动一个新运行,重放每个未改动的 ag
 `odw resume <run_id>` 依运行状态而定:
 
 - **已暂停**(worker 仍存活):原地继续——`odw pause|resume|stop` 这个控制动词不变;
+  [因额度用尽而暂停](#额度用尽时暂停odw-扩展)的运行会立即继续;
 - **已结束**——done、failed、stopped,或 stale(worker 已死):用同样的脚本、args 和
   适配器启动一个**新运行**(在它的 `meta.json` 里记为 `resumedFrom`)。prompt 和选项都
   没变的 `agent()` 调用立即返回已保存的值——不调用适配器、不占并发槽位、不计入派发数、
@@ -514,14 +515,15 @@ I'll run the tests first.
   `{"kind":"attempt","n":2,"reason":"schema"|"stall"|"rate_limit"}`。
 - `maxTranscriptBytes`(默认每个 agent 5 MB)限制其大小:超出时以一行
   `{"kind":"truncated","bytes":N}` 结束 transcript。transcript 包含 agent 读到和运行过的
-  一切;`"maxTranscriptBytes": 0` 则完全不保存。
+  一切——疑似密钥在流式写入时即被脱敏(见 [ODW 所保存内容中的密钥](#odw-所保存内容中的密钥odw-扩展));
+  `"maxTranscriptBytes": 0` 则完全不保存。
 - 保存从不拖慢 agent:各行先在内存中缓冲,再异步追加到文件。
 - 被 `odw resume` 重放的 agent 没有运行任何 CLI,所以没有 transcript——请看原运行的。
 - 看板 API 提供规范化后的版本:
   `GET /api/runs/:id/agents/:agentId/transcript?since=<i>` →
   `{ entries, next, more, truncated, replayed }`,每个条目为
   `{ i, kind: text|tool_call|tool_result|error|attempt|result|raw|truncated, text?, tool?, input?, output?, isError? }`,
-  长字段截断到 4 KB(`clipped: true`)。
+  长字段截断到 4 KB(`clipped: true`),有密钥被拦下的条目带 `redacted: true`。
 
 ## 看板:观测、检查、对话
 
@@ -587,7 +589,9 @@ odw logs --workflow adversarial-verify --follow
 ```
 
 看板可以在非 loopback 地址上查看,但本地写操作(例如 Chat 消息和停止 ODW 自己的运行)
-仍由 loopback server 保护。Claude Code 自己的运行始终严格只读。
+仍由 loopback server 保护。Claude Code 自己的运行始终严格只读。看板提供的 ODW agent
+内容——transcript、结果、日志——在写下之前已对疑似密钥脱敏
+(见 [ODW 所保存内容中的密钥](#odw-所保存内容中的密钥odw-扩展))。
 
 ## 配置适配器
 
@@ -839,6 +843,62 @@ approval_mode = "approve"
 (`odw doctor --smoke` 会发一次真实调用来检验)。`exec()` 命令、`worktreeSetup` 和
 `notify` 钩子仍拿到完整的环境变量。
 
+### ODW 所保存内容中的密钥(ODW 扩展)
+
+agent 读到什么就会打印什么——包括 `cat .env`——而 ODW 会保存这些输出:它的 transcript
+和 stderr 结尾、它的回复(保存的结果)、运行的日志与错误、发给 webhook 的内容。看板会
+提供这一切,在非 loopback 地址上也一样。所以在写下任何内容之前,ODW 会把每个疑似密钥
+替换成一个说明其类型的标记:
+
+```text
+the key is «redacted:env:STRIPE_SECRET_KEY»
+Authorization: Bearer «redacted:bearer»
+cloning with «redacted:github»
+```
+
+- **`env`** —— ODW 启动 agent 和 `exec()` 命令时所用环境(它自己的,以及每个适配器的
+  `env`)中,名字看起来像密钥的变量(`*_KEY`、`*_API_KEY`、`*TOKEN`、`*SECRET*`、
+  `*PASSWORD*`、`*_PWD`、`*_PAT`、`AUTHORIZATION`、`AWS_ACCESS_KEY_ID` 和
+  `*CONNECTION_STRING` 等云凭据、webhook URL)的值,无论出现在哪里(8 个字符及以上,
+  精确匹配),记为 `«redacted:env:NAME»`;以及任何打印出来的、`NAME` 看起来像密钥的
+  `NAME=value` 中的值(`.env` 文件、`env` 输出)。
+- **`patterns`** —— 常见令牌形态:Anthropic(`sk-ant-…`)、OpenAI(`sk-…`、
+  `sk-proj-…`)、GitHub(`ghp_…`、`gho_…`、`ghs_…`、`github_pat_…`)、Slack(`xoxb-…`
+  及同类)、AWS access key id、Google API key、JWT、PEM 私钥块和 `Bearer` 令牌——记为
+  `«redacted:anthropic»`、`«redacted:openai»`……
+- **`extra`** —— 你自己的正则表达式(JavaScript 写法),记为 `«redacted:extra»`。
+
+```jsonc
+// 默认值,再加一条自己的规则:
+{ "redact": { "env": true, "patterns": true, "extra": ["corp-[0-9a-f]{32}"] } }
+// 一切按打印原样保存:
+{ "redact": false }
+```
+
+会被脱敏的:transcript(在流式写入时进行——跨两段输出的密钥同样会被处理)和 stderr
+结尾;保存的 agent 结果(`odw result --agent`、看板的 agent 抽屉);运行的事件——
+`odw logs`、日志行、`agent_failed` 的错误(失败时引用的输出先脱敏再截断,所以不会留下
+半个密钥)、`exec()` 步骤显示的命令行以及失败的 `check` 引用的输出;运行的错误;
+`status.json` 中等待中的检查点;以及 webhook 负载。被脱敏过的内容会以 `redacted: true`
+标明——保存的结果、事件、transcript 行及其在 API 中的条目、`result.json`、
+`error.json`、webhook 负载——`odw doctor` 会说明脱敏是否开启、覆盖了哪些变量。脱敏随
+输出到达而进行,不会囤积输出:一行等到行尾,一个私钥等到它的最后一行。
+
+不会被脱敏的:
+- **agent 拿到的内容。** 提示词和 agent 的环境变量从不改动,`agent()` 和 `exec()` 交回
+  给工作流的内容也不改:脱敏只针对写下来的东西。
+- **运行的结果** 是工作流自己的数据——它可能有意返回读到的配置——所以 `result.json`
+  只应用 `patterns` 和 `extra`,从不应用 `env`。
+- **保存的 diff**(`agents/<id>.diff`)是 agent 对你代码的改动:也就是 `odw apply` 要应用、
+  保留分支要提交的内容,标记会损坏你的文件。agent 写进代码里的密钥,应在审阅时发现
+  (`odw diff`、看板的 Changes 标签页)。
+- 运行的 `args`(你传入的内容)、`worker.log`(worker 自己的输出,包括工作流的
+  `console.log`)以及 Chat Host 的会话。
+- **恢复的运行** 会按保存时的样子(已脱敏)重放 agent 的结果,并在日志中说明。
+
+脱敏是安全网,不是保险库:形态未知、变量名又不像密钥的秘密会按原样保存。用
+`agentEnv: "minimal"` 可以让 agent 从一开始就看不到它不需要的东西。
+
 ### 卡死看门狗
 
 **ODW 扩展。** 一个卡住的 agent CLI 原本会一直占着并发槽位,直到 `timeout`(默认 30
@@ -891,7 +951,8 @@ agent_failed    (Search) search — [quota, retry after 3h 22m] AdapterExecution
   上连续三个 agent 都这样失败时,运行会记一条警告;之后用 `odw resume` 会重放所有已完成
   的 agent。一分钟内就会恢复的"额度"(Gemini 免费档就是这样描述它的每分钟限额的)按它
   实际上的限流来处理。配置了[回退链](#按阶段路由与回退链odw-扩展)时,agent 会换到下一个
-  CLI;同一适配器连续三次额度失败后,本次运行之后的 agent 会跳过它。
+  CLI;同一适配器连续三次额度失败后,本次运行之后的 agent 会跳过它。开启
+  [`quotaWait`](#额度用尽时暂停odw-扩展) 后,没有 CLI 可换的 agent 会等额度重置,而不是失败。
 
 Claude Code 会在输出里报告这类错误,而且常常以 0 退出:它的 stream-json `result` 事件
 带着 `is_error: true` 和错误消息(`API Error: Rate limit reached`、
@@ -922,6 +983,48 @@ ODW 能识别的措辞——从每个内置 CLI 的源码和 issue 中收集而�
   }
 }
 ```
+
+### 额度用尽时暂停(ODW 扩展)
+
+**ODW 扩展。** 一个长时间运行的 workflow,如果所有可用的 CLI 都用完了额度,剩下的 agent
+都会失败——有额度熔断时还失败得很快。通宵跑的时候,你更希望它等到额度重置再接着跑。
+`quotaWait` 就是做这个的:
+
+```jsonc
+{
+  "quotaWait": { "max": 21600 } // 最多等 6 小时让用尽的额度重置;false(默认)则如上直接失败
+}
+```
+
+当一个 agent 因额度用尽而无 CLI 可用——链上最后一个适配器额度失败,或额度熔断跳过了每一个
+——且某个 CLI 说明了额度何时重置("try again in 3h 22m"、"resets 7pm"、Claude Code 的
+`usage limit reached|<epoch>`)、距今不超过 `max` 秒时,运行会**暂停**而不是让它失败:
+
+- 这个 agent 等待时不占任何槽位,所以还有额度的 CLI 上的 agent 照常运行。在 CLI 报出的
+  重置时间之前,运行会跳过那个 CLI:有回退链的 agent 换下一个,无处可去的 agent 也一起
+  等——而且是在启动之前等,所以等待期间既不显示为 agent,也不占槽位。
+- 运行显示为 `paused` 并写明在等什么:`odw status`、`odw list` 和实时视图显示
+  `paused until 19:10 (codex quota)`,`odw run --wait` 会提示一次;`status.json` 与
+  `GET /api/runs[/:id]` 带有 `pausedFor: { "reason": "quota", "adapter", "resumeAt" }`
+  (`resumeAt` 为 Unix 秒)。
+- 到了重置时间——再加最多 30 秒随机抖动,免得等待的 agent 在同一秒全部回来——每个 agent
+  都从它的链首重新开始,额度熔断也会忘掉这个 CLI。`odw resume <run>` 立即继续;
+  `odw stop` 照常停止运行。期间可以同时有 `checkpoint()` 在等待。
+- 没有给出重置时间的额度失败,或重置时间超过 `max` 的,仍按上文直接失败,运行日志会说明
+  原因(`quotaWait: not waiting — codex did not say when its quota resets, so the agent fails`)。
+- 暂停从不触发运行结束的 hook;在 [`notify.on`](#运行通知) 里加上 `"paused"`,即可在
+  每次暂停时收到通知。
+
+```text
+quota pause: codex is out of usage quota until 19:10 (in 3h 22m) — its agents wait, holding no slot, and go on then (quotaWait); odw resume goes on now
+search:3 waits for codex's quota to reset (quotaWait)
+quota pause over: codex's quota reset — its agents go on
+search:3 goes on after the quota wait, on codex
+```
+
+默认关闭,因为一个悄无声息地等上几个小时的运行,会让没有主动要求的人感到意外。等待发生在
+worker 进程里:worker 死掉时,运行会变成 `stale`,`odw resume` 会像对待任何已结束的运行
+一样重放它——已完成的 agent 直接取回结果,不会再跑一遍。
 
 ### 按阶段路由与回退链(ODW 扩展)
 
@@ -1058,7 +1161,7 @@ staggered fan-out: 15 claude agents sharing a 3412-character prompt prefix waite
 "notify": {
   "command": ["/usr/local/bin/odw-notify"],        // 参数向量,不经过 shell 执行
   "webhook": "https://hooks.slack.com/services/…", // Slack、Discord 或任何接收 JSON 的端点
-  "on": ["done", "failed", "stopped"]              // 默认:所有终态;"waiting" 需显式加入
+  "on": ["done", "failed", "stopped"]              // 默认:所有终态;"waiting" 和 "paused" 需显式加入
 }
 ```
 
@@ -1093,6 +1196,12 @@ hook——webhook 只显示协议和主机,因为 URL 的其余部分就是密�
 `ODW_RESULT_FILE`);webhook 收到 `"state": "waiting"`、一个
 `"checkpoint": { "checkpointId", "title", "since" }` 字段(代替 `finishedAt`),以及一行
 写明回答命令的 `text`。
+
+加上 `"paused"`,就能在运行[因额度用尽而暂停](#额度用尽时暂停odw-扩展)时收到通知——每次
+暂停一次,继续时不再通知:命令的环境变量带有 `ODW_RUN_STATE=paused`、`ODW_PAUSED_ADAPTER`
+和 `ODW_RESUME_AT`(Unix 秒);webhook 收到 `"state": "paused"`、一个
+`"pausedFor": { "reason": "quota", "adapter", "resumeAt" }` 字段,以及一行类似
+`odw · nightly paused until 19:10 (codex quota) · odw resume <run> goes on now` 的 `text`。
 
 Slack、Discord、ntfy 和桌面横幅的现成配置见
 [`docs/recipes/notify.md`](docs/recipes/notify.md)。
@@ -1160,15 +1269,28 @@ worktree 开始,并以同样方式准备。
 ```bash
 odw diff $RUN --stat               # 谁改了什么:文件数、增删行数、保留的分支
 odw diff $RUN --agent fix:auth     # 某个 agent 的 diff(按 label 或 id)——git 能读的补丁
-odw apply $RUN --agent 3 --check   # 能否应用到这里?哪些文件会冲突?
+odw apply $RUN --agent 3 --check   # 预览:每个文件是 clean、CONFLICT(附冲突行)还是 already applied
 odw apply $RUN --agent 3           # 用 git apply --3way 应用到当前工作树
+odw apply $RUN --all --check       # 预览所有已完成的 agent,每个都叠在前面的之上
+odw apply $RUN --all --verify "npm test"   # 按顺序应用;校验失败的那个回滚
 ```
 
-`odw apply` 在你所在的 git 工作树里用 `git apply --3way` 应用一个 agent 的 diff:能应用的
-部分会被暂存,与你自己的改动冲突的 hunk 做三方合并并留下冲突标记(退出码 1)。只要 diff
-涉及的路径上有未提交的改动,它就拒绝执行——先提交或 stash,或者加 `--force`。改动不同
-文件的多个 agent 可以依次应用。看板在运行的 **Changes** 标签页里展示同样的 diff,并通过
+`odw apply` 在你所在的 git 工作树里用 `git apply --3way` 应用一个 agent 的 diff——加
+`--all` 则按 agentId 顺序应用所有已完成 agent 的 diff:能应用的部分会被暂存。动手之前,它先在
+索引的临时副本上做同样的应用,逐个文件给出 `clean`、`CONFLICT`(附上合并后会留在文件里的冲突行,
+或无法合并的原因:`deleted here`、`binary`,或挡在那里、git 会直接覆盖的未跟踪/被忽略文件)或
+`already applied`;`--check` 到此为止
+(有冲突时退出码 1)。单个 agent 随后被应用,冲突处留下标记(退出码 1)。`--all` 把每个 agent
+叠在前面的之上预览,依次应用到第一个会冲突的为止,并说明哪些应用了、哪些没有;失败的 agent 的
+diff 只能用 `--agent` 单独应用。只要 diff 涉及的路径上有未提交的改动,它就拒绝执行——先提交或
+stash,或者加 `--force`。看板在运行的 **Changes** 标签页里展示同样的 diff,并通过
 `GET /api/runs/:id/agents/:agentId/diff` 提供。
+
+`--verify "<cmd>"`——或配置 `applyVerify`(`--no-verify` 跳过一次)——在每次应用之后于仓库
+根目录通过 shell 运行一条命令,受 `timeout` 配置约束。命令失败或超时时,这次应用会被回滚:它涉及
+的路径恢复成应用前的样子,内容和索引项都分毫不差,odw 以退出码 1 结束并给出命令输出的末尾;按下
+Ctrl-C 也会同样回滚。命令运行期间这些文件若被改动,改动后的版本会先另存一份,odw 会说明存在哪里。其他东西一概不碰——不 stash、不 reset——你其余的未提交改动保持原样。`--verify` 下
+会冲突的改动不会被应用。
 
 - **`keep: true`**(`agent()` 选项)或 **`keepBranches: true`**(配置)还会把改动提交到源
   仓库的分支 `odw/<runId>/<agentId>-<label>` 上——作者是 `odw <odw@localhost>`,父提交是
@@ -1185,7 +1307,8 @@ odw apply $RUN --agent 3           # 用 git apply --3way 应用到当前工作�
 ```jsonc
 {
   "maxDiffBytes": 2097152, // run 目录中单个 agent 的 diff 最多保留的字节数
-  "keepBranches": false    // true:每个隔离 agent 的改动也都提交到一个分支
+  "keepBranches": false,   // true:每个隔离 agent 的改动也都提交到一个分支
+  "applyVerify": null      // 例如 "npm test":每次 odw apply 之后运行,失败则回滚这次应用
 }
 ```
 
@@ -1299,6 +1422,10 @@ node web/dev.mjs --api http://127.0.0.1:4317     # → http://127.0.0.1:5173
   按 CLI 选出某层级的模型;CLI 额度用尽或登录失效的 agent 会沿回退链换到下一个 CLI
   (`adapter: ["codex", "claude"]`,或配置里的 `fallback`),而不是失败——额度熔断会让运行
   不再尝试已经用尽的 CLI(ODW 扩展;见[按阶段路由](#按阶段路由与回退链odw-扩展))。
+- **额度用尽时暂停。** 配置 `"quotaWait": { "max": 21600 }` 后,CLI 额度用尽的通宵运行会
+  等到 CLI 报出的重置时间——等待时不占槽位,其他 CLI 照常工作——然后继续,而不是让 agent
+  失败。运行显示 `paused until 19:10 (codex quota)`;`odw resume` 立即继续,
+  `notify.on: ["paused"]` 会通知你(ODW 扩展;见[额度用尽时暂停](#额度用尽时暂停odw-扩展))。
 - **原生结构化输出。** `claude`(`--json-schema`)和 `codex`(`--output-schema`,限 strict
   schema)直接拿到 agent 的 schema 并自行强制执行;ODW 依旧校验每一次回复。ODW 校验器不检查
   的 schema 关键字会连同位置写进运行日志,绝不悄悄跳过——`"schemaKeywords": "strict"` 则拒绝
@@ -1313,6 +1440,10 @@ node web/dev.mjs --api http://127.0.0.1:4317     # → http://127.0.0.1:5173
   `agent(…, { permissions: 'read' })`),完全权限必须显式开启,无法强制执行某档位的 CLI 会被
   拒绝或记录日志——绝不静默降级。`agentEnv: "minimal"` 让无关的密钥不进入 agent
   (ODW 扩展;见[权限档位](#权限档位odw-扩展))。
+- **ODW 保存的内容里不留密钥。** agent 打印的任何东西——包括 `cat .env`——在写入它的
+  transcript、保存的结果、运行的日志与错误或 webhook 之前都会脱敏:名字像密钥的变量的值和
+  常见令牌形态都变成 `«redacted:<kind>»`(ODW 扩展;见
+  [ODW 所保存内容中的密钥](#odw-所保存内容中的密钥odw-扩展))。
 - **人工检查点。** `checkpoint()` 会让运行暂停,直到有人批准或拒绝——通过
   `odw approve|reject`、看板,或可选的 `waiting` 钩子——让计划在昂贵的 fan-out 之前先
   得到一个"可以"(ODW 扩展;见 [`plan-approve-execute.js`](examples/plan-approve-execute.js))。
@@ -1330,7 +1461,9 @@ node web/dev.mjs --api http://127.0.0.1:4317     # → http://127.0.0.1:5173
   `odw schedule list` 里能看到上一次运行([配方](docs/recipes/cron.md))。
 - **审阅并应用隔离 agent 的改动。** worktree agent 的改动会在 worktree 删除前保存为 diff
   (排除初始化时放进去的文件),也可以用 `keep` 保留到分支。在看板的**改动**标签页或用 `odw diff`
-  审阅,再用 `odw apply`(先加 `--check`)逐个落地。
+  审阅,再用 `odw apply` 落地:动手之前它会逐个文件预览——干净、冲突(附冲突行)还是已应用——
+  `--all` 按顺序应用所有 agent,加上 `--verify "npm test"` 时,把弄坏构建的那次应用回滚,
+  你其余的未提交改动不受影响。
 - **真实用量与花费。** 内置 `claude` 适配器改为读取 Claude Code 的 `stream-json`,每个 agent
   都会记录 CLI 上报的 token 与花费——`odw status`、实时视图和看板里都能看到——`--budget` 也按真实
   输出 token 计量。单次 fan-out 超过 `fanOutWarn`(25)时会提前提示。

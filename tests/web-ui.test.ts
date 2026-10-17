@@ -16,7 +16,7 @@ import { renderActivity } from "../web/src/views/activity.ts";
 import { renderJob, type JobViewState } from "../web/src/views/job.ts";
 import { renderJobs } from "../web/src/views/jobs.ts";
 import type { ActivityEvent, AgentView, RunDetail, RunSummary } from "../web/src/types.ts";
-import { cronWords, esc, fmtDurSec, fmtTokens, fmtUsd, fuzzy, markHits } from "../web/src/util.ts";
+import { cronWords, esc, fmtDurSec, fmtTokens, fmtUsd, fuzzy, markHits, markRedactions } from "../web/src/util.ts";
 
 const NOW = 1_800_000_000;
 
@@ -327,6 +327,9 @@ test("the Changes tab lists agents that left a diff and freezes a host for the d
   assert.equal(count(html, /class="rv-item/g), 2, "an agent that changed nothing is not listed");
   assert.match(html, /class="rv-item on" data-review="0"/, "the first agent with changes is reviewed by default");
   assert.match(html, /data-copy="odw apply 20260101-000000-aaaaaa --agent 1"/);
+  assert.match(html, /data-copy="odw apply 20260101-000000-aaaaaa --agent 1 --check"/, "a preview that changes nothing");
+  assert.match(html, /data-copy="odw apply 20260101-000000-aaaaaa --all --check"/, "every agent previewed, stacked");
+  assert.match(html, /data-copy="odw apply 20260101-000000-aaaaaa --all"/);
   assert.match(html, /data-copy="git switch odw\/r\/1-fix-auth"/, "a kept branch can be checked out");
   assert.match(html, /<div class="diff-host"[^>]*data-morph="skip" data-v="20260101-000000-aaaaaa:1\|loading\|en"/);
   assert.match(html, /<b class="ins">\+40<\/b><b class="del">−15<\/b><\/span><span class="k">lines changed/);
@@ -601,5 +604,47 @@ test("the drawer shows what an agent's work missed and the tool calls its CLI re
   assert.match(html, /<span class="ndeny" title="2 tool calls refused">⚠2<\/span>/, "the node carries the warning");
   view.selectedAi = 2;
   assert.match(renderJob(view, NOW), /<span class="k">checks<\/span><span class="v">agent #1's work<\/span>/);
+  store.focusRun(null);
+});
+
+test("redaction markers render as ink bars, and redacted outputs are tagged", () => {
+  assert.equal(
+    markRedactions(esc("key=«redacted:env:OPENAI_API_KEY» <b>")),
+    'key=<span class="redact" title="redacted">env:OPENAI_API_KEY</span> &lt;b&gt;',
+  );
+  assert.match(renderJson({ token: "Bearer «redacted:bearer»" }), /<span class="redact" title="redacted">bearer<\/span>/);
+  assert.match(renderJson({ "«redacted:x»": 1 }), /data-key="j\$"/, "attributes never carry markup");
+  const tx = transcriptEntries([{ i: 0, kind: "text", text: "export KEY=«redacted:env:KEY»", redacted: true }]);
+  assert.match(tx, /<span class="redact" title="redacted">env:KEY<\/span>/);
+  assert.match(tx, /<span class="tx-clip"[^>]*>redacted<\/span>/);
+});
+
+test("a run waiting out a spent quota says until when, and offers to go on now", () => {
+  const view: JobViewState = {
+    cpNote: "",
+    tab: "graph",
+    selectedAi: null,
+    reviewAi: null,
+    zoom: 1,
+    logQuery: "",
+    logTypes: new Set(["agent"]),
+    logLimit: 600,
+    follow: true,
+    motion: false,
+  };
+  const resumeAt = NOW + 3600 + 12 * 60;
+  const pausedFor = { reason: "quota" as const, adapter: "codex", resumeAt };
+  store.capabilities = { writable: true };
+  store.focusRun("20260101-000000-aaaaaa");
+  store.run = detail([agent("search:1", "Search", "running", { agentId: 1 })], { state: "paused", pausedFor });
+  const html = renderJob(view, NOW);
+  assert.match(html, /<section class="card qpause"/);
+  assert.match(html, /codex is out of quota/);
+  assert.match(html, /in 1h12m/);
+  assert.match(html, /data-resume-run="20260101-000000-aaaaaa"/);
+  const prev = store.runs;
+  store.runs = [summary({ runId: "r-q", name: "nightly", state: "paused", pausedFor })];
+  assert.match(renderActivity(NOW), /class="ticket paused"[\s\S]*?codex is out of quota — resumes at/);
+  store.runs = prev;
   store.focusRun(null);
 });

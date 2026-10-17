@@ -474,6 +474,11 @@ test("notify is off by default and loads normalized", () => {
       ["done", "waiting"],
       "a checkpoint waiting (ODW extension) fires the hooks only when listed",
     );
+    assert.deepEqual(
+      load({ command: ["say"], on: ["paused", "failed", "waiting"] }).on,
+      ["failed", "waiting", "paused"],
+      "so does a pause for a spent quota (ODW extension: quotaWait)",
+    );
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -502,7 +507,7 @@ test("a malformed notify block is a ConfigError that never echoes a secret", () 
       [{ webhook: "https://user:SECRET@example.com/hook" }, /"notify.webhook" must not embed credentials/],
       [
         { webhook: "https://example.com/h", on: ["done", "finished"] },
-        /"notify.on" must be a list of "done", "failed", "stopped", "waiting"; got \["done","finished"\]/,
+        /"notify.on" must be a list of "done", "failed", "stopped", "waiting", "paused"; got \["done","finished"\]/,
       ],
       [{ webhook: "https://example.com/h", on: "failed" }, /"notify.on"/],
     ];

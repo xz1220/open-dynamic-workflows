@@ -260,6 +260,13 @@ export interface Settings {
    */
   keepBranches: boolean;
   /**
+   * A command `odw apply` runs at the repository root after each apply (an
+   * ODW extension; `--verify` overrides it, `--no-verify` skips it), through
+   * the platform shell and bounded by `timeout`: when it fails, that apply is
+   * rolled back. `null` => none.
+   */
+  applyVerify: string | null;
+  /**
    * Bytes of each agent's transcript — what its CLI printed — kept in the run
    * directory (an ODW extension); past it, one truncation line. `0` keeps none.
    */
@@ -321,6 +328,39 @@ export interface Settings {
    * `permissionDenials` overrides it.
    */
   permissionDenials: DenialPolicy;
+  /**
+   * What odw keeps and serves of its agents — transcripts, saved results,
+   * events, the run's error and result, webhook payloads — has its likely
+   * secrets replaced by `«redacted:<kind>»` (an ODW extension; see ../redact);
+   * `false` keeps it all as printed.
+   */
+  redact: RedactSettings | false;
+  /**
+   * Pause for a spent quota (an ODW extension): a call whose fallback chain is
+   * out of usage quota waits for the quota to reset — when its CLI said when,
+   * at most `max` seconds away — instead of failing; `false` fails it.
+   */
+  quotaWait: QuotaWaitSettings | false;
+}
+
+/** What redaction looks for (see `Settings.redact`). */
+export interface RedactSettings {
+  /**
+   * The values (8 characters or more) of the secret-named variables of the
+   * environment odw starts agents and commands with, wherever they appear —
+   * and of any `NAME=value` of such a name printed.
+   */
+  env: boolean;
+  /** Well-known token shapes: API keys, access tokens, JWTs, private-key blocks, `Bearer` tokens. */
+  patterns: boolean;
+  /** More regular expressions (JavaScript sources) whose matches are secrets. */
+  extra: readonly string[];
+}
+
+/** How long a run waits for a spent quota to reset (see `Settings.quotaWait`). */
+export interface QuotaWaitSettings {
+  /** The longest wait, in seconds: a quota that resets later fails its calls as before. */
+  max: number;
 }
 
 /** How a fan-out on a prompt-caching adapter is staggered (see `Settings.staggerFanOut`). */
@@ -336,9 +376,10 @@ export type RunEndState = "done" | "failed" | "stopped";
 
 /**
  * What can fire the notify hooks: a terminal state, or — opt-in — "waiting":
- * a checkpoint() starts waiting for a person (once per checkpoint).
+ * a checkpoint() starts waiting for a person (once per checkpoint), or
+ * "paused": the run pauses for an adapter's spent quota (once per pause).
  */
-export type NotifyTrigger = RunEndState | "waiting";
+export type NotifyTrigger = RunEndState | "waiting" | "paused";
 
 /**
  * Run-completion hooks (an ODW extension), fired by the worker once a run's
@@ -349,7 +390,7 @@ export interface NotifySettings {
   command: string[] | null;
   /** An http(s) URL that receives a JSON POST describing the run. */
   webhook: string | null;
-  /** What fires the hooks: the three terminal states unless configured; "waiting" only when listed. */
+  /** What fires the hooks: the three terminal states unless configured; "waiting" and "paused" only when listed. */
   on: NotifyTrigger[];
 }
 

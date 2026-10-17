@@ -5,7 +5,7 @@ import { renderPulse } from "../components/pulse";
 import { t, tn } from "../i18n";
 import { store } from "../store";
 import type { ActivityEvent, RunSummary } from "../types";
-import { ACTIVE, esc, fmtAgo, fmtClock } from "../util";
+import { ACTIVE, esc, fmtAgo, fmtClock, fmtHourMin } from "../util";
 
 export const EVT_CLASS: Record<string, string> = {
   run_started: "rstart",
@@ -170,11 +170,12 @@ export function renderActivity(nowSec: number): string {
  */
 function needsYou(nowSec: number): string {
   const waiting = store.runs.filter((r) => r.state === "waiting");
+  const quota = store.runs.filter((r) => r.pausedFor);
   const allBroken = store.runs.filter(
     (r) => r.provider === "odw" && (r.state === "failed" || r.state === "stale") && (r.updatedAt ?? 0) > nowSec - 86_400,
   );
   const broken = allBroken.slice(0, 3);
-  if (!waiting.length && !broken.length) return "";
+  if (!waiting.length && !quota.length && !broken.length) return "";
   const href = (r: RunSummary) => `#/job/${encodeURIComponent(r.runId)}`;
   const ticket = (r: RunSummary, kind: string, what: string, action: string) =>
     `<div class="ticket ${kind}" data-key="nt-${esc(r.runId)}">` +
@@ -189,6 +190,14 @@ function needsYou(nowSec: number): string {
         "waiting",
         r.waiting?.title ? t("asks: {q}", { q: esc(r.waiting.title) }) : t("is waiting for your decision"),
         `<a class="btn sm primary" href="${href(r)}">${t("Review")}</a>`,
+      ),
+    ),
+    ...quota.map((r) =>
+      ticket(
+        r,
+        "paused",
+        t("{adapter} is out of quota — resumes at {t}", { adapter: esc(r.pausedFor!.adapter), t: fmtHourMin(r.pausedFor!.resumeAt) }),
+        store.capabilities.writable ? `<button class="btn sm" data-resume-run="${esc(r.runId)}">${t("Resume now")}</button>` : "",
       ),
     ),
     ...broken.map((r) =>
@@ -206,7 +215,7 @@ function needsYou(nowSec: number): string {
   ];
   return (
     `<section class="needs" data-key="needs" aria-label="${esc(t("Needs you"))}">` +
-    `<div class="needs-head"><h3>${t("Needs you")}</h3><span class="n">${waiting.length + allBroken.length}</span>` +
+    `<div class="needs-head"><h3>${t("Needs you")}</h3><span class="n">${waiting.length + quota.length + allBroken.length}</span>` +
     `<span class="eyebrow">${t("decisions and runs to pick up")}</span></div>` +
     `<div class="tickets">${tickets.join("")}</div>` +
     (allBroken.length > broken.length

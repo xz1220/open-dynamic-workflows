@@ -20,6 +20,7 @@ import { cpus, homedir } from "node:os";
 import { dirname, join } from "node:path";
 
 import { AdapterNotFound, ConfigError } from "../errors.js";
+import { extraProblem } from "../redact.js";
 import { TIER_NAME } from "../routing.js";
 import { BUILTIN_ADAPTERS, DEFAULT_SETTINGS, type RawAdapter } from "./builtin.js";
 import { isOnPath } from "./executable.js";
@@ -42,6 +43,8 @@ import type {
   NotifyTrigger,
   PermissionArgs,
   PermissionTier,
+  QuotaWaitSettings,
+  RedactSettings,
   RunEndState,
   SchemaFlag,
   Settings,
@@ -53,8 +56,11 @@ export const CONFIG_ENV_VAR = "ODW_CONFIG";
 /** Every terminal run state, in display order: what `notify.on` defaults to. */
 export const RUN_END_STATES: readonly RunEndState[] = ["done", "failed", "stopped"];
 
-/** Everything `notify.on` may list: the terminal states, and the opt-in "waiting" (a checkpoint() waits). */
-export const NOTIFY_TRIGGERS: readonly NotifyTrigger[] = [...RUN_END_STATES, "waiting"];
+/**
+ * Everything `notify.on` may list: the terminal states, and the opt-in
+ * "waiting" (a checkpoint() waits) and "paused" (the run pauses for a spent quota).
+ */
+export const NOTIFY_TRIGGERS: readonly NotifyTrigger[] = [...RUN_END_STATES, "waiting", "paused"];
 
 /**
  * Load configuration, merging any discovered file over the built-ins.
@@ -108,6 +114,7 @@ const KNOWN_TOP_KEYS = [
   "staggerFanOut",
   "maxDiffBytes",
   "keepBranches",
+  "applyVerify",
   "maxTranscriptBytes",
   "permissions",
   "agentEnv",
@@ -119,6 +126,8 @@ const KNOWN_TOP_KEYS = [
   "quotaBreaker",
   "expectRetries",
   "permissionDenials",
+  "redact",
+  "quotaWait",
 ] as const;
 
 const KNOWN_ADAPTER_KEYS = ["command", "stdin", "env", "timeout", "stallTimeout", "concurrency", "promptCache", "label", "flags", "output", "failures", "permissionArgs", "permissions", "permissionDenials"] as const;
@@ -137,6 +146,10 @@ const KNOWN_SCHEMA_FLAG_KEYS = ["args", "mode", "strict"] as const;
 const KNOWN_NOTIFY_KEYS = ["command", "webhook", "on"] as const;
 
 const KNOWN_STAGGER_KEYS = ["first", "delayMs"] as const;
+
+const KNOWN_REDACT_KEYS = ["env", "patterns", "extra"] as const;
+
+const KNOWN_QUOTA_WAIT_KEYS = ["max"] as const;
 
 /**
  * Lint a parsed config object for keys odw would silently ignore.
@@ -201,6 +214,8 @@ export function collectConfigWarnings(raw: Record<string, unknown>): string[] {
     }
   }
   if (isObject(raw.staggerFanOut)) warnings.push(...unknownFields(raw.staggerFanOut, KNOWN_STAGGER_KEYS, "staggerFanOut"));
+  if (isObject(raw.redact)) warnings.push(...unknownFields(raw.redact, KNOWN_REDACT_KEYS, "redact"));
+  if (isObject(raw.quotaWait)) warnings.push(...unknownFields(raw.quotaWait, KNOWN_QUOTA_WAIT_KEYS, "quotaWait"));
   return warnings;
 }
 
@@ -938,6 +953,7 @@ function buildSettings(raw: Record<string, unknown>): Settings {
       integer: true,
     }),
     keepBranches: raw["keepBranches"] == null ? DEFAULT_SETTINGS.keepBranches : buildFlag("keepBranches", raw["keepBranches"]),
+    applyVerify: raw["applyVerify"] == null ? DEFAULT_SETTINGS.applyVerify : buildApplyVerify(raw["applyVerify"]),
     maxTranscriptBytes: num(
       "maxTranscriptBytes",
       DEFAULT_SETTINGS.maxTranscriptBytes,
@@ -975,7 +991,27 @@ function buildSettings(raw: Record<string, unknown>): Settings {
       raw["permissionDenials"] == null
         ? DEFAULT_SETTINGS.permissionDenials
         : buildChoice("permissionDenials", raw["permissionDenials"], ["warn", "fail"] as const),
+    // Absent or null keeps the default (on); only false turns it off.
+    redact: buildRedact(raw["redact"]),
+    quotaWait: raw["quotaWait"] == null ? DEFAULT_SETTINGS.quotaWait : buildQuotaWait(raw["quotaWait"]),
   };
+}
+
+/**
+ * Validate `quotaWait` (an ODW extension): `false` (or null) fails a call whose
+ * chain is out of quota, as before; `{ "max": <seconds> }` lets the run wait
+ * that long at most for the quota to reset. No default `max`: a run that waits
+ * for hours should be one someone asked to.
+ */
+function buildQuotaWait(raw: unknown): QuotaWaitSettings | false {
+  if (raw === false) return false;
+  if (!isObject(raw) || raw.max == null) {
+    throw new ConfigError(
+      `"quotaWait" must be false, or { "max": <seconds> }: the longest a run waits for a spent quota to reset; ` +
+        `got ${JSON.stringify(raw)}`,
+    );
+  }
+  return { max: numberSetting(`"quotaWait.max"`, raw.max, "a positive number of seconds", { min: 0, exclusiveMin: true }) };
 }
 
 /** Validate a setting that takes one of a few words, such as `schemaKeywords`. */
@@ -1073,6 +1109,39 @@ function buildFlag(key: string, raw: unknown): boolean {
   throw new ConfigError(`"${key}" must be true or false; got ${JSON.stringify(raw)}`);
 }
 
+/**
+ * Validate `redact`: `{ "env": bool, "patterns": bool, "extra": [regex, …] }`
+ * (a field left out keeps its default), `true` for the defaults, `false` for
+ * none; absent or null keeps the defaults.
+ */
+function buildRedact(raw: unknown): RedactSettings | false {
+  const defaults = DEFAULT_SETTINGS.redact || { env: true, patterns: true, extra: [] };
+  if (raw === false) return false;
+  if (raw == null || raw === true) return { ...defaults, extra: [...defaults.extra] };
+  if (!isObject(raw)) {
+    throw new ConfigError(
+      `"redact" must be { "env": true|false, "patterns": true|false, "extra": ["<regex>", …] }, or false to keep everything as printed; got ${JSON.stringify(raw)}`,
+    );
+  }
+  const extra = raw.extra == null ? [...defaults.extra] : raw.extra;
+  if (!Array.isArray(extra)) throw new ConfigError(`"redact.extra" must be a list of regular expressions; got ${JSON.stringify(extra)}`);
+  extra.forEach((source, i) => {
+    const problem = extraProblem(source);
+    if (problem) throw new ConfigError(`"redact.extra[${i}]" ${problem}; got ${JSON.stringify(source)}`);
+  });
+  return {
+    env: raw.env == null ? defaults.env : buildFlag("redact.env", raw.env),
+    patterns: raw.patterns == null ? defaults.patterns : buildFlag("redact.patterns", raw.patterns),
+    extra: [...(extra as string[])],
+  };
+}
+
+/** Validate `applyVerify`: a command line for the shell. */
+function buildApplyVerify(raw: unknown): string {
+  if (typeof raw === "string" && raw.trim() !== "") return raw;
+  throw new ConfigError(`"applyVerify" must be a command line for the shell (e.g. "npm test"), or null; got ${JSON.stringify(raw)}`);
+}
+
 /** The default `staggerFanOut`, as a fresh object. */
 function defaultStagger(): StaggerFanOut | null {
   return DEFAULT_SETTINGS.staggerFanOut && { ...DEFAULT_SETTINGS.staggerFanOut };
@@ -1151,7 +1220,7 @@ function buildNotify(raw: unknown): NotifySettings {
   if (on != null) {
     if (!Array.isArray(on) || !on.every((trigger) => (NOTIFY_TRIGGERS as readonly unknown[]).includes(trigger))) {
       throw new ConfigError(
-        `"notify.on" must be a list of "done", "failed", "stopped", "waiting"; got ${JSON.stringify(on)}`,
+        `"notify.on" must be a list of "done", "failed", "stopped", "waiting", "paused"; got ${JSON.stringify(on)}`,
       );
     }
     notify.on = NOTIFY_TRIGGERS.filter((trigger) => on.includes(trigger));

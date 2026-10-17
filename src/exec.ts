@@ -34,6 +34,10 @@
  * `command_failed` (a non-zero exit, a signal, a timeout, a launch failure, an
  * abort), keyed by a per-run `commandId`; the run views fold them into the
  * agent list as `kind: "command"` nodes.
+ *
+ * What those events and a check's error say of the command and its output has
+ * its likely secrets redacted (an ODW extension; see ./redact) — before it is
+ * cut, so none is kept cut in half. The result exec() returns is never redacted.
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
@@ -44,6 +48,7 @@ import { killProcessTree, trackProcess } from "./adapters/runner.js";
 import type { RunContext } from "./context.js";
 import { DynamicWorkflowError, RunStopped, WorkflowScriptError } from "./errors.js";
 import { COMMAND_FAILED, COMMAND_FINISHED, COMMAND_STARTED, event } from "./events.js";
+import { bothEnds, type Redactor } from "./redact.js";
 
 export interface ExecOptions {
   /** Working directory; a relative path resolves against the run's source directory (the default). */
@@ -131,7 +136,7 @@ export async function execStep(
   opts: ExecOptions = {},
   extra: Record<string, unknown> = {},
 ): Promise<ExecResult> {
-  const step = planStep(command, opts, ctx.source, ctx.runId);
+  const step = planStep(command, opts, ctx.source, ctx.runId, ctx.redactor);
   const phase = opts.phase !== undefined ? opts.phase : ctx.currentPhase;
   // Ids follow call order, as agent ids do, on the run's command sequence.
   const commandId = ++ctx.commandSeq.value;
@@ -149,7 +154,7 @@ export async function execStep(
     // Killed because the run is ending: report the run's reason (fatal), as an agent does.
     if (aborted) throw abortReason(signal);
     if (step.check && result.exitCode !== 0) {
-      throw new ExecError(checkMessage(fields.command, failure ?? "failed", result), fields.command, result);
+      throw new ExecError(checkMessage(fields.command, failure ?? "failed", result, ctx.redactor), fields.command, result);
     }
     return result;
   });
@@ -176,8 +181,11 @@ interface Step {
   check: boolean;
 }
 
-/** Check exec()'s arguments; a misuse is a (recoverable) WorkflowScriptError, before anything starts. */
-function planStep(command: unknown, opts: ExecOptions, source: string, runId: string | undefined): Step {
+/**
+ * Check exec()'s arguments; a misuse is a (recoverable) WorkflowScriptError,
+ * before anything starts. The command as events show it is redacted.
+ */
+function planStep(command: unknown, opts: ExecOptions, source: string, runId: string | undefined, redactor?: Redactor): Step {
   if (opts === null || typeof opts !== "object") {
     throw misuse(`options must be an object; got ${describeValue(opts)}`);
   }
@@ -235,7 +243,8 @@ function planStep(command: unknown, opts: ExecOptions, source: string, runId: st
     throw misuse(`label must be a string; got ${describeValue(opts.label)}`);
   }
 
-  const display = displayCommand(command as string | string[]);
+  const shown = displayCommand(command as string | string[]);
+  const display = redactor ? redactor.text(shown) : shown;
   return {
     file: argv[0]!,
     args: argv.slice(1),
@@ -452,10 +461,11 @@ function abortReason(signal: AbortSignal): Error {
   return signal.reason instanceof Error ? signal.reason : new RunStopped("run was stopped");
 }
 
-/** The check failure's message, with both ends of the diagnostic output. */
-function checkMessage(command: string, failure: string, result: ExecResult): string {
-  const text = result.stderr.trim() || result.stdout.trim();
-  const detail = text.length > 500 ? `${text.slice(0, 250)} … ${text.slice(-250)}` : text;
+/** The check failure's message, with both ends of the diagnostic output — redacted before it is cut. */
+function checkMessage(command: string, failure: string, result: ExecResult, redactor?: Redactor): string {
+  const said = result.stderr.trim() || result.stdout.trim();
+  const text = redactor ? redactor.text(said) : said;
+  const detail = bothEnds(text, 250);
   return `command '${command}' ${failure}${detail ? `: ${detail}` : ""}`;
 }
 

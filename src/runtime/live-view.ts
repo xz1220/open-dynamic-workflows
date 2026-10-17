@@ -33,11 +33,15 @@
  * An agent that fell back to another adapter (an ODW extension) shows the
  * adapters it went through — `codex → claude` — while it runs and once it
  * settled.
+ *
+ * A run paused for an adapter's spent quota (an ODW extension: quotaWait)
+ * says until when in its summary line: "paused until 19:10 (codex quota)".
  */
 
 import { formatSeconds } from "../adapters/failures.js";
 import { addUsage, type Usage } from "../adapters/usage.js";
 import type { WorkflowEvent } from "../events.js";
+import { pausedForOf, pausedText } from "../quota-wait.js";
 import {
   cursor,
   detectCaps,
@@ -500,6 +504,8 @@ class LiveView {
     }
 
     const paused = status.state === "paused";
+    // Paused for a spent quota (ODW extension: quotaWait): until when, and for which adapter.
+    const pausedFor = paused ? pausedForOf(status.pausedFor) : null;
     const stopping = control === "stop" && !TERMINAL_STATES.has(String(status.state));
     const startSec = this.runStartTs ?? nowSec;
     const parts = metaJoin(g, [
@@ -510,7 +516,7 @@ class LiveView {
       ...spendParts(this.usage, status),
       fmtElapsed((nowSec - startSec) * 1000),
       stopping ? p.run("stopping…") : null,
-      paused ? p.run("paused") : null,
+      paused ? p.run(pausedFor ? sanitizeText(pausedText(pausedFor, this.now()), 80) : "paused") : null,
     ]);
     const head = paused ? p.run(g.stop) : running.length === 0 && this.asked.size > 0 ? p.run(g.wait) : p.run(spin);
     block.push(`  ${head} ${p.dim(parts)}`);

@@ -25,12 +25,15 @@
  *
  * Long fields — text, output, input — are clipped to 4 KB and the entry
  * marked `clipped: true`; `odw logs --raw` prints the lines as they were kept.
+ * An entry whose fields hold a `«redacted:<kind>»` marker — a secret the
+ * recorder kept out (an ODW extension; see ../redact) — is marked `redacted: true`.
  */
 
 import { closeSync, fstatSync, openSync, readFileSync, readSync } from "node:fs";
 
 import { formatBytes } from "../changes.js";
 import type { WorkflowEvent } from "../events.js";
+import { hasMarker } from "../redact.js";
 import { attemptLabel, fitField } from "../transcript.js";
 import { fmtUsd, palette, sanitizeText, truncateToWidth, type TermCaps } from "../tty.js";
 import type { AgentRow } from "./agents-view.js";
@@ -72,6 +75,8 @@ export interface TranscriptEntry {
   /** result: the turns the session took and what it cost, as its CLI reported. */
   turns?: number;
   costUsd?: number;
+  /** Secrets in it were kept out as `«redacted:<kind>»` (an ODW extension). */
+  redacted?: true;
 }
 
 /** GET /api/runs/:id/agents/:agentId/transcript?since=<i> */
@@ -420,9 +425,11 @@ function errorMessage(error: unknown): string | undefined {
   return typeof error.name === "string" && error.name ? error.name : compact(error);
 }
 
-/** Number an entry and clip its long fields at 4 KB, saying so. */
+/** Number an entry and clip its long fields at 4 KB, saying so — and that a secret was kept out of it. */
 function finish(i: number, draft: Draft): TranscriptEntry {
   const entry: TranscriptEntry = { i, ...draft };
+  const input = entry.input === undefined || typeof entry.input === "string" ? entry.input : compact(entry.input);
+  if ([entry.text, entry.output, input].some((field) => field !== undefined && hasMarker(field))) entry.redacted = true;
   let clipped = false;
   const cut = (text: string): string => {
     const n = fitField(text);
@@ -434,9 +441,8 @@ function finish(i: number, draft: Draft): TranscriptEntry {
   if (entry.output !== undefined) entry.output = cut(entry.output);
   if (typeof entry.input === "string") {
     entry.input = cut(entry.input);
-  } else if (entry.input !== undefined) {
-    const json = compact(entry.input);
-    if (fitField(json) < json.length) entry.input = cut(json);
+  } else if (input !== undefined && fitField(input) < input.length) {
+    entry.input = cut(input);
   }
   if (clipped) entry.clipped = true;
   return entry;
