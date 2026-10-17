@@ -1231,7 +1231,8 @@ into the host's `node`, so each target is built on its own runner.
 
 ## Status
 
-**What's new on `main` (October 2026):**
+**What's new on `main` (October 2026)** — the full list, with what to check before
+upgrading, is in [`CHANGELOG.md`](CHANGELOG.md):
 - **Permission tiers.** Every agent runs `read`, `edit` (the default, unchanged) or
   `full`, mapped to each CLI's own flags: review and research fan-outs that cannot
   touch the tree (`--permissions read`, `agent(…, { permissions: 'read' })`), full

@@ -1114,7 +1114,8 @@ node web/dev.mjs --api http://127.0.0.1:4317     # → http://127.0.0.1:5173
 
 ## 状态
 
-**`main` 上的新内容(2026 年 10 月):**
+**`main` 上的新内容(2026 年 10 月)**——完整清单以及升级前需要留意的变化见
+[`CHANGELOG.md`](CHANGELOG.md):
 - **权限档位。** 每个 agent 以 `read`、`edit`(默认,与以往一致)或 `full` 运行,映射到各
   CLI 自己的参数:审查与调研类 fan-out 碰不到工作树(`--permissions read`、
   `agent(…, { permissions: 'read' })`),完全权限必须显式开启,无法强制执行某档位的 CLI 会被
