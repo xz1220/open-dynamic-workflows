@@ -279,6 +279,7 @@ export const DEFAULT_SETTINGS: Settings = {
   staggerFanOut: { first: 1, delayMs: 2500 }, // on adapters that declare promptCache
   maxDiffBytes: 2 * 1024 * 1024, // an isolated agent's kept diff; past it, the head and a note
   keepBranches: false, // keep: true per agent still commits its change to a branch
+  applyVerify: null, // odw apply runs no command after an apply (--verify still does)
   maxTranscriptBytes: 5 * 1024 * 1024, // each agent's transcript; past it, one truncation line (0: none)
   permissions: "edit", // the tier every built-in ran with before tiers existed
   agentEnv: "inherit", // agent CLIs see ODW's whole environment

@@ -260,6 +260,13 @@ export interface Settings {
    */
   keepBranches: boolean;
   /**
+   * A command `odw apply` runs at the repository root after each apply (an
+   * ODW extension; `--verify` overrides it, `--no-verify` skips it), through
+   * the platform shell and bounded by `timeout`: when it fails, that apply is
+   * rolled back. `null` => none.
+   */
+  applyVerify: string | null;
+  /**
    * Bytes of each agent's transcript — what its CLI printed — kept in the run
    * directory (an ODW extension); past it, one truncation line. `0` keeps none.
    */

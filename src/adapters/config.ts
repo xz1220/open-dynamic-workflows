@@ -114,6 +114,7 @@ const KNOWN_TOP_KEYS = [
   "staggerFanOut",
   "maxDiffBytes",
   "keepBranches",
+  "applyVerify",
   "maxTranscriptBytes",
   "permissions",
   "agentEnv",
@@ -952,6 +953,7 @@ function buildSettings(raw: Record<string, unknown>): Settings {
       integer: true,
     }),
     keepBranches: raw["keepBranches"] == null ? DEFAULT_SETTINGS.keepBranches : buildFlag("keepBranches", raw["keepBranches"]),
+    applyVerify: raw["applyVerify"] == null ? DEFAULT_SETTINGS.applyVerify : buildApplyVerify(raw["applyVerify"]),
     maxTranscriptBytes: num(
       "maxTranscriptBytes",
       DEFAULT_SETTINGS.maxTranscriptBytes,
@@ -1132,6 +1134,12 @@ function buildRedact(raw: unknown): RedactSettings | false {
     patterns: raw.patterns == null ? defaults.patterns : buildFlag("redact.patterns", raw.patterns),
     extra: [...(extra as string[])],
   };
+}
+
+/** Validate `applyVerify`: a command line for the shell. */
+function buildApplyVerify(raw: unknown): string {
+  if (typeof raw === "string" && raw.trim() !== "") return raw;
+  throw new ConfigError(`"applyVerify" must be a command line for the shell (e.g. "npm test"), or null; got ${JSON.stringify(raw)}`);
 }
 
 /** The default `staggerFanOut`, as a fresh object. */
