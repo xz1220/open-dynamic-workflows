@@ -46,6 +46,8 @@ function ensure(): HTMLElement {
   const input = el.querySelector<HTMLInputElement>("#pal-q")!;
   input.addEventListener("input", () => filter(input.value));
   input.addEventListener("keydown", (e) => {
+    // Enter confirms pinyin/kana candidates while composing — not a command.
+    if (e.isComposing || e.keyCode === 229) return;
     if (e.key === "ArrowDown" || (e.key === "n" && e.ctrlKey)) {
       e.preventDefault();
       move(1);

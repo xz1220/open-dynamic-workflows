@@ -97,7 +97,7 @@ export function renderActivity(nowSec: number): string {
     .map((name) => {
       const n = store.fleet[name] ?? 0;
       const dots = n
-        ? Array.from({ length: Math.min(n, 24) }, (_, i) => `<i data-key="fd-${name}-${i}"></i>`).join("")
+        ? Array.from({ length: Math.min(n, 24) }, (_, i) => `<i data-key="fd-${esc(name)}-${i}"></i>`).join("")
         : `<i class="idle"></i>`;
       return (
         `<div class="fleetrow${n ? "" : " zero"}" data-key="fl-${esc(name)}"><span class="nm">${esc(name)}</span>` +
@@ -107,14 +107,18 @@ export function renderActivity(nowSec: number): string {
     .join("");
 
   const rows = store.activity.slice(0, 60);
+  const seen = new Map<string, number>();
   const stream = rows.length
     ? rows
         .map((e) => {
+          const base = `ev-${e.runId}-${e.ts}-${e.type}-${String(e.label ?? e.phase ?? "")}`;
+          const dup = seen.get(base) ?? 0;
+          seen.set(base, dup + 1);
           const cls = EVT_CLASS[e.type] ?? "log";
           const label = EVT_LABEL[e.type] ?? e.type.toUpperCase();
           const detail = eventDetail(e);
           return (
-            `<div class="evrow" data-run="${esc(e.runId)}" data-key="ev-${esc(e.runId)}-${e.ts}-${esc(e.type)}-${esc(String(e.label ?? e.phase ?? ""))}">` +
+            `<div class="evrow" data-run="${esc(e.runId)}" data-key="${esc(dup ? `${base}~${dup}` : base)}">` +
             `<span class="ts">${fmtClock(e.ts)}</span>` +
             `<span><span class="evt ${cls}">${label}</span></span>` +
             `<span class="where"><b>${esc(e.run)}</b>${detail ? " · " + esc(detail) : ""}</span>` +

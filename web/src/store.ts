@@ -97,6 +97,7 @@ class Store {
       const es = new EventSource("/api/stream?delta=1");
       this.es = es;
       es.addEventListener("runs", (e) => {
+        this.runsFrames++;
         try {
           this.setRuns(JSON.parse((e as MessageEvent).data) as RunSummary[]);
         } catch {
@@ -109,6 +110,7 @@ class Store {
       // Servers that diff the run list push only what changed after the first
       // full `runs` frame: upserted summaries and removed run ids.
       es.addEventListener("runs-delta", (e) => {
+        this.runsFrames++;
         try {
           const d = JSON.parse((e as MessageEvent).data) as { upsert?: RunSummary[]; remove?: string[] };
           this.setRuns(applyRunsDelta(this.runs, d.upsert ?? [], d.remove ?? []));
@@ -133,9 +135,7 @@ class Store {
             void this.loadChatSessions();
           }, 300);
         }
-        if (sessionId && (this.chat?.id === sessionId || this.chatMissingId === sessionId)) {
-          void this.loadChatSession(sessionId);
-        }
+        if (sessionId && sessionId === this.chatWanted) void this.loadChatSession(sessionId);
       });
       es.onerror = () => {
         this.conn = "reconnecting";
@@ -153,9 +153,15 @@ class Store {
     }
   }
 
+  /** Counts run-list frames from the stream, so an older fetch never overwrites one. */
+  private runsFrames = 0;
+
   async loadRuns(): Promise<void> {
+    const frames = this.runsFrames;
     try {
-      this.setRuns(await api.runs());
+      const runs = await api.runs();
+      if (this.runsFrames !== frames) return; // the live stream already delivered newer data
+      this.setRuns(runs);
       this.emit();
     } catch {
       /* keep last-known */
@@ -200,13 +206,20 @@ class Store {
     }
   }
 
+  /** The session the Chat view asked for last; replies for any other are dropped. */
+  chatWanted: string | null = null;
+
   async loadChatSession(id: string): Promise<void> {
+    this.chatWanted = id;
     try {
-      this.chat = await api.chatSession(id);
+      const session = await api.chatSession(id);
+      if (this.chatWanted !== id) return; // the user moved to another session meanwhile
+      this.chat = session;
       this.chatMissingId = null;
       this.chatError = "";
       this.emit();
     } catch (err) {
+      if (this.chatWanted !== id) return;
       this.chat = null;
       this.chatMissingId = id;
       this.chatError = (err as Error).message;
@@ -220,6 +233,7 @@ class Store {
     this.emit();
     try {
       this.chat = await api.createChatSession(source ? { source } : {});
+      this.chatWanted = this.chat.id;
       this.chatMissingId = null;
       await this.loadChatSessions();
       return this.chat;
@@ -238,10 +252,12 @@ class Store {
     this.chatError = "";
     this.emit();
     try {
-      this.chat = await api.sendChatMessage(id, { text });
+      const updated = await api.sendChatMessage(id, { text });
+      // Only show the reply if the user is still on that session.
+      if (this.chatWanted === id || this.chatWanted === null) this.chat = updated;
       this.chatMissingId = null;
       await this.loadChatSessions();
-      return this.chat;
+      return updated;
     } catch (err) {
       this.chatError = (err as Error).message;
       this.emit();
@@ -269,12 +285,16 @@ class Store {
 
   /** The run the Job view shows; loads for any other run are dropped. */
   focusedRunId: string | null = null;
+  /** Bumped on every focus change: a reply from an older generation is stale. */
+  private runGen = 0;
   private runLoad: Promise<void> | null = null;
+  private runLoadId: string | null = null;
   private runLoadAgain = false;
 
   focusRun(id: string | null): void {
     if (this.focusedRunId === id) return;
     this.focusedRunId = id;
+    this.runGen++;
     this.clearRun();
   }
 
@@ -286,33 +306,42 @@ class Store {
    */
   async loadRun(id: string): Promise<void> {
     if (this.focusedRunId !== id) return;
-    if (this.runLoad) {
+    // Join an in-flight load only when it is for this same run.
+    if (this.runLoad && this.runLoadId === id) {
       this.runLoadAgain = true;
       return this.runLoad;
     }
-    this.runLoad = this.fetchRun(id);
+    const load = this.fetchRun(id, this.runGen);
+    this.runLoad = load;
+    this.runLoadId = id;
     try {
-      await this.runLoad;
+      await load;
     } finally {
-      this.runLoad = null;
+      if (this.runLoad === load) {
+        this.runLoad = null;
+        this.runLoadId = null;
+      }
     }
-    if (this.runLoadAgain) {
+    if (this.runLoadAgain && this.focusedRunId === id) {
       this.runLoadAgain = false;
       await this.loadRun(id);
     }
   }
 
-  private async fetchRun(id: string): Promise<void> {
+  private async fetchRun(id: string, gen: number): Promise<void> {
     const same = this.run?.runId === id;
-    const since = same ? this.runEvents.length : 0;
+    // Only ODW event logs are append-only; a Claude run's log is rebuilt from
+    // its transcripts on every read (it shrinks and reorders), so fetch it whole.
+    const incremental = same && this.run?.provider === "odw";
+    const since = incremental ? this.runEvents.length : 0;
     try {
       const [run, events] = await Promise.all([api.run(id), api.events(id, since)]);
-      if (this.focusedRunId !== id) return; // navigated away mid-flight
+      if (gen !== this.runGen || this.focusedRunId !== id) return; // navigated away mid-flight
       const sig = JSON.stringify(run);
-      if (same && sig === this.runSig && events.length === 0) return;
+      if (incremental && sig === this.runSig && events.length === 0) return;
       this.run = run;
       this.runSig = sig;
-      this.runEvents = same ? this.runEvents.concat(events) : events;
+      this.runEvents = incremental ? this.runEvents.concat(events) : events;
       this.emit();
     } catch {
       /* keep last-known */

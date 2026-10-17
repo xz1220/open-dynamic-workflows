@@ -77,10 +77,21 @@ function patchNode(from: Node, to: Node): void {
 }
 
 function patchChildren(parent: Node, next: Node): void {
-  const keyed = new Map<string, Node>();
-  for (let c = parent.firstChild; c; c = c.nextSibling) {
+  const incomingKeys = new Set<string>();
+  for (let c = next.firstChild; c; c = c.nextSibling) {
     const k = keyOf(c);
-    if (k) keyed.set(k, c);
+    if (k) incomingKeys.add(k);
+  }
+  // Remove keyed nodes that are gone before walking: otherwise one removal
+  // near the top stalls the cursor and every later sibling gets moved (losing
+  // focus and replaying its entry animation).
+  const keyed = new Map<string, Node>();
+  for (let c: Node | null = parent.firstChild; c; ) {
+    const after: Node | null = c.nextSibling;
+    const k = keyOf(c);
+    if (k && !incomingKeys.has(k)) parent.removeChild(c);
+    else if (k) keyed.set(k, c);
+    c = after;
   }
   let cursor: Node | null = parent.firstChild;
   const incoming = Array.from(next.childNodes);

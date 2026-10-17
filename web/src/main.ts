@@ -474,7 +474,7 @@ async function sendChat(): Promise<void> {
   }
   if (store.chatSending) return;
   const updated = await store.sendChatMessage(id, text);
-  if (updated) {
+  if (updated && store.chatWanted === updated.id) {
     activeChatId = updated.id;
     chatDraft = "";
     chatScrollToBottomOnNextRender = true;

@@ -85,13 +85,14 @@ export class RunFeed {
    * `delta` clients then receive `runs-delta` frames instead of full lists.
    */
   open(res: ServerResponse, opts: { delta?: boolean } = {}): void {
+    // Bring everyone already connected up to date first, so the baseline the
+    // deltas are computed against is exactly the list this client receives —
+    // otherwise a change undone (or a run removed) before the next push would
+    // never reach it.
+    guarded("run list refresh", () => this.push());
     const runs = allSummaries(this.sources);
-    // Nobody was listening, so the baseline is stale: restart it from what this
-    // client is about to receive.
-    if (this.clients.size === 0 && this.deltaClients.size === 0) {
-      this.last = signatures(runs);
-      this.lastFullSig = fullSignature(runs);
-    }
+    this.last = signatures(runs);
+    this.lastFullSig = fullSignature(runs);
     openStream(res, opts.delta ? this.deltaClients : this.clients, frame("runs", runs));
   }
 
