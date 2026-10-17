@@ -12,7 +12,9 @@
  * The same channel carries the answers to the `checkpoint()` primitive (an ODW
  * extension — not to be confused with the dispatch safe point above): a
  * person approves or rejects a checkpoint, and `awaitDecision` hands the
- * answer to the call waiting for it.
+ * answer to the call waiting for it. A resume also ends a run's pause for a
+ * spent quota (an ODW extension: quotaWait, see ./quota-wait) at once:
+ * `watchResume` hears it.
  *
  * The cross-process variant (driven by a control file the CLI writes) lives in
  * `runtime/file-control.ts` and implements the same tiny contract.
@@ -102,6 +104,13 @@ export interface Control {
    * without it nobody can answer, and a checkpoint ends only by its timeout.
    */
   awaitDecision?(checkpointId: number, signal: AbortSignal): Promise<CheckpointDecision>;
+  /**
+   * Call `onResume` for every resume asked for from now on — `odw resume` on
+   * a run paused for a spent quota (an ODW extension: quotaWait) — and return
+   * a function that stops watching. Optional: without it, a quota pause ends
+   * only when the quota resets (or the run ends).
+   */
+  watchResume?(onResume: () => void): () => void;
 }
 
 /** A control that never pauses or stops. The default for unmanaged runs. */
@@ -121,6 +130,7 @@ export class MemoryControl implements Control {
   private paused = false;
   private waiters: Array<() => void> = [];
   private readonly stopListeners = new Set<() => void>();
+  private readonly resumeListeners = new Set<() => void>();
   /** checkpoint id → the call waiting for its answer. */
   private readonly asked = new Map<number, (decision: CheckpointDecision) => void>();
 
@@ -128,9 +138,11 @@ export class MemoryControl implements Control {
     this.paused = true;
   }
 
+  /** Go on: a paused run dispatches again, and a pause for a spent quota ends now. */
   resume(): void {
     this.paused = false;
     this.wake();
+    for (const onResume of [...this.resumeListeners]) onResume();
   }
 
   stop(): void {
@@ -161,6 +173,11 @@ export class MemoryControl implements Control {
     }
     this.stopListeners.add(onStop);
     return () => this.stopListeners.delete(onStop);
+  }
+
+  watchResume(onResume: () => void): () => void {
+    this.resumeListeners.add(onResume);
+    return () => this.resumeListeners.delete(onResume);
   }
 
   awaitDecision(checkpointId: number, signal: AbortSignal): Promise<CheckpointDecision> {

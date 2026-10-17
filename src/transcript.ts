@@ -21,7 +21,9 @@
  * {"kind":"attempt","n":2,"reason":"schema"|"stall"|"rate_limit"|"expect"} line; a
  * call that falls back to another adapter (an ODW extension) goes on after
  * {"kind":"attempt","n":2,"reason":"fallback","adapter":"<next>"}, its output
- * kept as that adapter prints it from there on. Past
+ * kept as that adapter prints it from there on — and one that waited for a
+ * spent quota to reset (quotaWait, an ODW extension) after
+ * {"kind":"attempt","n":2,"reason":"quota_wait","adapter":"<its adapter>"}. Past
  * `maxTranscriptBytes` nothing more is kept but one
  * {"kind":"truncated","bytes":N} line, N being the bytes kept. ODW's own lines
  * carry a `kind` and no `type`, so they never pass for an adapter's events.
@@ -50,9 +52,10 @@ import { hasMarker, type RedactStream, type Redactor } from "./redact.js";
 /**
  * Why a call ran a CLI once more: its reply failed the schema, the CLI
  * stalled, it was rate-limited, or — ODW extensions — its work missed its
- * `expect` checks, or the call fell back to the next adapter of its chain.
+ * `expect` checks, the call fell back to the next adapter of its chain, or it
+ * starts over after waiting for a spent quota to reset (quotaWait).
  */
-export type AttemptReason = "schema" | "stall" | "rate_limit" | "expect" | "fallback";
+export type AttemptReason = "schema" | "stall" | "rate_limit" | "expect" | "fallback" | "quota_wait";
 
 /** Where one agent's transcript is kept: its stdout, and the end of its stderr. */
 export interface TranscriptPaths {
@@ -85,6 +88,8 @@ export function attemptLabel(reason: string | undefined, adapter?: string): stri
       return "expectation retry";
     case "fallback":
       return adapter ? `fallback to ${adapter}` : "fallback";
+    case "quota_wait":
+      return adapter ? `after the quota wait, on ${adapter}` : "after the quota wait";
     default:
       return "retry";
   }
@@ -181,9 +186,10 @@ export class TranscriptRecorder {
     this.heard = false;
     this.stderrNow = "";
     // The first run needs no line — unless it is a fallback's: the call left its
-    // adapter before any CLI ran there (the quota breaker took it out).
+    // adapter before any CLI ran there (the quota breaker took it out) — or it
+    // follows a wait for a spent quota.
     if (this.runs === 1 && reason === undefined) return;
-    const moved = reason === "fallback" && adapter ? { adapter: adapter.name } : {};
+    const moved = (reason === "fallback" || reason === "quota_wait") && adapter ? { adapter: adapter.name } : {};
     this.accept(JSON.stringify({ kind: "attempt", n: this.runs, reason, ...moved }) + "\n");
     this.stderrHead = `--- attempt ${this.runs}: ${attemptLabel(reason, adapter?.name)} ---\n`;
   }

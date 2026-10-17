@@ -57,6 +57,13 @@
  * included — and the run's quota breaker takes an adapter whose quota failed
  * `quotaBreaker` times in a row out of the run, so later calls start past it.
  *
+ * With `quotaWait` (an ODW extension; see ./quota-wait), a call whose chain
+ * is out of quota pauses instead of failing: it waits — holding no slot —
+ * for the first of its adapters' quotas to reset, when a CLI said when and
+ * that is within `quotaWait.max`, then starts over from its chain's start.
+ * Until the reset a CLI named, calls pass over that adapter, and one with
+ * nowhere else to go waits before it is dispatched (see {@link Bridge.awaitQuota}).
+ *
  * The command runner is injectable, so the bridge unit-tests with a fake runner
  * and no real agent account; so are the backoff's sleep, clock and jitter.
  */
@@ -100,6 +107,7 @@ import {
 } from "./errors.js";
 import { refusedMiss, type ExpectationSink } from "./expect.js";
 import { PortPool } from "./ports.js";
+import { QuotaWaits, type QuotaPause, type QuotaPauseChange } from "./quota-wait.js";
 import { bothEnds, type Redactor } from "./redact.js";
 import { LiteralRouter, type InvocationPlan, type OptionRouter } from "./router.js";
 import { isAdapterChoice, type AdapterChoice } from "./routing.js";
@@ -201,6 +209,14 @@ export interface BridgeOptions {
    * (an ODW extension; see ./redact), so no secret is kept or cut in half.
    */
   redactor?: Redactor;
+  /**
+   * Told whenever the run's pause for an adapter's spent quota (an ODW
+   * extension: quotaWait) starts, moves or ends, so the run can log it and
+   * show it. Waits happen on `sleep` and `now`, with jitter from `random`.
+   */
+  onQuotaPause?: (change: QuotaPauseChange) => void;
+  /** Call `onResume` for each `odw resume` while calls wait for a quota (see Control.watchResume): it ends every pause at once. */
+  watchResume?: (onResume: () => void) => () => void;
 }
 
 /** What the scheduler hands one call; all optional, so a bare `run(request)` works. */
@@ -293,6 +309,27 @@ export interface RunOptions {
   expect?: ExpectationSink;
   /** Called before work that missed its `expect` checks runs again, so the run can say so. */
   onExpectRetry?: (retry: ExpectRetry) => void;
+  /**
+   * Called when the call waits for a spent quota to reset (an ODW extension:
+   * quotaWait) — its chain is out of quota, and `adapter`'s resets first —
+   * once it has joined the adapter's pause, before the wait: the time to let
+   * go of its slots (see scheduler AgentSlot.release) and say so.
+   */
+  onQuotaWait?: (wait: QuotaPause) => void | Promise<void>;
+  /**
+   * Called when that wait is over, before the call's first CLI run after it,
+   * which waits until the returned promise settles: the time to take its
+   * slots back on the adapter it starts over on (AgentSlot.moveTo).
+   */
+  onQuotaResume?: (resume: QuotaResume) => void | Promise<void>;
+}
+
+/** A call going on after waiting for a spent quota to reset (an ODW extension: quotaWait). */
+export interface QuotaResume {
+  /** The adapter it starts over on: its chain's first with quota again. */
+  adapter: string;
+  /** Every adapter the call has left so far, in order — the one it was on before the wait last, when it starts over on another. */
+  fellBackFrom: string[];
 }
 
 /** Where the bridge reports an isolated call's worktrees: a ChangeRecorder (./changes). */
@@ -402,6 +439,10 @@ export class Bridge {
   /** Adapters the quota breaker took out of the run: later calls start past them. */
   private readonly tripped = new Set<string>();
   private readonly redactor: Redactor | undefined;
+  /** The run's pauses for spent quotas, and the resets the CLIs named (ODW extension: quotaWait). */
+  private readonly quota: QuotaWaits;
+  /** What this run has said about a quota it would not wait for: each once. */
+  private readonly quotaNotes = new Set<string>();
 
   constructor(
     private readonly config: Config,
@@ -417,6 +458,19 @@ export class Bridge {
     this.agentSchemaPath = options.agentSchemaPath;
     this.redactor = options.redactor;
     this.ports = new PortPool(...config.settings.portRange);
+    this.quota = new QuotaWaits({
+      now: this.now,
+      sleep: this.sleep,
+      random: this.random,
+      onChange: options.onQuotaPause,
+      watchResume: options.watchResume,
+      // An adapter whose quota is back starts over: the quota breaker forgets it.
+      onBack: (adapter) => {
+        this.tripped.delete(adapter);
+        this.quotaStreaks.delete(adapter);
+        this.blockedStreaks.delete(adapter);
+      },
+    });
   }
 
   /**
@@ -486,14 +540,15 @@ export class Bridge {
 
   /**
    * The first adapter of `chain` past `after` a call can move to: one the
-   * quota breaker has not taken out (passed over silently: its warning said
-   * so once) and — past the first — that runs `tier` exactly. Why one could
-   * not goes to `skipped`. -1 when none is left.
+   * quota breaker has not taken out, nor — under quotaWait — spent until a
+   * reset its CLI named (passed over silently: the run said so once), and —
+   * past the first — that runs `tier` exactly. Why one could not goes to
+   * `skipped`. -1 when none is left.
    */
   private nextAdapter(chain: Adapter[], after: number, tier: PermissionTier, skipped: string[]): number {
     for (let i = after + 1; i < chain.length; i++) {
       const adapter = chain[i]!;
-      if (this.tripped.has(adapter.name)) continue;
+      if (this.isOut(adapter.name)) continue;
       if (i > 0) {
         const plan = planPermissions(adapter, runTier(this.config), tier);
         if (plan.error || plan.tier !== tier) {
@@ -508,6 +563,32 @@ export class Bridge {
       return i;
     }
     return -1;
+  }
+
+  /**
+   * The run passes over `adapter`: the quota breaker took it out — or, under
+   * quotaWait (an ODW extension), its quota is spent until a reset its CLI
+   * named, or calls wait for it.
+   */
+  private isOut(adapter: string): boolean {
+    return this.tripped.has(adapter) || this.quota.isOut(adapter);
+  }
+
+  /**
+   * Hold a call that cannot start (an ODW extension: quotaWait): when no
+   * adapter of `route` has quota left — each spent until a reset its CLI
+   * named, or taken out by the quota breaker — and one of them named a reset
+   * within `quotaWait.max`, wait for the first such reset and resolve true:
+   * the call is then routed again. It runs before the call is dispatched, so
+   * the call holds no slot and shows no agent meanwhile. False when the call
+   * can start, or when no wait applies — it then fails at once, saying why.
+   */
+  async awaitQuota(route: AgentRoute, signal?: AbortSignal): Promise<boolean> {
+    if (route.start >= 0) return false;
+    const reset = this.quotaReset(route);
+    if (!reset) return false;
+    await this.waitForQuota(reset, signal);
+    return true;
   }
 
   async run(request: AgentRequest, options: RunOptions = {}): Promise<AgentOutcome> {
@@ -543,22 +624,33 @@ export class Bridge {
    * was ridden out in place; any other failure is the call's) — on the next
    * adapter of its chain that can take it, with a fresh prompt and the same
    * options, until one produces the value or none is left. An adapter the
-   * quota breaker took out while the call waited for its slot is left at
-   * once, as if its quota had just failed it.
+   * quota breaker took out — or, under quotaWait, whose quota is spent until
+   * a reset its CLI named — while the call waited for its slot is left at
+   * once, as if its quota had just failed it. With `quotaWait` (an ODW
+   * extension), a call whose chain is out of quota then waits for the first
+   * of its adapters' quotas to reset — holding no slot — and starts over
+   * from its chain's start.
    */
   private async runCall(request: AgentRequest, options: RunOptions, call: CallEnv): Promise<AgentOutcome> {
-    const route = options.route ?? this.route(request.adapter, request.permissions);
+    let route = options.route ?? this.route(request.adapter, request.permissions);
     for (const note of route.skipped) options.onNote?.(note);
-    if (route.start < 0) throw this.outOfQuota(route);
     const fellBackFrom: string[] = [];
+    // The adapter the call is on — the one it was dispatched to, until it
+    // moves — and why its first CLI run on the next one happens.
+    let on = route.chain[Math.max(0, route.start)]!.name;
+    let why: AttemptReason | undefined;
     for (let at = route.start; ; ) {
-      const adapter = route.chain[at]!;
-      let err: unknown = this.tripped.has(adapter.name) ? this.outOfQuota({ ...route, chain: [adapter] }) : undefined;
-      if (err === undefined) {
+      const adapter = at >= 0 ? route.chain[at]! : undefined;
+      let err: unknown = !adapter
+        ? this.outOfQuota(route)
+        : this.isOut(adapter.name)
+          ? this.outOfQuota({ ...route, chain: [adapter] })
+          : undefined;
+      if (adapter && err === undefined) {
         // A fallback runs the tier the call's first adapter settled, never another (see route()).
         const hop = at === 0 ? request : { ...request, permissions: route.permissions.tier };
         try {
-          const outcome = await this.callOn(adapter, hop, options, call, fellBackFrom.length > 0 ? "fallback" : undefined);
+          const outcome = await this.callOn(adapter, hop, options, call, why);
           this.blockedStreaks.delete(adapter.name);
           this.quotaStreaks.delete(adapter.name);
           return fellBackFrom.length > 0 ? { ...outcome, fellBackFrom } : outcome;
@@ -569,31 +661,132 @@ export class Bridge {
       }
       const reason = err instanceof AdapterExecutionError && !options.signal?.aborted ? err.reason : null;
       if (reason !== "quota" && reason !== "auth") throw err;
-      const skipped: string[] = [];
-      const next = this.nextAdapter(route.chain, at, route.permissions.tier!, skipped);
-      for (const note of skipped) options.onNote?.(note);
-      if (next < 0) throw err;
-      fellBackFrom.push(adapter.name);
-      // The next adapter starts the work over: what this one changed is not the agent's change.
+      if (adapter) {
+        const skipped: string[] = [];
+        const next = this.nextAdapter(route.chain, at, route.permissions.tier!, skipped);
+        for (const note of skipped) options.onNote?.(note);
+        if (next >= 0) {
+          fellBackFrom.push(adapter.name);
+          // The next adapter starts the work over: what this one changed is not the agent's change.
+          await call.changes?.discard();
+          await options.onFallback?.({ from: adapter.name, reason, to: route.chain[next]!.name, fellBackFrom: [...fellBackFrom] });
+          // Another CLI run: it passes the stop/budget guards first.
+          await options.beforeRetry?.();
+          at = next;
+          on = route.chain[next]!.name;
+          why = "fallback";
+          continue;
+        }
+      }
+      // Its chain is spent. Under quotaWait (an ODW extension) a spent quota
+      // whose reset a CLI named pauses the call instead of failing it: it
+      // waits, holding no slot, then starts over from its chain's start.
+      const reset = reason === "quota" ? this.quotaReset(route, options.onNote) : null;
+      if (!reset) throw err;
+      await this.waitForQuota(reset, options.signal, () =>
+        options.onQuotaWait?.({ adapter: reset.adapter, resumeAt: reset.resumeAt / 1000 }),
+      );
+      route = this.route(request.adapter, request.permissions);
+      at = route.start;
+      if (at < 0) continue; // out of quota again already: it waits again, or fails
+      if (route.chain[at]!.name !== on) fellBackFrom.push(on);
+      on = route.chain[at]!.name;
+      why = "quota_wait";
+      // It starts the work over: what was changed before the wait is not the agent's change.
       await call.changes?.discard();
-      await options.onFallback?.({ from: adapter.name, reason, to: route.chain[next]!.name, fellBackFrom: [...fellBackFrom] });
-      // Another CLI run: it passes the stop/budget guards first.
+      await options.onQuotaResume?.({ adapter: on, fellBackFrom: [...fellBackFrom] });
       await options.beforeRetry?.();
-      at = next;
     }
   }
 
-  /** Why a call cannot start: the quota breaker took out its adapters — and the rest of its chain cannot run its tier. */
+  /**
+   * Where a call whose chain is out of quota waits under quotaWait (an ODW
+   * extension): the adapter of its chain — its first, or one that runs its
+   * tier — whose quota resets first, as its CLI said, and when (ms). Null
+   * when quotaWait is off; and when no adapter of the chain named a reset, or
+   * the first is past `quotaWait.max`: the call then fails, and `onNote`
+   * hears why — once per run for each.
+   */
+  private quotaReset(route: AgentRoute, onNote?: (message: string) => void): { adapter: string; resumeAt: number } | null {
+    const settings = this.config.settings.quotaWait;
+    if (!settings) return null;
+    const tier = route.permissions.tier;
+    const usable = route.chain.filter((adapter, i) => i === 0 || (tier !== undefined && this.runsTier(adapter, tier)));
+    let first: { adapter: string; resumeAt: number } | undefined;
+    for (const adapter of usable) {
+      const resumeAt = this.quota.resetOf(adapter.name);
+      if (resumeAt !== undefined && (!first || resumeAt < first.resumeAt)) first = { adapter: adapter.name, resumeAt };
+    }
+    const note = (key: string, message: string): null => {
+      if (onNote && !this.quotaNotes.has(key)) {
+        this.quotaNotes.add(key);
+        onNote(message);
+      }
+      return null;
+    };
+    if (!first) {
+      const names = usable.map((adapter) => adapter.name);
+      const none = names.length === 1 ? `${names[0]} did not say` : `none of ${names.join(", ")} said`;
+      return note(`unknown:${names.join()}`, `quotaWait: not waiting — ${none} when its quota resets, so the agent fails`);
+    }
+    const left = (first.resumeAt - this.now()) / 1000;
+    if (left > settings.max) {
+      return note(
+        `past:${first.adapter}`,
+        `quotaWait: not waiting — ${first.adapter}'s quota resets in ${formatSeconds(left)}, ` +
+          `past quotaWait.max (${formatSeconds(settings.max)}), so the agent fails`,
+      );
+    }
+    return first;
+  }
+
+  /**
+   * Wait for `reset.adapter`'s quota (see QuotaWaits.wait); `before` runs
+   * once the call has joined its pause. A reset already gone by, with no
+   * call waiting for it, brings the adapter back at once instead.
+   */
+  private async waitForQuota(
+    reset: { adapter: string; resumeAt: number },
+    signal?: AbortSignal,
+    before?: () => void | Promise<void>,
+  ): Promise<void> {
+    if (reset.resumeAt <= this.now() && !this.quota.isPaused(reset.adapter)) return this.quota.back(reset.adapter);
+    await this.quota.wait(reset.adapter, signal, before);
+  }
+
+  /** `adapter` runs exactly `tier`, as a fallback must (see {@link nextAdapter}). */
+  private runsTier(adapter: Adapter, tier: PermissionTier): boolean {
+    const plan = planPermissions(adapter, runTier(this.config), tier);
+    return !plan.error && plan.tier === tier;
+  }
+
+  /**
+   * Why a call cannot start: the quota breaker took out its adapters — or,
+   * under quotaWait, their quotas are spent until the resets their CLIs
+   * named, the soonest its `retryAfter` — and the rest of its chain cannot
+   * run its tier.
+   */
   private outOfQuota(route: AgentRoute): AdapterExecutionError {
-    const out = route.chain.filter((adapter) => this.tripped.has(adapter.name)).map((adapter) => `'${adapter.name}'`);
+    const outs = route.chain.filter((adapter) => this.isOut(adapter.name));
+    const out = outs.map((adapter) => `'${adapter.name}'`);
     const one = out.length === 1;
     const rest =
       out.length < route.chain.length ? `, and the rest of its chain cannot run its permissions "${route.permissions.tier}"` : "";
+    // Under quotaWait (an ODW extension) the run knows when a quota comes back, when a CLI said.
+    const now = this.now();
+    const resets = outs.flatMap((adapter) => {
+      const at = this.quota.resetOf(adapter.name);
+      return at !== undefined && at > now ? [{ name: adapter.name, left: (at - now) / 1000 }] : [];
+    });
+    const span =
+      resets.length > 0
+        ? `(quota resets: ${resets.map((r) => `'${r.name}' in ${formatSeconds(r.left)}`).join(", ")})`
+        : `for the rest of this run (the quota breaker skips ${one ? "it" : "them"})`;
+    const soonest = resets.length > 0 ? Math.min(...resets.map((r) => r.left)) : undefined;
     return new AdapterExecutionError(
-      `adapter${one ? "" : "s"} ${out.join(", ")} ${one ? "is" : "are"} out of usage quota for the rest of this run ` +
-        `(the quota breaker skips ${one ? "it" : "them"})${rest} — wait for the quota window to reset and resume the run ` +
-        `(odw resume), or switch adapter with --adapter <name>`,
-      { reason: "quota" },
+      `adapter${one ? "" : "s"} ${out.join(", ")} ${one ? "is" : "are"} out of usage quota ${span}${rest} — ` +
+        `wait for the quota window to reset and resume the run (odw resume), or switch adapter with --adapter <name>`,
+      soonest === undefined ? { reason: "quota" } : { reason: "quota", retryAfter: soonest },
     );
   }
 
@@ -926,11 +1119,19 @@ export class Bridge {
    * on the adapter ends the streak; a stop or a run-ending error says nothing.
    * The run's quota breaker (an ODW extension) counts quota failures alone:
    * `quotaBreaker` of them in a row take the adapter out of the run, and its
-   * warning — the one — says so.
+   * warning — the one — says so. Under quotaWait (an ODW extension), when a
+   * spent quota resets, as its CLI said, is kept: the run passes over the
+   * adapter until then, and a call may wait for it — so its quota failures
+   * meanwhile count toward nothing.
    */
   private noteFailure(adapter: Adapter, err: unknown, options: RunOptions): void {
     if (options.signal?.aborted || isFatalError(err)) return;
     const reason = err instanceof AdapterExecutionError ? err.reason : null;
+    const retryAfter = err instanceof AdapterExecutionError ? err.retryAfter : undefined;
+    if (reason === "quota" && retryAfter !== undefined && this.config.settings.quotaWait) {
+      this.quota.noteReset(adapter.name, retryAfter);
+    }
+    if (this.quota.isOut(adapter.name)) return;
     const quota = reason === "quota" ? (this.quotaStreaks.get(adapter.name) ?? 0) + 1 : 0;
     if (quota > 0) this.quotaStreaks.set(adapter.name, quota);
     else this.quotaStreaks.delete(adapter.name);
@@ -967,6 +1168,10 @@ export class Bridge {
     const limit = this.config.settings.quotaBreaker;
     if (!limit || streak < limit || this.tripped.has(adapter.name)) return false;
     this.tripped.add(adapter.name);
+    // Under quotaWait (an ODW extension) an agent with nowhere else to go waits for the reset its CLI named.
+    const without = this.config.settings.quotaWait
+      ? "or without one waits for its quota to reset (quotaWait) — or fails at once when its CLI did not say when"
+      : "or fails at once without one";
     options.onAdapterWarning?.({
       adapter: adapter.name,
       reason: "quota",
@@ -974,7 +1179,7 @@ export class Bridge {
       tripped: true,
       message:
         `warning: ${streak} agents in a row failed on adapter '${adapter.name}' (usage quota) — the run's later agents ` +
-        `skip it: each starts on the next adapter of its fallback chain, or fails at once without one. ` +
+        `skip it: each starts on the next adapter of its fallback chain, ${without}. ` +
         `Wait for its quota window to reset and resume the run (odw resume), or switch adapter with --adapter <name>.`,
     });
     return true;

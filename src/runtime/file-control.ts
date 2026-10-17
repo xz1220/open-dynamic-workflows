@@ -18,6 +18,10 @@
  * checkpoint is still waiting; otherwise it is reported and dropped, so an
  * answer can never carry over to a later question. Requests already in the
  * log when a first checkpoint starts waiting predate it and are skipped.
+ *
+ * While the run waits for a spent quota to reset (an ODW extension:
+ * quotaWait), the control file is also watched for a new resume, which ends
+ * that wait at once.
  */
 
 import {
@@ -33,6 +37,12 @@ import { RunStopped } from "../errors.js";
 
 export interface FileControlOptions {
   readAction: () => string | null;
+  /**
+   * The control file's request whole — its action and when it was written —
+   * so {@link FileControl.watchResume} tells a new `odw resume` from an old one.
+   * Without it, only a change of action to "resume" counts.
+   */
+  readRequest?: () => { action: string | null; at: number | null } | null;
   /** The checkpoint answers in the decision log, oldest first (malformed ones left out). */
   readDecisions?: () => CheckpointRequest[];
   /** A request that answered nothing: its checkpoint was not (or no longer) waiting. */
@@ -107,6 +117,35 @@ export class FileControl implements Control {
       if (this.options.readAction() !== "stop") return;
       clearInterval(timer);
       onStop();
+    }, this.watchInterval);
+    timer.unref();
+    return () => clearInterval(timer);
+  }
+
+  /**
+   * Call `onResume` for each resume written to the control file from now on —
+   * `odw resume` on a run paused for a spent quota (an ODW extension) — while
+   * watched. A request already there when watching starts was answered
+   * before. Unref'd like the stop watch: the pause's own wait keeps the
+   * worker alive.
+   */
+  watchResume(onResume: () => void): () => void {
+    let seen = "";
+    const read = (): { key: string; resume: boolean } => {
+      try {
+        const request = this.options.readRequest?.();
+        const action = request ? request.action : this.options.readAction();
+        return { key: request ? `${request.action}@${request.at}` : String(action), resume: action === "resume" };
+      } catch {
+        return { key: seen, resume: false }; // unreadable for a moment: the next poll tries again
+      }
+    };
+    seen = read().key;
+    const timer = setInterval(() => {
+      const now = read();
+      if (now.key === seen) return;
+      seen = now.key;
+      if (now.resume) onResume();
     }, this.watchInterval);
     timer.unref();
     return () => clearInterval(timer);
