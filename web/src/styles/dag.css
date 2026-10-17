@@ -958,3 +958,41 @@
   font-size: 12px;
   color: var(--alarm-ink);
 }
+
+/* ---- checkpoint() gates: a capsule in the lane; amber while a person decides ---- */
+.node.cp {
+  border-radius: 999px;
+  padding-left: 16px;
+  padding-right: 16px;
+}
+.node.cp.waiting {
+  border-color: var(--amber-line);
+  background: linear-gradient(var(--amber-soft), var(--amber-soft)), var(--card);
+  animation: cp-breathe 2.4s ease-in-out infinite;
+}
+.node.cp.waiting .sub {
+  color: var(--amber-ink);
+}
+.node.cp.stopped .lbl {
+  text-decoration: line-through;
+  text-decoration-color: var(--line-2);
+}
+@keyframes cp-breathe {
+  50% {
+    box-shadow: 0 0 0 5px var(--amber-soft);
+  }
+}
+.edge.waiting {
+  stroke: var(--amber-line);
+}
+.flow.wait {
+  stroke: var(--amber);
+  filter: none;
+}
+.tl-bar.waiting {
+  background: repeating-linear-gradient(-45deg, var(--amber) 0 6px, var(--amber-soft) 6px 12px);
+  border: 1px solid var(--amber-line);
+}
+.tl-bar.stopped {
+  background: var(--line-2);
+}

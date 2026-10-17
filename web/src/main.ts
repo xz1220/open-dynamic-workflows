@@ -601,10 +601,12 @@ function switchLang(next: Lang): void {
 
 root.addEventListener("click", (ev) => {
   const t = ev.target as HTMLElement;
-  // Real links: let modified clicks open a new tab; route plain clicks ourselves.
+  // Real links: let modified clicks open a new tab, and links that leave the
+  // app (docs, GitHub) navigate as usual; route plain in-app clicks ourselves.
   const link = t.closest<HTMLAnchorElement>("a[href]");
   if (link) {
     if (ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.altKey || ev.button !== 0) return;
+    if (!link.getAttribute("href")!.startsWith("#")) return;
     ev.preventDefault();
   }
   if (t.closest("[data-palette]")) return openPalette();
@@ -749,6 +751,8 @@ root.addEventListener("click", (ev) => {
     job.selectedAi = null;
     return render();
   }
+  // An in-app link no handler above claimed goes where its href says.
+  if (link) go(link.getAttribute("href")!);
 });
 
 function selectTab(next: JobTab): void {

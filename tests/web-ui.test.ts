@@ -377,3 +377,47 @@ test("Activity puts waiting checkpoints and the day's failures in front of the p
   assert.ok(!renderActivity(NOW).includes('class="needs"'), "nothing to do, nothing drawn");
   store.runs = prev;
 });
+
+test("checkpoint() gates join the graph, the timeline and the drawer", () => {
+  const view: JobViewState = {
+    cpNote: "",
+    tab: "graph",
+    selectedAi: null,
+    reviewAi: null,
+    zoom: 1,
+    logQuery: "",
+    logTypes: new Set(["agent"]),
+    logLimit: 600,
+    follow: true,
+    motion: false,
+  };
+  store.focusRun("20260101-000000-aaaaaa");
+  store.run = detail([agent("planner", "Plan", "done", { agentId: 1 })], {
+    state: "waiting",
+    phaseOrder: ["Plan", "Approve", "Execute"],
+  });
+  store.runEvents = [
+    { type: "checkpoint_requested", ts: NOW - 90, checkpointId: 1, title: "Ship <it>?", payload: { steps: 3 }, phase: "Approve" },
+  ];
+  let html = renderJob(view, NOW);
+  assert.match(html, /<div class="node waiting cp" data-ai="1"/, "the gate follows the agents, so their indexes stay put");
+  assert.match(html, /Ship &lt;it&gt;\?/);
+  assert.match(html, /waiting for a person · 1m30s/);
+  assert.match(html, /class="flow wait"/, "the edge into a waiting gate marches in amber");
+
+  store.runEvents = [
+    ...store.runEvents,
+    { type: "checkpoint_resolved", ts: NOW - 30, checkpointId: 1, approved: false, note: "scope it down", by: "dashboard" },
+  ];
+  store.run = { ...store.run!, state: "done" };
+  view.selectedAi = 1;
+  html = renderJob(view, NOW);
+  assert.match(html, /<div class="node stopped cp/);
+  assert.match(html, /rejected · dashboard · “scope it down”/);
+  assert.match(html, /class="pill s-stopped">[\s\S]*?<span>rejected<\/span>/, "the drawer names the answer");
+  assert.match(html, /<span class="k">waited<\/span><span class="v">1m00s<\/span>/);
+  view.tab = "timeline";
+  assert.match(renderJob(view, NOW), /class="tl-bar stopped"/);
+  store.runEvents = [];
+  store.focusRun(null);
+});

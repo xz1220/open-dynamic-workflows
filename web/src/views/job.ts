@@ -1,4 +1,5 @@
 /** Job detail — header + phase stepper, then Graph (live DAG) · Timeline · Logs · Result · Changes. */
+import { withCheckpoints } from "../checkpoints";
 import { deltaHtml, diffBar, filePath, pathHtml, statusMark } from "../components/diff";
 import { glyph, pill } from "../components/glyph";
 import { renderJson } from "../components/json";
@@ -142,6 +143,7 @@ function tabs(run: RunDetail, tab: JobTab): string {
 }
 
 function agentEvents(a: AgentView): WorkflowEvent[] {
+  if (a.kind === "checkpoint") return store.runEvents.filter((e) => e.type.startsWith("checkpoint_") && e.checkpointId === a.checkpointId);
   if (a.kind === "command") {
     return store.runEvents.filter(
       (e) => e.type.startsWith("command_") && (a.commandId != null ? e.commandId === a.commandId : e.label === a.label),
@@ -163,9 +165,39 @@ function resetNote(a: AgentView, nowSec: number): string {
   return ` <span class="dim">${esc(text)}</span>`;
 }
 
+/** The drawer of a checkpoint() gate: what was asked, what the person saw, and the answer. */
+function checkpointDrawer(run: RunDetail, a: AgentView, ai: number, nowSec: number): string {
+  const waited = a.startedAt != null ? fmtDurSec((a.finishedAt ?? nowSec) - a.startedAt) : "—";
+  const d = a.decision;
+  const answer = d
+    ? `<div class="drawer-sec">${t("Answer")}</div><div class="outbox${d.approved ? "" : " err"}">${esc(d.approved ? t("approved") : t("rejected"))}` +
+      `${d.by ? ` · ${esc(t(d.by))}` : ""}${d.note ? `\n“${esc(d.note)}”` : ""}</div>`
+    : a.state === "waiting"
+      ? `<div class="drawer-sec">${t("Answer")}</div><div class="outbox">${t("Waiting — answer it in the card above the tabs, or with {cmd}", { cmd: `odw approve ${esc(run.runId)} --checkpoint ${a.checkpointId}` })}</div>`
+      : a.error
+        ? `<div class="drawer-sec">${t("Error")}</div><div class="outbox err">${esc(a.error)}</div>`
+        : "";
+  const payload =
+    a.payload !== undefined && a.payload !== null
+      ? `<div class="drawer-sec">${t("Payload")}</div><div class="outbox json-out">${renderJson(a.payload)}</div>`
+      : "";
+  return (
+    `<aside class="drawer" data-key="drawer-${ai}">` +
+    `<div class="drawer-head"><div class="row">${pill(a.state, d ? (d.approved ? t("approved") : t("rejected")) : a.state === "stopped" ? t("not answered") : undefined)}<span class="tag">${t("checkpoint")} #${a.checkpointId}</span>` +
+    `<button class="iconbtn" data-close="1" aria-label="${esc(t("Close"))}">${icons.close}</button></div>` +
+    `<h4>${esc(a.label)}</h4></div>` +
+    `<div class="drawer-body"><div class="kv">` +
+    `<span class="k">${t("phase")}</span><span class="v">${esc(a.phase ?? "—")}</span>` +
+    `<span class="k">${t("asked")}</span><span class="v">${fmtClock(a.startedAt)}</span>` +
+    `<span class="k">${t("waited")}</span><span class="v">${waited}</span>` +
+    `</div>${answer}${payload}</div></aside>`
+  );
+}
+
 function drawer(run: RunDetail, ai: number, nowSec: number): string {
   const a = run.agents[ai];
   if (!a) return "";
+  if (a.kind === "checkpoint") return checkpointDrawer(run, a, ai, nowSec);
   const dur =
     a.state === "running" && a.startedAt != null ? fmtDurSec(nowSec - a.startedAt) : fmtDurMs(a.durationMs);
   const status =
@@ -515,7 +547,8 @@ function changesTab(run: RunDetail, s: JobViewState): string {
 }
 
 export function renderJob(s: JobViewState, nowSec: number): string {
-  const run = store.run;
+  // checkpoint() gates join the graph, the timeline and the drawer as nodes.
+  const run = store.run ? withCheckpoints(store.run, store.runEvents) : null;
   if (!run) {
     return `<div class="job"><div class="empty"><div class="spinner"></div><p>${t("Loading run…")}</p></div></div>`;
   }

@@ -11,7 +11,8 @@ export type RunDisplayState =
   /** Paused at a checkpoint() until someone approves or rejects it. */
   | "waiting";
 
-export type AgentState = "running" | "done" | "failed" | "stale";
+/** `waiting` and `stopped` only occur on checkpoint() nodes the client folds in (checkpoints.ts). */
+export type AgentState = "running" | "done" | "failed" | "stale" | "waiting" | "stopped";
 
 /** Tallies over every graph node: `agents` includes exec() command steps. */
 export interface RunCounts {
@@ -71,8 +72,12 @@ export interface AgentView {
   agentId?: number | null;
   /** The value was replayed from an earlier run by `odw resume`. */
   cached?: boolean;
-  /** `exec()` steps fold into the same list as agents (ODW extension). */
-  kind?: "agent" | "command";
+  /** `exec()` steps fold into the same list as agents, and the client adds checkpoint() gates (ODW extensions). */
+  kind?: "agent" | "command" | "checkpoint";
+  /** A checkpoint node's id, its payload and the person's answer once given. */
+  checkpointId?: number | null;
+  payload?: unknown;
+  decision?: { approved: boolean; note: string | null; by: string | null } | null;
   /** A command step's per-run id (its `agentId` is null). */
   commandId?: number | null;
   /** A command step's exit code once it settled. */
