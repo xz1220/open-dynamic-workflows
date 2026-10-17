@@ -11,6 +11,7 @@
  *   odw list
  *   odw status <run_id>
  *   odw logs <run_id> [--follow]
+ *   odw logs <run_id> --agent <id|label> [--raw] [--follow]
  *   odw agents <run_id> [--json]
  *   odw result <run_id> [--agent <id|label>]
  *   odw diff <run_id> [--agent <id|label>] [--stat]
@@ -57,6 +58,7 @@ import { isRunActive, RunObserver } from "./runtime/run-liveness.js";
 import { RunStore, TERMINAL_STATES } from "./runtime/run-store.js";
 import { detail, type RunDetail } from "./runtime/runs-view.js";
 import { startServer } from "./runtime/server.js";
+import { printAgentLogs } from "./runtime/transcript-view.js";
 import { executeRun } from "./runtime/worker.js";
 import { cmdSchedule } from "./schedule/command.js";
 import { isSeaBinary } from "./sea.js";
@@ -108,6 +110,7 @@ export function helpText(): string {
     "  odw resume <run_id> [--force]                      unpause a paused run, or replay an ended one (below)",
     "  odw status <run_id>                                show a run's current state, tokens and cost",
     "  odw logs <run_id|--workflow name> [--follow]       print a run's progress events",
+    "  odw logs <run_id> --agent <id|label> [--raw]       one agent's transcript: its tool calls, results, text (--follow)",
     "  odw agents <run_id> [--json]                       list a run's agents with their saved results",
     "  odw result <run_id> [--agent <id|label>]           print a finished run's result, or one agent's (mid-run too)",
     "  odw diff <run_id> [--agent <id|label>] [--stat]    print what isolated agents changed (their kept diffs)",
@@ -881,7 +884,8 @@ function findAgent(rows: AgentRow[], runId: string, ref: string, cmd: string): (
   }
   const row = matches[0]!;
   if (row.agentId === null) {
-    process.stderr.write(`that agent of run ${runId} has no id (a run from before agent ids): it kept no diff\n`);
+    const kept = cmd === "logs" ? "transcript" : "diff";
+    process.stderr.write(`that agent of run ${runId} has no id (a run from before agent ids): it kept no ${kept}\n`);
     return null;
   }
   return row as AgentRow & { agentId: number };
@@ -893,6 +897,12 @@ function noDiffReason(row: AgentRow): string {
   return 'it changed nothing, or it did not run with isolation: "worktree"';
 }
 
+/**
+ * `odw logs <run_id> [--follow]` prints a run's progress events; with `--agent
+ * <id|label>` one agent's transcript instead — what its CLI printed (ODW
+ * extension; see runtime/transcript-view): readable, or its lines as kept
+ * with `--raw`, and with `--follow` until that agent settles.
+ */
 async function cmdLogs(rest: string[]): Promise<number> {
   const { values, positionals } = parseArgs({
     args: rest,
@@ -902,8 +912,13 @@ async function cmdLogs(rest: string[]): Promise<number> {
       "runs-root": { type: "string" },
       follow: { type: "boolean" },
       workflow: { type: "string" },
+      agent: { type: "string" },
+      raw: { type: "boolean" },
     },
   });
+  if (values.raw && values.agent === undefined) {
+    throw new UsageError("odw logs: --raw prints an agent's transcript as kept — name the agent with --agent <id|label>");
+  }
   const store = storeFrom(values);
   let runId = positionals[0];
   // --workflow with no explicit id targets that workflow's most recent run,
@@ -923,6 +938,20 @@ async function cmdLogs(rest: string[]): Promise<number> {
   if (!store.exists(runId)) {
     process.stderr.write(`no such run: ${runId}\n`);
     return 1;
+  }
+  if (values.agent !== undefined) {
+    const row = findAgent(agentRows(store, runId), runId, values.agent, "logs");
+    if (!row) return 1;
+    const caps = detectCaps(process.stdout, process.env);
+    const width = process.stdout.isTTY && process.stdout.columns ? process.stdout.columns : 120;
+    return printAgentLogs(store, runId, row, {
+      raw: values.raw === true,
+      follow: values.follow === true,
+      out: process.stdout,
+      err: process.stderr,
+      caps,
+      width,
+    });
   }
   const observer = new RunObserver(store, runId);
   for (;;) {
