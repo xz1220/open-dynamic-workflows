@@ -52,8 +52,13 @@ test("agent() logs each rate-limit wait: who, on which adapter, how long, which 
   await primitives.agent("warm up", { label: "a" });
   await primitives.agent("warm up", { label: "b" });
   assert.equal(await primitives.agent("look it up", { label: "search" }), "found it");
+  // Only the retry lines: on a machine with spare CPUs the adaptive back-pressure
+  // also logs that it lowered codex's cap (asserted in tests/throttle.test.ts).
   assert.deepEqual(
-    sink.ofType(LOG).map((e) => [e.message, e.agentId, e.label]),
+    sink
+      .ofType(LOG)
+      .filter((e) => /— retrying in/.test(String(e.message)))
+      .map((e) => [e.message, e.agentId, e.label]),
     [
       ["search:3 hit a rate limit on codex — retrying in 15s (1/3)", 3, "search"],
       ["search:3 hit a rate limit on codex — retrying in 45s (2/3)", 3, "search"],
@@ -146,7 +151,7 @@ test("a CLI rate-limited twice and then answering finishes the run, every wait l
     assert.equal(readFileSync(counter, "utf8").length, 3, "two rate-limited runs, then the answer");
     const events = store.readEvents(id);
     assert.deepEqual(
-      events.filter((e) => e.type === "log" && /rate limit/.test(String(e.message))).map((e) => e.message),
+      events.filter((e) => e.type === "log" && /— retrying in/.test(String(e.message))).map((e) => e.message),
       [
         "search:1 hit a rate limit on flaky — retrying in 0.1s (1/3)",
         "search:1 hit a rate limit on flaky — retrying in 0.1s (2/3)",
