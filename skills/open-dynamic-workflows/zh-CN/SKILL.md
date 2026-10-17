@@ -197,7 +197,8 @@ Codex、Claude Code、Gemini、Qwen、Kimi 开箱即用，无需配置。要换�
   （gitignore 语法；`symlink: node_modules` 表示链接而非复制）会把 `.env` 等带进去，
   配置里的 `worktreeSetup` 命令会在 agent 启动前运行（均为 ODW 扩展）。
 - **端口**：每个 agent 进程都有唯一的 `$ODW_PORT`（以及 `$ODW_RUN_ID`、`$ODW_AGENT_ID`）——
-  让并行的 agent "在 `$ODW_PORT` 上启动开发服务器"，它们就不会冲突（ODW 扩展）。
+  让并行的 agent "在 `$ODW_PORT` 上启动开发服务器"，它们就不会冲突；并让它们在结束前停掉服务
+  （agent CLI 退出前可能会等待自己的后台命令）（ODW 扩展）。
 - **限流**：被限流的 CLI 会按退避时间重试（遵守它给出的 retry-after）；额度耗尽或登录失败
   不会重试——agent 会失败并说明该怎么做，`odw logs` 会写明原因。遇到额度耗尽，用
   `--adapter` 换一个适配器，而不是反复重试。

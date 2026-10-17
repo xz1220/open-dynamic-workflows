@@ -789,6 +789,11 @@ await parallel(['grid', 'list'].map((layout) => () =>
     { isolation: 'worktree', label: layout })))
 ```
 
+Ask such agents to stop the servers they start before they finish: an agent
+CLI may wait for its own background commands before it exits (`claude -p`
+does), which holds the agent — and its port — until the stall watchdog or the
+timeout ends it.
+
 The setup command gets the same three variables, and `exec()` commands get
 `ODW_RUN_ID`. Keep `portRange` wider than `concurrency`: an agent started while
 the others hold every port runs without `ODW_PORT`, and the run's log says so.

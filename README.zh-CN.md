@@ -713,6 +713,9 @@ await parallel(['grid', 'list'].map((layout) => () =>
     { isolation: 'worktree', label: layout })))
 ```
 
+请让这类 agent 在结束前停掉自己启动的服务:agent CLI 退出前可能会等它自己的后台命令
+(`claude -p` 就会),于是 agent——连同它的端口——会一直被占着,直到卡死看门狗或超时结束它。
+
 setup 命令拿到同样的三个变量,`exec()` 命令拿到 `ODW_RUN_ID`。请让 `portRange` 比
 `concurrency` 更宽:如果其他 agent 占满了所有端口,新启动的 agent 就不带 `ODW_PORT`
 运行,运行日志里会说明。一次调用的每次尝试(schema 重试、卡死重启、限流重试)都从一个新的

@@ -237,7 +237,8 @@ without answering when headless (a login, trust or approval prompt).
   agent (both ODW extensions).
 - **Ports**: every agent process gets a unique `$ODW_PORT` (with `$ODW_RUN_ID`
   and `$ODW_AGENT_ID`) — tell parallel agents "start the dev server on
-  `$ODW_PORT`" so they never collide (ODW extension).
+  `$ODW_PORT`" so they never collide, and to stop the server before finishing
+  (an agent CLI may wait for its background commands before exiting) (ODW extension).
 - **Rate limits**: a rate-limited CLI is retried after a backoff (honoring its
   retry-after); a spent quota or a failed login is not retried — the agent fails
   with what to do, and `odw logs` names the reason. Switch adapter with
