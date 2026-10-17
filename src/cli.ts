@@ -35,10 +35,10 @@ import { VERSION } from "./index.js";
 import { cmdInit } from "./init.js";
 import { agentRowJson, agentRows, formatAgentTable, matchAgents } from "./runtime/agents-view.js";
 import { startRun, startRunFromSource, waitFor } from "./runtime/launcher.js";
-import { attachRun, checkpointCommands, formatEvent, resolveRunMode, type RunMode } from "./runtime/live-view.js";
+import { attachRun, checkpointCommands, formatEvent, formatUsage, resolveRunMode, type RunMode } from "./runtime/live-view.js";
 import { isRunActive, RunObserver } from "./runtime/run-liveness.js";
 import { RunStore, TERMINAL_STATES } from "./runtime/run-store.js";
-import { detail } from "./runtime/runs-view.js";
+import { detail, type RunDetail } from "./runtime/runs-view.js";
 import { startServer } from "./runtime/server.js";
 import { executeRun } from "./runtime/worker.js";
 import { isSeaBinary } from "./sea.js";
@@ -85,7 +85,7 @@ export function helpText(): string {
     "  odw attach <run_id>                                attach the live foreground view to a run",
     "  odw rerun <run_id>                                 start a fresh run with the same inputs",
     "  odw resume <run_id> [--force]                      unpause a paused run, or replay an ended one (below)",
-    "  odw status <run_id>                                show a run's current state",
+    "  odw status <run_id>                                show a run's current state, tokens and cost",
     "  odw logs <run_id|--workflow name> [--follow]       print a run's progress events",
     "  odw agents <run_id> [--json]                       list a run's agents with their saved results",
     "  odw result <run_id> [--agent <id|label>]           print a finished run's result, or one agent's (mid-run too)",
@@ -523,6 +523,8 @@ function cmdStatus(rest: string[]): number {
   process.stdout.write(`${runId}  [${run.state === "waiting" ? "waiting" : (status.state ?? "?")}]  ${name}\n`);
   if (status.description) process.stdout.write(`  ${status.description as string}\n`);
   process.stdout.write(`  dispatched: ${dispatchedCount(events, status)} agent(s)\n`);
+  // What its agents spent (ODW extension): as their CLIs reported it, or chars/4 estimates.
+  if (run.usage) process.stdout.write(`  usage: ${formatUsage(run.usage)}${estimateNote(run)}\n`);
   if (typeof meta.resumedFrom === "string") {
     const replayed = events.filter((e) => e.type === "agent_finished" && e.cached === true).length;
     process.stdout.write(`  resumed from: ${meta.resumedFrom} (${replayed} agent result(s) replayed)\n`);
@@ -548,6 +550,16 @@ function payloadPreview(payload: unknown, maxLines = 20): string[] {
   const shown = lines.slice(0, maxLines);
   if (lines.length > maxLines) shown.push(`… ${lines.length - maxLines} more line(s): the dashboard (odw serve) shows it all`);
   return ["payload:", ...shown.map((line) => `  ${line}`)];
+}
+
+/** Why a run's usage reads `~`: how many of its agents' CLIs reported no output tokens. */
+function estimateNote(run: RunDetail): string {
+  if (!run.usage?.estimated) return "";
+  const counted = run.agents.filter((a) => a.usage);
+  const estimated = counted.filter((a) => a.usage!.estimated).length;
+  return estimated === counted.length
+    ? " (estimated: chars/4 of the replies — the adapter reports no usage)"
+    : ` (estimated in part: ${estimated} of ${counted.length} agents reported no output tokens)`;
 }
 
 /** Real dispatches: replayed agents (odw resume) never took one. */

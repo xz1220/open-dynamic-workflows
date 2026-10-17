@@ -25,15 +25,22 @@
  * A checkpoint() waiting for a person (ODW extension) is narrated with the
  * exact `odw approve|reject` commands that answer it, and stays in the live
  * view's active block until it is answered.
+ *
+ * What the run spends (ODW extension) shows in the summary line: output
+ * tokens — what `--budget` counts — and the running cost once agents that
+ * report it have settled; each settled agent's line carries its own cost.
  */
 
 import { formatSeconds } from "../adapters/failures.js";
+import { addUsage, type Usage } from "../adapters/usage.js";
 import type { WorkflowEvent } from "../events.js";
 import {
   cursor,
   detectCaps,
   fmtDuration,
   fmtElapsed,
+  fmtTokens,
+  fmtUsd,
   glyphs,
   padEndWidth,
   palette,
@@ -116,6 +123,44 @@ function failureTag(ev: WorkflowEvent): string {
   if (typeof ev.reason !== "string" || ev.reason === "") return "";
   const after = typeof ev.retryAfter === "number" ? `, retry after ${formatSeconds(ev.retryAfter)}` : "";
   return `[${sanitizeText(ev.reason, 40)}${after}] `;
+}
+
+/**
+ * What a run (or an agent) spent, in one line for people: "17.9k tokens in
+ * (12.7k cache read, 5.1k cache write) · 812 out · $0.0387"; a `~` marks
+ * output tokens that are (partly) chars/4 estimates.
+ */
+export function formatUsage(usage: Usage): string {
+  const parts: string[] = [];
+  if (usage.inputTokens !== undefined) {
+    const cache = [
+      usage.cacheReadTokens ? `${fmtTokens(usage.cacheReadTokens)} cache read` : null,
+      usage.cacheWriteTokens ? `${fmtTokens(usage.cacheWriteTokens)} cache write` : null,
+    ].filter((part): part is string => part !== null);
+    parts.push(`${fmtTokens(usage.inputTokens)} tokens in${cache.length > 0 ? ` (${cache.join(", ")})` : ""}`);
+  }
+  if (usage.outputTokens !== undefined) {
+    const tokens = usage.inputTokens === undefined ? " tokens" : "";
+    parts.push(`${usage.estimated ? "~" : ""}${fmtTokens(usage.outputTokens)}${tokens} out`);
+  }
+  if (usage.costUsd !== undefined) parts.push(fmtUsd(usage.costUsd));
+  return parts.join(" · ");
+}
+
+/**
+ * The summary line's spend: output tokens (what `--budget` counts) and the
+ * cost when known. A run whose events carry no usage (an older engine's)
+ * shows status.json's estimate instead, as before.
+ */
+function spendParts(usage: Usage | undefined, status: Record<string, unknown>): Array<string | null> {
+  if (!usage) {
+    const spent = typeof status.spentTokens === "number" ? status.spentTokens : 0;
+    return [spent > 0 ? `~${spent} tok` : null];
+  }
+  return [
+    usage.outputTokens !== undefined ? `${usage.estimated ? "~" : ""}${fmtTokens(usage.outputTokens)} tok` : null,
+    usage.costUsd !== undefined ? fmtUsd(usage.costUsd) : null,
+  ];
 }
 
 /** A failure class in the live view's words; "exit" says no more than the error line below it. */
@@ -205,6 +250,8 @@ class LiveView {
   private currentPhase: string | null = null;
   private done = 0;
   private failed = 0;
+  /** What the settled agents spent, from their events' `usage`. */
+  private usage: Usage | undefined;
   runStartTs: number | null = null;
 
   constructor(
@@ -299,6 +346,7 @@ class LiveView {
       if (settled) {
         if (settled.state === "done") this.done++;
         else this.failed++;
+        if (settled.usage) this.usage = addUsage(this.usage, settled.usage);
         out.push(this.settledLine(settled));
         if (settled.state === "failed" && settled.error) {
           out.push(`      ${p.err(sanitizeText(settled.error, 200))}`);
@@ -322,6 +370,7 @@ class LiveView {
       // A replayed result (odw resume) took no time and ran nothing.
       a.cached ? "replayed" : a.durationMs !== null ? fmtDuration(a.durationMs) : null,
       !a.cached && a.attempts !== null && a.attempts > 1 ? `${a.attempts} tries` : null,
+      a.usage?.costUsd !== undefined ? fmtUsd(a.usage.costUsd) : null,
     ]);
     return `    ${glyph} ${label}  ${p.dim(meta)}`;
   }
@@ -367,14 +416,13 @@ class LiveView {
 
     const paused = status.state === "paused";
     const stopping = control === "stop" && !TERMINAL_STATES.has(String(status.state));
-    const spent = typeof status.spentTokens === "number" ? status.spentTokens : 0;
     const startSec = this.runStartTs ?? nowSec;
     const parts = metaJoin(g, [
       `${running.length} running`,
       `${this.done} done`,
       this.failed > 0 ? p.err(`${this.failed} failed`) : null,
       this.asked.size > 0 ? p.run(`${this.asked.size} waiting for a decision`) : null,
-      spent > 0 ? `~${spent} tok` : null,
+      ...spendParts(this.usage, status),
       fmtElapsed((nowSec - startSec) * 1000),
       stopping ? p.run("stopping…") : null,
       paused ? p.run("paused") : null,
@@ -393,13 +441,12 @@ class LiveView {
     this.eraseBlock();
     const nowSec = this.now() / 1000;
     const startSec = this.runStartTs ?? nowSec;
-    const spent = typeof status.spentTokens === "number" ? status.spentTokens : 0;
     const commands = this.agents.filter((a) => a.kind === "command").length;
     const meta = metaJoin(g, [
       `${this.agents.length - commands} agents`,
       commands > 0 ? `${commands} commands` : null,
       this.failed > 0 ? p.err(`${this.failed} failed`) : null,
-      spent > 0 ? `~${spent} tok` : null,
+      ...spendParts(this.usage, status),
       fmtElapsed((nowSec - startSec) * 1000),
     ]);
     const lines: string[] = [""];
