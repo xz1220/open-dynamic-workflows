@@ -14,7 +14,7 @@ import { Bridge } from "./bridge.js";
 import { NullControl, type Control } from "./control.js";
 import { BudgetExhausted } from "./errors.js";
 import { NullSink, type EventSink, type WorkflowEvent } from "./events.js";
-import type { AgentResultRecord } from "./journal.js";
+import type { AgentResultRecord, ReplayJournal } from "./journal.js";
 import { Scheduler } from "./scheduler.js";
 
 export interface RunContext {
@@ -48,6 +48,12 @@ export interface RunContext {
    * runs). It may throw: the agent still succeeds, and the failure is logged.
    */
   saveAgentResult?: (rec: AgentResultRecord) => void;
+  /**
+   * `odw resume`: the source run's saved results, replayed by the agent()
+   * calls that are unchanged. Shared like `seq`, so a nested workflow()
+   * replays its calls too.
+   */
+  replay?: ReplayJournal;
   emit(ev: WorkflowEvent): void;
 }
 
@@ -63,6 +69,7 @@ export interface BuildContextOptions {
   control?: Control;
   budgetTotal?: number | null;
   saveAgentResult?: (rec: AgentResultRecord) => void;
+  replay?: ReplayJournal;
 }
 
 /** Wire a full run context from a config and the run's surroundings. */
@@ -101,6 +108,7 @@ export function buildContext(config: Config, options: BuildContextOptions = {}):
     seq: { value: 0 },
     currentPhase: null,
     saveAgentResult: options.saveAgentResult,
+    replay: options.replay,
     emit(ev: WorkflowEvent): void {
       sink.emit(ev);
     },

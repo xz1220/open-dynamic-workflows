@@ -1,11 +1,14 @@
 /**
- * The agent journal (L4): what a completed `agent()` call leaves behind.
+ * The agent journal (L4): what a completed `agent()` call leaves behind, and
+ * how `odw resume` replays it.
  *
  * Every successful agent() call is saved as an {@link AgentResultRecord} (the
  * worker writes it to the run directory's `agents/<agentId>.json`) before its
  * `agent_finished` event, so the work a run finished survives the run
- * stalling, being stopped, or its worker dying (issue #24). Each record
- * carries the call's {@link resumeKey}.
+ * stalling, being stopped, or its worker dying (issue #24). A resumed run
+ * loads its source run's records into a {@link ReplayJournal}: an agent()
+ * call whose {@link resumeKey} still has a record returns that saved value
+ * instead of running the agent again.
  */
 
 import { createHash } from "node:crypto";
@@ -104,4 +107,52 @@ function sortKeys(value: unknown, path: object[]): unknown {
   } finally {
     path.pop();
   }
+}
+
+/**
+ * The saved results of the run being resumed, queued per resume key in
+ * agentId order (FIFO): the n-th call with a key gets the n-th record that key
+ * produced, so a loop that asks the same thing several times replays each of
+ * its answers once, in order. Calls past the queue (or with no queue) run.
+ */
+export class ReplayJournal {
+  private readonly queues = new Map<string, AgentResultRecord[]>();
+  private left = 0;
+
+  constructor(
+    /** The run being resumed (`meta.resumedFrom`). */
+    readonly sourceRunId: string,
+    records: Iterable<AgentResultRecord>,
+  ) {
+    const usable = [...records].filter(isReplayable).sort((a, b) => a.agentId - b.agentId);
+    for (const rec of usable) {
+      const queue = this.queues.get(rec.key);
+      if (queue) queue.push(rec);
+      else this.queues.set(rec.key, [rec]);
+    }
+    this.left = usable.length;
+  }
+
+  /** Records not replayed (yet). */
+  get size(): number {
+    return this.left;
+  }
+
+  /** Take the next record saved under `key`, if one is left. */
+  take(key: string): AgentResultRecord | undefined {
+    const rec = this.queues.get(key)?.shift();
+    if (rec) this.left--;
+    return rec;
+  }
+}
+
+/** A record a resume can trust: keyed, numbered, and carrying a value. */
+function isReplayable(rec: AgentResultRecord): boolean {
+  return (
+    rec !== null &&
+    typeof rec === "object" &&
+    typeof rec.key === "string" &&
+    Number.isSafeInteger(rec.agentId) &&
+    "value" in rec
+  );
 }

@@ -36,6 +36,12 @@ export interface StartRunOptions {
   adapter?: string | null;
   /** Where the run was initiated from (e.g. "chat" for Chat Host runs). */
   origin?: string | null;
+  /**
+   * `odw resume`: the run (id + directory) whose saved agent results this run
+   * replays — its agent() calls that are unchanged return those values
+   * instead of running again.
+   */
+  resumedFrom?: { runId: string; dir: string } | null;
 }
 
 /**
@@ -62,6 +68,7 @@ function commonCreateInput(options: StartRunOptions, source: string, workflowNam
     workflowName,
     adapter: options.adapter ?? null,
     origin: options.origin ?? null,
+    resumedFrom: options.resumedFrom ?? null,
   };
 }
 

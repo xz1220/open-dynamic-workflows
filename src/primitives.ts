@@ -16,7 +16,8 @@
  *
  * `args` is not here: it is run data injected alongside these globals.
  *
- * Every completed agent() is saved as it lands (see ./journal).
+ * Every completed agent() is saved as it lands, and a resumed run replays the
+ * calls it already completed instead of running them again (see ./journal).
  */
 
 import { readFileSync } from "node:fs";
@@ -119,6 +120,41 @@ export function createPrimitives(
     }
   };
 
+  /**
+   * `odw resume`: a call the resumed run already completed returns a copy of
+   * its saved value at once. It takes no scheduler slot and adds nothing to
+   * the dispatch count or the budget, but it shows like any agent — started
+   * and finished events and a saved record, all marked `cached` — so a
+   * resume of this run can replay it in turn.
+   */
+  const replay = (
+    agentId: number,
+    key: string,
+    recorded: AgentResultRecord,
+    opts: AgentOptions,
+    phase: string | null,
+  ): unknown => {
+    // Once the run has ended, every later call fails with its reason.
+    if (ctx.scheduler.fatalError !== undefined) throw ctx.scheduler.fatalError;
+    const label = opts.label ?? opts.adapter ?? opts.agentType ?? recorded.label;
+    const { adapter, attempts } = recorded;
+    const marks = {
+      cached: true,
+      // The run whose agent actually produced the value, across chained resumes.
+      sourceRunId: recorded.cached && recorded.sourceRunId ? recorded.sourceRunId : ctx.replay!.sourceRunId,
+    };
+    const startedEv = event(AGENT_STARTED, { agentId, label, phase, adapter, ...marks });
+    ctx.emit(startedEv);
+    const finished = event(AGENT_FINISHED, { agentId, label, phase, adapter, attempts, ...marks });
+    const startedAt = startedEv.ts;
+    const finishedAt = finished.ts;
+    if (save({ agentId, key, label, phase, adapter, attempts, startedAt, finishedAt, value: recorded.value, ...marks })) {
+      finished.saved = true;
+    }
+    ctx.emit(finished);
+    return structuredClone(recorded.value);
+  };
+
   const dispatch = async (prompt: string, opts: AgentOptions): Promise<unknown> => {
     const activePhase = opts.phase !== undefined ? opts.phase : ctx.currentPhase;
     // Stable per-dispatch identity. Events for THIS dispatch all carry it, so
@@ -127,6 +163,8 @@ export function createPrimitives(
     const agentId = ++ctx.seq.value;
     // What a resume matches this call by; saved with its result.
     const key = resumeKey(prompt, opts);
+    const recorded = ctx.replay?.take(key);
+    if (recorded) return replay(agentId, key, recorded, opts, activePhase);
     // Adapter selection honours ONLY opts.adapter. agentType is a persona (it is
     // forwarded to the bridge and injected into the prompt), never an adapter name.
     // Resolve it before asking for a slot: an unknown or ambiguous adapter is a

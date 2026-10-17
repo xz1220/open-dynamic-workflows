@@ -9,7 +9,8 @@
  * workflow's runs can be listed without scanning every run:
  *
  *   <runsRoot>/<workflow-slug>/<runId>/
- *     meta.json      immutable run description (script, args, source, config, workflowName)
+ *     meta.json      immutable run description (script, args, source, config, workflowName,
+ *                    resumedFrom: the run an `odw resume` replays)
  *     status.json    mutable state (running/paused/done/failed/stopped, counters)
  *     events.jsonl   append-only progress stream
  *     agents/<agentId>.json  each completed agent()'s result, saved as it lands
@@ -76,6 +77,12 @@ export interface CreateRunInput {
   adapter?: string | null;
   /** Where the run was initiated from (e.g. "chat" for Chat Host runs). */
   origin?: string | null;
+  /**
+   * `odw resume`: the run whose saved agent results this run replays, and its
+   * directory (where the worker reads them — the runs may live in different
+   * runs roots).
+   */
+  resumedFrom?: { runId: string; dir: string } | null;
 }
 
 /** A run plus the workflow it belongs to, returned by listing. */
@@ -131,6 +138,8 @@ export class RunStore {
       workflowName: input.workflowName ?? null,
       adapter: input.adapter ?? null,
       origin: input.origin ?? null,
+      resumedFrom: input.resumedFrom?.runId ?? null,
+      resumedFromDir: input.resumedFrom?.dir ?? null,
       // First-class fact (not inferred from path topology): the script lives in
       // this run dir because it was launched from inline source. Drives the
       // worker's run-by-name divergence exemption and `odw rerun` re-archival.

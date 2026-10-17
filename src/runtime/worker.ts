@@ -4,7 +4,9 @@
  * The back end. It runs in its own Node process (started by the launcher), so
  * the workflow holds its entire plan in local variables; what is written back
  * to the run directory is each completed agent's result (as it lands) and the
- * final return value. Exactly one run executes per worker process.
+ * final return value. A resumed run (meta.resumedFrom) first loads its source
+ * run's saved results, so unchanged agent() calls replay instead of running.
+ * Exactly one run executes per worker process.
  *
  * `executeRun` is also callable in-process (that is how tests exercise the full
  * stack without spawning a subprocess).
@@ -19,6 +21,7 @@ import { killAllAgentProcesses } from "../adapters/runner.js";
 import { buildContext, spentTokens, type RunContext } from "../context.js";
 import { RunStopped, WorkflowScriptError, isFatalError } from "../errors.js";
 import { LOG, RUN_FAILED, RUN_FINISHED, RUN_STARTED, RUN_STOPPED, event } from "../events.js";
+import { ReplayJournal } from "../journal.js";
 import { loadWorkflowScript } from "../loader.js";
 import { createPrimitives } from "../primitives.js";
 import type { Scheduler } from "../scheduler.js";
@@ -76,6 +79,7 @@ export async function executeRun(runDir: string): Promise<string> {
       readAction: () => store.readControl(runId),
       onState: (state) => store.updateStatus(runId, { state, dispatched: dispatched(), spentTokens: spent() }),
     });
+    const replay = replayJournal(meta);
     ctx = buildContext(config, {
       source: meta.source as string | undefined,
       args,
@@ -85,10 +89,18 @@ export async function executeRun(runDir: string): Promise<string> {
       // Each completed agent's result lands in agents/<agentId>.json at once,
       // so a run that stalls, is stopped, or dies keeps its finished work.
       saveAgentResult: (rec) => store.writeAgentResult(runId, rec),
+      replay,
     });
 
     store.updateStatus(runId, { state: "running", pid: process.pid });
     sink.emit(event(RUN_STARTED, { runId }));
+    if (replay) {
+      sink.emit(
+        event(LOG, {
+          message: `resuming ${replay.sourceRunId}: unchanged agent() calls replay its ${replay.size} saved result(s)`,
+        }),
+      );
+    }
 
     const source = readFileSync(script, "utf8");
     const loaded = loadWorkflowScript(source, script);
@@ -174,6 +186,17 @@ async function stopAgents(scheduler: Scheduler, err: unknown): Promise<void> {
 
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * The saved agent results of the run this one resumes (meta.resumedFrom), read
+ * from that run's own directory; undefined for a run that resumes nothing.
+ */
+function replayJournal(meta: Record<string, unknown>): ReplayJournal | undefined {
+  if (typeof meta.resumedFrom !== "string" || meta.resumedFrom === "") return undefined;
+  const dir = typeof meta.resumedFromDir === "string" ? meta.resumedFromDir : null;
+  const records = dir ? new RunStore(dirname(dir)).listAgentResults(basename(dir)) : [];
+  return new ReplayJournal(meta.resumedFrom, records);
 }
 
 /**
