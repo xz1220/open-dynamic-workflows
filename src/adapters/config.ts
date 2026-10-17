@@ -22,8 +22,10 @@ import { dirname, join } from "node:path";
 import { AdapterNotFound, ConfigError } from "../errors.js";
 import { BUILTIN_ADAPTERS, DEFAULT_SETTINGS, type RawAdapter } from "./builtin.js";
 import { isOnPath } from "./executable.js";
+import { CONFIGURABLE_REASONS } from "./failures.js";
 import type {
   Adapter,
+  AdapterFailures,
   AdapterFlags,
   AdapterOutput,
   Config,
@@ -71,6 +73,8 @@ const KNOWN_TOP_KEYS = [
   "timeout",
   "stallTimeout",
   "stallRestarts",
+  "transientRetries",
+  "maxBackoff",
   "schemaRetries",
   "runsRoot",
   "workflowsRoot",
@@ -79,7 +83,7 @@ const KNOWN_TOP_KEYS = [
   "notify",
 ] as const;
 
-const KNOWN_ADAPTER_KEYS = ["command", "stdin", "env", "timeout", "stallTimeout", "label", "flags", "output"] as const;
+const KNOWN_ADAPTER_KEYS = ["command", "stdin", "env", "timeout", "stallTimeout", "label", "flags", "output", "failures"] as const;
 
 const KNOWN_NOTIFY_KEYS = ["command", "webhook", "on"] as const;
 
@@ -488,7 +492,42 @@ function buildAdapter(name: string, spec: RawAdapter): Adapter {
   if (spec.label !== undefined) adapter.label = spec.label;
   if (spec.flags !== undefined) adapter.flags = buildFlags(name, spec.flags);
   if (spec.output !== undefined) adapter.output = buildOutput(name, spec.output);
+  if (spec.failures != null) adapter.failures = buildFailures(name, spec.failures);
   return adapter;
+}
+
+/**
+ * Validate an adapter's own failure wording: per class, a list of regular
+ * expressions (matched case-insensitively). A typo'd class or a pattern that
+ * does not compile fails the load: it would otherwise never match, silently.
+ */
+function buildFailures(name: string, raw: unknown): AdapterFailures {
+  if (!isObject(raw)) {
+    throw new ConfigError(`adapter '${name}' 'failures' must be an object of regular-expression lists`);
+  }
+  const out: AdapterFailures = {};
+  for (const [key, value] of Object.entries(raw)) {
+    if (key.startsWith("$") || key.startsWith("//")) continue; // comment conventions
+    if (!(CONFIGURABLE_REASONS as readonly string[]).includes(key)) {
+      throw new ConfigError(
+        `adapter '${name}' 'failures' may set ${CONFIGURABLE_REASONS.map((k) => `"${k}"`).join(", ")}; got "${key}"`,
+      );
+    }
+    if (!Array.isArray(value) || !value.every((p) => typeof p === "string" && p.length > 0)) {
+      throw new ConfigError(`adapter '${name}' 'failures.${key}' must be an array of non-empty regular-expression strings`);
+    }
+    for (const source of value as string[]) {
+      try {
+        new RegExp(source, "i");
+      } catch (err) {
+        throw new ConfigError(
+          `adapter '${name}' 'failures.${key}' has an invalid regular expression ${JSON.stringify(source)}: ${(err as Error).message}`,
+        );
+      }
+    }
+    out[key as keyof AdapterFailures] = [...(value as string[])];
+  }
+  return out;
 }
 
 /** Validate and normalise an adapter's capability declaration. */
@@ -594,6 +633,14 @@ function buildSettings(raw: Record<string, unknown>): Settings {
     stallRestarts: num("stallRestarts", DEFAULT_SETTINGS.stallRestarts, "a non-negative integer", {
       min: 0,
       integer: true,
+    }),
+    transientRetries: num("transientRetries", DEFAULT_SETTINGS.transientRetries, "a non-negative integer", {
+      min: 0,
+      integer: true,
+    }),
+    maxBackoff: num("maxBackoff", DEFAULT_SETTINGS.maxBackoff, "a positive number of seconds", {
+      min: 0,
+      exclusiveMin: true,
     }),
     schemaRetries: num("schemaRetries", DEFAULT_SETTINGS.schemaRetries, "a non-negative integer", {
       min: 0,

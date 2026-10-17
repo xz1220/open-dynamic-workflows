@@ -16,6 +16,8 @@
  * two categories never drift apart.
  */
 
+import type { FailureReason } from "./adapters/failures.js";
+
 export class DynamicWorkflowError extends Error {
   constructor(message?: string) {
     super(message);
@@ -30,8 +32,19 @@ export class ConfigError extends DynamicWorkflowError {}
 /** A workflow referenced an adapter name that is not configured. */
 export class AdapterNotFound extends ConfigError {}
 
-/** An agent CLI failed: non-zero exit, timeout, or spawn failure. */
-export class AdapterExecutionError extends DynamicWorkflowError {}
+/** An agent CLI failed: non-zero exit, timeout, stall, or spawn failure. */
+export class AdapterExecutionError extends DynamicWorkflowError {
+  /** Why it failed (see adapters/failures.ts); "exit" when nothing more specific is known. */
+  readonly reason: FailureReason;
+  /** Seconds until the CLI said it may be retried, or its quota resets, when its output said so. */
+  declare readonly retryAfter?: number;
+
+  constructor(message?: string, failure: { reason: FailureReason; retryAfter?: number } = { reason: "exit" }) {
+    super(message);
+    this.reason = failure.reason;
+    if (failure.retryAfter !== undefined) this.retryAfter = failure.retryAfter;
+  }
+}
 
 /** An agent never produced output matching the requested schema. */
 export class SchemaValidationError extends DynamicWorkflowError {}

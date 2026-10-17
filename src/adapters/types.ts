@@ -29,6 +29,20 @@ export type AdapterOutput =
       select: "last";
     };
 
+/**
+ * An adapter's own failure wording (ODW extension): regular-expression sources
+ * per failure class, matched case-insensitively against the end of a failed
+ * run's output before the built-in table (see adapters/failures.ts).
+ */
+export interface AdapterFailures {
+  /** Throttling or overload: retried after a backoff. */
+  rate_limit?: string[];
+  /** A spent usage window, credit balance or plan limit: not retried. */
+  quota?: string[];
+  /** Not logged in, or refused credentials: not retried. */
+  auth?: string[];
+}
+
 /** How to invoke one coding-agent CLI. */
 export interface Adapter {
   name: string;
@@ -51,6 +65,8 @@ export interface Adapter {
   flags?: AdapterFlags;
   /** Response decoding; omitted means trimmed plain text. */
   output?: AdapterOutput;
+  /** Extra failure wording for this CLI, matched before the built-in table. */
+  failures?: AdapterFailures;
 }
 
 /** Run-wide knobs independent of any single adapter. */
@@ -71,6 +87,13 @@ export interface Settings {
   stallTimeout: number | null;
   /** How many times one agent call is restarted after stalling before it fails. */
   stallRestarts: number;
+  /**
+   * How many times one agent call is retried after its CLI hit a rate limit,
+   * with exponential backoff that honors a retry-after the CLI printed.
+   */
+  transientRetries: number;
+  /** The longest single backoff wait before such a retry, in seconds. */
+  maxBackoff: number;
   /** Extra attempts when a schema fails to validate. */
   schemaRetries: number;
   /** Directory runs are stored under; `null` => `~/.odw/runs`. */

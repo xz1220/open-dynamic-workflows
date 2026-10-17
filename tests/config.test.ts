@@ -348,6 +348,96 @@ test("collectConfigWarnings knows the stall keys, top-level and per adapter", ()
   assert.match(typo!, /did you mean "stallTimeout"/);
 });
 
+test("rate-limit retries default to 3 waits of at most 300s; both settings load and validate", () => {
+  const defaults = defaultConfig().settings;
+  assert.equal(defaults.transientRetries, 3);
+  assert.equal(defaults.maxBackoff, 300);
+  const dir = mkdtempSync(join(tmpdir(), "odw-cfg-"));
+  try {
+    const p = join(dir, "odw.config.json");
+    const load = (raw: Record<string, unknown>) => {
+      writeFileSync(p, JSON.stringify(raw));
+      return loadConfig(p, { quiet: true }).settings;
+    };
+    assert.deepEqual(
+      [load({ transientRetries: 0, maxBackoff: 30.5 }).transientRetries, load({ maxBackoff: 30.5 }).maxBackoff],
+      [0, 30.5],
+    );
+    assert.equal(load({ transientRetries: "5" }).transientRetries, 5, "numeric strings load, like the other settings");
+    assert.deepEqual(
+      [load({ transientRetries: null }).transientRetries, load({ maxBackoff: null }).maxBackoff],
+      [3, 300],
+      "null keeps the default",
+    );
+    const cases: Array<[Record<string, unknown>, RegExp]> = [
+      [{ transientRetries: "often" }, /"transientRetries" must be a non-negative integer; got "often"/],
+      [{ transientRetries: -1 }, /"transientRetries"/],
+      [{ transientRetries: 1.5 }, /"transientRetries"/],
+      [{ maxBackoff: 0 }, /"maxBackoff" must be a positive number of seconds; got 0/],
+      [{ maxBackoff: -30 }, /"maxBackoff"/],
+      [{ maxBackoff: "long" }, /"maxBackoff"/],
+    ];
+    for (const [raw, message] of cases) {
+      assert.throws(() => load(raw), (err: Error) => err instanceof ConfigError && message.test(err.message), JSON.stringify(raw));
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("an adapter's own failure patterns load; a bad class or pattern is a ConfigError", () => {
+  const dir = mkdtempSync(join(tmpdir(), "odw-cfg-"));
+  try {
+    const p = join(dir, "odw.config.json");
+    const load = (failures: unknown) => {
+      writeFileSync(p, JSON.stringify({ adapters: { mine: { command: ["x"], failures } } }));
+      return loadConfig(p, { quiet: true }).adapters.mine!;
+    };
+    assert.deepEqual(
+      load({ rate_limit: ["server busy", "^E429"], quota: ["out of tokens"], auth: ["session gone"], $comment: "ok" })
+        .failures,
+      { rate_limit: ["server busy", "^E429"], quota: ["out of tokens"], auth: ["session gone"] },
+    );
+    assert.equal(load(null).failures, undefined, "null means none");
+    assert.equal(defaultConfig().adapters.claude!.failures, undefined, "built-ins rely on the shared table");
+    const example = loadConfig(join(process.cwd(), "odw.config.example.json"), { quiet: true });
+    assert.deepEqual([example.settings.transientRetries, example.settings.maxBackoff], [3, 300]);
+    assert.deepEqual(Object.keys(example.adapters.my_wrapper!.failures ?? {}), ["rate_limit", "quota", "auth"]);
+    const cases: Array<[unknown, RegExp]> = [
+      [["busy"], /adapter 'mine' 'failures' must be an object of regular-expression lists/],
+      [{ ratelimit: ["busy"] }, /adapter 'mine' 'failures' may set "rate_limit", "quota", "auth"; got "ratelimit"/],
+      [{ permission: ["denied"] }, /got "permission"/],
+      [{ quota: "out of tokens" }, /adapter 'mine' 'failures.quota' must be an array of non-empty regular-expression strings/],
+      [{ auth: [""] }, /'failures.auth' must be an array of non-empty/],
+      [{ rate_limit: ["(unclosed"] }, /adapter 'mine' 'failures.rate_limit' has an invalid regular expression "\(unclosed"/],
+    ];
+    for (const [failures, message] of cases) {
+      assert.throws(
+        () => load(failures),
+        (err: Error) => err instanceof ConfigError && message.test(err.message),
+        JSON.stringify(failures),
+      );
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("collectConfigWarnings knows the retry keys and an adapter's failures", () => {
+  assert.deepEqual(
+    collectConfigWarnings({
+      transientRetries: 2,
+      maxBackoff: 120,
+      adapters: { mine: { command: ["x"], failures: { rate_limit: ["busy"] } } },
+    }),
+    [],
+  );
+  const [typo] = collectConfigWarnings({ maxBackof: 60 });
+  assert.match(typo!, /did you mean "maxBackoff"/);
+  const [field] = collectConfigWarnings({ adapters: { mine: { command: ["x"], failure: {} } } });
+  assert.match(field!, /adapter "mine": unknown field "failure" is ignored — did you mean "failures"\?/);
+});
+
 test("notify is off by default and loads normalized", () => {
   assert.equal(defaultConfig().settings.notify, null);
   const dir = mkdtempSync(join(tmpdir(), "odw-cfg-"));
