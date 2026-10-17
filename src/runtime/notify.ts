@@ -16,6 +16,12 @@
  *            finishedAt, durationSec, counts: { agents, done, failed }, error?,
  *            text, content } — `text` (Slack) and `content` (Discord) carry the
  *            same one-line summary, so chat incoming webhooks render it as is.
+ *
+ * With "waiting" in `notify.on` (opt-in), the same hooks also fire once per
+ * checkpoint() that starts waiting for a person — while the run goes on
+ * waiting, so they never hold it up: state "waiting", no finishedAt or
+ * result, and the checkpoint (`ODW_CHECKPOINT_ID`, `ODW_CHECKPOINT_TITLE`; the
+ * webhook's `checkpoint: { checkpointId, title, since }`).
  */
 
 import { existsSync } from "node:fs";
@@ -23,6 +29,7 @@ import { join } from "node:path";
 
 import { runCommand } from "../adapters/runner.js";
 import { cliOk, type NotifySettings, type RunEndState } from "../adapters/types.js";
+import type { WaitingCheckpoint } from "../checkpoint.js";
 import type { RunStore } from "./run-store.js";
 import { countAgents, foldAgents } from "./runs-view.js";
 
@@ -48,6 +55,19 @@ export interface RunEnd {
   resultFile: string | null;
 }
 
+/** What the hooks are told about a run whose checkpoint() waits for a person ("waiting"). */
+export interface RunWaiting {
+  runId: string;
+  runDir: string;
+  workflow: string;
+  state: "waiting";
+  createdAt: number | null;
+  /** Whole seconds from creation to the checkpoint. */
+  durationSec: number;
+  counts: { agents: number; done: number; failed: number };
+  checkpoint: WaitingCheckpoint;
+}
+
 export interface NotifyOptions {
   /** Where hook failures go; defaults to the worker's stderr (its worker.log). */
   log?: (line: string) => void;
@@ -69,15 +89,38 @@ export async function notifyRunEnd(
   options: NotifyOptions = {},
 ): Promise<void> {
   if (!notify || !notify.on.includes(run.state) || (!notify.command && !notify.webhook)) return;
-  const log = options.log ?? ((line: string) => void process.stderr.write(`odw: ${line}\n`));
+  const log = options.log ?? defaultLog;
   try {
     const end = describeRunEnd(run.store, run.runId, run.state, run.error);
     const hooks: Array<Promise<void>> = [];
-    if (notify.command) hooks.push(runHookCommand(notify.command, end, options, log));
-    if (notify.webhook) hooks.push(postWebhook(notify.webhook, end, options, log));
+    if (notify.command) hooks.push(runHookCommand(notify.command, notifyEnv(end), options, log));
+    if (notify.webhook) hooks.push(postWebhook(notify.webhook, webhookPayload(end), options, log));
     await Promise.all(hooks);
   } catch (err) {
     log(`notify: hooks for run ${run.runId} failed: ${errorMessage(err)}`);
+  }
+}
+
+/**
+ * Fire the hooks for a checkpoint() that started waiting, when `notify.on`
+ * includes "waiting" (opt-in). Resolves once every hook has finished or hit
+ * its time limit; never rejects. The worker does not wait for it to go on.
+ */
+export async function notifyCheckpoint(
+  notify: NotifySettings | null,
+  run: { store: RunStore; runId: string; checkpoint: WaitingCheckpoint },
+  options: NotifyOptions = {},
+): Promise<void> {
+  if (!notify || !notify.on.includes("waiting") || (!notify.command && !notify.webhook)) return;
+  const log = options.log ?? defaultLog;
+  try {
+    const waiting = describeWaiting(run.store, run.runId, run.checkpoint);
+    const hooks: Array<Promise<void>> = [];
+    if (notify.command) hooks.push(runHookCommand(notify.command, waitingEnv(waiting), options, log));
+    if (notify.webhook) hooks.push(postWebhook(notify.webhook, waitingPayload(waiting), options, log));
+    await Promise.all(hooks);
+  } catch (err) {
+    log(`notify: hooks for checkpoint #${run.checkpoint.checkpointId} of run ${run.runId} failed: ${errorMessage(err)}`);
   }
 }
 
@@ -90,15 +133,10 @@ export function describeRunEnd(store: RunStore, runId: string, state: RunEndStat
   // status.updatedAt is stamped by the terminal write itself.
   const finishedAt = seconds(status.updatedAt) ?? Date.now() / 1000;
   const { agents, done, failed } = countAgents(foldAgents(store.readEvents(runId)));
-  const workflow =
-    (typeof status.name === "string" && status.name) ||
-    (typeof meta.workflowName === "string" && meta.workflowName) ||
-    (typeof meta.script === "string" && stem(meta.script)) ||
-    runId;
   return {
     runId,
     runDir,
-    workflow,
+    workflow: workflowName(runId, meta, status),
     state,
     createdAt,
     finishedAt,
@@ -106,6 +144,24 @@ export function describeRunEnd(store: RunStore, runId: string, state: RunEndStat
     counts: { agents, done, failed },
     ...(error !== undefined ? { error } : {}),
     resultFile: store.hasResult(runId) ? join(runDir, "result.json") : null,
+  };
+}
+
+/** Read what the hooks report about a run whose checkpoint() just started waiting. */
+export function describeWaiting(store: RunStore, runId: string, checkpoint: WaitingCheckpoint): RunWaiting {
+  const meta = store.readMeta(runId);
+  const status = store.readStatus(runId);
+  const createdAt = seconds(meta.createdAt);
+  const { agents, done, failed } = countAgents(foldAgents(store.readEvents(runId)));
+  return {
+    runId,
+    runDir: store.runDir(runId),
+    workflow: workflowName(runId, meta, status),
+    state: "waiting",
+    createdAt,
+    durationSec: createdAt === null ? 0 : Math.max(0, Math.round(checkpoint.since - createdAt)),
+    counts: { agents, done, failed },
+    checkpoint: { ...checkpoint },
   };
 }
 
@@ -121,6 +177,52 @@ export function notifyEnv(end: RunEnd): Record<string, string> {
     ODW_AGENTS: String(end.counts.agents),
     ODW_FAILED_AGENTS: String(end.counts.failed),
   };
+}
+
+/** The environment a notify command gets for a waiting checkpoint: the run so far, and the checkpoint. */
+export function waitingEnv(waiting: RunWaiting): Record<string, string> {
+  return {
+    ODW_RUN_ID: waiting.runId,
+    ODW_RUN_STATE: "waiting",
+    ODW_WORKFLOW: waiting.workflow,
+    ODW_RUN_DIR: waiting.runDir,
+    ODW_DURATION_SEC: String(waiting.durationSec),
+    ODW_AGENTS: String(waiting.counts.agents),
+    ODW_FAILED_AGENTS: String(waiting.counts.failed),
+    ODW_CHECKPOINT_ID: String(waiting.checkpoint.checkpointId),
+    // An environment value cannot hold a NUL byte.
+    ODW_CHECKPOINT_TITLE: waiting.checkpoint.title.replace(/\0/g, ""),
+  };
+}
+
+/** The JSON body a webhook receives for a waiting checkpoint. */
+export function waitingPayload(waiting: RunWaiting): Record<string, unknown> {
+  const text = waitingLine(waiting);
+  return {
+    runId: waiting.runId,
+    workflow: waiting.workflow,
+    state: "waiting",
+    createdAt: waiting.createdAt,
+    durationSec: waiting.durationSec,
+    counts: waiting.counts,
+    checkpoint: waiting.checkpoint,
+    text,
+    content: text,
+    allowed_mentions: { parse: [] },
+  };
+}
+
+/**
+ * The one-line human summary of a waiting checkpoint, with the command that
+ * answers it, e.g. "odw · deploy waits for a decision: Ship it? · odw
+ * approve|reject 20261017-041600-3fa2c1 --checkpoint 1".
+ */
+export function waitingLine(waiting: RunWaiting): string {
+  const { checkpointId, title } = waiting.checkpoint;
+  return (
+    `odw · ${waiting.workflow} waits for a decision: ${title} · ` +
+    `odw approve|reject ${waiting.runId} --checkpoint ${checkpointId}`
+  );
 }
 
 /** The JSON body a webhook receives. */
@@ -180,15 +282,17 @@ export function webhookOrigin(url: string): string {
 
 // --- the hooks ----------------------------------------------------------------
 
+/** The hook variables that are set only when they apply, whatever the worker itself inherited. */
+const OPTIONAL_HOOK_VARS = ["ODW_RESULT_FILE", "ODW_CHECKPOINT_ID", "ODW_CHECKPOINT_TITLE"];
+
 async function runHookCommand(
   command: string[],
-  end: RunEnd,
+  vars: Record<string, string>,
   options: NotifyOptions,
   log: (line: string) => void,
 ): Promise<void> {
-  const env: Record<string, string | undefined> = { ...process.env, ...notifyEnv(end) };
-  // Set only when result.json exists, whatever the worker itself inherited.
-  if (!end.resultFile) delete env.ODW_RESULT_FILE;
+  const env: Record<string, string | undefined> = { ...process.env, ...vars };
+  for (const name of OPTIONAL_HOOK_VARS) if (!(name in vars)) delete env[name];
   const timeout = options.commandTimeoutSec ?? NOTIFY_COMMAND_TIMEOUT_S;
   const result = await runCommand(command, {
     env: env as Record<string, string>,
@@ -206,7 +310,7 @@ async function runHookCommand(
 
 async function postWebhook(
   url: string,
-  end: RunEnd,
+  body: Record<string, unknown>,
   options: NotifyOptions,
   log: (line: string) => void,
 ): Promise<void> {
@@ -216,7 +320,7 @@ async function postWebhook(
     const res = await fetch(url, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify(webhookPayload(end)),
+      body: JSON.stringify(body),
       signal: AbortSignal.timeout(limit),
     });
     if (res.ok) {
@@ -251,6 +355,20 @@ async function firstChunk(res: Response): Promise<string> {
 
 function seconds(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+/** The run's workflow as the hooks name it: its meta.name, else what it was started as. */
+function workflowName(runId: string, meta: Record<string, unknown>, status: Record<string, unknown>): string {
+  return (
+    (typeof status.name === "string" && status.name) ||
+    (typeof meta.workflowName === "string" && meta.workflowName) ||
+    (typeof meta.script === "string" && stem(meta.script)) ||
+    runId
+  );
+}
+
+function defaultLog(line: string): void {
+  process.stderr.write(`odw: ${line}\n`);
 }
 
 function stem(path: string): string {

@@ -466,6 +466,11 @@ test("notify is off by default and loads normalized", () => {
       on: ["done", "failed", "stopped"],
     });
     assert.deepEqual(load({ command: ["say", "done"], on: [] }).on, [], "an empty list mutes the hooks");
+    assert.deepEqual(
+      load({ command: ["say"], on: ["waiting", "done"] }).on,
+      ["done", "waiting"],
+      "a checkpoint waiting (ODW extension) fires the hooks only when listed",
+    );
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -494,7 +499,7 @@ test("a malformed notify block is a ConfigError that never echoes a secret", () 
       [{ webhook: "https://user:SECRET@example.com/hook" }, /"notify.webhook" must not embed credentials/],
       [
         { webhook: "https://example.com/h", on: ["done", "finished"] },
-        /"notify.on" must be a list of "done", "failed", "stopped"; got \["done","finished"\]/,
+        /"notify.on" must be a list of "done", "failed", "stopped", "waiting"; got \["done","finished"\]/,
       ],
       [{ webhook: "https://example.com/h", on: "failed" }, /"notify.on"/],
     ];

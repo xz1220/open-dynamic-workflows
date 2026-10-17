@@ -30,7 +30,7 @@ import { loadWorkflowScript } from "../loader.js";
 import { createPrimitives } from "../primitives.js";
 import type { Scheduler } from "../scheduler.js";
 import { FileControl } from "./file-control.js";
-import { notifyRunEnd } from "./notify.js";
+import { notifyCheckpoint, notifyRunEnd } from "./notify.js";
 import { JsonlSink, RunStore } from "./run-store.js";
 
 /**
@@ -72,7 +72,8 @@ const SIGNAL_GRACE_MS = 10_000;
  * they are bounded and never throw, so they cannot change the returned state.
  *
  * A checkpoint() waiting for a person is shown in status.json as `waiting`
- * (the oldest one, which `odw approve` answers by default).
+ * (the oldest one, which `odw approve` answers by default) and, when
+ * `notify.on` lists "waiting", fires the hooks at once — the run waits on.
  */
 export async function executeRun(runDir: string): Promise<string> {
   const store = new RunStore(dirname(runDir));
@@ -92,6 +93,8 @@ export async function executeRun(runDir: string): Promise<string> {
 
   // Set right after the terminal state is written; the run then only has its hooks left.
   let end: { state: RunEndState; error?: string } | undefined;
+  // "waiting" hooks of checkpoints, awaited (they are bounded) before the worker returns.
+  const checkpointHooks: Array<Promise<void>> = [];
   const crashes = watchProcessCrashes();
   const signals = watchStopSignals({
     stop: (signal) => {
@@ -146,8 +149,15 @@ export async function executeRun(runDir: string): Promise<string> {
       saveAgentResult: (rec) => store.writeAgentResult(runId, rec),
       replay,
       onCheckpoint: (cp, isWaiting) => {
-        if (isWaiting) waiting.set(cp.checkpointId, cp);
-        else waiting.delete(cp.checkpointId);
+        if (isWaiting) {
+          waiting.set(cp.checkpointId, cp);
+          const hooks = notifyCheckpoint(config.settings.notify, { store, runId, checkpoint: cp }, {
+            cwd: typeof meta.source === "string" ? meta.source : undefined,
+          });
+          checkpointHooks.push(hooks);
+        } else {
+          waiting.delete(cp.checkpointId);
+        }
         // The oldest question still open: the one `odw approve <run>` answers.
         const oldest = [...waiting.values()].sort((a, b) => a.checkpointId - b.checkpointId)[0];
         store.updateStatus(runId, { waiting: oldest ?? null });
@@ -244,6 +254,8 @@ export async function executeRun(runDir: string): Promise<string> {
     await notifyRunEnd(ctx?.config.settings.notify ?? null, { store, runId, ...end }, {
       cwd: typeof meta.source === "string" ? meta.source : undefined,
     });
+    // A checkpoint's hooks may still be on their way (a quick answer): let them finish.
+    await Promise.all(checkpointHooks);
   } finally {
     signals.dispose();
   }

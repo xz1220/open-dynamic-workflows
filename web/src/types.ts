@@ -146,13 +146,13 @@ export interface SettingsSnapshot {
   }>;
   /**
    * Run-completion hooks (ODW extension): whether a command is set, the
-   * webhook as scheme + host only (its path/query are secret), and which
-   * terminal states fire them.
+   * webhook as scheme + host only (its path/query are secret), and what fires
+   * them — terminal states, and (opt-in) "waiting": a checkpoint() waits.
    */
   notify: {
     command: boolean;
     webhook: string | null;
-    on: Array<"done" | "failed" | "stopped">;
+    on: Array<"done" | "failed" | "stopped" | "waiting">;
   };
 }
 
