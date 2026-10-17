@@ -469,6 +469,8 @@ const ZH: Record<string, string> = {
   replayed: "重放",
   "replayed from an earlier run": "从之前的运行重放",
   "{n} older runs": "还有 {n} 条更早的运行",
+  "lifted at {t}": "已于 {t} 解除",
+  "lifts in {d} · {t}": "{d} 后解除 · {t}",
   // Activity — what needs a person.
   "Needs you": "待你处理",
   "decisions and runs to pick up": "等你决定的检查点,和可以接着跑的运行",

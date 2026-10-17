@@ -251,7 +251,10 @@ test("a run view shows pending checkpoints, usage and failure reasons when the s
       pendingCheckpoints: [{ checkpointId: 0, title: "Approve the plan?", payload: { angles: 4 }, since: NOW - 30 }],
     },
   );
+  store.runEvents = [{ type: "agent_failed", ts: NOW - 30, label: "search:1", reason: "rate_limit", retryAfter: 630 }];
   const html = renderJob(view, NOW);
+  assert.match(html, /lifts in 10m00s · /, "the drawer says when the limit lifts");
+  store.runEvents = [];
   assert.match(html, /class="card checkpoint/);
   assert.match(html, /Approve the plan\?/);
   assert.match(html, /data-cp="approve" data-cp-id="0"/);

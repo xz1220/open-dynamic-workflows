@@ -154,6 +154,15 @@ function agentEvents(a: AgentView): WorkflowEvent[] {
   );
 }
 
+/** When a rate limit or spent quota lifts, as the CLI said (`retryAfter` on its agent_failed event). */
+function resetNote(a: AgentView, nowSec: number): string {
+  const failed = agentEvents(a).filter((e) => e.type === "agent_failed").pop();
+  if (!failed || typeof failed.retryAfter !== "number") return "";
+  const at = failed.ts + failed.retryAfter;
+  const text = at <= nowSec ? t("lifted at {t}", { t: fmtClock(at) }) : t("lifts in {d} · {t}", { d: fmtDurSec(at - nowSec), t: fmtClock(at) });
+  return ` <span class="dim">${esc(text)}</span>`;
+}
+
 function drawer(run: RunDetail, ai: number, nowSec: number): string {
   const a = run.agents[ai];
   if (!a) return "";
@@ -198,7 +207,7 @@ function drawer(run: RunDetail, ai: number, nowSec: number): string {
     (a.kind === "command"
       ? `<span class="k">${t("exit code")}</span><span class="v">${a.exitCode ?? "—"}</span>`
       : `<span class="k">${t("attempts")}</span><span class="v">${a.attempts ?? "—"}</span>`) +
-    (a.failureReason ? `<span class="k">${t("reason")}</span><span class="v"><span class="tag ${/rate_limit|quota|stalled|timeout/.test(a.failureReason) ? "warn" : ""}">${esc(reasonLabel(a.failureReason))}</span></span>` : "") +
+    (a.failureReason ? `<span class="k">${t("reason")}</span><span class="v"><span class="tag ${/rate_limit|quota|stalled|timeout/.test(a.failureReason) ? "warn" : ""}">${esc(reasonLabel(a.failureReason))}</span>${resetNote(a, nowSec)}</span>` : "") +
     (a.usage && (a.usage.inputTokens != null || a.usage.outputTokens != null)
       ? `<span class="k">${t("tokens")}</span><span class="v">${fmtTokens(a.usage.inputTokens)} ${t("in")} · ${fmtTokens(a.usage.outputTokens)} ${t("out")}</span>`
       : "") +
