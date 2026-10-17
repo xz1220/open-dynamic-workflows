@@ -8,7 +8,8 @@
  * linked run settles, its result is posted back into the transcript as a user
  * message and Codex continues from it.
  *
- * Routes (mounted by {@link ./server}, which applies the write guard first):
+ * Routes (mounted by {@link ./server}; every write passes the shared writeGuard
+ * before anything else, and session ids are only matched against stored ones):
  *   GET    /api/chat/sessions                 [summary] (state folded from linked runs)
  *   POST   /api/chat/sessions                 { source? } → new session
  *   GET    /api/chat/sessions/:id             the session, linked runs hydrated
