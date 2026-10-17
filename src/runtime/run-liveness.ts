@@ -98,16 +98,35 @@ export class RunObserver {
   }
 
   private workerPid(status: Record<string, unknown>): number | null {
-    let pid = status.pid;
-    if (!validPid(pid)) {
-      try {
-        pid = Number(readFileSync(join(this.store.runDir(this.runId), "worker.pid"), "utf8"));
-      } catch {
-        return null;
-      }
-    }
-    return validPid(pid) ? pid : null;
+    return workerPid(this.store, this.runId, status);
   }
+}
+
+/**
+ * Whether a run may still be executing: it is not in a terminal state and its
+ * worker is alive — or not known yet (a pending run whose worker has recorded
+ * no pid). A run whose worker is provably gone is not active: it is stale.
+ */
+export function isRunActive(store: RunStore, runId: string, isAlive = isProcessAlive): boolean {
+  const status = store.readStatus(runId);
+  const state = String(status.state ?? "");
+  if (TERMINAL_STATES.has(state)) return false;
+  const pid = workerPid(store, runId, status);
+  if (pid === null) return state === "pending" || state === "";
+  return isAlive(pid) !== false;
+}
+
+/** The run's worker pid: status.pid, else the launcher's worker.pid file. */
+function workerPid(store: RunStore, runId: string, status: Record<string, unknown>): number | null {
+  let pid = status.pid;
+  if (!validPid(pid)) {
+    try {
+      pid = Number(readFileSync(join(store.runDir(runId), "worker.pid"), "utf8"));
+    } catch {
+      return null;
+    }
+  }
+  return validPid(pid) ? pid : null;
 }
 
 function validPid(pid: unknown): pid is number {

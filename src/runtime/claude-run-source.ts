@@ -156,6 +156,12 @@ export class ClaudeRunSource implements RunSource {
   control(): void {
     // Never called: controlError is non-null, so the server refuses with 409.
   }
+  agentResults(): null {
+    return null; // Claude Code keeps no per-agent result records ODW can serve
+  }
+  agentResult(): null {
+    return null;
+  }
 
   // --- discovery -------------------------------------------------------------
 
@@ -279,6 +285,7 @@ export class ClaudeRunSource implements RunSource {
         startedAt,
         finishedAt: startedAt != null && durationMs != null ? startedAt + durationMs / 1000 : null,
         durationMs,
+        cached: false,
       };
     });
     const counts = countAgents(agents);
@@ -374,6 +381,7 @@ export class ClaudeRunSource implements RunSource {
           startedAt: null,
           finishedAt: null,
           durationMs: null,
+          cached: false,
         }),
       ),
       ...Array.from({ length: done }, (): AgentView => ({
@@ -387,6 +395,7 @@ export class ClaudeRunSource implements RunSource {
         startedAt: null,
         finishedAt: null,
         durationMs: null,
+        cached: false,
       })),
     ];
     const counts: RunCounts = {

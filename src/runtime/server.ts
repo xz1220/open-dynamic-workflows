@@ -17,6 +17,14 @@
  *                                     ?tail=M   only the last M, after since (400 unless an integer ≥ 0)
  *                                     header x-total-count: the run's event count, i.e. the next ?since=
  *   GET  /api/runs/:id/result       { value } of a finished run; 404 when there is none
+ *   GET  /api/runs/:id/agents       [{ agentId, label, phase, adapter, cached, finishedAt }]: the
+ *                                   agents whose results are saved so far, by agentId (ODW runs;
+ *                                   Claude runs → 404)
+ *   GET  /api/runs/:id/agents/:agentId   one completed agent's saved record (the AgentResultRecord
+ *                                   in ../journal: value, adapter, attempts, timestamps, cached,
+ *                                   sourceRunId), readable while the run is still going; 404 when
+ *                                   it has none (still running, failed, a Claude run); 400 unless
+ *                                   :agentId is a non-negative integer
  *   POST /api/runs/:id/control      { action: pause|resume|stop } (ODW runs; Claude runs → 409)
  *   GET  /api/activity?limit=N      the Activity view (below)
  *   GET  /api/stream                text/event-stream: `runs` frames (the run list, on change);
@@ -37,8 +45,9 @@
  * running right now per adapter across active runs (an agent with no recorded
  * adapter counts as "claude" in a Claude Code run, else "unknown").
  *
- * The polled GETs (/api/runs, /api/runs/:id, …/events, …/result, /api/activity)
- * carry an ETag (with cache-control: no-cache) and answer If-None-Match with 304.
+ * The polled GETs (/api/runs, /api/runs/:id, …/events, …/result, …/agents[/:agentId],
+ * /api/activity) carry an ETag (with cache-control: no-cache) and answer
+ * If-None-Match with 304.
  * Request bodies are capped at 128 KiB (413 past it); a malformed %-escape in a
  * path id is a 400.
  *
@@ -73,6 +82,7 @@ import {
 import type { Config } from "../adapters/types.js";
 import { DASHBOARD_HTML } from "../dashboard.generated.js";
 import type { WorkflowEvent } from "../events.js";
+import type { AgentResultRecord } from "../journal.js";
 import { activityLimit, activityView } from "./activity-view.js";
 import { ChatHost, type ChatTurnRunner } from "./chat-host.js";
 import { ClaudeRunSource } from "./claude-run-source.js";
@@ -286,7 +296,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandleCont
       return;
     }
 
-    const runMatch = path.match(/^\/api\/runs\/([^/]+)(\/events|\/control|\/result)?$/);
+    const runMatch = path.match(/^\/api\/runs\/([^/]+)(\/events|\/control|\/result|\/agents(?:\/[^/]+)?)?$/);
     if (runMatch) {
       const sub = runMatch[2];
       // Writes are gated before any run lookup: an off-loopback bind refuses
@@ -330,6 +340,32 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandleCont
           return;
         }
         sendJsonCached(req, res, { value });
+        return;
+      }
+      // Saved per-agent results: ODW saves each one as it lands; Claude runs have none.
+      if (method === "GET" && sub === "/agents") {
+        const records = src.agentResults(runId);
+        if (!records) {
+          sendJson(res, 404, { error: "agent results are saved for ODW runs only" });
+          return;
+        }
+        sendJsonCached(req, res, records.map(agentListing));
+        return;
+      }
+      if (method === "GET" && sub?.startsWith("/agents/")) {
+        // The id names a file: only a non-negative integer may reach the store.
+        const raw = decodeSegment(sub.slice("/agents/".length));
+        const agentId = raw !== null && /^\d+$/.test(raw) ? Number(raw) : NaN;
+        if (!Number.isSafeInteger(agentId)) {
+          sendJson(res, 400, { error: "agentId must be a non-negative integer" });
+          return;
+        }
+        const rec = src.agentResult(runId, agentId);
+        if (!rec) {
+          sendJson(res, 404, { error: `no saved result for agent ${agentId}` });
+          return;
+        }
+        sendJsonCached(req, res, rec);
         return;
       }
       if (method === "POST" && sub === "/control") {
@@ -404,6 +440,18 @@ async function controlRun(
   // The source applies the action (ODW maps resume→"running" for FileControl).
   src.control(runId, action);
   sendJson(res, 200, { ok: true, runId, action });
+}
+
+/** A saved agent result as listed: which agent and when — the value stays behind its own route. */
+function agentListing(rec: AgentResultRecord): Record<string, unknown> {
+  return {
+    agentId: rec.agentId,
+    label: rec.label,
+    phase: rec.phase ?? null,
+    adapter: rec.adapter ?? null,
+    cached: rec.cached === true,
+    finishedAt: rec.finishedAt ?? null,
+  };
 }
 
 /**

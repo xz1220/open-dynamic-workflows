@@ -9,6 +9,7 @@
 import { join } from "node:path";
 
 import type { WorkflowEvent } from "../events.js";
+import type { AgentResultRecord } from "../journal.js";
 import { SigCache, statSig } from "./fs-util.js";
 import { detailFrom, EventFold, summaryFrom, type RunDetail, type RunFacts, type RunSummary } from "./runs-view.js";
 import type { RunSource } from "./run-source.js";
@@ -106,6 +107,12 @@ export class OdwRunSource implements RunSource {
   result(runId: string): { has: boolean; value: unknown } {
     const has = this.store.hasResult(runId);
     return { has, value: has ? this.store.readResult(runId) : undefined };
+  }
+  agentResults(runId: string): AgentResultRecord[] {
+    return this.store.listAgentResults(runId);
+  }
+  agentResult(runId: string, agentId: number): AgentResultRecord | null {
+    return this.store.readAgentResult(runId, agentId);
   }
   control(runId: string, action: string): void {
     // resume clears the control file by writing a benign "running" request; the

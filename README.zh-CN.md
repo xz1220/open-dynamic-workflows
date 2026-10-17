@@ -230,7 +230,7 @@ ODW 已实现下列原语能力。依赖宿主私有运行机制的脚本,迁移
 | 预算 | 按 `ceil(字符数 / 4)` 估算所有回复的输出 token,包括 schema 重试(不计输入和失败调用)。每次派发和每次 schema 重试前都会检查;预算用尽时运行结束,仍在运行的 agent 会被停止。 |
 | JSON Schema | 只校验[已列出的子集](skills/open-dynamic-workflows/zh-CN/references/primitives.md#schema)。`$ref`、`const`、`oneOf` 等约束不会生效;请明确声明对象/数组类型并使用受支持的约束。 |
 | 脚本可信性 | 只运行可信脚本:运行工作流会把正文当作普通 JavaScript 执行。加载时元数据按纯字面量解析,不会被求值;编译检查和兼容性警告都不提供沙箱隔离。 |
-| 恢复 | `resume` 继续已暂停且仍存活的 worker。`rerun` 从头执行,崩溃后不会重放并复用已完成调用。 |
+| 恢复 | 每个完成的 `agent()` 结果都会在完成时保存。`odw resume` 让已暂停且仍存活的 worker 原地继续;对已结束的运行(done、failed、stopped,或崩溃后的 stale)则启动一个新运行:prompt 和选项都没变的调用直接重放,其余照常执行。`rerun` 从头执行。见[恢复运行](#恢复运行odw-扩展)。 |
 
 原语名称一致不代表运行机制完全等价。`validate(source)` 是 ODW 扩展,迁移到未提供它的
 宿主时需要去掉。可恢复失败产生的 `null` 需要显式处理：接受部分结果、重试,或在要求完整
@@ -256,6 +256,7 @@ odw run wf.js [--args JSON|@file]            # 终端里前台展示;运行本�
 RUN=$(odw run wf.js)     # 非 TTY:打印 run id 并立即返回
 odw attach $RUN          # 实时视图(被管道时为纯行输出);--timeout <s> 超时退出码 124
 odw status $RUN          # 状态 + agent 计数
+odw agents $RUN          # 每个 agent 及其已保存的结果,运行中也可看
 odw logs $RUN --follow   # 流式输出原始进度事件
 odw result $RUN          # 最终值
 odw pause|resume|stop $RUN
@@ -282,6 +283,38 @@ odw serve --port 8080 --host 0.0.0.0    # 自定义端口 / 绑定地址
 
 ![odw serve —— 一次实时 deep-research 运行:五个阶段泳道(Plan → Search → Extract → Vote → Report)绘制成图,运行中的 agent 沿边传递信号,带运行计数与阶段步进条](assets/odw-dashboard.gif)
 
+### 恢复运行(ODW 扩展)
+
+每个 `agent()` 的结果在该 agent 完成的那一刻就保存到 run 目录(`agents/<agentId>.json`),
+早于它的 `agent_finished` 事件——所以某条泳道卡住、运行被停止或 worker 死掉,都不会让你
+失去已完成的工作。运行的其余部分仍在进行时就能读取:
+
+```bash
+odw agents $RUN              # 每个 agent:id、状态、label、phase、适配器、耗时、↺ 重放、结果预览
+odw agents $RUN --json       # 同样的行,供脚本使用
+odw result $RUN --agent 3    # 某个 agent 已保存的值(JSON;按 id,或 --agent <label>)
+odw resume $RUN              # 启动一个新运行,重放每个未改动的 agent() 调用(见下)
+```
+
+`odw resume <run_id>` 依运行状态而定:
+
+- **已暂停**(worker 仍存活):原地继续——`odw pause|resume|stop` 这个控制动词不变;
+- **已结束**——done、failed、stopped,或 stale(worker 已死):用同样的脚本、args 和
+  适配器启动一个**新运行**(在它的 `meta.json` 里记为 `resumedFrom`)。prompt 和选项都
+  没变的 `agent()` 调用立即返回已保存的值——不调用适配器、不占并发槽位、不计入派发数、
+  不耗预算——并在事件、`odw agents` 和看板里标记为重放(↺)。改动过的和新增的调用照常
+  执行,所以修好出错的那一步再 resume,而不是为整个运行再付一次钱。resume 可以串联:
+  对 resume 出来的运行再 resume,两次的结果都会重放;
+- **仍在运行**:拒绝,因为那会重做仍在进行的工作——先停止它,或加 `--force` 在旁边启动
+  重放运行。
+
+调用按以下内容的 sha256 匹配:prompt、`schema`、`adapter`(调用里写的值——resume 时的
+`--adapter` 只切换默认值,所以没指定适配器的调用仍会重放)、`model`、`agentType`、
+`isolation` 和 `label`;`phase` 不计入。相同的调用按调用顺序重放,所以请保持 prompt
+确定。resume 接受与 rerun 相同的参数:`--wait`/`--fg`/`-d`/`--timeout`、`--adapter`、
+`--config`、`--runs-root`。看板通过 `GET /api/runs/:id/agents` 和
+`GET /api/runs/:id/agents/:agentId` 提供同样的记录。
+
 ## 看板:观测、检查、对话
 
 看板的视觉像一张印刷品——纸、墨和一种信号色——也可以随时切换到夜间主题。它提供:
@@ -292,7 +325,8 @@ odw serve --port 8080 --host 0.0.0.0    # 自定义端口 / 绑定地址
   (`#/jobs/live|done|failed` 可直接链接到某个筛选)。
 - **单次运行** —— 图(扇出成扇、汇聚成漏斗;边会被"绘制"出来,对应 agent 运行时有信号流动;
   可缩放、适应、拖拽)、显示时间花在哪里的**时间线**、可筛选并可跟随的**日志**、可折叠 JSON 树
-  形式的**结果**,以及展示每个已完成 agent 自身输出的 **agent 抽屉**。
+  形式的**结果**,以及展示每个已完成 agent 自身输出的 **agent 抽屉**——输出在完成时
+  就已保存,运行中即可查看;重放的 agent 标记为 ↺。
 - **Workspace** —— 所有已保存的工作流:阶段的静态结构及每个阶段调用的原语、源码和最近的运行。
 - **Chat Host** —— 正常的 Codex 对话;提到 ODW 或 workflow 时,该回合会关联到一个真实的后台
   运行,工具卡片实时更新。
@@ -492,6 +526,11 @@ node web/dev.mjs --api http://127.0.0.1:4317     # → http://127.0.0.1:5173
 **0.5.0 开发版：**排队任务在真正启动前重新检查暂停、停止和预算;等待命令能识别后台进程
 已退出。升级时二进制与 skill 固定同一版本,替换失败恢复旧文件;源码构建显示具体修订号。
 
+**下一版(未发版):**每个已完成 agent 的结果都会**在完成时保存**——`odw agents`、
+`odw result --agent` 和看板在运行中即可读取——`odw resume` 则把已结束的运行变成一个新运行,
+**重放**每个未改动的 `agent()` 调用,卡住或失败的运行不必再从头开始
+([#24](https://github.com/xz1220/open-dynamic-workflows/issues/24))。
+
 **最新(`main` 上,未发版):**在交互式终端里,`odw run` 现在会直接挂上**前台实时视图**
 ——Ctrl-C 只脱离不杀任务,`odw attach` 随时挂回,管道/CI 下仍保持先拿 run id 再轮询的
 老契约。**首跑引导**落地:装了多个 CLI 时安装器会当场让你选默认,`odw init` 随时重开
@@ -516,7 +555,7 @@ node web/dev.mjs --api http://127.0.0.1:4317     # → http://127.0.0.1:5173
 ### 路线图(v1.5+)
 
 `model` / `agentType` 富路由 · adapter 上报的真实 token
-用量(当前预算按估算计量)· resume / journaling · 用于可重放确定性的
+用量(当前预算按估算计量)· 用于可重放确定性的
 `Date.now`/`Math.random` 沙箱。
 完整方案见 [`docs/dynamic-workflows-tech-plan.md`](docs/dynamic-workflows-tech-plan.md);
 ODW 所对齐的 Claude Code 方言背景见

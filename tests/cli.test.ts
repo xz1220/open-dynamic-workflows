@@ -36,9 +36,22 @@ test("known-but-unwired command exits 1 (not yet implemented)", async () => {
 });
 
 test("COMMANDS covers the documented verbs", () => {
-  for (const command of ["run", "status", "logs", "result", "list", "pause", "resume", "stop"]) {
+  for (const command of ["run", "status", "logs", "agents", "result", "list", "rerun", "pause", "resume", "stop"]) {
     assert.ok((COMMANDS as readonly string[]).includes(command));
   }
+});
+
+test("help documents odw agents, result --agent, and both meanings of resume", () => {
+  const help = helpText();
+  assert.match(help, /odw agents <run_id> \[--json\]/);
+  assert.match(help, /odw result <run_id> \[--agent <id\|label>\]/);
+  assert.match(help, /odw resume <run_id> \[--force\]/);
+  const start = help.indexOf("\nResume (odw resume <run_id>)");
+  assert.notEqual(start, -1, "a Resume section");
+  const section = help.slice(start);
+  assert.match(section, /paused, worker alive\s+continues it in place/);
+  assert.match(section, /done \/ failed \/ stopped,\s+starts a NEW run/);
+  assert.match(section, /still running\s+refused .*--force/);
 });
 
 test("CLI entrypoint detection follows npm bin symlinks", () => {
@@ -85,10 +98,10 @@ async function cliErr(argv: string[]): Promise<{ code: number; err: string }> {
   }
 }
 
-test("run and rerun validate --timeout and the run mode in the same order, before any lookup", async () => {
-  // Same flags → same first complaint for both commands, and rerun complains
-  // before it looks for the run (no 'no such run' for a usage mistake).
-  for (const cmd of ["run", "rerun"]) {
+test("run, rerun and resume validate --timeout and the run mode in the same order, before any lookup", async () => {
+  // Same flags → same first complaint for every command, and rerun/resume
+  // complain before they look for the run (no 'no such run' for a usage mistake).
+  for (const cmd of ["run", "rerun", "resume"]) {
     const target = cmd === "run" ? "wf.js" : "no-such-run";
     let r = await cliErr([cmd, target, "--fg", "--detach", "--timeout", "abc"]);
     assert.deepEqual(r, { code: 2, err: `odw ${cmd}: --timeout must be a non-negative number of seconds\n` });

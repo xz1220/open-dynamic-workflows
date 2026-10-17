@@ -9,9 +9,12 @@
  * workflow's runs can be listed without scanning every run:
  *
  *   <runsRoot>/<workflow-slug>/<runId>/
- *     meta.json      immutable run description (script, args, source, config, workflowName)
+ *     meta.json      immutable run description (script, args, source, config, workflowName,
+ *                    resumedFrom: the run an `odw resume` replays)
  *     status.json    mutable state (running/paused/done/failed/stopped, counters)
  *     events.jsonl   append-only progress stream
+ *     agents/<agentId>.json  each completed agent()'s result, saved as it lands
+ *                    (an AgentResultRecord; `agent_finished` carries `saved: true`)
  *     result.json    final return value (on success)
  *     error.json     message + stack (on failure)
  *     control.json   pause/resume/stop request written by the CLI
@@ -39,6 +42,7 @@ import {
 import { basename, join } from "node:path";
 
 import type { EventSink, WorkflowEvent } from "../events.js";
+import type { AgentResultRecord } from "../journal.js";
 import { readdirSafe, readJsonFile, writeJsonAtomic } from "./fs-util.js";
 
 /** Terminal states: a run in one of these will not change again. */
@@ -51,6 +55,8 @@ const RESULT = "result.json";
 const ERROR = "error.json";
 const CONTROL = "control.json";
 const LOG = "worker.log";
+const AGENTS = "agents";
+const AGENT_FILE = /^(\d+)\.json$/;
 
 export interface CreateRunInput {
   /**
@@ -71,6 +77,12 @@ export interface CreateRunInput {
   adapter?: string | null;
   /** Where the run was initiated from (e.g. "chat" for Chat Host runs). */
   origin?: string | null;
+  /**
+   * `odw resume`: the run whose saved agent results this run replays, and its
+   * directory (where the worker reads them — the runs may live in different
+   * runs roots).
+   */
+  resumedFrom?: { runId: string; dir: string } | null;
 }
 
 /** A run plus the workflow it belongs to, returned by listing. */
@@ -126,6 +138,8 @@ export class RunStore {
       workflowName: input.workflowName ?? null,
       adapter: input.adapter ?? null,
       origin: input.origin ?? null,
+      resumedFrom: input.resumedFrom?.runId ?? null,
+      resumedFromDir: input.resumedFrom?.dir ?? null,
       // First-class fact (not inferred from path topology): the script lives in
       // this run dir because it was launched from inline source. Drives the
       // worker's run-by-name divergence exemption and `odw rerun` re-archival.
@@ -290,6 +304,37 @@ export class RunStore {
     return readJsonFile(join(this.runDir(runId), ERROR));
   }
 
+  // --- per-agent results -----------------------------------------------------
+
+  /**
+   * Save one completed agent's record as `agents/<agentId>.json`, atomically:
+   * a reader polling a live run never sees half a result.
+   */
+  writeAgentResult(runId: string, rec: AgentResultRecord): void {
+    if (!isAgentId(rec.agentId)) throw new Error(`invalid agentId ${String(rec.agentId)}`);
+    const dir = join(this.runDir(runId), AGENTS);
+    mkdirSync(dir, { recursive: true });
+    writeJson(join(dir, `${rec.agentId}.json`), { ...rec, value: rec.value ?? null });
+  }
+  /** One saved agent result, or null when that agent has none (not finished, failed, unknown). */
+  readAgentResult(runId: string, agentId: number): AgentResultRecord | null {
+    if (!isAgentId(agentId)) return null;
+    const rec = readJsonFile<AgentResultRecord>(join(this.runDir(runId), AGENTS, `${agentId}.json`));
+    return isAgentRecord(rec) ? rec : null;
+  }
+  /** Every saved agent result of a run, by agentId (call order). */
+  listAgentResults(runId: string): AgentResultRecord[] {
+    const dir = join(this.runDir(runId), AGENTS);
+    const out: AgentResultRecord[] = [];
+    for (const entry of readdirSafe(dir)) {
+      // Temp files of an in-flight atomic write never match the pattern.
+      if (!entry.isFile() || !AGENT_FILE.test(entry.name)) continue;
+      const rec = readJsonFile<AgentResultRecord>(join(dir, entry.name));
+      if (isAgentRecord(rec)) out.push(rec);
+    }
+    return out.sort((a, b) => a.agentId - b.agentId);
+  }
+
   // --- control ---------------------------------------------------------------
 
   writeControl(runId: string, action: string): void {
@@ -418,6 +463,16 @@ function stemOf(script: string): string {
 function slugify(name: string): string {
   const s = name.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^[-.]+|[-.]+$/g, "");
   return s.length ? s : "_workflow";
+}
+
+/** An agent id is a non-negative integer: it names a file, so nothing else may pass. */
+function isAgentId(id: unknown): id is number {
+  return typeof id === "number" && Number.isSafeInteger(id) && id >= 0;
+}
+
+/** A parsed agents/<id>.json that looks like a record (a hand-edited file may not). */
+function isAgentRecord(rec: unknown): rec is AgentResultRecord {
+  return rec !== null && typeof rec === "object" && !Array.isArray(rec) && isAgentId((rec as AgentResultRecord).agentId);
 }
 
 /** The recorded workflowName from a run directory's meta.json, or null. */

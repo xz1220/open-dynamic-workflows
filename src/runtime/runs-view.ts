@@ -43,6 +43,8 @@ export interface AgentView {
   finishedAt: number | null;
   /** Wall-clock from agent_started to agent_finished/failed, in ms. */
   durationMs: number | null;
+  /** Replayed from an earlier run's saved result by `odw resume` (no agent ran). */
+  cached: boolean;
 }
 
 export type RunDisplayState =
@@ -180,6 +182,7 @@ export function applyAgentEvent(
       startedAt: typeof ev.ts === "number" ? ev.ts : null,
       finishedAt: null,
       durationMs: null,
+      cached: ev.cached === true,
     };
     agents.push(opened);
     return { opened };
@@ -212,6 +215,7 @@ export function applyAgentEvent(
       target.state = "done";
       target.adapter = ev.adapter != null ? String(ev.adapter) : null;
       target.attempts = typeof ev.attempts === "number" ? ev.attempts : null;
+      target.cached = ev.cached === true;
     }
     return { settled: target };
   }

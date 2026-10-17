@@ -11,7 +11,9 @@
  *   odw list
  *   odw status <run_id>
  *   odw logs <run_id> [--follow]
- *   odw result <run_id>
+ *   odw agents <run_id> [--json]
+ *   odw result <run_id> [--agent <id|label>]
+ *   odw rerun|resume <run_id>
  *   odw pause|resume|stop <run_id>
  */
 
@@ -25,11 +27,13 @@ import { listAdapters, loadConfig, locateConfig, resolveAdapter, resolveRunsRoot
 import type { Config } from "./adapters/types.js";
 import { runDoctor, type CheckStatus } from "./doctor.js";
 import { AdapterNotFound } from "./errors.js";
+import type { WorkflowEvent } from "./events.js";
 import { VERSION } from "./index.js";
 import { cmdInit } from "./init.js";
+import { agentRowJson, agentRows, formatAgentTable, matchAgents } from "./runtime/agents-view.js";
 import { startRun, startRunFromSource, waitFor } from "./runtime/launcher.js";
 import { attachRun, formatEvent, resolveRunMode, type RunMode } from "./runtime/live-view.js";
-import { RunObserver } from "./runtime/run-liveness.js";
+import { isRunActive, RunObserver } from "./runtime/run-liveness.js";
 import { RunStore, TERMINAL_STATES } from "./runtime/run-store.js";
 import { startServer } from "./runtime/server.js";
 import { executeRun } from "./runtime/worker.js";
@@ -46,6 +50,7 @@ export const COMMANDS = [
   "list",
   "status",
   "logs",
+  "agents",
   "result",
   "serve",
   "workflows",
@@ -73,9 +78,11 @@ export function helpText(): string {
     "  odw run <script.js|name> [--args JSON|@file]       start a workflow (see modes below)",
     "  odw attach <run_id>                                attach the live foreground view to a run",
     "  odw rerun <run_id>                                 start a fresh run with the same inputs",
+    "  odw resume <run_id> [--force]                      unpause a paused run, or replay an ended one (below)",
     "  odw status <run_id>                                show a run's current state",
     "  odw logs <run_id|--workflow name> [--follow]       print a run's progress events",
-    "  odw result <run_id>                                print a finished run's result",
+    "  odw agents <run_id> [--json]                       list a run's agents with their saved results",
+    "  odw result <run_id> [--agent <id|label>]           print a finished run's result, or one agent's (mid-run too)",
     "  odw list [--workflow <name>]                       list known runs",
     "  odw serve [--port N] [--host H] [--open]           open the live dashboard in a browser",
     "  odw workflows list [--project|--global|--all]      list workflows runnable by name",
@@ -101,10 +108,18 @@ export function helpText(): string {
     "  --host <addr>       dashboard bind address (default 127.0.0.1)",
     "  --open              open the dashboard in the default browser",
     "",
-    "Run modes (odw run / rerun):",
+    "Run modes (odw run / rerun / resume):",
     "  interactive terminal        attaches in the foreground (Ctrl-C detaches; the run keeps going)",
     "  piped / captured / CI       detaches and prints the run id — `RUN=$(odw run wf.js)` stays correct",
     "  ODW_DETACH=1                forces detach; explicit --fg/--wait/--detach always win",
+    "",
+    "Resume (odw resume <run_id>) acts on the run's state:",
+    "  paused, worker alive        continues it in place (as odw pause|resume|stop always did)",
+    "  done / failed / stopped,    starts a NEW run with the same script, args and adapter: every agent()",
+    "  or stale (worker gone)      call unchanged since (same prompt and options) replays its saved result",
+    "                              instead of running again; edited and new calls run. Takes the run",
+    "                              modes and --adapter/--config/--runs-root, like rerun",
+    "  still running               refused (it would redo work in flight); --force starts the new run anyway",
   ].join("\n");
 }
 
@@ -140,8 +155,12 @@ export async function main(argv: string[]): Promise<number> {
         return await cmdAttach(rest);
       case "rerun":
         return await cmdRerun(rest);
+      case "resume":
+        return await cmdResume(rest);
       case "status":
         return cmdStatus(rest);
+      case "agents":
+        return cmdAgents(rest);
       case "result":
         return cmdResult(rest);
       case "logs":
@@ -153,7 +172,6 @@ export async function main(argv: string[]): Promise<number> {
       case "workflows":
         return cmdWorkflows(rest);
       case "pause":
-      case "resume":
       case "stop":
         return cmdControl(command, rest);
       default:
@@ -333,13 +351,14 @@ function parseTimeout(cmd: string, raw: string | undefined): number | undefined 
 }
 
 /**
- * How `run` and `rerun` present the run they start: the --fg/--wait/--detach
- * mode (or the TTY/CI default) and the --timeout that bounds the viewer. One
- * resolver, so both commands validate in the same order: the --timeout value,
- * then conflicting mode flags, then a --timeout a detached start cannot honor.
+ * How `run`, `rerun` and `resume` present the run they start: the
+ * --fg/--wait/--detach mode (or the TTY/CI default) and the --timeout that
+ * bounds the viewer. One resolver, so the commands validate in the same order:
+ * the --timeout value, then conflicting mode flags, then a --timeout a
+ * detached start cannot honor.
  */
 function resolveStartMode(
-  cmd: "run" | "rerun",
+  cmd: "run" | "rerun" | "resume",
   flags: { fg?: boolean; detach?: boolean; wait?: boolean; timeout?: string },
 ): { mode: RunMode; timeoutMs: number | undefined } {
   const timeoutMs = parseTimeout(cmd, flags.timeout);
@@ -388,8 +407,9 @@ export function warnIfNoDefaultAdapter(
 }
 
 /**
- * What run/rerun do once the detached worker is spawned, per the resolved mode.
- * The run itself is identical in all three: only the viewer differs.
+ * What run/rerun/resume do once the detached worker is spawned, per the
+ * resolved mode. The run itself is identical in all three: only the viewer
+ * differs.
  */
 async function afterStart(
   store: RunStore,
@@ -454,23 +474,114 @@ function cmdStatus(rest: string[]): number {
   if (!store) return runId ? 1 : 2;
   const status = store.readStatus(runId);
   const meta = store.readMeta(runId);
+  const events = store.readEvents(runId);
   const name = (status.name as string) || baseName(meta.script as string | undefined);
   process.stdout.write(`${runId}  [${status.state ?? "?"}]  ${name}\n`);
   if (status.description) process.stdout.write(`  ${status.description as string}\n`);
-  process.stdout.write(`  dispatched: ${dispatchedCount(store, runId, status)} agent(s)\n`);
+  process.stdout.write(`  dispatched: ${dispatchedCount(events, status)} agent(s)\n`);
+  if (typeof meta.resumedFrom === "string") {
+    const replayed = events.filter((e) => e.type === "agent_finished" && e.cached === true).length;
+    process.stdout.write(`  resumed from: ${meta.resumedFrom} (${replayed} agent result(s) replayed)\n`);
+  }
   return 0;
 }
 
-function dispatchedCount(store: RunStore, runId: string, status: Record<string, unknown>): number {
+/** Real dispatches: replayed agents (odw resume) never took one. */
+function dispatchedCount(events: WorkflowEvent[], status: Record<string, unknown>): number {
   const recorded = typeof status.dispatched === "number" ? status.dispatched : 0;
-  const observed = store.readEvents(runId).filter((e) => e.type === "agent_started").length;
+  const observed = events.filter((e) => e.type === "agent_started" && e.cached !== true).length;
   return Math.max(recorded, observed);
 }
 
+/**
+ * `odw result <run_id>` prints a finished run's result; with `--agent
+ * <id|label>`, one agent's saved value — there as soon as that agent finished,
+ * while the run is still going (or after it stalled, stopped or died).
+ */
 function cmdResult(rest: string[]): number {
-  const { store, runId } = storeAndRun(rest);
-  if (!store) return runId ? 1 : 2;
+  const { values, positionals } = parseArgs({
+    args: rest,
+    allowPositionals: true,
+    options: { config: { type: "string" }, "runs-root": { type: "string" }, agent: { type: "string" } },
+  });
+  const runId = positionals[0];
+  if (!runId) {
+    process.stderr.write("missing <run_id>\n");
+    return 2;
+  }
+  const store = storeFrom(values);
+  if (!store.exists(runId)) {
+    process.stderr.write(`no such run: ${runId}\n`);
+    return 1;
+  }
+  if (values.agent !== undefined) return reportAgent(store, runId, values.agent);
   return reportTerminal(store, runId, store.readStatus(runId));
+}
+
+/** One agent's saved value as JSON on stdout; an unknown, ambiguous or unfinished agent is an error. */
+function reportAgent(store: RunStore, runId: string, ref: string): number {
+  const matches = matchAgents(agentRows(store, runId), ref);
+  if (matches.length === 0) {
+    process.stderr.write(`run ${runId} has no agent '${ref}' (see odw agents ${runId})\n`);
+    return 1;
+  }
+  if (matches.length > 1) {
+    const ids = matches.map((r) => `${r.agentId ?? "?"} (${r.state})`).join(", ");
+    process.stderr.write(
+      `label '${ref}' matches ${matches.length} agents of run ${runId}: ${ids} — pick one: odw result ${runId} --agent <id>\n`,
+    );
+    return 1;
+  }
+  const row = matches[0]!;
+  if (!row.record) {
+    const why =
+      row.state === "failed"
+        ? `failed: ${row.error ?? "unknown error"}`
+        : row.state === "done"
+          ? "finished, but no result was saved for it (a run from before per-agent results, or the save failed — see odw logs)"
+          : `is ${row.state}: no result yet`;
+    process.stderr.write(`agent ${row.agentId ?? "?"} (${row.label}) ${why}\n`);
+    return 1;
+  }
+  process.stdout.write(JSON.stringify(row.record.value, null, 2) + "\n");
+  return 0;
+}
+
+/**
+ * `odw agents <run_id> [--json]` — every agent of a run (running and failed
+ * ones too) with a one-line preview of its saved result. Works mid-run.
+ */
+function cmdAgents(rest: string[]): number {
+  const { values, positionals } = parseArgs({
+    args: rest,
+    allowPositionals: true,
+    options: { config: { type: "string" }, "runs-root": { type: "string" }, json: { type: "boolean" } },
+  });
+  const runId = positionals[0];
+  if (!runId) {
+    process.stderr.write("odw agents: missing <run_id>\n");
+    return 2;
+  }
+  const store = storeFrom(values);
+  if (!store.exists(runId)) {
+    process.stderr.write(`no such run: ${runId}\n`);
+    return 1;
+  }
+  const rows = agentRows(store, runId);
+  if (values.json) {
+    process.stdout.write(JSON.stringify(rows.map(agentRowJson), null, 2) + "\n");
+    return 0;
+  }
+  if (rows.length === 0) {
+    process.stderr.write(`run ${runId} has no agents yet\n`);
+    return 0;
+  }
+  const caps = detectCaps(process.stdout, process.env);
+  const width = process.stdout.isTTY && process.stdout.columns ? process.stdout.columns : 120;
+  for (const line of formatAgentTable(rows, { width, caps })) process.stdout.write(line + "\n");
+  const replayed = rows.some((r) => r.cached) ? `${caps.unicode ? "↺" : "(r)"} replayed by odw resume · ` : "";
+  process.stderr.write(`${replayed}full value: odw result ${runId} --agent <id|label>\n`);
+  return 0;
 }
 
 async function cmdLogs(rest: string[]): Promise<number> {
@@ -547,46 +658,122 @@ function cmdList(rest: string[]): number {
   return 0;
 }
 
+/**
+ * The flags `odw rerun` and `odw resume` share: where to find the run, the
+ * run-level adapter of the new run, and how to present it.
+ */
+const RELAUNCH_OPTIONS = {
+  config: { type: "string" },
+  "runs-root": { type: "string" },
+  adapter: { type: "string" },
+  wait: { type: "boolean" },
+  fg: { type: "boolean" },
+  detach: { type: "boolean", short: "d" },
+  timeout: { type: "string" },
+} as const;
+
 /** `odw rerun <run_id>` — start a fresh run with the same inputs as an existing one. */
 async function cmdRerun(rest: string[]): Promise<number> {
-  const { values, positionals } = parseArgs({
-    args: rest,
-    allowPositionals: true,
-    options: {
-      config: { type: "string" },
-      "runs-root": { type: "string" },
-      wait: { type: "boolean" },
-      fg: { type: "boolean" },
-      detach: { type: "boolean", short: "d" },
-      timeout: { type: "string" },
-    },
-  });
+  const { values, positionals } = parseArgs({ args: rest, allowPositionals: true, options: RELAUNCH_OPTIONS });
   const runId = positionals[0];
   if (!runId) {
     process.stderr.write("odw rerun: missing <run_id>\n");
     return 2;
   }
-  const { mode, timeoutMs } = resolveStartMode("rerun", values);
+  const start = resolveStartMode("rerun", values);
   const store = storeFrom(values);
   if (!store.exists(runId)) {
     process.stderr.write(`no such run: ${runId}\n`);
     return 1;
   }
+  return relaunch("rerun", store, runId, values, start);
+}
+
+/**
+ * `odw resume <run_id>` — continue a run, the way its state allows:
+ *
+ *   - live and paused (or asked to pause): release it in place, as `odw
+ *     pause|resume|stop` always did;
+ *   - ended (done, failed, stopped — or stale: its worker is gone): start a
+ *     NEW run with the same script, args and adapter whose unchanged agent()
+ *     calls replay the old run's saved results, so only the rest runs;
+ *   - live and not paused: refuse, since a replaying resume would redo the
+ *     work it still has in flight. `--force` starts one anyway (the original
+ *     keeps running).
+ */
+async function cmdResume(rest: string[]): Promise<number> {
+  const { values, positionals } = parseArgs({
+    args: rest,
+    allowPositionals: true,
+    options: { ...RELAUNCH_OPTIONS, force: { type: "boolean" } },
+  });
+  const runId = positionals[0];
+  if (!runId) {
+    process.stderr.write("odw resume: missing <run_id>\n");
+    return 2;
+  }
+  const start = resolveStartMode("resume", values);
+  const store = storeFrom(values);
+  if (!store.exists(runId)) {
+    process.stderr.write(`no such run: ${runId}\n`);
+    return 1;
+  }
+  if (!values.force && isRunActive(store, runId)) {
+    const state = String(store.readStatus(runId).state ?? "pending");
+    const control = store.readControl(runId);
+    if (state === "paused" || control === "pause") {
+      const given = values as Record<string, unknown>;
+      const newRunFlag = ["adapter", "wait", "fg", "detach", "timeout"].find((f) => given[f] !== undefined);
+      if (newRunFlag) {
+        throw new UsageError(
+          `odw resume: run ${runId} is paused, so resume continues it in place — ` +
+            `--${newRunFlag} applies only when resume starts a new run`,
+        );
+      }
+      store.writeControl(runId, "resume");
+      process.stderr.write(`resume requested for ${runId}\n`);
+      return 0;
+    }
+    process.stderr.write(
+      `odw resume: run ${runId} is still ${control === "stop" ? "stopping" : state} — only a paused run continues in place.\n` +
+        `  To replay its finished agents in a new run, let it end first (odw stop ${runId}), or pass --force.\n`,
+    );
+    return 1;
+  }
+  return relaunch("resume", store, runId, values, start);
+}
+
+/**
+ * Start a new run from an existing run's recorded inputs — script, args,
+ * source, config, budget and run-level adapter (`--adapter` overrides the
+ * last) — and present it per the resolved mode. `rerun` starts over; `resume`
+ * also records the source run, whose saved agent results the new run's worker
+ * replays for every agent() call that is unchanged.
+ */
+async function relaunch(
+  cmd: "rerun" | "resume",
+  store: RunStore,
+  runId: string,
+  flags: { "runs-root"?: string; adapter?: string },
+  start: { mode: RunMode; timeoutMs: number | undefined },
+): Promise<number> {
   const meta = store.readMeta(runId);
   const script = meta.script as string | undefined;
   if (!script) {
-    process.stderr.write(`run ${runId} has no script to rerun\n`);
+    process.stderr.write(`run ${runId} has no script to ${cmd}\n`);
     return 1;
   }
   const opts = {
     args: meta.args,
     configPath: (meta.configPath as string | null) ?? null,
-    runsRoot: values["runs-root"] ?? null,
+    runsRoot: flags["runs-root"] ?? null,
     source: (meta.source as string | undefined) ?? null,
-    adapter: (meta.adapter as string | null) ?? null,
+    adapter: flags.adapter ?? (meta.adapter as string | null) ?? null,
     budgetTotal: (meta.budgetTotal as number | null) ?? null,
+    // The worker reads the saved results from the source run's own directory.
+    resumedFrom: cmd === "resume" ? { runId, dir: store.runDir(runId) } : null,
   };
-  warnIfNoDefaultAdapter(opts.adapter, opts.configPath, opts.source, "rerun");
+  warnIfNoDefaultAdapter(opts.adapter, opts.configPath, opts.source, cmd);
   // An inline-launched run's script lives inside the OLD run dir. Re-archive its
   // source into the NEW run (via startRunFromSource) rather than pointing the new
   // run back at the old directory — so it stays self-contained and is correctly
@@ -601,7 +788,7 @@ async function cmdRerun(rest: string[]): Promise<number> {
     try {
       sourceCode = readFileSync(script, "utf8");
     } catch {
-      process.stderr.write(`run ${runId}: its archived script is gone, cannot rerun\n`);
+      process.stderr.write(`run ${runId}: its archived script is gone, cannot ${cmd}\n`);
       return 1;
     }
     started = startRunFromSource(sourceCode, {
@@ -612,9 +799,10 @@ async function cmdRerun(rest: string[]): Promise<number> {
   } else {
     started = startRun(script, opts);
   }
-  return afterStart(started.store, started.runId, mode, {
-    timeoutMs,
-    hint: `re-running ${runId} as`,
+  const saved = cmd === "resume" ? store.listAgentResults(runId).length : 0;
+  return afterStart(started.store, started.runId, start.mode, {
+    timeoutMs: start.timeoutMs,
+    hint: cmd === "resume" ? `resuming ${runId} (${saved} saved agent result(s) to replay) as` : `re-running ${runId} as`,
   });
 }
 

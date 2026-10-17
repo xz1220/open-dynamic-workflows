@@ -94,6 +94,7 @@ export function formatEvent(ev: WorkflowEvent): string {
   else if (type.startsWith("agent_")) {
     detail = sanitizeText(ev.label ?? "agent", 120);
     if (type === "agent_failed") detail += ` — ${sanitizeText(ev.error, 200)}`;
+    if (type === "agent_finished" && ev.cached === true) detail += ` (replayed from ${sanitizeText(ev.sourceRunId, 80)})`;
   } else detail = sanitizeText(ev.error ?? ev.runId ?? "", 200);
   return `[${stamp}] ${type.padEnd(15)}${phase} ${detail}`.trimEnd();
 }
@@ -213,8 +214,9 @@ class LiveView {
     const meta = metaJoin(g, [
       a.phase !== null && a.phase !== this.currentPhase ? sanitizeText(a.phase, 40) : null,
       a.adapter !== null ? sanitizeText(a.adapter, 40) : null,
-      a.durationMs !== null ? fmtDuration(a.durationMs) : null,
-      a.attempts !== null && a.attempts > 1 ? `${a.attempts} tries` : null,
+      // A replayed result (odw resume) took no time and ran nothing.
+      a.cached ? "replayed" : a.durationMs !== null ? fmtDuration(a.durationMs) : null,
+      !a.cached && a.attempts !== null && a.attempts > 1 ? `${a.attempts} tries` : null,
     ]);
     return `    ${glyph} ${label}  ${p.dim(meta)}`;
   }
