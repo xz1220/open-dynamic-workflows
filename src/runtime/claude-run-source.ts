@@ -168,6 +168,9 @@ export class ClaudeRunSource implements RunSource {
   agentDiff(): null {
     return null; // nor the diffs of its isolated agents
   }
+  agentTranscript(): null {
+    return null; // nor ODW transcripts (this source surfaces no raw agent transcripts)
+  }
 
   // --- discovery -------------------------------------------------------------
 

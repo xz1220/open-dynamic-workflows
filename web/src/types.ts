@@ -298,3 +298,50 @@ export interface AgentResultRecord {
   changes?: AgentChanges | null;
   branch?: string | null;
 }
+
+/** One step of an agent's transcript, normalized (ODW extension; src/runtime/transcript-view.ts). */
+export interface TranscriptEntry {
+  /** Its place in the transcript, from 0: what `?since=` counts. */
+  i: number;
+  kind: "text" | "tool_call" | "tool_result" | "error" | "attempt" | "result" | "raw" | "truncated";
+  /**
+   * text: what the agent wrote; tool_call: what the call is about (the command,
+   * the file, …); tool_result: its exit code and size ("exit 1, 12 lines"); the
+   * other kinds: what happened, in a sentence (raw: the line itself).
+   */
+  text?: string;
+  /** tool_call, tool_result (and a refused permission): the tool. */
+  tool?: string;
+  /** tool_call: the tool's input — as JSON text, cut, when it is longer than 4 KB. */
+  input?: unknown;
+  /** tool_result: what the tool returned. */
+  output?: string;
+  /** tool_result, result: the tool, or the whole session, failed. */
+  isError?: boolean;
+  /** A field was cut at 4 KB. */
+  clipped?: true;
+  /** text: the agent's thinking, not its reply. */
+  thinking?: true;
+  /** attempt: which CLI run of the call begins (2 = the first one more), and why: schema | stall | rate_limit. */
+  n?: number;
+  reason?: string;
+  /** truncated: the bytes kept before maxTranscriptBytes cut the transcript. */
+  bytes?: number;
+  /** result: the turns the session took and what it cost, as its CLI reported. */
+  turns?: number;
+  costUsd?: number;
+}
+
+/** GET /api/runs/:id/agents/:agentId/transcript?since=<i> — 404 when the agent has no transcript. */
+export interface TranscriptPage {
+  /** The entries from `since` on, at most 1000. */
+  entries: TranscriptEntry[];
+  /** The `since` of the next page: one past the last entry here. */
+  next: number;
+  /** More entries are on disk already: ask for `next` at once. */
+  more: boolean;
+  /** The transcript reached maxTranscriptBytes: the agent's later output was not kept. */
+  truncated: boolean;
+  /** The agent was replayed by `odw resume`: no CLI ran, so it has no transcript (no entries). */
+  replayed: boolean;
+}

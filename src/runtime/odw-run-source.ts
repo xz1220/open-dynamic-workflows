@@ -16,9 +16,12 @@ import { SigCache, statSig } from "./fs-util.js";
 import { detailFrom, EventFold, summaryFrom, type RunDetail, type RunFacts, type RunSummary } from "./runs-view.js";
 import type { RunSource } from "./run-source.js";
 import { TERMINAL_STATES, type EventsCursor, type RunStore } from "./run-store.js";
+import { TranscriptLog, transcriptPage, type TranscriptPage } from "./transcript-view.js";
 
 /** Full event streams kept in memory: the runs being viewed / tailed, not every run. */
 const EVENT_LOGS_KEPT = 64;
+/** Agent transcripts kept in memory, normalized: the ones being viewed. */
+const TRANSCRIPTS_KEPT = 16;
 /**
  * A terminal run never changes again (the worker writes its last event before
  * the terminal status), so the run list trusts its cached facts for a while
@@ -56,6 +59,8 @@ export class OdwRunSource implements RunSource {
   private readonly runs = new Map<string, RunEntry>();
   /** Whole event streams for the most recently read runs (LRU). */
   private readonly logs = new SigCache<EventLog>(EVENT_LOGS_KEPT);
+  /** The most recently read agent transcripts, read on as they grow (LRU). */
+  private readonly transcripts = new SigCache<TranscriptLog>(TRANSCRIPTS_KEPT);
   private readonly now: () => number;
 
   constructor(
@@ -119,6 +124,20 @@ export class OdwRunSource implements RunSource {
   agentDiff(runId: string, agentId: number): string | null {
     const path = this.store.agentDiffPath(runId, agentId);
     return existsSync(path) ? path : null;
+  }
+  agentTranscript(runId: string, agentId: number, since: number): TranscriptPage | null {
+    const path = this.store.agentTranscriptPaths(runId, agentId).transcript;
+    // A replayed agent ran no CLI: it has no transcript, and the page says why.
+    const replayed = this.facts(runId).fold.agents.some((a) => a.agentId === agentId && a.cached);
+    // Stat BEFORE reading, as for the facts: a write racing the read is caught next time.
+    const sig = statSig(path);
+    if (sig === "-") return replayed ? transcriptPage([], since, false, true) : null;
+    const log = this.transcripts.get(`${runId}\u0000${agentId}`, sig, (prev) => {
+      const next = prev ?? new TranscriptLog(path);
+      next.update();
+      return next;
+    });
+    return log.page(since, replayed);
   }
   control(runId: string, action: string): void {
     // resume clears the control file by writing a benign "running" request; the

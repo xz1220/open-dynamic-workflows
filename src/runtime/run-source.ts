@@ -23,6 +23,7 @@ import type { CheckpointRequest } from "../control.js";
 import type { WorkflowEvent } from "../events.js";
 import type { AgentResultRecord } from "../journal.js";
 import type { RunDetail, RunSummary } from "./runs-view.js";
+import type { TranscriptPage } from "./transcript-view.js";
 
 /** A run id (or Claude session dir name) is one safe path segment: `[A-Za-z0-9._-]`. */
 export const RUN_ID_RE = /^[A-Za-z0-9._-]+$/;
@@ -65,6 +66,14 @@ export interface RunSource {
    * extension); null when it kept none, or the provider keeps none.
    */
   agentDiff(runId: string, agentId: number): string | null;
+  /**
+   * One agent's transcript, normalized (ODW extension): its entries from index
+   * `since`, a page at a time. Null when it has none — it has not started, its
+   * run predates transcripts or keeps none (`maxTranscriptBytes: 0`), or the
+   * provider keeps none — except for an agent replayed by `odw resume`, whose
+   * (empty) page says `replayed`.
+   */
+  agentTranscript(runId: string, agentId: number, since: number): TranscriptPage | null;
   /**
    * Null when this source can pause/resume/stop a run; otherwise a human reason
    * the server returns (409) for any control attempt. Claude runs are read-only.
