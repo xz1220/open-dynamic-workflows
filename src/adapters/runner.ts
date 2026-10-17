@@ -12,7 +12,7 @@
  *
  * Agent CLIs start processes of their own (shells, test runners, language
  * servers). On POSIX each agent therefore leads its own process group, and a
- * kill (timeout, output overrun) takes down the whole group; on Windows
+ * kill (timeout, output overrun, abort) takes down the whole group; on Windows
  * `taskkill /T` walks the process tree instead. The result settles when the
  * agent exits, after a short grace period for its output to drain — a
  * descendant still holding the pipes cannot stall the run.
@@ -44,6 +44,12 @@ export interface RunCommandOptions {
    * process if the output becomes unusable (reported like an output overrun).
    */
   onStdout?: (chunk: string, terminate: (reason: string) => void) => void;
+  /**
+   * Abort the run: the process (and everything it started) is killed and the
+   * result settles at once. The caller owns the signal, so it knows why; the
+   * result just carries an "aborted" note.
+   */
+  signal?: AbortSignal;
 }
 
 /** The injectable contract for executing a command. */
@@ -64,6 +70,19 @@ const STREAM_GRACE_MS = 2000;
 
 const IS_WINDOWS = process.platform === "win32";
 
+/** Agent processes spawned here that have not settled yet. */
+const live = new Set<ChildProcess>();
+
+/**
+ * Kill every agent process still running, with everything it started. The
+ * worker's backstop when a run ends while agents are in flight: they must not
+ * outlive it and keep editing the repository unsupervised. Synchronous, so it
+ * is safe in a process 'exit' handler.
+ */
+export function killAllAgentProcesses(): void {
+  for (const child of live) killProcessTree(child);
+}
+
 export const runCommand: CommandRunner = (command, options = {}) => {
   const started = Date.now();
   const elapsed = (): number => (Date.now() - started) / 1000;
@@ -74,6 +93,10 @@ export const runCommand: CommandRunner = (command, options = {}) => {
   return new Promise<CliResult>((resolve) => {
     if (!cmd) {
       resolve({ returncode: 127, stdout: "", stderr: "empty command", timedOut: false, duration: 0 });
+      return;
+    }
+    if (options.signal?.aborted) {
+      resolve({ returncode: -1, stdout: "", stderr: "[aborted before start]", timedOut: false, duration: 0 });
       return;
     }
 
@@ -124,10 +147,13 @@ export const runCommand: CommandRunner = (command, options = {}) => {
       detached: !IS_WINDOWS,
     });
 
+    if (child.pid !== undefined) live.add(child);
+
     let stdout = "";
     const stderr = new Tail(TAIL_CHARS);
     const streamedTail = options.onStdout ? new Tail(TAIL_CHARS) : null;
     let timedOut = false;
+    let aborted = false;
     let outputBytes = 0;
     /** Why the output was refused (the stdout cap, or the stream consumer). */
     let overrun: string | null = null;
@@ -142,6 +168,8 @@ export const runCommand: CommandRunner = (command, options = {}) => {
       clearTimeout(timer);
       clearTimeout(drainTimer);
       clearTimeout(killTimer);
+      options.signal?.removeEventListener("abort", onAbort);
+      live.delete(child);
       resolve(result);
     };
 
@@ -151,10 +179,14 @@ export const runCommand: CommandRunner = (command, options = {}) => {
       // OOM SIGKILL, …) so a crash is never mistaken for a clean exit (0).
       let returncode: number;
       if (overrun) returncode = 1;
-      else if (timedOut) returncode = -1;
+      else if (timedOut || aborted) returncode = -1;
       else if (code !== null) returncode = code;
       else returncode = signal ? 128 : 1;
-      const note = signal && !timedOut ? `\n[process terminated by signal ${signal}]` : "";
+      const note = aborted
+        ? "\n[aborted; process terminated]"
+        : signal && !timedOut
+          ? `\n[process terminated by signal ${signal}]`
+          : "";
       const outputNote = overrun ? `\n[${overrun}; terminated]` : "";
       finish({
         returncode,
@@ -185,6 +217,12 @@ export const runCommand: CommandRunner = (command, options = {}) => {
         terminate();
       }, options.timeout * 1000);
     }
+
+    function onAbort(): void {
+      aborted = true;
+      terminate();
+    }
+    options.signal?.addEventListener("abort", onAbort, { once: true });
 
     const refuseOutput = (reason: string): void => {
       if (overrun) return;

@@ -60,7 +60,7 @@ export interface BuildContextOptions {
 /** Wire a full run context from a config and the run's surroundings. */
 export function buildContext(config: Config, options: BuildContextOptions = {}): RunContext {
   const sink = options.sink ?? new NullSink();
-  const control = options.control ?? new NullControl();
+  const control: Control = options.control ?? new NullControl();
   const bridge = new Bridge(config, { source: options.source });
   const budgetTotal = options.budgetTotal ?? null;
   // The shared tally `budget.spent()` reads. Estimated (chars/4 of agent
@@ -69,7 +69,9 @@ export function buildContext(config: Config, options: BuildContextOptions = {}):
   const scheduler = new Scheduler({
     concurrency: resolveConcurrency(config.settings.concurrency),
     maxAgents: config.settings.maxAgents,
-    checkpoint: () => control.checkpoint(),
+    checkpoint: (signal) => control.checkpoint(signal),
+    // A stop must reach agents that are already running, not just the next dispatch.
+    watchStop: control.watchStop ? (onStop) => control.watchStop!(onStop) : undefined,
     budgetGuard: () => {
       if (budgetTotal !== null && spentTokens(usage) >= budgetTotal) {
         throw new BudgetExhausted(

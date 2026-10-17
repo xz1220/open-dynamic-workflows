@@ -92,7 +92,7 @@ export function createPrimitives(
   const depth = internal.depth ?? 0;
   const phasePrefix = internal.phasePrefix ?? "";
 
-  const agent = async (prompt: string, opts: AgentOptions = {}): Promise<unknown> => {
+  const dispatch = async (prompt: string, opts: AgentOptions): Promise<unknown> => {
     const activePhase = opts.phase !== undefined ? opts.phase : ctx.currentPhase;
     // Stable per-dispatch identity. Events for THIS dispatch all carry it, so
     // observers pair started/finished exactly even when several concurrent
@@ -114,47 +114,67 @@ export function createPrimitives(
       agentType: opts.agentType,
       isolation: opts.isolation,
     };
-    let outcome;
+    const failed = (err: unknown): void => {
+      ctx.emit(event(AGENT_FAILED, { agentId, label: display, phase: activePhase, error: String(err) }));
+      if (typeof err === "object" && err !== null) surfaced.add(err);
+    };
     let started = false;
     try {
-      outcome = await ctx.scheduler.runAgent(async () => {
+      // Everything an agent records — its terminal event, its usage — happens
+      // while it holds its slot: once runAgent settles, the agent is fully
+      // accounted for (the run's drain relies on it), and the next queued
+      // dispatch sees the updated budget.
+      return await ctx.scheduler.runAgent(async (signal) => {
         // Record the adapter only once the scheduler has handed out a real
         // dispatch slot, so queued work is not presented as running.
         started = true;
         ctx.emit(
           event(AGENT_STARTED, { agentId, label: display, phase: activePhase, adapter: adapter.name }),
         );
-        return ctx.bridge.run(request);
+        let outcome;
+        try {
+          outcome = await ctx.bridge.run(request, { signal });
+        } catch (err) {
+          // A started agent always gets a terminal event, even when the error
+          // is fatal (stop, budget, a config error raised inside the slot) —
+          // else observers show it running forever.
+          failed(err);
+          throw err;
+        }
+        // No option is dropped silently: surface each routing note as a LOG event
+        // (visible in `odw logs` and the dashboard).
+        for (const note of outcome.notes ?? []) {
+          ctx.emit(event(LOG, { message: note, label: display, phase: activePhase }));
+        }
+        ctx.emit(
+          event(AGENT_FINISHED, {
+            agentId,
+            label: display,
+            phase: activePhase,
+            adapter: outcome.adapter,
+            attempts: outcome.attempts,
+          }),
+        );
+        // Feed the shared budget tally (estimated tokens ≈ chars/4 of the reply).
+        ctx.usage.outputChars += outcome.text.length;
+        return outcome.value;
       });
     } catch (err) {
-      // A started agent always gets a terminal event, even when the error is
-      // fatal (stop, budget, a config error raised inside the slot) — else
-      // observers show it running forever. A fatal error before the start
-      // (stop or budget at dispatch) concerns the run, not this agent.
-      if (started || !isFatalError(err)) {
-        ctx.emit(event(AGENT_FAILED, { agentId, label: display, phase: activePhase, error: String(err) }));
-        if (typeof err === "object" && err !== null) surfaced.add(err);
-      }
+      // A fatal error before the start (stop or budget at dispatch) concerns
+      // the run, not this agent; anything else is still this agent's failure.
+      if (!started && !isFatalError(err)) failed(err);
       throw err;
     }
-    // No option is dropped silently: surface each routing note as a LOG event
-    // (visible in `odw logs` and the dashboard).
-    for (const note of outcome.notes ?? []) {
-      ctx.emit(event(LOG, { message: note, label: display, phase: activePhase }));
-    }
-    ctx.emit(
-      event(AGENT_FINISHED, {
-        agentId,
-        label: display,
-        phase: activePhase,
-        adapter: outcome.adapter,
-        attempts: outcome.attempts,
-      }),
-    );
-    // Feed the shared budget tally (estimated tokens ≈ chars/4 of the reply).
-    ctx.usage.outputChars += outcome.text.length;
-    return outcome.value;
   };
+
+  const agent = (prompt: string, opts: AgentOptions = {}): Promise<unknown> =>
+    dispatch(prompt, opts).catch((err: unknown) => {
+      // A fatal error ends the run wherever it arose — in the slot or before
+      // it (an unknown adapter): the scheduler records it as the outcome and
+      // aborts the agents still running.
+      if (isFatalError(err)) ctx.scheduler.abort(err);
+      throw err;
+    });
 
   /**
    * gather turns a recoverable failure into a `null` slot; never let one vanish

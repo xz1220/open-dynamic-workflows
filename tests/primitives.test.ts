@@ -174,15 +174,18 @@ test("work started early and awaited later never surfaces as an unhandled reject
   const onUnhandled = (reason: unknown) => unhandled.push(reason);
   process.on("unhandledRejection", onUnhandled);
   try {
-    const { ctx } = fakeContext(async (req) => outcome(req.prompt));
+    const { ctx } = fakeContext(async (req) => {
+      if (req.prompt === "a") throw new Error("cli failed");
+      return outcome(req.prompt);
+    });
     const p = createPrimitives(ctx);
-    const early = p.agent("a", { adapter: "nope" });
+    const early = p.agent("a");
     const earlyBatch = p.parallel("not thunks" as unknown as Array<() => string>);
     const earlyPipeline = p.pipeline([1], 2 as unknown as (v: unknown) => unknown);
     await p.agent("b");
     // Cross a macrotask boundary: Node reports unhandled rejections there.
     await new Promise<void>((resolve) => setTimeout(resolve, 10));
-    await assert.rejects(early, AdapterNotFound);
+    await assert.rejects(early, /cli failed/);
     await assert.rejects(earlyBatch, WorkflowScriptError);
     await assert.rejects(earlyPipeline, WorkflowScriptError);
   } finally {

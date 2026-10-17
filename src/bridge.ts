@@ -27,7 +27,7 @@ import {
   type CliResult,
   type Config,
 } from "./adapters/types.js";
-import { AdapterExecutionError, SchemaValidationError } from "./errors.js";
+import { AdapterExecutionError, RunStopped, SchemaValidationError } from "./errors.js";
 import { LiteralRouter, type InvocationPlan, type OptionRouter } from "./router.js";
 import { describeSchema, extractJson, validate, type JsonSchema } from "./schema.js";
 import { withWorkspace } from "./workspace.js";
@@ -82,6 +82,16 @@ export interface BridgeOptions {
   router?: OptionRouter;
 }
 
+/** What the scheduler hands one call; all optional, so a bare `run(request)` works. */
+export interface RunOptions {
+  /**
+   * The run's abort signal. Aborting kills the CLI process (and everything it
+   * started) and ends the call with the signal's reason — the run's fatal
+   * error — so it propagates instead of becoming a null slot.
+   */
+  signal?: AbortSignal;
+}
+
 export class Bridge {
   private readonly source: string;
   private readonly runner: CommandRunner;
@@ -108,7 +118,8 @@ export class Bridge {
     return (this.autoPicked ??= resolveAdapter(this.config, null));
   }
 
-  async run(request: AgentRequest): Promise<AgentOutcome> {
+  async run(request: AgentRequest, options: RunOptions = {}): Promise<AgentOutcome> {
+    const { signal } = options;
     const adapter = this.adapterFor(request.adapter);
     const settings = this.config.settings;
     const timeout = adapter.timeout ?? settings.timeout ?? undefined;
@@ -120,8 +131,12 @@ export class Bridge {
 
     let problems: string[] = [];
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      throwIfAborted(signal);
       const prompt = problems.length ? `${basePrompt}\n\n${retryFeedback(problems)}` : basePrompt;
-      const { cli, decoder } = await this.invoke(adapter, plan, prompt, timeout);
+      const { cli, decoder } = await this.invoke(adapter, plan, prompt, timeout, signal);
+      // Killed by a stop (or by a fatal error elsewhere in the run): report
+      // the run's reason, not a misleading CLI failure.
+      throwIfAborted(signal);
       if (!cliOk(cli)) throw new AdapterExecutionError(cliFailureMessage(adapter, cli));
 
       // A runner that streams stdout fed the decoder and kept only a tail; an
@@ -167,6 +182,7 @@ export class Bridge {
     plan: InvocationPlan,
     prompt: string,
     timeout: number | undefined,
+    signal: AbortSignal | undefined,
   ): Promise<{ cli: CliResult; decoder: AdapterOutputDecoder | null }> {
     // JSONL transcripts are decoded while they stream, so only the final text
     // is retained (and a verbose session is never cut off at the stdout cap);
@@ -205,13 +221,22 @@ export class Bridge {
           : undefined;
         // No ws.diff() here: agent() returns the reply, never a diff, so
         // computing one per worktree attempt was pure overhead.
-        const cli = await this.runner(command, { stdin, cwd: ws.path, env, timeout, onStdout });
+        const cli = await this.runner(command, { stdin, cwd: ws.path, env, timeout, onStdout, signal });
         return { cli, decoder };
       } finally {
         if (cleanup) await cleanup();
       }
     });
   }
+}
+
+/**
+ * End an aborted call with the run's reason: a fatal error, so it propagates
+ * through parallel/pipeline instead of becoming a null slot.
+ */
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (!signal?.aborted) return;
+  throw signal.reason instanceof Error ? signal.reason : new RunStopped("run was stopped");
 }
 
 function usesPromptFile(adapter: Adapter): boolean {

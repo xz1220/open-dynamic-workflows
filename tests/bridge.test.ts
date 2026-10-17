@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { defaultConfig } from "../src/adapters/config.js";
 import { Bridge } from "../src/bridge.js";
 import type { CliResult } from "../src/adapters/types.js";
-import { AdapterExecutionError } from "../src/errors.js";
+import { AdapterExecutionError, RunStopped } from "../src/errors.js";
 
 function ok(stdout: string): CliResult {
   return { returncode: 0, stdout, stderr: "", timedOut: false, duration: 0.01 };
@@ -238,6 +238,31 @@ test("the zero-config adapter auto-pick scans PATH once per run and then sticks"
     process.env.PATH = oldPath;
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("an aborted call ends with the run's reason, not a CLI failure", async () => {
+  const controller = new AbortController();
+  const reason = new RunStopped("run was stopped");
+  let received: AbortSignal | undefined;
+  const bridge = new Bridge(inplaceConfig(), {
+    runner: async (_command, options) => {
+      received = options?.signal;
+      controller.abort(reason); // the stop lands while the CLI runs
+      return { returncode: -1, stdout: "", stderr: "[aborted; process terminated]", timedOut: false, duration: 0 };
+    },
+  });
+  await assert.rejects(() => bridge.run({ prompt: "x" }, { signal: controller.signal }), (err) => err === reason);
+  assert.equal(received, controller.signal, "the runner gets the run's signal");
+
+  let calls = 0;
+  const idle = new Bridge(inplaceConfig(), {
+    runner: async () => {
+      calls++;
+      return ok("never");
+    },
+  });
+  await assert.rejects(() => idle.run({ prompt: "x" }, { signal: controller.signal }), (err) => err === reason);
+  assert.equal(calls, 0, "an already-aborted run starts no CLI");
 });
 
 test("a failure message keeps both ends of a long diagnostic", async () => {

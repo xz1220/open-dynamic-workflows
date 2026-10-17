@@ -15,13 +15,21 @@ import { basename, dirname } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { loadConfig } from "../adapters/config.js";
+import { killAllAgentProcesses } from "../adapters/runner.js";
 import { buildContext, spentTokens, type RunContext } from "../context.js";
-import { RunStopped, WorkflowScriptError } from "../errors.js";
+import { RunStopped, WorkflowScriptError, isFatalError } from "../errors.js";
 import { LOG, RUN_FAILED, RUN_FINISHED, RUN_STARTED, RUN_STOPPED, event } from "../events.js";
 import { loadWorkflowScript } from "../loader.js";
 import { createPrimitives } from "../primitives.js";
+import type { Scheduler } from "../scheduler.js";
 import { FileControl } from "./file-control.js";
 import { JsonlSink, RunStore } from "./run-store.js";
+
+/**
+ * Once a run has failed or stopped, how long its remaining agents get to die
+ * and remove their worktrees before the worker kills what is left and moves on.
+ */
+const ABORT_DRAIN_MS = 10_000;
 
 /**
  * Run the workflow described by `runDir`; return its terminal state.
@@ -30,6 +38,11 @@ import { JsonlSink, RunStore } from "./run-store.js";
  * promise nobody handles, a throw inside a timer callback) fails the run
  * instead of killing the process and leaving the run "running" forever. The
  * listeners are process-wide, which is fine for the one run a worker executes.
+ *
+ * Agents still running when the run ends are aborted (or, after a normal
+ * return, awaited) before the outcome is recorded, and a process 'exit'
+ * listener kills any that remain while the run executes — an agent must never
+ * outlive its worker and keep editing the repository unsupervised.
  */
 export async function executeRun(runDir: string): Promise<string> {
   const store = new RunStore(dirname(runDir));
@@ -48,6 +61,7 @@ export async function executeRun(runDir: string): Promise<string> {
   const spent = () => (ctx ? spentTokens(ctx.usage) : 0);
 
   const crashes = watchProcessCrashes();
+  process.on("exit", killAllAgentProcesses);
   try {
     const baseConfig = loadConfig((meta.configPath as string | null) ?? null);
     // Run-level adapter override (meta.adapter): becomes this run's default for
@@ -100,12 +114,16 @@ export async function executeRun(runDir: string): Promise<string> {
     });
     const primitives = createPrimitives(ctx);
     const result = await crashes.race(loaded.run(primitives, args));
+    // Agents the script started but never awaited are still this run's work:
+    // let them finish (and clean up their worktrees) before recording it.
+    await crashes.race(ctx.scheduler.drain());
 
     store.writeResult(runId, result);
     sink.emit(event(RUN_FINISHED, { runId }));
     store.updateStatus(runId, { state: "done", dispatched: dispatched(), spentTokens: spent() });
     return "done";
   } catch (err) {
+    if (ctx) await stopAgents(ctx.scheduler, err);
     if (err instanceof RunStopped) {
       sink.emit(event(RUN_STOPPED, { runId }));
       store.updateStatus(runId, { state: "stopped", dispatched: dispatched(), spentTokens: spent() });
@@ -117,8 +135,20 @@ export async function executeRun(runDir: string): Promise<string> {
     store.updateStatus(runId, { state: "failed", dispatched: dispatched(), spentTokens: spent() });
     return "failed";
   } finally {
+    process.off("exit", killAllAgentProcesses);
     crashes.dispose();
   }
+}
+
+/**
+ * The run is over, but agents may still be in flight (siblings of the failure,
+ * agents the script never awaited). Abort them, give their worktree cleanup a
+ * bounded moment, then kill whatever is left.
+ */
+async function stopAgents(scheduler: Scheduler, err: unknown): Promise<void> {
+  const message = err instanceof Error ? err.message : String(err);
+  scheduler.abort(isFatalError(err) ? err : new RunStopped(`the workflow failed: ${message}`));
+  if (!(await scheduler.drain(ABORT_DRAIN_MS))) killAllAgentProcesses();
 }
 
 /**

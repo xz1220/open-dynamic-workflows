@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { copyFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execPath } from "node:process";
@@ -139,6 +139,42 @@ test(
     assert.ok(await eventually(() => !isRunning(straggler)), `straggler ${straggler} was left running`);
   },
 );
+
+test(
+  "an abort kills the agent's process group at once and settles the result",
+  { skip: process.platform === "win32" },
+  async () => {
+    const controller = new AbortController();
+    let grandchild = 0;
+    const started = Date.now();
+    const pending = runCommand(["sh", "-c", "sleep 30 & echo $!; wait"], {
+      signal: controller.signal,
+      onStdout: (chunk) => {
+        grandchild = Number(chunk.trim());
+        controller.abort(new Error("run stopped"));
+      },
+    });
+    const r = await pending;
+    assert.ok(Date.now() - started < 5000, "the abort was not honoured promptly");
+    assert.equal(r.returncode, -1);
+    assert.equal(r.timedOut, false);
+    assert.match(r.stderr, /\[aborted; process terminated\]/);
+    assert.ok(grandchild > 0);
+    assert.ok(await eventually(() => !isRunning(grandchild)), `grandchild ${grandchild} survived the abort`);
+  },
+);
+
+test("an already-aborted signal never spawns the process", async () => {
+  const controller = new AbortController();
+  controller.abort(new Error("stopped"));
+  const marker = join(mkdtempSync(join(tmpdir(), "odw-abort-")), "spawned");
+  const r = await runCommand([execPath, "-e", `require('fs').writeFileSync(${JSON.stringify(marker)}, 'x')`], {
+    signal: controller.signal,
+  });
+  assert.equal(r.returncode, -1);
+  assert.match(r.stderr, /aborted before start/);
+  assert.equal(existsSync(marker), false);
+});
 
 test("runaway output is capped before it can exhaust the worker heap", async () => {
   const r = await runCommand(
