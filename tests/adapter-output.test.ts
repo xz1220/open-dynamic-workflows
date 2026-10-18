@@ -421,6 +421,8 @@ test("the built-in claude adapter streams stream-json and decodes its result eve
     errorPath: ["is_error"],
     structuredPath: ["structured_output"],
     deniedPath: ["permission_denials"],
+    mcpEvent: "system",
+    mcpPath: ["mcp_servers"],
   });
   assert.deepEqual(decodeOutput(claude, claudeStream({ result: "The README says hello." })), {
     text: "The README says hello.",

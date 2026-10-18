@@ -104,7 +104,7 @@ export interface AgentView {
   exitCode?: number | null;
   /** A command step that is an agent's `expect.command` check: that agent's id (ODW extension). */
   forAgentId?: number;
-  /** Why an agent failed: rate_limit, quota, auth, timeout, stalled, not_found, permission, exit, empty_reply, unmet_expectation. */
+  /** Why an agent failed: rate_limit, quota, auth, timeout, stalled, not_found, permission, exit, empty_reply, unmet_expectation, mcp_unavailable. */
   failureReason?: string | null;
   /** With `unmet_expectation`: the `expect` checks its work did not meet, one line each (ODW extension). */
   misses?: string[];
@@ -126,6 +126,8 @@ export interface AgentView {
   fellBackFrom?: string[] | null;
   /** ODW extension (quotaWait): a running agent waiting for `adapter`'s spent quota to reset, holding no slot; when it resets. */
   quotaWait?: { adapter: string; resumeAt?: number };
+  /** ODW extension: the MCP servers its CLI started it without (any status but "connected": failed, needs-auth, pending, disabled), for the drawer. */
+  mcp?: Array<{ name: string; status: string }> | null;
   label: string;
   phase: string | null;
   state: AgentState;
@@ -479,6 +481,8 @@ export interface AgentResultRecord {
   fellBackFrom?: string[];
   /** The tool calls its CLI refused while it did the work (ODW extension). */
   denied?: string[];
+  /** The MCP servers its CLI started it without while it did the work (ODW extension). */
+  mcp?: Array<{ name: string; status: string }>;
   /** Secrets in it were replaced by `«redacted:<kind>»` before it was saved (ODW extension): show a "redacted" tag. */
   redacted?: boolean;
 }

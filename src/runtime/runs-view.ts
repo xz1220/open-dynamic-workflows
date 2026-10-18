@@ -59,7 +59,7 @@ export interface AgentView {
   /**
    * Why a failed agent's CLI failed (agent_failed's `reason`): rate_limit,
    * quota, auth, timeout, stalled, not_found, permission or exit — or, ODW
-   * extensions, empty_reply and unmet_expectation. Absent while running, for
+   * extensions, empty_reply, unmet_expectation and mcp_unavailable. Absent while running, for
    * other failures (schema, stop) and for older event files.
    */
   failureReason?: string;
@@ -121,6 +121,12 @@ export interface AgentView {
    * its CLI said the quota resets (epoch seconds). Absent otherwise.
    */
   quotaWait?: { adapter: string; resumeAt?: number };
+  /**
+   * Agents only (ODW extension): the MCP servers its CLI started it without —
+   * any status but "connected" (Claude Code's init event) — on its terminal
+   * event. Absent otherwise.
+   */
+  mcp?: Array<{ name: string; status: string }>;
 }
 
 export type RunDisplayState =
@@ -384,6 +390,9 @@ export function applyAgentEvent(
     // The adapters it fell back from, finished or failed (ODW extension).
     const from = adapterNames(ev.fellBackFrom);
     if (from) target.fellBackFrom = from;
+    // The MCP servers its CLI started it without, finished or failed (ODW extension).
+    const mcp = mcpServers(ev.mcp);
+    if (mcp) target.mcp = mcp;
     if (ev.type === "agent_failed") {
       target.state = "failed";
       target.error = ev.error != null ? String(ev.error) : null;
@@ -464,6 +473,15 @@ function adapterNames(raw: unknown): string[] | undefined {
   return [...(raw as string[])];
 }
 
+/** An event's `mcp`, when it lists servers `{ name, status }` (ODW extension); undefined otherwise. */
+function mcpServers(raw: unknown): Array<{ name: string; status: string }> | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const servers = raw
+    .filter((s): s is { name: string; status: string } => typeof s?.name === "string" && typeof s?.status === "string")
+    .map(({ name, status }) => ({ name, status }));
+  return servers.length > 0 ? servers : undefined;
+}
+
 /** An event's `changes`, when it is a diffstat; null otherwise. */
 function agentChanges(raw: unknown): AgentChanges | null {
   if (raw === null || typeof raw !== "object") return null;
@@ -495,6 +513,7 @@ function copyAgents(agents: AgentView[], stale: boolean): AgentView[] {
     if (a.usage) copy.usage = { ...a.usage };
     if (a.fellBackFrom) copy.fellBackFrom = [...a.fellBackFrom];
     if (a.quotaWait) copy.quotaWait = { ...a.quotaWait };
+    if (a.mcp) copy.mcp = a.mcp.map((server) => ({ ...server }));
     if (a.misses) copy.misses = [...a.misses];
     if (a.denied) copy.denied = [...a.denied];
     return copy;

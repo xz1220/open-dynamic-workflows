@@ -12,6 +12,7 @@
  *     "commit": "<message>",             then commit everything (git add -A)
  *     "reply": "<text>",                 what to print (default "done"; "" prints nothing)
  *     "denied": [ … ],                   with --claude: the result event's permission_denials
+ *     "mcp": [ { name, status } ],       with --claude: the init event's mcp_servers
  *     "exit": 3 }                        exit with this code
  *
  * With `--claude` after the log path, it prints Claude Code's stream-json
@@ -65,7 +66,8 @@ process.stdin.on("end", () => {
   const reply = step.reply ?? "done";
   if (claude) {
     const result = { type: "result", subtype: "success", is_error: false, result: reply, permission_denials: step.denied ?? [] };
-    process.stdout.write(`${JSON.stringify({ type: "system", subtype: "init" })}\n${JSON.stringify(result)}\n`);
+    const init = { type: "system", subtype: "init", ...(step.mcp ? { mcp_servers: step.mcp } : {}) };
+    process.stdout.write(`${JSON.stringify(init)}\n${JSON.stringify(result)}\n`);
   } else {
     process.stdout.write(reply);
   }

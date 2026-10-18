@@ -75,7 +75,9 @@ declare global {
      * refused count as a miss too. Work that misses runs again, on the same adapter, with what
      * it missed appended to its prompt (`expectRetries`), then the call throws (recoverable)
      * with `misses` and reason `"unmet_expectation"` — `"permission"` when refused calls are
-     * among them. A call that falls back to another adapter keeps its checks.
+     * among them. A call that falls back to another adapter keeps its checks. Without it, MCP
+     * servers its CLI started it without are recorded and logged; `"mcpFailures": "fail"`
+     * makes one that failed or needs authentication throw with reason `"mcp_unavailable"`.
      */
     expect?: ExpectOptions;
     /** ODW extension: how many times work that missed `expect` runs again (default: the `expectRetries` setting, 1). */
@@ -98,6 +100,13 @@ declare global {
     command?: string | string[];
     /** A regular expression (its source, no flags) the reply must match. */
     match?: string;
+    /**
+     * MCP servers, by name, the agent's CLI must have started it with: each must be listed in
+     * the CLI's report (Claude Code's init event) as "connected" — or "pending", still
+     * connecting — else it is a miss ("failed", "needs-auth", "disabled", not configured).
+     * Needs an adapter that reports its MCP servers (`output.mcpPath`; the built-in claude does).
+     */
+    mcp?: string[];
     /** Seconds `command` may run before it is killed, which is a miss (default 600). */
     timeout?: number;
   }

@@ -426,7 +426,7 @@ odw 以退出码 1 结束并给出命令输出的末尾（被信号中断时同�
 ## expect（ODW 扩展）
 
 ```js
-agent(prompt, { expect: { changes?, files?, command?, match?, timeout? }, expectRetries?, allowEmpty? })
+agent(prompt, { expect: { changes?, files?, command?, match?, mcp?, timeout? }, expectRetries?, allowEmpty? })
 ```
 
 agent 回复之后必须成立的条件——由 odw 检查，而不是问模型有没有做完。优先用它，而不是
@@ -440,6 +440,11 @@ agent 回复之后必须成立的条件——由 odw 检查，而不是问模型
   运行——它的 `command_*` 事件带 `forAgentId`——在读取改动之后执行，所以它写出的文件绝不会
   被算成 agent 的工作；停止会杀掉它。
 - **match** —— 回复必须匹配的正则表达式（只给源码，不带 flag）。
+- **mcp** —— MCP 服务器名列表：每个都必须出现在 agent 的 CLI 报告的、启动 agent 时的服务器里
+  （Claude Code stream-json 的 init 事件，经适配器的 `output.mcpPath` 读取），状态为
+  `connected`——或 `pending`，Claude Code 的文档说它本身不算失败（仍在后台连接，或带缓存的
+  工具列表、首次使用时才连接）。`failed`、`needs-auth`、`disabled` 或没有配置都算缺失。没有
+  声明 `mcpPath` 的适配器无法检查：调用在 CLI 启动前就失败。
 
 检查在回复到达、并通过 `schema` 校验之后进行。agent 改了什么从 git 读取。原地运行时，是与
 agent 第一次 CLI 运行前的源码树相比的差异：你自己未提交的改动和运行目录不算，agent 的提交算
@@ -474,7 +479,10 @@ CLI 拒绝的工具调用——Claude Code 的 `permission_denials`，经适配�
 `allowEmpty: true`。声称成功、但 CLI 拒绝了工具调用的回复照常成立——这些调用作为 `denied`
 记在 agent 的 `agent_finished` 事件和保存的结果上，运行也会记一行日志——除非设了
 `"permissionDenials": "fail"`（运行级，或写在适配器条目里），此时以 `"permission"` 抛错并
-列出它们。两种失败都不重试。`expect` 属于调用的 resume key；Claude Code 会忽略它，在那里检查
+列出它们。CLI 启动 agent 时没连上的 MCP 服务器——状态不是 `connected` 的——作为
+`mcp: [{ name, status }]` 记在 agent 的终止事件和保存的结果上，运行按服务器和状态各记一次日志；
+`"mcpFailures": "fail"` 让服务器为 `failed` 或 `needs-auth` 的调用以 `"mcp_unavailable"` 抛错
+（`expect.mcp` 列出的服务器则算作缺失）。两种失败都不重试。`expect` 属于调用的 resume key；Claude Code 会忽略它，在那里检查
 不会执行。
 
 ## schema

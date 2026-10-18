@@ -20,7 +20,9 @@
  * (`unmet_expectation`, see ../expect). A run whose CLI refused the agent a
  * tool call while it reported success (Claude Code's `permission_denials`)
  * is a `permission` failure when `permissionDenials` is "fail", or when the
- * call's `expect` still misses because of it; by default it stands.
+ * call's `expect` still misses because of it; by default it stands. So does
+ * one whose CLI started it without an MCP server that failed or needs
+ * authentication — `mcp_unavailable` when `mcpFailures` is "fail".
  *
  * The HTTP status alone does not decide a class: providers send a spent quota
  * as 429, 401 or 403, and a per-minute limit under the word "quota". So the
@@ -50,7 +52,9 @@ export type FailureReason =
   /** A clean exit with an empty or whitespace-only reply (ODW extension; `allowEmpty: true` accepts one). */
   | "empty_reply"
   /** The agent's work missed its `expect` checks, retries included (ODW extension). */
-  | "unmet_expectation";
+  | "unmet_expectation"
+  /** An MCP server the CLI started the agent with failed or needs authentication, under `mcpFailures: "fail"` (ODW extension). */
+  | "mcp_unavailable";
 
 /** The classes an adapter's `failures` config may add patterns to. */
 export const CONFIGURABLE_REASONS = ["rate_limit", "quota", "auth"] as const;

@@ -1,8 +1,9 @@
 /**
  * Decode an adapter's stdout into the agent's reply — and, for the JSON
  * formats, what the run spent, whether the CLI itself reported a failure, the
- * value it validated against a schema it was handed natively, and which tool
- * calls it refused the agent (Claude Code's `permission_denials`).
+ * value it validated against a schema it was handed natively, which tool
+ * calls it refused the agent (Claude Code's `permission_denials`), and the MCP
+ * servers it started the agent with (Claude Code's init `mcp_servers`).
  *
  * A structured decode that cannot find its text never fails the agent: the
  * raw stdout becomes the reply and {@link DecodedOutput.fallback} says why, for
@@ -26,6 +27,26 @@ export const MAX_JSONL_LINE_CHARS = 32 * 1024 * 1024;
  */
 export const MAX_FALLBACK_CHARS = 1024 * 1024;
 
+/**
+ * An MCP server a CLI started the agent with, and how it stood (Claude Code's
+ * init event: "connected", "failed", "needs-auth", "pending" or "disabled").
+ */
+export interface McpServer {
+  name: string;
+  status: string;
+}
+
+/** The status of an MCP server whose tools the agent has. */
+export const MCP_CONNECTED = "connected";
+
+/**
+ * The statuses of an MCP server that could not start, whose tools the agent
+ * went without: what Claude Code's docs say to check for. "pending" is not one
+ * — a server still connecting in the background, or one with a cached tool
+ * list it connects on first use — nor "disabled", which the user chose.
+ */
+export const MCP_UNAVAILABLE: readonly string[] = ["failed", "needs-auth"];
+
 /** What one CLI run's stdout decodes to. */
 export interface DecodedOutput {
   /** The reply: the declared text, or — when the decode found none — the raw stdout. */
@@ -41,6 +62,11 @@ export interface DecodedOutput {
    * records them, or fails the run (`permissionDenials`, `expect`).
    */
   denied?: string[];
+  /**
+   * Every MCP server the CLI said it started the agent with (`mcpPath`),
+   * connected or not; absent when it said nothing about them.
+   */
+  mcp?: McpServer[];
   /** Set when stdout did not match the declared format and `text` is the raw stdout: why, for the run's log. */
   fallback?: string;
   /**
@@ -111,6 +137,8 @@ export class AdapterOutputDecoder {
   private structured: unknown;
   /** What the latest matching event listed at `deniedPath`, when it listed any. */
   private denied: string[] | undefined;
+  /** The latest list of MCP servers (`mcpPath`), from any event that had one. */
+  private mcp: McpServer[] | undefined;
   private usage: Usage | undefined;
   /** The first line that was not JSON, for the fallback note. */
   private badLine: string | undefined;
@@ -153,7 +181,10 @@ export class AdapterOutputDecoder {
 
   /** The decoded run. Never throws: a stream that does not match its format falls back to the raw stdout. */
   finish(): DecodedOutput {
-    this.result ??= this.decode();
+    if (!this.result) {
+      const decoded = this.decode();
+      this.result = this.mcp ? { ...decoded, mcp: this.mcp } : decoded;
+    }
     return this.result;
   }
 
@@ -189,6 +220,7 @@ export class AdapterOutputDecoder {
     const parsed = parseDocument(raw);
     if (!parsed.ok) return this.fallback(raw, raw ? `stdout is not one JSON document: ${parsed.reason}` : "it printed nothing on stdout");
     const doc = parsed.value;
+    this.mcp = output.mcpPath ? mcpServers(doc, output.mcpPath) : undefined;
     const usage =
       output.usagePath || output.costPath
         ? normalizeUsage(output.usagePath && walk(doc, output.usagePath), output.costPath && walk(doc, output.costPath))
@@ -246,6 +278,11 @@ export class AdapterOutputDecoder {
     if (event.type === (output.usageEvent ?? output.eventType) && (output.usagePath || output.costPath)) {
       const usage = normalizeUsage(output.usagePath && walk(event, output.usagePath), output.costPath && walk(event, output.costPath));
       this.usage = addUsage(this.usage, usage);
+    }
+    // The MCP servers the CLI started with (Claude Code's `system` init event): the latest list decides.
+    if (output.mcpPath && (output.mcpEvent === undefined || event.type === output.mcpEvent)) {
+      const servers = mcpServers(event, output.mcpPath);
+      if (servers) this.mcp = servers;
     }
     if (event.type !== output.eventType) return;
     this.matching++;
@@ -346,6 +383,28 @@ function deniedCalls(holder: unknown, path: readonly string[]): string[] | undef
     if (!tool) return clipLine(JSON.stringify(entry));
     return clipLine(about ? `${tool} (${about.trim()})` : tool);
   });
+}
+
+/**
+ * The MCP servers listed at `path` — `{ name, status }` each, as Claude Code's
+ * init event lists them — or undefined when there is no list there. An entry
+ * without a name is left out; one without a status reads "unknown".
+ */
+function mcpServers(holder: unknown, path: readonly string[]): McpServer[] | undefined {
+  const list = walk(holder, path);
+  if (!Array.isArray(list)) return undefined;
+  const servers: McpServer[] = [];
+  for (const entry of list) {
+    if (!isRecord(entry) || typeof entry.name !== "string" || entry.name.trim() === "") continue;
+    const status = typeof entry.status === "string" && entry.status.trim() !== "" ? entry.status : "unknown";
+    servers.push({ name: clipLine(entry.name), status: clipLine(status) });
+  }
+  return servers;
+}
+
+/** The servers of `servers` that were not connected: what an agent's record keeps. */
+export function notConnected(servers: readonly McpServer[] | undefined): McpServer[] {
+  return (servers ?? []).filter((server) => server.status !== MCP_CONNECTED);
 }
 
 /** One line of at most {@link DENIAL_CHARS} characters. */

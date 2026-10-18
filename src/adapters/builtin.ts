@@ -50,7 +50,11 @@ const KILO_OPENCODE_OUTPUT: AdapterOutput = {
 // SDK's result message, which is this event: `structured_output?: unknown`);
 // a run that produced none has it absent or null, and its `result` text is
 // read instead. Its `permission_denials` list the tool calls headless mode
-// refused, under a reply that may claim success.
+// refused, under a reply that may claim success. The stream's first event,
+// `{"type":"system","subtype":"init"}` (the Agent SDK's SDKSystemMessage),
+// lists `mcp_servers: [{ name, status, source? }]`, status one of McpServerStatus's
+// "connected" | "failed" | "needs-auth" | "pending" | "disabled" — an agent whose
+// server failed runs on without its tools, and may still say it is done.
 const CLAUDE_OUTPUT: AdapterOutput = {
   format: "jsonl",
   eventType: "result",
@@ -61,6 +65,8 @@ const CLAUDE_OUTPUT: AdapterOutput = {
   errorPath: ["is_error"],
   structuredPath: ["structured_output"],
   deniedPath: ["permission_denials"],
+  mcpEvent: "system",
+  mcpPath: ["mcp_servers"],
 };
 
 // Native structured output (ODW extension; see native-schema.ts). Claude Code
@@ -292,6 +298,7 @@ export const DEFAULT_SETTINGS: Settings = {
   quotaBreaker: 3, // quota failures in a row before the run's later agents skip an adapter
   expectRetries: 1, // reruns of an agent whose work missed its expect checks, told what it missed
   permissionDenials: "warn", // a reply whose CLI refused tool calls stands, recorded and logged ("fail": it fails)
+  mcpFailures: "warn", // an agent whose MCP server did not start keeps its reply, recorded and logged ("fail": it fails)
   redact: { env: true, patterns: true, extra: [] }, // likely secrets out of what odw keeps and serves (false: none)
   quotaWait: false, // an agent whose chain is out of quota fails; { max: <s> } waits for the reset instead
 };

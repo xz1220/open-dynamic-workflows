@@ -83,6 +83,15 @@ export type AdapterOutput =
        * is recorded on the agent, or fails it (`permissionDenials`, `expect`).
        */
       deniedPath?: string[];
+      /** The events that list the CLI's MCP servers (Claude Code's `system` init event); unset: any event with a list at `mcpPath`. */
+      mcpEvent?: string;
+      /**
+       * Path, in such an event, to the MCP servers the CLI started the agent
+       * with, `{ name, status }` each (Claude Code's `mcp_servers`); the latest
+       * list decides. One not "connected" is recorded on the agent and logged,
+       * or fails it (`mcpFailures`, `expect.mcp`).
+       */
+      mcpPath?: string[];
     }
   | {
       /** One JSON document on stdout: the paths are read from it. */
@@ -93,6 +102,7 @@ export type AdapterOutput =
       errorPath?: string[];
       structuredPath?: string[];
       deniedPath?: string[];
+      mcpPath?: string[];
     };
 
 /**
@@ -334,6 +344,14 @@ export interface Settings {
    * `permissionDenials` overrides it.
    */
   permissionDenials: DenialPolicy;
+  /**
+   * An agent whose CLI reports an MCP server that could not start —
+   * "failed" or "needs-auth" (an ODW extension; `mcpPath`): `"warn"` keeps its
+   * reply, recording the servers on the agent and logging them once per run
+   * (as Claude Code itself only warns); `"fail"` fails the agent with reason
+   * "mcp_unavailable". Servers a call's `expect.mcp` lists are a miss instead.
+   */
+  mcpFailures: "warn" | "fail";
   /**
    * What odw keeps and serves of its agents — transcripts, saved results,
    * events, the run's error and result, webhook payloads — has its likely

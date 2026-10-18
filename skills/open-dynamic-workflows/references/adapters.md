@@ -168,6 +168,7 @@ did-you-mean hint) instead of silently ignoring them.
 | `models` | **ODW extension.** Model tiers: `{ "fast": { "claude": "haiku", "codex": "gpt-5-mini" }, … }`. `model: "@fast"` (in `agent()`, `phase()` or `meta.phases`) runs an agent with its adapter's id for the tier — after a fallback, the next adapter's; an adapter the tier names no id for runs its CLI's default (logged), and an unknown tier fails the agent. Tier names are letters, digits, `_`, `-` and `.`; every adapter named must be configured. Default `{}` |
 | `expectRetries` | **ODW extension.** How many times an agent whose work missed its `expect` checks runs again, told what it missed, before it fails with reason `unmet_expectation` (default 1; an `agent()` call's own `expectRetries` wins) — see [expect](primitives.md#expect-odw-extension) |
 | `permissionDenials` | **ODW extension.** What a reply that claims success does when the CLI refused the agent tool calls (`deniedPath`): `"warn"` (default) keeps it — the calls are recorded as `denied` on the agent and logged once — and `"fail"` fails the agent with reason `permission`. An adapter's own `permissionDenials` wins; a call with `expect` counts refused calls as a miss either way |
+| `mcpFailures` | **ODW extension.** What an agent does when its CLI started it without an MCP server (`mcpPath`: Claude Code's init event): `"warn"` (default, as Claude Code itself only warns) keeps the reply — every server that is not `connected` is recorded as `mcp` on the agent and logged once per run per server and status — and `"fail"` fails an agent whose server `failed` or `needs-auth` with reason `mcp_unavailable` (`pending` and `disabled` never fail it). A server the call's `expect.mcp` lists is a miss instead |
 | `redact` | **ODW extension.** `{ "env": true, "patterns": true, "extra": [] }` (default): what odw keeps and serves — transcripts and stderr tails, saved results, events, the run's error, webhook payloads — has likely secrets replaced by `«redacted:<kind>»` before it is written, and says so with `redacted: true`. `env`: the values (8+ characters) of secret-named variables (`*_KEY`, `*TOKEN`, `*SECRET*`, `*PASSWORD*`, `AUTHORIZATION`, cloud credentials) of odw's environment and each adapter's `env`, wherever they appear, and `NAME=value` of such names; `patterns`: well-known token shapes (Anthropic, OpenAI, GitHub, Slack, AWS, Google, JWT, private keys, `Bearer`); `extra`: more regular expressions. The run's result gets `patterns` and `extra` only; prompts, what agents see and kept diffs are never redacted. `false` = off; `odw doctor` reports it |
 
 ### Adapter fields
@@ -202,7 +203,11 @@ did-you-mean hint) instead of silently ignoring them.
 with it, classified like any failure whatever its exit status) and `deniedPath`
 (the tool calls the CLI refused the agent, under a reply that may claim success:
 recorded as `denied` on the agent and logged, or a `permission` failure under
-`permissionDenials: "fail"` — the built-in `claude` reads `permission_denials`);
+`permissionDenials: "fail"` — the built-in `claude` reads `permission_denials`) and
+`mcpPath` (the MCP servers the CLI started the agent with, `{ name, status }` each:
+one not `connected` is recorded as `mcp` on the agent and logged, or fails it under
+`mcpFailures: "fail"`; `jsonl` reads it from `mcpEvent` events, else any event —
+the built-in `claude` reads `mcp_servers` from its `system` init event);
 `jsonl` reads usage
 and cost from `usageEvent` events (default: `eventType`) and adds them up. Usage is
 normalized across the CLIs' field names (Anthropic's, OpenAI's, Codex's):
@@ -293,4 +298,6 @@ limit reached`). A clean exit can still fail (ODW extensions): with reason
 `empty_reply` when the reply is empty (unless the call sets `allowEmpty`),
 `unmet_expectation` when the work missed the call's `expect` checks, and
 `permission` when the CLI refused tool calls (`deniedPath`) and either
-`permissionDenials` is `"fail"` or the call has `expect`.
+`permissionDenials` is `"fail"` or the call has `expect`, and `mcp_unavailable`
+when the CLI started the agent without an MCP server that `failed` or
+`needs-auth` (`mcpPath`) and `mcpFailures` is `"fail"`.

@@ -37,6 +37,14 @@ changed, and run on a schedule — and a dashboard redesigned to watch them.
   (`permission_denials`) are kept as `denied` on the agent and logged once, while its
   reply stands (the default `"permissionDenials": "warn"`); with `expect` they count as
   a miss, and `"permissionDenials": "fail"` fails such agents with reason `permission`.
+- MCP health (**ODW extension**): the MCP servers Claude Code's stream-json init event
+  says it started an agent without — `failed`, `needs-auth`, `pending`, `disabled` —
+  are kept as `mcp` on the agent (events, saved result, `/api/runs/:id`) and logged
+  once per run per server and status, while its reply stands (the default
+  `"mcpFailures": "warn"`); `"mcpFailures": "fail"` fails an agent whose server
+  `failed` or `needs-auth` with reason `mcp_unavailable`, and `expect: { mcp: [...] }`
+  makes a listed server that is not there a miss. Adapters declare where their CLI
+  lists its servers with `output.mcpEvent` and `output.mcpPath`.
 
 ### Ask a person, tell a person
 - `checkpoint(title, { payload, timeout, onTimeout })` pauses a run until someone

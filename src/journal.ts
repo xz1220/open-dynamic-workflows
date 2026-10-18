@@ -64,6 +64,12 @@ export interface AgentResultRecord {
    */
   denied?: string[];
   /**
+   * The MCP servers its CLI started it without while it did the work — any
+   * status but "connected" (ODW extension; Claude Code's init event) — when
+   * there were any.
+   */
+  mcp?: Array<{ name: string; status: string }>;
+  /**
    * Likely secrets in it were replaced by `«redacted:<kind>»` before it was
    * saved (ODW extension; see ./redact) — a resume replays it as saved.
    */

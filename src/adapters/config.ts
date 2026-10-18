@@ -129,6 +129,7 @@ const KNOWN_TOP_KEYS = [
   "permissionDenials",
   "redact",
   "quotaWait",
+  "mcpFailures",
 ] as const;
 
 const KNOWN_ADAPTER_KEYS = ["command", "stdin", "env", "timeout", "stallTimeout", "concurrency", "promptCache", "label", "flags", "output", "failures", "permissionArgs", "permissions", "permissionDenials"] as const;
@@ -136,8 +137,8 @@ const KNOWN_ADAPTER_KEYS = ["command", "stdin", "env", "timeout", "stallTimeout"
 /** The fields of an adapter's `output`, per format. */
 const KNOWN_OUTPUT_KEYS: Record<string, readonly string[]> = {
   text: ["format"],
-  jsonl: ["format", "eventType", "textPath", "select", "usageEvent", "usagePath", "costPath", "errorPath", "structuredPath", "deniedPath"],
-  json: ["format", "textPath", "usagePath", "costPath", "errorPath", "structuredPath", "deniedPath"],
+  jsonl: ["format", "eventType", "textPath", "select", "usageEvent", "usagePath", "costPath", "errorPath", "structuredPath", "deniedPath", "mcpEvent", "mcpPath"],
+  json: ["format", "textPath", "usagePath", "costPath", "errorPath", "structuredPath", "deniedPath", "mcpPath"],
 };
 
 /** The fields of an adapter's `flags`, and of its `flags.schema`. */
@@ -823,11 +824,15 @@ function buildOutput(name: string, raw: unknown): AdapterOutput {
     errorPath?: string[];
     structuredPath?: string[];
     deniedPath?: string[];
+    mcpPath?: string[];
   } = {};
   for (const key of ["usagePath", "costPath", "errorPath", "structuredPath", "deniedPath"] as const) {
     const path = buildPath(name, key, value[key], { optional: true });
     if (path) extras[key] = path;
   }
+  // The MCP servers the CLI started with (ODW extension): set only when declared.
+  const mcpPath = buildPath(name, "mcpPath", value.mcpPath, { optional: true });
+  if (mcpPath) extras.mcpPath = mcpPath;
   if (value.format === "json") return { format: "json", textPath, ...extras };
   if (value.select !== "last") {
     throw new ConfigError(`adapter '${name}' 'output.select' must be 'last'`);
@@ -835,12 +840,16 @@ function buildOutput(name: string, raw: unknown): AdapterOutput {
   if (value.usageEvent != null && (typeof value.usageEvent !== "string" || !value.usageEvent.trim())) {
     throw new ConfigError(`adapter '${name}' 'output.usageEvent' must be a non-empty string`);
   }
+  if (value.mcpEvent != null && (typeof value.mcpEvent !== "string" || !value.mcpEvent.trim())) {
+    throw new ConfigError(`adapter '${name}' 'output.mcpEvent' must be a non-empty string`);
+  }
   return {
     format: "jsonl",
     eventType: value.eventType as string,
     textPath,
     select: "last",
     ...(value.usageEvent != null ? { usageEvent: value.usageEvent as string } : {}),
+    ...(value.mcpEvent != null ? { mcpEvent: value.mcpEvent as string } : {}),
     ...extras,
   };
 }
@@ -997,6 +1006,10 @@ function buildSettings(raw: Record<string, unknown>): Settings {
     // Absent or null keeps the default (on); only false turns it off.
     redact: buildRedact(raw["redact"]),
     quotaWait: raw["quotaWait"] == null ? DEFAULT_SETTINGS.quotaWait : buildQuotaWait(raw["quotaWait"]),
+    mcpFailures:
+      raw["mcpFailures"] == null
+        ? DEFAULT_SETTINGS.mcpFailures
+        : buildChoice("mcpFailures", raw["mcpFailures"], ["warn", "fail"] as const),
   };
 }
 

@@ -187,6 +187,7 @@ test("expect, expectRetries and allowEmpty are checked when agent() is called: a
     files: ["src/**/*.ts"],
     command: ["npm", "test"],
     match: "/^DONE/",
+    mcp: [],
     timeout: 30,
   });
   assert.equal(planChecks({}).expect, null);
@@ -195,9 +196,9 @@ test("expect, expectRetries and allowEmpty are checked when agent() is called: a
   assert.equal(planChecks({}).allowEmpty, false);
 
   const cases: Array<[Record<string, unknown>, RegExp]> = [
-    [{ expect: "changes" }, /^agent\(\): expect must be an object of checks — \{ changes\?, files\?, command\?, match\?, timeout\? \}; got a string$/],
+    [{ expect: "changes" }, /^agent\(\): expect must be an object of checks — \{ changes\?, files\?, command\?, match\?, mcp\?, timeout\? \}; got a string$/],
     [{ expect: [] }, /expect must be an object of checks .*got an empty array/],
-    [{ expect: { change: true } }, /^agent\(\): expect has no check "change"; use changes, files, command, match, timeout$/],
+    [{ expect: { change: true } }, /^agent\(\): expect has no check "change"; use changes, files, command, match, mcp, timeout$/],
     [{ expect: { changes: "yes" } }, /expect\.changes must be true or false; got a string/],
     [{ expect: { files: "src/**" } }, /expect\.files must be an array of globs \(non-empty strings\); got a string/],
     [{ expect: { files: [""] } }, /expect\.files must be an array of globs/],

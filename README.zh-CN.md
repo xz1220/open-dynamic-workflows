@@ -234,6 +234,7 @@ const summary = await agent('Fix the failing tests in src/parser.', {
     changes: true,              // 必须有文件改动(false:不许有任何改动)
     files: ['src/parser/**'],   // 每个 glob 都必须匹配到一个被改动或新建的文件
     match: '^Fixed',            // 回复必须匹配的正则表达式
+    mcp: ['github'],            // CLI 启动 agent 时必须连上的 MCP 服务器(claude)
   },
 })
 ```
@@ -269,6 +270,17 @@ agent_failed    (Fix) fixer — [unmet_expectation] did not meet: `npm test` mus
   work it could not do (raise its tier with --permissions or allowlist the tool)`。
   `"permissionDenials": "fail"`(或适配器自己的 `permissionDenials`)则让这样的 agent 以
   `reason: "permission"` 失败。
+- **没启动起来的 MCP 服务器。** Claude Code 的输出流以一个 init 事件开头,列出它为 agent
+  启动的 MCP 服务器;启动失败的服务器会让 agent 用不了它的工具,而 agent 仍可能说"完成了"。
+  每个状态不是 `connected` 的服务器都作为 `mcp: [{ name, status }]` 记在 agent 的
+  `agent_finished`(或 `agent_failed`)事件、保存的结果和 `/api/runs/:id` 上,运行按服务器
+  和状态各记一行日志(每次运行一次):``MCP server github failed to start (claude agent
+  `fix-auth`): its tools were unavailable``。回复照常成立——Claude Code 自己也只是警告——
+  除非 `"mcpFailures": "fail"`,它让服务器为 `failed` 或 `needs-auth` 的 agent 以
+  `reason: "mcp_unavailable"` 失败。`expect: { mcp: [...] }` 则把列出的服务器缺席——
+  `failed`、`needs-auth`、`disabled` 或没有配置——算作一项缺失,重试后以
+  `unmet_expectation` 失败。`pending` 两者都不算:Claude Code 的文档说不要把它单独当作
+  失败(`.mcp.json` 里的服务器通常以这个状态启动,并在后台连接)。
 
 Claude Code 的 Workflow 工具会忽略 `expect`,在那里检查不会执行。
 [`examples/fix-until-green.js`](examples/fix-until-green.js) 用 `expect` 驱动一个
@@ -707,7 +719,9 @@ agent 的哪些工具调用。内置的 `claude` 适配器就是这样声明的:
   "usagePath": ["usage"],         // token 计数,位于 usageEvent 事件中(默认同 eventType)
   "costPath": ["total_cost_usd"], // 美元花费,位于同一事件
   "errorPath": ["is_error"],      // true、一条消息或一个错误对象:这次运行以它失败
-  "deniedPath": ["permission_denials"] // CLI 拒绝的工具调用:记在 agent 上并写入日志
+  "deniedPath": ["permission_denials"], // CLI 拒绝的工具调用:记在 agent 上并写入日志
+  "mcpEvent": "system",           // 列出 MCP 服务器的事件(Claude Code 的 init)
+  "mcpPath": ["mcp_servers"]      // 每项 { name, status }:没连上的记在 agent 上并写入日志
 }
 ```
 
@@ -981,8 +995,8 @@ cloning with «redacted:github»
 
 **ODW 扩展。** 每个失败的 agent 都会根据其 CLI 的退出状态和输出末尾被归类:`rate_limit`、
 `quota`、`auth`、`timeout`、`stalled`、`not_found`(CLI 无法启动)、`permission`(工具
-调用或审批被拒)或 `exit`——另有两个类别,给"成功了"却拿不出证据的运行:`empty_reply` 和
-`unmet_expectation`(见[检查 agent 的工作](#检查-agent-的工作odw-扩展))。这个类别就是 `agent_failed` 事件上的 `reason`(CLI 说明了何时
+调用或审批被拒)或 `exit`——另有三个类别,给"成功了"却拿不出证据的运行:`empty_reply`、
+`unmet_expectation`,以及 `"mcpFailures": "fail"` 下的 `mcp_unavailable`(见[检查 agent 的工作](#检查-agent-的工作odw-扩展))。这个类别就是 `agent_failed` 事件上的 `reason`(CLI 说明了何时
 可以重试时,还带有以秒计的 `retryAfter`),也是看板和 `/api/runs/:id` 里该 agent 的
 `failureReason`,并显示在实时视图和 `odw logs` 中:
 
@@ -1485,7 +1499,7 @@ node web/dev.mjs --api http://127.0.0.1:4317     # → http://127.0.0.1:5173
 - **有证据的成功。** `agent(…, { expect })` 检查 agent 的工作,而不是听它怎么说——某条命令
   以 0 退出、有文件改动、回复匹配——没达到就把缺失项交还给它一次,之后以
   `reason: "unmet_expectation"` 和缺失项失败。空回复以 `empty_reply` 失败;Claude Code
-  拒绝的工具调用会记在 agent 上并写入日志——并计入 `expect`(ODW 扩展;见
+  拒绝的工具调用和它没能启动的 MCP 服务器会记在 agent 上并写入日志——并计入 `expect`(ODW 扩展;见
   [检查 agent 的工作](#检查-agent-的工作odw-扩展))。
 - **权限档位。** 每个 agent 以 `read`、`edit`(默认,与以往一致)或 `full` 运行,映射到各
   CLI 自己的参数:审查与调研类 fan-out 碰不到工作树(`--permissions read`、

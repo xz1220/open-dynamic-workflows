@@ -13,6 +13,12 @@
  *              seconds (600 by default) — an exec() step of the run, shown
  *              under the agent, so a stop kills it
  *   - match    a regular expression the reply must match
+ *   - mcp      MCP servers (by name) the agent's CLI must have started it
+ *              with: each must be listed, and "connected" — or "pending",
+ *              which Claude Code's docs say is no failure on its own (a
+ *              server connecting in the background, or one with a cached
+ *              tool list it connects on first use) — as the CLI's runs of the
+ *              work reported them (`mcpPath`: Claude Code's init event)
  *
  * The checks run once the reply is in and satisfies the call's schema. What
  * the agent changed is what the run keeps as its change: with isolation, the
@@ -54,6 +60,8 @@ export interface ExpectOptions {
   command?: string | string[];
   /** A regular expression (its source, no flags) the reply must match. */
   match?: string;
+  /** MCP servers the agent's CLI must have started it with, connected (or still connecting), by name. */
+  mcp?: string[];
   /** Seconds the command may run before it is killed — a miss (default 600). */
   timeout?: number;
 }
@@ -64,6 +72,8 @@ export interface ExpectPlan {
   files: Array<{ glob: string; pattern: RegExp }>;
   command?: string | string[];
   match?: RegExp;
+  /** MCP servers that must have been started, by name. */
+  mcp: string[];
   /** Seconds the command may run. */
   timeout: number;
 }
@@ -101,6 +111,41 @@ export function refusedMiss(refused: string[]): ExpectMiss {
 }
 
 /**
+ * What the agent's CLI runs said beside the reply, for the checks that read
+ * it: the MCP servers they started the agent with (ODW extension).
+ */
+export interface CliEvidence {
+  /**
+   * Each MCP server the CLI runs of the work reported, by name, with its
+   * status — one down in any of them stays down; null when they reported none.
+   */
+  mcp: ReadonlyMap<string, string> | null;
+}
+
+/**
+ * The miss of an MCP server `expect.mcp` lists that the agent's CLI did not
+ * start it with — `status` as the CLI reported it, undefined when it was not
+ * among the servers listed; `reported` false when the CLI listed none at all.
+ */
+export function mcpMiss(name: string, status: string | undefined, reported: boolean): ExpectMiss {
+  const how = !reported
+    ? "its CLI did not say which MCP servers it started"
+    : status === undefined
+      ? "the CLI did not start it — it is not configured for this agent"
+      : status === "failed"
+        ? "it failed to start"
+        : status === "needs-auth"
+          ? "it needs authentication"
+          : status === "disabled"
+            ? "it is disabled"
+            : `it was ${JSON.stringify(status)}`;
+  return {
+    text: `MCP server ${JSON.stringify(name)} must be connected, and ${how}`,
+    advice: "If its tools are missing again, do not claim the task is done: say what you could not do without them.",
+  };
+}
+
+/**
  * Where the bridge reports a call's work to its checks: an {@link Expectations}.
  * The bridge tells it the workspace mode before the call's first CLI run, hands
  * it each isolated run that ended with a reply before its worktree goes, and
@@ -109,6 +154,8 @@ export function refusedMiss(refused: string[]): ExpectMiss {
 export interface ExpectationSink {
   /** How many times work that missed may run again, told what it missed. */
   readonly retries: number;
+  /** The MCP servers the checks need the CLI to have started (`expect.mcp`): none for most calls. */
+  readonly mcp: readonly string[];
   /**
    * Before the first CLI run on each adapter of the call's chain — the one it
    * starts on, then each one it falls back to: where its work happens.
@@ -117,7 +164,7 @@ export interface ExpectationSink {
   /** An isolated CLI run that ended with a reply, in its worktree before the worktree goes. */
   inspect(ws: Workspace): Promise<void>;
   /** The attempt's reply is in and satisfies its schema: what its work missed — none when it is done. */
-  check(reply: string): Promise<ExpectMiss[]>;
+  check(reply: string, cli?: CliEvidence): Promise<ExpectMiss[]>;
   /** What to tell the next attempt about `misses`, appended to its prompt. */
   feedback(misses: ExpectMiss[]): string;
   /** The work runs again: what the next attempts do is judged afresh. */
@@ -127,7 +174,7 @@ export interface ExpectationSink {
 /** Seconds an `expect.command` may run, unless `expect.timeout` says otherwise. */
 export const DEFAULT_EXPECT_TIMEOUT = 600;
 
-const EXPECT_KEYS = ["changes", "files", "command", "match", "timeout"];
+const EXPECT_KEYS = ["changes", "files", "command", "match", "mcp", "timeout"];
 
 /** Check an agent() call's `expect`, `expectRetries` and `allowEmpty`; a misuse is a recoverable AgentError. */
 export function planChecks(opts: { expect?: unknown; expectRetries?: unknown; allowEmpty?: unknown }): AgentChecks {
@@ -146,15 +193,15 @@ export function planChecks(opts: { expect?: unknown; expectRetries?: unknown; al
 function planExpect(raw: unknown): ExpectPlan | null {
   if (raw === undefined) return null;
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
-    throw misuse(`expect must be an object of checks — { changes?, files?, command?, match?, timeout? }; got ${describeValue(raw)}`);
+    throw misuse(`expect must be an object of checks — { changes?, files?, command?, match?, mcp?, timeout? }; got ${describeValue(raw)}`);
   }
   const spec = raw as Record<string, unknown>;
   for (const key of Object.keys(spec)) {
     // A misspelled check would silently never run.
     if (!EXPECT_KEYS.includes(key)) throw misuse(`expect has no check "${key}"; use ${EXPECT_KEYS.join(", ")}`);
   }
-  const plan: ExpectPlan = { files: [], timeout: DEFAULT_EXPECT_TIMEOUT };
-  const { changes, files, command, match, timeout } = spec;
+  const plan: ExpectPlan = { files: [], mcp: [], timeout: DEFAULT_EXPECT_TIMEOUT };
+  const { changes, files, command, match, mcp, timeout } = spec;
   if (changes !== undefined) {
     if (typeof changes !== "boolean") throw misuse(`expect.changes must be true or false; got ${describeValue(changes)}`);
     plan.changes = changes;
@@ -189,13 +236,23 @@ function planExpect(raw: unknown): ExpectPlan | null {
       throw misuse(`expect.match is not a valid regular expression: ${(err as Error).message}`);
     }
   }
+  if (mcp !== undefined) {
+    if (!Array.isArray(mcp) || !mcp.every((name) => typeof name === "string" && name.trim() !== "")) {
+      throw misuse(`expect.mcp must be an array of MCP server names (non-empty strings); got ${describeValue(mcp)}`);
+    }
+    plan.mcp = [...new Set(mcp as string[])];
+  }
   if (timeout !== undefined) {
     if (typeof timeout !== "number" || !(timeout > 0)) {
       throw misuse(`expect.timeout must be a positive number of seconds; got ${describeValue(timeout)}`);
     }
     plan.timeout = timeout;
   }
-  return plan.changes === undefined && plan.files.length === 0 && plan.command === undefined && plan.match === undefined
+  return plan.changes === undefined &&
+    plan.files.length === 0 &&
+    plan.command === undefined &&
+    plan.match === undefined &&
+    plan.mcp.length === 0
     ? null
     : plan;
 }
@@ -325,6 +382,10 @@ export class Expectations implements ExpectationSink {
     private readonly deps: ExpectDeps,
   ) {}
 
+  get mcp(): readonly string[] {
+    return this.plan.mcp;
+  }
+
   /** Whether a check reads what the agent changed. */
   private get readsChanges(): boolean {
     return this.plan.changes !== undefined || this.plan.files.length > 0;
@@ -372,15 +433,15 @@ export class Expectations implements ExpectationSink {
     this.kept = await this.gather(ws.path, changed);
   }
 
-  async check(reply: string): Promise<ExpectMiss[]> {
+  async check(reply: string, cli?: CliEvidence): Promise<ExpectMiss[]> {
     if (this.isolated) {
       if (!this.kept) throw new Error("expect: the agent's worktree was never looked at");
-      return this.judge(reply, this.kept);
+      return [...this.judge(reply, this.kept), ...this.judgeMcp(cli)];
     }
     const snapshot = this.snapshot;
     const before = snapshot ? await this.changedInPlace(snapshot) : null;
     const evidence = await this.gather(this.source, before && before.map((path) => relativeToDir(this.within, path)));
-    const misses = this.judge(reply, evidence);
+    const misses = [...this.judge(reply, evidence), ...this.judgeMcp(cli)];
     if (misses.length > 0 && snapshot && before && this.plan.command !== undefined) {
       // What the command wrote in the shared tree (a report, a cache) is not
       // the agent's: a retry is judged without it.
@@ -452,6 +513,18 @@ export class Expectations implements ExpectationSink {
         ? `it exited with code ${result.exitCode}`
         : `it was killed by signal ${result.signal ?? "(unknown)"}`;
     return { text: `\`${clip(commandLine(command), COMMAND_CHARS)}\` must exit 0, and ${how}`, detail: outputEnd(result) };
+  }
+
+  /** The `mcp` check: each server it lists must be connected (or still connecting) in what the CLI runs reported. */
+  private judgeMcp(cli: CliEvidence | undefined): ExpectMiss[] {
+    const misses: ExpectMiss[] = [];
+    const reported = cli?.mcp ?? null;
+    for (const name of this.plan.mcp) {
+      const status = reported?.get(name);
+      if (status === "connected" || status === "pending") continue;
+      misses.push(mcpMiss(name, status, reported !== null));
+    }
+    return misses;
   }
 
   private judge(reply: string, evidence: Evidence): ExpectMiss[] {

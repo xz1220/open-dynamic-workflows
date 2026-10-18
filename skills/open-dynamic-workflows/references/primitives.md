@@ -525,7 +525,7 @@ replaces the earlier one. `odw resume` copies a replayed agent's diff into the n
 ## expect (ODW extension)
 
 ```js
-agent(prompt, { expect: { changes?, files?, command?, match?, timeout? }, expectRetries?, allowEmpty? })
+agent(prompt, { expect: { changes?, files?, command?, match?, mcp?, timeout? }, expectRetries?, allowEmpty? })
 ```
 
 What must hold once the agent has replied — checked by odw, instead of asking
@@ -542,6 +542,13 @@ the model whether it did the work. Prefer it to a second "did you do it?" agent:
   carry `forAgentId` — after the change is read, so what it writes is never the
   agent's work; a stop kills it.
 - **match** — a regular expression (its source, no flags) the reply must match.
+- **mcp** — MCP server names: each must be among the servers the agent's CLI
+  says it started the agent with (Claude Code's stream-json init event, read
+  through the adapter's `output.mcpPath`), `connected` — or `pending`, which
+  Claude Code's docs say is no failure on its own (a server still connecting in
+  the background, or one with a cached tool list it connects on first use).
+  `failed`, `needs-auth`, `disabled` or not configured is a miss. An adapter that
+  declares no `mcpPath` cannot be checked: the call fails before its CLI starts.
 
 The checks run once the reply is in and has satisfied its `schema`. What the
 agent changed is read from git. In place, it is what differs from the source
@@ -584,7 +591,13 @@ Without `expect`: an empty or whitespace-only reply throws with reason
 CLI refused tool calls stands — they are kept as `denied` on the agent's
 `agent_finished` event and saved result, and the run logs one line — unless
 `"permissionDenials": "fail"` (run-wide, or in the adapter's entry), which throws
-with reason `"permission"`, naming them. Neither failure is retried. `expect` is
+with reason `"permission"`, naming them. MCP servers its CLI started it without —
+any status but `connected` — are kept as `mcp: [{ name, status }]` on the agent's
+terminal event and saved result, and the run logs each server and status once
+(``MCP server github failed to start (claude agent `fix-auth`): its tools were
+unavailable``); `"mcpFailures": "fail"` throws for a server that `failed` or
+`needs-auth` with reason `"mcp_unavailable"` (one `expect.mcp` lists is a miss
+instead). Neither failure is retried. `expect` is
 part of the call's resume key; Claude Code ignores it, so there the checks do not
 run.
 

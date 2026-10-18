@@ -257,6 +257,7 @@ const summary = await agent('Fix the failing tests in src/parser.', {
     changes: true,              // some file must change (false: none may)
     files: ['src/parser/**'],   // each glob must match a file it changed or created
     match: '^Fixed',            // a regular expression the reply must match
+    mcp: ['github'],            // MCP servers its CLI must have started it with (claude)
   },
 })
 ```
@@ -301,6 +302,20 @@ agent_failed    (Fix) fixer — [unmet_expectation] did not meet: `npm test` mus
   rest on work it could not do (raise its tier with --permissions or allowlist
   the tool)`. `"permissionDenials": "fail"` (or an adapter's own
   `permissionDenials`) fails such agents with `reason: "permission"` instead.
+- **MCP servers that did not start.** Claude Code's stream begins with an init
+  event listing the MCP servers it started the agent with; one that failed leaves
+  the agent without its tools, and it may still say "done". Every server that is
+  not `connected` is kept as `mcp: [{ name, status }]` on the agent's
+  `agent_finished` (or `agent_failed`) event, its saved result and `/api/runs/:id`,
+  and the run logs it once per server and status: ``MCP server github failed to
+  start (claude agent `fix-auth`): its tools were unavailable``. The reply stands —
+  Claude Code itself only warns — unless `"mcpFailures": "fail"`, which fails an
+  agent whose server `failed` or `needs-auth` with `reason: "mcp_unavailable"`.
+  `expect: { mcp: [...] }` makes a listed server that is not there — `failed`,
+  `needs-auth`, `disabled` or not configured — a miss, retried and then
+  `unmet_expectation`. `pending` is neither: Claude Code's docs say not to treat it
+  as a failure (servers from `.mcp.json` usually start that way and connect in the
+  background).
 
 Claude Code's Workflow tool ignores `expect`, so there the checks do not run.
 [`examples/fix-until-green.js`](examples/fix-until-green.js) lets `expect` run a
@@ -782,7 +797,9 @@ built-in `claude` adapter is declared this way:
   "usagePath": ["usage"],         // token counts, in a usageEvent (default: eventType)
   "costPath": ["total_cost_usd"], // US dollars, in the same event
   "errorPath": ["is_error"],      // true, a message or an error object: the run failed with it
-  "deniedPath": ["permission_denials"] // tool calls the CLI refused: kept on the agent, logged
+  "deniedPath": ["permission_denials"], // tool calls the CLI refused: kept on the agent, logged
+  "mcpEvent": "system",           // the event that lists the MCP servers (Claude Code's init)
+  "mcpPath": ["mcp_servers"]      // { name, status } each: one not connected is kept and logged
 }
 ```
 
@@ -1097,8 +1114,9 @@ long test run inside one tool call prints nothing either.
 **ODW extension.** Every failed agent is classified from its CLI's exit status
 and the end of its output: `rate_limit`, `quota`, `auth`, `timeout`, `stalled`,
 `not_found` (the CLI could not start), `permission` (a tool call or approval was
-refused) or `exit` — and two classes for runs that "succeeded" without the
-evidence: `empty_reply` and `unmet_expectation` (see
+refused) or `exit` — and three classes for runs that "succeeded" without the
+evidence: `empty_reply`, `unmet_expectation` and, under `"mcpFailures": "fail"`,
+`mcp_unavailable` (see
 [Check an agent's work](#check-an-agents-work-odw-extension)). The class is the `reason` on the `agent_failed` event (with
 `retryAfter`, in seconds, when the CLI said when to come back), the agent's
 `failureReason` in the dashboard and `/api/runs/:id`, and it shows in the live
@@ -1674,8 +1692,9 @@ upgrading, is in [`CHANGELOG.md`](CHANGELOG.md):
 - **Evidence of success.** `agent(…, { expect })` checks an agent's work instead of
   taking its word — a command exits 0, files changed, the reply matches — and hands
   misses back once before failing with `reason: "unmet_expectation"` and what it
-  missed. An empty reply fails as `empty_reply`; tool calls Claude Code refused are
-  recorded on the agent and logged — and count against `expect` (ODW extensions;
+  missed. An empty reply fails as `empty_reply`; tool calls Claude Code refused, and
+  MCP servers it could not start, are recorded on the agent and logged — and count
+  against `expect` (ODW extensions;
   see [Check an agent's work](#check-an-agents-work-odw-extension)).
 - **Permission tiers.** Every agent runs `read`, `edit` (the default, unchanged) or
   `full`, mapped to each CLI's own flags: review and research fan-outs that cannot

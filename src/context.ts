@@ -69,6 +69,12 @@ export interface RunContext {
    */
   permissionNotes?: Set<string>;
   /**
+   * The MCP servers, with their status, whose not being connected the run has
+   * logged, so each (server, status) is said once per run (ODW extension).
+   * Shared like `seq`.
+   */
+  mcpNotes?: Set<string>;
+  /**
    * Each phase's defaults (ODW extension; see ./routing): the adapter and
    * model its agents run with when they name none — from `meta.phases` and
    * phase(title, {…}), by phase title. Shared like `seq`: a nested
@@ -221,6 +227,7 @@ export function buildContext(config: Config, options: BuildContextOptions = {}):
     commandSeq: { value: 0 },
     checkpointSeq: { value: 0 },
     permissionNotes: new Set(),
+    mcpNotes: new Set(),
     phaseDefaults: new Map(),
     currentPhase: null,
     saveAgentResult: options.saveAgentResult,
