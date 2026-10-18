@@ -22,6 +22,13 @@
  * ODW extension primitives it calls, read off the source, never run:
  *
  *   capabilities: { outOfDialect: [{ name, line, column, count, strict }], extensions: [string] }
+ *
+ * `hints` (an ODW extension; see ./check-hints): two shapes of script that
+ * run without an error and do nothing — a fan-out's `.filter(Boolean)` whose
+ * length nothing checks, a list chosen by an agent's text whose emptiness
+ * nothing checks. Never a reason to refuse it:
+ *
+ *   hints: [{ rule, message, line, column }]
  */
 
 import { readFileSync } from "node:fs";
@@ -30,6 +37,7 @@ import { parseArgs } from "node:util";
 
 import { loadConfig } from "./adapters/config.js";
 import { checkMeta } from "./dual-compat.js";
+import { scanHints, type CheckHint } from "./check-hints.js";
 import { WorkflowScriptError } from "./errors.js";
 import { loadWorkflowScript, scanDualCompat } from "./loader.js";
 import { scanCapabilities, type CapabilityReport } from "./script-context.js";
@@ -53,6 +61,8 @@ export interface CheckReport {
   warnings: string[];
   /** With `--capabilities`: what it names outside the dialect, and the ODW extensions it calls. */
   capabilities?: CapabilityReport;
+  /** Shapes that run and do nothing (ODW extension; see ./check-hints); empty when it does not compile. */
+  hints: CheckHint[];
 }
 
 /** Lines of context a code frame shows before and after the line at fault. */
@@ -74,6 +84,7 @@ export function checkWorkflow(source: string, file: string): CheckReport {
       },
       errors: [],
       warnings: scanDualCompat(source),
+      hints: scanHints(source),
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -90,7 +101,7 @@ export function checkWorkflow(source: string, file: string): CheckReport {
           "from its completions; ODW refuses to run it",
       );
     }
-    return { file, ok: false, errors: [problem], warnings };
+    return { file, ok: false, errors: [problem], warnings, hints: [] };
   }
 }
 
@@ -155,6 +166,7 @@ export function formatCheck(report: CheckReport): string[] {
     if (e.frame) out.push(e.frame);
   }
   for (const w of report.warnings) out.push(`${report.file}: warning: ${w}`);
+  for (const h of report.hints ?? []) out.push(`${report.file}:${h.line}:${h.column}: hint: ${h.message}`);
   if (report.capabilities) {
     const { outOfDialect, extensions } = report.capabilities;
     for (const use of outOfDialect) {

@@ -132,3 +132,71 @@ test("odw check exits 0 for a script that loads, 1 with a code frame for one tha
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+// odw check's hints (ODW extension; src/check-hints.ts): two shapes that run
+// and do nothing — never a reason to refuse the script.
+
+test("hint: a fan-out's .filter(Boolean) whose length nothing checks; none with a length check or minOk", () => {
+  const report = checkWorkflow(
+    META +
+      "const results = await parallel(args.files.map((f) => () => agent(f)))\n" +
+      "const kept = results.filter(Boolean)\n" +
+      "log(`kept ${kept.length}`)\n" +
+      "const lost = results.filter(Boolean)\n" +
+      "const direct = (await pipeline(args.files, (f) => agent(f))).filter((x) => x != null)\n" +
+      "const gated = (await parallel([() => agent('a')], { minOk: 1 })).filter(Boolean)\n" +
+      "return { lost, direct, gated }\n",
+    "h.js",
+  );
+  assert.equal(report.ok, true);
+  assert.deepEqual(
+    report.hints.map((h) => [h.rule, h.line, h.column]),
+    [
+      ["filter-null", 5, 21],
+      ["filter-null", 6, 61],
+    ],
+  );
+  assert.equal(
+    report.hints[0]!.message,
+    "parallel() results filtered with .filter(Boolean) and nothing checks how many are left — a fan-out that came back all null " +
+      "goes on as an empty list; check lost.length, or pass { minOk } to parallel() so too few ok results throw",
+  );
+  assert.match(report.hints[1]!.message, /^pipeline\(\) results .*check direct\.length before going on$/);
+  assert.deepEqual(formatCheck(report).slice(0, 1), [`h.js:5:21: hint: ${report.hints[0]!.message}`]);
+  assert.equal(formatCheck(report).at(-1), "h.js: ok — workflow 'x'", "a hint never fails the check");
+});
+
+test("hint: a list chosen by matching an agent's text, its emptiness unchecked (claude-code#94535); checked ones pass", () => {
+  const report = checkWorkflow(
+    META +
+      "const verdict = await agent('which lenses to rerun', { schema: { type: 'object' } })\n" +
+      "const lenses = ['security', 'perf']\n" +
+      "const rerun = lenses.filter((l) => verdict.rerun.includes(l))\n" +
+      "const findings = verdict.findings\n" +
+      "const blocking = findings.filter((f) => f.severity === 'blocking')\n" +
+      "const minor = findings.filter((f) => f.severity === 'minor')\n" +
+      "if (minor.length === 0) throw new Error('nothing matched')\n" +
+      "const n = findings.filter((f) => f.kind === 'bug').length\n" +
+      "if (n === 0) log('no bugs')\n" +
+      "const local = lenses.filter((l) => l.length > 3)\n" +
+      "return { rerun, blocking, local }\n",
+    "m.js",
+  );
+  assert.deepEqual(
+    report.hints.map((h) => [h.rule, h.line]),
+    [
+      ["empty-match", 4],
+      ["empty-match", 6],
+    ],
+  );
+  assert.equal(
+    report.hints[0]!.message,
+    "rerun is chosen by matching what an agent wrote (verdict) and nothing checks it is not empty — when its text matches nothing, " +
+      "rerun is empty and what runs over it does nothing, as if it passed; check rerun.length and fail or log when nothing matched",
+  );
+  assert.match(report.hints[1]!.message, /^blocking is chosen by matching what an agent wrote \(findings\)/);
+  // Strings and comments are no code: nothing in them is hinted.
+  const quiet = checkWorkflow(META + "// const x = (await parallel([])).filter(Boolean)\nconst s = 'results.filter(Boolean)'\nreturn s\n", "q.js");
+  assert.deepEqual(quiet.hints, []);
+  assert.deepEqual(checkWorkflow(META + "const s = 'end\\\\' oops'\n", "b.js").hints, [], "no hints for a script that does not load");
+});
