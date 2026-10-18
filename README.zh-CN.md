@@ -155,7 +155,22 @@ cp -r "$skill_source" ~/.claude/skills/open-dynamic-workflows
 已经让你选过默认了;`odw init` 随时可以重选(agent 则在问过你之后用
 `odw init --adapter <名字>` 写入)。`odw doctor` 会检查运行环境、配置、运行目录和每个适配器;
 `odw doctor --smoke` 还会给默认适配器发一条真实提示——能发现那些装得上、但在无头模式下卡在
-登录或审批提示上的 CLI。
+登录或审批提示上的 CLI。`odw doctor --models`(ODW 扩展)给配置和 `.odw/workflows` 中提到的
+每个「适配器/模型」组合各发一条极短的提示,告诉你哪些模型已经不在了。
+
+**第一次运行不花钱。** 从模板开始,先测试,再看它在所有 agent 都用桩回复的情况下跑一遍——然后
+再真跑:
+
+```bash
+odw new                    # 列出模板:hello、review-swarm、fix-until-green、plan-approve-execute……
+odw new hello              # 写入 .odw/workflows/hello.js 和起步测试 .odw/tests/hello.json
+odw test hello             # 起步测试:脚本化回复,不调用模型,$0
+odw run hello --dry        # 实时视图与阶段树,每个 agent 都是桩回复,$0(看板:odw serve --open)
+odw run hello              # 真实运行,用你的默认 agent CLI
+```
+
+在终端里,`odw init` 最后会主动提供这一步:写入 `hello`、运行 `odw run hello --dry`,然后打印
+看板命令和真实运行的命令——它自己从不发起付费调用。见[从模板开始](#从模板开始odw-扩展)。
 
 ODW 主要是**被你的 coding agent 驱动**的,不是手动跑。装好 skill 和二进制后,你只要把一个
 大任务丢给 agent——它会**自己写一个 workflow 并跑起来**,而且是在它自己的上下文之外:
@@ -197,6 +212,41 @@ odw run examples/fan-out-reduce.js --wait --args '{"question": "Design a rate li
 [`deep-research-verified.js`](examples/deep-research-verified.js)(在 codex 适配器上以
 100 个 agent、约 9 分钟端到端验证过)还配了可进 cron 的包装脚本——见
 [`docs/recipes/deep-research-verified.md`](docs/recipes/deep-research-verified.md)。
+
+### 从模板开始(ODW 扩展)
+
+`odw new` 从内置在二进制里的模板写出一个 workflow,所以只装了二进制也有这些模板;单独运行
+`odw new` 会列出它们。
+
+```bash
+odw new review-swarm                    # .odw/workflows/review-swarm.js、.odw/tests/…、.odw/evals/…
+odw new review-swarm --name pre-merge   # 同上,但命名为 pre-merge(workflow、测试与 eval 里都改名)
+odw new hello --force                   # 覆盖内容不同的已有文件
+odw new hello --yes                     # 同时写入建议的 .worktreeinclude(见下)
+```
+
+| 模板 | 作用 |
+| --- | --- |
+| `hello` | 两个 agent 并行描述这个仓库;纯 JS 留下更有把握的那个回答(只读) |
+| `review-swarm` | 从多个角度并行审阅改动,逐条核实每个发现,只留下站得住的 |
+| `fix-until-green` | agent 修复失败的测试;odw 自己跑测试来检查(`expect`),没达到就退回 |
+| `plan-approve-execute` | 起草计划,在 `checkpoint()` 等人批准,再并行执行各步骤 |
+| `pr-shepherd` | 把 PR 推到全绿:修复失败的 CI 和新的审阅评论、推送,标记为可审阅前先问人 |
+| `fan-out-reduce` | 并行起草 N 个回答,再综合出最好的一个 |
+
+- **写入什么**(在当前目录):`.odw/workflows/<名字>.js`(`odw run <名字>`)、
+  `.odw/tests/<名字>.json`——带脚本化回复的起步用例,`odw test <名字>` 立刻通过,$0——以及
+  `review-swarm` 与 `pr-shepherd` 的 eval 骨架 `.odw/evals/<名字>.json`(真实运行:先编辑再
+  `odw eval <名字>`)。除 `hello` 外,模板就是同名的[示例](examples/)。
+- **从不覆盖**内容不同的已有文件,除非加 `--force`:此时什么都不写,退出码 1。已经与模板
+  完全相同的文件算作已写入,所以同一条命令跑两次没有副作用。
+- **在没有 `.worktreeinclude` 的 git 仓库里**,它会为[隔离 worktree](#隔离-worktree-与-agent-端口)
+  打印一份建议:仓库里的 `.env*` 文件(不含 `.env.example` 之类),以及根据 lockfile 推断的
+  依赖目录的 `symlink:` 行(npm、yarn、pnpm、bun 对应 `node_modules`;uv、Poetry、Pipenv、PDM
+  对应 `.venv`;Composer 对应 `vendor`)。加 `--yes`,或在终端里回答 yes 才写入;否则从不写。
+- **`odw init`**(不带 `--check`)最后提供零成本的首跑:在终端里先询问,然后写入 `hello`(若
+  `.odw/workflows/hello.js` 已存在则直接用它),带实时视图运行 `odw run hello --dry`,再打印
+  `odw serve --open` 和真实的 `odw run hello`。不在终端时只打印这些命令。
 
 ## 编程原语
 
@@ -459,8 +509,10 @@ odw list
 提示)可显式指定模式;环境变量 `ODW_DETACH=1` 强制后台。
 
 **`--deadline <秒数>`**(ODW 扩展)在运行开始满这么多秒后停止它——像 `odw stop` 一样优雅:
-agent 被杀掉,隔离 agent 的 diff 与每个已完成 agent 的保存结果都保留,运行记为 `stopped`
-(状态里有 `stopReason: "deadline"`)。由 worker 执行,所以任何模式下都有效。配合 `--wait`
+agent 被杀掉,每个已完成 agent 的保存结果都保留,每个隔离 agent 的 diff 也保留——已完成的,
+以及被截止时间杀掉的 agent 到那时为止改动的部分,后者在其 `agent_failed` 事件里
+标为 `partial: true`(运行详情 `GET /api/runs/:id` 里也有);`odw diff` 可查看,`odw apply` 只在你点名该 agent 时应用它(与任何失败 agent 的 diff 一样)。被人停止(`odw stop`、Ctrl-C)
+时,被杀掉的 agent 的改动仍不保留。运行记为 `stopped`(状态里有 `stopReason: "deadline"`)。由 worker 执行,所以任何模式下都有效。配合 `--wait`
 或 `--fg` 时,odw 随后打印已完成的部分——`{ "state": "stopped", "reason": "deadline",
 "deadline", "finished": [{ agentId, label, phase, value }] }`——并**以退出码 3 退出**。退出码:
 0 完成,1 失败或被人停止,3 到达截止时间被停止,124 为 `--timeout`(它只是不再*等待*,运行
@@ -762,13 +814,20 @@ webhook 的正文,并返回 `202 { "runId" }`。
   `webhookTimestamp` 在一分钟内),Slack `X-Slack-Signature` 加五分钟内的
   `X-Slack-Request-Timestamp`,其他来源用 ODW 自己的 `X-ODW-Signature`(对
   `<时间戳>.<正文>` 签名)。都是对原始正文的 HMAC-SHA256、常数时间比较;见过的投递
-  (重放或重试)不会再启动运行。
+  (重放或重试)不会再启动运行。GitHub 不签时间戳:它的投递的签名与 `X-GitHub-Delivery` id
+  保存在运行根目录下 30 天,重启后依然有效(更早的投递会再次通过校验——密钥可能泄露时请轮换)。
+- **只认你自己的配置:** `odw serve` 只从你自己的配置读取触发器——`--config`、`$ODW_CONFIG`,
+  或仓库之外的 `~/.config/odw/config.json`。仓库自带的 `./odw.config.json` 不能声明触发器:
+  其中的 `triggers` 会被拒绝并给出警告(克隆下来的仓库不能借 webhook 进入你的机器),改为
+  提供你自己配置里的触发器。
 - **默认不受信任:** issue 文本谁都能写,所以这些运行默认 `--untrusted`,除非触发器写明
   `"untrusted": false`。
-- **范围很窄:** 只有配置里的触发器名存在(否则 `404`),每个只能启动它自己的工作流;
-  签名错误 `401`(按地址限速),正文超过 1 MiB `413`,超出 `concurrency` 或 `rateLimit`
-  `429`。这个路由在非回环绑定上、经隧道的 `Host` 也会响应——签名就是凭据——看板的其他
-  部分规则不变。
+- **范围很窄:** 只有你配置里的触发器存在,每个只能启动它自己的工作流。未知的名字、尚未设置的
+  密钥、错误/缺失/过期的签名一律返回相同的 `401`(按地址限速;`odw serve` 会在日志里写明原因),
+  没有密钥的调用方无从得知有哪些触发器;正文超过 1 MiB `413`,超出 `concurrency` 或
+  `rateLimit` `429`。这个路由在非回环绑定(`--host`)上也会响应——签名就是凭据,无需
+  `--token`——在回环绑定上则只接受回环 `Host` 与 `--public-url` 的主机(隧道的 URL 填在那里);
+  DNS 重绑定防护与看板其他部分一样有效。
 - **原路回复:** 运行会记录 `context`——触发器、事件、issue 的 id 与 URL、仓库、Slack 频道与
   线程——[`notify`](#运行通知) 钩子都会收到,于是钩子可以在 issue 下评论、在线程里回复,
   或用 `odw apply --pr` 开草稿 PR 并贴上链接。
@@ -788,10 +847,11 @@ webhook 的正文,并返回 `202 { "runId" }`。
     ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 ```
 
-它安装固定版本的 odw(校验 SHA-256),以 job 超时前留出余量的 `--deadline` 运行
-`odw run --wait`,把花费小票、agent 表和失败写入 job summary,把 `odw bundle` 上传为
-artifact,`apply-pr: true` 时开草稿 PR。来自 fork 的 PR 以及 issue、评论事件以
-`--untrusted` 运行。输入、密钥与示例:[`docs/github-action.md`](docs/github-action.md)。
+它安装固定版本的 odw(对照该 release 的 `SHA256SUMS` 校验 SHA-256——校验的是完整性而非真实性;
+没有 `SHA256SUMS` 的 release 一律拒绝),以 job 超时前留出余量的 `--deadline` 运行
+`odw run --wait`(`args` 输入经文件传入,从不作为命令行参数),把花费小票、agent 表和失败写入
+job summary,把 `odw bundle` 上传为 artifact,`apply-pr: true` 时开草稿 PR。来自 fork 的 PR、
+所有 `pull_request_target`、fork 触发的 `workflow_run`,以及 issue、评论事件以 `--untrusted` 运行。输入、密钥与示例:[`docs/github-action.md`](docs/github-action.md)。
 
 ### 在自己的服务器上运行(ODW 扩展)
 
@@ -910,7 +970,33 @@ odw compare $OLD $NEW --json           # 同一份对比,供脚本使用——GE
 第一次派发 agent 时——与 agent 并行执行、3 秒超时的 `<cli> --version`,记为 `cli_version`
 事件(`odw status` 和 `GET /api/runs/:id` 的 `cliVersions` 会显示)。它绝不拖慢或导致运行失败;
 不回应的 CLI 记为未知版本。命令为 node 或其他解释器、脚本或相对路径的适配器不做探测。
-`"recordVersions": false` 关闭探测。`odw eval`(见下文)就建立在这些记录之上。
+`"recordVersions": false` 关闭探测。`odw eval`(见下文)和漂移监测都建立在这些记录之上。
+
+### 漂移监测(ODW 扩展)
+
+模型被下线或被重新指向、CLI 一夜之间自动升级,工作流却依然"通过"——跑在一个它从未调过的
+东西上。因此每次运行都会与**同一工作流上一次结束的运行**比较——运行根目录中同一分桶里最新
+的、已结束(done、failed 或 stopped)、不是 dry run、且源码哈希相同或名字相同的那一次:各适配器
+CLI 的版本(`cli_version` 事件),以及每个 agent label 在其适配器上请求的模型(`"@tier"` 按
+各自运行的 `models` 解析)。每处不同在本次运行记录到时记一次日志:
+
+```text
+drift: claude CLI 2.1.302 → 2.1.330 since the last run of review-swarm (20261017-091500-3fa2c1)
+drift: reviewer asks claude for model opus-4 → opus-5 since the last run of review-swarm (20261017-091500-3fa2c1)
+drift: review-swarm has an eval — check it still passes against its last report: odw eval review-swarm --baseline ~/.odw/runs/_evals/review-swarm/20261017-093000-77e0.json
+```
+
+只比较两次运行都记录了的内容:其中一次没用过的适配器或 label、版本未知的 CLI 都不算漂移。
+这些变化就是运行摘要的 `drift` 字段——`{ since, changes: [{ kind: "cli" | "model", adapter,
+label?, from, to }] }`——见 `GET /api/runs` 与 `/api/runs/:id`;每条日志
+也以 `drift` 字段带着该变化。
+
+工作流有 eval 文件(`.odw/evals/<name>.json`)时,第一处漂移会建议拿最新保存的报告作基线
+运行它。配置 `"driftEval": true` 后,运行结束时(被停止的除外)会自己启动:`odw eval <name>
+--baseline <报告>`,脱离运行在运行的源码目录中,输出写入运行目录的 `drift-eval.log`。由 `odw
+eval` 启动的运行不会再启动 eval。dry run 和 `odw test` 的运行不做监测。不提供 `odw schedule
+add … --on-cli-change`:定时运行本身就会记录漂移,`driftEval` 会去检验——再加一个轮询 CLI
+版本的调度只是多一个守护进程,收益很小。
 
 ### 调试工作流(ODW 扩展)
 
@@ -936,7 +1022,7 @@ TypeScript(不再对每个错误都这样说),非 `async` 回调里的 `await`,�
 时都会保存它的输入(`agents/<id>.call.json`:脚本给出的提示词和选项、开始时所用的适配器、请求的
 模型),隔离 agent 的 `agent_started` 事件还记下它的 worktree 检出的提交(`base`)。重跑是一次只
 含这一个调用的新运行(`meta.json` 中 `origin: "replay"`、`replayOf: { runId, agentId, label,
-base }`),沿用原调用的 label 与 phase,在原运行的目录下、用原运行的配置、权限档位、信任级别与
+base }`;其 `args` 只有 `{ replayOf }`,提示词与选项保存在运行目录的 `call.json` 里,不对外提供),沿用原调用的 label 与 phase,在原运行的目录下、用原运行的配置、权限档位、信任级别与
 沙箱运行——`worktree` agent 则检出原来的 base 提交,不管现在 HEAD 在哪里,所以它看到的代码与
 原 agent 相同。`--prompt @文件|文本`、`--adapter` 与 `--model` 替换原值(每项改动都会打印出来);
 它接受 `odw run` 的 `--wait`/`--fg`/`-d`/`--timeout`。它打印新运行的 id,以及把重跑与原 agent
@@ -1038,6 +1124,7 @@ odw test review-swarm --case 2 --json     # 只跑一个用例(编号或名字);
 odw test review-swarm --keep              # 保留临时运行(odw logs <run_id> --runs-root …);或 --runs-root DIR
 odw run review-swarm --record             # 一次真实运行,存为 .odw/tests/review-swarm.json 的一个用例(--record-to FILE)
 odw run review-swarm --dry                # 每个 agent 都得到桩回复:阶段树与各阶段 agent 数,$0
+odw new review-swarm                      # 模板连同起步测试,一开始就能通过(见上)
 ```
 
 ```json
@@ -1388,6 +1475,13 @@ Codex、Claude Code、Gemini、Qwen、Kimi、Oh My Pi、Kilo Code、OpenCode、C
 | `opencode` | `opencode` | `run --format json --auto`;从 JSONL 解出最终文本 |
 | `cursor` | `agent` | `--print --force --trust`;stdin 传提示词 |
 | `agy` | `agy` | `--output-format stream-json`,stdin 传提示词;回复、token、错误和被拒的工具调用(`denied_actions`)取自其 `result` 事件;根为对象的 schema 走原生(`--json-schema`) |
+
+> **`gemini` 对个人与免费账号已停止支持。** Google 已于 2026-06-18 停止对个人(Gemini Code
+> Assist for individuals)与免费账号的 Gemini CLI 支持;这类登录现在会得到 "This client is no
+> longer supported for Gemini Code Assist for individuals",ODW 将其归为 `model_unavailable`
+> ([回退链](#按阶段路由与回退链odw-扩展)会换到下一个适配器)。请改用 `agy` 适配器
+> (Antigravity CLI)。企业与 Google Cloud 许可据称仍可使用(未经核实)。出处:
+> [littlebearapps/untether#720](https://github.com/littlebearapps/untether/issues/720)。
 
 内置的 `codex` 和 `claude` **自带联网能力**,调研类 workflow 零调参就能跑。
 `odw init` 会列出装了哪些 CLI
@@ -2065,7 +2159,8 @@ agent 在两次之间做的事不可能改变结果。同一次调用的后续 C
 
 **ODW 扩展。** 每个失败的 agent 都会根据其 CLI 的退出状态和输出末尾被归类:`rate_limit`、
 `quota`、`auth`、`timeout`、`stalled`、`not_found`(CLI 无法启动)、`permission`(工具
-调用或审批被拒)或 `exit`——另有四个类别,给"成功了"却拿不出证据的运行:`empty_reply`、
+调用或审批被拒)、`model_unavailable`(请求的模型未知、已下线或该账号不可用)或
+`exit`——另有四个类别,给"成功了"却拿不出证据的运行:`empty_reply`、
 `unmet_expectation`、`"mcpFailures": "fail"` 下的 `mcp_unavailable`,以及
 `orphaned_background`(回复时仍有后台任务在运行,`"orphanedBackground": "fail"` 或设了
 `expect` 时)(见[检查 agent 的工作](#检查-agent-的工作odw-扩展));`out_of_scope`:
@@ -2092,6 +2187,14 @@ agent_failed    (Search) search — [quota, retry after 3h 22m] AdapterExecution
   实际上的限流来处理。配置了[回退链](#按阶段路由与回退链odw-扩展)时,agent 会换到下一个
   CLI;同一适配器连续三次额度失败后,本次运行之后的 agent 会跳过它。开启
   [`quotaWait`](#额度用尽时暂停odw-扩展) 后,没有 CLI 可换的 agent 会等额度重置,而不是失败。
+- **不存在的模型**——CLI 不认识、已下线或该账号不可用("There's an issue with the selected
+  model"、"The model `x` does not exist or you do not have access to it"、Gemini 的
+  "models/x is not found for API version"、`ModelNotFoundError`、agy 的 "invalid model
+  selection"、Cursor 的 "Cannot use this model")——归为 `model_unavailable`:从不重试,并像额度
+  用尽一样让 agent 沿回退链换到下一个适配器。只看运行输出的最后几行,所以 agent 自己的工作里
+  打印的 "model not found" 不会被误判。`odw doctor --models` 检查配置的 `models` 档位、
+  `fallback` 链、默认适配器和 `.odw/workflows` 各阶段提到的每个模型,各发一条极短的提示,
+  逐个报告 `ok`、`model_unavailable` 或 `other`。
 
 Claude Code 会在输出里报告这类错误,而且常常以 0 退出:它的 stream-json `result` 事件
 带着 `is_error: true` 和错误消息(`API Error: Rate limit reached`、
@@ -2119,7 +2222,8 @@ ODW 能识别的措辞——从每个内置 CLI 的源码和 issue 中收集而�
       "failures": {
         "rate_limit": ["server busy", "E_THROTTLED"],
         "quota": ["monthly tokens? (used up|exhausted)"],
-        "auth": ["session expired"]
+        "auth": ["session expired"],
+        "model_unavailable": ["no such model"]
       }
     }
   }
@@ -2261,6 +2365,48 @@ search:3 → claude after codex quota
 `odw resume` 像重放其他调用一样重放发生过回退的调用,不会再走一遍回退链。一次调用的 resume
 key 是它写下的提示词和选项:阶段默认值和运行的默认适配器一样不在其中,所以把某个阶段改到
 别处——比如离开额度用尽的 CLI——仍会重放所有已完成的调用。
+
+### 同一个 CLI 的多个账号
+
+**ODW 扩展。** 如果你有不止一个 Claude Code 或 Codex 登录,`accounts` 让一次运行把它们
+都用上,不必在某个账号额度用完时手动重新登录。每一项都会成为一个独立的适配器
+`<适配器>@<名字>`:
+
+```jsonc
+{
+  "accounts": {
+    "claude": [
+      { "name": "work", "configDir": "~/.claude-work" },
+      { "name": "home", "configDir": "~/.claude-home", "concurrency": 2 }
+    ],
+    "codex": [{ "name": "team", "configDir": "~/.codex-team" }]
+  }
+}
+```
+
+- `claude@work` 就是 `claude` 适配器,只是把该 CLI 文档中的配置目录变量设为这个账号的目录:
+  Claude Code 用 `CLAUDE_CONFIG_DIR`,Codex 用 `CODEX_HOME`。每个账号先手动登录一次:
+  `CLAUDE_CONFIG_DIR=~/.claude-work claude auth login`、`CODEX_HOME=~/.codex-team codex login`。
+  其他 CLI 一律拒绝:ODW 不知道有哪个变量能把两个登录分开。
+- 每个账号有自己的并发上限(取其适配器的 `concurrency`,或该项自己的)和自己的额度熔断;
+  其余定义与其适配器相同。每一项接受 `name`、`configDir`(绝对路径或 `~/` 开头)、
+  `concurrency` 和 `label`。
+- `agent(…, { adapter: "claude" })`——以及默认适配器、提到 `claude` 的回退链——表示
+  *任意一个 claude 账号*:这次调用得到一条由这些账号组成、按余量排序的链,某个账号用完时
+  **交接工作**(与 `"fallback": { "handoff": true }` 相同;`agent(…, { handoff: false })`
+  则从头开始)。`adapter: "claude@work"` 只在这个账号上运行。
+- **余量**在每次路由调用时计算:不处于额度暂停的账号在前(额度熔断已把它移出,或在
+  `quotaWait` 下额度用完、等待重置),其次是本次运行中额度失败最少的,再次是本次运行中
+  已路由到它、尚未结束的 agent 最少的;相同时保持配置中的顺序。扇出因此会分散到各个账号。
+- 模型档位里没有 `claude@work` 的 id 时,使用 `claude` 的。
+- agent 的适配器在事件、实时视图、看板抽屉与花费小票中都显示为 `claude@work`;`odw status`
+  按账号分组列出 agent(`accounts of claude: claude@home 2 agents · claude@work 1 agent, 1 moved on`)。
+- `odw doctor` 不调用模型地检查每个账号的登录——用该账号的目录运行 `claude auth status`
+  或 `codex login status`——`odw doctor --smoke --adapter claude` 会通过每个账号各发一次提示词。
+- 在容器沙箱中,复制(或绑定)进容器 home 的是该账号的目录,而不是 `~/.claude`。
+
+能否把多个账号合在一起使用,取决于各服务商的服务条款:配置多个账号之前请先确认。ODW
+只是在你提供的登录之间切换。
 
 ### 按适配器限制并发与错开扇出
 
@@ -2688,8 +2834,9 @@ node web/dev.mjs --api http://127.0.0.1:4317     # → http://127.0.0.1:5173
 - **运行钩子与卡死看门狗。** 运行结束、失败或停止时触发 `notify` 命令或 webhook(兼容
   Slack/Discord);可选的 `stallTimeout` 会终止并重启长时间无输出的 agent;worker 收到
   SIGTERM 时会干净地停止运行。
-- **`odw doctor [--smoke]`** 检查运行环境、配置和每个适配器;加 `--smoke` 会发一条真实
-  提示,揪出那些无头模式下没有回答却以 0 退出的 CLI。
+- **`odw doctor [--smoke] [--models]`** 检查运行环境、配置和每个适配器;加 `--smoke` 会发一条真实
+  提示,揪出那些无头模式下没有回答却以 0 退出的 CLI;加 `--models` 则给配置和工作流提到的每个
+  「适配器/模型」组合各发一条。
 - **可靠性。** 超时和停止会作用于 agent 的整个进程树(先 SIGTERM 再 SIGKILL),也能停下
   已在运行的 agent;崩溃或被吞掉的致命错误不会再让运行卡在 `running`,停止的运行也不会被
   记成 `done`;有歧义的结构化回复会重试而不是瞎猜;配置里的非法数字会直接报错。

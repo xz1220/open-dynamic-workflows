@@ -10,14 +10,21 @@
 # Env overrides: ODW_VERSION (default: latest), ODW_BIN_DIR (default: ~/.local/bin),
 #                ODW_REF (skill source ref, default: the binary's release tag),
 #                ODW_ALLOW_UNVERIFIED=1 (see below),
+#                ODW_REQUIRE_CHECKSUMS=1 (see below; the GitHub Action sets it),
 #                ODW_SKILL=0 (the binary only: no skill, no `odw init`; what the
 #                GitHub Action in action/ installs on a CI runner).
 #
 # Integrity: the binary is checked against the release's SHA256SUMS asset
 # before anything is installed. A checksum mismatch, or a SHA256SUMS that does
 # not list the binary, always aborts. Releases up to v0.5.0 predate SHA256SUMS
-# and install with a warning. For any newer release, a missing SHA256SUMS (or
-# no sha256sum/shasum on this machine) aborts unless ODW_ALLOW_UNVERIFIED=1.
+# and install with a warning — or abort under ODW_REQUIRE_CHECKSUMS=1. For any
+# newer release, a missing SHA256SUMS (or no sha256sum/shasum on this machine)
+# aborts unless ODW_ALLOW_UNVERIFIED=1.
+#
+# What the check does and does not do: it proves the download is the file the
+# release's SHA256SUMS lists — no corruption, nothing swapped on the way. It
+# does not prove the release is authentic: SHA256SUMS comes from the same
+# release, so whoever can change the release's assets can change both.
 set -eu
 
 REPO="xz1220/open-dynamic-workflows"
@@ -133,7 +140,7 @@ predates_checksums() {
 }
 # Verification is impossible here: abort, unless explicitly allowed.
 unverified() {
-  if [ "${ODW_ALLOW_UNVERIFIED:-}" = 1 ]; then
+  if [ "${ODW_ALLOW_UNVERIFIED:-}" = 1 ] && [ "${ODW_REQUIRE_CHECKSUMS:-}" != 1 ]; then
     echo "  warning: $1; installing an UNVERIFIED binary (ODW_ALLOW_UNVERIFIED=1)" >&2
   else
     echo "$1; refusing to install an unverified binary (set ODW_ALLOW_UNVERIFIED=1 to override)" >&2
@@ -158,7 +165,10 @@ if SUMS_HTTP="$(curl -fSL -w '%{http_code}' "$BASE/SHA256SUMS" -o "$TMP/SHA256SU
     echo "→ verified SHA-256 of $ASSET against SHA256SUMS"
   fi
 elif [ "$SUMS_HTTP" = 404 ]; then
-  if predates_checksums; then
+  if predates_checksums && [ "${ODW_REQUIRE_CHECKSUMS:-}" = 1 ]; then
+    echo "$VERSION predates published checksums (SHA256SUMS); refusing to install it unverified (ODW_REQUIRE_CHECKSUMS=1)" >&2
+    exit 1
+  elif predates_checksums; then
     echo "  warning: $VERSION predates published checksums (SHA256SUMS); installing unverified" >&2
   else
     unverified "release $VERSION publishes no SHA256SUMS"

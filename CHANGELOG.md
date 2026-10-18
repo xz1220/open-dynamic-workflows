@@ -71,6 +71,16 @@ independent security reviews whose findings are all fixed.
   event `{ from, to, reason, bytes }`, and marked in the transcript (`odw logs --agent`,
   the dashboard drawer, the brief folded in). `expect` and the kept diff judge the final
   state, against the worktree's base.
+- Several accounts of one CLI in one run (`"accounts": { "claude": [{ "name": "work",
+  "configDir": "~/.claude-work" }, …] }`; **ODW extension**): each login becomes an
+  adapter `claude@work` with its CLI's config-dir variable (`CLAUDE_CONFIG_DIR`,
+  `CODEX_HOME`; other CLIs are refused), its own concurrency cap and quota breaker.
+  `adapter: "claude"` then runs on any account — the one with the most headroom first
+  (not paused for quota, fewest quota failures this run, fewest agents on it) — and hands
+  the work over to the next when one runs out. `odw status` groups agents by account,
+  `odw doctor` checks each login without a model call (`claude auth status`, `codex
+  login status`) and `--smoke` probes each; a container sandbox copies the account's
+  directory. Pooling accounts must follow each provider's terms of service.
 - Evidence of success: `agent(…, { expect })` checks an agent's work instead of taking
   its word — `command` exits 0 in its workspace, `changes`, `files` (globs), `match` —
   and hands misses back (`expectRetries`, default 1) before failing with
@@ -106,6 +116,28 @@ independent security reviews whose findings are all fixed.
   naming the paths — so an agent cannot edit or skip the tests it is judged by to get
   green. Read like `expect.changes`: an isolated agent's kept diff, an in-place agent's
   change since the call started.
+- A `model_unavailable` failure reason (**ODW extension**): a model the CLI does not
+  know, has retired, or does not offer the account — Claude Code's "There's an issue
+  with the selected model", Codex's "The model `x` does not exist or you do not have
+  access to it", Gemini's "models/x is not found for API version" and
+  `ModelNotFoundError`, agy's "invalid model selection", OpenCode/Kilo "Model not
+  found", Cursor's "Cannot use this model", each sampled with its source in
+  `tests/failures.test.ts`. Read from the final lines only; never retried; like a spent
+  quota it moves the agent down its fallback chain (and hands over with `handoff`).
+  Adapters may add their own wording (`failures.model_unavailable`); `odw test` scripts
+  it as `fail: "model_unavailable"`. Gemini CLI's end of life for individual and free
+  accounts (2026-06-18) reads as one too, and the README says so.
+- `odw doctor --models` (**ODW extension**): one tiny prompt per adapter/model pair the
+  config's `models` tiers, `fallback` chains and default adapter, and the phases of
+  `.odw/workflows`, name — on that adapter alone, no retry, no fallback — each reported
+  `ok`, `model_unavailable` (a failed check) or `other`; `--json` carries `model: {
+  adapter, model, result, from }` per check.
+- Drift watch (**ODW extension**): every run compares its CLI versions and requested
+  models with the workflow's previous finished run and logs each change once (`drift:
+  claude CLI 2.1.302 → 2.1.330 since the last run of review-swarm`); the run summary has
+  a `drift` field (`{ since, changes }`, web types too). A workflow with an eval file
+  gets `odw eval <name> --baseline <last report>` suggested; `"driftEval": true` starts
+  it once the run ends, detached, its output in `drift-eval.log`.
 
 ### Ask a person, tell a person
 - `checkpoint(title, { payload, timeout, onTimeout })` pauses a run until someone
@@ -432,6 +464,23 @@ independent security reviews whose findings are all fixed.
   `odw attach` re-attaches); pipes and CI keep the fire-and-poll contract.
 - First-run onboarding: `odw init` picks the default agent CLI; `odw doctor [--smoke]`
   checks the runtime, config and every adapter — `--smoke` sends one real prompt.
+- `odw new [<template>] [--name N] [--force] [--yes]` (**ODW extension**): a workflow
+  from a template embedded in the binary — `hello`, `review-swarm`, `fix-until-green`,
+  `plan-approve-execute`, `pr-shepherd`, `fan-out-reduce` — written to
+  `.odw/workflows/<name>.js` with a starter test, `.odw/tests/<name>.json`, that `odw
+  test <name>` passes at once, and for the review-ish ones an eval skeleton in
+  `.odw/evals/`. It never overwrites a file with other content without `--force`
+  (then it writes nothing, exit 1); `odw new` alone lists the templates. In a git
+  repository without a `.worktreeinclude` it prints one built from the lockfiles
+  (`symlink:` lines for `node_modules`, `.venv`, `vendor`) and `.env*` files, and
+  writes it with `--yes` or a yes at a terminal. The templates are embedded at build
+  time (`scripts/embed-templates.mjs` → `src/templates.generated.ts`, drift-checked in
+  CI like the dashboard).
+- `odw init` ends with a first run that costs nothing: at a terminal it offers `odw new
+  hello` and runs `odw run hello --dry` — the live view, every agent stubbed — then
+  prints the dashboard command and the real `odw run hello`. It never makes a paid call
+  itself; off a terminal it prints the commands. The README quick start now leads with
+  `odw new`, `odw test` and `odw run --dry`, then the real run.
 - A redesigned dashboard ("paper, ink and signal"): an Activity pulse with a "Needs
   you" strip, a live DAG with checkpoint gates and diff badges, a timeline, drawers with
   outputs, usage, failure reasons and tiers, the Changes and Transcript views, a Spend
@@ -533,8 +582,47 @@ independent security reviews whose findings are all fixed.
 - `odw apply --pr` let `gh pr create` guess the repository from the checkout (an
   `upstream` remote, a set default). It now passes `--repo owner/name` of the remote the
   branch was pushed to (`HOST/owner/name` off github.com).
+- A repository's own config could make `odw serve` start trusted runs for anyone: a
+  clone's `./odw.config.json` named a trigger with an inline secret and `"untrusted":
+  false`, and the trigger route was matched before the DNS-rebinding Host guard, so a
+  page a browser opened could post a signed request to a loopback `odw serve`. Triggers
+  now come only from the user's own config (`--config`, `$ODW_CONFIG`, or
+  `~/.config/odw/config.json` outside the repository); a repository config's are refused
+  with a warning at start. On a loopback bind the Host guard covers the trigger route,
+  letting loopback hosts and the `--public-url`'s host through.
+- A GitHub delivery could be replayed after an hour, or after `odw serve` restarted
+  (GitHub signs no timestamp; its signature was remembered in memory for an hour). Each
+  accepted delivery's signature and `X-GitHub-Delivery` id are now kept in
+  `<runsRoot>/_triggers/seen.jsonl` for 30 days and checked across restarts. A delivery
+  older than that, or replayed against another runs root, still verifies: rotate a
+  secret that may have leaked.
+- A trigger answered `404` for a name the config lacks and `503` while its secret was
+  unset, before any signature check, so an unauthenticated caller could list the
+  triggers. An unknown name, an unset secret and a bad, missing or stale signature now
+  get the same `401`, after the body is read and checked; `odw serve` logs the reason.
+- `--deadline` threw away what isolated agents it killed had changed. Their partial work
+  is now captured and kept as their diff, the `agent_failed` event marked `partial:
+  true`. A stop by a person still keeps no killed agent's change.
+- Dry runs and `odw test`'s recorded runs fed `odw estimate` and the cost forecasts:
+  twenty dry runs pushed every real run out of the window, so the estimate had no cost
+  and `costGate` let every fan-out through. Runs no model answered (`meta.dry`, `origin:
+  "test"`) are now left out.
+- The GitHub Action passed its `args` input to `odw run --args` as it was: `@/proc/self/
+  environ` made odw read that file into the run, and a leading `-` read as a flag. The
+  input now goes through a file (`--args=@<file>`), the other inputs as `--flag=value`.
+- The Action's `untrusted: auto` ran a `workflow_run` that followed a fork's run, and a
+  same-repository `pull_request_target`, trusted. Both now run `--untrusted`.
+- The Action installed a release without published checksums with a warning. It now
+  refuses one (`ODW_REQUIRE_CHECKSUMS=1` in `install.sh`), and the docs say the SHA-256
+  check proves integrity (the file the release lists), not authenticity.
+- `odw replay` put the original prompt in the new run's `meta.json` args, which the
+  dashboard serves with token-shape redaction only. The call now lives in the run's
+  `call.json`, which nothing serves; `args` hold `{ replayOf }`.
 
 ### Changed behavior — check before upgrading
+- Signed triggers in a repository's `./odw.config.json` are no longer served: move them
+  to `~/.config/odw/config.json` or pass `--config`. A tunnel to a loopback `odw serve`
+  needs `--public-url <the tunnel's URL>` for its webhooks to pass the Host guard.
 - The built-in `codex` adapter runs `codex exec --json --output-last-message
   {reply_file}` (it ran text mode). A config entry that gives `codex` its own `command`
   replaces the built-in and needs the matching `output` block to report usage and to

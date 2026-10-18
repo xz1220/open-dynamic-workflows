@@ -1,0 +1,16 @@
+{
+  "description": "A skeleton: real runs that push to a real pull request, so point it at a throwaway PR in a dedicated clone. Replace pr and test, then: odw eval pr-shepherd",
+  "workflow": "pr-shepherd",
+  "repeats": 1,
+  "timeout": 3600,
+  "cases": [
+    {
+      "name": "a-red-pr-goes-green",
+      "args": { "pr": 1, "test": "npm test", "markReady": false },
+      "checks": [
+        { "state": "done" },
+        { "path": "status", "matches": "^(green|ready)$" }
+      ]
+    }
+  ]
+}

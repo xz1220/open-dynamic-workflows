@@ -10,6 +10,7 @@ import type { TriggerSettings } from "../triggers.js";
 import type { EgressAllow } from "./egress.js";
 import type { CostGate } from "../forecast.js";
 import type { LimitSpec } from "../limits.js";
+import type { AccountOf } from "./accounts.js";
 
 /**
  * Which per-call options this CLI can carry, and the argv flag that carries
@@ -215,6 +216,8 @@ export interface AdapterFailures {
   quota?: string[];
   /** Not logged in, or refused credentials: not retried. */
   auth?: string[];
+  /** The model asked for is unknown, retired or not available to the account: not retried, it falls back. */
+  model_unavailable?: string[];
 }
 
 /**
@@ -311,6 +314,8 @@ export interface Adapter {
    * extension; see ./egress). The built-in adapters declare theirs.
    */
   egressHosts?: string[];
+  /** An account of another adapter (ODW extension; see ./accounts): set on the adapters `accounts` expands into. */
+  account?: AccountOf;
 }
 
 /**
@@ -472,6 +477,14 @@ export interface Settings {
    */
   recordVersions: boolean;
   /**
+   * Drift watch (an ODW extension; see ../drift): when a run's CLI versions or
+   * requested models changed since the workflow's previous run, and the
+   * workflow has an eval file (`.odw/evals/<name>.json`), start `odw eval
+   * <name> --baseline <last report>` once the run ends, detached. `false`
+   * (the default) only suggests it in the run's log.
+   */
+  driftEval: boolean;
+  /**
    * The run's notes board for every agent (an ODW extension; see ../notes):
    * the notes so far in each prompt, `ODW_NOTES` to post and read them, and
    * each isolated agent's interface changes posted as it finishes. Off by
@@ -515,8 +528,9 @@ export interface Settings {
   schemaPrompt: "auto" | "always";
   /**
    * Fallback chains (an ODW extension): adapter name → the adapters a call on
-   * it moves to, in order, when its CLI's quota is spent or its login is
-   * refused. An agent() call that lists its own adapters uses that list instead.
+   * it moves to, in order, when its CLI's quota is spent, its login is
+   * refused, or the model it asks for is unavailable. An agent() call that
+   * lists its own adapters uses that list instead.
    */
   fallback: Record<string, string[]>;
   /**
@@ -704,6 +718,12 @@ export interface NotifySettings {
 export interface Config {
   adapters: Record<string, Adapter>;
   settings: Settings;
+  /**
+   * Account pools (an ODW extension; see ./accounts): adapter name → its
+   * accounts' adapter names (`claude@work`, …), in config order. A call on
+   * the adapter runs on any of them. Absent: none.
+   */
+  accounts?: Record<string, string[]>;
 }
 
 /** The outcome of a single CLI invocation. */

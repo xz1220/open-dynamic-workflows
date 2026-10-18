@@ -1,0 +1,36 @@
+{
+  "workflow": "hello",
+  "description": "Starter tests: scripted replies, no model called, $0. Run them with: odw test hello",
+  "cases": [
+    {
+      "name": "the more confident answer wins",
+      "replies": [
+        { "label": "look:1", "reply": { "summary": "a CLI that runs agent workflows", "confidence": 0.6 } },
+        { "label": "look:2", "reply": { "summary": "a TypeScript runtime for agent workflows", "confidence": 0.9 } }
+      ],
+      "expect": {
+        "checks": [
+          { "path": "summary", "equals": "a TypeScript runtime for agent workflows" },
+          { "path": "topic", "equals": "this repository" },
+          { "path": "answers", "equals": 2 }
+        ],
+        "agents": { "count": 2, "labels": ["look:1", "look:2"] },
+        "logs": ["2 answers; kept the one at confidence 0.9"]
+      }
+    },
+    {
+      "name": "one agent failing still gives an answer",
+      "args": { "topic": "the build" },
+      "replies": [
+        { "label": "look:1", "fail": "exit" },
+        { "label": "look:2", "reply": { "summary": "tsc, then a single-file bundle", "confidence": 0.7 } }
+      ],
+      "expect": {
+        "checks": [
+          { "path": "topic", "equals": "the build" },
+          { "path": "answers", "equals": 1 }
+        ]
+      }
+    }
+  ]
+}

@@ -4,13 +4,16 @@
 
 1. installs the odw release binary its own tag pins (or the `version` input)
    with [`scripts/install.sh`](../scripts/install.sh), checked against the
-   release's `SHA256SUMS` — binary only, no skill;
+   release's `SHA256SUMS` — binary only, no skill. A release that publishes no
+   `SHA256SUMS` (odw 0.5.0 and older) is refused, never installed unverified;
+   see [What the checksum does and does not prove](#what-the-checksum-does-and-does-not-prove);
 2. runs `odw run <workflow> --wait --deadline <s>`, the deadline being the
    job's `timeout-minutes` less `margin-seconds` (default 300) and the time
    the action already spent — so when the work runs long, the run is
-   **stopped** (status `stopped`, finished agents and their diffs kept) while
-   the job still has time to report, instead of the runner killing the step and
-   everything after it;
+   **stopped** (status `stopped`; finished agents and their diffs kept, and
+   what each isolated agent the deadline killed had changed so far, marked
+   `partial: true`) while the job still has time to report, instead of the
+   runner killing the step and everything after it;
 3. writes the run's spend receipt, agent table and failures to the job summary;
 4. uploads `odw bundle <run>` as the artifact `odw-<run>` — download it and
    `odw view <file>.odwrun` to see the whole run in the dashboard;
@@ -29,10 +32,10 @@ commit SHA.
 | input | default | |
 | --- | --- | --- |
 | `workflow` | (required) | a path in the repository, or a managed workflow name |
-| `args` | | the workflow's input, JSON or a plain string |
+| `args` | | the workflow's input, JSON or a plain string — written to a file and passed as `--args=@<file>`, so a value starting with `@` or `-` is taken as text, never as a file to read or a flag |
 | `timeout-minutes` | `360` | **set it to the job's `timeout-minutes`** |
 | `margin-seconds` | `300` | kept after the deadline for the summary, bundle and upload |
-| `untrusted` | `auto` | `auto`: untrusted for pull requests from forks and for `issues`, `issue_comment`, review and discussion events; or `true` / `false` |
+| `untrusted` | `auto` | `auto`: untrusted for pull requests from forks, every `pull_request_target`, a `workflow_run` whose triggering run came from another repository (a fork's), and `issues`, `issue_comment`, review and discussion events; or `true` / `false` |
 | `config`, `adapter`, `permissions` | | passed to `odw run` (`--config`, `--adapter`, `--permissions`) |
 | `version` | the action's tag | the odw release to install |
 | `bundle` | `true` | upload `odw bundle` |
@@ -66,6 +69,25 @@ the README). Keep `permissions:` on the job as narrow as the run needs:
 Pull requests from forks get no repository secrets (`pull_request`), which is
 GitHub's protection; do not work around it with `pull_request_target` and a
 checkout of the fork's code unless the run is untrusted and sandboxed.
+`untrusted: auto` runs every `pull_request_target`, and every `workflow_run`
+that follows a fork's run, `--untrusted` — both carry the base repository's
+secrets while acting on code or text a fork controls.
+
+## What the checksum does and does not prove
+
+The install step checks the downloaded binary's SHA-256 against the
+`SHA256SUMS` published in the same GitHub release, and fails on a mismatch, on
+a release without `SHA256SUMS`, or on a runner with no `sha256sum`/`shasum`.
+That proves **integrity**: the binary is the file the release lists, not one
+corrupted or swapped on the way. It does **not** prove **authenticity**: both
+files come from the same release, so whoever can change the release's assets
+(a compromised maintainer account or token) can change both. Pinning the
+action to a commit SHA pins `install.sh` and this script, not the release's
+assets.
+
+Future work: pin each release's `SHA256SUMS` into the action at tag time (so an
+asset changed after the tag fails the check), or verify signed build
+provenance (GitHub artifact attestations / Sigstore).
 
 ## Example: review every pull request
 
@@ -149,7 +171,11 @@ is your default branch). For runs on your own machine instead of a runner, see
 ## Exit codes, and `--deadline` outside CI
 
 `odw run --deadline <s>` works anywhere: the worker stops the run once `s`
-seconds have passed since it started, whatever mode it runs in. With `--wait`
+seconds have passed since it started, whatever mode it runs in. Finished
+agents' results and diffs are kept, and so is what each isolated agent it killed
+had changed so far, marked `partial: true` on its `agent_failed` event (`odw
+apply` applies it only when that agent is named); a stop by a person keeps no
+killed agent's change. With `--wait`
 or `--fg` it then prints `{ "state": "stopped", "reason": "deadline",
 "deadline": s, "finished": [{ agentId, label, phase, value }] }` and exits `3`.
 `--timeout` is different: it only stops *waiting* (exit 124) and leaves the run

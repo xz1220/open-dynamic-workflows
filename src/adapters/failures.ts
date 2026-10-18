@@ -7,7 +7,10 @@
  * waits, see {@link backoffSeconds}, and runs the CLI again), while a spent
  * quota or a refused login is never retried but reported with what the user
  * can do about it — and it travels with the failure: `reason` on agent_failed
- * events, `failureReason` on the dashboard's agents.
+ * events, `failureReason` on the dashboard's agents. A model the CLI does not
+ * know, has retired, or will not give this account (`model_unavailable`) is
+ * never retried either: like a spent quota or a refused login, it moves the
+ * call down its fallback chain.
  *
  * The wording each CLI is known to print lives in one table,
  * {@link FAILURE_PATTERNS}. An adapter can add its own wording for the classes
@@ -42,6 +45,8 @@ export type FailureReason =
   | "quota"
   /** Not logged in, or the credentials were refused. */
   | "auth"
+  /** The model asked for is unknown to the CLI, retired, or not available to this account: not retried. */
+  | "model_unavailable"
   /** Killed at the timeout. */
   | "timeout"
   /** Killed by the stall watchdog. */
@@ -70,15 +75,25 @@ export type FailureReason =
   | "out_of_scope";
 
 /** The classes an adapter's `failures` config may add patterns to. */
-export const CONFIGURABLE_REASONS = ["rate_limit", "quota", "auth"] as const;
+export const CONFIGURABLE_REASONS = ["rate_limit", "quota", "auth", "model_unavailable"] as const;
 
 /** The classes read from output text. */
-type TextReason = "quota" | "auth" | "rate_limit" | "permission";
+type TextReason = "quota" | "model_unavailable" | "auth" | "rate_limit" | "permission";
 
 // Precedence, first match wins. Quota before rate_limit: a spent quota usually
 // arrives as an HTTP 429 that also says "rate limit" or "too many requests".
-// Quota before auth: a spent quota also arrives as a 401 or 403.
-const TEXT_ORDER: readonly TextReason[] = ["quota", "auth", "rate_limit", "permission"];
+// Quota before auth: a spent quota also arrives as a 401 or 403. Quota before
+// model_unavailable: a model's spent quota says "switch to another model";
+// model_unavailable before auth: a model the account may not use says
+// "you may not have access to it", sometimes as a 403.
+const TEXT_ORDER: readonly TextReason[] = ["quota", "model_unavailable", "auth", "rate_limit", "permission"];
+
+/**
+ * The classes that count only in the final lines of a run's output: each
+ * moves the call on (a retry, a fallback), and an agent's own transcript — a
+ * test hitting an API, a repo's error strings — lands in the same streams.
+ */
+const FINAL_LINES_ONLY: ReadonlySet<TextReason> = new Set(["rate_limit", "model_unavailable"]);
 
 /**
  * The wording that marks each class, per CLI (and the model APIs they relay),
@@ -119,6 +134,38 @@ export const FAILURE_PATTERNS: Readonly<Record<TextReason, readonly RegExp[]>> =
     // credits behind it ("Your AI credits balance is too low to continue.",
     // changelog 1.2.15).
     /\bindividual quota reached\b|\bcredits balance is too low\b/i,
+  ],
+  model_unavailable: [
+    // Claude Code: "There's an issue with the selected model (<id>). It may not
+    // exist or you may not have access to it. Run --model to pick a different
+    // model." (claude-code#97393) — also shown for a stray 404 (#103174), which
+    // a fallback rides out as well as a retry would. The API's own 404 names
+    // the model: {"type":"not_found_error","message":"model: <id>"} (#99578).
+    /\bissue with the selected model\b/i,
+    /"not_found_error"[^\n]{0,40}"message"\s*:\s*"model:|\bAPI model not found\b/i,
+    // OpenAI (Codex) and OpenAI-compatible APIs (Qwen's DashScope): "The model
+    // `gpt-5.5` does not exist or you do not have access to it." (codex#44560),
+    // "Model not found gpt-5.5" (codex#43755), the `model_not_found` code;
+    // OpenCode and Kilo "ProviderModelNotFoundError: Model not found: <id>".
+    /\bmodel\b[^\n]{0,80}\bdoes not exist or you do not have access to it\b/i,
+    /\bmodel_not_found\b|\bModelNotFoundError\b|\bmodel not found\b/i,
+    // Codex on a ChatGPT plan: "The 'gpt-5.4' model is not supported when using
+    // Codex with a ChatGPT account." (codex#54665)
+    /\bmodel is not supported when using Codex\b/i,
+    // Gemini: "models/gemini-3.1-pro is not found for API version v1beta, or is
+    // not supported for generateContent." (gemini-cli#24131); Vertex "Publisher
+    // model … was not found or your project does not have access to it." (#29213)
+    /\bmodels\/[\w.:-]+ is not found for API version\b/i,
+    /\bpublisher model\b[^\n]{0,300}\bwas not found or your project does not have access\b/i,
+    // ... and Gemini CLI itself, retired for individual and free accounts on
+    // 2026-06-18: "This client is no longer supported for Gemini Code Assist
+    // for individuals." (littlebearapps/untether#720) — no model is left there.
+    /\bno longer supported for Gemini Code Assist for individuals\b/i,
+    // agy: "invalid model selection (--model …)", "model <id> is not recognized
+    // as a known model or custom model in settings" (antigravity-cli#734).
+    /\binvalid model selection\b|\bis not recognized as a known model\b/i,
+    // Cursor: "Cannot use this model: haiku-4.5. Available models: …" (forum.cursor.com/t/164331)
+    /\bcannot use this model\b/i,
   ],
   auth: [
     // agy: an expired sign-in ("Authentication expired. Please log back in.",
@@ -231,9 +278,10 @@ export function classifyFailure(cli: CliResult, options: ClassifyOptions = {}): 
   const ownPatterns = compileOwn(options.patterns);
   for (const table of ownPatterns ? [ownPatterns, FAILURE_PATTERNS] : [FAILURE_PATTERNS]) {
     for (const [i, region] of regions.entries()) {
-      // A retry is a whole new agent run: a rate limit counts only in the final
-      // lines, where a CLI's last error lands — not in a transcript before them.
-      const reasons = i < 2 ? TEXT_ORDER : TEXT_ORDER.filter((r) => r !== "rate_limit");
+      // A retry is a whole new agent run: a rate limit (and a model that is not
+      // there, which moves the call on) counts only in the final lines, where a
+      // CLI's last error lands — not in a transcript before them.
+      const reasons = i < 2 ? TEXT_ORDER : TEXT_ORDER.filter((r) => !FINAL_LINES_ONLY.has(r));
       let reason = reasons.find((r) => table[r]?.some((pattern) => pattern.test(region)));
       if (!reason) continue;
       if (reason !== "rate_limit" && reason !== "quota") return { reason };
@@ -255,19 +303,20 @@ export function classifyFailure(cli: CliResult, options: ClassifyOptions = {}): 
  * reply that is nothing but such a message is a failed run, not an answer.
  */
 const ERROR_REPLY =
-  /^(?:API Error\b|Claude AI usage limit reached\b|(?:\d+-hour|session|(?:opus |sonnet )?weekly) limit reached\b|You've (?:hit|reached) your (?:[\w-]+ ){0,2}limit\b|Credit balance is too low\b|Not logged in\b|Invalid API key\b|Failed to authenticate\b|OAuth token has expired\b)/i;
+  /^(?:API Error\b|Claude AI usage limit reached\b|(?:\d+-hour|session|(?:opus |sonnet )?weekly) limit reached\b|You've (?:hit|reached) your (?:[\w-]+ ){0,2}limit\b|Credit balance is too low\b|Not logged in\b|Invalid API key\b|Failed to authenticate\b|OAuth token has expired\b|There's an issue with the selected model\b)/i;
 const ERROR_REPLY_MAX_CHARS = 1000;
 
 /**
- * A clean exit whose whole reply is the CLI's own rate-limit, quota or login
- * error — classified like a failure — or null for a real reply. Anchored at the
+ * A clean exit whose whole reply is the CLI's own rate-limit, quota, login or
+ * unknown-model error — classified like a failure — or null for a real reply. Anchored at the
  * start and short, so an answer that merely discusses such errors stays one.
  */
 export function classifyErrorReply(reply: string, options: ClassifyOptions = {}): FailureClass | null {
   const text = plain(reply).trim();
   if (text === "" || text.length > ERROR_REPLY_MAX_CHARS || !ERROR_REPLY.test(text)) return null;
   const verdict = classifyFailure({ returncode: 1, stdout: text, stderr: "", timedOut: false, duration: 0 }, options);
-  return verdict.reason === "rate_limit" || verdict.reason === "quota" || verdict.reason === "auth" ? verdict : null;
+  const { reason } = verdict;
+  return reason === "rate_limit" || reason === "quota" || reason === "auth" || reason === "model_unavailable" ? verdict : null;
 }
 
 function compileOwn(own: AdapterFailures | undefined): Partial<Record<TextReason, RegExp[]>> | undefined {

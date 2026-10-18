@@ -172,6 +172,23 @@ that choice anytime (agents use `odw init --adapter <name>` after asking you).
 `odw doctor` checks the setup — runtime, config, run directory, every adapter —
 and `odw doctor --smoke` sends your default adapter one real prompt, catching a
 CLI that installs fine but blocks on a login or approval prompt when headless.
+`odw doctor --models` (ODW extension) sends one tiny prompt to every adapter/model
+pair your config and `.odw/workflows` name, and says which models are gone.
+
+**Your first run costs nothing.** Start from a template, test it, watch it run with
+every agent stubbed — then run it for real:
+
+```bash
+odw new                    # the templates: hello, review-swarm, fix-until-green, plan-approve-execute, …
+odw new hello              # writes .odw/workflows/hello.js and a starter test, .odw/tests/hello.json
+odw test hello             # the starter test: scripted replies, no model called, $0
+odw run hello --dry        # the live view and the phase tree, every agent stubbed, $0 (odw serve --open: the dashboard)
+odw run hello              # the real run, on your default agent CLI
+```
+
+At a terminal, `odw init` ends by offering exactly this: it writes `hello` and runs
+`odw run hello --dry`, then prints the dashboard command and the real run — it never
+makes a paid call itself. See [Start from a template](#start-from-a-template-odw-extension).
 
 ODW is mostly driven **by your coding agent**, not by hand. With the skill and
 binary installed, just ask your agent for something big — it writes a workflow and
@@ -217,6 +234,46 @@ research → adversarial fact-check → cited report) is exactly such a script. 
 battle-tested sibling [`deep-research-verified.js`](examples/deep-research-verified.js)
 (validated at 100 agents / ~9 min on the codex adapter) ships with a cron-ready
 wrapper — see [`docs/recipes/deep-research-verified.md`](docs/recipes/deep-research-verified.md).
+
+### Start from a template (ODW extension)
+
+`odw new` writes a workflow from a template built into the binary, so a binary-only
+install has them too; `odw new` alone lists them.
+
+```bash
+odw new review-swarm                    # .odw/workflows/review-swarm.js, .odw/tests/…, .odw/evals/…
+odw new review-swarm --name pre-merge   # the same, named pre-merge (in the workflow, its test and its eval)
+odw new hello --force                   # replace files that exist with other content
+odw new hello --yes                     # also write the suggested .worktreeinclude (below)
+```
+
+| Template | What it does |
+| --- | --- |
+| `hello` | two agents describe the repository in parallel; plain JS keeps the more confident answer (read-only) |
+| `review-swarm` | review a change through several lenses in parallel, verify every finding, keep what survives |
+| `fix-until-green` | an agent fixes a red test suite; odw runs the suite to check it (`expect`) and hands misses back |
+| `plan-approve-execute` | draft a plan, wait at a `checkpoint()` for a person, then execute its steps in parallel |
+| `pr-shepherd` | take a pull request to green: fix red CI and new review comments, push, ask before marking it ready |
+| `fan-out-reduce` | draft N answers in parallel, then synthesize the single best one |
+
+- **What it writes**, in the current directory: `.odw/workflows/<name>.js` (`odw run
+  <name>`), `.odw/tests/<name>.json` — starter cases with scripted replies, so `odw test
+  <name>` passes at once, for $0 — and, for `review-swarm` and `pr-shepherd`, an eval
+  skeleton `.odw/evals/<name>.json` (real runs: edit it before `odw eval <name>`). The
+  templates other than `hello` are the [examples](examples/) of the same name.
+- **It never overwrites** a file that exists with other content without `--force`: it
+  then writes nothing at all and exits 1. A file that already holds exactly the template
+  counts as written, so the same command twice is harmless.
+- **In a git repository without a `.worktreeinclude`**, it prints one for
+  [isolated worktrees](#isolated-worktrees-and-agent-ports): the repository's `.env*`
+  files (not `.env.example` and the like), and `symlink:` lines for the dependency
+  directories its lockfiles imply (`node_modules` for npm, yarn, pnpm and bun; `.venv`
+  for uv, Poetry, Pipenv and PDM; `vendor` for Composer). It writes it with `--yes`, or
+  when you say yes at a terminal; never otherwise.
+- **`odw init`** (not `--check`) ends with the $0 first run: at a terminal it asks, then
+  writes `hello` (unless `.odw/workflows/hello.js` exists — then it runs that one) and
+  runs `odw run hello --dry` with its live view, then prints `odw serve --open` and the
+  real `odw run hello`. Off a terminal it only prints the commands.
 
 ## The primitives
 
@@ -529,8 +586,13 @@ background from the environment.
 
 **`--deadline <seconds>`** (ODW extension) stops the run once that many seconds
 have passed since it started — gracefully, like `odw stop`: its agents are
-killed, isolated agents' diffs and every finished agent's saved result are kept,
-and the run is recorded `stopped` (`stopReason: "deadline"` in its status). The
+killed, every finished agent's saved result is kept, and so is every isolated
+agent's diff — a finished one's, and what one the deadline killed had changed so
+far, marked `partial: true` on its `agent_failed` event and in the run's detail
+(`GET /api/runs/:id`); `odw diff` shows it, and `odw apply` applies it only when
+you name that agent, as for any failed agent's. A stop
+by a person (`odw stop`, Ctrl-C) keeps no killed agent's change, as before. The
+run is recorded `stopped` (`stopReason: "deadline"` in its status). The
 worker enforces it, so it holds in every mode. With `--wait` or `--fg`, odw then
 prints what finished — `{ "state": "stopped", "reason": "deadline", "deadline",
 "finished": [{ agentId, label, phase, value }] }` — and **exits 3**. Exit codes:
@@ -866,14 +928,25 @@ webhook's body, and gets `202 { "runId" }` back.
   `X-Slack-Signature` with `X-Slack-Request-Timestamp` within five minutes, or
   ODW's own `X-ODW-Signature` over `<timestamp>.<body>` for anything else. HMAC-SHA256
   over the raw body, compared in constant time; a delivery seen before (a replay,
-  a retry) starts nothing.
+  a retry) starts nothing. GitHub signs no timestamp: its deliveries' signatures
+  and `X-GitHub-Delivery` ids are kept under the runs root for 30 days, across
+  restarts (older ones verify again — rotate a secret that may have leaked).
+- **Your config only:** `odw serve` takes triggers from a config of your own —
+  `--config`, `$ODW_CONFIG`, or `~/.config/odw/config.json` outside the
+  repository. A repository's `./odw.config.json` cannot name one: its
+  `triggers` are refused with a warning (a clone must not open a webhook into
+  your machine), and your own config's are served instead.
 - **Untrusted by default:** issue text is anyone's input, so the runs are
   `--untrusted` unless the trigger says `"untrusted": false`.
-- **Narrow:** only trigger names in the config exist (`404` otherwise), each
-  starts only its own workflow; `401` on a bad signature (rate limited per
-  address), `413` past 1 MiB, `429` past `concurrency` or `rateLimit`. The route
-  answers off loopback and through a tunnel's `Host` — the signature is its
-  credential — while the rest of the dashboard keeps its rules.
+- **Narrow:** only the triggers of your config exist, each starts only its own
+  workflow. An unknown name, a secret not set yet and a bad, missing or stale
+  signature get the same `401` (rate limited per address; `odw serve` logs the
+  reason), so a caller without the secret learns nothing of which triggers
+  exist; `413` past 1 MiB, `429` past `concurrency` or `rateLimit`. The route
+  answers off loopback (`--host`) — the signature is its credential, no
+  `--token` — and on a loopback bind only through loopback `Host`s and the
+  `--public-url`'s (give a tunnel's URL there); the DNS-rebinding guard holds as
+  for the rest of the dashboard.
 - **Answer back:** the run records a `context` — the trigger, the event, the
   issue's id and URL, the repository, a Slack channel and thread — that
   [`notify`](#run-notifications) hooks receive, so a hook can comment on the issue,
@@ -896,11 +969,14 @@ out, so its output survives:
     ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 ```
 
-It installs the pinned odw release (SHA-256 verified), runs `odw run --wait
---deadline` with a margin before the job's timeout, writes the spend receipt,
-agent table and failures to the job summary, uploads `odw bundle` as an
-artifact, and with `apply-pr: true` opens a draft PR. Pull requests from forks
-and issue or comment events run `--untrusted`. Inputs, secrets and examples:
+It installs the pinned odw release (SHA-256 checked against the release's
+`SHA256SUMS` — integrity, not authenticity; a release without it is refused),
+runs `odw run --wait --deadline` with a margin before the job's timeout (the
+`args` input goes through a file, never as an argument), writes the spend
+receipt, agent table and failures to the job summary, uploads `odw bundle` as an
+artifact, and with `apply-pr: true` opens a draft PR. Pull requests from forks,
+every `pull_request_target`, a `workflow_run` after a fork's run, and issue or
+comment events run `--untrusted`. Inputs, secrets and examples:
 [`docs/github-action.md`](docs/github-action.md).
 
 ### Run on your own server (ODW extension)
@@ -1042,7 +1118,38 @@ call key and model on its `agent_started`, and — on an adapter's first agent o
 never delays or fails a run; a CLI that does not answer is recorded as unknown. An
 adapter whose command is node or another interpreter, a script or a relative path is
 not probed. `"recordVersions": false` turns the probes off. `odw eval` (below) builds
-on this.
+on this, and so does drift watch.
+
+### Drift watch (ODW extension)
+
+A model gets retired or re-pointed, a CLI upgrades itself overnight, and the workflow
+still "passes" on something it was never tuned for. Every run is therefore compared with
+the **previous finished run of the same workflow** — the newest one in its bucket of the
+runs root that ended (done, failed or stopped), was no dry run, and has the same source
+hash or the same name: each adapter CLI's version (its `cli_version` event) and the model
+each agent label asked for on its adapter (a `"@tier"` read through each run's own
+`models`). Each difference is logged once, as soon as the run records it:
+
+```text
+drift: claude CLI 2.1.302 → 2.1.330 since the last run of review-swarm (20261017-091500-3fa2c1)
+drift: reviewer asks claude for model opus-4 → opus-5 since the last run of review-swarm (20261017-091500-3fa2c1)
+drift: review-swarm has an eval — check it still passes against its last report: odw eval review-swarm --baseline ~/.odw/runs/_evals/review-swarm/20261017-093000-77e0.json
+```
+
+Only what both runs recorded counts: an adapter or a label one of them never used, or a
+CLI whose version is unknown, is no drift. The changes are the run summary's `drift`
+field — `{ since, changes: [{ kind: "cli" | "model", adapter, label?, from, to }] }` — in
+`GET /api/runs` and `/api/runs/:id`; each log line carries the change
+as `drift`.
+
+When the workflow has an eval file (`.odw/evals/<name>.json`), the first drift suggests
+running it against its newest kept report. With `"driftEval": true` in the config the
+run starts it itself once it ends (not when it was stopped): `odw eval <name> --baseline
+<report>`, detached, from the run's source directory, its output in the run directory's
+`drift-eval.log`. A run `odw eval` started never starts another. Dry runs and `odw test`
+runs are not watched. There is no `odw schedule add … --on-cli-change`: a scheduled run
+already logs its drift, and `driftEval` checks it — a schedule that polls CLI versions
+would be one more daemon for little gain.
 
 ### Debug a workflow (ODW extension)
 
@@ -1073,7 +1180,9 @@ Every call's inputs are kept as it starts (`agents/<id>.call.json`: the prompt a
 options as the script gave them, the adapter it started on, the model it asked for),
 and an isolated agent's `agent_started` event names the commit its worktree checked
 out (`base`). The replay is a new run (`origin: "replay"`, `replayOf: { runId,
-agentId, label, base }` in its `meta.json`) of just that call, with the original's
+agentId, label, base }` in its `meta.json`, whose `args` are `{ replayOf }` only: the
+prompt and options are kept in the run directory's `call.json`, which nothing serves)
+of just that call, with the original's
 label and phase, in the original's directory, config, permission tier, trust and
 sandbox — and, for a `worktree` agent, at the original's base commit whatever HEAD is
 now, so it sees the code the original saw. `--prompt @file|TEXT`, `--adapter` and
@@ -1193,6 +1302,7 @@ odw test review-swarm --case 2 --json     # one case (by number or name); the re
 odw test review-swarm --keep              # keep the scratch runs (odw logs <run_id> --runs-root …); or --runs-root DIR
 odw run review-swarm --record             # a real run, kept as a case of .odw/tests/review-swarm.json (--record-to FILE)
 odw run review-swarm --dry                # every agent gets a stub: the phase tree and agent counts, $0
+odw new review-swarm                      # a template with its starter tests, passing from the start (above)
 ```
 
 ```json
@@ -1597,6 +1707,15 @@ Cursor, and Google's Antigravity CLI work out of the box:
 | `opencode` | `opencode` | `run --format json --auto`; final text decoded from JSONL |
 | `cursor` | `agent` | `--print --force --trust`; prompt on stdin |
 | `agy` | `agy` | `--output-format stream-json`, prompt on stdin; reply, tokens, errors and refused tool calls (`denied_actions`) from its `result` event; object-rooted schemas natively (`--json-schema`) |
+
+> **`gemini` end of life for individual and free accounts.** Google ended Gemini CLI
+> support for individual (Gemini Code Assist for individuals) and free accounts on
+> 2026-06-18; such a login now gets "This client is no longer supported for Gemini
+> Code Assist for individuals", which ODW classifies as `model_unavailable` (a
+> [fallback chain](#per-phase-adapters-model-tiers-and-fallback-chains-odw-extension)
+> moves on). Use the `agy` adapter (Antigravity CLI) instead. Enterprise and Google
+> Cloud licences reportedly still work (unverified). Source:
+> [littlebearapps/untether#720](https://github.com/littlebearapps/untether/issues/720).
 
 The built-in `codex` and `claude` adapters come **web-capable**, so research
 workflows run with zero tuning. `odw init`
@@ -2388,7 +2507,8 @@ chars/4 of its reply — the run's log says so once. A CLI that reports no dolla
 **ODW extension.** Every failed agent is classified from its CLI's exit status
 and the end of its output: `rate_limit`, `quota`, `auth`, `timeout`, `stalled`,
 `not_found` (the CLI could not start), `permission` (a tool call or approval was
-refused) or `exit` — and four classes for runs that "succeeded" without the
+refused), `model_unavailable` (the model asked for is unknown, retired, or not
+offered to the account) or `exit` — and four classes for runs that "succeeded" without the
 evidence: `empty_reply`, `unmet_expectation`, under `"mcpFailures": "fail"`
 `mcp_unavailable`, and `orphaned_background` (background work left running at the
 reply, under `"orphanedBackground": "fail"` or `expect`; see
@@ -2423,6 +2543,16 @@ agent_failed    (Search) search — [quota, retry after 3h 22m] AdapterExecution
   the agent moves to the next CLI instead, and after three quota failures in a row
   the run's later agents skip that adapter. With [`quotaWait`](#pause-for-a-spent-quota-odw-extension),
   an agent with no CLI left waits for the quota to reset instead of failing.
+- **A model that is not there** — unknown to the CLI, retired, or not offered to this
+  account ("There's an issue with the selected model", "The model `x` does not exist or
+  you do not have access to it", Gemini's "models/x is not found for API version",
+  `ModelNotFoundError`, agy's "invalid model selection", Cursor's "Cannot use this
+  model") — is `model_unavailable`: never retried, and like a spent quota it moves the
+  agent down its fallback chain. Only the final lines of a run's output count, so an
+  agent's own work that prints "model not found" is not mistaken for it. `odw doctor
+  --models` checks every model the config's `models` tiers, `fallback` chains, default
+  adapter and the `.odw/workflows` phases name, one tiny prompt each, and reports `ok`,
+  `model_unavailable` or `other` per pair.
 
 Claude Code reports such errors in its output, often with exit 0: its stream-json
 `result` event says `is_error: true` with the message (`API Error: Rate limit
@@ -2453,7 +2583,8 @@ case-insensitively before the built-in table.
       "failures": {
         "rate_limit": ["server busy", "E_THROTTLED"],
         "quota": ["monthly tokens? (used up|exhausted)"],
-        "auth": ["session expired"]
+        "auth": ["session expired"],
+        "model_unavailable": ["no such model"]
       }
     }
   }
@@ -2614,6 +2745,55 @@ CLI spends its quota redoing what the last one did. With `"fallback": { "handoff
 call's resume key is its prompt and options as written: a phase's defaults stay out of
 it, like the run's default adapter, so routing a phase elsewhere — say, off a CLI that
 ran out of quota — still replays every call that finished.
+
+### Several accounts of one CLI
+
+**ODW extension.** If you have more than one Claude Code or Codex login, `accounts`
+lets one run use them all instead of you logging in again when one runs out. Each
+entry becomes an adapter of its own, `<adapter>@<name>`:
+
+```jsonc
+{
+  "accounts": {
+    "claude": [
+      { "name": "work", "configDir": "~/.claude-work" },
+      { "name": "home", "configDir": "~/.claude-home", "concurrency": 2 }
+    ],
+    "codex": [{ "name": "team", "configDir": "~/.codex-team" }]
+  }
+}
+```
+
+- `claude@work` is the `claude` adapter with its CLI's documented config-dir variable
+  set to the account's directory: `CLAUDE_CONFIG_DIR` for Claude Code, `CODEX_HOME` for
+  Codex. Log each one in once by hand: `CLAUDE_CONFIG_DIR=~/.claude-work claude auth login`,
+  `CODEX_HOME=~/.codex-team codex login`. Any other CLI is refused: ODW knows no
+  variable that would keep two logins apart.
+- Each account has its own concurrency cap (its adapter's `concurrency`, or the entry's
+  own) and its own quota breaker; the rest of the definition is its adapter's. An entry
+  takes `name`, `configDir` (absolute or `~/`), `concurrency` and `label`.
+- `agent(…, { adapter: "claude" })` — and the default adapter, and a fallback chain
+  naming `claude` — means *any claude account*: the call gets a chain of the accounts,
+  ordered by headroom, and **hands the work over** when one runs out (as `"fallback":
+  { "handoff": true }` does; `agent(…, { handoff: false })` starts over instead).
+  `adapter: "claude@work"` runs on that account alone.
+- **Headroom**, worked out each time a call is routed: accounts not in a quota pause
+  first (the quota breaker took them out, or under `quotaWait` their quota is spent
+  until a reset), then the fewest quota failures this run, then the fewest of the
+  run's agents routed to them and not yet finished; ties keep the config's order. A
+  fan-out spreads over the accounts that way.
+- A model tier without an id for `claude@work` uses the one for `claude`.
+- The agent's adapter reads `claude@work` in its events, the live view, the dashboard's
+  drawer and spend receipt; `odw status` groups agents by account (`accounts of claude:
+  claude@home 2 agents · claude@work 1 agent, 1 moved on`).
+- `odw doctor` checks each account's login without a model call — `claude auth
+  status` or `codex login status` with the account's directory — and `odw doctor
+  --smoke --adapter claude` sends one prompt through each account.
+- In a container sandbox, the account's directory is what gets copied (or bound) into
+  the container's home, not `~/.claude`.
+
+Whether you may pool several accounts is up to each provider's terms of service: check
+them before you configure more than one. ODW only switches between logins you give it.
 
 ### Concurrency per adapter and staggered fan-outs
 
@@ -3118,8 +3298,9 @@ upgrading, is in [`CHANGELOG.md`](CHANGELOG.md):
 - **Run hooks and a stall watchdog.** A `notify` command or webhook (Slack/Discord-
   ready) fires when a run finishes, fails or stops; an opt-in `stallTimeout` kills
   and restarts agents that go quiet; a SIGTERM to the worker stops the run cleanly.
-- **`odw doctor [--smoke]`** checks the runtime, config and every adapter — and with
-  `--smoke` sends one real prompt to catch CLIs that exit 0 without answering.
+- **`odw doctor [--smoke] [--models]`** checks the runtime, config and every adapter — and with
+  `--smoke` sends one real prompt to catch CLIs that exit 0 without answering; with
+  `--models`, one to each adapter/model pair the config and workflows name.
 - **Reliability.** Timeouts and stops reach an agent's whole process tree (SIGTERM,
   then SIGKILL) and agents already running; crashes and swallowed fatal errors can no
   longer leave a run `running` or call a stopped run `done`; ambiguous structured

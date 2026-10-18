@@ -122,7 +122,7 @@ import { applyArgsEdit } from "./breaks.js";
 import { branchName, ChangeRecorder, type AgentChanges, type KeptChanges } from "./changes.js";
 import { CheckpointTimeout, createCheckpoint, type CheckpointOptions, type CheckpointResult } from "./checkpoint.js";
 import { spentTokens, type RunContext } from "./context.js";
-import { AdapterExecutionError, AgentError, RunStopped, RunawayError, UnmetExpectationError, WorkflowScriptError, isFatalError } from "./errors.js";
+import { AdapterExecutionError, AgentError, RunStopped, RunawayError, UnmetExpectationError, WorkflowScriptError, isDeadlineStop, isFatalError } from "./errors.js";
 import { AGENT_FAILED, AGENT_FINISHED, AGENT_STARTED, HANDOFF, LOG, PHASE_STARTED, event } from "./events.js";
 import { ExecError, createExec, execStep, type ExecOptions, type ExecResult } from "./exec.js";
 import { CostGateRejected, costGateTitle, readCostGate, type CostGate, type CostHistory } from "./forecast.js";
@@ -721,7 +721,11 @@ export function createPrimitives(
           }),
         ),
       );
-      while (await ctx.bridge.awaitQuota(route, signal)) route = ctx.bridge.route(adapterChoice, opts.permissions);
+      while (await ctx.bridge.awaitQuota(route, signal)) {
+        // Routed again: the old route no longer counts on its account (ODW extension: accounts).
+        ctx.bridge.releaseRoute?.(route);
+        route = ctx.bridge.route(adapterChoice, opts.permissions);
+      }
       await turn?.gate?.(signal);
     };
     const request: AgentRequest = {
@@ -764,7 +768,7 @@ export function createPrimitives(
     };
     // The MCP servers its latest CLI run started it without (ODW extension): what a failed agent keeps.
     let mcpSeen: McpServer[] = [];
-    const failed = (err: unknown, kept: KeptChanges | null = null, outside: { outOfScope?: string[] } = {}): void => {
+    const failed = (err: unknown, kept: KeptChanges | null = null, outside: { outOfScope?: string[]; partial?: true } = {}): void => {
       ctx.emit(
         event(AGENT_FAILED, {
           agentId,
@@ -917,7 +921,7 @@ export function createPrimitives(
             transcript,
             // Where it runs, as routed at dispatch: the adapter its slot is on (ODW extension).
             route,
-            // A spent quota or a refused login moved it down its chain (ODW
+            // A spent quota, a refused login or a model that is not there moved it down its chain (ODW
             // extension): say so — the line also moves it, for every reader of
             // the run (runtime/runs-view) — and take a slot on the new adapter,
             // the old one's let go first.
@@ -1044,13 +1048,16 @@ export function createPrimitives(
           // A started agent always gets a terminal event, even when the error
           // is fatal (stop, budget, a config error raised inside the slot) —
           // else observers show it running forever. A failed agent's change
-          // is kept too (the work of one that timed out); a stop keeps none.
+          // is kept too (the work of one that timed out); a person's stop
+          // keeps none. The run's deadline keeps what an agent it killed had
+          // changed so far, marked `partial` (ODW extension: `--deadline`).
           // Its transcript is kept either way, complete before the event.
           await transcript?.close();
           notes?.close();
+          const deadline = isDeadlineStop(err) || (signal.aborted && isDeadlineStop(signal.reason));
           const stopped = isFatalError(err) || signal.aborted;
-          const kept = await keepChanges(changes, stopped, note);
-          failed(err, kept, stopped ? {} : outsideOf());
+          const kept = await keepChanges(changes, stopped && !deadline, note);
+          failed(err, kept, stopped ? (deadline && kept ? { partial: true } : {}) : outsideOf());
           throw err;
         }
         await transcript?.close();
@@ -1141,6 +1148,8 @@ export function createPrimitives(
       turn?.settled();
       // So may the calls waiting for its scope (ODW extension).
       claim?.release();
+      // A call routed across accounts that never ran no longer counts on one (ODW extension: accounts).
+      ctx.bridge.releaseRoute?.(route);
     }
   };
 

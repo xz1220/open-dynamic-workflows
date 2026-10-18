@@ -31,6 +31,7 @@ import type { PermissionTier, TrustLevel } from "../adapters/types.js";
 import { addUsage, readUsage, type Usage } from "../adapters/usage.js";
 import type { AgentChanges } from "../changes.js";
 import type { WaitingCheckpoint } from "../checkpoint.js";
+import { readDrift, type RunDrift } from "../drift.js";
 import type { WorkflowEvent } from "../events.js";
 import { LIMIT_NAMES, type AgentLimits, type LimitHit } from "../limits.js";
 import { readCliVersion, type CliVersion } from "../provenance.js";
@@ -136,6 +137,8 @@ export interface AgentView {
   changes?: AgentChanges | null;
   /** Agents only: the branch its change was kept on (`keep: true`, `keepBranches`), else null. */
   branch?: string | null;
+  /** Agents only (ODW extension): its `changes` are what it had when the run's `--deadline` killed it. */
+  partial?: true;
   /**
    * Agents only (ODW extension): the permission tier its CLI runs at —
    * agent_started's `permissions`. Absent for older event files.
@@ -272,6 +275,12 @@ export interface RunSummary {
   eval?: EvalRunTag;
   /** A dry run (`odw run --dry`; meta.dry, ODW extension): every agent got a stub, no model was called. Absent otherwise. */
   dry?: true;
+  /**
+   * What changed under the workflow since its previous run (ODW extension;
+   * see ../drift): the run compared with, and each CLI version or requested
+   * model that differs. Absent when nothing did.
+   */
+  drift?: RunDrift;
 }
 
 export interface RunDetail extends RunSummary {
@@ -464,6 +473,8 @@ export function applyAgentEvent(
     // What an isolated agent changed, finished or failed (ODW extension).
     target.changes = agentChanges(ev.changes);
     target.branch = typeof ev.branch === "string" && ev.branch !== "" ? ev.branch : null;
+    // Its change is what it had when the run's deadline killed it (ODW extension).
+    if (ev.partial === true) target.partial = true;
     // The adapters it fell back from, finished or failed (ODW extension).
     const from = adapterNames(ev.fellBackFrom);
     if (from) target.fellBackFrom = from;
@@ -698,6 +709,8 @@ export class EventFold {
   usage: Usage | undefined;
   /** Each adapter CLI's version, from the run's cli_version events (ODW extension). */
   readonly cliVersions: Record<string, CliVersion> = {};
+  /** What drifted since the workflow's previous run, from the run's drift log lines (ODW extension). */
+  drift: RunDrift | undefined;
 
   apply(events: WorkflowEvent[]): this {
     for (const ev of events) {
@@ -706,6 +719,12 @@ export class EventFold {
       applyCheckpointEvent(this.checkpoints, ev);
       const cli = readCliVersion(ev);
       if (cli) this.cliVersions[cli.adapter] = cli.cli;
+      const drifted = readDrift(ev);
+      if (drifted) {
+        const { since, ...change } = drifted;
+        this.drift ??= { since, changes: [] };
+        this.drift.changes.push(change);
+      }
       if (ev.type === "run_finished" || ev.type === "run_failed" || ev.type === "run_stopped") {
         this.ended = true;
         this.checkpoints.clear(); // nobody waits on a run that ended
@@ -801,6 +820,7 @@ export function summaryFrom(runId: string, facts: RunFacts): RunSummary {
     ...(meta.bundle ? { bundle: bundleOf(meta.bundle) } : {}),
     ...evalTagOf(meta),
     ...(meta.dry === true ? { dry: true as const } : {}),
+    ...(fold.drift ? { drift: { since: fold.drift.since, changes: fold.drift.changes.map((c) => ({ ...c })) } } : {}),
   };
 }
 

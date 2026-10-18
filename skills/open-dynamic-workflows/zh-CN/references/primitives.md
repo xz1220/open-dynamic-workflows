@@ -183,7 +183,8 @@ log(message)           // emit a one-line progress event
   会让调用以 `AgentError` 失败并列出已有层级。不带 `@` 的模型（或含有层级名不允许的字符，
   如 `@cf/…`）就是模型 ID，原样传给每个适配器。
 - **回退链。** `adapter: ["codex", "claude"]`，或调用所在适配器在 `fallback` 设置里的回退链：
-  CLI 额度用尽或登录被拒时，调用会在下一个适配器上重新运行——全新的提示词、相同的选项，
+  CLI 额度用尽、登录被拒或请求的模型不可用（`model_unavailable`：CLI 不认识、已下线或该账号
+  不可用）时，调用会在下一个适配器上重新运行——全新的提示词、相同的选项，
   [`expect`](#expectodw-扩展) 检查也一样。限流仍在原地重试（`transientRetries`）；其他失败
   ——包括没达到 expect 检查——都算调用自己的。每次切换记一行日志
   （`search:3 → claude after codex quota`）；调用会在新适配器上取得槽位，先释放旧适配器的；
@@ -205,6 +206,12 @@ log(message)           // emit a one-line progress event
 - **额度熔断。** 同一个适配器上连续 `quotaBreaker`（默认 3）次额度失败后，本次运行之后的
   调用都会跳过它：各自从回退链上的下一个适配器开始，没有回退链的则立即失败（原因为 `quota`）。
   只记一条警告。
+- **多账号**（ODW 扩展）。用户配置了 `accounts` 时，每个登录是一个适配器 `<适配器>@<名字>`
+  （`claude@work`），有自己的配置目录、并发上限和额度熔断。`adapter: "claude"`（或默认
+  适配器、提到它的回退链）表示任意一个 claude 账号：按余量排序的账号链——不处于额度暂停的
+  在前，其次是本次运行额度失败最少的，再次是已路由到它且未结束的 agent 最少的——并开启交接，
+  除非调用写了 `handoff: false`。`adapter: "claude@work"` 只在该账号上运行。事件、`odw status`
+  与看板都会写明账号。
 - **额度用尽时暂停。** 配置了 `quotaWait`（`{ "max": <秒数> }`；默认关闭）时，因额度用尽而无
   适配器可用的调用不会失败：它不占槽位地等到 CLI 报出的重置时间——只要在 `max` 之内——然后从
   链首重新开始，transcript 在 `{"kind":"attempt","reason":"quota_wait"}` 一行之后继续。在那个
@@ -811,6 +818,37 @@ Ctrl-C（SIGINT、SIGTERM、SIGHUP）会停止本次 eval 启动的所有运行�
 
 花费与 token 只对上报了它们的运行求和与平均，都未上报时为 null。任意两个运行 id 都可以用
 `odw compare <runA> <runB>` 对照。
+
+## odw new（ODW 扩展）
+
+```bash
+odw new                                          # 列出模板，每行一个（stdout）
+odw new <模板> [--name N] [--force] [--yes]
+```
+
+模板内置在二进制里：`hello`（两个只读 agent 并行，纯 JS 挑选）、`review-swarm`、
+`fix-until-green`、`plan-approve-execute`、`pr-shepherd`、`fan-out-reduce`（即同名示例）。
+在当前目录下写入：
+
+| 文件 | 内容 |
+| --- | --- |
+| `.odw/workflows/<名字>.js` | workflow；`meta.name` 为 `<名字>` |
+| `.odw/tests/<名字>.json` | 带脚本化回复的起步用例：`odw test <名字>` 立即通过，$0 |
+| `.odw/evals/<名字>.json` | 仅 review-swarm 与 pr-shepherd：eval 骨架（真实运行——先编辑） |
+
+- `--name`（默认为模板名）——字母、数字与 `. _ -`（不能打头），最长 128，不能以 `.js` 结尾——
+  在三个文件里替换模板名。
+- 已存在且内容不同的文件是冲突：不加 `--force` 时什么都不写，逐个列出冲突，退出 1。已经与模板
+  完全相同的文件保持不动，所以同一条命令跑两次也退出 0。
+- 在根目录没有 `.worktreeinclude` 的 git 仓库里，会打印一份建议：根目录的 `.env*` 文件（不含
+  `*.example`、`*.sample`、`*.template`、`*.dist`），然后是 `symlink: node_modules`（对应
+  `package-lock.json`、`npm-shrinkwrap.json`、`yarn.lock`、`pnpm-lock.yaml`、`bun.lock`、
+  `bun.lockb`）、`symlink: .venv`（`uv.lock`、`poetry.lock`、`Pipfile.lock`、`pdm.lock`）、
+  `symlink: vendor`（`composer.lock`）。加 `--yes` 或在终端提示里回答 yes 才写入，否则只打印。
+- 退出码：0 已写入（或已存在），1 拒绝覆盖，2 用法错误（未知模板、名字不合法）。
+- `odw init`（不带 `--check`）最后是首跑：在终端里先询问（回车即 yes），若
+  `.odw/workflows/hello.js` 不存在则写入 `hello`，运行 `odw run hello --dry`，再打印
+  `odw serve --open`、`odw test hello` 与 `odw run hello`；不在终端时只打印命令。它从不调用模型。
 
 ## odw test（ODW 扩展）
 

@@ -34,7 +34,7 @@ export const MOCK_ADAPTER = "mock";
 export const DRY_REPLY = "(dry run)";
 
 /** The failures a scripted reply can make its agent's CLI end with. */
-export const FAIL_KINDS = ["rate_limit", "quota", "auth", "permission", "timeout", "stalled", "not_found", "exit"] as const;
+export const FAIL_KINDS = ["rate_limit", "quota", "auth", "model_unavailable", "permission", "timeout", "stalled", "not_found", "exit"] as const;
 export type FailKind = (typeof FAIL_KINDS)[number];
 
 /** One agent CLI call the mock answers. */
@@ -119,6 +119,8 @@ function failure(kind: FailKind, duration: number): CliResult {
       return { ...base, returncode: 1, stderr: "mock agent: You've hit your usage limit" };
     case "auth":
       return { ...base, returncode: 1, stderr: "mock agent: Not logged in. Please run /login" };
+    case "model_unavailable":
+      return { ...base, returncode: 1, stderr: "mock agent: model_not_found: the model does not exist or you do not have access to it" };
     case "permission":
       return { ...base, returncode: 1, stderr: "mock agent: the tool call was denied" };
     case "timeout":

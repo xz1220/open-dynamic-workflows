@@ -411,3 +411,17 @@ test("notes in a container: the shim posts through its bound inbox, its shim and
   assert.match(reader.board, /#1 \[agent 1 · writer\] the config loader now returns a Promise/);
   assertNothingLeft();
 });
+
+test("an account's container gets a copy of the account's config dir, not the default one (ODW extension: accounts)", async () => {
+  const work = join(root, "claude-work");
+  mkdirSync(work, { recursive: true });
+  writeFileSync(join(work, ".credentials.json"), "work-login-placeholder", { mode: 0o600 });
+  const accounts = { boxed: [{ name: "work", configDir: work }] };
+  const bridge = new Bridge(config({ accounts }), { source: mkdtempSync(join(root, "repo-")), runId: "r-account" });
+  const outcome = await bridge.run({ prompt: "hello", adapter: "boxed@work" }, { agentId: 1 });
+  const seen = JSON.parse(outcome.text) as Record<string, string | null>;
+  assert.equal(seen.cred, "work-login-placeholder", "the account's login was copied in, not ~/.claude's");
+  assert.equal(readFileSync(join(work, ".credentials.json"), "utf8"), "work-login-placeholder", "the account's own was never touched");
+  assert.equal(valuesOf(runs().at(-1)!, "--env").includes("CLAUDE_CONFIG_DIR"), false, "the host path stays out of the container");
+  assertNothingLeft();
+});

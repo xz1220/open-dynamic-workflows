@@ -95,6 +95,7 @@ export function reasonLabel(reason: string): string {
     rate_limit: t("rate limit"),
     quota: t("quota"),
     auth: t("login needed"),
+    model_unavailable: t("model unavailable"),
     timeout: t("timed out"),
     stalled: t("stalled"),
     not_found: t("CLI not found"),

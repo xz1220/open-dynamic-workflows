@@ -112,7 +112,8 @@ export function resolveModel(
         (names.length > 0 ? `the tiers are ${names.join(", ")}` : `none is configured (set "models" in the config)`),
     );
   }
-  const id = own(ids, adapter.name);
+  // An account (ODW extension: accounts) has its own id, else its adapter's.
+  const id = own(ids, adapter.name) ?? (adapter.account ? own(ids, adapter.account.adapter) : undefined);
   if (id === undefined) {
     notes.push(`model tier '${model}' has no model for adapter '${adapter.name}' — the CLI's own default model is used`);
   }

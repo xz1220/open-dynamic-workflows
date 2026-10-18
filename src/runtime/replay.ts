@@ -22,7 +22,11 @@
  * the code the original saw.
  *
  * The run's meta.json says what it replays: `origin: "replay"` and
- * `replayOf: { runId, agentId, label, base? }`. It is a run like any other —
+ * `replayOf: { runId, agentId, label, base? }`. The call itself — the prompt
+ * and options, `args` to the workflow above — is kept in the run directory as
+ * `call.json`, which its worker reads and nothing serves; meta.json's `args`
+ * are `{ replayOf }` only, since a run's args are served (with token-shape
+ * redaction alone) and a prompt is the user's whole input. It is a run like any other —
  * `odw status`, `logs --agent`, `diff`, `apply` and the dashboard work on it —
  * and `odw compare <source> <replay> --agent <label>` puts the two side by side.
  */
@@ -105,7 +109,9 @@ export function planReplay(store: RunStore, runId: string, agentId: number, over
   }
   const configPath = overrides.configPath ?? (typeof meta.configPath === "string" ? meta.configPath : null);
   const start: StartRunOptions = {
-    args: { prompt, options },
+    // The prompt stays out of meta.json (served): the worker reads it from call.json.
+    args: { replayOf: link },
+    call: { prompt, options },
     configPath,
     runsRoot: store.root,
     source: typeof meta.source === "string" ? meta.source : null,

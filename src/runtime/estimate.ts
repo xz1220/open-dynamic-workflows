@@ -4,7 +4,11 @@
  *
  * Built only from what earlier runs of the same workflow spent — the last
  * {@link ESTIMATE_RUNS} finished ("done") runs, a resumed run left out (its
- * replayed agents cost nothing). Runs of the exact same source (meta.sourceHash)
+ * replayed agents cost nothing), and so are dry runs (`odw run --dry`) and
+ * `odw test`'s recorded runs, whose agents no model answered — their time and
+ * their missing cost would crowd real runs out. A run whose agents reported
+ * no cost still counts for time and tokens, and is left out of the cost
+ * figures only (the notes say how many). Runs of the exact same source (meta.sourceHash)
  * are used when there are any, else runs of the same workflow name, and the
  * estimate says which. Without any it says so — "no estimate: no finished
  * runs of this workflow yet" — and never guesses.
@@ -253,9 +257,14 @@ interface Candidate {
   args: unknown;
 }
 
+/** A run no model answered: `odw run --dry` (meta.dry), or a test case of `odw test` (origin "test"). */
+export function isMockRun(meta: Record<string, unknown>): boolean {
+  return meta.dry === true || meta.origin === "test";
+}
+
 /**
- * The finished runs of `workflow`, newest first — not resumed ones, nor
- * `exclude` — read from its bucket of the runs root: enough of them that the
+ * The finished runs of `workflow`, newest first — not resumed ones, nor dry
+ * or test runs ({@link isMockRun}), nor `exclude` — read from its bucket of the runs root: enough of them that the
  * newest `limit` of `sourceHash` are there when they exist.
  */
 function candidates(store: RunStore, workflow: string, sourceHash: string | null, limit: number, exclude?: string): Candidate[] {
@@ -273,6 +282,8 @@ function candidates(store: RunStore, workflow: string, sourceHash: string | null
     }
     const name = typeof meta.workflowName === "string" ? meta.workflowName : typeof status.name === "string" ? status.name : null;
     if (name !== workflow || status.state !== "done" || typeof meta.resumedFrom === "string") continue;
+    // Its agents answered with stubs or scripted replies, no model called: nothing it spent or took says what a run costs.
+    if (isMockRun(meta)) continue;
     const hash = typeof meta.sourceHash === "string" ? meta.sourceHash : null;
     out.push({ runId: ref.runId, sourceHash: hash, args: meta.args ?? null });
     if (sourceHash && hash === sourceHash && ++same >= limit) break;

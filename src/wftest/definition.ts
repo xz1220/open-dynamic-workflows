@@ -32,7 +32,7 @@
  * and answers with exactly one of:
  *
  *   reply    the reply: a string as is, any other value as its JSON (a schema call's value)
- *   fail     the CLI fails: "rate_limit" | "quota" | "auth" | "permission" | "timeout" |
+ *   fail     the CLI fails: "rate_limit" | "quota" | "auth" | "model_unavailable" | "permission" | "timeout" |
  *            "stalled" | "not_found" | "exit", read by ODW's failure classes as a real one
  *   empty    true: an empty reply (an `empty_reply` failure, unless the call allows one)
  *   dry      true: what `odw run --dry` answers — a schema's smallest valid value, else "(dry run)"

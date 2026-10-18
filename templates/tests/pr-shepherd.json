@@ -1,0 +1,20 @@
+{
+  "workflow": "pr-shepherd",
+  "description": "Starter tests: no model called, $0. The shepherd drives gh and git through exec(), so a case that goes further needs a stand-in gh (args.gh is its argv prefix). Run them with: odw test pr-shepherd",
+  "cases": [
+    {
+      "name": "without a PR number it touches nothing",
+      "args": {},
+      "expect": {
+        "state": "failed",
+        "error": "pass the pull request number",
+        "agents": { "count": 0 }
+      }
+    },
+    {
+      "name": "a PR number must be a number",
+      "args": { "pr": "42; rm -rf /" },
+      "expect": { "state": "failed", "error": "pass the pull request number" }
+    }
+  ]
+}

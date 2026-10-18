@@ -8,11 +8,16 @@
  *
  *   install   install the pinned odw release binary with scripts/install.sh
  *             (SHA-256 checked against the release's SHA256SUMS; binary only,
- *             ODW_SKILL=0) and put it on $GITHUB_PATH
+ *             ODW_SKILL=0) and put it on $GITHUB_PATH. A release without
+ *             SHA256SUMS is refused, never installed with a warning. The check
+ *             is of integrity — the download is what the release lists — not
+ *             of authenticity: whoever can change the release can change both.
  *   run       odw run <workflow> --wait --deadline <s>, the deadline a margin
- *             before the job's timeout, so the run is STOPPED (diffs and
- *             finished agents kept) while the job still has time for the
- *             summary and the bundle; outputs run-id, state, exit-code
+ *             before the job's timeout, so the run is STOPPED (finished agents
+ *             and every isolated agent's diff kept, a killed one's marked
+ *             partial) while the job still has time for the summary and the
+ *             bundle; the `args` input goes through a file (`--args @file`),
+ *             never as an argument; outputs run-id, state, exit-code
  *   summary   the run's spend receipt, agent table and failures, appended to
  *             $GITHUB_STEP_SUMMARY
  *
@@ -43,6 +48,19 @@ export function resolveVersion(input, packageJsonText) {
   return bare;
 }
 
+/**
+ * Throws for a release that predates published checksums (SHA256SUMS: from
+ * after v0.5.0): the Action installs only what it can verify. install.sh
+ * refuses it too, under ODW_REQUIRE_CHECKSUMS=1.
+ */
+export function requireChecksums(version) {
+  const [major, minor, patch] = String(version).split(/[-+]/)[0].split(".").map(Number);
+  if (major === 0 && (minor < 5 || (minor === 5 && patch === 0))) {
+    throw new Error(`odw ${version} predates published checksums (SHA256SUMS, from after 0.5.0): the action installs only a release it can verify; use a newer version`);
+  }
+  return version;
+}
+
 /** Events whose text anyone can write: their runs are untrusted under `untrusted: auto`. */
 const UNTRUSTED_EVENTS = new Set([
   "issues", "issue_comment", "discussion", "discussion_comment", "pull_request_review", "pull_request_review_comment",
@@ -50,8 +68,11 @@ const UNTRUSTED_EVENTS = new Set([
 
 /**
  * Whether the run goes `--untrusted`: `true`/`false` as given; `auto` (the
- * default) for a pull request from a fork, and for events carrying text
- * anyone can write (issues, comments, reviews, discussions).
+ * default) for a pull request from a fork, for every `pull_request_target`
+ * (it runs with the base's secrets whatever the head), for a `workflow_run`
+ * whose triggering run came from another repository (a fork's), and for
+ * events carrying text anyone can write (issues, comments, reviews,
+ * discussions). What the event does not say counts as untrusted.
  */
 export function untrustedFor(input, eventName, event) {
   const value = String(input ?? "auto").trim().toLowerCase();
@@ -59,11 +80,18 @@ export function untrustedFor(input, eventName, event) {
   if (value === "false") return false;
   if (value !== "auto") throw new Error(`untrusted must be auto, true or false; got '${input}'`);
   if (UNTRUSTED_EVENTS.has(eventName)) return true;
-  if (eventName === "pull_request" || eventName === "pull_request_target") {
-    const pr = event && typeof event === "object" ? event.pull_request : null;
+  if (eventName === "pull_request_target") return true;
+  const ev = event && typeof event === "object" ? event : {};
+  if (eventName === "pull_request") {
+    const pr = ev.pull_request;
     const head = pr?.head?.repo?.full_name;
     const base = pr?.base?.repo?.full_name;
     return !head || !base || head !== base || pr?.head?.repo?.fork === true;
+  }
+  if (eventName === "workflow_run") {
+    const head = ev.workflow_run?.head_repository?.full_name;
+    const repo = ev.repository?.full_name;
+    return !head || !repo || head !== repo;
   }
   return false;
 }
@@ -85,15 +113,27 @@ export function deadlineSeconds({ timeoutMinutes, marginSeconds, elapsedSeconds 
   return left;
 }
 
-/** The `odw run` argv the run step executes. */
-export function runArgv({ workflow, args, config, adapter, permissions }, deadline, untrusted) {
-  if (!String(workflow ?? "").trim()) throw new Error("the workflow input is required");
-  const argv = ["run", String(workflow), "--wait", "--deadline", String(deadline)];
+/**
+ * The `odw run` argv the run step executes. The `args` input is never an
+ * argument: given raw, `@/proc/self/environ` would have odw read that file
+ * and a leading `-` would read as a flag. The step writes it to `argsFile`
+ * and passes `--args=@<argsFile>` — odw reads the text and takes it as JSON
+ * or a plain string, as it does `--args`. The other inputs go as
+ * `--flag=value`, so no value reads as a flag either.
+ */
+export function runArgv({ workflow, args, config, adapter, permissions }, deadline, untrusted, argsFile = null) {
+  const wf = String(workflow ?? "");
+  if (!wf.trim()) throw new Error("the workflow input is required");
+  if (wf.startsWith("-")) throw new Error(`the workflow input must be a path or a workflow name, not '${wf}'`);
+  const argv = ["run", wf, "--wait", "--deadline", String(deadline)];
   if (untrusted) argv.push("--untrusted");
-  if (String(args ?? "").trim()) argv.push("--args", String(args));
-  if (String(config ?? "").trim()) argv.push("--config", String(config));
-  if (String(adapter ?? "").trim()) argv.push("--adapter", String(adapter));
-  if (String(permissions ?? "").trim()) argv.push("--permissions", String(permissions));
+  if (String(args ?? "").trim()) {
+    if (!argsFile) throw new Error("the args input needs a file to go through");
+    argv.push(`--args=@${argsFile}`);
+  }
+  if (String(config ?? "").trim()) argv.push(`--config=${config}`);
+  if (String(adapter ?? "").trim()) argv.push(`--adapter=${adapter}`);
+  if (String(permissions ?? "").trim()) argv.push(`--permissions=${permissions}`);
   return argv;
 }
 
@@ -147,7 +187,7 @@ export function renderSummary({ runId, workflow, exitCode, statusText = "", agen
   const lines = [`## ${icon} odw · ${cell(workflow, 80)} · ${state}`, ""];
   lines.push(`Run \`${cell(runId ?? "(none)", 60)}\` exited ${Number(exitCode)}.`);
   if (state === "stopped-at-deadline") {
-    lines.push("", "The run reached its `--deadline` before the job's timeout and was stopped: its finished agents and their diffs are kept in the bundle.");
+    lines.push("", "The run reached its `--deadline` before the job's timeout and was stopped: its finished agents and their diffs are kept in the bundle, and so is what each isolated agent it killed had changed (marked partial).");
   }
   const status = String(statusText).replace(ANSI, "");
   const receipt = status.split("\n").filter((line) => /^\s{2}(usage|spend|dispatched|CLIs)\b|^\s{4}\S/.test(line));
@@ -193,11 +233,12 @@ function workDir() {
 
 function stepInstall() {
   writeFileSync(join(workDir(), "started-at"), String(Date.now()));
-  const version = resolveVersion(input("version"), readFileSync(join(here, "..", "package.json"), "utf8"));
+  const version = requireChecksums(resolveVersion(input("version"), readFileSync(join(here, "..", "package.json"), "utf8")));
   const binDir = join(workDir(), "bin");
+  // Verified or not installed: no SHA256SUMS, no checksum tool, a mismatch — each fails the step.
   const result = spawnSync("sh", [join(here, "..", "scripts", "install.sh")], {
     stdio: "inherit",
-    env: { ...process.env, ODW_VERSION: version, ODW_BIN_DIR: binDir, ODW_SKILL: "0", ODW_ALLOW_UNVERIFIED: "" },
+    env: { ...process.env, ODW_VERSION: version, ODW_BIN_DIR: binDir, ODW_SKILL: "0", ODW_ALLOW_UNVERIFIED: "", ODW_REQUIRE_CHECKSUMS: "1" },
   });
   if (result.status !== 0) return result.status ?? 1;
   if (process.env.GITHUB_PATH) appendFileSync(process.env.GITHUB_PATH, `${binDir}\n`);
@@ -214,10 +255,15 @@ async function stepRun() {
   });
   const event = process.env.GITHUB_EVENT_PATH ? JSON.parse(readFileSafe(process.env.GITHUB_EVENT_PATH) || "{}") : {};
   const untrusted = untrustedFor(input("untrusted", "auto"), process.env.GITHUB_EVENT_NAME ?? "", event);
+  // The args input goes through a file, as given: odw reads it once and parses it as --args does.
+  const args = input("args");
+  const argsFile = join(workDir(), "args.txt");
+  if (args.trim()) writeFileSync(argsFile, args, { mode: 0o600 });
   const argv = runArgv(
-    { workflow: input("workflow"), args: input("args"), config: input("config"), adapter: input("adapter"), permissions: input("permissions") },
+    { workflow: input("workflow"), args, config: input("config"), adapter: input("adapter"), permissions: input("permissions") },
     deadline,
     untrusted,
+    argsFile,
   );
   process.stderr.write(`odw ${argv.map((a) => (/\s/.test(a) ? JSON.stringify(a) : a)).join(" ")}\n`);
   const child = spawn("odw", argv, { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, NO_COLOR: "1" } });

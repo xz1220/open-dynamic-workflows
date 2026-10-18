@@ -408,7 +408,7 @@ test("an adapter's own failure patterns load; a bad class or pattern is a Config
     assert.deepEqual(Object.keys(example.adapters.my_wrapper!.failures ?? {}), ["rate_limit", "quota", "auth"]);
     const cases: Array<[unknown, RegExp]> = [
       [["busy"], /adapter 'mine' 'failures' must be an object of regular-expression lists/],
-      [{ ratelimit: ["busy"] }, /adapter 'mine' 'failures' may set "rate_limit", "quota", "auth"; got "ratelimit"/],
+      [{ ratelimit: ["busy"] }, /adapter 'mine' 'failures' may set "rate_limit", "quota", "auth", "model_unavailable"; got "ratelimit"/],
       [{ permission: ["denied"] }, /got "permission"/],
       [{ quota: "out of tokens" }, /adapter 'mine' 'failures.quota' must be an array of non-empty regular-expression strings/],
       [{ auth: [""] }, /'failures.auth' must be an array of non-empty/],

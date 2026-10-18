@@ -34,6 +34,7 @@ import { createReadStream } from "node:fs";
 import { copyFile, lstat, mkdir, open, readlink, rename, rm, stat, utimes, type FileHandle } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 
+import { isDeadlineStop } from "./errors.js";
 import { SAFE_GIT } from "./git-safety.js";
 import type { Workspace } from "./workspace.js";
 
@@ -549,7 +550,7 @@ export interface ChangeRecorderOptions {
   branch: string | null;
   /** The kept commit's message: the agent's label and the run id. */
   message: string;
-  /** The run's abort signal: a stop ends a capture at once, and keeps nothing. */
+  /** The run's abort signal: a stop ends a capture at once, and keeps nothing — but the run's deadline's (see DeadlinePassed). */
   signal?: AbortSignal;
   /** Receives what the run should log: a change that could not be kept, a branch that could not be made. */
   onNote?: (message: string) => void;
@@ -586,7 +587,10 @@ export class ChangeRecorder {
 
   /** Capture what one CLI run changed in `ws`, before its worktree goes. Never throws. */
   async capture(ws: Workspace): Promise<void> {
-    const { path, maxDiffBytes, branch, message, signal } = this.opts;
+    const { path, maxDiffBytes, branch, message } = this.opts;
+    // The run's deadline (ODW extension) keeps what a killed agent had changed:
+    // that capture runs to its end, past the aborted signal (see DeadlinePassed).
+    const signal = this.opts.signal?.aborted && isDeadlineStop(this.opts.signal.reason) ? undefined : this.opts.signal;
     const file = `${path}.${++this.runs}.tmp`;
     let pending: Pending | null = null;
     try {

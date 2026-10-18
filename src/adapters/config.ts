@@ -39,6 +39,7 @@ import {
 import { isTrustLevel, untrustedPosture } from "./trust.js";
 import { buildEgressHosts } from "./egress.js";
 import { buildAdapterSandbox, buildSandboxSetting, checkSandboxImages } from "./sandbox.js";
+import { buildAccounts } from "./accounts.js";
 import type {
   Adapter,
   AdapterFailures,
@@ -93,10 +94,12 @@ export function loadConfig(
       process.stderr.write(`odw: config warning: ${w}\n`);
     }
   }
-  const config = {
+  const config: Config = {
     adapters: buildAdapters((raw.adapters as Record<string, RawAdapter>) ?? {}),
     settings: buildSettings(raw),
   };
+  // Account pools (ODW extension; see ./accounts): an adapter per account, before the names are checked.
+  if (raw.accounts != null) config.accounts = buildAccounts(raw.accounts, config.adapters, expandHome);
   checkRouting(config);
   checkSandboxImages(config);
   return config;
@@ -131,6 +134,7 @@ const KNOWN_TOP_KEYS = [
   "applyVerify",
   "maxTranscriptBytes",
   "recordVersions",
+  "driftEval",
   "notes",
   "permissions",
   "trust",
@@ -154,6 +158,7 @@ const KNOWN_TOP_KEYS = [
   "approveLinks",
   "triggers",
   "costGate",
+  "accounts",
 ] as const;
 
 const KNOWN_ADAPTER_KEYS = ["command", "stdin", "env", "timeout", "stallTimeout", "concurrency", "promptCache", "label", "flags", "output", "failures", "permissionArgs", "permissions", "permissionDenials", "trust", "untrustedArgs", "untrustedNote", "sandbox", "agentLimits", "egressHosts"] as const;
@@ -321,7 +326,8 @@ export function resolveAdapter(config: Config, name?: string | null): Adapter {
   const available = Object.keys(config.adapters).sort();
   if (!chosen) {
     if (available.length === 1) return config.adapters[available[0]!]!;
-    const installed = available.filter((n) => isOnPath(config.adapters[n]!.command[0]!));
+    // An account (ODW extension: accounts) is its adapter's: the auto-pick sees the adapter alone.
+    const installed = available.filter((n) => !config.adapters[n]!.account && isOnPath(config.adapters[n]!.command[0]!));
     if (installed.length === 1) return config.adapters[installed[0]!]!;
     const found =
       installed.length > 0
@@ -1184,6 +1190,7 @@ function buildSettings(raw: Record<string, unknown>): Settings {
     ),
     recordVersions:
       raw["recordVersions"] == null ? DEFAULT_SETTINGS.recordVersions : buildFlag("recordVersions", raw["recordVersions"]),
+    driftEval: raw["driftEval"] == null ? DEFAULT_SETTINGS.driftEval : buildFlag("driftEval", raw["driftEval"]),
     notes: raw["notes"] == null ? DEFAULT_SETTINGS.notes : buildFlag("notes", raw["notes"]),
     permissions: raw["permissions"] == null ? DEFAULT_SETTINGS.permissions : buildTier(raw["permissions"]),
     trust: raw["trust"] == null ? DEFAULT_SETTINGS.trust : buildTrust(raw["trust"]),

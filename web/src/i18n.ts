@@ -703,6 +703,7 @@ const ZH: Record<string, string> = {
   "MCP servers": "MCP 服务器",
   "Their tools were not there for this agent — check the server with claude mcp list.": "这个 agent 用不上它们的工具——用 claude mcp list 检查服务器。",
   "MCP unavailable": "MCP 不可用",
+  "model unavailable": "模型不可用",
   "orphaned background work": "遗留后台任务",
   "Left running": "仍在运行就被丢下",
   "outside its scope": "越出声明范围",

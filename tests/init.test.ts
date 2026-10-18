@@ -367,3 +367,123 @@ test("run preflight reads the config through the WORKER's eyes: --source, not la
     sb.cleanup();
   }
 });
+
+// The first run, for $0 (ODW extension): at a keyboard init offers `odw new
+// hello` and runs `odw run hello --dry` — every agent stubbed — then prints
+// the dashboard command and the real run; elsewhere it only prints the commands.
+import { main } from "../src/cli.js";
+import { RunStore } from "../src/runtime/run-store.js";
+
+test("init at a fake TTY: Enter writes hello and dry-runs it — no model called — then names the dashboard and the real run", async () => {
+  const sb = sandbox(["claude"]);
+  const runs = join(sb.dir, "runs");
+  const was = process.cwd();
+  const se = process.stderr.write.bind(process.stderr);
+  const dryErr: string[] = [];
+  const calls: string[][] = [];
+  try {
+    const input = ttyInput();
+    const err = sink(true);
+    const done = cmdInit(
+      { config: sb.configPath },
+      {
+        input,
+        err,
+        env: { TERM: "xterm" },
+        cwd: sb.dir,
+        // The real `odw run hello --dry`, from the project, its output captured.
+        runDry: async (argv) => {
+          calls.push(argv);
+          process.chdir(sb.dir);
+          (process.stderr as { write: unknown }).write = (s: unknown) => (dryErr.push(String(s)), true);
+          try {
+            return await main([...argv, "--wait", "--runs-root", runs, "--config", sb.configPath]);
+          } finally {
+            process.stderr.write = se;
+            process.chdir(was);
+          }
+        },
+      },
+    );
+    input.write("\n"); // the default: yes
+    const code = await done;
+    assert.equal(code, 0, err.text() + dryErr.join(""));
+    assert.deepEqual(calls, [["run", "hello", "--dry"]]);
+    const text = err.text().replace(/\x1b\[[0-9;]*[A-Za-z]/g, "");
+    assert.match(text, /a run resolves to claude — no setup needed/);
+    assert.match(text, /try a first run for \$0\? write \.odw\/workflows\/hello\.js \(odw new hello\) and run it with --dry/);
+    assert.match(text, /wrote \.odw\/workflows\/hello\.js\n.*wrote \.odw\/tests\/hello\.json/);
+    assert.match(text, /odw serve --open/);
+    assert.match(text, /odw run hello {2,}the real run: it calls your agent CLI/);
+    assert.match(readFileSync(join(sb.dir, ".odw", "workflows", "hello.js"), "utf8"), /name: 'hello'/);
+    assert.match(readFileSync(join(sb.dir, ".odw", "tests", "hello.json"), "utf8"), /"workflow": "hello"/);
+    assert.match(dryErr.join(""), /dry run \S+ done: 2 agents started, no model called \(\$0\)/);
+    const store = new RunStore(runs);
+    const [ref] = store.listRuns();
+    assert.equal(store.readMeta(ref!.runId).dry, true);
+    assert.equal(store.readStatus(ref!.runId).state, "done");
+  } finally {
+    process.stderr.write = se;
+    process.chdir(was);
+    sb.cleanup();
+  }
+});
+
+test("init at a fake TTY: 'n' declines the first run — nothing written, nothing run", async () => {
+  const sb = sandbox(["claude"]);
+  try {
+    const input = ttyInput();
+    const err = sink(true);
+    let ran = false;
+    const done = cmdInit({ config: sb.configPath }, { input, err, env: { TERM: "xterm" }, cwd: sb.dir, runDry: async () => ((ran = true), 0) });
+    input.write("n\n");
+    assert.equal(await done, 0);
+    assert.equal(ran, false);
+    assert.match(err.text(), /later: odw new hello && odw run hello --dry/);
+    assert.throws(() => readFileSync(join(sb.dir, ".odw", "workflows", "hello.js")));
+  } finally {
+    sb.cleanup();
+  }
+});
+
+test("init off a terminal (or --check) never runs anything: it names the $0 first run, or not at all", async () => {
+  const sb = sandbox(["claude"]);
+  try {
+    let ran = false;
+    const runDry = async () => ((ran = true), 0);
+    const err = sink();
+    assert.equal(await cmdInit({ config: sb.configPath }, { input: sink(), err, env: {}, cwd: sb.dir, runDry }), 0);
+    assert.match(err.text(), /first run, for \$0 \(every agent stubbed, no model called\): odw new hello && odw run hello --dry/);
+    const checked = sink(true);
+    assert.equal(
+      await cmdInit({ config: sb.configPath, check: true }, { input: ttyInput(), err: checked, env: { TERM: "xterm" }, cwd: sb.dir, runDry }),
+      0,
+    );
+    assert.doesNotMatch(checked.text(), /first run/);
+    assert.equal(ran, false);
+  } finally {
+    sb.cleanup();
+  }
+});
+
+test("init with hello already there dry-runs it as it is", async () => {
+  const sb = sandbox(["claude"]);
+  try {
+    mkdirSync(join(sb.dir, ".odw", "workflows"), { recursive: true });
+    writeFileSync(join(sb.dir, ".odw", "workflows", "hello.js"), "// mine\nreturn 1\n");
+    const input = ttyInput();
+    const err = sink(true);
+    const calls: string[][] = [];
+    const done = cmdInit(
+      { config: sb.configPath },
+      { input, err, env: { TERM: "xterm" }, cwd: sb.dir, runDry: async (argv) => (calls.push(argv), 0) },
+    );
+    input.write("y\n");
+    assert.equal(await done, 0);
+    assert.deepEqual(calls, [["run", "hello", "--dry"]]);
+    assert.match(err.text(), /run \.odw\/workflows\/hello\.js with --dry/);
+    assert.equal(readFileSync(join(sb.dir, ".odw", "workflows", "hello.js"), "utf8"), "// mine\nreturn 1\n");
+  } finally {
+    sb.cleanup();
+  }
+});

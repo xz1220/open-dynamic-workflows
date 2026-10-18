@@ -12,9 +12,10 @@
  * stack without spawning a subprocess).
  */
 
-import { readFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { closeSync, openSync, readFileSync, writeSync } from "node:fs";
 import { constants } from "node:os";
-import { basename, dirname } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { pathToFileURL } from "node:url";
 
@@ -27,9 +28,10 @@ import type { WaitingCheckpoint } from "../checkpoint.js";
 import type { CostHistory } from "../forecast.js";
 import { buildContext, spentTokens, type RunContext } from "../context.js";
 import { deciderText, PAUSED, RUNNING, type CheckpointRequest } from "../control.js";
-import { RunStopped, WorkflowScriptError, isFatalError } from "../errors.js";
+import { DeadlinePassed, RunStopped, WorkflowScriptError, isFatalError } from "../errors.js";
 import { AGENT_STARTED, LOG, RUN_FAILED, RUN_FINISHED, RUN_STARTED, RUN_STOPPED, event } from "../events.js";
 import { Breaks, breakSpecOf, runSoFar } from "../breaks.js";
+import { DriftWatch, driftEvalArgs, driftEvalOf, previousRun } from "../drift.js";
 import { ReplayJournal } from "../journal.js";
 import { loadWorkflowScript, scanDualCompat } from "../loader.js";
 import { NotesBoard } from "../notes.js";
@@ -41,6 +43,7 @@ import type { Scheduler } from "../scheduler.js";
 import { applyRunTrust, resolveRunTrust, untrustedConfigSwap } from "../untrusted.js";
 import { isCommitId } from "../workspace.js";
 import { pluginOrigin } from "../workflows/plugins.js";
+import { odwInvocation } from "../schedule/command.js";
 import { dryResponder, mockConfig, mockRunner, noSleep, type MockResponder } from "../wftest/mock.js";
 import { recordFixture } from "../wftest/record.js";
 import { FileControl } from "./file-control.js";
@@ -120,7 +123,9 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
   if (!script) throw new Error(`no run metadata found at ${runDir}`);
 
   const sink = new JsonlSink(store.eventsPath(runId));
-  const args = meta.args;
+  // A run of `odw replay` (ODW extension; see ./replay) takes its call — the prompt — from
+  // call.json, kept out of meta.json; a replay from before that has it in meta.args.
+  const args = (meta.origin === "replay" ? store.readRunCall(runId) : null) ?? meta.args;
   // The name its earlier runs go by: meta.workflowName, else — once loaded — the script's meta.name.
   let historyName: string | null = typeof meta.workflowName === "string" ? meta.workflowName : null;
   // ctx is created inside the try so that a config or context-build failure is
@@ -141,13 +146,16 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
   // Records each adapter CLI's version beside its first agent (ODW extension;
   // see ../provenance); closed before the terminal event, which nothing follows.
   let versions: CliVersions | undefined;
+  // Compares what the run records with the workflow's previous run (ODW extension; see ../drift).
+  let drift: DriftWatch | undefined;
   const crashes = watchProcessCrashes();
   // Undoes the redaction of this process's own output, once the run is over.
   let unredactOutput = (): void => {};
   const signals = watchStopSignals({
-    stop: (why) => {
+    stop: (why, deadline) => {
       if (end) return; // only the hooks are left; the grace period bounds them
-      const reason = new RunStopped(why);
+      // The deadline's stop keeps what the agents it kills had changed (see DeadlinePassed).
+      const reason = deadline ? new DeadlinePassed(why) : new RunStopped(why);
       sink.emit(event(LOG, { message: `${reason.message} — stopping the run` }));
       ctx?.scheduler.abort(reason);
     },
@@ -417,6 +425,33 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
       );
     }
     historyName ??= loaded.meta.name;
+    // Drift watch (ODW extension; see ../drift): what this run records — CLI
+    // versions, requested models — against the workflow's previous run. Not
+    // for a run no model answers.
+    if (!mock) {
+      try {
+        const runsRoot = dirname(dirname(runDir));
+        const baseline = previousRun(store, runId, {
+          workflow: historyName,
+          sourceHash: typeof meta.sourceHash === "string" ? meta.sourceHash : null,
+        });
+        if (baseline) {
+          const watch = new DriftWatch({
+            workflow: historyName,
+            baseline,
+            tiers: config.settings.models,
+            emit: (ev) => sink.emit(ev),
+            evalOf: driftEvalOf(typeof meta.source === "string" ? meta.source : null, historyName, runsRoot),
+            // A run `odw eval` started never starts another.
+            autoEval: config.settings.driftEval && meta.origin !== "eval",
+          });
+          drift = watch;
+          sink.onEmit = (ev) => watch.observe(ev);
+        }
+      } catch {
+        // Watching for drift never fails the run.
+      }
+    }
     store.updateStatus(runId, {
       name: loaded.meta.name,
       description: loaded.meta.description,
@@ -513,6 +548,23 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
       process.stderr.write(`odw: could not record ${runId} to ${record.file}: ${errorMessage(err)}\n`);
     }
   }
+  // `driftEval: true` (ODW extension; see ../drift): the run drifted, and its
+  // workflow has an eval — it starts now, detached, unless the run was stopped.
+  const pendingEval = drift?.pendingEval;
+  if (pendingEval && end.state !== "stopped" && typeof meta.source === "string") {
+    const configPath = typeof meta.configPath === "string" ? meta.configPath : null;
+    const launch: DriftEvalLaunch = {
+      args: [...driftEvalArgs(pendingEval), "--runs-root", dirname(dirname(runDir)), ...(configPath ? ["--config", configPath] : [])],
+      cwd: meta.source,
+      log: join(store.runDir(runId), "drift-eval.log"),
+    };
+    try {
+      (options.startDriftEval ?? launchDriftEval)(launch);
+      process.stderr.write(`odw: drift: started odw ${launch.args.join(" ")} — its output in ${launch.log}\n`);
+    } catch (err) {
+      process.stderr.write(`odw: drift: could not start odw eval: ${errorMessage(err)}\n`);
+    }
+  }
   return end.state;
 }
 
@@ -538,6 +590,37 @@ export interface ExecuteRunOptions {
    * mock. A run whose meta says `dry` gets the dry run's stubs without it.
    */
   mock?: MockResponder;
+  /** Starts the eval drift watch asks for under `driftEval` (ODW extension; see ../drift); a test seam. */
+  startDriftEval?: (launch: DriftEvalLaunch) => void;
+}
+
+/** An `odw eval` drift watch starts once the run ends (ODW extension; see ../drift). */
+export interface DriftEvalLaunch {
+  /** odw's arguments: `eval <name> [--baseline <report>] --runs-root <root> [--config <path>]`. */
+  args: string[];
+  /** Where it runs: the run's source directory, where `.odw/evals/<name>.json` is. */
+  cwd: string;
+  /** Where its output goes: the run directory's drift-eval.log. */
+  log: string;
+}
+
+/** Start `odw <args>` detached, its output appended to `log`; it outlives the worker. */
+function launchDriftEval(launch: DriftEvalLaunch): void {
+  const [command, ...pre] = odwInvocation();
+  const fd = openSync(launch.log, "a");
+  try {
+    writeSync(fd, `odw ${launch.args.join(" ")}\n`);
+    const child = spawn(command!, [...pre, ...launch.args], {
+      cwd: launch.cwd,
+      detached: true,
+      windowsHide: true,
+      stdio: ["ignore", fd, fd],
+    });
+    child.on("error", (err) => process.stderr.write(`odw: drift: could not start odw eval: ${err.message}\n`));
+    child.unref();
+  } finally {
+    closeSync(fd);
+  }
 }
 
 /**
@@ -660,10 +743,10 @@ function watchProcessCrashes(): { race<T>(work: Promise<T>): Promise<T>; dispose
  * Handle the stop signals while a run executes (see executeRun): `stop` on the
  * first; `force` on a second, or once SIGNAL_GRACE_MS have passed since the
  * first. `stopNow` stops the run the same way for a reason of the run's own
- * (its `--deadline`): a signal after it forces. Listening ends at `dispose`.
+ * (its `--deadline`; `stop` is told so): a signal after it forces. Listening ends at `dispose`.
  */
 function watchStopSignals(handlers: {
-  stop(why: string): void;
+  stop(why: string, deadline: boolean): void;
   force(signal: NodeJS.Signals, why: string): void;
 }): { dispose(): void; stopNow(why: string): void } {
   let first: { signal: NodeJS.Signals | null; why: string } | undefined;
@@ -674,7 +757,7 @@ function watchStopSignals(handlers: {
       () => handlers.force(signal ?? "SIGTERM", `the run did not stop within ${SIGNAL_GRACE_MS / 1000}s of ${signal ?? why}`),
       SIGNAL_GRACE_MS,
     );
-    handlers.stop(why);
+    handlers.stop(why, signal === null);
   };
   const onSignal = (signal: NodeJS.Signals): void => {
     if (first) {

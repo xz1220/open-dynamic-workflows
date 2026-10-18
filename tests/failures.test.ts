@@ -552,6 +552,86 @@ const WORDING: Array<{ cli: string; text: string; reason: string; retryAfter?: n
   { cli: "agy", text: "Authentication expired. Please log back in.", reason: "auth", source: "agy changelog 1.3.3" },
   { cli: "agy", text: "Waiting for authentication (timeout 60s)...\nError: authentication timed out", reason: "auth", source: "google-antigravity/antigravity-cli#944" },
   { cli: "agy", text: "Error: failed to retrieve token: secret keyring is locked", reason: "auth", source: "antigravity.google/docs/cli/troubleshooting" },
+  // A model the CLI does not know, has retired, or does not offer the account (model_unavailable)
+  {
+    cli: "claude",
+    text:
+      "There's an issue with the selected model (claude-opus-5-5). It may not exist or you may not have access to it. " +
+      "Run --model to pick a different model.",
+    reason: "model_unavailable",
+    source: "anthropics/claude-code#97393",
+  },
+  {
+    cli: "claude",
+    text: 'API Error: 404 {"type":"error","error":{"type":"not_found_error","message":"model: totally-fake-model"},"request_id":"req_…"}',
+    reason: "model_unavailable",
+    source: "anthropics/claude-code#99578",
+  },
+  {
+    cli: "codex",
+    text: "ERROR: unexpected status 404 Not Found: The model `gpt-5.5` does not exist or you do not have access to it.",
+    reason: "model_unavailable",
+    source: "openai/codex#44560",
+  },
+  { cli: "codex", text: "ERROR: unexpected status 404 Not Found: Model not found gpt-5.5", reason: "model_unavailable", source: "openai/codex#43755" },
+  {
+    cli: "codex",
+    text: "Codex error: The 'gpt-5.4' model is not supported when using Codex with a ChatGPT account.",
+    reason: "model_unavailable",
+    source: "openai/codex#54665, #53020",
+  },
+  {
+    cli: "gemini",
+    text: "[API Error: models/gemini-3.1-pro is not found for API version v1beta, or is not supported for generateContent.]",
+    reason: "model_unavailable",
+    source: "google-gemini/gemini-cli#24131",
+  },
+  { cli: "gemini", text: "ModelNotFoundError: Not found (404)", reason: "model_unavailable", source: "google-gemini/gemini-cli#24828" },
+  {
+    cli: "gemini",
+    text:
+      "This client is no longer supported for Gemini Code Assist for individuals.\n" +
+      "To continue using Gemini, please migrate to the Antigravity suite of products: https://antigravity.google",
+    reason: "model_unavailable",
+    source: "littlebearapps/untether#720 (gemini 0.40.1)",
+  },
+  {
+    cli: "agy",
+    text: 'invalid model selection (--model "gemini-3.1-flash-image" --effort "")',
+    reason: "model_unavailable",
+    source: "google-antigravity/antigravity-cli#734",
+  },
+  {
+    cli: "agy",
+    text: "model gemini-3.1-flash-image is not recognized as a known model or custom model in settings",
+    reason: "model_unavailable",
+    source: "google-antigravity/antigravity-cli#734",
+  },
+  {
+    // Composed: DashScope's OpenAI-compatible error (code model_not_found) as Qwen Code prints an API error.
+    cli: "qwen",
+    text: "[API Error: 404 The model `qwen9-max` does not exist or you do not have access to it.]",
+    reason: "model_unavailable",
+    source: "composed from DashScope's OpenAI-compatible error codes; QwenLM/qwen-code#10932 (404 model_not_found)",
+  },
+  {
+    cli: "opencode",
+    text: "ProviderModelNotFoundError: Model not found: deepseek/deepseek-v4-flash. Did you mean: deepseek-flash, deepseek-v4-pro?",
+    reason: "model_unavailable",
+    source: "anomalyco/opencode#51159",
+  },
+  {
+    cli: "kilo",
+    text: "Model not found: kilo/kilo-auto/free. Did you mean: kilo-auto/balanced, kilo-auto/efficient, kilo-auto/frontier?",
+    reason: "model_unavailable",
+    source: "Kilo-Org/kilocode#13311",
+  },
+  {
+    cli: "cursor",
+    text: "Cannot use this model: haiku-4.5. Available models: auto, composer-1.5, composer-1",
+    reason: "model_unavailable",
+    source: "forum.cursor.com/t/164331",
+  },
 ];
 
 test("each CLI's own wording lands in its class, with when to come back", () => {
@@ -567,7 +647,7 @@ test("each CLI's own wording lands in its class, with when to come back", () => 
     [...new Set(WORDING.map((w) => w.cli))].sort(),
     ["agy", "claude", "codex", "cursor", "gemini", "kilo", "kimi", "opencode", "qwen"],
   );
-  assert.deepEqual([...new Set(WORDING.map((w) => w.reason))].sort(), ["auth", "permission", "quota", "rate_limit"]);
+  assert.deepEqual([...new Set(WORDING.map((w) => w.reason))].sort(), ["auth", "model_unavailable", "permission", "quota", "rate_limit"]);
 });
 
 test("Kimi prints its errors on stdout; colors and curly apostrophes do not hide a class", () => {
@@ -579,6 +659,25 @@ test("Kimi prints its errors on stdout; colors and curly apostrophes do not hide
     "permission",
     "U+2019 reads as a plain apostrophe",
   );
+});
+
+test("a model that is not there: read from the final lines only, after a spent quota, before a 403", () => {
+  // A transcript before the end that mentions a missing model (a test of the agent's own code) is no evidence.
+  const transcript = `exec npm test\nError: model not found in registry\n${"log line\n".repeat(600)}`;
+  assert.equal(classify(`${transcript}fatal: the end`).reason, "exit");
+  assert.equal(classify(`${transcript}ERROR: Model not found gpt-5.5`).reason, "model_unavailable");
+  // A spent quota on one model ("switch to another model") is a quota; a model at capacity is a rate limit.
+  assert.equal(classify("You've hit your usage limit for GPT-5.1-Codex-Max. Switch to another model now.").reason, "quota");
+  assert.equal(classify("ERROR: Selected model is at capacity. Please try a different model.").reason, "rate_limit");
+  // "you may not have access to it" sent as a 403 is still the model's.
+  assert.equal(classify("Error 403: The model `o9` does not exist or you do not have access to it.").reason, "model_unavailable");
+  // Claude Code's text mode may print it as its reply and exit 0.
+  assert.deepEqual(
+    classifyErrorReply("There's an issue with the selected model (claude-x). It may not exist or you may not have access to it."),
+    { reason: "model_unavailable" },
+  );
+  // An adapter may add its own wording for the class.
+  assert.equal(classify("E_NO_SUCH_MODEL", { model_unavailable: ["^E_NO_SUCH_MODEL"] }).reason, "model_unavailable");
 });
 
 // --- a clean exit whose reply is only an error ------------------------------------

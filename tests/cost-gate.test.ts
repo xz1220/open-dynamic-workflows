@@ -149,6 +149,31 @@ test("a fan-out forecast over costGate waits at a checkpoint; a rejection throws
   }
 });
 
+test("dry and test runs feed no estimate: 20 dry runs neither zero it nor turn costGate off (review fix)", async () => {
+  const p = project();
+  try {
+    assert.equal(await p.start(HISTORY).run, "done");
+    // Twenty dry runs of the same source and one of `odw test`'s, all newer: no model answered any of them.
+    for (let i = 0; i < 21; i++) {
+      const id = p.store.create({ script: p.script, args: null, source: p.root, configPath: p.configPath, workflowName: "gated", ...(i < 20 ? { dry: true } : { origin: "test" }) });
+      assert.equal(await executeRun(p.store.runDir(id)), "done");
+    }
+    const before = p.calls().length;
+    const est = loadEstimate(p.store, { workflow: "gated", sourceHash: null });
+    assert.equal(est.runs.length, 1, "based on the one real run");
+    assert.deepEqual(est.total!.costUsd, { p50: 1.5, p90: 1.5, n: 1 });
+
+    const { id, run } = p.start(FAN_OUT, { costGate: { usd: 1 } });
+    await until(() => pending(p.store, id).length === 1);
+    assert.equal((pending(p.store, id)[0]!.payload as { forecast: { usd: number } }).forecast.usd, 2, "the gate still forecasts and asks");
+    p.store.requestCheckpointDecision(id, { action: "reject", checkpointId: 1, by: "cli" });
+    assert.equal(await run, "done");
+    assert.equal(p.calls().length, before, "the dry runs called no model either");
+  } finally {
+    await p.cleanup();
+  }
+});
+
 test("an approved gate runs the fan-out; under the gate, or lifted with costGate: null, nothing asks", async () => {
   const p = project();
   try {

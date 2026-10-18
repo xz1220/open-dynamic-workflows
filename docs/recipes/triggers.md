@@ -40,8 +40,13 @@ file.
   in constant time, over the raw body:
   - `github`: `X-Hub-Signature-256: sha256=<HMAC-SHA256 of the body>`
     ([GitHub docs](https://docs.github.com/en/webhooks/using-webhooks/validating-webhook-deliveries)).
-    GitHub signs no timestamp, so a delivery's signature is remembered for an
-    hour and a replay inside it starts nothing.
+    GitHub signs no timestamp, so each accepted delivery's signature and
+    `X-GitHub-Delivery` id are kept under the runs root
+    (`_triggers/seen.jsonl`) for 30 days, across `odw serve` restarts: a
+    replay inside them starts nothing. What that leaves: a captured delivery
+    older than 30 days, or one replayed against another runs root (or after
+    `_triggers/` was deleted), verifies again. Rotate the secret if one may
+    have leaked, and keep `dedupe`, a `rateLimit` and `untrusted` on.
   - `linear`: `Linear-Signature: <HMAC-SHA256 of the body, hex>`, and the body's
     `webhookTimestamp` within a minute of now
     ([Linear docs](https://linear.app/developers/webhooks#securing-webhooks)).
@@ -52,10 +57,12 @@ file.
     sha256=<HMAC-SHA256 of "<timestamp>.<body>">` with `X-ODW-Timestamp: <Unix
     seconds>` within five minutes, and optionally `X-ODW-Event` (what `events`
     matches) and `X-ODW-Delivery`.
-- **Answers.** `202 { ok, trigger, runId }` when a run started. `404` for a name
-  the config lacks, `401` for a missing or bad signature or a stale timestamp
-  (`429` once an address sent too many; a good signature is never held back),
-  `413` past 1 MiB, `503` while the secret is unset. `200` with `duplicate`,
+- **Answers.** `202 { ok, trigger, runId }` when a run started. One `401` for
+  a name the config lacks, a secret not set yet, a missing or bad signature and
+  a stale timestamp alike — a caller without the secret cannot learn which
+  triggers exist; `odw serve` logs the real reason on its stderr (`429` once an
+  address sent too many; a good signature is never held back). `413` past
+  1 MiB, for any name; `404` only when no trigger is served at all. `200` with `duplicate`,
   `ignored` (an event `events` does not list) or `deduped` (`runId` of the run
   still going for the same `dedupe` value) starts nothing; `429` with
   `retry-after` when `concurrency` runs are active or `rateLimit` is spent.
@@ -69,11 +76,21 @@ file.
   `"permissions": "read"` or a [container
   sandbox](../../README.md#run-agents-in-containers-odw-extension): triggered runs
   use the config `odw serve` was started with.
-- **Reaching it.** The route answers off loopback too, and through a tunnel's
-  `Host` on a loopback bind; the signature is its credential, so it needs no
-  `--token`. The rest of the dashboard keeps its rules. `odw serve` prints each
-  trigger's URL at start (under `--public-url`, when you give one), and warns
-  about a secret it cannot read.
+- **Your config, never the repository's.** `odw serve` takes triggers only
+  from a config of your own: `--config`, `$ODW_CONFIG`, or
+  `~/.config/odw/config.json` outside the repository it runs in. A
+  repository's `./odw.config.json` is code the repository ships — a clone
+  must not open a webhook that starts (trusted) runs on your machine — so
+  its `triggers` are refused with a warning at start, and those of your
+  `~/.config/odw/config.json` are served instead (their runs read that
+  config). `"untrusted": false` therefore only ever comes from your own config.
+- **Reaching it.** The route answers off loopback too (with `--host`); the
+  signature is its credential, so it needs no `--token`. On a loopback bind
+  the DNS-rebinding guard holds for it as for the dashboard: only loopback
+  `Host`s and the `--public-url`'s host pass — so a tunnel to a loopback bind
+  needs `--public-url <the tunnel's URL>`. The rest of the dashboard keeps its
+  rules. `odw serve` prints each trigger's URL at start (under `--public-url`,
+  when you give one), and warns about a secret it cannot read.
 
 ```bash
 export LINEAR_WEBHOOK_SECRET='paste-the-signing-secret-here'

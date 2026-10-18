@@ -240,8 +240,10 @@ take it. Claude Code ignores all of it.
   without the `@` (or with characters a tier name cannot have, such as
   `@cf/…`) is a model id, passed to every adapter as is.
 - **Fallback chains.** `adapter: ["codex", "claude"]`, or the `fallback`
-  setting for the adapter a call runs on: when its CLI's quota is spent or its
-  login is refused, the call runs again on the next adapter — a fresh prompt,
+  setting for the adapter a call runs on: when its CLI's quota is spent, its
+  login is refused, or the model it asks for is unavailable (`model_unavailable`:
+  unknown to the CLI, retired, or not offered to the account), the call runs again
+  on the next adapter — a fresh prompt,
   the same options, its [`expect`](#expect-odw-extension) checks included. A
   rate limit is retried in place (`transientRetries`); any other failure — an
   unmet expectation too — is the call's. Each move is a log line
@@ -275,6 +277,15 @@ take it. Claude Code ignores all of it.
   on one adapter, the run's later calls skip it: each starts on the next
   adapter of its chain, or fails at once (reason `quota`) without one. One
   warning says so.
+- **Accounts** (ODW extension). With the user's `accounts` config, each login
+  is an adapter `<adapter>@<name>` (`claude@work`) with its own config dir,
+  concurrency cap and quota breaker. `adapter: "claude"` (or the default
+  adapter, or a chain naming it) then means any claude account: a chain of
+  the accounts by headroom — not in a quota pause first, then fewest quota
+  failures this run, then fewest agents routed to it and not yet finished —
+  with handoff on unless the call says `handoff: false`.
+  `adapter: "claude@work"` runs on that account alone. Events, `odw status`
+  and the dashboard name the account.
 - **Pause for a spent quota.** With the `quotaWait` setting (`{ "max":
   <seconds> }`; off by default), a call with no adapter left on a spent quota
   does not fail: it waits, holding no slot, for the reset its CLI named — when
@@ -1035,6 +1046,45 @@ Costs and tokens are summed and averaged over the runs whose CLIs reported
 them, and null when none did. Any two run ids open side by side with
 `odw compare <runA> <runB>`.
 
+## odw new (ODW extension)
+
+```bash
+odw new                                          # the templates, one line each (stdout)
+odw new <template> [--name N] [--force] [--yes]
+```
+
+The templates are embedded in the binary: `hello` (two read-only agents in
+parallel, plain JS picks), `review-swarm`, `fix-until-green`,
+`plan-approve-execute`, `pr-shepherd`, `fan-out-reduce` (the examples of the
+same name). One writes, under the current directory:
+
+| File | What |
+| --- | --- |
+| `.odw/workflows/<name>.js` | the workflow; `meta.name` is `<name>` |
+| `.odw/tests/<name>.json` | starter cases with scripted replies: `odw test <name>` passes at once, $0 |
+| `.odw/evals/<name>.json` | review-swarm and pr-shepherd only: an eval skeleton (real runs — edit it first) |
+
+- `--name` (default: the template's name) — letters, digits and `. _ -`, not
+  first, at most 128, not ending in `.js` — replaces the template's name in all
+  three files.
+- A file that exists with other content is a conflict: without `--force`
+  nothing is written, each conflict is named, exit 1. A file that already holds
+  exactly the template is left as it is, so the same command twice exits 0.
+- In a git repository whose root has no `.worktreeinclude`, it prints a
+  suggested one: the root's `.env*` files (not `*.example`, `*.sample`,
+  `*.template`, `*.dist`), then `symlink: node_modules` (for `package-lock.json`,
+  `npm-shrinkwrap.json`, `yarn.lock`, `pnpm-lock.yaml`, `bun.lock`, `bun.lockb`),
+  `symlink: .venv` (`uv.lock`, `poetry.lock`, `Pipfile.lock`, `pdm.lock`),
+  `symlink: vendor` (`composer.lock`). Written with `--yes`, or a yes at a
+  terminal prompt; otherwise only printed.
+- Exit 0 written (or already there), 1 refused, 2 usage (an unknown template, a
+  bad name).
+- `odw init` (not `--check`) ends with the first run: at a terminal it asks
+  (Enter: yes), writes `hello` unless `.odw/workflows/hello.js` exists, runs
+  `odw run hello --dry`, then prints `odw serve --open`, `odw test hello` and
+  `odw run hello`; elsewhere it prints the commands only. It never calls a
+  model.
+
 ## odw test (ODW extension)
 
 ```bash
@@ -1158,8 +1208,9 @@ odw run wf.js --step                                  # a checkpoint before ever
 - **replay**: every `agent()` call saves `agents/<id>.call.json` as it starts
   (prompt, options, adapter it started on, model asked for); an isolated
   agent's `agent_started` carries `base` (its worktree's commit). A replay is
-  a new run (`origin: "replay"`, `replayOf: { runId, agentId, label, base? }`)
-  of that one call — same label, phase, source dir, config, tier, trust,
+  a new run (`origin: "replay"`, `replayOf: { runId, agentId, label, base? }`;
+  its meta `args` are `{ replayOf }` only — the prompt is in the run's unserved
+  `call.json`) of that one call — same label, phase, source dir, config, tier, trust,
   sandbox, and for `isolation: "worktree"` the original `base` whatever HEAD
   is now. `odw compare <source> <replay> --agent <label>` pairs the two (the
   CLI prints it, with the id when the label is shared). Runs from before this

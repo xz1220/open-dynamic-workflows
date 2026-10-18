@@ -1,0 +1,17 @@
+{
+  "description": "A skeleton: real runs on your agent CLIs, so each one costs. Put a change with a bug you know of in front of it, then: odw eval review-swarm",
+  "workflow": "review-swarm",
+  "repeats": 1,
+  "timeout": 900,
+  "cases": [
+    {
+      "name": "finds-the-known-bug",
+      "args": { "target": "the uncommitted changes in this repository (run `git diff HEAD` to see them)", "lenses": ["correctness", "security"] },
+      "checks": [
+        { "state": "done" },
+        { "path": "confirmed", "exists": true },
+        { "maxCostUsd": 2 }
+      ]
+    }
+  ]
+}

@@ -36,6 +36,7 @@
  *   odw replay <run_id> --agent <id|label> [--prompt @file|TEXT] [--adapter A] [--model M]   (runtime/replay.ts)
  *   odw run <wf> --break <phase|label>[,…] | --step   (a checkpoint before them; src/breaks.ts)
  *   odw check <script.js|name> [--json]   (the loader's checks, with a code frame; src/check.ts)
+ *   odw new [<template>] [--name N] [--force] [--yes]   (a workflow + starter test from an embedded template; src/new.ts)
  */
 
 import { spawn } from "node:child_process";
@@ -62,6 +63,7 @@ import { AdapterNotFound } from "./errors.js";
 import type { WorkflowEvent } from "./events.js";
 import { VERSION } from "./index.js";
 import { cmdInit } from "./init.js";
+import { cmdNew } from "./new.js";
 import { loadWorkflowScript } from "./loader.js";
 import type { AgentChanges } from "./changes.js";
 import { agentRowJson, agentRows, formatAgentTable, matchAgents, type AgentRow } from "./runtime/agents-view.js";
@@ -81,6 +83,7 @@ import { compareRuns, findComparedAgents, formatAgentComparison, formatCompariso
 import { editBlocker, editorCommand, editPayload, readPayloadOption } from "./runtime/checkpoint-edit.js";
 import { startRun, startRunFromSource, waitFor } from "./runtime/launcher.js";
 import { attachRun, bannerLines, checkpointCommands, fallbackLines, formatEvent, formatUsage, resolveRunMode, runawayLines, shellArg, type RunMode } from "./runtime/live-view.js";
+import { accountLines } from "./runtime/live-view.js";
 import { isRunActive, RunObserver } from "./runtime/run-liveness.js";
 import { RunStore, TERMINAL_STATES, type ReplayLink } from "./runtime/run-store.js";
 import { detail, evalTagOf, summarize, type RunDetail } from "./runtime/runs-view.js";
@@ -154,6 +157,7 @@ export const COMMANDS = [
   "estimate",
   "replay",
   "check",
+  "new",
 ] as const;
 
 export type Command = (typeof COMMANDS)[number];
@@ -172,6 +176,7 @@ export function helpText(): string {
     "Usage:",
     "  odw init [--adapter <name>] [--check]              pick the default agent CLI (first-time setup)",
     "  odw doctor [--smoke] [--adapter <name>|all]        check this machine is ready to run workflows",
+    "  odw doctor --models                                send each configured adapter/model pair one tiny prompt",
     "  odw run <script.js|name> [--args JSON|@file]       start a workflow (see modes below)",
     "  odw attach <run_id>                                attach the live foreground view to a run",
     "  odw rerun <run_id>                                 start a fresh run with the same inputs",
@@ -218,6 +223,7 @@ export function helpText(): string {
     "                                                     --prompt @file|TEXT, --adapter A, --model M replace its own; then odw compare",
     "  odw run <wf> --break <phase|label>[,…] | --step    stop for a decision before those phases/agents, or every phase (ODW extension)",
     "  odw check <script.js|name> [--json]                check a workflow loads: errors with line, column and a code frame",
+    "  odw new [<template>] [--name N] [--force] [--yes]  a workflow + starter test in .odw/ from a built-in template; no args lists them",
     "",
     "Options:",
     "  --args JSON|@file   workflow input (JSON, @file.json, or a raw string)",
@@ -314,6 +320,8 @@ export async function main(argv: string[]): Promise<number> {
         return await cmdEgressProxy(rest);
       case "init":
         return await cmdInitCli(rest);
+      case "new":
+        return await cmdNewCli(rest);
       case "doctor":
         return await cmdDoctor(rest);
       case "run":
@@ -395,8 +403,9 @@ export async function main(argv: string[]): Promise<number> {
 
 /**
  * `odw doctor` — a readiness checklist (see doctor.ts). `--smoke` also sends one
- * real prompt to the default adapter (or each `--adapter`, or `all` installed).
- * Exit 0 when nothing failed, 1 otherwise; `--json` for machines.
+ * real prompt to the default adapter (or each `--adapter`, or `all` installed);
+ * `--models` (ODW extension) one to each adapter/model pair the config and
+ * `.odw/workflows` name. Exit 0 when nothing failed, 1 otherwise; `--json` for machines.
  */
 async function cmdDoctor(rest: string[]): Promise<number> {
   const { values } = parseArgs({
@@ -404,6 +413,7 @@ async function cmdDoctor(rest: string[]): Promise<number> {
     options: {
       config: { type: "string" },
       smoke: { type: "boolean" },
+      models: { type: "boolean" },
       adapter: { type: "string", multiple: true },
       timeout: { type: "string" },
       json: { type: "boolean" },
@@ -443,6 +453,7 @@ async function cmdDoctor(rest: string[]): Promise<number> {
       cwd,
       smoke,
       smokeTimeout: timeoutMs !== undefined ? timeoutMs / 1000 : undefined,
+      models: values.models === true,
     });
   } finally {
     for (const s of signals) process.off(s, onSignal);
@@ -473,7 +484,7 @@ async function cmdDoctor(rest: string[]): Promise<number> {
     failed
       ? p.err(`${failed} check(s) failed`) + (warned ? p.dim(`, ${warned} warning(s)`) : "")
       : p.ok("ready") + (warned ? p.dim(` — ${warned} warning(s)`) : "") +
-          (values.smoke ? "" : p.dim(" · add --smoke to send each adapter a real prompt")),
+          (values.smoke || values.models ? "" : p.dim(" · add --smoke to send each adapter a real prompt")),
   );
   process.stdout.write(lines.join("\n") + "\n");
   return report.ok ? 0 : 1;
@@ -515,10 +526,40 @@ async function cmdInitCli(rest: string[]): Promise<number> {
       config: { type: "string" },
     },
   });
-  return cmdInit({
-    ...(values.adapter !== undefined ? { adapter: values.adapter } : {}),
-    check: values.check === true,
-    config: values.config ?? null,
+  return cmdInit(
+    {
+      ...(values.adapter !== undefined ? { adapter: values.adapter } : {}),
+      check: values.check === true,
+      config: values.config ?? null,
+    },
+    // The $0 first run it offers: `odw run hello --dry`, here, with its live view.
+    { runDry: (argv) => cmdRun(argv.slice(1)) },
+  );
+}
+
+/** `odw new` — a workflow and its starter test from an embedded template (see src/new.ts). */
+async function cmdNewCli(rest: string[]): Promise<number> {
+  let parsed;
+  try {
+    parsed = parseArgs({
+      args: rest,
+      allowPositionals: true,
+      options: {
+        name: { type: "string" },
+        force: { type: "boolean" },
+        yes: { type: "boolean", short: "y" },
+      },
+    });
+  } catch (err) {
+    throw new UsageError(`odw new: ${(err as Error).message}\nusage: odw new [<template>] [--name N] [--force] [--yes]`);
+  }
+  const { values, positionals } = parsed;
+  if (positionals.length > 1) throw new UsageError("usage: odw new [<template>] [--name N] [--force] [--yes]");
+  return cmdNew({
+    ...(positionals[0] !== undefined ? { template: positionals[0] } : {}),
+    ...(values.name !== undefined ? { name: values.name } : {}),
+    force: values.force === true,
+    yes: values.yes === true,
   });
 }
 
@@ -992,6 +1033,8 @@ function cmdStatus(rest: string[]): number {
   if (clis.length > 0) process.stdout.write(`  CLIs: ${sanitizeText(clis.join(" · "), 300)}\n`);
   // Agents that fell back to another adapter, and adapters the quota breaker took out (ODW extensions).
   for (const line of fallbackLines(run.agents, events)) process.stdout.write(`  ${line}\n`);
+  // Agents per account of an adapter (ODW extension; see adapters/accounts.ts).
+  for (const line of accountLines(run.agents)) process.stdout.write(`  ${line}\n`);
   // Agents killed at one of their limits, with the evidence (ODW extension; see limits.ts).
   for (const line of runawayLines(run.agents)) process.stdout.write(`  ${line}\n`);
   if (typeof meta.resumedFrom === "string") {
@@ -1819,6 +1862,8 @@ async function relaunch(
       origin: (meta.origin as string | null) ?? null,
       // A replay's rerun replays the same agent, at the same base commit (ODW extension).
       ...(meta.origin === "replay" && meta.replayOf !== null && typeof meta.replayOf === "object" ? { replayOf: meta.replayOf as ReplayLink } : {}),
+      // …with the same call, kept out of meta.json (call.json).
+      ...(meta.origin === "replay" ? { call: store.readRunCall(runId) } : {}),
     });
   } else {
     started = startRun(script, opts);
@@ -1957,7 +2002,11 @@ async function cmdServe(rest: string[], as: "serve" | "view" = "serve"): Promise
     }
   }
   // Signed triggers (ODW extension): where each is answered, and one whose secret is missing.
-  for (const line of opened ? [] : triggerLines(config.settings.triggers, publicUrl ?? base)) process.stdout.write(`${line}\n`);
+  for (const line of opened ? [] : triggerLines(handle.triggers, publicUrl ?? base)) process.stdout.write(`${line}\n`);
+  for (const line of handle.triggerWarnings) process.stderr.write(`  ${line}\n`);
+  if (loopback && !publicUrl && Object.keys(handle.triggers).length > 0) {
+    process.stdout.write("  triggers on a loopback bind answer loopback Hosts only: give a tunnel's URL as --public-url to take its webhooks\n");
+  }
   if (!loopback && !token) {
     process.stderr.write(
       `\n  ⚠ WARNING: bound to ${host} with no --token — anyone who can reach this port reads every project's runs\n` +

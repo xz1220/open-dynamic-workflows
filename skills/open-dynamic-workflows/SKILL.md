@@ -250,6 +250,7 @@ odw check wf.js             # does it load? file:line:col, a code frame, portabi
 odw eval review             # cases × adapters × repeats: pass rate, cost, time per cell (ODW extension; below)
 odw test review             # scripted replies, no model, $0: does the logic hold? (ODW extension; below)
 odw run review --dry        # every agent stubbed: the phase tree and agent counts, $0 (ODW extension)
+odw new review-swarm        # a built-in template + its starter test in .odw/; odw new lists them (ODW extension; below)
 odw notes $RUN              # what its agents told each other on the notes board (ODW extension)
 odw list                    # all runs (with a cost column once one reported dollars)
 ```
@@ -402,8 +403,8 @@ when one CLI runs out of quota.
   plain model id is passed to every CLI as is — prefer a tier whenever an agent
   may run on more than one CLI.
 - **Fallback chains.** `adapter: ['codex', 'claude']` (or the user's `fallback`
-  config): when the first CLI's quota is spent or its login is refused, the agent
-  runs again on the next one, at the same permission tier, and the log says so
+  config): when the first CLI's quota is spent, its login is refused, or the model
+  it asks for is unavailable (`model_unavailable`), the agent runs again on the next one, at the same permission tier, and the log says so
   (`search:3 → claude after codex quota`). Rate limits are still retried in place.
   After three quota failures in a row on one CLI, the run's later agents skip it.
   `odw agents --json` and the `agent_finished` event name the CLI that produced
@@ -413,6 +414,10 @@ when one CLI runs out of quota.
   it carries on instead: in the same worktree, its prompt starting with a brief of
   what the last one did (`agents/<id>.handoff.md`). Suggest it for long, isolated
   agents whose partial work is worth keeping.
+- **Accounts** (**ODW extension**). When the user's config has `accounts`,
+  `adapter: 'claude'` already means any of their claude logins — ordered by
+  headroom, handing the work over when one runs out — and `'claude@work'` one
+  login. Write `adapter: 'claude'`; name an account only when the user asks.
 - Only name adapters the user has installed (`odw doctor` lists them), and keep
   the user's choice of default CLI: suggest a chain when long runs keep stopping
   on quota, don't add one silently.
@@ -539,7 +544,10 @@ odw pull $RUN --from ssh://me@box                # copy it here (again while it 
   hooks (`context` in the payload; `ODW_TRIGGER`, `ODW_EVENT_ID`,
   `ODW_EVENT_URL`, `ODW_CONTEXT` for a command), so a hook can answer on the
   issue. Set this up only when the user asks; the secrets are theirs to place in
-  environment variables, never in a committed file.
+  environment variables, never in a committed file. Triggers go in the user's
+  own config (`~/.config/odw/config.json`, or `--config`): `odw serve` refuses
+  those of a repository's `./odw.config.json`, and a tunnel to a loopback bind
+  needs `--public-url <tunnel URL>`.
 - **GitHub Actions.** `uses: xz1220/open-dynamic-workflows/action@<tag>` with
   `workflow:` and `timeout-minutes:` (the job's) runs `odw run --wait
   --deadline` a margin before the job times out, writes the receipt to the job
@@ -614,6 +622,26 @@ odw run review-swarm --record             # a real (paid) run, kept as a test ca
   marked `dry: true`. `--record` costs what a normal run costs — confirm first.
 - The whole format: [`references/primitives.md`](references/primitives.md#odw-test-odw-extension).
 
+### Start from a template (ODW extension)
+
+When the user's task matches a built-in template, start from it instead of a
+blank file: `odw new` lists them (hello, review-swarm, fix-until-green,
+plan-approve-execute, pr-shepherd, fan-out-reduce), and `odw new <template>
+[--name N]` writes `.odw/workflows/<name>.js`, a starter test
+`.odw/tests/<name>.json` that `odw test <name>` passes at once, and for
+review-swarm and pr-shepherd an eval skeleton `.odw/evals/<name>.json`. Edit
+the workflow and its test together; `odw test` and `odw run <name> --dry` cost
+$0, so no need to ask before them.
+
+- It refuses to overwrite a file with other content (exit 1, nothing written)
+  unless `--force` — ask the user before passing it.
+- In a git repository without a `.worktreeinclude` it prints a suggested one
+  (`.env*` files, `symlink:` lines for dependency directories) and writes it
+  only with `--yes`: show it to the user and ask first.
+- `odw init` at a human's terminal ends by offering `odw new hello` and
+  `odw run hello --dry`; in your shell it only prints those commands.
+- Details: [`references/primitives.md`](references/primitives.md#odw-new-odw-extension).
+
 ## Adapters
 
 Codex, Claude Code, Gemini, Qwen, and Kimi work out of the box with no
@@ -634,6 +662,15 @@ runtime, config, run directory and every adapter, and prints what to fix.
 `odw doctor --smoke` additionally sends the default adapter one real prompt —
 ask your user first (it costs a model call) — and catches a CLI that exits 0
 without answering when headless (a login, trust or approval prompt).
+`odw doctor --models` (ODW extension; also ask first: one tiny prompt per pair)
+probes every adapter/model pair the config's `models` tiers, `fallback` chains,
+default adapter and `.odw/workflows` phases name, and reports `ok`,
+`model_unavailable` (the CLI does not know the model, retired it, or does not
+offer it to the account) or `other` for each — run it when agents fail with
+`model_unavailable`. A run whose CLI version or requested models changed since the
+workflow's last run logs `drift: …` lines and carries a `drift` field in its summary
+(ODW extension); if the workflow has an eval, suggest `odw eval <name> --baseline
+<last report>` (the line names it), or `"driftEval": true` to have it start by itself.
 
 ## Behavior you must know
 
@@ -657,7 +694,8 @@ without answering when headless (a login, trust or approval prompt).
   `$ODW_PORT`" so they never collide, and to stop the server before finishing
   (an agent CLI may wait for its background commands before exiting) (ODW extension).
 - **Rate limits**: a rate-limited CLI is retried after a backoff (honoring its
-  retry-after); a spent quota or a failed login is not retried — the agent fails
+  retry-after); a spent quota, a failed login or a model the CLI does not have
+  (`model_unavailable`) is not retried — the agent fails
   with what to do, and `odw logs` names the reason — unless it has a fallback
   chain, which moves it to the next CLI (ODW extension). Switch adapter with
   `--adapter` rather than retrying a quota failure. Under `quotaWait` (ODW

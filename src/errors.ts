@@ -107,6 +107,18 @@ export class BudgetExhausted extends DynamicWorkflowError {}
 /** A stop was requested: running agents are killed and the run unwinds. */
 export class RunStopped extends DynamicWorkflowError {}
 
+/**
+ * The run's own `--deadline` passed (ODW extension): a stop like any other,
+ * but an isolated agent it kills keeps what it had changed, marked partial —
+ * the work a deadline is set to bound, not work a person chose to throw away.
+ */
+export class DeadlinePassed extends RunStopped {}
+
+/** Whether `reason` (an abort signal's, an error) is the run's deadline passing. */
+export function isDeadlineStop(reason: unknown): boolean {
+  return reason instanceof DeadlinePassed;
+}
+
 /** A 1-based line and column in a workflow script's source. */
 export interface SourceLocation {
   line: number;
