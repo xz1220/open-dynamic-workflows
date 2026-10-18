@@ -331,7 +331,8 @@ hook 只会记录到该运行的 `worker.log`。
 `linksExpireAt`（`text` 末尾也有），命令拿到 `ODW_APPROVE_URL`、`ODW_REJECT_URL`、
 `ODW_LINKS_EXPIRE_AT` 和 `ODW_NTFY_ACTIONS`（带 Approve/Reject 两个 `http` 按钮的 ntfy
 `Actions` 头）。没有这样的服务时，`linksUnavailable` / `ODW_LINKS_UNAVAILABLE` 说明原因。
-链接只能用一次，在 `approveLinks.ttl` 秒内有效（顶层设置，默认 86400）；决定记为 `by: "link"`。
+链接只能用一次，在 `approveLinks.ttl` 秒内有效（顶层设置，默认 86400）；决定记为 `by: "link"`，
+请求同时携带具名令牌（`odw serve --tokens`）时再加上 `who: <名字>`。
 
 **ODW 扩展——触发器上下文。** 由签名触发器（`triggers`）启动的运行在每个 payload 中带有
 `context: { trigger, provider, event?, deliveryId?, id?, url?, repo?, channel?, threadTs?, dedupe? }`，

@@ -495,6 +495,10 @@ person's note or `null`; `by` is `"cli"` (`odw approve|reject`), `"dashboard"`
 (`odw serve`), `"link"` (a signed one-time approve link from a `waiting` notify hook,
 answered through `odw serve --public-url`; ODW extension) or `"timeout"`. A rejection is an answer, not an error: the script
 decides what it means — stop, re-plan with the note, skip a step.
+**ODW extension:** `who`, when known, names the person beside the channel —
+`"cli:<$USER> <git user.email>"` from `odw approve|reject`, a named token's name
+(`odw serve --tokens FILE`) from the dashboard or beside an approve link; absent
+otherwise (the timeout, an unnamed `--token`).
 
 The person may approve an **edited** payload instead of rejecting and re-running
 (as with Claude Code's plan approval): `odw approve <run> --edit` opens

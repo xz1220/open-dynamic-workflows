@@ -373,6 +373,9 @@ checkpoint(title, opts?) -> Promise<{ approved, note, by, payload, edited }>
 （`odw approve|reject`）、`"dashboard"`（`odw serve`）、`"link"`（`waiting` 通知带来的签名一次性
 批准链接，经 `odw serve --public-url` 回答；ODW 扩展）或 `"timeout"`。拒绝也是一个答复，
 不是错误：它意味着什么由脚本决定——停止、带着附言重新规划、跳过某一步。
+**ODW 扩展：**已知时，`who` 在渠道之外给出答复人——`odw approve|reject` 为
+`"cli:<$USER> <git user.email>"`，看板或批准链接旁为具名令牌（`odw serve --tokens FILE`）的名字；
+其他情况（超时、不具名的 `--token`）没有这个字段。
 
 对方可以批准一份**修改过的** payload，而不必拒绝后重跑（与 Claude Code 的计划审批一样）：
 `odw approve <run> --edit` 用 `$VISUAL`/`$EDITOR` 打开它，`--payload '<json>'` /

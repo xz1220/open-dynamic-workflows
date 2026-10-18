@@ -439,7 +439,8 @@ webhook gets `approveUrl`, `rejectUrl` and `linksExpireAt` (and both at the end 
 `ODW_NTFY_ACTIONS` (an ntfy `Actions` header with Approve/Reject `http` buttons).
 Without such a server, `linksUnavailable` / `ODW_LINKS_UNAVAILABLE` says why. A link
 works once, until `approveLinks.ttl` seconds (top-level setting, default 86400) have
-passed; the decision is recorded with `by: "link"`.
+passed; the decision is recorded with `by: "link"` — plus `who: <name>` when the
+request also carries a named token (`odw serve --tokens`).
 
 **ODW extension — trigger context.** A run a signed trigger started (`triggers`)
 carries `context: { trigger, provider, event?, deliveryId?, id?, url?, repo?,

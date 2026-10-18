@@ -224,6 +224,8 @@ odw run review --dry        # 每个 agent 都用桩应答：阶段树与 agent 
 odw new review-swarm        # 内置模板连同起步测试写入 .odw/；odw new 列出全部模板（ODW 扩展；见下文）
 odw notes $RUN              # 本次运行的 agent 在笔记板上互相告知的内容（ODW 扩展）
 odw list                    # 所有运行（有运行报了美元时多一列花费）
+odw list --by me            # 某人启动的运行（meta.launchedBy；ODW 扩展）
+odw token add alice --scope approve --file tokens.json  # 给 odw serve --tokens 用的具名令牌（ODW 扩展）
 ```
 
 保存过的 workflow 可直接按名字运行（`odw run <名字>`）；查找顺序：`.odw/workflows`、

@@ -165,6 +165,19 @@ independent security reviews whose findings are all fixed.
   tokens. `--token-scope approve` lets a remote token holder answer checkpoints from the
   dashboard too. Nothing else becomes writable remotely; without a server, the hooks say
   why there are no links (`linksUnavailable`).
+- Named tokens and who did what (**ODW extension**): `odw serve --tokens FILE` gives
+  each person a token of their own — `[{ name, scope: "read" | "approve", hash }]`, the
+  hash a sha256, so the file never holds a token — beside or instead of `--token`.
+  `odw token add <name> [--scope approve] --file FILE` prints a new token once and
+  keeps its hash; `odw token list|remove`. A presented token is hashed and looked up.
+  Runs record `launchedBy` in `meta.json` (git `user.email` or `$USER` locally, the
+  token's name from the dashboard, `trigger:<name>` from a trigger); checkpoint
+  decisions add `who` beside `by` (`cli:<user> <email>`, the token's name, and beside
+  `by: "link"` the name of a named token the request carries) in the decision log, the
+  `checkpoint_resolved` event and `checkpoint()`'s result; pause, resume and stop record
+  `who` in `control.json`, the run's log and `run_stopped`. `odw list --by <name|me>`
+  filters; the dashboard's run header says who launched it, a checkpoint's answer who
+  gave it, and the Jobs page has Mine / Team chips (`/api/capabilities` → `you`).
 
 ### Know what it costs and what it changed
 - Real usage and cost: the built-in `claude` adapter reads Claude Code's `stream-json`;

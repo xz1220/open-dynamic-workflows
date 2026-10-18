@@ -264,6 +264,8 @@ odw run review --dry        # every agent stubbed: the phase tree and agent coun
 odw new review-swarm        # a built-in template + its starter test in .odw/; odw new lists them (ODW extension; below)
 odw notes $RUN              # what its agents told each other on the notes board (ODW extension)
 odw list                    # all runs (with a cost column once one reported dollars)
+odw list --by me            # the runs one person launched (meta.launchedBy; ODW extension)
+odw token add alice --scope approve --file tokens.json  # a named token for odw serve --tokens (ODW extension)
 ```
 
 Both patterns above behave exactly like this for you: your shell is not a

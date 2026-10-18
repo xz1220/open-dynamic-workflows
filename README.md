@@ -1676,6 +1676,51 @@ The security model:
   [Approve from your phone](#approve-from-your-phone-odw-extension): signed one-time
   approve links (`--public-url`), and `--token-scope approve`.
 
+### Named tokens: who did what (ODW extension)
+
+When several people watch and approve on one box, give each a token of their own instead
+of sharing one — what each does is then attributed to them, and one can be withdrawn
+without the others:
+
+```bash
+odw token add alice --scope approve --file ~/.config/odw/tokens.json   # prints alice's token, once
+odw token add bob --file ~/.config/odw/tokens.json                      # scope read (the default)
+odw token list --file ~/.config/odw/tokens.json                         # names and scopes; remove <name> withdraws one
+odw serve --host 0.0.0.0 --tokens ~/.config/odw/tokens.json
+```
+
+The file is a JSON array of `{ "name", "scope": "read" | "approve", "hash" }`, where
+`hash` is the token's sha256 in hex — **it never holds a token**; `odw token add` prints
+the new one once and keeps only its hash (the file is written 0600). A presented token is
+hashed and looked up by that digest, so the comparison never runs over the token itself;
+every rule of `--token` above (the three ways to send it, the 429s, writes off loopback)
+holds for each. `--tokens` works alongside `--token` (an unnamed token, with
+`--token-scope`); a named token of scope `approve` answers checkpoints off loopback, one
+of scope `read` only reads. `odw serve` reads the file when it starts: restart it to take
+a change. Names are 1–64 of `A-Z a-z 0-9 . _ @ + -`.
+
+What is recorded, and where:
+
+- **`launchedBy`** in a run's `meta.json`: the local user for a run you start (git
+  `user.email`, else `$USER`), a named token's name for a run started from the dashboard
+  (Chat), and `trigger:<name>` for a [webhook trigger](#start-runs-from-webhooks-github-linear-slack-odw-extension)'s.
+  `odw list --by <name>` lists one person's runs (`--by me`: yours); the dashboard's run
+  header says "launched by …", and its Jobs page gets **Mine / Team** chips — mine is the
+  name `/api/capabilities` reports as `you` (your token's name; the local user when there
+  is no token at all; none for the unnamed `--token`).
+- **`who`** beside a checkpoint decision's `by` (the channel — `cli`, `dashboard`,
+  `link` — stays as it was): `cli:<$USER> <git user.email>` from `odw approve|reject`, the
+  token's name from the dashboard, and — beside `by: "link"` — the name of a named token
+  the approve link's request also carries. It is in the decision log
+  (`decisions.jsonl`), the `checkpoint_resolved` event and `checkpoint()`'s result
+  (`result.who`).
+- **Pause, resume and stop** record `who` in `control.json` (`odw pause|resume|stop`:
+  `cli:<user>`; the dashboard: the token's name); the run logs "paused by …" / "resumed
+  by …", and a stop puts `who` on `run_stopped` and `stoppedBy` in `status.json`.
+
+These are labels, not access control: anyone who can write the runs root can write any
+name into it. There is no RBAC beyond the two scopes.
+
 ### Approve from your phone (ODW extension)
 
 A [`checkpoint()`](#human-checkpoints-odw-extension) no longer has to wait for you to get

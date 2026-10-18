@@ -1447,6 +1447,43 @@ odw serve --host 0.0.0.0 --token
 - **只有两个窄口子能回答检查点,此外什么都不能写**——见[在手机上批准](#在手机上批准odw-扩展):
   签名的一次性批准链接(`--public-url`),以及 `--token-scope approve`。
 
+### 具名令牌:谁做了什么(ODW 扩展)
+
+几个人在同一台机器上查看、批准时,给每人一个自己的令牌,而不是共用一个——这样每个人做的事
+都记在他名下,也可以单独收回某一个人的令牌:
+
+```bash
+odw token add alice --scope approve --file ~/.config/odw/tokens.json   # 打印 alice 的令牌,仅此一次
+odw token add bob --file ~/.config/odw/tokens.json                      # 权限 read(默认)
+odw token list --file ~/.config/odw/tokens.json                         # 名字和权限;remove <name> 收回一个
+odw serve --host 0.0.0.0 --tokens ~/.config/odw/tokens.json
+```
+
+这个文件是 `{ "name", "scope": "read" | "approve", "hash" }` 组成的 JSON 数组,`hash` 是令牌的
+sha256(十六进制)——**文件里从不保存令牌本身**;`odw token add` 只打印一次新令牌,只保留它的
+哈希(文件以 0600 写入)。收到的令牌先哈希,再按摘要查找,比较从不在令牌本身上进行;上文
+`--token` 的所有规则(三种携带方式、429、非 loopback 上拒绝写)对每个令牌都成立。`--tokens`
+可以与 `--token`(一个不具名的令牌,配合 `--token-scope`)同时使用;权限为 `approve` 的具名令牌
+可以在非 loopback 上回答检查点,`read` 的只能读。`odw serve` 在启动时读取该文件:修改后需重启。
+名字为 1–64 个 `A-Z a-z 0-9 . _ @ + -` 字符。
+
+记录了什么、记在哪里:
+
+- 运行 `meta.json` 中的 **`launchedBy`**:你启动的运行记为本地用户(git `user.email`,否则
+  `$USER`),从看板(Chat)启动的记为具名令牌的名字,[webhook 触发器](#由-webhook-启动运行githublinearslackodw-扩展)
+  启动的记为 `trigger:<name>`。`odw list --by <name>` 列出某人的运行(`--by me`:你自己的);看板的
+  运行标题显示"由 … 启动",Jobs 页多出 **我的 / 团队** 筛选——"我的"即 `/api/capabilities` 返回的
+  `you`(你令牌的名字;完全没有令牌时为本地用户;不具名的 `--token` 则没有)。
+- 检查点决定的 `by`(渠道——`cli`、`dashboard`、`link`——保持不变)旁边多一个 **`who`**:
+  `odw approve|reject` 记为 `cli:<$USER> <git user.email>`,看板记为令牌的名字,批准链接在
+  `by: "link"` 之外,记下该请求同时携带的具名令牌的名字。它出现在决定日志(`decisions.jsonl`)、
+  `checkpoint_resolved` 事件和 `checkpoint()` 的结果(`result.who`)中。
+- **暂停、继续和停止**在 `control.json` 中记录 `who`(`odw pause|resume|stop`:`cli:<user>`;
+  看板:令牌的名字);运行日志写出 "paused by …" / "resumed by …",停止时 `run_stopped` 事件带
+  `who`,`status.json` 带 `stoppedBy`。
+
+这些是标签,不是访问控制:任何能写运行目录的人都能写入任何名字。除两种权限外没有更细的 RBAC。
+
 ### 在手机上批准(ODW 扩展)
 
 [`checkpoint()`](#人工检查点odw-扩展) 不必再等你回到终端。用手机能访问到的 URL(通常是一条
