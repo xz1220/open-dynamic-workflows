@@ -1208,8 +1208,9 @@ odw run wf.js --step                                  # a checkpoint before ever
 - **replay**: every `agent()` call saves `agents/<id>.call.json` as it starts
   (prompt, options, adapter it started on, model asked for); an isolated
   agent's `agent_started` carries `base` (its worktree's commit). A replay is
-  a new run (`origin: "replay"`, `replayOf: { runId, agentId, label, base? }`)
-  of that one call — same label, phase, source dir, config, tier, trust,
+  a new run (`origin: "replay"`, `replayOf: { runId, agentId, label, base? }`;
+  its meta `args` are `{ replayOf }` only — the prompt is in the run's unserved
+  `call.json`) of that one call — same label, phase, source dir, config, tier, trust,
   sandbox, and for `isolation: "worktree"` the original `base` whatever HEAD
   is now. `odw compare <source> <replay> --agent <label>` pairs the two (the
   CLI prints it, with the id when the label is shared). Runs from before this

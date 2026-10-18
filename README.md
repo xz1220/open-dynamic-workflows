@@ -1169,7 +1169,9 @@ Every call's inputs are kept as it starts (`agents/<id>.call.json`: the prompt a
 options as the script gave them, the adapter it started on, the model it asked for),
 and an isolated agent's `agent_started` event names the commit its worktree checked
 out (`base`). The replay is a new run (`origin: "replay"`, `replayOf: { runId,
-agentId, label, base }` in its `meta.json`) of just that call, with the original's
+agentId, label, base }` in its `meta.json`, whose `args` are `{ replayOf }` only: the
+prompt and options are kept in the run directory's `call.json`, which nothing serves)
+of just that call, with the original's
 label and phase, in the original's directory, config, permission tier, trust and
 sandbox — and, for a `worktree` agent, at the original's base commit whatever HEAD is
 now, so it sees the code the original saw. `--prompt @file|TEXT`, `--adapter` and

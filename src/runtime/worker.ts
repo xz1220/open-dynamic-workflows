@@ -123,7 +123,9 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
   if (!script) throw new Error(`no run metadata found at ${runDir}`);
 
   const sink = new JsonlSink(store.eventsPath(runId));
-  const args = meta.args;
+  // A run of `odw replay` (ODW extension; see ./replay) takes its call — the prompt — from
+  // call.json, kept out of meta.json; a replay from before that has it in meta.args.
+  const args = (meta.origin === "replay" ? store.readRunCall(runId) : null) ?? meta.args;
   // The name its earlier runs go by: meta.workflowName, else — once loaded — the script's meta.name.
   let historyName: string | null = typeof meta.workflowName === "string" ? meta.workflowName : null;
   // ctx is created inside the try so that a config or context-build failure is

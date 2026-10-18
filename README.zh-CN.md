@@ -1015,7 +1015,7 @@ TypeScript(不再对每个错误都这样说),非 `async` 回调里的 `await`,�
 时都会保存它的输入(`agents/<id>.call.json`:脚本给出的提示词和选项、开始时所用的适配器、请求的
 模型),隔离 agent 的 `agent_started` 事件还记下它的 worktree 检出的提交(`base`)。重跑是一次只
 含这一个调用的新运行(`meta.json` 中 `origin: "replay"`、`replayOf: { runId, agentId, label,
-base }`),沿用原调用的 label 与 phase,在原运行的目录下、用原运行的配置、权限档位、信任级别与
+base }`;其 `args` 只有 `{ replayOf }`,提示词与选项保存在运行目录的 `call.json` 里,不对外提供),沿用原调用的 label 与 phase,在原运行的目录下、用原运行的配置、权限档位、信任级别与
 沙箱运行——`worktree` agent 则检出原来的 base 提交,不管现在 HEAD 在哪里,所以它看到的代码与
 原 agent 相同。`--prompt @文件|文本`、`--adapter` 与 `--model` 替换原值(每项改动都会打印出来);
 它接受 `odw run` 的 `--wait`/`--fg`/`-d`/`--timeout`。它打印新运行的 id,以及把重跑与原 agent

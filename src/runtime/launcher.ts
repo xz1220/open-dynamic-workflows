@@ -79,6 +79,8 @@ export interface StartRunOptions {
   replayOf?: ReplayLink | null;
   /** `odw run --break`/`--step` (ODW extension; see ../breaks): where it stops for a person, kept in its meta. */
   breaks?: BreakSpec | null;
+  /** The call a run of `odw replay` dispatches (ODW extension; see ./replay): kept as the run's call.json, its worker's args. */
+  call?: Record<string, unknown> | null;
 }
 
 /**
@@ -123,6 +125,7 @@ function commonCreateInput(options: StartRunOptions, source: string, workflowNam
     deadlineSeconds: options.deadlineSeconds ?? null,
     replayOf: options.replayOf ?? null,
     breaks: options.breaks ?? null,
+    call: options.call ?? null,
   };
 }
 

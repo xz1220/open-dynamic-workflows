@@ -1862,6 +1862,8 @@ async function relaunch(
       origin: (meta.origin as string | null) ?? null,
       // A replay's rerun replays the same agent, at the same base commit (ODW extension).
       ...(meta.origin === "replay" && meta.replayOf !== null && typeof meta.replayOf === "object" ? { replayOf: meta.replayOf as ReplayLink } : {}),
+      // …with the same call, kept out of meta.json (call.json).
+      ...(meta.origin === "replay" ? { call: store.readRunCall(runId) } : {}),
     });
   } else {
     started = startRun(script, opts);

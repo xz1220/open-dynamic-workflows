@@ -16,6 +16,9 @@
  *                    `odw apply --resolve`, and resolvedBy — appended later — on the
  *                    run whose agent it resolved; replayOf for a run of `odw replay`; breaks
  *                    for a run of `odw run --break|--step`)
+ *     call.json      a run of `odw replay`: the call it dispatches — prompt and options —
+ *                    read by its worker as its args; meta.json's args hold `{ replayOf }`
+ *                    only, so the prompt is never served (ODW extension; see ./replay)
  *     status.json    mutable state (running/paused/done/failed/stopped, counters)
  *     events.jsonl   append-only progress stream
  *     agents/<agentId>.json  each completed agent()'s result, saved as it lands
@@ -81,6 +84,7 @@ import { readdirSafe, readJsonFile, writeJsonAtomic } from "./fs-util.js";
 export const TERMINAL_STATES = new Set(["done", "failed", "stopped"]);
 
 const META = "meta.json";
+const CALL = "call.json";
 const STATUS = "status.json";
 const EVENTS = "events.jsonl";
 const RESULT = "result.json";
@@ -148,6 +152,8 @@ export interface CreateRunInput {
   replayOf?: ReplayLink | null;
   /** `odw run --break`/`--step` (ODW extension): where the run stops for a person; written to meta only when set. */
   breaks?: BreakSpec | null;
+  /** A run of `odw replay` (ODW extension): the call it dispatches, kept as call.json — its worker's args, never served. */
+  call?: Record<string, unknown> | null;
 }
 
 /**
@@ -241,6 +247,8 @@ export class RunStore {
       writeFileSync(script, input.inlineSource, "utf8");
     }
     const createdAt = now();
+    // A replay's call before meta.json too: a worker never starts without it.
+    if (input.call) writeJson(join(dir, CALL), input.call);
     writeJson(join(dir, META), {
       runId,
       script,
@@ -469,6 +477,11 @@ export class RunStore {
     const dir = join(this.runDir(runId), AGENTS);
     mkdirSync(dir, { recursive: true });
     writeJson(join(dir, `${call.agentId}.call.json`), call);
+  }
+  /** The call a run of `odw replay` dispatches (call.json), or null when it has none (another run, or a replay from before it). */
+  readRunCall(runId: string): Record<string, unknown> | null {
+    const call = readJsonFile<Record<string, unknown>>(join(this.runDir(runId), CALL));
+    return call !== null && typeof call === "object" && !Array.isArray(call) ? call : null;
   }
   /** What agent `agentId` was asked, or null when the run saved no call for it (a run from before odw 0.7). */
   readAgentCall(runId: string, agentId: number): AgentCallRecord | null {

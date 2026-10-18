@@ -10,6 +10,7 @@ import { main } from "../src/cli.js";
 import { compareRuns, readCompareRun } from "../src/runtime/compare.js";
 import { planReplay, REPLAY_WORKFLOW, ReplayError } from "../src/runtime/replay.js";
 import { RunStore } from "../src/runtime/run-store.js";
+import { detail } from "../src/runtime/runs-view.js";
 import { executeRun } from "../src/runtime/worker.js";
 
 // `odw replay <run> --agent <id|label>` (ODW extension): one saved agent()
@@ -159,6 +160,11 @@ test("odw replay re-dispatches a text agent as a small new run, linked to its or
     const meta = f.store.readMeta(r.id);
     assert.equal(meta.origin, "replay");
     assert.deepEqual(meta.replayOf, { runId: f.runId, agentId: 1, label: "plan" });
+    // The prompt is kept out of meta.json — whose args are served — in the run's call.json (review fix).
+    assert.deepEqual(meta.args, { replayOf: { runId: f.runId, agentId: 1, label: "plan" } });
+    assert.deepEqual(f.store.readRunCall(r.id), { prompt: "TASK plan auth", options: { label: "plan", phase: "Plan", adapter: "main" } });
+    assert.deepEqual(detail(f.store, r.id).args, meta.args);
+    assert.doesNotMatch(JSON.stringify(detail(f.store, r.id)), /TASK plan auth/, "the run's detail does not carry the prompt");
     const [started] = startedOf(f.store, r.id);
     assert.equal(started!.label, "plan");
     assert.equal(started!.phase, "Plan");
