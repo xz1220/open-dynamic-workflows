@@ -35,7 +35,7 @@ import type { WorkflowEvent } from "../events.js";
 import { LIMIT_NAMES, type AgentLimits, type LimitHit } from "../limits.js";
 import { readCliVersion, type CliVersion } from "../provenance.js";
 import { pausedForOf, type PausedFor } from "../quota-wait.js";
-import { RunStore, TERMINAL_STATES, type EvalRunTag } from "./run-store.js";
+import { RunStore, TERMINAL_STATES, type EvalRunTag, type ResolveLink } from "./run-store.js";
 
 export type AgentState = "running" | "done" | "failed" | "stale";
 
@@ -273,6 +273,10 @@ export interface RunDetail extends RunSummary {
   error: { error?: string; stack?: string } | null;
   /** Where the run was initiated from (meta.origin, e.g. "chat"); null for CLI runs. */
   origin: string | null;
+  /** A resolver run of `odw apply --resolve` (origin "apply-resolve"; ODW extension): the run and agent it resolved. */
+  applyResolve?: ResolveLink;
+  /** The resolver runs `odw apply --resolve` started for this run's agents (ODW extension); absent when none. */
+  resolvedBy?: ResolveLink[];
   /** Run-level adapter override recorded at launch (meta.adapter), if any. */
   adapter: string | null;
   /** The workflow identity recorded at create time (meta.workflowName). */
@@ -791,6 +795,17 @@ export function evalTagOf(meta: Record<string, unknown>): { eval?: EvalRunTag } 
   return { eval: { name: tag.name, case: tag.case, adapter: tag.adapter, repeat: typeof tag.repeat === "number" ? tag.repeat : 1 } };
 }
 
+/** meta.json's links of `odw apply --resolve` — `applyResolve`, `resolvedBy` — the well-formed ones. */
+function resolveLinksOf(meta: Record<string, unknown>): { applyResolve?: ResolveLink; resolvedBy?: ResolveLink[] } {
+  const link = (value: unknown): ResolveLink | null => {
+    const v = (value !== null && typeof value === "object" ? value : {}) as Record<string, unknown>;
+    return typeof v.runId === "string" && typeof v.agentId === "number" ? { runId: v.runId, agentId: v.agentId } : null;
+  };
+  const of = link(meta.applyResolve);
+  const by = Array.isArray(meta.resolvedBy) ? meta.resolvedBy.map(link).filter((l): l is ResolveLink => l !== null) : [];
+  return { ...(of ? { applyResolve: of } : {}), ...(by.length > 0 ? { resolvedBy: by } : {}) };
+}
+
 /** The oldest checkpoint a fold has waiting, as status.json's `waiting` names it. */
 function oldestWaiting(fold: EventFold): WaitingCheckpoint | null {
   let oldest: PendingCheckpoint | undefined;
@@ -817,6 +832,7 @@ export function detailFrom(
     hasResult: extra.hasResult,
     error: extra.error,
     origin: (meta.origin as string) ?? null,
+    ...resolveLinksOf(meta),
     adapter: (meta.adapter as string) ?? null,
     workflowName: (meta.workflowName as string) ?? null,
     pendingCheckpoints: live ? pendingCheckpoints(fold) : [],

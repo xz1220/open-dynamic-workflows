@@ -16,6 +16,7 @@
  *   odw result <run_id> [--agent <id|label>]
  *   odw diff <run_id> [--agent <id|label>] [--stat]
  *   odw apply <run_id> --agent <id|label>|--all [--check] [--force] [--verify CMD|--no-verify]
+ *             [--resolve [--adapter A] [--confirm]]   (a resolver run for a conflict; runtime/apply-resolve)
  *   odw rerun|resume <run_id>
  *   odw pause|resume|stop <run_id>
  *   odw approve|reject <run_id> [--note TEXT] [--checkpoint N]
@@ -54,6 +55,7 @@ import { cmdInit } from "./init.js";
 import type { AgentChanges } from "./changes.js";
 import { agentRowJson, agentRows, formatAgentTable, matchAgents, type AgentRow } from "./runtime/agents-view.js";
 import { applyAgents, type AgentDiff } from "./runtime/apply.js";
+import { resolverRuns } from "./runtime/apply-resolve.js";
 import {
   changedAgents,
   colorDiff,
@@ -146,6 +148,7 @@ export function helpText(): string {
     "  odw diff <run_id> [--agent <id|label>] [--stat]    print what isolated agents changed (their kept diffs)",
     "  odw apply <run_id> --agent <id|label>|--all        preview, then apply kept diffs to this working tree (--force)",
     "                                                     --check previews only; --verify CMD rolls an apply back if CMD fails",
+    "                                                     --resolve [--adapter A] [--confirm]: an agent resolves a conflict, verified first",
     "  odw compare <runA> <runB> [--json]                 what changed: setup, time, cost, failures, replies",
     "                                                     --agent <label|id> shows one agent's whole reply diff",
     "  odw list [--workflow <name>]                       list known runs",
@@ -964,7 +967,9 @@ async function cmdDiff(rest: string[]): Promise<number> {
  * `--verify` (else the `applyVerify` setting) runs a command after each apply
  * and rolls the apply back when it fails. Exit 0 when everything applied
  * cleanly (and passed), 1 otherwise. A signal during a verify rolls its apply
- * back, then ends odw by that signal.
+ * back, then ends odw by that signal. `--resolve [--adapter A] [--confirm]`
+ * hands a conflict to a resolver run instead (runtime/apply-resolve), never
+ * with `--force` or `--check`.
  */
 async function cmdApply(rest: string[]): Promise<number> {
   const { values, positionals } = parseArgs({
@@ -979,10 +984,22 @@ async function cmdApply(rest: string[]): Promise<number> {
       force: { type: "boolean" },
       verify: { type: "string" },
       "no-verify": { type: "boolean" },
+      resolve: { type: "boolean" },
+      adapter: { type: "string" },
+      confirm: { type: "boolean" },
     },
   });
   const runId = positionals[0];
   if (!runId) throw new UsageError("odw apply: missing <run_id>");
+  if (!values.resolve) {
+    for (const flag of ["adapter", "confirm"] as const) {
+      if (values[flag] !== undefined) throw new UsageError(`odw apply: --${flag} goes with --resolve`);
+    }
+  } else {
+    // A resolver's work lands only on a tree whose paths hold nothing uncommitted, and is applied, not previewed.
+    if (values.force) throw new UsageError("odw apply: --resolve does not apply over uncommitted changes: commit or stash them instead of --force");
+    if (values.check) throw new UsageError("odw apply: --resolve applies; --check previews only — drop one");
+  }
   if (values.agent === undefined && !values.all) {
     throw new UsageError(
       `odw apply: --agent <id|label> or --all is required — which agent's change to apply (odw diff ${runId} --stat lists them)`,
@@ -1029,7 +1046,15 @@ async function cmdApply(rest: string[]): Promise<number> {
     caught ??= signal;
     interrupt.abort();
   };
-  if (verify) for (const s of signals) process.on(s, onSignal);
+  if (values.adapter !== undefined) resolveAdapter(loadConfig(values.config ?? null, { quiet: true }), values.adapter); // fail fast on unknown names
+  const resolveWith = values.resolve
+    ? {
+        ...resolverRuns({ store, runId, configPath: values.config ?? null, adapter: values.adapter ?? null }),
+        confirm: values.confirm === true,
+        input: process.stdin,
+      }
+    : null;
+  if (verify || resolveWith) for (const s of signals) process.on(s, onSignal);
   // A pipe or terminal that goes away (EPIPE, EIO) must not end odw between an apply and its rollback.
   const unheard = (): void => {};
   process.stdout.on("error", unheard);
@@ -1046,6 +1071,7 @@ async function cmdApply(rest: string[]): Promise<number> {
       timeout: settings?.timeout ?? null,
       interrupt: interrupt.signal,
       source: typeof source === "string" ? source : undefined,
+      resolve: resolveWith,
       out: process.stdout,
       err: process.stderr,
       caps: detectCaps(process.stdout, process.env),
