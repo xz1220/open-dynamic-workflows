@@ -867,6 +867,29 @@ ul.mcp li {
   color: var(--mute);
 }
 
+/* ---- the trust line: a run whose input came from outside ---- */
+.trust-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  color: var(--ink-2);
+  font-size: 12px;
+}
+.trust-line .sep {
+  color: var(--mute);
+}
+.tag.input-untrusted {
+  color: var(--sig-ink);
+  border-color: var(--sig-line);
+  background: var(--sig-soft);
+}
+.trust-line .unboxed {
+  color: var(--alarm-ink);
+  font-weight: 600;
+}
+
 /* ---- runs linked by odw apply --resolve ---- */
 .rlinks {
   display: flex;

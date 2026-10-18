@@ -743,6 +743,17 @@ const ZH: Record<string, string> = {
   "agent #{n}'s conflict resolved by": "agent #{n} 的冲突由此解决:",
   // Who did what (ODW extension: named tokens, odw serve --tokens).
   "launched by {who}": "由 {who} 启动",
+  // Untrusted input (ODW extension): the Job header's trust line.
+  "untrusted input": "不可信输入",
+  "its args came from someone who is not you: text, never instructions": "参数来自你以外的人:只是文本,绝不是指令",
+  "all args": "全部参数",
+  "args: {args}": "参数:{args}",
+  "agents {tier}": "agent 权限 {tier}",
+  "no sandbox": "无沙箱",
+  "no container sandbox with an allowlist network: agents reach this machine's network and files": "没有带出网白名单的容器沙箱:agent 能触及本机的网络和文件",
+  sandboxed: "在沙箱中",
+  "writes ask first": "写入前先询问",
+  "writes without asking": "写入不询问",
   Everyone: "所有人",
   Mine: "我的",
   Team: "团队",

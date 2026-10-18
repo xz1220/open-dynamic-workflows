@@ -118,6 +118,7 @@ function runHead(run: RunDetail, nowSec: number, spendOpen: boolean): string {
     (run.description ? `<p class="lede">${esc(run.description)}</p>` : "") +
     // Who started it (ODW extension): the local user, a named token's name, or trigger:<name>.
     (run.launchedBy ? `<p class="dim launched-by">${esc(t("launched by {who}", { who: run.launchedBy }))}</p>` : "") +
+    trustLine(run) +
     resolveLinks(run) +
     `</div>` +
     `<div class="actions">${stop}${resume}${compareLink(run)}${share}` +
@@ -140,6 +141,31 @@ function runHead(run: RunDetail, nowSec: number, spendOpen: boolean): string {
 }
 
 /** The runs `odw apply --resolve` linked to this one: the run whose conflict it resolved, or its resolvers. */
+/**
+ * The trust line (ODW extension): a run whose args came from outside — a
+ * trigger, `odw run --untrusted-input` — says so, which args, and what its
+ * agents were left: their tier, the sandbox (alarm when none), and whether
+ * the first that may write asked first. Empty for the user's own input.
+ */
+export function trustLine(run: Pick<RunDetail, "untrustedInput">): string {
+  const u = run.untrustedInput;
+  if (!u) return "";
+  const args = u.args.includes("*") ? t("all args") : u.args.join(", ");
+  const parts = [
+    `<span class="tag input-untrusted" title="${esc(t("its args came from someone who is not you: text, never instructions"))}">${esc(t("untrusted input"))}</span>`,
+    `<span class="mono">${esc(u.why)}</span>`,
+    ...(args ? [`<span>${esc(t("args: {args}", { args }))}</span>`] : []),
+    ...(u.permissions ? [`<span>${esc(t("agents {tier}", { tier: u.permissions }))}</span>`] : []),
+    ...(u.sandboxed === false
+      ? [`<span class="unboxed" title="${esc(t("no container sandbox with an allowlist network: agents reach this machine's network and files"))}">${esc(t("no sandbox"))}</span>`]
+      : u.sandboxed
+        ? [`<span>${esc(t("sandboxed"))}</span>`]
+        : []),
+    ...(u.permissions === "edit" || u.permissions === "full" ? [`<span>${esc(u.approve ? t("writes ask first") : t("writes without asking"))}</span>`] : []),
+  ];
+  return `<p class="trust-line">${parts.join('<span class="sep">·</span>')}</p>`;
+}
+
 function resolveLinks(run: RunDetail): string {
   const link = (l: { runId: string; agentId: number }, text: string) =>
     `<a class="rlink" href="#/job/${encodeURIComponent(l.runId)}">${icons.branch}${esc(text)} <span class="mono">${esc(l.runId)}</span></a>`;

@@ -1084,6 +1084,25 @@ test("a dry run is tagged as one in its header", () => {
   store.focusRun(null);
 });
 
+test("a run with untrusted input has a trust line in its header: what said so, its args, the agents' tier, an alarm without a sandbox", async () => {
+  const { trustLine } = await import("../web/src/views/job.ts");
+  assert.equal(trustLine({}), "");
+  const line = trustLine({ untrustedInput: { why: "trigger:gh", args: ["issue", "body"], approve: true, permissions: "edit", sandboxed: false } });
+  assert.match(line, /^<p class="trust-line"><span class="tag input-untrusted" title="[^"]+">untrusted input<\/span>/);
+  assert.match(line, /<span class="mono">trigger:gh<\/span>.*<span>args: issue, body<\/span>.*<span>agents edit<\/span>/);
+  assert.match(line, /<span class="unboxed" title="[^"]+">no sandbox<\/span>.*<span>writes ask first<\/span>/);
+  // Before its worker started: no tier, no sandbox word; read-only agents have nothing to ask.
+  const pending = trustLine({ untrustedInput: { why: "--untrusted-input", args: ["*"], approve: true, permissions: null, sandboxed: null } });
+  assert.match(pending, /<span>args: all args<\/span><\/p>$/);
+  assert.doesNotMatch(pending, /agents|sandbox|ask/);
+  const view: JobViewState = { cpNote: "", tab: "graph", selectedAi: null, reviewAi: null, zoom: 1, logQuery: "", logTypes: new Set(["agent"]), logLimit: 600, follow: true, motion: false };
+  store.focusRun("20260101-000000-aaaaaa");
+  store.run = detail([], { untrustedInput: { why: "trigger:gh", args: ["issue"], approve: true, permissions: "read", sandboxed: true } });
+  store.runEvents = [];
+  assert.match(renderJob(view, NOW), /<p class="trust-line">.*<span>agents read<\/span>.*<span>sandboxed<\/span><\/p>/);
+  store.focusRun(null);
+});
+
 test("a run whose CLI or model changed since the workflow's last run says so in a chip that lists it", async () => {
   const { driftChip } = await import("../web/src/views/job.ts");
   const html = driftChip({ drift: { since: "20260101-000000-zzzzzz", changes: [

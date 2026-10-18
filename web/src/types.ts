@@ -219,6 +219,19 @@ export interface ScheduleView {
 /** How much an agent may do (ODW extension): read < edit < full. */
 export type PermissionTier = "read" | "edit" | "full";
 
+/** A run's untrusted input (ODW extension), as its detail serves it. */
+export interface UntrustedInput {
+  /** `trigger:<name>` or `--untrusted-input`. */
+  why: string;
+  /** The args it covers (`["*"]`: all of them). */
+  args: string[];
+  approve: boolean;
+  /** Null until the worker started. */
+  permissions: PermissionTier | null;
+  /** Null until the worker started. */
+  sandboxed: boolean | null;
+}
+
 /** Whether an agent's CLI trusted the repository it worked in (ODW extension; `odw run --untrusted`). */
 export type TrustLevel = "trusted" | "untrusted";
 
@@ -280,6 +293,13 @@ export interface RunDetail extends RunSummary {
   adapter: string | null;
   /** The workflow identity recorded at create time (meta.workflowName). */
   workflowName: string | null;
+  /**
+   * The run took untrusted input (ODW extension: a trigger, `odw run
+   * --untrusted-input`): what said so, the args it covers, whether the first
+   * agent that may write asks first, and — once the worker started — the
+   * agents' tier and whether a sandbox boxed them in. Absent: the user's input.
+   */
+  untrustedInput?: UntrustedInput;
   /** checkpoint() calls waiting for approval (ODW extension). */
   pendingCheckpoints?: PendingCheckpoint[];
   /** This run resolved a conflict of that run's agent (`odw apply --resolve`; ODW extension). */
