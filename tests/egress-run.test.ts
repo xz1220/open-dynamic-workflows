@@ -154,7 +154,12 @@ test("a run with an allowlist: an internal network and a proxy; agents and steps
   const proxies = proxyRuns.map((a) => valuesOf(a, "--name")[0]!);
   assert.deepEqual(proxyRuns.map((a) => valuesOf(a, "--network")), [["bridge"], ["bridge"]], "a proxy starts on the default network");
   proxies.forEach((proxy, i) => {
-    assert.ok(mine.some((a) => a.join(" ") === `network connect ${nets[i]} ${proxy}`), "and joins its internal network");
+    const connected = mine.findIndex((a) => a.join(" ") === `network connect ${nets[i]} ${proxy}`);
+    assert.ok(connected !== -1, "and joins its internal network");
+    // Then listens only on its address there: no open proxy for the default network.
+    const inspected = mine.findIndex((a) => a[0] === "inspect" && a.at(-1) === proxy);
+    assert.ok(inspected > connected, "its address on the internal network is asked for once it has one");
+    assert.deepEqual(mine[inspected], ["inspect", "--format", `{{with index .NetworkSettings.Networks "${nets[i]}"}}{{.IPAddress}}{{end}}`, proxy]);
   });
   const boxed = mine.filter((a) => a[0] === "run" && !a.includes("-d"));
   assert.equal(boxed.length, 3, "two agents and a step");

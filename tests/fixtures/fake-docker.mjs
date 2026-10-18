@@ -23,6 +23,7 @@
  *                         $DOCKER_FAKE_STATE/fail.netrm exists, an rm fails once
  *                         (and removes it), as a busy network's does.
  *   network connect …     nothing; logs.
+ *   inspect … <name>      prints 127.0.0.1: its address on any network.
  *
  * A container run with `--dns` gets tests/fixtures/fake-dns.cjs preloaded: no
  * outside name resolves in it, as with the resolver ODW gives it — or, with
@@ -90,6 +91,10 @@ if (sub === "image" && rest[0] === "inspect") {
     rmSync(join(state, `net.${name}`), { force: true });
   }
   process.exit(0);
+} else if (sub === "inspect") {
+  // A container's address on a network: this host's loopback, where the fake runs it.
+  process.stdout.write("127.0.0.1\n");
+  process.exit(0);
 } else if (sub === "logs") {
   process.exit(0);
 } else if (sub === "kill" || sub === "rm") {
@@ -151,7 +156,7 @@ if (sub === "image" && rest[0] === "inspect") {
     const configArg = command.find((arg) => arg.endsWith("config.json"));
     if (configArg && existsSync(configArg)) {
       const config = JSON.parse(readFileSync(configArg, "utf8"));
-      for (const key of ["log", "ready"]) if (config[key]) config[key] = mapPath(config[key]);
+      for (const key of ["log", "ready", "listenFrom"]) if (config[key]) config[key] = mapPath(config[key]);
       writeFileSync(configArg, JSON.stringify(config));
     }
     const child = spawn(command[0], command.slice(1), { cwd: workdir, env: { ...env, ODW_EGRESS_PORT: "0" }, detached: true, stdio: "ignore" });

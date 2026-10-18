@@ -226,6 +226,12 @@ export interface EgressProxyConfig {
   port: number;
   /** The address it listens on; default every interface. */
   listen?: string;
+  /**
+   * A file to wait for and read the address to listen on from, instead: its
+   * address on the run's internal network, known only once it has joined it,
+   * so it is no open proxy for the engine's default network.
+   */
+  listenFrom?: string;
   /** Denials, one JSON line each: `{ ts, host, port, agent, method }`. */
   log: string;
   /** Written with the port once it listens. */
@@ -246,7 +252,7 @@ export interface EgressDenial {
 export interface EgressProxyDeps {
   net: typeof net;
   http: typeof http;
-  fs: Pick<typeof fs, "appendFileSync" | "writeFileSync">;
+  fs: Pick<typeof fs, "appendFileSync" | "writeFileSync" | "readFileSync">;
   hostAllowed: typeof hostAllowed;
 }
 
@@ -352,10 +358,31 @@ export function runEgressProxy(deps: EgressProxyDeps, config: EgressProxyConfig)
   server.on("clientError", (_err: Error, socket: net.Socket) => socket.destroy());
   const override = process.env.ODW_EGRESS_PORT;
   const port = override !== undefined && /^\d+$/.test(override) ? Number(override) : config.port;
-  server.listen(port, config.listen ?? "0.0.0.0", () => {
-    const address = server.address();
-    if (config.ready) fsm.writeFileSync(config.ready, String(typeof address === "object" && address ? address.port : port));
-  });
+  const listen = (host: string): void => {
+    server.listen(port, host, () => {
+      const address = server.address();
+      if (config.ready) fsm.writeFileSync(config.ready, String(typeof address === "object" && address ? address.port : port));
+    });
+  };
+  if (config.listenFrom) {
+    const listenFrom = config.listenFrom;
+    let closed = false;
+    server.once("close", () => (closed = true));
+    const wait = (): void => {
+      if (closed) return;
+      let host = "";
+      try {
+        host = String(fsm.readFileSync(listenFrom, "utf8")).trim();
+      } catch {
+        /* not yet */
+      }
+      if (netm.isIP(host)) listen(host);
+      else setTimeout(wait, 50);
+    };
+    wait();
+  } else {
+    listen(config.listen ?? "0.0.0.0");
+  }
   return server;
 }
 

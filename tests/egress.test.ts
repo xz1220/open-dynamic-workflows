@@ -437,6 +437,34 @@ test("the proxy: plain HTTP to an allowed host with a Host header naming another
   }
 });
 
+test("the proxy with listenFrom: it listens only once its address is written there, and only on that address", async () => {
+  const dir = tmp();
+  const log = join(dir, "denied.jsonl");
+  const ready = join(dir, "ready");
+  const listenFile = join(dir, "listen");
+  const server = startEgressProxy({ allow: [], port: 0, listenFrom: listenFile, log, ready });
+  try {
+    await new Promise((r) => setTimeout(r, 150));
+    assert.equal(server.listening, false, "no address yet: not listening anywhere");
+    writeFileSync(listenFile, "junk");
+    await new Promise((r) => setTimeout(r, 150));
+    assert.equal(server.listening, false, "not an address: still waiting");
+    writeFileSync(listenFile, "127.0.0.1\n");
+    const port = await listening(ready);
+    assert.deepEqual(server.address(), { address: "127.0.0.1", family: "IPv4", port });
+    assert.equal((await connect(port, "example.org:443")).status, 403);
+  } finally {
+    server.close();
+  }
+  // Closed before it ever listened, it stops waiting.
+  const idle = startEgressProxy({ allow: [], port: 0, listenFrom: join(dir, "never"), log, ready: join(dir, "ready2") });
+  idle.close();
+  await new Promise((r) => setTimeout(r, 120));
+  writeFileSync(join(dir, "never"), "127.0.0.1");
+  await new Promise((r) => setTimeout(r, 120));
+  assert.equal(idle.listening, false);
+});
+
 test("the proxy's standalone script: the same code runs under plain node, with the port from ODW_EGRESS_PORT", async () => {
   const up = await upstream();
   const dir = tmp();
