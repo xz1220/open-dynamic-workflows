@@ -361,7 +361,7 @@ test("odw run|rerun --sandbox container [--sandbox-image]: the banner, the meta,
   assert.equal(store.listRuns().length, runs);
 });
 
-test("notes in a container: the shim posts through its bound notes directory, the board is bound read-only, ODW_NOTES by name", async () => {
+test("notes in a container: the shim posts through its bound inbox, its shim and the board are bound read-only, ODW_NOTES by name", async () => {
   const noter = fileURLToPath(new URL("./fixtures/note-agent.mjs", import.meta.url));
   chmodSync(noter, 0o755);
   if (!existsSync(join(bin, "noter"))) symlinkSync(noter, join(bin, "noter"));
@@ -394,7 +394,12 @@ test("notes in a container: the shim posts through its bound notes directory, th
   const mounts = valuesOf(writerRun, "--mount");
   const agentDir = join(runDir, "notes", "1");
   const boardDir = join(runDir, "notes", "board");
-  assert.ok(mounts.includes(`type=bind,source=${agentDir},target=${agentDir}`), "its own notes directory, read-write");
+  const inbox = join(agentDir, "inbox");
+  const shim = join(agentDir, "note");
+  assert.ok(mounts.includes(`type=bind,source=${inbox},target=${inbox}`), "its own inbox, read-write");
+  assert.ok(mounts.includes(`type=bind,source=${shim},target=${shim},readonly`), "its shim, read-only");
+  // Not the directory that holds its inbox: from there it could replace the inbox with a link.
+  assert.ok(!mounts.some((m) => m.startsWith(`type=bind,source=${agentDir},`)), "never its whole notes directory");
   assert.ok(mounts.includes(`type=bind,source=${boardDir},target=${boardDir},readonly`), "the board, read-only");
   assert.ok(!mounts.some((m) => m.includes(join(runDir, "notes", "2"))), "no other agent's inbox");
   assert.ok(valuesOf(writerRun, "--env").includes("ODW_NOTES"), "ODW_NOTES passed by name");

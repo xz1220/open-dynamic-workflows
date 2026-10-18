@@ -379,9 +379,11 @@ const review = await agent('Which lanes clash?', { notes: true, schema: CLASHES 
 - **Bounds:** each note is cut at 2000 characters and redacted like the run's
   events; the board holds 200 notes and 256 KiB, and the run says once when it is
   full. Notes are kept in the run directory as `notes.jsonl`.
-- **In a container sandbox** the script works unchanged: the agent's own notes
-  directory is bound read-write, the board read-only — no other agent's inbox is
-  there to write to.
+- **In a container sandbox** the script works unchanged: the agent's own inbox is
+  bound read-write, its script and the board read-only — no other agent's inbox is
+  there to write to. The worker takes only regular files from an inbox that is a real
+  directory where it made it, never following a link or waiting on a FIFO, so nothing
+  an agent plants there makes the host read or delete a file elsewhere.
 - **Seeing them:** `odw notes $RUN [--json]`, `note_added` events in `odw logs`, and
   `GET /api/runs/:id/notes`.
 

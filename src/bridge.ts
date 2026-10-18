@@ -1750,7 +1750,7 @@ export class Bridge {
                 ...(promptFile ? [{ source: promptFile, target: promptFile, readonly: true }] : []),
                 ...(schema?.path ? [{ source: schema.path, target: schema.path, readonly: true }] : []),
                 ...(reply ? [{ source: dirname(reply.path), target: dirname(reply.path), readonly: false }] : []),
-                // The agent's notes directory and the board's (ODW extension; see ./notes).
+                // The agent's notes inbox and shim, and the board's (ODW extension; see ./notes).
                 ...(call.mounts ?? []),
               ],
               env,

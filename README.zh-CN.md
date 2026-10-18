@@ -332,8 +332,10 @@ const review = await agent('Which lanes clash?', { notes: true, schema: CLASHES 
   `interface`——一个适用于各种语言的廉价启发式,最多 12 行)。
 - **上限:** 每条笔记最多 2000 字符,并像运行事件一样脱敏;笔记板最多 200 条、256 KiB,满了运行
   会说一次。笔记保存在运行目录的 `notes.jsonl`。
-- **在容器沙箱中** 脚本照常可用:agent 自己的笔记目录以读写方式绑定,笔记板以只读方式绑定——容器
-  里没有其他 agent 的收件箱可写。
+- **在容器沙箱中** 脚本照常可用:agent 自己的收件箱以读写方式绑定,它的脚本和笔记板以只读方式
+  绑定——容器里没有其他 agent 的收件箱可写。worker 只从「确实是它所建位置上的真实目录」的收件箱里取
+  普通文件,从不跟随链接、也不会卡在 FIFO 上,所以 agent 放进去的任何东西都不能让宿主机读取或删除
+  别处的文件。
 - **查看:** `odw notes $RUN [--json]`、`odw logs` 中的 `note_added` 事件,以及
   `GET /api/runs/:id/notes`。
 

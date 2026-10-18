@@ -739,8 +739,10 @@ break together. Off by default (dialect fidelity); `notes: false` opts one agent
 - **Where.** `notes.jsonl` in the run directory; each note is a `note_added`
   event too. `odw notes <run> [--json]` prints it; `GET /api/runs/:id/notes`
   serves `[{ noteId, ts, by: { agentId, label }, text, kind, truncated?, redacted? }]`.
-- **Containers.** Under a container sandbox the agent's notes directory is bound
-  read-write and the board read-only, at the same paths: the script works there.
+- **Containers.** Under a container sandbox the agent's inbox is bound
+  read-write, its script and the board read-only, at the same paths: the script
+  works there. The worker takes only regular files from the inbox, never
+  following a link.
 - **Not persisted, no board.** An in-process run without a run directory logs
   once that its agents run without one. A call replayed by `odw resume` posts
   nothing. `notes` is not part of the resume key.

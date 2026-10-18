@@ -566,7 +566,7 @@ parallel(thunks, { notes: true })              // 其 thunk 启动的每个 agen
 - **位置。** 运行目录中的 `notes.jsonl`；每条笔记也是一个 `note_added` 事件。`odw notes <run>
   [--json]` 打印它；`GET /api/runs/:id/notes` 返回
   `[{ noteId, ts, by: { agentId, label }, text, kind, truncated?, redacted? }]`。
-- **容器。** 在容器沙箱中，agent 自己的笔记目录以读写、笔记板以只读方式按相同路径绑定：脚本照常可用。
+- **容器。** 在容器沙箱中，agent 自己的收件箱以读写、它的脚本和笔记板以只读方式按相同路径绑定：脚本照常可用。worker 只从收件箱取普通文件，从不跟随链接。
 - **不持久化则没有笔记板。** 没有运行目录的进程内运行会记一次日志，其 agent 不带笔记板运行。
   被 `odw resume` 重放的调用不发布任何笔记。`notes` 不属于 resume key。
 
