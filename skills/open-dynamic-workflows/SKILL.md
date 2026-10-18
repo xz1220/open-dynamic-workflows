@@ -76,7 +76,7 @@ outright, never silently passed through as a string).
 | Primitive | What it does |
 | --- | --- |
 | `agent(prompt, opts?)` | Run one coding agent on a subtask; returns its reply text, or a validated object when `opts.schema` is set. The only verb that does real work. |
-| `parallel(thunks)` | Run zero-arg thunks concurrently and **wait for all** (barrier). Order preserved; a failed slot is `null`. |
+| `parallel(thunks)` | Run zero-arg thunks concurrently and **wait for all** (barrier). Order preserved; a failed slot is `null`. `parallel(thunks, { notes: true })` gives its agents the run's notes board (**ODW extension**; below). |
 | `pipeline(items, ...stages)` | Stream each item through the stages independently (**no barrier**). Each stage receives `(prev, item, index)`. |
 | `phase(title, opts?)` / `log(msg)` | Label the following work for progress / emit one progress line. `opts` (`{ adapter, model }`, **ODW extension**) gives the phase's agents a CLI and a model. |
 | `args` | The workflow input (injected). |
@@ -86,7 +86,7 @@ outright, never silently passed through as a string).
 | `exec(command, opts?)` | Run a command (tests, a build, a linter) without a model; resolves to `{ stdout, stderr, exitCode, signal, timedOut, truncated, durationMs }`. A string runs through the shell, an array as argv. **ODW extension** — not part of Claude Code's dialect. |
 | `checkpoint(title, opts?)` | Pause the run until a person approves (perhaps with an edited payload) or rejects; resolves to `{ approved, note, by, payload, edited }`. **ODW extension** — not part of Claude Code's dialect. |
 
-`opts` for `agent`: `{ adapter?, schema?, label?, phase?, model?, agentType?, isolation?, keep?, permissions?, expect?, expectRetries?, allowEmpty? }`.
+`opts` for `agent`: `{ adapter?, schema?, label?, phase?, model?, agentType?, isolation?, keep?, permissions?, expect?, expectRetries?, allowEmpty?, notes? }`.
 `adapter` picks the CLI — or, as a list (`['codex', 'claude']`, **ODW
 extension**), a fallback chain; `model: '@fast'` picks a tier's model for
 whichever CLI runs it (**ODW extension**); `schema` is a raw JSON Schema object (an option, not
@@ -111,7 +111,9 @@ and odw checks it — prefer it to asking the model "did you do it?", or to
 trusting a reply that says so. `changes: true|false` (some file changed / none
 did), `files` (globs, each matching a file it changed or created), `command`
 (must exit 0 in the agent's workspace; `timeout` seconds, default 600) and
-`match` (a regular expression the reply must match). Work that misses runs
+`match` (a regular expression the reply must match), and `untouched` (globs no
+file it changed, created or deleted may match — `['test/**', '**/*.snap']`, so
+it cannot edit or skip the tests to get green). Work that misses runs
 again, on the same adapter, with what it missed in its prompt (`expectRetries`,
 default 1), then throws — recoverable — with `reason: "unmet_expectation"` and
 `misses`; a miss never falls back, and a call that does fall back keeps its
@@ -123,13 +125,35 @@ refused calls are kept as `denied` on the agent and logged once
 MCP servers connected when Claude Code started the agent (`pending` passes);
 without it, servers that were not are kept as `mcp` on the agent and logged once
 per run (`"mcpFailures": "fail"` fails an agent whose server `failed` or
-`needs-auth`, reason `"mcp_unavailable"`). An empty reply always throws
+`needs-auth`, reason `"mcp_unavailable"`). Background work its CLI left running
+when it replied (a `run_in_background` command or subagent, killed as `-p`
+exits) is a miss too, reason `"orphaned_background"`; without `expect` it is
+kept as `orphaned` on the agent and logged once (`"orphanedBackground": "fail"`
+fails it instead). An empty reply always throws
 `reason: "empty_reply"` (`allowEmpty: true` accepts one):
 
 ```js
 const fix = await agent('Fix the failing parser tests.', {   // ODW extension: expect
   expect: { command: 'npm test', changes: true, files: ['src/parser/**'] },
 })
+```
+
+`notes` (**ODW extension**) gives agents that change one codebase in parallel a
+run-scoped notes board, so their changes still fit together: `agent(…, { notes:
+true })`, `parallel(thunks, { notes: true })`, or `"notes": true` in the config
+(off by default; `notes: false` opts one agent out). Such an agent finds the notes
+posted before it started in its prompt, and posts with `"$ODW_NOTES" "renamed
+parseX → parse"` (or `odw note "…"`); `"$ODW_NOTES"` alone prints the board. An
+isolated agent's kept change is posted for it as it finishes — its diff stat and
+the declaration lines (`export`, `def`, `func`, `pub fn`, `class`, `interface`) its
+diff touched — so agents started after it see it. Use it for parallel worktree
+lanes on shared code, then read the board with `odw notes $RUN`; see
+`examples/coordinated-refactor.js` and
+[`references/primitives.md`](references/primitives.md#notes-odw-extension):
+
+```js
+const lanes = await parallel(tasks.map((t, i) => () =>      // ODW extension: notes
+  agent(t, { label: `lane-${i + 1}`, isolation: 'worktree' })), { notes: true })
 ```
 
 `opts` for `exec`: `{ cwd?, env?, timeout?, input?, maxOutputBytes?, label?, phase?, check? }`.
@@ -193,6 +217,7 @@ odw approve|reject $RUN     # answer a checkpoint() the run waits at — only on
 odw compare $OLD $RUN       # what changed between two runs: setup, time, cost, failures, replies (ODW extension)
                             #   --agent <label|id>: one agent's whole reply diff; --json for scripts
 odw eval review             # cases × adapters × repeats: pass rate, cost, time per cell (ODW extension; below)
+odw notes $RUN              # what its agents told each other on the notes board (ODW extension)
 odw list                    # all runs (with a cost column once one reported dollars)
 ```
 
@@ -256,6 +281,7 @@ odw apply $RUN --agent <id> --check   # preview: each file clean, CONFLICT (with
 odw apply $RUN --agent <id>           # git apply --3way into this working tree (staged)
 odw apply $RUN --all --check          # preview every finished agent, each on top of the ones before it
 odw apply $RUN --all --verify "<test command>"   # apply them in order; roll back one that fails the check
+odw apply $RUN --all --resolve --verify "<test command>"   # a resolver agent fixes a conflict; applied once verified
 ```
 
 - Preview first (`--check`, exit 1 when anything conflicts), apply what the task
@@ -270,6 +296,12 @@ odw apply $RUN --all --verify "<test command>"   # apply them in order; roll bac
   fails — only the paths the diff touched, never the user's other work. Use the
   project's test or build command when it has one. A change that would conflict
   is not applied under `--verify`.
+- `--resolve` (ODW extension; `[--adapter A] [--confirm]`) hands a conflict to a
+  resolver agent — a run of its own, whose id `odw apply` prints — in a temporary
+  worktree; its change is applied only when it edits just the conflicting files,
+  leaves no markers and passes the verify command there. Give it `--verify`, and
+  tell the user the resolver's run id; `--confirm` asks y/N at a terminal, so
+  leave it off when no person is there to answer.
 - `odw apply` refuses while a path the diff touches has uncommitted changes —
   commit or stash first; use `--force` only when the user agrees.
 - A diff cut at `maxDiffBytes` cannot be applied: use the agent's branch
@@ -372,7 +404,10 @@ user asks for changes to what they approve, send exactly the payload they
 approved with `odw approve $RUN --payload @file.json` (`--edit` opens an editor
 in a terminal — theirs, not yours). If the
 user is not there, leave it waiting: they can answer later from any shell, or
-with Approve/Reject in the dashboard (`odw serve`).
+with Approve/Reject in the dashboard (`odw serve`), or from their phone through
+the signed one-time approve links a `waiting` notify hook sends while
+`odw serve --public-url <url>` runs (ODW extension). Those links are the user's:
+never open, follow or POST to one yourself.
 
 `odw run --wait` blocks while a checkpoint waits. Start a workflow with
 checkpoints detached (`RUN=$(odw run wf.js)`) and poll `odw status $RUN`, or
@@ -528,5 +563,6 @@ without answering when headless (a login, trust or approval prompt).
 | Reaching for `--permissions full` when an agent was refused or denied | `full` drops the sandbox and every approval — ask the user. A refused `read` agent needs a read-capable adapter instead. |
 | Running agents on a repository you did not write as if it were the user's | `odw run --untrusted` (ODW extension): `claude --safe-mode` and the like keep its instructions, hooks and settings out; the run logs which CLIs cannot. |
 | Giving one CLI's model id to agents that may run on another (a phase default, a fallback chain) | Model ids do not cross CLIs: use a tier, `model: '@fast'`, which picks each CLI's own id (ODW extension). |
+| Letting a long agent run unbounded, or retrying one that failed with reason `runaway` as if it were flaky | Give it `limits: { toolCalls, costUsd, repeat: 5 }` (or `agentLimits` in the config): odw kills an agent stuck repeating the same tool call or past its caps at once (ODW extension). A `runaway` failure's `limitHit` says what it was doing — change the prompt or the task, don't just raise the limit. |
 | Fanning out wide without watching what it spends | `odw status $RUN` shows the run's tokens and cost so far, phase by phase, and a `parallel()`/`pipeline()` wider than `fanOutWarn` (default 25) logs a warning (ODW extensions). Size fan-outs to `budget.total` when one is set; `--budget` caps output tokens. |
 | Hand-writing a cron line around `odw run` | `odw schedule add` writes it with an overlap lock, a log and a pinned `PATH` — and only on the user's request: it edits their crontab or LaunchAgents. |

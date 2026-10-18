@@ -2,8 +2,10 @@
  * Decode an adapter's stdout into the agent's reply — and, for the JSON
  * formats, what the run spent, whether the CLI itself reported a failure, the
  * value it validated against a schema it was handed natively, which tool
- * calls it refused the agent (Claude Code's `permission_denials`), and the MCP
- * servers it started the agent with (Claude Code's init `mcp_servers`).
+ * calls it refused the agent (Claude Code's `permission_denials`), the MCP
+ * servers it started the agent with (Claude Code's init `mcp_servers`), and
+ * the background work still running when it replied (`background`: Claude
+ * Code's task events), which died when it exited.
  *
  * A structured decode that cannot find its text never fails the agent: the
  * raw stdout becomes the reply and {@link DecodedOutput.fallback} says why, for
@@ -21,7 +23,7 @@
  * what was missing.
  */
 
-import type { Adapter, AdapterOutput } from "./types.js";
+import type { Adapter, AdapterOutput, BackgroundCondition, BackgroundRule, BackgroundRules, BackgroundScalar } from "./types.js";
 import { addUsage, normalizeUsage, type Usage } from "./usage.js";
 
 /**
@@ -76,6 +78,13 @@ export interface DecodedOutput {
    * connected or not; absent when it said nothing about them.
    */
   mcp?: McpServer[];
+  /**
+   * The background work still running when the CLI gave its reply
+   * (`background`; an ODW extension), one line each ("Bash (npm run dev)");
+   * absent when there was none. The CLI exited with it, so it died unfinished:
+   * the bridge records it, or fails the run (`orphanedBackground`, `expect`).
+   */
+  orphaned?: string[];
   /** Set when stdout did not match the declared format and `text` is the raw stdout: why, for the run's log. */
   fallback?: string;
   /**
@@ -181,6 +190,10 @@ export class AdapterOutputDecoder {
   private denied: string[] | undefined;
   /** The latest list of MCP servers (`mcpPath`), from any event that had one. */
   private mcp: McpServer[] | undefined;
+  /** The background work the stream shows started and not ended (`background`), when the adapter declares it. */
+  private readonly background: BackgroundTracker | undefined;
+  /** The background work still open at the latest matching text event, when there was any. */
+  private orphaned: string[] | undefined;
   private usage: Usage | undefined;
   /** The first line that was not JSON, for the fallback note. */
   private badLine: string | undefined;
@@ -194,6 +207,7 @@ export class AdapterOutputDecoder {
     private readonly maxLineChars = MAX_JSONL_LINE_CHARS,
   ) {
     this.output = adapter.output ?? { format: "text" };
+    this.background = this.output.format === "jsonl" && this.output.background ? new BackgroundTracker(this.output.background) : undefined;
   }
 
   write(chunk: string): void {
@@ -238,7 +252,8 @@ export class AdapterOutputDecoder {
   finish(reply?: ReplyFileText): DecodedOutput {
     if (!this.result) {
       const decoded = this.decode(reply);
-      this.result = this.mcp ? { ...decoded, mcp: this.mcp } : decoded;
+      const withMcp = this.mcp ? { ...decoded, mcp: this.mcp } : decoded;
+      this.result = this.orphaned ? { ...withMcp, orphaned: this.orphaned } : withMcp;
     }
     return this.result;
   }
@@ -376,6 +391,8 @@ export class AdapterOutputDecoder {
       const servers = mcpServers(event, output.mcpPath);
       if (servers) this.mcp = servers;
     }
+    // Background work started and ended (ODW extension): what is open at the reply was orphaned.
+    if (this.background && type !== undefined) this.background.see(type, event);
     const failurePath = type !== undefined && output.errorEvents && hasOwn(output.errorEvents, type) ? output.errorEvents[type] : undefined;
     if (failurePath) {
       this.failure = reportedError(event, failurePath, undefined) ?? quoted(event);
@@ -397,7 +414,157 @@ export class AdapterOutputDecoder {
     }
     this.error = output.errorPath ? reportedError(event, output.errorPath, text) : undefined;
     this.denied = output.deniedPath ? deniedCalls(event, output.deniedPath) : undefined;
+    // So does the background work still running as it was given.
+    this.orphaned = this.background?.running();
   }
+}
+
+/** Pieces of open background work a tracker keeps, at most; past it, more are counted, not kept. */
+const MAX_OPEN_BACKGROUND = 1000;
+
+/** Ids of ended background work a tracker remembers, at most (a late start of it does not reopen it). */
+const MAX_ENDED_BACKGROUND = 10_000;
+
+/** One piece of background work: every id it goes by, and what it is. */
+interface BackgroundWork {
+  ids: Set<string>;
+  label: string;
+}
+
+/**
+ * The background work a JSONL stream shows (`background`; an ODW extension):
+ * what each event starts and ends, by id — work is one piece under any of its
+ * ids, so a tool call and the task it registered are one, and either id ends
+ * it. Bounded: at most {@link MAX_OPEN_BACKGROUND} open pieces are kept.
+ */
+class BackgroundTracker {
+  private readonly byId = new Map<string, BackgroundWork>();
+  /** Open work, in the order it started. */
+  private readonly open = new Set<BackgroundWork>();
+  private readonly ended = new Set<string>();
+  /** Starts past the cap: counted, not kept. */
+  private dropped = 0;
+  private readonly patterns = new Map<BackgroundRule, RegExp>();
+
+  constructor(private readonly rules: BackgroundRules) {
+    for (const rule of [...rules.started, ...rules.ended]) {
+      if (rule.pattern !== undefined) this.patterns.set(rule, new RegExp(rule.pattern, "g"));
+    }
+  }
+
+  see(type: string, event: Record<string, unknown>): void {
+    for (const rule of this.rules.started) {
+      if (rule.event !== type) continue;
+      for (const item of ruleItems(event, rule)) {
+        if (!meets(item, rule.where)) continue;
+        const ids = this.idsOf(item, rule);
+        if (ids.length > 0) this.start(ids, workLabel(item, rule));
+      }
+    }
+    for (const rule of this.rules.ended) {
+      if (rule.event !== type) continue;
+      for (const item of ruleItems(event, rule)) {
+        if (meets(item, rule.where)) this.end(this.idsOf(item, rule));
+      }
+    }
+  }
+
+  /** The work open now, one line each; undefined when there is none. */
+  running(): string[] | undefined {
+    if (this.open.size === 0 && this.dropped === 0) return undefined;
+    const lines = [...this.open].map((work) => work.label);
+    if (this.dropped > 0) lines.push(`and ${this.dropped} more`);
+    return lines;
+  }
+
+  private start(ids: string[], label: string): void {
+    if (ids.some((id) => this.ended.has(id))) return;
+    const known = [...new Set(ids.map((id) => this.byId.get(id)).filter((w): w is BackgroundWork => w !== undefined))];
+    let work = known[0];
+    if (!work) {
+      if (this.open.size >= MAX_OPEN_BACKGROUND) {
+        this.dropped++;
+        return;
+      }
+      work = { ids: new Set(), label };
+      this.open.add(work);
+    }
+    // Two pieces an id ties together are one: the first keeps its label.
+    for (const other of known.slice(1)) {
+      for (const id of other.ids) this.add(work, id);
+      this.open.delete(other);
+    }
+    for (const id of ids) this.add(work, id);
+  }
+
+  private add(work: BackgroundWork, id: string): void {
+    work.ids.add(id);
+    this.byId.set(id, work);
+  }
+
+  private end(ids: string[]): void {
+    for (const id of ids) {
+      const work = this.byId.get(id);
+      if (work) {
+        this.open.delete(work);
+        for (const own of work.ids) {
+          this.byId.delete(own);
+          this.remember(own);
+        }
+      }
+      this.remember(id);
+    }
+  }
+
+  private remember(id: string): void {
+    this.ended.add(id);
+    if (this.ended.size > MAX_ENDED_BACKGROUND) this.ended.delete(this.ended.values().next().value!);
+  }
+
+  /** The ids a rule reads from an event (or item): its values at `ids`, or what `pattern` finds in them. */
+  private idsOf(item: unknown, rule: BackgroundRule): string[] {
+    const pattern = this.patterns.get(rule);
+    const ids: string[] = [];
+    for (const path of rule.ids) {
+      const value = walk(item, path);
+      if (pattern) {
+        if (typeof value !== "string") continue;
+        for (const match of value.matchAll(pattern)) if (match[1]) ids.push(match[1]);
+      } else if (typeof value === "string" ? value !== "" : typeof value === "number" && Number.isFinite(value)) {
+        ids.push(String(value));
+      }
+    }
+    return ids;
+  }
+}
+
+/** What a background rule looks at in an event: the event, or each item of the array at its `each`. */
+function ruleItems(event: Record<string, unknown>, rule: BackgroundRule): unknown[] {
+  if (!rule.each) return [event];
+  const items = walk(event, rule.each);
+  return Array.isArray(items) ? items : [];
+}
+
+/** Whether an event (or item) meets every condition. */
+function meets(item: unknown, where: readonly BackgroundCondition[] | undefined): boolean {
+  for (const condition of where ?? []) {
+    const value = walk(item, condition.path);
+    const among = (wanted: BackgroundScalar | BackgroundScalar[]): boolean =>
+      (Array.isArray(wanted) ? wanted : [wanted]).some((v) => v === value);
+    if (condition.equals !== undefined && !among(condition.equals)) return false;
+    if (condition.not !== undefined && among(condition.not)) return false;
+  }
+  return true;
+}
+
+/** One line for a piece of background work: its kind and what it does — "Bash (npm run dev)". */
+function workLabel(item: unknown, rule: BackgroundRule): string {
+  const first = (paths: string[][] | undefined): string | undefined =>
+    (paths ?? []).map((path) => walk(item, path)).find((v): v is string => typeof v === "string" && v.trim() !== "");
+  const kind = first(rule.kind);
+  const about = first(rule.about);
+  if (kind && about) return clipLine(`${kind} (${about.trim()})`);
+  return clipLine(kind ?? about ?? "background work");
 }
 
 /** The text events, as the log names them: `'result' event(s)`, `'item.completed' event(s) with item.type 'agent_message'`. */

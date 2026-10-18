@@ -34,7 +34,7 @@ function build(): string {
     [
       t("A run"),
       [
-        [keys("1", "2", "3", "4", "5"), `${t("Graph")} · ${t("Timeline")} · ${t("Logs")} · ${t("Result")} · ${t("Changes")}`],
+        [keys("1", "2", "3", "4", "5", "6"), `${t("Graph")} · ${t("Timeline")} · ${t("Logs")} · ${t("Result")} · ${t("Changes")} · ${t("Notes")}`],
         [keys("j", "k"), t("Next / previous agent with changes")],
         [keys("$"), t("Where this run spent")],
         [keys("+", "-"), `${t("Zoom in")} / ${t("Zoom out")}`],

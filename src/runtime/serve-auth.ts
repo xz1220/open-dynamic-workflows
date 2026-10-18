@@ -25,7 +25,8 @@
  * without counting (the dashboard asks once before it shows its token screen).
  *
  * The token never makes anything writable: writes stay loopback-only (see
- * ./http-util writeGuard).
+ * ./http-util writeGuard) — except, with `--token-scope approve`, checkpoint
+ * decisions (see ./server).
  */
 
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
@@ -84,14 +85,75 @@ export interface TokenGateOptions {
   now?: () => number;
 }
 
-/** The token check of one server: its token, its cookie, and the failures per address. */
-export class TokenGate {
-  private readonly digest: Buffer;
+/** Why {@link FailureLimiter.blocked} refuses an address, and for how many seconds more. */
+export interface Blocked {
+  error: string;
+  retryAfter: number;
+}
+
+/**
+ * The failure limit behind a gate: failures per client address (see
+ * {@link failureKey}) and, past {@link AUTH_GLOBAL_FAILURES} from every
+ * address together, the whole server — each per window. The token gate keeps
+ * one, and so do the approve links (ODW extension; see ./approve-links).
+ */
+export class FailureLimiter {
   private readonly failures = new Map<string, { count: number; since: number }>();
   private global = { count: 0, since: 0 };
   private readonly limit: number;
   private readonly windowMs: number;
   private readonly now: () => number;
+
+  constructor(
+    /** What is being guessed, for the 429's message: "wrong tokens", "bad approve links". */
+    private readonly what: string,
+    options: TokenGateOptions = {},
+  ) {
+    this.limit = options.failures ?? AUTH_FAILURES;
+    this.windowMs = options.windowMs ?? AUTH_WINDOW_MS;
+    this.now = options.now ?? Date.now;
+  }
+
+  /** Why `address` (a failureKey) is refused before anything is checked, or null when it may try. */
+  blocked(address: string): Blocked | null {
+    const at = this.now();
+    if (at - this.global.since >= this.windowMs) this.global = { count: 0, since: at };
+    if (this.global.count >= AUTH_GLOBAL_FAILURES) {
+      const retryAfter = Math.max(1, Math.ceil((this.global.since + this.windowMs - at) / 1000));
+      return { error: `too many ${this.what}: none is checked for ${retryAfter}s`, retryAfter };
+    }
+    const record = this.failures.get(address);
+    if (record && at - record.since >= this.windowMs) this.failures.delete(address);
+    const current = this.failures.get(address);
+    if (current && current.count >= this.limit) {
+      const retryAfter = Math.max(1, Math.ceil((current.since + this.windowMs - at) / 1000));
+      return { error: `too many ${this.what} from this address: try again in ${retryAfter}s`, retryAfter };
+    }
+    return null;
+  }
+
+  /** Count a failure against `address` (a failureKey), and against the server. */
+  fail(address: string): void {
+    this.global.count++;
+    const record = this.failures.get(address);
+    if (record) {
+      record.count++;
+      return;
+    }
+    this.failures.set(address, { count: 1, since: this.now() });
+    if (this.failures.size > MAX_TRACKED) this.failures.delete(this.failures.keys().next().value!);
+  }
+
+  /** Forget `address`'s failures: it got through. */
+  clear(address: string): void {
+    this.failures.delete(address);
+  }
+}
+
+/** The token check of one server: its token, its cookie, and the failures per address. */
+export class TokenGate {
+  private readonly digest: Buffer;
+  private readonly limiter: FailureLimiter;
 
   constructor(
     token: string,
@@ -101,53 +163,29 @@ export class TokenGate {
   ) {
     if (!isValidToken(token)) throw new Error("a token is 16-256 characters of A-Z a-z 0-9 . _ ~ -");
     this.digest = hash(token);
-    this.limit = options.failures ?? AUTH_FAILURES;
-    this.windowMs = options.windowMs ?? AUTH_WINDOW_MS;
-    this.now = options.now ?? Date.now;
+    this.limiter = new FailureLimiter("wrong tokens", options);
   }
 
   /** May `req` (its URL parsed as `url`) read? */
   check(req: IncomingMessage, url: URL): AuthResult {
     const address = failureKey(req.socket.remoteAddress ?? "unknown");
-    const at = this.now();
-    if (at - this.global.since >= this.windowMs) this.global = { count: 0, since: at };
-    if (this.global.count >= AUTH_GLOBAL_FAILURES) {
-      const retryAfter = Math.max(1, Math.ceil((this.global.since + this.windowMs - at) / 1000));
-      return { ok: false, status: 429, error: `too many wrong tokens: no token is checked for ${retryAfter}s`, retryAfter };
-    }
-    const record = this.failures.get(address);
-    if (record && at - record.since >= this.windowMs) this.failures.delete(address);
-    const current = this.failures.get(address);
-    if (current && current.count >= this.limit) {
-      const retryAfter = Math.max(1, Math.ceil((current.since + this.windowMs - at) / 1000));
-      return { ok: false, status: 429, error: `too many wrong tokens from this address: try again in ${retryAfter}s`, retryAfter };
-    }
+    const blocked = this.limiter.blocked(address);
+    if (blocked) return { ok: false, status: 429, ...blocked };
     // One credential is judged: ?token= first (it replaces a stale cookie of an earlier token), then the header, then the cookie.
     const fromQuery = url.searchParams.get("token");
     const presented = fromQuery ?? bearer(req.headers.authorization) ?? cookie(req.headers.cookie, this.cookieName);
     if (presented === null || presented === "") return { ok: false, status: 401, error: "this dashboard needs a token (odw serve --token)" };
     if (this.matches(presented)) {
-      this.failures.delete(address);
+      this.limiter.clear(address);
       return { ok: true, setCookie: fromQuery !== null ? this.cookie(presented) : null };
     }
-    this.fail(address, at);
+    this.limiter.fail(address);
     return { ok: false, status: 401, error: "wrong token" };
   }
 
   /** Constant-time: both sides are hashed to equal-length digests first. */
   private matches(value: string): boolean {
     return timingSafeEqual(hash(value), this.digest);
-  }
-
-  private fail(address: string, at: number): void {
-    this.global.count++;
-    const record = this.failures.get(address);
-    if (record) {
-      record.count++;
-      return;
-    }
-    this.failures.set(address, { count: 1, since: at });
-    if (this.failures.size > MAX_TRACKED) this.failures.delete(this.failures.keys().next().value!);
   }
 
   private cookie(token: string): string {
@@ -166,7 +204,7 @@ function bearer(header: string | undefined): string | null {
 }
 
 /** The value of cookie `name` in a Cookie header, or null. */
-function cookie(header: string | undefined, name: string): string | null {
+export function cookie(header: string | undefined, name: string): string | null {
   for (const part of (header ?? "").split(";")) {
     const eq = part.indexOf("=");
     if (eq !== -1 && part.slice(0, eq).trim() === name) return part.slice(eq + 1).trim();

@@ -41,6 +41,7 @@
 import { formatSeconds } from "../adapters/failures.js";
 import { addUsage, type Usage } from "../adapters/usage.js";
 import type { WorkflowEvent } from "../events.js";
+import { limitLabel } from "../limits.js";
 import { clockTime, pausedForOf, pausedText } from "../quota-wait.js";
 import {
   cursor,
@@ -121,6 +122,9 @@ export function formatEvent(ev: WorkflowEvent): string {
     // Tool calls its CLI refused under a reply that stood (ODW extension).
     const denied = type === "agent_finished" ? linesOf(ev.denied) : null;
     if (denied) detail += ` — refused: ${sanitizeText(denied.join("; "), 200)}`;
+    // Background work its CLI left running under a reply that stood (ODW extension).
+    const orphaned = type === "agent_finished" ? linesOf(ev.orphaned) : null;
+    if (orphaned) detail += ` — left running: ${sanitizeText(orphaned.join("; "), 200)}`;
   } else if (type.startsWith("command_")) detail = commandDetail(ev, type);
   else if (type === "checkpoint_requested") {
     detail = `#${String(ev.checkpointId)} ${sanitizeText(ev.title, 200)}${ev.truncated === true ? " (payload truncated)" : ""}`;
@@ -128,6 +132,11 @@ export function formatEvent(ev: WorkflowEvent): string {
   // An adapter CLI's version, recorded on its first dispatch (ODW extension).
   else if (type === "cli_version") {
     detail = `${sanitizeText(ev.adapter, 40)}: ${sanitizeText(ev.version ?? `unknown (${String(ev.error ?? "?")})`, 160)}`;
+  }
+  // A note on the run's notes board (ODW extension; see ../notes).
+  else if (type === "note_added") {
+    const by = ev.by as { agentId?: unknown; label?: unknown } | undefined;
+    detail = `#${String(ev.noteId)} ${sanitizeText(by?.label ?? "?", 60)}:${String(by?.agentId ?? "?")} ${sanitizeText(ev.text, 300)}`;
   }
   else detail = sanitizeText(ev.error ?? ev.runId ?? "", 200);
   return `[${stamp}] ${type.padEnd(15)}${phase} ${detail}`.trimEnd();
@@ -180,6 +189,24 @@ export function fallbackLines(agents: AgentView[], events: WorkflowEvent[]): str
     lines.push(`quota breaker: ${names} out of usage quota — the run's later agents skip ${tripped.size === 1 ? "it" : "them"}`);
   }
   return lines;
+}
+
+/** How many runaway agents `odw status` names; past them, a count. */
+const RUNAWAYS_NAMED = 5;
+
+/**
+ * What `odw status` says about runaways (ODW extension; see ../limits): the
+ * agents killed at one of their limits, each with the evidence — "fix:3
+ * Bash `npm test` ×5 in a row (limits.repeat=5)". No line for a run without one.
+ */
+export function runawayLines(agents: AgentView[]): string[] {
+  const hits = agents.filter((a) => a.kind === "agent" && a.limits?.hit);
+  if (hits.length === 0) return [];
+  const named = hits
+    .slice(0, RUNAWAYS_NAMED)
+    .map((a) => `${sanitizeText(a.label, 40)}:${a.agentId ?? "?"} ${sanitizeText(a.limits!.hit!.evidence, 120)} (${limitLabel(a.limits!.hit!)})`);
+  const more = hits.length > RUNAWAYS_NAMED ? `, and ${hits.length - RUNAWAYS_NAMED} more` : "";
+  return [`runaway: ${hits.length} agent${hits.length === 1 ? "" : "s"} killed at a limit — ${named.join(", ")}${more}`];
 }
 
 /** The `expect` checks a failed agent's work missed (agent_failed's `misses`; ODW extension), or null. */
@@ -248,6 +275,8 @@ function reasonText(reason: string | undefined): string | null {
     permission: "permission denied",
     empty_reply: "empty reply",
     unmet_expectation: "expectations not met",
+    runaway: "runaway",
+    orphaned_background: "left background work running",
   };
   return words[reason] ?? sanitizeText(reason.replace(/_/g, " "), 40);
 }
@@ -470,6 +499,8 @@ class LiveView {
       a.usage?.costUsd !== undefined ? fmtUsd(a.usage.costUsd) : null,
       // Its reply stood though its CLI refused tool calls (ODW extension): the log line before says which.
       a.state === "done" && a.denied?.length ? `${a.denied.length === 1 ? "1 tool call" : `${a.denied.length} tool calls`} refused` : null,
+      // Its reply stood though its CLI left background work running (ODW extension).
+      a.state === "done" && a.orphaned?.length ? `${a.orphaned.length === 1 ? "1 background task" : `${a.orphaned.length} background tasks`} orphaned` : null,
     ]);
     return `    ${glyph} ${label}  ${p.dim(meta)}`;
   }

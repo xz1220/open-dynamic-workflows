@@ -21,7 +21,11 @@
  * checkpoint() that starts waiting for a person — while the run goes on
  * waiting, so they never hold it up: state "waiting", no finishedAt or
  * result, and the checkpoint (`ODW_CHECKPOINT_ID`, `ODW_CHECKPOINT_TITLE`; the
- * webhook's `checkpoint: { checkpointId, title, since }`).
+ * webhook's `checkpoint: { checkpointId, title, since }`). While an `odw serve
+ * --public-url` runs for the runs root, they also carry the checkpoint's
+ * signed one-time approve and reject links (ODW extension; see
+ * ./approve-links and {@link withLinks}, {@link linksEnv}); otherwise they
+ * say why there are none.
  *
  * With "paused" in `notify.on` (opt-in), they fire once per pause for an
  * adapter's spent quota (an ODW extension: quotaWait) — not when it ends: the
@@ -43,6 +47,7 @@ import { cliOk, type NotifySettings, type RunEndState } from "../adapters/types.
 import type { WaitingCheckpoint } from "../checkpoint.js";
 import { pausedText, type PausedFor, type QuotaPause } from "../quota-wait.js";
 import type { Redactor } from "../redact.js";
+import { ntfyActions, type MintResult } from "./approve-links.js";
 import type { RunStore } from "./run-store.js";
 import { countAgents, foldAgents } from "./runs-view.js";
 
@@ -136,16 +141,24 @@ export async function notifyRunEnd(
  */
 export async function notifyCheckpoint(
   notify: NotifySettings | null,
-  run: { store: RunStore; runId: string; checkpoint: WaitingCheckpoint },
+  run: {
+    store: RunStore;
+    runId: string;
+    checkpoint: WaitingCheckpoint;
+    /** Mint the checkpoint's approve links (ODW extension; see ./approve-links) — called only when a hook fires. */
+    links?: () => MintResult;
+  },
   options: NotifyOptions = {},
 ): Promise<void> {
   if (!notify || !notify.on.includes("waiting") || (!notify.command && !notify.webhook)) return;
   const log = options.log ?? defaultLog;
   try {
     const waiting = describeWaiting(run.store, run.runId, run.checkpoint);
+    const links = run.links ? run.links() : null;
     const hooks: Array<Promise<void>> = [];
-    if (notify.command) hooks.push(runHookCommand(notify.command, waitingEnv(waiting), options, log));
-    if (notify.webhook) hooks.push(postWebhook(notify.webhook, redacted(waitingPayload(waiting), options), options, log));
+    if (notify.command) hooks.push(runHookCommand(notify.command, { ...waitingEnv(waiting), ...linksEnv(links) }, options, log));
+    // The links go in after redaction: a link's token is no secret of the run's, and must reach the phone whole.
+    if (notify.webhook) hooks.push(postWebhook(notify.webhook, withLinks(redacted(waitingPayload(waiting), options), links), options, log));
     await Promise.all(hooks);
   } catch (err) {
     log(`notify: hooks for checkpoint #${run.checkpoint.checkpointId} of run ${run.runId} failed: ${errorMessage(err)}`);
@@ -336,6 +349,37 @@ export function waitingLine(waiting: RunWaiting): string {
   );
 }
 
+/**
+ * A waiting checkpoint's payload with its approve links (ODW extension):
+ * `approveUrl`, `rejectUrl` and `linksExpireAt` (Unix seconds), and both
+ * links at the end of `text`/`content` — or, when none were minted,
+ * `linksUnavailable` saying why. Unchanged without a minting step.
+ */
+export function withLinks(payload: Record<string, unknown>, links: MintResult | null): Record<string, unknown> {
+  if (!links) return payload;
+  if (!links.ok) return { ...payload, linksUnavailable: links.reason };
+  const { approveUrl, rejectUrl, expiresAt } = links.links;
+  const text = `${String(payload.text ?? "")} · approve: ${approveUrl} · reject: ${rejectUrl}`;
+  return { ...payload, text, content: text, approveUrl, rejectUrl, linksExpireAt: expiresAt };
+}
+
+/**
+ * What a notify command gets of a waiting checkpoint's approve links (ODW
+ * extension): ODW_APPROVE_URL, ODW_REJECT_URL, ODW_LINKS_EXPIRE_AT and
+ * ODW_NTFY_ACTIONS (an ntfy `Actions` header with both buttons) — or
+ * ODW_LINKS_UNAVAILABLE saying why there are none.
+ */
+export function linksEnv(links: MintResult | null): Record<string, string> {
+  if (!links) return {};
+  if (!links.ok) return { ODW_LINKS_UNAVAILABLE: links.reason };
+  return {
+    ODW_APPROVE_URL: links.links.approveUrl,
+    ODW_REJECT_URL: links.links.rejectUrl,
+    ODW_LINKS_EXPIRE_AT: String(links.links.expiresAt),
+    ODW_NTFY_ACTIONS: ntfyActions(links.links),
+  };
+}
+
 /** The JSON body a webhook receives. */
 export function webhookPayload(end: RunEnd): Record<string, unknown> {
   const text = summaryLine(end);
@@ -399,7 +443,18 @@ function redacted(payload: Record<string, unknown>, options: NotifyOptions): Rec
 // --- the hooks ----------------------------------------------------------------
 
 /** The hook variables that are set only when they apply, whatever the worker itself inherited. */
-const OPTIONAL_HOOK_VARS = ["ODW_RESULT_FILE", "ODW_CHECKPOINT_ID", "ODW_CHECKPOINT_TITLE", "ODW_PAUSED_ADAPTER", "ODW_RESUME_AT"];
+const OPTIONAL_HOOK_VARS = [
+  "ODW_RESULT_FILE",
+  "ODW_CHECKPOINT_ID",
+  "ODW_CHECKPOINT_TITLE",
+  "ODW_PAUSED_ADAPTER",
+  "ODW_RESUME_AT",
+  "ODW_APPROVE_URL",
+  "ODW_REJECT_URL",
+  "ODW_LINKS_EXPIRE_AT",
+  "ODW_NTFY_ACTIONS",
+  "ODW_LINKS_UNAVAILABLE",
+];
 
 async function runHookCommand(
   command: string[],

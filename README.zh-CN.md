@@ -206,7 +206,7 @@ odw run examples/fan-out-reduce.js --wait --args '{"question": "Design a rate li
 | 原语 | 作用 |
 | --- | --- |
 | `agent(prompt, opts?)` | 让一个 coding agent 跑一个子任务。唯一真正"产出工作"的原语。返回文本;设了 `opts.schema` 则返回校验过的对象。设了 `opts.expect` 时,它的工作会被检查——某条命令以 0 退出、有文件改动、回复匹配——没达到就带着缺失项重试;见[检查 agent 的工作](#检查-agent-的工作odw-扩展)(**ODW 扩展**)。 |
-| `parallel(thunks)` | 一组任务并发执行、**等全部完成**(屏障)。可恢复失败变 `null`;停止、预算耗尽和派发上限错误会中止运行。 |
+| `parallel(thunks)` | 一组任务并发执行、**等全部完成**(屏障)。可恢复失败变 `null`;停止、预算耗尽和派发上限错误会中止运行。`parallel(thunks, { notes: true })` 让其 agent 使用本次运行的笔记板——见[并行 agent 之间的笔记](#并行-agent-之间的笔记odw-扩展)(**ODW 扩展**)。 |
 | `pipeline(items, ...stages)` | 每个条目独立穿过各 stage(**无屏障**)。每个 stage 收 `(prev, item, index)`。 |
 | `phase(title, opts?)` / `log(msg)` | 把进度归入某阶段 / 发一行进度消息。`opts`——`{ adapter, model }`——为该阶段的 agent 指定适配器和模型(**ODW 扩展**;见[按阶段路由](#按阶段路由与回退链odw-扩展))。 |
 | `schema`(JSON Schema) | 给 `agent` 的输出定一个类型契约;回复会被校验,不符就重试。ODW 无法检查的关键字会记入运行日志(设 `"schemaKeywords": "strict"` 则让调用失败);会校验 schema 的 CLI(`claude`、`codex`)直接原生强制执行——见[结构化输出](#结构化输出odw-扩展)。 |
@@ -235,6 +235,7 @@ const summary = await agent('Fix the failing tests in src/parser.', {
     files: ['src/parser/**'],   // 每个 glob 都必须匹配到一个被改动或新建的文件
     match: '^Fixed',            // 回复必须匹配的正则表达式
     mcp: ['github'],            // CLI 启动 agent 时必须连上的 MCP 服务器(claude)
+    untouched: ['test/**', '**/*.snap', '.github/**'], // 匹配这些 glob 的文件一个都不许改
   },
 })
 ```
@@ -281,10 +282,63 @@ agent_failed    (Fix) fixer — [unmet_expectation] did not meet: `npm test` mus
   `failed`、`needs-auth`、`disabled` 或没有配置——算作一项缺失,重试后以
   `unmet_expectation` 失败。`pending` 两者都不算:Claude Code 的文档说不要把它单独当作
   失败(`.mcp.json` 里的服务器通常以这个状态启动,并在后台连接)。
+- **受保护的路径不许碰。** agent 会钻考核它的检查的空子:为了变绿去改、跳过或删除测试。
+  `untouched` 列出 glob(规则同 `files`:`*` 不跨目录,`**/*.snap` 匹配任意深度),agent
+  修改、新建或删除的文件都不许匹配——读取方式同 `changes`,所以原地运行时你在调用之前的
+  改动不算。碰到的路径算作一项缺失并被列出——``no file matching "test/**" may change, and
+  1 did: test/add.test.js``——重试时会要求 agent 把它们恢复原样。
+- **被丢下仍在运行的后台任务。** 无头模式下 agent 可以启动后台 shell 命令
+  (`run_in_background`)或子 agent,随后结束回合并退出:任务随 CLI 一起终止,结果却显示成功
+  ([claude-code#85129](https://github.com/anthropics/claude-code/issues/85129))。odw 跟踪
+  Claude Code stream-json 的任务事件(`task_started`、`task_updated`、`task_notification`)
+  和后台工具调用;到 `result` 事件时仍未结束的任务作为 `orphaned` 记在 agent 的
+  `agent_finished` 事件、保存的结果、`/api/runs/:id` 和看板侧栏上,运行为每个 agent 记一行
+  日志:`serve:1: Claude Code ended its turn with 1 background task still running — Bash
+  (Start the dev server); it died when the CLI exited, …`。回复照常成立(默认
+  `"orphanedBackground": "warn"`);`"orphanedBackground": "fail"` 让这样的 agent 以
+  `reason: "orphaned_background"` 失败;设了 `expect` 时它算作一项缺失——先交还给 agent
+  (要求它等所有后台命令和子 agent 结束后再回复),之后以 `orphaned_background` 失败。任何
+  JSONL 适配器都可以用 `output.background` 声明自己 CLI 的后台事件(见适配器参考)。
 
 Claude Code 的 Workflow 工具会忽略 `expect`,在那里检查不会执行。
 [`examples/fix-until-green.js`](examples/fix-until-green.js) 用 `expect` 驱动一个
 "修到测试通过为止"的循环。
+
+### 并行 agent 之间的笔记(ODW 扩展)
+
+并行的编程 agent 常常各自通过、合在一起却出错:一个把函数改了名,另一个还在调用旧名字。只要
+告诉它们同时发生的改动是什么,大多数冲突就能避免——所以 odw 为每次运行提供一块**笔记板**,
+默认关闭:
+
+```js
+const lanes = await parallel(tasks.map((t, i) => () =>
+  agent(t, { label: `lane-${i + 1}`, isolation: 'worktree' })), { notes: true })
+const review = await agent('Which lanes clash?', { notes: true, schema: CLASHES })
+```
+
+- **何时打开:** `agent(…, { notes: true })`、`parallel(thunks, { notes: true })` 启动的每个
+  agent,或配置中 `"notes": true` 时运行的每个 agent。`notes: false` 让单个 agent 退出。默认
+  关闭:Claude Code 工作流照原样运行。
+- **发布:** 打开笔记的 agent 会得到 `ODW_NOTES`——一个属于它自己的小 shell 脚本的路径,提示词里
+  会说明用法:`"$ODW_NOTES" "把 parseX 改名为 parse"` 发布一条笔记;装了 odw 的地方
+  `odw note "…"` 作用相同(读取 agent 的 `ODW_RUN_ID`、`ODW_AGENT_ID` 与 `ODW_NOTES`)。笔记由谁
+  发布,取决于放下它的是哪个 agent 的脚本,而不是笔记里写了什么。
+- **读取:** agent 启动前已发布的笔记写在它的提示词里,标题为"Notes from the other agents in this
+  run"(取放得下 8000 字符的最新几条)。新笔记不会推送给已在运行的 agent——CLI 只读一次提示词——
+  但不带参数的 `"$ODW_NOTES"` 会打印笔记板的当前内容,提示词里也写明了这一点。
+- **接口广播:** 打开笔记且 `isolation: "worktree"` 的 agent 带着保留的改动完成时,odw 在其
+  `agent_finished` 事件之前替它发布一条笔记,让脚本之后启动的 agent 都能看到:diff 统计、改到的
+  文件,以及 diff 中新增或删除的、看起来像声明的行(`export`、`def`、`func`、`pub fn`、`class`、
+  `interface`——一个适用于各种语言的廉价启发式,最多 12 行)。
+- **上限:** 每条笔记最多 2000 字符,并像运行事件一样脱敏;笔记板最多 200 条、256 KiB,满了运行
+  会说一次。笔记保存在运行目录的 `notes.jsonl`。
+- **在容器沙箱中** 脚本照常可用:agent 自己的笔记目录以读写方式绑定,笔记板以只读方式绑定——容器
+  里没有其他 agent 的收件箱可写。
+- **查看:** `odw notes $RUN [--json]`、`odw logs` 中的 `note_added` 事件,以及
+  `GET /api/runs/:id/notes`。
+
+Claude Code 的 Workflow 工具会忽略这些选项。[`examples/coordinated-refactor.js`](examples/coordinated-refactor.js)
+把一项改动拆成在笔记板上并行的隔离分支,由审阅者读取笔记板,再让相互冲突的分支带着全部笔记重跑。
 
 ## 兼容性与迁移
 
@@ -342,6 +396,7 @@ odw logs $RUN --follow   # 流式输出原始进度事件
 odw logs $RUN --agent 3  # 某个 agent 做了什么:它的工具调用、结果和文字(见下文)
 odw result $RUN          # 最终值
 odw diff $RUN --stat     # 隔离 agent 改了什么;odw apply $RUN --agent N(或 --all)落地
+odw notes $RUN           # 它的 agent 在笔记板上互相告知的内容(见上文)
 odw compare $OLD $RUN    # 两次运行之间变了什么:配置、耗时、花费、失败、回复(见下文)
 odw eval review          # 用例 × 适配器 × 重复次数:每个单元格的通过率、花费与耗时(见下文)
 odw export $RUN --otlp   # 把运行导出为 OpenTelemetry trace(OTLP/JSON;--send 直接发送;见下文)
@@ -394,6 +449,7 @@ workflow;项目里有同名 workflow 时运行项目的那个,并提示
 odw serve [--open]                      # 实时看板,默认 http://127.0.0.1:4317
 odw serve --port 8080 --host 0.0.0.0 --token   # 远程只读、需要令牌(见「远程只读访问」)
 odw view run.odwrun                     # 只读查看分享的运行包(见「分享一次运行」)
+odw serve --public-url https://odw.example.com  # 在手机上回答检查点(见「在手机上批准」)
 ```
 
 ![odw serve —— 一次实时 deep-research 运行:五个阶段泳道(Plan → Search → Extract → Vote → Report)绘制成图,运行中的 agent 沿边传递信号,带运行计数与阶段步进条](assets/odw-dashboard.gif)
@@ -461,7 +517,7 @@ odw approve $RUN --edit   # 先修改 payload,再批准修改后的内容
 `POST /api/runs/:id/checkpoint` 发送 `{ action, checkpointId?, note?, payload? }`;
 `GET /api/runs/:id` 会列出 `pendingCheckpoints`,运行列表则用 `waiting` 标出每个等待中
 运行最早的那个问题)。调用返回 `{ approved, note, by, payload, edited }`
-——`by` 是 `cli`、`dashboard` 或 `timeout`——拒绝也是一个答复而不是错误:"不"意味着
+——`by` 是 `cli`、`dashboard`、`link`(签名的[批准链接](#在手机上批准odw-扩展))或 `timeout`——拒绝也是一个答复而不是错误:"不"意味着
 什么由脚本决定。
 
 **修改后批准。** 和 Claude Code 的计划审批一样,审批人可以改了再批,而不必拒绝后重跑。
@@ -927,6 +983,56 @@ odw serve --host 0.0.0.0 --token
   缩小范围,或者改为把一次运行作为[运行包](#分享一次运行odw-扩展)分享。
 - **不加 `--token` 时**,非 loopback 绑定与以前一样——只读,任何能连到该端口的人都能读——并且
   `odw serve` 会打印一条醒目的警告,建议加上 `--token`。
+- **只有两个窄口子能回答检查点,此外什么都不能写**——见[在手机上批准](#在手机上批准odw-扩展):
+  签名的一次性批准链接(`--public-url`),以及 `--token-scope approve`。
+
+### 在手机上批准(ODW 扩展)
+
+[`checkpoint()`](#人工检查点odw-扩展) 不必再等你回到终端。用手机能访问到的 URL(通常是一条
+HTTPS 隧道)启动看板,并打开 `waiting` 通知 hook:
+
+```bash
+odw serve --public-url https://odw.example.com     # 例如放在 cloudflared 或 tailscale funnel 后面
+```
+
+```json
+{ "notify": { "webhook": "https://hooks.example.com/YOUR/WEBHOOK/PATH", "on": ["waiting"] }, "approveLinks": { "ttl": 86400 } }
+```
+
+此后每个开始等待的检查点都会发出两条链接,批准与拒绝:webhook 的 JSON 里是 `approveUrl`、
+`rejectUrl` 和 `linksExpireAt`(`text` 末尾也有);通知命令拿到 `ODW_APPROVE_URL`、
+`ODW_REJECT_URL`、`ODW_LINKS_EXPIRE_AT` 和 `ODW_NTFY_ACTIONS`——一个现成的 ntfy `Actions`
+头,带 Approve 与 Reject 两个按钮([示例](docs/recipes/notify.md#approve-from-the-notification))。
+打开链接会显示一个小页面——运行、检查点标题、payload 和一个按钮;按下即以 `by: "link"`
+记录决定,运行继续。
+
+`odw serve --token X --token-scope approve` 为远程看板做同样的事:持有令牌的人可以批准或拒绝
+检查点(与 loopback 上一样可附备注或修改后的 payload)。默认范围是 `read`。
+
+安全模型——唯一的远程写操作是检查点决定:
+
+- **链接就是能力凭证。** 拿到它的任何人都能在它过期或被用掉之前,对那一个检查点做那一个决定——
+  像对待承载它的 webhook URL 一样对待它。它是对运行、检查点、动作和过期时间的 HMAC-SHA256,
+  密钥按 runs 根目录各有一份(`<runsRoot>/.approve-secret`,权限 0600,由第一次
+  `odw serve --public-url` 生成;他人可读的会被替换)。改动链接里的任何内容都会破坏签名;
+  `odw serve --rotate-approve-secret` 让之前发出的所有链接失效。
+- **只能用一次。** 用过的链接记录在运行目录里(`approve-links/<nonce>`,以独占方式创建,两次
+  点击不可能都生效);检查点的另一条链接随之作废。重放、过期的链接(默认 24 小时:
+  `approveLinks.ttl`,60 秒到 30 天)或已用别的方式回答的检查点,得到一个清楚的 "410" 页面;
+  被篡改的链接得到 "403" 页面——从不出现堆栈。
+- **打开链接不会做出任何决定。** 聊天软件的链接预览和邮件扫描只会 `GET`。决定是一个 `POST`,
+  带着页面的 CSRF 值,它必须与页面设置的 `HttpOnly`、`SameSite=Strict` cookie 一致;ntfy 按钮
+  则在 `X-ODW-Action` 头里写明动作,其他网站的页面发不出这个头。来自其他源的表单会被拒绝,
+  页面也不能被嵌入 frame。
+- **猜测受到限速**,与错误令牌相同:每个地址每分钟 10 个坏链接(或 CSRF 校验失败),全体合计
+  100 个,之后回 429。
+- **链接只在 `odw serve --public-url` 运行时有效。** 该 runs 根目录没有这样的服务时不会生成链接,
+  并在通知里说明原因(`linksUnavailable`、`ODW_LINKS_UNAVAILABLE`)。`/approve/` 路由不需要看板
+  令牌——链接本身就是凭证——也不开放任何别的东西:停止、暂停、恢复和 Chat 仍只限 loopback,
+  `--token-scope approve` 下同样如此。
+- **请用 HTTPS。** 走明文 HTTP 时,路径上的任何人都能读到链接并抢先使用;`--public-url` 是指向
+  localhost 以外的 `http://` 时 `odw serve` 会给出警告。隧道连到 loopback 绑定也可以:公开 URL
+  的主机名可以越过 DNS rebinding 检查到达 `/approve/`(仅此路由)。
 
 ## 配置适配器
 
@@ -1465,12 +1571,63 @@ cloning with «redacted:github»
 `opencode` 这类 JSONL 适配器,或会打印心跳的包装脚本;并把值设得高于
 健康 agent 最长的静默时段——工具调用里跑一轮很长的测试,同样不会有任何输出。
 
+### 单 agent 上限与死循环(ODW 扩展)
+
+陷入循环的 agent 一直在输出,所以卡死看门狗永远不会触发;而 `--budget` 限制的是整个运行,
+不是单个 agent。`limits` 限制的是一次 `agent()` 调用:
+
+```js
+await agent("修好失败的测试", {
+  limits: { toolCalls: 200, costUsd: 3, outputTokens: 200000, seconds: 1800, repeat: 5 },
+});
+```
+
+| 上限 | 何时触发 |
+| --- | --- |
+| `toolCalls` | agent 的工具调用次数(累计它的所有 CLI 运行)超过此值 |
+| `costUsd` | 它的 CLI 报告的花费(美元)超过此值 |
+| `outputTokens` | 它的 CLI 报告的输出 token 超过此值 |
+| `seconds` | 从它第一次 CLI 运行开始已过去这么多秒 |
+| `repeat` | 同一个工具调用——工具名加参数的哈希——**连续**出现这么多次(至少 2) |
+
+这些上限**实时**执行,依据的是 CLI 运行时打印的内容:Claude Code 的 stream-json(tool_use
+块与每条消息的用量;花费随最后的 `result` 到来)、Codex 的 `exec --json`(命令、文件改动、
+MCP 与网页搜索条目;每一轮的用量),以及 kilo 和 opencode 的事件(工具调用;每一步的 token
+与花费)。一旦越界,ODW 会像卡死一样立即杀掉该 agent 的 CLI 及其启动的所有进程,agent 以
+`runaway` 失败:`agent_failed` 事件带有 `limitHit: { limit, max, value, evidence }`,错误
+信息形如 ``adapter 'claude' ran away — limits.repeat=5: Bash `npm test` ×5 in a row``
+(或 `41 tool calls > 40`、`$3.12 > $3.00`)。`runaway` 不会被 `transientRetries` 重试,在
+`expect` 下也不算需要重跑的未达标——它的额度已经用完。`odw status` 列出失控的 agent 及证据,
+`odw agents` 在值的位置显示证据,看板侧栏显示该 agent 的上限并标出触发的那一项。
+
+`repeat` 统计的是**连续**调用,而不是「最近 2n 次中出现 n 次」:后者在健康的编辑—测试循环
+(`npm test`、编辑、`npm test`、编辑……)上也会触发;而同样参数的同一调用接连出现,说明
+agent 在两次之间做的事不可能改变结果。同一次调用的后续 CLI 运行(重试、重启)重新计数。
+
+可以在配置中为所有 agent 设默认值,也可以按适配器设置;调用自己的 `limits` 逐键覆盖两者,
+`null` 取消继承来的某项上限:
+
+```jsonc
+{
+  "agentLimits": { "toolCalls": 300, "repeat": 6 },   // {}(默认)= 不设上限
+  "adapters": {
+    "codex": { "agentLimits": { "seconds": 1800, "repeat": null } }
+  }
+}
+```
+
+只输出文本的 CLI(`gemini`、`qwen`……)运行期间不报告用量:它们的 `outputTokens` 与
+`costUsd` 只能在每次运行结束后检查,依据它报告的用量或回复字符数 / 4——运行日志会提示一次。
+完全不报告美元花费的 CLI(Codex)无法触发 `costUsd`,日志同样提示一次——请改用 `outputTokens`。
+
 ### 限流、额度与登录
 
 **ODW 扩展。** 每个失败的 agent 都会根据其 CLI 的退出状态和输出末尾被归类:`rate_limit`、
 `quota`、`auth`、`timeout`、`stalled`、`not_found`(CLI 无法启动)、`permission`(工具
-调用或审批被拒)或 `exit`——另有三个类别,给"成功了"却拿不出证据的运行:`empty_reply`、
-`unmet_expectation`,以及 `"mcpFailures": "fail"` 下的 `mcp_unavailable`(见[检查 agent 的工作](#检查-agent-的工作odw-扩展))。这个类别就是 `agent_failed` 事件上的 `reason`(CLI 说明了何时
+调用或审批被拒)或 `exit`——另有四个类别,给"成功了"却拿不出证据的运行:`empty_reply`、
+`unmet_expectation`、`"mcpFailures": "fail"` 下的 `mcp_unavailable`,以及
+`orphaned_background`(回复时仍有后台任务在运行,`"orphanedBackground": "fail"` 或设了
+`expect` 时)(见[检查 agent 的工作](#检查-agent-的工作odw-扩展));还有 `runaway`:触及[上限](#单-agent-上限与死循环odw-扩展)被杀掉的 agent。这个类别就是 `agent_failed` 事件上的 `reason`(CLI 说明了何时
 可以重试时,还带有以秒计的 `retryAfter`),也是看板和 `/api/runs/:id` 里该 agent 的
 `failureReason`,并显示在实时视图和 `odw logs` 中:
 
@@ -1738,7 +1895,8 @@ hook——webhook 只显示协议和主机,因为 URL 的其余部分就是密�
 `ODW_RUN_STATE=waiting`、`ODW_CHECKPOINT_ID` 和 `ODW_CHECKPOINT_TITLE`(没有
 `ODW_RESULT_FILE`);webhook 收到 `"state": "waiting"`、一个
 `"checkpoint": { "checkpointId", "title", "since" }` 字段(代替 `finishedAt`),以及一行
-写明回答命令的 `text`。
+写明回答命令的 `text`。有 `odw serve --public-url` 在运行时,它们还会带上该检查点签名的一次性
+批准与拒绝链接——见[在手机上批准](#在手机上批准odw-扩展)。
 
 加上 `"paused"`,就能在运行[因额度用尽而暂停](#额度用尽时暂停odw-扩展)时收到通知——每次
 暂停一次,继续时不再通知:命令的环境变量带有 `ODW_RUN_STATE=paused`、`ODW_PAUSED_ADAPTER`
@@ -1816,6 +1974,7 @@ odw apply $RUN --agent 3 --check   # 预览:每个文件是 clean、CONFLICT(附
 odw apply $RUN --agent 3           # 用 git apply --3way 应用到当前工作树
 odw apply $RUN --all --check       # 预览所有已完成的 agent,每个都叠在前面的之上
 odw apply $RUN --all --verify "npm test"   # 按顺序应用;校验失败的那个回滚
+odw apply $RUN --all --resolve --verify "npm test"   # 由 agent 解决冲突;校验通过后才应用
 ```
 
 `odw apply` 在你所在的 git 工作树里用 `git apply --3way` 应用一个 agent 的 diff——加
@@ -1834,6 +1993,20 @@ stash,或者加 `--force`。看板在运行的 **Changes** 标签页里展示同
 的路径恢复成应用前的样子,内容和索引项都分毫不差,odw 以退出码 1 结束并给出命令输出的末尾;按下
 Ctrl-C 也会同样回滚。命令运行期间这些文件若被改动,改动后的版本会先另存一份,odw 会说明存在哪里。其他东西一概不碰——不 stash、不 reset——你其余的未提交改动保持原样。`--verify` 下
 会冲突的改动不会被应用。
+
+`--resolve`(配合 `--all` 或 `--agent`)遇到 diff 会冲突的 agent 时不再停下,而是交给一个
+解决冲突的 agent。odw 在 diff 将要落地的状态上建一个临时 worktree——HEAD、索引(包含此前已应用
+的 agent)、以及该 agent 能干净应用的文件——并在其中用默认 adapter(或 `--adapter A`)启动一个
+resolver 运行,告诉它每个冲突文件的 base、双方版本和冲突行,要求保留双方意图、不碰其他文件。
+只有当它的改动只涉及冲突文件、不留冲突标记、并在该 worktree 里通过校验命令(`--verify` 或
+`applyVerify`)时,才会连同该 agent 的干净文件按常规方式应用到你的工作树;`--all` 随后继续,
+并重新预览其后的 agent。任何一步不满足,你的工作树都不会被改动,odw 会说明原因。`--confirm`
+在应用前展示解决后的 diff 并询问 y/N(需要终端)。resolver 是一个真正的运行——meta.json 里有
+`origin: "apply-resolve"` 和 `applyResolve: { runId, agentId }`;`odw apply` 会打印它的 id,
+`odw diff`、`odw logs`、`odw compare` 和看板都适用——被应用的运行则通过 meta.json 的
+`resolvedBy` 和一条 `apply_resolved` 事件(`outcome`:applied、refused、declined 或
+interrupted)链接到它。`--resolve` 不能与 `--force` 或 `--check` 同用:有未提交改动挡路的路径
+照旧拒绝。(ODW 扩展。)
 
 - **`keep: true`**(`agent()` 选项)或 **`keepBranches: true`**(配置)还会把改动提交到源
   仓库的分支 `odw/<runId>/<agentId>-<label>` 上——作者是 `odw <odw@localhost>`,父提交是
@@ -1915,6 +2088,7 @@ workflow 脚本始终是**纯 `.js`**、从不编译;引擎用 **TypeScript** �
 | [`test-fix-loop.js`](examples/test-fix-loop.js) | 用 `exec()` 跑测试 → agent 修复失败 → 重跑直到全绿(仅 ODW) |
 | [`fix-until-green.js`](examples/fix-until-green.js) | 同样的循环改用 `expect`:agent 回复后由 odw 跑测试,把仍然红的测试——或什么都没改的"修复"——交还给它,最后带着缺失项失败(仅 ODW) |
 | [`plan-approve-execute.js`](examples/plan-approve-execute.js) | agent 起草计划 → 有人在 `checkpoint()` 处批准(附说明的拒绝会重新规划)→ 并行执行 → 汇报(仅 ODW) |
+| [`coordinated-refactor.js`](examples/coordinated-refactor.js) | 多个隔离分支在笔记板上并行修改同一仓库,每个分支落地时广播其接口改动 → 审阅者指出相互冲突的分支 → 这些分支在知道别人改了什么之后重跑(仅 ODW) |
 
 ## 开发
 

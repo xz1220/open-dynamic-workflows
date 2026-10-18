@@ -72,6 +72,18 @@ other primitive organizes calls to it.
   sandbox has not, a higher limit or another image fails the call before it
   starts. See [adapters](adapters.md#container-sandbox-odw-extension). Not part of
   the resume key. Claude Code ignores it.
+- **opts.limits** (**ODW extension**) — what this agent may do before it is killed
+  as a runaway: `{ toolCalls?, costUsd?, outputTokens?, seconds?, repeat? }` —
+  tool calls over all its CLI runs, dollars and output tokens its CLIs reported,
+  seconds since its first CLI run, and the same tool call (name + argument hash)
+  `repeat` times **in a row**. Over its adapter's and the run's `agentLimits`
+  key by key; `null` lifts one. Enforced live from claude, codex, kilo and
+  opencode output (a text CLI's spend only after each run); a breach kills the
+  CLI at once and throws — recoverable — with `reason: "runaway"` and
+  `limitHit: { limit, max, value, evidence }` on its event (``Bash `npm test`
+  ×5 in a row``). Never retried, never an `expect` miss. A malformed value
+  throws an `AgentError` before anything runs. Not part of the resume key.
+  Claude Code ignores it.
 - **opts.expect** (**ODW extension**) — what must hold once the agent has
   replied, checked by odw: `{ changes?, files?, command?, match?, timeout? }`. See
   [expect](#expect-odw-extension). Claude Code ignores it.
@@ -82,6 +94,11 @@ other primitive organizes calls to it.
   reply as the answer. Without it, an empty reply fails the call with reason
   `"empty_reply"`. (Tool calls the CLI refused do not fail a call by default:
   they are recorded as `denied` — see [expect](#expect-odw-extension).)
+- **opts.notes** (**ODW extension**) — `true`: the agent gets the run's notes
+  board (its prompt shows the notes so far, `ODW_NOTES` posts and reads them,
+  and an isolated agent's kept change is broadcast as it finishes); `false`
+  opts it out of its `parallel()`'s or the `notes` setting. See
+  [notes](#notes-odw-extension). Claude Code ignores it.
 
 Returns the reply text, or the validated JSON value when `schema` is set. CLI
 errors, exhausted schema retries, work that missed its `expect` checks and an
@@ -123,6 +140,11 @@ const yes = votes.filter((v) => v && v.toLowerCase().startsWith('yes')).length
 
 Each thunk must be zero-arg — build them with `.map((x) => () => agent(...))` so
 each captures its own value.
+
+**ODW extension:** `parallel(thunks, { notes: true })` turns the run's notes
+board on for every agent its thunks start (an agent's own `notes: false` wins);
+`notes` is the only option, anything else throws. See [notes](#notes-odw-extension).
+Claude Code's `parallel()` takes only the thunks.
 
 ## pipeline
 
@@ -391,7 +413,8 @@ precedence over the injected one.
 
 The call resolves to `{ approved, note, by, payload, edited }`: `note` is the
 person's note or `null`; `by` is `"cli"` (`odw approve|reject`), `"dashboard"`
-(`odw serve`) or `"timeout"`. A rejection is an answer, not an error: the script
+(`odw serve`), `"link"` (a signed one-time approve link from a `waiting` notify hook,
+answered through `odw serve --public-url`; ODW extension) or `"timeout"`. A rejection is an answer, not an error: the script
 decides what it means — stop, re-plan with the note, skip a step.
 
 The person may approve an **edited** payload instead of rejecting and re-running
@@ -508,6 +531,7 @@ odw apply <run> --agent <id|label> --check   # preview only
 odw apply <run> --agent <id|label>       # git apply --3way into the working tree you are in
 odw apply <run> --all [--check]          # every finished agent, in agentId order
 odw apply <run> --agent <id|label> --verify "<cmd>"   # roll the apply back if <cmd> fails
+odw apply <run> --all --resolve [--adapter A] [--confirm] --verify "<cmd>"   # a resolver agent fixes conflicts
 ```
 
 Before it touches the tree, `odw apply` runs the same apply against a scratch
@@ -526,6 +550,15 @@ root after each apply, within `timeout`; when it fails or times out, that apply
 is rolled back exactly — the touched paths' content and index entries, nothing
 else — and odw exits 1 with the end of its output (a signal rolls it back too,
 then ends odw). A change that would conflict is not applied under `--verify`.
+`--resolve` (ODW extension) hands such a change to a resolver agent instead: a
+run of its own (`origin: "apply-resolve"`, `applyResolve: { runId, agentId }` in
+its meta.json; the run applied gets `resolvedBy` and an `apply_resolved` event)
+in a temporary worktree at HEAD + the index + the agent's clean files, told the
+base, both sides and the conflicting lines of each file. Its change is applied
+with the agent's clean files only when it edits just the conflicting files,
+leaves no conflict markers and passes `<cmd>` in that worktree (`--confirm`: y/N
+at a terminal first); otherwise the tree is unchanged and odw says why. Only
+text conflicts are resolved; never with `--force` or `--check`.
 A diff past `maxDiffBytes` (default 2 MB) keeps its head and ends with a
 `# odw: diff truncated …` line; its counts still describe the whole change, and
 `odw apply` refuses it (`--all` stops there) — use the agent's branch
@@ -537,7 +570,7 @@ replaces the earlier one. `odw resume` copies a replayed agent's diff into the n
 ## expect (ODW extension)
 
 ```js
-agent(prompt, { expect: { changes?, files?, command?, match?, mcp?, timeout? }, expectRetries?, allowEmpty? })
+agent(prompt, { expect: { changes?, files?, command?, match?, mcp?, untouched?, timeout? }, expectRetries?, allowEmpty? })
 ```
 
 What must hold once the agent has replied — checked by odw, instead of asking
@@ -561,13 +594,19 @@ the model whether it did the work. Prefer it to a second "did you do it?" agent:
   the background, or one with a cached tool list it connects on first use).
   `failed`, `needs-auth`, `disabled` or not configured is a miss. An adapter that
   declares no `mcpPath` cannot be checked: the call fails before its CLI starts.
+- **untouched** — globs, as `files`, that no file the agent changed, created or
+  deleted may match: the tests, snapshots and CI config it must not edit, skip
+  or delete to get green (`['test/**', '**/*.snap', '.github/**']`; `*` stays
+  within a directory). A touched path is a miss naming it — `no file matching
+  "test/**" may change, and 1 did: test/add.test.js` — and the retry is told to
+  restore it. Read from git like `changes`.
 
 The checks run once the reply is in and has satisfied its `schema`. What the
 agent changed is read from git. In place, it is what differs from the source
 tree as it was before the agent's first CLI run: your own uncommitted edits and
 the run's directory are left out, the agent's commits count — and so do edits
 another in-place agent makes meanwhile, so isolate agents whose changes must be
-told apart. `expect.changes` or `expect.files` in place needs a git repository
+told apart. `expect.changes`, `expect.files` or `expect.untouched` in place needs a git repository
 (else the call fails before its CLI starts). With `isolation: "worktree"`, it is
 exactly the change the run keeps as the agent's diff; a schema retry that only
 reformats is judged on the attempt that did the work.
@@ -598,6 +637,13 @@ adapter's `output.deniedPath` — count as a miss: the retry is told which, and 
 call still refused after its retries throws with reason `"permission"`, its
 `misses` listing the refusal and anything else the work missed.
 
+So does background work the CLI left running when it replied — a shell command
+started with `run_in_background` or a subagent, still open at Claude Code's
+`result` event (its stream-json task events, read through the adapter's
+`output.background`), which died as the CLI exited: the retry is told to wait
+for every background command and subagent before replying, and a call that
+still leaves some throws with reason `"orphaned_background"`.
+
 Without `expect`: an empty or whitespace-only reply throws with reason
 `"empty_reply"` unless `allowEmpty: true`. A reply that claims success while the
 CLI refused tool calls stands — they are kept as `denied` on the agent's
@@ -609,9 +655,51 @@ terminal event and saved result, and the run logs each server and status once
 (``MCP server github failed to start (claude agent `fix-auth`): its tools were
 unavailable``); `"mcpFailures": "fail"` throws for a server that `failed` or
 `needs-auth` with reason `"mcp_unavailable"` (one `expect.mcp` lists is a miss
-instead). Neither failure is retried. `expect` is
+instead). Background work its CLI left running when it replied is kept as
+`orphaned` on the agent's `agent_finished` event and saved result, and the run
+logs one line per agent (`serve:1: Claude Code ended its turn with 1 background
+task still running — Bash (Start the dev server); …`);
+`"orphanedBackground": "fail"` throws with reason `"orphaned_background"`
+instead. None of these failures is retried. `expect` is
 part of the call's resume key; Claude Code ignores it, so there the checks do not
 run.
+
+## notes (ODW extension)
+
+```js
+agent(prompt, { notes: true })                 // this agent
+parallel(thunks, { notes: true })              // every agent its thunks start
+// odw.config.json: "notes": true              // every agent of the run
+```
+
+A run-scoped board where parallel agents tell each other what the others must
+know — an interface they changed, a decision — so changes that pass alone do not
+break together. Off by default (dialect fidelity); `notes: false` opts one agent out.
+
+- **Posting.** An agent with notes on gets `ODW_NOTES`, the path of a POSIX shell
+  script of its own: `"$ODW_NOTES" "renamed parseX → parse"` posts a note,
+  `"$ODW_NOTES"` alone prints the board. `odw note "…"` does the same (it needs the
+  agent's `ODW_RUN_ID` and `ODW_AGENT_ID`). Its prompt says so.
+- **Reading.** The notes posted before an agent started are appended to its
+  prompt — "Notes from the other agents in this run:", `#<n> [agent <id> · <label>]
+  <text>`, the latest that fit 8000 characters. New notes are not pushed into a
+  running agent (a CLI takes its prompt once); it can run `"$ODW_NOTES"` again.
+- **Interface broadcast.** An isolated (`isolation: "worktree"`) agent with notes
+  on that kept a change has a `kind: "interface"` note posted for it before its
+  `agent_finished` event: its diff stat, the files it touched, and the diff lines
+  it added (`+`) or removed (`-`) that look like declarations — `export`, `def`,
+  `func`, `pub fn`, `class`, `interface` — at most 12. Agents the script starts
+  after it see it in their prompt.
+- **Bounds.** A note is cut at 2000 characters and redacted; the board holds 200
+  notes and 256 KiB (later notes are dropped and the run logs it once).
+- **Where.** `notes.jsonl` in the run directory; each note is a `note_added`
+  event too. `odw notes <run> [--json]` prints it; `GET /api/runs/:id/notes`
+  serves `[{ noteId, ts, by: { agentId, label }, text, kind, truncated?, redacted? }]`.
+- **Containers.** Under a container sandbox the agent's notes directory is bound
+  read-write and the board read-only, at the same paths: the script works there.
+- **Not persisted, no board.** An in-process run without a run directory logs
+  once that its agents run without one. A call replayed by `odw resume` posts
+  nothing. `notes` is not part of the resume key.
 
 ## schema
 

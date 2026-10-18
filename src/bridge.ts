@@ -5,7 +5,8 @@
  * self-contained prompt (independence framing + optional schema instructions),
  * runs the adapter in its workspace (the source tree by default, a throwaway
  * git worktree when isolation is requested) with the agent's `ODW_RUN_ID`,
- * `ODW_AGENT_ID` and `ODW_PORT` in its environment, and — when a schema is requested —
+ * `ODW_AGENT_ID` and `ODW_PORT` in its environment (and `ODW_NOTES`, with the run's notes
+ * board in its prompt, when notes are on — an ODW extension; see ./notes), and — when a schema is requested —
  * extracts/validates the reply and retries with corrective feedback until it
  * conforms or the retry budget is spent. A CLI the stall watchdog killed for
  * going quiet is started again, up to `stallRestarts` times per call. Each
@@ -30,7 +31,11 @@
  * run reports them, and those not connected go with the reply; one that
  * failed or needs authentication is an `mcp_unavailable` failure under
  * `mcpFailures: "fail"`, and a server the call's `expect.mcp` lists that is
- * not there is a miss (ODW extensions).
+ * not there is a miss (ODW extensions). So does background work a CLI left
+ * running when it replied (`output.background`: Claude Code's task events),
+ * which died as it exited: recorded with the reply (`orphanedBackground:
+ * "warn"`), an `orphaned_background` failure (`"fail"`), or — with `expect` —
+ * a miss.
  *
  * A call with `expect` checks (an ODW extension; see ./expect) has its work
  * checked once its reply satisfies the schema — an isolated run's worktree is
@@ -38,6 +43,13 @@
  * that did it, with what it missed appended to the prompt, up to the checks'
  * `retries`; then the call fails with reason `unmet_expectation` and the list
  * of misses.
+ *
+ * A call runs under its limits (an ODW extension; see ./limits): the run's
+ * `agentLimits`, its adapter's, its own `limits`. What its CLI prints is
+ * watched as it streams, and a limit it runs into — tool calls, the same call
+ * in a row, output tokens, dollars, seconds — kills the CLI at once; the call
+ * fails with reason `runaway`, never retried and never an `expect` miss. A
+ * text CLI's spend is checked once each run is over.
  *
  * What each CLI run spent — the usage and cost its CLI reported, when its
  * adapter declares where (adapters/usage.ts) — is handed to the caller as the
@@ -118,6 +130,7 @@ import {
   type CliResult,
   type Config,
   type ContainerSandbox,
+  type SandboxMount,
   type PermissionTier,
   type SchemaFlag,
 } from "./adapters/types.js";
@@ -126,11 +139,13 @@ import {
   AgentError,
   ConfigError,
   RunStopped,
+  RunawayError,
   SchemaValidationError,
   UnmetExpectationError,
   isFatalError,
 } from "./errors.js";
-import { refusedMiss, type ExpectationSink } from "./expect.js";
+import { hasLimits, limitLabel, LimitWatch, mergeLimits, readLimits, type AgentLimits, type LimitHit } from "./limits.js";
+import { orphanedMiss, refusedMiss, type ExpectationSink } from "./expect.js";
 import { PortPool } from "./ports.js";
 import { QuotaWaits, type QuotaPause, type QuotaPauseChange } from "./quota-wait.js";
 import { bothEnds, type Redactor } from "./redact.js";
@@ -173,6 +188,16 @@ export interface AgentRequest {
    * tighten (see adapters/sandbox.ts). Unvalidated: a bad value fails the call.
    */
   sandbox?: unknown;
+  /**
+   * ODW extension (see ./notes): the notes board section of the prompt — how
+   * to post a note, and the notes so far — appended after the task.
+   */
+  notes?: string;
+  /**
+   * ODW extension: this agent's own limits, over its adapter's and the run's
+   * `agentLimits` key by key (see ./limits). Unvalidated: a bad value fails the call.
+   */
+  limits?: unknown;
 }
 
 /** The persona framing injected for `agentType`, on top of the independence preamble. */
@@ -216,6 +241,13 @@ export interface AgentOutcome {
    * extension; `mcpPath`) — any status but "connected" — when there were any.
    */
   mcp?: McpServer[];
+  /**
+   * The background work its CLI left running when it replied, while it did
+   * that work (ODW extension; `output.background`), one line each, when there
+   * was any: the reply stood anyway (`orphanedBackground: "warn"`), so the
+   * caller records and logs it.
+   */
+  orphaned?: string[];
 }
 
 /** The MCP servers one CLI run of a call reported (ODW extension): its adapter, and those not connected. */
@@ -285,6 +317,11 @@ export interface RunOptions {
   signal?: AbortSignal;
   /** The call's agent id (its events' `agentId`), given to its processes as `ODW_AGENT_ID`. */
   agentId?: number;
+  /**
+   * The run's notes board for this call (an ODW extension; see ./notes): its
+   * `ODW_NOTES`, and what a container binds for it.
+   */
+  notes?: { env: Record<string, string>; mounts: SandboxMount[] };
   /**
    * Called with a note on preparing the call — no port left for `ODW_PORT`, a
    * file `.worktreeinclude` left out — so the run can log it.
@@ -580,6 +617,16 @@ export class Bridge {
   }
 
   /**
+   * The limits an agent on `adapter` runs under (ODW extension; see ./limits):
+   * the run's `agentLimits`, its adapter's over them, and the call's own
+   * `option` over both, key by key. A malformed `option` is an AgentError.
+   */
+  limitsFor(adapter: Adapter, option?: unknown): AgentLimits {
+    const own = option === undefined ? undefined : readLimits(option, "agent(): limits", (m) => new AgentError(m));
+    return mergeLimits(this.config.settings.agentLimits, adapter.agentLimits, own);
+  }
+
+  /**
    * The engine `box` runs on, once it is known to run here: its engine is
    * installed and its image present (asked once per run for each). Throws a
    * ConfigError — fatal: every agent of the sandbox would fail alike.
@@ -724,13 +771,17 @@ export class Bridge {
     if (this.runId !== undefined) env.ODW_RUN_ID = this.runId;
     if (options.agentId !== undefined) env.ODW_AGENT_ID = String(options.agentId);
     if (port !== null) env.ODW_PORT = String(port);
+    Object.assign(env, options.notes?.env);
     try {
       return await this.runCall(request, options, {
         env,
+        mounts: options.notes?.mounts,
         onNote: options.onNote,
         changes: options.changes,
         transcript: options.transcript,
         onOutput: options.onOutput,
+        // Its limits count over every CLI run of the call, fallbacks included (ODW extension).
+        watch: new LimitWatch(),
       });
     } finally {
       if (port !== null) this.ports.release(port);
@@ -943,6 +994,18 @@ export class Bridge {
     const sandbox = this.sandboxFor(adapter, request.sandbox);
     if (sandbox.error) throw new AgentError(sandbox.error);
     const engine = sandbox.box ? await unlessStopped(signal, () => this.sandboxReady(sandbox.box!)) : undefined;
+    // Its limits (ODW extension; see ./limits): enforced live from what a
+    // JSONL CLI prints; a text CLI's spend only once each run is over — said once.
+    const agentLimits = this.limitsFor(adapter, request.limits);
+    if (adapter.output?.format !== "jsonl" && (agentLimits.outputTokens !== undefined || agentLimits.costUsd !== undefined)) {
+      this.noteOnce(
+        `limits:${adapter.name}`,
+        `limits: adapter '${adapter.name}' prints no usage while it runs — its agents' outputTokens and costUsd ` +
+          `are checked only after each CLI run, against what it reported or chars/4 of its reply`,
+        { adapter: adapter.name },
+        shared.onNote,
+      );
+    }
     const call: CallEnv = {
       ...shared,
       container: sandbox.box && engine ? { box: sandbox.box, engine, agentId: options.agentId } : undefined,
@@ -955,6 +1018,10 @@ export class Bridge {
       // MCP servers that could not start fail a run at once only under "fail" —
       // but those the call's `expect.mcp` lists, which are a miss (ODW extensions).
       mcpFails: settings.mcpFailures === "fail" ? new Set(options.expect?.mcp ?? []) : undefined,
+      limits: agentLimits,
+      // Background work left running fails a run at once only under "fail",
+      // and not with `expect`, which counts it as a miss (ODW extensions).
+      orphanFails: settings.orphanedBackground === "fail" && !options.expect,
     };
     const limits: CliLimits = {
       timeout: adapter.timeout ?? settings.timeout ?? undefined,
@@ -991,7 +1058,7 @@ export class Bridge {
     let attempts = 0;
     // What the work missed last round, told to the next one.
     let missed = "";
-    const done = (value: unknown, text: string, refused: string[], servers: Map<string, string>): AgentOutcome => {
+    const done = (value: unknown, text: string, refused: string[], servers: Map<string, string>, orphaned: string[]): AgentOutcome => {
       const down = notConnected([...servers].map(([name, status]) => ({ name, status })));
       return {
         value,
@@ -1001,6 +1068,7 @@ export class Bridge {
         notes: plan.notes,
         ...(refused.length > 0 ? { denied: refused } : {}),
         ...(down.length > 0 ? { mcp: down } : {}),
+        ...(orphaned.length > 0 ? { orphaned } : {}),
       };
     };
     for (let round = 0; ; round++) {
@@ -1012,6 +1080,8 @@ export class Bridge {
       // down in any of them stays down — the work may rest on that run (ODW extension).
       const servers = new Map<string, string>();
       let reported = false;
+      // The background work its CLI runs left running at their replies (ODW extension).
+      const orphaned: string[] = [];
       for (let attempt = 1; attempt <= maxAttempts; attempt++) {
         throwIfAborted(signal);
         if (++attempts > 1) await options.beforeRetry?.();
@@ -1024,6 +1094,8 @@ export class Bridge {
         // Killed by a stop (or by a fatal error elsewhere in the run): report
         // the run's reason, not a misleading CLI failure.
         throwIfAborted(signal);
+        // A runaway is not retried, nor a miss to run again: its limit is spent (ODW extension).
+        if (failure?.reason === "runaway" && call.watch?.hit) throw runawayError(adapter, call.watch.hit);
         if (failure || !cliOk(cli)) {
           const verdict = failure ?? classifyFailure(cli, { patterns: adapter.failures, prompt, now: this.now() });
           throw new AdapterExecutionError(
@@ -1045,6 +1117,7 @@ export class Bridge {
           throw new AdapterExecutionError(cliFailureMessage(adapter, cli, EMPTY_REPLY, this.redactor), { reason: "empty_reply" });
         }
         for (const denial of output.denied ?? []) if (!refused.includes(denial)) refused.push(denial);
+        for (const work of output.orphaned ?? []) if (!orphaned.includes(work)) orphaned.push(work);
         if (output.mcp) reported = true;
         for (const { name, status } of output.mcp ?? []) {
           if (status !== MCP_CONNECTED || !servers.has(name)) servers.set(name, status);
@@ -1065,16 +1138,22 @@ export class Bridge {
           value = pick.value;
         }
         // Without `expect`, a reply stands though tool calls were refused: they are recorded.
-        if (!expect) return done(value, text, refused, servers);
+        if (!expect) return done(value, text, refused, servers, orphaned);
 
         // The work is checked, not taken at its word (ODW extension; see ./expect),
         // and a refused tool call is a miss of its own: the work went without it.
+        // So is background work left running at the reply: it died unfinished.
         const checked = await unlessStopped(signal, () => expect.check(text, { mcp: reported ? servers : null }));
-        const misses = refused.length > 0 ? [refusedMiss(refused), ...checked] : checked;
-        if (misses.length === 0) return done(value, text, refused, servers);
+        const misses = [
+          ...(refused.length > 0 ? [refusedMiss(refused)] : []),
+          ...(orphaned.length > 0 ? [orphanedMiss(orphaned)] : []),
+          ...checked,
+        ];
+        if (misses.length === 0) return done(value, text, refused, servers, orphaned);
         const lines = misses.map((miss) => miss.text);
         if (round >= expect.retries) {
           if (refused.length > 0) throw this.refusedFailure(adapter, cli, refused, lines, limits, reruns);
+          if (orphaned.length > 0) throw this.orphanedFailure(adapter, cli, orphaned, lines, limits, reruns);
           const after = round > 0 ? ` after ${round} ${round === 1 ? "retry" : "retries"}` : "";
           throw new UnmetExpectationError(
             `adapter '${adapter.name}' did not meet its expectations${after}: ${lines.join("; ")}`,
@@ -1134,6 +1213,9 @@ export class Bridge {
         const output = decoder?.received ? decoder.finish(reply) : decodeOutput(adapter, cli.stdout, reply);
         // What the run said of its MCP servers is told as soon as it is in (ODW extension).
         if (output.mcp && !signal?.aborted) options.onMcp?.({ adapter: adapter.name, servers: notConnected(output.mcp) });
+        // A limit it ran into — live, or now that its spend is in — ends the call (ODW extension; see ./limits).
+        const hit = signal?.aborted ? null : this.settleLimits(adapter, call, output);
+        if (hit) return { cli: runawayEvidence(cli, hit), output, failure: { reason: "runaway" as const } };
         if (signal?.aborted || cli.stalled) return { cli, output };
         const failed = this.failureOf(adapter, cli, output, prompt, call);
         if (failed) return { cli: failed.cli, output, failure: failed.failure };
@@ -1175,6 +1257,28 @@ export class Bridge {
   }
 
   /**
+   * The call's limits once a CLI run's output is decoded (ODW extension; see
+   * ./limits): what the run spent is the call's — as its CLI reported it,
+   * else chars/4 of its reply — and the limit it ran into, live or now, comes
+   * back. A CLI that reported no cost leaves `costUsd` unchecked: said once.
+   */
+  private settleLimits(adapter: Adapter, call: CallEnv, output: DecodedOutput): LimitHit | null {
+    const { watch, limits } = call;
+    if (!watch || !hasLimits(limits)) return watch?.hit ?? null;
+    const estimate = output.usage?.outputTokens === undefined && output.text ? Math.ceil(output.text.length / 4) : undefined;
+    const hit = watch.settle(output.usage, estimate);
+    if (!hit && limits.costUsd !== undefined && !watch.reportedCost) {
+      this.noteOnce(
+        `limits-cost:${adapter.name}`,
+        `limits: adapter '${adapter.name}' reports no cost — its agents' costUsd limit cannot be checked (outputTokens can)`,
+        { adapter: adapter.name },
+        call.onNote,
+      );
+    }
+    return hit;
+  }
+
+  /**
    * How a CLI run that was neither stopped nor stalled failed — its verdict,
    * and the result whose output is the evidence — or null for a real reply.
    */
@@ -1212,7 +1316,37 @@ export class Bridge {
     // `permissionDenials: "fail"`; else the caller records them, or — with
     // `expect` — counts them as a miss.
     if (output.denied && call.refusalFails) return { cli: refusedEvidence(cli, output.denied), failure: { reason: "permission" } };
+    // A reply given while background work still ran (Claude Code's task
+    // events): the work died as the CLI exited. It fails here only under
+    // `orphanedBackground: "fail"`; else the caller records it, or — with
+    // `expect` — counts it as a miss.
+    if (output.orphaned && call.orphanFails) {
+      return { cli: orphanedEvidence(cli, output.orphaned), failure: { reason: "orphaned_background" } };
+    }
     return null;
+  }
+
+  /**
+   * How a call with `expect` fails when the background work its CLI left
+   * running is still among what its work missed after its retries: an
+   * `orphaned_background` failure naming it, with the rest of what it missed.
+   */
+  private orphanedFailure(
+    adapter: Adapter,
+    cli: CliResult,
+    orphaned: string[],
+    misses: string[],
+    limits: CliLimits,
+    reruns: Reruns,
+  ): UnmetExpectationError {
+    const why = this.whatFailed(adapter, cli, { reason: "orphaned_background" }, limits, reruns);
+    const message = cliFailureMessage(adapter, orphanedEvidence(cli, orphaned), why, this.redactor);
+    const others = misses.slice(1);
+    return new UnmetExpectationError(
+      others.length > 0 ? `${message} — and its work did not meet: ${others.join("; ")}` : message,
+      misses,
+      "orphaned_background",
+    );
   }
 
   /**
@@ -1272,6 +1406,11 @@ export class Bridge {
         return (
           `started the agent without an MCP server it is configured with (mcpFailures: "fail") — fix the server ` +
           `(claude mcp list) and resume the run, ${switchAdapter}`
+        );
+      case "orphaned_background":
+        return (
+          "ended its turn with background work still running, which died when its CLI exited — have the agent wait " +
+          "for that work before it replies, or run it in the foreground"
         );
       default:
         // An exit-0 run fails this way only when its CLI reported the failure in its output.
@@ -1362,6 +1501,7 @@ export class Bridge {
     // which native system-prompt flags do not. See LiteralRouter.noteAgentType.
     if (request.agentType) parts.push(personaPreamble(request.agentType));
     parts.push(request.prompt);
+    if (request.notes) parts.push(request.notes);
     if (request.schema && describe) parts.push(describeSchema(request.schema));
     return parts.join("\n\n");
   }
@@ -1459,6 +1599,8 @@ export class Bridge {
                 ...(promptFile ? [{ source: promptFile, target: promptFile, readonly: true }] : []),
                 ...(schema?.path ? [{ source: schema.path, target: schema.path, readonly: true }] : []),
                 ...(reply ? [{ source: dirname(reply.path), target: dirname(reply.path), readonly: false }] : []),
+                // The agent's notes directory and the board's (ODW extension; see ./notes).
+                ...(call.mounts ?? []),
               ],
               env,
               runId: this.runId,
@@ -1467,10 +1609,20 @@ export class Bridge {
           : undefined;
         if (container?.note) this.noteOnce(`sandbox:${adapter.name}`, container.note, { adapter: adapter.name }, call.onNote);
         let cli: CliResult | null = null;
+        // Its limits (ODW extension; see ./limits) watch what it prints, and
+        // one it runs into kills it — and everything it started — at once.
+        const guard = hasLimits(call.limits) && call.watch ? call.watch : undefined;
+        const runaway = guard ? new AbortController() : undefined;
+        const stopRun = (): void => runaway?.abort();
+        if (runaway && signal) {
+          if (signal.aborted) runaway.abort();
+          else signal.addEventListener("abort", stopRun, { once: true });
+        }
         try {
           // What the CLI prints is kept as it arrives (ODW extension; see ./transcript).
           const transcript = call.transcript;
           transcript?.beginRun(why, adapter);
+          guard?.startRun(call.limits!, adapter.output?.format === "jsonl", stopRun);
           // A version probe runs on the host: for a CLI in a container it would
           // name another CLI (or none), so a sandboxed run records no version.
           if (!container) this.onCliRun?.(adapter);
@@ -1482,18 +1634,24 @@ export class Bridge {
             stallTimeout: limits.stallTimeout,
             onStdout,
             observeStdout:
-              transcript || watch
+              transcript || watch || guard
                 ? (chunk) => {
                     transcript?.stdout(chunk);
+                    guard?.stdout(chunk);
                     watch?.();
                   }
                 : undefined,
             onStderr: transcript && ((chunk) => transcript.stderr(chunk)),
-            signal,
+            signal: runaway ? runaway.signal : signal,
           });
+          guard?.endRun();
+          // Killed as a runaway: its own note says so, not "aborted".
+          if (guard?.hit && !signal?.aborted) cli = { ...cli, stderr: cli.stderr.replace(/\n\[aborted; process terminated\]$/, "\n[runaway; terminated]") };
           transcript?.endRun(cli);
         } finally {
-          await container?.close(cli !== null && cliOk(cli) && !signal?.aborted);
+          guard?.endRun();
+          signal?.removeEventListener("abort", stopRun);
+          await container?.close(cli !== null && cliOk(cli) && !signal?.aborted && !guard?.hit);
         }
         // What it wrote to its reply file is read once it has exited.
         const written = reply ? await reply.read() : undefined;
@@ -1520,6 +1678,8 @@ export class Bridge {
  */
 interface CallEnv {
   env: Record<string, string>;
+  /** More binds each container run of the call gets: its notes board's (ODW extension). */
+  mounts?: SandboxMount[];
   onNote?: (message: string) => void;
   changes?: ChangeSink;
   transcript?: TranscriptSink;
@@ -1540,10 +1700,16 @@ interface CallEnv {
    * the set, which `expect.mcp` checks (ODW extension; see failureOf).
    */
   mcpFails?: ReadonlySet<string>;
+  /** Watches the call's CLI runs against its limits, over all of them (ODW extension; see ./limits). */
+  watch?: LimitWatch;
+  /** The limits the call runs under on this adapter (ODW extension). */
+  limits?: AgentLimits;
+  /** A run whose CLI exited with background work running fails as `orphaned_background` (ODW extension; see failureOf). */
+  orphanFails?: boolean;
 }
 
 /** The variables an agent's processes get from ODW: only ever this call's, never inherited. */
-const AGENT_VARS = ["ODW_RUN_ID", "ODW_AGENT_ID", "ODW_PORT"];
+const AGENT_VARS = ["ODW_RUN_ID", "ODW_AGENT_ID", "ODW_PORT", "ODW_NOTES"];
 
 /**
  * `base` with the call's agent variables over it — and none of their values
@@ -1678,7 +1844,22 @@ function mcpEvidence(cli: CliResult, servers: McpServer[]): CliResult {
   return { ...cli, stdout: `MCP servers not connected: ${listed}`, stderr: "" };
 }
 
+/** A run that ran into a limit, with the evidence as its diagnostic (ODW extension; see ./limits). */
+function runawayEvidence(cli: CliResult, hit: LimitHit): CliResult {
+  return { ...cli, stdout: hit.evidence, stderr: "" };
+}
+
+/** How a call that ran into a limit fails: reason "runaway", naming the limit and the evidence (ODW extension). */
+function runawayError(adapter: Adapter, hit: LimitHit): RunawayError {
+  return new RunawayError(`adapter '${adapter.name}' ran away — ${limitLabel(hit)}: ${hit.evidence}`, hit);
+}
+
 /** A run whose CLI refused tool calls, with them as its diagnostic: what a `permission` failure quotes. */
 function refusedEvidence(cli: CliResult, refused: string[]): CliResult {
   return { ...cli, stdout: `denied: ${refused.join("; ")}`, stderr: "" };
+}
+
+/** A run whose CLI exited with background work running, with it as its diagnostic: what `orphaned_background` quotes. */
+function orphanedEvidence(cli: CliResult, orphaned: string[]): CliResult {
+  return { ...cli, stdout: `left running: ${orphaned.join("; ")}`, stderr: "" };
 }

@@ -16,6 +16,7 @@
  *   odw result <run_id> [--agent <id|label>]
  *   odw diff <run_id> [--agent <id|label>] [--stat]
  *   odw apply <run_id> --agent <id|label>|--all [--check] [--force] [--verify CMD|--no-verify]
+ *             [--resolve [--adapter A] [--confirm]]   (a resolver run for a conflict; runtime/apply-resolve)
  *   odw rerun|resume <run_id>
  *   odw pause|resume|stop <run_id>
  *   odw approve|reject <run_id> [--note TEXT] [--checkpoint N]
@@ -27,6 +28,7 @@
  *   odw serve FILE.odwrun | odw view FILE   (a bundle, read-only); odw serve --token [VALUE] (runtime/serve-auth.ts)
  *   odw eval <file|name> [--adapter a,b] [--repeats N] [--json] [--out F] [--baseline F]   (src/eval/)
  *   odw conformance [--json] [--case N] [--dir DIR]   (the dialect conformance suite, src/conformance/)
+ *   odw note <text…> | odw notes [<run_id>] [--json]   (the run's notes board, runtime/notes-view.ts)
  */
 
 import { spawn } from "node:child_process";
@@ -53,6 +55,7 @@ import { cmdInit } from "./init.js";
 import type { AgentChanges } from "./changes.js";
 import { agentRowJson, agentRows, formatAgentTable, matchAgents, type AgentRow } from "./runtime/agents-view.js";
 import { applyAgents, type AgentDiff } from "./runtime/apply.js";
+import { resolverRuns } from "./runtime/apply-resolve.js";
 import {
   changedAgents,
   colorDiff,
@@ -65,7 +68,7 @@ import {
 import { compareRuns, findComparedAgents, formatAgentComparison, formatComparison, readCompareRun } from "./runtime/compare.js";
 import { editBlocker, editorCommand, editPayload, readPayloadOption } from "./runtime/checkpoint-edit.js";
 import { startRun, startRunFromSource, waitFor } from "./runtime/launcher.js";
-import { attachRun, bannerLines, checkpointCommands, fallbackLines, formatEvent, formatUsage, resolveRunMode, type RunMode } from "./runtime/live-view.js";
+import { attachRun, bannerLines, checkpointCommands, fallbackLines, formatEvent, formatUsage, resolveRunMode, runawayLines, type RunMode } from "./runtime/live-view.js";
 import { isRunActive, RunObserver } from "./runtime/run-liveness.js";
 import { RunStore, TERMINAL_STATES } from "./runtime/run-store.js";
 import { detail, evalTagOf, summarize, type RunDetail } from "./runtime/runs-view.js";
@@ -74,7 +77,9 @@ import { exportRun, exportTimeout, otlpTarget, OTEL_SEND_TIMEOUT_MS, postTrace, 
 import { startServer } from "./runtime/server.js";
 import { BUNDLE_EXT, BundleError, bundleRedactor, createBundle, DEFAULT_BUNDLE_MAX_BYTES, isBundleRunId, openBundle, type OpenedBundle } from "./runtime/bundle.js";
 import { generateToken, isValidToken } from "./runtime/serve-auth.js";
+import { parsePublicUrl } from "./runtime/approve-links.js";
 import { printAgentLogs } from "./runtime/transcript-view.js";
+import { cmdNote, cmdNotes } from "./runtime/notes-view.js";
 import { executeRun } from "./runtime/worker.js";
 import { pausedForOf, pausedText } from "./quota-wait.js";
 import { cmdSchedule } from "./schedule/command.js";
@@ -144,6 +149,7 @@ export function helpText(): string {
     "  odw diff <run_id> [--agent <id|label>] [--stat]    print what isolated agents changed (their kept diffs)",
     "  odw apply <run_id> --agent <id|label>|--all        preview, then apply kept diffs to this working tree (--force)",
     "                                                     --check previews only; --verify CMD rolls an apply back if CMD fails",
+    "                                                     --resolve [--adapter A] [--confirm]: an agent resolves a conflict, verified first",
     "  odw compare <runA> <runB> [--json]                 what changed: setup, time, cost, failures, replies",
     "                                                     --agent <label|id> shows one agent's whole reply diff",
     "  odw list [--workflow <name>]                       list known runs",
@@ -161,6 +167,8 @@ export function helpText(): string {
     "  odw view FILE.odwrun                               show a bundle read-only (odw serve --open FILE.odwrun)",
     "  odw eval <file|name> [--adapter a,b] [--repeats N] cases × adapters × repeats: pass rate, cost, time (ODW extension)",
     "                                                     --json, --out report.json, --baseline report.json (exit 1: regressed)",
+    "  odw notes <run_id> [--json]                        a run's notes board: what its agents told each other (ODW extension)",
+    '  odw note "<text>"                                  inside an agent with notes on: post a note for the run\'s other agents',
     "",
     "Options:",
     "  --args JSON|@file   workflow input (JSON, @file.json, or a raw string)",
@@ -186,6 +194,9 @@ export function helpText(): string {
     "  --host <addr>       dashboard bind address (default 127.0.0.1)",
     "  --open              open the dashboard in the default browser",
     "  --token [VALUE]     reads need a token (remote read-only access); no VALUE: a random one, printed once",
+    "  --token-scope S     read (default), or approve: the token also answers checkpoints, nothing else",
+    "  --public-url URL    answer signed one-time approve/reject links at URL (sent by \"waiting\" notify hooks)",
+    "  --rotate-approve-secret  replace the approve-link secret: every link sent before stops working",
     "  FILE.odwrun         show that bundle alone, read-only (--max-bytes N raises the 32 MiB cap)",
     "",
     "Run modes (odw run / rerun / resume):",
@@ -282,6 +293,10 @@ export async function main(argv: string[]): Promise<number> {
         return await cmdServe(["--open", ...rest], "view");
       case "eval":
         return await cmdEval(rest);
+      case "note":
+        return cmdNote(rest, storeFrom);
+      case "notes":
+        return cmdNotes(rest, storeFrom);
       case "conformance":
         return await cmdConformance(rest);
       default:
@@ -735,6 +750,8 @@ function cmdStatus(rest: string[]): number {
   if (clis.length > 0) process.stdout.write(`  CLIs: ${sanitizeText(clis.join(" · "), 300)}\n`);
   // Agents that fell back to another adapter, and adapters the quota breaker took out (ODW extensions).
   for (const line of fallbackLines(run.agents, events)) process.stdout.write(`  ${line}\n`);
+  // Agents killed at one of their limits, with the evidence (ODW extension; see limits.ts).
+  for (const line of runawayLines(run.agents)) process.stdout.write(`  ${line}\n`);
   if (typeof meta.resumedFrom === "string") {
     const replayed = events.filter((e) => e.type === "agent_finished" && e.cached === true).length;
     process.stdout.write(`  resumed from: ${meta.resumedFrom} (${replayed} agent result(s) replayed)\n`);
@@ -954,7 +971,9 @@ async function cmdDiff(rest: string[]): Promise<number> {
  * `--verify` (else the `applyVerify` setting) runs a command after each apply
  * and rolls the apply back when it fails. Exit 0 when everything applied
  * cleanly (and passed), 1 otherwise. A signal during a verify rolls its apply
- * back, then ends odw by that signal.
+ * back, then ends odw by that signal. `--resolve [--adapter A] [--confirm]`
+ * hands a conflict to a resolver run instead (runtime/apply-resolve), never
+ * with `--force` or `--check`.
  */
 async function cmdApply(rest: string[]): Promise<number> {
   const { values, positionals } = parseArgs({
@@ -969,10 +988,22 @@ async function cmdApply(rest: string[]): Promise<number> {
       force: { type: "boolean" },
       verify: { type: "string" },
       "no-verify": { type: "boolean" },
+      resolve: { type: "boolean" },
+      adapter: { type: "string" },
+      confirm: { type: "boolean" },
     },
   });
   const runId = positionals[0];
   if (!runId) throw new UsageError("odw apply: missing <run_id>");
+  if (!values.resolve) {
+    for (const flag of ["adapter", "confirm"] as const) {
+      if (values[flag] !== undefined) throw new UsageError(`odw apply: --${flag} goes with --resolve`);
+    }
+  } else {
+    // A resolver's work lands only on a tree whose paths hold nothing uncommitted, and is applied, not previewed.
+    if (values.force) throw new UsageError("odw apply: --resolve does not apply over uncommitted changes: commit or stash them instead of --force");
+    if (values.check) throw new UsageError("odw apply: --resolve applies; --check previews only — drop one");
+  }
   if (values.agent === undefined && !values.all) {
     throw new UsageError(
       `odw apply: --agent <id|label> or --all is required — which agent's change to apply (odw diff ${runId} --stat lists them)`,
@@ -1019,7 +1050,15 @@ async function cmdApply(rest: string[]): Promise<number> {
     caught ??= signal;
     interrupt.abort();
   };
-  if (verify) for (const s of signals) process.on(s, onSignal);
+  if (values.adapter !== undefined) resolveAdapter(loadConfig(values.config ?? null, { quiet: true }), values.adapter); // fail fast on unknown names
+  const resolveWith = values.resolve
+    ? {
+        ...resolverRuns({ store, runId, configPath: values.config ?? null, adapter: values.adapter ?? null }),
+        confirm: values.confirm === true,
+        input: process.stdin,
+      }
+    : null;
+  if (verify || resolveWith) for (const s of signals) process.on(s, onSignal);
   // A pipe or terminal that goes away (EPIPE, EIO) must not end odw between an apply and its rollback.
   const unheard = (): void => {};
   process.stdout.on("error", unheard);
@@ -1036,6 +1075,7 @@ async function cmdApply(rest: string[]): Promise<number> {
       timeout: settings?.timeout ?? null,
       interrupt: interrupt.signal,
       source: typeof source === "string" ? source : undefined,
+      resolve: resolveWith,
       out: process.stdout,
       err: process.stderr,
       caps: detectCaps(process.stdout, process.env),
@@ -1435,6 +1475,9 @@ async function relaunch(
  *                   unpacked into a private temp dir, removed on exit
  *   --token [VALUE] every API read needs the token (remote read-only access); with
  *                   no VALUE a random one, printed once in the URL (`/#token=…`)
+ *   --token-scope read|approve   approve: the token also answers checkpoints off loopback
+ *   --public-url URL              answer signed one-time approve links (runtime/approve-links.ts)
+ *   --rotate-approve-secret       replace the runs root's approve-link secret first
  */
 async function cmdServe(rest: string[], as: "serve" | "view" = "serve"): Promise<number> {
   const { args, token: tokenFlag } = takeTokenFlag(rest);
@@ -1448,9 +1491,23 @@ async function cmdServe(rest: string[], as: "serve" | "view" = "serve"): Promise
       host: { type: "string" },
       open: { type: "boolean" },
       "max-bytes": { type: "string" },
+      "public-url": { type: "string" },
+      "token-scope": { type: "string" },
+      "rotate-approve-secret": { type: "boolean" },
     },
   });
   if (positionals.length > 1) throw new UsageError("odw serve: at most one bundle file (FILE.odwrun)");
+  // Approve links and the approve scope (ODW extensions): checkpoint decisions are the only remote writes.
+  const scope = values["token-scope"] ?? "read";
+  if (scope !== "read" && scope !== "approve") throw new UsageError("odw serve: --token-scope is read or approve");
+  if (scope === "approve" && tokenFlag === undefined) throw new UsageError("odw serve: --token-scope approve goes with --token");
+  const publicUrl = values["public-url"] === undefined ? null : parsePublicUrl(values["public-url"]);
+  if (values["public-url"] !== undefined && !publicUrl) {
+    throw new UsageError("odw serve: --public-url must be an http(s) URL with no credentials, query, fragment, comma, semicolon or quote");
+  }
+  if ((publicUrl || values["rotate-approve-secret"]) && positionals[0] !== undefined) {
+    throw new UsageError("odw serve: a shared bundle answers no approve links (--public-url, --rotate-approve-secret)");
+  }
   const file = positionals[0];
   if (as === "view" && file === undefined) throw new UsageError("usage: odw view FILE.odwrun [--port N] [--host H] [--token [VALUE]]");
 
@@ -1496,6 +1553,9 @@ async function cmdServe(rest: string[], as: "serve" | "view" = "serve"): Promise
       configPath: values.config ? resolve(expandHome(values.config)) : null, // absolute: runs it starts work elsewhere
       token,
       bundle: opened?.info ?? null,
+      publicUrl,
+      tokenScope: scope,
+      rotateApproveSecret: values["rotate-approve-secret"] === true,
     });
   } catch (err) {
     cleanup();
@@ -1519,6 +1579,14 @@ async function cmdServe(rest: string[], as: "serve" | "view" = "serve"): Promise
         ? "  reads need the token in that URL (or Authorization: Bearer <token>); writes stay loopback-only\n"
         : "  reads need the token given with --token (?token=, a cookie, or Authorization: Bearer); writes stay loopback-only\n",
     );
+    if (scope === "approve") process.stdout.write("  --token-scope approve: the token also answers checkpoints (nothing else is writable remotely)\n");
+  }
+  if (values["rotate-approve-secret"]) process.stdout.write("  approve secret rotated: every approve link sent before no longer works\n");
+  if (publicUrl) {
+    process.stdout.write(`  approve links → ${publicUrl}/approve/… (signed, one-time; minted into "waiting" notify hooks while this runs)\n`);
+    if (publicUrl.startsWith("http:") && !/^http:\/\/(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(`${publicUrl}/`)) {
+      process.stderr.write("  ⚠ --public-url is plain http: an approve link can be read and used by anyone on the path. Use https (a tunnel).\n");
+    }
   }
   if (!loopback && !token) {
     process.stderr.write(

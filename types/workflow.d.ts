@@ -72,18 +72,37 @@ declare global {
     /**
      * ODW extension — Claude Code ignores it. What must hold once the agent replied (after
      * `schema` validation), checked by ODW instead of asking the model; tool calls its CLI
-     * refused count as a miss too. Work that misses runs again, on the same adapter, with what
+     * refused count as a miss too, and so does background work its CLI left running when it
+     * replied. Work that misses runs again, on the same adapter, with what
      * it missed appended to its prompt (`expectRetries`), then the call throws (recoverable)
      * with `misses` and reason `"unmet_expectation"` — `"permission"` when refused calls are
-     * among them. A call that falls back to another adapter keeps its checks. Without it, MCP
+     * among them, `"orphaned_background"` when background work left running is. A call that
+     * falls back to another adapter keeps its checks. Without it, MCP
      * servers its CLI started it without are recorded and logged; `"mcpFailures": "fail"`
      * makes one that failed or needs authentication throw with reason `"mcp_unavailable"`.
+     * Background work left running is recorded (`orphaned`) and logged;
+     * `"orphanedBackground": "fail"` makes it throw with reason `"orphaned_background"`.
      */
     expect?: ExpectOptions;
     /** ODW extension: how many times work that missed `expect` runs again (default: the `expectRetries` setting, 1). */
     expectRetries?: number;
     /** ODW extension: accept an empty or whitespace-only reply; without it the call throws with reason `"empty_reply"`. */
     allowEmpty?: boolean;
+    /**
+     * ODW extension — Claude Code ignores it. The run's notes board: the agent's prompt shows
+     * the notes posted before it started and how to post one (`"$ODW_NOTES" "text"`, or
+     * `odw note "text"`); `"$ODW_NOTES"` alone prints the notes so far. With `isolation:
+     * "worktree"`, a change it keeps is posted for it as it finishes: its diff stat and the
+     * declaration lines (export, def, func, pub fn, class, interface) its diff touched.
+     * Default: its parallel()'s `notes`, else the `notes` setting (off); `false` opts out.
+     */
+    notes?: boolean;
+  }
+
+  /** ODW extension — Claude Code's parallel() takes only the thunks. */
+  interface ParallelOptions {
+    /** Every agent the thunks start gets the run's notes board (see {@link AgentOptions.notes}), unless it says `notes: false`. */
+    notes?: boolean;
   }
 
   /** What {@link AgentOptions.expect} checks (ODW extension). */
@@ -107,6 +126,12 @@ declare global {
      * Needs an adapter that reports its MCP servers (`output.mcpPath`; the built-in claude does).
      */
     mcp?: string[];
+    /**
+     * Globs (as `files`) no file the agent changed, created or deleted may match — tests,
+     * snapshots, CI config it must not edit or skip to get green: `['test/**', '**/*.snap',
+     * '.github/**']`. A touched path is a miss naming it. Read from git, as `changes` is.
+     */
+    untouched?: string[];
     /** Seconds `command` may run before it is killed, which is a miss (default 600). */
     timeout?: number;
   }
@@ -133,7 +158,7 @@ declare global {
   function agent(prompt: string, opts?: AgentOptions): Promise<any>;
 
   /** Ordered barrier: recoverable failures become null; fatal stop/budget/dispatch-cap/configuration errors propagate after all thunks settle. */
-  function parallel<T>(thunks: Array<() => Promise<T> | T>): Promise<Array<T | null>>;
+  function parallel<T>(thunks: Array<() => Promise<T> | T>, opts?: ParallelOptions): Promise<Array<T | null>>;
 
   /** Run each item through stages independently; recoverable failures drop that item to null, fatal errors propagate. */
   function pipeline(
@@ -232,8 +257,8 @@ declare global {
     approved: boolean;
     /** The note given with the answer, or null. */
     note: string | null;
-    /** Who answered: `odw approve|reject`, the dashboard (`odw serve`), or the timeout. */
-    by: "cli" | "dashboard" | "timeout";
+    /** Who answered: `odw approve|reject`, the dashboard (`odw serve`), a signed approve link (ODW extension), or the timeout. */
+    by: "cli" | "dashboard" | "link" | "timeout";
     /**
      * What was approved: the approver's edit (`odw approve --edit|--payload`, or the
      * dashboard) when there is one, else the checkpoint's own payload — undefined when it

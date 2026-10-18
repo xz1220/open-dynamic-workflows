@@ -59,6 +59,15 @@ export function writeGuard(req: IncomingMessage, res: ServerResponse, boundHost:
     sendJson(res, 409, { error: "writes are loopback-only: an off-loopback bind is read-only, with or without --token" });
     return false;
   }
+  return jsonPostGuard(req, res);
+}
+
+/**
+ * The CSRF half of {@link writeGuard}, without its loopback rule: what a
+ * checkpoint decision needs off loopback under `--token-scope approve` (ODW
+ * extension), where the token gate has already let the request in.
+ */
+export function jsonPostGuard(req: IncomingMessage, res: ServerResponse): boolean {
   // Compare the MIME *essence* (type/subtype before any ";" parameters), not a
   // substring: `text/plain; x=application/json` is a CORS "simple request" and
   // must NOT pass, while `application/json; charset=utf-8` must.

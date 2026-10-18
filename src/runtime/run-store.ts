@@ -12,7 +12,9 @@
  *     meta.json      immutable run description (script, args, source, config, workflowName,
  *                    resumedFrom: the run an `odw resume` replays; odwVersion and the
  *                    workflow's sourceHash, sha256, for `odw compare`; origin, and `eval`
- *                    for a run of `odw eval`)
+ *                    for a run of `odw eval`; applyResolve for a resolver run of
+ *                    `odw apply --resolve`, and resolvedBy — appended later — on the
+ *                    run whose agent it resolved)
  *     status.json    mutable state (running/paused/done/failed/stopped, counters)
  *     events.jsonl   append-only progress stream
  *     agents/<agentId>.json  each completed agent()'s result, saved as it lands
@@ -114,6 +116,8 @@ export interface CreateRunInput {
   origin?: string | null;
   /** The `odw eval` cell this run is one repeat of (ODW extension); written to meta only when set. */
   eval?: EvalRunTag | null;
+  /** The agent whose conflicts this run resolves for `odw apply --resolve` (ODW extension); written to meta only when set. */
+  applyResolve?: ResolveLink | null;
   /**
    * `odw resume`: the run whose saved agent results this run replays, and its
    * directory (where the worker reads them — the runs may live in different
@@ -132,6 +136,17 @@ export interface EvalRunTag {
   case: string;
   adapter: string;
   repeat: number;
+}
+
+/**
+ * A link between a run and the resolver run `odw apply --resolve` started for
+ * one of its agents (ODW extension): the other run's id, and the agent. The
+ * resolver's meta.json keeps it as `applyResolve`; the agent's run appends it
+ * to `resolvedBy`.
+ */
+export interface ResolveLink {
+  runId: string;
+  agentId: number;
 }
 
 /** A run plus the workflow it belongs to, returned by listing. */
@@ -193,6 +208,7 @@ export class RunStore {
       ...(input.workflowNotes && input.workflowNotes.length > 0 ? { workflowNotes: input.workflowNotes } : {}),
       origin: input.origin ?? null,
       ...(input.eval ? { eval: input.eval } : {}),
+      ...(input.applyResolve ? { applyResolve: input.applyResolve } : {}),
       resumedFrom: input.resumedFrom?.runId ?? null,
       resumedFromDir: input.resumedFrom?.dir ?? null,
       // First-class fact (not inferred from path topology): the script lives in
@@ -252,6 +268,16 @@ export class RunStore {
 
   readMeta(runId: string): Record<string, unknown> {
     return readJsonFile(join(this.runDir(runId), META)) ?? {};
+  }
+  /**
+   * Note in meta.json that `odw apply --resolve` started resolver run `link`
+   * for one of this run's agents: appended to `resolvedBy`, the one field of
+   * meta.json written after the run was created.
+   */
+  addResolvedBy(runId: string, link: ResolveLink): void {
+    const meta = this.readMeta(runId);
+    const links = Array.isArray(meta.resolvedBy) ? meta.resolvedBy : [];
+    writeJson(join(this.runDir(runId), META), { ...meta, resolvedBy: [...links, link] });
   }
   readStatus(runId: string): Record<string, unknown> {
     return readJsonFile(join(this.runDir(runId), STATUS)) ?? {};

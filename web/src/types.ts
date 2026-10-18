@@ -116,12 +116,14 @@ export interface AgentView {
   exitCode?: number | null;
   /** A command step that is an agent's `expect.command` check: that agent's id (ODW extension). */
   forAgentId?: number;
-  /** Why an agent failed: rate_limit, quota, auth, timeout, stalled, not_found, permission, exit, empty_reply, unmet_expectation, mcp_unavailable. */
+  /** Why an agent failed: rate_limit, quota, auth, timeout, stalled, not_found, permission, exit, empty_reply, unmet_expectation, mcp_unavailable, runaway, orphaned_background. */
   failureReason?: string | null;
   /** With `unmet_expectation`: the `expect` checks its work did not meet, one line each (ODW extension). */
   misses?: string[];
   /** A finished agent's tool calls its CLI refused (its reply stood anyway), one line each (ODW extension). */
   denied?: string[];
+  /** A finished agent's background work its CLI left running when it replied, which died with it (its reply stood anyway), one line each (ODW extension). */
+  orphaned?: string[];
   /** What the adapter reported spending on this agent. */
   usage?: Usage | null;
   /** What an isolated (worktree) agent changed; its diff is served separately. */
@@ -140,6 +142,12 @@ export interface AgentView {
    * its adapter or the call put it in one (ODW extension); absent: on the host.
    */
   sandbox?: AgentSandbox;
+  /**
+   * The limits it ran under (ODW extension; `agent(…, { limits })`,
+   * `agentLimits`) and, with reason `runaway`, `hit`: the one it ran into,
+   * what it reached and the evidence. Absent: no limits.
+   */
+  limits?: AgentLimits;
   /**
    * The adapters it fell back from, in order — their quota was spent or their
    * login refused — before `adapter` (ODW extension). Absent when it never
@@ -181,6 +189,22 @@ export type PermissionTier = "read" | "edit" | "full";
 
 /** Whether an agent's CLI trusted the repository it worked in (ODW extension; `odw run --untrusted`). */
 export type TrustLevel = "trusted" | "untrusted";
+
+/** What one agent may do before it is killed as a runaway, and the limit it ran into (ODW extension). */
+export interface AgentLimits {
+  toolCalls?: number;
+  costUsd?: number;
+  outputTokens?: number;
+  seconds?: number;
+  repeat?: number;
+  hit?: {
+    limit: "toolCalls" | "costUsd" | "outputTokens" | "seconds" | "repeat";
+    max: number;
+    value: number;
+    /** "Bash `npm test` ×5 in a row", "41 tool calls > 40". */
+    evidence: string;
+  };
+}
 
 /** The container an agent's CLI ran in (ODW extension; `odw run --sandbox container`). */
 export interface AgentSandbox {
@@ -588,6 +612,8 @@ export interface Capabilities {
   auth?: "token" | "none";
   /** The shared bundle this dashboard shows, read-only (`odw serve --open FILE.odwrun`; ODW extension). */
   bundle?: BundleInfo | null;
+  /** Checkpoints can be answered here — off loopback too with `--token-scope approve` (ODW extension). Absent from older servers. */
+  decide?: boolean;
 }
 
 /** A shared bundle as `odw serve` describes it (ODW extension). */
@@ -700,6 +726,8 @@ export interface AgentResultRecord {
   denied?: string[];
   /** The MCP servers its CLI started it without while it did the work (ODW extension). */
   mcp?: Array<{ name: string; status: string }>;
+  /** The background work its CLI left running when it replied (ODW extension). */
+  orphaned?: string[];
   /** Secrets in it were replaced by `«redacted:<kind>»` before it was saved (ODW extension): show a "redacted" tag. */
   redacted?: boolean;
 }
@@ -738,6 +766,29 @@ export interface TranscriptEntry {
   turns?: number;
   costUsd?: number;
   /** Secrets in it were kept out as `«redacted:<kind>»` (ODW extension): show a "redacted" tag. */
+  redacted?: true;
+}
+
+/**
+ * One note on a run's notes board (ODW extension; src/notes.ts): GET
+ * /api/runs/:id/notes returns them in order ([] when the run has none; 404
+ * for Claude runs). Each is also a `note_added` event, with the same fields
+ * but `ts` (the event's own). Agents with notes on post them; ODW posts a
+ * `kind: "interface"` one for an isolated agent's kept change.
+ */
+export interface RunNote {
+  /** 1, 2, … in the order the board took them. */
+  noteId: number;
+  ts: number;
+  /** The agent that posted it, or that ODW posted it for. */
+  by: { agentId: number; label: string };
+  /** At most 2000 characters; may span lines. */
+  text: string;
+  /** "note": the agent's own; "interface": its diff stat and the interface lines it touched. */
+  kind: "note" | "interface";
+  /** Cut at 2000 characters. */
+  truncated?: true;
+  /** Secrets in it were replaced by `«redacted:<kind>»`. */
   redacted?: true;
 }
 

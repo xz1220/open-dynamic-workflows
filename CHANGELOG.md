@@ -45,6 +45,24 @@ changed, and run on a schedule — and a dashboard redesigned to watch them.
   `failed` or `needs-auth` with reason `mcp_unavailable`, and `expect: { mcp: [...] }`
   makes a listed server that is not there a miss. Adapters declare where their CLI
   lists its servers with `output.mcpEvent` and `output.mcpPath`.
+- Orphaned background work (**ODW extension**): in headless mode an agent can start a
+  background shell command (`run_in_background`) or subagent, end its turn and exit —
+  the work dies with the CLI while the result says success
+  ([claude-code#85129](https://github.com/anthropics/claude-code/issues/85129)). ODW
+  reads Claude Code's stream-json task events (`task_started`, `task_updated`,
+  `task_notification`, plus the background tool calls themselves) and, when work is
+  still open at the `result` event, keeps it as `orphaned` on the agent (events, saved
+  result, `/api/runs/:id`, the dashboard drawer) and logs it once, while its reply
+  stands (the default `"orphanedBackground": "warn"`); `"orphanedBackground": "fail"`
+  fails such agents with reason `orphaned_background`, and with `expect` it is a miss —
+  handed back, then `orphaned_background`. Adapters declare their CLI's background
+  events generically with `output.background` (`started` / `ended` rules); the built-in
+  `claude` ships one.
+- `expect: { untouched: ['test/**', '**/*.snap', '.github/**'] }` (**ODW extension**):
+  a file the agent changed, created or deleted that matches a listed glob is a miss
+  naming the paths — so an agent cannot edit or skip the tests it is judged by to get
+  green. Read like `expect.changes`: an isolated agent's kept diff, an in-place agent's
+  change since the call started.
 
 ### Ask a person, tell a person
 - `checkpoint(title, { payload, timeout, onTimeout })` pauses a run until someone
@@ -59,6 +77,18 @@ changed, and run on a schedule — and a dashboard redesigned to watch them.
 - Run-end hooks: a `notify` command or webhook (Slack/Discord/ntfy-ready) when a run
   finishes, fails, stops — or, opt-in, starts waiting, or pauses for a spent quota
   (`"paused"`).
+- Approve from your phone (**ODW extension**): with `odw serve --public-url <url>`
+  running, each `waiting` hook carries the checkpoint's signed one-time approve and
+  reject links (`approveUrl`, `rejectUrl`, `linksExpireAt`; `ODW_APPROVE_URL`,
+  `ODW_REJECT_URL`, and `ODW_NTFY_ACTIONS` for ntfy Approve/Reject buttons). A link is an
+  HMAC-SHA256 over the run, checkpoint, action and expiry (`approveLinks.ttl`, 24h by
+  default) under a 0600 per-runs-root secret (`--rotate-approve-secret`); it opens a
+  confirmation page, decides once on a POST with the page's CSRF value (or an ntfy
+  button's `X-ODW-Action` header), and records `by: "link"`. Replays, expired and
+  tampered links get clear 410/403 pages, and bad links are rate limited like wrong
+  tokens. `--token-scope approve` lets a remote token holder answer checkpoints from the
+  dashboard too. Nothing else becomes writable remotely; without a server, the hooks say
+  why there are no links (`linksUnavailable`).
 
 ### Know what it costs and what it changed
 - Real usage and cost: the built-in `claude` adapter reads Claude Code's `stream-json`;
@@ -84,6 +114,15 @@ changed, and run on a schedule — and a dashboard redesigned to watch them.
   would conflict; `--verify "npm test"` (or `applyVerify`) runs a check after each
   apply and rolls an apply that fails it back exactly, leaving the rest of your
   uncommitted work alone (**ODW extension**).
+- `odw apply --resolve [--adapter A] [--confirm]` (**ODW extension**): an agent whose
+  diff would conflict goes to a resolver agent instead of stopping the apply. It runs as
+  a real run (`origin: "apply-resolve"`, linked both ways: `applyResolve` in its meta,
+  `resolvedBy` and an `apply_resolved` event in the run applied) in a temporary
+  worktree at the state the diff lands on, told the base, both sides and the
+  conflicting lines. Its change is applied — with the agent's clean files — only when
+  it edits just the conflicting files, leaves no conflict markers and passes the verify
+  command there; `--confirm` asks y/N with the resolved diff shown. Otherwise nothing in
+  your tree changes, and odw says why.
 - Transcripts: every agent's CLI output is kept — `odw logs <run> --agent <id|label>
   [--follow]`, or live in the dashboard's Transcript sheet.
 - Compare two runs: `odw compare <runA> <runB>` shows what changed after you edited a
@@ -167,6 +206,16 @@ changed, and run on a schedule — and a dashboard redesigned to watch them.
 - Per-adapter `concurrency` caps; a rate limit halves that adapter's cap for the rest of
   the run; `claude` fan-outs sharing a long prompt prefix stagger their start so the
   rest read the prompt cache.
+- Per-agent limits and runaway-loop detection (**ODW extension**): `agent(…, { limits:
+  { toolCalls, costUsd, outputTokens, seconds, repeat } })`, over the adapter's and the
+  run's `agentLimits` key by key (`null` lifts one). They are enforced live from what the
+  CLI prints — Claude Code's stream-json, Codex's `exec --json`, kilo/opencode events —
+  and a breach kills the agent's CLI and everything it started at once: the agent fails
+  with reason `runaway` and `limitHit` names the limit and the evidence
+  (``Bash `npm test` ×5 in a row``, `41 tool calls > 40`). `repeat: n` trips on the same tool call
+  (name plus a hash of its arguments) n times in a row. A runaway is never retried
+  (`transientRetries`) nor an `expect` miss. A text CLI's spend is checked after each run,
+  and the run says so once. Shown in `odw status`, `odw agents` and the agent's drawer.
 
 ### Run on a schedule
 - `odw schedule add|list|remove|run` writes a cron, launchd or systemd entry that calls
@@ -215,6 +264,17 @@ changed, and run on a schedule — and a dashboard redesigned to watch them.
   (`unspecified`, pinning what ODW does); scripts that pass conformance run on both.
   `conformance/README.md` gives the format for another runtime's runner, and the cases
   run on Claude Code by hand.
+- A notes board for parallel agents (**ODW extension**; ROADMAP R3): with `agent(…, {
+  notes: true })`, `parallel(thunks, { notes: true })` or `"notes": true`, agents find
+  the notes posted before they started in their prompt and post their own with
+  `"$ODW_NOTES" "…"` — a small shell script of their own, which works in a container
+  sandbox too — or `odw note "…"`. When an isolated agent with notes on finishes with a
+  kept change, odw posts its diff stat and the declaration lines (`export`, `def`,
+  `func`, `pub fn`, `class`, `interface`) its diff touched before its `agent_finished`,
+  so later agents know what it changed. Notes are capped (2000 characters each, 200
+  notes, 256 KiB) and redacted, kept as `notes.jsonl`, emitted as `note_added`, and read
+  with `odw notes <run> [--json]` and `GET /api/runs/:id/notes`. Off by default.
+  Example: `coordinated-refactor.js`.
 
 ### Use the CLI and the dashboard
 - `odw run` attaches a live foreground view in interactive terminals (Ctrl-C detaches;

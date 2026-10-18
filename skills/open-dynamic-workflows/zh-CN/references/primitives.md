@@ -53,6 +53,7 @@ agent(prompt, opts?) -> Promise<unknown>
   拒绝 `"read"`（调用在 CLI 启动前失败；`claude`、`codex` 和 `gemini` 有只读模式）。见
   [适配器](adapters.md#权限每个内置适配器能做什么)。Claude Code 会忽略它。
 - **opts.sandbox**（**ODW 扩展**）—— 让这个 agent 的 CLI 在容器中运行，或在比运行与适配器更严格的容器中运行：`"container"`，或 `{ network: "none", memory, cpus, pids, cliConfig: "none", image }`（只有别处都没设镜像时才能给 `image`）。只能收紧——容器下的 `"none"`、沙箱没有的网络、更高的限制或换镜像都会让调用在启动前失败。见 [adapters](adapters.md)。不计入 resume key。Claude Code 会忽略它。
+- **opts.limits**（**ODW 扩展**）—— 这个 agent 被当作失控杀掉之前能做多少：`{ toolCalls?, costUsd?, outputTokens?, seconds?, repeat? }`——累计所有 CLI 运行的工具调用次数、CLI 报告的美元花费与输出 token、从第一次 CLI 运行起的秒数，以及同一工具调用（工具名 + 参数哈希）**连续**出现 `repeat` 次。逐键覆盖适配器与运行级的 `agentLimits`，`null` 取消某项。从 claude、codex、kilo、opencode 的输出实时执行（文本 CLI 的花费只能在每次运行后检查）；越界立即杀掉 CLI 并抛出可恢复的错误，`reason: "runaway"`，事件上的 `limitHit: { limit, max, value, evidence }` 写明证据（``Bash `npm test` ×5 in a row``）。不会重试，也不算 `expect` 未达标。格式错误的值在任何东西运行前抛出 `AgentError`。不计入 resume key。Claude Code 会忽略它。
 - **opts.expect**（**ODW 扩展**）—— agent 回复之后必须成立的条件，由 odw 检查：
   `{ changes?, files?, command?, match?, timeout? }`。见 [expect](#expectodw-扩展)。
   Claude Code 会忽略它。
@@ -61,6 +62,9 @@ agent(prompt, opts?) -> Promise<unknown>
 - **opts.allowEmpty**（**ODW 扩展**）—— 接受空回复或只有空白的回复作为答案。不设时，空回复
   会让调用以 `"empty_reply"` 失败。（CLI 拒绝工具调用默认不会让调用失败：它们会记为
   `denied`——见 [expect](#expectodw-扩展)。）
+- **opts.notes**（**ODW 扩展**）—— `true`：该 agent 使用本次运行的笔记板（提示词里有已有的笔记，
+  `ODW_NOTES` 用来发布和读取笔记，隔离 agent 完成时广播其保留改动）；`false` 让它退出所在
+  `parallel()` 或 `notes` 设置的笔记板。见 [notes](#notesodw-扩展)。Claude Code 会忽略它。
 
 返回回复文本，设了 `schema` 则返回校验过的 JSON 值。CLI 出错、schema 重试耗尽、工作没达到
 `expect`、空回复都会抛错；这些可恢复失败在 `parallel`/`pipeline` 内变成 `null`。停止请求、
@@ -96,6 +100,10 @@ const yes = votes.filter((v) => v && v.toLowerCase().startsWith('yes')).length
 ```
 
 每个 thunk 必须是零参——用 `.map((x) => () => agent(...))` 来构造，这样每个都捕获自己的值。
+
+**ODW 扩展：** `parallel(thunks, { notes: true })` 为其 thunk 启动的每个 agent 打开本次运行的
+笔记板（agent 自己的 `notes: false` 优先）；`notes` 是唯一的选项，其他键会抛错。见
+[notes](#notesodw-扩展)。Claude Code 的 `parallel()` 只接受 thunk 数组。
 
 ## pipeline
 
@@ -309,7 +317,8 @@ checkpoint(title, opts?) -> Promise<{ approved, note, by, payload, edited }>
   也可以交给 `parallel`/`pipeline` 变成 `null`。
 
 调用返回 `{ approved, note, by, payload, edited }`：`note` 是对方的附言或 `null`；`by` 是 `"cli"`
-（`odw approve|reject`）、`"dashboard"`（`odw serve`）或 `"timeout"`。拒绝也是一个答复，
+（`odw approve|reject`）、`"dashboard"`（`odw serve`）、`"link"`（`waiting` 通知带来的签名一次性
+批准链接，经 `odw serve --public-url` 回答；ODW 扩展）或 `"timeout"`。拒绝也是一个答复，
 不是错误：它意味着什么由脚本决定——停止、带着附言重新规划、跳过某一步。
 
 对方可以批准一份**修改过的** payload，而不必拒绝后重跑（与 Claude Code 的计划审批一样）：
@@ -408,6 +417,7 @@ odw apply <run> --agent <id|label> --check   # 只预览
 odw apply <run> --agent <id|label>       # 用 git apply --3way 应用到你所在的工作树
 odw apply <run> --all [--check]          # 所有已完成的 agent，按 agentId 顺序
 odw apply <run> --agent <id|label> --verify "<cmd>"   # <cmd> 失败则回滚这次应用
+odw apply <run> --all --resolve [--adapter A] [--confirm] --verify "<cmd>"   # 由 resolver agent 解决冲突
 ```
 
 动手之前，`odw apply` 先在索引的临时副本上做同样的应用，逐个文件给出 `clean`、`CONFLICT`
@@ -419,6 +429,12 @@ odw apply <run> --agent <id|label> --verify "<cmd>"   # <cmd> 失败则回滚这
 或配置 `applyVerify`（`--no-verify` 跳过）在每次应用后于仓库根目录运行 `<cmd>`，受 `timeout`
 约束；命令失败或超时时，这次应用会被原样回滚——只恢复涉及路径的内容和索引项，其他一概不动——
 odw 以退出码 1 结束并给出命令输出的末尾（被信号中断时同样回滚，然后 odw 随该信号结束）。`--verify` 下会冲突的改动不会被应用。
+`--resolve`（ODW 扩展）则把这样的改动交给一个 resolver agent：它是单独的一次运行（meta.json 里
+有 `origin: "apply-resolve"` 和 `applyResolve: { runId, agentId }`；被应用的运行得到 `resolvedBy`
+和一条 `apply_resolved` 事件），在 HEAD + 索引 + 该 agent 干净文件的临时 worktree 中进行，提示词
+给出每个冲突文件的 base、双方版本和冲突行。只有当它只改冲突文件、不留冲突标记、并在该 worktree
+里通过 `<cmd>` 时（`--confirm`：先在终端回答 y/N），它的改动才会连同 agent 的干净文件一起应用；
+否则工作树不变，odw 说明原因。只处理文本冲突；不能与 `--force` 或 `--check` 同用。
 超过 `maxDiffBytes`（默认 2 MB）的 diff 只保留开头，并以一行 `# odw: diff truncated …` 结尾；
 计数仍描述完整改动，但 `odw apply` 会拒绝它（`--all` 在此停下）——请改用该 agent 的分支
 （`keep: true` 或 `keepBranches`）。一次调用的每次尝试都在新的 worktree 里进行：只重排回复格式的 schema
@@ -428,7 +444,7 @@ odw 以退出码 1 结束并给出命令输出的末尾（被信号中断时同�
 ## expect（ODW 扩展）
 
 ```js
-agent(prompt, { expect: { changes?, files?, command?, match?, mcp?, timeout? }, expectRetries?, allowEmpty? })
+agent(prompt, { expect: { changes?, files?, command?, match?, mcp?, untouched?, timeout? }, expectRetries?, allowEmpty? })
 ```
 
 agent 回复之后必须成立的条件——由 odw 检查，而不是问模型有没有做完。优先用它，而不是
@@ -447,11 +463,15 @@ agent 回复之后必须成立的条件——由 odw 检查，而不是问模型
   `connected`——或 `pending`，Claude Code 的文档说它本身不算失败（仍在后台连接，或带缓存的
   工具列表、首次使用时才连接）。`failed`、`needs-auth`、`disabled` 或没有配置都算缺失。没有
   声明 `mcpPath` 的适配器无法检查：调用在 CLI 启动前就失败。
+- **untouched** —— glob 列表（规则同 `files`），agent 修改、新建或删除的文件都不许匹配：它不该
+  为了变绿去改、跳过或删除的测试、快照和 CI 配置（`['test/**', '**/*.snap', '.github/**']`；
+  `*` 不跨目录）。碰到的路径算作一项缺失并被列出——`no file matching "test/**" may change,
+  and 1 did: test/add.test.js`——重试时会要求 agent 把它们恢复原样。和 `changes` 一样从 git 读取。
 
 检查在回复到达、并通过 `schema` 校验之后进行。agent 改了什么从 git 读取。原地运行时，是与
 agent 第一次 CLI 运行前的源码树相比的差异：你自己未提交的改动和运行目录不算，agent 的提交算
 ——同时原地运行的其他 agent 的改动也会算进来，所以需要分清各自改动的 agent 请用隔离。原地
-使用 `expect.changes` 或 `expect.files` 需要 git 仓库（否则调用在 CLI 启动前失败）。用
+使用 `expect.changes`、`expect.files` 或 `expect.untouched` 需要 git 仓库（否则调用在 CLI 启动前失败）。用
 `isolation: "worktree"` 时，就是运行为该 agent 保留的那份 diff；只重排回复格式的 schema 重试，
 按真正干活的那次尝试来评判。
 
@@ -477,6 +497,11 @@ CLI 拒绝的工具调用——Claude Code 的 `permission_denials`，经适配�
 读取——算作一项缺失：重试时会告诉 agent 是哪些，重试之后仍被拒绝的调用会以 `"permission"`
 抛错，`misses` 里列出这次拒绝以及工作的其他缺失。
 
+CLI 回复时仍在运行的后台任务也一样——用 `run_in_background` 启动的 shell 命令或子 agent，
+到 Claude Code 的 `result` 事件时仍未结束（读取它 stream-json 的任务事件，经适配器的
+`output.background`），随 CLI 退出而终止：重试时会要求 agent 等所有后台命令和子 agent 结束后
+再回复，重试之后仍丢下后台任务的调用以 `"orphaned_background"` 抛错。
+
 没设 `expect` 时：空回复或只有空白的回复会以 `"empty_reply"` 抛错，除非设了
 `allowEmpty: true`。声称成功、但 CLI 拒绝了工具调用的回复照常成立——这些调用作为 `denied`
 记在 agent 的 `agent_finished` 事件和保存的结果上，运行也会记一行日志——除非设了
@@ -484,8 +509,40 @@ CLI 拒绝的工具调用——Claude Code 的 `permission_denials`，经适配�
 列出它们。CLI 启动 agent 时没连上的 MCP 服务器——状态不是 `connected` 的——作为
 `mcp: [{ name, status }]` 记在 agent 的终止事件和保存的结果上，运行按服务器和状态各记一次日志；
 `"mcpFailures": "fail"` 让服务器为 `failed` 或 `needs-auth` 的调用以 `"mcp_unavailable"` 抛错
-（`expect.mcp` 列出的服务器则算作缺失）。两种失败都不重试。`expect` 属于调用的 resume key；Claude Code 会忽略它，在那里检查
+（`expect.mcp` 列出的服务器则算作缺失）。CLI 回复时仍在运行的后台任务作为 `orphaned` 记在
+agent 的 `agent_finished` 事件和保存的结果上，运行为每个 agent 记一行日志；
+`"orphanedBackground": "fail"` 则以 `"orphaned_background"` 抛错。这些失败都不重试。`expect` 属于调用的 resume key；Claude Code 会忽略它，在那里检查
 不会执行。
+
+## notes（ODW 扩展）
+
+```js
+agent(prompt, { notes: true })                 // 这一个 agent
+parallel(thunks, { notes: true })              // 其 thunk 启动的每个 agent
+// odw.config.json: "notes": true              // 本次运行的每个 agent
+```
+
+运行级的笔记板：并行的 agent 在上面告诉彼此必须知道的事——改了哪个接口、做了什么决定——
+避免各自通过、合在一起却出错的改动。默认关闭（保持方言一致）；`notes: false` 让单个 agent 退出。
+
+- **发布。** 打开笔记的 agent 会得到 `ODW_NOTES`——一个属于它自己的 POSIX shell 脚本的路径：
+  `"$ODW_NOTES" "把 parseX 改名为 parse"` 发布一条笔记，不带参数的 `"$ODW_NOTES"` 打印笔记板。
+  `odw note "…"` 作用相同（需要 agent 的 `ODW_RUN_ID` 与 `ODW_AGENT_ID`）。提示词里会说明用法。
+- **读取。** agent 启动前已发布的笔记追加在它的提示词末尾——"Notes from the other agents in
+  this run:"，每条为 `#<n> [agent <id> · <label>] <内容>`，取放得下 8000 字符的最新几条。新笔记
+  不会推送给已经在运行的 agent（CLI 只读一次提示词）；它可以再次运行 `"$ODW_NOTES"`。
+- **接口广播。** 打开笔记、`isolation: "worktree"` 且保留了改动的 agent，在其 `agent_finished`
+  事件之前由 ODW 替它发布一条 `kind: "interface"` 的笔记：diff 统计、改到的文件，以及 diff 中新增
+  （`+`）或删除（`-`）的、看起来像声明的行——`export`、`def`、`func`、`pub fn`、`class`、
+  `interface`——最多 12 行。脚本之后启动的 agent 会在提示词里看到它。
+- **上限。** 每条笔记最多 2000 字符并经过脱敏；笔记板最多 200 条、256 KiB（之后的笔记被丢弃，
+  运行记一次日志）。
+- **位置。** 运行目录中的 `notes.jsonl`；每条笔记也是一个 `note_added` 事件。`odw notes <run>
+  [--json]` 打印它；`GET /api/runs/:id/notes` 返回
+  `[{ noteId, ts, by: { agentId, label }, text, kind, truncated?, redacted? }]`。
+- **容器。** 在容器沙箱中，agent 自己的笔记目录以读写、笔记板以只读方式按相同路径绑定：脚本照常可用。
+- **不持久化则没有笔记板。** 没有运行目录的进程内运行会记一次日志，其 agent 不带笔记板运行。
+  被 `odw resume` 重放的调用不发布任何笔记。`notes` 不属于 resume key。
 
 ## schema
 

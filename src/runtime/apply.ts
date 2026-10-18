@@ -34,14 +34,24 @@
  * in those paths while the command ran is set aside first, not lost. Nothing
  * else is touched (no stash, no reset), so uncommitted work elsewhere in the
  * tree stays as it is.
+ *
+ * `--resolve` hands an agent whose diff would conflict to a resolver agent
+ * instead of stopping (or leaving markers): a run of its own (./apply-resolve)
+ * in a temporary worktree at the state the diff lands on, told the base and
+ * both sides of each conflicting file. Its change is applied only when it
+ * touches the conflicting files alone, leaves no conflict markers, and passes
+ * the verify command in that worktree — and, with `--confirm`, a person says
+ * y — together with the agent's files that applied cleanly; see resolveOne.
  */
 
 import { spawn } from "node:child_process";
 import { chmod, copyFile, lstat, mkdir, mkdtemp, open, readdir, readFile, readlink, rm, rmdir, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
+import { createInterface } from "node:readline";
 
 import { SAFE_GIT } from "../git-safety.js";
+import { prepareWorktree } from "../worktree-setup.js";
 import { runCommand } from "../adapters/runner.js";
 import { cliOk } from "../adapters/types.js";
 import { fingerprint, git, runGit, splitNul, type GitOptions } from "../changes.js";
@@ -260,6 +270,8 @@ interface FilePreview {
   moreHunks: number;
   /** Refused before git ran: by its path, or by what stands in the working tree where it goes. */
   blocked?: boolean;
+  /** A text conflict's blobs — the common base (null when added on both sides), ours, theirs: what `--resolve` shows its resolver. */
+  stages?: { base: string | null; ours: string; theirs: string };
 }
 
 /** One conflicting region of a file: `<<<<<<< ours` … `>>>>>>> theirs`. */
@@ -522,7 +534,7 @@ async function conflictOf(
   file: DiffSection,
   entries: IndexEntry[],
   work: string,
-): Promise<Pick<FilePreview, "reason" | "hunks" | "moreHunks">> {
+): Promise<Pick<FilePreview, "reason" | "hunks" | "moreHunks" | "stages">> {
   const stage = (n: number): IndexEntry | undefined => entries.find((e) => e.stage === n);
   const [base, ours, theirs] = [stage(1), stage(2), stage(3)];
   const none = (reason: string | null) => ({ reason, hunks: [], moreHunks: 0 });
@@ -538,7 +550,8 @@ async function conflictOf(
     // The labels git apply --3way writes; its exit code is the number of conflicts, 255 when git cannot merge (binary).
     const merged = await runGit(repo, ["merge-file", "-p", "-L", "ours", "-L", "base", "-L", "theirs", blobs.ours, blobs.base, blobs.theirs]);
     if (merged.code === null || merged.code > 127) return none("binary: changed on both sides");
-    return { reason: base ? null : "added on both sides", ...conflictRegions(merged.stdout) };
+    const stages = { base: base?.oid ?? null, ours: ours.oid, theirs: theirs.oid };
+    return { reason: base ? null : "added on both sides", ...conflictRegions(merged.stdout), stages };
   } catch {
     return none(null); // a conflict all the same, with nothing to show
   }
@@ -930,6 +943,8 @@ export interface ApplyOptions {
   interrupt?: AbortSignal;
   /** Where the run worked, named when odw runs outside a repository. */
   source?: string;
+  /** `--resolve`: an agent whose diff would conflict goes to a resolver agent instead of stopping the apply; null without it. */
+  resolve?: ResolveOptions | null;
   out: Writer;
   err: Writer;
   caps: TermCaps;
@@ -953,7 +968,9 @@ type Applied =
   | { kind: "applied"; conflicts: number }
   | { kind: "refused"; said: string }
   | { kind: "rolled back"; why: string }
-  | { kind: "stuck"; why: string };
+  | { kind: "stuck"; why: string }
+  /** `--resolve` did not get to an apply: nothing of the agent's diff was changed in the tree. */
+  | { kind: "unresolved"; why: string };
 
 /**
  * `odw apply` (ODW extension): preview, then — unless `check` — apply and
@@ -1017,17 +1034,7 @@ export async function applyAgents(o: ApplyOptions): Promise<number> {
 
   const work = await mkdtemp(join(tmpdir(), "odw-apply-"));
   try {
-    const scratch = await scratchIndex(repo, work);
-    const before = `${scratch.index}.before`;
-    for (const item of items) {
-      if (item.cut) continue;
-      if (o.all) await copyIfThere(scratch.index, before);
-      item.preview = await previewFiles(repo, item.files, scratch, work);
-      if (unstaged.size > 0) refuseUnstaged(item.preview, unstaged);
-      const verdict = verdictOf(item.preview);
-      // Left out of the stack: the agents after it are previewed without it.
-      if (o.all && (verdict === "conflict" || verdict === "refused")) await copyIfThere(before, scratch.index);
-    }
+    await previewStack(o, repo, items, work, unstaged);
     if (single) {
       for (const line of previewLines(o, single, `${who} `, ` to ${repo}`)) o.out.write(`${line}\n`);
     } else {
@@ -1039,9 +1046,32 @@ export async function applyAgents(o: ApplyOptions): Promise<number> {
       return stops ? 1 : 0;
     }
     const zero = await zeroOid(repo);
-    return single ? await applySingle(o, repo, single, who, work, zero) : await applyAll(o, repo, items, work, zero);
+    return single ? await applySingle(o, repo, single, who, work, zero) : await applyAll(o, repo, items, work, zero, unstaged);
   } finally {
     await rm(work, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+let stacks = 0;
+
+/**
+ * Preview `items` against the repository's index as it is now, each on top of
+ * the ones before it under `--all`; one that would conflict is left out of the
+ * stack, so the agents after it are previewed without it.
+ */
+async function previewStack(o: ApplyOptions, repo: string, items: Item[], work: string, unstaged: Set<string>): Promise<void> {
+  const dir = join(work, `preview-${++stacks}`);
+  await mkdir(dir);
+  const scratch = await scratchIndex(repo, dir);
+  const before = `${scratch.index}.before`;
+  for (const item of items) {
+    if (item.cut) continue;
+    if (o.all) await copyIfThere(scratch.index, before);
+    item.preview = await previewFiles(repo, item.files, scratch, dir);
+    if (unstaged.size > 0) refuseUnstaged(item.preview, unstaged);
+    const verdict = verdictOf(item.preview);
+    // Left out of the stack: the agents after it are previewed without it.
+    if (o.all && (verdict === "conflict" || verdict === "refused")) await copyIfThere(before, scratch.index);
   }
 }
 
@@ -1053,6 +1083,11 @@ async function applySingle(o: ApplyOptions, repo: string, item: Item, who: strin
   if (verdict === "refused") {
     o.err.write(`odw apply: ${who} cannot be applied, so nothing was changed:\n${quoted(preview.refused!, o.width)}\n`);
     return 1;
+  }
+  if (verdict === "conflict" && o.resolve) {
+    if (o.interrupt?.aborted) return 1;
+    const resolved = await resolveOne(o, repo, item, work, zero);
+    return resolved.kind === "applied" && resolved.conflicts === 0 ? 0 : 1;
   }
   if (verdict === "conflict" && o.verify) {
     o.err.write(
@@ -1078,7 +1113,7 @@ async function applySingle(o: ApplyOptions, repo: string, item: Item, who: strin
 }
 
 /** Apply every agent in order — each verified, when asked — and stop before the first that would conflict. */
-async function applyAll(o: ApplyOptions, repo: string, items: Item[], work: string, zero: string): Promise<number> {
+async function applyAll(o: ApplyOptions, repo: string, items: Item[], work: string, zero: string, unstaged: Set<string>): Promise<number> {
   const applied: Item[] = [];
   const already: Item[] = [];
   let stop: { at: number; why: string } | null = null;
@@ -1094,6 +1129,22 @@ async function applyAll(o: ApplyOptions, repo: string, items: Item[], work: stri
     const verdict = verdictOf(item.preview!);
     if (verdict === "applied") {
       already.push(item);
+      continue;
+    }
+    if (verdict === "conflict" && o.resolve) {
+      const resolved = await resolveOne(o, repo, item, work, zero);
+      if (resolved.kind !== "applied") {
+        stop = { at, why: resolved.kind === "refused" ? "git could not apply its resolution" : resolved.why };
+        break;
+      }
+      applied.push(item);
+      // The agents after it were previewed without it: preview them again, on top of what it applied.
+      const rest = items.slice(at + 1).filter((i) => !i.cut);
+      if (rest.length > 0) {
+        await previewStack(o, repo, rest, work, unstaged);
+        o.out.write(`previewing the ${rest.length} agent(s) after it again, on top of its resolution:\n`);
+        for (const i of rest) for (const line of previewLines(o, i, `${i.name} `, "")) o.out.write(`${line}\n`);
+      }
       continue;
     }
     if (verdict === "conflict" || verdict === "refused") {
@@ -1116,7 +1167,7 @@ async function applyAll(o: ApplyOptions, repo: string, items: Item[], work: stri
   const left = items.slice(stop.at);
   const first = left[0]!;
   o.out.write(`not applied: ${names(left)} — stopped at ${first.name}: ${stop.why}\n`);
-  if (stop.why === "it would conflict") {
+  if (stop.why === "it would conflict" || (o.resolve && first.preview && verdictOf(first.preview) === "conflict")) {
     // Its paths may hold what the agents before it changed: uncommitted, they are in the way of --agent.
     const commitFirst = applied.length > 0 ? "commit what applied, then " : "";
     o.out.write(`  to apply it and resolve its conflicts by hand: ${commitFirst}odw apply ${o.runId} --agent ${first.agent.row.agentId}\n`);
@@ -1212,6 +1263,267 @@ async function rollBack(o: ApplyOptions, saved: Backup, who: string, report: boo
 
 async function discard(saved: Backup): Promise<void> {
   await rm(saved.dir, { recursive: true, force: true }).catch(() => {});
+}
+
+// --- resolving a conflict (--resolve) -------------------------------------------------
+
+/** What `--resolve` needs beyond the apply: how to run a resolver, how to note the outcome, whether to ask first. */
+export interface ResolveOptions {
+  /** Start the resolver run in `request.source` and wait until it ends (or `request.signal` stops it). */
+  dispatch(request: ResolveRequest): Promise<ResolverRun>;
+  /** Note in the agent's own run how its resolution ended. */
+  settled(outcome: ResolveOutcome): void;
+  /** `--confirm`: show the resolved diff and ask y/N before applying it. */
+  confirm: boolean;
+  /** Where the y/N answer is read from: it must be a terminal. */
+  input?: NodeJS.ReadableStream & { isTTY?: boolean };
+}
+
+export interface ResolveRequest {
+  /** The agent whose diff conflicts, in the run being applied. */
+  agentId: number;
+  label: string;
+  /** The temporary worktree: the repository's HEAD, its index, and the agent's files that apply cleanly. */
+  source: string;
+  prompt: string;
+  signal?: AbortSignal;
+  /** Hears the resolver's run id once the run exists. */
+  started(runId: string): void;
+}
+
+/** How a resolver run ended: its state, its error, and the diff it kept (null: it changed nothing). */
+export interface ResolverRun {
+  runId: string;
+  state: string;
+  error: string | null;
+  diff: string | null;
+}
+
+export interface ResolveOutcome {
+  agentId: number;
+  resolverRunId: string;
+  outcome: "applied" | "refused" | "declined" | "interrupted";
+  /** Why it was not applied; null when it was. */
+  why: string | null;
+}
+
+/** Characters of each version of a conflicting file the resolver's prompt quotes; it can read the rest in its workspace. */
+const PROMPT_FILE_CHARS = 20_000;
+
+/** A line git leaves as a conflict marker: `<<<<<<< `, `||||||| `, `>>>>>>> ` (and the bare forms). */
+const MARKER = /^(?:<{7}|\|{7}|>{7})(?: |$)/;
+
+/** Who commits the tree a resolver starts from: never the user's own identity, nor a config hook. */
+const RESOLVE_IDENTITY = { GIT_AUTHOR_NAME: "odw", GIT_AUTHOR_EMAIL: "odw@localhost", GIT_COMMITTER_NAME: "odw", GIT_COMMITTER_EMAIL: "odw@localhost" };
+
+let resolves = 0;
+
+/**
+ * `--resolve`: hand `item`'s conflicts to a resolver agent, check its work,
+ * and only then apply it. The resolver runs in a temporary worktree at the
+ * state the agent's diff lands on — HEAD, the index (what was applied before
+ * it included), and the agent's files that apply cleanly — told the base and
+ * both sides of each conflicting file. Its change must touch only those
+ * files, leave no conflict markers, apply there, and pass the verify command
+ * there; then the agent's clean files and the resolved ones are previewed
+ * and applied to the tree the normal way, rolled back should git give up.
+ * Anything short of that changes nothing in the tree, and says why.
+ */
+async function resolveOne(o: ApplyOptions, repo: string, item: Item, work: string, zero: string): Promise<Applied> {
+  const r = o.resolve!;
+  const preview = item.preview!;
+  const conflicts = preview.files.filter((f) => f.outcome === "conflict");
+  const unresolved = (why: string): Applied => {
+    o.err.write(`odw apply: ${item.name} was not applied: ${why}\n`);
+    return { kind: "unresolved", why };
+  };
+  const odd = conflicts.filter((f) => !f.stages || (f.file.status !== "modified" && f.file.status !== "added"));
+  if (odd.length > 0) {
+    const list = odd.map((f) => `${sanitizeText(target(f.file), 200)} (${f.reason ? sanitizeText(f.reason, 100) : f.file.status})`).join(", ");
+    return unresolved(`--resolve takes conflicting lines of text only, not ${list}`);
+  }
+  const paths = new Set(conflicts.map((f) => target(f.file)));
+  const clean = preview.files.filter((f) => f.outcome === "clean").map((f) => f.file);
+
+  const dir = join(work, `resolve-${++resolves}`);
+  await mkdir(dir);
+  // The state the agent's diff lands on, as a commit: the index as it is, the agent's clean files applied.
+  let commit: string;
+  try {
+    const scratch = await scratchIndex(repo, dir);
+    if (clean.length > 0) {
+      const applied = await applyFiles(repo, clean, dir, { cached: true, env: scratch.env });
+      if (applied.code !== 0) return unresolved(`its files that apply cleanly do not apply on their own: ${gitSaid(applied.stderr)}`);
+    }
+    const lands = (await git(repo, ["write-tree"], { env: scratch.env })).trim();
+    const head = (await git(repo, ["rev-parse", "--verify", "-q", "HEAD"], { okCodes: [0, 1] })).trim();
+    const message = `odw apply --resolve: what agent ${item.agent.row.agentId} of run ${o.runId} lands on`;
+    commit = (await git(repo, ["commit-tree", "--no-gpg-sign", lands, ...(head ? ["-p", head] : []), "-m", message], { env: { ...process.env, ...RESOLVE_IDENTITY } })).trim();
+  } catch (err) {
+    return unresolved(`could not make the tree its resolver starts from: ${errorText(err)}`);
+  }
+  const tree = join(dir, basename(repo));
+  try {
+    await git(repo, ["worktree", "add", "--detach", tree, commit]);
+  } catch (err) {
+    return unresolved(`could not make a temporary worktree for its resolver: ${errorText(err)}`);
+  }
+  const links: string[] = [];
+  try {
+    // What .worktreeinclude brings an isolated agent (node_modules, .env, …), the verify command gets too.
+    await prepareWorktree(repo, tree, tree, { onNote: (note) => o.err.write(`odw apply: ${sanitizeText(note, 300)}\n`) }, links).catch((err: unknown) =>
+      o.err.write(`odw apply: the temporary worktree could not be made ready: ${sanitizeText(errorText(err), 300)}\n`),
+    );
+    const prompt = await resolverPrompt(repo, item, conflicts);
+    let run: ResolverRun;
+    try {
+      run = await r.dispatch({
+        agentId: item.agent.row.agentId,
+        label: item.agent.row.label,
+        source: tree,
+        prompt,
+        signal: o.interrupt,
+        started: (runId) => o.out.write(`resolving the conflicts of ${item.name} with an agent: run ${runId}\n`),
+      });
+    } catch (err) {
+      return unresolved(`its resolver could not run: ${errorText(err)}`);
+    }
+    const settle = (outcome: ResolveOutcome["outcome"], why: string | null): void => {
+      try {
+        r.settled({ agentId: item.agent.row.agentId, resolverRunId: run.runId, outcome, why });
+      } catch (err) {
+        o.err.write(`odw apply: could not note the resolution in run ${o.runId}: ${errorText(err)}\n`);
+      }
+    };
+    const refuse = (why: string): Applied => {
+      settle("refused", why);
+      return unresolved(`its resolution (run ${run.runId}) was refused — ${why}`);
+    };
+    if (o.interrupt?.aborted) {
+      settle("interrupted", "interrupted");
+      return unresolved(`interrupted while run ${run.runId} resolved it`);
+    }
+    if (run.state !== "done") return refuse(`the resolver run ${run.state}${run.error ? `: ${sanitizeText(run.error, 300)}` : ""}`);
+    if (run.diff === null) return refuse("the resolver changed nothing");
+    const bytes = await readFile(run.diff);
+    if (truncationNoteOf(bytes.subarray(Math.max(0, bytes.length - 4096)).toString("utf8"))) return refuse("its diff was cut at maxDiffBytes");
+    const sections = diffSections(bytes);
+    if (sections.length === 0) return refuse("the resolver changed nothing");
+    // expect-style: only the conflicting files, edited in place.
+    const outside = sections.filter((s) => s.status !== "modified" || s.oldPath !== s.newPath || !paths.has(target(s)));
+    if (outside.length > 0) {
+      const list = outside.map((s) => `${sanitizeText(target(s), 200)}${s.status === "modified" ? "" : ` (${s.status})`}`).join(", ");
+      return refuse(`it may only edit the conflicting files (${[...paths].map((p) => sanitizeText(p, 200)).join(", ")}), and it changed ${list}`);
+    }
+    const patch = join(dir, "resolved.diff");
+    await writeFile(patch, bytes);
+    const there = await runGit(tree, ["apply", "--index", patch]);
+    if (there.code !== 0) return refuse(`it does not apply to the tree it was made in: ${gitSaid(there.stderr)}`);
+    const marked: string[] = [];
+    for (const path of paths) {
+      const text = await readFile(join(tree, path), "utf8").catch(() => "");
+      const at = text.split("\n").findIndex((line) => MARKER.test(line));
+      if (at !== -1) marked.push(`${sanitizeText(path, 200)} (line ${at + 1})`);
+    }
+    if (marked.length > 0) return refuse(`it left conflict markers in ${marked.join(", ")}`);
+    if (o.verify) {
+      o.err.write(`verifying the resolution of ${item.name} in a temporary worktree: ${o.verify}\n`);
+      const verified = await runVerify(tree, o.verify, o.timeout, o.interrupt);
+      if (verified.interrupted) {
+        settle("interrupted", "interrupted");
+        return unresolved(`interrupted while its resolution (run ${run.runId}) was verified`);
+      }
+      if (!verified.ok) {
+        const said = verified.tail.length > 0 ? `; the end of its output:\n${verified.tail.map((line) => `  ${printable(line, o.width - 2)}`).join("\n")}` : "; it printed nothing";
+        return refuse(`\`${o.verify}\` ${verified.why}${said}`);
+      }
+      o.out.write(`verified the resolution of ${item.name}: \`${o.verify}\` passed in ${verified.seconds.toFixed(1)}s\n`);
+    } else {
+      o.err.write(`odw apply: no verify command (--verify, applyVerify): the resolution of ${item.name} is checked for its files and conflict markers only\n`);
+    }
+    if (r.confirm) {
+      o.out.write(`the resolution of ${item.name} (run ${run.runId}):\n${quoted(bytes.toString("utf8").replace(/\n$/, ""), o.width)}\n`);
+      const yes = await askYes(r.input, o, `apply ${item.name} with this resolution? [y/N] `);
+      if (yes !== true) {
+        const why = yes === null ? "--confirm needs a terminal to ask on" : "not confirmed";
+        settle("declined", why);
+        return unresolved(`its resolution (run ${run.runId}) was ${yes === null ? "not applied: --confirm needs a terminal to ask on" : "not confirmed"}`);
+      }
+    }
+    // Now the user's tree: the agent's clean files and the resolved ones, previewed and applied the normal way.
+    const resolved: Item = { agent: item.agent, name: `${item.name} (resolved by run ${run.runId})`, files: [...clean, ...sections], cut: null, preview: null };
+    const final = join(dir, "final");
+    await mkdir(final);
+    resolved.preview = await previewFiles(repo, resolved.files, await scratchIndex(repo, final), final);
+    const verdict = verdictOf(resolved.preview);
+    if (verdict !== "clean" && verdict !== "applied") return refuse(`it no longer applies cleanly here (did the tree change meanwhile?)`);
+    // Verified already, on this very content: no second run of the command; a conflict after all rolls back.
+    const result = verdict === "applied" ? ({ kind: "applied", conflicts: 0 } as Applied) : await applyOne({ ...o, all: true, verify: null }, repo, resolved, resolved.name, final, zero);
+    if (result.kind === "applied") {
+      settle("applied", null);
+      o.out.write(`applied ${item.name} to ${repo} with its conflicts resolved by run ${run.runId} (staged)\n`);
+    } else {
+      settle("refused", result.kind === "refused" ? `git could not apply it: ${result.said}` : result.why);
+    }
+    return result;
+  } finally {
+    for (const link of links) await unlink(link).catch(() => {});
+    try {
+      await git(repo, ["worktree", "remove", "--force", "--force", tree]);
+    } catch {
+      await rm(tree, { recursive: true, force: true }).catch(() => {});
+      await git(repo, ["worktree", "prune"]).catch(() => {});
+    }
+  }
+}
+
+/** What a resolver is told: each conflicting file's base, both sides and conflicting lines, and to keep both intents. */
+async function resolverPrompt(repo: string, item: Item, conflicts: FilePreview[]): Promise<string> {
+  const blob = async (oid: string | null): Promise<string> => {
+    if (oid === null) return "(none: the file was added on both sides)";
+    const text = await git(repo, ["cat-file", "blob", oid]);
+    return text.length > PROMPT_FILE_CHARS ? `${text.slice(0, PROMPT_FILE_CHARS)}\n… (cut here: the rest is in the file)` : text;
+  };
+  const files = conflicts.map((f) => target(f.file));
+  const parts = [
+    `You resolve merge conflicts. Another agent (${item.agent.row.label}, agent ${item.agent.row.agentId}) changed this repository, ` +
+      `and its change conflicts with what the repository holds now in ${files.length} file(s): ${files.join(", ")}.`,
+    "Your working directory holds the repository as it is now: each of those files holds OURS (below). " +
+      "Edit each of them so that it keeps BOTH intents — what changed on our side since the base, and what the other agent changed. " +
+      "Rules: edit only these files; do not create, delete, rename or touch any other file; " +
+      "leave no conflict markers (<<<<<<<, =======, >>>>>>>); do not commit. Reply with one short paragraph saying how you merged each file.",
+  ];
+  for (const f of conflicts) {
+    const s = f.stages!;
+    const hunks = f.hunks.map((h) => `at line ${h.line}:\n${h.lines.join("\n")}${h.more > 0 ? `\n… ${h.more} more line(s)` : ""}`).join("\n\n");
+    parts.push(
+      [
+        `=== ${target(f.file)} ===`,
+        `--- BASE (before either change) ---\n${await blob(s.base)}`,
+        `--- OURS (what the file holds now) ---\n${await blob(s.ours)}`,
+        `--- THEIRS (the other agent's version) ---\n${await blob(s.theirs)}`,
+        `--- the conflicting lines, as a merge marks them (ours, then theirs) ---\n${hunks}${f.moreHunks > 0 ? `\n… ${f.moreHunks} more conflict(s)` : ""}`,
+      ].join("\n"),
+    );
+  }
+  return parts.join("\n\n");
+}
+
+/** Ask `question` and read a line: true for y/yes, false for anything else, null when `input` is no terminal. */
+async function askYes(input: ResolveOptions["input"], o: ApplyOptions, question: string): Promise<boolean | null> {
+  if (!input || input.isTTY !== true) return null;
+  o.err.write(question);
+  const rl = createInterface({ input, terminal: false });
+  try {
+    const line = await new Promise<string | null>((done) => {
+      rl.once("line", done);
+      rl.once("close", () => done(null));
+      o.interrupt?.addEventListener("abort", () => done(null), { once: true });
+    });
+    return line !== null && /^\s*y(?:es)?\s*$/i.test(line);
+  } finally {
+    rl.close();
+  }
 }
 
 // --- the report --------------------------------------------------------------------------

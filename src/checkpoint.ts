@@ -55,7 +55,7 @@
 
 import type { Settings } from "./adapters/types.js";
 import type { RunContext } from "./context.js";
-import { STOPPED, type CheckpointDecision } from "./control.js";
+import { deciderText, STOPPED, type CheckpointDecision } from "./control.js";
 import { DynamicWorkflowError, RunStopped, WorkflowScriptError } from "./errors.js";
 import { CHECKPOINT_REQUESTED, CHECKPOINT_RESOLVED, LOG, event } from "./events.js";
 import { auditSchema, checkedSubset, deepEqual, validate, type JsonSchema, type SchemaIssue } from "./schema.js";
@@ -75,8 +75,8 @@ export interface CheckpointResult {
   approved: boolean;
   /** The note given with the answer, or null. */
   note: string | null;
-  /** Who answered: `odw approve|reject`, the dashboard, or the timeout. */
-  by: "cli" | "dashboard" | "timeout";
+  /** Who answered: `odw approve|reject`, the dashboard, a signed approve link (ODW extension), or the timeout. */
+  by: "cli" | "dashboard" | "link" | "timeout";
   /**
    * What was approved: the person's edit when there is one (`edited`), else
    * the checkpoint's own payload, as given — undefined when it had none. A
@@ -421,7 +421,7 @@ async function wait(
     if (decision.payload === undefined) return true;
     const checked = checkEdit(decision.payload, cp.schema);
     if (checked.ok) return true;
-    const from = decision.by === "dashboard" ? "the dashboard" : "the cli";
+    const from = deciderText(decision.by);
     say(ctx, `ignored "approve" for checkpoint #${checkpointId} from ${from}: ${checked.message} — it still waits for an answer`);
     return false;
   };

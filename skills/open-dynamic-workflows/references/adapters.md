@@ -208,6 +208,7 @@ did-you-mean hint) instead of silently ignoring them.
 | `applyVerify` | **ODW extension.** A command line `odw apply` runs at the repository root after each apply, through the shell and within `timeout`, e.g. `"npm test"`: when it fails, times out or is interrupted, that apply is rolled back exactly (the touched paths' content and index entries; nothing else). `odw apply --verify "<cmd>"` overrides it, `--no-verify` skips it, `--check` never runs it. Default `null` (none) |
 | `maxTranscriptBytes` | **ODW extension.** Bytes of each agent's transcript kept in the run directory — what its CLI printed on stdout, `agents/<agentId>.transcript.jsonl` (a JSONL adapter's events as received, other output as `{"kind":"text"}` lines), beside the end of its stderr in `agents/<agentId>.stderr.txt`; read with `odw logs <run> --agent <id\|label>` (default 5 MB). Past it one `{"kind":"truncated","bytes":N}` line ends the transcript; `0` keeps none |
 | `recordVersions` | **ODW extension.** `true` (default): on an adapter's first agent of a run, `<cli> --version` (its command's first argv element) runs beside the agent, killed after 3s, and is recorded as a `cli_version` event — `odw status`, `cliVersions` in `GET /api/runs/:id`, and `odw compare` read it. It never delays or fails the run; a CLI that does not answer is recorded as unknown; an adapter whose command is node or another interpreter, a script or a relative path is not probed. `false` runs no probe (the odw version and workflow sha256 in meta.json, and the settings on `run_started`, are recorded either way) |
+| `notes` | **ODW extension.** `false` (default): no notes board, agents run as written. `true`: every agent of the run gets the run's notes board — the notes so far in its prompt, `ODW_NOTES` to post (`"$ODW_NOTES" "text"`, or `odw note "text"`) and read them, and, when isolated, its kept change's interface lines posted as it finishes. `agent(…, { notes })` and `parallel(…, { notes })` override it per call. See primitives.md |
 | `permissions` | **ODW extension.** The run's permission tier: `"read"`, `"edit"` (default) or `"full"` — see [permissions](#permissions-what-each-built-in-may-do). `odw run\|rerun\|resume --permissions` overrides it |
 | `trust` | **ODW extension.** `"trusted"` (default) or `"untrusted"`: for someone else's repository. Untrusted, each adapter's `untrustedArgs` go after its tier's flags (`claude --safe-mode`, `qwen --safe-mode`, `omp --no-extensions --no-skills --no-rules`); a CLI without a documented way is said once per run (its `untrustedNote`). `.worktreeinclude` `symlink:` lines link nothing, and a `worktreeSetup` from a config inside the repository does not run. `odw run\|rerun\|resume --untrusted` sets it per run; a config inside the repository cannot loosen the one `~/.config/odw/config.json` sets |
 | `agentEnv` | **ODW extension.** `"inherit"` (default): agent CLIs get ODW's whole environment. `"minimal"`: only `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `LANG`, `LC_*`, `TERM`, `TMPDIR`, `TZ` (and the Windows system variables), the auth and config variables the built-in CLIs document (`ANTHROPIC_*`, `CLAUDE_*`, `OPENAI_*`, `CODEX_*`, `GEMINI_*`, `GOOGLE_*`, `DASHSCOPE_*`, `QWEN_*`, `MOONSHOT_*`, `KIMI_*`, `CURSOR_*`, `OPENCODE_*`, the proxy variables, `NODE_EXTRA_CA_CERTS`), `ODW_*`, `agentEnvPass` and the adapter's `env`. `exec()` commands, `worktreeSetup` and `notify` keep the whole environment |
@@ -221,9 +222,11 @@ did-you-mean hint) instead of silently ignoring them.
 | `expectRetries` | **ODW extension.** How many times an agent whose work missed its `expect` checks runs again, told what it missed, before it fails with reason `unmet_expectation` (default 1; an `agent()` call's own `expectRetries` wins) — see [expect](primitives.md#expect-odw-extension) |
 | `permissionDenials` | **ODW extension.** What a reply that claims success does when the CLI refused the agent tool calls (`deniedPath`): `"warn"` (default) keeps it — the calls are recorded as `denied` on the agent and logged once — and `"fail"` fails the agent with reason `permission`. An adapter's own `permissionDenials` wins; a call with `expect` counts refused calls as a miss either way |
 | `mcpFailures` | **ODW extension.** What an agent does when its CLI started it without an MCP server (`mcpPath`: Claude Code's init event): `"warn"` (default, as Claude Code itself only warns) keeps the reply — every server that is not `connected` is recorded as `mcp` on the agent and logged once per run per server and status — and `"fail"` fails an agent whose server `failed` or `needs-auth` with reason `mcp_unavailable` (`pending` and `disabled` never fail it). A server the call's `expect.mcp` lists is a miss instead |
+| `orphanedBackground` | **ODW extension.** What an agent does when its CLI gave its reply with background work still running — a `run_in_background` shell command or a subagent it never waited for, which died as the CLI exited (`output.background`: Claude Code's task events): `"warn"` (default) keeps the reply — the work is recorded as `orphaned` on the agent and logged once — and `"fail"` fails the agent with reason `orphaned_background`. A call with `expect` counts it as a miss either way |
 | `redact` | **ODW extension.** `{ "env": true, "patterns": true, "extra": [] }` (default): what odw keeps and serves — transcripts and stderr tails, saved results, events, the run's error, webhook payloads — has likely secrets replaced by `«redacted:<kind>»` before it is written, and says so with `redacted: true` — and so do `worker.log` and the Chat Host's sessions (what a person typed: token shapes only), while a run's `args` are kept as given for `odw rerun` and served with token shapes redacted. `env`: the values (8+ characters) of secret-named variables (`*_KEY`, `*TOKEN`, `*SECRET*`, `*PASSWORD*`, `AUTHORIZATION`, cloud credentials) of odw's environment and each adapter's `env`, wherever they appear, and `NAME=value` of such names; `patterns`: well-known token shapes (Anthropic, OpenAI, GitHub, Slack, AWS, Google, JWT, private keys, `Bearer`); `extra`: more regular expressions. The run's result gets `patterns` and `extra` only; prompts, what agents see and kept diffs are never redacted. `false` = off; `odw doctor` reports it |
 | `otel` | **ODW extension.** OpenTelemetry export: `false` (default) sends nothing — the `OTEL_*` variables alone never turn it on. `true` or `{ "endpoint": "http://localhost:4318", "headers": { … }, "captureContent": false }`: once a run ended, the worker posts its trace (`invoke_workflow` / `phase` / `invoke_agent` / `execute_tool` / `exec` / `checkpoint` spans after the GenAI semantic conventions — usage, cost, models, failure reasons, retries and fallbacks as span events) once, as OTLP/HTTP JSON to `endpoint` + `/v1/traces`, within 5s; a failure is one line in the run's `worker.log` and never changes the run. Omitted, `endpoint` and `headers` come from `OTEL_EXPORTER_OTLP_(TRACES_)ENDPOINT` / `…HEADERS` (default endpoint `http://localhost:4318`); header values are secrets, never logged or shown. `captureContent` (or `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true`) adds replies, tool input and output and error text — redacted again on the way out, each field cut at 4096 characters. `odw export <run> --otlp [--out FILE \| --send]` exports any run; `odw doctor` shows where traces go |
 | `sandbox` | **ODW extension.** `"none"` (default): agent CLIs run on this machine. `{ "kind": "container", "image", "engine"?, "network"?, "mounts"?, "cliConfig"?, "memory"?, "cpus"?, "pids"? }`: each CLI run and `exec()` step in a fresh Docker/Podman container — see [container sandbox](#container-sandbox-odw-extension). `odw run\|rerun\|resume --sandbox container [--sandbox-image <image>]` turns it on per run |
+| `agentLimits` | **ODW extension.** `{}` (default): none. `{ "toolCalls"?, "costUsd"?, "outputTokens"?, "seconds"?, "repeat"? }`: what every agent may do before it is killed as a runaway (reason `runaway`, `limitHit` names the limit and the evidence) — enforced live from claude/codex/kilo/opencode output; the same tool call `repeat` times in a row (2+). An adapter's `agentLimits` and an `agent()`'s `limits` override it key by key, `null` lifting one. A text CLI's `outputTokens`/`costUsd` are checked after each run, a CLI that reports no cost (codex) never trips `costUsd` — each said once per run |
 
 ### Adapter fields
 
@@ -247,6 +250,7 @@ did-you-mean hint) instead of silently ignoring them.
 | `untrustedArgs` | **ODW extension.** The flags that keep the repository's instructions, settings, hooks and MCP servers from this CLI, added after its tier's flags at `{permission_args}` when it runs untrusted. Absent: the run says once that it keeps nothing out. Setting it on a built-in drops the built-in's `untrustedNote` |
 | `untrustedNote` | **ODW extension.** What an untrusted run still lets reach this CLI from the repository, logged once per run |
 | `sandbox` | **ODW extension.** Run this CLI in a container: `{ "kind": "container", … }`, the fields it sets over the run's `sandbox` (its own `image`, `engine`, `cliConfig`, more `mounts`; of `network` and the limits the stricter wins). It needs an `image` when the run's sandbox is `"none"`; `"none"` here is refused — it may only tighten |
+| `agentLimits` | **ODW extension.** This CLI's own per-agent limits, over the run's `agentLimits` key by key (`null` lifts one); an `agent()`'s `limits` override them |
 
 ### Output formats
 
@@ -287,6 +291,24 @@ final reply to a file takes `{reply_file}` in its command: a file with text is t
 reply; when it is empty or never written and stdout's events held no reply either,
 the reply is empty (`empty_reply` unless `allowEmpty`) and the log says what was
 missing.
+
+**ODW extension**, `jsonl` only: `background: { "started": [rule…], "ended": [rule…] }`
+says which events start and end background work, so work still open at the latest
+text event is caught as orphaned (`orphanedBackground`). A rule is `{ "event": <type>,
+"each"?: [path], "where"?: [{ "path": [...], "equals"?: v | [v…], "not"?: v | [v…] }],
+"ids": [[path]…], "pattern"?: <regex source>, "kind"?: [[path]…], "about"?: [[path]…] }`:
+events of that `type` (or, with `each`, every item of the array there) that meet
+every `where` condition start or end the work under the ids at `ids` — strings or
+numbers; with `pattern`, what its first capture group finds in the strings there.
+Work is one piece under any of its ids: a tool call and the task it registered
+are the same work, and either id ends it. `kind` and `about` (starts only) name it
+in the record: the first string found, as `Bash (npm run dev)`. A malformed rule is a
+`ConfigError`. The built-in `claude` reads Claude Code's stream-json `system` events
+`task_started` (all but `task_type` `in_process_teammate`), `task_updated` (a
+`patch.status` of `completed`, `failed` or `killed` ends it) and `task_notification`,
+the `assistant` tool calls `Bash`, `Agent` and `Task` with
+`input.run_in_background: true`, and a `<task-notification>` injected as a `user`
+message (`<task-id>`, `<tool-use-id>`).
 
 ### Native structured output
 
@@ -343,6 +365,15 @@ run's `worker.log`.
   for the command, `state: "paused"` and `pausedFor: { reason, adapter, resumeAt }`
   for the webhook. A pause never fires the run-end hooks.
 
+**ODW extension — approve links.** While `odw serve --public-url <url>` runs for the
+runs root, each `waiting` hook carries the checkpoint's signed one-time links: the
+webhook gets `approveUrl`, `rejectUrl` and `linksExpireAt` (and both at the end of
+`text`), the command `ODW_APPROVE_URL`, `ODW_REJECT_URL`, `ODW_LINKS_EXPIRE_AT` and
+`ODW_NTFY_ACTIONS` (an ntfy `Actions` header with Approve/Reject `http` buttons).
+Without such a server, `linksUnavailable` / `ODW_LINKS_UNAVAILABLE` says why. A link
+works once, until `approveLinks.ttl` seconds (top-level setting, default 86400) have
+passed; the decision is recorded with `by: "link"`.
+
 ### Placeholders
 
 Expanded in `command` and `stdin` before each call:
@@ -372,4 +403,6 @@ limit reached`). A clean exit can still fail (ODW extensions): with reason
 `permission` when the CLI refused tool calls (`deniedPath`) and either
 `permissionDenials` is `"fail"` or the call has `expect`, and `mcp_unavailable`
 when the CLI started the agent without an MCP server that `failed` or
-`needs-auth` (`mcpPath`) and `mcpFailures` is `"fail"`.
+`needs-auth` (`mcpPath`) and `mcpFailures` is `"fail"`, and `orphaned_background`
+when the CLI replied with background work still running (`background`) and either
+`orphanedBackground` is `"fail"` or the call has `expect`.

@@ -38,6 +38,10 @@
  *                                   true. 404 when it has none (not started, a run from before
  *                                   transcripts or with maxTranscriptBytes 0, a Claude run); the
  *                                   same :agentId check
+ *   GET  /api/runs/:id/notes        the run's notes board (ODW extension; see ../notes): [Note] in
+ *                                   order — { noteId, ts, by: { agentId, label }, text, kind:
+ *                                   note|interface, truncated?, redacted? } — [] when it has none;
+ *                                   404 for Claude runs
  *   POST /api/runs/:id/control      { action: pause|resume|stop } (ODW runs; Claude runs → 409)
  *   POST /api/runs/:id/checkpoint   { action: approve|reject, checkpointId?, note?, payload? } answers a
  *                                   waiting checkpoint() (ODW extension) — the one named, else the
@@ -54,7 +58,7 @@
  *   GET  /api/workflows             [WorkflowSummary] from the managed workflow dirs
  *   GET  /api/workflows/:name       WorkflowDetail (?provider=odw|claude picks a shadowed name;
  *                                   a plugin's workflow is `<plugin>:<name>`, provider claude-plugin:<plugin>)
- *   GET  /api/capabilities          { writable }: whether this bind accepts writes
+ *   GET  /api/capabilities          { writable, decide }: whether this bind accepts writes, and checkpoint decisions
  *   GET  /api/settings              runtime config summary (adapters, roots, Claude scope, notify)
  *   GET  /api/schedules             [schedule]: `odw schedule list --json`, read only (ODW extension)
  *   GET  /api/compare?a=<run>&b=<run>   RunComparison (./compare): what changed between two ODW
@@ -101,7 +105,17 @@
  *      CORS "simple requests") and, when an Origin header is present, it must be
  *      same-origin.
  *   2. Host-header allowlist on loopback binds (DNS-rebinding guard, all routes).
- *   3. Off-loopback binds (--host) refuse every write with 409 — with a token too.
+ *   3. Off-loopback binds (--host) refuse every write with 409 — with a token too
+ *      — but for the two narrow decision paths below.
+ *
+ * Remote checkpoint decisions (ODW extension), the only writes off loopback:
+ *   - `--public-url URL`: GET/POST /approve/<token> answers a signed one-time
+ *     approve link (see ./approve-route, ./approve-links); the link is its own
+ *     credential, so the token gate does not apply there. On a loopback bind
+ *     the Host guard also lets the public URL's host through, for that route only.
+ *   - `--token-scope approve` (with `--token`): POST /api/runs/:id/checkpoint
+ *     passes off loopback too, behind the token and jsonPostGuard;
+ *     /api/capabilities says `decide: true`. Control, chat and launches stay refused.
  *
  * Remote read-only access (ODW extension; see ./serve-auth): with `token` set
  * (`odw serve --token`), every /api request and the SSE stream need it — a
@@ -145,6 +159,7 @@ import {
   isAllowedHost,
   isLoopbackBind,
   jsonBodyOrReply,
+  jsonPostGuard,
   sendFileCached,
   sendJson,
   sendJsonCached,
@@ -159,7 +174,9 @@ import { RunFeed } from "./run-feed.js";
 import { allSummaries, RUN_ID_RE, sourceForRun, type RunSource } from "./run-source.js";
 import { RunStore } from "./run-store.js";
 import type { BundleInfo } from "./bundle.js";
-import { TokenGate, type TokenGateOptions } from "./serve-auth.js";
+import { FailureLimiter, TokenGate, type TokenGateOptions } from "./serve-auth.js";
+import { announceServe, ensureApproveSecret, parsePublicUrl, withdrawServe } from "./approve-links.js";
+import { approveLinksOff, approveRoute, type ApproveRouteContext } from "./approve-route.js";
 import { listWorkflowSummaries, workflowDetail } from "./workflows-view.js";
 
 export type { ChatTurnRequest, ChatTurnRunner } from "./chat-host.js";
@@ -187,6 +204,18 @@ export interface ServeOptions {
   authLimit?: TokenGateOptions;
   /** Show a shared bundle, read-only (ODW extension: `odw serve --open FILE.odwrun`): `store` is it unpacked. */
   bundle?: BundleInfo | null;
+  /**
+   * Answer signed approve links at this base URL (ODW extension: `odw serve
+   * --public-url`; see ./approve-links): the server keeps the runs root's
+   * link secret and announces itself there, so workers mint links for it.
+   */
+  publicUrl?: string | null;
+  /** Replace the runs root's link secret first: every link minted before stops working (`--rotate-approve-secret`). */
+  rotateApproveSecret?: boolean;
+  /** What a token lets a remote client do (ODW extension: `--token-scope`): "read" (default), or "approve" — answer checkpoints too. */
+  tokenScope?: "read" | "approve";
+  /** The bad-link rate limit (tests). */
+  approveLimit?: TokenGateOptions;
 }
 
 export interface ServeHandle {
@@ -240,7 +269,26 @@ export function startServer(options: ServeOptions): Promise<ServeHandle> {
     redactor,
   });
 
-  const ctx: HandleContext = { sources, store, chatHost, feed, cwd, config, configPath, boundHost: host, redactor, bundle, gate: null };
+  // Approve links (ODW extension): the one remote write, a decision on the checkpoint a link names.
+  if (options.tokenScope === "approve" && !options.token) throw new Error("--token-scope approve needs --token");
+  let approve: ApproveRouteContext | null = null;
+  if (options.publicUrl && !bundle) {
+    const publicUrl = parsePublicUrl(options.publicUrl);
+    if (!publicUrl) throw new Error(`--public-url must be an http(s) URL with no credentials, query or fragment`);
+    approve = {
+      secret: ensureApproveSecret(store.root, { rotate: options.rotateApproveSecret === true }),
+      publicUrl,
+      source: sources[0]!,
+      runDir: (runId) => store.runDir(runId),
+      limiter: new FailureLimiter("bad approve links", options.approveLimit),
+    };
+  } else if (options.rotateApproveSecret && !bundle) {
+    ensureApproveSecret(store.root, { rotate: true });
+  }
+  const ctx: HandleContext = {
+    sources, store, chatHost, feed, cwd, config, configPath, boundHost: host, redactor, bundle, gate: null,
+    approve, remoteDecide: options.tokenScope === "approve" && !bundle,
+  };
   const server = createServer((req, res) => {
     handle(req, res, ctx).catch((err) => {
       try {
@@ -277,12 +325,15 @@ export function startServer(options: ServeOptions): Promise<ServeHandle> {
       const boundPort = typeof addr === "object" && addr ? addr.port : port;
       // The cookie is named by port: cookies ignore ports, and two servers on a host must keep apart.
       if (options.token) ctx.gate = new TokenGate(options.token, `odw_token_${boundPort}`, options.authLimit);
+      // Workers mint links only while a server that answers them says so.
+      if (approve) announceServe(store.root, approve.publicUrl);
       const shown = host === "0.0.0.0" || host === "::" ? "localhost" : host;
       resolve({
         url: `http://${shown}:${boundPort}`,
         port: boundPort,
         host,
         close: () => {
+          if (approve) withdrawServe(store.root);
           stopBackground(); // also ends the SSE streams, so server.close() can finish
           return new Promise<void>((done) => server.close(() => done()));
         },
@@ -307,6 +358,10 @@ interface HandleContext {
   bundle: BundleInfo | null;
   /** The token check (ODW extension: `--token`); null when reads are open. */
   gate: TokenGate | null;
+  /** The approve-link route (ODW extension: `--public-url`); null when links are off. */
+  approve: ApproveRouteContext | null;
+  /** `--token-scope approve` (ODW extension): a token holder may answer checkpoints off loopback too. */
+  remoteDecide: boolean;
 }
 
 async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandleContext): Promise<void> {
@@ -327,8 +382,18 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandleCont
     // through a hostile DNS name carries that name in Host — refuse it outright
     // (reads too: the run list is sensitive). Off-loopback binds are explicit
     // opt-ins to remote reads, so the allowlist does not apply there.
-    if (!isAllowedHost(boundHost, req.headers.host)) {
+    // An approve link also arrives through the --public-url's host (a tunnel to a loopback bind).
+    const approvePath = path === "/approve" || path.startsWith("/approve/");
+    const publicHost = approvePath && ctx.approve && req.headers.host ? new URL(ctx.approve.publicUrl).host === req.headers.host : false;
+    if (!isAllowedHost(boundHost, req.headers.host) && !publicHost) {
       sendJson(res, 403, { error: `unexpected Host '${req.headers.host}' — refusing (DNS rebinding guard)` });
+      return;
+    }
+
+    // Signed approve links (ODW extension; see ./approve-route): the link is the credential, not the token.
+    if (approvePath) {
+      if (ctx.approve && !bundle) await approveRoute(req, res, path, ctx.approve);
+      else approveLinksOff(res);
       return;
     }
 
@@ -378,7 +443,9 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandleCont
       // remotely-viewed off-loopback dashboard shows no dead buttons. Mirrors
       // the writeGuard's loopback-only rule exactly.
       // `auth`: whether reads need a token; `bundle`: the shared bundle shown (ODW extensions).
-      sendJson(res, 200, { writable: isLoopbackBind(boundHost) && !bundle, auth: gate ? "token" : "none", bundle });
+      // `decide`: whether checkpoints can be answered here — `--token-scope approve` off loopback too.
+      const writable = isLoopbackBind(boundHost) && !bundle;
+      sendJson(res, 200, { writable, auth: gate ? "token" : "none", bundle, decide: writable || (ctx.remoteDecide && gate !== null) });
       return;
     }
     if (method === "GET" && path === "/api/settings") {
@@ -425,14 +492,16 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandleCont
     }
 
     const runMatch = path.match(
-      /^\/api\/runs\/([^/]+)(\/events|\/control|\/checkpoint|\/result|\/agents(?:\/[^/]+(?:\/diff|\/transcript)?)?)?$/,
+      /^\/api\/runs\/([^/]+)(\/events|\/control|\/checkpoint|\/result|\/notes|\/agents(?:\/[^/]+(?:\/diff|\/transcript)?)?)?$/,
     );
     if (runMatch) {
       const sub = runMatch[2];
       // Writes are gated before any run lookup: an off-loopback bind refuses
       // outright (no run-existence oracle), and CSRF posture comes first.
       const write = sub === "/control" || sub === "/checkpoint";
-      if (method === "POST" && write && !writeGuard(req, res, boundHost)) return;
+      // --token-scope approve (ODW extension): a checkpoint decision — only that — passes off loopback, CSRF checks kept.
+      const remoteDecision = sub === "/checkpoint" && ctx.remoteDecide && gate !== null;
+      if (method === "POST" && write && !(remoteDecision ? jsonPostGuard(req, res) : writeGuard(req, res, boundHost))) return;
       const runId = decodeSegment(runMatch[1]!);
       if (runId === null) {
         sendJson(res, 400, { error: "malformed URL escape in run id" });
@@ -471,6 +540,16 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandleCont
           return;
         }
         sendJsonCached(req, res, { value });
+        return;
+      }
+      // The run's notes board (ODW extension): ODW runs only; [] when it has none.
+      if (method === "GET" && sub === "/notes") {
+        const notes = src.notes?.(runId) ?? null;
+        if (!notes) {
+          sendJson(res, 404, { error: "notes boards are kept for ODW runs only" });
+          return;
+        }
+        sendJsonCached(req, res, notes);
         return;
       }
       // Saved per-agent results: ODW saves each one as it lands; Claude runs have none.

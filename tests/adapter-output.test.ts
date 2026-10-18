@@ -411,7 +411,10 @@ const claudeStream = (result: Record<string, unknown>): string =>
 test("the built-in claude adapter streams stream-json and decodes its result event", () => {
   const claude = defaultConfig().adapters.claude!;
   assert.deepEqual(claude.command.slice(0, 5), ["claude", "--print", "--output-format", "stream-json", "--verbose"]);
-  assert.deepEqual(claude.output, {
+  // Its background rules (ODW extension) are tests/orphaned-background.test.ts's.
+  const { background, ...output } = claude.output as Extract<typeof claude.output, { format: "jsonl" }>;
+  assert.ok(background);
+  assert.deepEqual(output, {
     format: "jsonl",
     eventType: "result",
     textPath: ["result"],

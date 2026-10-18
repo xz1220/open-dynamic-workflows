@@ -61,12 +61,26 @@
  * on its agent_finished event and saved record. The MCP servers its CLI
  * started it without (Claude Code's init event) are kept as `mcp` on its
  * terminal event and saved record, and logged once per run for each server
- * and status.
+ * and status. Background work its CLI left running under a reply that stood
+ * (`orphanedBackground: "warn"`) is logged once and kept as `orphaned` on its
+ * agent_finished event and saved record.
+ *
+ * An agent with notes on — `notes: true` on its call or its parallel(), or
+ * the `notes` setting (an ODW extension; see ./notes) — finds the run's notes
+ * board in its prompt and `ODW_NOTES` in its environment, and an isolated one
+ * that kept a change has a note of its interface changes posted for it before
+ * its agent_finished event, so the agents the script starts next see it.
+ *
+ * An agent runs under its limits (an ODW extension; see ./limits) — the
+ * call's `limits` over its adapter's and the run's `agentLimits` — carried as
+ * `limits` on its agent_started event; one that runs into a limit is killed
+ * and fails with reason "runaway" and `limitHit` (the limit, what it reached,
+ * the evidence) on agent_failed.
  */
 
 import { AsyncLocalStorage } from "node:async_hooks";
 import { readFileSync } from "node:fs";
-import { copyFile, mkdir } from "node:fs/promises";
+import { copyFile, mkdir, readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 
 import { formatSeconds } from "./adapters/failures.js";
@@ -80,14 +94,16 @@ import type { AgentRequest } from "./bridge.js";
 import { branchName, ChangeRecorder, type AgentChanges, type KeptChanges } from "./changes.js";
 import { CheckpointTimeout, createCheckpoint, type CheckpointOptions, type CheckpointResult } from "./checkpoint.js";
 import { spentTokens, type RunContext } from "./context.js";
-import { AdapterExecutionError, UnmetExpectationError, WorkflowScriptError, isFatalError } from "./errors.js";
+import { AdapterExecutionError, AgentError, RunawayError, UnmetExpectationError, WorkflowScriptError, isFatalError } from "./errors.js";
 import { AGENT_FAILED, AGENT_FINISHED, AGENT_STARTED, LOG, PHASE_STARTED, event } from "./events.js";
 import { ExecError, createExec, execStep, type ExecOptions, type ExecResult } from "./exec.js";
 import { Expectations, planChecks, type AgentChecks, type ExpectOptions } from "./expect.js";
 import { resumeKey, type AgentResultRecord } from "./journal.js";
+import { hasLimits, readLimits, type AgentLimits, type LimitHit, type LimitSpec } from "./limits.js";
 // Value import of the loader is safe: loader.ts only type-imports from here, so
 // the module cycle is erased at compile time and never exists at runtime.
 import { loadWorkflowScript, scanDualCompat, type WorkflowMeta } from "./loader.js";
+import { interfaceSummary, type AgentNotes } from "./notes.js";
 import { firstAdapter, phaseDefaultsOf, type AdapterChoice, type PhaseDefaults } from "./routing.js";
 import type { JsonSchema } from "./schema.js";
 import { FanOut } from "./throttle.js";
@@ -147,6 +163,26 @@ export interface AgentOptions {
    * adapters/sandbox.ts).
    */
   sandbox?: "none" | "container" | Record<string, unknown>;
+  /**
+   * ODW extension: what this agent may do before it is killed as a runaway —
+   * `{ toolCalls, costUsd, outputTokens, seconds, repeat }`, over its
+   * adapter's and the run's `agentLimits` key by key (`null` lifts one). A
+   * breach fails it with reason "runaway" (see ./limits).
+   */
+  limits?: LimitSpec;
+  /**
+   * ODW extension: the run's notes board for this agent (see ./notes) — the
+   * notes so far in its prompt, `ODW_NOTES` to post and read them, and, for
+   * an isolated agent that kept a change, a note of its interface changes.
+   * `false` opts one agent out of its parallel()'s or the `notes` setting.
+   */
+  notes?: boolean;
+}
+
+/** ODW extension: what parallel() takes after its thunks. */
+export interface ParallelOptions {
+  /** Every agent its thunks start has notes on (see AgentOptions.notes), unless one says `notes: false`. */
+  notes?: boolean;
 }
 
 export interface Budget {
@@ -173,7 +209,8 @@ export interface ValidationReport {
 /** The surface injected into a workflow script (alongside `args`). */
 export interface WorkflowGlobals {
   agent(prompt: string, opts?: AgentOptions): Promise<unknown>;
-  parallel<T>(thunks: Array<Thunk<T>>): Promise<Array<T | null>>;
+  /** ODW extension: `opts.notes` turns the notes board on for its agents. */
+  parallel<T>(thunks: Array<Thunk<T>>, opts?: ParallelOptions): Promise<Array<T | null>>;
   pipeline(items: unknown[], ...stages: Stage[]): Promise<unknown[]>;
   /** ODW extension: `opts` gives the phase's agents an adapter and a model (see ./routing). */
   phase(title: string, opts?: PhaseDefaults): void;
@@ -286,6 +323,7 @@ export function createPrimitives(
     // What its CLI refused when the value was produced travels with it (ODW extension).
     const denied = deniedField(recorded.denied);
     const mcp = mcpField(recorded.mcp);
+    const orphaned = orphanedField(recorded.orphaned);
     const changed = changeFields(kept);
     // A value saved with its secrets redacted replays as saved, and says so (ODW extension; see ./redact).
     const redacted = recorded.redacted === true ? { redacted: true } : {};
@@ -299,11 +337,11 @@ export function createPrimitives(
         }),
       );
     }
-    const finished = event(AGENT_FINISHED, { agentId, label, phase, adapter, ...moved, attempts, ...marks, ...changed, ...denied, ...mcp });
+    const finished = event(AGENT_FINISHED, { agentId, label, phase, adapter, ...moved, attempts, ...marks, ...changed, ...denied, ...mcp, ...orphaned });
     const startedAt = startedEv.ts;
     const finishedAt = finished.ts;
     const value = recorded.value;
-    if (save({ agentId, key, label, phase, adapter, ...moved, attempts, startedAt, finishedAt, value, ...tier, ...marks, ...changed, ...denied, ...mcp, ...redacted })) {
+    if (save({ agentId, key, label, phase, adapter, ...moved, attempts, startedAt, finishedAt, value, ...tier, ...marks, ...changed, ...denied, ...mcp, ...orphaned, ...redacted })) {
       finished.saved = true;
     }
     ctx.emit(finished);
@@ -427,10 +465,41 @@ export function createPrimitives(
     return null;
   };
 
+  /**
+   * Set an agent up on the run's notes board (ODW extension; see ./notes) —
+   * none in a run that is not persisted, which says so once.
+   */
+  const openNotes = (agentId: number, label: string): AgentNotes | undefined => {
+    if (ctx.notes) return ctx.notes.openAgent(agentId, label);
+    if (!notesUnavailable.has(ctx.seq)) {
+      notesUnavailable.add(ctx.seq);
+      ctx.emit(event(LOG, { message: "notes: this run is not persisted, so it has no notes board — its agents run without one" }));
+    }
+    return undefined;
+  };
+
+  /** Post the note of an isolated agent's kept change: its diff stat and the interface lines it touched (ODW extension). */
+  const broadcast = async (agentId: number, label: string, kept: KeptChanges, note: (message: string) => void): Promise<void> => {
+    if (!ctx.notes || !ctx.agentDiffPath) return;
+    try {
+      const summary = interfaceSummary(await readFile(ctx.agentDiffPath(agentId), "utf8"), kept.changes);
+      if (summary) ctx.notes.post({ agentId, label }, summary, "interface");
+    } catch (err) {
+      note(`could not post its interface changes to the notes board: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+
   const dispatch = async (prompt: string, opts: AgentOptions): Promise<unknown> => {
     // The output checks a call asks for are checked before anything starts:
     // a misuse is a recoverable error that costs no dispatch (ODW extension).
     const checks = planChecks(opts);
+    if (opts.notes !== undefined && typeof opts.notes !== "boolean") {
+      throw new AgentError(`agent(): notes must be true or false; got ${describeValue(opts.notes)}`);
+    }
+    // The run's notes board (ODW extension): its call's say, else its parallel()'s, else the setting.
+    const notesOn = opts.notes ?? notesScope.getStore() ?? ctx.config.settings.notes === true;
+    // So are its limits (ODW extension; see ./limits).
+    const ownLimits = opts.limits === undefined ? undefined : readLimits(opts.limits, "agent(): limits", (m) => new AgentError(m));
     const activePhase = opts.phase !== undefined ? opts.phase : ctx.currentPhase;
     // Stable per-dispatch identity. Events for THIS dispatch all carry it, so
     // observers pair started/finished exactly even when several concurrent
@@ -492,6 +561,7 @@ export function createPrimitives(
       permissions: opts.permissions,
       ...(checks.allowEmpty ? { allowEmpty: true } : {}),
       ...(opts.sandbox !== undefined ? { sandbox: opts.sandbox } : {}),
+      ...(ownLimits !== undefined ? { limits: ownLimits } : {}),
     };
     // The adapters it left down its chain, and the one it is on (ODW extension).
     const fellBackFrom: string[] = [];
@@ -562,6 +632,8 @@ export function createPrimitives(
           ...permissionField(permissions.tier ?? permissions.requested),
           ...trustField(trust),
           ...sandboxField(sandbox && sandboxView(sandbox)),
+          // The limits it runs under on this adapter, if any (ODW extension; see ./limits).
+          ...limitsField(ctx.bridge.limitsFor?.(adapter, ownLimits)),
           // What `odw compare` matches and shows it by (ODW extension): its
           // resume key, and the model it asked for (a tier keeps its @ name).
           key,
@@ -586,12 +658,16 @@ export function createPrimitives(
         const changes = changeRecorder(agentId, display, opts, signal, note);
         const transcript = transcriptRecorder(agentId, adapter, note);
         const expect = expectations(checks, agentId, display, activePhase, signal);
+        // The run's notes board (ODW extension): the notes so far go in its
+        // prompt as it starts; what it posts is taken until it ends.
+        const notes = notesOn ? openNotes(agentId, display) : undefined;
         let outcome;
         try {
-          outcome = await ctx.bridge.run(request, {
+          outcome = await ctx.bridge.run(notes ? { ...request, notes: notes.prompt } : request, {
             signal,
             // The agent process's ODW_AGENT_ID.
             agentId,
+            ...(notes ? { notes: { env: notes.env, mounts: notes.mounts } } : {}),
             onNote: note,
             // Feed the shared budget tally and this agent's usage from every
             // CLI run: replies (schema retries included), and runs that failed
@@ -750,11 +826,15 @@ export function createPrimitives(
           // is kept too (the work of one that timed out); a stop keeps none.
           // Its transcript is kept either way, complete before the event.
           await transcript?.close();
+          notes?.close();
           failed(err, await keepChanges(changes, isFatalError(err) || signal.aborted, note));
           throw err;
         }
         await transcript?.close();
+        notes?.close();
         const kept = await keepChanges(changes, false, note);
+        // Its interface changes go on the board before it is seen to finish (ODW extension).
+        if (notes && kept) await broadcast(agentId, display, kept, note);
         // No option is dropped silently: surface each routing note as a LOG event
         // (visible in `odw logs` and the dashboard).
         for (const routing of outcome.notes ?? []) {
@@ -775,6 +855,20 @@ export function createPrimitives(
             }),
           );
         }
+        // Background work its CLI left running when it replied (ODW extension):
+        // said once, and kept with the agent — it died unfinished.
+        if (outcome.orphaned?.length) {
+          const producer = ctx.config.adapters[outcome.adapter] ?? adapter;
+          ctx.emit(
+            event(LOG, {
+              message: orphanedNote(`${display}:${agentId}`, adapterDisplayName(producer), outcome.orphaned),
+              orphaned: outcome.orphaned,
+              agentId,
+              label: display,
+              phase: activePhase,
+            }),
+          );
+        }
         const finished = event(AGENT_FINISHED, {
           agentId,
           label: display,
@@ -786,6 +880,7 @@ export function createPrimitives(
           ...changeFields(kept),
           ...deniedField(outcome.denied),
           ...mcpField(outcome.mcp),
+          ...orphanedField(outcome.orphaned),
         });
         const persisted = save({
           agentId,
@@ -803,6 +898,7 @@ export function createPrimitives(
           ...changeFields(kept),
           ...deniedField(outcome.denied),
           ...mcpField(outcome.mcp),
+          ...orphanedField(outcome.orphaned),
         });
         if (persisted) finished.saved = true;
         ctx.emit(finished);
@@ -876,9 +972,19 @@ export function createPrimitives(
     return fanOutScope.run(fanOut, batch);
   };
 
-  const parallel = async <T>(thunks: Array<Thunk<T>>): Promise<Array<T | null>> => {
+  const parallel = async <T>(thunks: Array<Thunk<T>>, opts?: ParallelOptions): Promise<Array<T | null>> => {
     if (!Array.isArray(thunks)) {
       throw new WorkflowScriptError(`parallel() takes an array of functions (thunks); got ${describeValue(thunks)}`);
+    }
+    // ODW extension: options after the thunks — only `notes` (see ./notes).
+    if (opts !== undefined && (opts === null || typeof opts !== "object" || Array.isArray(opts))) {
+      throw new WorkflowScriptError(`parallel()'s options must be an object — { notes?: boolean }; got ${describeValue(opts)}`);
+    }
+    for (const key of Object.keys(opts ?? {})) {
+      if (key !== "notes") throw new WorkflowScriptError(`parallel() has no option "${key}"; use notes`);
+    }
+    if (opts?.notes !== undefined && typeof opts.notes !== "boolean") {
+      throw new WorkflowScriptError(`parallel(): notes must be true or false; got ${describeValue(opts.notes)}`);
     }
     thunks.forEach((thunk, i) => {
       if (typeof thunk !== "function") {
@@ -889,16 +995,19 @@ export function createPrimitives(
       }
     });
     warnFanOut("parallel()", thunks.length);
-    return asFanOut(() => ctx.scheduler.gather(
-      thunks.map((thunk, i) => async () => {
-        try {
-          return await thunk();
-        } catch (err) {
-          noteSwallowed(err, `parallel() thunk ${i}`);
-          throw err;
-        }
-      }),
-    ));
+    const batch = (): Promise<Array<T | null>> =>
+      asFanOut(() => ctx.scheduler.gather(
+        thunks.map((thunk, i) => async () => {
+          try {
+            return await thunk();
+          } catch (err) {
+            noteSwallowed(err, `parallel() thunk ${i}`);
+            throw err;
+          }
+        }),
+      ));
+    // Every agent its thunks start — through any await — has notes on or off as it says.
+    return opts?.notes === undefined ? batch() : notesScope.run(opts.notes, batch);
   };
 
   const pipeline = async (items: unknown[], ...stages: Stage[]): Promise<unknown[]> => {
@@ -1033,7 +1142,7 @@ export function createPrimitives(
 
   return {
     agent: (prompt, opts) => handled(agent(prompt, opts)),
-    parallel: (thunks) => handled(parallel(thunks)),
+    parallel: (thunks, opts) => handled(parallel(thunks, opts)),
     pipeline: (items, ...stages) => handled(pipeline(items, ...stages)),
     phase,
     log,
@@ -1073,6 +1182,11 @@ function sandboxField(view: SandboxView | null): { sandbox?: SandboxView } {
   return view ? { sandbox: view } : {};
 }
 
+/** The `limits` field an agent's start event carries when it runs under any (ODW extension; see ./limits). */
+function limitsField(limits: AgentLimits | undefined): { limits?: AgentLimits } {
+  return hasLimits(limits) ? { limits: { ...limits } } : {};
+}
+
 /** The `trust` field an agent's start event and record carry when its CLI runs untrusted (ODW extension; absent: trusted). */
 function trustField(trust: TrustLevel): { trust?: TrustLevel } {
   return trust === "untrusted" ? { trust } : {};
@@ -1085,6 +1199,15 @@ function trustField(trust: TrustLevel): { trust?: TrustLevel } {
  * workflow()'s agents belong to the fan-out that called it.
  */
 const fanOutScope = new AsyncLocalStorage<FanOut>();
+
+/**
+ * Whether a parallel() call turned the notes board on (or off) for its
+ * agents (an ODW extension; see ./notes), carried like `fanOutScope`.
+ */
+const notesScope = new AsyncLocalStorage<boolean>();
+
+/** Runs (by their shared `seq`) that said they have no notes board, so it is said once. */
+const notesUnavailable = new WeakSet<object>();
 
 /** The `fellBackFrom` an agent's agent_finished event and record carry when it fell back (ODW extension). */
 function fallbackField(fellBackFrom: string[] | undefined): { fellBackFrom?: string[] } {
@@ -1133,6 +1256,27 @@ function mcpNote(server: McpServer, adapter: string, label: string): string {
   }
 }
 
+/** The `orphaned` an agent's agent_finished event and record carry: the background work its CLI left running, when any (ODW extension). */
+function orphanedField(orphaned: unknown): { orphaned?: string[] } {
+  if (!Array.isArray(orphaned)) return {};
+  const work = orphaned.filter((line): line is string => typeof line === "string");
+  return work.length > 0 ? { orphaned: work } : {};
+}
+
+/**
+ * The one line a run logs for an agent whose reply stood though its CLI left
+ * background work running (`orphanedBackground: "warn"`; ODW extension).
+ */
+function orphanedNote(who: string, cli: string, orphaned: string[]): string {
+  const work = orphaned.length === 1 ? "1 background task" : `${orphaned.length} background tasks`;
+  const shown = orphaned.slice(0, REFUSED_SHOWN).join("; ");
+  const more = orphaned.length > REFUSED_SHOWN ? `; and ${orphaned.length - REFUSED_SHOWN} more` : "";
+  return (
+    `${who}: ${cli} ended its turn with ${work} still running — ${shown}${more}; it died when the CLI exited, ` +
+    "so its reply may rest on work that never finished (orphanedBackground: \"fail\" fails such an agent)"
+  );
+}
+
 /** Refused calls a log line names, at most; the event carries them all. */
 const REFUSED_SHOWN = 5;
 
@@ -1156,9 +1300,11 @@ function refusedNote(who: string, cli: string, denied: string[]): string {
  * its `expect` checks, what it missed. Nothing for other errors (a schema that
  * never validated, a stop).
  */
-function failureFields(err: unknown): { reason?: string; retryAfter?: number; misses?: string[] } {
+function failureFields(err: unknown): { reason?: string; retryAfter?: number; misses?: string[]; limitHit?: LimitHit } {
   if (!(err instanceof AdapterExecutionError)) return {};
   if (err instanceof UnmetExpectationError) return { reason: err.reason, misses: [...err.misses] };
+  // The limit a runaway ran into, and the evidence (ODW extension; see ./limits).
+  if (err instanceof RunawayError) return { reason: err.reason, limitHit: { ...err.hit } };
   if (err.retryAfter === undefined) return { reason: err.reason };
   return { reason: err.reason, retryAfter: Math.ceil(err.retryAfter) };
 }

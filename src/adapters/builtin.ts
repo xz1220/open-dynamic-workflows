@@ -15,6 +15,7 @@ import type {
   ContainerSpec,
   AdapterFlags,
   AdapterOutput,
+  BackgroundRules,
   DenialPolicy,
   PermissionArgs,
   PermissionTier,
@@ -22,6 +23,7 @@ import type {
   Settings,
   TrustLevel,
 } from "./types.js";
+import type { LimitSpec } from "../limits.js";
 
 /** A built-in adapter spec — same shape as a config entry, minus its name. */
 export interface RawAdapter {
@@ -43,6 +45,7 @@ export interface RawAdapter {
   untrustedArgs?: string[];
   untrustedNote?: string;
   sandbox?: ContainerSpec;
+  agentLimits?: LimitSpec;
 }
 
 // `flags` only DECLARES which native flag carries a model — the router appends
@@ -70,6 +73,65 @@ const KILO_OPENCODE_OUTPUT: AdapterOutput = {
 // lists `mcp_servers: [{ name, status, source? }]`, status one of McpServerStatus's
 // "connected" | "failed" | "needs-auth" | "pending" | "disabled" — an agent whose
 // server failed runs on without its tools, and may still say it is done.
+//
+// Background work (ODW extension; `background`): a Bash call with
+// `run_in_background: true` returns at once, and an Agent (formerly Task)
+// subagent runs in the background unless its call sets `run_in_background:
+// false` — so the tool call alone shows only some of it. What Claude Code's
+// stream-json says of every task is the Agent SDK's system messages (checked
+// against the 2.1.302 binary): `task_started { task_id, tool_use_id?,
+// task_type, description, is_backgrounded? }`, `task_updated { task_id,
+// patch: { status? } }` — "completed", "failed" or "killed" ends it — and
+// `task_notification { task_id, tool_use_id?, status }`: the events Claude
+// Code's own session runner counts a task open and done by, an
+// `in_process_teammate` aside. A background tool call is counted too, for a
+// CLI that registers no task for it, and the notification injected into the
+// conversation as text (`<task-id>`, `<tool-use-id>`) ends one. Work still
+// open at the `result` event died when `-p` exited (anthropics/claude-code#85129).
+const CLAUDE_NOTIFICATION_IDS = "<(?:task-id|tool-use-id)>\\s*([^<\\s]+)\\s*</";
+const CLAUDE_BACKGROUND: BackgroundRules = {
+  started: [
+    {
+      event: "system",
+      where: [{ path: ["subtype"], equals: "task_started" }, { path: ["task_type"], not: "in_process_teammate" }],
+      ids: [["task_id"], ["tool_use_id"]],
+      kind: [["subagent_type"], ["task_type"]],
+      about: [["description"]],
+    },
+    {
+      event: "assistant",
+      each: ["message", "content"],
+      where: [
+        { path: ["type"], equals: "tool_use" },
+        { path: ["name"], equals: ["Bash", "Agent", "Task"] },
+        { path: ["input", "run_in_background"], equals: true },
+      ],
+      ids: [["id"]],
+      kind: [["name"]],
+      about: [["input", "description"], ["input", "command"]],
+    },
+  ],
+  ended: [
+    { event: "system", where: [{ path: ["subtype"], equals: "task_notification" }], ids: [["task_id"], ["tool_use_id"]] },
+    {
+      event: "system",
+      where: [
+        { path: ["subtype"], equals: "task_updated" },
+        { path: ["patch", "status"], equals: ["completed", "failed", "killed"] },
+      ],
+      ids: [["task_id"]],
+    },
+    {
+      event: "user",
+      each: ["message", "content"],
+      where: [{ path: ["type"], equals: "text" }],
+      ids: [["text"]],
+      pattern: CLAUDE_NOTIFICATION_IDS,
+    },
+    { event: "user", ids: [["message", "content"]], pattern: CLAUDE_NOTIFICATION_IDS },
+  ],
+};
+
 const CLAUDE_OUTPUT: AdapterOutput = {
   format: "jsonl",
   eventType: "result",
@@ -82,6 +144,7 @@ const CLAUDE_OUTPUT: AdapterOutput = {
   deniedPath: ["permission_denials"],
   mcpEvent: "system",
   mcpPath: ["mcp_servers"],
+  background: CLAUDE_BACKGROUND,
 };
 
 // `codex exec --json` (https://developers.openai.com/codex/noninteractive, now
@@ -425,6 +488,7 @@ export const DEFAULT_SETTINGS: Settings = {
   applyVerify: null, // odw apply runs no command after an apply (--verify still does)
   maxTranscriptBytes: 5 * 1024 * 1024, // each agent's transcript; past it, one truncation line (0: none)
   recordVersions: true, // each adapter CLI's --version, once per run, for odw compare (false: no probe)
+  notes: false, // no notes board: agents run as written (true: every agent gets one; see src/notes.ts)
   permissions: "edit", // the tier every built-in ran with before tiers existed
   trust: "trusted", // agents read the repository's own instructions and settings (untrusted: each CLI's way of ignoring them)
   agentEnv: "inherit", // agent CLIs see ODW's whole environment
@@ -437,8 +501,11 @@ export const DEFAULT_SETTINGS: Settings = {
   expectRetries: 1, // reruns of an agent whose work missed its expect checks, told what it missed
   permissionDenials: "warn", // a reply whose CLI refused tool calls stands, recorded and logged ("fail": it fails)
   mcpFailures: "warn", // an agent whose MCP server did not start keeps its reply, recorded and logged ("fail": it fails)
+  orphanedBackground: "warn", // an agent that ended its turn with background work running keeps its reply, recorded and logged ("fail": it fails)
   redact: { env: true, patterns: true, extra: [] }, // likely secrets out of what odw keeps and serves (false: none)
   quotaWait: false, // an agent whose chain is out of quota fails; { max: <s> } waits for the reset instead
   otel: false, // no trace is sent; { endpoint?, headers?, captureContent? } posts each run's at its end
   sandbox: "none", // agent CLIs run on this machine; { kind: "container", image, … } runs each in a container
+  agentLimits: {}, // no per-agent limits; { toolCalls, costUsd, outputTokens, seconds, repeat } kills a runaway agent
+  approveLinks: { ttl: 86_400 }, // a checkpoint's approve/reject links (odw serve --public-url) are valid 24h
 };

@@ -188,6 +188,7 @@ test("expect, expectRetries and allowEmpty are checked when agent() is called: a
     command: ["npm", "test"],
     match: "/^DONE/",
     mcp: [],
+    untouched: [],
     timeout: 30,
   });
   assert.equal(planChecks({}).expect, null);
@@ -196,9 +197,12 @@ test("expect, expectRetries and allowEmpty are checked when agent() is called: a
   assert.equal(planChecks({}).allowEmpty, false);
 
   const cases: Array<[Record<string, unknown>, RegExp]> = [
-    [{ expect: "changes" }, /^agent\(\): expect must be an object of checks — \{ changes\?, files\?, command\?, match\?, mcp\?, timeout\? \}; got a string$/],
+    [{ expect: "changes" }, /^agent\(\): expect must be an object of checks — \{ changes\?, files\?, command\?, match\?, mcp\?, untouched\?, timeout\? \}; got a string$/],
     [{ expect: [] }, /expect must be an object of checks .*got an empty array/],
-    [{ expect: { change: true } }, /^agent\(\): expect has no check "change"; use changes, files, command, match, mcp, timeout$/],
+    [{ expect: { change: true } }, /^agent\(\): expect has no check "change"; use changes, files, command, match, mcp, untouched, timeout$/],
+    [{ expect: { untouched: "test/**" } }, /expect\.untouched must be an array of globs \(non-empty strings\); got a string/],
+    [{ expect: { untouched: ["/repo/test/**"] } }, /expect\.untouched globs are relative to the agent's workspace; got "\/repo\/test\/\*\*"/],
+    [{ expect: { untouched: ["test/{a"] } }, /expect\.untouched has an invalid glob "test\/\{a": an unclosed \{/],
     [{ expect: { changes: "yes" } }, /expect\.changes must be true or false; got a string/],
     [{ expect: { files: "src/**" } }, /expect\.files must be an array of globs \(non-empty strings\); got a string/],
     [{ expect: { files: [""] } }, /expect\.files must be an array of globs/],
@@ -408,6 +412,65 @@ test("files — each glob needs a file the agent changed or created; deleting on
     const feedback = flow.calls[1]!.feedback!;
     assert.match(feedback, /^- a file matching "src\/\*\*\/\*\.ts" must change or be created, and none did$/m);
     assert.doesNotMatch(feedback, /docs/, "docs/y.md met its glob in the first attempt");
+  } finally {
+    cleanup(src, root);
+  }
+});
+
+test("untouched — in place, editing or deleting a protected file is a miss naming it; restored, the work passes", async () => {
+  const committed = {
+    "src/add.js": "module.exports = (a, b) => a - b\n",
+    "test/add.test.js": "assert(add(1, 2) === 3)\n",
+    ".github/workflows/ci.yml": "on: push\n",
+  };
+  // The user's own draft test, uncommitted before the agent starts, is not the agent's change.
+  const src = makeRepo(committed, { "test/draft.test.js": "the user's draft\n" });
+  const root = mkdtempSync(join(tmpdir(), "odw-expect-run-"));
+  try {
+    const flow = await runAgent({
+      root,
+      source: src,
+      plan: [
+        // Gaming the check: skip the test and drop CI, beside the real fix.
+        { write: { "src/add.js": "module.exports = (a, b) => a + b\n", "test/add.test.js": "// skipped\n" }, remove: [".github/workflows/ci.yml"] },
+        { write: { "test/add.test.js": committed["test/add.test.js"], ".github/workflows/ci.yml": committed[".github/workflows/ci.yml"] }, reply: "fixed add" },
+      ],
+      opts: { expect: { changes: true, untouched: ["test/**", "**/*.snap", ".github/**"] } },
+    });
+    assert.deepEqual(flow.result, { value: "fixed add" });
+    assert.equal(flow.calls.length, 2);
+    const feedback = flow.calls[1]!.feedback!;
+    assert.match(
+      feedback,
+      /^- no file matching "test\/\*\*", "\.github\/\*\*" may change, and 2 did: (\.github\/workflows\/ci\.yml, test\/add\.test\.js|test\/add\.test\.js, \.github\/workflows\/ci\.yml)\. Those files are not yours to change: restore them/m,
+    );
+    assert.doesNotMatch(feedback, /draft|snap/, "the user's draft and an unmatched glob are not named");
+  } finally {
+    cleanup(src, root);
+  }
+});
+
+test("untouched — isolated, a created file counts too; a protected path still touched after the retries fails with its misses", async () => {
+  const src = makeRepo({ "src/view.js": "old\n", "__snapshots__/view.snap": "old\n" });
+  const root = mkdtempSync(join(tmpdir(), "odw-expect-run-"));
+  try {
+    const flow = await runAgent({
+      root,
+      source: src,
+      plan: [{ write: { "src/view.js": "new\n", "__snapshots__/view.snap": "new\n", "test/view.test.js": "new test\n" }, reply: "updated" }],
+      opts: { isolation: "worktree", expect: { untouched: ["**/*.snap", "test/**"] }, expectRetries: 0 },
+    });
+    assert.equal(
+      flow.result.error,
+      "UnmetExpectationError: adapter 'scripted' did not meet its expectations: no file matching \"**/*.snap\", \"test/**\" may change, " +
+        "and 2 did: __snapshots__/view.snap, test/view.test.js",
+    );
+    const failed = ofType(flow.events, "agent_failed")[0]!;
+    assert.equal(failed.reason, "unmet_expectation");
+    assert.equal(git(src, "status", "--porcelain"), "", "the source tree is untouched");
+    // Untouched alone is a check; protected files nobody touched pass it.
+    assert.notEqual(planChecks({ expect: { untouched: ["test/**"] } }).expect, null);
+    assert.equal(planChecks({ expect: { untouched: [] } }).expect, null, "no glob, nothing to check");
   } finally {
     cleanup(src, root);
   }

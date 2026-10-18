@@ -161,6 +161,7 @@ still reach the agent`）。仓库 `.worktreeinclude` 的 `symlink:` 行和仓�
 | `applyVerify` | **ODW 扩展。** `odw apply` 每次应用后在仓库根目录通过 shell 运行的命令（受 `timeout` 约束），例如 `"npm test"`：命令失败、超时或被中断时，这次应用会被原样回滚（只恢复涉及路径的内容和索引项，其他一概不动）。`odw apply --verify "<cmd>"` 覆盖它，`--no-verify` 跳过它，`--check` 从不运行它。默认 `null`（不运行） |
 | `maxTranscriptBytes` | **ODW 扩展。** run 目录里为每个 agent 保存的 transcript 最多多少字节——它的 CLI 在 stdout 上打印的内容写入 `agents/<agentId>.transcript.jsonl`（JSONL 适配器的事件按原样保存，其他输出写成 `{"kind":"text"}` 行），stderr 的结尾写入旁边的 `agents/<agentId>.stderr.txt`；用 `odw logs <run> --agent <id\|label>` 查看（默认 5 MB）。超出时以一行 `{"kind":"truncated","bytes":N}` 结束 transcript；`0` = 不保存 |
 | `recordVersions` | **ODW 扩展。** `true`（默认）：某个适配器在一次运行中第一次派发 agent 时，与 agent 并行执行 `<cli> --version`（命令的第一个 argv 元素），3 秒超时，记为 `cli_version` 事件——`odw status`、`GET /api/runs/:id` 的 `cliVersions` 与 `odw compare` 会读取它。它绝不拖慢或导致运行失败；不回应的 CLI 记为未知版本；命令为 node 或其他解释器、脚本或相对路径的适配器不做探测。`false` = 不探测（meta.json 中的 odw 版本与工作流 sha256、`run_started` 上的设置照常记录） |
+| `notes` | **ODW 扩展。** `false`（默认）：没有笔记板，agent 按原样运行。`true`：运行中的每个 agent 都使用本次运行的笔记板——启动时已有的笔记写进它的提示词，`ODW_NOTES` 用来发布（`"$ODW_NOTES" "内容"`，或 `odw note "内容"`）和读取笔记；隔离的 agent 完成时，ODW 替它发布所保留改动的接口行。`agent(…, { notes })` 与 `parallel(…, { notes })` 可按调用覆盖。见 primitives.md |
 | `permissions` | **ODW 扩展。** 运行的权限档位：`"read"`、`"edit"`（默认）或 `"full"`——见[权限](#权限每个内置适配器能做什么)。`odw run\|rerun\|resume --permissions` 可覆盖 |
 | `trust` | **ODW 扩展。** `"trusted"`（默认）或 `"untrusted"`：用于别人的仓库。不受信任时，每个适配器的 `untrustedArgs` 加在档位参数之后（`claude --safe-mode`、`qwen --safe-mode`、`omp --no-extensions --no-skills --no-rules`）；没有文档化方式的 CLI 每次运行说一次（它的 `untrustedNote`）。`.worktreeinclude` 的 `symlink:` 行不做链接，仓库内配置设置的 `worktreeSetup` 不会运行。`odw run\|rerun\|resume --untrusted` 按次设置；仓库内的配置无法放宽 `~/.config/odw/config.json` 设置的信任级别 |
 | `agentEnv` | **ODW 扩展。** `"inherit"`（默认）：agent CLI 拿到 ODW 的全部环境变量。`"minimal"`：只传 `PATH`、`HOME`、`USER`、`LOGNAME`、`SHELL`、`LANG`、`LC_*`、`TERM`、`TMPDIR`、`TZ`（以及 Windows 系统变量）、内置 CLI 文档中列出的认证与配置变量（`ANTHROPIC_*`、`CLAUDE_*`、`OPENAI_*`、`CODEX_*`、`GEMINI_*`、`GOOGLE_*`、`DASHSCOPE_*`、`QWEN_*`、`MOONSHOT_*`、`KIMI_*`、`CURSOR_*`、`OPENCODE_*`、代理变量、`NODE_EXTRA_CA_CERTS`）、`ODW_*`、`agentEnvPass` 和适配器的 `env`。`exec()` 命令、`worktreeSetup` 和 `notify` 仍拿到完整环境 |
@@ -174,9 +175,11 @@ still reach the agent`）。仓库 `.worktreeinclude` 的 `symlink:` 行和仓�
 | `expectRetries` | **ODW 扩展。** 工作没达到 `expect` 检查的 agent 带着缺失项重跑的次数，之后以 `unmet_expectation` 失败（默认 1；`agent()` 调用自己的 `expectRetries` 优先）——见 [expect](primitives.md#expectodw-扩展) |
 | `permissionDenials` | **ODW 扩展。** CLI 拒绝了 agent 的工具调用（`deniedPath`）、而回复声称成功时怎么办：`"warn"`（默认）保留回复——这些调用记为 agent 上的 `denied` 并记一次日志——`"fail"` 让 agent 以 `permission` 失败。适配器自己的 `permissionDenials` 优先；设了 `expect` 的调用无论如何都把被拒绝的调用算作缺失 |
 | `mcpFailures` | **ODW 扩展。** CLI 启动 agent 时没连上 MCP 服务器（`mcpPath`：Claude Code 的 init 事件）时怎么办：`"warn"`（默认，与 Claude Code 自己只警告一致）保留回复——每个状态不是 `connected` 的服务器记为 agent 上的 `mcp`，每次运行按服务器和状态各记一次日志——`"fail"` 让服务器为 `failed` 或 `needs-auth` 的 agent 以 `mcp_unavailable` 失败（`pending` 和 `disabled` 从不导致失败）。调用的 `expect.mcp` 列出的服务器则算作缺失 |
+| `orphanedBackground` | **ODW 扩展。** CLI 给出回复时仍有后台任务在运行——`run_in_background` 的 shell 命令或它从未等待的子 agent，随 CLI 退出而终止（`output.background`：Claude Code 的任务事件）——时怎么办：`"warn"`（默认）保留回复，任务记为 agent 上的 `orphaned` 并记一次日志；`"fail"` 让 agent 以 `orphaned_background` 失败。设了 `expect` 的调用无论如何都把它算作缺失 |
 | `redact` | **ODW 扩展。** `{ "env": true, "patterns": true, "extra": [] }`（默认）：odw 保存和提供的内容——transcript 与 stderr 结尾、保存的结果、事件、运行的错误、webhook 负载——在写下之前把疑似密钥替换为 `«redacted:<kind>»`，并以 `redacted: true` 标明；`worker.log` 与 Chat Host 会话同样脱敏（用户输入只脱敏令牌形态），运行的 `args` 为 `odw rerun` 原样保存、对外提供时脱敏令牌形态。`env`：odw 环境及各适配器 `env` 中名字像密钥的变量（`*_KEY`、`*TOKEN`、`*SECRET*`、`*PASSWORD*`、`AUTHORIZATION`、云凭据）的值（8 个字符及以上），无论出现在哪里，以及这类名字的 `NAME=value`；`patterns`：常见令牌形态（Anthropic、OpenAI、GitHub、Slack、AWS、Google、JWT、私钥、`Bearer`）；`extra`：更多正则表达式。运行的结果只应用 `patterns` 和 `extra`；提示词、agent 看到的内容和保存的 diff 从不脱敏。`false` = 关闭；`odw doctor` 会报告 |
 | `otel` | **ODW 扩展。** OpenTelemetry 导出：`false`（默认）什么都不发送——单靠 `OTEL_*` 环境变量不会开启。`true` 或 `{ "endpoint": "http://localhost:4318", "headers": { … }, "captureContent": false }`：运行结束后，worker 把它的 trace（遵循 GenAI 语义约定的 `invoke_workflow` / `phase` / `invoke_agent` / `execute_tool` / `exec` / `checkpoint` span——含用量、花费、模型、失败原因，重试和回退作为 span 事件）以 OTLP/HTTP JSON 发送到 `endpoint` + `/v1/traces`，只发一次，时限 5 秒；失败只在运行的 `worker.log` 留一行，绝不改变运行结果。省略时 `endpoint` 和 `headers` 取自 `OTEL_EXPORTER_OTLP_(TRACES_)ENDPOINT` / `…HEADERS`（默认端点 `http://localhost:4318`）；header 的值是机密，从不写日志或显示。`captureContent`（或 `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true`）会附带回复、工具输入输出和错误文本——发出前再次脱敏，每个字段截断到 4096 个字符。`odw export <run> --otlp [--out FILE \| --send]` 可导出任意运行；`odw doctor` 显示 trace 发往何处 |
 | `sandbox` | **ODW 扩展。** `"none"`（默认）：agent CLI 在本机运行。`{ "kind": "container", "image", "engine"?, "network"?, "mounts"?, "cliConfig"?, "memory"?, "cpus"?, "pids"? }`：每次 CLI 运行与每个 `exec()` 步骤都在全新的 Docker/Podman 容器中进行——只以相同路径挂载工作区与私有 home（复制 CLI 的登录文件），以宿主 uid:gid、无 capability、`no-new-privileges`、pids 上限、只读根文件系统运行，环境变量按名字传递；`network` 默认 `"default"`（agent 必须连到模型 API），`exec()` 步骤默认 `"none"`；非干净退出时按名字 kill 容器；镜像从不拉取（`examples/sandbox/Dockerfile`），缺引擎或镜像即 `ConfigError`。`odw run\|rerun\|resume --sandbox container [--sandbox-image <镜像>]` 按运行开启；适配器与 `agent()` 只能收紧 |
+| `agentLimits` | **ODW 扩展。** `{}`（默认）：不设上限。`{ "toolCalls"?, "costUsd"?, "outputTokens"?, "seconds"?, "repeat"? }`：每个 agent 被当作失控杀掉之前能做多少（原因 `runaway`，`limitHit` 写明上限与证据）——从 claude/codex/kilo/opencode 的输出实时执行；`repeat` 为同一工具调用连续出现的次数（至少 2）。适配器的 `agentLimits` 与 `agent()` 的 `limits` 逐键覆盖它，`null` 取消某项。文本 CLI 的 `outputTokens`/`costUsd` 只在每次运行后检查，不报告花费的 CLI（codex）永远不会触发 `costUsd`——每次运行各提示一次 |
 
 ### 适配器字段
 
@@ -200,6 +203,7 @@ still reach the agent`）。仓库 `.worktreeinclude` 的 `symlink:` 行和仓�
 | `untrustedArgs` | **ODW 扩展。** 让这个 CLI 不读取仓库指令、设置、hooks 和 MCP 服务器的参数，不受信任时加在 `{permission_args}` 处、档位参数之后。不设：运行会说一次它什么也挡不住。在内置适配器上设置它会去掉内置的 `untrustedNote` |
 | `untrustedNote` | **ODW 扩展。** 不受信任运行时仍会从仓库传给这个 CLI 的内容，每次运行记一次日志 |
 | `sandbox` | **ODW 扩展。** 让这个 CLI 在容器中运行：`{ "kind": "container", … }`，覆盖运行级 `sandbox` 的字段（自己的 `image`、`engine`、`cliConfig`，追加 `mounts`；`network` 与各项限制取更严格者）。运行级沙箱为 `"none"` 时必须给出 `image`；这里写 `"none"` 会被拒绝——只能收紧 |
+| `agentLimits` | **ODW 扩展。** 这个 CLI 自己的单 agent 上限，逐键覆盖运行级 `agentLimits`（`null` 取消某项）；`agent()` 的 `limits` 再覆盖它 |
 
 ### 输出格式
 
@@ -230,6 +234,20 @@ still reach the agent`）。仓库 `.worktreeinclude` 的 `symlink:` 行和仓�
 的这类事件像 `errorPath` 一样让运行失败，除非之后出现 `usageEvent`，说明 CLI 继续运行了。把
 最终回复写进文件的 CLI 在命令里使用 `{reply_file}`：文件有内容就是回复；文件为空或没写、
 stdout 的事件里也没有回复时，回复为空（除非 `allowEmpty`，否则 `empty_reply`），日志会写明缺了什么。
+
+**ODW 扩展**，仅 `jsonl`：`background: { "started": [规则…], "ended": [规则…] }` 说明哪些事件
+开始、哪些事件结束后台任务，到最新的文本事件时仍未结束的任务即为孤儿（`orphanedBackground`）。
+规则为 `{ "event": <类型>, "each"?: [路径], "where"?: [{ "path": [...], "equals"?: 值 | [值…],
+"not"?: 值 | [值…] }], "ids": [[路径]…], "pattern"?: <正则源码>, "kind"?: [[路径]…], "about"?:
+[[路径]…] }`：该 `type` 的事件（设了 `each` 时为该处数组的每一项）满足全部 `where` 条件时，以
+`ids` 处的值（字符串或数字；设了 `pattern` 时为其第一个捕获组在这些字符串里匹配到的内容）开始或
+结束任务。任务以任一 id 为准是同一件：工具调用和它登记的任务是同一件，任一 id 都能结束它。
+`kind` 和 `about`（仅开始规则）为记录命名：各取第一个找到的字符串，如 `Bash (npm run dev)`。规则
+写错即 `ConfigError`。内置 `claude` 读取 Claude Code stream-json 的 `system` 事件 `task_started`
+（`task_type` 为 `in_process_teammate` 的除外）、`task_updated`（`patch.status` 为
+`completed`、`failed` 或 `killed` 时结束）和 `task_notification`，`input.run_in_background: true`
+的 `assistant` 工具调用 `Bash`、`Agent`、`Task`，以及以 `user` 消息注入的
+`<task-notification>`（`<task-id>`、`<tool-use-id>`）。
 
 ### 原生结构化输出
 
@@ -279,6 +297,13 @@ hook 只会记录到该运行的 `worker.log`。
   （Unix 秒），webhook 收到 `state: "paused"` 与 `pausedFor: { reason, adapter, resumeAt }`。
   暂停从不触发运行结束的 hook。
 
+**ODW 扩展——批准链接。** 当该 runs 根目录有 `odw serve --public-url <url>` 在运行时，每个
+`waiting` hook 都带上该检查点签名的一次性链接：webhook 收到 `approveUrl`、`rejectUrl` 和
+`linksExpireAt`（`text` 末尾也有），命令拿到 `ODW_APPROVE_URL`、`ODW_REJECT_URL`、
+`ODW_LINKS_EXPIRE_AT` 和 `ODW_NTFY_ACTIONS`（带 Approve/Reject 两个 `http` 按钮的 ntfy
+`Actions` 头）。没有这样的服务时，`linksUnavailable` / `ODW_LINKS_UNAVAILABLE` 说明原因。
+链接只能用一次，在 `approveLinks.ttl` 秒内有效（顶层设置，默认 86400）；决定记为 `by: "link"`。
+
 ### 占位符
 
 每次调用前在 `command` 和 `stdin` 里展开：
@@ -303,4 +328,6 @@ CLI 在输出里报告的失败（`errorPath`：Claude Code stream-json 的 `is_
 为 `empty_reply`（除非调用设了 `allowEmpty`），工作没达到调用的 `expect` 检查时为
 `unmet_expectation`，CLI 拒绝了工具调用（`deniedPath`）且 `permissionDenials` 为 `"fail"`
 或调用设了 `expect` 时为 `permission`，CLI 启动 agent 时有 MCP 服务器 `failed` 或
-`needs-auth`（`mcpPath`）且 `mcpFailures` 为 `"fail"` 时为 `mcp_unavailable`。
+`needs-auth`（`mcpPath`）且 `mcpFailures` 为 `"fail"` 时为 `mcp_unavailable`，CLI 回复时
+仍有后台任务在运行（`background`）且 `orphanedBackground` 为 `"fail"` 或调用设了 `expect`
+时为 `orphaned_background`。

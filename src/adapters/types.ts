@@ -6,6 +6,8 @@
  * loaded once at run start and then only read.
  */
 
+import type { LimitSpec } from "../limits.js";
+
 /**
  * Which per-call options this CLI can carry, and the argv flag that carries
  * each. An option absent here is one this adapter does NOT support natively, so
@@ -109,6 +111,13 @@ export type AdapterOutput =
        * or fails it (`mcpFailures`, `expect.mcp`).
        */
       mcpPath?: string[];
+      /**
+       * The background work the CLI's events say the agent started, and the
+       * events that say it ended (an ODW extension): work still open at the
+       * latest text event was orphaned — the CLI ended the agent's turn and
+       * exited while it ran, and it died with it (`orphanedBackground`).
+       */
+      background?: BackgroundRules;
     }
   | {
       /** One JSON document on stdout: the paths are read from it. */
@@ -121,6 +130,57 @@ export type AdapterOutput =
       deniedPath?: string[];
       mcpPath?: string[];
     };
+
+/**
+ * How a JSONL adapter's events show background work (an ODW extension;
+ * `output.background`): a shell command or subagent the agent started without
+ * waiting for it (Claude Code's `run_in_background`), and its end. Work is one
+ * piece under any of its ids: a start and an end that share one match up, and
+ * two starts that share one (a tool call, then the task it registered) are the
+ * same work.
+ */
+export interface BackgroundRules {
+  /** Events that say background work started. */
+  started: BackgroundRule[];
+  /** Events that say background work ended — finished, failed, or was stopped. */
+  ended: BackgroundRule[];
+}
+
+/** One kind of event that starts or ends background work (ODW extension; see {@link BackgroundRules}). */
+export interface BackgroundRule {
+  /** The event's `type`. */
+  event: string;
+  /**
+   * Path to an array in the event whose items are each looked at, instead of
+   * the event itself (an assistant message's `message.content` blocks).
+   */
+  each?: string[];
+  /** Conditions the event (or item) must meet, all of them. */
+  where?: BackgroundCondition[];
+  /** Paths to the work's ids in the event (or item); one of them must hold a string or number. */
+  ids: string[][];
+  /**
+   * A regular expression (its source) the strings at `ids` are searched with:
+   * the ids are what its first capture group matches, every time it does (a
+   * notification written as text, `<task-id>b1</task-id>`). Unset: the values
+   * at `ids` are the ids.
+   */
+  pattern?: string;
+  /** Starts only: paths to what kind of work it is, the first string wins ("Bash", "local_agent"). */
+  kind?: string[][];
+  /** Starts only: paths to what it does, the first non-empty string wins (its description, its command). */
+  about?: string[][];
+}
+
+/** A condition on a background event (ODW extension): the value at `path` is `equals` (one of them), or is not `not` (none of them). */
+export interface BackgroundCondition {
+  path: string[];
+  equals?: BackgroundScalar | BackgroundScalar[];
+  not?: BackgroundScalar | BackgroundScalar[];
+}
+
+/** A value a background condition compares with. */
+export type BackgroundScalar = string | number | boolean | null;
 
 /** A condition on a JSONL event (ODW extension; `match`): its value at `path` is `equals`. */
 export interface OutputMatch {
@@ -228,6 +288,8 @@ export interface Adapter {
    * container on, never off.
    */
   sandbox?: ContainerSpec;
+  /** This CLI's own per-agent limits, over the run's `agentLimits` key by key (ODW extension; see ../limits). */
+  agentLimits?: LimitSpec;
 }
 
 /** Where a sandboxed agent's container may reach (ODW extension): nowhere, or the engine's default network. */
@@ -385,6 +447,13 @@ export interface Settings {
    */
   recordVersions: boolean;
   /**
+   * The run's notes board for every agent (an ODW extension; see ../notes):
+   * the notes so far in each prompt, `ODW_NOTES` to post and read them, and
+   * each isolated agent's interface changes posted as it finishes. Off by
+   * default; `agent(…, { notes })` and `parallel(…, { notes })` override it.
+   */
+  notes: boolean;
+  /**
    * The run's permission tier (an ODW extension; `odw run --permissions`
    * overrides it): an adapter's `permissions` and an agent()'s `permissions`
    * may only lower it.
@@ -457,6 +526,15 @@ export interface Settings {
    */
   mcpFailures: "warn" | "fail";
   /**
+   * An agent whose CLI ended its turn with background work still running —
+   * a shell command or subagent it started and never waited for, which died
+   * when the CLI exited (an ODW extension; `output.background`): `"warn"`
+   * keeps its reply, recording the work on the agent as `orphaned` and logging
+   * it once; `"fail"` fails the agent with reason "orphaned_background". A
+   * call with `expect` counts it as a miss either way.
+   */
+  orphanedBackground: "warn" | "fail";
+  /**
    * What odw keeps and serves of its agents — transcripts, saved results,
    * events, the run's error and result, webhook payloads — has its likely
    * secrets replaced by `«redacted:<kind>»` (an ODW extension; see ../redact);
@@ -483,6 +561,26 @@ export interface Settings {
    * may only tighten it.
    */
   sandbox: SandboxSetting;
+  /**
+   * What one agent may do before it is killed as a runaway (an ODW extension;
+   * see ../limits): tool calls, dollars, output tokens, seconds, and the same
+   * tool call in a row. An adapter's `agentLimits` and an agent()'s `limits`
+   * override it key by key; `{}` sets none.
+   */
+  agentLimits: LimitSpec;
+  /**
+   * Signed one-time approve/reject links for a waiting checkpoint() (an ODW
+   * extension; see ../runtime/approve-links): minted into the `waiting`
+   * notify hooks while an `odw serve --public-url` runs, each valid `ttl`
+   * seconds.
+   */
+  approveLinks: ApproveLinksSettings;
+}
+
+/** How approve links are minted (see `Settings.approveLinks`). */
+export interface ApproveLinksSettings {
+  /** Seconds a link stays valid after it is minted. */
+  ttl: number;
 }
 
 /** Where and how a run's trace is exported (see `Settings.otel`). */

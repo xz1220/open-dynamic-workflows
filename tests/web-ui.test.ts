@@ -10,7 +10,7 @@ import { transcriptEntries } from "../web/src/components/transcript.ts";
 import { renderPulse } from "../web/src/components/pulse.ts";
 import { highlightSource, outlineSource } from "../web/src/components/source.ts";
 import { renderTimeline } from "../web/src/components/timeline.ts";
-import { renderDag } from "../web/src/dag.ts";
+import { reasonLabel, renderDag } from "../web/src/dag.ts";
 import { applyRunsDelta, store } from "../web/src/store.ts";
 import { renderActivity } from "../web/src/views/activity.ts";
 import { renderJob, type JobViewState } from "../web/src/views/job.ts";
@@ -924,6 +924,29 @@ test("an agent whose MCP servers did not start lists them in its drawer", () => 
   store.focusRun(null);
 });
 
+test("an agent that left background work running lists it in its drawer, and the reason has words", () => {
+  const view: JobViewState = {
+    cpNote: "",
+    tab: "graph",
+    selectedAi: 0,
+    reviewAi: null,
+    zoom: 1,
+    logQuery: "",
+    logTypes: new Set(["agent"]),
+    logLimit: 600,
+    follow: true,
+    motion: false,
+  };
+  store.focusRun("20260101-000000-aaaaaa");
+  store.run = detail([agent("serve", "Plan", "done", { adapter: "claude", orphaned: ["Bash (Start the dev server)", "Explore (<survey>)"] })]);
+  store.runEvents = [];
+  const html = renderJob(view, NOW);
+  assert.match(html, /Left running<\/div><ul class="denied orphaned"><li>Bash \(Start the dev server\)<\/li><li>Explore \(&lt;survey&gt;\)<\/li><\/ul>/);
+  assert.match(html, /it died when the CLI exited/);
+  assert.equal(reasonLabel("orphaned_background"), "orphaned background work");
+  store.focusRun(null);
+});
+
 test("evals: a card per eval with its pass-rate dial and trend, and a report as a case × adapter matrix", async () => {
   const { renderEvals, rateColor } = await import("../web/src/views/evals.ts");
   const totals = (passed: number, runs: number) => ({ runs, passed, failed: runs - passed, passRate: passed / runs, costUsd: 0.5, inputTokens: 1000, outputTokens: 100 });
@@ -1001,5 +1024,35 @@ test("an agent that ran in a container says which, and whether it was offline", 
   store.runEvents = [];
   const html = renderJob(view, NOW);
   assert.match(html, /sandbox<\/span><span class="v"><span class="tag" title="odw-agents:1">docker<\/span> <span class="mono dim">odw-agents:1<\/span> <span class="tag">offline<\/span>/);
+  store.focusRun(null);
+});
+
+test("a run whose agents posted notes gets a Notes tab of pinned slips; interface notes read as code", () => {
+  const view: JobViewState = { cpNote: "", tab: "notes", selectedAi: null, reviewAi: null, zoom: 1, logQuery: "", logTypes: new Set(["agent"]), logLimit: 600, follow: true, motion: false };
+  store.focusRun("20260101-000000-aaaaaa");
+  store.run = detail([agent("lane", "Plan", "done")]);
+  store.runEvents = [{ type: "note_added", ts: NOW - 5 }, { type: "note_added", ts: NOW - 4 }];
+  store.notes.set("20260101-000000-aaaaaa", [
+    { noteId: 1, ts: NOW - 5, by: { agentId: 1, label: "lane:parser" }, text: "renamed parseX → parse", kind: "note" },
+    { noteId: 2, ts: NOW - 4, by: { agentId: 1, label: "lane:parser" }, text: "1 file, +2 −1\n+export function parse(", kind: "interface" },
+  ]);
+  const html = renderJob(view, NOW);
+  assert.match(html, /data-tab="notes"[^>]*>.*?Notes<span class="n">2<\/span>/s);
+  assert.equal(count(html, /<article class="slip/g), 2);
+  assert.match(html, /<article class="slip interface"[\s\S]*?<pre class="slip-code">1 file, \+2 −1\n\+export function parse\(<\/pre>/);
+  store.notes.clear();
+  store.runEvents = [];
+});
+
+test("an agent killed at one of its limits shows its limits, the one it hit, and the evidence", () => {
+  const view: JobViewState = { cpNote: "", tab: "graph", selectedAi: 0, reviewAi: null, zoom: 1, logQuery: "", logTypes: new Set(["agent"]), logLimit: 600, follow: true, motion: false };
+  store.focusRun("20260101-000000-aaaaaa");
+  const hit = { limit: "repeat" as const, max: 5, value: 5, evidence: "Bash `npm test` ×5 in a row" };
+  store.run = detail([agent("fix", "Plan", "failed", { failureReason: "runaway", limits: { toolCalls: 40, costUsd: 2, repeat: 5, hit } })]);
+  store.runEvents = [];
+  const html = renderJob(view, NOW);
+  assert.match(html, /limits<\/span><span class="v"><span class="mono dim">toolCalls 40<\/span> <span class="mono dim">costUsd \$2\.000<\/span> <span class="tag warn" title="Bash `npm test` ×5 in a row">repeat 5<\/span><\/span>/);
+  assert.match(html, /<span class="tag warn">runaway<\/span>/);
+  assert.match(html, /Stopped at a limit<\/div><p class="dnote"><span class="mono">Bash `npm test` ×5 in a row<\/span><\/p>/);
   store.focusRun(null);
 });

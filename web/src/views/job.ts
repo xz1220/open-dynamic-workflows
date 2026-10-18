@@ -14,7 +14,7 @@ import { EVT_CLASS, commandDetail, emptyArt } from "./activity";
 import { compareHash, previousRun } from "./compare";
 import { spendReceipt } from "./spend";
 
-export type JobTab = "graph" | "timeline" | "logs" | "result" | "changes";
+export type JobTab = "graph" | "timeline" | "logs" | "result" | "changes" | "notes";
 
 export interface JobViewState {
   /** Draft note for a checkpoint decision. */
@@ -157,6 +157,40 @@ function spendButton(run: RunDetail, stat: (v: string, k: string) => string, ope
   );
 }
 
+/** Notes the run's events say were posted (ODW extension: the notes board). */
+function noteCount(): number {
+  return store.runEvents.filter((e) => e.type === "note_added").length;
+}
+
+/** The notes board: a slip per note, pinned in the order the board took them. */
+function notesTab(run: RunDetail): string {
+  const notes = store.notes.get(run.runId);
+  if (!notes) return `<div class="empty"><div class="spinner"></div><p>${t("Loading notes…")}</p></div>`;
+  if (!notes.length) {
+    return emptyArt(
+      t("No notes on this run"),
+      esc(t("Agents with notes on post what the others must know — run odw note \"…\" — and a worktree agent posts the interfaces it changed.")),
+    );
+  }
+  return (
+    `<div class="notes-board">` +
+    notes
+      .map(
+        (n, i) =>
+          `<article class="slip ${n.kind}" data-key="nt-${n.noteId}" style="--i:${Math.min(i, 20)};--tilt:${((n.noteId * 37) % 7) - 3}">` +
+          `<header><span class="pin" aria-hidden="true"></span><span class="ix mono">#${n.noteId}</span>` +
+          `<span class="by">${esc(n.by.label)}</span><span class="dim mono">${fmtClock(n.ts)}</span>` +
+          (n.kind === "interface" ? `<span class="tag">${t("interface")}</span>` : "") +
+          (n.redacted ? `<span class="tag warn">${t("redacted")}</span>` : "") +
+          `</header>` +
+          (n.kind === "interface" ? `<pre class="slip-code">${markRedactions(esc(n.text))}</pre>` : `<p>${markRedactions(esc(n.text))}</p>`) +
+          `</article>`,
+      )
+      .join("") +
+    `</div>`
+  );
+}
+
 function tabs(run: RunDetail, tab: JobTab): string {
   const changed = changedAgents(run);
   const item = (key: JobTab, icon: string, label: string, n?: number) =>
@@ -168,6 +202,7 @@ function tabs(run: RunDetail, tab: JobTab): string {
     item("logs", icons.logs, t("Logs"), store.runEvents.length) +
     item("result", icons.result, t("Result")) +
     (changed.length || tab === "changes" ? item("changes", icons.diff, t("Changes"), changed.length) : "") +
+    (noteCount() || tab === "notes" ? item("notes", icons.note, t("Notes"), noteCount()) : "") +
     `<i class="ink-bar"></i></nav>`
   );
 }
@@ -192,6 +227,23 @@ const PERM_HINT: Record<string, string> = {
   edit: "edits files in its workspace",
   full: "no approval checks at all",
 };
+
+/** The drawer's limits row (ODW extension): each limit the agent ran under, the one it ran into marked. */
+function limitsRow(a: AgentView): string {
+  const limits = a.limits;
+  if (!limits) return "";
+  const names = ["toolCalls", "costUsd", "outputTokens", "seconds", "repeat"] as const;
+  const shown = names
+    .filter((name) => typeof limits[name] === "number" || limits.hit?.limit === name)
+    .map((name) => {
+      const max = limits[name] ?? limits.hit!.max;
+      const text = `${name} ${name === "costUsd" ? fmtUsd(max) : max}`;
+      return limits.hit?.limit === name
+        ? `<span class="tag warn" title="${esc(limits.hit.evidence)}">${esc(text)}</span>`
+        : `<span class="mono dim">${esc(text)}</span>`;
+    });
+  return shown.length ? `<span class="k">${t("limits")}</span><span class="v">${shown.join(" ")}</span>` : "";
+}
 
 /** When a rate limit or spent quota lifts, as the CLI said (`retryAfter` on its agent_failed event). */
 function resetNote(a: AgentView, nowSec: number): string {
@@ -311,7 +363,8 @@ function drawer(run: RunDetail, ai: number, nowSec: number): string {
       ? `<span class="k">${t("sandbox")}</span><span class="v"><span class="tag" title="${esc(a.sandbox.image ?? "")}">${esc(a.sandbox.engine ?? "container")}</span>` +
         ` <span class="mono dim">${esc(a.sandbox.image ?? "")}</span>${a.sandbox.network === "none" ? ` <span class="tag">${t("offline")}</span>` : ""}</span>`
       : "") +
-    (a.failureReason ? `<span class="k">${t("reason")}</span><span class="v"><span class="tag ${/rate_limit|quota|stalled|timeout/.test(a.failureReason) ? "warn" : ""}">${esc(reasonLabel(a.failureReason))}</span>${resetNote(a, nowSec)}</span>` : "") +
+    limitsRow(a) +
+    (a.failureReason ? `<span class="k">${t("reason")}</span><span class="v"><span class="tag ${/rate_limit|quota|stalled|timeout|runaway/.test(a.failureReason) ? "warn" : ""}">${esc(reasonLabel(a.failureReason))}</span>${resetNote(a, nowSec)}</span>` : "") +
     (a.usage && (a.usage.inputTokens != null || a.usage.outputTokens != null)
       ? `<span class="k">${t("tokens")}</span><span class="v">${fmtTokens(a.usage.inputTokens)} ${t("in")} · ${fmtTokens(a.usage.outputTokens)} ${t("out")}</span>`
       : "") +
@@ -321,6 +374,9 @@ function drawer(run: RunDetail, ai: number, nowSec: number): string {
       ? `<button class="btn sm tx-open" data-transcript="${ai}">${icons.logs}${t("Transcript")}</button>`
       : "") +
     status +
+    (a.limits?.hit
+      ? `<div class="drawer-sec">${t("Stopped at a limit")}</div><p class="dnote"><span class="mono">${esc(a.limits.hit.evidence)}</span></p>`
+      : "") +
     (a.misses?.length
       ? `<div class="drawer-sec">${t("Missed")}</div><ul class="misses">${a.misses.map((m) => `<li>${esc(m)}</li>`).join("")}</ul>`
       : "") +
@@ -333,6 +389,10 @@ function drawer(run: RunDetail, ai: number, nowSec: number): string {
           .map((m) => `<li><span class="tag ${m.status === "pending" ? "" : "warn"}">${esc(t(m.status))}</span><span class="mono">${esc(m.name)}</span></li>`)
           .join("")}</ul>` +
         `<p class="dnote">${t("Their tools were not there for this agent — check the server with claude mcp list.")}</p>`
+      : "") +
+    (a.orphaned?.length
+      ? `<div class="drawer-sec">${t("Left running")}</div><ul class="denied orphaned">${a.orphaned.map((o) => `<li>${esc(o)}</li>`).join("")}</ul>` +
+        `<p class="dnote">${t("It replied while this background work still ran; it died when the CLI exited, so the reply may rest on work that never finished.")}</p>`
       : "") +
     changesSection(run, a, ai, rec?.branch) +
     output +
@@ -535,7 +595,8 @@ function cpEditor(cp: { checkpointId: number; schema?: Record<string, unknown> |
 function checkpoints(run: RunDetail, s: JobViewState): string {
   const pending = run.pendingCheckpoints ?? [];
   if (!pending.length) return "";
-  const canDecide = run.provider === "odw" && store.capabilities.writable;
+  // `decide`: a remote dashboard under --token-scope approve answers checkpoints, and does nothing else.
+  const canDecide = run.provider === "odw" && (store.capabilities.writable || store.capabilities.decide === true);
   return pending
     .map((cp, i) => {
       const has = cp.payload !== undefined && cp.payload !== null;
@@ -757,7 +818,9 @@ export function renderJob(s: JobViewState, nowSec: number): string {
           ? logsTab(s)
           : s.tab === "changes"
             ? changesTab(run, s)
-            : resultTab(run);
+            : s.tab === "notes"
+              ? notesTab(run)
+              : resultTab(run);
   return (
     `<div class="job" data-key="job-${esc(run.runId)}">${runHead(run, nowSec, !!s.spend)}${spendReceipt(run, !!s.spend)}${quotaPause(run, nowSec)}${checkpoints(run, s)}${tabs(run, s.tab)}` +
     `<section class="tab-body" data-tabbody="${s.tab}" data-key="tb-${s.tab}">${body}</section></div>`

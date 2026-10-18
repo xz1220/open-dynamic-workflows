@@ -23,7 +23,7 @@ import { isSeaBinary } from "../sea.js";
 import { resolveRunTrust } from "../untrusted.js";
 import { resolveWorkflow, type ResolvedWorkflow } from "../workflows/resolve.js";
 import { RunObserver } from "./run-liveness.js";
-import { RunStore, type EvalRunTag } from "./run-store.js";
+import { RunStore, type EvalRunTag, type ResolveLink } from "./run-store.js";
 
 export interface StartRunOptions {
   args?: unknown;
@@ -59,6 +59,8 @@ export interface StartRunOptions {
   origin?: string | null;
   /** The `odw eval` cell this run is one repeat of (ODW extension), kept in its meta. */
   eval?: EvalRunTag | null;
+  /** The agent whose conflicts this run resolves for `odw apply --resolve` (ODW extension), kept in its meta. */
+  applyResolve?: ResolveLink | null;
   /**
    * `odw resume`: the run (id + directory) whose saved agent results this run
    * replays — its agent() calls that are unchanged return those values
@@ -101,6 +103,7 @@ function commonCreateInput(options: StartRunOptions, source: string, workflowNam
     sandbox: options.sandbox ?? null,
     origin: options.origin ?? null,
     eval: options.eval ?? null,
+    applyResolve: options.applyResolve ?? null,
     resumedFrom: options.resumedFrom ?? null,
   };
 }

@@ -13,6 +13,9 @@
  *              seconds (600 by default) — an exec() step of the run, shown
  *              under the agent, so a stop kills it
  *   - match    a regular expression the reply must match
+ *   - untouched  globs no file the agent changed, created or deleted may
+ *              match — tests, snapshots, CI config it must not edit or skip to
+ *              get green
  *   - mcp      MCP servers (by name) the agent's CLI must have started it
  *              with: each must be listed, and "connected" — or "pending",
  *              which Claude Code's docs say is no failure on its own (a
@@ -32,12 +35,15 @@
  *
  * Tool calls the agent's CLI refused (`deniedPath`) are a miss of their own
  * here, whatever `permissionDenials` says: work that went without them is not
- * the evidence asked for.
+ * the evidence asked for. So is background work its CLI left running when it
+ * replied (`output.background`), whatever `orphanedBackground` says: it died
+ * unfinished.
  *
  * Work that misses runs again with what it missed appended to its prompt, up
  * to `expectRetries` times (default 1); then the call fails with reason
  * "unmet_expectation" — "permission" when refused calls are among what it
- * missed — and the list of misses (the bridge's loop, ./bridge).
+ * missed, "orphaned_background" when orphaned work is — and the list of
+ * misses (the bridge's loop, ./bridge).
  * An isolated retry starts over in a fresh worktree, and the change it leaves
  * replaces the earlier one (ChangeRecorder.redo).
  */
@@ -62,6 +68,8 @@ export interface ExpectOptions {
   match?: string;
   /** MCP servers the agent's CLI must have started it with, connected (or still connecting), by name. */
   mcp?: string[];
+  /** Globs, relative to the agent's workspace: no file the agent changed, created or deleted may match one. */
+  untouched?: string[];
   /** Seconds the command may run before it is killed — a miss (default 600). */
   timeout?: number;
 }
@@ -70,6 +78,8 @@ export interface ExpectOptions {
 export interface ExpectPlan {
   changes?: boolean;
   files: Array<{ glob: string; pattern: RegExp }>;
+  /** Paths the agent may not touch. */
+  untouched: Array<{ glob: string; pattern: RegExp }>;
   command?: string | string[];
   match?: RegExp;
   /** MCP servers that must have been started, by name. */
@@ -107,6 +117,21 @@ export function refusedMiss(refused: string[]): ExpectMiss {
   return {
     text: `no tool call may be refused, and ${count}: ${refused.join("; ")}`,
     advice: "Those calls are not allowed here: do the task without them.",
+  };
+}
+
+/**
+ * The miss of work whose CLI ended its turn with background work still
+ * running (`output.background`): with `expect`, that work died unfinished, so
+ * the reply may rest on it.
+ */
+export function orphanedMiss(orphaned: string[]): ExpectMiss {
+  const count = orphaned.length === 1 ? "1 was" : `${orphaned.length} were`;
+  return {
+    text: `no background work may still be running at the reply, and ${count}: ${orphaned.join("; ")}`,
+    advice:
+      "Background work dies when your reply ends the session: wait for every background command and subagent " +
+      "to finish (or run it in the foreground) before you reply.",
   };
 }
 
@@ -174,7 +199,7 @@ export interface ExpectationSink {
 /** Seconds an `expect.command` may run, unless `expect.timeout` says otherwise. */
 export const DEFAULT_EXPECT_TIMEOUT = 600;
 
-const EXPECT_KEYS = ["changes", "files", "command", "match", "mcp", "timeout"];
+const EXPECT_KEYS = ["changes", "files", "command", "match", "mcp", "untouched", "timeout"];
 
 /** Check an agent() call's `expect`, `expectRetries` and `allowEmpty`; a misuse is a recoverable AgentError. */
 export function planChecks(opts: { expect?: unknown; expectRetries?: unknown; allowEmpty?: unknown }): AgentChecks {
@@ -193,32 +218,21 @@ export function planChecks(opts: { expect?: unknown; expectRetries?: unknown; al
 function planExpect(raw: unknown): ExpectPlan | null {
   if (raw === undefined) return null;
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
-    throw misuse(`expect must be an object of checks — { changes?, files?, command?, match?, mcp?, timeout? }; got ${describeValue(raw)}`);
+    throw misuse(`expect must be an object of checks — { changes?, files?, command?, match?, mcp?, untouched?, timeout? }; got ${describeValue(raw)}`);
   }
   const spec = raw as Record<string, unknown>;
   for (const key of Object.keys(spec)) {
     // A misspelled check would silently never run.
     if (!EXPECT_KEYS.includes(key)) throw misuse(`expect has no check "${key}"; use ${EXPECT_KEYS.join(", ")}`);
   }
-  const plan: ExpectPlan = { files: [], mcp: [], timeout: DEFAULT_EXPECT_TIMEOUT };
-  const { changes, files, command, match, mcp, timeout } = spec;
+  const plan: ExpectPlan = { files: [], untouched: [], mcp: [], timeout: DEFAULT_EXPECT_TIMEOUT };
+  const { changes, files, command, match, mcp, untouched, timeout } = spec;
   if (changes !== undefined) {
     if (typeof changes !== "boolean") throw misuse(`expect.changes must be true or false; got ${describeValue(changes)}`);
     plan.changes = changes;
   }
-  if (files !== undefined) {
-    if (!Array.isArray(files) || !files.every((glob) => typeof glob === "string" && glob.trim() !== "")) {
-      throw misuse(`expect.files must be an array of globs (non-empty strings); got ${describeValue(files)}`);
-    }
-    for (const glob of files as string[]) {
-      if (glob.startsWith("/")) throw misuse(`expect.files globs are relative to the agent's workspace; got "${glob}"`);
-      try {
-        plan.files.push({ glob, pattern: globToRegExp(glob) });
-      } catch (err) {
-        throw misuse(`expect.files has an invalid glob "${glob}": ${(err as Error).message}`);
-      }
-    }
-  }
+  if (files !== undefined) plan.files = planGlobs("files", files);
+  if (untouched !== undefined) plan.untouched = planGlobs("untouched", untouched);
   if (command !== undefined) {
     const argv = Array.isArray(command) && command.length > 0 && command.every((part) => typeof part === "string") && command[0] !== "";
     if (!(typeof command === "string" && command.trim() !== "") && !argv) {
@@ -252,9 +266,25 @@ function planExpect(raw: unknown): ExpectPlan | null {
     plan.files.length === 0 &&
     plan.command === undefined &&
     plan.match === undefined &&
-    plan.mcp.length === 0
+    plan.mcp.length === 0 &&
+    plan.untouched.length === 0
     ? null
     : plan;
+}
+
+/** `expect.files` or `expect.untouched`: globs relative to the agent's workspace, each compiled. */
+function planGlobs(key: "files" | "untouched", raw: unknown): Array<{ glob: string; pattern: RegExp }> {
+  if (!Array.isArray(raw) || !raw.every((glob) => typeof glob === "string" && glob.trim() !== "")) {
+    throw misuse(`expect.${key} must be an array of globs (non-empty strings); got ${describeValue(raw)}`);
+  }
+  return (raw as string[]).map((glob) => {
+    if (glob.startsWith("/")) throw misuse(`expect.${key} globs are relative to the agent's workspace; got "${glob}"`);
+    try {
+      return { glob, pattern: globToRegExp(glob) };
+    } catch (err) {
+      throw misuse(`expect.${key} has an invalid glob "${glob}": ${(err as Error).message}`);
+    }
+  });
 }
 
 function misuse(message: string): AgentError {
@@ -388,7 +418,7 @@ export class Expectations implements ExpectationSink {
 
   /** Whether a check reads what the agent changed. */
   private get readsChanges(): boolean {
-    return this.plan.changes !== undefined || this.plan.files.length > 0;
+    return this.plan.changes !== undefined || this.plan.files.length > 0 || this.plan.untouched.length > 0;
   }
 
   async begin(mode: WorkspaceMode, source: string): Promise<void> {
@@ -411,7 +441,11 @@ export class Expectations implements ExpectationSink {
       }
     } catch (err) {
       if (this.deps.signal?.aborted) throw err;
-      const checks = [this.plan.changes !== undefined ? "expect.changes" : null, this.plan.files.length ? "expect.files" : null];
+      const checks = [
+        this.plan.changes !== undefined ? "expect.changes" : null,
+        this.plan.files.length ? "expect.files" : null,
+        this.plan.untouched.length ? "expect.untouched" : null,
+      ];
       throw new AgentError(
         `agent(): ${checks.filter(Boolean).join(" and ")} read what the agent changed from git, and '${source}' is not in a ` +
           `git repository (${errorText(err)}) — run it in one, or check the work with expect.command`,
@@ -539,6 +573,17 @@ export class Expectations implements ExpectationSink {
       if (!evidence.present.some((path) => pattern.test(path))) {
         misses.push({ text: `a file matching ${JSON.stringify(glob)} must change or be created, and none did` });
       }
+    }
+    // A protected path the agent changed, created or deleted (`untouched`): one miss naming them all.
+    const touched = changed.filter((path) => this.plan.untouched.some(({ pattern }) => pattern.test(path)));
+    if (touched.length > 0) {
+      const globs = this.plan.untouched.filter(({ pattern }) => touched.some((path) => pattern.test(path))).map(({ glob }) => JSON.stringify(glob));
+      misses.push({
+        text: `no file matching ${globs.join(", ")} may change, and ${touched.length === 1 ? "1 did" : `${touched.length} did`}: ${listPaths(touched)}`,
+        advice:
+          "Those files are not yours to change: restore them as they were, and make the task pass without editing, " +
+          "skipping or deleting them.",
+      });
     }
     if (evidence.command) misses.push(evidence.command);
     if (match && !match.test(reply)) misses.push({ text: `the reply must match /${clip(match.source, 80)}/, and it does not` });

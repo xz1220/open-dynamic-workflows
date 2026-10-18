@@ -25,11 +25,12 @@ import { killAllAgentProcesses } from "../adapters/runner.js";
 import type { RunEndState } from "../adapters/types.js";
 import type { WaitingCheckpoint } from "../checkpoint.js";
 import { buildContext, spentTokens, type RunContext } from "../context.js";
-import { PAUSED, RUNNING, type CheckpointRequest } from "../control.js";
+import { deciderText, PAUSED, RUNNING, type CheckpointRequest } from "../control.js";
 import { RunStopped, WorkflowScriptError, isFatalError } from "../errors.js";
 import { LOG, RUN_FAILED, RUN_FINISHED, RUN_STARTED, RUN_STOPPED, event } from "../events.js";
 import { ReplayJournal } from "../journal.js";
 import { loadWorkflowScript, scanDualCompat } from "../loader.js";
+import { NotesBoard } from "../notes.js";
 import { createPrimitives } from "../primitives.js";
 import { CliVersions, runSetup } from "../provenance.js";
 import type { QuotaPause } from "../quota-wait.js";
@@ -39,6 +40,7 @@ import { applyRunTrust, resolveRunTrust, untrustedConfigSwap } from "../untruste
 import { pluginOrigin } from "../workflows/plugins.js";
 import { FileControl } from "./file-control.js";
 import { notifyCheckpoint, notifyQuotaPause, notifyRunEnd } from "./notify.js";
+import { mintCheckpointLinks, runsRootsOf } from "./approve-links.js";
 import { exportRunEnd } from "./otel-export.js";
 import { JsonlSink, RunStore } from "./run-store.js";
 
@@ -248,6 +250,8 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
       // its likely secrets redacted (ODW extension).
       saveAgentResult: (rec) => store.writeAgentResult(runId, runRedactor.record(rec)),
       redactor: runRedactor,
+      // The run's notes board (ODW extension): notes.jsonl, for agents with notes on.
+      notes: new NotesBoard({ runDir: store.runDir(runId), redactor: runRedactor, emit: (ev) => sink.emit(ev) }),
       // What an isolated agent changed is kept beside it, as agents/<agentId>.diff.
       agentDiffPath: (agentId) => store.agentDiffPath(runId, agentId),
       // What each agent's CLI prints, as agents/<agentId>.transcript.jsonl and .stderr.txt.
@@ -259,7 +263,9 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
       onCheckpoint: (cp, isWaiting) => {
         if (isWaiting) {
           waiting.set(cp.checkpointId, cp);
-          const hooks = notifyCheckpoint(config.settings.notify, { store, runId, checkpoint: cp }, {
+          // Its signed approve links (ODW extension), minted only when a hook fires and an `odw serve --public-url` answers them.
+          const links = () => mintCheckpointLinks(runsRootsOf(runDir), runId, cp.checkpointId, config.settings.approveLinks.ttl);
+          const hooks = notifyCheckpoint(config.settings.notify, { store, runId, checkpoint: cp, links }, {
             cwd: typeof meta.source === "string" ? meta.source : undefined,
             redactor: runRedactor,
           });
@@ -376,6 +382,7 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
     const kept = runRedactor.shapes.record({ value: result });
     store.writeResult(runId, kept.value, "redacted" in kept);
     versions?.close();
+    ctx.notes?.close();
     sink.emit(event(RUN_FINISHED, { runId }));
     store.updateStatus(runId, { state: "done", dispatched: dispatched(), spentTokens: spent() });
     end = { state: "done" };
@@ -388,6 +395,7 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
     }
     if (ctx) await stopAgents(ctx.scheduler, outcome);
     versions?.close();
+    ctx?.notes?.close();
     if (outcome instanceof RunStopped) {
       sink.emit(event(RUN_STOPPED, { runId }));
       store.updateStatus(runId, { state: "stopped", dispatched: dispatched(), spentTokens: spent() });
@@ -475,7 +483,7 @@ function redactOutput(redactor: Redactor): () => void {
 /** The log line for a checkpoint answer that found nothing waiting for it. */
 function unmatchedDecision(request: CheckpointRequest): string {
   const which = request.checkpointId !== undefined ? `checkpoint #${request.checkpointId}` : "a checkpoint";
-  const from = request.by === "dashboard" ? "the dashboard" : "the cli";
+  const from = deciderText(request.by);
   return `ignored "${request.action}" for ${which} from ${from}: no such checkpoint is waiting for an answer`;
 }
 

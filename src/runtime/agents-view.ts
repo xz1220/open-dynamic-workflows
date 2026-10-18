@@ -11,6 +11,7 @@
 import type { PermissionTier, TrustLevel } from "../adapters/types.js";
 import type { AgentChanges } from "../changes.js";
 import type { AgentResultRecord } from "../journal.js";
+import { limitLabel } from "../limits.js";
 import { clockTime } from "../quota-wait.js";
 import {
   displayWidth,
@@ -22,7 +23,7 @@ import {
   type TermCaps,
 } from "../tty.js";
 import type { RunStore } from "./run-store.js";
-import { detail, type AgentState } from "./runs-view.js";
+import { detail, type AgentLimitsView, type AgentState } from "./runs-view.js";
 
 export interface AgentRow {
   /** The engine's dispatch id (null only for pre-agentId event files). */
@@ -50,6 +51,8 @@ export interface AgentRow {
   fellBackFrom: string[] | null;
   /** While it waits for a spent quota to reset (ODW extension: quotaWait): which adapter's, and when; null otherwise. */
   quotaWait: { adapter: string; resumeAt?: number } | null;
+  /** The limits it runs under and the one it ran into, if any (ODW extension; see limits.ts); null without limits. */
+  limits: AgentLimitsView | null;
 }
 
 /** A run's agents in call (agentId) order, each with its saved result if it has one. */
@@ -77,6 +80,7 @@ export function agentRows(store: RunStore, runId: string): AgentRow[] {
       trust: a.trust ?? record?.trust ?? "trusted",
       fellBackFrom: a.fellBackFrom ?? record?.fellBackFrom ?? null,
       quotaWait: !record && a.state === "running" ? (a.quotaWait ?? null) : null,
+      limits: a.limits ?? null,
     };
   });
   // A saved result whose events were lost (a truncated log) is still listed.
@@ -105,6 +109,7 @@ function rowFromRecord(rec: AgentResultRecord): AgentRow {
     trust: rec.trust ?? "trusted",
     fellBackFrom: rec.fellBackFrom ?? null,
     quotaWait: null,
+    limits: null,
   };
 }
 
@@ -145,6 +150,8 @@ export function agentRowJson(row: AgentRow): Record<string, unknown> {
     ...(row.fellBackFrom ? { fellBackFrom: row.fellBackFrom } : {}),
     // The spent quota it waits out (ODW extension: quotaWait), while it does.
     ...(row.quotaWait ? { quotaWait: row.quotaWait } : {}),
+    // Its limits, and the one it ran into (ODW extension), when it has any.
+    ...(row.limits ? { limits: row.limits } : {}),
     saved: row.record !== null,
     error: row.error,
     preview: row.record ? previewValue(row.record.value, 120) : null,
@@ -188,7 +195,7 @@ export function formatAgentTable(rows: AgentRow[], opts: { width: number; caps: 
     const value = r.record
       ? previewValue(r.record.value, valueWidth)
       : r.state === "failed"
-        ? p.err(sanitizeText(r.error ?? "failed", valueWidth))
+        ? p.err(sanitizeText(r.limits?.hit ? `runaway: ${r.limits.hit.evidence} (${limitLabel(r.limits.hit)})` : (r.error ?? "failed"), valueWidth))
         : r.state === "done"
           ? p.dim("(not saved)")
           : r.quotaWait
