@@ -25,7 +25,8 @@ import {
 import { isOnPath } from "./adapters/executable.js";
 import { runCommand, type CommandRunner } from "./adapters/runner.js";
 import { trustBanner } from "./adapters/trust.js";
-import type { Config, PermissionTier } from "./adapters/types.js";
+import { clientEnv, describeContainer, planSandbox, resolveEngine, sandboxProblem } from "./adapters/sandbox.js";
+import type { Config, ContainerSandbox, PermissionTier } from "./adapters/types.js";
 import { Bridge } from "./bridge.js";
 import { redactorFor, type RedactionCoverage } from "./redact.js";
 import { otelCheck } from "./runtime/otel-export.js";
@@ -164,6 +165,9 @@ export async function runDoctor(opts: DoctorOptions): Promise<DoctorReport> {
   // The run's trust, and how an untrusted run keeps the repository out of each installed CLI (ODW extension).
   add(trustCheck(config, opts.cwd, opts.configPath));
 
+  // Where agents run: on this machine, or in a container — its engine, image and a smoke run (ODW extension).
+  for (const check of await sandboxChecks(config, runner, opts.env ?? process.env)) add(check);
+
   for (const a of listing) {
     // The permission tiers it can run (ODW extension): `odw run --permissions`
     // refuses read on an adapter without it, and runs full as edit — and how
@@ -269,6 +273,84 @@ export function trustCheck(config: Config, cwd: string, configPath: string | nul
     };
   }
   return { ...check, status: "ok", detail };
+}
+
+/**
+ * The sandbox checks (ODW extension; see adapters/sandbox.ts): with no
+ * container anywhere, one line saying agents run on this machine. Else, for
+ * the run's container and each adapter's own: the engine is on PATH, the
+ * image is present (never pulled), and a smoke run — `<engine> run --rm
+ * --pull never --network none <image> true`, no model involved — starts and
+ * exits 0. A failure is a `fail`: such a run would stop before its first agent.
+ */
+export async function sandboxChecks(
+  config: Config,
+  runner: CommandRunner,
+  env: Record<string, string | undefined> = process.env,
+  onPath: (cmd: string) => boolean = isOnPath,
+  platform: NodeJS.Platform = process.platform,
+): Promise<DoctorCheck[]> {
+  const run = config.settings.sandbox ?? "none";
+  const boxes: Array<{ id: string; title: string; box: ContainerSandbox }> = [];
+  if (run !== "none") boxes.push({ id: "sandbox", title: "Sandbox", box: run });
+  for (const adapter of Object.values(config.adapters)) {
+    const box = adapter.sandbox ? planSandbox(run, adapter).box : null;
+    if (box) boxes.push({ id: `sandbox:${adapter.name}`, title: `Sandbox ${adapter.name}`, box });
+  }
+  if (boxes.length === 0) {
+    return [
+      {
+        id: "sandbox",
+        title: "Sandbox",
+        status: "ok",
+        detail: "none — agents run on this machine as you (odw run --sandbox container runs them in a container)",
+      },
+    ];
+  }
+  const checks: DoctorCheck[] = [];
+  const smoked = new Map<string, DoctorCheck>();
+  for (const { id, title, box } of boxes) {
+    const what = describeContainer(box, onPath);
+    const engine = resolveEngine(box, onPath);
+    const key = `${engine}\u0000${box.image}`;
+    const known = smoked.get(key);
+    if (known) {
+      checks.push({ ...known, id, title });
+      continue;
+    }
+    let check: DoctorCheck;
+    const problem = await sandboxProblem(box, runner, env, onPath, platform);
+    if (problem || !engine) {
+      check = {
+        id,
+        title,
+        status: "fail",
+        detail: `${what} — ${problem ?? "no container engine"}`,
+        hint: problem?.includes("image")
+          ? `build it: ${engine ?? "docker"} build -t ${box.image} examples/sandbox (it must hold the agent CLIs)`
+          : "install Docker or Podman, or set sandbox.engine",
+      };
+    } else {
+      const smoke = await runner([engine, "run", "--rm", "--pull", "never", "--network", "none", box.image, "true"], {
+        timeout: 60,
+        env: clientEnv(env),
+      });
+      const said = (smoke.stderr || smoke.stdout).trim().split("\n")[0]?.slice(0, 160) ?? "";
+      check =
+        smoke.returncode === 0
+          ? { id, title, status: "ok", detail: `${what} — engine found, image present, \`${engine} run --rm ${box.image} true\` ran` }
+          : {
+              id,
+              title,
+              status: "fail",
+              detail: `${what} — \`${engine} run --rm ${box.image} true\` exited ${smoke.returncode}${said ? `: ${said}` : ""}`,
+              hint: `run it by hand to see why; the image needs a \`true\` on its PATH, and ${engine} must be able to start containers`,
+            };
+    }
+    smoked.set(key, check);
+    checks.push(check);
+  }
+  return checks;
 }
 
 /** Variables the redaction check names before it says how many more. */

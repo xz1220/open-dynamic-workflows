@@ -15,6 +15,7 @@ import { fileURLToPath } from "node:url";
 
 import { loadConfig, resolveAdapter, resolveRunsRoot } from "../adapters/config.js";
 import { isPermissionTier } from "../adapters/permissions.js";
+import { withSandboxFlag, type SandboxFlag } from "../adapters/sandbox.js";
 import type { Config, PermissionTier, TrustLevel } from "../adapters/types.js";
 import { ConfigError } from "../errors.js";
 import { loadWorkflowScript } from "../loader.js";
@@ -48,6 +49,12 @@ export interface StartRunOptions {
    * whatever the config's `trust` (see ../untrusted). Null or `"trusted"`: the config's.
    */
   trust?: TrustLevel | null;
+  /**
+   * Run every agent CLI in a container (an ODW extension; `--sandbox
+   * container`, `--sandbox-image`): the config's container, or one of
+   * `image`. Null: the config's sandbox.
+   */
+  sandbox?: SandboxFlag | null;
   /** Where the run was initiated from (e.g. "chat" for Chat Host runs, "eval" for `odw eval`'s). */
   origin?: string | null;
   /** The `odw eval` cell this run is one repeat of (ODW extension), kept in its meta. */
@@ -73,6 +80,9 @@ function prepare(options: StartRunOptions): { config: Config; source: string; st
   if (options.permissions != null && !isPermissionTier(options.permissions)) {
     throw new ConfigError(`permissions must be "read", "edit" or "full"; got ${JSON.stringify(options.permissions)}`);
   }
+  // Fail fast on `--sandbox container` with no image anywhere (ODW extension).
+  // The worker reads the config from the run's source: so does this check.
+  if (options.sandbox) withSandboxFlag(loadConfig(options.configPath ?? null, { quiet: true, cwd: source }).settings.sandbox, options.sandbox);
   const store = new RunStore(options.runsRoot ?? resolveRunsRoot(config.settings.runsRoot));
   return { config, source, store };
 }
@@ -88,6 +98,7 @@ function commonCreateInput(options: StartRunOptions, source: string, workflowNam
     adapter: options.adapter ?? null,
     permissions: options.permissions ?? null,
     trust: options.trust === "untrusted" ? "untrusted" : null,
+    sandbox: options.sandbox ?? null,
     origin: options.origin ?? null,
     eval: options.eval ?? null,
     resumedFrom: options.resumedFrom ?? null,

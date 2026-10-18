@@ -104,6 +104,21 @@ const live = new Set<ChildProcess>();
  */
 export function killAllAgentProcesses(): void {
   for (const child of live) killProcessTree(child);
+  for (const backstop of backstops) backstop();
+}
+
+/** More to kill with the agents: containers of the sandbox (an ODW extension; see ./sandbox). */
+const backstops = new Set<() => void>();
+
+/**
+ * Have {@link killAllAgentProcesses} also call `kill` — synchronous, like it —
+ * until the returned function is called.
+ */
+export function onKillAll(kill: () => void): () => void {
+  backstops.add(kill);
+  return () => {
+    backstops.delete(kill);
+  };
 }
 
 /**

@@ -40,6 +40,7 @@ import { parseArgs } from "node:util";
 import { isOnPath, listAdapters, loadConfig, locateConfig, resolveAdapter, resolveRunsRoot } from "./adapters/config.js";
 import { isPermissionTier, permissionsBanner } from "./adapters/permissions.js";
 import { trustBanner } from "./adapters/trust.js";
+import { sandboxBanner, sandboxFlagOf, withSandboxFlag, type SandboxFlag } from "./adapters/sandbox.js";
 import type { Adapter, Config, PermissionTier, TrustLevel } from "./adapters/types.js";
 import { killAllAgentProcesses } from "./adapters/runner.js";
 import { checkEdit } from "./checkpoint.js";
@@ -170,6 +171,8 @@ export function helpText(): string {
     "  --permissions <t>   read | edit | full: what this run's agents may do (default edit; ODW extension)",
     "  --untrusted         keep the repository's CLAUDE.md, hooks, MCP servers and settings from agents where",
     "                      each CLI allows (claude --safe-mode), say where one cannot (ODW extension)",
+    "  --sandbox container run each agent CLI (and exec() step) in a Docker/Podman container (ODW extension)",
+    "  --sandbox-image <i> the image it runs in (else the config's sandbox.image); never pulled",
     "  --fg                run in the foreground: live progress on a TTY, plain event lines otherwise",
     "  -d, --detach        start in the background and print the run id",
     "  --wait              block until the run finishes, then print the result (one run-id line on stderr)",
@@ -195,7 +198,7 @@ export function helpText(): string {
     "  done / failed / stopped,    starts a NEW run with the same script, args and adapter: every agent()",
     "  or stale (worker gone)      call unchanged since (same prompt and options) replays its saved result",
     "                              instead of running again; edited and new calls run. Takes the run",
-    "                              modes and --adapter/--permissions/--untrusted/--config/--runs-root, like rerun",
+    "                              modes and --adapter/--permissions/--untrusted/--sandbox/--config/--runs-root, like rerun",
     "  still running               refused (it would redo work in flight); --force starts the new run anyway",
     "",
     "Schedules (odw schedule, ODW extension — no daemon: cron, launchd or a systemd timer calls odw back):",
@@ -425,6 +428,8 @@ async function cmdRun(rest: string[]): Promise<number> {
       adapter: { type: "string" },
       permissions: { type: "string" },
       untrusted: { type: "boolean" },
+      sandbox: { type: "string" },
+      "sandbox-image": { type: "string" },
       wait: { type: "boolean" },
       fg: { type: "boolean" },
       detach: { type: "boolean", short: "d" },
@@ -450,6 +455,7 @@ async function cmdRun(rest: string[]): Promise<number> {
   const { mode, timeoutMs } = resolveStartMode("run", values);
   const permissions = parsePermissions("run", values.permissions);
   const trust: TrustLevel | null = values.untrusted === true ? "untrusted" : null;
+  const sandbox = parseSandbox("run", values.sandbox, values["sandbox-image"]);
 
   warnIfNoDefaultAdapter(values.adapter ?? null, values.config ?? null, values.source ?? null, "run");
 
@@ -461,14 +467,28 @@ async function cmdRun(rest: string[]): Promise<number> {
     adapter: values.adapter ?? null,
     permissions,
     trust,
+    sandbox,
     budgetTotal,
   });
 
   return afterStart(store, runId, mode, {
     timeoutMs,
     hint: "started run",
-    banner: withWorkflowLines(startBanner(values.config ?? null, values.source ?? null, permissions, trust), workflow),
+    banner: withWorkflowLines(startBanner(values.config ?? null, values.source ?? null, permissions, trust, sandbox), workflow),
   });
+}
+
+/** `--sandbox container` and `--sandbox-image <image>` (ODW extension), validated; null when absent. */
+function parseSandbox(cmd: string, raw: string | undefined, image: string | undefined): SandboxFlag | null {
+  if (raw === undefined) {
+    if (image !== undefined) throw new UsageError(`odw ${cmd}: --sandbox-image needs --sandbox container`);
+    return null;
+  }
+  if (raw !== "container") throw new UsageError(`odw ${cmd}: --sandbox must be container; got '${raw}'`);
+  if (image !== undefined && !/^[A-Za-z0-9][^\s]*$/.test(image)) {
+    throw new UsageError(`odw ${cmd}: --sandbox-image must be an image reference such as odw-agents:latest; got '${image}'`);
+  }
+  return { kind: "container", image: image ?? null };
 }
 
 /** `--permissions <tier>` (ODW extension), validated; null when absent. */
@@ -493,17 +513,21 @@ function startBanner(
   source: string | null,
   permissions: PermissionTier | null,
   trust: TrustLevel | null = null,
+  sandbox: SandboxFlag | null = null,
 ): string | undefined {
   try {
     const cwd = source ? resolve(source) : process.cwd();
     const config = loadConfig(configPath, { quiet: true, cwd });
     if (permissions) config.settings.permissions = permissions;
+    // The sandbox line (ODW extension): `--sandbox container` over the config's.
+    config.settings.sandbox = withSandboxFlag(config.settings.sandbox, sandbox);
     // The trust line (ODW extension), decided as the worker will decide it (see untrusted.ts).
     config.settings.trust = resolveRunTrust({ flag: trust, config, configPath, source: cwd, cwd }).trust;
     const installed = (adapter: Adapter): boolean => isOnPath(adapter.command[0]!);
     return [
       permissionsBanner(config, installed),
       trustBanner(config, installed),
+      sandboxBanner(config),
       `concurrency: ${describeConcurrency(config)}`,
     ].join("\n");
   } catch {
@@ -1241,6 +1265,8 @@ const RELAUNCH_OPTIONS = {
   adapter: { type: "string" },
   permissions: { type: "string" },
   untrusted: { type: "boolean" },
+  sandbox: { type: "string" },
+  "sandbox-image": { type: "string" },
   wait: { type: "boolean" },
   fg: { type: "boolean" },
   detach: { type: "boolean", short: "d" },
@@ -1257,12 +1283,13 @@ async function cmdRerun(rest: string[]): Promise<number> {
   }
   const start = resolveStartMode("rerun", values);
   const permissions = parsePermissions("rerun", values.permissions);
+  const sandbox = parseSandbox("rerun", values.sandbox, values["sandbox-image"]);
   const store = storeFrom(values);
   if (!store.exists(runId)) {
     process.stderr.write(`no such run: ${runId}\n`);
     return 1;
   }
-  return relaunch("rerun", store, runId, { ...values, permissions }, start);
+  return relaunch("rerun", store, runId, { ...values, permissions, sandbox }, start);
 }
 
 /**
@@ -1290,6 +1317,7 @@ async function cmdResume(rest: string[]): Promise<number> {
   }
   const start = resolveStartMode("resume", values);
   const permissions = parsePermissions("resume", values.permissions);
+  const sandbox = parseSandbox("resume", values.sandbox, values["sandbox-image"]);
   const store = storeFrom(values);
   if (!store.exists(runId)) {
     process.stderr.write(`no such run: ${runId}\n`);
@@ -1300,7 +1328,7 @@ async function cmdResume(rest: string[]): Promise<number> {
     const control = store.readControl(runId);
     if (state === "paused" || control === "pause") {
       const given = values as Record<string, unknown>;
-      const newRunFlag = ["adapter", "permissions", "untrusted", "wait", "fg", "detach", "timeout"].find((f) => given[f] !== undefined);
+      const newRunFlag = ["adapter", "permissions", "untrusted", "sandbox", "wait", "fg", "detach", "timeout"].find((f) => given[f] !== undefined);
       if (newRunFlag) {
         throw new UsageError(
           `odw resume: run ${runId} is paused, so resume continues it in place — ` +
@@ -1327,7 +1355,7 @@ async function cmdResume(rest: string[]): Promise<number> {
     );
     return 1;
   }
-  return relaunch("resume", store, runId, { ...values, permissions }, start);
+  return relaunch("resume", store, runId, { ...values, permissions, sandbox }, start);
 }
 
 /**
@@ -1342,7 +1370,7 @@ async function relaunch(
   cmd: "rerun" | "resume",
   store: RunStore,
   runId: string,
-  flags: { "runs-root"?: string; adapter?: string; permissions: PermissionTier | null; untrusted?: boolean },
+  flags: { "runs-root"?: string; adapter?: string; permissions: PermissionTier | null; untrusted?: boolean; sandbox: SandboxFlag | null },
   start: { mode: RunMode; timeoutMs: number | undefined },
 ): Promise<number> {
   const meta = store.readMeta(runId);
@@ -1360,6 +1388,8 @@ async function relaunch(
     permissions: flags.permissions ?? (isPermissionTier(meta.permissions) ? meta.permissions : null),
     // An untrusted run's rerun or resume is untrusted too (ODW extension): nothing loosens it.
     trust: (flags.untrusted === true || meta.trust === "untrusted" ? "untrusted" : null) as TrustLevel | null,
+    // A sandboxed run's rerun or resume is sandboxed too (ODW extension); --sandbox-image may change its image.
+    sandbox: flags.sandbox ?? sandboxFlagOf(meta.sandbox),
     budgetTotal: (meta.budgetTotal as number | null) ?? null,
     // The worker reads the saved results from the source run's own directory.
     resumedFrom: cmd === "resume" ? { runId, dir: store.runDir(runId) } : null,
@@ -1394,7 +1424,7 @@ async function relaunch(
   return afterStart(started.store, started.runId, start.mode, {
     timeoutMs: start.timeoutMs,
     hint: cmd === "resume" ? `resuming ${runId} (${saved} saved agent result(s) to replay) as` : `re-running ${runId} as`,
-    banner: withWorkflowLines(startBanner(opts.configPath, opts.source, opts.permissions, opts.trust), started.workflow),
+    banner: withWorkflowLines(startBanner(opts.configPath, opts.source, opts.permissions, opts.trust, opts.sandbox), started.workflow),
   });
 }
 

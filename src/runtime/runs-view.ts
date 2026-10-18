@@ -38,6 +38,15 @@ import { RunStore, TERMINAL_STATES, type EvalRunTag } from "./run-store.js";
 
 export type AgentState = "running" | "done" | "failed" | "stale";
 
+/** The container an agent's CLI ran in (ODW extension; see adapters/sandbox.ts). */
+export interface AgentSandbox {
+  kind: "container";
+  /** null: no engine was found when it started. */
+  engine: "docker" | "podman" | null;
+  image: string;
+  network: "none" | "default";
+}
+
 /**
  * One node of a run's graph: an agent() dispatch or, with `kind: "command"`,
  * an exec() step (ODW extension). A command has no agent id, adapter or
@@ -113,6 +122,12 @@ export interface AgentView {
    * agent_started's `trust` (see adapters/trust.ts). Absent: trusted.
    */
   trust?: TrustLevel;
+  /**
+   * Agents only (ODW extension): the container its CLI runs in — engine,
+   * image and network — agent_started's `sandbox` (see adapters/sandbox.ts).
+   * Absent: on the host.
+   */
+  sandbox?: AgentSandbox;
   /**
    * Agents only (ODW extension): the adapters it fell back from, in order —
    * their quota was spent or their login refused — before `adapter`, the one
@@ -375,6 +390,8 @@ export function applyAgentEvent(
     };
     if (isPermissionTier(ev.permissions)) opened.permissions = ev.permissions;
     if (ev.trust === "untrusted") opened.trust = "untrusted";
+    const sandbox = agentSandbox(ev.sandbox);
+    if (sandbox) opened.sandbox = sandbox;
     agents.push(opened);
     return { opened };
   }
@@ -499,6 +516,19 @@ function mcpServers(raw: unknown): Array<{ name: string; status: string }> | und
     .filter((s): s is { name: string; status: string } => typeof s?.name === "string" && typeof s?.status === "string")
     .map(({ name, status }) => ({ name, status }));
   return servers.length > 0 ? servers : undefined;
+}
+
+/** An event's `sandbox`, when it names a container (ODW extension); undefined otherwise. */
+function agentSandbox(raw: unknown): AgentSandbox | undefined {
+  if (raw === null || typeof raw !== "object") return undefined;
+  const { kind, engine, image, network } = raw as Record<string, unknown>;
+  if (kind !== "container" || typeof image !== "string") return undefined;
+  return {
+    kind,
+    engine: engine === "docker" || engine === "podman" ? engine : null,
+    image,
+    network: network === "none" ? "none" : "default",
+  };
 }
 
 /** An event's `changes`, when it is a diffstat; null otherwise. */

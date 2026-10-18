@@ -12,6 +12,7 @@
 
 import type {
   AdapterFailures,
+  ContainerSpec,
   AdapterFlags,
   AdapterOutput,
   DenialPolicy,
@@ -41,6 +42,7 @@ export interface RawAdapter {
   trust?: TrustLevel;
   untrustedArgs?: string[];
   untrustedNote?: string;
+  sandbox?: ContainerSpec;
 }
 
 // `flags` only DECLARES which native flag carries a model — the router appends
@@ -438,4 +440,5 @@ export const DEFAULT_SETTINGS: Settings = {
   redact: { env: true, patterns: true, extra: [] }, // likely secrets out of what odw keeps and serves (false: none)
   quotaWait: false, // an agent whose chain is out of quota fails; { max: <s> } waits for the reset instead
   otel: false, // no trace is sent; { endpoint?, headers?, captureContent? } posts each run's at its end
+  sandbox: "none", // agent CLIs run on this machine; { kind: "container", image, … } runs each in a container
 };

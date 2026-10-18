@@ -20,6 +20,7 @@ import { pathToFileURL } from "node:url";
 
 import { defaultConfig, loadConfig } from "../adapters/config.js";
 import { isPermissionTier } from "../adapters/permissions.js";
+import { sandboxFlagOf, withSandboxFlag } from "../adapters/sandbox.js";
 import { killAllAgentProcesses } from "../adapters/runner.js";
 import type { RunEndState } from "../adapters/types.js";
 import type { WaitingCheckpoint } from "../checkpoint.js";
@@ -166,12 +167,17 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
     // Run-level permission tier (meta.permissions: `--permissions` on run,
     // rerun or resume; ODW extension): the run's tier in place of the config's.
     const permissionsOverride = isPermissionTier(meta.permissions) ? meta.permissions : null;
+    // Run-level container sandbox (meta.sandbox: `--sandbox container` on run,
+    // rerun or resume; ODW extension): the config's container, or one of
+    // `--sandbox-image` — a ConfigError when neither names an image.
+    const sandboxFlag = sandboxFlagOf(meta.sandbox);
     const withOverrides = (base: typeof baseConfig) => ({
       ...base,
       settings: {
         ...base.settings,
         ...(adapterOverride ? { defaultAdapter: adapterOverride } : {}),
         ...(permissionsOverride ? { permissions: permissionsOverride } : {}),
+        ...(sandboxFlag ? { sandbox: withSandboxFlag(base.settings.sandbox, sandboxFlag) } : {}),
       },
     });
     let overridden = withOverrides(baseConfig);
@@ -288,6 +294,9 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
     // What the run starts with — the settings that change behaviour, and each
     // adapter's fingerprint — for `odw compare` (ODW extension; see ../provenance).
     sink.emit(event(RUN_STARTED, { runId, setup: runSetup(config) }));
+    // A container sandbox that cannot run here — no engine, no image — fails
+    // the run before any agent starts (ODW extension; see ../adapters/sandbox).
+    await ctx.bridge.checkSandbox();
     // An untrusted run says so, and what of the repository's config it refused (ODW extension).
     for (const message of trusted.notes) sink.emit(event(LOG, { message, trust: "untrusted" }));
     if (replay) {

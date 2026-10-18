@@ -44,7 +44,10 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { statSync } from "node:fs";
 import { resolve } from "node:path";
 
-import { killProcessTree, trackProcess } from "./adapters/runner.js";
+import { agentBaseEnv } from "./adapters/agent-env.js";
+import { killProcessTree, runCommand, trackProcess } from "./adapters/runner.js";
+import { openContainer } from "./adapters/sandbox.js";
+import type { ContainerSandbox, SandboxSetting } from "./adapters/types.js";
 import type { RunContext } from "./context.js";
 import { DynamicWorkflowError, RunStopped, WorkflowScriptError } from "./errors.js";
 import { COMMAND_FAILED, COMMAND_FINISHED, COMMAND_STARTED, event } from "./events.js";
@@ -67,6 +70,12 @@ export interface ExecOptions {
   phase?: string;
   /** Throw an {@link ExecError} when the command does not exit 0. */
   check?: boolean;
+  /**
+   * ODW extension: in a run whose sandbox is a container, the step's network —
+   * `"none"` (the default: a step is an offline check) or `"default"`, which
+   * a sandbox without network refuses. No effect outside a sandbox.
+   */
+  network?: "none" | "default";
 }
 
 export interface ExecResult {
@@ -141,10 +150,40 @@ export async function execStep(
   // Ids follow call order, as agent ids do, on the run's command sequence.
   const commandId = ++ctx.commandSeq.value;
   const fields = { commandId, label: step.label, phase, command: clip(step.display, EVENT_COMMAND_CHARS), ...extra };
+  const box = stepSandbox(ctx.config.settings.sandbox ?? "none", opts.network);
   return ctx.scheduler.runCommand(async (signal) => {
+    // In a container sandbox (ODW extension; see adapters/sandbox.ts) the step
+    // runs in a fresh container of the run's image — offline unless it asks —
+    // that is killed when the step does not exit cleanly. An engine or image
+    // that is not there is the run's ConfigError, before the step shows.
+    const engine = box ? await ctx.bridge.sandboxReady(box) : undefined;
     // Emitted once past the checkpoint, so a paused step never shows as running.
     ctx.emit(event(COMMAND_STARTED, fields));
-    const { result, failure, aborted } = await runStep(step, signal);
+    const container =
+      box && engine
+        ? await openContainer({
+            box,
+            engine,
+            runner: runCommand,
+            command: step.shell ? ["/bin/sh", "-c", step.file] : [step.file, ...step.args],
+            workspace: resolve(ctx.source),
+            workdir: step.cwd,
+            env: stepEnv(ctx, opts.env),
+            cliConfig: "none",
+            runId: ctx.runId,
+            agentId: `c${commandId}`,
+          })
+        : undefined;
+    let outcome: StepOutcome | undefined;
+    try {
+      outcome = await runStep(
+        container ? { ...step, file: engine!, args: container.argv.slice(1), shell: false, env: container.env } : step,
+        signal,
+      );
+    } finally {
+      await container?.close(outcome !== undefined && outcome.result.exitCode === 0 && !outcome.aborted && !outcome.result.timedOut);
+    }
+    const { result, failure, aborted } = outcome;
     const settled = { ...fields, exitCode: result.exitCode, durationMs: result.durationMs };
     ctx.emit(
       failure === null
@@ -260,6 +299,34 @@ function planStep(command: unknown, opts: ExecOptions, source: string, runId: st
     maxOutputBytes: Math.floor(maxOutputBytes),
     check: opts.check === true,
   };
+}
+
+/**
+ * The container a step runs in (ODW extension): the run's sandbox, with the
+ * step's network — `"none"` unless it asks for the sandbox's own; null
+ * outside a sandbox. A bad `network`, or one the sandbox has not, is a misuse.
+ */
+function stepSandbox(run: SandboxSetting, network: unknown): ContainerSandbox | null {
+  if (network !== undefined && network !== "none" && network !== "default") {
+    throw misuse(`network must be "none" or "default"; got ${describeValue(network)}`);
+  }
+  if (run === "none") return null;
+  if (network === "default" && run.network === "none") {
+    throw misuse(`network "default" — the run's sandbox has no network, and a step may not have more than it`);
+  }
+  return { ...run, network: network === "default" ? "default" : "none" };
+}
+
+/**
+ * What a sandboxed step's container gets of the environment: what an agent's
+ * would (`agentEnv`), the run's id, and the step's own `env` — not an agent's
+ * ODW_AGENT_ID or ODW_PORT.
+ */
+function stepEnv(ctx: RunContext, extra: Record<string, string> | undefined): Record<string, string | undefined> {
+  const env = agentBaseEnv(process.env, ctx.config.settings);
+  delete env.ODW_AGENT_ID;
+  delete env.ODW_PORT;
+  return { ...env, ...(ctx.runId === undefined ? {} : { ODW_RUN_ID: ctx.runId }), ...extra };
 }
 
 function misuse(message: string): WorkflowScriptError {

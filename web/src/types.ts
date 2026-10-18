@@ -136,6 +136,11 @@ export interface AgentView {
    */
   trust?: TrustLevel;
   /**
+   * The container its CLI ran in — engine, image, network — when the run,
+   * its adapter or the call put it in one (ODW extension); absent: on the host.
+   */
+  sandbox?: AgentSandbox;
+  /**
    * The adapters it fell back from, in order — their quota was spent or their
    * login refused — before `adapter` (ODW extension). Absent when it never
    * left the adapter it started on.
@@ -176,6 +181,16 @@ export type PermissionTier = "read" | "edit" | "full";
 
 /** Whether an agent's CLI trusted the repository it worked in (ODW extension; `odw run --untrusted`). */
 export type TrustLevel = "trusted" | "untrusted";
+
+/** The container an agent's CLI ran in (ODW extension; `odw run --sandbox container`). */
+export interface AgentSandbox {
+  kind: "container";
+  /** null: no engine was found when it started. */
+  engine: "docker" | "podman" | null;
+  image: string;
+  /** "none": no network at all; "default": the engine's default network (the model API is reachable). */
+  network: "none" | "default";
+}
 
 /** The diffstat of a worktree agent's changes (ODW extension). */
 export interface AgentChanges {

@@ -104,6 +104,8 @@ export interface CreateRunInput {
   permissions?: string | null;
   /** `"untrusted"` from `--untrusted` (ODW extension; see ../untrusted), else the config's trust. */
   trust?: string | null;
+  /** `--sandbox container` [`--sandbox-image`] (ODW extension; see ../adapters/sandbox), else the config's sandbox. */
+  sandbox?: { kind: "container"; image: string | null } | null;
   /** The Claude Code plugin the workflow came from (ODW extension; see ../workflows/plugins), recorded as `plugin`. */
   plugin?: { name: string; id: string; version: string | null; scope: string } | null;
   /** What resolving the workflow's name noted — a plugin's same-named workflow it did not pick — for the run's log. */
@@ -186,6 +188,7 @@ export class RunStore {
       adapter: input.adapter ?? null,
       permissions: input.permissions ?? null,
       ...(input.trust ? { trust: input.trust } : {}),
+      ...(input.sandbox ? { sandbox: input.sandbox } : {}),
       ...(input.plugin ? { plugin: input.plugin } : {}),
       ...(input.workflowNotes && input.workflowNotes.length > 0 ? { workflowNotes: input.workflowNotes } : {}),
       origin: input.origin ?? null,
