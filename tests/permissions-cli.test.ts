@@ -215,9 +215,9 @@ test("odw doctor shows each adapter's supported tiers", async () => {
     writeFileSync(path, JSON.stringify({ runsRoot: join(dir, "runs"), adapters: { node, bare: { command: [execPath] } } }));
     const report = await runDoctor({ config: loadConfig(path, { quiet: true }), configPath: path, cwd: dir, smoke: [] });
     const check = (id: string) => report.checks.find((c) => c.id === id)!;
-    assert.match(check("adapter:node").detail, / · tiers: read, edit$/);
+    assert.match(check("adapter:node").detail, / · tiers: read, edit · untrusted: no way declared$/);
     assert.deepEqual(check("adapter:node").tiers, ["read", "edit"]);
-    assert.match(check("adapter:bare").detail, / · tiers: none declared \(runs as configured\)$/);
+    assert.match(check("adapter:bare").detail, / · tiers: none declared \(runs as configured\) · untrusted: no way declared$/);
     assert.deepEqual(check("adapter:kimi").tiers, ["edit"], "uninstalled ones too");
   } finally {
     rmSync(dir, { recursive: true, force: true });

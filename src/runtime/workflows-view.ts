@@ -17,15 +17,17 @@ import { readFileSync } from "node:fs";
 
 import type { Config } from "../adapters/types.js";
 import { readWorkflowMeta, type WorkflowMeta } from "../loader.js";
-import { listWorkflows } from "../workflows/resolve.js";
+import { listWorkflows, type WorkflowListing, type WorkflowProvider } from "../workflows/resolve.js";
 import { SigCache, statSig } from "./fs-util.js";
 import type { RunStore } from "./run-store.js";
 
 export interface WorkflowSummary {
-  /** meta.name === filename stem (the run handle). */
+  /** meta.name === filename stem (the run handle); a plugin's workflow: `<plugin>:<meta.name>`. */
   name: string;
-  origin: "project" | "global";
-  provider: "odw" | "claude";
+  /** `plugin`: a workflow an installed Claude Code plugin ships (ODW extension). */
+  origin: WorkflowListing["origin"];
+  /** `claude-plugin:<plugin>` for a plugin's workflow (ODW extension). */
+  provider: WorkflowProvider;
   rootLabel: string;
   /** Absolute path of the script on disk. */
   path: string;
@@ -40,6 +42,8 @@ export interface WorkflowSummary {
    * silently hidden behind a same-named ODW one; the flag lets the UI say so.
    */
   shadowed: boolean;
+  /** A plugin workflow whose bare name runs a project or global workflow instead (ODW extension). */
+  note?: string;
 }
 
 export interface WorkflowDetail extends WorkflowSummary {
@@ -97,6 +101,7 @@ export function listWorkflowSummaries(
       // `odw run <name>` always resolves to the winner. Credit only the winner.
       runCount: store && !w.shadowed ? store.listRunsForWorkflow(w.name).length : 0,
       shadowed: w.shadowed,
+      ...(w.note ? { note: w.note } : {}),
     });
   }
   return out;
@@ -113,7 +118,7 @@ export function workflowDetail(
   config: Config,
   store: RunStore,
   name: string,
-  provider?: "odw" | "claude",
+  provider?: WorkflowProvider,
 ): WorkflowDetail | null {
   const all = listWorkflows(cwd, config);
   const w = provider
@@ -140,6 +145,7 @@ export function workflowDetail(
     phases: meta?.phases ?? [],
     runCount: runs.length,
     shadowed: w.shadowed,
+    ...(w.note ? { note: w.note } : {}),
     source,
     runs,
   };

@@ -567,6 +567,109 @@ resume 依赖同一条规则：调用按 prompt 和选项、按调用顺序匹�
 `Date.now()`/`Math.random()` 拼出的 prompt，或依赖完成时机的派发，都匹配不上，会重新
 执行。`odw rerun` 从头开始，不重放任何调用。
 
+## odw eval（ODW 扩展）
+
+`odw eval` 让一个工作流跑一组用例，在一个或多个适配器上各跑若干次，用不需要模型的检查判定每次
+运行，并按用例 × 适配器报告通过率、花费与延迟。这是 ODW 扩展，Claude Code 没有对应功能。
+
+```bash
+odw eval <file|name> [--adapter a,b] [--repeats N] [--json] [--out report.json]
+                     [--baseline report.json] [--config P] [--runs-root DIR]
+```
+
+`<name>` 指当前目录下的 `.odw/evals/<name>.json`（与 `.odw/workflows/` 一样纳入 git）；以 `.json`
+结尾或含路径分隔符的参数是文件路径。`--adapter`（逗号分隔，或重复给出）与 `--repeats` 覆盖文件中的值。
+
+### eval 文件
+
+```json
+{
+  "name": "review",
+  "description": "可选",
+  "workflow": "review",
+  "adapters": ["claude", "codex"],
+  "repeats": 3,
+  "concurrency": 2,
+  "budget": 200000,
+  "timeout": 900,
+  "cases": [
+    { "name": "small-diff", "args": { "diff": "…" }, "checks": [{ "state": "done" }] }
+  ]
+}
+```
+
+| 字段 | 含义 |
+| --- | --- |
+| `workflow` | 必填：工作流名字或脚本路径，与 `odw run` 完全相同地从运行 `odw eval` 的目录解析 |
+| `cases` | 必填、非空：`{ name, args?, checks? }`；名字唯一，最多 100 个字符 |
+| `adapters` | 可选：每个适配器都作为运行的默认适配器（`odw run --adapter`）跑完全部用例；省略时用配置的默认适配器，报告中写出其名字 |
+| `repeats` | 每个用例在每个适配器上的运行次数，1–1000（默认 1） |
+| `concurrency` | 同时进行的运行数，1–64（默认 1）；按适配器、用例、重复的顺序派发 |
+| `budget` | 可选：token，作为每次运行的 `--budget`（脚本中的 `budget.total`） |
+| `timeout` | 可选：每次运行可用的秒数；超时即停止（`odw stop`），并以 `timeout` 失败 |
+| `name` | 可选：eval 的名字（字母、数字、`.`、`_`、`-`）；否则取文件名去掉 `.json` |
+| `description` | 可选说明，写入报告 |
+
+其他字段、写错的检查、路径或正则都会报 `ConfigError` 并指出位置（`cases[1].checks[0].path: …`），
+`odw eval` 在任何运行开始前以 2 退出——未知适配器、无法解析或加载的工作流、不是报告的 baseline 同样如此。
+
+### 检查
+
+每个检查是恰好具有下列一种形态的对象。一次运行满足其用例的全部检查才算通过。没写 `checks`
+的用例为 `[{ "state": "done" }]`；写了检查的用例只判这些（需要时自己加上 `{ "state": "done" }`）。
+
+| 检查 | 通过条件 |
+| --- | --- |
+| `{ path, equals }` | `path` 处的值与 `equals` 深度相等（不计键顺序） |
+| `{ path, contains }` | 该处的字符串包含该字符串；该处的数组有与之深度相等的元素 |
+| `{ path, matches, flags? }` | 该处的字符串匹配正则（flags 取自 `i m s u`）；其他值按其 JSON 匹配 |
+| `{ path, exists }` | `true`：`path` 指向一个值（`null` 也算）；`false`：不指向任何值 |
+| `{ command, timeout? }` | shell 命令以 0 退出；在项目目录中执行，设置 `ODW_RESULT`（存放运行结果 JSON 的临时文件；运行未以 `done` 结束时为 `null`）、`ODW_RUN_ID`、`ODW_EVAL_NAME`、`ODW_EVAL_CASE`、`ODW_EVAL_ADAPTER`、`ODW_EVAL_REPEAT`；`timeout` 秒后被杀（默认 300） |
+| `{ state }` | 运行以 `"done"`、`"failed"` 或 `"stopped"` 结束 |
+| `{ maxCostUsd }` | 运行中 agent 的花费（按各 CLI 上报）不超过该值；花费未知即不通过 |
+| `{ maxSeconds }` | 运行从 `run_started` 事件到结束不超过该秒数 |
+
+`path` 用点/方括号写法指向运行的返回值：`verdict`、`findings[0].file`、`items.2`（数字键可索引
+数组）、`["odd.key"]`、`['odd key']`；`""` 表示整个结果。只沿对象自身的键查找。
+
+### 运行
+
+每个用例 × 适配器 × 重复都是运行目录中的一次真实 odw 运行，像 `odw run` 一样从当前目录启动，
+以单元格的适配器作为 `--adapter`（默认适配器时不传），并带上 eval 的 `budget`。其 `meta.json`
+含 `origin: "eval"` 与 `eval: { name, case, adapter, repeat }`；`odw list` 显示
+`(eval <name> · <case> · <adapter> #<repeat>)`，`GET /api/runs` 的摘要带 `eval`。运行遇到的
+`checkpoint()` 与普通运行一样等待回答（进度中会提示）；请给 eval 设 `timeout`。
+
+Ctrl-C（SIGINT、SIGTERM、SIGHUP）会停止本次 eval 启动的所有运行——各写一个停止请求——最多等
+30 秒让它们结束（再按一次 Ctrl-C 不再等待），不保存报告，并以该信号结束 `odw eval`。
+
+### 输出与退出码
+
+每完成一次运行在 stderr 打印一行进度。随后 stdout 输出表格——每个用例 × 适配器：通过 k/n、
+耗时中位数、总花费与平均花费、平均 token（输入 + 输出）；总计；每个失败运行的运行 id 及其没通过的
+每项检查——或在 `--json` 时输出报告。带 `--baseline` 时再输出一张表：每个单元格的通过率（A → B），
+以及通过率、平均花费、耗时中位数的 B − A，最后列出退步的单元格。
+
+全部运行通过——或带 `--baseline` 时没有单元格的通过率低于 baseline——退出 0（原本就失败的不算
+退步）；否则 1；用法错误为 2。
+
+### 报告
+
+保存在 `<runsRoot>/_evals/<name>/<id>.json`，写到 `--out`，由 `--json` 打印，被 `--baseline` 读回；
+`GET /api/evals` 列出已保存的报告（最新在前），`GET /api/evals/:name/:id` 返回单份，均只读。字段：
+
+- `version`（1）、`name`、`id`（开始时间加 6 位十六进制）、`file`、`description`
+- `evalHash`：实际运行的定义的 sha256（键排序、已应用命令行参数）；`definition`：该定义
+- `workflow`：`{ ref, script, sourceHash }`；`odwVersion`；`cliVersions`：`{ <adapter>: [各运行 cli_version 事件记录的版本] }`
+- `startedAt`、`finishedAt`（ISO 8601）、`wallMs`
+- `totals`：`{ runs, passed, failed, passRate, costUsd, inputTokens, outputTokens }`
+- `cells`：`[{ case, adapter, runs, passed, passRate, medianMs, costUsd, meanCostUsd, meanTokens, runIds }]`
+- `runs`：`[{ runId, case, adapter, repeat, state, passed, timedOut, wallMs, inputTokens, outputTokens, costUsd, estimated, cliVersions, error, failures: [{ check, message }] }]`
+- `baseline`：null，或 `{ file, name, id, evalHash, sameDefinition, cells: [{ case, adapter, status, passRate, meanCostUsd, medianMs }], regressed: [{ case, adapter }] }`——每个数值为 `{ a, b, delta }`（A 为 baseline，delta 为 B − A）；`status` 为 `regressed`（通过率下降）、`improved`、`unchanged`、`new` 或 `missing`
+
+花费与 token 只对上报了它们的运行求和与平均，都未上报时为 null。任意两个运行 id 都可以用
+`odw compare <runA> <runB>` 对照。
+
 ## 限制
 
 - **并发上限** —— 同时最多跑 N 个 agent CLI（默认 `min(16, cpus-2)`；在配置里设

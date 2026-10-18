@@ -6,7 +6,7 @@ import { store } from "./store";
 import { ACTIVE, clsx, esc } from "./util";
 
 export interface Route {
-  view: "chat" | "activity" | "workspace" | "jobs" | "job" | "compare" | "settings";
+  view: "chat" | "activity" | "workspace" | "jobs" | "job" | "compare" | "evals" | "settings";
   param: string | null;
 }
 
@@ -60,6 +60,7 @@ export function rail(route: Route): string {
     navItem("activity", route, icons.activity, t("Activity"), "a") +
     navItem("jobs", route, icons.jobs, t("Jobs"), "j", active.length) +
     navItem("workspace", route, icons.workspace, t("Workspace"), "w") +
+    navItem("evals", route, icons.evals, t("Evals"), "e") +
     navItem("chat", route, icons.chat, t("Chat"), "c") +
     `</nav>` +
     live +
@@ -95,6 +96,11 @@ function crumbs(route: Route): string {
         `<span class="here">${t("Compare")}</span>${sep}` +
         `<span class="here mono">${esc(a)} → ${esc(b)}</span>`
       );
+    }
+    case "evals": {
+      if (!route.param) return `<span class="here">${t("Evals")}</span>`;
+      const [name = "", id = ""] = route.param.split("/");
+      return link("#/evals", t("Evals")) + sep + `<span class="here">${esc(name)}</span>${sep}<span class="here mono">${esc(id)}</span>`;
     }
     case "workspace":
       return `<span class="here">${t("Workspace")}</span>`;

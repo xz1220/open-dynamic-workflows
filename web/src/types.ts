@@ -50,6 +50,18 @@ export interface RunSummary {
    * goes on (epoch seconds) — "paused until 19:10 (codex quota)". Null otherwise.
    */
   pausedFor?: { reason: "quota"; adapter: string; resumeAt: number } | null;
+  /** A shared bundle opened by `odw serve --open FILE.odwrun` (ODW extension): when it was bundled. */
+  bundle?: { bundledAt: number | null; odwVersion: string | null };
+  /** A run `odw eval` started (meta.origin "eval"; ODW extension); absent for every other run. */
+  eval?: EvalRunTag;
+}
+
+/** Which `odw eval` run this is: the eval's name, the case, the cell's adapter, the repeat (from 1). */
+export interface EvalRunTag {
+  name: string;
+  case: string;
+  adapter: string;
+  repeat: number;
 }
 
 /**
@@ -119,6 +131,11 @@ export interface AgentView {
   /** The permission tier its CLI runs at (ODW extension); absent for older runs. */
   permissions?: PermissionTier | null;
   /**
+   * `untrusted` when its CLI ran in its way of ignoring the repository's
+   * instructions, settings and hooks (ODW extension); absent: trusted.
+   */
+  trust?: TrustLevel;
+  /**
    * The adapters it fell back from, in order — their quota was spent or their
    * login refused — before `adapter` (ODW extension). Absent when it never
    * left the adapter it started on.
@@ -156,6 +173,9 @@ export interface ScheduleView {
 
 /** How much an agent may do (ODW extension): read < edit < full. */
 export type PermissionTier = "read" | "edit" | "full";
+
+/** Whether an agent's CLI trusted the repository it worked in (ODW extension; `odw run --untrusted`). */
+export type TrustLevel = "trusted" | "untrusted";
 
 /** The diffstat of a worktree agent's changes (ODW extension). */
 export interface AgentChanges {
@@ -322,6 +342,159 @@ export interface ReplyComparison {
   truncated: boolean;
 }
 
+/**
+ * GET /api/evals — the `odw eval` reports kept under the runs root
+ * (`_evals/<name>/<id>.json`), newest first (ODW extension; read only).
+ */
+export interface EvalReportSummary {
+  name: string;
+  /** The report's id: its start time (YYYYMMDD-HHMMSS), then 6 hex digits. */
+  id: string;
+  description: string | null;
+  /** The workflow as the eval file names it. */
+  workflow: string;
+  evalHash: string;
+  /** ISO 8601. */
+  startedAt: string;
+  finishedAt: string;
+  totals: EvalTotals;
+  adapters: string[];
+  /** How many cases. */
+  cases: number;
+  /** Cells that regressed against the report's baseline; null when it had none. */
+  regressed: number | null;
+}
+
+/**
+ * GET /api/evals/:name/:id — one `odw eval` report (ODW extension;
+ * src/eval/report.ts documents every key). Case args are served with token
+ * shapes redacted (`redacted: true` then). 400 unless name and id are
+ * run-id-like, 404 when there is no such report.
+ */
+export interface EvalReport {
+  /** 1; it changes when a key changes meaning. */
+  version: 1;
+  name: string;
+  id: string;
+  /** The eval file, absolute. */
+  file: string;
+  description: string | null;
+  /** sha256 of the definition as run (keys sorted; --adapter and --repeats applied). */
+  evalHash: string;
+  definition: EvalDefinition;
+  workflow: { ref: string; script: string; sourceHash: string | null };
+  odwVersion: string;
+  /** Each adapter CLI's versions the runs recorded ("unknown" when a CLI did not tell). */
+  cliVersions: Record<string, string[]>;
+  startedAt: string;
+  finishedAt: string;
+  /** The eval's whole wall time. */
+  wallMs: number;
+  totals: EvalTotals;
+  /** A row per case × adapter, adapter first, in definition order. */
+  cells: EvalCell[];
+  /** A row per run, in adapter, case, repeat order. */
+  runs: EvalRunRecord[];
+  baseline: EvalBaseline | null;
+  redacted?: boolean;
+}
+
+export interface EvalDefinition {
+  workflow: string;
+  cases: Array<{ name: string; args: unknown; checks: EvalCheck[] }>;
+  /** null: the config's default adapter. */
+  adapters: string[] | null;
+  repeats: number;
+  concurrency: number;
+  /** Tokens per run (--budget); null for none. */
+  budget: number | null;
+  /** Seconds a run may take before it is stopped (and fails); null for no limit. */
+  timeout: number | null;
+}
+
+/** A check, exactly one of these shapes; `path` is dot/bracket notation into the run's result ("" for all of it). */
+export type EvalCheck =
+  | { path: string; equals: unknown }
+  | { path: string; contains: unknown }
+  | { path: string; matches: string; flags?: string }
+  | { path: string; exists: boolean }
+  | { command: string; timeout?: number }
+  | { state: "done" | "failed" | "stopped" }
+  | { maxCostUsd: number }
+  | { maxSeconds: number };
+
+export interface EvalTotals {
+  runs: number;
+  passed: number;
+  failed: number;
+  passRate: number;
+  /** Summed over the runs that reported them; null when none did. */
+  costUsd: number | null;
+  inputTokens: number | null;
+  outputTokens: number | null;
+}
+
+export interface EvalCell {
+  case: string;
+  adapter: string;
+  runs: number;
+  passed: number;
+  passRate: number;
+  /** Median wall time of its runs. */
+  medianMs: number | null;
+  /** Total cost; the means are over the runs that reported one. Null when none did. */
+  costUsd: number | null;
+  meanCostUsd: number | null;
+  /** Mean input + output tokens per run. */
+  meanTokens: number | null;
+  /** Its runs, in repeat order: any two open with `odw compare` (GET /api/compare). */
+  runIds: string[];
+}
+
+export interface EvalRunRecord {
+  runId: string;
+  case: string;
+  adapter: string;
+  /** From 1. */
+  repeat: number;
+  /** done, failed, stopped — or stale. */
+  state: string;
+  passed: boolean;
+  /** Stopped by the eval's timeout. */
+  timedOut: boolean;
+  wallMs: number | null;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  costUsd: number | null;
+  /** Some output tokens are chars/4 estimates. */
+  estimated: boolean;
+  /** The CLI version each adapter's cli_version event recorded (null: unknown). */
+  cliVersions: Record<string, string | null>;
+  error: string | null;
+  /** The checks it missed (`check: "timeout"` when the eval's timeout stopped it), each with what was found. */
+  failures: Array<{ check: string; message: string }>;
+}
+
+/** The report against `--baseline`'s: A is the baseline, B this report; delta = B − A (null when either is unknown). */
+export interface EvalBaseline {
+  file: string;
+  name: string;
+  id: string;
+  evalHash: string;
+  /** The two ran the same definition. */
+  sameDefinition: boolean;
+  cells: Array<{
+    case: string;
+    adapter: string;
+    /** "regressed": its pass rate fell; "new"/"missing": only one report has the cell. */
+    status: "regressed" | "improved" | "unchanged" | "new" | "missing";
+    passRate: CompareMetric;
+    meanCostUsd: CompareMetric;
+    medianMs: CompareMetric;
+  }>;
+  regressed: Array<{ case: string; adapter: string }>;
+}
+
 /** One adapter row exposed in settings snapshots. */
 export interface AdapterListing {
   name: string;
@@ -331,6 +504,8 @@ export interface AdapterListing {
   permissionNote: string;
   /** The permission tiers it declares flags for (ODW extension); empty: none, it runs as configured. */
   tiers?: PermissionTier[];
+  /** How it runs untrusted: its flags, or that it has no documented way (ODW extension). */
+  untrusted?: string;
 }
 
 export interface SettingsSnapshot {
@@ -360,9 +535,11 @@ export interface SettingsSnapshot {
 }
 
 export interface WorkflowSummary {
+  /** A Claude Code plugin's workflow (ODW extension): `<plugin>:<name>`. */
   name: string;
-  origin: "project" | "global";
-  provider: "odw" | "claude";
+  origin: "project" | "global" | "plugin";
+  /** `claude-plugin:<plugin>` for a workflow an installed Claude Code plugin ships (ODW extension). */
+  provider: "odw" | "claude" | `claude-plugin:${string}`;
   rootLabel: string;
   path: string;
   description: string | null;
@@ -370,6 +547,8 @@ export interface WorkflowSummary {
   runCount: number;
   /** A higher-precedence same-named workflow wins `odw run <name>`; we still show this. */
   shadowed: boolean;
+  /** A plugin workflow whose bare name runs a project or global workflow instead (ODW extension). */
+  note?: string;
 }
 
 export interface WorkflowDetail extends WorkflowSummary {
@@ -390,6 +569,23 @@ export type Connection = "connecting" | "live" | "reconnecting";
 /** GET /api/capabilities — whether this dashboard may start/control runs. */
 export interface Capabilities {
   writable: boolean;
+  /** "token": reads need a token (`odw serve --token`; ODW extension). Absent from older servers. */
+  auth?: "token" | "none";
+  /** The shared bundle this dashboard shows, read-only (`odw serve --open FILE.odwrun`; ODW extension). */
+  bundle?: BundleInfo | null;
+}
+
+/** A shared bundle as `odw serve` describes it (ODW extension). */
+export interface BundleInfo {
+  runId: string;
+  /** The bundle file's name. */
+  file: string;
+  bundledAt: number | null;
+  odwVersion: string | null;
+  /** Something in it was redacted when it was bundled. */
+  redacted: boolean;
+  /** Its agents' transcripts are in it. */
+  transcripts: boolean;
 }
 
 export type ChatRole = "user" | "assistant" | "tool";
@@ -481,6 +677,8 @@ export interface AgentResultRecord {
   branch?: string | null;
   /** The permission tier it ran at (ODW extension). */
   permissions?: PermissionTier;
+  /** `untrusted` when its CLI ran untrusted (ODW extension); absent: trusted. */
+  trust?: TrustLevel;
   /** The adapters it fell back from before `adapter` produced the value (ODW extension). */
   fellBackFrom?: string[];
   /** The tool calls its CLI refused while it did the work (ODW extension). */

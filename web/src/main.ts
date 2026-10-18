@@ -39,10 +39,12 @@ import { ACTIVE, TERMINAL, fmtDurSec, runDurationSec } from "./util";
 import { renderActivity } from "./views/activity";
 import { renderChat } from "./views/chat";
 import { compareHash, renderCompare } from "./views/compare";
+import { renderEvals } from "./views/evals";
 import { LOG_PAGE, changedAgents, cpEditState, renderJob, reviewTarget, type JobTab, type JobViewState } from "./views/job";
 import { HISTORY_PAGE, renderJobs, type JobsFilter, type JobsState } from "./views/jobs";
 import { renderSettings } from "./views/settings";
-import { orderedWorkflows, renderWorkspace, wfKey } from "./views/workspace";
+import { renderTokenScreen } from "./views/token";
+import { orderedWorkflows, parseWfKey, renderWorkspace, wfKey } from "./views/workspace";
 
 /** Reflect the chosen language on <html lang> (a11y + correct CJK shaping). */
 function applyDocLang(): void {
@@ -108,6 +110,11 @@ function parseHash(): Route {
       job.tab = "graph";
       return { view: "job", param: decodeURIComponent(rest.join("/")) || null };
     }
+    case "evals": {
+      // #/evals[/<name>/<reportId>]
+      const [name, id] = rest.map((x) => decodeURIComponent(x));
+      return { view: "evals", param: name && id ? `${name}/${id}` : null };
+    }
     case "compare": {
       // #/compare/<runA>/<runB>
       const [a, b] = rest.map((x) => decodeURIComponent(x));
@@ -124,6 +131,7 @@ function parseHash(): Route {
 const currentRoute = parseHash;
 
 function viewHtml(route: Route): string {
+  if (store.needsToken) return renderTokenScreen(store.tokenError);
   const now = nowSec();
   switch (route.view) {
     case "chat":
@@ -144,6 +152,8 @@ function viewHtml(route: Route): string {
       return renderJob(job, now);
     case "compare":
       return renderCompare(route.param);
+    case "evals":
+      return renderEvals(route.param);
     case "settings":
       return renderSettings(store.settings);
   }
@@ -313,7 +323,7 @@ function updateChrome(): void {
   const label =
     route.view === "job" && store.run
       ? store.run.name
-      : { activity: tr("Activity"), jobs: tr("Jobs"), job: tr("Jobs"), compare: tr("Compare"), workspace: tr("Workspace"), chat: tr("Chat"), settings: tr("Settings") }[route.view];
+      : { activity: tr("Activity"), jobs: tr("Jobs"), job: tr("Jobs"), compare: tr("Compare"), evals: tr("Evals"), workspace: tr("Workspace"), chat: tr("Chat"), settings: tr("Settings") }[route.view];
   const title = `${active.length ? `(${active.length}) ` : ""}${label} · odw`;
   const sig = `${title}|${active.length > 0}|${resolvedTheme()}`;
   if (sig === lastChrome) return;
@@ -492,6 +502,15 @@ async function enterRoute(): Promise<void> {
   } else if (route.view === "settings") {
     render();
     await store.loadSettings();
+  } else if (route.view === "evals") {
+    render();
+    if (route.param) {
+      const [name, id] = route.param.split("/") as [string, string];
+      await store.loadEvalReport(name, id);
+    } else {
+      await store.loadEvals();
+      if (live()) every(10_000, token, () => store.loadEvals());
+    }
   } else if (route.view === "compare" && route.param) {
     const [a, b] = route.param.split("/") as [string, string];
     render();
@@ -537,11 +556,9 @@ async function selectWorkflow(key: string, navigate = true, token = routeToken):
   wfActive = key;
   wfDetail = null;
   render();
-  // key is `provider:name`; name has no colon, so split on the first one. Tolerate
-  // a bare name (old bookmark) by treating the whole thing as the name.
-  const i = key.indexOf(":");
-  const provider = i >= 0 ? key.slice(0, i) : undefined;
-  const name = i >= 0 ? key.slice(i + 1) : key;
+  // key is `provider:name` (a plugin's: `claude-plugin:<plugin>:<plugin>:<name>`).
+  // Tolerate a bare name (old bookmark) by treating the whole thing as the name.
+  const { provider, name } = parseWfKey(key);
   try {
     const detail = await api.workflow(name, provider);
     if (token !== routeToken || wfActive !== key) return;
@@ -948,6 +965,15 @@ root.addEventListener("input", (ev) => {
   }
 });
 
+// The token screen (odw serve --token): a token the server takes sets its cookie; start over with it.
+root.addEventListener("submit", (ev) => {
+  const form = (ev.target as HTMLElement).closest<HTMLFormElement>("form[data-token-form]");
+  if (!form) return;
+  ev.preventDefault();
+  const token = String(new FormData(form).get("token") ?? "");
+  if (token.trim()) void store.signIn(token).then((ok) => ok && location.reload());
+});
+
 root.addEventListener("compositionstart", () => {
   composing = true;
 });
@@ -981,7 +1007,7 @@ root.addEventListener("keydown", (ev) => {
 
 // --- keyboard shortcuts ---
 let gPending = 0;
-const G_TARGETS: Record<string, string> = { a: "#/activity", j: "#/jobs", w: "#/workspace", c: "#/chat", s: "#/settings" };
+const G_TARGETS: Record<string, string> = { a: "#/activity", j: "#/jobs", w: "#/workspace", e: "#/evals", c: "#/chat", s: "#/settings" };
 
 function typing(target: EventTarget | null): boolean {
   const el = target as HTMLElement | null;
@@ -1219,10 +1245,40 @@ watchSystemPrefs(() => {
 const snap = new URLSearchParams(location.search).get("snap") === "1";
 applyPrefs();
 applyDocLang();
+const givenToken = tokenFromUrl();
 if (!location.hash) location.hash = "#/activity";
-if (!snap) store.connect();
-// Learn whether this dashboard may write (loopback) so write affordances are
-// hidden on a remotely-viewed off-loopback bind rather than failing on click.
-void store.loadCapabilities();
-void store.loadSettings();
-void store.loadRuns().then(() => enterRoute());
+void (async () => {
+  // Remote access (odw serve --token): trade the URL's token for the server's cookie first.
+  if (givenToken) await store.signIn(givenToken);
+  // Learn whether this dashboard may write (loopback) so write affordances are
+  // hidden on a remotely-viewed off-loopback bind rather than failing on click —
+  // and whether it needs a token, before anything else asks.
+  await store.loadCapabilities();
+  if (store.needsToken) return render();
+  if (!snap) store.connect();
+  void store.loadSettings();
+  void store.loadRuns().then(() => enterRoute());
+})();
+
+/**
+ * The token of `odw serve --token`'s URL — `#token=…` (no request carries a
+ * fragment) or `?token=…` — taken out of the address bar at once, so it is
+ * neither shown, bookmarked nor shared with the page.
+ */
+function tokenFromUrl(): string | null {
+  const query = new URLSearchParams(location.search);
+  const fromHash = /^#token=([^&/]+)/.exec(location.hash)?.[1];
+  let token: string | null = query.get("token");
+  if (fromHash) {
+    try {
+      token = decodeURIComponent(fromHash);
+    } catch {
+      token = null;
+    }
+  }
+  if (!fromHash && token === null) return null;
+  query.delete("token");
+  const search = query.toString();
+  history.replaceState(null, "", `${location.pathname}${search ? `?${search}` : ""}#/activity`);
+  return token;
+}

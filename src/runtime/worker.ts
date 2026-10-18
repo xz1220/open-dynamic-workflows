@@ -18,7 +18,7 @@ import { basename, dirname } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { pathToFileURL } from "node:url";
 
-import { loadConfig } from "../adapters/config.js";
+import { defaultConfig, loadConfig } from "../adapters/config.js";
 import { isPermissionTier } from "../adapters/permissions.js";
 import { killAllAgentProcesses } from "../adapters/runner.js";
 import type { RunEndState } from "../adapters/types.js";
@@ -28,12 +28,14 @@ import { PAUSED, RUNNING, type CheckpointRequest } from "../control.js";
 import { RunStopped, WorkflowScriptError, isFatalError } from "../errors.js";
 import { LOG, RUN_FAILED, RUN_FINISHED, RUN_STARTED, RUN_STOPPED, event } from "../events.js";
 import { ReplayJournal } from "../journal.js";
-import { loadWorkflowScript } from "../loader.js";
+import { loadWorkflowScript, scanDualCompat } from "../loader.js";
 import { createPrimitives } from "../primitives.js";
 import { CliVersions, runSetup } from "../provenance.js";
 import type { QuotaPause } from "../quota-wait.js";
 import { redactorFor, type Redactor } from "../redact.js";
 import type { Scheduler } from "../scheduler.js";
+import { applyRunTrust, resolveRunTrust, untrustedConfigSwap } from "../untrusted.js";
+import { pluginOrigin } from "../workflows/plugins.js";
 import { FileControl } from "./file-control.js";
 import { notifyCheckpoint, notifyQuotaPause, notifyRunEnd } from "./notify.js";
 import { exportRunEnd } from "./otel-export.js";
@@ -155,7 +157,7 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
   });
   process.on("exit", killAllAgentProcesses);
   try {
-    const baseConfig = loadConfig((meta.configPath as string | null) ?? null);
+    let baseConfig = loadConfig((meta.configPath as string | null) ?? null);
     // Run-level adapter override (meta.adapter): becomes this run's default for
     // every `agent()` call that does not name one explicitly. Priority chain:
     // agent(p, { adapter }) > meta.adapter > config defaultAdapter > auto-pick.
@@ -164,14 +166,36 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
     // Run-level permission tier (meta.permissions: `--permissions` on run,
     // rerun or resume; ODW extension): the run's tier in place of the config's.
     const permissionsOverride = isPermissionTier(meta.permissions) ? meta.permissions : null;
-    const config = {
-      ...baseConfig,
+    const withOverrides = (base: typeof baseConfig) => ({
+      ...base,
       settings: {
-        ...baseConfig.settings,
+        ...base.settings,
         ...(adapterOverride ? { defaultAdapter: adapterOverride } : {}),
         ...(permissionsOverride ? { permissions: permissionsOverride } : {}),
       },
-    };
+    });
+    let overridden = withOverrides(baseConfig);
+    // The run's trust (ODW extension; see ../untrusted): `--untrusted` on run,
+    // rerun or resume (meta.trust), else the config's — and an untrusted run
+    // drops the worktreeSetup the repository's own config set.
+    const trustSource = typeof meta.source === "string" ? meta.source : process.cwd();
+    const configPath = (meta.configPath as string | null) ?? null;
+    let runTrust = resolveRunTrust({ flag: meta.trust === "untrusted" ? "untrusted" : null, config: overridden, configPath, source: trustSource });
+    // ... and never reads a config ODW found by itself inside the repository:
+    // its adapter commands would be the repository's code to run.
+    const swap = runTrust.trust === "untrusted" ? untrustedConfigSwap(configPath, trustSource) : undefined;
+    const swapNote = swap
+      ? `untrusted run: not reading the repository's own config (${swap.dropped}) — using ${swap.path ?? "the built-in defaults"}; ` +
+        `pass --config to choose one`
+      : null;
+    if (swap) {
+      baseConfig = swap.path ? loadConfig(swap.path) : defaultConfig();
+      overridden = withOverrides(baseConfig);
+      runTrust = { ...runTrust, repositoryConfig: null };
+    }
+    const trusted = applyRunTrust(overridden, runTrust);
+    if (swapNote) trusted.notes.push(swapNote);
+    const config = trusted.config;
     const runRedactor = redactorFor(config);
     redactor = runRedactor;
     sink.redactor = runRedactor;
@@ -264,6 +288,8 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
     // What the run starts with — the settings that change behaviour, and each
     // adapter's fingerprint — for `odw compare` (ODW extension; see ../provenance).
     sink.emit(event(RUN_STARTED, { runId, setup: runSetup(config) }));
+    // An untrusted run says so, and what of the repository's config it refused (ODW extension).
+    for (const message of trusted.notes) sink.emit(event(LOG, { message, trust: "untrusted" }));
     if (replay) {
       sink.emit(
         event(LOG, {
@@ -272,7 +298,26 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
       );
     }
 
+    // How the workflow's name resolved, and — for a Claude Code plugin's
+    // workflow (ODW extension) — where it came from, and what of it is not
+    // Claude Code's dialect: said before it runs, in every run.
+    const plugin = pluginOfMeta(meta.plugin);
+    for (const message of Array.isArray(meta.workflowNotes) ? meta.workflowNotes : []) {
+      if (typeof message === "string") sink.emit(event(LOG, { message }));
+    }
     const source = readFileSync(script, "utf8");
+    if (plugin) {
+      const allowed = config.settings.trust === "untrusted" ? "; allowed in an untrusted run: you installed it" : "";
+      sink.emit(
+        event(LOG, {
+          message: `workflow ${plugin.name} comes from ${pluginOrigin(plugin)}, run in place from ${script} (read, never modified)${allowed}`,
+          plugin: plugin.id,
+        }),
+      );
+      for (const warning of scanDualCompat(source)) {
+        sink.emit(event(LOG, { message: `workflow ${plugin.name}: ${warning}`, plugin: plugin.id }));
+      }
+    }
     const loaded = loadWorkflowScript(source, script);
     // The run-by-name lookup keys on the filename stem, not meta.name. Flag a
     // divergence (through the event stream, so it shows in `odw logs` and the
@@ -283,7 +328,8 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
     // Inline-launched runs (meta.inline) carry their script inside the run dir
     // and are not name-addressable, so the divergence note would only mislead.
     const isInline = meta.inline === true;
-    if (!isInline && loaded.meta.name !== stem) {
+    // A plugin's workflow runs by `<plugin>:<meta.name>`, never by its file's stem.
+    if (!isInline && !plugin && loaded.meta.name !== stem) {
       sink.emit(
         event(LOG, {
           message:
@@ -451,6 +497,19 @@ function replayJournal(meta: Record<string, unknown>): ReplayJournal | undefined
   return new ReplayJournal(meta.resumedFrom, source.listAgentResults(sourceId), (agentId) =>
     source.agentDiffPath(sourceId, agentId),
   );
+}
+
+/** The Claude Code plugin a run's workflow came from (meta.plugin, ODW extension); null for any other run. */
+function pluginOfMeta(raw: unknown): { name: string; id: string; version: string | null; scope: string } | null {
+  if (raw === null || typeof raw !== "object") return null;
+  const p = raw as Record<string, unknown>;
+  if (typeof p.name !== "string" || typeof p.id !== "string") return null;
+  return {
+    name: p.name,
+    id: p.id,
+    version: typeof p.version === "string" ? p.version : null,
+    scope: typeof p.scope === "string" ? p.scope : "user",
+  };
 }
 
 /**

@@ -544,7 +544,7 @@ test("odw run's start banner states the run's caps under its permissions line, w
     let r = await cli(["run", script, "--wait", ...flags]);
     assert.equal(r.code, 0, r.err);
     assert.equal(JSON.parse(r.out), "ok");
-    assert.match(r.err, /^running \S+ \.\.\.\npermissions: [^\n]+\nconcurrency: 3 agents at once · per adapter: quick 2\n/);
+    assert.match(r.err, /^running \S+ \.\.\.\npermissions: [^\n]+\ntrust: trusted\nconcurrency: 3 agents at once · per adapter: quick 2\n/);
 
     r = await cli(["run", script, "-d", ...flags]);
     assert.equal(r.code, 0, r.err);

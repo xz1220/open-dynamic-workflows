@@ -22,12 +22,15 @@ import {
   resolveRunsRoot,
   resolveWorkflowsRoot,
 } from "./adapters/config.js";
+import { isOnPath } from "./adapters/executable.js";
 import { runCommand, type CommandRunner } from "./adapters/runner.js";
+import { trustBanner } from "./adapters/trust.js";
 import type { Config, PermissionTier } from "./adapters/types.js";
 import { Bridge } from "./bridge.js";
 import { redactorFor, type RedactionCoverage } from "./redact.js";
 import { otelCheck } from "./runtime/otel-export.js";
 import { describeConcurrency } from "./throttle.js";
+import { resolveRunTrust } from "./untrusted.js";
 
 export type CheckStatus = "ok" | "warn" | "fail" | "skip";
 
@@ -40,6 +43,8 @@ export interface DoctorCheck {
   hint?: string;
   /** Adapter checks: the permission tiers it declares flags for (ODW extension). */
   tiers?: PermissionTier[];
+  /** Adapter checks: how it runs untrusted — its flags, or that it has no documented way (ODW extension). */
+  untrusted?: string;
 }
 
 export interface DoctorReport {
@@ -156,12 +161,25 @@ export async function runDoctor(opts: DoctorOptions): Promise<DoctorReport> {
   // Whether each run's trace is exported, and where to: scheme and host only (ODW extension).
   add(otelCheck(config, opts.env ?? process.env));
 
+  // The run's trust, and how an untrusted run keeps the repository out of each installed CLI (ODW extension).
+  add(trustCheck(config, opts.cwd, opts.configPath));
+
   for (const a of listing) {
     // The permission tiers it can run (ODW extension): `odw run --permissions`
-    // refuses read on an adapter without it, and runs full as edit.
-    const tiers = a.tiers.length > 0 ? `tiers: ${a.tiers.join(", ")}` : "tiers: none declared (runs as configured)";
+    // refuses read on an adapter without it, and runs full as edit — and how
+    // it runs untrusted (`odw run --untrusted`).
+    const tiers =
+      (a.tiers.length > 0 ? `tiers: ${a.tiers.join(", ")}` : "tiers: none declared (runs as configured)") +
+      ` · untrusted: ${a.untrusted}`;
     if (!a.installed) {
-      add({ id: `adapter:${a.name}`, title: `Adapter ${a.name}`, status: "skip", detail: `not installed · ${tiers}`, tiers: a.tiers });
+      add({
+        id: `adapter:${a.name}`,
+        title: `Adapter ${a.name}`,
+        status: "skip",
+        detail: `not installed · ${tiers}`,
+        tiers: a.tiers,
+        untrusted: a.untrusted,
+      });
       continue;
     }
     const exe = config.adapters[a.name]!.command[0]!;
@@ -174,6 +192,7 @@ export async function runDoctor(opts: DoctorOptions): Promise<DoctorReport> {
       detail: `${res.returncode === 0 ? line || "installed" : `\`${exe} --version\` exited ${res.returncode}`} · ${a.permissionNote} · ${tiers}`,
       hint: res.returncode === 0 ? undefined : "the CLI is on PATH but did not answer --version; try running it once by hand",
       tiers: a.tiers,
+      untrusted: a.untrusted,
     });
   }
 
@@ -226,6 +245,30 @@ export async function runDoctor(opts: DoctorOptions): Promise<DoctorReport> {
   }
 
   return { ok: !checks.some((c) => c.status === "fail"), checks };
+}
+
+/**
+ * The trust check (ODW extension; see adapters/trust.ts): the config's trust
+ * and how an untrusted run keeps the repository out of each installed CLI —
+ * a warning when an untrusted config is the repository's own.
+ */
+export function trustCheck(config: Config, cwd: string, configPath: string | null): DoctorCheck {
+  const check = { id: "trust", title: "Trust" };
+  const run = resolveRunTrust({ flag: null, config, configPath, source: cwd, cwd });
+  const untrusted: Config = { ...config, settings: { ...config.settings, trust: "untrusted" } };
+  const how = trustBanner(untrusted, (adapter) => isOnPath(adapter.command[0]!)).replace(/^trust: untrusted( — )?/, "");
+  const detail = `${run.trust}${run.why ? ` (${run.why})` : ""} — odw run --untrusted runs ${how || "no installed adapter"}`;
+  if (run.trust === "untrusted" && run.repositoryConfig) {
+    return {
+      ...check,
+      status: "warn",
+      detail,
+      hint:
+        `the config in use is the repository's own (${run.repositoryConfig}): an untrusted run reads it only when you name it ` +
+        `(--config, $ODW_CONFIG) — found by itself, it is skipped for your ~/.config/odw/config.json or the defaults`,
+    };
+  }
+  return { ...check, status: "ok", detail };
 }
 
 /** Variables the redaction check names before it says how many more. */

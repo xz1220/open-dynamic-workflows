@@ -93,6 +93,13 @@ function runHead(run: RunDetail, nowSec: number, spendOpen: boolean): string {
       ? `<button class="btn danger" data-stop="${esc(run.runId)}">${icons.stop}${t("Stop")}</button>`
       : "";
   const cc = run.provider === "claude" ? `<span class="tag cc">Claude Code · ${t("read-only")}</span>` : "";
+  // A shared bundle (odw serve --open FILE.odwrun): a snapshot someone sent, read-only.
+  const shared = run.bundle ? `<span class="tag bundle">${t("shared bundle")} · ${t("read-only")}</span>` : "";
+  // Share: `odw bundle` writes the run as one redacted file (ODW runs; a bundle is one already).
+  const share =
+    run.provider === "odw" && !run.bundle
+      ? `<button class="btn" data-copy="odw bundle ${esc(run.runId)}" data-tip="${esc(t("copies a command that writes this run as one redacted file to share"))}">${icons.copy}${t("Share")}</button>`
+      : "";
   // An ended ODW run can be picked up again from the terminal: `odw resume`
   // replays every agent call that already finished (the dashboard starts nothing).
   const resumable = run.provider === "odw" && (run.state === "failed" || run.state === "stopped" || run.state === "stale");
@@ -106,11 +113,11 @@ function runHead(run: RunDetail, nowSec: number, spendOpen: boolean): string {
   const w = (n: number) => `${((n / total) * 100).toFixed(2)}%`;
   return (
     `<header class="run-head">` +
-    `<div style="min-width:0"><div class="eyebrow"><span>${t("Run")}</span><span class="mono" style="text-transform:none;letter-spacing:0">${esc(run.runId)}</span>${cc}</div>` +
+    `<div style="min-width:0"><div class="eyebrow"><span>${t("Run")}</span><span class="mono" style="text-transform:none;letter-spacing:0">${esc(run.runId)}</span>${cc}${shared}</div>` +
     `<div class="title-row"><h1 class="display">${esc(run.name)}</h1>${pill(run.state)}</div>` +
     (run.description ? `<p class="lede">${esc(run.description)}</p>` : "") +
     `</div>` +
-    `<div class="actions">${stop}${resume}${compareLink(run)}` +
+    `<div class="actions">${stop}${resume}${compareLink(run)}${share}` +
     `<button class="btn" data-copy="odw logs ${esc(run.runId)} --follow" data-tip="${esc(t("copy a follow command"))}">${icons.terminal}${t("Follow in terminal")}</button>` +
     `<button class="btn ghost" data-copy="${esc(run.runId)}">${icons.copy}${t("Copy id")}</button></div>` +
     `</header>` +
@@ -296,6 +303,9 @@ function drawer(run: RunDetail, ai: number, nowSec: number): string {
       : `<span class="k">${t("attempts")}</span><span class="v">${a.attempts ?? "—"}</span>`) +
     (a.permissions
       ? `<span class="k">${t("permissions")}</span><span class="v"><span class="tag perm-${esc(a.permissions)}" title="${esc(t(PERM_HINT[a.permissions] ?? ""))}">${esc(t(a.permissions))}</span></span>`
+      : "") +
+    (a.trust === "untrusted"
+      ? `<span class="k">${t("trust")}</span><span class="v"><span class="tag trust-untrusted" title="${esc(t("its CLI ignored the repository's instructions, settings and hooks where it could"))}">${esc(t("untrusted"))}</span></span>`
       : "") +
     (a.failureReason ? `<span class="k">${t("reason")}</span><span class="v"><span class="tag ${/rate_limit|quota|stalled|timeout/.test(a.failureReason) ? "warn" : ""}">${esc(reasonLabel(a.failureReason))}</span>${resetNote(a, nowSec)}</span>` : "") +
     (a.usage && (a.usage.inputTokens != null || a.usage.outputTokens != null)

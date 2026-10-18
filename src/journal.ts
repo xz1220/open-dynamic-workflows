@@ -13,7 +13,7 @@
 
 import { createHash } from "node:crypto";
 
-import type { PermissionTier } from "./adapters/types.js";
+import type { PermissionTier, TrustLevel } from "./adapters/types.js";
 import type { AgentChanges } from "./changes.js";
 import type { AgentOptions } from "./primitives.js";
 
@@ -58,6 +58,8 @@ export interface AgentResultRecord {
   branch?: string | null;
   /** The permission tier its CLI ran at (ODW extension); absent in records from before tiers. */
   permissions?: PermissionTier;
+  /** `untrusted` when its CLI ran untrusted (ODW extension; see adapters/trust.ts); absent: trusted. */
+  trust?: TrustLevel;
   /**
    * The tool calls its CLI refused while it did the work, under a reply that
    * stood anyway (ODW extension; `permissionDenials: "warn"`), when it refused any.

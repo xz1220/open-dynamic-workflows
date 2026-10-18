@@ -155,17 +155,23 @@ odw status $RUN             # 状态、agent 计数、token 与花费
 odw logs $RUN --follow      # 流式输出进度事件
 odw logs $RUN --agent 3     # 某个 agent 做了什么：工具调用、结果、错误（ODW 扩展）
 odw export $RUN --otlp      # 把运行导出为 OpenTelemetry trace（OTLP/JSON）——--send 直接发送（ODW 扩展）
+odw bundle $RUN             # 把运行写成一个可分享的脱敏文件 $RUN.odwrun；odw view FILE 只读查看
+                            #   （ODW 扩展；--no-transcripts、--out FILE、--max-bytes N）
 odw result $RUN             # 完成后打印最终值
 odw pause $RUN / resume $RUN / stop $RUN
 odw approve|reject $RUN     # 回答运行正在等待的 checkpoint()——只在用户明确要求时
                             # （approve --payload JSON|@file 批准用户修改后的内容；--edit 需要用户的终端）
 odw compare $OLD $RUN       # 两次运行之间变了什么:配置、耗时、花费、失败、回复(ODW 扩展)
                             #   --agent <label|id>:某个 agent 的完整回复 diff;--json 供脚本使用
+odw eval review             # 用例 × 适配器 × 重复次数：每个单元格的通过率、花费、耗时（ODW 扩展；见下文）
 odw list                    # 所有运行
 ```
 
 保存过的 workflow 可直接按名字运行（`odw run <名字>`）；查找顺序：`.odw/workflows`、
-`.claude/workflows`、`~/.odw/workflows`、`~/.claude/workflows`。
+`.claude/workflows`、`~/.odw/workflows`、`~/.claude/workflows`。已安装并启用的 Claude Code
+插件所带的 workflow 用 `odw run <插件>:<名字>` 运行（ODW 扩展；`odw workflows list --plugins`
+列出它们）：就地、只读、同一方言。只有当项目级和个人级都没有同名 workflow 时，裸名字才会
+运行插件的 workflow——想确定运行哪一个，就用 `<插件>:<名字>` 的写法。
 
 ### 恢复卡住或失败的运行（ODW 扩展）
 
@@ -235,6 +241,11 @@ odw apply $RUN --all --verify "<测试命令>"   # 按顺序应用；校验失�
   适配器支持的档位，每次 `odw run` 也会打印各已安装适配器将以哪个档位运行。
 - **绝不要自己决定用 `full`。** 它去掉了沙箱和所有审批：只在用户明确要求、且是在用户视为
   可丢弃的机器上时才用。
+- **别人的仓库：用 `--untrusted` 运行**（ODW 扩展）。这时每个 CLI 都在其文档给出办法的
+  地方忽略仓库的 CLAUDE.md、hooks、MCP 服务器和设置（`claude --safe-mode`、
+  `qwen --safe-mode`），并由运行说一次哪些 CLI 做不到（codex 仍会读 AGENTS.md）——这时优先
+  用 `adapter: 'claude'`。仓库自己的 `worktreeSetup` 和 `.worktreeinclude` 链接不会执行。
+  它不是沙箱：审查类工作请再配上 `--permissions read`。
 
 ```js
 const findings = await parallel(files.map((f) => () =>
@@ -316,6 +327,34 @@ odw schedule remove digest     # 删除系统条目和定义
 - 定时运行遇到 `checkpoint()` 时，在得到答复前会挡住后续的运行：无人值守的检查点要设
   `timeout`。
 
+### 评估工作流（ODW 扩展）
+
+想确认改了提示词、模型或 CLI 之后工作流仍然把事情做对——在每个适配器上、各跑几次——就写一个
+eval 文件，然后运行 `odw eval`。每次运行的花费与普通运行相同：先和用户确认用例 × 适配器 ×
+重复次数。
+
+```bash
+odw eval review                                    # .odw/evals/review.json（或任意 .json 的路径）
+odw eval review --adapter claude,codex --repeats 3 # 覆盖文件中的 adapters 与 repeats
+odw eval review --json --out base.json             # 以 JSON 输出报告；同时保存在 <runsRoot>/_evals/ 下
+odw eval review --baseline base.json               # 每个单元格的变化；通过率下降时以 1 退出
+```
+
+```json
+{ "workflow": "review", "adapters": ["claude", "codex"], "repeats": 3, "concurrency": 2, "timeout": 900,
+  "cases": [{ "name": "small-diff", "args": { "diff": "…" },
+              "checks": [{ "state": "done" }, { "path": "verdict", "equals": "approve" }, { "maxCostUsd": 0.5 }] }] }
+```
+
+- 检查不调用模型：对运行结果的 `{ path, equals | contains | matches | exists }`（`findings[0].file`；
+  `""` 表示整个结果）、`{ command }`（以 0 退出；`ODW_RESULT` 指向存放结果 JSON 的文件，
+  `ODW_RUN_ID` 为运行 id）、`{ state }`、`{ maxCostUsd }`、`{ maxSeconds }`。不写检查即
+  `{ "state": "done" }`。
+- 每个用例 × 适配器 × 重复都是一次标记为 `origin: "eval"` 的真实运行；表格按单元格给出通过 k/n、
+  耗时中位数、花费与 token，然后列出每个失败及其检查与运行 id（用 `odw compare` 对照任意两次）。
+  全部通过（或带 `--baseline` 时没有退步）退出 0，否则 1，用法错误为 2。
+- 完整的文件格式与报告：[`references/primitives.md`](references/primitives.md) 的「odw eval（ODW 扩展）」一节。
+
 ## 适配器
 
 Codex、Claude Code、Gemini、Qwen、Kimi 开箱即用，无需配置。要换默认 CLI、调旗标或
@@ -387,6 +426,7 @@ Codex、Claude Code、Gemini、Qwen、Kimi 开箱即用，无需配置。要换�
 | 看运行像是卡住了，就自己批准了检查点 | 等待中的检查点由用户决定：给用户看 `odw status $RUN`，只有用户明确同意后才运行 `odw approve`/`odw reject`。 |
 | 扇出的调研或审查 agent 能改文件 | 给这些 agent 传 `{ permissions: 'read' }`，或用 `odw run --permissions read`：它们只读取和报告，改不了工作树（ODW 扩展；claude、codex 或 gemini）。 |
 | agent 被拒绝或被拦下时，转而用 `--permissions full` | `full` 去掉了沙箱和所有审批——先问用户。被拒绝的 `read` agent 需要的是一个支持只读的适配器。 |
+| 把不是用户写的仓库当作用户自己的仓库来跑 agent | `odw run --untrusted`（ODW 扩展）：`claude --safe-mode` 等参数挡住它的指令、hooks 和设置；运行日志会说明哪些 CLI 做不到。 |
 | 把某个 CLI 的模型 ID 交给可能跑在别的 CLI 上的 agent（阶段默认值、回退链） | 模型 ID 不能跨 CLI 通用：用层级 `model: '@fast'`，它会为每个 CLI 选出自己的 ID（ODW 扩展）。 |
 | 大规模扇出却不看它花了多少 | `odw status $RUN` 会显示运行到目前为止的 token 与花费，比 `fanOutWarn`（默认 25）更宽的 `parallel()`/`pipeline()` 会记一条警告（均为 ODW 扩展）。设了 `budget.total` 时按它决定扇出规模；`--budget` 限制输出 token。 |
 | 自己手写一条包着 `odw run` 的 cron 行 | `odw schedule add` 会带上防重叠锁、日志和固定的 `PATH` 写好它——且只在用户要求时使用：它会改动用户的 crontab 或 LaunchAgents。 |

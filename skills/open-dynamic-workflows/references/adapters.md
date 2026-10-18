@@ -98,6 +98,18 @@ A useful minimal-privilege split: let `claude` write code (acceptEdits) and let
 `codex` run/verify it (workspace-write sandbox) — see
 `examples/codex-claude-loop.js`.
 
+**Untrusted repositories (ODW extension).** `odw run --untrusted` (or
+`"trust": "untrusted"`) adds each CLI's documented way of ignoring the
+repository it works in after its tier's flags: `claude --safe-mode` (CLAUDE.md,
+skills, plugins, hooks, MCP servers, commands, agents and workflows off; auth
+works), `qwen --safe-mode`, and `omp --no-extensions --no-skills --no-rules`
+(its AGENTS.md, CLAUDE.md, hooks and MCP config still load). `codex`, `gemini`,
+`kimi`, `kilo`, `opencode` and `cursor` have no documented way: the run logs
+once per adapter what still reaches the agent (`codex has no documented way to
+ignore the repository's AGENTS.md — its instructions still reach the agent`).
+The repository's `.worktreeinclude` `symlink:` lines and a `worktreeSetup` from
+a config inside it do not run.
+
 ## Config file
 
 To change the default, tune flags, or add your own CLI, write an
@@ -165,6 +177,7 @@ did-you-mean hint) instead of silently ignoring them.
 | `maxTranscriptBytes` | **ODW extension.** Bytes of each agent's transcript kept in the run directory — what its CLI printed on stdout, `agents/<agentId>.transcript.jsonl` (a JSONL adapter's events as received, other output as `{"kind":"text"}` lines), beside the end of its stderr in `agents/<agentId>.stderr.txt`; read with `odw logs <run> --agent <id\|label>` (default 5 MB). Past it one `{"kind":"truncated","bytes":N}` line ends the transcript; `0` keeps none |
 | `recordVersions` | **ODW extension.** `true` (default): on an adapter's first agent of a run, `<cli> --version` (its command's first argv element) runs beside the agent, killed after 3s, and is recorded as a `cli_version` event — `odw status`, `cliVersions` in `GET /api/runs/:id`, and `odw compare` read it. It never delays or fails the run; a CLI that does not answer is recorded as unknown; an adapter whose command is node or another interpreter, a script or a relative path is not probed. `false` runs no probe (the odw version and workflow sha256 in meta.json, and the settings on `run_started`, are recorded either way) |
 | `permissions` | **ODW extension.** The run's permission tier: `"read"`, `"edit"` (default) or `"full"` — see [permissions](#permissions-what-each-built-in-may-do). `odw run\|rerun\|resume --permissions` overrides it |
+| `trust` | **ODW extension.** `"trusted"` (default) or `"untrusted"`: for someone else's repository. Untrusted, each adapter's `untrustedArgs` go after its tier's flags (`claude --safe-mode`, `qwen --safe-mode`, `omp --no-extensions --no-skills --no-rules`); a CLI without a documented way is said once per run (its `untrustedNote`). `.worktreeinclude` `symlink:` lines link nothing, and a `worktreeSetup` from a config inside the repository does not run. `odw run\|rerun\|resume --untrusted` sets it per run; a config inside the repository cannot loosen the one `~/.config/odw/config.json` sets |
 | `agentEnv` | **ODW extension.** `"inherit"` (default): agent CLIs get ODW's whole environment. `"minimal"`: only `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `LANG`, `LC_*`, `TERM`, `TMPDIR`, `TZ` (and the Windows system variables), the auth and config variables the built-in CLIs document (`ANTHROPIC_*`, `CLAUDE_*`, `OPENAI_*`, `CODEX_*`, `GEMINI_*`, `GOOGLE_*`, `DASHSCOPE_*`, `QWEN_*`, `MOONSHOT_*`, `KIMI_*`, `CURSOR_*`, `OPENCODE_*`, the proxy variables, `NODE_EXTRA_CA_CERTS`), `ODW_*`, `agentEnvPass` and the adapter's `env`. `exec()` commands, `worktreeSetup` and `notify` keep the whole environment |
 | `agentEnvPass` | **ODW extension.** More names, or `*` globs, a `"minimal"` agent environment passes (e.g. `["AWS_*"]` for Claude Code on Bedrock) |
 | `schemaKeywords` | **ODW extension.** What happens to keywords in an `agent()` schema that ODW's validator does not check. `"warn"` (default): the call runs, ODW checks the rest, and the run logs once which keywords, where, and who enforces them (an adapter's CLI that takes schemas natively, `flags.schema`, else nobody). `"strict"`: the call fails before it starts, naming each one. A malformed schema fails in either mode. A `checkpoint()` `schema` (what an edited payload must match) is held to the same rule. See [native structured output](#native-structured-output) |
@@ -197,6 +210,9 @@ did-you-mean hint) instead of silently ignoring them.
 | `permissionArgs` | **ODW extension.** Each tier's flags: `{ "read"?: [...], "edit": [...], "full"?: [...] }` (`edit` required, `[]` for none), put where the command has a `{permission_args}` element — which it must have exactly when this is set |
 | `permissions` | **ODW extension.** Caps this adapter's tier below the run's: its agents get the lower of the two |
 | `permissionDenials` | **ODW extension.** `"warn"` or `"fail"`: this CLI's own `permissionDenials`, over the run-wide setting |
+| `trust` | **ODW extension.** `"untrusted"`: this adapter runs untrusted in every run (`"trusted"` cannot loosen an untrusted run) |
+| `untrustedArgs` | **ODW extension.** The flags that keep the repository's instructions, settings, hooks and MCP servers from this CLI, added after its tier's flags at `{permission_args}` when it runs untrusted. Absent: the run says once that it keeps nothing out. Setting it on a built-in drops the built-in's `untrustedNote` |
+| `untrustedNote` | **ODW extension.** What an untrusted run still lets reach this CLI from the repository, logged once per run |
 
 ### Output formats
 

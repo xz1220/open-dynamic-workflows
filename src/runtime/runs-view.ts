@@ -27,14 +27,14 @@
  */
 
 import { isPermissionTier } from "../adapters/permissions.js";
-import type { PermissionTier } from "../adapters/types.js";
+import type { PermissionTier, TrustLevel } from "../adapters/types.js";
 import { addUsage, readUsage, type Usage } from "../adapters/usage.js";
 import type { AgentChanges } from "../changes.js";
 import type { WaitingCheckpoint } from "../checkpoint.js";
 import type { WorkflowEvent } from "../events.js";
 import { readCliVersion, type CliVersion } from "../provenance.js";
 import { pausedForOf, type PausedFor } from "../quota-wait.js";
-import { RunStore, TERMINAL_STATES } from "./run-store.js";
+import { RunStore, TERMINAL_STATES, type EvalRunTag } from "./run-store.js";
 
 export type AgentState = "running" | "done" | "failed" | "stale";
 
@@ -108,6 +108,11 @@ export interface AgentView {
    * agent_started's `permissions`. Absent for older event files.
    */
   permissions?: PermissionTier;
+  /**
+   * Agents only (ODW extension): `untrusted` when its CLI runs untrusted —
+   * agent_started's `trust` (see adapters/trust.ts). Absent: trusted.
+   */
+  trust?: TrustLevel;
   /**
    * Agents only (ODW extension): the adapters it fell back from, in order —
    * their quota was spent or their login refused — before `adapter`, the one
@@ -209,6 +214,16 @@ export interface RunSummary {
    * absent for Claude Code runs.
    */
   pausedFor?: PausedFor | null;
+  /**
+   * The run is a shared bundle opened by `odw serve --open FILE.odwrun` (ODW
+   * extension; see ./bundle): when it was bundled and by which odw. Absent otherwise.
+   */
+  bundle?: { bundledAt: number | null; odwVersion: string | null };
+  /**
+   * A run `odw eval` started (meta.origin "eval"; ODW extension): the eval's
+   * name, the case, the adapter and the repeat. Absent for every other run.
+   */
+  eval?: EvalRunTag;
 }
 
 export interface RunDetail extends RunSummary {
@@ -359,6 +374,7 @@ export function applyAgentEvent(
       branch: null,
     };
     if (isPermissionTier(ev.permissions)) opened.permissions = ev.permissions;
+    if (ev.trust === "untrusted") opened.trust = "untrusted";
     agents.push(opened);
     return { opened };
   }
@@ -678,7 +694,23 @@ export function summaryFrom(runId: string, facts: RunFacts): RunSummary {
     waiting: state === "waiting" ? oldestWaiting(fold) : null,
     // Only a live paused run waits for a quota; a stale one's worker is gone.
     pausedFor: state === "paused" ? pausedForOf(status.pausedFor) : null,
+    ...(meta.bundle ? { bundle: bundleOf(meta.bundle) } : {}),
+    ...evalTagOf(meta),
   };
+}
+
+/** meta.bundle as a summary carries it: a shared bundle's when and by which odw. */
+function bundleOf(value: unknown): { bundledAt: number | null; odwVersion: string | null } {
+  const b = (value !== null && typeof value === "object" ? value : {}) as Record<string, unknown>;
+  return { bundledAt: asNumber(b.bundledAt), odwVersion: typeof b.odwVersion === "string" ? b.odwVersion : null };
+}
+
+/** `{ eval }` for a run `odw eval` started, as its meta.json names it; `{}` for any other. */
+export function evalTagOf(meta: Record<string, unknown>): { eval?: EvalRunTag } {
+  const tag = meta.eval as Partial<EvalRunTag> | null | undefined;
+  if (meta.origin !== "eval" || !tag || typeof tag !== "object") return {};
+  if (typeof tag.name !== "string" || typeof tag.case !== "string" || typeof tag.adapter !== "string") return {};
+  return { eval: { name: tag.name, case: tag.case, adapter: tag.adapter, repeat: typeof tag.repeat === "number" ? tag.repeat : 1 } };
 }
 
 /** The oldest checkpoint a fold has waiting, as status.json's `waiting` names it. */

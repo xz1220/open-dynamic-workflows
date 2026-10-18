@@ -9,7 +9,7 @@
  * the active view. Defensive throughout — a failed fetch never crashes the
  * window, it just leaves the last-known state and flips `conn`.
  */
-import { api } from "./api";
+import { api, HttpError } from "./api";
 import { parseDiff, type ParsedDiff } from "./components/diff";
 import type {
   ActivityEvent,
@@ -18,6 +18,8 @@ import type {
   ChatSession,
   ChatSessionSummary,
   Connection,
+  EvalReport,
+  EvalReportSummary,
   RunComparison,
   RunDetail,
   RunSummary,
@@ -49,6 +51,10 @@ class Store {
   // Default writable = true (the loopback common case) until the probe answers,
   // so local use never flashes a read-only UI on first paint.
   capabilities: Capabilities = { writable: true };
+  /** The server wants a token (`odw serve --token`) this browser has not given: show the token screen. */
+  needsToken = false;
+  /** Why the last token was refused ("wrong" | "locked"), for the token screen. */
+  tokenError: "wrong" | "locked" | null = null;
   run: RunDetail | null = null;
   runEvents: WorkflowEvent[] = [];
   result: unknown = undefined;
@@ -158,6 +164,14 @@ class Store {
         this.conn = "reconnecting";
         this.emit();
         es.close();
+        // The token may be what failed (a server restarted with a new one): ask, and stop retrying if so.
+        if (this.capabilities.auth === "token") {
+          void this.loadCapabilities().then(() => {
+            if (!this.needsToken) setTimeout(() => this.connect(), this.backoff);
+          });
+          this.backoff = Math.min(this.backoff * 2, 15000);
+          return;
+        }
         const wait = this.backoff;
         this.backoff = Math.min(this.backoff * 2, 15000);
         setTimeout(() => this.connect(), wait);
@@ -197,10 +211,26 @@ class Store {
   async loadCapabilities(): Promise<void> {
     try {
       this.capabilities = await api.capabilities();
+      this.needsToken = false;
       this.emit();
-    } catch {
-      /* keep the optimistic default; a failed write still surfaces its 409 */
+    } catch (err) {
+      // 401: reads need a token this browser has not given (odw serve --token).
+      if (err instanceof HttpError && err.status === 401) {
+        this.needsToken = true;
+        this.capabilities = { writable: false };
+        this.es?.close();
+        this.emit();
+      }
+      /* otherwise keep the optimistic default; a failed write still surfaces its 409 */
     }
+  }
+
+  /** Give the server a token: it answers with its cookie. True when it took it. */
+  async signIn(token: string): Promise<boolean> {
+    const answer = await api.signIn(token.trim()).catch(() => "wrong" as const);
+    this.tokenError = answer === "ok" ? null : answer;
+    this.emit();
+    return answer === "ok";
   }
 
   async loadSettings(): Promise<void> {
@@ -437,6 +467,37 @@ class Store {
   }
 
   /** Refresh the scheduled runs; repaints only when something changed. */
+  /** The kept eval reports (null until loaded), and the one on screen by "name/id". */
+  evals: EvalReportSummary[] | null = null;
+  evalReport: { key: string; value: EvalReport | null; error: string | null } | null = null;
+
+  async loadEvals(): Promise<void> {
+    let next: EvalReportSummary[];
+    try {
+      next = await api.evals();
+    } catch {
+      next = []; // an older server keeps no reports
+    }
+    if (JSON.stringify(next) === JSON.stringify(this.evals)) return;
+    this.evals = next;
+    this.emit();
+  }
+
+  /** Reports never change once written: load one once. */
+  async loadEvalReport(name: string, id: string): Promise<void> {
+    const key = `${name}/${id}`;
+    if (this.evalReport?.key === key && (this.evalReport.value || this.evalReport.error)) return;
+    this.evalReport = { key, value: null, error: null };
+    this.emit();
+    try {
+      const value = await api.evalReport(name, id);
+      if (this.evalReport?.key === key) this.evalReport = { key, value, error: null };
+    } catch (err) {
+      if (this.evalReport?.key === key) this.evalReport = { key, value: null, error: (err as Error).message };
+    }
+    this.emit();
+  }
+
   /** Load (or refresh) what changed between runs `a` and `b`. */
   async loadCompare(a: string, b: string): Promise<void> {
     const key = `${a}/${b}`;

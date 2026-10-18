@@ -693,6 +693,127 @@ in call order, so a prompt built from `Date.now()`/`Math.random()`, or a
 dispatch that depends on completion timing, does not match and runs again.
 `odw rerun` starts over without replaying anything.
 
+## odw eval (ODW extension)
+
+`odw eval` runs one workflow over a set of cases, on one or more adapters,
+several times each, judges every run with checks that need no model, and
+reports pass rate, cost and latency per case × adapter. It is an ODW
+extension: Claude Code has no counterpart.
+
+```bash
+odw eval <file|name> [--adapter a,b] [--repeats N] [--json] [--out report.json]
+                     [--baseline report.json] [--config P] [--runs-root DIR]
+```
+
+`<name>` is `.odw/evals/<name>.json` in the current directory (tracked by git
+like `.odw/workflows/`); anything ending in `.json` or holding a path
+separator is a file path. `--adapter` (comma-separated, or repeated) and
+`--repeats` override the file's.
+
+### The eval file
+
+```json
+{
+  "name": "review",
+  "description": "optional",
+  "workflow": "review",
+  "adapters": ["claude", "codex"],
+  "repeats": 3,
+  "concurrency": 2,
+  "budget": 200000,
+  "timeout": 900,
+  "cases": [
+    { "name": "small-diff", "args": { "diff": "…" }, "checks": [{ "state": "done" }] }
+  ]
+}
+```
+
+| Key | Meaning |
+| --- | --- |
+| `workflow` | required: a workflow name or a script path, resolved exactly like `odw run`'s, from the directory `odw eval` runs in |
+| `cases` | required, non-empty: `{ name, args?, checks? }`; names unique, at most 100 characters |
+| `adapters` | optional: each runs the whole case set as the run's default adapter (`odw run --adapter`); absent: the config's default adapter, named in the report |
+| `repeats` | runs per case per adapter, 1–1000 (default 1) |
+| `concurrency` | runs at once, 1–64 (default 1); jobs go in adapter, case, repeat order |
+| `budget` | optional: tokens, each run's `--budget` (`budget.total` in the script) |
+| `timeout` | optional: seconds a run may take; then it is stopped (`odw stop`) and fails with a `timeout` failure |
+| `name` | optional: the eval's name (letters, digits, `.`, `_`, `-`); else the file name without `.json` |
+| `description` | optional text, kept in the report |
+
+Any other key, a malformed check, path or regex is a `ConfigError` naming
+where it is (`cases[1].checks[0].path: …`), and `odw eval` exits 2 before any
+run starts — as it does for an unknown adapter, a workflow that does not
+resolve or load, or a baseline that is not a report.
+
+### Checks
+
+A check is an object with exactly one of these shapes. A run passes when it
+meets every check of its case. A case without `checks` gets
+`[{ "state": "done" }]`; a case that lists checks gets exactly those (add
+`{ "state": "done" }` when you want it too).
+
+| Check | Passes when |
+| --- | --- |
+| `{ path, equals }` | the value at `path` deep-equals `equals` (key order aside) |
+| `{ path, contains }` | a string there contains the string; an array there has an element deep-equal to it |
+| `{ path, matches, flags? }` | a string there matches the regex (flags out of `i m s u`); another value is matched as its JSON |
+| `{ path, exists }` | `true`: `path` leads to a value (`null` counts); `false`: it does not |
+| `{ command, timeout? }` | the shell command exits 0, run in the project directory with `ODW_RESULT` (a temp file holding the run's result as JSON; `null` when it did not finish `done`), `ODW_RUN_ID`, `ODW_EVAL_NAME`, `ODW_EVAL_CASE`, `ODW_EVAL_ADAPTER`, `ODW_EVAL_REPEAT`; killed after `timeout` seconds (default 300) |
+| `{ state }` | the run ended `"done"`, `"failed"` or `"stopped"` |
+| `{ maxCostUsd }` | the run's agents cost at most that, as their CLIs reported it; an unknown cost fails |
+| `{ maxSeconds }` | the run took at most that, from its `run_started` event to its end |
+
+`path` is dot/bracket notation into the run's return value: `verdict`,
+`findings[0].file`, `items.2` (a digit key indexes an array),
+`["odd.key"]`, `['odd key']`; `""` is the whole result. Only own keys are
+followed.
+
+### The runs
+
+Every case × adapter × repeat is a real odw run in the run store, started like
+`odw run` from the current directory with the cell's adapter as `--adapter`
+(none for the config's default) and the eval's `budget`. Its `meta.json` has
+`origin: "eval"` and `eval: { name, case, adapter, repeat }`; `odw list`
+shows `(eval <name> · <case> · <adapter> #<repeat>)` and `GET /api/runs`
+summaries carry `eval`. A `checkpoint()` the run reaches waits for an answer
+like any run's (progress names it); give the eval a `timeout`.
+
+Ctrl-C (SIGINT, SIGTERM, SIGHUP) stops every run the eval started — a stop
+request each — waits up to 30 seconds for them to end (a second Ctrl-C does
+not wait), keeps no report, and ends `odw eval` by that signal.
+
+### Output and exit codes
+
+Progress is a line per finished run on stderr. Then stdout gets the table —
+per case × adapter: pass k/n, median wall time, total and mean cost, mean
+tokens (input + output); the totals; each failed run with its run id and every
+check it missed — or, with `--json`, the report. With `--baseline`, a second
+table gives each cell's pass rate (A → B) and B − A of pass rate, mean cost and
+median time, then the cells that regressed.
+
+Exit 0 when every run passed — or, with `--baseline`, when no cell's pass rate
+fell below the baseline's (failures that were there before are no
+regression); 1 otherwise; 2 for a usage error.
+
+### The report
+
+Kept as `<runsRoot>/_evals/<name>/<id>.json`, written to `--out`, printed by
+`--json`, read back by `--baseline`; `GET /api/evals` lists the kept ones
+(newest first) and `GET /api/evals/:name/:id` serves one, read only. Keys:
+
+- `version` (1), `name`, `id` (start time, then 6 hex digits), `file`, `description`
+- `evalHash`: sha256 of the definition as run (keys sorted, flags applied); `definition`: that definition
+- `workflow`: `{ ref, script, sourceHash }`; `odwVersion`; `cliVersions`: `{ <adapter>: [versions the runs' cli_version events recorded] }`
+- `startedAt`, `finishedAt` (ISO 8601), `wallMs`
+- `totals`: `{ runs, passed, failed, passRate, costUsd, inputTokens, outputTokens }`
+- `cells`: `[{ case, adapter, runs, passed, passRate, medianMs, costUsd, meanCostUsd, meanTokens, runIds }]`
+- `runs`: `[{ runId, case, adapter, repeat, state, passed, timedOut, wallMs, inputTokens, outputTokens, costUsd, estimated, cliVersions, error, failures: [{ check, message }] }]`
+- `baseline`: null, or `{ file, name, id, evalHash, sameDefinition, cells: [{ case, adapter, status, passRate, meanCostUsd, medianMs }], regressed: [{ case, adapter }] }` — each figure `{ a, b, delta }` (A the baseline, delta B − A); `status` is `regressed` (pass rate fell), `improved`, `unchanged`, `new` or `missing`
+
+Costs and tokens are summed and averaged over the runs whose CLIs reported
+them, and null when none did. Any two run ids open side by side with
+`odw compare <runA> <runB>`.
+
 ## Limits
 
 - **Concurrency cap** — at most N agent CLIs run at once (`min(16, cpus-2)` by

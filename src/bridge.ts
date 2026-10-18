@@ -88,6 +88,7 @@ import {
 } from "./adapters/failures.js";
 import { planPermissions, readCapableAdapter, runTier, spliceArgs, type PermissionPlan } from "./adapters/permissions.js";
 import { nativeSchemaArgs, planSchema, type NativeSchemaArgs } from "./adapters/native-schema.js";
+import { planTrust, runTrust } from "./adapters/trust.js";
 import { expand, expandAll, type PlaceholderContext } from "./adapters/placeholders.js";
 import {
   AdapterOutputDecoder,
@@ -250,6 +251,13 @@ export interface BridgeOptions {
    * It must return at once: the CLI does not wait for it.
    */
   onCliRun?: (adapter: Adapter) => void;
+  /**
+   * Told what the whole run should log once, not against one agent — what an
+   * untrusted run still lets reach an adapter's CLI, a `.worktreeinclude`
+   * link it refused (ODW extension: trust) — with the fields to log it with.
+   * Absent, the note goes to the call's `onNote`.
+   */
+  onRunNote?: (message: string, fields: Record<string, unknown>) => void;
 }
 
 /** What the scheduler hands one call; all optional, so a bare `run(request)` works. */
@@ -483,6 +491,9 @@ export class Bridge {
   /** What this run has said about a quota it would not wait for: each once. */
   private readonly quotaNotes = new Set<string>();
   private readonly onCliRun: ((adapter: Adapter) => void) | undefined;
+  /** What this untrusted run has said about the repository reaching its agents (ODW extension: trust): each once. */
+  private readonly trustNotes = new Set<string>();
+  private readonly onRunNote: ((message: string, fields: Record<string, unknown>) => void) | undefined;
 
   constructor(
     private readonly config: Config,
@@ -498,7 +509,8 @@ export class Bridge {
     this.agentSchemaPath = options.agentSchemaPath;
     this.redactor = options.redactor;
     this.onCliRun = options.onCliRun;
-    this.ports = new PortPool(...config.settings.portRange);
+    this.onRunNote = options.onRunNote;
+    this.ports =new PortPool(...config.settings.portRange);
     this.quota = new QuotaWaits({
       now: this.now,
       sleep: this.sleep,
@@ -523,6 +535,22 @@ export class Bridge {
   adapterFor(name?: string | null): Adapter {
     if (name || this.config.settings.defaultAdapter) return resolveAdapter(this.config, name);
     return (this.autoPicked ??= resolveAdapter(this.config, null));
+  }
+
+  /**
+   * Say `message` once per run (`key`): to the run's log when the bridge has
+   * one (`onRunNote`), else against the call that came across it first.
+   */
+  private noteOnce(
+    key: string,
+    message: string,
+    fields: Record<string, unknown>,
+    onNote: ((message: string) => void) | undefined,
+  ): void {
+    if (this.trustNotes.has(key)) return;
+    this.trustNotes.add(key);
+    if (this.onRunNote) this.onRunNote(message, fields);
+    else onNote?.(message);
   }
 
   /**
@@ -844,6 +872,11 @@ export class Bridge {
     // it, or whose CLI cannot enforce it, never reaches a workspace or a process.
     const permissions = this.permissionsFor(adapter, request.permissions);
     if (permissions.error) throw new AgentError(permissions.error);
+    // Untrusted (ODW extension; see adapters/trust.ts): the CLI's own way of
+    // ignoring the repository goes after its tier's flags — and what it
+    // cannot keep out is said once per adapter, never silently.
+    const trust = planTrust(adapter, runTrust(this.config));
+    if (trust.note) this.noteOnce(`trust:${adapter.name}`, trust.note, { adapter: adapter.name, trust: trust.trust }, shared.onNote);
     // So is the schema (ODW extension; see adapters/native-schema.ts): a
     // malformed one never starts, nor, under "strict", one with keywords ODW
     // does not check (else logged once); a CLI that validates schemas itself
@@ -857,7 +890,8 @@ export class Bridge {
     const schemaFile = options.agentId !== undefined ? this.agentSchemaPath?.(options.agentId) : undefined;
     const call: CallEnv = {
       ...shared,
-      permissionArgs: permissions.args,
+      permissionArgs: [...permissions.args, ...trust.args],
+      untrusted: trust.trust === "untrusted",
       schema: schema?.native ? { flag: schema.native, value: request.schema!, file: schemaFile } : undefined,
       // Tool calls the CLI refused fail a run at once only under "fail", and
       // not with `expect`, which counts them as a miss (ODW extensions).
@@ -1313,6 +1347,11 @@ export class Bridge {
       env: withAgentVars(process.env, call.env),
       signal,
       onNote: call.onNote,
+      // Untrusted (ODW extension: trust): `symlink:` lines of the
+      // repository's `.worktreeinclude` link nothing; the run says so once.
+      untrusted: call.untrusted === true,
+      onRefused: (message: string) =>
+        this.noteOnce(`refused:${message}`, message, { trust: "untrusted" }, call.onNote),
     };
     return withWorkspace(this.source, plan.workspaceMode, async (ws) => {
       let promptFile = "";
@@ -1400,6 +1439,8 @@ interface CallEnv {
   changes?: ChangeSink;
   transcript?: TranscriptSink;
   permissionArgs?: string[];
+  /** The CLI runs untrusted (ODW extension: trust): its worktree links nothing the repository's `.worktreeinclude` asks for. */
+  untrusted?: boolean;
   /** Told when a CLI run starts answering (see RunOptions.onOutput). */
   onOutput?: () => void;
   /** The schema the CLI takes natively (ODW extension), and where its file goes in `file` mode. */

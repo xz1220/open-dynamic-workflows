@@ -316,6 +316,7 @@ ODW 已实现下列原语能力。依赖宿主私有运行机制的脚本,迁移
 odw run wf.js [--args JSON|@file]            # 终端里前台展示;运行本体仍是独立 worker
                                              #   --adapter <name> 指定这次运行的默认 agent
                                              #   --permissions read|edit|full:agent 能做什么
+                                             #   --untrusted:挡住仓库的 CLAUDE.md、hooks 等
                                              #   --budget <tokens> 设置 budget.total
 ```
 
@@ -333,7 +334,9 @@ odw logs $RUN --agent 3  # 某个 agent 做了什么:它的工具调用、结果
 odw result $RUN          # 最终值
 odw diff $RUN --stat     # 隔离 agent 改了什么;odw apply $RUN --agent N(或 --all)落地
 odw compare $OLD $RUN    # 两次运行之间变了什么:配置、耗时、花费、失败、回复(见下文)
+odw eval review          # 用例 × 适配器 × 重复次数:每个单元格的通过率、花费与耗时(见下文)
 odw export $RUN --otlp   # 把运行导出为 OpenTelemetry trace(OTLP/JSON;--send 直接发送;见下文)
+odw bundle $RUN          # 把运行写成一个可分享的脱敏文件:$RUN.odwrun(用 odw view FILE 查看;见下文)
 odw pause|resume|stop $RUN
 odw approve|reject $RUN  # 回答运行正在等待的 checkpoint()(--note TEXT、--checkpoint N)
 odw approve $RUN --edit  # ……先在 $EDITOR 里修改 payload 再批准(或 --payload JSON|@file)
@@ -352,12 +355,36 @@ SIGHUP,效果与 `odw stop` 相同:它的 agent 连同其启动的所有进程�
 的目录和 Claude Code 保存 workflow 的目录: `.odw/workflows`、`.claude/workflows`、
 `~/.odw/workflows`、`~/.claude/workflows`(遵循 `CLAUDE_CONFIG_DIR`)。
 
+**来自 Claude Code 插件的 workflow**(ODW 扩展)。Claude Code 插件可以自带 workflow——放在
+它的 `workflows/` 目录,或 `plugin.json` 的 `"workflows"` 指向的位置。ODW 能运行你已安装
+并启用的插件所带的 workflow,名字与 Claude Code 给它们的一致:
+
+```bash
+odw workflows list --plugins          # <plugin>:<name>,以及来自哪个插件、版本和作用域
+odw run acme-tools:release-audit      # 就地运行,直接读插件自己的目录
+```
+
+ODW 读取 `~/.claude/plugins/installed_plugins.json`(遵循 `CLAUDE_CONFIG_DIR` 和
+`CLAUDE_CODE_PLUGIN_CACHE_DIR`;project 或 local 作用域的安装只在其项目内生效),以及你的
+`~/.claude/settings.json`、项目的 `.claude/settings.json` 和 `.claude/settings.local.json`
+里的 `enabledPlugins`(没有条目的插件按其 `defaultEnabled`)。它只读不写:插件的文件从不
+被修改,脚本走与其他 workflow 相同的加载器——`meta` 不是纯字面量的脚本会被略过(Claude
+Code 也会略过它),运行会在日志里写明 workflow 来自哪里、用到了哪些 ODW 独有的原语。只有当
+没有项目级或个人级 workflow 同名、且只有一个插件提供该名字时,裸名字才会运行插件的
+workflow;项目里有同名 workflow 时运行项目的那个,并提示
+`run acme-tools:release-audit for the plugin's`。`GET /api/workflows` 以 provider
+`claude-plugin:<plugin>` 列出它们,运行记录归在 `<plugin>:<name>` 下。在
+[不受信任](#不受信任的仓库odw-扩展)的运行中插件 workflow 照常可用——它们是你自己安装的——
+但仓库的设置只能禁用插件,不能启用;名字也不会解析到仓库自己的 `.odw/workflows` 或
+`.claude/workflows`(给出路径仍可运行)。
+
 **喜欢用浏览器?** `odw serve` 会对同一个 run 目录开一个零依赖的实时看板——每次运行都是一张
 实时图,还有时间线、日志和结果,全部通过 SSE 推送。无需构建,不引入额外依赖,加载时不访问网络。
 
 ```bash
 odw serve [--open]                      # 实时看板,默认 http://127.0.0.1:4317
-odw serve --port 8080 --host 0.0.0.0    # 自定义端口 / 绑定地址
+odw serve --port 8080 --host 0.0.0.0 --token   # 远程只读、需要令牌(见「远程只读访问」)
+odw view run.odwrun                     # 只读查看分享的运行包(见「分享一次运行」)
 ```
 
 ![odw serve —— 一次实时 deep-research 运行:五个阶段泳道(Plan → Search → Extract → Vote → Report)绘制成图,运行中的 agent 沿边传递信号,带运行计数与阶段步进条](assets/odw-dashboard.gif)
@@ -590,7 +617,68 @@ odw compare $OLD $NEW --json           # 同一份对比,供脚本使用——GE
 第一次派发 agent 时——与 agent 并行执行、3 秒超时的 `<cli> --version`,记为 `cli_version`
 事件(`odw status` 和 `GET /api/runs/:id` 的 `cliVersions` 会显示)。它绝不拖慢或导致运行失败;
 不回应的 CLI 记为未知版本。命令为 node 或其他解释器、脚本或相对路径的适配器不做探测。
-`"recordVersions": false` 关闭探测。下一步的 `odw eval`(用例 × 适配器 × 重复次数)将基于此构建。
+`"recordVersions": false` 关闭探测。`odw eval`(见下文)就建立在这些记录之上。
+
+### 评估工作流(ODW 扩展)
+
+改了提示词、模型分层或 CLI 之后,想知道工作流是否仍然把事情做对——可复现,并且在你用的每个
+CLI 上都成立?把几个用例写进一个 eval 文件,`odw eval` 会让每个用例在每个适配器上各跑若干次,
+并逐次判定:
+
+```bash
+odw eval review                          # .odw/evals/review.json;也可以给路径:odw eval examples/evals/routing.json
+odw eval review --adapter claude,codex --repeats 5   # 覆盖文件里的 adapters 与 repeats
+odw eval review --json --out today.json  # 以 JSON 输出报告(stdout 和文件)
+odw eval review --baseline today.json    # 与之前的报告对比;有单元格退步时以 1 退出
+```
+
+```json
+{
+  "workflow": "review",
+  "adapters": ["claude", "codex"],
+  "repeats": 3,
+  "concurrency": 2,
+  "timeout": 900,
+  "cases": [
+    { "name": "small-diff", "args": { "diff": "…" },
+      "checks": [
+        { "state": "done" },
+        { "path": "verdict", "equals": "approve" },
+        { "path": "findings[0].file", "matches": "\\.ts$" },
+        { "command": "jq -e '.findings | length < 5' \"$ODW_RESULT\"" },
+        { "maxCostUsd": 0.5 }, { "maxSeconds": 300 }
+      ] }
+  ]
+}
+```
+
+- **文件**:`workflow`(名字或路径,与 `odw run` 一样从运行 `odw eval` 的目录解析)、`cases`
+  (`name`、`args`、`checks`),以及可选的 `adapters`(每个适配器都以运行默认适配器的身份跑完
+  全部用例,等同 `odw run --adapter`;省略时用配置的默认适配器)、`repeats`(默认 1)、
+  `concurrency`(同时进行的运行数,默认 1)、`budget`(token,作为每次运行的 `--budget`)、
+  `timeout`(秒;到时仍在进行的运行会被停止并判为失败)、`name` 与 `description`。文件会被严格
+  校验——未知字段、错误的路径或正则都会报错并指出位置——在任何运行开始之前。
+- **检查**只看运行结果,不调用模型:`{ path, equals }`(深度相等)、`{ path, contains }`(子串,
+  或数组中的某个元素)、`{ path, matches, flags? }`(正则;非字符串值按其 JSON 匹配)、
+  `{ path, exists }`(`true`,或 `false` 表示"不存在")、`{ command, timeout? }`(在项目目录中由
+  shell 执行并以 0 退出,环境变量 `ODW_RESULT`——存放结果 JSON 的文件——与 `ODW_RUN_ID` 已设置;
+  默认 300 秒)、`{ state: "done" | "failed" | "stopped" }`、`{ maxCostUsd }`(花费未知即不通过)
+  和 `{ maxSeconds }`(运行从开始到结束)。路径用点/方括号写法指向结果:`verdict`、
+  `findings[0].file`、`["odd key"]`;`""` 表示整个结果。没写检查的用例默认 `{ "state": "done" }`;
+  写了检查的用例只判这些检查,全部满足才算通过。
+- **运行**:每个用例 × 适配器 × 重复都是运行目录里的一次真实运行,从当前目录启动,在 `meta.json`
+  中标记 `origin: "eval"` 与 `eval: { name, case, adapter, repeat }`——`odw list` 和看板的运行摘要
+  都会显示。同时最多 `concurrency` 个。每完成一次运行在 stderr 打印一行进度;Ctrl-C 会停止本次
+  eval 启动的所有运行,不保存报告,并结束 `odw eval`。
+- **表格**:每个用例 × 适配器一行——通过 k/n、耗时中位数、总花费与平均花费、平均 token;然后是
+  总计;再列出每个失败的运行、它没通过的检查与运行 id——任意两次运行都可以用 `odw compare` 对照。
+- **报告**(JSON,`version: 1`;`src/eval/report.ts` 列出每个字段)包含定义及其 sha256
+  (`evalHash`)、工作流的 sha256、odw 版本、运行记录到的 CLI 版本、各单元格,以及每次运行的 id
+  和失败项。报告保存在 `<runsRoot>/_evals/<name>/<id>.json`——`GET /api/evals` 列出、
+  `GET /api/evals/:name/:id` 返回单份,均只读——并写到 `--out`。
+- **`--baseline <report.json>`** 按用例与适配器把每个单元格与之前的报告对比:通过率、平均花费、
+  耗时中位数,B − A。通过率下降的单元格即为退步。退出码:全部运行通过——或带 `--baseline` 时没有
+  单元格退步——为 0;否则为 1;用法错误为 2(没有任何运行开始)。
 
 ### 可观测性:OpenTelemetry trace(ODW 扩展)
 
@@ -665,6 +753,40 @@ docker run --rm -d -p 16686:16686 -p 4318:4318 jaegertracing/all-in-one
 echo '{ "otel": { "endpoint": "http://localhost:4318" } }' > odw.config.json
 odw run wf.js            # 已有的运行则用:odw export $RUN --otlp --send
 ```
+
+### 分享一次运行(ODW 扩展)
+
+把一次运行给同事看、附到 issue 里,或在运行目录删掉之后留个底:`odw bundle` 把运行写成
+**一个自包含、已脱敏的文件**,`odw view` 在看板上只读地展示它——不需要 odw 配置、不需要
+运行目录,也不带出生成它的那台机器的任何其他东西。
+
+```bash
+odw bundle $RUN                       # → ./$RUN.odwrun
+odw bundle $RUN --out run.odwrun --no-transcripts   # 不带 agent 的 transcript
+odw view run.odwrun                   # 即 odw serve --open run.odwrun:在浏览器中打开这次运行
+```
+
+- **里面有什么。** 一个 JSON 对象(`"format": "odw-run-bundle"`、`"version": 1`):运行的
+  meta(名字、脚本、args、source、适配器、odw 版本、工作流 sha256、时间)、status、全部事件、
+  每个 agent 保存的结果、保留的 diff、agent 的 transcript 与 stderr(`--no-transcripts` 去掉)、
+  结果与错误。
+- **始终脱敏。** 其中的一切——包括 args——都经过运行的脱敏器:令牌形态、odw 启动 agent 所用
+  环境(你自己的与各适配器的 `env`)中名字像密钥的变量的值、名字像密钥的 `NAME=value`,以及你的
+  `redact.extra`——即使配置写了 `"redact": false` 也照样脱敏。有内容被替换的部分标
+  `redacted: true`,整个包也一样。保留的 diff 同样脱敏,所以包里的 diff 用于阅读,不能拿去
+  `odw apply`。
+- **绝不包含:** 配置文件及其路径、环境变量、`notify` 与 `otel` 设置、worker 的 pid、worker 日志、
+  运行的控制文件。(提示词本来就不在运行记录里,所以也不在包里。)分享之前先 `odw view` 看一遍。
+- **有大小上限。** 超过 32 MiB 的包会被拒绝,并给出大小和办法——`--no-transcripts`,或用
+  `--max-bytes N` 提高上限(`odw view` 也接受这个参数)。
+- **打开时不信任文件里的任何内容。** 读取前先检查大小;检查格式、版本和每个字段的类型;运行 id
+  必须是合法的运行 id(`[A-Za-z0-9._-]`,不能是 Claude Code 的 `cc-` id),每个 agent id 必须是
+  非负整数,最多 10 000 个 agent。它被解包到一个全新的私有临时目录(权限 0700),文件名固定——
+  文件里写的任何东西都不会变成路径——并在 `odw view` 退出时删除。看板只展示这一次运行,标为
+  **分享的运行包**:没有其他运行、没有 Claude Code 运行、工作流、定时任务或本机设置,所有写操作
+  一律拒绝(409),在 loopback 上也是如此。
+
+看板上运行的 **分享** 按钮会复制 `odw bundle <run>`。
 
 ## 看板:观测、检查、对话
 
@@ -743,6 +865,42 @@ odw logs --workflow adversarial-verify --follow
 仍由 loopback server 保护。Claude Code 自己的运行始终严格只读。看板提供的 ODW agent
 内容——transcript、结果、日志——在写下之前已对疑似密钥脱敏
 (见 [ODW 所保存内容中的密钥](#odw-所保存内容中的密钥odw-扩展))。
+
+### 远程只读访问(ODW 扩展)
+
+在手机上看一夜的运行,又不把你的机器交给任何人:
+
+```bash
+odw serve --host 0.0.0.0 --token
+# odw dashboard → http://192.168.1.20:4317/#token=Xq3…   ← 打开这个;它只打印一次
+```
+
+`--token` 不带值时,odw 生成一个 256 位的随机令牌,并把带令牌的 URL 以 `#token=…` 的形式打印
+一次——这是 URL 片段,任何请求都不会携带它,所以令牌不会进入服务器或代理的日志;odw 也不会把它
+写到别处。`--token VALUE`(16–256 个 `A-Z a-z 0-9 . _ ~ -` 字符)使用你给的令牌且从不打印——但它
+会出现在进程列表里,所以在共享的机器上请用生成的令牌。
+
+安全模型:
+
+- **每个 `/api` 请求和实时流都需要令牌**,三种方式任选其一:`Authorization: Bearer <token>`
+  (脚本、`curl`);请求带上 `?token=<token>`,其响应会设置一个 `HttpOnly`、`SameSite=Strict` 的
+  cookie(`odw_token_<端口>`);或者带着这个 cookie。看板加载时用 URL 里的 `#token=` 换取 cookie,
+  并把它从地址栏去掉。没有令牌:401;页面本身照常加载,显示一个"需要令牌"的界面供粘贴。
+- **令牌按常数时间比较**(两边先各自哈希)。一个地址在一分钟内发来 10 个错误令牌后,无论它再发
+  什么都回 429,直到这一分钟过去;完全不带令牌的请求不计数。
+- **非 loopback 绑定上写操作一律拒绝,与令牌无关**:停止或暂停运行、回答检查点、Chat,在
+  127.0.0.1 / localhost / ::1 以外的任何绑定上都是 409。令牌给的是远程*读*,从不给写。(在 loopback
+  绑定上,`--token` 对写操作与读操作同样把关,原有的写保护全部照旧:严格的
+  `Content-Type: application/json`、同源 `Origin`、防 DNS rebinding 的 Host 检查。)
+- **这是明文 HTTP。** 令牌和看板展示的一切都以未加密的形式经过网络:请在你信任的网络中使用,
+  或通过 VPN、SSH 隧道(`ssh -L 4317:localhost:4317 host` 根本不需要 `--host`),或放在 TLS
+  代理后面。
+- **持有令牌的人能读到的**就是看板展示的一切:所有项目的运行——ODW 的,以及在默认
+  `claudeJobsScope: "all"` 下 Claude Code 的——它们的 args、结果、事件、agent 的 transcript 和
+  diff(按上文脱敏),以及设置页上的路径与适配器。用 `--runs-root` 和 `"claudeJobsScope": "project"`
+  缩小范围,或者改为把一次运行作为[运行包](#分享一次运行odw-扩展)分享。
+- **不加 `--token` 时**,非 loopback 绑定与以前一样——只读,任何能连到该端口的人都能读——并且
+  `odw serve` 会打印一条醒目的警告,建议加上 `--token`。
 
 ## 配置适配器
 
@@ -987,7 +1145,8 @@ const reviews = await parallel(files.map((f) => () =>
 视图里、`--wait` 的第一行之后,以及 detached 运行的 run id 之后。每个 `agent_started`
 事件(以及 `odw agents --json`)都带有该 agent 的 `permissions`,`odw doctor` 会列出每个
 适配器支持的档位。档位只约束 agent 能做什么:`exec()` 命令属于 workflow 自身,不受影响。
-`read` 也不是运行不受信任代码的沙箱——比如 Claude Code 在 `-p` 下仍会执行仓库自带的 hooks。
+`read` 也不是运行不受信任代码的沙箱——比如 Claude Code 在 `-p` 下仍会执行仓库自带的 hooks;
+这样的仓库请以[不受信任](#不受信任的仓库odw-扩展)方式运行。
 
 **Codex 与需要审批的 MCP 工具**([#23](https://github.com/xz1220/open-dynamic-workflows/issues/23))。
 没有哪个档位能让 `codex exec` 批准 MCP 工具调用。它不向任何人询问,所以需要审批的工具
@@ -1034,6 +1193,63 @@ approval_mode = "approve"
 如果某个 CLI 在 `minimal` 下无法登录,把它需要的变量加进 `agentEnvPass`
 (`odw doctor --smoke` 会发一次真实调用来检验)。`exec()` 命令、`worktreeSetup` 和
 `notify` 钩子仍拿到完整的环境变量。
+
+### 不受信任的仓库(ODW 扩展)
+
+在别人的仓库上运行 agent 是危险的:仓库里的 CLAUDE.md 或 AGENTS.md 会左右 agent,它的
+hooks、MCP 服务器和项目设置会在 agent 里运行。对这样的仓库以**不受信任**方式运行——
+`odw run|rerun|resume --untrusted`,或在你的配置里写 `"trust": "untrusted"`(默认是
+`"trusted"`;不受信任运行的 rerun 和 resume 仍不受信任)。这时每个 CLI 都以它自己文档
+给出的"忽略仓库"方式运行,参数加在档位参数之后;没有这种方式的 CLI,运行会为每个适配器
+说一次——绝不悄悄降级:
+
+| 适配器 | 不受信任时 | 仍会传给 agent 的 |
+| --- | --- | --- |
+| `claude` | `--safe-mode`(关闭 CLAUDE.md、skills、插件、hooks、MCP 服务器、命令、agents、workflows;认证照常) | 无 |
+| `qwen` | `--safe-mode`(关闭上下文文件、hooks、扩展、skills、MCP 服务器) | 无 |
+| `omp` | `--no-extensions --no-skills --no-rules` | AGENTS.md、CLAUDE.md、hooks、MCP 配置 |
+| `codex` | 没有文档化的方式 | AGENTS.md(它的 `.codex/` 配置、hooks 和 rules 只对你信任过的项目加载) |
+| `gemini` | 没有文档化的方式(它的不受信任文件夹模式在无头下直接退出) | GEMINI.md、`.gemini/settings.json` |
+| `kimi` | 没有文档化的方式 | AGENTS.md、skills |
+| `kilo`、`opencode` | 没有文档化的方式 | AGENTS.md、项目配置、`.kilo/` / `.opencode/` |
+| `cursor` | 没有文档化的方式 | `.cursor/rules`、AGENTS.md、CLAUDE.md、`mcp.json`、hooks |
+
+Claude Code 的 `--bare` 跳过的更多,但它只接受 API key 认证,订阅登录用不了。第一次有
+agent 在 codex 上运行时,运行日志里会出现
+`codex has no documented way to ignore the repository's AGENTS.md — its instructions
+still reach the agent` 这样的一行。
+
+ODW 自己会执行的、属于仓库的代码会被拒绝:仓库 `.worktreeinclude` 里的 `symlink:` 行
+不做任何链接(链接等于把源码树交给 agent;普通行照常复制);仓库内配置(例如它的
+`./odw.config.json`)设置的 `worktreeSetup` 不会运行,日志里会说明。你自己的配置
+(`--config`、`$ODW_CONFIG`,或仓库之外的 `~/.config/odw/config.json`)里的
+`worktreeSetup` 照常运行。ODW 会自行在仓库里找到的配置(它的 `./odw.config.json`)在不受
+信任运行中根本不会读取:其中的适配器命令就是仓库的代码。运行改用你自己的
+`~/.config/odw/config.json`(在仓库之外)或内置默认值,并在日志里说明;用 `--config` 或
+`$ODW_CONFIG` 指定的配置是你自己的选择,照常生效。仓库的配置也无法放宽你在
+`~/.config/odw/config.json` 里设置的 `"trust": "untrusted"`。
+
+```jsonc
+{
+  "trust": "untrusted",
+  "adapters": {
+    "codex": { "trust": "untrusted" },  // 或者:只让这个适配器在每次运行中都不受信任
+    "my_wrapper": {
+      "command": ["my-agent", "{permission_args}", "--cwd", "{workspace}"],
+      "permissionArgs": { "edit": [] },
+      "untrustedArgs": ["--no-project-config"],           // 加在档位参数之后
+      "untrustedNote": "my-agent still reads .my-agent/rules" // 每次不受信任运行说一次
+    }
+  }
+}
+```
+
+启动横幅里有一行信任信息——`trust: untrusted — claude --safe-mode, codex no documented
+way`——`odw doctor` 会显示配置的信任级别,以及每个适配器不受信任时如何运行。不受信任
+agent 的 `agent_started` 事件、保存的结果和 `odw agents --json` 行都带有
+`trust: "untrusted"`,看板的详情抽屉会显示它,运行的 `run_started` setup 也记录 `trust`。
+不受信任不是沙箱:它只在 CLI 允许的地方挡住仓库的指令和配置,agent 能做什么仍由权限
+档位决定。
 
 ### ODW 所保存内容中的密钥(ODW 扩展)
 
@@ -1724,7 +1940,7 @@ node web/dev.mjs --api http://127.0.0.1:4317     # → http://127.0.0.1:5173
 
 按并行 coding agent 用户反馈的需求排序([调研](docs/research/user-needs-2026-10.md)):
 更多 CLI 上报的真实 token 用量与花费(目前 Claude Code 与 Codex 已上报,其余仍按估算)·
-运行 Claude plugin 工作流 · 评测。完整规划见 [`docs/ROADMAP.md`](docs/ROADMAP.md);
+运行 Claude plugin 工作流 · `odw compare` 与 `odw eval` 的看板视图。完整规划见 [`docs/ROADMAP.md`](docs/ROADMAP.md);
 最初的设计见 [`docs/dynamic-workflows-tech-plan.md`](docs/dynamic-workflows-tech-plan.md);
 ODW 所对齐的 Claude Code 方言背景见
 [`docs/dynamic-workflows-research.md`](docs/dynamic-workflows-research.md)。
@@ -1766,7 +1982,8 @@ ODW 也带一个 skill——但 skill 的职责是教你的 agent 写和跑 work
 <summary><b>网页能通过 <code>odw serve</code> 驱动我本机的 agent 吗?</b></summary>
 
 不能。写端点要求 <code>Content-Type: application/json</code> 和同源 Origin,Host 头
-有 allowlist 防 DNS rebinding,绑定到非回环地址时写操作一律拒绝(看板仍可读)。
+有 allowlist 防 DNS rebinding,绑定到非回环地址时写操作一律拒绝(看板仍可读;加上
+<code>--token</code> 后只有持有令牌的人可读)。
 </details>
 
 <details>

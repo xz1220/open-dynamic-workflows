@@ -23,18 +23,23 @@
  *   odw schedule add|list|remove|run …   (recurring runs via the OS scheduler, src/schedule/)
  *   odw compare <runA> <runB> [--json] [--agent <label|id>]   (what changed; runtime/compare)
  *   odw export <run_id> --otlp [--out FILE | --send]   (OpenTelemetry traces, runtime/otel-export.ts)
+ *   odw bundle <run_id> [--out FILE] [--no-transcripts] [--max-bytes N]   (a shareable run, runtime/bundle.ts)
+ *   odw serve FILE.odwrun | odw view FILE   (a bundle, read-only); odw serve --token [VALUE] (runtime/serve-auth.ts)
+ *   odw eval <file|name> [--adapter a,b] [--repeats N] [--json] [--out F] [--baseline F]   (src/eval/)
  */
 
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
+import { networkInterfaces } from "node:os";
 import { basename, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
 import { isOnPath, listAdapters, loadConfig, locateConfig, resolveAdapter, resolveRunsRoot } from "./adapters/config.js";
 import { isPermissionTier, permissionsBanner } from "./adapters/permissions.js";
-import type { Config, PermissionTier } from "./adapters/types.js";
+import { trustBanner } from "./adapters/trust.js";
+import type { Adapter, Config, PermissionTier, TrustLevel } from "./adapters/types.js";
 import { killAllAgentProcesses } from "./adapters/runner.js";
 import { checkEdit } from "./checkpoint.js";
 import { CHECKPOINT_NOTE_MAX, isCheckpointId } from "./control.js";
@@ -61,17 +66,22 @@ import { startRun, startRunFromSource, waitFor } from "./runtime/launcher.js";
 import { attachRun, bannerLines, checkpointCommands, fallbackLines, formatEvent, formatUsage, resolveRunMode, type RunMode } from "./runtime/live-view.js";
 import { isRunActive, RunObserver } from "./runtime/run-liveness.js";
 import { RunStore, TERMINAL_STATES } from "./runtime/run-store.js";
-import { detail, type RunDetail } from "./runtime/runs-view.js";
+import { detail, evalTagOf, type RunDetail } from "./runtime/runs-view.js";
 import { exportRun, exportTimeout, otlpTarget, OTEL_SEND_TIMEOUT_MS, postTrace, spanCount } from "./runtime/otel-export.js";
 import { startServer } from "./runtime/server.js";
+import { BUNDLE_EXT, BundleError, bundleRedactor, createBundle, DEFAULT_BUNDLE_MAX_BYTES, isBundleRunId, openBundle, type OpenedBundle } from "./runtime/bundle.js";
+import { generateToken, isValidToken } from "./runtime/serve-auth.js";
 import { printAgentLogs } from "./runtime/transcript-view.js";
 import { executeRun } from "./runtime/worker.js";
 import { pausedForOf, pausedText } from "./quota-wait.js";
 import { cmdSchedule } from "./schedule/command.js";
+import { cmdEval } from "./eval/command.js";
 import { isSeaBinary } from "./sea.js";
 import { describeConcurrency } from "./throttle.js";
 import { detectCaps, glyphs, palette, sanitizeText } from "./tty.js";
-import { listWorkflows, resolveWorkflow } from "./workflows/resolve.js";
+import { resolveRunTrust } from "./untrusted.js";
+import { pluginOrigin } from "./workflows/plugins.js";
+import { listWorkflows, resolveWorkflow, type ResolvedWorkflow } from "./workflows/resolve.js";
 
 export const COMMANDS = [
   "init",
@@ -96,6 +106,9 @@ export const COMMANDS = [
   "schedule",
   "compare",
   "export",
+  "bundle",
+  "view",
+  "eval",
 ] as const;
 
 export type Command = (typeof COMMANDS)[number];
@@ -130,7 +143,8 @@ export function helpText(): string {
     "                                                     --agent <label|id> shows one agent's whole reply diff",
     "  odw list [--workflow <name>]                       list known runs",
     "  odw serve [--port N] [--host H] [--open]           open the live dashboard in a browser",
-    "  odw workflows list [--project|--global|--all]      list workflows runnable by name",
+    "  odw workflows list [--project|--global|--plugins|--all]  list workflows runnable by name,",
+    "                                                     Claude Code plugins' as <plugin>:<name> (ODW extension)",
     "  odw workflows where <name>                         show the file a name resolves to",
     "  odw pause|resume|stop <run_id>                     control a running workflow",
     "  odw approve|reject <run_id> [--checkpoint N]       answer a checkpoint() the run waits at (--note TEXT)",
@@ -138,6 +152,10 @@ export function helpText(): string {
     "  odw schedule add <name> <workflow> --cron EXPR     run a workflow on a timer via cron/launchd/systemd (below)",
     "  odw schedule list [--json] | remove|run <name>     list schedules; delete one; run one now",
     "  odw export <run_id> --otlp [--out FILE|--send]     the run as OpenTelemetry traces (OTLP/JSON; ODW extension)",
+    "  odw bundle <run_id> [--out FILE] [--no-transcripts] one redacted file to share: <run_id>.odwrun (ODW extension)",
+    "  odw view FILE.odwrun                               show a bundle read-only (odw serve --open FILE.odwrun)",
+    "  odw eval <file|name> [--adapter a,b] [--repeats N] cases × adapters × repeats: pass rate, cost, time (ODW extension)",
+    "                                                     --json, --out report.json, --baseline report.json (exit 1: regressed)",
     "",
     "Options:",
     "  --args JSON|@file   workflow input (JSON, @file.json, or a raw string)",
@@ -146,6 +164,8 @@ export function helpText(): string {
     "  --source <dir>      run's working dir; also anchors a relative script path & project-name lookup",
     "  --adapter <name>    default agent() adapter for this run (explicit agent(p,{adapter}) still wins)",
     "  --permissions <t>   read | edit | full: what this run's agents may do (default edit; ODW extension)",
+    "  --untrusted         keep the repository's CLAUDE.md, hooks, MCP servers and settings from agents where",
+    "                      each CLI allows (claude --safe-mode), say where one cannot (ODW extension)",
     "  --fg                run in the foreground: live progress on a TTY, plain event lines otherwise",
     "  -d, --detach        start in the background and print the run id",
     "  --wait              block until the run finishes, then print the result (one run-id line on stderr)",
@@ -158,6 +178,8 @@ export function helpText(): string {
     "  --port <n>          dashboard port (default 4317)",
     "  --host <addr>       dashboard bind address (default 127.0.0.1)",
     "  --open              open the dashboard in the default browser",
+    "  --token [VALUE]     reads need a token (remote read-only access); no VALUE: a random one, printed once",
+    "  FILE.odwrun         show that bundle alone, read-only (--max-bytes N raises the 32 MiB cap)",
     "",
     "Run modes (odw run / rerun / resume):",
     "  interactive terminal        attaches in the foreground (Ctrl-C detaches; the run keeps going)",
@@ -169,7 +191,7 @@ export function helpText(): string {
     "  done / failed / stopped,    starts a NEW run with the same script, args and adapter: every agent()",
     "  or stale (worker gone)      call unchanged since (same prompt and options) replays its saved result",
     "                              instead of running again; edited and new calls run. Takes the run",
-    "                              modes and --adapter/--permissions/--config/--runs-root, like rerun",
+    "                              modes and --adapter/--permissions/--untrusted/--config/--runs-root, like rerun",
     "  still running               refused (it would redo work in flight); --force starts the new run anyway",
     "",
     "Schedules (odw schedule, ODW extension — no daemon: cron, launchd or a systemd timer calls odw back):",
@@ -247,6 +269,12 @@ export async function main(argv: string[]): Promise<number> {
         return cmdCompare(rest);
       case "export":
         return await cmdExport(rest);
+      case "bundle":
+        return cmdBundle(rest);
+      case "view":
+        return await cmdServe(["--open", ...rest], "view");
+      case "eval":
+        return await cmdEval(rest);
       default:
         process.stderr.write(`odw: unknown command '${command}'\n\n${helpText()}\n`);
         return 2;
@@ -390,6 +418,7 @@ async function cmdRun(rest: string[]): Promise<number> {
       source: { type: "string" },
       adapter: { type: "string" },
       permissions: { type: "string" },
+      untrusted: { type: "boolean" },
       wait: { type: "boolean" },
       fg: { type: "boolean" },
       detach: { type: "boolean", short: "d" },
@@ -414,23 +443,25 @@ async function cmdRun(rest: string[]): Promise<number> {
 
   const { mode, timeoutMs } = resolveStartMode("run", values);
   const permissions = parsePermissions("run", values.permissions);
+  const trust: TrustLevel | null = values.untrusted === true ? "untrusted" : null;
 
   warnIfNoDefaultAdapter(values.adapter ?? null, values.config ?? null, values.source ?? null, "run");
 
-  const { runId, store } = startRun(ref, {
+  const { runId, store, workflow } = startRun(ref, {
     args: parseArgsValue(values.args),
     configPath: values.config ?? null,
     runsRoot: values["runs-root"] ?? null,
     source: values.source ?? null,
     adapter: values.adapter ?? null,
     permissions,
+    trust,
     budgetTotal,
   });
 
   return afterStart(store, runId, mode, {
     timeoutMs,
     hint: "started run",
-    banner: startBanner(values.config ?? null, values.source ?? null, permissions),
+    banner: withWorkflowLines(startBanner(values.config ?? null, values.source ?? null, permissions, trust), workflow),
   });
 }
 
@@ -443,23 +474,49 @@ function parsePermissions(cmd: string, raw: string | undefined): PermissionTier 
 
 /**
  * The start banner (ODW extensions), a line each: the permissions line — the
- * run's tier and what each installed adapter runs with — and the concurrency
- * line, the caps the run's agents get (per adapter too). Both from the config
+ * run's tier and what each installed adapter runs with — the trust line —
+ * the run's trust and, untrusted, how each installed adapter keeps the
+ * repository out, or that it cannot — and the concurrency line, the caps
+ * the run's agents get (per adapter too). All from the config
  * the worker will load, which resolves a project-local file against --source
  * (see warnIfNoDefaultAdapter). Undefined when that config cannot be read:
  * the launch itself reports that.
  */
-function startBanner(configPath: string | null, source: string | null, permissions: PermissionTier | null): string | undefined {
+function startBanner(
+  configPath: string | null,
+  source: string | null,
+  permissions: PermissionTier | null,
+  trust: TrustLevel | null = null,
+): string | undefined {
   try {
-    const config = loadConfig(configPath, { quiet: true, ...(source ? { cwd: resolve(source) } : {}) });
+    const cwd = source ? resolve(source) : process.cwd();
+    const config = loadConfig(configPath, { quiet: true, cwd });
     if (permissions) config.settings.permissions = permissions;
+    // The trust line (ODW extension), decided as the worker will decide it (see untrusted.ts).
+    config.settings.trust = resolveRunTrust({ flag: trust, config, configPath, source: cwd, cwd }).trust;
+    const installed = (adapter: Adapter): boolean => isOnPath(adapter.command[0]!);
     return [
-      permissionsBanner(config, (adapter) => isOnPath(adapter.command[0]!)),
+      permissionsBanner(config, installed),
+      trustBanner(config, installed),
       `concurrency: ${describeConcurrency(config)}`,
     ].join("\n");
   } catch {
     return undefined;
   }
+}
+
+/**
+ * The start banner with what resolving the workflow said (ODW extensions): a
+ * Claude Code plugin's workflow names its plugin, and a name a plugin also
+ * ships, or one an untrusted run would not take from the repository, says so.
+ */
+function withWorkflowLines(banner: string | undefined, workflow: ResolvedWorkflow | undefined): string | undefined {
+  const lines = [
+    ...(workflow?.plugin ? [`workflow: ${workflow.plugin.name} from ${pluginOrigin(workflow.plugin)} (run in place, never modified)`] : []),
+    ...(workflow?.notes ?? []).map((note) => `note: ${note}`),
+  ];
+  if (lines.length === 0) return banner;
+  return [banner, ...lines].filter((line) => line !== undefined).join("\n");
 }
 
 /** `--timeout <seconds>` as milliseconds (undefined when absent). */
@@ -1153,7 +1210,10 @@ function cmdList(rest: string[]): number {
     // …and what a run paused for a spent quota waits for (ODW extension: quotaWait).
     const pausedFor = status.state === "paused" ? pausedForOf(status.pausedFor) : null;
     const until = pausedFor ? `  ${sanitizeText(pausedText(pausedFor), 120)}` : "";
-    process.stdout.write(`${ref.runId}  ${state.padEnd(8)}  ${name}${until}\n`);
+    // A run `odw eval` started says which eval, case, adapter and repeat (ODW extension).
+    const tag = evalTagOf(store.readMeta(ref.runId)).eval;
+    const of = tag ? `  (eval ${sanitizeText(`${tag.name} · ${tag.case} · ${tag.adapter} #${tag.repeat}`, 120)})` : "";
+    process.stdout.write(`${ref.runId}  ${state.padEnd(8)}  ${name}${until}${of}\n`);
   }
   return 0;
 }
@@ -1167,6 +1227,7 @@ const RELAUNCH_OPTIONS = {
   "runs-root": { type: "string" },
   adapter: { type: "string" },
   permissions: { type: "string" },
+  untrusted: { type: "boolean" },
   wait: { type: "boolean" },
   fg: { type: "boolean" },
   detach: { type: "boolean", short: "d" },
@@ -1226,7 +1287,7 @@ async function cmdResume(rest: string[]): Promise<number> {
     const control = store.readControl(runId);
     if (state === "paused" || control === "pause") {
       const given = values as Record<string, unknown>;
-      const newRunFlag = ["adapter", "permissions", "wait", "fg", "detach", "timeout"].find((f) => given[f] !== undefined);
+      const newRunFlag = ["adapter", "permissions", "untrusted", "wait", "fg", "detach", "timeout"].find((f) => given[f] !== undefined);
       if (newRunFlag) {
         throw new UsageError(
           `odw resume: run ${runId} is paused, so resume continues it in place — ` +
@@ -1268,7 +1329,7 @@ async function relaunch(
   cmd: "rerun" | "resume",
   store: RunStore,
   runId: string,
-  flags: { "runs-root"?: string; adapter?: string; permissions: PermissionTier | null },
+  flags: { "runs-root"?: string; adapter?: string; permissions: PermissionTier | null; untrusted?: boolean },
   start: { mode: RunMode; timeoutMs: number | undefined },
 ): Promise<number> {
   const meta = store.readMeta(runId);
@@ -1284,6 +1345,8 @@ async function relaunch(
     source: (meta.source as string | undefined) ?? null,
     adapter: flags.adapter ?? (meta.adapter as string | null) ?? null,
     permissions: flags.permissions ?? (isPermissionTier(meta.permissions) ? meta.permissions : null),
+    // An untrusted run's rerun or resume is untrusted too (ODW extension): nothing loosens it.
+    trust: (flags.untrusted === true || meta.trust === "untrusted" ? "untrusted" : null) as TrustLevel | null,
     budgetTotal: (meta.budgetTotal as number | null) ?? null,
     // The worker reads the saved results from the source run's own directory.
     resumedFrom: cmd === "resume" ? { runId, dir: store.runDir(runId) } : null,
@@ -1297,7 +1360,7 @@ async function relaunch(
   // Observe the NEW run through the store the launcher actually created it in
   // (the old run's configPath may point runsRoot somewhere the CLI-flag store
   // does not) — never through the store the OLD run was located with.
-  let started: { runId: string; store: RunStore };
+  let started: { runId: string; store: RunStore; workflow?: ResolvedWorkflow };
   if (meta.inline === true) {
     let sourceCode: string;
     try {
@@ -1318,13 +1381,21 @@ async function relaunch(
   return afterStart(started.store, started.runId, start.mode, {
     timeoutMs: start.timeoutMs,
     hint: cmd === "resume" ? `resuming ${runId} (${saved} saved agent result(s) to replay) as` : `re-running ${runId} as`,
-    banner: startBanner(opts.configPath, opts.source, opts.permissions),
+    banner: withWorkflowLines(startBanner(opts.configPath, opts.source, opts.permissions, opts.trust), started.workflow),
   });
 }
 
-async function cmdServe(rest: string[]): Promise<number> {
-  const { values } = parseArgs({
-    args: rest,
+/**
+ * `odw serve` — the live dashboard. ODW extensions:
+ *   FILE.odwrun     show that shared bundle alone, read-only (`odw view FILE` too):
+ *                   unpacked into a private temp dir, removed on exit
+ *   --token [VALUE] every API read needs the token (remote read-only access); with
+ *                   no VALUE a random one, printed once in the URL (`/#token=…`)
+ */
+async function cmdServe(rest: string[], as: "serve" | "view" = "serve"): Promise<number> {
+  const { args, token: tokenFlag } = takeTokenFlag(rest);
+  const { values, positionals } = parseArgs({
+    args,
     allowPositionals: true,
     options: {
       config: { type: "string" },
@@ -1332,44 +1403,206 @@ async function cmdServe(rest: string[]): Promise<number> {
       port: { type: "string" },
       host: { type: "string" },
       open: { type: "boolean" },
+      "max-bytes": { type: "string" },
     },
   });
+  if (positionals.length > 1) throw new UsageError("odw serve: at most one bundle file (FILE.odwrun)");
+  const file = positionals[0];
+  if (as === "view" && file === undefined) throw new UsageError("usage: odw view FILE.odwrun [--port N] [--host H] [--token [VALUE]]");
 
+  // --port 0: any free port (the URL printed says which).
   const port = values.port === undefined ? 4317 : Number(values.port);
-  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+  if (!Number.isInteger(port) || port < 0 || port > 65535) {
     process.stderr.write(`odw serve: invalid --port '${values.port}'\n`);
     return 2;
   }
+  let token: string | null = null;
+  const generated = tokenFlag === "";
+  if (tokenFlag !== undefined) {
+    token = generated ? generateToken() : tokenFlag;
+    if (!isValidToken(token)) throw new UsageError("odw serve: --token VALUE must be 16-256 characters of A-Z a-z 0-9 . _ ~ - (or omit VALUE for a random one)");
+  }
+  const maxBytes = maxBytesOption("serve", values["max-bytes"]);
+  if (values["max-bytes"] !== undefined && file === undefined) throw new UsageError("odw serve: --max-bytes goes with a bundle file");
   const host = values.host ?? "127.0.0.1";
-  const store = storeFrom(values);
   const config = loadConfig(values.config ?? null);
 
-  const handle = await startServer({
-    store,
-    port,
-    host,
-    cwd: process.cwd(),
-    config,
-    configPath: values.config ?? null,
-  });
-  process.stdout.write(`odw dashboard → ${handle.url}\n`);
-  process.stdout.write(`  watching ${store.root}\n`);
-  if (host !== "127.0.0.1" && host !== "localhost" && host !== "::1") {
+  let opened: OpenedBundle | null = null;
+  if (file !== undefined) {
+    try {
+      opened = openBundle(file, maxBytes);
+    } catch (err) {
+      if (!(err instanceof BundleError)) throw err;
+      process.stderr.write(`odw serve: ${err.message}\n`);
+      return 1;
+    }
+  }
+  const cleanup = () => opened?.cleanup();
+  process.once("exit", cleanup); // however serve ends, the unpacked bundle goes with it
+  const store = opened ? new RunStore(opened.root) : storeFrom(values);
+
+  let handle: Awaited<ReturnType<typeof startServer>>;
+  try {
+    handle = await startServer({
+      store,
+      port,
+      host,
+      cwd: process.cwd(),
+      config,
+      configPath: values.config ?? null,
+      token,
+      bundle: opened?.info ?? null,
+    });
+  } catch (err) {
+    cleanup();
+    throw err;
+  }
+  const loopback = host === "127.0.0.1" || host === "localhost" || host === "::1";
+  const base = loopback ? handle.url : `http://${reachableHost(host)}:${handle.port}`;
+  const page = opened ? `#/job/${encodeURIComponent(opened.info.runId)}` : "";
+  // The generated token is printed here, once, and nowhere else.
+  const url = generated ? `${base}/#token=${token}` : `${base}/${page}`;
+  process.stdout.write(`odw dashboard → ${url}\n`);
+  if (opened) {
+    process.stdout.write(`  shared bundle ${opened.info.file} (run ${opened.info.runId}), read-only\n`);
+    process.stdout.write(`  unpacked in ${opened.root} (removed on exit)\n`);
+  } else {
+    process.stdout.write(`  watching ${store.root}\n`);
+  }
+  if (token) {
+    process.stdout.write(
+      generated
+        ? "  reads need the token in that URL (or Authorization: Bearer <token>); writes stay loopback-only\n"
+        : "  reads need the token given with --token (?token=, a cookie, or Authorization: Bearer); writes stay loopback-only\n",
+    );
+  }
+  if (!loopback && !token) {
     process.stderr.write(
-      `  ⚠ bound to ${host}: every project's runs (prompts, results) are reachable off-localhost — use only on a trusted network\n`,
+      `\n  ⚠ WARNING: bound to ${host} with no --token — anyone who can reach this port reads every project's runs\n` +
+        `    (prompts, results). Writes are refused off-loopback, but reads are open. Require a token:\n` +
+        `      odw serve --host ${host} --token\n\n`,
     );
   }
   process.stdout.write("  press Ctrl-C to stop\n");
-  if (values.open) openBrowser(handle.url);
+  if (values.open) openBrowser(generated ? url : `${handle.url}/${page}`);
 
   await new Promise<void>((resolve) => {
     const shutdown = () => {
       process.stdout.write("\nshutting down…\n");
-      handle.close().then(resolve);
+      handle.close().then(() => {
+        cleanup();
+        resolve();
+      });
     };
     process.once("SIGINT", shutdown);
     process.once("SIGTERM", shutdown);
   });
+  return 0;
+}
+
+/**
+ * `--token [VALUE]` out of serve's arguments: parseArgs has no optional
+ * values. The token is the next argument unless that is a flag or a bundle
+ * file; `--token=VALUE` works too. Undefined without `--token`, "" for one
+ * with no VALUE (a random token).
+ */
+function takeTokenFlag(rest: string[]): { args: string[]; token: string | undefined } {
+  const args: string[] = [];
+  let token: string | undefined;
+  for (let i = 0; i < rest.length; i++) {
+    const arg = rest[i]!;
+    if (arg === "--") {
+      args.push(...rest.slice(i));
+      break;
+    }
+    if (arg.startsWith("--token=")) {
+      token = arg.slice("--token=".length);
+      if (token === "") throw new UsageError("odw serve: --token= needs a VALUE (or plain --token for a random one)");
+      continue;
+    }
+    if (arg !== "--token") {
+      args.push(arg);
+      continue;
+    }
+    const next = rest[i + 1];
+    if (next !== undefined && !next.startsWith("-") && !next.endsWith(BUNDLE_EXT)) {
+      token = next;
+      i++;
+    } else {
+      token = "";
+    }
+  }
+  return { args, token };
+}
+
+/** `--max-bytes N`: a positive integer, else the default cap. */
+function maxBytesOption(cmd: string, value: string | undefined): number {
+  if (value === undefined) return DEFAULT_BUNDLE_MAX_BYTES;
+  const n = Number(value);
+  if (!/^\d+$/.test(value.trim()) || !Number.isSafeInteger(n) || n < 1) throw new UsageError(`odw ${cmd}: --max-bytes must be a positive integer (bytes)`);
+  return n;
+}
+
+/** The host to print for a bind: a wildcard bind's first external IPv4 address (what a phone reaches), else the bind. */
+function reachableHost(host: string): string {
+  if (host !== "0.0.0.0" && host !== "::") return host.includes(":") ? `[${host}]` : host;
+  for (const addresses of Object.values(networkInterfaces())) {
+    for (const a of addresses ?? []) if (a.family === "IPv4" && !a.internal) return a.address;
+  }
+  return "localhost";
+}
+
+/**
+ * `odw bundle <run_id>` (ODW extension; see runtime/bundle.ts): the run as one
+ * redacted, self-contained file to share — `<run_id>.odwrun` here, or `--out
+ * FILE` (`-`: stdout). `--no-transcripts` leaves the agents' transcripts out;
+ * past 32 MiB it is refused unless `--max-bytes` raises the cap. Exit 0, 1 when
+ * the run is unknown or the bundle too big, 2 on a usage error.
+ */
+function cmdBundle(rest: string[]): number {
+  const { values, positionals } = parseArgs({
+    args: rest,
+    allowPositionals: true,
+    options: {
+      config: { type: "string" },
+      "runs-root": { type: "string" },
+      out: { type: "string" },
+      "no-transcripts": { type: "boolean" },
+      "max-bytes": { type: "string" },
+    },
+  });
+  const runId = positionals[0];
+  if (!runId || positionals.length > 1) throw new UsageError("usage: odw bundle <run_id> [--out FILE] [--no-transcripts] [--max-bytes N]");
+  if (runId.startsWith("cc-")) throw new UsageError(`odw bundle: ${runId} is a Claude Code run: odw bundles its own runs`);
+  if (!isBundleRunId(runId)) throw new UsageError(`odw bundle: not a run id: ${runId}`);
+  const maxBytes = maxBytesOption("bundle", values["max-bytes"]);
+  const config = loadConfig(values.config ?? null, { quiet: true });
+  const store = values["runs-root"] ? new RunStore(values["runs-root"]) : new RunStore(resolveRunsRoot(config.settings.runsRoot));
+  if (!store.exists(runId)) {
+    process.stderr.write(`no such run: ${runId}\n`);
+    return 1;
+  }
+  const state = String(store.readStatus(runId).state ?? "pending");
+  if (!TERMINAL_STATES.has(state)) process.stderr.write(`odw bundle: run ${runId} is ${state}: the bundle holds what happened so far\n`);
+  let made: ReturnType<typeof createBundle>;
+  try {
+    made = createBundle(store, runId, bundleRedactor(config), { transcripts: !values["no-transcripts"], maxBytes });
+  } catch (err) {
+    if (!(err instanceof BundleError)) throw err;
+    process.stderr.write(`odw bundle: ${err.message}\n`);
+    return 1;
+  }
+  const out = values.out ?? `${runId}${BUNDLE_EXT}`;
+  const bytes = Buffer.byteLength(made.json);
+  if (out === "-") process.stdout.write(made.json);
+  else writeFileSync(out, made.json, { mode: 0o600 });
+  const what = [
+    `${bytes} bytes`,
+    made.bundle.redacted ? "likely secrets redacted" : "nothing to redact found",
+    made.bundle.transcripts ? "with transcripts" : "without transcripts",
+  ].join(", ");
+  process.stderr.write(`${out === "-" ? "wrote" : `wrote ${out}:`} run ${runId} (${what})\n`);
+  if (out !== "-") process.stderr.write(`  look before you share: odw view ${out}${bytes > DEFAULT_BUNDLE_MAX_BYTES ? ` --max-bytes ${bytes}` : ""}\n`);
   return 0;
 }
 
@@ -1382,11 +1615,13 @@ function openBrowser(url: string): void {
         ? ["cmd", ["/c", "start", "", url]]
         : ["xdg-open", [url]];
   try {
-    spawn(cmd as string, args as string[], {
+    const opener = spawn(cmd as string, args as string[], {
       stdio: "ignore",
       detached: true,
       windowsHide: true,
-    }).unref();
+    });
+    opener.on("error", () => {}); // no opener installed (ENOENT arrives as an event, not a throw)
+    opener.unref();
   } catch {
     /* no browser opener available — the URL is already printed */
   }
@@ -1616,18 +1851,21 @@ function cmdWorkflowsList(rest: string[]): number {
       config: { type: "string" },
       project: { type: "boolean" },
       global: { type: "boolean" },
+      plugins: { type: "boolean" },
       all: { type: "boolean" },
     },
   });
-  if (values.project && values.global) {
-    process.stderr.write("odw workflows list: --project and --global are mutually exclusive\n");
+  if ([values.project, values.global, values.plugins].filter(Boolean).length > 1) {
+    process.stderr.write("odw workflows list: --project, --global and --plugins are mutually exclusive\n");
     return 2;
   }
   const config = loadConfig(values.config ?? null);
   let entries = listWorkflows(process.cwd(), config);
-  const scoped = Boolean(values.project || values.global);
+  const scoped = Boolean(values.project || values.global || values.plugins);
   if (values.project) entries = entries.filter((e) => e.origin === "project");
   if (values.global) entries = entries.filter((e) => e.origin === "global");
+  // Workflows installed Claude Code plugins ship, as <plugin>:<name> (ODW extension).
+  if (values.plugins) entries = entries.filter((e) => e.origin === "plugin");
   // The default (unscoped) view shows only the effective set; an explicit scope
   // or --all shows every entry, with shadowed ones still flagged.
   if (!values.all && !scoped) entries = entries.filter((e) => !e.shadowed);
@@ -1635,15 +1873,17 @@ function cmdWorkflowsList(rest: string[]): number {
   if (entries.length === 0) {
     process.stderr.write("no named workflows found\n");
     process.stderr.write(
-      "  add one by dropping a .js file in ./.odw/workflows, ./.claude/workflows, ~/.odw/workflows, or ~/.claude/workflows\n",
+      "  add one by dropping a .js file in ./.odw/workflows, ./.claude/workflows, ~/.odw/workflows, or ~/.claude/workflows\n" +
+        "  (or install a Claude Code plugin that ships workflows: odw run <plugin>:<name>)\n",
     );
     return 0;
   }
   const width = Math.max(...entries.map((e) => e.name.length));
   for (const e of entries) {
-    const scope = `${e.provider}:${e.origin}`;
+    const scope = e.origin === "plugin" ? e.provider : `${e.provider}:${e.origin}`;
     const shadow = e.shadowed ? "  shadowed by higher-precedence workflow" : "";
-    process.stdout.write(`${e.name.padEnd(width)}  (${scope.padEnd(14)} ${e.rootLabel})  ${e.path}${shadow}\n`);
+    const note = e.note ? `  note: ${e.note}` : "";
+    process.stdout.write(`${e.name.padEnd(width)}  (${scope.padEnd(14)} ${e.rootLabel})  ${e.path}${shadow}${note}\n`);
   }
   return 0;
 }
@@ -1662,7 +1902,8 @@ function cmdWorkflowsWhere(rest: string[]): number {
   const config = loadConfig(values.config ?? null);
   try {
     const { scriptPath, origin, provider, rootLabel } = resolveWorkflow(name, { cwd: process.cwd(), config });
-    const source = provider ? `${provider}:${origin}${rootLabel ? ` ${rootLabel}` : ""}` : origin;
+    const scope = origin === "plugin" ? provider : provider ? `${provider}:${origin}` : origin;
+    const source = `${scope}${provider && rootLabel ? ` ${rootLabel}` : ""}`;
     process.stdout.write(`${scriptPath}  (${source})\n`);
     return 0;
   } catch (err) {

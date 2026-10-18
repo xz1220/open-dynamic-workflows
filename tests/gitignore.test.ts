@@ -36,4 +36,5 @@ test("everything under .odw/workflows is committed; runs and scratch stay ignore
   // namespacing and any committed helpers); nested files are path-runnable today
   // even though v1 has no by-name namespacing.
   assert.equal(isIgnored(".odw/workflows/ci/flaky-hunt.js"), false, "the workflows subtree is tracked");
+  assert.equal(isIgnored(".odw/evals/review.json"), false, "eval files (odw eval) are tracked like workflows");
 });

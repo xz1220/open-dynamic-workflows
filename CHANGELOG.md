@@ -93,6 +93,19 @@ changed, and run on a schedule — and a dashboard redesigned to watch them.
   in `meta.json`, its behaviour settings on `run_started`, and each adapter CLI's
   `--version` on its first dispatch (a `cli_version` event, never delaying the run;
   `"recordVersions": false` turns it off) (**ODW extension**).
+- Evaluate a workflow (**ODW extension**): `odw eval <file|name>` runs the cases of an
+  eval file (`.odw/evals/<name>.json`) on each of its `adapters`, `repeats` times each,
+  at most `concurrency` at once, as real runs marked `origin: "eval"` (shown by `odw
+  list` and the run summaries), and judges each with checks that need no model — `{
+  path, equals | contains | matches | exists }` on the result, a `{ command }` that
+  exits 0 with `ODW_RESULT` and `ODW_RUN_ID` set, `{ state }`, `{ maxCostUsd }`, `{
+  maxSeconds }`; a per-run `timeout` stops a run and fails it. The table gives pass
+  k/n, median time, cost and tokens per case × adapter, then each failure with its
+  check and run id. The JSON report (`--json`, `--out`, kept under
+  `<runsRoot>/_evals/<name>/`, served read-only by `GET /api/evals[/:name/:id]`) has a
+  `version`, the definition's hash, the odw and CLI versions and every run id;
+  `--baseline` adds per-cell deltas and exits 1 when a pass rate fell. Ctrl-C stops
+  every run the eval started. Example: `examples/evals/routing.json`.
 - OpenTelemetry traces (**ODW extension**): `odw export <run> --otlp [--out FILE | --send]`
   writes a run as OTLP/JSON after the GenAI semantic conventions — `invoke_workflow`,
   `phase`, `invoke_agent` (provider, models, usage, cost, attempts, failure reason),
@@ -109,6 +122,19 @@ changed, and run on a schedule — and a dashboard redesigned to watch them.
 - Permission tiers `read` / `edit` / `full` (`--permissions`, per adapter, per call; a
   call can only lower its tier), mapped to each CLI's documented flags; `agentEnv:
   "minimal"` starts agents with only the environment they need (**ODW extension**).
+- Untrusted repositories (`odw run|rerun|resume --untrusted`, `"trust": "untrusted"`,
+  per adapter too; **ODW extension**): each CLI runs in the way of ignoring the
+  repository's CLAUDE.md, hooks, MCP servers and settings its docs give — `claude
+  --safe-mode` (not `--bare`, which takes API keys only), `qwen --safe-mode`, `omp
+  --no-extensions --no-skills --no-rules` — and the run says once per adapter what a CLI
+  without one still lets in (`codex has no documented way to ignore the repository's
+  AGENTS.md — its instructions still reach the agent`). The repository's
+  `.worktreeinclude` `symlink:` lines and a `worktreeSetup` from a config inside it do
+  not run; a `./odw.config.json` ODW finds inside it is not read at all (your own
+  config or the defaults apply, and the run says so; one you pass with `--config`
+  still does); a config inside it cannot loosen the trust your
+  `~/.config/odw/config.json` sets. The trust level shows in the start banner, `odw doctor`, the run's setup, each
+  agent's events and saved result, and the dashboard's drawer.
 - Secrets stay out of what odw keeps and serves: whatever an agent prints — `cat .env`
   included — is redacted before it reaches its transcript and stderr tail, its saved
   result, the run's events and error or a webhook. The values of secret-named variables
@@ -157,6 +183,14 @@ changed, and run on a schedule — and a dashboard redesigned to watch them.
   CLI ran out of quota or is logged out moves down its chain (`adapter: ["codex",
   "claude"]`, or `fallback` in the config) instead of failing, at the same permission
   tier — and `odw status`, the live view and the dashboard's data say where it went.
+- Workflows from Claude Code plugins (**ODW extension**): the workflows your installed,
+  enabled plugins ship (`workflows/`, or the manifest's `"workflows"`) run as
+  `odw run <plugin>:<name>` — the name Claude Code gives them — in place and read-only,
+  through the same loader; `odw workflows list --plugins` and `GET /api/workflows`
+  (provider `claude-plugin:<plugin>`) list them. Discovery follows
+  `installed_plugins.json` and `enabledPlugins`; a project workflow of the same bare
+  name wins, with a note. Each run logs which plugin, version and scope its workflow
+  came from, and any ODW-only primitive it uses.
 
 ### Use the CLI and the dashboard
 - `odw run` attaches a live foreground view in interactive terminals (Ctrl-C detaches;
@@ -168,6 +202,22 @@ changed, and run on a schedule — and a dashboard redesigned to watch them.
   outputs, usage, failure reasons and tiers, the Changes and Transcript views, a Spend
   receipt (where a run's tokens and dollars went, by phase, adapter and agent; `$`),
   Upcoming schedules, a command palette, light and dark themes, English and Chinese.
+- Share a run (**ODW extension**): `odw bundle <run> [--out FILE] [--no-transcripts]
+  [--max-bytes N]` writes `<run>.odwrun`, one self-contained JSON file — meta, status,
+  events, saved agent results, kept diffs, transcripts, the result and the error — all
+  through the run's redactor (token shapes and the environment's secret values, even
+  with `redact: false`), marked `redacted: true` where something was replaced, never the
+  config, the environment or `notify`/`otel`; refused past 32 MiB unless `--max-bytes`
+  raises it. `odw view FILE` (`odw serve --open FILE`) shows it read-only: the file is
+  checked (size first, run id, integer agent ids, field types), unpacked into a private
+  temp dir removed on exit, and served alone, tagged "shared bundle", every write refused.
+  The Job header's **Share** copies `odw bundle <run>`.
+- Remote read-only access (**ODW extension**): `odw serve --host 0.0.0.0 --token [VALUE]`
+  makes every `/api` request and the live stream need the token — `Authorization: Bearer`,
+  or `?token=` which sets an HttpOnly SameSite=Strict cookie — compared in constant time,
+  with wrong tokens rate limited per address (429). With no VALUE a random token is
+  printed once, in the URL (`/#token=…`); the dashboard trades it for the cookie and shows
+  a "needs a token" screen without one. Writes stay refused off loopback whatever the token.
 
 ### Reliability and safety
 - Timeouts and stops reach an agent's whole process tree (SIGTERM, then SIGKILL).
@@ -215,3 +265,6 @@ changed, and run on a schedule — and a dashboard redesigned to watch them.
   keeps everything as printed.
 - Config errors are fatal instead of producing a "done" run full of nulls.
 - The desktop (Tauri) app is retired in favor of `odw serve`.
+- `odw serve` bound off loopback without `--token` prints a loud warning on stderr that
+  suggests `--token` (it stays read-only and open, as before); a positional argument to
+  `odw serve` is now a bundle file to show; `--port 0` picks a free port.

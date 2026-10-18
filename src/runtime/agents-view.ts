@@ -8,7 +8,7 @@
  * stays there after the run stalls, is stopped, or its worker dies.
  */
 
-import type { PermissionTier } from "../adapters/types.js";
+import type { PermissionTier, TrustLevel } from "../adapters/types.js";
 import type { AgentChanges } from "../changes.js";
 import type { AgentResultRecord } from "../journal.js";
 import { clockTime } from "../quota-wait.js";
@@ -44,6 +44,8 @@ export interface AgentRow {
   branch: string | null;
   /** The permission tier it runs at (ODW extension); null for runs from before tiers. */
   permissions: PermissionTier | null;
+  /** Whether its CLI ran untrusted (ODW extension; see adapters/trust.ts): "trusted" for runs from before trust. */
+  trust: TrustLevel;
   /** The adapters it fell back from before `adapter` (ODW extension); null when it did not. */
   fellBackFrom: string[] | null;
   /** While it waits for a spent quota to reset (ODW extension: quotaWait): which adapter's, and when; null otherwise. */
@@ -72,6 +74,7 @@ export function agentRows(store: RunStore, runId: string): AgentRow[] {
       changes: a.changes ?? record?.changes ?? null,
       branch: a.branch ?? record?.branch ?? null,
       permissions: a.permissions ?? record?.permissions ?? null,
+      trust: a.trust ?? record?.trust ?? "trusted",
       fellBackFrom: a.fellBackFrom ?? record?.fellBackFrom ?? null,
       quotaWait: !record && a.state === "running" ? (a.quotaWait ?? null) : null,
     };
@@ -99,6 +102,7 @@ function rowFromRecord(rec: AgentResultRecord): AgentRow {
     changes: rec.changes ?? null,
     branch: rec.branch ?? null,
     permissions: rec.permissions ?? null,
+    trust: rec.trust ?? "trusted",
     fellBackFrom: rec.fellBackFrom ?? null,
     quotaWait: null,
   };
@@ -135,6 +139,8 @@ export function agentRowJson(row: AgentRow): Record<string, unknown> {
     sourceRunId: row.record?.sourceRunId ?? null,
     // The tier it ran at (ODW extension), for runs that record one.
     ...(row.permissions ? { permissions: row.permissions } : {}),
+    // That its CLI ran untrusted (ODW extension), when it did.
+    ...(row.trust === "untrusted" ? { trust: row.trust } : {}),
     // The adapters it fell back from (ODW extension), when it did.
     ...(row.fellBackFrom ? { fellBackFrom: row.fellBackFrom } : {}),
     // The spent quota it waits out (ODW extension: quotaWait), while it does.

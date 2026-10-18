@@ -16,7 +16,8 @@ import { renderActivity } from "../web/src/views/activity.ts";
 import { renderJob, type JobViewState } from "../web/src/views/job.ts";
 import { renderJobs } from "../web/src/views/jobs.ts";
 import { spendOf } from "../web/src/views/spend.ts";
-import type { ActivityEvent, AgentView, RunDetail, RunSummary } from "../web/src/types.ts";
+import { orderedWorkflows, parseWfKey, renderWorkspace, wfKey } from "../web/src/views/workspace.ts";
+import type { ActivityEvent, AgentView, RunDetail, RunSummary, WorkflowSummary } from "../web/src/types.ts";
 import { cronWords, esc, fmtDurSec, fmtTokens, fmtUsd, fuzzy, markHits, markRedactions } from "../web/src/util.ts";
 
 const NOW = 1_800_000_000;
@@ -265,6 +266,38 @@ test("a run view shows pending checkpoints, usage and failure reasons when the s
   assert.match(html, /\$0\.012/);
   assert.match(html, /rate limit/); // the failed node and the drawer name the class
   store.focusRun(null);
+});
+
+test("the Job header: Share copies `odw bundle <run>`; a shared bundle is tagged and has no Share", async () => {
+  const view: JobViewState = {
+    cpNote: "",
+    tab: "graph",
+    selectedAi: null,
+    reviewAi: null,
+    zoom: 1,
+    logQuery: "",
+    logTypes: new Set(["agent"]),
+    logLimit: 600,
+    follow: true,
+    motion: false,
+  };
+  store.focusRun("20260101-000000-aaaaaa");
+  store.run = detail([], { state: "done" });
+  const html = renderJob(view, NOW);
+  assert.match(html, /data-copy="odw bundle 20260101-000000-aaaaaa"[^>]*>[\s\S]*?Share<\/button>/);
+  assert.doesNotMatch(html, /shared bundle/);
+  store.run = detail([], { state: "done", bundle: { bundledAt: NOW - 60, odwVersion: "0.5.0" } });
+  const shared = renderJob(view, NOW);
+  assert.match(shared, /<span class="tag bundle">shared bundle · read-only<\/span>/);
+  assert.doesNotMatch(shared, /data-copy="odw bundle/);
+  store.focusRun(null);
+
+  // The token screen of `odw serve --token`: a form for the token, and why the last one was refused.
+  const { renderTokenScreen } = await import("../web/src/views/token.ts");
+  assert.match(renderTokenScreen(null), /<form [^>]*data-token-form[\s\S]*type="password" name="token"/);
+  assert.doesNotMatch(renderTokenScreen(null), /role="alert"/);
+  assert.match(renderTokenScreen("wrong"), /That token was refused/);
+  assert.match(renderTokenScreen("locked"), /Too many wrong tokens/);
 });
 
 test("the Logs tab paints the newest events and pages older ones in", () => {
@@ -549,6 +582,10 @@ test("the drawer names an agent's permission tier", () => {
   store.focusRun("20260101-000000-aaaaaa");
   store.run = detail([agent("review:1", "Review", "done", { agentId: 1, permissions: "read" })], { state: "done" });
   assert.match(renderJob(view, NOW), /<span class="k">permissions<\/span><span class="v"><span class="tag perm-read" title="reads and searches; no edits, no commands">read<\/span>/);
+  assert.doesNotMatch(renderJob(view, NOW), /trust-untrusted/, "a trusted agent shows no trust row");
+  // An agent whose CLI ran untrusted (ODW extension: --untrusted) says so beside its tier.
+  store.run = detail([agent("review:1", "Review", "done", { agentId: 1, permissions: "read", trust: "untrusted" })], { state: "done" });
+  assert.match(renderJob(view, NOW), /<span class="k">trust<\/span><span class="v"><span class="tag trust-untrusted" title="[^"]+">untrusted<\/span>/);
   store.focusRun(null);
 });
 
@@ -885,4 +922,74 @@ test("an agent whose MCP servers did not start lists them in its drawer", () => 
   assert.match(html, /MCP servers<\/div><ul class="mcp"><li><span class="tag warn">failed<\/span><span class="mono">github<\/span>/);
   assert.match(html, /MCP unavailable/);
   store.focusRun(null);
+});
+
+test("evals: a card per eval with its pass-rate dial and trend, and a report as a case × adapter matrix", async () => {
+  const { renderEvals, rateColor } = await import("../web/src/views/evals.ts");
+  const totals = (passed: number, runs: number) => ({ runs, passed, failed: runs - passed, passRate: passed / runs, costUsd: 0.5, inputTokens: 1000, outputTokens: 100 });
+  const summary = (id: string, passed: number) => ({ name: "triage", id, description: "labels", workflow: "triage", evalHash: "h", startedAt: "2026-10-18T05:00:00Z", finishedAt: "2026-10-18T05:01:00Z", totals: totals(passed, 4), adapters: ["claude"], cases: 2, regressed: null });
+  store.evals = [summary("20261018-050100-bbbbbb", 3), summary("20261018-050000-aaaaaa", 2)];
+  const list = renderEvals(null);
+  assert.equal(count(list, /class="card ev-card"/g), 1, "one card per eval name");
+  assert.equal(count(list, /class="tick/g), 2);
+  assert.match(list, /<a class="tick on" href="#\/evals\/triage\/20261018-050100-bbbbbb"/, "the latest report is lit");
+  assert.doesNotMatch(list, /<a class="card/, "no link nests a link");
+  assert.match(list, /75%/);
+
+  const run = (c: string, repeat: number, passed: boolean) => ({ runId: `r-${c}-${repeat}`, case: c, adapter: "claude", repeat, state: "done", passed, timedOut: false, wallMs: 1000, inputTokens: 1, outputTokens: 1, costUsd: 0.1, estimated: false, cliVersions: {}, error: null, failures: passed ? [] : [{ check: "label equals \"bug\"", message: "label is \"question\"" }] });
+  const cell = (c: string, passed: number) => ({ case: c, adapter: "claude", runs: 2, passed, passRate: passed / 2, medianMs: 1000, costUsd: 0.2, meanCostUsd: 0.1, meanTokens: 2, runIds: [`r-${c}-1`, `r-${c}-2`] });
+  store.evalReport = {
+    key: "triage/X",
+    error: null,
+    value: {
+      version: 1, name: "triage", id: "X", file: "/p/.odw/evals/triage.json", description: null, evalHash: "h",
+      definition: { workflow: "triage", cases: [], adapters: ["claude"], repeats: 2, concurrency: 1, budget: null, timeout: null },
+      workflow: { ref: "triage", script: "/p/triage.js", sourceHash: null }, odwVersion: "0.5.0", cliVersions: { claude: ["2.1.302"] },
+      startedAt: "", finishedAt: "", wallMs: 4000, totals: totals(3, 4),
+      cells: [cell("crash", 2), cell("how-to", 1)],
+      runs: [run("crash", 1, true), run("crash", 2, true), run("how-to", 1, true), run("how-to", 2, false)],
+      baseline: { file: "b.json", name: "triage", id: "W", evalHash: "h", sameDefinition: true, regressed: [{ case: "how-to", adapter: "claude" }],
+        cells: [{ case: "how-to", adapter: "claude", status: "regressed", passRate: { a: 1, b: 0.5, delta: -0.5 }, meanCostUsd: { a: 0.1, b: 0.1, delta: 0 }, medianMs: { a: 1, b: 1, delta: 0 } }] },
+    },
+  } as never;
+  const report = renderEvals("triage/X");
+  assert.equal(count(report, /class="ev-tile[ "]/g), 2);
+  assert.match(report, /class="ev-tile regressed"/);
+  assert.match(report, /▼ 50%/);
+  assert.equal(count(report, /class="sq ok"/g), 3);
+  assert.match(report, /href="#\/job\/r-how-to-2"/);
+  assert.match(report, /label equals &quot;bug&quot;: label is &quot;question&quot;|label equals "bug": label is "question"/);
+  assert.match(report, /claude 2\.1\.302/);
+  assert.match(rateColor(1), /var\(--sig\) 100%/);
+  assert.match(rateColor(0), /var\(--amber\) 0%, var\(--alarm\)/);
+  store.evals = null;
+  store.evalReport = null;
+});
+
+test("the Workspace groups a Claude Code plugin's workflows on their own, and their keys round-trip", () => {
+  const wf = (name: string, provider: WorkflowSummary["provider"], origin: WorkflowSummary["origin"] = "project"): WorkflowSummary => ({
+    name,
+    origin,
+    provider,
+    rootLabel: provider.startsWith("claude-plugin:") ? "Claude Code plugin acme-tools@market 1.0.0 (user scope)" : ".odw/workflows",
+    path: `/x/${name}.js`,
+    description: null,
+    phases: [],
+    runCount: 0,
+    shadowed: false,
+  });
+  const list = [wf("acme-tools:audit", "claude-plugin:acme-tools", "plugin"), wf("audit", "claude"), wf("echo", "odw")];
+  assert.deepEqual(orderedWorkflows(list).map((w) => w.name), ["echo", "audit", "acme-tools:audit"]);
+  const key = wfKey(list[0]!);
+  assert.equal(key, "claude-plugin:acme-tools:acme-tools:audit");
+  assert.deepEqual(parseWfKey(key), { provider: "claude-plugin:acme-tools", name: "acme-tools:audit" });
+  assert.deepEqual(parseWfKey("odw:echo"), { provider: "odw", name: "echo" });
+  assert.deepEqual(parseWfKey("echo"), { name: "echo" });
+  const saved = store.workflows;
+  store.workflows = list;
+  try {
+    assert.match(renderWorkspace(key, null, ""), /<span>Claude Code plugins<\/span><span>1<\/span>/);
+  } finally {
+    store.workflows = saved;
+  }
 });

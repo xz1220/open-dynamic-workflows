@@ -33,6 +33,7 @@ import {
   planPermissions,
   runTier,
 } from "./permissions.js";
+import { isTrustLevel, untrustedPosture } from "./trust.js";
 import type {
   Adapter,
   AdapterFailures,
@@ -50,6 +51,7 @@ import type {
   SchemaFlag,
   Settings,
   StaggerFanOut,
+  TrustLevel,
 } from "./types.js";
 
 export const CONFIG_ENV_VAR = "ODW_CONFIG";
@@ -119,6 +121,7 @@ const KNOWN_TOP_KEYS = [
   "maxTranscriptBytes",
   "recordVersions",
   "permissions",
+  "trust",
   "agentEnv",
   "agentEnvPass",
   "schemaKeywords",
@@ -134,7 +137,7 @@ const KNOWN_TOP_KEYS = [
   "otel",
 ] as const;
 
-const KNOWN_ADAPTER_KEYS = ["command", "stdin", "env", "timeout", "stallTimeout", "concurrency", "promptCache", "label", "flags", "output", "failures", "permissionArgs", "permissions", "permissionDenials"] as const;
+const KNOWN_ADAPTER_KEYS = ["command", "stdin", "env", "timeout", "stallTimeout", "concurrency", "promptCache", "label", "flags", "output", "failures", "permissionArgs", "permissions", "permissionDenials", "trust", "untrustedArgs", "untrustedNote"] as const;
 
 /** The fields of an adapter's `output`, per format. */
 const KNOWN_OUTPUT_KEYS: Record<string, readonly string[]> = {
@@ -398,6 +401,8 @@ export interface AdapterListing {
    * extension); empty when it declares none and runs as configured.
    */
   tiers: PermissionTier[];
+  /** How it runs untrusted (ODW extension; see ./trust): its flags, or that it has no documented way. */
+  untrusted: string;
 }
 
 /** Every configured adapter with install/default/permission info, sorted by name. */
@@ -413,6 +418,7 @@ export function listAdapters(config: Config): AdapterListing[] {
         isDefault: config.settings.defaultAdapter === name,
         permissionNote: postureNote(a, runTier(config)),
         tiers: declaredTiers(a),
+        untrusted: untrustedPosture(a),
       };
     });
 }
@@ -591,6 +597,9 @@ function buildAdapters(user: Record<string, RawAdapter>): Record<string, Adapter
     const builtin = BUILTIN_ADAPTERS[name];
     if (builtin && isObject(spec) && spec.command == null) {
       merged[name] = { ...builtin, ...spec, command: builtin.command };
+      // The built-in's note says what its own untrusted flags leave in: flags
+      // of the user's own are theirs to describe (ODW extension: trust).
+      if (spec.untrustedArgs != null && spec.untrustedNote == null) delete merged[name].untrustedNote;
     } else {
       merged[name] = spec;
     }
@@ -666,6 +675,35 @@ function buildAdapter(name: string, spec: RawAdapter): Adapter {
       );
     }
     adapter.permissionDenials = spec.permissionDenials;
+  }
+  // Trust (ODW extension; see ./trust): an adapter may only make itself
+  // untrusted, and its untrusted flags go where its tier flags go.
+  if (spec.trust != null) {
+    if (!isTrustLevel(spec.trust)) {
+      throw new ConfigError(`adapter '${name}' 'trust' must be "trusted" or "untrusted"; got ${JSON.stringify(spec.trust)}`);
+    }
+    adapter.trust = spec.trust;
+  }
+  if (spec.untrustedArgs != null) {
+    if (!Array.isArray(spec.untrustedArgs) || !spec.untrustedArgs.every((arg) => typeof arg === "string")) {
+      throw new ConfigError(
+        `adapter '${name}' 'untrustedArgs' must be a list of argv elements; got ${JSON.stringify(spec.untrustedArgs)}`,
+      );
+    }
+    if (!adapter.command.includes(PERMISSION_ARGS_TOKEN)) {
+      throw new ConfigError(
+        `adapter '${name}' declares "untrustedArgs" but its command has no ${PERMISSION_ARGS_TOKEN} element to put them in`,
+      );
+    }
+    adapter.untrustedArgs = [...spec.untrustedArgs];
+  }
+  if (spec.untrustedNote != null) {
+    if (typeof spec.untrustedNote !== "string" || spec.untrustedNote.trim() === "") {
+      throw new ConfigError(
+        `adapter '${name}' 'untrustedNote' must be a non-empty string; got ${JSON.stringify(spec.untrustedNote)}`,
+      );
+    }
+    adapter.untrustedNote = spec.untrustedNote;
   }
   return adapter;
 }
@@ -1022,6 +1060,7 @@ function buildSettings(raw: Record<string, unknown>): Settings {
     recordVersions:
       raw["recordVersions"] == null ? DEFAULT_SETTINGS.recordVersions : buildFlag("recordVersions", raw["recordVersions"]),
     permissions: raw["permissions"] == null ? DEFAULT_SETTINGS.permissions : buildTier(raw["permissions"]),
+    trust: raw["trust"] == null ? DEFAULT_SETTINGS.trust : buildTrust(raw["trust"]),
     agentEnv: raw["agentEnv"] == null ? DEFAULT_SETTINGS.agentEnv : buildAgentEnv(raw["agentEnv"]),
     agentEnvPass: raw["agentEnvPass"] == null ? [...DEFAULT_SETTINGS.agentEnvPass] : buildEnvPass(raw["agentEnvPass"]),
     schemaKeywords:
@@ -1201,6 +1240,12 @@ function checkRouting(config: Config): void {
 function buildTier(raw: unknown): PermissionTier {
   if (isPermissionTier(raw)) return raw;
   throw new ConfigError(`"permissions" must be "read", "edit" or "full"; got ${JSON.stringify(raw)}`);
+}
+
+/** Validate the run's trust level (ODW extension; see ./trust). */
+function buildTrust(raw: unknown): TrustLevel {
+  if (isTrustLevel(raw)) return raw;
+  throw new ConfigError(`"trust" must be "trusted" or "untrusted"; got ${JSON.stringify(raw)}`);
 }
 
 /** Validate `agentEnv`: which environment agent CLIs start with. */

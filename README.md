@@ -353,6 +353,7 @@ settles, phase by phase, with the result printed at the end. Ctrl-C detaches (th
 odw run wf.js [--args JSON|@file]            # foreground in a terminal; run keeps its own worker
                                              #   --adapter <name> sets this run's default agent
                                              #   --permissions read|edit|full: what its agents may do
+                                             #   --untrusted: keep the repository's CLAUDE.md, hooks… out
                                              #   --budget <tokens> sets budget.total
 ```
 
@@ -370,7 +371,9 @@ odw logs $RUN --agent 3  # what one agent did: its tool calls, results and text 
 odw result $RUN          # final value
 odw diff $RUN --stat     # what isolated agents changed; odw apply $RUN --agent N (or --all) lands it
 odw compare $OLD $RUN    # what changed between two runs: setup, time, cost, failures, replies (below)
+odw eval review          # cases × adapters × repeats: pass rate, cost and time per cell (below)
 odw export $RUN --otlp   # the run as OpenTelemetry traces (OTLP/JSON; --send posts it; below)
+odw bundle $RUN          # the run as one redacted file to share: $RUN.odwrun (odw view FILE shows it; below)
 odw pause|resume|stop $RUN
 odw approve|reject $RUN  # answer a checkpoint() the run waits at (--note TEXT, --checkpoint N)
 odw approve $RUN --edit  # …approving its payload as you edit it in $EDITOR (or --payload JSON|@file)
@@ -393,13 +396,41 @@ then personal workflows, across both its own directories and Claude Code's saved
 workflow directories: `.odw/workflows`, `.claude/workflows`, `~/.odw/workflows`,
 and `~/.claude/workflows` (honoring `CLAUDE_CONFIG_DIR`).
 
+**Workflows from Claude Code plugins** (ODW extension). A Claude Code plugin can ship
+workflows — `.js` files in its `workflows/` directory, or wherever its
+`plugin.json`'s `"workflows"` points. ODW runs the ones your installed, enabled plugins
+ship, under the name Claude Code gives them:
+
+```bash
+odw workflows list --plugins          # <plugin>:<name>, and which plugin, version and scope
+odw run acme-tools:release-audit      # in place, from the plugin's own directory
+```
+
+ODW reads `~/.claude/plugins/installed_plugins.json` (honoring `CLAUDE_CONFIG_DIR` and
+`CLAUDE_CODE_PLUGIN_CACHE_DIR`; a project or local install counts only inside its
+project) and `enabledPlugins` in your `~/.claude/settings.json` and the project's
+`.claude/settings.json` and `.claude/settings.local.json` (a plugin with no entry
+follows its `defaultEnabled`). It only reads: a plugin's files are never written, and
+its scripts run through the same loader as any workflow — a `meta` that is not a pure
+literal leaves a script out, as Claude Code leaves it out, and a run logs where its
+workflow came from and any ODW-only primitive it uses. A bare name runs a plugin's
+workflow only when no project or personal workflow has that name and one plugin ships
+it; when a project workflow has it, the project's runs and the run says
+`run acme-tools:release-audit for the plugin's`. `GET /api/workflows` lists them with
+provider `claude-plugin:<plugin>`, and runs are filed under `<plugin>:<name>`. In an
+[untrusted](#untrusted-repositories-odw-extension) run plugin workflows still run —
+you installed them — but the repository's settings can only disable a plugin, and a
+name never resolves to the repository's own `.odw/workflows` or `.claude/workflows`
+(its path still runs it).
+
 **Prefer a browser?** `odw serve` opens a zero-dependency live dashboard onto the same
 run directory — every run as a live graph, its timeline, logs and result, streamed over
 SSE. No build step, no extra deps, no network access on load.
 
 ```bash
 odw serve [--open]                      # live dashboard at http://127.0.0.1:4317
-odw serve --port 8080 --host 0.0.0.0    # custom port / bind address
+odw serve --port 8080 --host 0.0.0.0 --token   # remote, read-only, token-gated (see Remote access)
+odw view run.odwrun                     # a shared run bundle, read-only (see Share a run)
 ```
 
 ![odw serve — a live deep-research run: five phase lanes (Plan → Search → Extract → Vote → Report) drawn as a graph, running agents tracing signal along their edges, per-run counters and a phase stepper](assets/odw-dashboard.gif)
@@ -656,8 +687,77 @@ call key and model on its `agent_started`, and — on an adapter's first agent o
 `cli_version` event (`odw status` and `GET /api/runs/:id`'s `cliVersions` show it). It
 never delays or fails a run; a CLI that does not answer is recorded as unknown. An
 adapter whose command is node or another interpreter, a script or a relative path is
-not probed. `"recordVersions": false` turns the probes off. `odw eval` — cases ×
-adapters × repeats — builds on this next.
+not probed. `"recordVersions": false` turns the probes off. `odw eval` (below) builds
+on this.
+
+### Evaluate a workflow (ODW extension)
+
+Changed a prompt, a model tier or a CLI, and want to know if the workflow still does
+its job — reproducibly, and on every CLI you use? Put a few cases in an eval file and
+let `odw eval` run each one on each adapter, several times, and judge the runs:
+
+```bash
+odw eval review                          # .odw/evals/review.json; or a path: odw eval examples/evals/routing.json
+odw eval review --adapter claude,codex --repeats 5   # override the file's adapters and repeats
+odw eval review --json --out today.json  # the report as JSON (stdout and a file)
+odw eval review --baseline today.json    # deltas against an earlier report; exit 1 when a cell regressed
+```
+
+```json
+{
+  "workflow": "review",
+  "adapters": ["claude", "codex"],
+  "repeats": 3,
+  "concurrency": 2,
+  "timeout": 900,
+  "cases": [
+    { "name": "small-diff", "args": { "diff": "…" },
+      "checks": [
+        { "state": "done" },
+        { "path": "verdict", "equals": "approve" },
+        { "path": "findings[0].file", "matches": "\\.ts$" },
+        { "command": "jq -e '.findings | length < 5' \"$ODW_RESULT\"" },
+        { "maxCostUsd": 0.5 }, { "maxSeconds": 300 }
+      ] }
+  ]
+}
+```
+
+- **The file**: `workflow` (a name or a path, resolved like `odw run` from where you run
+  `odw eval`), `cases` (`name`, `args`, `checks`), and optionally `adapters` (each runs
+  the whole case set as the run's default adapter, like `odw run --adapter`; absent:
+  the config's default), `repeats` (default 1), `concurrency` (runs at once, default 1),
+  `budget` (tokens, each run's `--budget`), `timeout` (seconds; a run still going then is
+  stopped and fails), `name` and `description`. It is validated strictly — an unknown
+  key, a bad path or regex is an error naming where it is — before anything runs.
+- **Checks** are judged on the run's outcome, with no model: `{ path, equals }` (deep
+  equality), `{ path, contains }` (a substring, or an array element), `{ path, matches,
+  flags? }` (a regex; a non-string value is matched as its JSON), `{ path, exists }`
+  (`true`, or `false` for "not there"), `{ command, timeout? }` (exits 0, run by the
+  shell in the project directory with `ODW_RESULT` — a file holding the result as JSON —
+  and `ODW_RUN_ID` set; 300s unless it says), `{ state: "done" | "failed" | "stopped" }`,
+  `{ maxCostUsd }` (an unknown cost fails it) and `{ maxSeconds }` (the run's start to
+  end). Paths are dot/bracket notation into the result: `verdict`, `findings[0].file`,
+  `["odd key"]`; `""` is the whole result. A case without checks gets `{ "state":
+  "done" }`; one that lists checks gets exactly those, and a run passes when it meets
+  all of them.
+- **Runs**: every case × adapter × repeat is a real run in the run store, started from
+  this directory and marked `origin: "eval"` with `eval: { name, case, adapter, repeat }`
+  in its `meta.json` — `odw list` and the dashboard's run summaries say so. At most
+  `concurrency` go at once. Progress is a line per finished run on stderr; Ctrl-C stops
+  every run the eval started, keeps no report and ends `odw eval`.
+- **The table**: per case × adapter, pass k/n, median wall time, total and mean cost and
+  mean tokens; then the totals; then each failed run with the checks it missed and its
+  run id — any two runs open side by side with `odw compare`.
+- **The report** (JSON, `version: 1`; `src/eval/report.ts` documents every key) carries
+  the definition and its sha256 (`evalHash`), the workflow's sha256, the odw version, the
+  CLI versions the runs recorded, the cells, and every run with its id and failures. It
+  is kept as `<runsRoot>/_evals/<name>/<id>.json` — `GET /api/evals` lists them and `GET
+  /api/evals/:name/:id` serves one, read only — and written to `--out`.
+- **`--baseline <report.json>`** compares each cell (by case and adapter) with an earlier
+  report: pass rate, mean cost and median time, B − A. A cell whose pass rate fell
+  regressed. Exit codes: 0 when every run passed — or, with `--baseline`, when no cell
+  regressed; 1 otherwise; 2 for a usage error (nothing ran).
 
 ### Observability: OpenTelemetry traces (ODW extension)
 
@@ -738,6 +838,46 @@ docker run --rm -d -p 16686:16686 -p 4318:4318 jaegertracing/all-in-one
 echo '{ "otel": { "endpoint": "http://localhost:4318" } }' > odw.config.json
 odw run wf.js            # or, for a run you already have: odw export $RUN --otlp --send
 ```
+
+### Share a run (ODW extension)
+
+Show a run to a teammate, attach it to an issue, or keep it after the run directory is
+gone: `odw bundle` writes the run as **one self-contained, redacted file**, and
+`odw view` shows it on the dashboard, read-only — no odw config, no runs root, nothing
+else of the machine that made it.
+
+```bash
+odw bundle $RUN                       # → ./$RUN.odwrun
+odw bundle $RUN --out run.odwrun --no-transcripts   # leave the agents' transcripts out
+odw view run.odwrun                   # = odw serve --open run.odwrun: opens the run in a browser
+```
+
+- **What is in it.** One JSON object (`"format": "odw-run-bundle"`, `"version": 1`): the
+  run's meta (its name, script, args, source, adapter, odw version, workflow sha256,
+  times), its status, every event, each agent's saved result, the kept diffs, the agents'
+  transcripts and stderr (`--no-transcripts` drops them), the result and the error.
+- **Redacted, always.** Everything in it — args included — goes through the run's
+  redactor: the token shapes, the values of the secret-named variables of the environment
+  odw starts agents with (yours and each adapter's `env`), `NAME=value` of secret-looking
+  names, and your `redact.extra` — even when the config says `"redact": false`. Each piece
+  that had something replaced is marked `redacted: true`, and so is the bundle.
+  Kept diffs are redacted too, so a bundle's diff is for reading, not for `odw apply`.
+- **Never in it:** the config file or its path, the environment, `notify` and `otel`
+  settings, the worker's pid, the worker log, the run's control files. (Prompts are not
+  kept in run records, so they are not in it either.) Look before you share:
+  `odw view` it first.
+- **Capped.** A bundle over 32 MiB is refused with its size and the ways out —
+  `--no-transcripts`, or `--max-bytes N` to raise the cap (`odw view` takes the same flag).
+- **Opening one trusts nothing in it.** Its size is checked before it is read; the format,
+  version and every field's type are checked; the run id must be a run id
+  (`[A-Za-z0-9._-]`, not a Claude Code `cc-` id) and every agent id a non-negative
+  integer, at most 10 000 agents. It is unpacked into a fresh private temp directory
+  (mode 0700) under fixed file names — nothing the file says becomes a path — and removed
+  when `odw view` exits. The dashboard then shows that run alone, tagged **shared bundle**:
+  no other runs, no Claude Code runs, workflows, schedules or local settings, and every
+  write refused (409), on loopback too.
+
+The dashboard's **Share** button on a run copies `odw bundle <run>`.
 
 ## Dashboard: observe, inspect, chat
 
@@ -824,6 +964,49 @@ Chat messages and stopping ODW-owned runs stay guarded by the loopback server.
 Claude Code's own runs stay strictly read-only. What it serves of ODW's agents —
 transcripts, results, logs, chat sessions — had its likely secrets redacted before it
 was written, and a run's `args` are redacted as they are served (see [Secrets in what ODW keeps](#secrets-in-what-odw-keeps-odw-extension)).
+
+### Remote access, read-only (ODW extension)
+
+Watch an overnight run from your phone without handing anyone your machine:
+
+```bash
+odw serve --host 0.0.0.0 --token
+# odw dashboard → http://192.168.1.20:4317/#token=Xq3…   ← open this one; it is printed once
+```
+
+With `--token` and no value, odw makes a random 256-bit token and prints the URL with it
+once, as `#token=…` — a fragment, which no request carries, so the token stays out of
+server and proxy logs; odw writes it nowhere else. `--token VALUE` (16–256 characters of
+`A-Z a-z 0-9 . _ ~ -`) uses yours and never prints it — it does show in the process list,
+so prefer the generated one on a shared machine.
+
+The security model:
+
+- **Every `/api` request and the live stream need the token**, one of three ways:
+  `Authorization: Bearer <token>` (scripts, `curl`); `?token=<token>` on a request, whose
+  answer sets an `HttpOnly`, `SameSite=Strict` cookie (`odw_token_<port>`); or that
+  cookie. The dashboard trades the URL's `#token=` for the cookie on load and drops it
+  from the address bar. Without a token: 401; the page itself loads and shows a
+  "needs a token" screen to paste one into.
+- **Tokens are compared in constant time** (both sides hashed first). An address that
+  sends 10 wrong tokens within a minute is answered 429, whatever it sends, until the
+  minute is up; a request with no token at all is not counted.
+- **Writes stay refused off loopback, whatever the token**: stopping or pausing runs,
+  answering checkpoints and Chat are 409 on any bind but 127.0.0.1 / localhost / ::1.
+  The token gives remote *reads*, never writes. (On a loopback bind, `--token` gates
+  writes like reads, and every existing write guard still applies: exact
+  `Content-Type: application/json`, same-origin `Origin`, the DNS-rebinding Host check.)
+- **It is plain HTTP.** The token and everything the dashboard shows cross the network
+  unencrypted: use it on a network you trust, over a VPN or SSH tunnel
+  (`ssh -L 4317:localhost:4317 host` needs no `--host` at all), or behind a TLS proxy.
+- **What a token-holder reads** is what the dashboard shows: every project's runs — ODW's
+  and, with the default `claudeJobsScope: "all"`, Claude Code's — their args, results,
+  events, agents' transcripts and diffs (secrets redacted as above), and the settings
+  page's paths and adapters. Narrow it with `--runs-root` and `"claudeJobsScope": "project"`,
+  or share one run as a [bundle](#share-a-run-odw-extension) instead.
+- **Without `--token`**, an off-loopback bind behaves as before — read-only and open to
+  anyone who can reach the port — and `odw serve` prints a loud warning that suggests
+  `--token`.
 
 ## Configure adapters
 
@@ -1099,7 +1282,7 @@ live view, after `--wait`'s first line and after a detached run's id. Each
 `odw doctor` lists every adapter's tiers. A tier governs what agents may do: `exec()`
 commands are the workflow's own and are not affected. `read` is not a sandbox for code
 you do not trust either — Claude Code, for one, still runs a repository's hooks under
-`-p`.
+`-p`; run such a repository [untrusted](#untrusted-repositories-odw-extension).
 
 **Codex and MCP tools that ask for approval** ([#23](https://github.com/xz1220/open-dynamic-workflows/issues/23)).
 No tier makes `codex exec` approve an MCP tool call. It asks nobody, so a tool call that
@@ -1150,6 +1333,68 @@ does not reach every agent:
 If a CLI cannot log in under `minimal`, add what it needs to `agentEnvPass`
 (`odw doctor --smoke` makes one real call to check). `exec()` commands, `worktreeSetup`
 and the `notify` hooks keep the whole environment.
+
+### Untrusted repositories (ODW extension)
+
+Running agents on someone else's repository is dangerous: its CLAUDE.md or AGENTS.md
+steer the agent, and its hooks, MCP servers and project settings run inside it. Run
+such a repository **untrusted** — `odw run|rerun|resume --untrusted`, or
+`"trust": "untrusted"` in your config (the default is `"trusted"`; a rerun or resume
+of an untrusted run stays untrusted). Each CLI then runs in the way of ignoring the
+repository its own docs give, after its tier's flags; where it has none, the run says
+so once per adapter — never silently:
+
+| Adapter | Untrusted | What still reaches the agent |
+| --- | --- | --- |
+| `claude` | `--safe-mode` (CLAUDE.md, skills, plugins, hooks, MCP servers, commands, agents, workflows off; auth works) | nothing |
+| `qwen` | `--safe-mode` (context files, hooks, extensions, skills, MCP servers off) | nothing |
+| `omp` | `--no-extensions --no-skills --no-rules` | AGENTS.md, CLAUDE.md, hooks, MCP config |
+| `codex` | no documented way | AGENTS.md (its `.codex/` config, hooks and rules load only for a project you trusted) |
+| `gemini` | no documented way (its untrusted-folder mode exits headless) | GEMINI.md, `.gemini/settings.json` |
+| `kimi` | no documented way | AGENTS.md, skills |
+| `kilo`, `opencode` | no documented way | AGENTS.md, project config, `.kilo/` / `.opencode/` |
+| `cursor` | no documented way | `.cursor/rules`, AGENTS.md, CLAUDE.md, `mcp.json`, hooks |
+
+Claude Code's `--bare` would skip even more, but it takes API-key auth only, so
+subscription logins could not use it. A line such as
+`codex has no documented way to ignore the repository's AGENTS.md — its instructions
+still reach the agent` lands in the run's log the first time an agent runs on codex.
+
+The repository's own code that ODW itself would run is refused: the `symlink:` lines
+of its `.worktreeinclude` link nothing (a link hands agents the source tree; plain
+lines still copy), and a `worktreeSetup` set by a config inside the repository — such
+as its `./odw.config.json` — does not run, with a log line saying so. A `worktreeSetup`
+from your own config (`--config`, `$ODW_CONFIG`, or `~/.config/odw/config.json`
+outside the repository) still runs. A config ODW would find by itself inside the
+repository — its `./odw.config.json` — is not read at all in an untrusted run: its
+adapter commands are the repository's code. The run uses your
+`~/.config/odw/config.json` (outside the repository) or the built-in defaults, and says
+so; one you name with `--config` or `$ODW_CONFIG` is your choice and still applies. A
+repository's config cannot loosen the `"trust": "untrusted"` your
+`~/.config/odw/config.json` sets.
+
+```jsonc
+{
+  "trust": "untrusted",
+  "adapters": {
+    "codex": { "trust": "untrusted" },  // or: only this adapter, in every run
+    "my_wrapper": {
+      "command": ["my-agent", "{permission_args}", "--cwd", "{workspace}"],
+      "permissionArgs": { "edit": [] },
+      "untrustedArgs": ["--no-project-config"],           // goes after the tier's flags
+      "untrustedNote": "my-agent still reads .my-agent/rules" // said once per untrusted run
+    }
+  }
+}
+```
+
+The start banner has a trust line — `trust: untrusted — claude --safe-mode, codex no
+documented way` — and `odw doctor` shows the config's trust and how each adapter runs
+untrusted. An untrusted agent's `agent_started` event, saved result and
+`odw agents --json` row carry `trust: "untrusted"`, the dashboard's drawer shows it,
+and the run's `run_started` setup records `trust`. Untrusted is not a sandbox: it
+keeps the repository's instructions and configuration out where a CLI allows, and the
+permission tier still decides what agents may do.
 
 ### Secrets in what ODW keeps (ODW extension)
 
@@ -1958,7 +2203,7 @@ Ranked by what users of parallel coding agents report needing
 ([research](docs/research/user-needs-2026-10.md)): adapter-reported token usage and
 cost for more CLIs (Claude Code and Codex report it today; the others are estimated) ·
 running Claude plugin
-workflows · evaluation. Full plan: [`docs/ROADMAP.md`](docs/ROADMAP.md); the
+workflows · dashboard views of `odw compare` and `odw eval`. Full plan: [`docs/ROADMAP.md`](docs/ROADMAP.md); the
 original design: [`docs/dynamic-workflows-tech-plan.md`](docs/dynamic-workflows-tech-plan.md).
 Background on the Claude Code dialect ODW aligns with:
 [`docs/dynamic-workflows-research.md`](docs/dynamic-workflows-research.md).
@@ -2005,7 +2250,8 @@ no token billing of its own, no network calls from the engine.
 
 No. Write endpoints require <code>Content-Type: application/json</code> and a
 same-origin Origin, the Host header is allowlisted against DNS rebinding, and
-any off-loopback bind refuses writes entirely (the dashboard stays readable).
+any off-loopback bind refuses writes entirely (the dashboard stays readable — with
+<code>--token</code>, only to whoever holds the token).
 </details>
 
 <details>

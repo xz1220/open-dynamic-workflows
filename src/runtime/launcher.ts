@@ -15,13 +15,14 @@ import { fileURLToPath } from "node:url";
 
 import { loadConfig, resolveAdapter, resolveRunsRoot } from "../adapters/config.js";
 import { isPermissionTier } from "../adapters/permissions.js";
-import type { Config, PermissionTier } from "../adapters/types.js";
+import type { Config, PermissionTier, TrustLevel } from "../adapters/types.js";
 import { ConfigError } from "../errors.js";
 import { loadWorkflowScript } from "../loader.js";
 import { isSeaBinary } from "../sea.js";
-import { resolveWorkflow } from "../workflows/resolve.js";
+import { resolveRunTrust } from "../untrusted.js";
+import { resolveWorkflow, type ResolvedWorkflow } from "../workflows/resolve.js";
 import { RunObserver } from "./run-liveness.js";
-import { RunStore } from "./run-store.js";
+import { RunStore, type EvalRunTag } from "./run-store.js";
 
 export interface StartRunOptions {
   args?: unknown;
@@ -41,8 +42,16 @@ export interface StartRunOptions {
    * agent, in place of the config's `permissions`.
    */
   permissions?: PermissionTier | null;
-  /** Where the run was initiated from (e.g. "chat" for Chat Host runs). */
+  /**
+   * Run untrusted (an ODW extension; `--untrusted`): each agent CLI in its
+   * documented way of ignoring the repository's instructions and settings,
+   * whatever the config's `trust` (see ../untrusted). Null or `"trusted"`: the config's.
+   */
+  trust?: TrustLevel | null;
+  /** Where the run was initiated from (e.g. "chat" for Chat Host runs, "eval" for `odw eval`'s). */
   origin?: string | null;
+  /** The `odw eval` cell this run is one repeat of (ODW extension), kept in its meta. */
+  eval?: EvalRunTag | null;
   /**
    * `odw resume`: the run (id + directory) whose saved agent results this run
    * replays — its agent() calls that are unchanged return those values
@@ -78,36 +87,53 @@ function commonCreateInput(options: StartRunOptions, source: string, workflowNam
     workflowName,
     adapter: options.adapter ?? null,
     permissions: options.permissions ?? null,
+    trust: options.trust === "untrusted" ? "untrusted" : null,
     origin: options.origin ?? null,
+    eval: options.eval ?? null,
     resumedFrom: options.resumedFrom ?? null,
   };
 }
 
-/** Create a run and launch its worker process; return `{ runId, store }`. */
+/**
+ * Create a run and launch its worker process; return `{ runId, store }` and
+ * how the workflow resolved (`workflow`: a plugin's, what its name noted).
+ */
 export function startRun(
   script: string,
   options: StartRunOptions = {},
-): { runId: string; store: RunStore } {
+): { runId: string; store: RunStore; workflow: ResolvedWorkflow } {
   const { config, source, store } = prepare(options);
-  // `script` may be a path (./wf.js) or a managed-directory name (deep-research);
-  // resolve against `source` so --source steers both literal paths and name lookup.
-  const { scriptPath } = resolveWorkflow(script, { cwd: source, config });
+  // `script` may be a path (./wf.js), a managed-directory name (deep-research)
+  // or a Claude Code plugin's workflow (plugin:name, ODW extension); resolve
+  // against `source` so --source steers literal paths and name lookup alike.
+  // An untrusted run never resolves a name to the repository's own workflows.
+  const trust = resolveRunTrust({ flag: options.trust ?? null, config, configPath: options.configPath ?? null, source, cwd: source }).trust;
+  const workflow = resolveWorkflow(script, { cwd: source, config, trust });
+  const { scriptPath } = workflow;
 
   // Read the workflow's identity (meta.name) up front so the run is bucketed by
   // its workflow even before — and whether or not — it ever starts running. This
   // only COMPILES the script (extracts meta + builds the body factory); it never
   // executes the body. A malformed script leaves the name unknown (the run still
-  // gets created, then the worker records it as failed in the normal way).
+  // gets created, then the worker records it as failed in the normal way). A
+  // plugin's workflow is bucketed by its `<plugin>:<name>`.
   let workflowName: string | null = null;
   try {
     workflowName = loadWorkflowScript(readFileSync(scriptPath, "utf8"), scriptPath).meta.name;
   } catch {
     workflowName = null;
   }
+  const plugin = workflow.plugin;
+  if (plugin) workflowName = plugin.name;
 
-  const runId = store.create({ script: scriptPath, ...commonCreateInput(options, source, workflowName) });
+  const runId = store.create({
+    script: scriptPath,
+    ...commonCreateInput(options, source, workflowName),
+    ...(plugin ? { plugin: { name: plugin.name, id: plugin.id, version: plugin.version, scope: plugin.scope } } : {}),
+    ...(workflow.notes ? { workflowNotes: workflow.notes } : {}),
+  });
   spawnWorker(store, runId, source);
-  return { runId, store };
+  return { runId, store, workflow };
 }
 
 /**

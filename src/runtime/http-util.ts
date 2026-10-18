@@ -56,7 +56,7 @@ export function isAllowedHost(boundHost: string, header: string | undefined): bo
  */
 export function writeGuard(req: IncomingMessage, res: ServerResponse, boundHost: string): boolean {
   if (!isLoopbackBind(boundHost)) {
-    sendJson(res, 409, { error: "writes are loopback-only; token auth is a future opt-in" });
+    sendJson(res, 409, { error: "writes are loopback-only: an off-loopback bind is read-only, with or without --token" });
     return false;
   }
   // Compare the MIME *essence* (type/subtype before any ";" parameters), not a

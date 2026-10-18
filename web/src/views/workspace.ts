@@ -11,16 +11,27 @@ import { emptyArt } from "./activity";
 /**
  * A workflow's stable identity for selection + detail routing. Two providers can
  * own the same name (e.g. an ODW and a Claude `deep-research`), so name alone is
- * ambiguous; `provider:name` is unique (name excludes `:`).
+ * ambiguous; `provider:name` is unique (name excludes `:` — but a Claude Code
+ * plugin's, `claude-plugin:<plugin>:<plugin>:<name>`; see {@link parseWfKey}).
  */
 export function wfKey(w: { provider: string; name: string }): string {
   return `${w.provider}:${w.name}`;
 }
 
+/** A {@link wfKey} back to its provider and name. A bare name (an old bookmark) is the name alone. */
+export function parseWfKey(key: string): { provider?: string; name: string } {
+  const plugin = /^(claude-plugin:[^:]+):(.+)$/.exec(key);
+  if (plugin) return { provider: plugin[1]!, name: plugin[2]! };
+  const i = key.indexOf(":");
+  return i >= 0 ? { provider: key.slice(0, i), name: key.slice(i + 1) } : { name: key };
+}
+
 /** Provider sections, in display order. A provider with no workflows is dropped. */
-const PROVIDER_GROUPS: Array<{ provider: WorkflowSummary["provider"]; title: string }> = [
-  { provider: "odw", title: "ODW" },
-  { provider: "claude", title: "Claude Code" },
+const PROVIDER_GROUPS: Array<{ provider: string; title: string; has: (p: WorkflowSummary["provider"]) => boolean }> = [
+  { provider: "odw", title: "ODW", has: (p) => p === "odw" },
+  { provider: "claude", title: "Claude Code", has: (p) => p === "claude" },
+  // What installed Claude Code plugins ship, run as <plugin>:<name> (ODW extension).
+  { provider: "claude-plugin", title: "Claude Code plugins", has: (p) => p.startsWith("claude-plugin:") },
 ];
 
 /**
@@ -29,7 +40,7 @@ const PROVIDER_GROUPS: Array<{ provider: WorkflowSummary["provider"]; title: str
  * selection in main.ts can't disagree with what the user sees.
  */
 export function orderedWorkflows(list: WorkflowSummary[]): WorkflowSummary[] {
-  return PROVIDER_GROUPS.flatMap((g) => list.filter((w) => w.provider === g.provider));
+  return PROVIDER_GROUPS.flatMap((g) => list.filter((w) => g.has(w.provider)));
 }
 
 function listItem(w: WorkflowSummary, activeKey: string | null): string {
@@ -41,7 +52,7 @@ function listItem(w: WorkflowSummary, activeKey: string | null): string {
     `<a class="wf-item${key === activeKey ? " on" : ""}" href="#/workspace/${encodeURIComponent(key)}" data-wf="${esc(key)}" data-key="wf-${esc(key)}">` +
     `<h4>${esc(w.name)}</h4>` +
     (w.description ? `<div class="ds">${esc(w.description)}</div>` : "") +
-    `<div class="mini"><span class="tag${w.provider === "claude" ? " cc" : ""}">${esc(w.rootLabel)}</span>` +
+    `<div class="mini"><span class="tag${w.provider === "odw" ? "" : " cc"}"${w.note ? ` title="${esc(w.note)}"` : ""}>${esc(w.rootLabel)}</span>` +
     `<span class="tag">${tn(w.phases.length, "{n} phase", "{n} phases")}</span>` +
     (w.runCount ? `<span class="tag sig">${tn(w.runCount, "{n} run", "{n} runs")}</span>` : "") +
     shadow +
@@ -133,7 +144,7 @@ export function renderWorkspace(activeKey: string | null, detail: WorkflowDetail
   const filtered = q
     ? list.filter((w) => w.name.toLowerCase().includes(q) || (w.description ?? "").toLowerCase().includes(q))
     : list;
-  const sections = PROVIDER_GROUPS.map((g) => ({ ...g, items: filtered.filter((w) => w.provider === g.provider) }))
+  const sections = PROVIDER_GROUPS.map((g) => ({ ...g, items: filtered.filter((w) => g.has(w.provider)) }))
     .filter((g) => g.items.length > 0)
     .map(
       (g) =>
