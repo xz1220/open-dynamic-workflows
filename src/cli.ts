@@ -79,8 +79,10 @@ import { isRunActive, RunObserver } from "./runtime/run-liveness.js";
 import { RunStore, TERMINAL_STATES } from "./runtime/run-store.js";
 import { detail, evalTagOf, summarize, type RunDetail } from "./runtime/runs-view.js";
 import { spendLines } from "./runtime/spend-view.js";
+import { DEADLINE_EXIT_CODE, deadlineReport, parseDeadline, stoppedByDeadline } from "./runtime/deadline.js";
 import { exportRun, exportTimeout, otlpTarget, OTEL_SEND_TIMEOUT_MS, postTrace, spanCount } from "./runtime/otel-export.js";
 import { startServer } from "./runtime/server.js";
+import { triggerLines } from "./runtime/trigger-route.js";
 import { BUNDLE_EXT, BundleError, bundleRedactor, createBundle, DEFAULT_BUNDLE_MAX_BYTES, isBundleRunId, openBundle, type OpenedBundle } from "./runtime/bundle.js";
 import { generateToken, isValidToken } from "./runtime/serve-auth.js";
 import { parsePublicUrl, publicUrlHasPath } from "./runtime/approve-links.js";
@@ -216,6 +218,8 @@ export function helpText(): string {
     "  -d, --detach        start in the background and print the run id",
     "  --wait              block until the run finishes, then print the result (one run-id line on stderr)",
     "  --timeout <s>       with --fg/--wait/attach: give up after s seconds, exit 124 (run continues)",
+    "  --deadline <s>      odw run: STOP the run s seconds after it starts (stopped, diffs and finished agents kept);",
+    "                      --wait/--fg then print what finished and exit 3 (ODW extension)",
     "  --budget <tokens>   token target exposed to the script as budget.total",
     "  -h, --help          show this help",
     "  -v, --version       show the version",
@@ -228,6 +232,8 @@ export function helpText(): string {
     "  --token-scope S     read (default), or approve: the token also answers checkpoints, nothing else",
     "  --public-url URL    answer signed one-time approve/reject links at URL (sent by \"waiting\" notify hooks)",
     "  --rotate-approve-secret  replace the approve-link secret: every link sent before stops working",
+    "  (config \"triggers\")  answer signed GitHub/Linear/Slack/HMAC webhooks at POST /api/triggers/<name>,",
+    "                      each starting its workflow untrusted (ODW extension; off loopback too)",
     "  FILE.odwrun         show that bundle alone, read-only (--max-bytes N raises the 32 MiB cap)",
     "",
     "Run modes (odw run / rerun / resume):",
@@ -511,6 +517,7 @@ async function cmdRun(rest: string[]): Promise<number> {
       fg: { type: "boolean" },
       detach: { type: "boolean", short: "d" },
       timeout: { type: "string" },
+      deadline: { type: "string" },
       budget: { type: "string" },
       on: { type: "string" },
       sync: { type: "string" },
@@ -543,6 +550,9 @@ async function cmdRun(rest: string[]): Promise<number> {
   }
 
   const { mode, timeoutMs } = resolveStartMode("run", values);
+  // --deadline (ODW extension): the worker stops the run once it passes, in every mode.
+  const deadlineSeconds = values.deadline === undefined ? null : parseDeadline(values.deadline);
+  if (deadlineSeconds === null && values.deadline !== undefined) throw new UsageError("odw run: --deadline must be a positive number of seconds");
   const permissions = parsePermissions("run", values.permissions);
   const trust: TrustLevel | null = values.untrusted === true ? "untrusted" : null;
   const sandbox = parseSandbox("run", values.sandbox, values["sandbox-image"]);
@@ -563,6 +573,7 @@ async function cmdRun(rest: string[]): Promise<number> {
     budgetTotal,
     dry: values.dry === true,
     record,
+    deadlineSeconds,
   });
   if (record) process.stderr.write(`recording: once ${runId} ends, it is a case of ${record.file} (odw test ${record.workflow})\n`);
   if (!values.dry) {
@@ -630,7 +641,8 @@ async function cmdRunRemote(ref: string, values: Record<string, string | boolean
   parseSandbox("run", values.sandbox as string | undefined, values["sandbox-image"] as string | undefined);
   if (values.budget !== undefined && !(Number(values.budget) > 0)) throw new UsageError("odw run: --budget must be a positive number");
   const flags: string[] = [];
-  for (const flag of ["adapter", "permissions", "sandbox", "sandbox-image", "budget"]) {
+  if (values.deadline !== undefined && parseDeadline(String(values.deadline)) === null) throw new UsageError("odw run: --deadline must be a positive number of seconds");
+  for (const flag of ["adapter", "permissions", "sandbox", "sandbox-image", "budget", "deadline"]) {
     if (typeof values[flag] === "string") flags.push(`--${flag}`, values[flag] as string);
   }
   if (values.untrusted === true) flags.push("--untrusted");
@@ -1825,6 +1837,8 @@ async function cmdServe(rest: string[], as: "serve" | "view" = "serve"): Promise
       process.stderr.write("  ⚠ --public-url is plain http: an approve link can be read and used by anyone on the path. Use https (a tunnel).\n");
     }
   }
+  // Signed triggers (ODW extension): where each is answered, and one whose secret is missing.
+  for (const line of opened ? [] : triggerLines(config.settings.triggers, publicUrl ?? base)) process.stdout.write(`${line}\n`);
   if (!loopback && !token) {
     process.stderr.write(
       `\n  ⚠ WARNING: bound to ${host} with no --token — anyone who can reach this port reads every project's runs\n` +
@@ -2328,6 +2342,13 @@ function reportTerminal(store: RunStore, runId: string, status: Record<string, u
     const error = store.readError(runId) ?? {};
     process.stderr.write(`run failed: ${status.error ?? error.error ?? "unknown error"}\n`);
     return 1;
+  }
+  // Stopped by its --deadline (ODW extension): what it finished, and exit 3.
+  if (stoppedByDeadline(status)) {
+    const report = deadlineReport(store, runId);
+    process.stdout.write(JSON.stringify(report, null, 2) + "\n");
+    process.stderr.write(`run was stopped at its deadline (--deadline ${String(report.deadline)}); finished agents kept: ${(report.finished as unknown[]).length}\n`);
+    return DEADLINE_EXIT_CODE;
   }
   if (state === "stopped") {
     process.stderr.write("run was stopped before completion\n");

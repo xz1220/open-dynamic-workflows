@@ -139,9 +139,9 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
   // Undoes the redaction of this process's own output, once the run is over.
   let unredactOutput = (): void => {};
   const signals = watchStopSignals({
-    stop: (signal) => {
+    stop: (why) => {
       if (end) return; // only the hooks are left; the grace period bounds them
-      const reason = new RunStopped(`worker received ${signal}`);
+      const reason = new RunStopped(why);
       sink.emit(event(LOG, { message: `${reason.message} — stopping the run` }));
       ctx?.scheduler.abort(reason);
     },
@@ -161,6 +161,8 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
     },
   });
   process.on("exit", killAllAgentProcesses);
+  // `--deadline` (ODW extension): stops the run like a stop signal once it passes — armed once the run can be stopped.
+  let deadline: { dispose(): void } | undefined;
   try {
     let baseConfig = loadConfig((meta.configPath as string | null) ?? null);
     // Run-level adapter override (meta.adapter): becomes this run's default for
@@ -305,6 +307,11 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
       },
     });
 
+    deadline = watchDeadline(meta.deadline, (seconds) => {
+      if (end) return;
+      store.updateStatus(runId, { stopReason: "deadline" });
+      signals.stopNow(`the run's deadline (--deadline ${seconds}) passed`);
+    });
     store.updateStatus(runId, { state: "running", pid: process.pid });
     // What the run starts with — the settings that change behaviour, and each
     // adapter's fingerprint — for `odw compare` (ODW extension; see ../provenance).
@@ -428,6 +435,7 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
       end = { state: "failed", error: message };
     }
   } finally {
+    deadline?.dispose();
     process.off("exit", killAllAgentProcesses);
     crashes.dispose();
     if (!end) signals.dispose(); // the run itself threw: no hooks follow
@@ -595,24 +603,29 @@ function watchProcessCrashes(): { race<T>(work: Promise<T>): Promise<T>; dispose
 /**
  * Handle the stop signals while a run executes (see executeRun): `stop` on the
  * first; `force` on a second, or once SIGNAL_GRACE_MS have passed since the
- * first. Listening ends at `dispose`.
+ * first. `stopNow` stops the run the same way for a reason of the run's own
+ * (its `--deadline`): a signal after it forces. Listening ends at `dispose`.
  */
 function watchStopSignals(handlers: {
-  stop(signal: NodeJS.Signals): void;
+  stop(why: string): void;
   force(signal: NodeJS.Signals, why: string): void;
-}): { dispose(): void } {
-  let first: NodeJS.Signals | undefined;
+}): { dispose(): void; stopNow(why: string): void } {
+  let first: { signal: NodeJS.Signals | null; why: string } | undefined;
   let deadline: NodeJS.Timeout | undefined;
-  const onSignal = (signal: NodeJS.Signals): void => {
-    if (first) {
-      return handlers.force(signal, `worker received ${signal} ${signal === first ? "again" : `after ${first}`}`);
-    }
-    first = signal;
+  const begin = (signal: NodeJS.Signals | null, why: string): void => {
+    first = { signal, why };
     deadline = setTimeout(
-      () => handlers.force(signal, `the run did not stop within ${SIGNAL_GRACE_MS / 1000}s of ${signal}`),
+      () => handlers.force(signal ?? "SIGTERM", `the run did not stop within ${SIGNAL_GRACE_MS / 1000}s of ${signal ?? why}`),
       SIGNAL_GRACE_MS,
     );
-    handlers.stop(signal);
+    handlers.stop(why);
+  };
+  const onSignal = (signal: NodeJS.Signals): void => {
+    if (first) {
+      const after = first.signal === signal ? "again" : `after ${first.signal ?? first.why}`;
+      return handlers.force(signal, `worker received ${signal} ${after}`);
+    }
+    begin(signal, `worker received ${signal}`);
   };
   for (const signal of STOP_SIGNALS) process.on(signal, onSignal);
   return {
@@ -620,7 +633,33 @@ function watchStopSignals(handlers: {
       clearTimeout(deadline);
       for (const signal of STOP_SIGNALS) process.off(signal, onSignal);
     },
+    stopNow: (why) => {
+      if (!first) begin(null, why);
+    },
   };
+}
+
+/** The longest a timer waits in one go: setTimeout fires at once past 2^31-1 ms. */
+const MAX_TIMER_MS = 2 ** 31 - 1;
+
+/**
+ * Call `onPassed(seconds)` once the run's `meta.deadline` (`{ seconds, at }`,
+ * `at` in Unix seconds; ODW extension: `--deadline`) passes — at once when it
+ * already has. A far deadline is waited for in steps a timer can take.
+ */
+function watchDeadline(raw: unknown, onPassed: (seconds: number) => void): { dispose(): void } {
+  const spec = raw as { seconds?: unknown; at?: unknown } | null | undefined;
+  if (!spec || typeof spec.at !== "number" || !Number.isFinite(spec.at)) return { dispose: () => {} };
+  const at = spec.at * 1000;
+  const seconds = typeof spec.seconds === "number" ? spec.seconds : Math.round(spec.at - Date.now() / 1000);
+  let timer: NodeJS.Timeout | undefined;
+  const arm = (): void => {
+    const left = at - Date.now();
+    if (left <= 0) return onPassed(seconds);
+    timer = setTimeout(arm, Math.min(left, MAX_TIMER_MS));
+  };
+  arm();
+  return { dispose: () => clearTimeout(timer) };
 }
 
 function crashError(kind: string, cause: unknown): WorkflowScriptError {
