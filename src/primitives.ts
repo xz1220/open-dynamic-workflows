@@ -466,7 +466,7 @@ export function createPrimitives(
     const trust = planTrust(route.chain[0]!, runTrust(ctx.config)).trust;
     // The container its CLI runs in, if any (ODW extension; see adapters/sandbox.ts):
     // its first adapter's, for its events. The bridge enforces it, and refuses a looser one.
-    const sandbox = ctx.bridge.sandboxFor(route.chain[0]!, opts.sandbox).box;
+    const sandbox = ctx.bridge.sandboxFor?.(route.chain[0]!, opts.sandbox).box ?? null;
     // A staggered fan-out (ODW extension): in a parallel() or pipeline() call,
     // an agent on a prompt-caching adapter whose prompt shares a long prefix
     // with an earlier one's — on the same model and persona, so the same

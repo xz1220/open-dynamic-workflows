@@ -20,6 +20,7 @@ import { AdapterExecutionError, AgentError, ConfigError } from "../src/errors.ts
 import { RunStore } from "../src/runtime/run-store.ts";
 import { foldAgents } from "../src/runtime/runs-view.ts";
 import { executeRun } from "../src/runtime/worker.ts";
+import { main } from "../src/cli.ts";
 
 const FAKE = fileURLToPath(new URL("./fixtures/fake-docker.mjs", import.meta.url));
 
@@ -291,4 +292,63 @@ test("the worker's backstop removes every container still live", async () => {
   killAllAgentProcesses();
   await until(() => calls().slice(before).some((a) => a.join(" ") === "rm --force odw-backstop-test"));
   untrack();
+});
+
+/** Run the CLI with stdout/stderr captured (node:test's own buffer writes pass through). */
+async function cli(argv: string[]): Promise<{ code: number; out: string; err: string }> {
+  const out: string[] = [];
+  const err: string[] = [];
+  const so = process.stdout.write.bind(process.stdout);
+  const se = process.stderr.write.bind(process.stderr);
+  (process.stdout as { write: unknown }).write = (s: unknown) => {
+    if (Buffer.isBuffer(s)) return so(s);
+    out.push(String(s));
+    return true;
+  };
+  (process.stderr as { write: unknown }).write = (s: unknown) => {
+    if (Buffer.isBuffer(s)) return se(s);
+    err.push(String(s));
+    return true;
+  };
+  try {
+    const code = await main(argv);
+    return { code, out: out.join(""), err: err.join("") };
+  } finally {
+    process.stdout.write = so;
+    process.stderr.write = se;
+  }
+}
+
+test("odw run|rerun --sandbox container [--sandbox-image]: the banner, the meta, and a rerun stays sandboxed", async () => {
+  const dir = mkdtempSync(join(root, "cli-"));
+  const configPath = join(dir, "odw.config.json");
+  writeFileSync(configPath, JSON.stringify({ adapters: { boxed: { command: ["claude"], stdin: "{prompt}" } }, defaultAdapter: "boxed" }));
+  const script = join(dir, "wf.js");
+  writeFileSync(script, "export const meta = { name: 'cli', description: 'd' }\nreturn JSON.parse(await agent('hello')).cred\n");
+  const runsRoot = join(dir, "runs");
+  const flags = ["--config", configPath, "--runs-root", runsRoot, "--source", dir];
+  const store = new RunStore(runsRoot);
+
+  let r = await cli(["run", script, "--sandbox", "container", "--sandbox-image", "odw-test:1", "--wait", ...flags]);
+  assert.equal(r.code, 0, r.err);
+  assert.equal(JSON.parse(r.out), "host-login-placeholder");
+  assert.match(r.err, /sandbox: container \(docker, image odw-test:1, network default, cli config copy, pids 512\) — agents and exec\(\) steps run in it/);
+  const id = /running (\S+) \.\.\./.exec(r.err)![1]!;
+  assert.deepEqual(store.readMeta(id).sandbox, { kind: "container", image: "odw-test:1" });
+
+  r = await cli(["rerun", id, "--wait", "--runs-root", runsRoot]);
+  assert.equal(r.code, 0, r.err);
+  const again = /running (\S+) \.\.\./.exec(r.err)![1]!;
+  assert.deepEqual(store.readMeta(again).sandbox, { kind: "container", image: "odw-test:1" });
+
+  // Usage errors, before anything is created.
+  const runs = store.listRuns().length;
+  r = await cli(["run", script, "--sandbox", "vm", ...flags]);
+  assert.deepEqual([r.code, r.err], [2, "odw run: --sandbox must be container; got 'vm'\n"]);
+  r = await cli(["run", script, "--sandbox-image", "odw-test:1", ...flags]);
+  assert.deepEqual([r.code, r.err], [2, "odw run: --sandbox-image needs --sandbox container\n"]);
+  r = await cli(["run", script, "--sandbox", "container", "--detach", ...flags]);
+  assert.notEqual(r.code, 0);
+  assert.match(r.err, /--sandbox container needs an image/);
+  assert.equal(store.listRuns().length, runs);
 });

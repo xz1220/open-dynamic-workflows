@@ -527,8 +527,8 @@ function startBanner(
     return [
       permissionsBanner(config, installed),
       trustBanner(config, installed),
-      sandboxBanner(config),
       `concurrency: ${describeConcurrency(config)}`,
+      sandboxBanner(config),
     ].join("\n");
   } catch {
     return undefined;
