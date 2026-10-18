@@ -213,7 +213,10 @@ export interface RunSummary {
 
 export interface RunDetail extends RunSummary {
   script: string | null;
+  /** The run's input as given — as served (`odw serve`), with its token shapes redacted (ODW extension). */
   args: unknown;
+  /** Token shapes in `args` were replaced by `«redacted:<kind>»` before it was served (ODW extension). */
+  argsRedacted?: boolean;
   agents: AgentView[];
   /** Phases in the order their phase_started fired, plus any declared-not-started. */
   phaseOrder: string[];

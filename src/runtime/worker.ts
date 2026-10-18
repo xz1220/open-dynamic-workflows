@@ -15,6 +15,7 @@
 import { readFileSync } from "node:fs";
 import { constants } from "node:os";
 import { basename, dirname } from "node:path";
+import { StringDecoder } from "node:string_decoder";
 import { pathToFileURL } from "node:url";
 
 import { loadConfig } from "../adapters/config.js";
@@ -90,8 +91,13 @@ const SIGNAL_GRACE_MS = 10_000;
  * lists "paused", each pause fires the hooks once. The wait lives in this
  * process: a worker that dies leaves the run stale, and `odw resume` replays
  * it. A new `odw resume` ends the wait at once.
+ *
+ * Run as the run's worker process (`options.worker`), whose stdout and stderr
+ * are the run's worker.log, what it prints — a workflow's console.log of an
+ * agent's reply, a hook's failure — is redacted like the run's events, from
+ * the moment its redactor is built until the process exits (ODW extension).
  */
-export async function executeRun(runDir: string): Promise<string> {
+export async function executeRun(runDir: string, options: ExecuteRunOptions = {}): Promise<string> {
   const store = new RunStore(dirname(runDir));
   const runId = basename(runDir);
 
@@ -120,6 +126,8 @@ export async function executeRun(runDir: string): Promise<string> {
   // see ../provenance); closed before the terminal event, which nothing follows.
   let versions: CliVersions | undefined;
   const crashes = watchProcessCrashes();
+  // Undoes the redaction of this process's own output, once the run is over.
+  let unredactOutput = (): void => {};
   const signals = watchStopSignals({
     stop: (signal) => {
       if (end) return; // only the hooks are left; the grace period bounds them
@@ -164,6 +172,8 @@ export async function executeRun(runDir: string): Promise<string> {
     const runRedactor = redactorFor(config);
     redactor = runRedactor;
     sink.redactor = runRedactor;
+    // worker.log too, when this process is the run's worker (ODW extension).
+    if (options.worker) unredactOutput = redactOutput(runRedactor);
     // The state status.json shows: the control's (odw pause|resume|stop) —
     // and "paused" while agents wait for a spent quota to reset (ODW
     // extension: quotaWait), whose soonest reset is the run's `pausedFor`.
@@ -351,8 +361,54 @@ export async function executeRun(runDir: string): Promise<string> {
     await Promise.all(pauseHooks);
   } finally {
     signals.dispose();
+    unredactOutput();
   }
   return end.state;
+}
+
+export interface ExecuteRunOptions {
+  /**
+   * This process is the run's worker, its stdout and stderr the run's
+   * worker.log: what it prints is redacted too (see executeRun).
+   */
+  worker?: boolean;
+}
+
+/**
+ * Redact what this process writes to its stdout and stderr, as it writes it
+ * (ODW extension; see ../redact): each stream through a RedactStream, so a
+ * secret split across two writes is still caught; what one holds back of a
+ * line still arriving is written when it is undone, or when the process
+ * exits. Returns what undoes it. A redactor that redacts nothing changes nothing.
+ */
+function redactOutput(redactor: Redactor): () => void {
+  if (!redactor.active) return () => {};
+  const undo = [process.stdout, process.stderr].map((stream) => {
+    const write = stream.write;
+    const held = redactor.stream();
+    const decoder = new StringDecoder("utf8");
+    const flush = (): void => {
+      const rest = held.write(decoder.end()) + held.end();
+      if (rest) write.call(stream, rest);
+    };
+    stream.write = function (chunk: unknown, encoding?: unknown, callback?: unknown): boolean {
+      const done = typeof encoding === "function" ? encoding : typeof callback === "function" ? callback : undefined;
+      const text =
+        typeof chunk === "string"
+          ? typeof encoding === "string" && encoding !== "utf8" && encoding !== "utf-8"
+            ? Buffer.from(chunk, encoding as BufferEncoding).toString("utf8")
+            : chunk
+          : decoder.write(Buffer.from(chunk as Uint8Array));
+      return write.call(stream, held.write(text), "utf8", done as ((err?: Error | null) => void) | undefined);
+    } as typeof stream.write;
+    process.on("exit", flush);
+    return (): void => {
+      process.off("exit", flush);
+      stream.write = write;
+      flush();
+    };
+  });
+  return () => undo.forEach((fn) => fn());
 }
 
 /** The log line for a checkpoint answer that found nothing waiting for it. */
@@ -455,7 +511,7 @@ async function main(argv: string[]): Promise<number> {
     process.stderr.write("usage: node runtime/worker.js <run_dir>\n");
     return 2;
   }
-  await executeRun(argv[0]!);
+  await executeRun(argv[0]!, { worker: true });
   return 0;
 }
 

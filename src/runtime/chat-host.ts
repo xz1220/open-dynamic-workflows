@@ -8,6 +8,11 @@
  * linked run settles, its result is posted back into the transcript as a user
  * message and Codex continues from it.
  *
+ * What the sessions keep has its likely secrets redacted (an ODW extension;
+ * see ./chat-store and ../redact) — but never what Codex is given for the
+ * turn at hand: its prompt carries the latest message as it was said, and
+ * earlier ones as they were kept.
+ *
  * Routes (mounted by {@link ./server}; every write passes the shared writeGuard
  * before anything else, and session ids are only matched against stored ones):
  *   GET    /api/chat/sessions                 [summary] (state folded from linked runs)
@@ -25,6 +30,7 @@ import { tmpdir } from "node:os";
 
 import { listAdapters } from "../adapters/config.js";
 import type { Config } from "../adapters/types.js";
+import { redactorFor, type Redactor } from "../redact.js";
 import {
   ChatStore,
   sessionSummary,
@@ -60,6 +66,8 @@ export interface ChatHostOptions {
   runner?: ChatTurnRunner;
   /** Called whenever a session changes (the server pushes a `chat` SSE frame). */
   notify?: (sessionId: string) => void;
+  /** What keeps likely secrets out of the sessions (ODW extension); built from `config` when absent. */
+  redactor?: Redactor;
 }
 
 const CHAT_HOST_WORKFLOW_NAME = "chat-host-bridge";
@@ -135,6 +143,7 @@ export class ChatHost {
   constructor(private readonly opts: ChatHostOptions) {
     this.chat = new ChatStore(opts.store.root, opts.cwd, {
       onError: (err) => logServeError("chat store write", err),
+      redactor: opts.redactor ?? redactorFor(opts.config),
     });
     this.runtime = {
       runner: opts.runner ?? createDefaultChatRunner(),
@@ -286,9 +295,9 @@ export class ChatHost {
         // Resolve the follow-up's working dir BEFORE posting: if it throws, nothing
         // is posted and the next sync retries the whole thing.
         const cwd = chatWorkingDir(session);
-        chat.appendUserMessage(session.id, text, "chat.odw_result");
+        const posted = chat.appendUserMessage(session.id, text, "chat.odw_result");
         settledRuns.add(link.runId);
-        startChatCodexTurn(chat, session.id, runtime, cwd);
+        startChatCodexTurn(chat, session.id, runtime, cwd, { id: posted.messages.at(-1)!.id, text });
         break;
       }
     }
@@ -372,9 +381,14 @@ function formatTranscriptMessage(message: ChatMessage): string | null {
   return `${who}: ${message.text}`;
 }
 
-function buildCodexChatPrompt(session: ChatSessionRecord, assistantMessageId: string): string {
+/**
+ * Codex's prompt for the next reply: the transcript as kept, but for `said` —
+ * the message the turn answers, as it was said, never redacted (ODW extension).
+ */
+function buildCodexChatPrompt(session: ChatSessionRecord, assistantMessageId: string, said?: SaidMessage): string {
   const transcript = session.messages
     .filter((m) => m.id !== assistantMessageId)
+    .map((m) => (said && m.id === said.id ? { ...m, text: said.text } : m))
     .map(formatTranscriptMessage)
     .filter((m): m is string => m !== null)
     .slice(-24)
@@ -393,19 +407,29 @@ function buildCodexChatPrompt(session: ChatSessionRecord, assistantMessageId: st
   ].join("\n");
 }
 
-/** Stream a Codex reply into the session; `cwd` comes from {@link chatWorkingDir}. */
+/** A message as it was said, before the store kept it redacted: the one a Codex turn answers. */
+interface SaidMessage {
+  id: string;
+  text: string;
+}
+
+/**
+ * Stream a Codex reply into the session; `cwd` comes from {@link chatWorkingDir},
+ * `said` is the message it answers as it was said (see buildCodexChatPrompt).
+ */
 function startChatCodexTurn(
   chat: ChatStore,
   sessionId: string,
   runtime: ChatRuntime,
   cwd: string,
+  said?: SaidMessage,
 ): ChatSessionRecord | null {
   const current = chat.get(sessionId);
   if (!current || hasStreamingAssistant(current) || runtime.activeSessions.has(sessionId)) return current;
   const withPlaceholder = chat.appendAssistantMessage(sessionId, "", undefined, "streaming");
   runtime.notify(sessionId);
   const placeholder = withPlaceholder.messages[withPlaceholder.messages.length - 1]!;
-  const prompt = buildCodexChatPrompt(withPlaceholder, placeholder.id);
+  const prompt = buildCodexChatPrompt(withPlaceholder, placeholder.id, said);
   let text = "";
   let flushTimer: NodeJS.Timeout | null = null;
   // These run from timers and promise callbacks: a store write failing (disk
@@ -634,8 +658,8 @@ async function postChatMessage(
     chat.appendToolRun(sessionId, runId, CHAT_HOST_WORKFLOW_NAME);
   } else {
     const cwd = chatWorkingDir(existing);
-    chat.appendUserMessage(sessionId, text);
-    startChatCodexTurn(chat, sessionId, chatRuntime, cwd);
+    const appended = chat.appendUserMessage(sessionId, text);
+    startChatCodexTurn(chat, sessionId, chatRuntime, cwd, { id: appended.messages.at(-1)!.id, text });
   }
   const updated = chat.get(sessionId);
   if (!updated) {

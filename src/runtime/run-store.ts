@@ -40,8 +40,10 @@
  *
  * What the worker writes here of its agents — events, saved results, the
  * transcripts, the error and the result — has its likely secrets redacted
- * first (ODW extension; see ../redact). Kept diffs are not: they are the
- * agents' changes to the code, what `odw apply` applies.
+ * first (ODW extension; see ../redact), and so is worker.log, as the worker
+ * prints it. Kept diffs are not: they are the agents' changes to the code,
+ * what `odw apply` applies; nor are meta.json's `args`, what `odw rerun` and
+ * `odw resume` start from — they are redacted where they are served.
  */
 
 import {

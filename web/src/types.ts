@@ -169,6 +169,8 @@ export interface AgentChanges {
 export interface RunDetail extends RunSummary {
   script: string | null;
   args: unknown;
+  /** Token shapes in `args` were replaced by `«redacted:<kind>»` before it was served (ODW extension); `odw rerun` still uses the originals. */
+  argsRedacted?: boolean;
   agents: AgentView[];
   phaseOrder: string[];
   hasResult: boolean;
@@ -421,6 +423,8 @@ export interface ChatMessage {
   kind?: ChatMessageKind;
   status?: ChatMessageStatus;
   tool?: ChatToolCall;
+  /** Likely secrets in its text were replaced by `«redacted:<kind>»` before it was kept (ODW extension). */
+  redacted?: boolean;
 }
 
 export interface ChatLinkedRun {

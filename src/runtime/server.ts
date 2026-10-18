@@ -84,6 +84,11 @@
  * final result, NOT raw agent transcripts; narrow it with `claudeJobsScope:
  * "project"` to the served repo + its worktrees.
  *
+ * What it serves of ODW's runs had its likely secrets redacted when it was
+ * written (ODW extension; see ../redact); a run's `args` — and a schedule's —
+ * are redacted as they are served (token shapes: they are the user's data),
+ * since the run directory keeps them as given for `odw rerun`.
+ *
  * Write-path security: POST routes can drive local state, so the realistic
  * threat is a hostile web page reaching loopback through the user's browser,
  * not the local machine (local processes can already run code). Defenses:
@@ -110,6 +115,7 @@ import type { Config } from "../adapters/types.js";
 import { CHECKPOINT_EDIT_MAX_BYTES, checkEdit } from "../checkpoint.js";
 import { CHECKPOINT_NOTE_MAX, isCheckpointId } from "../control.js";
 import { DASHBOARD_HTML } from "../dashboard.generated.js";
+import { redactorFor, type Redactor } from "../redact.js";
 import type { WorkflowEvent } from "../events.js";
 import type { AgentResultRecord } from "../journal.js";
 import { activityLimit, activityView } from "./activity-view.js";
@@ -175,8 +181,10 @@ export function startServer(options: ServeOptions): Promise<ServeHandle> {
   const cwd = options.cwd ?? process.cwd();
   const config = options.config ?? loadConfig(null);
   const configPath = options.configPath ?? null;
+  // What the server serves of runs' args and keeps of chat sessions has its likely secrets redacted (ODW extension).
+  const redactor = redactorFor(config);
   const sources: RunSource[] = [
-    new OdwRunSource(store),
+    new OdwRunSource(store, { redactor }),
     // Default scope "all": the observatory aggregates every project's Claude runs,
     // mirroring how the global runs root already aggregates ODW runs. The scope can
     // be narrowed to the served repo + its worktrees via claudeJobsScope.
@@ -196,10 +204,11 @@ export function startServer(options: ServeOptions): Promise<ServeHandle> {
     configPath,
     runner: options.chatRunner,
     notify: (sessionId) => feed.broadcast("chat", { sessionId }),
+    redactor,
   });
 
   const server = createServer((req, res) => {
-    handle(req, res, { sources, store, chatHost, feed, cwd, config, configPath, boundHost: host }).catch((err) => {
+    handle(req, res, { sources, store, chatHost, feed, cwd, config, configPath, boundHost: host, redactor }).catch((err) => {
       try {
         sendJson(res, 500, { error: (err as Error).message ?? "internal error" });
       } catch {
@@ -256,10 +265,12 @@ interface HandleContext {
   configPath: string | null;
   /** The address the server was bound to (drives the write/Host policy). */
   boundHost: string;
+  /** What redacts the args it serves (ODW extension). */
+  redactor: Redactor;
 }
 
 async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandleContext): Promise<void> {
-  const { sources, store, chatHost, feed, cwd, config, configPath, boundHost } = ctx;
+  const { sources, store, chatHost, feed, cwd, config, configPath, boundHost, redactor } = ctx;
   const method = req.method ?? "GET";
 
   try {
@@ -315,7 +326,8 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandleCont
       return;
     }
     if (method === "GET" && path === "/api/schedules") {
-      sendJson(res, 200, listSchedules().map(scheduleJson));
+      // A schedule's args are the user's data, kept as given for its runs: served with token shapes redacted.
+      sendJson(res, 200, listSchedules().map((row) => redactor.shapes.record(scheduleJson(row))));
       return;
     }
     if (path.startsWith("/api/chat/") && (await chatHost.route(req, res, method, path, boundHost))) return;

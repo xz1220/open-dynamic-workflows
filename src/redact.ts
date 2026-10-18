@@ -4,7 +4,10 @@
  * An agent prints whatever it reads — `cat .env` included — and odw keeps it:
  * its transcript and the end of its stderr, its reply (its saved result), what
  * went wrong (the run's events and error), and what a run tells a webhook; the
- * dashboard serves all of it, off-loopback too. Before any of that is written,
+ * dashboard serves all of it, off-loopback too — and the worker's own output
+ * (its worker.log) and the Chat Host's sessions. A run's `args`, the user's
+ * data, are kept as given (`odw rerun` starts from them) but redacted where
+ * they are served. Before any of that is written,
  * a {@link Redactor} replaces each likely secret in it with `«redacted:<kind>»`:
  *
  *   env:NAME     `redact.env` — the value of NAME, a secret-named variable
@@ -342,6 +345,21 @@ export class Redactor {
   }
 
   /**
+   * How much of `text`, still arriving, can be kept now without keeping part
+   * of a secret: up to its last line break — a line that grows too long, but
+   * for its last `carry` characters, never cut inside a secret — and not past
+   * the line of a private key whose end has not come (as {@link RedactStream}
+   * lets text go).
+   */
+  ready(text: string): number {
+    let cut = text.lastIndexOf("\n") + 1;
+    if (text.length - cut > HOLD_CHARS) cut = this.cutBefore(text, text.length - this.carry);
+    const open = this.openKey(text, cut);
+    if (open !== -1 && text.length - open <= KEY_HOLD_CHARS) cut = Math.min(cut, open);
+    return cut;
+  }
+
+  /**
    * Where `text` may be cut near `at` without cutting a secret in two: `at`,
    * or the start of a secret that spans it.
    */
@@ -448,7 +466,7 @@ export class RedactStream {
   /** What the stream printed next. Returns what can be kept of it now, redacted ("" while it waits). */
   write(chunk: string): string {
     this.held += chunk;
-    const cut = this.cutPoint();
+    const cut = this.redactor.ready(this.held);
     if (cut <= 0) return "";
     const ready = this.held.slice(0, cut);
     this.held = this.held.slice(cut);
@@ -460,16 +478,6 @@ export class RedactStream {
     const rest = this.held;
     this.held = "";
     return rest && this.redactor.text(rest);
-  }
-
-  /** How much of what is held can go now. */
-  private cutPoint(): number {
-    const text = this.held;
-    let cut = text.lastIndexOf("\n") + 1;
-    if (text.length - cut > HOLD_CHARS) cut = this.redactor.cutBefore(text, text.length - this.redactor.carry);
-    const open = this.redactor.openKey(text, cut);
-    if (open !== -1 && text.length - open <= KEY_HOLD_CHARS) cut = Math.min(cut, open);
-    return cut;
   }
 }
 

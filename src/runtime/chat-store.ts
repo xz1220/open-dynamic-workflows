@@ -11,11 +11,23 @@
  * Objects handed out are never mutated afterwards (copy-on-write), so a caller
  * may hold a session while the stream keeps updating it. If another process
  * rewrites the file, the next read picks its version up.
+ *
+ * Given the run's {@link Redactor} (an ODW extension; see ../redact), what it
+ * keeps has its likely secrets replaced by `«redacted:<kind>»` before it is
+ * kept — in memory, so served, and on disk — a message that had any marked
+ * `redacted: true`. What a person typed (role "user", the run results posted
+ * as one included) is their data: token shapes only, as for a run's result.
+ * What an agent said (Codex's replies, its errors) gets the environment's
+ * values too. A reply still streaming keeps only what a secret could no
+ * longer be completing — its whole lines — until it settles. Sessions read
+ * from disk are redacted as they are read: a file written before redaction
+ * was on gets its secrets out once it is next written.
  */
 
 import { mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 
+import { hasMarker, type Redactor } from "../redact.js";
 import { readJsonFile, statSig, writeJsonAtomic } from "./fs-util.js";
 
 export type ChatRole = "user" | "assistant" | "tool";
@@ -49,6 +61,8 @@ export interface ChatMessage {
   kind?: ChatMessageKind;
   status?: ChatMessageStatus;
   tool?: ChatToolCall;
+  /** Likely secrets in its text were replaced by `«redacted:<kind>»` before it was kept (ODW extension). */
+  redacted?: boolean;
 }
 
 export interface ChatLinkedRunRef {
@@ -81,6 +95,8 @@ export interface ChatStoreOptions {
   streamPersistMs?: number;
   /** Where a failed background write is reported (it cannot be thrown to anyone). */
   onError?: (err: unknown) => void;
+  /** What keeps likely secrets out of what the store keeps (ODW extension); absent: nothing is redacted. */
+  redactor?: Redactor;
 }
 
 const STORAGE_VERSION = 1;
@@ -159,19 +175,50 @@ function validSession(value: unknown): value is ChatSessionRecord {
   );
 }
 
-/** Validate a parsed sessions file; anything unusable reads as no sessions. */
-function parseChatFile(parsed: unknown): ChatFile {
+/**
+ * What a redactor makes of a message's text (ODW extension): what a person
+ * typed is their data — token shapes only; anything else is an agent's.
+ */
+function policyFor(role: ChatRole, redactor: Redactor): Redactor {
+  return role === "user" ? redactor.shapes : redactor;
+}
+
+/** `message` with `text` kept as the redactor allows, marked `redacted` when it holds a marker. */
+function withText(message: ChatMessage, text: string, redactor: Redactor | undefined): ChatMessage {
+  const kept = redactor ? policyFor(message.role, redactor).text(text) : text;
+  const { redacted: _was, ...rest } = message;
+  return redactor?.active && hasMarker(kept) ? { ...rest, text: kept, redacted: true } : { ...rest, text: kept };
+}
+
+/** A session read from disk with its likely secrets redacted (a file kept before redaction was on). */
+function redactSession(session: ChatSessionRecord, redactor: Redactor): ChatSessionRecord {
+  let changed = false;
+  const messages = session.messages.map((message) => {
+    if (message.redacted === true) return message;
+    const next = withText(message, message.text, redactor);
+    if (next.text === message.text) return message;
+    changed = true;
+    return next;
+  });
+  const title = redactor.shapes.text(session.title);
+  return changed || title !== session.title ? { ...session, title, messages } : session;
+}
+
+/** Validate a parsed sessions file — redacted, given a redactor; anything unusable reads as no sessions. */
+function parseChatFile(parsed: unknown, redactor?: Redactor): ChatFile {
   const sessions =
     parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
       ? (parsed as { sessions?: unknown }).sessions
       : undefined;
-  return { version: STORAGE_VERSION, sessions: Array.isArray(sessions) ? sessions.filter(validSession) : [] };
+  const valid = Array.isArray(sessions) ? sessions.filter(validSession) : [];
+  return { version: STORAGE_VERSION, sessions: redactor?.active ? valid.map((s) => redactSession(s, redactor)) : valid };
 }
 
 export class ChatStore {
   private readonly file: string;
   private readonly streamPersistMs: number;
   private readonly onError: (err: unknown) => void;
+  private readonly redactor: Redactor | undefined;
   private data: ChatFile | null = null;
   /** The file's signature as we last read or wrote it; anything else is someone else's write. */
   private diskSig = "";
@@ -188,6 +235,7 @@ export class ChatStore {
     this.onError =
       opts.onError ??
       ((err) => process.stderr.write(`odw chat store: write failed: ${(err as Error)?.message ?? String(err)}\n`));
+    this.redactor = opts.redactor;
   }
 
   list(): ChatSessionSummary[] {
@@ -233,11 +281,13 @@ export class ChatStore {
     return this.writeThrough(() =>
       this.replace(id, (s) => {
         const ts = now();
+        const message = withText({ id: newId("msg"), role: "user", text: "", ts, ...(kind ? { kind } : {}) }, text, this.redactor);
         return {
           ...s,
-          title: s.title === "Untitled hosted turn" ? titleFrom(text) : s.title,
+          // The title comes from the message as kept.
+          title: s.title === "Untitled hosted turn" ? titleFrom(message.text) : s.title,
           updatedAt: ts,
-          messages: [...s.messages, { id: newId("msg"), role: "user", text, ts, ...(kind ? { kind } : {}) }],
+          messages: [...s.messages, message],
         };
       }),
     );
@@ -252,14 +302,11 @@ export class ChatStore {
     return this.writeThrough(() =>
       this.replace(id, (s) => {
         const ts = now();
-        const message: ChatMessage = {
-          id: newId("msg"),
-          role: "assistant",
+        const message = withText(
+          { id: newId("msg"), role: "assistant", text: "", ts, ...(kind ? { kind } : {}), ...(status ? { status } : {}) },
           text,
-          ts,
-          ...(kind ? { kind } : {}),
-          ...(status ? { status } : {}),
-        };
+          this.redactor,
+        );
         return {
           ...s,
           state: status === "streaming" ? "running" : s.state,
@@ -276,6 +323,9 @@ export class ChatStore {
    * (the reply settled) is written at once. Either way the in-memory session
    * reflects the patch even if the write fails — a settled message must never
    * stay "streaming" and block its session — and a failed write is retried.
+   * `text` is the whole text so far, as it was said: with a redactor, a
+   * streaming patch keeps what {@link Redactor.ready} lets go of it, and a
+   * settled one all of it, redacted.
    */
   updateMessage(
     id: string,
@@ -288,11 +338,11 @@ export class ChatStore {
     const at = session ? session.messages.findIndex((m) => m.id === messageId) : -1;
     if (!session || at === -1) return null;
     const messages = session.messages.slice();
-    messages[at] = {
-      ...messages[at]!,
-      ...(patch.text !== undefined ? { text: patch.text } : {}),
-      ...(patch.status !== undefined ? { status: patch.status } : {}),
-    };
+    const patched: ChatMessage = { ...messages[at]!, ...(patch.status !== undefined ? { status: patch.status } : {}) };
+    let text = patch.text;
+    // A reply still arriving keeps no part of a secret it may be completing (ODW extension).
+    if (text !== undefined && patch.status === undefined && this.redactor?.active) text = text.slice(0, this.redactor.ready(text));
+    messages[at] = text !== undefined ? withText(patched, text, this.redactor) : patched;
     const stillStreaming = messages.some((m) => m.status === "streaming");
     const next: ChatSessionRecord = {
       ...session,
@@ -401,7 +451,7 @@ export class ChatStore {
     if (this.data && (this.dirty || statSig(this.file) === this.diskSig)) return this.data;
     // Stat before reading: a write racing the read shows up as a new signature next time.
     this.diskSig = statSig(this.file);
-    this.data = parseChatFile(readJsonFile<unknown>(this.file));
+    this.data = parseChatFile(readJsonFile<unknown>(this.file), this.redactor);
     return this.data;
   }
 
@@ -415,7 +465,7 @@ export class ChatStore {
     // touched and dropping the ones we deleted — instead of clobbering them.
     let data = this.data ?? this.load();
     if (this.data && statSig(this.file) !== this.diskSig) {
-      const disk = parseChatFile(readJsonFile<unknown>(this.file));
+      const disk = parseChatFile(readJsonFile<unknown>(this.file), this.redactor);
       const ours = new Map(data.sessions.map((s) => [s.id, s]));
       const onDisk = new Set(disk.sessions.map((s) => s.id));
       const sessions = disk.sessions

@@ -945,9 +945,16 @@ cloning with «redacted:github»
 结尾;保存的 agent 结果(`odw result --agent`、看板的 agent 抽屉);运行的事件——
 `odw logs`、日志行、`agent_failed` 的错误(失败时引用的输出先脱敏再截断,所以不会留下
 半个密钥)、`exec()` 步骤显示的命令行以及失败的 `check` 引用的输出;运行的错误;
-`status.json` 中等待中的检查点;以及 webhook 负载。被脱敏过的内容会以 `redacted: true`
-标明——保存的结果、事件、transcript 行及其在 API 中的条目、`result.json`、
-`error.json`、webhook 负载——`odw doctor` 会说明脱敏是否开启、覆盖了哪些变量。脱敏随
+`status.json` 中等待中的检查点;webhook 负载;运行的 `worker.log`——worker 自己的输出,
+包括工作流用 `console.log` 打印的 agent 回复,写入时即脱敏;以及 Chat Host 的会话
+(`<runsRoot>/_chat/sessions.json` 和 `/api/chat/sessions` 提供的内容):Codex 的回复完整
+脱敏,你输入的内容——以及作为消息贴回的运行结果——只脱敏令牌形态,因为那是你的数据;仍在
+流式输出的回复在结束前只保留完整的行,开启脱敏前保存的会话文件在读取时脱敏。运行的 `args`
+也是你的数据,可能带着令牌:`/api/runs/:id` 和看板提供的 args 会脱敏令牌形态
+(`argsRedacted: true`),`/api/schedules` 提供的定时任务 args 也一样——但 `meta.json` 和
+定时任务本身按原样保存,所以 `odw rerun` 和 `odw resume` 用原始 args 启动新运行。被脱敏过的
+内容会以 `redacted: true` 标明——保存的结果、事件、transcript 行及其在 API 中的条目、
+`result.json`、`error.json`、webhook 负载、聊天消息——`odw doctor` 会说明脱敏是否开启、覆盖了哪些变量。脱敏随
 输出到达而进行,不会囤积输出:一行等到行尾,一个私钥等到它的最后一行。
 
 不会被脱敏的:
@@ -958,8 +965,9 @@ cloning with «redacted:github»
 - **保存的 diff**(`agents/<id>.diff`)是 agent 对你代码的改动:也就是 `odw apply` 要应用、
   保留分支要提交的内容,标记会损坏你的文件。agent 写进代码里的密钥,应在审阅时发现
   (`odw diff`、看板的 Changes 标签页)。
-- 运行的 `args`(你传入的内容)、`worker.log`(worker 自己的输出,包括工作流的
-  `console.log`)以及 Chat Host 的会话。
+- **`meta.json` 里保存的运行 `args`**(以及定时任务的):`odw rerun` 和 `odw resume`
+  必须从你传入的原样开始,只有对外提供的内容会脱敏。Chat Host 交给 Codex 的内容也不脱敏:
+  一个回合所回答的消息按你输入的原样交给它(更早的消息按保存的样子)。
 - **恢复的运行** 会按保存时的样子(已脱敏)重放 agent 的结果,并在日志中说明。
 
 脱敏是安全网,不是保险库:形态未知、变量名又不像密钥的秘密会按原样保存。用

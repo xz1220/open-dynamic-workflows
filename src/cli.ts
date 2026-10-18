@@ -352,7 +352,7 @@ async function cmdWorker(rest: string[]): Promise<number> {
     process.stderr.write("odw __worker: missing <run_dir>\n");
     return 2;
   }
-  const state = await executeRun(runDir);
+  const state = await executeRun(runDir, { worker: true });
   return state === "done" ? 0 : 1;
 }
 

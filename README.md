@@ -729,8 +729,8 @@ odw logs --workflow adversarial-verify --follow
 The dashboard can be viewed off-loopback, but local write operations such as
 Chat messages and stopping ODW-owned runs stay guarded by the loopback server.
 Claude Code's own runs stay strictly read-only. What it serves of ODW's agents —
-transcripts, results, logs — had its likely secrets redacted before it was written
-(see [Secrets in what ODW keeps](#secrets-in-what-odw-keeps-odw-extension)).
+transcripts, results, logs, chat sessions — had its likely secrets redacted before it
+was written, and a run's `args` are redacted as they are served (see [Secrets in what ODW keeps](#secrets-in-what-odw-keeps-odw-extension)).
 
 ## Configure adapters
 
@@ -1053,10 +1053,21 @@ included) and stderr tails; saved agent results (`odw result --agent`, the dashb
 agent drawer); the run's events — `odw logs`, log lines, `agent_failed` errors (a
 failure's quoted output is redacted before it is cut, so no secret is kept in half),
 the command lines `exec()` steps show and the output a failed `check` quotes; the
-run's error; the waiting checkpoint in `status.json`; and webhook payloads. What had
-anything redacted says so with `redacted: true` — a saved result, an event, a
-transcript line and its entry in the API, `result.json`, `error.json`, a webhook
-payload — and `odw doctor` says whether redaction is on and which variables it covers.
+run's error; the waiting checkpoint in `status.json`; webhook payloads; the run's
+`worker.log` — the worker's own output, a workflow's `console.log` of an agent's
+reply included, redacted as it is written; and the Chat Host's sessions
+(`<runsRoot>/_chat/sessions.json`, and what `/api/chat/sessions` serves): Codex's
+replies in full, what you typed — and the run results posted back as messages — of
+token shapes only, since they are your data; a reply still streaming keeps only its
+whole lines until it settles, and a sessions file kept before redaction was on is
+redacted as it is read. A run's `args` are your data too, and may hold a token: what
+`/api/runs/:id` and the dashboard serve of them has its token shapes redacted
+(`argsRedacted: true`), and so does what `/api/schedules` serves of a schedule's —
+but `meta.json` and the schedule keep them as given, so `odw rerun` and `odw resume`
+start the new run with the original args. What had anything redacted says so with
+`redacted: true` — a saved result, an event, a transcript line and its entry in the
+API, `result.json`, `error.json`, a webhook payload, a chat message — and `odw doctor`
+says whether redaction is on and which variables it covers.
 It runs as output arrives, without holding it: a line waits for its end, and a private
 key for its last line.
 
@@ -1070,8 +1081,10 @@ Not redacted:
   `odw apply` applies and a kept branch commits, where a marker would corrupt your
   files. A secret an agent wrote into code is there to be caught in review (`odw diff`,
   the dashboard's Changes tab).
-- The run's `args` (what you passed in), `worker.log` (the worker's own output, a
-  workflow's `console.log` included) and the Chat Host's sessions.
+- **The run's `args` as kept** in `meta.json` (and a schedule's): `odw rerun` and
+  `odw resume` must start from what you passed in. Only what is served of them is
+  redacted. Nor is what Codex is given in the Chat Host: the message a turn answers
+  goes to it as you typed it (earlier messages as kept).
 - **A resumed run** replays an agent's saved result as it was kept — redacted — and its
   log says so.
 

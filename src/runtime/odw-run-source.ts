@@ -12,6 +12,7 @@ import { join } from "node:path";
 import type { CheckpointRequest } from "../control.js";
 import type { WorkflowEvent } from "../events.js";
 import type { AgentResultRecord } from "../journal.js";
+import type { Redactor } from "../redact.js";
 import { SigCache, statSig } from "./fs-util.js";
 import { detailFrom, EventFold, summaryFrom, type RunDetail, type RunFacts, type RunSummary } from "./runs-view.js";
 import type { RunSource } from "./run-source.js";
@@ -29,6 +30,11 @@ const TRANSCRIPTS_KEPT = 16;
  * runs those stats ARE the list's cost. Re-checked every ~30s (jittered, so the
  * re-checks spread out) in case something rewrites a finished run by hand;
  * detail() and summary() always re-check.
+ *
+ * A run's `args` are the user's data, and may hold a token: what a detail
+ * serves of them has its token shapes redacted (an ODW extension; see
+ * ../redact) and says so with `argsRedacted: true`. meta.json keeps them as
+ * given — `odw rerun` and `odw resume` start the new run with the originals.
  */
 const TERMINAL_RECHECK_MS = 30_000;
 
@@ -62,12 +68,19 @@ export class OdwRunSource implements RunSource {
   /** The most recently read agent transcripts, read on as they grow (LRU). */
   private readonly transcripts = new SigCache<TranscriptLog>(TRANSCRIPTS_KEPT);
   private readonly now: () => number;
+  private readonly redactor: Redactor | undefined;
 
   constructor(
     private readonly store: RunStore,
-    opts: { /** Injectable clock for tests (ms). */ now?: () => number } = {},
+    opts: {
+      /** Injectable clock for tests (ms). */
+      now?: () => number;
+      /** What redacts the `args` a detail serves (ODW extension); absent: they are served as given. */
+      redactor?: Redactor;
+    } = {},
   ) {
     this.now = opts.now ?? Date.now;
+    this.redactor = opts.redactor;
   }
 
   /** A Claude run is `cc-`-prefixed; everything else is ODW's. */
@@ -92,10 +105,11 @@ export class OdwRunSource implements RunSource {
   }
   detail(runId: string): RunDetail | null {
     if (!this.store.exists(runId)) return null;
-    return detailFrom(runId, this.facts(runId), {
+    const detail = detailFrom(runId, this.facts(runId), {
       hasResult: this.store.hasResult(runId),
       error: this.store.readError(runId) as { error?: string; stack?: string } | null,
     });
+    return this.redactor ? servedArgs(detail, this.redactor) : detail;
   }
   events(runId: string, since: number): WorkflowEvent[] {
     return this.eventLog(runId).slice(Math.max(0, since));
@@ -199,6 +213,12 @@ export class OdwRunSource implements RunSource {
         : 0;
     return factsOf(e);
   }
+}
+
+/** A detail as served: its `args` with their token shapes redacted, and marked, when they held any (ODW extension). */
+export function servedArgs(detail: RunDetail, redactor: Redactor): RunDetail {
+  const kept = redactor.shapes.record({ args: detail.args });
+  return "redacted" in kept ? { ...detail, args: kept.args, argsRedacted: true } : detail;
 }
 
 function factsOf(e: RunEntry): RunFacts {

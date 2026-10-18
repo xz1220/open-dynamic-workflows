@@ -99,7 +99,12 @@ changed, and run on a schedule — and a dashboard redesigned to watch them.
   (Anthropic, OpenAI, GitHub, Slack, AWS, Google keys, JWTs, private keys, `Bearer`)
   become `«redacted:<kind>»`, marked `redacted: true`; `redact.extra` adds patterns of
   your own and `odw doctor` reports it (**ODW extension**). Prompts, what agents see and
-  kept diffs are never redacted; the run's result only of token shapes.
+  kept diffs are never redacted; the run's result only of token shapes. So are the
+  run's `worker.log` (a workflow's `console.log` included) and the Chat Host's sessions
+  (Codex's replies in full, what you typed of token shapes only, a streaming reply
+  line by line); a run's `args` — and a schedule's — are served by the API and the
+  dashboard with their token shapes redacted (`argsRedacted: true`), while `odw rerun`
+  and `odw resume` still start from the args as given.
 - Per-adapter `concurrency` caps; a rate limit halves that adapter's cap for the rest of
   the run; `claude` fan-outs sharing a long prompt prefix stagger their start so the
   rest read the prompt cache.
