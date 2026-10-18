@@ -528,7 +528,8 @@ function startBanner(
       permissionsBanner(config, installed),
       trustBanner(config, installed),
       `concurrency: ${describeConcurrency(config)}`,
-      sandboxBanner(config),
+      // The sandbox line (ODW extension), when a container is in play: none adds no line.
+      ...(config.settings.sandbox !== "none" || Object.values(config.adapters).some((a) => a.sandbox) ? [sandboxBanner(config)] : []),
     ].join("\n");
   } catch {
     return undefined;

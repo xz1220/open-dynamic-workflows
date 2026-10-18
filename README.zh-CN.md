@@ -1359,7 +1359,7 @@ CLI 配置和更多挂载,网络与各项限制取更严格者;`agent()` 调用�
 
 缺少引擎或镜像时,运行在第一个 agent 启动前就以 `ConfigError` 失败,并说明如何构建镜像;
 `odw doctor` 做同样的检查,并运行 `docker run --rm --pull never --network none <镜像> true`
-(不涉及模型)。启动横幅有一行沙箱信息,每个 agent 的 `agent_started` 事件与看板的 AgentView
+(不涉及模型)。配置了容器时启动横幅多一行沙箱信息,每个 agent 的 `agent_started` 事件与看板的 AgentView
 带 `sandbox: { kind, engine, image, network }`,运行 setup 记录 `sandbox` 供 `odw compare` 比较。
 沙箱中的 agent 不记录 CLI 版本:版本探测在宿主上运行,宿主的 CLI 不是镜像里的那个。
 

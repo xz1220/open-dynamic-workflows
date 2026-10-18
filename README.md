@@ -1526,7 +1526,7 @@ What each CLI run becomes (`docker run --rm -i --init --pull never --name odw-<r
 A missing engine or image fails the run before its first agent starts, with a
 `ConfigError` that says how to build the image; `odw doctor` checks the same and runs
 `docker run --rm --pull never --network none <image> true` (no model involved). The
-start banner has a sandbox line, each agent's `agent_started` event and the dashboard's
+start banner adds a sandbox line when a container is configured, each agent's `agent_started` event and the dashboard's
 AgentView carry `sandbox: { kind, engine, image, network }`, and the run's setup records
 `sandbox` for `odw compare`. Sandboxed agents record no CLI version: the probe runs on
 the host, whose CLI is not the image's.
