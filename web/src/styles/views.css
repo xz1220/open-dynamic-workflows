@@ -3386,3 +3386,22 @@ ul.mcp li {
     display: none;
   }
 }
+
+/* ---- whose runs: a quiet segmented control beside the History title ---- */
+.section-title .chips.owners {
+  align-self: center;
+  margin-left: 12px;
+  padding: 3px;
+  gap: 2px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--card-2);
+}
+.section-title .chips.owners .chip {
+  border-color: transparent;
+  background: transparent;
+}
+.section-title .chips.owners .chip.on {
+  background: var(--ink);
+  color: var(--paper);
+}

@@ -197,7 +197,7 @@ export function renderJobs(state: JobsState, nowSec: number): string {
     `<button class="chip${owner === o ? " on" : ""}" data-jobs-owner="${o}"${o === "mine" ? ` title="${esc(t("launched by {who}", { who: you ?? "" }))}"` : ""}>${esc(label)}<span class="n">${n}</span></button>`;
   const owners =
     you && runs.some((r) => r.launchedBy)
-      ? `<div class="chips">${ownerChip("all", t("Everyone"), runs.length)}${ownerChip("mine", t("Mine"), mine)}${ownerChip("team", t("Team"), runs.length - mine)}</div>`
+      ? `<div class="chips owners">${ownerChip("all", t("Everyone"), runs.length)}${ownerChip("mine", t("Mine"), mine)}${ownerChip("team", t("Team"), runs.length - mine)}</div>`
       : "";
 
   const liveCards = shown.filter((r) => ACTIVE.has(r.state));
@@ -244,12 +244,11 @@ export function renderJobs(state: JobsState, nowSec: number): string {
     `<header class="page-head"><div><div class="eyebrow">${t("Jobs")}</div><h1 class="display">${t("Every <em>run</em>, live and past.")}</h1></div>` +
     `<div class="jobs-tools">` +
     `<div class="chips">${chip("all", t("All"))}${chip("active", t("Live"))}${chip("done", t("Done"))}${chip("failed", t("Failed"))}</div>` +
-    owners +
     `<label class="field">${icons.search}<input id="jobs-q" placeholder="${esc(t("Filter by name or run id"))}" value="${esc(state.query)}" autocomplete="off"/></label>` +
     `</div></header>` +
     cards +
     (state.filter === "all" ? upcoming(nowSec, state.query) : "") +
-    `<div class="section-title"><h2>${t("History")}</h2><span class="eyebrow">${tn(ended.length, "{n} run", "{n} runs")}</span></div>` +
+    `<div class="section-title"><h2>${t("History")}</h2>${owners}<span class="eyebrow">${tn(ended.length, "{n} run", "{n} runs")}</span></div>` +
     history +
     `</div>`
   );
