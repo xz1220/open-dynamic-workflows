@@ -33,7 +33,7 @@ import { detectCaps } from "../tty.js";
 import { mintCheckpointLinks } from "./approve-links.js";
 import { collectDigest, digestLine, digestMarkdown, formatDigest, type Digest } from "./digest.js";
 import { readJsonFile, writeJsonAtomic } from "./fs-util.js";
-import { notifyDigest } from "./notify.js";
+import { discordContent, notifyDigest, slackText } from "./notify.js";
 import { RunStore } from "./run-store.js";
 
 const USAGE =
@@ -133,8 +133,12 @@ export async function sendDigest(
     ...sent,
     ...(linksUnavailable && sent.needsYou.length ? { linksUnavailable } : {}),
     markdown,
-    text: markdown,
-    content: markdown.length > CONTENT_MAX ? `${markdown.slice(0, CONTENT_MAX - 1)}…` : markdown,
+    // As notify's own lines (see ./notify): Slack's text escaped, Discord's mentions and links broken.
+    text: slackText(markdown),
+    content: (() => {
+      const content = discordContent(markdown);
+      return content.length > CONTENT_MAX ? `${content.slice(0, CONTENT_MAX - 1)}…` : content;
+    })(),
     allowed_mentions: { parse: [] },
   };
   const dir = mkdtempSync(join(tmpdir(), "odw-digest-"));

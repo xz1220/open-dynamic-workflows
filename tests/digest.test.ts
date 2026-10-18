@@ -70,7 +70,7 @@ const usage = (costUsd: number, tokens: number) => ({ inputTokens: tokens / 2, o
 function seed(box: Box) {
   const waiting = fakeRun(box, "deploy", "running", 0.5, [
     { type: "run_started" },
-    { type: "checkpoint_requested", checkpointId: 1, title: "Ship it?", payload: null },
+    { type: "checkpoint_requested", checkpointId: 1, title: "Ship it? <!channel> @everyone <https://evil.example/x|Approve run>", payload: null },
     { type: "checkpoint_requested", checkpointId: 2, title: "Which DB?", payload: null, question: { agentId: 3, label: "planner", adapter: "mock", questions: [{ question: "Which DB?" }] } },
   ], { status: { pid: process.pid } });
   const failed = fakeRun(box, "nightly", "failed", 2, [
@@ -253,7 +253,11 @@ test("--notify posts the digest as JSON and markdown, with approve links, redact
     assert.equal(body.state, "digest");
     assert.equal(body.redacted, true);
     assert.equal(typeof body.markdown, "string");
-    assert.equal(body.text, body.markdown);
+    // A title a model could write neither pings nor plants a link: Slack's text escaped, Discord's mentions broken.
+    assert.ok((body.markdown as string).includes("channel"));
+    assert.ok(!(body.text as string).includes("<!channel") && !(body.text as string).includes("<https://evil"), "Slack text is escaped");
+    assert.match(body.text as string, /&lt;!channel/);
+    assert.ok(!/@everyone/.test(body.content as string), "Discord @everyone is broken");
     assert.ok(!JSON.stringify(body).includes("digest-secret-value-4242"));
     assert.ok(!JSON.stringify(body).includes(CLAIM));
     const needs = body.needsYou as Array<Record<string, string>>;
