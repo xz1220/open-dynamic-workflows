@@ -993,3 +993,13 @@ test("the Workspace groups a Claude Code plugin's workflows on their own, and th
     store.workflows = saved;
   }
 });
+
+test("an agent that ran in a container says which, and whether it was offline", () => {
+  const view: JobViewState = { cpNote: "", tab: "graph", selectedAi: 0, reviewAi: null, zoom: 1, logQuery: "", logTypes: new Set(["agent"]), logLimit: 600, follow: true, motion: false };
+  store.focusRun("20260101-000000-aaaaaa");
+  store.run = detail([agent("fix", "Plan", "done", { sandbox: { kind: "container", engine: "docker", image: "odw-agents:1", network: "none" } } as Partial<AgentView>)]);
+  store.runEvents = [];
+  const html = renderJob(view, NOW);
+  assert.match(html, /sandbox<\/span><span class="v"><span class="tag" title="odw-agents:1">docker<\/span> <span class="mono dim">odw-agents:1<\/span> <span class="tag">offline<\/span>/);
+  store.focusRun(null);
+});
