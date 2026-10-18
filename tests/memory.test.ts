@@ -55,7 +55,7 @@ function commitAll(dir: string, message: string): string {
 }
 
 function makeRepo(files: Record<string, string>): { dir: string; head: string } {
-  const dir = mkdtempSync(join(tmpdir(), "odw-memory-src-"));
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "odw-memory-src-"))); // macOS: /var is a link to /private/var, and git names the real top
   git(dir, "init", "-q");
   for (const [path, text] of Object.entries(files)) {
     mkdirSync(join(dir, path, ".."), { recursive: true });
