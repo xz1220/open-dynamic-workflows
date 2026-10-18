@@ -138,7 +138,7 @@ import { detectCaps, fmtUsd, glyphs, palette, sanitizeText } from "./tty.js";
 import { resolveRunTrust } from "./untrusted.js";
 import { confirmUntrustedPr, untrustedInputBanner, untrustedInputOf, untrustedTier } from "./untrusted-input.js";
 import { pluginOrigin } from "./workflows/plugins.js";
-import { listWorkflows, resolveWorkflow, type ResolvedWorkflow } from "./workflows/resolve.js";
+import { listWorkflows, resolveWorkflow, workflowCandidates, type ResolvedWorkflow } from "./workflows/resolve.js";
 
 export const COMMANDS = [
   "init",
@@ -225,7 +225,7 @@ export function helpText(): string {
     "  odw token list|remove [<name>] --file F            the named tokens in F; withdraw one (ODW extension)",
     "  odw workflows list [--project|--global|--plugins|--all]  list workflows runnable by name,",
     "                                                     Claude Code plugins' as <plugin>:<name> (ODW extension)",
-    "  odw workflows where <name>                         show the file a name resolves to",
+    "  odw workflows where <name>                         show the file a name resolves to (and the ones it shadows)",
     "  odw pause|resume|stop <run_id>                     control a running workflow",
     "  odw approve|reject <run_id> [--checkpoint N]       answer a checkpoint() the run waits at (--note TEXT)",
     "  odw approve <run_id> --edit | --payload JSON|@file approve it with an edited payload ($VISUAL/$EDITOR for --edit)",
@@ -2625,7 +2625,9 @@ function cmdWorkflowsList(rest: string[]): number {
   const width = Math.max(...entries.map((e) => e.name.length));
   for (const e of entries) {
     const scope = e.origin === "plugin" ? e.provider : `${e.provider}:${e.origin}`;
-    const shadow = e.shadowed ? "  shadowed by higher-precedence workflow" : "";
+    const shadow = e.shadowed
+      ? `  shadowed by ${e.shadowedBy ? `${e.shadowedBy.rootLabel}/${basename(e.shadowedBy.path)}` : "a higher-precedence workflow"}`
+      : "";
     const note = e.note ? `  note: ${e.note}` : "";
     process.stdout.write(`${e.name.padEnd(width)}  (${scope.padEnd(14)} ${e.rootLabel})  ${e.path}${shadow}${note}\n`);
   }
@@ -2649,6 +2651,15 @@ function cmdWorkflowsWhere(rest: string[]): number {
     const scope = origin === "plugin" ? provider : provider ? `${provider}:${origin}` : origin;
     const source = `${scope}${provider && rootLabel ? ` ${rootLabel}` : ""}`;
     process.stdout.write(`${scriptPath}  (${source})\n`);
+    // More than one directory has the name: the whole chain, nearest first, and which one runs.
+    const chain = workflowCandidates(name, process.cwd(), config);
+    if (chain.length > 1) {
+      process.stdout.write("candidates, in precedence order:\n");
+      for (const c of chain) {
+        const mark = c.path === scriptPath ? "runs    " : "shadowed";
+        process.stdout.write(`  ${mark}  ${c.path}  (${c.provider}:${c.origin} ${c.rootLabel})\n`);
+      }
+    }
     return 0;
   } catch (err) {
     process.stderr.write(`${(err as Error).message}\n`);
