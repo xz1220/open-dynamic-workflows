@@ -50,6 +50,8 @@ export interface RunSummary {
    * goes on (epoch seconds) — "paused until 19:10 (codex quota)". Null otherwise.
    */
   pausedFor?: { reason: "quota"; adapter: string; resumeAt: number } | null;
+  /** A shared bundle opened by `odw serve --open FILE.odwrun` (ODW extension): when it was bundled. */
+  bundle?: { bundledAt: number | null; odwVersion: string | null };
 }
 
 /**
@@ -390,6 +392,23 @@ export type Connection = "connecting" | "live" | "reconnecting";
 /** GET /api/capabilities — whether this dashboard may start/control runs. */
 export interface Capabilities {
   writable: boolean;
+  /** "token": reads need a token (`odw serve --token`; ODW extension). Absent from older servers. */
+  auth?: "token" | "none";
+  /** The shared bundle this dashboard shows, read-only (`odw serve --open FILE.odwrun`; ODW extension). */
+  bundle?: BundleInfo | null;
+}
+
+/** A shared bundle as `odw serve` describes it (ODW extension). */
+export interface BundleInfo {
+  runId: string;
+  /** The bundle file's name. */
+  file: string;
+  bundledAt: number | null;
+  odwVersion: string | null;
+  /** Something in it was redacted when it was bundled. */
+  redacted: boolean;
+  /** Its agents' transcripts are in it. */
+  transcripts: boolean;
 }
 
 export type ChatRole = "user" | "assistant" | "tool";

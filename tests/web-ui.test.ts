@@ -267,6 +267,38 @@ test("a run view shows pending checkpoints, usage and failure reasons when the s
   store.focusRun(null);
 });
 
+test("the Job header: Share copies `odw bundle <run>`; a shared bundle is tagged and has no Share", async () => {
+  const view: JobViewState = {
+    cpNote: "",
+    tab: "graph",
+    selectedAi: null,
+    reviewAi: null,
+    zoom: 1,
+    logQuery: "",
+    logTypes: new Set(["agent"]),
+    logLimit: 600,
+    follow: true,
+    motion: false,
+  };
+  store.focusRun("20260101-000000-aaaaaa");
+  store.run = detail([], { state: "done" });
+  const html = renderJob(view, NOW);
+  assert.match(html, /data-copy="odw bundle 20260101-000000-aaaaaa"[^>]*>[\s\S]*?Share<\/button>/);
+  assert.doesNotMatch(html, /shared bundle/);
+  store.run = detail([], { state: "done", bundle: { bundledAt: NOW - 60, odwVersion: "0.5.0" } });
+  const shared = renderJob(view, NOW);
+  assert.match(shared, /<span class="tag bundle">shared bundle · read-only<\/span>/);
+  assert.doesNotMatch(shared, /data-copy="odw bundle/);
+  store.focusRun(null);
+
+  // The token screen of `odw serve --token`: a form for the token, and why the last one was refused.
+  const { renderTokenScreen } = await import("../web/src/views/token.ts");
+  assert.match(renderTokenScreen(null), /<form [^>]*data-token-form[\s\S]*type="password" name="token"/);
+  assert.doesNotMatch(renderTokenScreen(null), /role="alert"/);
+  assert.match(renderTokenScreen("wrong"), /That token was refused/);
+  assert.match(renderTokenScreen("locked"), /Too many wrong tokens/);
+});
+
 test("the Logs tab paints the newest events and pages older ones in", () => {
   const view: JobViewState = {
     cpNote: "",

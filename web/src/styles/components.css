@@ -199,6 +199,10 @@
   color: var(--clay);
   background: var(--clay-soft);
 }
+.tag.bundle {
+  color: var(--amber-ink);
+  background: var(--amber-soft);
+}
 .tag.sig {
   color: var(--sig-ink);
   background: var(--sig-soft);

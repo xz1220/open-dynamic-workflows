@@ -20,6 +20,7 @@ export interface JobsState {
 export const HISTORY_PAGE = 100;
 
 function provTag(r: RunSummary): string {
+  if (r.bundle) return `<span class="tag bundle">${t("shared bundle")}</span>`;
   return r.provider === "claude" ? `<span class="tag cc" title="${t("Claude Code workflow — observed read-only")}">Claude Code</span>` : "";
 }
 

@@ -22,11 +22,32 @@ import type {
   WorkflowSummary,
 } from "./types";
 
+/** A refused request: its HTTP status (401: this dashboard needs a token). */
+export class HttpError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+  }
+}
+
 async function getJSON<T>(url: string): Promise<T> {
+  // Same-origin fetches send the token cookie of `odw serve --token` on their own.
   const r = await fetch(url, { headers: { accept: "application/json" } });
   const payload = (await r.json().catch(() => ({}))) as Record<string, unknown>;
-  if (!r.ok) throw new Error(String(payload.error ?? `${url} → ${r.status}`));
+  if (!r.ok) throw new HttpError(String(payload.error ?? `${url} → ${r.status}`), r.status);
   return payload as T;
+}
+
+/**
+ * Trade a token (`odw serve --token`) for the server's HttpOnly cookie: one
+ * request with `?token=`. "ok", or why not: "wrong" (401) or "locked" (429:
+ * too many wrong tokens from here for a while).
+ */
+async function signIn(token: string): Promise<"ok" | "wrong" | "locked"> {
+  const r = await fetch(`/api/capabilities?token=${encodeURIComponent(token)}`, { headers: { accept: "application/json" } });
+  return r.ok ? "ok" : r.status === 429 ? "locked" : "wrong";
 }
 
 /** POST JSON; throws with the server's error message so forms can show it. */
@@ -91,6 +112,7 @@ export const api = {
   workflow: (name: string, provider?: string) =>
     getJSON<WorkflowDetail>(`/api/workflows/${enc(name)}${provider ? `?provider=${enc(provider)}` : ""}`),
   capabilities: () => getJSON<Capabilities>("/api/capabilities"),
+  signIn,
   settings: () => getJSON<SettingsSnapshot>("/api/settings"),
   chatSessions: () => getJSON<ChatSessionSummary[]>("/api/chat/sessions"),
   chatSession: (id: string) => getJSON<ChatSession>(`/api/chat/sessions/${enc(id)}`),

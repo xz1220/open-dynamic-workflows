@@ -42,6 +42,7 @@ import { compareHash, renderCompare } from "./views/compare";
 import { LOG_PAGE, changedAgents, cpEditState, renderJob, reviewTarget, type JobTab, type JobViewState } from "./views/job";
 import { HISTORY_PAGE, renderJobs, type JobsFilter, type JobsState } from "./views/jobs";
 import { renderSettings } from "./views/settings";
+import { renderTokenScreen } from "./views/token";
 import { orderedWorkflows, renderWorkspace, wfKey } from "./views/workspace";
 
 /** Reflect the chosen language on <html lang> (a11y + correct CJK shaping). */
@@ -124,6 +125,7 @@ function parseHash(): Route {
 const currentRoute = parseHash;
 
 function viewHtml(route: Route): string {
+  if (store.needsToken) return renderTokenScreen(store.tokenError);
   const now = nowSec();
   switch (route.view) {
     case "chat":
@@ -948,6 +950,15 @@ root.addEventListener("input", (ev) => {
   }
 });
 
+// The token screen (odw serve --token): a token the server takes sets its cookie; start over with it.
+root.addEventListener("submit", (ev) => {
+  const form = (ev.target as HTMLElement).closest<HTMLFormElement>("form[data-token-form]");
+  if (!form) return;
+  ev.preventDefault();
+  const token = String(new FormData(form).get("token") ?? "");
+  if (token.trim()) void store.signIn(token).then((ok) => ok && location.reload());
+});
+
 root.addEventListener("compositionstart", () => {
   composing = true;
 });
@@ -1219,10 +1230,40 @@ watchSystemPrefs(() => {
 const snap = new URLSearchParams(location.search).get("snap") === "1";
 applyPrefs();
 applyDocLang();
+const givenToken = tokenFromUrl();
 if (!location.hash) location.hash = "#/activity";
-if (!snap) store.connect();
-// Learn whether this dashboard may write (loopback) so write affordances are
-// hidden on a remotely-viewed off-loopback bind rather than failing on click.
-void store.loadCapabilities();
-void store.loadSettings();
-void store.loadRuns().then(() => enterRoute());
+void (async () => {
+  // Remote access (odw serve --token): trade the URL's token for the server's cookie first.
+  if (givenToken) await store.signIn(givenToken);
+  // Learn whether this dashboard may write (loopback) so write affordances are
+  // hidden on a remotely-viewed off-loopback bind rather than failing on click —
+  // and whether it needs a token, before anything else asks.
+  await store.loadCapabilities();
+  if (store.needsToken) return render();
+  if (!snap) store.connect();
+  void store.loadSettings();
+  void store.loadRuns().then(() => enterRoute());
+})();
+
+/**
+ * The token of `odw serve --token`'s URL — `#token=…` (no request carries a
+ * fragment) or `?token=…` — taken out of the address bar at once, so it is
+ * neither shown, bookmarked nor shared with the page.
+ */
+function tokenFromUrl(): string | null {
+  const query = new URLSearchParams(location.search);
+  const fromHash = /^#token=([^&/]+)/.exec(location.hash)?.[1];
+  let token: string | null = query.get("token");
+  if (fromHash) {
+    try {
+      token = decodeURIComponent(fromHash);
+    } catch {
+      token = null;
+    }
+  }
+  if (!fromHash && token === null) return null;
+  query.delete("token");
+  const search = query.toString();
+  history.replaceState(null, "", `${location.pathname}${search ? `?${search}` : ""}#/activity`);
+  return token;
+}
