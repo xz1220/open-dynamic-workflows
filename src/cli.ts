@@ -32,6 +32,7 @@
  *   odw test [<wf|file>] [--case N] [--json] [--keep]   (scripted replies, no model; src/wftest/)
  *   odw run <wf> --dry | --record [--record-to FILE]    (stub replies; a run kept as a test case)
  *   odw note <text…> | odw notes [<run_id>] [--json]   (the run's notes board, runtime/notes-view.ts)
+ *   odw memory list|add|prune …   (workflow memory in .odw/memory, runtime/memory-cli.ts)
  *   odw estimate <wf> [--args JSON|@file] [--json]; odw run --estimate [--yes]   (from earlier runs, runtime/estimate-cli.ts)
  *   odw replay <run_id> --agent <id|label> [--prompt @file|TEXT] [--adapter A] [--model M]   (runtime/replay.ts)
  *   odw run <wf> --break <phase|label>[,…] | --step   (a checkpoint before them; src/breaks.ts)
@@ -98,6 +99,7 @@ import { parsePublicUrl, publicUrlHasPath } from "./runtime/approve-links.js";
 import { planReplay, readPromptOption, ReplayError, startReplay } from "./runtime/replay.js";
 import { printAgentLogs } from "./runtime/transcript-view.js";
 import { cmdNote, cmdNotes } from "./runtime/notes-view.js";
+import { cmdMemory } from "./runtime/memory-cli.js";
 import { cmdEstimate, estimateBeforeRun } from "./runtime/estimate-cli.js";
 import { executeRun } from "./runtime/worker.js";
 import {
@@ -214,6 +216,10 @@ export function helpText(): string {
     "  odw run <wf> --record [--record-to FILE]           keep the run as a test case (default .odw/tests/<wf>.json)",
     "  odw notes <run_id> [--json]                        a run's notes board: what its agents told each other (ODW extension)",
     '  odw note "<text>"                                  inside an agent with notes on: post a note for the run\'s other agents',
+    '  odw note --keep [--paths G,…] "<text>"             …and keep it as workflow memory once the run ends (ODW extension)',
+    "  odw memory list [<wf>] [--stale] [--json]          workflow memory in .odw/memory: what earlier runs learned (ODW extension)",
+    '  odw memory add <wf> "<text>" [--paths G,…]         keep an entry by hand (--kind note|correction|lesson)',
+    "  odw memory prune [<wf>] --stale | <wf> --id N      drop the stale entries, or one entry",
     "  odw run <wf> --on ssh://[user@]host[:port][/dir]   run it on your own server, detached; prints its run id (ODW extension)",
     "                                                     --sync git (default: HEAD + a patch of uncommitted changes) | rsync",
     "  odw status|logs|attach <run_id> --on ssh://host    the same command, run by the odw over there",
@@ -372,6 +378,8 @@ export async function main(argv: string[]): Promise<number> {
         return cmdNote(rest, storeFrom);
       case "notes":
         return cmdNotes(rest, storeFrom);
+      case "memory":
+        return cmdMemory(rest);
       case "conformance":
         return await cmdConformance(rest);
       case "test":

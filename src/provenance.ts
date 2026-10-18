@@ -275,6 +275,7 @@ export const BEHAVIOUR_SETTINGS = [
   "scopePolicy",
   "sandbox",
   "notes",
+  "memory",
   "agentLimits",
   "costGate",
 ] as const satisfies ReadonlyArray<keyof Settings>;

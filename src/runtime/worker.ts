@@ -34,6 +34,7 @@ import { Breaks, breakSpecOf, runSoFar } from "../breaks.js";
 import { DriftWatch, driftEvalArgs, driftEvalOf, previousRun } from "../drift.js";
 import { ReplayJournal } from "../journal.js";
 import { loadWorkflowScript, scanDualCompat } from "../loader.js";
+import { RunMemory } from "../memory.js";
 import { NotesBoard } from "../notes.js";
 import { createPrimitives } from "../primitives.js";
 import { CliVersions, runSetup } from "../provenance.js";
@@ -280,6 +281,18 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
       });
       return history;
     };
+    // The workflow's memory (ODW extension; see ../memory): recalled for agents
+    // with memory on; what the run learns is kept once it ends — not by a run no model answers.
+    const memory = new RunMemory({
+      source: typeof meta.source === "string" ? meta.source : process.cwd(),
+      dir: config.settings.memoryDir ?? null,
+      runId,
+      workflow: () => historyName,
+      trust: config.settings.trust,
+      redactor: runRedactor,
+      emit: (ev) => sink.emit(ev),
+      write: !mock,
+    });
     ctx = buildContext(config, {
       source: meta.source as string | undefined,
       runId,
@@ -294,7 +307,14 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
       saveAgentResult: (rec) => store.writeAgentResult(runId, runRedactor.record(rec)),
       redactor: runRedactor,
       // The run's notes board (ODW extension): notes.jsonl, for agents with notes on.
-      notes: new NotesBoard({ runDir: store.runDir(runId), redactor: runRedactor, emit: (ev) => sink.emit(ev) }),
+      // A note posted with --keep becomes workflow memory when the run ends.
+      notes: new NotesBoard({
+        runDir: store.runDir(runId),
+        redactor: runRedactor,
+        emit: (ev) => sink.emit(ev),
+        onKeep: (note) => memory.record({ kind: "note", text: note.text, paths: note.paths ?? [], agent: note.by.label }),
+      }),
+      memory,
       // What an isolated agent changed is kept beside it, as agents/<agentId>.diff.
       agentDiffPath: (agentId) => store.agentDiffPath(runId, agentId),
       // What each agent's CLI prints, as agents/<agentId>.transcript.jsonl and .stderr.txt.
@@ -488,6 +508,8 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
     store.writeResult(runId, kept.value, "redacted" in kept);
     versions?.close();
     ctx.notes?.close();
+    // What the run learned is kept, before its terminal event (ODW extension).
+    ctx.memory?.flush();
     sink.emit(event(RUN_FINISHED, { runId }));
     store.updateStatus(runId, { state: "done", dispatched: dispatched(), spentTokens: spent() });
     end = { state: "done" };
@@ -502,6 +524,8 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
     await ctx?.bridge.closeEgress().catch(() => undefined);
     versions?.close();
     ctx?.notes?.close();
+    // A failed or stopped run keeps what it learned too: a correction is no less true.
+    ctx?.memory?.flush();
     if (outcome instanceof RunStopped) {
       sink.emit(event(RUN_STOPPED, { runId }));
       store.updateStatus(runId, { state: "stopped", dispatched: dispatched(), spentTokens: spent() });

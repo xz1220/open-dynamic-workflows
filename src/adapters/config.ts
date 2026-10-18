@@ -136,6 +136,8 @@ const KNOWN_TOP_KEYS = [
   "recordVersions",
   "driftEval",
   "notes",
+  "memory",
+  "memoryDir",
   "permissions",
   "trust",
   "agentEnv",
@@ -1192,6 +1194,8 @@ function buildSettings(raw: Record<string, unknown>): Settings {
       raw["recordVersions"] == null ? DEFAULT_SETTINGS.recordVersions : buildFlag("recordVersions", raw["recordVersions"]),
     driftEval: raw["driftEval"] == null ? DEFAULT_SETTINGS.driftEval : buildFlag("driftEval", raw["driftEval"]),
     notes: raw["notes"] == null ? DEFAULT_SETTINGS.notes : buildFlag("notes", raw["notes"]),
+    memory: raw["memory"] == null ? DEFAULT_SETTINGS.memory : buildFlag("memory", raw["memory"]),
+    memoryDir: raw["memoryDir"] == null ? DEFAULT_SETTINGS.memoryDir : buildMemoryDir(raw["memoryDir"]),
     permissions: raw["permissions"] == null ? DEFAULT_SETTINGS.permissions : buildTier(raw["permissions"]),
     trust: raw["trust"] == null ? DEFAULT_SETTINGS.trust : buildTrust(raw["trust"]),
     agentEnv: raw["agentEnv"] == null ? DEFAULT_SETTINGS.agentEnv : buildAgentEnv(raw["agentEnv"]),
@@ -1435,6 +1439,12 @@ function buildEnvPass(raw: unknown): string[] {
 function buildFlag(key: string, raw: unknown): boolean {
   if (typeof raw === "boolean") return raw;
   throw new ConfigError(`"${key}" must be true or false; got ${JSON.stringify(raw)}`);
+}
+
+/** Validate `memoryDir` (ODW extension; see ../memory): a non-empty path string. */
+function buildMemoryDir(raw: unknown): string {
+  if (typeof raw === "string" && raw.trim() !== "") return raw.trim();
+  throw new ConfigError(`"memoryDir" must be a directory (a non-empty string), or null for .odw/memory; got ${JSON.stringify(raw)}`);
 }
 
 /**

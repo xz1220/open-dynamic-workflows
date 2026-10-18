@@ -58,7 +58,10 @@
  *   GET  /api/workflows             [WorkflowSummary] from the managed workflow dirs
  *   GET  /api/workflows/:name       WorkflowDetail (?provider=odw|claude picks a shadowed name;
  *                                   a plugin's workflow is `<plugin>:<name>`, provider claude-plugin:<plugin>)
- *   GET  /api/capabilities          { writable, decide }: whether this bind accepts writes, and checkpoint decisions
+ *   GET  /api/memory[?workflow=<name>]   [WorkflowMemory] (../memory): the repository's workflow
+ *                                   memory, each entry with `stale`, as `odw memory list --json`
+ *                                   prints it (ODW extension); [] for a bundle; 400 for a bad name
+ *   GET  /api/capabilities         { writable, decide }: whether this bind accepts writes, and checkpoint decisions
  *   GET  /api/settings              runtime config summary (adapters, roots, Claude scope, notify)
  *   GET  /api/schedules             [schedule]: `odw schedule list --json`, read only (ODW extension)
  *   GET  /api/compare?a=<run>&b=<run>   RunComparison (./compare): what changed between two ODW
@@ -199,6 +202,7 @@ import { approveLinksOff, approveRoute, type ApproveRouteContext } from "./appro
 import { listWorkflowSummaries, workflowDetail } from "./workflows-view.js";
 import { TriggerRoute, triggersToServe, type TriggerRouteOptions } from "./trigger-route.js";
 import type { TriggerSettings } from "../triggers.js";
+import { listMemory, type WorkflowMemory } from "../memory.js";
 
 export type { ChatTurnRequest, ChatTurnRunner } from "./chat-host.js";
 
@@ -524,6 +528,20 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandleCont
     if (path.startsWith("/api/chat/") && (await chatHost.route(req, res, method, path, boundHost))) return;
     if (method === "GET" && path === "/api/workflows") {
       sendJson(res, 200, bundle ? [] : listWorkflowSummaries(cwd, config, store));
+      return;
+    }
+    // Workflow memory (ODW extension; see ../memory): as `odw memory list --json` prints it.
+    if (method === "GET" && path === "/api/memory") {
+      const workflow = url.searchParams.get("workflow") ?? undefined;
+      let listed: WorkflowMemory[];
+      try {
+        listed = bundle ? [] : listMemory(cwd, config.settings.memoryDir, workflow);
+      } catch (err) {
+        sendJson(res, 400, { error: (err as Error).message });
+        return;
+      }
+      const shown = listed.map((wf) => ({ ...wf, entries: wf.entries.map((entry) => ({ ...entry, text: redactor.text(entry.text) })) }));
+      sendJson(res, 200, shown);
       return;
     }
     const wfMatch = path.match(/^\/api\/workflows\/([^/]+)$/);

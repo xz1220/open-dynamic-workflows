@@ -638,6 +638,8 @@ export const DEFAULT_SETTINGS: Settings = {
   recordVersions: true, // each adapter CLI's --version, once per run, for odw compare (false: no probe)
   driftEval: false, // a run whose CLIs or models drifted only suggests its workflow's eval (true: starts it once the run ends)
   notes: false, // no notes board: agents run as written (true: every agent gets one; see src/notes.ts)
+  memory: false, // no workflow memory recalled or learned (true: .odw/memory/<wf>.jsonl; see src/memory.ts)
+  memoryDir: null, // workflow memory lives in the repository, .odw/memory
   permissions: "edit", // the tier every built-in ran with before tiers existed
   trust: "trusted", // agents read the repository's own instructions and settings (untrusted: each CLI's way of ignoring them)
   agentEnv: "inherit", // agent CLIs see ODW's whole environment

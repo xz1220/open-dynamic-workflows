@@ -44,6 +44,9 @@
  *     edits, such as a list where the payload was null. A script that relies
  *     on the shape says so with a schema; one without treats an edit as input
  *     it did not produce.
+ *   - **memory** — `true` or `{ paths }`: a rejection with a note, or an
+ *     approval with an edit, is kept as a correction in the workflow's memory
+ *     once the run ends (see ./memory); unset, the `memory` setting decides.
  *
  * Waiting is not work: a checkpoint takes no concurrency slot, counts toward
  * neither maxAgents nor the budget, and is asked even while the run is paused.
@@ -58,6 +61,7 @@ import type { RunContext } from "./context.js";
 import { deciderText, STOPPED, type CheckpointDecision } from "./control.js";
 import { DynamicWorkflowError, RunStopped, WorkflowScriptError } from "./errors.js";
 import { CHECKPOINT_REQUESTED, CHECKPOINT_RESOLVED, LOG, event } from "./events.js";
+import { checkMemoryPaths, editSummary } from "./memory.js";
 import { auditSchema, checkedSubset, deepEqual, validate, type JsonSchema, type SchemaIssue } from "./schema.js";
 
 export interface CheckpointOptions {
@@ -69,6 +73,13 @@ export interface CheckpointOptions {
   timeout?: number;
   /** What a timeout means: "approve", "reject", or "fail" (the default), which throws a CheckpointTimeout. */
   onTimeout?: "approve" | "reject" | "fail";
+  /**
+   * Workflow memory (ODW extension; see ./memory): a rejection with a note,
+   * or an approval with an edit, is kept as a correction once the run ends;
+   * `{ paths }` (globs) makes it go stale when those files change. Unset: the
+   * `memory` setting.
+   */
+  memory?: boolean | { paths: string[] };
 }
 
 export interface CheckpointResult {
@@ -131,6 +142,8 @@ const MAX_TIMER_MS = 2 ** 31 - 1;
 export function createCheckpoint(ctx: RunContext): CheckpointPrimitive {
   return async (title, opts = {}) => {
     const plan = planCheckpoint(title, opts, ctx.config.settings.schemaKeywords);
+    // Its corrections are kept as workflow memory: its own say, else the setting (ODW extension).
+    plan.memory ??= ctx.config.settings.memory === true ? { paths: [] } : null;
     if (!ctx.control.awaitDecision && plan.timeoutMs === null) {
       throw misuse("this run has no way to ask anyone (no decision channel) — give the checkpoint a timeout");
     }
@@ -164,6 +177,8 @@ interface Plan {
   /** null: no timer at all. */
   timeoutMs: number | null;
   onTimeout: (typeof ON_TIMEOUT)[number];
+  /** Whether its corrections become workflow memory, and the globs they are about; null: not; undefined: the setting decides. */
+  memory?: { paths: string[] } | null;
 }
 
 /** Check checkpoint()'s arguments; a misuse is a (recoverable) WorkflowScriptError, before anything is asked. */
@@ -174,7 +189,8 @@ function planCheckpoint(title: unknown, opts: unknown, schemaKeywords: Settings[
   if (opts === null || typeof opts !== "object" || Array.isArray(opts)) {
     throw misuse(`options must be an object; got ${describeValue(opts)}`);
   }
-  const { payload, schema, timeout, onTimeout = "fail" } = opts as CheckpointOptions;
+  const { payload, schema, timeout, onTimeout = "fail", memory } = opts as CheckpointOptions;
+  const keep = planMemory(memory);
   if (timeout !== undefined && (typeof timeout !== "number" || !(timeout > 0))) {
     throw misuse(`timeout must be a positive number of seconds; got ${describeValue(timeout)}`);
   }
@@ -196,7 +212,26 @@ function planCheckpoint(title: unknown, opts: unknown, schemaKeywords: Settings[
     timeout: timeout ?? null,
     timeoutMs: timeout !== undefined && timeout * 1000 <= MAX_TIMER_MS ? timeout * 1000 : null,
     onTimeout: onTimeout as Plan["onTimeout"],
+    ...(keep !== undefined ? { memory: keep } : {}),
   };
+}
+
+/** checkpoint()'s `memory`: true, false, or `{ paths: [globs] }` (ODW extension; see ./memory). */
+function planMemory(memory: unknown): { paths: string[] } | null | undefined {
+  if (memory === undefined) return undefined;
+  if (typeof memory === "boolean") return memory ? { paths: [] } : null;
+  if (memory !== null && typeof memory === "object" && !Array.isArray(memory)) {
+    const { paths, ...rest } = memory as { paths?: unknown };
+    const extra = Object.keys(rest);
+    if (extra.length > 0) throw misuse(`memory takes only paths; got ${extra.map((key) => JSON.stringify(key)).join(", ")}`);
+    if (!Array.isArray(paths)) throw misuse(`memory.paths must be an array of globs; got ${describeValue(paths)}`);
+    try {
+      return { paths: checkMemoryPaths(paths) };
+    } catch (err) {
+      throw misuse(errorMessage(err));
+    }
+  }
+  throw misuse(`memory must be true, false or { paths: [globs] }; got ${describeValue(memory)}`);
 }
 
 /**
@@ -466,6 +501,7 @@ async function wait(
       const { approved, note, by } = result;
       // An edit is on record — JSON-safe, cut to 64 KiB like the question's payload.
       resolved({ approved, note, by, ...(result.edited ? editedFields(result.payload) : {}) });
+      remember(ctx, cp, result);
       return result;
     }
     if (cp.onTimeout === "fail") {
@@ -496,6 +532,22 @@ function answerOf(cp: Plan, decision: CheckpointDecision): CheckpointResult {
   const edit = approved && decision.payload !== undefined ? checkEdit(decision.payload, cp.schema) : null;
   if (edit?.ok && !sameJson(edit.value, cp.json)) return { approved, note, by, payload: edit.value, edited: true };
   return { approved, note, by, payload: cp.original, edited: false };
+}
+
+/**
+ * A person's correction, kept as workflow memory once the run ends (ODW
+ * extension; see ./memory): a rejection with a note, or an approval with an
+ * edit — summarized by a structural diff of the payload, no model involved.
+ */
+function remember(ctx: RunContext, cp: Plan, result: CheckpointResult): void {
+  if (!cp.memory || !ctx.memory) return;
+  const note = result.note?.trim() ? result.note.trim() : null;
+  let text: string | null = null;
+  if (!result.approved && note) text = `"${cp.title}" was rejected: ${note}`;
+  else if (result.approved && result.edited) {
+    text = `"${cp.title}" was approved with edits: ${editSummary(cp.json?.value ?? null, result.payload)}` + (note ? ` — note: ${note}` : "");
+  }
+  if (text) ctx.memory.record({ kind: "correction", text, paths: cp.memory.paths });
 }
 
 /** The `checkpoint_resolved` fields of an approval with edits. */

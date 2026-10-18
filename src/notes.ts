@@ -18,7 +18,11 @@
  *   - when it ran in a worktree and kept a change, has ODW post a note of its
  *     own for it: its diff stat and the interface lines it touched — lines of
  *     its diff hunks that look like declarations (`export`, `def`, `func`,
- *     `pub fn`, `class`, `interface`), a cheap language-agnostic heuristic.
+ *     `pub fn`, `class`, `interface`), a cheap language-agnostic heuristic;
+ *   - can keep a note for later runs of the workflow: `"$ODW_NOTES" --keep
+ *     "text"` (or `odw note --keep [--paths …]`) posts it marked `keep`, and
+ *     the worker hands it to the run's workflow memory (./memory), written
+ *     when the run ends.
  *
  * The board lives in the run directory:
  *
@@ -106,6 +110,10 @@ export interface Note {
   truncated?: true;
   /** Likely secrets in it were replaced by `«redacted:<kind>»`. */
   redacted?: true;
+  /** Posted with `--keep` (ODW extension; see ./memory): it becomes workflow memory when the run ends. */
+  keep?: true;
+  /** A kept note's globs (`odw note --keep --paths`): it goes stale once files they match change. */
+  paths?: string[];
 }
 
 /** What an agent with notes on gets: its environment, its container binds, its prompt section, and its end. */
@@ -126,6 +134,8 @@ export interface NotesBoardOptions {
   emit: (ev: WorkflowEvent) => void;
   /** How often running agents' inboxes are looked at, in ms (tests). */
   pollMs?: number;
+  /** Told of each note posted with `--keep`, once it is on the board (workflow memory; see ./memory). */
+  onKeep?: (note: Note) => void;
 }
 
 /**
@@ -158,7 +168,12 @@ export class NotesBoard {
    * notes.jsonl, rendered into notes.txt and emitted as `note_added`. Null
    * when it is empty or the board is full. Never throws: a write that fails is logged.
    */
-  post(by: { agentId: number; label: string }, raw: string, kind: Note["kind"] = "note"): Note | null {
+  post(
+    by: { agentId: number; label: string },
+    raw: string,
+    kind: Note["kind"] = "note",
+    keep?: { paths: string[] },
+  ): Note | null {
     let text = cleanNote(raw);
     if (!text) return null;
     if (this.full) return null;
@@ -177,6 +192,7 @@ export class NotesBoard {
       kind,
       ...(truncated ? { truncated: true as const } : {}),
       ...(clean !== text ? { redacted: true as const } : {}),
+      ...(keep ? { keep: true as const, ...(keep.paths.length ? { paths: keep.paths } : {}) } : {}),
     };
     const line = JSON.stringify(note) + "\n";
     const size = Buffer.byteLength(line);
@@ -204,6 +220,13 @@ export class NotesBoard {
     this.render();
     const { ts: _ts, ...fields } = note;
     this.opts.emit(event(NOTE_ADDED, fields));
+    if (note.keep) {
+      try {
+        this.opts.onKeep?.(note);
+      } catch (err) {
+        this.opts.emit(event(LOG, { message: `could not keep note #${note.noteId} for later runs: ${errorText(err)}` }));
+      }
+    }
     return note;
   }
 
@@ -301,7 +324,12 @@ export class NotesBoard {
       } catch {
         continue; // taken already, or not ours to take
       }
-      this.post({ agentId, label: open.label }, text);
+      if (file.name.startsWith(KEEP_PREFIX)) {
+        const kept = keptNote(text);
+        this.post({ agentId, label: open.label }, kept.text, "note", { paths: kept.paths });
+      } else {
+        this.post({ agentId, label: open.label }, text);
+      }
     }
   }
 
@@ -319,9 +347,39 @@ export class NotesBoard {
   }
 }
 
+/** An inbox file named so holds a note to keep as workflow memory (`--keep`; see ./memory). */
+export const KEEP_PREFIX = "keep-";
+
+/**
+ * A kept note's inbox file: `{"text": …, "paths": [globs]}` as `odw note
+ * --keep --paths` writes it, else (the shim's `--keep`) the note's plain text.
+ * Paths that are not relative globs inside the repository are dropped.
+ */
+export function keptNote(raw: string): { text: string; paths: string[] } {
+  try {
+    const parsed = JSON.parse(raw) as { text?: unknown; paths?: unknown };
+    if (parsed && typeof parsed === "object" && typeof parsed.text === "string") {
+      const paths = Array.isArray(parsed.paths) ? parsed.paths.filter((p): p is string => typeof p === "string") : [];
+      return { text: parsed.text, paths: paths.flatMap((p) => safeGlob(p)).slice(0, 20) };
+    }
+  } catch {
+    // plain text
+  }
+  return { text: raw, paths: [] };
+}
+
+/** One glob as memory keeps it, or none (see checkMemoryPaths in ./memory, which odw note applies first). */
+function safeGlob(path: string): string[] {
+  const glob = path.trim().replace(/\\/g, "/");
+  if (!glob || glob.startsWith("/") || glob.startsWith(":") || /^[A-Za-z]:/.test(glob) || glob.split("/").includes("..")) return [];
+  return [glob.length > 300 ? glob.slice(0, 300) : glob];
+}
+
 /** A note as a line (or lines) of text: `#2 [agent 3 · api] text`, later lines indented. */
 export function formatNote(note: Note): string {
-  const kind = note.kind === "interface" ? " (interface change)" : note.kind === "scope" ? " (outside its scope)" : "";
+  const kind =
+    (note.kind === "interface" ? " (interface change)" : note.kind === "scope" ? " (outside its scope)" : "") +
+    (note.keep ? " (kept for later runs)" : "");
   const [first = "", ...rest] = note.text.split("\n");
   return [`#${note.noteId} [agent ${note.by.agentId} · ${oneLine(note.by.label)}]${kind} ${first}`, ...rest.map((line) => `   ${line}`)].join("\n");
 }
@@ -335,7 +393,8 @@ export function notesPrompt(notes: readonly Note[]): string {
     "This run has a notes board (an ODW extension): other agents of this run may work alongside you. " +
     "To tell the other agents something they must know (an interface you changed, a decision), run " +
     '`"$ODW_NOTES" "<your note>"` (the same as `odw note "<your note>"`). Keep each note short and concrete. ' +
-    'To read the notes posted since you started, run `"$ODW_NOTES"` with no arguments.';
+    'To read the notes posted since you started, run `"$ODW_NOTES"` with no arguments. ' +
+    'A note that later runs of this workflow should know too (a lasting lesson, not this run\'s chatter) can be kept: `"$ODW_NOTES" --keep "<your note>"`.';
   if (notes.length === 0) return `${how}\n\nNo notes from the other agents in this run yet.`;
   const shown: string[] = [];
   let used = 0;
@@ -476,34 +535,43 @@ export function inboxFromEnv(
   return inbox;
 }
 
-/** Drop a note in an inbox, whole: written under a dot name, then renamed. */
-export function dropNote(inbox: string, text: string): void {
-  const name = `${Date.now()}-${process.pid}-${Math.floor(Math.random() * 1e9).toString(36)}`;
+/** Drop a note in an inbox, whole: written under a dot name, then renamed. `keep`: a note to keep as workflow memory. */
+export function dropNote(inbox: string, text: string, keep?: { paths: string[] }): void {
+  const name = `${keep ? KEEP_PREFIX : ""}${Date.now()}-${process.pid}-${Math.floor(Math.random() * 1e9).toString(36)}`;
   const tmp = join(inbox, `.${name}`);
-  writeFileSync(tmp, text);
+  writeFileSync(tmp, keep ? JSON.stringify({ text, paths: keep.paths }) : text);
   renameSync(tmp, join(inbox, name));
 }
 
 /**
  * An agent's `ODW_NOTES` shim: POSIX sh, its board and inbox written in.
- * With arguments, it drops them (joined by spaces) in its inbox; without,
- * it prints the board.
+ * With arguments, it drops them (joined by spaces) in its inbox — after a
+ * leading `--keep`, as a note to keep for later runs; without, it prints
+ * the board.
  */
 export function shimScript(boardFile: string, inbox: string): string {
   return [
     "#!/bin/sh",
     "# The run's notes board (an ODW extension), written by odw for one agent.",
-    '#   "$ODW_NOTES" "text"   post a note for the other agents of this run',
-    '#   "$ODW_NOTES"          print the notes posted so far',
+    '#   "$ODW_NOTES" "text"          post a note for the other agents of this run',
+    '#   "$ODW_NOTES" --keep "text"   ...and keep it for later runs of the workflow (workflow memory)',
+    '#   "$ODW_NOTES"                 print the notes posted so far',
     `board=${shQuote(boardFile)}`,
     `inbox=${shQuote(inbox)}`,
+    "keep=",
+    'if [ "$1" = "--keep" ]; then',
+    "  keep=keep-",
+    "  shift",
+    '  if [ "$#" -eq 0 ]; then echo \'usage: "$ODW_NOTES" --keep "text"\' >&2; exit 2; fi',
+    "fi",
     'if [ "$#" -eq 0 ]; then',
     '  if [ -s "$board" ]; then cat "$board"; else echo "(no notes yet)"; fi',
     "  exit 0",
     "fi",
     "n=0",
-    'while [ -e "$inbox/n-$$-$n" ] || [ -e "$inbox/.n-$$-$n" ]; do n=$((n + 1)); done',
-    'printf \'%s\' "$*" > "$inbox/.n-$$-$n" && mv "$inbox/.n-$$-$n" "$inbox/n-$$-$n" || exit 1',
+    'f="${keep}n-$$-$n"',
+    'while [ -e "$inbox/$f" ] || [ -e "$inbox/.$f" ]; do n=$((n + 1)); f="${keep}n-$$-$n"; done',
+    'printf \'%s\' "$*" > "$inbox/.$f" && mv "$inbox/.$f" "$inbox/$f" || exit 1',
     'echo "note posted"',
     "",
   ].join("\n");
