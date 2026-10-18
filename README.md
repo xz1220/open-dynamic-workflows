@@ -1298,6 +1298,42 @@ runs are not watched. There is no `odw schedule add … --on-cli-change`: a sche
 already logs its drift, and `driftEval` checks it — a schedule that polls CLI versions
 would be one more daemon for little gain.
 
+### The model that actually served an agent (ODW extension)
+
+`agent(prompt, { model: "opus" })` is a request. An organisation's `availableModels`
+allowlist, a plan, a retired id or a CLI's own setting can put the agent on another model,
+and the reply never says so
+([claude-code#102655](https://github.com/anthropics/claude-code/issues/102655),
+[#73597](https://github.com/anthropics/claude-code/issues/73597)). Where a CLI's own events
+name the model that served the agent, odw records it beside the request: the built-in
+`claude` reads stream-json's init event (`model`), each assistant message's
+`message.model` (not Claude Code's own `<synthetic>` ones) and the result's `modelUsage`
+keys. The models go on the agent's `agent_finished` event and saved result as
+`servedModel`, in `odw agents --json`, `/api/runs/:id` (the agent's `model` and
+`servedModel`) and the dashboard drawer ("served by"), and `odw logs` shows them.
+
+When none of them is the model its CLI was asked for — a `"@tier"` resolved first; case, a
+`[1m]` suffix and a provider prefix (`anthropic/…`, `us.anthropic.…`) do not count, and an
+alias or shorter id matches a served id that holds it whole (`opus` ~ `claude-opus-5-5`,
+`best` is opus, `default` matches anything) — the run writes a `model_substituted` event
+(`{ agentId, label, adapter, requested, served, policy, message }`) and shows it as a log
+line:
+
+```text
+review:1: asked claude for model 'opus' but it was served by claude-sonnet-4-5 — its reply is kept; modelMismatch: "fail" fails such an agent
+```
+
+The reply stands (the default `"modelMismatch": "warn"`); `"modelMismatch": "fail"` fails
+such agents with `reason: "model_substituted"` (not retried, no fallback). A helper model
+next to the requested one (Claude Code summarising a WebFetch on haiku) is no
+substitution. The drawer flags it as "substituted", `odw agents` prefixes the value with
+`[served by …, asked …]`, `odw compare` sets `modelsServed` side by side and marks the
+agent, and `odw estimate` adds a `models` group (by the first served model) so one model's
+spend is not mixed with another's. A CLI that names no model — codex, agy, and any adapter
+without `output.servedModel` rules — is "not reported": nothing is guessed, least of all
+from the reply. Any JSONL adapter can declare its CLI's model events with
+`output.servedModel` (see the adapters reference).
+
 ### Debug a workflow (ODW extension)
 
 Three tools for the moment one step of a workflow is wrong — none of them needs the
@@ -2932,7 +2968,9 @@ reply, under `"orphanedBackground": "fail"` or `expect`; see
 [Check an agent's work](#check-an-agents-work-odw-extension)) — and `out_of_scope`, an agent that
 changed files outside its declared scope under `"scopePolicy": "fail"` (see
 [Declared scopes](#declared-scopes-odw-extension)), `needs_input`, an agent that stopped to ask a
-question nobody answered (see [Agent questions](#agent-questions-odw-extension)), and `runaway`, an agent killed at one of its
+question nobody answered (see [Agent questions](#agent-questions-odw-extension)), `model_substituted`, an agent its CLI
+said another model served under `"modelMismatch": "fail"` (see
+[The model that actually served an agent](#the-model-that-actually-served-an-agent-odw-extension)), and `runaway`, an agent killed at one of its
 [limits](#per-agent-limits-and-runaway-loops-odw-extension). The class is the `reason` on the `agent_failed` event (with
 `retryAfter`, in seconds, when the CLI said when to come back), the agent's
 `failureReason` in the dashboard and `/api/runs/:id`, and it shows in the live

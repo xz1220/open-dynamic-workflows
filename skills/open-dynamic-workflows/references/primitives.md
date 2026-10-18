@@ -803,7 +803,13 @@ instead). Background work its CLI left running when it replied is kept as
 logs one line per agent (`serve:1: Claude Code ended its turn with 1 background
 task still running — Bash (Start the dev server); …`);
 `"orphanedBackground": "fail"` throws with reason `"orphaned_background"`
-instead. None of these failures is retried. `expect` is
+instead. The model its CLI said served it (ODW extension; `output.servedModel`)
+is kept as `servedModel` on the agent's `agent_finished` event and saved result;
+when none of those models is the one `model` asked its CLI for, the run writes a
+`model_substituted` event and logs it (``review:1: asked claude for model 'opus'
+but it was served by claude-sonnet-4-5 — …``), and `"modelMismatch": "fail"`
+throws with reason `"model_substituted"`. A CLI that names no model is "not
+reported" — never guessed. None of these failures is retried. `expect` is
 part of the call's resume key; Claude Code ignores it, so there the checks do not
 run.
 

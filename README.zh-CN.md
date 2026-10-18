@@ -1121,6 +1121,37 @@ eval` 启动的运行不会再启动 eval。dry run 和 `odw test` 的运行不�
 add … --on-cli-change`:定时运行本身就会记录漂移,`driftEval` 会去检验——再加一个轮询 CLI
 版本的调度只是多一个守护进程,收益很小。
 
+### 实际服务 agent 的模型(ODW 扩展)
+
+`agent(prompt, { model: "opus" })` 只是一个请求。组织的 `availableModels` 白名单、套餐、已下线的
+模型 id 或 CLI 自己的设置都可能让 agent 跑在另一个模型上,而回复里不会提
+([claude-code#102655](https://github.com/anthropics/claude-code/issues/102655)、
+[#73597](https://github.com/anthropics/claude-code/issues/73597))。只要 CLI 自己的事件写明了
+实际服务的模型,odw 就把它记在请求旁边:内置 `claude` 读取 stream-json 的 init 事件
+(`model`)、每条 assistant 消息的 `message.model`(Claude Code 自己生成的 `<synthetic>` 除外)
+和 result 的 `modelUsage` 键。这些模型作为 `servedModel` 记在 agent 的 `agent_finished` 事件和
+保存的结果上,也出现在 `odw agents --json`、`/api/runs/:id`(agent 的 `model` 与
+`servedModel`)和看板侧栏("实际模型")里,`odw logs` 也会显示。
+
+它们都不是 CLI 被要求使用的模型时——先解析 `"@tier"`;大小写、`[1m]` 后缀和供应商前缀
+(`anthropic/…`、`us.anthropic.…`)不计,别名或较短的 id 只要完整出现在实际 id 中就算一致
+(`opus` ~ `claude-opus-5-5`,`best` 即 opus,`default` 与任何模型一致)——运行写入
+`model_substituted` 事件(`{ agentId, label, adapter, requested, served, policy, message }`),
+并以一行日志显示:
+
+```text
+review:1: asked claude for model 'opus' but it was served by claude-sonnet-4-5 — its reply is kept; modelMismatch: "fail" fails such an agent
+```
+
+回复照常成立(默认 `"modelMismatch": "warn"`);`"modelMismatch": "fail"` 让这样的 agent 以
+`reason: "model_substituted"` 失败(不重试,不回退)。请求的模型之外顺带用到的辅助模型
+(Claude Code 用 haiku 总结 WebFetch)不算替换。看板侧栏标出"已替换",`odw agents` 在值前加
+`[served by …, asked …]`,`odw compare` 并排列出 `modelsServed` 并标出该 agent,`odw estimate`
+增加按实际模型(第一个报告的模型)分组的 `models`,不同模型的花费不再混在一起。不报告模型的
+CLI——codex、agy,以及任何没有 `output.servedModel` 规则的适配器——显示"未报告":不做任何
+推断,更不从回复文本里猜。任何 JSONL 适配器都可以用 `output.servedModel` 声明自己 CLI 的模型
+事件(见适配器参考)。
+
 ### 调试工作流(ODW 扩展)
 
 工作流里某一步不对时,有三件工具可用——都不需要改工作流,也不需要为整次运行再付一次钱:
@@ -2506,7 +2537,7 @@ agent 在两次之间做的事不可能改变结果。同一次调用的后续 C
 `unmet_expectation`、`"mcpFailures": "fail"` 下的 `mcp_unavailable`,以及
 `orphaned_background`(回复时仍有后台任务在运行,`"orphanedBackground": "fail"` 或设了
 `expect` 时)(见[检查 agent 的工作](#检查-agent-的工作odw-扩展));`out_of_scope`:
-`"scopePolicy": "fail"` 下改动了声明范围之外文件的 agent(见[声明范围](#声明范围odw-扩展));`needs_input`:停下来提问却没人回答的 agent(见[agent 的提问](#agent-的提问odw-扩展));还有 `runaway`:触及[上限](#单-agent-上限与死循环odw-扩展)被杀掉的 agent。这个类别就是 `agent_failed` 事件上的 `reason`(CLI 说明了何时
+`"scopePolicy": "fail"` 下改动了声明范围之外文件的 agent(见[声明范围](#声明范围odw-扩展));`needs_input`:停下来提问却没人回答的 agent(见[agent 的提问](#agent-的提问odw-扩展));`model_substituted`:`"modelMismatch": "fail"` 下 CLI 报告由其他模型服务的 agent(见[实际服务 agent 的模型](#实际服务-agent-的模型odw-扩展));还有 `runaway`:触及[上限](#单-agent-上限与死循环odw-扩展)被杀掉的 agent。这个类别就是 `agent_failed` 事件上的 `reason`(CLI 说明了何时
 可以重试时,还带有以秒计的 `retryAfter`),也是看板和 `/api/runs/:id` 里该 agent 的
 `failureReason`,并显示在实时视图和 `odw logs` 中:
 

@@ -199,6 +199,7 @@ still reach the agent`）。仓库 `.worktreeinclude` 的 `symlink:` 行和仓�
 | `permissionDenials` | **ODW 扩展。** CLI 拒绝了 agent 的工具调用（`deniedPath`）、而回复声称成功时怎么办：`"warn"`（默认）保留回复——这些调用记为 agent 上的 `denied` 并记一次日志——`"fail"` 让 agent 以 `permission` 失败。适配器自己的 `permissionDenials` 优先；设了 `expect` 的调用无论如何都把被拒绝的调用算作缺失 |
 | `mcpFailures` | **ODW 扩展。** CLI 启动 agent 时没连上 MCP 服务器（`mcpPath`：Claude Code 的 init 事件）时怎么办：`"warn"`（默认，与 Claude Code 自己只警告一致）保留回复——每个状态不是 `connected` 的服务器记为 agent 上的 `mcp`，每次运行按服务器和状态各记一次日志——`"fail"` 让服务器为 `failed` 或 `needs-auth` 的 agent 以 `mcp_unavailable` 失败（`pending` 和 `disabled` 从不导致失败）。调用的 `expect.mcp` 列出的服务器则算作缺失 |
 | `orphanedBackground` | **ODW 扩展。** CLI 给出回复时仍有后台任务在运行——`run_in_background` 的 shell 命令或它从未等待的子 agent，随 CLI 退出而终止（`output.background`：Claude Code 的任务事件）——时怎么办：`"warn"`（默认）保留回复，任务记为 agent 上的 `orphaned` 并记一次日志；`"fail"` 让 agent 以 `orphaned_background` 失败。设了 `expect` 的调用无论如何都把它算作缺失 |
+| `modelMismatch` | **ODW 扩展。** CLI 报告实际服务 agent 的模型不是它被请求的模型时（`output.servedModel`：Claude Code 的 init `model`、assistant `message.model`、result `modelUsage` 键）怎么办：`"warn"`（默认）保留回复——模型作为 `servedModel` 记在 agent 上，并记录一条 `model_substituted` 事件 `{ agentId, label, adapter, requested, served, policy, message }`；`"fail"` 让 agent 以 `model_substituted` 失败（不重试、不回退）。`"@tier"` 先解析成向 CLI 请求的 id；大小写、`[1m]` 后缀和供应商前缀不计，别名完整出现在实际 id 中即一致（`opus` ~ `claude-opus-5-5`；`best` 即 opus，`default` 与任何模型一致），任一实际模型一致即可（辅助模型不算替换）。不报告模型的 CLI 显示"未报告"，从不算不一致 |
 | `scopePolicy` | **ODW 扩展。** agent 改动了声明的 `scope` 之外的文件时怎么办（见原语参考）：`"warn"`（默认）保留回复，这些文件记为 agent 上的 `outOfScope` 并记日志；`"fail"` 让 agent 以 `out_of_scope` 失败。`agent()` 自己的 `scopePolicy` 优先；设了 `expect` 的调用无论如何都把它算作缺失 |
 | `questions` | **ODW 扩展。** agent 提问时怎么办——CLI 的澄清工具调用（`output.questions`：Claude Code 的 `AskUserQuestion`），无头运行时没人能回答；无论哪种，CLI 都在提问处被停下：`"checkpoint"`（默认）在检查点上问人，再带着答案重新运行这个调用（`odw approve --note`），被拒绝则以 `needs_input` 失败；`"fail"` 以 `needs_input` 失败；`"deny"` 让 CLI 不带提问工具运行（`questionArgs`）并告诉 agent 自行假设。适配器自己的 `questions` 和 `agent()` 的会覆盖它 |
 | `destructiveGit` | **ODW 扩展。** agent 的 CLI 执行了破坏性 git 命令——`git reset --hard`、`git checkout .` / `-- .` / `--force`、`git restore .`、`git clean -f…`、`git push --force`（`-f`、`--force-with-lease`、`+refspec`）、`git stash drop\|clear`、`git branch -D`——时怎么办；命令从流式输出的工具调用中读取（Claude Code 的 Bash、Codex 的 `command_execution`、kilo/opencode/agy 的 shell 工具；文本适配器的正文不读）：`"warn"`（默认）保留回复，每条命令记为一个 `destructive_git` 事件，运行有安全快照时提示 `odw restore <run>`；`"fail"` 在 CLI 结束后让 agent 以 `destructive_git` 失败（ODW 无法在命令执行前拦住它）。只重置工作区的几类命令对隔离 agent 不计。快照本身——运行中第一个 `edit` 或 `full` 档位的原地 agent 开始前、工作区有未提交内容时存到 `refs/odw/safety/<run>`——不需要设置 |
@@ -292,6 +293,14 @@ stdout 的事件里也没有回复时，回复为空（除非 `allowEmpty`，否
 字符串的对象）。内置 `claude` 读取名为 `AskUserQuestion` 的 `assistant` `tool_use` 块及其
 `input.questions[]`（`question`、`header`、`options[].label`、`multiSelect`）。
 
+**ODW 扩展**，仅 `jsonl`：`servedModel: [规则…]` 说明哪些事件写明了实际服务 agent 的模型，作为
+`servedModel` 记在调用请求的模型旁边（`modelMismatch`）。规则为 `{ "event": <类型>, "where"?:
+[条件，同 background], "path": [路径], "keys"?: true }`：匹配的事件中，`path` 处的字符串——或该处
+数组里的每个字符串，设了 `keys` 时为该处对象的每个键——即模型 id，按出现顺序各记一次。内置
+`claude` 读取 `system` `init` 事件的 `model`、每条 `assistant` 消息的 `message.model`（
+`"<synthetic>"` 除外）和 `result` 的 `modelUsage` 键。codex、agy 等其他内置适配器不声明——它们
+文档化的事件里没有模型字段——其 agent 的实际模型显示为"未报告"，不做推断。
+
 ### 原生结构化输出
 
 **ODW 扩展。** `flags.schema` 声明某个 CLI 会自己校验 JSON Schema，以及它如何接收 schema：
@@ -382,4 +391,5 @@ CLI 在输出里报告的失败（`errorPath`：Claude Code stream-json 的 `is_
 或调用设了 `expect` 时为 `permission`，CLI 启动 agent 时有 MCP 服务器 `failed` 或
 `needs-auth`（`mcpPath`）且 `mcpFailures` 为 `"fail"` 时为 `mcp_unavailable`，CLI 回复时
 仍有后台任务在运行（`background`）且 `orphanedBackground` 为 `"fail"` 或调用设了 `expect`
-时为 `orphaned_background`。停下来提问却没人回答的 agent（`questions`）以 `needs_input` 失败。
+时为 `orphaned_background`，CLI 报告实际服务的模型不是被请求的模型（`servedModel`）且
+`modelMismatch` 为 `"fail"` 时为 `model_substituted`。停下来提问却没人回答的 agent（`questions`）以 `needs_input` 失败。

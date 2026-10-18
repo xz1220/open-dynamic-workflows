@@ -159,7 +159,7 @@
 | --- | --- | --- | --- |
 | U1 | **`agentType` 读取 agent 定义**：`.claude/agents/*.md` 的正文、模型、工具白名单（只能收紧档位）、隔离与 effort，按 CLI 映射 | M | ⏳ |
 | U2 | **方言补齐**：`agent(…, { stallMs })`、单仓多包下逐级向上查找工作流目录、`odw check` 提示 Claude Code 的限制 | S | ⏳ |
-| U3 | **记录实际服务的模型**：与请求的模型不符时警告或失败 | S | ⏳ |
+| U3 | **记录实际服务的模型**：与请求的模型不符时警告或失败 | S | ✅ 适配器输出规则 `output.servedModel: [{ event, where?, path, keys? }]`（ODW 扩展，与 `output.background` 同为声明式）；内置 claude 读 stream-json `system`/`init` 的 `model`、assistant 消息的 `message.model`（`<synthetic>` 除外）与 `result.modelUsage` 的键；codex/agy 等文档化事件不含模型字段，不声明，显示「未报告」，不推断。`agent_finished` 与保存的结果记 `servedModel`（可能多个，按出现顺序）；与 CLI 实际被请求的模型（`@tier` 先解析）都不一致时写 `model_substituted` 事件（`requested`、`served`、`policy`、`message`）并显示为日志行——比较忽略大小写、`[1m]` 后缀与供应商前缀，别名或较短 id 按分隔符完整出现即一致（`opus` ~ `claude-opus-5-5`，`best`=opus，`opusplan`=opus/sonnet，`default` 任意），任一实际模型一致即可（辅助模型不算替换）。配置 `modelMismatch: "warn" \| "fail"`（默认 `warn`；`fail` 以新失败原因 `model_substituted` 失败，不重试、不回退；加入 BEHAVIOUR_SETTINGS）。看板抽屉显示请求模型与「实际模型」（替换标「已替换」，未报告标「未报告」），失败原因有标签；`odw agents`（`--json` 带 `model`/`servedModel`/`substituted`，表格值前加 `[served by …, asked …]`）、`odw logs`、`odw compare`（setup 的 `modelsServed`，每个 agent 的 `servedModel`/`substituted`，网页对比标出被替换一侧）、`odw estimate`（按第一个实际模型分组的 `models`）。不做：S1 的扇出成本闸（forecast）仍按标签前缀，未按实际模型分组。测试：比较规则、claude 流解码（含分块）、配置校验、bridge 的 warn/fail/tier/自身错误优先、端到端（事件、记录、视图、`odw agents`、fail）、compare、estimate、web 抽屉与对比 |
 | U4 | **输入 schema 与扇出健康度**：`meta.input`、每次扇出的成功/空值计数、可选 `minOk` | S–M | ⏳ |
 | U5 | 在终端、tmux 和 IDE 里看运行（含 Claude Code 自己的运行） | S–M | ⏳ |
 | U6 | 多仓库工作流：`repos` 与 `agent({ repo })` | M | ⏳ |

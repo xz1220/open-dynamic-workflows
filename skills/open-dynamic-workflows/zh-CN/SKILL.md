@@ -106,7 +106,9 @@ agent 的工作区里以 0 退出；`timeout` 秒，默认 600）、`match`（�
 （`"mcpFailures": "fail"` 让服务器为 `failed` 或 `needs-auth` 的 agent 以 `"mcp_unavailable"`
 失败）。CLI 回复时仍在运行的后台任务（`run_in_background` 的命令或子 agent，随 `-p` 退出
 被终止）同样算作缺失，原因为 `"orphaned_background"`；不设 `expect` 时它作为 `orphaned`
-记在 agent 上并记一次日志（`"orphanedBackground": "fail"` 则让它失败）。空回复总会抛出 `reason: "empty_reply"`（`allowEmpty: true` 接受空回复）：
+记在 agent 上并记一次日志（`"orphanedBackground": "fail"` 则让它失败）。CLI 报告的实际服务模型记为
+`servedModel`；与请求的 `model` 不一致时记录一条 `model_substituted` 事件并记日志（`"modelMismatch": "fail"`
+则以 `"model_substituted"` 失败；不报告模型的 CLI 显示"未报告"）。空回复总会抛出 `reason: "empty_reply"`（`allowEmpty: true` 接受空回复）：
 
 ```js
 const fix = await agent('Fix the failing parser tests.', {   // ODW 扩展：expect

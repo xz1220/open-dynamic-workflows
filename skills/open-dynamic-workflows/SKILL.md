@@ -129,7 +129,10 @@ per run (`"mcpFailures": "fail"` fails an agent whose server `failed` or
 when it replied (a `run_in_background` command or subagent, killed as `-p`
 exits) is a miss too, reason `"orphaned_background"`; without `expect` it is
 kept as `orphaned` on the agent and logged once (`"orphanedBackground": "fail"`
-fails it instead). An empty reply always throws
+fails it instead). The model its CLI said served it is kept as `servedModel`;
+one that is not the `model` asked for is a logged `model_substituted` event
+(`"modelMismatch": "fail"` fails it, reason `"model_substituted"`; a CLI that
+names no model is "not reported"). An empty reply always throws
 `reason: "empty_reply"` (`allowEmpty: true` accepts one):
 
 ```js

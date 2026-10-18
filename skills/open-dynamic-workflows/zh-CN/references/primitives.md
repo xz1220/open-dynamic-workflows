@@ -612,7 +612,10 @@ CLI 回复时仍在运行的后台任务也一样——用 `run_in_background` �
 `"mcpFailures": "fail"` 让服务器为 `failed` 或 `needs-auth` 的调用以 `"mcp_unavailable"` 抛错
 （`expect.mcp` 列出的服务器则算作缺失）。CLI 回复时仍在运行的后台任务作为 `orphaned` 记在
 agent 的 `agent_finished` 事件和保存的结果上，运行为每个 agent 记一行日志；
-`"orphanedBackground": "fail"` 则以 `"orphaned_background"` 抛错。这些失败都不重试。`expect` 属于调用的 resume key；Claude Code 会忽略它，在那里检查
+`"orphanedBackground": "fail"` 则以 `"orphaned_background"` 抛错。CLI 报告的实际服务模型（ODW
+扩展；`output.servedModel`）作为 `servedModel` 记在 agent 的 `agent_finished` 事件和保存的结果上；
+这些模型都不是 `model` 向 CLI 请求的那个时，运行写入 `model_substituted` 事件并记一行日志，
+`"modelMismatch": "fail"` 则以 `"model_substituted"` 抛错。CLI 不报告模型时只显示"未报告"，不做推断。这些失败都不重试。`expect` 属于调用的 resume key；Claude Code 会忽略它，在那里检查
 不会执行。
 
 ## notes（ODW 扩展）

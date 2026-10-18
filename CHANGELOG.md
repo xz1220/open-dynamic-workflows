@@ -113,6 +113,25 @@ independent security reviews whose findings are all fixed.
   handed back, then `orphaned_background`. Adapters declare their CLI's background
   events generically with `output.background` (`started` / `ended` rules); the built-in
   `claude` ships one.
+- The model that actually served an agent (**ODW extension**; ROADMAP U3): a call's
+  `model` is only a request — an allowlist, a plan or a retired id can put the agent on
+  another model, and the reply never says so
+  ([claude-code#102655](https://github.com/anthropics/claude-code/issues/102655)). Where
+  a CLI's events name the model, ODW records it as `servedModel` on the agent's
+  `agent_finished` event and saved result, beside the requested `model` (`odw agents
+  --json`, `/api/runs/:id`, the dashboard drawer's "served by", `odw logs`). The built-in
+  `claude` reads stream-json's init `model`, each assistant `message.model` (not
+  `<synthetic>`) and the result's `modelUsage` keys; codex, agy and the rest name none,
+  so theirs is "not reported" — never guessed. When none of the served models is the
+  one the CLI was asked for (a tier resolved; case, `[1m]` and provider prefixes aside,
+  an alias such as `opus` matching `claude-opus-5-5`), a `model_substituted` event
+  (`requested`, `served`, `policy`) is logged; the reply stands under the default
+  `"modelMismatch": "warn"`, and `"modelMismatch": "fail"` fails the agent with reason
+  `model_substituted` (not retried, no fallback). The drawer flags it, `odw agents`
+  marks the value, `odw compare` adds `modelsServed` to the setup and `servedModel` /
+  `substituted` to each agent, and `odw estimate` groups history by served model
+  (`models`). Adapters declare their CLI's model events with `output.servedModel`
+  rules (`{ event, where?, path, keys? }`).
 - Agent questions become checkpoints (**ODW extension**; ROADMAP T1, T10): an agent that
   stops to ask the user — Claude Code's `AskUserQuestion` — gets no answer headless and
   goes on guessing ([claude-code#50728](https://github.com/anthropics/claude-code/issues/50728)).
