@@ -1070,6 +1070,6 @@ test("an allowlisted sandbox says how many hosts it allows; runs linked by apply
   store.runEvents = [];
   const html = renderJob(view, NOW);
   assert.match(html, /<span class="tag" title="api\.anthropic\.com, claude\.ai">2 hosts allowed<\/span>/);
-  assert.match(html, /<a class="rlink" href="#\/job\/20260101-010101-bbbbbb">.*agent #2's conflict resolved by/s);
+  assert.match(html, /<a class="rlink" href="#\/job\/20260101-010101-bbbbbb">.*agent #2(&#39;|')s conflict resolved by/s);
   store.focusRun(null);
 });
