@@ -187,7 +187,7 @@ JSON 但解析失败的输入会被拒绝，不会悄悄按字符串传入）。
 `budget.total ? Math.floor(budget.total / 120_000) : 5`。
 
 `spent()` 是本次运行到目前为止花掉的输出 token，包含子工作流：适配器上报用量时用 CLI
-自己的计数（内置 `claude` 会上报——ODW 扩展），否则这次 CLI 运行按 `ceil(回复字符数 / 4)`
+自己的计数（内置 `claude` 和 `codex` 会上报——ODW 扩展），否则这次 CLI 运行按 `ceil(回复字符数 / 4)`
 计。一次调用的每次 CLI 运行都计入——schema 重试、限流重试，以及上报了用量的失败运行；
 输入 token 不计入。`remaining()` 为 `max(0, total - spent())`；没设目标时为 `Infinity`。
 

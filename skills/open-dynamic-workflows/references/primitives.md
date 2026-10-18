@@ -226,7 +226,7 @@ through as a string). `budget.total` is the token target set with
 `budget.total ? Math.floor(budget.total / 120_000) : 5`.
 `spent()` is the output tokens spent so far across this run, nested workflows
 included: the CLI's own count wherever its adapter reports usage (the built-in
-`claude` does — an ODW extension), else `ceil(reply characters / 4)` for that
+`claude` and `codex` do — an ODW extension), else `ceil(reply characters / 4)` for that
 CLI run. Every CLI run of a call counts — schema retries, rate-limit retries, and
 failed runs that reported usage; input tokens do not. `remaining()` is
 `max(0, total - spent())`, or `Infinity` without a target.

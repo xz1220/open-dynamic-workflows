@@ -64,6 +64,13 @@ changed, and run on a schedule — and a dashboard redesigned to watch them.
 - Real usage and cost: the built-in `claude` adapter reads Claude Code's `stream-json`;
   tokens and dollars per agent and per run in `odw status`, the live view and the
   dashboard; `--budget` meters real output tokens; wide fan-outs warn up front.
+- Codex agents report their tokens too: the built-in `codex` adapter runs `codex exec
+  --json --output-last-message {reply_file}` — its reply from that file (else the last
+  `agent_message` event), tokens from `turn.completed` (no cost: codex reports none),
+  its transcript's commands, edits, MCP tool calls and web searches as tool calls, and
+  its `turn.failed` / `error` events as the failure, classified like any (an `error`
+  codex retried itself is not one). Output declarations gain `match`, `errorEvents`
+  and the `{reply_file}` placeholder (**ODW extension**).
 - Isolated (`worktree`) agents keep their change as a diff (setup files excluded),
   optionally on a `keep` branch. Review with `odw diff` or the dashboard's Changes tab;
   land with `odw apply`, which previews every file first — clean, conflicting (with the
@@ -159,6 +166,12 @@ changed, and run on a schedule — and a dashboard redesigned to watch them.
   responsive with thousands of runs.
 
 ### Changed behavior — check before upgrading
+- The built-in `codex` adapter runs `codex exec --json --output-last-message
+  {reply_file}` (it ran text mode). A config entry that gives `codex` its own `command`
+  replaces the built-in and needs the matching `output` block to report usage and to
+  read its reply from the events (the README shows the full entry). A codex turn that
+  ends with no agent message is now an `empty_reply` failure (`allowEmpty: true`
+  accepts it) rather than a reply.
 - The built-in `claude` adapter runs `--output-format stream-json --verbose`. A config
   entry that gives `claude` its own `command` replaces the built-in and needs the
   matching `output` block to report usage (the README shows the full entry).

@@ -72,11 +72,17 @@ agent 的 `permissions`；`odw doctor` 会列出每个适配器支持的档位�
 不写 `command` 的条目只修改同名内置适配器中它写出的字段（如上面的
 `"codex": { "permissions": "read" }`）。写了 `command` 的条目会整体替换内置适配器——对
 `claude` 来说，请像 `odw.config.example.json` 那样保留 stream-json 旗标、`output` 块和它的
-`permissionArgs`。
+`permissionArgs`；对 `codex` 也一样，保留 `--json`、`--output-last-message {reply_file}` 和它的
+`output` 块。
 
 内置的 `claude` 以 Claude Code 的 `--output-format stream-json --verbose` 运行：每一轮
 输出一个事件，最后是一个 `result` 事件，带着回复、这次运行的用量和花费，失败时还带
 `is_error`。
+
+内置的 `codex` 以 `codex exec --json --output-last-message {reply_file}` 运行：输出 JSONL
+事件，回复是 codex 写进该文件的最终消息（否则取最后一个 `item.completed` 的
+`agent_message`），token 取自 `turn.completed`（没有花费——codex 不上报），`turn.failed` /
+`error` 事件是它自己报告的失败。它的 transcript 会显示每条命令、文件改动、MCP 工具调用和网络搜索。
 
 一种实用的最小权限分工：让 `claude` 写代码（acceptEdits）、让 `codex` 运行/验证
 （workspace-write 沙箱）——见 `examples/codex-claude-loop.js`。
@@ -124,7 +130,7 @@ agent 的 `permissions`；`odw doctor` 会列出每个适配器支持的档位�
 | `concurrency` | 同时运行的 agent CLI 上限；省略则自动（`min(16, cpus-2)`） |
 | `maxAgents` | 单次运行总派发量的硬上限（防失控兜底） |
 | `timeout` | 每个 agent CLI 的超时（秒） |
-| `stallTimeout` | **ODW 扩展。** agent 在 stdout 和 stderr 上都没有任何输出的最长秒数，超过即像超时一样被杀掉，并用同一个 prompt 重启；`null`（默认）= 关闭。所有内置适配器都默认关闭，因为有些 CLI（文本模式的 `gemini`、`qwen`、`kimi`）在结束前什么都不输出——请只对会流式输出进度的适配器启用：`claude`（stream-json，每一轮一个事件）、`kilo`、`opencode`，并把值设得高于最长的单次工具调用 |
+| `stallTimeout` | **ODW 扩展。** agent 在 stdout 和 stderr 上都没有任何输出的最长秒数，超过即像超时一样被杀掉，并用同一个 prompt 重启；`null`（默认）= 关闭。所有内置适配器都默认关闭，因为有些 CLI（文本模式的 `gemini`、`qwen`、`kimi`）在结束前什么都不输出——请只对会流式输出进度的适配器启用：`claude`（stream-json，每一轮一个事件）、`codex`（`exec --json`，每个条目一个事件）、`kilo`、`opencode`，并把值设得高于最长的单次工具调用 |
 | `stallRestarts` | 每次 `agent()` 调用在卡死后最多重启几次，用完后调用以 “stalled” 错误失败（默认 1） |
 | `transientRetries` | **ODW 扩展。** CLI 撞上限流（429/529、overloaded）后，每次 `agent()` 调用最多重试几次；每次重试前按指数退避等待，并遵从 CLI 打印的 retry-after（默认 3；`0` = 从不重试）。额度用尽和登录失败从不重试：错误信息会说明该怎么做 |
 | `maxBackoff` | 单次退避等待的最长秒数（默认 300）；CLI 要求等待更久时，不会提前重试 |
@@ -200,6 +206,14 @@ agent 的 `permissions`；`odw doctor` 会列出每个适配器支持的档位�
 日志会说明原因——agent 不会因此失败。`structuredPath` 指向 CLI 按原生拿到的 schema 校验过的
 值（见下文）。
 
+**ODW 扩展**，仅 `jsonl`：`match: { "path": [...], "equals": <字符串、数字或布尔值> }` 只保留
+`path` 处的值等于 `equals` 的文本事件（codex：`{ "path": ["item", "type"], "equals":
+"agent_message" }`）；`errorEvents: { "<类型>": [路径] }` 指出文本事件之外、由 CLI 自己报告
+失败的事件——路径指向消息（codex：`{ "turn.failed": ["error"], "error": ["message"] }`）。最新
+的这类事件像 `errorPath` 一样让运行失败，除非之后出现 `usageEvent`，说明 CLI 继续运行了。把
+最终回复写进文件的 CLI 在命令里使用 `{reply_file}`：文件有内容就是回复；文件为空或没写、
+stdout 的事件里也没有回复时，回复为空（除非 `allowEmpty`，否则 `empty_reply`），日志会写明缺了什么。
+
 ### 原生结构化输出
 
 **ODW 扩展。** `flags.schema` 声明某个 CLI 会自己校验 JSON Schema，以及它如何接收 schema：
@@ -219,7 +233,7 @@ schema 参数排在所有其他参数之后（与模型参数同处），且不�
 | 内置适配器 | `flags.schema` | 值的来源 |
 | --- | --- | --- |
 | `claude` | `{ "args": ["--json-schema"], "mode": "inline" }` | `result` 事件里的 `structured_output`（`"structuredPath": ["structured_output"]`），否则用 `result` 文本 |
-| `codex` | `{ "args": ["--output-schema"], "mode": "file", "strict": true }` | stdout 上的最终消息 |
+| `codex` | `{ "args": ["--output-schema"], "mode": "file", "strict": true }` | 它的最终消息：`--output-last-message` 文件，否则最后一个 `agent_message` 事件 |
 
 agent 启动前，会对照 ODW 校验器支持的子集检查它的 schema（[原语](primitives.md#schema)）。
 其他内容会连同位置在运行日志里写明一次——适配器接收原生 schema 时（`strict` 的适配器上只限
@@ -256,6 +270,7 @@ hook 只会记录到该运行的 `worker.log`。
 | --- | --- |
 | `{prompt}` | 完整拼好的 prompt（独立性引导语 + 任务 + 任何 schema 指令） |
 | `{prompt_file}` | 存放 prompt 的临时文件路径（仅在被引用时才写） |
+| `{reply_file}` | **ODW 扩展。** 每次新建、位于私有临时目录中的路径，CLI 把最终回复写在这里（`codex --output-last-message`）；CLI 退出后读取，随后删除 |
 | `{workspace}` | agent 运行所在的目录（隔离时是它的 git worktree） |
 | `{source}` | 原始的工作树 |
 | `{adapter}` / `{role}` | 适配器的名字 / 标签 |
@@ -266,7 +281,7 @@ hook 只会记录到该运行的 `worker.log`。
 `quota`、`auth`、`timeout`、`stalled`、`not_found`、`permission` 或 `exit`（即其
 `agent_failed` 事件上的 `reason`；只有 `rate_limit` 会重试——见 `transientRetries`）。
 CLI 在输出里报告的失败（`errorPath`：Claude Code stream-json 的 `is_error` 结果，常常以 0
-退出）也一样，干净退出、但简短的文本回复只是一条限流、额度或登录错误的情况（如
+退出；`errorEvents`：Codex 的 `turn.failed` 与 `error`）也一样，干净退出、但简短的文本回复只是一条限流、额度或登录错误的情况（如
 `API Error: Rate limit reached`）同样算作失败。干净退出也可能失败（ODW 扩展）：回复为空时
 为 `empty_reply`（除非调用设了 `allowEmpty`），工作没达到调用的 `expect` 检查时为
 `unmet_expectation`，CLI 拒绝了工具调用（`deniedPath`）且 `permissionDenials` 为 `"fail"`

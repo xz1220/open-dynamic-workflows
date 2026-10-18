@@ -114,7 +114,7 @@ declare global {
   interface Budget {
     /** Output-token dispatch target, or null; not a billing ceiling. */
     total: number | null;
-    /** Output tokens spent, shared with children: the CLI's count where it reports usage (built-in claude does), else ceil(reply characters / 4); every attempt counts. */
+    /** Output tokens spent, shared with children: the CLI's count where it reports usage (built-in claude and codex do), else ceil(reply characters / 4); every attempt counts. */
     spent(): number;
     /** `max(0, total - spent())`, or Infinity if no target. */
     remaining(): number;

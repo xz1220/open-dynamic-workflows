@@ -81,11 +81,18 @@ adapter's tiers.
 An entry without `command` changes only the fields it sets on the built-in of
 its name (`"codex": { "permissions": "read" }` above). One with a `command`
 replaces the built-in whole — for `claude`, keep the stream-json flags, the
-`output` block and its `permissionArgs`, as `odw.config.example.json` does.
+`output` block and its `permissionArgs`, as `odw.config.example.json` does; for
+`codex`, likewise `--json`, `--output-last-message {reply_file}` and its `output` block.
 
 The built-in `claude` runs Claude Code's `--output-format stream-json --verbose`:
 an event per turn, ending in a `result` event that carries the reply, the run's
 usage and cost, and `is_error` when it failed.
+
+The built-in `codex` runs `codex exec --json --output-last-message {reply_file}`:
+JSONL events, its reply the final message codex writes to that file (else the last
+`item.completed` `agent_message`), its tokens from `turn.completed` (no cost — codex
+reports none), and `turn.failed` / `error` events its own failure report. Its
+transcript shows each command, file change, MCP tool call and web search.
 
 A useful minimal-privilege split: let `claude` write code (acceptEdits) and let
 `codex` run/verify it (workspace-write sandbox) — see
@@ -136,7 +143,7 @@ did-you-mean hint) instead of silently ignoring them.
 | `concurrency` | max agent CLIs running at once; omit for auto (`min(16, cpus-2)`) |
 | `maxAgents` | hard cap on total dispatches per run (runaway guard) |
 | `timeout` | per-agent CLI timeout in seconds |
-| `stallTimeout` | **ODW extension.** Seconds an agent may print nothing on stdout or stderr before it is killed (like a timeout) and restarted with the same prompt; `null` (default) = off. Off for every built-in because some CLIs (the text-mode `gemini`, `qwen`, `kimi`) print nothing until they finish — enable it for adapters that stream progress: `claude` (stream-json, an event per turn), `kilo`, `opencode`, with a value above the longest single tool call |
+| `stallTimeout` | **ODW extension.** Seconds an agent may print nothing on stdout or stderr before it is killed (like a timeout) and restarted with the same prompt; `null` (default) = off. Off for every built-in because some CLIs (the text-mode `gemini`, `qwen`, `kimi`) print nothing until they finish — enable it for adapters that stream progress: `claude` (stream-json, an event per turn), `codex` (`exec --json`, an event per item), `kilo`, `opencode`, with a value above the longest single tool call |
 | `stallRestarts` | restarts per `agent()` call after a stall before the call fails with a "stalled" error (default 1) |
 | `transientRetries` | **ODW extension.** Retries per `agent()` call after its CLI hit a rate limit (429/529, overloaded), each after an exponential backoff that honors a retry-after the CLI printed (default 3; `0` = never). A spent quota or a failed login is never retried: its error says what to do |
 | `maxBackoff` | the longest single backoff wait, in seconds (default 300); a CLI that asks to wait longer is not retried early |
@@ -218,6 +225,18 @@ reply and the run's log says why — the agent does not fail. A `structuredPath`
 points at the value the CLI validated against a schema it was handed natively (see
 below).
 
+**ODW extension**, `jsonl` only: `match: { "path": [...], "equals": <string, number
+or boolean> }` keeps only the text events whose value at `path` is `equals` (codex:
+`{ "path": ["item", "type"], "equals": "agent_message" }`), and `errorEvents: {
+"<type>": [path] }` names events that are the CLI's own failure report — the path
+leads to the message — apart from its text events (codex: `{ "turn.failed":
+["error"], "error": ["message"] }`). The latest such event fails the run like
+`errorPath`, unless a later `usageEvent` shows the CLI went on. A CLI that writes its
+final reply to a file takes `{reply_file}` in its command: a file with text is the
+reply; when it is empty or never written and stdout's events held no reply either,
+the reply is empty (`empty_reply` unless `allowEmpty`) and the log says what was
+missing.
+
 ### Native structured output
 
 **ODW extension.** `flags.schema` declares that a CLI validates a JSON Schema itself,
@@ -240,7 +259,7 @@ prompt describes the schema only to CLIs that do not take it (`schemaPrompt`).
 | Built-in | `flags.schema` | The value comes from |
 | --- | --- | --- |
 | `claude` | `{ "args": ["--json-schema"], "mode": "inline" }` | `structured_output` in its `result` event (`"structuredPath": ["structured_output"]`), else the `result` text |
-| `codex` | `{ "args": ["--output-schema"], "mode": "file", "strict": true }` | its final message on stdout |
+| `codex` | `{ "args": ["--output-schema"], "mode": "file", "strict": true }` | its final message: the `--output-last-message` file, else its last `agent_message` event |
 
 Before an agent starts, its schema is checked against the subset ODW's validator
 enforces ([primitives](primitives.md#schema)). Anything else is named in the run's
@@ -281,6 +300,7 @@ Expanded in `command` and `stdin` before each call:
 | --- | --- |
 | `{prompt}` | the full composed prompt (independence framing + task + any schema instruction) |
 | `{prompt_file}` | path to a temp file holding the prompt (written only when referenced) |
+| `{reply_file}` | **ODW extension.** A fresh path, in a private temp directory, where the CLI writes its final reply (`codex --output-last-message`); read once the CLI exits, then removed |
 | `{workspace}` | the directory the agent runs in (its git worktree when it is isolated) |
 | `{source}` | the original working tree |
 | `{adapter}` / `{role}` | the adapter's name / label |
@@ -292,7 +312,8 @@ failed agent call, classified as `rate_limit`, `quota`, `auth`, `timeout`,
 `stalled`, `not_found`, `permission` or `exit` (the `reason` on its
 `agent_failed` event; only `rate_limit` is retried — see `transientRetries`).
 So does a failure the CLI reports in its output (`errorPath`: Claude Code's
-stream-json `is_error` result, often with exit 0), and a clean exit whose short
+stream-json `is_error` result, often with exit 0; `errorEvents`: Codex's `turn.failed`
+and `error`), and a clean exit whose short
 text reply is nothing but a rate-limit, quota or login error (`API Error: Rate
 limit reached`). A clean exit can still fail (ODW extensions): with reason
 `empty_reply` when the reply is empty (unless the call sets `allowEmpty`),

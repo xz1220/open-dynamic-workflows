@@ -332,7 +332,7 @@ private runtime behavior need the following checks before migration:
 | Model selection | Pass `agent(..., {model})` using that CLI's model ID; an adapter without model routing support emits a note. A `meta.phases` entry's `model` (and `adapter`) is the default for its phase's agents, and `model: "@fast"` picks a tier's model per CLI — **ODW extensions** (see [per-phase adapters](#per-phase-adapters-model-tiers-and-fallback-chains-odw-extension)); a phase's model is a model ID like any other, so use a tier when its agents may run on more than one CLI. `meta.model` stays metadata. |
 | `agentType` | A persona added to the prompt. It does not load a host's named subagent configuration or select an adapter. |
 | Worktree isolation | Starts from committed HEAD, excludes uncommitted edits, and cleans up afterward. Changes are not merged and `agent()` returns the reply, not a diff; ODW keeps each isolated agent's change as a diff to review and apply (`odw diff`, `odw apply`, `keep` branches — ODW extensions; see [Review and apply](#review-and-apply-what-isolated-agents-changed-odw-extension)). `.worktreeinclude` is honored (ODW copies untracked files too, not only gitignored ones); its `symlink:` lines, `worktreeSetup` and the agents' `ODW_PORT` are ODW extensions — see [Isolated worktrees](#isolated-worktrees-and-agent-ports). |
-| Budget | Counts output tokens: the CLI's own count where its adapter reports usage (the built-in `claude` does — see [Usage and cost](#usage-and-cost-odw-extension)), else `ceil(chars / 4)` of each reply. Every CLI run counts: schema and rate-limit retries, and failed runs that reported usage. The guard runs before each dispatch and each schema retry; once the target is spent the run ends and agents still running are stopped. |
+| Budget | Counts output tokens: the CLI's own count where its adapter reports usage (the built-in `claude` and `codex` do — see [Usage and cost](#usage-and-cost-odw-extension)), else `ceil(chars / 4)` of each reply. Every CLI run counts: schema and rate-limit retries, and failed runs that reported usage. The guard runs before each dispatch and each schema retry; once the target is spent the run ends and agents still running are stopped. |
 | JSON Schema | ODW checks the [documented subset](skills/open-dynamic-workflows/references/primitives.md#schema); `format` is an annotation. Any other keyword (`$ref`, `const`, `oneOf`, `maxItems`, …) still runs: the run's log names it and where it is, and a CLI that validates schemas itself (`claude`, `codex`) enforces it. `"schemaKeywords": "strict"` refuses such calls instead (ODW extension; see [Structured output](#structured-output-odw-extension)). Use explicit object/array types and supported constraints. |
 | Script trust | Run trusted scripts only: a run executes the workflow body as ordinary JavaScript. Loading parses metadata as a pure literal without evaluating it; validation and compatibility warnings are not a sandbox. |
 | Recovery | Every completed `agent()` result is saved as it lands. `odw resume` continues a paused live worker in place; on an ended run (done, failed, stopped, or stale after a crash) it starts a new run that replays each call whose prompt and options are unchanged and runs the rest. `rerun` starts over. See [Resume a run](#resume-a-run-odw-extension). |
@@ -518,9 +518,11 @@ A fan-out spends quota fast, so a run shows what it spends as it goes. Every
 `agent_finished` (and `agent_failed`) event carries the agent's `usage`:
 `inputTokens` (cached input included), `outputTokens`, `cacheReadTokens`,
 `cacheWriteTokens` and `costUsd`, summed over all its CLI runs, as the CLI reported
-them — the built-in `claude` adapter reports them all. Where a CLI reports no output
-tokens (the text-mode adapters), ODW counts `ceil(chars / 4)` of the reply and marks
-the figure `estimated`.
+them — the built-in `claude` adapter reports them all; the built-in `codex` reports
+tokens only (its `turn.completed` events carry no dollars, and ODW invents no prices),
+so its agents show tokens and no cost. Where a CLI reports no output tokens (the
+text-mode adapters), ODW counts `ceil(chars / 4)` of the reply and marks the figure
+`estimated`.
 
 ```text
 $ odw status $RUN
@@ -599,7 +601,7 @@ I'll run the tests first.
 
 - While an agent runs, its stdout streams to `agents/<agentId>.transcript.jsonl` in the
   run directory: a JSONL adapter's events one per line, as its CLI printed them (the
-  built-in `claude` — stream-json — `kilo` and `opencode`), any other adapter's output as
+  built-in `claude`'s stream-json, `codex`'s `exec --json`, `kilo` and `opencode`), any other adapter's output as
   `{"kind":"text","text":…}` lines. The end of its stderr (the last 64 KB) goes to
   `agents/<agentId>.stderr.txt`; `odw logs --agent` shows its last lines after the transcript.
 - A schema retry, a stall restart or a rate-limit retry goes on in the same file after an
@@ -739,7 +741,7 @@ Cursor work out of the box:
 
 | Adapter | Local CLI | Non-interactive contract |
 | --- | --- | --- |
-| `codex` | `codex` | text on stdout; web search enabled; strict schemas natively (`--output-schema`) |
+| `codex` | `codex` | `exec --json` events; reply from its `--output-last-message` file (else its last `agent_message`), tokens from `turn.completed`, errors from `turn.failed` / `error`; web search enabled; strict schemas natively (`--output-schema`) |
 | `claude` | `claude` | stream-json events; reply, usage, cost and errors from its `result` event; WebSearch/WebFetch allowed; schemas natively (`--json-schema`) |
 | `gemini` | `gemini` | text on stdout |
 | `qwen` | `qwen` | text on stdout |
@@ -803,6 +805,48 @@ built-in `claude` adapter is declared this way:
 }
 ```
 
+The built-in `codex` (ODW extensions throughout) reads `codex exec --json`: its reply
+is the last `item.completed` event whose `item.type` is `agent_message` (`match`) —
+unless the file it writes its final message to (`--output-last-message
+{reply_file}`) has it, which wins: `{reply_file}` is a fresh path in a private temp
+directory for each CLI run, read once the CLI exits and then removed. Its tokens come
+from `turn.completed`, and `turn.failed` and `error` events are its own failure report
+(`errorEvents`: event type → path to the message), classified like any failure —
+an `error` codex retried itself, followed by a completed turn, is no failure:
+
+```jsonc
+"codex": {
+  "label": "Codex CLI",
+  "command": ["codex", "--search", "exec", "--json", "--output-last-message", "{reply_file}",
+              "--skip-git-repo-check", "{permission_args}", "--cd", "{workspace}", "-"],
+  "stdin": "{prompt}",
+  "flags": { "model": ["--model"], "schema": { "args": ["--output-schema"], "mode": "file", "strict": true } },
+  "output": {
+    "format": "jsonl",
+    "eventType": "item.completed",
+    "match": { "path": ["item", "type"], "equals": "agent_message" }, // only these events hold the reply
+    "textPath": ["item", "text"],
+    "select": "last",
+    "usageEvent": "turn.completed",
+    "usagePath": ["usage"],                                          // tokens only: codex reports no cost
+    "errorEvents": { "turn.failed": ["error"], "error": ["message"] }
+  },
+  "permissionArgs": {
+    "read": ["--sandbox", "read-only"],
+    "edit": ["--sandbox", "workspace-write"],
+    "full": ["--sandbox", "danger-full-access"]
+  }
+}
+```
+
+An entry that gives `codex` its own `command` replaces the built-in whole: keep this
+`output` block (and `--json`) with it, or its agents report no usage and their reply
+is codex's text output. When a codex turn ends with no agent message — its reply file
+empty and no `agent_message` event — the reply is empty, so the agent fails with
+`empty_reply` (`allowEmpty: true` accepts it) instead of returning a dump of events,
+and the run's log says exactly what was missing; when its events lack the reply but
+the reply file has it, the reply stands and the log says the events did not match.
+
 Under `acceptEdits`, Claude Code refuses headless what it would have asked about —
 a shell command that is not allowlisted, say — and the reply may still claim
 success; the refusals are what `deniedPath` reads. By default the reply stands,
@@ -821,7 +865,9 @@ document instead takes `{ "format": "json", "textPath": […], "usagePath": […
 any failed run — whatever the exit status — so a rate limit is retried and a spent
 quota says when it resets. When the declared text is not in the output — a CLI
 whose format drifted, or a misconfiguration — the raw stdout becomes the reply and
-the run's log says why; the agent does not fail.
+the run's log says why; the agent does not fail. A CLI that also writes its reply to
+`{reply_file}` (as `codex` does) is read from there first, and when both are empty
+its reply is empty rather than a dump of events.
 
 ODW returns only the decoded final response to the workflow; JSONL output is
 decoded line by line as it streams (keeping the latest text and a usage total, not
@@ -1118,7 +1164,8 @@ The watchdog is **off by default for every built-in adapter**: some CLIs — the
 text-mode ones (`gemini`, `qwen`, `kimi`, …) — print nothing until they finish, so
 any stall timeout would kill healthy work. Use it for adapters that stream
 progress: `claude` (its stream-json prints an event per turn, so it is now safe to
-enable for it), the JSONL adapters `kilo` and `opencode`, or a wrapper that prints
+enable for it), `codex` (`exec --json` prints an event per command, edit and message),
+the JSONL adapters `kilo` and `opencode`, or a wrapper that prints
 a heartbeat — with a value above the longest quiet stretch a healthy agent has: a
 long test run inside one tool call prints nothing either.
 
@@ -1162,7 +1209,9 @@ agent_failed    (Search) search — [quota, retry after 3h 22m] AdapterExecution
 Claude Code reports such errors in its output, often with exit 0: its stream-json
 `result` event says `is_error: true` with the message (`API Error: Rate limit
 reached`, `Claude AI usage limit reached|…`), and that counts as the failure it
-names. In text mode (a text adapter, or JSON output that fell back to its raw
+names. So do Codex's `turn.failed` and `error` events (`Quota exceeded. Check your
+plan and billing details.`, `exceeded retry limit, last status: 429 Too Many
+Requests`) — except an `error` it retried itself, after which its turn completed. In text mode (a text adapter, or JSON output that fell back to its raw
 stdout), a short reply that is nothing but such a rate-limit, quota or login error
 counts as that failure too — never as the agent's answer. An empty reply is an
 `empty_reply` failure, not retried. A `result` that claims success while its
@@ -1747,9 +1796,10 @@ upgrading, is in [`CHANGELOG.md`](CHANGELOG.md):
   agents in order, and with `--verify "npm test"` rolls back an apply that breaks
   the build, leaving your other uncommitted work alone.
 - **Real usage and cost.** The built-in `claude` adapter now reads Claude Code's
-  `stream-json`, so every agent records the tokens and dollars its CLI reported —
-  in `odw status`, the live view and the dashboard — and `--budget` meters real
-  output tokens. A single fan-out wider than `fanOutWarn` (25) says so up front.
+  `stream-json`, and the built-in `codex` adapter `codex exec --json`, so every agent
+  records the tokens (and, for Claude, the dollars) its CLI reported — in `odw status`,
+  the live view and the dashboard — and `--budget` meters real output tokens. Codex
+  agents' transcripts show their commands, edits and tool calls. A single fan-out wider than `fanOutWarn` (25) says so up front.
 - **Ready-to-work worktrees.** `.worktreeinclude` copies or links `.env`,
   `node_modules` and the like into isolated agents' worktrees, `worktreeSetup` runs
   your bootstrap command, and every agent gets its own `$ODW_PORT`.
@@ -1815,7 +1865,7 @@ runs end-to-end (plan → search → extract → vote → report).
 
 Ranked by what users of parallel coding agents report needing
 ([research](docs/research/user-needs-2026-10.md)): adapter-reported token usage and
-cost for more CLIs (Claude Code reports it today; the others are estimated) ·
+cost for more CLIs (Claude Code and Codex report it today; the others are estimated) ·
 running Claude plugin
 workflows · evaluation. Full plan: [`docs/ROADMAP.md`](docs/ROADMAP.md); the
 original design: [`docs/dynamic-workflows-tech-plan.md`](docs/dynamic-workflows-tech-plan.md).
