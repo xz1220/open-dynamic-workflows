@@ -288,18 +288,24 @@ export class EgressProxies {
       /* a log that cannot be read loses its last lines, nothing else */
     }
     const env = clientEnv(this.opts.hostEnv ?? process.env);
+    // Each is untracked only once its removal succeeded: what is left the worker's backstop tries again.
+    const removed = new Set<string>();
     for (const engine of ["docker", "podman"] as const) {
       const proxies = this.proxies.filter((p) => p.engine === engine).map((p) => p.name);
       const networks = this.networks.filter((p) => p.engine === engine).map((p) => p.name);
       for (const argv of egressCleanupArgvs(engine, proxies, networks)) {
-        await this.opts.runner(argv, { timeout: 30, env }).catch(() => undefined);
+        const ran = await this.opts.runner(argv, { timeout: 30, env }).catch(() => null);
+        if (ran?.returncode !== 0) continue;
+        if (argv[1] === "rm") for (const name of proxies) removed.add(`container:${name}`);
+        else removed.add(`network:${argv[argv.length - 1]}`);
       }
     }
     for (const proxy of this.proxies) {
+      if (!removed.has(`container:${proxy.name}`)) continue;
       proxy.untrack();
       await rm(proxy.configDir, { recursive: true, force: true }).catch(() => undefined);
     }
-    for (const network of this.networks) network.untrack();
+    for (const network of this.networks) if (removed.has(`network:${network.name}`)) network.untrack();
     if (this.ownLogDir && this.logDir) await rm(this.logDir, { recursive: true, force: true }).catch(() => undefined);
   }
 }

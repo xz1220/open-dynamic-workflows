@@ -19,7 +19,9 @@
  *   run -d …              the same, detached: prints an id and exits at once
  *                         (an egress proxy: it gets ODW_EGRESS_PORT=0, so it
  *                         listens on a free port of this host).
- *   network create|rm …   $DOCKER_FAKE_STATE/net.<name> exists while it does.
+ *   network create|rm …   $DOCKER_FAKE_STATE/net.<name> exists while it does. While
+ *                         $DOCKER_FAKE_STATE/fail.netrm exists, an rm fails once
+ *                         (and removes it), as a busy network's does.
  *   network connect …     nothing; logs.
  *
  * A container's command arguments under a bind mount's target are mapped to
@@ -71,6 +73,11 @@ if (sub === "image" && rest[0] === "inspect") {
   const name = names[names.length - 1];
   if (action === "create") writeFileSync(join(state, `net.${name}`), "");
   else if (action === "rm") {
+    if (existsSync(join(state, "fail.netrm"))) {
+      rmSync(join(state, "fail.netrm"), { force: true });
+      process.stderr.write(`Error response from daemon: error while removing network: network ${name} has active endpoints\n`);
+      process.exit(1);
+    }
     if (!existsSync(join(state, `net.${name}`))) {
       process.stderr.write(`Error: network ${name} not found\n`);
       process.exit(1);

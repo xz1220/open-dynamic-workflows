@@ -17,6 +17,7 @@ import { after, before, test } from "node:test";
 
 import { loadConfig } from "../src/adapters/config.ts";
 import { killAllAgentProcesses } from "../src/adapters/runner.ts";
+import { EgressProxies } from "../src/adapters/egress-run.ts";
 import { trackNetwork } from "../src/adapters/sandbox.ts";
 import { runCommand } from "../src/adapters/runner.ts";
 import { sandboxChecks } from "../src/doctor.ts";
@@ -203,6 +204,21 @@ test("the backstop removes a live network after the containers", async () => {
   killAllAgentProcesses();
   await until(() => calls().slice(before).some((a) => a.join(" ") === "network rm odw-backstop-net"));
   untrack();
+  assert.deepEqual(readdirSync(state), []);
+});
+
+test("a network whose rm fails at the run's end stays tracked: the backstop removes it", async () => {
+  const proxies = new EgressProxies({ runner: runCommand, runId: "netrm" });
+  const handle = await proxies.for("docker", "odw-test:1", { allow: [allowed] });
+  assert.ok(existsSync(join(state, `net.${handle.network}`)));
+  writeFileSync(join(state, "fail.netrm"), "");
+  await proxies.close();
+  assert.ok(existsSync(join(state, `net.${handle.network}`)), "the first rm failed: the network is still there");
+  assert.ok(!existsSync(join(state, handle.proxy)), "its proxy is gone");
+  const before = calls().length;
+  killAllAgentProcesses();
+  await until(() => !existsSync(join(state, `net.${handle.network}`)));
+  assert.ok(calls().slice(before).some((a) => a.join(" ") === `network rm ${handle.network}`), "the backstop tried it again");
   assert.deepEqual(readdirSync(state), []);
 });
 
