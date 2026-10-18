@@ -719,6 +719,10 @@ const ZH: Record<string, string> = {
   limits: "上限",
   runaway: "失控",
   "Stopped at a limit": "因触及上限被终止",
+  "{n} host allowed": "放行 {n} 个主机",
+  "{n} hosts allowed": "放行 {n} 个主机",
+  "resolves a conflict of agent #{n} in": "解决了这次运行中 agent #{n} 的冲突:",
+  "agent #{n}'s conflict resolved by": "agent #{n} 的冲突由此解决:",
   // Evals.
   "Evals": "评测",
   "Eval": "评测",

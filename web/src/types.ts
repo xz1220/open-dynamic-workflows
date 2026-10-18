@@ -212,8 +212,15 @@ export interface AgentSandbox {
   /** null: no engine was found when it started. */
   engine: "docker" | "podman" | null;
   image: string;
-  /** "none": no network at all; "default": the engine's default network (the model API is reachable). */
-  network: "none" | "default";
+  /** "none": no network at all; "default": the engine's default network; "allowlist": only `allow`'s hosts, through the run's egress proxy. */
+  network: "none" | "default" | "allowlist";
+  allow?: string[];
+}
+
+/** A link between a run and the resolver run `odw apply --resolve` started for one of its agents (ODW extension). */
+export interface ResolveLink {
+  runId: string;
+  agentId: number;
 }
 
 /** The diffstat of a worktree agent's changes (ODW extension). */
@@ -243,6 +250,10 @@ export interface RunDetail extends RunSummary {
   workflowName: string | null;
   /** checkpoint() calls waiting for approval (ODW extension). */
   pendingCheckpoints?: PendingCheckpoint[];
+  /** This run resolved a conflict of that run's agent (`odw apply --resolve`; ODW extension). */
+  applyResolve?: ResolveLink;
+  /** The resolver runs `odw apply --resolve` started for this run's agents. */
+  resolvedBy?: ResolveLink[];
   /** Each adapter CLI's version as the run recorded it on its first dispatch, by adapter (ODW extension). */
   cliVersions?: Record<string, CliVersion>;
   /** odw's version, and the sha256 of the workflow source as launched; null for older runs (ODW extension). */

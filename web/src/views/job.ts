@@ -116,6 +116,7 @@ function runHead(run: RunDetail, nowSec: number, spendOpen: boolean): string {
     `<div style="min-width:0"><div class="eyebrow"><span>${t("Run")}</span><span class="mono" style="text-transform:none;letter-spacing:0">${esc(run.runId)}</span>${cc}${shared}</div>` +
     `<div class="title-row"><h1 class="display">${esc(run.name)}</h1>${pill(run.state)}</div>` +
     (run.description ? `<p class="lede">${esc(run.description)}</p>` : "") +
+    resolveLinks(run) +
     `</div>` +
     `<div class="actions">${stop}${resume}${compareLink(run)}${share}` +
     `<button class="btn" data-copy="odw logs ${esc(run.runId)} --follow" data-tip="${esc(t("copy a follow command"))}">${icons.terminal}${t("Follow in terminal")}</button>` +
@@ -134,6 +135,17 @@ function runHead(run: RunDetail, nowSec: number, spendOpen: boolean): string {
     `<i class="p-done" style="width:${w(c.done)}"></i><i class="p-run" style="width:${w(c.running)}"></i>` +
     `<i class="p-fail" style="width:${w(c.failed)}"></i><i class="p-stale" style="width:${w(c.stale)}"></i></div></div>`
   );
+}
+
+/** The runs `odw apply --resolve` linked to this one: the run whose conflict it resolved, or its resolvers. */
+function resolveLinks(run: RunDetail): string {
+  const link = (l: { runId: string; agentId: number }, text: string) =>
+    `<a class="rlink" href="#/job/${encodeURIComponent(l.runId)}">${icons.branch}${esc(text)} <span class="mono">${esc(l.runId)}</span></a>`;
+  const parts = [
+    ...(run.applyResolve ? [link(run.applyResolve, t("resolves a conflict of agent #{n} in", { n: run.applyResolve.agentId }))] : []),
+    ...(run.resolvedBy ?? []).map((l) => link(l, t("agent #{n}'s conflict resolved by", { n: l.agentId }))),
+  ];
+  return parts.length ? `<div class="rlinks">${parts.join("")}</div>` : "";
 }
 
 /** A link to what changed since the workflow's previous run, when it has one. */
@@ -361,7 +373,11 @@ function drawer(run: RunDetail, ai: number, nowSec: number): string {
       : "") +
     (a.sandbox
       ? `<span class="k">${t("sandbox")}</span><span class="v"><span class="tag" title="${esc(a.sandbox.image ?? "")}">${esc(a.sandbox.engine ?? "container")}</span>` +
-        ` <span class="mono dim">${esc(a.sandbox.image ?? "")}</span>${a.sandbox.network === "none" ? ` <span class="tag">${t("offline")}</span>` : ""}</span>`
+        ` <span class="mono dim">${esc(a.sandbox.image ?? "")}</span>${a.sandbox.network === "none" ? ` <span class="tag">${t("offline")}</span>` : ""}` +
+        (a.sandbox.network === "allowlist"
+          ? ` <span class="tag" title="${esc((a.sandbox.allow ?? []).join(", "))}">${esc(tn(a.sandbox.allow?.length ?? 0, "{n} host allowed", "{n} hosts allowed"))}</span>`
+          : "") +
+        `</span>`
       : "") +
     limitsRow(a) +
     (a.failureReason ? `<span class="k">${t("reason")}</span><span class="v"><span class="tag ${/rate_limit|quota|stalled|timeout|runaway/.test(a.failureReason) ? "warn" : ""}">${esc(reasonLabel(a.failureReason))}</span>${resetNote(a, nowSec)}</span>` : "") +

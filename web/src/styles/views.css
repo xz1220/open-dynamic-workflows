@@ -667,6 +667,34 @@ ul.mcp li {
   }
 }
 
+/* ---- runs linked by odw apply --resolve ---- */
+.rlinks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+.rlink {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: 1px dashed var(--line-2);
+  border-radius: 999px;
+  color: var(--ink-2);
+  font-size: 12px;
+  text-decoration: none;
+  transition: border-color var(--t-fast), background var(--t-fast);
+}
+.rlink:hover {
+  border-style: solid;
+  background: var(--shade);
+}
+.rlink svg {
+  width: 13px;
+  height: 13px;
+}
+
 /* ---- notes board: what parallel agents told each other ---- */
 .notes-board {
   display: grid;
