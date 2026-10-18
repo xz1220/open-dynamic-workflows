@@ -103,6 +103,12 @@ async function route(req: IncomingMessage, res: ServerResponse, path: string, ct
     page(res, 404, "No such run", `Run ${claims.runId} is not in this server's runs root.`);
     return;
   }
+  // A run pulled from a remote (ODW extension) is answered there, never in its copy here.
+  const elsewhere = ctx.source.runControlError?.(claims.runId) ?? null;
+  if (elsewhere) {
+    page(res, 409, "This run is answered elsewhere", elsewhere);
+    return;
+  }
   if (linkUsed(runDir, claims.nonce)) {
     page(res, 410, "This link was already used", "Each approve link works once, and a checkpoint's approve and reject links are spent together.");
     return;

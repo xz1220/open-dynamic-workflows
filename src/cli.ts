@@ -84,7 +84,18 @@ import { parsePublicUrl } from "./runtime/approve-links.js";
 import { printAgentLogs } from "./runtime/transcript-view.js";
 import { cmdNote, cmdNotes } from "./runtime/notes-view.js";
 import { executeRun } from "./runtime/worker.js";
-import { parseSshTarget, passThrough, printRunDir, pullRun, remoteRun, RemoteUsageError, takeOnFlag } from "./runtime/remote.js";
+import {
+  parseSshTarget,
+  PASS_THROUGH,
+  passThrough,
+  type PassThroughCommand,
+  printRunDir,
+  pulledRunRefusal,
+  pullRun,
+  remoteRun,
+  RemoteUsageError,
+  takeOnFlag,
+} from "./runtime/remote.js";
 import { pausedForOf, pausedText } from "./quota-wait.js";
 import { cmdSchedule } from "./schedule/command.js";
 import { cmdEval } from "./eval/command.js";
@@ -178,6 +189,7 @@ export function helpText(): string {
     "  odw run <wf> --on ssh://[user@]host[:port][/dir]   run it on your own server, detached; prints its run id (ODW extension)",
     "                                                     --sync git (default: HEAD + a patch of uncommitted changes) | rsync",
     "  odw status|logs|attach <run_id> --on ssh://host    the same command, run by the odw over there",
+    "  odw approve|reject|pause|stop|resume <run_id> --on ssh://host   the same, there (a pulled copy is never answered here)",
     "  odw pull <run_id> --from ssh://host[/dir]          copy a remote run here (again while it runs): diff, apply, compare",
     "",
     "Options:",
@@ -250,10 +262,10 @@ export async function main(argv: string[]): Promise<number> {
   }
 
   try {
-    // `--on ssh://host` (ODW extension): status, logs and attach run on the remote odw instead.
-    if (command === "status" || command === "logs" || command === "attach") {
+    // `--on ssh://host` (ODW extension): status, logs, attach — and approve, reject, pause, stop, resume — run on the remote odw instead.
+    if ((PASS_THROUGH as readonly string[]).includes(command)) {
       const { url, rest: remoteArgs } = takeOnFlag(rest);
-      if (url !== null) return await passThrough(command, remoteArgs, parseSshTarget(url), process.cwd());
+      if (url !== null) return await passThrough(command as PassThroughCommand, remoteArgs, parseSshTarget(url), process.cwd());
     }
     switch (command) {
       case "__run-dir":
@@ -1516,6 +1528,12 @@ async function cmdResume(rest: string[]): Promise<number> {
     process.stderr.write(`no such run: ${runId}\n`);
     return 1;
   }
+  // A pulled run (ODW extension) goes on where it runs: resume it there, not as a copy here.
+  const pulled = pulledRunRefusal(store.readMeta(runId), runId, "resume");
+  if (pulled) {
+    process.stderr.write(`odw resume: ${pulled}\n`);
+    return 1;
+  }
   if (!values.force && isRunActive(store, runId)) {
     const state = String(store.readStatus(runId).state ?? "pending");
     const control = store.readControl(runId);
@@ -1894,6 +1912,11 @@ function openBrowser(url: string): void {
 function cmdControl(action: Command, rest: string[]): number {
   const { store, runId } = storeAndRun(rest);
   if (!store) return runId ? 1 : 2;
+  const pulled = pulledRunRefusal(store.readMeta(runId), runId, action);
+  if (pulled) {
+    process.stderr.write(`odw ${action}: ${pulled}\n`);
+    return 1;
+  }
   store.writeControl(runId, action);
   process.stderr.write(`${action} requested for ${runId}\n`);
   return 0;
@@ -1960,6 +1983,11 @@ async function cmdDecide(action: "approve" | "reject", rest: string[]): Promise<
   const store = storeFrom(values);
   if (!store.exists(runId)) {
     process.stderr.write(`no such run: ${runId}\n`);
+    return 1;
+  }
+  const pulled = pulledRunRefusal(store.readMeta(runId), runId, action);
+  if (pulled) {
+    process.stderr.write(`odw ${action}: ${pulled}\n`);
     return 1;
   }
   const run = detail(store, runId);

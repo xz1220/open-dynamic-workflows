@@ -1,14 +1,16 @@
 import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { execPath } from "node:process";
 import { fileURLToPath } from "node:url";
 
 import { RunStore, TERMINAL_STATES } from "../src/runtime/run-store.js";
-import { parseSshTarget, shQuote, sshArgv, takeOnFlag } from "../src/runtime/remote.js";
+import { OdwRunSource } from "../src/runtime/odw-run-source.js";
+import { startServer } from "../src/runtime/server.js";
+import { isOutside, parseSshTarget, shQuote, sshArgv, takeOnFlag } from "../src/runtime/remote.js";
 import { cli, pendingIds, stopProcessRun, until } from "./checkpoint-project.js";
 
 // odw run --on ssh://host, odw pull and the status/logs/attach pass-through
@@ -335,4 +337,136 @@ test("run --on refuses flags that name something here or would watch the run her
   } finally {
     rmSync(plain, { recursive: true, force: true });
   }
+});
+
+/** A run made straight in the remote's runs root (no worker): what `odw pull` finds there. */
+function remoteRunDir(): { id: string; dir: string } {
+  const remote = new RunStore(remoteRuns());
+  const id = remote.create({ script: join(project, "fast.js"), args: null, source: project, workflowName: "remote-fast" });
+  return { id, dir: remote.runDir(id) };
+}
+
+test("pull brings no links back (rsync or tar), and a pulled copy is answered and controlled only there, with --on", async () => {
+  const url = "ssh://box";
+  const { id, dir } = remoteRunDir();
+  // A remote run directory whose decision log is a link out of it: an answer here would write there.
+  const outside = join(base, "outside.txt");
+  writeFileSync(outside, "untouched\n");
+  symlinkSync(outside, join(dir, "decisions.jsonl"));
+  symlinkSync(base, join(dir, "up"));
+  const local = () => new RunStore(localRuns);
+  const isLink = (path: string): boolean => {
+    try {
+      return lstatSync(path).isSymbolicLink();
+    } catch {
+      return false;
+    }
+  };
+
+  let r = await cli(["pull", id, "--from", url, "--runs-root", localRuns]);
+  assert.equal(r.code, 0, r.err);
+  assert.match(rsyncLog(), /"--no-links","--no-D"/);
+  assert.equal(isLink(join(local().runDir(id), "decisions.jsonl")), false);
+  assert.equal(existsSync(join(local().runDir(id), "up")), false);
+
+  // tar keeps links: they are taken out after the copy, and said.
+  process.env.ODW_RSYNC = join(base, "no-rsync-here");
+  try {
+    r = await cli(["pull", id, "--from", url, "--runs-root", localRuns]);
+    assert.equal(r.code, 0, r.err);
+    assert.match(r.err, /\(tar over ssh\)/);
+    assert.match(r.err, /left out 2 link\(s\) or special file\(s\) of the remote run directory: "decisions\.jsonl", "up"|left out 2 link\(s\) or special file\(s\) of the remote run directory: "up", "decisions\.jsonl"/);
+  } finally {
+    process.env.ODW_RSYNC = join(base, "rsync");
+  }
+  const copy = local().runDir(id);
+  assert.equal(isLink(join(copy, "decisions.jsonl")), false);
+  assert.equal(isLink(join(copy, "up")), false);
+  assert.equal(local().readMeta(id).origin, "remote");
+
+  // Answering or controlling the copy here is refused, pointing at --on; nothing is written anywhere.
+  for (const command of ["approve", "reject", "stop", "pause", "resume"]) {
+    r = await cli([command, id, "--runs-root", localRuns]);
+    assert.equal(r.code, 1, command);
+    assert.match(r.err, new RegExp(`run ${id} was pulled from ssh://box: this copy is a snapshot`), command);
+    assert.match(r.err, new RegExp(`odw ${command} ${id} --on ssh://box`), command);
+  }
+  assert.equal(readFileSync(outside, "utf8"), "untouched\n");
+  assert.equal(existsSync(join(copy, "decisions.jsonl")), false);
+  assert.equal(existsSync(join(copy, "control.json")), false);
+  // The dashboard refuses the same (409), through the run source.
+  const source = new OdwRunSource(local());
+  assert.match(String(source.runControlError(id)), /was pulled from ssh:\/\/box/);
+  assert.equal(new OdwRunSource(new RunStore(remoteRuns())).runControlError(id), null);
+  const server = await startServer({ store: local(), port: 0, host: "127.0.0.1", claudeProjectsRoot: join(base, "no-claude") });
+  try {
+    const at = `http://127.0.0.1:${server.port}`;
+    for (const [path, body] of [["control", { action: "stop" }], ["checkpoint", { action: "approve" }]] as const) {
+      const res = await fetch(`${at}/api/runs/${id}/${path}`, {
+        method: "POST",
+        headers: { "content-type": "application/json", origin: at },
+        body: JSON.stringify(body),
+      });
+      assert.equal(res.status, 409, path);
+      assert.match(((await res.json()) as { error: string }).error, /was pulled from ssh:\/\/box: .* --on ssh:\/\/box/, path);
+    }
+  } finally {
+    await server.close();
+  }
+  assert.equal(existsSync(join(copy, "control.json")), false);
+
+  // With --on, the remote odw answers: its run has no checkpoint waiting.
+  r = await cli(["approve", id, "--on", url]);
+  assert.equal(r.code, 1);
+  assert.match(r.err, new RegExp(`run ${id} has no checkpoint waiting for a decision`));
+  assert.match(sshLog().trim().split("\n").pop()!, /'approve'/);
+});
+
+test("a failed pull leaves nothing that looks like a run, and an earlier copy stands; the next pull works", async () => {
+  const url = "ssh://box";
+  const { id } = remoteRunDir();
+  // rsync copies, then fails; tar over ssh fails too (no tar there).
+  const noTar = join(base, "remote-bin-no-tar");
+  mkdirSync(noTar, { recursive: true });
+  for (const tool of ["sh", "cat", "mkdir", "rm", "ls", "cp", "grep", "env", "odw"]) {
+    if (!existsSync(join(noTar, tool))) symlinkSync(join(bin, tool), join(noTar, tool));
+  }
+  const failing = async (): Promise<{ code: number; err: string }> => {
+    process.env.RSYNC_FAKE_PARTIAL = "1";
+    process.env.SSH_FAKE_PATH = noTar;
+    try {
+      return await cli(["pull", id, "--from", url, "--runs-root", localRuns]);
+    } finally {
+      delete process.env.RSYNC_FAKE_PARTIAL;
+      process.env.SSH_FAKE_PATH = bin;
+    }
+  };
+  let r = await failing();
+  assert.equal(r.code, 1, r.err);
+  assert.equal(new RunStore(localRuns).exists(id), false, "no run here, local-looking or not");
+  assert.equal(existsSync(join(localRuns, ".odw-pull")), false, "its staging is gone");
+
+  r = await cli(["pull", id, "--from", url, "--runs-root", localRuns]);
+  assert.equal(r.code, 0, r.err);
+  const local = new RunStore(localRuns);
+  assert.equal(local.readMeta(id).origin, "remote");
+  const pulledAt = (local.readMeta(id).remote as { pulledAt: number }).pulledAt;
+
+  // A failed pull again: the earlier copy is kept as it was.
+  r = await failing();
+  assert.equal(r.code, 1);
+  const again = new RunStore(localRuns);
+  assert.equal(again.exists(id), true);
+  assert.equal((again.readMeta(id).remote as { pulledAt: number }).pulledAt, pulledAt);
+  assert.equal(existsSync(join(localRuns, ".odw-pull")), false);
+});
+
+test("a path is outside its base only when it is .., starts with ../ or is absolute", () => {
+  assert.equal(isOutside(".."), true);
+  assert.equal(isOutside(join("..", "x")), true);
+  assert.equal(isOutside(join(tmpdir(), "x")), true);
+  assert.equal(isOutside("..data"), false);
+  assert.equal(isOutside(join("..data", "wf.js")), false);
+  assert.equal(isOutside("sub"), false);
+  assert.equal(isOutside(""), false);
 });

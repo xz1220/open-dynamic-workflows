@@ -5,15 +5,17 @@
  * remote home ($SSH_FAKE_HOME/path, or path itself when absolute), and copies
  * src's contents (a trailing slash, as odw always passes) into dest, leaving
  * out what an `--exclude=PATTERN` names (by file name; a leading or trailing
- * slash is dropped). --delete and --filter are taken and ignored.
+ * slash is dropped). --no-links leaves symbolic links out, as rsync does.
+ * --delete and --filter are taken and ignored.
  *
- *   RSYNC_FAKE_LOG   every call's argv appended as a JSON line
- *   RSYNC_FAKE_FAIL  set: exit 12, as rsync does when the remote end has no rsync
+ *   RSYNC_FAKE_LOG      every call's argv appended as a JSON line
+ *   RSYNC_FAKE_FAIL     set: exit 12, as rsync does when the remote end has no rsync
+ *   RSYNC_FAKE_PARTIAL  set: copy, then exit 23, as rsync does when some files could not be transferred
  *
  * Used only by the test suite.
  */
 
-import { appendFileSync, cpSync, mkdirSync } from "node:fs";
+import { appendFileSync, cpSync, lstatSync, mkdirSync } from "node:fs";
 import { basename, isAbsolute, join } from "node:path";
 
 const argv = process.argv.slice(2);
@@ -37,4 +39,13 @@ const [src, dest] = paths.map((p) => {
   return isAbsolute(m[1]) ? m[1] : join(process.env.SSH_FAKE_HOME, m[1]);
 });
 mkdirSync(dest, { recursive: true });
-cpSync(src, dest, { recursive: true, force: true, filter: (from) => !excludes.includes(basename(from)) });
+const noLinks = argv.includes("--no-links");
+cpSync(src, dest, {
+  recursive: true,
+  force: true,
+  filter: (from) => !excludes.includes(basename(from)) && !(noLinks && lstatSync(from).isSymbolicLink()),
+});
+if (process.env.RSYNC_FAKE_PARTIAL) {
+  process.stderr.write("rsync error: some files/attrs were not transferred (code 23)\n");
+  process.exit(23);
+}

@@ -16,6 +16,7 @@ import { readNotes, type Note } from "../notes.js";
 import type { Redactor } from "../redact.js";
 import { SigCache, statSig } from "./fs-util.js";
 import { detailFrom, EventFold, summaryFrom, type RunDetail, type RunFacts, type RunSummary } from "./runs-view.js";
+import { pulledRunRefusal } from "./remote.js";
 import type { RunSource } from "./run-source.js";
 import { TERMINAL_STATES, type EventsCursor, type RunStore } from "./run-store.js";
 import { TranscriptLog, transcriptPage, type TranscriptPage } from "./transcript-view.js";
@@ -156,6 +157,10 @@ export class OdwRunSource implements RunSource {
       return next;
     });
     return log.page(since, replayed);
+  }
+  runControlError(runId: string): string | null {
+    // A pulled run (ODW extension; see ./remote) goes on over there: its copy here is a snapshot.
+    return pulledRunRefusal(this.store.readMeta(runId), runId, "approve|reject|pause|stop|resume");
   }
   control(runId: string, action: string): void {
     // Written as `odw resume` writes it: the worker's FileControl treats any

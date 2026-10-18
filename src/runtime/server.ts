@@ -601,8 +601,9 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandleCont
       }
       if (method === "POST" && sub === "/control") {
         // A read-only source (Claude) refuses control with a 409 before any work.
-        if (src.controlError) {
-          sendJson(res, 409, { error: src.controlError });
+        const refused = src.controlError ?? src.runControlError?.(runId) ?? null;
+        if (refused) {
+          sendJson(res, 409, { error: refused });
           return;
         }
         await controlRun(req, res, src, runId);
@@ -610,8 +611,9 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandleCont
       }
       if (method === "POST" && sub === "/checkpoint") {
         // Claude runs are read-only, and have no checkpoint() to answer anyway.
-        if (src.controlError) {
-          sendJson(res, 409, { error: src.controlError });
+        const refused = src.controlError ?? src.runControlError?.(runId) ?? null;
+        if (refused) {
+          sendJson(res, 409, { error: refused });
           return;
         }
         await decideCheckpoint(req, res, src, runId);
