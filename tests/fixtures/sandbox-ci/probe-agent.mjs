@@ -22,6 +22,8 @@ process.stdin.on("end", () => {
     wroteWorkspace: tryWrite("from-container.txt"),
     wroteRoot: tryWrite("/odw-escape.txt"),
     wroteTmp: tryWrite("/tmp/scratch.txt"),
+    // The workspace's git metadata is bound read-only: config planted there would run on the host.
+    wroteGit: tryWrite(".git/planted"),
     home: process.env.HOME ?? null,
     hostPathLeaked: (process.env.PATH ?? "").includes("/home/runner"),
   };
