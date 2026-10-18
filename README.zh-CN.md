@@ -852,6 +852,71 @@ odw eval review --baseline today.json    # 与之前的报告对比;有单元格
   耗时中位数,B − A。通过率下降的单元格即为退步。退出码:全部运行通过——或带 `--baseline` 时没有
   单元格退步——为 0;否则为 1;用法错误为 2(没有任何运行开始)。
 
+### 测试工作流(ODW 扩展)
+
+工作流就是代码:像测试代码一样测试它,不必每试一次都为模型付费。`odw test` 运行真实的运行时——
+worker、调度器、schema 校验与重试、回退链、运行存储——并用你写好的脚本化回复应答每个 agent。
+不调用任何模型;一次测试花费 $0,耗时不到一秒。
+
+```bash
+odw test                                  # 当前目录下所有 .odw/tests/*.json
+odw test review-swarm                     # .odw/tests/review-swarm.json;或给路径:odw test examples/tests/review-swarm.json
+odw test review-swarm --case 2 --json     # 只跑一个用例(编号或名字);报告以 JSON 输出
+odw test review-swarm --keep              # 保留临时运行(odw logs <run_id> --runs-root …);或 --runs-root DIR
+odw run review-swarm --record             # 一次真实运行,存为 .odw/tests/review-swarm.json 的一个用例(--record-to FILE)
+odw run review-swarm --dry                # 每个 agent 都得到桩回复:阶段树与各阶段 agent 数,$0
+```
+
+```json
+{
+  "workflow": "review-swarm",
+  "cases": [
+    { "name": "a real finding survives",
+      "args": { "lenses": ["correctness", "security"] },
+      "replies": [
+        { "label": "map", "reply": { "summary": "adds a cache", "files": ["src/cache.ts"] } },
+        { "label": "review:correctness", "reply": { "findings": [{ "title": "stale read", "severity": "high", "rationale": "…" }] } },
+        { "label": "review:security", "fail": "rate_limit" },
+        { "label": "verify:*", "reply": { "real": true, "reason": "confirmed" }, "schemaMiss": 1 }
+      ],
+      "expect": {
+        "checks": [{ "path": "confirmed[0].title", "equals": "stale read" }],
+        "agents": { "count": 4 },
+        "logs": ["1 of 1 findings survived"]
+      } }
+  ]
+}
+```
+
+- **文件**(`.odw/tests/<workflow>.json`;完整示例见 [`examples/tests/review-swarm.json`](examples/tests/review-swarm.json)):
+  `workflow`(名字或路径,与 `odw run` 一样从运行 `odw test` 的目录解析;缺省为文件名)、`cases`
+  (`name`、`args`、`replies`、`expect`,以及可选的 `default`、`checkpoints: "approve" | "reject"`
+  ——自动应答每个 `checkpoint()`、`timeout` 秒数,默认 120),以及文件级的 `default`。运行前会严格校验。
+- **回复**按 `label`(glob:`verify:*`)、`phase`(glob)、`prompt`(子串)或 `adapter` 匹配 agent;
+  条目给出的每个匹配条件都须成立,第一个匹配的条目作答。作答方式:`reply`(字符串原样,其他值按 JSON
+  ——即 schema 调用的值)、`fail`(`rate_limit`、`quota`、`auth`、`permission`、`timeout`、`stalled`、
+  `not_found`、`exit`:ODW 的失败分类会像真实失败一样识别它,因此限流会重试、额度用尽会回退)、
+  `empty: true`(空回复)或 `dry: true`(`--dry` 的桩)。`schemaMiss: N` 先回 N 次任何 schema 都不接受的内容
+  (触发 schema 重试),`delayMs` 延迟作答(控制完成顺序),`once: true` 只回答一个 agent 后即用完
+  (同一标签的多个 agent 依次取用)。
+- **没有任何条目匹配的 agent 会让用例失败**——`unscripted agent \`review:tests\` (agent #6, phase Review)`
+  ——除非有 `default` 条目(不带匹配条件)应答它。
+- **`expect`**:`state`(默认 `"done"`,或 `"failed"`、`"stopped"`)、`error`(运行错误中的子串)、
+  `checks`(沿用 `odw eval` 的检查词汇:`{ path, equals | contains | matches | exists }`、`{ command }`、
+  `{ state }`、`{ maxSeconds }`、`{ maxCostUsd }`——测试花费为 $0)、`agents: { count, labels }`
+  (启动了多少个;恰好这些标签,顺序不限)以及 `logs`(`log()` 输出行中的子串,按此顺序)。
+- **运行**放在临时运行存储中,结束后删除(`--keep`、`--runs-root DIR` 可保留),标记为 `origin: "test"`。
+  `exec()` 步骤、`isolation: "worktree"` 等运行时的其余部分照常真实执行;只有 agent CLI 被替换。
+  全部通过退出码 0,有失败为 1,用法错误为 2(什么都没运行)。
+- **`odw run <wf> --record [--record-to FILE]`** 把一次真实运行存为回归固定用例:运行结束后,worker 追加
+  一个名为 `recorded <run_id>` 的用例——运行输入、每个 agent 的实际回复(或其失败类别)、包含最终状态、
+  结果(小于 8 KB 时)与 agent 数量的 `expect`。与运行自身的记录一样经过脱敏,每个字符串截断到 4,000 字符;
+  同一标签但回复不同的 agent 各得一个 `once` 条目,按启动顺序排列。之后 `odw test` 以 $0 回放它。
+- **`odw run <wf> --dry`** 让每个 agent 都由桩应答:`"(dry run)"`,或对 schema 调用给出其最小合法值
+  (只含必需属性、`minItems` 个元素、`enum` 的第一个值、边界允许的最小数)。它会等待运行结束,然后打印阶段树
+  ——每个阶段启动了多少 agent 及其标签——并在 `meta.json` 中标记 `dry: true`(看板的运行摘要带有 `dry: true`)。
+  不需要安装任何适配器。
+
 ### 可观测性:OpenTelemetry trace(ODW 扩展)
 
 已经在用 Langfuse、Arize Phoenix、Jaeger、Grafana Tempo、Datadog 或 Honeycomb 的团队,可以在

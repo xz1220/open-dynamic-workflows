@@ -235,6 +235,8 @@ odw approve|reject $RUN     # answer a checkpoint() the run waits at — only on
 odw compare $OLD $RUN       # what changed between two runs: setup, time, cost, failures, replies (ODW extension)
                             #   --agent <label|id>: one agent's whole reply diff; --json for scripts
 odw eval review             # cases × adapters × repeats: pass rate, cost, time per cell (ODW extension; below)
+odw test review             # scripted replies, no model, $0: does the logic hold? (ODW extension; below)
+odw run review --dry        # every agent stubbed: the phase tree and agent counts, $0 (ODW extension)
 odw notes $RUN              # what its agents told each other on the notes board (ODW extension)
 odw list                    # all runs (with a cost column once one reported dollars)
 ```
@@ -532,6 +534,43 @@ odw eval review --baseline base.json               # deltas per cell; exit 1 whe
   its check and run id (open two with `odw compare`). Exit 0 all passed (or,
   with `--baseline`, nothing regressed), 1 otherwise, 2 for a usage error.
 - The whole file format and report: [`references/primitives.md`](references/primitives.md#odw-eval-odw-extension).
+
+### Test a workflow (ODW extension)
+
+To check a workflow's logic without paying a model — after editing it, or
+before its first real run — script its agents' replies and run `odw test`.
+It runs the real runtime (schema retries, fallbacks, the run store); only the
+agent CLIs are replaced by a built-in mock. A test costs $0: no need to ask.
+
+```bash
+odw test review-swarm                     # .odw/tests/review-swarm.json (or a path); no name: every file there
+odw test review-swarm --case 2 --json     # one case, by number or name; the report as JSON
+odw run review-swarm --dry                # every agent gets a stub: the phase tree and agent counts, $0
+odw run review-swarm --record             # a real (paid) run, kept as a test case to replay for $0
+```
+
+```json
+{ "workflow": "review-swarm",
+  "cases": [{ "name": "one finding", "args": { "lenses": ["correctness"] },
+              "replies": [{ "label": "map", "reply": { "summary": "s", "files": [] } },
+                          { "label": "review:*", "reply": { "findings": [] }, "schemaMiss": 1 },
+                          { "label": "verify:*", "fail": "rate_limit" }],
+              "default": { "dry": true },
+              "expect": { "checks": [{ "path": "rejected", "equals": 0 }], "agents": { "count": 2 }, "logs": ["0 candidate"] } }] }
+```
+
+- A reply entry matches by `label` / `phase` (globs), `prompt` (substring),
+  `adapter`; the first match answers with `reply` (text, or JSON for a schema
+  call), `fail` (`rate_limit`, `quota`, `auth`, `permission`, `timeout`,
+  `stalled`, `not_found`, `exit`), `empty: true` or `dry: true`; `schemaMiss:
+  N`, `delayMs`, `once: true` modify it. An agent nothing matches fails the case
+  ("unscripted agent `x`") unless a `default` entry answers it.
+- `expect`: `state` (default "done"), `error`, `checks` (`odw eval`'s), `agents:
+  { count, labels }`, `logs` (substrings, in order). Exit 0 all passed, 1 any
+  failed, 2 usage.
+- `--dry` stubs are `"(dry run)"` or a schema's smallest valid value; the run is
+  marked `dry: true`. `--record` costs what a normal run costs — confirm first.
+- The whole format: [`references/primitives.md`](references/primitives.md#odw-test-odw-extension).
 
 ## Adapters
 

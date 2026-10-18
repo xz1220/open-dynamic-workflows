@@ -975,6 +975,82 @@ odw eval review --baseline today.json    # deltas against an earlier report; exi
   regressed. Exit codes: 0 when every run passed — or, with `--baseline`, when no cell
   regressed; 1 otherwise; 2 for a usage error (nothing ran).
 
+### Test a workflow (ODW extension)
+
+A workflow is code: test it like code, without paying a model for every try.
+`odw test` runs the real runtime — worker, scheduler, schema validation and retries,
+fallback chains, the run store — and answers every agent with a reply you scripted.
+Nothing calls a model; a test costs $0 and takes a fraction of a second.
+
+```bash
+odw test                                  # every .odw/tests/*.json in this directory
+odw test review-swarm                     # .odw/tests/review-swarm.json; or a path: odw test examples/tests/review-swarm.json
+odw test review-swarm --case 2 --json     # one case (by number or name); the report as JSON
+odw test review-swarm --keep              # keep the scratch runs (odw logs <run_id> --runs-root …); or --runs-root DIR
+odw run review-swarm --record             # a real run, kept as a case of .odw/tests/review-swarm.json (--record-to FILE)
+odw run review-swarm --dry                # every agent gets a stub: the phase tree and agent counts, $0
+```
+
+```json
+{
+  "workflow": "review-swarm",
+  "cases": [
+    { "name": "a real finding survives",
+      "args": { "lenses": ["correctness", "security"] },
+      "replies": [
+        { "label": "map", "reply": { "summary": "adds a cache", "files": ["src/cache.ts"] } },
+        { "label": "review:correctness", "reply": { "findings": [{ "title": "stale read", "severity": "high", "rationale": "…" }] } },
+        { "label": "review:security", "fail": "rate_limit" },
+        { "label": "verify:*", "reply": { "real": true, "reason": "confirmed" }, "schemaMiss": 1 }
+      ],
+      "expect": {
+        "checks": [{ "path": "confirmed[0].title", "equals": "stale read" }],
+        "agents": { "count": 4 },
+        "logs": ["1 of 1 findings survived"]
+      } }
+  ]
+}
+```
+
+- **The file** (`.odw/tests/<workflow>.json`; [`examples/tests/review-swarm.json`](examples/tests/review-swarm.json)
+  is a full one): `workflow` (a name or a path, resolved like `odw run` from where you run
+  `odw test`; absent: the file's name), `cases` (`name`, `args`, `replies`, `expect`, and
+  optionally `default`, `checkpoints: "approve" | "reject"` to answer every `checkpoint()`,
+  `timeout` in seconds, default 120), and a file-wide `default`. It is validated strictly
+  before anything runs.
+- **Replies** script agents by `label` (a glob: `verify:*`), `phase` (a glob), `prompt` (a
+  substring) or `adapter`; every matcher an entry gives must hold, and the first matching
+  entry answers. It answers with `reply` (a string as is, anything else as JSON — a
+  schema call's value), `fail` (`rate_limit`, `quota`, `auth`, `permission`, `timeout`,
+  `stalled`, `not_found`, `exit`: read by ODW's failure classes like the real thing, so
+  rate limits are retried and quota falls back), `empty: true` (an empty reply) or `dry:
+  true` (the `--dry` stub). `schemaMiss: N` replies with something no schema accepts N
+  times first (schema retries), `delayMs` answers late (finish order), `once: true` answers
+  one agent and is used up (agents sharing a label, in turn).
+- **An agent no entry scripts fails the case** — `unscripted agent \`review:tests\` (agent
+  #6, phase Review)` — unless a `default` entry (no matchers) answers it.
+- **`expect`**: `state` (`"done"` by default, `"failed"`, `"stopped"`), `error` (a substring
+  of the run's error), `checks` in `odw eval`'s vocabulary (`{ path, equals | contains |
+  matches | exists }`, `{ command }`, `{ state }`, `{ maxSeconds }`, `{ maxCostUsd }` — a
+  test costs $0), `agents: { count, labels }` (how many started; exactly these labels, any
+  order) and `logs` (substrings of `log()` lines, in this order).
+- **Runs** go in a scratch run store, removed afterwards (`--keep`, `--runs-root DIR` keep
+  them), marked `origin: "test"`. `exec()` steps, `isolation: "worktree"` and the rest of
+  the runtime run for real; only the agent CLIs are replaced. Exit 0 when every case
+  passed, 1 when any failed, 2 for a usage error (nothing ran).
+- **`odw run <wf> --record [--record-to FILE]`** keeps a real run as a regression fixture:
+  once it ends, its worker adds a case named `recorded <run_id>` — the run's input, each
+  agent's actual reply (or its failure class), `expect` with the final state, the result
+  (when under 8 KB) and the agent count. Redacted like the run's own records, each string
+  cut at 4,000 characters; agents sharing a label whose replies differ get one `once`
+  entry each, in start order. `odw test` then replays it for $0.
+- **`odw run <wf> --dry`** runs with every agent answered by a stub: `"(dry run)"`, or for a
+  schema call its smallest valid value (required properties only, `minItems` items, the
+  first `enum` value, the lowest number the bounds allow). It waits for the run, then
+  prints the phase tree — each phase with how many agents it started and their labels —
+  and marks the run `dry: true` in its `meta.json` (the dashboard's run summaries carry
+  `dry: true`). No adapter needs to be installed.
+
 ### Observability: OpenTelemetry traces (ODW extension)
 
 Teams that already run Langfuse, Arize Phoenix, Jaeger, Grafana Tempo, Datadog or

@@ -200,6 +200,8 @@ odw approve|reject $RUN     # 回答运行正在等待的 checkpoint()——只�
 odw compare $OLD $RUN       # 两次运行之间变了什么:配置、耗时、花费、失败、回复(ODW 扩展)
                             #   --agent <label|id>:某个 agent 的完整回复 diff;--json 供脚本使用
 odw eval review             # 用例 × 适配器 × 重复次数：每个单元格的通过率、花费、耗时（ODW 扩展；见下文）
+odw test review             # 脚本化回复，不调用模型，$0：逻辑是否成立？（ODW 扩展；见下文）
+odw run review --dry        # 每个 agent 都用桩应答：阶段树与 agent 数，$0（ODW 扩展）
 odw notes $RUN              # 本次运行的 agent 在笔记板上互相告知的内容（ODW 扩展）
 odw list                    # 所有运行（有运行报了美元时多一列花费）
 ```
@@ -440,6 +442,40 @@ odw eval review --baseline base.json               # 每个单元格的变化；
   耗时中位数、花费与 token，然后列出每个失败及其检查与运行 id（用 `odw compare` 对照任意两次）。
   全部通过（或带 `--baseline` 时没有退步）退出 0，否则 1，用法错误为 2。
 - 完整的文件格式与报告：[`references/primitives.md`](references/primitives.md) 的「odw eval（ODW 扩展）」一节。
+
+### 测试工作流（ODW 扩展）
+
+想在不为模型付费的情况下检查工作流的逻辑——改完之后，或第一次真实运行之前——就给它的 agent
+写好脚本化回复，然后运行 `odw test`。它运行真实的运行时（schema 重试、回退、运行存储），只有
+agent CLI 被内置 mock 替换。测试花费 $0：无需先问用户。
+
+```bash
+odw test review-swarm                     # .odw/tests/review-swarm.json（或路径）；不给名字：该目录下所有文件
+odw test review-swarm --case 2 --json     # 只跑一个用例（编号或名字）；报告以 JSON 输出
+odw run review-swarm --dry                # 每个 agent 都得到桩回复：阶段树与各阶段 agent 数，$0
+odw run review-swarm --record             # 一次真实（付费）运行，存为测试用例，之后以 $0 回放
+```
+
+```json
+{ "workflow": "review-swarm",
+  "cases": [{ "name": "one finding", "args": { "lenses": ["correctness"] },
+              "replies": [{ "label": "map", "reply": { "summary": "s", "files": [] } },
+                          { "label": "review:*", "reply": { "findings": [] }, "schemaMiss": 1 },
+                          { "label": "verify:*", "fail": "rate_limit" }],
+              "default": { "dry": true },
+              "expect": { "checks": [{ "path": "rejected", "equals": 0 }], "agents": { "count": 2 }, "logs": ["0 candidate"] } }] }
+```
+
+- 回复条目按 `label` / `phase`（glob）、`prompt`（子串）、`adapter` 匹配；第一个匹配的条目以
+  `reply`（文本，或 schema 调用的 JSON）、`fail`（`rate_limit`、`quota`、`auth`、`permission`、
+  `timeout`、`stalled`、`not_found`、`exit`）、`empty: true` 或 `dry: true` 作答；`schemaMiss: N`、
+  `delayMs`、`once: true` 用来修饰。没有条目匹配的 agent 会让用例失败（“unscripted agent `x`”），
+  除非有 `default` 条目应答它。
+- `expect`：`state`（默认 "done"）、`error`、`checks`（即 `odw eval` 的检查）、`agents: { count, labels }`、
+  `logs`（子串，按顺序）。全部通过退出 0，有失败为 1，用法错误为 2。
+- `--dry` 的桩回复是 `"(dry run)"` 或 schema 的最小合法值；运行标记为 `dry: true`。`--record`
+  的花费与普通运行相同——先确认。
+- 完整格式：[`references/primitives.md`](references/primitives.md) 的「odw test（ODW 扩展）」一节。
 
 ## 适配器
 

@@ -126,7 +126,7 @@
 | # | 方向 | 规模 | 状态 |
 | --- | --- | --- | --- |
 | S1 | **运行前估算与花费闸门**：`odw run --estimate` 按历史给出各阶段 p50/p90 花费与耗时；`costGate` 把预计超支的扇出变成检查点 | S–M | 🚧 |
-| S2 | **`odw test` / `--dry`**：脚本化回复、`--record` 录制固定回放，零成本预演工作流 | M | 🚧 |
+| S2 | **`odw test` / `--dry`**：脚本化回复、`--record` 录制固定回放，零成本预演工作流 | M | ✅ `odw test [<wf\|file>] [--case N] [--json] [--keep] [--runs-root DIR]`（ODW 扩展）：运行 `.odw/tests/<wf>.json` 的用例，每个用例都是真实运行（worker、调度器、bridge、schema 重试、回退链），在进程内由内置 mock 适配器按脚本化回复作答，不调用模型；回复按 label/phase glob、prompt 子串或 adapter 匹配，可为文本/JSON、`fail`（rate_limit/quota/auth/permission/timeout/stalled/not_found/exit，按真实失败分类）、`empty`、`dry`，修饰 `schemaMiss: N`、`delayMs`、`once`；未被脚本覆盖的 agent 判为失败（"unscripted agent `x`"），除非设置 `default`；`expect` 复用 eval 检查词汇，外加 `agents: { count, labels }` 与 `logs`；退出码 0/1/2。`odw run <wf> --record [--record-to FILE]` 运行结束后由 worker 把每个 agent 的实际回复（脱敏、截断）存为用例；`odw run <wf> --dry` 用桩回复（`"(dry run)"` 或 schema 的最小合法值）跑完整个工作流，打印阶段树与各阶段 agent 数，`meta.json` 与运行摘要标记 `dry: true`。示例 `examples/tests/review-swarm.json`。测试：每种回复、未覆盖的 agent、检查、录制后回放、带 schema 的 `--dry`（占位值合法）、退出码 |
 | S3 | **签名入站触发器 + GitHub Action**：`POST /api/triggers/<name>`（HMAC、默认不受信任），`--deadline` 优雅停止，job summary | M | 🚧 |
 | S4 | **`odw replay --agent` 与 `--break`/`--step`**：单独重跑一个 agent，或在阶段前断点 | M | 🚧 |
 | S5 | 漂移监测与 `doctor --models`、`model_unavailable` 失败原因 | S–M | ⏳ |

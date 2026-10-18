@@ -1010,6 +1010,113 @@ Costs and tokens are summed and averaged over the runs whose CLIs reported
 them, and null when none did. Any two run ids open side by side with
 `odw compare <runA> <runB>`.
 
+## odw test (ODW extension)
+
+```bash
+odw test [<wf|file.json>] [--case N|name]... [--json] [--keep] [--runs-root DIR] [--config P]
+odw run <wf> --dry
+odw run <wf> --record [--record-to FILE]
+```
+
+`odw test` runs a workflow's test cases as real odw runs — worker, scheduler,
+bridge, schema validation and retries, fallback chains, the run store —
+in-process, with every agent CLI replaced by a built-in mock that answers from
+the case's scripted replies. Nothing calls a model. `<wf>` is
+`.odw/tests/<wf>.json`; a `.json` or a path is a file; nothing runs every
+`.odw/tests/*.json`. Runs go in a scratch run store, removed afterwards
+(`--keep` or `--runs-root DIR` keep them), marked `origin: "test"`.
+
+### The test file
+
+```json
+{
+  "workflow": "review-swarm",
+  "description": "optional",
+  "default": { "dry": true },
+  "cases": [{
+    "name": "unique per file",
+    "args": {},
+    "replies": [ { "label": "verify:*", "phase": "Verify", "reply": { "real": true, "reason": "ok" } } ],
+    "default": { "reply": "ok" },
+    "expect": { "state": "done", "error": "…", "checks": [], "agents": { "count": 3, "labels": [] }, "logs": [] },
+    "checkpoints": "approve",
+    "timeout": 120
+  }]
+}
+```
+
+| Key | Meaning |
+| --- | --- |
+| `workflow` | A name or a path, resolved like `odw run`'s from where `odw test` runs. Absent: the file's name without `.json`. |
+| `default` | File-wide reply for agents no entry scripts (an entry without matchers); a case's own `default` wins. Absent: such an agent fails the case. |
+| `cases[].args` | The workflow's input; absent: null. |
+| `cases[].replies` | Reply entries, below. |
+| `cases[].expect` | What must come out, below. Absent: `{ "state": "done" }`. |
+| `cases[].checkpoints` | `"approve"` or `"reject"`: every `checkpoint()` is answered so. Absent: it waits, and the case runs into its timeout. |
+| `cases[].timeout` | Seconds (default 120); a run still going then is stopped and the case fails. |
+
+Any other key is an error naming where it is; nothing runs.
+
+**Reply entries.** Matchers — each one given must hold; the first entry that
+matches answers: `label` (glob: `*`, `?`), `phase` (glob; an agent outside any
+phase matches none), `prompt` (substring), `adapter` (glob; after a fallback,
+the adapter it moved to). Exactly one answer: `reply` (a string as is, any
+other value as JSON — a schema call's value), `fail` (`rate_limit` | `quota` |
+`auth` | `permission` | `timeout` | `stalled` | `not_found` | `exit`: worded so
+ODW's failure classes read it like the real thing — a rate limit is retried
+`transientRetries` times with no wait, a quota falls back down a chain),
+`empty: true` (an empty reply), `dry: true` (the `--dry` stub). Modifiers:
+`schemaMiss: N` (the first N attempts reply with text no schema accepts, then
+the answer: exercises schema retries; with `reply` or `dry`), `delayMs` (answer
+late: finish order), `once: true` (answers one agent — all its attempts — then
+is used up; agents sharing a label get such entries in turn). An agent nothing
+matches, with no `default`, gets a failing CLI and fails the case:
+`unscripted agent \`label\` (agent #N, phase P)`.
+
+**`expect`.** `state` (`"done"` default, `"failed"`, `"stopped"`), `error` (a
+substring of the run's error), `checks` (the `odw eval` vocabulary above:
+`{ path, equals | contains | matches | exists }`, `{ command }` — with
+`ODW_RESULT`, `ODW_RUN_ID` and `ODW_TEST_CASE` — `{ state }`, `{ maxSeconds }`,
+`{ maxCostUsd }` against a cost of $0), `agents: { count, labels }` (how many
+agents started; exactly these labels as a multiset), `logs` (substrings of
+`log()` lines, in this order, others between).
+
+**Output and exit codes.** A line per case (✔/✖, name, agents, time, then each
+missed expectation as `check: what was found`). `--json`: `{ version: 1,
+odwVersion, passed, failed, runsRoot, cases: [{ file, workflow, case, name,
+passed, failures: [{ check, message }], runId, state, agents, durationMs }] }`.
+Exit 0 all passed, 1 any failed, 2 usage (a bad flag or file, an unknown case,
+a workflow that does not load).
+
+**The mock.** Every adapter of the config is kept by name (so `agent(p, {
+adapter })`, phase defaults and fallback chains resolve) but runs the mock:
+plain-text output, the schema handed over natively (so prompts carry no schema
+text), every permission tier honoured, no sandbox, no CLI version probe, no
+notify hooks, no OpenTelemetry export, no quota wait, no worktree setup command.
+A config without a usable default adapter gets one named `mock`. `exec()`,
+`isolation: "worktree"` and the rest run for real.
+
+**`odw run <wf> --record [--record-to FILE]`.** A real run (it costs what a run
+costs) whose worker, once the run has ended, adds a case named `recorded
+<run_id>` to `FILE` (default `.odw/tests/<meta.name>.json` in the run's source
+directory; made if missing, a case of the same name replaced, the rest kept):
+its `args`, a reply entry per agent — `{ label, phase?, reply }` with the value
+the run saved, or `{ fail: <failure class> }` / `{ empty: true }` for a failed
+one — and `expect: { state, error?, checks?: [{ path: "", equals: <result> }],
+agents: { count } }` (the result only when its JSON is under 8,000 characters).
+Agents sharing a label and phase whose replies differ get one `once` entry
+each, in start order. Redacted with the run's redactor (input included); every
+string cut at 4,000 characters; at most 500 entries. Not with `--dry` or `--on`.
+
+**`odw run <wf> --dry`.** Every agent answered by a stub: `"(dry run)"`, or for
+a schema call its smallest valid value — required properties only, `minItems`
+items, `const` / the first `enum` value, the first `anyOf`/`oneOf` branch,
+`allOf` merged, local `$ref` followed, the lowest number the bounds allow, `""`
+(or `minLength` × `"x"`; a known `format` gets a sample). The run is marked
+`dry: true` in `meta.json` (and the dashboard summary); `odw run --dry` waits for
+it (never `--detach`) and prints to stderr the phase tree: each declared or
+started phase with how many agents it started and their labels.
+
 ## odw conformance
 
 ```bash

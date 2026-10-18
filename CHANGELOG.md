@@ -175,6 +175,19 @@ independent security reviews whose findings are all fixed.
   in `meta.json`, its behaviour settings on `run_started`, and each adapter CLI's
   `--version` on its first dispatch (a `cli_version` event, never delaying the run;
   `"recordVersions": false` turns it off) (**ODW extension**).
+- Test a workflow for $0 (**ODW extension**): `odw test [<wf|file>] [--case N] [--json]
+  [--keep]` runs the cases of `.odw/tests/<wf>.json` as real runs whose agents a built-in
+  mock answers from scripted replies — matched by label or phase glob, prompt substring or
+  adapter; a reply, a failure (`rate_limit`, `quota`, `auth`, `permission`, `timeout`,
+  `stalled`, `not_found`, `exit`, classified like the real thing), an empty reply, a dry
+  stub, `schemaMiss: N` invalid replies first, `delayMs`, `once`. An unscripted agent fails
+  the case unless a `default` answers it; `expect` takes `odw eval`'s checks plus `agents:
+  { count, labels }` and `logs`. Exit 0 / 1 / 2 (usage). `odw run <wf> --record
+  [--record-to FILE]` keeps a real run as a case (each agent's actual reply, redacted and
+  capped), and `odw run <wf> --dry` answers every agent with a stub — `"(dry run)"` or a
+  schema's smallest valid value — prints the phase tree with each phase's agent count,
+  and marks the run `dry: true` (also in the dashboard's run summaries). Example:
+  `examples/tests/review-swarm.json`.
 - Evaluate a workflow (**ODW extension**): `odw eval <file|name>` runs the cases of an
   eval file (`.odw/evals/<name>.json`) on each of its `adapters`, `repeats` times each,
   at most `concurrency` at once, as real runs marked `origin: "eval"` (shown by `odw
