@@ -1,0 +1,21 @@
+{
+  "title": "workflow() inside a child workflow throws (one level of nesting); uncaught, the run fails",
+  "claudeCode": "documented",
+  "sources": [
+    "docs/dynamic-workflows-research.md §3.2",
+    "skills/open-dynamic-workflows/references/primitives.md#workflow",
+    "tests/nested-workflow.test.ts"
+  ],
+  "notes": "The script paths are relative to the case directory: run the case from there.",
+  "mock": [
+    {
+      "when": "the text leaf and",
+      "reply": "leaf"
+    }
+  ],
+  "state": "failed",
+  "logs": [
+    "middle started"
+  ],
+  "agents": []
+}

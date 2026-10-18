@@ -26,6 +26,7 @@
  *   odw bundle <run_id> [--out FILE] [--no-transcripts] [--max-bytes N]   (a shareable run, runtime/bundle.ts)
  *   odw serve FILE.odwrun | odw view FILE   (a bundle, read-only); odw serve --token [VALUE] (runtime/serve-auth.ts)
  *   odw eval <file|name> [--adapter a,b] [--repeats N] [--json] [--out F] [--baseline F]   (src/eval/)
+ *   odw conformance [--json] [--case N] [--dir DIR]   (the dialect conformance suite, src/conformance/)
  */
 
 import { spawn } from "node:child_process";
@@ -77,6 +78,7 @@ import { executeRun } from "./runtime/worker.js";
 import { pausedForOf, pausedText } from "./quota-wait.js";
 import { cmdSchedule } from "./schedule/command.js";
 import { cmdEval } from "./eval/command.js";
+import { cmdConformance } from "./conformance/command.js";
 import { isSeaBinary } from "./sea.js";
 import { describeConcurrency } from "./throttle.js";
 import { detectCaps, fmtUsd, glyphs, palette, sanitizeText } from "./tty.js";
@@ -110,6 +112,7 @@ export const COMMANDS = [
   "bundle",
   "view",
   "eval",
+  "conformance",
 ] as const;
 
 export type Command = (typeof COMMANDS)[number];
@@ -276,6 +279,8 @@ export async function main(argv: string[]): Promise<number> {
         return await cmdServe(["--open", ...rest], "view");
       case "eval":
         return await cmdEval(rest);
+      case "conformance":
+        return await cmdConformance(rest);
       default:
         process.stderr.write(`odw: unknown command '${command}'\n\n${helpText()}\n`);
         return 2;

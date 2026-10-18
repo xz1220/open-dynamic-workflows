@@ -1,0 +1,13 @@
+{
+  "title": "without an input, args is null",
+  "claudeCode": "unspecified",
+  "sources": [
+    "skills/open-dynamic-workflows/references/primitives.md#args--budget"
+  ],
+  "notes": "What args holds when the Workflow tool is given no input is not documented. ODW injects null.",
+  "mock": [],
+  "state": "done",
+  "result": {
+    "args": null
+  }
+}

@@ -1,0 +1,38 @@
+{
+  "title": "an agent failure inside parallel() becomes null in its slot",
+  "claudeCode": "documented",
+  "sources": [
+    "docs/dynamic-workflows-research.md §3.2",
+    "skills/open-dynamic-workflows/references/primitives.md#agent",
+    "skills/open-dynamic-workflows/references/primitives.md#parallel"
+  ],
+  "notes": "By hand on Claude Code, the 'broken' agent has to fail some other way.",
+  "mock": [
+    {
+      "when": "the text one and",
+      "reply": "one"
+    },
+    {
+      "when": "the text broken and",
+      "fail": {
+        "exit": 1,
+        "stderr": "mock: this agent fails"
+      }
+    }
+  ],
+  "state": "done",
+  "result": [
+    "one",
+    null
+  ],
+  "agents": [
+    {
+      "label": "one",
+      "outcome": "finished"
+    },
+    {
+      "label": "broken",
+      "outcome": "failed"
+    }
+  ]
+}

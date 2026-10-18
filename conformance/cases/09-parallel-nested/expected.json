@@ -1,0 +1,42 @@
+{
+  "title": "nested parallel() calls keep their shape, order and null slots",
+  "claudeCode": "documented",
+  "sources": [
+    "docs/dynamic-workflows-research.md §3.2",
+    "skills/open-dynamic-workflows/references/primitives.md#parallel"
+  ],
+  "notes": "By hand on Claude Code, the 'broken' agent has to fail some other way.",
+  "mock": [
+    {
+      "when": "the text a1 and",
+      "reply": "a1",
+      "delayMs": 200
+    },
+    {
+      "when": "the text a2 and",
+      "reply": "a2"
+    },
+    {
+      "when": "the text b1 and",
+      "reply": "b1"
+    },
+    {
+      "when": "the text broken and",
+      "fail": {
+        "exit": 1,
+        "stderr": "mock: this agent fails"
+      }
+    }
+  ],
+  "state": "done",
+  "result": [
+    [
+      "a1",
+      "a2"
+    ],
+    [
+      "b1",
+      null
+    ]
+  ]
+}

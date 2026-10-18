@@ -1,0 +1,24 @@
+{
+  "title": "budget.total is the token target; spent() starts at 0 and grows; remaining() is max(0, total - spent())",
+  "claudeCode": "documented",
+  "sources": [
+    "docs/dynamic-workflows-research.md §3.2",
+    "skills/open-dynamic-workflows/references/primitives.md#args--budget",
+    "skills/open-dynamic-workflows/SKILL.md"
+  ],
+  "budget": 100000,
+  "mock": [
+    {
+      "when": "the text abcdefghijklmnopqrstuvwxyz and",
+      "reply": "abcdefghijklmnopqrstuvwxyz"
+    }
+  ],
+  "state": "done",
+  "result": {
+    "total": 100000,
+    "spentStartsAtZero": true,
+    "remainingStartsAtTotal": true,
+    "spentGrows": true,
+    "remainingIsTotalMinusSpent": true
+  }
+}

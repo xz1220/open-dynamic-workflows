@@ -1,0 +1,26 @@
+{
+  "title": "once spent() reaches the target, the next agent() is refused and the run fails, caught or not",
+  "claudeCode": "unspecified",
+  "sources": [
+    "skills/open-dynamic-workflows/references/primitives.md#args--budget"
+  ],
+  "notes": "Claude Code exposes the target for the script to scale against; whether it enforces it is not documented. ODW refuses dispatches once spent() >= total, and that error is fatal.",
+  "budget": 4,
+  "mock": [
+    {
+      "when": "the text abcdefghijklmnop and",
+      "reply": "abcdefghijklmnop"
+    },
+    {
+      "when": "the text over and",
+      "reply": "over"
+    }
+  ],
+  "state": "failed",
+  "agents": [
+    {
+      "label": "spend",
+      "outcome": "finished"
+    }
+  ]
+}

@@ -1,0 +1,38 @@
+{
+  "title": "args is the workflow's JSON input, verbatim",
+  "claudeCode": "documented",
+  "sources": [
+    "docs/dynamic-workflows-research.md §3.2",
+    "skills/open-dynamic-workflows/references/primitives.md#args--budget",
+    "skills/open-dynamic-workflows/SKILL.md"
+  ],
+  "args": {
+    "topic": "caches",
+    "depth": 2,
+    "tags": [
+      "a",
+      "b"
+    ],
+    "nested": {
+      "ok": true,
+      "none": null
+    }
+  },
+  "mock": [],
+  "state": "done",
+  "result": {
+    "args": {
+      "topic": "caches",
+      "depth": 2,
+      "tags": [
+        "a",
+        "b"
+      ],
+      "nested": {
+        "ok": true,
+        "none": null
+      }
+    },
+    "type": "object"
+  }
+}

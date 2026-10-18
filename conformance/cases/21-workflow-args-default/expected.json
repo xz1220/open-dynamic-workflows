@@ -1,0 +1,16 @@
+{
+  "title": "a child workflow called without args sees args === null, not the parent's input",
+  "claudeCode": "unspecified",
+  "sources": [
+    "skills/open-dynamic-workflows/references/primitives.md#workflow"
+  ],
+  "notes": "Claude Code documents args as optional; what a child sees without them is not documented. ODW passes null.",
+  "args": {
+    "inherited": "no"
+  },
+  "mock": [],
+  "state": "done",
+  "result": {
+    "args": null
+  }
+}

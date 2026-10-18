@@ -1,0 +1,60 @@
+{
+  "title": "phase(title) labels the agents that follow; opts.phase overrides it for one call only",
+  "claudeCode": "documented",
+  "sources": [
+    "docs/dynamic-workflows-research.md §3.2",
+    "skills/open-dynamic-workflows/references/primitives.md#phase--log",
+    "skills/open-dynamic-workflows/references/primitives.md#agent"
+  ],
+  "mock": [
+    {
+      "when": "the text draft and",
+      "reply": "draft"
+    },
+    {
+      "when": "the text review and",
+      "reply": "review"
+    },
+    {
+      "when": "the text verify and",
+      "reply": "verify"
+    },
+    {
+      "when": "the text after and",
+      "reply": "after"
+    }
+  ],
+  "state": "done",
+  "result": [
+    "draft",
+    "review",
+    "verify",
+    "after"
+  ],
+  "phases": [
+    "Draft",
+    "Review"
+  ],
+  "agents": [
+    {
+      "label": "drafter",
+      "phase": "Draft",
+      "outcome": "finished"
+    },
+    {
+      "label": "reviewer",
+      "phase": "Review",
+      "outcome": "finished"
+    },
+    {
+      "label": "verifier",
+      "phase": "Verify",
+      "outcome": "finished"
+    },
+    {
+      "label": "after",
+      "phase": "Review",
+      "outcome": "finished"
+    }
+  ]
+}

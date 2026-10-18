@@ -1,0 +1,22 @@
+{
+  "title": "an uncaught throw in the body fails the run with that message, after the work before it",
+  "claudeCode": "documented",
+  "sources": [
+    "docs/dynamic-workflows-research.md §3.2",
+    "skills/open-dynamic-workflows/references/primitives.md#agent"
+  ],
+  "mock": [
+    {
+      "when": "the text epsilon and",
+      "reply": "epsilon"
+    }
+  ],
+  "state": "failed",
+  "error": "conformance: boom after epsilon",
+  "agents": [
+    {
+      "label": "first",
+      "outcome": "finished"
+    }
+  ]
+}

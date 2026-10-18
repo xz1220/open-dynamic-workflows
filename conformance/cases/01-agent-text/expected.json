@@ -1,0 +1,25 @@
+{
+  "title": "agent() without a schema resolves to the reply text",
+  "claudeCode": "documented",
+  "sources": [
+    "docs/dynamic-workflows-research.md §3.2",
+    "skills/open-dynamic-workflows/references/primitives.md#agent"
+  ],
+  "mock": [
+    {
+      "when": "the text alpha and",
+      "reply": "alpha"
+    }
+  ],
+  "state": "done",
+  "result": {
+    "reply": "alpha",
+    "type": "string"
+  },
+  "agents": [
+    {
+      "label": "a",
+      "outcome": "finished"
+    }
+  ]
+}

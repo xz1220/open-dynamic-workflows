@@ -1,0 +1,21 @@
+{
+  "title": "log(message) emits one progress line per call, in call order",
+  "claudeCode": "documented",
+  "sources": [
+    "docs/dynamic-workflows-research.md §3.2",
+    "skills/open-dynamic-workflows/references/primitives.md#phase--log"
+  ],
+  "mock": [
+    {
+      "when": "the text gamma and",
+      "reply": "gamma"
+    }
+  ],
+  "state": "done",
+  "result": "gamma",
+  "logs": [
+    "starting",
+    "got gamma",
+    "done"
+  ]
+}

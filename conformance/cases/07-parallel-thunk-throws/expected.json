@@ -1,0 +1,27 @@
+{
+  "title": "a thunk that throws becomes null in its slot; parallel() does not reject",
+  "claudeCode": "documented",
+  "sources": [
+    "docs/dynamic-workflows-research.md §3.2",
+    "skills/open-dynamic-workflows/references/primitives.md#parallel"
+  ],
+  "mock": [
+    {
+      "when": "the text one and",
+      "reply": "one"
+    },
+    {
+      "when": "the text three and",
+      "reply": "three"
+    }
+  ],
+  "state": "done",
+  "result": {
+    "results": [
+      "one",
+      null,
+      "three"
+    ],
+    "resolved": true
+  }
+}
