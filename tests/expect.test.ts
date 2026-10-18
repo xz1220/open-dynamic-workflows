@@ -306,6 +306,7 @@ test("changes: true — work that changed nothing runs again, told what it misse
       "fixer:1 did not meet its expectations — running it again, told what it missed (1/1): a file must change, and none did",
     );
     assert.deepEqual(retried.misses, ["a file must change, and none did"]);
+    assert.deepEqual(retried.retry, { reason: "expect", n: 1, of: 1 });
     assert.equal(retried.agentId, 1);
     // The transcript says why the CLI ran again.
     const transcript = readFileSync(flow.store.agentTranscriptPaths(flow.id, 1).transcript, "utf8");

@@ -58,10 +58,10 @@ test("agent() logs each rate-limit wait: who, on which adapter, how long, which 
     sink
       .ofType(LOG)
       .filter((e) => /— retrying in/.test(String(e.message)))
-      .map((e) => [e.message, e.agentId, e.label]),
+      .map((e) => [e.message, e.agentId, e.label, e.retry]),
     [
-      ["search:3 hit a rate limit on codex — retrying in 15s (1/3)", 3, "search"],
-      ["search:3 hit a rate limit on codex — retrying in 45s (2/3)", 3, "search"],
+      ["search:3 hit a rate limit on codex — retrying in 15s (1/3)", 3, "search", { reason: "rate_limit", n: 1, of: 3, waitSeconds: 15 }],
+      ["search:3 hit a rate limit on codex — retrying in 45s (2/3)", 3, "search", { reason: "rate_limit", n: 2, of: 3, waitSeconds: 45 }],
     ],
   );
   assert.deepEqual(slept, [15_000, 45_000], "exponential first; then the 45s the CLI asked for");

@@ -589,6 +589,8 @@ export function createPrimitives(
                   agentId,
                   label: display,
                   phase: activePhase,
+                  // Structured for the run's readers: a span event of its OpenTelemetry trace (../otel).
+                  retry: { reason: "stall", n: restart, of: maxRestarts },
                 }),
               ),
             // A rate-limited CLI is retried after a backoff: say so, and for how long.
@@ -599,6 +601,7 @@ export function createPrimitives(
                   agentId,
                   label: display,
                   phase: activePhase,
+                  retry: { reason: "rate_limit", n: retry, of: maxRetries, waitSeconds },
                 }),
               );
               // Adaptive back-pressure (ODW extension): the limit lowers its adapter's cap.
@@ -695,6 +698,7 @@ export function createPrimitives(
                   agentId,
                   label: display,
                   phase: activePhase,
+                  retry: { reason: "expect", n: retry, of: maxRetries },
                 }),
               ),
             // The MCP servers a CLI run started it without (ODW extension): kept
