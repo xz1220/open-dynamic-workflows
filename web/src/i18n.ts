@@ -746,6 +746,12 @@ const ZH: Record<string, string> = {
     "本次运行没有为工作区做快照:被丢弃的内容也许还能在 git reflog 里找到。",
   "Copy restore command": "复制恢复命令",
   "safety snapshot": "安全快照",
+  // How a parallel() or pipeline() came out (ODW extension).
+  "{n} fan-out: {ok}/{total} ok": "{n} 次扇出:{ok}/{total} 成功",
+  "{n} fan-outs: {ok}/{total} ok": "{n} 次扇出:{ok}/{total} 成功",
+  "{ok}/{total} ok": "{ok}/{total} 成功",
+  "{n} null": "{n} 个 null",
+  "below minOk ({n} needed)": "未达 minOk(需要 {n} 个)",
   "{tracked} changed and {untracked} untracked file(s) kept at {ref} before the first in-place agent — click to copy the restore command":
     "第一个原地 agent 开始前保存了 {tracked} 个改动文件和 {untracked} 个未跟踪文件,位于 {ref}——点击复制恢复命令",
   "It replied while this background work still ran; it died when the CLI exited, so the reply may rest on work that never finished.":

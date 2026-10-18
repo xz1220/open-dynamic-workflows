@@ -113,7 +113,7 @@ function runHead(run: RunDetail, nowSec: number, spendOpen: boolean): string {
   const w = (n: number) => `${((n / total) * 100).toFixed(2)}%`;
   return (
     `<header class="run-head">` +
-    `<div style="min-width:0"><div class="eyebrow"><span>${t("Run")}</span><span class="mono" style="text-transform:none;letter-spacing:0">${esc(run.runId)}</span>${cc}${shared}${driftChip(run)}${safetyChip(run)}${run.dry ? `<span class="tag dry" title="${esc(t("every agent answered by a stub: it cost nothing"))}">${t("dry run")}</span>` : ""}${gcTags(run)}</div>` +
+    `<div style="min-width:0"><div class="eyebrow"><span>${t("Run")}</span><span class="mono" style="text-transform:none;letter-spacing:0">${esc(run.runId)}</span>${cc}${shared}${driftChip(run)}${safetyChip(run)}${fanOutChip(run)}${run.dry ? `<span class="tag dry" title="${esc(t("every agent answered by a stub: it cost nothing"))}">${t("dry run")}</span>` : ""}${gcTags(run)}</div>` +
     `<div class="title-row"><h1 class="display">${esc(run.name)}</h1>${pill(run.state)}</div>` +
     (run.description ? `<p class="lede">${esc(run.description)}</p>` : "") +
     // Who started it (ODW extension): the local user, a named token's name, or trigger:<name>.
@@ -150,6 +150,47 @@ function safetyChip(run: RunDetail): string {
     ref: s.ref,
   });
   return `<span class="tag safety" role="button" tabindex="0" data-copy="odw restore ${esc(run.runId)}" title="${esc(tip)}">${t("safety snapshot")}</span>`;
+}
+
+/**
+ * How the run's parallel() and pipeline() calls came out (ODW extension):
+ * one chip — its ok slots of all of them — amber when any came back mostly
+ * null or below its minOk; the tooltip lists each, with why its slots failed.
+ */
+export function fanOutChip(run: Pick<RunDetail, "fanOuts">): string {
+  const all = run.fanOuts ?? [];
+  if (!all.length) return "";
+  const ok = all.reduce((n, f) => n + f.ok, 0);
+  const total = all.reduce((n, f) => n + f.total, 0);
+  const bad = all.some((f) => f.belowMinOk || (f.failed + f.null) * 2 > f.total);
+  const lines = all.map((f) => fanOutText(f));
+  const label = tn(all.length, "{n} fan-out: {ok}/{total} ok", "{n} fan-outs: {ok}/{total} ok", { ok, total });
+  return `<span class="tag fanout${bad ? " warn" : ""}" title="${esc(lines.join("\n"))}">${esc(label)}</span>`;
+}
+
+/** One fan-out in a line: `parallel() · review — 7/10 ok · 2 failed (rate_limit 2) · 1 null`. */
+export function fanOutText(f: {
+  call: string;
+  phase?: string | null;
+  total: number;
+  ok: number;
+  failed: number;
+  null: number;
+  reasons?: Record<string, number>;
+  required?: number;
+  belowMinOk?: boolean;
+}): string {
+  const parts = [t("{ok}/{total} ok", { ok: f.ok, total: f.total })];
+  if (f.failed) {
+    const why = Object.entries(f.reasons ?? {})
+      .sort((a, b) => b[1] - a[1])
+      .map(([reason, n]) => `${reason} ${n}`)
+      .join(", ");
+    parts.push(t("{n} failed", { n: f.failed }) + (why ? ` (${why})` : ""));
+  }
+  if (f.null) parts.push(t("{n} null", { n: f.null }));
+  if (f.belowMinOk) parts.push(t("below minOk ({n} needed)", { n: f.required ?? 0 }));
+  return `${f.call}${f.phase ? ` · ${f.phase}` : ""} — ${parts.join(" · ")}`;
 }
 
 /** The destructive git commands an agent ran (ODW extension), and how to get the work back. */
@@ -600,6 +641,23 @@ function graphTab(run: RunDetail, s: JobViewState, nowSec: number): string {
   );
 }
 
+/** A fanout_done event's counts, read defensively (ODW extension). */
+function fanOutOfEvent(e: WorkflowEvent): Parameters<typeof fanOutText>[0] {
+  const n = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+  const reasons = e.reasons !== null && typeof e.reasons === "object" && !Array.isArray(e.reasons) ? (e.reasons as Record<string, number>) : {};
+  return {
+    call: String(e.call ?? "parallel()"),
+    phase: typeof e.phase === "string" ? e.phase : null,
+    total: n(e.total),
+    ok: n(e.ok),
+    failed: n(e.failed),
+    null: n(e.null),
+    reasons,
+    required: n(e.required),
+    belowMinOk: e.belowMinOk === true,
+  };
+}
+
 function logRow(e: WorkflowEvent, i: number): string {
   const cls = EVT_CLASS[e.type] ?? "log";
   const label =
@@ -617,6 +675,8 @@ function logRow(e: WorkflowEvent, i: number): string {
     msg = `<b>${esc(String(e.label ?? ""))}</b> <span class="er">${esc(String(e.error ?? ""))}</span>`;
   else if (e.type.startsWith("command_"))
     msg = `<b>${esc(commandDetail(e))}</b>${e.type === "command_failed" && e.error ? ` <span class="er">${esc(String(e.error))}</span>` : ""}`;
+  // How a parallel() or pipeline() came out (ODW extension).
+  else if (e.type === "fanout_done") msg = esc(fanOutText(fanOutOfEvent(e)));
   else if (e.type === "cli_version")
     msg = `<b>${esc(String(e.adapter ?? ""))}</b> ${esc(String(e.version ?? e.error ?? ""))}`;
   else if (e.type.startsWith("agent_"))

@@ -350,6 +350,24 @@ export interface RunDetail extends RunSummary {
   trimmed?: { at: number; files: number };
   /** The working tree as it stood before the run's first in-place agent — what `odw restore <run>` puts back (ODW extension; src/safety.ts). */
   safetySnapshot?: SafetySnapshot;
+  /** How each parallel() and pipeline() came out, from its fanout_done event (ODW extension; src/fanout.ts). */
+  fanOuts?: FanOut[];
+}
+
+/** One settled parallel() or pipeline() call (ODW extension): its ok, failed and null slots. */
+export interface FanOut {
+  call: "parallel()" | "pipeline()";
+  phase: string | null;
+  total: number;
+  ok: number;
+  failed: number;
+  null: number;
+  /** Failed slots by reason. */
+  reasons: Record<string, number>;
+  /** The ok results its minOk asked for, and whether it fell short. */
+  required?: number;
+  belowMinOk?: boolean;
+  at: number | null;
 }
 
 /** A run's safety snapshot at refs/odw/safety/<run> (ODW extension). */

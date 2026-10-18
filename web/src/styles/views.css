@@ -687,6 +687,15 @@ ul.mcp li {
 .tag.safety::before {
   content: "⛑ ";
 }
+/* ---- fan-out health: a parallel()/pipeline() that came back mostly null (ODW extension) ---- */
+.tag.fanout::before {
+  content: "⫶ ";
+}
+.tag.fanout.warn {
+  border-color: var(--amber-line);
+  background: var(--amber-soft);
+  color: var(--amber-ink);
+}
 .denied.destructive-git li::before {
   content: "✗";
   left: 2px;

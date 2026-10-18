@@ -1506,3 +1506,36 @@ test("Review (ODW extension): kept diffs riskiest first, each reason shown; mark
   store.reviewAll = prevAll;
   store.capabilities = prevCaps;
 });
+
+test("fan-out health (ODW extension): a chip on the run's head, amber when one came back mostly null; a line in the logs", () => {
+  const view: JobViewState = {
+    cpNote: "",
+    tab: "logs",
+    selectedAi: null,
+    reviewAi: null,
+    zoom: 1,
+    logQuery: "",
+    logTypes: new Set(["agent", "phase", "log", "run"]),
+    logLimit: 600,
+    follow: true,
+    motion: false,
+  };
+  const healthy = { call: "pipeline()" as const, phase: null, total: 4, ok: 4, failed: 0, null: 0, reasons: {}, at: NOW - 60 };
+  const sick = { call: "parallel()" as const, phase: "Review", total: 10, ok: 3, failed: 6, null: 1, reasons: { rate_limit: 4, timeout: 2 }, required: 8, belowMinOk: true, at: NOW - 30 };
+  store.focusRun("20260101-000000-aaaaaa");
+  store.run = detail([], { fanOuts: [healthy] });
+  store.runEvents = [];
+  let html = renderJob(view, NOW);
+  assert.match(html, /<span class="tag fanout" title="pipeline\(\) — 4\/4 ok">1 fan-out: 4\/4 ok<\/span>/);
+  store.run = detail([], { fanOuts: [healthy, sick] });
+  store.runEvents = [{ ts: NOW - 30, type: "fanout_done", call: "parallel()", phase: "Review", total: 10, ok: 3, failed: 6, null: 1, reasons: { rate_limit: 4, timeout: 2 }, required: 8, belowMinOk: true }];
+  html = renderJob(view, NOW);
+  assert.match(
+    html,
+    /<span class="tag fanout warn" title="pipeline\(\) — 4\/4 ok\nparallel\(\) · Review — 3\/10 ok · 6 failed \(rate_limit 4, timeout 2\) · 1 null · below minOk \(8 needed\)">2 fan-outs: 7\/14 ok<\/span>/,
+  );
+  assert.match(html, /<span class="msg">parallel\(\) · Review — 3\/10 ok · 6 failed \(rate_limit 4, timeout 2\) · 1 null · below minOk \(8 needed\)<\/span>/);
+  store.run = detail([]);
+  assert.doesNotMatch(renderJob(view, NOW), /tag fanout/, "no fan-outs, no chip");
+  store.focusRun(null);
+});
