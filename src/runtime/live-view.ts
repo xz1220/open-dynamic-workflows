@@ -313,7 +313,7 @@ export function checkpointCommands(
 }
 
 /** One argument as a POSIX shell would need it typed. */
-function shellArg(arg: string): string {
+export function shellArg(arg: string): string {
   return /^[\w@%+=:,./-]+$/.test(arg) ? arg : `'${arg.replace(/'/g, "'\\''")}'`;
 }
 

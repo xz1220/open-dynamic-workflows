@@ -9,6 +9,9 @@
  * `GET /api/compare` serves; {@link formatComparison} is the CLI's table.
  *
  * Agents are matched across the runs, each at most once, in passes:
+ *   0. a run of `odw replay` (ODW extension; see ./replay) and the run it
+ *      replays an agent of: that agent and its replay, as matched by label
+ *      (they have the same) whatever else the original run labels alike;
  *   1. by label: a label each run gives exactly one agent;
  *   2. by the call key `odw resume` replays by (journal.resumeKey — the same
  *      prompt and options are the same call), in call order;
@@ -121,6 +124,8 @@ export interface CompareRunInput {
   odwVersion: string | null;
   sourceHash: string | null;
   resumedFrom: string | null;
+  /** For a run of `odw replay` (meta.replayOf; ODW extension): the run and agent it replays. */
+  replayOf?: { runId: string; agentId: number } | null;
   /** What it started with (its run_started event's `setup`); null for runs from before setups were recorded. */
   setup: RunSetup | null;
   cliVersions: Record<string, CliVersion>;
@@ -348,10 +353,17 @@ export function readCompareRun(store: RunStore, runId: string, nowMs = Date.now(
     odwVersion: str(meta.odwVersion),
     sourceHash: str(meta.sourceHash),
     resumedFrom: str(meta.resumedFrom),
+    replayOf: replayLinkOf(meta.replayOf),
     setup,
     cliVersions: cliVersionsOf(events),
     agents,
   };
+}
+
+/** meta.json's `replayOf` (a run of `odw replay`), when it is one (untrusted JSON). */
+function replayLinkOf(raw: unknown): { runId: string; agentId: number } | null {
+  if (!isRecord(raw) || typeof raw.runId !== "string" || typeof raw.agentId !== "number") return null;
+  return { runId: raw.runId, agentId: raw.agentId };
 }
 
 /** A run_started event's `setup`, when it is one (untrusted JSON). */
@@ -371,7 +383,7 @@ function durationOf(rec: AgentResultRecord | undefined): number | null {
 
 /** What changed from run `a` to run `b` (see the module comment). Pure. */
 export function compareRuns(a: CompareRunInput, b: CompareRunInput, limits: DiffLimits = {}): RunComparison {
-  const rows = pairAgents(a.agents, b.agents).map((pair) => agentRow(pair, limits));
+  const rows = pairAgents(a.agents, b.agents, replayed(a, b)).map((pair) => agentRow(pair, limits));
   const order = mergePhases(phasesOf(a.agents), phasesOf(b.agents));
   const index = (phase: string | null): number => order.indexOf(phase);
   const ids = new Map<AgentComparison, number>(rows.map((row, i) => [row, i]));
@@ -422,14 +434,34 @@ function notesOf(a: CompareRunInput, b: CompareRunInput): string[] {
     }
     if (!run.setup) notes.push(`run ${side} recorded no setup (a run from before odw 0.5): its settings are not compared`);
   }
-  if (a.workflowName && b.workflowName && a.workflowName !== b.workflowName) {
+  const replay = b.replayOf?.runId === a.runId ? { of: "A", by: "B", agentId: b.replayOf.agentId } : a.replayOf?.runId === b.runId ? { of: "B", by: "A", agentId: a.replayOf.agentId } : null;
+  if (replay) {
+    notes.push(`run ${replay.by} replays agent ${replay.agentId} of run ${replay.of} (odw replay): only that agent is compared with its replay`);
+  } else if (a.workflowName && b.workflowName && a.workflowName !== b.workflowName) {
     notes.push(`the runs are of different workflows: ${a.workflowName} and ${b.workflowName}`);
   }
   return notes;
 }
 
+/**
+ * When one run replays an agent of the other (`odw replay`; ODW extension):
+ * that agent and its replay — the replay run's agent — in A and in B.
+ */
+function replayed(a: CompareRunInput, b: CompareRunInput): { a: RunAgent; b: RunAgent } | null {
+  const find = (run: CompareRunInput, agentId: number | null): RunAgent | undefined =>
+    agentId === null ? run.agents[0] : run.agents.find((agent) => agent.agentId === agentId);
+  let pair: { a: RunAgent | undefined; b: RunAgent | undefined } | null = null;
+  if (b.replayOf?.runId === a.runId) pair = { a: find(a, b.replayOf.agentId), b: find(b, null) };
+  else if (a.replayOf?.runId === b.runId) pair = { a: find(a, null), b: find(b, a.replayOf.agentId) };
+  return pair?.a && pair.b ? { a: pair.a, b: pair.b } : null;
+}
+
 /** Pairs of A's and B's agents (see the module comment), then the agents one run has. */
-function pairAgents(as: RunAgent[], bs: RunAgent[]): Array<{ a: RunAgent | null; b: RunAgent | null; match: AgentMatch | null }> {
+function pairAgents(
+  as: RunAgent[],
+  bs: RunAgent[],
+  replay: { a: RunAgent; b: RunAgent } | null = null,
+): Array<{ a: RunAgent | null; b: RunAgent | null; match: AgentMatch | null }> {
   const pairs: Array<{ a: RunAgent | null; b: RunAgent | null; match: AgentMatch | null }> = [];
   const freeA = new Set(as);
   const freeB = new Set(bs);
@@ -438,12 +470,14 @@ function pairAgents(as: RunAgent[], bs: RunAgent[]): Array<{ a: RunAgent | null;
     freeB.delete(b);
     pairs.push({ a, b, match });
   };
+  // 0. An agent and its replay (ODW extension), by the label they share.
+  if (replay) pair(replay.a, replay.b, "label");
   // 1. A label each run gives exactly one agent.
   const onceA = uniqueLabels(as);
   const onceB = uniqueLabels(bs);
   for (const [label, a] of onceA) {
     const b = onceB.get(label);
-    if (b) pair(a, b, "label");
+    if (b && freeA.has(a) && freeB.has(b)) pair(a, b, "label");
   }
   // 2. The same call: its resume key, in call order.
   const byKey = new Map<string, RunAgent[]>();

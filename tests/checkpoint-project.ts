@@ -30,7 +30,10 @@ export interface Project {
   store: RunStore;
   configPath: string;
   /** Write a workflow body (after META) and execute it in-process. */
-  start(body: string, extra?: { resumedFrom?: { runId: string; dir: string } }): { id: string; run: Promise<string> };
+  start(
+    body: string,
+    extra?: { resumedFrom?: { runId: string; dir: string }; breaks?: { at: string[]; step: boolean }; args?: unknown },
+  ): { id: string; run: Promise<string> };
   /**
    * Stop every run still going — a failed assertion can leave one waiting at a
    * checkpoint, and a waiting run keeps the process alive — then remove the root.
@@ -65,7 +68,14 @@ export function project(extra: Record<string, unknown> = {}): Project {
     start(body, more = {}) {
       const script = join(root, `wf-${++n}.js`);
       writeFileSync(script, META + body);
-      const id = store.create({ script, args: null, source: root, configPath, resumedFrom: more.resumedFrom ?? null });
+      const id = store.create({
+        script,
+        args: more.args ?? null,
+        source: root,
+        configPath,
+        resumedFrom: more.resumedFrom ?? null,
+        breaks: more.breaks ?? null,
+      });
       const started = { id, run: executeRun(store.runDir(id)) };
       runs.push(started);
       return started;

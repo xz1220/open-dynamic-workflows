@@ -33,6 +33,9 @@
  *   odw run <wf> --dry | --record [--record-to FILE]    (stub replies; a run kept as a test case)
  *   odw note <text…> | odw notes [<run_id>] [--json]   (the run's notes board, runtime/notes-view.ts)
  *   odw estimate <wf> [--args JSON|@file] [--json]; odw run --estimate [--yes]   (from earlier runs, runtime/estimate-cli.ts)
+ *   odw replay <run_id> --agent <id|label> [--prompt @file|TEXT] [--adapter A] [--model M]   (runtime/replay.ts)
+ *   odw run <wf> --break <phase|label>[,…] | --step   (a checkpoint before them; src/breaks.ts)
+ *   odw check <script.js|name> [--json]   (the loader's checks, with a code frame; src/check.ts)
  */
 
 import { spawn } from "node:child_process";
@@ -50,6 +53,8 @@ import { startEgressProxy, type EgressProxyConfig } from "./adapters/egress.js";
 import { sandboxBanner, sandboxFlagOf, withSandboxFlag, type SandboxFlag } from "./adapters/sandbox.js";
 import type { Adapter, Config, PermissionTier, TrustLevel } from "./adapters/types.js";
 import { killAllAgentProcesses } from "./adapters/runner.js";
+import { parseBreakNames } from "./breaks.js";
+import { cmdCheck } from "./check.js";
 import { checkEdit } from "./checkpoint.js";
 import { CHECKPOINT_NOTE_MAX, isCheckpointId } from "./control.js";
 import { runDoctor, type CheckStatus } from "./doctor.js";
@@ -75,9 +80,9 @@ import {
 import { compareRuns, findComparedAgents, formatAgentComparison, formatComparison, readCompareRun } from "./runtime/compare.js";
 import { editBlocker, editorCommand, editPayload, readPayloadOption } from "./runtime/checkpoint-edit.js";
 import { startRun, startRunFromSource, waitFor } from "./runtime/launcher.js";
-import { attachRun, bannerLines, checkpointCommands, fallbackLines, formatEvent, formatUsage, resolveRunMode, runawayLines, type RunMode } from "./runtime/live-view.js";
+import { attachRun, bannerLines, checkpointCommands, fallbackLines, formatEvent, formatUsage, resolveRunMode, runawayLines, shellArg, type RunMode } from "./runtime/live-view.js";
 import { isRunActive, RunObserver } from "./runtime/run-liveness.js";
-import { RunStore, TERMINAL_STATES } from "./runtime/run-store.js";
+import { RunStore, TERMINAL_STATES, type ReplayLink } from "./runtime/run-store.js";
 import { detail, evalTagOf, summarize, type RunDetail } from "./runtime/runs-view.js";
 import { spendLines } from "./runtime/spend-view.js";
 import { DEADLINE_EXIT_CODE, deadlineReport, parseDeadline, stoppedByDeadline } from "./runtime/deadline.js";
@@ -87,6 +92,7 @@ import { triggerLines } from "./runtime/trigger-route.js";
 import { BUNDLE_EXT, BundleError, bundleRedactor, createBundle, DEFAULT_BUNDLE_MAX_BYTES, isBundleRunId, openBundle, type OpenedBundle } from "./runtime/bundle.js";
 import { generateToken, isValidToken } from "./runtime/serve-auth.js";
 import { parsePublicUrl, publicUrlHasPath } from "./runtime/approve-links.js";
+import { planReplay, readPromptOption, ReplayError, startReplay } from "./runtime/replay.js";
 import { printAgentLogs } from "./runtime/transcript-view.js";
 import { cmdNote, cmdNotes } from "./runtime/notes-view.js";
 import { cmdEstimate, estimateBeforeRun } from "./runtime/estimate-cli.js";
@@ -146,6 +152,8 @@ export const COMMANDS = [
   "pull",
   "test",
   "estimate",
+  "replay",
+  "check",
 ] as const;
 
 export type Command = (typeof COMMANDS)[number];
@@ -206,6 +214,10 @@ export function helpText(): string {
     "  odw status|logs|attach <run_id> --on ssh://host    the same command, run by the odw over there",
     "  odw approve|reject|pause|stop|resume <run_id> --on ssh://host   the same, there (a pulled copy is never answered here)",
     "  odw pull <run_id> --from ssh://host[/dir]          copy a remote run here (again while it runs): diff, apply, compare",
+    "  odw replay <run_id> --agent <id|label>             run that one agent again as a new run, at the commit it saw (ODW extension)",
+    "                                                     --prompt @file|TEXT, --adapter A, --model M replace its own; then odw compare",
+    "  odw run <wf> --break <phase|label>[,…] | --step    stop for a decision before those phases/agents, or every phase (ODW extension)",
+    "  odw check <script.js|name> [--json]                check a workflow loads: errors with line, column and a code frame",
     "",
     "Options:",
     "  --args JSON|@file   workflow input (JSON, @file.json, or a raw string)",
@@ -358,6 +370,10 @@ export async function main(argv: string[]): Promise<number> {
         return await cmdTest(rest);
       case "estimate":
         return cmdEstimate(rest, parseArgsValue);
+      case "replay":
+        return await cmdReplay(rest);
+      case "check":
+        return cmdCheck(rest);
       default:
         process.stderr.write(`odw: unknown command '${command}'\n\n${helpText()}\n`);
         return 2;
@@ -533,6 +549,8 @@ async function cmdRun(rest: string[]): Promise<number> {
       "record-to": { type: "string" },
       estimate: { type: "boolean" },
       yes: { type: "boolean", short: "y" },
+      break: { type: "string", multiple: true },
+      step: { type: "boolean" },
     },
   });
   const ref = positionals[0];
@@ -552,7 +570,19 @@ async function cmdRun(rest: string[]): Promise<number> {
   if (values.estimate && (values.on !== undefined || values.sync !== undefined)) {
     throw new UsageError("odw run: --estimate reads this machine's runs; with --on, run odw estimate there");
   }
-  if (values.on !== undefined || values.sync !== undefined) return cmdRunRemote(ref, values);
+  if (values.on !== undefined || values.sync !== undefined) {
+    if (values.break !== undefined || values.step !== undefined) throw new UsageError("odw run: --break and --step run here; the remote run cannot take them (yet)");
+    return cmdRunRemote(ref, values as Record<string, string | boolean | undefined>);
+  }
+  // `--break`/`--step` (ODW extension; see breaks.ts): where the run stops for a decision.
+  let breaks: { at: string[]; step: boolean } | null = null;
+  if (values.break !== undefined || values.step === true) {
+    try {
+      breaks = { at: values.break !== undefined ? parseBreakNames(values.break) : [], step: values.step === true };
+    } catch (err) {
+      throw new UsageError(`odw run: ${(err as Error).message}`);
+    }
+  }
 
   let budgetTotal: number | null = null;
   if (values.budget !== undefined) {
@@ -593,6 +623,7 @@ async function cmdRun(rest: string[]): Promise<number> {
     dry: values.dry === true,
     record,
     deadlineSeconds,
+    breaks,
   });
   if (record) process.stderr.write(`recording: once ${runId} ends, it is a case of ${record.file} (odw test ${record.workflow})\n`);
   if (!values.dry) {
@@ -1411,6 +1442,73 @@ function cmdCompare(rest: string[]): number {
   return 0;
 }
 
+/**
+ * `odw replay <run_id> --agent <id|label> [--prompt @file|TEXT] [--adapter A]
+ * [--model M]` (ODW extension; runtime/replay.ts): that one agent's saved call
+ * dispatched again as a new run — at the commit an isolated one started from
+ * — in the run modes of `odw run`; then how to compare it with the original.
+ */
+async function cmdReplay(rest: string[]): Promise<number> {
+  const { values, positionals } = parseArgs({
+    args: rest,
+    allowPositionals: true,
+    options: {
+      agent: { type: "string" },
+      prompt: { type: "string" },
+      adapter: { type: "string" },
+      model: { type: "string" },
+      config: { type: "string" },
+      "runs-root": { type: "string" },
+      wait: { type: "boolean" },
+      fg: { type: "boolean" },
+      detach: { type: "boolean", short: "d" },
+      timeout: { type: "string" },
+    },
+  });
+  const [runId, extra] = positionals;
+  if (!runId || extra !== undefined || values.agent === undefined) {
+    throw new UsageError("usage: odw replay <run_id> --agent <id|label> [--prompt @file|TEXT] [--adapter A] [--model M]");
+  }
+  for (const [flag, value] of [["prompt", values.prompt], ["adapter", values.adapter], ["model", values.model]] as const) {
+    if (value !== undefined && value.trim() === "") throw new UsageError(`odw replay: --${flag} must not be empty`);
+  }
+  const start = resolveStartMode("run", values);
+  const store = storeFrom(values);
+  if (!store.exists(runId)) {
+    process.stderr.write(`no such run: ${runId}\n`);
+    return 1;
+  }
+  const rows = agentRows(store, runId);
+  const row = findAgent(rows, runId, values.agent, "replay");
+  if (!row) return 1;
+  let replayRun: { runId: string; store: RunStore };
+  try {
+    const plan = planReplay(store, runId, row.agentId, {
+      ...(values.prompt !== undefined ? { prompt: readPromptOption(values.prompt) } : {}),
+      ...(values.adapter !== undefined ? { adapter: values.adapter } : {}),
+      ...(values.model !== undefined ? { model: values.model } : {}),
+      ...(values.config !== undefined ? { configPath: values.config } : {}),
+    });
+    replayRun = startReplay(plan);
+    process.stderr.write(`replaying agent ${row.agentId} (${sanitizeText(row.label, 80)}) of ${runId}\n`);
+    for (const note of plan.notes) process.stderr.write(`  ${sanitizeText(note, 200)}\n`);
+  } catch (err) {
+    if (err instanceof ReplayError) {
+      process.stderr.write(`odw replay: ${err.message}\n`);
+      return 1;
+    }
+    throw err;
+  }
+  const code = await afterStart(replayRun.store, replayRun.runId, start.mode, { timeoutMs: start.timeoutMs, hint: "started replay" });
+  // The original by its label when no other agent of its run has it, else by its id in the original run.
+  const unique = rows.filter((r) => r.label === row.label).length === 1;
+  const ref = unique ? row.label : String(row.agentId);
+  const flags = storeFlagsFor(replayRun.store);
+  const words = [runId, replayRun.runId, "--agent", ref, ...flags].map(shellArg).join(" ");
+  process.stderr.write(`compare it with the original: odw compare ${words}\n`);
+  return code;
+}
+
 /** The one agent `ref` names (an id or a label), or null once the reason it is none is printed. */
 function findAgent(rows: AgentRow[], runId: string, ref: string, cmd: string): (AgentRow & { agentId: number }) | null {
   const matches = matchAgents(rows, ref);
@@ -1427,7 +1525,7 @@ function findAgent(rows: AgentRow[], runId: string, ref: string, cmd: string): (
   }
   const row = matches[0]!;
   if (row.agentId === null) {
-    const kept = cmd === "logs" ? "transcript" : "diff";
+    const kept = cmd === "logs" ? "transcript" : cmd === "replay" ? "call to replay" : "diff";
     process.stderr.write(`that agent of run ${runId} has no id (a run from before agent ids): it kept no ${kept}\n`);
     return null;
   }
@@ -1719,6 +1817,8 @@ async function relaunch(
       ...opts,
       allowInvalid: true,
       origin: (meta.origin as string | null) ?? null,
+      // A replay's rerun replays the same agent, at the same base commit (ODW extension).
+      ...(meta.origin === "replay" && meta.replayOf !== null && typeof meta.replayOf === "object" ? { replayOf: meta.replayOf as ReplayLink } : {}),
     });
   } else {
     started = startRun(script, opts);

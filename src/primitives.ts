@@ -96,6 +96,13 @@
  * a forecast over the gate waits at a checkpoint for a person's go, and a
  * rejection throws a recoverable CostGateRejected (ODW extensions; see
  * ./forecast). An agent()'s `costGate` does the same for that one agent.
+ *
+ * What each agent() call was asked — its prompt, its options, the adapter it
+ * started on, the model it asked for — is saved as it starts, for `odw
+ * replay` (an ODW extension; see ./runtime/replay), and an isolated agent's
+ * agent_started event names the commit its worktree checks out (`base`).
+ * Under `odw run --break`/`--step` (an ODW extension; see ./breaks) the
+ * script's calls wait at the run's breaks before they start.
  */
 
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -111,15 +118,16 @@ import { sandboxView, type SandboxView } from "./adapters/sandbox.js";
 import { adapterDisplayName, type Adapter, type PermissionTier, type TrustLevel } from "./adapters/types.js";
 import { addUsage, estimatedUsage, type Usage } from "./adapters/usage.js";
 import type { AgentRequest } from "./bridge.js";
+import { applyArgsEdit } from "./breaks.js";
 import { branchName, ChangeRecorder, type AgentChanges, type KeptChanges } from "./changes.js";
 import { CheckpointTimeout, createCheckpoint, type CheckpointOptions, type CheckpointResult } from "./checkpoint.js";
 import { spentTokens, type RunContext } from "./context.js";
-import { AdapterExecutionError, AgentError, RunawayError, UnmetExpectationError, WorkflowScriptError, isFatalError } from "./errors.js";
+import { AdapterExecutionError, AgentError, RunStopped, RunawayError, UnmetExpectationError, WorkflowScriptError, isFatalError } from "./errors.js";
 import { AGENT_FAILED, AGENT_FINISHED, AGENT_STARTED, HANDOFF, LOG, PHASE_STARTED, event } from "./events.js";
 import { ExecError, createExec, execStep, type ExecOptions, type ExecResult } from "./exec.js";
 import { CostGateRejected, costGateTitle, readCostGate, type CostGate, type CostHistory } from "./forecast.js";
 import { Expectations, planChecks, scopeOnlyPlan, type AgentChecks, type ExpectOptions } from "./expect.js";
-import { resumeKey, type AgentResultRecord } from "./journal.js";
+import { resumeKey, type AgentCallRecord, type AgentResultRecord } from "./journal.js";
 import { hasLimits, readLimits, type AgentLimits, type LimitHit, type LimitSpec } from "./limits.js";
 // Value import of the loader is safe: loader.ts only type-imports from here, so
 // the module cycle is erased at compile time and never exists at runtime.
@@ -132,6 +140,7 @@ import { FanOut } from "./throttle.js";
 import { fmtUsd } from "./tty.js";
 import { TranscriptRecorder } from "./transcript.js";
 import { resolveWorkflow } from "./workflows/resolve.js";
+import { headCommit } from "./workspace.js";
 
 export interface AgentOptions {
   /**
@@ -350,6 +359,26 @@ export function createPrimitives(
   };
 
   /**
+   * Save what a call was asked as it starts (ODW extension; see ./journal
+   * AgentCallRecord) — never failing the agent: an error is logged.
+   */
+  const saveCall = (call: Omit<AgentCallRecord, "options">, opts: AgentOptions): void => {
+    if (!ctx.saveAgentCall) return;
+    try {
+      const options = JSON.parse(JSON.stringify(opts ?? {}) ?? "{}") as Record<string, unknown>;
+      ctx.saveAgentCall({ ...call, options });
+    } catch (err) {
+      ctx.emit(
+        event(LOG, {
+          message: `could not save what agent ${call.agentId} was asked (odw replay cannot run it again): ${err instanceof Error ? err.message : String(err)}`,
+          label: call.label,
+          phase: call.phase,
+        }),
+      );
+    }
+  };
+
+  /**
    * `odw resume`: a call the resumed run already completed returns a copy of
    * its saved value at once. It takes no scheduler slot and adds nothing to
    * the dispatch count or the budget, but it shows like any agent — started
@@ -360,6 +389,7 @@ export function createPrimitives(
     agentId: number,
     key: string,
     recorded: AgentResultRecord,
+    prompt: string,
     opts: AgentOptions,
     phase: string | null,
   ): Promise<unknown> => {
@@ -380,6 +410,7 @@ export function createPrimitives(
     const scoped = Array.isArray(opts.scope) && opts.scope.length > 0 ? { scope: [...opts.scope] } : {};
     const startedEv = event(AGENT_STARTED, { agentId, label, phase, adapter, key, ...tier, ...marks, ...scoped });
     ctx.emit(startedEv);
+    saveCall({ agentId, label, phase, prompt, adapter, model: opts.model ?? null }, opts);
     const kept = await carryChanges(recorded, agentId, (message) =>
       ctx.emit(event(LOG, { message: `${label}:${agentId}: ${message}`, agentId, label, phase })),
     );
@@ -637,7 +668,7 @@ export function createPrimitives(
     // own options only: a phase's defaults stay out of it (see ./journal).
     const key = resumeKey(prompt, opts);
     const recorded = ctx.replay?.take(key);
-    if (recorded) return replay(agentId, key, recorded, opts, activePhase);
+    if (recorded) return replay(agentId, key, recorded, prompt, opts, activePhase);
     // The adapter and model its phase gives a call that names neither (ODW extension).
     const defaults = activePhase !== null ? phaseDefaults.get(activePhase) : undefined;
     const adapterChoice = opts.adapter ?? defaults?.adapter;
@@ -771,6 +802,9 @@ export function createPrimitives(
         turn?.started();
         // From now on, what it changes in place beside another scoped call may be that call's.
         claim?.start();
+        // The commit an isolated agent's worktree checks out (ODW extension):
+        // the run's pinned one (`odw replay`), else HEAD as it starts.
+        const base = opts.isolation === "worktree" ? (ctx.worktreeBase ?? (await headCommit(ctx.source))) : null;
         const startedEv = event(AGENT_STARTED, {
           agentId,
           label: display,
@@ -787,8 +821,11 @@ export function createPrimitives(
           // resume key, and the model it asked for (a tier keeps its @ name).
           key,
           ...(model !== undefined ? { model } : {}),
+          ...(base ? { base } : {}),
         });
         ctx.emit(startedEv);
+        // What it was asked, for `odw replay` (ODW extension).
+        saveCall({ agentId, label: display, phase: activePhase, prompt, adapter: adapter.name, model: model ?? null, ...(base ? { base } : {}) }, opts);
         // An adapter that runs another tier than asked, or one ODW cannot
         // enforce on it, is said once per run — never silently. (The plan is
         // the chain's first adapter's: see ./routing.)
@@ -818,7 +855,8 @@ export function createPrimitives(
         const notes = notesOn ? openNotes(agentId, display) : undefined;
         let outcome;
         try {
-          outcome = await ctx.bridge.run(notes ? { ...request, notes: notes.prompt } : request, {
+          const pinned: AgentRequest = base ? { ...request, base } : request;
+          outcome = await ctx.bridge.run(notes ? { ...pinned, notes: notes.prompt } : pinned, {
             signal,
             // The agent process's ODW_AGENT_ID.
             agentId,
@@ -1119,7 +1157,7 @@ export function createPrimitives(
   };
 
   const agent = (prompt: string, opts: AgentOptions = {}): Promise<unknown> =>
-    (opts?.costGate === undefined ? dispatch(prompt, opts) : agentGate(prompt, opts).then(() => dispatch(prompt, opts))).catch((err: unknown) => {
+    held(opts?.label, () => (opts?.costGate === undefined ? dispatch(prompt, opts) : agentGate(prompt, opts).then(() => dispatch(prompt, opts)))).catch((err: unknown) => {
       // A fatal error ends the run wherever it arose — in the slot or before
       // it (an unknown adapter): the scheduler records it as the outcome and
       // aborts the agents still running.
@@ -1343,6 +1381,11 @@ export function createPrimitives(
     }
     ctx.currentPhase = labelled;
     ctx.emit(event(PHASE_STARTED, { phase: labelled }));
+    // `--break`/`--step` (ODW extension; see ./breaks): the phase's work waits for a decision.
+    if (ctx.breaks?.atPhase(title, labelled)) {
+      const breaks = ctx.breaks;
+      breaks.hold(() => atPhase(labelled, () => askBreak(`Break before phase ${labelled}`, { phase: labelled })));
+    }
   };
 
   const log = (message: unknown): void => {
@@ -1436,6 +1479,63 @@ export function createPrimitives(
       throw err;
     });
 
+  /** Run `fn` with the phase cursor at `phase`: what a call reads as it starts. */
+  const atPhase = <T>(phase: string | null, fn: () => T): T => {
+    const saved = ctx.currentPhase;
+    ctx.currentPhase = phase;
+    try {
+      return fn();
+    } finally {
+      ctx.currentPhase = saved;
+    }
+  };
+
+  /**
+   * Start a call — at once when no break holds it, else once the breaks in
+   * its way are answered (ODW extension; see ./breaks), in the phase it was
+   * called in. `label`: an agent()'s, which may have a break of its own.
+   */
+  function held<T>(label: string | undefined, fn: () => Promise<T>): Promise<T> {
+    const wait = ctx.breaks?.before(label, () => askBreak(`Break before agent ${label}`, { agent: label! }));
+    if (!wait) return fn();
+    const phase = ctx.currentPhase;
+    return wait.then(() => atPhase(phase, fn));
+  }
+
+  /**
+   * Ask a break's checkpoint (ODW extension; see ./breaks): the run so far as
+   * its payload; a rejection stops the run, an approval with edited `args`
+   * changes the run's args in place.
+   */
+  const askBreak = async (title: string, before: { phase: string } | { agent: string }): Promise<void> => {
+    const payload = { before, ...breakState(), args: ctx.args };
+    const result = await checkpoint(title, { payload });
+    if (!result.approved) {
+      const stop = new RunStopped(`rejected at the ${title.charAt(0).toLowerCase()}${title.slice(1)}${result.note ? `: ${result.note}` : ""}`);
+      ctx.scheduler.abort(stop);
+      throw stop;
+    }
+    if (!result.edited) return;
+    const taken = applyArgsEdit(ctx.args, result.payload);
+    const message =
+      "refused" in taken
+        ? `${title}: approved with an edit, but its args were not taken — ${taken.refused}; the run goes on with the args it had`
+        : taken.changed.length === 0
+          ? `${title}: approved with an edit that leaves args as they were (only args are taken from it)`
+          : `${title}: approved with edited args — what the script reads from now on sees ${taken.changed.map((key) => `args.${key}`).join(", ")} changed ` +
+            "(what it read before the answer, such as the prompt of a call the break held, keeps the old value; odw rerun and resume start from the original args)";
+    ctx.emit(event(LOG, { message, ...("refused" in taken ? {} : { argsEdited: taken.changed }) }));
+  };
+
+  /** The run so far, for a break's payload. */
+  const breakState = (): Record<string, unknown> => {
+    try {
+      return { ...(ctx.breaks?.soFar?.() ?? {}) };
+    } catch (err) {
+      return { soFar: `[could not be read: ${err instanceof Error ? err.message : String(err)}]` };
+    }
+  };
+
   return {
     agent: (prompt, opts) => handled(agent(prompt, opts)),
     parallel: (thunks, opts) => handled(parallel(thunks, opts)),
@@ -1443,10 +1543,10 @@ export function createPrimitives(
     phase,
     log,
     budget,
-    workflow: (nameOrRef, childArgs) => handled(workflow(nameOrRef, childArgs)),
+    workflow: (nameOrRef, childArgs) => handled(held(undefined, () => workflow(nameOrRef, childArgs))),
     validate,
-    exec: (command, opts) => handled(exec(command, opts)),
-    checkpoint: (title, opts) => handled(checkpoint(title, opts)),
+    exec: (command, opts) => handled(held(undefined, () => exec(command, opts))),
+    checkpoint: (title, opts) => handled(held(undefined, () => checkpoint(title, opts))),
   };
 }
 

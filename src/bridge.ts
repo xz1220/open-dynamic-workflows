@@ -215,6 +215,12 @@ export interface AgentRequest {
    * `fallback.handoff` setting.
    */
   handoff?: boolean;
+  /**
+   * ODW extension: the commit an isolated agent's worktree checks out — the
+   * `base` of its agent_started event — in place of the source's HEAD at the
+   * time. A full commit id; unset, HEAD.
+   */
+  base?: string;
 }
 
 /** The persona framing injected for `agentType`, on top of the independence preamble. */
@@ -1178,6 +1184,8 @@ export class Bridge {
       // Background work left running fails a run at once only under "fail",
       // and not with `expect`, which counts it as a miss (ODW extensions).
       orphanFails: settings.orphanedBackground === "fail" && !options.expect,
+      // Its worktree's commit, pinned where its agent_started event says (ODW extension).
+      ...(request.base !== undefined ? { base: request.base } : {}),
     };
     const limits: CliLimits = {
       timeout: adapter.timeout ?? settings.timeout ?? undefined,
@@ -1730,6 +1738,7 @@ export class Bridge {
       untrusted: call.untrusted === true,
       onRefused: (message: string) =>
         this.noteOnce(`refused:${message}`, message, { trust: "untrusted" }, call.onNote),
+      ...(call.base !== undefined ? { base: call.base } : {}),
     };
     return this.inCallWorkspace(plan.workspaceMode, setup, call, signal, async (ws) => {
       let promptFile = "";
@@ -1932,6 +1941,8 @@ interface CallEnv {
   orphanFails?: boolean;
   /** A fallback hands the work over (ODW extension; see ./handoff): what that takes, over the whole call. */
   handoff?: HandoffState;
+  /** The commit its worktree checks out in place of HEAD (ODW extension; AgentRequest.base). */
+  base?: string;
 }
 
 /** What a call that hands its work over on a fallback keeps (an ODW extension; see ./handoff). */

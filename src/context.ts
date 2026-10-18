@@ -15,8 +15,9 @@ import type { WaitingCheckpoint } from "./checkpoint.js";
 import { NullControl, type Control } from "./control.js";
 import { BudgetExhausted } from "./errors.js";
 import { EGRESS_DENIED, LOG, NullSink, event, type EventSink, type WorkflowEvent } from "./events.js";
+import type { Breaks } from "./breaks.js";
 import type { CostHistory } from "./forecast.js";
-import type { AgentResultRecord, ReplayJournal } from "./journal.js";
+import type { AgentCallRecord, AgentResultRecord, ReplayJournal } from "./journal.js";
 import { quotaPauseMessage, type QuotaPauseChange } from "./quota-wait.js";
 import { redactorFor, type Redactor } from "./redact.js";
 import type { NotesBoard } from "./notes.js";
@@ -121,6 +122,24 @@ export interface RunContext {
    */
   replay?: ReplayJournal;
   /**
+   * Save what an agent() call was asked as it starts (ODW extension; the
+   * worker writes the run directory's `agents/<agentId>.call.json`, which
+   * `odw replay` reads). Absent where nothing is persisted. It may throw:
+   * the agent still runs, and the failure is logged.
+   */
+  saveAgentCall?: (call: AgentCallRecord) => void;
+  /**
+   * The commit every isolated agent's worktree checks out, in place of the
+   * source's HEAD (ODW extension: a run of `odw replay` starts its agent
+   * where the original started). Absent: each one's HEAD as it starts.
+   */
+  worktreeBase?: string;
+  /**
+   * Where `odw run --break`/`--step` stops the run for a person (ODW
+   * extension; see ./breaks). Shared like `seq`; absent: no breaks.
+   */
+  breaks?: Breaks;
+  /**
    * checkpoint() (ODW extension): told when a checkpoint starts waiting for a
    * person (`waiting` true) and when it stops, so the worker can show it in
    * status.json and fire the "waiting" hooks. Absent for in-process runs. It
@@ -174,6 +193,9 @@ export interface BuildContextOptions {
   agentTranscriptPaths?: (agentId: number) => TranscriptPaths;
   agentHandoffPath?: (agentId: number) => string;
   replay?: ReplayJournal;
+  saveAgentCall?: (call: AgentCallRecord) => void;
+  worktreeBase?: string;
+  breaks?: Breaks;
   onCheckpoint?: (cp: WaitingCheckpoint, waiting: boolean) => void;
   /** Where an agent's schema file goes for a CLI that reads one (the bridge's `agentSchemaPath`). */
   agentSchemaPath?: (agentId: number) => string;
@@ -276,6 +298,9 @@ export function buildContext(config: Config, options: BuildContextOptions = {}):
     agentTranscriptPaths: options.agentTranscriptPaths,
     agentHandoffPath: options.agentHandoffPath,
     replay: options.replay,
+    saveAgentCall: options.saveAgentCall,
+    worktreeBase: options.worktreeBase,
+    breaks: options.breaks,
     onCheckpoint: options.onCheckpoint,
     redactor,
     notes: options.notes,

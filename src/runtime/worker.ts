@@ -29,6 +29,7 @@ import { buildContext, spentTokens, type RunContext } from "../context.js";
 import { deciderText, PAUSED, RUNNING, type CheckpointRequest } from "../control.js";
 import { RunStopped, WorkflowScriptError, isFatalError } from "../errors.js";
 import { AGENT_STARTED, LOG, RUN_FAILED, RUN_FINISHED, RUN_STARTED, RUN_STOPPED, event } from "../events.js";
+import { Breaks, breakSpecOf, runSoFar } from "../breaks.js";
 import { ReplayJournal } from "../journal.js";
 import { loadWorkflowScript, scanDualCompat } from "../loader.js";
 import { NotesBoard } from "../notes.js";
@@ -38,6 +39,7 @@ import type { QuotaPause } from "../quota-wait.js";
 import { redactorFor, type Redactor } from "../redact.js";
 import type { Scheduler } from "../scheduler.js";
 import { applyRunTrust, resolveRunTrust, untrustedConfigSwap } from "../untrusted.js";
+import { isCommitId } from "../workspace.js";
 import { pluginOrigin } from "../workflows/plugins.js";
 import { dryResponder, mockConfig, mockRunner, noSleep, type MockResponder } from "../wftest/mock.js";
 import { recordFixture } from "../wftest/record.js";
@@ -239,6 +241,13 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
       },
     });
     const replay = replayJournal(meta);
+    // `odw run --break`/`--step` (ODW extension; see ../breaks): where the run stops for a person.
+    const breakSpec = breakSpecOf(meta.breaks);
+    const breaks = breakSpec
+      ? new Breaks(breakSpec, () => runSoFar(store.readEvents(runId), store.listAgentResults(runId)))
+      : undefined;
+    // A run of `odw replay` (ODW extension; see ./replay): its agent starts where the original did.
+    const replayOf = replayLinkOf(meta);
     const waiting = new Map<number, WaitingCheckpoint>();
     if (config.settings.recordVersions) {
       versions = new CliVersions({
@@ -288,6 +297,10 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
       agentSchemaPath: (agentId) => store.agentSchemaPath(runId, agentId),
       replay,
       costHistory,
+      // What each agent() call was asked, as agents/<agentId>.call.json, for `odw replay` (ODW extension).
+      saveAgentCall: (call) => store.writeAgentCall(runId, call),
+      ...(replayOf?.base ? { worktreeBase: replayOf.base } : {}),
+      breaks,
       onCliRun: cliVersions && ((adapter) => cliVersions.note(adapter)),
       // Each mocked agent is answered knowing its label and phase, from its agent_started event.
       ...(mock ? { bridge: { runner: mockRunner(mock, (agentId) => startedAgent(store, runId, agentId)), sleep: noSleep } } : {}),
@@ -345,6 +358,16 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
     }
     // An untrusted run says so, and what of the repository's config it refused (ODW extension).
     for (const message of trusted.notes) sink.emit(event(LOG, { message, trust: "untrusted" }));
+    if (breaks) sink.emit(event(LOG, { message: breaks.describe() }));
+    if (replayOf) {
+      sink.emit(
+        event(LOG, {
+          message:
+            `replaying agent ${replayOf.agentId} (${replayOf.label}) of run ${replayOf.runId}` +
+            (replayOf.base ? ` — an isolated agent, at the commit it started from, ${replayOf.base.slice(0, 12)}` : ""),
+        }),
+      );
+    }
     if (replay) {
       sink.emit(
         event(LOG, {
@@ -421,6 +444,10 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
       throw fatal;
     }
 
+    // A --break name nothing matched is said, once the run is done (ODW extension).
+    for (const name of breaks?.unmatched() ?? []) {
+      sink.emit(event(LOG, { message: `--break ${JSON.stringify(name)}: no phase title and no agent label of this run matched it` }));
+    }
     // The workflow's own value: token shapes are redacted, the values of variables are not (ODW extension).
     const kept = runRedactor.shapes.record({ value: result });
     store.writeResult(runId, kept.value, "redacted" in kept);
@@ -584,6 +611,14 @@ function replayJournal(meta: Record<string, unknown>): ReplayJournal | undefined
   return new ReplayJournal(meta.resumedFrom, source.listAgentResults(sourceId), (agentId) =>
     source.agentDiffPath(sourceId, agentId),
   );
+}
+
+/** The agent a run of `odw replay` dispatches again (meta.replayOf, ODW extension), well-formed; null for any other run. */
+function replayLinkOf(meta: Record<string, unknown>): { runId: string; agentId: number; label: string; base?: string } | null {
+  const r = meta.replayOf as Record<string, unknown> | null | undefined;
+  if (!r || typeof r !== "object" || typeof r.runId !== "string" || typeof r.agentId !== "number") return null;
+  const label = typeof r.label === "string" ? r.label : String(r.agentId);
+  return { runId: r.runId, agentId: r.agentId, label, ...(isCommitId(r.base) ? { base: r.base } : {}) };
 }
 
 /** The Claude Code plugin a run's workflow came from (meta.plugin, ODW extension); null for any other run. */

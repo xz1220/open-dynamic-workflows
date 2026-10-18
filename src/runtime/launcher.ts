@@ -23,7 +23,7 @@ import { isSeaBinary } from "../sea.js";
 import { resolveRunTrust } from "../untrusted.js";
 import { resolveWorkflow, type ResolvedWorkflow } from "../workflows/resolve.js";
 import { RunObserver } from "./run-liveness.js";
-import { RunStore, type EvalRunTag, type ResolveLink } from "./run-store.js";
+import { RunStore, type BreakSpec, type EvalRunTag, type ReplayLink, type ResolveLink } from "./run-store.js";
 
 export interface StartRunOptions {
   args?: unknown;
@@ -75,6 +75,10 @@ export interface StartRunOptions {
   context?: Record<string, unknown> | null;
   /** `--deadline <seconds>` (ODW extension): the worker stops the run gracefully once they pass. */
   deadlineSeconds?: number | null;
+  /** The agent this run dispatches again for `odw replay` (ODW extension; see ./replay), kept in its meta. */
+  replayOf?: ReplayLink | null;
+  /** `odw run --break`/`--step` (ODW extension; see ../breaks): where it stops for a person, kept in its meta. */
+  breaks?: BreakSpec | null;
 }
 
 /**
@@ -117,6 +121,8 @@ function commonCreateInput(options: StartRunOptions, source: string, workflowNam
     record: options.record ?? null,
     context: options.context ?? null,
     deadlineSeconds: options.deadlineSeconds ?? null,
+    replayOf: options.replayOf ?? null,
+    breaks: options.breaks ?? null,
   };
 }
 
