@@ -322,7 +322,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandleCont
       return;
     }
     if (method === "GET" && path === "/api/compare") {
-      compareView(req, res, store, url.searchParams);
+      compareView(req, res, store, url.searchParams, redactor);
       return;
     }
     if (method === "GET" && path === "/api/schedules") {
@@ -628,7 +628,7 @@ async function decideCheckpoint(
  * Each id must be a run id (RUN_ID_RE; a dot-only one is no run) — else 400
  * — and name an ODW run — else 404.
  */
-function compareView(req: IncomingMessage, res: ServerResponse, store: RunStore, params: URLSearchParams): void {
+function compareView(req: IncomingMessage, res: ServerResponse, store: RunStore, params: URLSearchParams, redactor: Redactor): void {
   const ids = [params.get("a"), params.get("b")];
   for (const id of ids) {
     if (id === null || !RUN_ID_RE.test(id) || /^\.+$/.test(id)) {
@@ -643,7 +643,12 @@ function compareView(req: IncomingMessage, res: ServerResponse, store: RunStore,
     }
   }
   const [a, b] = ids as [string, string];
-  sendJsonCached(req, res, compareRuns(readCompareRun(store, a), readCompareRun(store, b)));
+  // Args are served as /api/runs/:id serves them: token shapes redacted (meta.json keeps them whole).
+  const served = (id: string) => {
+    const run = readCompareRun(store, id);
+    return { ...run, args: (redactor.shapes.record({ args: run.args }) as { args: unknown }).args };
+  };
+  sendJsonCached(req, res, compareRuns(served(a), served(b)));
 }
 
 /** A saved agent result as listed: which agent and when — the value stays behind its own route. */

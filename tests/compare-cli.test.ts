@@ -243,6 +243,14 @@ test("GET /api/compare serves the comparison read-only; bad ids are 400, missing
       body: "{}",
     });
     assert.equal(post.status, 404, "read-only");
+
+    // Args are served as /api/runs/:id serves them: token shapes redacted.
+    const token = "gh" + "p_" + "Ab3d".repeat(9);
+    const c = store.create({ script: store.readMeta(a).script as string, args: { variant: "a", token }, source: root, configPath: join(root, "odw.config.json") });
+    assert.equal(await executeRun(store.runDir(c)), "done");
+    const text = await (await get(`?a=${a}&b=${c}`)).text();
+    assert.doesNotMatch(text, new RegExp(token));
+    assert.match(text, /«redacted:/);
   } finally {
     await handle.close();
     rmSync(root, { recursive: true, force: true });
