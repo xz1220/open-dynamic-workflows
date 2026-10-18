@@ -1652,7 +1652,9 @@ odw serve --host 0.0.0.0 --token
 - **非 loopback 绑定上写操作一律拒绝,与令牌无关**:停止或暂停运行、回答检查点、Chat,在
   127.0.0.1 / localhost / ::1 以外的任何绑定上都是 409。令牌给的是远程*读*,从不给写。(在 loopback
   绑定上,`--token` 对写操作与读操作同样把关,原有的写保护全部照旧:严格的
-  `Content-Type: application/json`、同源 `Origin`、防 DNS rebinding 的 Host 检查。)
+  `Content-Type: application/json`、同源 `Origin`、防 DNS rebinding 的 Host 检查。在那里,任何有效令牌
+  都能写,与其范围无关:`read` 令牌仍可停止、暂停或恢复运行并标记审阅,与其他 loopback 路由一样——
+  范围只限制令牌在 loopback 以外能做什么。)
 - **这是明文 HTTP。** 令牌和看板展示的一切都以未加密的形式经过网络:请在你信任的网络中使用,
   或通过 VPN、SSH 隧道(`ssh -L 4317:localhost:4317 host` 根本不需要 `--host`),或放在 TLS
   代理后面。
@@ -3285,7 +3287,7 @@ odw review mark $RUN 3 reviewed --note "看过迁移了"   # 或 dismissed | app
 同一个 agent 以最后一条标记为准。`odw apply` 会把干净应用(或发现已应用)的每个 agent 标为
 `applied`;`--check` 不做标记。`odw eval` 启动的运行和 `--resolve` 的解决冲突运行不进入队列。
 看板的 **Review** 页(`g r`)展示同一队列及其理由,可把条目标为已审阅或放弃(与所有写操作一样
-仅限回环地址),并能在所属运行的 Changes 标签页中打开条目;Activity 的 **待你处理** 会显示等待
+仅限回环地址——在那里也与所有写操作一样,服务接受的任何令牌都可以,`read` 范围的也不例外),并能在所属运行的 Changes 标签页中打开条目;Activity 的 **待你处理** 会显示等待
 审阅的数量。`GET /api/review[?since=7d][&all=1]` 提供该队列,`POST
 /api/runs/:id/agents/:agentId/review { state, note? }` 标记一条。
 

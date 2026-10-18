@@ -1932,7 +1932,10 @@ The security model:
   answering checkpoints and Chat are 409 on any bind but 127.0.0.1 / localhost / ::1.
   The token gives remote *reads*, never writes. (On a loopback bind, `--token` gates
   writes like reads, and every existing write guard still applies: exact
-  `Content-Type: application/json`, same-origin `Origin`, the DNS-rebinding Host check.)
+  `Content-Type: application/json`, same-origin `Origin`, the DNS-rebinding Host check.
+  There any valid token writes, whatever its scope: a `read` token can still stop,
+  pause or resume runs and mark reviews, as on every other loopback route — the scope
+  limits only what a token may do off loopback.)
 - **It is plain HTTP.** The token and everything the dashboard shows cross the network
   unencrypted: use it on a network you trust, over a VPN or SSH tunnel
   (`ssh -L 4317:localhost:4317 host` needs no `--host` at all), or behind a TLS proxy.
@@ -3869,7 +3872,8 @@ agent it applied cleanly (or found already applied) as `applied`; `--check`
 marks nothing. Runs `odw eval` started and `--resolve`'s resolver runs are not
 on the queue. The dashboard's **Review** page (`g r`) shows the same queue with
 its reasons, marks entries reviewed or dismissed (loopback only, like every
-write), and opens an entry in its run's Changes tab; Activity's **Needs you**
+write — and there, like every write, with any token the server takes, a `read`-scope
+one included), and opens an entry in its run's Changes tab; Activity's **Needs you**
 says how many wait. `GET /api/review[?since=7d][&all=1]` serves it, `POST
 /api/runs/:id/agents/:agentId/review { state, note? }` marks one.
 

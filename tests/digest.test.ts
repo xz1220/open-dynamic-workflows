@@ -16,6 +16,8 @@ import { execPath } from "node:process";
 import { loadConfig } from "../src/adapters/config.js";
 import { announceServe, ensureApproveSecret } from "../src/runtime/approve-links.js";
 import { DIGEST_DIR, MARKS_FILE, parseSince, readMark } from "../src/runtime/digest-cli.js";
+import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { collectDigest, digestLine, digestMarkdown, formatDigest } from "../src/runtime/digest.js";
 import { RunStore } from "../src/runtime/run-store.js";
 import { capture, odw, withSandbox } from "./schedule-fixture.js";
@@ -266,6 +268,9 @@ test("--notify posts the digest as JSON and markdown, with approve links, redact
     assert.match(needs[0]!.rejectUrl!, /^https:\/\/odw\.example\.com\/approve\//);
     assert.ok((body.markdown as string).includes(`[approve](${needs[0]!.approveUrl})`));
     assert.ok((body.failed as Array<{ runId: string }>).some((f) => f.runId === ids.failed));
+    // The runs root's absolute path stays on this machine (review fix); --json still prints it.
+    assert.equal("runsRoot" in body, false);
+    assert.ok(!JSON.stringify(body).includes(`"${box.runsRoot}"`));
 
     // The mark is where that digest ended; the next --since-last starts there.
     const mark = readMark(box.runsRoot, null);
@@ -284,6 +289,36 @@ test("--notify posts the digest as JSON and markdown, with approve links, redact
     if (saved === undefined) delete process.env.ODW_DIGEST_TEST_TOKEN;
     else process.env.ODW_DIGEST_TEST_TOKEN = saved;
     await hook.close();
+    box.cleanup();
+  }
+});
+
+test("digests sent at once each keep their mark: marks.json is changed under a lock (review fix)", async () => {
+  const box = scratch();
+  const digestCli = fileURLToPath(new URL("../src/runtime/digest-cli.ts", import.meta.url));
+  try {
+    const writers = 6;
+    const each = 100;
+    // All start together, once every one has loaded.
+    const start = Date.now() + 3000;
+    const body = (n: number) =>
+      `const { writeMark } = await import(${JSON.stringify(digestCli)});\n` +
+      `while (Date.now() < ${start}) await new Promise((r) => setTimeout(r, 5));\n` +
+      `for (let i = 0; i < ${each}; i++) writeMark(${JSON.stringify(box.runsRoot)}, "w${n}-" + i, ${n * 1000} + i);`;
+    await Promise.all(
+      Array.from({ length: writers }, (_, n) =>
+        new Promise<void>((resolve, reject) => {
+          const child = spawn(execPath, ["--import", "tsx", "--input-type=module", "-e", body(n)], { stdio: "inherit" });
+          child.on("error", reject);
+          child.on("exit", (code) => (code === 0 ? resolve() : reject(new Error(`writer ${n} exited ${code}`))));
+        }),
+      ),
+    );
+    for (let n = 0; n < writers; n++) {
+      for (let i = 0; i < each; i++) assert.equal(readMark(box.runsRoot, `w${n}-${i}`), n * 1000 + i, `w${n}-${i}`);
+    }
+    assert.equal(existsSync(join(box.runsRoot, DIGEST_DIR, `${MARKS_FILE}.lock`)), false, "the lock is released");
+  } finally {
     box.cleanup();
   }
 });

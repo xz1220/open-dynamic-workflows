@@ -947,6 +947,15 @@ independent security reviews whose findings are all fixed.
   workflow runs strict unless the config says `"host"`, and such a `"host"` is warned
   about in the run's log. The README says `exec()` still runs a host shell with the
   run's environment in a strict context.
+- A `worktreeTeardown` still running when its worker exited (after the grace period,
+  or forced out by a second signal) ran on unbounded: it is not killed with the agents.
+  It now still gets the rest of its timeout, then a watchdog it leaves behind kills its
+  process group. Two `odw digest --notify` sent at once could lose each other's
+  `--since-last` mark (a read, change and write of `marks.json`); the mark is now
+  written under an O_EXCL lock (taken over after 10 seconds). The digest webhook no
+  longer carries the runs root's absolute path (`--json` still prints it), and the
+  README says that on a loopback bind a `read`-scope token can still control runs and
+  mark reviews, like every loopback write.
 
 ### Changed behavior — check before upgrading
 - `agentType` naming an agent definition file now runs that definition (see "Write
