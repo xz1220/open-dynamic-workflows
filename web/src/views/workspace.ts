@@ -4,7 +4,7 @@ import { highlightSource, outlineSource } from "../components/source";
 import { icons } from "../icons";
 import { t, tn } from "../i18n";
 import { store } from "../store";
-import type { WorkflowDetail, WorkflowSummary } from "../types";
+import type { MemoryEntry, WorkflowDetail, WorkflowSummary } from "../types";
 import { esc, fmtAgo, fmtDurMs, fmtUsd } from "../util";
 import { emptyArt } from "./activity";
 
@@ -131,6 +131,42 @@ function estimateSection(name: string): string {
   );
 }
 
+const MEMORY_KIND: Record<MemoryEntry["kind"], string> = { note: "note", correction: "correction", lesson: "lesson" };
+
+/** What earlier runs learned: the entries recall would hand an agent, stale ones dimmed. */
+export function memorySection(name: string): string {
+  const m = store.memories.get(name);
+  if (!m?.length) return "";
+  const fresh = m.filter((e) => !e.stale).length;
+  const rows = m
+    .slice()
+    .reverse()
+    .slice(0, 20)
+    .map((e, i) => {
+      const from = e.run
+        ? `<a href="#/job/${encodeURIComponent(e.run)}">${esc(e.run)}</a>${e.agent ? ` · ${esc(e.agent)}` : ""}`
+        : esc(t("added by hand"));
+      const paths = e.paths.length ? `<span class="mem-paths">${e.paths.map((g) => `<code>${esc(g)}</code>`).join(" ")}</span>` : "";
+      return (
+        `<li class="mem${e.stale ? " stale" : ""}" style="--i:${i}" data-key="mem-${e.id}">` +
+        `<span class="mem-kind k-${e.kind}">${esc(t(MEMORY_KIND[e.kind]))}</span>` +
+        `<p class="mem-text">${esc(e.text)}</p>` +
+        `<span class="mem-meta">#${e.id} · ${from} · ${fmtAgo(Date.parse(e.at) / 1000)}` +
+        `${e.stale ? ` · <span class="mem-stale" title="${esc(t("A file its paths match changed since it was learned: recall leaves it out."))}">${esc(t("outdated"))}</span>` : ""}</span>` +
+        paths +
+        `</li>`
+      );
+    })
+    .join("");
+  return (
+    `<div class="section-title"><h2>${t("What earlier runs learned")}</h2><span class="eyebrow">${esc(t("{fresh} of {n} recalled", { fresh: String(fresh), n: String(m.length) }))}</span></div>` +
+    `<ul class="mem-list card">${rows}</ul>` +
+    (fresh === m.length
+      ? ""
+      : `<span class="cmd sm"><span class="p">$</span>odw memory prune ${esc(name)} --stale<button class="iconbtn" data-copy="odw memory prune ${esc(name)} --stale" aria-label="${esc(t("Copy"))}">${icons.copy}</button></span>`)
+  );
+}
+
 function detailPane(d: WorkflowDetail): string {
   const runs = d.runs.slice(0, 12).map((r) => {
     const summary = store.runs.find((x) => x.runId === r.runId);
@@ -154,6 +190,7 @@ function detailPane(d: WorkflowDetail): string {
     `<div class="section-title"><h2>${t("Outline")}</h2><span class="eyebrow">${t("read statically from the source")}</span></div>` +
     outline(d) +
     estimateSection(d.name) +
+    memorySection(d.name) +
     (runs.length
       ? `<div class="section-title"><h2>${t("Recent runs")}</h2><span class="eyebrow">${tn(d.runs.length, "{n} run", "{n} runs")}</span></div><div class="wf-runs">${runs.join("")}</div>`
       : "") +

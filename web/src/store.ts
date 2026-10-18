@@ -22,6 +22,7 @@ import type {
   EvalReportSummary,
   RunComparison,
   WorkflowEstimate,
+  MemoryEntry,
   RunDetail,
   RunNote,
   RunSummary,
@@ -481,6 +482,21 @@ class Store {
     }
     if (JSON.stringify(next) === JSON.stringify(this.estimates.get(workflow))) return;
     this.estimates.set(workflow, next);
+    this.emit();
+  }
+
+  /** What earlier runs of a workflow learned (ODW extension), by workflow name. */
+  memories = new Map<string, MemoryEntry[]>();
+
+  async loadMemory(workflow: string): Promise<void> {
+    let next: MemoryEntry[];
+    try {
+      next = (await api.memory(workflow)).find((m) => m.workflow === workflow)?.entries ?? [];
+    } catch {
+      next = []; // an older server
+    }
+    if (JSON.stringify(next) === JSON.stringify(this.memories.get(workflow))) return;
+    this.memories.set(workflow, next);
     this.emit();
   }
 

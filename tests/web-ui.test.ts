@@ -1092,3 +1092,24 @@ test("a run whose CLI or model changed since the workflow's last run says so in 
   assert.match(html, /<span class="tag drift" title="since 20260101-000000-zzzzzz\nclaude CLI 2\.1\.302 → 2\.1\.330\nreview on codex: model default → gpt-6">2 changes since last run<\/span>/);
   assert.equal(driftChip({}), "");
 });
+
+test("a workflow's memory lists newest first, strikes the stale entries, and offers a prune only when some are stale", async () => {
+  const { memorySection } = await import("../web/src/views/workspace.ts");
+  const { store } = await import("../web/src/store.ts");
+  const at = new Date().toISOString();
+  store.memories.set("mem-wf", [
+    { id: 1, text: "Fixtures are <generated>", kind: "correction", paths: ["tests/data/**"], commit: "abc", run: "20260101-000000-aaaaaa", agent: "fix", at, stale: false },
+    { id: 2, text: "Lint with --cache", kind: "lesson", paths: ["README.md"], commit: "abc", run: null, at, stale: true },
+  ]);
+  const html = memorySection("mem-wf");
+  assert.ok(html.indexOf('data-key="mem-2"') < html.indexOf('data-key="mem-1"'), "newest first");
+  assert.match(html, /<li class="mem stale"[^>]*data-key="mem-2">/);
+  assert.match(html, /Fixtures are &lt;generated&gt;/);
+  assert.match(html, /href="#\/job\/20260101-000000-aaaaaa">20260101-000000-aaaaaa<\/a> · fix/);
+  assert.match(html, /1 of 2 recalled/);
+  assert.match(html, /odw memory prune mem-wf --stale/);
+  store.memories.set("mem-wf", [{ id: 1, text: "x", kind: "note", paths: [], commit: null, run: null, at, stale: false }]);
+  assert.doesNotMatch(memorySection("mem-wf"), /prune/);
+  store.memories.set("mem-wf", []);
+  assert.equal(memorySection("mem-wf"), "");
+});
