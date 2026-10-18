@@ -407,6 +407,25 @@ independent security reviews whose findings are all fixed.
   run's setup) is `"warn"` by default; `"fail"` fails such an agent with reason
   `out_of_scope`, and with `expect` it is a miss. In place, writes inside the scope of a
   scoped call that ran beside it are not counted.
+- Debug one step (**ODW extension**; ROADMAP S4). `odw replay <run> --agent <id|label>
+  [--prompt @file|TEXT] [--adapter A] [--model M]` dispatches one saved `agent()` call
+  again as a small new run (`origin: "replay"`, `replayOf` in its meta.json): every call
+  now keeps its inputs as it starts (`agents/<id>.call.json`), an isolated agent's
+  `agent_started` names its worktree's `base` commit, and the replay checks that commit
+  out whatever HEAD is now. It prints the `odw compare` command that pairs the replay
+  with its original. `odw run <wf> --break <phase|label>[,…]` and `--step` stop the run
+  for a decision before those phases or agent labels (or every phase): a checkpoint
+  titled `Break before phase X` whose payload is the run so far — approve goes on,
+  reject stops the run, an approval with edited `args` changes them in place for what
+  the script reads from then on (object or array args only).
+- `odw check <script.js|name> [--json]` (**ODW extension**) loads a workflow as a run
+  would, never running it, and reports `file:line:col` with a code frame; exit 0 or 1.
+  Parse errors now carry the line and column everywhere (runs, `validate()`) and keep
+  the compiler's own message, with a hint only where it fits — TypeScript syntax only
+  when a type annotation, `interface` or `as` is at fault (anthropics/claude-code#63540
+  blamed TypeScript for every parse error), an `await` in a callback that is not
+  `async`, a script that ends before a bracket closes — and a `meta` that is declared
+  but not exported says what was found.
 
 ### Use the CLI and the dashboard
 - `odw run` attaches a live foreground view in interactive terminals (Ctrl-C detaches;

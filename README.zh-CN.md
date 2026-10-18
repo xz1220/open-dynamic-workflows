@@ -445,6 +445,7 @@ odw diff $RUN --stat     # 隔离 agent 改了什么;odw apply $RUN --agent N(�
 odw notes $RUN           # 它的 agent 在笔记板上互相告知的内容(见上文)
 odw compare $OLD $RUN    # 两次运行之间变了什么:配置、耗时、花费、失败、回复(见下文)
 odw estimate review      # 下一次运行的 p50/p90 耗时、花费、token 和 agent 数,依据以往运行(见下文)
+odw replay $RUN --agent 3 # 把这一个 agent 作为新运行重跑,检出它当时的提交;可换 --prompt/--adapter/--model(见下文)
 odw eval review          # 用例 × 适配器 × 重复次数:每个单元格的通过率、花费与耗时(见下文)
 odw export $RUN --otlp   # 把运行导出为 OpenTelemetry trace(OTLP/JSON;--send 直接发送;见下文)
 odw bundle $RUN          # 把运行写成一个可分享的脱敏文件:$RUN.odwrun(用 odw view FILE 查看;见下文)
@@ -910,6 +911,58 @@ odw compare $OLD $NEW --json           # 同一份对比,供脚本使用——GE
 事件(`odw status` 和 `GET /api/runs/:id` 的 `cliVersions` 会显示)。它绝不拖慢或导致运行失败;
 不回应的 CLI 记为未知版本。命令为 node 或其他解释器、脚本或相对路径的适配器不做探测。
 `"recordVersions": false` 关闭探测。`odw eval`(见下文)就建立在这些记录之上。
+
+### 调试工作流(ODW 扩展)
+
+工作流里某一步不对时,有三件工具可用——都不需要改工作流,也不需要为整次运行再付一次钱:
+
+```bash
+odw check wf.js                           # 能否加载?错误带行号、列号和代码片段
+odw replay $RUN --agent judge             # 把这一个 agent 作为一次小的新运行重跑
+odw replay $RUN --agent judge --prompt @better.txt --adapter codex --model gpt-5
+odw compare $RUN $REPLAY --agent judge    # 原 agent 与重跑并排对照
+odw run wf.js --break Review              # 在阶段 "Review"(或该 label 的 agent)之前停下等决定
+odw run wf.js --step                      # ……在每个阶段之前
+```
+
+**`odw check <script.js|名字> [--json]`** 按运行时的方式编译工作流——`meta` 按纯字面量解析,
+检查 name、description 与 phases,编译脚本体但绝不执行——打印 `文件:行:列: error: …`,附上前后
+几行源码和指向出错列的 `^`,然后是 `validate()` 给出的可移植性警告。能加载退出 0,否则退出 1。
+解析错误照编译器的原话说,只在合适时附提示:只有类型注解、`interface` 或 `as` 出错时才提
+TypeScript(不再对每个错误都这样说),非 `async` 回调里的 `await`,以及脚本在括号闭合前就结束了。
+运行失败时的报错与 `validate()` 的错误里也带同样的位置。
+
+**`odw replay <run> --agent <id|label>`** 把一次保存下来的 `agent()` 调用重新派发。每次调用开始
+时都会保存它的输入(`agents/<id>.call.json`:脚本给出的提示词和选项、开始时所用的适配器、请求的
+模型),隔离 agent 的 `agent_started` 事件还记下它的 worktree 检出的提交(`base`)。重跑是一次只
+含这一个调用的新运行(`meta.json` 中 `origin: "replay"`、`replayOf: { runId, agentId, label,
+base }`),沿用原调用的 label 与 phase,在原运行的目录下、用原运行的配置、权限档位、信任级别与
+沙箱运行——`worktree` agent 则检出原来的 base 提交,不管现在 HEAD 在哪里,所以它看到的代码与
+原 agent 相同。`--prompt @文件|文本`、`--adapter` 与 `--model` 替换原值(每项改动都会打印出来);
+它接受 `odw run` 的 `--wait`/`--fg`/`-d`/`--timeout`。它打印新运行的 id,以及把重跑与原 agent
+配对的 `odw compare` 命令(按 label;同一运行里还有别的 agent 用同一 label 时按 id)。本版本之前的
+运行没有保存调用,无法重跑(`odw rerun` 重跑整个工作流)。
+
+**`odw run <wf> --break <阶段|label>[,…]`**(可重复)与 **`--step`** 让运行在指定阶段之前——嵌套
+工作流的阶段可写标题或 `▸ 子工作流 · 标题`——以及在带指定 `label` 的 agent 之前停下等决定;
+`--step` 则在每个阶段之前。断点就是运行自己发起的[检查点](#人工检查点odw-扩展),标题为
+`Break before phase Review`(或 `… agent judge`),所以 `odw approve|reject`、看板与
+[手机链接](#在手机上批准odw-扩展)都能回答它。它的 payload 是到此为止的运行情况:`{ before,
+phasesDone, agents: { done, failed, running }, results: [最近 20 个,回复截到 300 字符], args }`。
+`phase()` 在方言里是同步的、无法等待,所以等待的是该阶段的工作:此后调用的每个 `agent()`、
+`exec()`、`workflow()` 和 `checkpoint()` 都会停住直到有答复;已经在跑的 agent 继续;断点等待期间
+发出的同 label 调用共用同一个断点。
+
+- **批准**——运行继续。
+- **拒绝**——运行停止,与 `odw stop` 相同,原因里写明断点与你的备注。
+- **批准并修改 payload**(`--edit`、`--payload`、看板)——只采用 `args`:当运行的 `args` 是对象或
+  数组且修改后仍是同类时,原地修改它,于是答复之后对 `args` 的每次读取都看到修改。脚本此前已经
+  读到的值保持不变——比如开头的 `const { x } = args`,以及被断点拦住的那次调用的参数(它的提示词在
+  答复之前就已拼好;其后的调用会读到修改)。这是唯一不会让正在运行的脚本措手不及的改法;其他对
+  `args` 的修改会被拒绝并记一行日志,运行照原样继续。修改只在本次运行内有效:`odw rerun`/`resume`
+  仍从 `meta.json` 中的 args 开始。
+
+没有匹配到任何东西的 `--break` 名字,会在运行结束时记入日志。
 
 ### 评估工作流(ODW 扩展)
 

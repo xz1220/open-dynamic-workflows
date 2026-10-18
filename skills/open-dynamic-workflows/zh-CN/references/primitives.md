@@ -881,6 +881,32 @@ workflow, case, name, passed, failures: [{ check, message }], runId, state, agen
 `meta.json`（以及看板摘要）中标记为 `dry: true`；`odw run --dry` 会等待它结束（不可 `--detach`），并在
 stderr 打印阶段树：每个声明或启动过的阶段、它启动的 agent 数及其标签。
 
+## 调试：odw check、odw replay、--break / --step（ODW 扩展）
+
+```bash
+odw check wf.js [--json]                      # 按运行的方式加载（绝不执行）：退出 0，或退出 1 并给出 文件:行:列 + 代码片段
+odw replay $RUN --agent <id|label> [--prompt @文件|文本] [--adapter A] [--model M] [--wait|--fg|-d]
+odw run wf.js --break <阶段|label>[,…] [--break …]    # 在这些阶段 / agent label 之前加一个检查点
+odw run wf.js --step                                  # 在每个阶段之前加一个检查点
+```
+
+- **check**：`meta` 字面量、其 name/description/phases、编译脚本体。解析错误保留编译器原话并附
+  `(line 行:列)`；只在合适时附提示（TypeScript 语法、非 async 回调里的 `await`、括号未闭合脚本就
+  结束了）。`validate()` 给出同样的内容。
+- **replay**：每次 `agent()` 调用开始时保存 `agents/<id>.call.json`（提示词、选项、开始时的适配器、
+  请求的模型）；隔离 agent 的 `agent_started` 带 `base`（其 worktree 的提交）。重跑是只含这一个调用的
+  新运行（`origin: "replay"`、`replayOf: { runId, agentId, label, base? }`）——label、phase、源码目录、
+  配置、权限档位、信任级别、沙箱都与原来相同，`isolation: "worktree"` 时检出原来的 `base`，不管现在
+  HEAD 在哪。`odw compare <原运行> <重跑> --agent <label>` 把两者配对（CLI 会打印该命令，label
+  被共用时用 id）。本版本之前的运行没有保存调用：用 `odw rerun`。
+- **--break / --step**：断点就是运行自己发起的 `checkpoint()`，标题 `Break before phase X` /
+  `Break before agent X`，payload 为 `{ before, phasesDone, agents: { done, failed, running },
+  results: [最近 20 个], args }`——用 `odw approve|reject`、看板或手机链接回答。`phase(X)`（无法等待）
+  之后调用的每个 `agent()`、`exec()`、`workflow()` 和 `checkpoint()` 都停住直到有答复；已在跑的 agent
+  继续。批准：继续。拒绝：运行停止（状态 `stopped`）。批准并修改 payload：只采用 `args`，且只在
+  `args` 为对象或数组并保持同类时原地修改——答复之后的读取会看到修改，此前读到的（包括被拦住的
+  那次调用自己的提示词）不变。其他修改会被拒绝并记一行日志。`meta.json` 保留原始 args（rerun/resume 用它）。
+
 ## odw conformance
 
 ```bash

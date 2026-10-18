@@ -513,6 +513,7 @@ odw diff $RUN --stat     # what isolated agents changed; odw apply $RUN --agent 
 odw notes $RUN           # what its agents told each other on the notes board (above)
 odw compare $OLD $RUN    # what changed between two runs: setup, time, cost, failures, replies (below)
 odw estimate review      # p50/p90 time, cost, tokens and agents of its next run, from earlier runs (below)
+odw replay $RUN --agent 3 # that one agent again as a new run, at the commit it saw; --prompt/--adapter/--model (below)
 odw eval review          # cases × adapters × repeats: pass rate, cost and time per cell (below)
 odw export $RUN --otlp   # the run as OpenTelemetry traces (OTLP/JSON; --send posts it; below)
 odw bundle $RUN          # the run as one redacted file to share: $RUN.odwrun (odw view FILE shows it; below)
@@ -1042,6 +1043,72 @@ never delays or fails a run; a CLI that does not answer is recorded as unknown. 
 adapter whose command is node or another interpreter, a script or a relative path is
 not probed. `"recordVersions": false` turns the probes off. `odw eval` (below) builds
 on this.
+
+### Debug a workflow (ODW extension)
+
+Three tools for the moment one step of a workflow is wrong — none of them needs the
+workflow edited or the whole run paid for again:
+
+```bash
+odw check wf.js                           # does it load? errors with line, column and a code frame
+odw replay $RUN --agent judge             # run that one agent again, as a small new run
+odw replay $RUN --agent judge --prompt @better.txt --adapter codex --model gpt-5
+odw compare $RUN $REPLAY --agent judge    # the original and the replay side by side
+odw run wf.js --break Review              # stop for a decision before phase "Review" (or agent label)
+odw run wf.js --step                      # … before every phase
+```
+
+**`odw check <script.js|name> [--json]`** compiles a workflow the way a run does —
+the `meta` literal parsed as a pure literal, its name, description and phases checked,
+the body compiled, never run — and prints `file:line:col: error: …` with the source
+lines around it and a caret, then the portability warnings `validate()` gives. Exit 0
+when it loads, 1 when it does not. Parse errors say what the compiler says, with a
+hint only where one fits: TypeScript syntax when a type annotation, `interface` or
+`as` is at fault (not for every error), an `await` inside a callback that is not
+`async`, a script that ends before a bracket it opened is closed. The same positions
+are in the messages a run fails with and in `validate()`'s errors.
+
+**`odw replay <run> --agent <id|label>`** dispatches one saved `agent()` call again.
+Every call's inputs are kept as it starts (`agents/<id>.call.json`: the prompt and
+options as the script gave them, the adapter it started on, the model it asked for),
+and an isolated agent's `agent_started` event names the commit its worktree checked
+out (`base`). The replay is a new run (`origin: "replay"`, `replayOf: { runId,
+agentId, label, base }` in its `meta.json`) of just that call, with the original's
+label and phase, in the original's directory, config, permission tier, trust and
+sandbox — and, for a `worktree` agent, at the original's base commit whatever HEAD is
+now, so it sees the code the original saw. `--prompt @file|TEXT`, `--adapter` and
+`--model` replace the original's (each change is printed); it takes `odw run`'s
+`--wait`/`--fg`/`-d`/`--timeout`. It prints the new run id and the `odw compare`
+command that pairs the replay with its original (by label, or by id when other agents
+of the run share the label). A run from before this version saved no calls and cannot
+be replayed (`odw rerun` runs the whole workflow).
+
+**`odw run <wf> --break <phase|label>[,…]`** (repeatable) and **`--step`** stop the
+run for a decision before the named phases — a nested workflow's phase by its title
+or its `▸ child · title` — and before agents with the named `label`, or with `--step`
+before every phase. A break is a [checkpoint](#human-checkpoints-odw-extension) the
+run asks itself, titled `Break before phase Review` (or `… agent judge`), so `odw
+approve|reject`, the dashboard and [phone links](#approve-from-your-phone-odw-extension)
+answer it. Its payload is the run so far: `{ before, phasesDone, agents: { done,
+failed, running }, results: [the last 20, replies cut to 300 characters], args }`.
+`phase()` cannot wait (it is synchronous in the dialect), so the phase's work does:
+every `agent()`, `exec()`, `workflow()` and `checkpoint()` called from then on holds
+until the answer; agents already running go on; calls with a break's label made while
+it waits share it.
+
+- **approve** — the run goes on.
+- **reject** — the run stops, as `odw stop` would, the break and your note in the reason.
+- **approve with an edited payload** (`--edit`, `--payload`, the dashboard) — only
+  `args` is taken: when the run's `args` is an object or an array and the edit keeps
+  it one, it is changed in place, so every read of `args` after the answer sees the
+  edit. What the script read before keeps its value — a `const { x } = args` at the
+  top, and the arguments of the call the break holds (its prompt was built before the
+  answer; the calls after it read the edit). That is the only change that cannot
+  surprise a running script; any other `args` edit is refused with a log line and the
+  run goes on unchanged. The edit lives in this run: `odw rerun`/`resume` start from
+  the args in `meta.json`.
+
+A `--break` name that matched nothing is said in the run's log when it ends.
 
 ### Evaluate a workflow (ODW extension)
 

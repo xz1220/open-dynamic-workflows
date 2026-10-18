@@ -1142,6 +1142,40 @@ items, `const` / the first `enum` value, the first `anyOf`/`oneOf` branch,
 it (never `--detach`) and prints to stderr the phase tree: each declared or
 started phase with how many agents it started and their labels.
 
+## Debugging: odw check, odw replay, --break / --step (ODW extension)
+
+```bash
+odw check wf.js [--json]                      # load it as a run would (never runs it): exit 0, or 1 with file:line:col + a code frame
+odw replay $RUN --agent <id|label> [--prompt @file|TEXT] [--adapter A] [--model M] [--wait|--fg|-d]
+odw run wf.js --break <phase|label>[,…] [--break …]   # a checkpoint before those phases / agent labels
+odw run wf.js --step                                  # a checkpoint before every phase
+```
+
+- **check**: the `meta` literal, its name/description/phases, the body compiled.
+  Parse errors keep the compiler's message plus `(line L:C)`; a hint is added
+  only when it fits (TypeScript syntax, `await` in a non-async callback, the
+  script ending before a bracket closes). `validate()` reports the same.
+- **replay**: every `agent()` call saves `agents/<id>.call.json` as it starts
+  (prompt, options, adapter it started on, model asked for); an isolated
+  agent's `agent_started` carries `base` (its worktree's commit). A replay is
+  a new run (`origin: "replay"`, `replayOf: { runId, agentId, label, base? }`)
+  of that one call — same label, phase, source dir, config, tier, trust,
+  sandbox, and for `isolation: "worktree"` the original `base` whatever HEAD
+  is now. `odw compare <source> <replay> --agent <label>` pairs the two (the
+  CLI prints it, with the id when the label is shared). Runs from before this
+  version saved no calls: `odw rerun`.
+- **--break / --step**: a break is a `checkpoint()` the run asks itself, title
+  `Break before phase X` / `Break before agent X`, payload `{ before,
+  phasesDone, agents: { done, failed, running }, results: [last 20], args }`
+  — answered with `odw approve|reject`, the dashboard or a phone link. After
+  `phase(X)` (which cannot wait) every `agent()`, `exec()`, `workflow()` and
+  `checkpoint()` call holds until the answer; agents already running go on.
+  Approve: continue. Reject: the run stops (state `stopped`). Approve with an
+  edited payload: only `args` is taken, in place, when `args` is an object or
+  array and stays one — reads after the answer see it; what was read before
+  (including the held call's own prompt) does not. Other edits are refused
+  with a log line. `meta.json` keeps the original args (rerun/resume use them).
+
 ## odw conformance
 
 ```bash

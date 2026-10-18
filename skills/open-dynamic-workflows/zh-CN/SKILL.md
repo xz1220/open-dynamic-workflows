@@ -206,6 +206,10 @@ odw compare $OLD $RUN       # 两次运行之间变了什么:配置、耗时、�
 odw estimate wf.js          # 依据以往运行估算下一次的 p50/p90 耗时、花费、token、agent 数(ODW 扩展)
                             #   --json 给脚本用;odw run --estimate 先打印并询问 y/N(--yes:只打印)
                             #   --agent <label|id>:某个 agent 的完整回复 diff;--json 供脚本使用
+odw replay $RUN --agent 3   # 把这一次 agent() 调用作为新运行重跑,检出它当时的提交(ODW 扩展);
+                            #   --prompt @文件|文本、--adapter A、--model M 替换原值;会打印对照命令
+odw run wf.js --break Review  # 在阶段/label "Review" 之前停下等决定(一个检查点);--step:每个阶段之前
+odw check wf.js             # 能否加载?文件:行:列、代码片段、可移植性警告;退出 0/1
 odw eval review             # 用例 × 适配器 × 重复次数：每个单元格的通过率、花费、耗时（ODW 扩展；见下文）
 odw test review             # 脚本化回复，不调用模型，$0：逻辑是否成立？（ODW 扩展；见下文）
 odw run review --dry        # 每个 agent 都用桩应答：阶段树与 agent 数，$0（ODW 扩展）

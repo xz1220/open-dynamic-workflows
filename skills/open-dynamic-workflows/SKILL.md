@@ -243,6 +243,10 @@ odw compare $OLD $RUN       # what changed between two runs: setup, time, cost, 
 odw estimate wf.js          # p50/p90 time, cost, tokens, agents of its next run, from its earlier runs (ODW extension)
                             #   --json for scripts; odw run --estimate prints it and asks y/N first (--yes: just print)
                             #   --agent <label|id>: one agent's whole reply diff; --json for scripts
+odw replay $RUN --agent 3   # that one agent() call again, as a new run, at the commit it saw (ODW extension);
+                            #   --prompt @file|TEXT, --adapter A, --model M replace its own; prints the compare command
+odw run wf.js --break Review  # stop for a decision (a checkpoint) before phase/label "Review"; --step: every phase
+odw check wf.js             # does it load? file:line:col, a code frame, portability warnings; exit 0/1
 odw eval review             # cases × adapters × repeats: pass rate, cost, time per cell (ODW extension; below)
 odw test review             # scripted replies, no model, $0: does the logic hold? (ODW extension; below)
 odw run review --dry        # every agent stubbed: the phase tree and agent counts, $0 (ODW extension)
