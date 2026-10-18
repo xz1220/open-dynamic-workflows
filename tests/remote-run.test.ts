@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { execPath } from "node:process";
 import { fileURLToPath } from "node:url";
 
@@ -135,7 +135,10 @@ test("run --on, status --on, pull while it runs, then again after it ends", asyn
   writeFileSync(join(project, "build", "out.bin"), "ignored\n");
   const url = "ssh://me@box:2222";
 
-  let r = await cli(["run", "wait.js", "--on", url, "--source", project, "--args", '{"token":"PLACEHOLDER-not-a-secret"}']);
+  // Through a link to the project (as macOS's /var is to /private/var): git names the real path.
+  const linked = join(dirname(project), "linked-proj");
+  if (!existsSync(linked)) symlinkSync(project, linked);
+  let r = await cli(["run", "wait.js", "--on", url, "--source", linked, "--args", '{"token":"PLACEHOLDER-not-a-secret"}']);
   assert.equal(r.code, 0, r.err);
   const id = r.out.trim();
   assert.match(id, /^\d{8}-\d{6}-[0-9a-f]{6}$/);

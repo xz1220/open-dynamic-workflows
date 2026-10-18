@@ -37,7 +37,7 @@
 
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
-import { closeSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
@@ -289,10 +289,20 @@ export interface RemoteRunOptions {
   flags: string[];
 }
 
+/** `path` with its links resolved, or as given when it cannot be (it does not exist yet). */
+function realPath(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return path;
+  }
+}
+
 /** `odw run <wf> --on ssh://host`: check, sync, start detached there, print the remote run id. Returns the exit code. */
 export async function remoteRun(opts: RemoteRunOptions): Promise<number> {
   const { target } = opts;
-  const source = resolve(opts.source);
+  // Links resolved: git names the project by its real path (macOS: /var is /private/var).
+  const source = realPath(resolve(opts.source));
   const root = projectRoot(source);
   const workdir = target.workdir ?? defaultWorkdir(root);
   const where = `${sshDestination(target)}:${workdir}`;
@@ -447,11 +457,11 @@ function stageWorkflow(ref: string, source: string, root: string, stage: string)
     if (/^[A-Za-z0-9._:-]+$/.test(ref) && !/\.(?:js|mjs|cjs)$/i.test(ref) && !ref.startsWith(".")) return ref;
     throw err;
   }
-  const rel = relative(root, scriptPath);
+  const rel = relative(root, realPath(scriptPath));
   const inside = !rel.startsWith("..") && !isAbsolute(rel);
   if (origin === "project" && inside) return ref;
   // The remote run starts in the source's place in the workdir: a path is relative to it, as here.
-  if (origin === "path" && inside) return `./${relative(source, scriptPath).split(sep).join("/")}`;
+  if (origin === "path" && inside) return `./${relative(source, realPath(scriptPath)).split(sep).join("/")}`;
   const text = readFileSync(scriptPath);
   const name = `${createHash("sha256").update(text).digest("hex").slice(0, 12)}-${basename(scriptPath).replace(/[^A-Za-z0-9._-]+/g, "-")}`;
   mkdirSync(join(stage, "workflows"), { recursive: true });
