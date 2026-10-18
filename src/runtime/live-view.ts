@@ -41,7 +41,7 @@
 import { formatSeconds } from "../adapters/failures.js";
 import { addUsage, type Usage } from "../adapters/usage.js";
 import type { WorkflowEvent } from "../events.js";
-import { pausedForOf, pausedText } from "../quota-wait.js";
+import { clockTime, pausedForOf, pausedText } from "../quota-wait.js";
 import {
   cursor,
   detectCaps,
@@ -125,6 +125,10 @@ export function formatEvent(ev: WorkflowEvent): string {
   else if (type === "checkpoint_requested") {
     detail = `#${String(ev.checkpointId)} ${sanitizeText(ev.title, 200)}${ev.truncated === true ? " (payload truncated)" : ""}`;
   } else if (type === "checkpoint_resolved") detail = `#${String(ev.checkpointId)} ${answerText(ev)}`;
+  // An adapter CLI's version, recorded on its first dispatch (ODW extension).
+  else if (type === "cli_version") {
+    detail = `${sanitizeText(ev.adapter, 40)}: ${sanitizeText(ev.version ?? `unknown (${String(ev.error ?? "?")})`, 160)}`;
+  }
   else detail = sanitizeText(ev.error ?? ev.runId ?? "", 200);
   return `[${stamp}] ${type.padEnd(15)}${phase} ${detail}`.trimEnd();
 }
@@ -249,13 +253,19 @@ function reasonText(reason: string | undefined): string | null {
 }
 
 /**
- * How a checkpoint was answered: "approved by cli — note", "rejected by
- * timeout", or — no answer — "not answered: <why>".
+ * How a checkpoint was answered: "approved by cli — note", "approved with
+ * edits by dashboard", "rejected by timeout", or — no answer — "not
+ * answered: <why>".
  */
 function answerText(ev: WorkflowEvent): string {
   if (ev.error != null) return `not answered: ${sanitizeText(ev.error, 200)}`;
   const note = typeof ev.note === "string" && ev.note !== "" ? ` — ${sanitizeText(ev.note, 200)}` : "";
-  return `${ev.approved === true ? "approved" : "rejected"} by ${sanitizeText(ev.by ?? "?", 20)}${note}`;
+  return `${verdictText(ev)} by ${sanitizeText(ev.by ?? "?", 20)}${note}`;
+}
+
+/** "approved", "approved with edits" (an edited payload; ODW extension) or "rejected". */
+function verdictText(ev: WorkflowEvent): string {
+  return ev.approved !== true ? "rejected" : ev.edited === true ? "approved with edits" : "approved";
 }
 
 /**
@@ -472,7 +482,7 @@ class LiveView {
     }
     const approved = ev.approved === true;
     const meta = metaJoin(g, [
-      approved ? "approved" : "rejected",
+      verdictText(ev),
       `by ${sanitizeText(ev.by ?? "?", 20)}`,
       typeof ev.note === "string" && ev.note !== "" ? `"${sanitizeText(ev.note, 120)}"` : null,
     ]);
@@ -490,12 +500,18 @@ class LiveView {
     const block: string[] = [""];
     for (const a of running) {
       const label = padEndWidth(sanitizeText(nodeLabel(a), 60), this.labelW);
+      // One waiting out a spent quota (quotaWait) is not working: it says until when.
+      const wait = a.quotaWait;
       const meta = metaJoin(g, [
         a.phase !== null && a.phase !== this.currentPhase ? sanitizeText(a.phase, 40) : null,
         this.adapterText(a),
-        a.startedAt !== null ? fmtDuration((nowSec - a.startedAt) * 1000) : null,
+        wait
+          ? `waits for ${sanitizeText(wait.adapter, 40)} quota${wait.resumeAt !== undefined ? ` until ${clockTime(wait.resumeAt, this.now())}` : ""}`
+          : a.startedAt !== null
+            ? fmtDuration((nowSec - a.startedAt) * 1000)
+            : null,
       ]);
-      block.push(`    ${p.run(spin)} ${label}  ${p.dim(meta)}`);
+      block.push(`    ${wait ? p.run(g.wait) : p.run(spin)} ${label}  ${p.dim(meta)}`);
     }
     // Every question still open, with the command that answers it.
     for (const [id, title] of this.asked) {

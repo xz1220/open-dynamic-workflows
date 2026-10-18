@@ -244,10 +244,12 @@ test(
   },
 );
 
-test("an already-aborted signal never spawns the process", async () => {
+test("an already-aborted signal never spawns the process", async (t) => {
   const controller = new AbortController();
   controller.abort(new Error("stopped"));
-  const marker = join(mkdtempSync(join(tmpdir(), "odw-abort-")), "spawned");
+  const markerDir = mkdtempSync(join(tmpdir(), "odw-abort-"));
+  t.after(() => rmSync(markerDir, { recursive: true, force: true }));
+  const marker = join(markerDir, "spawned");
   const r = await runCommand([execPath, "-e", `require('fs').writeFileSync(${JSON.stringify(marker)}, 'x')`], {
     signal: controller.signal,
   });

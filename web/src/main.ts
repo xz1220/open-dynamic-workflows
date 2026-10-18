@@ -38,7 +38,8 @@ import type { RunSummary, WorkflowDetail } from "./types";
 import { ACTIVE, TERMINAL, fmtDurSec, runDurationSec } from "./util";
 import { renderActivity } from "./views/activity";
 import { renderChat } from "./views/chat";
-import { LOG_PAGE, changedAgents, renderJob, reviewTarget, type JobTab, type JobViewState } from "./views/job";
+import { compareHash, renderCompare } from "./views/compare";
+import { LOG_PAGE, changedAgents, cpEditState, renderJob, reviewTarget, type JobTab, type JobViewState } from "./views/job";
 import { HISTORY_PAGE, renderJobs, type JobsFilter, type JobsState } from "./views/jobs";
 import { renderSettings } from "./views/settings";
 import { orderedWorkflows, renderWorkspace, wfKey } from "./views/workspace";
@@ -107,6 +108,11 @@ function parseHash(): Route {
       job.tab = "graph";
       return { view: "job", param: decodeURIComponent(rest.join("/")) || null };
     }
+    case "compare": {
+      // #/compare/<runA>/<runB>
+      const [a, b] = rest.map((x) => decodeURIComponent(x));
+      return { view: "compare", param: a && b ? `${a}/${b}` : null };
+    }
     case "settings":
       return { view: "settings", param: null };
     default:
@@ -136,6 +142,8 @@ function viewHtml(route: Route): string {
       return renderJobs(jobs, now);
     case "job":
       return renderJob(job, now);
+    case "compare":
+      return renderCompare(route.param);
     case "settings":
       return renderSettings(store.settings);
   }
@@ -305,7 +313,7 @@ function updateChrome(): void {
   const label =
     route.view === "job" && store.run
       ? store.run.name
-      : { activity: tr("Activity"), jobs: tr("Jobs"), job: tr("Jobs"), workspace: tr("Workspace"), chat: tr("Chat"), settings: tr("Settings") }[route.view];
+      : { activity: tr("Activity"), jobs: tr("Jobs"), job: tr("Jobs"), compare: tr("Compare"), workspace: tr("Workspace"), chat: tr("Chat"), settings: tr("Settings") }[route.view];
   const title = `${active.length ? `(${active.length}) ` : ""}${label} · odw`;
   const sig = `${title}|${active.length > 0}|${resolvedTheme()}`;
   if (sig === lastChrome) return;
@@ -484,6 +492,18 @@ async function enterRoute(): Promise<void> {
   } else if (route.view === "settings") {
     render();
     await store.loadSettings();
+  } else if (route.view === "compare" && route.param) {
+    const [a, b] = route.param.split("/") as [string, string];
+    render();
+    await store.loadCompare(a, b);
+    // A run still going is compared as it stands: refresh until both ended.
+    if (live()) {
+      every(3000, token, async () => {
+        const c = store.comparison?.value;
+        if (c && !c.a.live && !c.b.live) return stopPolling();
+        await store.loadCompare(a, b);
+      });
+    }
   } else if (route.view === "job" && route.param) {
     const id = route.param;
     if (store.focusedRunId !== id) {
@@ -689,17 +709,49 @@ root.addEventListener("click", (ev) => {
   }
   const copyEl = t.closest<HTMLElement>("[data-copy]");
   if (copyEl) return copy(copyEl.dataset.copy!);
+  const cpEditEl = t.closest<HTMLElement>("[data-cp-edit]");
+  if (cpEditEl && store.run) {
+    const id = Number(cpEditEl.dataset.cpEdit);
+    const cp = store.run.pendingCheckpoints?.find((c) => c.checkpointId === id);
+    job.cpEdit = { id, text: JSON.stringify(cp?.payload ?? null, null, 2) };
+    render();
+    root.querySelector<HTMLTextAreaElement>("#cp-payload")?.focus();
+    return;
+  }
+  if (t.closest("[data-cp-edit-cancel]")) {
+    job.cpEdit = null;
+    return render();
+  }
+  if (t.closest("[data-cp-format]") && job.cpEdit) {
+    try {
+      job.cpEdit.text = JSON.stringify(JSON.parse(job.cpEdit.text), null, 2);
+      const area = root.querySelector<HTMLTextAreaElement>("#cp-payload");
+      if (area) area.value = job.cpEdit.text;
+    } catch {
+      /* the status line already says why */
+    }
+    return render();
+  }
   const cpEl = t.closest<HTMLElement>("[data-cp]");
   if (cpEl && store.run) {
     const id = store.run.runId;
     const action = cpEl.dataset.cp as "approve" | "reject";
     const checkpointId = Number(cpEl.dataset.cpId);
     const note = job.cpNote.trim() || undefined;
+    // An approval carries the edited payload when it differs from what was asked.
+    const asked = store.run.pendingCheckpoints?.find((c) => c.checkpointId === checkpointId);
+    const edit = action === "approve" && job.cpEdit?.id === checkpointId ? cpEditState(asked?.payload, job.cpEdit.text) : null;
+    if (edit && !edit.ok) return;
+    const body =
+      action === "approve"
+        ? { action, checkpointId, note, ...(edit?.changed ? { payload: edit.value } : {}) }
+        : { action, checkpointId, note };
     void api
-      .checkpoint(id, { action, checkpointId, note })
+      .checkpoint(id, body)
       .then(() => {
         job.cpNote = "";
-        toast({ state: action === "approve" ? "done" : "stopped", title: action === "approve" ? tr("Approved") : tr("Rejected"), body: id, ttlMs: 2400 });
+        if (job.cpEdit?.id === checkpointId) job.cpEdit = null;
+        toast({ state: action === "approve" ? "done" : "stopped", title: action === "approve" ? (edit?.changed ? tr("Approved with edits") : tr("Approved")) : tr("Rejected"), body: id, ttlMs: 2400 });
         return store.loadRun(id);
       })
       .catch((err: Error) => toast({ state: "failed", title: tr("Could not resolve the checkpoint"), body: err.message }));
@@ -818,6 +870,18 @@ root.addEventListener("click", (ev) => {
     job.transcriptAi = null;
     return render();
   }
+  const spendAi = t.closest<HTMLElement>("[data-spend-ai]");
+  if (spendAi) {
+    // A top spender opens in the drawer, which the graph and the timeline show;
+    // the receipt folds away to give it the room.
+    job.selectedAi = Number(spendAi.dataset.spendAi);
+    job.spend = false;
+    return job.tab === "graph" || job.tab === "timeline" ? render() : selectTab("graph");
+  }
+  if (t.closest("[data-spend]")) {
+    job.spend = !job.spend;
+    return render();
+  }
   const nodeEl = t.closest<HTMLElement>("[data-ai]");
   if (nodeEl) {
     const ai = Number(nodeEl.dataset.ai);
@@ -846,6 +910,13 @@ function selectTab(next: JobTab): void {
   }
 }
 
+// Picking another run to compare B with.
+root.addEventListener("change", (ev) => {
+  const el = ev.target as HTMLSelectElement;
+  const b = el.dataset?.cmpPick;
+  if (b && el.value) go(compareHash(el.value, b));
+});
+
 // Form state must survive re-renders, so inputs write through to module state.
 root.addEventListener("input", (ev) => {
   const el = ev.target as HTMLInputElement | HTMLTextAreaElement;
@@ -871,6 +942,9 @@ root.addEventListener("input", (ev) => {
     case "cp-note":
       job.cpNote = el.value;
       return;
+    case "cp-payload":
+      if (job.cpEdit) job.cpEdit.text = el.value;
+      return render();
   }
 });
 
@@ -937,6 +1011,10 @@ document.addEventListener("keydown", (e) => {
     job.selectedAi = null;
     return render();
   }
+  if (e.key === "Escape" && job.spend && currentRoute().view === "job") {
+    job.spend = false;
+    return render();
+  }
   const now = Date.now();
   if (gPending && now - gPending < 900 && G_TARGETS[e.key]) {
     gPending = 0;
@@ -945,6 +1023,10 @@ document.addEventListener("keydown", (e) => {
   gPending = e.key === "g" ? now : 0;
   const route = currentRoute();
   if (route.view === "job" && /^[1-5]$/.test(e.key)) selectTab(JOB_TABS[Number(e.key) - 1]!);
+  if (route.view === "job" && e.key === "$") {
+    job.spend = !job.spend;
+    render();
+  }
   // j / k step through the agents with changes.
   if (route.view === "job" && job.tab === "changes" && store.run && (e.key === "j" || e.key === "k")) {
     const changed = changedAgents(store.run);

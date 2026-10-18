@@ -56,6 +56,7 @@ test("a CLI that goes quiet is killed and restarted, and the run says so", async
     const restarts = events.filter((e) => e.type === "log" && /went quiet/.test(String(e.message)));
     assert.equal(restarts.length, 1);
     assert.equal(restarts[0]!.message, "search:1 went quiet for 1s — restarting (1/1)");
+    assert.deepEqual(restarts[0]!.retry, { reason: "stall", n: 1, of: 1 }, "structured for the run's readers (its trace)");
     assert.equal(restarts[0]!.agentId, 1);
     assert.equal(events.filter((e) => e.type === "agent_finished").length, 1, "still one agent, not two");
   } finally {

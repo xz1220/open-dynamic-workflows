@@ -83,6 +83,16 @@ const STRICT_VERDICT = {
 const DESCRIBED = /JSON Schema:/;
 const claudeArgv = (tier: "read" | "edit" = "edit") => commandAt(defaultConfig().adapters.claude!, tier);
 const codexArgv = () => commandAt(defaultConfig().adapters.codex!, "edit").map((part) => (part === "{workspace}" ? "/repo" : part));
+/** A codex argv with its run's reply-file path put back as the `{reply_file}` it came from. */
+const unreplied = (command: string[]) => command.map((part, i) => (command[i - 1] === "--output-last-message" ? "{reply_file}" : part));
+/** What codex does with its final message: writes it to its reply file, and prints its events. */
+function codexAnswer(run: Run, message: string): string {
+  writeFileSync(run.command[run.command.indexOf("--output-last-message") + 1]!, message);
+  const item = { id: "item_0", type: "agent_message", text: message };
+  const usage = { input_tokens: 9, cached_input_tokens: 0, output_tokens: 3 };
+  const events = [{ type: "thread.started", thread_id: "t" }, { type: "turn.started" }, { type: "item.completed", item }, { type: "turn.completed", usage }];
+  return events.map((event) => JSON.stringify(event)).join("\n");
+}
 
 // --- the plan -------------------------------------------------------------------------
 
@@ -276,13 +286,13 @@ test("codex is handed a strict schema as a file in the run directory, there only
       configFor("codex"),
       (run) => {
         held.push(JSON.parse(readFileSync(run.command.at(-1)!, "utf8")));
-        return '{"verdict": "pass", "note": ""}';
+        return codexAnswer(run, '{"verdict": "pass", "note": ""}');
       },
       { agentSchemaPath: (agentId) => join(dir, "agents", `${agentId}.schema.json`) },
     );
     const out = await bridge.run({ prompt: "Check it.", schema: STRICT_VERDICT }, { agentId: 7 });
     assert.deepEqual(out.value, { verdict: "pass", note: "" });
-    assert.deepEqual(runs[0]!.command, [...codexArgv(), "--output-schema", path], "after `-`, as --model goes");
+    assert.deepEqual(unreplied(runs[0]!.command), [...codexArgv(), "--output-schema", path], "after `-`, as --model goes");
     assert.deepEqual(held, [STRICT_VERDICT], "the file held the schema while codex ran");
     assert.equal(existsSync(path), false, "and is gone once it has run");
     assert.doesNotMatch(runs[0]!.stdin, DESCRIBED);
@@ -297,7 +307,8 @@ test("without a run directory a temp directory holds the file; every CLI run's g
     const path = run.command.at(-1)!;
     paths.push(path);
     assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), STRICT_VERDICT, "written before the CLI starts");
-    return answers[n - 1]!;
+    const answer = answers[n - 1]!;
+    return typeof answer === "string" ? codexAnswer(run, answer) : answer;
   };
   // A schema retry writes it again for its own run.
   const retried = recording(configFor("codex"), answering(["no JSON here", '{"verdict": "fail", "note": "n"}']));
@@ -340,13 +351,13 @@ test("nativeSchemaArgs: inline is compact JSON; a file gets its directory made, 
 
 test("codex is not handed a schema strict mode would refuse: it goes in the prompt, and the run says so once", async () => {
   const notes: string[] = [];
-  const { runs, bridge } = recording(configFor("codex"), () => '{"verdict": "pass"}');
+  const { runs, bridge } = recording(configFor("codex"), (run) => codexAnswer(run, '{"verdict": "pass"}'));
   for (const prompt of ["one", "two"]) {
     const out = await bridge.run({ prompt, schema: VERDICT }, { onNote: (message) => notes.push(message) });
     assert.deepEqual(out.value, { verdict: "pass" });
   }
   assert.deepEqual(
-    runs.map((run) => run.command),
+    runs.map((run) => unreplied(run.command)),
     [codexArgv(), codexArgv()],
   );
   assert.ok(runs.every((run) => DESCRIBED.test(run.stdin)), "described in the prompt instead");

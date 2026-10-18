@@ -10,19 +10,24 @@
  *
  * The answers to `checkpoint()` calls (ODW extension) arrive next to it, in
  * the run's append-only decision log: requests
- * `{ action: "approve" | "reject", checkpointId?, note?, by, at }` that the
- * CLI and the server append — never rewriting the control file, so an answer
- * and a stop can never undo each other. While any checkpoint waits, the log
- * is read on the poll interval and each request is taken once: it answers the
- * checkpoint it names — or, without an id, the oldest one waiting — if that
- * checkpoint is still waiting; otherwise it is reported and dropped, so an
- * answer can never carry over to a later question. Requests already in the
- * log when a first checkpoint starts waiting predate it and are skipped.
+ * `{ action: "approve" | "reject", checkpointId?, note?, payload?, by, at }`
+ * that the CLI and the server append — never rewriting the control file, so
+ * an answer and a stop can never undo each other. While any checkpoint waits,
+ * the log is read on the poll interval and each request is taken once: it
+ * answers the checkpoint it names — or, without an id, the oldest one waiting
+ * — if that checkpoint is still waiting; otherwise it is reported and
+ * dropped, so an answer can never carry over to a later question. Requests
+ * already in the log when a first checkpoint starts waiting predate it and
+ * are skipped. An approval's edited `payload` goes to the checkpoint, which
+ * may refuse it (one that does not match its schema): that answer is
+ * dropped, and the checkpoint goes on waiting.
  *
  * While the run waits for a spent quota to reset (an ODW extension:
  * quotaWait), the control file is also watched for a new resume, which ends
  * that wait at once.
  */
+
+import { createHash } from "node:crypto";
 
 import {
   PAUSED,
@@ -54,6 +59,19 @@ export interface FileControlOptions {
   watchIntervalMs?: number;
 }
 
+/**
+ * A short stand-in for a request's payload in the set of taken requests: two
+ * requests may differ only by it, and a payload can be large.
+ */
+function digest(payload: unknown): string | null {
+  if (payload === undefined) return null;
+  try {
+    return createHash("sha256").update(JSON.stringify(payload) ?? "").digest("base64");
+  } catch {
+    return "?"; // not JSON (an in-process request): the checkpoint refuses it anyway
+  }
+}
+
 /** Wait `ms`, or less if `signal` aborts first. */
 function delay(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise<void>((resolve) => {
@@ -71,8 +89,8 @@ export class FileControl implements Control {
   private readonly poll: number;
   private readonly watchInterval: number;
   private reported = RUNNING;
-  /** checkpoint id → the call waiting for its answer. */
-  private readonly asked = new Map<number, (decision: CheckpointDecision) => void>();
+  /** checkpoint id → the call waiting for its answer; false: the answer was refused. */
+  private readonly asked = new Map<number, (decision: CheckpointDecision) => boolean>();
   /** The requests already taken (or skipped), by content. */
   private readonly taken = new Set<string>();
   private decisionTimer: NodeJS.Timeout | undefined;
@@ -153,10 +171,15 @@ export class FileControl implements Control {
 
   /**
    * Wait for the answer to checkpoint `checkpointId`, read from the control
-   * file. The poll timer is NOT unref'd: a waiting checkpoint may be all a
-   * worker has left to do, and it must stay alive to hear the answer.
+   * file; `accept` may refuse one (see {@link Control.awaitDecision}). The
+   * poll timer is NOT unref'd: a waiting checkpoint may be all a worker has
+   * left to do, and it must stay alive to hear the answer.
    */
-  awaitDecision(checkpointId: number, signal: AbortSignal): Promise<CheckpointDecision> {
+  awaitDecision(
+    checkpointId: number,
+    signal: AbortSignal,
+    accept?: (decision: CheckpointDecision) => boolean,
+  ): Promise<CheckpointDecision> {
     return new Promise<CheckpointDecision>((resolve, reject) => {
       if (signal.aborted) return reject(signal.reason);
       // The first question in a while: whatever the file already holds was
@@ -168,9 +191,11 @@ export class FileControl implements Control {
       };
       signal.addEventListener("abort", onAbort, { once: true });
       this.asked.set(checkpointId, (decision) => {
+        if (accept && !accept(decision)) return false;
         signal.removeEventListener("abort", onAbort);
         this.forget(checkpointId);
         resolve(decision);
+        return true;
       });
       this.decisionTimer ??= setInterval(() => this.take(), this.poll);
     });
@@ -179,7 +204,8 @@ export class FileControl implements Control {
   /**
    * Take every request not taken yet, oldest first, and answer the checkpoint
    * each one is for. `unmatched` (by default the option) hears the requests
-   * that answered nothing.
+   * that answered nothing. A request the checkpoint refused is taken all the
+   * same: it never answers anything later.
    */
   private take(unmatched = this.options.onUnmatchedDecision): void {
     let requests: CheckpointRequest[];
@@ -189,13 +215,20 @@ export class FileControl implements Control {
       return; // unreadable for a moment: the next poll tries again
     }
     for (const request of requests) {
-      const key = JSON.stringify([request.action, request.checkpointId, request.note, request.by, request.at]);
+      const key = JSON.stringify([request.action, request.checkpointId, request.note, request.by, request.at, digest(request.payload)]);
       if (this.taken.has(key)) continue;
       this.taken.add(key);
       const id = request.checkpointId ?? Math.min(...this.asked.keys());
       const answer = this.asked.get(id);
-      if (answer) answer(decisionOf(request));
-      else unmatched?.(request);
+      if (!answer) {
+        unmatched?.(request);
+        continue;
+      }
+      try {
+        answer(decisionOf(request));
+      } catch {
+        // A checkpoint that cannot weigh an answer refuses it: never a crash on a poll.
+      }
     }
   }
 

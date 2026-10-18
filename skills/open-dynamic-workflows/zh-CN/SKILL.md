@@ -70,7 +70,7 @@ return await agent(
 | `workflow(ref, args?)` | 内联调用另一个 workflow（仅一层）。`ref` 是受管目录中的名字或 `{ scriptPath }`；子 workflow 共享本次运行的并发上限、agent 计数和预算。 |
 | `validate(source)` | 解析并编译检查源码,不运行工作流正文;`meta` 按纯字面量解析,绝不求值。返回 `{ ok, meta?, errors, warnings }`。**ODW 扩展**——不属于 Claude Code 方言。 |
 | `exec(command, opts?)` | 不启动模型直接运行一条命令（测试、构建、linter）；返回 `{ stdout, stderr, exitCode, signal, timedOut, truncated, durationMs }`。字符串经 shell 执行，数组按 argv 执行。**ODW 扩展**——不属于 Claude Code 方言。 |
-| `checkpoint(title, opts?)` | 暂停运行，直到有人批准或拒绝；返回 `{ approved, note, by }`。**ODW 扩展**——不属于 Claude Code 方言。 |
+| `checkpoint(title, opts?)` | 暂停运行，直到有人批准（可以附上修改后的 payload）或拒绝；返回 `{ approved, note, by, payload, edited }`。**ODW 扩展**——不属于 Claude Code 方言。 |
 
 `agent` 的 `opts`：`{ adapter?, schema?, label?, phase?, model?, agentType?, isolation?, keep?, permissions?, expect?, expectRetries?, allowEmpty? }`。
 `adapter` 选择用哪个 CLI——写成列表（`['codex', 'claude']`，**ODW 扩展**）就是回退链；
@@ -96,7 +96,10 @@ agent 的工作区里以 0 退出；`timeout` 秒，默认 600）和 `match`（�
 带着它的 `expect`。CLI 拒绝的工具调用（claude 的
 `permission_denials`）也算作缺失，此时原因为 `"permission"`。没设 `expect` 时，这样的回复
 照常成立：被拒绝的调用作为 `denied` 记在 agent 上，并记一次日志（`"permissionDenials":
-"fail"` 则让它失败）。空回复总会抛出 `reason: "empty_reply"`（`allowEmpty: true` 接受空回复）：
+"fail"` 则让它失败）。`mcp: ['github']` 要求 Claude Code 启动 agent 时这些 MCP 服务器已连上
+（`pending` 也算通过）；不设时，没连上的服务器作为 `mcp` 记在 agent 上，每次运行记一次日志
+（`"mcpFailures": "fail"` 让服务器为 `failed` 或 `needs-auth` 的 agent 以 `"mcp_unavailable"`
+失败）。空回复总会抛出 `reason: "empty_reply"`（`allowEmpty: true` 接受空回复）：
 
 ```js
 const fix = await agent('Fix the failing parser tests.', {   // ODW 扩展：expect
@@ -117,15 +120,19 @@ for (let round = 1; run.exitCode !== 0 && round <= 3; round++) {
 }
 ```
 
-`checkpoint` 的 `opts`：`{ payload?, timeout?, onTimeout? }`。`payload` 是要给人看的
+`checkpoint` 的 `opts`：`{ payload?, schema?, timeout?, onTimeout? }`。`payload` 是要给人看的
 内容（计划、改动摘要）；`timeout` 是等待的秒数，超时后由 `onTimeout` 批准、拒绝，或
 （默认的 `"fail"`）抛出可恢复的 `CheckpointTimeout`。拒绝也是一个答复而不是错误：按
-`approved` 分支，并利用对方的 `note`：
+`approved` 分支，并利用对方的 `note`。对方也可以批准一份**修改过的** payload（`odw approve
+--edit` / `--payload`，或看板）：请使用结果里的 `payload`——也就是被批准的内容——而不是你
+自己手里的那份（`edited` 表示它是否被改过），并传入 `schema`，让修改必须保持代码所依赖的
+结构（不传时任何 JSON 值都接受）：
 
 ```js
 const plan = await agent(`Plan this as independent steps: ${task}`, { schema: PLAN })
-const { approved, note } = await checkpoint('Run this plan?', { payload: plan })   // ODW 扩展
-if (!approved) return { approved, note, plan }
+const r = await checkpoint('Run this plan?', { payload: plan, schema: PLAN })   // ODW 扩展
+if (!r.approved) return { approved: false, note: r.note, plan }
+const approvedPlan = r.payload   // 对方修改后的内容，或 plan 本身
 ```
 
 **选择法则：** 下一步需要**一整批**结果一次到位（去重、计票、综合）时用 `parallel`；
@@ -147,9 +154,13 @@ RUN=$(odw run wf.js)        # 打印一个 run id 后立即返回
 odw status $RUN             # 状态、agent 计数、token 与花费
 odw logs $RUN --follow      # 流式输出进度事件
 odw logs $RUN --agent 3     # 某个 agent 做了什么：工具调用、结果、错误（ODW 扩展）
+odw export $RUN --otlp      # 把运行导出为 OpenTelemetry trace（OTLP/JSON）——--send 直接发送（ODW 扩展）
 odw result $RUN             # 完成后打印最终值
 odw pause $RUN / resume $RUN / stop $RUN
 odw approve|reject $RUN     # 回答运行正在等待的 checkpoint()——只在用户明确要求时
+                            # （approve --payload JSON|@file 批准用户修改后的内容；--edit 需要用户的终端）
+odw compare $OLD $RUN       # 两次运行之间变了什么:配置、耗时、花费、失败、回复(ODW 扩展)
+                            #   --agent <label|id>:某个 agent 的完整回复 diff;--json 供脚本使用
 odw list                    # 所有运行
 ```
 
@@ -274,7 +285,9 @@ odw status $RUN     # 问题、它的 payload，以及回答它的确切命令
 
 **绝不要自己回答检查点。** 它存在的意义就是让用户来决定。把问题和 payload 展示给用户，
 只有在用户明确告诉你之后，才运行 `odw approve $RUN` 或 `odw reject $RUN --note "…"`
-（有多个在等待时加 `--checkpoint N`）——把用户的理由写进 `--note`。如果用户不在，就让它
+（有多个在等待时加 `--checkpoint N`）——把用户的理由写进 `--note`。如果用户要求改了再批，
+就用 `odw approve $RUN --payload @file.json` 发送用户认可的那份 payload（`--edit` 会在终端里
+打开编辑器——那是用户的终端，不是你的）。如果用户不在，就让它
 继续等：用户之后可以在任意 shell 里回答，或在看板（`odw serve`）里点 Approve/Reject。
 
 检查点等待期间 `odw run --wait` 会一直阻塞。带检查点的 workflow 请以后台方式启动
@@ -347,11 +360,13 @@ Codex、Claude Code、Gemini、Qwen、Kimi 开箱即用，无需配置。要换�
 - **结果**：引擎不会替你 commit、push 或应用 diff。先检视 `return` 值，再决定下一步——对隔离
   agent 而言，这包括审阅它们保存下来的 diff 并运行 `odw apply`。
 - **密钥**（ODW 扩展）：odw 保存和提供的内容——transcript、`odw logs`、保存的结果
-  （`odw result --agent`）、运行的错误、webhook——会把疑似密钥显示为 `«redacted:<kind>»`
+  （`odw result --agent`）、运行的错误、webhook、`worker.log`（含工作流里的 `console.log`）、
+  Chat Host 会话——会把疑似密钥显示为 `«redacted:<kind>»`
   （名字像密钥的变量的值记为 `env:NAME`，否则记为令牌类型）。agent 和工作流拿到的仍是原文；
   只有写下来的内容被脱敏，所以 `odw logs` 里出现标记并不是 agent 出错。恢复的运行会按保存
   时的样子重放已脱敏的结果：别让后续步骤依赖 agent 打印出来的密钥——从环境变量读取。运行
-  自身的结果保留变量的值（那里只脱敏令牌形态）；`"redact": false` 可关闭脱敏。
+  自身的结果保留变量的值（那里只脱敏令牌形态），保存的运行 `args` 也一样——看板和 API 显示时
+  脱敏令牌形态，`odw rerun` 用原始值；`"redact": false` 可关闭脱敏。
 
 ## 常见错误
 

@@ -39,11 +39,14 @@
  *                                   transcripts or with maxTranscriptBytes 0, a Claude run); the
  *                                   same :agentId check
  *   POST /api/runs/:id/control      { action: pause|resume|stop } (ODW runs; Claude runs → 409)
- *   POST /api/runs/:id/checkpoint   { action: approve|reject, checkpointId?, note? } answers a
+ *   POST /api/runs/:id/checkpoint   { action: approve|reject, checkpointId?, note?, payload? } answers a
  *                                   waiting checkpoint() (ODW extension) — the one named, else the
  *                                   oldest; → { ok, runId, action, checkpointId }. 409 when that
  *                                   checkpoint (or any) is not waiting, and for Claude runs; 400
  *                                   on a bad body. RunDetail.pendingCheckpoints lists what waits.
+ *                                   With approve, `payload` approves an edit of the checkpoint's
+ *                                   payload: 413 past 256 KiB of JSON, 400 (with `problems`) off
+ *                                   the checkpoint's schema; that route takes bodies to 512 KiB.
  *   GET  /api/activity?limit=N      the Activity view (below)
  *   GET  /api/stream                text/event-stream: `runs` frames (the run list, on change);
  *                                   `?delta=1` → one `runs` frame, then `runs-delta` frames
@@ -53,6 +56,9 @@
  *   GET  /api/capabilities          { writable }: whether this bind accepts writes
  *   GET  /api/settings              runtime config summary (adapters, roots, Claude scope, notify)
  *   GET  /api/schedules             [schedule]: `odw schedule list --json`, read only (ODW extension)
+ *   GET  /api/compare?a=<run>&b=<run>   RunComparison (./compare): what changed between two ODW
+ *                                   runs, as `odw compare --json` prints it (ODW extension); 400
+ *                                   unless both are run ids, 404 when either is no ODW run
  *   *    /api/chat/sessions[/:id[/messages]]   the Chat Host (see ./chat-host)
  *
  * GET /api/activity?limit=N (default 40, clamped to 1..200; junk → 40) →
@@ -67,7 +73,7 @@
  * The polled GETs (/api/runs, /api/runs/:id, …/events, …/result, …/agents[/:agentId],
  * …/agents/:agentId/transcript, /api/activity) carry an ETag (with cache-control: no-cache) and answer
  * If-None-Match with 304.
- * Request bodies are capped at 128 KiB (413 past it); a malformed %-escape in a
+ * Request bodies are capped at 128 KiB (413 past it; 512 KiB for /checkpoint); a malformed %-escape in a
  * path id is a 400.
  *
  * Security: binds 127.0.0.1 by default. The run list aggregates every project's
@@ -77,6 +83,11 @@
  * (control is refused) and surfaces a run's metadata + author `log()` lines +
  * final result, NOT raw agent transcripts; narrow it with `claudeJobsScope:
  * "project"` to the served repo + its worktrees.
+ *
+ * What it serves of ODW's runs had its likely secrets redacted when it was
+ * written (ODW extension; see ../redact); a run's `args` — and a schedule's —
+ * are redacted as they are served (token shapes: they are the user's data),
+ * since the run directory keeps them as given for `odw rerun`.
  *
  * Write-path security: POST routes can drive local state, so the realistic
  * threat is a hostile web page reaching loopback through the user's browser,
@@ -101,13 +112,16 @@ import {
 } from "../adapters/config.js";
 import { commandAt, runTier } from "../adapters/permissions.js";
 import type { Config } from "../adapters/types.js";
+import { CHECKPOINT_EDIT_MAX_BYTES, checkEdit } from "../checkpoint.js";
 import { CHECKPOINT_NOTE_MAX, isCheckpointId } from "../control.js";
 import { DASHBOARD_HTML } from "../dashboard.generated.js";
+import { redactorFor, type Redactor } from "../redact.js";
 import type { WorkflowEvent } from "../events.js";
 import type { AgentResultRecord } from "../journal.js";
 import { activityLimit, activityView } from "./activity-view.js";
 import { ChatHost, type ChatTurnRunner } from "./chat-host.js";
 import { ClaudeRunSource } from "./claude-run-source.js";
+import { compareRuns, readCompareRun } from "./compare.js";
 import {
   decodeSegment,
   isAllowedHost,
@@ -123,7 +137,7 @@ import { listSchedules, scheduleJson } from "../schedule/command.js";
 import { webhookOrigin } from "./notify.js";
 import { OdwRunSource } from "./odw-run-source.js";
 import { RunFeed } from "./run-feed.js";
-import { allSummaries, sourceForRun, type RunSource } from "./run-source.js";
+import { allSummaries, RUN_ID_RE, sourceForRun, type RunSource } from "./run-source.js";
 import { RunStore } from "./run-store.js";
 import { listWorkflowSummaries, workflowDetail } from "./workflows-view.js";
 
@@ -167,8 +181,10 @@ export function startServer(options: ServeOptions): Promise<ServeHandle> {
   const cwd = options.cwd ?? process.cwd();
   const config = options.config ?? loadConfig(null);
   const configPath = options.configPath ?? null;
+  // What the server serves of runs' args and keeps of chat sessions has its likely secrets redacted (ODW extension).
+  const redactor = redactorFor(config);
   const sources: RunSource[] = [
-    new OdwRunSource(store),
+    new OdwRunSource(store, { redactor }),
     // Default scope "all": the observatory aggregates every project's Claude runs,
     // mirroring how the global runs root already aggregates ODW runs. The scope can
     // be narrowed to the served repo + its worktrees via claudeJobsScope.
@@ -188,10 +204,11 @@ export function startServer(options: ServeOptions): Promise<ServeHandle> {
     configPath,
     runner: options.chatRunner,
     notify: (sessionId) => feed.broadcast("chat", { sessionId }),
+    redactor,
   });
 
   const server = createServer((req, res) => {
-    handle(req, res, { sources, store, chatHost, feed, cwd, config, configPath, boundHost: host }).catch((err) => {
+    handle(req, res, { sources, store, chatHost, feed, cwd, config, configPath, boundHost: host, redactor }).catch((err) => {
       try {
         sendJson(res, 500, { error: (err as Error).message ?? "internal error" });
       } catch {
@@ -248,10 +265,12 @@ interface HandleContext {
   configPath: string | null;
   /** The address the server was bound to (drives the write/Host policy). */
   boundHost: string;
+  /** What redacts the args it serves (ODW extension). */
+  redactor: Redactor;
 }
 
 async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandleContext): Promise<void> {
-  const { sources, store, chatHost, feed, cwd, config, configPath, boundHost } = ctx;
+  const { sources, store, chatHost, feed, cwd, config, configPath, boundHost, redactor } = ctx;
   const method = req.method ?? "GET";
 
   try {
@@ -302,8 +321,13 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandleCont
       sendJson(res, 200, settingsView(store, config, cwd, configPath, boundHost));
       return;
     }
+    if (method === "GET" && path === "/api/compare") {
+      compareView(req, res, store, url.searchParams, redactor);
+      return;
+    }
     if (method === "GET" && path === "/api/schedules") {
-      sendJson(res, 200, listSchedules().map(scheduleJson));
+      // A schedule's args are the user's data, kept as given for its runs: served with token shapes redacted.
+      sendJson(res, 200, listSchedules().map((row) => redactor.shapes.record(scheduleJson(row))));
       return;
     }
     if (path.startsWith("/api/chat/") && (await chatHost.route(req, res, method, path, boundHost))) return;
@@ -519,10 +543,19 @@ async function controlRun(
 }
 
 /**
+ * The checkpoint route's body cap: an edited payload may be 256 KiB of
+ * compact JSON, and a client's own formatting, escapes and the note need room.
+ */
+const CHECKPOINT_BODY_MAX_BYTES = 2 * CHECKPOINT_EDIT_MAX_BYTES;
+
+/**
  * Answer a waiting checkpoint() (ODW extension): `{ action: approve|reject,
- * checkpointId?, note? }`. The answer is checked against what the run waits
- * for now — and always sent for an explicit id — so it can never land on a
- * question asked after the person decided.
+ * checkpointId?, note?, payload? }`. The answer is checked against what the
+ * run waits for now — and always sent for an explicit id — so it can never
+ * land on a question asked after the person decided. `payload`, with
+ * approve only, is an edit of the checkpoint's payload: refused (413) over
+ * 256 KiB of JSON, and (400, with the validator's `problems`) when it does not
+ * match the checkpoint's schema — the run checks it again on receipt.
  */
 async function decideCheckpoint(
   req: IncomingMessage,
@@ -531,10 +564,13 @@ async function decideCheckpoint(
   runId: string,
 ): Promise<void> {
   // CSRF posture (Content-Type + same-origin) is enforced by writeGuard upstream.
-  const body = await jsonBodyOrReply(req, res);
+  // The body may hold an edited payload of up to 256 KiB, with room around it.
+  const body = await jsonBodyOrReply(req, res, CHECKPOINT_BODY_MAX_BYTES);
   if (!body) return;
   const { action, note } = body;
   const checkpointId = body.checkpointId ?? undefined;
+  // An approval's edited payload: present (null included) means sent.
+  const edited = Object.hasOwn(body, "payload");
   if (action !== "approve" && action !== "reject") {
     sendJson(res, 400, { error: "action must be one of approve, reject" });
     return;
@@ -551,6 +587,17 @@ async function decideCheckpoint(
     sendJson(res, 400, { error: `note must be at most ${CHECKPOINT_NOTE_MAX} characters` });
     return;
   }
+  if (edited && action !== "approve") {
+    sendJson(res, 400, { error: "payload goes with action approve only — a rejection keeps the checkpoint's payload" });
+    return;
+  }
+  if (edited) {
+    const sized = checkEdit(body.payload, null);
+    if (!sized.ok) {
+      sendJson(res, sized.tooLarge ? 413 : 400, { error: sized.message });
+      return;
+    }
+  }
   const pending = src.detail(runId)?.pendingCheckpoints ?? [];
   const target = checkpointId === undefined ? pending[0] : pending.find((cp) => cp.checkpointId === checkpointId);
   if (!target) {
@@ -559,13 +606,49 @@ async function decideCheckpoint(
     sendJson(res, 409, { error: `${which} waiting for an answer in run ${runId}${open}` });
     return;
   }
+  // The same check the run makes on receipt, so it never sees an edit it would refuse.
+  const checked = edited ? checkEdit(body.payload, target.schema ?? null) : null;
+  if (checked && !checked.ok) {
+    sendJson(res, 400, { error: checked.message, problems: checked.problems });
+    return;
+  }
   src.decide(runId, {
     action,
     checkpointId: target.checkpointId,
     ...(typeof note === "string" && note.trim() !== "" ? { note } : {}),
+    ...(checked?.ok ? { payload: checked.value } : {}),
     by: "dashboard",
   });
   sendJson(res, 200, { ok: true, runId, action, checkpointId: target.checkpointId });
+}
+
+/**
+ * `GET /api/compare?a=<run>&b=<run>` (ODW extension): what changed between
+ * two ODW runs — the RunComparison `odw compare --json` prints. Read only.
+ * Each id must be a run id (RUN_ID_RE; a dot-only one is no run) — else 400
+ * — and name an ODW run — else 404.
+ */
+function compareView(req: IncomingMessage, res: ServerResponse, store: RunStore, params: URLSearchParams, redactor: Redactor): void {
+  const ids = [params.get("a"), params.get("b")];
+  for (const id of ids) {
+    if (id === null || !RUN_ID_RE.test(id) || /^\.+$/.test(id)) {
+      sendJson(res, 400, { error: "a and b must each be a run id: /api/compare?a=<run>&b=<run>" });
+      return;
+    }
+  }
+  for (const id of ids as string[]) {
+    if (id.startsWith("cc-") || !store.exists(id)) {
+      sendJson(res, 404, { error: id.startsWith("cc-") ? `odw compare covers ODW runs only: ${id}` : `no such run: ${id}` });
+      return;
+    }
+  }
+  const [a, b] = ids as [string, string];
+  // Args are served as /api/runs/:id serves them: token shapes redacted (meta.json keeps them whole).
+  const served = (id: string) => {
+    const run = readCompareRun(store, id);
+    return { ...run, args: (redactor.shapes.record({ args: run.args }) as { args: unknown }).args };
+  };
+  sendJsonCached(req, res, compareRuns(served(a), served(b)));
 }
 
 /** A saved agent result as listed: which agent and when — the value stays behind its own route. */

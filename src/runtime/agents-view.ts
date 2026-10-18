@@ -11,6 +11,7 @@
 import type { PermissionTier } from "../adapters/types.js";
 import type { AgentChanges } from "../changes.js";
 import type { AgentResultRecord } from "../journal.js";
+import { clockTime } from "../quota-wait.js";
 import {
   displayWidth,
   fmtDuration,
@@ -45,6 +46,8 @@ export interface AgentRow {
   permissions: PermissionTier | null;
   /** The adapters it fell back from before `adapter` (ODW extension); null when it did not. */
   fellBackFrom: string[] | null;
+  /** While it waits for a spent quota to reset (ODW extension: quotaWait): which adapter's, and when; null otherwise. */
+  quotaWait: { adapter: string; resumeAt?: number } | null;
 }
 
 /** A run's agents in call (agentId) order, each with its saved result if it has one. */
@@ -70,6 +73,7 @@ export function agentRows(store: RunStore, runId: string): AgentRow[] {
       branch: a.branch ?? record?.branch ?? null,
       permissions: a.permissions ?? record?.permissions ?? null,
       fellBackFrom: a.fellBackFrom ?? record?.fellBackFrom ?? null,
+      quotaWait: !record && a.state === "running" ? (a.quotaWait ?? null) : null,
     };
   });
   // A saved result whose events were lost (a truncated log) is still listed.
@@ -96,6 +100,7 @@ function rowFromRecord(rec: AgentResultRecord): AgentRow {
     branch: rec.branch ?? null,
     permissions: rec.permissions ?? null,
     fellBackFrom: rec.fellBackFrom ?? null,
+    quotaWait: null,
   };
 }
 
@@ -132,6 +137,8 @@ export function agentRowJson(row: AgentRow): Record<string, unknown> {
     ...(row.permissions ? { permissions: row.permissions } : {}),
     // The adapters it fell back from (ODW extension), when it did.
     ...(row.fellBackFrom ? { fellBackFrom: row.fellBackFrom } : {}),
+    // The spent quota it waits out (ODW extension: quotaWait), while it does.
+    ...(row.quotaWait ? { quotaWait: row.quotaWait } : {}),
     saved: row.record !== null,
     error: row.error,
     preview: row.record ? previewValue(row.record.value, 120) : null,
@@ -178,7 +185,14 @@ export function formatAgentTable(rows: AgentRow[], opts: { width: number; caps: 
         ? p.err(sanitizeText(r.error ?? "failed", valueWidth))
         : r.state === "done"
           ? p.dim("(not saved)")
-          : "";
+          : r.quotaWait
+            ? p.dim(
+                sanitizeText(
+                  `waits for ${r.quotaWait.adapter} quota${r.quotaWait.resumeAt !== undefined ? ` until ${clockTime(r.quotaWait.resumeAt, nowSec * 1000)}` : ""}`,
+                  valueWidth,
+                ),
+              )
+            : "";
     out.push(line(cells[i]!, value, r.state));
   });
   return out;

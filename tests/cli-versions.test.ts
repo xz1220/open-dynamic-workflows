@@ -1,0 +1,330 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { execPath } from "node:process";
+
+import { collectConfigWarnings, defaultConfig, loadConfig } from "../src/adapters/config.js";
+import type { RunCommandOptions } from "../src/adapters/runner.js";
+import type { Adapter, CliResult } from "../src/adapters/types.js";
+import { main } from "../src/cli.js";
+import type { WorkflowEvent } from "../src/events.js";
+import { VERSION } from "../src/index.js";
+import {
+  adapterFingerprint,
+  CliVersions,
+  runSetup,
+  versionOf,
+  versionProbe,
+  VERSION_TIMEOUT_SECONDS,
+} from "../src/provenance.js";
+import { RunStore } from "../src/runtime/run-store.js";
+import { detail } from "../src/runtime/runs-view.js";
+import { executeRun } from "../src/runtime/worker.js";
+
+// Recording what ran (ODW extension): each adapter CLI's version, probed once
+// per run beside its first agent, never delaying or failing the run; the
+// run's behaviour settings on run_started; odw's version and the source hash
+// in meta.json.
+
+const adapter = (name: string, command: string[], extra: Partial<Adapter> = {}): Adapter => ({ name, command, ...extra });
+const cli = (fields: Partial<CliResult>): CliResult => ({ returncode: 0, stdout: "", stderr: "", timedOut: false, duration: 0, ...fields });
+
+test("which commands are probed: an installed CLI yes; node, interpreters, scripts and relative paths no", () => {
+  for (const exe of ["claude", "codex", "agent", "/usr/local/bin/claude", "C:\\Tools\\kilo.exe", "claude.cmd"]) {
+    assert.equal(versionProbe(adapter("x", [exe, "{prompt}"])), exe, exe);
+  }
+  for (const exe of [
+    "node",
+    "/usr/bin/node",
+    "node.exe",
+    execPath,
+    "python3",
+    "python3.12",
+    "bun",
+    "npx",
+    "sh",
+    "bash",
+    "env",
+    "./bin/agent",
+    "scripts/agent",
+    "agent.mjs",
+    "/opt/agents/agent.py",
+    "run.sh",
+    "{workspace}/agent",
+    "",
+  ]) {
+    assert.equal(versionProbe(adapter("x", [exe, "x"])), null, exe);
+  }
+  // Every built-in adapter is an installed CLI.
+  for (const builtin of Object.values(defaultConfig().adapters)) assert.equal(versionProbe(builtin), builtin.command[0]);
+});
+
+test("a probe's finding: the first line it printed, or why there is none", () => {
+  assert.deepEqual(versionOf(cli({ stdout: "\n2.1.302 (Claude Code)\nmore\n", stderr: "warning" })), { version: "2.1.302 (Claude Code)" });
+  assert.deepEqual(versionOf(cli({ stderr: "gemini 0.9.0\n" })), { version: "gemini 0.9.0" });
+  assert.deepEqual(versionOf(cli({ stdout: "\x1b[32mv1\x1b[0m" })), { version: "v1" }, "escapes stripped");
+  assert.deepEqual(versionOf(cli({ timedOut: true, returncode: -1 })), { version: null, error: `no answer within ${VERSION_TIMEOUT_SECONDS}s` });
+  assert.deepEqual(versionOf(cli({ returncode: 127, stderr: "failed to launch 'x': spawn x ENOENT" })), { version: null, error: "not found" });
+  assert.deepEqual(versionOf(cli({ returncode: 2, stderr: "unknown option --version" })), {
+    version: null,
+    error: "exited 2: unknown option --version",
+  });
+  assert.deepEqual(versionOf(cli({})), { version: null, error: "printed nothing" });
+  assert.equal((versionOf(cli({ stdout: "v".repeat(500) })) as { version: string }).version.length <= 120, true);
+});
+
+test("CliVersions probes each adapter once, beside it, and records nothing once the run closes it", async () => {
+  const events: WorkflowEvent[] = [];
+  const calls: Array<{ command: string[]; options?: RunCommandOptions }> = [];
+  const pending: Array<(r: CliResult) => void> = [];
+  const versions = new CliVersions({
+    emit: (ev) => events.push(ev),
+    settings: { agentEnv: "inherit", agentEnvPass: [] },
+    cwd: "/src",
+    runner: (command, options) => {
+      calls.push({ command, options });
+      return new Promise<CliResult>((resolve) => {
+        pending.push(resolve);
+        options?.signal?.addEventListener("abort", () => resolve(cli({ returncode: -1, stderr: "[aborted]" })));
+      });
+    },
+  });
+  const claude = adapter("claude", ["claude", "-p"], { env: { CLAUDE_CONFIG_DIR: "/cfg" } });
+  versions.note(claude); // returns at once: the probe is not awaited
+  versions.note(claude);
+  versions.note(adapter("mock", [execPath, "mock.mjs"]));
+  versions.note(adapter("codex", ["codex", "exec"]));
+  assert.deepEqual(calls.map((c) => c.command), [["claude", "--version"], ["codex", "--version"]]);
+  assert.equal(calls[0]!.options!.timeout, VERSION_TIMEOUT_SECONDS);
+  assert.equal(calls[0]!.options!.cwd, "/src");
+  assert.equal(calls[0]!.options!.env!.CLAUDE_CONFIG_DIR, "/cfg", "the probe gets its adapter's environment");
+
+  pending[0]!(cli({ stdout: "2.1.302 (Claude Code)\n" }));
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(
+    events.map(({ ts: _ts, ...ev }) => ev),
+    [{ type: "cli_version", adapter: "claude", command: "claude", version: "2.1.302 (Claude Code)" }],
+  );
+  // The run ends with codex's probe still out: it is killed, and records nothing.
+  versions.close();
+  await new Promise((r) => setImmediate(r));
+  assert.equal(events.length, 1);
+  versions.note(adapter("gemini", ["gemini"]));
+  assert.equal(calls.length, 2, "nothing is probed after close");
+
+  // A runner that throws does not either.
+  const quiet = new CliVersions({
+    emit: (ev) => events.push(ev),
+    settings: { agentEnv: "inherit", agentEnvPass: [] },
+    runner: () => {
+      throw new Error("bad argv");
+    },
+  });
+  quiet.note(claude);
+  await new Promise((r) => setImmediate(r));
+  assert.equal(events.at(-1)!.error, "could not start: bad argv");
+});
+
+test("a run's setup: the behaviour settings and adapter fingerprints, env values left out", () => {
+  const config = defaultConfig();
+  config.settings.timeout = 600;
+  const setup = runSetup(config);
+  assert.equal(setup.settings.timeout, 600);
+  assert.equal(setup.settings.permissions, "edit");
+  assert.equal("runsRoot" in setup.settings, false, "where things are kept is no behaviour");
+  assert.equal("notify" in setup.settings, false, "nor anything that may hold a secret");
+  assert.deepEqual(Object.keys(setup.adapters), Object.keys(config.adapters).sort());
+  const claude = config.adapters.claude!;
+  assert.match(setup.adapters.claude!, /^[0-9a-f]{12}$/);
+  assert.equal(adapterFingerprint({ ...claude, label: "renamed" }), setup.adapters.claude, "a label changes nothing");
+  assert.notEqual(adapterFingerprint({ ...claude, command: [...claude.command, "--x"] }), setup.adapters.claude);
+  const keyed = (value: string) => adapterFingerprint({ ...claude, env: { API_KEY: value } });
+  assert.equal(keyed("one-secret-value"), keyed("another-secret"), "env values stay out of it");
+});
+
+/** A bin directory on PATH with fake CLIs; Windows runs no shell scripts. */
+const posix = { skip: process.platform === "win32" ? "fake CLIs are shell scripts" : false };
+
+function sandbox(): { root: string; bin: string; cleanup(): void } {
+  const root = mkdtempSync(join(tmpdir(), "odw-cli-versions-"));
+  const bin = join(root, "bin");
+  mkdirSync(bin);
+  const oldPath = process.env.PATH;
+  process.env.PATH = `${bin}:${oldPath ?? ""}`;
+  return {
+    root,
+    bin,
+    cleanup: () => {
+      process.env.PATH = oldPath;
+      rmSync(root, { recursive: true, force: true });
+    },
+  };
+}
+
+function fakeCli(bin: string, name: string, script: string): void {
+  writeFileSync(join(bin, name), `#!/bin/sh\n${script}\n`);
+  chmodSync(join(bin, name), 0o755);
+}
+
+/**
+ * `<name> --version` prints a version and leaves a marker; as an agent it
+ * waits (at most a second) for that marker, then says whether it saw it — so
+ * the run cannot end before its probe answered.
+ */
+function versionedCli(bin: string, name: string, marker: string): void {
+  fakeCli(
+    bin,
+    name,
+    [
+      `if [ "$1" = "--version" ]; then echo "${name} 1.2.3 (test)"; echo "a warning" >&2; touch '${marker}'; exit 0; fi`,
+      "cat > /dev/null",
+      `i=0; while [ ! -f '${marker}' ] && [ $i -lt 50 ]; do sleep 0.02; i=$((i+1)); done`,
+      `if [ -f '${marker}' ]; then echo "probed"; else echo "not probed"; fi`,
+    ].join("\n"),
+  );
+}
+
+function launch(root: string, adapters: Record<string, unknown>, workflow: string, extra: Record<string, unknown> = {}) {
+  const configPath = join(root, "odw.config.json");
+  writeFileSync(configPath, JSON.stringify({ adapters, ...extra }));
+  const script = join(root, "wf.js");
+  writeFileSync(script, `export const meta = { name: 'wf', description: 'd' }\n${workflow}`);
+  const store = new RunStore(join(root, "runs"));
+  const id = store.create({ script, args: null, source: root, configPath });
+  return { store, id, script };
+}
+
+const versionEvents = (events: WorkflowEvent[]) =>
+  events.filter((e) => e.type === "cli_version").map(({ ts: _ts, ...ev }) => ev);
+
+test("a fake CLI's --version is recorded as a cli_version event, in the run's views and odw status", posix, async () => {
+  const box = sandbox();
+  try {
+    versionedCli(box.bin, "fakecli", join(box.root, "probed"));
+    const { store, id, script } = launch(
+      box.root,
+      { fake: { command: ["fakecli", "--print"], stdin: "{prompt}" } },
+      "const a = await agent('one', { adapter: 'fake', label: 'a', model: 'big' })\nconst b = await agent('two', { adapter: 'fake', label: 'b' })\nreturn [a, b]\n",
+    );
+    assert.equal(await executeRun(store.runDir(id)), "done");
+    assert.deepEqual(store.readResult(id), ["probed", "probed"]);
+    const events = store.readEvents(id);
+    assert.deepEqual(versionEvents(events), [{ type: "cli_version", adapter: "fake", command: "fakecli", version: "fakecli 1.2.3 (test)" }], "once per run");
+    assert.equal(events.at(-1)!.type, "run_finished", "nothing follows the terminal event");
+    // What else the run recorded: the setup, each call's key and model, odw's version and the source hash.
+    const started = events.find((e) => e.type === "run_started")!;
+    assert.deepEqual(Object.keys(started.setup as object), ["settings", "adapters"]);
+    const agents = events.filter((e) => e.type === "agent_started");
+    assert.match(String(agents[0]!.key), /^[0-9a-f]{64}$/);
+    assert.deepEqual([agents[0]!.model, "model" in agents[1]!], ["big", false]);
+    const meta = store.readMeta(id);
+    assert.equal(meta.odwVersion, VERSION);
+    assert.equal(meta.sourceHash, createHash("sha256").update(readFileSync(script, "utf8")).digest("hex"));
+
+    const run = detail(store, id);
+    assert.deepEqual(run.cliVersions, { fake: { command: "fakecli", version: "fakecli 1.2.3 (test)" } });
+    assert.deepEqual([run.odwVersion, run.sourceHash], [VERSION, meta.sourceHash]);
+    const out: string[] = [];
+    const write = process.stdout.write.bind(process.stdout);
+    (process.stdout as { write: unknown }).write = (s: unknown) => (out.push(String(s)), true);
+    try {
+      assert.equal(await main(["status", id, "--runs-root", join(box.root, "runs")]), 0);
+    } finally {
+      process.stdout.write = write;
+    }
+    assert.match(out.join(""), /^ {2}CLIs: fake fakecli 1\.2\.3 \(test\)$/m);
+  } finally {
+    box.cleanup();
+  }
+});
+
+test("a hanging --version never delays the run: it is killed at the end and records nothing", posix, async () => {
+  const box = sandbox();
+  try {
+    const pidFile = join(box.root, "probe.pid");
+    fakeCli(box.bin, "hangcli", `if [ "$1" = "--version" ]; then echo $$ > '${pidFile}'; exec sleep 30; fi\ncat > /dev/null\necho done`);
+    const { store, id } = launch(box.root, { hang: { command: ["hangcli"], stdin: "{prompt}" } }, "return await agent('x', { adapter: 'hang' })\n");
+    const started = Date.now();
+    assert.equal(await executeRun(store.runDir(id)), "done");
+    const took = Date.now() - started;
+    assert.ok(took < VERSION_TIMEOUT_SECONDS * 1000, `the run did not wait for the probe (${took}ms)`);
+    const events = store.readEvents(id);
+    assert.deepEqual(versionEvents(events), []);
+    assert.equal(events.at(-1)!.type, "run_finished");
+    // The probe was killed with the run's end, not left to its own timeout.
+    const deadline = Date.now() + 5000;
+    while (!existsSync(pidFile) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 20));
+    const pid = Number(readFileSync(pidFile, "utf8"));
+    const alive = () => {
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    while (alive() && Date.now() < deadline) await new Promise((r) => setTimeout(r, 20));
+    assert.equal(alive(), false, "the hanging probe is gone");
+  } finally {
+    box.cleanup();
+  }
+});
+
+test("a missing binary is fine: its version is unknown, the run goes on", posix, async () => {
+  const box = sandbox();
+  try {
+    versionedCli(box.bin, "fakecli", join(box.root, "probed"));
+    const { store, id } = launch(
+      box.root,
+      { ghost: { command: ["odw-test-no-such-cli"], stdin: "{prompt}" }, fake: { command: ["fakecli"], stdin: "{prompt}" } },
+      "let lost = null\ntry { await agent('x', { adapter: 'ghost' }) } catch (e) { lost = 'failed' }\nreturn [lost, await agent('y', { adapter: 'fake' })]\n",
+    );
+    assert.equal(await executeRun(store.runDir(id)), "done");
+    assert.deepEqual(store.readResult(id), ["failed", "probed"]);
+    assert.deepEqual(versionEvents(store.readEvents(id)), [
+      { type: "cli_version", adapter: "ghost", command: "odw-test-no-such-cli", version: null, error: "not found" },
+      { type: "cli_version", adapter: "fake", command: "fakecli", version: "fakecli 1.2.3 (test)" },
+    ]);
+    assert.deepEqual(detail(store, id).cliVersions!.ghost, { command: "odw-test-no-such-cli", version: null, error: "not found" });
+  } finally {
+    box.cleanup();
+  }
+});
+
+test("recordVersions: false runs no probe", posix, async () => {
+  const box = sandbox();
+  try {
+    versionedCli(box.bin, "fakecli", join(box.root, "probed"));
+    const { store, id } = launch(
+      box.root,
+      { fake: { command: ["fakecli"], stdin: "{prompt}" } },
+      "return await agent('x', { adapter: 'fake' })\n",
+      { recordVersions: false },
+    );
+    assert.equal(await executeRun(store.runDir(id)), "done");
+    assert.equal(store.readResult(id), "not probed");
+    assert.deepEqual(versionEvents(store.readEvents(id)), []);
+    assert.deepEqual(detail(store, id).cliVersions, {});
+  } finally {
+    box.cleanup();
+  }
+});
+
+test("recordVersions loads, defaults to true, and rejects a non-boolean", () => {
+  assert.equal(defaultConfig().settings.recordVersions, true);
+  const dir = mkdtempSync(join(tmpdir(), "odw-cli-versions-cfg-"));
+  try {
+    const path = join(dir, "odw.config.json");
+    writeFileSync(path, JSON.stringify({ recordVersions: "no" }));
+    assert.throws(() => loadConfig(path, { quiet: true }), /"recordVersions" must be true or false/);
+    writeFileSync(path, JSON.stringify({ recordVersions: false }));
+    assert.equal(loadConfig(path, { quiet: true }).settings.recordVersions, false);
+    assert.deepEqual(collectConfigWarnings({ recordVersions: false }), []);
+    assert.equal(loadConfig(join(process.cwd(), "odw.config.example.json"), { quiet: true }).settings.recordVersions, true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

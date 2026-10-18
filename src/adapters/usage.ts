@@ -45,7 +45,9 @@ type Count = (typeof USAGE_COUNTS)[number];
  * `cache_read_input_tokens`, `cache_creation_input_tokens`, and Claude Code's
  * camel-case `cacheReadInputTokens` / `cacheCreationInputTokens`), OpenAI's
  * (`prompt_tokens`, `completion_tokens`, `*_tokens_details.cached_tokens`),
- * Codex's `cached_input_tokens`, cost as `total_cost_usd` / `cost_usd` /
+ * Codex's `cached_input_tokens` and `cache_write_input_tokens` (both part of
+ * its `input_tokens`, as its reasoning_output_tokens are of its
+ * `output_tokens`), cost as `total_cost_usd` / `cost_usd` /
  * `costUSD`, and ODW's own field names. `cost` — what `costPath` points at —
  * wins over a cost inside the usage object.
  */
@@ -79,7 +81,7 @@ export function normalizeUsage(raw: unknown, cost?: unknown): Usage | undefined 
         cachedDetail("input_tokens_details") ??
         cachedDetail("prompt_tokens_details"),
     );
-    set(usage, "cacheWriteTokens", cacheWrite ?? first("cacheWriteTokens"));
+    set(usage, "cacheWriteTokens", cacheWrite ?? first("cacheWriteTokens", "cache_write_input_tokens"));
     set(usage, "costUsd", first("costUsd", "cost_usd", "total_cost_usd", "costUSD"));
   }
   set(usage, "costUsd", amount(cost) ?? usage.costUsd);

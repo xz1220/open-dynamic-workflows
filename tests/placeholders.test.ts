@@ -11,6 +11,11 @@ test("a known token missing from context expands to empty", () => {
   assert.equal(expand("{prompt}", {}), "");
 });
 
+test("{reply_file} is a known token (ODW extension): where the CLI writes its final reply", () => {
+  assert.equal(expand("{reply_file}", { reply_file: "/tmp/odw-reply-x/reply.txt" }), "/tmp/odw-reply-x/reply.txt");
+  assert.equal(expand("--out={reply_file}", {}), "--out=");
+});
+
 test("an unknown token is left untouched", () => {
   assert.equal(expand("keep {weird} literal", {}), "keep {weird} literal");
 });

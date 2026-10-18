@@ -41,6 +41,7 @@ import type {
   Config,
   NotifySettings,
   NotifyTrigger,
+  OtelSettings,
   PermissionArgs,
   PermissionTier,
   QuotaWaitSettings,
@@ -116,6 +117,7 @@ const KNOWN_TOP_KEYS = [
   "keepBranches",
   "applyVerify",
   "maxTranscriptBytes",
+  "recordVersions",
   "permissions",
   "agentEnv",
   "agentEnvPass",
@@ -128,6 +130,8 @@ const KNOWN_TOP_KEYS = [
   "permissionDenials",
   "redact",
   "quotaWait",
+  "mcpFailures",
+  "otel",
 ] as const;
 
 const KNOWN_ADAPTER_KEYS = ["command", "stdin", "env", "timeout", "stallTimeout", "concurrency", "promptCache", "label", "flags", "output", "failures", "permissionArgs", "permissions", "permissionDenials"] as const;
@@ -135,9 +139,12 @@ const KNOWN_ADAPTER_KEYS = ["command", "stdin", "env", "timeout", "stallTimeout"
 /** The fields of an adapter's `output`, per format. */
 const KNOWN_OUTPUT_KEYS: Record<string, readonly string[]> = {
   text: ["format"],
-  jsonl: ["format", "eventType", "textPath", "select", "usageEvent", "usagePath", "costPath", "errorPath", "structuredPath", "deniedPath"],
-  json: ["format", "textPath", "usagePath", "costPath", "errorPath", "structuredPath", "deniedPath"],
+  jsonl: ["format", "eventType", "textPath", "select", "usageEvent", "usagePath", "costPath", "errorPath", "structuredPath", "deniedPath", "mcpEvent", "mcpPath", "match", "errorEvents"],
+  json: ["format", "textPath", "usagePath", "costPath", "errorPath", "structuredPath", "deniedPath", "mcpPath"],
 };
+
+/** The fields of a jsonl output's `match`. */
+const KNOWN_MATCH_KEYS = ["path", "equals"] as const;
 
 /** The fields of an adapter's `flags`, and of its `flags.schema`. */
 const KNOWN_FLAG_KEYS = ["model", "schema"] as const;
@@ -150,6 +157,8 @@ const KNOWN_STAGGER_KEYS = ["first", "delayMs"] as const;
 const KNOWN_REDACT_KEYS = ["env", "patterns", "extra"] as const;
 
 const KNOWN_QUOTA_WAIT_KEYS = ["max"] as const;
+
+const KNOWN_OTEL_KEYS = ["endpoint", "headers", "captureContent"] as const;
 
 /**
  * Lint a parsed config object for keys odw would silently ignore.
@@ -186,6 +195,8 @@ export function collectConfigWarnings(raw: Record<string, unknown>): string[] {
       const output = isObject(spec) ? spec.output : undefined;
       const knownOutput = isObject(output) ? KNOWN_OUTPUT_KEYS[String(output.format)] : undefined;
       if (knownOutput) warnings.push(...unknownFields(output as Record<string, unknown>, knownOutput, `adapter "${name}" output`));
+      const match = isObject(output) && output.format === "jsonl" ? output.match : undefined;
+      if (isObject(match)) warnings.push(...unknownFields(match, KNOWN_MATCH_KEYS, `adapter "${name}" output.match`));
       // A misspelled capability would quietly leave the CLI's native support unused.
       const flags = isObject(spec) ? spec.flags : undefined;
       if (isObject(flags)) {
@@ -216,6 +227,7 @@ export function collectConfigWarnings(raw: Record<string, unknown>): string[] {
   if (isObject(raw.staggerFanOut)) warnings.push(...unknownFields(raw.staggerFanOut, KNOWN_STAGGER_KEYS, "staggerFanOut"));
   if (isObject(raw.redact)) warnings.push(...unknownFields(raw.redact, KNOWN_REDACT_KEYS, "redact"));
   if (isObject(raw.quotaWait)) warnings.push(...unknownFields(raw.quotaWait, KNOWN_QUOTA_WAIT_KEYS, "quotaWait"));
+  if (isObject(raw.otel)) warnings.push(...unknownFields(raw.otel, KNOWN_OTEL_KEYS, "otel"));
   return warnings;
 }
 
@@ -822,11 +834,15 @@ function buildOutput(name: string, raw: unknown): AdapterOutput {
     errorPath?: string[];
     structuredPath?: string[];
     deniedPath?: string[];
+    mcpPath?: string[];
   } = {};
   for (const key of ["usagePath", "costPath", "errorPath", "structuredPath", "deniedPath"] as const) {
     const path = buildPath(name, key, value[key], { optional: true });
     if (path) extras[key] = path;
   }
+  // The MCP servers the CLI started with (ODW extension): set only when declared.
+  const mcpPath = buildPath(name, "mcpPath", value.mcpPath, { optional: true });
+  if (mcpPath) extras.mcpPath = mcpPath;
   if (value.format === "json") return { format: "json", textPath, ...extras };
   if (value.select !== "last") {
     throw new ConfigError(`adapter '${name}' 'output.select' must be 'last'`);
@@ -834,14 +850,57 @@ function buildOutput(name: string, raw: unknown): AdapterOutput {
   if (value.usageEvent != null && (typeof value.usageEvent !== "string" || !value.usageEvent.trim())) {
     throw new ConfigError(`adapter '${name}' 'output.usageEvent' must be a non-empty string`);
   }
+  if (value.mcpEvent != null && (typeof value.mcpEvent !== "string" || !value.mcpEvent.trim())) {
+    throw new ConfigError(`adapter '${name}' 'output.mcpEvent' must be a non-empty string`);
+  }
+  const eventType = value.eventType as string;
+  const usageEvent = (value.usageEvent as string | undefined) ?? eventType;
   return {
     format: "jsonl",
-    eventType: value.eventType as string,
+    eventType,
+    ...(value.match != null ? { match: buildMatch(name, value.match) } : {}),
     textPath,
     select: "last",
     ...(value.usageEvent != null ? { usageEvent: value.usageEvent as string } : {}),
+    ...(value.mcpEvent != null ? { mcpEvent: value.mcpEvent as string } : {}),
     ...extras,
+    ...(value.errorEvents != null ? { errorEvents: buildErrorEvents(name, value.errorEvents, [eventType, usageEvent]) } : {}),
   };
+}
+
+/** Validate a jsonl output's `match` (ODW extension): `{ "path": [...], "equals": <string, number or boolean> }`. */
+function buildMatch(name: string, raw: unknown): { path: string[]; equals: string | number | boolean } {
+  const equals = isObject(raw) ? raw.equals : undefined;
+  if (!isObject(raw) || !["string", "number", "boolean"].includes(typeof equals)) {
+    throw new ConfigError(
+      `adapter '${name}' 'output.match' must be { "path": [...], "equals": <a string, number or boolean> } — ` +
+        `e.g. { "path": ["item", "type"], "equals": "agent_message" }`,
+    );
+  }
+  return { path: buildPath(name, "match.path", raw.path)!, equals: equals as string | number | boolean };
+}
+
+/**
+ * Validate a jsonl output's `errorEvents` (ODW extension): event type → path
+ * to its message. A text or usage event cannot be one: a failure in a text
+ * event is `errorPath`'s, and a usage event is what clears a failure.
+ */
+function buildErrorEvents(name: string, raw: unknown, reserved: string[]): Record<string, string[]> {
+  if (!isObject(raw)) {
+    throw new ConfigError(`adapter '${name}' 'output.errorEvents' must be an object: event type → path to its message, e.g. { "error": ["message"] }`);
+  }
+  const out: Record<string, string[]> = {};
+  for (const [type, path] of Object.entries(raw)) {
+    if (type.startsWith("$") || type.startsWith("//")) continue; // comment conventions
+    if (!type.trim()) throw new ConfigError(`adapter '${name}' 'output.errorEvents' has an empty event type`);
+    if (reserved.includes(type)) {
+      throw new ConfigError(
+        `adapter '${name}' 'output.errorEvents' cannot name '${type}', its text or usage event — a failure reported in a text event is 'errorPath''s`,
+      );
+    }
+    out[type] = buildPath(name, `errorEvents.${type}`, path)!;
+  }
+  return out;
 }
 
 /** Validate a path into a JSON value: a non-empty array of non-empty strings (absent is fine when optional). */
@@ -960,6 +1019,8 @@ function buildSettings(raw: Record<string, unknown>): Settings {
       "a whole number of bytes, or 0 to keep no transcripts",
       { min: 0, integer: true },
     ),
+    recordVersions:
+      raw["recordVersions"] == null ? DEFAULT_SETTINGS.recordVersions : buildFlag("recordVersions", raw["recordVersions"]),
     permissions: raw["permissions"] == null ? DEFAULT_SETTINGS.permissions : buildTier(raw["permissions"]),
     agentEnv: raw["agentEnv"] == null ? DEFAULT_SETTINGS.agentEnv : buildAgentEnv(raw["agentEnv"]),
     agentEnvPass: raw["agentEnvPass"] == null ? [...DEFAULT_SETTINGS.agentEnvPass] : buildEnvPass(raw["agentEnvPass"]),
@@ -994,7 +1055,62 @@ function buildSettings(raw: Record<string, unknown>): Settings {
     // Absent or null keeps the default (on); only false turns it off.
     redact: buildRedact(raw["redact"]),
     quotaWait: raw["quotaWait"] == null ? DEFAULT_SETTINGS.quotaWait : buildQuotaWait(raw["quotaWait"]),
+    mcpFailures:
+      raw["mcpFailures"] == null
+        ? DEFAULT_SETTINGS.mcpFailures
+        : buildChoice("mcpFailures", raw["mcpFailures"], ["warn", "fail"] as const),
+    otel: raw["otel"] == null ? DEFAULT_SETTINGS.otel : buildOtel(raw["otel"]),
   };
+}
+
+/** An HTTP header name: an RFC 9110 token. */
+const HEADER_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
+
+/**
+ * Validate `otel` (an ODW extension): `false` sends no trace; `true` or
+ * `{ "endpoint"?, "headers"?, "captureContent"? }` posts each run's at its end.
+ * Errors never echo a header's value, nor the endpoint: either may carry a key.
+ */
+function buildOtel(raw: unknown): OtelSettings | false {
+  if (raw === false) return false;
+  if (raw === true) return { endpoint: null, headers: {}, captureContent: false };
+  if (!isObject(raw)) {
+    throw new ConfigError(
+      `"otel" must be false, true, or { "endpoint": "<url>", "headers": { … }, "captureContent": false }; got ${kindOf(raw)}`,
+    );
+  }
+  const otel: OtelSettings = { endpoint: null, headers: {}, captureContent: false };
+  if (raw.endpoint != null) otel.endpoint = buildOtelEndpoint(raw.endpoint);
+  if (raw.headers != null) {
+    if (!isObject(raw.headers)) throw new ConfigError(`"otel.headers" must be an object of header names and values; got ${kindOf(raw.headers)}`);
+    for (const [name, value] of Object.entries(raw.headers)) {
+      if (name.startsWith("$") || name.startsWith("//")) continue; // comment conventions
+      if (!HEADER_NAME.test(name)) throw new ConfigError(`"otel.headers" names must be HTTP header names; got ${JSON.stringify(name)}`);
+      if (typeof value !== "string" || /[\r\n\0]/.test(value)) {
+        throw new ConfigError(`"otel.headers.${name}" must be a string on one line; got ${typeof value === "string" ? "a string with a line break" : kindOf(value)}`);
+      }
+      otel.headers[name] = value;
+    }
+  }
+  if (raw.captureContent != null) otel.captureContent = buildFlag("otel.captureContent", raw.captureContent);
+  return otel;
+}
+
+/** Validate `otel.endpoint`: an absolute http(s) URL that fetch() will accept. */
+function buildOtelEndpoint(raw: unknown): string {
+  let url: URL | null = null;
+  try {
+    url = typeof raw === "string" ? new URL(raw) : null;
+  } catch {
+    url = null;
+  }
+  if (!url || (url.protocol !== "http:" && url.protocol !== "https:")) {
+    throw new ConfigError(`"otel.endpoint" must be an http(s) URL, such as "http://localhost:4318"; got ${url ? `a ${url.protocol} URL` : typeof raw === "string" ? "a string that is not an absolute URL" : kindOf(raw)}`);
+  }
+  if (url.username || url.password) {
+    throw new ConfigError(`"otel.endpoint" must not embed credentials (user:password@): put them in "otel.headers"`);
+  }
+  return url.href;
 }
 
 /**

@@ -11,7 +11,7 @@
   "claudeWorkflowsRoot": "~/.claude/workflows",
   "claudeJobsScope": "all",
 
-  "//stallTimeout": "ODW extension. Seconds an agent may print nothing on stdout or stderr before it is killed (like a timeout) and restarted, at most stallRestarts times per agent call; null (the default) turns the watchdog off. It stays off for every built-in adapter because some CLIs (gemini, qwen, kimi in text mode) print nothing until they finish: enable it for adapters that stream progress — claude (stream-json: an event per turn), kilo, opencode — with a value above the longest single tool call. An adapter's own \"stallTimeout\" overrides this value; 0 turns the watchdog off for that adapter.",
+  "//stallTimeout": "ODW extension. Seconds an agent may print nothing on stdout or stderr before it is killed (like a timeout) and restarted, at most stallRestarts times per agent call; null (the default) turns the watchdog off. It stays off for every built-in adapter because some CLIs (gemini, qwen, kimi in text mode) print nothing until they finish: enable it for adapters that stream progress — claude (stream-json: an event per turn), codex (exec --json: an event per item), kilo, opencode — with a value above the longest single tool call. An adapter's own \"stallTimeout\" overrides this value; 0 turns the watchdog off for that adapter.",
   "stallTimeout": null,
   "stallRestarts": 1,
 
@@ -26,7 +26,7 @@
   "//portRange": "ODW extension. Every agent process gets ODW_PORT: a port from this inclusive range that no other running agent of the run holds (ports something already listens on are passed over), kept until its call settles, so a workflow can say \"start your dev server on $ODW_PORT\". Keep the range wider than concurrency.",
   "portRange": [41000, 41999],
 
-  "//fanOutWarn": "ODW extension. When one parallel() or pipeline() call fans out more than this many tasks or items, the run logs one warning with the count (it never blocks); 0 or null turns it off. What a run spends — tokens and cost as adapters report them (the built-in claude does), else output tokens estimated as chars/4 — shows in odw status, the live view and the dashboard.",
+  "//fanOutWarn": "ODW extension. When one parallel() or pipeline() call fans out more than this many tasks or items, the run logs one warning with the count (it never blocks); 0 or null turns it off. What a run spends — tokens and cost as adapters report them (the built-in claude does; codex reports tokens, no cost), else output tokens estimated as chars/4 — shows in odw status, the live view and the dashboard.",
   "fanOutWarn": 25,
 
   "//adaptiveConcurrency": "ODW extension. An adapter's own \"concurrency\" (my_wrapper below sets 2) caps how many of its agents run at once, inside the run-wide concurrency (an agent needs a slot in both; each adapter queues first come, first served, and a throttled adapter never holds up the others). With adaptiveConcurrency, a rate limit halves its adapter's cap — that of an adapter without one starts at the run-wide cap — for the rest of the run, never below 1, and each minute without another gives one slot back; both are logged. false keeps every cap fixed. odw doctor and odw run's start banner show the caps.",
@@ -44,6 +44,9 @@
 
   "//maxTranscriptBytes": "ODW extension. While each agent runs, what its CLI prints is kept in the run directory as its transcript: agents/<agentId>.transcript.jsonl (a JSONL adapter's events as received, other adapters' output as text lines) and agents/<agentId>.stderr.txt (the end of its stderr). odw logs <run> --agent <id|label> prints it readably (--raw as kept, --follow while it runs). Past maxTranscriptBytes per agent one truncation line ends it; 0 keeps no transcripts.",
   "maxTranscriptBytes": 5242880,
+
+  "//recordVersions": "ODW extension. What each run ran with, for odw compare: on an adapter's first agent of the run, `<cli> --version` (its command's first argv element) runs beside the agent, killed after 3s, and lands as a cli_version event (odw status and the API show it). It never delays or fails the run; a CLI that does not answer is recorded as unknown. Adapters whose command is node (or another interpreter), a script or a relative path are not probed. false runs no probe; the odw version and the workflow's sha256 in meta.json, and the settings on run_started, are recorded either way.",
+  "recordVersions": true,
 
   "//permissions": "ODW extension. What the run's agents may do: \"read\" (look, never edit or run commands — for research and review fan-outs), \"edit\" (the default: what every built-in always ran with) or \"full\" (no sandbox, no approvals). odw run|rerun|resume --permissions overrides it per run; an adapter's own \"permissions\" and an agent()'s { permissions } may only lower it. Each adapter's flags per tier are its \"permissionArgs\", spliced where its command has \"{permission_args}\". An agent that asks a CLI with no read flags for \"read\" fails before it starts; one that asks for \"full\" where the CLI declares none runs with its \"edit\" flags, logged once. To cap one built-in without redefining it, give only the fields you change: \"adapters\": { \"codex\": { \"permissions\": \"read\" } }.",
   "permissions": "edit",
@@ -76,6 +79,9 @@
   "//permissionDenials": "ODW extension. What a reply that claims success does when its CLI refused the agent tool calls (claude's permission_denials, read through an adapter's output deniedPath; under the edit tier, Claude Code refuses every shell command that is not allowlisted): \"warn\" (the default) keeps the reply, records the refused calls as denied on the agent's agent_finished event and saved result, and logs one line; \"fail\" fails the agent with reason permission. An adapter's own \"permissionDenials\" overrides this; with expect, refused calls are a miss whatever it says.",
   "permissionDenials": "warn",
 
+  "//mcpFailures": "ODW extension. Claude Code's stream-json starts with an init event listing the MCP servers it started the agent with and their status (read through an adapter's output mcpEvent and mcpPath). A server that is not \"connected\" is recorded as mcp on the agent's agent_finished or agent_failed event and saved result, and logged once per run for each server and status: \"MCP server github failed to start (claude agent `fix-auth`): its tools were unavailable\". \"warn\" (the default, as Claude Code itself only warns) keeps the reply; \"fail\" fails an agent whose server \"failed\" or \"needs-auth\" with reason mcp_unavailable. \"pending\" (still connecting in the background, or connected on first use) and \"disabled\" never fail it. agent(prompt, { expect: { mcp: [\"github\"] } }) instead makes a listed server that is not connected (or pending) a miss: retried, then unmet_expectation.",
+  "mcpFailures": "warn",
+
   "//redact": "ODW extension. What odw keeps and serves of its agents — transcripts and stderr tails, saved results, events (log lines, agent and exec() failures), the run's error, webhook payloads — has its likely secrets replaced by «redacted:<kind>» before it is written, and is marked redacted: true. env: the value (8 characters or more) of every variable whose name looks secret (*_KEY, *TOKEN, *SECRET*, *PASSWORD*, AUTHORIZATION, cloud credentials) in the environment odw starts agents and commands with — its own and each adapter's env — wherever it appears, and the value of any NAME=value printed whose NAME looks secret (a .env file, env output). patterns: well-known token shapes (Anthropic, OpenAI, GitHub, Slack, AWS, Google keys, JWTs, private-key blocks, Bearer tokens). extra: more regular expressions (JavaScript sources). The run's result is the workflow's own data: only patterns and extra apply to it. Prompts and what agents see are never redacted, nor kept diffs (they are what odw apply applies). false keeps everything as printed; odw doctor says which.",
   "redact": { "env": true, "patterns": true, "extra": [] },
 
@@ -86,12 +92,20 @@
     "on": ["done", "failed", "stopped"]
   },
 
+  "//otel": {
+    "$comment": "ODW extension: OpenTelemetry export. Rename \"//otel\" to \"otel\" to turn it on (true works too); the OTEL_* variables alone never do. Once a run ended, the worker posts its trace — invoke_workflow, phase, invoke_agent and execute_tool spans after the GenAI semantic conventions, with usage, cost, retries and fallbacks — once, as OTLP/HTTP JSON to endpoint + /v1/traces (5s limit; a failure is one line in the run's worker.log and never changes the run). endpoint: the receiver's base URL; omitted, OTEL_EXPORTER_OTLP_TRACES_ENDPOINT or OTEL_EXPORTER_OTLP_ENDPOINT, else http://localhost:4318. headers: sent with it, over OTEL_EXPORTER_OTLP_HEADERS; their values are secrets — never logged or shown. captureContent: also export replies, tool input and output and error text (redacted, each cut at 4096 characters); OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true does the same. odw export <run> --otlp writes any run's trace.",
+    "endpoint": "http://localhost:4318",
+    "headers": { "Authorization": "Basic YOUR_BASE64_KEY_PAIR" },
+    "captureContent": false
+  },
+
   "adapters": {
     "codex": {
       "label": "Codex CLI",
-      "command": ["codex", "--search", "exec", "--skip-git-repo-check", "{permission_args}", "--cd", "{workspace}", "-"],
+      "command": ["codex", "--search", "exec", "--json", "--output-last-message", "{reply_file}", "--skip-git-repo-check", "{permission_args}", "--cd", "{workspace}", "-"],
       "stdin": "{prompt}",
       "flags": { "model": ["--model"], "schema": { "args": ["--output-schema"], "mode": "file", "strict": true } },
+      "output": { "format": "jsonl", "eventType": "item.completed", "match": { "path": ["item", "type"], "equals": "agent_message" }, "textPath": ["item", "text"], "select": "last", "usageEvent": "turn.completed", "usagePath": ["usage"], "errorEvents": { "turn.failed": ["error"], "error": ["message"] } },
       "permissionArgs": {
         "read": ["--sandbox", "read-only"],
         "edit": ["--sandbox", "workspace-write"],
@@ -103,7 +117,7 @@
       "command": ["claude", "--print", "--output-format", "stream-json", "--verbose", "{permission_args}", "--no-session-persistence"],
       "stdin": "{prompt}",
       "flags": { "model": ["--model"], "schema": { "args": ["--json-schema"], "mode": "inline" } },
-      "output": { "format": "jsonl", "eventType": "result", "textPath": ["result"], "select": "last", "usagePath": ["usage"], "costPath": ["total_cost_usd"], "errorPath": ["is_error"], "structuredPath": ["structured_output"], "deniedPath": ["permission_denials"] },
+      "output": { "format": "jsonl", "eventType": "result", "textPath": ["result"], "select": "last", "usagePath": ["usage"], "costPath": ["total_cost_usd"], "errorPath": ["is_error"], "structuredPath": ["structured_output"], "deniedPath": ["permission_denials"], "mcpEvent": "system", "mcpPath": ["mcp_servers"] },
       "permissionArgs": {
         "read": ["--permission-mode", "dontAsk", "--tools", "Read,Glob,Grep,WebSearch,WebFetch", "--allowedTools", "WebSearch", "WebFetch", "--strict-mcp-config"],
         "edit": ["--permission-mode", "acceptEdits", "--allowedTools", "WebSearch", "WebFetch"],

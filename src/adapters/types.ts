@@ -57,6 +57,12 @@ export type AdapterOutput =
       /** Newline-delimited JSON events; the last matching text event wins. */
       format: "jsonl";
       eventType: string;
+      /**
+       * Narrows the text events to those whose value at `path` is `equals`
+       * (an ODW extension): Codex prints every finished item as an
+       * `item.completed` event, and only an `agent_message` item holds the reply.
+       */
+      match?: OutputMatch;
       textPath: string[];
       select: "last";
       /** The events usage and cost are read from (default: `eventType`); every one adds up. */
@@ -72,6 +78,17 @@ export type AdapterOutput =
        */
       errorPath?: string[];
       /**
+       * Events that are the CLI's own report that the run failed, apart from
+       * its text events (an ODW extension): event type → the path, in such an
+       * event, to its message (`true`, a message or an error object; an event
+       * with none there is quoted). Codex's `turn.failed` and `error`. The
+       * latest one fails the run, classified like any failure whatever its
+       * exit — unless a usage event (`usageEvent`: a turn completed) comes
+       * after it, for the CLI went on (Codex prints a stream error it retries
+       * as an `error` event).
+       */
+      errorEvents?: Record<string, string[]>;
+      /**
        * Path, in a text event, to the value the CLI validated against a schema
        * it was handed natively (Claude Code's `structured_output`). When the
        * last text event has one (not null), it is the reply's value.
@@ -83,6 +100,15 @@ export type AdapterOutput =
        * is recorded on the agent, or fails it (`permissionDenials`, `expect`).
        */
       deniedPath?: string[];
+      /** The events that list the CLI's MCP servers (Claude Code's `system` init event); unset: any event with a list at `mcpPath`. */
+      mcpEvent?: string;
+      /**
+       * Path, in such an event, to the MCP servers the CLI started the agent
+       * with, `{ name, status }` each (Claude Code's `mcp_servers`); the latest
+       * list decides. One not "connected" is recorded on the agent and logged,
+       * or fails it (`mcpFailures`, `expect.mcp`).
+       */
+      mcpPath?: string[];
     }
   | {
       /** One JSON document on stdout: the paths are read from it. */
@@ -93,7 +119,14 @@ export type AdapterOutput =
       errorPath?: string[];
       structuredPath?: string[];
       deniedPath?: string[];
+      mcpPath?: string[];
     };
+
+/** A condition on a JSONL event (ODW extension; `match`): its value at `path` is `equals`. */
+export interface OutputMatch {
+  path: string[];
+  equals: string | number | boolean;
+}
 
 /**
  * An adapter's own failure wording (ODW extension): regular-expression sources
@@ -272,6 +305,12 @@ export interface Settings {
    */
   maxTranscriptBytes: number;
   /**
+   * Record each adapter CLI's version once per run (an ODW extension, for
+   * `odw compare`): `<cli> --version` beside the adapter's first agent, killed
+   * after 3s, as a `cli_version` event; `false` runs no probe.
+   */
+  recordVersions: boolean;
+  /**
    * The run's permission tier (an ODW extension; `odw run --permissions`
    * overrides it): an adapter's `permissions` and an agent()'s `permissions`
    * may only lower it.
@@ -329,6 +368,14 @@ export interface Settings {
    */
   permissionDenials: DenialPolicy;
   /**
+   * An agent whose CLI reports an MCP server that could not start —
+   * "failed" or "needs-auth" (an ODW extension; `mcpPath`): `"warn"` keeps its
+   * reply, recording the servers on the agent and logging them once per run
+   * (as Claude Code itself only warns); `"fail"` fails the agent with reason
+   * "mcp_unavailable". Servers a call's `expect.mcp` lists are a miss instead.
+   */
+  mcpFailures: "warn" | "fail";
+  /**
    * What odw keeps and serves of its agents — transcripts, saved results,
    * events, the run's error and result, webhook payloads — has its likely
    * secrets replaced by `«redacted:<kind>»` (an ODW extension; see ../redact);
@@ -341,6 +388,26 @@ export interface Settings {
    * at most `max` seconds away — instead of failing; `false` fails it.
    */
   quotaWait: QuotaWaitSettings | false;
+  /**
+   * OpenTelemetry export (an ODW extension; see ../runtime/otel-export): the
+   * worker posts each run's trace once it ended; `false` (the default) sends
+   * nothing — the OTEL_* variables alone never turn it on.
+   */
+  otel: OtelSettings | false;
+}
+
+/** Where and how a run's trace is exported (see `Settings.otel`). */
+export interface OtelSettings {
+  /**
+   * The OTLP/HTTP base URL, as OTEL_EXPORTER_OTLP_ENDPOINT takes it
+   * (`/v1/traces` is appended); null: the OTEL_EXPORTER_OTLP_* variables, else
+   * http://localhost:4318.
+   */
+  endpoint: string | null;
+  /** Headers sent with each export, over OTEL_EXPORTER_OTLP_HEADERS: secrets, never logged or shown. */
+  headers: Record<string, string>;
+  /** Export what agents replied and their tools' input and output too — redacted and cut. */
+  captureContent: boolean;
 }
 
 /** What redaction looks for (see `Settings.redact`). */

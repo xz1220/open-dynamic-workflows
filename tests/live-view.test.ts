@@ -3,17 +3,25 @@ import { spawnSync } from "node:child_process";
 import { appendFileSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "node:test";
+import { after, test } from "node:test";
 
 import { attachRun, formatEvent, resolveRunMode } from "../src/runtime/live-view.js";
 import { RunStore } from "../src/runtime/run-store.js";
 import { FakeTerm } from "./fake-term.js";
 
+/** Every temp dir this file made, removed once its tests are done. */
+const made: string[] = [];
+after(() => {
+  for (const dir of made) rmSync(dir, { recursive: true, force: true });
+});
+
 const ENV = { TERM: "xterm", LANG: "en_US.UTF-8" }; // color on (16), unicode on
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 function freshStore(): RunStore {
-  return new RunStore(mkdtempSync(join(tmpdir(), "odw-live-")));
+  const dir = mkdtempSync(join(tmpdir(), "odw-live-"));
+  made.push(dir);
+  return new RunStore(dir);
 }
 
 function makeRun(store: RunStore, name = "demo"): string {
@@ -259,6 +267,36 @@ test("attachRun (live): scrollback narrates phases/agents and pairing uses agent
   assert.equal(term.hiddenCursor, false);
   // stdout carries exactly the result JSON
   assert.deepEqual(JSON.parse(out.text()), { answer: 42 });
+});
+
+test("attachRun (live): an agent waiting out a spent quota says until when instead of spinning", async () => {
+  const store = freshStore();
+  const runId = makeRun(store, "qw-demo");
+  const term = new FakeTerm(120);
+  const out = new Collector();
+  emit(store, runId, { ts: 100, type: "run_started", runId });
+  emit(store, runId, { ts: 100, type: "agent_started", agentId: 1, label: "scan", adapter: "codex" });
+  emit(store, runId, {
+    ts: 101,
+    type: "log",
+    message: "scan:1 waits for codex's quota to reset (quotaWait)",
+    agentId: 1,
+    label: "scan",
+    adapter: "codex",
+    reason: "quota",
+    quotaWait: "start",
+    resumeAt: 4_000_000_000,
+  });
+  const done = attachRun(store, runId, { out, err: term, live: true, pollMs: 10, signals: false, env: ENV });
+  await sleep(60);
+  assert.match(term.text(), /scan\s+.*waits for codex quota until /);
+  emit(store, runId, { ts: 102, type: "log", message: "scan:1 goes on after the quota wait, on codex", agentId: 1, label: "scan", adapter: "codex", quotaWait: "end" });
+  await sleep(60);
+  assert.doesNotMatch(term.text(), /waits for codex quota until/);
+  emit(store, runId, { ts: 103, type: "agent_finished", agentId: 1, label: "scan", adapter: "codex", attempts: 1 });
+  emit(store, runId, { ts: 103, type: "run_finished", runId });
+  store.updateStatus(runId, { state: "done" });
+  assert.equal(await done, 0);
 });
 
 // --- live attach: failure -------------------------------------------------------------

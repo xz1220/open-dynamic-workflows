@@ -15,6 +15,7 @@
 import { readFileSync } from "node:fs";
 import { constants } from "node:os";
 import { basename, dirname } from "node:path";
+import { StringDecoder } from "node:string_decoder";
 import { pathToFileURL } from "node:url";
 
 import { loadConfig } from "../adapters/config.js";
@@ -29,11 +30,13 @@ import { LOG, RUN_FAILED, RUN_FINISHED, RUN_STARTED, RUN_STOPPED, event } from "
 import { ReplayJournal } from "../journal.js";
 import { loadWorkflowScript } from "../loader.js";
 import { createPrimitives } from "../primitives.js";
+import { CliVersions, runSetup } from "../provenance.js";
 import type { QuotaPause } from "../quota-wait.js";
 import { redactorFor, type Redactor } from "../redact.js";
 import type { Scheduler } from "../scheduler.js";
 import { FileControl } from "./file-control.js";
 import { notifyCheckpoint, notifyQuotaPause, notifyRunEnd } from "./notify.js";
+import { exportRunEnd } from "./otel-export.js";
 import { JsonlSink, RunStore } from "./run-store.js";
 
 /**
@@ -73,6 +76,8 @@ const SIGNAL_GRACE_MS = 10_000;
  *
  * Once the outcome is on disk, the configured run-end hooks (`notify`) fire;
  * they are bounded and never throw, so they cannot change the returned state.
+ * So is the run's OpenTelemetry trace, posted once when the config has `otel`
+ * (an ODW extension; see ./otel-export).
  *
  * What the run writes down has its likely secrets redacted (an ODW extension;
  * see ../redact): its events, each saved agent result, its error, a webhook's
@@ -89,8 +94,13 @@ const SIGNAL_GRACE_MS = 10_000;
  * lists "paused", each pause fires the hooks once. The wait lives in this
  * process: a worker that dies leaves the run stale, and `odw resume` replays
  * it. A new `odw resume` ends the wait at once.
+ *
+ * Run as the run's worker process (`options.worker`), whose stdout and stderr
+ * are the run's worker.log, what it prints — a workflow's console.log of an
+ * agent's reply, a hook's failure — is redacted like the run's events, from
+ * the moment its redactor is built until the process exits (ODW extension).
  */
-export async function executeRun(runDir: string): Promise<string> {
+export async function executeRun(runDir: string, options: ExecuteRunOptions = {}): Promise<string> {
   const store = new RunStore(dirname(runDir));
   const runId = basename(runDir);
 
@@ -115,7 +125,12 @@ export async function executeRun(runDir: string): Promise<string> {
   const checkpointHooks: Array<Promise<void>> = [];
   // …and "paused" hooks of quota pauses (ODW extension: quotaWait).
   const pauseHooks: Array<Promise<void>> = [];
+  // Records each adapter CLI's version beside its first agent (ODW extension;
+  // see ../provenance); closed before the terminal event, which nothing follows.
+  let versions: CliVersions | undefined;
   const crashes = watchProcessCrashes();
+  // Undoes the redaction of this process's own output, once the run is over.
+  let unredactOutput = (): void => {};
   const signals = watchStopSignals({
     stop: (signal) => {
       if (end) return; // only the hooks are left; the grace period bounds them
@@ -127,6 +142,7 @@ export async function executeRun(runDir: string): Promise<string> {
       killAllAgentProcesses();
       if (!end) {
         sink.emit(event(LOG, { message: `${why} — killing the agents and exiting` }));
+        versions?.close();
         sink.emit(event(RUN_STOPPED, { runId }));
         // No checkpoint (nor quota pause) gets to withdraw itself here: nothing waits any more.
         store.updateStatus(runId, { state: "stopped", dispatched: dispatched(), spentTokens: spent(), waiting: null, pausedFor: null });
@@ -159,6 +175,8 @@ export async function executeRun(runDir: string): Promise<string> {
     const runRedactor = redactorFor(config);
     redactor = runRedactor;
     sink.redactor = runRedactor;
+    // worker.log too, when this process is the run's worker (ODW extension).
+    if (options.worker) unredactOutput = redactOutput(runRedactor);
     // The state status.json shows: the control's (odw pause|resume|stop) —
     // and "paused" while agents wait for a spent quota to reset (ODW
     // extension: quotaWait), whose soonest reset is the run's `pausedFor`.
@@ -179,6 +197,14 @@ export async function executeRun(runDir: string): Promise<string> {
     });
     const replay = replayJournal(meta);
     const waiting = new Map<number, WaitingCheckpoint>();
+    if (config.settings.recordVersions) {
+      versions = new CliVersions({
+        emit: (ev) => sink.emit(ev),
+        settings: config.settings,
+        cwd: typeof meta.source === "string" ? meta.source : undefined,
+      });
+    }
+    const cliVersions = versions;
     ctx = buildContext(config, {
       source: meta.source as string | undefined,
       runId,
@@ -199,6 +225,7 @@ export async function executeRun(runDir: string): Promise<string> {
       // A schema handed to a CLI as a file, as agents/<agentId>.schema.json while it runs.
       agentSchemaPath: (agentId) => store.agentSchemaPath(runId, agentId),
       replay,
+      onCliRun: cliVersions && ((adapter) => cliVersions.note(adapter)),
       onCheckpoint: (cp, isWaiting) => {
         if (isWaiting) {
           waiting.set(cp.checkpointId, cp);
@@ -234,7 +261,9 @@ export async function executeRun(runDir: string): Promise<string> {
     });
 
     store.updateStatus(runId, { state: "running", pid: process.pid });
-    sink.emit(event(RUN_STARTED, { runId }));
+    // What the run starts with — the settings that change behaviour, and each
+    // adapter's fingerprint — for `odw compare` (ODW extension; see ../provenance).
+    sink.emit(event(RUN_STARTED, { runId, setup: runSetup(config) }));
     if (replay) {
       sink.emit(
         event(LOG, {
@@ -291,6 +320,7 @@ export async function executeRun(runDir: string): Promise<string> {
     // The workflow's own value: token shapes are redacted, the values of variables are not (ODW extension).
     const kept = runRedactor.shapes.record({ value: result });
     store.writeResult(runId, kept.value, "redacted" in kept);
+    versions?.close();
     sink.emit(event(RUN_FINISHED, { runId }));
     store.updateStatus(runId, { state: "done", dispatched: dispatched(), spentTokens: spent() });
     end = { state: "done" };
@@ -302,6 +332,7 @@ export async function executeRun(runDir: string): Promise<string> {
       sink.emit(event(LOG, { message: `after the run ended, the workflow also failed: ${errorMessage(err)}` }));
     }
     if (ctx) await stopAgents(ctx.scheduler, outcome);
+    versions?.close();
     if (outcome instanceof RunStopped) {
       sink.emit(event(RUN_STOPPED, { runId }));
       store.updateStatus(runId, { state: "stopped", dispatched: dispatched(), spentTokens: spent() });
@@ -322,7 +353,9 @@ export async function executeRun(runDir: string): Promise<string> {
     crashes.dispose();
     if (!end) signals.dispose(); // the run itself threw: no hooks follow
   }
-  // The outcome is on disk; only now do the run-end hooks fire.
+  // The outcome is on disk; only now do the run-end hooks fire — and its trace
+  // go out, with `otel` in the config (ODW extension), beside them.
+  const exported = exportRunEnd(ctx?.config ?? null, { store, runId });
   try {
     await notifyRunEnd(ctx?.config.settings.notify ?? null, { store, runId, ...end }, {
       cwd: typeof meta.source === "string" ? meta.source : undefined,
@@ -331,10 +364,57 @@ export async function executeRun(runDir: string): Promise<string> {
     // A checkpoint's hooks may still be on their way (a quick answer): let them finish.
     await Promise.all(checkpointHooks);
     await Promise.all(pauseHooks);
+    await exported;
   } finally {
     signals.dispose();
+    unredactOutput();
   }
   return end.state;
+}
+
+export interface ExecuteRunOptions {
+  /**
+   * This process is the run's worker, its stdout and stderr the run's
+   * worker.log: what it prints is redacted too (see executeRun).
+   */
+  worker?: boolean;
+}
+
+/**
+ * Redact what this process writes to its stdout and stderr, as it writes it
+ * (ODW extension; see ../redact): each stream through a RedactStream, so a
+ * secret split across two writes is still caught; what one holds back of a
+ * line still arriving is written when it is undone, or when the process
+ * exits. Returns what undoes it. A redactor that redacts nothing changes nothing.
+ */
+function redactOutput(redactor: Redactor): () => void {
+  if (!redactor.active) return () => {};
+  const undo = [process.stdout, process.stderr].map((stream) => {
+    const write = stream.write;
+    const held = redactor.stream();
+    const decoder = new StringDecoder("utf8");
+    const flush = (): void => {
+      const rest = held.write(decoder.end()) + held.end();
+      if (rest) write.call(stream, rest);
+    };
+    stream.write = function (chunk: unknown, encoding?: unknown, callback?: unknown): boolean {
+      const done = typeof encoding === "function" ? encoding : typeof callback === "function" ? callback : undefined;
+      const text =
+        typeof chunk === "string"
+          ? typeof encoding === "string" && encoding !== "utf8" && encoding !== "utf-8"
+            ? Buffer.from(chunk, encoding as BufferEncoding).toString("utf8")
+            : chunk
+          : decoder.write(Buffer.from(chunk as Uint8Array));
+      return write.call(stream, held.write(text), "utf8", done as ((err?: Error | null) => void) | undefined);
+    } as typeof stream.write;
+    process.on("exit", flush);
+    return (): void => {
+      process.off("exit", flush);
+      stream.write = write;
+      flush();
+    };
+  });
+  return () => undo.forEach((fn) => fn());
 }
 
 /** The log line for a checkpoint answer that found nothing waiting for it. */
@@ -437,7 +517,7 @@ async function main(argv: string[]): Promise<number> {
     process.stderr.write("usage: node runtime/worker.js <run_dir>\n");
     return 2;
   }
-  await executeRun(argv[0]!);
+  await executeRun(argv[0]!, { worker: true });
   return 0;
 }
 

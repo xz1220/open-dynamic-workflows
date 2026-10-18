@@ -360,3 +360,24 @@ test("GET /api/schedules serves what odw schedule list --json prints", { skip: p
     }
   }),
 );
+
+test("GET /api/schedules serves a schedule's args with their token shapes redacted; the schedule keeps them", { skip: process.platform === "win32" }, () =>
+  withSandbox(async (box) => {
+    const token = `ghp_${"a".repeat(36)}`;
+    const add = await odw(["schedule", "add", "nightly", "nightly", "--cron", "15 2 * * 1-5", "--cwd", box.proj, "--backend", "cron", "--args", JSON.stringify({ token, n: 1 })]);
+    assert.equal(add.code, 0, add.err);
+    const { startServer } = await import("../src/runtime/server.js");
+    const { RunStore } = await import("../src/runtime/run-store.js");
+    const handle = await startServer({ store: new RunStore(join(box.root, "runs")), port: 0, host: "127.0.0.1", claudeProjectsRoot: join(box.root, "no-claude") });
+    try {
+      const body = (await (await fetch(`http://127.0.0.1:${handle.port}/api/schedules`)).json()) as Array<Record<string, unknown>>;
+      assert.deepEqual(body[0]!.args, { token: "«redacted:github»", n: 1 });
+      assert.equal(body[0]!.redacted, true);
+      // What its runs start with is the schedule as kept.
+      const listed = JSON.parse((await odw(["schedule", "list", "--json"])).out) as Array<Record<string, unknown>>;
+      assert.deepEqual(listed[0]!.args, { token, n: 1 });
+    } finally {
+      await handle.close();
+    }
+  }),
+);

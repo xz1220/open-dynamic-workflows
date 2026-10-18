@@ -244,8 +244,8 @@ export function validate(value: unknown, schema: JsonSchema, path = "$"): string
   return errors;
 }
 
-/** Structural equality over the JSON value space (for `enum` membership). */
-function deepEqual(a: unknown, b: unknown): boolean {
+/** Structural equality over the JSON value space (for `enum` membership, and to tell an edited checkpoint payload). */
+export function deepEqual(a: unknown, b: unknown): boolean {
   if (a === b) return true;
   if (a === null || b === null || typeof a !== "object" || typeof b !== "object") return false;
   if (Array.isArray(a) || Array.isArray(b)) {

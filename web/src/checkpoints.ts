@@ -57,6 +57,8 @@ export function withCheckpoints(run: RunDetail, events: WorkflowEvent[]): RunDet
           res && !error
             ? { approved: Boolean(res.approved), note: res.note != null ? String(res.note) : null, by: res.by != null ? String(res.by) : null }
             : null,
+        // Approved with an edited payload (ODW extension): the event keeps what was approved.
+        ...(res && !error && res.approved && res.edited === true ? { edited: true, approvedPayload: res.payload ?? null } : {}),
       };
     });
   const out = nodes.length ? { ...run, agents: [...run.agents, ...nodes] } : run;

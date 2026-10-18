@@ -25,7 +25,12 @@
  * reported with it (`permissionDenials: "warn"`, the default) — or is a
  * `permission` failure (`"fail"`); with `expect`, they are a miss. An empty
  * reply fails the call with reason `empty_reply`, unless the request allows
- * one (ODW extensions).
+ * one (ODW extensions). The MCP servers a CLI reports it started the agent
+ * with (`mcpPath`: Claude Code's init event) are told to the caller as each
+ * run reports them, and those not connected go with the reply; one that
+ * failed or needs authentication is an `mcp_unavailable` failure under
+ * `mcpFailures: "fail"`, and a server the call's `expect.mcp` lists that is
+ * not there is a miss (ODW extensions).
  *
  * A call with `expect` checks (an ODW extension; see ./expect) has its work
  * checked once its reply satisfies the schema — an isolated run's worktree is
@@ -84,7 +89,17 @@ import {
 import { planPermissions, readCapableAdapter, runTier, spliceArgs, type PermissionPlan } from "./adapters/permissions.js";
 import { nativeSchemaArgs, planSchema, type NativeSchemaArgs } from "./adapters/native-schema.js";
 import { expand, expandAll, type PlaceholderContext } from "./adapters/placeholders.js";
-import { AdapterOutputDecoder, decodeOutput, type DecodedOutput } from "./adapters/output.js";
+import {
+  AdapterOutputDecoder,
+  decodeOutput,
+  MCP_CONNECTED,
+  MCP_UNAVAILABLE,
+  notConnected,
+  type DecodedOutput,
+  type McpServer,
+  type ReplyFileText,
+} from "./adapters/output.js";
+import { replyFile, usesReplyFile, type ReplyFile } from "./adapters/reply-file.js";
 import { runCommand, type CommandRunner } from "./adapters/runner.js";
 import type { Usage } from "./adapters/usage.js";
 import {
@@ -180,6 +195,18 @@ export interface AgentOutcome {
    * and logs them.
    */
   denied?: string[];
+  /**
+   * The MCP servers its CLI started it without while it did that work (ODW
+   * extension; `mcpPath`) — any status but "connected" — when there were any.
+   */
+  mcp?: McpServer[];
+}
+
+/** The MCP servers one CLI run of a call reported (ODW extension): its adapter, and those not connected. */
+export interface McpReport {
+  adapter: string;
+  /** Every server it reported that was not "connected"; empty when all were. */
+  servers: McpServer[];
 }
 
 export interface BridgeOptions {
@@ -217,6 +244,12 @@ export interface BridgeOptions {
   onQuotaPause?: (change: QuotaPauseChange) => void;
   /** Call `onResume` for each `odw resume` while calls wait for a quota (see Control.watchResume): it ends every pause at once. */
   watchResume?: (onResume: () => void) => () => void;
+  /**
+   * Told as each agent CLI run starts, with its adapter — what records each
+   * adapter CLI's version once per run (an ODW extension; see ./provenance).
+   * It must return at once: the CLI does not wait for it.
+   */
+  onCliRun?: (adapter: Adapter) => void;
 }
 
 /** What the scheduler hands one call; all optional, so a bare `run(request)` works. */
@@ -309,6 +342,12 @@ export interface RunOptions {
   expect?: ExpectationSink;
   /** Called before work that missed its `expect` checks runs again, so the run can say so. */
   onExpectRetry?: (retry: ExpectRetry) => void;
+  /**
+   * Called with the MCP servers each CLI run of the call reported it started
+   * the agent without (an ODW extension; `mcpPath`), as soon as the run's
+   * output is in — whatever becomes of the call — so the run can log them.
+   */
+  onMcp?: (report: McpReport) => void;
   /**
    * Called when the call waits for a spent quota to reset (an ODW extension:
    * quotaWait) — its chain is out of quota, and `adapter`'s resets first —
@@ -443,6 +482,7 @@ export class Bridge {
   private readonly quota: QuotaWaits;
   /** What this run has said about a quota it would not wait for: each once. */
   private readonly quotaNotes = new Set<string>();
+  private readonly onCliRun: ((adapter: Adapter) => void) | undefined;
 
   constructor(
     private readonly config: Config,
@@ -457,6 +497,7 @@ export class Bridge {
     this.runId = options.runId;
     this.agentSchemaPath = options.agentSchemaPath;
     this.redactor = options.redactor;
+    this.onCliRun = options.onCliRun;
     this.ports = new PortPool(...config.settings.portRange);
     this.quota = new QuotaWaits({
       now: this.now,
@@ -821,6 +862,9 @@ export class Bridge {
       // Tool calls the CLI refused fail a run at once only under "fail", and
       // not with `expect`, which counts them as a miss (ODW extensions).
       refusalFails: (adapter.permissionDenials ?? settings.permissionDenials) === "fail" && !options.expect,
+      // MCP servers that could not start fail a run at once only under "fail" —
+      // but those the call's `expect.mcp` lists, which are a miss (ODW extensions).
+      mcpFails: settings.mcpFailures === "fail" ? new Set(options.expect?.mcp ?? []) : undefined,
     };
     const limits: CliLimits = {
       timeout: adapter.timeout ?? settings.timeout ?? undefined,
@@ -836,6 +880,12 @@ export class Bridge {
     // before it starts on this adapter — a fallback hop starts it over; an
     // isolated run's worktree is looked at before it goes.
     const expect = options.expect;
+    if (expect?.mcp.length && !reportsMcp(adapter)) {
+      throw new AgentError(
+        `agent(): expect.mcp needs a CLI that says which MCP servers it started — adapter '${adapter.name}' ` +
+          `declares no output.mcpPath (the built-in claude does)`,
+      );
+    }
     if (expect) await unlessStopped(signal, () => expect.begin(plan.workspaceMode, this.source));
     const inspect =
       expect && plan.workspaceMode === "worktree"
@@ -851,19 +901,27 @@ export class Bridge {
     let attempts = 0;
     // What the work missed last round, told to the next one.
     let missed = "";
-    const done = (value: unknown, text: string, refused: string[]): AgentOutcome => ({
-      value,
-      text,
-      adapter: adapter.name,
-      attempts,
-      notes: plan.notes,
-      ...(refused.length > 0 ? { denied: refused } : {}),
-    });
+    const done = (value: unknown, text: string, refused: string[], servers: Map<string, string>): AgentOutcome => {
+      const down = notConnected([...servers].map(([name, status]) => ({ name, status })));
+      return {
+        value,
+        text,
+        adapter: adapter.name,
+        attempts,
+        notes: plan.notes,
+        ...(refused.length > 0 ? { denied: refused } : {}),
+        ...(down.length > 0 ? { mcp: down } : {}),
+      };
+    };
     for (let round = 0; ; round++) {
       let problems: string[] = [];
       let previous = "";
       // The tool calls the CLI refused while doing this round's work (ODW extension).
       const refused: string[] = [];
+      // The MCP servers its runs of this round's work reported, by name: one
+      // down in any of them stays down — the work may rest on that run (ODW extension).
+      const servers = new Map<string, string>();
+      let reported = false;
       for (let attempt = 1; attempt <= maxAttempts; attempt++) {
         throwIfAborted(signal);
         if (++attempts > 1) await options.beforeRetry?.();
@@ -887,6 +945,8 @@ export class Bridge {
         // Stdout that did not match the adapter's declared format is the reply
         // as it stands — never a failed agent — and the run's log says why.
         if (output.fallback) call.onNote?.(output.fallback);
+        // So does a reply found in the CLI's reply file instead, or nowhere (ODW extension).
+        if (output.note) call.onNote?.(output.note);
         const text = output.text;
         options.onReply?.(text, output.usage);
         // A CLI that exits cleanly with nothing to say did not do the task (ODW
@@ -895,6 +955,10 @@ export class Bridge {
           throw new AdapterExecutionError(cliFailureMessage(adapter, cli, EMPTY_REPLY, this.redactor), { reason: "empty_reply" });
         }
         for (const denial of output.denied ?? []) if (!refused.includes(denial)) refused.push(denial);
+        if (output.mcp) reported = true;
+        for (const { name, status } of output.mcp ?? []) {
+          if (status !== MCP_CONNECTED || !servers.has(name)) servers.set(name, status);
+        }
         let value: unknown = text;
         if (schema) {
           // The schema steers extraction to the one candidate that satisfies it;
@@ -911,13 +975,13 @@ export class Bridge {
           value = pick.value;
         }
         // Without `expect`, a reply stands though tool calls were refused: they are recorded.
-        if (!expect) return done(value, text, refused);
+        if (!expect) return done(value, text, refused, servers);
 
         // The work is checked, not taken at its word (ODW extension; see ./expect),
         // and a refused tool call is a miss of its own: the work went without it.
-        const checked = await unlessStopped(signal, () => expect.check(text));
+        const checked = await unlessStopped(signal, () => expect.check(text, { mcp: reported ? servers : null }));
         const misses = refused.length > 0 ? [refusedMiss(refused), ...checked] : checked;
-        if (misses.length === 0) return done(value, text, refused);
+        if (misses.length === 0) return done(value, text, refused, servers);
         const lines = misses.map((miss) => miss.text);
         if (round >= expect.retries) {
           if (refused.length > 0) throw this.refusedFailure(adapter, cli, refused, lines, limits, reruns);
@@ -973,10 +1037,13 @@ export class Bridge {
     const settings = this.config.settings;
     for (;;) {
       // How the run ended is judged while its workspace is still there.
-      const { cli, output, failure } = await this.invoke(adapter, plan, prompt, limits, signal, call, why, async (ws, cli, decoder) => {
+      const { cli, output, failure } = await this.invoke(adapter, plan, prompt, limits, signal, call, why, async (ws, cli, decoder, reply) => {
         // A runner that streams stdout fed the decoder and kept only a tail; an
         // injected runner that does not stream returns the whole stdout instead.
-        const output = decoder?.received ? decoder.finish() : decodeOutput(adapter, cli.stdout);
+        // What the CLI wrote to its reply file (ODW extension) has its say too.
+        const output = decoder?.received ? decoder.finish(reply) : decodeOutput(adapter, cli.stdout, reply);
+        // What the run said of its MCP servers is told as soon as it is in (ODW extension).
+        if (output.mcp && !signal?.aborted) options.onMcp?.({ adapter: adapter.name, servers: notConnected(output.mcp) });
         if (signal?.aborted || cli.stalled) return { cli, output };
         const failed = this.failureOf(adapter, cli, output, prompt, call);
         if (failed) return { cli: failed.cli, output, failure: failed.failure };
@@ -1044,6 +1111,12 @@ export class Bridge {
     const structured = (adapter.output?.format ?? "text") !== "text";
     const errorReply = !structured || output.fallback !== undefined ? classifyErrorReply(output.text, classify) : null;
     if (errorReply) return { cli, failure: errorReply };
+    // An MCP server that could not start (Claude Code's init event) fails the
+    // run only under `mcpFailures: "fail"`, and not one the call's `expect.mcp`
+    // lists — that is a miss; else the caller records and logs it.
+    const mcpFails = call.mcpFails;
+    const unavailable = mcpFails ? (output.mcp ?? []).filter((s) => MCP_UNAVAILABLE.includes(s.status) && !mcpFails.has(s.name)) : [];
+    if (unavailable.length > 0) return { cli: mcpEvidence(cli, unavailable), failure: { reason: "mcp_unavailable" } };
     // A reply that claims success while the CLI refused the agent tool calls
     // (Claude Code's `permission_denials`) fails here only under
     // `permissionDenials: "fail"`; else the caller records them, or — with
@@ -1105,6 +1178,11 @@ export class Bridge {
         return `could not authenticate — log in to ${adapterDisplayName(adapter)} and resume the run, ${switchAdapter}`;
       case "permission":
         return `was refused a permission it needed — allow it in the adapter's permissionArgs for its tier, ${switchAdapter}`;
+      case "mcp_unavailable":
+        return (
+          `started the agent without an MCP server it is configured with (mcpFailures: "fail") — fix the server ` +
+          `(claude mcp list) and resume the run, ${switchAdapter}`
+        );
       default:
         // An exit-0 run fails this way only when its CLI reported the failure in its output.
         return cli.returncode === 0 ? "reported an error" : `exited with code ${cli.returncode}`;
@@ -1206,7 +1284,7 @@ export class Bridge {
     signal: AbortSignal | undefined,
     call: CallEnv,
     why: AttemptReason | undefined,
-    settle: (ws: Workspace, cli: CliResult, decoder: AdapterOutputDecoder | null) => Promise<T>,
+    settle: (ws: Workspace, cli: CliResult, decoder: AdapterOutputDecoder | null, reply: ReplyFileText) => Promise<T>,
   ): Promise<T> {
     // JSONL transcripts are decoded while they stream, so only the final text
     // is retained (and a verbose session is never cut off at the stdout cap);
@@ -1246,13 +1324,18 @@ export class Bridge {
         cleanup = () => rm(dir, { recursive: true, force: true });
       }
       let schema: NativeSchemaArgs | undefined;
+      let reply: ReplyFile | undefined;
       try {
         // A schema the CLI takes natively (ODW extension): inline, or in a
         // file written for this run and removed after it.
         if (call.schema) schema = await nativeSchemaArgs(call.schema.flag, call.schema.value, call.schema.file);
+        // A CLI that writes its reply to a file of its own (ODW extension)
+        // gets a fresh path for this run, removed after it.
+        if (usesReplyFile(adapter)) reply = await replyFile();
         const context: PlaceholderContext = {
           prompt,
           prompt_file: promptFile,
+          reply_file: reply?.path ?? "",
           workspace: ws.path,
           source: ws.source,
           adapter: adapter.name,
@@ -1269,6 +1352,7 @@ export class Bridge {
         // What the CLI prints is kept as it arrives (ODW extension; see ./transcript).
         const transcript = call.transcript;
         transcript?.beginRun(why, adapter);
+        this.onCliRun?.(adapter);
         const cli = await this.runner(command, {
           stdin,
           cwd: ws.path,
@@ -1287,15 +1371,19 @@ export class Bridge {
           signal,
         });
         transcript?.endRun(cli);
+        // What it wrote to its reply file is read once it has exited.
+        const written = reply ? await reply.read() : undefined;
+        if (written?.note) call.onNote?.(`adapter '${adapter.name}': ${written.note}`);
         // agent() returns the reply; what an isolated run changed is kept
         // beside it, before its worktree goes (ODW extension; see ./changes).
         if (call.changes && plan.workspaceMode === "worktree" && !signal?.aborted) await call.changes.capture(ws);
         // Then how the run ended is settled — while its worktree is still
         // there, for an `expect` check to look at (ODW extension; see ./expect).
-        return await settle(ws, cli, decoder);
+        return await settle(ws, cli, decoder, written === undefined ? undefined : written.text);
       } finally {
         if (cleanup) await cleanup();
         await schema?.cleanup();
+        await reply?.cleanup();
       }
     }, setup);
   }
@@ -1318,6 +1406,12 @@ interface CallEnv {
   schema?: { flag: SchemaFlag; value: JsonSchema; file?: string };
   /** A run whose CLI refused the agent tool calls fails as `permission` (ODW extension; see failureOf). */
   refusalFails?: boolean;
+  /**
+   * A run whose CLI started the agent without an MCP server that failed or
+   * needs authentication fails as `mcp_unavailable` — but for the servers in
+   * the set, which `expect.mcp` checks (ODW extension; see failureOf).
+   */
+  mcpFails?: ReadonlySet<string>;
 }
 
 /** The variables an agent's processes get from ODW: only ever this call's, never inherited. */
@@ -1442,6 +1536,18 @@ function cliFailureMessage(adapter: Adapter, cli: CliResult, what: string, redac
   const detail = bothEnds(text, 250);
   const suffix = detail ? `: ${detail}` : "";
   return `adapter '${adapter.name}' ${what}${suffix}`;
+}
+
+/** Whether `adapter` says which MCP servers its CLI started (`output.mcpPath`; ODW extension). */
+function reportsMcp(adapter: Adapter): boolean {
+  const output = adapter.output;
+  return output !== undefined && output.format !== "text" && output.mcpPath !== undefined;
+}
+
+/** A run whose CLI started the agent without MCP servers, with them as its diagnostic: what `mcp_unavailable` quotes. */
+function mcpEvidence(cli: CliResult, servers: McpServer[]): CliResult {
+  const listed = servers.map((server) => `${server.name} (${server.status})`).join("; ");
+  return { ...cli, stdout: `MCP servers not connected: ${listed}`, stderr: "" };
 }
 
 /** A run whose CLI refused tool calls, with them as its diagnostic: what a `permission` failure quotes. */

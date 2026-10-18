@@ -19,11 +19,14 @@
  *   odw rerun|resume <run_id>
  *   odw pause|resume|stop <run_id>
  *   odw approve|reject <run_id> [--note TEXT] [--checkpoint N]
+ *   odw approve <run_id> [--checkpoint N] (--payload JSON|@file | --edit)
  *   odw schedule add|list|remove|run …   (recurring runs via the OS scheduler, src/schedule/)
+ *   odw compare <runA> <runB> [--json] [--agent <label|id>]   (what changed; runtime/compare)
+ *   odw export <run_id> --otlp [--out FILE | --send]   (OpenTelemetry traces, runtime/otel-export.ts)
  */
 
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { basename, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -33,6 +36,7 @@ import { isOnPath, listAdapters, loadConfig, locateConfig, resolveAdapter, resol
 import { isPermissionTier, permissionsBanner } from "./adapters/permissions.js";
 import type { Config, PermissionTier } from "./adapters/types.js";
 import { killAllAgentProcesses } from "./adapters/runner.js";
+import { checkEdit } from "./checkpoint.js";
 import { CHECKPOINT_NOTE_MAX, isCheckpointId } from "./control.js";
 import { runDoctor, type CheckStatus } from "./doctor.js";
 import { AdapterNotFound } from "./errors.js";
@@ -51,11 +55,14 @@ import {
   formatFileList,
   truncationNoteOf,
 } from "./runtime/changes-view.js";
+import { compareRuns, findComparedAgents, formatAgentComparison, formatComparison, readCompareRun } from "./runtime/compare.js";
+import { editBlocker, editorCommand, editPayload, readPayloadOption } from "./runtime/checkpoint-edit.js";
 import { startRun, startRunFromSource, waitFor } from "./runtime/launcher.js";
 import { attachRun, bannerLines, checkpointCommands, fallbackLines, formatEvent, formatUsage, resolveRunMode, type RunMode } from "./runtime/live-view.js";
 import { isRunActive, RunObserver } from "./runtime/run-liveness.js";
 import { RunStore, TERMINAL_STATES } from "./runtime/run-store.js";
 import { detail, type RunDetail } from "./runtime/runs-view.js";
+import { exportRun, exportTimeout, otlpTarget, OTEL_SEND_TIMEOUT_MS, postTrace, spanCount } from "./runtime/otel-export.js";
 import { startServer } from "./runtime/server.js";
 import { printAgentLogs } from "./runtime/transcript-view.js";
 import { executeRun } from "./runtime/worker.js";
@@ -87,6 +94,8 @@ export const COMMANDS = [
   "diff",
   "apply",
   "schedule",
+  "compare",
+  "export",
 ] as const;
 
 export type Command = (typeof COMMANDS)[number];
@@ -117,14 +126,18 @@ export function helpText(): string {
     "  odw diff <run_id> [--agent <id|label>] [--stat]    print what isolated agents changed (their kept diffs)",
     "  odw apply <run_id> --agent <id|label>|--all        preview, then apply kept diffs to this working tree (--force)",
     "                                                     --check previews only; --verify CMD rolls an apply back if CMD fails",
+    "  odw compare <runA> <runB> [--json]                 what changed: setup, time, cost, failures, replies",
+    "                                                     --agent <label|id> shows one agent's whole reply diff",
     "  odw list [--workflow <name>]                       list known runs",
     "  odw serve [--port N] [--host H] [--open]           open the live dashboard in a browser",
     "  odw workflows list [--project|--global|--all]      list workflows runnable by name",
     "  odw workflows where <name>                         show the file a name resolves to",
     "  odw pause|resume|stop <run_id>                     control a running workflow",
     "  odw approve|reject <run_id> [--checkpoint N]       answer a checkpoint() the run waits at (--note TEXT)",
+    "  odw approve <run_id> --edit | --payload JSON|@file approve it with an edited payload ($VISUAL/$EDITOR for --edit)",
     "  odw schedule add <name> <workflow> --cron EXPR     run a workflow on a timer via cron/launchd/systemd (below)",
     "  odw schedule list [--json] | remove|run <name>     list schedules; delete one; run one now",
+    "  odw export <run_id> --otlp [--out FILE|--send]     the run as OpenTelemetry traces (OTLP/JSON; ODW extension)",
     "",
     "Options:",
     "  --args JSON|@file   workflow input (JSON, @file.json, or a raw string)",
@@ -223,13 +236,17 @@ export async function main(argv: string[]): Promise<number> {
         return cmdControl(command, rest);
       case "approve":
       case "reject":
-        return cmdDecide(command, rest);
+        return await cmdDecide(command, rest);
       case "diff":
         return await cmdDiff(rest);
       case "apply":
         return await cmdApply(rest);
       case "schedule":
         return await cmdSchedule(rest, { parseArgsValue });
+      case "compare":
+        return cmdCompare(rest);
+      case "export":
+        return await cmdExport(rest);
       default:
         process.stderr.write(`odw: unknown command '${command}'\n\n${helpText()}\n`);
         return 2;
@@ -341,7 +358,7 @@ async function cmdWorker(rest: string[]): Promise<number> {
     process.stderr.write("odw __worker: missing <run_dir>\n");
     return 2;
   }
-  const state = await executeRun(runDir);
+  const state = await executeRun(runDir, { worker: true });
   return state === "done" ? 0 : 1;
 }
 
@@ -623,6 +640,9 @@ function cmdStatus(rest: string[]): number {
   process.stdout.write(`  dispatched: ${dispatchedCount(events, status)} agent(s)\n`);
   // What its agents spent (ODW extension): as their CLIs reported it, or chars/4 estimates.
   if (run.usage) process.stdout.write(`  usage: ${formatUsage(run.usage)}${estimateNote(run)}\n`);
+  // Each adapter CLI's version, as the run recorded it (ODW extension; see provenance.ts).
+  const clis = Object.entries(run.cliVersions ?? {}).map(([name, cli]) => `${name} ${cli.version ?? `unknown (${cli.error ?? "?"})`}`);
+  if (clis.length > 0) process.stdout.write(`  CLIs: ${sanitizeText(clis.join(" · "), 300)}\n`);
   // Agents that fell back to another adapter, and adapters the quota breaker took out (ODW extensions).
   for (const line of fallbackLines(run.agents, events)) process.stdout.write(`  ${line}\n`);
   if (typeof meta.resumedFrom === "string") {
@@ -638,6 +658,7 @@ function cmdStatus(rest: string[]): number {
     process.stdout.write(`    approve: ${approve}\n    reject:  ${reject}\n`);
   }
   if (pending.length > 0) process.stdout.write("    (--note TEXT tells the workflow why)\n");
+  if (pending.length > 0) process.stdout.write("    (odw approve --edit approves an edited payload; --payload JSON|@file does it without an editor)\n");
   return 0;
 }
 
@@ -936,6 +957,72 @@ async function cmdApply(rest: string[]): Promise<number> {
     for (const s of signals) process.off(s, onSignal);
     if (caught) process.kill(process.pid, caught);
   }
+}
+
+/**
+ * `odw compare <runA> <runB> [--json] [--agent <label|id>]` (ODW extension) —
+ * what changed from run A to run B (see runtime/compare): the setup each ran
+ * with, time, tokens, cost, which agents failed, whether their replies
+ * differ. `--json` prints the comparison; `--agent` one agent's row and its
+ * whole reply diff (with `--json`, that row). A run still going is compared
+ * as it stands. Exit 0 once compared, 1 for a missing run or agent.
+ */
+function cmdCompare(rest: string[]): number {
+  const { values, positionals } = parseArgs({
+    args: rest,
+    allowPositionals: true,
+    options: {
+      config: { type: "string" },
+      "runs-root": { type: "string" },
+      json: { type: "boolean" },
+      agent: { type: "string" },
+    },
+  });
+  const [runA, runB, extra] = positionals;
+  if (!runA || !runB || extra !== undefined) throw new UsageError("usage: odw compare <runA> <runB> [--json] [--agent <label|id>]");
+  const store = storeFrom(values);
+  for (const id of [runA, runB]) {
+    if (!store.exists(id)) {
+      process.stderr.write(`no such run: ${id}\n`);
+      return 1;
+    }
+  }
+  const a = readCompareRun(store, runA);
+  const b = readCompareRun(store, runB);
+  const caps = detectCaps(process.stdout, process.env);
+  const width = Math.min(100, process.stdout.isTTY && process.stdout.columns ? process.stdout.columns : 100);
+  if (values.agent !== undefined) {
+    const bounded = compareRuns(a, b).agents;
+    const rows = findComparedAgents(bounded, values.agent);
+    if (rows.length === 0) {
+      process.stderr.write(`neither run has an agent '${values.agent}' (see odw compare ${runA} ${runB})\n`);
+      return 1;
+    }
+    if (rows.length > 1) {
+      const which = rows.map((r) => `A#${r.a?.agentId ?? "-"}↔B#${r.b?.agentId ?? "-"}`).join(", ");
+      process.stderr.write(
+        `'${values.agent}' matches ${rows.length} agents: ${which} — pick one by its id in A (else B): --agent <id>\n`,
+      );
+      return 1;
+    }
+    // The whole reply diff: the comparison again, its bounds lifted — the same rows, in the same order.
+    const full = compareRuns(a, b, { diffLines: Infinity, jsonPaths: Infinity, chars: Infinity });
+    const row = full.agents[bounded.indexOf(rows[0]!)]!;
+    if (values.json) {
+      process.stdout.write(JSON.stringify(row, null, 2) + "\n");
+      return 0;
+    }
+    for (const line of formatAgentComparison(row, full, { width, caps })) process.stdout.write(line + "\n");
+    return 0;
+  }
+  const comparison = compareRuns(a, b);
+  if (values.json) {
+    process.stdout.write(JSON.stringify(comparison, null, 2) + "\n");
+    return 0;
+  }
+  for (const line of formatComparison(comparison, { width, caps })) process.stdout.write(line + "\n");
+  process.stderr.write(`one agent's whole reply diff: odw compare ${runA} ${runB} --agent <label|id> · all of it as JSON: --json\n`);
+  return 0;
 }
 
 /** The one agent `ref` names (an id or a label), or null once the reason it is none is printed. */
@@ -1319,8 +1406,13 @@ function cmdControl(action: Command, rest: string[]): number {
  * oldest one waiting. The answer always names the checkpoint the person saw,
  * so it can never land on a question asked after they decided; the run picks
  * it up from its decision log within a fraction of a second.
+ *
+ * `odw approve` may carry an edited payload: `--payload JSON|@file`, or
+ * `--edit`, which opens $VISUAL / $EDITOR on the checkpoint's payload first
+ * (see runtime/checkpoint-edit.ts). Either is checked as the run will check
+ * it — JSON, at most 256 KiB, the checkpoint's schema — before it is written.
  */
-function cmdDecide(action: "approve" | "reject", rest: string[]): number {
+async function cmdDecide(action: "approve" | "reject", rest: string[]): Promise<number> {
   const { values, positionals } = parseArgs({
     args: rest,
     allowPositionals: true,
@@ -1329,6 +1421,8 @@ function cmdDecide(action: "approve" | "reject", rest: string[]): number {
       "runs-root": { type: "string" },
       note: { type: "string" },
       checkpoint: { type: "string" },
+      payload: { type: "string" },
+      edit: { type: "boolean" },
     },
   });
   const runId = positionals[0];
@@ -1343,6 +1437,26 @@ function cmdDecide(action: "approve" | "reject", rest: string[]): number {
   const note = values.note;
   if (note !== undefined && note.length > CHECKPOINT_NOTE_MAX) {
     throw new UsageError(`odw ${action}: --note must be at most ${CHECKPOINT_NOTE_MAX} characters`);
+  }
+  if ((values.payload !== undefined || values.edit) && action === "reject") {
+    throw new UsageError("odw reject: --payload and --edit go with odw approve only — a rejection keeps the checkpoint's payload");
+  }
+  if (values.payload !== undefined && values.edit) {
+    throw new UsageError("odw approve: --payload and --edit are mutually exclusive");
+  }
+  let edit: { value: unknown } | undefined;
+  if (values.payload !== undefined) {
+    const read = readPayloadOption(values.payload);
+    if ("error" in read) throw new UsageError(`odw approve: --payload: ${read.error}`);
+    const sized = checkEdit(read.value, null);
+    if (!sized.ok) throw new UsageError(`odw approve: --payload: ${sized.message}`);
+    edit = { value: sized.value };
+  }
+  if (values.edit && !(process.stdin.isTTY === true && process.stdout.isTTY === true)) {
+    throw new UsageError(
+      "odw approve: --edit opens an editor, which needs a terminal (stdin and stdout are not one) — " +
+        "pass the edited payload with --payload '<json>' or --payload @file.json",
+    );
   }
   const store = storeFrom(values);
   if (!store.exists(runId)) {
@@ -1361,15 +1475,127 @@ function cmdDecide(action: "approve" | "reject", rest: string[]): number {
     );
     return 1;
   }
+  const which = `checkpoint #${target.checkpointId}`;
+  if (edit) {
+    const checked = checkEdit(edit.value, target.schema ?? null);
+    if (!checked.ok) {
+      process.stderr.write(`odw approve: ${editRefusal(which, checked.message, checked.problems)}`);
+      return 1;
+    }
+  }
+  // An --edit file stays until its edit is written; it is kept, and named, when it cannot be.
+  let keep: { file: string; discard(): void } | undefined;
+  if (values.edit) {
+    const blocked = editBlocker(target);
+    if (blocked) {
+      process.stderr.write(`odw approve: cannot --edit ${which}: ${blocked} — pass the edited payload with --payload @file.json\n`);
+      return 1;
+    }
+    const outcome = await editPayload(target.payload, {
+      editor: editorCommand(),
+      check: (value) => checkEdit(value, target.schema ?? null),
+    });
+    const kept = (file: string | null | undefined): string => (file ? `  your edit is kept in ${file}\n` : "");
+    switch (outcome.kind) {
+      case "empty":
+        process.stderr.write(`odw approve: the payload file was empty — not answering; ${which} still waits\n`);
+        return 1;
+      case "editor-failed":
+        process.stderr.write(`odw approve: ${outcome.message} — not answering; ${which} still waits\n${kept(outcome.file)}`);
+        return 1;
+      case "refused":
+        process.stderr.write(`odw approve: ${editRefusal(which, outcome.message, outcome.problems)}${kept(outcome.file)}`);
+        return 1;
+      case "unchanged":
+        process.stderr.write(`payload unchanged — approving ${which} as is\n`);
+        break;
+      case "edited":
+        edit = { value: outcome.value };
+        keep = outcome;
+        break;
+    }
+    // Time passed in the editor: the checkpoint may have been answered meanwhile, or the run ended.
+    if (!(detail(store, runId).pendingCheckpoints ?? []).some((cp) => cp.checkpointId === target.checkpointId)) {
+      process.stderr.write(`odw approve: ${which} of run ${runId} is no longer waiting for a decision\n${kept(keep?.file)}`);
+      return 1;
+    }
+  }
   store.requestCheckpointDecision(runId, {
     action,
     checkpointId: target.checkpointId,
     ...(note !== undefined && note.trim() !== "" ? { note } : {}),
+    ...(edit ? { payload: edit.value } : {}),
     by: "cli",
   });
+  keep?.discard();
   process.stderr.write(
-    `${action} requested for checkpoint #${target.checkpointId} ${JSON.stringify(sanitizeText(target.title, 120))} of ${runId}\n`,
+    `${action} requested for checkpoint #${target.checkpointId} ${JSON.stringify(sanitizeText(target.title, 120))} of ${runId}` +
+      `${edit ? ", with an edited payload" : ""}\n`,
   );
+  return 0;
+}
+
+/** Why an edited payload was refused: the message, or the schema's problems one per line. */
+function editRefusal(which: string, message: string, problems: string[]): string {
+  if (problems.length <= 1) return `${message} — not answering; ${which} still waits\n`;
+  const shown = problems.slice(0, 20).map((p) => `  ${sanitizeText(p, 200)}\n`).join("");
+  const more = problems.length > 20 ? `  … and ${problems.length - 20} more\n` : "";
+  return `the edited payload does not match ${which}'s schema — not answering; it still waits:\n${shown}${more}`;
+}
+
+/**
+ * `odw export <run_id> --otlp [--out <file> | --send]` (ODW extension) — the
+ * run as OpenTelemetry traces in OTLP/JSON (see runtime/otel-export): on
+ * stdout, into a file, or POSTed to the configured endpoint. Content is
+ * captured only when `otel.captureContent` or
+ * OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT asks. A run still going
+ * is exported as it stands. Exit 0, or 1 when the run is unknown or the send failed.
+ */
+async function cmdExport(rest: string[]): Promise<number> {
+  const { values, positionals } = parseArgs({
+    args: rest,
+    allowPositionals: true,
+    options: {
+      config: { type: "string" },
+      "runs-root": { type: "string" },
+      otlp: { type: "boolean" },
+      out: { type: "string" },
+      send: { type: "boolean" },
+    },
+  });
+  const runId = positionals[0];
+  if (!runId) throw new UsageError("odw export: missing <run_id>");
+  if (!values.otlp) throw new UsageError("odw export: name the format: --otlp (OpenTelemetry traces, OTLP/JSON)");
+  if (values.send && values.out !== undefined) throw new UsageError("odw export: --out and --send exclude each other");
+  const config = loadConfig(values.config ?? null, { quiet: true });
+  const store = values["runs-root"] ? new RunStore(values["runs-root"]) : new RunStore(resolveRunsRoot(config.settings.runsRoot));
+  if (!store.exists(runId)) {
+    process.stderr.write(`no such run: ${runId}\n`);
+    return 1;
+  }
+  const state = String(store.readStatus(runId).state ?? "pending");
+  if (!TERMINAL_STATES.has(state)) {
+    process.stderr.write(`odw export: run ${runId} is ${state}: its trace holds what happened so far, open spans ending at its last event\n`);
+  }
+  const trace = exportRun(store, runId, config);
+  const spans = spanCount(trace);
+  if (values.send) {
+    const target = otlpTarget(config.settings.otel, process.env);
+    const failure = await postTrace(target, trace, exportTimeout(process.env, OTEL_SEND_TIMEOUT_MS));
+    if (failure) {
+      process.stderr.write(`odw export: ${failure}\n`);
+      return 1;
+    }
+    process.stderr.write(`sent the trace of run ${runId} (${spans} spans) to ${target.origin}\n`);
+    return 0;
+  }
+  const json = JSON.stringify(trace) + "\n";
+  if (values.out !== undefined) {
+    writeFileSync(values.out, json);
+    process.stderr.write(`wrote the trace of run ${runId} (${spans} spans) to ${values.out}\n`);
+  } else {
+    process.stdout.write(json);
+  }
   return 0;
 }
 

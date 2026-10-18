@@ -2248,7 +2248,200 @@
         }
       }
 
-      /* ---------- 04 · install ---------- */
+      /* ---------- 04 · review & control ---------- */
+      .ctl-grid {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1.08fr);
+        gap: 24px;
+        align-items: start;
+        margin-top: 56px;
+      }
+      .ctl-card {
+        position: sticky;
+        top: 96px;
+        overflow: hidden;
+      }
+      .ctl-card .plate {
+        border-bottom: 1px solid var(--line);
+      }
+      /* the receipt and the diff: the dashboard's Spend and Changes views, drawn in hairlines */
+      .pl-ctl .paper {
+        fill: var(--card);
+        stroke: var(--line-2);
+        stroke-width: 1;
+      }
+      .pl-ctl .eyebrow {
+        font-size: 8.5px;
+        letter-spacing: 0.12em;
+        fill: var(--faint);
+      }
+      .pl-ctl .serif {
+        font-family: var(--f-display);
+        font-size: 18px;
+        fill: var(--ink);
+      }
+      .pl-ctl .serif.total {
+        font-size: 22px;
+      }
+      .pl-ctl .rule {
+        stroke: var(--line-2);
+        stroke-width: 1;
+        stroke-dasharray: 3 3;
+      }
+      .pl-ctl .rl text {
+        fill: var(--ink-2);
+      }
+      .pl-ctl .rl .ix {
+        fill: var(--faint);
+        font-size: 8.5px;
+      }
+      .pl-ctl .rl .amt {
+        fill: var(--ink);
+        font-weight: 600;
+      }
+      .pl-ctl .lead {
+        stroke: var(--line-2);
+        stroke-width: 1.2;
+        stroke-dasharray: 1 3;
+        stroke-linecap: round;
+      }
+      .pl-ctl .track {
+        fill: var(--shade);
+      }
+      .pl-ctl .rb {
+        fill: var(--ink);
+        transform-box: fill-box;
+        transform-origin: left;
+      }
+      .pl-ctl .rb.hot {
+        fill: var(--sig);
+      }
+      .pl-ctl .split .clay {
+        fill: var(--clay);
+      }
+      .pl-ctl .split .ink {
+        fill: var(--mute);
+      }
+      .pl-ctl .dbox {
+        fill: var(--card);
+        stroke: var(--line-2);
+      }
+      .pl-ctl .path {
+        fill: var(--ink);
+      }
+      .pl-ctl .ins {
+        fill: var(--sig-ink);
+        font-weight: 600;
+      }
+      .pl-ctl .del {
+        fill: var(--alarm-ink);
+        font-weight: 600;
+      }
+      .pl-ctl .gut {
+        fill: var(--faint);
+        font-size: 8.5px;
+      }
+      .pl-ctl .code {
+        fill: var(--line-2);
+      }
+      .pl-ctl .dr.del .row {
+        fill: var(--alarm-soft);
+      }
+      .pl-ctl .dr.add .row {
+        fill: var(--sig-soft);
+      }
+      .pl-ctl .dr.del .sg {
+        fill: var(--alarm-ink);
+      }
+      .pl-ctl .dr.add .sg {
+        fill: var(--sig-ink);
+      }
+      .pl-ctl .dr .word {
+        fill: var(--sig-line);
+      }
+      .pl-ctl .cn {
+        fill: none;
+        stroke: var(--line-2);
+        stroke-width: 1.2;
+        stroke-dasharray: 1;
+      }
+      .pl-ctl .chip rect {
+        fill: var(--ink);
+      }
+      .pl-ctl .chip text {
+        fill: var(--paper);
+        font-size: 10.5px;
+      }
+      .pl-ctl .ok circle {
+        fill: var(--sig);
+      }
+      .pl-ctl .ok .ck {
+        fill: none;
+        stroke: var(--paper);
+        stroke-width: 1.8;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+        stroke-dasharray: 1;
+      }
+      .pl-ctl .ok text {
+        fill: var(--ink);
+      }
+      .pl-ctl .ok .dim {
+        fill: var(--faint);
+        font-size: 9px;
+      }
+      .pl-ctl .rl,
+      .pl-ctl .split,
+      .pl-ctl .dr,
+      .pl-ctl .chip,
+      .pl-ctl .ok {
+        transform-box: fill-box;
+        transform-origin: center;
+      }
+      /* drawn in: the receipt prints line by line, its bars grow, the diff
+         rows slide in, then the apply runs and its check draws */
+      .pl-ctl.draw .rl,
+      .pl-ctl.draw .split {
+        animation: rec-pop 0.5s var(--ease-out) both;
+        animation-delay: calc(0.2s + var(--i, 0) * 110ms);
+      }
+      .pl-ctl.draw .rb {
+        animation: ctl-grow 0.9s var(--ease-out) both;
+        animation-delay: calc(0.35s + var(--i, 0) * 110ms);
+      }
+      .pl-ctl.draw .dr {
+        animation: ctl-slide 0.45s var(--ease-out) both;
+        animation-delay: calc(0.5s + var(--i, 0) * 90ms);
+      }
+      .pl-ctl.draw .cn {
+        animation: draw 0.5s var(--ease-out) both;
+        animation-delay: 1.05s;
+      }
+      .pl-ctl.draw .chip {
+        animation: rec-pop 0.45s var(--ease-spring) both;
+        animation-delay: 1.2s;
+      }
+      .pl-ctl.draw .ok {
+        animation: rec-pop 0.45s var(--ease-spring) both;
+        animation-delay: 1.55s;
+      }
+      .pl-ctl.draw .ok .ck {
+        animation: draw 0.4s var(--ease-out) both;
+        animation-delay: 1.75s;
+      }
+      @keyframes ctl-grow {
+        from {
+          transform: scaleX(0);
+        }
+      }
+      @keyframes ctl-slide {
+        from {
+          opacity: 0;
+          transform: translateX(-8px);
+        }
+      }
+
+      /* ---------- 05 · install ---------- */
       .install-panel {
         display: grid;
         grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.05fr);
@@ -2634,13 +2827,18 @@
       @media (max-width: 1023px) {
         .runtime-grid,
         .long-grid,
+        .ctl-grid,
         .install-panel,
         .sechead {
           grid-template-columns: minmax(0, 1fr);
         }
-        .rec-card {
+        .rec-card,
+        .ctl-card {
           position: relative;
           top: 0;
+        }
+        .ctl-card {
+          order: -1;
         }
         .sechead .section-lede {
           max-width: 60ch;
@@ -2781,7 +2979,8 @@
             <a href="#why"><span class="ix" aria-hidden="true">01</span><span data-i18n="nav.why">Why</span></a>
             <a href="#runtime"><span class="ix" aria-hidden="true">02</span><span data-i18n="nav.runtime">Runtime</span></a>
             <a href="#long"><span class="ix" aria-hidden="true">03</span><span data-i18n="nav.long">Long runs</span></a>
-            <a href="#install"><span class="ix" aria-hidden="true">04</span><span data-i18n="nav.install">Install</span></a>
+            <a href="#control"><span class="ix" aria-hidden="true">04</span><span data-i18n="nav.control">Control</span></a>
+            <a href="#install"><span class="ix" aria-hidden="true">05</span><span data-i18n="nav.install">Install</span></a>
             <a class="gh" href="https://github.com/xz1220/open-dynamic-workflows"
               >GitHub<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7.5 16.5 16.5 7.5M9 7.5h7.5V15" /></svg
             ></a>
@@ -3229,7 +3428,7 @@
               <article class="lr card">
                 <span class="op par"><i></i><span class="kd">429 → retry</span></span>
                 <h3 data-i18n="long.limits.title">Rides out rate limits</h3>
-                <p data-i18n="long.limits.copy">Throttled CLIs retry after the wait they asked for; a spent quota fails fast and says when it resets.</p>
+                <p data-i18n="long.limits.copy">Throttled CLIs retry after the wait they asked for; a spent quota says when it resets — and, if you allow it, the run waits for it.</p>
               </article>
               <article class="lr card">
                 <span class="op pipe"><i></i><span class="kd">stallTimeout</span></span>
@@ -3251,10 +3450,94 @@
         </div>
       </section>
 
-      <!-- ============================ 04 · INSTALL ============================ -->
+      <!-- ============================ 04 · CONTROL ============================ -->
+      <section class="section tint" id="control" aria-labelledby="control-title">
+        <div class="section-inner">
+          <p class="seclabel"><span class="num">04</span> <span class="kick" data-i18n="control.kicker">Review &amp; control</span> <span class="rule"></span></p>
+          <div class="sechead">
+            <h2 class="sectitle display" id="control-title" data-i18n="control.title" data-i18n-html>Know what it <em>cost</em>. See what it <em>changed</em>.</h2>
+            <p class="section-lede" data-i18n="control.copy">
+              Every agent reports what it spent from its own CLI, keeps its diff for review, and runs at the tier you allow. Nothing lands in your tree until you apply it — and a failed check rolls it back.
+            </p>
+          </div>
+
+          <div class="ctl-grid">
+            <div class="lr-list">
+              <article class="lr card">
+                <span class="op ok"><i></i><span class="kd">$ spend</span></span>
+                <h3 data-i18n="control.spend.title">See where it spent</h3>
+                <p data-i18n="control.spend.copy">Tokens and dollars per agent and per phase, from each CLI's own report — and a warning before a wide fan-out.</p>
+              </article>
+              <article class="lr card">
+                <span class="op cmd"><i></i><span class="kd">odw apply --verify</span></span>
+                <h3 data-i18n="control.apply.title">Review, then land</h3>
+                <p data-i18n="control.apply.copy">Worktree agents keep their diff. Preview every file, apply in order, run your checks; a failure rolls back exactly.</p>
+              </article>
+              <article class="lr card">
+                <span class="op pipe"><i></i><span class="kd">odw logs --agent</span></span>
+                <h3 data-i18n="control.logs.title">Every step on the record</h3>
+                <p data-i18n="control.logs.copy">Each agent's transcript — tool calls, results, retries — live in the terminal or the dashboard.</p>
+              </article>
+              <article class="lr card">
+                <span class="op rp"><i></i><span class="kd">--permissions read</span></span>
+                <h3 data-i18n="control.perms.title">Only what you allow</h3>
+                <p data-i18n="control.perms.copy">Read, edit or full, mapped to each CLI's own flags. Secrets are redacted from everything odw keeps.</p>
+              </article>
+              <article class="lr card">
+                <span class="op par"><i></i><span class="kd">["codex", "claude"]</span></span>
+                <h3 data-i18n="control.fallback.title">Out of quota, not out of work</h3>
+                <p data-i18n="control.fallback.copy">Fallback chains and model tiers move an agent down its list instead of failing it, at the same permission tier.</p>
+              </article>
+              <article class="lr card">
+                <span class="op bell"><i></i><span class="kd">odw schedule</span></span>
+                <h3 data-i18n="control.schedule.title">On a schedule, no daemon</h3>
+                <p data-i18n="control.schedule.copy">cron, launchd or systemd, with an overlap lock and a log per run; the dashboard shows what runs next.</p>
+              </article>
+            </div>
+
+            <figure class="ctl-card card marked">
+              <div class="plate" aria-hidden="true">
+                <svg class="pl pl-ctl" viewBox="0 0 520 290" data-live data-draw>
+                  <!-- the receipt: where the run spent -->
+                  <path class="paper" d="M24 30a8 8 0 0 1 8-8h204a8 8 0 0 1 8 8v226l-7 5-7.3-5-7.3 5-7.3-5-7.3 5-7.3-5-7.3 5-7.3-5-7.3 5-7.3-5-7.3 5-7.3-5-7.3 5-7.3-5-7.3 5-7.3-5-7.3 5-7.3-5-7.3 5-7.3-5-7.3 5-7.3-5-7.3 5-7.3-5-7.3 5-7.3-5-7.3 5-7.3-5-7.3 5-7.3-5-7.3 5L24 256z" />
+                  <text class="eyebrow" x="42" y="48" data-i18n="control.plate.spend">SPEND</text>
+                  <text class="serif" x="42" y="72" data-i18n="control.plate.title">Where this run spent</text>
+                  <text class="serif total" x="226" y="48" text-anchor="end">$0.77</text>
+                  <line class="rule" x1="42" y1="88" x2="226" y2="88" />
+                  <g class="rl" style="--i: 0"><text class="ix" x="42" y="114">01</text><text x="62" y="114">Plan</text><line class="lead" x1="92" y1="111" x2="182" y2="111" /><text class="amt" x="226" y="114" text-anchor="end">$0.08</text><rect class="track" x="62" y="121" width="164" height="2" rx="1" /><rect class="rb" x="62" y="121" width="17" height="2" rx="1" /></g>
+                  <g class="rl" style="--i: 1"><text class="ix" x="42" y="146">02</text><text x="62" y="146">Research</text><line class="lead" x1="120" y1="143" x2="182" y2="143" /><text class="amt" x="226" y="146" text-anchor="end">$0.29</text><rect class="track" x="62" y="153" width="164" height="2" rx="1" /><rect class="rb hot" x="62" y="153" width="62" height="2" rx="1" /></g>
+                  <g class="rl" style="--i: 2"><text class="ix" x="42" y="178">03</text><text x="62" y="178">Review</text><line class="lead" x1="106" y1="175" x2="182" y2="175" /><text class="amt" x="226" y="178" text-anchor="end">$0.19</text><rect class="track" x="62" y="185" width="164" height="2" rx="1" /><rect class="rb" x="62" y="185" width="41" height="2" rx="1" /></g>
+                  <g class="rl" style="--i: 3"><text class="ix" x="42" y="210">04</text><text x="62" y="210">Report</text><line class="lead" x1="106" y1="207" x2="182" y2="207" /><text class="amt" x="226" y="210" text-anchor="end">$0.21</text><rect class="track" x="62" y="217" width="164" height="2" rx="1" /><rect class="rb" x="62" y="217" width="44" height="2" rx="1" /></g>
+                  <g class="split" style="--i: 4"><rect class="clay" x="42" y="236" width="102" height="6" rx="2" /><rect class="ink" x="146" y="236" width="80" height="6" rx="2" /></g>
+
+                  <!-- what one agent changed, and landing it -->
+                  <g class="dcard">
+                    <rect class="dbox" x="270" y="22" width="226" height="136" rx="8" />
+                    <text class="path" x="286" y="44">src/cache.ts</text>
+                    <text class="ins" x="452" y="44" text-anchor="end">+12</text><text class="del" x="480" y="44" text-anchor="end">−3</text>
+                    <line class="rule" x1="270" y1="54" x2="496" y2="54" />
+                    <g class="dr" style="--i: 0"><text class="gut" x="284" y="72">41</text><rect class="code" x="306" y="66" width="120" height="6" rx="3" /></g>
+                    <g class="dr del" style="--i: 1"><rect class="row" x="271" y="78" width="224" height="16" /><text class="sg" x="296" y="90">−</text><rect class="code" x="306" y="83" width="138" height="6" rx="3" /></g>
+                    <g class="dr add" style="--i: 2"><rect class="row" x="271" y="94" width="224" height="16" /><text class="sg" x="296" y="106">+</text><rect class="code" x="306" y="99" width="152" height="6" rx="3" /><rect class="word" x="404" y="98" width="40" height="8" rx="2" /></g>
+                    <g class="dr add" style="--i: 3"><rect class="row" x="271" y="110" width="224" height="16" /><text class="sg" x="296" y="122">+</text><rect class="code" x="316" y="115" width="104" height="6" rx="3" /></g>
+                    <g class="dr" style="--i: 4"><text class="gut" x="284" y="142">45</text><rect class="code" x="306" y="136" width="86" height="6" rx="3" /></g>
+                  </g>
+                  <path class="cn" pathLength="1" d="M383 158V184" />
+                  <g class="chip"><rect x="296" y="184" width="174" height="26" rx="13" /><text x="383" y="201" text-anchor="middle">$ odw apply --verify</text></g>
+                  <path class="cn" pathLength="1" d="M383 210V232" />
+                  <g class="ok"><circle cx="318" cy="250" r="9" /><path class="ck" pathLength="1" d="M313.5 250.2l3.2 3.2 5.8-6.4" /><text x="336" y="246" data-i18n="control.plate.passed">npm test passed</text><text class="dim" x="336" y="260" data-i18n="control.plate.applied">applied · staged</text></g>
+                </svg>
+              </div>
+              <figcaption class="rec-cap"><code>odw apply $RUN --all --verify "npm test"</code><span data-i18n="control.tally">3 applied · 1 rolled back</span></figcaption>
+            </figure>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================ 05 · INSTALL ============================ -->
       <section class="section" id="install" aria-labelledby="install-title">
         <div class="section-inner">
-          <p class="seclabel"><span class="num">04</span> <span class="kick" data-i18n="install.kicker">Start</span> <span class="rule"></span></p>
+          <p class="seclabel"><span class="num">05</span> <span class="kick" data-i18n="install.kicker">Start</span> <span class="rule"></span></p>
           <div class="install-panel">
             <div class="install-copy">
               <h2 class="sectitle display" id="install-title" data-i18n="install.title" data-i18n-html>Install the runtime or <em>hack from source</em>.</h2>
@@ -3440,13 +3723,34 @@
           "long.checkpoint.title": "Ask before the expensive part",
           "long.checkpoint.copy": "A run waits for a person's yes — from the terminal, the dashboard or a webhook — then carries on.",
           "long.limits.title": "Rides out rate limits",
-          "long.limits.copy": "Throttled CLIs retry after the wait they asked for; a spent quota fails fast and says when it resets.",
+          "long.limits.copy": "Throttled CLIs retry after the wait they asked for; a spent quota says when it resets — and, if you allow it, the run waits for it.",
           "long.stall.title": "No silent hangs",
           "long.stall.copy": "An agent that stops printing is killed and retried, a bounded number of times.",
           "long.exec.title": "Checks without a model",
           "long.exec.copy": "Run tests and linters as steps of the graph, with exit codes and output caps.",
           "long.doctor.title": "Know it works first",
           "long.doctor.copy": "Checks your config and agent CLIs, then sends each a real smoke prompt.",
+          "control.kicker": "Review & control",
+          "control.title": "Know what it <em>cost</em>. See what it <em>changed</em>.",
+          "control.copy": "Every agent reports what it spent from its own CLI, keeps its diff for review, and runs at the tier you allow. Nothing lands in your tree until you apply it — and a failed check rolls it back.",
+          "control.spend.title": "See where it spent",
+          "control.spend.copy": "Tokens and dollars per agent and per phase, from each CLI's own report — and a warning before a wide fan-out.",
+          "control.apply.title": "Review, then land",
+          "control.apply.copy": "Worktree agents keep their diff. Preview every file, apply in order, run your checks; a failure rolls back exactly.",
+          "control.logs.title": "Every step on the record",
+          "control.logs.copy": "Each agent's transcript — tool calls, results, retries — live in the terminal or the dashboard.",
+          "control.perms.title": "Only what you allow",
+          "control.perms.copy": "Read, edit or full, mapped to each CLI's own flags. Secrets are redacted from everything odw keeps.",
+          "control.fallback.title": "Out of quota, not out of work",
+          "control.fallback.copy": "Fallback chains and model tiers move an agent down its list instead of failing it, at the same permission tier.",
+          "control.schedule.title": "On a schedule, no daemon",
+          "control.schedule.copy": "cron, launchd or systemd, with an overlap lock and a log per run; the dashboard shows what runs next.",
+          "control.plate.spend": "SPEND",
+          "control.plate.title": "Where this run spent",
+          "control.plate.passed": "npm test passed",
+          "control.plate.applied": "applied · staged",
+          "control.tally": "3 applied · 1 rolled back",
+          "nav.control": "Control",
           "install.kicker": "Start",
           "install.title": "Install the runtime or <em>hack from source</em>.",
           "install.copy":
@@ -3555,13 +3859,34 @@
           "long.checkpoint.title": "昂贵的一步，先问一句",
           "long.checkpoint.copy": "运行会停下来等一个人点头——终端、看板或 webhook 都能答复——然后继续。",
           "long.limits.title": "扛得住限流",
-          "long.limits.copy": "被限流的 CLI 按它要求的时间等待后重试；额度用尽则立即失败，并告诉你何时恢复。",
+          "long.limits.copy": "被限流的 CLI 按它要求的时间等待后重试；额度用尽会告诉你何时恢复——你允许的话，运行会等到恢复再继续。",
           "long.stall.title": "不再无声卡死",
           "long.stall.copy": "长时间没有输出的 agent 会被终止并重试，重试次数有上限。",
           "long.exec.title": "不经模型的检查",
           "long.exec.copy": "把测试和 lint 作为图中的步骤来运行，带退出码与输出上限。",
           "long.doctor.title": "先确认能跑",
           "long.doctor.copy": "检查你的配置和各个 agent CLI，再给每个 CLI 发一次真实的冒烟提示。",
+          "control.kicker": "审阅与掌控",
+          "control.title": "知道它<em>花了多少</em>，看清它<em>改了什么</em>。",
+          "control.copy": "每个 agent 都用自己 CLI 的报告说明花了多少，把改动留成 diff 供你审阅，并在你允许的权限档位内运行。你不应用，什么都不会落进工作区——检查不过，就精确回滚。",
+          "control.spend.title": "看清钱花在哪",
+          "control.spend.copy": "按 agent、按阶段的 token 与花费，取自各 CLI 自己的报告——大规模扇出前还会先提醒。",
+          "control.apply.title": "先审阅，再落地",
+          "control.apply.copy": "worktree agent 保留各自的 diff。逐个文件预览、按顺序应用、跑你的检查；失败就精确回滚。",
+          "control.logs.title": "每一步都有记录",
+          "control.logs.copy": "每个 agent 的执行记录——工具调用、结果、重试——在终端或看板里实时查看。",
+          "control.perms.title": "只做你允许的事",
+          "control.perms.copy": "只读、编辑、完全三档，映射到各 CLI 自己的参数。odw 保存的一切都会先脱敏密钥。",
+          "control.fallback.title": "额度用尽，活不停",
+          "control.fallback.copy": "回退链和模型分层让 agent 沿着列表换一家继续，而不是失败，权限档位不变。",
+          "control.schedule.title": "定时运行，无需常驻进程",
+          "control.schedule.copy": "写入 cron、launchd 或 systemd，带防重叠锁和每次运行的日志；看板会显示下一次何时运行。",
+          "control.plate.spend": "花费",
+          "control.plate.title": "这次运行花在了哪里",
+          "control.plate.passed": "npm test 通过",
+          "control.plate.applied": "已应用 · 已暂存",
+          "control.tally": "3 个已应用 · 1 个已回滚",
+          "nav.control": "掌控",
           "install.kicker": "开始使用",
           "install.title": "安装运行时，或直接<em>从源码改起</em>。",
           "install.copy": "可以用单文件安装器、npm 安装，或 clone 仓库。ODW 只驱动本地 agent CLI，不直接调用模型 API。",

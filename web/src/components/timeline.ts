@@ -6,6 +6,7 @@
 import { t } from "../i18n";
 import type { AgentView, RunDetail } from "../types";
 import { TERMINAL, esc, fmtDurSec } from "../util";
+import { shownState } from "../dag";
 import { glyph } from "./glyph";
 
 const STEPS = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 14400];
@@ -76,14 +77,14 @@ export function renderTimeline(run: RunDetail, selectedAi: number | null, nowSec
         const e = (ends[ai] ?? (a.state === "running" || a.state === "waiting" ? lastEnd : a.startedAt)) - t0;
         const dur = a.durationMs != null ? a.durationMs / 1000 : e - s;
         bar =
-          `<i class="tl-bar ${esc(a.state)}" style="left:${pct(s)};width:${pct(Math.max(e - s, 0))}"></i>` +
+          `<i class="tl-bar ${esc(shownState(a))}" style="left:${pct(s)};width:${pct(Math.max(e - s, 0))}"></i>` +
           (e / span > 0.86
             ? `<span class="tl-dur in" style="right:calc(100% - ${pct(s)})">${fmtDurSec(dur)}</span>`
             : `<span class="tl-dur" style="left:${pct(Math.max(e, s))}">${fmtDurSec(dur)}</span>`);
       }
       body.push(
         `<div class="tl-row${sel}" data-ai="${ai}" data-key="tlr-${ai}" tabindex="0" role="button">` +
-          `<div class="nm">${glyph(a.state)}<span>${esc(a.label)}</span></div>` +
+          `<div class="nm">${glyph(shownState(a))}<span>${esc(a.label)}</span></div>` +
           `<div class="tl-track">${gridHtml}${bar}</div></div>`,
       );
     }

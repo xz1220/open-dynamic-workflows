@@ -138,6 +138,29 @@ test("odw agents: a table of every agent with its state and a one-line preview",
   }
 });
 
+test("odw agents: an agent waiting out a spent quota says until when", async () => {
+  const root = mkdtempSync(join(tmpdir(), "odw-agents-cli-"));
+  try {
+    const store = new RunStore(root);
+    const id = store.create({ script: "/demo/wf.js", args: null, source: "/demo" });
+    store.updateStatus(id, { state: "running", pid: process.pid, name: "demo" });
+    const line = (ev: Record<string, unknown>) => appendFileSync(store.eventsPath(id), JSON.stringify(ev) + "\n");
+    line({ ts: 100, type: "agent_started", agentId: 1, label: "scan", phase: "Work", adapter: "codex" });
+    line({ ts: 101, type: "log", message: "scan:1 waits for codex's quota to reset (quotaWait)", agentId: 1, label: "scan", adapter: "codex", reason: "quota", quotaWait: "start", resumeAt: 4_000_000_000 });
+    const r = await cli(["agents", id, "--runs-root", root]);
+    assert.equal(r.code, 0, r.err);
+    assert.match(plain(r.out), /^ 1\s+running\s+scan\s+Work\s+codex\s+\S+\s+waits for codex quota until \S/m);
+    const json = JSON.parse((await cli(["agents", id, "--json", "--runs-root", root])).out) as Array<Record<string, unknown>>;
+    assert.deepEqual(json[0]!.quotaWait, { adapter: "codex", resumeAt: 4_000_000_000 });
+
+    line({ ts: 102, type: "log", message: "scan:1 goes on after the quota wait, on codex", agentId: 1, label: "scan", adapter: "codex", quotaWait: "end" });
+    const after = await cli(["agents", id, "--runs-root", root]);
+    assert.doesNotMatch(plain(after.out), /waits for/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("odw result --agent prints one agent's value by id or label, mid-run", async () => {
   const root = mkdtempSync(join(tmpdir(), "odw-agents-cli-"));
   try {

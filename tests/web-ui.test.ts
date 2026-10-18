@@ -15,6 +15,7 @@ import { applyRunsDelta, store } from "../web/src/store.ts";
 import { renderActivity } from "../web/src/views/activity.ts";
 import { renderJob, type JobViewState } from "../web/src/views/job.ts";
 import { renderJobs } from "../web/src/views/jobs.ts";
+import { spendOf } from "../web/src/views/spend.ts";
 import type { ActivityEvent, AgentView, RunDetail, RunSummary } from "../web/src/types.ts";
 import { cronWords, esc, fmtDurSec, fmtTokens, fmtUsd, fuzzy, markHits, markRedactions } from "../web/src/util.ts";
 
@@ -646,5 +647,242 @@ test("a run waiting out a spent quota says until when, and offers to go on now",
   store.runs = [summary({ runId: "r-q", name: "nightly", state: "paused", pausedFor })];
   assert.match(renderActivity(NOW), /class="ticket paused"[\s\S]*?codex is out of quota — resumes at/);
   store.runs = prev;
+  store.focusRun(null);
+});
+
+test("spend: phases in declared order with outsiders last, shares of cost, top spenders, and nothing before any usage", () => {
+  const u = (inputTokens: number, outputTokens: number, costUsd?: number) => ({ inputTokens, outputTokens, ...(costUsd != null ? { costUsd } : {}) });
+  const run = detail([
+    agent("search:1", "Search", "done", { adapter: "claude", usage: u(4000, 1000, 0.3) }),
+    agent("plan", "Plan", "done", { adapter: "claude", usage: u(1000, 500, 0.05) }),
+    agent("loose", undefined as unknown as string, "done", { adapter: "claude", phase: undefined, usage: u(100, 100, 0.01) }),
+    agent("search:2", "Search", "running", { adapter: "claude" }),
+    agent("$ npm test", "Search", "done", { kind: "command" }),
+  ]);
+  const sp = spendOf(run)!;
+  assert.equal(sp.by, "cost");
+  assert.deepEqual(
+    sp.phases.map((l) => [l.key, l.agents, l.running, l.tokens, l.costUsd]),
+    [
+      ["Plan", 1, 0, 1500, 0.05],
+      ["Search", 2, 1, 5000, 0.3],
+      ["Report", 0, 0, 0, null],
+      ["", 1, 0, 200, 0.01],
+    ],
+    "declared phases keep their order (one not started yet included), commands spend nothing, outsiders close the list",
+  );
+  assert.deepEqual(sp.top.map((x) => x.a.label), ["search:1", "plan", "loose"]);
+  assert.equal(sp.tokens, 6700);
+  assert.ok(Math.abs(sp.costUsd! - 0.36) < 1e-9);
+  assert.equal(sp.running, 1);
+
+  // A codex agent reports tokens but no dollars: the shares are of tokens.
+  const mixed = spendOf(detail([agent("a", "Plan", "done", { adapter: "claude", usage: u(10, 10, 0.5) }), agent("b", "Plan", "done", { adapter: "codex", usage: u(900, 100) })]))!;
+  assert.equal(mixed.by, "tokens");
+  assert.deepEqual(mixed.adapters.map((l) => l.key), ["codex", "claude"], "adapters biggest first");
+  assert.deepEqual(mixed.top.map((x) => x.a.label), ["b", "a"]);
+
+  assert.equal(spendOf(detail([agent("a", "Plan", "running")])), null, "no receipt before an agent reports usage");
+});
+
+test("spend: the tokens and cost unfold a receipt by phase, adapter and agent", () => {
+  const view: JobViewState = {
+    cpNote: "",
+    tab: "logs",
+    selectedAi: null,
+    reviewAi: null,
+    zoom: 1,
+    logQuery: "",
+    logTypes: new Set(["agent"]),
+    logLimit: 600,
+    follow: true,
+    motion: false,
+  };
+  store.focusRun("20260101-000000-aaaaaa");
+  store.run = detail(
+    [
+      agent("plan", "Plan", "done", { adapter: "claude", usage: { inputTokens: 1000, outputTokens: 500, costUsd: 0.05 } }),
+      agent("search:1", "Search", "done", { adapter: "codex", usage: { inputTokens: 8000, outputTokens: 1000, estimated: true } }),
+    ],
+    { state: "running", usage: { inputTokens: 9000, outputTokens: 1500, costUsd: 0.05, estimated: true } },
+  );
+  store.runEvents = [];
+  const closed = renderJob(view, NOW);
+  assert.match(closed, /<button class="spend-btn" data-spend aria-expanded="false"/, "tokens and cost are one button");
+  assert.doesNotMatch(closed, /class="receipt"/);
+
+  const html = renderJob({ ...view, spend: true }, NOW);
+  assert.match(html, /<button class="spend-btn on" data-spend aria-expanded="true"/);
+  assert.match(html, /<section class="receipt"/);
+  assert.match(html, /Where this run spent/);
+  assert.equal(count(html, /<li class="rc-line/g), 3, "Plan, Search, and Report not started yet");
+  assert.match(html, /data-key="rc-Report"[^>]*>.*?not started/s);
+  assert.match(html, /share of tokens/, "codex reported no dollars, so shares are of tokens");
+  assert.match(html, /Not every agent reported dollars/);
+  assert.match(html, /partly estimated/);
+  assert.match(html, /class="rc-split"/, "two adapters: a split bar");
+  assert.match(html, /--c:var\(--clay\)/, "claude in its provenance colour");
+  assert.match(html, /data-spend-ai="1"[\s\S]*data-spend-ai="0"/, "top spenders biggest first");
+  store.focusRun(null);
+});
+
+test("an agent waiting out a spent quota is drawn waiting — amber node, until when, and why in its drawer", () => {
+  const view: JobViewState = {
+    cpNote: "",
+    tab: "graph",
+    selectedAi: 0,
+    reviewAi: null,
+    zoom: 1,
+    logQuery: "",
+    logTypes: new Set(["agent"]),
+    logLimit: 600,
+    follow: true,
+    motion: false,
+  };
+  store.focusRun("20260101-000000-aaaaaa");
+  store.run = detail([agent("scan", "Plan", "running", { quotaWait: { adapter: "codex", resumeAt: NOW + 3600 } })], { state: "running" });
+  store.runEvents = [];
+  const html = renderJob(view, NOW);
+  assert.match(html, /class="node waiting qwait/);
+  assert.match(html, /waits for codex quota · /);
+  assert.match(html, /<span class="pill s-waiting">.*?quota wait/s);
+  assert.match(html, /Waiting for codex&#39;s quota to reset at .* \(in 1h00m\)|Waiting for codex's quota to reset at .* \(in 1h00m\)/);
+  store.focusRun(null);
+});
+
+test("compare: figures with their deltas, what changed in the setup, and a row per agent that opens on its reply diff", async () => {
+  const { renderCompare, verdict } = await import("../web/src/views/compare.ts");
+  const facts = (over: Record<string, unknown> = {}) => ({
+    agentId: 1, label: "plan", phase: "Plan", state: "done", adapter: "claude", model: null, attempts: 1, durationMs: 10_000,
+    inputTokens: 1000, outputTokens: 200, costUsd: 0.01, estimated: false, replayed: false, failureReason: null, error: null, changes: null, ...over,
+  });
+  const run = (runId: string) => ({ runId, name: "demo", workflowName: "demo", state: "done", live: false, createdAt: NOW, odwVersion: "0.5.0", sourceHash: null, resumedFrom: null });
+  const m = (a: number, b: number) => ({ a, b, delta: b - a });
+  store.comparison = {
+    key: "A/B",
+    error: null,
+    value: {
+      version: 1,
+      a: run("A"),
+      b: run("B"),
+      notes: [],
+      setup: [{ field: "cliVersion.claude", a: "2.1.300", b: "2.1.302" }],
+      totals: { wallMs: m(60_000, 30_000), inputTokens: m(1000, 1100), outputTokens: m(200, 200), costUsd: m(0.01, 0.02), agents: m(2, 2), done: m(2, 1), failed: m(0, 1), estimated: { a: false, b: false } },
+      agents: [
+        { match: "label", outcome: "unchanged", label: "plan", phase: "Plan", a: facts(), b: facts({ durationMs: 4000 }),
+          delta: { durationMs: -6000, inputTokens: 0, outputTokens: 0, costUsd: 0, attempts: 0 },
+          reply: { status: "differs", kind: "text", diff: ["@@ -1 +1 @@", "-old line", "+new line"], added: 1, removed: 1, truncated: false } },
+        { match: "label", outcome: "newly-failed", label: "check", phase: "Plan", a: facts({ label: "check" }), b: facts({ label: "check", state: "failed", failureReason: "timeout", error: "timed out" }),
+          delta: { durationMs: 20_000, inputTokens: 100, outputTokens: 0, costUsd: 0.01, attempts: 1 },
+          reply: { status: "none", kind: null, truncated: false } },
+      ],
+    },
+  } as never;
+  const html = renderCompare("A/B");
+  assert.match(html, /What changed in <em>demo<\/em>/);
+  assert.match(html, /data-key="cf-wall"[\s\S]*?dlt better">−50%/, "half the wall time is better");
+  assert.match(html, /data-key="cf-usd"[\s\S]*?dlt worse">\+100%/);
+  assert.match(html, /claude version<\/span><span class="a mono" title="2\.1\.300">/);
+  assert.match(html, /<details class="cmp-row newly-failed"/);
+  assert.match(html, /class="dv left better"/, "faster leans left");
+  assert.match(html, /class="dv right worse"/);
+  assert.match(html, /<span class="del">-old line<\/span>\n<span class="add">\+new line<\/span>/);
+  assert.match(html, /data-copy="odw compare A B --agent check"/);
+  assert.equal(verdict({ a: 100, b: 103, delta: 3 }), "same", "within 5% is noise");
+  assert.equal(verdict({ a: 2, b: 1, delta: -1 }, false), "worse", "fewer done is worse");
+  store.comparison = null;
+});
+
+test("a checkpoint approved with edits says so, and the drawer shows what was approved", () => {
+  const view: JobViewState = {
+    cpNote: "",
+    tab: "graph",
+    selectedAi: 1,
+    reviewAi: null,
+    zoom: 1,
+    logQuery: "",
+    logTypes: new Set(["agent"]),
+    logLimit: 600,
+    follow: true,
+    motion: false,
+  };
+  store.focusRun("20260101-000000-aaaaaa");
+  store.run = detail([agent("planner", "Plan", "done", { agentId: 1 })], { state: "done", phaseOrder: ["Plan", "Approve"] });
+  store.runEvents = [
+    { type: "checkpoint_requested", ts: NOW - 90, checkpointId: 1, title: "Ship it?", payload: { steps: ["a", "b"] }, phase: "Approve" },
+    { type: "checkpoint_resolved", ts: NOW - 30, checkpointId: 1, approved: true, note: null, by: "cli", edited: true, payload: { steps: ["only-b"] } },
+  ];
+  const html = renderJob(view, NOW);
+  assert.match(html, /approved with edits · cli/, "the graph node");
+  assert.match(html, /class="pill s-done">[\s\S]*?<span>approved with edits<\/span>/, "the drawer's pill");
+  assert.match(html, /Approved payload \(edited\)[\s\S]*?only-b[\s\S]*?Payload/, "the approved payload, then what was asked");
+  store.runEvents = [];
+  store.focusRun(null);
+});
+
+test("a checkpoint's payload can be edited before approving: valid, changed, invalid, and never when it was cut or redacted", async () => {
+  const { cpEditState } = await import("../web/src/views/job.ts");
+  const view: JobViewState = {
+    cpNote: "",
+    tab: "graph",
+    selectedAi: null,
+    reviewAi: null,
+    zoom: 1,
+    logQuery: "",
+    logTypes: new Set(["agent"]),
+    logLimit: 600,
+    follow: true,
+    motion: false,
+  };
+  store.focusRun("20260101-000000-aaaaaa");
+  store.capabilities = { ...store.capabilities, writable: true };
+  const asked = { steps: ["a", "b"] };
+  store.run = detail([], {
+    state: "waiting",
+    pendingCheckpoints: [
+      { checkpointId: 0, title: "Run this plan?", payload: asked, since: NOW - 5 },
+      { checkpointId: 1, title: "Cut", payload: "{\"x\":", truncated: true, since: NOW - 5 },
+    ],
+  });
+  store.runEvents = [];
+  const closed = renderJob(view, NOW);
+  assert.equal(count(closed, /data-cp-edit="/g), 1, "only the whole payload can be edited");
+
+  const same = renderJob({ ...view, cpEdit: { id: 0, text: JSON.stringify(asked, null, 2) } }, NOW);
+  assert.match(same, /<textarea id="cp-payload"/);
+  assert.match(same, /valid JSON · unchanged/);
+  assert.match(same, /data-cp="approve" data-cp-id="0">Approve</);
+
+  const edited = renderJob({ ...view, cpEdit: { id: 0, text: '{"steps":["a"]}' } }, NOW);
+  assert.match(edited, /valid JSON · edited/);
+  assert.match(edited, /data-cp="approve" data-cp-id="0">Approve with edits</);
+
+  const broken = renderJob({ ...view, cpEdit: { id: 0, text: '{"steps":' } }, NOW);
+  assert.match(broken, /class="cpv bad">not valid JSON/);
+  assert.match(broken, /data-cp="approve" data-cp-id="0" disabled>/);
+
+  assert.deepEqual(cpEditState(asked, ' { "steps" : ["a","b"] } '), { ok: true, changed: false, error: null, value: asked }, "whitespace is no edit");
+  store.focusRun(null);
+});
+
+test("an agent whose MCP servers did not start lists them in its drawer", () => {
+  const view: JobViewState = {
+    cpNote: "",
+    tab: "graph",
+    selectedAi: 0,
+    reviewAi: null,
+    zoom: 1,
+    logQuery: "",
+    logTypes: new Set(["agent"]),
+    logLimit: 600,
+    follow: true,
+    motion: false,
+  };
+  store.focusRun("20260101-000000-aaaaaa");
+  store.run = detail([agent("fix", "Plan", "failed", { adapter: "claude", failureReason: "mcp_unavailable", mcp: [{ name: "github", status: "failed" }] })]);
+  store.runEvents = [];
+  const html = renderJob(view, NOW);
+  assert.match(html, /MCP servers<\/div><ul class="mcp"><li><span class="tag warn">failed<\/span><span class="mono">github<\/span>/);
+  assert.match(html, /MCP unavailable/);
   store.focusRun(null);
 });

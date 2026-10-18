@@ -11,6 +11,7 @@ import type {
   Capabilities,
   ChatSession,
   ChatSessionSummary,
+  RunComparison,
   RunDetail,
   RunSummary,
   ScheduleView,
@@ -36,7 +37,11 @@ async function postJSON<T>(url: string, body: unknown): Promise<T> {
     body: JSON.stringify(body),
   });
   const payload = (await r.json().catch(() => ({}))) as Record<string, unknown>;
-  if (!r.ok) throw new Error(String(payload.error ?? `${url} → ${r.status}`));
+  if (!r.ok) {
+    // A refused checkpoint edit says each way it misses the schema.
+    const problems = Array.isArray(payload.problems) ? `\n${payload.problems.map(String).join("\n")}` : "";
+    throw new Error(String(payload.error ?? `${url} → ${r.status}`) + problems);
+  }
   return payload as T;
 }
 
@@ -56,6 +61,8 @@ const enc = encodeURIComponent;
 export const api = {
   runs: () => getJSON<RunSummary[]>("/api/runs"),
   run: (id: string) => getJSON<RunDetail>(`/api/runs/${enc(id)}`),
+  /** What changed between two of ODW's runs (B against A). */
+  compare: (a: string, b: string) => getJSON<RunComparison>(`/api/compare?a=${enc(a)}&b=${enc(b)}`),
   events: (id: string, since = 0) =>
     getJSON<WorkflowEvent[]>(`/api/runs/${enc(id)}/events?since=${since}`),
   /** The newest events across runs plus running agents per adapter. */
@@ -95,7 +102,15 @@ export const api = {
   deleteChatSession: (id: string) => deleteJSON<{ ok: true }>(`/api/chat/sessions/${enc(id)}`),
   control: (id: string, action: "pause" | "resume" | "stop") =>
     postJSON<{ ok: boolean }>(`/api/runs/${enc(id)}/control`, { action }),
-  /** Approve or reject a pending checkpoint() (ODW runs, loopback only). */
-  checkpoint: (id: string, body: { action: "approve" | "reject"; checkpointId?: number; note?: string }) =>
-    postJSON<{ ok: boolean }>(`/api/runs/${enc(id)}/checkpoint`, body),
+  /**
+   * Approve or reject a pending checkpoint() (ODW runs, loopback only). An
+   * approval may carry `payload`, an edit of the checkpoint's: the server
+   * refuses one off its schema (400, with `problems`) or over 256 KiB (413).
+   */
+  checkpoint: (
+    id: string,
+    body:
+      | { action: "approve"; checkpointId?: number; note?: string; payload?: unknown }
+      | { action: "reject"; checkpointId?: number; note?: string },
+  ) => postJSON<{ ok: boolean }>(`/api/runs/${enc(id)}/checkpoint`, body),
 };

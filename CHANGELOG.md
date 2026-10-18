@@ -37,12 +37,25 @@ changed, and run on a schedule — and a dashboard redesigned to watch them.
   (`permission_denials`) are kept as `denied` on the agent and logged once, while its
   reply stands (the default `"permissionDenials": "warn"`); with `expect` they count as
   a miss, and `"permissionDenials": "fail"` fails such agents with reason `permission`.
+- MCP health (**ODW extension**): the MCP servers Claude Code's stream-json init event
+  says it started an agent without — `failed`, `needs-auth`, `pending`, `disabled` —
+  are kept as `mcp` on the agent (events, saved result, `/api/runs/:id`) and logged
+  once per run per server and status, while its reply stands (the default
+  `"mcpFailures": "warn"`); `"mcpFailures": "fail"` fails an agent whose server
+  `failed` or `needs-auth` with reason `mcp_unavailable`, and `expect: { mcp: [...] }`
+  makes a listed server that is not there a miss. Adapters declare where their CLI
+  lists its servers with `output.mcpEvent` and `output.mcpPath`.
 
 ### Ask a person, tell a person
 - `checkpoint(title, { payload, timeout, onTimeout })` pauses a run until someone
   approves or rejects — `odw approve|reject`, the dashboard, or
   `POST /api/runs/:id/checkpoint` (**ODW extension**). Runs show a `waiting` state
   everywhere.
+- Approve with edits: `odw approve <run> --edit` opens `$EDITOR` on the checkpoint's
+  payload (`--payload JSON|@file` without an editor; `payload` in the API), and the call
+  resolves to `{ approved, note, by, payload, edited }` — the plan as approved, not
+  only a yes. An optional `checkpoint(title, { schema })` makes the CLI, the API and
+  the run refuse an edit that does not match it (**ODW extension**).
 - Run-end hooks: a `notify` command or webhook (Slack/Discord/ntfy-ready) when a run
   finishes, fails, stops — or, opt-in, starts waiting, or pauses for a spent quota
   (`"paused"`).
@@ -51,6 +64,13 @@ changed, and run on a schedule — and a dashboard redesigned to watch them.
 - Real usage and cost: the built-in `claude` adapter reads Claude Code's `stream-json`;
   tokens and dollars per agent and per run in `odw status`, the live view and the
   dashboard; `--budget` meters real output tokens; wide fan-outs warn up front.
+- Codex agents report their tokens too: the built-in `codex` adapter runs `codex exec
+  --json --output-last-message {reply_file}` — its reply from that file (else the last
+  `agent_message` event), tokens from `turn.completed` (no cost: codex reports none),
+  its transcript's commands, edits, MCP tool calls and web searches as tool calls, and
+  its `turn.failed` / `error` events as the failure, classified like any (an `error`
+  codex retried itself is not one). Output declarations gain `match`, `errorEvents`
+  and the `{reply_file}` placeholder (**ODW extension**).
 - Isolated (`worktree`) agents keep their change as a diff (setup files excluded),
   optionally on a `keep` branch. Review with `odw diff` or the dashboard's Changes tab;
   land with `odw apply`, which previews every file first — clean, conflicting (with the
@@ -62,6 +82,28 @@ changed, and run on a schedule — and a dashboard redesigned to watch them.
   uncommitted work alone (**ODW extension**).
 - Transcripts: every agent's CLI output is kept — `odw logs <run> --agent <id|label>
   [--follow]`, or live in the dashboard's Transcript sheet.
+- Compare two runs: `odw compare <runA> <runB>` shows what changed after you edited a
+  prompt, switched adapter or model, or upgraded a CLI — the setup differences
+  (workflow sha256, args, odw and CLI versions, behaviour settings, adapters and
+  models), wall time, tokens, cost and failures with B − A, and a row per agent
+  (matched by label, then by its resume call key, then by order in its phase) with
+  whether its reply is identical or differs; red when worse, green when better.
+  `--agent` shows one agent's whole reply diff, `--json` and `GET /api/compare` the
+  documented structure. Every run now records odw's version and its workflow's sha256
+  in `meta.json`, its behaviour settings on `run_started`, and each adapter CLI's
+  `--version` on its first dispatch (a `cli_version` event, never delaying the run;
+  `"recordVersions": false` turns it off) (**ODW extension**).
+- OpenTelemetry traces (**ODW extension**): `odw export <run> --otlp [--out FILE | --send]`
+  writes a run as OTLP/JSON after the GenAI semantic conventions — `invoke_workflow`,
+  `phase`, `invoke_agent` (provider, models, usage, cost, attempts, failure reason),
+  `execute_tool` from transcripts, `exec` and `checkpoint` spans, retries and fallbacks as
+  span events — with no dependency; trace ids derive from the run id, so a re-export
+  de-duplicates. With `otel: { endpoint?, headers?, captureContent? }` in the config the
+  worker posts each run's trace once at its end (5s limit; a failure is a `worker.log`
+  line). The `OTEL_*` variables fill in endpoint, headers and resource but never turn it
+  on; content stays out unless captured, then redacted again and cut at 4096 characters;
+  `odw doctor` shows where traces go. Any OTLP/HTTP receiver that takes JSON gets it
+  directly (Jaeger, Langfuse, an OpenTelemetry Collector in front of the rest).
 
 ### Control what agents may do
 - Permission tiers `read` / `edit` / `full` (`--permissions`, per adapter, per call; a
@@ -75,7 +117,12 @@ changed, and run on a schedule — and a dashboard redesigned to watch them.
   (Anthropic, OpenAI, GitHub, Slack, AWS, Google keys, JWTs, private keys, `Bearer`)
   become `«redacted:<kind>»`, marked `redacted: true`; `redact.extra` adds patterns of
   your own and `odw doctor` reports it (**ODW extension**). Prompts, what agents see and
-  kept diffs are never redacted; the run's result only of token shapes.
+  kept diffs are never redacted; the run's result only of token shapes. So are the
+  run's `worker.log` (a workflow's `console.log` included) and the Chat Host's sessions
+  (Codex's replies in full, what you typed of token shapes only, a streaming reply
+  line by line); a run's `args` — and a schedule's — are served by the API and the
+  dashboard with their token shapes redacted (`argsRedacted: true`), while `odw rerun`
+  and `odw resume` still start from the args as given.
 - Per-adapter `concurrency` caps; a rate limit halves that adapter's cap for the rest of
   the run; `claude` fan-outs sharing a long prompt prefix stagger their start so the
   rest read the prompt cache.
@@ -118,8 +165,9 @@ changed, and run on a schedule — and a dashboard redesigned to watch them.
   checks the runtime, config and every adapter — `--smoke` sends one real prompt.
 - A redesigned dashboard ("paper, ink and signal"): an Activity pulse with a "Needs
   you" strip, a live DAG with checkpoint gates and diff badges, a timeline, drawers with
-  outputs, usage, failure reasons and tiers, the Changes and Transcript views, Upcoming
-  schedules, a command palette, light and dark themes, English and Chinese.
+  outputs, usage, failure reasons and tiers, the Changes and Transcript views, a Spend
+  receipt (where a run's tokens and dollars went, by phase, adapter and agent; `$`),
+  Upcoming schedules, a command palette, light and dark themes, English and Chinese.
 
 ### Reliability and safety
 - Timeouts and stops reach an agent's whole process tree (SIGTERM, then SIGKILL).
@@ -129,6 +177,12 @@ changed, and run on a schedule — and a dashboard redesigned to watch them.
   responsive with thousands of runs.
 
 ### Changed behavior — check before upgrading
+- The built-in `codex` adapter runs `codex exec --json --output-last-message
+  {reply_file}` (it ran text mode). A config entry that gives `codex` its own `command`
+  replaces the built-in and needs the matching `output` block to report usage and to
+  read its reply from the events (the README shows the full entry). A codex turn that
+  ends with no agent message is now an `empty_reply` failure (`allowEmpty: true`
+  accepts it) rather than a reply.
 - The built-in `claude` adapter runs `--output-format stream-json --verbose`. A config
   entry that gives `claude` its own `command` replaces the built-in and needs the
   matching `output` block to report usage (the README shows the full entry).

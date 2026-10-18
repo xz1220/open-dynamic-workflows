@@ -236,7 +236,7 @@ control flow (loops, `if`, dedup) — no imports:
 | `workflow(ref, args?)` | Run another workflow inline (one level deep). The child shares this run's concurrency cap, agent counter, and budget; its phases group as their own DAG lanes. |
 | `validate(source)` | Parse and compile-check trusted source without running its workflow body. Metadata is parsed as a pure literal, never evaluated. **ODW extension** (not in Claude Code's dialect). |
 | `exec(command, opts?)` | Run a command — tests, a build, a linter — without launching a model; resolves to `{ stdout, stderr, exitCode, signal, timedOut, truncated, durationMs }`. A string runs through the shell, an array as argv. Bounded by `timeout` (600 s) and `maxOutputBytes` (8 MiB per stream); a stop kills it. Takes no agent slot. **ODW extension** (not in Claude Code's dialect). |
-| `checkpoint(title, opts?)` | Pause the run until a person approves or rejects — from `odw approve\|reject` or the dashboard — and resolve to `{ approved, note, by }`. `opts`: `payload` (what to look at), `timeout` (seconds) and `onTimeout` (`"approve"`, `"reject"`, or the default `"fail"`). Takes no agent slot; a stop still ends the run. See [Human checkpoints](#human-checkpoints-odw-extension). **ODW extension** (not in Claude Code's dialect). |
+| `checkpoint(title, opts?)` | Pause the run until a person approves — perhaps with an edited payload — or rejects, from `odw approve\|reject` or the dashboard, and resolve to `{ approved, note, by, payload, edited }`. `opts`: `payload` (what to look at), `schema` (what an edit must match), `timeout` (seconds) and `onTimeout` (`"approve"`, `"reject"`, or the default `"fail"`). Takes no agent slot; a stop still ends the run. See [Human checkpoints](#human-checkpoints-odw-extension). **ODW extension** (not in Claude Code's dialect). |
 
 Use **`parallel`** when the next step needs the whole batch at once (dedup,
 tally, synthesis); **`pipeline`** for multi-stage work (the default). Keep
@@ -257,6 +257,7 @@ const summary = await agent('Fix the failing tests in src/parser.', {
     changes: true,              // some file must change (false: none may)
     files: ['src/parser/**'],   // each glob must match a file it changed or created
     match: '^Fixed',            // a regular expression the reply must match
+    mcp: ['github'],            // MCP servers its CLI must have started it with (claude)
   },
 })
 ```
@@ -301,6 +302,20 @@ agent_failed    (Fix) fixer — [unmet_expectation] did not meet: `npm test` mus
   rest on work it could not do (raise its tier with --permissions or allowlist
   the tool)`. `"permissionDenials": "fail"` (or an adapter's own
   `permissionDenials`) fails such agents with `reason: "permission"` instead.
+- **MCP servers that did not start.** Claude Code's stream begins with an init
+  event listing the MCP servers it started the agent with; one that failed leaves
+  the agent without its tools, and it may still say "done". Every server that is
+  not `connected` is kept as `mcp: [{ name, status }]` on the agent's
+  `agent_finished` (or `agent_failed`) event, its saved result and `/api/runs/:id`,
+  and the run logs it once per server and status: ``MCP server github failed to
+  start (claude agent `fix-auth`): its tools were unavailable``. The reply stands —
+  Claude Code itself only warns — unless `"mcpFailures": "fail"`, which fails an
+  agent whose server `failed` or `needs-auth` with `reason: "mcp_unavailable"`.
+  `expect: { mcp: [...] }` makes a listed server that is not there — `failed`,
+  `needs-auth`, `disabled` or not configured — a miss, retried and then
+  `unmet_expectation`. `pending` is neither: Claude Code's docs say not to treat it
+  as a failure (servers from `.mcp.json` usually start that way and connect in the
+  background).
 
 Claude Code's Workflow tool ignores `expect`, so there the checks do not run.
 [`examples/fix-until-green.js`](examples/fix-until-green.js) lets `expect` run a
@@ -317,7 +332,7 @@ private runtime behavior need the following checks before migration:
 | Model selection | Pass `agent(..., {model})` using that CLI's model ID; an adapter without model routing support emits a note. A `meta.phases` entry's `model` (and `adapter`) is the default for its phase's agents, and `model: "@fast"` picks a tier's model per CLI — **ODW extensions** (see [per-phase adapters](#per-phase-adapters-model-tiers-and-fallback-chains-odw-extension)); a phase's model is a model ID like any other, so use a tier when its agents may run on more than one CLI. `meta.model` stays metadata. |
 | `agentType` | A persona added to the prompt. It does not load a host's named subagent configuration or select an adapter. |
 | Worktree isolation | Starts from committed HEAD, excludes uncommitted edits, and cleans up afterward. Changes are not merged and `agent()` returns the reply, not a diff; ODW keeps each isolated agent's change as a diff to review and apply (`odw diff`, `odw apply`, `keep` branches — ODW extensions; see [Review and apply](#review-and-apply-what-isolated-agents-changed-odw-extension)). `.worktreeinclude` is honored (ODW copies untracked files too, not only gitignored ones); its `symlink:` lines, `worktreeSetup` and the agents' `ODW_PORT` are ODW extensions — see [Isolated worktrees](#isolated-worktrees-and-agent-ports). |
-| Budget | Counts output tokens: the CLI's own count where its adapter reports usage (the built-in `claude` does — see [Usage and cost](#usage-and-cost-odw-extension)), else `ceil(chars / 4)` of each reply. Every CLI run counts: schema and rate-limit retries, and failed runs that reported usage. The guard runs before each dispatch and each schema retry; once the target is spent the run ends and agents still running are stopped. |
+| Budget | Counts output tokens: the CLI's own count where its adapter reports usage (the built-in `claude` and `codex` do — see [Usage and cost](#usage-and-cost-odw-extension)), else `ceil(chars / 4)` of each reply. Every CLI run counts: schema and rate-limit retries, and failed runs that reported usage. The guard runs before each dispatch and each schema retry; once the target is spent the run ends and agents still running are stopped. |
 | JSON Schema | ODW checks the [documented subset](skills/open-dynamic-workflows/references/primitives.md#schema); `format` is an annotation. Any other keyword (`$ref`, `const`, `oneOf`, `maxItems`, …) still runs: the run's log names it and where it is, and a CLI that validates schemas itself (`claude`, `codex`) enforces it. `"schemaKeywords": "strict"` refuses such calls instead (ODW extension; see [Structured output](#structured-output-odw-extension)). Use explicit object/array types and supported constraints. |
 | Script trust | Run trusted scripts only: a run executes the workflow body as ordinary JavaScript. Loading parses metadata as a pure literal without evaluating it; validation and compatibility warnings are not a sandbox. |
 | Recovery | Every completed `agent()` result is saved as it lands. `odw resume` continues a paused live worker in place; on an ended run (done, failed, stopped, or stale after a crash) it starts a new run that replays each call whose prompt and options are unchanged and runs the rest. `rerun` starts over. See [Resume a run](#resume-a-run-odw-extension). |
@@ -354,8 +369,11 @@ odw logs $RUN --follow   # stream raw progress events
 odw logs $RUN --agent 3  # what one agent did: its tool calls, results and text (below)
 odw result $RUN          # final value
 odw diff $RUN --stat     # what isolated agents changed; odw apply $RUN --agent N (or --all) lands it
+odw compare $OLD $RUN    # what changed between two runs: setup, time, cost, failures, replies (below)
+odw export $RUN --otlp   # the run as OpenTelemetry traces (OTLP/JSON; --send posts it; below)
 odw pause|resume|stop $RUN
 odw approve|reject $RUN  # answer a checkpoint() the run waits at (--note TEXT, --checkpoint N)
+odw approve $RUN --edit  # …approving its payload as you edit it in $EDITOR (or --payload JSON|@file)
 odw list
 ```
 
@@ -449,16 +467,39 @@ ends the run. Answer it from any shell:
 odw status $RUN       # the question, its payload, and the exact commands that answer it
 odw approve $RUN      # the oldest checkpoint waiting; --checkpoint N picks one
 odw reject $RUN --note "Keep the old table until the backfill is verified"
+odw approve $RUN --edit   # change the payload first, then approve what you changed
 ```
 
 or with **Approve** / **Reject** on the run's page in the dashboard (loopback binds
-only; it posts `{ action, checkpointId?, note? }` to `POST /api/runs/:id/checkpoint`;
+only; it posts `{ action, checkpointId?, note?, payload? }` to `POST /api/runs/:id/checkpoint`;
 `GET /api/runs/:id` lists `pendingCheckpoints`, and the run list names each waiting
 run's oldest question as `waiting`). The call resolves to
-`{ approved, note, by }` — `by` is `cli`, `dashboard` or `timeout` — and a rejection
+`{ approved, note, by, payload, edited }` — `by` is `cli`, `dashboard` or `timeout` — and a rejection
 is an answer, not an error: the script decides what "no" means.
 
+**Approve with edits.** As with Claude Code's plan approval, the person can change
+what they approve instead of rejecting and re-running. `odw approve $RUN --edit` opens
+`$VISUAL` / `$EDITOR` (else `vi`; `notepad` on Windows) on the checkpoint's payload,
+pretty-printed in a private temp file: save an edit to approve it; leave it unchanged
+to approve as is; empty the file to abort without answering. Invalid JSON, or an edit
+the checkpoint refuses, aborts with the error and keeps the file (its path is
+printed). `--payload '<json>'` or `--payload @plan.json` approves an edit without an
+editor, and the dashboard sends `payload` with `action: "approve"`. The call then
+resolves with `payload` — the edit, or the checkpoint's own payload when there was
+none — and `edited: true` only when it differs from the original as JSON; a rejection
+and a timeout carry the original. Give `checkpoint()` a `schema` (JSON Schema, checked
+by the same validator as `agent()`'s) and an edit must match it: `odw approve`, the API
+and the run itself refuse one that does not, with the validator's errors. Without a
+schema any JSON value goes — the payload is the script's own data and only the script
+knows what an edit may be — so a script that relies on its shape should give one:
+
+```js
+const { approved, payload: approvedPlan } = await checkpoint('Run this plan?', { payload: plan, schema: PLAN })
+```
+
 - `payload` is any JSON value — a plan, a summary of the changes — kept up to 64 KiB.
+- An edited payload is at most 256 KiB of JSON; `checkpoint_resolved` records
+  `edited: true` and the edit (cut to 64 KiB like the question's).
 - `timeout` (seconds) bounds the wait for unattended runs; `onTimeout` then approves,
   rejects, or (the default, `"fail"`) throws a `CheckpointTimeout` the script can catch.
 - Several checkpoints can wait at once (inside `parallel()`), each with its own number.
@@ -478,9 +519,11 @@ A fan-out spends quota fast, so a run shows what it spends as it goes. Every
 `agent_finished` (and `agent_failed`) event carries the agent's `usage`:
 `inputTokens` (cached input included), `outputTokens`, `cacheReadTokens`,
 `cacheWriteTokens` and `costUsd`, summed over all its CLI runs, as the CLI reported
-them — the built-in `claude` adapter reports them all. Where a CLI reports no output
-tokens (the text-mode adapters), ODW counts `ceil(chars / 4)` of the reply and marks
-the figure `estimated`.
+them — the built-in `claude` adapter reports them all; the built-in `codex` reports
+tokens only (its `turn.completed` events carry no dollars, and ODW invents no prices),
+so its agents show tokens and no cost. Where a CLI reports no output tokens (the
+text-mode adapters), ODW counts `ceil(chars / 4)` of the reply and marks the figure
+`estimated`.
 
 ```text
 $ odw status $RUN
@@ -559,7 +602,7 @@ I'll run the tests first.
 
 - While an agent runs, its stdout streams to `agents/<agentId>.transcript.jsonl` in the
   run directory: a JSONL adapter's events one per line, as its CLI printed them (the
-  built-in `claude` — stream-json — `kilo` and `opencode`), any other adapter's output as
+  built-in `claude`'s stream-json, `codex`'s `exec --json`, `kilo` and `opencode`), any other adapter's output as
   `{"kind":"text","text":…}` lines. The end of its stderr (the last 64 KB) goes to
   `agents/<agentId>.stderr.txt`; `odw logs --agent` shows its last lines after the transcript.
 - A schema retry, a stall restart or a rate-limit retry goes on in the same file after an
@@ -578,6 +621,123 @@ I'll run the tests first.
   `{ i, kind: text|tool_call|tool_result|error|attempt|result|raw|truncated, text?, tool?, input?, output?, isError? }`,
   long fields clipped to 4 KB (`clipped: true`), and `redacted: true` on one a secret
   was kept out of.
+
+### Compare two runs (ODW extension)
+
+Re-ran a workflow after editing a prompt, switching adapter or model, or upgrading a
+CLI? `odw compare` says what changed:
+
+```bash
+odw compare $OLD $NEW                  # setup differences, run totals with B − A, a row per agent
+odw compare $OLD $NEW --agent judge    # one agent in both runs, and its whole reply diff (by label or id)
+odw compare $OLD $NEW --json           # the same comparison for scripts — GET /api/compare?a=…&b=… serves it
+```
+
+- **Setup**: what the runs ran with that differs — the workflow source (its sha256 as
+  launched), script, args, odw version, `--budget`, each adapter CLI's version, the
+  settings that change behaviour (timeouts, retries, tiers, `fallback`, `models`, …),
+  each used adapter's definition, and the adapters and models the agents used.
+- **Run**: wall time, tokens in and out, cost, agents done and failed — A, B and B − A.
+- **Agents**: each agent is matched across the runs by its label (one each run gives
+  once), then by the call key `odw resume` replays by (same prompt and options), then
+  by order within its phase; the rest show as only in A or only in B. Each row has
+  both states, adapter/model, time, spend, attempts, kept-diff stats, and whether its
+  reply is identical or differs (a bounded unified diff of a text reply, a bounded list
+  of JSON paths for a structured one; `--agent` shows it whole).
+- On a terminal, deltas are red when B is worse (more time or cost, newly failed) and
+  green when better; `NO_COLOR` and pipes get plain text. The table fits 100 columns.
+- Finished, failed and stopped runs compare alike; a run still going is compared as it
+  stands, with a note.
+
+What makes this possible is recorded with every run: odw's version and the workflow's
+sha256 in `meta.json`, the behaviour settings on its `run_started` event, each agent's
+call key and model on its `agent_started`, and — on an adapter's first agent of the run
+— `<cli> --version`, run beside the agent and killed after 3 seconds, as a
+`cli_version` event (`odw status` and `GET /api/runs/:id`'s `cliVersions` show it). It
+never delays or fails a run; a CLI that does not answer is recorded as unknown. An
+adapter whose command is node or another interpreter, a script or a relative path is
+not probed. `"recordVersions": false` turns the probes off. `odw eval` — cases ×
+adapters × repeats — builds on this next.
+
+### Observability: OpenTelemetry traces (ODW extension)
+
+Teams that already run Langfuse, Arize Phoenix, Jaeger, Grafana Tempo, Datadog or
+Honeycomb can see each run there: `odw export` turns a run's record into an
+OpenTelemetry trace after the GenAI semantic conventions — OTLP/HTTP with JSON
+encoding, no SDK, no dependency.
+
+```bash
+odw export $RUN --otlp > trace.json          # offline: the run as OTLP/JSON (--out FILE does the same)
+curl -H 'Content-Type: application/json' --data @trace.json "$ENDPOINT/v1/traces"
+odw export $RUN --otlp --send                # or post it to the configured endpoint
+```
+
+With `otel` in the config, the worker posts every run's trace itself, once, when the run
+has ended (done, failed or stopped):
+
+```json
+{ "otel": { "endpoint": "http://localhost:4318", "headers": {}, "captureContent": false } }
+```
+
+- **Spans.** `invoke_workflow <name>` for the run (`odw.run.id`, `odw.run.state`, its
+  totals — never its args); `phase <title>` around each phase's work; `invoke_agent <label>`
+  per agent with `gen_ai.provider.name` (`claude` → `anthropic`, `codex` → `openai`,
+  `gemini` → `gcp.gemini`, `kimi` → `moonshot_ai`, others their adapter's name),
+  `gen_ai.request.model` / `gen_ai.response.model`, `gen_ai.usage.*` (cache tokens included),
+  `odw.agent.cost_usd`, `odw.agent.attempts`, and on a failure `error.type` = its reason
+  (`rate_limit`, `quota`, …) with status ERROR; `execute_tool <name>` for every tool call
+  its transcript shows (`gen_ai.tool.name`, `gen_ai.tool.call.id`, ERROR when it failed);
+  `exec <label>` per `exec()` step and `checkpoint <title>` per wait.
+- **Retries, fallbacks and quota waits** are span events on their agent (`odw.retry`,
+  `odw.fallback`, `odw.quota_wait`): moments within one agent call, at the times the run
+  recorded them — not links, which would need spans the run never had.
+- **Ids are derived from the run id** (trace id: the first 16 bytes of
+  SHA-256(`odw/run/<runId>`); span ids likewise from what each span is), so exporting a
+  run again yields the same ids and a backend that keys on them keeps one copy. A resumed
+  run's root links to the run it resumed.
+- **Times** come from the run's events. Claude Code's stream-json carries no times, so its
+  tool calls are placed by where they sit in the transcript, marked `odw.timing.estimated`;
+  opencode and kilo report their own.
+- **Content is off by default** — prompts, replies and tool output are sensitive. With
+  `"captureContent": true` (or `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true`)
+  the trace also holds replies (`gen_ai.output.messages`), tool arguments and results, error
+  text, `exec()` command lines and checkpoint payloads — the text odw kept, already
+  redacted, redacted once more on the way out whatever `redact` says (no environment value
+  ever leaves), each field cut at 4096 characters with `…`. Prompts are not kept, so never
+  exported.
+- **Only the config turns it on.** `OTEL_EXPORTER_OTLP_ENDPOINT` (or `…_TRACES_ENDPOINT`),
+  `OTEL_EXPORTER_OTLP_HEADERS`, `OTEL_SERVICE_NAME` and `OTEL_RESOURCE_ATTRIBUTES` fill in
+  what `otel` leaves out — people set them for other tools, so they alone send nothing. The
+  endpoint defaults to `http://localhost:4318`; `/v1/traces` is appended.
+- **It never costs the run anything:** one POST with a 5-second limit (shorter if
+  `OTEL_EXPORTER_OTLP_TIMEOUT` says), after the outcome is written; a failure is one line in
+  the run's `worker.log`. Header values are secrets: never logged, never in events;
+  `odw doctor` shows whether export is on, the endpoint's scheme and host, and header names.
+- **JSON, not protobuf.** A receiver that takes OTLP/HTTP JSON gets the trace directly (Jaeger,
+  Langfuse, the OpenTelemetry Collector); one that takes only protobuf or gRPC (Arize Phoenix,
+  for one) gets it through a Collector, whose `otlp` receiver forwards it in either.
+
+Langfuse (its OTLP endpoint takes HTTP Basic auth of the project's key pair):
+
+```json
+{
+  "otel": {
+    "endpoint": "https://cloud.langfuse.com/api/public/otel",
+    "headers": {
+      "Authorization": "Basic BASE64_OF_PUBLIC_KEY_COLON_SECRET_KEY",
+      "x-langfuse-ingestion-version": "4"
+    }
+  }
+}
+```
+
+Jaeger, locally (its all-in-one image receives OTLP on 4318; the UI is on 16686):
+
+```bash
+docker run --rm -d -p 16686:16686 -p 4318:4318 jaegertracing/all-in-one
+echo '{ "otel": { "endpoint": "http://localhost:4318" } }' > odw.config.json
+odw run wf.js            # or, for a run you already have: odw export $RUN --otlp --send
+```
 
 ## Dashboard: observe, inspect, chat
 
@@ -635,12 +795,22 @@ switches to a night theme on demand. What it gives you:
       <img src="assets/app-screenshots/checkpoint.png" alt="A run waiting at a checkpoint: the question and its payload in an approval card with Approve and Reject, and an amber gate node in the graph's Approve lane" />
     </td>
   </tr>
+  <tr>
+    <td width="50%">
+      <strong>Spend</strong><br />
+      <img src="assets/app-screenshots/spend.png" alt="A run's spend receipt: tokens and dollars by phase with share bars, the split by adapter, and the agents that spent most" />
+    </td>
+    <td width="50%">
+      <strong>Compare</strong><br />
+      <img src="assets/app-screenshots/compare.png" alt="Two runs of a workflow compared: wall time, tokens, cost, done and failed with their deltas, what the runs ran with, and a row per agent" />
+    </td>
+  </tr>
 </table>
 
 Press <kbd>⌘K</kbd> / <kbd>Ctrl K</kbd> (or <kbd>/</kbd>) for the command palette —
 jump to any run or workflow, switch theme or language, copy a follow or rerun command.
 <kbd>g</kbd> then <kbd>a</kbd>/<kbd>j</kbd>/<kbd>w</kbd>/<kbd>c</kbd>/<kbd>s</kbd> moves
-between views, <kbd>1</kbd>–<kbd>4</kbd> switch a run's tabs, and <kbd>+</kbd>/<kbd>-</kbd>/<kbd>0</kbd>
+between views, <kbd>1</kbd>–<kbd>5</kbd> switch a run's tabs, <kbd>$</kbd> unfolds where it spent, and <kbd>+</kbd>/<kbd>-</kbd>/<kbd>0</kbd>
 zoom the graph. When a run finishes the dashboard says so, and — if you opt in under
 Settings — sends a desktop notification while the tab is in the background.
 
@@ -652,8 +822,8 @@ odw logs --workflow adversarial-verify --follow
 The dashboard can be viewed off-loopback, but local write operations such as
 Chat messages and stopping ODW-owned runs stay guarded by the loopback server.
 Claude Code's own runs stay strictly read-only. What it serves of ODW's agents —
-transcripts, results, logs — had its likely secrets redacted before it was written
-(see [Secrets in what ODW keeps](#secrets-in-what-odw-keeps-odw-extension)).
+transcripts, results, logs, chat sessions — had its likely secrets redacted before it
+was written, and a run's `args` are redacted as they are served (see [Secrets in what ODW keeps](#secrets-in-what-odw-keeps-odw-extension)).
 
 ## Configure adapters
 
@@ -662,7 +832,7 @@ Cursor work out of the box:
 
 | Adapter | Local CLI | Non-interactive contract |
 | --- | --- | --- |
-| `codex` | `codex` | text on stdout; web search enabled; strict schemas natively (`--output-schema`) |
+| `codex` | `codex` | `exec --json` events; reply from its `--output-last-message` file (else its last `agent_message`), tokens from `turn.completed`, errors from `turn.failed` / `error`; web search enabled; strict schemas natively (`--output-schema`) |
 | `claude` | `claude` | stream-json events; reply, usage, cost and errors from its `result` event; WebSearch/WebFetch allowed; schemas natively (`--json-schema`) |
 | `gemini` | `gemini` | text on stdout |
 | `qwen` | `qwen` | text on stdout |
@@ -720,9 +890,53 @@ built-in `claude` adapter is declared this way:
   "usagePath": ["usage"],         // token counts, in a usageEvent (default: eventType)
   "costPath": ["total_cost_usd"], // US dollars, in the same event
   "errorPath": ["is_error"],      // true, a message or an error object: the run failed with it
-  "deniedPath": ["permission_denials"] // tool calls the CLI refused: kept on the agent, logged
+  "deniedPath": ["permission_denials"], // tool calls the CLI refused: kept on the agent, logged
+  "mcpEvent": "system",           // the event that lists the MCP servers (Claude Code's init)
+  "mcpPath": ["mcp_servers"]      // { name, status } each: one not connected is kept and logged
 }
 ```
+
+The built-in `codex` (ODW extensions throughout) reads `codex exec --json`: its reply
+is the last `item.completed` event whose `item.type` is `agent_message` (`match`) —
+unless the file it writes its final message to (`--output-last-message
+{reply_file}`) has it, which wins: `{reply_file}` is a fresh path in a private temp
+directory for each CLI run, read once the CLI exits and then removed. Its tokens come
+from `turn.completed`, and `turn.failed` and `error` events are its own failure report
+(`errorEvents`: event type → path to the message), classified like any failure —
+an `error` codex retried itself, followed by a completed turn, is no failure:
+
+```jsonc
+"codex": {
+  "label": "Codex CLI",
+  "command": ["codex", "--search", "exec", "--json", "--output-last-message", "{reply_file}",
+              "--skip-git-repo-check", "{permission_args}", "--cd", "{workspace}", "-"],
+  "stdin": "{prompt}",
+  "flags": { "model": ["--model"], "schema": { "args": ["--output-schema"], "mode": "file", "strict": true } },
+  "output": {
+    "format": "jsonl",
+    "eventType": "item.completed",
+    "match": { "path": ["item", "type"], "equals": "agent_message" }, // only these events hold the reply
+    "textPath": ["item", "text"],
+    "select": "last",
+    "usageEvent": "turn.completed",
+    "usagePath": ["usage"],                                          // tokens only: codex reports no cost
+    "errorEvents": { "turn.failed": ["error"], "error": ["message"] }
+  },
+  "permissionArgs": {
+    "read": ["--sandbox", "read-only"],
+    "edit": ["--sandbox", "workspace-write"],
+    "full": ["--sandbox", "danger-full-access"]
+  }
+}
+```
+
+An entry that gives `codex` its own `command` replaces the built-in whole: keep this
+`output` block (and `--json`) with it, or its agents report no usage and their reply
+is codex's text output. When a codex turn ends with no agent message — its reply file
+empty and no `agent_message` event — the reply is empty, so the agent fails with
+`empty_reply` (`allowEmpty: true` accepts it) instead of returning a dump of events,
+and the run's log says exactly what was missing; when its events lack the reply but
+the reply file has it, the reply stands and the log says the events did not match.
 
 Under `acceptEdits`, Claude Code refuses headless what it would have asked about —
 a shell command that is not allowlisted, say — and the reply may still claim
@@ -742,7 +956,9 @@ document instead takes `{ "format": "json", "textPath": […], "usagePath": […
 any failed run — whatever the exit status — so a rate limit is retried and a spent
 quota says when it resets. When the declared text is not in the output — a CLI
 whose format drifted, or a misconfiguration — the raw stdout becomes the reply and
-the run's log says why; the agent does not fail.
+the run's log says why; the agent does not fail. A CLI that also writes its reply to
+`{reply_file}` (as `codex` does) is read from there first, and when both are empty
+its reply is empty rather than a dump of events.
 
 ODW returns only the decoded final response to the workflow; JSONL output is
 decoded line by line as it streams (keeping the latest text and a usage total, not
@@ -974,10 +1190,21 @@ included) and stderr tails; saved agent results (`odw result --agent`, the dashb
 agent drawer); the run's events — `odw logs`, log lines, `agent_failed` errors (a
 failure's quoted output is redacted before it is cut, so no secret is kept in half),
 the command lines `exec()` steps show and the output a failed `check` quotes; the
-run's error; the waiting checkpoint in `status.json`; and webhook payloads. What had
-anything redacted says so with `redacted: true` — a saved result, an event, a
-transcript line and its entry in the API, `result.json`, `error.json`, a webhook
-payload — and `odw doctor` says whether redaction is on and which variables it covers.
+run's error; the waiting checkpoint in `status.json`; webhook payloads; the run's
+`worker.log` — the worker's own output, a workflow's `console.log` of an agent's
+reply included, redacted as it is written; and the Chat Host's sessions
+(`<runsRoot>/_chat/sessions.json`, and what `/api/chat/sessions` serves): Codex's
+replies in full, what you typed — and the run results posted back as messages — of
+token shapes only, since they are your data; a reply still streaming keeps only its
+whole lines until it settles, and a sessions file kept before redaction was on is
+redacted as it is read. A run's `args` are your data too, and may hold a token: what
+`/api/runs/:id` and the dashboard serve of them has its token shapes redacted
+(`argsRedacted: true`), and so does what `/api/schedules` serves of a schedule's —
+but `meta.json` and the schedule keep them as given, so `odw rerun` and `odw resume`
+start the new run with the original args. What had anything redacted says so with
+`redacted: true` — a saved result, an event, a transcript line and its entry in the
+API, `result.json`, `error.json`, a webhook payload, a chat message — and `odw doctor`
+says whether redaction is on and which variables it covers.
 It runs as output arrives, without holding it: a line waits for its end, and a private
 key for its last line.
 
@@ -991,8 +1218,10 @@ Not redacted:
   `odw apply` applies and a kept branch commits, where a marker would corrupt your
   files. A secret an agent wrote into code is there to be caught in review (`odw diff`,
   the dashboard's Changes tab).
-- The run's `args` (what you passed in), `worker.log` (the worker's own output, a
-  workflow's `console.log` included) and the Chat Host's sessions.
+- **The run's `args` as kept** in `meta.json` (and a schedule's): `odw rerun` and
+  `odw resume` must start from what you passed in. Only what is served of them is
+  redacted. Nor is what Codex is given in the Chat Host: the message a turn answers
+  goes to it as you typed it (earlier messages as kept).
 - **A resumed run** replays an agent's saved result as it was kept — redacted — and its
   log says so.
 
@@ -1026,7 +1255,8 @@ The watchdog is **off by default for every built-in adapter**: some CLIs — the
 text-mode ones (`gemini`, `qwen`, `kimi`, …) — print nothing until they finish, so
 any stall timeout would kill healthy work. Use it for adapters that stream
 progress: `claude` (its stream-json prints an event per turn, so it is now safe to
-enable for it), the JSONL adapters `kilo` and `opencode`, or a wrapper that prints
+enable for it), `codex` (`exec --json` prints an event per command, edit and message),
+the JSONL adapters `kilo` and `opencode`, or a wrapper that prints
 a heartbeat — with a value above the longest quiet stretch a healthy agent has: a
 long test run inside one tool call prints nothing either.
 
@@ -1035,8 +1265,9 @@ long test run inside one tool call prints nothing either.
 **ODW extension.** Every failed agent is classified from its CLI's exit status
 and the end of its output: `rate_limit`, `quota`, `auth`, `timeout`, `stalled`,
 `not_found` (the CLI could not start), `permission` (a tool call or approval was
-refused) or `exit` — and two classes for runs that "succeeded" without the
-evidence: `empty_reply` and `unmet_expectation` (see
+refused) or `exit` — and three classes for runs that "succeeded" without the
+evidence: `empty_reply`, `unmet_expectation` and, under `"mcpFailures": "fail"`,
+`mcp_unavailable` (see
 [Check an agent's work](#check-an-agents-work-odw-extension)). The class is the `reason` on the `agent_failed` event (with
 `retryAfter`, in seconds, when the CLI said when to come back), the agent's
 `failureReason` in the dashboard and `/api/runs/:id`, and it shows in the live
@@ -1069,7 +1300,9 @@ agent_failed    (Search) search — [quota, retry after 3h 22m] AdapterExecution
 Claude Code reports such errors in its output, often with exit 0: its stream-json
 `result` event says `is_error: true` with the message (`API Error: Rate limit
 reached`, `Claude AI usage limit reached|…`), and that counts as the failure it
-names. In text mode (a text adapter, or JSON output that fell back to its raw
+names. So do Codex's `turn.failed` and `error` events (`Quota exceeded. Check your
+plan and billing details.`, `exceeded retry limit, last status: 429 Too Many
+Requests`) — except an `error` it retried itself, after which its turn completed. In text mode (a text adapter, or JSON output that fell back to its raw
 stdout), a short reply that is nothing but such a rate-limit, quota or login error
 counts as that failure too — never as the agent's answer. An empty reply is an
 `empty_reply` failure, not retried. A `result` that claims success while its
@@ -1612,8 +1845,9 @@ upgrading, is in [`CHANGELOG.md`](CHANGELOG.md):
 - **Evidence of success.** `agent(…, { expect })` checks an agent's work instead of
   taking its word — a command exits 0, files changed, the reply matches — and hands
   misses back once before failing with `reason: "unmet_expectation"` and what it
-  missed. An empty reply fails as `empty_reply`; tool calls Claude Code refused are
-  recorded on the agent and logged — and count against `expect` (ODW extensions;
+  missed. An empty reply fails as `empty_reply`; tool calls Claude Code refused, and
+  MCP servers it could not start, are recorded on the agent and logged — and count
+  against `expect` (ODW extensions;
   see [Check an agent's work](#check-an-agents-work-odw-extension)).
 - **Permission tiers.** Every agent runs `read`, `edit` (the default, unchanged) or
   `full`, mapped to each CLI's own flags: review and research fan-outs that cannot
@@ -1653,9 +1887,10 @@ upgrading, is in [`CHANGELOG.md`](CHANGELOG.md):
   agents in order, and with `--verify "npm test"` rolls back an apply that breaks
   the build, leaving your other uncommitted work alone.
 - **Real usage and cost.** The built-in `claude` adapter now reads Claude Code's
-  `stream-json`, so every agent records the tokens and dollars its CLI reported —
-  in `odw status`, the live view and the dashboard — and `--budget` meters real
-  output tokens. A single fan-out wider than `fanOutWarn` (25) says so up front.
+  `stream-json`, and the built-in `codex` adapter `codex exec --json`, so every agent
+  records the tokens (and, for Claude, the dollars) its CLI reported — in `odw status`,
+  the live view and the dashboard — and `--budget` meters real output tokens. Codex
+  agents' transcripts show their commands, edits and tool calls. A single fan-out wider than `fanOutWarn` (25) says so up front.
 - **Ready-to-work worktrees.** `.worktreeinclude` copies or links `.env`,
   `node_modules` and the like into isolated agents' worktrees, `worktreeSetup` runs
   your bootstrap command, and every agent gets its own `$ODW_PORT`.
@@ -1721,7 +1956,7 @@ runs end-to-end (plan → search → extract → vote → report).
 
 Ranked by what users of parallel coding agents report needing
 ([research](docs/research/user-needs-2026-10.md)): adapter-reported token usage and
-cost for more CLIs (Claude Code reports it today; the others are estimated) ·
+cost for more CLIs (Claude Code and Codex report it today; the others are estimated) ·
 running Claude plugin
 workflows · evaluation. Full plan: [`docs/ROADMAP.md`](docs/ROADMAP.md); the
 original design: [`docs/dynamic-workflows-tech-plan.md`](docs/dynamic-workflows-tech-plan.md).

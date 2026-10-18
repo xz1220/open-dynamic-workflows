@@ -120,8 +120,8 @@ test("worker: the run shows 'waiting' while a checkpoint waits, and goes on once
     p.store.requestCheckpointDecision(id, { action: "reject" });
     assert.equal(await run, "done");
     assert.deepEqual(p.store.readResult(id), {
-      first: { approved: true, note: "go", by: "cli" },
-      second: { approved: false, note: null, by: "cli" },
+      first: { approved: true, note: "go", by: "cli", payload: { plan: "done:plan" }, edited: false },
+      second: { approved: false, note: null, by: "cli", edited: false },
     });
     assert.equal(p.store.readStatus(id).waiting, null);
     assert.equal(summarize(p.store, id).state, "done");
@@ -230,7 +230,7 @@ test("a worker process whose only work is a waiting checkpoint stays alive until
     store.requestCheckpointDecision(runId, { action: "approve", checkpointId: 1, note: "ship it", by: "cli" });
     const status = await waitFor(store, runId, { timeoutMs: 20_000, pollIntervalMs: 50 });
     assert.equal(status.state, "done", JSON.stringify(status));
-    assert.deepEqual(store.readResult(runId), { approved: true, note: "ship it", by: "cli" });
+    assert.deepEqual(store.readResult(runId), { approved: true, note: "ship it", by: "cli", payload: "plan", edited: false });
   } finally {
     await stopProcessRun(store, runId);
     rmSync(root, { recursive: true, force: true });

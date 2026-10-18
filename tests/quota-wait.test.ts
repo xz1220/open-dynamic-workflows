@@ -605,8 +605,15 @@ test("agent(): a call out of quota waits holding no slot — another adapter's a
   assert.deepEqual([pause.adapter, pause.reason, pause.resumeAt], ["a", "quota", resumeAt]);
   const waits = sink.ofType(LOG).find((e) => e.agentId === 1)!;
   assert.deepEqual([waits.message, waits.adapter, waits.reason], ["x:1 waits for a's quota to reset (quotaWait)", "a", "quota"]);
+  assert.deepEqual([waits.quotaWait, waits.resumeAt], ["start", resumeAt], "structured for the run's views");
+  const during = new EventFold().apply(sink.events);
+  assert.deepEqual(during.agents.find((a) => a.agentId === 1)!.quotaWait, { adapter: "a", resumeAt }, "its node waits, not works");
   clock.advance(RESET_MS);
   assert.equal(await first, "a answered");
+  const goesOn = sink.ofType(LOG).find((e) => /goes on after the quota wait/.test(String(e.message)))!;
+  assert.equal(goesOn.quotaWait, "end");
+  const after = new EventFold().apply(sink.events.filter((e) => e.type !== AGENT_FINISHED));
+  assert.equal(after.agents.find((a) => a.agentId === 1)!.quotaWait, undefined, "working again once it goes on");
   assert.deepEqual(calls, ["a", "b", "a"]);
   assert.deepEqual(logs(sink).slice(-2), ["quota pause over: a's quota reset — its agents go on", "x:1 goes on after the quota wait, on a"]);
   assert.deepEqual(sink.ofType(AGENT_FINISHED).map((e) => e.label), ["y", "x"]);
@@ -705,7 +712,7 @@ test("agent(): a checkpoint() waits beside a quota pause — answered meanwhile,
   const asked = p.checkpoint("Ship it?");
   await until(() => control.waiting().length === 1);
   assert.equal(control.decide({ action: "approve", note: "go", by: "cli" }), true);
-  assert.deepEqual(await asked, { approved: true, note: "go", by: "cli" });
+  assert.deepEqual(await asked, { approved: true, note: "go", by: "cli", payload: undefined, edited: false });
   assert.deepEqual([clock.sleeping, changes.map((c) => c.change)], [1, ["started"]], "the pause goes on");
   clock.advance(RESET_MS);
   assert.equal(await waiting, "a answered");

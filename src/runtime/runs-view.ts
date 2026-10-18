@@ -32,6 +32,7 @@ import { addUsage, readUsage, type Usage } from "../adapters/usage.js";
 import type { AgentChanges } from "../changes.js";
 import type { WaitingCheckpoint } from "../checkpoint.js";
 import type { WorkflowEvent } from "../events.js";
+import { readCliVersion, type CliVersion } from "../provenance.js";
 import { pausedForOf, type PausedFor } from "../quota-wait.js";
 import { RunStore, TERMINAL_STATES } from "./run-store.js";
 
@@ -58,7 +59,7 @@ export interface AgentView {
   /**
    * Why a failed agent's CLI failed (agent_failed's `reason`): rate_limit,
    * quota, auth, timeout, stalled, not_found, permission or exit — or, ODW
-   * extensions, empty_reply and unmet_expectation. Absent while running, for
+   * extensions, empty_reply, unmet_expectation and mcp_unavailable. Absent while running, for
    * other failures (schema, stop) and for older event files.
    */
   failureReason?: string;
@@ -114,6 +115,18 @@ export interface AgentView {
    * failed last). Absent when it never left the adapter it started on.
    */
   fellBackFrom?: string[];
+  /**
+   * Agents only (ODW extension: quotaWait): while a running agent waits for
+   * `adapter`'s spent quota to reset — holding no slot — that adapter and when
+   * its CLI said the quota resets (epoch seconds). Absent otherwise.
+   */
+  quotaWait?: { adapter: string; resumeAt?: number };
+  /**
+   * Agents only (ODW extension): the MCP servers its CLI started it without —
+   * any status but "connected" (Claude Code's init event) — on its terminal
+   * event. Absent otherwise.
+   */
+  mcp?: Array<{ name: string; status: string }>;
 }
 
 export type RunDisplayState =
@@ -133,6 +146,10 @@ export interface PendingCheckpoint {
   title: string;
   /** What the person should look at: JSON-safe, at most 64 KiB (null when none was given). */
   payload: unknown;
+  /** The payload was cut to fit its event: `payload` holds only its start, as text. Absent otherwise. */
+  truncated?: boolean;
+  /** The JSON Schema an approval's edited payload must match; absent when the checkpoint has none. */
+  schema?: Record<string, unknown>;
   /** When it started waiting (epoch seconds). */
   since: number;
 }
@@ -196,7 +213,10 @@ export interface RunSummary {
 
 export interface RunDetail extends RunSummary {
   script: string | null;
+  /** The run's input as given — as served (`odw serve`), with its token shapes redacted (ODW extension). */
   args: unknown;
+  /** Token shapes in `args` were replaced by `«redacted:<kind>»` before it was served (ODW extension). */
+  argsRedacted?: boolean;
   agents: AgentView[];
   /** Phases in the order their phase_started fired, plus any declared-not-started. */
   phaseOrder: string[];
@@ -214,6 +234,16 @@ export interface RunDetail extends RunSummary {
    * the run is live (neither ended nor stale); absent for Claude Code runs.
    */
   pendingCheckpoints?: PendingCheckpoint[];
+  /**
+   * What ran (ODW extension; see ../provenance): each adapter CLI's version
+   * as the run recorded it on the adapter's first dispatch (`version` null
+   * when the CLI did not tell, with `error`), by adapter; odw's version and
+   * the sha256 of the workflow source as launched (null for older runs).
+   * Absent for Claude Code runs.
+   */
+  cliVersions?: Record<string, CliVersion>;
+  odwVersion?: string | null;
+  sourceHash?: string | null;
 }
 
 /** Is `pid` a live process on this host? null when unknowable (no pid). */
@@ -292,12 +322,20 @@ export function applyAgentEvent(
     return applyCommandEvent(agents, ev);
   }
   if (ev.type === "log") {
+    if (typeof ev.agentId !== "number" || typeof ev.adapter !== "string") return {};
+    const target = agents.find((a) => a.state === "running" && a.agentId === ev.agentId);
+    if (!target) return {};
+    // A call out of quota waits for a reset (ODW extension: quotaWait) until
+    // its log line says it goes on.
+    if (ev.quotaWait === "start") {
+      target.quotaWait = { adapter: ev.adapter, ...(typeof ev.resumeAt === "number" ? { resumeAt: ev.resumeAt } : {}) };
+    } else if (ev.quotaWait === "end") {
+      delete target.quotaWait;
+    }
     // A fallback (ODW extension) moves a running agent to another adapter:
     // its log line names the adapter and every one the agent has left.
     const from = adapterNames(ev.fellBackFrom);
-    if (!from || typeof ev.agentId !== "number" || typeof ev.adapter !== "string") return {};
-    const target = agents.find((a) => a.state === "running" && a.agentId === ev.agentId);
-    if (target) {
+    if (from) {
       target.adapter = ev.adapter;
       target.fellBackFrom = from;
     }
@@ -342,6 +380,7 @@ export function applyAgentEvent(
       );
     }
     if (!target) return {}; // a stray finish with no matching start — ignore
+    delete target.quotaWait;
     target.finishedAt = typeof ev.ts === "number" ? ev.ts : null;
     if (target.startedAt !== null && target.finishedAt !== null) {
       target.durationMs = Math.max(0, Math.round((target.finishedAt - target.startedAt) * 1000));
@@ -354,6 +393,9 @@ export function applyAgentEvent(
     // The adapters it fell back from, finished or failed (ODW extension).
     const from = adapterNames(ev.fellBackFrom);
     if (from) target.fellBackFrom = from;
+    // The MCP servers its CLI started it without, finished or failed (ODW extension).
+    const mcp = mcpServers(ev.mcp);
+    if (mcp) target.mcp = mcp;
     if (ev.type === "agent_failed") {
       target.state = "failed";
       target.error = ev.error != null ? String(ev.error) : null;
@@ -434,6 +476,15 @@ function adapterNames(raw: unknown): string[] | undefined {
   return [...(raw as string[])];
 }
 
+/** An event's `mcp`, when it lists servers `{ name, status }` (ODW extension); undefined otherwise. */
+function mcpServers(raw: unknown): Array<{ name: string; status: string }> | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const servers = raw
+    .filter((s): s is { name: string; status: string } => typeof s?.name === "string" && typeof s?.status === "string")
+    .map(({ name, status }) => ({ name, status }));
+  return servers.length > 0 ? servers : undefined;
+}
+
 /** An event's `changes`, when it is a diffstat; null otherwise. */
 function agentChanges(raw: unknown): AgentChanges | null {
   if (raw === null || typeof raw !== "object") return null;
@@ -464,6 +515,8 @@ function copyAgents(agents: AgentView[], stale: boolean): AgentView[] {
     const copy: AgentView = stale && a.state === "running" ? { ...a, state: "stale" } : { ...a };
     if (a.usage) copy.usage = { ...a.usage };
     if (a.fellBackFrom) copy.fellBackFrom = [...a.fellBackFrom];
+    if (a.quotaWait) copy.quotaWait = { ...a.quotaWait };
+    if (a.mcp) copy.mcp = a.mcp.map((server) => ({ ...server }));
     if (a.misses) copy.misses = [...a.misses];
     if (a.denied) copy.denied = [...a.denied];
     return copy;
@@ -523,12 +576,16 @@ export class EventFold {
   ended = false;
   /** What the settled agents spent, summed as they settle (see RunSummary.usage). */
   usage: Usage | undefined;
+  /** Each adapter CLI's version, from the run's cli_version events (ODW extension). */
+  readonly cliVersions: Record<string, CliVersion> = {};
 
   apply(events: WorkflowEvent[]): this {
     for (const ev of events) {
       const { settled } = applyAgentEvent(this.agents, ev);
       if (settled?.usage) this.usage = addUsage(this.usage, settled.usage);
       applyCheckpointEvent(this.checkpoints, ev);
+      const cli = readCliVersion(ev);
+      if (cli) this.cliVersions[cli.adapter] = cli.cli;
       if (ev.type === "run_finished" || ev.type === "run_failed" || ev.type === "run_stopped") {
         this.ended = true;
         this.checkpoints.clear(); // nobody waits on a run that ended
@@ -547,10 +604,13 @@ export class EventFold {
 function applyCheckpointEvent(pending: Map<number, PendingCheckpoint>, ev: WorkflowEvent): void {
   if (typeof ev.checkpointId !== "number") return;
   if (ev.type === "checkpoint_requested") {
+    const schema = ev.schema;
     pending.set(ev.checkpointId, {
       checkpointId: ev.checkpointId,
       title: String(ev.title ?? ""),
       payload: ev.payload ?? null,
+      ...(ev.truncated === true ? { truncated: true } : {}),
+      ...(schema !== null && typeof schema === "object" && !Array.isArray(schema) ? { schema: schema as Record<string, unknown> } : {}),
       since: asNumber(ev.ts) ?? 0,
     });
   } else if (ev.type === "checkpoint_resolved") {
@@ -650,6 +710,9 @@ export function detailFrom(
     adapter: (meta.adapter as string) ?? null,
     workflowName: (meta.workflowName as string) ?? null,
     pendingCheckpoints: live ? pendingCheckpoints(fold) : [],
+    cliVersions: Object.fromEntries(Object.entries(fold.cliVersions).map(([name, cli]) => [name, { ...cli }])),
+    odwVersion: typeof meta.odwVersion === "string" ? meta.odwVersion : null,
+    sourceHash: typeof meta.sourceHash === "string" ? meta.sourceHash : null,
   };
 }
 

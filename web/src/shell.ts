@@ -6,7 +6,7 @@ import { store } from "./store";
 import { ACTIVE, clsx, esc } from "./util";
 
 export interface Route {
-  view: "chat" | "activity" | "workspace" | "jobs" | "job" | "settings";
+  view: "chat" | "activity" | "workspace" | "jobs" | "job" | "compare" | "settings";
   param: string | null;
 }
 
@@ -15,7 +15,7 @@ export function activeRuns() {
 }
 
 function navItem(view: string, route: Route, icon: string, label: string, key: string, count?: number): string {
-  const on = route.view === view || (view === "jobs" && route.view === "job");
+  const on = route.view === view || (view === "jobs" && (route.view === "job" || route.view === "compare"));
   const badge = count ? `<span class="count">${count}</span>` : `<kbd>g ${key}</kbd>`;
   return (
     `<a class="${clsx("navitem", on && "on")}" href="#/${view}" data-nav="#/${view}" data-key="nav-${view}"` +
@@ -85,6 +85,15 @@ function crumbs(route: Route): string {
         sep +
         (run ? `<span class="here">${esc(run.name)}</span>${sep}` : "") +
         `<span class="here mono">${esc(route.param ?? "")}</span>`
+      );
+    }
+    case "compare": {
+      const [a = "", b = ""] = (route.param ?? "").split("/");
+      return (
+        link("#/jobs", t("Jobs")) +
+        sep +
+        `<span class="here">${t("Compare")}</span>${sep}` +
+        `<span class="here mono">${esc(a)} → ${esc(b)}</span>`
       );
     }
     case "workspace":

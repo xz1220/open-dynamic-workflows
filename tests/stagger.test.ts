@@ -344,7 +344,14 @@ test("the decoder tells a CLI starting up from one answering", () => {
   decoder.write('{"type":"assistant","message":{}}\n');
   assert.equal(decoder.answering, true);
 
-  const text = new AdapterOutputDecoder(defaultConfig().adapters.codex!);
+  // Codex's thread.started and turn.started come before its model has read the prompt.
+  const codex = new AdapterOutputDecoder(defaultConfig().adapters.codex!);
+  codex.write('{"type":"thread.started","thread_id":"t1"}\n{"type":"turn.started"}\n');
+  assert.equal(codex.answering, false, "codex starting up is not output");
+  codex.write('{"type":"item.completed","item":{"id":"item_0","type":"reasoning","text":"Looking."}}\n');
+  assert.equal(codex.answering, true);
+
+  const text = new AdapterOutputDecoder(defaultConfig().adapters.gemini!);
   assert.equal(text.answering, false);
   text.write("anything");
   assert.equal(text.answering, true, "for text output, any output is the answer");

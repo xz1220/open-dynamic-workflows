@@ -72,11 +72,17 @@ agent 的 `permissions`；`odw doctor` 会列出每个适配器支持的档位�
 不写 `command` 的条目只修改同名内置适配器中它写出的字段（如上面的
 `"codex": { "permissions": "read" }`）。写了 `command` 的条目会整体替换内置适配器——对
 `claude` 来说，请像 `odw.config.example.json` 那样保留 stream-json 旗标、`output` 块和它的
-`permissionArgs`。
+`permissionArgs`；对 `codex` 也一样，保留 `--json`、`--output-last-message {reply_file}` 和它的
+`output` 块。
 
 内置的 `claude` 以 Claude Code 的 `--output-format stream-json --verbose` 运行：每一轮
 输出一个事件，最后是一个 `result` 事件，带着回复、这次运行的用量和花费，失败时还带
 `is_error`。
+
+内置的 `codex` 以 `codex exec --json --output-last-message {reply_file}` 运行：输出 JSONL
+事件，回复是 codex 写进该文件的最终消息（否则取最后一个 `item.completed` 的
+`agent_message`），token 取自 `turn.completed`（没有花费——codex 不上报），`turn.failed` /
+`error` 事件是它自己报告的失败。它的 transcript 会显示每条命令、文件改动、MCP 工具调用和网络搜索。
 
 一种实用的最小权限分工：让 `claude` 写代码（acceptEdits）、让 `codex` 运行/验证
 （workspace-write 沙箱）——见 `examples/codex-claude-loop.js`。
@@ -124,7 +130,7 @@ agent 的 `permissions`；`odw doctor` 会列出每个适配器支持的档位�
 | `concurrency` | 同时运行的 agent CLI 上限；省略则自动（`min(16, cpus-2)`） |
 | `maxAgents` | 单次运行总派发量的硬上限（防失控兜底） |
 | `timeout` | 每个 agent CLI 的超时（秒） |
-| `stallTimeout` | **ODW 扩展。** agent 在 stdout 和 stderr 上都没有任何输出的最长秒数，超过即像超时一样被杀掉，并用同一个 prompt 重启；`null`（默认）= 关闭。所有内置适配器都默认关闭，因为有些 CLI（文本模式的 `gemini`、`qwen`、`kimi`）在结束前什么都不输出——请只对会流式输出进度的适配器启用：`claude`（stream-json，每一轮一个事件）、`kilo`、`opencode`，并把值设得高于最长的单次工具调用 |
+| `stallTimeout` | **ODW 扩展。** agent 在 stdout 和 stderr 上都没有任何输出的最长秒数，超过即像超时一样被杀掉，并用同一个 prompt 重启；`null`（默认）= 关闭。所有内置适配器都默认关闭，因为有些 CLI（文本模式的 `gemini`、`qwen`、`kimi`）在结束前什么都不输出——请只对会流式输出进度的适配器启用：`claude`（stream-json，每一轮一个事件）、`codex`（`exec --json`，每个条目一个事件）、`kilo`、`opencode`，并把值设得高于最长的单次工具调用 |
 | `stallRestarts` | 每次 `agent()` 调用在卡死后最多重启几次，用完后调用以 “stalled” 错误失败（默认 1） |
 | `transientRetries` | **ODW 扩展。** CLI 撞上限流（429/529、overloaded）后，每次 `agent()` 调用最多重试几次；每次重试前按指数退避等待，并遵从 CLI 打印的 retry-after（默认 3；`0` = 从不重试）。额度用尽和登录失败从不重试：错误信息会说明该怎么做 |
 | `maxBackoff` | 单次退避等待的最长秒数（默认 300）；CLI 要求等待更久时，不会提前重试 |
@@ -144,10 +150,11 @@ agent 的 `permissions`；`odw doctor` 会列出每个适配器支持的档位�
 | `keepBranches` | **ODW 扩展。** `true`：每个隔离 agent 的改动也都提交到源仓库的分支 `odw/<runId>/<agentId>-<label>`，就像对单个 agent 用 `keep: true`（`keep: false` 可让某个 agent 不受影响）。默认 `false` |
 | `applyVerify` | **ODW 扩展。** `odw apply` 每次应用后在仓库根目录通过 shell 运行的命令（受 `timeout` 约束），例如 `"npm test"`：命令失败、超时或被中断时，这次应用会被原样回滚（只恢复涉及路径的内容和索引项，其他一概不动）。`odw apply --verify "<cmd>"` 覆盖它，`--no-verify` 跳过它，`--check` 从不运行它。默认 `null`（不运行） |
 | `maxTranscriptBytes` | **ODW 扩展。** run 目录里为每个 agent 保存的 transcript 最多多少字节——它的 CLI 在 stdout 上打印的内容写入 `agents/<agentId>.transcript.jsonl`（JSONL 适配器的事件按原样保存，其他输出写成 `{"kind":"text"}` 行），stderr 的结尾写入旁边的 `agents/<agentId>.stderr.txt`；用 `odw logs <run> --agent <id\|label>` 查看（默认 5 MB）。超出时以一行 `{"kind":"truncated","bytes":N}` 结束 transcript；`0` = 不保存 |
+| `recordVersions` | **ODW 扩展。** `true`（默认）：某个适配器在一次运行中第一次派发 agent 时，与 agent 并行执行 `<cli> --version`（命令的第一个 argv 元素），3 秒超时，记为 `cli_version` 事件——`odw status`、`GET /api/runs/:id` 的 `cliVersions` 与 `odw compare` 会读取它。它绝不拖慢或导致运行失败；不回应的 CLI 记为未知版本；命令为 node 或其他解释器、脚本或相对路径的适配器不做探测。`false` = 不探测（meta.json 中的 odw 版本与工作流 sha256、`run_started` 上的设置照常记录） |
 | `permissions` | **ODW 扩展。** 运行的权限档位：`"read"`、`"edit"`（默认）或 `"full"`——见[权限](#权限每个内置适配器能做什么)。`odw run\|rerun\|resume --permissions` 可覆盖 |
 | `agentEnv` | **ODW 扩展。** `"inherit"`（默认）：agent CLI 拿到 ODW 的全部环境变量。`"minimal"`：只传 `PATH`、`HOME`、`USER`、`LOGNAME`、`SHELL`、`LANG`、`LC_*`、`TERM`、`TMPDIR`、`TZ`（以及 Windows 系统变量）、内置 CLI 文档中列出的认证与配置变量（`ANTHROPIC_*`、`CLAUDE_*`、`OPENAI_*`、`CODEX_*`、`GEMINI_*`、`GOOGLE_*`、`DASHSCOPE_*`、`QWEN_*`、`MOONSHOT_*`、`KIMI_*`、`CURSOR_*`、`OPENCODE_*`、代理变量、`NODE_EXTRA_CA_CERTS`）、`ODW_*`、`agentEnvPass` 和适配器的 `env`。`exec()` 命令、`worktreeSetup` 和 `notify` 仍拿到完整环境 |
 | `agentEnvPass` | **ODW 扩展。** `"minimal"` 环境下额外放行的变量名或 `*` 通配（如在 Bedrock 上用 Claude Code 时的 `["AWS_*"]`） |
-| `schemaKeywords` | **ODW 扩展。** `agent()` 的 schema 里 ODW 校验器不检查的关键字如何处理。`"warn"`（默认）：调用照常运行，ODW 检查其余部分，运行日志只说一次哪些关键字、位于何处、由谁强制执行（接收原生 schema 的适配器 CLI，即 `flags.schema`，否则无人）。`"strict"`：调用在启动前失败，逐个写明。格式错误的 schema 在两种模式下都会失败。见[原生结构化输出](#原生结构化输出) |
+| `schemaKeywords` | **ODW 扩展。** `agent()` 的 schema 里 ODW 校验器不检查的关键字如何处理。`"warn"`（默认）：调用照常运行，ODW 检查其余部分，运行日志只说一次哪些关键字、位于何处、由谁强制执行（接收原生 schema 的适配器 CLI，即 `flags.schema`，否则无人）。`"strict"`：调用在启动前失败，逐个写明。格式错误的 schema 在两种模式下都会失败。`checkpoint()` 的 `schema`（修改后的 payload 必须满足的结构）遵循同样的规则。见[原生结构化输出](#原生结构化输出) |
 | `schemaPrompt` | **ODW 扩展。** `"auto"`（默认）：只有不接收原生 schema 的 CLI 才在提示词里看到 schema 描述；`"always"`：所有 CLI 都附上 |
 | `fallback` | **ODW 扩展。** 回退链：`{ "codex": ["claude"], … }`——agent 的 CLI 额度用尽或登录被拒时，它会在为其所在适配器列出的下一个适配器上重新运行（全新的提示词、相同的选项、相同的权限档位：不能运行该档位的适配器会被跳过）。限流仍在原地重试。`agent()` 调用自己的列表 `adapter: ["codex", "claude"]` 会取代它。列出的每个适配器都必须已配置。默认 `{}`——见[路由](primitives.md#路由阶段默认值模型分层回退链odw-扩展) |
 | `quotaBreaker` | **ODW 扩展。** 同一个适配器上连续这么多次额度失败后，本次运行之后的 agent 都会跳过它——各自从回退链上的下一个适配器开始，没有回退链的则立即失败——并记一条警告。默认 3；`0` 或 `null` 表示从不跳过 |
@@ -155,7 +162,9 @@ agent 的 `permissions`；`odw doctor` 会列出每个适配器支持的档位�
 | `models` | **ODW 扩展。** 模型层级：`{ "fast": { "claude": "haiku", "codex": "gpt-5-mini" }, … }`。`model: "@fast"`（写在 `agent()`、`phase()` 或 `meta.phases` 里）让 agent 使用其适配器在该层级下的 ID——回退之后用下一个适配器的；层级没给某适配器 ID 时使用其 CLI 的默认模型（记日志），未知层级会让 agent 失败。层级名由字母、数字、`_`、`-` 和 `.` 组成；列出的每个适配器都必须已配置。默认 `{}` |
 | `expectRetries` | **ODW 扩展。** 工作没达到 `expect` 检查的 agent 带着缺失项重跑的次数，之后以 `unmet_expectation` 失败（默认 1；`agent()` 调用自己的 `expectRetries` 优先）——见 [expect](primitives.md#expectodw-扩展) |
 | `permissionDenials` | **ODW 扩展。** CLI 拒绝了 agent 的工具调用（`deniedPath`）、而回复声称成功时怎么办：`"warn"`（默认）保留回复——这些调用记为 agent 上的 `denied` 并记一次日志——`"fail"` 让 agent 以 `permission` 失败。适配器自己的 `permissionDenials` 优先；设了 `expect` 的调用无论如何都把被拒绝的调用算作缺失 |
-| `redact` | **ODW 扩展。** `{ "env": true, "patterns": true, "extra": [] }`（默认）：odw 保存和提供的内容——transcript 与 stderr 结尾、保存的结果、事件、运行的错误、webhook 负载——在写下之前把疑似密钥替换为 `«redacted:<kind>»`，并以 `redacted: true` 标明。`env`：odw 环境及各适配器 `env` 中名字像密钥的变量（`*_KEY`、`*TOKEN`、`*SECRET*`、`*PASSWORD*`、`AUTHORIZATION`、云凭据）的值（8 个字符及以上），无论出现在哪里，以及这类名字的 `NAME=value`；`patterns`：常见令牌形态（Anthropic、OpenAI、GitHub、Slack、AWS、Google、JWT、私钥、`Bearer`）；`extra`：更多正则表达式。运行的结果只应用 `patterns` 和 `extra`；提示词、agent 看到的内容和保存的 diff 从不脱敏。`false` = 关闭；`odw doctor` 会报告 |
+| `mcpFailures` | **ODW 扩展。** CLI 启动 agent 时没连上 MCP 服务器（`mcpPath`：Claude Code 的 init 事件）时怎么办：`"warn"`（默认，与 Claude Code 自己只警告一致）保留回复——每个状态不是 `connected` 的服务器记为 agent 上的 `mcp`，每次运行按服务器和状态各记一次日志——`"fail"` 让服务器为 `failed` 或 `needs-auth` 的 agent 以 `mcp_unavailable` 失败（`pending` 和 `disabled` 从不导致失败）。调用的 `expect.mcp` 列出的服务器则算作缺失 |
+| `redact` | **ODW 扩展。** `{ "env": true, "patterns": true, "extra": [] }`（默认）：odw 保存和提供的内容——transcript 与 stderr 结尾、保存的结果、事件、运行的错误、webhook 负载——在写下之前把疑似密钥替换为 `«redacted:<kind>»`，并以 `redacted: true` 标明；`worker.log` 与 Chat Host 会话同样脱敏（用户输入只脱敏令牌形态），运行的 `args` 为 `odw rerun` 原样保存、对外提供时脱敏令牌形态。`env`：odw 环境及各适配器 `env` 中名字像密钥的变量（`*_KEY`、`*TOKEN`、`*SECRET*`、`*PASSWORD*`、`AUTHORIZATION`、云凭据）的值（8 个字符及以上），无论出现在哪里，以及这类名字的 `NAME=value`；`patterns`：常见令牌形态（Anthropic、OpenAI、GitHub、Slack、AWS、Google、JWT、私钥、`Bearer`）；`extra`：更多正则表达式。运行的结果只应用 `patterns` 和 `extra`；提示词、agent 看到的内容和保存的 diff 从不脱敏。`false` = 关闭；`odw doctor` 会报告 |
+| `otel` | **ODW 扩展。** OpenTelemetry 导出：`false`（默认）什么都不发送——单靠 `OTEL_*` 环境变量不会开启。`true` 或 `{ "endpoint": "http://localhost:4318", "headers": { … }, "captureContent": false }`：运行结束后，worker 把它的 trace（遵循 GenAI 语义约定的 `invoke_workflow` / `phase` / `invoke_agent` / `execute_tool` / `exec` / `checkpoint` span——含用量、花费、模型、失败原因，重试和回退作为 span 事件）以 OTLP/HTTP JSON 发送到 `endpoint` + `/v1/traces`，只发一次，时限 5 秒；失败只在运行的 `worker.log` 留一行，绝不改变运行结果。省略时 `endpoint` 和 `headers` 取自 `OTEL_EXPORTER_OTLP_(TRACES_)ENDPOINT` / `…HEADERS`（默认端点 `http://localhost:4318`）；header 的值是机密，从不写日志或显示。`captureContent`（或 `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true`）会附带回复、工具输入输出和错误文本——发出前再次脱敏，每个字段截断到 4096 个字符。`odw export <run> --otlp [--out FILE \| --send]` 可导出任意运行；`odw doctor` 显示 trace 发往何处 |
 
 ### 适配器字段
 
@@ -188,12 +197,23 @@ agent 的 `permissions`；`odw doctor` 会列出每个适配器支持的档位�
 `errorPath`（`true`、一条消息或一个错误对象：这次运行以它失败，不论退出码都像任何失败一样
 被归类）和 `deniedPath`（CLI 拒绝了 agent 的哪些工具调用，回复可能仍声称成功：记为 agent
 上的 `denied` 并写入日志，或在 `permissionDenials: "fail"` 下算作 `permission` 失败——内置
-`claude` 读取 `permission_denials`）；`jsonl` 从 `usageEvent` 事件（默认同 `eventType`）读取用量和花费并累加。用量会在
+`claude` 读取 `permission_denials`）和 `mcpPath`（CLI 启动 agent 时的 MCP 服务器，每项
+`{ name, status }`：没连上的记为 agent 上的 `mcp` 并写入日志，或在 `mcpFailures: "fail"` 下
+让它失败；`jsonl` 从 `mcpEvent` 事件读取，未设则任何事件——内置 `claude` 从 `system` init
+事件读取 `mcp_servers`）；`jsonl` 从 `usageEvent` 事件（默认同 `eventType`）读取用量和花费并累加。用量会在
 不同 CLI 的字段名（Anthropic、OpenAI、Codex）之间归一化为：`inputTokens`（含缓存命中的
 输入）、`outputTokens`、`cacheReadTokens`、`cacheWriteTokens`、`costUsd`。路径里的整数
 用于索引数组（负数从末尾数）。stdout 里找不到声明的文本时，原始 stdout 就作为回复，运行
 日志会说明原因——agent 不会因此失败。`structuredPath` 指向 CLI 按原生拿到的 schema 校验过的
 值（见下文）。
+
+**ODW 扩展**，仅 `jsonl`：`match: { "path": [...], "equals": <字符串、数字或布尔值> }` 只保留
+`path` 处的值等于 `equals` 的文本事件（codex：`{ "path": ["item", "type"], "equals":
+"agent_message" }`）；`errorEvents: { "<类型>": [路径] }` 指出文本事件之外、由 CLI 自己报告
+失败的事件——路径指向消息（codex：`{ "turn.failed": ["error"], "error": ["message"] }`）。最新
+的这类事件像 `errorPath` 一样让运行失败，除非之后出现 `usageEvent`，说明 CLI 继续运行了。把
+最终回复写进文件的 CLI 在命令里使用 `{reply_file}`：文件有内容就是回复；文件为空或没写、
+stdout 的事件里也没有回复时，回复为空（除非 `allowEmpty`，否则 `empty_reply`），日志会写明缺了什么。
 
 ### 原生结构化输出
 
@@ -214,7 +234,7 @@ schema 参数排在所有其他参数之后（与模型参数同处），且不�
 | 内置适配器 | `flags.schema` | 值的来源 |
 | --- | --- | --- |
 | `claude` | `{ "args": ["--json-schema"], "mode": "inline" }` | `result` 事件里的 `structured_output`（`"structuredPath": ["structured_output"]`），否则用 `result` 文本 |
-| `codex` | `{ "args": ["--output-schema"], "mode": "file", "strict": true }` | stdout 上的最终消息 |
+| `codex` | `{ "args": ["--output-schema"], "mode": "file", "strict": true }` | 它的最终消息：`--output-last-message` 文件，否则最后一个 `agent_message` 事件 |
 
 agent 启动前，会对照 ODW 校验器支持的子集检查它的 schema（[原语](primitives.md#schema)）。
 其他内容会连同位置在运行日志里写明一次——适配器接收原生 schema 时（`strict` 的适配器上只限
@@ -251,6 +271,7 @@ hook 只会记录到该运行的 `worker.log`。
 | --- | --- |
 | `{prompt}` | 完整拼好的 prompt（独立性引导语 + 任务 + 任何 schema 指令） |
 | `{prompt_file}` | 存放 prompt 的临时文件路径（仅在被引用时才写） |
+| `{reply_file}` | **ODW 扩展。** 每次新建、位于私有临时目录中的路径，CLI 把最终回复写在这里（`codex --output-last-message`）；CLI 退出后读取，随后删除 |
 | `{workspace}` | agent 运行所在的目录（隔离时是它的 git worktree） |
 | `{source}` | 原始的工作树 |
 | `{adapter}` / `{role}` | 适配器的名字 / 标签 |
@@ -261,8 +282,9 @@ hook 只会记录到该运行的 `worker.log`。
 `quota`、`auth`、`timeout`、`stalled`、`not_found`、`permission` 或 `exit`（即其
 `agent_failed` 事件上的 `reason`；只有 `rate_limit` 会重试——见 `transientRetries`）。
 CLI 在输出里报告的失败（`errorPath`：Claude Code stream-json 的 `is_error` 结果，常常以 0
-退出）也一样，干净退出、但简短的文本回复只是一条限流、额度或登录错误的情况（如
+退出；`errorEvents`：Codex 的 `turn.failed` 与 `error`）也一样，干净退出、但简短的文本回复只是一条限流、额度或登录错误的情况（如
 `API Error: Rate limit reached`）同样算作失败。干净退出也可能失败（ODW 扩展）：回复为空时
 为 `empty_reply`（除非调用设了 `allowEmpty`），工作没达到调用的 `expect` 检查时为
 `unmet_expectation`，CLI 拒绝了工具调用（`deniedPath`）且 `permissionDenials` 为 `"fail"`
-或调用设了 `expect` 时为 `permission`。
+或调用设了 `expect` 时为 `permission`，CLI 启动 agent 时有 MCP 服务器 `failed` 或
+`needs-auth`（`mcpPath`）且 `mcpFailures` 为 `"fail"` 时为 `mcp_unavailable`。

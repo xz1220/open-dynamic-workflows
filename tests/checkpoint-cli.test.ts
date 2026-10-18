@@ -59,8 +59,8 @@ test("odw approve|reject answer a waiting checkpoint; odw status and list show i
 
     assert.equal(await run, "done");
     assert.deepEqual(p.store.readResult(id), {
-      a: { approved: true, note: null, by: "cli" },
-      b: { approved: false, note: "not yet", by: "cli" },
+      a: { approved: true, note: null, by: "cli", payload: { hosts: ["web-1", "web-2"] }, edited: false },
+      b: { approved: false, note: "not yet", by: "cli", payload: "line 1\nline 2", edited: false },
     });
     r = await cli(["approve", id, ...flags]);
     assert.equal(r.code, 1);
@@ -91,7 +91,7 @@ test("odw run --wait says which checkpoint holds the run, and how to answer it",
     assert.equal(r0.code, 0, r0.err);
     const r = await waiting;
     assert.equal(r.code, 0, r.err);
-    assert.deepEqual(JSON.parse(r.out), { approved: true, note: null, by: "cli" });
+    assert.deepEqual(JSON.parse(r.out), { approved: true, note: null, by: "cli", edited: false });
     const hint =
       `waiting for a decision — checkpoint #1: Proceed?\n` +
       `  approve: odw approve ${runId} --checkpoint 1 --runs-root ${store.root}\n` +

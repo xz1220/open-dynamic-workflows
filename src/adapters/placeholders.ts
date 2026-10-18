@@ -16,6 +16,8 @@ export const PLACEHOLDERS = [
   "adapter",
   "role",
   "model",
+  // ODW extension: where the CLI writes its final reply (see reply-file.ts).
+  "reply_file",
 ] as const;
 
 export type PlaceholderName = (typeof PLACEHOLDERS)[number];

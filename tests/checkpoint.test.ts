@@ -50,7 +50,7 @@ function harness(options: { concurrency?: number; maxAgents?: number; budgetTota
   return { ctx, control, sink, prims: createPrimitives(ctx), started, reply: (prompt: string) => replies.get(prompt)!("ok") };
 }
 
-test("checkpoint() waits for an answer and resolves { approved, note, by }", async () => {
+test("checkpoint() waits for an answer and resolves { approved, note, by, payload, edited }", async () => {
   const { prims, control, sink, ctx } = harness();
   prims.phase("Plan");
   const first = prims.checkpoint("Ship   it?\n", { payload: { steps: ["a", "b"] } });
@@ -62,12 +62,16 @@ test("checkpoint() waits for an answer and resolves { approved, note, by }", asy
     "one line of title, the payload, and the phase it was asked in",
   );
   assert.equal(control.decide({ action: "approve", note: "lgtm", by: "dashboard" }), true);
-  assert.deepEqual(await first, { approved: true, note: "lgtm", by: "dashboard" });
+  assert.deepEqual(await first, { approved: true, note: "lgtm", by: "dashboard", payload: { steps: ["a", "b"] }, edited: false });
 
   const second = prims.checkpoint("Again?");
   await until(() => control.waiting().length === 1);
   control.decide({ action: "reject", checkpointId: 2, note: "   " });
-  assert.deepEqual(await second, { approved: false, note: null, by: "cli" }, "a rejection is an answer; a blank note is none");
+  assert.deepEqual(
+    await second,
+    { approved: false, note: null, by: "cli", payload: undefined, edited: false },
+    "a rejection is an answer; a blank note is none",
+  );
 
   const resolved = ofType(sink.events, "checkpoint_resolved").map(({ ts: _ts, ...rest }) => rest);
   assert.deepEqual(resolved, [
@@ -102,11 +106,15 @@ test("timeouts: approve and reject answer by timeout; fail throws a recoverable 
     approved: true,
     note: null,
     by: "timeout",
+    payload: undefined,
+    edited: false,
   });
   assert.deepEqual(await prims.checkpoint("B?", { timeout: 0.02, onTimeout: "reject" }), {
     approved: false,
     note: null,
     by: "timeout",
+    payload: undefined,
+    edited: false,
   });
   await assert.rejects(prims.checkpoint("C?", { timeout: 0.02 }), (err) => {
     assert.ok(err instanceof CheckpointTimeout);
@@ -169,8 +177,8 @@ test("parallel checkpoints wait side by side; an answer without an id goes to th
   await until(() => control.waiting().length === 1);
   control.decide({ action: "approve" });
   assert.deepEqual(await both, [
-    { approved: true, note: null, by: "cli" },
-    { approved: false, note: "not this one", by: "cli" },
+    { approved: true, note: null, by: "cli", payload: undefined, edited: false },
+    { approved: false, note: "not this one", by: "cli", payload: undefined, edited: false },
   ]);
   assert.equal(control.decide({ action: "approve" }), false, "nothing waits any more");
 });
@@ -195,6 +203,8 @@ test("without a decision channel a checkpoint needs a timeout", async () => {
     approved: true,
     note: null,
     by: "timeout",
+    payload: undefined,
+    edited: false,
   });
 });
 

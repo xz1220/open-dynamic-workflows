@@ -14,7 +14,7 @@
 import { glyph } from "./components/glyph";
 import { t } from "./i18n";
 import type { AgentView, RunDetail } from "./types";
-import { esc, fmtDurSec, fmtTokens } from "./util";
+import { esc, fmtDurSec, fmtHourMin, fmtTokens } from "./util";
 
 export const NODE_W = 196;
 const NODE_H = 58;
@@ -38,13 +38,21 @@ function laneTitles(run: RunDetail): string[] {
   return seen.length ? seen : [t("run")];
 }
 
+/**
+ * The state a node is drawn in: a running agent waiting out a spent quota
+ * (quotaWait) is waiting, not working — amber, like a checkpoint.
+ */
+export function shownState(a: AgentView): AgentView["state"] {
+  return a.state === "running" && a.quotaWait ? "waiting" : a.state;
+}
+
 function subLine(a: AgentView, nowSec: number): string {
   if (a.kind === "checkpoint") {
     if (a.state === "waiting") {
       return [t("waiting for a person"), a.startedAt != null ? fmtDurSec(nowSec - a.startedAt) : ""].filter(Boolean).join(" · ");
     }
     if (a.decision) {
-      const verdict = a.decision.approved ? t("approved") : t("rejected");
+      const verdict = a.decision.approved ? (a.edited ? t("approved with edits") : t("approved")) : t("rejected");
       return [verdict, a.decision.by ? t(a.decision.by) : "", a.decision.note ? `“${a.decision.note}”` : ""].filter(Boolean).join(" · ");
     }
     return a.error ? a.error.split("\n")[0]!.slice(0, 80) : t("not answered");
@@ -65,6 +73,12 @@ function subLine(a: AgentView, nowSec: number): string {
   }
   // An agent that fell back shows the chain it walked: codex → claude.
   const via = a.fellBackFrom?.length && a.adapter ? `${a.fellBackFrom.join(" → ")} → ${a.adapter}` : a.adapter;
+  if (a.state === "running" && a.quotaWait) {
+    const w = a.quotaWait;
+    return w.resumeAt != null
+      ? t("waits for {adapter} quota · {t}", { adapter: w.adapter, t: fmtHourMin(w.resumeAt) })
+      : t("waits for {adapter} quota", { adapter: w.adapter });
+  }
   if (a.state === "running") {
     const elapsed = a.startedAt != null ? fmtDurSec(nowSec - a.startedAt) : "";
     return [via, elapsed].filter(Boolean).join(" · ") || t("running");
@@ -88,6 +102,7 @@ export function reasonLabel(reason: string): string {
     exit: t("exit"),
     empty_reply: t("empty reply"),
     unmet_expectation: t("unmet expectation"),
+    mcp_unavailable: t("MCP unavailable"),
   };
   return labels[reason] ?? reason.replace(/_/g, " ");
 }
@@ -120,7 +135,7 @@ export function renderDag(
   const pos: Pos[][] = cols.map((col, li) => {
     const shown = col.slice(0, MAX_PER_LANE);
     const offset = ((maxRows - rowsOf(col.length)) * SLOT) / 2;
-    return shown.map((c, i) => ({ ai: c.ai, x: PAD_X + li * PITCH, y: PAD_TOP + offset + i * SLOT, state: c.a.state }));
+    return shown.map((c, i) => ({ ai: c.ai, x: PAD_X + li * PITCH, y: PAD_TOP + offset + i * SLOT, state: shownState(c.a) }));
   });
 
   // --- edges between consecutive non-empty lanes ---
@@ -188,9 +203,9 @@ export function renderDag(
       const sel = selectedAi === p.ai ? " selected" : "";
       const dim = selectedAi != null && selectedAi !== p.ai ? " dim" : "";
       parts.push(
-        `<div class="node ${esc(a.state)}${a.kind === "command" ? " cmd" : a.kind === "checkpoint" ? " cp" : ""}${sel}${dim}" data-ai="${p.ai}" data-key="n-${p.ai}" tabindex="0" role="button" aria-pressed="${selectedAi === p.ai}" ` +
+        `<div class="node ${esc(p.state)}${a.kind === "command" ? " cmd" : a.kind === "checkpoint" ? " cp" : a.quotaWait && a.state === "running" ? " qwait" : ""}${sel}${dim}" data-ai="${p.ai}" data-key="n-${p.ai}" tabindex="0" role="button" aria-pressed="${selectedAi === p.ai}" ` +
           `style="left:${p.x}px;top:${p.y}px;width:${NODE_W}px" title="${esc(a.label)}">` +
-          `<div class="h">${glyph(a.state)}<span class="lbl">${a.kind === "command" ? `<span class="prompt">$</span> ` : ""}${esc(a.label)}</span>${a.changes?.files ? `<span class="ndelta" title="${esc(t("lines changed"))}"><b class="ins">+${fmtTokens(a.changes.insertions)}</b><b class="del">−${fmtTokens(a.changes.deletions)}</b></span>` : ""}${a.denied?.length ? `<span class="ndeny" title="${esc(t("{n} tool calls refused", { n: a.denied.length }))}">⚠${a.denied.length}</span>` : ""}${a.cached ? `<span class="cached" title="${esc(t("replayed from an earlier run"))}">↺</span>` : ""}</div>` +
+          `<div class="h">${glyph(p.state)}<span class="lbl">${a.kind === "command" ? `<span class="prompt">$</span> ` : ""}${esc(a.label)}</span>${a.changes?.files ? `<span class="ndelta" title="${esc(t("lines changed"))}"><b class="ins">+${fmtTokens(a.changes.insertions)}</b><b class="del">−${fmtTokens(a.changes.deletions)}</b></span>` : ""}${a.denied?.length ? `<span class="ndeny" title="${esc(t("{n} tool calls refused", { n: a.denied.length }))}">⚠${a.denied.length}</span>` : ""}${a.cached ? `<span class="cached" title="${esc(t("replayed from an earlier run"))}">↺</span>` : ""}</div>` +
           `<div class="sub">${esc(subLine(a, opts.nowSec))}</div></div>`,
       );
     }

@@ -215,7 +215,7 @@ odw run examples/fan-out-reduce.js --wait --args '{"question": "Design a rate li
 | `workflow(ref, args?)` | 内联调用另一个 workflow(仅一层)。子 workflow 共享本次运行的并发上限、agent 计数与预算;其 phase 以独立泳道归组。 |
 | `validate(source)` | 解析并编译检查可信源码,不运行工作流正文;元数据按纯字面量解析,不会被求值。**ODW 扩展**(不属于 Claude Code 方言)。 |
 | `exec(command, opts?)` | 不启动模型直接运行一条命令——测试、构建、linter;返回 `{ stdout, stderr, exitCode, signal, timedOut, truncated, durationMs }`。字符串经 shell 执行,数组按 argv 执行。受 `timeout`(600 秒)和 `maxOutputBytes`(每个输出流 8 MiB)约束;停止会杀掉它。不占 agent 槽位。**ODW 扩展**(不属于 Claude Code 方言)。 |
-| `checkpoint(title, opts?)` | 暂停运行,直到有人批准或拒绝——用 `odw approve\|reject` 或看板——然后返回 `{ approved, note, by }`。`opts`:`payload`(要给人看的内容)、`timeout`(秒)和 `onTimeout`(`"approve"`、`"reject"`,或默认的 `"fail"`)。不占 agent 槽位;停止依然会结束运行。见[人工检查点](#人工检查点odw-扩展)。**ODW 扩展**(不属于 Claude Code 方言)。 |
+| `checkpoint(title, opts?)` | 暂停运行,直到有人批准(可以附上修改后的 payload)或拒绝——用 `odw approve\|reject` 或看板——然后返回 `{ approved, note, by, payload, edited }`。`opts`:`payload`(要给人看的内容)、`schema`(修改必须满足的 JSON Schema)、`timeout`(秒)和 `onTimeout`(`"approve"`、`"reject"`,或默认的 `"fail"`)。不占 agent 槽位;停止依然会结束运行。见[人工检查点](#人工检查点odw-扩展)。**ODW 扩展**(不属于 Claude Code 方言)。 |
 
 下一步需要"全量结果一次到位"(去重、计票、综合)时用 **`parallel`**;多阶段处理默认用
 **`pipeline`**。归并要保持顺序无关——按"谁先跑完"分支会破坏可复现性。完整参考见
@@ -234,6 +234,7 @@ const summary = await agent('Fix the failing tests in src/parser.', {
     changes: true,              // 必须有文件改动(false:不许有任何改动)
     files: ['src/parser/**'],   // 每个 glob 都必须匹配到一个被改动或新建的文件
     match: '^Fixed',            // 回复必须匹配的正则表达式
+    mcp: ['github'],            // CLI 启动 agent 时必须连上的 MCP 服务器(claude)
   },
 })
 ```
@@ -269,6 +270,17 @@ agent_failed    (Fix) fixer — [unmet_expectation] did not meet: `npm test` mus
   work it could not do (raise its tier with --permissions or allowlist the tool)`。
   `"permissionDenials": "fail"`(或适配器自己的 `permissionDenials`)则让这样的 agent 以
   `reason: "permission"` 失败。
+- **没启动起来的 MCP 服务器。** Claude Code 的输出流以一个 init 事件开头,列出它为 agent
+  启动的 MCP 服务器;启动失败的服务器会让 agent 用不了它的工具,而 agent 仍可能说"完成了"。
+  每个状态不是 `connected` 的服务器都作为 `mcp: [{ name, status }]` 记在 agent 的
+  `agent_finished`(或 `agent_failed`)事件、保存的结果和 `/api/runs/:id` 上,运行按服务器
+  和状态各记一行日志(每次运行一次):``MCP server github failed to start (claude agent
+  `fix-auth`): its tools were unavailable``。回复照常成立——Claude Code 自己也只是警告——
+  除非 `"mcpFailures": "fail"`,它让服务器为 `failed` 或 `needs-auth` 的 agent 以
+  `reason: "mcp_unavailable"` 失败。`expect: { mcp: [...] }` 则把列出的服务器缺席——
+  `failed`、`needs-auth`、`disabled` 或没有配置——算作一项缺失,重试后以
+  `unmet_expectation` 失败。`pending` 两者都不算:Claude Code 的文档说不要把它单独当作
+  失败(`.mcp.json` 里的服务器通常以这个状态启动,并在后台连接)。
 
 Claude Code 的 Workflow 工具会忽略 `expect`,在那里检查不会执行。
 [`examples/fix-until-green.js`](examples/fix-until-green.js) 用 `expect` 驱动一个
@@ -284,7 +296,7 @@ ODW 已实现下列原语能力。依赖宿主私有运行机制的脚本,迁移
 | 模型选择 | 在 `agent(..., {model})` 中传该 CLI 的模型 ID;适配器没有模型参数时会记录路由说明。`meta.phases` 条目里的 `model`(以及 `adapter`)是该阶段 agent 的默认值,`model: "@fast"` 按 CLI 选出某层级的模型——都是 **ODW 扩展**(见[按阶段路由](#按阶段路由与回退链odw-扩展));阶段的模型和其他模型 ID 一样,其 agent 可能跑在多个 CLI 上时请用层级。`meta.model` 仍只是元数据。 |
 | `agentType` | 将人设加入提示词,不会加载宿主的同名子 agent 配置或选择适配器。 |
 | 工作区隔离 | 从已保存的 HEAD 创建临时工作区,不含未保存修改,结束后清理。不会自动合并,`agent()` 返回回复而非 diff;ODW 会把每个隔离 agent 的改动保存为 diff,供审阅和应用(`odw diff`、`odw apply`、`keep` 分支——均为 ODW 扩展;见[审阅并应用](#审阅并应用隔离-agent-的改动odw-扩展))。支持 `.worktreeinclude`(ODW 连未跟踪文件也复制,而不只是被 gitignore 的文件);其中的 `symlink:` 行、`worktreeSetup` 和 agent 的 `ODW_PORT` 是 ODW 扩展——见[隔离 worktree](#隔离-worktree-与-agent-端口)。 |
-| 预算 | 计算输出 token:适配器上报用量时用 CLI 自己的计数(内置 `claude` 会上报——见[用量与花费](#用量与花费odw-扩展)),否则按每条回复的 `ceil(字符数 / 4)` 估算。每次 CLI 运行都计入:schema 重试、限流重试,以及上报了用量的失败运行。每次派发和每次 schema 重试前都会检查;预算用尽时运行结束,仍在运行的 agent 会被停止。 |
+| 预算 | 计算输出 token:适配器上报用量时用 CLI 自己的计数(内置 `claude` 和 `codex` 会上报——见[用量与花费](#用量与花费odw-扩展)),否则按每条回复的 `ceil(字符数 / 4)` 估算。每次 CLI 运行都计入:schema 重试、限流重试,以及上报了用量的失败运行。每次派发和每次 schema 重试前都会检查;预算用尽时运行结束,仍在运行的 agent 会被停止。 |
 | JSON Schema | ODW 只检查[已列出的子集](skills/open-dynamic-workflows/zh-CN/references/primitives.md#schema);`format` 是注解。其他关键字(`$ref`、`const`、`oneOf`、`maxItems` 等)照常运行:运行日志会写明关键字及其位置,自己校验 schema 的 CLI(`claude`、`codex`)会强制执行它们。设 `"schemaKeywords": "strict"` 则改为拒绝这类调用(ODW 扩展;见[结构化输出](#结构化输出odw-扩展))。请明确声明对象/数组类型并使用受支持的约束。 |
 | 脚本可信性 | 只运行可信脚本:运行工作流会把正文当作普通 JavaScript 执行。加载时元数据按纯字面量解析,不会被求值;编译检查和兼容性警告都不提供沙箱隔离。 |
 | 恢复 | 每个完成的 `agent()` 结果都会在完成时保存。`odw resume` 让已暂停且仍存活的 worker 原地继续;对已结束的运行(done、failed、stopped,或崩溃后的 stale)则启动一个新运行:prompt 和选项都没变的调用直接重放,其余照常执行。`rerun` 从头执行。见[恢复运行](#恢复运行odw-扩展)。 |
@@ -320,8 +332,11 @@ odw logs $RUN --follow   # 流式输出原始进度事件
 odw logs $RUN --agent 3  # 某个 agent 做了什么:它的工具调用、结果和文字(见下文)
 odw result $RUN          # 最终值
 odw diff $RUN --stat     # 隔离 agent 改了什么;odw apply $RUN --agent N(或 --all)落地
+odw compare $OLD $RUN    # 两次运行之间变了什么:配置、耗时、花费、失败、回复(见下文)
+odw export $RUN --otlp   # 把运行导出为 OpenTelemetry trace(OTLP/JSON;--send 直接发送;见下文)
 odw pause|resume|stop $RUN
 odw approve|reject $RUN  # 回答运行正在等待的 checkpoint()(--note TEXT、--checkpoint N)
+odw approve $RUN --edit  # ……先在 $EDITOR 里修改 payload 再批准(或 --payload JSON|@file)
 odw list
 ```
 
@@ -403,16 +418,36 @@ await parallel(plan.steps.map((step) => () => agent(step.instructions)))
 odw status $RUN       # 问题、它的 payload,以及回答它的确切命令
 odw approve $RUN      # 最早在等待的检查点;--checkpoint N 指定某一个
 odw reject $RUN --note "Keep the old table until the backfill is verified"
+odw approve $RUN --edit   # 先修改 payload,再批准修改后的内容
 ```
 
 也可以在看板里该运行的页面上点 **Approve** / **Reject**(仅限 loopback 绑定;它向
-`POST /api/runs/:id/checkpoint` 发送 `{ action, checkpointId?, note? }`;
+`POST /api/runs/:id/checkpoint` 发送 `{ action, checkpointId?, note?, payload? }`;
 `GET /api/runs/:id` 会列出 `pendingCheckpoints`,运行列表则用 `waiting` 标出每个等待中
-运行最早的那个问题)。调用返回 `{ approved, note, by }`
+运行最早的那个问题)。调用返回 `{ approved, note, by, payload, edited }`
 ——`by` 是 `cli`、`dashboard` 或 `timeout`——拒绝也是一个答复而不是错误:"不"意味着
 什么由脚本决定。
 
+**修改后批准。** 和 Claude Code 的计划审批一样,审批人可以改了再批,而不必拒绝后重跑。
+`odw approve $RUN --edit` 会用 `$VISUAL` / `$EDITOR`(否则 `vi`;Windows 上是 `notepad`)
+打开一个私有临时文件,里面是格式化后的 payload:保存修改即批准修改后的内容;不改动就按
+原样批准;清空文件则放弃、不作答复。JSON 无效或修改不被检查点接受时,命令带着错误退出并
+保留该文件(打印其路径)。`--payload '<json>'` 或 `--payload @plan.json` 不经编辑器直接
+批准修改,看板则在 `action: "approve"` 时附上 `payload`。调用随后返回的 `payload` 是修改
+后的内容(没有修改时是检查点原来的 payload),只有与原 payload 的 JSON 不同时
+`edited` 才为 `true`;拒绝和超时都带回原 payload。给 `checkpoint()` 一个 `schema`
+(JSON Schema,用与 `agent()` 相同的校验器检查),修改就必须满足它:`odw approve`、API
+和运行本身都会拒绝不满足的修改,并给出校验错误。没有 schema 时任何 JSON 值都接受——
+payload 是脚本自己的数据,只有脚本知道修改可以是什么样——所以依赖其结构的脚本应当给出
+schema:
+
+```js
+const { approved, payload: approvedPlan } = await checkpoint('Run this plan?', { payload: plan, schema: PLAN })
+```
+
 - `payload` 可以是任意 JSON 值——计划、改动摘要——最多保留 64 KiB。
+- 修改后的 payload 最多 256 KiB JSON;`checkpoint_resolved` 会记录 `edited: true` 和
+  修改内容(与问题的 payload 一样截断到 64 KiB)。
 - `timeout`(秒)为无人值守的运行限定等待时长;超时后由 `onTimeout` 批准、拒绝,或(默认
   的 `"fail"`)抛出脚本可以捕获的 `CheckpointTimeout`。
 - 多个检查点可以同时等待(在 `parallel()` 里),各有自己的编号。
@@ -431,7 +466,9 @@ odw reject $RUN --note "Keep the old table until the backfill is verified"
 扇出很快就会烧掉额度,所以运行会边跑边显示花了多少。每个 `agent_finished`(以及
 `agent_failed`)事件都带着这个 agent 的 `usage`:`inputTokens`(含缓存命中的输入)、
 `outputTokens`、`cacheReadTokens`、`cacheWriteTokens` 和 `costUsd`,按 CLI 上报的数值
-在它所有的 CLI 运行上求和——内置 `claude` 适配器这些都会上报。CLI 不上报输出 token 时
+在它所有的 CLI 运行上求和——内置 `claude` 适配器这些都会上报;内置 `codex` 只上报 token
+(它的 `turn.completed` 事件不带美元花费,ODW 也不自行编造价格),所以 codex agent 只显示
+token、不显示花费。CLI 不上报输出 token 时
 (文本模式的适配器),ODW 按回复的 `ceil(字符数 / 4)` 计数,并把这个数标记为
 `estimated`(估算)。
 
@@ -508,7 +545,7 @@ I'll run the tests first.
 ```
 
 - agent 运行期间,它的 stdout 流式写入 run 目录下的 `agents/<agentId>.transcript.jsonl`:
-  JSONL 适配器的事件按 CLI 打印的原样每行一个(内置 `claude`——stream-json——、`kilo` 和
+  JSONL 适配器的事件按 CLI 打印的原样每行一个(内置 `claude` 的 stream-json、`codex` 的 `exec --json`、`kilo` 和
   `opencode`),其他适配器的输出写成 `{"kind":"text","text":…}` 行。stderr 的结尾(最后
   64 KB)写入 `agents/<agentId>.stderr.txt`;`odw logs --agent` 会在 transcript 之后显示它的最后几行。
 - schema 重试、卡死重启或限流重试都接着写在同一个文件里,前面先写一行
@@ -524,6 +561,110 @@ I'll run the tests first.
   `{ entries, next, more, truncated, replayed }`,每个条目为
   `{ i, kind: text|tool_call|tool_result|error|attempt|result|raw|truncated, text?, tool?, input?, output?, isError? }`,
   长字段截断到 4 KB(`clipped: true`),有密钥被拦下的条目带 `redacted: true`。
+
+### 对比两次运行(ODW 扩展)
+
+改了提示词、换了适配器或模型、升级了 CLI 之后重跑了工作流?`odw compare` 告诉你变了什么:
+
+```bash
+odw compare $OLD $NEW                  # 配置差异、运行总计(含 B − A)、每个 agent 一行
+odw compare $OLD $NEW --agent judge    # 某个 agent 在两次运行中的情况,以及完整的回复 diff(按 label 或 id)
+odw compare $OLD $NEW --json           # 同一份对比,供脚本使用——GET /api/compare?a=…&b=… 返回同样的结构
+```
+
+- **配置**:两次运行所用的、有差异的东西——工作流源码(启动时的 sha256)、脚本、args、odw
+  版本、`--budget`、各适配器 CLI 的版本、会改变行为的设置(超时、重试、权限档位、`fallback`、
+  `models` 等)、用到的适配器的定义,以及 agent 实际用到的适配器和模型。
+- **运行**:总耗时、输入/输出 token、花费、完成与失败的 agent 数——A、B 和 B − A。
+- **Agent**:先按 label 匹配(两次运行中各只出现一次的 label),再按 `odw resume` 重放所用的
+  调用键匹配(提示词和选项相同即同一调用),最后按所在 phase 内的顺序匹配;其余的显示为仅在 A
+  或仅在 B。每行给出两边的状态、适配器/模型、耗时、花费、尝试次数、保留 diff 的统计,以及回复是
+  相同还是不同(文本回复给出有上限的统一 diff,结构化回复给出有上限的 JSON 路径列表;`--agent`
+  显示完整内容)。
+- 在终端里,B 更差(耗时或花费更多、新出现失败)标红,更好标绿;`NO_COLOR` 和管道输出为纯文本。
+  表格不超过 100 列。
+- 已完成、失败和被停止的运行都可以对比;仍在进行的运行按当前状态对比,并附一条说明。
+
+这一切依赖每次运行记录下的信息:`meta.json` 中的 odw 版本和工作流的 sha256,`run_started`
+事件上会改变行为的设置,每个 `agent_started` 上的调用键和模型,以及——某个适配器在本次运行中
+第一次派发 agent 时——与 agent 并行执行、3 秒超时的 `<cli> --version`,记为 `cli_version`
+事件(`odw status` 和 `GET /api/runs/:id` 的 `cliVersions` 会显示)。它绝不拖慢或导致运行失败;
+不回应的 CLI 记为未知版本。命令为 node 或其他解释器、脚本或相对路径的适配器不做探测。
+`"recordVersions": false` 关闭探测。下一步的 `odw eval`(用例 × 适配器 × 重复次数)将基于此构建。
+
+### 可观测性:OpenTelemetry trace(ODW 扩展)
+
+已经在用 Langfuse、Arize Phoenix、Jaeger、Grafana Tempo、Datadog 或 Honeycomb 的团队,可以在
+那里查看每次运行:`odw export` 把运行记录转成遵循 GenAI 语义约定的 OpenTelemetry trace——
+OTLP/HTTP + JSON 编码,不需要 SDK,没有依赖。
+
+```bash
+odw export $RUN --otlp > trace.json          # 离线:把运行导出为 OTLP/JSON(--out FILE 效果相同)
+curl -H 'Content-Type: application/json' --data @trace.json "$ENDPOINT/v1/traces"
+odw export $RUN --otlp --send                # 或直接发送到配置的端点
+```
+
+配置中有 `otel` 时,worker 会在每次运行结束(done、failed 或 stopped)后自己发送该运行的
+trace,且只发一次:
+
+```json
+{ "otel": { "endpoint": "http://localhost:4318", "headers": {}, "captureContent": false } }
+```
+
+- **Span。** 运行对应 `invoke_workflow <name>`(`odw.run.id`、`odw.run.state`、总用量——
+  从不包含 args);`phase <title>` 包住每个阶段的工作;每个 agent 一个 `invoke_agent <label>`,
+  带 `gen_ai.provider.name`(`claude` → `anthropic`、`codex` → `openai`、`gemini` →
+  `gcp.gemini`、`kimi` → `moonshot_ai`,其余用适配器名)、`gen_ai.request.model` /
+  `gen_ai.response.model`、`gen_ai.usage.*`(含缓存 token)、`odw.agent.cost_usd`、
+  `odw.agent.attempts`,失败时 `error.type` 为失败原因(`rate_limit`、`quota` 等)且状态为
+  ERROR;transcript 中的每次工具调用一个 `execute_tool <name>`(`gen_ai.tool.name`、
+  `gen_ai.tool.call.id`,失败时为 ERROR);每个 `exec()` 步骤一个 `exec <label>`,每次等待一个
+  `checkpoint <title>`。
+- **重试、回退和额度等待**是所属 agent 上的 span 事件(`odw.retry`、`odw.fallback`、
+  `odw.quota_wait`):它们是一次 agent 调用中的时刻,时间取自运行记录——不用 link,因为 link
+  需要运行里本不存在的独立 span。
+- **ID 由运行 id 派生**(trace id 为 SHA-256(`odw/run/<runId>`) 的前 16 字节;span id 同理按
+  span 的身份派生),所以重复导出同一运行得到相同 ID,按 ID 去重的后端只保留一份。被续跑的运行,
+  根 span 会 link 到它续跑的运行。
+- **时间**取自运行事件。Claude Code 的 stream-json 不带时间,所以它的工具调用按在 transcript
+  中的位置估算,并标记 `odw.timing.estimated`;opencode 和 kilo 会报告自己的时间。
+- **默认不导出内容**——提示词、回复和工具输出都可能敏感。设 `"captureContent": true`(或
+  `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true`)后,trace 还会包含回复
+  (`gen_ai.output.messages`)、工具参数和结果、错误文本、`exec()` 命令行和检查点 payload——
+  都是 odw 已保存、已脱敏的文本,发出前无论 `redact` 如何设置都会再脱敏一次(环境变量的值
+  绝不外发),每个字段截断到 4096 个字符并以 `…` 标记。提示词本身不保存,因此从不导出。
+- **只有配置能开启它。** `OTEL_EXPORTER_OTLP_ENDPOINT`(或 `…_TRACES_ENDPOINT`)、
+  `OTEL_EXPORTER_OTLP_HEADERS`、`OTEL_SERVICE_NAME` 和 `OTEL_RESOURCE_ATTRIBUTES` 只补全
+  `otel` 没写的部分——人们会为别的工具设置它们,所以单靠它们什么都不会发送。端点默认为
+  `http://localhost:4318`,并追加 `/v1/traces`。
+- **绝不拖累运行:** 结果写盘之后只发一次 POST,时限 5 秒(`OTEL_EXPORTER_OTLP_TIMEOUT` 可以
+  设得更短);失败只在运行的 `worker.log` 中留一行。header 的值是机密:从不写日志、从不进事件;
+  `odw doctor` 只显示是否开启、端点的协议和主机,以及 header 名称。
+- **JSON,而非 protobuf。** 接受 OTLP/HTTP JSON 的接收端(Jaeger、Langfuse、OpenTelemetry
+  Collector)可直接接收;只接受 protobuf 或 gRPC 的(例如 Arize Phoenix)请经由 Collector,
+  它的 `otlp` receiver 可以任一格式转发。
+
+Langfuse(其 OTLP 端点使用项目密钥对的 HTTP Basic 认证):
+
+```json
+{
+  "otel": {
+    "endpoint": "https://cloud.langfuse.com/api/public/otel",
+    "headers": {
+      "Authorization": "Basic BASE64_OF_PUBLIC_KEY_COLON_SECRET_KEY",
+      "x-langfuse-ingestion-version": "4"
+    }
+  }
+}
+```
+
+本地 Jaeger(all-in-one 镜像在 4318 接收 OTLP,界面在 16686):
+
+```bash
+docker run --rm -d -p 16686:16686 -p 4318:4318 jaegertracing/all-in-one
+echo '{ "otel": { "endpoint": "http://localhost:4318" } }' > odw.config.json
+odw run wf.js            # 已有的运行则用:odw export $RUN --otlp --send
+```
 
 ## 看板:观测、检查、对话
 
@@ -576,11 +717,21 @@ I'll run the tests first.
       <img src="assets/app-screenshots/checkpoint.png" alt="停在检查点的运行:审批卡片里是问题和附带内容,带批准与拒绝按钮;图中 Approve 泳道里是一个琥珀色的关卡节点" />
     </td>
   </tr>
+  <tr>
+    <td width="50%">
+      <strong>花费</strong><br />
+      <img src="assets/app-screenshots/spend.png" alt="一次运行的花费小票:按阶段的 token 与花费及占比条、按适配器的分段、花费最多的 agent" />
+    </td>
+    <td width="50%">
+      <strong>对比</strong><br />
+      <img src="assets/app-screenshots/compare.png" alt="同一工作流两次运行的对比:总耗时、token、花费、完成与失败数及其变化,运行配置的差异,以及每个 agent 一行" />
+    </td>
+  </tr>
 </table>
 
 按 <kbd>⌘K</kbd> / <kbd>Ctrl K</kbd>(或 <kbd>/</kbd>)打开命令面板——跳转到任意运行或工作流、
 切换主题或语言、复制跟踪或重跑命令。<kbd>g</kbd> 再按 <kbd>a</kbd>/<kbd>j</kbd>/<kbd>w</kbd>/<kbd>c</kbd>/<kbd>s</kbd>
-切换页面,<kbd>1</kbd>–<kbd>4</kbd> 切换运行的标签页,<kbd>+</kbd>/<kbd>-</kbd>/<kbd>0</kbd> 缩放图。
+切换页面,<kbd>1</kbd>–<kbd>5</kbd> 切换运行的标签页,<kbd>$</kbd> 展开花费小票,<kbd>+</kbd>/<kbd>-</kbd>/<kbd>0</kbd> 缩放图。
 运行结束时看板会提示;如果在设置中开启,标签页在后台时还会发送桌面通知。
 
 ```bash
@@ -600,7 +751,7 @@ Codex、Claude Code、Gemini、Qwen、Kimi、Oh My Pi、Kilo Code、OpenCode、C
 
 | 适配器 | 本地 CLI | 非交互契约 |
 | --- | --- | --- |
-| `codex` | `codex` | stdout 文本;自带联网搜索;strict schema 走原生(`--output-schema`) |
+| `codex` | `codex` | `exec --json` 事件;回复取自 `--output-last-message` 文件(否则取最后一条 `agent_message`),token 取自 `turn.completed`,错误取自 `turn.failed` / `error`;自带联网搜索;strict schema 走原生(`--output-schema`) |
 | `claude` | `claude` | stream-json 事件;回复、用量、花费和错误取自其 `result` 事件;放行 WebSearch/WebFetch;schema 走原生(`--json-schema`) |
 | `gemini` | `gemini` | stdout 文本 |
 | `qwen` | `qwen` | stdout 文本 |
@@ -655,9 +806,49 @@ agent 的哪些工具调用。内置的 `claude` 适配器就是这样声明的:
   "usagePath": ["usage"],         // token 计数,位于 usageEvent 事件中(默认同 eventType)
   "costPath": ["total_cost_usd"], // 美元花费,位于同一事件
   "errorPath": ["is_error"],      // true、一条消息或一个错误对象:这次运行以它失败
-  "deniedPath": ["permission_denials"] // CLI 拒绝的工具调用:记在 agent 上并写入日志
+  "deniedPath": ["permission_denials"], // CLI 拒绝的工具调用:记在 agent 上并写入日志
+  "mcpEvent": "system",           // 列出 MCP 服务器的事件(Claude Code 的 init)
+  "mcpPath": ["mcp_servers"]      // 每项 { name, status }:没连上的记在 agent 上并写入日志
 }
 ```
+
+内置 `codex`(以下均为 ODW 扩展)读取 `codex exec --json`:回复是最后一个 `item.type` 为
+`agent_message` 的 `item.completed` 事件(`match`)——除非它写入最终消息的文件
+(`--output-last-message {reply_file}`)里有,文件优先:`{reply_file}` 是每次 CLI 运行在私有
+临时目录里新建的路径,CLI 退出后读取,随后删除。token 取自 `turn.completed`;`turn.failed`
+与 `error` 事件是它自己报告的失败(`errorEvents`:事件类型 → 消息所在路径),像其他失败一样
+归类——codex 自己重试过、随后这一轮正常完成的 `error` 不算失败:
+
+```jsonc
+"codex": {
+  "label": "Codex CLI",
+  "command": ["codex", "--search", "exec", "--json", "--output-last-message", "{reply_file}",
+              "--skip-git-repo-check", "{permission_args}", "--cd", "{workspace}", "-"],
+  "stdin": "{prompt}",
+  "flags": { "model": ["--model"], "schema": { "args": ["--output-schema"], "mode": "file", "strict": true } },
+  "output": {
+    "format": "jsonl",
+    "eventType": "item.completed",
+    "match": { "path": ["item", "type"], "equals": "agent_message" }, // 只有这些事件带回复
+    "textPath": ["item", "text"],
+    "select": "last",
+    "usageEvent": "turn.completed",
+    "usagePath": ["usage"],                                          // 只有 token:codex 不报花费
+    "errorEvents": { "turn.failed": ["error"], "error": ["message"] }
+  },
+  "permissionArgs": {
+    "read": ["--sandbox", "read-only"],
+    "edit": ["--sandbox", "workspace-write"],
+    "full": ["--sandbox", "danger-full-access"]
+  }
+}
+```
+
+给 `codex` 写了自己 `command` 的条目会整体替换内置适配器:要连同这个 `output` 块(以及
+`--json`)一起写,否则它的 agent 不上报用量,回复也会是 codex 的文本输出。codex 的一轮结束时
+若没有任何 agent 消息——回复文件为空、也没有 `agent_message` 事件——回复就是空的,agent 以
+`empty_reply` 失败(`allowEmpty: true` 可接受),而不是返回一堆事件;运行日志会写明到底缺了
+什么。事件里没有回复而回复文件里有时,回复照常成立,日志说明事件与声明不符。
 
 在 `acceptEdits` 下,Claude Code 无头运行时会直接拒绝本该询问的操作——比如没在允许列表里
 的 shell 命令——而回复仍可能声称成功;`deniedPath` 读的就是这些拒绝。默认情况下回复照常
@@ -672,7 +863,8 @@ agent 的哪些工具调用。内置的 `claude` 适配器就是这样声明的:
 "errorPath": […], "deniedPath": […] }`;路径里的整数用于索引数组(负数从末尾数)。`errorPath` 上报的失败
 会像任何失败的运行一样被归类——不论退出码——所以限流会被重试,额度用尽会说明何时重置。
 输出里找不到声明的文本时——CLI 的格式变了,或配置写错了——原始 stdout 就作为回复,运行
-日志会说明原因;agent 不会因此失败。
+日志会说明原因;agent 不会因此失败。同时把回复写进 `{reply_file}` 的 CLI(如 `codex`)先从
+文件读取;两处都为空时,回复为空,而不是一堆事件。
 
 ODW 只把解码后的最终响应交给 workflow;JSONL 输出会边流式到达边逐行解码(只保留最新文本
 和用量合计,而不是整段记录),stderr 只保留有限的尾部用于错误信息。
@@ -879,9 +1071,16 @@ cloning with «redacted:github»
 结尾;保存的 agent 结果(`odw result --agent`、看板的 agent 抽屉);运行的事件——
 `odw logs`、日志行、`agent_failed` 的错误(失败时引用的输出先脱敏再截断,所以不会留下
 半个密钥)、`exec()` 步骤显示的命令行以及失败的 `check` 引用的输出;运行的错误;
-`status.json` 中等待中的检查点;以及 webhook 负载。被脱敏过的内容会以 `redacted: true`
-标明——保存的结果、事件、transcript 行及其在 API 中的条目、`result.json`、
-`error.json`、webhook 负载——`odw doctor` 会说明脱敏是否开启、覆盖了哪些变量。脱敏随
+`status.json` 中等待中的检查点;webhook 负载;运行的 `worker.log`——worker 自己的输出,
+包括工作流用 `console.log` 打印的 agent 回复,写入时即脱敏;以及 Chat Host 的会话
+(`<runsRoot>/_chat/sessions.json` 和 `/api/chat/sessions` 提供的内容):Codex 的回复完整
+脱敏,你输入的内容——以及作为消息贴回的运行结果——只脱敏令牌形态,因为那是你的数据;仍在
+流式输出的回复在结束前只保留完整的行,开启脱敏前保存的会话文件在读取时脱敏。运行的 `args`
+也是你的数据,可能带着令牌:`/api/runs/:id` 和看板提供的 args 会脱敏令牌形态
+(`argsRedacted: true`),`/api/schedules` 提供的定时任务 args 也一样——但 `meta.json` 和
+定时任务本身按原样保存,所以 `odw rerun` 和 `odw resume` 用原始 args 启动新运行。被脱敏过的
+内容会以 `redacted: true` 标明——保存的结果、事件、transcript 行及其在 API 中的条目、
+`result.json`、`error.json`、webhook 负载、聊天消息——`odw doctor` 会说明脱敏是否开启、覆盖了哪些变量。脱敏随
 输出到达而进行,不会囤积输出:一行等到行尾,一个私钥等到它的最后一行。
 
 不会被脱敏的:
@@ -892,8 +1091,9 @@ cloning with «redacted:github»
 - **保存的 diff**(`agents/<id>.diff`)是 agent 对你代码的改动:也就是 `odw apply` 要应用、
   保留分支要提交的内容,标记会损坏你的文件。agent 写进代码里的密钥,应在审阅时发现
   (`odw diff`、看板的 Changes 标签页)。
-- 运行的 `args`(你传入的内容)、`worker.log`(worker 自己的输出,包括工作流的
-  `console.log`)以及 Chat Host 的会话。
+- **`meta.json` 里保存的运行 `args`**(以及定时任务的):`odw rerun` 和 `odw resume`
+  必须从你传入的原样开始,只有对外提供的内容会脱敏。Chat Host 交给 Codex 的内容也不脱敏:
+  一个回合所回答的消息按你输入的原样交给它(更早的消息按保存的样子)。
 - **恢复的运行** 会按保存时的样子(已脱敏)重放 agent 的结果,并在日志中说明。
 
 脱敏是安全网,不是保险库:形态未知、变量名又不像密钥的秘密会按原样保存。用
@@ -922,15 +1122,16 @@ cloning with «redacted:github»
 看门狗**对所有内置适配器默认关闭**:有些 CLI——文本模式的那些(`gemini`、`qwen`、
 `kimi`……)——在结束前什么都不输出,任何卡死超时都会误杀正常工作。请只对会流式输出进度
 的适配器启用:`claude`(它的 stream-json 每一轮都会输出一个事件,所以现在可以放心对它
-启用)、`kilo` 和 `opencode` 这类 JSONL 适配器,或会打印心跳的包装脚本;并把值设得高于
+启用)、`codex`(`exec --json` 每条命令、每次编辑、每条消息都输出一个事件)、`kilo` 和
+`opencode` 这类 JSONL 适配器,或会打印心跳的包装脚本;并把值设得高于
 健康 agent 最长的静默时段——工具调用里跑一轮很长的测试,同样不会有任何输出。
 
 ### 限流、额度与登录
 
 **ODW 扩展。** 每个失败的 agent 都会根据其 CLI 的退出状态和输出末尾被归类:`rate_limit`、
 `quota`、`auth`、`timeout`、`stalled`、`not_found`(CLI 无法启动)、`permission`(工具
-调用或审批被拒)或 `exit`——另有两个类别,给"成功了"却拿不出证据的运行:`empty_reply` 和
-`unmet_expectation`(见[检查 agent 的工作](#检查-agent-的工作odw-扩展))。这个类别就是 `agent_failed` 事件上的 `reason`(CLI 说明了何时
+调用或审批被拒)或 `exit`——另有三个类别,给"成功了"却拿不出证据的运行:`empty_reply`、
+`unmet_expectation`,以及 `"mcpFailures": "fail"` 下的 `mcp_unavailable`(见[检查 agent 的工作](#检查-agent-的工作odw-扩展))。这个类别就是 `agent_failed` 事件上的 `reason`(CLI 说明了何时
 可以重试时,还带有以秒计的 `retryAfter`),也是看板和 `/api/runs/:id` 里该 agent 的
 `failureReason`,并显示在实时视图和 `odw logs` 中:
 
@@ -956,7 +1157,10 @@ agent_failed    (Search) search — [quota, retry after 3h 22m] AdapterExecution
 
 Claude Code 会在输出里报告这类错误,而且常常以 0 退出:它的 stream-json `result` 事件
 带着 `is_error: true` 和错误消息(`API Error: Rate limit reached`、
-`Claude AI usage limit reached|…`),这会被算作消息所指的那种失败。在文本模式下(文本
+`Claude AI usage limit reached|…`),这会被算作消息所指的那种失败。Codex 的 `turn.failed`
+与 `error` 事件同样如此(`Quota exceeded. Check your plan and billing details.`、
+`exceeded retry limit, last status: 429 Too Many Requests`)——它自己重试过、随后这一轮
+正常完成的 `error` 除外。在文本模式下(文本
 适配器,或回退到原始 stdout 的 JSON 输出),一条简短、内容只有这类限流、额度或登录错误
 的回复同样会被算作对应的失败——绝不会被当成 agent 的答案。空回复算作 `empty_reply` 失败,
 不重试。声称成功、但 `permission_denials` 列出了被无头模式拒绝的工具调用的 `result` 照常
@@ -1433,7 +1637,7 @@ node web/dev.mjs --api http://127.0.0.1:4317     # → http://127.0.0.1:5173
 - **有证据的成功。** `agent(…, { expect })` 检查 agent 的工作,而不是听它怎么说——某条命令
   以 0 退出、有文件改动、回复匹配——没达到就把缺失项交还给它一次,之后以
   `reason: "unmet_expectation"` 和缺失项失败。空回复以 `empty_reply` 失败;Claude Code
-  拒绝的工具调用会记在 agent 上并写入日志——并计入 `expect`(ODW 扩展;见
+  拒绝的工具调用和它没能启动的 MCP 服务器会记在 agent 上并写入日志——并计入 `expect`(ODW 扩展;见
   [检查 agent 的工作](#检查-agent-的工作odw-扩展))。
 - **权限档位。** 每个 agent 以 `read`、`edit`(默认,与以往一致)或 `full` 运行,映射到各
   CLI 自己的参数:审查与调研类 fan-out 碰不到工作树(`--permissions read`、
@@ -1464,8 +1668,9 @@ node web/dev.mjs --api http://127.0.0.1:4317     # → http://127.0.0.1:5173
   审阅,再用 `odw apply` 落地:动手之前它会逐个文件预览——干净、冲突(附冲突行)还是已应用——
   `--all` 按顺序应用所有 agent,加上 `--verify "npm test"` 时,把弄坏构建的那次应用回滚,
   你其余的未提交改动不受影响。
-- **真实用量与花费。** 内置 `claude` 适配器改为读取 Claude Code 的 `stream-json`,每个 agent
-  都会记录 CLI 上报的 token 与花费——`odw status`、实时视图和看板里都能看到——`--budget` 也按真实
+- **真实用量与花费。** 内置 `claude` 适配器改为读取 Claude Code 的 `stream-json`,内置 `codex`
+  适配器改为读取 `codex exec --json`,每个 agent 都会记录 CLI 上报的 token(Claude 还有花费;
+  codex agent 的 transcript 会显示它执行的命令、编辑与工具调用)——`odw status`、实时视图和看板里都能看到——`--budget` 也按真实
   输出 token 计量。单次 fan-out 超过 `fanOutWarn`(25)时会提前提示。
 - **开箱即用的 worktree。** `.worktreeinclude` 会把 `.env`、`node_modules` 等复制或链接
   进隔离 agent 的 worktree,`worktreeSetup` 运行你的初始化命令,每个 agent 都有自己的
@@ -1518,7 +1723,7 @@ node web/dev.mjs --api http://127.0.0.1:4317     # → http://127.0.0.1:5173
 ### 路线图
 
 按并行 coding agent 用户反馈的需求排序([调研](docs/research/user-needs-2026-10.md)):
-更多 CLI 上报的真实 token 用量与花费(目前 Claude Code 已上报,其余仍按估算)·
+更多 CLI 上报的真实 token 用量与花费(目前 Claude Code 与 Codex 已上报,其余仍按估算)·
 运行 Claude plugin 工作流 · 评测。完整规划见 [`docs/ROADMAP.md`](docs/ROADMAP.md);
 最初的设计见 [`docs/dynamic-workflows-tech-plan.md`](docs/dynamic-workflows-tech-plan.md);
 ODW 所对齐的 Claude Code 方言背景见

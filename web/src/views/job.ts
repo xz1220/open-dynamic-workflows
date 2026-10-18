@@ -4,25 +4,31 @@ import { deltaHtml, diffBar, filePath, pathHtml, statusMark } from "../component
 import { glyph, pill } from "../components/glyph";
 import { renderJson } from "../components/json";
 import { renderTimeline } from "../components/timeline";
-import { reasonLabel, renderDag } from "../dag";
+import { reasonLabel, renderDag, shownState } from "../dag";
 import { icons } from "../icons";
 import { getLang, t, tn } from "../i18n";
 import { store } from "../store";
 import type { AgentView, RunDetail, WorkflowEvent } from "../types";
 import { ACTIVE, TERMINAL, esc, fmtClock, fmtDurMs, fmtDurSec, fmtHourMin, fmtTokens, fmtUsd, markRedactions } from "../util";
 import { EVT_CLASS, commandDetail, emptyArt } from "./activity";
+import { compareHash, previousRun } from "./compare";
+import { spendReceipt } from "./spend";
 
 export type JobTab = "graph" | "timeline" | "logs" | "result" | "changes";
 
 export interface JobViewState {
   /** Draft note for a checkpoint decision. */
   cpNote: string;
+  /** The payload being edited before an approval: which checkpoint, and the JSON as typed. */
+  cpEdit?: { id: number; text: string } | null;
   tab: JobTab;
   selectedAi: number | null;
   /** The agent whose diff the Changes tab shows (index into run.agents). */
   reviewAi: number | null;
   /** The agent whose transcript sheet is open (index into run.agents). */
   transcriptAi?: number | null;
+  /** The spend receipt under the header is unfolded. */
+  spend?: boolean;
   zoom: number;
   logQuery: string;
   logTypes: Set<string>;
@@ -78,7 +84,7 @@ function stepper(run: RunDetail): string {
   );
 }
 
-function runHead(run: RunDetail, nowSec: number): string {
+function runHead(run: RunDetail, nowSec: number, spendOpen: boolean): string {
   const terminal = TERMINAL.has(run.state);
   const elapsed =
     run.createdAt != null ? fmtDurSec((terminal ? (run.updatedAt ?? run.createdAt) : nowSec) - run.createdAt) : "—";
@@ -104,7 +110,7 @@ function runHead(run: RunDetail, nowSec: number): string {
     `<div class="title-row"><h1 class="display">${esc(run.name)}</h1>${pill(run.state)}</div>` +
     (run.description ? `<p class="lede">${esc(run.description)}</p>` : "") +
     `</div>` +
-    `<div class="actions">${stop}${resume}` +
+    `<div class="actions">${stop}${resume}${compareLink(run)}` +
     `<button class="btn" data-copy="odw logs ${esc(run.runId)} --follow" data-tip="${esc(t("copy a follow command"))}">${icons.terminal}${t("Follow in terminal")}</button>` +
     `<button class="btn ghost" data-copy="${esc(run.runId)}">${icons.copy}${t("Copy id")}</button></div>` +
     `</header>` +
@@ -113,19 +119,34 @@ function runHead(run: RunDetail, nowSec: number): string {
     stat(c.running, t("running"), c.running ? "sig" : "") +
     stat(c.done, t("done")) +
     (c.failed ? stat(c.failed, t("failed"), "alarm") : "") +
-    (run.usage && (run.usage.inputTokens != null || run.usage.outputTokens != null)
-      ? stat(
-          `${fmtTokens((run.usage.inputTokens ?? 0) + (run.usage.outputTokens ?? 0))}${run.usage.estimated ? "~" : ""}`,
-          t("tokens"),
-        )
-      : "") +
-    (run.usage?.costUsd != null ? stat(fmtUsd(run.usage.costUsd), t("cost")) : "") +
+    spendButton(run, stat, spendOpen) +
     changedStat(run, stat) +
     stat(elapsed, t("elapsed")) +
     `</div></div>` +
     `<div class="run-prog"><div class="prog">` +
     `<i class="p-done" style="width:${w(c.done)}"></i><i class="p-run" style="width:${w(c.running)}"></i>` +
     `<i class="p-fail" style="width:${w(c.failed)}"></i><i class="p-stale" style="width:${w(c.stale)}"></i></div></div>`
+  );
+}
+
+/** A link to what changed since the workflow's previous run, when it has one. */
+function compareLink(run: RunDetail): string {
+  const prev = previousRun(run);
+  if (!prev) return "";
+  return `<a class="btn" href="${compareHash(prev.runId, run.runId)}" data-tip="${esc(t("against {id}", { id: prev.runId }))}">${icons.compare}${t("Compare")}</a>`;
+}
+
+/** The run's tokens and cost — a button that unfolds where they went. */
+function spendButton(run: RunDetail, stat: (v: string, k: string) => string, open: boolean): string {
+  const u = run.usage;
+  const stats =
+    (u && (u.inputTokens != null || u.outputTokens != null)
+      ? stat(`${fmtTokens((u.inputTokens ?? 0) + (u.outputTokens ?? 0))}${u.estimated ? "~" : ""}`, t("tokens"))
+      : "") + (u?.costUsd != null ? stat(fmtUsd(u.costUsd), t("cost")) : "");
+  if (!stats) return "";
+  return (
+    `<button class="spend-btn${open ? " on" : ""}" data-spend aria-expanded="${open}" data-tip="${esc(t("where the tokens and dollars went"))}">` +
+    `${stats}<i class="caret" aria-hidden="true"></i></button>`
   );
 }
 
@@ -178,28 +199,32 @@ function resetNote(a: AgentView, nowSec: number): string {
 function checkpointDrawer(run: RunDetail, a: AgentView, ai: number, nowSec: number): string {
   const waited = a.startedAt != null ? fmtDurSec((a.finishedAt ?? nowSec) - a.startedAt) : "—";
   const d = a.decision;
+  const verdict = d ? (d.approved ? (a.edited ? t("approved with edits") : t("approved")) : t("rejected")) : "";
   const answer = d
-    ? `<div class="drawer-sec">${t("Answer")}</div><div class="outbox${d.approved ? "" : " err"}">${esc(d.approved ? t("approved") : t("rejected"))}` +
+    ? `<div class="drawer-sec">${t("Answer")}</div><div class="outbox${d.approved ? "" : " err"}">${esc(verdict)}` +
       `${d.by ? ` · ${esc(t(d.by))}` : ""}${d.note ? `\n“${esc(d.note)}”` : ""}</div>`
     : a.state === "waiting"
       ? `<div class="drawer-sec">${t("Answer")}</div><div class="outbox">${t("Waiting — answer it in the card above the tabs, or with {cmd}", { cmd: `odw approve ${esc(run.runId)} --checkpoint ${a.checkpointId}` })}</div>`
       : a.error
         ? `<div class="drawer-sec">${t("Error")}</div><div class="outbox err">${esc(a.error)}</div>`
         : "";
+  const approved = a.edited
+    ? `<div class="drawer-sec">${t("Approved payload (edited)")}</div><div class="outbox json-out">${renderJson(a.approvedPayload ?? null)}</div>`
+    : "";
   const payload =
     a.payload !== undefined && a.payload !== null
       ? `<div class="drawer-sec">${t("Payload")}</div><div class="outbox json-out">${renderJson(a.payload)}</div>`
       : "";
   return (
     `<aside class="drawer" data-key="drawer-${ai}">` +
-    `<div class="drawer-head"><div class="row">${pill(a.state, d ? (d.approved ? t("approved") : t("rejected")) : a.state === "stopped" ? t("not answered") : undefined)}<span class="tag">${t("checkpoint")} #${a.checkpointId}</span>` +
+    `<div class="drawer-head"><div class="row">${pill(a.state, d ? verdict : a.state === "stopped" ? t("not answered") : undefined)}<span class="tag">${t("checkpoint")} #${a.checkpointId}</span>` +
     `<button class="iconbtn" data-close="1" aria-label="${esc(t("Close"))}">${icons.close}</button></div>` +
     `<h4>${esc(a.label)}</h4></div>` +
     `<div class="drawer-body"><div class="kv">` +
     `<span class="k">${t("phase")}</span><span class="v">${esc(a.phase ?? "—")}</span>` +
     `<span class="k">${t("asked")}</span><span class="v">${fmtClock(a.startedAt)}</span>` +
     `<span class="k">${t("waited")}</span><span class="v">${waited}</span>` +
-    `</div>${answer}${payload}</div></aside>`
+    `</div>${answer}${approved}${payload}</div></aside>`
   );
 }
 
@@ -209,8 +234,20 @@ function drawer(run: RunDetail, ai: number, nowSec: number): string {
   if (a.kind === "checkpoint") return checkpointDrawer(run, a, ai, nowSec);
   const dur =
     a.state === "running" && a.startedAt != null ? fmtDurSec(nowSec - a.startedAt) : fmtDurMs(a.durationMs);
-  const status =
-    a.state === "failed"
+  const wait = a.state === "running" ? a.quotaWait : undefined;
+  const status = wait
+    ? `<div class="drawer-sec">${t("Status")}</div><div class="outbox wait">` +
+      esc(
+        wait.resumeAt != null
+          ? t("Waiting for {adapter}'s quota to reset at {t} (in {d}). It holds no slot: agents on other adapters keep running.", {
+              adapter: wait.adapter,
+              t: fmtHourMin(wait.resumeAt),
+              d: fmtDurSec(Math.max(0, wait.resumeAt - nowSec)),
+            })
+          : t("Waiting for {adapter}'s quota to reset. It holds no slot: agents on other adapters keep running.", { adapter: wait.adapter }),
+      ) +
+      `</div>`
+    : a.state === "failed"
       ? `<div class="drawer-sec">${t("Error")}</div><div class="outbox err">${markRedactions(esc(a.error ?? t("(no message)")))}</div>`
       : a.state === "stale"
         ? `<div class="drawer-sec">${t("Status")}</div><div class="outbox">${run.provider === "claude" ? t("no recent signal") : t("worker lost contact")}</div>`
@@ -235,7 +272,7 @@ function drawer(run: RunDetail, ai: number, nowSec: number): string {
     .join("");
   return (
     `<aside class="drawer" data-key="drawer-${ai}">` +
-    `<div class="drawer-head"><div class="row">${pill(a.state)}<span class="tag">${esc(a.kind === "command" ? t("command") : (a.adapter ?? "—"))}</span>` +
+    `<div class="drawer-head"><div class="row">${pill(shownState(a), wait ? t("quota wait") : undefined)}<span class="tag">${esc(a.kind === "command" ? t("command") : (a.adapter ?? "—"))}</span>` +
     `<button class="iconbtn" data-close="1" aria-label="${esc(t("Close"))}">${icons.close}</button></div>` +
     `<h4>${esc(a.label)}</h4></div>` +
     `<div class="drawer-body">` +
@@ -276,6 +313,12 @@ function drawer(run: RunDetail, ai: number, nowSec: number): string {
     (a.denied?.length
       ? `<div class="drawer-sec">${t("Refused tool calls")}</div><ul class="denied">${a.denied.map((d) => `<li>${esc(d)}</li>`).join("")}</ul>` +
         `<p class="dnote">${t("Its reply may rest on work it could not do — raise its tier with --permissions, or allowlist the tool.")}</p>`
+      : "") +
+    (a.mcp?.length
+      ? `<div class="drawer-sec">${t("MCP servers")}</div><ul class="mcp">${a.mcp
+          .map((m) => `<li><span class="tag ${m.status === "pending" ? "" : "warn"}">${esc(t(m.status))}</span><span class="mono">${esc(m.name)}</span></li>`)
+          .join("")}</ul>` +
+        `<p class="dnote">${t("Their tools were not there for this agent — check the server with claude mcp list.")}</p>`
       : "") +
     changesSection(run, a, ai, rec?.branch) +
     output +
@@ -364,6 +407,8 @@ function logRow(e: WorkflowEvent, i: number): string {
     msg = `<b>${esc(String(e.label ?? ""))}</b> <span class="er">${esc(String(e.error ?? ""))}</span>`;
   else if (e.type.startsWith("command_"))
     msg = `<b>${esc(commandDetail(e))}</b>${e.type === "command_failed" && e.error ? ` <span class="er">${esc(String(e.error))}</span>` : ""}`;
+  else if (e.type === "cli_version")
+    msg = `<b>${esc(String(e.adapter ?? ""))}</b> ${esc(String(e.version ?? e.error ?? ""))}`;
   else if (e.type.startsWith("agent_"))
     msg = `<b>${esc(String(e.label ?? ""))}</b>${e.adapter ? ` · ${esc(String(e.adapter))}` : ""}${e.attempts && Number(e.attempts) > 1 ? ` · ×${esc(String(e.attempts))}` : ""}`;
   else msg = esc(e.type.replace(/_/g, " "));
@@ -435,6 +480,43 @@ function resultTab(run: RunDetail): string {
   );
 }
 
+/**
+ * A payload a person may edit before approving: one the event carried whole
+ * (not cut to 64 KiB) and with no redaction markers, which an edit would send
+ * back in place of the secrets.
+ */
+function editablePayload(cp: { payload?: unknown; truncated?: boolean }): boolean {
+  return cp.payload !== undefined && cp.payload !== null && !cp.truncated && !JSON.stringify(cp.payload).includes("«redacted:");
+}
+
+/** What the edited text is: valid JSON or not (and why), and whether it differs from what was asked. */
+export function cpEditState(original: unknown, text: string): { ok: boolean; changed: boolean; error: string | null; value?: unknown } {
+  try {
+    const value: unknown = JSON.parse(text);
+    return { ok: true, changed: JSON.stringify(value) !== JSON.stringify(original ?? null), error: null, value };
+  } catch (err) {
+    return { ok: false, changed: true, error: (err as Error).message };
+  }
+}
+
+function cpEditor(cp: { checkpointId: number; schema?: Record<string, unknown> | null }, text: string, st: ReturnType<typeof cpEditState>): string {
+  const lines = Math.min(22, Math.max(6, text.split("\n").length + 1));
+  const status = !st.ok
+    ? `<span class="cpv bad">${esc(t("not valid JSON — {why}", { why: st.error ?? "" }))}</span>`
+    : st.changed
+      ? `<span class="cpv ok">${t("valid JSON · edited")}</span>`
+      : `<span class="cpv">${t("valid JSON · unchanged")}</span>`;
+  return (
+    `<div class="cp-edit" data-key="cpe-${cp.checkpointId}">` +
+    `<textarea id="cp-payload" class="cp-json" rows="${lines}" spellcheck="false" autocomplete="off" aria-label="${esc(t("Payload to approve"))}">${esc(text)}</textarea>` +
+    `<div class="cp-edit-bar">${status}` +
+    (cp.schema ? `<span class="dim">${t("It must match the checkpoint's schema — the run checks it.")}</span>` : "") +
+    `<span class="sp"></span>` +
+    `<button class="btn sm ghost" data-cp-format${st.ok ? "" : " disabled"}>${t("Format")}</button>` +
+    `<button class="btn sm ghost" data-cp-edit-cancel>${t("Discard edits")}</button></div></div>`
+  );
+}
+
 /** checkpoint() calls waiting for a person: what is asked, the payload, and the decision. */
 function checkpoints(run: RunDetail, s: JobViewState): string {
   const pending = run.pendingCheckpoints ?? [];
@@ -442,13 +524,23 @@ function checkpoints(run: RunDetail, s: JobViewState): string {
   const canDecide = run.provider === "odw" && store.capabilities.writable;
   return pending
     .map((cp, i) => {
-      const payload = cp.payload !== undefined && cp.payload !== null ? `<div class="cp-payload">${renderJson(cp.payload)}</div>` : "";
+      const has = cp.payload !== undefined && cp.payload !== null;
+      const edit = s.cpEdit?.id === cp.checkpointId ? cpEditState(cp.payload, s.cpEdit.text) : null;
+      const payload = edit
+        ? cpEditor(cp, s.cpEdit!.text, edit)
+        : has
+          ? `<div class="cp-payload">${renderJson(cp.payload)}</div>` +
+            (canDecide && editablePayload(cp)
+              ? `<button class="btn sm ghost cp-edit-open" data-cp-edit="${cp.checkpointId}">${icons.edit}${t("Edit before approving")}</button>`
+              : "")
+          : "";
+      const approve = edit?.changed ? t("Approve with edits") : t("Approve");
       const actions = canDecide
         ? `<div class="cp-actions">` +
           (i === 0
             ? `<input id="cp-note" class="cp-note" placeholder="${esc(t("Add a note for the workflow (optional)"))}" value="${esc(s.cpNote)}" autocomplete="off"/>`
             : "") +
-          `<button class="btn primary" data-cp="approve" data-cp-id="${cp.checkpointId}">${t("Approve")}</button>` +
+          `<button class="btn primary" data-cp="approve" data-cp-id="${cp.checkpointId}"${edit && !edit.ok ? " disabled" : ""}>${approve}</button>` +
           `<button class="btn danger" data-cp="reject" data-cp-id="${cp.checkpointId}">${t("Reject")}</button></div>`
         : `<p class="dim" style="margin:10px 0 0">${t("Resolve it with {cmd}", { cmd: `<code>odw approve ${esc(run.runId)}</code>` })}</p>`;
       return (
@@ -653,7 +745,7 @@ export function renderJob(s: JobViewState, nowSec: number): string {
             ? changesTab(run, s)
             : resultTab(run);
   return (
-    `<div class="job" data-key="job-${esc(run.runId)}">${runHead(run, nowSec)}${quotaPause(run, nowSec)}${checkpoints(run, s)}${tabs(run, s.tab)}` +
+    `<div class="job" data-key="job-${esc(run.runId)}">${runHead(run, nowSec, !!s.spend)}${spendReceipt(run, !!s.spend)}${quotaPause(run, nowSec)}${checkpoints(run, s)}${tabs(run, s.tab)}` +
     `<section class="tab-body" data-tabbody="${s.tab}" data-key="tb-${s.tab}">${body}</section></div>`
   );
 }

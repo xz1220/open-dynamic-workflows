@@ -58,7 +58,10 @@
  * "unmet_expectation" and its `misses` on agent_failed. An empty reply fails
  * with reason "empty_reply" unless the call sets `allowEmpty`. Tool calls its
  * CLI refused under a reply that stood are logged once and kept as `denied`
- * on its agent_finished event and saved record.
+ * on its agent_finished event and saved record. The MCP servers its CLI
+ * started it without (Claude Code's init event) are kept as `mcp` on its
+ * terminal event and saved record, and logged once per run for each server
+ * and status.
  */
 
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -68,6 +71,7 @@ import { dirname, resolve } from "node:path";
 
 import { formatSeconds } from "./adapters/failures.js";
 import { isPermissionTier } from "./adapters/permissions.js";
+import type { McpServer } from "./adapters/output.js";
 import { adapterDisplayName, type Adapter, type PermissionTier } from "./adapters/types.js";
 import { addUsage, estimatedUsage, type Usage } from "./adapters/usage.js";
 import type { AgentRequest } from "./bridge.js";
@@ -200,6 +204,9 @@ export function createPrimitives(
   // Adapters whose permissions note the run has logged: once per adapter per
   // run, shared with nested workflow()s (their contexts are copies of this one).
   const notedPermissions = (ctx.permissionNotes ??= new Set<string>());
+  // Each MCP server, with its status, the run has said was not connected:
+  // once per run, shared with nested workflow()s like the notes above (ODW extension).
+  const notedMcp = (ctx.mcpNotes ??= new Set<string>());
   // Each phase's defaults for its agents (ODW extension), by its (prefixed)
   // title — shared with nested workflow()s like the notes above.
   const phaseDefaults = (ctx.phaseDefaults ??= new Map<string, PhaseDefaults>());
@@ -261,13 +268,14 @@ export function createPrimitives(
     };
     // The tier the value was produced at, when the record says (ODW extension).
     const tier = permissionField(recorded.permissions);
-    const startedEv = event(AGENT_STARTED, { agentId, label, phase, adapter, ...tier, ...marks });
+    const startedEv = event(AGENT_STARTED, { agentId, label, phase, adapter, key, ...tier, ...marks });
     ctx.emit(startedEv);
     const kept = await carryChanges(recorded, agentId, (message) =>
       ctx.emit(event(LOG, { message: `${label}:${agentId}: ${message}`, agentId, label, phase })),
     );
     // What its CLI refused when the value was produced travels with it (ODW extension).
     const denied = deniedField(recorded.denied);
+    const mcp = mcpField(recorded.mcp);
     const changed = changeFields(kept);
     // A value saved with its secrets redacted replays as saved, and says so (ODW extension; see ./redact).
     const redacted = recorded.redacted === true ? { redacted: true } : {};
@@ -281,11 +289,11 @@ export function createPrimitives(
         }),
       );
     }
-    const finished = event(AGENT_FINISHED, { agentId, label, phase, adapter, ...moved, attempts, ...marks, ...changed, ...denied });
+    const finished = event(AGENT_FINISHED, { agentId, label, phase, adapter, ...moved, attempts, ...marks, ...changed, ...denied, ...mcp });
     const startedAt = startedEv.ts;
     const finishedAt = finished.ts;
     const value = recorded.value;
-    if (save({ agentId, key, label, phase, adapter, ...moved, attempts, startedAt, finishedAt, value, ...tier, ...marks, ...changed, ...denied, ...redacted })) {
+    if (save({ agentId, key, label, phase, adapter, ...moved, attempts, startedAt, finishedAt, value, ...tier, ...marks, ...changed, ...denied, ...mcp, ...redacted })) {
       finished.saved = true;
     }
     ctx.emit(finished);
@@ -492,6 +500,8 @@ export function createPrimitives(
       const usage = estimatedChars > 0 ? addUsage(reported, estimatedUsage(estimatedChars)) : reported;
       return usage ? { usage } : {};
     };
+    // The MCP servers its latest CLI run started it without (ODW extension): what a failed agent keeps.
+    let mcpSeen: McpServer[] = [];
     const failed = (err: unknown, kept: KeptChanges | null = null): void => {
       ctx.emit(
         event(AGENT_FAILED, {
@@ -503,6 +513,7 @@ export function createPrimitives(
           ...movedFields(),
           ...usageField(),
           ...changeFields(kept),
+          ...mcpField(mcpSeen),
         }),
       );
       if (typeof err === "object" && err !== null) surfaced.add(err);
@@ -532,6 +543,10 @@ export function createPrimitives(
           phase: activePhase,
           adapter: adapter.name,
           ...permissionField(permissions.tier ?? permissions.requested),
+          // What `odw compare` matches and shows it by (ODW extension): its
+          // resume key, and the model it asked for (a tier keeps its @ name).
+          key,
+          ...(model !== undefined ? { model } : {}),
         });
         ctx.emit(startedEv);
         // An adapter that runs another tier than asked, or one ODW cannot
@@ -574,6 +589,8 @@ export function createPrimitives(
                   agentId,
                   label: display,
                   phase: activePhase,
+                  // Structured for the run's readers: a span event of its OpenTelemetry trace (../otel).
+                  retry: { reason: "stall", n: restart, of: maxRestarts },
                 }),
               ),
             // A rate-limited CLI is retried after a backoff: say so, and for how long.
@@ -584,6 +601,7 @@ export function createPrimitives(
                   agentId,
                   label: display,
                   phase: activePhase,
+                  retry: { reason: "rate_limit", n: retry, of: maxRetries, waitSeconds },
                 }),
               );
               // Adaptive back-pressure (ODW extension): the limit lowers its adapter's cap.
@@ -635,7 +653,7 @@ export function createPrimitives(
             // quotaWait) holding no slot — and says so — then takes a slot
             // again on the adapter it starts over on; a line that names the
             // adapters it left moves it, for every reader of the run.
-            onQuotaWait: ({ adapter: name }) => {
+            onQuotaWait: ({ adapter: name, resumeAt }) => {
               ctx.emit(
                 event(LOG, {
                   message: `${display}:${agentId} waits for ${name}'s quota to reset (quotaWait)`,
@@ -644,6 +662,9 @@ export function createPrimitives(
                   phase: activePhase,
                   adapter: name,
                   reason: "quota",
+                  // Structured for the run's views: this agent waits, holding no slot, until then.
+                  quotaWait: "start",
+                  resumeAt,
                 }),
               );
               slot.release();
@@ -658,6 +679,7 @@ export function createPrimitives(
                   label: display,
                   phase: activePhase,
                   adapter: name,
+                  quotaWait: "end",
                   ...(left.length > 0 ? { fellBackFrom: [...left] } : {}),
                 }),
               );
@@ -676,8 +698,29 @@ export function createPrimitives(
                   agentId,
                   label: display,
                   phase: activePhase,
+                  retry: { reason: "expect", n: retry, of: maxRetries },
                 }),
               ),
+            // The MCP servers a CLI run started it without (ODW extension): kept
+            // for its record, and each server and status said once per run.
+            onMcp: ({ adapter: name, servers }) => {
+              mcpSeen = servers;
+              for (const server of servers) {
+                const key = `${server.name}\u0000${server.status}`;
+                if (notedMcp.has(key)) continue;
+                notedMcp.add(key);
+                ctx.emit(
+                  event(LOG, {
+                    message: mcpNote(server, name, display),
+                    mcp: [{ ...server }],
+                    agentId,
+                    label: display,
+                    phase: activePhase,
+                    adapter: name,
+                  }),
+                );
+              }
+            },
           });
         } catch (err) {
           // Out of rate-limit retries (or allowed none): that lowers its adapter's cap too.
@@ -723,6 +766,7 @@ export function createPrimitives(
           ...usageField(),
           ...changeFields(kept),
           ...deniedField(outcome.denied),
+          ...mcpField(outcome.mcp),
         });
         const persisted = save({
           agentId,
@@ -738,6 +782,7 @@ export function createPrimitives(
           ...permissionField(permissions.tier),
           ...changeFields(kept),
           ...deniedField(outcome.denied),
+          ...mcpField(outcome.mcp),
         });
         if (persisted) finished.saved = true;
         ctx.emit(finished);
@@ -1026,6 +1071,36 @@ function deniedField(denied: unknown): { denied?: string[] } {
   if (!Array.isArray(denied)) return {};
   const calls = denied.filter((call): call is string => typeof call === "string");
   return calls.length > 0 ? { denied: calls } : {};
+}
+
+/** The `mcp` an agent's terminal event and record carry: the MCP servers its CLI started it without, when any (ODW extension). */
+function mcpField(servers: unknown): { mcp?: McpServer[] } {
+  if (!Array.isArray(servers)) return {};
+  const down = servers
+    .filter((s): s is McpServer => typeof s?.name === "string" && typeof s?.status === "string")
+    .map(({ name, status }) => ({ name, status }));
+  return down.length > 0 ? { mcp: down } : {};
+}
+
+/**
+ * The one line a run logs, once, for an MCP server an agent's CLI started it
+ * without (ODW extension): "MCP server github failed to start (claude agent
+ * `fix-auth`): its tools were unavailable".
+ */
+function mcpNote(server: McpServer, adapter: string, label: string): string {
+  const who = `(${adapter} agent \`${label}\`)`;
+  switch (server.status) {
+    case "failed":
+      return `MCP server ${server.name} failed to start ${who}: its tools were unavailable`;
+    case "needs-auth":
+      return `MCP server ${server.name} needs authentication ${who}: its tools were unavailable — sign in to it (/mcp in claude)`;
+    case "disabled":
+      return `MCP server ${server.name} is disabled ${who}: its tools were unavailable`;
+    case "pending":
+      return `MCP server ${server.name} was still connecting when the agent started ${who}: its tools came only once it connected, if it did`;
+    default:
+      return `MCP server ${server.name} was ${JSON.stringify(server.status)}, not connected ${who}: its tools may have been unavailable`;
+  }
 }
 
 /** Refused calls a log line names, at most; the event carries them all. */

@@ -76,6 +76,10 @@ export interface PendingCheckpoint {
   checkpointId: number;
   title: string;
   payload?: unknown;
+  /** The payload was cut to 64 KiB for its event: only its start, as text — not something to edit. */
+  truncated?: boolean;
+  /** The JSON Schema an edited payload must match (ODW extension); the server checks it too. */
+  schema?: Record<string, unknown> | null;
   since: number;
 }
 
@@ -90,13 +94,17 @@ export interface AgentView {
   checkpointId?: number | null;
   payload?: unknown;
   decision?: { approved: boolean; note: string | null; by: string | null } | null;
+  /** A checkpoint approved with an edited payload (ODW extension): `approvedPayload` is what was approved. */
+  edited?: boolean;
+  /** With `edited`: the approved payload, as its event keeps it (JSON-safe, cut to 64 KiB). */
+  approvedPayload?: unknown;
   /** A command step's per-run id (its `agentId` is null). */
   commandId?: number | null;
   /** A command step's exit code once it settled. */
   exitCode?: number | null;
   /** A command step that is an agent's `expect.command` check: that agent's id (ODW extension). */
   forAgentId?: number;
-  /** Why an agent failed: rate_limit, quota, auth, timeout, stalled, not_found, permission, exit, empty_reply, unmet_expectation. */
+  /** Why an agent failed: rate_limit, quota, auth, timeout, stalled, not_found, permission, exit, empty_reply, unmet_expectation, mcp_unavailable. */
   failureReason?: string | null;
   /** With `unmet_expectation`: the `expect` checks its work did not meet, one line each (ODW extension). */
   misses?: string[];
@@ -116,6 +124,10 @@ export interface AgentView {
    * left the adapter it started on.
    */
   fellBackFrom?: string[] | null;
+  /** ODW extension (quotaWait): a running agent waiting for `adapter`'s spent quota to reset, holding no slot; when it resets. */
+  quotaWait?: { adapter: string; resumeAt?: number };
+  /** ODW extension: the MCP servers its CLI started it without (any status but "connected": failed, needs-auth, pending, disabled), for the drawer. */
+  mcp?: Array<{ name: string; status: string }> | null;
   label: string;
   phase: string | null;
   state: AgentState;
@@ -157,6 +169,8 @@ export interface AgentChanges {
 export interface RunDetail extends RunSummary {
   script: string | null;
   args: unknown;
+  /** Token shapes in `args` were replaced by `«redacted:<kind>»` before it was served (ODW extension); `odw rerun` still uses the originals. */
+  argsRedacted?: boolean;
   agents: AgentView[];
   phaseOrder: string[];
   hasResult: boolean;
@@ -170,6 +184,142 @@ export interface RunDetail extends RunSummary {
   workflowName: string | null;
   /** checkpoint() calls waiting for approval (ODW extension). */
   pendingCheckpoints?: PendingCheckpoint[];
+  /** Each adapter CLI's version as the run recorded it on its first dispatch, by adapter (ODW extension). */
+  cliVersions?: Record<string, CliVersion>;
+  /** odw's version, and the sha256 of the workflow source as launched; null for older runs (ODW extension). */
+  odwVersion?: string | null;
+  sourceHash?: string | null;
+}
+
+/** An adapter CLI's `--version` as a run recorded it: null, with why, when the CLI did not tell (ODW extension). */
+export interface CliVersion {
+  /** The executable probed: the adapter command's first argv element. */
+  command: string;
+  version: string | null;
+  error?: string;
+}
+
+/**
+ * GET /api/compare?a=<run>&b=<run> — what changed from run A to run B (ODW
+ * extension; src/runtime/compare.ts documents every key). 400 unless both are
+ * run ids, 404 when either is no ODW run.
+ */
+export interface RunComparison {
+  /** 1; it changes when a key changes meaning. */
+  version: 1;
+  a: CompareRunInfo;
+  b: CompareRunInfo;
+  /** How to read it, a sentence each: a run still going (compared as it stands), a run without a recorded setup, different workflows. */
+  notes: string[];
+  /** What the runs ran with that differs. */
+  setup: SetupChange[];
+  totals: CompareTotals;
+  /** A row per agent of either run, in A's phase and call order (B's new phases in place). */
+  agents: AgentComparison[];
+}
+
+export interface CompareRunInfo {
+  runId: string;
+  name: string;
+  workflowName: string | null;
+  /** Display state: done, failed, stopped, running, paused, waiting, stale, pending. */
+  state: string;
+  /** Still going: compared as it stands. */
+  live: boolean;
+  createdAt: number | null;
+  odwVersion: string | null;
+  sourceHash: string | null;
+  resumedFrom: string | null;
+}
+
+/**
+ * `field`: "source" (sha256), "script", "args", "odwVersion", "budget",
+ * "cliVersion.<adapter>", "settings.<key>", "adapterDefinition.<adapter>" (a
+ * 12-hex fingerprint), "adapter" / "permissions" (runs without a recorded
+ * setup), "adaptersUsed", "modelsUsed" (sorted lists). `a`/`b`: as recorded; null: unknown or unset.
+ */
+export interface SetupChange {
+  field: string;
+  a: unknown;
+  b: unknown;
+}
+
+/** One figure of both runs, and B − A (null when either is unknown). */
+export interface CompareMetric {
+  a: number | null;
+  b: number | null;
+  delta: number | null;
+}
+
+export interface CompareTotals {
+  wallMs: CompareMetric;
+  inputTokens: CompareMetric;
+  outputTokens: CompareMetric;
+  costUsd: CompareMetric;
+  agents: CompareMetric;
+  done: CompareMetric;
+  failed: CompareMetric;
+  /** Some output tokens of the run are chars/4 estimates. */
+  estimated: { a: boolean; b: boolean };
+}
+
+export interface CompareAgentFacts {
+  agentId: number | null;
+  label: string;
+  phase: string | null;
+  state: "running" | "done" | "failed" | "stale";
+  adapter: string | null;
+  /** The model it asked for: a tier keeps its `@` name. */
+  model: string | null;
+  attempts: number | null;
+  durationMs: number | null;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  costUsd: number | null;
+  estimated: boolean;
+  /** Replayed by `odw resume`: no CLI ran. */
+  replayed: boolean;
+  failureReason: string | null;
+  error: string | null;
+  /** Its kept diff's stats; null when it kept none. */
+  changes: AgentChanges | null;
+}
+
+export interface AgentComparison {
+  /** How A's and B's agents were paired; null when one run has it only. */
+  match: "label" | "key" | "order" | null;
+  /** Red: "newly-failed"; green: "fixed". */
+  outcome: "unchanged" | "newly-failed" | "fixed" | "only-a" | "only-b";
+  label: string;
+  phase: string | null;
+  a: CompareAgentFacts | null;
+  b: CompareAgentFacts | null;
+  /** B − A; null when either is unknown. */
+  delta: {
+    durationMs: number | null;
+    inputTokens: number | null;
+    outputTokens: number | null;
+    costUsd: number | null;
+    attempts: number | null;
+  };
+  reply: ReplyComparison;
+}
+
+export interface ReplyComparison {
+  /** "none": a side has no saved reply (failed, still running, not in that run). */
+  status: "identical" | "differs" | "none";
+  kind: "text" | "json" | null;
+  /** text: unified-diff lines (`@@` headers, ` `/`-`/`+` lines), at most 40, each cut to 200 characters. */
+  diff?: string[];
+  /** text: lines added and removed over the whole reply. */
+  added?: number;
+  removed?: number;
+  /** json: the paths that differ, at most 20; values as compact JSON cut to 200 characters. */
+  paths?: Array<{ path: string; op: "changed" | "added" | "removed"; a?: string; b?: string }>;
+  /** json: how many paths differ in all. */
+  changed?: number;
+  /** Cut: `odw compare <a> <b> --agent <label|id>` shows it whole. */
+  truncated: boolean;
 }
 
 /** One adapter row exposed in settings snapshots. */
@@ -273,6 +423,8 @@ export interface ChatMessage {
   kind?: ChatMessageKind;
   status?: ChatMessageStatus;
   tool?: ChatToolCall;
+  /** Likely secrets in its text were replaced by `«redacted:<kind>»` before it was kept (ODW extension). */
+  redacted?: boolean;
 }
 
 export interface ChatLinkedRun {
@@ -333,6 +485,8 @@ export interface AgentResultRecord {
   fellBackFrom?: string[];
   /** The tool calls its CLI refused while it did the work (ODW extension). */
   denied?: string[];
+  /** The MCP servers its CLI started it without while it did the work (ODW extension). */
+  mcp?: Array<{ name: string; status: string }>;
   /** Secrets in it were replaced by `«redacted:<kind>»` before it was saved (ODW extension): show a "redacted" tag. */
   redacted?: boolean;
 }

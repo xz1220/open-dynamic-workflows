@@ -81,11 +81,18 @@ adapter's tiers.
 An entry without `command` changes only the fields it sets on the built-in of
 its name (`"codex": { "permissions": "read" }` above). One with a `command`
 replaces the built-in whole — for `claude`, keep the stream-json flags, the
-`output` block and its `permissionArgs`, as `odw.config.example.json` does.
+`output` block and its `permissionArgs`, as `odw.config.example.json` does; for
+`codex`, likewise `--json`, `--output-last-message {reply_file}` and its `output` block.
 
 The built-in `claude` runs Claude Code's `--output-format stream-json --verbose`:
 an event per turn, ending in a `result` event that carries the reply, the run's
 usage and cost, and `is_error` when it failed.
+
+The built-in `codex` runs `codex exec --json --output-last-message {reply_file}`:
+JSONL events, its reply the final message codex writes to that file (else the last
+`item.completed` `agent_message`), its tokens from `turn.completed` (no cost — codex
+reports none), and `turn.failed` / `error` events its own failure report. Its
+transcript shows each command, file change, MCP tool call and web search.
 
 A useful minimal-privilege split: let `claude` write code (acceptEdits) and let
 `codex` run/verify it (workspace-write sandbox) — see
@@ -136,7 +143,7 @@ did-you-mean hint) instead of silently ignoring them.
 | `concurrency` | max agent CLIs running at once; omit for auto (`min(16, cpus-2)`) |
 | `maxAgents` | hard cap on total dispatches per run (runaway guard) |
 | `timeout` | per-agent CLI timeout in seconds |
-| `stallTimeout` | **ODW extension.** Seconds an agent may print nothing on stdout or stderr before it is killed (like a timeout) and restarted with the same prompt; `null` (default) = off. Off for every built-in because some CLIs (the text-mode `gemini`, `qwen`, `kimi`) print nothing until they finish — enable it for adapters that stream progress: `claude` (stream-json, an event per turn), `kilo`, `opencode`, with a value above the longest single tool call |
+| `stallTimeout` | **ODW extension.** Seconds an agent may print nothing on stdout or stderr before it is killed (like a timeout) and restarted with the same prompt; `null` (default) = off. Off for every built-in because some CLIs (the text-mode `gemini`, `qwen`, `kimi`) print nothing until they finish — enable it for adapters that stream progress: `claude` (stream-json, an event per turn), `codex` (`exec --json`, an event per item), `kilo`, `opencode`, with a value above the longest single tool call |
 | `stallRestarts` | restarts per `agent()` call after a stall before the call fails with a "stalled" error (default 1) |
 | `transientRetries` | **ODW extension.** Retries per `agent()` call after its CLI hit a rate limit (429/529, overloaded), each after an exponential backoff that honors a retry-after the CLI printed (default 3; `0` = never). A spent quota or a failed login is never retried: its error says what to do |
 | `maxBackoff` | the longest single backoff wait, in seconds (default 300); a CLI that asks to wait longer is not retried early |
@@ -156,10 +163,11 @@ did-you-mean hint) instead of silently ignoring them.
 | `keepBranches` | **ODW extension.** `true`: every isolated agent's change is also committed to a branch `odw/<runId>/<agentId>-<label>` of the source repository, as `keep: true` does for one agent (`keep: false` opts one out). Default `false` |
 | `applyVerify` | **ODW extension.** A command line `odw apply` runs at the repository root after each apply, through the shell and within `timeout`, e.g. `"npm test"`: when it fails, times out or is interrupted, that apply is rolled back exactly (the touched paths' content and index entries; nothing else). `odw apply --verify "<cmd>"` overrides it, `--no-verify` skips it, `--check` never runs it. Default `null` (none) |
 | `maxTranscriptBytes` | **ODW extension.** Bytes of each agent's transcript kept in the run directory — what its CLI printed on stdout, `agents/<agentId>.transcript.jsonl` (a JSONL adapter's events as received, other output as `{"kind":"text"}` lines), beside the end of its stderr in `agents/<agentId>.stderr.txt`; read with `odw logs <run> --agent <id\|label>` (default 5 MB). Past it one `{"kind":"truncated","bytes":N}` line ends the transcript; `0` keeps none |
+| `recordVersions` | **ODW extension.** `true` (default): on an adapter's first agent of a run, `<cli> --version` (its command's first argv element) runs beside the agent, killed after 3s, and is recorded as a `cli_version` event — `odw status`, `cliVersions` in `GET /api/runs/:id`, and `odw compare` read it. It never delays or fails the run; a CLI that does not answer is recorded as unknown; an adapter whose command is node or another interpreter, a script or a relative path is not probed. `false` runs no probe (the odw version and workflow sha256 in meta.json, and the settings on `run_started`, are recorded either way) |
 | `permissions` | **ODW extension.** The run's permission tier: `"read"`, `"edit"` (default) or `"full"` — see [permissions](#permissions-what-each-built-in-may-do). `odw run\|rerun\|resume --permissions` overrides it |
 | `agentEnv` | **ODW extension.** `"inherit"` (default): agent CLIs get ODW's whole environment. `"minimal"`: only `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `LANG`, `LC_*`, `TERM`, `TMPDIR`, `TZ` (and the Windows system variables), the auth and config variables the built-in CLIs document (`ANTHROPIC_*`, `CLAUDE_*`, `OPENAI_*`, `CODEX_*`, `GEMINI_*`, `GOOGLE_*`, `DASHSCOPE_*`, `QWEN_*`, `MOONSHOT_*`, `KIMI_*`, `CURSOR_*`, `OPENCODE_*`, the proxy variables, `NODE_EXTRA_CA_CERTS`), `ODW_*`, `agentEnvPass` and the adapter's `env`. `exec()` commands, `worktreeSetup` and `notify` keep the whole environment |
 | `agentEnvPass` | **ODW extension.** More names, or `*` globs, a `"minimal"` agent environment passes (e.g. `["AWS_*"]` for Claude Code on Bedrock) |
-| `schemaKeywords` | **ODW extension.** What happens to keywords in an `agent()` schema that ODW's validator does not check. `"warn"` (default): the call runs, ODW checks the rest, and the run logs once which keywords, where, and who enforces them (an adapter's CLI that takes schemas natively, `flags.schema`, else nobody). `"strict"`: the call fails before it starts, naming each one. A malformed schema fails in either mode. See [native structured output](#native-structured-output) |
+| `schemaKeywords` | **ODW extension.** What happens to keywords in an `agent()` schema that ODW's validator does not check. `"warn"` (default): the call runs, ODW checks the rest, and the run logs once which keywords, where, and who enforces them (an adapter's CLI that takes schemas natively, `flags.schema`, else nobody). `"strict"`: the call fails before it starts, naming each one. A malformed schema fails in either mode. A `checkpoint()` `schema` (what an edited payload must match) is held to the same rule. See [native structured output](#native-structured-output) |
 | `schemaPrompt` | **ODW extension.** `"auto"` (default): the prompt describes the schema only to a CLI that does not take it natively; `"always"`: to every CLI |
 | `fallback` | **ODW extension.** Fallback chains: `{ "codex": ["claude"], … }` — when an agent's CLI has spent its usage quota or its login is refused, the agent runs again on the next adapter listed for the one it was on (a fresh prompt, the same options, the same permission tier: an adapter that cannot run that tier is skipped). A rate limit is still retried in place. An `agent()` call's own list, `adapter: ["codex", "claude"]`, takes its place. Every adapter named must be configured. Default `{}` — see [routing](primitives.md#routing-phase-defaults-model-tiers-fallback-chains-odw-extension) |
 | `quotaBreaker` | **ODW extension.** After this many quota failures in a row on one adapter, the run's later agents skip it — each starts on the next adapter of its chain, or fails at once without one — with one warning. Default 3; `0` or `null` = never |
@@ -167,7 +175,9 @@ did-you-mean hint) instead of silently ignoring them.
 | `models` | **ODW extension.** Model tiers: `{ "fast": { "claude": "haiku", "codex": "gpt-5-mini" }, … }`. `model: "@fast"` (in `agent()`, `phase()` or `meta.phases`) runs an agent with its adapter's id for the tier — after a fallback, the next adapter's; an adapter the tier names no id for runs its CLI's default (logged), and an unknown tier fails the agent. Tier names are letters, digits, `_`, `-` and `.`; every adapter named must be configured. Default `{}` |
 | `expectRetries` | **ODW extension.** How many times an agent whose work missed its `expect` checks runs again, told what it missed, before it fails with reason `unmet_expectation` (default 1; an `agent()` call's own `expectRetries` wins) — see [expect](primitives.md#expect-odw-extension) |
 | `permissionDenials` | **ODW extension.** What a reply that claims success does when the CLI refused the agent tool calls (`deniedPath`): `"warn"` (default) keeps it — the calls are recorded as `denied` on the agent and logged once — and `"fail"` fails the agent with reason `permission`. An adapter's own `permissionDenials` wins; a call with `expect` counts refused calls as a miss either way |
-| `redact` | **ODW extension.** `{ "env": true, "patterns": true, "extra": [] }` (default): what odw keeps and serves — transcripts and stderr tails, saved results, events, the run's error, webhook payloads — has likely secrets replaced by `«redacted:<kind>»` before it is written, and says so with `redacted: true`. `env`: the values (8+ characters) of secret-named variables (`*_KEY`, `*TOKEN`, `*SECRET*`, `*PASSWORD*`, `AUTHORIZATION`, cloud credentials) of odw's environment and each adapter's `env`, wherever they appear, and `NAME=value` of such names; `patterns`: well-known token shapes (Anthropic, OpenAI, GitHub, Slack, AWS, Google, JWT, private keys, `Bearer`); `extra`: more regular expressions. The run's result gets `patterns` and `extra` only; prompts, what agents see and kept diffs are never redacted. `false` = off; `odw doctor` reports it |
+| `mcpFailures` | **ODW extension.** What an agent does when its CLI started it without an MCP server (`mcpPath`: Claude Code's init event): `"warn"` (default, as Claude Code itself only warns) keeps the reply — every server that is not `connected` is recorded as `mcp` on the agent and logged once per run per server and status — and `"fail"` fails an agent whose server `failed` or `needs-auth` with reason `mcp_unavailable` (`pending` and `disabled` never fail it). A server the call's `expect.mcp` lists is a miss instead |
+| `redact` | **ODW extension.** `{ "env": true, "patterns": true, "extra": [] }` (default): what odw keeps and serves — transcripts and stderr tails, saved results, events, the run's error, webhook payloads — has likely secrets replaced by `«redacted:<kind>»` before it is written, and says so with `redacted: true` — and so do `worker.log` and the Chat Host's sessions (what a person typed: token shapes only), while a run's `args` are kept as given for `odw rerun` and served with token shapes redacted. `env`: the values (8+ characters) of secret-named variables (`*_KEY`, `*TOKEN`, `*SECRET*`, `*PASSWORD*`, `AUTHORIZATION`, cloud credentials) of odw's environment and each adapter's `env`, wherever they appear, and `NAME=value` of such names; `patterns`: well-known token shapes (Anthropic, OpenAI, GitHub, Slack, AWS, Google, JWT, private keys, `Bearer`); `extra`: more regular expressions. The run's result gets `patterns` and `extra` only; prompts, what agents see and kept diffs are never redacted. `false` = off; `odw doctor` reports it |
+| `otel` | **ODW extension.** OpenTelemetry export: `false` (default) sends nothing — the `OTEL_*` variables alone never turn it on. `true` or `{ "endpoint": "http://localhost:4318", "headers": { … }, "captureContent": false }`: once a run ended, the worker posts its trace (`invoke_workflow` / `phase` / `invoke_agent` / `execute_tool` / `exec` / `checkpoint` spans after the GenAI semantic conventions — usage, cost, models, failure reasons, retries and fallbacks as span events) once, as OTLP/HTTP JSON to `endpoint` + `/v1/traces`, within 5s; a failure is one line in the run's `worker.log` and never changes the run. Omitted, `endpoint` and `headers` come from `OTEL_EXPORTER_OTLP_(TRACES_)ENDPOINT` / `…HEADERS` (default endpoint `http://localhost:4318`); header values are secrets, never logged or shown. `captureContent` (or `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true`) adds replies, tool input and output and error text — redacted again on the way out, each field cut at 4096 characters. `odw export <run> --otlp [--out FILE \| --send]` exports any run; `odw doctor` shows where traces go |
 
 ### Adapter fields
 
@@ -201,7 +211,11 @@ did-you-mean hint) instead of silently ignoring them.
 with it, classified like any failure whatever its exit status) and `deniedPath`
 (the tool calls the CLI refused the agent, under a reply that may claim success:
 recorded as `denied` on the agent and logged, or a `permission` failure under
-`permissionDenials: "fail"` — the built-in `claude` reads `permission_denials`);
+`permissionDenials: "fail"` — the built-in `claude` reads `permission_denials`) and
+`mcpPath` (the MCP servers the CLI started the agent with, `{ name, status }` each:
+one not `connected` is recorded as `mcp` on the agent and logged, or fails it under
+`mcpFailures: "fail"`; `jsonl` reads it from `mcpEvent` events, else any event —
+the built-in `claude` reads `mcp_servers` from its `system` init event);
 `jsonl` reads usage
 and cost from `usageEvent` events (default: `eventType`) and adds them up. Usage is
 normalized across the CLIs' field names (Anthropic's, OpenAI's, Codex's):
@@ -211,6 +225,18 @@ from its end). When stdout does not have the declared text, the raw stdout is th
 reply and the run's log says why — the agent does not fail. A `structuredPath`
 points at the value the CLI validated against a schema it was handed natively (see
 below).
+
+**ODW extension**, `jsonl` only: `match: { "path": [...], "equals": <string, number
+or boolean> }` keeps only the text events whose value at `path` is `equals` (codex:
+`{ "path": ["item", "type"], "equals": "agent_message" }`), and `errorEvents: {
+"<type>": [path] }` names events that are the CLI's own failure report — the path
+leads to the message — apart from its text events (codex: `{ "turn.failed":
+["error"], "error": ["message"] }`). The latest such event fails the run like
+`errorPath`, unless a later `usageEvent` shows the CLI went on. A CLI that writes its
+final reply to a file takes `{reply_file}` in its command: a file with text is the
+reply; when it is empty or never written and stdout's events held no reply either,
+the reply is empty (`empty_reply` unless `allowEmpty`) and the log says what was
+missing.
 
 ### Native structured output
 
@@ -234,7 +260,7 @@ prompt describes the schema only to CLIs that do not take it (`schemaPrompt`).
 | Built-in | `flags.schema` | The value comes from |
 | --- | --- | --- |
 | `claude` | `{ "args": ["--json-schema"], "mode": "inline" }` | `structured_output` in its `result` event (`"structuredPath": ["structured_output"]`), else the `result` text |
-| `codex` | `{ "args": ["--output-schema"], "mode": "file", "strict": true }` | its final message on stdout |
+| `codex` | `{ "args": ["--output-schema"], "mode": "file", "strict": true }` | its final message: the `--output-last-message` file, else its last `agent_message` event |
 
 Before an agent starts, its schema is checked against the subset ODW's validator
 enforces ([primitives](primitives.md#schema)). Anything else is named in the run's
@@ -275,6 +301,7 @@ Expanded in `command` and `stdin` before each call:
 | --- | --- |
 | `{prompt}` | the full composed prompt (independence framing + task + any schema instruction) |
 | `{prompt_file}` | path to a temp file holding the prompt (written only when referenced) |
+| `{reply_file}` | **ODW extension.** A fresh path, in a private temp directory, where the CLI writes its final reply (`codex --output-last-message`); read once the CLI exits, then removed |
 | `{workspace}` | the directory the agent runs in (its git worktree when it is isolated) |
 | `{source}` | the original working tree |
 | `{adapter}` / `{role}` | the adapter's name / label |
@@ -286,10 +313,13 @@ failed agent call, classified as `rate_limit`, `quota`, `auth`, `timeout`,
 `stalled`, `not_found`, `permission` or `exit` (the `reason` on its
 `agent_failed` event; only `rate_limit` is retried — see `transientRetries`).
 So does a failure the CLI reports in its output (`errorPath`: Claude Code's
-stream-json `is_error` result, often with exit 0), and a clean exit whose short
+stream-json `is_error` result, often with exit 0; `errorEvents`: Codex's `turn.failed`
+and `error`), and a clean exit whose short
 text reply is nothing but a rate-limit, quota or login error (`API Error: Rate
 limit reached`). A clean exit can still fail (ODW extensions): with reason
 `empty_reply` when the reply is empty (unless the call sets `allowEmpty`),
 `unmet_expectation` when the work missed the call's `expect` checks, and
 `permission` when the CLI refused tool calls (`deniedPath`) and either
-`permissionDenials` is `"fail"` or the call has `expect`.
+`permissionDenials` is `"fail"` or the call has `expect`, and `mcp_unavailable`
+when the CLI started the agent without an MCP server that `failed` or
+`needs-auth` (`mcpPath`) and `mcpFailures` is `"fail"`.

@@ -50,7 +50,11 @@ const KILO_OPENCODE_OUTPUT: AdapterOutput = {
 // SDK's result message, which is this event: `structured_output?: unknown`);
 // a run that produced none has it absent or null, and its `result` text is
 // read instead. Its `permission_denials` list the tool calls headless mode
-// refused, under a reply that may claim success.
+// refused, under a reply that may claim success. The stream's first event,
+// `{"type":"system","subtype":"init"}` (the Agent SDK's SDKSystemMessage),
+// lists `mcp_servers: [{ name, status, source? }]`, status one of McpServerStatus's
+// "connected" | "failed" | "needs-auth" | "pending" | "disabled" — an agent whose
+// server failed runs on without its tools, and may still say it is done.
 const CLAUDE_OUTPUT: AdapterOutput = {
   format: "jsonl",
   eventType: "result",
@@ -61,6 +65,46 @@ const CLAUDE_OUTPUT: AdapterOutput = {
   errorPath: ["is_error"],
   structuredPath: ["structured_output"],
   deniedPath: ["permission_denials"],
+  mcpEvent: "system",
+  mcpPath: ["mcp_servers"],
+};
+
+// `codex exec --json` (https://developers.openai.com/codex/noninteractive, now
+// https://learn.chatgpt.com/docs/non-interactive-mode; the event types are
+// codex-rs/exec/src/exec_events.rs): JSONL events — thread.started,
+// turn.started, item.started/updated/completed {item: {id, type, …}},
+// turn.completed {usage}, turn.failed {error: {message}}, error {message}.
+//
+// The reply comes from two places, on purpose. `--output-last-message
+// {reply_file}` is codex's own final message, written once the turn completed
+// — empty when it had none — whatever shape its events take (it even
+// recovers a message whose event was dropped under backpressure), so it wins.
+// The last `item.completed` agent_message (`match`) is the reply when that
+// file is missing — and when both are, a stream of events is no reply: the
+// reply is empty (an empty_reply failure) and the run's log says what was
+// missing (see output.ts). With --output-schema that message is the JSON.
+//
+// Usage: `turn.completed`'s, summed. Its input_tokens already counts the
+// cached part (codex's own non_cached_input() is input_tokens -
+// cached_input_tokens) and its output_tokens the reasoning part, so they are
+// usage.ts's inputTokens and outputTokens as they are; cached_input_tokens is
+// cacheReadTokens, cache_write_input_tokens cacheWriteTokens. Codex runs one
+// turn per exec, so the sum is that turn's (codex reports its thread's total
+// so far). No dollars: codex reports none, and ODW invents no prices.
+//
+// Failures: `turn.failed` and `error` are codex's own report, classified like
+// any failure — but codex also prints an error it retries ("Reconnecting...
+// 2/5") as an `error` event and goes on, so a later turn.completed clears it.
+// Non-fatal `error` *items* are warnings, shown in the transcript only.
+const CODEX_OUTPUT: AdapterOutput = {
+  format: "jsonl",
+  eventType: "item.completed",
+  match: { path: ["item", "type"], equals: "agent_message" },
+  textPath: ["item", "text"],
+  select: "last",
+  usageEvent: "turn.completed",
+  usagePath: ["usage"],
+  errorEvents: { "turn.failed": ["error"], error: ["message"] },
 };
 
 // Native structured output (ODW extension; see native-schema.ts). Claude Code
@@ -153,6 +197,11 @@ export const BUILTIN_ADAPTERS: Record<string, RawAdapter> = {
       // top-level flag: `codex exec --search` is rejected, it must precede `exec`
       "--search",
       "exec",
+      // exec options: events on stdout, and the final message in a file of
+      // its own. The long spelling: older releases do not know `-o`.
+      "--json",
+      "--output-last-message",
+      "{reply_file}",
       "--skip-git-repo-check",
       "{permission_args}",
       "--cd",
@@ -161,6 +210,7 @@ export const BUILTIN_ADAPTERS: Record<string, RawAdapter> = {
     ],
     stdin: "{prompt}",
     flags: { model: ["--model"], schema: CODEX_SCHEMA },
+    output: CODEX_OUTPUT,
     permissionArgs: CODEX_PERMISSIONS,
   },
   claude: {
@@ -281,6 +331,7 @@ export const DEFAULT_SETTINGS: Settings = {
   keepBranches: false, // keep: true per agent still commits its change to a branch
   applyVerify: null, // odw apply runs no command after an apply (--verify still does)
   maxTranscriptBytes: 5 * 1024 * 1024, // each agent's transcript; past it, one truncation line (0: none)
+  recordVersions: true, // each adapter CLI's --version, once per run, for odw compare (false: no probe)
   permissions: "edit", // the tier every built-in ran with before tiers existed
   agentEnv: "inherit", // agent CLIs see ODW's whole environment
   agentEnvPass: [], // more variables a "minimal" agent environment passes through
@@ -291,6 +342,8 @@ export const DEFAULT_SETTINGS: Settings = {
   quotaBreaker: 3, // quota failures in a row before the run's later agents skip an adapter
   expectRetries: 1, // reruns of an agent whose work missed its expect checks, told what it missed
   permissionDenials: "warn", // a reply whose CLI refused tool calls stands, recorded and logged ("fail": it fails)
+  mcpFailures: "warn", // an agent whose MCP server did not start keeps its reply, recorded and logged ("fail": it fails)
   redact: { env: true, patterns: true, extra: [] }, // likely secrets out of what odw keeps and serves (false: none)
   quotaWait: false, // an agent whose chain is out of quota fails; { max: <s> } waits for the reset instead
+  otel: false, // no trace is sent; { endpoint?, headers?, captureContent? } posts each run's at its end
 };

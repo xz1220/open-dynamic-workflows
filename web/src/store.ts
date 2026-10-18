@@ -18,6 +18,7 @@ import type {
   ChatSession,
   ChatSessionSummary,
   Connection,
+  RunComparison,
   RunDetail,
   RunSummary,
   ScheduleView,
@@ -63,6 +64,8 @@ class Store {
   private transcriptsLoading = new Set<string>();
   /** `odw schedule` entries for the Jobs page (empty until loaded, or from older servers). */
   schedules: ScheduleView[] = [];
+  /** The comparison on screen, by "a/b"; null while it loads. */
+  comparison: { key: string; value: RunComparison | null; error: string | null } | null = null;
   /** Parsed diffs of worktree agents by `runId:agentId`; null = none to show. */
   agentDiffs = new Map<string, ParsedDiff | null>();
   private diffsLoading = new Set<string>();
@@ -434,6 +437,25 @@ class Store {
   }
 
   /** Refresh the scheduled runs; repaints only when something changed. */
+  /** Load (or refresh) what changed between runs `a` and `b`. */
+  async loadCompare(a: string, b: string): Promise<void> {
+    const key = `${a}/${b}`;
+    if (this.comparison?.key !== key) {
+      this.comparison = { key, value: null, error: null };
+      this.emit();
+    }
+    try {
+      const value = await api.compare(a, b);
+      if (this.comparison?.key !== key) return;
+      if (JSON.stringify(value) === JSON.stringify(this.comparison.value)) return;
+      this.comparison = { key, value, error: null };
+    } catch (err) {
+      if (this.comparison?.key !== key) return;
+      this.comparison = { key, value: null, error: (err as Error).message };
+    }
+    this.emit();
+  }
+
   async loadSchedules(): Promise<void> {
     let next: ScheduleView[];
     try {

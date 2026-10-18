@@ -23,9 +23,12 @@ import { AgentError, ConfigError } from "../src/errors.js";
 // of its command into permissionArgs, spliced at {permission_args}. The
 // default tier must keep each built-in's argv byte for byte what it was.
 
-/** Every built-in's argv template as it was before tiers existed. */
+/** Codex's exec options since it reports through `--json` (and its final message through a reply file). */
+const CODEX_EXEC = ["--json", "--output-last-message", "{reply_file}"];
+
+/** Every built-in's argv template as it was before tiers existed (codex's exec options since added). */
 const BEFORE_TIERS: Record<string, string[]> = {
-  codex: ["codex", "--search", "exec", "--skip-git-repo-check", "--sandbox", "workspace-write", "--cd", "{workspace}", "-"],
+  codex: ["codex", "--search", "exec", ...CODEX_EXEC, "--skip-git-repo-check", "--sandbox", "workspace-write", "--cd", "{workspace}", "-"],
   claude: [
     "claude",
     "--print",
@@ -79,8 +82,8 @@ const TIER_ARGV: Record<string, Partial<Record<PermissionTier, string[]>>> = {
     ],
   },
   codex: {
-    read: ["codex", "--search", "exec", "--skip-git-repo-check", "--sandbox", "read-only", "--cd", "{workspace}", "-"],
-    full: ["codex", "--search", "exec", "--skip-git-repo-check", "--sandbox", "danger-full-access", "--cd", "{workspace}", "-"],
+    read: ["codex", "--search", "exec", ...CODEX_EXEC, "--skip-git-repo-check", "--sandbox", "read-only", "--cd", "{workspace}", "-"],
+    full: ["codex", "--search", "exec", ...CODEX_EXEC, "--skip-git-repo-check", "--sandbox", "danger-full-access", "--cd", "{workspace}", "-"],
   },
   gemini: {
     read: ["gemini", "--approval-mode", "default", "--prompt", "{prompt}"],
@@ -109,6 +112,7 @@ function assertArgv(actual: string[] | undefined, template: string[], what: stri
   assert.equal(actual.length, template.length, `${what}: ${JSON.stringify(actual)}`);
   template.forEach((part, i) => {
     if (part === "{prompt}") assert.match(actual[i]!, /TASK/, what);
+    else if (part === "{reply_file}") assert.match(actual[i]!, /odw-reply-[^/\\]+[/\\]reply\.txt$/, what);
     else assert.equal(actual[i], part === "{workspace}" ? "/repo" : part, `${what}: element ${i}`);
   });
 }
