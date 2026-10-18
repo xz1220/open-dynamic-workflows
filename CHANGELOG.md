@@ -113,6 +113,25 @@ independent security reviews whose findings are all fixed.
   handed back, then `orphaned_background`. Adapters declare their CLI's background
   events generically with `output.background` (`started` / `ended` rules); the built-in
   `claude` ships one.
+- Agent questions become checkpoints (**ODW extension**; ROADMAP T1, T10): an agent that
+  stops to ask the user — Claude Code's `AskUserQuestion` — gets no answer headless and
+  goes on guessing ([claude-code#50728](https://github.com/anthropics/claude-code/issues/50728)).
+  ODW reads the tool call from the stream and stops the CLI there, then does what
+  `"questions"` says (run-wide, per adapter, or `agent(…, { questions })`):
+  `"checkpoint"` (the default) asks a person at a checkpoint — `odw status`, a dashboard
+  card with the options as chips, the `notify` "waiting" hook and approve links — and
+  runs the same call again, in the same worktree, told "earlier you asked X; the user
+  answered Y" (`odw approve <run> --checkpoint N --note "<answer>"`); a rejection, a
+  fourth question, `"fail"`, or a question asked anyway under `"deny"` fail it with the
+  new reason `needs_input`, its questions on the `agent_failed` event, the drawer and
+  `odw status`. `"deny"` runs claude with `--disallowedTools AskUserQuestion`
+  (`questionArgs`) and tells the agent to assume and say so. The rerun is logged
+  (`retry.reason: "question"`) and counts toward the budget. Activity's "Needs you" and
+  the command palette show questions and `needs_input` failures apart from checkpoints;
+  the `notify` waiting payload carries `checkpoint.kind` (`"checkpoint"` | `"question"`),
+  `checkpoint.question` and `ODW_CHECKPOINT_KIND` / `ODW_QUESTION_AGENT`. Adapters
+  declare their CLI's question events with `output.questions`; no reply text is ever
+  guessed to be a question, and no CLI session is resumed.
 - `expect: { untouched: ['test/**', '**/*.snap', '.github/**'] }` (**ODW extension**):
   a file the agent changed, created or deleted that matches a listed glob is a miss
   naming the paths — so an agent cannot edit or skip the tests it is judged by to get

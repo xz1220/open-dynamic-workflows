@@ -706,6 +706,31 @@ const { approved, payload: approvedPlan } = await checkpoint('Run this plan?', {
 [`examples/plan-approve-execute.js`](examples/plan-approve-execute.js) 是完整的
 计划 → 批准 → 执行循环,附带说明的拒绝会触发重新规划。
 
+### agent 的提问(ODW 扩展)
+
+模型有时会在任务中途停下来问用户——Claude Code 的 `AskUserQuestion` 工具。无头运行时没人
+能回答:工具立刻空着返回,模型接着瞎猜,或者一直挂到超时
+([claude-code#50728](https://github.com/anthropics/claude-code/issues/50728))。odw 从 CLI
+的输出流里识别这个调用,**在提问处立即停下 CLI**——agent 绝不会拿着空答案继续——然后按
+`questions` 的设置处理:
+
+- `"checkpoint"`(默认)把问题变成一个检查点:与 `checkpoint()` 共用 `odw status`、看板卡片
+  (每个选项是一个可点击填入答案的标签)、`notify` 的 `"waiting"` hook 和一次性审批链接。用
+  `odw approve <run> --checkpoint N --note "<答案>"` 回答(或批准时把编辑后的 payload 的
+  `answer` 填上);同一个 agent() 调用会重新派发——隔离 agent 复用原来的 worktree——提示词末尾
+  附上"Earlier in this task you stopped to ask the user: … The user answered: …"。重派会记
+  一行日志(`retry.reason: "question"`)并计入预算。`odw reject` 表示拒绝回答:agent 以
+  `reason: "needs_input"` 失败。同一调用回答过 3 次后再问,也会失败。
+- `"fail"`:agent 立即以 `reason: "needs_input"` 失败;它问了什么会列在 `agent_failed`
+  事件、`/api/runs/:id`、看板侧栏和 `odw status` 里。
+- `"deny"`:CLI 运行时不带提问工具(适配器的 `questionArgs`:`claude --disallowedTools
+  AskUserQuestion`),并告诉 agent 自行假设、在回复里说明假设了什么。仍然提问的以 `needs_input` 失败。
+
+可以在运行级(配置里的 `"questions"`)、适配器级或单个调用上设置:
+`agent(prompt, { questions: "fail" })`。只认 CLI 自己的工具调用——以问号结尾的回复不算提问——
+也不续接 CLI 会话:调用带着答案重新运行。任何 JSONL 适配器都可以用 `output.questions` 声明自己
+CLI 的提问事件(见适配器参考);内置 `claude` 已声明。
+
 ### 用量与花费(ODW 扩展)
 
 扇出很快就会烧掉额度,所以运行会边跑边显示花了多少。每个 `agent_finished`(以及
@@ -2297,7 +2322,7 @@ agent 在两次之间做的事不可能改变结果。同一次调用的后续 C
 `unmet_expectation`、`"mcpFailures": "fail"` 下的 `mcp_unavailable`,以及
 `orphaned_background`(回复时仍有后台任务在运行,`"orphanedBackground": "fail"` 或设了
 `expect` 时)(见[检查 agent 的工作](#检查-agent-的工作odw-扩展));`out_of_scope`:
-`"scopePolicy": "fail"` 下改动了声明范围之外文件的 agent(见[声明范围](#声明范围odw-扩展));还有 `runaway`:触及[上限](#单-agent-上限与死循环odw-扩展)被杀掉的 agent。这个类别就是 `agent_failed` 事件上的 `reason`(CLI 说明了何时
+`"scopePolicy": "fail"` 下改动了声明范围之外文件的 agent(见[声明范围](#声明范围odw-扩展));`needs_input`:停下来提问却没人回答的 agent(见[agent 的提问](#agent-的提问odw-扩展));还有 `runaway`:触及[上限](#单-agent-上限与死循环odw-扩展)被杀掉的 agent。这个类别就是 `agent_failed` 事件上的 `reason`(CLI 说明了何时
 可以重试时,还带有以秒计的 `retryAfter`),也是看板和 `/api/runs/:id` 里该 agent 的
 `failureReason`,并显示在实时视图和 `odw logs` 中:
 
@@ -2643,7 +2668,10 @@ hook——webhook 只显示协议和主机,因为 URL 的其余部分就是密�
 `ODW_RESULT_FILE`);webhook 收到 `"state": "waiting"`、一个
 `"checkpoint": { "checkpointId", "title", "since" }` 字段(代替 `finishedAt`),以及一行
 写明回答命令的 `text`。有 `odw serve --public-url` 在运行时,它们还会带上该检查点签名的一次性
-批准与拒绝链接——见[在手机上批准](#在手机上批准odw-扩展)。
+批准与拒绝链接——见[在手机上批准](#在手机上批准odw-扩展)。[agent 的提问](#agent-的提问odw-扩展)
+也触发同样的 hook:载荷的 `checkpoint.kind` 为 `"question"`(普通检查点为 `"checkpoint"`),
+`checkpoint.question` 写明提问的 agent(`{ agentId, label, adapter }`),命令多出
+`ODW_CHECKPOINT_KIND` 与 `ODW_QUESTION_AGENT`,`text` 行提示用 `odw approve … --note` 回答。
 
 加上 `"paused"`,就能在运行[因额度用尽而暂停](#额度用尽时暂停odw-扩展)时收到通知——每次
 暂停一次,继续时不再通知:命令的环境变量带有 `ODW_RUN_STATE=paused`、`ODW_PAUSED_ADAPTER`

@@ -76,12 +76,21 @@ agent(prompt, opts?) -> Promise<unknown>
   见 [scope](#scopeodw-扩展)。Claude Code 会忽略它。
 - **opts.scopePolicy**（**ODW 扩展**）—— `"warn"`（默认：`scopePolicy` 设置）或 `"fail"`：
   越出 `scope` 的写入如何处理。需要同时设 `scope`。
+- **opts.questions**（**ODW 扩展**）—— agent 停下来向用户提问（CLI 的澄清工具调用：Claude
+  Code 的 `AskUserQuestion`）时怎么办。无论哪种，CLI 都在提问处被停下。`"checkpoint"`（默认：
+  适配器的设置，否则 `questions` 设置）在检查点上问人（`checkpoint_requested` 带
+  `question: { agentId, label, adapter, questions }`），然后重新运行这个调用——隔离时复用同一个
+  worktree——提示词附上"Earlier in this task you stopped to ask the user: … The user answered: …"
+  （答案取批准时的 note，否则取编辑后 payload 的 `answer`）；被拒绝，或第四次提问，以
+  `needs_input` 抛错。`"fail"` 立即以 `needs_input` 抛错；`"deny"` 让 CLI 不带提问工具运行
+  （适配器的 `questionArgs`）并告诉 agent 自行假设。`needs_input` 失败带着问题列表
+  （`agent_failed` 的 `questions`）。Claude Code 会忽略它。
 
 返回回复文本，设了 `schema` 则返回校验过的 JSON 值。CLI 出错、schema 重试耗尽、工作没达到
 `expect`、空回复都会抛错；这些可恢复失败在 `parallel`/`pipeline` 内变成 `null`。停止请求、
 预算耗尽和 agent 总量上限以及无效的 adapter/运行配置属于 fatal 错误，会继续向上抛出并终止
 运行。失败的 CLI 运行抛出的错误带有 `reason`（`rate_limit`、`quota`、`auth`、`timeout`、
-`stalled`、`not_found`、`permission`、`exit`、`empty_reply` 或 `unmet_expectation`），与它的
+`stalled`、`not_found`、`permission`、`exit`、`empty_reply`、`unmet_expectation` 或 `needs_input`），与它的
 `agent_failed` 事件一致——可以在 `try`/`catch` 里据此分支。
 
 每次完成的调用都会在发出 `agent_finished` 事件之前保存到运行目录

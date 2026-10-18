@@ -818,6 +818,37 @@ const { approved, payload: approvedPlan } = await checkpoint('Run this plan?', {
 [`examples/plan-approve-execute.js`](examples/plan-approve-execute.js) is the full
 plan → approve → execute loop, re-planning when a rejection comes with a note.
 
+### Agent questions (ODW extension)
+
+A model sometimes stops mid-task to ask the user something — Claude Code's
+`AskUserQuestion` tool. Run headless, nobody can answer: the tool comes back
+empty and the model goes on guessing, or the run hangs until a timeout
+([claude-code#50728](https://github.com/anthropics/claude-code/issues/50728)).
+odw reads the call from the CLI's stream, **stops the CLI at the question** — an
+agent never goes on with an empty answer — and then does what `questions` says:
+
+- `"checkpoint"` (the default) turns the question into a checkpoint: the same
+  `odw status`, dashboard card (each option a chip that fills the answer), `notify`
+  `"waiting"` hook and one-time approve links as `checkpoint()`. Answer it with
+  `odw approve <run> --checkpoint N --note "<answer>"` (or an approval whose edited
+  payload has an `answer`); the same agent() call runs again — in the same worktree
+  when isolated — its prompt ending with “Earlier in this task you stopped to ask
+  the user: … The user answered: …”. The rerun is logged (`retry.reason:
+  "question"`) and counts toward the budget. `odw reject` declines: the agent
+  fails with `reason: "needs_input"`. A call answered 3 times that asks again fails too.
+- `"fail"` fails the agent at once with `reason: "needs_input"`; its `agent_failed`
+  event, `/api/runs/:id`, the drawer and `odw status` list what it asked.
+- `"deny"` runs the CLI without its question tool (the adapter's `questionArgs`:
+  `claude --disallowedTools AskUserQuestion`) and tells the agent to assume and say
+  what it assumed. One that asks anyway fails with `needs_input`.
+
+Set it for the run (`"questions"` in the config), per adapter, or per call:
+`agent(prompt, { questions: "fail" })`. Only the CLI's own tool call counts — a
+reply that ends in a question mark is not a question — and no CLI session is
+resumed: the call runs again, told the answer. Any JSONL adapter can declare its
+CLI's question events with `output.questions` (see the adapters reference); the
+built-in `claude` does.
+
 ### Usage and cost (ODW extension)
 
 A fan-out spends quota fast, so a run shows what it spends as it goes. Every
@@ -2675,7 +2706,8 @@ evidence: `empty_reply`, `unmet_expectation`, under `"mcpFailures": "fail"`
 reply, under `"orphanedBackground": "fail"` or `expect`; see
 [Check an agent's work](#check-an-agents-work-odw-extension)) — and `out_of_scope`, an agent that
 changed files outside its declared scope under `"scopePolicy": "fail"` (see
-[Declared scopes](#declared-scopes-odw-extension)), and `runaway`, an agent killed at one of its
+[Declared scopes](#declared-scopes-odw-extension)), `needs_input`, an agent that stopped to ask a
+question nobody answered (see [Agent questions](#agent-questions-odw-extension)), and `runaway`, an agent killed at one of its
 [limits](#per-agent-limits-and-runaway-loops-odw-extension). The class is the `reason` on the `agent_failed` event (with
 `retryAfter`, in seconds, when the CLI said when to come back), the agent's
 `failureReason` in the dashboard and `/api/runs/:id`, and it shows in the live
@@ -3070,7 +3102,11 @@ The hooks then fire once per checkpoint, while the run waits on: the command wit
 `"checkpoint": { "checkpointId", "title", "since" }` field in place of `finishedAt`,
 and a `text` line naming the command that answers it. While an `odw serve --public-url`
 runs, they also carry the checkpoint's signed one-time approve and reject links — see
-[Approve from your phone](#approve-from-your-phone-odw-extension).
+[Approve from your phone](#approve-from-your-phone-odw-extension). An
+[agent's question](#agent-questions-odw-extension) fires the same hooks: the payload's
+`checkpoint.kind` is `"question"` (else `"checkpoint"`), `checkpoint.question` names the
+agent that asked (`{ agentId, label, adapter }`), the command gets `ODW_CHECKPOINT_KIND`
+and `ODW_QUESTION_AGENT`, and the `text` line says to answer with `odw approve … --note`.
 
 Add `"paused"` to hear when a run [pauses for a spent quota](#pause-for-a-spent-quota-odw-extension)
 — once per pause, not when it goes on: the command with `ODW_RUN_STATE=paused`,

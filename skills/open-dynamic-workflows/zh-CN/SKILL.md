@@ -75,7 +75,7 @@ return await agent(
 | `exec(command, opts?)` | 不启动模型直接运行一条命令（测试、构建、linter）；返回 `{ stdout, stderr, exitCode, signal, timedOut, truncated, durationMs }`。字符串经 shell 执行，数组按 argv 执行。**ODW 扩展**——不属于 Claude Code 方言。 |
 | `checkpoint(title, opts?)` | 暂停运行，直到有人批准（可以附上修改后的 payload）或拒绝；返回 `{ approved, note, by, payload, edited }`。**ODW 扩展**——不属于 Claude Code 方言。 |
 
-`agent` 的 `opts`：`{ adapter?, schema?, label?, phase?, model?, agentType?, isolation?, keep?, permissions?, expect?, expectRetries?, allowEmpty?, notes?, handoff?, scope?, scopePolicy? }`。
+`agent` 的 `opts`：`{ adapter?, schema?, label?, phase?, model?, agentType?, isolation?, keep?, permissions?, expect?, expectRetries?, allowEmpty?, notes?, handoff?, scope?, scopePolicy?, questions? }`。
 `adapter` 选择用哪个 CLI——写成列表（`['codex', 'claude']`，**ODW 扩展**）就是回退链；
 `model: '@fast'` 为实际运行它的 CLI 选出该层级的模型（**ODW 扩展**）；`schema` 是一个原始 JSON Schema 对象（选项，不是全局）；
 `agentType` 是注入进 prompt 的**人设**，*不是* adapter 名。`keep: true`（**ODW 扩展**）
@@ -398,6 +398,14 @@ odw status $RUN     # 问题、它的 payload，以及回答它的确切命令
 检查点等待期间 `odw run --wait` 会一直阻塞。带检查点的 workflow 请以后台方式启动
 （`RUN=$(odw run wf.js)`）并轮询 `odw status $RUN`，或用 `--wait --timeout <秒>` 限定
 等待时长。`odw resume` 会重放已完成的 agent，但每个检查点都会重新提问。
+
+**agent 的提问（ODW 扩展）。** agent 停下来问用户（Claude Code 的 `AskUserQuestion`）时，会在
+提问处被停下，绝不让它瞎猜。默认（`questions: "checkpoint"`）问题像检查点一样等待——
+`odw status $RUN` 把它显示为"an agent asks"并列出选项——回答后同一个调用会带着答案重新运行。
+规则不变：**把问题转给用户，只用用户的原话回答**——`odw approve $RUN --checkpoint N --note
+"<用户的回答>"`；`odw reject` 表示拒绝回答，agent 以 `needs_input` 失败。无人值守的运行更适合
+`agent(prompt, { questions: "deny" })`（不给提问工具，agent 自行假设并说明）或 `"fail"`（以
+`needs_input` 失败），并把 agent 可能会问的事写进提示词。
 
 **成本闸门（ODW 扩展）。** 大规模扇出之前，与其自己加检查点，不如用 `costGate`，只在必要时
 才问：配置里写 `"costGate": { "usd": 5 }`，或 `parallel(thunks, { costGate: { usd: 5 } })`

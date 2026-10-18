@@ -86,7 +86,7 @@ outright, never silently passed through as a string).
 | `exec(command, opts?)` | Run a command (tests, a build, a linter) without a model; resolves to `{ stdout, stderr, exitCode, signal, timedOut, truncated, durationMs }`. A string runs through the shell, an array as argv. **ODW extension** — not part of Claude Code's dialect. |
 | `checkpoint(title, opts?)` | Pause the run until a person approves (perhaps with an edited payload) or rejects; resolves to `{ approved, note, by, payload, edited }`. **ODW extension** — not part of Claude Code's dialect. |
 
-`opts` for `agent`: `{ adapter?, schema?, label?, phase?, model?, agentType?, isolation?, keep?, permissions?, expect?, expectRetries?, allowEmpty?, notes?, handoff?, scope?, scopePolicy? }`.
+`opts` for `agent`: `{ adapter?, schema?, label?, phase?, model?, agentType?, isolation?, keep?, permissions?, expect?, expectRetries?, allowEmpty?, notes?, handoff?, scope?, scopePolicy?, questions? }`.
 `adapter` picks the CLI — or, as a list (`['codex', 'claude']`, **ODW
 extension**), a fallback chain; `model: '@fast'` picks a tier's model for
 whichever CLI runs it (**ODW extension**); `schema` is a raw JSON Schema object (an option, not
@@ -489,6 +489,17 @@ never open, follow or POST to one yourself.
 checkpoints detached (`RUN=$(odw run wf.js)`) and poll `odw status $RUN`, or
 bound the wait with `--wait --timeout <s>`. `odw resume` replays finished
 agents but asks every checkpoint again.
+
+**Agent questions (ODW extension).** An agent that stops to ask the user (Claude
+Code's `AskUserQuestion`) is stopped at the question, never left to guess. By
+default (`questions: "checkpoint"`) the question waits like a checkpoint —
+`odw status $RUN` shows it as "an agent asks" with its options — and the answer
+reruns the same call, told it. The same rule holds: **relay the question to the
+user and answer only with their words** — `odw approve $RUN --checkpoint N --note
+"<their answer>"`; `odw reject` declines and the agent fails with reason
+`needs_input`. For unattended runs prefer `agent(prompt, { questions: "deny" })`
+(no question tool; the agent assumes and says so) or `"fail"` (reason
+`needs_input`), and put what an agent would ask in its prompt.
 
 **Cost gates (ODW extension).** Before a big fan-out, rather than a checkpoint of
 your own, a `costGate` asks only when it matters: with `"costGate": { "usd": 5 }`

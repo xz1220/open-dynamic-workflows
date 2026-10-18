@@ -281,6 +281,7 @@ did-you-mean hint) instead of silently ignoring them.
 | `mcpFailures` | **ODW extension.** What an agent does when its CLI started it without an MCP server (`mcpPath`: Claude Code's init event): `"warn"` (default, as Claude Code itself only warns) keeps the reply — every server that is not `connected` is recorded as `mcp` on the agent and logged once per run per server and status — and `"fail"` fails an agent whose server `failed` or `needs-auth` with reason `mcp_unavailable` (`pending` and `disabled` never fail it). A server the call's `expect.mcp` lists is a miss instead |
 | `orphanedBackground` | **ODW extension.** What an agent does when its CLI gave its reply with background work still running — a `run_in_background` shell command or a subagent it never waited for, which died as the CLI exited (`output.background`: Claude Code's task events): `"warn"` (default) keeps the reply — the work is recorded as `orphaned` on the agent and logged once — and `"fail"` fails the agent with reason `orphaned_background`. A call with `expect` counts it as a miss either way |
 | `scopePolicy` | **ODW extension.** What an agent that changed files outside its declared `scope` does (see the primitives reference): `"warn"` (default) keeps the reply — the files are recorded as `outOfScope` on the agent and logged — and `"fail"` fails the agent with reason `out_of_scope`. An agent()'s own `scopePolicy` wins; a call with `expect` counts such a write as a miss either way |
+| `questions` | **ODW extension.** What an agent's question does — a clarifying tool call its CLI made (`output.questions`: Claude Code's `AskUserQuestion`), which nobody can answer headless; the CLI is stopped at it either way: `"checkpoint"` (default) asks a person at a checkpoint and runs the call again told the answer (`odw approve --note`), a rejection failing it with reason `needs_input`; `"fail"` fails it with reason `needs_input`; `"deny"` runs the CLI without its question tool (`questionArgs`) and tells the agent to assume. An adapter's own `questions` and an `agent()`'s override it |
 | `redact` | **ODW extension.** `{ "env": true, "patterns": true, "extra": [] }` (default): what odw keeps and serves — transcripts and stderr tails, saved results, events, the run's error, webhook payloads — has likely secrets replaced by `«redacted:<kind>»` before it is written, and says so with `redacted: true` — and so do `worker.log` and the Chat Host's sessions (what a person typed: token shapes only), while a run's `args` are kept as given for `odw rerun` and served with token shapes redacted. `env`: the values (8+ characters) of secret-named variables (`*_KEY`, `*TOKEN`, `*SECRET*`, `*PASSWORD*`, `AUTHORIZATION`, cloud credentials) of odw's environment and each adapter's `env`, wherever they appear, and `NAME=value` of such names; `patterns`: well-known token shapes (Anthropic, OpenAI, GitHub, Slack, AWS, Google, JWT, private keys, `Bearer`); `extra`: more regular expressions. The run's result gets `patterns` and `extra` only; prompts, what agents see and kept diffs are never redacted. `false` = off; `odw doctor` reports it |
 | `otel` | **ODW extension.** OpenTelemetry export: `false` (default) sends nothing — the `OTEL_*` variables alone never turn it on. `true` or `{ "endpoint": "http://localhost:4318", "headers": { … }, "captureContent": false }`: once a run ended, the worker posts its trace (`invoke_workflow` / `phase` / `invoke_agent` / `execute_tool` / `exec` / `checkpoint` spans after the GenAI semantic conventions — usage, cost, models, failure reasons, retries and fallbacks as span events) once, as OTLP/HTTP JSON to `endpoint` + `/v1/traces`, within 5s; a failure is one line in the run's `worker.log` and never changes the run. Omitted, `endpoint` and `headers` come from `OTEL_EXPORTER_OTLP_(TRACES_)ENDPOINT` / `…HEADERS` (default endpoint `http://localhost:4318`); header values are secrets, never logged or shown. `captureContent` (or `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true`) adds replies, tool input and output and error text — redacted again on the way out, each field cut at 4096 characters. `odw export <run> --otlp [--out FILE \| --send]` exports any run; `odw doctor` shows where traces go |
 | `sandbox` | **ODW extension.** `"none"` (default): agent CLIs run on this machine. `{ "kind": "container", "image", "engine"?, "network"?, "mounts"?, "cliConfig"?, "memory"?, "cpus"?, "pids"? }`: each CLI run and `exec()` step in a fresh Docker/Podman container — see [container sandbox](#container-sandbox-odw-extension). `odw run\|rerun\|resume --sandbox container [--sandbox-image <image>]` turns it on per run |
@@ -306,6 +307,8 @@ did-you-mean hint) instead of silently ignoring them.
 | `permissionArgs` | **ODW extension.** Each tier's flags: `{ "read"?: [...], "edit": [...], "full"?: [...] }` (`edit` required, `[]` for none), put where the command has a `{permission_args}` element — which it must have exactly when this is set |
 | `permissions` | **ODW extension.** Caps this adapter's tier below the run's: its agents get the lower of the two |
 | `permissionDenials` | **ODW extension.** `"warn"` or `"fail"`: this CLI's own `permissionDenials`, over the run-wide setting |
+| `questions` | **ODW extension.** `"checkpoint"`, `"fail"` or `"deny"`: this CLI's own `questions`, over the run-wide setting |
+| `questionArgs` | **ODW extension.** The flags that take this CLI's question tool away, added at `{permission_args}` under `questions: "deny"` (the built-in `claude`: `["--disallowedTools", "AskUserQuestion"]`). Needs a `{permission_args}` element |
 | `trust` | **ODW extension.** `"untrusted"`: this adapter runs untrusted in every run (`"trusted"` cannot loosen an untrusted run) |
 | `untrustedArgs` | **ODW extension.** The flags that keep the repository's instructions, settings, hooks and MCP servers from this CLI, added after its tier's flags at `{permission_args}` when it runs untrusted. Absent: the run says once that it keeps nothing out. Setting it on a built-in drops the built-in's `untrustedNote` |
 | `untrustedNote` | **ODW extension.** What an untrusted run still lets reach this CLI from the repository, logged once per run |
@@ -373,6 +376,17 @@ in the record: the first string found, as `Bash (npm run dev)`. A malformed rule
 the `assistant` tool calls `Bash`, `Agent` and `Task` with
 `input.run_in_background: true`, and a `<task-notification>` injected as a `user`
 message (`<task-id>`, `<tool-use-id>`).
+
+**ODW extension**, `jsonl` only: `questions: [rule…]` says which events are the agent
+asking the user a question, so the CLI is stopped there and the `questions` setting
+decides what next. A rule is `{ "event": <type>, "each"?: [path], "where"?: [conditions,
+as background's], "list"?: [path], "text": [[path]…], "header"?: [[path]…], "options"?:
+[path], "optionLabel"?: [path], "multiSelect"?: [path] }`: in a matching event (or item),
+`list` is the array of questions (unset: the item is one question); in each, the first
+string at `text` is the question, `header` its heading, `options` the answers it offers
+(strings, or objects with a string at `optionLabel`, default `["label"]`). The built-in
+`claude` reads the `assistant` `tool_use` block named `AskUserQuestion`, its
+`input.questions[]` (`question`, `header`, `options[].label`, `multiSelect`).
 
 ### Native structured output
 
@@ -479,4 +493,5 @@ limit reached`). A clean exit can still fail (ODW extensions): with reason
 when the CLI started the agent without an MCP server that `failed` or
 `needs-auth` (`mcpPath`) and `mcpFailures` is `"fail"`, and `orphaned_background`
 when the CLI replied with background work still running (`background`) and either
-`orphanedBackground` is `"fail"` or the call has `expect`.
+`orphanedBackground` is `"fail"` or the call has `expect`. An agent that stopped to
+ask a question nobody answered (`questions`) fails with reason `needs_input`.

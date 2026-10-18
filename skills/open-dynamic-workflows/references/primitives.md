@@ -116,6 +116,19 @@ other primitive organizes calls to it.
 - **opts.scopePolicy** (**ODW extension**) — `"warn"` (default: the
   `scopePolicy` setting) or `"fail"`: what a write outside `scope` does. Needs
   `scope`.
+- **opts.questions** (**ODW extension**) — what a question the agent stops to
+  ask the user (its CLI's clarifying tool call: Claude Code's `AskUserQuestion`)
+  does. The CLI is stopped at the question either way. `"checkpoint"` (default:
+  the adapter's, else the `questions` setting) asks a person at a checkpoint
+  (`checkpoint_requested` carries `question: { agentId, label, adapter,
+  questions }`) and runs the call again — in the same worktree when isolated —
+  its prompt told "Earlier in this task you stopped to ask the user: … The user
+  answered: …" (the approval's note, else an edited payload's `answer`); a
+  rejection, or a fourth question, throws with reason `needs_input`. `"fail"`
+  throws with reason `needs_input` at once; `"deny"` runs the CLI without its
+  question tool (the adapter's `questionArgs`) and tells the agent to assume.
+  A `needs_input` failure carries the questions (`agent_failed`'s `questions`).
+  Claude Code ignores it.
 
 Returns the reply text, or the validated JSON value when `schema` is set. CLI
 errors, exhausted schema retries, work that missed its `expect` checks and an
@@ -123,8 +136,8 @@ empty reply throw. Inside `parallel`/`pipeline`, these recoverable failures
 become `null`. Fatal errors — stop requests, exhausted budgets, the total-agent
 cap, and invalid adapter/run configuration — propagate and terminate the run.
 A failed CLI run's error carries `reason` (`rate_limit`, `quota`, `auth`,
-`timeout`, `stalled`, `not_found`, `permission`, `exit`, `empty_reply` or
-`unmet_expectation`), the same as its `agent_failed` event — branch on it in a
+`timeout`, `stalled`, `not_found`, `permission`, `exit`, `empty_reply`,
+`unmet_expectation` or `needs_input`), the same as its `agent_failed` event — branch on it in a
 `try`/`catch`.
 
 Every call that completes is saved in its run directory
