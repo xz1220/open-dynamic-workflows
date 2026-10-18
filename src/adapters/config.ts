@@ -145,6 +145,7 @@ const KNOWN_TOP_KEYS = [
   "quotaWait",
   "mcpFailures",
   "orphanedBackground",
+  "scopePolicy",
   "otel",
   "sandbox",
   "agentLimits",
@@ -1225,6 +1226,10 @@ function buildSettings(raw: Record<string, unknown>): Settings {
       raw["orphanedBackground"] == null
         ? DEFAULT_SETTINGS.orphanedBackground
         : buildChoice("orphanedBackground", raw["orphanedBackground"], ["warn", "fail"] as const),
+    scopePolicy:
+      raw["scopePolicy"] == null
+        ? DEFAULT_SETTINGS.scopePolicy
+        : buildChoice("scopePolicy", raw["scopePolicy"], ["warn", "fail"] as const),
     otel: raw["otel"] == null ? DEFAULT_SETTINGS.otel : buildOtel(raw["otel"]),
     sandbox: raw["sandbox"] == null ? DEFAULT_SETTINGS.sandbox : buildSandboxSetting(raw["sandbox"]),
     agentLimits: raw["agentLimits"] == null ? {} : readLimits(raw["agentLimits"], '"agentLimits"', (m) => new ConfigError(m)),

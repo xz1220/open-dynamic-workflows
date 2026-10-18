@@ -277,6 +277,7 @@ function reasonText(reason: string | undefined): string | null {
     unmet_expectation: "expectations not met",
     runaway: "runaway",
     orphaned_background: "left background work running",
+    out_of_scope: "wrote outside its scope",
   };
   return words[reason] ?? sanitizeText(reason.replace(/_/g, " "), 40);
 }

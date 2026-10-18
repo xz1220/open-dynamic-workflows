@@ -272,6 +272,7 @@ export const BEHAVIOUR_SETTINGS = [
   "permissionDenials",
   "mcpFailures",
   "orphanedBackground",
+  "scopePolicy",
   "sandbox",
   "notes",
   "agentLimits",

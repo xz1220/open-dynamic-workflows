@@ -52,6 +52,8 @@ export class AdapterExecutionError extends DynamicWorkflowError {
  * extension; see ./expect): reason "unmet_expectation" — or "permission" when
  * its CLI refused it tool calls, which count as a miss; "orphaned_background"
  * when it left background work running, which does too — and what it missed.
+ * Without `expect`, "out_of_scope" is the failure of an agent that wrote
+ * outside its declared scope under `scopePolicy: "fail"` (see ./scope).
  */
 export class UnmetExpectationError extends AdapterExecutionError {
   /** Each check the last attempt did not meet, in one line. */
@@ -60,7 +62,7 @@ export class UnmetExpectationError extends AdapterExecutionError {
   constructor(
     message: string,
     misses: string[],
-    reason: "unmet_expectation" | "permission" | "orphaned_background" = "unmet_expectation",
+    reason: "unmet_expectation" | "permission" | "orphaned_background" | "out_of_scope" = "unmet_expectation",
   ) {
     super(message, { reason });
     this.misses = misses;

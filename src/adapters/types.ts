@@ -566,6 +566,14 @@ export interface Settings {
    */
   orphanedBackground: "warn" | "fail";
   /**
+   * An agent that changed files outside its declared `scope` (an ODW
+   * extension; see ../scope): `"warn"` keeps its reply, recording the files on
+   * the agent as `outOfScope` and logging them; `"fail"` fails the agent with
+   * reason "out_of_scope". An agent()'s `scopePolicy` overrides it; a call
+   * with `expect` counts such a write as a miss either way.
+   */
+  scopePolicy: "warn" | "fail";
+  /**
    * What odw keeps and serves of its agents — transcripts, saved results,
    * events, the run's error and result, webhook payloads — has its likely
    * secrets replaced by `«redacted:<kind>»` (an ODW extension; see ../redact);
