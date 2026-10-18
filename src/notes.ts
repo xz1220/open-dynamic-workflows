@@ -165,6 +165,11 @@ export class NotesBoard {
     return this.notes;
   }
 
+  /** `text` with likely secrets replaced, as the board stores it. */
+  redact(text: string): string {
+    return this.opts.redactor ? this.opts.redactor.text(text) : text;
+  }
+
   /**
    * Put a note on the board: cleaned, capped, redacted, appended to
    * notes.jsonl, rendered into notes.txt and emitted as `note_added`. Null
@@ -176,16 +181,17 @@ export class NotesBoard {
     kind: Note["kind"] = "note",
     keep?: { paths: string[] },
   ): Note | null {
-    let text = cleanNote(raw);
+    const text = cleanNote(raw);
     if (!text) return null;
     if (this.full) return null;
+    // Redacted before it is cut: a cut secret no longer matches its pattern.
+    const redacted = this.redact(text);
+    let clean = redacted;
     let truncated = false;
-    if (text.length > NOTE_MAX_CHARS) {
-      text = text.slice(0, NOTE_MAX_CHARS - 1) + "…";
+    if (clean.length > NOTE_MAX_CHARS) {
+      clean = clean.slice(0, NOTE_MAX_CHARS - 1) + "…";
       truncated = true;
     }
-    const redactor = this.opts.redactor;
-    const clean = redactor ? redactor.text(text) : text;
     const note: Note = {
       noteId: this.notes.length + 1,
       ts: Date.now() / 1000,
@@ -193,7 +199,7 @@ export class NotesBoard {
       text: clean,
       kind,
       ...(truncated ? { truncated: true as const } : {}),
-      ...(clean !== text ? { redacted: true as const } : {}),
+      ...(redacted !== text ? { redacted: true as const } : {}),
       ...(keep ? { keep: true as const, ...(keep.paths.length ? { paths: keep.paths } : {}) } : {}),
     };
     const line = JSON.stringify(note) + "\n";
@@ -436,9 +442,9 @@ const SIGNATURE_RE =
 /**
  * The note ODW posts for an agent that kept a change: its diff stat, the
  * files it touched, and the declaration-like lines its hunks add or remove —
- * capped. Null when the diff touches nothing.
+ * capped, each line redacted before it is cut. Null when the diff touches nothing.
  */
-export function interfaceSummary(diff: string, changes?: AgentChanges): string | null {
+export function interfaceSummary(diff: string, changes?: AgentChanges, redact: (text: string) => string = (text) => text): string | null {
   const files = new Map<string, { add: number; del: number }>();
   const signatures: string[] = [];
   const seen = new Set<string>();
@@ -463,7 +469,7 @@ export function interfaceSummary(diff: string, changes?: AgentChanges): string |
     else file.del++;
     const body = line.slice(1);
     if (!SIGNATURE_RE.test(body)) continue;
-    const shown = `${sign} ${oneLine(body.trim()).slice(0, SIGNATURE_CHARS)}`;
+    const shown = `${sign} ${oneLine(redact(body).trim()).slice(0, SIGNATURE_CHARS)}`;
     if (seen.has(shown)) continue;
     seen.add(shown);
     signatures.push(shown);

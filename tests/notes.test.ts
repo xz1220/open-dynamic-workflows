@@ -268,6 +268,16 @@ test("the board caps each note and the board, redacts secrets, strips control ch
     assert.equal(secret.redacted, true);
     assert.doesNotMatch(secret.text, /s3cr3t/);
     assert.doesNotMatch(readFileSync(join(runDir, "notes.jsonl"), "utf8"), /s3cr3t/);
+    // A secret straddling the cut is redacted whole, not cut below its pattern first.
+    const straddle = board.post(by, "x".repeat(NOTE_MAX_CHARS - 12) + " s3cr3t-placeholder-value-1234")!;
+    assert.equal(straddle.redacted, true);
+    assert.doesNotMatch(straddle.text, /s3cr3t/);
+    const sig = interfaceSummary(
+      ["diff --git a/k.ts b/k.ts", "--- a/k.ts", "+++ b/k.ts", "@@ -0,0 +1 @@", `+export const KEY = "${"p".repeat(150)}s3cr3t-placeholder-value-1234";`].join("\n"),
+      undefined,
+      (text) => board.redact(text),
+    )!;
+    assert.doesNotMatch(sig, /s3cr3t/);
     const ctl = board.post(by, "a\u001b[31mred\u0007\r\nnext")!;
     assert.equal(ctl.text, "a[31mred\nnext");
     // Fill it: the cap holds, later notes are dropped, and the run says so once.

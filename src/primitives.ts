@@ -679,7 +679,7 @@ export function createPrimitives(
   const broadcast = async (agentId: number, label: string, kept: KeptChanges, note: (message: string) => void): Promise<void> => {
     if (!ctx.notes || !ctx.agentDiffPath) return;
     try {
-      const summary = interfaceSummary(await readFile(ctx.agentDiffPath(agentId), "utf8"), kept.changes);
+      const summary = interfaceSummary(await readFile(ctx.agentDiffPath(agentId), "utf8"), kept.changes, (text) => ctx.notes!.redact(text));
       if (summary) ctx.notes.post({ agentId, label }, summary, "interface");
     } catch (err) {
       note(`could not post its interface changes to the notes board: ${err instanceof Error ? err.message : String(err)}`);

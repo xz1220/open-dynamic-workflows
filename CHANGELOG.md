@@ -661,7 +661,8 @@ independent security reviews whose findings are all fixed.
   linked file really is. Also in memory: an entry, and each value of a checkpoint
   edit's summary, was cut before it was redacted, so a long secret or token cut below
   the length the redactor knows it by survived in part — both are now redacted first,
-  then cut. A large file froze the run or `odw serve` (read whole, then one blocking
+  then cut; so are the notes board's notes and the interface lines ODW posts for a
+  kept change, which had the same order. A large file froze the run or `odw serve` (read whole, then one blocking
   `git diff` per distinct commit, for every file on `GET /api/memory`): a file over 4
   MiB (or not a regular file) is now refused and said — in the run's log, by `odw
   memory list`, as `error` in the API — and never written over, and at most 32
