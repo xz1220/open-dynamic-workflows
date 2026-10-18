@@ -59,6 +59,21 @@ jobs:
       - run: npm run build
       - run: scripts/ci/sandbox-real.sh
 
+  # odw run --on ssh:// against a real sshd: a second local user stands in for
+  # the server. The tests use a fake ssh; this checks the real thing.
+  remote-real:
+    name: remote (ubuntu-latest, real sshd)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: scripts/ci/remote-real.sh
+
   # The full suite leans on POSIX shells (installer, worker, adapter stubs), so
   # Windows gets a build plus a smoke check of the CLI the release ships.
   windows-smoke:

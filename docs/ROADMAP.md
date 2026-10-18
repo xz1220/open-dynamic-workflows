@@ -119,6 +119,22 @@
 | R11 | **声明范围**（ODW 扩展）：`agent(…, { scope: [globs] })` 事先声明要改的文件，范围重叠的并行调用串行，越出范围的写入被标出（研究第 9 条，Claim Plane 的声明式准入） | M | ✅ `scope` 用 `expect` 的 glob 规则；同时在途、范围重叠的调用（`parallel()`/`pipeline()` 扇出或未 await 的调用）后发出的在申请槽位前等先发出的结束（不占槽位），每次等待记一行日志（`fix-auth waits for refactor-login: both declare src/auth/**`，事件带 `scopeWait: { for, globs }`），只等更早的调用、不会成环；不相交或未声明范围的调用照常并行。重叠判定只看 glob、保守：展开 `{a,b}`，字面路径相等，glob 匹配字面路径，或一个 glob 的字面前缀以另一个的开头。回复后按 `expect` 的读法（隔离看 worktree，原地看调用开始以来的改动）与范围比较，范围外的文件记为 `outOfScope`（终止事件、保存结果、`AgentView`、`odw agents`、看板侧栏）并记日志，打开笔记时贴一条 `kind: "scope"` 笔记；`scopePolicy`（调用或设置，默认 `"warn"`，`BEHAVIOUR_SETTINGS` 含该设置）`"fail"` 以 `out_of_scope` 失败、不重试，设了 `expect` 时算一项缺失；原地运行时同时运行的另一个已声明范围调用之范围内的文件不计入。测试：重叠规则、声明队列、mock agent 的串行/并行（以事件顺序与屏障判定，无固定 sleep）、warn/fail/expect、隔离与原地 |
 | R12 | 在自己的机器上运行：`odw run --on ssh://host` 与 `odw pull`（不引入 daemon；调研第 11 条） | M | ✅ `odw run <wf> --on ssh://[user@]host[:port][/dir] [--sync git\|rsync]`（ODW 扩展）：先在远端 `odw --version`（否则 `npx --no-install odw`），缺失则给出安装提示；`--sync git`（默认）发送 HEAD 的 `git bundle` 加上用临时 index 生成的未提交改动补丁（含未跟踪文件、不含被忽略的，用户的 index 不动，并说明带了哪个提交与多少文件），`--sync rsync` 镜像目录（`--filter=':- .gitignore'`）；工作目录默认 `~/odw-remote/<仓库名>`（或 URL 路径），带 `.odw-remote/workdir` 标记，非 odw 建的非空目录拒绝、绝不覆盖；项目外的工作流一并发送（`.odw-remote/workflows/<sha12>-<名>`）；随后 `odw run … --detach` 并打印远端运行 id。`--args` 本地解析后作为文件经 ssh stdin 发送，绝不上命令行；每次 ssh 调用都是 `sh -c <脚本>` 加逐个引用的位置参数；`--config`/`--runs-root`/`--wait`/`--fg`/`--timeout` 拒绝，`--adapter`/`--permissions`/`--untrusted`/`--sandbox`/`--sandbox-image`/`--budget` 透传。远端用它自己的 odw 配置与 CLI 登录。`odw status\|logs\|attach <run> --on ssh://host` 透传给远端 odw（终端里 attach 与 `logs --follow` 用 `ssh -t`，退出码透传）。`odw pull <run> --from ssh://host` 经隐藏命令 `odw __run-dir` 找到远端运行目录，用 rsync（本机没有或失败时用 ssh 上的 tar）拷入本地运行根目录，`meta.json` 标记 `origin: "remote"` 与 `remote: { url, host, dir, origin, pulledAt }`，去掉远端 worker 的 pid（快照在本机显示为 stale），运行中可反复拉取，`odw status` 显示来源。`ODW_SSH`/`ODW_RSYNC` 可替换二进制。测试：假 ssh（在临时「远端家目录」执行远端命令）与假 rsync 跑通运行、状态透传、运行中拉取再结束后拉取、tar 回退、未提交改动作为补丁、远端缺 odw、不可达主机、非 odw 目录拒绝 |
 
+### 0.7「先看清，再花钱」（2026-10-18 第三轮调研）
+
+依据：[`docs/research/user-needs-2026-10-round3.md`](research/user-needs-2026-10-round3.md)。
+
+| # | 方向 | 规模 | 状态 |
+| --- | --- | --- | --- |
+| S1 | **运行前估算与花费闸门**：`odw run --estimate` 按历史给出各阶段 p50/p90 花费与耗时；`costGate` 把预计超支的扇出变成检查点 | S–M | 🚧 |
+| S2 | **`odw test` / `--dry`**：脚本化回复、`--record` 录制固定回放，零成本预演工作流 | M | 🚧 |
+| S3 | **签名入站触发器 + GitHub Action**：`POST /api/triggers/<name>`（HMAC、默认不受信任），`--deadline` 优雅停止，job summary | M | 🚧 |
+| S4 | **`odw replay --agent` 与 `--break`/`--step`**：单独重跑一个 agent，或在阶段前断点 | M | 🚧 |
+| S5 | 漂移监测与 `doctor --models`、`model_unavailable` 失败原因 | S–M | ⏳ |
+| S6 | 多账号：`accounts` 配置展开为按余量调度的适配器链 | S | ⏳ |
+| S7 | 带出处的工作流记忆（`.odw/memory/`） | M | ⏳ |
+| S8 | 具名令牌与操作人归属 | M | ⏳ |
+| S9 | `odw new` 模板与零成本首跑 | S | ⏳ |
+
 ### Later — 0.8+「规模与生态」
 
 - ✅ **可选的容器运行器**（ODW 扩展；#6）：`sandbox: { kind: "container", image, engine?, network?, mounts?, cliConfig?, memory?, cpus?, pids? }`（配置、`odw run|rerun|resume --sandbox container [--sandbox-image <镜像>]`、按适配器、`agent(…, { sandbox })`——只能收紧），每次 CLI 运行与每个 `exec()` 步骤变成 `<engine> run --rm -i --init --pull never --name odw-<run>-<agent>-<随机>` 的全新 Docker/Podman 容器：只以相同路径读写挂载工作区、私有临时 home（按各 CLI 文档复制登录与配置文件：claude 的 `.credentials.json`/`settings.json`/`~/.claude.json` 去掉 `projects` 等，codex 的 `auth.json`/`config.toml`，gemini 的 `oauth_creds.json` 等；`mount-ro` 只读绑定，`none` 为空，运行后删除）、`--user` 宿主 uid:gid（Podman 加 `--userns keep-id`）、`--cap-drop ALL`、`no-new-privileges`、`--pids-limit 512`、只读根文件系统与 tmpfs `/tmp`；环境只含 `agentEnv` 放行的变量且按名字传递（argv 里没有值）。argv 由纯函数构造并单测。超时、停顿、停止或非干净退出时按名字 `kill` + `rm --force` 容器，worker 退出时的兜底清理同样覆盖。镜像由用户构建（`examples/sandbox/Dockerfile`），从不拉取；缺引擎或镜像在 `odw doctor`（含 `run --rm --pull never --network none <镜像> true` 冒烟）与运行开始前报 `ConfigError`。网络默认 `"default"`——agent CLI 必须连到模型 API，所以**并非默认断网**；`exec()` 步骤默认 `network: "none"`。启动横幅、运行 setup（`BEHAVIOUR_SETTINGS`）、`agent_started` 与看板类型 `AgentView.sandbox` 显示沙箱（看板绘制待接入）。
