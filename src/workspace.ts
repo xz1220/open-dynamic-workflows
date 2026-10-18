@@ -91,6 +91,14 @@ function gitDetail(err: unknown): string {
   return (err as { stderr?: string }).stderr?.trim() || (err as Error).message;
 }
 
+/** A workspace that stays open until {@link OpenWorkspace.close}: what {@link openWorkspace} hands back. */
+export interface OpenWorkspace {
+  workspace: Workspace;
+  mode: WorkspaceMode;
+  /** Remove it (worktree mode only): its links first, then the worktree. Never throws; a second call does nothing. */
+  close(): Promise<void>;
+}
+
 /**
  * Open a workspace, run `fn` inside it, then clean up (worktree mode only). A
  * new worktree is made ready first — `.worktreeinclude`, then the `setup`
@@ -103,8 +111,34 @@ export async function withWorkspace<T>(
   fn: (workspace: Workspace) => Promise<T>,
   setup: WorktreeSetupOptions = {},
 ): Promise<T> {
+  const open = await openWorkspace(source, mode, setup);
+  try {
+    return await fn(open.workspace);
+  } finally {
+    await open.close();
+  }
+}
+
+/**
+ * Open a workspace as {@link withWorkspace} does, open until it is closed —
+ * so it can outlive one CLI run: a fallback that hands the work over (an ODW
+ * extension; see ./handoff) runs the next adapter in the worktree the last
+ * one left, its change still told against the same base and baseline.
+ */
+export async function openWorkspace(
+  source: string,
+  mode: WorkspaceMode,
+  setup: WorktreeSetupOptions = {},
+): Promise<OpenWorkspace> {
   if (mode === "inplace") {
-    return fn({ path: source, source, diff: async () => "", captureChanges: async () => null, changedPaths: async () => null });
+    const workspace: Workspace = {
+      path: source,
+      source,
+      diff: async () => "",
+      captureChanges: async () => null,
+      changedPaths: async () => null,
+    };
+    return { workspace, mode, close: async () => {} };
   }
   if (mode !== "worktree") {
     throw new Error(`unknown workspace mode '${mode}'; use 'inplace' or 'worktree'`);
@@ -176,14 +210,10 @@ export async function withWorkspace<T>(
   // The links .worktreeinclude made to the source tree go first, so removing
   // the worktree can never reach through one into the source.
   const links: string[] = [];
-  try {
-    const placed = await prepareWorktree(top, work, wsPath, setup, links);
-    // Just before the agent starts: what the include step and the setup left here.
-    baseline = await snapshotWorktree(work, placed, setup.signal).catch((err: unknown) =>
-      err instanceof Error ? err : new Error(String(err)),
-    );
-    return await fn(ws);
-  } finally {
+  let closed = false;
+  const close = async (): Promise<void> => {
+    if (closed) return;
+    closed = true;
     for (const link of links) await unlink(link).catch(() => {});
     // An agent may have locked its worktree; unlock (best-effort), then
     // remove with double --force (dirty AND locked); if git still refuses,
@@ -196,5 +226,16 @@ export async function withWorkspace<T>(
       await git(top, ["worktree", "prune"]).catch(() => {});
     }
     await rm(tmp, { recursive: true, force: true }).catch(() => {});
+  };
+  try {
+    const placed = await prepareWorktree(top, work, wsPath, setup, links);
+    // Just before the agent starts: what the include step and the setup left here.
+    baseline = await snapshotWorktree(work, placed, setup.signal).catch((err: unknown) =>
+      err instanceof Error ? err : new Error(String(err)),
+    );
+  } catch (err) {
+    await close();
+    throw err;
   }
+  return { workspace: ws, mode, close };
 }
