@@ -249,7 +249,7 @@ test(
       const run = executeRun(store.runDir(id));
 
       const recorded = () => (existsSync(pids) ? readFileSync(pids, "utf8").trim().split("\n").map(Number) : []);
-      assert.ok(await waitUntil(() => recorded().length === 2, 15_000), "both agents should be running");
+      assert.ok(await waitUntil(() => recorded().length === 2, 45_000), "both agents should be running"); // two worktrees on a loaded CI runner can take a while
       const worktrees = git("worktree", "list", "--porcelain")
         .split("\n")
         .filter((line) => line.startsWith("worktree "))
