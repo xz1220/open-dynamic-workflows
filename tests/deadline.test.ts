@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execPath } from "node:process";
@@ -8,6 +9,7 @@ import { execPath } from "node:process";
 import { main } from "../src/cli.js";
 import { DEADLINE_EXIT_CODE, deadlineReport, parseDeadline, stoppedByDeadline } from "../src/runtime/deadline.js";
 import { RunStore } from "../src/runtime/run-store.js";
+import { detail } from "../src/runtime/runs-view.js";
 import { executeRun } from "../src/runtime/worker.js";
 
 // `odw run --deadline <s>` (ODW extension; src/runtime/deadline.ts): the
@@ -112,6 +114,62 @@ test("a deadline that does not pass changes nothing; one already past stops the 
     assert.ok(stoppedByDeadline(status));
     assert.deepEqual((deadlineReport(store, late).finished as unknown[]).length, 0);
     assert.equal(stoppedByDeadline({ state: "stopped" }), false, "a stop by a person is not a deadline");
+  } finally {
+    rmSync(p.root, { recursive: true, force: true });
+  }
+});
+
+/** An agent CLI that writes partial.txt in its working directory, then never answers. */
+const EDIT_THEN_HANG =
+  "require('node:fs').writeFileSync('partial.txt','half done\\n');process.stdin.resume();setInterval(()=>{},1000)";
+
+/** A git repository to run isolated agents over, and a config whose agent edits then hangs. */
+function isolatedProject(): { root: string; repo: string; config: string; wf: string; runs: string } {
+  const root = mkdtempSync(join(tmpdir(), "odw-deadline-iso-"));
+  const repo = join(root, "repo");
+  execFileSync("git", ["init", "-q", repo]);
+  writeFileSync(join(repo, "a.txt"), "a\n");
+  execFileSync("git", ["-C", repo, "add", "-A"]);
+  execFileSync("git", ["-C", repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--no-gpg-sign", "-m", "init"]);
+  const config = join(root, "odw.config.json");
+  writeFileSync(config, JSON.stringify({ adapters: { mock: { command: [execPath, "-e", EDIT_THEN_HANG], stdin: "{prompt}" } }, defaultAdapter: "mock" }));
+  const wf = join(root, "wf.js");
+  writeFileSync(wf, "export const meta = { name: 'iso', description: 'x' }\nreturn await agent('edit', { label: 'worker', isolation: 'worktree' })\n");
+  return { root, repo, config, wf, runs: join(root, "runs") };
+}
+
+test("--deadline keeps an isolated agent's partial diff, marked partial; a person's stop keeps none (review fix)", { skip: process.platform === "win32" }, async () => {
+  const p = isolatedProject();
+  try {
+    const store = new RunStore(p.runs);
+    const id = store.create({ script: p.wf, args: null, source: p.repo, configPath: p.config, deadlineSeconds: 1.5 });
+    assert.equal(await executeRun(store.runDir(id)), "stopped");
+    assert.ok(stoppedByDeadline(store.readStatus(id)));
+    const failed = store.readEvents(id).find((e) => e.type === "agent_failed");
+    assert.ok(failed, "the killed agent settled");
+    assert.equal(failed.partial, true);
+    assert.deepEqual(failed.changes, { files: 1, insertions: 1, deletions: 0, truncated: false });
+    const diff = readFileSync(store.agentDiffPath(id, 1), "utf8");
+    assert.match(diff, /^\+\+\+ b\/partial\.txt$/m);
+    assert.match(diff, /^\+half done$/m);
+    const agent = detail(store, id).agents.find((a) => a.agentId === 1);
+    assert.equal(agent?.partial, true);
+    assert.equal(agent?.changes?.files, 1);
+
+    // The same agent stopped by a person: its work is thrown away, as before.
+    const stopped = store.create({ script: p.wf, args: null, source: p.repo, configPath: p.config });
+    const run = executeRun(store.runDir(stopped));
+    const until = Date.now() + 15_000;
+    while (!store.readEvents(stopped).some((e) => e.type === "agent_started") && Date.now() < until) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    await new Promise((r) => setTimeout(r, 500)); // its CLI has written the file by now
+    store.writeControl(stopped, "stop");
+    assert.equal(await run, "stopped");
+    const settled = store.readEvents(stopped).find((e) => e.type === "agent_failed");
+    assert.equal(settled?.partial, undefined);
+    assert.equal(settled?.changes, undefined);
+    assert.equal(existsSync(store.agentDiffPath(stopped, 1)), false);
   } finally {
     rmSync(p.root, { recursive: true, force: true });
   }

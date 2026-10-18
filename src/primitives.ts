@@ -122,7 +122,7 @@ import { applyArgsEdit } from "./breaks.js";
 import { branchName, ChangeRecorder, type AgentChanges, type KeptChanges } from "./changes.js";
 import { CheckpointTimeout, createCheckpoint, type CheckpointOptions, type CheckpointResult } from "./checkpoint.js";
 import { spentTokens, type RunContext } from "./context.js";
-import { AdapterExecutionError, AgentError, RunStopped, RunawayError, UnmetExpectationError, WorkflowScriptError, isFatalError } from "./errors.js";
+import { AdapterExecutionError, AgentError, RunStopped, RunawayError, UnmetExpectationError, WorkflowScriptError, isDeadlineStop, isFatalError } from "./errors.js";
 import { AGENT_FAILED, AGENT_FINISHED, AGENT_STARTED, HANDOFF, LOG, PHASE_STARTED, event } from "./events.js";
 import { ExecError, createExec, execStep, type ExecOptions, type ExecResult } from "./exec.js";
 import { CostGateRejected, costGateTitle, readCostGate, type CostGate, type CostHistory } from "./forecast.js";
@@ -768,7 +768,7 @@ export function createPrimitives(
     };
     // The MCP servers its latest CLI run started it without (ODW extension): what a failed agent keeps.
     let mcpSeen: McpServer[] = [];
-    const failed = (err: unknown, kept: KeptChanges | null = null, outside: { outOfScope?: string[] } = {}): void => {
+    const failed = (err: unknown, kept: KeptChanges | null = null, outside: { outOfScope?: string[]; partial?: true } = {}): void => {
       ctx.emit(
         event(AGENT_FAILED, {
           agentId,
@@ -1048,13 +1048,16 @@ export function createPrimitives(
           // A started agent always gets a terminal event, even when the error
           // is fatal (stop, budget, a config error raised inside the slot) —
           // else observers show it running forever. A failed agent's change
-          // is kept too (the work of one that timed out); a stop keeps none.
+          // is kept too (the work of one that timed out); a person's stop
+          // keeps none. The run's deadline keeps what an agent it killed had
+          // changed so far, marked `partial` (ODW extension: `--deadline`).
           // Its transcript is kept either way, complete before the event.
           await transcript?.close();
           notes?.close();
+          const deadline = isDeadlineStop(err) || (signal.aborted && isDeadlineStop(signal.reason));
           const stopped = isFatalError(err) || signal.aborted;
-          const kept = await keepChanges(changes, stopped, note);
-          failed(err, kept, stopped ? {} : outsideOf());
+          const kept = await keepChanges(changes, stopped && !deadline, note);
+          failed(err, kept, stopped ? (deadline && kept ? { partial: true } : {}) : outsideOf());
           throw err;
         }
         await transcript?.close();

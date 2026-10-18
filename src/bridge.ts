@@ -151,6 +151,7 @@ import {
   RunawayError,
   SchemaValidationError,
   UnmetExpectationError,
+  isDeadlineStop,
   isFatalError,
 } from "./errors.js";
 import { hasLimits, limitLabel, LimitWatch, mergeLimits, readLimits, type AgentLimits, type LimitHit } from "./limits.js";
@@ -1958,7 +1959,10 @@ export class Bridge {
         if (written?.note) call.onNote?.(`adapter '${adapter.name}': ${written.note}`);
         // agent() returns the reply; what an isolated run changed is kept
         // beside it, before its worktree goes (ODW extension; see ./changes).
-        if (call.changes && plan.workspaceMode === "worktree" && !signal?.aborted) await call.changes.capture(ws);
+        // A stop keeps none — but the run's deadline keeps what it had changed so far.
+        if (call.changes && plan.workspaceMode === "worktree" && (!signal?.aborted || isDeadlineStop(signal.reason))) {
+          await call.changes.capture(ws);
+        }
         // Then how the run ended is settled — while its worktree is still
         // there, for an `expect` check to look at (ODW extension; see ./expect).
         return await settle(ws, cli, decoder, written === undefined ? undefined : written.text);

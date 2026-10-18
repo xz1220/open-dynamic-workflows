@@ -28,7 +28,7 @@ import type { WaitingCheckpoint } from "../checkpoint.js";
 import type { CostHistory } from "../forecast.js";
 import { buildContext, spentTokens, type RunContext } from "../context.js";
 import { deciderText, PAUSED, RUNNING, type CheckpointRequest } from "../control.js";
-import { RunStopped, WorkflowScriptError, isFatalError } from "../errors.js";
+import { DeadlinePassed, RunStopped, WorkflowScriptError, isFatalError } from "../errors.js";
 import { AGENT_STARTED, LOG, RUN_FAILED, RUN_FINISHED, RUN_STARTED, RUN_STOPPED, event } from "../events.js";
 import { Breaks, breakSpecOf, runSoFar } from "../breaks.js";
 import { DriftWatch, driftEvalArgs, driftEvalOf, previousRun } from "../drift.js";
@@ -150,9 +150,10 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
   // Undoes the redaction of this process's own output, once the run is over.
   let unredactOutput = (): void => {};
   const signals = watchStopSignals({
-    stop: (why) => {
+    stop: (why, deadline) => {
       if (end) return; // only the hooks are left; the grace period bounds them
-      const reason = new RunStopped(why);
+      // The deadline's stop keeps what the agents it kills had changed (see DeadlinePassed).
+      const reason = deadline ? new DeadlinePassed(why) : new RunStopped(why);
       sink.emit(event(LOG, { message: `${reason.message} — stopping the run` }));
       ctx?.scheduler.abort(reason);
     },
@@ -740,10 +741,10 @@ function watchProcessCrashes(): { race<T>(work: Promise<T>): Promise<T>; dispose
  * Handle the stop signals while a run executes (see executeRun): `stop` on the
  * first; `force` on a second, or once SIGNAL_GRACE_MS have passed since the
  * first. `stopNow` stops the run the same way for a reason of the run's own
- * (its `--deadline`): a signal after it forces. Listening ends at `dispose`.
+ * (its `--deadline`; `stop` is told so): a signal after it forces. Listening ends at `dispose`.
  */
 function watchStopSignals(handlers: {
-  stop(why: string): void;
+  stop(why: string, deadline: boolean): void;
   force(signal: NodeJS.Signals, why: string): void;
 }): { dispose(): void; stopNow(why: string): void } {
   let first: { signal: NodeJS.Signals | null; why: string } | undefined;
@@ -754,7 +755,7 @@ function watchStopSignals(handlers: {
       () => handlers.force(signal ?? "SIGTERM", `the run did not stop within ${SIGNAL_GRACE_MS / 1000}s of ${signal ?? why}`),
       SIGNAL_GRACE_MS,
     );
-    handlers.stop(why);
+    handlers.stop(why, signal === null);
   };
   const onSignal = (signal: NodeJS.Signals): void => {
     if (first) {

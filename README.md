@@ -586,8 +586,13 @@ background from the environment.
 
 **`--deadline <seconds>`** (ODW extension) stops the run once that many seconds
 have passed since it started — gracefully, like `odw stop`: its agents are
-killed, isolated agents' diffs and every finished agent's saved result are kept,
-and the run is recorded `stopped` (`stopReason: "deadline"` in its status). The
+killed, every finished agent's saved result is kept, and so is every isolated
+agent's diff — a finished one's, and what one the deadline killed had changed so
+far, marked `partial: true` on its `agent_failed` event and in the run's detail
+(`GET /api/runs/:id`); `odw diff` shows it, and `odw apply` applies it only when
+you name that agent, as for any failed agent's. A stop
+by a person (`odw stop`, Ctrl-C) keeps no killed agent's change, as before. The
+run is recorded `stopped` (`stopReason: "deadline"` in its status). The
 worker enforces it, so it holds in every mode. With `--wait` or `--fg`, odw then
 prints what finished — `{ "state": "stopped", "reason": "deadline", "deadline",
 "finished": [{ agentId, label, phase, value }] }` — and **exits 3**. Exit codes:

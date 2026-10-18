@@ -509,8 +509,10 @@ odw list
 提示)可显式指定模式;环境变量 `ODW_DETACH=1` 强制后台。
 
 **`--deadline <秒数>`**(ODW 扩展)在运行开始满这么多秒后停止它——像 `odw stop` 一样优雅:
-agent 被杀掉,隔离 agent 的 diff 与每个已完成 agent 的保存结果都保留,运行记为 `stopped`
-(状态里有 `stopReason: "deadline"`)。由 worker 执行,所以任何模式下都有效。配合 `--wait`
+agent 被杀掉,每个已完成 agent 的保存结果都保留,每个隔离 agent 的 diff 也保留——已完成的,
+以及被截止时间杀掉的 agent 到那时为止改动的部分,后者在其 `agent_failed` 事件里
+标为 `partial: true`(运行详情 `GET /api/runs/:id` 里也有);`odw diff` 可查看,`odw apply` 只在你点名该 agent 时应用它(与任何失败 agent 的 diff 一样)。被人停止(`odw stop`、Ctrl-C)
+时,被杀掉的 agent 的改动仍不保留。运行记为 `stopped`(状态里有 `stopReason: "deadline"`)。由 worker 执行,所以任何模式下都有效。配合 `--wait`
 或 `--fg` 时,odw 随后打印已完成的部分——`{ "state": "stopped", "reason": "deadline",
 "deadline", "finished": [{ agentId, label, phase, value }] }`——并**以退出码 3 退出**。退出码:
 0 完成,1 失败或被人停止,3 到达截止时间被停止,124 为 `--timeout`(它只是不再*等待*,运行

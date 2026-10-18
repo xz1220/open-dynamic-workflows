@@ -137,6 +137,8 @@ export interface AgentView {
   changes?: AgentChanges | null;
   /** Agents only: the branch its change was kept on (`keep: true`, `keepBranches`), else null. */
   branch?: string | null;
+  /** Agents only (ODW extension): its `changes` are what it had when the run's `--deadline` killed it. */
+  partial?: true;
   /**
    * Agents only (ODW extension): the permission tier its CLI runs at —
    * agent_started's `permissions`. Absent for older event files.
@@ -471,6 +473,8 @@ export function applyAgentEvent(
     // What an isolated agent changed, finished or failed (ODW extension).
     target.changes = agentChanges(ev.changes);
     target.branch = typeof ev.branch === "string" && ev.branch !== "" ? ev.branch : null;
+    // Its change is what it had when the run's deadline killed it (ODW extension).
+    if (ev.partial === true) target.partial = true;
     // The adapters it fell back from, finished or failed (ODW extension).
     const from = adapterNames(ev.fellBackFrom);
     if (from) target.fellBackFrom = from;

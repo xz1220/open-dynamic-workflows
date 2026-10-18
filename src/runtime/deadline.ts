@@ -1,10 +1,12 @@
 /**
  * `odw run --deadline <seconds>` (an ODW extension): the run is STOPPED
  * gracefully once its deadline passes — status `stopped` with `stopReason:
- * "deadline"`, isolated agents' diffs kept, every finished agent's saved
- * result kept — unlike `--timeout`, which only stops waiting and leaves the
- * run going. The worker enforces it (see ./worker), so it holds in every run
- * mode, detached included.
+ * "deadline"`, every finished agent's saved result kept, and every isolated
+ * agent's diff kept: a finished one's, and what one the deadline killed had
+ * changed so far — its `agent_failed` event carries `partial: true` beside
+ * `changes` (a stop by a person keeps no killed agent's change) — unlike
+ * `--timeout`, which only stops waiting and leaves the run going. The worker
+ * enforces it (see ./worker), so it holds in every run mode, detached included.
  *
  * What `--wait` and `--fg` print for such a run is what it finished: on
  * stdout, `{ state: "stopped", reason: "deadline", deadline, finished: [{
