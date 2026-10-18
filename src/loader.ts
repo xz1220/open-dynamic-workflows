@@ -33,8 +33,10 @@ import { Script } from "node:vm";
 
 import { scanClaudeCodeLimits } from "./claude-limits.js";
 import { WorkflowScriptError, type SourceLocation } from "./errors.js";
+import { inputSchemaProblems } from "./input-schema.js";
 import type { WorkflowGlobals } from "./primitives.js";
 import { phaseDefaultsOf, type AdapterChoice } from "./routing.js";
+import type { JsonSchema } from "./schema.js";
 import { assertNoDynamicImport, createStrictRealm, type ScriptContext, type StrictRealm } from "./script-context.js";
 
 /**
@@ -55,6 +57,8 @@ export interface WorkflowMeta {
   whenToUse?: string;
   phases?: WorkflowPhaseMeta[];
   model?: string;
+  /** The shape of its `args`, checked before a run starts (ODW extension; see ./input-schema). */
+  input?: JsonSchema;
 }
 
 export interface LoadedWorkflow {
@@ -158,6 +162,11 @@ export function loadWorkflowScript(source: string, filename: string, options: Lo
     } catch (err) {
       throw new WorkflowScriptError(`workflow ${filename}: ${(err as Error).message}`, metaAt);
     }
+  }
+  // Its input schema (an ODW extension) must be one the validator checks in full.
+  if (meta.input !== undefined) {
+    const problems = inputSchemaProblems(meta.input);
+    if (problems.length > 0) throw new WorkflowScriptError(`workflow ${filename}: ${problems.join("; ")}`, metaAt);
   }
 
   // Inject each extension unless the body's own top-level binding of that

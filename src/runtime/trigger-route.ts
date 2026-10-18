@@ -39,6 +39,7 @@ import { randomBytes } from "node:crypto";
 
 import { expandHome, loadConfig } from "../adapters/config.js";
 import type { Config, PermissionTier } from "../adapters/types.js";
+import { InputSchemaError } from "../input-schema.js";
 import {
   MIN_SECRET_LENGTH,
   ReplayCache,
@@ -248,7 +249,8 @@ export class TriggerRoute {
       });
     } catch (err) {
       forget();
-      sendJson(res, 500, { error: `trigger ${name} could not start its run: ${(err as Error).message}` });
+      // Args its workflow's meta.input refuses (ODW extension; see ../input-schema): the delivery's fault, not the server's.
+      sendJson(res, err instanceof InputSchemaError ? 422 : 500, { error: `trigger ${name} could not start its run: ${(err as Error).message}` });
       return;
     }
     recent.push(now);

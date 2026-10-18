@@ -18,7 +18,8 @@ import { isPermissionTier } from "../adapters/permissions.js";
 import { withSandboxFlag, type SandboxFlag } from "../adapters/sandbox.js";
 import type { Config, PermissionTier, TrustLevel } from "../adapters/types.js";
 import { ConfigError } from "../errors.js";
-import { loadWorkflowScript } from "../loader.js";
+import { checkInput } from "../input-schema.js";
+import { loadWorkflowScript, type WorkflowMeta } from "../loader.js";
 import { isSeaBinary } from "../sea.js";
 import { resolveRunTrust } from "../untrusted.js";
 import { requireSandboxRefusal, sandboxGap, taintedArgs } from "../untrusted-input.js";
@@ -185,13 +186,17 @@ export function startRun(
   // gets created, then the worker records it as failed in the normal way). A
   // plugin's workflow is bucketed by its `<plugin>:<name>`.
   let workflowName: string | null = null;
+  let meta: WorkflowMeta | null = null;
   try {
-    workflowName = loadWorkflowScript(readFileSync(scriptPath, "utf8"), scriptPath).meta.name;
+    meta = loadWorkflowScript(readFileSync(scriptPath, "utf8"), scriptPath).meta;
+    workflowName = meta.name;
   } catch {
     workflowName = null;
   }
   const plugin = workflow.plugin;
   if (plugin) workflowName = plugin.name;
+  // Its args against its meta.input (ODW extension; see ../input-schema): refused before a run exists.
+  if (meta && !options.call && options.origin !== "replay") checkInput(meta.input, options.args, script);
 
   const runId = store.create({
     script: scriptPath,
@@ -222,11 +227,15 @@ export function startRunFromSource(
   const { source, store } = prepare(options);
 
   let workflowName: string | null = null;
+  let meta: WorkflowMeta | null = null;
   try {
-    workflowName = loadWorkflowScript(sourceCode, "workflow.js").meta.name;
+    meta = loadWorkflowScript(sourceCode, "workflow.js").meta;
+    workflowName = meta.name;
   } catch (err) {
     if (!options.allowInvalid) throw err; // surface the compile error to the caller
   }
+  // Its args against its meta.input (ODW extension; see ../input-schema); a replay's call runs no script.
+  if (meta && !options.call && options.origin !== "replay") checkInput(meta.input, options.args, meta.name);
 
   const runId = store.create({
     script: "",

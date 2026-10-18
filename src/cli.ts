@@ -126,6 +126,7 @@ import {
   takeOnFlag,
 } from "./runtime/remote.js";
 import { questionLine } from "./questions.js";
+import { runHelpLines } from "./run-help.js";
 import { pausedForOf, pausedText } from "./quota-wait.js";
 import { cmdSchedule } from "./schedule/command.js";
 import { cmdEval } from "./eval/command.js";
@@ -201,6 +202,7 @@ export function helpText(): string {
     "  odw doctor --local [--endpoint URL] [--model M]    check a local Ollama / LM Studio: context length, tool calling;",
     "                                                     with --smoke, whether a long prompt's front is silently cut",
     "  odw run <script.js|name> [--args JSON|@file]       start a workflow (see modes below)",
+    "  odw run <script.js|name> --help                    what it takes as --args, from its meta.input (ODW extension)",
     "  odw attach <run_id>                                attach the live foreground view to a run",
     "  odw rerun <run_id>                                 start a fresh run with the same inputs",
     "  odw resume <run_id> [--force]                      unpause a paused run, or replay an ended one (below)",
@@ -663,9 +665,15 @@ async function cmdRun(rest: string[]): Promise<number> {
       yes: { type: "boolean", short: "y" },
       break: { type: "string", multiple: true },
       step: { type: "boolean" },
+      help: { type: "boolean", short: "h" },
     },
   });
   const ref = positionals[0];
+  // `odw run <wf> --help` (ODW extension; see run-help.ts): what it takes as args, from its meta.input.
+  if (values.help) {
+    process.stdout.write((ref ? runHelpLines(ref, { config: values.config ?? null, source: values.source ?? null }) : [helpText()]).join("\n") + "\n");
+    return 0;
+  }
   if (!ref) {
     process.stderr.write("odw run: missing <script.js|name>\n");
     return 2;
