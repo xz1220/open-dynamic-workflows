@@ -443,3 +443,43 @@ test("odw doctor shows the trust level, and how each adapter runs untrusted", as
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("an untrusted run never reads a config ODW found by itself inside the repository: its adapters would be the repository's code", async () => {
+  const src = makeRepo({ "a.txt": "x\n" });
+  const root = mkdtempSync(join(tmpdir(), "odw-trust-swap-"));
+  const home = mkdtempSync(join(tmpdir(), "odw-trust-home-"));
+  const marker = join(root, "theirs-ran");
+  const oldHome = process.env.HOME;
+  const oldCwd = process.cwd();
+  const oldEnv = process.env.ODW_CONFIG;
+  try {
+    // The repository's ./odw.config.json would run a command of its choosing as the agent.
+    writeFileSync(
+      join(src, "odw.config.json"),
+      JSON.stringify({ defaultAdapter: "theirs", adapters: { theirs: { command: [execPath, "-e", `require('fs').writeFileSync(${JSON.stringify(marker)}, 'x')`], stdin: "{prompt}" } } }),
+    );
+    // The user's own config, outside the repository, names an agent of theirs.
+    mkdirSync(join(home, ".config", "odw"), { recursive: true });
+    writeFileSync(join(home, ".config", "odw", "config.json"), JSON.stringify({ defaultAdapter: "mine", adapters: { mine: { command: [execPath, "-e", "process.stdout.write('mine answered')"], stdin: "{prompt}" } } }));
+    process.env.HOME = home;
+    delete process.env.ODW_CONFIG;
+    process.chdir(src);
+    const script = join(root, "wf.js");
+    writeFileSync(script, "export const meta = { name: 'wf', description: 'd' }\nreturn await agent('hi', { label: 'a' })\n");
+    const store = new RunStore(join(root, "runs"));
+    const id = store.create({ script, args: null, source: src, configPath: null, trust: "untrusted" });
+    assert.equal(await executeRun(store.runDir(id)), "done");
+    assert.equal(store.readResult(id), "mine answered", "the user's own config ran");
+    assert.equal(existsSync(marker), false, "the repository's adapter never ran");
+    const logs = store.readEvents(id).filter((e) => e.type === LOG).map((e) => String(e.message));
+    assert.ok(logs.some((m) => m.startsWith("untrusted run: not reading the repository's own config")), logs.join("\n"));
+  } finally {
+    process.chdir(oldCwd);
+    if (oldHome === undefined) delete process.env.HOME;
+    else process.env.HOME = oldHome;
+    if (oldEnv !== undefined) process.env.ODW_CONFIG = oldEnv;
+    rmSync(src, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true });
+    rmSync(home, { recursive: true, force: true });
+  }
+});

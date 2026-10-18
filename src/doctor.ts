@@ -250,8 +250,7 @@ export async function runDoctor(opts: DoctorOptions): Promise<DoctorReport> {
 /**
  * The trust check (ODW extension; see adapters/trust.ts): the config's trust
  * and how an untrusted run keeps the repository out of each installed CLI —
- * a warning when an untrusted config is the repository's own, whose
- * adapters still apply.
+ * a warning when an untrusted config is the repository's own.
  */
 export function trustCheck(config: Config, cwd: string, configPath: string | null): DoctorCheck {
   const check = { id: "trust", title: "Trust" };
@@ -264,7 +263,9 @@ export function trustCheck(config: Config, cwd: string, configPath: string | nul
       ...check,
       status: "warn",
       detail,
-      hint: `the config in use is the repository's own (${run.repositoryConfig}): its adapters still apply — pass --config with a file of your own`,
+      hint:
+        `the config in use is the repository's own (${run.repositoryConfig}): an untrusted run reads it only when you name it ` +
+        `(--config, $ODW_CONFIG) — found by itself, it is skipped for your ~/.config/odw/config.json or the defaults`,
     };
   }
   return { ...check, status: "ok", detail };

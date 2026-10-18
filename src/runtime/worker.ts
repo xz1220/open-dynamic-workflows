@@ -18,7 +18,7 @@ import { basename, dirname } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { pathToFileURL } from "node:url";
 
-import { loadConfig } from "../adapters/config.js";
+import { defaultConfig, loadConfig } from "../adapters/config.js";
 import { isPermissionTier } from "../adapters/permissions.js";
 import { killAllAgentProcesses } from "../adapters/runner.js";
 import type { RunEndState } from "../adapters/types.js";
@@ -34,7 +34,7 @@ import { CliVersions, runSetup } from "../provenance.js";
 import type { QuotaPause } from "../quota-wait.js";
 import { redactorFor, type Redactor } from "../redact.js";
 import type { Scheduler } from "../scheduler.js";
-import { applyRunTrust, resolveRunTrust } from "../untrusted.js";
+import { applyRunTrust, resolveRunTrust, untrustedConfigSwap } from "../untrusted.js";
 import { pluginOrigin } from "../workflows/plugins.js";
 import { FileControl } from "./file-control.js";
 import { notifyCheckpoint, notifyQuotaPause, notifyRunEnd } from "./notify.js";
@@ -157,7 +157,7 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
   });
   process.on("exit", killAllAgentProcesses);
   try {
-    const baseConfig = loadConfig((meta.configPath as string | null) ?? null);
+    let baseConfig = loadConfig((meta.configPath as string | null) ?? null);
     // Run-level adapter override (meta.adapter): becomes this run's default for
     // every `agent()` call that does not name one explicitly. Priority chain:
     // agent(p, { adapter }) > meta.adapter > config defaultAdapter > auto-pick.
@@ -166,26 +166,35 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
     // Run-level permission tier (meta.permissions: `--permissions` on run,
     // rerun or resume; ODW extension): the run's tier in place of the config's.
     const permissionsOverride = isPermissionTier(meta.permissions) ? meta.permissions : null;
-    const overridden = {
-      ...baseConfig,
+    const withOverrides = (base: typeof baseConfig) => ({
+      ...base,
       settings: {
-        ...baseConfig.settings,
+        ...base.settings,
         ...(adapterOverride ? { defaultAdapter: adapterOverride } : {}),
         ...(permissionsOverride ? { permissions: permissionsOverride } : {}),
       },
-    };
+    });
+    let overridden = withOverrides(baseConfig);
     // The run's trust (ODW extension; see ../untrusted): `--untrusted` on run,
     // rerun or resume (meta.trust), else the config's — and an untrusted run
     // drops the worktreeSetup the repository's own config set.
-    const trusted = applyRunTrust(
-      overridden,
-      resolveRunTrust({
-        flag: meta.trust === "untrusted" ? "untrusted" : null,
-        config: overridden,
-        configPath: (meta.configPath as string | null) ?? null,
-        source: typeof meta.source === "string" ? meta.source : process.cwd(),
-      }),
-    );
+    const trustSource = typeof meta.source === "string" ? meta.source : process.cwd();
+    const configPath = (meta.configPath as string | null) ?? null;
+    let runTrust = resolveRunTrust({ flag: meta.trust === "untrusted" ? "untrusted" : null, config: overridden, configPath, source: trustSource });
+    // ... and never reads a config ODW found by itself inside the repository:
+    // its adapter commands would be the repository's code to run.
+    const swap = runTrust.trust === "untrusted" ? untrustedConfigSwap(configPath, trustSource) : undefined;
+    const swapNote = swap
+      ? `untrusted run: not reading the repository's own config (${swap.dropped}) — using ${swap.path ?? "the built-in defaults"}; ` +
+        `pass --config to choose one`
+      : null;
+    if (swap) {
+      baseConfig = swap.path ? loadConfig(swap.path) : defaultConfig();
+      overridden = withOverrides(baseConfig);
+      runTrust = { ...runTrust, repositoryConfig: null };
+    }
+    const trusted = applyRunTrust(overridden, runTrust);
+    if (swapNote) trusted.notes.push(swapNote);
     const config = trusted.config;
     const runRedactor = redactorFor(config);
     redactor = runRedactor;

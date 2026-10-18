@@ -1223,9 +1223,11 @@ ODW 自己会执行的、属于仓库的代码会被拒绝:仓库 `.worktreeincl
 不做任何链接(链接等于把源码树交给 agent;普通行照常复制);仓库内配置(例如它的
 `./odw.config.json`)设置的 `worktreeSetup` 不会运行,日志里会说明。你自己的配置
 (`--config`、`$ODW_CONFIG`,或仓库之外的 `~/.config/odw/config.json`)里的
-`worktreeSetup` 照常运行。如果所用配置是仓库自己的,不受信任运行还会说一次:它的适配器
-和其他设置仍然生效;它也无法放宽你在 `~/.config/odw/config.json` 里设置的
-`"trust": "untrusted"`。
+`worktreeSetup` 照常运行。ODW 会自行在仓库里找到的配置(它的 `./odw.config.json`)在不受
+信任运行中根本不会读取:其中的适配器命令就是仓库的代码。运行改用你自己的
+`~/.config/odw/config.json`(在仓库之外)或内置默认值,并在日志里说明;用 `--config` 或
+`$ODW_CONFIG` 指定的配置是你自己的选择,照常生效。仓库的配置也无法放宽你在
+`~/.config/odw/config.json` 里设置的 `"trust": "untrusted"`。
 
 ```jsonc
 {

@@ -22,10 +22,10 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { readFileSync, realpathSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 
-import { homeDir, locateConfig } from "./adapters/config.js";
+import { CONFIG_ENV_VAR, homeDir, locateConfig } from "./adapters/config.js";
 import { isTrustLevel } from "./adapters/trust.js";
 import type { Config, TrustLevel } from "./adapters/types.js";
 
@@ -68,6 +68,23 @@ export function repositoryConfig(configPath: string | null, source: string, cwd?
   }
   if (!located) return null;
   return inside(repositoryRoot(source), resolve(cwd ?? process.cwd(), located)) ? located : null;
+}
+
+/**
+ * What an untrusted run reads in place of a config ODW found by itself inside
+ * the repository (`./odw.config.json` where the run started): that file is
+ * the repository's code — its adapter commands are what would run — so it is
+ * not read. The run takes the user's `~/.config/odw/config.json` when that
+ * lies outside the repository, else the built-in defaults (`path` null).
+ * Undefined when nothing is swapped: no config inside the repository, or one
+ * the user named (`--config`, `$ODW_CONFIG`), which is their choice.
+ */
+export function untrustedConfigSwap(configPath: string | null, source: string, cwd?: string): { path: string | null; dropped: string } | undefined {
+  if (configPath || process.env[CONFIG_ENV_VAR]) return undefined;
+  const dropped = repositoryConfig(null, source, cwd);
+  if (!dropped) return undefined;
+  const home = join(homeDir(), ".config", "odw", "config.json");
+  return { path: existsSync(home) && !inside(repositoryRoot(source), home) ? home : null, dropped };
 }
 
 /** The `trust` the user's own `~/.config/odw/config.json` sets, when it sets a valid one. */

@@ -1365,9 +1365,13 @@ of its `.worktreeinclude` link nothing (a link hands agents the source tree; pla
 lines still copy), and a `worktreeSetup` set by a config inside the repository — such
 as its `./odw.config.json` — does not run, with a log line saying so. A `worktreeSetup`
 from your own config (`--config`, `$ODW_CONFIG`, or `~/.config/odw/config.json`
-outside the repository) still runs. When the config in use is the repository's own, an
-untrusted run also says once that its adapters and other settings still apply, and it
-cannot loosen the `"trust": "untrusted"` your `~/.config/odw/config.json` sets.
+outside the repository) still runs. A config ODW would find by itself inside the
+repository — its `./odw.config.json` — is not read at all in an untrusted run: its
+adapter commands are the repository's code. The run uses your
+`~/.config/odw/config.json` (outside the repository) or the built-in defaults, and says
+so; one you name with `--config` or `$ODW_CONFIG` is your choice and still applies. A
+repository's config cannot loosen the `"trust": "untrusted"` your
+`~/.config/odw/config.json` sets.
 
 ```jsonc
 {
