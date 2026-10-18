@@ -62,6 +62,8 @@ export interface RunSummary {
    * model that differs. Absent when nothing did.
    */
   drift?: RunDrift;
+  /** Who started the run (ODW extension): the local user, a named token's name, or `trigger:<name>`. Absent for older and Claude Code runs. */
+  launchedBy?: string;
 }
 
 /** One thing that changed since a workflow's previous run (ODW extension: drift watch). */
@@ -131,7 +133,7 @@ export interface AgentView {
   /** A checkpoint node's id, its payload and the person's answer once given. */
   checkpointId?: number | null;
   payload?: unknown;
-  decision?: { approved: boolean; note: string | null; by: string | null } | null;
+  decision?: { approved: boolean; note: string | null; by: string | null; who?: string | null } | null;
   /** A checkpoint approved with an edited payload (ODW extension): `approvedPayload` is what was approved. */
   edited?: boolean;
   /** With `edited`: the approved payload, as its event keeps it (JSON-safe, cut to 64 KiB). */
@@ -722,6 +724,8 @@ export interface Capabilities {
   bundle?: BundleInfo | null;
   /** Checkpoints can be answered here — off loopback too with `--token-scope approve` (ODW extension). Absent from older servers. */
   decide?: boolean;
+  /** Who this dashboard acts as (ODW extension): a named token's name, the local user without a token, null for an unnamed token. Absent from older servers. */
+  you?: string | null;
 }
 
 /** A shared bundle as `odw serve` describes it (ODW extension). */

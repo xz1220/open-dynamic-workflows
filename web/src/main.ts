@@ -41,7 +41,7 @@ import { renderChat } from "./views/chat";
 import { compareHash, renderCompare } from "./views/compare";
 import { renderEvals } from "./views/evals";
 import { LOG_PAGE, changedAgents, cpEditState, renderJob, reviewTarget, type JobTab, type JobViewState } from "./views/job";
-import { HISTORY_PAGE, renderJobs, type JobsFilter, type JobsState } from "./views/jobs";
+import { HISTORY_PAGE, renderJobs, type JobsFilter, type JobsOwner, type JobsState } from "./views/jobs";
 import { renderSettings } from "./views/settings";
 import { renderTokenScreen } from "./views/token";
 import { orderedWorkflows, parseWfKey, renderWorkspace, wfKey } from "./views/workspace";
@@ -808,6 +808,13 @@ root.addEventListener("click", (ev) => {
     jobs.limit = HISTORY_PAGE;
     const slug = jobs.filter === "active" ? "live" : jobs.filter;
     history.replaceState(null, "", slug === "all" ? "#/jobs" : `#/jobs/${slug}`);
+    return render();
+  }
+  // Mine / team (ODW extension): whose runs the Jobs page shows.
+  const ownerEl = t.closest<HTMLElement>("[data-jobs-owner]");
+  if (ownerEl) {
+    jobs.owner = ownerEl.dataset.jobsOwner as JobsOwner;
+    jobs.limit = HISTORY_PAGE;
     return render();
   }
   if (t.closest("[data-jobs-more]")) {

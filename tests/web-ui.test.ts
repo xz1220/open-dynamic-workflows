@@ -5,6 +5,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
+import { withCheckpoints } from "../web/src/checkpoints.ts";
 import { renderJson } from "../web/src/components/json.ts";
 import { transcriptEntries } from "../web/src/components/transcript.ts";
 import { renderPulse } from "../web/src/components/pulse.ts";
@@ -1112,4 +1113,55 @@ test("a workflow's memory lists newest first, strikes the stale entries, and off
   assert.doesNotMatch(memorySection("mem-wf"), /prune/);
   store.memories.set("mem-wf", []);
   assert.equal(memorySection("mem-wf"), "");
+});
+
+test("who did what (ODW extension): the Job header says who launched it; Jobs filters mine and team; a decision names who", () => {
+  const prevRuns = store.runs;
+  const prevCaps = store.capabilities;
+  const view: JobViewState = {
+    cpNote: "",
+    tab: "graph",
+    selectedAi: null,
+    reviewAi: null,
+    zoom: 1,
+    logQuery: "",
+    logTypes: new Set(["agent"]),
+    logLimit: 600,
+    follow: true,
+    motion: false,
+  };
+  store.focusRun("20260101-000000-aaaaaa");
+  store.run = detail([], { state: "done", launchedBy: "trigger:gh" });
+  assert.match(renderJob(view, NOW), /<p class="dim launched-by">launched by trigger:gh<\/p>/);
+  store.run = detail([], { state: "done" });
+  assert.doesNotMatch(renderJob(view, NOW), /launched by/);
+  store.focusRun(null);
+
+  store.runs = [
+    summary({ runId: "r-mine", state: "done", launchedBy: "Alice" }),
+    summary({ runId: "r-bob", state: "done", launchedBy: "bob" }),
+    summary({ runId: "r-old", state: "done" }),
+  ];
+  // No `you` (an unnamed token, an older server): no owner chips, every run.
+  store.capabilities = { writable: false, you: null };
+  const all = renderJobs({ filter: "all", query: "", limit: 100 }, NOW);
+  assert.doesNotMatch(all, /data-jobs-owner/);
+  assert.match(all, /r-mine · Alice/, "a row says who launched it");
+  store.capabilities = { writable: false, you: "alice" };
+  const owners = renderJobs({ filter: "all", query: "", limit: 100 }, NOW);
+  assert.match(owners, /data-jobs-owner="mine"[^>]*>Mine<span class="n">1<\/span>/);
+  assert.match(owners, /data-jobs-owner="team"[^>]*>Team<span class="n">2<\/span>/);
+  const mine = renderJobs({ filter: "all", owner: "mine", query: "", limit: 100 }, NOW);
+  assert.ok(mine.includes("h-r-mine") && !mine.includes("h-r-bob") && !mine.includes("h-r-old"));
+  const team = renderJobs({ filter: "all", owner: "team", query: "", limit: 100 }, NOW);
+  assert.ok(!team.includes("h-r-mine") && team.includes("h-r-bob") && team.includes("h-r-old"));
+  store.runs = prevRuns;
+  store.capabilities = prevCaps;
+
+  const events = [
+    { type: "checkpoint_requested", ts: NOW - 10, checkpointId: 1, title: "Ship?" },
+    { type: "checkpoint_resolved", ts: NOW - 5, checkpointId: 1, approved: true, note: null, by: "link", who: "bob" },
+  ];
+  const gate = withCheckpoints(detail([], { state: "done" }), events).agents.at(-1)!;
+  assert.deepEqual(gate.decision, { approved: true, note: null, by: "link", who: "bob" });
 });

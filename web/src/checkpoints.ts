@@ -55,7 +55,13 @@ export function withCheckpoints(run: RunDetail, events: WorkflowEvent[]): RunDet
         payload: req.payload ?? null,
         decision:
           res && !error
-            ? { approved: Boolean(res.approved), note: res.note != null ? String(res.note) : null, by: res.by != null ? String(res.by) : null }
+            ? {
+                approved: Boolean(res.approved),
+                note: res.note != null ? String(res.note) : null,
+                by: res.by != null ? String(res.by) : null,
+                // Who answered, by name (ODW extension).
+                who: typeof res.who === "string" && res.who !== "" ? res.who : null,
+              }
             : null,
         // Approved with an edited payload (ODW extension): the event keeps what was approved.
         ...(res && !error && res.approved && res.edited === true ? { edited: true, approvedPayload: res.payload ?? null } : {}),

@@ -11,8 +11,13 @@ import { emptyArt } from "./activity";
 
 export type JobsFilter = "all" | "active" | "done" | "failed";
 
+/** Whose runs (ODW extension): everyone's, the ones this dashboard's user launched, or everyone else's. */
+export type JobsOwner = "all" | "mine" | "team";
+
 export interface JobsState {
   filter: JobsFilter;
+  /** Whose runs are shown: "mine" is launchedBy = /api/capabilities `you`. */
+  owner?: JobsOwner;
   query: string;
   /** History rows shown; long histories page in on demand instead of painting thousands of rows. */
   limit: number;
@@ -125,7 +130,7 @@ function runCard(r: RunSummary, nowSec: number): string {
   const cur = n ? r.phases[Math.min(n - 1, Math.floor(r.progress * n))]!.title : null;
   return (
     `<article class="card runcard" data-run="${esc(r.runId)}" data-key="rc-${esc(r.runId)}" tabindex="0" role="link" aria-label="${esc(r.name)} · ${esc(t(r.state))}">` +
-    `<div class="top"><div><div class="nm">${esc(r.name)}</div><div class="rid">${esc(r.runId)}</div></div>${pill(r.state, r.pausedFor ? t("paused until {t}", { t: fmtHourMin(r.pausedFor.resumeAt) }) : undefined)}</div>` +
+    `<div class="top"><div><div class="nm">${esc(r.name)}</div><div class="rid">${esc(r.runId)}${byWho(r)}</div></div>${pill(r.state, r.pausedFor ? t("paused until {t}", { t: fmtHourMin(r.pausedFor.resumeAt) }) : undefined)}</div>` +
     phaseDots(r) +
     (cur ? `<div class="cur">${t("phase")} <b>${esc(cur)}</b> · ${Math.round(r.progress * 100)}%</div>` : "") +
     segProgress(r) +
@@ -136,7 +141,20 @@ function runCard(r: RunSummary, nowSec: number): string {
   );
 }
 
+/** " · <who>" after a run id: who launched it (ODW extension), when it says. */
+function byWho(r: RunSummary): string {
+  return r.launchedBy ? ` · ${esc(r.launchedBy)}` : "";
+}
+
+/** Is `r` this dashboard user's run (launchedBy = capabilities `you`; case aside, as `odw list --by`)? */
+export function isMine(r: RunSummary, you: string | null | undefined): boolean {
+  return !!you && typeof r.launchedBy === "string" && r.launchedBy.toLowerCase() === you.toLowerCase();
+}
+
 function matches(r: RunSummary, s: JobsState): boolean {
+  const you = store.capabilities.you;
+  if (you && s.owner === "mine" && !isMine(r, you)) return false;
+  if (you && s.owner === "team" && isMine(r, you)) return false;
   if (s.filter === "active" && !ACTIVE.has(r.state)) return false;
   if (s.filter === "done" && r.state !== "done") return false;
   if (s.filter === "failed" && !(r.state === "failed" || r.state === "stopped" || r.state === "stale")) return false;
@@ -171,6 +189,16 @@ export function renderJobs(state: JobsState, nowSec: number): string {
   };
   const chip = (f: JobsFilter, label: string) =>
     `<button class="chip${state.filter === f ? " on" : ""}" data-jobs-filter="${f}">${esc(label)}<span class="n">${counts[f]}</span></button>`;
+  // Mine / team (ODW extension): when the server says who this dashboard is, and some run says who launched it.
+  const you = store.capabilities.you;
+  const owner = state.owner ?? "all";
+  const mine = you ? runs.filter((r) => isMine(r, you)).length : 0;
+  const ownerChip = (o: JobsOwner, label: string, n: number) =>
+    `<button class="chip${owner === o ? " on" : ""}" data-jobs-owner="${o}"${o === "mine" ? ` title="${esc(t("launched by {who}", { who: you ?? "" }))}"` : ""}>${esc(label)}<span class="n">${n}</span></button>`;
+  const owners =
+    you && runs.some((r) => r.launchedBy)
+      ? `<div class="chips">${ownerChip("all", t("Everyone"), runs.length)}${ownerChip("mine", t("Mine"), mine)}${ownerChip("team", t("Team"), runs.length - mine)}</div>`
+      : "";
 
   const liveCards = shown.filter((r) => ACTIVE.has(r.state));
   const cards = liveCards.length
@@ -194,7 +222,7 @@ export function renderJobs(state: JobsState, nowSec: number): string {
     const dur = runDurationSec(r.createdAt, r.updatedAt, TERMINAL.has(r.state));
     rows.push(
       `<tr class="run" data-run="${esc(r.runId)}" data-key="h-${esc(r.runId)}" tabindex="0" role="link">` +
-        `<td><div class="wf">${esc(r.name)} ${provTag(r)}</div><div class="rid">${esc(r.runId)}</div></td>` +
+        `<td><div class="wf">${esc(r.name)} ${provTag(r)}</div><div class="rid">${esc(r.runId)}${byWho(r)}</div></td>` +
         `<td>${pill(r.state)}</td>` +
         `<td class="when">${fmtClock(r.createdAt)}<span>${fmtAgo(r.createdAt)}</span></td>` +
         `<td><div class="dur"><i style="width:${Math.max(3, Math.round(Math.sqrt(Math.min(1, (dur ?? 0) / longest)) * 90))}px"></i>${fmtDurSec(dur)}</div></td>` +
@@ -209,13 +237,14 @@ export function renderJobs(state: JobsState, nowSec: number): string {
     : "";
   const history = ended.length
     ? `<table class="htable"><thead><tr><th>${t("workflow")}</th><th>${t("status")}</th><th>${t("started")}</th><th>${t("duration")}</th><th>${t("agents")}</th></tr></thead><tbody>${rows.join("")}</tbody></table>${more}`
-    : `<div class="empty" style="min-height:140px"><p>${state.query || state.filter !== "all" ? t("No runs match.") : t("No finished runs yet.")}</p></div>`;
+    : `<div class="empty" style="min-height:140px"><p>${state.query || state.filter !== "all" || owner !== "all" ? t("No runs match.") : t("No finished runs yet.")}</p></div>`;
 
   return (
     `<div class="page jobs">` +
     `<header class="page-head"><div><div class="eyebrow">${t("Jobs")}</div><h1 class="display">${t("Every <em>run</em>, live and past.")}</h1></div>` +
     `<div class="jobs-tools">` +
     `<div class="chips">${chip("all", t("All"))}${chip("active", t("Live"))}${chip("done", t("Done"))}${chip("failed", t("Failed"))}</div>` +
+    owners +
     `<label class="field">${icons.search}<input id="jobs-q" placeholder="${esc(t("Filter by name or run id"))}" value="${esc(state.query)}" autocomplete="off"/></label>` +
     `</div></header>` +
     cards +
