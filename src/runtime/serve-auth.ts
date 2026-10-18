@@ -40,6 +40,26 @@ export const AUTH_FAILURES = 10;
 export const AUTH_WINDOW_MS = 60_000;
 /** Addresses tracked at most; past it the oldest is forgotten. */
 const MAX_TRACKED = 10_000;
+/**
+ * Wrong tokens the whole server takes per window, from every address
+ * together: past it, no token is even checked until the window has passed.
+ * One address is not one attacker — an IPv6 network hands out millions —
+ * so the per-address limit alone would not bound guessing.
+ */
+export const AUTH_GLOBAL_FAILURES = 100;
+
+/** The address a failure counts against: an IPv6 address by its /64, which one host or network controls whole. */
+export function failureKey(address: string): string {
+  const v4mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/i.exec(address);
+  if (v4mapped) return v4mapped[1]!;
+  if (!address.includes(":")) return address;
+  const [head = ""] = address.split("%");
+  const parts = head.split("::");
+  const left = parts[0] ? parts[0].split(":") : [];
+  const right = parts.length > 1 && parts[1] ? parts[1].split(":") : [];
+  const full = parts.length > 1 ? [...left, ...Array(Math.max(0, 8 - left.length - right.length)).fill("0"), ...right] : left;
+  return `${full.slice(0, 4).map((h) => h.toLowerCase().replace(/^0+(?=.)/, "")).join(":")}::/64`;
+}
 
 /** Is `value` usable as a token (`--token VALUE`)? */
 export function isValidToken(value: string): boolean {
@@ -68,6 +88,7 @@ export interface TokenGateOptions {
 export class TokenGate {
   private readonly digest: Buffer;
   private readonly failures = new Map<string, { count: number; since: number }>();
+  private global = { count: 0, since: 0 };
   private readonly limit: number;
   private readonly windowMs: number;
   private readonly now: () => number;
@@ -87,8 +108,13 @@ export class TokenGate {
 
   /** May `req` (its URL parsed as `url`) read? */
   check(req: IncomingMessage, url: URL): AuthResult {
-    const address = req.socket.remoteAddress ?? "unknown";
+    const address = failureKey(req.socket.remoteAddress ?? "unknown");
     const at = this.now();
+    if (at - this.global.since >= this.windowMs) this.global = { count: 0, since: at };
+    if (this.global.count >= AUTH_GLOBAL_FAILURES) {
+      const retryAfter = Math.max(1, Math.ceil((this.global.since + this.windowMs - at) / 1000));
+      return { ok: false, status: 429, error: `too many wrong tokens: no token is checked for ${retryAfter}s`, retryAfter };
+    }
     const record = this.failures.get(address);
     if (record && at - record.since >= this.windowMs) this.failures.delete(address);
     const current = this.failures.get(address);
@@ -114,6 +140,7 @@ export class TokenGate {
   }
 
   private fail(address: string, at: number): void {
+    this.global.count++;
     const record = this.failures.get(address);
     if (record) {
       record.count++;
