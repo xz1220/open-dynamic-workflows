@@ -89,6 +89,13 @@
  * terminal event and saved record, logged, and — with notes on — posted to
  * the notes board; `scopePolicy: "fail"` fails it with reason "out_of_scope",
  * and with `expect` it is a miss.
+ *
+ * Before a parallel() or pipeline() at least `fanOutWarn` wide, or one a
+ * `costGate` covers — the setting, or its parallel()'s option — the run
+ * forecasts what it will cost from the workflow's earlier runs and logs it;
+ * a forecast over the gate waits at a checkpoint for a person's go, and a
+ * rejection throws a recoverable CostGateRejected (ODW extensions; see
+ * ./forecast). An agent()'s `costGate` does the same for that one agent.
  */
 
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -110,6 +117,7 @@ import { spentTokens, type RunContext } from "./context.js";
 import { AdapterExecutionError, AgentError, RunawayError, UnmetExpectationError, WorkflowScriptError, isFatalError } from "./errors.js";
 import { AGENT_FAILED, AGENT_FINISHED, AGENT_STARTED, HANDOFF, LOG, PHASE_STARTED, event } from "./events.js";
 import { ExecError, createExec, execStep, type ExecOptions, type ExecResult } from "./exec.js";
+import { CostGateRejected, costGateTitle, readCostGate, type CostGate, type CostHistory } from "./forecast.js";
 import { Expectations, planChecks, scopeOnlyPlan, type AgentChecks, type ExpectOptions } from "./expect.js";
 import { resumeKey, type AgentResultRecord } from "./journal.js";
 import { hasLimits, readLimits, type AgentLimits, type LimitHit, type LimitSpec } from "./limits.js";
@@ -121,6 +129,7 @@ import { firstAdapter, phaseDefaultsOf, type AdapterChoice, type PhaseDefaults }
 import type { JsonSchema } from "./schema.js";
 import { planScope, ScopeLocks, waitNote, type ScopeClaim, type ScopePlan, type ScopePolicy } from "./scope.js";
 import { FanOut } from "./throttle.js";
+import { fmtUsd } from "./tty.js";
 import { TranscriptRecorder } from "./transcript.js";
 import { resolveWorkflow } from "./workflows/resolve.js";
 
@@ -212,12 +221,26 @@ export interface AgentOptions {
    * `scopePolicy` setting ("warn" by default). With `expect` it is a miss.
    */
   scopePolicy?: ScopePolicy;
+  /**
+   * ODW extension: `{ usd }` — when this agent is forecast, from the
+   * workflow's earlier runs, to cost more than `usd` dollars, it waits at a
+   * checkpoint for a person's go first; a rejection throws a
+   * CostGateRejected (see ./forecast). Unset: no gate (the `costGate`
+   * setting covers fan-outs, not single agents).
+   */
+  costGate?: CostGate | null;
 }
 
 /** ODW extension: what parallel() takes after its thunks. */
 export interface ParallelOptions {
   /** Every agent its thunks start has notes on (see AgentOptions.notes), unless one says `notes: false`. */
   notes?: boolean;
+  /**
+   * `{ usd }`: a forecast over `usd` dollars waits at a checkpoint for a
+   * person's go (see ./forecast); `null` lifts the `costGate` setting for
+   * this call. Unset: the setting.
+   */
+  costGate?: CostGate | null;
 }
 
 export interface Budget {
@@ -1083,8 +1106,20 @@ export function createPrimitives(
     }
   };
 
+  /**
+   * An agent() with a `costGate` (ODW extension): its forecast, and its gate,
+   * before it is dispatched — unless a resume replays it, which costs nothing.
+   */
+  const agentGate = async (prompt: string, opts: AgentOptions): Promise<void> => {
+    const gate = readCostGate(opts.costGate, "agent(): costGate", (m) => new AgentError(m));
+    if (!gate) return;
+    if (ctx.replay && ctx.replay.has(resumeKey(prompt, opts))) return;
+    const phase = opts.phase !== undefined ? opts.phase : ctx.currentPhase;
+    await forecastFanOut("agent()", 1, 1, gate, phase, opts.label ?? null);
+  };
+
   const agent = (prompt: string, opts: AgentOptions = {}): Promise<unknown> =>
-    dispatch(prompt, opts).catch((err: unknown) => {
+    (opts?.costGate === undefined ? dispatch(prompt, opts) : agentGate(prompt, opts).then(() => dispatch(prompt, opts))).catch((err: unknown) => {
       // A fatal error ends the run wherever it arose — in the slot or before
       // it (an unknown adapter): the scheduler records it as the outcome and
       // aborts the agents still running.
@@ -1126,6 +1161,92 @@ export function createPrimitives(
   };
 
   /**
+   * What a fan-out is forecast to cost, before it starts (ODW extension; see
+   * ./forecast): logged when it is at least `fanOutWarn` wide or a cost gate
+   * covers it — `option` (null lifts it), else the `costGate` setting for a
+   * parallel() or pipeline(). A forecast over the gate asks a person first,
+   * as a checkpoint(); a rejection throws a CostGateRejected. Without
+   * history the gate lets it through, and says so once per run. Undefined —
+   * synchronously, so the fan-out starts as it always did — when there is
+   * nothing to forecast.
+   */
+  const forecastFanOut = (
+    call: "parallel()" | "pipeline()" | "agent()",
+    width: number,
+    agents: number,
+    option: CostGate | null | undefined,
+    phase: string | null,
+    label: string | null = null,
+  ): Promise<void> | undefined => {
+    const gate = option !== undefined ? option : call === "agent()" ? null : (ctx.config.settings.costGate ?? null);
+    const limit = ctx.config.settings.fanOutWarn;
+    if (width === 0 || (!gate && !(call !== "agent()" && limit && width >= limit))) return undefined;
+    return forecastAndGate(call, width, agents, gate, phase, label);
+  };
+
+  const forecastAndGate = async (
+    call: "parallel()" | "pipeline()" | "agent()",
+    width: number,
+    agents: number,
+    gate: CostGate | null,
+    phase: string | null,
+    label: string | null,
+  ): Promise<void> => {
+    const once = (key: string, message: string): void => {
+      const said = (ctx.costNotes ??= new Set<string>());
+      if (said.has(key)) return;
+      said.add(key);
+      ctx.emit(event(LOG, { message, ...(gate ? { costGate: gate.usd } : {}) }));
+    };
+    let history: CostHistory | null = null;
+    try {
+      history = ctx.costHistory?.() ?? null;
+    } catch (err) {
+      once("unreadable", `could not read this workflow's earlier runs for a cost forecast: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    if (!history) {
+      if (gate) once("history", "costGate: no forecast — no finished runs of this workflow yet, so the gate lets fan-outs through");
+      return;
+    }
+    const forecast = history.forecast(call, width, agents, phase, label);
+    if (!forecast) {
+      if (gate) {
+        once(
+          `phase:${phase ?? ""}`,
+          `costGate: no forecast for phase ${phase === null ? "(none)" : JSON.stringify(phase)} — no agent of it in earlier runs reported a cost, so the gate lets it through`,
+        );
+      }
+      return;
+    }
+    const what =
+      call === "agent()" ? "agent()" : call === "parallel()" ? `parallel() of ${width} tasks` : `pipeline() of ${width} items (${agents} agents)`;
+    const from = forecast.basis === "label" ? `agents labelled ${JSON.stringify(forecast.label)}` : "agents";
+    const where = phase === null ? "" : ` in phase ${JSON.stringify(phase)}`;
+    ctx.emit(
+      event(LOG, {
+        message:
+          `cost forecast: ${what}${where} ~${fmtUsd(forecast.usd)} (p90 ${fmtUsd(forecast.p90Usd)}) — ${agents} × ${fmtUsd(forecast.perAgentUsd.p50)} ` +
+          `per agent, the median of ${forecast.perAgentUsd.n} ${from} of ${forecast.runs} earlier run${forecast.runs === 1 ? "" : "s"}` +
+          `${forecast.match === "name" ? " (of another source)" : ""}; it assumes they cost what those did`,
+        forecast,
+        ...(gate ? { costGate: gate.usd } : {}),
+      }),
+    );
+    if (!gate || forecast.usd <= gate.usd) return;
+    const title = costGateTitle(forecast);
+    if (!ctx.control.awaitDecision) {
+      throw new CostGateRejected(`${title} — nobody can be asked in this run (no decision channel), so it did not start`, forecast, null);
+    }
+    const answer = await checkpoint(title, { payload: { width, forecast } });
+    if (answer.approved) return;
+    throw new CostGateRejected(
+      `${what}: its cost gate (${fmtUsd(gate.usd)}) was rejected${answer.note ? ` — ${answer.note}` : ""}; it did not start`,
+      forecast,
+      answer.note,
+    );
+  };
+
+  /**
    * Run one parallel() or pipeline() call's batch as one fan-out, which every
    * agent() its thunks or stages call — through any await — belongs to: on a
    * prompt-caching adapter, its agents may start staggered (an ODW extension;
@@ -1144,16 +1265,18 @@ export function createPrimitives(
     if (!Array.isArray(thunks)) {
       throw new WorkflowScriptError(`parallel() takes an array of functions (thunks); got ${describeValue(thunks)}`);
     }
-    // ODW extension: options after the thunks — only `notes` (see ./notes).
+    // ODW extension: options after the thunks — `notes` (see ./notes) and `costGate` (see ./forecast).
     if (opts !== undefined && (opts === null || typeof opts !== "object" || Array.isArray(opts))) {
-      throw new WorkflowScriptError(`parallel()'s options must be an object — { notes?: boolean }; got ${describeValue(opts)}`);
+      throw new WorkflowScriptError(`parallel()'s options must be an object — { notes?: boolean, costGate?: { usd } }; got ${describeValue(opts)}`);
     }
     for (const key of Object.keys(opts ?? {})) {
-      if (key !== "notes") throw new WorkflowScriptError(`parallel() has no option "${key}"; use notes`);
+      if (key !== "notes" && key !== "costGate") throw new WorkflowScriptError(`parallel() has no option "${key}"; use notes or costGate`);
     }
     if (opts?.notes !== undefined && typeof opts.notes !== "boolean") {
       throw new WorkflowScriptError(`parallel(): notes must be true or false; got ${describeValue(opts.notes)}`);
     }
+    const gate =
+      opts?.costGate === undefined ? undefined : readCostGate(opts.costGate, "parallel(): costGate", (m) => new WorkflowScriptError(m));
     thunks.forEach((thunk, i) => {
       if (typeof thunk !== "function") {
         throw new WorkflowScriptError(
@@ -1163,6 +1286,8 @@ export function createPrimitives(
       }
     });
     warnFanOut("parallel()", thunks.length);
+    const forecasting = forecastFanOut("parallel()", thunks.length, thunks.length, gate, ctx.currentPhase);
+    if (forecasting) await forecasting;
     const batch = (): Promise<Array<T | null>> =>
       asFanOut(() => ctx.scheduler.gather(
         thunks.map((thunk, i) => async () => {
@@ -1192,6 +1317,9 @@ export function createPrimitives(
       }
     });
     warnFanOut("pipeline()", items.length, stages.length);
+    // A pipeline() takes no options: the `costGate` setting covers it.
+    const forecasting = forecastFanOut("pipeline()", items.length, items.length * Math.max(1, stages.length), undefined, ctx.currentPhase);
+    if (forecasting) await forecasting;
     const chains = items.map((item, index) => async (): Promise<unknown> => {
       let value: unknown = item;
       let s = 0;

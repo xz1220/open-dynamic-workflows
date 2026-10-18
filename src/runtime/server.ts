@@ -64,6 +64,11 @@
  *   GET  /api/compare?a=<run>&b=<run>   RunComparison (./compare): what changed between two ODW
  *                                   runs, as `odw compare --json` prints it (ODW extension); 400
  *                                   unless both are run ids, 404 when either is no ODW run
+ *   GET  /api/estimate?workflow=<name>[&sourceHash=<sha256>]   WorkflowEstimate (./estimate): what
+ *                                   a run of it is likely to cost and take, from its earlier finished
+ *                                   runs, as `odw estimate --json` prints it (ODW extension); matched by
+ *                                   `sourceHash`, else the newest run's, then by name; 400 for a bad
+ *                                   name or hash
  *   GET  /api/evals                 [EvalReportSummary], newest first: the `odw eval` reports kept
  *                                   under <runsRoot>/_evals/<name>/<id>.json (ODW extension; read only)
  *   GET  /api/evals/:name/:id       one EvalReport (../eval/report), case args token-shape redacted;
@@ -161,6 +166,7 @@ import { activityLimit, activityView } from "./activity-view.js";
 import { ChatHost, type ChatTurnRunner } from "./chat-host.js";
 import { ClaudeRunSource } from "./claude-run-source.js";
 import { compareRuns, readCompareRun } from "./compare.js";
+import { latestSourceHash, loadEstimate } from "./estimate.js";
 import { isEvalName } from "../eval/definition.js";
 import { listReports, readStoredReport } from "../eval/report.js";
 import {
@@ -483,6 +489,10 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandleCont
     }
     if (method === "GET" && path === "/api/compare") {
       compareView(req, res, store, url.searchParams, redactor);
+      return;
+    }
+    if (method === "GET" && path === "/api/estimate") {
+      estimateView(req, res, store, url.searchParams);
       return;
     }
     if (method === "GET" && path === "/api/schedules") {
@@ -843,6 +853,28 @@ function compareView(req: IncomingMessage, res: ServerResponse, store: RunStore,
     return { ...run, args: (redactor.shapes.record({ args: run.args }) as { args: unknown }).args };
   };
   sendJsonCached(req, res, compareRuns(served(a), served(b)));
+}
+
+/**
+ * `GET /api/estimate?workflow=<name>[&sourceHash=<sha256>]` (ODW extension):
+ * the WorkflowEstimate `odw estimate --json` prints, from the workflow's
+ * earlier finished runs. Read only. The name only ever picks a bucket through
+ * the store's own slug (no path of it is joined as given); a name that is
+ * empty, over 200 characters or has control characters is a 400, and so is a
+ * `sourceHash` that is no sha256. Without one, the newest run's is matched.
+ */
+function estimateView(req: IncomingMessage, res: ServerResponse, store: RunStore, params: URLSearchParams): void {
+  const workflow = params.get("workflow");
+  if (workflow === null || workflow.trim() === "" || workflow.length > 200 || /[\u0000-\u001f\u007f]/.test(workflow)) {
+    sendJson(res, 400, { error: "workflow must be a workflow's name: /api/estimate?workflow=<name>" });
+    return;
+  }
+  const hash = params.get("sourceHash");
+  if (hash !== null && !/^[0-9a-f]{64}$/.test(hash)) {
+    sendJson(res, 400, { error: "sourceHash must be a sha256, 64 lowercase hex characters" });
+    return;
+  }
+  sendJsonCached(req, res, loadEstimate(store, { workflow, sourceHash: hash ?? latestSourceHash(store, workflow) }));
 }
 
 /**

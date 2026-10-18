@@ -398,6 +398,73 @@ export interface ReplyComparison {
   truncated: boolean;
 }
 
+/** The median and 90th percentile of some samples, and how many there were (nearest rank). */
+export interface EstimateSpread {
+  p50: number;
+  p90: number;
+  n: number;
+}
+
+/** A run's, a phase's or an adapter's figures across earlier runs; null where none had one. */
+export interface EstimateFigures {
+  wallMs: EstimateSpread | null;
+  costUsd: EstimateSpread | null;
+  inputTokens: EstimateSpread | null;
+  outputTokens: EstimateSpread | null;
+  /** Agents it started per run. */
+  agents: EstimateSpread | null;
+}
+
+export interface PhaseEstimate extends EstimateFigures {
+  /** null: agents started before any phase(). */
+  phase: string | null;
+  /** How many of the runs had agents in it. */
+  runs: number;
+}
+
+export interface AdapterEstimate extends EstimateFigures {
+  adapter: string;
+  runs: number;
+}
+
+/**
+ * GET /api/estimate?workflow=<name>[&sourceHash=<sha256>] — what a run of a
+ * workflow is likely to cost and take, from its last finished runs (ODW
+ * extension; src/runtime/estimate.ts documents every key). Without history
+ * `match` is null, `total` null, and the one note says so.
+ */
+export interface WorkflowEstimate {
+  version: 1;
+  workflow: string;
+  sourceHash: string | null;
+  /** "sourceHash": runs of this exact source; "name": of the workflow's name (its source differed). */
+  match: "sourceHash" | "name" | null;
+  /** The runs it is based on, newest first. */
+  runs: string[];
+  total: EstimateFigures | null;
+  phases: PhaseEstimate[];
+  adapters: AdapterEstimate[];
+  /** Some output tokens are chars/4 estimates. */
+  estimated: boolean;
+  notes: string[];
+}
+
+/** A fan-out's cost forecast, as its `log` event's `forecast` carries it (ODW extension; src/forecast.ts). */
+export interface FanOutForecast {
+  call: string;
+  width: number;
+  agents: number;
+  phase: string | null;
+  label: string | null;
+  basis: "label" | "phase";
+  perAgentUsd: EstimateSpread;
+  usd: number;
+  p90Usd: number;
+  perAgentOutputTokens: EstimateSpread | null;
+  runs: number;
+  match: "sourceHash" | "name";
+}
+
 /**
  * GET /api/evals — the `odw eval` reports kept under the runs root
  * (`_evals/<name>/<id>.json`), newest first (ODW extension; read only).

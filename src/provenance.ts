@@ -276,6 +276,7 @@ export const BEHAVIOUR_SETTINGS = [
   "sandbox",
   "notes",
   "agentLimits",
+  "costGate",
 ] as const satisfies ReadonlyArray<keyof Settings>;
 
 /** What a run started with (its `run_started` event's `setup`). */

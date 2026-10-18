@@ -15,6 +15,7 @@ import type { WaitingCheckpoint } from "./checkpoint.js";
 import { NullControl, type Control } from "./control.js";
 import { BudgetExhausted } from "./errors.js";
 import { EGRESS_DENIED, LOG, NullSink, event, type EventSink, type WorkflowEvent } from "./events.js";
+import type { CostHistory } from "./forecast.js";
 import type { AgentResultRecord, ReplayJournal } from "./journal.js";
 import { quotaPauseMessage, type QuotaPauseChange } from "./quota-wait.js";
 import { redactorFor, type Redactor } from "./redact.js";
@@ -138,6 +139,17 @@ export interface RunContext {
    * persisted (in-process runs), which then have none.
    */
   notes?: NotesBoard;
+  /**
+   * The workflow's earlier runs, as fan-out forecasts and cost gates read
+   * them (ODW extension; see ./forecast) — read once, on the first fan-out
+   * that asks; null without history. Absent where no run is persisted.
+   */
+  costHistory?: () => CostHistory | null;
+  /**
+   * What the run has said about cost gates without history, so it is said
+   * once per run (ODW extension). Shared like `seq`.
+   */
+  costNotes?: Set<string>;
   emit(ev: WorkflowEvent): void;
 }
 
@@ -169,6 +181,8 @@ export interface BuildContextOptions {
   redactor?: Redactor;
   /** The run's notes board (ODW extension; see ./notes). */
   notes?: NotesBoard;
+  /** The workflow's earlier runs, for fan-out forecasts and cost gates (ODW extension; see ./forecast). */
+  costHistory?: () => CostHistory | null;
   /**
    * quotaWait (ODW extension): told whenever the run's pause for an adapter's
    * spent quota starts, moves or ends — after the run's log has said so — so
@@ -265,6 +279,8 @@ export function buildContext(config: Config, options: BuildContextOptions = {}):
     onCheckpoint: options.onCheckpoint,
     redactor,
     notes: options.notes,
+    costHistory: options.costHistory,
+    costNotes: new Set(),
     emit(ev: WorkflowEvent): void {
       sink.emit(ev);
     },

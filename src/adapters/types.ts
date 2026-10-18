@@ -8,6 +8,7 @@
 
 import type { TriggerSettings } from "../triggers.js";
 import type { EgressAllow } from "./egress.js";
+import type { CostGate } from "../forecast.js";
 import type { LimitSpec } from "../limits.js";
 
 /**
@@ -620,6 +621,13 @@ export interface Settings {
    * serve` starts at `POST /api/triggers/<name>`. `{}` sets none.
    */
   triggers: Record<string, TriggerSettings>;
+  /**
+   * A cost gate on every parallel() and pipeline() (an ODW extension; see
+   * ../forecast): `{ usd }` — a fan-out whose forecast, from earlier runs of
+   * the workflow, is over `usd` dollars waits at a checkpoint for a person's
+   * go. `null`: none.
+   */
+  costGate: CostGate | null;
 }
 
 /** How approve links are minted (see `Settings.approveLinks`). */

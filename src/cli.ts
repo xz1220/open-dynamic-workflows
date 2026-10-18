@@ -32,6 +32,7 @@
  *   odw test [<wf|file>] [--case N] [--json] [--keep]   (scripted replies, no model; src/wftest/)
  *   odw run <wf> --dry | --record [--record-to FILE]    (stub replies; a run kept as a test case)
  *   odw note <text…> | odw notes [<run_id>] [--json]   (the run's notes board, runtime/notes-view.ts)
+ *   odw estimate <wf> [--args JSON|@file] [--json]; odw run --estimate [--yes]   (from earlier runs, runtime/estimate-cli.ts)
  */
 
 import { spawn } from "node:child_process";
@@ -88,6 +89,7 @@ import { generateToken, isValidToken } from "./runtime/serve-auth.js";
 import { parsePublicUrl, publicUrlHasPath } from "./runtime/approve-links.js";
 import { printAgentLogs } from "./runtime/transcript-view.js";
 import { cmdNote, cmdNotes } from "./runtime/notes-view.js";
+import { cmdEstimate, estimateBeforeRun } from "./runtime/estimate-cli.js";
 import { executeRun } from "./runtime/worker.js";
 import {
   parseSshTarget,
@@ -143,6 +145,7 @@ export const COMMANDS = [
   "conformance",
   "pull",
   "test",
+  "estimate",
 ] as const;
 
 export type Command = (typeof COMMANDS)[number];
@@ -177,6 +180,7 @@ export function helpText(): string {
     "                                                     --pr [--base B] [--ready] [--title T]: a branch, pushed, and a draft PR (gh); never merges",
     "  odw compare <runA> <runB> [--json]                 what changed: setup, time, cost, failures, replies",
     "                                                     --agent <label|id> shows one agent's whole reply diff",
+    "  odw estimate <wf> [--args JSON|@file] [--json]     p50/p90 time, cost, tokens and agents, from its earlier runs (ODW extension)",
     "  odw list [--workflow <name>]                       list known runs",
     "  odw serve [--port N] [--host H] [--open]           open the live dashboard in a browser",
     "  odw workflows list [--project|--global|--plugins|--all]  list workflows runnable by name,",
@@ -221,6 +225,7 @@ export function helpText(): string {
     "  --deadline <s>      odw run: STOP the run s seconds after it starts (stopped, diffs and finished agents kept);",
     "                      --wait/--fg then print what finished and exit 3 (ODW extension)",
     "  --budget <tokens>   token target exposed to the script as budget.total",
+    "  --estimate          odw run: print the estimate from earlier runs first, then ask y/N (--yes: just print)",
     "  -h, --help          show this help",
     "  -v, --version       show the version",
     "",
@@ -351,6 +356,8 @@ export async function main(argv: string[]): Promise<number> {
         return await cmdConformance(rest);
       case "test":
         return await cmdTest(rest);
+      case "estimate":
+        return cmdEstimate(rest, parseArgsValue);
       default:
         process.stderr.write(`odw: unknown command '${command}'\n\n${helpText()}\n`);
         return 2;
@@ -524,6 +531,8 @@ async function cmdRun(rest: string[]): Promise<number> {
       dry: { type: "boolean" },
       record: { type: "boolean" },
       "record-to": { type: "string" },
+      estimate: { type: "boolean" },
+      yes: { type: "boolean", short: "y" },
     },
   });
   const ref = positionals[0];
@@ -538,6 +547,11 @@ async function cmdRun(rest: string[]): Promise<number> {
   if (values.dry && (values.record || values["record-to"] !== undefined)) throw new UsageError("odw run: --dry calls no model: there is nothing to --record");
   if (values["record-to"] !== undefined && !values.record) throw new UsageError("odw run: --record-to goes with --record");
   if (values.dry && values.detach) throw new UsageError("odw run: --dry waits for its run to print its phase tree; leave out --detach");
+  // --estimate (ODW extension): what earlier runs of it cost, before this one starts.
+  if (values.yes !== undefined && values.estimate === undefined) throw new UsageError("odw run: --yes goes with --estimate");
+  if (values.estimate && (values.on !== undefined || values.sync !== undefined)) {
+    throw new UsageError("odw run: --estimate reads this machine's runs; with --on, run odw estimate there");
+  }
   if (values.on !== undefined || values.sync !== undefined) return cmdRunRemote(ref, values);
 
   let budgetTotal: number | null = null;
@@ -560,6 +574,11 @@ async function cmdRun(rest: string[]): Promise<number> {
   // A dry run answers every agent itself: no adapter needs to be installed.
   if (!values.dry) warnIfNoDefaultAdapter(values.adapter ?? null, values.config ?? null, values.source ?? null, "run");
   const record = values.record ? recordTarget(ref, values["record-to"], values.config ?? null, values.source ?? null) : null;
+
+  if (values.estimate) {
+    const flags = { config: values.config ?? null, runsRoot: values["runs-root"] ?? null, source: values.source ?? null };
+    if (!(await estimateBeforeRun(ref, flags, parseArgsValue(values.args), values.yes === true))) return 1;
+  }
 
   const { runId, store, workflow } = startRun(ref, {
     args: parseArgsValue(values.args),

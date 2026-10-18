@@ -106,12 +106,27 @@ declare global {
      * `fallback.handoff` setting (off).
      */
     handoff?: boolean;
+    /**
+     * ODW extension — Claude Code ignores it. When this agent is forecast, from earlier
+     * finished runs of the workflow (agents of its phase with its label prefix, else of
+     * its phase), to cost more than `usd` dollars, it waits at a checkpoint for a person's
+     * go first; a rejection throws an error named `"CostGateRejected"`. Without history
+     * it runs.
+     */
+    costGate?: { usd: number } | null;
   }
 
   /** ODW extension — Claude Code's parallel() takes only the thunks. */
   interface ParallelOptions {
     /** Every agent the thunks start gets the run's notes board (see {@link AgentOptions.notes}), unless it says `notes: false`. */
     notes?: boolean;
+    /**
+     * A fan-out forecast, from earlier finished runs of the workflow, to cost more than
+     * `usd` dollars waits at a checkpoint ("This fan-out is forecast to cost ~$X (p90 $Y)
+     * — go?") before any of its agents start; a rejection throws an error named
+     * `"CostGateRejected"`. `null` lifts the `costGate` setting for this call.
+     */
+    costGate?: { usd: number } | null;
   }
 
   /** What {@link AgentOptions.expect} checks (ODW extension). */

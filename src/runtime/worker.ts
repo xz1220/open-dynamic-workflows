@@ -24,6 +24,7 @@ import { sandboxFlagOf, withSandboxFlag } from "../adapters/sandbox.js";
 import { killAllAgentProcesses } from "../adapters/runner.js";
 import type { RunEndState } from "../adapters/types.js";
 import type { WaitingCheckpoint } from "../checkpoint.js";
+import type { CostHistory } from "../forecast.js";
 import { buildContext, spentTokens, type RunContext } from "../context.js";
 import { deciderText, PAUSED, RUNNING, type CheckpointRequest } from "../control.js";
 import { RunStopped, WorkflowScriptError, isFatalError } from "../errors.js";
@@ -44,6 +45,7 @@ import { FileControl } from "./file-control.js";
 import { notifyCheckpoint, notifyQuotaPause, notifyRunEnd } from "./notify.js";
 import { mintCheckpointLinks, runsRootsOf } from "./approve-links.js";
 import { exportRunEnd } from "./otel-export.js";
+import { loadCostHistory } from "./estimate.js";
 import { JsonlSink, RunStore } from "./run-store.js";
 
 /**
@@ -117,6 +119,8 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
 
   const sink = new JsonlSink(store.eventsPath(runId));
   const args = meta.args;
+  // The name its earlier runs go by: meta.workflowName, else — once loaded — the script's meta.name.
+  let historyName: string | null = typeof meta.workflowName === "string" ? meta.workflowName : null;
   // ctx is created inside the try so that a config or context-build failure is
   // still recorded as a failed run rather than leaving it stuck in "pending".
   let ctx: RunContext | undefined;
@@ -244,6 +248,21 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
       });
     }
     const cliVersions = versions;
+    // The workflow's earlier runs, for fan-out forecasts and cost gates (ODW
+    // extension; see ../forecast): read from its bucket of the runs root on
+    // the first fan-out that asks, this run left out.
+    let history: CostHistory | null | undefined;
+    const costHistory = (): CostHistory | null => {
+      if (history !== undefined) return history;
+      history = null; // read once, even when reading fails
+      if (historyName === null) return null;
+      history = loadCostHistory(new RunStore(dirname(dirname(runDir))), {
+        workflow: historyName,
+        sourceHash: typeof meta.sourceHash === "string" ? meta.sourceHash : null,
+        exclude: runId,
+      });
+      return history;
+    };
     ctx = buildContext(config, {
       source: meta.source as string | undefined,
       runId,
@@ -268,6 +287,7 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
       // A schema handed to a CLI as a file, as agents/<agentId>.schema.json while it runs.
       agentSchemaPath: (agentId) => store.agentSchemaPath(runId, agentId),
       replay,
+      costHistory,
       onCliRun: cliVersions && ((adapter) => cliVersions.note(adapter)),
       // Each mocked agent is answered knowing its label and phase, from its agent_started event.
       ...(mock ? { bridge: { runner: mockRunner(mock, (agentId) => startedAgent(store, runId, agentId)), sleep: noSleep } } : {}),
@@ -373,6 +393,7 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
         }),
       );
     }
+    historyName ??= loaded.meta.name;
     store.updateStatus(runId, {
       name: loaded.meta.name,
       description: loaded.meta.description,

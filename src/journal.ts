@@ -212,6 +212,11 @@ export class ReplayJournal {
     return this.left;
   }
 
+  /** Whether a record saved under `key` is left: the call would replay, not run. */
+  has(key: string): boolean {
+    return (this.queues.get(key)?.length ?? 0) > 0;
+  }
+
   /** Take the next record saved under `key`, if one is left. */
   take(key: string): AgentResultRecord | undefined {
     const rec = this.queues.get(key)?.shift();
