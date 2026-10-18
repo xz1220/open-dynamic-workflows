@@ -1019,5 +1019,17 @@ test("a run whose agents posted notes gets a Notes tab of pinned slips; interfac
   assert.match(html, /<article class="slip interface"[\s\S]*?<pre class="slip-code">1 file, \+2 −1\n\+export function parse\(<\/pre>/);
   store.notes.clear();
   store.runEvents = [];
+});
+
+test("an agent killed at one of its limits shows its limits, the one it hit, and the evidence", () => {
+  const view: JobViewState = { cpNote: "", tab: "graph", selectedAi: 0, reviewAi: null, zoom: 1, logQuery: "", logTypes: new Set(["agent"]), logLimit: 600, follow: true, motion: false };
+  store.focusRun("20260101-000000-aaaaaa");
+  const hit = { limit: "repeat" as const, max: 5, value: 5, evidence: "Bash `npm test` ×5 in a row" };
+  store.run = detail([agent("fix", "Plan", "failed", { failureReason: "runaway", limits: { toolCalls: 40, costUsd: 2, repeat: 5, hit } })]);
+  store.runEvents = [];
+  const html = renderJob(view, NOW);
+  assert.match(html, /limits<\/span><span class="v"><span class="mono dim">toolCalls 40<\/span> <span class="mono dim">costUsd \$2\.000<\/span> <span class="tag warn" title="Bash `npm test` ×5 in a row">repeat 5<\/span><\/span>/);
+  assert.match(html, /<span class="tag warn">runaway<\/span>/);
+  assert.match(html, /Stopped at a limit<\/div><p class="dnote"><span class="mono">Bash `npm test` ×5 in a row<\/span><\/p>/);
   store.focusRun(null);
 });

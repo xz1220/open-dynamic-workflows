@@ -709,6 +709,9 @@ const ZH: Record<string, string> = {
   "No notes on this run": "这次运行没有笔记",
   "Agents with notes on post what the others must know — run odw note \"…\" — and a worktree agent posts the interfaces it changed.": "开启笔记的 agent 会把其他 agent 必须知道的事写下来——执行 odw note \"…\"——worktree agent 结束时会贴出它改动的接口。",
   interface: "接口",
+  limits: "上限",
+  runaway: "失控",
+  "Stopped at a limit": "因触及上限被终止",
   // Evals.
   "Evals": "评测",
   "Eval": "评测",

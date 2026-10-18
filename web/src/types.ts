@@ -116,7 +116,7 @@ export interface AgentView {
   exitCode?: number | null;
   /** A command step that is an agent's `expect.command` check: that agent's id (ODW extension). */
   forAgentId?: number;
-  /** Why an agent failed: rate_limit, quota, auth, timeout, stalled, not_found, permission, exit, empty_reply, unmet_expectation, mcp_unavailable. */
+  /** Why an agent failed: rate_limit, quota, auth, timeout, stalled, not_found, permission, exit, empty_reply, unmet_expectation, mcp_unavailable, runaway. */
   failureReason?: string | null;
   /** With `unmet_expectation`: the `expect` checks its work did not meet, one line each (ODW extension). */
   misses?: string[];
@@ -140,6 +140,12 @@ export interface AgentView {
    * its adapter or the call put it in one (ODW extension); absent: on the host.
    */
   sandbox?: AgentSandbox;
+  /**
+   * The limits it ran under (ODW extension; `agent(…, { limits })`,
+   * `agentLimits`) and, with reason `runaway`, `hit`: the one it ran into,
+   * what it reached and the evidence. Absent: no limits.
+   */
+  limits?: AgentLimits;
   /**
    * The adapters it fell back from, in order — their quota was spent or their
    * login refused — before `adapter` (ODW extension). Absent when it never
@@ -181,6 +187,22 @@ export type PermissionTier = "read" | "edit" | "full";
 
 /** Whether an agent's CLI trusted the repository it worked in (ODW extension; `odw run --untrusted`). */
 export type TrustLevel = "trusted" | "untrusted";
+
+/** What one agent may do before it is killed as a runaway, and the limit it ran into (ODW extension). */
+export interface AgentLimits {
+  toolCalls?: number;
+  costUsd?: number;
+  outputTokens?: number;
+  seconds?: number;
+  repeat?: number;
+  hit?: {
+    limit: "toolCalls" | "costUsd" | "outputTokens" | "seconds" | "repeat";
+    max: number;
+    value: number;
+    /** "Bash `npm test` ×5 in a row", "41 tool calls > 40". */
+    evidence: string;
+  };
+}
 
 /** The container an agent's CLI ran in (ODW extension; `odw run --sandbox container`). */
 export interface AgentSandbox {

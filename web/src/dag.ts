@@ -103,6 +103,7 @@ export function reasonLabel(reason: string): string {
     empty_reply: t("empty reply"),
     unmet_expectation: t("unmet expectation"),
     mcp_unavailable: t("MCP unavailable"),
+    runaway: t("runaway"),
   };
   return labels[reason] ?? reason.replace(/_/g, " ");
 }
