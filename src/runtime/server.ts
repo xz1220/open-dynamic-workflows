@@ -52,6 +52,12 @@
  *                                   payload: 413 past 256 KiB of JSON, 400 (with `problems`) off
  *                                   the checkpoint's schema; that route takes bodies to 512 KiB.
  *   GET  /api/activity?limit=N      the Activity view (below)
+ *   GET  /api/review[?since=7d][&all=1]   the review queue (ODW extension; see ./review): { entries,
+ *                                   open, marked } — kept diffs not dealt with yet, riskiest first, each
+ *                                   with its factors; `all` includes the marked ones; 400 for a bad since
+ *   POST /api/runs/:id/agents/:agentId/review   { state: reviewed|dismissed|applied|open, note? } marks
+ *                                   an agent's kept diff in the run's reviews.jsonl, `by` who asks
+ *                                   (ODW extension); 404 when it kept none; 400 on a bad body
  *   GET  /api/stream                text/event-stream: `runs` frames (the run list, on change);
  *                                   `?delta=1` → one `runs` frame, then `runs-delta` frames
  *                                   and `chat` frames ({ sessionId }, coalesced per 250ms)
@@ -179,6 +185,8 @@ import { redactorFor, type Redactor } from "../redact.js";
 import type { WorkflowEvent } from "../events.js";
 import type { AgentResultRecord } from "../journal.js";
 import { activityLimit, activityView } from "./activity-view.js";
+import { parseAge } from "./gc-cli.js";
+import { appendReview, isReviewState, markable, ReviewReader, REVIEW_NOTE_MAX } from "./review.js";
 import { ChatHost, type ChatTurnRunner } from "./chat-host.js";
 import { ClaudeRunSource } from "./claude-run-source.js";
 import { compareRuns, readCompareRun } from "./compare.js";
@@ -342,7 +350,7 @@ export function startServer(options: ServeOptions): Promise<ServeHandle> {
       : null;
   const ctx: HandleContext = {
     sources, store, chatHost, feed, cwd, config, configPath, boundHost: host, redactor, bundle, gate: null,
-    approve, remoteDecide: !bundle, triggers,
+    approve, remoteDecide: !bundle, triggers, reviews: new ReviewReader(store),
   };
   const server = createServer((req, res) => {
     handle(req, res, ctx).catch((err) => {
@@ -431,6 +439,8 @@ interface HandleContext {
   remoteDecide: boolean;
   /** The signed-trigger route (ODW extension); null when the config has no triggers. */
   triggers: TriggerRoute | null;
+  /** The review queue's reader (ODW extension; see ./review): caches each run's scored entries. */
+  reviews: ReviewReader;
 }
 
 async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandleContext): Promise<void> {
@@ -524,6 +534,18 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandleCont
       sendJsonCached(req, res, view);
       return;
     }
+    // The review queue (ODW extension; see ./review).
+    if (method === "GET" && path === "/api/review") {
+      const sinceText = url.searchParams.get("since");
+      const days = sinceText === null ? null : parseAge(sinceText);
+      if (sinceText !== null && days === null) {
+        sendJson(res, 400, { error: "since takes an age like 7d, 12h or 2w" });
+        return;
+      }
+      const since = days === null ? null : Date.now() / 1000 - days * 86_400;
+      sendJsonCached(req, res, ctx.reviews.queue({ since, all: url.searchParams.get("all") === "1" }));
+      return;
+    }
     if (method === "GET" && path === "/api/stream") {
       feed.open(res, { delta: url.searchParams.get("delta") === "1" });
       return;
@@ -601,13 +623,13 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandleCont
     }
 
     const runMatch = path.match(
-      /^\/api\/runs\/([^/]+)(\/events|\/control|\/checkpoint|\/result|\/notes|\/agents(?:\/[^/]+(?:\/diff|\/transcript)?)?)?$/,
+      /^\/api\/runs\/([^/]+)(\/events|\/control|\/checkpoint|\/result|\/notes|\/agents(?:\/[^/]+(?:\/diff|\/transcript|\/review)?)?)?$/,
     );
     if (runMatch) {
       const sub = runMatch[2];
       // Writes are gated before any run lookup: an off-loopback bind refuses
       // outright (no run-existence oracle), and CSRF posture comes first.
-      const write = sub === "/control" || sub === "/checkpoint";
+      const write = sub === "/control" || sub === "/checkpoint" || (sub?.startsWith("/agents/") === true && sub.endsWith("/review"));
       // --token-scope approve (ODW extension): a checkpoint decision — only that — passes off loopback, CSRF checks kept.
       const remoteDecision = sub === "/checkpoint" && remoteDecide;
       if (method === "POST" && write && !(remoteDecision ? jsonPostGuard(req, res) : writeGuard(req, res, boundHost))) return;
@@ -669,6 +691,21 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandleCont
           return;
         }
         sendJsonCached(req, res, records.map(agentListing));
+        return;
+      }
+      // Mark an agent's kept diff on the review queue (ODW extension; see ./review).
+      if (method === "POST" && sub?.startsWith("/agents/") && sub.endsWith("/review")) {
+        const raw = decodeSegment(sub.slice("/agents/".length, -"/review".length));
+        const agentId = raw !== null && /^\d+$/.test(raw) ? Number(raw) : NaN;
+        if (!Number.isSafeInteger(agentId)) {
+          sendJson(res, 400, { error: "agentId must be a non-negative integer" });
+          return;
+        }
+        if (src.provider !== "odw" || !store.exists(runId) || !markable(store, runId, agentId)) {
+          sendJson(res, 404, { error: `agent ${agentId} kept no diff to review` });
+          return;
+        }
+        await markReview(req, res, store, runId, agentId, who);
         return;
       }
       if (method === "GET" && sub?.startsWith("/agents/")) {
@@ -816,6 +853,24 @@ async function controlRun(
   // The source applies the action (ODW maps resume→"running" for FileControl).
   src.control(runId, action, who);
   sendJson(res, 200, { ok: true, runId, action });
+}
+
+/** `POST /api/runs/:id/agents/:agentId/review` (ODW extension): `{ state, note? }` appended to the run's reviews.jsonl. */
+async function markReview(req: IncomingMessage, res: ServerResponse, store: RunStore, runId: string, agentId: number, who: string | null): Promise<void> {
+  // CSRF posture (Content-Type + same-origin) is enforced by writeGuard upstream.
+  const body = await jsonBodyOrReply(req, res);
+  if (!body) return;
+  const { state, note } = body;
+  if (!isReviewState(state)) {
+    sendJson(res, 400, { error: "state must be one of reviewed, dismissed, applied, open" });
+    return;
+  }
+  if (note !== undefined && note !== null && (typeof note !== "string" || note.length > REVIEW_NOTE_MAX)) {
+    sendJson(res, 400, { error: `note must be a string of at most ${REVIEW_NOTE_MAX} characters` });
+    return;
+  }
+  const mark = appendReview(store.runDir(runId), { agentId, state, by: who, via: "dashboard", note: typeof note === "string" ? note : null });
+  sendJson(res, 200, { ok: true, runId, ...mark });
 }
 
 /**

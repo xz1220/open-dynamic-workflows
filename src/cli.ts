@@ -40,6 +40,7 @@
  *   odw new [<template>] [--name N] [--force] [--yes]   (a workflow + starter test from an embedded template; src/new.ts)
  *   odw gc [--yes] [--older-than 30d] [--json] | odw pin <run_id> [--remove]   (what odw left on disk; runtime/gc.ts)
  *   odw restore <run_id> [--check] [--force]   (the working tree before the run's first in-place agent; runtime/restore.ts)
+ *   odw review [--json] [--since 7d] [--all] | odw review mark <run_id> <agent> <state> [--note T]   (runtime/review-cli.ts)
  */
 
 import { spawn } from "node:child_process";
@@ -109,6 +110,8 @@ import { cmdMemory } from "./runtime/memory-cli.js";
 import { askYesNo, cmdEstimate, estimateBeforeRun } from "./runtime/estimate-cli.js";
 import { cmdGc, cmdPin } from "./runtime/gc-cli.js";
 import { cmdDigest } from "./runtime/digest-cli.js";
+import { cmdReview } from "./runtime/review-cli.js";
+import { appendReview } from "./runtime/review.js";
 import { executeRun } from "./runtime/worker.js";
 import {
   parseSshTarget,
@@ -175,6 +178,7 @@ export const COMMANDS = [
   "pin",
   "restore",
   "digest",
+  "review",
 ] as const;
 
 export type Command = (typeof COMMANDS)[number];
@@ -255,6 +259,8 @@ export function helpText(): string {
     "  odw pin <run_id> [--remove]                        odw gc skips a pinned run; no run id lists them",
     "  odw digest [--since 12h|--since-last] [--workflow W] what happened across runs, from their evidence: needs you, failed,",
     "             [--json|--markdown] [--notify]          missed checks, changes, spend; --notify sends it (notify.on \"digest\"; ODW extension)",
+    "  odw review [--json] [--since 7d] [--all]           kept diffs across runs not dealt with yet, riskiest first, each with why (ODW extension)",
+    "  odw review mark <run_id> <agent> <state> [--note T] reviewed | dismissed | applied | open (undo); odw apply marks applied",
     "",
     "Options:",
     "  --args JSON|@file   workflow input (JSON, @file.json, or a raw string)",
@@ -430,6 +436,8 @@ export async function main(argv: string[]): Promise<number> {
         return await cmdRestore(rest);
       case "digest":
         return await cmdDigest(rest);
+      case "review":
+        return await cmdReview(rest);
       default:
         process.stderr.write(`odw: unknown command '${command}'\n\n${helpText()}\n`);
         return 2;
@@ -1509,6 +1517,10 @@ async function cmdApply(rest: string[]): Promise<number> {
       err: process.stderr,
       caps: detectCaps(process.stdout, process.env),
       width: process.stdout.isTTY && process.stdout.columns ? process.stdout.columns : 120,
+      // What applied cleanly leaves the review queue as `applied` (ODW extension; see runtime/review).
+      onApplied: (a) => {
+        appendReview(store.runDir(runId), { agentId: a.row.agentId, state: "applied", by: cliActor(), via: "apply" });
+      },
     });
   } finally {
     process.stdout.off("error", unheard);
