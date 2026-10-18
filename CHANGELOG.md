@@ -7,8 +7,12 @@ marked **ODW extension** is outside Claude Code's workflow dialect and runs on `
 ## Unreleased — 0.5.0
 
 Everything since v0.4.0 (2026-06-11). The theme: runs you can leave alone — they
-survive failures, ask before the expensive parts, say what they cost and what they
-changed, and run on a schedule — and a dashboard redesigned to watch them.
+survive failures, ask before the expensive parts (from your phone too), say what they
+cost and what they changed, run on a schedule or on your own server — and many agents
+that share a codebase without surprises: limits that stop runaways, background work that
+cannot pass for success, declared scopes, a notes board, an egress allowlist. Plus a
+dashboard redesigned to watch them, evals and comparisons to check them, and two
+independent security reviews whose findings are all fixed.
 
 ### Recover instead of restarting
 - Every finished `agent()` result is saved the moment it lands. Read it mid-run with
