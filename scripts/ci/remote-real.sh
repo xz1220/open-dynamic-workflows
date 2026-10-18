@@ -67,6 +67,7 @@ sudo test -f /home/odwremote/odw-remote/proj/NOTE.txt || { echo "the uncommitted
 node "$here/dist/cli.js" pull "$id" --from "$url" --runs-root "$work/local-runs"
 result="$(node "$here/dist/cli.js" result "$id" --runs-root "$work/local-runs")"
 echo "$result"
-echo "$result" | grep -q "remote answered: hello from the laptop" || { echo "the pulled result is wrong" >&2; exit 1; }
+# The stand-in echoes the start of its prompt (odw's preamble comes first); args travelled too.
+echo "$result" | grep -q '"reply": "remote answered: ' && echo "$result" | grep -q '"host": "ci"' || { echo "the pulled result is wrong" >&2; exit 1; }
 if find "$work/local-runs" -type l | grep -q .; then echo "the pull kept links" >&2; exit 1; fi
 echo "remote run over a real sshd: ok"
