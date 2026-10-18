@@ -288,6 +288,7 @@ did-you-mean hint) instead of silently ignoring them.
 | `sandbox` | **ODW extension.** `"none"` (default): agent CLIs run on this machine. `{ "kind": "container", "image", "engine"?, "network"?, "mounts"?, "cliConfig"?, "memory"?, "cpus"?, "pids"? }`: each CLI run and `exec()` step in a fresh Docker/Podman container — see [container sandbox](#container-sandbox-odw-extension). `odw run\|rerun\|resume --sandbox container [--sandbox-image <image>]` turns it on per run |
 | `triggers` | **ODW extension.** `{}` (default): none. `{ "<name>": { "workflow", "verify": "github"\|"linear"\|"slack"\|"hmac-sha256", "secret"\|"secretEnv", "args"?: { "<arg>": "$.json.path" }, "events"?, "dedupe"?: "$.path", "concurrency"?, "rateLimit"?: { "max", "windowSec" }, "untrusted"?: true, "source"? } }`: signed webhooks `odw serve` answers at `POST /api/triggers/<name>`, each starting its workflow (untrusted unless `"untrusted": false`) with the run's `context` passed to `notify`. Read only from the user's own config (`--config`, `$ODW_CONFIG`, `~/.config/odw/config.json` outside the repository): a repository's `./odw.config.json` triggers are refused. Validated strictly: an unknown field is an error |
 | `costGate` | **ODW extension.** `null` (default): none. `{ "usd": <dollars> }`: a `parallel()` or `pipeline()` forecast — from earlier finished runs of the workflow — to cost more than that waits at a checkpoint (`This fan-out is forecast to cost ~$X (p90 $Y) — go?`) before it starts; a rejection throws a catchable `CostGateRejected`. Without history it lets fan-outs through, said once per run. A `parallel()`'s `costGate` overrides it (`null` lifts it) |
+| `digest` | **ODW extension.** `null` (default). `{ "cron": "0 8 * * 1-5" }`: when `odw schedule add <name> --digest` sends `odw digest --since-last --notify` unless `--cron` says otherwise. Validated strictly |
 | `retention` | **ODW extension.** `{ "days": 30, "transcripts": true }` (default): what `odw gc` keeps. An ended run older than `days` has its keep branches deleted and — unless `transcripts` is `false` — its agents' transcripts and stderr trimmed (meta, status, events, results and diffs stay); `odw gc --older-than` overrides `days`. Nothing is deleted without `odw gc --yes`; pinned (`odw pin`) and active runs are skipped |
 | `agentLimits` | **ODW extension.** `{}` (default): none. `{ "toolCalls"?, "costUsd"?, "outputTokens"?, "seconds"?, "repeat"? }`: what every agent may do before it is killed as a runaway (reason `runaway`, `limitHit` names the limit and the evidence) — enforced live from claude/codex/kilo/opencode output; the same tool call `repeat` times in a row (2+). An adapter's `agentLimits` and an `agent()`'s `limits` override it key by key, `null` lifting one. A text CLI's `outputTokens`/`costUsd` are checked after each run, a CLI that reports no cost (codex) never trips `costUsd` — each said once per run |
 
@@ -445,7 +446,13 @@ run's `worker.log`.
   `"paused"` — once per pause for a spent quota (`quotaWait`), with
   `ODW_RUN_STATE=paused`, `ODW_PAUSED_ADAPTER` and `ODW_RESUME_AT` (Unix seconds)
   for the command, `state: "paused"` and `pausedFor: { reason, adapter, resumeAt }`
-  for the webhook. A pause never fires the run-end hooks.
+  for the webhook. A pause never fires the run-end hooks. And `"digest"` (ODW
+  extension): `odw digest --notify` sends the cross-run digest once — the
+  command with `ODW_RUN_STATE=digest`, `ODW_DIGEST_TEXT`, `ODW_DIGEST_FILE`,
+  `ODW_DIGEST_MARKDOWN_FILE`, `ODW_DIGEST_SINCE`, `ODW_DIGEST_NEEDS_YOU`,
+  `ODW_DIGEST_FAILED`; the webhook with `kind: "digest"`, the digest's fields
+  (`needsYou` with approve links while `odw serve --public-url` runs, `failed`,
+  `unmet`, `changes`, `spend`, `counts`), `markdown`, and `text`/`content`.
 
 **ODW extension — approve links.** While `odw serve --public-url <url>` (a root URL,
 `https://host[:port]`: one with a path is refused) runs for the

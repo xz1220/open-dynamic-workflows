@@ -209,6 +209,9 @@ odw bundle $RUN             # 把运行写成一个可分享的脱敏文件 $RUN
 odw gc                      # 运行留在磁盘上的东西——孤儿 worktree、keep 分支、旧 transcript——及其大小
                             #   （ODW 扩展）；默认空跑：--yes 才删，且只在用户明确要求时；
                             #   --older-than 14d、--json；odw pin $RUN 让某个运行不受影响（--remove 取消）
+odw digest                  # 跨运行、只基于证据的一份报告（ODW 扩展）：等待中的检查点、失败的运行 + odw resume、
+                            #   未达成的 expect/越界、保留的 diff、花费；--since 12h | --since-last、--workflow W、
+                            #   --json | --markdown；--notify 发送（notify.on 要有 "digest"）——只在用户明确要求时
 odw result $RUN             # 完成后打印最终值
 odw pause $RUN / resume $RUN / stop $RUN
 odw approve|reject $RUN     # 回答运行正在等待的 checkpoint()——只在用户明确要求时
@@ -452,6 +455,9 @@ odw schedule remove digest     # 删除系统条目和定义
   会被拒绝）。
 - 定时运行遇到 `checkpoint()` 时，在得到答复前会挡住后续的运行：无人值守的检查点要设
   `timeout`。
+- 每天早上一条消息而不是一个运行一条：`odw schedule add <name> --digest [--cron EXPR]` 发送
+  `odw digest --since-last --notify`（时间默认取配置的 `digest.cron`；`notify.on` 里没有
+  `"digest"` 时拒绝添加）。
 
 ### 在用户自己的服务器上运行（ODW 扩展）
 

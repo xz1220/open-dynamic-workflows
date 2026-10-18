@@ -249,6 +249,10 @@ odw bundle $RUN             # the run as one redacted file to share, $RUN.odwrun
 odw gc                      # what runs left on disk — orphaned worktrees, keep branches, old transcripts — with
                             #   sizes (ODW extension); a dry run: --yes deletes, only on the user's say-so;
                             #   --older-than 14d, --json; odw pin $RUN keeps a run out of it (--remove unpins)
+odw digest                  # one report across runs, from their evidence only (ODW extension): checkpoints
+                            #   waiting, failed runs + odw resume, missed expect/scope, kept diffs, spend;
+                            #   --since 12h | --since-last, --workflow W, --json | --markdown; --notify sends it
+                            #   ("digest" in notify.on) — only on the user's say-so
 odw result $RUN             # print the final value when done
 odw pause $RUN / resume $RUN / stop $RUN
 odw approve|reject $RUN     # answer a checkpoint() the run waits at — only on the user's say-so
@@ -554,6 +558,9 @@ odw schedule remove digest     # delete the OS entry and the definition
   expression is cron's five fields (`@daily`, `L`, `#` are refused).
 - A scheduled run that reaches a `checkpoint()` holds back the next ones until
   it is answered: give unattended checkpoints a `timeout`.
+- One morning message instead of one per run: `odw schedule add <name> --digest
+  [--cron EXPR]` sends `odw digest --since-last --notify` (cron defaults to the
+  config's `digest.cron`; refused unless `notify.on` lists `"digest"`).
 
 ### Run on the user's own server (ODW extension)
 

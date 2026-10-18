@@ -634,6 +634,7 @@ odw eval review          # cases × adapters × repeats: pass rate, cost and tim
 odw export $RUN --otlp   # the run as OpenTelemetry traces (OTLP/JSON; --send posts it; below)
 odw bundle $RUN          # the run as one redacted file to share: $RUN.odwrun (odw view FILE shows it; below)
 odw gc                   # what runs left on disk — orphaned worktrees, keep branches, old transcripts; --yes deletes (below)
+odw digest               # across runs, from their evidence: needs you, failed, missed checks, changes, spend (below)
 odw pause|resume|stop $RUN
 odw approve|reject $RUN  # answer a checkpoint() the run waits at (--note TEXT, --checkpoint N)
 odw approve $RUN --edit  # …approving its payload as you edit it in $EDITOR (or --payload JSON|@file)
@@ -990,6 +991,56 @@ odw schedule remove digest     # delete the OS entry and the definition (safe if
 The expression is cron's five fields (numbers, `*`, lists, ranges, steps, `jan`-`dec`,
 `sun`-`sat`); `@daily`, `L`, `#` and the like are refused with the reason. The full guide,
 and the raw cron line as the manual alternative: [`docs/recipes/cron.md`](docs/recipes/cron.md).
+
+### Morning digest: `odw digest` (ODW extension)
+
+After a night of schedules, triggers and long runs, `odw digest` is one report across
+all of them — built only from what the runs recorded, never from what an agent said
+about its own work (no reply, result or model-written summary is repeated):
+
+```bash
+odw digest                         # the last 24 hours
+odw digest --since 12h             # 90m, 12h, 2d, 1w
+odw digest --since-last            # since the last digest that was sent (--notify)
+odw digest --workflow nightly      # one workflow's runs
+odw digest --json | --markdown     # for scripts, or to paste
+odw digest --since-last --notify   # send it through the notify hooks ("digest" in notify.on)
+```
+
+Groups, each with the command that acts on it:
+
+- **Needs you** — every checkpoint (and [agent question](#agent-questions-odw-extension))
+  waiting now, whatever the window, with `odw approve|reject … --checkpoint N`; sent
+  with `--notify` while an `odw serve --public-url` runs, each also carries its signed
+  one-time approve/reject links.
+- **Failed** — failed runs and runs whose worker died (stale): the recorded error, how
+  many agents did not finish and why (`timeout 1, exit 2`), and `odw resume <run>`.
+- **Done, but checks were not met** — done runs with agents that missed their
+  [`expect`](#check-an-agents-work-odw-extension) checks, wrote outside their
+  [`scope`](#declared-scopes-odw-extension), or failed under a run that went on.
+- **Done, with changes to review** — done runs whose isolated agents kept a diff: files
+  and lines, and `odw apply <run> --all --check` to preview it.
+- **Spend** — dollars and tokens over the window, and the most expensive run.
+
+A run is in the window when its last write is; dry runs are left out. `--notify` fires
+the [`notify`](#run-notifications) hooks once — a day's runs make one message, not
+one per run — and moves the `--since-last` mark (`<runsRoot>/_digest/marks.json`, per
+`--workflow`) only when every hook succeeded; looking without `--notify` never moves it.
+To send it every weekday morning:
+
+```jsonc
+{
+  "notify": { "webhook": "https://hooks.example.com/YOUR/PATH", "on": ["digest"] },
+  "digest": { "cron": "0 8 * * 1-5" }
+}
+```
+
+```bash
+odw schedule add morning --digest     # each fire: odw digest --since-last --notify (cron: digest.cron, or --cron)
+```
+
+`add --digest` refuses a config whose hooks would not send it; `--workflow W` narrows
+it. Recipe: [`docs/recipes/notify.md`](docs/recipes/notify.md#a-morning-digest).
 
 ### Start runs from webhooks: GitHub, Linear, Slack (ODW extension)
 
@@ -3231,7 +3282,7 @@ ends, so an overnight run can tell you how it went:
 "notify": {
   "command": ["/usr/local/bin/odw-notify"],        // an argv, run WITHOUT a shell
   "webhook": "https://hooks.slack.com/services/…", // Slack, Discord, or any JSON endpoint
-  "on": ["done", "failed", "stopped"]              // the default: every final state; "waiting" and "paused" are opt-in
+  "on": ["done", "failed", "stopped"]              // the default: every final state; "waiting", "paused" and "digest" are opt-in
 }
 ```
 
@@ -3289,6 +3340,14 @@ deliveryId, id, url, repo, channel, threadTs }`, as far as the webhook had them 
 every payload, and to the command as `ODW_TRIGGER`, `ODW_EVENT_ID`, `ODW_EVENT_URL` and
 `ODW_CONTEXT` (all of it, as JSON), so a hook can answer on the issue or in the
 thread the work came from: [`docs/recipes/triggers.md`](docs/recipes/triggers.md).
+
+Add `"digest"` (ODW extension) to have `odw digest --notify` — by hand or from
+`odw schedule add <name> --digest` — send the [cross-run digest](#morning-digest-odw-digest-odw-extension)
+once: the command with `ODW_RUN_STATE=digest`, `ODW_DIGEST_TEXT` (the one-line summary),
+`ODW_DIGEST_FILE` and `ODW_DIGEST_MARKDOWN_FILE` (deleted once it exits), `ODW_DIGEST_SINCE`,
+`ODW_DIGEST_NEEDS_YOU` and `ODW_DIGEST_FAILED`; the webhook with `"kind": "digest"`, the
+digest's fields (`needsYou`, `failed`, `unmet`, `changes`, `spend`, `counts`, `since`, `until`),
+`markdown`, and `text`/`content` carrying the markdown (`content` cut to Discord's 2000 characters).
 
 Ready-made setups for Slack, Discord, ntfy and desktop banners:
 [`docs/recipes/notify.md`](docs/recipes/notify.md).

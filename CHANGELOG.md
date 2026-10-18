@@ -455,6 +455,23 @@ independent security reviews whose findings are all fixed.
   `compare` and the dashboard work here — again and again while it runs. Plain ssh
   with your ssh config and agent (`ODW_SSH` overrides the binary), no daemon, no
   secrets on a command line; the remote uses its own odw config and CLI logins.
+- `odw digest [--since 12h|--since-last] [--workflow W] [--json|--markdown]
+  [--notify]` (**ODW extension**): one report across runs, built only from what they
+  recorded — no agent reply, result or model-written summary is repeated. Groups:
+  checkpoints and agent questions waiting now (with `odw approve|reject`), failed and
+  stale runs (recorded error, why their agents did not finish, `odw resume`), done runs
+  whose agents missed `expect` checks, wrote outside their `scope` or failed under a
+  run that went on, done runs with kept diffs (`odw apply <run> --all --check`), and
+  spend with the most expensive run. `notify.on: ["digest"]` lets `--notify` send it
+  once — webhook `kind: "digest"` with the structured digest, `markdown` and
+  `text`/`content`, redacted, plus signed one-time approve links while `odw serve
+  --public-url` runs; a command gets `ODW_DIGEST_TEXT`, `ODW_DIGEST_FILE`,
+  `ODW_DIGEST_MARKDOWN_FILE` and counts. `--since-last` starts where the last digest
+  sent ended (`<runsRoot>/_digest/marks.json`, per `--workflow`; moved only when every
+  hook succeeded). `odw schedule add <name> --digest [--cron EXPR]` (cron defaults to
+  the new `digest: { cron }` setting) sends `odw digest --since-last --notify` on a
+  timer — one message a morning instead of one per run. Recipe:
+  [`docs/recipes/notify.md`](docs/recipes/notify.md#a-morning-digest).
 
 ### Write workflows
 - `exec(command, opts)` runs tests, builds and linters without a model, as steps of the

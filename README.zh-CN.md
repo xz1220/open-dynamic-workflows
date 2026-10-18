@@ -547,6 +547,7 @@ odw eval review          # 用例 × 适配器 × 重复次数:每个单元格�
 odw export $RUN --otlp   # 把运行导出为 OpenTelemetry trace(OTLP/JSON;--send 直接发送;见下文)
 odw bundle $RUN          # 把运行写成一个可分享的脱敏文件:$RUN.odwrun(用 odw view FILE 查看;见下文)
 odw gc                   # 运行留在磁盘上的东西:孤儿 worktree、keep 分支、旧 transcript;--yes 才删(见下文)
+odw digest               # 跨运行、基于证据:需要你决定、失败、未达成的检查、待审改动、花费(见下文)
 odw pause|resume|stop $RUN
 odw approve|reject $RUN  # 回答运行正在等待的 checkpoint()(--note TEXT、--checkpoint N)
 odw approve $RUN --edit  # ……先在 $EDITOR 里修改 payload 再批准(或 --payload JSON|@file)
@@ -860,6 +861,52 @@ odw schedule remove digest     # 删除系统里的条目和定义(条目已被�
 表达式是 cron 的五个字段(数字、`*`、列表、范围、步长、`jan`-`dec`、`sun`-`sat`);
 `@daily`、`L`、`#` 之类会被拒绝并说明原因。完整说明,以及手写 cron 行这一手动替代方案:
 [`docs/recipes/cron.md`](docs/recipes/cron.md)。
+
+### 晨报:`odw digest`(ODW 扩展)
+
+一晚上跑了定时任务、触发器和长任务之后,`odw digest` 把它们汇成一份报告——只用运行记录下来的
+证据,绝不复述 agent 对自己工作的说法(不转述任何回复、结果或模型写的总结):
+
+```bash
+odw digest                         # 最近 24 小时
+odw digest --since 12h             # 90m、12h、2d、1w
+odw digest --since-last            # 从上一份已发送(--notify)的晨报算起
+odw digest --workflow nightly      # 只看一个 workflow 的运行
+odw digest --json | --markdown     # 给脚本用,或直接粘贴
+odw digest --since-last --notify   # 经 notify 钩子发送(notify.on 里要有 "digest")
+```
+
+分组,每组附上处理它的命令:
+
+- **需要你决定**——此刻在等待的每个检查点(以及 [agent 的提问](#agent-的提问odw-扩展)),
+  不受时间窗限制,附 `odw approve|reject … --checkpoint N`;`--notify` 发送时若有
+  `odw serve --public-url` 在运行,每条还带签名的一次性批准/拒绝链接。
+- **失败**——失败的运行,以及 worker 已经不在的运行(stale):记录的错误、有几个 agent 没完成、
+  原因分布(`timeout 1, exit 2`),以及 `odw resume <run>`。
+- **完成,但检查未达成**——已完成的运行中,有 agent 没通过 [`expect`](#检查-agent-的工作odw-扩展)
+  检查、改动了[声明范围](#声明范围odw-扩展)之外的文件,或在运行继续的情况下失败了。
+- **完成,有待审改动**——隔离 agent 保留了 diff 的已完成运行:文件与行数,以及预览用的
+  `odw apply <run> --all --check`。
+- **花费**——时间窗内的美元与 token 合计,以及最贵的一次运行。
+
+运行的最后一次写入落在时间窗内即算在内;`--dry` 运行不计。`--notify` 让
+[`notify`](#运行通知) 钩子触发一次——一天的运行是一条消息,而不是一个运行一条——并且只有在每个
+钩子都成功时才移动 `--since-last` 的标记(`<runsRoot>/_digest/marks.json`,按 `--workflow`
+分开);不带 `--notify` 只看不会移动它。每个工作日早上发送:
+
+```jsonc
+{
+  "notify": { "webhook": "https://hooks.example.com/YOUR/PATH", "on": ["digest"] },
+  "digest": { "cron": "0 8 * * 1-5" }
+}
+```
+
+```bash
+odw schedule add morning --digest     # 每次触发:odw digest --since-last --notify(时间取 digest.cron,或 --cron)
+```
+
+钩子不会发送晨报的配置会被 `add --digest` 拒绝;`--workflow W` 只汇总一个 workflow。配方:
+[`docs/recipes/notify.md`](docs/recipes/notify.md#a-morning-digest)。
 
 ### 由 webhook 启动运行:GitHub、Linear、Slack(ODW 扩展)
 
@@ -2774,7 +2821,7 @@ staggered fan-out: 15 claude agents sharing a 3412-character prompt prefix waite
 "notify": {
   "command": ["/usr/local/bin/odw-notify"],        // 参数向量,不经过 shell 执行
   "webhook": "https://hooks.slack.com/services/…", // Slack、Discord 或任何接收 JSON 的端点
-  "on": ["done", "failed", "stopped"]              // 默认:所有终态;"waiting" 和 "paused" 需显式加入
+  "on": ["done", "failed", "stopped"]              // 默认:所有终态;"waiting"、"paused" 和 "digest" 需显式加入
 }
 ```
 
@@ -2825,6 +2872,13 @@ payload 中带上它的 `context`——`{ trigger, provider, event, deliveryId, 
 threadTs }`(webhook 有的才有)——命令则得到 `ODW_TRIGGER`、`ODW_EVENT_ID`、`ODW_EVENT_URL`
 和 `ODW_CONTEXT`(完整 JSON),于是钩子能在工作来源的 issue 或线程里回复:
 [`docs/recipes/triggers.md`](docs/recipes/triggers.md)。
+
+加上 `"digest"`(ODW 扩展),`odw digest --notify`——手动运行或由 `odw schedule add <name> --digest`
+触发——就会把[跨运行晨报](#晨报odw-digestodw-扩展)发送一次:命令的环境变量带有 `ODW_RUN_STATE=digest`、
+`ODW_DIGEST_TEXT`(一行摘要)、`ODW_DIGEST_FILE` 与 `ODW_DIGEST_MARKDOWN_FILE`(命令结束后删除)、
+`ODW_DIGEST_SINCE`、`ODW_DIGEST_NEEDS_YOU` 和 `ODW_DIGEST_FAILED`;webhook 收到 `"kind": "digest"`、
+晨报各字段(`needsYou`、`failed`、`unmet`、`changes`、`spend`、`counts`、`since`、`until`)、
+`markdown`,以及承载 markdown 的 `text`/`content`(`content` 截到 Discord 的 2000 字符)。
 
 Slack、Discord、ntfy 和桌面横幅的现成配置见
 [`docs/recipes/notify.md`](docs/recipes/notify.md)。
