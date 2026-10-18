@@ -75,6 +75,11 @@
  * that kept a change has a note of its interface changes posted for it before
  * its agent_finished event, so the agents the script starts next see it.
  *
+ * An agent with memory on — `memory: true` on its call, or the `memory`
+ * setting (an ODW extension; see ./memory) — finds what earlier runs of the
+ * workflow learned that still applies ahead of its task, and an `expect` miss
+ * a retry of it met is kept as a lesson once the run ends.
+ *
  * An agent runs under its limits (an ODW extension; see ./limits) — the
  * call's `limits` over its adapter's and the run's `agentLimits` — carried as
  * `limits` on its agent_started event; one that runs into a limit is killed
@@ -210,6 +215,13 @@ export interface AgentOptions {
    * `false` opts one agent out of its parallel()'s or the `notes` setting.
    */
   notes?: boolean;
+  /**
+   * ODW extension: workflow memory for this agent (see ./memory) — what
+   * earlier runs learned that still applies, ahead of its task; and an
+   * `expect` miss a retry of it then met, kept as a lesson once the run
+   * ends. Unset: the `memory` setting.
+   */
+  memory?: boolean;
   /**
    * ODW extension: when a fallback moves this agent to the next adapter of its
    * chain, hand the work over instead of starting it over — the next adapter
@@ -620,11 +632,12 @@ export function createPrimitives(
   };
 
   /**
-   * Set an agent up on the run's notes board (ODW extension; see ./notes) —
+   * Set an agent up on the run's notes board (ODW extension; see ./notes),
+   * told of `--keep` when its workflow memory is on —
    * none in a run that is not persisted, which says so once.
    */
-  const openNotes = (agentId: number, label: string): AgentNotes | undefined => {
-    if (ctx.notes) return ctx.notes.openAgent(agentId, label);
+  const openNotes = (agentId: number, label: string, keep: boolean): AgentNotes | undefined => {
+    if (ctx.notes) return ctx.notes.openAgent(agentId, label, { keep });
     if (!notesUnavailable.has(ctx.seq)) {
       notesUnavailable.add(ctx.seq);
       ctx.emit(event(LOG, { message: "notes: this run is not persisted, so it has no notes board — its agents run without one" }));
@@ -632,11 +645,41 @@ export function createPrimitives(
     return undefined;
   };
 
+  /**
+   * The workflow's memory for an agent's prompt (ODW extension; see ./memory):
+   * "" when nothing applies — and in a run that is not persisted, which says so once.
+   */
+  const recallMemory = (): string => {
+    if (ctx.memory) return ctx.memory.recall();
+    if (!memoryUnavailable.has(ctx.seq)) {
+      memoryUnavailable.add(ctx.seq);
+      ctx.emit(event(LOG, { message: "memory: this run is not persisted, so it has no workflow memory — its agents run without one" }));
+    }
+    return "";
+  };
+
+  /**
+   * Keep what an agent's `expect` retries were told it missed, met by the
+   * attempt that stood, as a lesson (ODW extension; see ./memory): what was
+   * missing and what fixed it, from the checks themselves — no model.
+   */
+  const learnLesson = (label: string, missed: string[], attempts: number, kept: KeptChanges | null): void => {
+    const change = kept?.changes;
+    const how = change
+      ? `, which changed ${change.files} file${change.files === 1 ? "" : "s"} (+${change.insertions} -${change.deletions})`
+      : "";
+    ctx.memory?.record({
+      kind: "lesson",
+      text: `"${label}": ${missed.join("; ")} — it was fixed by a retry told what was missing (${attempts} attempts in all)${how}`,
+      agent: label,
+    });
+  };
+
   /** Post the note of an isolated agent's kept change: its diff stat and the interface lines it touched (ODW extension). */
   const broadcast = async (agentId: number, label: string, kept: KeptChanges, note: (message: string) => void): Promise<void> => {
     if (!ctx.notes || !ctx.agentDiffPath) return;
     try {
-      const summary = interfaceSummary(await readFile(ctx.agentDiffPath(agentId), "utf8"), kept.changes);
+      const summary = interfaceSummary(await readFile(ctx.agentDiffPath(agentId), "utf8"), kept.changes, (text) => ctx.notes!.redact(text));
       if (summary) ctx.notes.post({ agentId, label }, summary, "interface");
     } catch (err) {
       note(`could not post its interface changes to the notes board: ${err instanceof Error ? err.message : String(err)}`);
@@ -653,8 +696,13 @@ export function createPrimitives(
     if (opts.handoff !== undefined && typeof opts.handoff !== "boolean") {
       throw new AgentError(`agent(): handoff must be true or false; got ${describeValue(opts.handoff)}`);
     }
+    if (opts.memory !== undefined && typeof opts.memory !== "boolean") {
+      throw new AgentError(`agent(): memory must be true or false; got ${describeValue(opts.memory)}`);
+    }
     // The run's notes board (ODW extension): its call's say, else its parallel()'s, else the setting.
     const notesOn = opts.notes ?? notesScope.getStore() ?? ctx.config.settings.notes === true;
+    // Workflow memory (ODW extension; see ./memory): its call's say, else the setting.
+    const memoryOn = opts.memory ?? ctx.config.settings.memory === true;
     // So are its limits (ODW extension; see ./limits).
     const ownLimits = opts.limits === undefined ? undefined : readLimits(opts.limits, "agent(): limits", (m) => new AgentError(m));
     // And its declared scope (ODW extension; see ./scope).
@@ -856,11 +904,16 @@ export function createPrimitives(
           scope ? reportOutOfScope(judged?.outOfScope, scope, { agentId, label: display, phase: activePhase }, notesOn, note) : {};
         // The run's notes board (ODW extension): the notes so far go in its
         // prompt as it starts; what it posts is taken until it ends.
-        const notes = notesOn ? openNotes(agentId, display) : undefined;
+        const notes = notesOn ? openNotes(agentId, display, memoryOn) : undefined;
+        // What earlier runs of the workflow learned goes ahead of its task (ODW extension; see ./memory).
+        const recalled = memoryOn ? recallMemory() : "";
+        // The misses its `expect` retries were told of: met by the attempt that stood, they are a lesson.
+        const missed: string[] = [];
         let outcome;
         try {
           const pinned: AgentRequest = base ? { ...request, base } : request;
-          outcome = await ctx.bridge.run(notes ? { ...pinned, notes: notes.prompt } : pinned, {
+          const told = recalled ? { ...pinned, memory: recalled } : pinned;
+          outcome = await ctx.bridge.run(notes ? { ...told, notes: notes.prompt } : told, {
             signal,
             // The agent process's ODW_AGENT_ID.
             agentId,
@@ -1008,7 +1061,8 @@ export function createPrimitives(
             // miss that earns a retry is logged with what it missed.
             expect,
             ...(watch ? { scopeWatch: watch } : {}),
-            onExpectRetry: ({ misses, retry, maxRetries }) =>
+            onExpectRetry: ({ misses, retry, maxRetries }) => {
+              for (const miss of misses) if (!missed.includes(miss)) missed.push(miss);
               ctx.emit(
                 event(LOG, {
                   message:
@@ -1020,7 +1074,8 @@ export function createPrimitives(
                   phase: activePhase,
                   retry: { reason: "expect", n: retry, of: maxRetries },
                 }),
-              ),
+              );
+            },
             // The MCP servers a CLI run started it without (ODW extension): kept
             // for its record, and each server and status said once per run.
             onMcp: ({ adapter: name, servers }) => {
@@ -1065,6 +1120,8 @@ export function createPrimitives(
         const kept = await keepChanges(changes, false, note);
         // Its interface changes go on the board before it is seen to finish (ODW extension).
         if (notes && kept) await broadcast(agentId, display, kept, note);
+        // What a retry met that an earlier attempt missed is a lesson for later runs (ODW extension; see ./memory).
+        if (memoryOn && missed.length > 0) learnLesson(display, missed, outcome.attempts, kept);
         // So do its writes outside its declared scope, said in the log too (ODW extension).
         const outside = outsideOf();
         // No option is dropped silently: surface each routing note as a LOG event
@@ -1284,7 +1341,7 @@ export function createPrimitives(
     if (!ctx.control.awaitDecision) {
       throw new CostGateRejected(`${title} — nobody can be asked in this run (no decision channel), so it did not start`, forecast, null);
     }
-    const answer = await checkpoint(title, { payload: { width, forecast } });
+    const answer = await checkpoint(title, { payload: { width, forecast }, memory: false });
     if (answer.approved) return;
     throw new CostGateRejected(
       `${what}: its cost gate (${fmtUsd(gate.usd)}) was rejected${answer.note ? ` — ${answer.note}` : ""}; it did not start`,
@@ -1518,7 +1575,7 @@ export function createPrimitives(
    */
   const askBreak = async (title: string, before: { phase: string } | { agent: string }): Promise<void> => {
     const payload = { before, ...breakState(), args: ctx.args };
-    const result = await checkpoint(title, { payload });
+    const result = await checkpoint(title, { payload, memory: false });
     if (!result.approved) {
       const stop = new RunStopped(`rejected at the ${title.charAt(0).toLowerCase()}${title.slice(1)}${result.note ? `: ${result.note}` : ""}`);
       ctx.scheduler.abort(stop);
@@ -1613,6 +1670,9 @@ const notesScope = new AsyncLocalStorage<boolean>();
 
 /** Runs (by their shared `seq`) that said they have no notes board, so it is said once. */
 const notesUnavailable = new WeakSet<object>();
+
+/** Runs (by their shared `seq`) that said they have no workflow memory, so it is said once (ODW extension). */
+const memoryUnavailable = new WeakSet<object>();
 
 /** The `fellBackFrom` an agent's agent_finished event and record carry when it fell back (ODW extension). */
 function fallbackField(fellBackFrom: string[] | undefined): { fellBackFrom?: string[] } {

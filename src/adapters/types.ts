@@ -492,6 +492,19 @@ export interface Settings {
    */
   notes: boolean;
   /**
+   * Workflow memory for every agent and checkpoint (an ODW extension; see
+   * ../memory): what earlier runs learned recalled into each prompt, and
+   * corrections and lessons kept. Off by default; `agent(…, { memory })` and
+   * `checkpoint(…, { memory })` override it. Kept notes are kept either way.
+   */
+  memory: boolean;
+  /**
+   * Where workflow memory lives (an ODW extension): relative to the
+   * repository's top, `~` allowed; null: `.odw/memory`. A directory outside
+   * the repository is the user's own, which an untrusted run may use.
+   */
+  memoryDir: string | null;
+  /**
    * The run's permission tier (an ODW extension; `odw run --permissions`
    * overrides it): an adapter's `permissions` and an agent()'s `permissions`
    * may only lower it.

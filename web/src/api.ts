@@ -16,6 +16,7 @@ import type {
   RunComparison,
   RunDetail,
   WorkflowEstimate,
+  WorkflowMemory,
   RunNote,
   RunSummary,
   ScheduleView,
@@ -94,6 +95,7 @@ export const api = {
   /** What changed between two of ODW's runs (B against A). */
   compare: (a: string, b: string) => getJSON<RunComparison>(`/api/compare?a=${enc(a)}&b=${enc(b)}`),
   /** What a run of a workflow is likely to cost and take, from its earlier runs (ODW extension). */
+  memory: (workflow: string) => getJSON<WorkflowMemory[]>(`/api/memory?workflow=${enc(workflow)}`),
   estimate: (workflow: string, sourceHash?: string) =>
     getJSON<WorkflowEstimate>(`/api/estimate?workflow=${enc(workflow)}${sourceHash ? `&sourceHash=${enc(sourceHash)}` : ""}`),
   events: (id: string, since = 0) =>

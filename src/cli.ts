@@ -32,6 +32,7 @@
  *   odw test [<wf|file>] [--case N] [--json] [--keep]   (scripted replies, no model; src/wftest/)
  *   odw run <wf> --dry | --record [--record-to FILE]    (stub replies; a run kept as a test case)
  *   odw note <text…> | odw notes [<run_id>] [--json]   (the run's notes board, runtime/notes-view.ts)
+ *   odw memory list|add|prune …   (workflow memory in .odw/memory, runtime/memory-cli.ts)
  *   odw estimate <wf> [--args JSON|@file] [--json]; odw run --estimate [--yes]   (from earlier runs, runtime/estimate-cli.ts)
  *   odw replay <run_id> --agent <id|label> [--prompt @file|TEXT] [--adapter A] [--model M]   (runtime/replay.ts)
  *   odw run <wf> --break <phase|label>[,…] | --step   (a checkpoint before them; src/breaks.ts)
@@ -58,6 +59,7 @@ import { parseBreakNames } from "./breaks.js";
 import { cmdCheck } from "./check.js";
 import { checkEdit } from "./checkpoint.js";
 import { CHECKPOINT_NOTE_MAX, isCheckpointId } from "./control.js";
+import { cliActor, localLauncher } from "./identity.js";
 import { runDoctor, type CheckStatus } from "./doctor.js";
 import { AdapterNotFound } from "./errors.js";
 import type { WorkflowEvent } from "./events.js";
@@ -94,10 +96,12 @@ import { startServer } from "./runtime/server.js";
 import { triggerLines } from "./runtime/trigger-route.js";
 import { BUNDLE_EXT, BundleError, bundleRedactor, createBundle, DEFAULT_BUNDLE_MAX_BYTES, isBundleRunId, openBundle, type OpenedBundle } from "./runtime/bundle.js";
 import { generateToken, isValidToken } from "./runtime/serve-auth.js";
+import { cmdToken, readTokens, TokenFileError, type NamedToken } from "./runtime/serve-tokens.js";
 import { parsePublicUrl, publicUrlHasPath } from "./runtime/approve-links.js";
 import { planReplay, readPromptOption, ReplayError, startReplay } from "./runtime/replay.js";
 import { printAgentLogs } from "./runtime/transcript-view.js";
 import { cmdNote, cmdNotes } from "./runtime/notes-view.js";
+import { cmdMemory } from "./runtime/memory-cli.js";
 import { cmdEstimate, estimateBeforeRun } from "./runtime/estimate-cli.js";
 import { executeRun } from "./runtime/worker.js";
 import {
@@ -158,6 +162,7 @@ export const COMMANDS = [
   "replay",
   "check",
   "new",
+  "token",
 ] as const;
 
 export type Command = (typeof COMMANDS)[number];
@@ -194,8 +199,10 @@ export function helpText(): string {
     "  odw compare <runA> <runB> [--json]                 what changed: setup, time, cost, failures, replies",
     "                                                     --agent <label|id> shows one agent's whole reply diff",
     "  odw estimate <wf> [--args JSON|@file] [--json]     p50/p90 time, cost, tokens and agents, from its earlier runs (ODW extension)",
-    "  odw list [--workflow <name>]                       list known runs",
+    "  odw list [--workflow <name>] [--by <name|me>]      list known runs; --by: the ones that name launched (ODW extension)",
     "  odw serve [--port N] [--host H] [--open]           open the live dashboard in a browser",
+    "  odw token add <name> [--scope approve] --file F    a named token for odw serve --tokens F: printed once, its hash kept",
+    "  odw token list|remove [<name>] --file F            the named tokens in F; withdraw one (ODW extension)",
     "  odw workflows list [--project|--global|--plugins|--all]  list workflows runnable by name,",
     "                                                     Claude Code plugins' as <plugin>:<name> (ODW extension)",
     "  odw workflows where <name>                         show the file a name resolves to",
@@ -214,6 +221,10 @@ export function helpText(): string {
     "  odw run <wf> --record [--record-to FILE]           keep the run as a test case (default .odw/tests/<wf>.json)",
     "  odw notes <run_id> [--json]                        a run's notes board: what its agents told each other (ODW extension)",
     '  odw note "<text>"                                  inside an agent with notes on: post a note for the run\'s other agents',
+    '  odw note --keep [--paths G,…] "<text>"             …and keep it as workflow memory once the run ends (ODW extension)',
+    "  odw memory list [<wf>] [--stale] [--json]          workflow memory in .odw/memory: what earlier runs learned (ODW extension)",
+    '  odw memory add <wf> "<text>" [--paths G,…]         keep an entry by hand (--kind note|correction|lesson)',
+    "  odw memory prune [<wf>] --stale | <wf> --id N      drop the stale entries, or one entry",
     "  odw run <wf> --on ssh://[user@]host[:port][/dir]   run it on your own server, detached; prints its run id (ODW extension)",
     "                                                     --sync git (default: HEAD + a patch of uncommitted changes) | rsync",
     "  odw status|logs|attach <run_id> --on ssh://host    the same command, run by the odw over there",
@@ -253,6 +264,8 @@ export function helpText(): string {
     "  --open              open the dashboard in the default browser",
     "  --token [VALUE]     reads need a token (remote read-only access); no VALUE: a random one, printed once",
     "  --token-scope S     read (default), or approve: the token also answers checkpoints, nothing else",
+    "  --tokens FILE       named tokens, each with its scope; what each does is attributed to its name",
+    "                      (odw token add <name> [--scope approve] --file FILE | list | remove; ODW extension)",
     "  --public-url URL    answer signed one-time approve/reject links at URL (sent by \"waiting\" notify hooks)",
     "  --rotate-approve-secret  replace the approve-link secret: every link sent before stops working",
     "  (config \"triggers\")  answer signed GitHub/Linear/Slack/HMAC webhooks at POST /api/triggers/<name>,",
@@ -372,6 +385,8 @@ export async function main(argv: string[]): Promise<number> {
         return cmdNote(rest, storeFrom);
       case "notes":
         return cmdNotes(rest, storeFrom);
+      case "memory":
+        return cmdMemory(rest);
       case "conformance":
         return await cmdConformance(rest);
       case "test":
@@ -382,6 +397,8 @@ export async function main(argv: string[]): Promise<number> {
         return await cmdReplay(rest);
       case "check":
         return cmdCheck(rest);
+      case "token":
+        return cmdToken(rest);
       default:
         process.stderr.write(`odw: unknown command '${command}'\n\n${helpText()}\n`);
         return 2;
@@ -1662,14 +1679,18 @@ function cmdList(rest: string[]): number {
       config: { type: "string" },
       "runs-root": { type: "string" },
       workflow: { type: "string" },
+      by: { type: "string" },
     },
   });
   const store = storeFrom(values);
-  const runs = values.workflow ? store.listRunsForWorkflow(values.workflow) : store.listRuns();
+  const all = values.workflow ? store.listRunsForWorkflow(values.workflow) : store.listRuns();
+  // `--by <name>` (ODW extension; see identity.ts): the runs it launched — `me` is the local user.
+  const by = values.by === undefined ? null : (values.by === "me" ? localLauncher() : values.by.trim()) ?? "";
+  if (by === "") throw new UsageError("odw list: --by needs a name (or me)");
+  const runs = by === null ? all : all.filter((ref) => sameWho(store.readMeta(ref.runId).launchedBy, by));
   if (runs.length === 0) {
-    process.stderr.write(
-      values.workflow ? `no runs found for workflow '${values.workflow}'\n` : "no runs found\n",
-    );
+    const of = [values.workflow ? `for workflow '${values.workflow}'` : "", by !== null ? `launched by '${by}'` : ""].filter(Boolean).join(" ");
+    process.stderr.write(of ? `no runs found ${of}\n` : "no runs found\n");
     return 0;
   }
   // What each run cost (ODW extension): a column only when some listed run reported dollars.
@@ -1691,6 +1712,11 @@ function cmdList(rest: string[]): number {
     process.stdout.write(`${ref.runId}  ${state.padEnd(8)}  ${cost}${name}${until}${of}\n`);
   }
   return 0;
+}
+
+/** Is meta.json's `launchedBy` the name `by` (case aside: an email's case says nothing)? */
+function sameWho(launchedBy: unknown, by: string): boolean {
+  return typeof launchedBy === "string" && launchedBy.toLowerCase() === by.toLowerCase();
 }
 
 /**
@@ -1779,7 +1805,7 @@ async function cmdResume(rest: string[]): Promise<number> {
             `--${newRunFlag} applies only when resume starts a new run`,
         );
       }
-      store.writeControl(runId, "resume");
+      store.writeControl(runId, "resume", cliActor());
       // A pause for a spent quota (ODW extension: quotaWait) ends at once: its agents retry now.
       const pausedFor = pausedForOf(store.readStatus(runId).pausedFor);
       const quota = pausedFor ? ` — it was ${sanitizeText(pausedText(pausedFor), 120)}; its agents go on now` : "";
@@ -1883,6 +1909,7 @@ async function relaunch(
  *   --token [VALUE] every API read needs the token (remote read-only access); with
  *                   no VALUE a random one, printed once in the URL (`/#token=…`)
  *   --token-scope read|approve   approve: the token also answers checkpoints off loopback
+ *   --tokens FILE   named tokens (runtime/serve-tokens.ts), each with its scope: attribution by name
  *   --public-url URL              answer signed one-time approve links (runtime/approve-links.ts)
  *   --rotate-approve-secret       replace the runs root's approve-link secret first
  */
@@ -1900,6 +1927,7 @@ async function cmdServe(rest: string[], as: "serve" | "view" = "serve"): Promise
       "max-bytes": { type: "string" },
       "public-url": { type: "string" },
       "token-scope": { type: "string" },
+      tokens: { type: "string" },
       "rotate-approve-secret": { type: "boolean" },
     },
   });
@@ -1936,6 +1964,22 @@ async function cmdServe(rest: string[], as: "serve" | "view" = "serve"): Promise
     token = generated ? generateToken() : tokenFlag;
     if (!isValidToken(token)) throw new UsageError("odw serve: --token VALUE must be 16-256 characters of A-Z a-z 0-9 . _ ~ - (or omit VALUE for a random one)");
   }
+  // Named tokens (ODW extension: --tokens FILE, see runtime/serve-tokens.ts): each its own name and scope.
+  let named: NamedToken[] = [];
+  const tokensFile = values.tokens === undefined ? null : resolve(expandHome(values.tokens));
+  if (tokensFile) {
+    try {
+      named = readTokens(tokensFile);
+    } catch (err) {
+      if (!(err instanceof TokenFileError)) throw err;
+      process.stderr.write(`odw serve: --tokens: ${err.message}\n`);
+      return 1;
+    }
+    if (named.length === 0 && token === null) {
+      process.stderr.write(`odw serve: --tokens: ${tokensFile} has no tokens — add one with odw token add <name> --file ${tokensFile}\n`);
+      return 1;
+    }
+  }
   const maxBytes = maxBytesOption("serve", values["max-bytes"]);
   if (values["max-bytes"] !== undefined && file === undefined) throw new UsageError("odw serve: --max-bytes goes with a bundle file");
   const host = values.host ?? "127.0.0.1";
@@ -1965,6 +2009,7 @@ async function cmdServe(rest: string[], as: "serve" | "view" = "serve"): Promise
       config,
       configPath: values.config ? resolve(expandHome(values.config)) : null, // absolute: runs it starts work elsewhere
       token,
+      namedTokens: named,
       bundle: opened?.info ?? null,
       publicUrl,
       tokenScope: scope,
@@ -1994,6 +2039,13 @@ async function cmdServe(rest: string[], as: "serve" | "view" = "serve"): Promise
     );
     if (scope === "approve") process.stdout.write("  --token-scope approve: the token also answers checkpoints (nothing else is writable remotely)\n");
   }
+  if (named.length > 0) {
+    const approvers = named.filter((t) => t.scope === "approve").map((t) => t.name);
+    process.stdout.write(
+      `  ${named.length} named token${named.length === 1 ? "" : "s"} from ${tokensFile}: reads need one; what each does is attributed to its name` +
+        `${approvers.length ? `\n  approve scope (answers checkpoints, nothing else remotely): ${approvers.join(", ")}` : ""}\n`,
+    );
+  }
   if (values["rotate-approve-secret"]) process.stdout.write("  approve secret rotated: every approve link sent before no longer works\n");
   if (publicUrl) {
     process.stdout.write(`  approve links → ${publicUrl}/approve/… (signed, one-time; minted into "waiting" notify hooks while this runs)\n`);
@@ -2007,7 +2059,7 @@ async function cmdServe(rest: string[], as: "serve" | "view" = "serve"): Promise
   if (loopback && !publicUrl && Object.keys(handle.triggers).length > 0) {
     process.stdout.write("  triggers on a loopback bind answer loopback Hosts only: give a tunnel's URL as --public-url to take its webhooks\n");
   }
-  if (!loopback && !token) {
+  if (!loopback && !token && named.length === 0) {
     process.stderr.write(
       `\n  ⚠ WARNING: bound to ${host} with no --token — anyone who can reach this port reads every project's runs\n` +
         `    (prompts, results). Writes are refused off-loopback, but reads are open. Require a token:\n` +
@@ -2166,7 +2218,7 @@ function cmdControl(action: Command, rest: string[]): number {
     process.stderr.write(`odw ${action}: ${pulled}\n`);
     return 1;
   }
-  store.writeControl(runId, action);
+  store.writeControl(runId, action, cliActor());
   process.stderr.write(`${action} requested for ${runId}\n`);
   return 0;
 }
@@ -2302,6 +2354,7 @@ async function cmdDecide(action: "approve" | "reject", rest: string[]): Promise<
     ...(note !== undefined && note.trim() !== "" ? { note } : {}),
     ...(edit ? { payload: edit.value } : {}),
     by: "cli",
+    who: cliActor(),
   });
   keep?.discard();
   process.stderr.write(

@@ -206,6 +206,11 @@ export interface AgentRequest {
    */
   notes?: string;
   /**
+   * ODW extension (see ./memory): what earlier runs of the workflow learned
+   * that still applies, as a prompt section — put ahead of the task.
+   */
+  memory?: string;
+  /**
    * ODW extension: this agent's own limits, over its adapter's and the run's
    * `agentLimits` key by key (see ./limits). Unvalidated: a bad value fails the call.
    */
@@ -1793,6 +1798,8 @@ export class Bridge {
     // Persona (agentType) is universal prompt text — it works on every CLI,
     // which native system-prompt flags do not. See LiteralRouter.noteAgentType.
     if (request.agentType) parts.push(personaPreamble(request.agentType));
+    // What earlier runs of the workflow learned, ahead of the task (ODW extension; see ./memory).
+    if (request.memory) parts.push(request.memory);
     if (brief) parts.push(brief);
     parts.push(request.prompt);
     if (request.notes) parts.push(request.notes);

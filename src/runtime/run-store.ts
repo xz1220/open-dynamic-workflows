@@ -15,7 +15,8 @@
  *                    for a run of `odw eval`; applyResolve for a resolver run of
  *                    `odw apply --resolve`, and resolvedBy — appended later — on the
  *                    run whose agent it resolved; replayOf for a run of `odw replay`; breaks
- *                    for a run of `odw run --break|--step`)
+ *                    for a run of `odw run --break|--step`; launchedBy: who started it,
+ *                    see ../identity)
  *     call.json      a run of `odw replay`: the call it dispatches — prompt and options —
  *                    read by its worker as its args; meta.json's args hold `{ replayOf }`
  *                    only, so the prompt is never served (ODW extension; see ./replay)
@@ -73,6 +74,7 @@ import { basename, join } from "node:path";
 
 import { isCheckpointRequest, type CheckpointRequest } from "../control.js";
 import type { EventSink, WorkflowEvent } from "../events.js";
+import { clean, isWho, localLauncher } from "../identity.js";
 import type { AgentCallRecord, AgentResultRecord } from "../journal.js";
 import { sourceHash } from "../provenance.js";
 import type { Redactor } from "../redact.js";
@@ -154,6 +156,12 @@ export interface CreateRunInput {
   breaks?: BreakSpec | null;
   /** A run of `odw replay` (ODW extension): the call it dispatches, kept as call.json — its worker's args, never served. */
   call?: Record<string, unknown> | null;
+  /**
+   * Who started the run (ODW extension; see ../identity): a named token's
+   * name, `trigger:<name>`. Absent: the local user (git user.email, else
+   * $USER). Written to meta as `launchedBy`.
+   */
+  launchedBy?: string | null;
 }
 
 /**
@@ -272,6 +280,7 @@ export class RunStore {
       ...(input.deadlineSeconds ? { deadline: { seconds: input.deadlineSeconds, at: createdAt + input.deadlineSeconds } } : {}),
       ...(input.replayOf ? { replayOf: input.replayOf } : {}),
       ...(input.breaks ? { breaks: input.breaks } : {}),
+      launchedBy: clean(input.launchedBy) ?? localLauncher(),
       resumedFrom: input.resumedFrom?.runId ?? null,
       resumedFromDir: input.resumedFrom?.dir ?? null,
       // First-class fact (not inferred from path topology): the script lives in
@@ -546,20 +555,22 @@ export class RunStore {
 
   // --- control ---------------------------------------------------------------
 
-  writeControl(runId: string, action: string): void {
-    writeJson(this.controlPath(runId), { action, at: now() });
+  /** `who`: who asked, by name (ODW extension; see ../identity) — the worker logs it with the change. */
+  writeControl(runId: string, action: string, who?: string | null): void {
+    writeJson(this.controlPath(runId), { action, at: now(), ...(who ? { who } : {}) });
   }
   readControl(runId: string): string | null {
     const payload = readJsonFile(this.controlPath(runId));
     return payload === null ? null : ((payload.action as string) ?? null);
   }
-  /** The control request whole: its action and when it was written (epoch seconds); null when none was. */
-  readControlRequest(runId: string): { action: string | null; at: number | null } | null {
+  /** The control request whole: its action, when it was written (epoch seconds) and who asked; null when none was. */
+  readControlRequest(runId: string): { action: string | null; at: number | null; who?: string } | null {
     const payload = readJsonFile(this.controlPath(runId));
     if (payload === null) return null;
     return {
       action: typeof payload.action === "string" ? payload.action : null,
       at: typeof payload.at === "number" ? payload.at : null,
+      ...(isWho(payload.who) ? { who: payload.who } : {}),
     };
   }
   /**

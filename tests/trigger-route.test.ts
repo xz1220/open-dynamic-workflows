@@ -129,6 +129,7 @@ test("a signed delivery starts its workflow untrusted, with mapped args and cont
     const start = starts[0]!;
     assert.equal(start.workflow, "triage");
     assert.equal(start.untrusted, true, "untrusted by default: issue text is untrusted input");
+    assert.equal(start.launchedBy, "trigger:gh");
     assert.deepEqual(start.args, { issue: 7, title: "Bug 7" });
     assert.equal(start.source, root);
     assert.deepEqual(start.context, {
@@ -349,6 +350,7 @@ test("end to end: the launcher starts a real untrusted run carrying its context"
         const meta = store.readMeta(runId);
         assert.equal(meta.trust, "untrusted");
         assert.equal(meta.origin, "trigger");
+        assert.equal(meta.launchedBy, "trigger:gh", "a trigger's run is launched by trigger:<name> (ODW extension)");
         assert.equal(meta.source, join(wfDir, "src"));
         assert.deepEqual(meta.args, { issue: 42 });
         assert.deepEqual((meta.context as Record<string, unknown>).trigger, "gh");

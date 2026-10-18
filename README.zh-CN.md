@@ -392,6 +392,50 @@ const review = await agent('Which lanes clash?', { notes: true, schema: CLASHES 
 Claude Code 的 Workflow 工具会忽略这些选项。[`examples/coordinated-refactor.js`](examples/coordinated-refactor.js)
 把一项改动拆成在笔记板上并行的隔离分支,由审阅者读取笔记板,再让相互冲突的分支带着全部笔记重跑。
 
+### 工作流记忆(ODW 扩展)
+
+每次运行都从零开始:一个人在上一次运行里做的纠正,下一次运行还会再犯。工作流记忆把一个工作流
+历次运行学到的东西**存在仓库里**,即 `.odw/memory/<工作流>.jsonl`,像其他文件一样在 PR 里审阅。
+默认关闭;其中没有任何内容出自模型总结,只来自明确的来源:
+
+| 来源 | 条目 |
+| --- | --- |
+| `"$ODW_NOTES" --keep "…"` 或 `odw note --keep [--paths GLOB,…] "…"`(开启笔记的 agent) | `note`,记该 agent——只在该 agent 开启记忆时保留(否则只发布、不保留,并记日志) |
+| 带备注被拒绝的 `checkpoint()` | `correction`:`"Ship the plan?" was rejected: <备注>` |
+| 修改 payload 后批准的 `checkpoint()` | `correction`:修改的结构化 diff,如 `$.steps[1]: "b" → "c"; removed $.owner` |
+| 同一 agent 的重试补上了的 `expect` 未达项 | `lesson`:缺了什么,以及被告知后的重试补上了它(附它保留的改动) |
+| `odw memory add <wf> "…" [--paths GLOB,…]` | 手工添加的 `note`(或 `--kind correction\|lesson`) |
+
+每行是 `{ id, text, kind, paths, commit, run, agent?, at }`:`commit` 是学到时的 HEAD,`paths`
+是它涉及的 glob(相对仓库根目录)。每种条目都只在开启记忆时保留——配置 `"memory": true`、
+对该 agent 保留的笔记与教训用 `agent(…, { memory: true })`、对检查点的纠正用 `checkpoint(…, { memory: true })`
+或 `{ memory: { paths: ['src/**'] } }`。
+
+```js
+const plan = await checkpoint('Ship this plan?', { payload: draft, memory: { paths: ['src/api/**'] } })
+await agent('Implement the approved plan.', { memory: true, expect: { command: 'npm test' } })
+```
+
+- **召回:** 开启记忆的 agent(`agent(…, { memory: true })` 或该设置;`memory: false` 让单个 agent
+  退出)在任务之前看到仍然适用的条目,标题为 "What earlier runs of this workflow learned",最新的在前,
+  至多 4 KB;每条标明种类与来源(运行与 agent,或"手工添加"),正文逐行以 `> ` 引用。运行日志说明
+  召回了多少、略去了多少。
+- **过期:** 条目的 `paths` 匹配的文件在其 `commit` 与 HEAD 之间有改动(`git diff --name-only
+  <commit> HEAD`)即过期,不再召回。没有 paths 的条目永不过期;有 paths 但 git 不认识其提交的条目
+  视为过期——没有东西能为它作证。每个文件至多检查 32 个不同的提交(最新条目的优先),其余提交上的条目
+  视为过期;超过 4 MiB 的文件不读取,运行、`odw memory list` 与 API 都会说明。
+- **运行结束时保存**——无论完成、失败还是被停止——并经运行的脱敏器处理。同一条目再次学到时替换旧的
+  那条;每个文件至多 500 条,超出时删去最旧的并记一行日志。`odw test` 与 `--dry` 运行会召回但不保存。
+- **不受信任的运行**既不召回也不保存仓库里的记忆:那个文件是仓库的内容,而不受信任的运行学到的东西
+  会进入之后受信任运行的提示词。用户放在仓库之外的记忆——在自己的配置里写 `"memoryDir":
+  "~/odw-memory/my-repo"`——属于用户自己,不受信任的运行也会使用:前提是它按字面路径和解析链接后
+  都在仓库之外;仓库自己的配置设置的 `memoryDir` 一律不算。
+- **维护:** `odw memory list [<wf>] [--stale] [--json]`、`odw memory add <wf> "内容" [--paths …]`、
+  `odw memory prune [<wf>] --stale` 或 `odw memory prune <wf> --id N`(`--source DIR` 指定仓库);
+  `GET /api/memory[?workflow=]` 返回同样的列表。
+
+Claude Code 的 Workflow 工具会忽略这些选项。
+
 ### 声明范围(ODW 扩展)
 
 两个 agent 指向同一批文件,改动直到合并时才冲突。事先声明每个 agent 打算改哪些文件,odw 就能把
@@ -1406,6 +1450,43 @@ odw serve --host 0.0.0.0 --token
 - **只有两个窄口子能回答检查点,此外什么都不能写**——见[在手机上批准](#在手机上批准odw-扩展):
   签名的一次性批准链接(`--public-url`),以及 `--token-scope approve`。
 
+### 具名令牌:谁做了什么(ODW 扩展)
+
+几个人在同一台机器上查看、批准时,给每人一个自己的令牌,而不是共用一个——这样每个人做的事
+都记在他名下,也可以单独收回某一个人的令牌:
+
+```bash
+odw token add alice --scope approve --file ~/.config/odw/tokens.json   # 打印 alice 的令牌,仅此一次
+odw token add bob --file ~/.config/odw/tokens.json                      # 权限 read(默认)
+odw token list --file ~/.config/odw/tokens.json                         # 名字和权限;remove <name> 收回一个
+odw serve --host 0.0.0.0 --tokens ~/.config/odw/tokens.json
+```
+
+这个文件是 `{ "name", "scope": "read" | "approve", "hash" }` 组成的 JSON 数组,`hash` 是令牌的
+sha256(十六进制)——**文件里从不保存令牌本身**;`odw token add` 只打印一次新令牌,只保留它的
+哈希(文件以 0600 写入)。收到的令牌先哈希,再按摘要查找,比较从不在令牌本身上进行;上文
+`--token` 的所有规则(三种携带方式、429、非 loopback 上拒绝写)对每个令牌都成立。`--tokens`
+可以与 `--token`(一个不具名的令牌,配合 `--token-scope`)同时使用;权限为 `approve` 的具名令牌
+可以在非 loopback 上回答检查点,`read` 的只能读。`odw serve` 在启动时读取该文件:修改后需重启。
+名字为 1–64 个 `A-Z a-z 0-9 . _ @ + -` 字符。
+
+记录了什么、记在哪里:
+
+- 运行 `meta.json` 中的 **`launchedBy`**:你启动的运行记为本地用户(git `user.email`,否则
+  `$USER`),从看板(Chat)启动的记为具名令牌的名字,[webhook 触发器](#由-webhook-启动运行githublinearslackodw-扩展)
+  启动的记为 `trigger:<name>`。`odw list --by <name>` 列出某人的运行(`--by me`:你自己的);看板的
+  运行标题显示"由 … 启动",Jobs 页多出 **我的 / 团队** 筛选——"我的"即 `/api/capabilities` 返回的
+  `you`(你令牌的名字;完全没有令牌时为本地用户;不具名的 `--token` 则没有)。
+- 检查点决定的 `by`(渠道——`cli`、`dashboard`、`link`——保持不变)旁边多一个 **`who`**:
+  `odw approve|reject` 记为 `cli:<$USER> <git user.email>`,看板记为令牌的名字,批准链接在
+  `by: "link"` 之外,记下该请求同时携带的具名令牌的名字。它出现在决定日志(`decisions.jsonl`)、
+  `checkpoint_resolved` 事件和 `checkpoint()` 的结果(`result.who`)中。
+- **暂停、继续和停止**在 `control.json` 中记录 `who`(`odw pause|resume|stop`:`cli:<user>`;
+  看板:令牌的名字);运行日志写出 "paused by …" / "resumed by …",停止时 `run_stopped` 事件带
+  `who`,`status.json` 带 `stoppedBy`。
+
+这些是标签,不是访问控制:任何能写运行目录的人都能写入任何名字。除两种权限外没有更细的 RBAC。
+
 ### 在手机上批准(ODW 扩展)
 
 [`checkpoint()`](#人工检查点odw-扩展) 不必再等你回到终端。用手机能访问到的 URL(通常是一条
@@ -1837,7 +1918,8 @@ ODW 自己会执行的、属于仓库的代码会被拒绝:仓库 `.worktreeincl
 信任运行中根本不会读取:其中的适配器命令就是仓库的代码。运行改用你自己的
 `~/.config/odw/config.json`(在仓库之外)或内置默认值,并在日志里说明;用 `--config` 或
 `$ODW_CONFIG` 指定的配置是你自己的选择,照常生效。仓库的配置也无法放宽你在
-`~/.config/odw/config.json` 里设置的 `"trust": "untrusted"`。
+`~/.config/odw/config.json` 里设置的 `"trust": "untrusted"`。仓库的[工作流记忆](#工作流记忆odw-扩展)
+(`.odw/memory/`)既不召回也不写入;你放在仓库之外的 `memoryDir` 照常使用。
 
 ```jsonc
 {

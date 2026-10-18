@@ -448,6 +448,61 @@ Claude Code's Workflow tool ignores these options. [`examples/coordinated-refact
 splits a change across isolated lanes on the board, has a reviewer read it, and
 runs the lanes that clash again with every note in their prompt.
 
+### Workflow memory (ODW extension)
+
+Every run starts cold: a correction a person made in one run is violated again in
+the next. Workflow memory keeps what earlier runs of a workflow learned **in the
+repository**, as `.odw/memory/<workflow>.jsonl`, so it is reviewed in pull requests
+like any other file. It is off unless asked for, and nothing in it comes from a model
+summarizing — only from explicit sources:
+
+| Source | Entry |
+| --- | --- |
+| `"$ODW_NOTES" --keep "…"` or `odw note --keep [--paths GLOB,…] "…"` (an agent with notes on) | `note`, by that agent — kept only when that agent has memory on (else posted, not kept, and said) |
+| a `checkpoint()` rejected with a note | `correction`: `"Ship the plan?" was rejected: <note>` |
+| a `checkpoint()` approved with an edited payload | `correction`: a structural diff of the edit, `$.steps[1]: "b" → "c"; removed $.owner` |
+| an `expect` miss that a retry of the same agent then met | `lesson`: what was missing, and that a retry told of it fixed it (with the change it kept) |
+| `odw memory add <wf> "…" [--paths GLOB,…]` | `note` (or `--kind correction\|lesson`), by hand |
+
+Each line is `{ id, text, kind, paths, commit, run, agent?, at }`: `commit` is HEAD
+when it was learned, `paths` the globs (from the repository's top) it is about.
+Every entry is kept only where memory is on — `"memory": true` in the config,
+`agent(…, { memory: true })` for that agent's kept notes and lessons, `checkpoint(…, {
+memory: true })` or `{ memory: { paths: ['src/**'] } }` for its corrections.
+
+```js
+const plan = await checkpoint('Ship this plan?', { payload: draft, memory: { paths: ['src/api/**'] } })
+await agent('Implement the approved plan.', { memory: true, expect: { command: 'npm test' } })
+```
+
+- **Recall:** an agent with memory on (`agent(…, { memory: true })`, or the setting;
+  `memory: false` opts one out) finds the entries that still apply ahead of its task,
+  under "What earlier runs of this workflow learned", newest first, at most 4 KB, each
+  labelled with its kind and where it came from (run and agent, or "by hand") and its
+  text quoted (`> ` on every line). The run's log says how many it recalled and how
+  many it left out.
+- **Staleness:** an entry is stale once a file its `paths` match changed between its
+  `commit` and HEAD (`git diff --name-only <commit> HEAD`); stale entries are not
+  recalled. An entry without paths never goes stale; one with paths whose commit git
+  does not know is stale — nothing vouches for it. At most 32 distinct commits are
+  checked per file (the newest entries' first); entries at others count as stale. A
+  file over 4 MiB is not read: the run, `odw memory list` and the API say so.
+- **Kept when the run ends** — done, failed or stopped — redacted with the run's
+  redactor. The same entry learned again replaces the older copy; a file holds at most
+  500 entries, the oldest pruned with a line in the run's log. `odw test` and `--dry`
+  runs recall but keep nothing.
+- **Untrusted runs** neither recall nor keep the repository's memory: the file is the
+  repository's content, and what an untrusted run learned would reach later trusted
+  runs' prompts. Memory the user keeps outside the repository — `"memoryDir":
+  "~/odw-memory/my-repo"` in their own config — is theirs, and an untrusted run uses it:
+  only when it is outside the repository both as written and with links resolved,
+  and never a `memoryDir` the repository's own config sets.
+- **Tending it:** `odw memory list [<wf>] [--stale] [--json]`, `odw memory add <wf>
+  "text" [--paths …]`, `odw memory prune [<wf>] --stale` or `odw memory prune <wf> --id
+  N` (`--source DIR` picks the repository); `GET /api/memory[?workflow=]` serves the list.
+
+Claude Code's Workflow tool ignores these options.
+
 ### Declared scopes (ODW extension)
 
 Two agents pointed at the same files produce changes that conflict only at merge
@@ -1627,6 +1682,51 @@ The security model:
   [Approve from your phone](#approve-from-your-phone-odw-extension): signed one-time
   approve links (`--public-url`), and `--token-scope approve`.
 
+### Named tokens: who did what (ODW extension)
+
+When several people watch and approve on one box, give each a token of their own instead
+of sharing one — what each does is then attributed to them, and one can be withdrawn
+without the others:
+
+```bash
+odw token add alice --scope approve --file ~/.config/odw/tokens.json   # prints alice's token, once
+odw token add bob --file ~/.config/odw/tokens.json                      # scope read (the default)
+odw token list --file ~/.config/odw/tokens.json                         # names and scopes; remove <name> withdraws one
+odw serve --host 0.0.0.0 --tokens ~/.config/odw/tokens.json
+```
+
+The file is a JSON array of `{ "name", "scope": "read" | "approve", "hash" }`, where
+`hash` is the token's sha256 in hex — **it never holds a token**; `odw token add` prints
+the new one once and keeps only its hash (the file is written 0600). A presented token is
+hashed and looked up by that digest, so the comparison never runs over the token itself;
+every rule of `--token` above (the three ways to send it, the 429s, writes off loopback)
+holds for each. `--tokens` works alongside `--token` (an unnamed token, with
+`--token-scope`); a named token of scope `approve` answers checkpoints off loopback, one
+of scope `read` only reads. `odw serve` reads the file when it starts: restart it to take
+a change. Names are 1–64 of `A-Z a-z 0-9 . _ @ + -`.
+
+What is recorded, and where:
+
+- **`launchedBy`** in a run's `meta.json`: the local user for a run you start (git
+  `user.email`, else `$USER`), a named token's name for a run started from the dashboard
+  (Chat), and `trigger:<name>` for a [webhook trigger](#start-runs-from-webhooks-github-linear-slack-odw-extension)'s.
+  `odw list --by <name>` lists one person's runs (`--by me`: yours); the dashboard's run
+  header says "launched by …", and its Jobs page gets **Mine / Team** chips — mine is the
+  name `/api/capabilities` reports as `you` (your token's name; the local user when there
+  is no token at all; none for the unnamed `--token`).
+- **`who`** beside a checkpoint decision's `by` (the channel — `cli`, `dashboard`,
+  `link` — stays as it was): `cli:<$USER> <git user.email>` from `odw approve|reject`, the
+  token's name from the dashboard, and — beside `by: "link"` — the name of a named token
+  the approve link's request also carries. It is in the decision log
+  (`decisions.jsonl`), the `checkpoint_resolved` event and `checkpoint()`'s result
+  (`result.who`).
+- **Pause, resume and stop** record `who` in `control.json` (`odw pause|resume|stop`:
+  `cli:<user>`; the dashboard: the token's name); the run logs "paused by …" / "resumed
+  by …", and a stop puts `who` on `run_stopped` and `stoppedBy` in `status.json`.
+
+These are labels, not access control: anyone who can write the runs root can write any
+name into it. There is no RBAC beyond the two scopes.
+
 ### Approve from your phone (ODW extension)
 
 A [`checkpoint()`](#human-checkpoints-odw-extension) no longer has to wait for you to get
@@ -2115,7 +2215,9 @@ adapter commands are the repository's code. The run uses your
 `~/.config/odw/config.json` (outside the repository) or the built-in defaults, and says
 so; one you name with `--config` or `$ODW_CONFIG` is your choice and still applies. A
 repository's config cannot loosen the `"trust": "untrusted"` your
-`~/.config/odw/config.json` sets.
+`~/.config/odw/config.json` sets. Its [workflow memory](#workflow-memory-odw-extension)
+(`.odw/memory/`) is neither recalled nor written; a `memoryDir` of yours outside the
+repository is.
 
 ```jsonc
 {

@@ -162,11 +162,11 @@ export class OdwRunSource implements RunSource {
     // A pulled run (ODW extension; see ./remote) goes on over there: its copy here is a snapshot.
     return pulledRunRefusal(this.store.readMeta(runId), runId, "approve|reject|pause|stop|resume");
   }
-  control(runId: string, action: string): void {
+  control(runId: string, action: string, who?: string | null): void {
     // Written as `odw resume` writes it: the worker's FileControl treats any
     // non-pause/stop action as "carry on", and a run paused for a spent quota
     // (quotaWait) hears "resume" as "go on now" — the dashboard's Resume now.
-    this.store.writeControl(runId, action);
+    this.store.writeControl(runId, action, who);
   }
   decide(runId: string, request: CheckpointRequest): void {
     this.store.requestCheckpointDecision(runId, request);

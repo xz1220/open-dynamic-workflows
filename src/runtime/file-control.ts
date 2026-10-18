@@ -215,7 +215,7 @@ export class FileControl implements Control {
       return; // unreadable for a moment: the next poll tries again
     }
     for (const request of requests) {
-      const key = JSON.stringify([request.action, request.checkpointId, request.note, request.by, request.at, digest(request.payload)]);
+      const key = JSON.stringify([request.action, request.checkpointId, request.note, request.by, request.who, request.at, digest(request.payload)]);
       if (this.taken.has(key)) continue;
       this.taken.add(key);
       const id = request.checkpointId ?? Math.min(...this.asked.keys());

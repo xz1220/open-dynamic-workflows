@@ -98,6 +98,14 @@ declare global {
      */
     notes?: boolean;
     /**
+     * ODW extension — Claude Code ignores it. Workflow memory: the entries of
+     * `.odw/memory/<workflow>.jsonl` that still apply (none of the files they are about
+     * changed since) go ahead of the task, under "What earlier runs of this workflow
+     * learned", newest first, at most 4 KB; and an `expect` miss a retry then met is kept
+     * there as a lesson once the run ends. Default: the `memory` setting (off).
+     */
+    memory?: boolean;
+    /**
      * ODW extension — Claude Code ignores it. When its CLI runs out of quota (or its login
      * is refused) and a fallback chain moves it to the next adapter, hand the work over
      * instead of starting it over: the next adapter goes on in the same worktree, its prompt
@@ -274,6 +282,13 @@ declare global {
     timeout?: number;
     /** What a timeout means: approve, reject, or (the default) "fail" — throw a recoverable `CheckpointTimeout`. */
     onTimeout?: "approve" | "reject" | "fail";
+    /**
+     * Workflow memory: a rejection with a note, or an approval with an edited payload, is
+     * kept in `.odw/memory/<workflow>.jsonl` as a correction once the run ends; `{ paths }`
+     * (globs from the repository's top) makes it go stale when those files change.
+     * Default: the `memory` setting (off).
+     */
+    memory?: boolean | { paths: string[] };
   }
 
   /** What {@link checkpoint} resolves to. */
@@ -283,6 +298,12 @@ declare global {
     note: string | null;
     /** Who answered: `odw approve|reject`, the dashboard (`odw serve`), a signed approve link (ODW extension), or the timeout. */
     by: "cli" | "dashboard" | "link" | "timeout";
+    /**
+     * Who answered, by name (ODW extension): `cli:<user> <email>` from `odw approve|reject`,
+     * a named `odw serve --tokens` token's name from the dashboard or beside an approve link.
+     * Absent when nobody is named (the timeout, an unnamed token).
+     */
+    who?: string;
     /**
      * What was approved: the approver's edit (`odw approve --edit|--payload`, or the
      * dashboard) when there is one, else the checkpoint's own payload — undefined when it

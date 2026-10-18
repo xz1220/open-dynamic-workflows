@@ -255,6 +255,8 @@ export class ChatHost {
     method: string,
     path: string,
     boundHost: string,
+    /** Who asks, by name (ODW extension; see ../identity): the runs a turn starts are launched by them. */
+    who: string | null = null,
   ): Promise<boolean> {
     const { chat } = this;
     const { sources } = this.opts;
@@ -292,7 +294,7 @@ export class ChatHost {
     } else if (method === "DELETE") {
       await deleteChatSession(req, res, chat, sessionId);
     } else {
-      await postChatMessage(req, res, chat, this.runtime, this.opts, sessionId);
+      await postChatMessage(req, res, chat, this.runtime, this.opts, sessionId, who);
     }
     return true;
   }
@@ -711,6 +713,8 @@ async function postChatMessage(
   chatRuntime: ChatRuntime,
   opts: ChatHostOptions,
   sessionId: string,
+  /** Who asks, by name (ODW extension): a run it starts is launched by them. */
+  who: string | null = null,
 ): Promise<void> {
   const { sources, store, config, configPath } = opts;
   const body = await jsonBodyOrReply(req, res);
@@ -746,6 +750,7 @@ async function postChatMessage(
       runsRoot: store.root,
       configPath,
       origin: "chat",
+      launchedBy: who,
     });
     chat.appendUserMessage(sessionId, text);
     chat.appendToolRun(sessionId, runId, CHAT_HOST_WORKFLOW_NAME);

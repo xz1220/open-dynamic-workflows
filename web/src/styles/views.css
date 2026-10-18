@@ -667,6 +667,198 @@ ul.mcp li {
   }
 }
 
+/* ---- drift: what changed under a workflow since its last run ---- */
+.tag.drift {
+  border-color: var(--amber-line);
+  background: var(--amber-soft);
+  color: var(--amber-ink);
+}
+.tag.drift::before {
+  content: "↯ ";
+}
+
+/* ---- what earlier runs of a workflow learned: marginalia, stale ones struck ---- */
+.mem-list {
+  list-style: none;
+  margin: 0;
+  padding: 6px 0;
+}
+.mem {
+  position: relative;
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr);
+  gap: 4px 14px;
+  padding: 12px 20px;
+  animation: rc-print 400ms var(--ease-out) both;
+  animation-delay: calc(var(--i) * 40ms);
+}
+.mem + .mem {
+  border-top: 1px dashed var(--line);
+}
+.mem::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 14px;
+  bottom: 14px;
+  width: 2px;
+  background: var(--sig);
+  transform-origin: top;
+  animation: mem-rule 520ms var(--ease-out) both;
+  animation-delay: calc(var(--i) * 40ms + 120ms);
+}
+@keyframes mem-rule {
+  from {
+    transform: scaleY(0);
+  }
+}
+.mem-kind {
+  grid-row: span 3;
+  align-self: start;
+  justify-self: start;
+  padding: 2px 7px;
+  border: 1px solid currentColor;
+  border-radius: var(--r-xs);
+  font-family: var(--f-mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--sig-ink);
+  transform: rotate(-2deg);
+}
+.mem-kind.k-correction {
+  color: var(--amber-ink);
+}
+.mem-kind.k-lesson {
+  color: var(--ink-2);
+}
+.mem-text {
+  margin: 0;
+  font-family: var(--f-display);
+  font-size: 17px;
+  line-height: 1.35;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.mem-meta {
+  font-family: var(--f-mono);
+  font-size: 11px;
+  color: var(--faint);
+}
+.mem-meta a {
+  color: inherit;
+}
+.mem-meta a:hover {
+  color: var(--ink);
+}
+.mem-paths code {
+  font-family: var(--f-mono);
+  font-size: 10.5px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--shade);
+  color: var(--mute);
+}
+.mem.stale::before {
+  background: var(--line-2);
+}
+.mem.stale .mem-text {
+  color: var(--faint);
+  text-decoration: line-through;
+  text-decoration-color: var(--alarm-line);
+}
+.mem-stale {
+  color: var(--alarm-ink);
+}
+.mem-list + .cmd {
+  margin-top: 10px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .mem,
+  .mem::before {
+    animation: none;
+  }
+}
+
+/* ---- what a run of a workflow costs, from its earlier runs ---- */
+.est {
+  padding: 18px 20px;
+}
+.est-figs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 36px;
+  padding-bottom: 14px;
+  border-bottom: 1px dashed var(--line);
+}
+.est-fig {
+  display: grid;
+}
+.est-fig .k {
+  font-family: var(--f-mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+.est-fig .v {
+  font-family: var(--f-display);
+  font-size: 30px;
+  line-height: 1.1;
+}
+.est-fig .p9 {
+  font-family: var(--f-mono);
+  font-size: 11px;
+  color: var(--mute);
+}
+.est-rows {
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+}
+.est-row {
+  display: grid;
+  grid-template-columns: minmax(90px, 0.6fr) minmax(0, 1.6fr) auto;
+  align-items: center;
+  gap: 12px;
+  font-size: 12.5px;
+  animation: rc-print 400ms var(--ease-out) both;
+  animation-delay: calc(var(--i) * 50ms);
+}
+.est-row .num {
+  font-family: var(--f-mono);
+  font-size: 11.5px;
+  color: var(--ink-2);
+}
+.est-bar {
+  position: relative;
+  height: 8px;
+  border-radius: 4px;
+  background: var(--shade);
+  overflow: hidden;
+}
+.est-bar i {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: var(--w);
+  border-radius: 4px;
+  transform-origin: left;
+  animation: rc-grow 800ms var(--ease-out) both;
+}
+.est-bar .p90 {
+  background: repeating-linear-gradient(-45deg, var(--sig-line) 0 3px, transparent 3px 6px);
+}
+.est-bar .p50 {
+  background: var(--sig);
+}
+.est-note {
+  margin: 12px 0 10px;
+  font-size: 12px;
+  color: var(--mute);
+}
+
 /* ---- a dry run: every agent a stub ---- */
 .tag.dry {
   border-style: dashed;
@@ -3193,4 +3385,23 @@ ul.mcp li {
   .legend {
     display: none;
   }
+}
+
+/* ---- whose runs: a quiet segmented control beside the History title ---- */
+.section-title .chips.owners {
+  align-self: center;
+  margin-left: 12px;
+  padding: 3px;
+  gap: 2px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--card-2);
+}
+.section-title .chips.owners .chip {
+  border-color: transparent;
+  background: transparent;
+}
+.section-title .chips.owners .chip.on {
+  background: var(--ink);
+  color: var(--paper);
 }

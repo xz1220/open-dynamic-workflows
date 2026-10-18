@@ -113,9 +113,11 @@ function runHead(run: RunDetail, nowSec: number, spendOpen: boolean): string {
   const w = (n: number) => `${((n / total) * 100).toFixed(2)}%`;
   return (
     `<header class="run-head">` +
-    `<div style="min-width:0"><div class="eyebrow"><span>${t("Run")}</span><span class="mono" style="text-transform:none;letter-spacing:0">${esc(run.runId)}</span>${cc}${shared}${run.dry ? `<span class="tag dry" title="${esc(t("every agent answered by a stub: it cost nothing"))}">${t("dry run")}</span>` : ""}</div>` +
+    `<div style="min-width:0"><div class="eyebrow"><span>${t("Run")}</span><span class="mono" style="text-transform:none;letter-spacing:0">${esc(run.runId)}</span>${cc}${shared}${driftChip(run)}${run.dry ? `<span class="tag dry" title="${esc(t("every agent answered by a stub: it cost nothing"))}">${t("dry run")}</span>` : ""}</div>` +
     `<div class="title-row"><h1 class="display">${esc(run.name)}</h1>${pill(run.state)}</div>` +
     (run.description ? `<p class="lede">${esc(run.description)}</p>` : "") +
+    // Who started it (ODW extension): the local user, a named token's name, or trigger:<name>.
+    (run.launchedBy ? `<p class="dim launched-by">${esc(t("launched by {who}", { who: run.launchedBy }))}</p>` : "") +
     resolveLinks(run) +
     `</div>` +
     `<div class="actions">${stop}${resume}${compareLink(run)}${share}` +
@@ -146,6 +148,18 @@ function resolveLinks(run: RunDetail): string {
     ...(run.resolvedBy ?? []).map((l) => link(l, t("agent #{n}'s conflict resolved by", { n: l.agentId }))),
   ];
   return parts.length ? `<div class="rlinks">${parts.join("")}</div>` : "";
+}
+
+/** What changed under the workflow since its last run (drift watch; ODW extension): a chip listing it. */
+export function driftChip(run: { drift?: { since: string; changes: Array<{ kind: string; adapter: string; label?: string; from: string | null; to: string | null }> } }): string {
+  const d = run.drift;
+  if (!d || !d.changes.length) return "";
+  const lines = d.changes.map((c) =>
+    c.kind === "cli"
+      ? t("{adapter} CLI {from} → {to}", { adapter: c.adapter, from: c.from ?? "?", to: c.to ?? "?" })
+      : t("{label} on {adapter}: model {from} → {to}", { label: c.label ?? "?", adapter: c.adapter, from: c.from ?? t("default"), to: c.to ?? t("default") }),
+  );
+  return `<span class="tag drift" title="${esc(`${t("since {run}", { run: d.since })}\n${lines.join("\n")}`)}">${esc(tn(d.changes.length, "{n} change since last run", "{n} changes since last run"))}</span>`;
 }
 
 /** A link to what changed since the workflow's previous run, when it has one. */
@@ -274,7 +288,7 @@ function checkpointDrawer(run: RunDetail, a: AgentView, ai: number, nowSec: numb
   const verdict = d ? (d.approved ? (a.edited ? t("approved with edits") : t("approved")) : t("rejected")) : "";
   const answer = d
     ? `<div class="drawer-sec">${t("Answer")}</div><div class="outbox${d.approved ? "" : " err"}">${esc(verdict)}` +
-      `${d.by ? ` · ${esc(t(d.by))}` : ""}${d.note ? `\n“${esc(d.note)}”` : ""}</div>`
+      `${d.by ? ` · ${esc(t(d.by))}` : ""}${d.who ? ` · ${esc(d.who)}` : ""}${d.note ? `\n“${esc(d.note)}”` : ""}</div>`
     : a.state === "waiting"
       ? `<div class="drawer-sec">${t("Answer")}</div><div class="outbox">${t("Waiting — answer it in the card above the tabs, or with {cmd}", { cmd: `odw approve ${esc(run.runId)} --checkpoint ${a.checkpointId}` })}</div>`
       : a.error

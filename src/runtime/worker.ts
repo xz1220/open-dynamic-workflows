@@ -27,13 +27,14 @@ import type { RunEndState } from "../adapters/types.js";
 import type { WaitingCheckpoint } from "../checkpoint.js";
 import type { CostHistory } from "../forecast.js";
 import { buildContext, spentTokens, type RunContext } from "../context.js";
-import { deciderText, PAUSED, RUNNING, type CheckpointRequest } from "../control.js";
+import { deciderText, PAUSED, RUNNING, STOPPED, type CheckpointRequest } from "../control.js";
 import { DeadlinePassed, RunStopped, WorkflowScriptError, isFatalError } from "../errors.js";
 import { AGENT_STARTED, LOG, RUN_FAILED, RUN_FINISHED, RUN_STARTED, RUN_STOPPED, event } from "../events.js";
 import { Breaks, breakSpecOf, runSoFar } from "../breaks.js";
 import { DriftWatch, driftEvalArgs, driftEvalOf, previousRun } from "../drift.js";
 import { ReplayJournal } from "../journal.js";
 import { loadWorkflowScript, scanDualCompat } from "../loader.js";
+import { RunMemory } from "../memory.js";
 import { NotesBoard } from "../notes.js";
 import { createPrimitives } from "../primitives.js";
 import { CliVersions, runSetup } from "../provenance.js";
@@ -246,6 +247,9 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
       onState: (state) => {
         controlState = state;
         store.updateStatus(runId, { state: shownState(), dispatched: dispatched(), spentTokens: spent() });
+        // Who paused or resumed it, by name (ODW extension; see ../identity); a stop says so on run_stopped.
+        const who = state === STOPPED ? undefined : store.readControlRequest(runId)?.who;
+        if (who) sink.emit(event(LOG, { message: `${state === PAUSED ? "paused" : "resumed"} by ${who}`, control: state, who }));
       },
     });
     const replay = replayJournal(meta);
@@ -280,6 +284,20 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
       });
       return history;
     };
+    // The workflow's memory (ODW extension; see ../memory): recalled for agents
+    // with memory on; what the run learns is kept once it ends — not by a run no model answers.
+    const memory = new RunMemory({
+      source: typeof meta.source === "string" ? meta.source : process.cwd(),
+      dir: config.settings.memoryDir ?? null,
+      // A memoryDir the repository's own config sets is never the user's (see ../untrusted).
+      dirFromRepository: runTrust.repositoryConfig !== null,
+      runId,
+      workflow: () => historyName,
+      trust: config.settings.trust,
+      redactor: runRedactor,
+      emit: (ev) => sink.emit(ev),
+      write: !mock,
+    });
     ctx = buildContext(config, {
       source: meta.source as string | undefined,
       runId,
@@ -294,7 +312,14 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
       saveAgentResult: (rec) => store.writeAgentResult(runId, runRedactor.record(rec)),
       redactor: runRedactor,
       // The run's notes board (ODW extension): notes.jsonl, for agents with notes on.
-      notes: new NotesBoard({ runDir: store.runDir(runId), redactor: runRedactor, emit: (ev) => sink.emit(ev) }),
+      // A note posted with --keep becomes workflow memory when the run ends.
+      notes: new NotesBoard({
+        runDir: store.runDir(runId),
+        redactor: runRedactor,
+        emit: (ev) => sink.emit(ev),
+        onKeep: (note) => memory.record({ kind: "note", text: note.text, paths: note.paths ?? [], agent: note.by.label }),
+      }),
+      memory,
       // What an isolated agent changed is kept beside it, as agents/<agentId>.diff.
       agentDiffPath: (agentId) => store.agentDiffPath(runId, agentId),
       // What each agent's CLI prints, as agents/<agentId>.transcript.jsonl and .stderr.txt.
@@ -488,6 +513,8 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
     store.writeResult(runId, kept.value, "redacted" in kept);
     versions?.close();
     ctx.notes?.close();
+    // What the run learned is kept, before its terminal event (ODW extension).
+    ctx.memory?.flush();
     sink.emit(event(RUN_FINISHED, { runId }));
     store.updateStatus(runId, { state: "done", dispatched: dispatched(), spentTokens: spent() });
     end = { state: "done" };
@@ -502,9 +529,14 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
     await ctx?.bridge.closeEgress().catch(() => undefined);
     versions?.close();
     ctx?.notes?.close();
+    // A failed or stopped run keeps what it learned too: a correction is no less true.
+    ctx?.memory?.flush();
     if (outcome instanceof RunStopped) {
-      sink.emit(event(RUN_STOPPED, { runId }));
-      store.updateStatus(runId, { state: "stopped", dispatched: dispatched(), spentTokens: spent() });
+      // Who stopped it, by name (ODW extension; see ../identity), when `odw stop` or the dashboard did.
+      const control = store.readControlRequest(runId);
+      const who = control?.action === "stop" ? control.who : undefined;
+      sink.emit(event(RUN_STOPPED, { runId, ...(who ? { who } : {}) }));
+      store.updateStatus(runId, { state: "stopped", dispatched: dispatched(), spentTokens: spent(), ...(who ? { stoppedBy: who } : {}) });
       end = { state: "stopped", error: outcome.message };
     } else {
       // A script may throw anything — `throw null` included — so never read
@@ -663,7 +695,7 @@ function redactOutput(redactor: Redactor): () => void {
 /** The log line for a checkpoint answer that found nothing waiting for it. */
 function unmatchedDecision(request: CheckpointRequest): string {
   const which = request.checkpointId !== undefined ? `checkpoint #${request.checkpointId}` : "a checkpoint";
-  const from = deciderText(request.by);
+  const from = deciderText(request.by, request.who);
   return `ignored "${request.action}" for ${which} from ${from}: no such checkpoint is waiting for an answer`;
 }
 

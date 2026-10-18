@@ -128,6 +128,14 @@ const lanes = await parallel(tasks.map((t, i) => () =>      // ODW 扩展：note
   agent(t, { label: `lane-${i + 1}`, isolation: 'worktree' })), { notes: true })
 ```
 
+`memory`（**ODW 扩展**）把一个工作流历次运行学到的东西带到下一次：存在仓库里的
+`.odw/memory/<工作流>.jsonl`，只来自明确的来源——用 `"$ODW_NOTES" --keep "…"`（或 `odw note --keep`）
+保留的笔记、带备注被拒绝或修改后批准的检查点（`checkpoint(…, { memory: true })`）、被重试补上的
+`expect` 未达项（`agent(…, { memory: true })`），以及 `odw memory add`。`memory: true`（或配置中的
+`"memory": true`）的 agent 在任务之前看到仍然适用的条目——最新的在前，至多 4 KB；`paths` 自其提交以来
+有改动的条目已过期，不再召回。不受信任的运行不使用仓库的记忆。用 `odw memory list|add|prune` 维护；见
+[`references/primitives.md`](references/primitives.md#memoryodw-扩展)。
+
 `scope`（**ODW 扩展**）声明 agent 打算改动的文件——glob 规则同 `expect.files`。范围重叠的并行调用
 先后运行（后发出的等先发出的结束，记一次日志："fix-auth waits for refactor-login: both declare
 src/auth/**"）；范围不相交或未声明范围的调用照常并行。agent 在范围之外的改动记为 `outOfScope`、
@@ -216,6 +224,8 @@ odw run review --dry        # 每个 agent 都用桩应答：阶段树与 agent 
 odw new review-swarm        # 内置模板连同起步测试写入 .odw/；odw new 列出全部模板（ODW 扩展；见下文）
 odw notes $RUN              # 本次运行的 agent 在笔记板上互相告知的内容（ODW 扩展）
 odw list                    # 所有运行（有运行报了美元时多一列花费）
+odw list --by me            # 某人启动的运行（meta.launchedBy；ODW 扩展）
+odw token add alice --scope approve --file tokens.json  # 给 odw serve --tokens 用的具名令牌（ODW 扩展）
 ```
 
 保存过的 workflow 可直接按名字运行（`odw run <名字>`）；查找顺序：`.odw/workflows`、

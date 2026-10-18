@@ -20,6 +20,7 @@ import type { CostHistory } from "./forecast.js";
 import type { AgentCallRecord, AgentResultRecord, ReplayJournal } from "./journal.js";
 import { quotaPauseMessage, type QuotaPauseChange } from "./quota-wait.js";
 import { redactorFor, type Redactor } from "./redact.js";
+import type { RunMemory } from "./memory.js";
 import type { NotesBoard } from "./notes.js";
 import type { PhaseDefaults } from "./routing.js";
 import { Scheduler } from "./scheduler.js";
@@ -159,6 +160,12 @@ export interface RunContext {
    */
   notes?: NotesBoard;
   /**
+   * The workflow's memory (ODW extension; see ./memory): what earlier runs
+   * learned, recalled into the prompts of agents with memory on, and what
+   * this run learns, kept once it ends. Absent where no run is persisted.
+   */
+  memory?: RunMemory;
+  /**
    * The workflow's earlier runs, as fan-out forecasts and cost gates read
    * them (ODW extension; see ./forecast) — read once, on the first fan-out
    * that asks; null without history. Absent where no run is persisted.
@@ -203,6 +210,8 @@ export interface BuildContextOptions {
   redactor?: Redactor;
   /** The run's notes board (ODW extension; see ./notes). */
   notes?: NotesBoard;
+  /** The workflow's memory (ODW extension; see ./memory). */
+  memory?: RunMemory;
   /** The workflow's earlier runs, for fan-out forecasts and cost gates (ODW extension; see ./forecast). */
   costHistory?: () => CostHistory | null;
   /**
@@ -304,6 +313,7 @@ export function buildContext(config: Config, options: BuildContextOptions = {}):
     onCheckpoint: options.onCheckpoint,
     redactor,
     notes: options.notes,
+    memory: options.memory,
     costHistory: options.costHistory,
     costNotes: new Set(),
     emit(ev: WorkflowEvent): void {

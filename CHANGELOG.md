@@ -135,7 +135,8 @@ independent security reviews whose findings are all fixed.
 - Drift watch (**ODW extension**): every run compares its CLI versions and requested
   models with the workflow's previous finished run and logs each change once (`drift:
   claude CLI 2.1.302 → 2.1.330 since the last run of review-swarm`); the run summary has
-  a `drift` field (`{ since, changes }`, web types too). A workflow with an eval file
+  a `drift` field (`{ since, changes }`, web types too), drawn as a `↯ n changes since
+  last run` chip on the run and in the jobs list. A workflow with an eval file
   gets `odw eval <name> --baseline <last report>` suggested; `"driftEval": true` starts
   it once the run ends, detached, its output in `drift-eval.log`.
 
@@ -164,6 +165,19 @@ independent security reviews whose findings are all fixed.
   tokens. `--token-scope approve` lets a remote token holder answer checkpoints from the
   dashboard too. Nothing else becomes writable remotely; without a server, the hooks say
   why there are no links (`linksUnavailable`).
+- Named tokens and who did what (**ODW extension**): `odw serve --tokens FILE` gives
+  each person a token of their own — `[{ name, scope: "read" | "approve", hash }]`, the
+  hash a sha256, so the file never holds a token — beside or instead of `--token`.
+  `odw token add <name> [--scope approve] --file FILE` prints a new token once and
+  keeps its hash; `odw token list|remove`. A presented token is hashed and looked up.
+  Runs record `launchedBy` in `meta.json` (git `user.email` or `$USER` locally, the
+  token's name from the dashboard, `trigger:<name>` from a trigger); checkpoint
+  decisions add `who` beside `by` (`cli:<user> <email>`, the token's name, and beside
+  `by: "link"` the name of a named token the request carries) in the decision log, the
+  `checkpoint_resolved` event and `checkpoint()`'s result; pause, resume and stop record
+  `who` in `control.json`, the run's log and `run_stopped`. `odw list --by <name|me>`
+  filters; the dashboard's run header says who launched it, a checkpoint's answer who
+  gave it, and the Jobs page has Mine / Team chips (`/api/capabilities` → `you`).
 
 ### Know what it costs and what it changed
 - Real usage and cost: the built-in `claude` adapter reads Claude Code's `stream-json`;
@@ -181,7 +195,8 @@ independent security reviews whose findings are all fixed.
   forecast over the gate becomes a checkpoint (`This fan-out is forecast to cost ~$X
   (p90 $Y) — go?`, answerable from the phone links too); a rejection throws a
   catchable `CostGateRejected`. Without history the gate lets fan-outs through and
-  says so once.
+  says so once. The dashboard's workspace draws the estimate for a workflow with runs:
+  the totals, and a p50/p90 range bar per phase.
 - Codex agents report their tokens too: the built-in `codex` adapter runs `codex exec
   --json --output-last-message {reply_file}` — its reply from that file (else the last
   `agent_message` event), tokens from `turn.completed` (no cost: codex reports none),
@@ -426,6 +441,25 @@ independent security reviews whose findings are all fixed.
   notes, 256 KiB) and redacted, kept as `notes.jsonl`, emitted as `note_added`, and read
   with `odw notes <run> [--json]` and `GET /api/runs/:id/notes`. Off by default.
   Example: `coordinated-refactor.js`.
+- Workflow memory with provenance (**ODW extension**; ROADMAP S7): what earlier runs of a
+  workflow learned, kept in the repository as `.odw/memory/<workflow>.jsonl` (reviewable
+  in PRs), one `{ id, text, kind, paths, commit, run, agent?, at }` per line, from
+  explicit sources only — a note kept with `"$ODW_NOTES" --keep "…"` or `odw note --keep
+  [--paths …]`, a checkpoint rejected with a note or approved with an edit (a structural
+  diff of the payload) under `checkpoint(…, { memory: true | { paths } })`, an `expect`
+  miss a retry then met under `agent(…, { memory: true })`, and `odw memory add`; never
+  a model's summary; each only where memory is on (a kept note: its agent's). An agent
+  with `memory: true` (or `"memory": true` in the config) gets the entries that still
+  apply ahead of its task — newest first, at most 4 KB, each labelled with its kind
+  and origin and its text quoted —
+  and an entry whose `paths` changed since its `commit` (`git diff --name-only`) is
+  stale and left out, the run saying how many. Written when the run ends, redacted, at
+  most 500 per file (oldest pruned, logged). Untrusted runs neither recall nor keep the
+  repository's memory; a `memoryDir` of the user's own outside the repository they use.
+  `odw memory list|add|prune`, `GET /api/memory`, and `web/src/types.ts`
+  `WorkflowMemory`. The dashboard's workspace lists a workflow's memory, newest first:
+  the kind, the run and agent each entry came from, its globs, and stale entries
+  struck through, with `odw memory prune <wf> --stale` to copy.
 - Declared scopes (**ODW extension**; ROADMAP R11): `agent(…, { scope: ["src/auth/**"] })`
   names the files a call means to change, with the `expect` glob rules. Scoped calls in
   flight at once whose scopes overlap — decided conservatively from the globs: braces
@@ -618,6 +652,33 @@ independent security reviews whose findings are all fixed.
 - `odw replay` put the original prompt in the new run's `meta.json` args, which the
   dashboard serves with token-shape redaction only. The call now lives in the run's
   `call.json`, which nothing serves; `args` hold `{ replayOf }`.
+- Workflow memory let an untrusted run reach another repository's memory: "outside
+  the repository" was judged with links resolved, so a clone shipping `.odw/memory ->
+  ../../victim/.odw/memory` (or a `memoryDir: "../victim/…"` in its own config) had
+  the run read that memory into its prompts and write to it. An untrusted run now uses
+  memory only from a `memoryDir` of the user's own config that lies outside the
+  repository both as written and with links resolved; the run's log names where a
+  linked file really is. Also in memory: an entry, and each value of a checkpoint
+  edit's summary, was cut before it was redacted, so a long secret or token cut below
+  the length the redactor knows it by survived in part — both are now redacted first,
+  then cut; so are the notes board's notes and the interface lines ODW posts for a
+  kept change, which had the same order. A large file froze the run or `odw serve` (read whole, then one blocking
+  `git diff` per distinct commit, for every file on `GET /api/memory`): a file over 4
+  MiB (or not a regular file) is now refused and said — in the run's log, by `odw
+  memory list`, as `error` in the API — and never written over, and at most 32
+  distinct commits are checked per file (the newest entries' first; entries at others
+  count as stale), each answer cached per commit and HEAD. Recall told agents its
+  entries were kept "by people and checks, not by a model", yet kept notes are
+  agents' own words and a multi-line entry could pass for the prompt's own headings:
+  the header now says who keeps what, and each entry is labelled with its kind and
+  origin (run and agent, or "by hand"), its text quoted with `> ` on every line. A
+  note kept with `--keep` now becomes memory only from an agent with memory on (the
+  setting or `agent(…, { memory: true })`), the only agents told of `--keep`; from
+  others it is posted unkept, and the run says so. `odw memory list` printed an
+  entry's `paths`, time and commit raw (terminal escapes); they now pass through the
+  sanitizer, and an entry whose `run`, `agent`, `at` or `paths` has the wrong type is
+  skipped. Files were written through a predictable `<file>.<pid>.tmp`, which a
+  planted link could redirect; the temp name is now random and created fresh (`wx`).
 
 ### Changed behavior — check before upgrading
 - Signed triggers in a repository's `./odw.config.json` are no longer served: move them

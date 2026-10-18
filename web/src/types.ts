@@ -62,6 +62,8 @@ export interface RunSummary {
    * model that differs. Absent when nothing did.
    */
   drift?: RunDrift;
+  /** Who started the run (ODW extension): the local user, a named token's name, or `trigger:<name>`. Absent for older and Claude Code runs. */
+  launchedBy?: string;
 }
 
 /** One thing that changed since a workflow's previous run (ODW extension: drift watch). */
@@ -131,7 +133,7 @@ export interface AgentView {
   /** A checkpoint node's id, its payload and the person's answer once given. */
   checkpointId?: number | null;
   payload?: unknown;
-  decision?: { approved: boolean; note: string | null; by: string | null } | null;
+  decision?: { approved: boolean; note: string | null; by: string | null; who?: string | null } | null;
   /** A checkpoint approved with an edited payload (ODW extension): `approvedPayload` is what was approved. */
   edited?: boolean;
   /** With `edited`: the approved payload, as its event keeps it (JSON-safe, cut to 64 KiB). */
@@ -722,6 +724,8 @@ export interface Capabilities {
   bundle?: BundleInfo | null;
   /** Checkpoints can be answered here — off loopback too with `--token-scope approve` (ODW extension). Absent from older servers. */
   decide?: boolean;
+  /** Who this dashboard acts as (ODW extension): a named token's name, the local user without a token, null for an unnamed token. Absent from older servers. */
+  you?: string | null;
 }
 
 /** A shared bundle as `odw serve` describes it (ODW extension). */
@@ -904,6 +908,45 @@ export interface RunNote {
   truncated?: true;
   /** Secrets in it were replaced by `«redacted:<kind>»`. */
   redacted?: true;
+  /** Posted with --keep: it becomes workflow memory when the run ends (ODW extension). */
+  keep?: true;
+  /** A kept note's globs: it goes stale once files they match change. */
+  paths?: string[];
+}
+
+/**
+ * One entry of a workflow's memory (ODW extension; src/memory.ts): a line of
+ * `.odw/memory/<workflow>.jsonl`, with whether it is stale now.
+ */
+export interface MemoryEntry {
+  /** 1, 2, … in the order the file took them. */
+  id: number;
+  /** At most 2000 characters, redacted; may span lines. */
+  text: string;
+  /** "note": a note kept with --keep or added by hand; "correction": a checkpoint rejected with a note or approved with edits; "lesson": an expect miss a retry met. */
+  kind: "note" | "correction" | "lesson";
+  /** Globs from the repository's top; [] never goes stale. */
+  paths: string[];
+  /** HEAD when it was learned; null outside git. */
+  commit: string | null;
+  /** The run it came from; null: `odw memory add`. */
+  run: string | null;
+  /** The agent it came from, by label. */
+  agent?: string;
+  /** ISO 8601. */
+  at: string;
+  /** A file its paths match changed since its commit (or its commit is unknown): recall leaves it out. */
+  stale: boolean;
+}
+
+/** GET /api/memory[?workflow=<name>] — one per workflow with a memory file (or the one asked for). */
+export interface WorkflowMemory {
+  workflow: string;
+  /** The memory file's path on the server. */
+  file: string;
+  entries: MemoryEntry[];
+  /** Why the file was not read (over 4 MiB, not a regular file); `entries` is then []. */
+  error?: string;
 }
 
 /** GET /api/runs/:id/agents/:agentId/transcript?since=<i> — 404 when the agent has no transcript. */

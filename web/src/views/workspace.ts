@@ -4,8 +4,8 @@ import { highlightSource, outlineSource } from "../components/source";
 import { icons } from "../icons";
 import { t, tn } from "../i18n";
 import { store } from "../store";
-import type { WorkflowDetail, WorkflowSummary } from "../types";
-import { esc, fmtAgo } from "../util";
+import type { MemoryEntry, WorkflowDetail, WorkflowSummary } from "../types";
+import { esc, fmtAgo, fmtDurMs, fmtUsd } from "../util";
 import { emptyArt } from "./activity";
 
 /**
@@ -93,6 +93,80 @@ function outline(d: WorkflowDetail): string {
   );
 }
 
+/** A p50–p90 range as a bar: solid to the median, faint on to the 90th percentile, on a shared scale. */
+function rangeBar(s: { p50: number; p90: number } | null, max: number): string {
+  if (!s || max <= 0) return `<span class="est-bar none"></span>`;
+  const p50 = Math.min(100, (s.p50 / max) * 100);
+  const p90 = Math.min(100, (s.p90 / max) * 100);
+  return `<span class="est-bar"><i class="p90" style="--w:${p90.toFixed(1)}%"></i><i class="p50" style="--w:${p50.toFixed(1)}%"></i></span>`;
+}
+
+/** What a run of this workflow costs, from its earlier runs (`odw estimate`; ODW extension). */
+function estimateSection(name: string): string {
+  const e = store.estimates.get(name);
+  if (!e || !e.total) return "";
+  const money = e.total.costUsd != null;
+  const pick = (f: { costUsd: { p50: number; p90: number } | null; wallMs: { p50: number; p90: number } | null }) => (money ? f.costUsd : f.wallMs);
+  const fmt = (n: number) => (money ? fmtUsd(n) : fmtDurMs(n));
+  const max = Math.max(1e-9, ...e.phases.map((p) => pick(p)?.p90 ?? 0));
+  const T = e.total;
+  const fig = (k: string, s: { p50: number; p90: number } | null, f: (n: number) => string) =>
+    s ? `<div class="est-fig"><span class="k">${esc(k)}</span><span class="v num">${f(s.p50)}</span><span class="p9">p90 ${f(s.p90)}</span></div>` : "";
+  return (
+    `<div class="section-title"><h2>${t("What a run costs")}</h2><span class="eyebrow">${esc(tn(e.runs.length, "from {n} earlier run", "from {n} earlier runs"))}</span></div>` +
+    `<div class="est card">` +
+    `<div class="est-figs">${fig(t("cost"), T.costUsd, fmtUsd)}${fig(t("wall time"), T.wallMs, fmtDurMs)}${fig(t("agents"), T.agents, (n) => String(Math.round(n)))}</div>` +
+    `<div class="est-rows">` +
+    e.phases
+      .map(
+        (p, i) =>
+          `<div class="est-row" style="--i:${i}"><span class="nm">${esc(p.phase ?? t("outside phases"))}</span>${rangeBar(pick(p), max)}` +
+          `<span class="num">${pick(p) ? `${fmt(pick(p)!.p50)} – ${fmt(pick(p)!.p90)}` : "—"}</span></div>`,
+      )
+      .join("") +
+    `</div>` +
+    `<p class="est-note">${esc([money ? t("Per phase: median to 90th percentile cost.") : t("Per phase: median to 90th percentile time — the CLIs reported no dollars."), ...e.notes].join(" · "))}</p>` +
+    `<span class="cmd sm"><span class="p">$</span>odw run ${esc(name)} --estimate<button class="iconbtn" data-copy="odw run ${esc(name)} --estimate" aria-label="${esc(t("Copy"))}">${icons.copy}</button></span>` +
+    `</div>`
+  );
+}
+
+const MEMORY_KIND: Record<MemoryEntry["kind"], string> = { note: "note", correction: "correction", lesson: "lesson" };
+
+/** What earlier runs learned: the entries recall would hand an agent, stale ones dimmed. */
+export function memorySection(name: string): string {
+  const m = store.memories.get(name);
+  if (!m?.length) return "";
+  const fresh = m.filter((e) => !e.stale).length;
+  const rows = m
+    .slice()
+    .reverse()
+    .slice(0, 20)
+    .map((e, i) => {
+      const from = e.run
+        ? `<a href="#/job/${encodeURIComponent(e.run)}">${esc(e.run)}</a>${e.agent ? ` · ${esc(e.agent)}` : ""}`
+        : esc(t("added by hand"));
+      const paths = e.paths.length ? `<span class="mem-paths">${e.paths.map((g) => `<code>${esc(g)}</code>`).join(" ")}</span>` : "";
+      return (
+        `<li class="mem${e.stale ? " stale" : ""}" style="--i:${i}" data-key="mem-${e.id}">` +
+        `<span class="mem-kind k-${e.kind}">${esc(t(MEMORY_KIND[e.kind]))}</span>` +
+        `<p class="mem-text">${esc(e.text)}</p>` +
+        `<span class="mem-meta">#${e.id} · ${from} · ${fmtAgo(Date.parse(e.at) / 1000)}` +
+        `${e.stale ? ` · <span class="mem-stale" title="${esc(t("A file its paths match changed since it was learned: recall leaves it out."))}">${esc(t("outdated"))}</span>` : ""}</span>` +
+        paths +
+        `</li>`
+      );
+    })
+    .join("");
+  return (
+    `<div class="section-title"><h2>${t("What earlier runs learned")}</h2><span class="eyebrow">${esc(t("{fresh} of {n} recalled", { fresh: String(fresh), n: String(m.length) }))}</span></div>` +
+    `<ul class="mem-list card">${rows}</ul>` +
+    (fresh === m.length
+      ? ""
+      : `<span class="cmd sm"><span class="p">$</span>odw memory prune ${esc(name)} --stale<button class="iconbtn" data-copy="odw memory prune ${esc(name)} --stale" aria-label="${esc(t("Copy"))}">${icons.copy}</button></span>`)
+  );
+}
+
 function detailPane(d: WorkflowDetail): string {
   const runs = d.runs.slice(0, 12).map((r) => {
     const summary = store.runs.find((x) => x.runId === r.runId);
@@ -115,6 +189,8 @@ function detailPane(d: WorkflowDetail): string {
     `<span class="dim" style="font-size:12.5px">${esc(runNote)}</span></div>` +
     `<div class="section-title"><h2>${t("Outline")}</h2><span class="eyebrow">${t("read statically from the source")}</span></div>` +
     outline(d) +
+    estimateSection(d.name) +
+    memorySection(d.name) +
     (runs.length
       ? `<div class="section-title"><h2>${t("Recent runs")}</h2><span class="eyebrow">${tn(d.runs.length, "{n} run", "{n} runs")}</span></div><div class="wf-runs">${runs.join("")}</div>`
       : "") +
