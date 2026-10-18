@@ -1,4 +1,5 @@
 /** Jobs — the run monitor: live run cards + a filterable, day-grouped history. */
+import { driftChip } from "./job";
 import { pill } from "../components/glyph";
 import { icons } from "../icons";
 import { t, tn } from "../i18n";
@@ -21,6 +22,7 @@ export const HISTORY_PAGE = 100;
 
 function provTag(r: RunSummary): string {
   if (r.bundle) return `<span class="tag bundle">${t("shared bundle")}</span>`;
+  if (r.drift?.changes.length) return driftChip(r);
   if (r.dry) return `<span class="tag dry" title="${t("every agent answered by a stub: it cost nothing")}">${t("dry run")}</span>`;
   return r.provider === "claude" ? `<span class="tag cc" title="${t("Claude Code workflow — observed read-only")}">Claude Code</span>` : "";
 }

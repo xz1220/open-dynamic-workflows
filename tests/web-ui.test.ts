@@ -1082,3 +1082,13 @@ test("a dry run is tagged as one in its header", () => {
   assert.match(renderJob(view, NOW), /<span class="tag dry"[^>]*>dry run<\/span>/);
   store.focusRun(null);
 });
+
+test("a run whose CLI or model changed since the workflow's last run says so in a chip that lists it", async () => {
+  const { driftChip } = await import("../web/src/views/job.ts");
+  const html = driftChip({ drift: { since: "20260101-000000-zzzzzz", changes: [
+    { kind: "cli", adapter: "claude", from: "2.1.302", to: "2.1.330" },
+    { kind: "model", adapter: "codex", label: "review", from: null, to: "gpt-6" },
+  ] } });
+  assert.match(html, /<span class="tag drift" title="since 20260101-000000-zzzzzz\nclaude CLI 2\.1\.302 → 2\.1\.330\nreview on codex: model default → gpt-6">2 changes since last run<\/span>/);
+  assert.equal(driftChip({}), "");
+});

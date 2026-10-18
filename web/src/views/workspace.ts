@@ -5,7 +5,7 @@ import { icons } from "../icons";
 import { t, tn } from "../i18n";
 import { store } from "../store";
 import type { WorkflowDetail, WorkflowSummary } from "../types";
-import { esc, fmtAgo } from "../util";
+import { esc, fmtAgo, fmtDurMs, fmtUsd } from "../util";
 import { emptyArt } from "./activity";
 
 /**
@@ -93,6 +93,44 @@ function outline(d: WorkflowDetail): string {
   );
 }
 
+/** A p50–p90 range as a bar: solid to the median, faint on to the 90th percentile, on a shared scale. */
+function rangeBar(s: { p50: number; p90: number } | null, max: number): string {
+  if (!s || max <= 0) return `<span class="est-bar none"></span>`;
+  const p50 = Math.min(100, (s.p50 / max) * 100);
+  const p90 = Math.min(100, (s.p90 / max) * 100);
+  return `<span class="est-bar"><i class="p90" style="--w:${p90.toFixed(1)}%"></i><i class="p50" style="--w:${p50.toFixed(1)}%"></i></span>`;
+}
+
+/** What a run of this workflow costs, from its earlier runs (`odw estimate`; ODW extension). */
+function estimateSection(name: string): string {
+  const e = store.estimates.get(name);
+  if (!e || !e.total) return "";
+  const money = e.total.costUsd != null;
+  const pick = (f: { costUsd: { p50: number; p90: number } | null; wallMs: { p50: number; p90: number } | null }) => (money ? f.costUsd : f.wallMs);
+  const fmt = (n: number) => (money ? fmtUsd(n) : fmtDurMs(n));
+  const max = Math.max(1e-9, ...e.phases.map((p) => pick(p)?.p90 ?? 0));
+  const T = e.total;
+  const fig = (k: string, s: { p50: number; p90: number } | null, f: (n: number) => string) =>
+    s ? `<div class="est-fig"><span class="k">${esc(k)}</span><span class="v num">${f(s.p50)}</span><span class="p9">p90 ${f(s.p90)}</span></div>` : "";
+  return (
+    `<div class="section-title"><h2>${t("What a run costs")}</h2><span class="eyebrow">${esc(tn(e.runs.length, "from {n} earlier run", "from {n} earlier runs"))}</span></div>` +
+    `<div class="est card">` +
+    `<div class="est-figs">${fig(t("cost"), T.costUsd, fmtUsd)}${fig(t("wall time"), T.wallMs, fmtDurMs)}${fig(t("agents"), T.agents, (n) => String(Math.round(n)))}</div>` +
+    `<div class="est-rows">` +
+    e.phases
+      .map(
+        (p, i) =>
+          `<div class="est-row" style="--i:${i}"><span class="nm">${esc(p.phase ?? t("outside phases"))}</span>${rangeBar(pick(p), max)}` +
+          `<span class="num">${pick(p) ? `${fmt(pick(p)!.p50)} – ${fmt(pick(p)!.p90)}` : "—"}</span></div>`,
+      )
+      .join("") +
+    `</div>` +
+    `<p class="est-note">${esc([money ? t("Per phase: median to 90th percentile cost.") : t("Per phase: median to 90th percentile time — the CLIs reported no dollars."), ...e.notes].join(" · "))}</p>` +
+    `<span class="cmd sm"><span class="p">$</span>odw run ${esc(name)} --estimate<button class="iconbtn" data-copy="odw run ${esc(name)} --estimate" aria-label="${esc(t("Copy"))}">${icons.copy}</button></span>` +
+    `</div>`
+  );
+}
+
 function detailPane(d: WorkflowDetail): string {
   const runs = d.runs.slice(0, 12).map((r) => {
     const summary = store.runs.find((x) => x.runId === r.runId);
@@ -115,6 +153,7 @@ function detailPane(d: WorkflowDetail): string {
     `<span class="dim" style="font-size:12.5px">${esc(runNote)}</span></div>` +
     `<div class="section-title"><h2>${t("Outline")}</h2><span class="eyebrow">${t("read statically from the source")}</span></div>` +
     outline(d) +
+    estimateSection(d.name) +
     (runs.length
       ? `<div class="section-title"><h2>${t("Recent runs")}</h2><span class="eyebrow">${tn(d.runs.length, "{n} run", "{n} runs")}</span></div><div class="wf-runs">${runs.join("")}</div>`
       : "") +

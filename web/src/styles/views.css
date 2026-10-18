@@ -667,6 +667,95 @@ ul.mcp li {
   }
 }
 
+/* ---- drift: what changed under a workflow since its last run ---- */
+.tag.drift {
+  border-color: var(--amber-line);
+  background: var(--amber-soft);
+  color: var(--amber-ink);
+}
+.tag.drift::before {
+  content: "↯ ";
+}
+
+/* ---- what a run of a workflow costs, from its earlier runs ---- */
+.est {
+  padding: 18px 20px;
+}
+.est-figs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 36px;
+  padding-bottom: 14px;
+  border-bottom: 1px dashed var(--line);
+}
+.est-fig {
+  display: grid;
+}
+.est-fig .k {
+  font-family: var(--f-mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+.est-fig .v {
+  font-family: var(--f-display);
+  font-size: 30px;
+  line-height: 1.1;
+}
+.est-fig .p9 {
+  font-family: var(--f-mono);
+  font-size: 11px;
+  color: var(--mute);
+}
+.est-rows {
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+}
+.est-row {
+  display: grid;
+  grid-template-columns: minmax(90px, 0.6fr) minmax(0, 1.6fr) auto;
+  align-items: center;
+  gap: 12px;
+  font-size: 12.5px;
+  animation: rc-print 400ms var(--ease-out) both;
+  animation-delay: calc(var(--i) * 50ms);
+}
+.est-row .num {
+  font-family: var(--f-mono);
+  font-size: 11.5px;
+  color: var(--ink-2);
+}
+.est-bar {
+  position: relative;
+  height: 8px;
+  border-radius: 4px;
+  background: var(--shade);
+  overflow: hidden;
+}
+.est-bar i {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: var(--w);
+  border-radius: 4px;
+  transform-origin: left;
+  animation: rc-grow 800ms var(--ease-out) both;
+}
+.est-bar .p90 {
+  background: repeating-linear-gradient(-45deg, var(--sig-line) 0 3px, transparent 3px 6px);
+}
+.est-bar .p50 {
+  background: var(--sig);
+}
+.est-note {
+  margin: 12px 0 10px;
+  font-size: 12px;
+  color: var(--mute);
+}
+
 /* ---- a dry run: every agent a stub ---- */
 .tag.dry {
   border-style: dashed;

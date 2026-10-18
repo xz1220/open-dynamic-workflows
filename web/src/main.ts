@@ -570,6 +570,7 @@ async function selectWorkflow(key: string, navigate = true, token = routeToken):
     wfDetail = null;
   }
   render();
+  if (wfDetail?.runs.length) void store.loadEstimate(wfDetail.name);
   if (navigate && location.hash !== `#/workspace/${encodeURIComponent(key)}`) {
     history.replaceState(null, "", `#/workspace/${encodeURIComponent(key)}`);
   }
