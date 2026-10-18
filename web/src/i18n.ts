@@ -723,6 +723,18 @@ const ZH: Record<string, string> = {
   "Outside its scope": "范围之外的改动",
   "It changed these files outside the scope it declared — another agent may be changing them too.":
     "它改动了声明范围之外的这些文件——别的 agent 可能也在改它们。",
+  // The safety snapshot and destructive git commands (ODW extension).
+  "Destructive git commands": "破坏性 git 命令",
+  "ran a destructive git command": "执行了破坏性 git 命令",
+  "ran {n} destructive git command(s)": "执行了 {n} 条破坏性 git 命令",
+  "The working tree was snapshot before this run's first in-place agent — {cmd} puts it back.":
+    "本次运行第一个原地 agent 开始前已为工作区做了快照——{cmd} 可以把它恢复回来。",
+  "No snapshot of the working tree was taken for this run: what it threw away may still be in git reflog.":
+    "本次运行没有为工作区做快照:被丢弃的内容也许还能在 git reflog 里找到。",
+  "Copy restore command": "复制恢复命令",
+  "safety snapshot": "安全快照",
+  "{tracked} changed and {untracked} untracked file(s) kept at {ref} before the first in-place agent — click to copy the restore command":
+    "第一个原地 agent 开始前保存了 {tracked} 个改动文件和 {untracked} 个未跟踪文件,位于 {ref}——点击复制恢复命令",
   "It replied while this background work still ran; it died when the CLI exited, so the reply may rest on work that never finished.":
     "它在这些后台任务仍在运行时就给出了回复;CLI 退出时它们随之终止,所以回复可能基于从未完成的工作。",
   "needs-auth": "需要授权",

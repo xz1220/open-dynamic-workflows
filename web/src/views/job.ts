@@ -113,7 +113,7 @@ function runHead(run: RunDetail, nowSec: number, spendOpen: boolean): string {
   const w = (n: number) => `${((n / total) * 100).toFixed(2)}%`;
   return (
     `<header class="run-head">` +
-    `<div style="min-width:0"><div class="eyebrow"><span>${t("Run")}</span><span class="mono" style="text-transform:none;letter-spacing:0">${esc(run.runId)}</span>${cc}${shared}${driftChip(run)}${run.dry ? `<span class="tag dry" title="${esc(t("every agent answered by a stub: it cost nothing"))}">${t("dry run")}</span>` : ""}${gcTags(run)}</div>` +
+    `<div style="min-width:0"><div class="eyebrow"><span>${t("Run")}</span><span class="mono" style="text-transform:none;letter-spacing:0">${esc(run.runId)}</span>${cc}${shared}${driftChip(run)}${safetyChip(run)}${run.dry ? `<span class="tag dry" title="${esc(t("every agent answered by a stub: it cost nothing"))}">${t("dry run")}</span>` : ""}${gcTags(run)}</div>` +
     `<div class="title-row"><h1 class="display">${esc(run.name)}</h1>${pill(run.state)}</div>` +
     (run.description ? `<p class="lede">${esc(run.description)}</p>` : "") +
     // Who started it (ODW extension): the local user, a named token's name, or trigger:<name>.
@@ -137,6 +137,32 @@ function runHead(run: RunDetail, nowSec: number, spendOpen: boolean): string {
     `<div class="run-prog"><div class="prog">` +
     `<i class="p-done" style="width:${w(c.done)}"></i><i class="p-run" style="width:${w(c.running)}"></i>` +
     `<i class="p-fail" style="width:${w(c.failed)}"></i><i class="p-stale" style="width:${w(c.stale)}"></i></div></div>`
+  );
+}
+
+/** The run's safety snapshot (ODW extension): a chip that copies the command that puts the working tree back. */
+function safetyChip(run: RunDetail): string {
+  const s = run.safetySnapshot;
+  if (!s) return "";
+  const tip = t("{tracked} changed and {untracked} untracked file(s) kept at {ref} before the first in-place agent — click to copy the restore command", {
+    tracked: s.tracked,
+    untracked: s.untracked,
+    ref: s.ref,
+  });
+  return `<span class="tag safety" role="button" tabindex="0" data-copy="odw restore ${esc(run.runId)}" title="${esc(tip)}">${t("safety snapshot")}</span>`;
+}
+
+/** The destructive git commands an agent ran (ODW extension), and how to get the work back. */
+function destructiveGitSection(run: RunDetail, a: AgentView): string {
+  if (!a.destructiveGit?.length) return "";
+  const cmd = `odw restore ${run.runId}`;
+  return (
+    `<div class="drawer-sec">${t("Destructive git commands")}</div>` +
+    `<ul class="denied destructive-git">${a.destructiveGit.map((h) => `<li><span class="tag">${esc(h.what)}</span> ${esc(h.command)}</li>`).join("")}</ul>` +
+    (run.safetySnapshot
+      ? `<p class="dnote">${t("The working tree was snapshot before this run's first in-place agent — {cmd} puts it back.", { cmd: `<code>${esc(cmd)}</code>` })}</p>` +
+        `<button class="btn sm" data-copy="${esc(cmd)}">${icons.copy}${t("Copy restore command")}</button>`
+      : `<p class="dnote">${t("No snapshot of the working tree was taken for this run: what it threw away may still be in git reflog.")}</p>`)
   );
 }
 
@@ -475,6 +501,7 @@ function drawer(run: RunDetail, ai: number, nowSec: number): string {
       ? `<div class="drawer-sec">${t("Outside its scope")}</div><ul class="denied out-of-scope">${a.outOfScope.map((f) => `<li>${esc(f)}</li>`).join("")}</ul>` +
         `<p class="dnote">${t("It changed these files outside the scope it declared — another agent may be changing them too.")}</p>`
       : "") +
+    destructiveGitSection(run, a) +
     changesSection(run, a, ai, rec?.branch) +
     output +
     (evs ? `<div class="drawer-sec">${t("Events")}</div><div class="mini-events">${evs}</div>` : "") +

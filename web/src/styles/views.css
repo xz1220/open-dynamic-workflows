@@ -677,6 +677,30 @@ ul.mcp li {
   content: "↯ ";
 }
 
+/* ---- the safety snapshot, and the destructive git commands it guards against ---- */
+.tag.safety {
+  cursor: copy;
+  border-color: var(--sig-line);
+  background: var(--sig-soft);
+  color: var(--sig-ink);
+}
+.tag.safety::before {
+  content: "⛑ ";
+}
+.denied.destructive-git li::before {
+  content: "✗";
+  left: 2px;
+  color: var(--alarm-ink);
+}
+.denied.destructive-git .tag {
+  margin-right: 4px;
+  color: var(--alarm-ink);
+  background: var(--alarm-soft);
+}
+.node .ngit {
+  color: var(--alarm-ink);
+}
+
 /* ---- what earlier runs of a workflow learned: marginalia, stale ones struck ---- */
 .mem-list {
   list-style: none;

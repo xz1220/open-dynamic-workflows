@@ -952,6 +952,40 @@ test("an agent that left background work running lists it in its drawer, and the
   store.focusRun(null);
 });
 
+test("an agent's destructive git commands are marked on its node and listed in its drawer, with odw restore when the run has a snapshot", () => {
+  const view: JobViewState = {
+    cpNote: "",
+    tab: "graph",
+    selectedAi: 0,
+    reviewAi: null,
+    zoom: 1,
+    logQuery: "",
+    logTypes: new Set(["agent"]),
+    logLimit: 600,
+    follow: true,
+    motion: false,
+  };
+  const hits = [{ command: "cd x && git reset --hard <HEAD>", what: "git reset --hard" }];
+  const snapshot = { ref: "refs/odw/safety/20260101-000000-aaaaaa", commit: "c".repeat(40), head: "h".repeat(40), tracked: 2, untracked: 1, at: NOW - 110 };
+  store.focusRun("20260101-000000-aaaaaa");
+  store.run = detail([agent("fix", "Plan", "done", { adapter: "claude", destructiveGit: hits })], { safetySnapshot: snapshot });
+  store.runEvents = [];
+  const html = renderJob(view, NOW);
+  assert.match(html, /Destructive git commands<\/div><ul class="denied destructive-git"><li><span class="tag">git reset --hard<\/span> cd x &amp;&amp; git reset --hard &lt;HEAD&gt;<\/li><\/ul>/);
+  assert.match(html, /<code>odw restore 20260101-000000-aaaaaa<\/code> puts it back/);
+  assert.match(html, /data-copy="odw restore 20260101-000000-aaaaaa">/);
+  assert.match(html, /<span class="ndeny ngit" title="ran 1 destructive git command\(s\)">git!<\/span>/);
+  // The run's head carries the snapshot as a chip that copies the restore command.
+  assert.match(html, /<span class="tag safety" role="button" tabindex="0" data-copy="odw restore 20260101-000000-aaaaaa" title="2 changed and 1 untracked file\(s\) kept at refs\/odw\/safety\/20260101-000000-aaaaaa/);
+  // Without a snapshot the drawer says where the work may still be.
+  store.run = detail([agent("fix", "Plan", "failed", { adapter: "claude", destructiveGit: hits, failureReason: "destructive_git" })]);
+  const bare = renderJob(view, NOW);
+  assert.match(bare, /No snapshot of the working tree was taken for this run/);
+  assert.doesNotMatch(bare, /tag safety/);
+  assert.equal(reasonLabel("destructive_git"), "ran a destructive git command");
+  store.focusRun(null);
+});
+
 test("evals: a card per eval with its pass-rate dial and trend, and a report as a case × adapter matrix", async () => {
   const { renderEvals, rateColor } = await import("../web/src/views/evals.ts");
   const totals = (passed: number, runs: number) => ({ runs, passed, failed: runs - passed, passRate: passed / runs, costUsd: 0.5, inputTokens: 1000, outputTokens: 100 });

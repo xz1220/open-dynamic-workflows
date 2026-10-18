@@ -177,6 +177,8 @@ export interface AgentView {
   scope?: string[];
   /** The files it changed outside its scope, finished or failed (ODW extension). */
   outOfScope?: string[];
+  /** The destructive git commands its CLI ran — git reset --hard, git clean -f, … (ODW extension; src/destructive-git.ts). */
+  destructiveGit?: Array<{ command: string; what: string }>;
   /** What the adapter reported spending on this agent. */
   usage?: Usage | null;
   /** What an isolated (worktree) agent changed; its diff is served separately. */
@@ -336,6 +338,21 @@ export interface RunDetail extends RunSummary {
   pinned?: { at: number; by: string | null };
   /** `odw gc` trimmed its transcripts and stderr: when, and how many files (ODW extension). Absent otherwise. */
   trimmed?: { at: number; files: number };
+  /** The working tree as it stood before the run's first in-place agent — what `odw restore <run>` puts back (ODW extension; src/safety.ts). */
+  safetySnapshot?: SafetySnapshot;
+}
+
+/** A run's safety snapshot at refs/odw/safety/<run> (ODW extension). */
+export interface SafetySnapshot {
+  ref: string;
+  commit: string;
+  head: string | null;
+  /** Changed tracked files, and untracked ones, it kept. */
+  tracked: number;
+  untracked: number;
+  /** Untracked files left out for their size. */
+  skipped?: string[];
+  at: number | null;
 }
 
 /** An adapter CLI's `--version` as a run recorded it: null, with why, when the CLI did not tell (ODW extension). */
