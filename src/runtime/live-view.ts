@@ -192,6 +192,52 @@ export function fallbackLines(agents: AgentView[], events: WorkflowEvent[]): str
   return lines;
 }
 
+/**
+ * What `odw status` says about accounts (ODW extension; see
+ * ../adapters/accounts): per adapter with accounts — an agent's adapter
+ * `claude@work` — how many agents ran on each, how many run there now, and
+ * how many left it for another. No lines for a run without one.
+ */
+export function accountLines(agents: AgentView[]): string[] {
+  const pools = new Map<string, Map<string, { on: number; running: number; left: number }>>();
+  const tally = (account: string) => {
+    const at = account.lastIndexOf("@");
+    if (at <= 0) return undefined;
+    const base = account.slice(0, at);
+    if (!pools.has(base)) pools.set(base, new Map());
+    const pool = pools.get(base)!;
+    if (!pool.has(account)) pool.set(account, { on: 0, running: 0, left: 0 });
+    return pool.get(account)!;
+  };
+  for (const a of agents) {
+    if (a.kind !== "agent") continue;
+    const on = a.adapter !== null ? tally(a.adapter) : undefined;
+    if (on) {
+      on.on += 1;
+      if (a.state === "running") on.running += 1;
+    }
+    for (const left of new Set(a.fellBackFrom ?? [])) {
+      const from = tally(left);
+      if (from) from.left += 1;
+    }
+  }
+  const plural = (n: number, what: string): string => `${n} ${what}${n === 1 ? "" : "s"}`;
+  return [...pools.entries()]
+    .sort(([x], [y]) => x.localeCompare(y))
+    .map(([base, pool]) => {
+      const parts = [...pool.entries()]
+        .sort(([x], [y]) => x.localeCompare(y))
+        .map(([name, t]) =>
+          [
+            `${sanitizeText(name, 40)} ${plural(t.on, "agent")}`,
+            ...(t.running > 0 ? [`${t.running} running`] : []),
+            ...(t.left > 0 ? [`${t.left} moved on (quota or login)`] : []),
+          ].join(", "),
+        );
+      return `accounts of ${sanitizeText(base, 40)}: ${parts.join(" · ")}`;
+    });
+}
+
 /** How many runaway agents `odw status` names; past them, a count. */
 const RUNAWAYS_NAMED = 5;
 

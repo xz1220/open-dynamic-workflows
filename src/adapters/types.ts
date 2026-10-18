@@ -10,6 +10,7 @@ import type { TriggerSettings } from "../triggers.js";
 import type { EgressAllow } from "./egress.js";
 import type { CostGate } from "../forecast.js";
 import type { LimitSpec } from "../limits.js";
+import type { AccountOf } from "./accounts.js";
 
 /**
  * Which per-call options this CLI can carry, and the argv flag that carries
@@ -311,6 +312,8 @@ export interface Adapter {
    * extension; see ./egress). The built-in adapters declare theirs.
    */
   egressHosts?: string[];
+  /** An account of another adapter (ODW extension; see ./accounts): set on the adapters `accounts` expands into. */
+  account?: AccountOf;
 }
 
 /**
@@ -704,6 +707,12 @@ export interface NotifySettings {
 export interface Config {
   adapters: Record<string, Adapter>;
   settings: Settings;
+  /**
+   * Account pools (an ODW extension; see ./accounts): adapter name → its
+   * accounts' adapter names (`claude@work`, …), in config order. A call on
+   * the adapter runs on any of them. Absent: none.
+   */
+  accounts?: Record<string, string[]>;
 }
 
 /** The outcome of a single CLI invocation. */

@@ -96,6 +96,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
 import { agentBaseEnv } from "./adapters/agent-env.js";
+import { byHeadroom, type Headroom } from "./adapters/accounts.js";
 import { isOnPath, resolveAdapter } from "./adapters/config.js";
 import {
   backoffSeconds,
@@ -506,6 +507,14 @@ export interface AgentRoute {
   start: number;
   /** Why adapters before `start` were passed over for their tier, for the run's log. */
   skipped: string[];
+  /**
+   * An adapter of the chain stood for its accounts (an ODW extension; see
+   * adapters/accounts.ts): they are in the chain, by headroom, and the call
+   * hands its work over between them unless it says `handoff: false`.
+   */
+  pooled?: boolean;
+  /** The account this pooled call counts on as running, until it settles (see {@link Bridge.releaseRoute}). */
+  lease?: { adapter: string | null };
 }
 
 /** A call moving to the next adapter of its fallback chain (an ODW extension). */
@@ -596,6 +605,9 @@ export class Bridge {
   private readonly quotaStreaks = new Map<string, number>();
   /** Adapters the quota breaker took out of the run: later calls start past them. */
   private readonly tripped = new Set<string>();
+  /** Per account: its quota failures this run, and its calls routed and not yet settled — its headroom (ODW extension: accounts). */
+  private readonly quotaFailures = new Map<string, number>();
+  private readonly load = new Map<string, number>();
   private readonly redactor: Redactor | undefined;
   /** The run's pauses for spent quotas, and the resets the CLIs named (ODW extension: quotaWait). */
   private readonly quota: QuotaWaits;
@@ -760,6 +772,53 @@ export class Bridge {
    * Throws a ConfigError — fatal, like an unknown adapter — for a malformed list.
    */
   chainFor(choice?: AdapterChoice | null): Adapter[] {
+    return this.expandAccounts(this.namedChain(choice)).chain;
+  }
+
+  /**
+   * A chain with each adapter that has accounts (an ODW extension; see
+   * adapters/accounts.ts) replaced by them, by headroom: not in a quota pause
+   * first, then the fewest quota failures this run, then the fewest agents
+   * running on it. `pooled`: one was.
+   */
+  private expandAccounts(named: Adapter[]): { chain: Adapter[]; pooled: boolean } {
+    const pools = this.config.accounts ?? {};
+    let pooled = false;
+    const chain = named.flatMap((adapter) => {
+      const names = Object.prototype.hasOwnProperty.call(pools, adapter.name) ? pools[adapter.name]! : undefined;
+      if (!names || names.length === 0) return [adapter];
+      pooled = true;
+      const accounts = names.map((name) => resolveAdapter(this.config, name));
+      return byHeadroom(accounts, (account) => this.headroom(account.name));
+    });
+    return { chain: chain.filter((adapter, i) => chain.findIndex((other) => other.name === adapter.name) === i), pooled };
+  }
+
+  /** What the run has seen of `adapter` (an ODW extension: accounts): what accounts are ordered by. */
+  headroom(adapter: string): Headroom {
+    return { out: this.isOut(adapter), quotaFailures: this.quotaFailures.get(adapter) ?? 0, running: this.load.get(adapter) ?? 0 };
+  }
+
+  /** A pooled call is no longer counted as running on its account (an ODW extension: accounts); idempotent. */
+  releaseRoute(route: AgentRoute | undefined): void {
+    const lease = route?.lease;
+    if (!lease?.adapter) return;
+    const left = (this.load.get(lease.adapter) ?? 1) - 1;
+    if (left > 0) this.load.set(lease.adapter, left);
+    else this.load.delete(lease.adapter);
+    lease.adapter = null;
+  }
+
+  /** Count a pooled call as running on `adapter` instead (an ODW extension: accounts). */
+  private leaseTo(route: AgentRoute, adapter: string): void {
+    if (!route.lease) return;
+    this.releaseRoute(route);
+    route.lease.adapter = adapter;
+    this.load.set(adapter, (this.load.get(adapter) ?? 0) + 1);
+  }
+
+  /** The adapters a choice names, and the `fallback` setting's chain — before accounts are expanded. */
+  private namedChain(choice?: AdapterChoice | null): Adapter[] {
     let chain: Adapter[];
     if (Array.isArray(choice)) {
       if (!isAdapterChoice(choice)) {
@@ -786,11 +845,16 @@ export class Bridge {
    * may not run fails as it is (see {@link run}).
    */
   route(choice?: AdapterChoice | null, permissions?: unknown): AgentRoute {
-    const chain = this.chainFor(choice);
+    const { chain, pooled } = this.expandAccounts(this.namedChain(choice));
     const plan = this.permissionsFor(chain[0]!, permissions);
     const skipped: string[] = [];
     const start = plan.error ? 0 : this.nextAdapter(chain, -1, plan.tier!, skipped);
-    return { chain, permissions: plan, start, skipped };
+    if (!pooled) return { chain, permissions: plan, start, skipped };
+    // A pooled call counts as running on its account from now on, so the
+    // calls routed after it — a fan-out's — spread over the others.
+    const route: AgentRoute = { chain, permissions: plan, start, skipped, pooled, lease: { adapter: null } };
+    if (start >= 0) this.leaseTo(route, chain[start]!.name);
+    return route;
   }
 
   /**
@@ -894,11 +958,13 @@ export class Bridge {
     // A fallback hands the work over (ODW extension; see ./handoff): what the
     // call's CLI runs print is read for a brief, and a failed-over run's
     // worktree is held for the next adapter — let go however the call ends.
-    const handsOver = request.handoff ?? this.config.settings.handoff === true;
-    if (!handsOver) return this.walkChain(request, options, call);
+    // A chain across one adapter's accounts (ODW extension: accounts) hands over too.
+    const route = options.route ?? this.route(request.adapter, request.permissions);
+    const handsOver = request.handoff ?? (this.config.settings.handoff === true || route.pooled === true);
+    if (!handsOver) return this.walkChain(request, { ...options, route }, call);
     const handoff: HandoffState = { log: new HandoffLog(), hold: false, held: null, heldPosture: null, carry: false, brief: null };
     try {
-      return await this.walkChain(request, options, { ...call, handoff });
+      return await this.walkChain(request, { ...options, route }, { ...call, handoff });
     } finally {
       await handoff.held?.close();
     }
@@ -907,6 +973,23 @@ export class Bridge {
   /** {@link runCall}'s walk down the call's route, adapter by adapter. */
   private async walkChain(request: AgentRequest, options: RunOptions, call: CallEnv): Promise<AgentOutcome> {
     let route = options.route ?? this.route(request.adapter, request.permissions);
+    try {
+      return await this.walkRoute(request, options, call, route, (next) => (route = next));
+    } finally {
+      // However the call ended, it no longer runs on its account (ODW extension: accounts).
+      this.releaseRoute(route);
+    }
+  }
+
+  /** {@link walkChain}'s loop; `reroute` is told each new route it takes. */
+  private async walkRoute(
+    request: AgentRequest,
+    options: RunOptions,
+    call: CallEnv,
+    first: AgentRoute,
+    reroute: (route: AgentRoute) => void,
+  ): Promise<AgentOutcome> {
+    let route = first;
     for (const note of route.skipped) options.onNote?.(note);
     const fellBackFrom: string[] = [];
     // The adapter the call is on — the one it was dispatched to, until it
@@ -952,6 +1035,7 @@ export class Bridge {
           await options.beforeRetry?.();
           at = next;
           on = route.chain[next]!.name;
+          this.leaseTo(route, on);
           why = "fallback";
           continue;
         }
@@ -964,7 +1048,10 @@ export class Bridge {
       await this.waitForQuota(reset, options.signal, () =>
         options.onQuotaWait?.({ adapter: reset.adapter, resumeAt: reset.resumeAt / 1000 }),
       );
+      // Routed again: the old route no longer counts on its account (ODW extension: accounts).
+      this.releaseRoute(route);
       route = this.route(request.adapter, request.permissions);
+      reroute(route);
       at = route.start;
       if (at < 0) continue; // out of quota again already: it waits again, or fails
       if (route.chain[at]!.name !== on) fellBackFrom.push(on);
@@ -1623,6 +1710,8 @@ export class Bridge {
     if (reason === "quota" && retryAfter !== undefined && this.config.settings.quotaWait) {
       this.quota.noteReset(adapter.name, retryAfter);
     }
+    // Every quota failure counts against its account's headroom (ODW extension: accounts).
+    if (reason === "quota") this.quotaFailures.set(adapter.name, (this.quotaFailures.get(adapter.name) ?? 0) + 1);
     if (this.quota.isOut(adapter.name)) return;
     const quota = reason === "quota" ? (this.quotaStreaks.get(adapter.name) ?? 0) + 1 : 0;
     if (quota > 0) this.quotaStreaks.set(adapter.name, quota);

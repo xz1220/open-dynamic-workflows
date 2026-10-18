@@ -721,7 +721,11 @@ export function createPrimitives(
           }),
         ),
       );
-      while (await ctx.bridge.awaitQuota(route, signal)) route = ctx.bridge.route(adapterChoice, opts.permissions);
+      while (await ctx.bridge.awaitQuota(route, signal)) {
+        // Routed again: the old route no longer counts on its account (ODW extension: accounts).
+        ctx.bridge.releaseRoute?.(route);
+        route = ctx.bridge.route(adapterChoice, opts.permissions);
+      }
       await turn?.gate?.(signal);
     };
     const request: AgentRequest = {
@@ -1141,6 +1145,8 @@ export function createPrimitives(
       turn?.settled();
       // So may the calls waiting for its scope (ODW extension).
       claim?.release();
+      // A call routed across accounts that never ran no longer counts on one (ODW extension: accounts).
+      ctx.bridge.releaseRoute?.(route);
     }
   };
 

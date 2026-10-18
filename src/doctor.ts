@@ -38,7 +38,8 @@ import {
   sandboxProblem,
   type SandboxEngine,
 } from "./adapters/sandbox.js";
-import type { Config, ContainerSandbox, PermissionTier } from "./adapters/types.js";
+import type { Adapter, Config, ContainerSandbox, PermissionTier } from "./adapters/types.js";
+import { loginCheckArgv } from "./adapters/accounts.js";
 import { Bridge } from "./bridge.js";
 import { redactorFor, type RedactionCoverage } from "./redact.js";
 import { otelCheck } from "./runtime/otel-export.js";
@@ -198,6 +199,11 @@ export async function runDoctor(opts: DoctorOptions): Promise<DoctorReport> {
       });
       continue;
     }
+    // An account (ODW extension; see adapters/accounts.ts): its CLI is its adapter's — is its login there?
+    if (config.adapters[a.name]!.account) {
+      add(await loginCheck(config.adapters[a.name]!, runner, opts.env ?? process.env));
+      continue;
+    }
     const exe = config.adapters[a.name]!.command[0]!;
     const res = await runner([exe, "--version"], { timeout: 15 });
     const line = (res.stdout || res.stderr).trim().split("\n")[0]?.slice(0, 80) ?? "";
@@ -212,7 +218,9 @@ export async function runDoctor(opts: DoctorOptions): Promise<DoctorReport> {
     });
   }
 
-  for (const name of opts.smoke) {
+  // An adapter with accounts is smoke-tested on each of them (ODW extension: accounts).
+  const smoke = [...new Set(opts.smoke.flatMap((name) => config.accounts?.[name] ?? [name]))];
+  for (const name of smoke) {
     const listingFor = listing.find((a) => a.name === name);
     if (!listingFor) {
       add({ id: `smoke:${name}`, title: `Smoke ${name}`, status: "fail", detail: "not a configured adapter" });
@@ -264,6 +272,36 @@ export async function runDoctor(opts: DoctorOptions): Promise<DoctorReport> {
   }
 
   return { ok: !checks.some((c) => c.status === "fail"), checks };
+}
+
+/**
+ * An account's login check (ODW extension; see adapters/accounts.ts): its
+ * CLI's own non-model status command (`claude auth status`, `codex login
+ * status`) run with the account's config directory — "not checked" for a CLI
+ * that has none. Not logged in is a warning: the run's other accounts may be.
+ */
+export async function loginCheck(
+  adapter: Adapter,
+  runner: CommandRunner,
+  env: Record<string, string | undefined> = process.env,
+): Promise<DoctorCheck> {
+  const account = adapter.account!;
+  const check = { id: `login:${adapter.name}`, title: `Account ${adapter.name}` };
+  const where = `${account.dirEnv}=${account.configDir}`;
+  const argv = loginCheckArgv(adapter);
+  if (!argv) return { ...check, status: "skip", detail: `${where} · login not checked — ODW knows no login check of ${adapter.command[0]}` };
+  const base: Record<string, string> = {};
+  for (const [name, value] of Object.entries(env)) if (value !== undefined) base[name] = value;
+  const res = await runner(argv, { timeout: 15, env: { ...base, ...adapter.env } });
+  const said = (res.stdout || res.stderr).trim().split("\n")[0]?.slice(0, 80) ?? "";
+  if (res.returncode === 0) return { ...check, status: "ok", detail: `${where} · logged in (\`${argv.slice(1).join(" ")}\`)` };
+  const login = argv[1] === "auth" ? `${argv[0]} auth login` : `${argv[0]} login`;
+  return {
+    ...check,
+    status: "warn",
+    detail: `${where} · not logged in (\`${argv.slice(1).join(" ")}\` exited ${res.returncode}${said ? `: ${said}` : ""})`,
+    hint: `log it in: ${where} ${login} — until then its agents move to the adapter's other accounts`,
+  };
 }
 
 /**

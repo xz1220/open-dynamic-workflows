@@ -81,6 +81,7 @@ import { compareRuns, findComparedAgents, formatAgentComparison, formatCompariso
 import { editBlocker, editorCommand, editPayload, readPayloadOption } from "./runtime/checkpoint-edit.js";
 import { startRun, startRunFromSource, waitFor } from "./runtime/launcher.js";
 import { attachRun, bannerLines, checkpointCommands, fallbackLines, formatEvent, formatUsage, resolveRunMode, runawayLines, shellArg, type RunMode } from "./runtime/live-view.js";
+import { accountLines } from "./runtime/live-view.js";
 import { isRunActive, RunObserver } from "./runtime/run-liveness.js";
 import { RunStore, TERMINAL_STATES, type ReplayLink } from "./runtime/run-store.js";
 import { detail, evalTagOf, summarize, type RunDetail } from "./runtime/runs-view.js";
@@ -992,6 +993,8 @@ function cmdStatus(rest: string[]): number {
   if (clis.length > 0) process.stdout.write(`  CLIs: ${sanitizeText(clis.join(" · "), 300)}\n`);
   // Agents that fell back to another adapter, and adapters the quota breaker took out (ODW extensions).
   for (const line of fallbackLines(run.agents, events)) process.stdout.write(`  ${line}\n`);
+  // Agents per account of an adapter (ODW extension; see adapters/accounts.ts).
+  for (const line of accountLines(run.agents)) process.stdout.write(`  ${line}\n`);
   // Agents killed at one of their limits, with the evidence (ODW extension; see limits.ts).
   for (const line of runawayLines(run.agents)) process.stdout.write(`  ${line}\n`);
   if (typeof meta.resumedFrom === "string") {
