@@ -389,6 +389,25 @@ export interface RunDetail extends RunSummary {
    * puts back. Absent when none was taken.
    */
   safetySnapshot?: SafetySnapshotView;
+  /** How each parallel() and pipeline() came out, from its fanout_done event, in order (ODW extension; see ../fanout). Absent when none settled. */
+  fanOuts?: FanOutView[];
+}
+
+/** One settled parallel() or pipeline() call, as a run's detail shows it (ODW extension; see ../fanout). */
+export interface FanOutView {
+  call: "parallel()" | "pipeline()";
+  phase: string | null;
+  total: number;
+  ok: number;
+  failed: number;
+  null: number;
+  /** Failed slots by reason. */
+  reasons: Record<string, number>;
+  /** What `minOk` asked of it in ok results, when it set one, and whether it fell short. */
+  required?: number;
+  belowMinOk?: boolean;
+  /** When it settled (epoch seconds). */
+  at: number | null;
 }
 
 /** A run's safety snapshot, as its detail shows it (ODW extension; see ../safety). */
@@ -823,6 +842,8 @@ export class EventFold {
   drift: RunDrift | undefined;
   /** The working tree's snapshot before the run's first in-place agent, from its safety_snapshot event (ODW extension). */
   safety: SafetySnapshotView | undefined;
+  /** Its settled parallel() and pipeline() calls, from their fanout_done events (ODW extension). */
+  readonly fanOuts: FanOutView[] = [];
 
   apply(events: WorkflowEvent[]): this {
     for (const ev of events) {
@@ -838,6 +859,10 @@ export class EventFold {
         this.drift.changes.push(change);
       }
       if (ev.type === "safety_snapshot") this.safety = safetySnapshotOf(ev) ?? this.safety;
+      if (ev.type === "fanout_done") {
+        const fanOut = fanOutOf(ev);
+        if (fanOut) this.fanOuts.push(fanOut);
+      }
       if (ev.type === "run_finished" || ev.type === "run_failed" || ev.type === "run_stopped") {
         this.ended = true;
         this.checkpoints.clear(); // nobody waits on a run that ended
@@ -850,6 +875,29 @@ export class EventFold {
     if (events.length > 0) this.lastActivityTs = asNumber(events[events.length - 1]!.ts);
     return this;
   }
+}
+
+/** A fanout_done event as a run's detail shows it (ODW extension); null for a malformed one. */
+function fanOutOf(ev: WorkflowEvent): FanOutView | null {
+  const count = (value: unknown): number | null => (typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : null);
+  const [total, ok, failed, nulls] = [count(ev.total), count(ev.ok), count(ev.failed), count(ev.null)];
+  if (total === null || ok === null || failed === null || nulls === null) return null;
+  const reasons: Record<string, number> = {};
+  if (ev.reasons !== null && typeof ev.reasons === "object" && !Array.isArray(ev.reasons)) {
+    for (const [reason, n] of Object.entries(ev.reasons)) if (count(n) !== null) reasons[reason] = n as number;
+  }
+  const required = count(ev.required);
+  return {
+    call: ev.call === "pipeline()" ? "pipeline()" : "parallel()",
+    phase: typeof ev.phase === "string" ? ev.phase : null,
+    total,
+    ok,
+    failed,
+    null: nulls,
+    reasons,
+    ...(required !== null ? { required, belowMinOk: ev.belowMinOk === true } : {}),
+    at: typeof ev.ts === "number" ? ev.ts : null,
+  };
 }
 
 /** A safety_snapshot event as a run's detail shows it (ODW extension); null for a malformed one. */
@@ -1069,6 +1117,7 @@ export function detailFrom(
     odwVersion: typeof meta.odwVersion === "string" ? meta.odwVersion : null,
     sourceHash: typeof meta.sourceHash === "string" ? meta.sourceHash : null,
     ...(fold.safety ? { safetySnapshot: { ...fold.safety, ...(fold.safety.skipped ? { skipped: [...fold.safety.skipped] } : {}) } } : {}),
+    ...(fold.fanOuts.length > 0 ? { fanOuts: fold.fanOuts.map((f) => ({ ...f, reasons: { ...f.reasons } })) } : {}),
   };
 }
 

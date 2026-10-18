@@ -41,6 +41,7 @@
 import { formatSeconds } from "../adapters/failures.js";
 import { addUsage, type Usage } from "../adapters/usage.js";
 import type { WorkflowEvent } from "../events.js";
+import { fanOutLine } from "../fanout.js";
 import { limitLabel } from "../limits.js";
 import { clockTime, pausedForOf, pausedText } from "../quota-wait.js";
 import {
@@ -146,6 +147,8 @@ export function formatEvent(ev: WorkflowEvent): string {
   else if (type === "safety_snapshot" || type === "destructive_git") detail = sanitizeText(ev.message, 400);
   // Another model served an agent than the one it asked for (ODW extension; see ../served-model).
   else if (type === "model_substituted") detail = sanitizeText(ev.message, 400);
+  // How a parallel() or pipeline() came out (ODW extension; see ../fanout).
+  else if (type === "fanout_done") detail = sanitizeText(fanOutLine(ev), 400);
   else detail = sanitizeText(ev.error ?? ev.runId ?? "", 200);
   return `[${stamp}] ${type.padEnd(15)}${phase} ${detail}`.trimEnd();
 }
@@ -544,6 +547,13 @@ class LiveView {
       if (ev.type === "model_substituted") {
         out.push(`    ${p.run(`${g.bullet} ${sanitizeText(ev.message, 400)}`)}`);
         applyAgentEvent(this.agents, ev);
+        continue;
+      }
+      // How a parallel() or pipeline() came out (ODW extension; see ../fanout): amber when most of it is null.
+      if (ev.type === "fanout_done") {
+        const line = `${g.bullet} ${sanitizeText(fanOutLine(ev), 400)}`;
+        const bad = ev.belowMinOk === true || (typeof ev.total === "number" && (Number(ev.failed) + Number(ev.null)) * 2 > ev.total);
+        out.push(`    ${bad ? p.run(line) : p.dim(line)}`);
         continue;
       }
       if (ev.type === "checkpoint_requested" && typeof ev.checkpointId === "number") {

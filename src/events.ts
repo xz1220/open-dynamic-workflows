@@ -39,6 +39,8 @@ export const SAFETY_SNAPSHOT = "safety_snapshot";
 export const DESTRUCTIVE_GIT = "destructive_git";
 // An agent's CLI said another model served it than the one asked for: { agentId, label, phase, adapter, requested, served, policy, message } (ODW extension; see served-model.ts).
 export const MODEL_SUBSTITUTED = "model_substituted";
+// A parallel() or pipeline() call settled: { call, phase?, total, ok, failed, null, reasons, minOk?, required?, belowMinOk? } (ODW extension; see fanout.ts).
+export const FANOUT_DONE = "fanout_done";
 
 export interface WorkflowEvent {
   ts: number;

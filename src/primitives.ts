@@ -135,6 +135,20 @@ import { AGENT_FAILED, AGENT_FINISHED, AGENT_STARTED, DESTRUCTIVE_GIT, HANDOFF, 
 import { substitutionNote } from "./served-model.js";
 import { DestructiveGitWatch } from "./destructive-git.js";
 import { ExecError, createExec, execStep, type ExecOptions, type ExecResult } from "./exec.js";
+import {
+  countOutcomes,
+  countsText,
+  failedOutcome,
+  FanOutShortfall,
+  fanOutEvent,
+  fanOutWhat,
+  mostlyNull,
+  readMinOk,
+  requiredOk,
+  returnedOutcome,
+  type MinOk,
+  type SlotOutcome,
+} from "./fanout.js";
 import { CostGateRejected, costGateTitle, readCostGate, type CostGate, type CostHistory } from "./forecast.js";
 import { Expectations, planChecks, scopeOnlyPlan, type AgentChecks, type ExpectOptions } from "./expect.js";
 import { resumeKey, type AgentCallRecord, type AgentResultRecord } from "./journal.js";
@@ -284,6 +298,13 @@ export interface ParallelOptions {
    * this call. Unset: the setting.
    */
   costGate?: CostGate | null;
+  /**
+   * The ok results it needs (see ./fanout): a whole number, a fraction of
+   * its thunks (`0.8`), or `"all"`. Fewer, and parallel() throws a
+   * FanOutShortfall with the counts instead of resolving with the nulls.
+   * Unset: it resolves whatever came back, as in Claude Code.
+   */
+  minOk?: MinOk;
 }
 
 export interface Budget {
@@ -1508,11 +1529,13 @@ export function createPrimitives(
     }
     // ODW extension: options after the thunks — `notes` (see ./notes) and `costGate` (see ./forecast).
     if (opts !== undefined && (opts === null || typeof opts !== "object" || Array.isArray(opts))) {
-      throw new WorkflowScriptError(`parallel()'s options must be an object — { notes?: boolean, costGate?: { usd } }; got ${describeValue(opts)}`);
+      throw new WorkflowScriptError(`parallel()'s options must be an object — { notes?: boolean, costGate?: { usd }, minOk? }; got ${describeValue(opts)}`);
     }
     for (const key of Object.keys(opts ?? {})) {
-      if (key !== "notes" && key !== "costGate") throw new WorkflowScriptError(`parallel() has no option "${key}"; use notes or costGate`);
+      if (key !== "notes" && key !== "costGate" && key !== "minOk") throw new WorkflowScriptError(`parallel() has no option "${key}"; use notes, costGate or minOk`);
     }
+    // `minOk` (ODW extension; see ./fanout): too few ok results is an error, not a list of nulls.
+    const minOk = opts?.minOk === undefined ? undefined : readMinOk(opts.minOk, (m) => new WorkflowScriptError(m));
     if (opts?.notes !== undefined && typeof opts.notes !== "boolean") {
       throw new WorkflowScriptError(`parallel(): notes must be true or false; got ${describeValue(opts.notes)}`);
     }
@@ -1529,19 +1552,26 @@ export function createPrimitives(
     warnFanOut("parallel()", thunks.length);
     const forecasting = forecastFanOut("parallel()", thunks.length, thunks.length, gate, ctx.currentPhase);
     if (forecasting) await forecasting;
+    const startedIn = ctx.currentPhase;
+    const outcomes: SlotOutcome[] = [];
     const batch = (): Promise<Array<T | null>> =>
       asFanOut(() => ctx.scheduler.gather(
         thunks.map((thunk, i) => async () => {
           try {
-            return await thunk();
+            const value = await thunk();
+            outcomes[i] = returnedOutcome(value);
+            return value;
           } catch (err) {
+            outcomes[i] = failedOutcome(err);
             noteSwallowed(err, `parallel() thunk ${i}`);
             throw err;
           }
         }),
       ));
     // Every agent its thunks start — through any await — has notes on or off as it says.
-    return opts?.notes === undefined ? batch() : notesScope.run(opts.notes, batch);
+    const results = await (opts?.notes === undefined ? batch() : notesScope.run(opts.notes, batch));
+    fanOutDone("parallel()", startedIn, Array.from({ length: thunks.length }, (_, i) => outcomes[i]), minOk);
+    return results;
   };
 
   const pipeline = async (items: unknown[], ...stages: Stage[]): Promise<unknown[]> => {
@@ -1561,18 +1591,49 @@ export function createPrimitives(
     // A pipeline() takes no options: the `costGate` setting covers it.
     const forecasting = forecastFanOut("pipeline()", items.length, items.length * Math.max(1, stages.length), undefined, ctx.currentPhase);
     if (forecasting) await forecasting;
+    const startedIn = ctx.currentPhase;
+    const outcomes: SlotOutcome[] = [];
     const chains = items.map((item, index) => async (): Promise<unknown> => {
       let value: unknown = item;
       let s = 0;
       try {
         for (; s < stages.length; s++) value = await stages[s]!(value, item, index);
       } catch (err) {
+        outcomes[index] = failedOutcome(err);
         noteSwallowed(err, `pipeline() item ${index} at stage ${s}`);
         throw err;
       }
+      outcomes[index] = returnedOutcome(value);
       return value;
     });
-    return asFanOut(() => ctx.scheduler.gather(chains) as Promise<unknown[]>);
+    const results = await asFanOut(() => ctx.scheduler.gather(chains) as Promise<unknown[]>);
+    fanOutDone("pipeline()", startedIn, Array.from({ length: items.length }, (_, i) => outcomes[i]));
+    return results;
+  };
+
+  /**
+   * A settled fan-out's `fanout_done` event (ODW extension; see ./fanout),
+   * one LOG when over half of it is null, and — under `minOk` — the
+   * FanOutShortfall that replaces its result when too few came back ok.
+   */
+  const fanOutDone = (call: "parallel()" | "pipeline()", phase: string | null, outcomes: Array<SlotOutcome | undefined>, minOk?: MinOk): void => {
+    if (outcomes.length === 0) return;
+    const counts = countOutcomes(outcomes);
+    const required = minOk === undefined ? undefined : requiredOk(minOk, counts.total);
+    ctx.emit(fanOutEvent(call, phase, counts, minOk === undefined ? undefined : { minOk, required: required! }));
+    const what = fanOutWhat(call, counts.total);
+    if (required !== undefined && counts.ok < required) {
+      throw new FanOutShortfall(`${what}: ${countsText(counts)} — minOk ${JSON.stringify(minOk)} needs ${required} ok`, counts, required);
+    }
+    if (mostlyNull(counts)) {
+      ctx.emit(
+        event(LOG, {
+          message:
+            `${what}: most results are null — ${countsText(counts)}` +
+            (call === "parallel()" ? "; parallel(thunks, { minOk }) fails a fan-out like this instead of going on" : ""),
+        }),
+      );
+    }
   };
 
   const phase = (title: string, opts?: PhaseDefaults): void => {
