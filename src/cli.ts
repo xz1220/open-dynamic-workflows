@@ -66,7 +66,8 @@ import { startRun, startRunFromSource, waitFor } from "./runtime/launcher.js";
 import { attachRun, bannerLines, checkpointCommands, fallbackLines, formatEvent, formatUsage, resolveRunMode, type RunMode } from "./runtime/live-view.js";
 import { isRunActive, RunObserver } from "./runtime/run-liveness.js";
 import { RunStore, TERMINAL_STATES } from "./runtime/run-store.js";
-import { detail, evalTagOf, type RunDetail } from "./runtime/runs-view.js";
+import { detail, evalTagOf, summarize, type RunDetail } from "./runtime/runs-view.js";
+import { spendLines } from "./runtime/spend-view.js";
 import { exportRun, exportTimeout, otlpTarget, OTEL_SEND_TIMEOUT_MS, postTrace, spanCount } from "./runtime/otel-export.js";
 import { startServer } from "./runtime/server.js";
 import { BUNDLE_EXT, BundleError, bundleRedactor, createBundle, DEFAULT_BUNDLE_MAX_BYTES, isBundleRunId, openBundle, type OpenedBundle } from "./runtime/bundle.js";
@@ -78,7 +79,7 @@ import { cmdSchedule } from "./schedule/command.js";
 import { cmdEval } from "./eval/command.js";
 import { isSeaBinary } from "./sea.js";
 import { describeConcurrency } from "./throttle.js";
-import { detectCaps, glyphs, palette, sanitizeText } from "./tty.js";
+import { detectCaps, fmtUsd, glyphs, palette, sanitizeText } from "./tty.js";
 import { resolveRunTrust } from "./untrusted.js";
 import { pluginOrigin } from "./workflows/plugins.js";
 import { listWorkflows, resolveWorkflow, type ResolvedWorkflow } from "./workflows/resolve.js";
@@ -697,6 +698,8 @@ function cmdStatus(rest: string[]): number {
   process.stdout.write(`  dispatched: ${dispatchedCount(events, status)} agent(s)\n`);
   // What its agents spent (ODW extension): as their CLIs reported it, or chars/4 estimates.
   if (run.usage) process.stdout.write(`  usage: ${formatUsage(run.usage)}${estimateNote(run)}\n`);
+  // …and where, phase by phase: the dashboard's spend receipt in text (ODW extension).
+  for (const line of spendLines(run, detectCaps(process.stdout, process.env))) process.stdout.write(`${line}\n`);
   // Each adapter CLI's version, as the run recorded it (ODW extension; see provenance.ts).
   const clis = Object.entries(run.cliVersions ?? {}).map(([name, cli]) => `${name} ${cli.version ?? `unknown (${cli.error ?? "?"})`}`);
   if (clis.length > 0) process.stdout.write(`  CLIs: ${sanitizeText(clis.join(" · "), 300)}\n`);
@@ -1202,7 +1205,12 @@ function cmdList(rest: string[]): number {
     );
     return 0;
   }
-  for (const ref of runs) {
+  // What each run cost (ODW extension): a column only when some listed run reported dollars.
+  const costs = runs.map((ref) => summarize(store, ref.runId).usage?.costUsd);
+  const costW = Math.max(0, ...costs.map((c) => (c === undefined ? 0 : fmtUsd(c).length)));
+  const none = detectCaps(process.stdout, process.env).unicode ? "—" : "-";
+  for (const [i, ref] of runs.entries()) {
+    const cost = costW > 0 ? `${(costs[i] === undefined ? none : fmtUsd(costs[i]!)).padStart(costW)}  ` : "";
     const status = store.readStatus(ref.runId);
     const name = (status.name as string) || ref.workflowName || "";
     // status.json names the checkpoint() a running run waits at (ODW extension).
@@ -1213,7 +1221,7 @@ function cmdList(rest: string[]): number {
     // A run `odw eval` started says which eval, case, adapter and repeat (ODW extension).
     const tag = evalTagOf(store.readMeta(ref.runId)).eval;
     const of = tag ? `  (eval ${sanitizeText(`${tag.name} · ${tag.case} · ${tag.adapter} #${tag.repeat}`, 120)})` : "";
-    process.stdout.write(`${ref.runId}  ${state.padEnd(8)}  ${name}${until}${of}\n`);
+    process.stdout.write(`${ref.runId}  ${state.padEnd(8)}  ${cost}${name}${until}${of}\n`);
   }
   return 0;
 }
