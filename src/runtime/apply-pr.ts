@@ -193,7 +193,10 @@ export async function applyPr(o: ApplyPrOptions): Promise<number> {
     const bodyFile = join(work, "body.md");
     await writeFile(bodyFile, prBody(o, committed, branch, baseName));
     const title = o.pr.title ?? defaultTitle(o, agents);
-    const args = ["pr", "create", "--head", branch, "--base", baseName, "--title", title, "--body-file", bodyFile];
+    // The PR goes to the repository the branch was pushed to — never one gh
+    // guesses from the checkout (an upstream remote, a default it was told).
+    const repoFlag = ghRepoFlag(remoteUrl);
+    const args = ["pr", "create", ...(repoFlag ? ["--repo", repoFlag] : []), "--head", branch, "--base", baseName, "--title", title, "--body-file", bodyFile];
     if (o.pr.draft) args.push("--draft");
     const created = await runCommand(["gh", ...args], { cwd: repo, timeout: GH_TIMEOUT, env: ghEnv() });
     if (created.returncode !== 0) {
@@ -341,11 +344,8 @@ export function prBody(o: ApplyPrOptions, committed: Committed[], branch: string
   return lines.join("\n");
 }
 
-/**
- * The page that opens a PR from `branch` into `base`, for a GitHub remote;
- * null for others. Credentials in the URL never make it into the link.
- */
-export function compareUrl(remoteUrl: string, base: string, branch: string): string | null {
+/** A GitHub remote's host and `owner/name`, from its URL in any spelling; null for other hosts. */
+export function githubRepo(remoteUrl: string): { host: string; repo: string } | null {
   let host: string;
   let path: string;
   const scp = /^(?:[^@/]+@)?([^:/]+):(?!\/)(.+)$/.exec(remoteUrl);
@@ -366,8 +366,29 @@ export function compareUrl(remoteUrl: string, base: string, branch: string): str
     return null;
   }
   if (!/(^|\.)github\.com$|^github\./i.test(host)) return null;
-  const repoPath = path.replace(/^\/+/, "").replace(/\.git$/, "").replace(/\/+$/, "");
-  if (!/^[\w.-]+\/[\w.-]+$/.test(repoPath)) return null;
+  const repo = path.replace(/^\/+/, "").replace(/\.git$/, "").replace(/\/+$/, "");
+  if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) return null;
+  return { host, repo };
+}
+
+/**
+ * `gh --repo`'s value for a GitHub remote: `owner/name`, with the host first
+ * (`HOST/owner/name`) when it is not github.com; null for other hosts.
+ */
+export function ghRepoFlag(remoteUrl: string): string | null {
+  const found = githubRepo(remoteUrl);
+  if (!found) return null;
+  return /^(www\.)?github\.com$/i.test(found.host) ? found.repo : `${found.host}/${found.repo}`;
+}
+
+/**
+ * The page that opens a PR from `branch` into `base`, for a GitHub remote;
+ * null for others. Credentials in the URL never make it into the link.
+ */
+export function compareUrl(remoteUrl: string, base: string, branch: string): string | null {
+  const found = githubRepo(remoteUrl);
+  if (!found) return null;
+  const { host, repo: repoPath } = found;
   const enc = (ref: string): string => ref.split("/").map(encodeURIComponent).join("/");
   return `https://${host}/${repoPath}/compare/${enc(base)}...${enc(branch)}?expand=1`;
 }

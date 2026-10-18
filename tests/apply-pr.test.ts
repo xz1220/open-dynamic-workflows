@@ -7,7 +7,7 @@ import { dirname, join } from "node:path";
 
 import { captureChanges } from "../src/changes.js";
 import { main } from "../src/cli.js";
-import { compareUrl } from "../src/runtime/apply-pr.js";
+import { compareUrl, ghRepoFlag } from "../src/runtime/apply-pr.js";
 import { RunStore } from "../src/runtime/run-store.js";
 
 // odw apply --pr (ODW extension): the kept diffs go to a new branch made in a
@@ -338,6 +338,36 @@ test("--pr refuses a repository without the remote, and a base that does not exi
   assert.equal(noBase.code, 1);
   assert.match(noBase.err, /no branch or commit 'nope'/);
   assert.deepEqual(remoteBranches(fx), ["main"]);
+});
+
+test("--pr opens the PR in the repository the branch was pushed to (gh --repo), never one gh guesses from the checkout", async () => {
+  const fx = await setup({ "a.txt": "a\n" }, [{ label: "fix", edit: { "a.txt": "a fixed\n" } }]);
+  // A second remote — a fork — pushed to with --remote: origin is another repository.
+  const FORK_URL = "git@github.com:pat/widgets.git";
+  git(fx.repo, "remote", "add", "fork", FORK_URL);
+  git(fx.repo, "config", `url.${fx.bare}.insteadOf`, FORK_URL, "--add");
+  const r = await cli(["apply", fx.runId, "--agent", "fix", "--pr", "--remote", "fork", "--base", "main", ...fx.flags], fx.repo, fx.path);
+  assert.equal(r.code, 0, r.err);
+  const create = ghCalls(fx).find((c) => c.args[0] === "pr")!;
+  const flag = (name: string): string | undefined => create.args[create.args.indexOf(name) + 1];
+  assert.equal(flag("--repo"), "pat/widgets", "the fork, where the branch is");
+  assert.equal(flag("--head"), `odw/${fx.runId}-fix`);
+  assert.equal(flag("--base"), "main");
+  // The first test's origin: --repo acme/widgets.
+  const fx2 = await setup({ "a.txt": "a\n" }, [{ label: "fix", edit: { "a.txt": "a2\n" } }]);
+  assert.equal((await cli(["apply", fx2.runId, "--agent", "fix", "--pr", ...fx2.flags], fx2.repo, fx2.path)).code, 0);
+  const args = ghCalls(fx2).find((c) => c.args[0] === "pr")!.args;
+  assert.equal(args[args.indexOf("--repo") + 1], "acme/widgets");
+});
+
+test("ghRepoFlag: owner/name of a GitHub remote, host first when it is not github.com; none for other hosts", () => {
+  assert.equal(ghRepoFlag("https://github.com/acme/widgets.git"), "acme/widgets");
+  assert.equal(ghRepoFlag("git@github.com:pat/widgets.git"), "pat/widgets");
+  assert.equal(ghRepoFlag("ssh://git@github.com/acme/widgets"), "acme/widgets");
+  assert.equal(ghRepoFlag("https://user:PLACEHOLDER@github.com/acme/widgets.git"), "acme/widgets");
+  assert.equal(ghRepoFlag("https://github.example.com/acme/widgets.git"), "github.example.com/acme/widgets");
+  assert.equal(ghRepoFlag("https://gitlab.example.com/acme/widgets.git"), null);
+  assert.equal(ghRepoFlag("/srv/git/widgets.git"), null);
 });
 
 test("compareUrl: GitHub remotes in every spelling, credentials dropped; other hosts get none", () => {
