@@ -769,6 +769,10 @@ const ZH: Record<string, string> = {
   sandboxed: "在沙箱中",
   "writes ask first": "写入前先询问",
   "writes without asking": "写入不询问",
+  // Strict script context (ODW extension): on the trust line.
+  "strict script context": "严格脚本上下文",
+  "only the workflow primitives and standard JavaScript built-ins: no process, require, import() or fetch — not a security boundary":
+    "只有工作流原语与标准 JavaScript 内建对象:没有 process、require、import() 和 fetch——不是安全边界",
   Everyone: "所有人",
   Mine: "我的",
   Team: "团队",
