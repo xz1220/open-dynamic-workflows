@@ -2024,6 +2024,9 @@ async function relaunch(
     resumedFrom: cmd === "resume" ? { runId, dir: store.runDir(runId) } : null,
     // Untrusted input stays untrusted on a rerun or resume (ODW extension): nothing loosens it.
     untrustedInput: untrustedInputOf(meta),
+    // …and a triggered run's rerun or resume is still one, strict by default (ODW extension; see ./script-context).
+    origin: meta.origin === "trigger" ? "trigger" : null,
+    sourceOrigin: meta.sourceOrigin === "trigger" ? "trigger" : null,
   };
   warnIfNoDefaultAdapter(opts.adapter, opts.configPath, opts.source, cmd);
   // An inline-launched run's script lives inside the OLD run dir. Re-archive its

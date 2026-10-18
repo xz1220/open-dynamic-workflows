@@ -161,6 +161,7 @@ import { interfaceSummary, type AgentNotes } from "./notes.js";
 import { answerOf, isQuestionPolicy, MAX_QUESTION_ROUNDS, questionLine, questionTitle, type QuestionPolicy } from "./questions.js";
 import { firstAdapter, phaseDefaultsOf, type AdapterChoice, type PhaseDefaults } from "./routing.js";
 import type { JsonSchema } from "./schema.js";
+import { resolveScriptContext } from "./script-context.js";
 import { planScope, ScopeLocks, waitNote, type ScopeClaim, type ScopePlan, type ScopePolicy } from "./scope.js";
 import { FanOut } from "./throttle.js";
 import { fmtUsd } from "./tty.js";
@@ -1726,10 +1727,18 @@ export function createPrimitives(
       );
     }
     let scriptPath: string;
+    let plugin = false;
     if (typeof nameOrRef === "string") {
-      scriptPath = resolveWorkflow(nameOrRef, { cwd: ctx.source, config: ctx.config }).scriptPath;
+      const found = resolveWorkflow(nameOrRef, { cwd: ctx.source, config: ctx.config });
+      scriptPath = found.scriptPath;
+      plugin = found.plugin != null;
     } else if (nameOrRef && typeof nameOrRef.scriptPath === "string") {
       scriptPath = resolve(ctx.source, nameOrRef.scriptPath);
+      try {
+        plugin = resolveWorkflow(scriptPath, { cwd: ctx.source, config: ctx.config }).plugin != null; // a plugin's, by its path
+      } catch {
+        // not there: reading it says so below
+      }
     } else {
       throw new WorkflowScriptError("workflow() expects a name or { scriptPath }");
     }
@@ -1741,8 +1750,14 @@ export function createPrimitives(
         `workflow(): cannot read ${scriptPath}: ${(err as Error).message}`,
       );
     }
-    // In the run's script context (ODW extension; see ./script-context): a strict run's child is strict too.
-    const loaded = loadWorkflowScript(text, scriptPath, { context: ctx.config.settings.scriptContext ?? "host" }); // throws on a syntax error
+    // In the run's script context (ODW extension; see ./script-context): a strict run's child is strict too,
+    // and a plugin's workflow is strict as when it runs on its own, unless the config says "host".
+    const parentContext = ctx.config.settings.scriptContext ?? "host";
+    const pluginContext = plugin
+      ? (ctx.pluginScriptContext ?? resolveScriptContext(ctx.config.settings.scriptContext, { plugin: true, untrustedInput: false, untrustedRepo: false }).context)
+      : "host";
+    const context = parentContext === "strict" || pluginContext === "strict" ? "strict" : "host";
+    const loaded = loadWorkflowScript(text, scriptPath, { context }); // throws on a syntax error
     const name = loaded.meta.name;
     const entryLane = `▸ ${name}`;
     // The child gets its own phase cursor (so a concurrent parent agent keeps
@@ -1755,6 +1770,14 @@ export function createPrimitives(
       phases: loaded.meta.phases,
     });
     ctx.emit(event(LOG, { message: `▸ entering workflow ${name} (${scriptPath})` }));
+    if (context !== parentContext) {
+      ctx.emit(
+        event(LOG, {
+          message: `▸ workflow ${name} runs in a strict script context — the workflow is a Claude Code plugin's: only the primitives and standard JavaScript built-ins`,
+          scriptContext: "strict",
+        }),
+      );
+    }
     // Open the child's entry lane as a real phase, so a child that dispatches
     // agents BEFORE its first phase() call (phases are optional) renders them in
     // its own lane rather than inheriting the parent's current phase. A child

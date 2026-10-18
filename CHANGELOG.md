@@ -939,6 +939,14 @@ independent security reviews whose findings are all fixed.
   now keeps `untrustedInput` (with the args it covered) as a rerun or resume does, and
   a triggered run's replay keeps its strict script context (`sourceOrigin: "trigger"`
   in its meta).
+- The strict script context's defaults had gaps: a rerun or resume of a triggered run
+  lost its `origin: "trigger"` and ran host; a nested `workflow()` of a plugin's
+  workflow under a host parent ran host, though the plugin's own run is strict; and a
+  config's `scriptContext: "host"` took the strict default away from triggered, plugin
+  and untrusted runs without a word. A rerun now keeps the origin, a plugin's nested
+  workflow runs strict unless the config says `"host"`, and such a `"host"` is warned
+  about in the run's log. The README says `exec()` still runs a host shell with the
+  run's environment in a strict context.
 
 ### Changed behavior — check before upgrading
 - `agentType` naming an agent definition file now runs that definition (see "Write

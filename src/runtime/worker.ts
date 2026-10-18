@@ -410,6 +410,8 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
       },
     });
 
+    // A nested workflow() of a plugin's runs strict, unless the config says "host" (ODW extension; see ../script-context).
+    ctx.pluginScriptContext = resolveScriptContext(chosen.settings.scriptContext, { plugin: true, untrustedInput: false, untrustedRepo: false }).context;
     deadline = watchDeadline(meta.deadline, (seconds) => {
       if (end) return;
       store.updateStatus(runId, { stopReason: "deadline" });
@@ -496,7 +498,18 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
       }
     }
     // A strict script context (ODW extension; see ../script-context) is said
-    // before the body runs, with the names outside the dialect it uses.
+    // before the body runs, with the names outside the dialect it uses — and so
+    // is a config's "host" that took away the strict default.
+    if (scriptContext.overrode) {
+      sink.emit(
+        event(LOG, {
+          message:
+            `⚠ the workflow runs in the worker's own script context (scriptContext: "host" in the config), though ${scriptContext.overrode} ` +
+            "and it would run strict by default: the script reaches process, require, fetch and the run's environment",
+          scriptContext: "host",
+        }),
+      );
+    }
     if (scriptContext.context === "strict") {
       const outside = scanCapabilities(source).outOfDialect.filter((use) => !use.strict);
       const names = outside.map((use) => `${use.name} (line ${use.line})`).join(", ");

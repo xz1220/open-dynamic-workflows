@@ -2657,14 +2657,19 @@ the script's own realm; an error the script throws leaves it as an ordinary `Err
 
 Unset, a run is **strict when a trigger started it, when its workflow is a Claude
 Code plugin's, or when its input or its repository is untrusted**, and **host** for
-everything else — local and personal workflows run as before. A nested `workflow()`
-runs in its parent's context. The run's `run_started` event records the context it
+everything else — local and personal workflows run as before. A rerun, resume or
+replay of a triggered run is strict too. A config's `"host"` wins, and the run's log
+warns when it takes a strict default away. A nested `workflow()` runs in its parent's
+context — and a plugin's workflow strict even under a host parent, unless the config
+says `"host"`. The run's `run_started` event records the context it
 chose, status.json has `scriptContext: "strict"`, and the dashboard's Job header shows
 it on the trust line. `odw check --capabilities` lists what a script would miss there.
 
 **`vm` is not a security boundary.** Strict takes away what a script could casually
 reach; a hostile script can still find its way out of the context, and every script
-drives agents that act with the run's permissions. Read a workflow before you run
+drives agents that act with the run's permissions. `exec()` is still there, and runs
+its command in a shell on this machine (or the run's container sandbox) with the run's
+environment — strict does not take commands away. Read a workflow before you run
 it, and use [permissions](#permissions-odw-extension) and a
 [container sandbox](#run-agents-in-containers-odw-extension) for the agents.
 

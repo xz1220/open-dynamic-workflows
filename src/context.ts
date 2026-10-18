@@ -28,6 +28,7 @@ import { Scheduler } from "./scheduler.js";
 import type { ScopeLocks } from "./scope.js";
 import { capChangeMessage } from "./throttle.js";
 import type { TranscriptPaths } from "./transcript.js";
+import type { ScriptContext } from "./script-context.js";
 import type { UntrustedInputMeta } from "./untrusted-input.js";
 
 export interface RunContext {
@@ -189,6 +190,12 @@ export interface RunContext {
    * write waits at. Shared like `seq`; absent: the input is the user's.
    */
   input?: { meta: UntrustedInputMeta; writeGate?: Promise<void> };
+  /**
+   * The script context a nested workflow() of a Claude Code plugin's runs in
+   * (ODW extension; see ./script-context): strict unless the config's own
+   * `scriptContext` says "host". Absent: worked out from the config.
+   */
+  pluginScriptContext?: ScriptContext;
   /**
    * The run's safety snapshot (ODW extension; see ./safety): taken once,
    * before its first in-place agent with `edit` or `full` starts. Shared like

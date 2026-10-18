@@ -224,6 +224,12 @@ test("which runs are strict: the config's choice, else triggered, plugin and unt
   assert.equal(resolveScriptContext(null, { ...run, untrustedInput: true }).context, "strict");
   assert.equal(resolveScriptContext(null, { ...run, untrustedRepo: true }).context, "strict");
   assert.equal(resolveScriptContext("host", { ...run, origin: "trigger" }).context, "host");
+  // A "host" that takes a strict default away says what it took away (review fix); one over host's own default does not.
+  assert.equal(resolveScriptContext("host", { ...run, origin: "trigger" }).overrode, "a trigger started this run");
+  assert.equal(resolveScriptContext("host", { ...run, untrustedInput: true }).overrode, "the run's input is untrusted");
+  assert.equal(resolveScriptContext("host", run).overrode, undefined);
+  // A replay or rerun of a triggered run (meta.sourceOrigin) is strict too.
+  assert.equal(resolveScriptContext(null, { ...run, origin: "replay", sourceOrigin: "trigger" }).context, "strict");
   assert.equal(resolveScriptContext("strict", run).context, "strict");
   assert.equal(readableStrictMessage("ReferenceError", "x is not defined"), null, "a script's own typo stays as it was");
 });
@@ -347,6 +353,38 @@ test("a triggered run is strict: said before the body runs, with the names it la
 
   const overridden = await runWorkflow(body, { origin: "trigger", config: { scriptContext: "host" } });
   assert.equal(overridden.state, "done");
+  // …and its log warns that the config took the strict default away (review fix).
+  assert.ok(
+    overridden.logs.some((l) =>
+      l.startsWith(`⚠ the workflow runs in the worker's own script context (scriptContext: "host" in the config), though a trigger started this run`),
+    ),
+    overridden.logs.join("\n"),
+  );
+  assert.equal(local.logs.some((l) => l.includes("worker's own script context")), false, "a local run's host is not warned about");
+});
+
+test("a rerun of a triggered run is still triggered: origin \"trigger\", strict by default (review fix)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "odw-strict-rerun-"));
+  try {
+    const table = join(dir, "mock.json");
+    writeFileSync(table, JSON.stringify([{ when: "say hi", reply: "hi" }]));
+    const configPath = join(dir, "odw.config.json");
+    writeFileSync(configPath, JSON.stringify({ defaultAdapter: "mock", recordVersions: false, adapters: { mock: { command: [...mockCommand(SUITE), table], stdin: "{prompt}" } } }));
+    const script = join(dir, "wf.js");
+    writeFileSync(script, META + "return [typeof process, await agent('say hi')]\n");
+    const store = new RunStore(join(dir, "runs"));
+    const runId = store.create({ script, args: null, source: dir, configPath, origin: "trigger" });
+    assert.equal(await executeRun(store.runDir(runId)), "done");
+    const known = new Set(store.listRunIds());
+    const r = await odw(["rerun", runId, "--wait", "--timeout", "60", "--runs-root", store.root]);
+    assert.equal(r.code, 0, r.err);
+    assert.deepEqual(JSON.parse(r.out), ["undefined", "hi"]);
+    const again = store.listRunIds().find((id) => !known.has(id))!;
+    assert.equal(store.readMeta(again).origin, "trigger");
+    assert.equal(store.readStatus(again).scriptContext, "strict");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("a strict run's nested workflow() is strict too", async () => {

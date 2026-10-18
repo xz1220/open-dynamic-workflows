@@ -28,8 +28,9 @@
  *
  * `vm` is NOT a security boundary. Strict takes away what a well-meaning but
  * unknown script could casually reach; it does not stop a hostile one from
- * finding a way out of the context, and a script still drives agents that act
- * with the run's permissions. Read a workflow before you run it.
+ * finding a way out of the context, a script still drives agents that act
+ * with the run's permissions, and its `exec()` still runs a shell with the
+ * run's environment. Read a workflow before you run it.
  *
  * {@link scanCapabilities} is the static half, for `odw check --capabilities`:
  * which identifiers outside the dialect a script names, and which ODW
@@ -65,12 +66,19 @@ export interface ScriptContextRun {
 /**
  * The run's script context and why: the config's `scriptContext` when it sets
  * one, else strict for a triggered run, a plugin's workflow, or untrusted
- * input or repository, and host for the rest.
+ * input or repository, and host for the rest. `overrode` is why the run would
+ * have been strict, when the config's `"host"` took that away — the run's log
+ * says so.
  */
 export function resolveScriptContext(
   setting: ScriptContext | null | undefined,
   run: ScriptContextRun,
-): { context: ScriptContext; why: string } {
+): { context: ScriptContext; why: string; overrode?: string } {
+  if (setting === "host") {
+    const strict = resolveScriptContext(null, run);
+    const why = `scriptContext: "host" in the config`;
+    return strict.context === "strict" ? { context: "host", why, overrode: strict.why } : { context: "host", why };
+  }
   if (setting) return { context: setting, why: `scriptContext: "${setting}" in the config` };
   if (run.origin === "trigger") return { context: "strict", why: "a trigger started this run" };
   if (run.sourceOrigin === "trigger") return { context: "strict", why: "a trigger started the run this one replays" };
