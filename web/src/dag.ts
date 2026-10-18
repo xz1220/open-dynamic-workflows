@@ -102,6 +102,7 @@ export function reasonLabel(reason: string): string {
     exit: t("exit"),
     empty_reply: t("empty reply"),
     unmet_expectation: t("unmet expectation"),
+    mcp_unavailable: t("MCP unavailable"),
   };
   return labels[reason] ?? reason.replace(/_/g, " ");
 }

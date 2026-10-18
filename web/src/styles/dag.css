@@ -949,6 +949,80 @@
   border: 1px solid var(--line);
   background: var(--card-2);
 }
+/* editing the payload before approving: the JSON as a page of code */
+.cp-edit-open {
+  margin-top: 8px;
+}
+.cp-edit {
+  margin-top: 12px;
+  overflow: hidden;
+  border: 1px solid var(--amber-line);
+  border-radius: var(--r-sm);
+  background: var(--code-bg);
+  box-shadow: 0 0 0 4px var(--amber-soft);
+  animation: rc-print 320ms var(--ease-out) both;
+}
+.cp-json {
+  display: block;
+  width: 100%;
+  min-height: 120px;
+  max-height: 420px;
+  padding: 12px 14px;
+  border: 0;
+  outline: 0;
+  resize: vertical;
+  background: transparent;
+  color: var(--code-ink);
+  caret-color: var(--sig);
+  font-family: var(--f-mono);
+  font-size: 12.5px;
+  line-height: 1.6;
+  tab-size: 2;
+}
+.cp-edit-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  padding: 7px 10px 7px 14px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  font-size: 11.5px;
+  color: var(--code-dim);
+}
+.cp-edit-bar .sp {
+  flex: 1;
+}
+.cp-edit-bar .btn {
+  color: var(--code-ink);
+}
+.cpv {
+  font-family: var(--f-mono);
+}
+.cpv::before {
+  content: "";
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: var(--code-dim);
+}
+.cpv.ok {
+  color: var(--code-str);
+}
+.cpv.ok::before {
+  background: var(--code-str);
+}
+.cpv.bad {
+  color: var(--alarm);
+}
+.cpv.bad::before {
+  background: var(--alarm);
+}
+.cp-actions .btn[disabled] {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
 .cp-actions {
   display: flex;
   align-items: center;

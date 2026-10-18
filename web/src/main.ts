@@ -39,7 +39,7 @@ import { ACTIVE, TERMINAL, fmtDurSec, runDurationSec } from "./util";
 import { renderActivity } from "./views/activity";
 import { renderChat } from "./views/chat";
 import { compareHash, renderCompare } from "./views/compare";
-import { LOG_PAGE, changedAgents, renderJob, reviewTarget, type JobTab, type JobViewState } from "./views/job";
+import { LOG_PAGE, changedAgents, cpEditState, renderJob, reviewTarget, type JobTab, type JobViewState } from "./views/job";
 import { HISTORY_PAGE, renderJobs, type JobsFilter, type JobsState } from "./views/jobs";
 import { renderSettings } from "./views/settings";
 import { orderedWorkflows, renderWorkspace, wfKey } from "./views/workspace";
@@ -709,17 +709,49 @@ root.addEventListener("click", (ev) => {
   }
   const copyEl = t.closest<HTMLElement>("[data-copy]");
   if (copyEl) return copy(copyEl.dataset.copy!);
+  const cpEditEl = t.closest<HTMLElement>("[data-cp-edit]");
+  if (cpEditEl && store.run) {
+    const id = Number(cpEditEl.dataset.cpEdit);
+    const cp = store.run.pendingCheckpoints?.find((c) => c.checkpointId === id);
+    job.cpEdit = { id, text: JSON.stringify(cp?.payload ?? null, null, 2) };
+    render();
+    root.querySelector<HTMLTextAreaElement>("#cp-payload")?.focus();
+    return;
+  }
+  if (t.closest("[data-cp-edit-cancel]")) {
+    job.cpEdit = null;
+    return render();
+  }
+  if (t.closest("[data-cp-format]") && job.cpEdit) {
+    try {
+      job.cpEdit.text = JSON.stringify(JSON.parse(job.cpEdit.text), null, 2);
+      const area = root.querySelector<HTMLTextAreaElement>("#cp-payload");
+      if (area) area.value = job.cpEdit.text;
+    } catch {
+      /* the status line already says why */
+    }
+    return render();
+  }
   const cpEl = t.closest<HTMLElement>("[data-cp]");
   if (cpEl && store.run) {
     const id = store.run.runId;
     const action = cpEl.dataset.cp as "approve" | "reject";
     const checkpointId = Number(cpEl.dataset.cpId);
     const note = job.cpNote.trim() || undefined;
+    // An approval carries the edited payload when it differs from what was asked.
+    const asked = store.run.pendingCheckpoints?.find((c) => c.checkpointId === checkpointId);
+    const edit = action === "approve" && job.cpEdit?.id === checkpointId ? cpEditState(asked?.payload, job.cpEdit.text) : null;
+    if (edit && !edit.ok) return;
+    const body =
+      action === "approve"
+        ? { action, checkpointId, note, ...(edit?.changed ? { payload: edit.value } : {}) }
+        : { action, checkpointId, note };
     void api
-      .checkpoint(id, { action, checkpointId, note })
+      .checkpoint(id, body)
       .then(() => {
         job.cpNote = "";
-        toast({ state: action === "approve" ? "done" : "stopped", title: action === "approve" ? tr("Approved") : tr("Rejected"), body: id, ttlMs: 2400 });
+        if (job.cpEdit?.id === checkpointId) job.cpEdit = null;
+        toast({ state: action === "approve" ? "done" : "stopped", title: action === "approve" ? (edit?.changed ? tr("Approved with edits") : tr("Approved")) : tr("Rejected"), body: id, ttlMs: 2400 });
         return store.loadRun(id);
       })
       .catch((err: Error) => toast({ state: "failed", title: tr("Could not resolve the checkpoint"), body: err.message }));
@@ -910,6 +942,9 @@ root.addEventListener("input", (ev) => {
     case "cp-note":
       job.cpNote = el.value;
       return;
+    case "cp-payload":
+      if (job.cpEdit) job.cpEdit.text = el.value;
+      return render();
   }
 });
 

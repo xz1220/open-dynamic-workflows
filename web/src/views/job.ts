@@ -19,6 +19,8 @@ export type JobTab = "graph" | "timeline" | "logs" | "result" | "changes";
 export interface JobViewState {
   /** Draft note for a checkpoint decision. */
   cpNote: string;
+  /** The payload being edited before an approval: which checkpoint, and the JSON as typed. */
+  cpEdit?: { id: number; text: string } | null;
   tab: JobTab;
   selectedAi: number | null;
   /** The agent whose diff the Changes tab shows (index into run.agents). */
@@ -312,6 +314,12 @@ function drawer(run: RunDetail, ai: number, nowSec: number): string {
       ? `<div class="drawer-sec">${t("Refused tool calls")}</div><ul class="denied">${a.denied.map((d) => `<li>${esc(d)}</li>`).join("")}</ul>` +
         `<p class="dnote">${t("Its reply may rest on work it could not do — raise its tier with --permissions, or allowlist the tool.")}</p>`
       : "") +
+    (a.mcp?.length
+      ? `<div class="drawer-sec">${t("MCP servers")}</div><ul class="mcp">${a.mcp
+          .map((m) => `<li><span class="tag ${m.status === "pending" ? "" : "warn"}">${esc(t(m.status))}</span><span class="mono">${esc(m.name)}</span></li>`)
+          .join("")}</ul>` +
+        `<p class="dnote">${t("Their tools were not there for this agent — check the server with claude mcp list.")}</p>`
+      : "") +
     changesSection(run, a, ai, rec?.branch) +
     output +
     (evs ? `<div class="drawer-sec">${t("Events")}</div><div class="mini-events">${evs}</div>` : "") +
@@ -399,6 +407,8 @@ function logRow(e: WorkflowEvent, i: number): string {
     msg = `<b>${esc(String(e.label ?? ""))}</b> <span class="er">${esc(String(e.error ?? ""))}</span>`;
   else if (e.type.startsWith("command_"))
     msg = `<b>${esc(commandDetail(e))}</b>${e.type === "command_failed" && e.error ? ` <span class="er">${esc(String(e.error))}</span>` : ""}`;
+  else if (e.type === "cli_version")
+    msg = `<b>${esc(String(e.adapter ?? ""))}</b> ${esc(String(e.version ?? e.error ?? ""))}`;
   else if (e.type.startsWith("agent_"))
     msg = `<b>${esc(String(e.label ?? ""))}</b>${e.adapter ? ` · ${esc(String(e.adapter))}` : ""}${e.attempts && Number(e.attempts) > 1 ? ` · ×${esc(String(e.attempts))}` : ""}`;
   else msg = esc(e.type.replace(/_/g, " "));
@@ -470,6 +480,43 @@ function resultTab(run: RunDetail): string {
   );
 }
 
+/**
+ * A payload a person may edit before approving: one the event carried whole
+ * (not cut to 64 KiB) and with no redaction markers, which an edit would send
+ * back in place of the secrets.
+ */
+function editablePayload(cp: { payload?: unknown; truncated?: boolean }): boolean {
+  return cp.payload !== undefined && cp.payload !== null && !cp.truncated && !JSON.stringify(cp.payload).includes("«redacted:");
+}
+
+/** What the edited text is: valid JSON or not (and why), and whether it differs from what was asked. */
+export function cpEditState(original: unknown, text: string): { ok: boolean; changed: boolean; error: string | null; value?: unknown } {
+  try {
+    const value: unknown = JSON.parse(text);
+    return { ok: true, changed: JSON.stringify(value) !== JSON.stringify(original ?? null), error: null, value };
+  } catch (err) {
+    return { ok: false, changed: true, error: (err as Error).message };
+  }
+}
+
+function cpEditor(cp: { checkpointId: number; schema?: Record<string, unknown> | null }, text: string, st: ReturnType<typeof cpEditState>): string {
+  const lines = Math.min(22, Math.max(6, text.split("\n").length + 1));
+  const status = !st.ok
+    ? `<span class="cpv bad">${esc(t("not valid JSON — {why}", { why: st.error ?? "" }))}</span>`
+    : st.changed
+      ? `<span class="cpv ok">${t("valid JSON · edited")}</span>`
+      : `<span class="cpv">${t("valid JSON · unchanged")}</span>`;
+  return (
+    `<div class="cp-edit" data-key="cpe-${cp.checkpointId}">` +
+    `<textarea id="cp-payload" class="cp-json" rows="${lines}" spellcheck="false" autocomplete="off" aria-label="${esc(t("Payload to approve"))}">${esc(text)}</textarea>` +
+    `<div class="cp-edit-bar">${status}` +
+    (cp.schema ? `<span class="dim">${t("It must match the checkpoint's schema — the run checks it.")}</span>` : "") +
+    `<span class="sp"></span>` +
+    `<button class="btn sm ghost" data-cp-format${st.ok ? "" : " disabled"}>${t("Format")}</button>` +
+    `<button class="btn sm ghost" data-cp-edit-cancel>${t("Discard edits")}</button></div></div>`
+  );
+}
+
 /** checkpoint() calls waiting for a person: what is asked, the payload, and the decision. */
 function checkpoints(run: RunDetail, s: JobViewState): string {
   const pending = run.pendingCheckpoints ?? [];
@@ -477,13 +524,23 @@ function checkpoints(run: RunDetail, s: JobViewState): string {
   const canDecide = run.provider === "odw" && store.capabilities.writable;
   return pending
     .map((cp, i) => {
-      const payload = cp.payload !== undefined && cp.payload !== null ? `<div class="cp-payload">${renderJson(cp.payload)}</div>` : "";
+      const has = cp.payload !== undefined && cp.payload !== null;
+      const edit = s.cpEdit?.id === cp.checkpointId ? cpEditState(cp.payload, s.cpEdit.text) : null;
+      const payload = edit
+        ? cpEditor(cp, s.cpEdit!.text, edit)
+        : has
+          ? `<div class="cp-payload">${renderJson(cp.payload)}</div>` +
+            (canDecide && editablePayload(cp)
+              ? `<button class="btn sm ghost cp-edit-open" data-cp-edit="${cp.checkpointId}">${icons.edit}${t("Edit before approving")}</button>`
+              : "")
+          : "";
+      const approve = edit?.changed ? t("Approve with edits") : t("Approve");
       const actions = canDecide
         ? `<div class="cp-actions">` +
           (i === 0
             ? `<input id="cp-note" class="cp-note" placeholder="${esc(t("Add a note for the workflow (optional)"))}" value="${esc(s.cpNote)}" autocomplete="off"/>`
             : "") +
-          `<button class="btn primary" data-cp="approve" data-cp-id="${cp.checkpointId}">${t("Approve")}</button>` +
+          `<button class="btn primary" data-cp="approve" data-cp-id="${cp.checkpointId}"${edit && !edit.ok ? " disabled" : ""}>${approve}</button>` +
           `<button class="btn danger" data-cp="reject" data-cp-id="${cp.checkpointId}">${t("Reject")}</button></div>`
         : `<p class="dim" style="margin:10px 0 0">${t("Resolve it with {cmd}", { cmd: `<code>odw approve ${esc(run.runId)}</code>` })}</p>`;
       return (

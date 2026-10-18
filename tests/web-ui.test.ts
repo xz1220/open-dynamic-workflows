@@ -819,3 +819,70 @@ test("a checkpoint approved with edits says so, and the drawer shows what was ap
   store.runEvents = [];
   store.focusRun(null);
 });
+
+test("a checkpoint's payload can be edited before approving: valid, changed, invalid, and never when it was cut or redacted", async () => {
+  const { cpEditState } = await import("../web/src/views/job.ts");
+  const view: JobViewState = {
+    cpNote: "",
+    tab: "graph",
+    selectedAi: null,
+    reviewAi: null,
+    zoom: 1,
+    logQuery: "",
+    logTypes: new Set(["agent"]),
+    logLimit: 600,
+    follow: true,
+    motion: false,
+  };
+  store.focusRun("20260101-000000-aaaaaa");
+  store.capabilities = { ...store.capabilities, writable: true };
+  const asked = { steps: ["a", "b"] };
+  store.run = detail([], {
+    state: "waiting",
+    pendingCheckpoints: [
+      { checkpointId: 0, title: "Run this plan?", payload: asked, since: NOW - 5 },
+      { checkpointId: 1, title: "Cut", payload: "{\"x\":", truncated: true, since: NOW - 5 },
+    ],
+  });
+  store.runEvents = [];
+  const closed = renderJob(view, NOW);
+  assert.equal(count(closed, /data-cp-edit="/g), 1, "only the whole payload can be edited");
+
+  const same = renderJob({ ...view, cpEdit: { id: 0, text: JSON.stringify(asked, null, 2) } }, NOW);
+  assert.match(same, /<textarea id="cp-payload"/);
+  assert.match(same, /valid JSON · unchanged/);
+  assert.match(same, /data-cp="approve" data-cp-id="0">Approve</);
+
+  const edited = renderJob({ ...view, cpEdit: { id: 0, text: '{"steps":["a"]}' } }, NOW);
+  assert.match(edited, /valid JSON · edited/);
+  assert.match(edited, /data-cp="approve" data-cp-id="0">Approve with edits</);
+
+  const broken = renderJob({ ...view, cpEdit: { id: 0, text: '{"steps":' } }, NOW);
+  assert.match(broken, /class="cpv bad">not valid JSON/);
+  assert.match(broken, /data-cp="approve" data-cp-id="0" disabled>/);
+
+  assert.deepEqual(cpEditState(asked, ' { "steps" : ["a","b"] } '), { ok: true, changed: false, error: null, value: asked }, "whitespace is no edit");
+  store.focusRun(null);
+});
+
+test("an agent whose MCP servers did not start lists them in its drawer", () => {
+  const view: JobViewState = {
+    cpNote: "",
+    tab: "graph",
+    selectedAi: 0,
+    reviewAi: null,
+    zoom: 1,
+    logQuery: "",
+    logTypes: new Set(["agent"]),
+    logLimit: 600,
+    follow: true,
+    motion: false,
+  };
+  store.focusRun("20260101-000000-aaaaaa");
+  store.run = detail([agent("fix", "Plan", "failed", { adapter: "claude", failureReason: "mcp_unavailable", mcp: [{ name: "github", status: "failed" }] })]);
+  store.runEvents = [];
+  const html = renderJob(view, NOW);
+  assert.match(html, /MCP servers<\/div><ul class="mcp"><li><span class="tag warn">failed<\/span><span class="mono">github<\/span>/);
+  assert.match(html, /MCP unavailable/);
+  store.focusRun(null);
+});

@@ -37,7 +37,11 @@ async function postJSON<T>(url: string, body: unknown): Promise<T> {
     body: JSON.stringify(body),
   });
   const payload = (await r.json().catch(() => ({}))) as Record<string, unknown>;
-  if (!r.ok) throw new Error(String(payload.error ?? `${url} → ${r.status}`));
+  if (!r.ok) {
+    // A refused checkpoint edit says each way it misses the schema.
+    const problems = Array.isArray(payload.problems) ? `\n${payload.problems.map(String).join("\n")}` : "";
+    throw new Error(String(payload.error ?? `${url} → ${r.status}`) + problems);
+  }
   return payload as T;
 }
 

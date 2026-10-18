@@ -331,6 +331,21 @@
   }
 }
 
+/* a drawer's MCP servers that did not start */
+ul.mcp {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 12px;
+}
+ul.mcp li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 /* a drawer's status for an agent waiting out a spent quota */
 .outbox.wait {
   border-color: var(--amber-line);
