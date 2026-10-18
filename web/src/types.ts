@@ -54,6 +54,8 @@ export interface RunSummary {
   bundle?: { bundledAt: number | null; odwVersion: string | null };
   /** A run `odw eval` started (meta.origin "eval"; ODW extension); absent for every other run. */
   eval?: EvalRunTag;
+  /** A dry run (`odw run --dry`; ODW extension): every agent got a stub reply, no model was called. Absent otherwise. */
+  dry?: true;
 }
 
 /** Which `odw eval` run this is: the eval's name, the case, the cell's adapter, the repeat (from 1). */

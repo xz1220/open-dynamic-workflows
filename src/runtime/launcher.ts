@@ -67,6 +67,10 @@ export interface StartRunOptions {
    * instead of running again.
    */
   resumedFrom?: { runId: string; dir: string } | null;
+  /** `odw run --dry` (ODW extension): every agent gets a stub, no model is called. */
+  dry?: boolean | null;
+  /** `odw run --record` (ODW extension): keep the run as a case of this test file. */
+  record?: { file: string; workflow: string } | null;
 }
 
 /**
@@ -105,6 +109,8 @@ function commonCreateInput(options: StartRunOptions, source: string, workflowNam
     eval: options.eval ?? null,
     applyResolve: options.applyResolve ?? null,
     resumedFrom: options.resumedFrom ?? null,
+    dry: options.dry ?? null,
+    record: options.record ?? null,
   };
 }
 

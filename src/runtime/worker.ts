@@ -27,7 +27,7 @@ import type { WaitingCheckpoint } from "../checkpoint.js";
 import { buildContext, spentTokens, type RunContext } from "../context.js";
 import { deciderText, PAUSED, RUNNING, type CheckpointRequest } from "../control.js";
 import { RunStopped, WorkflowScriptError, isFatalError } from "../errors.js";
-import { LOG, RUN_FAILED, RUN_FINISHED, RUN_STARTED, RUN_STOPPED, event } from "../events.js";
+import { AGENT_STARTED, LOG, RUN_FAILED, RUN_FINISHED, RUN_STARTED, RUN_STOPPED, event } from "../events.js";
 import { ReplayJournal } from "../journal.js";
 import { loadWorkflowScript, scanDualCompat } from "../loader.js";
 import { NotesBoard } from "../notes.js";
@@ -38,6 +38,8 @@ import { redactorFor, type Redactor } from "../redact.js";
 import type { Scheduler } from "../scheduler.js";
 import { applyRunTrust, resolveRunTrust, untrustedConfigSwap } from "../untrusted.js";
 import { pluginOrigin } from "../workflows/plugins.js";
+import { dryResponder, mockConfig, mockRunner, noSleep, type MockResponder } from "../wftest/mock.js";
+import { recordFixture } from "../wftest/record.js";
 import { FileControl } from "./file-control.js";
 import { notifyCheckpoint, notifyQuotaPause, notifyRunEnd } from "./notify.js";
 import { mintCheckpointLinks, runsRootsOf } from "./approve-links.js";
@@ -203,7 +205,10 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
     }
     const trusted = applyRunTrust(overridden, runTrust);
     if (swapNote) trusted.notes.push(swapNote);
-    const config = trusted.config;
+    // No model is called (ODW extension; see ../wftest/mock): `odw test`'s
+    // scripted replies, or a dry run's stubs, answer every agent in-process.
+    const mock: MockResponder | undefined = options.mock ?? (meta.dry === true ? dryResponder : undefined);
+    const config = mock ? mockConfig(trusted.config) : trusted.config;
     const runRedactor = redactorFor(config);
     redactor = runRedactor;
     sink.redactor = runRedactor;
@@ -262,6 +267,8 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
       agentSchemaPath: (agentId) => store.agentSchemaPath(runId, agentId),
       replay,
       onCliRun: cliVersions && ((adapter) => cliVersions.note(adapter)),
+      // Each mocked agent is answered knowing its label and phase, from its agent_started event.
+      ...(mock ? { bridge: { runner: mockRunner(mock, (agentId) => startedAgent(store, runId, agentId)), sleep: noSleep } } : {}),
       onCheckpoint: (cp, isWaiting) => {
         if (isWaiting) {
           waiting.set(cp.checkpointId, cp);
@@ -305,6 +312,10 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
     // A container sandbox that cannot run here — no engine, no image — fails
     // the run before any agent starts (ODW extension; see ../adapters/sandbox).
     await ctx.bridge.checkSandbox();
+    if (mock) {
+      const how = meta.dry === true ? "a dry run: every agent gets a stub reply" : "a test run: every agent gets its scripted reply";
+      sink.emit(event(LOG, { message: `${how}, no model is called (ODW extension)` }));
+    }
     // An untrusted run says so, and what of the repository's config it refused (ODW extension).
     for (const message of trusted.notes) sink.emit(event(LOG, { message, trust: "untrusted" }));
     if (replay) {
@@ -437,7 +448,26 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
     signals.dispose();
     unredactOutput();
   }
+  // `odw run --record` (ODW extension): the run, its replies included, kept as a test case.
+  const record = meta.record as { file?: unknown; workflow?: unknown } | null | undefined;
+  if (record && typeof record.file === "string" && typeof record.workflow === "string") {
+    try {
+      recordFixture(store, runId, { file: record.file, workflow: record.workflow, redactor });
+    } catch (err) {
+      process.stderr.write(`odw: could not record ${runId} to ${record.file}: ${errorMessage(err)}\n`);
+    }
+  }
   return end.state;
+}
+
+/** An agent's label and phase, as the run's agent_started event for it names them; null before it has one. */
+function startedAgent(store: RunStore, runId: string, agentId: number): { label: string | null; phase: string | null } | null {
+  for (const ev of store.readEvents(runId)) {
+    if (ev.type === AGENT_STARTED && ev.agentId === agentId) {
+      return { label: typeof ev.label === "string" ? ev.label : null, phase: typeof ev.phase === "string" ? ev.phase : null };
+    }
+  }
+  return null;
 }
 
 export interface ExecuteRunOptions {
@@ -446,6 +476,12 @@ export interface ExecuteRunOptions {
    * worker.log: what it prints is redacted too (see executeRun).
    */
   worker?: boolean;
+  /**
+   * Answer every agent in-process instead of running its CLI (ODW extension;
+   * `odw test`, see ../wftest): the config's adapters, each pointed at the
+   * mock. A run whose meta says `dry` gets the dry run's stubs without it.
+   */
+  mock?: MockResponder;
 }
 
 /**

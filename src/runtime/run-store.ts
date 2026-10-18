@@ -126,6 +126,10 @@ export interface CreateRunInput {
    * runs roots).
    */
   resumedFrom?: { runId: string; dir: string } | null;
+  /** `odw run --dry` (ODW extension; see ../wftest): every agent gets a stub, no model is called; written to meta only when set. */
+  dry?: boolean | null;
+  /** `odw run --record` (ODW extension): the test file the run is kept in as a case, and the workflow it names; written to meta only when set. */
+  record?: { file: string; workflow: string } | null;
 }
 
 /**
@@ -211,6 +215,8 @@ export class RunStore {
       origin: input.origin ?? null,
       ...(input.eval ? { eval: input.eval } : {}),
       ...(input.applyResolve ? { applyResolve: input.applyResolve } : {}),
+      ...(input.dry ? { dry: true } : {}),
+      ...(input.record ? { record: input.record } : {}),
       resumedFrom: input.resumedFrom?.runId ?? null,
       resumedFromDir: input.resumedFrom?.dir ?? null,
       // First-class fact (not inferred from path topology): the script lives in

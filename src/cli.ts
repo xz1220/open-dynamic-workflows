@@ -29,6 +29,8 @@
  *   odw serve FILE.odwrun | odw view FILE   (a bundle, read-only); odw serve --token [VALUE] (runtime/serve-auth.ts)
  *   odw eval <file|name> [--adapter a,b] [--repeats N] [--json] [--out F] [--baseline F]   (src/eval/)
  *   odw conformance [--json] [--case N] [--dir DIR]   (the dialect conformance suite, src/conformance/)
+ *   odw test [<wf|file>] [--case N] [--json] [--keep]   (scripted replies, no model; src/wftest/)
+ *   odw run <wf> --dry | --record [--record-to FILE]    (stub replies; a run kept as a test case)
  *   odw note <text…> | odw notes [<run_id>] [--json]   (the run's notes board, runtime/notes-view.ts)
  */
 
@@ -36,7 +38,7 @@ import { spawn } from "node:child_process";
 import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { networkInterfaces } from "node:os";
-import { basename, resolve } from "node:path";
+import { basename, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
@@ -54,6 +56,7 @@ import { AdapterNotFound } from "./errors.js";
 import type { WorkflowEvent } from "./events.js";
 import { VERSION } from "./index.js";
 import { cmdInit } from "./init.js";
+import { loadWorkflowScript } from "./loader.js";
 import type { AgentChanges } from "./changes.js";
 import { agentRowJson, agentRows, formatAgentTable, matchAgents, type AgentRow } from "./runtime/agents-view.js";
 import { applyAgents, type AgentDiff } from "./runtime/apply.js";
@@ -100,6 +103,8 @@ import { pausedForOf, pausedText } from "./quota-wait.js";
 import { cmdSchedule } from "./schedule/command.js";
 import { cmdEval } from "./eval/command.js";
 import { cmdConformance } from "./conformance/command.js";
+import { cmdTest } from "./wftest/command.js";
+import { formatPhaseTree, phaseCounts } from "./wftest/dry.js";
 import { isSeaBinary } from "./sea.js";
 import { describeConcurrency } from "./throttle.js";
 import { detectCaps, fmtUsd, glyphs, palette, sanitizeText } from "./tty.js";
@@ -135,6 +140,7 @@ export const COMMANDS = [
   "eval",
   "conformance",
   "pull",
+  "test",
 ] as const;
 
 export type Command = (typeof COMMANDS)[number];
@@ -184,6 +190,9 @@ export function helpText(): string {
     "  odw view FILE.odwrun                               show a bundle read-only (odw serve --open FILE.odwrun)",
     "  odw eval <file|name> [--adapter a,b] [--repeats N] cases × adapters × repeats: pass rate, cost, time (ODW extension)",
     "                                                     --json, --out report.json, --baseline report.json (exit 1: regressed)",
+    "  odw test [<wf|file>] [--case N] [--json] [--keep]  run .odw/tests/<wf>.json: scripted replies, checks; no model, $0 (ODW extension)",
+    "  odw run <wf> --dry                                 every agent gets a stub (a schema's smallest value): the phase tree, $0",
+    "  odw run <wf> --record [--record-to FILE]           keep the run as a test case (default .odw/tests/<wf>.json)",
     "  odw notes <run_id> [--json]                        a run's notes board: what its agents told each other (ODW extension)",
     '  odw note "<text>"                                  inside an agent with notes on: post a note for the run\'s other agents',
     "  odw run <wf> --on ssh://[user@]host[:port][/dir]   run it on your own server, detached; prints its run id (ODW extension)",
@@ -334,6 +343,8 @@ export async function main(argv: string[]): Promise<number> {
         return cmdNotes(rest, storeFrom);
       case "conformance":
         return await cmdConformance(rest);
+      case "test":
+        return await cmdTest(rest);
       default:
         process.stderr.write(`odw: unknown command '${command}'\n\n${helpText()}\n`);
         return 2;
@@ -503,6 +514,9 @@ async function cmdRun(rest: string[]): Promise<number> {
       budget: { type: "string" },
       on: { type: "string" },
       sync: { type: "string" },
+      dry: { type: "boolean" },
+      record: { type: "boolean" },
+      "record-to": { type: "string" },
     },
   });
   const ref = positionals[0];
@@ -510,6 +524,13 @@ async function cmdRun(rest: string[]): Promise<number> {
     process.stderr.write("odw run: missing <script.js|name>\n");
     return 2;
   }
+  // --dry and --record (ODW extensions; see wftest/): a run for $0, and a run kept as a test case.
+  if ((values.dry || values.record || values["record-to"] !== undefined) && (values.on !== undefined || values.sync !== undefined)) {
+    throw new UsageError("odw run: --dry and --record run here, not with --on");
+  }
+  if (values.dry && (values.record || values["record-to"] !== undefined)) throw new UsageError("odw run: --dry calls no model: there is nothing to --record");
+  if (values["record-to"] !== undefined && !values.record) throw new UsageError("odw run: --record-to goes with --record");
+  if (values.dry && values.detach) throw new UsageError("odw run: --dry waits for its run to print its phase tree; leave out --detach");
   if (values.on !== undefined || values.sync !== undefined) return cmdRunRemote(ref, values);
 
   let budgetTotal: number | null = null;
@@ -526,7 +547,9 @@ async function cmdRun(rest: string[]): Promise<number> {
   const trust: TrustLevel | null = values.untrusted === true ? "untrusted" : null;
   const sandbox = parseSandbox("run", values.sandbox, values["sandbox-image"]);
 
-  warnIfNoDefaultAdapter(values.adapter ?? null, values.config ?? null, values.source ?? null, "run");
+  // A dry run answers every agent itself: no adapter needs to be installed.
+  if (!values.dry) warnIfNoDefaultAdapter(values.adapter ?? null, values.config ?? null, values.source ?? null, "run");
+  const record = values.record ? recordTarget(ref, values["record-to"], values.config ?? null, values.source ?? null) : null;
 
   const { runId, store, workflow } = startRun(ref, {
     args: parseArgsValue(values.args),
@@ -538,13 +561,51 @@ async function cmdRun(rest: string[]): Promise<number> {
     trust,
     sandbox,
     budgetTotal,
+    dry: values.dry === true,
+    record,
   });
+  if (record) process.stderr.write(`recording: once ${runId} ends, it is a case of ${record.file} (odw test ${record.workflow})\n`);
+  if (!values.dry) {
+    return afterStart(store, runId, mode, {
+      timeoutMs,
+      hint: "started run",
+      banner: withWorkflowLines(startBanner(values.config ?? null, values.source ?? null, permissions, trust, sandbox), workflow),
+    });
+  }
+  // A dry run is waited for (a non-TTY start would detach), then shown as its phase tree.
+  process.stderr.write(`dry run: every agent gets a stub reply, no model is called\n`);
+  const code = await afterStart(store, runId, mode === "detach" ? "wait" : mode, { timeoutMs, hint: "started dry run" });
+  const status = store.readStatus(runId);
+  if (TERMINAL_STATES.has(String(status.state))) {
+    const declared = Array.isArray(status.phases) ? (status.phases as Array<{ title?: unknown }>).map((ph) => ph?.title).filter((t): t is string => typeof t === "string") : [];
+    const counts = phaseCounts(store.readEvents(runId), declared);
+    const agents = counts.reduce((n, c) => n + c.agents, 0);
+    process.stderr.write(`dry run ${runId} ${String(status.state)}: ${agents} agent${agents === 1 ? "" : "s"} started, no model called ($0)\n`);
+    for (const line of formatPhaseTree(counts, detectCaps(process.stderr, process.env).unicode)) process.stderr.write(`  ${line}\n`);
+  }
+  return code;
+}
 
-  return afterStart(store, runId, mode, {
-    timeoutMs,
-    hint: "started run",
-    banner: withWorkflowLines(startBanner(values.config ?? null, values.source ?? null, permissions, trust, sandbox), workflow),
-  });
+/**
+ * Where `odw run --record` keeps the run (ODW extension): `--record-to`, else
+ * `.odw/tests/<workflow>.json` in the run's source directory — the workflow's
+ * meta.name, else its file's stem — and what the test file names as its
+ * workflow: the name given, or a path relative to that directory.
+ */
+function recordTarget(ref: string, to: string | undefined, configPath: string | null, source: string | null): { file: string; workflow: string } {
+  const cwd = source ? resolve(source) : process.cwd();
+  const isPath = /\.(?:[cm]?js|ts)$/i.test(ref) || /[\\/]/.test(ref);
+  const workflow = isPath ? relative(cwd, resolve(cwd, ref)) || ref : ref;
+  if (to !== undefined) return { file: resolve(to), workflow };
+  let name = basename(ref).replace(/\.[^.]*$/, "");
+  try {
+    const { scriptPath } = resolveWorkflow(ref, { cwd, config: loadConfig(configPath, { quiet: true, cwd }) });
+    name = loadWorkflowScript(readFileSync(scriptPath, "utf8"), scriptPath).meta.name;
+  } catch {
+    // startRun reports a workflow it cannot resolve; the stem names the file meanwhile.
+  }
+  const safe = name.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^[.-]+/, "") || "workflow";
+  return { file: join(cwd, ".odw", "tests", `${safe}.json`), workflow };
 }
 
 /**
