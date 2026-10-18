@@ -31,7 +31,11 @@
  * run reports them, and those not connected go with the reply; one that
  * failed or needs authentication is an `mcp_unavailable` failure under
  * `mcpFailures: "fail"`, and a server the call's `expect.mcp` lists that is
- * not there is a miss (ODW extensions).
+ * not there is a miss (ODW extensions). So does background work a CLI left
+ * running when it replied (`output.background`: Claude Code's task events),
+ * which died as it exited: recorded with the reply (`orphanedBackground:
+ * "warn"`), an `orphaned_background` failure (`"fail"`), or — with `expect` —
+ * a miss.
  *
  * A call with `expect` checks (an ODW extension; see ./expect) has its work
  * checked once its reply satisfies the schema — an isolated run's worktree is
@@ -141,7 +145,7 @@ import {
   isFatalError,
 } from "./errors.js";
 import { hasLimits, limitLabel, LimitWatch, mergeLimits, readLimits, type AgentLimits, type LimitHit } from "./limits.js";
-import { refusedMiss, type ExpectationSink } from "./expect.js";
+import { orphanedMiss, refusedMiss, type ExpectationSink } from "./expect.js";
 import { PortPool } from "./ports.js";
 import { QuotaWaits, type QuotaPause, type QuotaPauseChange } from "./quota-wait.js";
 import { bothEnds, type Redactor } from "./redact.js";
@@ -237,6 +241,13 @@ export interface AgentOutcome {
    * extension; `mcpPath`) — any status but "connected" — when there were any.
    */
   mcp?: McpServer[];
+  /**
+   * The background work its CLI left running when it replied, while it did
+   * that work (ODW extension; `output.background`), one line each, when there
+   * was any: the reply stood anyway (`orphanedBackground: "warn"`), so the
+   * caller records and logs it.
+   */
+  orphaned?: string[];
 }
 
 /** The MCP servers one CLI run of a call reported (ODW extension): its adapter, and those not connected. */
@@ -1008,6 +1019,9 @@ export class Bridge {
       // but those the call's `expect.mcp` lists, which are a miss (ODW extensions).
       mcpFails: settings.mcpFailures === "fail" ? new Set(options.expect?.mcp ?? []) : undefined,
       limits: agentLimits,
+      // Background work left running fails a run at once only under "fail",
+      // and not with `expect`, which counts it as a miss (ODW extensions).
+      orphanFails: settings.orphanedBackground === "fail" && !options.expect,
     };
     const limits: CliLimits = {
       timeout: adapter.timeout ?? settings.timeout ?? undefined,
@@ -1044,7 +1058,7 @@ export class Bridge {
     let attempts = 0;
     // What the work missed last round, told to the next one.
     let missed = "";
-    const done = (value: unknown, text: string, refused: string[], servers: Map<string, string>): AgentOutcome => {
+    const done = (value: unknown, text: string, refused: string[], servers: Map<string, string>, orphaned: string[]): AgentOutcome => {
       const down = notConnected([...servers].map(([name, status]) => ({ name, status })));
       return {
         value,
@@ -1054,6 +1068,7 @@ export class Bridge {
         notes: plan.notes,
         ...(refused.length > 0 ? { denied: refused } : {}),
         ...(down.length > 0 ? { mcp: down } : {}),
+        ...(orphaned.length > 0 ? { orphaned } : {}),
       };
     };
     for (let round = 0; ; round++) {
@@ -1065,6 +1080,8 @@ export class Bridge {
       // down in any of them stays down — the work may rest on that run (ODW extension).
       const servers = new Map<string, string>();
       let reported = false;
+      // The background work its CLI runs left running at their replies (ODW extension).
+      const orphaned: string[] = [];
       for (let attempt = 1; attempt <= maxAttempts; attempt++) {
         throwIfAborted(signal);
         if (++attempts > 1) await options.beforeRetry?.();
@@ -1100,6 +1117,7 @@ export class Bridge {
           throw new AdapterExecutionError(cliFailureMessage(adapter, cli, EMPTY_REPLY, this.redactor), { reason: "empty_reply" });
         }
         for (const denial of output.denied ?? []) if (!refused.includes(denial)) refused.push(denial);
+        for (const work of output.orphaned ?? []) if (!orphaned.includes(work)) orphaned.push(work);
         if (output.mcp) reported = true;
         for (const { name, status } of output.mcp ?? []) {
           if (status !== MCP_CONNECTED || !servers.has(name)) servers.set(name, status);
@@ -1120,16 +1138,22 @@ export class Bridge {
           value = pick.value;
         }
         // Without `expect`, a reply stands though tool calls were refused: they are recorded.
-        if (!expect) return done(value, text, refused, servers);
+        if (!expect) return done(value, text, refused, servers, orphaned);
 
         // The work is checked, not taken at its word (ODW extension; see ./expect),
         // and a refused tool call is a miss of its own: the work went without it.
+        // So is background work left running at the reply: it died unfinished.
         const checked = await unlessStopped(signal, () => expect.check(text, { mcp: reported ? servers : null }));
-        const misses = refused.length > 0 ? [refusedMiss(refused), ...checked] : checked;
-        if (misses.length === 0) return done(value, text, refused, servers);
+        const misses = [
+          ...(refused.length > 0 ? [refusedMiss(refused)] : []),
+          ...(orphaned.length > 0 ? [orphanedMiss(orphaned)] : []),
+          ...checked,
+        ];
+        if (misses.length === 0) return done(value, text, refused, servers, orphaned);
         const lines = misses.map((miss) => miss.text);
         if (round >= expect.retries) {
           if (refused.length > 0) throw this.refusedFailure(adapter, cli, refused, lines, limits, reruns);
+          if (orphaned.length > 0) throw this.orphanedFailure(adapter, cli, orphaned, lines, limits, reruns);
           const after = round > 0 ? ` after ${round} ${round === 1 ? "retry" : "retries"}` : "";
           throw new UnmetExpectationError(
             `adapter '${adapter.name}' did not meet its expectations${after}: ${lines.join("; ")}`,
@@ -1292,7 +1316,37 @@ export class Bridge {
     // `permissionDenials: "fail"`; else the caller records them, or — with
     // `expect` — counts them as a miss.
     if (output.denied && call.refusalFails) return { cli: refusedEvidence(cli, output.denied), failure: { reason: "permission" } };
+    // A reply given while background work still ran (Claude Code's task
+    // events): the work died as the CLI exited. It fails here only under
+    // `orphanedBackground: "fail"`; else the caller records it, or — with
+    // `expect` — counts it as a miss.
+    if (output.orphaned && call.orphanFails) {
+      return { cli: orphanedEvidence(cli, output.orphaned), failure: { reason: "orphaned_background" } };
+    }
     return null;
+  }
+
+  /**
+   * How a call with `expect` fails when the background work its CLI left
+   * running is still among what its work missed after its retries: an
+   * `orphaned_background` failure naming it, with the rest of what it missed.
+   */
+  private orphanedFailure(
+    adapter: Adapter,
+    cli: CliResult,
+    orphaned: string[],
+    misses: string[],
+    limits: CliLimits,
+    reruns: Reruns,
+  ): UnmetExpectationError {
+    const why = this.whatFailed(adapter, cli, { reason: "orphaned_background" }, limits, reruns);
+    const message = cliFailureMessage(adapter, orphanedEvidence(cli, orphaned), why, this.redactor);
+    const others = misses.slice(1);
+    return new UnmetExpectationError(
+      others.length > 0 ? `${message} — and its work did not meet: ${others.join("; ")}` : message,
+      misses,
+      "orphaned_background",
+    );
   }
 
   /**
@@ -1352,6 +1406,11 @@ export class Bridge {
         return (
           `started the agent without an MCP server it is configured with (mcpFailures: "fail") — fix the server ` +
           `(claude mcp list) and resume the run, ${switchAdapter}`
+        );
+      case "orphaned_background":
+        return (
+          "ended its turn with background work still running, which died when its CLI exited — have the agent wait " +
+          "for that work before it replies, or run it in the foreground"
         );
       default:
         // An exit-0 run fails this way only when its CLI reported the failure in its output.
@@ -1645,6 +1704,8 @@ interface CallEnv {
   watch?: LimitWatch;
   /** The limits the call runs under on this adapter (ODW extension). */
   limits?: AgentLimits;
+  /** A run whose CLI exited with background work running fails as `orphaned_background` (ODW extension; see failureOf). */
+  orphanFails?: boolean;
 }
 
 /** The variables an agent's processes get from ODW: only ever this call's, never inherited. */
@@ -1796,4 +1857,9 @@ function runawayError(adapter: Adapter, hit: LimitHit): RunawayError {
 /** A run whose CLI refused tool calls, with them as its diagnostic: what a `permission` failure quotes. */
 function refusedEvidence(cli: CliResult, refused: string[]): CliResult {
   return { ...cli, stdout: `denied: ${refused.join("; ")}`, stderr: "" };
+}
+
+/** A run whose CLI exited with background work running, with it as its diagnostic: what `orphaned_background` quotes. */
+function orphanedEvidence(cli: CliResult, orphaned: string[]): CliResult {
+  return { ...cli, stdout: `left running: ${orphaned.join("; ")}`, stderr: "" };
 }

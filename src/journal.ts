@@ -72,6 +72,12 @@ export interface AgentResultRecord {
    */
   mcp?: Array<{ name: string; status: string }>;
   /**
+   * The background work its CLI left running when it replied, which died with
+   * it — the reply stood anyway (ODW extension; `orphanedBackground: "warn"`),
+   * when there was any.
+   */
+  orphaned?: string[];
+  /**
    * Likely secrets in it were replaced by `«redacted:<kind>»` before it was
    * saved (ODW extension; see ./redact) — a resume replays it as saved.
    */

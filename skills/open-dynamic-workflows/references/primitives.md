@@ -626,6 +626,13 @@ adapter's `output.deniedPath` — count as a miss: the retry is told which, and 
 call still refused after its retries throws with reason `"permission"`, its
 `misses` listing the refusal and anything else the work missed.
 
+So does background work the CLI left running when it replied — a shell command
+started with `run_in_background` or a subagent, still open at Claude Code's
+`result` event (its stream-json task events, read through the adapter's
+`output.background`), which died as the CLI exited: the retry is told to wait
+for every background command and subagent before replying, and a call that
+still leaves some throws with reason `"orphaned_background"`.
+
 Without `expect`: an empty or whitespace-only reply throws with reason
 `"empty_reply"` unless `allowEmpty: true`. A reply that claims success while the
 CLI refused tool calls stands — they are kept as `denied` on the agent's
@@ -637,7 +644,12 @@ terminal event and saved result, and the run logs each server and status once
 (``MCP server github failed to start (claude agent `fix-auth`): its tools were
 unavailable``); `"mcpFailures": "fail"` throws for a server that `failed` or
 `needs-auth` with reason `"mcp_unavailable"` (one `expect.mcp` lists is a miss
-instead). Neither failure is retried. `expect` is
+instead). Background work its CLI left running when it replied is kept as
+`orphaned` on the agent's `agent_finished` event and saved result, and the run
+logs one line per agent (`serve:1: Claude Code ended its turn with 1 background
+task still running — Bash (Start the dev server); …`);
+`"orphanedBackground": "fail"` throws with reason `"orphaned_background"`
+instead. None of these failures is retried. `expect` is
 part of the call's resume key; Claude Code ignores it, so there the checks do not
 run.
 

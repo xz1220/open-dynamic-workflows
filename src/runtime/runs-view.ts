@@ -74,7 +74,7 @@ export interface AgentView {
   /**
    * Why a failed agent's CLI failed (agent_failed's `reason`): rate_limit,
    * quota, auth, timeout, stalled, not_found, permission or exit — or, ODW
-   * extensions, empty_reply, unmet_expectation, mcp_unavailable and runaway. Absent while running, for
+   * extensions, empty_reply, unmet_expectation, mcp_unavailable, runaway and orphaned_background. Absent while running, for
    * other failures (schema, stop) and for older event files.
    */
   failureReason?: string;
@@ -89,6 +89,12 @@ export interface AgentView {
    * that stood anyway (agent_finished's `denied`), one line each. Absent otherwise.
    */
   denied?: string[];
+  /**
+   * Agents only (ODW extension): the background work its CLI left running
+   * under a reply that stood anyway (agent_finished's `orphaned`), one line
+   * each. Absent otherwise.
+   */
+  orphaned?: string[];
   startedAt: number | null;
   finishedAt: number | null;
   /** Wall-clock from agent_started to agent_finished/failed, in ms (a command's own measurement). */
@@ -458,6 +464,8 @@ export function applyAgentEvent(
     } else {
       const denied = strings(ev.denied);
       if (denied) target.denied = denied;
+      const orphaned = strings(ev.orphaned);
+      if (orphaned) target.orphaned = orphaned;
       target.state = "done";
       target.adapter = ev.adapter != null ? String(ev.adapter) : null;
       target.attempts = typeof ev.attempts === "number" ? ev.attempts : null;
@@ -604,6 +612,7 @@ function copyAgents(agents: AgentView[], stale: boolean): AgentView[] {
     if (a.misses) copy.misses = [...a.misses];
     if (a.denied) copy.denied = [...a.denied];
     if (a.limits) copy.limits = { ...a.limits, ...(a.limits.hit ? { hit: { ...a.limits.hit } } : {}) };
+    if (a.orphaned) copy.orphaned = [...a.orphaned];
     return copy;
   });
 }

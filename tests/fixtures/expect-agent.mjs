@@ -13,11 +13,13 @@
  *     "reply": "<text>",                 what to print (default "done"; "" prints nothing)
  *     "denied": [ … ],                   with --claude: the result event's permission_denials
  *     "mcp": [ { name, status } ],       with --claude: the init event's mcp_servers
+ *     "stream": [ { … } ],               with --claude: events printed between init and result
  *     "exit": 3 }                        exit with this code
  *
  * With `--claude` after the log path, it prints Claude Code's stream-json
- * instead of plain text: an init event, then a `result` event whose `result`
- * is the reply and whose `permission_denials` are the step's `denied`.
+ * instead of plain text: an init event, the step's `stream` events (a
+ * background task starting, say), then a `result` event whose `result` is the
+ * reply and whose `permission_denials` are the step's `denied`.
  *
  * Each invocation appends one JSON line to the log — its number, the adapter
  * that ran it (its EXPECT_AGENT_ADAPTER variable), its working directory, the
@@ -67,7 +69,8 @@ process.stdin.on("end", () => {
   if (claude) {
     const result = { type: "result", subtype: "success", is_error: false, result: reply, permission_denials: step.denied ?? [] };
     const init = { type: "system", subtype: "init", ...(step.mcp ? { mcp_servers: step.mcp } : {}) };
-    process.stdout.write(`${JSON.stringify(init)}\n${JSON.stringify(result)}\n`);
+    const events = [init, ...(step.stream ?? []), result];
+    process.stdout.write(events.map((event) => `${JSON.stringify(event)}\n`).join(""));
   } else {
     process.stdout.write(reply);
   }

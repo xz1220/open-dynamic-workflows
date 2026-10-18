@@ -72,12 +72,16 @@ declare global {
     /**
      * ODW extension — Claude Code ignores it. What must hold once the agent replied (after
      * `schema` validation), checked by ODW instead of asking the model; tool calls its CLI
-     * refused count as a miss too. Work that misses runs again, on the same adapter, with what
+     * refused count as a miss too, and so does background work its CLI left running when it
+     * replied. Work that misses runs again, on the same adapter, with what
      * it missed appended to its prompt (`expectRetries`), then the call throws (recoverable)
      * with `misses` and reason `"unmet_expectation"` — `"permission"` when refused calls are
-     * among them. A call that falls back to another adapter keeps its checks. Without it, MCP
+     * among them, `"orphaned_background"` when background work left running is. A call that
+     * falls back to another adapter keeps its checks. Without it, MCP
      * servers its CLI started it without are recorded and logged; `"mcpFailures": "fail"`
      * makes one that failed or needs authentication throw with reason `"mcp_unavailable"`.
+     * Background work left running is recorded (`orphaned`) and logged;
+     * `"orphanedBackground": "fail"` makes it throw with reason `"orphaned_background"`.
      */
     expect?: ExpectOptions;
     /** ODW extension: how many times work that missed `expect` runs again (default: the `expectRetries` setting, 1). */

@@ -489,6 +489,11 @@ CLI 拒绝的工具调用——Claude Code 的 `permission_denials`，经适配�
 读取——算作一项缺失：重试时会告诉 agent 是哪些，重试之后仍被拒绝的调用会以 `"permission"`
 抛错，`misses` 里列出这次拒绝以及工作的其他缺失。
 
+CLI 回复时仍在运行的后台任务也一样——用 `run_in_background` 启动的 shell 命令或子 agent，
+到 Claude Code 的 `result` 事件时仍未结束（读取它 stream-json 的任务事件，经适配器的
+`output.background`），随 CLI 退出而终止：重试时会要求 agent 等所有后台命令和子 agent 结束后
+再回复，重试之后仍丢下后台任务的调用以 `"orphaned_background"` 抛错。
+
 没设 `expect` 时：空回复或只有空白的回复会以 `"empty_reply"` 抛错，除非设了
 `allowEmpty: true`。声称成功、但 CLI 拒绝了工具调用的回复照常成立——这些调用作为 `denied`
 记在 agent 的 `agent_finished` 事件和保存的结果上，运行也会记一行日志——除非设了
@@ -496,7 +501,9 @@ CLI 拒绝的工具调用——Claude Code 的 `permission_denials`，经适配�
 列出它们。CLI 启动 agent 时没连上的 MCP 服务器——状态不是 `connected` 的——作为
 `mcp: [{ name, status }]` 记在 agent 的终止事件和保存的结果上，运行按服务器和状态各记一次日志；
 `"mcpFailures": "fail"` 让服务器为 `failed` 或 `needs-auth` 的调用以 `"mcp_unavailable"` 抛错
-（`expect.mcp` 列出的服务器则算作缺失）。两种失败都不重试。`expect` 属于调用的 resume key；Claude Code 会忽略它，在那里检查
+（`expect.mcp` 列出的服务器则算作缺失）。CLI 回复时仍在运行的后台任务作为 `orphaned` 记在
+agent 的 `agent_finished` 事件和保存的结果上，运行为每个 agent 记一行日志；
+`"orphanedBackground": "fail"` 则以 `"orphaned_background"` 抛错。这些失败都不重试。`expect` 属于调用的 resume key；Claude Code 会忽略它，在那里检查
 不会执行。
 
 ## notes（ODW 扩展）

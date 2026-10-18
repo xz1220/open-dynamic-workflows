@@ -41,6 +41,10 @@ import type {
   AdapterFailures,
   AdapterFlags,
   AdapterOutput,
+  BackgroundCondition,
+  BackgroundRule,
+  BackgroundRules,
+  BackgroundScalar,
   Config,
   NotifySettings,
   NotifyTrigger,
@@ -138,6 +142,7 @@ const KNOWN_TOP_KEYS = [
   "redact",
   "quotaWait",
   "mcpFailures",
+  "orphanedBackground",
   "otel",
   "sandbox",
   "agentLimits",
@@ -148,7 +153,7 @@ const KNOWN_ADAPTER_KEYS = ["command", "stdin", "env", "timeout", "stallTimeout"
 /** The fields of an adapter's `output`, per format. */
 const KNOWN_OUTPUT_KEYS: Record<string, readonly string[]> = {
   text: ["format"],
-  jsonl: ["format", "eventType", "textPath", "select", "usageEvent", "usagePath", "costPath", "errorPath", "structuredPath", "deniedPath", "mcpEvent", "mcpPath", "match", "errorEvents"],
+  jsonl: ["format", "eventType", "textPath", "select", "usageEvent", "usagePath", "costPath", "errorPath", "structuredPath", "deniedPath", "mcpEvent", "mcpPath", "match", "errorEvents", "background"],
   json: ["format", "textPath", "usagePath", "costPath", "errorPath", "structuredPath", "deniedPath", "mcpPath"],
 };
 
@@ -915,7 +920,92 @@ function buildOutput(name: string, raw: unknown): AdapterOutput {
     ...(value.mcpEvent != null ? { mcpEvent: value.mcpEvent as string } : {}),
     ...extras,
     ...(value.errorEvents != null ? { errorEvents: buildErrorEvents(name, value.errorEvents, [eventType, usageEvent]) } : {}),
+    ...(value.background != null ? { background: buildBackground(name, value.background) } : {}),
   };
+}
+
+/** The fields of a jsonl output's `background`, of each of its rules, and of a rule's condition. */
+const KNOWN_BACKGROUND_KEYS = ["started", "ended"] as const;
+const KNOWN_BACKGROUND_RULE_KEYS = ["event", "each", "where", "ids", "pattern", "kind", "about"] as const;
+const KNOWN_BACKGROUND_CONDITION_KEYS = ["path", "equals", "not"] as const;
+
+/**
+ * Validate a jsonl output's `background` (ODW extension): `{ "started": [rule…],
+ * "ended": [rule…] }`, each rule `{ event, each?, where?, ids, pattern?, kind?,
+ * about? }` (see {@link BackgroundRules}).
+ */
+function buildBackground(name: string, raw: unknown): BackgroundRules {
+  const where = `adapter '${name}' 'output.background'`;
+  if (!isObject(raw)) throw new ConfigError(`${where} must be an object: { "started": [...], "ended": [...] }`);
+  rejectUnknown(raw, KNOWN_BACKGROUND_KEYS, where);
+  const rules = (key: "started" | "ended"): BackgroundRule[] => {
+    const list = raw[key];
+    if (!Array.isArray(list) || list.length === 0) throw new ConfigError(`${where}.${key} must be a non-empty array of rules`);
+    return list.map((rule, i) => buildBackgroundRule(name, `background.${key}[${i}]`, rule, key === "started"));
+  };
+  return { started: rules("started"), ended: rules("ended") };
+}
+
+function buildBackgroundRule(name: string, at: string, raw: unknown, start: boolean): BackgroundRule {
+  const where = `adapter '${name}' 'output.${at}'`;
+  if (!isObject(raw)) throw new ConfigError(`${where} must be an object: { "event", "ids", "where"?, "each"?, "pattern"?, "kind"?, "about"? }`);
+  rejectUnknown(raw, KNOWN_BACKGROUND_RULE_KEYS, where);
+  if (typeof raw.event !== "string" || !raw.event.trim()) throw new ConfigError(`${where}.event must be a non-empty string (an event type)`);
+  const paths = (key: string, value: unknown, optional: boolean): string[][] | undefined => {
+    if (value == null && optional) return undefined;
+    if (!Array.isArray(value) || value.length === 0) throw new ConfigError(`${where}.${key} must be a non-empty array of paths`);
+    return value.map((path, i) => buildPath(name, `${at}.${key}[${i}]`, path)!);
+  };
+  if (!start && (raw.kind != null || raw.about != null)) {
+    throw new ConfigError(`${where} ends work: 'kind' and 'about' describe work as it starts`);
+  }
+  const rule: BackgroundRule = { event: raw.event, ids: paths("ids", raw.ids, false)! };
+  if (raw.each != null) rule.each = buildPath(name, `${at}.each`, raw.each);
+  if (raw.where != null) {
+    if (!Array.isArray(raw.where)) throw new ConfigError(`${where}.where must be an array of conditions`);
+    rule.where = raw.where.map((condition, i) => buildBackgroundCondition(name, `${at}.where[${i}]`, condition));
+  }
+  if (raw.pattern != null) {
+    if (typeof raw.pattern !== "string" || !raw.pattern) throw new ConfigError(`${where}.pattern must be a regular expression's source`);
+    let groups = 0;
+    try {
+      groups = new RegExp(`${raw.pattern}|`).exec("")!.length - 1;
+    } catch (err) {
+      throw new ConfigError(`${where}.pattern is not a valid regular expression: ${(err as Error).message}`);
+    }
+    if (groups < 1) throw new ConfigError(`${where}.pattern needs a capture group: what it captures is the id`);
+    rule.pattern = raw.pattern;
+  }
+  const kind = paths("kind", raw.kind, true);
+  if (kind) rule.kind = kind;
+  const about = paths("about", raw.about, true);
+  if (about) rule.about = about;
+  return rule;
+}
+
+function buildBackgroundCondition(name: string, at: string, raw: unknown): BackgroundCondition {
+  const where = `adapter '${name}' 'output.${at}'`;
+  if (!isObject(raw)) throw new ConfigError(`${where} must be { "path": [...], "equals"?: <value or values>, "not"?: <value or values> }`);
+  rejectUnknown(raw, KNOWN_BACKGROUND_CONDITION_KEYS, where);
+  const condition: BackgroundCondition = { path: buildPath(name, `${at}.path`, raw.path)! };
+  const scalars = (key: "equals" | "not"): BackgroundScalar | BackgroundScalar[] => {
+    const value = raw[key];
+    const ok = (v: unknown): v is BackgroundScalar => v === null || ["string", "number", "boolean"].includes(typeof v);
+    if (ok(value)) return value;
+    if (Array.isArray(value) && value.length > 0 && value.every(ok)) return [...value];
+    throw new ConfigError(`${where}.${key} must be a string, number, boolean or null, or a non-empty array of them`);
+  };
+  if (raw.equals !== undefined) condition.equals = scalars("equals");
+  if (raw.not !== undefined) condition.not = scalars("not");
+  if (condition.equals === undefined && condition.not === undefined) throw new ConfigError(`${where} needs "equals" or "not"`);
+  return condition;
+}
+
+function rejectUnknown(raw: Record<string, unknown>, known: readonly string[], where: string): void {
+  for (const key of Object.keys(raw)) {
+    if (key.startsWith("$") || key.startsWith("//")) continue; // comment conventions
+    if (!known.includes(key)) throw new ConfigError(`${where} has an unknown key '${key}'; expected ${known.join(", ")}`);
+  }
 }
 
 /** Validate a jsonl output's `match` (ODW extension): `{ "path": [...], "equals": <string, number or boolean> }`. */
@@ -1111,6 +1201,10 @@ function buildSettings(raw: Record<string, unknown>): Settings {
       raw["mcpFailures"] == null
         ? DEFAULT_SETTINGS.mcpFailures
         : buildChoice("mcpFailures", raw["mcpFailures"], ["warn", "fail"] as const),
+    orphanedBackground:
+      raw["orphanedBackground"] == null
+        ? DEFAULT_SETTINGS.orphanedBackground
+        : buildChoice("orphanedBackground", raw["orphanedBackground"], ["warn", "fail"] as const),
     otel: raw["otel"] == null ? DEFAULT_SETTINGS.otel : buildOtel(raw["otel"]),
     sandbox: raw["sandbox"] == null ? DEFAULT_SETTINGS.sandbox : buildSandboxSetting(raw["sandbox"]),
     agentLimits: raw["agentLimits"] == null ? {} : readLimits(raw["agentLimits"], '"agentLimits"', (m) => new ConfigError(m)),

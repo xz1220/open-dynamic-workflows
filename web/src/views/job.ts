@@ -390,6 +390,10 @@ function drawer(run: RunDetail, ai: number, nowSec: number): string {
           .join("")}</ul>` +
         `<p class="dnote">${t("Their tools were not there for this agent — check the server with claude mcp list.")}</p>`
       : "") +
+    (a.orphaned?.length
+      ? `<div class="drawer-sec">${t("Left running")}</div><ul class="denied orphaned">${a.orphaned.map((o) => `<li>${esc(o)}</li>`).join("")}</ul>` +
+        `<p class="dnote">${t("It replied while this background work still ran; it died when the CLI exited, so the reply may rest on work that never finished.")}</p>`
+      : "") +
     changesSection(run, a, ai, rec?.branch) +
     output +
     (evs ? `<div class="drawer-sec">${t("Events")}</div><div class="mini-events">${evs}</div>` : "") +

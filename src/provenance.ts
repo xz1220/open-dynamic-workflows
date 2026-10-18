@@ -270,6 +270,7 @@ export const BEHAVIOUR_SETTINGS = [
   "expectRetries",
   "permissionDenials",
   "mcpFailures",
+  "orphanedBackground",
   "sandbox",
   "notes",
   "agentLimits",

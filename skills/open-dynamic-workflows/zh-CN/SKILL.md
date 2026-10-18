@@ -104,7 +104,9 @@ agent 的工作区里以 0 退出；`timeout` 秒，默认 600）、`match`（�
 "fail"` 则让它失败）。`mcp: ['github']` 要求 Claude Code 启动 agent 时这些 MCP 服务器已连上
 （`pending` 也算通过）；不设时，没连上的服务器作为 `mcp` 记在 agent 上，每次运行记一次日志
 （`"mcpFailures": "fail"` 让服务器为 `failed` 或 `needs-auth` 的 agent 以 `"mcp_unavailable"`
-失败）。空回复总会抛出 `reason: "empty_reply"`（`allowEmpty: true` 接受空回复）：
+失败）。CLI 回复时仍在运行的后台任务（`run_in_background` 的命令或子 agent，随 `-p` 退出
+被终止）同样算作缺失，原因为 `"orphaned_background"`；不设 `expect` 时它作为 `orphaned`
+记在 agent 上并记一次日志（`"orphanedBackground": "fail"` 则让它失败）。空回复总会抛出 `reason: "empty_reply"`（`allowEmpty: true` 接受空回复）：
 
 ```js
 const fix = await agent('Fix the failing parser tests.', {   // ODW 扩展：expect

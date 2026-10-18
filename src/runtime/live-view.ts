@@ -122,6 +122,9 @@ export function formatEvent(ev: WorkflowEvent): string {
     // Tool calls its CLI refused under a reply that stood (ODW extension).
     const denied = type === "agent_finished" ? linesOf(ev.denied) : null;
     if (denied) detail += ` — refused: ${sanitizeText(denied.join("; "), 200)}`;
+    // Background work its CLI left running under a reply that stood (ODW extension).
+    const orphaned = type === "agent_finished" ? linesOf(ev.orphaned) : null;
+    if (orphaned) detail += ` — left running: ${sanitizeText(orphaned.join("; "), 200)}`;
   } else if (type.startsWith("command_")) detail = commandDetail(ev, type);
   else if (type === "checkpoint_requested") {
     detail = `#${String(ev.checkpointId)} ${sanitizeText(ev.title, 200)}${ev.truncated === true ? " (payload truncated)" : ""}`;
@@ -273,6 +276,7 @@ function reasonText(reason: string | undefined): string | null {
     empty_reply: "empty reply",
     unmet_expectation: "expectations not met",
     runaway: "runaway",
+    orphaned_background: "left background work running",
   };
   return words[reason] ?? sanitizeText(reason.replace(/_/g, " "), 40);
 }
@@ -495,6 +499,8 @@ class LiveView {
       a.usage?.costUsd !== undefined ? fmtUsd(a.usage.costUsd) : null,
       // Its reply stood though its CLI refused tool calls (ODW extension): the log line before says which.
       a.state === "done" && a.denied?.length ? `${a.denied.length === 1 ? "1 tool call" : `${a.denied.length} tool calls`} refused` : null,
+      // Its reply stood though its CLI left background work running (ODW extension).
+      a.state === "done" && a.orphaned?.length ? `${a.orphaned.length === 1 ? "1 background task" : `${a.orphaned.length} background tasks`} orphaned` : null,
     ]);
     return `    ${glyph} ${label}  ${p.dim(meta)}`;
   }

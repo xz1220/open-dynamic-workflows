@@ -61,7 +61,9 @@
  * on its agent_finished event and saved record. The MCP servers its CLI
  * started it without (Claude Code's init event) are kept as `mcp` on its
  * terminal event and saved record, and logged once per run for each server
- * and status.
+ * and status. Background work its CLI left running under a reply that stood
+ * (`orphanedBackground: "warn"`) is logged once and kept as `orphaned` on its
+ * agent_finished event and saved record.
  *
  * An agent with notes on — `notes: true` on its call or its parallel(), or
  * the `notes` setting (an ODW extension; see ./notes) — finds the run's notes
@@ -321,6 +323,7 @@ export function createPrimitives(
     // What its CLI refused when the value was produced travels with it (ODW extension).
     const denied = deniedField(recorded.denied);
     const mcp = mcpField(recorded.mcp);
+    const orphaned = orphanedField(recorded.orphaned);
     const changed = changeFields(kept);
     // A value saved with its secrets redacted replays as saved, and says so (ODW extension; see ./redact).
     const redacted = recorded.redacted === true ? { redacted: true } : {};
@@ -334,11 +337,11 @@ export function createPrimitives(
         }),
       );
     }
-    const finished = event(AGENT_FINISHED, { agentId, label, phase, adapter, ...moved, attempts, ...marks, ...changed, ...denied, ...mcp });
+    const finished = event(AGENT_FINISHED, { agentId, label, phase, adapter, ...moved, attempts, ...marks, ...changed, ...denied, ...mcp, ...orphaned });
     const startedAt = startedEv.ts;
     const finishedAt = finished.ts;
     const value = recorded.value;
-    if (save({ agentId, key, label, phase, adapter, ...moved, attempts, startedAt, finishedAt, value, ...tier, ...marks, ...changed, ...denied, ...mcp, ...redacted })) {
+    if (save({ agentId, key, label, phase, adapter, ...moved, attempts, startedAt, finishedAt, value, ...tier, ...marks, ...changed, ...denied, ...mcp, ...orphaned, ...redacted })) {
       finished.saved = true;
     }
     ctx.emit(finished);
@@ -852,6 +855,20 @@ export function createPrimitives(
             }),
           );
         }
+        // Background work its CLI left running when it replied (ODW extension):
+        // said once, and kept with the agent — it died unfinished.
+        if (outcome.orphaned?.length) {
+          const producer = ctx.config.adapters[outcome.adapter] ?? adapter;
+          ctx.emit(
+            event(LOG, {
+              message: orphanedNote(`${display}:${agentId}`, adapterDisplayName(producer), outcome.orphaned),
+              orphaned: outcome.orphaned,
+              agentId,
+              label: display,
+              phase: activePhase,
+            }),
+          );
+        }
         const finished = event(AGENT_FINISHED, {
           agentId,
           label: display,
@@ -863,6 +880,7 @@ export function createPrimitives(
           ...changeFields(kept),
           ...deniedField(outcome.denied),
           ...mcpField(outcome.mcp),
+          ...orphanedField(outcome.orphaned),
         });
         const persisted = save({
           agentId,
@@ -880,6 +898,7 @@ export function createPrimitives(
           ...changeFields(kept),
           ...deniedField(outcome.denied),
           ...mcpField(outcome.mcp),
+          ...orphanedField(outcome.orphaned),
         });
         if (persisted) finished.saved = true;
         ctx.emit(finished);
@@ -1235,6 +1254,27 @@ function mcpNote(server: McpServer, adapter: string, label: string): string {
     default:
       return `MCP server ${server.name} was ${JSON.stringify(server.status)}, not connected ${who}: its tools may have been unavailable`;
   }
+}
+
+/** The `orphaned` an agent's agent_finished event and record carry: the background work its CLI left running, when any (ODW extension). */
+function orphanedField(orphaned: unknown): { orphaned?: string[] } {
+  if (!Array.isArray(orphaned)) return {};
+  const work = orphaned.filter((line): line is string => typeof line === "string");
+  return work.length > 0 ? { orphaned: work } : {};
+}
+
+/**
+ * The one line a run logs for an agent whose reply stood though its CLI left
+ * background work running (`orphanedBackground: "warn"`; ODW extension).
+ */
+function orphanedNote(who: string, cli: string, orphaned: string[]): string {
+  const work = orphaned.length === 1 ? "1 background task" : `${orphaned.length} background tasks`;
+  const shown = orphaned.slice(0, REFUSED_SHOWN).join("; ");
+  const more = orphaned.length > REFUSED_SHOWN ? `; and ${orphaned.length - REFUSED_SHOWN} more` : "";
+  return (
+    `${who}: ${cli} ended its turn with ${work} still running — ${shown}${more}; it died when the CLI exited, ` +
+    "so its reply may rest on work that never finished (orphanedBackground: \"fail\" fails such an agent)"
+  );
 }
 
 /** Refused calls a log line names, at most; the event carries them all. */

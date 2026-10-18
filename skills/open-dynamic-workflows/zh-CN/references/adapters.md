@@ -175,6 +175,7 @@ still reach the agent`）。仓库 `.worktreeinclude` 的 `symlink:` 行和仓�
 | `expectRetries` | **ODW 扩展。** 工作没达到 `expect` 检查的 agent 带着缺失项重跑的次数，之后以 `unmet_expectation` 失败（默认 1；`agent()` 调用自己的 `expectRetries` 优先）——见 [expect](primitives.md#expectodw-扩展) |
 | `permissionDenials` | **ODW 扩展。** CLI 拒绝了 agent 的工具调用（`deniedPath`）、而回复声称成功时怎么办：`"warn"`（默认）保留回复——这些调用记为 agent 上的 `denied` 并记一次日志——`"fail"` 让 agent 以 `permission` 失败。适配器自己的 `permissionDenials` 优先；设了 `expect` 的调用无论如何都把被拒绝的调用算作缺失 |
 | `mcpFailures` | **ODW 扩展。** CLI 启动 agent 时没连上 MCP 服务器（`mcpPath`：Claude Code 的 init 事件）时怎么办：`"warn"`（默认，与 Claude Code 自己只警告一致）保留回复——每个状态不是 `connected` 的服务器记为 agent 上的 `mcp`，每次运行按服务器和状态各记一次日志——`"fail"` 让服务器为 `failed` 或 `needs-auth` 的 agent 以 `mcp_unavailable` 失败（`pending` 和 `disabled` 从不导致失败）。调用的 `expect.mcp` 列出的服务器则算作缺失 |
+| `orphanedBackground` | **ODW 扩展。** CLI 给出回复时仍有后台任务在运行——`run_in_background` 的 shell 命令或它从未等待的子 agent，随 CLI 退出而终止（`output.background`：Claude Code 的任务事件）——时怎么办：`"warn"`（默认）保留回复，任务记为 agent 上的 `orphaned` 并记一次日志；`"fail"` 让 agent 以 `orphaned_background` 失败。设了 `expect` 的调用无论如何都把它算作缺失 |
 | `redact` | **ODW 扩展。** `{ "env": true, "patterns": true, "extra": [] }`（默认）：odw 保存和提供的内容——transcript 与 stderr 结尾、保存的结果、事件、运行的错误、webhook 负载——在写下之前把疑似密钥替换为 `«redacted:<kind>»`，并以 `redacted: true` 标明；`worker.log` 与 Chat Host 会话同样脱敏（用户输入只脱敏令牌形态），运行的 `args` 为 `odw rerun` 原样保存、对外提供时脱敏令牌形态。`env`：odw 环境及各适配器 `env` 中名字像密钥的变量（`*_KEY`、`*TOKEN`、`*SECRET*`、`*PASSWORD*`、`AUTHORIZATION`、云凭据）的值（8 个字符及以上），无论出现在哪里，以及这类名字的 `NAME=value`；`patterns`：常见令牌形态（Anthropic、OpenAI、GitHub、Slack、AWS、Google、JWT、私钥、`Bearer`）；`extra`：更多正则表达式。运行的结果只应用 `patterns` 和 `extra`；提示词、agent 看到的内容和保存的 diff 从不脱敏。`false` = 关闭；`odw doctor` 会报告 |
 | `otel` | **ODW 扩展。** OpenTelemetry 导出：`false`（默认）什么都不发送——单靠 `OTEL_*` 环境变量不会开启。`true` 或 `{ "endpoint": "http://localhost:4318", "headers": { … }, "captureContent": false }`：运行结束后，worker 把它的 trace（遵循 GenAI 语义约定的 `invoke_workflow` / `phase` / `invoke_agent` / `execute_tool` / `exec` / `checkpoint` span——含用量、花费、模型、失败原因，重试和回退作为 span 事件）以 OTLP/HTTP JSON 发送到 `endpoint` + `/v1/traces`，只发一次，时限 5 秒；失败只在运行的 `worker.log` 留一行，绝不改变运行结果。省略时 `endpoint` 和 `headers` 取自 `OTEL_EXPORTER_OTLP_(TRACES_)ENDPOINT` / `…HEADERS`（默认端点 `http://localhost:4318`）；header 的值是机密，从不写日志或显示。`captureContent`（或 `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true`）会附带回复、工具输入输出和错误文本——发出前再次脱敏，每个字段截断到 4096 个字符。`odw export <run> --otlp [--out FILE \| --send]` 可导出任意运行；`odw doctor` 显示 trace 发往何处 |
 | `sandbox` | **ODW 扩展。** `"none"`（默认）：agent CLI 在本机运行。`{ "kind": "container", "image", "engine"?, "network"?, "mounts"?, "cliConfig"?, "memory"?, "cpus"?, "pids"? }`：每次 CLI 运行与每个 `exec()` 步骤都在全新的 Docker/Podman 容器中进行——只以相同路径挂载工作区与私有 home（复制 CLI 的登录文件），以宿主 uid:gid、无 capability、`no-new-privileges`、pids 上限、只读根文件系统运行，环境变量按名字传递；`network` 默认 `"default"`（agent 必须连到模型 API），`exec()` 步骤默认 `"none"`；非干净退出时按名字 kill 容器；镜像从不拉取（`examples/sandbox/Dockerfile`），缺引擎或镜像即 `ConfigError`。`odw run\|rerun\|resume --sandbox container [--sandbox-image <镜像>]` 按运行开启；适配器与 `agent()` 只能收紧 |
@@ -233,6 +234,20 @@ still reach the agent`）。仓库 `.worktreeinclude` 的 `symlink:` 行和仓�
 的这类事件像 `errorPath` 一样让运行失败，除非之后出现 `usageEvent`，说明 CLI 继续运行了。把
 最终回复写进文件的 CLI 在命令里使用 `{reply_file}`：文件有内容就是回复；文件为空或没写、
 stdout 的事件里也没有回复时，回复为空（除非 `allowEmpty`，否则 `empty_reply`），日志会写明缺了什么。
+
+**ODW 扩展**，仅 `jsonl`：`background: { "started": [规则…], "ended": [规则…] }` 说明哪些事件
+开始、哪些事件结束后台任务，到最新的文本事件时仍未结束的任务即为孤儿（`orphanedBackground`）。
+规则为 `{ "event": <类型>, "each"?: [路径], "where"?: [{ "path": [...], "equals"?: 值 | [值…],
+"not"?: 值 | [值…] }], "ids": [[路径]…], "pattern"?: <正则源码>, "kind"?: [[路径]…], "about"?:
+[[路径]…] }`：该 `type` 的事件（设了 `each` 时为该处数组的每一项）满足全部 `where` 条件时，以
+`ids` 处的值（字符串或数字；设了 `pattern` 时为其第一个捕获组在这些字符串里匹配到的内容）开始或
+结束任务。任务以任一 id 为准是同一件：工具调用和它登记的任务是同一件，任一 id 都能结束它。
+`kind` 和 `about`（仅开始规则）为记录命名：各取第一个找到的字符串，如 `Bash (npm run dev)`。规则
+写错即 `ConfigError`。内置 `claude` 读取 Claude Code stream-json 的 `system` 事件 `task_started`
+（`task_type` 为 `in_process_teammate` 的除外）、`task_updated`（`patch.status` 为
+`completed`、`failed` 或 `killed` 时结束）和 `task_notification`，`input.run_in_background: true`
+的 `assistant` 工具调用 `Bash`、`Agent`、`Task`，以及以 `user` 消息注入的
+`<task-notification>`（`<task-id>`、`<tool-use-id>`）。
 
 ### 原生结构化输出
 
@@ -306,4 +321,6 @@ CLI 在输出里报告的失败（`errorPath`：Claude Code stream-json 的 `is_
 为 `empty_reply`（除非调用设了 `allowEmpty`），工作没达到调用的 `expect` 检查时为
 `unmet_expectation`，CLI 拒绝了工具调用（`deniedPath`）且 `permissionDenials` 为 `"fail"`
 或调用设了 `expect` 时为 `permission`，CLI 启动 agent 时有 MCP 服务器 `failed` 或
-`needs-auth`（`mcpPath`）且 `mcpFailures` 为 `"fail"` 时为 `mcp_unavailable`。
+`needs-auth`（`mcpPath`）且 `mcpFailures` 为 `"fail"` 时为 `mcp_unavailable`，CLI 回复时
+仍有后台任务在运行（`background`）且 `orphanedBackground` 为 `"fail"` 或调用设了 `expect`
+时为 `orphaned_background`。

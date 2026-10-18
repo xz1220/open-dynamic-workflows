@@ -35,12 +35,15 @@
  *
  * Tool calls the agent's CLI refused (`deniedPath`) are a miss of their own
  * here, whatever `permissionDenials` says: work that went without them is not
- * the evidence asked for.
+ * the evidence asked for. So is background work its CLI left running when it
+ * replied (`output.background`), whatever `orphanedBackground` says: it died
+ * unfinished.
  *
  * Work that misses runs again with what it missed appended to its prompt, up
  * to `expectRetries` times (default 1); then the call fails with reason
  * "unmet_expectation" — "permission" when refused calls are among what it
- * missed — and the list of misses (the bridge's loop, ./bridge).
+ * missed, "orphaned_background" when orphaned work is — and the list of
+ * misses (the bridge's loop, ./bridge).
  * An isolated retry starts over in a fresh worktree, and the change it leaves
  * replaces the earlier one (ChangeRecorder.redo).
  */
@@ -114,6 +117,21 @@ export function refusedMiss(refused: string[]): ExpectMiss {
   return {
     text: `no tool call may be refused, and ${count}: ${refused.join("; ")}`,
     advice: "Those calls are not allowed here: do the task without them.",
+  };
+}
+
+/**
+ * The miss of work whose CLI ended its turn with background work still
+ * running (`output.background`): with `expect`, that work died unfinished, so
+ * the reply may rest on it.
+ */
+export function orphanedMiss(orphaned: string[]): ExpectMiss {
+  const count = orphaned.length === 1 ? "1 was" : `${orphaned.length} were`;
+  return {
+    text: `no background work may still be running at the reply, and ${count}: ${orphaned.join("; ")}`,
+    advice:
+      "Background work dies when your reply ends the session: wait for every background command and subagent " +
+      "to finish (or run it in the foreground) before you reply.",
   };
 }
 

@@ -22,7 +22,10 @@
  * is a `permission` failure when `permissionDenials` is "fail", or when the
  * call's `expect` still misses because of it; by default it stands. So does
  * one whose CLI started it without an MCP server that failed or needs
- * authentication — `mcp_unavailable` when `mcpFailures` is "fail".
+ * authentication — `mcp_unavailable` when `mcpFailures` is "fail" — and one
+ * whose CLI exited with background work still running (`output.background`)
+ * — `orphaned_background` when `orphanedBackground` is "fail", or when the
+ * call's `expect` still misses because of it.
  *
  * The HTTP status alone does not decide a class: providers send a spent quota
  * as 429, 401 or 403, and a per-minute limit under the word "quota". So the
@@ -56,7 +59,13 @@ export type FailureReason =
   /** An MCP server the CLI started the agent with failed or needs authentication, under `mcpFailures: "fail"` (ODW extension). */
   | "mcp_unavailable"
   /** The agent ran into one of its `limits` — a loop, too many tool calls, too much spend — and was killed (ODW extension). */
-  | "runaway";
+  | "runaway"
+  /**
+   * The CLI ended the agent's turn and exited with background work still
+   * running, which died with it, under `orphanedBackground: "fail"` — or
+   * among what its `expect` checks still missed (ODW extension).
+   */
+  | "orphaned_background";
 
 /** The classes an adapter's `failures` config may add patterns to. */
 export const CONFIGURABLE_REASONS = ["rate_limit", "quota", "auth"] as const;

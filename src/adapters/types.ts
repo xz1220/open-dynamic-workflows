@@ -111,6 +111,13 @@ export type AdapterOutput =
        * or fails it (`mcpFailures`, `expect.mcp`).
        */
       mcpPath?: string[];
+      /**
+       * The background work the CLI's events say the agent started, and the
+       * events that say it ended (an ODW extension): work still open at the
+       * latest text event was orphaned — the CLI ended the agent's turn and
+       * exited while it ran, and it died with it (`orphanedBackground`).
+       */
+      background?: BackgroundRules;
     }
   | {
       /** One JSON document on stdout: the paths are read from it. */
@@ -123,6 +130,57 @@ export type AdapterOutput =
       deniedPath?: string[];
       mcpPath?: string[];
     };
+
+/**
+ * How a JSONL adapter's events show background work (an ODW extension;
+ * `output.background`): a shell command or subagent the agent started without
+ * waiting for it (Claude Code's `run_in_background`), and its end. Work is one
+ * piece under any of its ids: a start and an end that share one match up, and
+ * two starts that share one (a tool call, then the task it registered) are the
+ * same work.
+ */
+export interface BackgroundRules {
+  /** Events that say background work started. */
+  started: BackgroundRule[];
+  /** Events that say background work ended — finished, failed, or was stopped. */
+  ended: BackgroundRule[];
+}
+
+/** One kind of event that starts or ends background work (ODW extension; see {@link BackgroundRules}). */
+export interface BackgroundRule {
+  /** The event's `type`. */
+  event: string;
+  /**
+   * Path to an array in the event whose items are each looked at, instead of
+   * the event itself (an assistant message's `message.content` blocks).
+   */
+  each?: string[];
+  /** Conditions the event (or item) must meet, all of them. */
+  where?: BackgroundCondition[];
+  /** Paths to the work's ids in the event (or item); one of them must hold a string or number. */
+  ids: string[][];
+  /**
+   * A regular expression (its source) the strings at `ids` are searched with:
+   * the ids are what its first capture group matches, every time it does (a
+   * notification written as text, `<task-id>b1</task-id>`). Unset: the values
+   * at `ids` are the ids.
+   */
+  pattern?: string;
+  /** Starts only: paths to what kind of work it is, the first string wins ("Bash", "local_agent"). */
+  kind?: string[][];
+  /** Starts only: paths to what it does, the first non-empty string wins (its description, its command). */
+  about?: string[][];
+}
+
+/** A condition on a background event (ODW extension): the value at `path` is `equals` (one of them), or is not `not` (none of them). */
+export interface BackgroundCondition {
+  path: string[];
+  equals?: BackgroundScalar | BackgroundScalar[];
+  not?: BackgroundScalar | BackgroundScalar[];
+}
+
+/** A value a background condition compares with. */
+export type BackgroundScalar = string | number | boolean | null;
 
 /** A condition on a JSONL event (ODW extension; `match`): its value at `path` is `equals`. */
 export interface OutputMatch {
@@ -467,6 +525,15 @@ export interface Settings {
    * "mcp_unavailable". Servers a call's `expect.mcp` lists are a miss instead.
    */
   mcpFailures: "warn" | "fail";
+  /**
+   * An agent whose CLI ended its turn with background work still running —
+   * a shell command or subagent it started and never waited for, which died
+   * when the CLI exited (an ODW extension; `output.background`): `"warn"`
+   * keeps its reply, recording the work on the agent as `orphaned` and logging
+   * it once; `"fail"` fails the agent with reason "orphaned_background". A
+   * call with `expect` counts it as a miss either way.
+   */
+  orphanedBackground: "warn" | "fail";
   /**
    * What odw keeps and serves of its agents — transcripts, saved results,
    * events, the run's error and result, webhook payloads — has its likely

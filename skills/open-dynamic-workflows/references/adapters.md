@@ -222,6 +222,7 @@ did-you-mean hint) instead of silently ignoring them.
 | `expectRetries` | **ODW extension.** How many times an agent whose work missed its `expect` checks runs again, told what it missed, before it fails with reason `unmet_expectation` (default 1; an `agent()` call's own `expectRetries` wins) — see [expect](primitives.md#expect-odw-extension) |
 | `permissionDenials` | **ODW extension.** What a reply that claims success does when the CLI refused the agent tool calls (`deniedPath`): `"warn"` (default) keeps it — the calls are recorded as `denied` on the agent and logged once — and `"fail"` fails the agent with reason `permission`. An adapter's own `permissionDenials` wins; a call with `expect` counts refused calls as a miss either way |
 | `mcpFailures` | **ODW extension.** What an agent does when its CLI started it without an MCP server (`mcpPath`: Claude Code's init event): `"warn"` (default, as Claude Code itself only warns) keeps the reply — every server that is not `connected` is recorded as `mcp` on the agent and logged once per run per server and status — and `"fail"` fails an agent whose server `failed` or `needs-auth` with reason `mcp_unavailable` (`pending` and `disabled` never fail it). A server the call's `expect.mcp` lists is a miss instead |
+| `orphanedBackground` | **ODW extension.** What an agent does when its CLI gave its reply with background work still running — a `run_in_background` shell command or a subagent it never waited for, which died as the CLI exited (`output.background`: Claude Code's task events): `"warn"` (default) keeps the reply — the work is recorded as `orphaned` on the agent and logged once — and `"fail"` fails the agent with reason `orphaned_background`. A call with `expect` counts it as a miss either way |
 | `redact` | **ODW extension.** `{ "env": true, "patterns": true, "extra": [] }` (default): what odw keeps and serves — transcripts and stderr tails, saved results, events, the run's error, webhook payloads — has likely secrets replaced by `«redacted:<kind>»` before it is written, and says so with `redacted: true` — and so do `worker.log` and the Chat Host's sessions (what a person typed: token shapes only), while a run's `args` are kept as given for `odw rerun` and served with token shapes redacted. `env`: the values (8+ characters) of secret-named variables (`*_KEY`, `*TOKEN`, `*SECRET*`, `*PASSWORD*`, `AUTHORIZATION`, cloud credentials) of odw's environment and each adapter's `env`, wherever they appear, and `NAME=value` of such names; `patterns`: well-known token shapes (Anthropic, OpenAI, GitHub, Slack, AWS, Google, JWT, private keys, `Bearer`); `extra`: more regular expressions. The run's result gets `patterns` and `extra` only; prompts, what agents see and kept diffs are never redacted. `false` = off; `odw doctor` reports it |
 | `otel` | **ODW extension.** OpenTelemetry export: `false` (default) sends nothing — the `OTEL_*` variables alone never turn it on. `true` or `{ "endpoint": "http://localhost:4318", "headers": { … }, "captureContent": false }`: once a run ended, the worker posts its trace (`invoke_workflow` / `phase` / `invoke_agent` / `execute_tool` / `exec` / `checkpoint` spans after the GenAI semantic conventions — usage, cost, models, failure reasons, retries and fallbacks as span events) once, as OTLP/HTTP JSON to `endpoint` + `/v1/traces`, within 5s; a failure is one line in the run's `worker.log` and never changes the run. Omitted, `endpoint` and `headers` come from `OTEL_EXPORTER_OTLP_(TRACES_)ENDPOINT` / `…HEADERS` (default endpoint `http://localhost:4318`); header values are secrets, never logged or shown. `captureContent` (or `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true`) adds replies, tool input and output and error text — redacted again on the way out, each field cut at 4096 characters. `odw export <run> --otlp [--out FILE \| --send]` exports any run; `odw doctor` shows where traces go |
 | `sandbox` | **ODW extension.** `"none"` (default): agent CLIs run on this machine. `{ "kind": "container", "image", "engine"?, "network"?, "mounts"?, "cliConfig"?, "memory"?, "cpus"?, "pids"? }`: each CLI run and `exec()` step in a fresh Docker/Podman container — see [container sandbox](#container-sandbox-odw-extension). `odw run\|rerun\|resume --sandbox container [--sandbox-image <image>]` turns it on per run |
@@ -290,6 +291,24 @@ final reply to a file takes `{reply_file}` in its command: a file with text is t
 reply; when it is empty or never written and stdout's events held no reply either,
 the reply is empty (`empty_reply` unless `allowEmpty`) and the log says what was
 missing.
+
+**ODW extension**, `jsonl` only: `background: { "started": [rule…], "ended": [rule…] }`
+says which events start and end background work, so work still open at the latest
+text event is caught as orphaned (`orphanedBackground`). A rule is `{ "event": <type>,
+"each"?: [path], "where"?: [{ "path": [...], "equals"?: v | [v…], "not"?: v | [v…] }],
+"ids": [[path]…], "pattern"?: <regex source>, "kind"?: [[path]…], "about"?: [[path]…] }`:
+events of that `type` (or, with `each`, every item of the array there) that meet
+every `where` condition start or end the work under the ids at `ids` — strings or
+numbers; with `pattern`, what its first capture group finds in the strings there.
+Work is one piece under any of its ids: a tool call and the task it registered
+are the same work, and either id ends it. `kind` and `about` (starts only) name it
+in the record: the first string found, as `Bash (npm run dev)`. A malformed rule is a
+`ConfigError`. The built-in `claude` reads Claude Code's stream-json `system` events
+`task_started` (all but `task_type` `in_process_teammate`), `task_updated` (a
+`patch.status` of `completed`, `failed` or `killed` ends it) and `task_notification`,
+the `assistant` tool calls `Bash`, `Agent` and `Task` with
+`input.run_in_background: true`, and a `<task-notification>` injected as a `user`
+message (`<task-id>`, `<tool-use-id>`).
 
 ### Native structured output
 
@@ -375,4 +394,6 @@ limit reached`). A clean exit can still fail (ODW extensions): with reason
 `permission` when the CLI refused tool calls (`deniedPath`) and either
 `permissionDenials` is `"fail"` or the call has `expect`, and `mcp_unavailable`
 when the CLI started the agent without an MCP server that `failed` or
-`needs-auth` (`mcpPath`) and `mcpFailures` is `"fail"`.
+`needs-auth` (`mcpPath`) and `mcpFailures` is `"fail"`, and `orphaned_background`
+when the CLI replied with background work still running (`background`) and either
+`orphanedBackground` is `"fail"` or the call has `expect`.

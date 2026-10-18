@@ -10,7 +10,7 @@ import { transcriptEntries } from "../web/src/components/transcript.ts";
 import { renderPulse } from "../web/src/components/pulse.ts";
 import { highlightSource, outlineSource } from "../web/src/components/source.ts";
 import { renderTimeline } from "../web/src/components/timeline.ts";
-import { renderDag } from "../web/src/dag.ts";
+import { reasonLabel, renderDag } from "../web/src/dag.ts";
 import { applyRunsDelta, store } from "../web/src/store.ts";
 import { renderActivity } from "../web/src/views/activity.ts";
 import { renderJob, type JobViewState } from "../web/src/views/job.ts";
@@ -921,6 +921,29 @@ test("an agent whose MCP servers did not start lists them in its drawer", () => 
   const html = renderJob(view, NOW);
   assert.match(html, /MCP servers<\/div><ul class="mcp"><li><span class="tag warn">failed<\/span><span class="mono">github<\/span>/);
   assert.match(html, /MCP unavailable/);
+  store.focusRun(null);
+});
+
+test("an agent that left background work running lists it in its drawer, and the reason has words", () => {
+  const view: JobViewState = {
+    cpNote: "",
+    tab: "graph",
+    selectedAi: 0,
+    reviewAi: null,
+    zoom: 1,
+    logQuery: "",
+    logTypes: new Set(["agent"]),
+    logLimit: 600,
+    follow: true,
+    motion: false,
+  };
+  store.focusRun("20260101-000000-aaaaaa");
+  store.run = detail([agent("serve", "Plan", "done", { adapter: "claude", orphaned: ["Bash (Start the dev server)", "Explore (<survey>)"] })]);
+  store.runEvents = [];
+  const html = renderJob(view, NOW);
+  assert.match(html, /Left running<\/div><ul class="denied orphaned"><li>Bash \(Start the dev server\)<\/li><li>Explore \(&lt;survey&gt;\)<\/li><\/ul>/);
+  assert.match(html, /it died when the CLI exited/);
+  assert.equal(reasonLabel("orphaned_background"), "orphaned background work");
   store.focusRun(null);
 });
 

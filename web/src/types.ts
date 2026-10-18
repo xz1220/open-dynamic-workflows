@@ -116,12 +116,14 @@ export interface AgentView {
   exitCode?: number | null;
   /** A command step that is an agent's `expect.command` check: that agent's id (ODW extension). */
   forAgentId?: number;
-  /** Why an agent failed: rate_limit, quota, auth, timeout, stalled, not_found, permission, exit, empty_reply, unmet_expectation, mcp_unavailable, runaway. */
+  /** Why an agent failed: rate_limit, quota, auth, timeout, stalled, not_found, permission, exit, empty_reply, unmet_expectation, mcp_unavailable, runaway, orphaned_background. */
   failureReason?: string | null;
   /** With `unmet_expectation`: the `expect` checks its work did not meet, one line each (ODW extension). */
   misses?: string[];
   /** A finished agent's tool calls its CLI refused (its reply stood anyway), one line each (ODW extension). */
   denied?: string[];
+  /** A finished agent's background work its CLI left running when it replied, which died with it (its reply stood anyway), one line each (ODW extension). */
+  orphaned?: string[];
   /** What the adapter reported spending on this agent. */
   usage?: Usage | null;
   /** What an isolated (worktree) agent changed; its diff is served separately. */
@@ -722,6 +724,8 @@ export interface AgentResultRecord {
   denied?: string[];
   /** The MCP servers its CLI started it without while it did the work (ODW extension). */
   mcp?: Array<{ name: string; status: string }>;
+  /** The background work its CLI left running when it replied (ODW extension). */
+  orphaned?: string[];
   /** Secrets in it were replaced by `«redacted:<kind>»` before it was saved (ODW extension): show a "redacted" tag. */
   redacted?: boolean;
 }

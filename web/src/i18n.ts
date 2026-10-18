@@ -700,6 +700,10 @@ const ZH: Record<string, string> = {
   "MCP servers": "MCP 服务器",
   "Their tools were not there for this agent — check the server with claude mcp list.": "这个 agent 用不上它们的工具——用 claude mcp list 检查服务器。",
   "MCP unavailable": "MCP 不可用",
+  "orphaned background work": "遗留后台任务",
+  "Left running": "仍在运行就被丢下",
+  "It replied while this background work still ran; it died when the CLI exited, so the reply may rest on work that never finished.":
+    "它在这些后台任务仍在运行时就给出了回复;CLI 退出时它们随之终止,所以回复可能基于从未完成的工作。",
   "needs-auth": "需要授权",
   "disabled": "已禁用",
   sandbox: "沙箱",
