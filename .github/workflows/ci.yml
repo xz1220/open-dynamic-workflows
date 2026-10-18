@@ -39,6 +39,9 @@ jobs:
         run: git diff --exit-code -- src/dashboard.generated.ts
       - name: Typecheck the web client
         run: npx tsc -p web/tsconfig.json
+      # The Claude Code dialect conformance suite (conformance/), on the built CLI.
+      - name: Dialect conformance suite
+        run: node dist/cli.js conformance
       - run: npm test
 
   # The full suite leans on POSIX shells (installer, worker, adapter stubs), so
