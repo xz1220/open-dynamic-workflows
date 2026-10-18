@@ -11,10 +11,10 @@
  *
  * The same channel carries the answers to the `checkpoint()` primitive (an ODW
  * extension — not to be confused with the dispatch safe point above): a
- * person approves or rejects a checkpoint, and `awaitDecision` hands the
- * answer to the call waiting for it. A resume also ends a run's pause for a
- * spent quota (an ODW extension: quotaWait, see ./quota-wait) at once:
- * `watchResume` hears it.
+ * person approves (perhaps with an edited payload) or rejects a checkpoint,
+ * and `awaitDecision` hands the answer to the call waiting for it. A resume
+ * also ends a run's pause for a spent quota (an ODW extension: quotaWait, see
+ * ./quota-wait) at once: `watchResume` hears it.
  *
  * The cross-process variant (driven by a control file the CLI writes) lives in
  * `runtime/file-control.ts` and implements the same tiny contract.
@@ -34,19 +34,27 @@ export interface CheckpointDecision {
   approved: boolean;
   note: string | null;
   by: CheckpointDecider;
+  /**
+   * The payload an approval was given with — the person's edit of the
+   * checkpoint's own. Absent when they sent none, and always with a
+   * rejection: edits are only accepted with approve.
+   */
+  payload?: unknown;
 }
 
 /**
  * A request to answer a checkpoint(), as the CLI and the server send it:
- * `{ action: "approve" | "reject", checkpointId?, note? }`. Without a
- * `checkpointId` it answers the oldest checkpoint waiting when the run reads
- * it. Writers stamp `by` and `at` (epoch seconds), which also tell two
- * otherwise equal requests apart.
+ * `{ action: "approve" | "reject", checkpointId?, note?, payload? }`. Without
+ * a `checkpointId` it answers the oldest checkpoint waiting when the run reads
+ * it. `payload` is an approval's edit of the checkpoint's payload — any JSON
+ * value, `null` included; a rejection's is ignored. Writers stamp `by` and
+ * `at` (epoch seconds), which also tell two otherwise equal requests apart.
  */
 export interface CheckpointRequest {
   action: "approve" | "reject";
   checkpointId?: number;
   note?: string | null;
+  payload?: unknown;
   by?: CheckpointDecider;
   at?: number;
 }
@@ -71,16 +79,22 @@ export function isCheckpointId(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
 }
 
-/** The answer a request carries; an empty note is no note, a long one is cut (never mid-character). */
+/**
+ * The answer a request carries; an empty note is no note, a long one is cut
+ * (never mid-character). An approval's payload goes along as it came — the
+ * checkpoint waiting for it checks it — and a rejection's is dropped.
+ */
 export function decisionOf(request: CheckpointRequest): CheckpointDecision {
   const note = typeof request.note === "string" && request.note.trim() !== "" ? request.note : null;
+  const approved = request.action === "approve";
   return {
-    approved: request.action === "approve",
+    approved,
     note:
       note !== null && note.length > CHECKPOINT_NOTE_MAX
         ? note.slice(0, CHECKPOINT_NOTE_MAX).replace(/[\uD800-\uDBFF]$/, "")
         : note,
     by: request.by === "dashboard" ? "dashboard" : "cli",
+    ...(approved && request.payload !== undefined ? { payload: request.payload } : {}),
   };
 }
 
@@ -102,8 +116,14 @@ export interface Control {
    * Wait for a person's answer to checkpoint `checkpointId` (the checkpoint()
    * primitive). Rejects with the abort reason once `signal` aborts. Optional:
    * without it nobody can answer, and a checkpoint ends only by its timeout.
+   * `accept`, when given, sees each answer first: one it refuses (false) is
+   * dropped, and the checkpoint goes on waiting — saying why is up to it.
    */
-  awaitDecision?(checkpointId: number, signal: AbortSignal): Promise<CheckpointDecision>;
+  awaitDecision?(
+    checkpointId: number,
+    signal: AbortSignal,
+    accept?: (decision: CheckpointDecision) => boolean,
+  ): Promise<CheckpointDecision>;
   /**
    * Call `onResume` for every resume asked for from now on — `odw resume` on
    * a run paused for a spent quota (an ODW extension: quotaWait) — and return
@@ -131,8 +151,8 @@ export class MemoryControl implements Control {
   private waiters: Array<() => void> = [];
   private readonly stopListeners = new Set<() => void>();
   private readonly resumeListeners = new Set<() => void>();
-  /** checkpoint id → the call waiting for its answer. */
-  private readonly asked = new Map<number, (decision: CheckpointDecision) => void>();
+  /** checkpoint id → the call waiting for its answer; false: the answer was refused. */
+  private readonly asked = new Map<number, (decision: CheckpointDecision) => boolean>();
 
   pause(): void {
     this.paused = true;
@@ -180,7 +200,11 @@ export class MemoryControl implements Control {
     return () => this.resumeListeners.delete(onResume);
   }
 
-  awaitDecision(checkpointId: number, signal: AbortSignal): Promise<CheckpointDecision> {
+  awaitDecision(
+    checkpointId: number,
+    signal: AbortSignal,
+    accept?: (decision: CheckpointDecision) => boolean,
+  ): Promise<CheckpointDecision> {
     return new Promise<CheckpointDecision>((resolve, reject) => {
       if (signal.aborted) return reject(signal.reason);
       const onAbort = (): void => {
@@ -189,9 +213,11 @@ export class MemoryControl implements Control {
       };
       signal.addEventListener("abort", onAbort, { once: true });
       this.asked.set(checkpointId, (decision) => {
+        if (accept && !accept(decision)) return false;
         signal.removeEventListener("abort", onAbort);
         this.asked.delete(checkpointId);
         resolve(decision);
+        return true;
       });
     });
   }
@@ -201,13 +227,15 @@ export class MemoryControl implements Control {
     return [...this.asked.keys()].sort((a, b) => a - b);
   }
 
-  /** Answer a waiting checkpoint — the oldest, without an id. False when none matched. */
+  /**
+   * Answer a waiting checkpoint — the oldest, without an id. False when none
+   * matched, or when the checkpoint refused the answer (an edit it does not take).
+   */
   decide(request: CheckpointRequest): boolean {
     const id = request.checkpointId ?? this.waiting()[0];
     const answer = id === undefined ? undefined : this.asked.get(id);
     if (!answer) return false;
-    answer(decisionOf(request));
-    return true;
+    return answer(decisionOf(request));
   }
 
   private wake(): void {

@@ -40,7 +40,7 @@ test("HTTP: GET exposes pendingCheckpoints; POST /checkpoint answers it (by: das
     assert.equal(res.status, 200);
     assert.deepEqual(await res.json(), { ok: true, runId: id, action: "approve", checkpointId: 1 });
     assert.equal(await run, "done");
-    assert.deepEqual(p.store.readResult(id), { approved: true, note: "looks right", by: "dashboard" });
+    assert.deepEqual(p.store.readResult(id), { approved: true, note: "looks right", by: "dashboard", payload: { steps: 3 }, edited: false });
   } finally {
     await handle.close();
     await p.cleanup();

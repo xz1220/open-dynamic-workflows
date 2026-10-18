@@ -140,6 +140,10 @@ export interface PendingCheckpoint {
   title: string;
   /** What the person should look at: JSON-safe, at most 64 KiB (null when none was given). */
   payload: unknown;
+  /** The payload was cut to fit its event: `payload` holds only its start, as text. Absent otherwise. */
+  truncated?: boolean;
+  /** The JSON Schema an approval's edited payload must match; absent when the checkpoint has none. */
+  schema?: Record<string, unknown>;
   /** When it started waiting (epoch seconds). */
   since: number;
 }
@@ -578,10 +582,13 @@ export class EventFold {
 function applyCheckpointEvent(pending: Map<number, PendingCheckpoint>, ev: WorkflowEvent): void {
   if (typeof ev.checkpointId !== "number") return;
   if (ev.type === "checkpoint_requested") {
+    const schema = ev.schema;
     pending.set(ev.checkpointId, {
       checkpointId: ev.checkpointId,
       title: String(ev.title ?? ""),
       payload: ev.payload ?? null,
+      ...(ev.truncated === true ? { truncated: true } : {}),
+      ...(schema !== null && typeof schema === "object" && !Array.isArray(schema) ? { schema: schema as Record<string, unknown> } : {}),
       since: asNumber(ev.ts) ?? 0,
     });
   } else if (ev.type === "checkpoint_resolved") {

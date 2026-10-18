@@ -253,13 +253,19 @@ function reasonText(reason: string | undefined): string | null {
 }
 
 /**
- * How a checkpoint was answered: "approved by cli — note", "rejected by
- * timeout", or — no answer — "not answered: <why>".
+ * How a checkpoint was answered: "approved by cli — note", "approved with
+ * edits by dashboard", "rejected by timeout", or — no answer — "not
+ * answered: <why>".
  */
 function answerText(ev: WorkflowEvent): string {
   if (ev.error != null) return `not answered: ${sanitizeText(ev.error, 200)}`;
   const note = typeof ev.note === "string" && ev.note !== "" ? ` — ${sanitizeText(ev.note, 200)}` : "";
-  return `${ev.approved === true ? "approved" : "rejected"} by ${sanitizeText(ev.by ?? "?", 20)}${note}`;
+  return `${verdictText(ev)} by ${sanitizeText(ev.by ?? "?", 20)}${note}`;
+}
+
+/** "approved", "approved with edits" (an edited payload; ODW extension) or "rejected". */
+function verdictText(ev: WorkflowEvent): string {
+  return ev.approved !== true ? "rejected" : ev.edited === true ? "approved with edits" : "approved";
 }
 
 /**
@@ -476,7 +482,7 @@ class LiveView {
     }
     const approved = ev.approved === true;
     const meta = metaJoin(g, [
-      approved ? "approved" : "rejected",
+      verdictText(ev),
       `by ${sanitizeText(ev.by ?? "?", 20)}`,
       typeof ev.note === "string" && ev.note !== "" ? `"${sanitizeText(ev.note, 120)}"` : null,
     ]);

@@ -206,6 +206,12 @@ declare global {
   interface CheckpointOptions {
     /** What the person should look at (a plan, a summary of the changes): any JSON value, kept up to 64 KiB. */
     payload?: unknown;
+    /**
+     * A JSON Schema an approver's edited payload must match (ODW's validator, as for agent()):
+     * `odw approve` and the dashboard refuse an edit that does not, and so does the run.
+     * Without one, any JSON value of at most 256 KiB is taken.
+     */
+    schema?: Record<string, unknown>;
     /** Seconds to wait for an answer; no limit by default. */
     timeout?: number;
     /** What a timeout means: approve, reject, or (the default) "fail" — throw a recoverable `CheckpointTimeout`. */
@@ -219,6 +225,14 @@ declare global {
     note: string | null;
     /** Who answered: `odw approve|reject`, the dashboard (`odw serve`), or the timeout. */
     by: "cli" | "dashboard" | "timeout";
+    /**
+     * What was approved: the approver's edit (`odw approve --edit|--payload`, or the
+     * dashboard) when there is one, else the checkpoint's own payload — undefined when it
+     * had none. A rejection and a timeout carry the checkpoint's own.
+     */
+    payload: unknown;
+    /** The approval came with an edited payload that differs (as JSON) from the checkpoint's own. */
+    edited: boolean;
   }
 
   /**
@@ -226,7 +240,8 @@ declare global {
    * mid-run input. Pauses the run until a person approves or rejects (`odw
    * approve|reject <run> [--note TEXT] [--checkpoint N]`, or the dashboard);
    * meanwhile the run shows as "waiting". A rejection resolves too — branch on
-   * `approved`. Takes no agent slot and counts toward neither maxAgents nor the
+   * `approved`; an approval may come with an edited payload (`payload`, `edited`).
+   * Takes no agent slot and counts toward neither maxAgents nor the
    * budget; a stop ends the wait and the run. `odw resume` asks it again. A
    * script's own `checkpoint` binding takes precedence over this one.
    */
