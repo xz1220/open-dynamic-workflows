@@ -535,9 +535,11 @@ export interface SettingsSnapshot {
 }
 
 export interface WorkflowSummary {
+  /** A Claude Code plugin's workflow (ODW extension): `<plugin>:<name>`. */
   name: string;
-  origin: "project" | "global";
-  provider: "odw" | "claude";
+  origin: "project" | "global" | "plugin";
+  /** `claude-plugin:<plugin>` for a workflow an installed Claude Code plugin ships (ODW extension). */
+  provider: "odw" | "claude" | `claude-plugin:${string}`;
   rootLabel: string;
   path: string;
   description: string | null;
@@ -545,6 +547,8 @@ export interface WorkflowSummary {
   runCount: number;
   /** A higher-precedence same-named workflow wins `odw run <name>`; we still show this. */
   shadowed: boolean;
+  /** A plugin workflow whose bare name runs a project or global workflow instead (ODW extension). */
+  note?: string;
 }
 
 export interface WorkflowDetail extends WorkflowSummary {

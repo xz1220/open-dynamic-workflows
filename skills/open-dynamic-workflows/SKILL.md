@@ -200,7 +200,11 @@ Force either way with `-d`/`--detach` or `--fg`, or `ODW_DETACH=1`.
 
 Saved workflows run by name (`odw run <name>`); lookup order:
 `.odw/workflows`, `.claude/workflows`, `~/.odw/workflows`,
-`~/.claude/workflows`.
+`~/.claude/workflows`. Workflows that installed, enabled Claude Code plugins
+ship run as `odw run <plugin>:<name>` (ODW extension; `odw workflows list
+--plugins` lists them): in place, read-only, same dialect. A bare name reaches
+a plugin's workflow only when no project or personal one has it — use the
+`<plugin>:<name>` form to be sure which runs.
 
 ### Recover a stalled or failed run (ODW extension)
 

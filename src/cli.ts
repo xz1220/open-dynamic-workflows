@@ -80,7 +80,8 @@ import { isSeaBinary } from "./sea.js";
 import { describeConcurrency } from "./throttle.js";
 import { detectCaps, glyphs, palette, sanitizeText } from "./tty.js";
 import { resolveRunTrust } from "./untrusted.js";
-import { listWorkflows, resolveWorkflow } from "./workflows/resolve.js";
+import { pluginOrigin } from "./workflows/plugins.js";
+import { listWorkflows, resolveWorkflow, type ResolvedWorkflow } from "./workflows/resolve.js";
 
 export const COMMANDS = [
   "init",
@@ -142,7 +143,8 @@ export function helpText(): string {
     "                                                     --agent <label|id> shows one agent's whole reply diff",
     "  odw list [--workflow <name>]                       list known runs",
     "  odw serve [--port N] [--host H] [--open]           open the live dashboard in a browser",
-    "  odw workflows list [--project|--global|--all]      list workflows runnable by name",
+    "  odw workflows list [--project|--global|--plugins|--all]  list workflows runnable by name,",
+    "                                                     Claude Code plugins' as <plugin>:<name> (ODW extension)",
     "  odw workflows where <name>                         show the file a name resolves to",
     "  odw pause|resume|stop <run_id>                     control a running workflow",
     "  odw approve|reject <run_id> [--checkpoint N]       answer a checkpoint() the run waits at (--note TEXT)",
@@ -445,7 +447,7 @@ async function cmdRun(rest: string[]): Promise<number> {
 
   warnIfNoDefaultAdapter(values.adapter ?? null, values.config ?? null, values.source ?? null, "run");
 
-  const { runId, store } = startRun(ref, {
+  const { runId, store, workflow } = startRun(ref, {
     args: parseArgsValue(values.args),
     configPath: values.config ?? null,
     runsRoot: values["runs-root"] ?? null,
@@ -459,7 +461,7 @@ async function cmdRun(rest: string[]): Promise<number> {
   return afterStart(store, runId, mode, {
     timeoutMs,
     hint: "started run",
-    banner: startBanner(values.config ?? null, values.source ?? null, permissions, trust),
+    banner: withWorkflowLines(startBanner(values.config ?? null, values.source ?? null, permissions, trust), workflow),
   });
 }
 
@@ -501,6 +503,20 @@ function startBanner(
   } catch {
     return undefined;
   }
+}
+
+/**
+ * The start banner with what resolving the workflow said (ODW extensions): a
+ * Claude Code plugin's workflow names its plugin, and a name a plugin also
+ * ships, or one an untrusted run would not take from the repository, says so.
+ */
+function withWorkflowLines(banner: string | undefined, workflow: ResolvedWorkflow | undefined): string | undefined {
+  const lines = [
+    ...(workflow?.plugin ? [`workflow: ${workflow.plugin.name} from ${pluginOrigin(workflow.plugin)} (run in place, never modified)`] : []),
+    ...(workflow?.notes ?? []).map((note) => `note: ${note}`),
+  ];
+  if (lines.length === 0) return banner;
+  return [banner, ...lines].filter((line) => line !== undefined).join("\n");
 }
 
 /** `--timeout <seconds>` as milliseconds (undefined when absent). */
@@ -1344,7 +1360,7 @@ async function relaunch(
   // Observe the NEW run through the store the launcher actually created it in
   // (the old run's configPath may point runsRoot somewhere the CLI-flag store
   // does not) — never through the store the OLD run was located with.
-  let started: { runId: string; store: RunStore };
+  let started: { runId: string; store: RunStore; workflow?: ResolvedWorkflow };
   if (meta.inline === true) {
     let sourceCode: string;
     try {
@@ -1365,7 +1381,7 @@ async function relaunch(
   return afterStart(started.store, started.runId, start.mode, {
     timeoutMs: start.timeoutMs,
     hint: cmd === "resume" ? `resuming ${runId} (${saved} saved agent result(s) to replay) as` : `re-running ${runId} as`,
-    banner: startBanner(opts.configPath, opts.source, opts.permissions, opts.trust),
+    banner: withWorkflowLines(startBanner(opts.configPath, opts.source, opts.permissions, opts.trust), started.workflow),
   });
 }
 
@@ -1835,18 +1851,21 @@ function cmdWorkflowsList(rest: string[]): number {
       config: { type: "string" },
       project: { type: "boolean" },
       global: { type: "boolean" },
+      plugins: { type: "boolean" },
       all: { type: "boolean" },
     },
   });
-  if (values.project && values.global) {
-    process.stderr.write("odw workflows list: --project and --global are mutually exclusive\n");
+  if ([values.project, values.global, values.plugins].filter(Boolean).length > 1) {
+    process.stderr.write("odw workflows list: --project, --global and --plugins are mutually exclusive\n");
     return 2;
   }
   const config = loadConfig(values.config ?? null);
   let entries = listWorkflows(process.cwd(), config);
-  const scoped = Boolean(values.project || values.global);
+  const scoped = Boolean(values.project || values.global || values.plugins);
   if (values.project) entries = entries.filter((e) => e.origin === "project");
   if (values.global) entries = entries.filter((e) => e.origin === "global");
+  // Workflows installed Claude Code plugins ship, as <plugin>:<name> (ODW extension).
+  if (values.plugins) entries = entries.filter((e) => e.origin === "plugin");
   // The default (unscoped) view shows only the effective set; an explicit scope
   // or --all shows every entry, with shadowed ones still flagged.
   if (!values.all && !scoped) entries = entries.filter((e) => !e.shadowed);
@@ -1854,15 +1873,17 @@ function cmdWorkflowsList(rest: string[]): number {
   if (entries.length === 0) {
     process.stderr.write("no named workflows found\n");
     process.stderr.write(
-      "  add one by dropping a .js file in ./.odw/workflows, ./.claude/workflows, ~/.odw/workflows, or ~/.claude/workflows\n",
+      "  add one by dropping a .js file in ./.odw/workflows, ./.claude/workflows, ~/.odw/workflows, or ~/.claude/workflows\n" +
+        "  (or install a Claude Code plugin that ships workflows: odw run <plugin>:<name>)\n",
     );
     return 0;
   }
   const width = Math.max(...entries.map((e) => e.name.length));
   for (const e of entries) {
-    const scope = `${e.provider}:${e.origin}`;
+    const scope = e.origin === "plugin" ? e.provider : `${e.provider}:${e.origin}`;
     const shadow = e.shadowed ? "  shadowed by higher-precedence workflow" : "";
-    process.stdout.write(`${e.name.padEnd(width)}  (${scope.padEnd(14)} ${e.rootLabel})  ${e.path}${shadow}\n`);
+    const note = e.note ? `  note: ${e.note}` : "";
+    process.stdout.write(`${e.name.padEnd(width)}  (${scope.padEnd(14)} ${e.rootLabel})  ${e.path}${shadow}${note}\n`);
   }
   return 0;
 }
@@ -1881,7 +1902,8 @@ function cmdWorkflowsWhere(rest: string[]): number {
   const config = loadConfig(values.config ?? null);
   try {
     const { scriptPath, origin, provider, rootLabel } = resolveWorkflow(name, { cwd: process.cwd(), config });
-    const source = provider ? `${provider}:${origin}${rootLabel ? ` ${rootLabel}` : ""}` : origin;
+    const scope = origin === "plugin" ? provider : provider ? `${provider}:${origin}` : origin;
+    const source = `${scope}${provider && rootLabel ? ` ${rootLabel}` : ""}`;
     process.stdout.write(`${scriptPath}  (${source})\n`);
     return 0;
   } catch (err) {

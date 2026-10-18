@@ -44,7 +44,7 @@ import { LOG_PAGE, changedAgents, cpEditState, renderJob, reviewTarget, type Job
 import { HISTORY_PAGE, renderJobs, type JobsFilter, type JobsState } from "./views/jobs";
 import { renderSettings } from "./views/settings";
 import { renderTokenScreen } from "./views/token";
-import { orderedWorkflows, renderWorkspace, wfKey } from "./views/workspace";
+import { orderedWorkflows, parseWfKey, renderWorkspace, wfKey } from "./views/workspace";
 
 /** Reflect the chosen language on <html lang> (a11y + correct CJK shaping). */
 function applyDocLang(): void {
@@ -556,11 +556,9 @@ async function selectWorkflow(key: string, navigate = true, token = routeToken):
   wfActive = key;
   wfDetail = null;
   render();
-  // key is `provider:name`; name has no colon, so split on the first one. Tolerate
-  // a bare name (old bookmark) by treating the whole thing as the name.
-  const i = key.indexOf(":");
-  const provider = i >= 0 ? key.slice(0, i) : undefined;
-  const name = i >= 0 ? key.slice(i + 1) : key;
+  // key is `provider:name` (a plugin's: `claude-plugin:<plugin>:<plugin>:<name>`).
+  // Tolerate a bare name (old bookmark) by treating the whole thing as the name.
+  const { provider, name } = parseWfKey(key);
   try {
     const detail = await api.workflow(name, provider);
     if (token !== routeToken || wfActive !== key) return;

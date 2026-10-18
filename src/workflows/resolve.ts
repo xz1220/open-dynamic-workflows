@@ -1,19 +1,23 @@
 /**
  * Workflow resolution (L5): turn a `run` argument into an absolute script path.
  *
- * `odw run <arg>` accepts the argument two ways, and this module is the single
+ * `odw run <arg>` accepts the argument three ways, and this module is the single
  * place that tells them apart and resolves each:
  *
  *   - a PATH (`./wf.js`, `/abs/wf.js`, `foo.js`) → used literally, exactly as the
  *     CLI always has (backward compatible);
  *   - a NAME (`deep-research`) → looked up by FILENAME STEM in a managed
- *     directory ODW or Claude Code owns, project-local first then global.
+ *     directory ODW or Claude Code owns, project-local first then global;
+ *   - `<plugin>:<name>` (an ODW extension) → the workflow an installed, enabled
+ *     Claude Code plugin ships under that name (see ./plugins); a bare name no
+ *     project or global workflow has resolves to the one plugin that ships it.
  *
- * It is a PURE path/fs-stat resolver: it never reads, parses, or compiles a
- * workflow body, so a malformed neighbour can never poison resolution and
- * listing can never execute someone else's code. The same `resolveWorkflow` is
- * meant to back both the CLI and (in v2) the inline `workflow(nameOrRef)`
- * primitive, so the two can never resolve a name differently.
+ * It never compiles or runs a workflow body, so a malformed neighbour can never
+ * poison resolution and listing can never execute someone else's code. The
+ * managed directories are searched by stat alone; a plugin's workflows are
+ * named by their `meta`, which is parsed as a literal, never evaluated. The
+ * same `resolveWorkflow` is meant to back both the CLI and (in v2) the inline
+ * `workflow(nameOrRef)` primitive, so the two can never resolve a name differently.
  *
  * Precedence is decided up front and is decisive: a path-shaped argument is
  * ALWAYS a file (so `odw run foo.js` is the file foo.js even if a workflow named
@@ -21,15 +25,23 @@
  */
 
 import { existsSync, readdirSync, realpathSync, statSync } from "node:fs";
-import { isAbsolute, join, resolve, sep } from "node:path";
+import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import { resolveClaudeWorkflowsRoot, resolveWorkflowsRoot } from "../adapters/config.js";
-import type { Config } from "../adapters/types.js";
+import type { Config, TrustLevel } from "../adapters/types.js";
 import { ConfigError, WorkflowScriptError } from "../errors.js";
+import {
+  claudePluginsRoot,
+  discoverPluginWorkflows,
+  parsePluginRef,
+  pluginOrigin,
+  type PluginProvider,
+  type PluginWorkflow,
+} from "./plugins.js";
 
-/** How a `run` argument was resolved. */
-export type WorkflowOrigin = "path" | "project" | "global";
-export type WorkflowProvider = "odw" | "claude";
+/** How a `run` argument was resolved: `plugin` — a workflow an installed Claude Code plugin ships (ODW extension). */
+export type WorkflowOrigin = "path" | "project" | "global" | "plugin";
+export type WorkflowProvider = "odw" | "claude" | PluginProvider;
 
 export interface ResolvedWorkflow {
   /** Absolute path of the script to load and run. */
@@ -37,8 +49,12 @@ export interface ResolvedWorkflow {
   origin: WorkflowOrigin;
   /** Present for named workflows; omitted for literal path runs. */
   provider?: WorkflowProvider;
-  /** Human-readable root label, e.g. `.claude/workflows`. */
+  /** Human-readable root label, e.g. `.claude/workflows`, or where a plugin workflow came from. */
   rootLabel?: string;
+  /** A workflow a Claude Code plugin ships (by name, or by its path): where it came from (ODW extension). */
+  plugin?: PluginWorkflow;
+  /** What the run should say about how the name resolved: a plugin workflow it did not pick, a project one it skipped. */
+  notes?: string[];
 }
 
 export interface ResolveOptions {
@@ -50,6 +66,13 @@ export interface ResolveOptions {
    */
   cwd: string;
   config: Config;
+  /**
+   * The run's trust (ODW extension; default the config's): untrusted, a name
+   * never resolves to the repository's own `.odw/workflows` or
+   * `.claude/workflows` — a path still runs what it names — and the
+   * repository's settings cannot enable a plugin.
+   */
+  trust?: TrustLevel;
 }
 
 /** One non-path workflow name: letters, digits and `. _ -`, nothing else. */
@@ -70,7 +93,9 @@ export function resolveWorkflow(arg: string, opts: ResolveOptions): ResolvedWork
     throw new WorkflowScriptError("no workflow specified");
   }
   // Decide path-vs-name from the raw string, before touching the filesystem.
-  if (isPathLike(arg)) return resolveAsPath(arg, opts.cwd);
+  if (isPathLike(arg)) return withPluginOrigin(resolveAsPath(arg, opts.cwd), opts);
+  const ref = parsePluginRef(arg);
+  if (ref) return resolveAsPluginRef(arg, opts);
   if (isValidName(arg)) return resolveAsName(arg, opts);
   // Not path-shaped, but not a clean name either (e.g. has a space or '@'):
   // fall back to path semantics so the user gets the familiar not-found error.
@@ -84,15 +109,44 @@ export function resolveWorkflow(arg: string, opts: ResolveOptions): ResolvedWork
  */
 export interface WorkflowListing {
   name: string;
-  origin: "project" | "global";
+  origin: "project" | "global" | "plugin";
   provider: WorkflowProvider;
   rootLabel: string;
   path: string;
   /** A higher-precedence root defines this name, so this entry never wins. */
   shadowed: boolean;
+  /** A plugin workflow's bare name runs a project or global workflow instead (ODW extension). */
+  note?: string;
+  /** A plugin workflow: the plugin it came from (ODW extension). */
+  plugin?: PluginWorkflow;
 }
 
-export function listWorkflows(cwd: string, config: Config): WorkflowListing[] {
+/**
+ * The names resolvable from `cwd` (see above), then the workflows installed
+ * Claude Code plugins ship, as `<plugin>:<name>` (ODW extension) — each
+ * noted when its bare name runs a project or global workflow instead.
+ * Reading a plugin's workflows parses their `meta`, never their body.
+ */
+export function listWorkflows(cwd: string, config: Config, opts: { trust?: TrustLevel } = {}): WorkflowListing[] {
+  const out = listRootWorkflows(cwd, config);
+  const bare = new Map(out.filter((e) => !e.shadowed).map((e) => [e.name, e]));
+  for (const w of discoverPluginWorkflows({ cwd, trust: opts.trust ?? config.settings.trust }).workflows) {
+    const winner = bare.get(w.workflow);
+    out.push({
+      name: w.name,
+      origin: "plugin",
+      provider: w.provider,
+      rootLabel: pluginOrigin(w),
+      path: w.path,
+      shadowed: false,
+      ...(winner ? { note: `'${w.workflow}' alone runs ${winner.rootLabel}/${basename(winner.path)} (the ${winner.origin} one wins)` } : {}),
+      plugin: w,
+    });
+  }
+  return out;
+}
+
+function listRootWorkflows(cwd: string, config: Config): WorkflowListing[] {
   const winners = new Set<string>();
   const out: WorkflowListing[] = [];
   for (const root of searchRoots(cwd, config)) {
@@ -152,15 +206,85 @@ function resolveAsPath(arg: string, cwd: string): ResolvedWorkflow {
 }
 
 function resolveAsName(name: string, opts: ResolveOptions): ResolvedWorkflow {
+  const untrusted = (opts.trust ?? opts.config.settings.trust) === "untrusted";
   const roots = searchRoots(opts.cwd, opts.config);
+  const notes: string[] = [];
+  let found: ResolvedWorkflow | null = null;
   for (const root of roots) {
     const candidate = join(root.dir, `${name}.js`);
     if (!existsSync(candidate)) continue;
     assertContained(name, root.dir, candidate);
     if (!isRegularFile(candidate)) continue; // a dir named "<name>.js": skip, don't run
-    return { scriptPath: candidate, origin: root.origin, provider: root.provider, rootLabel: root.label };
+    // Untrusted (ODW extension: trust): the repository's own workflows run
+    // only when their path is given — a name could shadow one of the user's.
+    if (untrusted && root.origin === "project") {
+      notes.push(
+        `untrusted run: not running the repository's own ${root.label}/${name}.js by name — ` +
+          `pass its path (./${relative(opts.cwd, candidate).split(sep).join("/")}) to run it anyway`,
+      );
+      continue;
+    }
+    found = { scriptPath: candidate, origin: root.origin, provider: root.provider, rootLabel: root.label };
+    break;
   }
-  throw notFound(name, roots, opts.cwd);
+  // A Claude Code plugin's workflow answers to its bare name too, after every
+  // project and global one (ODW extension): it runs only when none has the
+  // name, and only when one plugin ships it.
+  const plugins = discoverPluginWorkflows({ cwd: opts.cwd, trust: opts.trust ?? opts.config.settings.trust }).workflows;
+  const same = plugins.filter((w) => w.workflow === name);
+  if (found) {
+    for (const w of same) {
+      notes.push(
+        `${pluginOrigin(w)} also ships '${name}': this runs ${found.rootLabel}/${name}.js (the ${found.origin} one wins) — ` +
+          `run ${w.name} for the plugin's`,
+      );
+    }
+    return notes.length > 0 ? { ...found, notes } : found;
+  }
+  if (same.length === 1) return { ...pluginResolution(same[0]!), ...(notes.length > 0 ? { notes } : {}) };
+  if (same.length > 1) {
+    throw new WorkflowScriptError(
+      `'${name}' is a workflow of ${same.length} Claude Code plugins: run one by its plugin's name — ${same.map((w) => w.name).join(", ")}`,
+    );
+  }
+  const err = notFound(name, roots, opts.cwd);
+  if (notes.length > 0) err.message += `\n${notes.join("\n")}`;
+  throw err;
+}
+
+/** `<plugin>:<name>`: the workflow an installed, enabled plugin ships under that name — else a file of that name, as before. */
+function resolveAsPluginRef(arg: string, opts: ResolveOptions): ResolvedWorkflow {
+  const discovered = discoverPluginWorkflows({ cwd: opts.cwd, trust: opts.trust ?? opts.config.settings.trust });
+  const match = discovered.workflows.find((w) => w.name === arg);
+  if (match) return pluginResolution(match);
+  if (existsSync(resolve(opts.cwd, arg))) return resolveAsPath(arg, opts.cwd);
+  const lines = [`no workflow named '${arg}' in an installed, enabled Claude Code plugin (${claudePluginsRoot()})`];
+  const names = discovered.workflows.map((w) => w.name);
+  const suggestions = nearest(arg, names);
+  if (suggestions.length) lines.push(`did you mean: ${suggestions.join(", ")}?`);
+  else if (names.length) lines.push(`plugin workflows: ${names.slice(0, 10).join(", ")}${names.length > 10 ? ", …" : ""}`);
+  lines.push(...discovered.notes);
+  throw new WorkflowScriptError(lines.join("\n"));
+}
+
+function pluginResolution(w: PluginWorkflow): ResolvedWorkflow {
+  return { scriptPath: w.path, origin: "plugin", provider: w.provider, rootLabel: pluginOrigin(w), plugin: w };
+}
+
+/**
+ * A path inside Claude Code's plugins directory that is a workflow an
+ * installed plugin ships — a rerun of a plugin workflow's run, say — keeps
+ * saying where it came from (ODW extension).
+ */
+function withPluginOrigin(found: ResolvedWorkflow, opts: ResolveOptions): ResolvedWorkflow {
+  const root = claudePluginsRoot();
+  const rel = relative(root, found.scriptPath);
+  if (rel === "" || rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) return found;
+  const real = realpathSync(found.scriptPath);
+  const w = discoverPluginWorkflows({ cwd: opts.cwd, trust: opts.trust ?? opts.config.settings.trust }).workflows.find(
+    (x) => existsSync(x.path) && realpathSync(x.path) === real,
+  );
+  return w ? { ...found, provider: w.provider, rootLabel: pluginOrigin(w), plugin: w } : found;
 }
 
 /** Project roots then global roots, deduped by realpath. */

@@ -104,6 +104,10 @@ export interface CreateRunInput {
   permissions?: string | null;
   /** `"untrusted"` from `--untrusted` (ODW extension; see ../untrusted), else the config's trust. */
   trust?: string | null;
+  /** The Claude Code plugin the workflow came from (ODW extension; see ../workflows/plugins), recorded as `plugin`. */
+  plugin?: { name: string; id: string; version: string | null; scope: string } | null;
+  /** What resolving the workflow's name noted — a plugin's same-named workflow it did not pick — for the run's log. */
+  workflowNotes?: string[];
   /** Where the run was initiated from (e.g. "chat" for Chat Host runs, "eval" for `odw eval`'s). */
   origin?: string | null;
   /** The `odw eval` cell this run is one repeat of (ODW extension); written to meta only when set. */
@@ -182,6 +186,8 @@ export class RunStore {
       adapter: input.adapter ?? null,
       permissions: input.permissions ?? null,
       ...(input.trust ? { trust: input.trust } : {}),
+      ...(input.plugin ? { plugin: input.plugin } : {}),
+      ...(input.workflowNotes && input.workflowNotes.length > 0 ? { workflowNotes: input.workflowNotes } : {}),
       origin: input.origin ?? null,
       ...(input.eval ? { eval: input.eval } : {}),
       resumedFrom: input.resumedFrom?.runId ?? null,

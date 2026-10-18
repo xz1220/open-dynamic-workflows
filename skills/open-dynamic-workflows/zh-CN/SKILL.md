@@ -168,7 +168,10 @@ odw list                    # 所有运行
 ```
 
 保存过的 workflow 可直接按名字运行（`odw run <名字>`）；查找顺序：`.odw/workflows`、
-`.claude/workflows`、`~/.odw/workflows`、`~/.claude/workflows`。
+`.claude/workflows`、`~/.odw/workflows`、`~/.claude/workflows`。已安装并启用的 Claude Code
+插件所带的 workflow 用 `odw run <插件>:<名字>` 运行（ODW 扩展；`odw workflows list --plugins`
+列出它们）：就地、只读、同一方言。只有当项目级和个人级都没有同名 workflow 时，裸名字才会
+运行插件的 workflow——想确定运行哪一个，就用 `<插件>:<名字>` 的写法。
 
 ### 恢复卡住或失败的运行（ODW 扩展）
 

@@ -355,6 +355,29 @@ SIGHUP,效果与 `odw stop` 相同:它的 agent 连同其启动的所有进程�
 的目录和 Claude Code 保存 workflow 的目录: `.odw/workflows`、`.claude/workflows`、
 `~/.odw/workflows`、`~/.claude/workflows`(遵循 `CLAUDE_CONFIG_DIR`)。
 
+**来自 Claude Code 插件的 workflow**(ODW 扩展)。Claude Code 插件可以自带 workflow——放在
+它的 `workflows/` 目录,或 `plugin.json` 的 `"workflows"` 指向的位置。ODW 能运行你已安装
+并启用的插件所带的 workflow,名字与 Claude Code 给它们的一致:
+
+```bash
+odw workflows list --plugins          # <plugin>:<name>,以及来自哪个插件、版本和作用域
+odw run acme-tools:release-audit      # 就地运行,直接读插件自己的目录
+```
+
+ODW 读取 `~/.claude/plugins/installed_plugins.json`(遵循 `CLAUDE_CONFIG_DIR` 和
+`CLAUDE_CODE_PLUGIN_CACHE_DIR`;project 或 local 作用域的安装只在其项目内生效),以及你的
+`~/.claude/settings.json`、项目的 `.claude/settings.json` 和 `.claude/settings.local.json`
+里的 `enabledPlugins`(没有条目的插件按其 `defaultEnabled`)。它只读不写:插件的文件从不
+被修改,脚本走与其他 workflow 相同的加载器——`meta` 不是纯字面量的脚本会被略过(Claude
+Code 也会略过它),运行会在日志里写明 workflow 来自哪里、用到了哪些 ODW 独有的原语。只有当
+没有项目级或个人级 workflow 同名、且只有一个插件提供该名字时,裸名字才会运行插件的
+workflow;项目里有同名 workflow 时运行项目的那个,并提示
+`run acme-tools:release-audit for the plugin's`。`GET /api/workflows` 以 provider
+`claude-plugin:<plugin>` 列出它们,运行记录归在 `<plugin>:<name>` 下。在
+[不受信任](#不受信任的仓库odw-扩展)的运行中插件 workflow 照常可用——它们是你自己安装的——
+但仓库的设置只能禁用插件,不能启用;名字也不会解析到仓库自己的 `.odw/workflows` 或
+`.claude/workflows`(给出路径仍可运行)。
+
 **喜欢用浏览器?** `odw serve` 会对同一个 run 目录开一个零依赖的实时看板——每次运行都是一张
 实时图,还有时间线、日志和结果,全部通过 SSE 推送。无需构建,不引入额外依赖,加载时不访问网络。
 

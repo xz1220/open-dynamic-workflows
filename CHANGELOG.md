@@ -181,6 +181,14 @@ changed, and run on a schedule — and a dashboard redesigned to watch them.
   CLI ran out of quota or is logged out moves down its chain (`adapter: ["codex",
   "claude"]`, or `fallback` in the config) instead of failing, at the same permission
   tier — and `odw status`, the live view and the dashboard's data say where it went.
+- Workflows from Claude Code plugins (**ODW extension**): the workflows your installed,
+  enabled plugins ship (`workflows/`, or the manifest's `"workflows"`) run as
+  `odw run <plugin>:<name>` — the name Claude Code gives them — in place and read-only,
+  through the same loader; `odw workflows list --plugins` and `GET /api/workflows`
+  (provider `claude-plugin:<plugin>`) list them. Discovery follows
+  `installed_plugins.json` and `enabledPlugins`; a project workflow of the same bare
+  name wins, with a note. Each run logs which plugin, version and scope its workflow
+  came from, and any ODW-only primitive it uses.
 
 ### Use the CLI and the dashboard
 - `odw run` attaches a live foreground view in interactive terminals (Ctrl-C detaches;

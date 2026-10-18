@@ -52,7 +52,8 @@
  *                                   `?delta=1` → one `runs` frame, then `runs-delta` frames
  *                                   and `chat` frames ({ sessionId }, coalesced per 250ms)
  *   GET  /api/workflows             [WorkflowSummary] from the managed workflow dirs
- *   GET  /api/workflows/:name       WorkflowDetail (?provider=odw|claude picks a shadowed name)
+ *   GET  /api/workflows/:name       WorkflowDetail (?provider=odw|claude picks a shadowed name;
+ *                                   a plugin's workflow is `<plugin>:<name>`, provider claude-plugin:<plugin>)
  *   GET  /api/capabilities          { writable }: whether this bind accepts writes
  *   GET  /api/settings              runtime config summary (adapters, roots, Claude scope, notify)
  *   GET  /api/schedules             [schedule]: `odw schedule list --json`, read only (ODW extension)
@@ -151,6 +152,7 @@ import {
   logServeError,
 } from "./http-util.js";
 import { listSchedules, scheduleJson } from "../schedule/command.js";
+import type { WorkflowProvider } from "../workflows/resolve.js";
 import { webhookOrigin } from "./notify.js";
 import { OdwRunSource } from "./odw-run-source.js";
 import { RunFeed } from "./run-feed.js";
@@ -409,9 +411,10 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandleCont
         return;
       }
       // Optional ?provider= disambiguates a cross-provider name collision (so a
-      // shadowed Claude workflow's source is reachable); ignored if not odw|claude.
+      // shadowed Claude workflow's source is reachable); ignored if not odw|claude
+      // or claude-plugin:<plugin> (a Claude Code plugin's workflows, ODW extension).
       const p = url.searchParams.get("provider");
-      const provider = p === "odw" || p === "claude" ? p : undefined;
+      const provider = p === "odw" || p === "claude" || (p !== null && /^claude-plugin:[A-Za-z0-9._-]+$/.test(p)) ? (p as WorkflowProvider) : undefined;
       const det = workflowDetail(cwd, config, store, name, provider);
       if (!det) {
         sendJson(res, 404, { error: `no such workflow: ${name}` });

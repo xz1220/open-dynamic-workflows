@@ -396,6 +396,33 @@ then personal workflows, across both its own directories and Claude Code's saved
 workflow directories: `.odw/workflows`, `.claude/workflows`, `~/.odw/workflows`,
 and `~/.claude/workflows` (honoring `CLAUDE_CONFIG_DIR`).
 
+**Workflows from Claude Code plugins** (ODW extension). A Claude Code plugin can ship
+workflows — `.js` files in its `workflows/` directory, or wherever its
+`plugin.json`'s `"workflows"` points. ODW runs the ones your installed, enabled plugins
+ship, under the name Claude Code gives them:
+
+```bash
+odw workflows list --plugins          # <plugin>:<name>, and which plugin, version and scope
+odw run acme-tools:release-audit      # in place, from the plugin's own directory
+```
+
+ODW reads `~/.claude/plugins/installed_plugins.json` (honoring `CLAUDE_CONFIG_DIR` and
+`CLAUDE_CODE_PLUGIN_CACHE_DIR`; a project or local install counts only inside its
+project) and `enabledPlugins` in your `~/.claude/settings.json` and the project's
+`.claude/settings.json` and `.claude/settings.local.json` (a plugin with no entry
+follows its `defaultEnabled`). It only reads: a plugin's files are never written, and
+its scripts run through the same loader as any workflow — a `meta` that is not a pure
+literal leaves a script out, as Claude Code leaves it out, and a run logs where its
+workflow came from and any ODW-only primitive it uses. A bare name runs a plugin's
+workflow only when no project or personal workflow has that name and one plugin ships
+it; when a project workflow has it, the project's runs and the run says
+`run acme-tools:release-audit for the plugin's`. `GET /api/workflows` lists them with
+provider `claude-plugin:<plugin>`, and runs are filed under `<plugin>:<name>`. In an
+[untrusted](#untrusted-repositories-odw-extension) run plugin workflows still run —
+you installed them — but the repository's settings can only disable a plugin, and a
+name never resolves to the repository's own `.odw/workflows` or `.claude/workflows`
+(its path still runs it).
+
 **Prefer a browser?** `odw serve` opens a zero-dependency live dashboard onto the same
 run directory — every run as a live graph, its timeline, logs and result, streamed over
 SSE. No build step, no extra deps, no network access on load.

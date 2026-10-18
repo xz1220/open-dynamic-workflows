@@ -16,7 +16,8 @@ import { renderActivity } from "../web/src/views/activity.ts";
 import { renderJob, type JobViewState } from "../web/src/views/job.ts";
 import { renderJobs } from "../web/src/views/jobs.ts";
 import { spendOf } from "../web/src/views/spend.ts";
-import type { ActivityEvent, AgentView, RunDetail, RunSummary } from "../web/src/types.ts";
+import { orderedWorkflows, parseWfKey, renderWorkspace, wfKey } from "../web/src/views/workspace.ts";
+import type { ActivityEvent, AgentView, RunDetail, RunSummary, WorkflowSummary } from "../web/src/types.ts";
 import { cronWords, esc, fmtDurSec, fmtTokens, fmtUsd, fuzzy, markHits, markRedactions } from "../web/src/util.ts";
 
 const NOW = 1_800_000_000;
@@ -963,4 +964,32 @@ test("evals: a card per eval with its pass-rate dial and trend, and a report as 
   assert.match(rateColor(0), /var\(--amber\) 0%, var\(--alarm\)/);
   store.evals = null;
   store.evalReport = null;
+});
+
+test("the Workspace groups a Claude Code plugin's workflows on their own, and their keys round-trip", () => {
+  const wf = (name: string, provider: WorkflowSummary["provider"], origin: WorkflowSummary["origin"] = "project"): WorkflowSummary => ({
+    name,
+    origin,
+    provider,
+    rootLabel: provider.startsWith("claude-plugin:") ? "Claude Code plugin acme-tools@market 1.0.0 (user scope)" : ".odw/workflows",
+    path: `/x/${name}.js`,
+    description: null,
+    phases: [],
+    runCount: 0,
+    shadowed: false,
+  });
+  const list = [wf("acme-tools:audit", "claude-plugin:acme-tools", "plugin"), wf("audit", "claude"), wf("echo", "odw")];
+  assert.deepEqual(orderedWorkflows(list).map((w) => w.name), ["echo", "audit", "acme-tools:audit"]);
+  const key = wfKey(list[0]!);
+  assert.equal(key, "claude-plugin:acme-tools:acme-tools:audit");
+  assert.deepEqual(parseWfKey(key), { provider: "claude-plugin:acme-tools", name: "acme-tools:audit" });
+  assert.deepEqual(parseWfKey("odw:echo"), { provider: "odw", name: "echo" });
+  assert.deepEqual(parseWfKey("echo"), { name: "echo" });
+  const saved = store.workflows;
+  store.workflows = list;
+  try {
+    assert.match(renderWorkspace(key, null, ""), /<span>Claude Code plugins<\/span><span>1<\/span>/);
+  } finally {
+    store.workflows = saved;
+  }
 });

@@ -28,13 +28,14 @@ import { PAUSED, RUNNING, type CheckpointRequest } from "../control.js";
 import { RunStopped, WorkflowScriptError, isFatalError } from "../errors.js";
 import { LOG, RUN_FAILED, RUN_FINISHED, RUN_STARTED, RUN_STOPPED, event } from "../events.js";
 import { ReplayJournal } from "../journal.js";
-import { loadWorkflowScript } from "../loader.js";
+import { loadWorkflowScript, scanDualCompat } from "../loader.js";
 import { createPrimitives } from "../primitives.js";
 import { CliVersions, runSetup } from "../provenance.js";
 import type { QuotaPause } from "../quota-wait.js";
 import { redactorFor, type Redactor } from "../redact.js";
 import type { Scheduler } from "../scheduler.js";
 import { applyRunTrust, resolveRunTrust } from "../untrusted.js";
+import { pluginOrigin } from "../workflows/plugins.js";
 import { FileControl } from "./file-control.js";
 import { notifyCheckpoint, notifyQuotaPause, notifyRunEnd } from "./notify.js";
 import { exportRunEnd } from "./otel-export.js";
@@ -288,7 +289,26 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
       );
     }
 
+    // How the workflow's name resolved, and — for a Claude Code plugin's
+    // workflow (ODW extension) — where it came from, and what of it is not
+    // Claude Code's dialect: said before it runs, in every run.
+    const plugin = pluginOfMeta(meta.plugin);
+    for (const message of Array.isArray(meta.workflowNotes) ? meta.workflowNotes : []) {
+      if (typeof message === "string") sink.emit(event(LOG, { message }));
+    }
     const source = readFileSync(script, "utf8");
+    if (plugin) {
+      const allowed = config.settings.trust === "untrusted" ? "; allowed in an untrusted run: you installed it" : "";
+      sink.emit(
+        event(LOG, {
+          message: `workflow ${plugin.name} comes from ${pluginOrigin(plugin)}, run in place from ${script} (read, never modified)${allowed}`,
+          plugin: plugin.id,
+        }),
+      );
+      for (const warning of scanDualCompat(source)) {
+        sink.emit(event(LOG, { message: `workflow ${plugin.name}: ${warning}`, plugin: plugin.id }));
+      }
+    }
     const loaded = loadWorkflowScript(source, script);
     // The run-by-name lookup keys on the filename stem, not meta.name. Flag a
     // divergence (through the event stream, so it shows in `odw logs` and the
@@ -299,7 +319,8 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
     // Inline-launched runs (meta.inline) carry their script inside the run dir
     // and are not name-addressable, so the divergence note would only mislead.
     const isInline = meta.inline === true;
-    if (!isInline && loaded.meta.name !== stem) {
+    // A plugin's workflow runs by `<plugin>:<meta.name>`, never by its file's stem.
+    if (!isInline && !plugin && loaded.meta.name !== stem) {
       sink.emit(
         event(LOG, {
           message:
@@ -467,6 +488,19 @@ function replayJournal(meta: Record<string, unknown>): ReplayJournal | undefined
   return new ReplayJournal(meta.resumedFrom, source.listAgentResults(sourceId), (agentId) =>
     source.agentDiffPath(sourceId, agentId),
   );
+}
+
+/** The Claude Code plugin a run's workflow came from (meta.plugin, ODW extension); null for any other run. */
+function pluginOfMeta(raw: unknown): { name: string; id: string; version: string | null; scope: string } | null {
+  if (raw === null || typeof raw !== "object") return null;
+  const p = raw as Record<string, unknown>;
+  if (typeof p.name !== "string" || typeof p.id !== "string") return null;
+  return {
+    name: p.name,
+    id: p.id,
+    version: typeof p.version === "string" ? p.version : null,
+    scope: typeof p.scope === "string" ? p.scope : "user",
+  };
 }
 
 /**
