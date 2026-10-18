@@ -6,7 +6,11 @@ import { join } from "node:path";
 
 import { RunStore } from "../src/runtime/run-store.js";
 import { startServer } from "../src/runtime/server.js";
+import { localLauncher } from "../src/identity.js";
 import { pendingIds, project, until } from "./checkpoint-project.js";
+
+// Who answers from a dashboard with no token: the user who runs odw serve (ODW extension).
+const LOCAL = localLauncher() ? { who: localLauncher()! } : {};
 
 // The dashboard's side of checkpoint(): GET /api/runs/:id lists what waits
 // (pendingCheckpoints), POST /api/runs/:id/checkpoint answers it — behind the
@@ -40,7 +44,7 @@ test("HTTP: GET exposes pendingCheckpoints; POST /checkpoint answers it (by: das
     assert.equal(res.status, 200);
     assert.deepEqual(await res.json(), { ok: true, runId: id, action: "approve", checkpointId: 1 });
     assert.equal(await run, "done");
-    assert.deepEqual(p.store.readResult(id), { approved: true, note: "looks right", by: "dashboard", payload: { steps: 3 }, edited: false });
+    assert.deepEqual(p.store.readResult(id), { approved: true, note: "looks right", by: "dashboard", ...LOCAL, payload: { steps: 3 }, edited: false });
   } finally {
     await handle.close();
     await p.cleanup();
@@ -147,7 +151,7 @@ test("HTTP: /checkpoint refuses what it cannot answer (409), bad bodies (400), a
       assert.deepEqual(await ok.json(), { ok: true, runId: waiting, action: "reject", checkpointId: 1 });
       assert.deepEqual(
         store.readCheckpointRequests(waiting).map(({ at: _at, ...r }) => r),
-        [{ action: "reject", checkpointId: 1, by: "dashboard" }],
+        [{ action: "reject", checkpointId: 1, by: "dashboard", ...LOCAL }],
       );
     } finally {
       await handle.close();

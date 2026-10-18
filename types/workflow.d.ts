@@ -299,6 +299,12 @@ declare global {
     /** Who answered: `odw approve|reject`, the dashboard (`odw serve`), a signed approve link (ODW extension), or the timeout. */
     by: "cli" | "dashboard" | "link" | "timeout";
     /**
+     * Who answered, by name (ODW extension): `cli:<user> <email>` from `odw approve|reject`,
+     * a named `odw serve --tokens` token's name from the dashboard or beside an approve link.
+     * Absent when nobody is named (the timeout, an unnamed token).
+     */
+    who?: string;
+    /**
      * What was approved: the approver's edit (`odw approve --edit|--payload`, or the
      * dashboard) when there is one, else the checkpoint's own payload — undefined when it
      * had none. A rejection and a timeout carry the checkpoint's own.

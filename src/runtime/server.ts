@@ -61,7 +61,9 @@
  *   GET  /api/memory[?workflow=<name>]   [WorkflowMemory] (../memory): the repository's workflow
  *                                   memory, each entry with `stale`, as `odw memory list --json`
  *                                   prints it (ODW extension); [] for a bundle; 400 for a bad name
- *   GET  /api/capabilities         { writable, decide }: whether this bind accepts writes, and checkpoint decisions
+ *   GET  /api/capabilities          { writable, decide, auth, bundle, you }: whether this bind accepts writes, and
+ *                                   checkpoint decisions; `you` who the dashboard acts as — a named token's
+ *                                   name, the local user without a token, null for the unnamed --token
  *   GET  /api/settings              runtime config summary (adapters, roots, Claude scope, notify)
  *   GET  /api/schedules             [schedule]: `odw schedule list --json`, read only (ODW extension)
  *   GET  /api/compare?a=<run>&b=<run>   RunComparison (./compare): what changed between two ODW
@@ -128,6 +130,13 @@
  *   - `--token-scope approve` (with `--token`): POST /api/runs/:id/checkpoint
  *     passes off loopback too, behind the token and jsonPostGuard;
  *     /api/capabilities says `decide: true`. Control, chat and launches stay refused.
+ *     A named token of scope approve (`--tokens FILE`) does the same.
+ *
+ * Attribution (ODW extension; see ../identity): a decision, a control action
+ * and a chat-started run record who asked as `who` / `launchedBy` — a named
+ * token's name, else (no token at all) the user who runs odw serve; an
+ * approve link keeps `by: "link"` and adds the name of a named token the
+ * request also carries.
  *
  * Signed triggers (ODW extension; see ./trigger-route): POST /api/triggers/<name>
  * answers a webhook whose signature checks out against the trigger's secret —
@@ -197,6 +206,8 @@ import { allSummaries, RUN_ID_RE, sourceForRun, type RunSource } from "./run-sou
 import { RunStore } from "./run-store.js";
 import type { BundleInfo } from "./bundle.js";
 import { FailureLimiter, TokenGate, type TokenGateOptions } from "./serve-auth.js";
+import type { NamedToken } from "./serve-tokens.js";
+import { localLauncher } from "../identity.js";
 import { announceServe, ensureApproveSecret, parsePublicUrl, withdrawServe } from "./approve-links.js";
 import { approveLinksOff, approveRoute, type ApproveRouteContext } from "./approve-route.js";
 import { listWorkflowSummaries, workflowDetail } from "./workflows-view.js";
@@ -225,6 +236,12 @@ export interface ServeOptions {
   chatRunner?: ChatTurnRunner;
   /** Require this token on every /api request (ODW extension: `odw serve --token`; see ./serve-auth). */
   token?: string | null;
+  /**
+   * Named tokens (ODW extension: `odw serve --tokens FILE`; see ./serve-tokens),
+   * beside or instead of `token`: each its own scope, and what a holder does
+   * is attributed to its name.
+   */
+  namedTokens?: readonly NamedToken[];
   /** The wrong-token rate limit (tests). */
   authLimit?: TokenGateOptions;
   /** Show a shared bundle, read-only (ODW extension: `odw serve --open FILE.odwrun`): `store` is it unpacked. */
@@ -325,7 +342,7 @@ export function startServer(options: ServeOptions): Promise<ServeHandle> {
       : null;
   const ctx: HandleContext = {
     sources, store, chatHost, feed, cwd, config, configPath, boundHost: host, redactor, bundle, gate: null,
-    approve, remoteDecide: options.tokenScope === "approve" && !bundle, triggers,
+    approve, remoteDecide: !bundle, triggers,
   };
   const server = createServer((req, res) => {
     handle(req, res, ctx).catch((err) => {
@@ -362,7 +379,14 @@ export function startServer(options: ServeOptions): Promise<ServeHandle> {
       const addr = server.address();
       const boundPort = typeof addr === "object" && addr ? addr.port : port;
       // The cookie is named by port: cookies ignore ports, and two servers on a host must keep apart.
-      if (options.token) ctx.gate = new TokenGate(options.token, `odw_token_${boundPort}`, options.authLimit);
+      // Named tokens (--tokens) sit beside the unnamed one, each with its own scope.
+      const named = options.namedTokens ?? [];
+      if (options.token || named.length > 0) {
+        const gate = new TokenGate(options.token ?? null, `odw_token_${boundPort}`, { ...options.authLimit, scope: options.tokenScope ?? "read", named });
+        ctx.gate = gate;
+        // An approve link is its own credential; a named token beside it only says who used it.
+        if (approve) approve.identify = (req) => gate.identify(req, new URL(req.url ?? "/", "http://localhost"));
+      }
       // Workers mint links only while a server that answers them says so.
       if (approve) announceServe(store.root, approve.publicUrl);
       const shown = host === "0.0.0.0" || host === "::" ? "localhost" : host;
@@ -400,7 +424,10 @@ interface HandleContext {
   gate: TokenGate | null;
   /** The approve-link route (ODW extension: `--public-url`); null when links are off. */
   approve: ApproveRouteContext | null;
-  /** `--token-scope approve` (ODW extension): a token holder may answer checkpoints off loopback too. */
+  /**
+   * Whether an approve-scope token (`--token-scope approve`, or a named one of
+   * that scope; ODW extensions) may answer checkpoints off loopback too: not for a bundle.
+   */
   remoteDecide: boolean;
   /** The signed-trigger route (ODW extension); null when the config has no triggers. */
   triggers: TriggerRoute | null;
@@ -464,6 +491,9 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandleCont
       res.end(DASHBOARD_HTML);
       return;
     }
+    // Who asks (ODW extension; see ../identity): a named token's name — or, with
+    // no token at all, the user who runs odw serve. An unnamed token says nobody.
+    let holder: { name: string | null; scope: "read" | "approve" } | null = null;
     if (path === "/api" || path.startsWith("/api/")) {
       // --token (ODW extension): every API read and the stream need it.
       if (gate) {
@@ -474,6 +504,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandleCont
           return;
         }
         if (auth.setCookie) res.setHeader("set-cookie", auth.setCookie);
+        holder = { name: auth.name, scope: auth.scope };
       }
       // A shared bundle is read-only, on loopback too.
       if (bundle && method !== "GET" && method !== "HEAD") {
@@ -481,6 +512,9 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandleCont
         return;
       }
     }
+    const who = holder ? holder.name : localLauncher();
+    // --token-scope approve, or a named token of scope approve (ODW extensions): it may answer checkpoints off loopback.
+    const remoteDecide = ctx.remoteDecide && holder?.scope === "approve";
     if (method === "GET" && path === "/api/runs") {
       sendJsonCached(req, res, allSummaries(sources));
       return;
@@ -499,9 +533,10 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandleCont
       // remotely-viewed off-loopback dashboard shows no dead buttons. Mirrors
       // the writeGuard's loopback-only rule exactly.
       // `auth`: whether reads need a token; `bundle`: the shared bundle shown (ODW extensions).
-      // `decide`: whether checkpoints can be answered here — `--token-scope approve` off loopback too.
+      // `decide`: whether checkpoints can be answered here — an approve-scope token's off loopback too.
+      // `you`: who this dashboard acts as (a named token's name, or the local user without a token), for "mine".
       const writable = isLoopbackBind(boundHost) && !bundle;
-      sendJson(res, 200, { writable, auth: gate ? "token" : "none", bundle, decide: writable || (ctx.remoteDecide && gate !== null) });
+      sendJson(res, 200, { writable, auth: gate ? "token" : "none", bundle, decide: writable || remoteDecide, you: who });
       return;
     }
     if (method === "GET" && path === "/api/settings") {
@@ -525,7 +560,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandleCont
       evalsView(req, res, store, path, redactor);
       return;
     }
-    if (path.startsWith("/api/chat/") && (await chatHost.route(req, res, method, path, boundHost))) return;
+    if (path.startsWith("/api/chat/") && (await chatHost.route(req, res, method, path, boundHost, who))) return;
     if (method === "GET" && path === "/api/workflows") {
       sendJson(res, 200, bundle ? [] : listWorkflowSummaries(cwd, config, store));
       return;
@@ -574,7 +609,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandleCont
       // outright (no run-existence oracle), and CSRF posture comes first.
       const write = sub === "/control" || sub === "/checkpoint";
       // --token-scope approve (ODW extension): a checkpoint decision — only that — passes off loopback, CSRF checks kept.
-      const remoteDecision = sub === "/checkpoint" && ctx.remoteDecide && gate !== null;
+      const remoteDecision = sub === "/checkpoint" && remoteDecide;
       if (method === "POST" && write && !(remoteDecision ? jsonPostGuard(req, res) : writeGuard(req, res, boundHost))) return;
       const runId = decodeSegment(runMatch[1]!);
       if (runId === null) {
@@ -680,7 +715,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandleCont
           sendJson(res, 409, { error: refused });
           return;
         }
-        await controlRun(req, res, src, runId);
+        await controlRun(req, res, src, runId, who);
         return;
       }
       if (method === "POST" && sub === "/checkpoint") {
@@ -690,7 +725,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandleCont
           sendJson(res, 409, { error: refused });
           return;
         }
-        await decideCheckpoint(req, res, src, runId);
+        await decideCheckpoint(req, res, src, runId, who);
         return;
       }
     }
@@ -767,6 +802,8 @@ async function controlRun(
   res: ServerResponse,
   src: RunSource,
   runId: string,
+  /** Who asks, by name (ODW extension): the worker logs it with the change. */
+  who: string | null,
 ): Promise<void> {
   // CSRF posture (Content-Type + same-origin) is enforced by writeGuard upstream.
   const body = await jsonBodyOrReply(req, res);
@@ -777,7 +814,7 @@ async function controlRun(
     return;
   }
   // The source applies the action (ODW maps resume→"running" for FileControl).
-  src.control(runId, action);
+  src.control(runId, action, who);
   sendJson(res, 200, { ok: true, runId, action });
 }
 
@@ -801,6 +838,8 @@ async function decideCheckpoint(
   res: ServerResponse,
   src: RunSource,
   runId: string,
+  /** Who answers, by name (ODW extension): kept as `who` beside `by: "dashboard"`. */
+  who: string | null,
 ): Promise<void> {
   // CSRF posture (Content-Type + same-origin) is enforced by writeGuard upstream.
   // The body may hold an edited payload of up to 256 KiB, with room around it.
@@ -857,6 +896,7 @@ async function decideCheckpoint(
     ...(typeof note === "string" && note.trim() !== "" ? { note } : {}),
     ...(checked?.ok ? { payload: checked.value } : {}),
     by: "dashboard",
+    ...(who ? { who } : {}),
   });
   sendJson(res, 200, { ok: true, runId, action, checkpointId: target.checkpointId });
 }

@@ -21,6 +21,7 @@
  */
 
 import { RunStopped } from "./errors.js";
+import { isWho } from "./identity.js";
 
 export const RUNNING = "running";
 export const PAUSED = "paused";
@@ -32,9 +33,13 @@ export const STOPPED = "stopped";
  */
 export type CheckpointDecider = "cli" | "dashboard" | "link";
 
-/** Who answered, as a log line says it: "the cli", "the dashboard", "an approve link". */
-export function deciderText(by: CheckpointDecider | undefined): string {
-  return by === "dashboard" ? "the dashboard" : by === "link" ? "an approve link" : "the cli";
+/**
+ * Who answered, as a log line says it: "the cli", "the dashboard", "an
+ * approve link" — and the person's name after it when it is known (`who`).
+ */
+export function deciderText(by: CheckpointDecider | undefined, who?: string | null): string {
+  const channel = by === "dashboard" ? "the dashboard" : by === "link" ? "an approve link" : "the cli";
+  return who ? `${channel} (${who})` : channel;
 }
 
 /** A person's answer to a waiting checkpoint(). */
@@ -42,6 +47,12 @@ export interface CheckpointDecision {
   approved: boolean;
   note: string | null;
   by: CheckpointDecider;
+  /**
+   * Who answered, by name (ODW extension; see ./identity): `cli:<user>` from
+   * `odw approve|reject`, a named token's name from the dashboard or beside
+   * an approve link. Absent when nobody is named.
+   */
+  who?: string;
   /**
    * The payload an approval was given with — the person's edit of the
    * checkpoint's own. Absent when they sent none, and always with a
@@ -64,6 +75,8 @@ export interface CheckpointRequest {
   note?: string | null;
   payload?: unknown;
   by?: CheckpointDecider;
+  /** Who answered, by name (ODW extension; see ./identity) — beside `by`, which says by what channel. */
+  who?: string;
   at?: number;
 }
 
@@ -78,7 +91,8 @@ export function isCheckpointRequest(value: unknown): value is CheckpointRequest 
     (r.action === "approve" || r.action === "reject") &&
     (r.checkpointId === undefined || isCheckpointId(r.checkpointId)) &&
     (r.note === undefined || r.note === null || typeof r.note === "string") &&
-    (r.by === undefined || r.by === "cli" || r.by === "dashboard" || r.by === "link")
+    (r.by === undefined || r.by === "cli" || r.by === "dashboard" || r.by === "link") &&
+    (r.who === undefined || isWho(r.who))
   );
 }
 
@@ -102,6 +116,7 @@ export function decisionOf(request: CheckpointRequest): CheckpointDecision {
         ? note.slice(0, CHECKPOINT_NOTE_MAX).replace(/[\uD800-\uDBFF]$/, "")
         : note,
     by: request.by === "dashboard" || request.by === "link" ? request.by : "cli",
+    ...(isWho(request.who) ? { who: request.who } : {}),
     ...(approved && request.payload !== undefined ? { payload: request.payload } : {}),
   };
 }

@@ -27,7 +27,7 @@ import type { RunEndState } from "../adapters/types.js";
 import type { WaitingCheckpoint } from "../checkpoint.js";
 import type { CostHistory } from "../forecast.js";
 import { buildContext, spentTokens, type RunContext } from "../context.js";
-import { deciderText, PAUSED, RUNNING, type CheckpointRequest } from "../control.js";
+import { deciderText, PAUSED, RUNNING, STOPPED, type CheckpointRequest } from "../control.js";
 import { DeadlinePassed, RunStopped, WorkflowScriptError, isFatalError } from "../errors.js";
 import { AGENT_STARTED, LOG, RUN_FAILED, RUN_FINISHED, RUN_STARTED, RUN_STOPPED, event } from "../events.js";
 import { Breaks, breakSpecOf, runSoFar } from "../breaks.js";
@@ -247,6 +247,9 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
       onState: (state) => {
         controlState = state;
         store.updateStatus(runId, { state: shownState(), dispatched: dispatched(), spentTokens: spent() });
+        // Who paused or resumed it, by name (ODW extension; see ../identity); a stop says so on run_stopped.
+        const who = state === STOPPED ? undefined : store.readControlRequest(runId)?.who;
+        if (who) sink.emit(event(LOG, { message: `${state === PAUSED ? "paused" : "resumed"} by ${who}`, control: state, who }));
       },
     });
     const replay = replayJournal(meta);
@@ -527,8 +530,11 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
     // A failed or stopped run keeps what it learned too: a correction is no less true.
     ctx?.memory?.flush();
     if (outcome instanceof RunStopped) {
-      sink.emit(event(RUN_STOPPED, { runId }));
-      store.updateStatus(runId, { state: "stopped", dispatched: dispatched(), spentTokens: spent() });
+      // Who stopped it, by name (ODW extension; see ../identity), when `odw stop` or the dashboard did.
+      const control = store.readControlRequest(runId);
+      const who = control?.action === "stop" ? control.who : undefined;
+      sink.emit(event(RUN_STOPPED, { runId, ...(who ? { who } : {}) }));
+      store.updateStatus(runId, { state: "stopped", dispatched: dispatched(), spentTokens: spent(), ...(who ? { stoppedBy: who } : {}) });
       end = { state: "stopped", error: outcome.message };
     } else {
       // A script may throw anything — `throw null` included — so never read
@@ -687,7 +693,7 @@ function redactOutput(redactor: Redactor): () => void {
 /** The log line for a checkpoint answer that found nothing waiting for it. */
 function unmatchedDecision(request: CheckpointRequest): string {
   const which = request.checkpointId !== undefined ? `checkpoint #${request.checkpointId}` : "a checkpoint";
-  const from = deciderText(request.by);
+  const from = deciderText(request.by, request.who);
   return `ignored "${request.action}" for ${which} from ${from}: no such checkpoint is waiting for an answer`;
 }
 

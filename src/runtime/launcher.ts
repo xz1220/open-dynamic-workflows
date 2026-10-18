@@ -81,6 +81,8 @@ export interface StartRunOptions {
   breaks?: BreakSpec | null;
   /** The call a run of `odw replay` dispatches (ODW extension; see ./replay): kept as the run's call.json, its worker's args. */
   call?: Record<string, unknown> | null;
+  /** Who starts it (ODW extension; see ../identity): kept in meta as `launchedBy`; null: the local user. */
+  launchedBy?: string | null;
 }
 
 /**
@@ -126,6 +128,7 @@ function commonCreateInput(options: StartRunOptions, source: string, workflowNam
     replayOf: options.replayOf ?? null,
     breaks: options.breaks ?? null,
     call: options.call ?? null,
+    launchedBy: options.launchedBy ?? null,
   };
 }
 

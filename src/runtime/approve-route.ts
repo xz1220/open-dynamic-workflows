@@ -17,7 +17,8 @@
  *                           cross-site page can send without a CORS preflight,
  *                           which this server never grants. An Origin, when
  *                           sent, must be the public URL's or the Host's.
- *                           Written with `by: "link"`.
+ *                           Written with `by: "link"` — and `who`, a named
+ *                           token's name, when the request carries one.
  *
  * Every answer is a small HTML page — a used (410), expired (410), tampered
  * (403) or unknown link gets one saying so, never a stack trace. Tampered and
@@ -47,6 +48,12 @@ export interface ApproveRouteContext {
   /** Where each run's used links are recorded. */
   runDir: (runId: string) => string;
   limiter: FailureLimiter;
+  /**
+   * The named token the request also carries, if any (ODW extension: `odw
+   * serve --tokens`; see ./serve-auth TokenGate.identify): its name is kept
+   * beside `by: "link"` as `who`. The link alone decides; this only attributes.
+   */
+  identify?: (req: IncomingMessage) => string | null;
   /** The clock, ms (tests). */
   now?: () => number;
 }
@@ -170,7 +177,9 @@ async function route(req: IncomingMessage, res: ServerResponse, path: string, ct
     page(res, 410, "This link was already used", "Each approve link works once, and a checkpoint's approve and reject links are spent together.");
     return;
   }
-  ctx.source.decide(claims.runId, { action: claims.action, checkpointId: claims.checkpointId, by: "link" });
+  // Who, when the request also carries a named token (ODW extension): `by` stays "link".
+  const who = ctx.identify?.(req) ?? null;
+  ctx.source.decide(claims.runId, { action: claims.action, checkpointId: claims.checkpointId, by: "link", ...(who ? { who } : {}) });
   const clear = `${CSRF_COOKIE}=; Path=/approve/${token}; Max-Age=0; HttpOnly; SameSite=Strict`;
   page(
     res,

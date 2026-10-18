@@ -450,7 +450,7 @@ test("off loopback, approve links open no other write; on a loopback bind the pu
         assert.equal(res.status, 409, path);
       }
       const caps = await (await fetch(`${base}/api/capabilities`, { headers: auth })).json();
-      assert.deepEqual(caps, { writable: false, auth: "token", bundle: null, decide: false });
+      assert.deepEqual(caps, { writable: false, auth: "token", bundle: null, decide: false, you: null });
       assert.deepEqual(pendingIds(p.store, id), [1]);
       assert.equal(p.store.readControl(id), null);
     });
@@ -541,6 +541,7 @@ test("--token-scope approve: a token holder answers checkpoints off loopback —
       auth: "token",
       bundle: null,
       decide: true,
+      you: null,
     });
     // No token: 401. Not JSON: 415. Another site's page: 403.
     assert.equal((await post(`/api/runs/${id}/checkpoint`, { action: "approve" }, json)).status, 401);

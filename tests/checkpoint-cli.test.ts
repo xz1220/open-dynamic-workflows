@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { attachRun, formatEvent } from "../src/runtime/live-view.js";
+import { cliActor } from "../src/identity.js";
 import { RunStore } from "../src/runtime/run-store.js";
 import { FakeTerm } from "./fake-term.js";
 import { META, cli, pendingIds, project, stopProcessRun, until } from "./checkpoint-project.js";
@@ -59,8 +60,8 @@ test("odw approve|reject answer a waiting checkpoint; odw status and list show i
 
     assert.equal(await run, "done");
     assert.deepEqual(p.store.readResult(id), {
-      a: { approved: true, note: null, by: "cli", payload: { hosts: ["web-1", "web-2"] }, edited: false },
-      b: { approved: false, note: "not yet", by: "cli", payload: "line 1\nline 2", edited: false },
+      a: { approved: true, note: null, by: "cli", who: cliActor(), payload: { hosts: ["web-1", "web-2"] }, edited: false },
+      b: { approved: false, note: "not yet", by: "cli", who: cliActor(), payload: "line 1\nline 2", edited: false },
     });
     r = await cli(["approve", id, ...flags]);
     assert.equal(r.code, 1);
@@ -91,7 +92,7 @@ test("odw run --wait says which checkpoint holds the run, and how to answer it",
     assert.equal(r0.code, 0, r0.err);
     const r = await waiting;
     assert.equal(r.code, 0, r.err);
-    assert.deepEqual(JSON.parse(r.out), { approved: true, note: null, by: "cli", edited: false });
+    assert.deepEqual(JSON.parse(r.out), { approved: true, note: null, by: "cli", who: cliActor(), edited: false });
     const hint =
       `waiting for a decision — checkpoint #1: Proceed?\n` +
       `  approve: odw approve ${runId} --checkpoint 1 --runs-root ${store.root}\n` +

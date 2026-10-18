@@ -8,7 +8,11 @@ import { CHECKPOINT_EDIT_MAX_BYTES } from "../src/checkpoint.js";
 import { MAX_BODY_BYTES } from "../src/runtime/http-util.js";
 import { RunStore } from "../src/runtime/run-store.js";
 import { startServer } from "../src/runtime/server.js";
+import { localLauncher } from "../src/identity.js";
 import { pendingIds, project, until } from "./checkpoint-project.js";
+
+// Who answers from a dashboard with no token: the user who runs odw serve (ODW extension).
+const LOCAL = localLauncher() ? { who: localLauncher()! } : {};
 
 // POST /api/runs/:id/checkpoint with `payload` (ODW extension): the dashboard
 // approves a checkpoint() with an edited payload — checked as the run checks
@@ -93,7 +97,7 @@ test("HTTP: a payload is checked — reject-only, the size cap, the schema — a
     assert.equal(res.status, 200);
     assert.deepEqual(
       store.readCheckpointRequests(id).map(({ at: _at, ...r }) => r),
-      [{ action: "approve", checkpointId: 1, payload: { steps: ["b"] }, by: "dashboard" }],
+      [{ action: "approve", checkpointId: 1, payload: { steps: ["b"] }, by: "dashboard", ...LOCAL }],
     );
   } finally {
     await handle.close();

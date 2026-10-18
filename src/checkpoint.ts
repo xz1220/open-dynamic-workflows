@@ -88,6 +88,8 @@ export interface CheckpointResult {
   note: string | null;
   /** Who answered: `odw approve|reject`, the dashboard, a signed approve link (ODW extension), or the timeout. */
   by: "cli" | "dashboard" | "link" | "timeout";
+  /** Who answered, by name (ODW extension; see ./identity) — absent when nobody is named. */
+  who?: string;
   /**
    * What was approved: the person's edit when there is one (`edited`), else
    * the checkpoint's own payload, as given — undefined when it had none. A
@@ -456,7 +458,7 @@ async function wait(
     if (decision.payload === undefined) return true;
     const checked = checkEdit(decision.payload, cp.schema);
     if (checked.ok) return true;
-    const from = deciderText(decision.by);
+    const from = deciderText(decision.by, decision.who);
     say(ctx, `ignored "approve" for checkpoint #${checkpointId} from ${from}: ${checked.message} — it still waits for an answer`);
     return false;
   };
@@ -499,8 +501,8 @@ async function wait(
     if (outcome !== "timeout") {
       const result = answerOf(cp, outcome);
       const { approved, note, by } = result;
-      // An edit is on record — JSON-safe, cut to 64 KiB like the question's payload.
-      resolved({ approved, note, by, ...(result.edited ? editedFields(result.payload) : {}) });
+      // An edit is on record — JSON-safe, cut to 64 KiB like the question's payload — and who answered, by name.
+      resolved({ approved, note, by, ...(result.who ? { who: result.who } : {}), ...(result.edited ? editedFields(result.payload) : {}) });
       remember(ctx, cp, result);
       return result;
     }
@@ -529,9 +531,10 @@ async function wait(
  */
 function answerOf(cp: Plan, decision: CheckpointDecision): CheckpointResult {
   const { approved, note, by } = decision;
+  const who = decision.who ? { who: decision.who } : {};
   const edit = approved && decision.payload !== undefined ? checkEdit(decision.payload, cp.schema) : null;
-  if (edit?.ok && !sameJson(edit.value, cp.json)) return { approved, note, by, payload: edit.value, edited: true };
-  return { approved, note, by, payload: cp.original, edited: false };
+  if (edit?.ok && !sameJson(edit.value, cp.json)) return { approved, note, by, ...who, payload: edit.value, edited: true };
+  return { approved, note, by, ...who, payload: cp.original, edited: false };
 }
 
 /**

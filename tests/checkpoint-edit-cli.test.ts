@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { execPath } from "node:process";
 import { fileURLToPath } from "node:url";
 
+import { cliActor } from "../src/identity.js";
 import { CHECKPOINT_EDIT_MAX_BYTES } from "../src/checkpoint.js";
 import { cli, pendingIds, project, until, type Project } from "./checkpoint-project.js";
 
@@ -81,9 +82,9 @@ test("odw approve --payload: inline JSON and @file; the run gets the edit", asyn
     let r = await cli(["approve", first.id, "--payload", '{"steps":["b"]}', "--note", "just b", ...flags]);
     assert.equal(r.code, 0, r.err);
     assert.match(r.err, /approve requested for checkpoint #1 "Run the plan\?" of .*, with an edited payload/);
-    assert.deepEqual(answers(p, first.id), [{ action: "approve", checkpointId: 1, note: "just b", payload: { steps: ["b"] }, by: "cli" }]);
+    assert.deepEqual(answers(p, first.id), [{ action: "approve", checkpointId: 1, note: "just b", payload: { steps: ["b"] }, by: "cli", who: cliActor() }]);
     assert.equal(await first.run, "done");
-    assert.deepEqual(p.store.readResult(first.id), { approved: true, note: "just b", by: "cli", payload: { steps: ["b"] }, edited: true });
+    assert.deepEqual(p.store.readResult(first.id), { approved: true, note: "just b", by: "cli", who: cliActor(), payload: { steps: ["b"] }, edited: true });
 
     const second = await waitingRun(p);
     const file = join(p.root, "plan.json");
@@ -140,7 +141,7 @@ test("odw approve --edit opens $EDITOR on the payload in a private file; the edi
     assert.equal(existsSync(r.opened!.file), false, "removed once sent");
     assert.match(r.err, /with an edited payload/);
     assert.equal(await run, "done");
-    assert.deepEqual(p.store.readResult(id), { approved: true, note: null, by: "cli", payload: { steps: ["a", "b", "c"] }, edited: true });
+    assert.deepEqual(p.store.readResult(id), { approved: true, note: null, by: "cli", who: cliActor(), payload: { steps: ["a", "b", "c"] }, edited: true });
   } finally {
     await p.cleanup();
   }
@@ -186,9 +187,9 @@ test("odw approve --edit: unchanged approves as is; empty aborts; invalid keeps 
     assert.match(r.err, /payload unchanged — approving checkpoint #1 as is/);
     assert.doesNotMatch(r.err, /with an edited payload/);
     assert.equal(existsSync(r.opened!.file), false);
-    assert.deepEqual(answers(p, id), [{ action: "approve", checkpointId: 1, note: "fine", by: "cli" }]);
+    assert.deepEqual(answers(p, id), [{ action: "approve", checkpointId: 1, note: "fine", by: "cli", who: cliActor() }]);
     assert.equal(await run, "done");
-    assert.deepEqual(p.store.readResult(id), { approved: true, note: "fine", by: "cli", payload: { steps: ["a", "b"] }, edited: false });
+    assert.deepEqual(p.store.readResult(id), { approved: true, note: "fine", by: "cli", who: cliActor(), payload: { steps: ["a", "b"] }, edited: false });
   } finally {
     await p.cleanup();
   }

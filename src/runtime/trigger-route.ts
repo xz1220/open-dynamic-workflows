@@ -82,6 +82,8 @@ export interface TriggerStart {
   configPath: string | null;
   runsRoot: string;
   context: TriggerContext;
+  /** Who the run is attributed to (ODW extension; see ../identity): `trigger:<name>`, kept in meta as `launchedBy`. */
+  launchedBy: string;
 }
 
 export interface TriggerRouteOptions {
@@ -236,6 +238,7 @@ export class TriggerRoute {
         configPath: this.options.configPath,
         runsRoot: this.options.store.root,
         context,
+        launchedBy: `trigger:${name}`,
       });
     } catch (err) {
       forget();
@@ -330,6 +333,7 @@ function startTriggerRun(spec: TriggerStart): string {
     trust: spec.untrusted ? "untrusted" : null,
     origin: "trigger",
     context: spec.context as unknown as Record<string, unknown>,
+    launchedBy: spec.launchedBy,
   }).runId;
 }
 

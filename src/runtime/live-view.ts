@@ -337,7 +337,9 @@ function reasonText(reason: string | undefined): string | null {
 function answerText(ev: WorkflowEvent): string {
   if (ev.error != null) return `not answered: ${sanitizeText(ev.error, 200)}`;
   const note = typeof ev.note === "string" && ev.note !== "" ? ` — ${sanitizeText(ev.note, 200)}` : "";
-  return `${verdictText(ev)} by ${sanitizeText(ev.by ?? "?", 20)}${note}`;
+  // Who answered, by name (ODW extension), beside the channel.
+  const who = typeof ev.who === "string" && ev.who !== "" ? ` (${sanitizeText(ev.who, 120)})` : "";
+  return `${verdictText(ev)} by ${sanitizeText(ev.by ?? "?", 20)}${who}${note}`;
 }
 
 /** "approved", "approved with edits" (an edited payload; ODW extension) or "rejected". */

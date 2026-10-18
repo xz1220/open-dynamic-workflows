@@ -91,8 +91,8 @@ export interface RunSource {
    * extension) is answered where it runs, never in its copy here.
    */
   runControlError?(runId: string): string | null;
-  /** Apply a control action (pause|resume|stop). Only called when controlError is null. */
-  control(runId: string, action: string): void;
+  /** Apply a control action (pause|resume|stop); `who` asked, by name (ODW extension). Only called when controlError is null. */
+  control(runId: string, action: string, who?: string | null): void;
   /** Answer a waiting checkpoint() (ODW extension). Only called when controlError is null. */
   decide(runId: string, request: CheckpointRequest): void;
 }

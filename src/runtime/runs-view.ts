@@ -33,6 +33,7 @@ import type { AgentChanges } from "../changes.js";
 import type { WaitingCheckpoint } from "../checkpoint.js";
 import { readDrift, type RunDrift } from "../drift.js";
 import type { WorkflowEvent } from "../events.js";
+import { isWho } from "../identity.js";
 import { LIMIT_NAMES, type AgentLimits, type LimitHit } from "../limits.js";
 import { readCliVersion, type CliVersion } from "../provenance.js";
 import { pausedForOf, type PausedFor } from "../quota-wait.js";
@@ -281,6 +282,12 @@ export interface RunSummary {
    * model that differs. Absent when nothing did.
    */
   drift?: RunDrift;
+  /**
+   * Who started the run (meta.launchedBy; ODW extension, see ../identity): the
+   * local user, a named token's name, or `trigger:<name>`. Absent for runs from
+   * before it was kept, and for Claude Code runs.
+   */
+  launchedBy?: string;
 }
 
 export interface RunDetail extends RunSummary {
@@ -821,6 +828,7 @@ export function summaryFrom(runId: string, facts: RunFacts): RunSummary {
     ...evalTagOf(meta),
     ...(meta.dry === true ? { dry: true as const } : {}),
     ...(fold.drift ? { drift: { since: fold.drift.since, changes: fold.drift.changes.map((c) => ({ ...c })) } } : {}),
+    ...(isWho(meta.launchedBy) ? { launchedBy: meta.launchedBy } : {}),
   };
 }
 
