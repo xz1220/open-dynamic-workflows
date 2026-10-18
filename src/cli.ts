@@ -20,6 +20,7 @@
  *   odw pause|resume|stop <run_id>
  *   odw approve|reject <run_id> [--note TEXT] [--checkpoint N]
  *   odw schedule add|list|remove|run …   (recurring runs via the OS scheduler, src/schedule/)
+ *   odw compare <runA> <runB> [--json] [--agent <label|id>]   (what changed; runtime/compare)
  */
 
 import { spawn } from "node:child_process";
@@ -51,6 +52,7 @@ import {
   formatFileList,
   truncationNoteOf,
 } from "./runtime/changes-view.js";
+import { compareRuns, findComparedAgents, formatAgentComparison, formatComparison, readCompareRun } from "./runtime/compare.js";
 import { startRun, startRunFromSource, waitFor } from "./runtime/launcher.js";
 import { attachRun, bannerLines, checkpointCommands, fallbackLines, formatEvent, formatUsage, resolveRunMode, type RunMode } from "./runtime/live-view.js";
 import { isRunActive, RunObserver } from "./runtime/run-liveness.js";
@@ -87,6 +89,7 @@ export const COMMANDS = [
   "diff",
   "apply",
   "schedule",
+  "compare",
 ] as const;
 
 export type Command = (typeof COMMANDS)[number];
@@ -117,6 +120,8 @@ export function helpText(): string {
     "  odw diff <run_id> [--agent <id|label>] [--stat]    print what isolated agents changed (their kept diffs)",
     "  odw apply <run_id> --agent <id|label>|--all        preview, then apply kept diffs to this working tree (--force)",
     "                                                     --check previews only; --verify CMD rolls an apply back if CMD fails",
+    "  odw compare <runA> <runB> [--json]                 what changed: setup, time, cost, failures, replies",
+    "                                                     --agent <label|id> shows one agent's whole reply diff",
     "  odw list [--workflow <name>]                       list known runs",
     "  odw serve [--port N] [--host H] [--open]           open the live dashboard in a browser",
     "  odw workflows list [--project|--global|--all]      list workflows runnable by name",
@@ -230,6 +235,8 @@ export async function main(argv: string[]): Promise<number> {
         return await cmdApply(rest);
       case "schedule":
         return await cmdSchedule(rest, { parseArgsValue });
+      case "compare":
+        return cmdCompare(rest);
       default:
         process.stderr.write(`odw: unknown command '${command}'\n\n${helpText()}\n`);
         return 2;
@@ -939,6 +946,72 @@ async function cmdApply(rest: string[]): Promise<number> {
     for (const s of signals) process.off(s, onSignal);
     if (caught) process.kill(process.pid, caught);
   }
+}
+
+/**
+ * `odw compare <runA> <runB> [--json] [--agent <label|id>]` (ODW extension) —
+ * what changed from run A to run B (see runtime/compare): the setup each ran
+ * with, time, tokens, cost, which agents failed, whether their replies
+ * differ. `--json` prints the comparison; `--agent` one agent's row and its
+ * whole reply diff (with `--json`, that row). A run still going is compared
+ * as it stands. Exit 0 once compared, 1 for a missing run or agent.
+ */
+function cmdCompare(rest: string[]): number {
+  const { values, positionals } = parseArgs({
+    args: rest,
+    allowPositionals: true,
+    options: {
+      config: { type: "string" },
+      "runs-root": { type: "string" },
+      json: { type: "boolean" },
+      agent: { type: "string" },
+    },
+  });
+  const [runA, runB, extra] = positionals;
+  if (!runA || !runB || extra !== undefined) throw new UsageError("usage: odw compare <runA> <runB> [--json] [--agent <label|id>]");
+  const store = storeFrom(values);
+  for (const id of [runA, runB]) {
+    if (!store.exists(id)) {
+      process.stderr.write(`no such run: ${id}\n`);
+      return 1;
+    }
+  }
+  const a = readCompareRun(store, runA);
+  const b = readCompareRun(store, runB);
+  const caps = detectCaps(process.stdout, process.env);
+  const width = Math.min(100, process.stdout.isTTY && process.stdout.columns ? process.stdout.columns : 100);
+  if (values.agent !== undefined) {
+    const bounded = compareRuns(a, b).agents;
+    const rows = findComparedAgents(bounded, values.agent);
+    if (rows.length === 0) {
+      process.stderr.write(`neither run has an agent '${values.agent}' (see odw compare ${runA} ${runB})\n`);
+      return 1;
+    }
+    if (rows.length > 1) {
+      const which = rows.map((r) => `A#${r.a?.agentId ?? "-"}↔B#${r.b?.agentId ?? "-"}`).join(", ");
+      process.stderr.write(
+        `'${values.agent}' matches ${rows.length} agents: ${which} — pick one by its id in A (else B): --agent <id>\n`,
+      );
+      return 1;
+    }
+    // The whole reply diff: the comparison again, its bounds lifted — the same rows, in the same order.
+    const full = compareRuns(a, b, { diffLines: Infinity, jsonPaths: Infinity, chars: Infinity });
+    const row = full.agents[bounded.indexOf(rows[0]!)]!;
+    if (values.json) {
+      process.stdout.write(JSON.stringify(row, null, 2) + "\n");
+      return 0;
+    }
+    for (const line of formatAgentComparison(row, full, { width, caps })) process.stdout.write(line + "\n");
+    return 0;
+  }
+  const comparison = compareRuns(a, b);
+  if (values.json) {
+    process.stdout.write(JSON.stringify(comparison, null, 2) + "\n");
+    return 0;
+  }
+  for (const line of formatComparison(comparison, { width, caps })) process.stdout.write(line + "\n");
+  process.stderr.write(`one agent's whole reply diff: odw compare ${runA} ${runB} --agent <label|id> · all of it as JSON: --json\n`);
+  return 0;
 }
 
 /** The one agent `ref` names (an id or a label), or null once the reason it is none is printed. */

@@ -53,6 +53,9 @@
  *   GET  /api/capabilities          { writable }: whether this bind accepts writes
  *   GET  /api/settings              runtime config summary (adapters, roots, Claude scope, notify)
  *   GET  /api/schedules             [schedule]: `odw schedule list --json`, read only (ODW extension)
+ *   GET  /api/compare?a=<run>&b=<run>   RunComparison (./compare): what changed between two ODW
+ *                                   runs, as `odw compare --json` prints it (ODW extension); 400
+ *                                   unless both are run ids, 404 when either is no ODW run
  *   *    /api/chat/sessions[/:id[/messages]]   the Chat Host (see ./chat-host)
  *
  * GET /api/activity?limit=N (default 40, clamped to 1..200; junk → 40) →
@@ -108,6 +111,7 @@ import type { AgentResultRecord } from "../journal.js";
 import { activityLimit, activityView } from "./activity-view.js";
 import { ChatHost, type ChatTurnRunner } from "./chat-host.js";
 import { ClaudeRunSource } from "./claude-run-source.js";
+import { compareRuns, readCompareRun } from "./compare.js";
 import {
   decodeSegment,
   isAllowedHost,
@@ -123,7 +127,7 @@ import { listSchedules, scheduleJson } from "../schedule/command.js";
 import { webhookOrigin } from "./notify.js";
 import { OdwRunSource } from "./odw-run-source.js";
 import { RunFeed } from "./run-feed.js";
-import { allSummaries, sourceForRun, type RunSource } from "./run-source.js";
+import { allSummaries, RUN_ID_RE, sourceForRun, type RunSource } from "./run-source.js";
 import { RunStore } from "./run-store.js";
 import { listWorkflowSummaries, workflowDetail } from "./workflows-view.js";
 
@@ -300,6 +304,10 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandleCont
     }
     if (method === "GET" && path === "/api/settings") {
       sendJson(res, 200, settingsView(store, config, cwd, configPath, boundHost));
+      return;
+    }
+    if (method === "GET" && path === "/api/compare") {
+      compareView(req, res, store, url.searchParams);
       return;
     }
     if (method === "GET" && path === "/api/schedules") {
@@ -566,6 +574,30 @@ async function decideCheckpoint(
     by: "dashboard",
   });
   sendJson(res, 200, { ok: true, runId, action, checkpointId: target.checkpointId });
+}
+
+/**
+ * `GET /api/compare?a=<run>&b=<run>` (ODW extension): what changed between
+ * two ODW runs — the RunComparison `odw compare --json` prints. Read only.
+ * Each id must be a run id (RUN_ID_RE; a dot-only one is no run) — else 400
+ * — and name an ODW run — else 404.
+ */
+function compareView(req: IncomingMessage, res: ServerResponse, store: RunStore, params: URLSearchParams): void {
+  const ids = [params.get("a"), params.get("b")];
+  for (const id of ids) {
+    if (id === null || !RUN_ID_RE.test(id) || /^\.+$/.test(id)) {
+      sendJson(res, 400, { error: "a and b must each be a run id: /api/compare?a=<run>&b=<run>" });
+      return;
+    }
+  }
+  for (const id of ids as string[]) {
+    if (id.startsWith("cc-") || !store.exists(id)) {
+      sendJson(res, 404, { error: id.startsWith("cc-") ? `odw compare covers ODW runs only: ${id}` : `no such run: ${id}` });
+      return;
+    }
+  }
+  const [a, b] = ids as [string, string];
+  sendJsonCached(req, res, compareRuns(readCompareRun(store, a), readCompareRun(store, b)));
 }
 
 /** A saved agent result as listed: which agent and when — the value stays behind its own route. */
