@@ -1429,6 +1429,123 @@ and the run's `run_started` setup records `trust`. Untrusted is not a sandbox: i
 keeps the repository's instructions and configuration out where a CLI allows, and the
 permission tier still decides what agents may do.
 
+### Run agents in containers (ODW extension)
+
+By default ODW runs each agent CLI on your machine, as you, held back only by the CLI's
+own permission flags. The container sandbox runs each CLI run — and each `exec()` step —
+in a fresh Docker or Podman container instead. It is opt-in, and the image is yours: it
+must hold the CLIs, and ODW never pulls it.
+
+```bash
+docker build -t odw-agents --build-arg UID=$(id -u) --build-arg GID=$(id -g) examples/sandbox
+odw doctor                                   # engine found, image present, a smoke run
+odw run wf.js --sandbox container --sandbox-image odw-agents
+```
+
+[`examples/sandbox/Dockerfile`](examples/sandbox/Dockerfile) builds one with Node, git,
+Claude Code and Codex (pin their versions with `--build-arg CLAUDE_CODE_VERSION=…`). Or
+set it in your config, per run, per adapter, or per call:
+
+```jsonc
+{
+  "sandbox": {
+    "kind": "container",
+    "image": "odw-agents",          // required; never pulled
+    "engine": "docker",             // or "podman"; default: docker if installed, else podman
+    "network": "default",           // or "none" (see below)
+    "cliConfig": "copy",            // or "mount-ro" | "none"
+    "mounts": [{ "source": "~/datasets", "readonly": true }], // read-only unless "readonly": false
+    "memory": "4g", "cpus": 2, "pids": 512 // pids defaults to 512; the rest to the engine's
+  },
+  "adapters": {
+    "codex": { "sandbox": { "kind": "container", "image": "odw-codex", "network": "none" } }
+  }
+}
+```
+
+```js
+await agent('Review this diff', { sandbox: { network: 'none', memory: '1g' } })
+await agent('Summarize', { sandbox: { image: 'odw-agents' } }) // a call in a run on the host
+await exec('npm test')                                          // in the run's container, offline
+await exec('npm ci', { network: 'default' })                    // a step that needs the network
+```
+
+Like permissions, the sandbox only tightens: an adapter's `sandbox` may turn the
+container on and set its own image, engine, CLI config and more mounts, and of network
+and the limits the stricter wins; an `agent()` call's may turn it on (naming an image
+only when nothing else does), take the network away, lower a limit or drop the CLI's
+config (`cliConfig: "none"`). Anything looser — `sandbox: "none"` under a container, a
+network its sandbox has not, more memory, another image, mounts — fails the call before
+it starts. `odw run|rerun|resume --sandbox container [--sandbox-image <image>]` puts a
+whole run in one (the config's container, or one of that image); a rerun or resume of a
+sandboxed run stays sandboxed.
+
+What each CLI run becomes (`docker run --rm -i --init --pull never --name odw-<run>-<agent>-<rand> --label odw.run=<run> …`):
+
+- **The workspace, and nothing else of yours.** The agent's workspace — its isolated
+  worktree, or the run's source — is bound read-write at the same path and is the
+  working directory, so diffs, transcripts, `expect` checks and `{workspace}` work as
+  before. The rest of the host's filesystem is not there: only a private home, the files
+  this CLI run is handed (its prompt file, schema file and reply file), and the `mounts`
+  you list. In an isolated worktree, `git` inside the container cannot reach the
+  repository (the worktree's `.git` points outside it); ODW takes the diff on the host as
+  always. Bind the repository's `.git` read-only with `mounts` if your agents need history.
+- **The CLI's login, as a copy.** `cliConfig: "copy"` (the default) copies the CLI's own
+  login and config files into a private temporary home (bound at `/odw/home`, removed
+  after the run), so the agent can use them but never change yours. Only the files each
+  CLI's docs name: Claude Code's `~/.claude/.credentials.json`, `settings.json`,
+  `CLAUDE.md`, `agents/`, `commands/`, `skills/` and `~/.claude.json` without its
+  `projects` (your other repositories); Codex's `~/.codex/auth.json`, `config.toml`,
+  `AGENTS.md`; Gemini's `~/.gemini/settings.json`, `oauth_creds.json`,
+  `google_accounts.json`, `GEMINI.md`, `.env`. Never session history or logs.
+  `CLAUDE_CONFIG_DIR` and `CODEX_HOME` are honoured. `"mount-ro"` binds those files
+  read-only instead (Claude Code rewrites `~/.claude.json` as it runs: prefer `copy` for
+  it); `"none"` leaves the home empty. On macOS Claude Code keeps its login in the
+  Keychain, so there is nothing to copy: set `CLAUDE_CODE_OAUTH_TOKEN` (from
+  `claude setup-token`) or `ANTHROPIC_API_KEY`; for Codex `CODEX_API_KEY`, for Gemini
+  `GEMINI_API_KEY`. The run says once when it found nothing to copy. A CLI that refreshes
+  its login inside the container writes the new token to the copy, which is thrown away;
+  where the provider rotates refresh tokens, your own login may then need a fresh
+  `/login`, so long-lived tokens and API keys suit sandboxed runs best.
+- **You, with no privileges.** `--user` your uid:gid (Podman: also `--userns keep-id`),
+  so what agents write is yours; `--cap-drop ALL`, `--security-opt no-new-privileges`,
+  `--pids-limit` (512), optional `--memory` and `--cpus`, a read-only root filesystem
+  with a tmpfs `/tmp`, and `--init` to forward signals.
+- **Only the environment `agentEnv` lets through** — set `"agentEnv": "minimal"` to keep
+  your shell's other secrets out — passed by name (`--env NAME`), so no value appears in
+  a process listing, less the host's paths (`PATH`, `HOME`, `TMPDIR`, `XDG_*`,
+  `CLAUDE_CONFIG_DIR`, `CODEX_HOME`).
+- **`ODW_PORT` still set, nothing published.** A server an agent starts on its port is
+  reachable inside its container only.
+- **Killed with the run.** A CLI run that times out, stalls, is stopped or does not exit
+  cleanly has its container killed by name (`docker kill`, then `docker rm --force`);
+  killing the engine client alone would leave it running. If the worker itself is killed,
+  its exit handler removes every container it still has. `docker ps --filter label=odw.run`
+  finds any left by a crash.
+
+A missing engine or image fails the run before its first agent starts, with a
+`ConfigError` that says how to build the image; `odw doctor` checks the same and runs
+`docker run --rm --pull never --network none <image> true` (no model involved). The
+start banner has a sandbox line, each agent's `agent_started` event and the dashboard's
+AgentView carry `sandbox: { kind, engine, image, network }`, and the run's setup records
+`sandbox` for `odw compare`. Sandboxed agents record no CLI version: the probe runs on
+the host, whose CLI is not the image's.
+
+**What it protects, and what it does not.** It keeps an agent — and anything it runs —
+from reading or changing the rest of your filesystem (your SSH keys, other repositories,
+your shell profile, your real CLI config), from running as anything but you, and from
+leaving processes behind. It does **not** keep your code from the model: the agent
+still sends what it reads to its model API. With `network: "default"` (the default, as
+agent CLIs must reach their model API) it has the open network, so it can send your
+workspace and the secrets in its environment and login anywhere — keep secrets out of
+`agentEnv`, and use `network: "none"` wherever no model API is needed (`exec()`
+steps are offline by default). The workspace is writable: what an agent writes
+there — a git hook in a repository it works in place, a `package.json` script, a
+Makefile — runs on your host when you later run it, so review changes (isolated
+worktrees and `odw apply` help). A container shares the host's kernel; it is not a VM.
+Rootless Docker maps uids its own way, so files may come out owned by another uid; on
+SELinux hosts, binds may need relabelling. Windows hosts are not supported.
+
 ### Secrets in what ODW keeps (ODW extension)
 
 An agent prints whatever it reads — `cat .env` included — and ODW keeps that output:

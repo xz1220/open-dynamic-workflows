@@ -110,6 +110,38 @@ ignore the repository's AGENTS.md — its instructions still reach the agent`).
 The repository's `.worktreeinclude` `symlink:` lines and a `worktreeSetup` from
 a config inside it do not run.
 
+### Container sandbox (ODW extension)
+
+`"sandbox": { "kind": "container", "image": "odw-agents" }` in the config (or
+`odw run|rerun|resume --sandbox container [--sandbox-image <image>]`) runs each
+agent CLI run, and each `exec()` step, as `<engine> run --rm -i --init --pull
+never --name odw-<run>-<agent>-<rand> --label odw.run=<run> --user <uid>:<gid>
+--cap-drop ALL --security-opt no-new-privileges --read-only --tmpfs
+/tmp:rw,nosuid,nodev,exec --pids-limit 512 [--network none] --workdir <ws>
+--mount <ws> --mount <private home at /odw/home> --env NAME… <image> <argv>`
+(Podman adds `--userns keep-id`). Only the workspace (same path), a private home,
+the run's prompt/schema/reply files and the listed `mounts` (read-only unless
+`"readonly": false`) are bound. `cliConfig`: `"copy"` (default) copies the
+CLI's documented login and config files into the home — claude
+`~/.claude/{.credentials.json,settings.json,CLAUDE.md,agents,commands,skills}`
+and `~/.claude.json` without `projects`; codex `~/.codex/{auth.json,config.toml,AGENTS.md}`;
+gemini `~/.gemini/{settings.json,oauth_creds.json,google_accounts.json,GEMINI.md,.env}`
+— `"mount-ro"` binds them read-only, `"none"` leaves it empty (use
+`CLAUDE_CODE_OAUTH_TOKEN`/`ANTHROPIC_API_KEY`, `CODEX_API_KEY`, `GEMINI_API_KEY`;
+macOS keeps Claude Code's login in the Keychain). Env: what `agentEnv` passes,
+by name, less `PATH`, `HOME`, `TMPDIR`, `XDG_*`, `CLAUDE_CONFIG_DIR`,
+`CODEX_HOME`. `network`: `"default"` (agents must reach their model API) or
+`"none"`; `exec()` steps default to `"none"` (`exec(cmd, { network: "default" })`).
+A run that does not exit cleanly has its container `kill`ed and `rm --force`d
+by name. The image must hold the CLIs and is never pulled
+(`examples/sandbox/Dockerfile`); a missing engine or image is a `ConfigError`
+before the first container and in `odw doctor`, which also smoke-runs
+`<engine> run --rm --pull never --network none <image> true`. An adapter's
+`sandbox` sets its own image/engine/cliConfig and more mounts (network and
+limits: the stricter wins); an `agent()`'s may only tighten. It guards the
+host's files and processes, not the workspace or what the agent sends over the
+network.
+
 ## Config file
 
 To change the default, tune flags, or add your own CLI, write an
@@ -191,6 +223,7 @@ did-you-mean hint) instead of silently ignoring them.
 | `mcpFailures` | **ODW extension.** What an agent does when its CLI started it without an MCP server (`mcpPath`: Claude Code's init event): `"warn"` (default, as Claude Code itself only warns) keeps the reply — every server that is not `connected` is recorded as `mcp` on the agent and logged once per run per server and status — and `"fail"` fails an agent whose server `failed` or `needs-auth` with reason `mcp_unavailable` (`pending` and `disabled` never fail it). A server the call's `expect.mcp` lists is a miss instead |
 | `redact` | **ODW extension.** `{ "env": true, "patterns": true, "extra": [] }` (default): what odw keeps and serves — transcripts and stderr tails, saved results, events, the run's error, webhook payloads — has likely secrets replaced by `«redacted:<kind>»` before it is written, and says so with `redacted: true` — and so do `worker.log` and the Chat Host's sessions (what a person typed: token shapes only), while a run's `args` are kept as given for `odw rerun` and served with token shapes redacted. `env`: the values (8+ characters) of secret-named variables (`*_KEY`, `*TOKEN`, `*SECRET*`, `*PASSWORD*`, `AUTHORIZATION`, cloud credentials) of odw's environment and each adapter's `env`, wherever they appear, and `NAME=value` of such names; `patterns`: well-known token shapes (Anthropic, OpenAI, GitHub, Slack, AWS, Google, JWT, private keys, `Bearer`); `extra`: more regular expressions. The run's result gets `patterns` and `extra` only; prompts, what agents see and kept diffs are never redacted. `false` = off; `odw doctor` reports it |
 | `otel` | **ODW extension.** OpenTelemetry export: `false` (default) sends nothing — the `OTEL_*` variables alone never turn it on. `true` or `{ "endpoint": "http://localhost:4318", "headers": { … }, "captureContent": false }`: once a run ended, the worker posts its trace (`invoke_workflow` / `phase` / `invoke_agent` / `execute_tool` / `exec` / `checkpoint` spans after the GenAI semantic conventions — usage, cost, models, failure reasons, retries and fallbacks as span events) once, as OTLP/HTTP JSON to `endpoint` + `/v1/traces`, within 5s; a failure is one line in the run's `worker.log` and never changes the run. Omitted, `endpoint` and `headers` come from `OTEL_EXPORTER_OTLP_(TRACES_)ENDPOINT` / `…HEADERS` (default endpoint `http://localhost:4318`); header values are secrets, never logged or shown. `captureContent` (or `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true`) adds replies, tool input and output and error text — redacted again on the way out, each field cut at 4096 characters. `odw export <run> --otlp [--out FILE \| --send]` exports any run; `odw doctor` shows where traces go |
+| `sandbox` | **ODW extension.** `"none"` (default): agent CLIs run on this machine. `{ "kind": "container", "image", "engine"?, "network"?, "mounts"?, "cliConfig"?, "memory"?, "cpus"?, "pids"? }`: each CLI run and `exec()` step in a fresh Docker/Podman container — see [container sandbox](#container-sandbox-odw-extension). `odw run\|rerun\|resume --sandbox container [--sandbox-image <image>]` turns it on per run |
 
 ### Adapter fields
 
@@ -213,6 +246,7 @@ did-you-mean hint) instead of silently ignoring them.
 | `trust` | **ODW extension.** `"untrusted"`: this adapter runs untrusted in every run (`"trusted"` cannot loosen an untrusted run) |
 | `untrustedArgs` | **ODW extension.** The flags that keep the repository's instructions, settings, hooks and MCP servers from this CLI, added after its tier's flags at `{permission_args}` when it runs untrusted. Absent: the run says once that it keeps nothing out. Setting it on a built-in drops the built-in's `untrustedNote` |
 | `untrustedNote` | **ODW extension.** What an untrusted run still lets reach this CLI from the repository, logged once per run |
+| `sandbox` | **ODW extension.** Run this CLI in a container: `{ "kind": "container", … }`, the fields it sets over the run's `sandbox` (its own `image`, `engine`, `cliConfig`, more `mounts`; of `network` and the limits the stricter wins). It needs an `image` when the run's sandbox is `"none"`; `"none"` here is refused — it may only tighten |
 
 ### Output formats
 

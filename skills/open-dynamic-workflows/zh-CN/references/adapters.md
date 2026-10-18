@@ -176,6 +176,7 @@ still reach the agent`）。仓库 `.worktreeinclude` 的 `symlink:` 行和仓�
 | `mcpFailures` | **ODW 扩展。** CLI 启动 agent 时没连上 MCP 服务器（`mcpPath`：Claude Code 的 init 事件）时怎么办：`"warn"`（默认，与 Claude Code 自己只警告一致）保留回复——每个状态不是 `connected` 的服务器记为 agent 上的 `mcp`，每次运行按服务器和状态各记一次日志——`"fail"` 让服务器为 `failed` 或 `needs-auth` 的 agent 以 `mcp_unavailable` 失败（`pending` 和 `disabled` 从不导致失败）。调用的 `expect.mcp` 列出的服务器则算作缺失 |
 | `redact` | **ODW 扩展。** `{ "env": true, "patterns": true, "extra": [] }`（默认）：odw 保存和提供的内容——transcript 与 stderr 结尾、保存的结果、事件、运行的错误、webhook 负载——在写下之前把疑似密钥替换为 `«redacted:<kind>»`，并以 `redacted: true` 标明；`worker.log` 与 Chat Host 会话同样脱敏（用户输入只脱敏令牌形态），运行的 `args` 为 `odw rerun` 原样保存、对外提供时脱敏令牌形态。`env`：odw 环境及各适配器 `env` 中名字像密钥的变量（`*_KEY`、`*TOKEN`、`*SECRET*`、`*PASSWORD*`、`AUTHORIZATION`、云凭据）的值（8 个字符及以上），无论出现在哪里，以及这类名字的 `NAME=value`；`patterns`：常见令牌形态（Anthropic、OpenAI、GitHub、Slack、AWS、Google、JWT、私钥、`Bearer`）；`extra`：更多正则表达式。运行的结果只应用 `patterns` 和 `extra`；提示词、agent 看到的内容和保存的 diff 从不脱敏。`false` = 关闭；`odw doctor` 会报告 |
 | `otel` | **ODW 扩展。** OpenTelemetry 导出：`false`（默认）什么都不发送——单靠 `OTEL_*` 环境变量不会开启。`true` 或 `{ "endpoint": "http://localhost:4318", "headers": { … }, "captureContent": false }`：运行结束后，worker 把它的 trace（遵循 GenAI 语义约定的 `invoke_workflow` / `phase` / `invoke_agent` / `execute_tool` / `exec` / `checkpoint` span——含用量、花费、模型、失败原因，重试和回退作为 span 事件）以 OTLP/HTTP JSON 发送到 `endpoint` + `/v1/traces`，只发一次，时限 5 秒；失败只在运行的 `worker.log` 留一行，绝不改变运行结果。省略时 `endpoint` 和 `headers` 取自 `OTEL_EXPORTER_OTLP_(TRACES_)ENDPOINT` / `…HEADERS`（默认端点 `http://localhost:4318`）；header 的值是机密，从不写日志或显示。`captureContent`（或 `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true`）会附带回复、工具输入输出和错误文本——发出前再次脱敏，每个字段截断到 4096 个字符。`odw export <run> --otlp [--out FILE \| --send]` 可导出任意运行；`odw doctor` 显示 trace 发往何处 |
+| `sandbox` | **ODW 扩展。** `"none"`（默认）：agent CLI 在本机运行。`{ "kind": "container", "image", "engine"?, "network"?, "mounts"?, "cliConfig"?, "memory"?, "cpus"?, "pids"? }`：每次 CLI 运行与每个 `exec()` 步骤都在全新的 Docker/Podman 容器中进行——只以相同路径挂载工作区与私有 home（复制 CLI 的登录文件），以宿主 uid:gid、无 capability、`no-new-privileges`、pids 上限、只读根文件系统运行，环境变量按名字传递；`network` 默认 `"default"`（agent 必须连到模型 API），`exec()` 步骤默认 `"none"`；非干净退出时按名字 kill 容器；镜像从不拉取（`examples/sandbox/Dockerfile`），缺引擎或镜像即 `ConfigError`。`odw run\|rerun\|resume --sandbox container [--sandbox-image <镜像>]` 按运行开启；适配器与 `agent()` 只能收紧 |
 
 ### 适配器字段
 
@@ -198,6 +199,7 @@ still reach the agent`）。仓库 `.worktreeinclude` 的 `symlink:` 行和仓�
 | `trust` | **ODW 扩展。** `"untrusted"`：这个适配器在每次运行中都不受信任（`"trusted"` 不能放宽不受信任的运行） |
 | `untrustedArgs` | **ODW 扩展。** 让这个 CLI 不读取仓库指令、设置、hooks 和 MCP 服务器的参数，不受信任时加在 `{permission_args}` 处、档位参数之后。不设：运行会说一次它什么也挡不住。在内置适配器上设置它会去掉内置的 `untrustedNote` |
 | `untrustedNote` | **ODW 扩展。** 不受信任运行时仍会从仓库传给这个 CLI 的内容，每次运行记一次日志 |
+| `sandbox` | **ODW 扩展。** 让这个 CLI 在容器中运行：`{ "kind": "container", … }`，覆盖运行级 `sandbox` 的字段（自己的 `image`、`engine`、`cliConfig`，追加 `mounts`；`network` 与各项限制取更严格者）。运行级沙箱为 `"none"` 时必须给出 `image`；这里写 `"none"` 会被拒绝——只能收紧 |
 
 ### 输出格式
 

@@ -139,6 +139,17 @@ changed, and run on a schedule — and a dashboard redesigned to watch them.
   still does); a config inside it cannot loosen the trust your
   `~/.config/odw/config.json` sets. The trust level shows in the start banner, `odw doctor`, the run's setup, each
   agent's events and saved result, and the dashboard's drawer.
+- Run agents in containers (`sandbox: { "kind": "container", "image": … }`, `odw
+  run|rerun|resume --sandbox container [--sandbox-image <image>]`, per adapter, per
+  `agent()` call — which may only tighten it; **ODW extension**): each CLI run, and each
+  `exec()` step (offline by default), runs in a fresh Docker or Podman container with
+  only its workspace bound (same path), a private home holding a copy of the CLI's login
+  files, your uid:gid, no capabilities, `no-new-privileges`, a pids limit and a read-only
+  root. Env goes by name, never in argv; a run that times out or is stopped has its
+  container killed by name. The image is yours (`examples/sandbox/Dockerfile`) and never
+  pulled; `odw doctor` checks the engine, the image and a smoke run. Agents keep the
+  network by default (they must reach their model API) — see the threat model in the
+  README.
 - Secrets stay out of what odw keeps and serves: whatever an agent prints — `cat .env`
   included — is redacted before it reaches its transcript and stderr tail, its saved
   result, the run's events and error or a webhook. The values of secret-named variables

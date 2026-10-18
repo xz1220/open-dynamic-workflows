@@ -1277,6 +1277,103 @@ agent 的 `agent_started` 事件、保存的结果和 `odw agents --json` 行都
 不受信任不是沙箱:它只在 CLI 允许的地方挡住仓库的指令和配置,agent 能做什么仍由权限
 档位决定。
 
+### 在容器中运行 agent(ODW 扩展)
+
+默认情况下,ODW 以你的身份在本机运行每个 agent CLI,只靠 CLI 自己的权限参数约束。容器
+沙箱则把每次 CLI 运行——以及每个 `exec()` 步骤——放进一个全新的 Docker 或 Podman 容器。
+它需要显式开启,镜像由你提供:镜像里必须装好 CLI,ODW 从不拉取镜像。
+
+```bash
+docker build -t odw-agents --build-arg UID=$(id -u) --build-arg GID=$(id -g) examples/sandbox
+odw doctor                                   # 找到引擎、镜像存在、冒烟运行
+odw run wf.js --sandbox container --sandbox-image odw-agents
+```
+
+[`examples/sandbox/Dockerfile`](examples/sandbox/Dockerfile) 构建一个带 Node、git、Claude
+Code 与 Codex 的镜像(用 `--build-arg CLAUDE_CODE_VERSION=…` 固定版本)。也可以写进配置,
+按运行、按适配器或按调用设置:
+
+```jsonc
+{
+  "sandbox": {
+    "kind": "container",
+    "image": "odw-agents",          // 必填;从不拉取
+    "engine": "docker",             // 或 "podman";默认:装了 docker 用 docker,否则 podman
+    "network": "default",           // 或 "none"(见下文)
+    "cliConfig": "copy",            // 或 "mount-ro" | "none"
+    "mounts": [{ "source": "~/datasets", "readonly": true }], // 默认只读,除非 "readonly": false
+    "memory": "4g", "cpus": 2, "pids": 512 // pids 默认 512;其余用引擎默认值
+  },
+  "adapters": {
+    "codex": { "sandbox": { "kind": "container", "image": "odw-codex", "network": "none" } }
+  }
+}
+```
+
+```js
+await agent('Review this diff', { sandbox: { network: 'none', memory: '1g' } })
+await agent('Summarize', { sandbox: { image: 'odw-agents' } }) // 在宿主上运行的 run 中单个调用进容器
+await exec('npm test')                                          // 在运行的容器里,不联网
+await exec('npm ci', { network: 'default' })                    // 需要网络的步骤
+```
+
+与权限档位一样,沙箱只能收紧:适配器的 `sandbox` 可以开启容器并设定自己的镜像、引擎、
+CLI 配置和更多挂载,网络与各项限制取更严格者;`agent()` 调用可以开启容器(只有在别处都
+没给镜像时才能指定镜像)、拿掉网络、降低限制或丢掉 CLI 配置(`cliConfig: "none"`)。任何
+更宽松的要求——容器下的 `sandbox: "none"`、沙箱没有的网络、更多内存、换镜像、挂载——都会让
+调用在启动前失败。`odw run|rerun|resume --sandbox container [--sandbox-image <镜像>]` 让整次
+运行进入容器(配置里的容器,或该镜像的容器);沙箱运行的 rerun 或 resume 仍在沙箱中。
+
+每次 CLI 运行变成(`docker run --rm -i --init --pull never --name odw-<run>-<agent>-<随机> --label odw.run=<run> …`):
+
+- **只有工作区,别无其他。** agent 的工作区——隔离 worktree 或运行的 source——以相同路径
+  读写挂载并作为工作目录,所以 diff、transcript、`expect` 检查与 `{workspace}` 照常工作。宿主
+  文件系统的其他部分都不可见:只有私有 home、这次 CLI 运行要用的文件(提示词文件、schema
+  文件、回复文件)以及你列出的 `mounts`。在隔离 worktree 里,容器内的 `git` 找不到仓库
+  (worktree 的 `.git` 指向外面);ODW 照常在宿主上取 diff。agent 需要历史时,用 `mounts`
+  把仓库的 `.git` 只读挂进去。
+- **CLI 的登录,以副本形式。** `cliConfig: "copy"`(默认)把 CLI 自己的登录与配置文件复制到
+  私有临时 home(挂载在 `/odw/home`,运行结束后删除),agent 能用,但改不了你的原件。只复制
+  各 CLI 文档点名的文件:Claude Code 的 `~/.claude/.credentials.json`、`settings.json`、
+  `CLAUDE.md`、`agents/`、`commands/`、`skills/` 和去掉 `projects`(你的其他仓库)的
+  `~/.claude.json`;Codex 的 `~/.codex/auth.json`、`config.toml`、`AGENTS.md`;Gemini 的
+  `~/.gemini/settings.json`、`oauth_creds.json`、`google_accounts.json`、`GEMINI.md`、`.env`。
+  从不复制会话历史或日志。支持 `CLAUDE_CONFIG_DIR` 与 `CODEX_HOME`。`"mount-ro"` 改为只读
+  绑定这些文件(Claude Code 运行时会改写 `~/.claude.json`,它更适合 `copy`);`"none"` 让 home
+  为空。macOS 上 Claude Code 把登录存在钥匙串里,没有文件可复制:请设置
+  `CLAUDE_CODE_OAUTH_TOKEN`(来自 `claude setup-token`)或 `ANTHROPIC_API_KEY`;Codex 用
+  `CODEX_API_KEY`,Gemini 用 `GEMINI_API_KEY`。找不到可复制的文件时,运行会说明一次。CLI 若在
+  容器里刷新登录,新令牌写进随后丢弃的副本;若提供方轮换刷新令牌,你本机的登录之后可能需要
+  重新 `/login`——沙箱运行最适合长期令牌与 API key。
+- **以你的身份,没有特权。** `--user` 为你的 uid:gid(Podman 另加 `--userns keep-id`),agent
+  写下的文件归你所有;`--cap-drop ALL`、`--security-opt no-new-privileges`、`--pids-limit`
+  (512)、可选的 `--memory` 与 `--cpus`、只读根文件系统加 tmpfs `/tmp`,以及转发信号的 `--init`。
+- **只有 `agentEnv` 放行的环境变量**——设置 `"agentEnv": "minimal"` 可挡住 shell 里的其他
+  密钥——按名字传递(`--env NAME`),进程列表里看不到值;宿主路径类变量(`PATH`、`HOME`、
+  `TMPDIR`、`XDG_*`、`CLAUDE_CONFIG_DIR`、`CODEX_HOME`)不传。
+- **`ODW_PORT` 照常设置,但不发布任何端口。** agent 在该端口启动的服务只在它的容器内可达。
+- **随运行一起被杀掉。** 超时、停顿、被停止或没有干净退出的 CLI 运行,其容器按名字被杀掉
+  (`docker kill`,再 `docker rm --force`);只杀引擎客户端会让容器继续运行。worker 自己被杀时,
+  它的退出处理会删除仍在运行的全部容器。崩溃遗留的容器可用
+  `docker ps --filter label=odw.run` 找到。
+
+缺少引擎或镜像时,运行在第一个 agent 启动前就以 `ConfigError` 失败,并说明如何构建镜像;
+`odw doctor` 做同样的检查,并运行 `docker run --rm --pull never --network none <镜像> true`
+(不涉及模型)。启动横幅有一行沙箱信息,每个 agent 的 `agent_started` 事件与看板的 AgentView
+带 `sandbox: { kind, engine, image, network }`,运行 setup 记录 `sandbox` 供 `odw compare` 比较。
+沙箱中的 agent 不记录 CLI 版本:版本探测在宿主上运行,宿主的 CLI 不是镜像里的那个。
+
+**它保护什么,不保护什么。** 它让 agent——以及它运行的一切——读不到也改不了你文件系统的
+其余部分(SSH 密钥、其他仓库、shell 配置、真实的 CLI 配置),只能以你的身份运行,也留不下
+进程。它**不能**让你的代码远离模型:agent 仍会把读到的内容发给模型 API。在
+`network: "default"`(默认值,因为 agent CLI 必须连到模型 API)下它拥有开放网络,可以把工作区
+以及环境变量和登录中的密钥发往任何地方——请把密钥挡在 `agentEnv` 之外,不需要模型 API 的
+地方都用 `network: "none"`(`exec()` 步骤默认就不联网)。工作区是可写的:agent 写在那里的东西
+——原地工作时仓库里的 git hook、`package.json` 脚本、Makefile——会在你之后运行它时在宿主上
+执行,所以请审阅改动(隔离 worktree 与 `odw apply` 有帮助)。容器与宿主共享内核,不是虚拟机。
+无 root 的 Docker 有自己的 uid 映射,文件可能归另一个 uid 所有;SELinux 宿主上的绑定挂载可能
+需要重新打标签。不支持 Windows 宿主。
+
 ### ODW 所保存内容中的密钥(ODW 扩展)
 
 agent 读到什么就会打印什么——包括 `cat .env`——而 ODW 会保存这些输出:它的 transcript

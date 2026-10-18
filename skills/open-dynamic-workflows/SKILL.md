@@ -299,6 +299,14 @@ approvals).
   once which CLIs cannot (codex still reads AGENTS.md) — prefer `adapter: 'claude'`
   there. The repository's own `worktreeSetup` and `.worktreeinclude` links do not
   run. It is not a sandbox: pair it with `--permissions read` for review work.
+- **Need a real boundary? Run agents in a container** (ODW extension):
+  `odw run wf.js --sandbox container --sandbox-image <image>`, or `sandbox` in the
+  config. Each CLI run and `exec()` step goes in a fresh Docker/Podman container
+  holding only its workspace and a copy of the CLI's login. The user builds the
+  image (`examples/sandbox/Dockerfile`; ODW never pulls); check with `odw doctor`.
+  Agents keep the network (they must reach their model API) — so it guards the
+  user's files, not their code from the model. `agent(p, { sandbox: { network:
+  'none' } })` may only tighten it.
 
 ```js
 const findings = await parallel(files.map((f) => () =>

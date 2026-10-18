@@ -65,6 +65,13 @@ other primitive organizes calls to it.
   before its CLI starts; `claude`, `codex` and `gemini` have one). See
   [adapters](adapters.md#permissions-what-each-built-in-may-do). Claude Code
   ignores it.
+- **opts.sandbox** (**ODW extension**) — run this agent's CLI in a container, or a
+  stricter one than its run's and adapter's: `"container"`, or `{ network: "none",
+  memory, cpus, pids, cliConfig: "none", image }` (`image` only where nothing else
+  sets one). It may only tighten — `"none"` under a container, a network the
+  sandbox has not, a higher limit or another image fails the call before it
+  starts. See [adapters](adapters.md#container-sandbox-odw-extension). Not part of
+  the resume key. Claude Code ignores it.
 - **opts.expect** (**ODW extension**) — what must hold once the agent has
   replied, checked by odw: `{ changes?, files?, command?, match?, timeout? }`. See
   [expect](#expect-odw-extension). Claude Code ignores it.
@@ -318,6 +325,11 @@ script's own `exec` binding takes precedence over the injected one.
 - **opts.label** / **opts.phase** — progress display, as for `agent`. The label
   defaults to the first 40 characters of the command.
 - **opts.check** — throw an `ExecError` unless the command exits 0.
+- **opts.network** (**ODW extension**) — in a run whose `sandbox` is a container,
+  the step runs in a fresh container of the run's image, with the run's source
+  (and its `cwd`) bound at the same path and the agents' environment; its network
+  is `"none"` unless it asks for `"default"` (refused when the sandbox has none).
+  No effect outside a sandbox.
 
 A non-zero exit is a result, not an error. A program that cannot be launched
 reports exit `127` (not found) or `126`, as a shell would. With `check: true`
