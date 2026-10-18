@@ -228,6 +228,22 @@ test("the run and summary steps, against a stand-in odw", { skip: process.platfo
       assert.equal(parseArgsValue(`@${file}`), args);
     }
 
+    // Untrusted input, and a token actions/checkout left in git's config: named — never shown — on stderr and in the summary (review fix).
+    const header = ["AUTHORIZATION: basic ", "eC1hY2Nlc3M", "6ZmFrZQ=="].join("");
+    const persisted = { GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "http.https://github.com/.extraheader", GIT_CONFIG_VALUE_0: header };
+    writeFileSync(summary, "");
+    const warned = spawnSync(execPath, [script, "run"], { env: { ...env, ...persisted }, cwd: dir, encoding: "utf8" });
+    assert.equal(warned.status, 3, warned.stderr);
+    assert.match(warned.stderr, /::warning::odw action: untrusted input, and git's config holds an HTTP auth header \(http\.https:\/\/github\.com\/\.extraheader\)/);
+    assert.match(warned.stderr, /persist-credentials: false/);
+    assert.match(readFileSync(summary, "utf8"), /^> ⚠️ untrusted input, and git's config holds an HTTP auth header/m);
+    assert.ok(!warned.stderr.includes("eC1hY2Nlc3M") && !readFileSync(summary, "utf8").includes("eC1hY2Nlc3M"), "the token itself is never printed");
+    // The user's own input, or nothing persisted: no warning.
+    const own = spawnSync(execPath, [script, "run"], { env: { ...env, ...persisted, ODW_INPUT_UNTRUSTED_INPUT: "false" }, cwd: dir, encoding: "utf8" });
+    assert.ok(!own.stderr.includes("::warning::"), own.stderr);
+    const clean = spawnSync(execPath, [script, "run"], { env, cwd: dir, encoding: "utf8" });
+    assert.ok(!clean.stderr.includes("extraheader"), clean.stderr);
+
     // A timeout too short for the margin fails the step before anything runs.
     const tooShort = spawnSync(execPath, [script, "run"], { env: { ...env, ODW_INPUT_TIMEOUT_MINUTES: "1" }, encoding: "utf8" });
     assert.equal(tooShort.status, 1);
@@ -235,6 +251,23 @@ test("the run and summary steps, against a stand-in odw", { skip: process.platfo
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("a token actions/checkout persisted: its config names are read, never its value, and a warning names them", () => {
+  assert.deepEqual(action.EXTRAHEADER_PATTERNS, ["^http\\..*\\.extraheader$", "^http\\.extraheader$"]);
+  assert.deepEqual(action.configNames("http.https://github.com/.extraheader AUTHORIZATION: basic x\nhttp.extraheader y\n"), [
+    "http.https://github.com/.extraheader",
+    "http.extraheader",
+  ]);
+  assert.deepEqual(action.configNames(""), []);
+  assert.equal(action.persistedCredentialsWarning([]), null);
+  assert.match(action.persistedCredentialsWarning(["http.extraheader"]) as string, /\(http\.extraheader\).*persist-credentials: false/);
+  // The docs' examples (a fork's PR, an issue) check out without persisting the token; apply-pr pushes through gh instead.
+  const docs = readFileSync(fileURLToPath(new URL("../docs/github-action.md", import.meta.url)), "utf8");
+  const checkouts = [...docs.matchAll(/- uses: actions\/checkout@v4\n(?: {8}.*\n)*/g)].map((m) => m[0]);
+  assert.ok(checkouts.length >= 2);
+  for (const step of checkouts) assert.match(step, /persist-credentials: false/);
+  assert.match(actionYml, /GIT_CONFIG_KEY_0: credential\.https:\/\/github\.com\.helper\n\s+GIT_CONFIG_VALUE_0: "!gh auth git-credential"/);
 });
 
 test("untrusted-input follows untrusted unless the job says otherwise, and only the run step's answer adds --accept-untrusted-input to apply --pr", () => {

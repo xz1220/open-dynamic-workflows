@@ -2111,12 +2111,16 @@ issue 正文、PR 标题、评论是任何人写的文字,模型无法可靠地�
 
 - **agent 只读**——`permissions: "read"`——除非显式给出了运行档位:`--permissions`,或触发器的
   `"permissions"`;
-- **agent CLI 以 `agentEnv: "minimal"` 启动,且不带密钥类变量**——`GH_TOKEN`、`GITHUB_TOKEN`、
-  `*_API_KEY`、`*_TOKEN` 等——只保留该 CLI 自身登录文档里的那些(claude 是 `ANTHROPIC_*`/`CLAUDE_*`,
-  codex 是 `OPENAI_*`/`CODEX_*`,……),无论 `agentEnvPass` 列了什么。适配器自己的 `env` 仍然生效,
-  `exec()` 命令(工作流作者写的)得到最小环境加上 `agentEnvPass`;
+- **agent CLI 以 `agentEnv: "minimal"` 启动,不带其他厂商的变量,也不带密钥类变量**——`GH_TOKEN`、
+  `GITHUB_TOKEN`、`*_API_KEY`、`*_TOKEN`、`*_HEADERS` 等——只保留该 CLI 自身登录文档里的那些(claude 是
+  `ANTHROPIC_*`/`CLAUDE_*`,codex 是 `OPENAI_*`/`CODEX_*`,gemini 是 `GEMINI_*` 与 `GOOGLE_API_KEY`、
+  `GOOGLE_GENAI_USE_VERTEXAI`、`GOOGLE_GENAI_USE_GCA`、`GOOGLE_CLOUD_PROJECT`、`GOOGLE_CLOUD_LOCATION`,……),
+  无论 `agentEnvPass` 列了什么。适配器自己的 `env` 仍然生效,`exec()` 命令(工作流作者写的)得到最小环境加上
+  `agentEnvPass`;
 - **没有隔离时大声说出来:** 若没有 `network` 为白名单(或 `"none"`)的
-  [容器沙箱](#在容器中运行-agentodw-扩展),启动横幅、运行日志和 `run_started` 事件都会警告。
+  [容器沙箱](#在容器中运行-agentodw-扩展),启动横幅、运行日志和 `run_started` 事件都会警告,且只读 agent
+  启动时不带其 CLI 的联网工具(Claude Code 的 `WebFetch` 与 `WebSearch`,codex 的 `--search`)——它们可能把
+  读到的文件(比如 `actions/checkout` 留在 `.git/config` 里的 token)带出本机。
   配置 `"untrustedInput": { "requireSandbox": true }` 则直接拒绝启动;
 - **写之前先问:** 第一个可写(`edit` 或 `full`)的 agent 会停在一个[检查点](#人工检查点odw-扩展)
   等人放行——每个运行只问一次,答复对之后的 agent 都有效;拒绝会让这些 agent 以可捕获的

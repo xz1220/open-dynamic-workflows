@@ -2443,14 +2443,20 @@ takes it (unless the trigger says `"untrusted": false`), and so does
 
 - **runs read-only agents** — `permissions: "read"` — unless the run's tier was given:
   `--permissions`, or the trigger's `"permissions"`;
-- **starts agent CLIs with `agentEnv: "minimal"` and no secret-named variable** —
-  `GH_TOKEN`, `GITHUB_TOKEN`, `*_API_KEY`, `*_TOKEN`, … — but the ones the CLI's own login
-  documents (`ANTHROPIC_*`/`CLAUDE_*` for claude, `OPENAI_*`/`CODEX_*` for codex, …),
-  whatever `agentEnvPass` lists. An adapter's own `env` still applies, and `exec()`
-  commands — the workflow author's — get the minimal environment plus `agentEnvPass`;
+- **starts agent CLIs with `agentEnv: "minimal"`, no other vendor's variables and no
+  secret-named variable** — `GH_TOKEN`, `GITHUB_TOKEN`, `*_API_KEY`, `*_TOKEN`,
+  `*_HEADERS`, … — but the ones the CLI's own login documents (`ANTHROPIC_*`/`CLAUDE_*`
+  for claude, `OPENAI_*`/`CODEX_*` for codex, `GEMINI_*` and `GOOGLE_API_KEY`,
+  `GOOGLE_GENAI_USE_VERTEXAI`, `GOOGLE_GENAI_USE_GCA`, `GOOGLE_CLOUD_PROJECT`,
+  `GOOGLE_CLOUD_LOCATION` for gemini, …), whatever `agentEnvPass` lists. An adapter's
+  own `env` still applies, and `exec()` commands — the workflow author's — get the
+  minimal environment plus `agentEnvPass`;
 - **says loudly when nothing boxes it in:** without a
   [container sandbox](#run-agents-in-containers-odw-extension) whose `network` is an
-  allowlist (or `"none"`), the start banner, the run's log and its `run_started` event warn.
+  allowlist (or `"none"`), the start banner, the run's log and its `run_started` event warn,
+  and read-only agents start without their CLI's web tools (Claude Code's `WebFetch` and
+  `WebSearch`, codex's `--search`), which could carry a file they read — a token
+  `actions/checkout` left in `.git/config` — off the machine.
   `"untrustedInput": { "requireSandbox": true }` refuses to start such a run instead;
 - **asks before anything writes:** the first agent that may write (`edit` or `full`) waits
   at a [checkpoint](#human-checkpoints-odw-extension) — once per run; its answer stands for

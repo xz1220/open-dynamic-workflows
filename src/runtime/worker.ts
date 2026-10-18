@@ -408,7 +408,7 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
     // loudly without a sandbox, and refused under untrustedInput.requireSandbox.
     const inputGap = input ? sandboxGap(config.settings) : null;
     const inputProfile = input
-      ? { ...input, permissions: config.settings.permissions, agentEnv: config.settings.agentEnv, sandboxed: inputGap === null, ...(inputGap ? { warning: sandboxWarning(inputGap) } : {}) }
+      ? { ...input, permissions: config.settings.permissions, agentEnv: config.settings.agentEnv, sandboxed: inputGap === null, ...(inputGap ? { webTools: "withheld from read-only agents", warning: sandboxWarning(inputGap) } : {}) }
       : null;
     sink.emit(event(RUN_STARTED, { runId, setup: runSetup(config), ...(inputProfile ? { untrustedInput: inputProfile } : {}) }));
     if (input) {

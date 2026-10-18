@@ -174,7 +174,7 @@ import { isAdapterChoice, type AdapterChoice } from "./routing.js";
 import { describeSchema, pickStructured, type JsonSchema } from "./schema.js";
 import { handoffBrief, HandoffLog } from "./handoff.js";
 import { transcriptFormat, type AttemptReason } from "./transcript.js";
-import { withholdSecrets } from "./untrusted-input.js";
+import { withholdSecrets, withoutWebTools } from "./untrusted-input.js";
 import { openWorkspace, type OpenWorkspace, type Workspace, type WorkspaceMode } from "./workspace.js";
 import type { WorktreeSetupOptions } from "./worktree-setup.js";
 
@@ -1342,6 +1342,11 @@ export class Bridge {
       ...shared,
       container: sandbox.box && engine ? { box: sandbox.box, engine, agentId: options.agentId } : undefined,
       permissionArgs: [...permissions.args, ...trust.args, ...denyArgs],
+      // Untrusted input (ODW extension): a read-only agent whose network is not
+      // boxed in (a container with an allowlist, or none) has no web tool to
+      // carry what it reads — a token in .git/config — off the machine.
+      noWebTools:
+        this.withholdSecrets && permissions.tier === "read" && (!sandbox.box || sandbox.box.network === "default"),
       untrusted: trust.trust === "untrusted",
       schema: schema?.native ? { flag: schema.native, value: request.schema!, file: schemaFile } : undefined,
       // Tool calls the CLI refused fail a run at once only under "fail", and
@@ -2018,7 +2023,8 @@ export class Bridge {
         };
         // The tier's flags take the place of `{permission_args}`, then every
         // placeholder (theirs too) is expanded. The schema comes last, as is.
-        const template = spliceArgs(adapter.command, call.permissionArgs ?? []);
+        const spliced = spliceArgs(adapter.command, call.permissionArgs ?? []);
+        const template = call.noWebTools ? withoutWebTools(spliced) : spliced;
         const command = [...expandAll(template, context), ...plan.extraArgs, ...(schema?.args ?? [])];
         const stdin = adapter.stdin ? expand(adapter.stdin, context) : undefined;
         // Untrusted input (ODW extension; see ./untrusted-input): no secret its own login does not need.
@@ -2175,6 +2181,8 @@ interface CallEnv {
   changes?: ChangeSink;
   transcript?: TranscriptSink;
   permissionArgs?: string[];
+  /** Untrusted input, read-only, network not boxed in: the CLI starts without its web tools (ODW extension; see ./untrusted-input). */
+  noWebTools?: boolean;
   /** The CLI runs untrusted (ODW extension: trust): its worktree links nothing the repository's `.worktreeinclude` asks for. */
   untrusted?: boolean;
   /** The container each CLI run of the call runs in, and its engine (ODW extension; see adapters/sandbox.ts). */

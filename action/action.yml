@@ -154,6 +154,11 @@ runs:
         BASE: ${{ inputs.apply-pr-base }}
         GH_TOKEN: ${{ inputs.github-token }}
         GH_PROMPT_DISABLED: "1"
+        # The push authenticates through gh with github-token, for this step only:
+        # a checkout with persist-credentials: false left no token in .git/config.
+        GIT_CONFIG_COUNT: "1"
+        GIT_CONFIG_KEY_0: credential.https://github.com.helper
+        GIT_CONFIG_VALUE_0: "!gh auth git-credential"
       run: |
         # A runner has no git identity: commit as github-actions[bot] unless the job set one.
         if [ -z "$(git config user.email || true)" ]; then

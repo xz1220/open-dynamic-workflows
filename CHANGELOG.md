@@ -778,6 +778,22 @@ independent security reviews whose findings are all fixed.
   sanitizer, and an entry whose `run`, `agent`, `at` or `paths` has the wrong type is
   skipped. Files were written through a predictable `<file>.<pid>.tmp`, which a
   planted link could redirect; the temp name is now random and created fresh (`wx`).
+- A read-only Claude Code agent of a run with untrusted input kept `WebFetch` and
+  `WebSearch`, so text from outside could have it read a token on disk — the one
+  `actions/checkout` leaves in `.git/config` — and send it anywhere. Without a container
+  sandbox whose network is an allowlist (or `"none"`), read-only agents now start
+  without them (and codex without `--search`); the run's untrusted-input profile and
+  warning say so. The Action's docs check out with `persist-credentials: false` for
+  untrusted events, its `apply-pr` push authenticates through `gh` for that step only,
+  and its run step warns when untrusted input meets an `http.*extraheader` in git's config.
+- `agentEnv: "minimal"` passed every vendor's variables to every agent, so under
+  untrusted input claude got `OPENAI_*` and gemini every `GOOGLE_*` — a runner's
+  `GOOGLE_APPLICATION_CREDENTIALS`, `GOOGLE_OAUTH_ACCESS_TOKEN` or
+  `GOOGLE_GHA_CREDS_PATH`. An agent of such a run now keeps only its own CLI's login
+  variables (gemini's: `GEMINI_*`, `GOOGLE_API_KEY`, `GOOGLE_GENAI_USE_VERTEXAI`,
+  `GOOGLE_GENAI_USE_GCA`, `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION`), and
+  `*_HEADERS` (`ANTHROPIC_CUSTOM_HEADERS`) counts as secret-named — withheld, and
+  redacted from what ODW keeps. Trusted runs' minimal environment is unchanged.
 
 ### Changed behavior — check before upgrading
 - Signed triggers in a repository's `./odw.config.json` are no longer served: move them
