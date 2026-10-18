@@ -482,7 +482,7 @@ ODW 仓库里的 `examples/plan-approve-execute.js` 就是这个流程的完整 
 | `ODW_RUN_ID` | 本次运行的 id |
 | `ODW_AGENT_ID` | 这个 agent 的 id，与它的事件和 `odw agents` 里的一致 |
 | `ODW_PORT` | 来自 `portRange`（默认 41000–41999）的一个端口，本次运行中没有其他正在运行的 agent 占用它——已经有程序在监听的端口会被跳过——直到这次调用结束都归它所有 |
-| `ODW_SLOT` | 仅隔离 agent：`odw-<run>-<agent>`（运行 id 的随机部分加 agent id；只含小写字母、数字和连字符），在这次调用的每次尝试、setup 和 teardown 中都相同。`COMPOSE_PROJECT_NAME` 未设置时默认取它——每个 agent 一套 compose 栈、数据库或卷名前缀 |
+| `ODW_SLOT` | 仅隔离 agent：`odw-<run>-<agent>`（运行 id 的随机部分加 agent id；只含小写字母、数字和连字符），在这次调用的每次尝试、setup 和 teardown 中都相同。`COMPOSE_PROJECT_NAME` 被设为它，已设置的也会被覆盖（运行日志说明一次）——每个 agent 一套 compose 栈、数据库或卷名前缀；仍请显式指定项目名：`docker compose -p "$ODW_SLOT" down -v` |
 
 这样并行的 agent 各自起服务也不会冲突：
 

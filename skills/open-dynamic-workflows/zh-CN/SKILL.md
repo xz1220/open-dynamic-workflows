@@ -642,7 +642,7 @@ agent「在工作」的静默前部截断;它会运行模型,先征得同意。
   （gitignore 语法；`symlink: node_modules` 表示链接而非复制）会把 `.env` 等带进去，
   配置里的 `worktreeSetup` 命令会在 agent 启动前运行（均为 ODW 扩展）；`worktreeTeardown` 在
   worktree 删除前运行——成功、失败或被停止都会运行——每个隔离 agent 还会拿到 `$ODW_SLOT`
-  （`odw-<run>-<agent>`，也是它默认的 `COMPOSE_PROJECT_NAME`），供它独占一套 compose 栈或数据库
+  （`odw-<run>-<agent>`，也是它的 `COMPOSE_PROJECT_NAME`；用 `docker compose -p "$ODW_SLOT"` 显式指定），供它独占一套 compose 栈或数据库
   （ODW 扩展）。
 - **端口**：每个 agent 进程都有唯一的 `$ODW_PORT`（以及 `$ODW_RUN_ID`、`$ODW_AGENT_ID`）——
   让并行的 agent "在 `$ODW_PORT` 上启动开发服务器"，它们就不会冲突；并让它们在结束前停掉服务

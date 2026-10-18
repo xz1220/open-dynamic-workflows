@@ -785,6 +785,21 @@ export class Bridge {
   }
 
   /**
+   * What says, once per run, that an isolated agent's `ODW_SLOT` took the
+   * place of the `COMPOSE_PROJECT_NAME` the user set (ODW extension; see ./slot).
+   */
+  private composeOverride(onNote: ((message: string) => void) | undefined): (userValue: string) => void {
+    return (userValue) =>
+      this.noteOnce(
+        "compose-project",
+        `COMPOSE_PROJECT_NAME=${userValue} is set, but each isolated agent runs with its own ODW_SLOT as COMPOSE_PROJECT_NAME — ` +
+          `its worktreeSetup, teardown and CLI drive that agent's compose stack, never ${userValue}`,
+        { composeProjectName: userValue },
+        onNote,
+      );
+  }
+
+  /**
    * The container an agent on `adapter` runs in, if any (ODW extension; see
    * adapters/sandbox.ts): the run's sandbox, its adapter's, and the call's
    * own `option`, which may only tighten them.
@@ -2045,7 +2060,7 @@ export class Bridge {
       // Run before the worktree goes, with the same variables (ODW extension).
       teardown: worktreeTeardown,
       teardownTimeout: worktreeTeardownTimeout,
-      env: withAgentVars(process.env, call.env),
+      env: withAgentVars(process.env, call.env, this.composeOverride(call.onNote)),
       signal,
       onNote: call.onNote,
       // Untrusted (ODW extension: trust): `symlink:` lines of the
@@ -2096,7 +2111,11 @@ export class Bridge {
         const stdin = adapter.stdin ? expand(adapter.stdin, context) : undefined;
         // Untrusted input (ODW extension; see ./untrusted-input): no secret its own login does not need.
         const base = agentBaseEnv(process.env, this.config.settings);
-        const env = withAgentVars({ ...(this.withholdSecrets ? withholdSecrets(base, adapter) : base), ...adapter.env }, call.env);
+        const env = withAgentVars(
+          { ...(this.withholdSecrets ? withholdSecrets(base, adapter) : base), ...adapter.env },
+          call.env,
+          this.composeOverride(call.onNote),
+        );
         // The container sandbox (ODW extension; see adapters/sandbox.ts): the
         // CLI runs in a fresh container with its workspace and the files this
         // run hands it bound at the same paths. A run that did not end cleanly
@@ -2327,11 +2346,15 @@ const AGENT_VARS = ["ODW_RUN_ID", "ODW_AGENT_ID", "ODW_PORT", "ODW_NOTES", "ODW_
  * `base` with the call's agent variables over it — and none of their values
  * from `base` (a worker started by another run's agent inherits that agent's),
  * so an agent without a port has no `ODW_PORT` rather than someone else's.
- * An agent with an `ODW_SLOT` gets it as `COMPOSE_PROJECT_NAME` too, unless
- * the user set one (see {@link withSlot}).
+ * An agent with an `ODW_SLOT` gets it as `COMPOSE_PROJECT_NAME` too, over
+ * one the user set, which `onOverride` is told of (see {@link withSlot}).
  */
-function withAgentVars(base: Record<string, string | undefined>, vars: Record<string, string>): Record<string, string> {
-  const env = withSlot(base, vars.ODW_SLOT);
+function withAgentVars(
+  base: Record<string, string | undefined>,
+  vars: Record<string, string>,
+  onOverride?: (userValue: string) => void,
+): Record<string, string> {
+  const env = withSlot(base, vars.ODW_SLOT, onOverride);
   for (const name of AGENT_VARS) delete env[name];
   return { ...env, ...vars } as Record<string, string>;
 }

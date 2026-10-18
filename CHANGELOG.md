@@ -748,7 +748,7 @@ independent security reviews whose findings are all fixed.
   logged against the agent, whose result stands. Like `worktreeSetup`, one set by the
   repository's own config does not run in an untrusted run. Each isolated agent gets
   `ODW_SLOT=odw-<run>-<agent>` (the run id's random part and the agent id; lowercase
-  letters, digits, hyphens), and `COMPOSE_PROJECT_NAME` defaults to it unless set. `odw
+  letters, digits, hyphens), and `COMPOSE_PROJECT_NAME` is set to it. `odw
   gc` lists leftover `odw-*` compose projects whose run is not active (`docker compose
   ls`, when it answers; `$ODW_DOCKER` names another docker) and never removes them.
   README recipe: a compose stack and a database per agent.
@@ -921,6 +921,12 @@ independent security reviews whose findings are all fixed.
   array's edit called `args.splice`, which the script could replace. Edited values now
   cross the strict context's membrane into the script's realm, and `args` is changed
   through `Reflect`, never through a method of the script's object.
+- An isolated agent kept a `COMPOSE_PROJECT_NAME` the user had set, so every agent
+  drove the user's own compose stack, and the README recipe's teardown (`docker compose
+  down -v`) removed it, volumes and all. An agent with an `ODW_SLOT` now always gets it
+  as `COMPOSE_PROJECT_NAME` (the run's log says once when that overrides a value of the
+  user's), and the recipe names the project explicitly: `docker compose -p "$ODW_SLOT"`
+  in setup and teardown.
 
 ### Changed behavior — check before upgrading
 - `agentType` naming an agent definition file now runs that definition (see "Write

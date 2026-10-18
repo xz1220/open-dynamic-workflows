@@ -783,7 +783,7 @@ it runs the model.
   and the like, and a `worktreeSetup` command in the config runs before the
   agent (both ODW extensions); a `worktreeTeardown` runs before the worktree
   goes — success, failure or stop — and each isolated agent gets `$ODW_SLOT`
-  (`odw-<run>-<agent>`, its default `COMPOSE_PROJECT_NAME`) for a compose stack
+  (`odw-<run>-<agent>`, also its `COMPOSE_PROJECT_NAME`; name it with `docker compose -p "$ODW_SLOT"`) for a compose stack
   or database of its own (ODW extensions).
 - **Ports**: every agent process gets a unique `$ODW_PORT` (with `$ODW_RUN_ID`
   and `$ODW_AGENT_ID`) — tell parallel agents "start the dev server on

@@ -3124,9 +3124,10 @@ worktree 开始,并以同样方式准备。
 
 隔离 agent 还会拿到 `ODW_SLOT`(**ODW 扩展**):`odw-<run>-<agent>`——运行 id 的随机部分加
 agent id,例如 `odw-a1b2c3-4`——只含小写字母、数字和连字符,在这次调用的每次尝试、它的 setup
-和 teardown 中都相同。`COMPOSE_PROJECT_NAME` 默认设为它(你自己设置的不会被覆盖),于是在
-worktree 里执行 `docker compose` 操作的就是这个 agent 自己的那套栈。它也可以用作数据库名或卷名
-前缀(不允许连字符的地方加引号,或把连字符换成下划线)。
+和 teardown 中都相同。`COMPOSE_PROJECT_NAME` 被设为它——即使你自己设置了,也会被覆盖,运行日志会
+说明一次——于是在 worktree 里执行 `docker compose` 操作的就是这个 agent 自己的那套栈,不会是你的,
+并行的 agent 也不会共用一套。尽管如此,仍请显式指定项目名(`docker compose -p "$ODW_SLOT" …`),
+如下面的配方所示。它也可以用作数据库名或卷名前缀(不允许连字符的地方加引号,或把连字符换成下划线)。
 
 #### 配方:每个 agent 一套 compose 栈和独立数据库
 
@@ -3134,7 +3135,7 @@ worktree 里执行 `docker compose` 操作的就是这个 agent 自己的那套�
 不论成功、失败还是被停止:
 
 ```yaml
-# compose.yaml —— 项目名来自 COMPOSE_PROJECT_NAME(即 $ODW_SLOT)
+# compose.yaml —— 项目名在命令行上指定:-p "$ODW_SLOT"
 services:
   db:
     image: postgres:16
@@ -3151,8 +3152,8 @@ volumes:
 
 ```jsonc
 {
-  "worktreeSetup": "docker compose up -d --wait && npm run migrate",
-  "worktreeTeardown": "docker compose down -v --remove-orphans",
+  "worktreeSetup": "docker compose -p \"$ODW_SLOT\" up -d --wait && npm run migrate",
+  "worktreeTeardown": "docker compose -p \"$ODW_SLOT\" down -v --remove-orphans",
   "worktreeTeardownTimeout": 120
 }
 ```
@@ -3163,7 +3164,8 @@ await parallel(['grid', 'list'].map((layout) => () =>
     { isolation: 'worktree', label: layout })))
 ```
 
-这样迁移只会落到这个 agent 自己的数据库,不会碰共享库。worker 被直接杀掉(SIGKILL、第二次信号)
+这样迁移只会落到这个 agent 自己的数据库,不会碰共享库;teardown 的 `down -v` 也只删除这个 agent
+的栈和卷——不论环境里有什么,`-p "$ODW_SLOT"` 都指定了它。worker 被直接杀掉(SIGKILL、第二次信号)
 时,teardown 来不及运行:`odw gc` 会列出所属运行已不再活跃的 `odw-*` compose 项目,并给出要执行的
 `docker compose -p <name> down -v`——它自己从不删除。ODW 不克隆数据库,也不管理不是它启动的服务。
 

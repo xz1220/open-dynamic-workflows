@@ -683,7 +683,7 @@ extension**):
 | `ODW_RUN_ID` | the run's id |
 | `ODW_AGENT_ID` | the agent's id, as in its events and `odw agents` |
 | `ODW_PORT` | a port from `portRange` (default 41000–41999) that no other running agent of the run holds — ports something already listens on are passed over — kept until the call settles |
-| `ODW_SLOT` | isolated agents only: `odw-<run>-<agent>` (the run id's random part, the agent id; lowercase letters, digits, hyphens), the same for every attempt, setup and teardown of the call. `COMPOSE_PROJECT_NAME` defaults to it unless already set — a compose stack, database or volume prefix per agent |
+| `ODW_SLOT` | isolated agents only: `odw-<run>-<agent>` (the run id's random part, the agent id; lowercase letters, digits, hyphens), the same for every attempt, setup and teardown of the call. `COMPOSE_PROJECT_NAME` is set to it, over one already set (the run logs that once) — a compose stack, database or volume prefix per agent; name the project explicitly too: `docker compose -p "$ODW_SLOT" down -v` |
 
 So agents running side by side can each start a server without colliding:
 

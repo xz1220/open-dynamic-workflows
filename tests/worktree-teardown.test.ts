@@ -100,13 +100,18 @@ test("ODW_SLOT is odw-<the run id's random part>-<agent>, lowercase letters, dig
   }
 });
 
-test("COMPOSE_PROJECT_NAME defaults to the slot; the user's own is kept; an agent's inherited one is not", () => {
-  assert.equal(withSlot({}, "odw-a1b2c3-1").COMPOSE_PROJECT_NAME, "odw-a1b2c3-1");
-  assert.equal(withSlot({ COMPOSE_PROJECT_NAME: "mine" }, "odw-a1b2c3-1").COMPOSE_PROJECT_NAME, "mine");
-  assert.equal(withSlot({ COMPOSE_PROJECT_NAME: "" }, "odw-a1b2c3-1").COMPOSE_PROJECT_NAME, "odw-a1b2c3-1", "empty is unset");
+test("COMPOSE_PROJECT_NAME is the slot, over the user's own (said); an agent's inherited one is not kept", () => {
+  const overridden: string[] = [];
+  const said = (user: string) => overridden.push(user);
+  assert.equal(withSlot({}, "odw-a1b2c3-1", said).COMPOSE_PROJECT_NAME, "odw-a1b2c3-1");
+  // Kept, every agent would share the user's stack, and a teardown's `down -v` would remove it.
+  assert.equal(withSlot({ COMPOSE_PROJECT_NAME: "mine" }, "odw-a1b2c3-1", said).COMPOSE_PROJECT_NAME, "odw-a1b2c3-1");
+  assert.deepEqual(overridden, ["mine"]);
+  assert.equal(withSlot({ COMPOSE_PROJECT_NAME: "" }, "odw-a1b2c3-1", said).COMPOSE_PROJECT_NAME, "odw-a1b2c3-1", "empty is unset");
   // A worker started by another run's agent inherits that agent's slot and project name.
   const inherited = { ODW_SLOT: "odw-ffffff-9", COMPOSE_PROJECT_NAME: "odw-ffffff-9" };
-  assert.equal(withSlot(inherited, "odw-a1b2c3-1").COMPOSE_PROJECT_NAME, "odw-a1b2c3-1");
+  assert.equal(withSlot(inherited, "odw-a1b2c3-1", said).COMPOSE_PROJECT_NAME, "odw-a1b2c3-1");
+  assert.deepEqual(overridden, ["mine"], "neither an empty one nor an agent's is the user's");
   assert.equal("COMPOSE_PROJECT_NAME" in withSlot(inherited, undefined), false, "an agent without a slot does not keep it");
   assert.equal(withSlot({ COMPOSE_PROJECT_NAME: "mine" }, undefined).COMPOSE_PROJECT_NAME, "mine");
   assert.equal(inherited.COMPOSE_PROJECT_NAME, "odw-ffffff-9", "the base is not changed");
@@ -138,6 +143,36 @@ test("the bridge gives an isolated call ODW_SLOT and COMPOSE_PROJECT_NAME on eve
       assert.equal(seenEnv[2]?.ODW_SLOT, undefined, "an agent in the source tree has no slot");
       assert.equal(seenEnv[2]?.COMPOSE_PROJECT_NAME, undefined, "nor the inherited project name");
     });
+  } finally {
+    rmSync(src, { recursive: true, force: true });
+  }
+});
+
+test("a COMPOSE_PROJECT_NAME of the user's: every isolated agent gets its own slot instead, and the run says so once", async () => {
+  const src = makeRepo();
+  const cfg = defaultConfig();
+  cfg.settings.defaultAdapter = "claude";
+  const seenEnv: Array<Record<string, string> | undefined> = [];
+  const notes: Array<[string, Record<string, unknown>]> = [];
+  const bridge = new Bridge(cfg, {
+    runId: "20261018-120000-abc123",
+    source: src,
+    onRunNote: (message, fields) => notes.push([message, fields]),
+    runner: async (_command, options) => (
+      seenEnv.push(options?.env), { returncode: 0, stdout: "ok", stderr: "", timedOut: false, duration: 0.01 }
+    ),
+  });
+  try {
+    await withoutComposeEnv(async () => {
+      process.env.COMPOSE_PROJECT_NAME = "mine";
+      await Promise.all([1, 2].map((agentId) => bridge.run({ prompt: "x", isolation: "worktree" }, { agentId })));
+      assert.deepEqual(seenEnv.map((env) => env?.COMPOSE_PROJECT_NAME).sort(), ["odw-abc123-1", "odw-abc123-2"]);
+      await bridge.run({ prompt: "y" }, { agentId: 3 });
+      assert.equal(seenEnv[2]?.COMPOSE_PROJECT_NAME, "mine", "an agent without a slot keeps the user's");
+    });
+    assert.equal(notes.length, 1, "said once per run");
+    assert.match(notes[0]![0], /COMPOSE_PROJECT_NAME=mine is set, but each isolated agent runs with its own ODW_SLOT/);
+    assert.deepEqual(notes[0]![1], { composeProjectName: "mine" });
   } finally {
     rmSync(src, { recursive: true, force: true });
   }

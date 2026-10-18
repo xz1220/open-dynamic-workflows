@@ -23,7 +23,7 @@
   "worktreeSetup": null,
   "worktreeSetupTimeout": 600,
 
-  "//worktreeTeardown": "ODW extension. A command run in an isolated agent's workspace just before its worktree is removed — after the agent finished, failed or was stopped, and after a failed setup — with the same variables as worktreeSetup, plus ODW_SLOT (odw-<run>-<agent>, also the default COMPOSE_PROJECT_NAME): e.g. \"docker compose down -v\". Killed after worktreeTeardownTimeout seconds; a failure is logged, the agent's result stands. null (the default) runs nothing.",
+  "//worktreeTeardown": "ODW extension. A command run in an isolated agent's workspace just before its worktree is removed — after the agent finished, failed or was stopped, and after a failed setup — with the same variables as worktreeSetup, plus ODW_SLOT (odw-<run>-<agent>, also its COMPOSE_PROJECT_NAME): e.g. \"docker compose -p \\\"$ODW_SLOT\\\" down -v\". Killed after worktreeTeardownTimeout seconds; a failure is logged, the agent's result stands. null (the default) runs nothing.",
   "worktreeTeardown": null,
   "worktreeTeardownTimeout": 120,
 

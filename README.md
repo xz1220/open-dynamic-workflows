@@ -3653,10 +3653,12 @@ starts from a fresh worktree, prepared the same way.
 An isolated agent also gets `ODW_SLOT` (**ODW extension**): `odw-<run>-<agent>` —
 the run id's random part and the agent id, e.g. `odw-a1b2c3-4` — lowercase
 letters, digits and hyphens only, the same for every attempt of the call, its
-setup and its teardown. `COMPOSE_PROJECT_NAME` defaults to it (one you set is
-kept), so `docker compose` in a worktree drives that agent's own stack. Use it
-as a database name or volume prefix too (quote it, or swap the hyphens for
-underscores, where a hyphen is not allowed).
+setup and its teardown. `COMPOSE_PROJECT_NAME` is set to it — over one you set,
+which the run's log says once — so `docker compose` in a worktree drives that
+agent's own stack, never yours, and parallel agents never share one. Name the
+project explicitly all the same (`docker compose -p "$ODW_SLOT" …`), as the recipe
+below does. Use it as a database name or volume prefix too (quote it, or swap the
+hyphens for underscores, where a hyphen is not allowed).
 
 #### Recipe: a compose stack and a database per agent
 
@@ -3665,7 +3667,7 @@ down — volumes included — before its worktree goes, whether it succeeded, fa
 or was stopped:
 
 ```yaml
-# compose.yaml — the project name comes from COMPOSE_PROJECT_NAME (= $ODW_SLOT)
+# compose.yaml — the project is named on the command line: -p "$ODW_SLOT"
 services:
   db:
     image: postgres:16
@@ -3682,8 +3684,8 @@ volumes:
 
 ```jsonc
 {
-  "worktreeSetup": "docker compose up -d --wait && npm run migrate",
-  "worktreeTeardown": "docker compose down -v --remove-orphans",
+  "worktreeSetup": "docker compose -p \"$ODW_SLOT\" up -d --wait && npm run migrate",
+  "worktreeTeardown": "docker compose -p \"$ODW_SLOT\" down -v --remove-orphans",
   "worktreeTeardownTimeout": 120
 }
 ```
@@ -3694,7 +3696,9 @@ await parallel(['grid', 'list'].map((layout) => () =>
     { isolation: 'worktree', label: layout })))
 ```
 
-Migrations then run against that agent's database, never a shared one. A stack a
+Migrations then run against that agent's database, never a shared one, and the
+teardown's `down -v` removes that agent's stack and volumes only — `-p "$ODW_SLOT"`
+names it whatever the environment holds. A stack a
 worker killed outright (SIGKILL, a second signal) never got its teardown: `odw
 gc` lists the `odw-*` compose projects whose run is no longer active, with the
 `docker compose -p <name> down -v` to run — it never removes them itself. ODW
