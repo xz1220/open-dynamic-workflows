@@ -62,6 +62,17 @@ changed, and run on a schedule — and a dashboard redesigned to watch them.
   uncommitted work alone (**ODW extension**).
 - Transcripts: every agent's CLI output is kept — `odw logs <run> --agent <id|label>
   [--follow]`, or live in the dashboard's Transcript sheet.
+- Compare two runs: `odw compare <runA> <runB>` shows what changed after you edited a
+  prompt, switched adapter or model, or upgraded a CLI — the setup differences
+  (workflow sha256, args, odw and CLI versions, behaviour settings, adapters and
+  models), wall time, tokens, cost and failures with B − A, and a row per agent
+  (matched by label, then by its resume call key, then by order in its phase) with
+  whether its reply is identical or differs; red when worse, green when better.
+  `--agent` shows one agent's whole reply diff, `--json` and `GET /api/compare` the
+  documented structure. Every run now records odw's version and its workflow's sha256
+  in `meta.json`, its behaviour settings on `run_started`, and each adapter CLI's
+  `--version` on its first dispatch (a `cli_version` event, never delaying the run;
+  `"recordVersions": false` turns it off) (**ODW extension**).
 
 ### Control what agents may do
 - Permission tiers `read` / `edit` / `full` (`--permissions`, per adapter, per call; a

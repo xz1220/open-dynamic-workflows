@@ -100,7 +100,8 @@
 ### Later — 0.8+「规模与生态」
 
 - 可选的容器运行器（默认断网）。（#6，L）
-- `odw eval`：用例 × 适配器 × 重复次数，输出通过率、成本和延迟；运行元数据记录 CLI 版本；提供 `odw compare runA runB`（`odw diff <run_id>` 已用于查看一次运行保留的改动）。（#15，L）
+- ✅ **`odw compare <runA> <runB> [--json] [--agent <label|id>]`**（ODW 扩展；#15 的前半）：每次运行记录它用了什么——`meta.json` 中的 odw 版本与工作流源码的 sha256，`run_started` 上会改变行为的设置与各适配器定义的指纹，`agent_started` 上的调用键与模型，以及各适配器首次派发时与 agent 并行、3 秒超时的 `<cli> --version`（`cli_version` 事件，不拖慢、不导致失败；node、解释器、脚本与相对路径不探测；`recordVersions: false` 关闭）；纯函数比较器按 label → resume 调用键 → phase 内顺序匹配 agent，给出配置差异、运行总计（耗时、token、花费、完成/失败，含 B − A）、每个 agent 的状态/适配器/模型/耗时/花费/尝试次数/保留 diff 统计与回复对比（文本为有上限的统一 diff，结构化回复为 JSON 路径 diff）；终端表格不超过 100 列，更差标红、更好标绿；`GET /api/compare?a=&b=` 只读返回同一结构（看板视图待接入）。
+- `odw eval`：用例 × 适配器 × 重复次数，输出通过率、成本和延迟——在 `odw compare` 记录的运行元数据之上构建（下一步）。（#15，L）
 - 可分享的脱敏运行包；看板远程只读访问（写操作必须带令牌鉴权）。（#11/#13，M）
 - 发布方言双兼容测试套件，作为社区工作流的兼容性标准。（#13）
 
@@ -119,7 +120,7 @@
 | ✅ 本轮 | 「待你处理」：Activity 首屏列出等待决定的检查点，以及过去一天失败或失去 worker 的运行（附 `odw resume` 命令）；官网新增「为长任务而生」一节 |
 | ✅ 本轮 | 执行记录侧栏（运行中实时跟随、追加不重绘）；Jobs 页「即将运行」（下一次触发、cron 的自然语言描述、上次运行）；检查点关卡节点与等待提醒；抽屉里的权限档位、回退链、未达成的预期与被拒的工具调用；DAG 节点上的回退链与被拒计数 |
 | ✅ 本轮 | 额度暂停卡片（重置时间、倒计时、立即继续）与运行卡片上的「暂停至」；花费小票：按阶段、按适配器与花费最多的 agent（`$` 键） |
-| ⏳ | 运行之间的对比（`odw compare`）；检查点审批时编辑 payload；MCP 状态与 codex 用量在抽屉中的呈现 |
+| ⏳ | 运行之间的对比（`odw compare`：`GET /api/compare` 与 `web/src/types.ts` 的 `RunComparison` 已就绪）；检查点审批时编辑 payload；MCP 状态与 codex 用量在抽屉中的呈现 |
 
 开发方式：`node web/demo-fixtures.mjs <runs> <proj> --live` 生成实时模拟数据，`node web/dev.mjs --api http://127.0.0.1:4317` 启动开发服务器（每次刷新都会重新构建）。
 

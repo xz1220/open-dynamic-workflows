@@ -173,6 +173,8 @@ odw logs $RUN --agent 3     # what one agent did: tool calls, results, errors (O
 odw result $RUN             # print the final value when done
 odw pause $RUN / resume $RUN / stop $RUN
 odw approve|reject $RUN     # answer a checkpoint() the run waits at — only on the user's say-so
+odw compare $OLD $RUN       # what changed between two runs: setup, time, cost, failures, replies (ODW extension)
+                            #   --agent <label|id>: one agent's whole reply diff; --json for scripts
 odw list                    # all runs
 ```
 

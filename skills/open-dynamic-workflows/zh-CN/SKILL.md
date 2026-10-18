@@ -150,6 +150,8 @@ odw logs $RUN --agent 3     # 某个 agent 做了什么：工具调用、结果�
 odw result $RUN             # 完成后打印最终值
 odw pause $RUN / resume $RUN / stop $RUN
 odw approve|reject $RUN     # 回答运行正在等待的 checkpoint()——只在用户明确要求时
+odw compare $OLD $RUN       # 两次运行之间变了什么:配置、耗时、花费、失败、回复(ODW 扩展)
+                            #   --agent <label|id>:某个 agent 的完整回复 diff;--json 供脚本使用
 odw list                    # 所有运行
 ```
 

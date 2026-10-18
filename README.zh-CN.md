@@ -320,6 +320,7 @@ odw logs $RUN --follow   # 流式输出原始进度事件
 odw logs $RUN --agent 3  # 某个 agent 做了什么:它的工具调用、结果和文字(见下文)
 odw result $RUN          # 最终值
 odw diff $RUN --stat     # 隔离 agent 改了什么;odw apply $RUN --agent N(或 --all)落地
+odw compare $OLD $RUN    # 两次运行之间变了什么:配置、耗时、花费、失败、回复(见下文)
 odw pause|resume|stop $RUN
 odw approve|reject $RUN  # 回答运行正在等待的 checkpoint()(--note TEXT、--checkpoint N)
 odw list
@@ -524,6 +525,36 @@ I'll run the tests first.
   `{ entries, next, more, truncated, replayed }`,每个条目为
   `{ i, kind: text|tool_call|tool_result|error|attempt|result|raw|truncated, text?, tool?, input?, output?, isError? }`,
   长字段截断到 4 KB(`clipped: true`),有密钥被拦下的条目带 `redacted: true`。
+
+### 对比两次运行(ODW 扩展)
+
+改了提示词、换了适配器或模型、升级了 CLI 之后重跑了工作流?`odw compare` 告诉你变了什么:
+
+```bash
+odw compare $OLD $NEW                  # 配置差异、运行总计(含 B − A)、每个 agent 一行
+odw compare $OLD $NEW --agent judge    # 某个 agent 在两次运行中的情况,以及完整的回复 diff(按 label 或 id)
+odw compare $OLD $NEW --json           # 同一份对比,供脚本使用——GET /api/compare?a=…&b=… 返回同样的结构
+```
+
+- **配置**:两次运行所用的、有差异的东西——工作流源码(启动时的 sha256)、脚本、args、odw
+  版本、`--budget`、各适配器 CLI 的版本、会改变行为的设置(超时、重试、权限档位、`fallback`、
+  `models` 等)、用到的适配器的定义,以及 agent 实际用到的适配器和模型。
+- **运行**:总耗时、输入/输出 token、花费、完成与失败的 agent 数——A、B 和 B − A。
+- **Agent**:先按 label 匹配(两次运行中各只出现一次的 label),再按 `odw resume` 重放所用的
+  调用键匹配(提示词和选项相同即同一调用),最后按所在 phase 内的顺序匹配;其余的显示为仅在 A
+  或仅在 B。每行给出两边的状态、适配器/模型、耗时、花费、尝试次数、保留 diff 的统计,以及回复是
+  相同还是不同(文本回复给出有上限的统一 diff,结构化回复给出有上限的 JSON 路径列表;`--agent`
+  显示完整内容)。
+- 在终端里,B 更差(耗时或花费更多、新出现失败)标红,更好标绿;`NO_COLOR` 和管道输出为纯文本。
+  表格不超过 100 列。
+- 已完成、失败和被停止的运行都可以对比;仍在进行的运行按当前状态对比,并附一条说明。
+
+这一切依赖每次运行记录下的信息:`meta.json` 中的 odw 版本和工作流的 sha256,`run_started`
+事件上会改变行为的设置,每个 `agent_started` 上的调用键和模型,以及——某个适配器在本次运行中
+第一次派发 agent 时——与 agent 并行执行、3 秒超时的 `<cli> --version`,记为 `cli_version`
+事件(`odw status` 和 `GET /api/runs/:id` 的 `cliVersions` 会显示)。它绝不拖慢或导致运行失败;
+不回应的 CLI 记为未知版本。命令为 node 或其他解释器、脚本或相对路径的适配器不做探测。
+`"recordVersions": false` 关闭探测。下一步的 `odw eval`(用例 × 适配器 × 重复次数)将基于此构建。
 
 ## 看板:观测、检查、对话
 

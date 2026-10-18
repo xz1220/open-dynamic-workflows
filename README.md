@@ -354,6 +354,7 @@ odw logs $RUN --follow   # stream raw progress events
 odw logs $RUN --agent 3  # what one agent did: its tool calls, results and text (below)
 odw result $RUN          # final value
 odw diff $RUN --stat     # what isolated agents changed; odw apply $RUN --agent N (or --all) lands it
+odw compare $OLD $RUN    # what changed between two runs: setup, time, cost, failures, replies (below)
 odw pause|resume|stop $RUN
 odw approve|reject $RUN  # answer a checkpoint() the run waits at (--note TEXT, --checkpoint N)
 odw list
@@ -578,6 +579,43 @@ I'll run the tests first.
   `{ i, kind: text|tool_call|tool_result|error|attempt|result|raw|truncated, text?, tool?, input?, output?, isError? }`,
   long fields clipped to 4 KB (`clipped: true`), and `redacted: true` on one a secret
   was kept out of.
+
+### Compare two runs (ODW extension)
+
+Re-ran a workflow after editing a prompt, switching adapter or model, or upgrading a
+CLI? `odw compare` says what changed:
+
+```bash
+odw compare $OLD $NEW                  # setup differences, run totals with B − A, a row per agent
+odw compare $OLD $NEW --agent judge    # one agent in both runs, and its whole reply diff (by label or id)
+odw compare $OLD $NEW --json           # the same comparison for scripts — GET /api/compare?a=…&b=… serves it
+```
+
+- **Setup**: what the runs ran with that differs — the workflow source (its sha256 as
+  launched), script, args, odw version, `--budget`, each adapter CLI's version, the
+  settings that change behaviour (timeouts, retries, tiers, `fallback`, `models`, …),
+  each used adapter's definition, and the adapters and models the agents used.
+- **Run**: wall time, tokens in and out, cost, agents done and failed — A, B and B − A.
+- **Agents**: each agent is matched across the runs by its label (one each run gives
+  once), then by the call key `odw resume` replays by (same prompt and options), then
+  by order within its phase; the rest show as only in A or only in B. Each row has
+  both states, adapter/model, time, spend, attempts, kept-diff stats, and whether its
+  reply is identical or differs (a bounded unified diff of a text reply, a bounded list
+  of JSON paths for a structured one; `--agent` shows it whole).
+- On a terminal, deltas are red when B is worse (more time or cost, newly failed) and
+  green when better; `NO_COLOR` and pipes get plain text. The table fits 100 columns.
+- Finished, failed and stopped runs compare alike; a run still going is compared as it
+  stands, with a note.
+
+What makes this possible is recorded with every run: odw's version and the workflow's
+sha256 in `meta.json`, the behaviour settings on its `run_started` event, each agent's
+call key and model on its `agent_started`, and — on an adapter's first agent of the run
+— `<cli> --version`, run beside the agent and killed after 3 seconds, as a
+`cli_version` event (`odw status` and `GET /api/runs/:id`'s `cliVersions` show it). It
+never delays or fails a run; a CLI that does not answer is recorded as unknown. An
+adapter whose command is node or another interpreter, a script or a relative path is
+not probed. `"recordVersions": false` turns the probes off. `odw eval` — cases ×
+adapters × repeats — builds on this next.
 
 ## Dashboard: observe, inspect, chat
 
