@@ -353,6 +353,320 @@ ul.mcp li {
   color: var(--amber-ink);
 }
 
+/* ---- evals: does the workflow still work ---- */
+.evals {
+  padding: 28px 32px 56px;
+}
+.evals .page-head h1 em {
+  color: var(--sig-ink);
+}
+.ev-cmd {
+  display: inline-block;
+  margin-top: 8px;
+  padding: 4px 10px;
+  border-radius: var(--r-xs);
+  background: var(--shade);
+  font-family: var(--f-mono);
+  font-size: 12px;
+}
+.ev-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  gap: 16px;
+  margin-top: 24px;
+}
+.evals .page-head .lede {
+  margin-top: 12px;
+}
+.ev-open {
+  color: inherit;
+  text-decoration: none;
+}
+.ev-open::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+}
+.ev-trend .tick {
+  position: relative;
+  z-index: 1;
+}
+.ev-card {
+  position: relative;
+  display: grid;
+  gap: 14px;
+  padding: 18px 20px 16px;
+  color: inherit;
+  text-decoration: none;
+  transition: transform var(--t-med) var(--ease-out), box-shadow var(--t-med), border-color var(--t-med);
+  animation: rc-print 420ms var(--ease-out) both;
+  animation-delay: calc(var(--i) * 60ms);
+}
+.ev-card:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-2);
+  border-color: var(--line-2);
+}
+.ev-top {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+.ev-meter {
+  position: relative;
+  display: grid;
+  width: 64px;
+  height: 64px;
+  flex: none;
+  place-items: center;
+}
+.ev-dial {
+  position: absolute;
+  inset: 0;
+  transform: rotate(-90deg);
+}
+.ev-dial circle {
+  fill: none;
+  stroke-width: 5;
+}
+.ev-dial .bg {
+  stroke: var(--shade);
+}
+.ev-dial .fg {
+  stroke: var(--c);
+  stroke-linecap: round;
+  stroke-dashoffset: var(--off);
+  animation: ev-dial 1.1s var(--ease-out) both;
+}
+@keyframes ev-dial {
+  from {
+    stroke-dashoffset: var(--full);
+  }
+}
+.ev-pct {
+  position: relative;
+  font-family: var(--f-display);
+  font-size: 19px;
+}
+.ev-id h3 {
+  margin: 0 0 2px;
+  font-family: var(--f-display);
+  font-size: 24px;
+  font-weight: 400;
+}
+.ev-id .mono {
+  font-size: 11.5px;
+}
+.ev-id p {
+  margin: 4px 0 0;
+  font-size: 12.5px;
+  color: var(--mute);
+}
+/* the reports before, as ticks whose height is their pass rate */
+.ev-trend {
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+  height: 34px;
+  padding-bottom: 2px;
+  border-bottom: 1px solid var(--line);
+}
+.ev-trend .tick {
+  flex: 0 0 8px;
+  height: calc(var(--h) * 100%);
+  border-radius: 2px 2px 0 0;
+  background: var(--c);
+  opacity: 0.55;
+  transform-origin: bottom;
+  animation: ev-rise 700ms var(--ease-out) both;
+  transition: opacity var(--t-fast);
+}
+.ev-trend .tick.on,
+.ev-trend .tick:hover {
+  opacity: 1;
+}
+@keyframes ev-rise {
+  from {
+    transform: scaleY(0);
+  }
+}
+.ev-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 14px;
+  font-size: 12px;
+  color: var(--ink-2);
+}
+/* the report: a tile per case x adapter, tinted by its pass rate */
+.ev-matrix {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.6fr) repeat(var(--cols), minmax(150px, 1fr));
+  gap: 10px;
+  align-items: stretch;
+}
+.ev-col {
+  align-self: end;
+  font-size: 11.5px;
+  color: var(--mute);
+}
+.ev-row {
+  align-self: center;
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 550;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ev-tile {
+  position: relative;
+  display: grid;
+  gap: 8px;
+  padding: 12px 12px 10px;
+  border: 1px solid color-mix(in oklab, var(--c) 45%, var(--line));
+  border-radius: var(--r-sm);
+  background: linear-gradient(160deg, color-mix(in oklab, var(--c) 16%, transparent), transparent 70%), var(--card);
+  animation: rc-print 420ms var(--ease-out) both;
+  animation-delay: calc(var(--i) * 40ms + 120ms);
+}
+.ev-tile.none {
+  border-style: dashed;
+  background: none;
+  animation: none;
+}
+.ev-tile.regressed {
+  box-shadow: 0 0 0 3px var(--alarm-soft);
+  border-color: var(--alarm-line);
+}
+.ev-tile-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.ev-rate {
+  font-family: var(--f-display);
+  font-size: 26px;
+  line-height: 1;
+}
+.ev-base {
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-family: var(--f-mono);
+  font-size: 10.5px;
+}
+.ev-base.regressed {
+  background: var(--alarm-soft);
+  color: var(--alarm-ink);
+}
+.ev-base.improved {
+  background: var(--sig-soft);
+  color: var(--sig-ink);
+}
+.ev-base.new {
+  background: var(--shade);
+  color: var(--mute);
+}
+.ev-pair {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  margin-left: auto;
+  place-items: center;
+  border-radius: 6px;
+  color: var(--mute);
+}
+.ev-pair:hover {
+  background: var(--shade);
+  color: var(--ink);
+}
+.ev-pair svg {
+  width: 14px;
+  height: 14px;
+}
+.ev-squares {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.ev-squares .sq {
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  transition: transform var(--t-fast) var(--ease-spring);
+}
+.ev-squares .sq.ok {
+  background: var(--sig);
+}
+.ev-squares .sq.bad {
+  background: var(--alarm);
+}
+.ev-squares .sq:hover {
+  transform: scale(1.35);
+}
+.ev-tile-foot {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-family: var(--f-mono);
+  font-size: 10.5px;
+  color: var(--mute);
+}
+.ev-fails {
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--card);
+  overflow: hidden;
+}
+.ev-fail {
+  display: grid;
+  grid-template-columns: 16px minmax(140px, 0.6fr) minmax(0, 1.6fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  color: inherit;
+  font-size: 12.5px;
+  text-decoration: none;
+}
+.ev-fail + .ev-fail {
+  border-top: 1px dashed var(--line);
+}
+.ev-fail:hover {
+  background: var(--shade);
+}
+.ev-fail .who {
+  font-weight: 550;
+}
+.ev-fail .why {
+  overflow: hidden;
+  color: var(--alarm-ink);
+  font-family: var(--f-mono);
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+@media (max-width: 760px) {
+  .evals {
+    padding: 20px 16px 40px;
+  }
+  .ev-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .ev-matrix {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .ev-col,
+  .ev-tile.none {
+    display: none;
+  }
+  .ev-fail {
+    grid-template-columns: 16px minmax(0, 1fr);
+  }
+  .ev-fail .why,
+  .ev-fail .mono {
+    grid-column: 2;
+  }
+}
+
 /* ---- the remote dashboard's token screen ---- */
 .token-screen {
   display: grid;

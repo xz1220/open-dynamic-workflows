@@ -25,6 +25,7 @@ function build(): string {
         [`${keys("g")} ${keys("a")}`, t("Activity")],
         [`${keys("g")} ${keys("j")}`, t("Jobs")],
         [`${keys("g")} ${keys("w")}`, t("Workspace")],
+        [`${keys("g")} ${keys("e")}`, t("Evals")],
         [`${keys("g")} ${keys("c")}`, t("Chat Host")],
         [`${keys("g")} ${keys("s")}`, t("Settings")],
         [keys("?"), t("Keyboard shortcuts")],

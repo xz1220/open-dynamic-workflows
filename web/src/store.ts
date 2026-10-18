@@ -18,6 +18,8 @@ import type {
   ChatSession,
   ChatSessionSummary,
   Connection,
+  EvalReport,
+  EvalReportSummary,
   RunComparison,
   RunDetail,
   RunSummary,
@@ -465,6 +467,37 @@ class Store {
   }
 
   /** Refresh the scheduled runs; repaints only when something changed. */
+  /** The kept eval reports (null until loaded), and the one on screen by "name/id". */
+  evals: EvalReportSummary[] | null = null;
+  evalReport: { key: string; value: EvalReport | null; error: string | null } | null = null;
+
+  async loadEvals(): Promise<void> {
+    let next: EvalReportSummary[];
+    try {
+      next = await api.evals();
+    } catch {
+      next = []; // an older server keeps no reports
+    }
+    if (JSON.stringify(next) === JSON.stringify(this.evals)) return;
+    this.evals = next;
+    this.emit();
+  }
+
+  /** Reports never change once written: load one once. */
+  async loadEvalReport(name: string, id: string): Promise<void> {
+    const key = `${name}/${id}`;
+    if (this.evalReport?.key === key && (this.evalReport.value || this.evalReport.error)) return;
+    this.evalReport = { key, value: null, error: null };
+    this.emit();
+    try {
+      const value = await api.evalReport(name, id);
+      if (this.evalReport?.key === key) this.evalReport = { key, value, error: null };
+    } catch (err) {
+      if (this.evalReport?.key === key) this.evalReport = { key, value: null, error: (err as Error).message };
+    }
+    this.emit();
+  }
+
   /** Load (or refresh) what changed between runs `a` and `b`. */
   async loadCompare(a: string, b: string): Promise<void> {
     const key = `${a}/${b}`;

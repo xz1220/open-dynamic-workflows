@@ -39,6 +39,7 @@ import { ACTIVE, TERMINAL, fmtDurSec, runDurationSec } from "./util";
 import { renderActivity } from "./views/activity";
 import { renderChat } from "./views/chat";
 import { compareHash, renderCompare } from "./views/compare";
+import { renderEvals } from "./views/evals";
 import { LOG_PAGE, changedAgents, cpEditState, renderJob, reviewTarget, type JobTab, type JobViewState } from "./views/job";
 import { HISTORY_PAGE, renderJobs, type JobsFilter, type JobsState } from "./views/jobs";
 import { renderSettings } from "./views/settings";
@@ -109,6 +110,11 @@ function parseHash(): Route {
       job.tab = "graph";
       return { view: "job", param: decodeURIComponent(rest.join("/")) || null };
     }
+    case "evals": {
+      // #/evals[/<name>/<reportId>]
+      const [name, id] = rest.map((x) => decodeURIComponent(x));
+      return { view: "evals", param: name && id ? `${name}/${id}` : null };
+    }
     case "compare": {
       // #/compare/<runA>/<runB>
       const [a, b] = rest.map((x) => decodeURIComponent(x));
@@ -146,6 +152,8 @@ function viewHtml(route: Route): string {
       return renderJob(job, now);
     case "compare":
       return renderCompare(route.param);
+    case "evals":
+      return renderEvals(route.param);
     case "settings":
       return renderSettings(store.settings);
   }
@@ -315,7 +323,7 @@ function updateChrome(): void {
   const label =
     route.view === "job" && store.run
       ? store.run.name
-      : { activity: tr("Activity"), jobs: tr("Jobs"), job: tr("Jobs"), compare: tr("Compare"), workspace: tr("Workspace"), chat: tr("Chat"), settings: tr("Settings") }[route.view];
+      : { activity: tr("Activity"), jobs: tr("Jobs"), job: tr("Jobs"), compare: tr("Compare"), evals: tr("Evals"), workspace: tr("Workspace"), chat: tr("Chat"), settings: tr("Settings") }[route.view];
   const title = `${active.length ? `(${active.length}) ` : ""}${label} · odw`;
   const sig = `${title}|${active.length > 0}|${resolvedTheme()}`;
   if (sig === lastChrome) return;
@@ -494,6 +502,15 @@ async function enterRoute(): Promise<void> {
   } else if (route.view === "settings") {
     render();
     await store.loadSettings();
+  } else if (route.view === "evals") {
+    render();
+    if (route.param) {
+      const [name, id] = route.param.split("/") as [string, string];
+      await store.loadEvalReport(name, id);
+    } else {
+      await store.loadEvals();
+      if (live()) every(10_000, token, () => store.loadEvals());
+    }
   } else if (route.view === "compare" && route.param) {
     const [a, b] = route.param.split("/") as [string, string];
     render();
@@ -992,7 +1009,7 @@ root.addEventListener("keydown", (ev) => {
 
 // --- keyboard shortcuts ---
 let gPending = 0;
-const G_TARGETS: Record<string, string> = { a: "#/activity", j: "#/jobs", w: "#/workspace", c: "#/chat", s: "#/settings" };
+const G_TARGETS: Record<string, string> = { a: "#/activity", j: "#/jobs", w: "#/workspace", e: "#/evals", c: "#/chat", s: "#/settings" };
 
 function typing(target: EventTarget | null): boolean {
   const el = target as HTMLElement | null;

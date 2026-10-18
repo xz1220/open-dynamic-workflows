@@ -11,6 +11,8 @@ import type {
   Capabilities,
   ChatSession,
   ChatSessionSummary,
+  EvalReport,
+  EvalReportSummary,
   RunComparison,
   RunDetail,
   RunSummary,
@@ -82,6 +84,9 @@ const enc = encodeURIComponent;
 export const api = {
   runs: () => getJSON<RunSummary[]>("/api/runs"),
   run: (id: string) => getJSON<RunDetail>(`/api/runs/${enc(id)}`),
+  /** The kept `odw eval` reports, newest first. */
+  evals: () => getJSON<EvalReportSummary[]>("/api/evals"),
+  evalReport: (name: string, id: string) => getJSON<EvalReport>(`/api/evals/${enc(name)}/${enc(id)}`),
   /** What changed between two of ODW's runs (B against A). */
   compare: (a: string, b: string) => getJSON<RunComparison>(`/api/compare?a=${enc(a)}&b=${enc(b)}`),
   events: (id: string, since = 0) =>

@@ -918,3 +918,45 @@ test("an agent whose MCP servers did not start lists them in its drawer", () => 
   assert.match(html, /MCP unavailable/);
   store.focusRun(null);
 });
+
+test("evals: a card per eval with its pass-rate dial and trend, and a report as a case × adapter matrix", async () => {
+  const { renderEvals, rateColor } = await import("../web/src/views/evals.ts");
+  const totals = (passed: number, runs: number) => ({ runs, passed, failed: runs - passed, passRate: passed / runs, costUsd: 0.5, inputTokens: 1000, outputTokens: 100 });
+  const summary = (id: string, passed: number) => ({ name: "triage", id, description: "labels", workflow: "triage", evalHash: "h", startedAt: "2026-10-18T05:00:00Z", finishedAt: "2026-10-18T05:01:00Z", totals: totals(passed, 4), adapters: ["claude"], cases: 2, regressed: null });
+  store.evals = [summary("20261018-050100-bbbbbb", 3), summary("20261018-050000-aaaaaa", 2)];
+  const list = renderEvals(null);
+  assert.equal(count(list, /class="card ev-card"/g), 1, "one card per eval name");
+  assert.equal(count(list, /class="tick/g), 2);
+  assert.match(list, /<a class="tick on" href="#\/evals\/triage\/20261018-050100-bbbbbb"/, "the latest report is lit");
+  assert.doesNotMatch(list, /<a class="card/, "no link nests a link");
+  assert.match(list, /75%/);
+
+  const run = (c: string, repeat: number, passed: boolean) => ({ runId: `r-${c}-${repeat}`, case: c, adapter: "claude", repeat, state: "done", passed, timedOut: false, wallMs: 1000, inputTokens: 1, outputTokens: 1, costUsd: 0.1, estimated: false, cliVersions: {}, error: null, failures: passed ? [] : [{ check: "label equals \"bug\"", message: "label is \"question\"" }] });
+  const cell = (c: string, passed: number) => ({ case: c, adapter: "claude", runs: 2, passed, passRate: passed / 2, medianMs: 1000, costUsd: 0.2, meanCostUsd: 0.1, meanTokens: 2, runIds: [`r-${c}-1`, `r-${c}-2`] });
+  store.evalReport = {
+    key: "triage/X",
+    error: null,
+    value: {
+      version: 1, name: "triage", id: "X", file: "/p/.odw/evals/triage.json", description: null, evalHash: "h",
+      definition: { workflow: "triage", cases: [], adapters: ["claude"], repeats: 2, concurrency: 1, budget: null, timeout: null },
+      workflow: { ref: "triage", script: "/p/triage.js", sourceHash: null }, odwVersion: "0.5.0", cliVersions: { claude: ["2.1.302"] },
+      startedAt: "", finishedAt: "", wallMs: 4000, totals: totals(3, 4),
+      cells: [cell("crash", 2), cell("how-to", 1)],
+      runs: [run("crash", 1, true), run("crash", 2, true), run("how-to", 1, true), run("how-to", 2, false)],
+      baseline: { file: "b.json", name: "triage", id: "W", evalHash: "h", sameDefinition: true, regressed: [{ case: "how-to", adapter: "claude" }],
+        cells: [{ case: "how-to", adapter: "claude", status: "regressed", passRate: { a: 1, b: 0.5, delta: -0.5 }, meanCostUsd: { a: 0.1, b: 0.1, delta: 0 }, medianMs: { a: 1, b: 1, delta: 0 } }] },
+    },
+  } as never;
+  const report = renderEvals("triage/X");
+  assert.equal(count(report, /class="ev-tile[ "]/g), 2);
+  assert.match(report, /class="ev-tile regressed"/);
+  assert.match(report, /▼ 50%/);
+  assert.equal(count(report, /class="sq ok"/g), 3);
+  assert.match(report, /href="#\/job\/r-how-to-2"/);
+  assert.match(report, /label equals &quot;bug&quot;: label is &quot;question&quot;|label equals "bug": label is "question"/);
+  assert.match(report, /claude 2\.1\.302/);
+  assert.match(rateColor(1), /var\(--sig\) 100%/);
+  assert.match(rateColor(0), /var\(--amber\) 0%, var\(--alarm\)/);
+  store.evals = null;
+  store.evalReport = null;
+});
