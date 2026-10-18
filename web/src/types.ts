@@ -945,6 +945,8 @@ export interface WorkflowMemory {
   /** The memory file's path on the server. */
   file: string;
   entries: MemoryEntry[];
+  /** Why the file was not read (over 4 MiB, not a regular file); `entries` is then []. */
+  error?: string;
 }
 
 /** GET /api/runs/:id/agents/:agentId/transcript?since=<i> — 404 when the agent has no transcript. */

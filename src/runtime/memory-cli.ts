@@ -77,6 +77,16 @@ export function cmdMemory(rest: string[], cwd: string = process.cwd()): number {
     }
   };
 
+  // A file too big (or not a regular file) is said, not read.
+  const readable = (file: string): MemoryEntry[] | null => {
+    try {
+      return readMemory(file);
+    } catch (err) {
+      process.stderr.write(`odw memory ${sub}: ${sanitizeText((err as Error).message, 400)}\n`);
+      return null;
+    }
+  };
+
   if (sub === "list") {
     if (positionals.length > 1 || values.id !== undefined || values.paths || values.kind) return usage();
     if (positionals[0] !== undefined && !named(positionals[0])) return 2;
@@ -88,9 +98,12 @@ export function cmdMemory(rest: string[], cwd: string = process.cwd()): number {
       process.stdout.write(JSON.stringify(listed, null, 2) + "\n");
       return 0;
     }
+    // A file that was not read (too big, not a regular file) is said, and fails the list.
+    const unread = listed.filter((wf) => wf.error);
+    for (const wf of unread) process.stderr.write(`odw memory list: ${sanitizeText(wf.error, 400)}\n`);
     if (listed.every((wf) => wf.entries.length === 0)) {
-      process.stderr.write(values.stale ? "no stale memory entries\n" : `no workflow memory in ${dir}\n`);
-      return 0;
+      if (unread.length === 0) process.stderr.write(values.stale ? "no stale memory entries\n" : `no workflow memory in ${dir}\n`);
+      return unread.length ? 1 : 0;
     }
     for (const wf of listed) {
       if (wf.entries.length === 0) continue;
@@ -98,7 +111,7 @@ export function cmdMemory(rest: string[], cwd: string = process.cwd()): number {
       process.stdout.write(`${sanitizeText(wf.workflow, 200)} — ${wf.entries.length} entr${wf.entries.length === 1 ? "y" : "ies"}${stale ? `, ${stale} stale` : ""} (${wf.file})\n`);
       for (const entry of wf.entries) process.stdout.write(entryLines(entry) + "\n");
     }
-    return 0;
+    return unread.length ? 1 : 0;
   }
 
   if (sub === "add") {
@@ -125,7 +138,14 @@ export function cmdMemory(rest: string[], cwd: string = process.cwd()): number {
       process.stderr.write("odw memory add: --paths needs a git repository with a commit: an entry is stale once those files change since it\n");
       return 1;
     }
-    const { added, pruned } = addMemory(file, [{ kind, text, paths }], { run: null, commit, redactor: redactorFor(config) });
+    let done: ReturnType<typeof addMemory>;
+    try {
+      done = addMemory(file, [{ kind, text, paths }], { run: null, commit, redactor: redactorFor(config) });
+    } catch (err) {
+      process.stderr.write(`odw memory add: ${sanitizeText((err as Error).message, 400)}\n`);
+      return 1;
+    }
+    const { added, pruned } = done;
     const entry = added[0];
     if (!entry) return usage();
     process.stdout.write(`kept #${entry.id} in ${file}${pruned ? ` (pruned the ${pruned} oldest)` : ""}\n`);
@@ -141,7 +161,8 @@ export function cmdMemory(rest: string[], cwd: string = process.cwd()): number {
       if (workflow === undefined || !/^\d+$/.test(values.id) || !Number.isSafeInteger(id)) return usage();
       const file = named(workflow);
       if (!file) return 2;
-      const entries = readMemory(file);
+      const entries = readable(file);
+      if (!entries) return 1;
       const left = entries.filter((entry) => entry.id !== id);
       if (left.length === entries.length) {
         process.stderr.write(`odw memory prune: ${sanitizeText(workflow, 200)} has no entry #${id}\n`);
@@ -156,7 +177,8 @@ export function cmdMemory(rest: string[], cwd: string = process.cwd()): number {
     for (const workflow of workflows) {
       const file = named(workflow);
       if (!file) return 2;
-      const entries = readMemory(file);
+      const entries = readable(file);
+      if (!entries) return 1;
       const stale = staleEntries(root, entries);
       if (stale.size === 0) continue;
       writeMemory(file, entries.filter((entry) => !stale.has(entry.id)));
@@ -170,11 +192,16 @@ export function cmdMemory(rest: string[], cwd: string = process.cwd()): number {
   return usage();
 }
 
-/** An entry for the terminal: its id, the entry, then where it came from — nothing it says can move the cursor. */
+/** An entry for the terminal: its id, the entry, then where it came from — nothing it says (text, paths, time, commit) can move the cursor. */
 function entryLines(entry: MemoryEntry & { stale: boolean }): string {
-  const text = formatEntry({ ...entry, text: entry.text.split("\n").map((line) => sanitizeText(line, 4000)).join("\n") });
+  const text = formatEntry({
+    ...entry,
+    text: entry.text.split("\n").map((line) => sanitizeText(line, 4000)).join("\n"),
+    paths: entry.paths.map((path) => sanitizeText(path, 200)),
+    at: sanitizeText(entry.at, 40),
+  });
   const from = [
-    entry.commit ? `at ${entry.commit.slice(0, 12)}` : "outside git",
+    entry.commit ? `at ${sanitizeText(entry.commit, 64).slice(0, 12)}` : "outside git",
     entry.run ? `run ${sanitizeText(entry.run, 80)}` : "added by hand",
     ...(entry.agent ? [`agent ${sanitizeText(entry.agent, 80)}`] : []),
   ].join(", ");

@@ -19,10 +19,12 @@
  *     own for it: its diff stat and the interface lines it touched — lines of
  *     its diff hunks that look like declarations (`export`, `def`, `func`,
  *     `pub fn`, `class`, `interface`), a cheap language-agnostic heuristic;
- *   - can keep a note for later runs of the workflow: `"$ODW_NOTES" --keep
- *     "text"` (or `odw note --keep [--paths …]`) posts it marked `keep`, and
- *     the worker hands it to the run's workflow memory (./memory), written
- *     when the run ends.
+ *   - with memory on too, can keep a note for later runs of the workflow:
+ *     `"$ODW_NOTES" --keep "text"` (or `odw note --keep [--paths …]`) posts
+ *     it marked `keep`, and the worker hands it to the run's workflow memory
+ *     (./memory), written when the run ends. An agent with memory off is not
+ *     told of `--keep`; a note it posts so anyway goes on the board unkept, and
+ *     the run says so.
  *
  * The board lives in the run directory:
  *
@@ -146,7 +148,7 @@ export class NotesBoard {
   private readonly notes: Note[] = [];
   private bytes = 0;
   private full = false;
-  private readonly open = new Map<number, { inbox: string; agentDir: string; label: string }>();
+  private readonly open = new Map<number, { inbox: string; agentDir: string; label: string; keep: boolean }>();
   private timer: NodeJS.Timeout | undefined;
 
   constructor(private readonly opts: NotesBoardOptions) {}
@@ -233,8 +235,11 @@ export class NotesBoard {
   /**
    * Set up an agent with notes on: its shim and inbox, and its prompt section
    * (the notes so far). Its inbox is looked at until {@link AgentNotes.close}.
+   * `keep`: it has workflow memory on, so the notes it asks to keep are kept
+   * (see ./memory); without, it is not told of `--keep`.
    */
-  openAgent(agentId: number, label: string): AgentNotes {
+  openAgent(agentId: number, label: string, opts: { keep?: boolean } = {}): AgentNotes {
+    const keep = opts.keep === true;
     const agentDir = join(this.dir, String(agentId));
     const inbox = join(agentDir, "inbox");
     const shim = join(agentDir, "note");
@@ -244,7 +249,7 @@ export class NotesBoard {
     if (!existsSync(boardFile)) this.render();
     writeFileSync(shim, shimScript(boardFile, inbox), { mode: 0o755 });
     chmodSync(shim, 0o755);
-    this.open.set(agentId, { inbox, agentDir, label });
+    this.open.set(agentId, { inbox, agentDir, label, keep });
     if (!this.timer) {
       this.timer = setInterval(() => this.sweepAll(), this.opts.pollMs ?? NOTE_POLL_MS);
       this.timer.unref();
@@ -258,7 +263,7 @@ export class NotesBoard {
         { source: shim, target: shim, readonly: true },
         { source: this.boardDir, target: this.boardDir, readonly: true },
       ],
-      prompt: notesPrompt(this.notes),
+      prompt: notesPrompt(this.notes, keep),
       close: () => {
         if (closed) return;
         closed = true;
@@ -326,7 +331,19 @@ export class NotesBoard {
       }
       if (file.name.startsWith(KEEP_PREFIX)) {
         const kept = keptNote(text);
-        this.post({ agentId, label: open.label }, kept.text, "note", { paths: kept.paths });
+        if (open.keep) {
+          this.post({ agentId, label: open.label }, kept.text, "note", { paths: kept.paths });
+          continue;
+        }
+        // Memory is off for it: on the board, but not kept for later runs.
+        const posted = this.post({ agentId, label: open.label }, kept.text);
+        if (posted) {
+          this.opts.emit(
+            event(LOG, {
+              message: `note #${posted.noteId} from ${open.label}:${agentId} asked to be kept, but memory is off for that agent — posted, not kept`,
+            }),
+          );
+        }
       } else {
         this.post({ agentId, label: open.label }, text);
       }
@@ -387,14 +404,17 @@ export function formatNote(note: Note): string {
 /**
  * The prompt section of an agent with notes on: how to post a note and read
  * the board, then the latest notes so far that fit {@link PROMPT_NOTES_CHARS}.
+ * `keep`: it has workflow memory on, so it is told how to keep a note for later runs.
  */
-export function notesPrompt(notes: readonly Note[]): string {
+export function notesPrompt(notes: readonly Note[], keep = false): string {
   const how =
     "This run has a notes board (an ODW extension): other agents of this run may work alongside you. " +
     "To tell the other agents something they must know (an interface you changed, a decision), run " +
     '`"$ODW_NOTES" "<your note>"` (the same as `odw note "<your note>"`). Keep each note short and concrete. ' +
-    'To read the notes posted since you started, run `"$ODW_NOTES"` with no arguments. ' +
-    'A note that later runs of this workflow should know too (a lasting lesson, not this run\'s chatter) can be kept: `"$ODW_NOTES" --keep "<your note>"`.';
+    'To read the notes posted since you started, run `"$ODW_NOTES"` with no arguments.' +
+    (keep
+      ? ' A note that later runs of this workflow should know too (a lasting lesson, not this run\'s chatter) can be kept: `"$ODW_NOTES" --keep "<your note>"`.'
+      : "");
   if (notes.length === 0) return `${how}\n\nNo notes from the other agents in this run yet.`;
   const shown: string[] = [];
   let used = 0;

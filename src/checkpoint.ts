@@ -548,7 +548,10 @@ function remember(ctx: RunContext, cp: Plan, result: CheckpointResult): void {
   let text: string | null = null;
   if (!result.approved && note) text = `"${cp.title}" was rejected: ${note}`;
   else if (result.approved && result.edited) {
-    text = `"${cp.title}" was approved with edits: ${editSummary(cp.json?.value ?? null, result.payload)}` + (note ? ` — note: ${note}` : "");
+    // Its values redacted before the summary cuts them.
+    const redactor = ctx.redactor;
+    const redact = redactor ? (value: string): string => redactor.text(value) : undefined;
+    text = `"${cp.title}" was approved with edits: ${editSummary(cp.json?.value ?? null, result.payload, redact)}` + (note ? ` — note: ${note}` : "");
   }
   if (text) ctx.memory.record({ kind: "correction", text, paths: cp.memory.paths });
 }

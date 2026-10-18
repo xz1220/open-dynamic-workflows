@@ -289,6 +289,8 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
     const memory = new RunMemory({
       source: typeof meta.source === "string" ? meta.source : process.cwd(),
       dir: config.settings.memoryDir ?? null,
+      // A memoryDir the repository's own config sets is never the user's (see ../untrusted).
+      dirFromRepository: runTrust.repositoryConfig !== null,
       runId,
       workflow: () => historyName,
       trust: config.settings.trust,

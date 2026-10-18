@@ -632,11 +632,12 @@ export function createPrimitives(
   };
 
   /**
-   * Set an agent up on the run's notes board (ODW extension; see ./notes) —
+   * Set an agent up on the run's notes board (ODW extension; see ./notes),
+   * told of `--keep` when its workflow memory is on —
    * none in a run that is not persisted, which says so once.
    */
-  const openNotes = (agentId: number, label: string): AgentNotes | undefined => {
-    if (ctx.notes) return ctx.notes.openAgent(agentId, label);
+  const openNotes = (agentId: number, label: string, keep: boolean): AgentNotes | undefined => {
+    if (ctx.notes) return ctx.notes.openAgent(agentId, label, { keep });
     if (!notesUnavailable.has(ctx.seq)) {
       notesUnavailable.add(ctx.seq);
       ctx.emit(event(LOG, { message: "notes: this run is not persisted, so it has no notes board — its agents run without one" }));
@@ -903,7 +904,7 @@ export function createPrimitives(
           scope ? reportOutOfScope(judged?.outOfScope, scope, { agentId, label: display, phase: activePhase }, notesOn, note) : {};
         // The run's notes board (ODW extension): the notes so far go in its
         // prompt as it starts; what it posts is taken until it ends.
-        const notes = notesOn ? openNotes(agentId, display) : undefined;
+        const notes = notesOn ? openNotes(agentId, display, memoryOn) : undefined;
         // What earlier runs of the workflow learned goes ahead of its task (ODW extension; see ./memory).
         const recalled = memoryOn ? recallMemory() : "";
         // The misses its `expect` retries were told of: met by the attempt that stood, they are a lesson.
