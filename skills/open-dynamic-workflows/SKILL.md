@@ -86,7 +86,7 @@ outright, never silently passed through as a string).
 | `exec(command, opts?)` | Run a command (tests, a build, a linter) without a model; resolves to `{ stdout, stderr, exitCode, signal, timedOut, truncated, durationMs }`. A string runs through the shell, an array as argv. **ODW extension** — not part of Claude Code's dialect. |
 | `checkpoint(title, opts?)` | Pause the run until a person approves (perhaps with an edited payload) or rejects; resolves to `{ approved, note, by, payload, edited }`. **ODW extension** — not part of Claude Code's dialect. |
 
-`opts` for `agent`: `{ adapter?, schema?, label?, phase?, model?, agentType?, isolation?, keep?, permissions?, expect?, expectRetries?, allowEmpty?, notes? }`.
+`opts` for `agent`: `{ adapter?, schema?, label?, phase?, model?, agentType?, isolation?, keep?, permissions?, expect?, expectRetries?, allowEmpty?, notes?, handoff? }`.
 `adapter` picks the CLI — or, as a list (`['codex', 'claude']`, **ODW
 extension**), a fallback chain; `model: '@fast'` picks a tier's model for
 whichever CLI runs it (**ODW extension**); `schema` is a raw JSON Schema object (an option, not
@@ -372,6 +372,11 @@ when one CLI runs out of quota.
   After three quota failures in a row on one CLI, the run's later agents skip it.
   `odw agents --json` and the `agent_finished` event name the CLI that produced
   each value (`adapter`) and the ones it left (`fellBackFrom`).
+- **Handoff** (**ODW extension**). By default the next CLI starts the work over.
+  With `handoff: true` on the call (or the user's `"fallback": { "handoff": true }`)
+  it carries on instead: in the same worktree, its prompt starting with a brief of
+  what the last one did (`agents/<id>.handoff.md`). Suggest it for long, isolated
+  agents whose partial work is worth keeping.
 - Only name adapters the user has installed (`odw doctor` lists them), and keep
   the user's choice of default CLI: suggest a chain when long runs keep stopping
   on quota, don't add one silently.

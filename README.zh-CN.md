@@ -1826,6 +1826,30 @@ search:3 → claude after codex quota
   agent 都会跳过它:各自从回退链上的下一个适配器开始,没有回退链的则立即失败。只记一条
   警告,`odw status` 也会列出它。
 
+**交接工作,而不是从头再来。** 默认情况下回退会让 agent 的工作从头开始:隔离 agent 做了一半
+的 worktree 被丢弃,下一个 CLI 再花额度把上一个做过的重做一遍。配置
+`"fallback": { "handoff": true }`(`handoff` 在这里是保留键,不是适配器)或
+`agent(prompt, { handoff: true })`(两个方向都覆盖设置)后,下一个适配器会接着做:
+
+- 隔离 agent 的 worktree 保留下来:下一个适配器在其中运行,做了一半的改动原样在场。原地
+  agent 的改动本来就在源码树里。
+- 它的提示词在任务之前加一段以 *"You are continuing work another agent started…"* 开头的
+  交接简报:上一个适配器停下的原因、改过的文件(worktree 的 diff 统计;原地 agent 取其编辑
+  类工具调用涉及的文件)、它最后写下的计划或待办(Claude Code 的 `TodoWrite`、Codex 的计划)、
+  运行过的命令及其结果、最后几条消息(文本 CLI 取输出末尾)。至多 6 KB,与 ODW 保存的其他
+  内容一样脱敏。推理过程无论如何都会丢失——简报是其中看得见的部分,精简到下一个 agent 需要的
+  程度。
+- 简报保存为 `agents/<id>.handoff.md`;`handoff` 事件 `{ from, to, reason, bytes }` 记录这次
+  交接,transcript 在下一个适配器的 `attempt` 行之前有一行 `{"kind":"handoff",…}`
+  (`odw logs --agent` 会显示;看板侧栏把简报折叠在其中)。
+- `expect` 与保留的 diff 判定最终状态:共享 worktree 相对其基线的 diff,两个适配器的工作都在
+  其中。`expect` 重试仍在新的 worktree 中从头开始,等待额度重置(`quotaWait`)之后的调用也
+  一样。交接属于同一次调用:`odw resume` 照旧重放该调用。
+
+```jsonc
+{ "fallback": { "codex": ["claude"], "handoff": true } }
+```
+
 ```jsonc
 {
   "fallback": { "codex": ["claude"], "claude": ["codex"] },

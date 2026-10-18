@@ -28,6 +28,16 @@ changed, and run on a schedule — and a dashboard redesigned to watch them.
   instead of failing its agents. It shows `paused until 19:10 (codex quota)` in
   `odw status`, `odw list`, the live view and the API (`pausedFor`); `odw resume` goes
   on at once. A quota that names no reset, or one past `max`, still fails, saying why.
+- Hand the work over on a fallback (`"fallback": { "handoff": true }`, or `agent(…, {
+  handoff: true })`; off by default; **ODW extension**): when an agent's CLI runs out
+  of quota or its login is refused mid-task, the next adapter of its chain carries on
+  instead of starting over — in the same worktree, partial edits in place, its prompt
+  starting with a brief (at most 6 KB) of why the last one stopped, the files it changed
+  (diff stat), its last plan or to-do list, the commands it ran and how they ended, and
+  its last messages. The brief is kept as `agents/<id>.handoff.md`, told by a `handoff`
+  event `{ from, to, reason, bytes }`, and marked in the transcript (`odw logs --agent`,
+  the dashboard drawer, the brief folded in). `expect` and the kept diff judge the final
+  state, against the worktree's base.
 - Evidence of success: `agent(…, { expect })` checks an agent's work instead of taking
   its word — `command` exits 0 in its workspace, `changes`, `files` (globs), `match` —
   and hands misses back (`expectRetries`, default 1) before failing with

@@ -99,6 +99,11 @@ other primitive organizes calls to it.
   and an isolated agent's kept change is broadcast as it finishes); `false`
   opts it out of its `parallel()`'s or the `notes` setting. See
   [notes](#notes-odw-extension). Claude Code ignores it.
+- **opts.handoff** (**ODW extension**) — `true`: when a fallback moves the
+  call to the next adapter, it hands the work over instead of starting it
+  over; `false` starts over whatever the `fallback.handoff` setting says. See
+  [routing](#routing-phase-defaults-model-tiers-fallback-chains-odw-extension).
+  Claude Code ignores it.
 
 Returns the reply text, or the validated JSON value when `schema` is set. CLI
 errors, exhausted schema retries, work that missed its `expect` checks and an
@@ -215,6 +220,20 @@ take it. Claude Code ignores all of it.
   with a log line. `agent_finished` and the saved result name the adapter that
   produced the value (`adapter`) and the ones left (`fellBackFrom`);
   `agent_failed` names them too when the call fell back.
+- **Handoff.** With `"fallback": { "handoff": true }` or `handoff: true` on
+  the call (off by default), a fallback hands the work over instead of
+  starting it over: an isolated call's worktree is kept and the next adapter
+  runs in it, partial edits in place (an in-place call's are in the source
+  tree already), and its prompt starts, ahead of the task, with a brief headed
+  "You are continuing work another agent started…" — why the last adapter
+  stopped, the files it changed (diff stat; in place, its edit tool calls),
+  its last plan or to-do list, the commands it ran and how they ended, its
+  last messages; at most 6 KB, redacted. The brief is kept as
+  `agents/<id>.handoff.md`, told by a `handoff` event `{ from, to, reason,
+  bytes }` and a `{"kind":"handoff"}` transcript line. `expect` and the kept
+  diff judge the final state (the shared worktree against its base); an
+  `expect` retry, and a call after a `quotaWait`, still start over. `handoff`
+  is not part of the resume key.
 - **Quota breaker.** After `quotaBreaker` (default 3) quota failures in a row
   on one adapter, the run's later calls skip it: each starts on the next
   adapter of its chain, or fails at once (reason `quota`) without one. One

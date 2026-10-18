@@ -65,6 +65,9 @@ agent(prompt, opts?) -> Promise<unknown>
 - **opts.notes**（**ODW 扩展**）—— `true`：该 agent 使用本次运行的笔记板（提示词里有已有的笔记，
   `ODW_NOTES` 用来发布和读取笔记，隔离 agent 完成时广播其保留改动）；`false` 让它退出所在
   `parallel()` 或 `notes` 设置的笔记板。见 [notes](#notesodw-扩展)。Claude Code 会忽略它。
+- **opts.handoff**（**ODW 扩展**）—— `true`：回退把调用移到下一个适配器时交接工作，而不是从头
+  再来；`false` 无论 `fallback.handoff` 设置如何都从头再来。见[路由](#路由阶段默认值模型分层回退链odw-扩展)。
+  Claude Code 会忽略它。
 
 返回回复文本，设了 `schema` 则返回校验过的 JSON 值。CLI 出错、schema 重试耗尽、工作没达到
 `expect`、空回复都会抛错；这些可恢复失败在 `parallel`/`pipeline` 内变成 `null`。停止请求、
@@ -162,6 +165,15 @@ log(message)           // emit a one-line progress event
   继续；失败的那些运行花掉的用量照样计入。回退时沿用调用自己的权限档位——不能恰好运行该档位
   的适配器会被跳过并记一行日志。`agent_finished` 和保存的结果会写明产出结果的适配器
   （`adapter`）和离开过的那些（`fellBackFrom`）；发生过回退的 `agent_failed` 也会写明。
+- **交接。** 配置 `"fallback": { "handoff": true }` 或在调用上写 `handoff: true`（默认关闭）时，
+  回退交接工作而不是从头再来：隔离调用的 worktree 保留下来，下一个适配器在其中运行，做了一半的
+  改动原样在场（原地调用的改动本来就在源码树里）；它的提示词在任务之前加一段以
+  "You are continuing work another agent started…" 开头的简报——上一个适配器停下的原因、改过的
+  文件（diff 统计；原地调用取其编辑类工具调用）、最后的计划或待办、运行过的命令及结果、最后几条
+  消息；至多 6 KB，已脱敏。简报保存为 `agents/<id>.handoff.md`，并记 `handoff` 事件
+  `{ from, to, reason, bytes }` 和一行 `{"kind":"handoff"}` transcript。`expect` 与保留的 diff
+  判定最终状态（共享 worktree 相对其基线）；`expect` 重试和 `quotaWait` 之后的调用仍从头开始。
+  `handoff` 不在 resume key 中。
 - **额度熔断。** 同一个适配器上连续 `quotaBreaker`（默认 3）次额度失败后，本次运行之后的
   调用都会跳过它：各自从回退链上的下一个适配器开始，没有回退链的则立即失败（原因为 `quota`）。
   只记一条警告。

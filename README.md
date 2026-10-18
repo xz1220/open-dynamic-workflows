@@ -2085,6 +2085,34 @@ search:3 → claude after codex quota
   adapter, the run's later agents skip it: each starts on the next adapter of its
   chain, or fails at once without one. One warning says so, and `odw status` names it.
 
+**Hand the work over instead of starting over.** By default a fallback starts the
+agent's work over: an isolated agent's partial worktree is thrown away, and the next
+CLI spends its quota redoing what the last one did. With `"fallback": { "handoff": true }`
+(`handoff` is a reserved key there, not an adapter) or `agent(prompt, { handoff: true })`
+— which overrides the setting either way — the next adapter carries the work on:
+
+- An isolated agent's worktree is kept: the next adapter runs in it, the partial edits
+  in place. An in-place agent's edits are in the source tree already.
+- Its prompt starts, ahead of the task, with a brief headed *"You are continuing work
+  another agent started…"*: why the last adapter stopped, the files it changed (the
+  worktree's diff stat; for an in-place agent, the files its edit tool calls named), the
+  last plan or to-do list it wrote (Claude Code's `TodoWrite`, Codex's plan), the
+  commands it ran and how they ended, and its last few messages (a text CLI: the end of
+  its output). At most 6 KB, redacted like everything ODW keeps. The reasoning is lost
+  either way — the brief is the visible part of it, cut down to what the next agent needs.
+- The brief is kept as `agents/<id>.handoff.md`; a `handoff` event `{ from, to, reason,
+  bytes }` says so, and the transcript has a `{"kind":"handoff",…}` line before the next
+  adapter's `attempt` line (`odw logs --agent` shows it; the dashboard drawer folds the
+  brief in).
+- `expect` and the kept diff judge the final state: the shared worktree's diff against
+  its base, both adapters' work in it. An `expect` retry still starts over in a fresh
+  worktree, and so does a call that waited out a quota (`quotaWait`). A handoff is part
+  of one call: `odw resume` replays the call as before.
+
+```jsonc
+{ "fallback": { "codex": ["claude"], "handoff": true } }
+```
+
 ```jsonc
 {
   "fallback": { "codex": ["claude"], "claude": ["codex"] },

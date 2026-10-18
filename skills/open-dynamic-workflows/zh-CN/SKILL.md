@@ -75,7 +75,7 @@ return await agent(
 | `exec(command, opts?)` | 不启动模型直接运行一条命令（测试、构建、linter）；返回 `{ stdout, stderr, exitCode, signal, timedOut, truncated, durationMs }`。字符串经 shell 执行，数组按 argv 执行。**ODW 扩展**——不属于 Claude Code 方言。 |
 | `checkpoint(title, opts?)` | 暂停运行，直到有人批准（可以附上修改后的 payload）或拒绝；返回 `{ approved, note, by, payload, edited }`。**ODW 扩展**——不属于 Claude Code 方言。 |
 
-`agent` 的 `opts`：`{ adapter?, schema?, label?, phase?, model?, agentType?, isolation?, keep?, permissions?, expect?, expectRetries?, allowEmpty?, notes? }`。
+`agent` 的 `opts`：`{ adapter?, schema?, label?, phase?, model?, agentType?, isolation?, keep?, permissions?, expect?, expectRetries?, allowEmpty?, notes?, handoff? }`。
 `adapter` 选择用哪个 CLI——写成列表（`['codex', 'claude']`，**ODW 扩展**）就是回退链；
 `model: '@fast'` 为实际运行它的 CLI 选出该层级的模型（**ODW 扩展**）；`schema` 是一个原始 JSON Schema 对象（选项，不是全局）；
 `agentType` 是注入进 prompt 的**人设**，*不是* adapter 名。`keep: true`（**ODW 扩展**）
@@ -306,6 +306,9 @@ CLI 额度用尽时让长时间运行继续下去。
   （`search:3 → claude after codex quota`）。限流仍在原 CLI 上重试。同一个 CLI 连续三次
   额度失败后，本次运行之后的 agent 会跳过它。`odw agents --json` 和 `agent_finished` 事件
   会写明产出每个结果的 CLI（`adapter`）以及它离开过的那些（`fellBackFrom`）。
+- **交接**（**ODW 扩展**）。默认情况下下一个 CLI 从头再来。调用上写 `handoff: true`（或用户
+  配置 `"fallback": { "handoff": true }`）时它会接着做：在同一个 worktree 中，提示词以上一个
+  CLI 所做之事的简报开头（`agents/<id>.handoff.md`）。适合做了一半就值得保留的长时间隔离 agent。
 - 只写用户装好的适配器（`odw doctor` 会列出），并尊重用户选定的默认 CLI：长时间运行总因
   额度停下时，建议用户加回退链，不要擅自加。
 - **额度用尽时暂停。** 配置里写上 `"quotaWait": { "max": <秒数> }`（默认关闭）后，无 CLI
