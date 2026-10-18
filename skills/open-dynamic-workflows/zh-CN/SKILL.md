@@ -70,7 +70,7 @@ return await agent(
 | `workflow(ref, args?)` | 内联调用另一个 workflow（仅一层）。`ref` 是受管目录中的名字或 `{ scriptPath }`；子 workflow 共享本次运行的并发上限、agent 计数和预算。 |
 | `validate(source)` | 解析并编译检查源码,不运行工作流正文;`meta` 按纯字面量解析,绝不求值。返回 `{ ok, meta?, errors, warnings }`。**ODW 扩展**——不属于 Claude Code 方言。 |
 | `exec(command, opts?)` | 不启动模型直接运行一条命令（测试、构建、linter）；返回 `{ stdout, stderr, exitCode, signal, timedOut, truncated, durationMs }`。字符串经 shell 执行，数组按 argv 执行。**ODW 扩展**——不属于 Claude Code 方言。 |
-| `checkpoint(title, opts?)` | 暂停运行，直到有人批准或拒绝；返回 `{ approved, note, by }`。**ODW 扩展**——不属于 Claude Code 方言。 |
+| `checkpoint(title, opts?)` | 暂停运行，直到有人批准（可以附上修改后的 payload）或拒绝；返回 `{ approved, note, by, payload, edited }`。**ODW 扩展**——不属于 Claude Code 方言。 |
 
 `agent` 的 `opts`：`{ adapter?, schema?, label?, phase?, model?, agentType?, isolation?, keep?, permissions?, expect?, expectRetries?, allowEmpty? }`。
 `adapter` 选择用哪个 CLI——写成列表（`['codex', 'claude']`，**ODW 扩展**）就是回退链；
@@ -117,15 +117,19 @@ for (let round = 1; run.exitCode !== 0 && round <= 3; round++) {
 }
 ```
 
-`checkpoint` 的 `opts`：`{ payload?, timeout?, onTimeout? }`。`payload` 是要给人看的
+`checkpoint` 的 `opts`：`{ payload?, schema?, timeout?, onTimeout? }`。`payload` 是要给人看的
 内容（计划、改动摘要）；`timeout` 是等待的秒数，超时后由 `onTimeout` 批准、拒绝，或
 （默认的 `"fail"`）抛出可恢复的 `CheckpointTimeout`。拒绝也是一个答复而不是错误：按
-`approved` 分支，并利用对方的 `note`：
+`approved` 分支，并利用对方的 `note`。对方也可以批准一份**修改过的** payload（`odw approve
+--edit` / `--payload`，或看板）：请使用结果里的 `payload`——也就是被批准的内容——而不是你
+自己手里的那份（`edited` 表示它是否被改过），并传入 `schema`，让修改必须保持代码所依赖的
+结构（不传时任何 JSON 值都接受）：
 
 ```js
 const plan = await agent(`Plan this as independent steps: ${task}`, { schema: PLAN })
-const { approved, note } = await checkpoint('Run this plan?', { payload: plan })   // ODW 扩展
-if (!approved) return { approved, note, plan }
+const r = await checkpoint('Run this plan?', { payload: plan, schema: PLAN })   // ODW 扩展
+if (!r.approved) return { approved: false, note: r.note, plan }
+const approvedPlan = r.payload   // 对方修改后的内容，或 plan 本身
 ```
 
 **选择法则：** 下一步需要**一整批**结果一次到位（去重、计票、综合）时用 `parallel`；
@@ -150,6 +154,7 @@ odw logs $RUN --agent 3     # 某个 agent 做了什么：工具调用、结果�
 odw result $RUN             # 完成后打印最终值
 odw pause $RUN / resume $RUN / stop $RUN
 odw approve|reject $RUN     # 回答运行正在等待的 checkpoint()——只在用户明确要求时
+                            # （approve --payload JSON|@file 批准用户修改后的内容；--edit 需要用户的终端）
 odw compare $OLD $RUN       # 两次运行之间变了什么:配置、耗时、花费、失败、回复(ODW 扩展)
                             #   --agent <label|id>:某个 agent 的完整回复 diff;--json 供脚本使用
 odw list                    # 所有运行
@@ -276,7 +281,9 @@ odw status $RUN     # 问题、它的 payload，以及回答它的确切命令
 
 **绝不要自己回答检查点。** 它存在的意义就是让用户来决定。把问题和 payload 展示给用户，
 只有在用户明确告诉你之后，才运行 `odw approve $RUN` 或 `odw reject $RUN --note "…"`
-（有多个在等待时加 `--checkpoint N`）——把用户的理由写进 `--note`。如果用户不在，就让它
+（有多个在等待时加 `--checkpoint N`）——把用户的理由写进 `--note`。如果用户要求改了再批，
+就用 `odw approve $RUN --payload @file.json` 发送用户认可的那份 payload（`--edit` 会在终端里
+打开编辑器——那是用户的终端，不是你的）。如果用户不在，就让它
 继续等：用户之后可以在任意 shell 里回答，或在看板（`odw serve`）里点 Approve/Reject。
 
 检查点等待期间 `odw run --wait` 会一直阻塞。带检查点的 workflow 请以后台方式启动

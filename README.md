@@ -236,7 +236,7 @@ control flow (loops, `if`, dedup) — no imports:
 | `workflow(ref, args?)` | Run another workflow inline (one level deep). The child shares this run's concurrency cap, agent counter, and budget; its phases group as their own DAG lanes. |
 | `validate(source)` | Parse and compile-check trusted source without running its workflow body. Metadata is parsed as a pure literal, never evaluated. **ODW extension** (not in Claude Code's dialect). |
 | `exec(command, opts?)` | Run a command — tests, a build, a linter — without launching a model; resolves to `{ stdout, stderr, exitCode, signal, timedOut, truncated, durationMs }`. A string runs through the shell, an array as argv. Bounded by `timeout` (600 s) and `maxOutputBytes` (8 MiB per stream); a stop kills it. Takes no agent slot. **ODW extension** (not in Claude Code's dialect). |
-| `checkpoint(title, opts?)` | Pause the run until a person approves or rejects — from `odw approve\|reject` or the dashboard — and resolve to `{ approved, note, by }`. `opts`: `payload` (what to look at), `timeout` (seconds) and `onTimeout` (`"approve"`, `"reject"`, or the default `"fail"`). Takes no agent slot; a stop still ends the run. See [Human checkpoints](#human-checkpoints-odw-extension). **ODW extension** (not in Claude Code's dialect). |
+| `checkpoint(title, opts?)` | Pause the run until a person approves — perhaps with an edited payload — or rejects, from `odw approve\|reject` or the dashboard, and resolve to `{ approved, note, by, payload, edited }`. `opts`: `payload` (what to look at), `schema` (what an edit must match), `timeout` (seconds) and `onTimeout` (`"approve"`, `"reject"`, or the default `"fail"`). Takes no agent slot; a stop still ends the run. See [Human checkpoints](#human-checkpoints-odw-extension). **ODW extension** (not in Claude Code's dialect). |
 
 Use **`parallel`** when the next step needs the whole batch at once (dedup,
 tally, synthesis); **`pipeline`** for multi-stage work (the default). Keep
@@ -357,6 +357,7 @@ odw diff $RUN --stat     # what isolated agents changed; odw apply $RUN --agent 
 odw compare $OLD $RUN    # what changed between two runs: setup, time, cost, failures, replies (below)
 odw pause|resume|stop $RUN
 odw approve|reject $RUN  # answer a checkpoint() the run waits at (--note TEXT, --checkpoint N)
+odw approve $RUN --edit  # …approving its payload as you edit it in $EDITOR (or --payload JSON|@file)
 odw list
 ```
 
@@ -450,16 +451,39 @@ ends the run. Answer it from any shell:
 odw status $RUN       # the question, its payload, and the exact commands that answer it
 odw approve $RUN      # the oldest checkpoint waiting; --checkpoint N picks one
 odw reject $RUN --note "Keep the old table until the backfill is verified"
+odw approve $RUN --edit   # change the payload first, then approve what you changed
 ```
 
 or with **Approve** / **Reject** on the run's page in the dashboard (loopback binds
-only; it posts `{ action, checkpointId?, note? }` to `POST /api/runs/:id/checkpoint`;
+only; it posts `{ action, checkpointId?, note?, payload? }` to `POST /api/runs/:id/checkpoint`;
 `GET /api/runs/:id` lists `pendingCheckpoints`, and the run list names each waiting
 run's oldest question as `waiting`). The call resolves to
-`{ approved, note, by }` — `by` is `cli`, `dashboard` or `timeout` — and a rejection
+`{ approved, note, by, payload, edited }` — `by` is `cli`, `dashboard` or `timeout` — and a rejection
 is an answer, not an error: the script decides what "no" means.
 
+**Approve with edits.** As with Claude Code's plan approval, the person can change
+what they approve instead of rejecting and re-running. `odw approve $RUN --edit` opens
+`$VISUAL` / `$EDITOR` (else `vi`; `notepad` on Windows) on the checkpoint's payload,
+pretty-printed in a private temp file: save an edit to approve it; leave it unchanged
+to approve as is; empty the file to abort without answering. Invalid JSON, or an edit
+the checkpoint refuses, aborts with the error and keeps the file (its path is
+printed). `--payload '<json>'` or `--payload @plan.json` approves an edit without an
+editor, and the dashboard sends `payload` with `action: "approve"`. The call then
+resolves with `payload` — the edit, or the checkpoint's own payload when there was
+none — and `edited: true` only when it differs from the original as JSON; a rejection
+and a timeout carry the original. Give `checkpoint()` a `schema` (JSON Schema, checked
+by the same validator as `agent()`'s) and an edit must match it: `odw approve`, the API
+and the run itself refuse one that does not, with the validator's errors. Without a
+schema any JSON value goes — the payload is the script's own data and only the script
+knows what an edit may be — so a script that relies on its shape should give one:
+
+```js
+const { approved, payload: approvedPlan } = await checkpoint('Run this plan?', { payload: plan, schema: PLAN })
+```
+
 - `payload` is any JSON value — a plan, a summary of the changes — kept up to 64 KiB.
+- An edited payload is at most 256 KiB of JSON; `checkpoint_resolved` records
+  `edited: true` and the edit (cut to 64 KiB like the question's).
 - `timeout` (seconds) bounds the wait for unattended runs; `onTimeout` then approves,
   rejects, or (the default, `"fail"`) throws a `CheckpointTimeout` the script can catch.
 - Several checkpoints can wait at once (inside `parallel()`), each with its own number.

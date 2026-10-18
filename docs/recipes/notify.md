@@ -105,7 +105,12 @@ checkpoint as it starts waiting — the command with `ODW_RUN_STATE=waiting`,
 
 Answer from any shell with `odw approve <run> --note "…"` (or `odw reject`), or
 with Approve/Reject in the dashboard, which also raises a toast — and, with Run
-notifications on, a system notification — the moment a run starts waiting.
+notifications on, a system notification — the moment a run starts waiting. To
+approve a changed payload instead (the plan minus a step, say), use
+`odw approve <run> --edit`, which opens it in `$EDITOR`, or
+`odw approve <run> --payload @plan.json`; the run's log and `odw logs` then say
+"approved with edits". The hooks fire when a checkpoint starts waiting, not when
+it is answered.
 
 ## When a run pauses for a spent quota
 

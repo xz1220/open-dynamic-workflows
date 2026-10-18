@@ -92,7 +92,7 @@
 | X1 | **diff 作为运行产物 + `odw apply`**：保留 worktree 的分支和 diff；合并前用 `git merge-tree` 预检，再跑校验命令，逐个合并；看板提供并排 diff 审阅 | #2 | M | ✅ diff 落盘（排除初始化文件、可截断）、`keep` 分支、`odw diff`/`odw apply [--check]`、看板改动页；合并前逐文件预检（临时索引上的 `git apply --3way --cached`，没有分支的 diff 同样适用）、`--all` 叠加预览并逐个应用、`--verify`/`applyVerify` 校验失败精确回滚 ✅；看板改动页可复制预览、全部预览与全部应用命令 ✅ |
 | X2 | **权限档位**：read-only / edit / full 三档，映射到各 CLI 的对应参数，启动前展示；环境变量白名单 + 密钥引用脱敏；不受信任的仓库使用 `--bare` | #6 | M | 🚧 三档 + 按 CLI 映射（只填文档证实的）、`--permissions`、`agent()` 只能降档、启动横幅、`odw doctor` 档位、`agentEnv: "minimal"` 白名单、密钥脱敏（`redact`）✅；`--bare` 待做 |
 | X3 | **agent transcript**：保存每个 agent 的 JSON 流（工具调用、重试）；看板和 `odw logs --agent` 可查看；导出 OpenTelemetry GenAI span | #8 | M | ✅ 记录与回看（`odw logs --agent [--raw] [--follow]`、API、看板实时侧栏）；OpenTelemetry 导出待做 |
-| X4 | **人工检查点** `checkpoint()`（ODW 扩展）：持久暂停，`odw approve/reject [--edit]` 继续；看板提供审批入口（依赖 N1） | #9 | M | ✅（`--edit` 待做） |
+| X4 | **人工检查点** `checkpoint()`（ODW 扩展）：持久暂停，`odw approve/reject [--edit]` 继续；看板提供审批入口（依赖 N1） | #9 | M | ✅（含 `--edit` / `--payload` 修改后批准、`schema` 校验；看板编辑器待做） |
 | X5 | **worktree 环境**：支持 `.worktreeinclude`、带超时的 setup 命令、为每个 agent 分配 `ODW_PORT` | #10 | S | ✅ |
 | X6 | **调度**：`odw schedule add/list/remove/run` 写入 cron/launchd/systemd（不引入 daemon）；每个定时任务一把防重叠锁（失效锁自动接管）、每次运行一行日志、上次与下次运行时间；错过的运行按各后端处理（systemd `Persistent=true` 开机补跑）；失败通知复用 `notify` | #14 | S | ✅ |
 | X7 | **按阶段指定适配器和模型**：设置默认值、模型分层和回退链；解析 Claude plugin 工作流 | #13 | M | 🚧 阶段默认适配器/模型、模型分层、回退链与额度熔断 ✅；解析 Claude plugin 工作流待做 |

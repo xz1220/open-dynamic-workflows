@@ -351,7 +351,7 @@ script itself; `exec` adds no sandbox. The ODW repository's
 ## checkpoint (ODW extension)
 
 ```js
-checkpoint(title, opts?) -> Promise<{ approved, note, by }>
+checkpoint(title, opts?) -> Promise<{ approved, note, by, payload, edited }>
 ```
 
 Pause the run until a person approves or rejects — before an expensive or
@@ -366,16 +366,34 @@ precedence over the injected one.
   made JSON-safe (a BigInt becomes its digits, a cycle `"[Circular]"`) and kept
   to 64 KiB; a larger one keeps its start, as text, and the event says
   `truncated`.
+- **opts.schema** — a JSON Schema an edited payload must match (below), checked
+  by the same validator as `agent()`'s replies. It is audited like one: a
+  malformed schema is a misuse; keywords the validator does not check are
+  logged (`schemaKeywords: "warn"`) or refused (`"strict"`). Without a schema
+  any JSON value is accepted as an edit.
 - **opts.timeout** — seconds to wait; no limit by default.
 - **opts.onTimeout** — what silence means: `"approve"` or `"reject"` resolve
   with `by: "timeout"`; `"fail"` (the default) throws a `CheckpointTimeout` —
   recoverable, like a failed agent: catch it, or let `parallel`/`pipeline` turn
   it into `null`.
 
-The call resolves to `{ approved, note, by }`: `note` is the person's note or
-`null`; `by` is `"cli"` (`odw approve|reject`), `"dashboard"` (`odw serve`) or
-`"timeout"`. A rejection is an answer, not an error: the script decides what it
-means — stop, re-plan with the note, skip a step.
+The call resolves to `{ approved, note, by, payload, edited }`: `note` is the
+person's note or `null`; `by` is `"cli"` (`odw approve|reject`), `"dashboard"`
+(`odw serve`) or `"timeout"`. A rejection is an answer, not an error: the script
+decides what it means — stop, re-plan with the note, skip a step.
+
+The person may approve an **edited** payload instead of rejecting and re-running
+(as with Claude Code's plan approval): `odw approve <run> --edit` opens
+`$VISUAL`/`$EDITOR` on it, `--payload '<json>'` / `--payload @file.json` sends one,
+and the dashboard posts `payload` with `action: "approve"`. `payload` is then what
+was approved — the edit, or else the checkpoint's own payload as given (undefined
+when it had none) — and `edited` is `true` only when the edit differs from the
+original as JSON. A rejection and a timeout carry the original. An edit must be
+JSON of at most 256 KiB matching `opts.schema` when given: the CLI and the API
+refuse others with the validator's errors, and the run drops one written to its
+decision log by hand with a log line, still waiting. So read the approved value
+from the result, not from your own variable, and give a `schema` when the code
+after the checkpoint relies on the payload's shape.
 
 Waiting is not work: a checkpoint takes no concurrency slot, counts toward
 neither the total-agent cap nor the budget, and is asked even while the run is
@@ -388,23 +406,25 @@ While one waits, the run's display state is `waiting`: `odw status` shows the
 question, the payload and the exact `odw approve|reject <run> --checkpoint N`
 commands, and the dashboard an Approve/Reject card. Without `--checkpoint` an
 answer goes to the oldest checkpoint waiting. Each checkpoint is recorded as
-`checkpoint_requested { checkpointId, title, payload, phase }`, then exactly one
-`checkpoint_resolved { checkpointId, approved, note, by }` (with an `error`, and
-`by: null`, when the run ended first). `odw resume` never replays a checkpoint:
+`checkpoint_requested { checkpointId, title, payload, schema?, phase }`, then exactly one
+`checkpoint_resolved { checkpointId, approved, note, by }` (with `edited: true` and
+the edited `payload`, cut to 64 KiB, for an approval with edits; with an `error`,
+and `by: null`, when the run ended first). `odw resume` never replays a checkpoint:
 the resumed run asks again.
 
 ```js
 phase('Plan')
-const plan = await agent(`Plan this as independent steps: ${task}`, { schema: PLAN })
+const draft = await agent(`Plan this as independent steps: ${task}`, { schema: PLAN })
 phase('Approve')
-const { approved, note } = await checkpoint(`Run this ${plan.steps.length}-step plan?`, {
-  payload: plan,
+const { approved, note, payload: plan } = await checkpoint(`Run this ${draft.steps.length}-step plan?`, {
+  payload: draft,
+  schema: PLAN, // an edited plan must still be a plan
   timeout: 3600,
   onTimeout: 'reject', // nobody answered within the hour: change nothing
 })
 if (!approved) return { approved, note, plan }
 phase('Execute')
-await parallel(plan.steps.map((step) => () => agent(step.instructions)))
+await parallel(plan.steps.map((step) => () => agent(step.instructions))) // the plan as approved
 ```
 
 The ODW repository's `examples/plan-approve-execute.js` is this flow as a

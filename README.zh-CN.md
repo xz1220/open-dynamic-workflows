@@ -215,7 +215,7 @@ odw run examples/fan-out-reduce.js --wait --args '{"question": "Design a rate li
 | `workflow(ref, args?)` | 内联调用另一个 workflow(仅一层)。子 workflow 共享本次运行的并发上限、agent 计数与预算;其 phase 以独立泳道归组。 |
 | `validate(source)` | 解析并编译检查可信源码,不运行工作流正文;元数据按纯字面量解析,不会被求值。**ODW 扩展**(不属于 Claude Code 方言)。 |
 | `exec(command, opts?)` | 不启动模型直接运行一条命令——测试、构建、linter;返回 `{ stdout, stderr, exitCode, signal, timedOut, truncated, durationMs }`。字符串经 shell 执行,数组按 argv 执行。受 `timeout`(600 秒)和 `maxOutputBytes`(每个输出流 8 MiB)约束;停止会杀掉它。不占 agent 槽位。**ODW 扩展**(不属于 Claude Code 方言)。 |
-| `checkpoint(title, opts?)` | 暂停运行,直到有人批准或拒绝——用 `odw approve\|reject` 或看板——然后返回 `{ approved, note, by }`。`opts`:`payload`(要给人看的内容)、`timeout`(秒)和 `onTimeout`(`"approve"`、`"reject"`,或默认的 `"fail"`)。不占 agent 槽位;停止依然会结束运行。见[人工检查点](#人工检查点odw-扩展)。**ODW 扩展**(不属于 Claude Code 方言)。 |
+| `checkpoint(title, opts?)` | 暂停运行,直到有人批准(可以附上修改后的 payload)或拒绝——用 `odw approve\|reject` 或看板——然后返回 `{ approved, note, by, payload, edited }`。`opts`:`payload`(要给人看的内容)、`schema`(修改必须满足的 JSON Schema)、`timeout`(秒)和 `onTimeout`(`"approve"`、`"reject"`,或默认的 `"fail"`)。不占 agent 槽位;停止依然会结束运行。见[人工检查点](#人工检查点odw-扩展)。**ODW 扩展**(不属于 Claude Code 方言)。 |
 
 下一步需要"全量结果一次到位"(去重、计票、综合)时用 **`parallel`**;多阶段处理默认用
 **`pipeline`**。归并要保持顺序无关——按"谁先跑完"分支会破坏可复现性。完整参考见
@@ -323,6 +323,7 @@ odw diff $RUN --stat     # 隔离 agent 改了什么;odw apply $RUN --agent N(�
 odw compare $OLD $RUN    # 两次运行之间变了什么:配置、耗时、花费、失败、回复(见下文)
 odw pause|resume|stop $RUN
 odw approve|reject $RUN  # 回答运行正在等待的 checkpoint()(--note TEXT、--checkpoint N)
+odw approve $RUN --edit  # ……先在 $EDITOR 里修改 payload 再批准(或 --payload JSON|@file)
 odw list
 ```
 
@@ -404,16 +405,36 @@ await parallel(plan.steps.map((step) => () => agent(step.instructions)))
 odw status $RUN       # 问题、它的 payload,以及回答它的确切命令
 odw approve $RUN      # 最早在等待的检查点;--checkpoint N 指定某一个
 odw reject $RUN --note "Keep the old table until the backfill is verified"
+odw approve $RUN --edit   # 先修改 payload,再批准修改后的内容
 ```
 
 也可以在看板里该运行的页面上点 **Approve** / **Reject**(仅限 loopback 绑定;它向
-`POST /api/runs/:id/checkpoint` 发送 `{ action, checkpointId?, note? }`;
+`POST /api/runs/:id/checkpoint` 发送 `{ action, checkpointId?, note?, payload? }`;
 `GET /api/runs/:id` 会列出 `pendingCheckpoints`,运行列表则用 `waiting` 标出每个等待中
-运行最早的那个问题)。调用返回 `{ approved, note, by }`
+运行最早的那个问题)。调用返回 `{ approved, note, by, payload, edited }`
 ——`by` 是 `cli`、`dashboard` 或 `timeout`——拒绝也是一个答复而不是错误:"不"意味着
 什么由脚本决定。
 
+**修改后批准。** 和 Claude Code 的计划审批一样,审批人可以改了再批,而不必拒绝后重跑。
+`odw approve $RUN --edit` 会用 `$VISUAL` / `$EDITOR`(否则 `vi`;Windows 上是 `notepad`)
+打开一个私有临时文件,里面是格式化后的 payload:保存修改即批准修改后的内容;不改动就按
+原样批准;清空文件则放弃、不作答复。JSON 无效或修改不被检查点接受时,命令带着错误退出并
+保留该文件(打印其路径)。`--payload '<json>'` 或 `--payload @plan.json` 不经编辑器直接
+批准修改,看板则在 `action: "approve"` 时附上 `payload`。调用随后返回的 `payload` 是修改
+后的内容(没有修改时是检查点原来的 payload),只有与原 payload 的 JSON 不同时
+`edited` 才为 `true`;拒绝和超时都带回原 payload。给 `checkpoint()` 一个 `schema`
+(JSON Schema,用与 `agent()` 相同的校验器检查),修改就必须满足它:`odw approve`、API
+和运行本身都会拒绝不满足的修改,并给出校验错误。没有 schema 时任何 JSON 值都接受——
+payload 是脚本自己的数据,只有脚本知道修改可以是什么样——所以依赖其结构的脚本应当给出
+schema:
+
+```js
+const { approved, payload: approvedPlan } = await checkpoint('Run this plan?', { payload: plan, schema: PLAN })
+```
+
 - `payload` 可以是任意 JSON 值——计划、改动摘要——最多保留 64 KiB。
+- 修改后的 payload 最多 256 KiB JSON;`checkpoint_resolved` 会记录 `edited: true` 和
+  修改内容(与问题的 payload 一样截断到 64 KiB)。
 - `timeout`(秒)为无人值守的运行限定等待时长;超时后由 `onTimeout` 批准、拒绝,或(默认
   的 `"fail"`)抛出脚本可以捕获的 `CheckpointTimeout`。
 - 多个检查点可以同时等待(在 `parallel()` 里),各有自己的编号。

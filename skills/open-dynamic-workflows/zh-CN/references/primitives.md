@@ -286,7 +286,7 @@ await exec(['git', 'diff', '--stat'], { check: true }) // 退出码不为 0 时�
 ## checkpoint（ODW 扩展）
 
 ```js
-checkpoint(title, opts?) -> Promise<{ approved, note, by }>
+checkpoint(title, opts?) -> Promise<{ approved, note, by, payload, edited }>
 ```
 
 暂停运行，直到有人批准或拒绝——用在昂贵或难以撤销的步骤之前，或让人确认一份计划。它
@@ -297,14 +297,28 @@ checkpoint(title, opts?) -> Promise<{ approved, note, by }>
 - **opts.payload** —— 要给人看的内容：任意 JSON 值。它会被转成 JSON 安全的形式（BigInt
   变成数字字符串，循环引用变成 `"[Circular]"`），最多保留 64 KiB；更大的只保留开头一段
   文本，事件里会标注 `truncated`。
+- **opts.schema** —— 修改后的 payload 必须满足的 JSON Schema（见下文），由检查 `agent()`
+  回复的同一个校验器检查，也像它一样先审查：格式错误的 schema 属于误用；校验器不检查的
+  关键字会记一行日志（`schemaKeywords: "warn"`）或被拒绝（`"strict"`）。没有 schema 时，
+  任何 JSON 值都可以作为修改。
 - **opts.timeout** —— 等待的秒数；默认不限。
 - **opts.onTimeout** —— 无人回答时的含义：`"approve"` 或 `"reject"` 以 `by: "timeout"`
   返回；`"fail"`（默认）抛出 `CheckpointTimeout`——与 agent 失败一样可恢复：可以 catch，
   也可以交给 `parallel`/`pipeline` 变成 `null`。
 
-调用返回 `{ approved, note, by }`：`note` 是对方的附言或 `null`；`by` 是 `"cli"`
+调用返回 `{ approved, note, by, payload, edited }`：`note` 是对方的附言或 `null`；`by` 是 `"cli"`
 （`odw approve|reject`）、`"dashboard"`（`odw serve`）或 `"timeout"`。拒绝也是一个答复，
 不是错误：它意味着什么由脚本决定——停止、带着附言重新规划、跳过某一步。
+
+对方可以批准一份**修改过的** payload，而不必拒绝后重跑（与 Claude Code 的计划审批一样）：
+`odw approve <run> --edit` 用 `$VISUAL`/`$EDITOR` 打开它，`--payload '<json>'` /
+`--payload @file.json` 直接发送一份，看板则在 `action: "approve"` 时附上 `payload`。此时
+`payload` 是被批准的内容——修改后的版本，否则是检查点原样的 payload（没有时为
+undefined）——只有与原 payload 的 JSON 不同时 `edited` 才为 `true`。拒绝和超时都带回原
+payload。修改必须是最多 256 KiB 的 JSON，且在给出 `opts.schema` 时满足它：CLI 和 API 会
+带着校验错误拒绝不满足的修改，手写进决定日志的则由运行丢弃并记一行日志，检查点继续等待。
+所以请从结果里读取被批准的值，而不是用自己的变量；检查点之后的代码依赖 payload 结构时，
+请给出 `schema`。
 
 等待不是工作：检查点不占并发槽位，不计入 agent 总量上限和预算，运行暂停时也照样提问；
 已在运行的 agent 继续运行。停止（或任何致命错误）会立刻结束等待，运行也随之结束。多个
@@ -314,22 +328,24 @@ checkpoint(title, opts?) -> Promise<{ approved, note, by }>
 等待期间，运行的展示状态是 `waiting`：`odw status` 会显示问题、payload，以及确切的
 `odw approve|reject <run> --checkpoint N` 命令，看板则显示一张 Approve/Reject 卡片。
 不带 `--checkpoint` 的答复会交给最早在等待的检查点。每个检查点都记录为
-`checkpoint_requested { checkpointId, title, payload, phase }`，随后恰好一个
-`checkpoint_resolved { checkpointId, approved, note, by }`（运行先结束时带 `error`，且
-`by: null`）。`odw resume` 永远不会重放检查点：恢复出来的运行会重新提问。
+`checkpoint_requested { checkpointId, title, payload, schema?, phase }`，随后恰好一个
+`checkpoint_resolved { checkpointId, approved, note, by }`（修改后批准时带 `edited: true`
+和修改后的 `payload`，截断到 64 KiB；运行先结束时带 `error`，且 `by: null`）。
+`odw resume` 永远不会重放检查点：恢复出来的运行会重新提问。
 
 ```js
 phase('Plan')
-const plan = await agent(`Plan this as independent steps: ${task}`, { schema: PLAN })
+const draft = await agent(`Plan this as independent steps: ${task}`, { schema: PLAN })
 phase('Approve')
-const { approved, note } = await checkpoint(`Run this ${plan.steps.length}-step plan?`, {
-  payload: plan,
+const { approved, note, payload: plan } = await checkpoint(`Run this ${draft.steps.length}-step plan?`, {
+  payload: draft,
+  schema: PLAN, // 修改后的计划也必须还是一份计划
   timeout: 3600,
   onTimeout: 'reject', // 一小时内没人回答：什么都不改
 })
 if (!approved) return { approved, note, plan }
 phase('Execute')
-await parallel(plan.steps.map((step) => () => agent(step.instructions)))
+await parallel(plan.steps.map((step) => () => agent(step.instructions))) // 按批准的计划执行
 ```
 
 ODW 仓库里的 `examples/plan-approve-execute.js` 就是这个流程的完整 workflow，附带说明

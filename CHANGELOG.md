@@ -43,6 +43,11 @@ changed, and run on a schedule — and a dashboard redesigned to watch them.
   approves or rejects — `odw approve|reject`, the dashboard, or
   `POST /api/runs/:id/checkpoint` (**ODW extension**). Runs show a `waiting` state
   everywhere.
+- Approve with edits: `odw approve <run> --edit` opens `$EDITOR` on the checkpoint's
+  payload (`--payload JSON|@file` without an editor; `payload` in the API), and the call
+  resolves to `{ approved, note, by, payload, edited }` — the plan as approved, not
+  only a yes. An optional `checkpoint(title, { schema })` makes the CLI, the API and
+  the run refuse an edit that does not match it (**ODW extension**).
 - Run-end hooks: a `notify` command or webhook (Slack/Discord/ntfy-ready) when a run
   finishes, fails, stops — or, opt-in, starts waiting, or pauses for a spent quota
   (`"paused"`).

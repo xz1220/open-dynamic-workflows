@@ -80,7 +80,7 @@ outright, never silently passed through as a string).
 | `workflow(ref, args?)` | Run another workflow inline (one level deep). `ref` is a managed-directory name or `{ scriptPath }`; the child shares this run's concurrency cap, agent counter, and budget. |
 | `validate(source)` | Parse and compile-check source without running its workflow body; `meta` is parsed as a pure literal, never evaluated. Returns `{ ok, meta?, errors, warnings }`. **ODW extension** — not part of Claude Code's dialect. |
 | `exec(command, opts?)` | Run a command (tests, a build, a linter) without a model; resolves to `{ stdout, stderr, exitCode, signal, timedOut, truncated, durationMs }`. A string runs through the shell, an array as argv. **ODW extension** — not part of Claude Code's dialect. |
-| `checkpoint(title, opts?)` | Pause the run until a person approves or rejects; resolves to `{ approved, note, by }`. **ODW extension** — not part of Claude Code's dialect. |
+| `checkpoint(title, opts?)` | Pause the run until a person approves (perhaps with an edited payload) or rejects; resolves to `{ approved, note, by, payload, edited }`. **ODW extension** — not part of Claude Code's dialect. |
 
 `opts` for `agent`: `{ adapter?, schema?, label?, phase?, model?, agentType?, isolation?, keep?, permissions?, expect?, expectRetries?, allowEmpty? }`.
 `adapter` picks the CLI — or, as a list (`['codex', 'claude']`, **ODW
@@ -138,16 +138,21 @@ for (let round = 1; run.exitCode !== 0 && round <= 3; round++) {
 }
 ```
 
-`opts` for `checkpoint`: `{ payload?, timeout?, onTimeout? }`. `payload` is what
-the person should look at (a plan, a summary of the changes); `timeout` is
-seconds to wait, after which `onTimeout` approves, rejects, or — the default
+`opts` for `checkpoint`: `{ payload?, schema?, timeout?, onTimeout? }`. `payload`
+is what the person should look at (a plan, a summary of the changes); `timeout`
+is seconds to wait, after which `onTimeout` approves, rejects, or — the default
 `"fail"` — throws a recoverable `CheckpointTimeout`. A rejection is an answer,
-not an error: branch on `approved`, and use the person's `note`:
+not an error: branch on `approved`, and use the person's `note`. The person may
+also approve an **edited** payload (`odw approve --edit` / `--payload`, or the
+dashboard): use the result's `payload` — what was approved — rather than your
+own copy (`edited` says whether it changed), and pass a `schema` so an edit must
+keep the shape your code relies on (without one, any JSON value is accepted):
 
 ```js
 const plan = await agent(`Plan this as independent steps: ${task}`, { schema: PLAN })
-const { approved, note } = await checkpoint('Run this plan?', { payload: plan })   // ODW extension
-if (!approved) return { approved, note, plan }
+const r = await checkpoint('Run this plan?', { payload: plan, schema: PLAN })   // ODW extension
+if (!r.approved) return { approved: false, note: r.note, plan }
+const approvedPlan = r.payload   // the person's edit, or plan itself
 ```
 
 **Rule of thumb:** use `parallel` when the next step needs the **whole batch**
@@ -173,6 +178,7 @@ odw logs $RUN --agent 3     # what one agent did: tool calls, results, errors (O
 odw result $RUN             # print the final value when done
 odw pause $RUN / resume $RUN / stop $RUN
 odw approve|reject $RUN     # answer a checkpoint() the run waits at — only on the user's say-so
+                            # (approve --payload JSON|@file approves the user's edit; --edit needs their terminal)
 odw compare $OLD $RUN       # what changed between two runs: setup, time, cost, failures, replies (ODW extension)
                             #   --agent <label|id>: one agent's whole reply diff; --json for scripts
 odw list                    # all runs
@@ -332,6 +338,9 @@ odw status $RUN     # the question, its payload, and the exact commands that ans
 Show the user the question and the payload, and run `odw approve $RUN` or
 `odw reject $RUN --note "…"` (add `--checkpoint N` when several wait) only
 after the user explicitly tells you to — put their reasons in `--note`. If the
+user asks for changes to what they approve, send exactly the payload they
+approved with `odw approve $RUN --payload @file.json` (`--edit` opens an editor
+in a terminal — theirs, not yours). If the
 user is not there, leave it waiting: they can answer later from any shell, or
 with Approve/Reject in the dashboard (`odw serve`).
 
