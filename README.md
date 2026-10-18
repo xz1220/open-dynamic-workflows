@@ -173,6 +173,21 @@ that choice anytime (agents use `odw init --adapter <name>` after asking you).
 and `odw doctor --smoke` sends your default adapter one real prompt, catching a
 CLI that installs fine but blocks on a login or approval prompt when headless.
 
+**Your first run costs nothing.** Start from a template, test it, watch it run with
+every agent stubbed — then run it for real:
+
+```bash
+odw new                    # the templates: hello, review-swarm, fix-until-green, plan-approve-execute, …
+odw new hello              # writes .odw/workflows/hello.js and a starter test, .odw/tests/hello.json
+odw test hello             # the starter test: scripted replies, no model called, $0
+odw run hello --dry        # the live view and the phase tree, every agent stubbed, $0 (odw serve --open: the dashboard)
+odw run hello              # the real run, on your default agent CLI
+```
+
+At a terminal, `odw init` ends by offering exactly this: it writes `hello` and runs
+`odw run hello --dry`, then prints the dashboard command and the real run — it never
+makes a paid call itself. See [Start from a template](#start-from-a-template-odw-extension).
+
 ODW is mostly driven **by your coding agent**, not by hand. With the skill and
 binary installed, just ask your agent for something big — it writes a workflow and
 runs it for you, out of its own context:
@@ -217,6 +232,46 @@ research → adversarial fact-check → cited report) is exactly such a script. 
 battle-tested sibling [`deep-research-verified.js`](examples/deep-research-verified.js)
 (validated at 100 agents / ~9 min on the codex adapter) ships with a cron-ready
 wrapper — see [`docs/recipes/deep-research-verified.md`](docs/recipes/deep-research-verified.md).
+
+### Start from a template (ODW extension)
+
+`odw new` writes a workflow from a template built into the binary, so a binary-only
+install has them too; `odw new` alone lists them.
+
+```bash
+odw new review-swarm                    # .odw/workflows/review-swarm.js, .odw/tests/…, .odw/evals/…
+odw new review-swarm --name pre-merge   # the same, named pre-merge (in the workflow, its test and its eval)
+odw new hello --force                   # replace files that exist with other content
+odw new hello --yes                     # also write the suggested .worktreeinclude (below)
+```
+
+| Template | What it does |
+| --- | --- |
+| `hello` | two agents describe the repository in parallel; plain JS keeps the more confident answer (read-only) |
+| `review-swarm` | review a change through several lenses in parallel, verify every finding, keep what survives |
+| `fix-until-green` | an agent fixes a red test suite; odw runs the suite to check it (`expect`) and hands misses back |
+| `plan-approve-execute` | draft a plan, wait at a `checkpoint()` for a person, then execute its steps in parallel |
+| `pr-shepherd` | take a pull request to green: fix red CI and new review comments, push, ask before marking it ready |
+| `fan-out-reduce` | draft N answers in parallel, then synthesize the single best one |
+
+- **What it writes**, in the current directory: `.odw/workflows/<name>.js` (`odw run
+  <name>`), `.odw/tests/<name>.json` — starter cases with scripted replies, so `odw test
+  <name>` passes at once, for $0 — and, for `review-swarm` and `pr-shepherd`, an eval
+  skeleton `.odw/evals/<name>.json` (real runs: edit it before `odw eval <name>`). The
+  templates other than `hello` are the [examples](examples/) of the same name.
+- **It never overwrites** a file that exists with other content without `--force`: it
+  then writes nothing at all and exits 1. A file that already holds exactly the template
+  counts as written, so the same command twice is harmless.
+- **In a git repository without a `.worktreeinclude`**, it prints one for
+  [isolated worktrees](#isolated-worktrees-and-agent-ports): the repository's `.env*`
+  files (not `.env.example` and the like), and `symlink:` lines for the dependency
+  directories its lockfiles imply (`node_modules` for npm, yarn, pnpm and bun; `.venv`
+  for uv, Poetry, Pipenv and PDM; `vendor` for Composer). It writes it with `--yes`, or
+  when you say yes at a terminal; never otherwise.
+- **`odw init`** (not `--check`) ends with the $0 first run: at a terminal it asks, then
+  writes `hello` (unless `.odw/workflows/hello.js` exists — then it runs that one) and
+  runs `odw run hello --dry` with its live view, then prints `odw serve --open` and the
+  real `odw run hello`. Off a terminal it only prints the commands.
 
 ## The primitives
 
@@ -1193,6 +1248,7 @@ odw test review-swarm --case 2 --json     # one case (by number or name); the re
 odw test review-swarm --keep              # keep the scratch runs (odw logs <run_id> --runs-root …); or --runs-root DIR
 odw run review-swarm --record             # a real run, kept as a case of .odw/tests/review-swarm.json (--record-to FILE)
 odw run review-swarm --dry                # every agent gets a stub: the phase tree and agent counts, $0
+odw new review-swarm                      # a template with its starter tests, passing from the start (above)
 ```
 
 ```json

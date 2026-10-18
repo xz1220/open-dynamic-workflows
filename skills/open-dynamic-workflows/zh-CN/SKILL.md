@@ -213,6 +213,7 @@ odw check wf.js             # 能否加载?文件:行:列、代码片段、可�
 odw eval review             # 用例 × 适配器 × 重复次数：每个单元格的通过率、花费、耗时（ODW 扩展；见下文）
 odw test review             # 脚本化回复，不调用模型，$0：逻辑是否成立？（ODW 扩展；见下文）
 odw run review --dry        # 每个 agent 都用桩应答：阶段树与 agent 数，$0（ODW 扩展）
+odw new review-swarm        # 内置模板连同起步测试写入 .odw/；odw new 列出全部模板（ODW 扩展；见下文）
 odw notes $RUN              # 本次运行的 agent 在笔记板上互相告知的内容（ODW 扩展）
 odw list                    # 所有运行（有运行报了美元时多一列花费）
 ```
@@ -514,6 +515,22 @@ odw run review-swarm --record             # 一次真实（付费）运行，存
 - `--dry` 的桩回复是 `"(dry run)"` 或 schema 的最小合法值；运行标记为 `dry: true`。`--record`
   的花费与普通运行相同——先确认。
 - 完整格式：[`references/primitives.md`](references/primitives.md) 的「odw test（ODW 扩展）」一节。
+
+### 从模板开始（ODW 扩展）
+
+用户的任务与某个内置模板吻合时，从模板开始，而不是从空文件开始：`odw new` 列出模板（hello、
+review-swarm、fix-until-green、plan-approve-execute、pr-shepherd、fan-out-reduce），
+`odw new <模板> [--name N]` 写入 `.odw/workflows/<名字>.js`、`odw test <名字>` 立即能通过的起步
+测试 `.odw/tests/<名字>.json`，review-swarm 与 pr-shepherd 还会写 eval 骨架
+`.odw/evals/<名字>.json`。workflow 与它的测试一起改；`odw test` 和 `odw run <名字> --dry` 花费 $0，
+不必先问。
+
+- 内容不同的已有文件不会被覆盖（退出 1，什么都不写），除非 `--force`——加它之前先问用户。
+- 在没有 `.worktreeinclude` 的 git 仓库里，它会打印一份建议（`.env*` 文件、依赖目录的 `symlink:`
+  行），只有 `--yes` 才写入：先给用户看并征得同意。
+- 在人的终端里，`odw init` 最后会提供 `odw new hello` 与 `odw run hello --dry`；在你的 shell 里只
+  打印这些命令。
+- 详见 [`references/primitives.md`](references/primitives.md) 的「odw new（ODW 扩展）」一节。
 
 ## 适配器
 

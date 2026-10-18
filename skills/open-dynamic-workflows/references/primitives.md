@@ -1044,6 +1044,45 @@ Costs and tokens are summed and averaged over the runs whose CLIs reported
 them, and null when none did. Any two run ids open side by side with
 `odw compare <runA> <runB>`.
 
+## odw new (ODW extension)
+
+```bash
+odw new                                          # the templates, one line each (stdout)
+odw new <template> [--name N] [--force] [--yes]
+```
+
+The templates are embedded in the binary: `hello` (two read-only agents in
+parallel, plain JS picks), `review-swarm`, `fix-until-green`,
+`plan-approve-execute`, `pr-shepherd`, `fan-out-reduce` (the examples of the
+same name). One writes, under the current directory:
+
+| File | What |
+| --- | --- |
+| `.odw/workflows/<name>.js` | the workflow; `meta.name` is `<name>` |
+| `.odw/tests/<name>.json` | starter cases with scripted replies: `odw test <name>` passes at once, $0 |
+| `.odw/evals/<name>.json` | review-swarm and pr-shepherd only: an eval skeleton (real runs — edit it first) |
+
+- `--name` (default: the template's name) — letters, digits and `. _ -`, not
+  first, at most 128, not ending in `.js` — replaces the template's name in all
+  three files.
+- A file that exists with other content is a conflict: without `--force`
+  nothing is written, each conflict is named, exit 1. A file that already holds
+  exactly the template is left as it is, so the same command twice exits 0.
+- In a git repository whose root has no `.worktreeinclude`, it prints a
+  suggested one: the root's `.env*` files (not `*.example`, `*.sample`,
+  `*.template`, `*.dist`), then `symlink: node_modules` (for `package-lock.json`,
+  `npm-shrinkwrap.json`, `yarn.lock`, `pnpm-lock.yaml`, `bun.lock`, `bun.lockb`),
+  `symlink: .venv` (`uv.lock`, `poetry.lock`, `Pipfile.lock`, `pdm.lock`),
+  `symlink: vendor` (`composer.lock`). Written with `--yes`, or a yes at a
+  terminal prompt; otherwise only printed.
+- Exit 0 written (or already there), 1 refused, 2 usage (an unknown template, a
+  bad name).
+- `odw init` (not `--check`) ends with the first run: at a terminal it asks
+  (Enter: yes), writes `hello` unless `.odw/workflows/hello.js` exists, runs
+  `odw run hello --dry`, then prints `odw serve --open`, `odw test hello` and
+  `odw run hello`; elsewhere it prints the commands only. It never calls a
+  model.
+
 ## odw test (ODW extension)
 
 ```bash

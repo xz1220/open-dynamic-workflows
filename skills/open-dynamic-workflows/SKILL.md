@@ -250,6 +250,7 @@ odw check wf.js             # does it load? file:line:col, a code frame, portabi
 odw eval review             # cases × adapters × repeats: pass rate, cost, time per cell (ODW extension; below)
 odw test review             # scripted replies, no model, $0: does the logic hold? (ODW extension; below)
 odw run review --dry        # every agent stubbed: the phase tree and agent counts, $0 (ODW extension)
+odw new review-swarm        # a built-in template + its starter test in .odw/; odw new lists them (ODW extension; below)
 odw notes $RUN              # what its agents told each other on the notes board (ODW extension)
 odw list                    # all runs (with a cost column once one reported dollars)
 ```
@@ -617,6 +618,26 @@ odw run review-swarm --record             # a real (paid) run, kept as a test ca
 - `--dry` stubs are `"(dry run)"` or a schema's smallest valid value; the run is
   marked `dry: true`. `--record` costs what a normal run costs — confirm first.
 - The whole format: [`references/primitives.md`](references/primitives.md#odw-test-odw-extension).
+
+### Start from a template (ODW extension)
+
+When the user's task matches a built-in template, start from it instead of a
+blank file: `odw new` lists them (hello, review-swarm, fix-until-green,
+plan-approve-execute, pr-shepherd, fan-out-reduce), and `odw new <template>
+[--name N]` writes `.odw/workflows/<name>.js`, a starter test
+`.odw/tests/<name>.json` that `odw test <name>` passes at once, and for
+review-swarm and pr-shepherd an eval skeleton `.odw/evals/<name>.json`. Edit
+the workflow and its test together; `odw test` and `odw run <name> --dry` cost
+$0, so no need to ask before them.
+
+- It refuses to overwrite a file with other content (exit 1, nothing written)
+  unless `--force` — ask the user before passing it.
+- In a git repository without a `.worktreeinclude` it prints a suggested one
+  (`.env*` files, `symlink:` lines for dependency directories) and writes it
+  only with `--yes`: show it to the user and ask first.
+- `odw init` at a human's terminal ends by offering `odw new hello` and
+  `odw run hello --dry`; in your shell it only prints those commands.
+- Details: [`references/primitives.md`](references/primitives.md#odw-new-odw-extension).
 
 ## Adapters
 

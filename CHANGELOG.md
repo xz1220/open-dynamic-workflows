@@ -442,6 +442,23 @@ independent security reviews whose findings are all fixed.
   `odw attach` re-attaches); pipes and CI keep the fire-and-poll contract.
 - First-run onboarding: `odw init` picks the default agent CLI; `odw doctor [--smoke]`
   checks the runtime, config and every adapter — `--smoke` sends one real prompt.
+- `odw new [<template>] [--name N] [--force] [--yes]` (**ODW extension**): a workflow
+  from a template embedded in the binary — `hello`, `review-swarm`, `fix-until-green`,
+  `plan-approve-execute`, `pr-shepherd`, `fan-out-reduce` — written to
+  `.odw/workflows/<name>.js` with a starter test, `.odw/tests/<name>.json`, that `odw
+  test <name>` passes at once, and for the review-ish ones an eval skeleton in
+  `.odw/evals/`. It never overwrites a file with other content without `--force`
+  (then it writes nothing, exit 1); `odw new` alone lists the templates. In a git
+  repository without a `.worktreeinclude` it prints one built from the lockfiles
+  (`symlink:` lines for `node_modules`, `.venv`, `vendor`) and `.env*` files, and
+  writes it with `--yes` or a yes at a terminal. The templates are embedded at build
+  time (`scripts/embed-templates.mjs` → `src/templates.generated.ts`, drift-checked in
+  CI like the dashboard).
+- `odw init` ends with a first run that costs nothing: at a terminal it offers `odw new
+  hello` and runs `odw run hello --dry` — the live view, every agent stubbed — then
+  prints the dashboard command and the real `odw run hello`. It never makes a paid call
+  itself; off a terminal it prints the commands. The README quick start now leads with
+  `odw new`, `odw test` and `odw run --dry`, then the real run.
 - A redesigned dashboard ("paper, ink and signal"): an Activity pulse with a "Needs
   you" strip, a live DAG with checkpoint gates and diff badges, a timeline, drawers with
   outputs, usage, failure reasons and tiers, the Changes and Transcript views, a Spend

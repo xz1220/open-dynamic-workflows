@@ -157,6 +157,20 @@ cp -r "$skill_source" ~/.claude/skills/open-dynamic-workflows
 `odw doctor --smoke` 还会给默认适配器发一条真实提示——能发现那些装得上、但在无头模式下卡在
 登录或审批提示上的 CLI。
 
+**第一次运行不花钱。** 从模板开始,先测试,再看它在所有 agent 都用桩回复的情况下跑一遍——然后
+再真跑:
+
+```bash
+odw new                    # 列出模板:hello、review-swarm、fix-until-green、plan-approve-execute……
+odw new hello              # 写入 .odw/workflows/hello.js 和起步测试 .odw/tests/hello.json
+odw test hello             # 起步测试:脚本化回复,不调用模型,$0
+odw run hello --dry        # 实时视图与阶段树,每个 agent 都是桩回复,$0(看板:odw serve --open)
+odw run hello              # 真实运行,用你的默认 agent CLI
+```
+
+在终端里,`odw init` 最后会主动提供这一步:写入 `hello`、运行 `odw run hello --dry`,然后打印
+看板命令和真实运行的命令——它自己从不发起付费调用。见[从模板开始](#从模板开始odw-扩展)。
+
 ODW 主要是**被你的 coding agent 驱动**的,不是手动跑。装好 skill 和二进制后,你只要把一个
 大任务丢给 agent——它会**自己写一个 workflow 并跑起来**,而且是在它自己的上下文之外:
 
@@ -197,6 +211,41 @@ odw run examples/fan-out-reduce.js --wait --args '{"question": "Design a rate li
 [`deep-research-verified.js`](examples/deep-research-verified.js)(在 codex 适配器上以
 100 个 agent、约 9 分钟端到端验证过)还配了可进 cron 的包装脚本——见
 [`docs/recipes/deep-research-verified.md`](docs/recipes/deep-research-verified.md)。
+
+### 从模板开始(ODW 扩展)
+
+`odw new` 从内置在二进制里的模板写出一个 workflow,所以只装了二进制也有这些模板;单独运行
+`odw new` 会列出它们。
+
+```bash
+odw new review-swarm                    # .odw/workflows/review-swarm.js、.odw/tests/…、.odw/evals/…
+odw new review-swarm --name pre-merge   # 同上,但命名为 pre-merge(workflow、测试与 eval 里都改名)
+odw new hello --force                   # 覆盖内容不同的已有文件
+odw new hello --yes                     # 同时写入建议的 .worktreeinclude(见下)
+```
+
+| 模板 | 作用 |
+| --- | --- |
+| `hello` | 两个 agent 并行描述这个仓库;纯 JS 留下更有把握的那个回答(只读) |
+| `review-swarm` | 从多个角度并行审阅改动,逐条核实每个发现,只留下站得住的 |
+| `fix-until-green` | agent 修复失败的测试;odw 自己跑测试来检查(`expect`),没达到就退回 |
+| `plan-approve-execute` | 起草计划,在 `checkpoint()` 等人批准,再并行执行各步骤 |
+| `pr-shepherd` | 把 PR 推到全绿:修复失败的 CI 和新的审阅评论、推送,标记为可审阅前先问人 |
+| `fan-out-reduce` | 并行起草 N 个回答,再综合出最好的一个 |
+
+- **写入什么**(在当前目录):`.odw/workflows/<名字>.js`(`odw run <名字>`)、
+  `.odw/tests/<名字>.json`——带脚本化回复的起步用例,`odw test <名字>` 立刻通过,$0——以及
+  `review-swarm` 与 `pr-shepherd` 的 eval 骨架 `.odw/evals/<名字>.json`(真实运行:先编辑再
+  `odw eval <名字>`)。除 `hello` 外,模板就是同名的[示例](examples/)。
+- **从不覆盖**内容不同的已有文件,除非加 `--force`:此时什么都不写,退出码 1。已经与模板
+  完全相同的文件算作已写入,所以同一条命令跑两次没有副作用。
+- **在没有 `.worktreeinclude` 的 git 仓库里**,它会为[隔离 worktree](#隔离-worktree-与-agent-端口)
+  打印一份建议:仓库里的 `.env*` 文件(不含 `.env.example` 之类),以及根据 lockfile 推断的
+  依赖目录的 `symlink:` 行(npm、yarn、pnpm、bun 对应 `node_modules`;uv、Poetry、Pipenv、PDM
+  对应 `.venv`;Composer 对应 `vendor`)。加 `--yes`,或在终端里回答 yes 才写入;否则从不写。
+- **`odw init`**(不带 `--check`)最后提供零成本的首跑:在终端里先询问,然后写入 `hello`(若
+  `.odw/workflows/hello.js` 已存在则直接用它),带实时视图运行 `odw run hello --dry`,再打印
+  `odw serve --open` 和真实的 `odw run hello`。不在终端时只打印这些命令。
 
 ## 编程原语
 
@@ -1038,6 +1087,7 @@ odw test review-swarm --case 2 --json     # 只跑一个用例(编号或名字);
 odw test review-swarm --keep              # 保留临时运行(odw logs <run_id> --runs-root …);或 --runs-root DIR
 odw run review-swarm --record             # 一次真实运行,存为 .odw/tests/review-swarm.json 的一个用例(--record-to FILE)
 odw run review-swarm --dry                # 每个 agent 都得到桩回复:阶段树与各阶段 agent 数,$0
+odw new review-swarm                      # 模板连同起步测试,一开始就能通过(见上)
 ```
 
 ```json
