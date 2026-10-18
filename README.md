@@ -512,6 +512,7 @@ odw result $RUN          # final value
 odw diff $RUN --stat     # what isolated agents changed; odw apply $RUN --agent N (or --all) lands it
 odw notes $RUN           # what its agents told each other on the notes board (above)
 odw compare $OLD $RUN    # what changed between two runs: setup, time, cost, failures, replies (below)
+odw estimate review      # p50/p90 time, cost, tokens and agents of its next run, from earlier runs (below)
 odw eval review          # cases × adapters × repeats: pass rate, cost and time per cell (below)
 odw export $RUN --otlp   # the run as OpenTelemetry traces (OTLP/JSON; --send posts it; below)
 odw bundle $RUN          # the run as one redacted file to share: $RUN.odwrun (odw view FILE shows it; below)
@@ -743,6 +744,65 @@ $ odw status $RUN
 
 Adapters declare where their CLI reports usage in their `output`; see
 [Configure adapters](#configure-adapters).
+
+### Know the cost before you run (ODW extension)
+
+A run says what it spent as it goes; `odw estimate` says what it is likely to spend
+before it starts — from what earlier runs of the same workflow spent, never a guess:
+
+```text
+$ odw estimate review-swarm --args '{"dir":"src"}'
+estimate for review-swarm (5 runs, matched by source)
+                  agents  time p50 / p90  cost p50 / p90   out tokens p50 / p90
+  total           9–11    6:20 / 7:00     $2.620 / $3.400  43k / 54k
+  phase Plan      1       50.0s / 1:00    $0.140 / $0.160  2.1k / 2.1k
+  phase Review    7–9     3:13 / 3:47     $2.380 / $3.150  38k / 49k
+  phase Report    1       36.0s / 42.0s   $0.090 / $0.090  3.0k / 3.0k
+  adapter claude  9–11    5:36 / 5:42     $2.620 / $3.400  43k / 54k
+  · based on the last 5 finished runs of this exact source
+  · it assumes similar args: fan-outs as wide as in those runs (agents per phase)
+  · none of those runs had these args
+```
+
+- It reads the last 20 finished (`done`) runs of the workflow — resumed runs left
+  out, their replayed agents cost nothing — of the exact same source (`meta.sourceHash`)
+  when there are any, else of the same workflow name, and says which. Without any it
+  prints `no estimate: no finished runs of this workflow yet`.
+- For the run, each phase and each adapter: the median and 90th percentile of the
+  wall time, the cost, the tokens and the agents started. Fan-outs are as wide as they
+  were in those runs; with `--args` it says how many of them had the same args.
+- `odw estimate <wf> --json` prints it for scripts, and `GET /api/estimate?workflow=<name>`
+  serves it (`&sourceHash=<sha256>`; without one, the newest run's source is matched).
+- `odw run <wf> --estimate` prints the estimate, then asks `start the run? [y/N]` on
+  a terminal; `--yes` starts it without asking. With no terminal and no `--yes` it does
+  not start.
+
+**In the run.** Before a `parallel()` or `pipeline()` at least `fanOutWarn` wide, or
+one a cost gate covers, the run logs a forecast: its width × the median cost of the
+agents of that phase in earlier runs (of the agents with the same label prefix, for an
+`agent()`), with the p90 — `cost forecast: parallel() of 40 tasks in phase "Review"
+~$12.40 (p90 $18.00) — …`. A `pipeline()` counts an agent per item per stage.
+
+**`costGate`.** With `"costGate": { "usd": 5 }` in the config — or
+`parallel(thunks, { costGate: { usd: 5 } })`, or `agent(prompt, { costGate: { usd: 1 } })`
+for one agent — a fan-out forecast over the gate becomes a checkpoint first:
+
+```js
+try {
+  await parallel(files.map((f) => () => agent(`Review ${f}`, { label: `review-${f}` })))
+} catch (e) {
+  if (e.name !== 'CostGateRejected') throw e
+  log('review skipped: ' + e.message)   // the person said no; the run goes on
+}
+```
+
+The checkpoint — `This fan-out is forecast to cost ~$12.40 (p90 $18.00) — go?`, its
+payload `{ width, forecast }` — is answered like any other: `odw approve|reject`, the
+dashboard, or the [phone approve links](#approve-from-your-phone-odw-extension). A
+rejection throws a `CostGateRejected` the script may catch. `costGate: null` on a
+`parallel()` lifts the setting for that call. Without history the gate lets fan-outs
+through and logs that once per run. `costGate` is recorded in the run's setup for
+`odw compare`.
 
 ### Schedule runs (ODW extension)
 

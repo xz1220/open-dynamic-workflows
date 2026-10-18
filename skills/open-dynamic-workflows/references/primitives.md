@@ -156,8 +156,33 @@ each captures its own value.
 
 **ODW extension:** `parallel(thunks, { notes: true })` turns the run's notes
 board on for every agent its thunks start (an agent's own `notes: false` wins);
-`notes` is the only option, anything else throws. See [notes](#notes-odw-extension).
+`notes` and `costGate` are the only options, anything else throws. See [notes](#notes-odw-extension).
 Claude Code's `parallel()` takes only the thunks.
+
+**ODW extension — cost forecast and `costGate`.** Before a `parallel()` or
+`pipeline()` at least `fanOutWarn` wide, or one a cost gate covers, the run logs a
+forecast from earlier finished runs of the same workflow (the same source when
+there are any, else the same name): width × the median cost of that phase's agents,
+with the p90 (`cost forecast: parallel() of 40 tasks in phase "Review" ~$12.40
+(p90 $18.00) — …`; a `pipeline()` counts items × stages agents). With a gate —
+the `costGate` setting `{ usd }`, or `parallel(thunks, { costGate: { usd } })`
+(`costGate: null` lifts the setting for one call) — a forecast over `usd` becomes
+`checkpoint("This fan-out is forecast to cost ~$X (p90 $Y) — go?", { payload: {
+width, forecast } })` before any of its agents start. Approved, it runs; rejected,
+the call throws a recoverable `CostGateRejected` (`e.name`; `e.forecast`) that the
+script may catch. `agent(prompt, { costGate: { usd } })` gates one agent, by the
+agents of its phase with its label prefix (`review-3` → `review`), else the phase's;
+a resume that replays it does not ask. Without history the gate lets everything
+through and logs that once per run.
+
+```js
+try {
+  await parallel(files.map((f) => () => agent(`Review ${f}`)), { costGate: { usd: 5 } })
+} catch (e) {
+  if (e.name !== 'CostGateRejected') throw e
+  log('review skipped: ' + e.message)
+}
+```
 
 ## pipeline
 

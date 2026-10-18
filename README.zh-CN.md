@@ -444,6 +444,7 @@ odw result $RUN          # 最终值
 odw diff $RUN --stat     # 隔离 agent 改了什么;odw apply $RUN --agent N(或 --all)落地
 odw notes $RUN           # 它的 agent 在笔记板上互相告知的内容(见上文)
 odw compare $OLD $RUN    # 两次运行之间变了什么:配置、耗时、花费、失败、回复(见下文)
+odw estimate review      # 下一次运行的 p50/p90 耗时、花费、token 和 agent 数,依据以往运行(见下文)
 odw eval review          # 用例 × 适配器 × 重复次数:每个单元格的通过率、花费与耗时(见下文)
 odw export $RUN --otlp   # 把运行导出为 OpenTelemetry trace(OTLP/JSON;--send 直接发送;见下文)
 odw bundle $RUN          # 把运行写成一个可分享的脱敏文件:$RUN.odwrun(用 odw view FILE 查看;见下文)
@@ -647,6 +648,59 @@ $ odw status $RUN
   `large fan-out: parallel() starts 40 tasks (over fanOutWarn: 25) — …`——然后照常运行。
 
 适配器在自己的 `output` 里声明 CLI 在哪里上报用量;见[配置适配器](#配置适配器)。
+
+### 运行前先知道花费(ODW 扩展)
+
+运行会边跑边告诉你花了多少;`odw estimate` 在开跑之前就告诉你大概会花多少——依据同一
+工作流以往运行的实际花费,绝不凭空猜测:
+
+```text
+$ odw estimate review-swarm --args '{"dir":"src"}'
+estimate for review-swarm (5 runs, matched by source)
+                  agents  time p50 / p90  cost p50 / p90   out tokens p50 / p90
+  total           9–11    6:20 / 7:00     $2.620 / $3.400  43k / 54k
+  phase Plan      1       50.0s / 1:00    $0.140 / $0.160  2.1k / 2.1k
+  phase Review    7–9     3:13 / 3:47     $2.380 / $3.150  38k / 49k
+  phase Report    1       36.0s / 42.0s   $0.090 / $0.090  3.0k / 3.0k
+  adapter claude  9–11    5:36 / 5:42     $2.620 / $3.400  43k / 54k
+  · based on the last 5 finished runs of this exact source
+  · it assumes similar args: fan-outs as wide as in those runs (agents per phase)
+  · none of those runs had these args
+```
+
+- 它读取该工作流最近 20 次已完成(`done`)的运行——不含 resume 出来的运行,它们重放的
+  agent 不花钱——有完全相同源码(`meta.sourceHash`)的运行时只用这些,否则用同名工作流
+  的运行,并说明是哪一种。一次都没有时输出 `no estimate: no finished runs of this workflow yet`。
+- 对整次运行、每个阶段、每个适配器:墙钟时间、花费、token 和启动的 agent 数的中位数和
+  第 90 百分位。扇出宽度按那些运行里的实际宽度计;带 `--args` 时会说明其中多少次参数相同。
+- `odw estimate <wf> --json` 给脚本用;`GET /api/estimate?workflow=<名称>` 提供同样的数据
+  (`&sourceHash=<sha256>`;不给时按最新一次运行的源码匹配)。
+- `odw run <wf> --estimate` 先打印估算,在终端上再问 `start the run? [y/N]`;`--yes` 不问
+  直接开跑。没有终端又没给 `--yes` 时不会开跑。
+
+**运行中。** 在宽度不小于 `fanOutWarn`、或受成本闸门约束的 `parallel()` / `pipeline()` 之前,
+运行会记一条预测:宽度 × 以往运行中同一阶段 agent 花费的中位数(单个 `agent()` 则取同一标签
+前缀的 agent),并附 p90——`cost forecast: parallel() of 40 tasks in phase "Review" ~$12.40
+(p90 $18.00) — …`。`pipeline()` 按每个条目每个阶段一个 agent 计。
+
+**`costGate`。** 配置里写 `"costGate": { "usd": 5 }`——或 `parallel(thunks, { costGate: { usd: 5 } })`,
+或对单个 agent 用 `agent(prompt, { costGate: { usd: 1 } })`——预测超过闸门的扇出会先变成一个
+checkpoint:
+
+```js
+try {
+  await parallel(files.map((f) => () => agent(`Review ${f}`, { label: `review-${f}` })))
+} catch (e) {
+  if (e.name !== 'CostGateRejected') throw e
+  log('review skipped: ' + e.message)   // 对方拒绝了;运行继续
+}
+```
+
+这个 checkpoint——`This fan-out is forecast to cost ~$12.40 (p90 $18.00) — go?`,payload 为
+`{ width, forecast }`——和其他 checkpoint 一样作答:`odw approve|reject`、仪表盘,或
+[手机批准链接](#在手机上批准odw-扩展)。拒绝会抛出脚本可以捕获的 `CostGateRejected`。在某个
+`parallel()` 上写 `costGate: null` 可为这次调用取消该设置。没有历史时闸门放行所有扇出,并在
+每次运行中只记一次。`costGate` 记录在运行的 setup 里,供 `odw compare` 使用。
 
 ### 定时运行(ODW 扩展)
 

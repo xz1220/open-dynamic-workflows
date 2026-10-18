@@ -137,6 +137,19 @@ independent security reviews whose findings are all fixed.
 - Real usage and cost: the built-in `claude` adapter reads Claude Code's `stream-json`;
   tokens and dollars per agent and per run in `odw status`, the live view and the
   dashboard; `--budget` meters real output tokens; wide fan-outs warn up front.
+- Know the cost before you run (**ODW extension**): `odw estimate <wf> [--args JSON]
+  [--json]` gives the p50/p90 wall time, cost, tokens and agents of a run — and of each
+  phase and adapter — from the last 20 finished runs of the same source (else of the
+  same workflow name; it says which), and `no estimate: no finished runs of this
+  workflow yet` without any. `odw run --estimate` prints it and asks y/N on a terminal
+  (`--yes`: just print); `GET /api/estimate?workflow=…` serves it. Before a
+  `parallel()` or `pipeline()` at least `fanOutWarn` wide the run logs a cost forecast
+  (width × the median agent of that phase in those runs, and the p90), and with a
+  `costGate: { usd }` — the setting, a `parallel()`'s option, or an `agent()`'s — a
+  forecast over the gate becomes a checkpoint (`This fan-out is forecast to cost ~$X
+  (p90 $Y) — go?`, answerable from the phone links too); a rejection throws a
+  catchable `CostGateRejected`. Without history the gate lets fan-outs through and
+  says so once.
 - Codex agents report their tokens too: the built-in `codex` adapter runs `codex exec
   --json --output-last-message {reply_file}` — its reply from that file (else the last
   `agent_message` event), tokens from `turn.completed` (no cost: codex reports none),

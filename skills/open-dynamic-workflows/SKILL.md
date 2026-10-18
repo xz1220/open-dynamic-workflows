@@ -240,6 +240,8 @@ odw pause $RUN / resume $RUN / stop $RUN
 odw approve|reject $RUN     # answer a checkpoint() the run waits at — only on the user's say-so
                             # (approve --payload JSON|@file approves the user's edit; --edit needs their terminal)
 odw compare $OLD $RUN       # what changed between two runs: setup, time, cost, failures, replies (ODW extension)
+odw estimate wf.js          # p50/p90 time, cost, tokens, agents of its next run, from its earlier runs (ODW extension)
+                            #   --json for scripts; odw run --estimate prints it and asks y/N first (--yes: just print)
                             #   --agent <label|id>: one agent's whole reply diff; --json for scripts
 odw eval review             # cases × adapters × repeats: pass rate, cost, time per cell (ODW extension; below)
 odw test review             # scripted replies, no model, $0: does the logic hold? (ODW extension; below)
@@ -455,6 +457,16 @@ never open, follow or POST to one yourself.
 checkpoints detached (`RUN=$(odw run wf.js)`) and poll `odw status $RUN`, or
 bound the wait with `--wait --timeout <s>`. `odw resume` replays finished
 agents but asks every checkpoint again.
+
+**Cost gates (ODW extension).** Before a big fan-out, rather than a checkpoint of
+your own, a `costGate` asks only when it matters: with `"costGate": { "usd": 5 }`
+in the config, or `parallel(thunks, { costGate: { usd: 5 } })` (or an `agent()`'s
+`costGate` for one expensive agent), a fan-out forecast — from earlier runs of the
+same workflow — to cost more than that waits at a checkpoint (`This fan-out is
+forecast to cost ~$X (p90 $Y) — go?`). A rejection throws `CostGateRejected`;
+catch it (`e.name === 'CostGateRejected'`) to go on without that fan-out. Without
+history the gate lets everything through. Before suggesting a large run, show the
+user `odw estimate <wf>` — it never guesses: with no finished runs it says so.
 
 ### Schedule runs (ODW extension)
 

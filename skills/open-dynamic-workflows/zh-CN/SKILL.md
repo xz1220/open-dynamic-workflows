@@ -203,6 +203,8 @@ odw pause $RUN / resume $RUN / stop $RUN
 odw approve|reject $RUN     # 回答运行正在等待的 checkpoint()——只在用户明确要求时
                             # （approve --payload JSON|@file 批准用户修改后的内容；--edit 需要用户的终端）
 odw compare $OLD $RUN       # 两次运行之间变了什么:配置、耗时、花费、失败、回复(ODW 扩展)
+odw estimate wf.js          # 依据以往运行估算下一次的 p50/p90 耗时、花费、token、agent 数(ODW 扩展)
+                            #   --json 给脚本用;odw run --estimate 先打印并询问 y/N(--yes:只打印)
                             #   --agent <label|id>:某个 agent 的完整回复 diff;--json 供脚本使用
 odw eval review             # 用例 × 适配器 × 重复次数：每个单元格的通过率、花费、耗时（ODW 扩展；见下文）
 odw test review             # 脚本化回复，不调用模型，$0：逻辑是否成立？（ODW 扩展；见下文）
@@ -371,6 +373,14 @@ odw status $RUN     # 问题、它的 payload，以及回答它的确切命令
 检查点等待期间 `odw run --wait` 会一直阻塞。带检查点的 workflow 请以后台方式启动
 （`RUN=$(odw run wf.js)`）并轮询 `odw status $RUN`，或用 `--wait --timeout <秒>` 限定
 等待时长。`odw resume` 会重放已完成的 agent，但每个检查点都会重新提问。
+
+**成本闸门（ODW 扩展）。** 大规模扇出之前，与其自己加检查点，不如用 `costGate`，只在必要时
+才问：配置里写 `"costGate": { "usd": 5 }`，或 `parallel(thunks, { costGate: { usd: 5 } })`
+（单个昂贵 agent 用 `agent()` 的 `costGate`），依据同一工作流以往运行预测花费超过该值的扇出会
+停在检查点等待（`This fan-out is forecast to cost ~$X (p90 $Y) — go?`）。拒绝会抛出
+`CostGateRejected`；捕获它（`e.name === 'CostGateRejected'`）即可跳过该扇出继续运行。没有历史时
+闸门全部放行。建议用户跑大任务之前，先给他看 `odw estimate <wf>`——它从不猜测：没有已完成的
+运行时会直说。
 
 ### 定时运行（ODW 扩展）
 

@@ -110,8 +110,29 @@ const yes = votes.filter((v) => v && v.toLowerCase().startsWith('yes')).length
 每个 thunk 必须是零参——用 `.map((x) => () => agent(...))` 来构造，这样每个都捕获自己的值。
 
 **ODW 扩展：** `parallel(thunks, { notes: true })` 为其 thunk 启动的每个 agent 打开本次运行的
-笔记板（agent 自己的 `notes: false` 优先）；`notes` 是唯一的选项，其他键会抛错。见
+笔记板（agent 自己的 `notes: false` 优先）；只有 `notes` 和 `costGate` 两个选项，其他键会抛错。见
 [notes](#notesodw-扩展)。Claude Code 的 `parallel()` 只接受 thunk 数组。
+
+**ODW 扩展——花费预测与 `costGate`。** 在宽度不小于 `fanOutWarn`、或受成本闸门约束的
+`parallel()` / `pipeline()` 之前，运行会依据同一工作流以往已完成的运行（有相同源码的就只用
+这些，否则按同名）记一条预测：宽度 × 该阶段 agent 花费的中位数，并附 p90（`cost forecast:
+parallel() of 40 tasks in phase "Review" ~$12.40 (p90 $18.00) — …`；`pipeline()` 按条目数 × 阶段数
+计 agent）。设了闸门——`costGate` 设置 `{ usd }`，或 `parallel(thunks, { costGate: { usd } })`
+（`costGate: null` 为这次调用取消设置）——预测超过 `usd` 时，在任何 agent 启动之前先变成
+`checkpoint("This fan-out is forecast to cost ~$X (p90 $Y) — go?", { payload: { width, forecast } })`。
+批准则照常运行；拒绝则该调用抛出可恢复的 `CostGateRejected`（看 `e.name`；`e.forecast`），脚本
+可以捕获。`agent(prompt, { costGate: { usd } })` 为单个 agent 设闸门，依据同阶段、同标签前缀
+（`review-3` → `review`）的 agent，没有则取整个阶段；resume 重放它时不会再问。没有历史时闸门
+全部放行，每次运行只记一次。
+
+```js
+try {
+  await parallel(files.map((f) => () => agent(`Review ${f}`)), { costGate: { usd: 5 } })
+} catch (e) {
+  if (e.name !== 'CostGateRejected') throw e
+  log('review skipped: ' + e.message)
+}
+```
 
 ## pipeline
 
