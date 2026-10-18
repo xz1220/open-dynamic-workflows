@@ -34,7 +34,7 @@ import type { WaitingCheckpoint } from "../checkpoint.js";
 import type { WorkflowEvent } from "../events.js";
 import { readCliVersion, type CliVersion } from "../provenance.js";
 import { pausedForOf, type PausedFor } from "../quota-wait.js";
-import { RunStore, TERMINAL_STATES } from "./run-store.js";
+import { RunStore, TERMINAL_STATES, type EvalRunTag } from "./run-store.js";
 
 export type AgentState = "running" | "done" | "failed" | "stale";
 
@@ -214,6 +214,11 @@ export interface RunSummary {
    * extension; see ./bundle): when it was bundled and by which odw. Absent otherwise.
    */
   bundle?: { bundledAt: number | null; odwVersion: string | null };
+  /**
+   * A run `odw eval` started (meta.origin "eval"; ODW extension): the eval's
+   * name, the case, the adapter and the repeat. Absent for every other run.
+   */
+  eval?: EvalRunTag;
 }
 
 export interface RunDetail extends RunSummary {
@@ -684,6 +689,7 @@ export function summaryFrom(runId: string, facts: RunFacts): RunSummary {
     // Only a live paused run waits for a quota; a stale one's worker is gone.
     pausedFor: state === "paused" ? pausedForOf(status.pausedFor) : null,
     ...(meta.bundle ? { bundle: bundleOf(meta.bundle) } : {}),
+    ...evalTagOf(meta),
   };
 }
 
@@ -691,6 +697,14 @@ export function summaryFrom(runId: string, facts: RunFacts): RunSummary {
 function bundleOf(value: unknown): { bundledAt: number | null; odwVersion: string | null } {
   const b = (value !== null && typeof value === "object" ? value : {}) as Record<string, unknown>;
   return { bundledAt: asNumber(b.bundledAt), odwVersion: typeof b.odwVersion === "string" ? b.odwVersion : null };
+}
+
+/** `{ eval }` for a run `odw eval` started, as its meta.json names it; `{}` for any other. */
+export function evalTagOf(meta: Record<string, unknown>): { eval?: EvalRunTag } {
+  const tag = meta.eval as Partial<EvalRunTag> | null | undefined;
+  if (meta.origin !== "eval" || !tag || typeof tag !== "object") return {};
+  if (typeof tag.name !== "string" || typeof tag.case !== "string" || typeof tag.adapter !== "string") return {};
+  return { eval: { name: tag.name, case: tag.case, adapter: tag.adapter, repeat: typeof tag.repeat === "number" ? tag.repeat : 1 } };
 }
 
 /** The oldest checkpoint a fold has waiting, as status.json's `waiting` names it. */

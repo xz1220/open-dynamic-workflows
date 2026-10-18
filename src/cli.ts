@@ -25,6 +25,7 @@
  *   odw export <run_id> --otlp [--out FILE | --send]   (OpenTelemetry traces, runtime/otel-export.ts)
  *   odw bundle <run_id> [--out FILE] [--no-transcripts] [--max-bytes N]   (a shareable run, runtime/bundle.ts)
  *   odw serve FILE.odwrun | odw view FILE   (a bundle, read-only); odw serve --token [VALUE] (runtime/serve-auth.ts)
+ *   odw eval <file|name> [--adapter a,b] [--repeats N] [--json] [--out F] [--baseline F]   (src/eval/)
  */
 
 import { spawn } from "node:child_process";
@@ -64,7 +65,7 @@ import { startRun, startRunFromSource, waitFor } from "./runtime/launcher.js";
 import { attachRun, bannerLines, checkpointCommands, fallbackLines, formatEvent, formatUsage, resolveRunMode, type RunMode } from "./runtime/live-view.js";
 import { isRunActive, RunObserver } from "./runtime/run-liveness.js";
 import { RunStore, TERMINAL_STATES } from "./runtime/run-store.js";
-import { detail, type RunDetail } from "./runtime/runs-view.js";
+import { detail, evalTagOf, type RunDetail } from "./runtime/runs-view.js";
 import { exportRun, exportTimeout, otlpTarget, OTEL_SEND_TIMEOUT_MS, postTrace, spanCount } from "./runtime/otel-export.js";
 import { startServer } from "./runtime/server.js";
 import { BUNDLE_EXT, BundleError, bundleRedactor, createBundle, DEFAULT_BUNDLE_MAX_BYTES, isBundleRunId, openBundle, type OpenedBundle } from "./runtime/bundle.js";
@@ -73,6 +74,7 @@ import { printAgentLogs } from "./runtime/transcript-view.js";
 import { executeRun } from "./runtime/worker.js";
 import { pausedForOf, pausedText } from "./quota-wait.js";
 import { cmdSchedule } from "./schedule/command.js";
+import { cmdEval } from "./eval/command.js";
 import { isSeaBinary } from "./sea.js";
 import { describeConcurrency } from "./throttle.js";
 import { detectCaps, glyphs, palette, sanitizeText } from "./tty.js";
@@ -103,6 +105,7 @@ export const COMMANDS = [
   "export",
   "bundle",
   "view",
+  "eval",
 ] as const;
 
 export type Command = (typeof COMMANDS)[number];
@@ -147,6 +150,8 @@ export function helpText(): string {
     "  odw export <run_id> --otlp [--out FILE|--send]     the run as OpenTelemetry traces (OTLP/JSON; ODW extension)",
     "  odw bundle <run_id> [--out FILE] [--no-transcripts] one redacted file to share: <run_id>.odwrun (ODW extension)",
     "  odw view FILE.odwrun                               show a bundle read-only (odw serve --open FILE.odwrun)",
+    "  odw eval <file|name> [--adapter a,b] [--repeats N] cases × adapters × repeats: pass rate, cost, time (ODW extension)",
+    "                                                     --json, --out report.json, --baseline report.json (exit 1: regressed)",
     "",
     "Options:",
     "  --args JSON|@file   workflow input (JSON, @file.json, or a raw string)",
@@ -262,6 +267,8 @@ export async function main(argv: string[]): Promise<number> {
         return cmdBundle(rest);
       case "view":
         return await cmdServe(["--open", ...rest], "view");
+      case "eval":
+        return await cmdEval(rest);
       default:
         process.stderr.write(`odw: unknown command '${command}'\n\n${helpText()}\n`);
         return 2;
@@ -1168,7 +1175,10 @@ function cmdList(rest: string[]): number {
     // …and what a run paused for a spent quota waits for (ODW extension: quotaWait).
     const pausedFor = status.state === "paused" ? pausedForOf(status.pausedFor) : null;
     const until = pausedFor ? `  ${sanitizeText(pausedText(pausedFor), 120)}` : "";
-    process.stdout.write(`${ref.runId}  ${state.padEnd(8)}  ${name}${until}\n`);
+    // A run `odw eval` started says which eval, case, adapter and repeat (ODW extension).
+    const tag = evalTagOf(store.readMeta(ref.runId)).eval;
+    const of = tag ? `  (eval ${sanitizeText(`${tag.name} · ${tag.case} · ${tag.adapter} #${tag.repeat}`, 120)})` : "";
+    process.stdout.write(`${ref.runId}  ${state.padEnd(8)}  ${name}${until}${of}\n`);
   }
   return 0;
 }

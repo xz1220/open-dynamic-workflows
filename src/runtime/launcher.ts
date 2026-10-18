@@ -21,7 +21,7 @@ import { loadWorkflowScript } from "../loader.js";
 import { isSeaBinary } from "../sea.js";
 import { resolveWorkflow } from "../workflows/resolve.js";
 import { RunObserver } from "./run-liveness.js";
-import { RunStore } from "./run-store.js";
+import { RunStore, type EvalRunTag } from "./run-store.js";
 
 export interface StartRunOptions {
   args?: unknown;
@@ -41,8 +41,10 @@ export interface StartRunOptions {
    * agent, in place of the config's `permissions`.
    */
   permissions?: PermissionTier | null;
-  /** Where the run was initiated from (e.g. "chat" for Chat Host runs). */
+  /** Where the run was initiated from (e.g. "chat" for Chat Host runs, "eval" for `odw eval`'s). */
   origin?: string | null;
+  /** The `odw eval` cell this run is one repeat of (ODW extension), kept in its meta. */
+  eval?: EvalRunTag | null;
   /**
    * `odw resume`: the run (id + directory) whose saved agent results this run
    * replays — its agent() calls that are unchanged return those values
@@ -79,6 +81,7 @@ function commonCreateInput(options: StartRunOptions, source: string, workflowNam
     adapter: options.adapter ?? null,
     permissions: options.permissions ?? null,
     origin: options.origin ?? null,
+    eval: options.eval ?? null,
     resumedFrom: options.resumedFrom ?? null,
   };
 }

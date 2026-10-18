@@ -1,0 +1,39 @@
+{
+  "description": "Does routing.js send each request to the right specialist, on two CLIs, three times each? Run from the repository root: odw eval examples/evals/routing.json",
+  "workflow": "examples/routing.js",
+  "adapters": ["claude", "codex"],
+  "repeats": 3,
+  "concurrency": 2,
+  "timeout": 900,
+  "cases": [
+    {
+      "name": "crash-is-a-bug",
+      "args": { "request": "The login page returns a 500 after the latest deploy." },
+      "checks": [
+        { "state": "done" },
+        { "path": "category", "equals": "bug" },
+        { "path": "grade.verdict", "matches": "^(accept|revise)$" },
+        { "maxCostUsd": 0.5 }
+      ]
+    },
+    {
+      "name": "export-is-a-feature",
+      "args": { "request": "Add a CSV export to the reports page." },
+      "checks": [
+        { "state": "done" },
+        { "path": "category", "equals": "feature" },
+        { "command": "node -e \"const r = require(process.env.ODW_RESULT); process.exit(r.output.length > 200 ? 0 : 1)\"" }
+      ]
+    },
+    {
+      "name": "comparison-is-a-question",
+      "args": { "request": "Should a single-user desktop app keep its data in Postgres or SQLite?" },
+      "checks": [
+        { "state": "done" },
+        { "path": "category", "equals": "question" },
+        { "path": "output", "exists": true },
+        { "maxSeconds": 300 }
+      ]
+    }
+  ]
+}

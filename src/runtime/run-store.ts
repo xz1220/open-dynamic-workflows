@@ -11,7 +11,8 @@
  *   <runsRoot>/<workflow-slug>/<runId>/
  *     meta.json      immutable run description (script, args, source, config, workflowName,
  *                    resumedFrom: the run an `odw resume` replays; odwVersion and the
- *                    workflow's sourceHash, sha256, for `odw compare`)
+ *                    workflow's sourceHash, sha256, for `odw compare`; origin, and `eval`
+ *                    for a run of `odw eval`)
  *     status.json    mutable state (running/paused/done/failed/stopped, counters)
  *     events.jsonl   append-only progress stream
  *     agents/<agentId>.json  each completed agent()'s result, saved as it lands
@@ -101,14 +102,28 @@ export interface CreateRunInput {
   adapter?: string | null;
   /** Run-level permission tier override (`--permissions`; ODW extension), else the config's. */
   permissions?: string | null;
-  /** Where the run was initiated from (e.g. "chat" for Chat Host runs). */
+  /** Where the run was initiated from (e.g. "chat" for Chat Host runs, "eval" for `odw eval`'s). */
   origin?: string | null;
+  /** The `odw eval` cell this run is one repeat of (ODW extension); written to meta only when set. */
+  eval?: EvalRunTag | null;
   /**
    * `odw resume`: the run whose saved agent results this run replays, and its
    * directory (where the worker reads them — the runs may live in different
    * runs roots).
    */
   resumedFrom?: { runId: string; dir: string } | null;
+}
+
+/**
+ * Which `odw eval` run this is (ODW extension; see ../eval): the eval's name,
+ * the case, the adapter the cell names, and which repeat (from 1). Kept in
+ * meta.json as `eval`, beside `origin: "eval"`.
+ */
+export interface EvalRunTag {
+  name: string;
+  case: string;
+  adapter: string;
+  repeat: number;
 }
 
 /** A run plus the workflow it belongs to, returned by listing. */
@@ -165,6 +180,7 @@ export class RunStore {
       adapter: input.adapter ?? null,
       permissions: input.permissions ?? null,
       origin: input.origin ?? null,
+      ...(input.eval ? { eval: input.eval } : {}),
       resumedFrom: input.resumedFrom?.runId ?? null,
       resumedFromDir: input.resumedFrom?.dir ?? null,
       // First-class fact (not inferred from path topology): the script lives in
