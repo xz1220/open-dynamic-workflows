@@ -42,6 +42,11 @@ export interface SchemaFlag {
    * properties `required`. Any other schema goes in the prompt instead.
    */
   strict?: boolean;
+  /**
+   * The CLI takes only schemas whose root is `"type": "object"` (agy refuses
+   * any other at startup). Any other schema goes in the prompt instead.
+   */
+  objectRoot?: boolean;
 }
 
 /**
@@ -59,6 +64,13 @@ export type AdapterOutput =
       /** Newline-delimited JSON events; the last matching text event wins. */
       format: "jsonl";
       eventType: string;
+      /**
+       * The key that names each event's type (an ODW extension; default
+       * `"type"`). agy's stream-json names it `event`: `{"event":"result",…}`.
+       * Every event type below — `eventType`, `usageEvent`, `mcpEvent`,
+       * `errorEvents`, `background` rules — is read under it.
+       */
+      eventKey?: string;
       /**
        * Narrows the text events to those whose value at `path` is `equals`
        * (an ODW extension): Codex prints every finished item as an

@@ -30,7 +30,18 @@
  *                            (the list), error → error; turn.completed →
  *                            result; turn.failed → result (failed); error →
  *                            error
- *   ODW's own lines          {"kind":"text"} → text; attempt (with the
+ *   agy stream-json          (events named by `event`) init → raw (model,
+ *                            permission mode, tools); step_update:
+ *                            agent_response → text, its text_delta fragments
+ *                            joined once the step is DONE; tool → tool_call
+ *                            {tool_name, tool_info.parameters} then, once it
+ *                            ends, tool_result (failed: state ERROR or a
+ *                            tool_info.error); subagent_info → raw, a line per
+ *                            subagent (its log_uri: its output is not in this
+ *                            stream); error_message → error; user_input and
+ *                            checkpoint → nothing; result → result (failed
+ *                            unless status SUCCESS)
+ *   ODW's own lines         {"kind":"text"} → text; attempt (with the
  *                            adapter a fallback moved to); truncated
  *   anything else            raw: the line itself
  *
@@ -121,12 +132,13 @@ const TOOL_IDS_KEPT = 4096;
 export class TranscriptNormalizer {
   private count = 0;
   private readonly tools = new Map<string, string>();
+  private readonly agy = new AgySteps();
   /** The transcript was cut at maxTranscriptBytes (its truncation line went by). */
   truncated = false;
 
   /** The entries one line makes: none for a blank line, or an event shown otherwise. */
   line(line: string): TranscriptEntry[] {
-    return normalizeLine(line, this.tools).map((draft) => {
+    return normalizeLine(line, this.tools, this.agy).map((draft) => {
       if (draft.kind === "truncated") this.truncated = true;
       return finish(this.count++, draft);
     });
@@ -139,8 +151,11 @@ export function normalizeTranscript(text: string): TranscriptEntry[] {
   return text.split("\n").flatMap((line) => normalizer.line(line));
 }
 
-/** What one line says, as entries without their place. `tools` (tool id → name) is read and added to. */
-function normalizeLine(line: string, tools: Map<string, string>): Draft[] {
+/**
+ * What one line says, as entries without their place. `tools` (tool id →
+ * name) is read and added to; so is `agy`, agy's steps in progress.
+ */
+function normalizeLine(line: string, tools: Map<string, string>, agy: AgySteps = new AgySteps()): Draft[] {
   const text = line.trim();
   if (!text) return [];
   let event: unknown;
@@ -150,6 +165,8 @@ function normalizeLine(line: string, tools: Map<string, string>): Draft[] {
     return [{ kind: "raw", text }]; // a CLI's stray notice
   }
   if (!isRecord(event)) return [{ kind: "raw", text }];
+  // agy stream-json names its events by `event` (https://antigravity.google/docs/cli/headless).
+  if (typeof event.type !== "string" && typeof event.event === "string") return agyEvent(event, text, tools, agy);
   if (typeof event.type !== "string") return odwLine(event, text);
   switch (event.type) {
     // Claude Code stream-json (https://code.claude.com/docs/en/headless)
@@ -438,6 +455,117 @@ function codexItem(phase: string, raw: unknown, tools: Map<string, string>, line
   }
 }
 
+/** Characters of one agy response step's text kept while its fragments arrive (the entry is clipped at 4 KB anyway). */
+const AGY_TEXT_KEPT = 64 * 1024;
+
+/** agy steps in progress: each response step's text so far, and the subagents shown already. */
+class AgySteps {
+  readonly text = new Map<string, string>();
+  readonly subagents = new Set<string>();
+
+  /** Add a fragment to a step's text; the oldest steps are let go past {@link TOOL_IDS_KEPT}. */
+  append(key: string, fragment: string): void {
+    const sofar = (this.text.get(key) ?? "") + fragment;
+    this.text.delete(key);
+    this.text.set(key, sofar.length > AGY_TEXT_KEPT ? sofar.slice(0, AGY_TEXT_KEPT) : sofar);
+    if (this.text.size > TOOL_IDS_KEPT) this.text.delete(this.text.keys().next().value!);
+  }
+
+  /** Whether a subagent is new: true once per conversation id. */
+  firstSight(id: string): boolean {
+    if (this.subagents.has(id)) return false;
+    this.subagents.add(id);
+    if (this.subagents.size > TOOL_IDS_KEPT) this.subagents.delete(this.subagents.values().next().value!);
+    return true;
+  }
+}
+
+/**
+ * An agy stream-json event (https://antigravity.google/docs/cli/headless,
+ * "Streaming JSON"): `init`, `step_update` (one step's transition — ACTIVE
+ * while it runs, DONE when it ends, ERROR when a tool failed — or a fragment
+ * of its text), `result`. A step is keyed by its conversation and index.
+ */
+function agyEvent(event: Record<string, unknown>, line: string, tools: Map<string, string>, agy: AgySteps): Draft[] {
+  const words = (value: unknown): string => (typeof value === "string" ? value : "");
+  switch (event.event) {
+    case "init": {
+      const init = isRecord(event.init) ? event.init : {};
+      const names = strings(init.tools);
+      const said = [
+        words(init.model) ? `model ${words(init.model)}` : null,
+        words(init.agent) ? `agent ${words(init.agent)}` : null,
+        words(init.permission_mode) ? `permission mode ${words(init.permission_mode)}` : null,
+        names.length > 0 ? `${names.length} tools: ${names.join(", ")}` : null,
+      ].filter((part) => part !== null);
+      return [{ kind: "raw", text: said.length > 0 ? said.join(" · ") : "session started" }];
+    }
+    case "step_update": {
+      if (!isRecord(event.step_update)) return [{ kind: "raw", text: line }];
+      return agyStep(event.step_update, line, tools, agy);
+    }
+    case "result": {
+      const result = isRecord(event.result) ? event.result : {};
+      const error = words(result.error);
+      const draft: Draft = { kind: "result", isError: result.status !== "SUCCESS" };
+      const text = error || words(result.response) || words(result.status);
+      if (text) draft.text = text;
+      if (typeof result.num_turns === "number") draft.turns = result.num_turns;
+      return [draft];
+    }
+    default:
+      return [{ kind: "raw", text: line }];
+  }
+}
+
+function agyStep(step: Record<string, unknown>, line: string, tools: Map<string, string>, agy: AgySteps): Draft[] {
+  const key = `agy:${String(step.conversation_id ?? "")}:${String(step.step_index ?? "")}`;
+  const active = step.state === "ACTIVE";
+  const out: Draft[] = [];
+  // A step that delegates to subagents: each one once, with where its log is.
+  const subagents = isRecord(step.subagent_info) && Array.isArray(step.subagent_info.subagents) ? step.subagent_info.subagents : [];
+  for (const sub of subagents) {
+    if (!isRecord(sub)) continue;
+    const id = typeof sub.conversation_id === "string" && sub.conversation_id ? sub.conversation_id : JSON.stringify(sub);
+    if (!agy.firstSight(id)) continue;
+    const name = [sub.type_name, sub.role].filter((v): v is string => typeof v === "string" && v !== "").join(", ");
+    const log = typeof sub.log_uri === "string" && sub.log_uri ? ` · log ${sub.log_uri}` : "";
+    out.push({ kind: "raw", text: `subagent started${name ? ` (${name})` : ""}${log} — its output is not in this stream` });
+  }
+  switch (step.step_type) {
+    case "agent_response": {
+      if (typeof step.text_delta === "string") agy.append(key, step.text_delta);
+      if (active) return out;
+      const text = agy.text.get(key) ?? "";
+      agy.text.delete(key);
+      if (text.trim()) out.push({ kind: "text", text });
+      return out;
+    }
+    case "tool": {
+      const info = isRecord(step.tool_info) ? step.tool_info : {};
+      const name = [step.tool_name, info.name].find((v): v is string => typeof v === "string" && v !== "") ?? "tool";
+      if (!tools.has(key)) out.push(toolCall(key, name, info.parameters, tools));
+      if (active) return out;
+      tools.delete(key);
+      const error = errorMessage(info.error);
+      const output = error ?? (typeof info.output === "string" ? info.output : contentText(info.output));
+      out.push(toolResult(name, output, step.state === "ERROR" || error !== undefined));
+      return out;
+    }
+    case "error_message":
+      if (active) return out;
+      out.push({ kind: "error", text: errorMessage(step.error) ?? (typeof step.text_delta === "string" && step.text_delta ? step.text_delta : line) });
+      return out;
+    case "user_input":
+    case "checkpoint":
+      return out;
+    default:
+      // A step this does not know: once it ends, the line itself.
+      if (!active && subagents.length === 0) out.push({ kind: "raw", text: line });
+      return out;
+  }
+}
+
 function toolCall(id: unknown, name: unknown, input: unknown, tools: Map<string, string>): Draft {
   const tool = typeof name === "string" && name ? name : "tool";
   if (typeof id === "string" && id) {
@@ -478,6 +606,10 @@ const SUMMARY_FIELDS = [
   "description",
   "prompt",
   "skill",
+  // agy's tool parameters: run_command's, view_file's, list_dir's.
+  "CommandLine",
+  "AbsolutePath",
+  "DirectoryPath",
 ];
 
 /** What a tool call is about: its command, file, pattern, URL, … — else its input as JSON. */

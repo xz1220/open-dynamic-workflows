@@ -210,6 +210,28 @@
       "permissionArgs": { "edit": ["--force"] },
       "untrustedNote": "cursor has no documented way to ignore the repository's .cursor/rules, AGENTS.md, CLAUDE.md, mcp.json and hooks — headless it runs only on a workspace it trusts, and they still reach the agent"
     },
+    "agy": {
+      "label": "Antigravity CLI",
+      "command": ["agy", "--output-format", "stream-json", "--input-format", "text", "--disable-slash-commands", "--print-timeout", "24h", "{permission_args}"],
+      "stdin": "{prompt}",
+      "flags": { "model": ["--model"], "schema": { "args": ["--json-schema"], "mode": "inline", "objectRoot": true } },
+      "output": {
+        "format": "jsonl",
+        "eventKey": "event",
+        "eventType": "result",
+        "textPath": ["result", "response"],
+        "select": "last",
+        "usagePath": ["result", "usage"],
+        "errorPath": ["result", "error"],
+        "structuredPath": ["result", "structured_output"],
+        "deniedPath": ["result", "denied_actions"]
+      },
+      "permissionArgs": {
+        "edit": ["--mode", "accept-edits"],
+        "full": ["--mode", "accept-edits", "--dangerously-skip-permissions"]
+      },
+      "untrustedNote": "agy has no documented way to ignore the repository's AGENTS.md, GEMINI.md and .agents/ rules, skills, agents and MCP servers — they still reach the agent"
+    },
     "my_wrapper": {
       "label": "My custom wrapper (example)",
       "command": ["my-agent-wrapper", "--cwd", "{workspace}", "--prompt-file", "{prompt_file}"],

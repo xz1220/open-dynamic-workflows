@@ -43,7 +43,8 @@ type Count = (typeof USAGE_COUNTS)[number];
  * {@link Usage}; undefined when neither holds a number ODW recognizes.
  * Understood field names: Anthropic's (`input_tokens`, `output_tokens`,
  * `cache_read_input_tokens`, `cache_creation_input_tokens`, and Claude Code's
- * camel-case `cacheReadInputTokens` / `cacheCreationInputTokens`), OpenAI's
+ * camel-case `cacheReadInputTokens` / `cacheCreationInputTokens`; agy's
+ * `cache_read_tokens`, counted apart the same way), OpenAI's
  * (`prompt_tokens`, `completion_tokens`, `*_tokens_details.cached_tokens`),
  * Codex's `cached_input_tokens` and `cache_write_input_tokens` (both part of
  * its `input_tokens`, as its reasoning_output_tokens are of its
@@ -65,8 +66,11 @@ export function normalizeUsage(raw: unknown, cost?: unknown): Usage | undefined 
       const details = raw[key];
       return isRecord(details) ? amount(details.cached_tokens) : undefined;
     };
-    // Anthropic counts the cache apart from input_tokens: add it back in...
-    const cacheRead = first("cache_read_input_tokens", "cacheReadInputTokens");
+    // Anthropic counts the cache apart from input_tokens: add it back in. So
+    // does agy (https://antigravity.google/docs/cli/headless): a turn of 278
+    // input_tokens reports 30214 cache_read_tokens, and its total_tokens is
+    // input_tokens + output_tokens...
+    const cacheRead = first("cache_read_input_tokens", "cacheReadInputTokens", "cache_read_tokens");
     const cacheWrite = first("cache_creation_input_tokens", "cacheCreationInputTokens");
     let input = first("inputTokens", "input_tokens", "prompt_tokens", "promptTokens");
     if (cacheRead !== undefined || cacheWrite !== undefined) input = (input ?? 0) + (cacheRead ?? 0) + (cacheWrite ?? 0);

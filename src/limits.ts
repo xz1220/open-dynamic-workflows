@@ -17,8 +17,9 @@
  * events): Claude Code's stream-json `assistant` tool_use blocks and each
  * message's usage (its `result` brings the cost), Codex's `exec --json`
  * items (command_execution, file_change, mcp_tool_call, web_search) and its
- * per-turn `turn.completed` usage, and kilo's and opencode's `tool_use` and
- * `step_finish` (tokens and cost) events. A breach kills the CLI and
+ * per-turn `turn.completed` usage, kilo's and opencode's `tool_use` and
+ * `step_finish` (tokens and cost) events, and agy's stream-json tool steps
+ * and each step's usage (its `result` brings the total). A breach kills the CLI and
  * everything it started at once, like a stall, and the agent fails with
  * reason `runaway` and the evidence ("Bash `npm test` ×5 in a row", "41 tool
  * calls > 40"). A CLI that prints text reports no usage while it runs: its
@@ -289,7 +290,12 @@ export class LimitWatch {
     } catch {
       return;
     }
-    if (!isRecord(event) || typeof event.type !== "string") return;
+    if (!isRecord(event)) return;
+    if (typeof event.type !== "string") {
+      if (typeof event.event === "string") this.agyEvent(event);
+      if (!this.hit) this.checkSpend(false);
+      return;
+    }
     switch (event.type) {
       // Claude Code stream-json: tool_use blocks, and each message's usage.
       case "assistant": {
@@ -358,6 +364,33 @@ export class LimitWatch {
         return;
     }
     if (!this.hit) this.checkSpend(false);
+  }
+
+  /**
+   * agy stream-json (events named by `event`; https://antigravity.google/docs/cli/headless):
+   * a tool step, once it shows its parameters or ends; each step's usage; the
+   * result's total.
+   */
+  private agyEvent(event: Record<string, unknown>): void {
+    if (event.event === "result") {
+      const result = isRecord(event.result) ? event.result : {};
+      const usage = isRecord(result.usage) ? result.usage : null;
+      const out = usage ? count(usage.output_tokens) : undefined;
+      if (out !== undefined) this.runFinal.tokens = out;
+      return;
+    }
+    if (event.event !== "step_update" || !isRecord(event.step_update)) return;
+    const step = event.step_update;
+    if (step.step_type === "tool") {
+      const info = isRecord(step.tool_info) ? step.tool_info : {};
+      if (info.parameters !== undefined || step.state !== "ACTIVE") {
+        const name = typeof step.tool_name === "string" && step.tool_name ? step.tool_name : info.name;
+        this.call(`agy:${String(step.conversation_id ?? "")}:${String(step.step_index ?? "")}`, name, info.parameters);
+      }
+    }
+    // A step's usage comes once, as it ends.
+    const usage = isRecord(step.usage) && step.state !== "ACTIVE" ? step.usage : null;
+    this.runTokens += (usage ? count(usage.output_tokens) : undefined) ?? 0;
   }
 
   private codexItem(done: boolean, raw: unknown): void {

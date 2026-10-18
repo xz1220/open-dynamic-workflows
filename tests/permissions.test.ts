@@ -27,6 +27,9 @@ import { AgentError, ConfigError } from "../src/errors.js";
 const CODEX_EXEC = ["--json", "--output-last-message", "{reply_file}"];
 
 /** Every built-in's argv template as it was before tiers existed (codex's exec options since added). */
+/** agy's print-mode flags, before its tier's (https://antigravity.google/docs/cli/headless). */
+const AGY_PRINT = ["agy", "--output-format", "stream-json", "--input-format", "text", "--disable-slash-commands", "--print-timeout", "24h"];
+
 const BEFORE_TIERS: Record<string, string[]> = {
   codex: ["codex", "--search", "exec", ...CODEX_EXEC, "--skip-git-repo-check", "--sandbox", "workspace-write", "--cd", "{workspace}", "-"],
   claude: [
@@ -49,6 +52,7 @@ const BEFORE_TIERS: Record<string, string[]> = {
   kilo: ["kilo", "run", "--format", "json", "--auto", "--dir", "{workspace}"],
   opencode: ["opencode", "run", "--format", "json", "--auto", "--dir", "{workspace}"],
   cursor: ["agent", "--print", "--force", "--trust", "--output-format", "text", "--workspace", "{workspace}"],
+  agy: [...AGY_PRINT, "--mode", "accept-edits"],
 };
 
 /** The read and full argv templates of the built-ins that declare those tiers. */
@@ -90,6 +94,7 @@ const TIER_ARGV: Record<string, Partial<Record<PermissionTier, string[]>>> = {
     full: ["gemini", "--approval-mode", "yolo", "--prompt", "{prompt}"],
   },
   qwen: { full: ["qwen", "--approval-mode", "yolo", "--output-format", "text", "{prompt}"] },
+  agy: { full: [...AGY_PRINT, "--mode", "accept-edits", "--dangerously-skip-permissions"] },
 };
 
 const ok = (stdout: string): CliResult => ({ returncode: 0, stdout, stderr: "", timedOut: false, duration: 0.01 });
@@ -158,6 +163,7 @@ test("each built-in declares only the tiers its CLI's docs confirm", () => {
     kilo: ["edit"],
     opencode: ["edit"],
     cursor: ["edit"],
+    agy: ["edit", "full"],
   });
   // claude's read tier leaves no tool that edits or runs code, and keeps the web.
   const read = adapters.claude!.permissionArgs!.read!;
@@ -170,7 +176,7 @@ test("each built-in declares only the tiers its CLI's docs confirm", () => {
 });
 
 test("a CLI with no read mode is refused before anything spawns; full runs its edit flags", async () => {
-  for (const name of ["qwen", "kimi", "omp", "kilo", "opencode", "cursor"]) {
+  for (const name of ["qwen", "kimi", "omp", "kilo", "opencode", "cursor", "agy"]) {
     const { bridge, spawned } = recordingBridge("read");
     await assert.rejects(
       () => bridge.run({ prompt: "TASK", adapter: name }),
