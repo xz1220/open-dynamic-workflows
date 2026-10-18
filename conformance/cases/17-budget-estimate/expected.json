@@ -1,0 +1,24 @@
+{
+  "title": "spent() counts output tokens; for a CLI that reports none, characters / 4 rounded up",
+  "claudeCode": "unspecified",
+  "sources": [
+    "skills/open-dynamic-workflows/references/primitives.md#args--budget"
+  ],
+  "notes": "How a runtime counts tokens is its own. ODW uses the CLI's count, else ceil(characters / 4); the mock reports no usage (12 characters, then 4).",
+  "budget": 100000,
+  "mock": [
+    {
+      "when": "the text abcdefghijkl and",
+      "reply": "abcdefghijkl"
+    },
+    {
+      "when": "the text wxyz and",
+      "reply": "wxyz"
+    }
+  ],
+  "state": "done",
+  "result": [
+    3,
+    4
+  ]
+}

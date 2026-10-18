@@ -1,0 +1,16 @@
+{
+  "title": "a body that does not parse fails the run before any agent starts",
+  "claudeCode": "documented",
+  "sources": [
+    "docs/dynamic-workflows-research.md §3.2",
+    "skills/open-dynamic-workflows/SKILL.md"
+  ],
+  "mock": [
+    {
+      "when": "the text never and",
+      "reply": "never"
+    }
+  ],
+  "state": "failed",
+  "agents": []
+}

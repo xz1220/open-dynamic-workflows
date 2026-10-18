@@ -98,7 +98,7 @@ export function agentBaseEnv(
 }
 
 /** A test for names against `*` globs (`*` matches any run of characters, nothing else is special). */
-function globMatcher(patterns: string[], ignoreCase: boolean): (name: string) => boolean {
+export function globMatcher(patterns: string[], ignoreCase: boolean): (name: string) => boolean {
   const alternatives = patterns.map((pattern) =>
     pattern
       .split("*")

@@ -1,0 +1,44 @@
+{
+  "title": "pipeline() runs each item through every stage, each stage called with (previous, item, index)",
+  "claudeCode": "documented",
+  "sources": [
+    "docs/dynamic-workflows-research.md §3.2",
+    "skills/open-dynamic-workflows/references/primitives.md#pipeline",
+    "skills/open-dynamic-workflows/SKILL.md"
+  ],
+  "mock": [
+    {
+      "when": "the text x-0 and",
+      "reply": "x-0"
+    },
+    {
+      "when": "the text y-1 and",
+      "reply": "y-1"
+    },
+    {
+      "when": "the text z-2 and",
+      "reply": "z-2"
+    }
+  ],
+  "state": "done",
+  "result": [
+    {
+      "draft": "x-0",
+      "item": "x",
+      "index": 0,
+      "stages": 3
+    },
+    {
+      "draft": "y-1",
+      "item": "y",
+      "index": 1,
+      "stages": 3
+    },
+    {
+      "draft": "z-2",
+      "item": "z",
+      "index": 2,
+      "stages": 3
+    }
+  ]
+}

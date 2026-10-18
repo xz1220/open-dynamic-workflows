@@ -3,7 +3,7 @@
  * A fake `codex`, for the codex adapter's tests (codex is not installed where
  * they run). It takes the argv the built-in adapter passes — `--search` before
  * `exec`; `--json`, `--output-last-message <file>` (or `-o`),
- * `--skip-git-repo-check`, `--sandbox <mode>`, `--cd <dir>`, `--model <id>`,
+ * `--skip-git-repo-check`, `--ephemeral`, `--sandbox <mode>`, `--cd <dir>`, `--model <id>`,
  * `--output-schema <file>` and `-` after it — and refuses, as clap does (exit
  * 2), an argv codex would refuse. `--version` answers.
  *
@@ -17,6 +17,9 @@
  *               mcp_tool_call, web_search, todo_list, a warning `error` item
  *   schema      the --output-schema file's minimal valid value, as the message
  *   quota       an `error`, then `turn.failed`, both "Quota exceeded…"; exit 1
+ *   login       `turn.failed` with codex's expired-login message; exit 1
+ *   stream      a first message, then — once the file `GATE:<path>` names
+ *               exists — the final one: what a live view sees in between
  *   rate-limit  the first run: a retried "Reconnecting…" `error`, then
  *               "exceeded retry limit, last status: 429 …" and exit 1 (no
  *               turn.failed); later runs: a retried error, then a reply
@@ -57,7 +60,7 @@ const takesValue = { "--output-last-message": "lastMessage", "-o": "lastMessage"
 for (at++; at < args.length; at++) {
   const arg = args[at];
   if (arg === "--json") opts.json = true;
-  else if (arg === "--skip-git-repo-check") continue;
+  else if (arg === "--skip-git-repo-check" || arg === "--ephemeral") continue;
   else if (arg === "-") opts.stdin = true;
   else if (arg in takesValue) {
     const value = args[++at];
@@ -83,7 +86,7 @@ process.stdin.on("end", () => {
     run = existsSync(state) ? Number(readFileSync(state, "utf8")) || 0 : 0;
     writeFileSync(state, String(run + 1));
   }
-  const scenarios = { ok, tools, schema, quota, "rate-limit": rateLimit, noisy, silent, drift };
+  const scenarios = { ok, tools, schema, quota, login, stream, "rate-limit": rateLimit, noisy, silent, drift };
   const play = scenarios[scenario];
   if (!play) {
     process.stderr.write(`fake codex: no scenario '${scenario}'\n`);
@@ -194,6 +197,30 @@ function quota() {
   emit({ type: "error", message: said });
   emit({ type: "turn.failed", error: { message: said } });
   process.exitCode = 1;
+}
+
+function login() {
+  start();
+  const said = "Your access token could not be refreshed because your refresh token has expired. Please log out and sign in again.";
+  emit({ type: "turn.failed", error: { message: said } });
+  process.exitCode = 1;
+}
+
+function stream() {
+  const gate = /GATE:(\S+)/.exec(prompt)?.[1];
+  start();
+  message("thinking it over");
+  const deadline = Date.now() + 10_000;
+  const wait = () => {
+    if (gate && !existsSync(gate) && Date.now() < deadline) {
+      setTimeout(wait, 20);
+      return;
+    }
+    message("the streamed answer");
+    turnCompleted(800, 600, 25);
+    finish("the streamed answer");
+  };
+  wait();
 }
 
 function rateLimit(run) {

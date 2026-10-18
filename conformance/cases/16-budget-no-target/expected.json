@@ -1,0 +1,15 @@
+{
+  "title": "without a target, budget.total is null and remaining() is Infinity",
+  "claudeCode": "unspecified",
+  "sources": [
+    "skills/open-dynamic-workflows/references/primitives.md#args--budget"
+  ],
+  "notes": "Claude Code documents budget as the user's token target; what it holds when there is none is not documented.",
+  "mock": [],
+  "state": "done",
+  "result": {
+    "total": null,
+    "spent": 0,
+    "remainingIsInfinity": true
+  }
+}

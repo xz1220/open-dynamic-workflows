@@ -139,6 +139,8 @@ function uncheckedNote(adapter: Adapter, unchecked: SchemaIssue[], flag: SchemaF
 /** The argv that hands a CLI its schema, and what removes what was written for it. */
 export interface NativeSchemaArgs {
   args: string[];
+  /** `file` mode: the file written (a container sandbox binds it; ODW extension). */
+  path?: string;
   cleanup(): Promise<void>;
 }
 
@@ -160,7 +162,7 @@ export async function nativeSchemaArgs(flag: SchemaFlag, schema: JsonSchema, fil
     await cleanup();
     throw err;
   }
-  return { args: [...flag.args, path], cleanup };
+  return { args: [...flag.args, path], path, cleanup };
 }
 
 /** `"oneOf" at #/properties/status; …`, the first few, then how many more. */

@@ -52,6 +52,7 @@ agent(prompt, opts?) -> Promise<unknown>
   full）——请求更高档位会让调用以 `AgentError` 失败，报错写明两个档位——没有只读模式的适配器会
   拒绝 `"read"`（调用在 CLI 启动前失败；`claude`、`codex` 和 `gemini` 有只读模式）。见
   [适配器](adapters.md#权限每个内置适配器能做什么)。Claude Code 会忽略它。
+- **opts.sandbox**（**ODW 扩展**）—— 让这个 agent 的 CLI 在容器中运行，或在比运行与适配器更严格的容器中运行：`"container"`，或 `{ network: "none", memory, cpus, pids, cliConfig: "none", image }`（只有别处都没设镜像时才能给 `image`）。只能收紧——容器下的 `"none"`、沙箱没有的网络、更高的限制或换镜像都会让调用在启动前失败。见 [adapters](adapters.md)。不计入 resume key。Claude Code 会忽略它。
 - **opts.expect**（**ODW 扩展**）—— agent 回复之后必须成立的条件，由 odw 检查：
   `{ changes?, files?, command?, match?, timeout? }`。见 [expect](#expectodw-扩展)。
   Claude Code 会忽略它。
@@ -259,6 +260,7 @@ Claude Code 的 Workflow 工具没有 `exec` 全局（`validate()` 会对此给�
 - **opts.label** / **opts.phase** —— 进度展示，与 `agent` 相同。label 默认取命令的前
   40 个字符。
 - **opts.check** —— 命令没有以 0 退出时抛出 `ExecError`。
+- **opts.network**（**ODW 扩展**）—— 运行的 `sandbox` 为容器时，该步骤在运行镜像的全新容器里执行，以相同路径挂载运行的 source（及其 `cwd`），环境同 agent；网络默认 `"none"`，可要求 `"default"`（沙箱本身没有网络时拒绝）。不在沙箱中时无效。
 
 非零退出码是结果，不是错误。无法启动的程序像 shell 一样报告退出码 `127`（找不到）或
 `126`。设了 `check: true` 时，失败会抛出携带 `.result` 的 `ExecError`——与 agent 失败
@@ -669,6 +671,21 @@ Ctrl-C（SIGINT、SIGTERM、SIGHUP）会停止本次 eval 启动的所有运行�
 
 花费与 token 只对上报了它们的运行求和与平均，都未上报时为 null。任意两个运行 id 都可以用
 `odw compare <runA> <runB>` 对照。
+
+## odw conformance
+
+```bash
+odw conformance [--json] [--case N|name]... [--dir DIR]
+```
+
+把方言的行为写成可运行的用例（ODW 仓库的 `conformance/`，随 npm 包发布）：每个用例是一份
+Claude Code 方言的普通工作流脚本，配一个 `expected.json`——返回值，以及要紧的日志、phase 和
+agent——由确定性的 mock agent 按用例里的表作答。`odw conformance` 把每个用例当作一次真实的
+odw 运行来跑，逐个打印通过与否；任一失败退出码为 1，未知用例或不符合格式的套件为 2。每个用例
+要么是 `documented`（Claude Code 的文档确定了该行为），要么是 `unspecified`（文档没有确定；
+用例记录的是 ODW 的行为——也就是可能出现差异的地方）。通过一致性测试的脚本两边都能跑：只依赖
+documented 用例所确定的行为。这条命令属于 ODW；用例本身可以在 Claude Code 上手动运行，
+`conformance/README.md` 说明了格式，供其他运行时实现自己的 runner。
 
 ## 限制
 

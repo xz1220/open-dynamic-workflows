@@ -306,6 +306,15 @@ ODW 已实现下列原语能力。依赖宿主私有运行机制的脚本,迁移
 调用给出 warning)。可恢复失败产生的 `null` 需要显式处理：接受部分结果、重试,或在要求完整
 交付时报告失败。
 
+**一致性测试套件。** [`conformance/`](conformance/) 把方言的行为写成可运行的用例:每个用例是
+一份 Claude Code 方言的普通工作流脚本,配一个 `expected.json`(返回值,以及要紧的日志、phase
+和 agent),由确定性的 mock agent 按表作答。`odw conformance [--json] [--case N]` 用它们检查
+当前的 odw(任一用例失败即退出码 1;CI 会运行)。每个用例都标明 Claude Code 的文档是否确定了
+该行为(`documented`),还是没有(`unspecified`:用例记录的是 ODW 的行为)。只依赖 documented
+用例所确定行为的脚本,两边都能跑。这些用例是普通工作流文件,也可以在 Claude Code 上手动运行;
+[`conformance/README.md`](conformance/README.md) 说明了格式,其他运行时可以据此实现自己的
+runner。
+
 ## 运行与观测
 
 在交互式终端里,`odw run` 会附着一个**实时前台视图**——每个 agent(以及带 `$` 提示符的
@@ -503,9 +512,21 @@ token、不显示花费。CLI 不上报输出 token 时
 $ odw status $RUN
 20261017-101500-ab12cd  [done]  review-swarm
   dispatched: 9 agent(s)
-  usage: 1.4M tokens in (1.2M cache read, 96k cache write) · ~38k out · $2.871 (estimated in part: 1 of 9 agents reported no output tokens)
+  usage: 1.4M tokens in (1.2M cache read, 96k cache write) · ~50k out · $2.867 (estimated in part: 1 of 9 agents reported no output tokens)
+  spend by phase (share of tokens):
+    01  Scan    6 agents  1.1M  $2.100  78%  ███████████████▋
+    02  Verify  2 agents  296k  $0.767  21%  ████▎
+    03  Report  1 agent   10k~       —  <1%  ▏
+    not every agent reported dollars, so shares are of tokens
+    ~ partly estimated: a CLI that reports no count is measured as characters / 4
 ```
 
+- `odw status` 按阶段拆分花费 —— 即看板花费清单(spend receipt)的文本版:按工作流声明的
+  顺序每个阶段一行(尚未开始的会注明),最后是不属于任何阶段的 agent;每行给出 agent 数、
+  token、花费、占比,以及一条 Unicode 方块组成的占比条(没有 UTF-8 locale 时用 `#`)。
+  当每个有花费的 agent 都报了美元时,占比按美元计算,否则按 token。整块不超过 100 列,
+  在 `NO_COLOR` 下或输出到管道时为纯文本。
+- 当列出的运行中有任何一个报了美元时,`odw list` 会多出一列花费(没有花费的运行显示 `—`)。
 - 实时视图的汇总行显示输出 token(也就是 `--budget` 所计的数)和累计花费;每个已结束
   agent 的那一行显示它自己的花费。
 - `GET /api/runs` 和 `GET /api/runs/:id` 以 `usage` 给出运行的合计(有 agent 的输出
@@ -806,7 +827,12 @@ odw view run.odwrun                   # 即 odw serve --open run.odwrun:在浏�
   并可复制 `odw apply` 命令(以及保留的分支)。
 - **Workspace** —— 所有已保存的工作流:阶段的静态结构及每个阶段调用的原语、源码和最近的运行。
 - **Chat Host** —— 正常的 Codex 对话;提到 ODW 或 workflow 时,该回合会关联到一个真实的后台
-  运行,工具卡片实时更新。
+  运行,工具卡片实时更新。普通回合运行 `codex exec --json`(只读沙箱、`--ephemeral`),
+  并按内置 `codex` 适配器的方式解读:回复取自它的 `--output-last-message` 文件,没有时取最后
+  一条 `agent_message`;回复流式输出期间,每条消息完成时即显示。该回合的 token(来自
+  `turn.completed`;codex 不报美元)记录在消息的 `usage` 上。codex 报告的失败按 agent 失败
+  的方式归类:额度用尽或登录被拒时会说明该怎么做 —— 等额度窗口重置,或执行 `codex login` ——
+  消息带上 `failureReason`(`quota`、`auth` 等)(ODW 扩展)。
 
 <table>
   <tr>
@@ -1250,6 +1276,103 @@ agent 的 `agent_started` 事件、保存的结果和 `odw agents --json` 行都
 `trust: "untrusted"`,看板的详情抽屉会显示它,运行的 `run_started` setup 也记录 `trust`。
 不受信任不是沙箱:它只在 CLI 允许的地方挡住仓库的指令和配置,agent 能做什么仍由权限
 档位决定。
+
+### 在容器中运行 agent(ODW 扩展)
+
+默认情况下,ODW 以你的身份在本机运行每个 agent CLI,只靠 CLI 自己的权限参数约束。容器
+沙箱则把每次 CLI 运行——以及每个 `exec()` 步骤——放进一个全新的 Docker 或 Podman 容器。
+它需要显式开启,镜像由你提供:镜像里必须装好 CLI,ODW 从不拉取镜像。
+
+```bash
+docker build -t odw-agents --build-arg UID=$(id -u) --build-arg GID=$(id -g) examples/sandbox
+odw doctor                                   # 找到引擎、镜像存在、冒烟运行
+odw run wf.js --sandbox container --sandbox-image odw-agents
+```
+
+[`examples/sandbox/Dockerfile`](examples/sandbox/Dockerfile) 构建一个带 Node、git、Claude
+Code 与 Codex 的镜像(用 `--build-arg CLAUDE_CODE_VERSION=…` 固定版本)。也可以写进配置,
+按运行、按适配器或按调用设置:
+
+```jsonc
+{
+  "sandbox": {
+    "kind": "container",
+    "image": "odw-agents",          // 必填;从不拉取
+    "engine": "docker",             // 或 "podman";默认:装了 docker 用 docker,否则 podman
+    "network": "default",           // 或 "none"(见下文)
+    "cliConfig": "copy",            // 或 "mount-ro" | "none"
+    "mounts": [{ "source": "~/datasets", "readonly": true }], // 默认只读,除非 "readonly": false
+    "memory": "4g", "cpus": 2, "pids": 512 // pids 默认 512;其余用引擎默认值
+  },
+  "adapters": {
+    "codex": { "sandbox": { "kind": "container", "image": "odw-codex", "network": "none" } }
+  }
+}
+```
+
+```js
+await agent('Review this diff', { sandbox: { network: 'none', memory: '1g' } })
+await agent('Summarize', { sandbox: { image: 'odw-agents' } }) // 在宿主上运行的 run 中单个调用进容器
+await exec('npm test')                                          // 在运行的容器里,不联网
+await exec('npm ci', { network: 'default' })                    // 需要网络的步骤
+```
+
+与权限档位一样,沙箱只能收紧:适配器的 `sandbox` 可以开启容器并设定自己的镜像、引擎、
+CLI 配置和更多挂载,网络与各项限制取更严格者;`agent()` 调用可以开启容器(只有在别处都
+没给镜像时才能指定镜像)、拿掉网络、降低限制或丢掉 CLI 配置(`cliConfig: "none"`)。任何
+更宽松的要求——容器下的 `sandbox: "none"`、沙箱没有的网络、更多内存、换镜像、挂载——都会让
+调用在启动前失败。`odw run|rerun|resume --sandbox container [--sandbox-image <镜像>]` 让整次
+运行进入容器(配置里的容器,或该镜像的容器);沙箱运行的 rerun 或 resume 仍在沙箱中。
+
+每次 CLI 运行变成(`docker run --rm -i --init --pull never --name odw-<run>-<agent>-<随机> --label odw.run=<run> …`):
+
+- **只有工作区,别无其他。** agent 的工作区——隔离 worktree 或运行的 source——以相同路径
+  读写挂载并作为工作目录,所以 diff、transcript、`expect` 检查与 `{workspace}` 照常工作。宿主
+  文件系统的其他部分都不可见:只有私有 home、这次 CLI 运行要用的文件(提示词文件、schema
+  文件、回复文件)以及你列出的 `mounts`。在隔离 worktree 里,容器内的 `git` 找不到仓库
+  (worktree 的 `.git` 指向外面);ODW 照常在宿主上取 diff。agent 需要历史时,用 `mounts`
+  把仓库的 `.git` 只读挂进去。
+- **CLI 的登录,以副本形式。** `cliConfig: "copy"`(默认)把 CLI 自己的登录与配置文件复制到
+  私有临时 home(挂载在 `/odw/home`,运行结束后删除),agent 能用,但改不了你的原件。只复制
+  各 CLI 文档点名的文件:Claude Code 的 `~/.claude/.credentials.json`、`settings.json`、
+  `CLAUDE.md`、`agents/`、`commands/`、`skills/` 和去掉 `projects`(你的其他仓库)的
+  `~/.claude.json`;Codex 的 `~/.codex/auth.json`、`config.toml`、`AGENTS.md`;Gemini 的
+  `~/.gemini/settings.json`、`oauth_creds.json`、`google_accounts.json`、`GEMINI.md`、`.env`。
+  从不复制会话历史或日志。支持 `CLAUDE_CONFIG_DIR` 与 `CODEX_HOME`。`"mount-ro"` 改为只读
+  绑定这些文件(Claude Code 运行时会改写 `~/.claude.json`,它更适合 `copy`);`"none"` 让 home
+  为空。macOS 上 Claude Code 把登录存在钥匙串里,没有文件可复制:请设置
+  `CLAUDE_CODE_OAUTH_TOKEN`(来自 `claude setup-token`)或 `ANTHROPIC_API_KEY`;Codex 用
+  `CODEX_API_KEY`,Gemini 用 `GEMINI_API_KEY`。找不到可复制的文件时,运行会说明一次。CLI 若在
+  容器里刷新登录,新令牌写进随后丢弃的副本;若提供方轮换刷新令牌,你本机的登录之后可能需要
+  重新 `/login`——沙箱运行最适合长期令牌与 API key。
+- **以你的身份,没有特权。** `--user` 为你的 uid:gid(Podman 另加 `--userns keep-id`),agent
+  写下的文件归你所有;`--cap-drop ALL`、`--security-opt no-new-privileges`、`--pids-limit`
+  (512)、可选的 `--memory` 与 `--cpus`、只读根文件系统加 tmpfs `/tmp`,以及转发信号的 `--init`。
+- **只有 `agentEnv` 放行的环境变量**——设置 `"agentEnv": "minimal"` 可挡住 shell 里的其他
+  密钥——按名字传递(`--env NAME`),进程列表里看不到值;宿主路径类变量(`PATH`、`HOME`、
+  `TMPDIR`、`XDG_*`、`CLAUDE_CONFIG_DIR`、`CODEX_HOME`)不传。
+- **`ODW_PORT` 照常设置,但不发布任何端口。** agent 在该端口启动的服务只在它的容器内可达。
+- **随运行一起被杀掉。** 超时、停顿、被停止或没有干净退出的 CLI 运行,其容器按名字被杀掉
+  (`docker kill`,再 `docker rm --force`);只杀引擎客户端会让容器继续运行。worker 自己被杀时,
+  它的退出处理会删除仍在运行的全部容器。崩溃遗留的容器可用
+  `docker ps --filter label=odw.run` 找到。
+
+缺少引擎或镜像时,运行在第一个 agent 启动前就以 `ConfigError` 失败,并说明如何构建镜像;
+`odw doctor` 做同样的检查,并运行 `docker run --rm --pull never --network none <镜像> true`
+(不涉及模型)。配置了容器时启动横幅多一行沙箱信息,每个 agent 的 `agent_started` 事件与看板的 AgentView
+带 `sandbox: { kind, engine, image, network }`,运行 setup 记录 `sandbox` 供 `odw compare` 比较。
+沙箱中的 agent 不记录 CLI 版本:版本探测在宿主上运行,宿主的 CLI 不是镜像里的那个。
+
+**它保护什么,不保护什么。** 它让 agent——以及它运行的一切——读不到也改不了你文件系统的
+其余部分(SSH 密钥、其他仓库、shell 配置、真实的 CLI 配置),只能以你的身份运行,也留不下
+进程。它**不能**让你的代码远离模型:agent 仍会把读到的内容发给模型 API。在
+`network: "default"`(默认值,因为 agent CLI 必须连到模型 API)下它拥有开放网络,可以把工作区
+以及环境变量和登录中的密钥发往任何地方——请把密钥挡在 `agentEnv` 之外,不需要模型 API 的
+地方都用 `network: "none"`(`exec()` 步骤默认就不联网)。工作区是可写的:agent 写在那里的东西
+——原地工作时仓库里的 git hook、`package.json` 脚本、Makefile——会在你之后运行它时在宿主上
+执行,所以请审阅改动(隔离 worktree 与 `odw apply` 有帮助)。容器与宿主共享内核,不是虚拟机。
+无 root 的 Docker 有自己的 uid 映射,文件可能归另一个 uid 所有;SELinux 宿主上的绑定挂载可能
+需要重新打标签。不支持 Windows 宿主。
 
 ### ODW 所保存内容中的密钥(ODW 扩展)
 
@@ -1800,6 +1923,7 @@ npm ci                # 安装锁定版本的构建依赖
 npm run build         # tsc → dist/
 npm test              # node:test 测试套件,由 mock 适配器驱动(无需真实账号)
 npm run typecheck     # tsc --noEmit
+npx tsx src/cli.ts conformance   # 方言一致性测试套件(conformance/);npm test 也会运行
 npm run build:binary  # 打包 + Node SEA + postject → 单个自包含的 ./build/odw
 ```
 

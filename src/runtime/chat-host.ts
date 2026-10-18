@@ -2,8 +2,13 @@
  * The Chat Host (L5): the dashboard's local chat sessions.
  *
  * A session is a transcript persisted by {@link ChatStore}. A plain turn
- * streams a reply from a local Codex process (`codex exec`, read-only
- * sandbox); a turn that asks for ODW/workflow work instead launches a real
+ * streams a reply from a local Codex process (`codex exec --json`, read-only
+ * sandbox), decoded as the built-in codex adapter decodes it: the reply from
+ * its `--output-last-message` file, else its last `agent_message` — each one
+ * shown as it completes while the reply streams — its tokens from
+ * `turn.completed`, kept on the message, and a failure it reports
+ * (`turn.failed`, `error`) classified like an agent's: a spent quota or a
+ * refused login says what to do. A turn that asks for ODW/workflow work instead launches a real
  * inline ODW run (`chat-host-bridge`) and links it to the session. When a
  * linked run settles, its result is posted back into the transcript as a user
  * message and Codex continues from it.
@@ -23,13 +28,18 @@
  */
 
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { spawn } from "node:child_process";
 import { mkdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
+import { BUILTIN_ADAPTERS } from "../adapters/builtin.js";
 import { listAdapters } from "../adapters/config.js";
-import type { Config } from "../adapters/types.js";
+import { classifyFailure, formatSeconds, type FailureClass, type FailureReason } from "../adapters/failures.js";
+import { AdapterOutputDecoder } from "../adapters/output.js";
+import { replyFile } from "../adapters/reply-file.js";
+import { runCommand } from "../adapters/runner.js";
+import { cliOk, type Adapter, type CliResult, type Config } from "../adapters/types.js";
+import type { Usage } from "../adapters/usage.js";
 import { redactorFor, type Redactor } from "../redact.js";
 import {
   ChatStore,
@@ -52,7 +62,35 @@ export interface ChatTurnRequest {
   cwd: string;
 }
 
-export type ChatTurnRunner = (req: ChatTurnRequest, onChunk: (chunk: string) => void) => Promise<void>;
+/** What a turn settled with: its reply (else the text streamed so far stands) and what it spent. */
+export interface ChatTurnResult {
+  text?: string;
+  usage?: Usage;
+}
+
+/**
+ * Stream one assistant reply. `onChunk` appends to the reply so far;
+ * `onReply` replaces it whole (a JSON stream's latest message). A runner may
+ * resolve with the final reply and its usage, and reject with a
+ * {@link ChatTurnError} to say why the turn failed.
+ */
+export type ChatTurnRunner = (
+  req: ChatTurnRequest,
+  onChunk: (chunk: string) => void,
+  onReply?: (text: string) => void,
+) => Promise<ChatTurnResult | void>;
+
+/** A Codex turn that failed: its message for the transcript, its class, and what it spent first. */
+export class ChatTurnError extends Error {
+  constructor(
+    message: string,
+    readonly reason: FailureReason,
+    readonly usage?: Usage,
+  ) {
+    super(message);
+    this.name = "ChatTurnError";
+  }
+}
 
 export interface ChatHostOptions {
   store: RunStore;
@@ -62,8 +100,10 @@ export interface ChatHostOptions {
   config: Config;
   /** Forwarded to launched runs so a worker loads the same config the server validated against. */
   configPath: string | null;
-  /** Test seam for the Codex-backed assistant stream. Defaults to `codex exec`. */
+  /** Test seam for the Codex-backed assistant stream. Defaults to `codex exec --json`. */
   runner?: ChatTurnRunner;
+  /** What starts Codex for the default runner: its executable and any leading args. Defaults to `codex`; a test seam. */
+  codex?: string[];
   /** Called whenever a session changes (the server pushes a `chat` SSE frame). */
   notify?: (sessionId: string) => void;
   /** What keeps likely secrets out of the sessions (ODW extension); built from `config` when absent. */
@@ -146,7 +186,7 @@ export class ChatHost {
       redactor: opts.redactor ?? redactorFor(opts.config),
     });
     this.runtime = {
-      runner: opts.runner ?? createDefaultChatRunner(),
+      runner: opts.runner ?? createDefaultChatRunner(opts.codex),
       activeSessions: new Set(),
       serverStartedAt: Math.floor(Date.now() / 1000),
       notify: (sessionId) => this.notifySoon(sessionId),
@@ -304,47 +344,80 @@ export class ChatHost {
   }
 }
 
-function createDefaultChatRunner(): ChatTurnRunner {
-  return ({ prompt, cwd }, onChunk) =>
-    new Promise<void>((resolvePromise, reject) => {
-      const child = spawn(
-        "codex",
-        [
-          "exec",
-          "--skip-git-repo-check",
-          "--ephemeral",
-          "--sandbox",
-          "read-only",
-          "--cd",
+/**
+ * The built-in codex adapter's output declaration (`match`, `errorEvents`,
+ * usage from `turn.completed`; see ../adapters/builtin.ts): what the Chat
+ * Host's own `codex exec --json` is decoded with.
+ */
+const CHAT_CODEX: Adapter = { name: "codex", label: "Codex CLI", command: [], output: BUILTIN_ADAPTERS.codex!.output };
+
+/**
+ * The default runner: `codex exec --json` in a read-only sandbox, its final
+ * message written to a reply file of its own (see ../adapters/reply-file.ts).
+ * The reply is that file's, else the last `agent_message`; each message is
+ * shown as it completes. A failure codex reports — or a failed exit — is
+ * classified like an agent's (../adapters/failures.ts) and rejects with a
+ * {@link ChatTurnError}.
+ */
+function createDefaultChatRunner(codex: readonly string[] = ["codex"]): ChatTurnRunner {
+  return async ({ prompt, cwd }, _onChunk, onReply) => {
+    const decoder = new AdapterOutputDecoder(CHAT_CODEX);
+    const reply = await replyFile();
+    try {
+      let shown: string | undefined;
+      const cli = await runCommand(
+        [...codex, "exec", "--json", "--output-last-message", reply.path, "--skip-git-repo-check", "--ephemeral", "--sandbox", "read-only", "--cd", cwd, "-"],
+        {
           cwd,
-          "--color",
-          "never",
-          "-",
-        ],
-        { cwd, stdio: ["pipe", "pipe", "pipe"], windowsHide: true },
+          stdin: prompt,
+          onStdout: (chunk, terminate) => {
+            decoder.write(chunk);
+            if (decoder.overflow) terminate(decoder.overflow);
+            const latest = decoder.latest;
+            if (latest !== undefined && latest !== shown) onReply?.((shown = latest));
+          },
+        },
       );
-      let stderr = "";
-      child.stdout.setEncoding("utf8");
-      child.stderr.setEncoding("utf8");
-      child.stdout.on("data", (chunk) => onChunk(stripAnsi(String(chunk))));
-      child.stderr.on("data", (chunk) => {
-        stderr += stripAnsi(String(chunk));
-      });
-      child.on("error", reject);
-      child.on("close", (code, signal) => {
-        if (code === 0) {
-          resolvePromise();
-          return;
-        }
-        const tail = stderr.trim().slice(-1600);
-        reject(new Error(`codex exited with ${code ?? signal ?? "unknown"}${tail ? `: ${tail}` : ""}`));
-      });
-      child.stdin.end(prompt);
-    });
+      const output = decoder.finish((await reply.read()).text);
+      // Codex's own failure report decides, whatever the exit status: its message is the evidence.
+      const failed: CliResult | null =
+        output.error !== undefined ? { ...cli, stdout: output.error, stderr: "" } : cliOk(cli) ? null : cli;
+      if (failed) {
+        const failure = classifyFailure(failed, { prompt });
+        throw new ChatTurnError(chatFailureText(failure, output.error ?? exitText(cli)), failure.reason, output.usage);
+      }
+      return { text: output.text, ...(output.usage ? { usage: output.usage } : {}) };
+    } finally {
+      await reply.cleanup();
+    }
+  };
 }
 
-function stripAnsi(text: string): string {
-  return text.replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, "");
+/** A failed exit, for the transcript: its status and the end of stderr. */
+function exitText(cli: CliResult): string {
+  const tail = cli.stderr.trim().slice(-1600);
+  return `codex exited with ${cli.returncode}${tail ? `: ${tail}` : ""}`;
+}
+
+/**
+ * A failed Codex turn in the transcript: for a spent quota or a refused login
+ * (or a rate limit), what the user can do — the bridge's wording for an
+ * agent's — then what codex said; for anything else, what codex said.
+ */
+function chatFailureText(failure: FailureClass, said: string): string {
+  const wait = failure.retryAfter !== undefined ? ` (in ${formatSeconds(failure.retryAfter)})` : "";
+  switch (failure.reason) {
+    case "quota":
+      return `Codex ran out of usage quota — wait for the window to reset${wait} and send the message again.\n\nCodex said: ${said}`;
+    case "auth":
+      return `Codex could not authenticate — log in to Codex CLI (codex login) and send the message again.\n\nCodex said: ${said}`;
+    case "rate_limit":
+      return `Codex hit a rate limit — send the message again${wait ? ` after the wait${wait}` : " in a moment"}.\n\nCodex said: ${said}`;
+    case "not_found":
+      return `Codex stream failed: could not start codex — install the Codex CLI and put it on PATH (odw doctor checks it). ${said}`;
+    default:
+      return `Codex stream failed: ${said}`;
+  }
 }
 
 function hasStreamingAssistant(session: ChatSessionRecord): boolean {
@@ -434,7 +507,7 @@ function startChatCodexTurn(
   let flushTimer: NodeJS.Timeout | null = null;
   // These run from timers and promise callbacks: a store write failing (disk
   // full, EACCES) is logged, never allowed to crash the server.
-  const update = (patch: { text: string; status?: "done" | "failed" }) =>
+  const update = (patch: { text: string; status?: "done" | "failed"; usage?: Usage; failureReason?: FailureReason }) =>
     guarded("chat message update", () => {
       chat.updateMessage(sessionId, placeholder.id, patch);
     });
@@ -457,22 +530,42 @@ function startChatCodexTurn(
   runtime.activeSessions.add(sessionId);
   void Promise.resolve()
     .then(() =>
-      runtime.runner({ session: withPlaceholder, prompt, cwd }, (chunk) => {
-        if (!chunk) return;
-        text += chunk;
-        queueFlush();
-      }),
+      runtime.runner(
+        { session: withPlaceholder, prompt, cwd },
+        (chunk) => {
+          if (!chunk) return;
+          text += chunk;
+          queueFlush();
+        },
+        (whole) => {
+          // A completed message is whole: it ends its line, so the store's
+          // redaction (which holds back a streaming reply's unfinished line) keeps it all.
+          text = whole.endsWith("\n") ? whole : `${whole}\n`;
+          queueFlush();
+        },
+      ),
     )
     .then(
-      () => {
+      (result) => {
         cancelFlush();
-        update({ text: text.trimEnd() || "Codex finished without producing text.", status: "done" });
+        const reply = typeof result?.text === "string" ? result.text : text;
+        update({
+          text: reply.trimEnd() || "Codex finished without producing text.",
+          status: "done",
+          ...(result?.usage ? { usage: result.usage } : {}),
+        });
       },
       (err) => {
         cancelFlush();
         const existing = text.trimEnd();
-        const errorText = `Codex stream failed: ${(err as Error)?.message ?? String(err)}`;
-        update({ text: existing ? `${existing}\n\n${errorText}` : errorText, status: "failed" });
+        const typed = err instanceof ChatTurnError ? err : null;
+        const errorText = typed ? typed.message : `Codex stream failed: ${(err as Error)?.message ?? String(err)}`;
+        update({
+          text: existing ? `${existing}\n\n${errorText}` : errorText,
+          status: "failed",
+          ...(typed ? { failureReason: typed.reason } : {}),
+          ...(typed?.usage ? { usage: typed.usage } : {}),
+        });
       },
     )
     .finally(() => {

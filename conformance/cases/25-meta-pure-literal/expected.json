@@ -1,0 +1,13 @@
+{
+  "title": "meta as a pure literal (comments, quoted keys, trailing commas) loads and the body runs",
+  "claudeCode": "documented",
+  "sources": [
+    "docs/dynamic-workflows-research.md §3.2",
+    "skills/open-dynamic-workflows/SKILL.md",
+    "src/dual-compat.ts",
+    "tests/dual-compat.test.ts"
+  ],
+  "mock": [],
+  "state": "done",
+  "result": "loaded"
+}

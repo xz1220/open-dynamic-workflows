@@ -1,0 +1,39 @@
+{
+  "title": "a failed agent() rejects with an Error that try/catch recovers from",
+  "claudeCode": "documented",
+  "sources": [
+    "skills/open-dynamic-workflows/references/primitives.md#agent"
+  ],
+  "notes": "By hand on Claude Code, the 'broken' agent has to fail some other way (a model cannot be told to fail).",
+  "mock": [
+    {
+      "when": "the text broken and",
+      "fail": {
+        "exit": 1,
+        "stderr": "mock: this agent fails"
+      }
+    },
+    {
+      "when": "the text beta and",
+      "reply": "beta"
+    }
+  ],
+  "state": "done",
+  "result": {
+    "caught": {
+      "isError": true,
+      "hasMessage": true
+    },
+    "after": "beta"
+  },
+  "agents": [
+    {
+      "label": "broken",
+      "outcome": "failed"
+    },
+    {
+      "label": "after",
+      "outcome": "finished"
+    }
+  ]
+}

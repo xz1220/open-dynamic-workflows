@@ -222,7 +222,61 @@ export interface Adapter {
   untrustedArgs?: string[];
   /** What an untrusted run still lets reach this CLI from the repository, said once per run (ODW extension). */
   untrustedNote?: string;
+  /**
+   * Run this CLI in a container (ODW extension; see ./sandbox): the fields it
+   * sets over the run's `sandbox` — its own image, say. It may turn the
+   * container on, never off.
+   */
+  sandbox?: ContainerSpec;
 }
+
+/** Where a sandboxed agent's container may reach (ODW extension): nowhere, or the engine's default network. */
+export type SandboxNetwork = "none" | "default";
+
+/**
+ * What a container gets of its CLI's own config and login (ODW extension):
+ * `copy` — the CLI's documented files, copied into a private home removed
+ * after the run; `mount-ro` — those files bound read-only; `none` — an empty home.
+ */
+export type SandboxCliConfig = "copy" | "mount-ro" | "none";
+
+/** A host path bound into a sandbox container (ODW extension). */
+export interface SandboxMount {
+  /** Absolute host path; it must exist. */
+  source: string;
+  /** Absolute path in the container; defaults to `source`. */
+  target: string;
+  /** Read-only unless the config says `"readonly": false`. */
+  readonly: boolean;
+}
+
+/**
+ * Run agent CLIs in a container (an ODW extension; see ./sandbox): each CLI
+ * run is `<engine> run --rm -i …` on `image`, with the agent's workspace
+ * bound at the same path and nothing else of the host but what is listed.
+ */
+export interface ContainerSandbox {
+  kind: "container";
+  /** `null`: docker when it is on PATH, else podman. */
+  engine: "docker" | "podman" | null;
+  /** The image the CLI runs in; it must hold the CLI, and is never pulled. */
+  image: string;
+  network: SandboxNetwork;
+  mounts: SandboxMount[];
+  cliConfig: SandboxCliConfig;
+  /** `--memory` (e.g. "4g"); null: the engine's default. */
+  memory: string | null;
+  /** `--cpus`; null: the engine's default. */
+  cpus: number | null;
+  /** `--pids-limit`. */
+  pids: number;
+}
+
+/** The run's sandbox (ODW extension): agents on the host, or in a container. */
+export type SandboxSetting = "none" | ContainerSandbox;
+
+/** An adapter's sandbox (ODW extension): the container fields it sets over the run's. */
+export type ContainerSpec = { kind: "container" } & Partial<Omit<ContainerSandbox, "kind">>;
 
 /**
  * What a reply that claims success does when its CLI refused the agent tool
@@ -421,6 +475,14 @@ export interface Settings {
    * nothing — the OTEL_* variables alone never turn it on.
    */
   otel: OtelSettings | false;
+  /**
+   * Where agent CLIs run (an ODW extension; `odw run --sandbox container`
+   * turns it on; see ./sandbox): `"none"` — on this machine, as you; a
+   * container — each CLI run in a fresh container of `image`, and `exec()`
+   * steps too (offline by default). An adapter's and an agent()'s `sandbox`
+   * may only tighten it.
+   */
+  sandbox: SandboxSetting;
 }
 
 /** Where and how a run's trace is exported (see `Settings.otel`). */

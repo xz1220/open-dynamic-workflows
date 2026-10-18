@@ -1,0 +1,25 @@
+{
+  "title": "a reply that never matches its schema makes agent() reject once the retries are spent",
+  "claudeCode": "unspecified",
+  "sources": [
+    "docs/dynamic-workflows-research.md §3.2",
+    "skills/open-dynamic-workflows/references/primitives.md#agent"
+  ],
+  "notes": "Claude Code forces its StructuredOutput tool and retries a mismatch; how often, and what agent() does when the reply never conforms, is not documented. ODW retries schemaRetries (2) times, then the call throws.",
+  "mock": [
+    {
+      "when": "{\"n\": 1}",
+      "reply": "this is not JSON"
+    }
+  ],
+  "state": "done",
+  "result": {
+    "caught": true
+  },
+  "agents": [
+    {
+      "label": "shape",
+      "outcome": "failed"
+    }
+  ]
+}

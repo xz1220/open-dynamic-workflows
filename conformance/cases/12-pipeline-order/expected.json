@@ -1,0 +1,24 @@
+{
+  "title": "pipeline() returns results in item order, whatever order the items finish in",
+  "claudeCode": "unspecified",
+  "sources": [
+    "skills/open-dynamic-workflows/references/primitives.md#pipeline"
+  ],
+  "notes": "Documented for parallel() (input order); for pipeline() only the return type (an array) is. ODW returns item order.",
+  "mock": [
+    {
+      "when": "the text slow and",
+      "reply": "slow",
+      "delayMs": 400
+    },
+    {
+      "when": "the text fast and",
+      "reply": "fast"
+    }
+  ],
+  "state": "done",
+  "result": [
+    "0:slow",
+    "1:fast"
+  ]
+}

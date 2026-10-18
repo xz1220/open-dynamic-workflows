@@ -1,0 +1,18 @@
+{
+  "title": "a meta that is not a pure literal (here, a variable) fails before the body runs",
+  "claudeCode": "documented",
+  "sources": [
+    "docs/dynamic-workflows-research.md §3.2",
+    "skills/open-dynamic-workflows/SKILL.md",
+    "src/dual-compat.ts",
+    "tests/dual-compat.test.ts"
+  ],
+  "mock": [
+    {
+      "when": "the text never and",
+      "reply": "never"
+    }
+  ],
+  "state": "failed",
+  "agents": []
+}

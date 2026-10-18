@@ -75,7 +75,7 @@
 
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import { agentBaseEnv } from "./adapters/agent-env.js";
 import { isOnPath, resolveAdapter } from "./adapters/config.js";
@@ -102,6 +102,14 @@ import {
 } from "./adapters/output.js";
 import { replyFile, usesReplyFile, type ReplyFile } from "./adapters/reply-file.js";
 import { runCommand, type CommandRunner } from "./adapters/runner.js";
+import {
+  openContainer,
+  planSandbox,
+  resolveEngine,
+  sandboxProblem,
+  type SandboxEngine,
+  type SandboxPlan,
+} from "./adapters/sandbox.js";
 import type { Usage } from "./adapters/usage.js";
 import {
   adapterDisplayName,
@@ -109,6 +117,7 @@ import {
   type Adapter,
   type CliResult,
   type Config,
+  type ContainerSandbox,
   type PermissionTier,
   type SchemaFlag,
 } from "./adapters/types.js";
@@ -158,6 +167,12 @@ export interface AgentRequest {
   permissions?: PermissionTier;
   /** An empty reply is the answer; otherwise the call fails with reason "empty_reply" (ODW extension). */
   allowEmpty?: boolean;
+  /**
+   * ODW extension: run this agent in a stricter sandbox than the run's and
+   * its adapter's — `"container"`, or `{ network: "none", … }`; it may only
+   * tighten (see adapters/sandbox.ts). Unvalidated: a bad value fails the call.
+   */
+  sandbox?: unknown;
 }
 
 /** The persona framing injected for `agentType`, on top of the independence preamble. */
@@ -494,6 +509,8 @@ export class Bridge {
   /** What this untrusted run has said about the repository reaching its agents (ODW extension: trust): each once. */
   private readonly trustNotes = new Set<string>();
   private readonly onRunNote: ((message: string, fields: Record<string, unknown>) => void) | undefined;
+  /** Per engine and image: whether a sandbox can run here, asked once per run (ODW extension). */
+  private readonly sandboxChecks = new Map<string, Promise<string | null>>();
 
   constructor(
     private readonly config: Config,
@@ -551,6 +568,39 @@ export class Bridge {
     this.trustNotes.add(key);
     if (this.onRunNote) this.onRunNote(message, fields);
     else onNote?.(message);
+  }
+
+  /**
+   * The container an agent on `adapter` runs in, if any (ODW extension; see
+   * adapters/sandbox.ts): the run's sandbox, its adapter's, and the call's
+   * own `option`, which may only tighten them.
+   */
+  sandboxFor(adapter: Adapter, option?: unknown): SandboxPlan {
+    return planSandbox(this.config.settings.sandbox ?? "none", adapter, option);
+  }
+
+  /**
+   * The engine `box` runs on, once it is known to run here: its engine is
+   * installed and its image present (asked once per run for each). Throws a
+   * ConfigError — fatal: every agent of the sandbox would fail alike.
+   */
+  async sandboxReady(box: ContainerSandbox): Promise<SandboxEngine> {
+    const engine = resolveEngine(box);
+    const key = `${engine ?? box.engine ?? ""}\u0000${box.image}`;
+    let check = this.sandboxChecks.get(key);
+    if (!check) {
+      check = sandboxProblem(box, this.runner);
+      this.sandboxChecks.set(key, check);
+    }
+    const problem = await check;
+    if (problem || !engine) throw new ConfigError(problem ?? "no container engine on PATH (docker or podman)");
+    return engine;
+  }
+
+  /** Check the run's own sandbox before anything runs (ODW extension): a ConfigError when it cannot run here. */
+  async checkSandbox(): Promise<void> {
+    const run = this.config.settings.sandbox;
+    if (run && run !== "none") await this.sandboxReady(run);
   }
 
   /**
@@ -888,8 +938,14 @@ export class Bridge {
       shared.onNote?.(schema.note);
     }
     const schemaFile = options.agentId !== undefined ? this.agentSchemaPath?.(options.agentId) : undefined;
+    // The container sandbox (ODW extension; see adapters/sandbox.ts): a call
+    // may only tighten it, and one that cannot run here never starts.
+    const sandbox = this.sandboxFor(adapter, request.sandbox);
+    if (sandbox.error) throw new AgentError(sandbox.error);
+    const engine = sandbox.box ? await unlessStopped(signal, () => this.sandboxReady(sandbox.box!)) : undefined;
     const call: CallEnv = {
       ...shared,
+      container: sandbox.box && engine ? { box: sandbox.box, engine, agentId: options.agentId } : undefined,
       permissionArgs: [...permissions.args, ...trust.args],
       untrusted: trust.trust === "untrusted",
       schema: schema?.native ? { flag: schema.native, value: request.schema!, file: schemaFile } : undefined,
@@ -1388,28 +1444,57 @@ export class Bridge {
         const command = [...expandAll(template, context), ...plan.extraArgs, ...(schema?.args ?? [])];
         const stdin = adapter.stdin ? expand(adapter.stdin, context) : undefined;
         const env = withAgentVars({ ...agentBaseEnv(process.env, this.config.settings), ...adapter.env }, call.env);
-        // What the CLI prints is kept as it arrives (ODW extension; see ./transcript).
-        const transcript = call.transcript;
-        transcript?.beginRun(why, adapter);
-        this.onCliRun?.(adapter);
-        const cli = await this.runner(command, {
-          stdin,
-          cwd: ws.path,
-          env,
-          timeout: limits.timeout,
-          stallTimeout: limits.stallTimeout,
-          onStdout,
-          observeStdout:
-            transcript || watch
-              ? (chunk) => {
-                  transcript?.stdout(chunk);
-                  watch?.();
-                }
-              : undefined,
-          onStderr: transcript && ((chunk) => transcript.stderr(chunk)),
-          signal,
-        });
-        transcript?.endRun(cli);
+        // The container sandbox (ODW extension; see adapters/sandbox.ts): the
+        // CLI runs in a fresh container with its workspace and the files this
+        // run hands it bound at the same paths. A run that did not end cleanly
+        // has its container killed by name; its private home goes either way.
+        const container = call.container
+          ? await openContainer({
+              box: call.container.box,
+              engine: call.container.engine,
+              runner: this.runner,
+              command,
+              workspace: ws.path,
+              extraMounts: [
+                ...(promptFile ? [{ source: promptFile, target: promptFile, readonly: true }] : []),
+                ...(schema?.path ? [{ source: schema.path, target: schema.path, readonly: true }] : []),
+                ...(reply ? [{ source: dirname(reply.path), target: dirname(reply.path), readonly: false }] : []),
+              ],
+              env,
+              runId: this.runId,
+              agentId: call.container.agentId,
+            })
+          : undefined;
+        if (container?.note) this.noteOnce(`sandbox:${adapter.name}`, container.note, { adapter: adapter.name }, call.onNote);
+        let cli: CliResult | null = null;
+        try {
+          // What the CLI prints is kept as it arrives (ODW extension; see ./transcript).
+          const transcript = call.transcript;
+          transcript?.beginRun(why, adapter);
+          // A version probe runs on the host: for a CLI in a container it would
+          // name another CLI (or none), so a sandboxed run records no version.
+          if (!container) this.onCliRun?.(adapter);
+          cli = await this.runner(container ? container.argv : command, {
+            stdin,
+            cwd: ws.path,
+            env: container ? container.env : env,
+            timeout: limits.timeout,
+            stallTimeout: limits.stallTimeout,
+            onStdout,
+            observeStdout:
+              transcript || watch
+                ? (chunk) => {
+                    transcript?.stdout(chunk);
+                    watch?.();
+                  }
+                : undefined,
+            onStderr: transcript && ((chunk) => transcript.stderr(chunk)),
+            signal,
+          });
+          transcript?.endRun(cli);
+        } finally {
+          await container?.close(cli !== null && cliOk(cli) && !signal?.aborted);
+        }
         // What it wrote to its reply file is read once it has exited.
         const written = reply ? await reply.read() : undefined;
         if (written?.note) call.onNote?.(`adapter '${adapter.name}': ${written.note}`);
@@ -1441,6 +1526,8 @@ interface CallEnv {
   permissionArgs?: string[];
   /** The CLI runs untrusted (ODW extension: trust): its worktree links nothing the repository's `.worktreeinclude` asks for. */
   untrusted?: boolean;
+  /** The container each CLI run of the call runs in, and its engine (ODW extension; see adapters/sandbox.ts). */
+  container?: { box: ContainerSandbox; engine: SandboxEngine; agentId?: number };
   /** Told when a CLI run starts answering (see RunOptions.onOutput). */
   onOutput?: () => void;
   /** The schema the CLI takes natively (ODW extension), and where its file goes in `file` mode. */

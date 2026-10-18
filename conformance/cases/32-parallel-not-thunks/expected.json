@@ -1,0 +1,12 @@
+{
+  "title": "parallel() given something other than functions throws, and uncaught, the run fails",
+  "claudeCode": "unspecified",
+  "sources": [
+    "skills/open-dynamic-workflows/references/primitives.md#parallel",
+    "skills/open-dynamic-workflows/SKILL.md"
+  ],
+  "notes": "Claude Code documents parallel(thunks); what it does with a non-function is not documented. ODW throws a script error.",
+  "mock": [],
+  "state": "failed",
+  "agents": []
+}

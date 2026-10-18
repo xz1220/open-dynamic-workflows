@@ -73,6 +73,7 @@ import { formatSeconds } from "./adapters/failures.js";
 import { isPermissionTier } from "./adapters/permissions.js";
 import type { McpServer } from "./adapters/output.js";
 import { planTrust, runTrust } from "./adapters/trust.js";
+import { sandboxView, type SandboxView } from "./adapters/sandbox.js";
 import { adapterDisplayName, type Adapter, type PermissionTier, type TrustLevel } from "./adapters/types.js";
 import { addUsage, estimatedUsage, type Usage } from "./adapters/usage.js";
 import type { AgentRequest } from "./bridge.js";
@@ -138,6 +139,14 @@ export interface AgentOptions {
   expectRetries?: number;
   /** ODW extension: an empty reply is the answer, not an "empty_reply" failure. */
   allowEmpty?: boolean;
+  /**
+   * ODW extension: run this agent in a container, or a stricter one than the
+   * run's — `"container"`, or `{ network: "none", memory, cpus, pids,
+   * cliConfig: "none", image }` (`image` only where nothing else sets one).
+   * It may only tighten the sandbox; asking for less fails the call (see
+   * adapters/sandbox.ts).
+   */
+  sandbox?: "none" | "container" | Record<string, unknown>;
 }
 
 export interface Budget {
@@ -455,6 +464,9 @@ export function createPrimitives(
     // Whether its CLI runs untrusted (ODW extension; see adapters/trust.ts):
     // the run's level, or its first adapter's own. The bridge adds the flags.
     const trust = planTrust(route.chain[0]!, runTrust(ctx.config)).trust;
+    // The container its CLI runs in, if any (ODW extension; see adapters/sandbox.ts):
+    // its first adapter's, for its events. The bridge enforces it, and refuses a looser one.
+    const sandbox = ctx.bridge.sandboxFor?.(route.chain[0]!, opts.sandbox).box ?? null;
     // A staggered fan-out (ODW extension): in a parallel() or pipeline() call,
     // an agent on a prompt-caching adapter whose prompt shares a long prefix
     // with an earlier one's — on the same model and persona, so the same
@@ -479,6 +491,7 @@ export function createPrimitives(
       isolation: opts.isolation,
       permissions: opts.permissions,
       ...(checks.allowEmpty ? { allowEmpty: true } : {}),
+      ...(opts.sandbox !== undefined ? { sandbox: opts.sandbox } : {}),
     };
     // The adapters it left down its chain, and the one it is on (ODW extension).
     const fellBackFrom: string[] = [];
@@ -548,6 +561,7 @@ export function createPrimitives(
           adapter: adapter.name,
           ...permissionField(permissions.tier ?? permissions.requested),
           ...trustField(trust),
+          ...sandboxField(sandbox && sandboxView(sandbox)),
           // What `odw compare` matches and shows it by (ODW extension): its
           // resume key, and the model it asked for (a tier keeps its @ name).
           key,
@@ -1052,6 +1066,11 @@ const surfaced = new WeakSet<object>();
 /** The `permissions` field an agent's start event and record carry: its tier, when it has one (ODW extension). */
 function permissionField(tier: unknown): { permissions?: PermissionTier } {
   return isPermissionTier(tier) ? { permissions: tier } : {};
+}
+
+/** The `sandbox` field an agent's start event carries when its CLI runs in a container (ODW extension; absent: on the host). */
+function sandboxField(view: SandboxView | null): { sandbox?: SandboxView } {
+  return view ? { sandbox: view } : {};
 }
 
 /** The `trust` field an agent's start event and record carry when its CLI runs untrusted (ODW extension; absent: trusted). */

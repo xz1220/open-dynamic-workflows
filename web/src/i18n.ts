@@ -702,6 +702,8 @@ const ZH: Record<string, string> = {
   "MCP unavailable": "MCP 不可用",
   "needs-auth": "需要授权",
   "disabled": "已禁用",
+  sandbox: "沙箱",
+  offline: "断网",
   // Evals.
   "Evals": "评测",
   "Eval": "评测",

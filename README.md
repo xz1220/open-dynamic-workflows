@@ -343,6 +343,17 @@ must be removed when targeting a host that does not provide them (`validate()`
 warns about `exec()` and `checkpoint()` calls). Recoverable `null` results require an explicit choice: accept a partial
 result, retry, or fail when the task requires every item.
 
+**Conformance suite.** [`conformance/`](conformance/) holds the dialect's behaviour
+as runnable cases: plain workflow scripts in Claude Code's dialect, each with an
+`expected.json` (its result, and the logs, phases and agents that matter), run on
+a deterministic mock agent. `odw conformance [--json] [--case N]` checks this odw
+against them (exit 1 on any failure; CI runs it). Each case says whether Claude
+Code's docs settle its behaviour (`documented`) or not (`unspecified`: it pins
+what ODW does). Scripts that keep to what the documented cases pin down run on
+both. The cases run on Claude Code by hand — they are plain workflow files — and
+[`conformance/README.md`](conformance/README.md) gives the format, so another
+runtime can implement a runner.
+
 ## Run and observe
 
 In an interactive terminal, `odw run` attaches a **live foreground view** — every
@@ -560,9 +571,23 @@ text-mode adapters), ODW counts `ceil(chars / 4)` of the reply and marks the fig
 $ odw status $RUN
 20261017-101500-ab12cd  [done]  review-swarm
   dispatched: 9 agent(s)
-  usage: 1.4M tokens in (1.2M cache read, 96k cache write) · ~38k out · $2.871 (estimated in part: 1 of 9 agents reported no output tokens)
+  usage: 1.4M tokens in (1.2M cache read, 96k cache write) · ~50k out · $2.867 (estimated in part: 1 of 9 agents reported no output tokens)
+  spend by phase (share of tokens):
+    01  Scan    6 agents  1.1M  $2.100  78%  ███████████████▋
+    02  Verify  2 agents  296k  $0.767  21%  ████▎
+    03  Report  1 agent   10k~       —  <1%  ▏
+    not every agent reported dollars, so shares are of tokens
+    ~ partly estimated: a CLI that reports no count is measured as characters / 4
 ```
 
+- `odw status` breaks the spend down by phase — the dashboard's spend receipt in
+  text: a line per phase in the order the workflow declared them (one not started
+  yet says so), then the agents outside every phase, each with its agents, tokens,
+  cost and share, and a bar of Unicode blocks (`#` without a UTF-8 locale). The
+  shares are of dollars when every agent that spent reported some, else of tokens.
+  It fits 100 columns and is plain text under `NO_COLOR` or in a pipe.
+- `odw list` adds a cost column when any listed run reported dollars (`—` for one
+  that did not).
 - The live view's summary line shows output tokens (what `--budget` counts) and the
   running cost; each settled agent's line shows its own cost.
 - `GET /api/runs` and `GET /api/runs/:id` carry the run's total as `usage`
@@ -902,7 +927,15 @@ switches to a night theme on demand. What it gives you:
 - **Workspace** — every saved workflow with a static outline of its phases and the
   primitives each one calls, its source, and its recent runs.
 - **Chat Host** — ordinary Codex conversation; mention ODW or workflow and the turn
-  is attached to a real background run whose tool card updates live.
+  is attached to a real background run whose tool card updates live. A plain turn
+  runs `codex exec --json` (read-only sandbox, `--ephemeral`) and reads it as the
+  built-in `codex` adapter does: the reply is its `--output-last-message` file, else
+  its last `agent_message`, and each message shows as it completes while the reply
+  streams. The turn's tokens (from `turn.completed`; codex reports no dollars) are
+  kept on the message as `usage`. A failure codex reports is classified like an
+  agent's: a spent quota or a refused login says what to do — wait for the window to
+  reset, or `codex login` — and the message carries `failureReason` (`quota`,
+  `auth`, …) (ODW extensions).
 
 <table>
   <tr>
@@ -1395,6 +1428,123 @@ untrusted. An untrusted agent's `agent_started` event, saved result and
 and the run's `run_started` setup records `trust`. Untrusted is not a sandbox: it
 keeps the repository's instructions and configuration out where a CLI allows, and the
 permission tier still decides what agents may do.
+
+### Run agents in containers (ODW extension)
+
+By default ODW runs each agent CLI on your machine, as you, held back only by the CLI's
+own permission flags. The container sandbox runs each CLI run — and each `exec()` step —
+in a fresh Docker or Podman container instead. It is opt-in, and the image is yours: it
+must hold the CLIs, and ODW never pulls it.
+
+```bash
+docker build -t odw-agents --build-arg UID=$(id -u) --build-arg GID=$(id -g) examples/sandbox
+odw doctor                                   # engine found, image present, a smoke run
+odw run wf.js --sandbox container --sandbox-image odw-agents
+```
+
+[`examples/sandbox/Dockerfile`](examples/sandbox/Dockerfile) builds one with Node, git,
+Claude Code and Codex (pin their versions with `--build-arg CLAUDE_CODE_VERSION=…`). Or
+set it in your config, per run, per adapter, or per call:
+
+```jsonc
+{
+  "sandbox": {
+    "kind": "container",
+    "image": "odw-agents",          // required; never pulled
+    "engine": "docker",             // or "podman"; default: docker if installed, else podman
+    "network": "default",           // or "none" (see below)
+    "cliConfig": "copy",            // or "mount-ro" | "none"
+    "mounts": [{ "source": "~/datasets", "readonly": true }], // read-only unless "readonly": false
+    "memory": "4g", "cpus": 2, "pids": 512 // pids defaults to 512; the rest to the engine's
+  },
+  "adapters": {
+    "codex": { "sandbox": { "kind": "container", "image": "odw-codex", "network": "none" } }
+  }
+}
+```
+
+```js
+await agent('Review this diff', { sandbox: { network: 'none', memory: '1g' } })
+await agent('Summarize', { sandbox: { image: 'odw-agents' } }) // a call in a run on the host
+await exec('npm test')                                          // in the run's container, offline
+await exec('npm ci', { network: 'default' })                    // a step that needs the network
+```
+
+Like permissions, the sandbox only tightens: an adapter's `sandbox` may turn the
+container on and set its own image, engine, CLI config and more mounts, and of network
+and the limits the stricter wins; an `agent()` call's may turn it on (naming an image
+only when nothing else does), take the network away, lower a limit or drop the CLI's
+config (`cliConfig: "none"`). Anything looser — `sandbox: "none"` under a container, a
+network its sandbox has not, more memory, another image, mounts — fails the call before
+it starts. `odw run|rerun|resume --sandbox container [--sandbox-image <image>]` puts a
+whole run in one (the config's container, or one of that image); a rerun or resume of a
+sandboxed run stays sandboxed.
+
+What each CLI run becomes (`docker run --rm -i --init --pull never --name odw-<run>-<agent>-<rand> --label odw.run=<run> …`):
+
+- **The workspace, and nothing else of yours.** The agent's workspace — its isolated
+  worktree, or the run's source — is bound read-write at the same path and is the
+  working directory, so diffs, transcripts, `expect` checks and `{workspace}` work as
+  before. The rest of the host's filesystem is not there: only a private home, the files
+  this CLI run is handed (its prompt file, schema file and reply file), and the `mounts`
+  you list. In an isolated worktree, `git` inside the container cannot reach the
+  repository (the worktree's `.git` points outside it); ODW takes the diff on the host as
+  always. Bind the repository's `.git` read-only with `mounts` if your agents need history.
+- **The CLI's login, as a copy.** `cliConfig: "copy"` (the default) copies the CLI's own
+  login and config files into a private temporary home (bound at `/odw/home`, removed
+  after the run), so the agent can use them but never change yours. Only the files each
+  CLI's docs name: Claude Code's `~/.claude/.credentials.json`, `settings.json`,
+  `CLAUDE.md`, `agents/`, `commands/`, `skills/` and `~/.claude.json` without its
+  `projects` (your other repositories); Codex's `~/.codex/auth.json`, `config.toml`,
+  `AGENTS.md`; Gemini's `~/.gemini/settings.json`, `oauth_creds.json`,
+  `google_accounts.json`, `GEMINI.md`, `.env`. Never session history or logs.
+  `CLAUDE_CONFIG_DIR` and `CODEX_HOME` are honoured. `"mount-ro"` binds those files
+  read-only instead (Claude Code rewrites `~/.claude.json` as it runs: prefer `copy` for
+  it); `"none"` leaves the home empty. On macOS Claude Code keeps its login in the
+  Keychain, so there is nothing to copy: set `CLAUDE_CODE_OAUTH_TOKEN` (from
+  `claude setup-token`) or `ANTHROPIC_API_KEY`; for Codex `CODEX_API_KEY`, for Gemini
+  `GEMINI_API_KEY`. The run says once when it found nothing to copy. A CLI that refreshes
+  its login inside the container writes the new token to the copy, which is thrown away;
+  where the provider rotates refresh tokens, your own login may then need a fresh
+  `/login`, so long-lived tokens and API keys suit sandboxed runs best.
+- **You, with no privileges.** `--user` your uid:gid (Podman: also `--userns keep-id`),
+  so what agents write is yours; `--cap-drop ALL`, `--security-opt no-new-privileges`,
+  `--pids-limit` (512), optional `--memory` and `--cpus`, a read-only root filesystem
+  with a tmpfs `/tmp`, and `--init` to forward signals.
+- **Only the environment `agentEnv` lets through** — set `"agentEnv": "minimal"` to keep
+  your shell's other secrets out — passed by name (`--env NAME`), so no value appears in
+  a process listing, less the host's paths (`PATH`, `HOME`, `TMPDIR`, `XDG_*`,
+  `CLAUDE_CONFIG_DIR`, `CODEX_HOME`).
+- **`ODW_PORT` still set, nothing published.** A server an agent starts on its port is
+  reachable inside its container only.
+- **Killed with the run.** A CLI run that times out, stalls, is stopped or does not exit
+  cleanly has its container killed by name (`docker kill`, then `docker rm --force`);
+  killing the engine client alone would leave it running. If the worker itself is killed,
+  its exit handler removes every container it still has. `docker ps --filter label=odw.run`
+  finds any left by a crash.
+
+A missing engine or image fails the run before its first agent starts, with a
+`ConfigError` that says how to build the image; `odw doctor` checks the same and runs
+`docker run --rm --pull never --network none <image> true` (no model involved). The
+start banner adds a sandbox line when a container is configured, each agent's `agent_started` event and the dashboard's
+AgentView carry `sandbox: { kind, engine, image, network }`, and the run's setup records
+`sandbox` for `odw compare`. Sandboxed agents record no CLI version: the probe runs on
+the host, whose CLI is not the image's.
+
+**What it protects, and what it does not.** It keeps an agent — and anything it runs —
+from reading or changing the rest of your filesystem (your SSH keys, other repositories,
+your shell profile, your real CLI config), from running as anything but you, and from
+leaving processes behind. It does **not** keep your code from the model: the agent
+still sends what it reads to its model API. With `network: "default"` (the default, as
+agent CLIs must reach their model API) it has the open network, so it can send your
+workspace and the secrets in its environment and login anywhere — keep secrets out of
+`agentEnv`, and use `network: "none"` wherever no model API is needed (`exec()`
+steps are offline by default). The workspace is writable: what an agent writes
+there — a git hook in a repository it works in place, a `package.json` script, a
+Makefile — runs on your host when you later run it, so review changes (isolated
+worktrees and `odw apply` help). A container shares the host's kernel; it is not a VM.
+Rootless Docker maps uids its own way, so files may come out owned by another uid; on
+SELinux hosts, binds may need relabelling. Windows hosts are not supported.
 
 ### Secrets in what ODW keeps (ODW extension)
 
@@ -2025,6 +2175,7 @@ npm ci                # install the locked build dependencies
 npm run build         # tsc → dist/
 npm test              # node:test suite, driven by a mock adapter (no real accounts)
 npm run typecheck     # tsc --noEmit
+npx tsx src/cli.ts conformance   # the dialect conformance suite (conformance/); also part of npm test
 npm run build:binary  # bundle + Node SEA + postject → a single self-contained ./build/odw
 ```
 

@@ -1,0 +1,17 @@
+{
+  "title": "the body can read its own meta as a constant",
+  "claudeCode": "unspecified",
+  "sources": [
+    "skills/open-dynamic-workflows/SKILL.md"
+  ],
+  "notes": "Claude Code reads meta statically; whether the body may also read it is not documented. ODW keeps `const meta` in the body.",
+  "mock": [],
+  "state": "done",
+  "result": {
+    "name": "meta-in-scope",
+    "phases": [
+      "First",
+      "Second"
+    ]
+  }
+}

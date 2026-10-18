@@ -27,6 +27,8 @@
 import { mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 
+import type { FailureReason } from "../adapters/failures.js";
+import type { Usage } from "../adapters/usage.js";
 import { hasMarker, type Redactor } from "../redact.js";
 import { readJsonFile, statSig, writeJsonAtomic } from "./fs-util.js";
 
@@ -63,6 +65,10 @@ export interface ChatMessage {
   tool?: ChatToolCall;
   /** Likely secrets in its text were replaced by `«redacted:<kind>»` before it was kept (ODW extension). */
   redacted?: boolean;
+  /** A Codex reply: what its turn spent, as `codex exec --json` reported it (tokens; codex reports no dollars). */
+  usage?: Usage;
+  /** A failed Codex reply: why, in the failure classifier's classes ("quota", "auth", …). */
+  failureReason?: FailureReason;
 }
 
 export interface ChatLinkedRunRef {
@@ -325,12 +331,13 @@ export class ChatStore {
    * stay "streaming" and block its session — and a failed write is retried.
    * `text` is the whole text so far, as it was said: with a redactor, a
    * streaming patch keeps what {@link Redactor.ready} lets go of it, and a
-   * settled one all of it, redacted.
+   * settled one all of it, redacted. `usage` and `failureReason` come with
+   * the settling patch of a Codex reply.
    */
   updateMessage(
     id: string,
     messageId: string,
-    patch: { text?: string; status?: ChatMessageStatus },
+    patch: { text?: string; status?: ChatMessageStatus; usage?: Usage; failureReason?: FailureReason },
   ): ChatSessionRecord | null {
     const data = this.load();
     const index = data.sessions.findIndex((s) => s.id === id);
@@ -338,7 +345,12 @@ export class ChatStore {
     const at = session ? session.messages.findIndex((m) => m.id === messageId) : -1;
     if (!session || at === -1) return null;
     const messages = session.messages.slice();
-    const patched: ChatMessage = { ...messages[at]!, ...(patch.status !== undefined ? { status: patch.status } : {}) };
+    const patched: ChatMessage = {
+      ...messages[at]!,
+      ...(patch.status !== undefined ? { status: patch.status } : {}),
+      ...(patch.usage !== undefined ? { usage: patch.usage } : {}),
+      ...(patch.failureReason !== undefined ? { failureReason: patch.failureReason } : {}),
+    };
     let text = patch.text;
     // A reply still arriving keeps no part of a secret it may be completing (ODW extension).
     if (text !== undefined && patch.status === undefined && this.redactor?.active) text = text.slice(0, this.redactor.ready(text));

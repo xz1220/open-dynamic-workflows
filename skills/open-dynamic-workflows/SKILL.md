@@ -40,6 +40,10 @@ do it directly.
 - Ordinary control flow (loops, `if`, dedup) lives in the script. The
   primitives only **dispatch and wait**; what to do with results is the
   script's decision.
+- To run on Claude Code's Workflow tool as well, keep to the dialect: no ODW
+  extension, and no behaviour the conformance suite marks `unspecified`.
+  Scripts that pass conformance run on both — `odw conformance` runs the
+  suite (`conformance/` in the ODW repository; [primitives](references/primitives.md#odw-conformance)).
 
 ```js
 // fan-out-reduce.js
@@ -176,7 +180,7 @@ For long runs, fire-and-poll instead of blocking yourself:
 
 ```bash
 RUN=$(odw run wf.js)        # prints a run id and returns immediately
-odw status $RUN             # state, agent count, tokens and cost
+odw status $RUN             # state, agent count, tokens and cost (by phase: ODW extension)
 odw logs $RUN --follow      # stream progress events
 odw logs $RUN --agent 3     # what one agent did: tool calls, results, errors (ODW extension)
 odw export $RUN --otlp      # the run as OpenTelemetry traces, OTLP/JSON — --send posts it (ODW extension)
@@ -189,7 +193,7 @@ odw approve|reject $RUN     # answer a checkpoint() the run waits at — only on
 odw compare $OLD $RUN       # what changed between two runs: setup, time, cost, failures, replies (ODW extension)
                             #   --agent <label|id>: one agent's whole reply diff; --json for scripts
 odw eval review             # cases × adapters × repeats: pass rate, cost, time per cell (ODW extension; below)
-odw list                    # all runs
+odw list                    # all runs (with a cost column once one reported dollars)
 ```
 
 Both patterns above behave exactly like this for you: your shell is not a
@@ -295,6 +299,14 @@ approvals).
   once which CLIs cannot (codex still reads AGENTS.md) — prefer `adapter: 'claude'`
   there. The repository's own `worktreeSetup` and `.worktreeinclude` links do not
   run. It is not a sandbox: pair it with `--permissions read` for review work.
+- **Need a real boundary? Run agents in a container** (ODW extension):
+  `odw run wf.js --sandbox container --sandbox-image <image>`, or `sandbox` in the
+  config. Each CLI run and `exec()` step goes in a fresh Docker/Podman container
+  holding only its workspace and a copy of the CLI's login. The user builds the
+  image (`examples/sandbox/Dockerfile`; ODW never pulls); check with `odw doctor`.
+  Agents keep the network (they must reach their model API) — so it guards the
+  user's files, not their code from the model. `agent(p, { sandbox: { network:
+  'none' } })` may only tighten it.
 
 ```js
 const findings = await parallel(files.map((f) => () =>
@@ -516,5 +528,5 @@ without answering when headless (a login, trust or approval prompt).
 | Reaching for `--permissions full` when an agent was refused or denied | `full` drops the sandbox and every approval — ask the user. A refused `read` agent needs a read-capable adapter instead. |
 | Running agents on a repository you did not write as if it were the user's | `odw run --untrusted` (ODW extension): `claude --safe-mode` and the like keep its instructions, hooks and settings out; the run logs which CLIs cannot. |
 | Giving one CLI's model id to agents that may run on another (a phase default, a fallback chain) | Model ids do not cross CLIs: use a tier, `model: '@fast'`, which picks each CLI's own id (ODW extension). |
-| Fanning out wide without watching what it spends | `odw status $RUN` shows the run's tokens and cost so far, and a `parallel()`/`pipeline()` wider than `fanOutWarn` (default 25) logs a warning (ODW extensions). Size fan-outs to `budget.total` when one is set; `--budget` caps output tokens. |
+| Fanning out wide without watching what it spends | `odw status $RUN` shows the run's tokens and cost so far, phase by phase, and a `parallel()`/`pipeline()` wider than `fanOutWarn` (default 25) logs a warning (ODW extensions). Size fan-outs to `budget.total` when one is set; `--budget` caps output tokens. |
 | Hand-writing a cron line around `odw run` | `odw schedule add` writes it with an overlap lock, a log and a pinned `PATH` — and only on the user's request: it edits their crontab or LaunchAgents. |

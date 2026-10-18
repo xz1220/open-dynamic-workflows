@@ -1,0 +1,17 @@
+{
+  "title": "a top-level import statement fails the run before any agent starts",
+  "claudeCode": "unspecified",
+  "sources": [
+    "skills/open-dynamic-workflows/SKILL.md",
+    "skills/open-dynamic-workflows/references/primitives.md#primitive-reference"
+  ],
+  "notes": "Claude Code scripts have no module system or Node API; what an import statement does there is not documented. ODW refuses it at load.",
+  "mock": [
+    {
+      "when": "the text never and",
+      "reply": "never"
+    }
+  ],
+  "state": "failed",
+  "agents": []
+}

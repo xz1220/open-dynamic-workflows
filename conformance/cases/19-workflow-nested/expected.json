@@ -1,0 +1,31 @@
+{
+  "title": "workflow({ scriptPath }, args) runs the child inline with those args and resolves to its return value",
+  "claudeCode": "documented",
+  "sources": [
+    "docs/dynamic-workflows-research.md §3.2",
+    "skills/open-dynamic-workflows/references/primitives.md#workflow",
+    "tests/nested-workflow.test.ts"
+  ],
+  "notes": "The script path is relative to the case directory: run the case from there.",
+  "mock": [
+    {
+      "when": "the text delta and",
+      "reply": "delta"
+    }
+  ],
+  "state": "done",
+  "result": {
+    "child": {
+      "reply": "delta",
+      "args": {
+        "word": "delta"
+      }
+    }
+  },
+  "agents": [
+    {
+      "label": "child-agent",
+      "outcome": "finished"
+    }
+  ]
+}

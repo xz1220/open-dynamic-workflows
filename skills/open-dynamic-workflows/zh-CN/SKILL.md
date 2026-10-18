@@ -31,6 +31,9 @@ license: MIT
   其他顶层 `import` / `export` 都会被加载器拒绝。
 - 循环、`if`、去重等普通控制流直接写在脚本里。原语只负责**派发并等待**，拿结果做
   什么由脚本决定。
+- 要同时能在 Claude Code 的 Workflow 工具上运行，就只用方言本身：不用 ODW 扩展，也不依赖
+  一致性测试套件标为 `unspecified` 的行为。通过一致性测试的脚本两边都能跑——
+  `odw conformance` 运行该套件（ODW 仓库的 `conformance/`；见[原语参考](references/primitives.md#odw-conformance)）。
 
 ```js
 // fan-out-reduce.js
@@ -151,7 +154,7 @@ odw run wf.js --wait --args '{"question": "Design a cache."}'   # 阻塞并打�
 
 ```bash
 RUN=$(odw run wf.js)        # 打印一个 run id 后立即返回
-odw status $RUN             # 状态、agent 计数、token 与花费
+odw status $RUN             # 状态、agent 计数、token 与花费（按阶段：ODW 扩展）
 odw logs $RUN --follow      # 流式输出进度事件
 odw logs $RUN --agent 3     # 某个 agent 做了什么：工具调用、结果、错误（ODW 扩展）
 odw export $RUN --otlp      # 把运行导出为 OpenTelemetry trace（OTLP/JSON）——--send 直接发送（ODW 扩展）
@@ -164,7 +167,7 @@ odw approve|reject $RUN     # 回答运行正在等待的 checkpoint()——只�
 odw compare $OLD $RUN       # 两次运行之间变了什么:配置、耗时、花费、失败、回复(ODW 扩展)
                             #   --agent <label|id>:某个 agent 的完整回复 diff;--json 供脚本使用
 odw eval review             # 用例 × 适配器 × 重复次数：每个单元格的通过率、花费、耗时（ODW 扩展；见下文）
-odw list                    # 所有运行
+odw list                    # 所有运行（有运行报了美元时多一列花费）
 ```
 
 保存过的 workflow 可直接按名字运行（`odw run <名字>`）；查找顺序：`.odw/workflows`、
@@ -246,6 +249,12 @@ odw apply $RUN --all --verify "<测试命令>"   # 按顺序应用；校验失�
   `qwen --safe-mode`），并由运行说一次哪些 CLI 做不到（codex 仍会读 AGENTS.md）——这时优先
   用 `adapter: 'claude'`。仓库自己的 `worktreeSetup` 和 `.worktreeinclude` 链接不会执行。
   它不是沙箱：审查类工作请再配上 `--permissions read`。
+- **需要真正的边界？在容器里运行 agent**（ODW 扩展）：
+  `odw run wf.js --sandbox container --sandbox-image <镜像>`，或在配置里写 `sandbox`。每次
+  CLI 运行和每个 `exec()` 步骤都在全新的 Docker/Podman 容器里进行，只能看到自己的工作区和
+  CLI 登录文件的副本。镜像由用户构建（`examples/sandbox/Dockerfile`；ODW 从不拉取），用
+  `odw doctor` 检查。agent 保留网络（必须连到模型 API）——它保护的是用户的文件，而不是让代码
+  远离模型。`agent(p, { sandbox: { network: 'none' } })` 只能收紧它。
 
 ```js
 const findings = await parallel(files.map((f) => () =>
@@ -428,5 +437,5 @@ Codex、Claude Code、Gemini、Qwen、Kimi 开箱即用，无需配置。要换�
 | agent 被拒绝或被拦下时，转而用 `--permissions full` | `full` 去掉了沙箱和所有审批——先问用户。被拒绝的 `read` agent 需要的是一个支持只读的适配器。 |
 | 把不是用户写的仓库当作用户自己的仓库来跑 agent | `odw run --untrusted`（ODW 扩展）：`claude --safe-mode` 等参数挡住它的指令、hooks 和设置；运行日志会说明哪些 CLI 做不到。 |
 | 把某个 CLI 的模型 ID 交给可能跑在别的 CLI 上的 agent（阶段默认值、回退链） | 模型 ID 不能跨 CLI 通用：用层级 `model: '@fast'`，它会为每个 CLI 选出自己的 ID（ODW 扩展）。 |
-| 大规模扇出却不看它花了多少 | `odw status $RUN` 会显示运行到目前为止的 token 与花费，比 `fanOutWarn`（默认 25）更宽的 `parallel()`/`pipeline()` 会记一条警告（均为 ODW 扩展）。设了 `budget.total` 时按它决定扇出规模；`--budget` 限制输出 token。 |
+| 大规模扇出却不看它花了多少 | `odw status $RUN` 会按阶段显示运行到目前为止的 token 与花费，比 `fanOutWarn`（默认 25）更宽的 `parallel()`/`pipeline()` 会记一条警告（均为 ODW 扩展）。设了 `budget.total` 时按它决定扇出规模；`--budget` 限制输出 token。 |
 | 自己手写一条包着 `odw run` 的 cron 行 | `odw schedule add` 会带上防重叠锁、日志和固定的 `PATH` 写好它——且只在用户要求时使用：它会改动用户的 crontab 或 LaunchAgents。 |

@@ -1,0 +1,16 @@
+{
+  "title": "a string input arrives in args as that string",
+  "claudeCode": "documented",
+  "sources": [
+    "docs/dynamic-workflows-research.md §3.2",
+    "skills/open-dynamic-workflows/references/primitives.md#args--budget",
+    "skills/open-dynamic-workflows/SKILL.md"
+  ],
+  "args": "plain text input",
+  "mock": [],
+  "state": "done",
+  "result": {
+    "args": "plain text input",
+    "type": "string"
+  }
+}

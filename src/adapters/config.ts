@@ -34,6 +34,7 @@ import {
   runTier,
 } from "./permissions.js";
 import { isTrustLevel, untrustedPosture } from "./trust.js";
+import { buildAdapterSandbox, buildSandboxSetting, checkSandboxImages } from "./sandbox.js";
 import type {
   Adapter,
   AdapterFailures,
@@ -88,6 +89,7 @@ export function loadConfig(
     settings: buildSettings(raw),
   };
   checkRouting(config);
+  checkSandboxImages(config);
   return config;
 }
 
@@ -135,9 +137,10 @@ const KNOWN_TOP_KEYS = [
   "quotaWait",
   "mcpFailures",
   "otel",
+  "sandbox",
 ] as const;
 
-const KNOWN_ADAPTER_KEYS = ["command", "stdin", "env", "timeout", "stallTimeout", "concurrency", "promptCache", "label", "flags", "output", "failures", "permissionArgs", "permissions", "permissionDenials", "trust", "untrustedArgs", "untrustedNote"] as const;
+const KNOWN_ADAPTER_KEYS = ["command", "stdin", "env", "timeout", "stallTimeout", "concurrency", "promptCache", "label", "flags", "output", "failures", "permissionArgs", "permissions", "permissionDenials", "trust", "untrustedArgs", "untrustedNote", "sandbox"] as const;
 
 /** The fields of an adapter's `output`, per format. */
 const KNOWN_OUTPUT_KEYS: Record<string, readonly string[]> = {
@@ -705,6 +708,8 @@ function buildAdapter(name: string, spec: RawAdapter): Adapter {
     }
     adapter.untrustedNote = spec.untrustedNote;
   }
+  // The container sandbox (ODW extension; see ./sandbox): an adapter may only turn it on.
+  if (spec.sandbox != null) adapter.sandbox = buildAdapterSandbox(name, spec.sandbox);
   return adapter;
 }
 
@@ -1099,6 +1104,7 @@ function buildSettings(raw: Record<string, unknown>): Settings {
         ? DEFAULT_SETTINGS.mcpFailures
         : buildChoice("mcpFailures", raw["mcpFailures"], ["warn", "fail"] as const),
     otel: raw["otel"] == null ? DEFAULT_SETTINGS.otel : buildOtel(raw["otel"]),
+    sandbox: raw["sandbox"] == null ? DEFAULT_SETTINGS.sandbox : buildSandboxSetting(raw["sandbox"]),
   };
 }
 

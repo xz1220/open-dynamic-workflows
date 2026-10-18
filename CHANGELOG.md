@@ -71,6 +71,10 @@ changed, and run on a schedule — and a dashboard redesigned to watch them.
   its `turn.failed` / `error` events as the failure, classified like any (an `error`
   codex retried itself is not one). Output declarations gain `match`, `errorEvents`
   and the `{reply_file}` placeholder (**ODW extension**).
+- The spend receipt in the terminal (**ODW extension**): `odw status` prints a "spend
+  by phase" block — each phase's agents, tokens, cost, share and a bar of Unicode
+  blocks, within 100 columns, plain under `NO_COLOR` — and `odw list` a cost column
+  when any listed run reported dollars.
 - Isolated (`worktree`) agents keep their change as a diff (setup files excluded),
   optionally on a `keep` branch. Review with `odw diff` or the dashboard's Changes tab;
   land with `odw apply`, which previews every file first — clean, conflicting (with the
@@ -135,6 +139,17 @@ changed, and run on a schedule — and a dashboard redesigned to watch them.
   still does); a config inside it cannot loosen the trust your
   `~/.config/odw/config.json` sets. The trust level shows in the start banner, `odw doctor`, the run's setup, each
   agent's events and saved result, and the dashboard's drawer.
+- Run agents in containers (`sandbox: { "kind": "container", "image": … }`, `odw
+  run|rerun|resume --sandbox container [--sandbox-image <image>]`, per adapter, per
+  `agent()` call — which may only tighten it; **ODW extension**): each CLI run, and each
+  `exec()` step (offline by default), runs in a fresh Docker or Podman container with
+  only its workspace bound (same path), a private home holding a copy of the CLI's login
+  files, your uid:gid, no capabilities, `no-new-privileges`, a pids limit and a read-only
+  root. Env goes by name, never in argv; a run that times out or is stopped has its
+  container killed by name. The image is yours (`examples/sandbox/Dockerfile`) and never
+  pulled; `odw doctor` checks the engine, the image and a smoke run. Agents keep the
+  network by default (they must reach their model API) — see the threat model in the
+  README.
 - Secrets stay out of what odw keeps and serves: whatever an agent prints — `cat .env`
   included — is redacted before it reaches its transcript and stderr tail, its saved
   result, the run's events and error or a webhook. The values of secret-named variables
@@ -191,6 +206,15 @@ changed, and run on a schedule — and a dashboard redesigned to watch them.
   `installed_plugins.json` and `enabledPlugins`; a project workflow of the same bare
   name wins, with a note. Each run logs which plugin, version and scope its workflow
   came from, and any ODW-only primitive it uses.
+- A dialect conformance suite ([#13](https://github.com/xz1220/open-dynamic-workflows/issues/13)):
+  `conformance/` holds 32 plain workflow scripts in Claude Code's dialect, each with an
+  `expected.json` — its result, and the logs, phases and agents that matter — run on a
+  deterministic mock agent that answers from a table in the case. `odw conformance
+  [--json] [--case N]` checks this odw against them (exit 1 on any failure; CI runs it).
+  Each case says whether Claude Code's docs settle its behaviour (`documented`) or not
+  (`unspecified`, pinning what ODW does); scripts that pass conformance run on both.
+  `conformance/README.md` gives the format for another runtime's runner, and the cases
+  run on Claude Code by hand.
 
 ### Use the CLI and the dashboard
 - `odw run` attaches a live foreground view in interactive terminals (Ctrl-C detaches;
@@ -202,6 +226,11 @@ changed, and run on a schedule — and a dashboard redesigned to watch them.
   outputs, usage, failure reasons and tiers, the Changes and Transcript views, a Spend
   receipt (where a run's tokens and dollars went, by phase, adapter and agent; `$`),
   Upcoming schedules, a command palette, light and dark themes, English and Chinese.
+- The Chat Host talks to codex as the `codex` adapter does (**ODW extension**): `codex
+  exec --json` with its reply from `--output-last-message` (else the last
+  `agent_message`), each message shown as it completes while the reply streams, the
+  turn's tokens kept on the message (`usage`), and a failure codex reports classified
+  — a spent quota or a refused login says what to do (`failureReason`).
 - Share a run (**ODW extension**): `odw bundle <run> [--out FILE] [--no-transcripts]
   [--max-bytes N]` writes `<run>.odwrun`, one self-contained JSON file — meta, status,
   events, saved agent results, kept diffs, transcripts, the result and the error — all

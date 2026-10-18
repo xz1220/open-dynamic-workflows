@@ -1,0 +1,46 @@
+{
+  "title": "parallel() waits for every thunk and returns results in input order",
+  "claudeCode": "documented",
+  "sources": [
+    "docs/dynamic-workflows-research.md §3.2",
+    "skills/open-dynamic-workflows/references/primitives.md#parallel",
+    "skills/open-dynamic-workflows/SKILL.md"
+  ],
+  "notes": "The mock answers 'one' last (delayMs), so completion order is not input order.",
+  "mock": [
+    {
+      "when": "the text one and",
+      "reply": "one",
+      "delayMs": 400
+    },
+    {
+      "when": "the text two and",
+      "reply": "two",
+      "delayMs": 150
+    },
+    {
+      "when": "the text three and",
+      "reply": "three"
+    }
+  ],
+  "state": "done",
+  "result": [
+    "one",
+    "two",
+    "three"
+  ],
+  "agents": [
+    {
+      "label": "one",
+      "outcome": "finished"
+    },
+    {
+      "label": "two",
+      "outcome": "finished"
+    },
+    {
+      "label": "three",
+      "outcome": "finished"
+    }
+  ]
+}

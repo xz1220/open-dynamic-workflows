@@ -1,0 +1,41 @@
+{
+  "title": "agent() with a schema resolves to the validated value",
+  "claudeCode": "documented",
+  "sources": [
+    "docs/dynamic-workflows-research.md §3.2",
+    "skills/open-dynamic-workflows/references/primitives.md#agent",
+    "skills/open-dynamic-workflows/references/primitives.md#schema"
+  ],
+  "mock": [
+    {
+      "when": "{\"verdict\": \"pass\"",
+      "reply": {
+        "verdict": "pass",
+        "score": 3,
+        "tags": [
+          "x",
+          "y"
+        ]
+      }
+    }
+  ],
+  "state": "done",
+  "result": {
+    "value": {
+      "verdict": "pass",
+      "score": 3,
+      "tags": [
+        "x",
+        "y"
+      ]
+    },
+    "type": "object",
+    "tagsIsArray": true
+  },
+  "agents": [
+    {
+      "label": "judge",
+      "outcome": "finished"
+    }
+  ]
+}

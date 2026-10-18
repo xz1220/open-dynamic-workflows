@@ -222,6 +222,15 @@ export class AdapterOutputDecoder {
   }
 
   /**
+   * JSONL: the latest non-empty text of a matching event so far (Codex's
+   * latest agent_message) — what a live view shows while the CLI answers.
+   * The reply itself is {@link finish}'s, which a reply file may still overrule.
+   */
+  get latest(): string | undefined {
+    return this.last;
+  }
+
+  /**
    * The decoded run. Never throws: a stream that does not match its format
    * falls back to the raw stdout. `reply` is what the CLI wrote to its
    * `{reply_file}` (see {@link ReplyFileText}); the first call decides.
