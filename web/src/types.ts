@@ -1026,3 +1026,48 @@ export interface TranscriptPage {
   /** The agent was replayed by `odw resume`: no CLI ran, so it has no transcript (no entries). */
   replayed: boolean;
 }
+
+/** One reason a review entry ranks where it does (ODW extension; GET /api/review). */
+export interface ReviewFactor {
+  key: string;
+  points: number;
+  why: string;
+}
+
+/** A mark in a run's reviews.jsonl (ODW extension). */
+export interface ReviewMark {
+  ts: number;
+  agentId: number;
+  state: "reviewed" | "dismissed" | "applied" | "open";
+  by: string | null;
+  via: "cli" | "dashboard" | "apply";
+  note?: string;
+}
+
+/** One agent's kept diff on the review queue (ODW extension). */
+export interface ReviewEntry {
+  runId: string;
+  run: string;
+  runState: string;
+  createdAt: number | null;
+  agentId: number;
+  label: string;
+  phase: string | null;
+  adapter: string | null;
+  agentState: string;
+  finishedAt: number | null;
+  changes: AgentChanges;
+  branch: string | null;
+  categories: string[];
+  score: number;
+  risk: "low" | "medium" | "high";
+  factors: ReviewFactor[];
+  review: ReviewMark | null;
+}
+
+/** GET /api/review (ODW extension): the queue, riskiest first; `open` waits, `marked` was dealt with. */
+export interface ReviewQueue {
+  entries: ReviewEntry[];
+  open: number;
+  marked: number;
+}

@@ -26,6 +26,7 @@ import type {
   RunDetail,
   RunNote,
   RunSummary,
+  ReviewQueue,
   ScheduleView,
   SettingsSnapshot,
   TranscriptEntry,
@@ -512,6 +513,27 @@ class Store {
     }
     if (JSON.stringify(next) === JSON.stringify(this.notes.get(runId))) return;
     this.notes.set(runId, next);
+    this.emit();
+  }
+
+  /** The review queue (ODW extension; null until loaded), and whether it lists the marked entries too. */
+  review: ReviewQueue | null = null;
+  reviewAll = false;
+  private reviewAt = 0;
+
+  /** Load the review queue — again only after `maxAgeMs` unless asked as another listing. */
+  async loadReview(all = this.reviewAll, maxAgeMs = 0): Promise<void> {
+    if (all === this.reviewAll && this.review && Date.now() - this.reviewAt < maxAgeMs) return;
+    let next: ReviewQueue;
+    try {
+      next = await api.review(all);
+    } catch {
+      next = { entries: [], open: 0, marked: 0 }; // an older server keeps no queue
+    }
+    this.reviewAt = Date.now();
+    if (all === this.reviewAll && JSON.stringify(next) === JSON.stringify(this.review)) return;
+    this.reviewAll = all;
+    this.review = next;
     this.emit();
   }
 

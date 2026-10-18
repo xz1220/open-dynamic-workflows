@@ -34,12 +34,13 @@ import {
 } from "./prefs";
 import { activeRuns, rail, statusbar, topbar, type Route } from "./shell";
 import { store } from "./store";
-import type { RunSummary, WorkflowDetail } from "./types";
+import type { ReviewMark, RunSummary, WorkflowDetail } from "./types";
 import { ACTIVE, TERMINAL, fmtDurSec, runDurationSec } from "./util";
 import { renderActivity } from "./views/activity";
 import { renderChat } from "./views/chat";
 import { compareHash, renderCompare } from "./views/compare";
 import { renderEvals } from "./views/evals";
+import { renderReview } from "./views/review";
 import { LOG_PAGE, changedAgents, cpEditState, renderJob, reviewTarget, type JobTab, type JobViewState } from "./views/job";
 import { HISTORY_PAGE, renderJobs, type JobsFilter, type JobsOwner, type JobsState } from "./views/jobs";
 import { renderSettings } from "./views/settings";
@@ -122,6 +123,8 @@ function parseHash(): Route {
     }
     case "settings":
       return { view: "settings", param: null };
+    case "review":
+      return { view: "review", param: null };
     default:
       if (h && view !== "activity") history.replaceState(null, "", "#/activity");
       return { view: "activity", param: null };
@@ -154,6 +157,8 @@ function viewHtml(route: Route): string {
       return renderCompare(route.param);
     case "evals":
       return renderEvals(route.param);
+    case "review":
+      return renderReview();
     case "settings":
       return renderSettings(store.settings);
   }
@@ -323,7 +328,7 @@ function updateChrome(): void {
   const label =
     route.view === "job" && store.run
       ? store.run.name
-      : { activity: tr("Activity"), jobs: tr("Jobs"), job: tr("Jobs"), compare: tr("Compare"), evals: tr("Evals"), workspace: tr("Workspace"), chat: tr("Chat"), settings: tr("Settings") }[route.view];
+      : { activity: tr("Activity"), jobs: tr("Jobs"), job: tr("Jobs"), compare: tr("Compare"), evals: tr("Evals"), review: tr("Review"), workspace: tr("Workspace"), chat: tr("Chat"), settings: tr("Settings") }[route.view];
   const title = `${active.length ? `(${active.length}) ` : ""}${label} · odw`;
   const sig = `${title}|${active.length > 0}|${resolvedTheme()}`;
   if (sig === lastChrome) return;
@@ -465,8 +470,9 @@ async function enterRoute(): Promise<void> {
 
   if (route.view === "activity") {
     render();
-    await store.loadActivity();
-    if (live()) every(2000, token, () => store.loadActivity());
+    await Promise.all([store.loadActivity(), store.loadReview()]);
+    // The review count for Needs you (ODW extension) moves slower than the stream.
+    if (live()) every(2000, token, () => Promise.all([store.loadActivity(), store.loadReview(store.reviewAll, 10_000)]).then(() => {}));
   } else if (route.view === "chat") {
     if (store.chatSessions === null) await store.loadChatSessions();
     if (!live()) return;
@@ -502,6 +508,10 @@ async function enterRoute(): Promise<void> {
   } else if (route.view === "settings") {
     render();
     await store.loadSettings();
+  } else if (route.view === "review") {
+    render();
+    await store.loadReview();
+    if (live()) every(5000, token, () => store.loadReview());
   } else if (route.view === "evals") {
     render();
     if (route.param) {
@@ -536,6 +546,13 @@ async function enterRoute(): Promise<void> {
     render();
     await store.loadRun(id);
     if (!live()) return;
+    // Opened from the Review page (ODW extension): its Changes tab shows that agent.
+    if (openAgent?.runId === id && store.run) {
+      const ai = store.run.agents.findIndex((a) => a.agentId === openAgent!.agentId);
+      if (ai >= 0) job.reviewAi = ai;
+      openAgent = null;
+      render();
+    }
     if (job.tab === "result") await store.loadResult(id);
     if (job.tab === "notes") await store.loadNotes(id);
     if (!live()) return;
@@ -575,6 +592,15 @@ async function selectWorkflow(key: string, navigate = true, token = routeToken):
   if (navigate && location.hash !== `#/workspace/${encodeURIComponent(key)}`) {
     history.replaceState(null, "", `#/workspace/${encodeURIComponent(key)}`);
   }
+}
+
+/** The agent the Review page opened, for the job route to show in its Changes tab. */
+let openAgent: { runId: string; agentId: number } | null = null;
+
+/** `<runId>/<agentId>` of a review entry. */
+function splitReviewKey(key: string): [string, number] {
+  const at = key.lastIndexOf("/");
+  return [key.slice(0, at), Number(key.slice(at + 1))];
 }
 
 function go(hash: string): void {
@@ -730,6 +756,25 @@ root.addEventListener("click", (ev) => {
   }
   const copyEl = t.closest<HTMLElement>("[data-copy]");
   if (copyEl) return copy(copyEl.dataset.copy!);
+  // The review queue (ODW extension): mark an entry, list the marked too, open one's diff.
+  const markEl = t.closest<HTMLElement>("[data-review-mark]");
+  if (markEl) {
+    const [runId, agentId] = splitReviewKey(markEl.dataset.reviewMark!);
+    const state = markEl.dataset.state as ReviewMark["state"];
+    void api
+      .markReview(runId, agentId, state)
+      .then(() => store.loadReview())
+      .catch((err: Error) => toast({ state: "failed", title: tr("Could not mark it"), body: err.message }));
+    return;
+  }
+  const allEl = t.closest<HTMLElement>("[data-review-all]");
+  if (allEl) return void store.loadReview(allEl.dataset.reviewAll === "1");
+  const openEl = t.closest<HTMLElement>("[data-review-open]");
+  if (openEl) {
+    const [runId, agentId] = splitReviewKey(openEl.dataset.reviewOpen!);
+    openAgent = { runId, agentId };
+    return;
+  }
   const cpEditEl = t.closest<HTMLElement>("[data-cp-edit]");
   if (cpEditEl && store.run) {
     const id = Number(cpEditEl.dataset.cpEdit);
@@ -1031,7 +1076,7 @@ root.addEventListener("keydown", (ev) => {
 
 // --- keyboard shortcuts ---
 let gPending = 0;
-const G_TARGETS: Record<string, string> = { a: "#/activity", j: "#/jobs", w: "#/workspace", e: "#/evals", c: "#/chat", s: "#/settings" };
+const G_TARGETS: Record<string, string> = { a: "#/activity", j: "#/jobs", w: "#/workspace", e: "#/evals", r: "#/review", c: "#/chat", s: "#/settings" };
 
 function typing(target: EventTarget | null): boolean {
   const el = target as HTMLElement | null;
@@ -1099,6 +1144,7 @@ setPaletteSource((): PaletteItem[] => {
     ["activity", tr("Activity"), icons.activity, "g a"],
     ["jobs", tr("Jobs"), icons.jobs, "g j"],
     ["workspace", tr("Workspace"), icons.workspace, "g w"],
+    ["review", tr("Review"), icons.review, "g r"],
     ["chat", tr("Chat Host"), icons.chat, "g c"],
     ["settings", tr("Settings"), icons.settings, "g s"],
   ];
@@ -1130,6 +1176,18 @@ setPaletteSource((): PaletteItem[] => {
       icon: glyph("waiting"),
       keywords: `${r.runId} ${r.waiting?.title ?? ""} ${r.waiting?.question ? "question" : "checkpoint"}`,
       run: () => go(runHash(r.runId)),
+    });
+  }
+  // Kept diffs nobody dealt with yet (ODW extension): the review queue.
+  if (store.review?.open) {
+    items.push({
+      id: "needs-review",
+      group: tr("Needs you"),
+      title: tr("{n} kept diff(s) wait for review", { n: store.review.open }),
+      hint: "odw review",
+      icon: icons.review,
+      keywords: "review diff risk",
+      run: () => go("#/review"),
     });
   }
   for (const r of store.runs.filter((x) => x.needsInput)) {

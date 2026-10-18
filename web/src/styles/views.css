@@ -3603,3 +3603,235 @@ ul.mcp li {
     animation: none;
   }
 }
+
+/* ---- review: kept diffs across runs, riskiest first (ODW extension) ---- */
+.review {
+  padding: 28px 32px 56px;
+}
+.review .page-head h1 em {
+  color: var(--sig-ink);
+}
+.review .page-head .lede {
+  max-width: 62ch;
+  margin-top: 12px;
+}
+.rv-tabs {
+  display: inline-flex;
+  flex: none;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--card-2);
+}
+.rv-tabs button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 12px;
+  border: 0;
+  border-radius: var(--r-xs);
+  background: transparent;
+  color: var(--mute);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.rv-tabs button.on {
+  background: var(--card);
+  color: var(--ink);
+  box-shadow: var(--shadow-1);
+}
+.rv-tabs .num {
+  font-family: var(--f-mono);
+  font-size: 11px;
+  color: var(--faint);
+}
+.rv-list {
+  display: grid;
+  gap: 12px;
+}
+.rv-item {
+  --rv: var(--sig);
+  position: relative;
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr);
+  gap: 20px;
+  padding: 16px 20px 14px 22px;
+  overflow: hidden;
+  animation: rc-print 420ms var(--ease-out) both;
+  animation-delay: calc(var(--i) * 40ms);
+}
+.rv-item.medium {
+  --rv: var(--amber);
+}
+.rv-item.high {
+  --rv: var(--alarm);
+}
+.rv-item::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: var(--rv);
+}
+.rv-item.dealt {
+  opacity: 0.66;
+}
+.rv-item.dealt::before {
+  background: var(--line-2);
+}
+.rv-meter {
+  display: grid;
+  align-content: start;
+  gap: 2px;
+}
+.rv-score {
+  font-family: var(--f-display);
+  font-size: 40px;
+  line-height: 1;
+  color: var(--ink);
+}
+.rv-level {
+  font-family: var(--f-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--rv);
+}
+.rv-marks {
+  display: grid;
+  grid-template-columns: repeat(10, 1fr);
+  gap: 2px;
+  margin-top: 8px;
+}
+.rv-marks i {
+  height: 10px;
+  border-radius: 1.5px;
+  background: var(--shade);
+}
+.rv-marks i.on {
+  background: var(--rv);
+}
+.rv-body {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+.rv-head {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  min-width: 0;
+}
+.rv-open {
+  overflow: hidden;
+  min-width: 0;
+  color: inherit;
+  font-size: 15px;
+  text-decoration: none;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rv-open:hover b {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.rv-mark {
+  flex: none;
+  margin-left: auto;
+  font-family: var(--f-mono);
+  font-size: 11px;
+  color: var(--mute);
+}
+.rv-mark.applied {
+  color: var(--sig-ink);
+}
+.rv-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  font-size: 12px;
+  color: var(--mute);
+}
+.rv-meta .mono {
+  font-family: var(--f-mono);
+  font-size: 11.5px;
+}
+.rv-stat {
+  font-family: var(--f-mono);
+  font-size: 11.5px;
+}
+.rv-stat .add {
+  color: var(--sig-ink);
+}
+.rv-stat .del {
+  color: var(--alarm-ink);
+}
+.rv-why {
+  display: grid;
+  gap: 3px;
+  margin: 2px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 12.5px;
+}
+.rv-why li {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr);
+  gap: 8px;
+  color: var(--ink-2);
+}
+.rv-why .pt {
+  font-family: var(--f-mono);
+  font-size: 11.5px;
+  text-align: right;
+  color: var(--rv);
+}
+.rv-why li.for .pt {
+  color: var(--sig-ink);
+}
+.rv-why .why {
+  overflow-wrap: anywhere;
+}
+.rv-quiet {
+  margin: 0;
+  font-size: 12.5px;
+}
+.rv-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+}
+.ticket.review::before {
+  background: var(--sig);
+}
+.ticket.review.medium::before {
+  background: var(--amber);
+}
+.ticket.review.high::before {
+  background: var(--alarm);
+}
+.ticket.review .tk-main > .ic {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  color: var(--mute);
+}
+@media (max-width: 760px) {
+  .review {
+    padding: 20px 16px 40px;
+  }
+  .rv-item {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 10px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .rv-item {
+    animation: none;
+  }
+}

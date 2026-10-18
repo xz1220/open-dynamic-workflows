@@ -181,7 +181,9 @@ function needsYou(nowSec: number): string {
   const destructive = store.runs
     .filter((r) => r.destructiveGit && !allBroken.includes(r) && (r.updatedAt ?? 0) > nowSec - 86_400)
     .slice(0, 3);
-  if (!waiting.length && !quota.length && !broken.length && !destructive.length) return "";
+  // Kept diffs nobody reviewed, dismissed or applied yet (ODW extension): one ticket for the queue.
+  const review = store.review?.open ?? 0;
+  if (!waiting.length && !quota.length && !broken.length && !destructive.length && !review) return "";
   const href = (r: RunSummary) => `#/job/${encodeURIComponent(r.runId)}`;
   const ticket = (r: RunSummary, kind: string, what: string, action: string) =>
     `<div class="ticket ${kind}" data-key="nt-${esc(r.runId)}">` +
@@ -238,16 +240,27 @@ function needsYou(nowSec: number): string {
           : `<a class="btn sm" href="${href(r)}">${t("Review")}</a>`,
       ),
     ),
+    ...(review ? [reviewTicket(review, store.review!.entries[0]?.risk ?? "low")] : []),
   ];
   return (
     `<section class="needs" data-key="needs" aria-label="${esc(t("Needs you"))}">` +
-    `<div class="needs-head"><h3>${t("Needs you")}</h3><span class="n">${waiting.length + quota.length + allBroken.length + destructive.length}</span>` +
+    `<div class="needs-head"><h3>${t("Needs you")}</h3><span class="n">${waiting.length + quota.length + allBroken.length + destructive.length + (review ? 1 : 0)}</span>` +
     `<span class="eyebrow">${t("decisions and runs to pick up")}</span></div>` +
     `<div class="tickets">${tickets.join("")}</div>` +
     (allBroken.length > broken.length
       ? `<a class="needs-more" href="#/jobs/failed" data-key="needs-more">${t("+{n} more failed in the last day", { n: allBroken.length - broken.length })} →</a>`
       : "") +
     `</section>`
+  );
+}
+
+/** The review queue's ticket (ODW extension): how many kept diffs wait, and how risky the first one is. */
+function reviewTicket(n: number, risk: string): string {
+  return (
+    `<div class="ticket review ${esc(risk)}" data-key="nt-review">` +
+    `<a class="tk-main" href="#/review" data-nav="#/review">${icons.review}<span class="tk-text"><b>${esc(t("Review"))}</b>` +
+    `<span>${esc(tn(n, "{n} kept diff waits for review — the riskiest is {risk}", "{n} kept diffs wait for review — the riskiest is {risk}", { risk: t(risk) }))}</span></span></a>` +
+    `<div class="tk-side"><a class="btn sm" href="#/review" data-nav="#/review">${t("Review")}</a></div></div>`
   );
 }
 
