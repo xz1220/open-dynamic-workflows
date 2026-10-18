@@ -15,7 +15,11 @@
  *   webhook  a JSON POST (10s limit): { runId, workflow, state, createdAt,
  *            finishedAt, durationSec, counts: { agents, done, failed }, error?,
  *            text, content } — `text` (Slack) and `content` (Discord) carry the
- *            same one-line summary, so chat incoming webhooks render it as is.
+ *            same one-line summary, so chat incoming webhooks render it as is:
+ *            `text` with `&`, `<` and `>` escaped as Slack asks, `content`
+ *            with every mention and masked link broken — a title a model wrote
+ *            (`<!channel> <https://evil.example|Approve run>`) pings nobody and
+ *            links nowhere.
  *
  * With "waiting" in `notify.on` (opt-in), the same hooks also fire once per
  * checkpoint() that starts waiting for a person — while the run goes on
@@ -318,7 +322,7 @@ export function pausedEnv(paused: RunPaused): Record<string, string> {
 
 /** The JSON body a webhook receives for a quota pause. */
 export function pausedPayload(paused: RunPaused): Record<string, unknown> {
-  const text = pausedLine(paused);
+  const line = pausedLine(paused);
   return {
     runId: paused.runId,
     workflow: paused.workflow,
@@ -328,8 +332,8 @@ export function pausedPayload(paused: RunPaused): Record<string, unknown> {
     counts: paused.counts,
     pausedFor: paused.pausedFor,
     ...(paused.context ? { context: paused.context } : {}),
-    text,
-    content: text,
+    text: slackText(line),
+    content: discordContent(line),
     allowed_mentions: { parse: [] },
   };
 }
@@ -380,7 +384,7 @@ export function waitingEnv(waiting: RunWaiting): Record<string, string> {
 
 /** The JSON body a webhook receives for a waiting checkpoint. */
 export function waitingPayload(waiting: RunWaiting): Record<string, unknown> {
-  const text = waitingLine(waiting);
+  const line = waitingLine(waiting);
   return {
     runId: waiting.runId,
     workflow: waiting.workflow,
@@ -390,8 +394,8 @@ export function waitingPayload(waiting: RunWaiting): Record<string, unknown> {
     counts: waiting.counts,
     checkpoint: { ...waiting.checkpoint, kind: waiting.checkpoint.question ? "question" : "checkpoint" },
     ...(waiting.context ? { context: waiting.context } : {}),
-    text,
-    content: text,
+    text: slackText(line),
+    content: discordContent(line),
     allowed_mentions: { parse: [] },
   };
 }
@@ -426,8 +430,31 @@ export function withLinks(payload: Record<string, unknown>, links: MintResult | 
   if (!links) return payload;
   if (!links.ok) return { ...payload, linksUnavailable: links.reason };
   const { approveUrl, rejectUrl, expiresAt } = links.links;
-  const text = `${String(payload.text ?? "")} · approve: ${approveUrl} · reject: ${rejectUrl}`;
-  return { ...payload, text, content: text, approveUrl, rejectUrl, linksExpireAt: expiresAt };
+  const tail = ` · approve: ${approveUrl} · reject: ${rejectUrl}`;
+  const text = `${String(payload.text ?? "")}${slackText(tail)}`;
+  const content = `${String(payload.content ?? payload.text ?? "")}${tail}`;
+  return { ...payload, text, content, approveUrl, rejectUrl, linksExpireAt: expiresAt };
+}
+
+/**
+ * A line as Slack's `text`: `&`, `<` and `>` escaped (https://api.slack.com/reference/surfaces/formatting#escaping),
+ * so a title a model wrote cannot be `<!channel>` or a `<url|label>` link.
+ */
+export function slackText(line: string): string {
+  return line.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+/**
+ * A line as Discord's `content`: `@everyone`, `@here`, `<@id>`, `<@&id>` and
+ * `<#id>` broken by a zero-width space, and `[label](url)` links by escaped
+ * brackets — on top of `allowed_mentions: { parse: [] }`, which only keeps a
+ * mention from pinging.
+ */
+export function discordContent(line: string): string {
+  return line
+    .replace(/@(everyone|here)\b/gi, "@\u200b$1")
+    .replace(/<([@#])/g, "<$1\u200b")
+    .replace(/[[\]]/g, "\\$&");
 }
 
 /**
@@ -449,7 +476,7 @@ export function linksEnv(links: MintResult | null): Record<string, string> {
 
 /** The JSON body a webhook receives. */
 export function webhookPayload(end: RunEnd): Record<string, unknown> {
-  const text = summaryLine(end);
+  const line = summaryLine(end);
   return {
     runId: end.runId,
     workflow: end.workflow,
@@ -460,8 +487,8 @@ export function webhookPayload(end: RunEnd): Record<string, unknown> {
     counts: end.counts,
     ...(end.error !== undefined ? { error: end.error } : {}),
     ...(end.context ? { context: end.context } : {}),
-    text,
-    content: text,
+    text: slackText(line),
+    content: discordContent(line),
     // Discord: never ping anyone from a run's text (a generated workflow's
     // name could say "@everyone"). Slack ignores the field.
     allowed_mentions: { parse: [] },

@@ -794,6 +794,11 @@ independent security reviews whose findings are all fixed.
   `GOOGLE_GENAI_USE_GCA`, `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION`), and
   `*_HEADERS` (`ANTHROPIC_CUSTOM_HEADERS`) counts as secret-named — withheld, and
   redacted from what ODW keeps. Trusted runs' minimal environment is unchanged.
+- A checkpoint's or question's title — a model's words — went into the notify
+  webhook's `text` and `content` as written, so `<!channel> <https://evil.example|Approve
+  run>` pinged a Slack channel with a fake approve link. Slack's `text` now has `&`, `<`
+  and `>` escaped, and Discord's `content` has `@everyone`, `@here`, `<@…>`, `<#…>` and
+  `[label](url)` links broken (besides `allowed_mentions: { parse: [] }`).
 
 ### Changed behavior — check before upgrading
 - Signed triggers in a repository's `./odw.config.json` are no longer served: move them
