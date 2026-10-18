@@ -416,6 +416,7 @@ odw apply <run> --agent <id|label> --check   # 只预览
 odw apply <run> --agent <id|label>       # 用 git apply --3way 应用到你所在的工作树
 odw apply <run> --all [--check]          # 所有已完成的 agent，按 agentId 顺序
 odw apply <run> --agent <id|label> --verify "<cmd>"   # <cmd> 失败则回滚这次应用
+odw apply <run> --all --resolve [--adapter A] [--confirm] --verify "<cmd>"   # 由 resolver agent 解决冲突
 ```
 
 动手之前，`odw apply` 先在索引的临时副本上做同样的应用，逐个文件给出 `clean`、`CONFLICT`
@@ -427,6 +428,12 @@ odw apply <run> --agent <id|label> --verify "<cmd>"   # <cmd> 失败则回滚这
 或配置 `applyVerify`（`--no-verify` 跳过）在每次应用后于仓库根目录运行 `<cmd>`，受 `timeout`
 约束；命令失败或超时时，这次应用会被原样回滚——只恢复涉及路径的内容和索引项，其他一概不动——
 odw 以退出码 1 结束并给出命令输出的末尾（被信号中断时同样回滚，然后 odw 随该信号结束）。`--verify` 下会冲突的改动不会被应用。
+`--resolve`（ODW 扩展）则把这样的改动交给一个 resolver agent：它是单独的一次运行（meta.json 里
+有 `origin: "apply-resolve"` 和 `applyResolve: { runId, agentId }`；被应用的运行得到 `resolvedBy`
+和一条 `apply_resolved` 事件），在 HEAD + 索引 + 该 agent 干净文件的临时 worktree 中进行，提示词
+给出每个冲突文件的 base、双方版本和冲突行。只有当它只改冲突文件、不留冲突标记、并在该 worktree
+里通过 `<cmd>` 时（`--confirm`：先在终端回答 y/N），它的改动才会连同 agent 的干净文件一起应用；
+否则工作树不变，odw 说明原因。只处理文本冲突；不能与 `--force` 或 `--check` 同用。
 超过 `maxDiffBytes`（默认 2 MB）的 diff 只保留开头，并以一行 `# odw: diff truncated …` 结尾；
 计数仍描述完整改动，但 `odw apply` 会拒绝它（`--all` 在此停下）——请改用该 agent 的分支
 （`keep: true` 或 `keepBranches`）。一次调用的每次尝试都在新的 worktree 里进行：只重排回复格式的 schema

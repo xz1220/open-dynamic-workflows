@@ -2186,6 +2186,7 @@ odw apply $RUN --agent 3 --check   # preview: each file clean, CONFLICT (with it
 odw apply $RUN --agent 3           # apply it to this working tree (git apply --3way)
 odw apply $RUN --all --check       # preview every finished agent, each on top of the ones before it
 odw apply $RUN --all --verify "npm test"   # apply them in order; roll back one that fails the check
+odw apply $RUN --all --resolve --verify "npm test"   # an agent resolves a conflict; applied once verified
 ```
 
 `odw apply` applies one agent's diff — or, with `--all`, every finished agent's,
@@ -2213,6 +2214,26 @@ rolls it back the same way. An edit made to those files while the command ran is
 set aside first, where odw says. Nothing else is touched — no stash, no reset —
 so your other uncommitted work stays as it is. A change that would conflict is
 not applied under `--verify`.
+
+`--resolve` (with `--all` or `--agent`) hands an agent whose diff would conflict
+to a resolver agent instead of stopping there. odw makes a temporary worktree at
+the state the diff lands on — HEAD, the index (the agents applied before it
+included), and the agent's files that apply cleanly — and starts a resolver run
+in it on the default adapter (or `--adapter A`), told the base, both sides and
+the conflicting lines of each conflicting file, to keep both intents and touch
+nothing else. Its change is refused unless it edits only the conflicting files,
+leaves no conflict markers, and passes the verify command (`--verify` or
+`applyVerify`) in that worktree; then it is applied to your tree with the
+agent's clean files, the normal way, and `--all` goes on, previewing the agents
+after it again. Anything short of that changes nothing in your tree, and odw
+says why. `--confirm` shows the resolved diff and asks y/N first (at a
+terminal). The resolver is a real run — `origin: "apply-resolve"`, with
+`applyResolve: { runId, agentId }` in its meta.json; `odw apply` prints its id,
+and `odw diff`, `odw logs`, `odw compare` and the dashboard work on it — linked
+from the run applied by `resolvedBy` in its meta.json and an `apply_resolved`
+event (`outcome`: applied, refused, declined or interrupted). `--resolve` never
+goes with `--force` or `--check`: a path with uncommitted changes in the way is
+refused as ever. (ODW extension.)
 
 - **`keep: true`** (an `agent()` option) or **`keepBranches: true`** (config) also
   commits the change to a branch `odw/<runId>/<agentId>-<label>` of the source

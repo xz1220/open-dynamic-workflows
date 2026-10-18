@@ -530,6 +530,7 @@ odw apply <run> --agent <id|label> --check   # preview only
 odw apply <run> --agent <id|label>       # git apply --3way into the working tree you are in
 odw apply <run> --all [--check]          # every finished agent, in agentId order
 odw apply <run> --agent <id|label> --verify "<cmd>"   # roll the apply back if <cmd> fails
+odw apply <run> --all --resolve [--adapter A] [--confirm] --verify "<cmd>"   # a resolver agent fixes conflicts
 ```
 
 Before it touches the tree, `odw apply` runs the same apply against a scratch
@@ -548,6 +549,15 @@ root after each apply, within `timeout`; when it fails or times out, that apply
 is rolled back exactly — the touched paths' content and index entries, nothing
 else — and odw exits 1 with the end of its output (a signal rolls it back too,
 then ends odw). A change that would conflict is not applied under `--verify`.
+`--resolve` (ODW extension) hands such a change to a resolver agent instead: a
+run of its own (`origin: "apply-resolve"`, `applyResolve: { runId, agentId }` in
+its meta.json; the run applied gets `resolvedBy` and an `apply_resolved` event)
+in a temporary worktree at HEAD + the index + the agent's clean files, told the
+base, both sides and the conflicting lines of each file. Its change is applied
+with the agent's clean files only when it edits just the conflicting files,
+leaves no conflict markers and passes `<cmd>` in that worktree (`--confirm`: y/N
+at a terminal first); otherwise the tree is unchanged and odw says why. Only
+text conflicts are resolved; never with `--force` or `--check`.
 A diff past `maxDiffBytes` (default 2 MB) keeps its head and ends with a
 `# odw: diff truncated …` line; its counts still describe the whole change, and
 `odw apply` refuses it (`--all` stops there) — use the agent's branch

@@ -1922,6 +1922,7 @@ odw apply $RUN --agent 3 --check   # 预览:每个文件是 clean、CONFLICT(附
 odw apply $RUN --agent 3           # 用 git apply --3way 应用到当前工作树
 odw apply $RUN --all --check       # 预览所有已完成的 agent,每个都叠在前面的之上
 odw apply $RUN --all --verify "npm test"   # 按顺序应用;校验失败的那个回滚
+odw apply $RUN --all --resolve --verify "npm test"   # 由 agent 解决冲突;校验通过后才应用
 ```
 
 `odw apply` 在你所在的 git 工作树里用 `git apply --3way` 应用一个 agent 的 diff——加
@@ -1940,6 +1941,20 @@ stash,或者加 `--force`。看板在运行的 **Changes** 标签页里展示同
 的路径恢复成应用前的样子,内容和索引项都分毫不差,odw 以退出码 1 结束并给出命令输出的末尾;按下
 Ctrl-C 也会同样回滚。命令运行期间这些文件若被改动,改动后的版本会先另存一份,odw 会说明存在哪里。其他东西一概不碰——不 stash、不 reset——你其余的未提交改动保持原样。`--verify` 下
 会冲突的改动不会被应用。
+
+`--resolve`(配合 `--all` 或 `--agent`)遇到 diff 会冲突的 agent 时不再停下,而是交给一个
+解决冲突的 agent。odw 在 diff 将要落地的状态上建一个临时 worktree——HEAD、索引(包含此前已应用
+的 agent)、以及该 agent 能干净应用的文件——并在其中用默认 adapter(或 `--adapter A`)启动一个
+resolver 运行,告诉它每个冲突文件的 base、双方版本和冲突行,要求保留双方意图、不碰其他文件。
+只有当它的改动只涉及冲突文件、不留冲突标记、并在该 worktree 里通过校验命令(`--verify` 或
+`applyVerify`)时,才会连同该 agent 的干净文件按常规方式应用到你的工作树;`--all` 随后继续,
+并重新预览其后的 agent。任何一步不满足,你的工作树都不会被改动,odw 会说明原因。`--confirm`
+在应用前展示解决后的 diff 并询问 y/N(需要终端)。resolver 是一个真正的运行——meta.json 里有
+`origin: "apply-resolve"` 和 `applyResolve: { runId, agentId }`;`odw apply` 会打印它的 id,
+`odw diff`、`odw logs`、`odw compare` 和看板都适用——被应用的运行则通过 meta.json 的
+`resolvedBy` 和一条 `apply_resolved` 事件(`outcome`:applied、refused、declined 或
+interrupted)链接到它。`--resolve` 不能与 `--force` 或 `--check` 同用:有未提交改动挡路的路径
+照旧拒绝。(ODW 扩展。)
 
 - **`keep: true`**(`agent()` 选项)或 **`keepBranches: true`**(配置)还会把改动提交到源
   仓库的分支 `odw/<runId>/<agentId>-<label>` 上——作者是 `odw <odw@localhost>`,父提交是

@@ -102,6 +102,15 @@ changed, and run on a schedule — and a dashboard redesigned to watch them.
   would conflict; `--verify "npm test"` (or `applyVerify`) runs a check after each
   apply and rolls an apply that fails it back exactly, leaving the rest of your
   uncommitted work alone (**ODW extension**).
+- `odw apply --resolve [--adapter A] [--confirm]` (**ODW extension**): an agent whose
+  diff would conflict goes to a resolver agent instead of stopping the apply. It runs as
+  a real run (`origin: "apply-resolve"`, linked both ways: `applyResolve` in its meta,
+  `resolvedBy` and an `apply_resolved` event in the run applied) in a temporary
+  worktree at the state the diff lands on, told the base, both sides and the
+  conflicting lines. Its change is applied — with the agent's clean files — only when
+  it edits just the conflicting files, leaves no conflict markers and passes the verify
+  command there; `--confirm` asks y/N with the resolved diff shown. Otherwise nothing in
+  your tree changes, and odw says why.
 - Transcripts: every agent's CLI output is kept — `odw logs <run> --agent <id|label>
   [--follow]`, or live in the dashboard's Transcript sheet.
 - Compare two runs: `odw compare <runA> <runB>` shows what changed after you edited a

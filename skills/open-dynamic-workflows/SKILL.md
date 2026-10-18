@@ -281,6 +281,7 @@ odw apply $RUN --agent <id> --check   # preview: each file clean, CONFLICT (with
 odw apply $RUN --agent <id>           # git apply --3way into this working tree (staged)
 odw apply $RUN --all --check          # preview every finished agent, each on top of the ones before it
 odw apply $RUN --all --verify "<test command>"   # apply them in order; roll back one that fails the check
+odw apply $RUN --all --resolve --verify "<test command>"   # a resolver agent fixes a conflict; applied once verified
 ```
 
 - Preview first (`--check`, exit 1 when anything conflicts), apply what the task
@@ -295,6 +296,12 @@ odw apply $RUN --all --verify "<test command>"   # apply them in order; roll bac
   fails — only the paths the diff touched, never the user's other work. Use the
   project's test or build command when it has one. A change that would conflict
   is not applied under `--verify`.
+- `--resolve` (ODW extension; `[--adapter A] [--confirm]`) hands a conflict to a
+  resolver agent — a run of its own, whose id `odw apply` prints — in a temporary
+  worktree; its change is applied only when it edits just the conflicting files,
+  leaves no markers and passes the verify command there. Give it `--verify`, and
+  tell the user the resolver's run id; `--confirm` asks y/N at a terminal, so
+  leave it off when no person is there to answer.
 - `odw apply` refuses while a path the diff touches has uncommitted changes —
   commit or stash first; use `--force` only when the user agrees.
 - A diff cut at `maxDiffBytes` cannot be applied: use the agent's branch
