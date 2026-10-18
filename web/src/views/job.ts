@@ -166,6 +166,27 @@ function destructiveGitSection(run: RunDetail, a: AgentView): string {
   );
 }
 
+/**
+ * The drawer's model rows (ODW extension; src/served-model.ts): the model the
+ * agent asked for, and the one its CLI said served it — flagged when it is
+ * another, "not reported" when its CLI said none. Never guessed.
+ */
+function modelRows(run: RunDetail, a: AgentView): string {
+  if (a.kind === "command" || run.provider !== "odw") return "";
+  const settled = a.state === "done" || a.state === "failed";
+  const asked = a.substituted?.requested ?? a.model;
+  const served = a.servedModel ?? a.substituted?.served;
+  const askedRow = `<span class="k">${t("model")}</span><span class="v mono">${esc(asked ?? t("CLI default"))}</span>`;
+  if (served?.length) {
+    const swap = a.substituted
+      ? ` <span class="tag warn served-swap" title="${esc(t("its CLI said another model served it than the one it asked for"))}">${t("substituted")}</span>`
+      : "";
+    return askedRow + `<span class="k">${t("served by")}</span><span class="v"><span class="mono">${esc(served.join(", "))}</span>${swap}</span>`;
+  }
+  if (!settled || a.cached) return a.model ? askedRow : "";
+  return askedRow + `<span class="k">${t("served by")}</span><span class="v"><span class="dim" title="${esc(t("its CLI does not say which model served it"))}">${t("not reported")}</span></span>`;
+}
+
 /** The runs `odw apply --resolve` linked to this one: the run whose conflict it resolved, or its resolvers. */
 /**
  * The trust line (ODW extension): a run whose args came from outside — a
@@ -442,6 +463,7 @@ function drawer(run: RunDetail, ai: number, nowSec: number): string {
           ? ` <span class="tag warn" title="${esc(t("its earlier adapters ran out of quota or refused the login"))}">${esc(t("after {chain}", { chain: a.fellBackFrom.join(" → ") }))}</span>`
           : "") +
         `</span>`) +
+    modelRows(run, a) +
     `<span class="k">${t("started")}</span><span class="v">${fmtClock(a.startedAt)}</span>` +
     `<span class="k">${t("finished")}</span><span class="v">${fmtClock(a.finishedAt)}</span>` +
     `<span class="k">${t("duration")}</span><span class="v">${dur}</span>` +

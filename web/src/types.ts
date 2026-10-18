@@ -175,6 +175,12 @@ export interface AgentView {
   denied?: string[];
   /** A finished agent's background work its CLI left running when it replied, which died with it (its reply stood anyway), one line each (ODW extension). */
   orphaned?: string[];
+  /** The model it asked for (agent_started's `model`; a tier keeps its `@` name). Absent: its CLI's default. */
+  model?: string;
+  /** The models its CLI said served it (ODW extension; src/served-model.ts). Absent: not reported. */
+  servedModel?: string[];
+  /** Another model served it than the one it asked for — its `model_substituted` event (ODW extension). */
+  substituted?: { requested: string; served: string[] };
   /** The files it declared it means to change — agent(…, { scope }) globs (ODW extension; src/scope.ts). */
   scope?: string[];
   /** The files it changed outside its scope, finished or failed (ODW extension). */
@@ -439,6 +445,10 @@ export interface CompareAgentFacts {
   adapter: string | null;
   /** The model it asked for: a tier keeps its `@` name. */
   model: string | null;
+  /** The models its CLI said served it; null: not reported (ODW extension). Absent from older servers. */
+  servedModel?: string[] | null;
+  /** None of them is the model it asked for (ODW extension). */
+  substituted?: boolean;
   attempts: number | null;
   durationMs: number | null;
   inputTokens: number | null;
@@ -536,6 +546,8 @@ export interface WorkflowEstimate {
   total: EstimateFigures | null;
   phases: PhaseEstimate[];
   adapters: AdapterEstimate[];
+  /** By the model that served the agents, as their CLIs said (ODW extension); absent when none said. */
+  models?: Array<EstimateFigures & { model: string; runs: number }>;
   /** Some output tokens are chars/4 estimates. */
   estimated: boolean;
   notes: string[];
@@ -906,6 +918,8 @@ export interface AgentResultRecord {
   mcp?: Array<{ name: string; status: string }>;
   /** The background work its CLI left running when it replied (ODW extension). */
   orphaned?: string[];
+  /** The models its CLI said served it (ODW extension). */
+  servedModel?: string[];
   /** Secrets in it were replaced by `«redacted:<kind>»` before it was saved (ODW extension): show a "redacted" tag. */
   redacted?: boolean;
 }
