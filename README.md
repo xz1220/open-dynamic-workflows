@@ -1862,24 +1862,39 @@ hosts you name, enforced outside it:
   internal network, with `HTTPS_PROXY`/`HTTP_PROXY` (and lower-case) pointing at the
   proxy, `NO_PROXY` for loopback and `NODE_USE_ENV_PROXY=1`. The proxy tunnels `CONNECT`
   only to an allowlisted host's port 443 (or the entry's port), forwards plain HTTP only
-  to an allowlisted host, and **resolves names itself** — the agent's container has no
-  DNS for the outside. It is ODW's own zero-dependency script (the same code as the
-  hidden `odw __egress-proxy`), run with `node` in **the agent's image — which then
-  needs node** — or in `proxyImage`, as locked down as an agent's container.
+  to an allowlisted host (refusing a `Host` header that names another), and **resolves
+  names itself** — the agent's container has no DNS for the outside: on Docker it gets
+  `--dns 192.0.2.1`, an address nothing answers on, because Docker's embedded resolver
+  before 26.0 forwarded an internal network's lookups out through the host
+  (CVE-2024-29018). The proxy listens only on its address on the internal network, so
+  other containers on the default network cannot use it. It is ODW's own
+  zero-dependency script (the same code as the hidden `odw __egress-proxy`), run with
+  `node` in **the agent's image — which then needs node** — or in `proxyImage`, as
+  locked down as an agent's container.
 - **Denials are events.** Each refused request is a line in `<run dir>/egress/`, which
   the run turns into `egress_denied` events (`{ host, port, method, agent }`, or
-  `commandId` for a step) in `odw logs` and the dashboard. The agent is named by the
-  user name in its proxy URL; a CLI that drops it shows `agent: null`.
+  `commandId` for a step) in `odw logs` and the dashboard — at most 200 per run, then
+  one log line at its end saying how many more there were; each proxy's log stops at
+  1 MiB. The agent is named by the user name in its proxy URL; a CLI that drops it
+  shows `agent: null`. That name is a hint, not proof — the client sends it, and an
+  agent could change it — but it gets an agent nothing: every agent behind a proxy has
+  the same allowlist.
 - **Cleaned up.** At the run's end the proxies are removed, then the networks; the
-  worker's exit handler does the same if it is killed. `docker network ls --filter
-  label=odw.run` finds any a crash left. `odw doctor` brings up the proxy and, from a
-  container on the internal network, expects 200 for the first host listed and 403 for
-  a reserved one.
+  worker's exit handler does the same if it is killed, or if one could not be removed at
+  the end. `docker network ls --filter label=odw.run` finds any a crash left. `odw
+  doctor` brings up the proxy and, from a container on the internal network, expects 200
+  for the first host listed, 403 for a reserved one, and example.com not to resolve.
 - **The safe failure.** A CLI or tool that ignores `HTTPS_PROXY` gets no network at all:
   there is no route out of the internal network but the proxy. Anything not over HTTP(S)
   through the proxy — SSH, raw TCP, UDP — fails. Agents with different allowlists get
   different networks and proxies, so an agent cannot use another's. Allowed hosts are
   still trusted: an agent can send your code anywhere an allowed host forwards it.
+- **By name, not by site.** The list limits the host names a connection is made to, and
+  so the servers those names resolve to — not the site served there. Over `CONNECT` the
+  TLS inside the tunnel is the agent's: it can name another site in its SNI and inner
+  `Host` header (domain fronting), and the server an allowed name resolves to — a CDN's
+  edge, a shared front end — may serve it. Allowing one name behind a CDN can admit
+  every site that edge fronts for; prefer hosts that are not behind shared front ends.
 
 A missing engine or image fails the run before its first agent starts, with a
 `ConfigError` that says how to build the image; `odw doctor` checks the same and runs

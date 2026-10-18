@@ -158,16 +158,23 @@ out) whose only way out is an egress proxy sidecar (ODW's zero-dependency node
 script, the hidden `odw __egress-proxy`, run in the agent's image — **it needs
 node** — or `proxyImage`), reached through `HTTPS_PROXY`/`HTTP_PROXY`. The proxy
 tunnels CONNECT only to an allowlisted host's 443 (or the entry's port),
-forwards plain HTTP only to allowlisted hosts, resolves names itself, and
-refuses IP literals unless listed; `*.d` matches subdomains of `d`, not `d`.
+forwards plain HTTP only to allowlisted hosts (and only with a `Host` header
+naming that host), resolves names itself (on Docker the container gets
+`--dns 192.0.2.1`: no outside DNS, CVE-2024-29018), listens only on its
+internal-network address, and refuses IP literals unless listed; `*.d`
+matches subdomains of `d`, not `d`. It limits by host name, not by site: TLS
+inside a CONNECT can name another site behind the same CDN edge (domain
+fronting).
 `"adapter"` = the adapter's `egressHosts` (claude: api.anthropic.com, claude.ai,
 platform.claude.com; codex: api.openai.com, chatgpt.com, auth.openai.com;
 gemini and agy: their Google API and login hosts; others: none). Adapters and
 calls only narrow it (the hosts both allow). Each denial is an `egress_denied`
-event `{ host, port, method, agent | commandId }`. A CLI that ignores
-`HTTPS_PROXY` gets no network at all (the safe failure). Proxies and networks
-are removed at the run's end and by the backstop; `odw doctor` expects 200 for
-the first listed host and 403 for a reserved one.
+event `{ host, port, method, agent | commandId }` (at most 200 per run, then
+one log line with the count; `agent` is the proxy user name the client sent, a
+hint). A CLI that ignores `HTTPS_PROXY` gets no network at all (the safe
+failure). Proxies and networks are removed at the run's end and by the
+backstop; `odw doctor` expects 200 for the first listed host, 403 for a
+reserved one, and example.com not to resolve in the container.
 A run that does not exit cleanly has its container `kill`ed and `rm --force`d
 by name. The image must hold the CLIs and is never pulled
 (`examples/sandbox/Dockerfile`); a missing engine or image is a `ConfigError`

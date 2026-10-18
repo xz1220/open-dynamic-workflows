@@ -400,6 +400,26 @@ changed, and run on a schedule — and a dashboard redesigned to watch them.
   `odw` was started.
 - The private homes holding copies of a CLI's login are removed by the worker's exit
   backstop too, not only on a clean exit.
+- A sandboxed agent with notes on could read and delete host files through its notes
+  inbox: its whole notes directory was bound read-write, so it could replace the inbox
+  with a link to a host directory, and the worker's sweep followed links — posting the
+  files there to the board, then deleting them. A container now gets only its inbox
+  (read-write) and its notes script (read-only), and the sweep takes only regular files
+  from an inbox that is a real directory where ODW made it, never following a link or
+  waiting on a FIFO.
+- The egress proxy checked a plain-HTTP request's URL but sent the client's `Host`
+  header on, so an agent could reach any site behind an allowed address. A `Host`
+  header naming another host is now refused, and the URL's host is what is sent.
+  `CONNECT` can be fronted the same way through TLS SNI (domain fronting); the README's
+  threat model now says the allowlist limits by host name, not by site.
+- Containers on an egress network get `--dns 192.0.2.1` on Docker, so Docker's embedded
+  resolver before 26.0 cannot carry lookups out through the host (CVE-2024-29018); `odw
+  doctor`'s egress check fails when an outside name resolves there.
+- The egress proxy listened on every interface, so containers on the engine's default
+  network could use it; it now listens only on its internal-network address.
+- Egress denials are capped: at most 200 `egress_denied` events per run, then one log
+  line with the count, and 1 MiB of denial log per proxy. A proxy or network that could
+  not be removed at a run's end is left for the exit backstop instead of forgotten.
 
 ### Changed behavior — check before upgrading
 - The built-in `codex` adapter runs `codex exec --json --output-last-message

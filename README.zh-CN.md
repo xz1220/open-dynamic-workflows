@@ -1630,18 +1630,27 @@ CLI 配置和更多挂载,网络与各项限制取更严格者;`agent()` 调用�
   (`odw-<run>-egress<n>-…`,标签 `odw.role=egress-proxy`),代理位于引擎默认网络上并同时加入内部网络。
   agent 的容器只加入内部网络,`HTTPS_PROXY`/`HTTP_PROXY`(及小写形式)指向代理,`NO_PROXY` 放过回环地址,
   并设 `NODE_USE_ENV_PROXY=1`。代理只为白名单主机的 443 端口(或条目指定的端口)建立 `CONNECT` 隧道,
-  只把明文 HTTP 转发给白名单主机,并且**自己解析域名**——agent 的容器对外没有 DNS。它是 ODW 自带的
-  零依赖脚本(与隐藏命令 `odw __egress-proxy` 是同一份代码),用 `node` 跑在**agent 的镜像里——
-  因此镜像需要 node**——或 `proxyImage` 里,加固方式与 agent 容器相同。
+  只把明文 HTTP 转发给白名单主机(`Host` 头指向别的主机则拒绝),并且**自己解析域名**——agent 的容器
+  对外没有 DNS:在 Docker 上它得到 `--dns 192.0.2.1`,一个无人应答的地址,因为 Docker 26.0 之前的内置
+  解析器会经由宿主机把内部网络的查询转发出去(CVE-2024-29018)。代理只在它于内部网络上的地址监听,
+  默认网络上的其他容器用不了它。它是 ODW 自带的零依赖脚本(与隐藏命令 `odw __egress-proxy` 是同一份
+  代码),用 `node` 跑在**agent 的镜像里——因此镜像需要 node**——或 `proxyImage` 里,加固方式与 agent
+  容器相同。
 - **拒绝即事件。** 每个被拒绝的请求都会写入 `<运行目录>/egress/` 的一行,运行把它变成
   `egress_denied` 事件(`{ host, port, method, agent }`,步骤则为 `commandId`),出现在
-  `odw logs` 与看板中。agent 由其代理 URL 中的用户名标识;丢掉用户名的 CLI 显示为 `agent: null`。
-- **会被清理。** 运行结束时先删除代理,再删除网络;worker 被杀时退出处理也会这样做。崩溃遗留的
-  网络可用 `docker network ls --filter label=odw.run` 找到。`odw doctor` 会拉起代理,并在内部网络上的
-  容器里期望第一个列出的主机返回 200、一个保留域名返回 403。
+  `odw logs` 与看板中——每次运行最多 200 条,运行结束时再用一行日志说明还有多少条;每个代理的日志
+  最多 1 MiB。agent 由其代理 URL 中的用户名标识;丢掉用户名的 CLI 显示为 `agent: null`。这个名字只是
+  提示而非证明——它由客户端发送,agent 可以改掉——但改了也得不到什么:同一代理后的 agent 白名单相同。
+- **会被清理。** 运行结束时先删除代理,再删除网络;worker 被杀、或结束时有删不掉的,退出处理也会
+  这样做。崩溃遗留的网络可用 `docker network ls --filter label=odw.run` 找到。`odw doctor` 会拉起代理,
+  并在内部网络上的容器里期望第一个列出的主机返回 200、一个保留域名返回 403,且 example.com 解析不了。
 - **安全的失败方式。** 忽略 `HTTPS_PROXY` 的 CLI 或工具完全没有网络:内部网络除了代理别无出路。
   不经代理走 HTTP(S) 的一切——SSH、裸 TCP、UDP——都会失败。白名单不同的 agent 用不同的网络与代理,
   所以 agent 用不了别人的代理。被放行的主机仍是受信任的:agent 能把代码发到任何被放行主机会转发的地方。
+- **按名字,而非按站点。** 白名单限制的是连接所用的主机名,也就是这些名字解析到的服务器——而不是
+  那里提供的站点。经 `CONNECT` 时,隧道里的 TLS 由 agent 掌控:它可以在 SNI 和内层 `Host` 头里写另一个
+  站点(域前置,domain fronting),而被放行名字解析到的服务器——CDN 边缘、共享前端——可能会为它服务。
+  放行 CDN 后面的一个名字,可能等于放行了该边缘代理的所有站点;尽量选不在共享前端后面的主机。
 
 缺少引擎或镜像时,运行在第一个 agent 启动前就以 `ConfigError` 失败,并说明如何构建镜像;
 `odw doctor` 做同样的检查,并运行 `docker run --rm --pull never --network none <镜像> true`
