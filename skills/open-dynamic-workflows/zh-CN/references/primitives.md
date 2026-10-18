@@ -85,6 +85,11 @@ agent(prompt, opts?) -> Promise<unknown>
   `needs_input` 抛错。`"fail"` 立即以 `needs_input` 抛错；`"deny"` 让 CLI 不带提问工具运行
   （适配器的 `questionArgs`）并告诉 agent 自行假设。`needs_input` 失败带着问题列表
   （`agent_failed` 的 `questions`）。Claude Code 会忽略它。
+- **opts.stallMs**（Claude Code 方言）—— 这个 agent 的卡死窗口，单位毫秒：
+  `agent(prompt, { stallMs: 1800000 })` 让它的 CLI 可以 30 分钟没有输出，超过后卡死看门狗将其终止并
+  重启（`stallRestarts`，默认 1 次），之后调用以 `stalled` 原因抛错。它取代适配器和整个运行的
+  `stallTimeout`，没有设置 `stallTimeout` 时同样生效；`0` 关闭这一次调用的看门狗（ODW 的解释）。
+  不是非负数时，在 agent 启动前抛错。
 
 返回回复文本，设了 `schema` 则返回校验过的 JSON 值。CLI 出错、schema 重试耗尽、工作没达到
 `expect`、空回复都会抛错；这些可恢复失败在 `parallel`/`pipeline` 内变成 `null`。停止请求、
@@ -1018,7 +1023,9 @@ odw run wf.js --step                                  # 在每个阶段之前加
 
 - **check**：`meta` 字面量、其 name/description/phases、编译脚本体。解析错误保留编译器原话并附
   `(line 行:列)`；只在合适时附提示（TypeScript 语法、非 async 回调里的 `await`、括号未闭合脚本就
-  结束了）。`validate()` 给出同样的内容。
+  结束了）。`validate()` 给出同样的内容。警告中包括 Claude Code 的限制：源码字面量即可判定（数组
+  字面量、`Array.from({ length: n })`、`Array(n)`、`[...Array(n)]`）超过 4,096 项的
+  `parallel()`/`pipeline()`——Claude Code 会拒绝，ODW 照常运行；以及不是纯字面量的 `meta`。
 - **replay**：每次 `agent()` 调用开始时保存 `agents/<id>.call.json`（提示词、选项、开始时的适配器、
   请求的模型）；隔离 agent 的 `agent_started` 带 `base`（其 worktree 的提交）。重跑是只含这一个调用的
   新运行（`origin: "replay"`、`replayOf: { runId, agentId, label, base? }`）——label、phase、源码目录、

@@ -675,6 +675,15 @@ then personal workflows, across both its own directories and Claude Code's saved
 workflow directories: `.odw/workflows`, `.claude/workflows`, `~/.odw/workflows`,
 and `~/.claude/workflows` (honoring `CLAUDE_CONFIG_DIR`).
 
+In a monorepo, as in Claude Code, the project directories are every `.odw/workflows`
+and `.claude/workflows` from the working directory up to the repository root (the
+nearest directory holding `.git`; outside a repository, the working directory alone).
+The nearest one wins a name, so a package's own `audit` shadows the root's; at one
+level `.odw` still comes before `.claude`. `odw workflows list --all` labels each
+entry with its directory (`../../.claude/workflows`) and says which entry shadows it;
+`odw workflows where <name>` prints the file that runs and, when more than one
+directory has the name, the whole chain in precedence order.
+
 **Workflows from Claude Code plugins** (ODW extension). A Claude Code plugin can ship
 workflows — `.js` files in its `workflows/` directory, or wherever its
 `plugin.json`'s `"workflows"` points. ODW runs the ones your installed, enabled plugins
@@ -1365,6 +1374,14 @@ Code's dialect — `process`, `require`, `import(`, `globalThis`, `Function(`, `
 [strict script context](#strict-script-context-odw-extension) has it, and the ODW
 extension primitives it calls (`validate`, `exec`, `checkpoint`, `workflow.input`);
 `--json` carries them as `capabilities: { outOfDialect, extensions }`.
+
+Among the warnings are **Claude Code's limits** that ODW does not share: a
+`parallel()` or `pipeline()` whose list the source settles at more than 4,096 items
+(an array literal, `Array.from({ length: n })`, `Array(n)`, `[...Array(n)]`, through
+`.map`/`.fill`/`.keys`), which Claude Code's runtime rejects with an error —
+`parallel() on line 12 is given 5,000 items …` — and a `meta` that is not a pure
+literal, which Claude Code drops from its completions (ODW refuses it outright).
+They are warnings only: ODW runs a fan-out of any size, and `check` still exits 0.
 
 **`odw replay <run> --agent <id|label>`** dispatches one saved `agent()` call again.
 Every call's inputs are kept as it starts (`agents/<id>.call.json`: the prompt and
@@ -2898,6 +2915,13 @@ enable for it), `codex` (`exec --json` prints an event per command, edit and mes
 the JSONL adapters `kilo`, `opencode` and `agy` (an event per step), or a wrapper that prints
 a heartbeat — with a value above the longest quiet stretch a healthy agent has: a
 long test run inside one tool call prints nothing either.
+
+**One agent's window** (Claude Code dialect): `agent(prompt, { stallMs: 1800000 })`
+gives that call its own stall window in milliseconds — 30 minutes here — in place of
+its adapter's and the run's `stallTimeout`, with the same restarts (`stallRestarts`)
+and the same failure (reason `"stalled"`). It works where no `stallTimeout` is set,
+so a long fan-out can give its slow reviewers more room and its quick ones less;
+`stallMs: 0` turns the watchdog off for that call.
 
 ### Per-agent limits and runaway loops (ODW extension)
 

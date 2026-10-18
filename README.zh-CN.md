@@ -577,6 +577,12 @@ SIGHUP,效果与 `odw stop` 相同:它的 agent 连同其启动的所有进程�
 的目录和 Claude Code 保存 workflow 的目录: `.odw/workflows`、`.claude/workflows`、
 `~/.odw/workflows`、`~/.claude/workflows`(遵循 `CLAUDE_CONFIG_DIR`)。
 
+在 monorepo 中,与 Claude Code 一样,项目级目录是从工作目录向上直到仓库根(最近的含 `.git`
+的目录;不在仓库中时只看工作目录)沿途的每个 `.odw/workflows` 与 `.claude/workflows`。同名时
+最近者胜,所以包内自己的 `audit` 会遮蔽根目录的;同一层里仍是 `.odw` 先于 `.claude`。
+`odw workflows list --all` 为每一项标出它来自哪个目录(`../../.claude/workflows`)以及被哪一项遮蔽;
+`odw workflows where <名字>` 打印实际运行的文件,多个目录都有这个名字时再按优先级列出完整的候选链。
+
 **来自 Claude Code 插件的 workflow**(ODW 扩展)。Claude Code 插件可以自带 workflow——放在
 它的 `workflows/` 目录,或 `plugin.json` 的 `"workflows"` 指向的位置。ODW 能运行你已安装
 并启用的插件所带的 workflow,名字与 Claude Code 给它们的一致:
@@ -1176,6 +1182,12 @@ TypeScript(不再对每个错误都这样说),非 `async` 回调里的 `await`,�
 `eval`、`fetch`、`console`、定时器等——各带首次出现的行列号以及[严格脚本上下文](#严格脚本上下文odw-扩展)
 里有没有它,还有它调用的 ODW 扩展原语(`validate`、`exec`、`checkpoint`、`workflow.input`);`--json` 中为
 `capabilities: { outOfDialect, extensions }`。
+
+警告中还包括 ODW 没有、但 **Claude Code 有的限制**:源码字面量即可判定超过 4,096 项的
+`parallel()` 或 `pipeline()`(数组字面量、`Array.from({ length: n })`、`Array(n)`、`[...Array(n)]`,
+可经 `.map`/`.fill`/`.keys`),Claude Code 的运行时会报错拒绝——`parallel() on line 12 is given
+5,000 items …`;以及不是纯字面量的 `meta`,Claude Code 会把它从补全中去掉(ODW 直接拒绝)。
+它们只是警告:ODW 照样运行任意规模的扇出,`check` 仍退出 0。
 
 **`odw replay <run> --agent <id|label>`** 把一次保存下来的 `agent()` 调用重新派发。每次调用开始
 时都会保存它的输入(`agents/<id>.call.json`:脚本给出的提示词和选项、开始时所用的适配器、请求的
@@ -2478,6 +2490,11 @@ cloning with «redacted:github»
 启用)、`codex`(`exec --json` 每条命令、每次编辑、每条消息都输出一个事件)、`kilo`、
 `opencode` 和 `agy`(每一步一个事件)这类 JSONL 适配器,或会打印心跳的包装脚本;并把值设得高于
 健康 agent 最长的静默时段——工具调用里跑一轮很长的测试,同样不会有任何输出。
+
+**单个 agent 的窗口**(Claude Code 方言):`agent(prompt, { stallMs: 1800000 })` 为这一次调用
+单独设定卡死窗口(毫秒,此处为 30 分钟),取代其适配器和整个运行的 `stallTimeout`,重启次数
+(`stallRestarts`)与失败方式(原因 `"stalled"`)不变。没有设置 `stallTimeout` 时它同样生效,
+因此长扇出可以给慢的审查者更宽的窗口、给快的更窄;`stallMs: 0` 关闭这一次调用的看门狗。
 
 ### 单 agent 上限与死循环(ODW 扩展)
 

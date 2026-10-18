@@ -86,7 +86,9 @@ outright, never silently passed through as a string).
 | `exec(command, opts?)` | Run a command (tests, a build, a linter) without a model; resolves to `{ stdout, stderr, exitCode, signal, timedOut, truncated, durationMs }`. A string runs through the shell, an array as argv. **ODW extension** — not part of Claude Code's dialect. |
 | `checkpoint(title, opts?)` | Pause the run until a person approves (perhaps with an edited payload) or rejects; resolves to `{ approved, note, by, payload, edited }`. **ODW extension** — not part of Claude Code's dialect. |
 
-`opts` for `agent`: `{ adapter?, schema?, label?, phase?, model?, agentType?, isolation?, keep?, permissions?, expect?, expectRetries?, allowEmpty?, notes?, handoff?, scope?, scopePolicy?, questions? }`.
+`opts` for `agent`: `{ adapter?, schema?, label?, phase?, model?, agentType?, isolation?, keep?, permissions?, expect?, expectRetries?, allowEmpty?, notes?, handoff?, scope?, scopePolicy?, questions?, stallMs? }`.
+`stallMs` (Claude Code dialect) is that one agent's stall window in milliseconds
+(`{ stallMs: 1800000 }` = 30 minutes), in place of the `stallTimeout` setting.
 `adapter` picks the CLI — or, as a list (`['codex', 'claude']`, **ODW
 extension**), a fallback chain; `model: '@fast'` picks a tier's model for
 whichever CLI runs it (**ODW extension**); `schema` is a raw JSON Schema object (an option, not
@@ -269,6 +271,7 @@ odw replay $RUN --agent 3   # that one agent() call again, as a new run, at the 
 odw run wf.js --break Review  # stop for a decision (a checkpoint) before phase/label "Review"; --step: every phase
 odw check wf.js             # does it load? file:line:col, a code frame, portability warnings; exit 0/1
                             #   --capabilities: what it names outside the dialect (process, require, import(, …) and the ODW extensions it calls
+                            #   warns of Claude Code's limits: a parallel()/pipeline() over 4,096 items, a meta that is not a pure literal
 odw eval review             # cases × adapters × repeats: pass rate, cost, time per cell (ODW extension; below)
 odw test review             # scripted replies, no model, $0: does the logic hold? (ODW extension; below)
 odw run review --dry        # every agent stubbed: the phase tree and agent counts, $0 (ODW extension)
@@ -286,8 +289,10 @@ in a human's interactive terminal attaches a live progress view instead
 Force either way with `-d`/`--detach` or `--fg`, or `ODW_DETACH=1`.
 
 Saved workflows run by name (`odw run <name>`); lookup order:
-`.odw/workflows`, `.claude/workflows`, `~/.odw/workflows`,
-`~/.claude/workflows`. Workflows that installed, enabled Claude Code plugins
+`.odw/workflows`, `.claude/workflows` — in each directory from the working
+directory up to the repository root, nearest first (a monorepo package's own
+workflow shadows the root's; `odw workflows where <name>` shows the chain) —
+then `~/.odw/workflows`, `~/.claude/workflows`. Workflows that installed, enabled Claude Code plugins
 ship run as `odw run <plugin>:<name>` (ODW extension; `odw workflows list
 --plugins` lists them): in place, read-only, same dialect. A bare name reaches
 a plugin's workflow only when no project or personal one has it — use the

@@ -129,6 +129,13 @@ other primitive organizes calls to it.
   question tool (the adapter's `questionArgs`) and tells the agent to assume.
   A `needs_input` failure carries the questions (`agent_failed`'s `questions`).
   Claude Code ignores it.
+- **opts.stallMs** (Claude Code dialect) — this agent's stall window in
+  milliseconds: `agent(prompt, { stallMs: 1800000 })` lets its CLI go 30
+  minutes without output before the stall watchdog kills it and starts it
+  again (`stallRestarts`, default 1), then the call throws with reason
+  `stalled`. It takes the place of the adapter's and the run's `stallTimeout`,
+  and works where none is set; `0` turns the watchdog off for the call (an ODW
+  reading). Anything but a non-negative number throws before the agent starts.
 
 Returns the reply text, or the validated JSON value when `schema` is set. CLI
 errors, exhausted schema retries, work that missed its `expect` checks and an
@@ -1327,6 +1334,10 @@ odw run wf.js --step                                  # a checkpoint before ever
   Parse errors keep the compiler's message plus `(line L:C)`; a hint is added
   only when it fits (TypeScript syntax, `await` in a non-async callback, the
   script ending before a bracket closes). `validate()` reports the same.
+  Its warnings include Claude Code's limits: a `parallel()`/`pipeline()` whose
+  list the source settles (an array literal, `Array.from({ length: n })`,
+  `Array(n)`, `[...Array(n)]`) at more than 4,096 items, which Claude Code
+  rejects and ODW runs; a `meta` that is not a pure literal.
 - **replay**: every `agent()` call saves `agents/<id>.call.json` as it starts
   (prompt, options, adapter it started on, model asked for); an isolated
   agent's `agent_started` carries `base` (its worktree's commit). A replay is

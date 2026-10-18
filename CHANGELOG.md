@@ -523,6 +523,20 @@ independent security reviews whose findings are all fixed.
   [`docs/recipes/notify.md`](docs/recipes/notify.md#a-morning-digest).
 
 ### Write workflows
+- Dialect gaps closed (Claude Code dialect, not ODW extensions): `agent(prompt, {
+  stallMs })` sets that one call's stall window in milliseconds, in place of its
+  adapter's and the run's `stallTimeout` (and where none is set), with the same
+  `stallRestarts` and reason `stalled`; `0` turns the watchdog off for the call (an
+  ODW reading); typed in `types/workflow.d.ts`, conformance case `33-agent-stallms`.
+  A workflow name now resolves through every `.odw/workflows` and `.claude/workflows`
+  from the working directory up to the repository root (the nearest `.git`), the
+  nearest winning — a monorepo package's own workflow shadows the root's; `.odw`
+  still comes before `.claude` at one level. `odw workflows list` says which entry
+  shadows one; `odw workflows where` prints the candidate chain.
+- `odw check` warns of Claude Code's limits (**ODW extension**): a `parallel()` or
+  `pipeline()` the source settles at more than 4,096 items, which Claude Code rejects
+  (ODW runs it, nothing enforced), and a `meta` that is not a pure literal, which
+  Claude Code drops from its completions. `validate()` gives the same warnings.
 - `exec(command, opts)` runs tests, builds and linters without a model, as steps of the
   graph ([#31](https://github.com/xz1220/open-dynamic-workflows/issues/31); **ODW
   extension**). Examples: `test-fix-loop.js`, `review-swarm.js`, `plan-approve-execute.js`.

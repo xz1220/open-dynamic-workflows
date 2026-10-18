@@ -75,7 +75,8 @@ return await agent(
 | `exec(command, opts?)` | 不启动模型直接运行一条命令（测试、构建、linter）；返回 `{ stdout, stderr, exitCode, signal, timedOut, truncated, durationMs }`。字符串经 shell 执行，数组按 argv 执行。**ODW 扩展**——不属于 Claude Code 方言。 |
 | `checkpoint(title, opts?)` | 暂停运行，直到有人批准（可以附上修改后的 payload）或拒绝；返回 `{ approved, note, by, payload, edited }`。**ODW 扩展**——不属于 Claude Code 方言。 |
 
-`agent` 的 `opts`：`{ adapter?, schema?, label?, phase?, model?, agentType?, isolation?, keep?, permissions?, expect?, expectRetries?, allowEmpty?, notes?, handoff?, scope?, scopePolicy?, questions? }`。
+`agent` 的 `opts`：`{ adapter?, schema?, label?, phase?, model?, agentType?, isolation?, keep?, permissions?, expect?, expectRetries?, allowEmpty?, notes?, handoff?, scope?, scopePolicy?, questions?, stallMs? }`。
+`stallMs`（Claude Code 方言）是这一个 agent 的卡死窗口，单位毫秒（`{ stallMs: 1800000 }` 即 30 分钟），取代 `stallTimeout` 设置。
 `adapter` 选择用哪个 CLI——写成列表（`['codex', 'claude']`，**ODW 扩展**）就是回退链；
 `model: '@fast'` 为实际运行它的 CLI 选出该层级的模型（**ODW 扩展**）；`schema` 是一个原始 JSON Schema 对象（选项，不是全局）；
 `agentType` 是注入进 prompt 的**人设**，*不是* adapter 名。`keep: true`（**ODW 扩展**）
@@ -227,6 +228,7 @@ odw replay $RUN --agent 3   # 把这一次 agent() 调用作为新运行重跑,�
 odw run wf.js --break Review  # 在阶段/label "Review" 之前停下等决定(一个检查点);--step:每个阶段之前
 odw check wf.js             # 能否加载?文件:行:列、代码片段、可移植性警告;退出 0/1
                             #   --capabilities:它用到的方言之外的名字(process、require、import( 等)与调用的 ODW 扩展
+                            #   提示 Claude Code 的限制:超过 4,096 项的 parallel()/pipeline()、不是纯字面量的 meta
 odw eval review             # 用例 × 适配器 × 重复次数：每个单元格的通过率、花费、耗时（ODW 扩展；见下文）
 odw test review             # 脚本化回复，不调用模型，$0：逻辑是否成立？（ODW 扩展；见下文）
 odw run review --dry        # 每个 agent 都用桩应答：阶段树与 agent 数，$0（ODW 扩展）
@@ -238,7 +240,9 @@ odw token add alice --scope approve --file tokens.json  # 给 odw serve --tokens
 ```
 
 保存过的 workflow 可直接按名字运行（`odw run <名字>`）；查找顺序：`.odw/workflows`、
-`.claude/workflows`、`~/.odw/workflows`、`~/.claude/workflows`。已安装并启用的 Claude Code
+`.claude/workflows`——从工作目录向上到仓库根的每一层，最近者优先（monorepo 中包内的
+同名 workflow 遮蔽根目录的；`odw workflows where <名字>` 显示候选链）——然后是
+`~/.odw/workflows`、`~/.claude/workflows`。已安装并启用的 Claude Code
 插件所带的 workflow 用 `odw run <插件>:<名字>` 运行（ODW 扩展；`odw workflows list --plugins`
 列出它们）：就地、只读、同一方言。只有当项目级和个人级都没有同名 workflow 时，裸名字才会
 运行插件的 workflow——想确定运行哪一个，就用 `<插件>:<名字>` 的写法。
