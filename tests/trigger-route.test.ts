@@ -144,7 +144,8 @@ test("unknown trigger 404; bad or missing signature 401; unset secret 503; overs
       await missing.text();
       const unset = await post("envd", issueEvent(1));
       assert.equal(unset.status, 503);
-      assert.match(String(unset.json.error), /ODW_TEST_UNSET_SECRET/);
+      assert.match(String(unset.json.error), /its secret is not set on the server/);
+      assert.doesNotMatch(String(unset.json.error), /ODW_TEST_UNSET_SECRET/, "the variable's name is the operator's, not the sender's");
       const big = await post("gh", JSON.stringify({ pad: "x".repeat(TRIGGER_MAX_BODY_BYTES) }));
       assert.equal(big.status, 413);
       const get = await fetch(`${base}/api/triggers/gh`);

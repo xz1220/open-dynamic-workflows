@@ -125,7 +125,9 @@ export class TriggerRoute {
     }
     const secret = trigger.secret ?? (trigger.secretEnv ? ((this.options.env ?? process.env)[trigger.secretEnv] ?? "") : "");
     if (secret.length < MIN_SECRET_LENGTH) {
-      sendJson(res, 503, { error: `trigger ${name} has no usable secret: set ${trigger.secretEnv ?? "its secret"} (${MIN_SECRET_LENGTH}+ characters) for odw serve` });
+      // Which variable is the operator's to know (odw serve says it at start), not the sender's.
+      (this.options.log ?? defaultLog)(`odw serve: trigger ${name} refused a delivery: $${trigger.secretEnv} is unset or under ${MIN_SECRET_LENGTH} characters`);
+      sendJson(res, 503, { error: `trigger ${name} is not ready: its secret is not set on the server` });
       return;
     }
     const now = this.now();
