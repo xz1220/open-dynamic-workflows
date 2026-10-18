@@ -11,9 +11,11 @@ trap 'rm -rf "$work"' EXIT
 
 # The "server": a user with odw on PATH (this checkout's build) and a stand-in agent.
 sudo useradd -m -s /bin/bash odwremote
+# The checkout's home is not readable by another user: install the build where it is.
+sudo mkdir -p /opt/odw && sudo cp -r "$here/dist" "$here/package.json" /opt/odw/ && sudo chmod -R a+rX /opt/odw
 sudo tee /usr/local/bin/odw >/dev/null <<SH
 #!/bin/sh
-exec "$node_bin" "$here/dist/cli.js" "\$@"
+exec "$node_bin" /opt/odw/dist/cli.js "\$@"
 SH
 sudo chmod 755 /usr/local/bin/odw
 sudo -u odwremote mkdir -p /home/odwremote/.config/odw /home/odwremote/.ssh
