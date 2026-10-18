@@ -728,6 +728,8 @@ const ZH: Record<string, string> = {
   "{n} hosts allowed": "放行 {n} 个主机",
   "resolves a conflict of agent #{n} in": "解决了这次运行中 agent #{n} 的冲突:",
   "agent #{n}'s conflict resolved by": "agent #{n} 的冲突由此解决:",
+  "dry run": "空跑",
+  "every agent answered by a stub: it cost nothing": "每个 agent 都由占位回复应答:不产生任何花费",
   // Evals.
   "Evals": "评测",
   "Eval": "评测",

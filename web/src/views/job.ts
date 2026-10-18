@@ -113,7 +113,7 @@ function runHead(run: RunDetail, nowSec: number, spendOpen: boolean): string {
   const w = (n: number) => `${((n / total) * 100).toFixed(2)}%`;
   return (
     `<header class="run-head">` +
-    `<div style="min-width:0"><div class="eyebrow"><span>${t("Run")}</span><span class="mono" style="text-transform:none;letter-spacing:0">${esc(run.runId)}</span>${cc}${shared}</div>` +
+    `<div style="min-width:0"><div class="eyebrow"><span>${t("Run")}</span><span class="mono" style="text-transform:none;letter-spacing:0">${esc(run.runId)}</span>${cc}${shared}${run.dry ? `<span class="tag dry" title="${esc(t("every agent answered by a stub: it cost nothing"))}">${t("dry run")}</span>` : ""}</div>` +
     `<div class="title-row"><h1 class="display">${esc(run.name)}</h1>${pill(run.state)}</div>` +
     (run.description ? `<p class="lede">${esc(run.description)}</p>` : "") +
     resolveLinks(run) +

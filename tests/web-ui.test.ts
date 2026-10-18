@@ -1073,3 +1073,12 @@ test("an allowlisted sandbox says how many hosts it allows; runs linked by apply
   assert.match(html, /<a class="rlink" href="#\/job\/20260101-010101-bbbbbb">.*agent #2(&#39;|')s conflict resolved by/s);
   store.focusRun(null);
 });
+
+test("a dry run is tagged as one in its header", () => {
+  const view: JobViewState = { cpNote: "", tab: "graph", selectedAi: null, reviewAi: null, zoom: 1, logQuery: "", logTypes: new Set(["agent"]), logLimit: 600, follow: true, motion: false };
+  store.focusRun("20260101-000000-aaaaaa");
+  store.run = detail([], { dry: true });
+  store.runEvents = [];
+  assert.match(renderJob(view, NOW), /<span class="tag dry"[^>]*>dry run<\/span>/);
+  store.focusRun(null);
+});

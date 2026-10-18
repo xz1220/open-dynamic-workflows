@@ -667,6 +667,14 @@ ul.mcp li {
   }
 }
 
+/* ---- a dry run: every agent a stub ---- */
+.tag.dry {
+  border-style: dashed;
+  border-color: var(--line-2);
+  background: repeating-linear-gradient(-45deg, var(--shade) 0 4px, transparent 4px 8px);
+  color: var(--mute);
+}
+
 /* ---- runs linked by odw apply --resolve ---- */
 .rlinks {
   display: flex;
