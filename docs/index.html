@@ -2441,7 +2441,95 @@
         }
       }
 
-      /* ---------- 05 · install ---------- */
+      /* the guardrails plate: lanes by scope, a wait, a cut, a pinned note */
+      .pl-guard .lane {
+        fill: var(--faint);
+        font-size: 9px;
+      }
+      .pl-guard .rail {
+        stroke: var(--line);
+        stroke-dasharray: 2 4;
+      }
+      .pl-guard .bar {
+        fill: var(--card);
+        stroke: var(--line-2);
+      }
+      .pl-guard .bar.a,
+      .pl-guard .bar.b {
+        fill: var(--sig-soft);
+        stroke: var(--sig-line);
+      }
+      .pl-guard .wait {
+        fill: var(--amber-soft);
+        stroke: var(--amber-line);
+        stroke-dasharray: 4 3;
+      }
+      .pl-guard .bt {
+        fill: var(--ink-2);
+        font-size: 9.5px;
+      }
+      .pl-guard .bt.dim {
+        fill: var(--amber-ink);
+      }
+      .pl-guard .cut {
+        stroke: var(--alarm);
+        stroke-width: 2;
+        stroke-dasharray: 3 3;
+      }
+      .pl-guard .cutt {
+        fill: var(--alarm-ink);
+        font-size: 9.5px;
+      }
+      .pl-guard .note rect {
+        fill: var(--card);
+        stroke: var(--line-2);
+        filter: drop-shadow(0 4px 6px rgba(0, 0, 0, 0.12));
+      }
+      .pl-guard .note .pin {
+        fill: var(--alarm);
+      }
+      .pl-guard .note text {
+        fill: var(--mute);
+        font-size: 8.5px;
+      }
+      .pl-guard .note .nt {
+        fill: var(--ink);
+        font-family: var(--f-display);
+        font-size: 11px;
+      }
+      .pl-guard .cn {
+        fill: none;
+        stroke: var(--line-2);
+        stroke-dasharray: 1;
+      }
+      .pl-guard .bar,
+      .pl-guard .wait,
+      .pl-guard .note {
+        transform-box: fill-box;
+        transform-origin: left center;
+      }
+      .pl-guard.draw .bar.a,
+      .pl-guard.draw .bar.c {
+        animation: ctl-grow 0.9s var(--ease-out) 0.2s both;
+      }
+      .pl-guard.draw .wait {
+        animation: ctl-grow 0.9s var(--ease-out) 0.35s both;
+      }
+      .pl-guard.draw .bar.b {
+        animation: ctl-grow 0.8s var(--ease-out) 1.1s both;
+      }
+      .pl-guard.draw .cut,
+      .pl-guard.draw .cutt {
+        animation: rec-pop 0.4s var(--ease-spring) 1.2s both;
+      }
+      .pl-guard.draw .note {
+        animation: rec-pop 0.5s var(--ease-spring) 0.9s both;
+      }
+      .pl-guard.draw .cn {
+        animation: draw 0.5s var(--ease-out) 1.3s both;
+      }
+
+      /* ---------- 06 · install ---------- */
       .install-panel {
         display: grid;
         grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.05fr);
@@ -2980,7 +3068,8 @@
             <a href="#runtime"><span class="ix" aria-hidden="true">02</span><span data-i18n="nav.runtime">Runtime</span></a>
             <a href="#long"><span class="ix" aria-hidden="true">03</span><span data-i18n="nav.long">Long runs</span></a>
             <a href="#control"><span class="ix" aria-hidden="true">04</span><span data-i18n="nav.control">Control</span></a>
-            <a href="#install"><span class="ix" aria-hidden="true">05</span><span data-i18n="nav.install">Install</span></a>
+            <a href="#guard"><span class="ix" aria-hidden="true">05</span><span data-i18n="nav.guard">Guardrails</span></a>
+            <a href="#install"><span class="ix" aria-hidden="true">06</span><span data-i18n="nav.install">Install</span></a>
             <a class="gh" href="https://github.com/xz1220/open-dynamic-workflows"
               >GitHub<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7.5 16.5 16.5 7.5M9 7.5h7.5V15" /></svg
             ></a>
@@ -3534,10 +3623,92 @@
         </div>
       </section>
 
-      <!-- ============================ 05 · INSTALL ============================ -->
+      <!-- ============================ 05 · GUARDRAILS ============================ -->
+      <section class="section" id="guard" aria-labelledby="guard-title">
+        <div class="section-inner">
+          <p class="seclabel"><span class="num">05</span> <span class="kick" data-i18n="guard.kicker">Guardrails</span> <span class="rule"></span></p>
+          <div class="sechead">
+            <h2 class="sectitle display" id="guard-title" data-i18n="guard.title" data-i18n-html>Many agents, <em>one</em> codebase, no surprises.</h2>
+            <p class="section-lede" data-i18n="guard.copy">
+              Parallel agents step on each other, loop for hours, or report green with half the work killed. ODW sees it in their transcripts and stops it — and lets them talk before they collide.
+            </p>
+          </div>
+
+          <div class="long-grid">
+            <figure class="rec-card card marked">
+              <div class="plate" aria-hidden="true">
+                <svg class="pl pl-guard" viewBox="0 0 520 260" data-live data-draw>
+                  <!-- three lanes: two share a scope, so the second waits -->
+                  <text class="lane" x="16" y="52">src/auth/**</text>
+                  <text class="lane" x="16" y="122">src/auth/**</text>
+                  <text class="lane" x="16" y="192">src/db/**</text>
+                  <line class="rail" x1="108" y1="48" x2="500" y2="48" />
+                  <line class="rail" x1="108" y1="118" x2="500" y2="118" />
+                  <line class="rail" x1="108" y1="188" x2="500" y2="188" />
+                  <rect class="bar a" x="112" y="38" width="170" height="20" rx="6" />
+                  <text class="bt" x="122" y="52">login · claude</text>
+                  <rect class="wait" x="112" y="108" width="170" height="20" rx="6" />
+                  <text class="bt dim" x="122" y="122">waits: same scope</text>
+                  <rect class="bar b" x="290" y="108" width="150" height="20" rx="6" />
+                  <text class="bt" x="300" y="122">fix-auth · codex</text>
+                  <rect class="bar c" x="112" y="178" width="200" height="20" rx="6" />
+                  <text class="bt" x="122" y="192">migrate · claude</text>
+                  <!-- runaway: cut at a limit -->
+                  <line class="cut" x1="312" y1="170" x2="312" y2="206" />
+                  <text class="cutt" x="320" y="222">✕ runaway: Bash ×5</text>
+                  <!-- a note pinned between the lanes -->
+                  <g class="note">
+                    <rect x="300" y="64" width="176" height="34" rx="3" />
+                    <circle class="pin" cx="388" cy="64" r="4" />
+                    <text x="310" y="79">note · login</text>
+                    <text class="nt" x="310" y="91">renamed parse(input, opts)</text>
+                  </g>
+                  <path class="cn" pathLength="1" d="M388 98C388 104 365 104 365 108" />
+                </svg>
+              </div>
+              <figcaption class="rec-cap"><code>agent(p, { scope, limits, notes: true })</code><span data-i18n="guard.tally">1 waited · 1 stopped · 1 note</span></figcaption>
+            </figure>
+
+            <div class="lr-list">
+              <article class="lr card">
+                <span class="op bell"><i></i><span class="kd">limits</span></span>
+                <h3 data-i18n="guard.limits.title">No runaway loops</h3>
+                <p data-i18n="guard.limits.copy">Cap an agent's tool calls, cost, tokens or time; the same call five times in a row kills it, with the evidence.</p>
+              </article>
+              <article class="lr card">
+                <span class="op ok"><i></i><span class="kd">orphanedBackground</span></span>
+                <h3 data-i18n="guard.orphans.title">No silent green</h3>
+                <p data-i18n="guard.orphans.copy">Background work a headless agent left running when it said “done” is caught, not counted as success.</p>
+              </article>
+              <article class="lr card">
+                <span class="op pipe"><i></i><span class="kd">scope</span></span>
+                <h3 data-i18n="guard.scope.title">Plan who touches what</h3>
+                <p data-i18n="guard.scope.copy">Calls that declare overlapping files run one after another; a write outside its scope is flagged.</p>
+              </article>
+              <article class="lr card">
+                <span class="op par"><i></i><span class="kd">odw note</span></span>
+                <h3 data-i18n="guard.notes.title">Agents that talk</h3>
+                <p data-i18n="guard.notes.copy">A shared notes board, and each worktree agent's interface changes posted for the ones that start after it.</p>
+              </article>
+              <article class="lr card">
+                <span class="op rp"><i></i><span class="kd">network.allow</span></span>
+                <h3 data-i18n="guard.egress.title">Only the hosts you allow</h3>
+                <p data-i18n="guard.egress.copy">Container agents reach the web through a proxy they cannot touch; every refused host is on the record.</p>
+              </article>
+              <article class="lr card">
+                <span class="op cmd"><i></i><span class="kd">--on ssh://box</span></span>
+                <h3 data-i18n="guard.remote.title">Your box, your phone</h3>
+                <p data-i18n="guard.remote.copy">Run on your own server over plain ssh, approve its checkpoints from a signed one-time link, pull the run back.</p>
+              </article>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================ 06 · INSTALL ============================ -->
       <section class="section" id="install" aria-labelledby="install-title">
         <div class="section-inner">
-          <p class="seclabel"><span class="num">05</span> <span class="kick" data-i18n="install.kicker">Start</span> <span class="rule"></span></p>
+          <p class="seclabel"><span class="num">06</span> <span class="kick" data-i18n="install.kicker">Start</span> <span class="rule"></span></p>
           <div class="install-panel">
             <div class="install-copy">
               <h2 class="sectitle display" id="install-title" data-i18n="install.title" data-i18n-html>Install the runtime or <em>hack from source</em>.</h2>
@@ -3751,6 +3922,23 @@
           "control.plate.applied": "applied · staged",
           "control.tally": "3 applied · 1 rolled back",
           "nav.control": "Control",
+          "guard.kicker": "Guardrails",
+          "guard.title": "Many agents, <em>one</em> codebase, no surprises.",
+          "guard.copy": "Parallel agents step on each other, loop for hours, or report green with half the work killed. ODW sees it in their transcripts and stops it — and lets them talk before they collide.",
+          "guard.tally": "1 waited · 1 stopped · 1 note",
+          "guard.limits.title": "No runaway loops",
+          "guard.limits.copy": "Cap an agent's tool calls, cost, tokens or time; the same call five times in a row kills it, with the evidence.",
+          "guard.orphans.title": "No silent green",
+          "guard.orphans.copy": "Background work a headless agent left running when it said “done” is caught, not counted as success.",
+          "guard.scope.title": "Plan who touches what",
+          "guard.scope.copy": "Calls that declare overlapping files run one after another; a write outside its scope is flagged.",
+          "guard.notes.title": "Agents that talk",
+          "guard.notes.copy": "A shared notes board, and each worktree agent's interface changes posted for the ones that start after it.",
+          "guard.egress.title": "Only the hosts you allow",
+          "guard.egress.copy": "Container agents reach the web through a proxy they cannot touch; every refused host is on the record.",
+          "guard.remote.title": "Your box, your phone",
+          "guard.remote.copy": "Run on your own server over plain ssh, approve its checkpoints from a signed one-time link, pull the run back.",
+          "nav.guard": "Guardrails",
           "install.kicker": "Start",
           "install.title": "Install the runtime or <em>hack from source</em>.",
           "install.copy":
@@ -3887,6 +4075,23 @@
           "control.plate.applied": "已应用 · 已暂存",
           "control.tally": "3 个已应用 · 1 个已回滚",
           "nav.control": "掌控",
+          "guard.kicker": "护栏",
+          "guard.title": "许多 agent，<em>一份</em>代码，没有意外。",
+          "guard.copy": "并行的 agent 会互相踩踏、一转几小时，或者半截工作被杀掉却报绿。ODW 从它们的执行记录里看出来并叫停——还让它们在撞上之前先通个气。",
+          "guard.tally": "1 个等待 · 1 个被叫停 · 1 条笔记",
+          "guard.limits.title": "不再失控打转",
+          "guard.limits.copy": "给 agent 的工具调用、花费、token 或时长设上限；同一调用连续五次就会被终止，并附上证据。",
+          "guard.orphans.title": "不再静默报绿",
+          "guard.orphans.copy": "无头 agent 说“完成”时还留在后台的工作会被发现，而不是算作成功。",
+          "guard.scope.title": "先划清谁改哪里",
+          "guard.scope.copy": "声明了重叠文件的调用依次运行；越出范围的写入会被标出。",
+          "guard.notes.title": "会互相沟通的 agent",
+          "guard.notes.copy": "共享笔记板，每个 worktree agent 的接口改动都会贴给之后启动的 agent。",
+          "guard.egress.title": "只放行你允许的主机",
+          "guard.egress.copy": "容器里的 agent 经由它们碰不到的代理上网；每个被拒的主机都有记录。",
+          "guard.remote.title": "你的机器，你的手机",
+          "guard.remote.copy": "用普通 ssh 在自己的服务器上运行，凭签名的一次性链接审批检查点，再把运行拉回本地。",
+          "nav.guard": "护栏",
           "install.kicker": "开始使用",
           "install.title": "安装运行时，或直接<em>从源码改起</em>。",
           "install.copy": "可以用单文件安装器、npm 安装，或 clone 仓库。ODW 只驱动本地 agent CLI，不直接调用模型 API。",
