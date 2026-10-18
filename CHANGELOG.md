@@ -587,6 +587,19 @@ independent security reviews whose findings are all fixed.
   compiles a body; installs verify SHA256 checksums.
 - The dashboard server reads events incrementally, pushes run-list deltas, and stays
   responsive with thousands of runs.
+- `odw gc` and `odw pin` (**ODW extension**): `odw gc [--yes] [--older-than 30d]
+  [--json] [--source DIR]` reports what runs left on disk, with sizes — orphaned
+  `$TMPDIR/odw-wt-*` worktrees whose process is gone (each worktree now names its
+  process, run and repository in `odw-owner.json` beside it), keep branches whose change
+  HEAD already holds or whose run is past retention, and expired runs' transcripts and
+  stderr — and deletes nothing without `--yes` (worktrees as the worker would:
+  unlock, `remove --force --force`, prune; meta, events, results and diffs of a trimmed
+  run stay, `gc.json` says what went). Running, paused and waiting runs, and runs marked
+  with `odw pin <run>` (`pinned.json`; `--remove` unpins), are skipped; branches and
+  worktrees odw did not make are never looked at. Config `retention: { days: 30,
+  transcripts: true }`. Each worker says once in the run's log when its repository has
+  orphaned worktrees; `odw doctor` gains a **Disk** line (runs root size, orphans); the
+  dashboard tags a run **pinned** or **transcripts trimmed**.
 
 ### Security fixes found in review
 - A sandboxed agent could plant git config (`core.fsmonitor`, hooks) in its workspace's

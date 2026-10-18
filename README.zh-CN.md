@@ -544,6 +544,7 @@ odw replay $RUN --agent 3 # 把这一个 agent 作为新运行重跑,检出它�
 odw eval review          # 用例 × 适配器 × 重复次数:每个单元格的通过率、花费与耗时(见下文)
 odw export $RUN --otlp   # 把运行导出为 OpenTelemetry trace(OTLP/JSON;--send 直接发送;见下文)
 odw bundle $RUN          # 把运行写成一个可分享的脱敏文件:$RUN.odwrun(用 odw view FILE 查看;见下文)
+odw gc                   # 运行留在磁盘上的东西:孤儿 worktree、keep 分支、旧 transcript;--yes 才删(见下文)
 odw pause|resume|stop $RUN
 odw approve|reject $RUN  # 回答运行正在等待的 checkpoint()(--note TEXT、--checkpoint N)
 odw approve $RUN --edit  # ……先在 $EDITOR 里修改 payload 再批准(或 --payload JSON|@file)
@@ -1356,6 +1357,47 @@ odw view run.odwrun                   # 即 odw serve --open run.odwrun:在浏�
   一律拒绝(409),在 loopback 上也是如此。
 
 看板上运行的 **分享** 按钮会复制 `odw bundle <run>`。
+
+### 回收磁盘:`odw gc` 与 `odw pin`(ODW 扩展)
+
+每个隔离 agent 的 worktree 在调用结束时就会删除——但 worker 被 SIGKILL、机器断电时,清理来不及
+执行。保留的分支(`keep: true`、`keepBranches`)在你删除之前一直存在,每个运行目录也一直保留 agent
+的 transcript。`odw gc` 把这些连同大小一起列出来,**不加 `--yes` 什么都不删**:
+
+```bash
+odw gc                        # 默认空跑:列出会删什么、能腾出多少空间
+odw gc --older-than 14d       # 超过 14 天的运行算作过期(默认取 retention.days,30)
+odw gc --yes                  # 真的删除
+odw gc --json                 # 同一份报告,给脚本用
+odw pin $RUN                  # odw gc 跳过这个运行,不论多旧;--remove 取消;不带运行 id 列出已固定的
+```
+
+- **孤儿 worktree。** 每个隔离 agent 的 worktree 目录(`$TMPDIR/odw-wt-*`)里有一个
+  `odw-owner.json`,写明它属于哪个进程、哪个运行、哪个仓库。进程已不在、且所属运行不再活动的,
+  就是孤儿;没有这个文件的(旧版 odw 建的)要一天没被改动过才算。清理方式与 worker 自己一样:
+  `git worktree unlock`、`worktree remove --force --force`、删目录、`worktree prune`;目录已经
+  不在的注册项会被 prune。`odw gc` 查看临时目录,以及当前仓库(`--source DIR`)和每个运行的源仓库
+  里注册的 worktree。
+- **keep 分支** `odw/<run>/<agent>-<label>`(属于本运行根目录中的运行):HEAD 已经包含其改动
+  (提交在 HEAD 中,或 `git cherry` 在 HEAD 里找到同样的补丁——`odw apply` 加一次提交之后就是这样),
+  或所属运行超过保留期限时删除。任何地方检出着的分支 git 会拒绝删除,于是保留;本运行根目录不认识
+  其运行的分支只计数,从不删除。
+- **过期运行**——已结束且超过保留期限——删除各 agent 的 transcript 和 stderr(运行中最大的部分)。
+  `meta.json`、状态、事件、保存的结果和 diff 都保留,所以 `odw list`、`odw estimate`、`odw compare`
+  和 `odw apply` 仍然可用;运行目录中的 `gc.json` 记录删了什么,看板为该运行标出 **转录已清理**。
+- **从不碰:** 运行中、暂停中或在检查点等待的运行;你固定过的运行(运行目录里的 `pinned.json`,看板
+  标出 **已固定**);不是 odw 建的 worktree 和分支。每一项删除前都会再检查一次,失败的会报告(退出码 1),
+  其余照常进行。
+- **启动时** 每个 worker 只读地查看其仓库注册的 worktree,若有已死运行留下的,就在运行日志里说一次,
+  并给出 `odw gc` 命令。`odw doctor` 增加 **Disk** 一行:运行根目录的大小与孤儿 worktree 数。
+
+```jsonc
+{
+  "retention": { "days": 30, "transcripts": true } // transcripts: false 保留 transcript;gc 只清理 worktree 与分支
+}
+```
+
+odw 不运行常驻进程:要定期清理,把 `odw gc --yes` 放进你自己的 crontab 或 CI 任务。
 
 ## 看板:观测、检查、对话
 

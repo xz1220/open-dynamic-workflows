@@ -246,6 +246,9 @@ odw logs $RUN --agent 3     # what one agent did: tool calls, results, errors (O
 odw export $RUN --otlp      # the run as OpenTelemetry traces, OTLP/JSON — --send posts it (ODW extension)
 odw bundle $RUN             # the run as one redacted file to share, $RUN.odwrun; odw view FILE shows it
                             #   read-only (ODW extension; --no-transcripts, --out FILE, --max-bytes N)
+odw gc                      # what runs left on disk — orphaned worktrees, keep branches, old transcripts — with
+                            #   sizes (ODW extension); a dry run: --yes deletes, only on the user's say-so;
+                            #   --older-than 14d, --json; odw pin $RUN keeps a run out of it (--remove unpins)
 odw result $RUN             # print the final value when done
 odw pause $RUN / resume $RUN / stop $RUN
 odw approve|reject $RUN     # answer a checkpoint() the run waits at — only on the user's say-so

@@ -206,6 +206,9 @@ odw logs $RUN --agent 3     # 某个 agent 做了什么：工具调用、结果�
 odw export $RUN --otlp      # 把运行导出为 OpenTelemetry trace（OTLP/JSON）——--send 直接发送（ODW 扩展）
 odw bundle $RUN             # 把运行写成一个可分享的脱敏文件 $RUN.odwrun；odw view FILE 只读查看
                             #   （ODW 扩展；--no-transcripts、--out FILE、--max-bytes N）
+odw gc                      # 运行留在磁盘上的东西——孤儿 worktree、keep 分支、旧 transcript——及其大小
+                            #   （ODW 扩展）；默认空跑：--yes 才删，且只在用户明确要求时；
+                            #   --older-than 14d、--json；odw pin $RUN 让某个运行不受影响（--remove 取消）
 odw result $RUN             # 完成后打印最终值
 odw pause $RUN / resume $RUN / stop $RUN
 odw approve|reject $RUN     # 回答运行正在等待的 checkpoint()——只在用户明确要求时
