@@ -1,13 +1,16 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { execPath } from "node:process";
 import { Readable } from "node:stream";
+import { fileURLToPath } from "node:url";
 
 import { defaultConfig } from "../src/adapters/config.js";
 import { ChatHost, type ChatTurnRunner } from "../src/runtime/chat-host.js";
+import type { ChatMessage } from "../src/runtime/chat-store.js";
 import type { RunSource } from "../src/runtime/run-source.js";
 import { RunStore } from "../src/runtime/run-store.js";
 import type { RunDetail, RunDisplayState, RunSummary } from "../src/runtime/runs-view.js";
@@ -261,6 +264,149 @@ test("a linked run that no longer exists is skipped and not looked up again", ()
     h.syncCompletedRuns();
     assert.equal(source.calls.summary, 0, "exists() already said no");
     assert.equal(source.calls.detail, 0);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// --- the default runner: codex exec --json, against the fake codex -------------------------
+
+const FAKE_CODEX = fileURLToPath(new URL("./fixtures/fake-codex.mjs", import.meta.url));
+
+/** A host whose turns run the fake codex (tests/fixtures/fake-codex.mjs) through the default runner. */
+function codexHost(root: string, codex: string[] = [execPath, FAKE_CODEX]) {
+  return new ChatHost({ store: new RunStore(root), sources: [], cwd: root, config: defaultConfig(), configPath: null, codex });
+}
+
+/** A dir for the files a turn names to the fake: its path must not read as an ODW request ("odw" would). */
+const plainDir = () => mkdtempSync(join(tmpdir(), "chat-fixture-"));
+
+/** The session's latest assistant reply, once `until` holds (by default: settled). */
+async function replyWhen(
+  h: ChatHost,
+  sessionId: string,
+  until: (m: ChatMessage) => boolean = (m) => m.status === "done" || m.status === "failed",
+): Promise<ChatMessage> {
+  const deadline = Date.now() + 15_000;
+  for (;;) {
+    const reply = h.chat.get(sessionId)!.messages.filter((m) => m.role === "assistant").at(-1)!;
+    if (until(reply)) return reply;
+    assert.ok(Date.now() < deadline, `no such reply in time: ${JSON.stringify(reply)}`);
+    await new Promise((r) => setTimeout(r, 10));
+  }
+}
+
+/** Post `text` as a turn and resolve with its assistant reply once `until` holds. */
+async function turn(h: ChatHost, sessionId: string, text: string, until?: (m: ChatMessage) => boolean): Promise<ChatMessage> {
+  const posted = await call(h, "POST", `/api/chat/sessions/${sessionId}/messages`, { text });
+  assert.equal(posted.status, 200);
+  return replyWhen(h, sessionId, until);
+}
+
+test("a Codex turn runs exec --json: the reply file's text is the reply, and its tokens are kept on the message", async () => {
+  const root = tempRoot();
+  const files = plainDir();
+  try {
+    const h = codexHost(root);
+    const session = h.chat.create(root);
+    const log = join(files, "replies.log");
+    const reply = await turn(h, session.id, `hello there CASE:ok REPLY_LOG:${log}`);
+    assert.equal(reply.status, "done");
+    assert.equal(reply.text, "final answer", "the final message, not the first one the turn printed");
+    assert.deepEqual(reply.usage, { inputTokens: 3600, outputTokens: 130, cacheReadTokens: 3000, cacheWriteTokens: 0 });
+    assert.equal(reply.failureReason, undefined);
+    // The reply file lived only as long as its codex run.
+    const handed = readFileSync(log, "utf8").trim();
+    assert.match(handed, /odw-reply-.*reply\.txt$/);
+    assert.equal(existsSync(dirname(handed)), false);
+    // ... and the message as kept on disk carries the tokens too.
+    h.stop();
+    const kept = JSON.parse(readFileSync(join(root, "_chat", "sessions.json"), "utf8"));
+    assert.deepEqual(kept.sessions[0].messages.at(-1).usage, reply.usage);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(files, { recursive: true, force: true });
+  }
+});
+
+test("a Codex turn: no agent_message the adapter knows — the reply file holds the reply; neither — no text", async () => {
+  const root = tempRoot();
+  try {
+    const h = codexHost(root);
+    const drifted = await turn(h, h.chat.create(root).id, "CASE:drift");
+    assert.equal(drifted.status, "done");
+    assert.equal(drifted.text, "the drifted reply");
+    const silent = await turn(h, h.chat.create(root).id, "CASE:silent");
+    assert.equal(silent.status, "done");
+    assert.equal(silent.text, "Codex finished without producing text.");
+    assert.deepEqual(silent.usage, { inputTokens: 400, outputTokens: 9, cacheReadTokens: 0, cacheWriteTokens: 0 });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a Codex turn that fails says why, typed: a spent quota, a refused login, a missing CLI", async () => {
+  const root = tempRoot();
+  try {
+    const h = codexHost(root);
+    const quota = await turn(h, h.chat.create(root).id, "CASE:quota");
+    assert.equal(quota.status, "failed");
+    assert.equal(quota.failureReason, "quota");
+    assert.equal(
+      quota.text,
+      "Codex ran out of usage quota — wait for the window to reset and send the message again.\n\n" +
+        "Codex said: Quota exceeded. Check your plan and billing details.",
+    );
+    const login = await turn(h, h.chat.create(root).id, "CASE:login");
+    assert.equal(login.status, "failed");
+    assert.equal(login.failureReason, "auth");
+    assert.match(
+      login.text,
+      /^Codex could not authenticate — log in to Codex CLI \(codex login\) and send the message again\.\n\nCodex said: Your access token could not be refreshed/,
+    );
+
+    const missing = codexHost(root, [join(root, "no-such-codex")]);
+    const gone = await turn(missing, missing.chat.create(root).id, "hello");
+    assert.equal(gone.status, "failed");
+    assert.equal(gone.failureReason, "not_found");
+    assert.match(gone.text, /^Codex stream failed: could not start codex/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a streaming Codex reply shows each agent_message as it completes, then settles on the final one", async () => {
+  const root = tempRoot();
+  const files = plainDir();
+  try {
+    const h = codexHost(root);
+    const session = h.chat.create(root);
+    const gate = join(files, "gate");
+    const live = await turn(h, session.id, `CASE:stream GATE:${gate}`, (m) => m.text.trimEnd() === "thinking it over");
+    assert.equal(live.status, "streaming", "the first message shows while codex is still answering");
+    writeFileSync(gate, "");
+    const settled = await replyWhen(h, session.id);
+    assert.equal(settled.status, "done");
+    assert.equal(settled.text, "the streamed answer");
+    assert.deepEqual(settled.usage, { inputTokens: 800, outputTokens: 25, cacheReadTokens: 600, cacheWriteTokens: 0 });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(files, { recursive: true, force: true });
+  }
+});
+
+test("a Codex reply is kept redacted, while Codex is given the message as typed", async () => {
+  const root = tempRoot();
+  const token = `ghp_${"q".repeat(36)}`;
+  try {
+    const h = codexHost(root);
+    const session = h.chat.create(root);
+    const reply = await turn(h, session.id, `Reply with exactly ${token} and nothing else`);
+    assert.equal(reply.status, "done");
+    assert.equal(reply.text, "«redacted:github»", "codex echoed the token it was given, and the session keeps it redacted");
+    assert.equal(reply.redacted, true);
+    h.stop();
+    assert.doesNotMatch(readFileSync(join(root, "_chat", "sessions.json"), "utf8"), new RegExp(token));
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
