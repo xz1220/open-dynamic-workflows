@@ -42,7 +42,10 @@
  * looked at before it goes. Work that missed is run again, on the adapter
  * that did it, with what it missed appended to the prompt, up to the checks'
  * `retries`; then the call fails with reason `unmet_expectation` and the list
- * of misses.
+ * of misses. A call with a declared scope and no `expect` (an ODW extension;
+ * see ./scope) has what it changed read the same way, by its `scopeWatch`:
+ * under `scopePolicy: "fail"` a write outside the scope fails it at once with
+ * reason `out_of_scope`, else it is only recorded.
  *
  * A call runs under its limits (an ODW extension; see ./limits): the run's
  * `agentLimits`, its adapter's, its own `limits`. What its CLI prints is
@@ -424,6 +427,13 @@ export interface RunOptions {
    * retries.
    */
   expect?: ExpectationSink;
+  /**
+   * A call with a declared scope and no `expect` (an ODW extension; see
+   * ./scope): told and shown the work like `expect`, and asked once a reply
+   * stands — a miss (`scopePolicy: "fail"`) fails the call with reason
+   * "out_of_scope", never retried. Ignored when `expect` is set: it judges the scope.
+   */
+  scopeWatch?: ExpectationSink;
   /** Called before work that missed its `expect` checks runs again, so the run can say so. */
   onExpectRetry?: (retry: ExpectRetry) => void;
   /**
@@ -1165,12 +1175,15 @@ export class Bridge {
           `declares no output.mcpPath (the built-in claude does)`,
       );
     }
-    if (expect) await unlessStopped(signal, () => expect.begin(plan.workspaceMode, this.source));
+    // A declared scope without `expect` reads the work the same way (ODW extension; see ./scope).
+    const watch = expect ? undefined : options.scopeWatch;
+    const looker = expect ?? watch;
+    if (looker) await unlessStopped(signal, () => looker.begin(plan.workspaceMode, this.source));
     const inspect =
-      expect && plan.workspaceMode === "worktree"
+      looker && plan.workspaceMode === "worktree"
         ? async (ws: Workspace, output: DecodedOutput): Promise<void> => {
             const empty = output.text.trim() === "" && output.structured === undefined;
-            if (request.allowEmpty || !empty) await unlessStopped(signal, () => expect.inspect(ws));
+            if (request.allowEmpty || !empty) await unlessStopped(signal, () => looker.inspect(ws));
           }
         : undefined;
 
@@ -1260,7 +1273,16 @@ export class Bridge {
           value = pick.value;
         }
         // Without `expect`, a reply stands though tool calls were refused: they are recorded.
-        if (!expect) return done(value, text, refused, servers, orphaned);
+        if (!expect) {
+          // Its writes are read against its declared scope (ODW extension; see ./scope):
+          // a miss only under scopePolicy "fail", which fails it at once.
+          const outside = watch ? await unlessStopped(signal, () => watch.check(text)) : [];
+          if (outside.length > 0) {
+            const lines = outside.map((miss) => miss.text);
+            throw new UnmetExpectationError(`adapter '${adapter.name}' wrote outside its scope: ${lines.join("; ")}`, lines, "out_of_scope");
+          }
+          return done(value, text, refused, servers, orphaned);
+        }
 
         // The work is checked, not taken at its word (ODW extension; see ./expect),
         // and a refused tool call is a miss of its own: the work went without it.

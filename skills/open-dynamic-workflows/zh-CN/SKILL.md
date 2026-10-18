@@ -75,7 +75,7 @@ return await agent(
 | `exec(command, opts?)` | 不启动模型直接运行一条命令（测试、构建、linter）；返回 `{ stdout, stderr, exitCode, signal, timedOut, truncated, durationMs }`。字符串经 shell 执行，数组按 argv 执行。**ODW 扩展**——不属于 Claude Code 方言。 |
 | `checkpoint(title, opts?)` | 暂停运行，直到有人批准（可以附上修改后的 payload）或拒绝；返回 `{ approved, note, by, payload, edited }`。**ODW 扩展**——不属于 Claude Code 方言。 |
 
-`agent` 的 `opts`：`{ adapter?, schema?, label?, phase?, model?, agentType?, isolation?, keep?, permissions?, expect?, expectRetries?, allowEmpty?, notes?, handoff? }`。
+`agent` 的 `opts`：`{ adapter?, schema?, label?, phase?, model?, agentType?, isolation?, keep?, permissions?, expect?, expectRetries?, allowEmpty?, notes?, handoff?, scope?, scopePolicy? }`。
 `adapter` 选择用哪个 CLI——写成列表（`['codex', 'claude']`，**ODW 扩展**）就是回退链；
 `model: '@fast'` 为实际运行它的 CLI 选出该层级的模型（**ODW 扩展**）；`schema` 是一个原始 JSON Schema 对象（选项，不是全局）；
 `agentType` 是注入进 prompt 的**人设**，*不是* adapter 名。`keep: true`（**ODW 扩展**）
@@ -126,6 +126,21 @@ const fix = await agent('Fix the failing parser tests.', {   // ODW 扩展：exp
 ```js
 const lanes = await parallel(tasks.map((t, i) => () =>      // ODW 扩展：notes
   agent(t, { label: `lane-${i + 1}`, isolation: 'worktree' })), { notes: true })
+```
+
+`scope`（**ODW 扩展**）声明 agent 打算改动的文件——glob 规则同 `expect.files`。范围重叠的并行调用
+先后运行（后发出的等先发出的结束，记一次日志："fix-auth waits for refactor-login: both declare
+src/auth/**"）；范围不相交或未声明范围的调用照常并行。agent 在范围之外的改动记为 `outOfScope`、
+记日志，打开笔记时还贴到笔记板；`scopePolicy: "fail"`（或 `"scopePolicy"` 设置）让它以
+`out_of_scope` 失败，设了 `expect` 时算一项缺失。在共享代码上扇出时给每条分支声明范围；见
+[`references/primitives.md`](references/primitives.md#scopeodw-扩展)：
+
+```js
+await parallel([                                             // ODW 扩展：scope
+  () => agent('Refactor login.', { label: 'refactor-login', scope: ['src/auth/**'] }),
+  () => agent('Fix token expiry.', { label: 'fix-auth', scope: ['src/auth/token.ts'] }), // 等待
+  () => agent('Document the parser.', { label: 'docs', scope: ['docs/**'] }),            // 并行
+])
 ```
 
 `exec` 的 `opts`：`{ cwd?, env?, timeout?, input?, maxOutputBytes?, label?, phase?, check? }`。
@@ -371,6 +386,28 @@ odw schedule remove digest     # 删除系统条目和定义
   会被拒绝）。
 - 定时运行遇到 `checkpoint()` 时，在得到答复前会挡住后续的运行：无人值守的检查点要设
   `timeout`。
+
+### 在用户自己的服务器上运行（ODW 扩展）
+
+用户希望笔记本休眠时运行继续进行，就通过普通 ssh 在他自己的机器上启动（没有 daemon）。只用
+用户指明的主机。
+
+```bash
+RUN=$(odw run review --on ssh://me@box)          # 同步项目，在那边后台启动，打印运行 id
+odw status $RUN --on ssh://me@box                # status|logs|attach 在远端 odw 上执行
+odw pull $RUN --from ssh://me@box                # 拷回本机（运行中也可反复拉取），用于 diff/apply/compare
+```
+
+- 远端需要在非交互 ssh 会话的 PATH 上有 odw，并使用它自己的 odw 配置和 agent CLI 登录：
+  用户的配置和登录都不会被拷贝。缺少 odw 时会给出安装提示。
+- `--sync git`（默认）发送 HEAD 的 git bundle 加上所有未提交改动的补丁（含未跟踪文件，
+  不含被忽略的）；`--sync rsync` 镜像整个目录。工作目录默认 `~/odw-remote/<仓库名>`，URL
+  带路径时用它（`ssh://box/~/work/app`）；不是 odw 建的非空目录会被拒绝。
+- 与 `--on` 同用时 `--config`、`--runs-root`、`--wait`、`--fg`、`--timeout` 会被拒绝；
+  `--args`、`--adapter`、`--permissions`、`--untrusted`、`--sandbox`、`--budget` 一并传过去
+  （`--args` 作为文件经 stdin 传递，绝不放在命令行上）。
+- 拉回的运行标记为 `origin: "remote"`；在那边结束之前，本地拷贝是一个显示为 stale 的快照——
+  再拉一次即可刷新。
 
 ### 评估工作流（ODW 扩展）
 

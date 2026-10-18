@@ -104,6 +104,14 @@ other primitive organizes calls to it.
   over; `false` starts over whatever the `fallback.handoff` setting says. See
   [routing](#routing-phase-defaults-model-tiers-fallback-chains-odw-extension).
   Claude Code ignores it.
+- **opts.scope** (**ODW extension**) — globs (relative to the workspace, the
+  `expect.files` rules) of the files the agent means to change: a call whose
+  scope overlaps an earlier one still in flight waits for it; what it changes
+  outside is recorded as `outOfScope`. See [scope](#scope-odw-extension).
+  Claude Code ignores it.
+- **opts.scopePolicy** (**ODW extension**) — `"warn"` (default: the
+  `scopePolicy` setting) or `"fail"`: what a write outside `scope` does. Needs
+  `scope`.
 
 Returns the reply text, or the validated JSON value when `schema` is set. CLI
 errors, exhausted schema retries, work that missed its `expect` checks and an
@@ -272,6 +280,9 @@ JSON-looking input that fails to parse is rejected rather than silently passed
 through as a string). `budget.total` is the token target set with
 `odw run … --budget <tokens>`, else `null`; scale depth to it, e.g.
 `budget.total ? Math.floor(budget.total / 120_000) : 5`.
+A run started on another machine with `odw run … --on ssh://host` (ODW
+extension) gets the same `args` and `budget.total`: `--args` is parsed here
+and sent as a file, and the script runs from the project's copy there.
 `spent()` is the output tokens spent so far across this run, nested workflows
 included: the CLI's own count wherever its adapter reports usage (the built-in
 `claude` and `codex` do — an ODW extension), else `ceil(reply characters / 4)` for that
@@ -733,6 +744,51 @@ break together. Off by default (dialect fidelity); `notes: false` opts one agent
 - **Not persisted, no board.** An in-process run without a run directory logs
   once that its agents run without one. A call replayed by `odw resume` posts
   nothing. `notes` is not part of the resume key.
+
+## scope (ODW extension)
+
+```js
+agent(prompt, { scope: ['src/parser/**', 'docs/parser.md'] })   // the files it means to change
+agent(prompt, { scope: [...], scopePolicy: 'fail' })              // a write outside fails it
+// odw.config.json: "scopePolicy": "fail"                        // for every scoped call
+```
+
+Declared scopes keep agents that work on one codebase at the same time off each
+other's files — an advisory plan, not a sandbox.
+
+- **Globs.** Non-empty, relative to the agent's workspace, with the `expect.files`
+  rules (`*`, `**`, `?`, `[…]`, `{a,b}`, `\` escapes). `scope: []`, an absolute
+  path, an invalid glob, or `scopePolicy` without `scope` throws a recoverable
+  `AgentError` before anything starts.
+- **Scheduling.** A scoped call made while an earlier scoped call whose scope
+  overlaps has not settled waits for it before it asks for a slot (holding none),
+  then runs; it waits only for calls made before it. Calls without `scope` overlap
+  nothing. The run logs each wait once — `"fix-auth waits for refactor-login: both
+  declare src/auth/**"`, or `"… : fix-auth declares src/auth/token.ts,
+  refactor-login src/auth/**"` — a `log` event with `scopeWait: { for: <agentId>,
+  globs: [mine, theirs] }`.
+- **Overlap** is decided from the globs, conservatively: `{a,b}` expanded; two
+  literal paths overlap when equal; a literal path and a glob when the glob
+  matches it; two globs when one's literal prefix (before its first wildcard)
+  starts with the other's — `src/auth/**` ~ `src/auth/*.ts`, `src/auth/**` !~
+  `src/db/**`, `src/*.ts` ~ `src/*.md`, `**` ~ everything.
+- **Out-of-scope writes.** Once the reply is in, the agent's change (as `expect`
+  reads it: an isolated worktree's diff, or in place what changed since the call
+  began) is compared with its scope. Files no glob matches are `outOfScope` on its
+  `agent_finished`/`agent_failed` event and saved record, logged
+  (`"fixer:1: wrote 1 file outside its scope (src/auth/**) — package.json"`), shown
+  by `odw agents` and the dashboard, and — with notes on — posted to the board as a
+  `kind: "scope"` note.
+- **Policy.** `"warn"` (default) keeps the reply. `"fail"` fails the agent with
+  reason `"out_of_scope"`, not retried. With `expect`, a write outside the scope is
+  a miss whatever the policy: retried with what it missed, then
+  `"unmet_expectation"`.
+- **In place**, a file inside the scope of another scoped call that ran at the same
+  time is not counted against this one; edits of unscoped calls beside it are.
+  Outside a git repository the change cannot be read: logged, not checked.
+- **Events.** `agent_started` carries `scope`. `scope` and `scopePolicy` are not
+  part of the resume key; a replayed call waits for nobody and keeps its recorded
+  `outOfScope`.
 
 ## schema
 

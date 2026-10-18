@@ -68,6 +68,11 @@ agent(prompt, opts?) -> Promise<unknown>
 - **opts.handoff**（**ODW 扩展**）—— `true`：回退把调用移到下一个适配器时交接工作，而不是从头
   再来；`false` 无论 `fallback.handoff` 设置如何都从头再来。见[路由](#路由阶段默认值模型分层回退链odw-扩展)。
   Claude Code 会忽略它。
+- **opts.scope**（**ODW 扩展**）—— agent 打算改动的文件的 glob（相对工作区，规则同
+  `expect.files`）：范围与仍在途的更早调用重叠时先等它结束；范围之外的改动记为 `outOfScope`。
+  见 [scope](#scopeodw-扩展)。Claude Code 会忽略它。
+- **opts.scopePolicy**（**ODW 扩展**）—— `"warn"`（默认：`scopePolicy` 设置）或 `"fail"`：
+  越出 `scope` 的写入如何处理。需要同时设 `scope`。
 
 返回回复文本，设了 `schema` 则返回校验过的 JSON 值。CLI 出错、schema 重试耗尽、工作没达到
 `expect`、空回复都会抛错；这些可恢复失败在 `parallel`/`pipeline` 内变成 `null`。停止请求、
@@ -564,6 +569,39 @@ parallel(thunks, { notes: true })              // 其 thunk 启动的每个 agen
 - **容器。** 在容器沙箱中，agent 自己的笔记目录以读写、笔记板以只读方式按相同路径绑定：脚本照常可用。
 - **不持久化则没有笔记板。** 没有运行目录的进程内运行会记一次日志，其 agent 不带笔记板运行。
   被 `odw resume` 重放的调用不发布任何笔记。`notes` 不属于 resume key。
+
+## scope（ODW 扩展）
+
+```js
+agent(prompt, { scope: ['src/parser/**', 'docs/parser.md'] })   // 打算改动的文件
+agent(prompt, { scope: [...], scopePolicy: 'fail' })              // 越出范围的写入让它失败
+// odw.config.json: "scopePolicy": "fail"                        // 对每个声明了范围的调用
+```
+
+声明范围让同时改动同一代码库的 agent 互不踩到对方的文件——是一份建议性的计划，不是沙箱。
+
+- **Glob。** 非空、相对 agent 工作区，规则同 `expect.files`（`*`、`**`、`?`、`[…]`、`{a,b}`、
+  `\` 转义）。`scope: []`、绝对路径、无效 glob，或没有 `scope` 却设了 `scopePolicy`，都会在启动前
+  抛出可恢复的 `AgentError`。
+- **调度。** 一个声明了范围的调用发出时，若更早发出、尚未结束的调用范围与之重叠，它在申请槽位之前
+  先等那个调用结束（等待时不占槽位），然后运行；它只等在它之前发出的调用。没有 `scope` 的调用与
+  任何调用都不重叠。运行为每次等待记一次日志——`"fix-auth waits for refactor-login: both declare
+  src/auth/**"`，或 `"…: fix-auth declares src/auth/token.ts, refactor-login src/auth/**"`——
+  即带 `scopeWait: { for: <agentId>, globs: [mine, theirs] }` 的 `log` 事件。
+- **重叠**只看 glob、保守判定：先展开 `{a,b}`；两个字面路径相同才重叠；字面路径与 glob，glob 匹配它
+  即重叠；两个 glob，一个的字面前缀（第一个通配符之前）以另一个的字面前缀开头即重叠——
+  `src/auth/**` ~ `src/auth/*.ts`、`src/auth/**` !~ `src/db/**`、`src/*.ts` ~ `src/*.md`、`**` ~ 一切。
+- **越出范围的写入。** 回复到达后，agent 的改动（按 `expect` 的读法：隔离 worktree 的 diff，或原地
+  调用开始以来的改动）与其范围比较。没有任何 glob 匹配的文件记为 `agent_finished`/`agent_failed`
+  事件与保存记录上的 `outOfScope`，记日志（`"fixer:1: wrote 1 file outside its scope (src/auth/**)
+  — package.json"`），在 `odw agents` 与看板中显示，打开笔记时还作为 `kind: "scope"` 笔记贴到笔记板。
+- **策略。** `"warn"`（默认）保留回复。`"fail"` 让 agent 以 `"out_of_scope"` 失败，不重试。设了
+  `expect` 时，无论策略如何，越出范围的写入都算一项缺失：带着缺失项重试，之后以
+  `"unmet_expectation"` 失败。
+- **原地运行时**，落在同时运行的另一个已声明范围调用之范围内的文件不计入本调用；同时运行的未声明范围
+  调用的改动会计入。不在 git 仓库中时无法读取改动：记日志，不做检查。
+- **事件。** `agent_started` 带 `scope`。`scope` 与 `scopePolicy` 不属于 resume key；被重放的调用
+  不等待任何调用，保留记录中的 `outOfScope`。
 
 ## schema
 

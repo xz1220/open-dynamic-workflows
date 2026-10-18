@@ -94,8 +94,11 @@ export interface Note {
   /** Who posted it: the agent whose inbox it came from (or that ODW posted it for). */
   by: { agentId: number; label: string };
   text: string;
-  /** "note": the agent posted it; "interface": ODW posted the change it kept. */
-  kind: "note" | "interface";
+  /**
+   * "note": the agent posted it; "interface": ODW posted the change it kept;
+   * "scope": ODW posted the files it changed outside its declared scope (see ./scope).
+   */
+  kind: "note" | "interface" | "scope";
   /** Cut at NOTE_MAX_CHARS. */
   truncated?: true;
   /** Likely secrets in it were replaced by `«redacted:<kind>»`. */
@@ -302,7 +305,7 @@ export class NotesBoard {
 
 /** A note as a line (or lines) of text: `#2 [agent 3 · api] text`, later lines indented. */
 export function formatNote(note: Note): string {
-  const kind = note.kind === "interface" ? " (interface change)" : "";
+  const kind = note.kind === "interface" ? " (interface change)" : note.kind === "scope" ? " (outside its scope)" : "";
   const [first = "", ...rest] = note.text.split("\n");
   return [`#${note.noteId} [agent ${note.by.agentId} · ${oneLine(note.by.label)}]${kind} ${first}`, ...rest.map((line) => `   ${line}`)].join("\n");
 }

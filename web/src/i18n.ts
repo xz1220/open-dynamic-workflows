@@ -705,6 +705,11 @@ const ZH: Record<string, string> = {
   "MCP unavailable": "MCP 不可用",
   "orphaned background work": "遗留后台任务",
   "Left running": "仍在运行就被丢下",
+  "outside its scope": "越出声明范围",
+  "Scope": "声明范围",
+  "Outside its scope": "范围之外的改动",
+  "It changed these files outside the scope it declared — another agent may be changing them too.":
+    "它改动了声明范围之外的这些文件——别的 agent 可能也在改它们。",
   "It replied while this background work still ran; it died when the CLI exited, so the reply may rest on work that never finished.":
     "它在这些后台任务仍在运行时就给出了回复;CLI 退出时它们随之终止,所以回复可能基于从未完成的工作。",
   "needs-auth": "需要授权",
@@ -719,6 +724,10 @@ const ZH: Record<string, string> = {
   limits: "上限",
   runaway: "失控",
   "Stopped at a limit": "因触及上限被终止",
+  "{n} host allowed": "放行 {n} 个主机",
+  "{n} hosts allowed": "放行 {n} 个主机",
+  "resolves a conflict of agent #{n} in": "解决了这次运行中 agent #{n} 的冲突:",
+  "agent #{n}'s conflict resolved by": "agent #{n} 的冲突由此解决:",
   // Evals.
   "Evals": "评测",
   "Eval": "评测",

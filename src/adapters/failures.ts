@@ -65,7 +65,9 @@ export type FailureReason =
    * running, which died with it, under `orphanedBackground: "fail"` — or
    * among what its `expect` checks still missed (ODW extension).
    */
-  | "orphaned_background";
+  | "orphaned_background"
+  /** The agent changed files outside its declared `scope`, under `scopePolicy: "fail"` (ODW extension; see ../scope). */
+  | "out_of_scope";
 
 /** The classes an adapter's `failures` config may add patterns to. */
 export const CONFIGURABLE_REASONS = ["rate_limit", "quota", "auth"] as const;

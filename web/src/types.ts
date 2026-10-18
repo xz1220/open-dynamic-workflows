@@ -116,7 +116,7 @@ export interface AgentView {
   exitCode?: number | null;
   /** A command step that is an agent's `expect.command` check: that agent's id (ODW extension). */
   forAgentId?: number;
-  /** Why an agent failed: rate_limit, quota, auth, timeout, stalled, not_found, permission, exit, empty_reply, unmet_expectation, mcp_unavailable, runaway, orphaned_background. */
+  /** Why an agent failed: rate_limit, quota, auth, timeout, stalled, not_found, permission, exit, empty_reply, unmet_expectation, mcp_unavailable, runaway, orphaned_background, out_of_scope. */
   failureReason?: string | null;
   /** With `unmet_expectation`: the `expect` checks its work did not meet, one line each (ODW extension). */
   misses?: string[];
@@ -124,6 +124,10 @@ export interface AgentView {
   denied?: string[];
   /** A finished agent's background work its CLI left running when it replied, which died with it (its reply stood anyway), one line each (ODW extension). */
   orphaned?: string[];
+  /** The files it declared it means to change — agent(…, { scope }) globs (ODW extension; src/scope.ts). */
+  scope?: string[];
+  /** The files it changed outside its scope, finished or failed (ODW extension). */
+  outOfScope?: string[];
   /** What the adapter reported spending on this agent. */
   usage?: Usage | null;
   /** What an isolated (worktree) agent changed; its diff is served separately. */
@@ -212,8 +216,15 @@ export interface AgentSandbox {
   /** null: no engine was found when it started. */
   engine: "docker" | "podman" | null;
   image: string;
-  /** "none": no network at all; "default": the engine's default network (the model API is reachable). */
-  network: "none" | "default";
+  /** "none": no network at all; "default": the engine's default network; "allowlist": only `allow`'s hosts, through the run's egress proxy. */
+  network: "none" | "default" | "allowlist";
+  allow?: string[];
+}
+
+/** A link between a run and the resolver run `odw apply --resolve` started for one of its agents (ODW extension). */
+export interface ResolveLink {
+  runId: string;
+  agentId: number;
 }
 
 /** The diffstat of a worktree agent's changes (ODW extension). */
@@ -243,6 +254,10 @@ export interface RunDetail extends RunSummary {
   workflowName: string | null;
   /** checkpoint() calls waiting for approval (ODW extension). */
   pendingCheckpoints?: PendingCheckpoint[];
+  /** This run resolved a conflict of that run's agent (`odw apply --resolve`; ODW extension). */
+  applyResolve?: ResolveLink;
+  /** The resolver runs `odw apply --resolve` started for this run's agents. */
+  resolvedBy?: ResolveLink[];
   /** Each adapter CLI's version as the run recorded it on its first dispatch, by adapter (ODW extension). */
   cliVersions?: Record<string, CliVersion>;
   /** odw's version, and the sha256 of the workflow source as launched; null for older runs (ODW extension). */
@@ -779,7 +794,8 @@ export interface TranscriptEntry {
  * /api/runs/:id/notes returns them in order ([] when the run has none; 404
  * for Claude runs). Each is also a `note_added` event, with the same fields
  * but `ts` (the event's own). Agents with notes on post them; ODW posts a
- * `kind: "interface"` one for an isolated agent's kept change.
+ * `kind: "interface"` one for an isolated agent's kept change, and a
+ * `kind: "scope"` one for an agent that changed files outside its scope.
  */
 export interface RunNote {
   /** 1, 2, … in the order the board took them. */
@@ -789,8 +805,8 @@ export interface RunNote {
   by: { agentId: number; label: string };
   /** At most 2000 characters; may span lines. */
   text: string;
-  /** "note": the agent's own; "interface": its diff stat and the interface lines it touched. */
-  kind: "note" | "interface";
+  /** "note": the agent's own; "interface": its diff stat and the interface lines it touched; "scope": the files it changed outside its scope. */
+  kind: "note" | "interface" | "scope";
   /** Cut at 2000 characters. */
   truncated?: true;
   /** Secrets in it were replaced by `«redacted:<kind>»`. */

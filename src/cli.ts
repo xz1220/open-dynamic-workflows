@@ -84,6 +84,7 @@ import { parsePublicUrl } from "./runtime/approve-links.js";
 import { printAgentLogs } from "./runtime/transcript-view.js";
 import { cmdNote, cmdNotes } from "./runtime/notes-view.js";
 import { executeRun } from "./runtime/worker.js";
+import { parseSshTarget, passThrough, printRunDir, pullRun, remoteRun, RemoteUsageError, takeOnFlag } from "./runtime/remote.js";
 import { pausedForOf, pausedText } from "./quota-wait.js";
 import { cmdSchedule } from "./schedule/command.js";
 import { cmdEval } from "./eval/command.js";
@@ -122,6 +123,7 @@ export const COMMANDS = [
   "view",
   "eval",
   "conformance",
+  "pull",
 ] as const;
 
 export type Command = (typeof COMMANDS)[number];
@@ -173,6 +175,10 @@ export function helpText(): string {
     "                                                     --json, --out report.json, --baseline report.json (exit 1: regressed)",
     "  odw notes <run_id> [--json]                        a run's notes board: what its agents told each other (ODW extension)",
     '  odw note "<text>"                                  inside an agent with notes on: post a note for the run\'s other agents',
+    "  odw run <wf> --on ssh://[user@]host[:port][/dir]   run it on your own server, detached; prints its run id (ODW extension)",
+    "                                                     --sync git (default: HEAD + a patch of uncommitted changes) | rsync",
+    "  odw status|logs|attach <run_id> --on ssh://host    the same command, run by the odw over there",
+    "  odw pull <run_id> --from ssh://host[/dir]          copy a remote run here (again while it runs): diff, apply, compare",
     "",
     "Options:",
     "  --args JSON|@file   workflow input (JSON, @file.json, or a raw string)",
@@ -244,7 +250,17 @@ export async function main(argv: string[]): Promise<number> {
   }
 
   try {
+    // `--on ssh://host` (ODW extension): status, logs and attach run on the remote odw instead.
+    if (command === "status" || command === "logs" || command === "attach") {
+      const { url, rest: remoteArgs } = takeOnFlag(rest);
+      if (url !== null) return await passThrough(command, remoteArgs, parseSshTarget(url), process.cwd());
+    }
     switch (command) {
+      case "__run-dir":
+        // Hidden: what `odw pull` asks a remote odw — the run's absolute directory (runtime/remote.ts).
+        return cmdRunDir(rest);
+      case "pull":
+        return await cmdPull(rest);
       case "__worker":
         // Hidden: the worker entrypoint a background run re-execs into. In a SEA
         // binary there is no separate worker.js, so the binary calls itself here.
@@ -311,8 +327,9 @@ export async function main(argv: string[]): Promise<number> {
         return 2;
     }
   } catch (err) {
-    if (err instanceof UsageError) {
-      process.stderr.write(`${err.message}\n`);
+    if (err instanceof UsageError || err instanceof RemoteUsageError) {
+      const named = err instanceof RemoteUsageError && !err.message.startsWith("odw ") ? `odw ${command}: ` : "";
+      process.stderr.write(`${named}${err.message}\n`);
       return 2;
     }
     const e = err as NodeJS.ErrnoException;
@@ -472,6 +489,8 @@ async function cmdRun(rest: string[]): Promise<number> {
       detach: { type: "boolean", short: "d" },
       timeout: { type: "string" },
       budget: { type: "string" },
+      on: { type: "string" },
+      sync: { type: "string" },
     },
   });
   const ref = positionals[0];
@@ -479,6 +498,7 @@ async function cmdRun(rest: string[]): Promise<number> {
     process.stderr.write("odw run: missing <script.js|name>\n");
     return 2;
   }
+  if (values.on !== undefined || values.sync !== undefined) return cmdRunRemote(ref, values);
 
   let budgetTotal: number | null = null;
   if (values.budget !== undefined) {
@@ -513,6 +533,65 @@ async function cmdRun(rest: string[]): Promise<number> {
     hint: "started run",
     banner: withWorkflowLines(startBanner(values.config ?? null, values.source ?? null, permissions, trust, sandbox), workflow),
   });
+}
+
+/**
+ * `odw run <wf> --on ssh://host [--sync git|rsync]` (ODW extension): the run
+ * starts detached on that machine, under its own odw config and CLI logins
+ * (runtime/remote.ts). Flags that name something here — a config, a runs
+ * root — or that would watch the run here are refused; the run flags go on.
+ */
+async function cmdRunRemote(ref: string, values: Record<string, string | boolean | undefined>): Promise<number> {
+  if (values.on === undefined) throw new UsageError("odw run: --sync goes with --on ssh://host");
+  const sync = values.sync ?? "git";
+  if (sync !== "git" && sync !== "rsync") throw new UsageError(`odw run: --sync must be git or rsync; got '${String(sync)}'`);
+  for (const flag of ["config", "runs-root"]) {
+    if (values[flag] !== undefined) throw new UsageError(`odw run: --${flag} names a file here; with --on the run uses the remote's own odw config`);
+  }
+  for (const flag of ["wait", "fg", "timeout"]) {
+    if (values[flag] !== undefined) throw new UsageError(`odw run: --on always starts detached; watch it with odw attach <run_id> --on ${String(values.on)}`);
+  }
+  const target = parseSshTarget(String(values.on));
+  // Validated here as they would be there, so a typo fails before anything is sent.
+  parsePermissions("run", values.permissions as string | undefined);
+  parseSandbox("run", values.sandbox as string | undefined, values["sandbox-image"] as string | undefined);
+  if (values.budget !== undefined && !(Number(values.budget) > 0)) throw new UsageError("odw run: --budget must be a positive number");
+  const flags: string[] = [];
+  for (const flag of ["adapter", "permissions", "sandbox", "sandbox-image", "budget"]) {
+    if (typeof values[flag] === "string") flags.push(`--${flag}`, values[flag] as string);
+  }
+  if (values.untrusted === true) flags.push("--untrusted");
+  return remoteRun({
+    ref,
+    target,
+    sync,
+    source: typeof values.source === "string" ? values.source : process.cwd(),
+    args: parseArgsValue(values.args as string | undefined),
+    flags,
+  });
+}
+
+/** `odw pull <run_id> --from ssh://host[/dir]` (ODW extension): copy a remote run into the local runs root. */
+async function cmdPull(rest: string[]): Promise<number> {
+  const { values, positionals } = parseArgs({
+    args: rest,
+    allowPositionals: true,
+    options: { from: { type: "string" }, config: { type: "string" }, "runs-root": { type: "string" } },
+  });
+  const runId = positionals[0];
+  if (!runId) throw new UsageError("odw pull: missing <run_id>");
+  if (values.from === undefined) throw new UsageError("odw pull: --from ssh://[user@]host[:port][/dir] is required: where the run is");
+  return pullRun({ runId, target: parseSshTarget(values.from, "--from"), store: storeFrom(values), cwd: process.cwd() });
+}
+
+/** Hidden `odw __run-dir <run_id>`: what `odw pull` asks a remote odw — the run's absolute directory. */
+function cmdRunDir(rest: string[]): number {
+  const { values, positionals } = parseArgs({
+    args: rest,
+    allowPositionals: true,
+    options: { config: { type: "string" }, "runs-root": { type: "string" } },
+  });
+  return printRunDir(storeFrom(values), positionals[0]);
 }
 
 /** `--sandbox container` and `--sandbox-image <image>` (ODW extension), validated; null when absent. */
@@ -758,6 +837,12 @@ function cmdStatus(rest: string[]): number {
   const pending = run.pendingCheckpoints ?? [];
   process.stdout.write(`${runId}  [${run.state === "waiting" ? "waiting" : (status.state ?? "?")}]  ${name}\n`);
   if (status.description) process.stdout.write(`  ${status.description as string}\n`);
+  // A run `odw pull` copied here (ODW extension): a snapshot of one on another machine.
+  const remote = meta.origin === "remote" ? (meta.remote as { url?: unknown; pulledAt?: unknown } | undefined) : undefined;
+  if (remote && typeof remote.url === "string") {
+    const at = typeof remote.pulledAt === "number" ? ` at ${new Date(remote.pulledAt * 1000).toLocaleString()}` : "";
+    process.stdout.write(`  pulled from ${sanitizeText(remote.url, 200)}${at} — a copy: odw pull ${runId} --from ${sanitizeText(remote.url, 200)} refreshes it\n`);
+  }
   // What a run paused for a spent quota waits for (ODW extension: quotaWait).
   if (run.pausedFor) {
     process.stdout.write(`  ${sanitizeText(pausedText(run.pausedFor), 120)} — its agents go on then; odw resume ${runId} goes on now\n`);

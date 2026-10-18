@@ -340,6 +340,49 @@ const review = await agent('Which lanes clash?', { notes: true, schema: CLASHES 
 Claude Code 的 Workflow 工具会忽略这些选项。[`examples/coordinated-refactor.js`](examples/coordinated-refactor.js)
 把一项改动拆成在笔记板上并行的隔离分支,由审阅者读取笔记板,再让相互冲突的分支带着全部笔记重跑。
 
+### 声明范围(ODW 扩展)
+
+两个 agent 指向同一批文件,改动直到合并时才冲突。事先声明每个 agent 打算改哪些文件,odw 就能把
+它们分开——主要做法是让会相撞的 agent 先后运行:
+
+```js
+await parallel([
+  () => agent('Refactor the login flow.', { label: 'refactor-login', scope: ['src/auth/**'] }),
+  () => agent('Fix the token expiry bug.', { label: 'fix-auth', scope: ['src/auth/token.ts'] }),
+  () => agent('Document the parser.', { label: 'docs', scope: ['docs/parser.md', 'src/parser/**/*.md'] }),
+])
+```
+
+- **`scope`** 是相对 agent 工作区的一组 glob,规则同 `expect`(`*` 不跨目录、`**` 跨目录、
+  `{a,b}`、`[…]`)。不设 `scope` 的调用行为不变。
+- **范围重叠的调用先后运行。** 一个声明了范围的调用发出时,若更早发出、尚未结束的调用范围与它重叠,
+  它就等那个调用结束——等待期间不占槽位——运行为每次等待记一行日志:`fix-auth waits for
+  refactor-login: fix-auth declares src/auth/token.ts, refactor-login src/auth/**`(或 `both
+  declare src/auth/**`;日志事件带 `scopeWait: { for, globs }`)。其余调用照常运行。这适用于
+  任何同时在途的调用——`parallel()`、`pipeline()` 扇出,或没有 `await` 就发出的调用——而且一个调用
+  只会等它之前发出的调用。上例中 `fix-auth` 在 `refactor-login` 完成后才运行,`docs` 与它们并行。
+- **重叠如何判定**——只看 glob,保守判定(拿不准就算重叠,代价只是多串行):先展开 `{a,b}`;两个
+  字面路径相同才重叠;字面路径与 glob,glob 匹配该路径即重叠;两个 glob,一个的字面前缀(第一个
+  通配符之前的文字)以另一个的字面前缀开头即重叠。因此 `src/auth/**` 与 `src/auth/*.ts` 重叠,
+  `src/auth/**` 与 `src/db/**` 不重叠,`src/*.ts` 与 `src/*.md` 重叠(通配符之后的部分不比较),
+  `**` 与一切重叠。
+- **越出范围的写入会被标出。** agent 回复后,它的改动——按 `expect` 的方式读取:隔离 agent 看它的
+  worktree,原地 agent 看调用开始以来的改动——与其范围比较。范围之外的文件记为 `outOfScope`,
+  出现在 `agent_finished`(或 `agent_failed`)事件、保存的结果、`/api/runs/:id`、`odw agents`
+  (值前显示 `[outside scope: …]`;`--json` 含 `scope` 与 `outOfScope`)和看板侧栏中,并记一行
+  日志:`fix-auth:2: wrote 1 file outside its scope (src/auth/token.ts) — package.json`。打开笔记时
+  (见[并行 agent 之间的笔记](#并行-agent-之间的笔记odw-扩展)),笔记板上也会贴一条,让脚本之后
+  启动的 agent 知道。
+- **`scopePolicy`**——调用自己的,否则取 `"scopePolicy"` 设置——默认 `"warn"`:回复照常有效。
+  `"fail"` 让这样的 agent 以 `reason: "out_of_scope"` 失败,不重试。设了 `expect` 时,越出范围的
+  写入无论如何都算一项缺失:先交还给 agent(恢复那些文件、把改动留在范围内),之后以
+  `unmet_expectation` 失败。运行的 setup 记录 `scopePolicy`,供 `odw compare` 使用。
+- **原地运行时**源码树是共享的:落在同时运行的另一个已声明范围的调用之范围内的文件算那个调用的,不计入
+  本调用。同时运行、未声明范围的调用所做的改动仍会计入——要精确结果请用隔离。不在 git 仓库中时
+  无从读取:agent 照常运行、不做检查,运行会说明这一点。
+
+Claude Code 的 Workflow 工具会忽略 `scope` 与 `scopePolicy`:在那里这些调用按原样一起运行。
+
 ## 兼容性与迁移
 
 ODW 已实现下列原语能力。依赖宿主私有运行机制的脚本,迁移前需要逐项核对：
@@ -626,6 +669,48 @@ odw schedule remove digest     # 删除系统里的条目和定义(条目已被�
 表达式是 cron 的五个字段(数字、`*`、列表、范围、步长、`jan`-`dec`、`sun`-`sat`);
 `@daily`、`L`、`#` 之类会被拒绝并说明原因。完整说明,以及手写 cron 行这一手动替代方案:
 [`docs/recipes/cron.md`](docs/recipes/cron.md)。
+
+### 在自己的服务器上运行(ODW 扩展)
+
+笔记本一合上,运行就停了。改在你自己的机器上启动——走普通的 SSH,两端都没有 daemon:
+
+```bash
+odw run review --on ssh://me@box:2222            # 同步项目,在那边以后台方式启动,打印运行 id
+odw run wf.js --on ssh://box/srv/work/app --sync rsync --args @in.json --adapter codex
+odw status $RUN --on ssh://box                   # 同一条命令,由那边的 odw 执行
+odw logs $RUN --on ssh://box --follow            # ……odw attach $RUN --on ssh://box 显示实时视图
+odw pull $RUN --from ssh://box                   # 拷回本机:odw status、diff、apply、compare、看板都能用
+```
+
+`--on ssh://[user@]host[:port][/path]` 先检查远端有没有 odw(`odw --version`,否则
+`npx --no-install odw`),没有就告诉你怎么装。然后把项目拷到远端工作目录——默认
+`~/odw-remote/<仓库名>`,URL 带路径时用它(`ssh://box/~/work/app` 相对家目录,
+`ssh://box/srv/app` 是绝对路径):
+
+- `--sync git`(默认):HEAD 的 `git bundle`,外加一个包含所有未提交改动的补丁——已暂存、
+  未暂存和未跟踪的文件,.gitignore 忽略的不带——用临时 index 生成,你的 index 不受影响。
+  运行时会说明带了哪个提交、多少个未提交的文件。
+- `--sync rsync`:用 `rsync`(两端都需要)镜像整个目录,.gitignore 忽略的文件不带。
+
+工作目录归 odw 所有:每次同步都会替换上一次留下的内容(那边被忽略的文件,比如远端的
+`node_modules`,保留),不是 odw 建的目录会被拒绝,绝不覆盖。项目之外的工作流(个人或插件
+的)会一并发过去。然后在那边执行 `odw run … --detach`,打印远端运行 id 和后续可用的命令。
+`--adapter`、`--permissions`、`--untrusted`、`--sandbox`、`--sandbox-image`、`--budget`
+会一并传过去;`--config`、`--runs-root`、`--wait`、`--fg`、`--timeout` 会被拒绝(用
+`odw attach --on` 观看)。
+
+**远端使用它自己的 odw 配置和 agent CLI 登录。** 你的 `~/.config/odw/config.json` 和各
+CLI 的登录都不会被拷过去:在那边安装 odw、登录 agent CLI,需要时在那边放一份配置(项目里的
+`odw.config.json` 和其他文件一样随项目同步)。不会把任何密钥放到命令行上——`--args` 作为
+文件经 ssh 的 stdin 传过去——ssh 用的是你自己的,带着你的 `~/.ssh/config`、密钥和 agent;
+`ODW_SSH` 可以替换 `ssh` 可执行文件(`ODW_RSYNC` 替换 `rsync`)。
+
+`odw status|logs|attach <run> --on ssh://host` 在远端 odw 上执行这条命令,原样传回输出和
+退出码(终端里的 attach 和 `logs --follow` 用 `ssh -t`,所以 attach 就是实时视图)。
+`odw pull <run> --from ssh://host` 把运行目录拷进本地的运行根目录——本机有 rsync 就用
+rsync,否则走 ssh 上的 tar——并在 `meta.json` 中标记 `origin: "remote"` 和
+`remote: { url, host, dir, pulledAt }`。还在跑的运行可以反复拉取:拷贝是一个快照(远端
+worker 的 pid 被去掉,所以在本机结束前显示为 stale),`odw status` 会说明它来自哪里。
 
 ### Agent transcript(ODW 扩展)
 
@@ -1722,7 +1807,8 @@ agent 在两次之间做的事不可能改变结果。同一次调用的后续 C
 调用或审批被拒)或 `exit`——另有四个类别,给"成功了"却拿不出证据的运行:`empty_reply`、
 `unmet_expectation`、`"mcpFailures": "fail"` 下的 `mcp_unavailable`,以及
 `orphaned_background`(回复时仍有后台任务在运行,`"orphanedBackground": "fail"` 或设了
-`expect` 时)(见[检查 agent 的工作](#检查-agent-的工作odw-扩展));还有 `runaway`:触及[上限](#单-agent-上限与死循环odw-扩展)被杀掉的 agent。这个类别就是 `agent_failed` 事件上的 `reason`(CLI 说明了何时
+`expect` 时)(见[检查 agent 的工作](#检查-agent-的工作odw-扩展));`out_of_scope`:
+`"scopePolicy": "fail"` 下改动了声明范围之外文件的 agent(见[声明范围](#声明范围odw-扩展));还有 `runaway`:触及[上限](#单-agent-上限与死循环odw-扩展)被杀掉的 agent。这个类别就是 `agent_failed` 事件上的 `reason`(CLI 说明了何时
 可以重试时,还带有以秒计的 `retryAfter`),也是看板和 `/api/runs/:id` 里该 agent 的
 `failureReason`,并显示在实时视图和 `odw logs` 中:
 

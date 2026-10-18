@@ -1060,3 +1060,16 @@ test("an agent killed at one of its limits shows its limits, the one it hit, and
   assert.match(html, /Stopped at a limit<\/div><p class="dnote"><span class="mono">Bash `npm test` ×5 in a row<\/span><\/p>/);
   store.focusRun(null);
 });
+
+test("an allowlisted sandbox says how many hosts it allows; runs linked by apply --resolve link to each other", () => {
+  const view: JobViewState = { cpNote: "", tab: "graph", selectedAi: 0, reviewAi: null, zoom: 1, logQuery: "", logTypes: new Set(["agent"]), logLimit: 600, follow: true, motion: false };
+  store.focusRun("20260101-000000-aaaaaa");
+  store.run = detail([agent("fix", "Plan", "done", { sandbox: { kind: "container", engine: "docker", image: "img:1", network: "allowlist", allow: ["api.anthropic.com", "claude.ai"] } } as Partial<AgentView>)], {
+    resolvedBy: [{ runId: "20260101-010101-bbbbbb", agentId: 2 }],
+  });
+  store.runEvents = [];
+  const html = renderJob(view, NOW);
+  assert.match(html, /<span class="tag" title="api\.anthropic\.com, claude\.ai">2 hosts allowed<\/span>/);
+  assert.match(html, /<a class="rlink" href="#\/job\/20260101-010101-bbbbbb">.*agent #2(&#39;|')s conflict resolved by/s);
+  store.focusRun(null);
+});

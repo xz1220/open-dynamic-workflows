@@ -269,6 +269,18 @@ changed, and run on a schedule — and a dashboard redesigned to watch them.
 - `odw schedule add|list|remove|run` writes a cron, launchd or systemd entry that calls
   back into odw — overlap lock, per-schedule log, last run — with no daemon. The
   dashboard's Jobs page shows what runs next.
+- Run on your own server (**ODW extension**): `odw run <wf> --on
+  ssh://[user@]host[:port][/dir]` checks the remote has odw (install hints when not),
+  sends the project — a `git bundle` of HEAD plus a patch of the uncommitted changes,
+  untracked files included (`--sync git`, the default), or an rsync mirror (`--sync
+  rsync`) — into `~/odw-remote/<repo>` (or the URL's path; a directory odw did not
+  make is refused), starts it there detached and prints the remote run id.
+  `odw status|logs|attach <run> --on ssh://host` run on the remote odw (attach shows
+  the live view); `odw pull <run> --from ssh://host` copies the run directory back
+  (rsync, else tar over ssh) as `origin: "remote"`, so `status`, `diff`, `apply`,
+  `compare` and the dashboard work here — again and again while it runs. Plain ssh
+  with your ssh config and agent (`ODW_SSH` overrides the binary), no daemon, no
+  secrets on a command line; the remote uses its own odw config and CLI logins.
 
 ### Write workflows
 - `exec(command, opts)` runs tests, builds and linters without a model, as steps of the
@@ -323,6 +335,19 @@ changed, and run on a schedule — and a dashboard redesigned to watch them.
   notes, 256 KiB) and redacted, kept as `notes.jsonl`, emitted as `note_added`, and read
   with `odw notes <run> [--json]` and `GET /api/runs/:id/notes`. Off by default.
   Example: `coordinated-refactor.js`.
+- Declared scopes (**ODW extension**; ROADMAP R11): `agent(…, { scope: ["src/auth/**"] })`
+  names the files a call means to change, with the `expect` glob rules. Scoped calls in
+  flight at once whose scopes overlap — decided conservatively from the globs: braces
+  expanded, equal literal paths, a glob matching a literal path, or one glob's literal
+  prefix starting with the other's — run one after the other: the later waits, holding
+  no slot, and the run logs it once (`fix-auth waits for refactor-login: both declare
+  src/auth/**`); disjoint and unscoped calls keep running together. What an agent changed
+  outside its scope is kept as `outOfScope` on its terminal event and saved result,
+  logged, shown by `odw agents` and the dashboard, and posted to the notes board when
+  notes are on. `scopePolicy` (per call, or the `"scopePolicy"` setting, recorded in a
+  run's setup) is `"warn"` by default; `"fail"` fails such an agent with reason
+  `out_of_scope`, and with `expect` it is a miss. In place, writes inside the scope of a
+  scoped call that ran beside it are not counted.
 
 ### Use the CLI and the dashboard
 - `odw run` attaches a live foreground view in interactive terminals (Ctrl-C detaches;

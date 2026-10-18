@@ -76,7 +76,7 @@ export interface AgentView {
   /**
    * Why a failed agent's CLI failed (agent_failed's `reason`): rate_limit,
    * quota, auth, timeout, stalled, not_found, permission or exit — or, ODW
-   * extensions, empty_reply, unmet_expectation, mcp_unavailable, runaway and orphaned_background. Absent while running, for
+   * extensions, empty_reply, unmet_expectation, mcp_unavailable, runaway, orphaned_background and out_of_scope. Absent while running, for
    * other failures (schema, stop) and for older event files.
    */
   failureReason?: string;
@@ -97,6 +97,16 @@ export interface AgentView {
    * each. Absent otherwise.
    */
   orphaned?: string[];
+  /**
+   * Agents only (ODW extension; see scope.ts): the files it declared it means
+   * to change — agent_started's `scope`. Absent: no scope.
+   */
+  scope?: string[];
+  /**
+   * Agents only (ODW extension; see scope.ts): the files it changed outside
+   * its scope — its terminal event's `outOfScope`. Absent otherwise.
+   */
+  outOfScope?: string[];
   startedAt: number | null;
   finishedAt: number | null;
   /** Wall-clock from agent_started to agent_finished/failed, in ms (a command's own measurement). */
@@ -419,6 +429,8 @@ export function applyAgentEvent(
     if (sandbox) opened.sandbox = sandbox;
     const limits = agentLimits(ev.limits);
     if (limits) opened.limits = limits;
+    const scope = strings(ev.scope);
+    if (scope) opened.scope = scope;
     agents.push(opened);
     return { opened };
   }
@@ -456,6 +468,9 @@ export function applyAgentEvent(
     // The MCP servers its CLI started it without, finished or failed (ODW extension).
     const mcp = mcpServers(ev.mcp);
     if (mcp) target.mcp = mcp;
+    // What it changed outside its declared scope, finished or failed (ODW extension).
+    const outOfScope = strings(ev.outOfScope);
+    if (outOfScope) target.outOfScope = outOfScope;
     if (ev.type === "agent_failed") {
       target.state = "failed";
       target.error = ev.error != null ? String(ev.error) : null;
@@ -620,6 +635,8 @@ function copyAgents(agents: AgentView[], stale: boolean): AgentView[] {
     if (a.denied) copy.denied = [...a.denied];
     if (a.limits) copy.limits = { ...a.limits, ...(a.limits.hit ? { hit: { ...a.limits.hit } } : {}) };
     if (a.orphaned) copy.orphaned = [...a.orphaned];
+    if (a.scope) copy.scope = [...a.scope];
+    if (a.outOfScope) copy.outOfScope = [...a.outOfScope];
     return copy;
   });
 }

@@ -651,6 +651,7 @@ export const DEFAULT_SETTINGS: Settings = {
   permissionDenials: "warn", // a reply whose CLI refused tool calls stands, recorded and logged ("fail": it fails)
   mcpFailures: "warn", // an agent whose MCP server did not start keeps its reply, recorded and logged ("fail": it fails)
   orphanedBackground: "warn", // an agent that ended its turn with background work running keeps its reply, recorded and logged ("fail": it fails)
+  scopePolicy: "warn", // an agent that wrote outside its declared scope keeps its reply, recorded and logged ("fail": it fails)
   redact: { env: true, patterns: true, extra: [] }, // likely secrets out of what odw keeps and serves (false: none)
   quotaWait: false, // an agent whose chain is out of quota fails; { max: <s> } waits for the reset instead
   otel: false, // no trace is sent; { endpoint?, headers?, captureContent? } posts each run's at its end

@@ -86,7 +86,7 @@ outright, never silently passed through as a string).
 | `exec(command, opts?)` | Run a command (tests, a build, a linter) without a model; resolves to `{ stdout, stderr, exitCode, signal, timedOut, truncated, durationMs }`. A string runs through the shell, an array as argv. **ODW extension** — not part of Claude Code's dialect. |
 | `checkpoint(title, opts?)` | Pause the run until a person approves (perhaps with an edited payload) or rejects; resolves to `{ approved, note, by, payload, edited }`. **ODW extension** — not part of Claude Code's dialect. |
 
-`opts` for `agent`: `{ adapter?, schema?, label?, phase?, model?, agentType?, isolation?, keep?, permissions?, expect?, expectRetries?, allowEmpty?, notes?, handoff? }`.
+`opts` for `agent`: `{ adapter?, schema?, label?, phase?, model?, agentType?, isolation?, keep?, permissions?, expect?, expectRetries?, allowEmpty?, notes?, handoff?, scope?, scopePolicy? }`.
 `adapter` picks the CLI — or, as a list (`['codex', 'claude']`, **ODW
 extension**), a fallback chain; `model: '@fast'` picks a tier's model for
 whichever CLI runs it (**ODW extension**); `schema` is a raw JSON Schema object (an option, not
@@ -154,6 +154,24 @@ lanes on shared code, then read the board with `odw notes $RUN`; see
 ```js
 const lanes = await parallel(tasks.map((t, i) => () =>      // ODW extension: notes
   agent(t, { label: `lane-${i + 1}`, isolation: 'worktree' })), { notes: true })
+```
+
+`scope` (**ODW extension**) declares the files an agent means to change — globs
+like `expect.files`. Parallel calls whose scopes overlap run one after the other
+(the later waits for the earlier, logged once: "fix-auth waits for
+refactor-login: both declare src/auth/**"); disjoint and unscoped ones run
+together. What an agent changed outside its scope is recorded as `outOfScope`,
+logged, and posted to the notes board when notes are on; `scopePolicy: "fail"`
+(or the `"scopePolicy"` setting) fails it with reason `out_of_scope`, and with
+`expect` it is a miss. Give each lane of a fan-out over shared code a scope; see
+[`references/primitives.md`](references/primitives.md#scope-odw-extension):
+
+```js
+await parallel([                                             // ODW extension: scope
+  () => agent('Refactor login.', { label: 'refactor-login', scope: ['src/auth/**'] }),
+  () => agent('Fix token expiry.', { label: 'fix-auth', scope: ['src/auth/token.ts'] }), // waits
+  () => agent('Document the parser.', { label: 'docs', scope: ['docs/**'] }),            // runs beside
+])
 ```
 
 `opts` for `exec`: `{ cwd?, env?, timeout?, input?, maxOutputBytes?, label?, phase?, check? }`.
@@ -453,6 +471,31 @@ odw schedule remove digest     # delete the OS entry and the definition
   expression is cron's five fields (`@daily`, `L`, `#` are refused).
 - A scheduled run that reaches a `checkpoint()` holds back the next ones until
   it is answered: give unattended checkpoints a `timeout`.
+
+### Run on the user's own server (ODW extension)
+
+When the user wants a run to go on while their laptop sleeps, start it on a
+machine they own over plain ssh (no daemon). Only with a host they name.
+
+```bash
+RUN=$(odw run review --on ssh://me@box)          # sync the project, start there detached, print the run id
+odw status $RUN --on ssh://me@box                # status|logs|attach run on the remote odw
+odw pull $RUN --from ssh://me@box                # copy it here (again while it runs) for diff/apply/compare
+```
+
+- The remote needs odw on the PATH of a non-interactive ssh session, its own
+  odw config and its own agent CLI logins: nothing of the user's config or
+  logins is copied. Missing odw is reported with install hints.
+- `--sync git` (default) sends a git bundle of HEAD plus a patch of every
+  uncommitted change (untracked included, ignored left out); `--sync rsync`
+  mirrors the directory. The workdir is `~/odw-remote/<repo>` unless the URL
+  has a path (`ssh://box/~/work/app`); odw refuses a non-empty directory it
+  did not make.
+- `--config`, `--runs-root`, `--wait`, `--fg`, `--timeout` are refused with
+  `--on`; `--args`, `--adapter`, `--permissions`, `--untrusted`, `--sandbox`,
+  `--budget` go along (`--args` as a file on stdin, never on a command line).
+- A pulled run is marked `origin: "remote"`; until it ends there, the local
+  copy is a snapshot that reads as stale — pull again to refresh it.
 
 ### Evaluate a workflow (ODW extension)
 

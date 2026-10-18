@@ -78,6 +78,11 @@ export interface AgentResultRecord {
    */
   orphaned?: string[];
   /**
+   * The files it changed outside its declared `scope` (ODW extension; see
+   * ./scope), when there were any.
+   */
+  outOfScope?: string[];
+  /**
    * Likely secrets in it were replaced by `«redacted:<kind>»` before it was
    * saved (ODW extension; see ./redact) — a resume replays it as saved.
    */
@@ -126,7 +131,9 @@ export interface AgentResultRecord {
  * phase(), and prefixed inside a nested workflow()), and regrouping progress
  * must not invalidate finished work. So is `keep`: it only decides whether an
  * isolated agent's change is also committed to a branch; and `expectRetries`:
- * it only decides how often missed work is tried again. An option left
+ * it only decides how often missed work is tried again; nor `scope` and
+ * `scopePolicy` (ODW extensions): they decide when the call runs and what is
+ * said of where it wrote, not what it was asked. An option left
  * undefined keys exactly like an absent one. Should this derivation ever
  * change, old records simply stop matching and their calls run again — the
  * safe direction.

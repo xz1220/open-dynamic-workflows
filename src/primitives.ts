@@ -80,6 +80,15 @@
  * `limits` on its agent_started event; one that runs into a limit is killed
  * and fails with reason "runaway" and `limitHit` (the limit, what it reached,
  * the evidence) on agent_failed.
+ *
+ * An agent may declare the files it means to change (`scope`, an ODW
+ * extension; see ./scope): a scoped call made while an earlier one whose
+ * scope overlaps has not settled waits for it, holding no slot, and the run
+ * says so once per wait; its scope is carried as `scope` on its agent_started
+ * event. What it changed outside its scope is kept as `outOfScope` on its
+ * terminal event and saved record, logged, and — with notes on — posted to
+ * the notes board; `scopePolicy: "fail"` fails it with reason "out_of_scope",
+ * and with `expect` it is a miss.
  */
 
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -101,7 +110,7 @@ import { spentTokens, type RunContext } from "./context.js";
 import { AdapterExecutionError, AgentError, RunawayError, UnmetExpectationError, WorkflowScriptError, isFatalError } from "./errors.js";
 import { AGENT_FAILED, AGENT_FINISHED, AGENT_STARTED, HANDOFF, LOG, PHASE_STARTED, event } from "./events.js";
 import { ExecError, createExec, execStep, type ExecOptions, type ExecResult } from "./exec.js";
-import { Expectations, planChecks, type AgentChecks, type ExpectOptions } from "./expect.js";
+import { Expectations, planChecks, scopeOnlyPlan, type AgentChecks, type ExpectOptions } from "./expect.js";
 import { resumeKey, type AgentResultRecord } from "./journal.js";
 import { hasLimits, readLimits, type AgentLimits, type LimitHit, type LimitSpec } from "./limits.js";
 // Value import of the loader is safe: loader.ts only type-imports from here, so
@@ -110,6 +119,7 @@ import { loadWorkflowScript, scanDualCompat, type WorkflowMeta } from "./loader.
 import { interfaceSummary, type AgentNotes } from "./notes.js";
 import { firstAdapter, phaseDefaultsOf, type AdapterChoice, type PhaseDefaults } from "./routing.js";
 import type { JsonSchema } from "./schema.js";
+import { planScope, ScopeLocks, waitNote, type ScopeClaim, type ScopePlan, type ScopePolicy } from "./scope.js";
 import { FanOut } from "./throttle.js";
 import { TranscriptRecorder } from "./transcript.js";
 import { resolveWorkflow } from "./workflows/resolve.js";
@@ -189,6 +199,19 @@ export interface AgentOptions {
    * last one did (see ./handoff). Unset: the `fallback.handoff` setting.
    */
   handoff?: boolean;
+  /**
+   * ODW extension: the files this agent means to change — globs relative to
+   * its workspace, with the `expect` glob rules (see ./scope). A scoped call
+   * whose scope overlaps an earlier one's still in flight waits for it; what
+   * it changes outside its scope is recorded as `outOfScope` and logged.
+   */
+  scope?: string[];
+  /**
+   * ODW extension: what a write outside `scope` does — `"warn"` records and
+   * logs it, `"fail"` fails the agent with reason "out_of_scope". Unset: the
+   * `scopePolicy` setting ("warn" by default). With `expect` it is a miss.
+   */
+  scopePolicy?: ScopePolicy;
 }
 
 /** ODW extension: what parallel() takes after its thunks. */
@@ -269,6 +292,9 @@ export function createPrimitives(
   // Each phase's defaults for its agents (ODW extension), by its (prefixed)
   // title — shared with nested workflow()s like the notes above.
   const phaseDefaults = (ctx.phaseDefaults ??= new Map<string, PhaseDefaults>());
+  // The scoped calls not settled yet (ODW extension; see ./scope) — shared with
+  // nested workflow()s like the notes above, so their agents wait for each other too.
+  const scopeLocks = (ctx.scopeLocks ??= new ScopeLocks());
   for (const [i, entry] of (internal.phases ?? []).entries()) {
     if (entry === null || typeof entry !== "object" || typeof entry.title !== "string") continue;
     const defaults = phaseDefaultsOf(entry, `meta.phases[${i}]`);
@@ -327,7 +353,9 @@ export function createPrimitives(
     };
     // The tier the value was produced at, when the record says (ODW extension).
     const tier = permissionField(recorded.permissions);
-    const startedEv = event(AGENT_STARTED, { agentId, label, phase, adapter, key, ...tier, ...marks });
+    // The scope the call declares (ODW extension): a replay waits for nobody, but shows it.
+    const scoped = Array.isArray(opts.scope) && opts.scope.length > 0 ? { scope: [...opts.scope] } : {};
+    const startedEv = event(AGENT_STARTED, { agentId, label, phase, adapter, key, ...tier, ...marks, ...scoped });
     ctx.emit(startedEv);
     const kept = await carryChanges(recorded, agentId, (message) =>
       ctx.emit(event(LOG, { message: `${label}:${agentId}: ${message}`, agentId, label, phase })),
@@ -336,6 +364,7 @@ export function createPrimitives(
     const denied = deniedField(recorded.denied);
     const mcp = mcpField(recorded.mcp);
     const orphaned = orphanedField(recorded.orphaned);
+    const outside = outOfScopeField(recorded.outOfScope);
     const changed = changeFields(kept);
     // A value saved with its secrets redacted replays as saved, and says so (ODW extension; see ./redact).
     const redacted = recorded.redacted === true ? { redacted: true } : {};
@@ -349,11 +378,11 @@ export function createPrimitives(
         }),
       );
     }
-    const finished = event(AGENT_FINISHED, { agentId, label, phase, adapter, ...moved, attempts, ...marks, ...changed, ...denied, ...mcp, ...orphaned });
+    const finished = event(AGENT_FINISHED, { agentId, label, phase, adapter, ...moved, attempts, ...marks, ...changed, ...denied, ...mcp, ...orphaned, ...outside });
     const startedAt = startedEv.ts;
     const finishedAt = finished.ts;
     const value = recorded.value;
-    if (save({ agentId, key, label, phase, adapter, ...moved, attempts, startedAt, finishedAt, value, ...tier, ...marks, ...changed, ...denied, ...mcp, ...orphaned, ...redacted })) {
+    if (save({ agentId, key, label, phase, adapter, ...moved, attempts, startedAt, finishedAt, value, ...tier, ...marks, ...changed, ...denied, ...mcp, ...orphaned, ...outside, ...redacted })) {
       finished.saved = true;
     }
     ctx.emit(finished);
@@ -443,13 +472,17 @@ export function createPrimitives(
     label: string,
     phase: string | null,
     signal: AbortSignal,
+    scope?: { plan: ScopePlan; claim: ScopeClaim; note: (message: string) => void },
   ): Expectations | undefined => {
     if (!checks.expect) return undefined;
     const retries = checks.expectRetries ?? ctx.config.settings.expectRetries ?? 1;
-    return new Expectations(checks.expect, retries, {
+    // A declared scope is judged with the checks, a write outside it a miss (ODW extension; see ./scope).
+    const plan = scope ? { ...checks.expect, scope: scope.plan.globs, scopeMiss: true } : checks.expect;
+    return new Expectations(plan, retries, {
       signal,
       // ODW writes the run's directory while the agent works: never its change.
       ignore: ctx.runDir ? [ctx.runDir] : [],
+      ...(scope ? { neighbours: () => scope.claim.neighbours(), onNote: scope.note } : {}),
       exec: (command, opts) =>
         execStep(
           ctx,
@@ -459,6 +492,61 @@ export function createPrimitives(
           { phase, forAgentId: agentId },
         ),
     });
+  };
+
+  /**
+   * What reads a scoped call's change when it has no `expect` (ODW extension;
+   * see ./scope): its writes outside the scope are recorded — a miss that
+   * fails it under `scopePolicy: "fail"`, never retried.
+   */
+  const scopeWatch = (plan: ScopePlan, claim: ScopeClaim, signal: AbortSignal, note: (message: string) => void): Expectations =>
+    new Expectations(scopeOnlyPlan(plan.globs, plan.policy === "fail"), 0, {
+      signal,
+      ignore: ctx.runDir ? [ctx.runDir] : [],
+      neighbours: () => claim.neighbours(),
+      onNote: note,
+      exec: () => Promise.reject(new Error("a scope runs no command")),
+    });
+
+  /**
+   * Say what an agent wrote outside its declared scope (ODW extension; see
+   * ./scope): a line in the run's log and, with notes on, a note on the board
+   * — so the agents that work there next know. Its `outOfScope` field.
+   */
+  const reportOutOfScope = (
+    outside: string[] | null | undefined,
+    plan: ScopePlan,
+    who: { agentId: number; label: string; phase: string | null },
+    notesOn: boolean,
+    note: (message: string) => void,
+  ): { outOfScope?: string[] } => {
+    if (!outside || outside.length === 0) return {};
+    const globs = plan.globs.map(({ glob }) => glob).join(", ");
+    const files = outside.length === 1 ? "1 file" : `${outside.length} files`;
+    const shown = outside.slice(0, REFUSED_SHOWN).join(", ") + (outside.length > REFUSED_SHOWN ? ` and ${outside.length - REFUSED_SHOWN} more` : "");
+    ctx.emit(
+      event(LOG, {
+        message:
+          `${who.label}:${who.agentId}: wrote ${files} outside its scope (${globs}) — ${shown}` +
+          (plan.policy === "warn" ? ' (scopePolicy: "fail" fails such an agent)' : ""),
+        outOfScope: [...outside],
+        agentId: who.agentId,
+        label: who.label,
+        phase: who.phase,
+      }),
+    );
+    if (notesOn && ctx.notes) {
+      try {
+        ctx.notes.post(
+          { agentId: who.agentId, label: who.label },
+          `Changed ${files} outside its declared scope (${globs}): ${outside.join(", ")}`,
+          "scope",
+        );
+      } catch (err) {
+        note(`could not post its out-of-scope writes to the notes board: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    return { outOfScope: [...outside] };
   };
 
   /** Settle a call's kept change, or drop it when the run ended under the call. Never throws. */
@@ -515,6 +603,8 @@ export function createPrimitives(
     const notesOn = opts.notes ?? notesScope.getStore() ?? ctx.config.settings.notes === true;
     // So are its limits (ODW extension; see ./limits).
     const ownLimits = opts.limits === undefined ? undefined : readLimits(opts.limits, "agent(): limits", (m) => new AgentError(m));
+    // And its declared scope (ODW extension; see ./scope).
+    const scope = planScope(opts, ctx.config.settings.scopePolicy ?? "warn");
     const activePhase = opts.phase !== undefined ? opts.phase : ctx.currentPhase;
     // Stable per-dispatch identity. Events for THIS dispatch all carry it, so
     // observers pair started/finished exactly even when several concurrent
@@ -557,11 +647,26 @@ export function createPrimitives(
     // cache — waits, holding no slot, until that one has warmed the cache.
     const fanOut = adapter.promptCache && typeof prompt === "string" ? fanOutScope.getStore() : undefined;
     const cache = [adapter.name, model ?? "", opts.agentType ?? ""].join("\u0000");
+    // A scoped call claims its scope as it is made (ODW extension; see ./scope):
+    // it waits, holding no slot, for each earlier call in flight whose scope overlaps.
+    const claim = scope ? scopeLocks.claim({ agentId, label: display }, scope.globs.map(({ glob }) => glob)) : undefined;
     const turn = fanOut?.enter(adapter.name, cache, prompt);
     // A call none of whose adapters has quota left waits for the first reset
     // before it is dispatched (ODW extension: quotaWait) — holding no slot,
     // showing no agent — and is routed again once it can run.
     const ready = async (signal: AbortSignal): Promise<void> => {
+      await claim?.wait(signal, (holder, pair) =>
+        ctx.emit(
+          event(LOG, {
+            message: waitNote(display, holder.label, pair),
+            agentId,
+            label: display,
+            phase: activePhase,
+            // Structured for the run's readers: whom it waits for, and why.
+            scopeWait: { for: holder.agentId, globs: [...pair] },
+          }),
+        ),
+      );
       while (await ctx.bridge.awaitQuota(route, signal)) route = ctx.bridge.route(adapterChoice, opts.permissions);
       await turn?.gate?.(signal);
     };
@@ -605,7 +710,7 @@ export function createPrimitives(
     };
     // The MCP servers its latest CLI run started it without (ODW extension): what a failed agent keeps.
     let mcpSeen: McpServer[] = [];
-    const failed = (err: unknown, kept: KeptChanges | null = null): void => {
+    const failed = (err: unknown, kept: KeptChanges | null = null, outside: { outOfScope?: string[] } = {}): void => {
       ctx.emit(
         event(AGENT_FAILED, {
           agentId,
@@ -617,6 +722,7 @@ export function createPrimitives(
           ...usageField(),
           ...changeFields(kept),
           ...mcpField(mcpSeen),
+          ...outside,
         }),
       );
       if (typeof err === "object" && err !== null) surfaced.add(err);
@@ -640,6 +746,8 @@ export function createPrimitives(
         // dispatch slot, so queued work is not presented as running.
         started = true;
         turn?.started();
+        // From now on, what it changes in place beside another scoped call may be that call's.
+        claim?.start();
         const startedEv = event(AGENT_STARTED, {
           agentId,
           label: display,
@@ -650,6 +758,8 @@ export function createPrimitives(
           ...sandboxField(sandbox && sandboxView(sandbox)),
           // The limits it runs under on this adapter, if any (ODW extension; see ./limits).
           ...limitsField(ctx.bridge.limitsFor?.(adapter, ownLimits)),
+          // The files it declared it means to change (ODW extension; see ./scope).
+          ...(scope ? { scope: scope.globs.map(({ glob }) => glob) } : {}),
           // What `odw compare` matches and shows it by (ODW extension): its
           // resume key, and the model it asked for (a tier keeps its @ name).
           key,
@@ -673,7 +783,13 @@ export function createPrimitives(
         }
         const changes = changeRecorder(agentId, display, opts, signal, note);
         const transcript = transcriptRecorder(agentId, adapter, note);
-        const expect = expectations(checks, agentId, display, activePhase, signal);
+        const scoping = scope && claim ? { plan: scope, claim, note } : undefined;
+        const expect = expectations(checks, agentId, display, activePhase, signal, scoping);
+        // Without `expect`, its scope has a reader of its own (ODW extension; see ./scope).
+        const watch = scoping && !expect ? scopeWatch(scope!, claim!, signal, note) : undefined;
+        const judged = expect ?? watch;
+        const outsideOf = (): { outOfScope?: string[] } =>
+          scope ? reportOutOfScope(judged?.outOfScope, scope, { agentId, label: display, phase: activePhase }, notesOn, note) : {};
         // The run's notes board (ODW extension): the notes so far go in its
         // prompt as it starts; what it posts is taken until it ends.
         const notes = notesOn ? openNotes(agentId, display) : undefined;
@@ -826,6 +942,7 @@ export function createPrimitives(
             // Its work is checked against its `expect` (ODW extension), and a
             // miss that earns a retry is logged with what it missed.
             expect,
+            ...(watch ? { scopeWatch: watch } : {}),
             onExpectRetry: ({ misses, retry, maxRetries }) =>
               ctx.emit(
                 event(LOG, {
@@ -870,7 +987,9 @@ export function createPrimitives(
           // Its transcript is kept either way, complete before the event.
           await transcript?.close();
           notes?.close();
-          failed(err, await keepChanges(changes, isFatalError(err) || signal.aborted, note));
+          const stopped = isFatalError(err) || signal.aborted;
+          const kept = await keepChanges(changes, stopped, note);
+          failed(err, kept, stopped ? {} : outsideOf());
           throw err;
         }
         await transcript?.close();
@@ -878,6 +997,8 @@ export function createPrimitives(
         const kept = await keepChanges(changes, false, note);
         // Its interface changes go on the board before it is seen to finish (ODW extension).
         if (notes && kept) await broadcast(agentId, display, kept, note);
+        // So do its writes outside its declared scope, said in the log too (ODW extension).
+        const outside = outsideOf();
         // No option is dropped silently: surface each routing note as a LOG event
         // (visible in `odw logs` and the dashboard).
         for (const routing of outcome.notes ?? []) {
@@ -924,6 +1045,7 @@ export function createPrimitives(
           ...deniedField(outcome.denied),
           ...mcpField(outcome.mcp),
           ...orphanedField(outcome.orphaned),
+          ...outside,
         });
         const persisted = save({
           agentId,
@@ -942,11 +1064,12 @@ export function createPrimitives(
           ...deniedField(outcome.denied),
           ...mcpField(outcome.mcp),
           ...orphanedField(outcome.orphaned),
+          ...outside,
         });
         if (persisted) finished.saved = true;
         ctx.emit(finished);
         return outcome.value;
-      }, { adapter: adapter.name, gate: route.start < 0 || turn?.gate ? ready : undefined });
+      }, { adapter: adapter.name, gate: route.start < 0 || turn?.gate || claim?.blocked ? ready : undefined });
     } catch (err) {
       // A fatal error before the start (stop or budget at dispatch) concerns
       // the run, not this agent; anything else is still this agent's failure.
@@ -955,6 +1078,8 @@ export function createPrimitives(
     } finally {
       // However a leader of a staggered fan-out ended, the agents it held may go.
       turn?.settled();
+      // So may the calls waiting for its scope (ODW extension).
+      claim?.release();
     }
   };
 
@@ -1255,6 +1380,13 @@ const notesUnavailable = new WeakSet<object>();
 /** The `fellBackFrom` an agent's agent_finished event and record carry when it fell back (ODW extension). */
 function fallbackField(fellBackFrom: string[] | undefined): { fellBackFrom?: string[] } {
   return Array.isArray(fellBackFrom) && fellBackFrom.length > 0 ? { fellBackFrom: [...fellBackFrom] } : {};
+}
+
+/** The `outOfScope` an agent's terminal event and record carry: what it changed outside its declared scope, when anything (ODW extension). */
+function outOfScopeField(outside: unknown): { outOfScope?: string[] } {
+  if (!Array.isArray(outside)) return {};
+  const paths = outside.filter((path): path is string => typeof path === "string");
+  return paths.length > 0 ? { outOfScope: paths } : {};
 }
 
 /** The `changes` and `branch` an agent's terminal event and record carry when it kept a change (ODW extension). */

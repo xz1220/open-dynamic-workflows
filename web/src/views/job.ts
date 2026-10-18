@@ -116,6 +116,7 @@ function runHead(run: RunDetail, nowSec: number, spendOpen: boolean): string {
     `<div style="min-width:0"><div class="eyebrow"><span>${t("Run")}</span><span class="mono" style="text-transform:none;letter-spacing:0">${esc(run.runId)}</span>${cc}${shared}</div>` +
     `<div class="title-row"><h1 class="display">${esc(run.name)}</h1>${pill(run.state)}</div>` +
     (run.description ? `<p class="lede">${esc(run.description)}</p>` : "") +
+    resolveLinks(run) +
     `</div>` +
     `<div class="actions">${stop}${resume}${compareLink(run)}${share}` +
     `<button class="btn" data-copy="odw logs ${esc(run.runId)} --follow" data-tip="${esc(t("copy a follow command"))}">${icons.terminal}${t("Follow in terminal")}</button>` +
@@ -134,6 +135,17 @@ function runHead(run: RunDetail, nowSec: number, spendOpen: boolean): string {
     `<i class="p-done" style="width:${w(c.done)}"></i><i class="p-run" style="width:${w(c.running)}"></i>` +
     `<i class="p-fail" style="width:${w(c.failed)}"></i><i class="p-stale" style="width:${w(c.stale)}"></i></div></div>`
   );
+}
+
+/** The runs `odw apply --resolve` linked to this one: the run whose conflict it resolved, or its resolvers. */
+function resolveLinks(run: RunDetail): string {
+  const link = (l: { runId: string; agentId: number }, text: string) =>
+    `<a class="rlink" href="#/job/${encodeURIComponent(l.runId)}">${icons.branch}${esc(text)} <span class="mono">${esc(l.runId)}</span></a>`;
+  const parts = [
+    ...(run.applyResolve ? [link(run.applyResolve, t("resolves a conflict of agent #{n} in", { n: run.applyResolve.agentId }))] : []),
+    ...(run.resolvedBy ?? []).map((l) => link(l, t("agent #{n}'s conflict resolved by", { n: l.agentId }))),
+  ];
+  return parts.length ? `<div class="rlinks">${parts.join("")}</div>` : "";
 }
 
 /** A link to what changed since the workflow's previous run, when it has one. */
@@ -181,6 +193,7 @@ function notesTab(run: RunDetail): string {
           `<header><span class="pin" aria-hidden="true"></span><span class="ix mono">#${n.noteId}</span>` +
           `<span class="by">${esc(n.by.label)}</span><span class="dim mono">${fmtClock(n.ts)}</span>` +
           (n.kind === "interface" ? `<span class="tag">${t("interface")}</span>` : "") +
+          (n.kind === "scope" ? `<span class="tag warn">${t("outside its scope")}</span>` : "") +
           (n.redacted ? `<span class="tag warn">${t("redacted")}</span>` : "") +
           `</header>` +
           (n.kind === "interface" ? `<pre class="slip-code">${markRedactions(esc(n.text))}</pre>` : `<p>${markRedactions(esc(n.text))}</p>`) +
@@ -361,7 +374,11 @@ function drawer(run: RunDetail, ai: number, nowSec: number): string {
       : "") +
     (a.sandbox
       ? `<span class="k">${t("sandbox")}</span><span class="v"><span class="tag" title="${esc(a.sandbox.image ?? "")}">${esc(a.sandbox.engine ?? "container")}</span>` +
-        ` <span class="mono dim">${esc(a.sandbox.image ?? "")}</span>${a.sandbox.network === "none" ? ` <span class="tag">${t("offline")}</span>` : ""}</span>`
+        ` <span class="mono dim">${esc(a.sandbox.image ?? "")}</span>${a.sandbox.network === "none" ? ` <span class="tag">${t("offline")}</span>` : ""}` +
+        (a.sandbox.network === "allowlist"
+          ? ` <span class="tag" title="${esc((a.sandbox.allow ?? []).join(", "))}">${esc(tn(a.sandbox.allow?.length ?? 0, "{n} host allowed", "{n} hosts allowed"))}</span>`
+          : "") +
+        `</span>`
       : "") +
     limitsRow(a) +
     (a.failureReason ? `<span class="k">${t("reason")}</span><span class="v"><span class="tag ${/rate_limit|quota|stalled|timeout|runaway/.test(a.failureReason) ? "warn" : ""}">${esc(reasonLabel(a.failureReason))}</span>${resetNote(a, nowSec)}</span>` : "") +
@@ -393,6 +410,13 @@ function drawer(run: RunDetail, ai: number, nowSec: number): string {
     (a.orphaned?.length
       ? `<div class="drawer-sec">${t("Left running")}</div><ul class="denied orphaned">${a.orphaned.map((o) => `<li>${esc(o)}</li>`).join("")}</ul>` +
         `<p class="dnote">${t("It replied while this background work still ran; it died when the CLI exited, so the reply may rest on work that never finished.")}</p>`
+      : "") +
+    (a.scope?.length
+      ? `<div class="drawer-sec">${t("Scope")}</div><ul class="scope mono">${a.scope.map((g) => `<li>${esc(g)}</li>`).join("")}</ul>`
+      : "") +
+    (a.outOfScope?.length
+      ? `<div class="drawer-sec">${t("Outside its scope")}</div><ul class="denied out-of-scope">${a.outOfScope.map((f) => `<li>${esc(f)}</li>`).join("")}</ul>` +
+        `<p class="dnote">${t("It changed these files outside the scope it declared — another agent may be changing them too.")}</p>`
       : "") +
     changesSection(run, a, ai, rec?.branch) +
     output +

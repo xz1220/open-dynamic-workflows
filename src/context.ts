@@ -21,6 +21,7 @@ import { redactorFor, type Redactor } from "./redact.js";
 import type { NotesBoard } from "./notes.js";
 import type { PhaseDefaults } from "./routing.js";
 import { Scheduler } from "./scheduler.js";
+import type { ScopeLocks } from "./scope.js";
 import { capChangeMessage } from "./throttle.js";
 import type { TranscriptPaths } from "./transcript.js";
 
@@ -82,6 +83,11 @@ export interface RunContext {
    * workflow()'s phases are there under their prefixed titles.
    */
   phaseDefaults?: Map<string, PhaseDefaults>;
+  /**
+   * The scoped agent() calls not settled yet (ODW extension; see ./scope):
+   * what a call whose declared scope overlaps waits for. Shared like `seq`.
+   */
+  scopeLocks?: ScopeLocks;
   currentPhase: string | null;
   /**
    * Save a completed agent's record (the worker writes the run directory's

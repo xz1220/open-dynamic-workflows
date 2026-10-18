@@ -389,6 +389,64 @@ Claude Code's Workflow tool ignores these options. [`examples/coordinated-refact
 splits a change across isolated lanes on the board, has a reviewer read it, and
 runs the lanes that clash again with every note in their prompt.
 
+### Declared scopes (ODW extension)
+
+Two agents pointed at the same files produce changes that conflict only at merge
+time. Declaring up front which files each agent means to change lets odw keep
+them apart — mostly by running the ones that collide one after the other:
+
+```js
+await parallel([
+  () => agent('Refactor the login flow.', { label: 'refactor-login', scope: ['src/auth/**'] }),
+  () => agent('Fix the token expiry bug.', { label: 'fix-auth', scope: ['src/auth/token.ts'] }),
+  () => agent('Document the parser.', { label: 'docs', scope: ['docs/parser.md', 'src/parser/**/*.md'] }),
+])
+```
+
+- **`scope`** is a list of globs relative to the agent's workspace, with the
+  `expect` glob rules (`*` within a directory, `**` across them, `{a,b}`, `[…]`).
+  A call without one behaves as before.
+- **Overlapping scopes run one after the other.** A scoped call made while an
+  earlier scoped call whose scope overlaps has not settled waits for it — holding
+  no slot — and the run logs the wait once: `fix-auth waits for refactor-login:
+  fix-auth declares src/auth/token.ts, refactor-login src/auth/**` (or `both
+  declare src/auth/**`; the log event carries `scopeWait: { for, globs }`). The
+  others keep running. This holds for any calls in flight at once — a
+  `parallel()` or `pipeline()` fan-out, or calls started without `await` — and a
+  call only ever waits for calls made before it. In the example, `fix-auth` runs
+  once `refactor-login` is done, while `docs` runs beside them.
+- **How overlap is decided** — from the globs alone, conservatively (in doubt they
+  overlap, which only serializes): `{a,b}` alternatives are expanded; two literal
+  paths overlap when they are the same path; a literal path and a glob when the
+  glob matches the path; two globs when the literal prefix of one (the text before
+  its first wildcard) starts with the other's. So `src/auth/**` and
+  `src/auth/*.ts` overlap, `src/auth/**` and `src/db/**` do not, `src/*.ts` and
+  `src/*.md` do (the part after a wildcard is not compared), and `**` overlaps
+  everything.
+- **Writes outside the scope are flagged.** Once the agent replied, what it changed
+  — read as `expect` reads it: an isolated agent's worktree, an in-place agent's
+  changes since its call began — is compared with its scope. Files outside it are
+  kept as `outOfScope` on its `agent_finished` (or `agent_failed`) event, its saved
+  result, `/api/runs/:id`, `odw agents` (`[outside scope: …]` before the value;
+  `--json` has `scope` and `outOfScope`) and the dashboard drawer, and logged:
+  `fix-auth:2: wrote 1 file outside its scope (src/auth/token.ts) — package.json`.
+  With notes on (see [Notes between parallel agents](#notes-between-parallel-agents-odw-extension))
+  the board gets a note of them too, so the agents the script starts next know.
+- **`scopePolicy`** — per call, else the `"scopePolicy"` setting — is `"warn"` by
+  default: the reply stands. `"fail"` fails such an agent with
+  `reason: "out_of_scope"`, not retried. With `expect` set, a write outside the
+  scope is a miss either way: handed back to the agent (restore those files, keep
+  the change inside the scope), then `unmet_expectation`. The run's setup records
+  `scopePolicy` for `odw compare`.
+- **In place**, the tree is shared: a file inside the scope of another scoped call
+  that ran at the same time is that call's, and is not counted against this one.
+  Edits by unscoped calls running beside it still count — isolate for an exact
+  answer. Outside a git repository nothing can be read: the agent runs, unchecked,
+  and the run says so.
+
+Claude Code's Workflow tool ignores `scope` and `scopePolicy`: there the calls run
+together as written.
+
 ## Compatibility and migration
 
 ODW implements the primitive surface below. Scripts that depend on a host's
@@ -704,6 +762,56 @@ odw schedule remove digest     # delete the OS entry and the definition (safe if
 The expression is cron's five fields (numbers, `*`, lists, ranges, steps, `jan`-`dec`,
 `sun`-`sat`); `@daily`, `L`, `#` and the like are refused with the reason. The full guide,
 and the raw cron line as the manual alternative: [`docs/recipes/cron.md`](docs/recipes/cron.md).
+
+### Run on your own server (ODW extension)
+
+A laptop that sleeps pauses its runs. Start one on a machine you own instead —
+over plain SSH, with no daemon on either side:
+
+```bash
+odw run review --on ssh://me@box:2222            # sync the project, start it there detached, print its run id
+odw run wf.js --on ssh://box/srv/work/app --sync rsync --args @in.json --adapter codex
+odw status $RUN --on ssh://box                   # the same command, run by the odw over there
+odw logs $RUN --on ssh://box --follow            # …and odw attach $RUN --on ssh://box shows the live view
+odw pull $RUN --from ssh://box                   # copy it here: odw status, diff, apply, compare, the dashboard
+```
+
+`--on ssh://[user@]host[:port][/path]` first checks the remote has odw (`odw --version`,
+else `npx --no-install odw`) and, when it has not, says how to install it. Then it
+copies the project to the remote workdir — `~/odw-remote/<repo>` unless the URL names
+one (`ssh://box/~/work/app` is home-relative, `ssh://box/srv/app` absolute):
+
+- `--sync git` (the default): a `git bundle` of HEAD, plus one patch of your
+  uncommitted changes — staged, unstaged and untracked files, .gitignore'd ones left
+  out — made with a temporary index, so yours is untouched. The run prints which
+  commit and how many uncommitted files went along.
+- `--sync rsync`: the directory mirrored with `rsync` (needed on both ends),
+  .gitignore'd files left out.
+
+The workdir is odw's: each sync replaces what the last one left (files ignored there,
+such as a remote `node_modules`, stay), and a directory odw did not make is refused,
+never overwritten. A workflow from outside the project (a personal or plugin one)
+is sent along. Then `odw run … --detach` starts it there, and the remote run id is
+printed with the commands that follow it. `--adapter`, `--permissions`, `--untrusted`,
+`--sandbox`, `--sandbox-image` and `--budget` go along; `--config`, `--runs-root`,
+`--wait`, `--fg` and `--timeout` are refused (watch it with `odw attach --on`).
+
+**The remote uses its own odw config and agent CLI logins.** Nothing of your
+`~/.config/odw/config.json` or your CLIs' logins is copied: install odw there, log in
+its agent CLIs there, and give it a config there if it needs one (a project's
+`odw.config.json` travels with the project like any file in it). No secret is put on
+a command line — `--args` travels as a file on ssh's stdin — and ssh is your own, with
+your `~/.ssh/config`, keys and agent; `ODW_SSH` replaces the `ssh` binary (and
+`ODW_RSYNC` the `rsync` one).
+
+`odw status|logs|attach <run> --on ssh://host` run that command on the remote odw and
+pass its output and exit code back (`ssh -t` for attach and `logs --follow` in a
+terminal, so attach is the live view). `odw pull <run> --from ssh://host` copies the run
+directory into your local runs root — rsync when this machine has it, else tar over
+ssh — and marks it `origin: "remote"` with `remote: { url, host, dir, pulledAt }` in its
+`meta.json`. A run still going can be pulled again and again: the copy is a snapshot
+(the remote worker's pid is dropped, so here it reads as stale until it ends), and
+`odw status` says where it came from.
 
 ### Agent transcripts (ODW extension)
 
@@ -1971,7 +2079,9 @@ refused) or `exit` — and four classes for runs that "succeeded" without the
 evidence: `empty_reply`, `unmet_expectation`, under `"mcpFailures": "fail"`
 `mcp_unavailable`, and `orphaned_background` (background work left running at the
 reply, under `"orphanedBackground": "fail"` or `expect`; see
-[Check an agent's work](#check-an-agents-work-odw-extension)) — and `runaway`, an agent killed at one of its
+[Check an agent's work](#check-an-agents-work-odw-extension)) — and `out_of_scope`, an agent that
+changed files outside its declared scope under `"scopePolicy": "fail"` (see
+[Declared scopes](#declared-scopes-odw-extension)), and `runaway`, an agent killed at one of its
 [limits](#per-agent-limits-and-runaway-loops-odw-extension). The class is the `reason` on the `agent_failed` event (with
 `retryAfter`, in seconds, when the CLI said when to come back), the agent's
 `failureReason` in the dashboard and `/api/runs/:id`, and it shows in the live

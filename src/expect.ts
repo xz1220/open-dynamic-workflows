@@ -46,6 +46,12 @@
  * misses (the bridge's loop, ./bridge).
  * An isolated retry starts over in a fresh worktree, and the change it leaves
  * replaces the earlier one (ChangeRecorder.redo).
+ *
+ * A call's declared `scope` (an ODW extension; see ./scope) is judged here
+ * too, on the same reading of what the agent changed: the paths no scope glob
+ * matches are its `outOfScope`. With `expect` they are a miss; without, the
+ * same reading runs as the bridge's `scopeWatch`, and they are a miss only
+ * under `scopePolicy: "fail"` — never retried — else only recorded.
  */
 
 import { lstat, realpath } from "node:fs/promises";
@@ -54,6 +60,7 @@ import { join, relative, sep } from "node:path";
 import { changedSince, rebaseline, relativeToDir, snapshotTree, type TreeSnapshot } from "./changes.js";
 import { AgentError } from "./errors.js";
 import type { ExecOptions, ExecResult } from "./exec.js";
+import type { ScopeGlob } from "./scope.js";
 import type { Workspace, WorkspaceMode } from "./workspace.js";
 
 /** What `agent(prompt, { expect })` checks once the agent has replied (ODW extension). */
@@ -86,6 +93,21 @@ export interface ExpectPlan {
   mcp: string[];
   /** Seconds the command may run. */
   timeout: number;
+  /**
+   * The call's declared scope (ODW extension; see ./scope): what it changed
+   * outside these globs is its `outOfScope`. Absent: no scope.
+   */
+  scope?: ScopeGlob[];
+  /** Whether a write outside `scope` is a miss — with `expect`, or under `scopePolicy: "fail"`. */
+  scopeMiss?: boolean;
+}
+
+/**
+ * The plan that judges only a call's scope (ODW extension; see ./scope): what
+ * the bridge's `scopeWatch` checks for a call with a scope and no `expect`.
+ */
+export function scopeOnlyPlan(scope: ScopeGlob[], miss: boolean): ExpectPlan {
+  return { files: [], untouched: [], mcp: [], timeout: DEFAULT_EXPECT_TIMEOUT, scope, scopeMiss: miss };
 }
 
 /** The output checks an agent() call asked for, validated before it starts. */
@@ -117,6 +139,17 @@ export function refusedMiss(refused: string[]): ExpectMiss {
   return {
     text: `no tool call may be refused, and ${count}: ${refused.join("; ")}`,
     advice: "Those calls are not allowed here: do the task without them.",
+  };
+}
+
+/** The miss of work that changed files outside its declared scope (ODW extension; see ./scope). */
+export function scopeMiss(scope: readonly ScopeGlob[], outside: string[]): ExpectMiss {
+  const count = outside.length === 1 ? "1 did" : `${outside.length} did`;
+  return {
+    text: `no file outside its scope (${scope.map(({ glob }) => glob).join(", ")}) may change, and ${count}: ${listPaths(outside)}`,
+    advice:
+      "Those files are outside the scope you were given — another agent may be changing them: restore them as they " +
+      "were, and keep your change inside your scope.",
   };
 }
 
@@ -381,6 +414,14 @@ export interface ExpectDeps {
   /** The run's abort signal: a stop ends a git listing at once. */
   signal?: AbortSignal;
   /**
+   * In place: the scopes of the other scoped calls that ran beside this one
+   * (ODW extension; see ./scope) — what changed inside them is theirs, not
+   * counted outside this call's scope.
+   */
+  neighbours?: () => RegExp[];
+  /** Say something about the checks that does not fail the call: a scope that cannot be read outside git. */
+  onNote?: (message: string) => void;
+  /**
    * Directories whose files are never the agent's change in place: the run's
    * own directory, which ODW writes while the agent works (when it lies in
    * the source tree, as a project-local runsRoot puts it).
@@ -405,6 +446,10 @@ export class Expectations implements ExpectationSink {
    * showed — else of its latest attempt — as the change the run keeps is.
    */
   private kept: Evidence | null = null;
+  /** What the latest checked attempt changed outside its scope; null when it has none, or it was not read. */
+  private outside: string[] | null = null;
+  /** In place outside git: the scope could not be read, and is not judged. */
+  private scopeUnread = false;
 
   constructor(
     private readonly plan: ExpectPlan,
@@ -416,9 +461,27 @@ export class Expectations implements ExpectationSink {
     return this.plan.mcp;
   }
 
+  /**
+   * The files the work the call stands on changed outside its declared scope
+   * (ODW extension; see ./scope), as of the latest check: null when it has no
+   * scope, or what it changed could not be read.
+   */
+  get outOfScope(): string[] | null {
+    return this.outside;
+  }
+
   /** Whether a check reads what the agent changed. */
   private get readsChanges(): boolean {
+    return this.expectReadsChanges || this.hasScope;
+  }
+
+  /** Whether an `expect` check (not the scope) reads what the agent changed. */
+  private get expectReadsChanges(): boolean {
     return this.plan.changes !== undefined || this.plan.files.length > 0 || this.plan.untouched.length > 0;
+  }
+
+  private get hasScope(): boolean {
+    return (this.plan.scope?.length ?? 0) > 0;
   }
 
   async begin(mode: WorkspaceMode, source: string): Promise<void> {
@@ -429,7 +492,7 @@ export class Expectations implements ExpectationSink {
     // what its worktree showed. In place, the tree keeps what every hop did:
     // the work is judged against the tree as it was before the call's first run.
     this.kept = null;
-    if (this.isolated || !this.readsChanges || this.snapshot) return;
+    if (this.isolated || !this.readsChanges || this.snapshot || this.scopeUnread) return;
     try {
       this.snapshot = await snapshotTree(source, this.deps.signal);
       const root = await realpath(this.snapshot.root);
@@ -441,6 +504,16 @@ export class Expectations implements ExpectationSink {
       }
     } catch (err) {
       if (this.deps.signal?.aborted) throw err;
+      this.snapshot = null;
+      // Only the scope reads it: a scope is advisory, so the agent runs, its scope unread.
+      if (!this.expectReadsChanges) {
+        this.scopeUnread = true;
+        this.deps.onNote?.(
+          `scope: what the agent changed is read from git, and '${source}' is not in a git repository ` +
+            `(${errorText(err)}) — its writes are not checked against its scope`,
+        );
+        return;
+      }
       const checks = [
         this.plan.changes !== undefined ? "expect.changes" : null,
         this.plan.files.length ? "expect.files" : null,
@@ -470,12 +543,12 @@ export class Expectations implements ExpectationSink {
   async check(reply: string, cli?: CliEvidence): Promise<ExpectMiss[]> {
     if (this.isolated) {
       if (!this.kept) throw new Error("expect: the agent's worktree was never looked at");
-      return [...this.judge(reply, this.kept), ...this.judgeMcp(cli)];
+      return [...this.judge(reply, this.kept), ...this.judgeScope(this.kept, []), ...this.judgeMcp(cli)];
     }
     const snapshot = this.snapshot;
     const before = snapshot ? await this.changedInPlace(snapshot) : null;
     const evidence = await this.gather(this.source, before && before.map((path) => relativeToDir(this.within, path)));
-    const misses = [...this.judge(reply, evidence), ...this.judgeMcp(cli)];
+    const misses = [...this.judge(reply, evidence), ...this.judgeScope(evidence, this.deps.neighbours?.() ?? []), ...this.judgeMcp(cli)];
     if (misses.length > 0 && snapshot && before && this.plan.command !== undefined) {
       // What the command wrote in the shared tree (a report, a cache) is not
       // the agent's: a retry is judged without it.
@@ -547,6 +620,24 @@ export class Expectations implements ExpectationSink {
         ? `it exited with code ${result.exitCode}`
         : `it was killed by signal ${result.signal ?? "(unknown)"}`;
     return { text: `\`${clip(commandLine(command), COMMAND_CHARS)}\` must exit 0, and ${how}`, detail: outputEnd(result) };
+  }
+
+  /**
+   * The declared scope (ODW extension; see ./scope): what the work changed
+   * outside it — in place, not what changed inside the scope of a call that
+   * ran beside it — kept as {@link outOfScope}, and a miss when it should be.
+   */
+  private judgeScope(evidence: Evidence, neighbours: RegExp[]): ExpectMiss[] {
+    const scope = this.plan.scope ?? [];
+    if (scope.length === 0 || this.scopeUnread || evidence.changed === null) {
+      this.outside = null;
+      return [];
+    }
+    const outside = evidence.changed.filter(
+      (path) => !scope.some(({ pattern }) => pattern.test(path)) && !neighbours.some((pattern) => pattern.test(path)),
+    );
+    this.outside = outside;
+    return outside.length > 0 && this.plan.scopeMiss ? [scopeMiss(scope, outside)] : [];
   }
 
   /** The `mcp` check: each server it lists must be connected (or still connecting) in what the CLI runs reported. */

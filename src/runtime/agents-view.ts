@@ -53,6 +53,10 @@ export interface AgentRow {
   quotaWait: { adapter: string; resumeAt?: number } | null;
   /** The limits it runs under and the one it ran into, if any (ODW extension; see limits.ts); null without limits. */
   limits: AgentLimitsView | null;
+  /** The files it declared it means to change (ODW extension; see scope.ts); null without a scope. */
+  scope: string[] | null;
+  /** The files it changed outside its scope (ODW extension); null when none, or it has no scope. */
+  outOfScope: string[] | null;
 }
 
 /** A run's agents in call (agentId) order, each with its saved result if it has one. */
@@ -81,6 +85,8 @@ export function agentRows(store: RunStore, runId: string): AgentRow[] {
       fellBackFrom: a.fellBackFrom ?? record?.fellBackFrom ?? null,
       quotaWait: !record && a.state === "running" ? (a.quotaWait ?? null) : null,
       limits: a.limits ?? null,
+      scope: a.scope ?? null,
+      outOfScope: a.outOfScope ?? record?.outOfScope ?? null,
     };
   });
   // A saved result whose events were lost (a truncated log) is still listed.
@@ -110,6 +116,8 @@ function rowFromRecord(rec: AgentResultRecord): AgentRow {
     fellBackFrom: rec.fellBackFrom ?? null,
     quotaWait: null,
     limits: null,
+    scope: null,
+    outOfScope: rec.outOfScope ?? null,
   };
 }
 
@@ -152,6 +160,9 @@ export function agentRowJson(row: AgentRow): Record<string, unknown> {
     ...(row.quotaWait ? { quotaWait: row.quotaWait } : {}),
     // Its limits, and the one it ran into (ODW extension), when it has any.
     ...(row.limits ? { limits: row.limits } : {}),
+    // Its declared scope, and what it changed outside it (ODW extension), when it has them.
+    ...(row.scope ? { scope: row.scope } : {}),
+    ...(row.outOfScope ? { outOfScope: row.outOfScope } : {}),
     saved: row.record !== null,
     error: row.error,
     preview: row.record ? previewValue(row.record.value, 120) : null,
@@ -161,7 +172,9 @@ export function agentRowJson(row: AgentRow): Record<string, unknown> {
 /**
  * The `odw agents` table: ID, STATE (↺ when replayed), LABEL, PHASE, ADAPTER,
  * TIME (a running agent's age so far) and a one-line VALUE — the saved value,
- * or a failed agent's error — fitted to `width` columns.
+ * or a failed agent's error — fitted to `width` columns. An agent that wrote
+ * outside its declared scope (ODW extension) has its VALUE start with
+ * `[outside scope: <files>]`.
  */
 export function formatAgentTable(rows: AgentRow[], opts: { width: number; caps: TermCaps; nowMs?: number }): string[] {
   const p = palette(opts.caps);
@@ -192,7 +205,8 @@ export function formatAgentTable(rows: AgentRow[], opts: { width: number; caps: 
   };
   const out = [p.dim(line(header, "VALUE"))];
   rows.forEach((r, i) => {
-    const value = r.record
+    const outside = r.outOfScope?.length ? `[outside scope: ${r.outOfScope.join(", ")}]` : "";
+    const shown = r.record
       ? previewValue(r.record.value, valueWidth)
       : r.state === "failed"
         ? p.err(sanitizeText(r.limits?.hit ? `runaway: ${r.limits.hit.evidence} (${limitLabel(r.limits.hit)})` : (r.error ?? "failed"), valueWidth))
@@ -206,6 +220,7 @@ export function formatAgentTable(rows: AgentRow[], opts: { width: number; caps: 
                 ),
               )
             : "";
+    const value = outside ? `${p.err(sanitizeText(outside, valueWidth))} ${shown}` : shown;
     out.push(line(cells[i]!, value, r.state));
   });
   return out;
