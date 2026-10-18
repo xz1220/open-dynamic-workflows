@@ -9,7 +9,9 @@
 #
 # Env overrides: ODW_VERSION (default: latest), ODW_BIN_DIR (default: ~/.local/bin),
 #                ODW_REF (skill source ref, default: the binary's release tag),
-#                ODW_ALLOW_UNVERIFIED=1 (see below).
+#                ODW_ALLOW_UNVERIFIED=1 (see below),
+#                ODW_SKILL=0 (the binary only: no skill, no `odw init`; what the
+#                GitHub Action in action/ installs on a CI runner).
 #
 # Integrity: the binary is checked against the release's SHA256SUMS asset
 # before anything is installed. A checksum mismatch, or a SHA256SUMS that does
@@ -21,6 +23,8 @@ set -eu
 REPO="xz1220/open-dynamic-workflows"
 VERSION="${ODW_VERSION:-latest}"
 BIN_DIR="${ODW_BIN_DIR:-$HOME/.local/bin}"
+WITH_SKILL=1
+[ "${ODW_SKILL:-1}" != 0 ] || WITH_SKILL=0
 case "$BIN_DIR" in /*) ;; *) BIN_DIR="$(pwd)/$BIN_DIR" ;; esac
 
 # --- pick the right binary for this machine ---------------------------------
@@ -166,6 +170,8 @@ gzip -dc "$TMP/odw.gz" > "$TMP/odw"
 chmod +x "$TMP/odw"
 
 # --- the skill (into Claude Code's skills dir, else Codex's) -----------------
+# (skipped with ODW_SKILL=0, down to its staging and replacement below)
+if [ "$WITH_SKILL" = 1 ]; then
 SKILL_DIR="$HOME/.claude/skills/open-dynamic-workflows"
 if [ ! -d "$HOME/.claude" ]; then
   if [ -d "$HOME/.codex" ]; then
@@ -193,6 +199,7 @@ curl -fSL "$RAW/references/adapters.md"   -o "$TMP/open-dynamic-workflows/refere
 for DOC in SKILL.md references/primitives.md references/adapters.md; do
   [ -s "$TMP/open-dynamic-workflows/$DOC" ] || { echo "Downloaded an empty skill file: $DOC" >&2; exit 1; }
 done
+fi   # WITH_SKILL
 
 ODW_VER="$("$TMP/odw" --version)"
 case "$ODW_VER" in
@@ -205,13 +212,15 @@ HELP_OUT="$("$TMP/odw" --help)"
 # rename. Copy the existing skill first to retain custom files. Dereference
 # only its root and references directory; replace owned file symlinks in the
 # copy, never writing through links into an existing installation.
-mkdir -p "$BIN_DIR" "$(dirname "$SKILL_DIR")"
+mkdir -p "$BIN_DIR"
 BIN_STAGE="$(mktemp -d "$BIN_DIR/.odw-install.XXXXXX")"
-SKILL_STAGE="$(mktemp -d "$(dirname "$SKILL_DIR")/.odw-install.XXXXXX")"
 if [ -d "$BIN_DIR/odw" ] && [ ! -L "$BIN_DIR/odw" ]; then
   echo "Refusing to replace a directory: $BIN_DIR/odw" >&2; exit 1
 fi
 cp -p "$TMP/odw" "$BIN_STAGE/new"
+if [ "$WITH_SKILL" = 1 ]; then
+mkdir -p "$(dirname "$SKILL_DIR")"
+SKILL_STAGE="$(mktemp -d "$(dirname "$SKILL_DIR")/.odw-install.XXXXXX")"
 mkdir "$SKILL_STAGE/new"
 if [ -d "$SKILL_DIR" ]; then
   cp -pRP "$SKILL_DIR/." "$SKILL_STAGE/new"
@@ -233,6 +242,7 @@ for DOC in SKILL.md references/primitives.md references/adapters.md; do
   rm -f "$SKILL_STAGE/new/$DOC"
   cp "$TMP/open-dynamic-workflows/$DOC" "$SKILL_STAGE/new/$DOC"
 done
+fi   # WITH_SKILL
 
 replace_entry() {
   if [ -e "$2" ] || [ -L "$2" ]; then
@@ -243,7 +253,7 @@ replace_entry() {
   mv "$1/new" "$2"
 }
 replace_entry "$BIN_STAGE" "$BIN_DIR/odw"
-replace_entry "$SKILL_STAGE" "$SKILL_DIR"
+[ "$WITH_SKILL" = 0 ] || replace_entry "$SKILL_STAGE" "$SKILL_DIR"
 COMMITTED=1
 
 echo "✓ installed $ODW_VER"
@@ -264,7 +274,7 @@ esac
 # init degrades to a report telling the agent to ask its user and run
 # `odw init --adapter <name>`. The --help probe skips all of this when
 # ODW_VERSION pins a release that predates `odw init`.
-if printf '%s\n' "$HELP_OUT" | grep -q "odw init"; then
+if [ "$WITH_SKILL" = 1 ] && printf '%s\n' "$HELP_OUT" | grep -q "odw init"; then
   echo ""
   # Interactive only as the terminal's FOREGROUND job: a backgrounded install
   # (`curl … | sh &`) that read /dev/tty would be stopped cold by SIGTTIN.

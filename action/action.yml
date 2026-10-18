@@ -1,0 +1,157 @@
+# Open Dynamic Workflows as a composite GitHub Action (ODW extension).
+#
+#   - uses: xz1220/open-dynamic-workflows/action@v0.7.0
+#     with:
+#       workflow: .odw/workflows/review.js
+#       timeout-minutes: 30          # the same number as the job's timeout-minutes
+#
+# It installs the odw release this action is pinned to (SHA-256 verified),
+# runs the workflow with `--wait --deadline` so the run is STOPPED gracefully
+# margin-seconds before the job's timeout (diffs and finished agents kept),
+# writes the spend receipt, agent table and failures to the job summary,
+# uploads `odw bundle` as an artifact, and can open a draft PR with
+# `odw apply --pr`. See docs/github-action.md.
+name: Open Dynamic Workflows
+description: Run an odw workflow in CI, stopped gracefully before the job times out, with its receipt in the job summary.
+author: Daniel Xing
+branding:
+  icon: git-branch
+  color: green
+
+inputs:
+  workflow:
+    description: The workflow to run — a path in the repository, or a managed workflow name.
+    required: true
+  args:
+    description: The workflow's input, as JSON (or a plain string).
+    required: false
+    default: ""
+  version:
+    description: The odw release to install (e.g. 0.7.0). Default — the version of this action's own ref.
+    required: false
+    default: ""
+  timeout-minutes:
+    description: The job's timeout-minutes. The run's --deadline is this less margin-seconds and the time the action spent before the run.
+    required: false
+    default: "360"
+  margin-seconds:
+    description: Seconds kept after the deadline for the summary, the bundle and the upload.
+    required: false
+    default: "300"
+  untrusted:
+    description: auto (default) — untrusted for pull requests from forks and for issue, comment, review and discussion events; or true / false.
+    required: false
+    default: auto
+  config:
+    description: Path to an odw.config.json (else the repository's own, or the built-in defaults; an untrusted run never reads the repository's own).
+    required: false
+    default: ""
+  adapter:
+    description: The run's default adapter (claude, codex, …).
+    required: false
+    default: ""
+  permissions:
+    description: read | edit | full — what the run's agents may do.
+    required: false
+    default: ""
+  bundle:
+    description: Upload `odw bundle` of the run as an artifact (true / false).
+    required: false
+    default: "true"
+  apply-pr:
+    description: When the run is done, open a draft PR of every agent's change with `odw apply --all --pr` (needs contents and pull-requests write).
+    required: false
+    default: "false"
+  apply-pr-base:
+    description: The base branch of that PR (default — the checked-out branch).
+    required: false
+    default: ""
+  github-token:
+    description: The token `gh` uses for apply-pr.
+    required: false
+    default: ${{ github.token }}
+
+outputs:
+  run-id:
+    description: The odw run id.
+    value: ${{ steps.run.outputs.run-id }}
+  state:
+    description: done | stopped-at-deadline | timed-out | failed
+    value: ${{ steps.run.outputs.state }}
+  exit-code:
+    description: "`odw run`'s exit code: 0 done, 1 failed, 3 stopped at its deadline."
+    value: ${{ steps.run.outputs.exit-code }}
+  odw-version:
+    description: The odw release installed.
+    value: ${{ steps.install.outputs.odw-version }}
+
+runs:
+  using: composite
+  steps:
+    - id: install
+      name: Install odw (SHA-256 verified)
+      shell: bash
+      env:
+        ODW_INPUT_VERSION: ${{ inputs.version }}
+      run: node "$GITHUB_ACTION_PATH/odw-action.mjs" install
+
+    - id: run
+      name: odw run --wait --deadline
+      shell: bash
+      env:
+        ODW_INPUT_WORKFLOW: ${{ inputs.workflow }}
+        ODW_INPUT_ARGS: ${{ inputs.args }}
+        ODW_INPUT_TIMEOUT_MINUTES: ${{ inputs.timeout-minutes }}
+        ODW_INPUT_MARGIN_SECONDS: ${{ inputs.margin-seconds }}
+        ODW_INPUT_UNTRUSTED: ${{ inputs.untrusted }}
+        ODW_INPUT_CONFIG: ${{ inputs.config }}
+        ODW_INPUT_ADAPTER: ${{ inputs.adapter }}
+        ODW_INPUT_PERMISSIONS: ${{ inputs.permissions }}
+      run: node "$GITHUB_ACTION_PATH/odw-action.mjs" run
+
+    - name: Job summary
+      if: always() && steps.install.outcome == 'success'
+      shell: bash
+      env:
+        ODW_INPUT_WORKFLOW: ${{ inputs.workflow }}
+        ODW_INPUT_RUN_ID: ${{ steps.run.outputs.run-id }}
+        ODW_INPUT_EXIT_CODE: ${{ steps.run.outputs.exit-code }}
+      run: node "$GITHUB_ACTION_PATH/odw-action.mjs" summary
+
+    - id: bundle
+      name: odw bundle
+      if: always() && inputs.bundle == 'true' && steps.run.outputs.run-id != ''
+      shell: bash
+      env:
+        RUN_ID: ${{ steps.run.outputs.run-id }}
+      run: |
+        out="$RUNNER_TEMP/odw-action/$RUN_ID.odwrun"
+        odw bundle "$RUN_ID" --out "$out"
+        echo "path=$out" >> "$GITHUB_OUTPUT"
+
+    - name: Upload the bundle
+      if: always() && steps.bundle.outputs.path != ''
+      uses: actions/upload-artifact@v4
+      with:
+        name: odw-${{ steps.run.outputs.run-id }}
+        path: ${{ steps.bundle.outputs.path }}
+        if-no-files-found: error
+
+    - name: odw apply --pr
+      if: success() && inputs.apply-pr == 'true' && steps.run.outputs.exit-code == '0'
+      shell: bash
+      env:
+        RUN_ID: ${{ steps.run.outputs.run-id }}
+        BASE: ${{ inputs.apply-pr-base }}
+        GH_TOKEN: ${{ inputs.github-token }}
+        GH_PROMPT_DISABLED: "1"
+      run: |
+        # A runner has no git identity: commit as github-actions[bot] unless the job set one.
+        if [ -z "$(git config user.email || true)" ]; then
+          export GIT_AUTHOR_NAME="github-actions[bot]" GIT_COMMITTER_NAME="github-actions[bot]"
+          export GIT_AUTHOR_EMAIL="41898282+github-actions[bot]@users.noreply.github.com"
+          export GIT_COMMITTER_EMAIL="$GIT_AUTHOR_EMAIL"
+        fi
+        set -- apply "$RUN_ID" --all --pr
+        [ -z "$BASE" ] || set -- "$@" --base "$BASE"
+        odw "$@"
