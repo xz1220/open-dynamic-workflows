@@ -193,9 +193,10 @@ test("a runner that does not stream hands over its whole stdout at the end; a wr
     broken.stdout('{"type":"a"}\n{"type":"b"}\n');
     broken.endRun(cli({ stderr: "boom" }));
     await broken.close();
+    // Both writes fail independently, in whichever order the file system answers: each is noted once.
     assert.equal(notes.length, 2);
-    assert.match(notes[0]!, /^could not keep its transcript: /);
-    assert.match(notes[1]!, /^could not keep the end of its stderr: /);
+    assert.equal(notes.filter((n) => /^could not keep its transcript: /.test(n)).length, 1, notes.join("\n"));
+    assert.equal(notes.filter((n) => /^could not keep the end of its stderr: /.test(n)).length, 1, notes.join("\n"));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
