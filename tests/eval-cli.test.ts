@@ -8,7 +8,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execPath } from "node:process";
@@ -42,7 +42,8 @@ interface Project {
 
 /** A project: the echo workflow, adapters a and b on the fake CLI, a runs root inside. */
 async function withProject(fn: (p: Project) => Promise<void>): Promise<void> {
-  const dir = mkdtempSync(join(tmpdir(), "odw-eval-cli-"));
+  // Canonical (macOS: /var is /private/var): the CLI reports real paths.
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "odw-eval-cli-")));
   try {
     for (const sub of [".odw/workflows", ".odw/evals", "bin"]) mkdirSync(join(dir, sub), { recursive: true });
     writeFileSync(join(dir, ".odw", "workflows", "echo.js"), ECHO);
