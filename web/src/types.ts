@@ -46,6 +46,8 @@ export interface RunSummary {
   waiting?: { checkpointId: number; title: string; since: number; question?: QuestionAsker } | null;
   /** How many of its agents stopped to ask a question nobody answered (reason "needs_input"; ODW extension). Absent when none. */
   needsInput?: number;
+  /** How many of its agents ran a destructive git command, and whether `odw restore` can put the tree back (ODW extension). Absent when none did. */
+  destructiveGit?: { agents: number; restorable: boolean };
   /**
    * While the run is `paused` because its agents wait for an adapter's spent
    * quota to reset (ODW extension: quotaWait): which adapter, and when the run

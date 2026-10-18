@@ -177,7 +177,11 @@ function needsYou(nowSec: number): string {
     (r) => r.provider === "odw" && (r.state === "failed" || r.state === "stale") && (r.updatedAt ?? 0) > nowSec - 86_400,
   );
   const broken = allBroken.slice(0, 3);
-  if (!waiting.length && !quota.length && !broken.length) return "";
+  // Agents that ran git reset --hard, clean -f, push --force… (ODW extension): worth a look even when the run went well.
+  const destructive = store.runs
+    .filter((r) => r.destructiveGit && !allBroken.includes(r) && (r.updatedAt ?? 0) > nowSec - 86_400)
+    .slice(0, 3);
+  if (!waiting.length && !quota.length && !broken.length && !destructive.length) return "";
   const href = (r: RunSummary) => `#/job/${encodeURIComponent(r.runId)}`;
   const ticket = (r: RunSummary, kind: string, what: string, action: string) =>
     `<div class="ticket ${kind}" data-key="nt-${esc(r.runId)}">` +
@@ -224,10 +228,20 @@ function needsYou(nowSec: number): string {
         resume(r),
       ),
     ),
+    ...destructive.map((r) =>
+      ticket(
+        r,
+        "failed",
+        t("{n} agent(s) ran a destructive git command", { n: r.destructiveGit!.agents }),
+        r.destructiveGit!.restorable
+          ? `<button class="btn sm" data-copy="odw restore ${esc(r.runId)} --check" data-tip="${esc(t("copies a command that previews putting the tree back"))}">${icons.terminal}${t("Copy restore")}</button>`
+          : `<a class="btn sm" href="${href(r)}">${t("Review")}</a>`,
+      ),
+    ),
   ];
   return (
     `<section class="needs" data-key="needs" aria-label="${esc(t("Needs you"))}">` +
-    `<div class="needs-head"><h3>${t("Needs you")}</h3><span class="n">${waiting.length + quota.length + allBroken.length}</span>` +
+    `<div class="needs-head"><h3>${t("Needs you")}</h3><span class="n">${waiting.length + quota.length + allBroken.length + destructive.length}</span>` +
     `<span class="eyebrow">${t("decisions and runs to pick up")}</span></div>` +
     `<div class="tickets">${tickets.join("")}</div>` +
     (allBroken.length > broken.length

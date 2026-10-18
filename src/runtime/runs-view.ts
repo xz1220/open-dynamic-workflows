@@ -279,6 +279,12 @@ export interface RunSummary {
    */
   needsInput?: number;
   /**
+   * How many of its agents ran a destructive git command (`destructive_git`
+   * events; ODW extension, see ../destructive-git), and whether a safety
+   * snapshot can put the tree back (`odw restore`). Absent when none did.
+   */
+  destructiveGit?: { agents: number; restorable: boolean };
+  /**
    * What a "paused" run waits for when its agents wait for an adapter's
    * spent quota to reset (ODW extension: quotaWait) — `{ reason: "quota",
    * adapter, resumeAt }`, resumeAt in epoch seconds; null otherwise, and
@@ -920,6 +926,7 @@ export function summaryFrom(runId: string, facts: RunFacts): RunSummary {
     usage: fold.usage ? { ...fold.usage } : null,
     waiting: state === "waiting" ? oldestWaiting(fold) : null,
     ...needsInputOf(fold),
+    ...destructiveGitOf(fold),
     // Only a live paused run waits for a quota; a stale one's worker is gone.
     pausedFor: state === "paused" ? pausedForOf(status.pausedFor) : null,
     ...(meta.bundle ? { bundle: bundleOf(meta.bundle) } : {}),
@@ -957,6 +964,13 @@ function needsInputOf(fold: EventFold): { needsInput?: number } {
   let n = 0;
   for (const agent of fold.agents) if (agent.failureReason === "needs_input") n++;
   return n > 0 ? { needsInput: n } : {};
+}
+
+/** `{ destructiveGit }`: how many of a fold's agents ran a destructive git command, and whether a snapshot can restore — `{}` when none did. */
+function destructiveGitOf(fold: EventFold): { destructiveGit?: { agents: number; restorable: boolean } } {
+  let n = 0;
+  for (const agent of fold.agents) if (agent.destructiveGit?.length) n++;
+  return n > 0 ? { destructiveGit: { agents: n, restorable: fold.safety !== undefined } } : {};
 }
 
 /** meta.bundle as a summary carries it: a shared bundle's when and by which odw. */

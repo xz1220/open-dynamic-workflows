@@ -16,7 +16,7 @@ import { safetyRef, takeSafetySnapshot } from "../src/safety.js";
 import { formatEvent, safetyLines } from "../src/runtime/live-view.js";
 import { restoreSnapshot } from "../src/runtime/restore.js";
 import { RunStore } from "../src/runtime/run-store.js";
-import { detail } from "../src/runtime/runs-view.js";
+import { detail, summarize } from "../src/runtime/runs-view.js";
 import { executeRun } from "../src/runtime/worker.js";
 
 // T3 (ODW extension): before a run's first in-place agent that may change the
@@ -328,6 +328,7 @@ test("an in-place agent's `git reset --hard` is recorded, its run's snapshot nam
     const view = detail(flow.store, flow.id);
     assert.deepEqual(view.agents[0]!.destructiveGit, [{ command: "git stash list; git reset --hard", what: "git reset --hard" }]);
     assert.equal(view.safetySnapshot?.ref, snap.ref);
+    assert.deepEqual(summarize(flow.store, flow.id).destructiveGit, { agents: 1, restorable: true }, "the run list carries it for Needs you");
     assert.equal(view.safetySnapshot?.commit, snap.commit);
     assert.equal(view.safetySnapshot?.tracked, 1);
     // odw status says both.

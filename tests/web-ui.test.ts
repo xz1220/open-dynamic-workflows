@@ -1324,3 +1324,18 @@ test("an agent's question: a card to answer it, its own ticket on Activity, and 
   assert.match(activity, /class="ticket failed"[\s\S]*?failed · 1 agent\(s\) asked a question nobody answered/);
   store.runs = prev;
 });
+
+test("Activity flags a day's run whose agents ran destructive git, offering odw restore --check when a snapshot can put the tree back", () => {
+  const prev = store.runs;
+  store.runs = [
+    summary({ runId: "r-git", name: "fixer", state: "done", updatedAt: NOW - 50, destructiveGit: { agents: 2, restorable: true } }),
+    summary({ runId: "r-git2", name: "pusher", state: "done", updatedAt: NOW - 60, destructiveGit: { agents: 1, restorable: false } }),
+    summary({ runId: "r-old-git", name: "old", state: "done", updatedAt: NOW - 200_000, destructiveGit: { agents: 1, restorable: true } }),
+  ];
+  const html = renderActivity(NOW);
+  assert.match(html, /data-key="nt-r-git"[\s\S]*?2 agent\(s\) ran a destructive git command[\s\S]*?data-copy="odw restore r-git --check"/);
+  assert.match(html, /data-key="nt-r-git2"[\s\S]*?href="#\/job\/r-git2">Review</);
+  assert.ok(!html.includes("nt-r-old-git"), "only the last day's");
+  assert.match(html, /<span class="n">2<\/span>/);
+  store.runs = prev;
+});
