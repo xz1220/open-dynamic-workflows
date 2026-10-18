@@ -388,10 +388,17 @@ export function startEgressProxy(config: EgressProxyConfig): http.Server {
 /**
  * The doctor's probe, run in a container on the internal network: through
  * `$HTTPS_PROXY`, a CONNECT to each `host:port` given as an argument; prints
- * `{ "<host:port>": <status> }` (0: no answer). Plain JS for `node -e`.
+ * `{ "<host:port>": <status> }` (0: no answer). An argument `dns:<name>`
+ * instead looks the name up in the container: 1 when it resolved, 0 when not.
+ * Plain JS for `node -e`.
  */
 export const EGRESS_PROBE = `
 const net = require("node:net");
+const dns = require("node:dns");
+const resolves = (name) => new Promise((done) => {
+  const timer = setTimeout(() => done(0), 20000);
+  dns.lookup(name, (err) => { clearTimeout(timer); done(err ? 0 : 1); });
+});
 const proxy = new URL(process.env.HTTPS_PROXY);
 const auth = proxy.username ? "Proxy-Authorization: Basic " + Buffer.from(decodeURIComponent(proxy.username) + ":" + decodeURIComponent(proxy.password)).toString("base64") + "\\r\\n" : "";
 const ask = (target) => new Promise((done) => {
@@ -408,7 +415,7 @@ const ask = (target) => new Promise((done) => {
 });
 (async () => {
   const out = {};
-  for (const target of process.argv.slice(1)) out[target] = await ask(target);
+  for (const target of process.argv.slice(1)) out[target] = target.startsWith("dns:") ? await resolves(target.slice(4)) : await ask(target);
   process.stdout.write(JSON.stringify(out) + "\\n");
 })();
 `;

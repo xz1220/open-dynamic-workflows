@@ -39,6 +39,7 @@ import {
 import {
   CONTAINER_DEFAULTS,
   CONTAINER_HOME,
+  EGRESS_DNS,
   TMPFS,
   backstopCommands,
   containerArgv,
@@ -62,6 +63,7 @@ function tmp(): string {
 
 const box = (over: Partial<ContainerSandbox> = {}): ContainerSandbox => ({ ...CONTAINER_DEFAULTS, image: "odw-agents:1", mounts: [], ...over });
 const allow = (...hosts: string[]) => ({ allow: hosts });
+const valuesOf = (argv: string[], flag: string): string[] => argv.flatMap((arg, i) => (arg === flag ? [argv[i + 1]!] : []));
 
 // --- the matcher ---------------------------------------------------------------
 
@@ -240,6 +242,11 @@ test("argv: the internal network, the proxy sidecar, joining it, its variables, 
   const argv = containerArgv(agent);
   assert.deepEqual(argv.slice(argv.indexOf("--network"), argv.indexOf("--network") + 2), ["--network", "odw-r1-net1-abcdef"]);
   assert.equal(argv.filter((a) => a === "--network").length, 1);
+  // No outside DNS (Docker's embedded resolver forwarded it through the host before 26.0: CVE-2024-29018);
+  // not on Podman, whose aardvark-dns --dns would replace.
+  assert.deepEqual(valuesOf(argv, "--dns"), [EGRESS_DNS]);
+  assert.deepEqual(valuesOf(containerArgv({ ...agent, engine: "podman" }), "--dns"), []);
+  assert.deepEqual(valuesOf(containerArgv({ ...agent, network: "none", networkName: undefined }), "--dns"), [], "only on an egress network");
   assert.ok(argv.includes(`HTTPS_PROXY=${env.HTTPS_PROXY}`));
   assert.throws(() => containerArgv({ ...agent, networkName: undefined }), /needs its run's internal network/);
 

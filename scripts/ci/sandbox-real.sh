@@ -63,8 +63,9 @@ NODE
 # The egress allowlist: the agent's container is on an internal network of
 # the run, its only way out the proxy sidecar. example.com is allowlisted
 # (fetched over TLS through the tunnel), example.org is not (403, and an
-# egress_denied event naming the agent), and a connection around the proxy
-# gets nowhere. The doctor's egress check passes, and nothing is left behind.
+# egress_denied event naming the agent), example.com does not resolve inside
+# the agent's container (no DNS around the proxy), and a connection around the
+# proxy gets nowhere. The doctor's egress check passes, and nothing is left behind.
 egress="$work/egress"
 mkdir -p "$egress/.odw/workflows"
 git -C "$egress" init -q
@@ -104,6 +105,7 @@ const denied = report.fetched["example.org"];
 if (!/^http:\/\/1:odw@odw-/.test(report.proxyVar ?? "")) fail(`HTTPS_PROXY was ${report.proxyVar}`);
 if (allowed.proxy !== 200 || !(allowed.https >= 200 && allowed.https < 500)) fail(`example.com through the proxy: ${JSON.stringify(allowed)}`);
 if (denied.proxy !== 403) fail(`example.org was not refused: ${JSON.stringify(denied)}`);
+if (report.dns !== false) fail(`example.com resolved inside the agent's container: ${JSON.stringify(report.dns)}`);
 if (report.direct) fail("a connection around the proxy got out");
 const events = readFileSync(`${dir}/events.jsonl`, "utf8").trim().split("\n").map((l) => JSON.parse(l));
 const denial = events.find((e) => e.type === "egress_denied" && e.host === "example.org");
@@ -113,6 +115,7 @@ if (events.some((e) => e.type === "egress_denied" && e.host === "example.com")) 
 const doctor = JSON.parse(readFileSync(doctorFile, "utf8"));
 const check = (doctor.checks ?? []).find((c) => c.id === "sandbox:egress");
 if (!check || check.status !== "ok") fail(`doctor's egress check: ${JSON.stringify(check)}`);
+if (!/example\.com did not resolve/.test(check.detail)) fail(`doctor's egress check did not try DNS: ${check.detail}`);
 console.log("egress allowlist on a real engine: ok");
 NODE
 left="$("$engine" ps -a --filter label=odw.role=egress-proxy --format '{{.Names}}')"

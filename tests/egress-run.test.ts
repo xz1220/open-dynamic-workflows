@@ -18,7 +18,7 @@ import { after, before, test } from "node:test";
 import { loadConfig } from "../src/adapters/config.ts";
 import { killAllAgentProcesses } from "../src/adapters/runner.ts";
 import { EgressProxies } from "../src/adapters/egress-run.ts";
-import { trackNetwork } from "../src/adapters/sandbox.ts";
+import { EGRESS_DNS, trackNetwork } from "../src/adapters/sandbox.ts";
 import { runCommand } from "../src/adapters/runner.ts";
 import { sandboxChecks } from "../src/doctor.ts";
 import { RunStore } from "../src/runtime/run-store.ts";
@@ -43,6 +43,7 @@ process.stdin.on("data", (c) => (prompt += c)).on("end", async () => {
   });
   const out = {};
   for (const target of prompt.match(/[a-z0-9.-]+\\.[a-z0-9]+:\\d+/g) ?? []) out[target] = await ask(target);
+  out.dns = await new Promise((done) => require("node:dns").lookup("example.com", (err) => done(!err)));
   out.proxyUser = proxy.username;
   out.nodeProxy = process.env.NODE_USE_ENV_PROXY ?? null;
   process.stdout.write(JSON.stringify(out));
@@ -137,6 +138,7 @@ test("a run with an allowlist: an internal network and a proxy; agents and steps
   assert.equal(result.agentSaw["denied.example:443"], 403);
   assert.equal(result.agentSaw.proxyUser, "1", "its agent id is its proxy user name");
   assert.equal(result.agentSaw.nodeProxy, "1");
+  assert.equal(result.agentSaw.dns, false, "an outside name does not resolve in its container");
   // A step's "default" is the run's allowlist, less "adapter": nothing.
   assert.equal(result.stepSaw["blocked.example:443"], 403);
   assert.equal(result.stepSaw.proxyUser, "c1");
@@ -159,6 +161,7 @@ test("a run with an allowlist: an internal network and a proxy; agents and steps
   const expectOn = [nets[0], nets[0], nets[1]];
   boxed.forEach((argv, i) => {
     assert.deepEqual(valuesOf(argv, "--network"), [expectOn[i]], "on its internal network only");
+    assert.deepEqual(valuesOf(argv, "--dns"), [EGRESS_DNS], "with no resolver for the outside");
     const pattern = new RegExp(`^HTTPS_PROXY=http://(1|2|c1):odw@${proxies[i === 2 ? 1 : 0]}:\\d+$`);
     assert.ok(valuesOf(argv, "--env").some((e) => pattern.test(e)), "its proxy by value, its id as the user");
   });
@@ -222,7 +225,7 @@ test("a network whose rm fails at the run's end stays tracked: the backstop remo
   assert.deepEqual(readdirSync(state), []);
 });
 
-test("doctor: the egress check brings up the proxy, gets 200 for a listed host and 403 for a reserved one, and cleans up", async () => {
+test("doctor: the egress check brings up the proxy, gets 200 for a listed host and 403 for a reserved one, no outside DNS, and cleans up", async () => {
   const { configPath } = project({ allow: [allowed, "*.example.com"] });
   const config = loadConfig(configPath, { quiet: true });
   const before = calls().length;
@@ -230,8 +233,28 @@ test("doctor: the egress check brings up the proxy, gets 200 for a listed host a
   const egress = checks.find((c) => c.id === "sandbox:egress");
   assert.ok(egress, JSON.stringify(checks));
   assert.equal(egress.status, "ok", egress.detail);
-  assert.match(egress.detail, new RegExp(`${allowed.replace(/\./g, "\\.")} was reached and odw-egress-check\\.invalid:443 refused`));
+  assert.match(egress.detail, new RegExp(`${allowed.replace(/\./g, "\\.")} was reached and odw-egress-check\\.invalid:443 refused; example\\.com did not resolve`));
   const mine = calls().slice(before);
+  const probe = mine.find((a) => a[0] === "run" && a.includes("-e"))!;
+  assert.deepEqual(valuesOf(probe, "--dns"), [EGRESS_DNS], "the probe has the agent's resolver");
+  assert.ok(probe.includes("dns:example.com"));
   assert.ok(mine.some((a) => a[0] === "network" && a[1] === "rm"));
+  assert.deepEqual(readdirSync(state), []);
+});
+
+test("doctor: an outside name that resolves on the internal network fails the egress check (CVE-2024-29018)", async () => {
+  const { configPath } = project({ allow: [allowed] });
+  const config = loadConfig(configPath, { quiet: true });
+  process.env.DOCKER_FAKE_DNS_LEAK = "1";
+  try {
+    const checks = await sandboxChecks(config, runCommand, process.env, (cmd) => cmd === "docker", "linux");
+    const egress = checks.find((c) => c.id === "sandbox:egress");
+    assert.ok(egress, JSON.stringify(checks));
+    assert.equal(egress.status, "fail", egress.detail);
+    assert.match(egress.detail, /example\.com resolves in a container on the internal network/);
+    assert.match(egress.hint ?? "", /CVE-2024-29018/);
+  } finally {
+    delete process.env.DOCKER_FAKE_DNS_LEAK;
+  }
   assert.deepEqual(readdirSync(state), []);
 });

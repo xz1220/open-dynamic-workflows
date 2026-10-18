@@ -24,6 +24,10 @@
  *                         (and removes it), as a busy network's does.
  *   network connect …     nothing; logs.
  *
+ * A container run with `--dns` gets tests/fixtures/fake-dns.cjs preloaded: no
+ * outside name resolves in it, as with the resolver ODW gives it — or, with
+ * $DOCKER_FAKE_DNS_LEAK, every one does (an engine that forwards them anyway).
+ *
  * A container's command arguments under a bind mount's target are mapped to
  * its source (the proxy's script and config), and a `@<name>:` in an --env
  * value — a proxy URL naming a running container — becomes `@127.0.0.1:`,
@@ -35,6 +39,7 @@
 import { spawn } from "node:child_process";
 import { appendFileSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const argv = process.argv.slice(2);
 if (process.env.DOCKER_FAKE_LOG) appendFileSync(process.env.DOCKER_FAKE_LOG, JSON.stringify(argv) + "\n");
@@ -42,7 +47,7 @@ const state = process.env.DOCKER_FAKE_STATE ?? "/tmp";
 
 const WITH_VALUE = new Set([
   "--name", "--label", "--user", "--userns", "--cap-drop", "--security-opt", "--tmpfs", "--pids-limit",
-  "--memory", "--cpus", "--network", "--workdir", "--mount", "--env", "--pull", "--entrypoint",
+  "--memory", "--cpus", "--network", "--workdir", "--mount", "--env", "--pull", "--entrypoint", "--dns",
 ]);
 
 function stop(name) {
@@ -103,6 +108,7 @@ if (sub === "image" && rest[0] === "inspect") {
   let workdir = process.cwd();
   let entrypoint = null;
   let detach = false;
+  let dns = null;
   const env = { PATH: process.env.PATH };
   const mounts = [];
   for (; i < rest.length; i++) {
@@ -114,6 +120,7 @@ if (sub === "image" && rest[0] === "inspect") {
     if (arg === "--name") name = value;
     else if (arg === "--entrypoint") entrypoint = value;
     else if (arg === "--workdir") workdir = value;
+    else if (arg === "--dns") dns = value;
     else if (arg === "--mount") mounts.push(Object.fromEntries(value.split(",").map((f) => f.split("="))));
     else if (arg === "--env") {
       const eq = value.indexOf("=");
@@ -133,6 +140,11 @@ if (sub === "image" && rest[0] === "inspect") {
   // Container names resolve to this host.
   for (const [key, value] of Object.entries(env)) {
     env[key] = value.replace(/@([A-Za-z0-9_.-]+):/g, (whole, host) => (existsSync(join(state, host)) ? "@127.0.0.1:" : whole));
+  }
+  // A resolver of its own (--dns): no name from outside resolves in it.
+  if (dns !== null) {
+    env.NODE_OPTIONS = `--require=${fileURLToPath(new URL("./fake-dns.cjs", import.meta.url))}`;
+    if (process.env.DOCKER_FAKE_DNS_LEAK) env.DOCKER_FAKE_DNS_LEAK = "1";
   }
   if (detach) {
     // The proxy's log paths in its config are container paths: the fake maps its config file.

@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 // A stand-in agent CLI for the real-engine egress check: through $HTTPS_PROXY
 // it fetches https://<host>/ for each host its prompt names (`fetch a b`),
-// and tries one connection around the proxy — answering with what it got, as
-// one line of JSON. Node's own fetch ignores the proxy before Node 24, so
+// looks the first one up in its own container (it must not resolve: the proxy
+// resolves names), and tries one connection around the proxy — answering with
+// what it got, as one line of JSON. Node's own fetch ignores the proxy before Node 24, so
 // this speaks CONNECT and TLS itself.
+import * as dns from "node:dns";
 import * as net from "node:net";
 import * as tls from "node:tls";
 
@@ -41,6 +43,12 @@ const viaProxy = (host) =>
     });
   });
 
+const resolves = (host) =>
+  new Promise((done) => {
+    const timer = setTimeout(() => done(false), 20_000);
+    dns.lookup(host, (err) => (clearTimeout(timer), done(!err)));
+  });
+
 const around = (host) =>
   new Promise((done) => {
     const socket = net.connect(443, host);
@@ -55,6 +63,7 @@ process.stdin.on("end", async () => {
   const hosts = /fetch ([a-z0-9. ]+)/.exec(prompt)?.[1]?.trim().split(/\s+/) ?? [];
   const report = { proxyVar: process.env.HTTPS_PROXY ?? null, fetched: {} };
   for (const host of hosts) report.fetched[host] = await viaProxy(host);
+  report.dns = await resolves(hosts[0] ?? "example.com");
   report.direct = await around(hosts[0] ?? "example.com");
   process.stdout.write(JSON.stringify(report));
 });
