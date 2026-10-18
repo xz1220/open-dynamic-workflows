@@ -49,6 +49,8 @@ import { AdapterExecutionError } from "./errors.js";
 import { readWorkflowMeta } from "./loader.js";
 import { redactorFor, type RedactionCoverage } from "./redact.js";
 import { otelCheck } from "./runtime/otel-export.js";
+import { diskBytes, formatBytes, scanWorktrees } from "./runtime/gc.js";
+import { RunStore } from "./runtime/run-store.js";
 import { describeConcurrency } from "./throttle.js";
 import { resolveRunTrust } from "./untrusted.js";
 
@@ -93,6 +95,8 @@ export interface DoctorOptions {
   nodeVersion?: string;
   /** The environment runs would start agents with; defaults to this process's. */
   env?: Record<string, string | undefined>;
+  /** Where isolated agents' worktrees are made (default: os.tmpdir()), for the disk check. */
+  tmpRoot?: string;
 }
 
 /** The marker a smoke prompt asks for — unlikely to appear by accident. */
@@ -144,6 +148,9 @@ export async function runDoctor(opts: DoctorOptions): Promise<DoctorReport> {
       hint: "set runsRoot in your config (or --runs-root) to a writable directory",
     });
   }
+
+  // What runs left on disk: the runs root's size and orphaned worktrees (ODW extension; see ./runtime/gc).
+  add(await diskCheck(runsRoot, opts.cwd, opts.tmpRoot));
 
   const roots = [
     join(opts.cwd, ".odw", "workflows"),
@@ -496,6 +503,26 @@ export async function loginCheck(
  * and how an untrusted run keeps the repository out of each installed CLI —
  * a warning when an untrusted config is the repository's own.
  */
+/**
+ * The runs root's size and the orphaned worktrees left by runs whose process
+ * is gone (ODW extension; see ./runtime/gc) — a warning, with `odw gc`, when
+ * there are any. Read-only.
+ */
+export async function diskCheck(runsRoot: string, cwd: string, tmpRoot?: string): Promise<DoctorCheck> {
+  const check = { id: "disk", title: "Disk" };
+  const size = formatBytes(diskBytes(runsRoot));
+  const store = existsSync(runsRoot) ? new RunStore(runsRoot) : null;
+  const orphans = (await scanWorktrees({ tmpRoot, repos: [cwd], store })).filter((w) => w.orphan);
+  if (orphans.length === 0) return { ...check, status: "ok", detail: `runs root ${size} · no orphaned worktrees` };
+  const bytes = formatBytes(orphans.reduce((n, w) => n + w.bytes, 0));
+  return {
+    ...check,
+    status: "warn",
+    detail: `runs root ${size} · ${orphans.length} orphaned worktree(s), ${bytes}`,
+    hint: "`odw gc` lists what runs left behind; `odw gc --yes` removes it",
+  };
+}
+
 export function trustCheck(config: Config, cwd: string, configPath: string | null): DoctorCheck {
   const check = { id: "trust", title: "Trust" };
   const run = resolveRunTrust({ flag: null, config, configPath, source: cwd, cwd });

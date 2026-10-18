@@ -60,6 +60,7 @@ import type {
   QuestionRule,
   QuotaWaitSettings,
   RedactSettings,
+  RetentionSettings,
   RunEndState,
   SchemaFlag,
   Settings,
@@ -166,6 +167,7 @@ const KNOWN_TOP_KEYS = [
   "costGate",
   "accounts",
   "untrustedInput",
+  "retention",
 ] as const;
 
 const KNOWN_ADAPTER_KEYS = ["command", "stdin", "env", "timeout", "stallTimeout", "concurrency", "promptCache", "label", "flags", "output", "failures", "permissionArgs", "permissions", "permissionDenials", "trust", "untrustedArgs", "untrustedNote", "sandbox", "agentLimits", "egressHosts", "questions", "questionArgs"] as const;
@@ -1317,6 +1319,7 @@ function buildSettings(raw: Record<string, unknown>): Settings {
     triggers: raw["triggers"] == null ? {} : buildTriggers(raw["triggers"]),
     costGate: raw["costGate"] == null ? DEFAULT_SETTINGS.costGate : readCostGate(raw["costGate"], '"costGate"', (m) => new ConfigError(m)),
     untrustedInput: raw["untrustedInput"] == null ? { ...DEFAULT_SETTINGS.untrustedInput } : buildUntrustedInput(raw["untrustedInput"]),
+    retention: raw["retention"] == null ? { ...DEFAULT_SETTINGS.retention } : buildRetention(raw["retention"]),
   };
 }
 
@@ -1331,6 +1334,26 @@ function buildUntrustedInput(raw: unknown): UntrustedInputSettings {
   }
   return {
     requireSandbox: raw.requireSandbox == null ? DEFAULT_SETTINGS.untrustedInput.requireSandbox : buildFlag("untrustedInput.requireSandbox", raw.requireSandbox),
+  };
+}
+
+/**
+ * Validate `retention` (an ODW extension; see ../runtime/gc): `{ "days"?:
+ * <positive whole number>, "transcripts"?: <boolean> }` — what `odw gc` keeps.
+ */
+function buildRetention(raw: unknown): RetentionSettings {
+  if (!isObject(raw)) {
+    throw new ConfigError(`"retention" must be { "days": <days>, "transcripts": true|false }: what odw gc keeps; got ${kindOf(raw)}`);
+  }
+  for (const key of Object.keys(raw)) {
+    if (key !== "days" && key !== "transcripts") throw new ConfigError(`"retention" has an unknown key '${key}'; expected days, transcripts`);
+  }
+  return {
+    days:
+      raw.days == null
+        ? DEFAULT_SETTINGS.retention.days
+        : numberSetting(`"retention.days"`, raw.days, "a positive whole number of days", { min: 1, integer: true }),
+    transcripts: raw.transcripts == null ? DEFAULT_SETTINGS.retention.transcripts : buildFlag("retention.transcripts", raw.transcripts),
   };
 }
 

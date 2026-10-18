@@ -29,7 +29,7 @@
  */
 
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, realpath, rm, unlink } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
@@ -50,6 +50,28 @@ import { prepareWorktree, type WorktreeSetupOptions } from "./worktree-setup.js"
 const run = promisify(execFile);
 
 export type WorkspaceMode = "inplace" | "worktree";
+
+/** The temporary directory an isolated agent's worktree lives in starts so: `$TMPDIR/odw-wt-XXXXXX/<repo>`. */
+export const WORKTREE_PREFIX = "odw-wt-";
+/** The file beside the worktree, in that directory, that names who it is for (see {@link WorktreeOwner}). */
+export const OWNER_FILE = "odw-owner.json";
+
+/**
+ * Who an isolated agent's worktree is for (ODW extension; see runtime/gc):
+ * the process that made it, the run it is an agent of (null outside a run),
+ * the repository it is a worktree of, and when (epoch seconds).
+ */
+export interface WorktreeOwner {
+  pid: number;
+  run: string | null;
+  repo: string;
+  at: number;
+}
+
+/** Write the owner file; best-effort — a worktree without one is only ever an orphan once a day old. */
+async function writeOwner(tmp: string, owner: WorktreeOwner): Promise<void> {
+  await writeFile(join(tmp, OWNER_FILE), JSON.stringify(owner) + "\n", "utf8").catch(() => {});
+}
 
 export interface Workspace {
   /** Directory the agent runs in. */
@@ -194,8 +216,12 @@ export async function openWorkspace(
     }
   }
 
-  const tmp = await mkdtemp(join(tmpdir(), "odw-wt-"));
+  const tmp = await mkdtemp(join(tmpdir(), WORKTREE_PREFIX));
   const work = join(tmp, basename(top));
+  // Who the worktree is for, beside it (ODW extension; see runtime/gc): a
+  // worktree whose process is gone — a SIGKILL, a power cut — is an orphan
+  // `odw gc` may remove; one whose process lives is never touched.
+  await writeOwner(tmp, { pid: process.pid, run: setup.owner ?? null, repo: top, at: Date.now() / 1000 });
   try {
     // Pin the worktree to the resolved base commit: immune to concurrent HEAD
     // movement, and the later diff is taken against this exact baseline.

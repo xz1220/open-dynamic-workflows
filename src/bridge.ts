@@ -1984,6 +1984,8 @@ export class Bridge {
       onRefused: (message: string) =>
         this.noteOnce(`refused:${message}`, message, { trust: "untrusted" }, call.onNote),
       ...(call.base !== undefined ? { base: call.base } : {}),
+      // Named beside the worktree, so `odw gc` can tell whose it is (ODW extension).
+      ...(this.runId !== undefined ? { owner: this.runId } : {}),
     };
     return this.inCallWorkspace(plan.workspaceMode, setup, call, signal, async (ws) => {
       let promptFile = "";

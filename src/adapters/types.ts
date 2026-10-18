@@ -710,12 +710,27 @@ export interface Settings {
    * container whose network is an allowlist or none.
    */
   untrustedInput: UntrustedInputSettings;
+  /**
+   * What `odw gc` keeps (an ODW extension; see ../runtime/gc): an ended run
+   * older than `days` has its keep branches deleted and — unless
+   * `transcripts` is false — its transcripts and stderr trimmed; `odw gc
+   * --older-than` overrides `days`. Nothing is deleted without `odw gc --yes`.
+   */
+  retention: RetentionSettings;
 }
 
 /** How runs with untrusted input are held (see `Settings.untrustedInput`). */
 export interface UntrustedInputSettings {
   /** Refuse to start a run with untrusted input unless agents run in a container with an allowlist (or no) network. */
   requireSandbox: boolean;
+}
+
+/** What `odw gc` keeps (see `Settings.retention`). */
+export interface RetentionSettings {
+  /** Days after an ended run's last activity before gc reclaims what it left. */
+  days: number;
+  /** Whether gc trims an expired run's transcripts and stderr (meta, status, events and results always stay). */
+  transcripts: boolean;
 }
 
 /** How approve links are minted (see `Settings.approveLinks`). */

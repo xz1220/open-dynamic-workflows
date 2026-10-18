@@ -696,4 +696,5 @@ export const DEFAULT_SETTINGS: Settings = {
   triggers: {}, // no inbound triggers: odw serve starts no run from a webhook
   costGate: null, // no fan-out waits for a go; { usd } asks before one forecast to cost more
   untrustedInput: { requireSandbox: false }, // a run with untrusted input and no sandbox warns loudly (true: refused)
+  retention: { days: 30, transcripts: true }, // odw gc: an ended run's branches and transcripts after 30 days (only with --yes)
 };

@@ -95,6 +95,8 @@ export interface WorktreeSetupOptions {
    * replayed agent where the original started). A full hex commit id.
    */
   base?: string;
+  /** The run the worktree is for, written beside it so `odw gc` can tell an orphan (ODW extension; see runtime/gc). */
+  owner?: string;
 }
 
 /** The lines of a `.worktreeinclude`: the patterns to copy, and the `symlink:` ones to link. */

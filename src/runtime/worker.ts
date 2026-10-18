@@ -54,6 +54,7 @@ import { mintCheckpointLinks, runsRootsOf } from "./approve-links.js";
 import { exportRunEnd } from "./otel-export.js";
 import { loadCostHistory } from "./estimate.js";
 import { JsonlSink, RunStore } from "./run-store.js";
+import { orphanedWorktreesOf } from "./gc.js";
 
 /**
  * Once a run has failed or stopped, how long its remaining agents get to die
@@ -426,6 +427,23 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
       sink.emit(
         event(LOG, {
           message: `resuming ${replay.sourceRunId}: unchanged agent() calls replay its ${replay.size} saved result(s)`,
+        }),
+      );
+    }
+
+    // Worktrees of this repository that runs which died left behind (ODW
+    // extension; see ./gc): a read-only look at its registrations, said once.
+    const orphans = await orphanedWorktreesOf(
+      typeof meta.source === "string" ? meta.source : process.cwd(),
+      new RunStore(dirname(dirname(runDir))),
+    );
+    if (orphans.length > 0) {
+      sink.emit(
+        event(LOG, {
+          message:
+            `${orphans.length} orphaned odw worktree(s) of this repository, left by runs whose process is gone — ` +
+            "`odw gc` lists them, `odw gc --yes` removes them",
+          gc: { orphanedWorktrees: orphans.length },
         }),
       );
     }

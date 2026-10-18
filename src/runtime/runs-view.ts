@@ -348,6 +348,10 @@ export interface RunDetail extends RunSummary {
   cliVersions?: Record<string, CliVersion>;
   odwVersion?: string | null;
   sourceHash?: string | null;
+  /** `odw pin` marked it (ODW extension; see ./gc): `odw gc` skips it. Absent otherwise. */
+  pinned?: { at: number; by: string | null };
+  /** `odw gc` trimmed its transcripts and stderr (ODW extension; see ./gc): when, and how many files. Absent otherwise. */
+  trimmed?: { at: number; files: number };
 }
 
 /** Is `pid` a live process on this host? null when unknowable (no pid). */

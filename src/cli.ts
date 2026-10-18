@@ -38,6 +38,7 @@
  *   odw run <wf> --break <phase|label>[,…] | --step   (a checkpoint before them; src/breaks.ts)
  *   odw check <script.js|name> [--json]   (the loader's checks, with a code frame; src/check.ts)
  *   odw new [<template>] [--name N] [--force] [--yes]   (a workflow + starter test from an embedded template; src/new.ts)
+ *   odw gc [--yes] [--older-than 30d] [--json] | odw pin <run_id> [--remove]   (what odw left on disk; runtime/gc.ts)
  */
 
 import { spawn } from "node:child_process";
@@ -103,6 +104,7 @@ import { printAgentLogs } from "./runtime/transcript-view.js";
 import { cmdNote, cmdNotes } from "./runtime/notes-view.js";
 import { cmdMemory } from "./runtime/memory-cli.js";
 import { askYesNo, cmdEstimate, estimateBeforeRun } from "./runtime/estimate-cli.js";
+import { cmdGc, cmdPin } from "./runtime/gc-cli.js";
 import { executeRun } from "./runtime/worker.js";
 import {
   parseSshTarget,
@@ -165,6 +167,8 @@ export const COMMANDS = [
   "check",
   "new",
   "token",
+  "gc",
+  "pin",
 ] as const;
 
 export type Command = (typeof COMMANDS)[number];
@@ -238,6 +242,8 @@ export function helpText(): string {
     "  odw run <wf> --break <phase|label>[,…] | --step    stop for a decision before those phases/agents, or every phase (ODW extension)",
     "  odw check <script.js|name> [--json]                check a workflow loads: errors with line, column and a code frame",
     "  odw new [<template>] [--name N] [--force] [--yes]  a workflow + starter test in .odw/ from a built-in template; no args lists them",
+    "  odw gc [--yes] [--older-than 30d] [--json]         report orphaned worktrees, keep branches, old transcripts; --yes deletes (ODW extension)",
+    "  odw pin <run_id> [--remove]                        odw gc skips a pinned run; no run id lists them",
     "",
     "Options:",
     "  --args JSON|@file   workflow input (JSON, @file.json, or a raw string)",
@@ -404,6 +410,10 @@ export async function main(argv: string[]): Promise<number> {
         return cmdCheck(rest);
       case "token":
         return cmdToken(rest);
+      case "gc":
+        return await cmdGc(rest);
+      case "pin":
+        return cmdPin(rest);
       default:
         process.stderr.write(`odw: unknown command '${command}'\n\n${helpText()}\n`);
         return 2;
