@@ -43,6 +43,13 @@ export interface InvocationPlan {
    * ever dropped silently. Empty when every set option mapped cleanly.
    */
   notes: string[];
+  /**
+   * The model id the CLI is asked for — a tier resolved — when the call set
+   * one and the adapter carries it (a `{model}` token or its model flag);
+   * unset otherwise. What a served model is compared with (ODW extension; see
+   * ./served-model).
+   */
+  model?: string;
 }
 
 /** Maps `agent` options onto an {@link InvocationPlan}. Swap to change behaviour. */
@@ -61,11 +68,11 @@ export class LiteralRouter implements OptionRouter {
     const extraArgs: string[] = [];
     const notes: string[] = [];
 
-    this.routeModel(request, adapter, settings, context, extraArgs, notes);
+    const model = this.routeModel(request, adapter, settings, context, extraArgs, notes);
     this.noteAgentType(request, adapter, notes);
     const workspaceMode = this.routeIsolation(request);
 
-    return { context, extraArgs, workspaceMode, notes };
+    return { context, extraArgs, workspaceMode, notes, ...(model !== undefined ? { model } : {}) };
   }
 
   /**
@@ -73,7 +80,8 @@ export class LiteralRouter implements OptionRouter {
    * the adapter declares, appended *only when a value is present* (so a call
    * with no model never produces a dangling `--model ""`). No carrier → a note.
    * A model tier (`"@fast"`, an ODW extension) is first this adapter's own id
-   * for it (see ./routing): an unknown tier fails the call.
+   * for it (see ./routing): an unknown tier fails the call. Returns the model
+   * the CLI is asked for, if any.
    */
   private routeModel(
     request: AgentRequest,
@@ -82,9 +90,9 @@ export class LiteralRouter implements OptionRouter {
     context: PlaceholderContext,
     extraArgs: string[],
     notes: string[],
-  ): void {
+  ): string | undefined {
     const model = resolveModel(request.model, adapter, settings, notes);
-    if (!model) return;
+    if (!model) return undefined;
     const usesToken =
       adapter.command.some((p) => p.includes("{model}")) ||
       (adapter.stdin?.includes("{model}") ?? false);
@@ -98,7 +106,9 @@ export class LiteralRouter implements OptionRouter {
         `model '${model}' requested but adapter '${adapter.name}' declares no model flag ` +
           `— ignored (the CLI's own default model is used)`,
       );
+      return undefined;
     }
+    return model;
   }
 
   /**

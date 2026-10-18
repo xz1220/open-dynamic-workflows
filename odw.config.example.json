@@ -94,6 +94,9 @@
   "//orphanedBackground": "ODW extension. In headless mode an agent can start a background shell command (Bash run_in_background) or subagent, end its turn, and exit: the work dies with the CLI while the result says success (anthropics/claude-code#85129). ODW reads the task events in Claude Code's stream-json (an adapter's output.background rules) and, when work is still running at the result event, records it as orphaned on the agent's agent_finished event and saved result and logs it once. \"warn\" (the default) keeps the reply; \"fail\" fails the agent with reason orphaned_background. With agent(prompt, { expect }) it is a miss: retried, then orphaned_background.",
   "orphanedBackground": "warn",
 
+  "//modelMismatch": "ODW extension. A call's model is only a request: an allowlist, a plan or a retired id can put the agent on another model, and the reply never says so. Where a CLI's events name the model that served the agent (an adapter's output.servedModel rules: Claude Code's init event, its assistant messages, the result's modelUsage keys), ODW records it as servedModel on the agent's agent_finished event and saved result. When none of them is the model the CLI was asked for (case, a [1m] suffix and a provider prefix aside; an alias like opus matches claude-opus-4-8), a model_substituted event is logged. \"warn\" (the default) keeps the reply; \"fail\" fails the agent with reason model_substituted. A CLI that names no model (codex, agy) is \"not reported\", never guessed.",
+  "modelMismatch": "warn",
+
   "//questions": "ODW extension. What an agent's question does: a clarifying tool call its CLI made (Claude Code's AskUserQuestion, read through an adapter's output.questions rules), which nobody can answer headless — the CLI returns an empty answer and the model goes on guessing (anthropics/claude-code#50728). ODW stops the CLI at the question, then: \"checkpoint\" (the default) asks a person at a checkpoint — odw approve <run> --checkpoint N --note \"<answer>\", the dashboard's card, notify's waiting hook (checkpoint.kind \"question\") — and runs the same call again, in the same worktree, its prompt told \"earlier you asked X; the user answered Y\" (odw reject fails it with reason needs_input); \"fail\" fails the agent with reason needs_input and its questions; \"deny\" runs the CLI without its question tool (an adapter's questionArgs: claude --disallowedTools AskUserQuestion) and tells the agent to assume and say so. An adapter's own \"questions\" and agent(prompt, { questions }) override it.",
   "questions": "checkpoint",
 
@@ -150,6 +153,11 @@
         },
         "questions": [
           { "event": "assistant", "each": ["message", "content"], "where": [{ "path": ["type"], "equals": "tool_use" }, { "path": ["name"], "equals": "AskUserQuestion" }], "list": ["input", "questions"], "text": [["question"]], "header": [["header"]], "options": ["options"], "optionLabel": ["label"], "multiSelect": ["multiSelect"] }
+        ],
+        "servedModel": [
+          { "event": "system", "where": [{ "path": ["subtype"], "equals": "init" }], "path": ["model"] },
+          { "event": "assistant", "where": [{ "path": ["message", "model"], "not": "<synthetic>" }], "path": ["message", "model"] },
+          { "event": "result", "path": ["modelUsage"], "keys": true }
         ]
       },
       "permissionArgs": {

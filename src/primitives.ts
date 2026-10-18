@@ -67,7 +67,10 @@
  * terminal event and saved record, and logged once per run for each server
  * and status. Background work its CLI left running under a reply that stood
  * (`orphanedBackground: "warn"`) is logged once and kept as `orphaned` on its
- * agent_finished event and saved record.
+ * agent_finished event and saved record. The models its CLI said served it
+ * (`output.servedModel`) are kept as `servedModel` there too; one run served by
+ * another model than the one asked for is a `model_substituted` event, once
+ * per adapter and models (see ./served-model).
  *
  * An agent with notes on — `notes: true` on its call or its parallel(), or
  * the `notes` setting (an ODW extension; see ./notes) — finds the run's notes
@@ -128,7 +131,8 @@ import { branchName, ChangeRecorder, type AgentChanges, type KeptChanges } from 
 import { CheckpointTimeout, createCheckpoint, type CheckpointOptions, type CheckpointResult } from "./checkpoint.js";
 import { spentTokens, type RunContext } from "./context.js";
 import { AdapterExecutionError, AgentError, NeedsInputError, RunStopped, RunawayError, UnmetExpectationError, WorkflowScriptError, isDeadlineStop, isFatalError } from "./errors.js";
-import { AGENT_FAILED, AGENT_FINISHED, AGENT_STARTED, DESTRUCTIVE_GIT, HANDOFF, LOG, PHASE_STARTED, event } from "./events.js";
+import { AGENT_FAILED, AGENT_FINISHED, AGENT_STARTED, DESTRUCTIVE_GIT, HANDOFF, LOG, MODEL_SUBSTITUTED, PHASE_STARTED, event } from "./events.js";
+import { substitutionNote } from "./served-model.js";
 import { DestructiveGitWatch } from "./destructive-git.js";
 import { ExecError, createExec, execStep, type ExecOptions, type ExecResult } from "./exec.js";
 import { CostGateRejected, costGateTitle, readCostGate, type CostGate, type CostHistory } from "./forecast.js";
@@ -442,6 +446,7 @@ export function createPrimitives(
     const denied = deniedField(recorded.denied);
     const mcp = mcpField(recorded.mcp);
     const orphaned = orphanedField(recorded.orphaned);
+    const served = servedModelField(recorded.servedModel);
     const outside = outOfScopeField(recorded.outOfScope);
     const changed = changeFields(kept);
     // A value saved with its secrets redacted replays as saved, and says so (ODW extension; see ./redact).
@@ -456,11 +461,11 @@ export function createPrimitives(
         }),
       );
     }
-    const finished = event(AGENT_FINISHED, { agentId, label, phase, adapter, ...moved, attempts, ...marks, ...changed, ...denied, ...mcp, ...orphaned, ...outside });
+    const finished = event(AGENT_FINISHED, { agentId, label, phase, adapter, ...moved, attempts, ...marks, ...changed, ...denied, ...mcp, ...orphaned, ...served, ...outside });
     const startedAt = startedEv.ts;
     const finishedAt = finished.ts;
     const value = recorded.value;
-    if (save({ agentId, key, label, phase, adapter, ...moved, attempts, startedAt, finishedAt, value, ...tier, ...marks, ...changed, ...denied, ...mcp, ...orphaned, ...outside, ...redacted })) {
+    if (save({ agentId, key, label, phase, adapter, ...moved, attempts, startedAt, finishedAt, value, ...tier, ...marks, ...changed, ...denied, ...mcp, ...orphaned, ...served, ...outside, ...redacted })) {
       finished.saved = true;
     }
     ctx.emit(finished);
@@ -868,6 +873,8 @@ export function createPrimitives(
     };
     // The MCP servers its latest CLI run started it without (ODW extension): what a failed agent keeps.
     let mcpSeen: McpServer[] = [];
+    // The substitutions its CLI runs reported, each said once (ODW extension).
+    const substitutions = new Set<string>();
     const failed = (err: unknown, kept: KeptChanges | null = null, outside: { outOfScope?: string[]; partial?: true } = {}): void => {
       ctx.emit(
         event(AGENT_FAILED, {
@@ -1172,6 +1179,27 @@ export function createPrimitives(
             },
             // The MCP servers a CLI run started it without (ODW extension): kept
             // for its record, and each server and status said once per run.
+            // Another model than the one it asked for served it (ODW extension; see
+            // ./served-model): a model_substituted event, once per adapter and models.
+            onModelSubstituted: ({ adapter: name, requested, served }) => {
+              const key = `${name}\u0000${requested}\u0000${served.join("\u0000")}`;
+              if (substitutions.has(key)) return;
+              substitutions.add(key);
+              const policy = ctx.config.settings.modelMismatch;
+              const cli = adapterDisplayName(ctx.config.adapters[name] ?? adapter);
+              ctx.emit(
+                event(MODEL_SUBSTITUTED, {
+                  message: substitutionNote(`${display}:${agentId}`, cli, requested, served, policy),
+                  agentId,
+                  label: display,
+                  phase: activePhase,
+                  adapter: name,
+                  requested,
+                  served,
+                  policy,
+                }),
+              );
+            },
             onMcp: ({ adapter: name, servers }) => {
               mcpSeen = servers;
               for (const server of servers) {
@@ -1266,6 +1294,7 @@ export function createPrimitives(
           ...deniedField(outcome.denied),
           ...mcpField(outcome.mcp),
           ...orphanedField(outcome.orphaned),
+          ...servedModelField(outcome.servedModel),
           ...outside,
         });
         const persisted = save({
@@ -1285,6 +1314,7 @@ export function createPrimitives(
           ...deniedField(outcome.denied),
           ...mcpField(outcome.mcp),
           ...orphanedField(outcome.orphaned),
+          ...servedModelField(outcome.servedModel),
           ...outside,
         });
         if (persisted) finished.saved = true;
@@ -1851,6 +1881,13 @@ function mcpNote(server: McpServer, adapter: string, label: string): string {
     default:
       return `MCP server ${server.name} was ${JSON.stringify(server.status)}, not connected ${who}: its tools may have been unavailable`;
   }
+}
+
+/** The `servedModel` an agent's agent_finished event and record carry: the models its CLI said served it, when any (ODW extension). */
+function servedModelField(served: unknown): { servedModel?: string[] } {
+  if (!Array.isArray(served)) return {};
+  const models = served.filter((model): model is string => typeof model === "string" && model !== "");
+  return models.length > 0 ? { servedModel: models } : {};
 }
 
 /** The `orphaned` an agent's agent_finished event and record carry: the background work its CLI left running, when any (ODW extension). */

@@ -78,6 +78,11 @@ export interface AgentResultRecord {
    */
   orphaned?: string[];
   /**
+   * The models its CLI said served it (ODW extension; `output.servedModel`),
+   * when it named any — absent: not reported.
+   */
+  servedModel?: string[];
+  /**
    * The files it changed outside its declared `scope` (ODW extension; see
    * ./scope), when there were any.
    */

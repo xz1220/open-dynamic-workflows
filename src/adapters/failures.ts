@@ -82,7 +82,12 @@ export type FailureReason =
    */
   | "needs_input"
   /** The agent ran a destructive git command (`git reset --hard`, …), under `destructiveGit: "fail"` (ODW extension; see ../destructive-git). */
-  | "destructive_git";
+  | "destructive_git"
+  /**
+   * The CLI said another model served the agent than the one the call asked
+   * for, under `modelMismatch: "fail"` (ODW extension; see ../served-model).
+   */
+  | "model_substituted";
 
 /** The classes an adapter's `failures` config may add patterns to. */
 export const CONFIGURABLE_REASONS = ["rate_limit", "quota", "auth", "model_unavailable"] as const;

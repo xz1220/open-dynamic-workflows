@@ -275,6 +275,7 @@ export const BEHAVIOUR_SETTINGS = [
   "scopePolicy",
   "questions",
   "destructiveGit",
+  "modelMismatch",
   "scriptContext",
   "sandbox",
   "notes",

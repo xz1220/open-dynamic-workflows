@@ -79,7 +79,7 @@ export interface AgentView {
   /**
    * Why a failed agent's CLI failed (agent_failed's `reason`): rate_limit,
    * quota, auth, timeout, stalled, not_found, permission or exit — or, ODW
-   * extensions, empty_reply, unmet_expectation, mcp_unavailable, runaway, orphaned_background, out_of_scope, needs_input and destructive_git. Absent while running, for
+   * extensions, empty_reply, unmet_expectation, mcp_unavailable, runaway, orphaned_background, out_of_scope, needs_input, destructive_git and model_substituted. Absent while running, for
    * other failures (schema, stop) and for older event files.
    */
   failureReason?: string;
@@ -106,6 +106,23 @@ export interface AgentView {
    * each. Absent otherwise.
    */
   orphaned?: string[];
+  /**
+   * Agents only: the model it asked for, as its agent_started event says (a
+   * tier keeps its `@` name). Absent: its CLI's default.
+   */
+  model?: string;
+  /**
+   * Agents only (ODW extension; see ../served-model): the models its CLI said
+   * served it (agent_finished's `servedModel`). Absent: not reported (or not
+   * finished).
+   */
+  servedModel?: string[];
+  /**
+   * Agents only (ODW extension): another model served it than the one it
+   * asked for — its latest `model_substituted` event: the id its CLI was
+   * asked for, and the models that served it. Absent otherwise.
+   */
+  substituted?: { requested: string; served: string[] };
   /**
    * Agents only (ODW extension; see scope.ts): the files it declared it means
    * to change — agent_started's `scope`. Absent: no scope.
@@ -473,6 +490,13 @@ export function applyAgentEvent(
     }
     return {};
   }
+  if (ev.type === "model_substituted") {
+    // Another model than the one asked for served it (ODW extension), running or settled.
+    const target = typeof ev.agentId === "number" ? agents.find((a) => a.kind === "agent" && a.agentId === ev.agentId) : undefined;
+    const served = strings(ev.served);
+    if (target && typeof ev.requested === "string" && served) target.substituted = { requested: ev.requested, served };
+    return {};
+  }
   if (ev.type === "log") {
     if (typeof ev.agentId !== "number" || typeof ev.adapter !== "string") return {};
     const target = agents.find((a) => a.state === "running" && a.agentId === ev.agentId);
@@ -518,6 +542,7 @@ export function applyAgentEvent(
     if (limits) opened.limits = limits;
     const scope = strings(ev.scope);
     if (scope) opened.scope = scope;
+    if (typeof ev.model === "string" && ev.model !== "") opened.model = ev.model;
     agents.push(opened);
     return { opened };
   }
@@ -579,6 +604,8 @@ export function applyAgentEvent(
       if (denied) target.denied = denied;
       const orphaned = strings(ev.orphaned);
       if (orphaned) target.orphaned = orphaned;
+      const servedModel = strings(ev.servedModel);
+      if (servedModel) target.servedModel = servedModel;
       target.state = "done";
       target.adapter = ev.adapter != null ? String(ev.adapter) : null;
       target.attempts = typeof ev.attempts === "number" ? ev.attempts : null;
@@ -728,6 +755,8 @@ function copyAgents(agents: AgentView[], stale: boolean): AgentView[] {
     if (a.denied) copy.denied = [...a.denied];
     if (a.limits) copy.limits = { ...a.limits, ...(a.limits.hit ? { hit: { ...a.limits.hit } } : {}) };
     if (a.orphaned) copy.orphaned = [...a.orphaned];
+    if (a.servedModel) copy.servedModel = [...a.servedModel];
+    if (a.substituted) copy.substituted = { requested: a.substituted.requested, served: [...a.substituted.served] };
     if (a.scope) copy.scope = [...a.scope];
     if (a.outOfScope) copy.outOfScope = [...a.outOfScope];
     if (a.destructiveGit) copy.destructiveGit = a.destructiveGit.map((hit) => ({ ...hit }));

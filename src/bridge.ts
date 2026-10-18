@@ -157,6 +157,7 @@ import {
 } from "./errors.js";
 import { hasLimits, limitLabel, LimitWatch, mergeLimits, readLimits, type AgentLimits, type LimitHit } from "./limits.js";
 import { orphanedMiss, refusedMiss, type ExpectationSink } from "./expect.js";
+import { isSubstituted } from "./served-model.js";
 import { PortPool } from "./ports.js";
 import {
   answeredBrief,
@@ -296,6 +297,21 @@ export interface AgentOutcome {
    * caller records and logs it.
    */
   orphaned?: string[];
+  /**
+   * The models its CLI said served it while it did that work (ODW extension;
+   * `output.servedModel`), in the order they showed; absent when the CLI
+   * named none — "not reported", never guessed.
+   */
+  servedModel?: string[];
+}
+
+/** A CLI run served by another model than the one asked for (ODW extension; see ./served-model). */
+export interface ModelSubstitution {
+  adapter: string;
+  /** The model id the CLI was asked for (a tier resolved). */
+  requested: string;
+  /** The models the CLI said served the agent, none of them the one asked for. */
+  served: string[];
 }
 
 /** The MCP servers one CLI run of a call reported (ODW extension): its adapter, and those not connected. */
@@ -479,6 +495,13 @@ export interface RunOptions {
    * output is in — whatever becomes of the call — so the run can log them.
    */
   onMcp?: (report: McpReport) => void;
+  /**
+   * Called when a CLI run of the call said another model served the agent
+   * than the one the call asked it for (an ODW extension; `output.servedModel`,
+   * see ./served-model), as soon as the run's output is in — whatever becomes
+   * of the call — so the run can record and log it.
+   */
+  onModelSubstituted?: (substitution: ModelSubstitution) => void;
   /**
    * Called when the call waits for a spent quota to reset (an ODW extension:
    * quotaWait) — its chain is out of quota, and `adapter`'s resets first —
@@ -1362,6 +1385,8 @@ export class Bridge {
       // Background work left running fails a run at once only under "fail",
       // and not with `expect`, which counts it as a miss (ODW extensions).
       orphanFails: settings.orphanedBackground === "fail" && !options.expect,
+      // Another model than the one asked for fails a run only under "fail" (ODW extension).
+      substitutionFails: settings.modelMismatch === "fail",
       // A question can be put to a person, who answers it (ODW extension; see ./questions).
       asksPerson: questions === "checkpoint" && options.onQuestion !== undefined,
       // Its worktree's commit, pinned where its agent_started event says (ODW extension).
@@ -1415,7 +1440,7 @@ export class Bridge {
     let attempts = 0;
     // What the work missed last round, told to the next one.
     let missed = "";
-    const done = (value: unknown, text: string, refused: string[], servers: Map<string, string>, orphaned: string[]): AgentOutcome => {
+    const done = (value: unknown, text: string, refused: string[], servers: Map<string, string>, orphaned: string[], served: string[]): AgentOutcome => {
       const down = notConnected([...servers].map(([name, status]) => ({ name, status })));
       return {
         value,
@@ -1426,6 +1451,7 @@ export class Bridge {
         ...(refused.length > 0 ? { denied: refused } : {}),
         ...(down.length > 0 ? { mcp: down } : {}),
         ...(orphaned.length > 0 ? { orphaned } : {}),
+        ...(served.length > 0 ? { servedModel: served } : {}),
       };
     };
     for (let round = 0; ; round++) {
@@ -1439,6 +1465,8 @@ export class Bridge {
       let reported = false;
       // The background work its CLI runs left running at their replies (ODW extension).
       const orphaned: string[] = [];
+      // The models its CLI runs said served this round's work (ODW extension).
+      const served: string[] = [];
       for (let attempt = 1; attempt <= maxAttempts; attempt++) {
         throwIfAborted(signal);
         if (++attempts > 1) await options.beforeRetry?.();
@@ -1489,6 +1517,7 @@ export class Bridge {
         }
         for (const denial of output.denied ?? []) if (!refused.includes(denial)) refused.push(denial);
         for (const work of output.orphaned ?? []) if (!orphaned.includes(work)) orphaned.push(work);
+        for (const model of output.servedModel ?? []) if (!served.includes(model)) served.push(model);
         if (output.mcp) reported = true;
         for (const { name, status } of output.mcp ?? []) {
           if (status !== MCP_CONNECTED || !servers.has(name)) servers.set(name, status);
@@ -1517,7 +1546,7 @@ export class Bridge {
             const lines = outside.map((miss) => miss.text);
             throw new UnmetExpectationError(`adapter '${adapter.name}' wrote outside its scope: ${lines.join("; ")}`, lines, "out_of_scope");
           }
-          return done(value, text, refused, servers, orphaned);
+          return done(value, text, refused, servers, orphaned, served);
         }
 
         // The work is checked, not taken at its word (ODW extension; see ./expect),
@@ -1529,7 +1558,7 @@ export class Bridge {
           ...(orphaned.length > 0 ? [orphanedMiss(orphaned)] : []),
           ...checked,
         ];
-        if (misses.length === 0) return done(value, text, refused, servers, orphaned);
+        if (misses.length === 0) return done(value, text, refused, servers, orphaned, served);
         const lines = misses.map((miss) => miss.text);
         if (round >= expect.retries) {
           if (refused.length > 0) throw this.refusedFailure(adapter, cli, refused, lines, limits, reruns);
@@ -1599,7 +1628,10 @@ export class Bridge {
         const hit = signal?.aborted ? null : this.settleLimits(adapter, call, output);
         if (hit) return { cli: runawayEvidence(cli, hit), output, failure: { reason: "runaway" as const } };
         if (signal?.aborted || cli.stalled) return { cli, output };
-        const failed = this.failureOf(adapter, cli, output, prompt, call);
+        // Served by another model than the one asked for (ODW extension; see ./served-model): told at once.
+        const substituted = plan.model !== undefined && isSubstituted(plan.model, output.servedModel);
+        if (substituted) options.onModelSubstituted?.({ adapter: adapter.name, requested: plan.model!, served: [...output.servedModel!] });
+        const failed = this.failureOf(adapter, cli, output, prompt, call, substituted);
         // A run that fails the call over hands its worktree to the next adapter (ODW extension; see ./handoff).
         if (failed && call.handoff && isFallbackReason(failed.failure.reason)) call.handoff.hold = true;
         // One that stopped to ask keeps it for the run told the answer (ODW extension; see ./questions).
@@ -1674,6 +1706,7 @@ export class Bridge {
     output: DecodedOutput,
     prompt: string,
     call: CallEnv,
+    substituted = false,
   ): { cli: CliResult; failure: FailureClass } | null {
     const classify = { patterns: adapter.failures, prompt, now: this.now() };
     // The agent stopped to ask the user a question (ODW extension; see
@@ -1711,6 +1744,12 @@ export class Bridge {
     // `expect` — counts it as a miss.
     if (output.orphaned && call.orphanFails) {
       return { cli: orphanedEvidence(cli, output.orphaned), failure: { reason: "orphaned_background" } };
+    }
+    // A reply from another model than the one asked for (the CLI's own report
+    // of the model that served it): it fails only under `modelMismatch: "fail"`;
+    // else the caller records and logs it.
+    if (substituted && call.substitutionFails) {
+      return { cli: substitutedEvidence(cli, output.servedModel ?? []), failure: { reason: "model_substituted" } };
     }
     return null;
   }
@@ -1804,6 +1843,11 @@ export class Bridge {
         );
       case "needs_input":
         return "stopped to ask the user a question, which nobody answered";
+      case "model_substituted":
+        return (
+          "was served by another model than the one it was asked for (modelMismatch: \"fail\") — check that the " +
+          "account may use the model (an allowlist, a plan), or ask for the one that served it"
+        );
       case "orphaned_background":
         return (
           "ended its turn with background work still running, which died when its CLI exited — have the agent wait " +
@@ -2211,6 +2255,8 @@ interface CallEnv {
   limits?: AgentLimits;
   /** A run whose CLI exited with background work running fails as `orphaned_background` (ODW extension; see failureOf). */
   orphanFails?: boolean;
+  /** A run its CLI says another model served than the one asked for fails as `model_substituted` (ODW extension; see failureOf). */
+  substitutionFails?: boolean;
   /** A fallback hands the work over (ODW extension; see ./handoff): what that takes, over the whole call. */
   handoff?: HandoffState;
   /** The commit its worktree checks out in place of HEAD (ODW extension; AgentRequest.base). */
@@ -2418,6 +2464,11 @@ function asksQuestions(adapter: Adapter): boolean {
 /** A run whose agent stopped to ask, with its questions as its diagnostic: what `needs_input` quotes. */
 function questionEvidence(cli: CliResult, questions: AgentQuestion[]): CliResult {
   return { ...cli, stdout: `asked: ${questions.map(questionLine).join("; ")}`, stderr: "" };
+}
+
+/** A run served by another model than the one asked for, with the models as its diagnostic: what `model_substituted` quotes. */
+function substitutedEvidence(cli: CliResult, served: readonly string[]): CliResult {
+  return { ...cli, stdout: `served by: ${served.join(", ")}`, stderr: "" };
 }
 
 /** A run whose CLI exited with background work running, with it as its diagnostic: what `orphaned_background` quotes. */

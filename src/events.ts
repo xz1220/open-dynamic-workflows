@@ -37,6 +37,8 @@ export const EGRESS_DENIED = "egress_denied";
 export const SAFETY_SNAPSHOT = "safety_snapshot";
 // An agent ran a destructive git command: { agentId, label, phase, command, what, policy, message } (ODW extension; see destructive-git.ts).
 export const DESTRUCTIVE_GIT = "destructive_git";
+// An agent's CLI said another model served it than the one asked for: { agentId, label, phase, adapter, requested, served, policy, message } (ODW extension; see served-model.ts).
+export const MODEL_SUBSTITUTED = "model_substituted";
 
 export interface WorkflowEvent {
   ts: number;

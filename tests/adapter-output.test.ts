@@ -411,10 +411,12 @@ const claudeStream = (result: Record<string, unknown>): string =>
 test("the built-in claude adapter streams stream-json and decodes its result event", () => {
   const claude = defaultConfig().adapters.claude!;
   assert.deepEqual(claude.command.slice(0, 5), ["claude", "--print", "--output-format", "stream-json", "--verbose"]);
-  // Its background rules (ODW extension) are tests/orphaned-background.test.ts's; its question rules tests/questions.test.ts's.
-  const { background, questions, ...output } = claude.output as Extract<typeof claude.output, { format: "jsonl" }>;
+  // Its background rules (ODW extension) are tests/orphaned-background.test.ts's; its question rules tests/questions.test.ts's;
+  // its served-model rules tests/served-model.test.ts's.
+  const { background, questions, servedModel, ...output } = claude.output as Extract<typeof claude.output, { format: "jsonl" }>;
   assert.ok(background);
   assert.ok(questions);
+  assert.ok(servedModel);
   assert.deepEqual(output, {
     format: "jsonl",
     eventType: "result",
@@ -438,6 +440,8 @@ test("the built-in claude adapter streams stream-json and decodes its result eve
       cacheWriteTokens: 5133,
       costUsd: 0.0387,
     },
+    // The init event names the session's model (ODW extension; tests/served-model.test.ts).
+    servedModel: ["claude-sonnet-4-5"],
   });
 });
 
