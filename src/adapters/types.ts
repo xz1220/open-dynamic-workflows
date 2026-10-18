@@ -468,6 +468,15 @@ export interface Settings {
   worktreeSetup: string | string[] | null;
   /** Seconds the worktree setup may run before it is killed and its agent fails. */
   worktreeSetupTimeout: number;
+  /**
+   * A command run in an isolated agent's worktree just before it is removed
+   * (an ODW extension) — on success, failure and stop alike: as
+   * `worktreeSetup`, a string runs through the platform shell, an array is
+   * an argv; `null` => none. Its failure is logged, never the agent's.
+   */
+  worktreeTeardown: string | string[] | null;
+  /** Seconds the worktree teardown may run before it is killed. */
+  worktreeTeardownTimeout: number;
   /** Where each running agent's `ODW_PORT` comes from: `[first, last]`, inclusive (an ODW extension). */
   portRange: [number, number];
   /**

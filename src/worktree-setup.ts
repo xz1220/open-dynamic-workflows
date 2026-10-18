@@ -22,9 +22,17 @@
  *      the agent, not the run ({@link WorktreeSetupError} is recoverable), and
  *      the end of its output is in the error.
  *
+ * Its counterpart, **`worktreeTeardown`** (an ODW extension), runs in the
+ * same workspace with the same variables just before the worktree is removed
+ * ({@link runTeardown}, called by ../workspace) — after the agent succeeded,
+ * failed or was stopped, and after a failed setup too — killed after
+ * `worktreeTeardownTimeout` seconds. A teardown that fails or times out is
+ * logged; the agent's result stands.
+ *
  * In an untrusted run (an ODW extension; see adapters/trust.ts) the
- * `symlink:` lines link nothing, and a `worktreeSetup` the repository's own
- * config set is dropped before the run starts (see ./untrusted).
+ * `symlink:` lines link nothing, and a `worktreeSetup` or `worktreeTeardown`
+ * the repository's own config set is dropped before the run starts (see
+ * ./untrusted).
  *
  * Each worktree is prepared on its own: every CLI attempt of an agent call (a
  * schema retry, a stall restart) starts from a fresh worktree.
@@ -97,6 +105,10 @@ export interface WorktreeSetupOptions {
   base?: string;
   /** The run the worktree is for, written beside it so `odw gc` can tell an orphan (ODW extension; see runtime/gc). */
   owner?: string;
+  /** `settings.worktreeTeardown`: run (with `env`) before the worktree is removed; absent or null => none. */
+  teardown?: string | string[] | null;
+  /** Seconds before the teardown command is killed (`settings.worktreeTeardownTimeout`, default 120). */
+  teardownTimeout?: number;
 }
 
 /** The lines of a `.worktreeinclude`: the patterns to copy, and the `symlink:` ones to link. */
@@ -414,6 +426,43 @@ async function runSetup(command: string | string[], cwd: string, options: Worktr
   // A command that could not start printed nothing: the runner says why instead.
   const said = tail ? `${cut || output.length > SETUP_TAIL_CHARS ? "…" : ""}${tail}` : result.stderr.trim();
   throw new WorktreeSetupError(`the worktree setup ("worktreeSetup") ${why}${said ? `; the end of its output:\n${said}` : ""}`);
+}
+
+// --- the teardown command ---------------------------------------------------------
+
+/**
+ * Run `settings.worktreeTeardown` in the agent's workspace, before its
+ * worktree goes. Never throws: a failure or a timeout goes to `onNote`, with
+ * the end of its output. The run's abort signal is not its own — a stopped
+ * agent is exactly what it cleans up after — and a stop does not kill it
+ * either (see `cleanup` in adapters/runner): its timeout bounds it.
+ */
+export async function runTeardown(cwd: string, options: WorktreeSetupOptions): Promise<void> {
+  const command = options.teardown;
+  if (!command || (Array.isArray(command) && command.length === 0)) return;
+  const timeout = options.teardownTimeout ?? DEFAULT_SETTINGS.worktreeTeardownTimeout;
+  let output = "";
+  const keep = (chunk: string): void => {
+    output = (output + chunk).slice(-SETUP_TAIL_CHARS * 2);
+  };
+  const shell = typeof command === "string";
+  try {
+    const result = await runCommand(shell ? [command] : command, {
+      shell,
+      cwd,
+      env: options.env,
+      timeout,
+      cleanup: true,
+      onStdout: keep,
+      onStderr: keep,
+    });
+    if (cliOk(result)) return;
+    const why = result.timedOut ? `timed out after ${timeout}s` : `exited with code ${result.returncode}`;
+    const tail = output.slice(-SETUP_TAIL_CHARS).trim() || result.stderr.trim();
+    options.onNote?.(`the worktree teardown ("worktreeTeardown") ${why}${tail ? `; the end of its output:\n${tail}` : ""}`);
+  } catch (err) {
+    options.onNote?.(`the worktree teardown ("worktreeTeardown") could not run: ${(err as Error).message}`);
+  }
 }
 
 /** End with the run's reason once it is aborted (a fatal error), as the bridge does. */

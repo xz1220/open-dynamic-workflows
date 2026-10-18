@@ -10,7 +10,7 @@
  *   - it cannot loosen the run: a run is untrusted when `--untrusted` says so,
  *     when the config in use does, or — when that config is the repository's
  *     own and so shadows the user's — when `~/.config/odw/config.json` does;
- *   - the `worktreeSetup` it sets does not run: a command the repository
+ *   - the `worktreeSetup` (and `worktreeTeardown`) it sets does not run: a command the repository
  *     chose would run in every isolated agent's worktree. One the user's own
  *     config sets (`--config`, `$ODW_CONFIG`, `~/.config/odw/config.json`
  *     outside the repository) still runs;
@@ -128,7 +128,7 @@ export function resolveRunTrust(opts: {
 
 /**
  * `config` as an untrusted run uses it — its trust set, and without the
- * `worktreeSetup` the repository's own config set — and what the run logs
+ * `worktreeSetup` (and `worktreeTeardown`) the repository's own config set — and what the run logs
  * about it, one line each. A trusted run's config is returned as it is.
  */
 export function applyRunTrust(config: Config, run: RunTrust): { config: Config; notes: string[] } {
@@ -145,6 +145,14 @@ export function applyRunTrust(config: Config, run: RunTrust): { config: Config; 
           `it is the repository's code; set worktreeSetup in a config of your own (--config) to run one`,
       );
       settings.worktreeSetup = null;
+    }
+    // Its teardown is the repository's code too (ODW extension: worktreeTeardown).
+    if (settings.worktreeTeardown) {
+      notes.push(
+        `untrusted run: not running the worktreeTeardown that the repository's own config (${run.repositoryConfig}) sets — ` +
+          `it is the repository's code; set worktreeTeardown in a config of your own (--config) to run one`,
+      );
+      settings.worktreeTeardown = null;
     }
     notes.push(
       `untrusted run: the config in use is the repository's own (${run.repositoryConfig}) — its adapters and other ` +

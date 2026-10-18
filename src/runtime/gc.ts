@@ -23,6 +23,11 @@
  *      in this runs root that is past retention. A snapshot of a run this
  *      runs root does not know is counted, never deleted.
  *   5. totals — the runs root's size, and what each kind would reclaim.
+ *   6. compose projects — `odw-*` docker compose projects (an agent's
+ *      `ODW_SLOT` is its default `COMPOSE_PROJECT_NAME`; see ../slot) whose
+ *      run is not active: what a `worktreeTeardown` did not take down.
+ *      Reported only, never removed, and only when `docker compose ls`
+ *      answers at once; ODW does not manage services.
  *
  * A run that is running, paused or waiting at a checkpoint, or that `odw pin`
  * marked (`pinned.json` in its directory), is skipped in every kind: the
@@ -38,6 +43,7 @@ import { promisify } from "node:util";
 
 import { SAFE_GIT } from "../git-safety.js";
 import { SAFETY_REF_PREFIX } from "../safety.js";
+import { runSlotPart, SLOT_PREFIX } from "../slot.js";
 import { OWNER_FILE, WORKTREE_PREFIX } from "../workspace.js";
 import { readJsonFile, readdirSafe, writeJsonAtomic } from "./fs-util.js";
 import { isRunActive } from "./run-liveness.js";
@@ -411,6 +417,58 @@ export interface SnapshotScan {
   kept: number;
 }
 
+// --- 6. compose projects --------------------------------------------------------------
+
+export interface ComposeFinding {
+  /** The compose project: `odw-<run>-<agent>`, an agent's ODW_SLOT. */
+  name: string;
+  /** As `docker compose ls` says it: `running(2)`, `exited(1)`. */
+  status: string;
+  /** The run of this runs root it belongs to; null when none here matches. */
+  run: string | null;
+}
+
+export interface ComposeScan {
+  /** Projects whose run is not active nor pinned (or unknown here): reported, never removed. */
+  leftover: ComposeFinding[];
+  /** Projects of runs still active or pinned. */
+  inUse: number;
+}
+
+/** `docker compose ls` gets this long: a daemon that does not answer at once is not looked at. */
+const COMPOSE_TIMEOUT_MS = 5_000;
+
+/**
+ * The `odw-*` compose projects `docker` (a program name or path) lists, by
+ * run; null when it cannot say — no docker, no daemon, no compose plugin.
+ */
+async function scanCompose(docker: string, runIds: string[], held: Set<string>): Promise<ComposeScan | null> {
+  let listed: unknown;
+  try {
+    const { stdout } = await run(docker, ["compose", "ls", "--all", "--format", "json", "--filter", `name=${SLOT_PREFIX}`], {
+      maxBuffer: 4 * 1024 * 1024,
+      timeout: COMPOSE_TIMEOUT_MS,
+      windowsHide: true,
+    });
+    listed = JSON.parse(stdout.trim() || "[]");
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(listed)) return null;
+  const byPart = new Map<string, string>();
+  for (const runId of runIds) byPart.set(runSlotPart(runId), runId);
+  const scan: ComposeScan = { leftover: [], inUse: 0 };
+  for (const entry of listed as Array<Record<string, unknown>>) {
+    const name = typeof entry?.Name === "string" ? entry.Name : "";
+    const m = /^odw-([a-z0-9-]+)-[a-z0-9]+$/.exec(name);
+    if (!m) continue; // the filter matches anywhere in the name
+    const runId = byPart.get(m[1]!) ?? null;
+    if (runId !== null && held.has(runId)) scan.inUse++;
+    else scan.leftover.push({ name, status: typeof entry.Status === "string" ? entry.Status : "", run: runId });
+  }
+  return scan;
+}
+
 // --- 3. run directories ---------------------------------------------------------------
 
 export interface RunFinding {
@@ -436,6 +494,8 @@ export interface GcOptions {
   tmpRoot?: string | null;
   isAlive?: typeof isProcessAlive;
   now?: number;
+  /** The docker to ask for leftover `odw-*` compose projects (`odw gc` passes "docker"); absent => not looked at. */
+  docker?: string | null;
 }
 
 export interface GcPlan {
@@ -444,6 +504,8 @@ export interface GcPlan {
   worktrees: WorktreeFinding[];
   branches: BranchScan;
   snapshots: SnapshotScan;
+  /** Leftover `odw-*` compose projects, reported only; null when not looked at or docker could not say. */
+  compose: ComposeScan | null;
   runs: RunFinding[];
   /** Runs skipped in every kind: still active, or pinned. */
   skipped: { active: string[]; pinned: string[] };
@@ -555,12 +617,15 @@ export async function planGc(opts: GcOptions): Promise<GcPlan> {
     }
   }
 
+  const compose = opts.docker ? await scanCompose(opts.docker, [...known], held) : null;
+
   return {
     runsRoot: store.root,
     olderThanDays: opts.olderThanDays,
     worktrees,
     branches,
     snapshots,
+    compose,
     runs,
     skipped,
     totals: {

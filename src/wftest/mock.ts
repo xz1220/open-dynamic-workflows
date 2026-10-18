@@ -89,6 +89,7 @@ export function mockConfig(config: Config): Config {
       quotaWait: false,
       sandbox: "none",
       worktreeSetup: null,
+      worktreeTeardown: null,
       schemaPrompt: "auto",
     },
   };

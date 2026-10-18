@@ -70,6 +70,12 @@ export interface RunCommandOptions {
    * result just carries an "aborted" note.
    */
   signal?: AbortSignal;
+  /**
+   * A cleanup command (an ODW extension: `worktreeTeardown`) — bounded by its
+   * own timeout, and not killed by {@link killAllAgentProcesses}: a stopped
+   * run's agents die, the cleanup after them still runs.
+   */
+  cleanup?: boolean;
 }
 
 /** The injectable contract for executing a command. */
@@ -198,7 +204,7 @@ export const runCommand: CommandRunner = (command, options = {}) => {
       detached: !IS_WINDOWS,
     });
 
-    if (child.pid !== undefined) live.add(child);
+    if (child.pid !== undefined && !options.cleanup) live.add(child);
 
     let stdout = "";
     const stderr = new Tail(TAIL_CHARS);

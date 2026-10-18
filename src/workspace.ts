@@ -45,7 +45,7 @@ import {
 } from "./changes.js";
 import { SAFE_GIT } from "./git-safety.js";
 import { ConfigError } from "./errors.js";
-import { prepareWorktree, type WorktreeSetupOptions } from "./worktree-setup.js";
+import { prepareWorktree, runTeardown, type WorktreeSetupOptions } from "./worktree-setup.js";
 
 const run = promisify(execFile);
 
@@ -136,7 +136,11 @@ export async function headCommit(source: string): Promise<string | null> {
 export interface OpenWorkspace {
   workspace: Workspace;
   mode: WorkspaceMode;
-  /** Remove it (worktree mode only): its links first, then the worktree. Never throws; a second call does nothing. */
+  /**
+   * Remove it (worktree mode only): its `worktreeTeardown` first (ODW
+   * extension), then its links, then the worktree. Never throws; a second
+   * call does nothing.
+   */
   close(): Promise<void>;
 }
 
@@ -144,7 +148,9 @@ export interface OpenWorkspace {
  * Open a workspace, run `fn` inside it, then clean up (worktree mode only). A
  * new worktree is made ready first — `.worktreeinclude`, then the `setup`
  * command, see {@link prepareWorktree} — and a failure there fails the call
- * with a recoverable WorktreeSetupError, after the same cleanup.
+ * with a recoverable WorktreeSetupError, after the same cleanup (the
+ * `setup.teardown` command included: a setup that failed half-way may have
+ * started something).
  */
 export async function withWorkspace<T>(
   source: string,
@@ -271,6 +277,9 @@ export async function openWorkspace(
   const close = async (): Promise<void> => {
     if (closed) return;
     closed = true;
+    // `worktreeTeardown` (ODW extension) first, while the worktree — and its
+    // links — are whole: whatever the setup or the agent started goes with it.
+    await runTeardown(wsPath, setup);
     for (const link of links) await unlink(link).catch(() => {});
     // An agent may have locked its worktree; unlock (best-effort), then
     // remove with double --force (dirty AND locked); if git still refuses,

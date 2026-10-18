@@ -175,6 +175,7 @@ import { describeSchema, pickStructured, type JsonSchema } from "./schema.js";
 import { handoffBrief, HandoffLog } from "./handoff.js";
 import { transcriptFormat, type AttemptReason } from "./transcript.js";
 import { withholdSecrets, withoutWebTools } from "./untrusted-input.js";
+import { slotName, withSlot } from "./slot.js";
 import { openWorkspace, type OpenWorkspace, type Workspace, type WorkspaceMode } from "./workspace.js";
 import type { WorktreeSetupOptions } from "./worktree-setup.js";
 
@@ -986,6 +987,8 @@ export class Bridge {
     if (this.runId !== undefined) env.ODW_RUN_ID = this.runId;
     if (options.agentId !== undefined) env.ODW_AGENT_ID = String(options.agentId);
     if (port !== null) env.ODW_PORT = String(port);
+    // An isolated agent's stable name for what it runs beside its worktree (ODW extension; see ./slot).
+    if (request.isolation === "worktree") env.ODW_SLOT = slotName(this.runId, options.agentId);
     Object.assign(env, options.notes?.env);
     // The workspace a run that stopped to ask leaves for the run told the answer (ODW extension; see ./questions).
     const asking: AskingState = { hold: false, held: null };
@@ -1976,10 +1979,13 @@ export class Bridge {
         }
       : undefined;
     const watch = !decoder && call.onOutput ? answered : undefined;
-    const { worktreeSetup, worktreeSetupTimeout } = this.config.settings;
+    const { worktreeSetup, worktreeSetupTimeout, worktreeTeardown, worktreeTeardownTimeout } = this.config.settings;
     const setup = {
       command: worktreeSetup,
       timeout: worktreeSetupTimeout,
+      // Run before the worktree goes, with the same variables (ODW extension).
+      teardown: worktreeTeardown,
+      teardownTimeout: worktreeTeardownTimeout,
       env: withAgentVars(process.env, call.env),
       signal,
       onNote: call.onNote,
@@ -2252,15 +2258,17 @@ async function letGoOfHeld(state: HandoffState): Promise<void> {
 }
 
 /** The variables an agent's processes get from ODW: only ever this call's, never inherited. */
-const AGENT_VARS = ["ODW_RUN_ID", "ODW_AGENT_ID", "ODW_PORT", "ODW_NOTES"];
+const AGENT_VARS = ["ODW_RUN_ID", "ODW_AGENT_ID", "ODW_PORT", "ODW_NOTES", "ODW_SLOT"];
 
 /**
  * `base` with the call's agent variables over it — and none of their values
  * from `base` (a worker started by another run's agent inherits that agent's),
  * so an agent without a port has no `ODW_PORT` rather than someone else's.
+ * An agent with an `ODW_SLOT` gets it as `COMPOSE_PROJECT_NAME` too, unless
+ * the user set one (see {@link withSlot}).
  */
 function withAgentVars(base: Record<string, string | undefined>, vars: Record<string, string>): Record<string, string> {
-  const env = { ...base };
+  const env = withSlot(base, vars.ODW_SLOT);
   for (const name of AGENT_VARS) delete env[name];
   return { ...env, ...vars } as Record<string, string>;
 }

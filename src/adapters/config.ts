@@ -132,6 +132,8 @@ const KNOWN_TOP_KEYS = [
   "notify",
   "worktreeSetup",
   "worktreeSetupTimeout",
+  "worktreeTeardown",
+  "worktreeTeardownTimeout",
   "portRange",
   "fanOutWarn",
   "adaptiveConcurrency",
@@ -1233,6 +1235,12 @@ function buildSettings(raw: Record<string, unknown>): Settings {
       min: 0,
       exclusiveMin: true,
     }),
+    worktreeTeardown:
+      raw["worktreeTeardown"] == null ? DEFAULT_SETTINGS.worktreeTeardown : buildWorktreeSetup(raw["worktreeTeardown"], "worktreeTeardown"),
+    worktreeTeardownTimeout: num("worktreeTeardownTimeout", DEFAULT_SETTINGS.worktreeTeardownTimeout, "a positive number of seconds", {
+      min: 0,
+      exclusiveMin: true,
+    }),
     portRange: raw["portRange"] == null ? [...DEFAULT_SETTINGS.portRange] : buildPortRange(raw["portRange"]),
     // null (unlike for the keys above, where it means "the default") and 0 both mean "never".
     fanOutWarn:
@@ -1643,13 +1651,13 @@ function buildStagger(raw: unknown): StaggerFanOut | null {
   };
 }
 
-/** Validate `worktreeSetup`: a command line for the shell, or an argv run without one. */
-function buildWorktreeSetup(raw: unknown): string | string[] {
+/** Validate `worktreeSetup` (or `worktreeTeardown`): a command line for the shell, or an argv run without one. */
+function buildWorktreeSetup(raw: unknown, key = "worktreeSetup"): string | string[] {
   if (typeof raw === "string" && raw.trim()) return raw;
   if (Array.isArray(raw) && raw.every((part) => typeof part === "string") && raw[0]) return [...(raw as string[])];
   // The kind only: a setup command may carry a token.
   throw new ConfigError(
-    `"worktreeSetup" must be a command string (run by the platform shell) or a non-empty array of strings ` +
+    `"${key}" must be a command string (run by the platform shell) or a non-empty array of strings ` +
       `(an argv, run without a shell); got ${kindOf(raw)}`,
   );
 }
