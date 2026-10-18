@@ -370,6 +370,7 @@ odw logs $RUN --agent 3  # what one agent did: its tool calls, results and text 
 odw result $RUN          # final value
 odw diff $RUN --stat     # what isolated agents changed; odw apply $RUN --agent N (or --all) lands it
 odw compare $OLD $RUN    # what changed between two runs: setup, time, cost, failures, replies (below)
+odw eval review          # cases × adapters × repeats: pass rate, cost and time per cell (below)
 odw export $RUN --otlp   # the run as OpenTelemetry traces (OTLP/JSON; --send posts it; below)
 odw bundle $RUN          # the run as one redacted file to share: $RUN.odwrun (odw view FILE shows it; below)
 odw pause|resume|stop $RUN
@@ -658,8 +659,77 @@ call key and model on its `agent_started`, and — on an adapter's first agent o
 `cli_version` event (`odw status` and `GET /api/runs/:id`'s `cliVersions` show it). It
 never delays or fails a run; a CLI that does not answer is recorded as unknown. An
 adapter whose command is node or another interpreter, a script or a relative path is
-not probed. `"recordVersions": false` turns the probes off. `odw eval` — cases ×
-adapters × repeats — builds on this next.
+not probed. `"recordVersions": false` turns the probes off. `odw eval` (below) builds
+on this.
+
+### Evaluate a workflow (ODW extension)
+
+Changed a prompt, a model tier or a CLI, and want to know if the workflow still does
+its job — reproducibly, and on every CLI you use? Put a few cases in an eval file and
+let `odw eval` run each one on each adapter, several times, and judge the runs:
+
+```bash
+odw eval review                          # .odw/evals/review.json; or a path: odw eval examples/evals/routing.json
+odw eval review --adapter claude,codex --repeats 5   # override the file's adapters and repeats
+odw eval review --json --out today.json  # the report as JSON (stdout and a file)
+odw eval review --baseline today.json    # deltas against an earlier report; exit 1 when a cell regressed
+```
+
+```json
+{
+  "workflow": "review",
+  "adapters": ["claude", "codex"],
+  "repeats": 3,
+  "concurrency": 2,
+  "timeout": 900,
+  "cases": [
+    { "name": "small-diff", "args": { "diff": "…" },
+      "checks": [
+        { "state": "done" },
+        { "path": "verdict", "equals": "approve" },
+        { "path": "findings[0].file", "matches": "\\.ts$" },
+        { "command": "jq -e '.findings | length < 5' \"$ODW_RESULT\"" },
+        { "maxCostUsd": 0.5 }, { "maxSeconds": 300 }
+      ] }
+  ]
+}
+```
+
+- **The file**: `workflow` (a name or a path, resolved like `odw run` from where you run
+  `odw eval`), `cases` (`name`, `args`, `checks`), and optionally `adapters` (each runs
+  the whole case set as the run's default adapter, like `odw run --adapter`; absent:
+  the config's default), `repeats` (default 1), `concurrency` (runs at once, default 1),
+  `budget` (tokens, each run's `--budget`), `timeout` (seconds; a run still going then is
+  stopped and fails), `name` and `description`. It is validated strictly — an unknown
+  key, a bad path or regex is an error naming where it is — before anything runs.
+- **Checks** are judged on the run's outcome, with no model: `{ path, equals }` (deep
+  equality), `{ path, contains }` (a substring, or an array element), `{ path, matches,
+  flags? }` (a regex; a non-string value is matched as its JSON), `{ path, exists }`
+  (`true`, or `false` for "not there"), `{ command, timeout? }` (exits 0, run by the
+  shell in the project directory with `ODW_RESULT` — a file holding the result as JSON —
+  and `ODW_RUN_ID` set; 300s unless it says), `{ state: "done" | "failed" | "stopped" }`,
+  `{ maxCostUsd }` (an unknown cost fails it) and `{ maxSeconds }` (the run's start to
+  end). Paths are dot/bracket notation into the result: `verdict`, `findings[0].file`,
+  `["odd key"]`; `""` is the whole result. A case without checks gets `{ "state":
+  "done" }`; one that lists checks gets exactly those, and a run passes when it meets
+  all of them.
+- **Runs**: every case × adapter × repeat is a real run in the run store, started from
+  this directory and marked `origin: "eval"` with `eval: { name, case, adapter, repeat }`
+  in its `meta.json` — `odw list` and the dashboard's run summaries say so. At most
+  `concurrency` go at once. Progress is a line per finished run on stderr; Ctrl-C stops
+  every run the eval started, keeps no report and ends `odw eval`.
+- **The table**: per case × adapter, pass k/n, median wall time, total and mean cost and
+  mean tokens; then the totals; then each failed run with the checks it missed and its
+  run id — any two runs open side by side with `odw compare`.
+- **The report** (JSON, `version: 1`; `src/eval/report.ts` documents every key) carries
+  the definition and its sha256 (`evalHash`), the workflow's sha256, the odw version, the
+  CLI versions the runs recorded, the cells, and every run with its id and failures. It
+  is kept as `<runsRoot>/_evals/<name>/<id>.json` — `GET /api/evals` lists them and `GET
+  /api/evals/:name/:id` serves one, read only — and written to `--out`.
+- **`--baseline <report.json>`** compares each cell (by case and adapter) with an earlier
+  report: pass rate, mean cost and median time, B − A. A cell whose pass rate fell
+  regressed. Exit codes: 0 when every run passed — or, with `--baseline`, when no cell
+  regressed; 1 otherwise; 2 for a usage error (nothing ran).
 
 ### Observability: OpenTelemetry traces (ODW extension)
 
@@ -2043,7 +2113,7 @@ Ranked by what users of parallel coding agents report needing
 ([research](docs/research/user-needs-2026-10.md)): adapter-reported token usage and
 cost for more CLIs (Claude Code and Codex report it today; the others are estimated) ·
 running Claude plugin
-workflows · evaluation. Full plan: [`docs/ROADMAP.md`](docs/ROADMAP.md); the
+workflows · dashboard views of `odw compare` and `odw eval`. Full plan: [`docs/ROADMAP.md`](docs/ROADMAP.md); the
 original design: [`docs/dynamic-workflows-tech-plan.md`](docs/dynamic-workflows-tech-plan.md).
 Background on the Claude Code dialect ODW aligns with:
 [`docs/dynamic-workflows-research.md`](docs/dynamic-workflows-research.md).

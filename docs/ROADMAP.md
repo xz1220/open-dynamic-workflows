@@ -102,7 +102,7 @@
 
 - 可选的容器运行器（默认断网）。（#6，L）
 - ✅ **`odw compare <runA> <runB> [--json] [--agent <label|id>]`**（ODW 扩展；#15 的前半）：每次运行记录它用了什么——`meta.json` 中的 odw 版本与工作流源码的 sha256，`run_started` 上会改变行为的设置与各适配器定义的指纹，`agent_started` 上的调用键与模型，以及各适配器首次派发时与 agent 并行、3 秒超时的 `<cli> --version`（`cli_version` 事件，不拖慢、不导致失败；node、解释器、脚本与相对路径不探测；`recordVersions: false` 关闭）；纯函数比较器按 label → resume 调用键 → phase 内顺序匹配 agent，给出配置差异、运行总计（耗时、token、花费、完成/失败，含 B − A）、每个 agent 的状态/适配器/模型/耗时/花费/尝试次数/保留 diff 统计与回复对比（文本为有上限的统一 diff，结构化回复为 JSON 路径 diff）；终端表格不超过 100 列，更差标红、更好标绿；`GET /api/compare?a=&b=` 只读返回同一结构（看板视图待接入）。
-- `odw eval`：用例 × 适配器 × 重复次数，输出通过率、成本和延迟——在 `odw compare` 记录的运行元数据之上构建（下一步）。（#15，L）
+- ✅ **`odw eval <file|name> [--adapter a,b] [--repeats N] [--json] [--out F] [--baseline F]`**（ODW 扩展；#15 的后半）：eval 文件（`.odw/evals/<name>.json`，与 `.odw/workflows/` 一样纳入版本库）列出工作流、用例 `{ name, args, checks }`、可选的适配器矩阵（每个适配器作为运行默认适配器跑完全部用例）、`repeats`、`concurrency`、每次运行的 `budget` 与 `timeout`，启动前严格校验；检查不调用模型——结果路径（点/方括号写法）上的 `equals`/`contains`/`matches`/`exists`、在项目目录中以 0 退出的 `command`（带 `ODW_RESULT` 与 `ODW_RUN_ID`）、`state`、`maxCostUsd`、`maxSeconds`，未写检查即 `state: done`；每个用例 × 适配器 × 重复都是运行目录里标记 `origin: "eval"` 与 `eval: { name, case, adapter, repeat }` 的真实运行（`odw list` 与运行摘要可区分），最多 `concurrency` 个并行，超时即停止并判失败，Ctrl-C 停止本次启动的全部运行；表格按单元格给出通过 k/n、耗时中位数、总/平均花费与平均 token，附总计和带检查与运行 id 的失败；带 `version` 的 JSON 报告含定义哈希、工作流 sha256、odw 与各 CLI 版本（取自 `cli_version` 事件）和每个运行 id（可直接 `odw compare`），保存在 `<runsRoot>/_evals/<name>/<id>.json`；`--baseline` 给出每个单元格通过率、花费、延迟的 B − A 与退步的单元格；退出码 0（全部通过或无退步）/ 1 / 2（用法错误）；只读的 `GET /api/evals` 与 `GET /api/evals/:name/:id`，`web/src/types.ts` 已有类型（看板视图待接入）；示例 `examples/evals/routing.json`。
 - ✅ **可分享的脱敏运行包；看板远程只读访问**（ODW 扩展；#11/#13）：`odw bundle <run> [--out FILE] [--no-transcripts] [--max-bytes N]` 写出一个自包含的 `<run>.odwrun`（JSON：meta 只保留描述运行的字段、status 去掉 pid、事件、保存的 agent 结果、保留的 diff、transcript 与 stderr、结果与错误），全部经过运行的脱敏器（令牌形态与环境中密钥变量的值，即使 `redact: false`），被替换处标 `redacted: true`，绝不包含配置文件、环境变量与 notify/otel 设置；默认 32 MiB 上限。`odw view FILE`（`odw serve --open FILE`）读取前先查大小，校验运行 id 正则、agent id 为非负整数（最多 10 000 个）与各字段类型，解包到 0700 的私有临时目录（文件名固定，退出即删），看板只展示这一次运行并标「分享的运行包」，所有写操作 409（loopback 上也是）。`odw serve --token [VALUE]`：每个 `/api` 请求与 SSE 需要令牌（Bearer 头、`?token=` 换取 HttpOnly SameSite=Strict cookie、或该 cookie），常数时间比较，按地址限制错误次数（429）；不带值时生成随机令牌，只在 URL（`/#token=…`）里打印一次；HTML 外壳无需令牌并显示「需要令牌」界面；非 loopback 绑定上写操作无论有无令牌一律拒绝（与原计划「写操作带令牌鉴权」不同：远程写入仍不开放），不带 `--token` 的非 loopback 绑定打印醒目警告。看板 Job 头部的「分享」复制 `odw bundle <run>`。
 - 发布方言双兼容测试套件，作为社区工作流的兼容性标准。（#13）
 
@@ -121,7 +121,7 @@
 | ✅ 本轮 | 「待你处理」：Activity 首屏列出等待决定的检查点，以及过去一天失败或失去 worker 的运行（附 `odw resume` 命令）；官网新增「为长任务而生」一节 |
 | ✅ 本轮 | 执行记录侧栏（运行中实时跟随、追加不重绘）；Jobs 页「即将运行」（下一次触发、cron 的自然语言描述、上次运行）；检查点关卡节点与等待提醒；抽屉里的权限档位、回退链、未达成的预期与被拒的工具调用；DAG 节点上的回退链与被拒计数 |
 | ✅ 本轮 | 额度暂停卡片（重置时间、倒计时、立即继续）与运行卡片上的「暂停至」；花费小票：按阶段、按适配器与花费最多的 agent（`$` 键） |
-| ⏳ | 运行之间的对比（`odw compare`：`GET /api/compare` 与 `web/src/types.ts` 的 `RunComparison` 已就绪）；检查点审批时编辑 payload；MCP 状态与 codex 用量在抽屉中的呈现 |
+| ⏳ | 运行之间的对比（`odw compare`：`GET /api/compare` 与 `web/src/types.ts` 的 `RunComparison` 已就绪）；eval 报告视图（`odw eval`：`GET /api/evals[/:name/:id]` 与 `EvalReport`、`EvalReportSummary` 已就绪，eval 运行的摘要带 `eval` 标记）；检查点审批时编辑 payload；MCP 状态与 codex 用量在抽屉中的呈现 |
 
 开发方式：`node web/demo-fixtures.mjs <runs> <proj> --live` 生成实时模拟数据，`node web/dev.mjs --api http://127.0.0.1:4317` 启动开发服务器（每次刷新都会重新构建）。
 

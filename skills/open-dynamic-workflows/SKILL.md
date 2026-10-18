@@ -188,6 +188,7 @@ odw approve|reject $RUN     # answer a checkpoint() the run waits at — only on
                             # (approve --payload JSON|@file approves the user's edit; --edit needs their terminal)
 odw compare $OLD $RUN       # what changed between two runs: setup, time, cost, failures, replies (ODW extension)
                             #   --agent <label|id>: one agent's whole reply diff; --json for scripts
+odw eval review             # cases × adapters × repeats: pass rate, cost, time per cell (ODW extension; below)
 odw list                    # all runs
 ```
 
@@ -380,6 +381,37 @@ odw schedule remove digest     # delete the OS entry and the definition
   expression is cron's five fields (`@daily`, `L`, `#` are refused).
 - A scheduled run that reaches a `checkpoint()` holds back the next ones until
   it is answered: give unattended checkpoints a `timeout`.
+
+### Evaluate a workflow (ODW extension)
+
+To check a workflow still does its job after a prompt, model or CLI change —
+on each adapter, several times — write an eval file and run `odw eval`. Every
+run costs what a normal run costs: confirm the cases × adapters × repeats
+with the user first.
+
+```bash
+odw eval review                                    # .odw/evals/review.json (or a path to any .json)
+odw eval review --adapter claude,codex --repeats 3 # override the file's adapters and repeats
+odw eval review --json --out base.json             # the report as JSON; also kept under <runsRoot>/_evals/
+odw eval review --baseline base.json               # deltas per cell; exit 1 when a pass rate fell
+```
+
+```json
+{ "workflow": "review", "adapters": ["claude", "codex"], "repeats": 3, "concurrency": 2, "timeout": 900,
+  "cases": [{ "name": "small-diff", "args": { "diff": "…" },
+              "checks": [{ "state": "done" }, { "path": "verdict", "equals": "approve" }, { "maxCostUsd": 0.5 }] }] }
+```
+
+- Checks need no model: `{ path, equals | contains | matches | exists }` on the
+  run's result (`findings[0].file`; `""` is all of it), `{ command }` (exits 0;
+  `ODW_RESULT` names a file with the result JSON, `ODW_RUN_ID` the run),
+  `{ state }`, `{ maxCostUsd }`, `{ maxSeconds }`. No checks means
+  `{ "state": "done" }`.
+- Each case × adapter × repeat is a real run marked `origin: "eval"`; the table
+  gives pass k/n, median time, cost and tokens per cell, then each failure with
+  its check and run id (open two with `odw compare`). Exit 0 all passed (or,
+  with `--baseline`, nothing regressed), 1 otherwise, 2 for a usage error.
+- The whole file format and report: [`references/primitives.md`](references/primitives.md#odw-eval-odw-extension).
 
 ## Adapters
 

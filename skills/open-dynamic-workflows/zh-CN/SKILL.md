@@ -163,6 +163,7 @@ odw approve|reject $RUN     # 回答运行正在等待的 checkpoint()——只�
                             # （approve --payload JSON|@file 批准用户修改后的内容；--edit 需要用户的终端）
 odw compare $OLD $RUN       # 两次运行之间变了什么:配置、耗时、花费、失败、回复(ODW 扩展)
                             #   --agent <label|id>:某个 agent 的完整回复 diff;--json 供脚本使用
+odw eval review             # 用例 × 适配器 × 重复次数：每个单元格的通过率、花费、耗时（ODW 扩展；见下文）
 odw list                    # 所有运行
 ```
 
@@ -317,6 +318,34 @@ odw schedule remove digest     # 删除系统条目和定义
   会被拒绝）。
 - 定时运行遇到 `checkpoint()` 时，在得到答复前会挡住后续的运行：无人值守的检查点要设
   `timeout`。
+
+### 评估工作流（ODW 扩展）
+
+想确认改了提示词、模型或 CLI 之后工作流仍然把事情做对——在每个适配器上、各跑几次——就写一个
+eval 文件，然后运行 `odw eval`。每次运行的花费与普通运行相同：先和用户确认用例 × 适配器 ×
+重复次数。
+
+```bash
+odw eval review                                    # .odw/evals/review.json（或任意 .json 的路径）
+odw eval review --adapter claude,codex --repeats 3 # 覆盖文件中的 adapters 与 repeats
+odw eval review --json --out base.json             # 以 JSON 输出报告；同时保存在 <runsRoot>/_evals/ 下
+odw eval review --baseline base.json               # 每个单元格的变化；通过率下降时以 1 退出
+```
+
+```json
+{ "workflow": "review", "adapters": ["claude", "codex"], "repeats": 3, "concurrency": 2, "timeout": 900,
+  "cases": [{ "name": "small-diff", "args": { "diff": "…" },
+              "checks": [{ "state": "done" }, { "path": "verdict", "equals": "approve" }, { "maxCostUsd": 0.5 }] }] }
+```
+
+- 检查不调用模型：对运行结果的 `{ path, equals | contains | matches | exists }`（`findings[0].file`；
+  `""` 表示整个结果）、`{ command }`（以 0 退出；`ODW_RESULT` 指向存放结果 JSON 的文件，
+  `ODW_RUN_ID` 为运行 id）、`{ state }`、`{ maxCostUsd }`、`{ maxSeconds }`。不写检查即
+  `{ "state": "done" }`。
+- 每个用例 × 适配器 × 重复都是一次标记为 `origin: "eval"` 的真实运行；表格按单元格给出通过 k/n、
+  耗时中位数、花费与 token，然后列出每个失败及其检查与运行 id（用 `odw compare` 对照任意两次）。
+  全部通过（或带 `--baseline` 时没有退步）退出 0，否则 1，用法错误为 2。
+- 完整的文件格式与报告：[`references/primitives.md`](references/primitives.md) 的「odw eval（ODW 扩展）」一节。
 
 ## 适配器
 

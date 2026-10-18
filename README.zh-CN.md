@@ -333,6 +333,7 @@ odw logs $RUN --agent 3  # 某个 agent 做了什么:它的工具调用、结果
 odw result $RUN          # 最终值
 odw diff $RUN --stat     # 隔离 agent 改了什么;odw apply $RUN --agent N(或 --all)落地
 odw compare $OLD $RUN    # 两次运行之间变了什么:配置、耗时、花费、失败、回复(见下文)
+odw eval review          # 用例 × 适配器 × 重复次数:每个单元格的通过率、花费与耗时(见下文)
 odw export $RUN --otlp   # 把运行导出为 OpenTelemetry trace(OTLP/JSON;--send 直接发送;见下文)
 odw bundle $RUN          # 把运行写成一个可分享的脱敏文件:$RUN.odwrun(用 odw view FILE 查看;见下文)
 odw pause|resume|stop $RUN
@@ -592,7 +593,68 @@ odw compare $OLD $NEW --json           # 同一份对比,供脚本使用——GE
 第一次派发 agent 时——与 agent 并行执行、3 秒超时的 `<cli> --version`,记为 `cli_version`
 事件(`odw status` 和 `GET /api/runs/:id` 的 `cliVersions` 会显示)。它绝不拖慢或导致运行失败;
 不回应的 CLI 记为未知版本。命令为 node 或其他解释器、脚本或相对路径的适配器不做探测。
-`"recordVersions": false` 关闭探测。下一步的 `odw eval`(用例 × 适配器 × 重复次数)将基于此构建。
+`"recordVersions": false` 关闭探测。`odw eval`(见下文)就建立在这些记录之上。
+
+### 评估工作流(ODW 扩展)
+
+改了提示词、模型分层或 CLI 之后,想知道工作流是否仍然把事情做对——可复现,并且在你用的每个
+CLI 上都成立?把几个用例写进一个 eval 文件,`odw eval` 会让每个用例在每个适配器上各跑若干次,
+并逐次判定:
+
+```bash
+odw eval review                          # .odw/evals/review.json;也可以给路径:odw eval examples/evals/routing.json
+odw eval review --adapter claude,codex --repeats 5   # 覆盖文件里的 adapters 与 repeats
+odw eval review --json --out today.json  # 以 JSON 输出报告(stdout 和文件)
+odw eval review --baseline today.json    # 与之前的报告对比;有单元格退步时以 1 退出
+```
+
+```json
+{
+  "workflow": "review",
+  "adapters": ["claude", "codex"],
+  "repeats": 3,
+  "concurrency": 2,
+  "timeout": 900,
+  "cases": [
+    { "name": "small-diff", "args": { "diff": "…" },
+      "checks": [
+        { "state": "done" },
+        { "path": "verdict", "equals": "approve" },
+        { "path": "findings[0].file", "matches": "\\.ts$" },
+        { "command": "jq -e '.findings | length < 5' \"$ODW_RESULT\"" },
+        { "maxCostUsd": 0.5 }, { "maxSeconds": 300 }
+      ] }
+  ]
+}
+```
+
+- **文件**:`workflow`(名字或路径,与 `odw run` 一样从运行 `odw eval` 的目录解析)、`cases`
+  (`name`、`args`、`checks`),以及可选的 `adapters`(每个适配器都以运行默认适配器的身份跑完
+  全部用例,等同 `odw run --adapter`;省略时用配置的默认适配器)、`repeats`(默认 1)、
+  `concurrency`(同时进行的运行数,默认 1)、`budget`(token,作为每次运行的 `--budget`)、
+  `timeout`(秒;到时仍在进行的运行会被停止并判为失败)、`name` 与 `description`。文件会被严格
+  校验——未知字段、错误的路径或正则都会报错并指出位置——在任何运行开始之前。
+- **检查**只看运行结果,不调用模型:`{ path, equals }`(深度相等)、`{ path, contains }`(子串,
+  或数组中的某个元素)、`{ path, matches, flags? }`(正则;非字符串值按其 JSON 匹配)、
+  `{ path, exists }`(`true`,或 `false` 表示"不存在")、`{ command, timeout? }`(在项目目录中由
+  shell 执行并以 0 退出,环境变量 `ODW_RESULT`——存放结果 JSON 的文件——与 `ODW_RUN_ID` 已设置;
+  默认 300 秒)、`{ state: "done" | "failed" | "stopped" }`、`{ maxCostUsd }`(花费未知即不通过)
+  和 `{ maxSeconds }`(运行从开始到结束)。路径用点/方括号写法指向结果:`verdict`、
+  `findings[0].file`、`["odd key"]`;`""` 表示整个结果。没写检查的用例默认 `{ "state": "done" }`;
+  写了检查的用例只判这些检查,全部满足才算通过。
+- **运行**:每个用例 × 适配器 × 重复都是运行目录里的一次真实运行,从当前目录启动,在 `meta.json`
+  中标记 `origin: "eval"` 与 `eval: { name, case, adapter, repeat }`——`odw list` 和看板的运行摘要
+  都会显示。同时最多 `concurrency` 个。每完成一次运行在 stderr 打印一行进度;Ctrl-C 会停止本次
+  eval 启动的所有运行,不保存报告,并结束 `odw eval`。
+- **表格**:每个用例 × 适配器一行——通过 k/n、耗时中位数、总花费与平均花费、平均 token;然后是
+  总计;再列出每个失败的运行、它没通过的检查与运行 id——任意两次运行都可以用 `odw compare` 对照。
+- **报告**(JSON,`version: 1`;`src/eval/report.ts` 列出每个字段)包含定义及其 sha256
+  (`evalHash`)、工作流的 sha256、odw 版本、运行记录到的 CLI 版本、各单元格,以及每次运行的 id
+  和失败项。报告保存在 `<runsRoot>/_evals/<name>/<id>.json`——`GET /api/evals` 列出、
+  `GET /api/evals/:name/:id` 返回单份,均只读——并写到 `--out`。
+- **`--baseline <report.json>`** 按用例与适配器把每个单元格与之前的报告对比:通过率、平均花费、
+  耗时中位数,B − A。通过率下降的单元格即为退步。退出码:全部运行通过——或带 `--baseline` 时没有
+  单元格退步——为 0;否则为 1;用法错误为 2(没有任何运行开始)。
 
 ### 可观测性:OpenTelemetry trace(ODW 扩展)
 
@@ -1796,7 +1858,7 @@ node web/dev.mjs --api http://127.0.0.1:4317     # → http://127.0.0.1:5173
 
 按并行 coding agent 用户反馈的需求排序([调研](docs/research/user-needs-2026-10.md)):
 更多 CLI 上报的真实 token 用量与花费(目前 Claude Code 与 Codex 已上报,其余仍按估算)·
-运行 Claude plugin 工作流 · 评测。完整规划见 [`docs/ROADMAP.md`](docs/ROADMAP.md);
+运行 Claude plugin 工作流 · `odw compare` 与 `odw eval` 的看板视图。完整规划见 [`docs/ROADMAP.md`](docs/ROADMAP.md);
 最初的设计见 [`docs/dynamic-workflows-tech-plan.md`](docs/dynamic-workflows-tech-plan.md);
 ODW 所对齐的 Claude Code 方言背景见
 [`docs/dynamic-workflows-research.md`](docs/dynamic-workflows-research.md)。

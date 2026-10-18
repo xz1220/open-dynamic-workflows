@@ -93,6 +93,19 @@ changed, and run on a schedule — and a dashboard redesigned to watch them.
   in `meta.json`, its behaviour settings on `run_started`, and each adapter CLI's
   `--version` on its first dispatch (a `cli_version` event, never delaying the run;
   `"recordVersions": false` turns it off) (**ODW extension**).
+- Evaluate a workflow (**ODW extension**): `odw eval <file|name>` runs the cases of an
+  eval file (`.odw/evals/<name>.json`) on each of its `adapters`, `repeats` times each,
+  at most `concurrency` at once, as real runs marked `origin: "eval"` (shown by `odw
+  list` and the run summaries), and judges each with checks that need no model — `{
+  path, equals | contains | matches | exists }` on the result, a `{ command }` that
+  exits 0 with `ODW_RESULT` and `ODW_RUN_ID` set, `{ state }`, `{ maxCostUsd }`, `{
+  maxSeconds }`; a per-run `timeout` stops a run and fails it. The table gives pass
+  k/n, median time, cost and tokens per case × adapter, then each failure with its
+  check and run id. The JSON report (`--json`, `--out`, kept under
+  `<runsRoot>/_evals/<name>/`, served read-only by `GET /api/evals[/:name/:id]`) has a
+  `version`, the definition's hash, the odw and CLI versions and every run id;
+  `--baseline` adds per-cell deltas and exits 1 when a pass rate fell. Ctrl-C stops
+  every run the eval started. Example: `examples/evals/routing.json`.
 - OpenTelemetry traces (**ODW extension**): `odw export <run> --otlp [--out FILE | --send]`
   writes a run as OTLP/JSON after the GenAI semantic conventions — `invoke_workflow`,
   `phase`, `invoke_agent` (provider, models, usage, cost, attempts, failure reason),
