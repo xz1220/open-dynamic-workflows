@@ -28,7 +28,7 @@
  *   odw bundle <run_id> [--out FILE] [--no-transcripts] [--max-bytes N]   (a shareable run, runtime/bundle.ts)
  *   odw serve FILE.odwrun | odw view FILE   (a bundle, read-only); odw serve --token [VALUE] (runtime/serve-auth.ts)
  *   odw eval <file|name> [--adapter a,b] [--repeats N] [--json] [--out F] [--baseline F]   (src/eval/)
- *   odw conformance [--json] [--case N] [--dir DIR]   (the dialect conformance suite, src/conformance/)
+ *   odw conformance [--json] [--case N] [--dir DIR] [--strict]   (the dialect conformance suite, src/conformance/)
  *   odw test [<wf|file>] [--case N] [--json] [--keep]   (scripted replies, no model; src/wftest/)
  *   odw run <wf> --dry | --record [--record-to FILE]    (stub replies; a run kept as a test case)
  *   odw note <text…> | odw notes [<run_id>] [--json]   (the run's notes board, runtime/notes-view.ts)
@@ -36,7 +36,7 @@
  *   odw estimate <wf> [--args JSON|@file] [--json]; odw run --estimate [--yes]   (from earlier runs, runtime/estimate-cli.ts)
  *   odw replay <run_id> --agent <id|label> [--prompt @file|TEXT] [--adapter A] [--model M]   (runtime/replay.ts)
  *   odw run <wf> --break <phase|label>[,…] | --step   (a checkpoint before them; src/breaks.ts)
- *   odw check <script.js|name> [--json]   (the loader's checks, with a code frame; src/check.ts)
+ *   odw check <script.js|name> [--json] [--capabilities]   (the loader's checks, with a code frame; src/check.ts)
  *   odw new [<template>] [--name N] [--force] [--yes]   (a workflow + starter test from an embedded template; src/new.ts)
  *   odw gc [--yes] [--older-than 30d] [--json] | odw pin <run_id> [--remove]   (what odw left on disk; runtime/gc.ts)
  *   odw restore <run_id> [--check] [--force]   (the working tree before the run's first in-place agent; runtime/restore.ts)
@@ -254,6 +254,7 @@ export function helpText(): string {
     "                                                     --prompt @file|TEXT, --adapter A, --model M replace its own; then odw compare",
     "  odw run <wf> --break <phase|label>[,…] | --step    stop for a decision before those phases/agents, or every phase (ODW extension)",
     "  odw check <script.js|name> [--json]                check a workflow loads: errors with line, column and a code frame",
+    "                                                     --capabilities lists what it names outside the dialect (process, require, import(, …)",
     "  odw new [<template>] [--name N] [--force] [--yes]  a workflow + starter test in .odw/ from a built-in template; no args lists them",
     "  odw gc [--yes] [--older-than 30d] [--json]         report orphaned worktrees, keep branches, old transcripts; --yes deletes (ODW extension)",
     "  odw pin <run_id> [--remove]                        odw gc skips a pinned run; no run id lists them",

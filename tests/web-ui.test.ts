@@ -1137,6 +1137,22 @@ test("a run with untrusted input has a trust line in its header: what said so, i
   store.focusRun(null);
 });
 
+test("a run whose body ran in a strict script context says so on the trust line, alone or after its untrusted input", async () => {
+  const { trustLine } = await import("../web/src/views/job.ts");
+  const alone = trustLine({ scriptContext: "strict" });
+  assert.match(alone, /^<p class="trust-line"><span class="tag script-strict" title="[^"]*not a security boundary">strict script context<\/span><\/p>$/);
+  const both = trustLine({ scriptContext: "strict", untrustedInput: { why: "trigger:gh", args: ["*"], approve: true, permissions: "read", sandboxed: true } });
+  assert.match(both, /untrusted input<\/span>.*<span>sandboxed<\/span><span class="sep">·<\/span><span class="tag script-strict"[^>]*>strict script context<\/span><\/p>$/);
+  const view: JobViewState = { cpNote: "", tab: "graph", selectedAi: null, reviewAi: null, zoom: 1, logQuery: "", logTypes: new Set(["agent"]), logLimit: 600, follow: true, motion: false };
+  store.focusRun("20260101-000000-aaaaaa");
+  store.run = detail([], { scriptContext: "strict" });
+  store.runEvents = [];
+  assert.match(renderJob(view, NOW), /<p class="trust-line"><span class="tag script-strict"/);
+  store.run = detail([]);
+  assert.doesNotMatch(renderJob(view, NOW), /script-strict/);
+  store.focusRun(null);
+});
+
 test("a pinned run, and one whose transcripts odw gc trimmed, say so in the header", () => {
   const view: JobViewState = { cpNote: "", tab: "graph", selectedAi: null, reviewAi: null, zoom: 1, logQuery: "", logTypes: new Set(["agent"]), logLimit: 600, follow: true, motion: false };
   store.focusRun("20260101-000000-aaaaaa");

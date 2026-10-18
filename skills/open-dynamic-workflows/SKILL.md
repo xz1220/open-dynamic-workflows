@@ -265,6 +265,7 @@ odw replay $RUN --agent 3   # that one agent() call again, as a new run, at the 
                             #   --prompt @file|TEXT, --adapter A, --model M replace its own; prints the compare command
 odw run wf.js --break Review  # stop for a decision (a checkpoint) before phase/label "Review"; --step: every phase
 odw check wf.js             # does it load? file:line:col, a code frame, portability warnings; exit 0/1
+                            #   --capabilities: what it names outside the dialect (process, require, import(, …) and the ODW extensions it calls
 odw eval review             # cases × adapters × repeats: pass rate, cost, time per cell (ODW extension; below)
 odw test review             # scripted replies, no model, $0: does the logic hold? (ODW extension; below)
 odw run review --dry        # every agent stubbed: the phase tree and agent counts, $0 (ODW extension)
@@ -811,6 +812,7 @@ it runs the model.
 | Mistake | Correction |
 | --- | --- |
 | Importing primitives or other modules in the script | Primitives are injected globals; any extra top-level `import`/`export` is rejected by the loader. |
+| Reaching for `process`, `require`, `fetch`, `console` or timers in a script | Not in the dialect: Claude Code gives a bare ECMAScript realm, and so does ODW's strict script context (`scriptContext: "strict"`, ODW extension) — the default for triggered, plugin and untrusted runs, where such a name fails the run with a message saying so. Pass data in `args`, log with `log()`, let an agent fetch; `odw check --capabilities` lists what a script names. `vm` is not a security boundary. |
 | Variables, spreads, or function calls inside `meta` | `meta` must be a pure literal. |
 | Treating all failures in `parallel`/`pipeline` alike | Recoverable failures become `null`; stop, budget and dispatch-limit errors abort. Retry missing results or fail when every item is required; filter only when partial output is acceptable. |
 | Branching on which agent finished first | Breaks reproducibility; keep reductions order-independent. |

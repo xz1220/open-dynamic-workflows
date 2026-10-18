@@ -12,6 +12,7 @@ import type { CostGate } from "../forecast.js";
 import type { QuestionPolicy } from "../questions.js";
 import type { LimitSpec } from "../limits.js";
 import type { AccountOf } from "./accounts.js";
+import type { ScriptContext } from "../script-context.js";
 
 /**
  * Which per-call options this CLI can carry, and the argv flag that carries
@@ -671,6 +672,16 @@ export interface Settings {
    * for in-place agents alone.
    */
   destructiveGit: "warn" | "fail";
+  /**
+   * Where a workflow body runs (an ODW extension; see ../script-context):
+   * `"host"` in the worker's own context, `"strict"` in a fresh vm context
+   * with only the primitives and standard built-ins — no `process`,
+   * `require`, `import()`, `fetch`. Null (the default): strict for a run a
+   * trigger started, a Claude Code plugin's workflow, and a run whose input
+   * or repository is untrusted; host for the rest. A run's worker sets it to
+   * the context it chose. `vm` is not a security boundary.
+   */
+  scriptContext: ScriptContext | null;
   /**
    * What odw keeps and serves of its agents — transcripts, saved results,
    * events, the run's error and result, webhook payloads — has its likely

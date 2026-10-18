@@ -2,7 +2,7 @@
  * `odw conformance` — check this ODW against the dialect conformance suite
  * (./suite; the format is the repository's conformance/README.md).
  *
- *   odw conformance [--json] [--case N|name]... [--dir DIR]
+ *   odw conformance [--json] [--case N|name]... [--dir DIR] [--strict]
  *
  * Runs every case (or the `--case` ones) one after another, each as a real
  * odw run on the suite's mock agent, and prints a line per case: ✔ or ✖, its
@@ -10,6 +10,8 @@
  * then each expectation it missed. `--json` prints the report instead.
  * `--dir` names another suite directory (one with cases/ and
  * mock-agent.mjs); the default is the suite this odw ships with.
+ * `--strict` runs every case in a strict script context (an ODW extension;
+ * see ../script-context) — the bare realm Claude Code gives a script.
  *
  * Exit 0 when every case passed, 1 when any failed (unspecified ones too:
  * they pin what ODW does), 2 for a usage error — an unknown case, a suite
@@ -21,6 +23,7 @@ import { parseArgs } from "node:util";
 
 import { detectCaps, glyphs, palette, sanitizeText } from "../tty.js";
 import { VERSION } from "../version.generated.js";
+import type { ScriptContext } from "../script-context.js";
 import {
   checkCase,
   ConformanceFormatError,
@@ -38,6 +41,8 @@ export interface ConformanceReport {
   version: number;
   odwVersion: string;
   suite: string;
+  /** The script context every case ran in: "strict" under --strict, else each run's own ("host"). */
+  scriptContext: ScriptContext;
   passed: number;
   failed: number;
   cases: CaseReport[];
@@ -52,10 +57,11 @@ export async function cmdConformance(rest: string[]): Promise<number> {
       json: { type: "boolean" },
       case: { type: "string", multiple: true },
       dir: { type: "string" },
+      strict: { type: "boolean" },
     },
   });
   if (positionals.length > 0) {
-    process.stderr.write("usage: odw conformance [--json] [--case N|name]... [--dir DIR]\n");
+    process.stderr.write("usage: odw conformance [--json] [--case N|name]... [--dir DIR] [--strict]\n");
     return 2;
   }
   const dir = values.dir !== undefined ? resolve(values.dir) : defaultSuiteDir();
@@ -84,13 +90,14 @@ export async function cmdConformance(rest: string[]): Promise<number> {
     const unspecified = cases.filter((c) => c.claudeCode === "unspecified").length;
     process.stdout.write(
       `odw conformance — ${cases.length} case${cases.length === 1 ? "" : "s"} from ${dir}` +
+        (values.strict ? " in a strict script context" : "") +
         (unspecified > 0 ? paint.dim(` (${unspecified} unspecified in Claude Code's docs)`) : "") +
         "\n",
     );
   }
   const reports: CaseReport[] = [];
   for (const c of cases) {
-    const report = await checkCase(c, dir);
+    const report = await checkCase(c, dir, values.strict ? { scriptContext: "strict" } : {});
     reports.push(report);
     if (text) process.stdout.write(formatCase(report, paint, g));
   }
@@ -100,6 +107,7 @@ export async function cmdConformance(rest: string[]): Promise<number> {
       version: CONFORMANCE_REPORT_VERSION,
       odwVersion: VERSION,
       suite: dir,
+      scriptContext: values.strict ? "strict" : "host",
       passed: reports.length - failed,
       failed,
       cases: reports,

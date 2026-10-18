@@ -325,6 +325,8 @@ export interface RunDetail extends RunSummary {
    * agents' tier and whether a sandbox boxed them in. Absent: the user's input.
    */
   untrustedInput?: UntrustedInput;
+  /** The workflow body ran in a strict script context (ODW extension): only the primitives and standard built-ins. */
+  scriptContext?: "strict";
   /** checkpoint() calls waiting for approval (ODW extension). */
   pendingCheckpoints?: PendingCheckpoint[];
   /** This run resolved a conflict of that run's agent (`odw apply --resolve`; ODW extension). */

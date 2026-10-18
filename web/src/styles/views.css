@@ -909,6 +909,10 @@ ul.mcp li {
   border-color: var(--sig-line);
   background: var(--sig-soft);
 }
+.tag.script-strict {
+  color: var(--ink);
+  border-color: var(--ink-2);
+}
 .trust-line .unboxed {
   color: var(--alarm-ink);
   font-weight: 600;

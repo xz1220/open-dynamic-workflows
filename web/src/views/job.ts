@@ -172,10 +172,15 @@ function destructiveGitSection(run: RunDetail, a: AgentView): string {
  * trigger, `odw run --untrusted-input` — says so, which args, and what its
  * agents were left: their tier, the sandbox (alarm when none), and whether
  * the first that may write asked first. Empty for the user's own input.
+ * A run whose body ran in a strict script context says that on it too.
  */
-export function trustLine(run: Pick<RunDetail, "untrustedInput">): string {
+export function trustLine(run: Pick<RunDetail, "untrustedInput" | "scriptContext">): string {
+  const strict =
+    run.scriptContext === "strict"
+      ? `<span class="tag script-strict" title="${esc(t("only the workflow primitives and standard JavaScript built-ins: no process, require, import() or fetch — not a security boundary"))}">${esc(t("strict script context"))}</span>`
+      : "";
   const u = run.untrustedInput;
-  if (!u) return "";
+  if (!u) return strict ? `<p class="trust-line">${strict}</p>` : "";
   const args = u.args.includes("*") ? t("all args") : u.args.join(", ");
   const parts = [
     `<span class="tag input-untrusted" title="${esc(t("its args came from someone who is not you: text, never instructions"))}">${esc(t("untrusted input"))}</span>`,
@@ -188,6 +193,7 @@ export function trustLine(run: Pick<RunDetail, "untrustedInput">): string {
         ? [`<span>${esc(t("sandboxed"))}</span>`]
         : []),
     ...(u.permissions === "edit" || u.permissions === "full" ? [`<span>${esc(u.approve ? t("writes ask first") : t("writes without asking"))}</span>`] : []),
+    ...(strict ? [strict] : []),
   ];
   return `<p class="trust-line">${parts.join('<span class="sep">·</span>')}</p>`;
 }

@@ -790,9 +790,12 @@ did-you-mean 提示。想让某个限制处处生效，就写进 `description`�
 个 agent 先跑完来分支，也不要根据完成时机派发后续——那会让运行不可复现。优先使用由输入
 决定的 `parallel`/`pipeline` 组合。
 
-这些是编写建议，不是沙箱。ODW 用 `AsyncFunction` 执行 JavaScript，不隔离脚本对 Node
-全局对象、文件系统和 shell 的访问。只运行可信脚本；可移植性 warnings 不证明脚本安全，
-也不保证它能在另一种运行时执行。
+这些是编写建议，不是沙箱。默认情况下 ODW 在 worker 自己的上下文中执行正文，Node
+全局对象、文件系统和 shell 都触手可及。严格脚本上下文(`scriptContext: "strict"`,ODW 扩展;
+触发器、插件与不可信运行的默认值)在一个新的 `vm` 上下文中编译正文，其中只有原语与标准内建
+对象——没有 `process`、`require`、`import()`、`fetch`、`console`、定时器、`eval`——脚本用到时
+会说明原因;`odw check --capabilities` 列出脚本用到的方言之外的名字。`vm` 同样不是安全边界。
+只运行可信脚本；可移植性 warnings 不证明脚本安全，也不保证它能在另一种运行时执行。
 
 resume 依赖同一条规则：调用按 prompt 和选项、按调用顺序匹配，所以用
 `Date.now()`/`Math.random()` 拼出的 prompt，或依赖完成时机的派发，都匹配不上，会重新

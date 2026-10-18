@@ -1025,10 +1025,16 @@ Out-of-order execution is fine **as long as your reduction is order-independent*
 first or dispatch follow-ups based on completion timing — that makes the run
 non-reproducible. Prefer input-driven `parallel`/`pipeline` compositions.
 
-These are authoring guidelines, not a sandbox. ODW executes JavaScript with
-`AsyncFunction` and does not isolate the script from Node globals or filesystem
-and shell access. Run only trusted scripts. Portability warnings do not prove
-that a script is safe or will run in another runtime.
+These are authoring guidelines, not a sandbox. By default ODW executes the
+body in the worker's own context, with Node globals, filesystem and shell
+within reach. A strict script context (`scriptContext: "strict"`, an ODW
+extension; the default for triggered, plugin and untrusted runs) compiles it
+in a fresh `vm` context with only the primitives and the standard built-ins —
+no `process`, `require`, `import()`, `fetch`, `console`, timers, `eval` — and
+says so when a script reaches for one; `odw check --capabilities` lists what a
+script names outside the dialect. `vm` is not a security boundary either. Run
+only trusted scripts. Portability warnings do not prove that a script is safe
+or will run in another runtime.
 
 Resume depends on the same rule: a call is matched by its prompt and options,
 in call order, so a prompt built from `Date.now()`/`Math.random()`, or a

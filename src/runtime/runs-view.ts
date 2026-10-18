@@ -344,6 +344,8 @@ export interface RunDetail extends RunSummary {
    * it ran with. The dashboard's trust line. Absent: the input was the user's.
    */
   untrustedInput?: UntrustedInputView;
+  /** The run's body ran in a strict script context (ODW extension; see ../script-context); absent: the worker's own. */
+  scriptContext?: "strict";
   /**
    * checkpoint() calls waiting for an answer, oldest first (ODW extension):
    * what `POST /api/runs/:id/checkpoint` can approve or reject. Empty unless
@@ -1032,6 +1034,7 @@ export function detailFrom(
     adapter: (meta.adapter as string) ?? null,
     workflowName: (meta.workflowName as string) ?? null,
     ...untrustedInputView(meta, facts.status),
+    ...(facts.status.scriptContext === "strict" ? { scriptContext: "strict" as const } : {}),
     pendingCheckpoints: live ? pendingCheckpoints(fold) : [],
     cliVersions: Object.fromEntries(Object.entries(fold.cliVersions).map(([name, cli]) => [name, { ...cli }])),
     odwVersion: typeof meta.odwVersion === "string" ? meta.odwVersion : null,

@@ -34,6 +34,7 @@ import { Script } from "node:vm";
 import { WorkflowScriptError, type SourceLocation } from "./errors.js";
 import type { WorkflowGlobals } from "./primitives.js";
 import { phaseDefaultsOf, type AdapterChoice } from "./routing.js";
+import { assertNoDynamicImport, createStrictRealm, type ScriptContext, type StrictRealm } from "./script-context.js";
 
 /**
  * One `meta.phases` entry. A plain string is read as `{ title }`. Its
@@ -57,8 +58,18 @@ export interface WorkflowMeta {
 
 export interface LoadedWorkflow {
   meta: WorkflowMeta;
-  /** Execute the transformed body with the injected globals and `args`. */
-  run(globals: WorkflowGlobals, args: unknown): Promise<unknown>;
+  /**
+   * Execute the transformed body with the injected globals and `args`.
+   * `adoptArgs` is told the args object the script holds — in a strict
+   * context a copy in its own realm — so a break's edit (../breaks) changes
+   * what the script reads.
+   */
+  run(globals: WorkflowGlobals, args: unknown, adoptArgs?: (inScript: unknown) => void): Promise<unknown>;
+}
+
+/** How {@link loadWorkflowScript} compiles: `context: "strict"` in a fresh vm context (ODW extension; see ./script-context). */
+export interface LoadOptions {
+  context?: ScriptContext;
 }
 
 // The injected names, in the order the wrapper function receives them. These
@@ -135,7 +146,7 @@ export function readWorkflowMeta(source: string, filename: string): WorkflowMeta
 }
 
 /** Parse + transform a workflow script's source into a runnable form. */
-export function loadWorkflowScript(source: string, filename: string): LoadedWorkflow {
+export function loadWorkflowScript(source: string, filename: string, options: LoadOptions = {}): LoadedWorkflow {
   const { meta, body, metaAt } = extractMeta(source, filename);
   // The defaults its phases give their agents (an ODW extension) must be
   // usable before the body runs; a listing reads only the titles.
@@ -155,6 +166,10 @@ export function loadWorkflowScript(source: string, filename: string): LoadedWork
   const extensions = EXTENSION_PARAM_NAMES.filter((name) => !clashes(maskedBody, name, body));
   const paramNames = [...CLAUDE_PARAM_NAMES, ...extensions];
 
+  // A strict context (ODW extension; see ./script-context): its own realm, and no import().
+  const strict = options.context === "strict";
+  if (strict) assertNoDynamicImport(body, filename);
+  let realm: StrictRealm | undefined;
   let factory: (...callArgs: unknown[]) => Promise<unknown>;
   try {
     // First compile the body on its own: the AsyncFunction constructor accepts
@@ -166,14 +181,21 @@ export function loadWorkflowScript(source: string, filename: string): LoadedWork
     // line 2, with lineOffset -1 so stack traces and log frames point at the
     // script's own line numbers (the AsyncFunction would put them two lines off).
     const wrapped = `(async function (${paramNames.join(", ")}) {\n${body}\n})`;
-    factory = new Script(wrapped, { filename, lineOffset: -1 }).runInThisContext() as typeof factory;
+    if (strict) {
+      realm = createStrictRealm(filename);
+      factory = new Script(wrapped, { filename, lineOffset: -1, ...realm.scriptOptions }).runInContext(realm.context) as typeof factory;
+    } else {
+      factory = new Script(wrapped, { filename, lineOffset: -1 }).runInThisContext() as typeof factory;
+    }
   } catch (err) {
     throw compileError(err, body, paramNames, filename);
   }
 
   return {
     meta,
-    run(globals: WorkflowGlobals, args: unknown): Promise<unknown> {
+    run(globals: WorkflowGlobals, args: unknown, adoptArgs?: (inScript: unknown) => void): Promise<unknown> {
+      if (realm) return runStrict(realm, factory, extensions, globals, args, adoptArgs);
+      adoptArgs?.(args);
       // The first eight never move; the injected extensions follow in the
       // order of their parameters.
       return factory(
@@ -189,6 +211,33 @@ export function loadWorkflowScript(source: string, filename: string): LoadedWork
       );
     },
   };
+}
+
+/**
+ * Run a body compiled in a strict realm: the globals and args go in through
+ * its membrane, and what the script throws comes out as the worker's own
+ * error (see ./script-context).
+ */
+function runStrict(
+  realm: StrictRealm,
+  factory: (...callArgs: unknown[]) => Promise<unknown>,
+  extensions: readonly ExtensionName[],
+  globals: WorkflowGlobals,
+  args: unknown,
+  adoptArgs?: (inScript: unknown) => void,
+): Promise<unknown> {
+  const g = realm.toScript({ ...globals }) as Record<string, unknown>;
+  const inScript = realm.toScript(args);
+  adoptArgs?.(inScript);
+  let result: Promise<unknown>;
+  try {
+    result = factory(g.agent, g.parallel, g.pipeline, g.phase, g.log, inScript, g.budget, g.workflow, ...extensions.map((name) => g[name]));
+  } catch (err) {
+    return Promise.reject(realm.toHostError(err));
+  }
+  return Promise.resolve(result).catch((err: unknown) => {
+    throw realm.toHostError(err);
+  });
 }
 
 /**
