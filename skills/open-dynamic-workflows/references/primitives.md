@@ -82,6 +82,11 @@ other primitive organizes calls to it.
   reply as the answer. Without it, an empty reply fails the call with reason
   `"empty_reply"`. (Tool calls the CLI refused do not fail a call by default:
   they are recorded as `denied` — see [expect](#expect-odw-extension).)
+- **opts.notes** (**ODW extension**) — `true`: the agent gets the run's notes
+  board (its prompt shows the notes so far, `ODW_NOTES` posts and reads them,
+  and an isolated agent's kept change is broadcast as it finishes); `false`
+  opts it out of its `parallel()`'s or the `notes` setting. See
+  [notes](#notes-odw-extension). Claude Code ignores it.
 
 Returns the reply text, or the validated JSON value when `schema` is set. CLI
 errors, exhausted schema retries, work that missed its `expect` checks and an
@@ -123,6 +128,11 @@ const yes = votes.filter((v) => v && v.toLowerCase().startsWith('yes')).length
 
 Each thunk must be zero-arg — build them with `.map((x) => () => agent(...))` so
 each captures its own value.
+
+**ODW extension:** `parallel(thunks, { notes: true })` turns the run's notes
+board on for every agent its thunks start (an agent's own `notes: false` wins);
+`notes` is the only option, anything else throws. See [notes](#notes-odw-extension).
+Claude Code's `parallel()` takes only the thunks.
 
 ## pipeline
 
@@ -612,6 +622,43 @@ unavailable``); `"mcpFailures": "fail"` throws for a server that `failed` or
 instead). Neither failure is retried. `expect` is
 part of the call's resume key; Claude Code ignores it, so there the checks do not
 run.
+
+## notes (ODW extension)
+
+```js
+agent(prompt, { notes: true })                 // this agent
+parallel(thunks, { notes: true })              // every agent its thunks start
+// odw.config.json: "notes": true              // every agent of the run
+```
+
+A run-scoped board where parallel agents tell each other what the others must
+know — an interface they changed, a decision — so changes that pass alone do not
+break together. Off by default (dialect fidelity); `notes: false` opts one agent out.
+
+- **Posting.** An agent with notes on gets `ODW_NOTES`, the path of a POSIX shell
+  script of its own: `"$ODW_NOTES" "renamed parseX → parse"` posts a note,
+  `"$ODW_NOTES"` alone prints the board. `odw note "…"` does the same (it needs the
+  agent's `ODW_RUN_ID` and `ODW_AGENT_ID`). Its prompt says so.
+- **Reading.** The notes posted before an agent started are appended to its
+  prompt — "Notes from the other agents in this run:", `#<n> [agent <id> · <label>]
+  <text>`, the latest that fit 8000 characters. New notes are not pushed into a
+  running agent (a CLI takes its prompt once); it can run `"$ODW_NOTES"` again.
+- **Interface broadcast.** An isolated (`isolation: "worktree"`) agent with notes
+  on that kept a change has a `kind: "interface"` note posted for it before its
+  `agent_finished` event: its diff stat, the files it touched, and the diff lines
+  it added (`+`) or removed (`-`) that look like declarations — `export`, `def`,
+  `func`, `pub fn`, `class`, `interface` — at most 12. Agents the script starts
+  after it see it in their prompt.
+- **Bounds.** A note is cut at 2000 characters and redacted; the board holds 200
+  notes and 256 KiB (later notes are dropped and the run logs it once).
+- **Where.** `notes.jsonl` in the run directory; each note is a `note_added`
+  event too. `odw notes <run> [--json]` prints it; `GET /api/runs/:id/notes`
+  serves `[{ noteId, ts, by: { agentId, label }, text, kind, truncated?, redacted? }]`.
+- **Containers.** Under a container sandbox the agent's notes directory is bound
+  read-write and the board read-only, at the same paths: the script works there.
+- **Not persisted, no board.** An in-process run without a run directory logs
+  once that its agents run without one. A call replayed by `odw resume` posts
+  nothing. `notes` is not part of the resume key.
 
 ## schema
 

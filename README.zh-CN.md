@@ -206,7 +206,7 @@ odw run examples/fan-out-reduce.js --wait --args '{"question": "Design a rate li
 | 原语 | 作用 |
 | --- | --- |
 | `agent(prompt, opts?)` | 让一个 coding agent 跑一个子任务。唯一真正"产出工作"的原语。返回文本;设了 `opts.schema` 则返回校验过的对象。设了 `opts.expect` 时,它的工作会被检查——某条命令以 0 退出、有文件改动、回复匹配——没达到就带着缺失项重试;见[检查 agent 的工作](#检查-agent-的工作odw-扩展)(**ODW 扩展**)。 |
-| `parallel(thunks)` | 一组任务并发执行、**等全部完成**(屏障)。可恢复失败变 `null`;停止、预算耗尽和派发上限错误会中止运行。 |
+| `parallel(thunks)` | 一组任务并发执行、**等全部完成**(屏障)。可恢复失败变 `null`;停止、预算耗尽和派发上限错误会中止运行。`parallel(thunks, { notes: true })` 让其 agent 使用本次运行的笔记板——见[并行 agent 之间的笔记](#并行-agent-之间的笔记odw-扩展)(**ODW 扩展**)。 |
 | `pipeline(items, ...stages)` | 每个条目独立穿过各 stage(**无屏障**)。每个 stage 收 `(prev, item, index)`。 |
 | `phase(title, opts?)` / `log(msg)` | 把进度归入某阶段 / 发一行进度消息。`opts`——`{ adapter, model }`——为该阶段的 agent 指定适配器和模型(**ODW 扩展**;见[按阶段路由](#按阶段路由与回退链odw-扩展))。 |
 | `schema`(JSON Schema) | 给 `agent` 的输出定一个类型契约;回复会被校验,不符就重试。ODW 无法检查的关键字会记入运行日志(设 `"schemaKeywords": "strict"` 则让调用失败);会校验 schema 的 CLI(`claude`、`codex`)直接原生强制执行——见[结构化输出](#结构化输出odw-扩展)。 |
@@ -286,6 +286,42 @@ Claude Code 的 Workflow 工具会忽略 `expect`,在那里检查不会执行。
 [`examples/fix-until-green.js`](examples/fix-until-green.js) 用 `expect` 驱动一个
 "修到测试通过为止"的循环。
 
+### 并行 agent 之间的笔记(ODW 扩展)
+
+并行的编程 agent 常常各自通过、合在一起却出错:一个把函数改了名,另一个还在调用旧名字。只要
+告诉它们同时发生的改动是什么,大多数冲突就能避免——所以 odw 为每次运行提供一块**笔记板**,
+默认关闭:
+
+```js
+const lanes = await parallel(tasks.map((t, i) => () =>
+  agent(t, { label: `lane-${i + 1}`, isolation: 'worktree' })), { notes: true })
+const review = await agent('Which lanes clash?', { notes: true, schema: CLASHES })
+```
+
+- **何时打开:** `agent(…, { notes: true })`、`parallel(thunks, { notes: true })` 启动的每个
+  agent,或配置中 `"notes": true` 时运行的每个 agent。`notes: false` 让单个 agent 退出。默认
+  关闭:Claude Code 工作流照原样运行。
+- **发布:** 打开笔记的 agent 会得到 `ODW_NOTES`——一个属于它自己的小 shell 脚本的路径,提示词里
+  会说明用法:`"$ODW_NOTES" "把 parseX 改名为 parse"` 发布一条笔记;装了 odw 的地方
+  `odw note "…"` 作用相同(读取 agent 的 `ODW_RUN_ID`、`ODW_AGENT_ID` 与 `ODW_NOTES`)。笔记由谁
+  发布,取决于放下它的是哪个 agent 的脚本,而不是笔记里写了什么。
+- **读取:** agent 启动前已发布的笔记写在它的提示词里,标题为"Notes from the other agents in this
+  run"(取放得下 8000 字符的最新几条)。新笔记不会推送给已在运行的 agent——CLI 只读一次提示词——
+  但不带参数的 `"$ODW_NOTES"` 会打印笔记板的当前内容,提示词里也写明了这一点。
+- **接口广播:** 打开笔记且 `isolation: "worktree"` 的 agent 带着保留的改动完成时,odw 在其
+  `agent_finished` 事件之前替它发布一条笔记,让脚本之后启动的 agent 都能看到:diff 统计、改到的
+  文件,以及 diff 中新增或删除的、看起来像声明的行(`export`、`def`、`func`、`pub fn`、`class`、
+  `interface`——一个适用于各种语言的廉价启发式,最多 12 行)。
+- **上限:** 每条笔记最多 2000 字符,并像运行事件一样脱敏;笔记板最多 200 条、256 KiB,满了运行
+  会说一次。笔记保存在运行目录的 `notes.jsonl`。
+- **在容器沙箱中** 脚本照常可用:agent 自己的笔记目录以读写方式绑定,笔记板以只读方式绑定——容器
+  里没有其他 agent 的收件箱可写。
+- **查看:** `odw notes $RUN [--json]`、`odw logs` 中的 `note_added` 事件,以及
+  `GET /api/runs/:id/notes`。
+
+Claude Code 的 Workflow 工具会忽略这些选项。[`examples/coordinated-refactor.js`](examples/coordinated-refactor.js)
+把一项改动拆成在笔记板上并行的隔离分支,由审阅者读取笔记板,再让相互冲突的分支带着全部笔记重跑。
+
 ## 兼容性与迁移
 
 ODW 已实现下列原语能力。依赖宿主私有运行机制的脚本,迁移前需要逐项核对：
@@ -342,6 +378,7 @@ odw logs $RUN --follow   # 流式输出原始进度事件
 odw logs $RUN --agent 3  # 某个 agent 做了什么:它的工具调用、结果和文字(见下文)
 odw result $RUN          # 最终值
 odw diff $RUN --stat     # 隔离 agent 改了什么;odw apply $RUN --agent N(或 --all)落地
+odw notes $RUN           # 它的 agent 在笔记板上互相告知的内容(见上文)
 odw compare $OLD $RUN    # 两次运行之间变了什么:配置、耗时、花费、失败、回复(见下文)
 odw eval review          # 用例 × 适配器 × 重复次数:每个单元格的通过率、花费与耗时(见下文)
 odw export $RUN --otlp   # 把运行导出为 OpenTelemetry trace(OTLP/JSON;--send 直接发送;见下文)
@@ -1915,6 +1952,7 @@ workflow 脚本始终是**纯 `.js`**、从不编译;引擎用 **TypeScript** �
 | [`test-fix-loop.js`](examples/test-fix-loop.js) | 用 `exec()` 跑测试 → agent 修复失败 → 重跑直到全绿(仅 ODW) |
 | [`fix-until-green.js`](examples/fix-until-green.js) | 同样的循环改用 `expect`:agent 回复后由 odw 跑测试,把仍然红的测试——或什么都没改的"修复"——交还给它,最后带着缺失项失败(仅 ODW) |
 | [`plan-approve-execute.js`](examples/plan-approve-execute.js) | agent 起草计划 → 有人在 `checkpoint()` 处批准(附说明的拒绝会重新规划)→ 并行执行 → 汇报(仅 ODW) |
+| [`coordinated-refactor.js`](examples/coordinated-refactor.js) | 多个隔离分支在笔记板上并行修改同一仓库,每个分支落地时广播其接口改动 → 审阅者指出相互冲突的分支 → 这些分支在知道别人改了什么之后重跑(仅 ODW) |
 
 ## 开发
 

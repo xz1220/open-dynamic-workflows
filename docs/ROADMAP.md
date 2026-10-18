@@ -108,7 +108,7 @@
 | --- | --- | --- | --- |
 | R1 | **孤儿后台任务检测**：解析 stream-json 时跟踪后台任务/子 agent 的开始与结束，`result` 时仍有未完成的则以 `orphaned_background` 失败（warn/fail 两档） | S | 🚧 |
 | R2 | **单 agent 上限与死循环检测**：`agent(…, { limits: { toolCalls, costUsd, outputTokens, repeat } })`，按工具名+参数哈希识别重复调用，越界以 `runaway` 终止 | S–M | 🚧 |
-| R3 | **运行级笔记板 + 接口变更广播**：并行 agent 通过 `odw note` 互相告知决定，完成时广播其接口改动 | M | 🚧 |
+| R3 | **运行级笔记板 + 接口变更广播**：并行 agent 通过 `odw note` 互相告知决定，完成时广播其接口改动 | M | ✅ `agent(…, { notes: true })`、`parallel(thunks, { notes: true })` 或配置 `"notes": true`（默认关闭）；agent 启动时已有笔记写进提示词，`ODW_NOTES`（每个 agent 自己的 POSIX shell 脚本，容器沙箱中只绑定它自己的笔记目录读写、笔记板只读）或 `odw note` 发布、读取；隔离 agent 完成时在 `agent_finished` 之前广播 diff 统计与 diff 中的声明行（export/def/func/pub fn/class/interface，最多 12 行）；每条 2000 字符、共 200 条/256 KiB 上限并脱敏；`notes.jsonl`、`note_added` 事件、`odw notes <run>`、`GET /api/runs/:id/notes`、`web/src/types.ts` 的 `RunNote`（看板面板待接入）；已在运行的 agent 不推送新笔记（可再次读取 `ODW_NOTES`）；示例 `examples/coordinated-refactor.js` |
 | R4 | **只批准不写入的远程链接**：每个检查点签名的一次性批准/拒绝链接，随 notify 发出；`--token-scope approve` | M | ⏳ |
 | R5 | `expect.untouched`：声明不得改动的路径（防止改测试凑绿） | S | 🚧 |
 | R6 | `odw apply --resolve`：冲突交给 agent 在临时 worktree 解决，校验通过才接受 | M | ⏳ |

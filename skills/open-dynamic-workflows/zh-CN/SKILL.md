@@ -65,7 +65,7 @@ return await agent(
 | 原语 | 作用 |
 | --- | --- |
 | `agent(prompt, opts?)` | 让一个 coding agent 跑一个子任务；返回它的回复文本，设了 `opts.schema` 则返回校验过的对象。唯一真正干活的动词。 |
-| `parallel(thunks)` | 并发执行一组零参 thunk，并**等全部完成**（屏障）。顺序保留；失败的槽位是 `null`。 |
+| `parallel(thunks)` | 并发执行一组零参 thunk，并**等全部完成**（屏障）。顺序保留；失败的槽位是 `null`。`parallel(thunks, { notes: true })` 让其 agent 使用本次运行的笔记板（**ODW 扩展**；见下文）。 |
 | `pipeline(items, ...stages)` | 让每个条目独立地流过各 stage（**无屏障**）。每个 stage 收到 `(prev, item, index)`。 |
 | `phase(title, opts?)` / `log(msg)` | 给后续工作打上进度标签 / 发一行进度消息。`opts`（`{ adapter, model }`，**ODW 扩展**）为该阶段的 agent 指定 CLI 和模型。 |
 | `args` | workflow 的输入（注入）。 |
@@ -75,7 +75,7 @@ return await agent(
 | `exec(command, opts?)` | 不启动模型直接运行一条命令（测试、构建、linter）；返回 `{ stdout, stderr, exitCode, signal, timedOut, truncated, durationMs }`。字符串经 shell 执行，数组按 argv 执行。**ODW 扩展**——不属于 Claude Code 方言。 |
 | `checkpoint(title, opts?)` | 暂停运行，直到有人批准（可以附上修改后的 payload）或拒绝；返回 `{ approved, note, by, payload, edited }`。**ODW 扩展**——不属于 Claude Code 方言。 |
 
-`agent` 的 `opts`：`{ adapter?, schema?, label?, phase?, model?, agentType?, isolation?, keep?, permissions?, expect?, expectRetries?, allowEmpty? }`。
+`agent` 的 `opts`：`{ adapter?, schema?, label?, phase?, model?, agentType?, isolation?, keep?, permissions?, expect?, expectRetries?, allowEmpty?, notes? }`。
 `adapter` 选择用哪个 CLI——写成列表（`['codex', 'claude']`，**ODW 扩展**）就是回退链；
 `model: '@fast'` 为实际运行它的 CLI 选出该层级的模型（**ODW 扩展**）；`schema` 是一个原始 JSON Schema 对象（选项，不是全局）；
 `agentType` 是注入进 prompt 的**人设**，*不是* adapter 名。`keep: true`（**ODW 扩展**）
@@ -108,6 +108,20 @@ agent 的工作区里以 0 退出；`timeout` 秒，默认 600）和 `match`（�
 const fix = await agent('Fix the failing parser tests.', {   // ODW 扩展：expect
   expect: { command: 'npm test', changes: true, files: ['src/parser/**'] },
 })
+```
+
+`notes`（**ODW 扩展**）为并行修改同一代码库的 agent 提供运行级笔记板，让各自的改动合在一起仍然
+成立：`agent(…, { notes: true })`、`parallel(thunks, { notes: true })` 或配置中的 `"notes": true`
+（默认关闭；`notes: false` 让单个 agent 退出）。这样的 agent 会在提示词里看到它启动前已发布的笔记，
+并用 `"$ODW_NOTES" "把 parseX 改名为 parse"`（或 `odw note "…"`）发布笔记；不带参数的
+`"$ODW_NOTES"` 打印笔记板。隔离 agent 完成时，ODW 替它发布所保留改动的 diff 统计和 diff 中改到的
+声明行（`export`、`def`、`func`、`pub fn`、`class`、`interface`），之后启动的 agent 都能看到。
+适合在共享代码上并行的 worktree 分支，之后用 `odw notes $RUN` 查看笔记板；见
+`examples/coordinated-refactor.js` 与 [`references/primitives.md`](references/primitives.md#notesodw-扩展)：
+
+```js
+const lanes = await parallel(tasks.map((t, i) => () =>      // ODW 扩展：notes
+  agent(t, { label: `lane-${i + 1}`, isolation: 'worktree' })), { notes: true })
 ```
 
 `exec` 的 `opts`：`{ cwd?, env?, timeout?, input?, maxOutputBytes?, label?, phase?, check? }`。
@@ -167,6 +181,7 @@ odw approve|reject $RUN     # 回答运行正在等待的 checkpoint()——只�
 odw compare $OLD $RUN       # 两次运行之间变了什么:配置、耗时、花费、失败、回复(ODW 扩展)
                             #   --agent <label|id>:某个 agent 的完整回复 diff;--json 供脚本使用
 odw eval review             # 用例 × 适配器 × 重复次数：每个单元格的通过率、花费、耗时（ODW 扩展；见下文）
+odw notes $RUN              # 本次运行的 agent 在笔记板上互相告知的内容（ODW 扩展）
 odw list                    # 所有运行（有运行报了美元时多一列花费）
 ```
 

@@ -227,7 +227,7 @@ control flow (loops, `if`, dedup) — no imports:
 | Primitive | Role |
 | --- | --- |
 | `agent(prompt, opts?)` | Run one coding agent on a subtask. The only verb that does work. Returns its text, or a validated object when `opts.schema` is set. With `opts.expect` its work is checked — a command exits 0, files changed, the reply matches — and retried, told what it missed; see [Check an agent's work](#check-an-agents-work-odw-extension) (**ODW extension**). |
-| `parallel(thunks)` | Run a batch concurrently and wait for all of it (**barrier**). Recoverable failures become `null`; stop, budget, and dispatch-limit errors abort the run. |
+| `parallel(thunks)` | Run a batch concurrently and wait for all of it (**barrier**). Recoverable failures become `null`; stop, budget, and dispatch-limit errors abort the run. `parallel(thunks, { notes: true })` gives its agents the run's notes board — see [Notes between parallel agents](#notes-between-parallel-agents-odw-extension) (**ODW extension**). |
 | `pipeline(items, ...stages)` | Stream each item through the stages independently (**no barrier**). Each stage gets `(prev, item, index)`. |
 | `phase(title, opts?)` / `log(msg)` | Group progress under a phase / emit a progress line. `opts` — `{ adapter, model }` — gives the phase's agents an adapter and a model (**ODW extension**; see [per-phase adapters](#per-phase-adapters-model-tiers-and-fallback-chains-odw-extension)). |
 | `schema` (JSON Schema) | A typed output contract for `agent`; the reply is validated and retried until it conforms. A keyword ODW cannot check is reported in the run's log (or, with `"schemaKeywords": "strict"`, fails the call), and CLIs that validate schemas (`claude`, `codex`) enforce it natively — see [Structured output](#structured-output-odw-extension). |
@@ -321,6 +321,50 @@ Claude Code's Workflow tool ignores `expect`, so there the checks do not run.
 [`examples/fix-until-green.js`](examples/fix-until-green.js) lets `expect` run a
 fix-until-the-tests-pass loop.
 
+### Notes between parallel agents (ODW extension)
+
+Parallel coding agents produce changes that pass alone and break together: one
+renames a function another still calls. Told what the concurrent change was,
+they mostly avoid it — so odw gives a run a **notes board**, off unless asked for:
+
+```js
+const lanes = await parallel(tasks.map((t, i) => () =>
+  agent(t, { label: `lane-${i + 1}`, isolation: 'worktree' })), { notes: true })
+const review = await agent('Which lanes clash?', { notes: true, schema: CLASHES })
+```
+
+- **On for:** `agent(…, { notes: true })`, every agent a `parallel(thunks, { notes: true })`
+  starts, or every agent of the run with `"notes": true` in the config.
+  `notes: false` opts one agent out. Off by default: a Claude Code workflow runs
+  exactly as written.
+- **Posting:** an agent with notes on gets `ODW_NOTES`, the path of a small shell
+  script of its own, and its prompt says how to use it: `"$ODW_NOTES" "renamed parseX
+  → parse"` posts a note; `odw note "…"` does the same where odw is installed (it
+  reads the agent's `ODW_RUN_ID`, `ODW_AGENT_ID` and `ODW_NOTES`). Who posted a note
+  is the agent whose script dropped it, never what the note says.
+- **Reading:** the notes posted before an agent started are in its prompt, under
+  "Notes from the other agents in this run" (the latest that fit 8000 characters).
+  A running agent is not sent new notes — a CLI takes its prompt once — but
+  `"$ODW_NOTES"` alone prints the board as it is now, and the prompt says so.
+- **Interface broadcast:** when an agent with notes on and `isolation: "worktree"`
+  finishes with a kept change, odw posts a note for it before its `agent_finished`
+  event, so the agents the script starts next see it: its diff stat, the files
+  it touched, and the lines its diff added or removed that look like declarations
+  (`export`, `def`, `func`, `pub fn`, `class`, `interface` — a cheap heuristic for
+  every language, at most 12 lines).
+- **Bounds:** each note is cut at 2000 characters and redacted like the run's
+  events; the board holds 200 notes and 256 KiB, and the run says once when it is
+  full. Notes are kept in the run directory as `notes.jsonl`.
+- **In a container sandbox** the script works unchanged: the agent's own notes
+  directory is bound read-write, the board read-only — no other agent's inbox is
+  there to write to.
+- **Seeing them:** `odw notes $RUN [--json]`, `note_added` events in `odw logs`, and
+  `GET /api/runs/:id/notes`.
+
+Claude Code's Workflow tool ignores these options. [`examples/coordinated-refactor.js`](examples/coordinated-refactor.js)
+splits a change across isolated lanes on the board, has a reviewer read it, and
+runs the lanes that clash again with every note in their prompt.
+
 ## Compatibility and migration
 
 ODW implements the primitive surface below. Scripts that depend on a host's
@@ -381,6 +425,7 @@ odw logs $RUN --follow   # stream raw progress events
 odw logs $RUN --agent 3  # what one agent did: its tool calls, results and text (below)
 odw result $RUN          # final value
 odw diff $RUN --stat     # what isolated agents changed; odw apply $RUN --agent N (or --all) lands it
+odw notes $RUN           # what its agents told each other on the notes board (above)
 odw compare $OLD $RUN    # what changed between two runs: setup, time, cost, failures, replies (below)
 odw eval review          # cases × adapters × repeats: pass rate, cost and time per cell (below)
 odw export $RUN --otlp   # the run as OpenTelemetry traces (OTLP/JSON; --send posts it; below)
@@ -2174,6 +2219,7 @@ Runnable, plain-JS workflows in [`examples/`](examples/):
 | [`test-fix-loop.js`](examples/test-fix-loop.js) | run the tests with `exec()` → an agent fixes the failures → re-run until green (ODW only) |
 | [`fix-until-green.js`](examples/fix-until-green.js) | the same loop with `expect`: odw runs the tests after the agent replies and hands a red suite — or a "fix" that changed nothing — back to it, then fails with what it missed (ODW only) |
 | [`plan-approve-execute.js`](examples/plan-approve-execute.js) | an agent drafts a plan → a person approves it at a `checkpoint()` (a rejection with a note re-plans) → parallel execution → report (ODW only) |
+| [`coordinated-refactor.js`](examples/coordinated-refactor.js) | isolated lanes change one repo in parallel on a notes board, each one's interface changes broadcast as it lands → a reviewer names the lanes that clash → they run again knowing what the others changed (ODW only) |
 
 ## Develop
 

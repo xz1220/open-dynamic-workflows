@@ -215,6 +215,17 @@ changed, and run on a schedule — and a dashboard redesigned to watch them.
   (`unspecified`, pinning what ODW does); scripts that pass conformance run on both.
   `conformance/README.md` gives the format for another runtime's runner, and the cases
   run on Claude Code by hand.
+- A notes board for parallel agents (**ODW extension**; ROADMAP R3): with `agent(…, {
+  notes: true })`, `parallel(thunks, { notes: true })` or `"notes": true`, agents find
+  the notes posted before they started in their prompt and post their own with
+  `"$ODW_NOTES" "…"` — a small shell script of their own, which works in a container
+  sandbox too — or `odw note "…"`. When an isolated agent with notes on finishes with a
+  kept change, odw posts its diff stat and the declaration lines (`export`, `def`,
+  `func`, `pub fn`, `class`, `interface`) its diff touched before its `agent_finished`,
+  so later agents know what it changed. Notes are capped (2000 characters each, 200
+  notes, 256 KiB) and redacted, kept as `notes.jsonl`, emitted as `note_added`, and read
+  with `odw notes <run> [--json]` and `GET /api/runs/:id/notes`. Off by default.
+  Example: `coordinated-refactor.js`.
 
 ### Use the CLI and the dashboard
 - `odw run` attaches a live foreground view in interactive terminals (Ctrl-C detaches;

@@ -76,7 +76,7 @@ outright, never silently passed through as a string).
 | Primitive | What it does |
 | --- | --- |
 | `agent(prompt, opts?)` | Run one coding agent on a subtask; returns its reply text, or a validated object when `opts.schema` is set. The only verb that does real work. |
-| `parallel(thunks)` | Run zero-arg thunks concurrently and **wait for all** (barrier). Order preserved; a failed slot is `null`. |
+| `parallel(thunks)` | Run zero-arg thunks concurrently and **wait for all** (barrier). Order preserved; a failed slot is `null`. `parallel(thunks, { notes: true })` gives its agents the run's notes board (**ODW extension**; below). |
 | `pipeline(items, ...stages)` | Stream each item through the stages independently (**no barrier**). Each stage receives `(prev, item, index)`. |
 | `phase(title, opts?)` / `log(msg)` | Label the following work for progress / emit one progress line. `opts` (`{ adapter, model }`, **ODW extension**) gives the phase's agents a CLI and a model. |
 | `args` | The workflow input (injected). |
@@ -86,7 +86,7 @@ outright, never silently passed through as a string).
 | `exec(command, opts?)` | Run a command (tests, a build, a linter) without a model; resolves to `{ stdout, stderr, exitCode, signal, timedOut, truncated, durationMs }`. A string runs through the shell, an array as argv. **ODW extension** — not part of Claude Code's dialect. |
 | `checkpoint(title, opts?)` | Pause the run until a person approves (perhaps with an edited payload) or rejects; resolves to `{ approved, note, by, payload, edited }`. **ODW extension** — not part of Claude Code's dialect. |
 
-`opts` for `agent`: `{ adapter?, schema?, label?, phase?, model?, agentType?, isolation?, keep?, permissions?, expect?, expectRetries?, allowEmpty? }`.
+`opts` for `agent`: `{ adapter?, schema?, label?, phase?, model?, agentType?, isolation?, keep?, permissions?, expect?, expectRetries?, allowEmpty?, notes? }`.
 `adapter` picks the CLI — or, as a list (`['codex', 'claude']`, **ODW
 extension**), a fallback chain; `model: '@fast'` picks a tier's model for
 whichever CLI runs it (**ODW extension**); `schema` is a raw JSON Schema object (an option, not
@@ -130,6 +130,24 @@ per run (`"mcpFailures": "fail"` fails an agent whose server `failed` or
 const fix = await agent('Fix the failing parser tests.', {   // ODW extension: expect
   expect: { command: 'npm test', changes: true, files: ['src/parser/**'] },
 })
+```
+
+`notes` (**ODW extension**) gives agents that change one codebase in parallel a
+run-scoped notes board, so their changes still fit together: `agent(…, { notes:
+true })`, `parallel(thunks, { notes: true })`, or `"notes": true` in the config
+(off by default; `notes: false` opts one agent out). Such an agent finds the notes
+posted before it started in its prompt, and posts with `"$ODW_NOTES" "renamed
+parseX → parse"` (or `odw note "…"`); `"$ODW_NOTES"` alone prints the board. An
+isolated agent's kept change is posted for it as it finishes — its diff stat and
+the declaration lines (`export`, `def`, `func`, `pub fn`, `class`, `interface`) its
+diff touched — so agents started after it see it. Use it for parallel worktree
+lanes on shared code, then read the board with `odw notes $RUN`; see
+`examples/coordinated-refactor.js` and
+[`references/primitives.md`](references/primitives.md#notes-odw-extension):
+
+```js
+const lanes = await parallel(tasks.map((t, i) => () =>      // ODW extension: notes
+  agent(t, { label: `lane-${i + 1}`, isolation: 'worktree' })), { notes: true })
 ```
 
 `opts` for `exec`: `{ cwd?, env?, timeout?, input?, maxOutputBytes?, label?, phase?, check? }`.
@@ -193,6 +211,7 @@ odw approve|reject $RUN     # answer a checkpoint() the run waits at — only on
 odw compare $OLD $RUN       # what changed between two runs: setup, time, cost, failures, replies (ODW extension)
                             #   --agent <label|id>: one agent's whole reply diff; --json for scripts
 odw eval review             # cases × adapters × repeats: pass rate, cost, time per cell (ODW extension; below)
+odw notes $RUN              # what its agents told each other on the notes board (ODW extension)
 odw list                    # all runs (with a cost column once one reported dollars)
 ```
 

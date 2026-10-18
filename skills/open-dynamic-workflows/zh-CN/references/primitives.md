@@ -61,6 +61,9 @@ agent(prompt, opts?) -> Promise<unknown>
 - **opts.allowEmpty**（**ODW 扩展**）—— 接受空回复或只有空白的回复作为答案。不设时，空回复
   会让调用以 `"empty_reply"` 失败。（CLI 拒绝工具调用默认不会让调用失败：它们会记为
   `denied`——见 [expect](#expectodw-扩展)。）
+- **opts.notes**（**ODW 扩展**）—— `true`：该 agent 使用本次运行的笔记板（提示词里有已有的笔记，
+  `ODW_NOTES` 用来发布和读取笔记，隔离 agent 完成时广播其保留改动）；`false` 让它退出所在
+  `parallel()` 或 `notes` 设置的笔记板。见 [notes](#notesodw-扩展)。Claude Code 会忽略它。
 
 返回回复文本，设了 `schema` 则返回校验过的 JSON 值。CLI 出错、schema 重试耗尽、工作没达到
 `expect`、空回复都会抛错；这些可恢复失败在 `parallel`/`pipeline` 内变成 `null`。停止请求、
@@ -96,6 +99,10 @@ const yes = votes.filter((v) => v && v.toLowerCase().startsWith('yes')).length
 ```
 
 每个 thunk 必须是零参——用 `.map((x) => () => agent(...))` 来构造，这样每个都捕获自己的值。
+
+**ODW 扩展：** `parallel(thunks, { notes: true })` 为其 thunk 启动的每个 agent 打开本次运行的
+笔记板（agent 自己的 `notes: false` 优先）；`notes` 是唯一的选项，其他键会抛错。见
+[notes](#notesodw-扩展)。Claude Code 的 `parallel()` 只接受 thunk 数组。
 
 ## pipeline
 
@@ -486,6 +493,36 @@ CLI 拒绝的工具调用——Claude Code 的 `permission_denials`，经适配�
 `"mcpFailures": "fail"` 让服务器为 `failed` 或 `needs-auth` 的调用以 `"mcp_unavailable"` 抛错
 （`expect.mcp` 列出的服务器则算作缺失）。两种失败都不重试。`expect` 属于调用的 resume key；Claude Code 会忽略它，在那里检查
 不会执行。
+
+## notes（ODW 扩展）
+
+```js
+agent(prompt, { notes: true })                 // 这一个 agent
+parallel(thunks, { notes: true })              // 其 thunk 启动的每个 agent
+// odw.config.json: "notes": true              // 本次运行的每个 agent
+```
+
+运行级的笔记板：并行的 agent 在上面告诉彼此必须知道的事——改了哪个接口、做了什么决定——
+避免各自通过、合在一起却出错的改动。默认关闭（保持方言一致）；`notes: false` 让单个 agent 退出。
+
+- **发布。** 打开笔记的 agent 会得到 `ODW_NOTES`——一个属于它自己的 POSIX shell 脚本的路径：
+  `"$ODW_NOTES" "把 parseX 改名为 parse"` 发布一条笔记，不带参数的 `"$ODW_NOTES"` 打印笔记板。
+  `odw note "…"` 作用相同（需要 agent 的 `ODW_RUN_ID` 与 `ODW_AGENT_ID`）。提示词里会说明用法。
+- **读取。** agent 启动前已发布的笔记追加在它的提示词末尾——"Notes from the other agents in
+  this run:"，每条为 `#<n> [agent <id> · <label>] <内容>`，取放得下 8000 字符的最新几条。新笔记
+  不会推送给已经在运行的 agent（CLI 只读一次提示词）；它可以再次运行 `"$ODW_NOTES"`。
+- **接口广播。** 打开笔记、`isolation: "worktree"` 且保留了改动的 agent，在其 `agent_finished`
+  事件之前由 ODW 替它发布一条 `kind: "interface"` 的笔记：diff 统计、改到的文件，以及 diff 中新增
+  （`+`）或删除（`-`）的、看起来像声明的行——`export`、`def`、`func`、`pub fn`、`class`、
+  `interface`——最多 12 行。脚本之后启动的 agent 会在提示词里看到它。
+- **上限。** 每条笔记最多 2000 字符并经过脱敏；笔记板最多 200 条、256 KiB（之后的笔记被丢弃，
+  运行记一次日志）。
+- **位置。** 运行目录中的 `notes.jsonl`；每条笔记也是一个 `note_added` 事件。`odw notes <run>
+  [--json]` 打印它；`GET /api/runs/:id/notes` 返回
+  `[{ noteId, ts, by: { agentId, label }, text, kind, truncated?, redacted? }]`。
+- **容器。** 在容器沙箱中，agent 自己的笔记目录以读写、笔记板以只读方式按相同路径绑定：脚本照常可用。
+- **不持久化则没有笔记板。** 没有运行目录的进程内运行会记一次日志，其 agent 不带笔记板运行。
+  被 `odw resume` 重放的调用不发布任何笔记。`notes` 不属于 resume key。
 
 ## schema
 
