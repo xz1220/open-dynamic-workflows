@@ -57,6 +57,12 @@ export type AdapterOutput =
       /** Newline-delimited JSON events; the last matching text event wins. */
       format: "jsonl";
       eventType: string;
+      /**
+       * Narrows the text events to those whose value at `path` is `equals`
+       * (an ODW extension): Codex prints every finished item as an
+       * `item.completed` event, and only an `agent_message` item holds the reply.
+       */
+      match?: OutputMatch;
       textPath: string[];
       select: "last";
       /** The events usage and cost are read from (default: `eventType`); every one adds up. */
@@ -71,6 +77,17 @@ export type AdapterOutput =
        * run failed with it (classified like any failure), whatever its exit.
        */
       errorPath?: string[];
+      /**
+       * Events that are the CLI's own report that the run failed, apart from
+       * its text events (an ODW extension): event type → the path, in such an
+       * event, to its message (`true`, a message or an error object; an event
+       * with none there is quoted). Codex's `turn.failed` and `error`. The
+       * latest one fails the run, classified like any failure whatever its
+       * exit — unless a usage event (`usageEvent`: a turn completed) comes
+       * after it, for the CLI went on (Codex prints a stream error it retries
+       * as an `error` event).
+       */
+      errorEvents?: Record<string, string[]>;
       /**
        * Path, in a text event, to the value the CLI validated against a schema
        * it was handed natively (Claude Code's `structured_output`). When the
@@ -104,6 +121,12 @@ export type AdapterOutput =
       deniedPath?: string[];
       mcpPath?: string[];
     };
+
+/** A condition on a JSONL event (ODW extension; `match`): its value at `path` is `equals`. */
+export interface OutputMatch {
+  path: string[];
+  equals: string | number | boolean;
+}
 
 /**
  * An adapter's own failure wording (ODW extension): regular-expression sources

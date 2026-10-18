@@ -137,9 +137,12 @@ const KNOWN_ADAPTER_KEYS = ["command", "stdin", "env", "timeout", "stallTimeout"
 /** The fields of an adapter's `output`, per format. */
 const KNOWN_OUTPUT_KEYS: Record<string, readonly string[]> = {
   text: ["format"],
-  jsonl: ["format", "eventType", "textPath", "select", "usageEvent", "usagePath", "costPath", "errorPath", "structuredPath", "deniedPath", "mcpEvent", "mcpPath"],
+  jsonl: ["format", "eventType", "textPath", "select", "usageEvent", "usagePath", "costPath", "errorPath", "structuredPath", "deniedPath", "mcpEvent", "mcpPath", "match", "errorEvents"],
   json: ["format", "textPath", "usagePath", "costPath", "errorPath", "structuredPath", "deniedPath", "mcpPath"],
 };
+
+/** The fields of a jsonl output's `match`. */
+const KNOWN_MATCH_KEYS = ["path", "equals"] as const;
 
 /** The fields of an adapter's `flags`, and of its `flags.schema`. */
 const KNOWN_FLAG_KEYS = ["model", "schema"] as const;
@@ -188,6 +191,8 @@ export function collectConfigWarnings(raw: Record<string, unknown>): string[] {
       const output = isObject(spec) ? spec.output : undefined;
       const knownOutput = isObject(output) ? KNOWN_OUTPUT_KEYS[String(output.format)] : undefined;
       if (knownOutput) warnings.push(...unknownFields(output as Record<string, unknown>, knownOutput, `adapter "${name}" output`));
+      const match = isObject(output) && output.format === "jsonl" ? output.match : undefined;
+      if (isObject(match)) warnings.push(...unknownFields(match, KNOWN_MATCH_KEYS, `adapter "${name}" output.match`));
       // A misspelled capability would quietly leave the CLI's native support unused.
       const flags = isObject(spec) ? spec.flags : undefined;
       if (isObject(flags)) {
@@ -843,15 +848,54 @@ function buildOutput(name: string, raw: unknown): AdapterOutput {
   if (value.mcpEvent != null && (typeof value.mcpEvent !== "string" || !value.mcpEvent.trim())) {
     throw new ConfigError(`adapter '${name}' 'output.mcpEvent' must be a non-empty string`);
   }
+  const eventType = value.eventType as string;
+  const usageEvent = (value.usageEvent as string | undefined) ?? eventType;
   return {
     format: "jsonl",
-    eventType: value.eventType as string,
+    eventType,
+    ...(value.match != null ? { match: buildMatch(name, value.match) } : {}),
     textPath,
     select: "last",
     ...(value.usageEvent != null ? { usageEvent: value.usageEvent as string } : {}),
     ...(value.mcpEvent != null ? { mcpEvent: value.mcpEvent as string } : {}),
     ...extras,
+    ...(value.errorEvents != null ? { errorEvents: buildErrorEvents(name, value.errorEvents, [eventType, usageEvent]) } : {}),
   };
+}
+
+/** Validate a jsonl output's `match` (ODW extension): `{ "path": [...], "equals": <string, number or boolean> }`. */
+function buildMatch(name: string, raw: unknown): { path: string[]; equals: string | number | boolean } {
+  const equals = isObject(raw) ? raw.equals : undefined;
+  if (!isObject(raw) || !["string", "number", "boolean"].includes(typeof equals)) {
+    throw new ConfigError(
+      `adapter '${name}' 'output.match' must be { "path": [...], "equals": <a string, number or boolean> } — ` +
+        `e.g. { "path": ["item", "type"], "equals": "agent_message" }`,
+    );
+  }
+  return { path: buildPath(name, "match.path", raw.path)!, equals: equals as string | number | boolean };
+}
+
+/**
+ * Validate a jsonl output's `errorEvents` (ODW extension): event type → path
+ * to its message. A text or usage event cannot be one: a failure in a text
+ * event is `errorPath`'s, and a usage event is what clears a failure.
+ */
+function buildErrorEvents(name: string, raw: unknown, reserved: string[]): Record<string, string[]> {
+  if (!isObject(raw)) {
+    throw new ConfigError(`adapter '${name}' 'output.errorEvents' must be an object: event type → path to its message, e.g. { "error": ["message"] }`);
+  }
+  const out: Record<string, string[]> = {};
+  for (const [type, path] of Object.entries(raw)) {
+    if (type.startsWith("$") || type.startsWith("//")) continue; // comment conventions
+    if (!type.trim()) throw new ConfigError(`adapter '${name}' 'output.errorEvents' has an empty event type`);
+    if (reserved.includes(type)) {
+      throw new ConfigError(
+        `adapter '${name}' 'output.errorEvents' cannot name '${type}', its text or usage event — a failure reported in a text event is 'errorPath''s`,
+      );
+    }
+    out[type] = buildPath(name, `errorEvents.${type}`, path)!;
+  }
+  return out;
 }
 
 /** Validate a path into a JSON value: a non-empty array of non-empty strings (absent is fine when optional). */

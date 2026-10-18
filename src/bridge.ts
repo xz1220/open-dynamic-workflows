@@ -97,7 +97,9 @@ import {
   notConnected,
   type DecodedOutput,
   type McpServer,
+  type ReplyFileText,
 } from "./adapters/output.js";
+import { replyFile, usesReplyFile, type ReplyFile } from "./adapters/reply-file.js";
 import { runCommand, type CommandRunner } from "./adapters/runner.js";
 import type { Usage } from "./adapters/usage.js";
 import {
@@ -943,6 +945,8 @@ export class Bridge {
         // Stdout that did not match the adapter's declared format is the reply
         // as it stands — never a failed agent — and the run's log says why.
         if (output.fallback) call.onNote?.(output.fallback);
+        // So does a reply found in the CLI's reply file instead, or nowhere (ODW extension).
+        if (output.note) call.onNote?.(output.note);
         const text = output.text;
         options.onReply?.(text, output.usage);
         // A CLI that exits cleanly with nothing to say did not do the task (ODW
@@ -1033,10 +1037,11 @@ export class Bridge {
     const settings = this.config.settings;
     for (;;) {
       // How the run ended is judged while its workspace is still there.
-      const { cli, output, failure } = await this.invoke(adapter, plan, prompt, limits, signal, call, why, async (ws, cli, decoder) => {
+      const { cli, output, failure } = await this.invoke(adapter, plan, prompt, limits, signal, call, why, async (ws, cli, decoder, reply) => {
         // A runner that streams stdout fed the decoder and kept only a tail; an
         // injected runner that does not stream returns the whole stdout instead.
-        const output = decoder?.received ? decoder.finish() : decodeOutput(adapter, cli.stdout);
+        // What the CLI wrote to its reply file (ODW extension) has its say too.
+        const output = decoder?.received ? decoder.finish(reply) : decodeOutput(adapter, cli.stdout, reply);
         // What the run said of its MCP servers is told as soon as it is in (ODW extension).
         if (output.mcp && !signal?.aborted) options.onMcp?.({ adapter: adapter.name, servers: notConnected(output.mcp) });
         if (signal?.aborted || cli.stalled) return { cli, output };
@@ -1279,7 +1284,7 @@ export class Bridge {
     signal: AbortSignal | undefined,
     call: CallEnv,
     why: AttemptReason | undefined,
-    settle: (ws: Workspace, cli: CliResult, decoder: AdapterOutputDecoder | null) => Promise<T>,
+    settle: (ws: Workspace, cli: CliResult, decoder: AdapterOutputDecoder | null, reply: ReplyFileText) => Promise<T>,
   ): Promise<T> {
     // JSONL transcripts are decoded while they stream, so only the final text
     // is retained (and a verbose session is never cut off at the stdout cap);
@@ -1319,13 +1324,18 @@ export class Bridge {
         cleanup = () => rm(dir, { recursive: true, force: true });
       }
       let schema: NativeSchemaArgs | undefined;
+      let reply: ReplyFile | undefined;
       try {
         // A schema the CLI takes natively (ODW extension): inline, or in a
         // file written for this run and removed after it.
         if (call.schema) schema = await nativeSchemaArgs(call.schema.flag, call.schema.value, call.schema.file);
+        // A CLI that writes its reply to a file of its own (ODW extension)
+        // gets a fresh path for this run, removed after it.
+        if (usesReplyFile(adapter)) reply = await replyFile();
         const context: PlaceholderContext = {
           prompt,
           prompt_file: promptFile,
+          reply_file: reply?.path ?? "",
           workspace: ws.path,
           source: ws.source,
           adapter: adapter.name,
@@ -1361,15 +1371,19 @@ export class Bridge {
           signal,
         });
         transcript?.endRun(cli);
+        // What it wrote to its reply file is read once it has exited.
+        const written = reply ? await reply.read() : undefined;
+        if (written?.note) call.onNote?.(`adapter '${adapter.name}': ${written.note}`);
         // agent() returns the reply; what an isolated run changed is kept
         // beside it, before its worktree goes (ODW extension; see ./changes).
         if (call.changes && plan.workspaceMode === "worktree" && !signal?.aborted) await call.changes.capture(ws);
         // Then how the run ended is settled — while its worktree is still
         // there, for an `expect` check to look at (ODW extension; see ./expect).
-        return await settle(ws, cli, decoder);
+        return await settle(ws, cli, decoder, written === undefined ? undefined : written.text);
       } finally {
         if (cleanup) await cleanup();
         await schema?.cleanup();
+        await reply?.cleanup();
       }
     }, setup);
   }

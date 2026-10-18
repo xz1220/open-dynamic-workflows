@@ -10,6 +10,15 @@
  * the run's log. ODW cannot run every vendor's CLI in CI, so a CLI whose
  * output shape drifts from its adapter's declaration degrades to a text
  * adapter instead of breaking every run.
+ *
+ * A CLI may also write its final reply to a file of its own (`{reply_file}`,
+ * an ODW extension; Codex's `--output-last-message`): that file is its own
+ * word on the reply, independent of event shapes, so it wins over stdout. And
+ * when the file is empty or was never written while stdout — a stream in its
+ * declared format — had no reply either, the CLI did not answer: the reply is
+ * empty (an `empty_reply` failure unless the call allows one) rather than a
+ * dump of events nobody can use, and {@link DecodedOutput.note} says exactly
+ * what was missing.
  */
 
 import type { Adapter, AdapterOutput } from "./types.js";
@@ -70,6 +79,12 @@ export interface DecodedOutput {
   /** Set when stdout did not match the declared format and `text` is the raw stdout: why, for the run's log. */
   fallback?: string;
   /**
+   * Set when the reply is not where the adapter declares it in stdout, yet
+   * not the raw stdout either — its reply file held it, or nothing did and
+   * the reply is empty: what was missing, for the run's log.
+   */
+  note?: string;
+  /**
    * The value the CLI validated against a schema it was handed natively — at
    * `structuredPath` in the latest text event — when it has one: absent, or
    * null (a run that produced none), leaves this unset.
@@ -80,11 +95,32 @@ export interface DecodedOutput {
 type JsonlOutput = Extract<AdapterOutput, { format: "jsonl" }>;
 type JsonOutput = Extract<AdapterOutput, { format: "json" }>;
 
-/** Decode a CLI run's whole stdout at once (see {@link AdapterOutputDecoder}). */
-export function decodeOutput(adapter: Adapter, stdout: string): DecodedOutput {
+/**
+ * What a CLI run wrote to its `{reply_file}` (an ODW extension), read once it
+ * exited: its text, or null when it wrote none. Undefined: the adapter has no
+ * reply file.
+ */
+export type ReplyFileText = string | null | undefined;
+
+/**
+ * JSONL events a CLI prints while it starts up, before its model has read the
+ * prompt: Claude Code's `system` events (its `init`), Codex's `thread.started`
+ * and `turn.started`. Any other event means it is answering.
+ */
+const STARTUP_EVENTS: ReadonlySet<string> = new Set(["system", "thread.started", "turn.started"]);
+
+/** What stdout said about the reply, before a reply file has its say. */
+type Verdict =
+  | { kind: "error"; error: string }
+  | { kind: "reply"; text: string; structured?: unknown }
+  /** No reply: why; the raw stdout kept; whether stdout was in its declared format, only without the reply. */
+  | { kind: "none"; why: string; raw: string; keptChars: number | null; formatted: boolean };
+
+/** Decode a CLI run's whole stdout at once (see {@link AdapterOutputDecoder}), with what it wrote to its reply file. */
+export function decodeOutput(adapter: Adapter, stdout: string, reply?: ReplyFileText): DecodedOutput {
   const decoder = new AdapterOutputDecoder(adapter);
   decoder.write(stdout);
-  return decoder.finish();
+  return decoder.finish(reply);
 }
 
 /** The reply alone: trimmed text, or the selected text of a JSON format (else its raw stdout). */
@@ -99,17 +135,19 @@ export function decodeAdapterOutput(adapter: Adapter, stdout: string): string {
  * running usage total, the unterminated tail, and (for the fallback) the end
  * of the stream until a text event turns up — so a verbose agent session
  * costs memory proportional to its longest line, not to its transcript. Lines
- * that are not JSON (a CLI's stray notice) are skipped. A text decoder
- * accumulates the reply; a JSON decoder, the document.
+ * that are not JSON (a CLI's stray notice), and events of types it does not
+ * declare, are skipped. A text decoder accumulates the reply; a JSON decoder,
+ * the document.
  */
 export class AdapterOutputDecoder {
   /** Whether any stdout has been written. */
   received = false;
   /**
    * Whether the stream shows more than the CLI starting up: any output, or —
-   * for JSONL — an event other than a `system` one (Claude Code prints its
-   * `init` before the model has read the prompt). What a staggered fan-out
-   * waits for (an ODW extension; see ../throttle.ts).
+   * for JSONL — an event other than a start-up one (Claude Code's `system`
+   * init, Codex's `thread.started` and `turn.started`, printed before the
+   * model has read the prompt). What a staggered fan-out waits for (an ODW
+   * extension; see ../throttle.ts).
    */
   answering = false;
   /**
@@ -125,6 +163,8 @@ export class AdapterOutputDecoder {
   private lines = 0;
   /** JSON events parsed (of any type). */
   private events = 0;
+  /** Of those, objects with a string `type`: the stream is one of events. */
+  private typed = 0;
   /** Events of the text type seen. */
   private matching = 0;
   /** The latest non-empty text of a matching event. */
@@ -133,6 +173,8 @@ export class AdapterOutputDecoder {
   private found = false;
   /** What the latest matching event reported at `errorPath`, when it reported a failure. */
   private error: string | undefined;
+  /** What the latest of the `errorEvents` reported, until a usage event shows the CLI went on. */
+  private failure: string | undefined;
   /** What the latest matching event had at `structuredPath` (null: nothing). */
   private structured: unknown;
   /** What the latest matching event listed at `deniedPath`, when it listed any. */
@@ -179,46 +221,62 @@ export class AdapterOutputDecoder {
     }
   }
 
-  /** The decoded run. Never throws: a stream that does not match its format falls back to the raw stdout. */
-  finish(): DecodedOutput {
+  /**
+   * The decoded run. Never throws: a stream that does not match its format
+   * falls back to the raw stdout. `reply` is what the CLI wrote to its
+   * `{reply_file}` (see {@link ReplyFileText}); the first call decides.
+   */
+  finish(reply?: ReplyFileText): DecodedOutput {
     if (!this.result) {
-      const decoded = this.decode();
+      const decoded = this.decode(reply);
       this.result = this.mcp ? { ...decoded, mcp: this.mcp } : decoded;
     }
     return this.result;
   }
 
-  private decode(): DecodedOutput {
+  private decode(reply: ReplyFileText): DecodedOutput {
     const output = this.output;
-    if (output.format === "text") return { text: this.text.trim() };
-    if (output.format === "json") return this.decodeJson(output);
+    if (output.format === "text") return this.resolve({ kind: "reply", text: this.text.trim() }, reply);
+    if (output.format === "json") {
+      const { verdict, usage, denied } = this.decodeJson(output);
+      return withUsage(this.resolve(verdict, reply), usage, denied);
+    }
+    return withUsage(this.resolve(this.decodeJsonl(output), reply), this.usage, this.denied);
+  }
+
+  private decodeJsonl(output: JsonlOutput): Verdict {
     if (!this.overflow && this.partial) {
       const tail = this.partial;
       this.partial = "";
       this.consume(tail);
     }
-    const usage = this.usage;
-    const denied = this.denied;
-    if (this.error !== undefined) return withUsage({ text: this.error, error: this.error }, usage, denied);
-    if (this.found) return withUsage(withStructured({ text: this.last ?? "" }, this.structured), usage, denied);
+    // The CLI's own failure report: a failure event it did not go on from, else its latest text event's.
+    const error = this.failure ?? this.error;
+    if (error !== undefined) return { kind: "error", error };
+    if (this.found) return { kind: "reply", text: this.last ?? "", structured: this.structured };
     const why = this.overflow
       ? this.overflow
       : this.matching > 0
-        ? `its '${output.eventType}' events had no text at '${output.textPath.join(".")}'`
+        ? `its ${textEvents(output, true)} had no text at '${output.textPath.join(".")}'`
         : this.events === 0 && this.badLine
           ? `stdout is not JSONL: ${this.badLine}`
           : this.events === 0
             ? "it printed nothing on stdout"
-            : `no '${output.eventType}' event was found`;
+            : `no ${textEvents(output)} was found`;
     const kept = this.raw.length > MAX_FALLBACK_CHARS ? this.raw.slice(-MAX_FALLBACK_CHARS) : this.raw;
     const dropped = this.rawDropped + (this.raw.length - kept.length);
-    return withUsage(this.fallback(kept, why, dropped > 0 ? kept.length : null), usage, denied);
+    // Events came, of the declared kind, only without the reply: stdout was in its format.
+    const formatted = !this.overflow && (this.matching > 0 || this.typed > 0);
+    return { kind: "none", why, raw: kept, keptChars: dropped > 0 ? kept.length : null, formatted };
   }
 
-  private decodeJson(output: JsonOutput): DecodedOutput {
+  private decodeJson(output: JsonOutput): { verdict: Verdict; usage?: Usage; denied?: string[] } {
     const raw = this.text.trim();
     const parsed = parseDocument(raw);
-    if (!parsed.ok) return this.fallback(raw, raw ? `stdout is not one JSON document: ${parsed.reason}` : "it printed nothing on stdout");
+    if (!parsed.ok) {
+      const why = raw ? `stdout is not one JSON document: ${parsed.reason}` : "it printed nothing on stdout";
+      return { verdict: { kind: "none", why, raw, keptChars: null, formatted: false } };
+    }
     const doc = parsed.value;
     this.mcp = output.mcpPath ? mcpServers(doc, output.mcpPath) : undefined;
     const usage =
@@ -230,11 +288,30 @@ export class AdapterOutputDecoder {
     const error = output.errorPath ? reportedError(doc, output.errorPath, text) : undefined;
     const structured = output.structuredPath ? walk(doc, output.structuredPath) : undefined;
     const denied = output.deniedPath ? deniedCalls(doc, output.deniedPath) : undefined;
-    if (error !== undefined) return withUsage({ text: error, error }, usage, denied);
-    if (text !== undefined || isPresent(structured)) {
-      return withUsage(withStructured({ text: text ?? "" }, structured), usage, denied);
-    }
-    return withUsage(this.fallback(raw, `it has no text at '${output.textPath.join(".")}'`), usage, denied);
+    if (error !== undefined) return { verdict: { kind: "error", error }, usage, denied };
+    if (text !== undefined || isPresent(structured)) return { verdict: { kind: "reply", text: text ?? "", structured }, usage, denied };
+    const why = `it has no text at '${output.textPath.join(".")}'`;
+    return { verdict: { kind: "none", why, raw, keptChars: null, formatted: true }, usage, denied };
+  }
+
+  /**
+   * The reply, from what stdout said and what the CLI wrote to its reply file
+   * (see the module doc): the CLI's failure report decides; else a reply file
+   * with text is the reply; else stdout's reply; else — stdout in its format
+   * but without a reply, and a reply file empty or never written — nothing;
+   * else the raw stdout.
+   */
+  private resolve(verdict: Verdict, reply: ReplyFileText): DecodedOutput {
+    if (verdict.kind === "error") return { text: verdict.error, error: verdict.error };
+    const file = typeof reply === "string" ? reply.trim() : "";
+    if (verdict.kind === "reply") return withStructured({ text: file || verdict.text }, verdict.structured);
+    const mismatch = `adapter '${this.adapter.name}': stdout did not match its '${this.output.format}' output format (${verdict.why}`;
+    if (file) return { text: file, note: `${mismatch}); its reply file holds the reply` };
+    if (reply === undefined) return this.fallback(verdict.raw, verdict.why, verdict.keptChars);
+    const unwritten = reply === null ? "it wrote no reply file" : "its reply file was empty";
+    // A dump of events is no reply: both places the CLI could have put one are empty.
+    if (verdict.formatted) return { text: "", note: `${mismatch}), and ${unwritten}; the reply is empty` };
+    return this.fallback(verdict.raw, `${verdict.why}; and ${unwritten}`, verdict.keptChars);
   }
 
   private fallback(raw: string, why: string, keptChars: number | null = null): DecodedOutput {
@@ -274,17 +351,29 @@ export class AdapterOutputDecoder {
     }
     this.events++;
     if (!isRecord(event)) return;
-    if (event.type !== "system") this.answering = true;
-    if (event.type === (output.usageEvent ?? output.eventType) && (output.usagePath || output.costPath)) {
-      const usage = normalizeUsage(output.usagePath && walk(event, output.usagePath), output.costPath && walk(event, output.costPath));
-      this.usage = addUsage(this.usage, usage);
+    const type = typeof event.type === "string" ? event.type : undefined;
+    if (type !== undefined) this.typed++;
+    if (type === undefined || !STARTUP_EVENTS.has(type)) this.answering = true;
+    if (type === (output.usageEvent ?? output.eventType)) {
+      if (output.usagePath || output.costPath) {
+        const usage = normalizeUsage(output.usagePath && walk(event, output.usagePath), output.costPath && walk(event, output.costPath));
+        this.usage = addUsage(this.usage, usage);
+      }
+      // A turn completed after the CLI reported an error: it recovered and went on.
+      this.failure = undefined;
     }
     // The MCP servers the CLI started with (Claude Code's `system` init event): the latest list decides.
-    if (output.mcpPath && (output.mcpEvent === undefined || event.type === output.mcpEvent)) {
+    if (output.mcpPath && (output.mcpEvent === undefined || type === output.mcpEvent)) {
       const servers = mcpServers(event, output.mcpPath);
       if (servers) this.mcp = servers;
     }
-    if (event.type !== output.eventType) return;
+    const failurePath = type !== undefined && output.errorEvents && hasOwn(output.errorEvents, type) ? output.errorEvents[type] : undefined;
+    if (failurePath) {
+      this.failure = reportedError(event, failurePath, undefined) ?? quoted(event);
+      return;
+    }
+    if (type !== output.eventType) return;
+    if (output.match && walk(event, output.match.path) !== output.match.equals) return;
     this.matching++;
 
     const value = walk(event, output.textPath);
@@ -300,6 +389,18 @@ export class AdapterOutputDecoder {
     this.error = output.errorPath ? reportedError(event, output.errorPath, text) : undefined;
     this.denied = output.deniedPath ? deniedCalls(event, output.deniedPath) : undefined;
   }
+}
+
+/** The text events, as the log names them: `'result' event(s)`, `'item.completed' event(s) with item.type 'agent_message'`. */
+function textEvents(output: JsonlOutput, plural = false): string {
+  const events = `'${output.eventType}' event${plural ? "s" : ""}`;
+  if (!output.match) return events;
+  const { path, equals } = output.match;
+  return `${events} with ${path.join(".")} ${typeof equals === "string" ? `'${equals}'` : String(equals)}`;
+}
+
+function hasOwn(record: object, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(record, key);
 }
 
 function withUsage(decoded: DecodedOutput, usage: Usage | undefined, denied?: string[]): DecodedOutput {
@@ -356,8 +457,13 @@ function reportedError(
   if (typeof flag === "string" && flag.trim()) return flag.trim();
   if (isRecord(flag) && typeof flag.message === "string" && flag.message.trim()) return flag.message.trim();
   if (text) return text;
-  const quoted = JSON.stringify(holder) ?? String(holder);
-  return quoted.length > ERROR_EXCERPT_CHARS ? `${quoted.slice(0, ERROR_EXCERPT_CHARS)}…` : quoted;
+  return quoted(holder);
+}
+
+/** An event quoted as a failure's message: its JSON, cut at {@link ERROR_EXCERPT_CHARS}. */
+function quoted(holder: unknown): string {
+  const json = JSON.stringify(holder) ?? String(holder);
+  return json.length > ERROR_EXCERPT_CHARS ? `${json.slice(0, ERROR_EXCERPT_CHARS)}…` : json;
 }
 
 /** Characters of one refused call's description. */
