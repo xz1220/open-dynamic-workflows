@@ -1,4 +1,5 @@
 /** Activity — the machine's pulse: a headline, live counters, the ridgeline, the fleet and the event stream. */
+import { renderTrend } from "../components/trend";
 import { glyph, pill } from "../components/glyph";
 import { icons } from "../icons";
 import { renderPulse } from "../components/pulse";
@@ -156,6 +157,7 @@ export function renderActivity(nowSec: number): string {
     `</div></section>` +
     needsYou(nowSec) +
     pulseCard +
+    renderTrend(runs, nowSec) +
     `<div class="act-grid">` +
     `<section class="card fleet" data-key="fleet"><div class="card-head" style="padding:16px 0 8px"><h3>${t("Fleet")}</h3><span class="eyebrow">${t("agents running · by adapter")}</span></div>${fleetRows}</section>` +
     `<section class="card stream" data-key="stream"><div class="card-head"><h3>${t("Live event stream")}</h3><span class="eyebrow">${t("all runs · events.jsonl")}</span></div><div class="stream-list">${stream}</div></section>` +

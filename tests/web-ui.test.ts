@@ -1165,3 +1165,33 @@ test("who did what (ODW extension): the Job header says who launched it; Jobs fi
   const gate = withCheckpoints(detail([], { state: "done" }), events).agents.at(-1)!;
   assert.deepEqual(gate.decision, { approved: true, note: null, by: "link", who: "bob" });
 });
+
+test("the spend trend buckets a fortnight by local day, stacks the top workflows, leaves dry runs out and compares with the fortnight before", async () => {
+  const { spendTrend, renderTrend } = await import("../web/src/components/trend.ts");
+  const noon = new Date();
+  noon.setHours(12, 0, 0, 0);
+  const now = Math.floor(noon.getTime() / 1000);
+  const day = 86400;
+  const run = (name: string, ago: number, costUsd: number, extra: Record<string, unknown> = {}) =>
+    ({ runId: `r-${name}-${ago}-${costUsd}`, name, state: "done", createdAt: now - ago * day, usage: { costUsd }, counts: { agents: 1 }, ...extra }) as never;
+  const runs = [
+    run("a", 0, 2), run("b", 0, 1), run("c", 1, 0.5), run("d", 1, 0.25), run("e", 2, 0.1),
+    run("a", 0, 100, { dry: true }),
+    run("a", 20, 1), // the fortnight before
+    run("a", 40, 9), // older still
+  ];
+  const tr = spendTrend(runs, now)!;
+  assert.equal(tr.by, "cost");
+  assert.equal(tr.days.length, 14);
+  assert.equal(tr.days[13].total, 3);
+  assert.equal(tr.days[13].runs, 2);
+  assert.ok(Math.abs(tr.total - 3.85) < 1e-9);
+  assert.equal(tr.previous, 1);
+  assert.deepEqual(tr.top, ["a", "b", "c"]);
+  assert.ok(Math.abs((tr.days[12].parts.get("") ?? 0) - 0.25) < 1e-9, "d falls into the rest");
+  const html = renderTrend(runs, now);
+  assert.match(html, /class="tr-col today"/);
+  assert.match(html, /↑ 285%/);
+  assert.equal(spendTrend([run("a", 0, 5, { dry: true })], now), null);
+  assert.equal(renderTrend([], now), "");
+});

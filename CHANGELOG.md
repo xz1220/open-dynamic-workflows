@@ -197,6 +197,9 @@ independent security reviews whose findings are all fixed.
   catchable `CostGateRejected`. Without history the gate lets fan-outs through and
   says so once. The dashboard's workspace draws the estimate for a workflow with runs:
   the totals, and a p50/p90 range bar per phase.
+  Activity adds a Spend card: the last fortnight's dollars (else tokens) per day,
+  stacked by the three workflows that spent most, today lit, with the change against
+  the fortnight before; dry runs stay out.
 - Codex agents report their tokens too: the built-in `codex` adapter runs `codex exec
   --json --output-last-message {reply_file}` — its reply from that file (else the last
   `agent_message` event), tokens from `turn.completed` (no cost: codex reports none),
