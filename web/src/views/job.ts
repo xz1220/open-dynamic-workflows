@@ -113,7 +113,7 @@ function runHead(run: RunDetail, nowSec: number, spendOpen: boolean): string {
   const w = (n: number) => `${((n / total) * 100).toFixed(2)}%`;
   return (
     `<header class="run-head">` +
-    `<div style="min-width:0"><div class="eyebrow"><span>${t("Run")}</span><span class="mono" style="text-transform:none;letter-spacing:0">${esc(run.runId)}</span>${cc}${shared}${driftChip(run)}${run.dry ? `<span class="tag dry" title="${esc(t("every agent answered by a stub: it cost nothing"))}">${t("dry run")}</span>` : ""}</div>` +
+    `<div style="min-width:0"><div class="eyebrow"><span>${t("Run")}</span><span class="mono" style="text-transform:none;letter-spacing:0">${esc(run.runId)}</span>${cc}${shared}${driftChip(run)}${run.dry ? `<span class="tag dry" title="${esc(t("every agent answered by a stub: it cost nothing"))}">${t("dry run")}</span>` : ""}${gcTags(run)}</div>` +
     `<div class="title-row"><h1 class="display">${esc(run.name)}</h1>${pill(run.state)}</div>` +
     (run.description ? `<p class="lede">${esc(run.description)}</p>` : "") +
     // Who started it (ODW extension): the local user, a named token's name, or trigger:<name>.
@@ -186,6 +186,19 @@ export function driftChip(run: { drift?: { since: string; changes: Array<{ kind:
       : t("{label} on {adapter}: model {from} → {to}", { label: c.label ?? "?", adapter: c.adapter, from: c.from ?? t("default"), to: c.to ?? t("default") }),
   );
   return `<span class="tag drift" title="${esc(`${t("since {run}", { run: d.since })}\n${lines.join("\n")}`)}">${esc(tn(d.changes.length, "{n} change since last run", "{n} changes since last run"))}</span>`;
+}
+
+/** What `odw pin` and `odw gc` left on the run (ODW extension): kept from gc, or its transcripts trimmed. */
+export function gcTags(run: Pick<RunDetail, "runId" | "pinned" | "trimmed">): string {
+  let out = "";
+  if (run.pinned) {
+    const tip = t("odw gc skips this run (odw pin {run} --remove undoes it)", { run: run.runId }) + (run.pinned.by ? `\n${t("pinned by {who}", { who: run.pinned.by })}` : "");
+    out += `<span class="tag pinned" title="${esc(tip)}">${t("pinned")}</span>`;
+  }
+  if (run.trimmed) {
+    out += `<span class="tag trimmed" title="${esc(t("odw gc removed {n} transcript and stderr file(s); events, results and diffs stay", { n: run.trimmed.files }))}">${t("transcripts trimmed")}</span>`;
+  }
+  return out;
 }
 
 /** A link to what changed since the workflow's previous run, when it has one. */

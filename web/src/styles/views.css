@@ -890,6 +890,17 @@ ul.mcp li {
   font-weight: 600;
 }
 
+/* ---- odw pin / odw gc: kept, or trimmed ---- */
+.tag.pinned {
+  border-color: var(--ink);
+  color: var(--ink);
+}
+.tag.trimmed {
+  border-style: dashed;
+  border-color: var(--line-2);
+  color: var(--mute);
+}
+
 /* ---- runs linked by odw apply --resolve ---- */
 .rlinks {
   display: flex;

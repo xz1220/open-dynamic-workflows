@@ -332,6 +332,10 @@ export interface RunDetail extends RunSummary {
   /** odw's version, and the sha256 of the workflow source as launched; null for older runs (ODW extension). */
   odwVersion?: string | null;
   sourceHash?: string | null;
+  /** `odw pin` marked it: `odw gc` skips it (ODW extension). Absent otherwise. */
+  pinned?: { at: number; by: string | null };
+  /** `odw gc` trimmed its transcripts and stderr: when, and how many files (ODW extension). Absent otherwise. */
+  trimmed?: { at: number; files: number };
 }
 
 /** An adapter CLI's `--version` as a run recorded it: null, with why, when the CLI did not tell (ODW extension). */

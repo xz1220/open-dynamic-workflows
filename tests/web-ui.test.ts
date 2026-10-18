@@ -1103,6 +1103,20 @@ test("a run with untrusted input has a trust line in its header: what said so, i
   store.focusRun(null);
 });
 
+test("a pinned run, and one whose transcripts odw gc trimmed, say so in the header", () => {
+  const view: JobViewState = { cpNote: "", tab: "graph", selectedAi: null, reviewAi: null, zoom: 1, logQuery: "", logTypes: new Set(["agent"]), logLimit: 600, follow: true, motion: false };
+  store.focusRun("20260101-000000-aaaaaa");
+  store.run = detail([], { pinned: { at: 1, by: "cli:ada" }, trimmed: { at: 2, files: 3 } });
+  store.runEvents = [];
+  const html = renderJob(view, NOW);
+  assert.match(html, /<span class="tag pinned" title="odw gc skips this run \(odw pin 20260101-000000-aaaaaa --remove undoes it\)\npinned by cli:ada">pinned<\/span>/);
+  assert.match(html, /<span class="tag trimmed" title="odw gc removed 3 transcript and stderr file\(s\); events, results and diffs stay">transcripts trimmed<\/span>/);
+  store.run = detail([]);
+  const plain = renderJob(view, NOW);
+  assert.doesNotMatch(plain, /tag pinned|tag trimmed/);
+  store.focusRun(null);
+});
+
 test("a run whose CLI or model changed since the workflow's last run says so in a chip that lists it", async () => {
   const { driftChip } = await import("../web/src/views/job.ts");
   const html = driftChip({ drift: { since: "20260101-000000-zzzzzz", changes: [
