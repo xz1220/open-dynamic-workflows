@@ -19,6 +19,7 @@
  *   odw rerun|resume <run_id>
  *   odw pause|resume|stop <run_id>
  *   odw approve|reject <run_id> [--note TEXT] [--checkpoint N]
+ *   odw approve <run_id> [--checkpoint N] (--payload JSON|@file | --edit)
  *   odw schedule add|list|remove|run …   (recurring runs via the OS scheduler, src/schedule/)
  *   odw compare <runA> <runB> [--json] [--agent <label|id>]   (what changed; runtime/compare)
  */
@@ -34,6 +35,7 @@ import { isOnPath, listAdapters, loadConfig, locateConfig, resolveAdapter, resol
 import { isPermissionTier, permissionsBanner } from "./adapters/permissions.js";
 import type { Config, PermissionTier } from "./adapters/types.js";
 import { killAllAgentProcesses } from "./adapters/runner.js";
+import { checkEdit } from "./checkpoint.js";
 import { CHECKPOINT_NOTE_MAX, isCheckpointId } from "./control.js";
 import { runDoctor, type CheckStatus } from "./doctor.js";
 import { AdapterNotFound } from "./errors.js";
@@ -53,6 +55,7 @@ import {
   truncationNoteOf,
 } from "./runtime/changes-view.js";
 import { compareRuns, findComparedAgents, formatAgentComparison, formatComparison, readCompareRun } from "./runtime/compare.js";
+import { editBlocker, editorCommand, editPayload, readPayloadOption } from "./runtime/checkpoint-edit.js";
 import { startRun, startRunFromSource, waitFor } from "./runtime/launcher.js";
 import { attachRun, bannerLines, checkpointCommands, fallbackLines, formatEvent, formatUsage, resolveRunMode, type RunMode } from "./runtime/live-view.js";
 import { isRunActive, RunObserver } from "./runtime/run-liveness.js";
@@ -128,6 +131,7 @@ export function helpText(): string {
     "  odw workflows where <name>                         show the file a name resolves to",
     "  odw pause|resume|stop <run_id>                     control a running workflow",
     "  odw approve|reject <run_id> [--checkpoint N]       answer a checkpoint() the run waits at (--note TEXT)",
+    "  odw approve <run_id> --edit | --payload JSON|@file approve it with an edited payload ($VISUAL/$EDITOR for --edit)",
     "  odw schedule add <name> <workflow> --cron EXPR     run a workflow on a timer via cron/launchd/systemd (below)",
     "  odw schedule list [--json] | remove|run <name>     list schedules; delete one; run one now",
     "",
@@ -228,7 +232,7 @@ export async function main(argv: string[]): Promise<number> {
         return cmdControl(command, rest);
       case "approve":
       case "reject":
-        return cmdDecide(command, rest);
+        return await cmdDecide(command, rest);
       case "diff":
         return await cmdDiff(rest);
       case "apply":
@@ -648,6 +652,7 @@ function cmdStatus(rest: string[]): number {
     process.stdout.write(`    approve: ${approve}\n    reject:  ${reject}\n`);
   }
   if (pending.length > 0) process.stdout.write("    (--note TEXT tells the workflow why)\n");
+  if (pending.length > 0) process.stdout.write("    (odw approve --edit approves an edited payload; --payload JSON|@file does it without an editor)\n");
   return 0;
 }
 
@@ -1395,8 +1400,13 @@ function cmdControl(action: Command, rest: string[]): number {
  * oldest one waiting. The answer always names the checkpoint the person saw,
  * so it can never land on a question asked after they decided; the run picks
  * it up from its decision log within a fraction of a second.
+ *
+ * `odw approve` may carry an edited payload: `--payload JSON|@file`, or
+ * `--edit`, which opens $VISUAL / $EDITOR on the checkpoint's payload first
+ * (see runtime/checkpoint-edit.ts). Either is checked as the run will check
+ * it — JSON, at most 256 KiB, the checkpoint's schema — before it is written.
  */
-function cmdDecide(action: "approve" | "reject", rest: string[]): number {
+async function cmdDecide(action: "approve" | "reject", rest: string[]): Promise<number> {
   const { values, positionals } = parseArgs({
     args: rest,
     allowPositionals: true,
@@ -1405,6 +1415,8 @@ function cmdDecide(action: "approve" | "reject", rest: string[]): number {
       "runs-root": { type: "string" },
       note: { type: "string" },
       checkpoint: { type: "string" },
+      payload: { type: "string" },
+      edit: { type: "boolean" },
     },
   });
   const runId = positionals[0];
@@ -1419,6 +1431,26 @@ function cmdDecide(action: "approve" | "reject", rest: string[]): number {
   const note = values.note;
   if (note !== undefined && note.length > CHECKPOINT_NOTE_MAX) {
     throw new UsageError(`odw ${action}: --note must be at most ${CHECKPOINT_NOTE_MAX} characters`);
+  }
+  if ((values.payload !== undefined || values.edit) && action === "reject") {
+    throw new UsageError("odw reject: --payload and --edit go with odw approve only — a rejection keeps the checkpoint's payload");
+  }
+  if (values.payload !== undefined && values.edit) {
+    throw new UsageError("odw approve: --payload and --edit are mutually exclusive");
+  }
+  let edit: { value: unknown } | undefined;
+  if (values.payload !== undefined) {
+    const read = readPayloadOption(values.payload);
+    if ("error" in read) throw new UsageError(`odw approve: --payload: ${read.error}`);
+    const sized = checkEdit(read.value, null);
+    if (!sized.ok) throw new UsageError(`odw approve: --payload: ${sized.message}`);
+    edit = { value: sized.value };
+  }
+  if (values.edit && !(process.stdin.isTTY === true && process.stdout.isTTY === true)) {
+    throw new UsageError(
+      "odw approve: --edit opens an editor, which needs a terminal (stdin and stdout are not one) — " +
+        "pass the edited payload with --payload '<json>' or --payload @file.json",
+    );
   }
   const store = storeFrom(values);
   if (!store.exists(runId)) {
@@ -1437,16 +1469,72 @@ function cmdDecide(action: "approve" | "reject", rest: string[]): number {
     );
     return 1;
   }
+  const which = `checkpoint #${target.checkpointId}`;
+  if (edit) {
+    const checked = checkEdit(edit.value, target.schema ?? null);
+    if (!checked.ok) {
+      process.stderr.write(`odw approve: ${editRefusal(which, checked.message, checked.problems)}`);
+      return 1;
+    }
+  }
+  // An --edit file stays until its edit is written; it is kept, and named, when it cannot be.
+  let keep: { file: string; discard(): void } | undefined;
+  if (values.edit) {
+    const blocked = editBlocker(target);
+    if (blocked) {
+      process.stderr.write(`odw approve: cannot --edit ${which}: ${blocked} — pass the edited payload with --payload @file.json\n`);
+      return 1;
+    }
+    const outcome = await editPayload(target.payload, {
+      editor: editorCommand(),
+      check: (value) => checkEdit(value, target.schema ?? null),
+    });
+    const kept = (file: string | null | undefined): string => (file ? `  your edit is kept in ${file}\n` : "");
+    switch (outcome.kind) {
+      case "empty":
+        process.stderr.write(`odw approve: the payload file was empty — not answering; ${which} still waits\n`);
+        return 1;
+      case "editor-failed":
+        process.stderr.write(`odw approve: ${outcome.message} — not answering; ${which} still waits\n${kept(outcome.file)}`);
+        return 1;
+      case "refused":
+        process.stderr.write(`odw approve: ${editRefusal(which, outcome.message, outcome.problems)}${kept(outcome.file)}`);
+        return 1;
+      case "unchanged":
+        process.stderr.write(`payload unchanged — approving ${which} as is\n`);
+        break;
+      case "edited":
+        edit = { value: outcome.value };
+        keep = outcome;
+        break;
+    }
+    // Time passed in the editor: the checkpoint may have been answered meanwhile, or the run ended.
+    if (!(detail(store, runId).pendingCheckpoints ?? []).some((cp) => cp.checkpointId === target.checkpointId)) {
+      process.stderr.write(`odw approve: ${which} of run ${runId} is no longer waiting for a decision\n${kept(keep?.file)}`);
+      return 1;
+    }
+  }
   store.requestCheckpointDecision(runId, {
     action,
     checkpointId: target.checkpointId,
     ...(note !== undefined && note.trim() !== "" ? { note } : {}),
+    ...(edit ? { payload: edit.value } : {}),
     by: "cli",
   });
+  keep?.discard();
   process.stderr.write(
-    `${action} requested for checkpoint #${target.checkpointId} ${JSON.stringify(sanitizeText(target.title, 120))} of ${runId}\n`,
+    `${action} requested for checkpoint #${target.checkpointId} ${JSON.stringify(sanitizeText(target.title, 120))} of ${runId}` +
+      `${edit ? ", with an edited payload" : ""}\n`,
   );
   return 0;
+}
+
+/** Why an edited payload was refused: the message, or the schema's problems one per line. */
+function editRefusal(which: string, message: string, problems: string[]): string {
+  if (problems.length <= 1) return `${message} — not answering; ${which} still waits\n`;
+  const shown = problems.slice(0, 20).map((p) => `  ${sanitizeText(p, 200)}\n`).join("");
+  const more = problems.length > 20 ? `  … and ${problems.length - 20} more\n` : "";
+  return `the edited payload does not match ${which}'s schema — not answering; it still waits:\n${shown}${more}`;
 }
 
 /** `odw workflows <list|where>` — inspect the workflows runnable by name. */
