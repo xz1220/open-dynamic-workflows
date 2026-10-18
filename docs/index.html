@@ -2529,7 +2529,147 @@
         animation: draw 0.5s var(--ease-out) 1.3s both;
       }
 
-      /* ---------- 06 · install ---------- */
+      /* the nothing-lost plate: a question answered, a snapshot restored, a queue by risk */
+      .pl-lost .lane {
+        fill: var(--faint);
+        font-size: 9px;
+      }
+      .pl-lost .rail {
+        stroke: var(--line);
+        stroke-dasharray: 2 4;
+      }
+      .pl-lost .bar {
+        fill: var(--sig-soft);
+        stroke: var(--sig-line);
+      }
+      .pl-lost .bar.re {
+        fill: var(--card);
+        stroke: var(--sig-line);
+        stroke-dasharray: 4 3;
+      }
+      .pl-lost .bt {
+        fill: var(--ink-2);
+        font-size: 9.5px;
+      }
+      .pl-lost .ask rect {
+        fill: var(--card);
+        stroke: var(--amber-line);
+        filter: drop-shadow(0 4px 6px rgba(0, 0, 0, 0.1));
+      }
+      .pl-lost .ask text {
+        fill: var(--ink);
+        font-family: var(--f-display);
+        font-size: 11px;
+      }
+      .pl-lost .gate {
+        fill: var(--amber-soft);
+        stroke: var(--amber);
+      }
+      .pl-lost .ans {
+        fill: var(--amber-ink);
+        font-size: 9px;
+      }
+      .pl-lost .snap {
+        fill: var(--card);
+        stroke: var(--ink-2);
+      }
+      .pl-lost .snapt {
+        fill: var(--mute);
+        font-size: 8.5px;
+      }
+      .pl-lost .cut {
+        stroke: var(--alarm);
+        stroke-width: 2;
+        stroke-dasharray: 3 3;
+      }
+      .pl-lost .cutt {
+        fill: var(--alarm-ink);
+        font-size: 9.5px;
+      }
+      .pl-lost .back {
+        fill: none;
+        stroke: var(--sig);
+        stroke-width: 1.5;
+        stroke-dasharray: 1;
+      }
+      .pl-lost .backt {
+        fill: var(--sig-ink);
+        font-size: 9px;
+      }
+      .pl-lost .q text {
+        fill: var(--ink-2);
+        font-size: 9px;
+      }
+      .pl-lost .q .sc {
+        fill: var(--ink);
+        font-family: var(--f-display);
+        font-size: 16px;
+      }
+      .pl-lost .q .m {
+        fill: var(--shade);
+      }
+      .pl-lost .q .m.hi {
+        fill: var(--alarm);
+      }
+      .pl-lost .q .m.md {
+        fill: var(--amber);
+      }
+      .pl-lost .q .m.lo {
+        fill: var(--sig);
+      }
+      .pl-lost .gate {
+        transform-box: fill-box;
+        transform-origin: center;
+      }
+      .pl-lost .bar,
+      .pl-lost .ask,
+      .pl-lost .snap,
+      .pl-lost .q {
+        transform-box: fill-box;
+        transform-origin: left center;
+      }
+      .pl-lost.draw .bar.a1,
+      .pl-lost.draw .bar.b1 {
+        animation: ctl-grow 0.8s var(--ease-out) 0.15s both;
+      }
+      .pl-lost.draw .ask {
+        animation: rec-pop 0.5s var(--ease-spring) 0.8s both;
+      }
+      .pl-lost.draw .gate,
+      .pl-lost.draw .ans {
+        animation: rec-pop 0.45s var(--ease-spring) 1.15s both;
+      }
+      .pl-lost.draw .bar.re {
+        animation: ctl-grow 0.8s var(--ease-out) 1.45s both;
+      }
+      .pl-lost.draw .snap,
+      .pl-lost.draw .snapt {
+        animation: rec-pop 0.45s var(--ease-spring) 0.5s both;
+      }
+      .pl-lost.draw .cut,
+      .pl-lost.draw .cutt {
+        animation: rec-pop 0.4s var(--ease-spring) 1s both;
+      }
+      .pl-lost.draw .back {
+        animation: draw 0.7s var(--ease-out) 1.35s both;
+      }
+      .pl-lost.draw .backt {
+        animation: rec-pop 0.4s var(--ease-spring) 1.8s both;
+      }
+      .pl-lost.draw .q {
+        animation: ctl-grow 0.6s var(--ease-out) both;
+      }
+      .pl-lost.draw .q.r1 {
+        animation-delay: 1.6s;
+      }
+      .pl-lost.draw .q.r2 {
+        animation-delay: 1.75s;
+      }
+      .pl-lost.draw .q.r3 {
+        animation-delay: 1.9s;
+      }
+
+      /* ---------- 07 · install ---------- */
       .install-panel {
         display: grid;
         grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.05fr);
@@ -3069,7 +3209,8 @@
             <a href="#long"><span class="ix" aria-hidden="true">03</span><span data-i18n="nav.long">Long runs</span></a>
             <a href="#control"><span class="ix" aria-hidden="true">04</span><span data-i18n="nav.control">Control</span></a>
             <a href="#guard"><span class="ix" aria-hidden="true">05</span><span data-i18n="nav.guard">Guardrails</span></a>
-            <a href="#install"><span class="ix" aria-hidden="true">06</span><span data-i18n="nav.install">Install</span></a>
+            <a href="#lost"><span class="ix" aria-hidden="true">06</span><span data-i18n="nav.lost">Nothing lost</span></a>
+            <a href="#install"><span class="ix" aria-hidden="true">07</span><span data-i18n="nav.install">Install</span></a>
             <a class="gh" href="https://github.com/xz1220/open-dynamic-workflows"
               >GitHub<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7.5 16.5 16.5 7.5M9 7.5h7.5V15" /></svg
             ></a>
@@ -3705,10 +3846,96 @@
         </div>
       </section>
 
-      <!-- ============================ 06 · INSTALL ============================ -->
+      <!-- ============================ 06 · NOTHING LOST ============================ -->
+      <section class="section" id="lost" aria-labelledby="lost-title">
+        <div class="section-inner">
+          <p class="seclabel"><span class="num">06</span> <span class="kick" data-i18n="lost.kicker">Nothing lost</span> <span class="rule"></span></p>
+          <div class="sechead">
+            <h2 class="sectitle display" id="lost-title" data-i18n="lost.title" data-i18n-html>No silent guesses. No <em>lost</em> work.</h2>
+            <p class="section-lede" data-i18n="lost.copy">
+              A headless agent that stops to ask gets your answer, not a guess. Work you had not committed is saved before an agent can wipe it. And the changes that come back are ranked by what could go wrong.
+            </p>
+          </div>
+
+          <div class="long-grid">
+            <figure class="rec-card card marked">
+              <div class="plate" aria-hidden="true">
+                <svg class="pl pl-lost" viewBox="0 0 520 260" data-live data-draw>
+                  <!-- 1 · a question becomes a checkpoint, and the call runs again with the answer -->
+                  <text class="lane" x="16" y="44">questions</text>
+                  <line class="rail" x1="92" y1="40" x2="500" y2="40" />
+                  <rect class="bar a1" x="96" y="30" width="110" height="20" rx="6" />
+                  <text class="bt" x="106" y="44">plan · claude</text>
+                  <g class="ask">
+                    <rect x="120" y="58" width="104" height="24" rx="10" />
+                    <text x="130" y="74">Which database?</text>
+                  </g>
+                  <path class="gate" d="M262 40L272 30L282 40L272 50Z" />
+                  <text class="ans" x="240" y="74">you: Postgres</text>
+                  <rect class="bar re" x="290" y="30" width="200" height="20" rx="6" />
+                  <text class="bt" x="300" y="44">plan · again, with the answer</text>
+                  <!-- 2 · a snapshot before the first in-place agent; a reset caught; restored -->
+                  <text class="lane" x="16" y="124">in place</text>
+                  <line class="rail" x1="92" y1="120" x2="500" y2="120" />
+                  <rect class="snap" x="96" y="110" width="20" height="20" rx="4" />
+                  <text class="snapt" x="96" y="104">refs/odw/safety</text>
+                  <rect class="bar b1" x="124" y="110" width="150" height="20" rx="6" />
+                  <text class="bt" x="134" y="124">migrate · codex</text>
+                  <line class="cut" x1="274" y1="102" x2="274" y2="138" />
+                  <text class="cutt" x="282" y="118">↯ git reset --hard</text>
+                  <path class="back" pathLength="1" d="M274 134C250 162 130 162 106 134" />
+                  <text class="backt" x="160" y="170">odw restore</text>
+                  <!-- 3 · the review queue, riskiest first -->
+                  <text class="lane" x="16" y="212">odw review</text>
+                  <line class="rail" x1="92" y1="208" x2="112" y2="208" />
+<g class="q r1"><text class="sc" x="124" y="200">10</text><text x="148" y="198">ci · auth</text><rect class="m hi" x="260" y="192" width="7" height="7" rx="1.5" /><rect class="m hi" x="269" y="192" width="7" height="7" rx="1.5" /><rect class="m hi" x="278" y="192" width="7" height="7" rx="1.5" /><rect class="m hi" x="287" y="192" width="7" height="7" rx="1.5" /><rect class="m hi" x="296" y="192" width="7" height="7" rx="1.5" /><rect class="m hi" x="305" y="192" width="7" height="7" rx="1.5" /><rect class="m hi" x="314" y="192" width="7" height="7" rx="1.5" /><rect class="m hi" x="323" y="192" width="7" height="7" rx="1.5" /><rect class="m hi" x="332" y="192" width="7" height="7" rx="1.5" /><rect class="m hi" x="341" y="192" width="7" height="7" rx="1.5" /></g>
+                  <g class="q r2"><text class="sc" x="124" y="224">3</text><text x="148" y="222">migrations</text><rect class="m md" x="260" y="216" width="7" height="7" rx="1.5" /><rect class="m md" x="269" y="216" width="7" height="7" rx="1.5" /><rect class="m md" x="278" y="216" width="7" height="7" rx="1.5" /><rect class="m" x="287" y="216" width="7" height="7" rx="1.5" /><rect class="m" x="296" y="216" width="7" height="7" rx="1.5" /><rect class="m" x="305" y="216" width="7" height="7" rx="1.5" /><rect class="m" x="314" y="216" width="7" height="7" rx="1.5" /><rect class="m" x="323" y="216" width="7" height="7" rx="1.5" /><rect class="m" x="332" y="216" width="7" height="7" rx="1.5" /><rect class="m" x="341" y="216" width="7" height="7" rx="1.5" /></g>
+                  <g class="q r3"><text class="sc" x="124" y="248">0</text><text x="148" y="246">README</text><rect class="m" x="260" y="240" width="7" height="7" rx="1.5" /><rect class="m" x="269" y="240" width="7" height="7" rx="1.5" /><rect class="m" x="278" y="240" width="7" height="7" rx="1.5" /><rect class="m" x="287" y="240" width="7" height="7" rx="1.5" /><rect class="m" x="296" y="240" width="7" height="7" rx="1.5" /><rect class="m" x="305" y="240" width="7" height="7" rx="1.5" /><rect class="m" x="314" y="240" width="7" height="7" rx="1.5" /><rect class="m" x="323" y="240" width="7" height="7" rx="1.5" /><rect class="m" x="332" y="240" width="7" height="7" rx="1.5" /><rect class="m" x="341" y="240" width="7" height="7" rx="1.5" /></g>
+                </svg>
+              </div>
+              <figcaption class="rec-cap"><code>questions · odw restore · odw review</code><span data-i18n="lost.tally">1 answered · 1 restored · 3 ranked</span></figcaption>
+            </figure>
+
+            <div class="lr-list">
+              <article class="lr card">
+                <span class="op bell"><i></i><span class="kd">questions</span></span>
+                <h3 data-i18n="lost.ask.title">Questions get answers</h3>
+                <p data-i18n="lost.ask.copy">An agent that stops to ask waits at a checkpoint — terminal, dashboard or phone — then runs again with your answer.</p>
+              </article>
+              <article class="lr card">
+                <span class="op ok"><i></i><span class="kd">odw restore</span></span>
+                <h3 data-i18n="lost.snap.title">Uncommitted work, kept</h3>
+                <p data-i18n="lost.snap.copy">A snapshot before the first agent edits your tree in place; git reset --hard and friends are flagged, and one command puts it back.</p>
+              </article>
+              <article class="lr card">
+                <span class="op pipe"><i></i><span class="kd">odw review</span></span>
+                <h3 data-i18n="lost.review.title">Review the risky first</h3>
+                <p data-i18n="lost.review.copy">Every kept diff across runs, ranked by what the run recorded — CI, auth, migrations, missed checks — each point explained.</p>
+              </article>
+              <article class="lr card">
+                <span class="op rp"><i></i><span class="kd">--untrusted-input</span></span>
+                <h3 data-i18n="lost.input.title">Issue text is not a command</h3>
+                <p data-i18n="lost.input.copy">Runs started from issues and webhooks get read-only agents, no tokens, and a checkpoint before anything writes.</p>
+              </article>
+              <article class="lr card">
+                <span class="op par"><i></i><span class="kd">odw gc</span></span>
+                <h3 data-i18n="lost.gc.title">A disk that stays yours</h3>
+                <p data-i18n="lost.gc.copy">Orphaned worktrees, applied branches and old transcripts, reported with sizes; nothing goes without --yes, and pinned runs never do.</p>
+              </article>
+              <article class="lr card">
+                <span class="op cmd"><i></i><span class="kd">odw digest</span></span>
+                <h3 data-i18n="lost.digest.title">One morning note</h3>
+                <p data-i18n="lost.digest.copy">What needs you, what failed, what changed and what it cost — across every run, from the record, once a day.</p>
+              </article>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================ 07 · INSTALL ============================ -->
       <section class="section" id="install" aria-labelledby="install-title">
         <div class="section-inner">
-          <p class="seclabel"><span class="num">06</span> <span class="kick" data-i18n="install.kicker">Start</span> <span class="rule"></span></p>
+          <p class="seclabel"><span class="num">07</span> <span class="kick" data-i18n="install.kicker">Start</span> <span class="rule"></span></p>
           <div class="install-panel">
             <div class="install-copy">
               <h2 class="sectitle display" id="install-title" data-i18n="install.title" data-i18n-html>Install the runtime or <em>hack from source</em>.</h2>
@@ -3939,6 +4166,23 @@
           "guard.remote.title": "Your box, your phone",
           "guard.remote.copy": "Run on your own server over plain ssh, approve its checkpoints from a signed one-time link, pull the run back.",
           "nav.guard": "Guardrails",
+          "lost.kicker": "Nothing lost",
+          "lost.title": "No silent guesses. No <em>lost</em> work.",
+          "lost.copy": "A headless agent that stops to ask gets your answer, not a guess. Work you had not committed is saved before an agent can wipe it. And the changes that come back are ranked by what could go wrong.",
+          "lost.tally": "1 answered · 1 restored · 3 ranked",
+          "lost.ask.title": "Questions get answers",
+          "lost.ask.copy": "An agent that stops to ask waits at a checkpoint — terminal, dashboard or phone — then runs again with your answer.",
+          "lost.snap.title": "Uncommitted work, kept",
+          "lost.snap.copy": "A snapshot before the first agent edits your tree in place; git reset --hard and friends are flagged, and one command puts it back.",
+          "lost.review.title": "Review the risky first",
+          "lost.review.copy": "Every kept diff across runs, ranked by what the run recorded — CI, auth, migrations, missed checks — each point explained.",
+          "lost.input.title": "Issue text is not a command",
+          "lost.input.copy": "Runs started from issues and webhooks get read-only agents, no tokens, and a checkpoint before anything writes.",
+          "lost.gc.title": "A disk that stays yours",
+          "lost.gc.copy": "Orphaned worktrees, applied branches and old transcripts, reported with sizes; nothing goes without --yes, and pinned runs never do.",
+          "lost.digest.title": "One morning note",
+          "lost.digest.copy": "What needs you, what failed, what changed and what it cost — across every run, from the record, once a day.",
+          "nav.lost": "Nothing lost",
           "install.kicker": "Start",
           "install.title": "Install the runtime or <em>hack from source</em>.",
           "install.copy":
@@ -4092,6 +4336,23 @@
           "guard.remote.title": "你的机器，你的手机",
           "guard.remote.copy": "用普通 ssh 在自己的服务器上运行，凭签名的一次性链接审批检查点，再把运行拉回本地。",
           "nav.guard": "护栏",
+          "lost.kicker": "不丢东西",
+          "lost.title": "不瞎猜，不<em>丢</em>工作。",
+          "lost.copy": "无头 agent 停下来提问时，等到的是你的回答，而不是它自己的猜测；你尚未提交的工作，在 agent 能抹掉它之前就已保存；交回来的改动，按可能出的问题排好了序。",
+          "lost.tally": "1 个已回答 · 1 次已恢复 · 3 份已排序",
+          "lost.ask.title": "提问有人回答",
+          "lost.ask.copy": "停下来提问的 agent 会在检查点等待——终端、看板或手机上都能回答——然后带着你的回答重新运行。",
+          "lost.snap.title": "未提交的工作，保住了",
+          "lost.snap.copy": "第一个原地修改工作区的 agent 开始前先拍快照；git reset --hard 之类的命令会被标出，一条命令就能恢复。",
+          "lost.review.title": "先审风险最高的",
+          "lost.review.copy": "跨运行的所有保留改动，按运行记录下的事实排序——CI、鉴权、迁移、未达成的检查——每一分都写明原因。",
+          "lost.input.title": "issue 文本不是命令",
+          "lost.input.copy": "由 issue 和 webhook 启动的运行：agent 只读、拿不到令牌，任何写入之前都要过一道检查点。",
+          "lost.gc.title": "磁盘还是你的",
+          "lost.gc.copy": "孤儿 worktree、已应用的分支和旧 transcript，连同大小一起列出；不加 --yes 什么都不删，固定的运行永远不删。",
+          "lost.digest.title": "一份晨报",
+          "lost.digest.copy": "需要你处理的、失败的、改了什么、花了多少——跨所有运行，只取记录，一天一次。",
+          "nav.lost": "不丢东西",
           "install.kicker": "开始使用",
           "install.title": "安装运行时，或直接<em>从源码改起</em>。",
           "install.copy": "可以用单文件安装器、npm 安装，或 clone 仓库。ODW 只驱动本地 agent CLI，不直接调用模型 API。",
