@@ -56,26 +56,27 @@ async function cli(argv: string[]): Promise<{ code: number; out: string; err: st
 test("--deadline: the worker stops the run, keeps what finished; --wait prints it and exits 3", async () => {
   const p = project();
   try {
-    // Its own directory as the source: the time a safety snapshot of a dirty checkout takes stays out of the 2s.
-    const r = await cli(["run", p.wf, "--wait", "--deadline", "2", "--config", p.config, "--runs-root", p.runs, "--source", p.root]);
+    // Its own directory as the source: the time a safety snapshot of a dirty checkout takes stays out of the deadline.
+    // Long enough for a loaded machine to start the worker and the quick agent; the slow one never ends anyway.
+    const r = await cli(["run", p.wf, "--wait", "--deadline", "6", "--config", p.config, "--runs-root", p.runs, "--source", p.root]);
     assert.equal(r.code, DEADLINE_EXIT_CODE, r.err);
     assert.equal(DEADLINE_EXIT_CODE, 3);
     const report = JSON.parse(r.out) as { state: string; reason: string; deadline: number; finished: Array<{ label: string; value: unknown }> };
     assert.equal(report.state, "stopped");
     assert.equal(report.reason, "deadline");
-    assert.equal(report.deadline, 2);
+    assert.equal(report.deadline, 6);
     assert.deepEqual(report.finished.map((a) => [a.label, a.value]), [["quick", "quick reply"]]);
-    assert.match(r.err, /stopped at its deadline \(--deadline 2\)/);
+    assert.match(r.err, /stopped at its deadline \(--deadline 6\)/);
 
     const store = new RunStore(p.runs);
     const runId = store.listRunIds()[0]!;
     const status = store.readStatus(runId);
     assert.equal(status.state, "stopped");
     assert.equal(status.stopReason, "deadline");
-    assert.deepEqual(store.readMeta(runId).deadline, { seconds: 2, at: (store.readMeta(runId).createdAt as number) + 2 });
+    assert.deepEqual(store.readMeta(runId).deadline, { seconds: 6, at: (store.readMeta(runId).createdAt as number) + 6 });
     assert.equal(store.hasResult(runId), false, "a stopped run has no result.json: its finished agents are its result");
     const events = store.readEvents(runId);
-    assert.ok(events.some((e) => e.type === "log" && /deadline \(--deadline 2\) passed/.test(String(e.message))));
+    assert.ok(events.some((e) => e.type === "log" && /deadline \(--deadline 6\) passed/.test(String(e.message))));
     assert.equal(events.at(-1)?.type, "run_stopped");
   } finally {
     rmSync(p.root, { recursive: true, force: true });
