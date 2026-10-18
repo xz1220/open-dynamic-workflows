@@ -38,6 +38,7 @@ import type { RunSummary, WorkflowDetail } from "./types";
 import { ACTIVE, TERMINAL, fmtDurSec, runDurationSec } from "./util";
 import { renderActivity } from "./views/activity";
 import { renderChat } from "./views/chat";
+import { compareHash, renderCompare } from "./views/compare";
 import { LOG_PAGE, changedAgents, renderJob, reviewTarget, type JobTab, type JobViewState } from "./views/job";
 import { HISTORY_PAGE, renderJobs, type JobsFilter, type JobsState } from "./views/jobs";
 import { renderSettings } from "./views/settings";
@@ -107,6 +108,11 @@ function parseHash(): Route {
       job.tab = "graph";
       return { view: "job", param: decodeURIComponent(rest.join("/")) || null };
     }
+    case "compare": {
+      // #/compare/<runA>/<runB>
+      const [a, b] = rest.map((x) => decodeURIComponent(x));
+      return { view: "compare", param: a && b ? `${a}/${b}` : null };
+    }
     case "settings":
       return { view: "settings", param: null };
     default:
@@ -136,6 +142,8 @@ function viewHtml(route: Route): string {
       return renderJobs(jobs, now);
     case "job":
       return renderJob(job, now);
+    case "compare":
+      return renderCompare(route.param);
     case "settings":
       return renderSettings(store.settings);
   }
@@ -305,7 +313,7 @@ function updateChrome(): void {
   const label =
     route.view === "job" && store.run
       ? store.run.name
-      : { activity: tr("Activity"), jobs: tr("Jobs"), job: tr("Jobs"), workspace: tr("Workspace"), chat: tr("Chat"), settings: tr("Settings") }[route.view];
+      : { activity: tr("Activity"), jobs: tr("Jobs"), job: tr("Jobs"), compare: tr("Compare"), workspace: tr("Workspace"), chat: tr("Chat"), settings: tr("Settings") }[route.view];
   const title = `${active.length ? `(${active.length}) ` : ""}${label} · odw`;
   const sig = `${title}|${active.length > 0}|${resolvedTheme()}`;
   if (sig === lastChrome) return;
@@ -484,6 +492,18 @@ async function enterRoute(): Promise<void> {
   } else if (route.view === "settings") {
     render();
     await store.loadSettings();
+  } else if (route.view === "compare" && route.param) {
+    const [a, b] = route.param.split("/") as [string, string];
+    render();
+    await store.loadCompare(a, b);
+    // A run still going is compared as it stands: refresh until both ended.
+    if (live()) {
+      every(3000, token, async () => {
+        const c = store.comparison?.value;
+        if (c && !c.a.live && !c.b.live) return stopPolling();
+        await store.loadCompare(a, b);
+      });
+    }
   } else if (route.view === "job" && route.param) {
     const id = route.param;
     if (store.focusedRunId !== id) {
@@ -857,6 +877,13 @@ function selectTab(next: JobTab): void {
     if (body) body.scrollTop = body.scrollHeight;
   }
 }
+
+// Picking another run to compare B with.
+root.addEventListener("change", (ev) => {
+  const el = ev.target as HTMLSelectElement;
+  const b = el.dataset?.cmpPick;
+  if (b && el.value) go(compareHash(el.value, b));
+});
 
 // Form state must survive re-renders, so inputs write through to module state.
 root.addEventListener("input", (ev) => {

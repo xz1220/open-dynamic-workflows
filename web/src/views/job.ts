@@ -11,6 +11,7 @@ import { store } from "../store";
 import type { AgentView, RunDetail, WorkflowEvent } from "../types";
 import { ACTIVE, TERMINAL, esc, fmtClock, fmtDurMs, fmtDurSec, fmtHourMin, fmtTokens, fmtUsd, markRedactions } from "../util";
 import { EVT_CLASS, commandDetail, emptyArt } from "./activity";
+import { compareHash, previousRun } from "./compare";
 import { spendReceipt } from "./spend";
 
 export type JobTab = "graph" | "timeline" | "logs" | "result" | "changes";
@@ -107,7 +108,7 @@ function runHead(run: RunDetail, nowSec: number, spendOpen: boolean): string {
     `<div class="title-row"><h1 class="display">${esc(run.name)}</h1>${pill(run.state)}</div>` +
     (run.description ? `<p class="lede">${esc(run.description)}</p>` : "") +
     `</div>` +
-    `<div class="actions">${stop}${resume}` +
+    `<div class="actions">${stop}${resume}${compareLink(run)}` +
     `<button class="btn" data-copy="odw logs ${esc(run.runId)} --follow" data-tip="${esc(t("copy a follow command"))}">${icons.terminal}${t("Follow in terminal")}</button>` +
     `<button class="btn ghost" data-copy="${esc(run.runId)}">${icons.copy}${t("Copy id")}</button></div>` +
     `</header>` +
@@ -124,6 +125,13 @@ function runHead(run: RunDetail, nowSec: number, spendOpen: boolean): string {
     `<i class="p-done" style="width:${w(c.done)}"></i><i class="p-run" style="width:${w(c.running)}"></i>` +
     `<i class="p-fail" style="width:${w(c.failed)}"></i><i class="p-stale" style="width:${w(c.stale)}"></i></div></div>`
   );
+}
+
+/** A link to what changed since the workflow's previous run, when it has one. */
+function compareLink(run: RunDetail): string {
+  const prev = previousRun(run);
+  if (!prev) return "";
+  return `<a class="btn" href="${compareHash(prev.runId, run.runId)}" data-tip="${esc(t("against {id}", { id: prev.runId }))}">${icons.compare}${t("Compare")}</a>`;
 }
 
 /** The run's tokens and cost — a button that unfolds where they went. */

@@ -749,3 +749,46 @@ test("an agent waiting out a spent quota is drawn waiting — amber node, until 
   assert.match(html, /Waiting for codex&#39;s quota to reset at .* \(in 1h00m\)|Waiting for codex's quota to reset at .* \(in 1h00m\)/);
   store.focusRun(null);
 });
+
+test("compare: figures with their deltas, what changed in the setup, and a row per agent that opens on its reply diff", async () => {
+  const { renderCompare, verdict } = await import("../web/src/views/compare.ts");
+  const facts = (over: Record<string, unknown> = {}) => ({
+    agentId: 1, label: "plan", phase: "Plan", state: "done", adapter: "claude", model: null, attempts: 1, durationMs: 10_000,
+    inputTokens: 1000, outputTokens: 200, costUsd: 0.01, estimated: false, replayed: false, failureReason: null, error: null, changes: null, ...over,
+  });
+  const run = (runId: string) => ({ runId, name: "demo", workflowName: "demo", state: "done", live: false, createdAt: NOW, odwVersion: "0.5.0", sourceHash: null, resumedFrom: null });
+  const m = (a: number, b: number) => ({ a, b, delta: b - a });
+  store.comparison = {
+    key: "A/B",
+    error: null,
+    value: {
+      version: 1,
+      a: run("A"),
+      b: run("B"),
+      notes: [],
+      setup: [{ field: "cliVersion.claude", a: "2.1.300", b: "2.1.302" }],
+      totals: { wallMs: m(60_000, 30_000), inputTokens: m(1000, 1100), outputTokens: m(200, 200), costUsd: m(0.01, 0.02), agents: m(2, 2), done: m(2, 1), failed: m(0, 1), estimated: { a: false, b: false } },
+      agents: [
+        { match: "label", outcome: "unchanged", label: "plan", phase: "Plan", a: facts(), b: facts({ durationMs: 4000 }),
+          delta: { durationMs: -6000, inputTokens: 0, outputTokens: 0, costUsd: 0, attempts: 0 },
+          reply: { status: "differs", kind: "text", diff: ["@@ -1 +1 @@", "-old line", "+new line"], added: 1, removed: 1, truncated: false } },
+        { match: "label", outcome: "newly-failed", label: "check", phase: "Plan", a: facts({ label: "check" }), b: facts({ label: "check", state: "failed", failureReason: "timeout", error: "timed out" }),
+          delta: { durationMs: 20_000, inputTokens: 100, outputTokens: 0, costUsd: 0.01, attempts: 1 },
+          reply: { status: "none", kind: null, truncated: false } },
+      ],
+    },
+  } as never;
+  const html = renderCompare("A/B");
+  assert.match(html, /What changed in <em>demo<\/em>/);
+  assert.match(html, /data-key="cf-wall"[\s\S]*?dlt better">−50%/, "half the wall time is better");
+  assert.match(html, /data-key="cf-usd"[\s\S]*?dlt worse">\+100%/);
+  assert.match(html, /claude version<\/span><span class="a mono" title="2\.1\.300">/);
+  assert.match(html, /<details class="cmp-row newly-failed"/);
+  assert.match(html, /class="dv left better"/, "faster leans left");
+  assert.match(html, /class="dv right worse"/);
+  assert.match(html, /<span class="del">-old line<\/span>\n<span class="add">\+new line<\/span>/);
+  assert.match(html, /data-copy="odw compare A B --agent check"/);
+  assert.equal(verdict({ a: 100, b: 103, delta: 3 }), "same", "within 5% is noise");
+  assert.equal(verdict({ a: 2, b: 1, delta: -1 }, false), "worse", "fewer done is worse");
+  store.comparison = null;
+});

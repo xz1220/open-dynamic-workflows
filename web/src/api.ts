@@ -11,6 +11,7 @@ import type {
   Capabilities,
   ChatSession,
   ChatSessionSummary,
+  RunComparison,
   RunDetail,
   RunSummary,
   ScheduleView,
@@ -56,6 +57,8 @@ const enc = encodeURIComponent;
 export const api = {
   runs: () => getJSON<RunSummary[]>("/api/runs"),
   run: (id: string) => getJSON<RunDetail>(`/api/runs/${enc(id)}`),
+  /** What changed between two of ODW's runs (B against A). */
+  compare: (a: string, b: string) => getJSON<RunComparison>(`/api/compare?a=${enc(a)}&b=${enc(b)}`),
   events: (id: string, since = 0) =>
     getJSON<WorkflowEvent[]>(`/api/runs/${enc(id)}/events?since=${since}`),
   /** The newest events across runs plus running agents per adapter. */

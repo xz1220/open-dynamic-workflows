@@ -338,6 +338,587 @@
   color: var(--amber-ink);
 }
 
+/* ---- compare: what changed between two runs ---- */
+.cmp {
+  padding: 28px 32px 56px;
+}
+.cmp-head h1 {
+  margin: 8px 0 18px;
+  font-size: clamp(34px, 4vw, 52px);
+  line-height: 1;
+}
+.cmp-head h1 em {
+  color: var(--sig-ink);
+}
+.cmp-runs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 14px;
+}
+.cmp-run {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 14px 7px 7px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--card);
+  color: inherit;
+  font-size: 12.5px;
+  text-decoration: none;
+  transition: border-color var(--t-fast), box-shadow var(--t-fast);
+}
+.cmp-run:hover {
+  border-color: var(--line-2);
+  box-shadow: var(--shadow-2);
+}
+.tag-ab {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--paper-2);
+  color: var(--ink-2);
+  font-family: var(--f-mono);
+  font-size: 11px;
+  font-weight: 700;
+}
+.cmp-run.b .tag-ab {
+  background: var(--ink);
+  color: var(--paper);
+}
+/* A drawn line with a travelling tick: from A, toward B */
+.cmp-arrow {
+  position: relative;
+  width: 46px;
+  height: 1px;
+  background: var(--line-2);
+}
+.cmp-arrow::after {
+  content: "";
+  position: absolute;
+  top: -3px;
+  right: 0;
+  width: 7px;
+  height: 7px;
+  border-top: 1px solid var(--ink-2);
+  border-right: 1px solid var(--ink-2);
+  transform: rotate(45deg);
+}
+.cmp-arrow::before {
+  content: "";
+  position: absolute;
+  top: -1px;
+  left: 0;
+  width: 10px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--sig);
+  animation: cmp-travel 2.4s var(--ease-out) infinite;
+}
+@keyframes cmp-travel {
+  from {
+    transform: translateX(0);
+    opacity: 0;
+  }
+  20% {
+    opacity: 1;
+  }
+  to {
+    transform: translateX(34px);
+    opacity: 0;
+  }
+}
+.cmp-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 14px;
+}
+.cmp-pick {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--mute);
+}
+.cmp-pick select {
+  max-width: 300px;
+  padding: 5px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-xs);
+  background: var(--card);
+  color: var(--ink);
+  font-family: var(--f-mono);
+  font-size: 11.5px;
+}
+.cmp-notes {
+  margin-top: 14px;
+  padding: 10px 14px;
+  border-left: 2px solid var(--amber);
+  background: var(--amber-soft);
+  font-size: 12.5px;
+  color: var(--amber-ink);
+}
+.cmp-notes p {
+  margin: 0;
+}
+.cmp-figs {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  margin-top: 28px;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+.cmp-fig {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: baseline;
+  gap: 2px 10px;
+  padding: 18px 20px 16px;
+  animation: rc-print 420ms var(--ease-out) both;
+}
+.cmp-fig + .cmp-fig {
+  border-left: 1px dashed var(--line);
+}
+.cmp-fig:nth-child(2) {
+  animation-delay: 60ms;
+}
+.cmp-fig:nth-child(3) {
+  animation-delay: 120ms;
+}
+.cmp-fig:nth-child(4) {
+  animation-delay: 180ms;
+}
+.cmp-fig:nth-child(5) {
+  animation-delay: 240ms;
+}
+.cmp-fig .k {
+  grid-column: 1 / -1;
+  font-family: var(--f-mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+.cmp-fig .v {
+  font-family: var(--f-display);
+  font-size: 34px;
+  line-height: 1.05;
+}
+.cmp-fig .dlt {
+  justify-self: start;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-family: var(--f-mono);
+  font-size: 11px;
+  font-weight: 600;
+}
+.cmp-fig .was {
+  grid-column: 1 / -1;
+  font-family: var(--f-mono);
+  font-size: 11px;
+  color: var(--faint);
+  text-decoration: line-through;
+  text-decoration-color: var(--line-2);
+}
+.dlt.better,
+.dvt.better {
+  background: var(--sig-soft);
+  color: var(--sig-ink);
+}
+.dlt.worse,
+.dvt.worse {
+  background: var(--alarm-soft);
+  color: var(--alarm-ink);
+}
+.dlt.same,
+.dlt.unknown,
+.dvt.same,
+.dvt.unknown {
+  background: var(--shade);
+  color: var(--mute);
+}
+.cmp-sec {
+  margin-top: 30px;
+}
+.cmp-h {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 12px;
+  font-family: var(--f-display);
+  font-size: 24px;
+  font-weight: 400;
+}
+.cmp-chips {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.cmp-same {
+  margin: 0;
+  color: var(--mute);
+  font-size: 13px;
+}
+.cmp-setup {
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--card);
+  overflow: hidden;
+}
+.set-row {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.7fr) minmax(0, 1fr) 20px minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  padding: 9px 16px;
+  font-size: 12.5px;
+  animation: rc-print 380ms var(--ease-out) both;
+  animation-delay: calc(var(--i) * 40ms + 200ms);
+}
+.set-row + .set-row {
+  border-top: 1px dashed var(--line);
+}
+.set-row .k {
+  color: var(--mute);
+}
+.set-row .a,
+.set-row .b,
+.cp-row .a,
+.cp-row .b {
+  overflow: hidden;
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.set-row .a,
+.cp-row .a {
+  color: var(--faint);
+  text-decoration: line-through;
+  text-decoration-color: var(--line-2);
+}
+.set-row .arr,
+.cp-row .arr {
+  color: var(--faint);
+  text-align: center;
+}
+.cmp-cols,
+.cmp-row summary {
+  display: grid;
+  grid-template-columns: 12px minmax(0, 1.5fr) minmax(0, 1fr) minmax(0, 1fr) 180px 68px 68px 128px;
+  align-items: center;
+  gap: 12px;
+  padding: 0 14px;
+}
+.cmp-cols {
+  padding-bottom: 8px;
+  font-family: var(--f-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+.cmp-cols span:nth-child(n + 6) {
+  text-align: right;
+}
+.cmp-rows {
+  border-top: 1px solid var(--line);
+}
+.cmp-row {
+  border-bottom: 1px solid var(--line);
+  animation: rc-print 400ms var(--ease-out) both;
+  animation-delay: calc(var(--i) * 30ms + 240ms);
+}
+.cmp-row summary {
+  min-height: 46px;
+  cursor: pointer;
+  list-style: none;
+  transition: background var(--t-fast);
+}
+.cmp-row summary::-webkit-details-marker {
+  display: none;
+}
+.cmp-row summary:hover,
+.cmp-row[open] summary {
+  background: var(--shade);
+}
+.cmp-row .mk {
+  width: 8px;
+  height: 8px;
+  border: 1.5px solid var(--line-2);
+  border-radius: 50%;
+}
+.cmp-row.newly-failed .mk {
+  border-color: var(--alarm);
+  background: var(--alarm);
+  box-shadow: 0 0 0 4px var(--alarm-soft);
+}
+.cmp-row.fixed .mk {
+  border-color: var(--sig);
+  background: var(--sig);
+  box-shadow: 0 0 0 4px var(--sig-soft);
+}
+.cmp-row.only-a .mk {
+  border-style: dashed;
+}
+.cmp-row.only-b .mk {
+  border-color: var(--ink);
+  background: var(--ink);
+}
+.cmp-row .lbl {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+  min-width: 0;
+}
+.cmp-row .lbl .t {
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 550;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cmp-row .lbl .ph {
+  font-size: 11px;
+  color: var(--faint);
+}
+.tag.newly-failed {
+  border-color: var(--alarm-line);
+  background: var(--alarm-soft);
+  color: var(--alarm-ink);
+}
+.tag.fixed {
+  border-color: var(--sig-line);
+  background: var(--sig-soft);
+  color: var(--sig-ink);
+}
+.cmp-side {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--ink-2);
+}
+.cmp-side .w {
+  overflow: hidden;
+  font-family: var(--f-mono);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cmp-side.none {
+  color: var(--faint);
+  font-style: italic;
+}
+.cmp-row .tm {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 8px;
+}
+/* the time bar: a centre axis; faster leans left (signal), slower right (alarm) */
+.dv {
+  position: relative;
+  height: 14px;
+}
+.dv::before {
+  content: "";
+  position: absolute;
+  top: 1px;
+  bottom: 1px;
+  left: 50%;
+  width: 1px;
+  background: var(--line-2);
+}
+.dv i {
+  position: absolute;
+  top: 4px;
+  height: 6px;
+  width: var(--w);
+  border-radius: 3px;
+  background: var(--mute);
+  animation: rc-grow 800ms var(--ease-out) both;
+  animation-delay: calc(var(--i, 0) * 30ms + 360ms);
+}
+.dv.left i {
+  right: 50%;
+  transform-origin: right;
+}
+.dv.right i {
+  left: 50%;
+  transform-origin: left;
+}
+.dv.better i {
+  background: var(--sig);
+}
+.dv.worse i {
+  background: var(--alarm);
+}
+.dvt {
+  min-width: 52px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-family: var(--f-mono);
+  font-size: 10.5px;
+  text-align: center;
+}
+.cmp-row .nn {
+  font-family: var(--f-mono);
+  font-size: 11.5px;
+  color: var(--ink-2);
+  text-align: right;
+}
+.rchip {
+  justify-self: end;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.rchip.same {
+  color: var(--faint);
+}
+.rchip.differs {
+  border: 1px solid var(--line-2);
+  background: var(--card);
+}
+.rchip b {
+  margin-left: 4px;
+  font-family: var(--f-mono);
+  font-weight: 600;
+}
+.rchip .ins {
+  color: var(--sig-ink);
+}
+.rchip .del {
+  color: var(--alarm-ink);
+}
+.rchip.none {
+  color: var(--faint);
+}
+.cmp-body {
+  display: grid;
+  gap: 10px;
+  padding: 6px 14px 16px 38px;
+  animation: rc-print 300ms var(--ease-out) both;
+}
+.cmp-body .btn {
+  justify-self: start;
+}
+.cmp-err {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--f-mono);
+  font-size: 11.5px;
+  color: var(--alarm-ink);
+}
+.cmp-diff {
+  max-height: 360px;
+  margin: 0;
+  padding: 10px 0;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--card);
+  font-family: var(--f-mono);
+  font-size: 11.5px;
+  line-height: 1.6;
+}
+.cmp-diff span {
+  display: block;
+  padding: 0 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.cmp-diff .add {
+  background: var(--sig-soft);
+  color: var(--sig-ink);
+}
+.cmp-diff .del {
+  background: var(--alarm-soft);
+  color: var(--alarm-ink);
+}
+.cmp-diff .hh {
+  color: var(--faint);
+}
+.cmp-paths {
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--card);
+}
+.cp-row {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.8fr) minmax(0, 1fr) 20px minmax(0, 1fr);
+  gap: 10px;
+  padding: 7px 12px;
+}
+.cp-row + .cp-row {
+  border-top: 1px dashed var(--line);
+}
+.cp-row .p {
+  font-size: 11.5px;
+  color: var(--ink);
+}
+.cp-row.added .p::before {
+  content: "+ ";
+  color: var(--sig-ink);
+}
+.cp-row.removed .p::before {
+  content: "− ";
+  color: var(--alarm-ink);
+}
+@media (max-width: 1100px) {
+  .cmp-cols,
+  .cmp-row summary {
+    grid-template-columns: 12px minmax(0, 1.4fr) minmax(0, 1fr) 150px 110px;
+  }
+  .cmp-cols span:nth-child(3),
+  .cmp-cols span:nth-child(6),
+  .cmp-cols span:nth-child(7),
+  .cmp-row summary > .cmp-side.a,
+  .cmp-row summary > .nn {
+    display: none;
+  }
+}
+@media (max-width: 760px) {
+  .cmp {
+    padding: 20px 16px 40px;
+  }
+  .cmp-cols {
+    display: none;
+  }
+  .cmp-row summary {
+    grid-template-columns: 12px minmax(0, 1fr) auto;
+    padding: 8px 10px;
+  }
+  .cmp-row summary > .cmp-side,
+  .cmp-row summary > .tm {
+    display: none;
+  }
+  .cmp-body {
+    padding-left: 14px;
+  }
+  .set-row,
+  .cp-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 2px;
+  }
+  .set-row .arr,
+  .cp-row .arr {
+    display: none;
+  }
+}
+
 /* ---- spend: the run's tokens and dollars, and where they went ---- */
 .spend-btn {
   display: flex;
