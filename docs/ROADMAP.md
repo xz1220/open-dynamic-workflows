@@ -151,6 +151,23 @@
 | T8 | 严格脚本上下文 `scriptContext: strict` + `odw check --capabilities` | M | ✅ ODW 扩展（`src/script-context.ts`）：配置 `scriptContext: "host"\|"strict"`（计入 `BEHAVIOUR_SETTINGS`；不设置时触发器启动的运行、Claude Code 插件工作流、输入或仓库不可信的运行为 strict，其余为 host，不破坏现有脚本；嵌套 `workflow()` 跟随父运行）。strict 时加载器用 `vm.createContext`（空原型全局、`codeGeneration: { strings: false, wasm: false }`、删去 V8 自带的 console）编译执行正文：只有注入原语与标准内建对象，没有 `process`、`require`、`fetch`、定时器、`console`，`eval`/`new Function` 不可用，`import()` 在编译时拒绝（`importModuleDynamically` 兜底拒绝）。跨上下文经一层膜：原语的返回值与错误在脚本自己的 realm 中复制（普通对象、数组、日期、错误及其字段，函数包装），脚本抛出的错误转回 worker 自己的 `Error`（原本由 worker 抛出的则还原为同一对象），回调参数同样转换；断点编辑 args 改的是脚本持有的那份。访问上述名字时报错改写为可读说明（如 `process is not defined: a strict script context … not Node.js's process — …`）；运行开始前日志说明为何 strict 及脚本用到哪些方言外名字，`status.json` 记 `scriptContext: "strict"`，看板 Job 头部信任行显示「严格脚本上下文」。`odw check --capabilities [--json]` 在掩码源码上静态列出方言外标识符（`process`、`require`、`import(`、`globalThis`、`Function(`、`eval`、`fetch`、`console`、定时器等，跳过字符串、注释、对象键与自声明绑定，附首次行列号与次数）及调用的 ODW 扩展原语（`validate`/`exec`/`checkpoint`/`workflow.input`）。`odw conformance --strict` 在 strict 下跑一致性套件，32 个用例全部通过，`npm test` 包含它。文档写明 `vm` 不是安全边界。测试：`tests/script-context.test.ts`、`tests/conformance.test.ts`、`tests/web-ui.test.ts`。未做：`odw view` 分享包没有运行可言，不涉及；签名与市场审核 |
 | T9 | `odw doctor --local`：本地模型上下文截断探测 | S | ✅ `odw doctor --local [--endpoint URL] [--model M] [--smoke]`（ODW 扩展，`src/local-models.ts`）：只读探测 Ollama（`/api/version`、`/api/ps`、`/api/tags`、`/api/show`）或 OpenAI 兼容服务（`/v1/models`，LM Studio 另读 `/api/v0/models`），默认 127.0.0.1 的 11434 与 1234 端口（都没有只给一条警告），`--endpoint`（可多次，隐含 `--local`，可带 `/v1`）没有应答算失败；逐个已加载模型（或 `--model` 指定的）报告实际加载的上下文（低于 32K 警告，给出 `OLLAMA_CONTEXT_LENGTH` 的设置方法与 `ollama ps` 核对）、模型上限、Modelfile 的 `num_ctx`、是否声明工具调用（Ollama `capabilities` 的 `tools`、LM Studio 的 `tool_use`），Ollama 低于 0.13.4（`codex --oss` 指南要求）警告；普通 OpenAI 兼容服务如实说明不报告上下文与工具能力。`--smoke` 向 `/v1/chat/completions` 发一个约 10K token 的提示（首行随机口令、末行要求复述，不设 `num_ctx`，与 agent 所见一致），回复没有口令即一项失败的 doctor 检查（附服务端统计的提示 token 数），不是运行失败原因；只发往本机或局域网地址、从不发往 Ollama 云端模型（`remote_host`/`-cloud`）、不带凭据、不跟随重定向；与 `--local` 同用时适配器冒烟只在 `--adapter` 指名时进行。README 配方：`models` 档位把 `meta.phases` 的侦察阶段经 `opencode` 路由到本地模型、规划与审阅留在云端。不新增内置 `ollama` 适配器、不拉取模型。测试：本地假 HTTP 服务模拟 Ollama、LM Studio、普通 OpenAI 兼容服务与截断（只保留提示末尾）、云端模型、无应答端点，以及 CLI `--json` |
 
+### 0.9「写得对，看得见」（2026-10-18 第五轮调研）
+
+依据：[`docs/research/user-needs-2026-10-round5.md`](research/user-needs-2026-10-round5.md)。
+
+| # | 方向 | 规模 | 状态 |
+| --- | --- | --- | --- |
+| U1 | **`agentType` 读取 agent 定义**：`.claude/agents/*.md` 的正文、模型、工具白名单（只能收紧档位）、隔离与 effort，按 CLI 映射 | M | ⏳ |
+| U2 | **方言补齐**：`agent(…, { stallMs })`、单仓多包下逐级向上查找工作流目录、`odw check` 提示 Claude Code 的限制 | S | ⏳ |
+| U3 | **记录实际服务的模型**：与请求的模型不符时警告或失败 | S | ⏳ |
+| U4 | **输入 schema 与扇出健康度**：`meta.input`、每次扇出的成功/空值计数、可选 `minOk` | S–M | ⏳ |
+| U5 | 在终端、tmux 和 IDE 里看运行（含 Claude Code 自己的运行） | S–M | ⏳ |
+| U6 | 多仓库工作流：`repos` 与 `agent({ repo })` | M | ⏳ |
+| U7 | `odw outcomes`：跨运行的接受率与返工趋势 | S–M | ⏳ |
+| U8 | 从 git 安装工作流并锁定版本 | M | ⏳ |
+| U9 | ACP 适配器类型 | M | ⏳ |
+| U10 | 编辑器补全开箱即用：`odw types` | S | ⏳ |
+
 ### Later — 0.8+「规模与生态」
 
 - ✅ **可选的容器运行器**（ODW 扩展；#6）：`sandbox: { kind: "container", image, engine?, network?, mounts?, cliConfig?, memory?, cpus?, pids? }`（配置、`odw run|rerun|resume --sandbox container [--sandbox-image <镜像>]`、按适配器、`agent(…, { sandbox })`——只能收紧），每次 CLI 运行与每个 `exec()` 步骤变成 `<engine> run --rm -i --init --pull never --name odw-<run>-<agent>-<随机>` 的全新 Docker/Podman 容器：只以相同路径读写挂载工作区、私有临时 home（按各 CLI 文档复制登录与配置文件：claude 的 `.credentials.json`/`settings.json`/`~/.claude.json` 去掉 `projects` 等，codex 的 `auth.json`/`config.toml`，gemini 的 `oauth_creds.json` 等；`mount-ro` 只读绑定，`none` 为空，运行后删除）、`--user` 宿主 uid:gid（Podman 加 `--userns keep-id`）、`--cap-drop ALL`、`no-new-privileges`、`--pids-limit 512`、只读根文件系统与 tmpfs `/tmp`；环境只含 `agentEnv` 放行的变量且按名字传递（argv 里没有值）。argv 由纯函数构造并单测。超时、停顿、停止或非干净退出时按名字 `kill` + `rm --force` 容器，worker 退出时的兜底清理同样覆盖。镜像由用户构建（`examples/sandbox/Dockerfile`），从不拉取；缺引擎或镜像在 `odw doctor`（含 `run --rm --pull never --network none <镜像> true` 冒烟）与运行开始前报 `ConfigError`。网络默认 `"default"`——agent CLI 必须连到模型 API，所以**并非默认断网**；`exec()` 步骤默认 `network: "none"`。启动横幅、运行 setup（`BEHAVIOUR_SETTINGS`）、`agent_started` 与看板类型 `AgentView.sandbox` 显示沙箱（看板绘制待接入）。
