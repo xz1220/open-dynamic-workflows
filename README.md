@@ -705,6 +705,56 @@ The expression is cron's five fields (numbers, `*`, lists, ranges, steps, `jan`-
 `sun`-`sat`); `@daily`, `L`, `#` and the like are refused with the reason. The full guide,
 and the raw cron line as the manual alternative: [`docs/recipes/cron.md`](docs/recipes/cron.md).
 
+### Run on your own server (ODW extension)
+
+A laptop that sleeps pauses its runs. Start one on a machine you own instead —
+over plain SSH, with no daemon on either side:
+
+```bash
+odw run review --on ssh://me@box:2222            # sync the project, start it there detached, print its run id
+odw run wf.js --on ssh://box/srv/work/app --sync rsync --args @in.json --adapter codex
+odw status $RUN --on ssh://box                   # the same command, run by the odw over there
+odw logs $RUN --on ssh://box --follow            # …and odw attach $RUN --on ssh://box shows the live view
+odw pull $RUN --from ssh://box                   # copy it here: odw status, diff, apply, compare, the dashboard
+```
+
+`--on ssh://[user@]host[:port][/path]` first checks the remote has odw (`odw --version`,
+else `npx --no-install odw`) and, when it has not, says how to install it. Then it
+copies the project to the remote workdir — `~/odw-remote/<repo>` unless the URL names
+one (`ssh://box/~/work/app` is home-relative, `ssh://box/srv/app` absolute):
+
+- `--sync git` (the default): a `git bundle` of HEAD, plus one patch of your
+  uncommitted changes — staged, unstaged and untracked files, .gitignore'd ones left
+  out — made with a temporary index, so yours is untouched. The run prints which
+  commit and how many uncommitted files went along.
+- `--sync rsync`: the directory mirrored with `rsync` (needed on both ends),
+  .gitignore'd files left out.
+
+The workdir is odw's: each sync replaces what the last one left (files ignored there,
+such as a remote `node_modules`, stay), and a directory odw did not make is refused,
+never overwritten. A workflow from outside the project (a personal or plugin one)
+is sent along. Then `odw run … --detach` starts it there, and the remote run id is
+printed with the commands that follow it. `--adapter`, `--permissions`, `--untrusted`,
+`--sandbox`, `--sandbox-image` and `--budget` go along; `--config`, `--runs-root`,
+`--wait`, `--fg` and `--timeout` are refused (watch it with `odw attach --on`).
+
+**The remote uses its own odw config and agent CLI logins.** Nothing of your
+`~/.config/odw/config.json` or your CLIs' logins is copied: install odw there, log in
+its agent CLIs there, and give it a config there if it needs one (a project's
+`odw.config.json` travels with the project like any file in it). No secret is put on
+a command line — `--args` travels as a file on ssh's stdin — and ssh is your own, with
+your `~/.ssh/config`, keys and agent; `ODW_SSH` replaces the `ssh` binary (and
+`ODW_RSYNC` the `rsync` one).
+
+`odw status|logs|attach <run> --on ssh://host` run that command on the remote odw and
+pass its output and exit code back (`ssh -t` for attach and `logs --follow` in a
+terminal, so attach is the live view). `odw pull <run> --from ssh://host` copies the run
+directory into your local runs root — rsync when this machine has it, else tar over
+ssh — and marks it `origin: "remote"` with `remote: { url, host, dir, pulledAt }` in its
+`meta.json`. A run still going can be pulled again and again: the copy is a snapshot
+(the remote worker's pid is dropped, so here it reads as stale until it ends), and
+`odw status` says where it came from.
+
 ### Agent transcripts (ODW extension)
 
 `agent()` hands back only the final reply, but the run keeps what each agent's CLI

@@ -190,6 +190,12 @@ To change the default, tune flags, or add your own CLI, write an
 
 A user file is merged over the built-ins, so you only specify what you change.
 
+A run started with `odw run --on ssh://host` (ODW extension) loads the
+**remote's** config, found the same way from its workdir, and uses the
+remote's agent CLI logins: neither is copied from this machine (a project's
+`./odw.config.json` travels with the project). `ODW_SSH` replaces the `ssh`
+binary those commands call, `ODW_RSYNC` the `rsync` one.
+
 ```json
 {
   "defaultAdapter": "claude",

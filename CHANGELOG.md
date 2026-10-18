@@ -269,6 +269,18 @@ changed, and run on a schedule — and a dashboard redesigned to watch them.
 - `odw schedule add|list|remove|run` writes a cron, launchd or systemd entry that calls
   back into odw — overlap lock, per-schedule log, last run — with no daemon. The
   dashboard's Jobs page shows what runs next.
+- Run on your own server (**ODW extension**): `odw run <wf> --on
+  ssh://[user@]host[:port][/dir]` checks the remote has odw (install hints when not),
+  sends the project — a `git bundle` of HEAD plus a patch of the uncommitted changes,
+  untracked files included (`--sync git`, the default), or an rsync mirror (`--sync
+  rsync`) — into `~/odw-remote/<repo>` (or the URL's path; a directory odw did not
+  make is refused), starts it there detached and prints the remote run id.
+  `odw status|logs|attach <run> --on ssh://host` run on the remote odw (attach shows
+  the live view); `odw pull <run> --from ssh://host` copies the run directory back
+  (rsync, else tar over ssh) as `origin: "remote"`, so `status`, `diff`, `apply`,
+  `compare` and the dashboard work here — again and again while it runs. Plain ssh
+  with your ssh config and agent (`ODW_SSH` overrides the binary), no daemon, no
+  secrets on a command line; the remote uses its own odw config and CLI logins.
 
 ### Write workflows
 - `exec(command, opts)` runs tests, builds and linters without a model, as steps of the

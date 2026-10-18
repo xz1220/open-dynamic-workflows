@@ -372,6 +372,28 @@ odw schedule remove digest     # 删除系统条目和定义
 - 定时运行遇到 `checkpoint()` 时，在得到答复前会挡住后续的运行：无人值守的检查点要设
   `timeout`。
 
+### 在用户自己的服务器上运行（ODW 扩展）
+
+用户希望笔记本休眠时运行继续进行，就通过普通 ssh 在他自己的机器上启动（没有 daemon）。只用
+用户指明的主机。
+
+```bash
+RUN=$(odw run review --on ssh://me@box)          # 同步项目，在那边后台启动，打印运行 id
+odw status $RUN --on ssh://me@box                # status|logs|attach 在远端 odw 上执行
+odw pull $RUN --from ssh://me@box                # 拷回本机（运行中也可反复拉取），用于 diff/apply/compare
+```
+
+- 远端需要在非交互 ssh 会话的 PATH 上有 odw，并使用它自己的 odw 配置和 agent CLI 登录：
+  用户的配置和登录都不会被拷贝。缺少 odw 时会给出安装提示。
+- `--sync git`（默认）发送 HEAD 的 git bundle 加上所有未提交改动的补丁（含未跟踪文件，
+  不含被忽略的）；`--sync rsync` 镜像整个目录。工作目录默认 `~/odw-remote/<仓库名>`，URL
+  带路径时用它（`ssh://box/~/work/app`）；不是 odw 建的非空目录会被拒绝。
+- 与 `--on` 同用时 `--config`、`--runs-root`、`--wait`、`--fg`、`--timeout` 会被拒绝；
+  `--args`、`--adapter`、`--permissions`、`--untrusted`、`--sandbox`、`--budget` 一并传过去
+  （`--args` 作为文件经 stdin 传递，绝不放在命令行上）。
+- 拉回的运行标记为 `origin: "remote"`；在那边结束之前，本地拷贝是一个显示为 stale 的快照——
+  再拉一次即可刷新。
+
 ### 评估工作流（ODW 扩展）
 
 想确认改了提示词、模型或 CLI 之后工作流仍然把事情做对——在每个适配器上、各跑几次——就写一个

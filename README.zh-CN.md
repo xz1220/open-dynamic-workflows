@@ -627,6 +627,48 @@ odw schedule remove digest     # 删除系统里的条目和定义(条目已被�
 `@daily`、`L`、`#` 之类会被拒绝并说明原因。完整说明,以及手写 cron 行这一手动替代方案:
 [`docs/recipes/cron.md`](docs/recipes/cron.md)。
 
+### 在自己的服务器上运行(ODW 扩展)
+
+笔记本一合上,运行就停了。改在你自己的机器上启动——走普通的 SSH,两端都没有 daemon:
+
+```bash
+odw run review --on ssh://me@box:2222            # 同步项目,在那边以后台方式启动,打印运行 id
+odw run wf.js --on ssh://box/srv/work/app --sync rsync --args @in.json --adapter codex
+odw status $RUN --on ssh://box                   # 同一条命令,由那边的 odw 执行
+odw logs $RUN --on ssh://box --follow            # ……odw attach $RUN --on ssh://box 显示实时视图
+odw pull $RUN --from ssh://box                   # 拷回本机:odw status、diff、apply、compare、看板都能用
+```
+
+`--on ssh://[user@]host[:port][/path]` 先检查远端有没有 odw(`odw --version`,否则
+`npx --no-install odw`),没有就告诉你怎么装。然后把项目拷到远端工作目录——默认
+`~/odw-remote/<仓库名>`,URL 带路径时用它(`ssh://box/~/work/app` 相对家目录,
+`ssh://box/srv/app` 是绝对路径):
+
+- `--sync git`(默认):HEAD 的 `git bundle`,外加一个包含所有未提交改动的补丁——已暂存、
+  未暂存和未跟踪的文件,.gitignore 忽略的不带——用临时 index 生成,你的 index 不受影响。
+  运行时会说明带了哪个提交、多少个未提交的文件。
+- `--sync rsync`:用 `rsync`(两端都需要)镜像整个目录,.gitignore 忽略的文件不带。
+
+工作目录归 odw 所有:每次同步都会替换上一次留下的内容(那边被忽略的文件,比如远端的
+`node_modules`,保留),不是 odw 建的目录会被拒绝,绝不覆盖。项目之外的工作流(个人或插件
+的)会一并发过去。然后在那边执行 `odw run … --detach`,打印远端运行 id 和后续可用的命令。
+`--adapter`、`--permissions`、`--untrusted`、`--sandbox`、`--sandbox-image`、`--budget`
+会一并传过去;`--config`、`--runs-root`、`--wait`、`--fg`、`--timeout` 会被拒绝(用
+`odw attach --on` 观看)。
+
+**远端使用它自己的 odw 配置和 agent CLI 登录。** 你的 `~/.config/odw/config.json` 和各
+CLI 的登录都不会被拷过去:在那边安装 odw、登录 agent CLI,需要时在那边放一份配置(项目里的
+`odw.config.json` 和其他文件一样随项目同步)。不会把任何密钥放到命令行上——`--args` 作为
+文件经 ssh 的 stdin 传过去——ssh 用的是你自己的,带着你的 `~/.ssh/config`、密钥和 agent;
+`ODW_SSH` 可以替换 `ssh` 可执行文件(`ODW_RSYNC` 替换 `rsync`)。
+
+`odw status|logs|attach <run> --on ssh://host` 在远端 odw 上执行这条命令,原样传回输出和
+退出码(终端里的 attach 和 `logs --follow` 用 `ssh -t`,所以 attach 就是实时视图)。
+`odw pull <run> --from ssh://host` 把运行目录拷进本地的运行根目录——本机有 rsync 就用
+rsync,否则走 ssh 上的 tar——并在 `meta.json` 中标记 `origin: "remote"` 和
+`remote: { url, host, dir, pulledAt }`。还在跑的运行可以反复拉取:拷贝是一个快照(远端
+worker 的 pid 被去掉,所以在本机结束前显示为 stale),`odw status` 会说明它来自哪里。
+
 ### Agent transcript(ODW 扩展)
 
 `agent()` 只返回最终回复,但运行会保留每个 agent 的 CLI 一路打印的内容——每次工具调用、

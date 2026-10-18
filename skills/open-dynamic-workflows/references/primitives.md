@@ -272,6 +272,9 @@ JSON-looking input that fails to parse is rejected rather than silently passed
 through as a string). `budget.total` is the token target set with
 `odw run … --budget <tokens>`, else `null`; scale depth to it, e.g.
 `budget.total ? Math.floor(budget.total / 120_000) : 5`.
+A run started on another machine with `odw run … --on ssh://host` (ODW
+extension) gets the same `args` and `budget.total`: `--args` is parsed here
+and sent as a file, and the script runs from the project's copy there.
 `spent()` is the output tokens spent so far across this run, nested workflows
 included: the CLI's own count wherever its adapter reports usage (the built-in
 `claude` and `codex` do — an ODW extension), else `ceil(reply characters / 4)` for that
