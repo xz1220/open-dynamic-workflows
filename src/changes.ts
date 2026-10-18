@@ -64,8 +64,8 @@ export const TRUNCATION_NOTE = "# odw: diff truncated";
  * prefixes whatever the user's config says, unusual paths C-quoted, renames
  * detected, and no color, external or textconv driver in the way.
  */
-const DIFF_CONFIG = ["-c", "core.quotePath=true", "-c", "diff.noprefix=false", "-c", "diff.mnemonicPrefix=false"];
-const DIFF_FLAGS = ["--no-color", "--no-ext-diff", "--no-textconv", "-M", "--src-prefix=a/", "--dst-prefix=b/"];
+export const DIFF_CONFIG = ["-c", "core.quotePath=true", "-c", "diff.noprefix=false", "-c", "diff.mnemonicPrefix=false"];
+export const DIFF_FLAGS = ["--no-color", "--no-ext-diff", "--no-textconv", "-M", "--src-prefix=a/", "--dst-prefix=b/"];
 
 /** Bytes of output kept from a git command that lists paths (one per changed file, at most). */
 const GIT_OUTPUT_MAX = 64 * 1024 * 1024;

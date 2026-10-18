@@ -652,6 +652,17 @@ export interface Settings {
    */
   questions: QuestionPolicy;
   /**
+   * An agent whose CLI ran a destructive git command — `git reset --hard`,
+   * `git checkout .`, `git clean -f`, `git push --force`, `git stash
+   * drop|clear`, `git branch -D`, … (an ODW extension; see
+   * ../destructive-git): `"warn"` keeps its reply, recording the command as a
+   * `destructive_git` event on the agent; `"fail"` fails the agent with
+   * reason "destructive_git" once its CLI is done (ODW cannot stop the
+   * command before it runs). Commands that only reset a working tree count
+   * for in-place agents alone.
+   */
+  destructiveGit: "warn" | "fail";
+  /**
    * What odw keeps and serves of its agents — transcripts, saved results,
    * events, the run's error and result, webhook payloads — has its likely
    * secrets replaced by `«redacted:<kind>»` (an ODW extension; see ../redact);

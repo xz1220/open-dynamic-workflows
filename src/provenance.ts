@@ -274,6 +274,7 @@ export const BEHAVIOUR_SETTINGS = [
   "orphanedBackground",
   "scopePolicy",
   "questions",
+  "destructiveGit",
   "sandbox",
   "notes",
   "memory",

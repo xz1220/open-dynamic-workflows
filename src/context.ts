@@ -21,6 +21,7 @@ import type { AgentCallRecord, AgentResultRecord, ReplayJournal } from "./journa
 import { quotaPauseMessage, type QuotaPauseChange } from "./quota-wait.js";
 import { redactorFor, type Redactor } from "./redact.js";
 import type { RunMemory } from "./memory.js";
+import type { SafetySnapshot } from "./safety.js";
 import type { NotesBoard } from "./notes.js";
 import type { PhaseDefaults } from "./routing.js";
 import { Scheduler } from "./scheduler.js";
@@ -183,6 +184,12 @@ export interface RunContext {
    * write waits at. Shared like `seq`; absent: the input is the user's.
    */
   input?: { meta: UntrustedInputMeta; writeGate?: Promise<void> };
+  /**
+   * The run's safety snapshot (ODW extension; see ./safety): taken once,
+   * before its first in-place agent with `edit` or `full` starts. Shared like
+   * `seq`; absent where no run is persisted, and for a dry or test run.
+   */
+  safety?: SafetySnapshot;
   emit(ev: WorkflowEvent): void;
 }
 
@@ -221,6 +228,8 @@ export interface BuildContextOptions {
   memory?: RunMemory;
   /** The workflow's earlier runs, for fan-out forecasts and cost gates (ODW extension; see ./forecast). */
   costHistory?: () => CostHistory | null;
+  /** The run's safety snapshot, taken before its first in-place agent that may change things (ODW extension; see ./safety). */
+  safety?: SafetySnapshot;
   /**
    * quotaWait (ODW extension): told whenever the run's pause for an adapter's
    * spent quota starts, moves or ends — after the run's log has said so — so
@@ -328,6 +337,7 @@ export function buildContext(config: Config, options: BuildContextOptions = {}):
     costHistory: options.costHistory,
     costNotes: new Set(),
     ...(options.input ? { input: { meta: options.input } } : {}),
+    safety: options.safety,
     emit(ev: WorkflowEvent): void {
       sink.emit(ev);
     },

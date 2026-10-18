@@ -79,7 +79,7 @@ export interface AgentView {
   /**
    * Why a failed agent's CLI failed (agent_failed's `reason`): rate_limit,
    * quota, auth, timeout, stalled, not_found, permission or exit — or, ODW
-   * extensions, empty_reply, unmet_expectation, mcp_unavailable, runaway, orphaned_background, out_of_scope and needs_input. Absent while running, for
+   * extensions, empty_reply, unmet_expectation, mcp_unavailable, runaway, orphaned_background, out_of_scope, needs_input and destructive_git. Absent while running, for
    * other failures (schema, stop) and for older event files.
    */
   failureReason?: string;
@@ -116,6 +116,12 @@ export interface AgentView {
    * its scope — its terminal event's `outOfScope`. Absent otherwise.
    */
   outOfScope?: string[];
+  /**
+   * Agents only (ODW extension; see ../destructive-git): the destructive git
+   * commands its CLI ran — `destructive_git` events, as they showed — each
+   * with what it is ("git reset --hard"). Absent: none.
+   */
+  destructiveGit?: Array<{ command: string; what: string }>;
   startedAt: number | null;
   finishedAt: number | null;
   /** Wall-clock from agent_started to agent_finished/failed, in ms (a command's own measurement). */
@@ -352,6 +358,28 @@ export interface RunDetail extends RunSummary {
   pinned?: { at: number; by: string | null };
   /** `odw gc` trimmed its transcripts and stderr (ODW extension; see ./gc): when, and how many files. Absent otherwise. */
   trimmed?: { at: number; files: number };
+  /**
+   * The working tree as it stood before the run's first in-place agent that
+   * could change it (ODW extension; see ../safety) — what `odw restore <run>`
+   * puts back. Absent when none was taken.
+   */
+  safetySnapshot?: SafetySnapshotView;
+}
+
+/** A run's safety snapshot, as its detail shows it (ODW extension; see ../safety). */
+export interface SafetySnapshotView {
+  /** `refs/odw/safety/<run>`, in the run's source repository. */
+  ref: string;
+  commit: string;
+  /** HEAD when it was taken. */
+  head: string | null;
+  /** Changed tracked files, and untracked ones, it kept. */
+  tracked: number;
+  untracked: number;
+  /** Untracked files left out for their size. */
+  skipped?: string[];
+  /** When it was taken (epoch seconds). */
+  at: number | null;
 }
 
 /** Is `pid` a live process on this host? null when unknowable (no pid). */
@@ -428,6 +456,14 @@ export function applyAgentEvent(
 ): { opened?: AgentView; settled?: AgentView } {
   if (ev.type === "command_started" || ev.type === "command_finished" || ev.type === "command_failed") {
     return applyCommandEvent(agents, ev);
+  }
+  if (ev.type === "destructive_git") {
+    // A destructive git command its CLI ran (ODW extension), running or settled.
+    const target = typeof ev.agentId === "number" ? agents.find((a) => a.kind === "agent" && a.agentId === ev.agentId) : undefined;
+    if (target && typeof ev.command === "string") {
+      (target.destructiveGit ??= []).push({ command: ev.command, what: typeof ev.what === "string" ? ev.what : "git" });
+    }
+    return {};
   }
   if (ev.type === "log") {
     if (typeof ev.agentId !== "number" || typeof ev.adapter !== "string") return {};
@@ -686,6 +722,7 @@ function copyAgents(agents: AgentView[], stale: boolean): AgentView[] {
     if (a.orphaned) copy.orphaned = [...a.orphaned];
     if (a.scope) copy.scope = [...a.scope];
     if (a.outOfScope) copy.outOfScope = [...a.outOfScope];
+    if (a.destructiveGit) copy.destructiveGit = a.destructiveGit.map((hit) => ({ ...hit }));
     return copy;
   });
 }
@@ -747,6 +784,8 @@ export class EventFold {
   readonly cliVersions: Record<string, CliVersion> = {};
   /** What drifted since the workflow's previous run, from the run's drift log lines (ODW extension). */
   drift: RunDrift | undefined;
+  /** The working tree's snapshot before the run's first in-place agent, from its safety_snapshot event (ODW extension). */
+  safety: SafetySnapshotView | undefined;
 
   apply(events: WorkflowEvent[]): this {
     for (const ev of events) {
@@ -761,6 +800,7 @@ export class EventFold {
         this.drift ??= { since, changes: [] };
         this.drift.changes.push(change);
       }
+      if (ev.type === "safety_snapshot") this.safety = safetySnapshotOf(ev) ?? this.safety;
       if (ev.type === "run_finished" || ev.type === "run_failed" || ev.type === "run_stopped") {
         this.ended = true;
         this.checkpoints.clear(); // nobody waits on a run that ended
@@ -773,6 +813,21 @@ export class EventFold {
     if (events.length > 0) this.lastActivityTs = asNumber(events[events.length - 1]!.ts);
     return this;
   }
+}
+
+/** A safety_snapshot event as a run's detail shows it (ODW extension); null for a malformed one. */
+function safetySnapshotOf(ev: WorkflowEvent): SafetySnapshotView | null {
+  if (typeof ev.ref !== "string" || typeof ev.commit !== "string") return null;
+  const skipped = strings(ev.skipped);
+  return {
+    ref: ev.ref,
+    commit: ev.commit,
+    head: typeof ev.head === "string" ? ev.head : null,
+    tracked: asNumber(ev.tracked) ?? 0,
+    untracked: asNumber(ev.untracked) ?? 0,
+    ...(skipped ? { skipped } : {}),
+    at: asNumber(ev.ts),
+  };
 }
 
 /** checkpoint_requested opens a pending checkpoint; checkpoint_resolved closes it. */
@@ -967,6 +1022,7 @@ export function detailFrom(
     cliVersions: Object.fromEntries(Object.entries(fold.cliVersions).map(([name, cli]) => [name, { ...cli }])),
     odwVersion: typeof meta.odwVersion === "string" ? meta.odwVersion : null,
     sourceHash: typeof meta.sourceHash === "string" ? meta.sourceHash : null,
+    ...(fold.safety ? { safetySnapshot: { ...fold.safety, ...(fold.safety.skipped ? { skipped: [...fold.safety.skipped] } : {}) } } : {}),
   };
 }
 

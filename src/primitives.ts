@@ -122,13 +122,14 @@ import { planTrust, runTrust } from "./adapters/trust.js";
 import { sandboxView, type SandboxView } from "./adapters/sandbox.js";
 import { adapterDisplayName, type Adapter, type PermissionTier, type TrustLevel } from "./adapters/types.js";
 import { addUsage, estimatedUsage, type Usage } from "./adapters/usage.js";
-import type { AgentRequest } from "./bridge.js";
+import type { AgentRequest, TranscriptSink } from "./bridge.js";
 import { applyArgsEdit } from "./breaks.js";
 import { branchName, ChangeRecorder, type AgentChanges, type KeptChanges } from "./changes.js";
 import { CheckpointTimeout, createCheckpoint, type CheckpointOptions, type CheckpointResult } from "./checkpoint.js";
 import { spentTokens, type RunContext } from "./context.js";
 import { AdapterExecutionError, AgentError, NeedsInputError, RunStopped, RunawayError, UnmetExpectationError, WorkflowScriptError, isDeadlineStop, isFatalError } from "./errors.js";
-import { AGENT_FAILED, AGENT_FINISHED, AGENT_STARTED, HANDOFF, LOG, PHASE_STARTED, event } from "./events.js";
+import { AGENT_FAILED, AGENT_FINISHED, AGENT_STARTED, DESTRUCTIVE_GIT, HANDOFF, LOG, PHASE_STARTED, event } from "./events.js";
+import { DestructiveGitWatch } from "./destructive-git.js";
 import { ExecError, createExec, execStep, type ExecOptions, type ExecResult } from "./exec.js";
 import { CostGateRejected, costGateTitle, readCostGate, type CostGate, type CostHistory } from "./forecast.js";
 import { Expectations, planChecks, scopeOnlyPlan, type AgentChecks, type ExpectOptions } from "./expect.js";
@@ -538,6 +539,31 @@ export function createPrimitives(
   };
 
   /**
+   * What watches an agent's CLI runs for destructive git commands (ODW
+   * extension; see ./destructive-git): each one it runs is a
+   * `destructive_git` event as soon as it shows — with `odw restore` named
+   * when the run has a snapshot to put back.
+   */
+  const destructiveGitWatch = (agentId: number, label: string, phase: string | null, isolated: boolean): DestructiveGitWatch =>
+    new DestructiveGitWatch((hit) => {
+      const policy = ctx.config.settings.destructiveGit;
+      const snapshot = ctx.safety?.info;
+      const restore = snapshot && ctx.runId ? ` — odw restore ${ctx.runId} puts back the working tree as it was before the run's first in-place agent` : "";
+      ctx.emit(
+        event(DESTRUCTIVE_GIT, {
+          message: `${label}:${agentId} ran a destructive git command (${hit.what}): ${hit.command}${restore}`,
+          agentId,
+          label,
+          phase,
+          command: hit.command,
+          what: hit.what,
+          policy,
+          ...(snapshot ? { snapshot: snapshot.ref } : {}),
+        }),
+      );
+    }, isolated);
+
+  /**
    * What checks a call's work against its `expect` (ODW extension; see
    * ./expect). Its command runs as an exec() step of the run — in the agent's
    * phase, carrying the agent's id — so it shows under the agent and a stop
@@ -883,6 +909,10 @@ export function createPrimitives(
         // The commit an isolated agent's worktree checks out (ODW extension):
         // the run's pinned one (`odw replay`), else HEAD as it starts.
         const base = opts.isolation === "worktree" ? (ctx.worktreeBase ?? (await headCommit(ctx.source))) : null;
+        // The run's first in-place agent that may change the user's tree has it
+        // snapshot first; any other one starting meanwhile waits for that (ODW extension; see ./safety).
+        const inPlace = opts.isolation !== "worktree";
+        if (inPlace && (permissions.tier === "edit" || permissions.tier === "full")) await ctx.safety?.before();
         const startedEv = event(AGENT_STARTED, {
           agentId,
           label: display,
@@ -921,6 +951,8 @@ export function createPrimitives(
         }
         const changes = changeRecorder(agentId, display, opts, signal, note);
         const transcript = transcriptRecorder(agentId, adapter, note);
+        // The destructive git commands its CLI runs are said as they show (ODW extension; see ./destructive-git).
+        const gitWatch = destructiveGitWatch(agentId, display, activePhase, !inPlace);
         const scoping = scope && claim ? { plan: scope, claim, note } : undefined;
         const expect = expectations(checks, agentId, display, activePhase, signal, scoping);
         // Without `expect`, its scope has a reader of its own (ODW extension; see ./scope).
@@ -996,8 +1028,8 @@ export function createPrimitives(
               ),
             // An isolated agent's change is kept as it lands (ODW extension).
             changes,
-            // So is what its CLI prints (ODW extension).
-            transcript,
+            // So is what its CLI prints (ODW extension), read for destructive git commands as it goes.
+            transcript: teeTranscript(transcript, gitWatch),
             // Where it runs, as routed at dispatch: the adapter its slot is on (ODW extension).
             route,
             // A spent quota, a refused login or a model that is not there moved it down its chain (ODW
@@ -1159,6 +1191,8 @@ export function createPrimitives(
               }
             },
           });
+          // Under destructiveGit: "fail", a destructive git command fails it once its CLI is done (ODW extension).
+          if (gitWatch.hits.length > 0 && ctx.config.settings.destructiveGit === "fail") throw destructiveGitError(gitWatch);
         } catch (err) {
           // Out of rate-limit retries (or allowed none): that lowers its adapter's cap too.
           if (err instanceof AdapterExecutionError && err.reason === "rate_limit") slot.rateLimited();
@@ -1862,6 +1896,40 @@ function refusedNote(who: string, cli: string, denied: string[]): string {
  * its `expect` checks, what it missed. Nothing for other errors (a schema that
  * never validated, a stop).
  */
+/**
+ * One transcript sink for the bridge from two (ODW extension): an agent's
+ * transcript, kept when the run keeps them, and its destructive-git watch.
+ */
+function teeTranscript(transcript: TranscriptRecorder | undefined, watch: DestructiveGitWatch): TranscriptSink {
+  if (!transcript) return watch;
+  return {
+    beginRun: (reason, adapter) => {
+      transcript.beginRun(reason, adapter);
+      watch.beginRun(reason, adapter);
+    },
+    stdout: (chunk) => {
+      transcript.stdout(chunk);
+      watch.stdout(chunk);
+    },
+    stderr: (chunk) => transcript.stderr(chunk),
+    endRun: (cli) => {
+      transcript.endRun(cli);
+      watch.endRun(cli);
+    },
+    handoff: (handoff) => transcript.handoff(handoff),
+  };
+}
+
+/** How an agent that ran a destructive git command fails under `destructiveGit: "fail"` (ODW extension). */
+function destructiveGitError(watch: DestructiveGitWatch): AdapterExecutionError {
+  const more = watch.more > 0 ? `, and ${watch.more} more` : "";
+  const commands = watch.hits.map((hit) => hit.command).join("; ");
+  return new AdapterExecutionError(
+    `it ran a destructive git command (${watch.summary()}): ${commands}${more} — destructiveGit: "fail" fails such an agent`,
+    { reason: "destructive_git" },
+  );
+}
+
 function failureFields(err: unknown): { reason?: string; retryAfter?: number; misses?: string[]; limitHit?: LimitHit; questions?: string[] } {
   if (!(err instanceof AdapterExecutionError)) return {};
   // The questions it asked nobody answered, one line each (ODW extension; see ./questions).

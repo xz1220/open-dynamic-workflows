@@ -40,6 +40,7 @@ import { createPrimitives } from "../primitives.js";
 import { CliVersions, runSetup } from "../provenance.js";
 import type { QuotaPause } from "../quota-wait.js";
 import { redactorFor, type Redactor } from "../redact.js";
+import { SafetySnapshot } from "../safety.js";
 import type { Scheduler } from "../scheduler.js";
 import { applyRunTrust, resolveRunTrust, untrustedConfigSwap } from "../untrusted.js";
 import { requireSandboxRefusal, sandboxGap, sandboxWarning, untrustedInputNote, untrustedInputOf, untrustedTier } from "../untrusted-input.js";
@@ -340,6 +341,18 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
       agentSchemaPath: (agentId) => store.agentSchemaPath(runId, agentId),
       replay,
       costHistory,
+      // The working tree, kept before the first in-place agent that may change it (ODW extension;
+      // see ../safety) — not by a run no model answers.
+      ...(mock
+        ? {}
+        : {
+            safety: new SafetySnapshot({
+              source: typeof meta.source === "string" ? meta.source : process.cwd(),
+              runId,
+              runDir: store.runDir(runId),
+              emit: (ev) => sink.emit(ev),
+            }),
+          }),
       // What each agent() call was asked, as agents/<agentId>.call.json, for `odw replay` (ODW extension).
       saveAgentCall: (call) => store.writeAgentCall(runId, call),
       ...(replayOf?.base ? { worktreeBase: replayOf.base } : {}),

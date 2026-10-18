@@ -80,7 +80,9 @@ export type FailureReason =
    * call) that nobody answered — under `questions: "fail"`, a rejected
    * question checkpoint, or one asked under `"deny"` (ODW extension; see ../questions).
    */
-  | "needs_input";
+  | "needs_input"
+  /** The agent ran a destructive git command (`git reset --hard`, …), under `destructiveGit: "fail"` (ODW extension; see ../destructive-git). */
+  | "destructive_git";
 
 /** The classes an adapter's `failures` config may add patterns to. */
 export const CONFIGURABLE_REASONS = ["rate_limit", "quota", "auth", "model_unavailable"] as const;

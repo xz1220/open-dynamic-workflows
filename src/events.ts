@@ -33,6 +33,10 @@ export const APPLY_RESOLVED = "apply_resolved";
 export const HANDOFF = "handoff";
 // A sandbox's egress proxy refused a request: { host, port, method, agent | commandId } (ODW extension; see adapters/egress-run.ts).
 export const EGRESS_DENIED = "egress_denied";
+// The working tree was snapshot before the run's first in-place agent: { ref, commit, head, stash?, tracked, untracked, skipped?, message } (ODW extension; see safety.ts).
+export const SAFETY_SNAPSHOT = "safety_snapshot";
+// An agent ran a destructive git command: { agentId, label, phase, command, what, policy, message } (ODW extension; see destructive-git.ts).
+export const DESTRUCTIVE_GIT = "destructive_git";
 
 export interface WorkflowEvent {
   ts: number;

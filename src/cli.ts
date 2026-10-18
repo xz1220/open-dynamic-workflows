@@ -39,6 +39,7 @@
  *   odw check <script.js|name> [--json]   (the loader's checks, with a code frame; src/check.ts)
  *   odw new [<template>] [--name N] [--force] [--yes]   (a workflow + starter test from an embedded template; src/new.ts)
  *   odw gc [--yes] [--older-than 30d] [--json] | odw pin <run_id> [--remove]   (what odw left on disk; runtime/gc.ts)
+ *   odw restore <run_id> [--check] [--force]   (the working tree before the run's first in-place agent; runtime/restore.ts)
  */
 
 import { spawn } from "node:child_process";
@@ -73,6 +74,7 @@ import { agentRowJson, agentRows, formatAgentTable, matchAgents, type AgentRow }
 import { applyAgents, type AgentDiff } from "./runtime/apply.js";
 import { resolverRuns } from "./runtime/apply-resolve.js";
 import { applyPr } from "./runtime/apply-pr.js";
+import { restoreSnapshot } from "./runtime/restore.js";
 import {
   changedAgents,
   colorDiff,
@@ -87,6 +89,7 @@ import { editBlocker, editorCommand, editPayload, readPayloadOption } from "./ru
 import { startRun, startRunFromSource, waitFor } from "./runtime/launcher.js";
 import { attachRun, bannerLines, checkpointCommands, fallbackLines, formatEvent, formatUsage, needsInputLines, resolveRunMode, runawayLines, shellArg, type RunMode } from "./runtime/live-view.js";
 import { accountLines } from "./runtime/live-view.js";
+import { safetyLines } from "./runtime/live-view.js";
 import { isRunActive, RunObserver } from "./runtime/run-liveness.js";
 import { RunStore, TERMINAL_STATES, type ReplayLink } from "./runtime/run-store.js";
 import { detail, evalTagOf, summarize, type RunDetail } from "./runtime/runs-view.js";
@@ -169,6 +172,7 @@ export const COMMANDS = [
   "token",
   "gc",
   "pin",
+  "restore",
 ] as const;
 
 export type Command = (typeof COMMANDS)[number];
@@ -203,6 +207,7 @@ export function helpText(): string {
     "                                                     --resolve [--adapter A] [--confirm]: an agent resolves a conflict, verified first",
     "                                                     --pr [--base B] [--ready] [--title T]: a branch, pushed, and a draft PR (gh); never merges",
     "                                                     (a run with untrusted input asks y/N first; --accept-untrusted-input: yes)",
+    "  odw restore <run_id> [--check] [--force]           put back the working tree as it was before the run's first in-place agent (ODW extension)",
     "  odw compare <runA> <runB> [--json]                 what changed: setup, time, cost, failures, replies",
     "                                                     --agent <label|id> shows one agent's whole reply diff",
     "  odw estimate <wf> [--args JSON|@file] [--json]     p50/p90 time, cost, tokens and agents, from its earlier runs (ODW extension)",
@@ -414,6 +419,8 @@ export async function main(argv: string[]): Promise<number> {
         return await cmdGc(rest);
       case "pin":
         return cmdPin(rest);
+      case "restore":
+        return await cmdRestore(rest);
       default:
         process.stderr.write(`odw: unknown command '${command}'\n\n${helpText()}\n`);
         return 2;
@@ -1089,6 +1096,8 @@ function cmdStatus(rest: string[]): number {
   for (const line of runawayLines(run.agents)) process.stdout.write(`  ${line}\n`);
   // Agents that stopped to ask a question nobody answered (ODW extension; see questions.ts).
   for (const line of needsInputLines(run.agents)) process.stdout.write(`  ${line}\n`);
+  // The working tree's safety snapshot, and agents that ran destructive git commands (ODW extension; see safety.ts).
+  for (const line of safetyLines(runId, run.agents, run.safetySnapshot)) process.stdout.write(`  ${line}\n`);
   if (typeof meta.resumedFrom === "string") {
     const replayed = events.filter((e) => e.type === "agent_finished" && e.cached === true).length;
     process.stdout.write(`  resumed from: ${meta.resumedFrom} (${replayed} agent result(s) replayed)\n`);
@@ -1482,6 +1491,59 @@ async function cmdApply(rest: string[]): Promise<number> {
   } finally {
     process.stdout.off("error", unheard);
     process.stderr.off("error", unheard);
+    for (const s of signals) process.off(s, onSignal);
+    if (caught) process.kill(process.pid, caught);
+  }
+}
+
+/**
+ * `odw restore <run_id> [--check] [--force]` (ODW extension) — preview, then
+ * put back, the working tree the run's safety snapshot kept before its first
+ * in-place agent (see ../safety, runtime/restore): in the run's source
+ * repository, file by file as `odw apply` does. Exit 0 when everything is
+ * back (or would be), 1 otherwise. A signal stops it before the apply.
+ */
+async function cmdRestore(rest: string[]): Promise<number> {
+  const { values, positionals } = parseArgs({
+    args: rest,
+    allowPositionals: true,
+    options: {
+      config: { type: "string" },
+      "runs-root": { type: "string" },
+      check: { type: "boolean" },
+      force: { type: "boolean" },
+    },
+  });
+  const runId = positionals[0];
+  if (!runId) throw new UsageError("odw restore: missing <run_id>");
+  const store = storeFrom(values);
+  if (!store.exists(runId)) {
+    process.stderr.write(`no such run: ${runId}\n`);
+    return 1;
+  }
+  const source = store.readMeta(runId).source;
+  // A signal stops it before anything more is applied; odw then ends by that signal.
+  const interrupt = new AbortController();
+  let caught: NodeJS.Signals | null = null;
+  const onSignal = (signal: NodeJS.Signals): void => {
+    caught ??= signal;
+    interrupt.abort();
+  };
+  const signals: NodeJS.Signals[] = ["SIGINT", "SIGTERM", "SIGHUP"];
+  for (const s of signals) process.on(s, onSignal);
+  try {
+    return await restoreSnapshot({
+      runId,
+      source: typeof source === "string" ? source : process.cwd(),
+      check: values.check === true,
+      force: values.force === true,
+      interrupt: interrupt.signal,
+      out: process.stdout,
+      err: process.stderr,
+      caps: detectCaps(process.stdout, process.env),
+      width: process.stdout.isTTY && process.stdout.columns ? process.stdout.columns : 120,
+    });
+  } finally {
     for (const s of signals) process.off(s, onSignal);
     if (caught) process.kill(process.pid, caught);
   }

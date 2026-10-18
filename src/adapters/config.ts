@@ -159,6 +159,7 @@ const KNOWN_TOP_KEYS = [
   "orphanedBackground",
   "scopePolicy",
   "questions",
+  "destructiveGit",
   "otel",
   "sandbox",
   "agentLimits",
@@ -1312,6 +1313,10 @@ function buildSettings(raw: Record<string, unknown>): Settings {
         : buildChoice("scopePolicy", raw["scopePolicy"], ["warn", "fail"] as const),
     questions:
       raw["questions"] == null ? DEFAULT_SETTINGS.questions : buildChoice("questions", raw["questions"], ["fail", "checkpoint", "deny"] as const),
+    destructiveGit:
+      raw["destructiveGit"] == null
+        ? DEFAULT_SETTINGS.destructiveGit
+        : buildChoice("destructiveGit", raw["destructiveGit"], ["warn", "fail"] as const),
     otel: raw["otel"] == null ? DEFAULT_SETTINGS.otel : buildOtel(raw["otel"]),
     sandbox: raw["sandbox"] == null ? DEFAULT_SETTINGS.sandbox : buildSandboxSetting(raw["sandbox"]),
     agentLimits: raw["agentLimits"] == null ? {} : readLimits(raw["agentLimits"], '"agentLimits"', (m) => new ConfigError(m)),
