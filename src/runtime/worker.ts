@@ -25,7 +25,7 @@ import { killAllAgentProcesses } from "../adapters/runner.js";
 import type { RunEndState } from "../adapters/types.js";
 import type { WaitingCheckpoint } from "../checkpoint.js";
 import { buildContext, spentTokens, type RunContext } from "../context.js";
-import { PAUSED, RUNNING, type CheckpointRequest } from "../control.js";
+import { deciderText, PAUSED, RUNNING, type CheckpointRequest } from "../control.js";
 import { RunStopped, WorkflowScriptError, isFatalError } from "../errors.js";
 import { LOG, RUN_FAILED, RUN_FINISHED, RUN_STARTED, RUN_STOPPED, event } from "../events.js";
 import { ReplayJournal } from "../journal.js";
@@ -40,6 +40,7 @@ import { applyRunTrust, resolveRunTrust, untrustedConfigSwap } from "../untruste
 import { pluginOrigin } from "../workflows/plugins.js";
 import { FileControl } from "./file-control.js";
 import { notifyCheckpoint, notifyQuotaPause, notifyRunEnd } from "./notify.js";
+import { mintCheckpointLinks, runsRootsOf } from "./approve-links.js";
 import { exportRunEnd } from "./otel-export.js";
 import { JsonlSink, RunStore } from "./run-store.js";
 
@@ -262,7 +263,9 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
       onCheckpoint: (cp, isWaiting) => {
         if (isWaiting) {
           waiting.set(cp.checkpointId, cp);
-          const hooks = notifyCheckpoint(config.settings.notify, { store, runId, checkpoint: cp }, {
+          // Its signed approve links (ODW extension), minted only when a hook fires and an `odw serve --public-url` answers them.
+          const links = () => mintCheckpointLinks(runsRootsOf(runDir), runId, cp.checkpointId, config.settings.approveLinks.ttl);
+          const hooks = notifyCheckpoint(config.settings.notify, { store, runId, checkpoint: cp, links }, {
             cwd: typeof meta.source === "string" ? meta.source : undefined,
             redactor: runRedactor,
           });
@@ -480,7 +483,7 @@ function redactOutput(redactor: Redactor): () => void {
 /** The log line for a checkpoint answer that found nothing waiting for it. */
 function unmatchedDecision(request: CheckpointRequest): string {
   const which = request.checkpointId !== undefined ? `checkpoint #${request.checkpointId}` : "a checkpoint";
-  const from = request.by === "dashboard" ? "the dashboard" : "the cli";
+  const from = deciderText(request.by);
   return `ignored "${request.action}" for ${which} from ${from}: no such checkpoint is waiting for an answer`;
 }
 

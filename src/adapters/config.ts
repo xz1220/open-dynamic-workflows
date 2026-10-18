@@ -41,6 +41,7 @@ import type {
   AdapterFailures,
   AdapterFlags,
   AdapterOutput,
+  ApproveLinksSettings,
   BackgroundCondition,
   BackgroundRule,
   BackgroundRules,
@@ -146,6 +147,7 @@ const KNOWN_TOP_KEYS = [
   "otel",
   "sandbox",
   "agentLimits",
+  "approveLinks",
 ] as const;
 
 const KNOWN_ADAPTER_KEYS = ["command", "stdin", "env", "timeout", "stallTimeout", "concurrency", "promptCache", "label", "flags", "output", "failures", "permissionArgs", "permissions", "permissionDenials", "trust", "untrustedArgs", "untrustedNote", "sandbox", "agentLimits"] as const;
@@ -173,6 +175,8 @@ const KNOWN_REDACT_KEYS = ["env", "patterns", "extra"] as const;
 const KNOWN_QUOTA_WAIT_KEYS = ["max"] as const;
 
 const KNOWN_OTEL_KEYS = ["endpoint", "headers", "captureContent"] as const;
+
+const KNOWN_APPROVE_LINKS_KEYS = ["ttl"] as const;
 
 /**
  * Lint a parsed config object for keys odw would silently ignore.
@@ -242,6 +246,7 @@ export function collectConfigWarnings(raw: Record<string, unknown>): string[] {
   if (isObject(raw.redact)) warnings.push(...unknownFields(raw.redact, KNOWN_REDACT_KEYS, "redact"));
   if (isObject(raw.quotaWait)) warnings.push(...unknownFields(raw.quotaWait, KNOWN_QUOTA_WAIT_KEYS, "quotaWait"));
   if (isObject(raw.otel)) warnings.push(...unknownFields(raw.otel, KNOWN_OTEL_KEYS, "otel"));
+  if (isObject(raw.approveLinks)) warnings.push(...unknownFields(raw.approveLinks, KNOWN_APPROVE_LINKS_KEYS, "approveLinks"));
   return warnings;
 }
 
@@ -1208,7 +1213,23 @@ function buildSettings(raw: Record<string, unknown>): Settings {
     otel: raw["otel"] == null ? DEFAULT_SETTINGS.otel : buildOtel(raw["otel"]),
     sandbox: raw["sandbox"] == null ? DEFAULT_SETTINGS.sandbox : buildSandboxSetting(raw["sandbox"]),
     agentLimits: raw["agentLimits"] == null ? {} : readLimits(raw["agentLimits"], '"agentLimits"', (m) => new ConfigError(m)),
+    approveLinks: raw["approveLinks"] == null ? { ...DEFAULT_SETTINGS.approveLinks } : buildApproveLinks(raw["approveLinks"]),
   };
+}
+
+/**
+ * Validate `approveLinks` (an ODW extension): `{ "ttl": <seconds> }`, how long
+ * a checkpoint's approve/reject links stay valid — at most 30 days.
+ */
+function buildApproveLinks(raw: unknown): ApproveLinksSettings {
+  if (!isObject(raw)) {
+    throw new ConfigError(`"approveLinks" must be { "ttl": <seconds> }: how long a checkpoint's approve links stay valid; got ${kindOf(raw)}`);
+  }
+  if (raw.ttl == null) return { ...DEFAULT_SETTINGS.approveLinks };
+  const expected = "a whole number of seconds from 60 to 2592000 (30 days)";
+  const ttl = numberSetting(`"approveLinks.ttl"`, raw.ttl, expected, { min: 60, integer: true });
+  if (ttl > 2_592_000) throw new ConfigError(`"approveLinks.ttl" must be ${expected}; got ${JSON.stringify(raw.ttl)}`);
+  return { ttl };
 }
 
 /** An HTTP header name: an RFC 9110 token. */

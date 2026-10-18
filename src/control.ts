@@ -26,8 +26,16 @@ export const RUNNING = "running";
 export const PAUSED = "paused";
 export const STOPPED = "stopped";
 
-/** Who answered a checkpoint(): `odw approve|reject`, or the dashboard (`odw serve`). */
-export type CheckpointDecider = "cli" | "dashboard";
+/**
+ * Who answered a checkpoint(): `odw approve|reject`, the dashboard (`odw
+ * serve`), or a signed approve link (ODW extension; see ./runtime/approve-links).
+ */
+export type CheckpointDecider = "cli" | "dashboard" | "link";
+
+/** Who answered, as a log line says it: "the cli", "the dashboard", "an approve link". */
+export function deciderText(by: CheckpointDecider | undefined): string {
+  return by === "dashboard" ? "the dashboard" : by === "link" ? "an approve link" : "the cli";
+}
 
 /** A person's answer to a waiting checkpoint(). */
 export interface CheckpointDecision {
@@ -70,7 +78,7 @@ export function isCheckpointRequest(value: unknown): value is CheckpointRequest 
     (r.action === "approve" || r.action === "reject") &&
     (r.checkpointId === undefined || isCheckpointId(r.checkpointId)) &&
     (r.note === undefined || r.note === null || typeof r.note === "string") &&
-    (r.by === undefined || r.by === "cli" || r.by === "dashboard")
+    (r.by === undefined || r.by === "cli" || r.by === "dashboard" || r.by === "link")
   );
 }
 
@@ -93,7 +101,7 @@ export function decisionOf(request: CheckpointRequest): CheckpointDecision {
       note !== null && note.length > CHECKPOINT_NOTE_MAX
         ? note.slice(0, CHECKPOINT_NOTE_MAX).replace(/[\uD800-\uDBFF]$/, "")
         : note,
-    by: request.by === "dashboard" ? "dashboard" : "cli",
+    by: request.by === "dashboard" || request.by === "link" ? request.by : "cli",
     ...(approved && request.payload !== undefined ? { payload: request.payload } : {}),
   };
 }

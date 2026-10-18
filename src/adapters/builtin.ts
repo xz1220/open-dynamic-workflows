@@ -507,4 +507,5 @@ export const DEFAULT_SETTINGS: Settings = {
   otel: false, // no trace is sent; { endpoint?, headers?, captureContent? } posts each run's at its end
   sandbox: "none", // agent CLIs run on this machine; { kind: "container", image, … } runs each in a container
   agentLimits: {}, // no per-agent limits; { toolCalls, costUsd, outputTokens, seconds, repeat } kills a runaway agent
+  approveLinks: { ttl: 86_400 }, // a checkpoint's approve/reject links (odw serve --public-url) are valid 24h
 };

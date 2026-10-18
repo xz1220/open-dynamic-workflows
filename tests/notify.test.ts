@@ -249,6 +249,7 @@ test("'waiting' (opt-in) fires the hooks once per checkpoint() while the run wai
       "text",
       "content",
       "allowed_mentions",
+      "linksUnavailable", // no odw serve --public-url runs for this runs root (ODW extension: approve links)
     ]);
     assert.equal(first.runId, id);
     assert.equal(first.workflow, "nightly");

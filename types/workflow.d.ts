@@ -257,8 +257,8 @@ declare global {
     approved: boolean;
     /** The note given with the answer, or null. */
     note: string | null;
-    /** Who answered: `odw approve|reject`, the dashboard (`odw serve`), or the timeout. */
-    by: "cli" | "dashboard" | "timeout";
+    /** Who answered: `odw approve|reject`, the dashboard (`odw serve`), a signed approve link (ODW extension), or the timeout. */
+    by: "cli" | "dashboard" | "link" | "timeout";
     /**
      * What was approved: the approver's edit (`odw approve --edit|--payload`, or the
      * dashboard) when there is one, else the checkpoint's own payload — undefined when it

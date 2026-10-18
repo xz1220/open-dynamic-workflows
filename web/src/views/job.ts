@@ -595,7 +595,8 @@ function cpEditor(cp: { checkpointId: number; schema?: Record<string, unknown> |
 function checkpoints(run: RunDetail, s: JobViewState): string {
   const pending = run.pendingCheckpoints ?? [];
   if (!pending.length) return "";
-  const canDecide = run.provider === "odw" && store.capabilities.writable;
+  // `decide`: a remote dashboard under --token-scope approve answers checkpoints, and does nothing else.
+  const canDecide = run.provider === "odw" && (store.capabilities.writable || store.capabilities.decide === true);
   return pending
     .map((cp, i) => {
       const has = cp.payload !== undefined && cp.payload !== null;

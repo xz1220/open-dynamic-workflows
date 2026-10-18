@@ -612,6 +612,8 @@ export interface Capabilities {
   auth?: "token" | "none";
   /** The shared bundle this dashboard shows, read-only (`odw serve --open FILE.odwrun`; ODW extension). */
   bundle?: BundleInfo | null;
+  /** Checkpoints can be answered here — off loopback too with `--token-scope approve` (ODW extension). Absent from older servers. */
+  decide?: boolean;
 }
 
 /** A shared bundle as `odw serve` describes it (ODW extension). */

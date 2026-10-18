@@ -568,6 +568,19 @@ export interface Settings {
    * override it key by key; `{}` sets none.
    */
   agentLimits: LimitSpec;
+  /**
+   * Signed one-time approve/reject links for a waiting checkpoint() (an ODW
+   * extension; see ../runtime/approve-links): minted into the `waiting`
+   * notify hooks while an `odw serve --public-url` runs, each valid `ttl`
+   * seconds.
+   */
+  approveLinks: ApproveLinksSettings;
+}
+
+/** How approve links are minted (see `Settings.approveLinks`). */
+export interface ApproveLinksSettings {
+  /** Seconds a link stays valid after it is minted. */
+  ttl: number;
 }
 
 /** Where and how a run's trace is exported (see `Settings.otel`). */

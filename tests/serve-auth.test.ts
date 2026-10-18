@@ -73,7 +73,7 @@ test("--token: a Bearer header passes; a wrong one is refused", async () => {
     assert.deepEqual(((await ok.json()) as Array<{ runId: string }>).map((r) => r.runId), [runId]);
     assert.equal(ok.headers.get("set-cookie"), null, "a header sets no cookie");
     const caps = (await (await fetch(`${base}/api/capabilities`, { headers: bearer })).json()) as Record<string, unknown>;
-    assert.deepEqual(caps, { writable: false, auth: "token", bundle: null });
+    assert.deepEqual(caps, { writable: false, auth: "token", bundle: null, decide: false });
     for (const authorization of [`Bearer ${TOKEN}x`, `Bearer ${TOKEN.slice(0, -1)}`, "Bearer short", `Basic ${TOKEN}`]) {
       const res = await fetch(`${base}/api/runs`, { headers: { authorization } });
       assert.equal(res.status, 401, authorization);
@@ -177,7 +177,7 @@ test("--token: writes stay refused off loopback, whatever the token; on a loopba
 test("without --token nothing changes: reads open, capabilities say auth none", async () => {
   await withServer({ token: null }, async (base) => {
     assert.equal((await fetch(`${base}/api/runs`)).status, 200);
-    assert.deepEqual(await (await fetch(`${base}/api/capabilities`)).json(), { writable: false, auth: "none", bundle: null });
+    assert.deepEqual(await (await fetch(`${base}/api/capabilities`)).json(), { writable: false, auth: "none", bundle: null, decide: false });
   });
 });
 

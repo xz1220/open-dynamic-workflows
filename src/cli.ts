@@ -77,6 +77,7 @@ import { exportRun, exportTimeout, otlpTarget, OTEL_SEND_TIMEOUT_MS, postTrace, 
 import { startServer } from "./runtime/server.js";
 import { BUNDLE_EXT, BundleError, bundleRedactor, createBundle, DEFAULT_BUNDLE_MAX_BYTES, isBundleRunId, openBundle, type OpenedBundle } from "./runtime/bundle.js";
 import { generateToken, isValidToken } from "./runtime/serve-auth.js";
+import { parsePublicUrl } from "./runtime/approve-links.js";
 import { printAgentLogs } from "./runtime/transcript-view.js";
 import { cmdNote, cmdNotes } from "./runtime/notes-view.js";
 import { executeRun } from "./runtime/worker.js";
@@ -193,6 +194,9 @@ export function helpText(): string {
     "  --host <addr>       dashboard bind address (default 127.0.0.1)",
     "  --open              open the dashboard in the default browser",
     "  --token [VALUE]     reads need a token (remote read-only access); no VALUE: a random one, printed once",
+    "  --token-scope S     read (default), or approve: the token also answers checkpoints, nothing else",
+    "  --public-url URL    answer signed one-time approve/reject links at URL (sent by \"waiting\" notify hooks)",
+    "  --rotate-approve-secret  replace the approve-link secret: every link sent before stops working",
     "  FILE.odwrun         show that bundle alone, read-only (--max-bytes N raises the 32 MiB cap)",
     "",
     "Run modes (odw run / rerun / resume):",
@@ -1471,6 +1475,9 @@ async function relaunch(
  *                   unpacked into a private temp dir, removed on exit
  *   --token [VALUE] every API read needs the token (remote read-only access); with
  *                   no VALUE a random one, printed once in the URL (`/#token=…`)
+ *   --token-scope read|approve   approve: the token also answers checkpoints off loopback
+ *   --public-url URL              answer signed one-time approve links (runtime/approve-links.ts)
+ *   --rotate-approve-secret       replace the runs root's approve-link secret first
  */
 async function cmdServe(rest: string[], as: "serve" | "view" = "serve"): Promise<number> {
   const { args, token: tokenFlag } = takeTokenFlag(rest);
@@ -1484,9 +1491,23 @@ async function cmdServe(rest: string[], as: "serve" | "view" = "serve"): Promise
       host: { type: "string" },
       open: { type: "boolean" },
       "max-bytes": { type: "string" },
+      "public-url": { type: "string" },
+      "token-scope": { type: "string" },
+      "rotate-approve-secret": { type: "boolean" },
     },
   });
   if (positionals.length > 1) throw new UsageError("odw serve: at most one bundle file (FILE.odwrun)");
+  // Approve links and the approve scope (ODW extensions): checkpoint decisions are the only remote writes.
+  const scope = values["token-scope"] ?? "read";
+  if (scope !== "read" && scope !== "approve") throw new UsageError("odw serve: --token-scope is read or approve");
+  if (scope === "approve" && tokenFlag === undefined) throw new UsageError("odw serve: --token-scope approve goes with --token");
+  const publicUrl = values["public-url"] === undefined ? null : parsePublicUrl(values["public-url"]);
+  if (values["public-url"] !== undefined && !publicUrl) {
+    throw new UsageError("odw serve: --public-url must be an http(s) URL with no credentials, query, fragment, comma, semicolon or quote");
+  }
+  if ((publicUrl || values["rotate-approve-secret"]) && positionals[0] !== undefined) {
+    throw new UsageError("odw serve: a shared bundle answers no approve links (--public-url, --rotate-approve-secret)");
+  }
   const file = positionals[0];
   if (as === "view" && file === undefined) throw new UsageError("usage: odw view FILE.odwrun [--port N] [--host H] [--token [VALUE]]");
 
@@ -1532,6 +1553,9 @@ async function cmdServe(rest: string[], as: "serve" | "view" = "serve"): Promise
       configPath: values.config ? resolve(expandHome(values.config)) : null, // absolute: runs it starts work elsewhere
       token,
       bundle: opened?.info ?? null,
+      publicUrl,
+      tokenScope: scope,
+      rotateApproveSecret: values["rotate-approve-secret"] === true,
     });
   } catch (err) {
     cleanup();
@@ -1555,6 +1579,14 @@ async function cmdServe(rest: string[], as: "serve" | "view" = "serve"): Promise
         ? "  reads need the token in that URL (or Authorization: Bearer <token>); writes stay loopback-only\n"
         : "  reads need the token given with --token (?token=, a cookie, or Authorization: Bearer); writes stay loopback-only\n",
     );
+    if (scope === "approve") process.stdout.write("  --token-scope approve: the token also answers checkpoints (nothing else is writable remotely)\n");
+  }
+  if (values["rotate-approve-secret"]) process.stdout.write("  approve secret rotated: every approve link sent before no longer works\n");
+  if (publicUrl) {
+    process.stdout.write(`  approve links → ${publicUrl}/approve/… (signed, one-time; minted into "waiting" notify hooks while this runs)\n`);
+    if (publicUrl.startsWith("http:") && !/^http:\/\/(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(`${publicUrl}/`)) {
+      process.stderr.write("  ⚠ --public-url is plain http: an approve link can be read and used by anyone on the path. Use https (a tunnel).\n");
+    }
   }
   if (!loopback && !token) {
     process.stderr.write(
