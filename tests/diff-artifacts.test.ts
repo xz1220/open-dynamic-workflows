@@ -324,7 +324,7 @@ test("keep: true commits the change to odw/<run>/<agent>-<label>; the user's bra
     assert.equal(terminal(store, id, 1).branch, branch);
     assert.equal(store.readAgentResult(id, 1)?.branch, branch);
     assert.deepEqual(
-      detail(store, id).agents.map((a) => [a.label, a.changes?.files ?? 0, a.branch]),
+      [...detail(store, id).agents].sort((x, y) => (x.agentId ?? 0) - (y.agentId ?? 0)).map((a) => [a.label, a.changes?.files ?? 0, a.branch]),
       [
         ["Fix: Auth!", 1, branch],
         ["plain", 1, null],
