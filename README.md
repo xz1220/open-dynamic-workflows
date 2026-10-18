@@ -640,7 +640,7 @@ switches to a night theme on demand. What it gives you:
 Press <kbd>⌘K</kbd> / <kbd>Ctrl K</kbd> (or <kbd>/</kbd>) for the command palette —
 jump to any run or workflow, switch theme or language, copy a follow or rerun command.
 <kbd>g</kbd> then <kbd>a</kbd>/<kbd>j</kbd>/<kbd>w</kbd>/<kbd>c</kbd>/<kbd>s</kbd> moves
-between views, <kbd>1</kbd>–<kbd>4</kbd> switch a run's tabs, and <kbd>+</kbd>/<kbd>-</kbd>/<kbd>0</kbd>
+between views, <kbd>1</kbd>–<kbd>5</kbd> switch a run's tabs, <kbd>$</kbd> unfolds where it spent, and <kbd>+</kbd>/<kbd>-</kbd>/<kbd>0</kbd>
 zoom the graph. When a run finishes the dashboard says so, and — if you opt in under
 Settings — sends a desktop notification while the tab is in the background.
 

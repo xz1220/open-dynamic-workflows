@@ -580,7 +580,7 @@ I'll run the tests first.
 
 按 <kbd>⌘K</kbd> / <kbd>Ctrl K</kbd>(或 <kbd>/</kbd>)打开命令面板——跳转到任意运行或工作流、
 切换主题或语言、复制跟踪或重跑命令。<kbd>g</kbd> 再按 <kbd>a</kbd>/<kbd>j</kbd>/<kbd>w</kbd>/<kbd>c</kbd>/<kbd>s</kbd>
-切换页面,<kbd>1</kbd>–<kbd>4</kbd> 切换运行的标签页,<kbd>+</kbd>/<kbd>-</kbd>/<kbd>0</kbd> 缩放图。
+切换页面,<kbd>1</kbd>–<kbd>5</kbd> 切换运行的标签页,<kbd>$</kbd> 展开花费小票,<kbd>+</kbd>/<kbd>-</kbd>/<kbd>0</kbd> 缩放图。
 运行结束时看板会提示;如果在设置中开启,标签页在后台时还会发送桌面通知。
 
 ```bash
