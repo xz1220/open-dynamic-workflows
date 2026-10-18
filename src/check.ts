@@ -7,7 +7,10 @@
  * phases checked, the body compiled — never run) and reports a problem with
  * its line and column and a code frame: the source lines around it, a caret
  * under the column. The portability warnings `validate()` gives (./loader
- * `scanDualCompat`) come with it. {@link formatCheck} is the CLI's text; the
+ * `scanDualCompat`) come with it, Claude Code's own limits among them — a
+ * `parallel()`/`pipeline()` the source settles at more than 4,096 items (see
+ * ./claude-limits), a `meta` that is not a pure literal. Nothing is
+ * enforced for them: ODW runs such a fan-out. {@link formatCheck} is the CLI's text; the
  * report itself is what `odw check --json` prints:
  *
  *   { file, ok, meta?: { name, description, phases }, errors: [{ message,
@@ -26,6 +29,7 @@ import { relative } from "node:path";
 import { parseArgs } from "node:util";
 
 import { loadConfig } from "./adapters/config.js";
+import { checkMeta } from "./dual-compat.js";
 import { WorkflowScriptError } from "./errors.js";
 import { loadWorkflowScript, scanDualCompat } from "./loader.js";
 import { scanCapabilities, type CapabilityReport } from "./script-context.js";
@@ -77,7 +81,16 @@ export function checkWorkflow(source: string, file: string): CheckReport {
     const problem: CheckProblem = at
       ? { message, line: at.line, column: at.column, frame: codeFrame(source, at.line, at.column) }
       : { message };
-    return { file, ok: false, errors: [problem], warnings: scanDualCompat(source) };
+    const warnings = scanDualCompat(source);
+    // A Claude Code limit too: it reads meta without running the script, and drops one it cannot.
+    const metaCheck = checkMeta(source);
+    if (metaCheck.found && !metaCheck.pure) {
+      warnings.push(
+        "meta is not a pure literal — Claude Code reads it without running the script, so it drops the workflow " +
+          "from its completions; ODW refuses to run it",
+      );
+    }
+    return { file, ok: false, errors: [problem], warnings };
   }
 }
 

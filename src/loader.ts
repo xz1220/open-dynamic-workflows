@@ -31,6 +31,7 @@
 
 import { Script } from "node:vm";
 
+import { scanClaudeCodeLimits } from "./claude-limits.js";
 import { WorkflowScriptError, type SourceLocation } from "./errors.js";
 import type { WorkflowGlobals } from "./primitives.js";
 import { phaseDefaultsOf, type AdapterChoice } from "./routing.js";
@@ -336,6 +337,9 @@ function syntaxHint(message: string, text: string, column: number): string | nul
  * which is then the one it calls (member calls such as `re.exec(text)` never
  * count).
  *
+ * And a `parallel()` or `pipeline()` whose list the source settles at more
+ * than 4,096 items, which Claude Code's runtime rejects (see ./claude-limits).
+ *
  * These come back as *warnings*, not errors — ODW itself executes them — so a
  * caller (the generate-workflow repair loop, a linter) can decide how hard to
  * push for dual-compatibility.
@@ -361,6 +365,8 @@ export function scanDualCompat(source: string): string[] {
       "checkpoint() is an ODW extension, not portable to Claude Code — its Workflow tool takes no mid-run input and has no checkpoint global, so the script fails there",
     );
   }
+  // Claude Code's documented limits ODW does not share: a fan-out over 4,096 items (see ./claude-limits).
+  warnings.push(...scanClaudeCodeLimits(source, masked));
   return warnings;
 }
 
