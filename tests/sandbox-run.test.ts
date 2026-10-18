@@ -6,7 +6,7 @@
  * engine, image or model.
  */
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync, mkdirSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -53,7 +53,7 @@ let home = "";
 const saved: Record<string, string | undefined> = {};
 
 before(() => {
-  root = mkdtempSync(join(tmpdir(), "odw-sandbox-run-"));
+  root = realpathSync(mkdtempSync(join(tmpdir(), "odw-sandbox-run-"))); // macOS: /var is /private/var
   bin = join(root, "bin");
   state = join(root, "state");
   pids = join(root, "pids");
