@@ -124,7 +124,8 @@ independent security reviews whose findings are all fixed.
   `<synthetic>`) and the result's `modelUsage` keys; codex, agy and the rest name none,
   so theirs is "not reported" — never guessed. When none of the served models is the
   one the CLI was asked for (a tier resolved; case, `[1m]` and provider prefixes aside,
-  an alias such as `opus` matching `claude-opus-5-5`), a `model_substituted` event
+  an alias such as `opus` matching `claude-opus-5-5`, and only a version, date or
+  release word after it — `gpt-5-mini` is not `gpt-5`), a `model_substituted` event
   (`requested`, `served`, `policy`) is logged; the reply stands under the default
   `"modelMismatch": "warn"`, and `"modelMismatch": "fail"` fails the agent with reason
   `model_substituted` (not retried, no fallback). The drawer flags it, `odw agents`

@@ -80,6 +80,8 @@ test("a served model is the requested one by alias, prefix, case, suffix and pro
     ["opusplan", "claude-sonnet-4-5"],
     ["default", "claude-haiku-4-5"],
     ["gpt-5.6", "gpt-5.6"],
+    ["gemini-2.5-pro", "gemini-2.5-pro-preview-06-05"],
+    ["gpt-5", "gpt-5-2026-08-07"],
   ];
   for (const [requested, served] of same) assert.ok(sameModel(requested, served), `${requested} ~ ${served}`);
   const other: Array<[string, string]> = [
@@ -89,6 +91,12 @@ test("a served model is the requested one by alias, prefix, case, suffix and pro
     ["sonnet", "claude-sonnets-4"],
     ["best", "claude-sonnet-4-5"],
     ["gpt-5.6", "gpt-5.5"],
+    // A smaller sibling is another model, not a dated release of the same one.
+    ["gpt-5", "gpt-5-mini"],
+    ["gpt-5", "gpt-5-nano"],
+    ["gemini-2.5-pro", "gemini-2.5-flash"],
+    ["gemini-2.5", "gemini-2.5-flash-lite"],
+    ["opus", "claude-opus-4-8-mini"],
   ];
   for (const [requested, served] of other) assert.ok(!sameModel(requested, served), `${requested} ≁ ${served}`);
 

@@ -1134,8 +1134,8 @@ add … --on-cli-change`:定时运行本身就会记录漂移,`driftEval` 会去
 `servedModel`)和看板侧栏("实际模型")里,`odw logs` 也会显示。
 
 它们都不是 CLI 被要求使用的模型时——先解析 `"@tier"`;大小写、`[1m]` 后缀和供应商前缀
-(`anthropic/…`、`us.anthropic.…`)不计,别名或较短的 id 只要完整出现在实际 id 中就算一致
-(`opus` ~ `claude-opus-5-5`,`best` 即 opus,`default` 与任何模型一致)——运行写入
+(`anthropic/…`、`us.anthropic.…`)不计,别名或较短的 id 完整出现在实际 id 中、其后只跟版本号、日期或 `latest`/`preview` 时算一致
+(`opus` ~ `claude-opus-5-5`,但 `gpt-5` ≁ `gpt-5-mini`;`best` 即 opus,`default` 与任何模型一致)——运行写入
 `model_substituted` 事件(`{ agentId, label, adapter, requested, served, policy, message }`),
 并以一行日志显示:
 

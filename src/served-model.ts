@@ -41,14 +41,24 @@ function normal(id: string): string {
 /** The characters model ids are made of words with. */
 const SEPARATOR = /[-._/:@\s]/;
 
-/** Whether `served` holds `wanted` whole, between separators (or its ends). */
+/**
+ * What may follow the requested name in a served id and still be the same
+ * model: a version or date (`-4-5`, `-20250929`, `@20250929`) or a release
+ * word. A word like `mini`, `nano`, `lite` or `flash` names another model —
+ * `gpt-5-mini` is not `gpt-5`.
+ */
+const SAME_MODEL_TAIL = /^(?:\d+|latest|preview|exp|experimental|v\d+)$/;
+
+/** Whether `served` holds `wanted` whole, between separators (or its ends), followed only by a version, date or release word. */
 function holds(served: string, wanted: string): boolean {
   if (!wanted) return false;
   for (let at = served.indexOf(wanted); at !== -1; at = served.indexOf(wanted, at + 1)) {
     const before = at === 0 || SEPARATOR.test(served[at - 1]!);
     const end = at + wanted.length;
     const after = end === served.length || SEPARATOR.test(served[end]!);
-    if (before && after) return true;
+    if (!before || !after) continue;
+    const tail = served.slice(end).split(SEPARATOR).filter((word) => word !== "");
+    if (tail.every((word) => SAME_MODEL_TAIL.test(word))) return true;
   }
   return false;
 }

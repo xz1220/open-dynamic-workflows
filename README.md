@@ -1314,7 +1314,8 @@ keys. The models go on the agent's `agent_finished` event and saved result as
 
 When none of them is the model its CLI was asked for — a `"@tier"` resolved first; case, a
 `[1m]` suffix and a provider prefix (`anthropic/…`, `us.anthropic.…`) do not count, and an
-alias or shorter id matches a served id that holds it whole (`opus` ~ `claude-opus-5-5`,
+alias or shorter id matches a served id that holds it whole, followed only by a version,
+date or `latest`/`preview` (`opus` ~ `claude-opus-5-5`, but `gpt-5` ≁ `gpt-5-mini`;
 `best` is opus, `default` matches anything) — the run writes a `model_substituted` event
 (`{ agentId, label, adapter, requested, served, policy, message }`) and shows it as a log
 line:
