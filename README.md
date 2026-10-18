@@ -371,6 +371,7 @@ odw result $RUN          # final value
 odw diff $RUN --stat     # what isolated agents changed; odw apply $RUN --agent N (or --all) lands it
 odw compare $OLD $RUN    # what changed between two runs: setup, time, cost, failures, replies (below)
 odw export $RUN --otlp   # the run as OpenTelemetry traces (OTLP/JSON; --send posts it; below)
+odw bundle $RUN          # the run as one redacted file to share: $RUN.odwrun (odw view FILE shows it; below)
 odw pause|resume|stop $RUN
 odw approve|reject $RUN  # answer a checkpoint() the run waits at (--note TEXT, --checkpoint N)
 odw approve $RUN --edit  # …approving its payload as you edit it in $EDITOR (or --payload JSON|@file)
@@ -399,7 +400,8 @@ SSE. No build step, no extra deps, no network access on load.
 
 ```bash
 odw serve [--open]                      # live dashboard at http://127.0.0.1:4317
-odw serve --port 8080 --host 0.0.0.0    # custom port / bind address
+odw serve --port 8080 --host 0.0.0.0 --token   # remote, read-only, token-gated (see Remote access)
+odw view run.odwrun                     # a shared run bundle, read-only (see Share a run)
 ```
 
 ![odw serve — a live deep-research run: five phase lanes (Plan → Search → Extract → Vote → Report) drawn as a graph, running agents tracing signal along their edges, per-run counters and a phase stepper](assets/odw-dashboard.gif)
@@ -739,6 +741,46 @@ echo '{ "otel": { "endpoint": "http://localhost:4318" } }' > odw.config.json
 odw run wf.js            # or, for a run you already have: odw export $RUN --otlp --send
 ```
 
+### Share a run (ODW extension)
+
+Show a run to a teammate, attach it to an issue, or keep it after the run directory is
+gone: `odw bundle` writes the run as **one self-contained, redacted file**, and
+`odw view` shows it on the dashboard, read-only — no odw config, no runs root, nothing
+else of the machine that made it.
+
+```bash
+odw bundle $RUN                       # → ./$RUN.odwrun
+odw bundle $RUN --out run.odwrun --no-transcripts   # leave the agents' transcripts out
+odw view run.odwrun                   # = odw serve --open run.odwrun: opens the run in a browser
+```
+
+- **What is in it.** One JSON object (`"format": "odw-run-bundle"`, `"version": 1`): the
+  run's meta (its name, script, args, source, adapter, odw version, workflow sha256,
+  times), its status, every event, each agent's saved result, the kept diffs, the agents'
+  transcripts and stderr (`--no-transcripts` drops them), the result and the error.
+- **Redacted, always.** Everything in it — args included — goes through the run's
+  redactor: the token shapes, the values of the secret-named variables of the environment
+  odw starts agents with (yours and each adapter's `env`), `NAME=value` of secret-looking
+  names, and your `redact.extra` — even when the config says `"redact": false`. Each piece
+  that had something replaced is marked `redacted: true`, and so is the bundle.
+  Kept diffs are redacted too, so a bundle's diff is for reading, not for `odw apply`.
+- **Never in it:** the config file or its path, the environment, `notify` and `otel`
+  settings, the worker's pid, the worker log, the run's control files. (Prompts are not
+  kept in run records, so they are not in it either.) Look before you share:
+  `odw view` it first.
+- **Capped.** A bundle over 32 MiB is refused with its size and the ways out —
+  `--no-transcripts`, or `--max-bytes N` to raise the cap (`odw view` takes the same flag).
+- **Opening one trusts nothing in it.** Its size is checked before it is read; the format,
+  version and every field's type are checked; the run id must be a run id
+  (`[A-Za-z0-9._-]`, not a Claude Code `cc-` id) and every agent id a non-negative
+  integer, at most 10 000 agents. It is unpacked into a fresh private temp directory
+  (mode 0700) under fixed file names — nothing the file says becomes a path — and removed
+  when `odw view` exits. The dashboard then shows that run alone, tagged **shared bundle**:
+  no other runs, no Claude Code runs, workflows, schedules or local settings, and every
+  write refused (409), on loopback too.
+
+The dashboard's **Share** button on a run copies `odw bundle <run>`.
+
 ## Dashboard: observe, inspect, chat
 
 The dashboard reads like a printed sheet — paper, ink and one signal colour — and
@@ -824,6 +866,49 @@ Chat messages and stopping ODW-owned runs stay guarded by the loopback server.
 Claude Code's own runs stay strictly read-only. What it serves of ODW's agents —
 transcripts, results, logs, chat sessions — had its likely secrets redacted before it
 was written, and a run's `args` are redacted as they are served (see [Secrets in what ODW keeps](#secrets-in-what-odw-keeps-odw-extension)).
+
+### Remote access, read-only (ODW extension)
+
+Watch an overnight run from your phone without handing anyone your machine:
+
+```bash
+odw serve --host 0.0.0.0 --token
+# odw dashboard → http://192.168.1.20:4317/#token=Xq3…   ← open this one; it is printed once
+```
+
+With `--token` and no value, odw makes a random 256-bit token and prints the URL with it
+once, as `#token=…` — a fragment, which no request carries, so the token stays out of
+server and proxy logs; odw writes it nowhere else. `--token VALUE` (16–256 characters of
+`A-Z a-z 0-9 . _ ~ -`) uses yours and never prints it — it does show in the process list,
+so prefer the generated one on a shared machine.
+
+The security model:
+
+- **Every `/api` request and the live stream need the token**, one of three ways:
+  `Authorization: Bearer <token>` (scripts, `curl`); `?token=<token>` on a request, whose
+  answer sets an `HttpOnly`, `SameSite=Strict` cookie (`odw_token_<port>`); or that
+  cookie. The dashboard trades the URL's `#token=` for the cookie on load and drops it
+  from the address bar. Without a token: 401; the page itself loads and shows a
+  "needs a token" screen to paste one into.
+- **Tokens are compared in constant time** (both sides hashed first). An address that
+  sends 10 wrong tokens within a minute is answered 429, whatever it sends, until the
+  minute is up; a request with no token at all is not counted.
+- **Writes stay refused off loopback, whatever the token**: stopping or pausing runs,
+  answering checkpoints and Chat are 409 on any bind but 127.0.0.1 / localhost / ::1.
+  The token gives remote *reads*, never writes. (On a loopback bind, `--token` gates
+  writes like reads, and every existing write guard still applies: exact
+  `Content-Type: application/json`, same-origin `Origin`, the DNS-rebinding Host check.)
+- **It is plain HTTP.** The token and everything the dashboard shows cross the network
+  unencrypted: use it on a network you trust, over a VPN or SSH tunnel
+  (`ssh -L 4317:localhost:4317 host` needs no `--host` at all), or behind a TLS proxy.
+- **What a token-holder reads** is what the dashboard shows: every project's runs — ODW's
+  and, with the default `claudeJobsScope: "all"`, Claude Code's — their args, results,
+  events, agents' transcripts and diffs (secrets redacted as above), and the settings
+  page's paths and adapters. Narrow it with `--runs-root` and `"claudeJobsScope": "project"`,
+  or share one run as a [bundle](#share-a-run-odw-extension) instead.
+- **Without `--token`**, an off-loopback bind behaves as before — read-only and open to
+  anyone who can reach the port — and `odw serve` prints a loud warning that suggests
+  `--token`.
 
 ## Configure adapters
 
@@ -2005,7 +2090,8 @@ no token billing of its own, no network calls from the engine.
 
 No. Write endpoints require <code>Content-Type: application/json</code> and a
 same-origin Origin, the Host header is allowlisted against DNS rebinding, and
-any off-loopback bind refuses writes entirely (the dashboard stays readable).
+any off-loopback bind refuses writes entirely (the dashboard stays readable — with
+<code>--token</code>, only to whoever holds the token).
 </details>
 
 <details>

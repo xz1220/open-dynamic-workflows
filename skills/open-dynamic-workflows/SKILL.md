@@ -180,6 +180,8 @@ odw status $RUN             # state, agent count, tokens and cost
 odw logs $RUN --follow      # stream progress events
 odw logs $RUN --agent 3     # what one agent did: tool calls, results, errors (ODW extension)
 odw export $RUN --otlp      # the run as OpenTelemetry traces, OTLP/JSON — --send posts it (ODW extension)
+odw bundle $RUN             # the run as one redacted file to share, $RUN.odwrun; odw view FILE shows it
+                            #   read-only (ODW extension; --no-transcripts, --out FILE, --max-bytes N)
 odw result $RUN             # print the final value when done
 odw pause $RUN / resume $RUN / stop $RUN
 odw approve|reject $RUN     # answer a checkpoint() the run waits at — only on the user's say-so

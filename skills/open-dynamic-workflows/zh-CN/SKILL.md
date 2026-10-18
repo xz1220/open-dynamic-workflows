@@ -155,6 +155,8 @@ odw status $RUN             # 状态、agent 计数、token 与花费
 odw logs $RUN --follow      # 流式输出进度事件
 odw logs $RUN --agent 3     # 某个 agent 做了什么：工具调用、结果、错误（ODW 扩展）
 odw export $RUN --otlp      # 把运行导出为 OpenTelemetry trace（OTLP/JSON）——--send 直接发送（ODW 扩展）
+odw bundle $RUN             # 把运行写成一个可分享的脱敏文件 $RUN.odwrun；odw view FILE 只读查看
+                            #   （ODW 扩展；--no-transcripts、--out FILE、--max-bytes N）
 odw result $RUN             # 完成后打印最终值
 odw pause $RUN / resume $RUN / stop $RUN
 odw approve|reject $RUN     # 回答运行正在等待的 checkpoint()——只在用户明确要求时

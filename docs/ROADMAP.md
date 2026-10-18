@@ -103,7 +103,7 @@
 - 可选的容器运行器（默认断网）。（#6，L）
 - ✅ **`odw compare <runA> <runB> [--json] [--agent <label|id>]`**（ODW 扩展；#15 的前半）：每次运行记录它用了什么——`meta.json` 中的 odw 版本与工作流源码的 sha256，`run_started` 上会改变行为的设置与各适配器定义的指纹，`agent_started` 上的调用键与模型，以及各适配器首次派发时与 agent 并行、3 秒超时的 `<cli> --version`（`cli_version` 事件，不拖慢、不导致失败；node、解释器、脚本与相对路径不探测；`recordVersions: false` 关闭）；纯函数比较器按 label → resume 调用键 → phase 内顺序匹配 agent，给出配置差异、运行总计（耗时、token、花费、完成/失败，含 B − A）、每个 agent 的状态/适配器/模型/耗时/花费/尝试次数/保留 diff 统计与回复对比（文本为有上限的统一 diff，结构化回复为 JSON 路径 diff）；终端表格不超过 100 列，更差标红、更好标绿；`GET /api/compare?a=&b=` 只读返回同一结构（看板视图待接入）。
 - `odw eval`：用例 × 适配器 × 重复次数，输出通过率、成本和延迟——在 `odw compare` 记录的运行元数据之上构建（下一步）。（#15，L）
-- 可分享的脱敏运行包；看板远程只读访问（写操作必须带令牌鉴权）。（#11/#13，M）
+- ✅ **可分享的脱敏运行包；看板远程只读访问**（ODW 扩展；#11/#13）：`odw bundle <run> [--out FILE] [--no-transcripts] [--max-bytes N]` 写出一个自包含的 `<run>.odwrun`（JSON：meta 只保留描述运行的字段、status 去掉 pid、事件、保存的 agent 结果、保留的 diff、transcript 与 stderr、结果与错误），全部经过运行的脱敏器（令牌形态与环境中密钥变量的值，即使 `redact: false`），被替换处标 `redacted: true`，绝不包含配置文件、环境变量与 notify/otel 设置；默认 32 MiB 上限。`odw view FILE`（`odw serve --open FILE`）读取前先查大小，校验运行 id 正则、agent id 为非负整数（最多 10 000 个）与各字段类型，解包到 0700 的私有临时目录（文件名固定，退出即删），看板只展示这一次运行并标「分享的运行包」，所有写操作 409（loopback 上也是）。`odw serve --token [VALUE]`：每个 `/api` 请求与 SSE 需要令牌（Bearer 头、`?token=` 换取 HttpOnly SameSite=Strict cookie、或该 cookie），常数时间比较，按地址限制错误次数（429）；不带值时生成随机令牌，只在 URL（`/#token=…`）里打印一次；HTML 外壳无需令牌并显示「需要令牌」界面；非 loopback 绑定上写操作无论有无令牌一律拒绝（与原计划「写操作带令牌鉴权」不同：远程写入仍不开放），不带 `--token` 的非 loopback 绑定打印醒目警告。看板 Job 头部的「分享」复制 `odw bundle <run>`。
 - 发布方言双兼容测试套件，作为社区工作流的兼容性标准。（#13）
 
 ---

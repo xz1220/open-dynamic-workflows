@@ -334,6 +334,7 @@ odw result $RUN          # 最终值
 odw diff $RUN --stat     # 隔离 agent 改了什么;odw apply $RUN --agent N(或 --all)落地
 odw compare $OLD $RUN    # 两次运行之间变了什么:配置、耗时、花费、失败、回复(见下文)
 odw export $RUN --otlp   # 把运行导出为 OpenTelemetry trace(OTLP/JSON;--send 直接发送;见下文)
+odw bundle $RUN          # 把运行写成一个可分享的脱敏文件:$RUN.odwrun(用 odw view FILE 查看;见下文)
 odw pause|resume|stop $RUN
 odw approve|reject $RUN  # 回答运行正在等待的 checkpoint()(--note TEXT、--checkpoint N)
 odw approve $RUN --edit  # ……先在 $EDITOR 里修改 payload 再批准(或 --payload JSON|@file)
@@ -357,7 +358,8 @@ SIGHUP,效果与 `odw stop` 相同:它的 agent 连同其启动的所有进程�
 
 ```bash
 odw serve [--open]                      # 实时看板,默认 http://127.0.0.1:4317
-odw serve --port 8080 --host 0.0.0.0    # 自定义端口 / 绑定地址
+odw serve --port 8080 --host 0.0.0.0 --token   # 远程只读、需要令牌(见「远程只读访问」)
+odw view run.odwrun                     # 只读查看分享的运行包(见「分享一次运行」)
 ```
 
 ![odw serve —— 一次实时 deep-research 运行:五个阶段泳道(Plan → Search → Extract → Vote → Report)绘制成图,运行中的 agent 沿边传递信号,带运行计数与阶段步进条](assets/odw-dashboard.gif)
@@ -666,6 +668,40 @@ echo '{ "otel": { "endpoint": "http://localhost:4318" } }' > odw.config.json
 odw run wf.js            # 已有的运行则用:odw export $RUN --otlp --send
 ```
 
+### 分享一次运行(ODW 扩展)
+
+把一次运行给同事看、附到 issue 里,或在运行目录删掉之后留个底:`odw bundle` 把运行写成
+**一个自包含、已脱敏的文件**,`odw view` 在看板上只读地展示它——不需要 odw 配置、不需要
+运行目录,也不带出生成它的那台机器的任何其他东西。
+
+```bash
+odw bundle $RUN                       # → ./$RUN.odwrun
+odw bundle $RUN --out run.odwrun --no-transcripts   # 不带 agent 的 transcript
+odw view run.odwrun                   # 即 odw serve --open run.odwrun:在浏览器中打开这次运行
+```
+
+- **里面有什么。** 一个 JSON 对象(`"format": "odw-run-bundle"`、`"version": 1`):运行的
+  meta(名字、脚本、args、source、适配器、odw 版本、工作流 sha256、时间)、status、全部事件、
+  每个 agent 保存的结果、保留的 diff、agent 的 transcript 与 stderr(`--no-transcripts` 去掉)、
+  结果与错误。
+- **始终脱敏。** 其中的一切——包括 args——都经过运行的脱敏器:令牌形态、odw 启动 agent 所用
+  环境(你自己的与各适配器的 `env`)中名字像密钥的变量的值、名字像密钥的 `NAME=value`,以及你的
+  `redact.extra`——即使配置写了 `"redact": false` 也照样脱敏。有内容被替换的部分标
+  `redacted: true`,整个包也一样。保留的 diff 同样脱敏,所以包里的 diff 用于阅读,不能拿去
+  `odw apply`。
+- **绝不包含:** 配置文件及其路径、环境变量、`notify` 与 `otel` 设置、worker 的 pid、worker 日志、
+  运行的控制文件。(提示词本来就不在运行记录里,所以也不在包里。)分享之前先 `odw view` 看一遍。
+- **有大小上限。** 超过 32 MiB 的包会被拒绝,并给出大小和办法——`--no-transcripts`,或用
+  `--max-bytes N` 提高上限(`odw view` 也接受这个参数)。
+- **打开时不信任文件里的任何内容。** 读取前先检查大小;检查格式、版本和每个字段的类型;运行 id
+  必须是合法的运行 id(`[A-Za-z0-9._-]`,不能是 Claude Code 的 `cc-` id),每个 agent id 必须是
+  非负整数,最多 10 000 个 agent。它被解包到一个全新的私有临时目录(权限 0700),文件名固定——
+  文件里写的任何东西都不会变成路径——并在 `odw view` 退出时删除。看板只展示这一次运行,标为
+  **分享的运行包**:没有其他运行、没有 Claude Code 运行、工作流、定时任务或本机设置,所有写操作
+  一律拒绝(409),在 loopback 上也是如此。
+
+看板上运行的 **分享** 按钮会复制 `odw bundle <run>`。
+
 ## 看板:观测、检查、对话
 
 看板的视觉像一张印刷品——纸、墨和一种信号色——也可以随时切换到夜间主题。它提供:
@@ -743,6 +779,42 @@ odw logs --workflow adversarial-verify --follow
 仍由 loopback server 保护。Claude Code 自己的运行始终严格只读。看板提供的 ODW agent
 内容——transcript、结果、日志——在写下之前已对疑似密钥脱敏
 (见 [ODW 所保存内容中的密钥](#odw-所保存内容中的密钥odw-扩展))。
+
+### 远程只读访问(ODW 扩展)
+
+在手机上看一夜的运行,又不把你的机器交给任何人:
+
+```bash
+odw serve --host 0.0.0.0 --token
+# odw dashboard → http://192.168.1.20:4317/#token=Xq3…   ← 打开这个;它只打印一次
+```
+
+`--token` 不带值时,odw 生成一个 256 位的随机令牌,并把带令牌的 URL 以 `#token=…` 的形式打印
+一次——这是 URL 片段,任何请求都不会携带它,所以令牌不会进入服务器或代理的日志;odw 也不会把它
+写到别处。`--token VALUE`(16–256 个 `A-Z a-z 0-9 . _ ~ -` 字符)使用你给的令牌且从不打印——但它
+会出现在进程列表里,所以在共享的机器上请用生成的令牌。
+
+安全模型:
+
+- **每个 `/api` 请求和实时流都需要令牌**,三种方式任选其一:`Authorization: Bearer <token>`
+  (脚本、`curl`);请求带上 `?token=<token>`,其响应会设置一个 `HttpOnly`、`SameSite=Strict` 的
+  cookie(`odw_token_<端口>`);或者带着这个 cookie。看板加载时用 URL 里的 `#token=` 换取 cookie,
+  并把它从地址栏去掉。没有令牌:401;页面本身照常加载,显示一个"需要令牌"的界面供粘贴。
+- **令牌按常数时间比较**(两边先各自哈希)。一个地址在一分钟内发来 10 个错误令牌后,无论它再发
+  什么都回 429,直到这一分钟过去;完全不带令牌的请求不计数。
+- **非 loopback 绑定上写操作一律拒绝,与令牌无关**:停止或暂停运行、回答检查点、Chat,在
+  127.0.0.1 / localhost / ::1 以外的任何绑定上都是 409。令牌给的是远程*读*,从不给写。(在 loopback
+  绑定上,`--token` 对写操作与读操作同样把关,原有的写保护全部照旧:严格的
+  `Content-Type: application/json`、同源 `Origin`、防 DNS rebinding 的 Host 检查。)
+- **这是明文 HTTP。** 令牌和看板展示的一切都以未加密的形式经过网络:请在你信任的网络中使用,
+  或通过 VPN、SSH 隧道(`ssh -L 4317:localhost:4317 host` 根本不需要 `--host`),或放在 TLS
+  代理后面。
+- **持有令牌的人能读到的**就是看板展示的一切:所有项目的运行——ODW 的,以及在默认
+  `claudeJobsScope: "all"` 下 Claude Code 的——它们的 args、结果、事件、agent 的 transcript 和
+  diff(按上文脱敏),以及设置页上的路径与适配器。用 `--runs-root` 和 `"claudeJobsScope": "project"`
+  缩小范围,或者改为把一次运行作为[运行包](#分享一次运行odw-扩展)分享。
+- **不加 `--token` 时**,非 loopback 绑定与以前一样——只读,任何能连到该端口的人都能读——并且
+  `odw serve` 会打印一条醒目的警告,建议加上 `--token`。
 
 ## 配置适配器
 
@@ -1766,7 +1838,8 @@ ODW 也带一个 skill——但 skill 的职责是教你的 agent 写和跑 work
 <summary><b>网页能通过 <code>odw serve</code> 驱动我本机的 agent 吗?</b></summary>
 
 不能。写端点要求 <code>Content-Type: application/json</code> 和同源 Origin,Host 头
-有 allowlist 防 DNS rebinding,绑定到非回环地址时写操作一律拒绝(看板仍可读)。
+有 allowlist 防 DNS rebinding,绑定到非回环地址时写操作一律拒绝(看板仍可读;加上
+<code>--token</code> 后只有持有令牌的人可读)。
 </details>
 
 <details>

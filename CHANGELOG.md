@@ -168,6 +168,22 @@ changed, and run on a schedule — and a dashboard redesigned to watch them.
   outputs, usage, failure reasons and tiers, the Changes and Transcript views, a Spend
   receipt (where a run's tokens and dollars went, by phase, adapter and agent; `$`),
   Upcoming schedules, a command palette, light and dark themes, English and Chinese.
+- Share a run (**ODW extension**): `odw bundle <run> [--out FILE] [--no-transcripts]
+  [--max-bytes N]` writes `<run>.odwrun`, one self-contained JSON file — meta, status,
+  events, saved agent results, kept diffs, transcripts, the result and the error — all
+  through the run's redactor (token shapes and the environment's secret values, even
+  with `redact: false`), marked `redacted: true` where something was replaced, never the
+  config, the environment or `notify`/`otel`; refused past 32 MiB unless `--max-bytes`
+  raises it. `odw view FILE` (`odw serve --open FILE`) shows it read-only: the file is
+  checked (size first, run id, integer agent ids, field types), unpacked into a private
+  temp dir removed on exit, and served alone, tagged "shared bundle", every write refused.
+  The Job header's **Share** copies `odw bundle <run>`.
+- Remote read-only access (**ODW extension**): `odw serve --host 0.0.0.0 --token [VALUE]`
+  makes every `/api` request and the live stream need the token — `Authorization: Bearer`,
+  or `?token=` which sets an HttpOnly SameSite=Strict cookie — compared in constant time,
+  with wrong tokens rate limited per address (429). With no VALUE a random token is
+  printed once, in the URL (`/#token=…`); the dashboard trades it for the cookie and shows
+  a "needs a token" screen without one. Writes stay refused off loopback whatever the token.
 
 ### Reliability and safety
 - Timeouts and stops reach an agent's whole process tree (SIGTERM, then SIGKILL).
@@ -215,3 +231,6 @@ changed, and run on a schedule — and a dashboard redesigned to watch them.
   keeps everything as printed.
 - Config errors are fatal instead of producing a "done" run full of nulls.
 - The desktop (Tauri) app is retired in favor of `odw serve`.
+- `odw serve` bound off loopback without `--token` prints a loud warning on stderr that
+  suggests `--token` (it stays read-only and open, as before); a positional argument to
+  `odw serve` is now a bundle file to show; `--port 0` picks a free port.
