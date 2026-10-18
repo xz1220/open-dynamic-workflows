@@ -164,6 +164,7 @@ import { isAdapterChoice, type AdapterChoice } from "./routing.js";
 import { describeSchema, pickStructured, type JsonSchema } from "./schema.js";
 import { handoffBrief, HandoffLog } from "./handoff.js";
 import { transcriptFormat, type AttemptReason } from "./transcript.js";
+import { withholdSecrets } from "./untrusted-input.js";
 import { openWorkspace, type OpenWorkspace, type Workspace, type WorkspaceMode } from "./workspace.js";
 import type { WorktreeSetupOptions } from "./worktree-setup.js";
 
@@ -339,6 +340,12 @@ export interface BridgeOptions {
    * Absent, the note goes to the call's `onNote`.
    */
   onRunNote?: (message: string, fields: Record<string, unknown>) => void;
+  /**
+   * The run's input is untrusted (an ODW extension; see ./untrusted-input):
+   * agent CLIs start without the secret-named variables their own login does
+   * not need — whatever `agentEnvPass` lists.
+   */
+  withholdSecrets?: boolean;
 }
 
 /** What the scheduler hands one call; all optional, so a bare `run(request)` works. */
@@ -641,6 +648,9 @@ export class Bridge {
     onNote?: (message: string, fields: Record<string, unknown>) => void;
   };
 
+  /** Untrusted input (ODW extension): agent CLIs get no secret their own login does not need. */
+  private readonly withholdSecrets: boolean;
+
   constructor(
     private readonly config: Config,
     options: BridgeOptions = {},
@@ -656,6 +666,7 @@ export class Bridge {
     this.redactor = options.redactor;
     this.onCliRun = options.onCliRun;
     this.onRunNote = options.onRunNote;
+    this.withholdSecrets = options.withholdSecrets === true;
     this.egressOptions = { runDir: options.runDir, onDenied: options.onEgressDenied, onNote: options.onRunNote };
     this.ports =new PortPool(...config.settings.portRange);
     this.quota = new QuotaWaits({
@@ -1885,7 +1896,9 @@ export class Bridge {
         const template = spliceArgs(adapter.command, call.permissionArgs ?? []);
         const command = [...expandAll(template, context), ...plan.extraArgs, ...(schema?.args ?? [])];
         const stdin = adapter.stdin ? expand(adapter.stdin, context) : undefined;
-        const env = withAgentVars({ ...agentBaseEnv(process.env, this.config.settings), ...adapter.env }, call.env);
+        // Untrusted input (ODW extension; see ./untrusted-input): no secret its own login does not need.
+        const base = agentBaseEnv(process.env, this.config.settings);
+        const env = withAgentVars({ ...(this.withholdSecrets ? withholdSecrets(base, adapter) : base), ...adapter.env }, call.env);
         // The container sandbox (ODW extension; see adapters/sandbox.ts): the
         // CLI runs in a fresh container with its workspace and the files this
         // run hands it bound at the same paths. A run that did not end cleanly

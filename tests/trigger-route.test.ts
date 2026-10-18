@@ -129,6 +129,8 @@ test("a signed delivery starts its workflow untrusted, with mapped args and cont
     const start = starts[0]!;
     assert.equal(start.workflow, "triage");
     assert.equal(start.untrusted, true, "untrusted by default: issue text is untrusted input");
+    assert.equal(start.permissions, null, "the config's tier: read for untrusted input");
+    assert.equal(start.approve, true);
     assert.equal(start.launchedBy, "trigger:gh");
     assert.deepEqual(start.args, { issue: 7, title: "Bug 7" });
     assert.equal(start.source, root);
@@ -354,9 +356,12 @@ test("end to end: the launcher starts a real untrusted run carrying its context"
         assert.equal(meta.source, join(wfDir, "src"));
         assert.deepEqual(meta.args, { issue: 42 });
         assert.deepEqual((meta.context as Record<string, unknown>).trigger, "gh");
+        // Its args are untrusted input (ODW extension): read-only agents, the mapped args tainted.
+        assert.deepEqual(meta.untrustedInput, { why: "trigger:gh", args: ["issue"], approve: true });
         const status = await waitFor(store, runId, { timeoutMs: 15_000 });
         assert.equal(status.state, "done");
         assert.deepEqual(store.readResult(runId), { issue: 42 });
+        assert.equal((store.readStatus(runId).untrustedInput as { permissions: string }).permissions, "read");
       },
       { realStart: true },
     );
@@ -371,7 +376,7 @@ test("odw serve's trigger lines: where each answers, and a secret it lacks", () 
     ci: { workflow: "ci", secret: SECRET, verify: "hmac-sha256", untrusted: false },
   });
   const lines = triggerLines(triggers, "https://odw.example.com", {});
-  assert.match(lines[0]!, /trigger gh → POST https:\/\/odw\.example\.com\/api\/triggers\/gh \(github-signed; runs triage, untrusted\)/);
+  assert.match(lines[0]!, /trigger gh → POST https:\/\/odw\.example\.com\/api\/triggers\/gh \(github-signed; runs triage, untrusted input, agents read\)/);
   assert.match(lines[1]!, /\$GH_SECRET_FOR_TEST is unset/);
   assert.match(lines[2]!, /trigger ci .*TRUSTED/);
   assert.equal(lines.length, 3);

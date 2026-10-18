@@ -21,6 +21,7 @@ import { ConfigError } from "../errors.js";
 import { loadWorkflowScript } from "../loader.js";
 import { isSeaBinary } from "../sea.js";
 import { resolveRunTrust } from "../untrusted.js";
+import { requireSandboxRefusal, sandboxGap, taintedArgs } from "../untrusted-input.js";
 import { resolveWorkflow, type ResolvedWorkflow } from "../workflows/resolve.js";
 import { RunObserver } from "./run-liveness.js";
 import { RunStore, type BreakSpec, type EvalRunTag, type ReplayLink, type ResolveLink } from "./run-store.js";
@@ -83,6 +84,13 @@ export interface StartRunOptions {
   call?: Record<string, unknown> | null;
   /** Who starts it (ODW extension; see ../identity): kept in meta as `launchedBy`; null: the local user. */
   launchedBy?: string | null;
+  /**
+   * Its args come from someone who is not the user (ODW extension; see
+   * ../untrusted-input): what said so (`trigger:<name>`, `--untrusted-input`)
+   * and whether its first agent that may write asks first (default true).
+   * Kept in meta as `untrustedInput`, with the args it covers.
+   */
+  untrustedInput?: { why: string; approve?: boolean } | null;
 }
 
 /**
@@ -101,6 +109,14 @@ function prepare(options: StartRunOptions): { config: Config; source: string; st
   // Fail fast on `--sandbox container` with no image anywhere (ODW extension).
   // The worker reads the config from the run's source: so does this check.
   if (options.sandbox) withSandboxFlag(loadConfig(options.configPath ?? null, { quiet: true, cwd: source }).settings.sandbox, options.sandbox);
+  // Untrusted input with `untrustedInput.requireSandbox` and no sandbox (ODW
+  // extension; see ../untrusted-input): refused before a run exists. The
+  // worker decides again with the config it reads.
+  if (options.untrustedInput) {
+    const settings = loadConfig(options.configPath ?? null, { quiet: true, cwd: source }).settings;
+    const gap = sandboxGap({ sandbox: withSandboxFlag(settings.sandbox, options.sandbox ?? null) });
+    if (gap && settings.untrustedInput.requireSandbox) throw new ConfigError(requireSandboxRefusal(gap));
+  }
   const store = new RunStore(options.runsRoot ?? resolveRunsRoot(config.settings.runsRoot));
   return { config, source, store };
 }
@@ -129,6 +145,9 @@ function commonCreateInput(options: StartRunOptions, source: string, workflowNam
     breaks: options.breaks ?? null,
     call: options.call ?? null,
     launchedBy: options.launchedBy ?? null,
+    untrustedInput: options.untrustedInput
+      ? { why: options.untrustedInput.why, args: taintedArgs(options.args), approve: options.untrustedInput.approve !== false }
+      : null,
   };
 }
 

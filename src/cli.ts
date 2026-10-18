@@ -102,7 +102,7 @@ import { planReplay, readPromptOption, ReplayError, startReplay } from "./runtim
 import { printAgentLogs } from "./runtime/transcript-view.js";
 import { cmdNote, cmdNotes } from "./runtime/notes-view.js";
 import { cmdMemory } from "./runtime/memory-cli.js";
-import { cmdEstimate, estimateBeforeRun } from "./runtime/estimate-cli.js";
+import { askYesNo, cmdEstimate, estimateBeforeRun } from "./runtime/estimate-cli.js";
 import { executeRun } from "./runtime/worker.js";
 import {
   parseSshTarget,
@@ -126,6 +126,7 @@ import { isSeaBinary } from "./sea.js";
 import { describeConcurrency } from "./throttle.js";
 import { detectCaps, fmtUsd, glyphs, palette, sanitizeText } from "./tty.js";
 import { resolveRunTrust } from "./untrusted.js";
+import { confirmUntrustedPr, untrustedInputBanner, untrustedInputOf, untrustedTier } from "./untrusted-input.js";
 import { pluginOrigin } from "./workflows/plugins.js";
 import { listWorkflows, resolveWorkflow, type ResolvedWorkflow } from "./workflows/resolve.js";
 
@@ -196,6 +197,7 @@ export function helpText(): string {
     "                                                     --check previews only; --verify CMD rolls an apply back if CMD fails",
     "                                                     --resolve [--adapter A] [--confirm]: an agent resolves a conflict, verified first",
     "                                                     --pr [--base B] [--ready] [--title T]: a branch, pushed, and a draft PR (gh); never merges",
+    "                                                     (a run with untrusted input asks y/N first; --accept-untrusted-input: yes)",
     "  odw compare <runA> <runB> [--json]                 what changed: setup, time, cost, failures, replies",
     "                                                     --agent <label|id> shows one agent's whole reply diff",
     "  odw estimate <wf> [--args JSON|@file] [--json]     p50/p90 time, cost, tokens and agents, from its earlier runs (ODW extension)",
@@ -245,6 +247,8 @@ export function helpText(): string {
     "  --permissions <t>   read | edit | full: what this run's agents may do (default edit; ODW extension)",
     "  --untrusted         keep the repository's CLAUDE.md, hooks, MCP servers and settings from agents where",
     "                      each CLI allows (claude --safe-mode), say where one cannot (ODW extension)",
+    "  --untrusted-input   the args are someone else's text (an issue, a comment): read-only agents unless",
+    "                      --permissions, a minimal env without tokens, a checkpoint before any agent may write (ODW extension)",
     "  --sandbox container run each agent CLI (and exec() step) in a Docker/Podman container (ODW extension)",
     "  --sandbox-image <i> the image it runs in (else the config's sandbox.image); never pulled",
     "  --fg                run in the foreground: live progress on a TTY, plain event lines otherwise",
@@ -592,6 +596,7 @@ async function cmdRun(rest: string[]): Promise<number> {
       adapter: { type: "string" },
       permissions: { type: "string" },
       untrusted: { type: "boolean" },
+      "untrusted-input": { type: "boolean" },
       sandbox: { type: "string" },
       "sandbox-image": { type: "string" },
       wait: { type: "boolean" },
@@ -658,6 +663,8 @@ async function cmdRun(rest: string[]): Promise<number> {
   const permissions = parsePermissions("run", values.permissions);
   const trust: TrustLevel | null = values.untrusted === true ? "untrusted" : null;
   const sandbox = parseSandbox("run", values.sandbox, values["sandbox-image"]);
+  // --untrusted-input (ODW extension; see untrusted-input.ts): the args are someone else's text.
+  const untrustedInput = values["untrusted-input"] === true ? { why: "--untrusted-input" } : null;
 
   // A dry run answers every agent itself: no adapter needs to be installed.
   if (!values.dry) warnIfNoDefaultAdapter(values.adapter ?? null, values.config ?? null, values.source ?? null, "run");
@@ -682,13 +689,14 @@ async function cmdRun(rest: string[]): Promise<number> {
     record,
     deadlineSeconds,
     breaks,
+    untrustedInput,
   });
   if (record) process.stderr.write(`recording: once ${runId} ends, it is a case of ${record.file} (odw test ${record.workflow})\n`);
   if (!values.dry) {
     return afterStart(store, runId, mode, {
       timeoutMs,
       hint: "started run",
-      banner: withWorkflowLines(startBanner(values.config ?? null, values.source ?? null, permissions, trust, sandbox), workflow),
+      banner: withWorkflowLines(startBanner(values.config ?? null, values.source ?? null, permissions, trust, sandbox, untrustedInput !== null), workflow),
     });
   }
   // A dry run is waited for (a non-TTY start would detach), then shown as its phase tree.
@@ -754,6 +762,7 @@ async function cmdRunRemote(ref: string, values: Record<string, string | boolean
     if (typeof values[flag] === "string") flags.push(`--${flag}`, values[flag] as string);
   }
   if (values.untrusted === true) flags.push("--untrusted");
+  if (values["untrusted-input"] === true) flags.push("--untrusted-input");
   return remoteRun({
     ref,
     target,
@@ -823,11 +832,14 @@ function startBanner(
   permissions: PermissionTier | null,
   trust: TrustLevel | null = null,
   sandbox: SandboxFlag | null = null,
+  untrustedInput = false,
 ): string | undefined {
   try {
     const cwd = source ? resolve(source) : process.cwd();
     const config = loadConfig(configPath, { quiet: true, cwd });
     if (permissions) config.settings.permissions = permissions;
+    // Untrusted input (ODW extension): read-only unless --permissions, as the worker decides it.
+    if (untrustedInput) config.settings.permissions = untrustedTier(permissions);
     // The sandbox line (ODW extension): `--sandbox container` over the config's.
     config.settings.sandbox = withSandboxFlag(config.settings.sandbox, sandbox);
     // The trust line (ODW extension), decided as the worker will decide it (see untrusted.ts).
@@ -839,6 +851,8 @@ function startBanner(
       `concurrency: ${describeConcurrency(config)}`,
       // The sandbox line (ODW extension), when a container is in play: none adds no line.
       ...(config.settings.sandbox !== "none" || Object.values(config.adapters).some((a) => a.sandbox) ? [sandboxBanner(config)] : []),
+      // The untrusted-input line (ODW extension), loud when no sandbox boxes its agents in.
+      ...(untrustedInput ? untrustedInputBanner(config.settings) : []),
     ].join("\n");
   } catch {
     return undefined;
@@ -1301,12 +1315,13 @@ async function cmdApply(rest: string[]): Promise<number> {
       draft: { type: "boolean" },
       ready: { type: "boolean" },
       title: { type: "string" },
+      "accept-untrusted-input": { type: "boolean" },
     },
   });
   const runId = positionals[0];
   if (!runId) throw new UsageError("odw apply: missing <run_id>");
   if (!values.pr) {
-    for (const flag of ["base", "remote", "draft", "ready", "title"] as const) {
+    for (const flag of ["base", "remote", "draft", "ready", "title", "accept-untrusted-input"] as const) {
       if (values[flag] !== undefined) throw new UsageError(`odw apply: --${flag} goes with --pr`);
     }
   } else {
@@ -1389,6 +1404,14 @@ async function cmdApply(rest: string[]): Promise<number> {
   process.stderr.on("error", unheard);
   try {
     if (values.pr) {
+      // A run with untrusted input (ODW extension; see untrusted-input.ts): a person says yes before its PR is pushed.
+      const confirmed = await confirmUntrustedPr(untrustedInputOf(store.readMeta(runId)), {
+        runId,
+        accepted: values["accept-untrusted-input"] === true,
+        ask: process.stdin.isTTY ? (question) => askYesNo(question, process.stdin, process.stderr) : null,
+        err: process.stderr,
+      });
+      if (!confirmed) return 1;
       return await applyPr({
         cwd: process.cwd(),
         runId,
@@ -1863,6 +1886,8 @@ async function relaunch(
     budgetTotal: (meta.budgetTotal as number | null) ?? null,
     // The worker reads the saved results from the source run's own directory.
     resumedFrom: cmd === "resume" ? { runId, dir: store.runDir(runId) } : null,
+    // Untrusted input stays untrusted on a rerun or resume (ODW extension): nothing loosens it.
+    untrustedInput: untrustedInputOf(meta),
   };
   warnIfNoDefaultAdapter(opts.adapter, opts.configPath, opts.source, cmd);
   // An inline-launched run's script lives inside the OLD run dir. Re-archive its

@@ -38,7 +38,7 @@ import { isAbsolute, resolve } from "node:path";
 import { randomBytes } from "node:crypto";
 
 import { expandHome, loadConfig } from "../adapters/config.js";
-import type { Config } from "../adapters/types.js";
+import type { Config, PermissionTier } from "../adapters/types.js";
 import {
   MIN_SECRET_LENGTH,
   ReplayCache,
@@ -78,6 +78,10 @@ export interface TriggerStart {
   workflow: string;
   args: Record<string, unknown>;
   untrusted: boolean;
+  /** The trigger's `permissions`; null: the config's — read-only for untrusted input (see ../untrusted-input). */
+  permissions: PermissionTier | null;
+  /** Whether an untrusted run asks before its first agent that may write (the trigger's `approve`). */
+  approve: boolean;
   source: string;
   configPath: string | null;
   runsRoot: string;
@@ -234,6 +238,8 @@ export class TriggerRoute {
         workflow: known.workflow,
         args: mapArgs(delivery, known.args),
         untrusted: known.untrusted,
+        permissions: known.permissions,
+        approve: known.approve,
         source: isAbsolute(source) ? source : resolve(source),
         configPath: this.options.configPath,
         runsRoot: this.options.store.root,
@@ -331,6 +337,9 @@ function startTriggerRun(spec: TriggerStart): string {
     runsRoot: spec.runsRoot,
     source: spec.source,
     trust: spec.untrusted ? "untrusted" : null,
+    permissions: spec.permissions,
+    // An untrusted trigger's args are untrusted input too (ODW extension; see ../untrusted-input).
+    untrustedInput: spec.untrusted ? { why: spec.launchedBy, approve: spec.approve } : null,
     origin: "trigger",
     context: spec.context as unknown as Record<string, unknown>,
     launchedBy: spec.launchedBy,
@@ -345,7 +354,7 @@ function startTriggerRun(spec: TriggerStart): string {
 export function triggerLines(triggers: Record<string, TriggerSettings>, base: string, env: NodeJS.ProcessEnv = process.env): string[] {
   const lines: string[] = [];
   for (const [name, trigger] of Object.entries(triggers)) {
-    const trust = trigger.untrusted ? "untrusted" : "TRUSTED";
+    const trust = trigger.untrusted ? `untrusted input, agents ${trigger.permissions ?? "read"}${trigger.approve ? "" : ", writes without asking"}` : "TRUSTED";
     lines.push(`  trigger ${name} → POST ${base}/api/triggers/${name} (${trigger.verify}-signed; runs ${trigger.workflow}, ${trust})`);
     const secret = trigger.secret ?? (trigger.secretEnv ? (env[trigger.secretEnv] ?? "") : "");
     if (secret.length < MIN_SECRET_LENGTH) {

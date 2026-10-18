@@ -655,6 +655,18 @@ export interface Settings {
    * go. `null`: none.
    */
   costGate: CostGate | null;
+  /**
+   * Runs with untrusted input (an ODW extension; see ../untrusted-input):
+   * `requireSandbox: true` refuses to start one unless its agents run in a
+   * container whose network is an allowlist or none.
+   */
+  untrustedInput: UntrustedInputSettings;
+}
+
+/** How runs with untrusted input are held (see `Settings.untrustedInput`). */
+export interface UntrustedInputSettings {
+  /** Refuse to start a run with untrusted input unless agents run in a container with an allowlist (or no) network. */
+  requireSandbox: boolean;
 }
 
 /** How approve links are minted (see `Settings.approveLinks`). */

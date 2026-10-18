@@ -144,6 +144,7 @@ import { planScope, ScopeLocks, waitNote, type ScopeClaim, type ScopePlan, type 
 import { FanOut } from "./throttle.js";
 import { fmtUsd } from "./tty.js";
 import { TranscriptRecorder } from "./transcript.js";
+import { UntrustedInputRejected, workflowInput, writes, type WorkflowInput } from "./untrusted-input.js";
 import { resolveWorkflow } from "./workflows/resolve.js";
 import { headCommit } from "./workspace.js";
 
@@ -295,7 +296,8 @@ export interface WorkflowGlobals {
   phase(title: string, opts?: PhaseDefaults): void;
   log(message: unknown): void;
   budget: Budget;
-  workflow(nameOrRef: string | { scriptPath: string }, args?: unknown): Promise<unknown>;
+  /** `workflow.input` is an ODW extension (see ./untrusted-input): whether the run's args came from outside. */
+  workflow: ((nameOrRef: string | { scriptPath: string }, args?: unknown) => Promise<unknown>) & { readonly input?: WorkflowInput };
   /**
    * Compile-check a candidate workflow source without executing it (ODW
    * extension; not part of Claude Code's Workflow tool surface). The seam that
@@ -737,6 +739,16 @@ export function createPrimitives(
     // an agent that may not have its tier, or whose CLI cannot enforce it,
     // fails before it starts.
     const permissions = route.permissions;
+    // Untrusted input (ODW extension; see ./untrusted-input): the first agent
+    // that may write waits for a person's go, once per run, holding no slot.
+    if (writes(permissions.tier) && ctx.input?.meta.approve) {
+      try {
+        await writeGate(display, permissions.tier!);
+      } catch (err) {
+        ctx.bridge.releaseRoute?.(route);
+        throw err;
+      }
+    }
     // Whether its CLI runs untrusted (ODW extension; see adapters/trust.ts):
     // the run's level, or its first adapter's own. The bridge adds the flags.
     const trust = planTrust(route.chain[0]!, runTrust(ctx.config)).trust;
@@ -1545,6 +1557,30 @@ export function createPrimitives(
       throw err;
     });
 
+  /**
+   * The checkpoint a run with untrusted input asks before its first agent that
+   * may write (ODW extension; see ./untrusted-input): asked once per run, and
+   * its answer stands for every later such agent. A refusal — or a run with
+   * nobody to ask — fails those agents with UntrustedInputRejected (recoverable).
+   */
+  const writeGate = (label: string, tier: PermissionTier): Promise<void> => {
+    const input = ctx.input!;
+    input.writeGate ??= (async () => {
+      const { why, args } = input.meta;
+      const title = `Untrusted input (${why}): let agents that may write (${tier}) run?`;
+      if (!ctx.control.awaitDecision) {
+        throw new UntrustedInputRejected(`${title} — nobody can be asked in this run (no decision channel), so no agent that may write starts`);
+      }
+      const answer = await checkpoint(title, { payload: { untrustedInput: { why, args }, agent: label, permissions: tier }, memory: false });
+      if (!answer.approved) {
+        throw new UntrustedInputRejected(
+          `untrusted input (${why}): agents that may write were refused${answer.note ? ` — ${answer.note}` : ""}; this one did not start`,
+        );
+      }
+    })();
+    return input.writeGate;
+  };
+
   /** Run `fn` with the phase cursor at `phase`: what a call reads as it starts. */
   const atPhase = <T>(phase: string | null, fn: () => T): T => {
     const saved = ctx.currentPhase;
@@ -1609,7 +1645,10 @@ export function createPrimitives(
     phase,
     log,
     budget,
-    workflow: (nameOrRef, childArgs) => handled(held(undefined, () => workflow(nameOrRef, childArgs))),
+    // `workflow.input` (ODW extension; see ./untrusted-input): whether the run's args came from outside.
+    workflow: Object.assign((nameOrRef: string | { scriptPath: string }, childArgs?: unknown) => handled(held(undefined, () => workflow(nameOrRef, childArgs))), {
+      input: workflowInput(ctx.input?.meta ?? null),
+    }),
     validate,
     exec: (command, opts) => handled(held(undefined, () => exec(command, opts))),
     checkpoint: (title, opts) => handled(held(undefined, () => checkpoint(title, opts))),

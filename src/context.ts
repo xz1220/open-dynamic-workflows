@@ -27,6 +27,7 @@ import { Scheduler } from "./scheduler.js";
 import type { ScopeLocks } from "./scope.js";
 import { capChangeMessage } from "./throttle.js";
 import type { TranscriptPaths } from "./transcript.js";
+import type { UntrustedInputMeta } from "./untrusted-input.js";
 
 export interface RunContext {
   config: Config;
@@ -176,6 +177,12 @@ export interface RunContext {
    * once per run (ODW extension). Shared like `seq`.
    */
   costNotes?: Set<string>;
+  /**
+   * The run's untrusted input (ODW extension; see ./untrusted-input): what
+   * meta.json says of it, and the one checkpoint its first agent that may
+   * write waits at. Shared like `seq`; absent: the input is the user's.
+   */
+  input?: { meta: UntrustedInputMeta; writeGate?: Promise<void> };
   emit(ev: WorkflowEvent): void;
 }
 
@@ -225,6 +232,8 @@ export interface BuildContextOptions {
   bridge?: Pick<BridgeOptions, "runner" | "sleep" | "now" | "random">;
   /** Told as each agent CLI run starts (the bridge's `onCliRun`): the worker records CLI versions by it (ODW extension). */
   onCliRun?: BridgeOptions["onCliRun"];
+  /** The run's untrusted input, as meta.json says (ODW extension; see ./untrusted-input); null or absent: the user's. */
+  input?: UntrustedInputMeta | null;
 }
 
 /** Wire a full run context from a config and the run's surroundings. */
@@ -242,6 +251,8 @@ export function buildContext(config: Config, options: BuildContextOptions = {}):
     agentSchemaPath: options.agentSchemaPath,
     redactor,
     onCliRun: options.onCliRun,
+    // Untrusted input (ODW extension): agent CLIs get no secret their own login does not need.
+    withholdSecrets: options.input != null,
     // What an untrusted run still lets through, or refused, is the run's to say once (ODW extension: trust).
     onRunNote: (message, fields) => sink.emit(event(LOG, { message, ...fields })),
     ...options.bridge,
@@ -316,6 +327,7 @@ export function buildContext(config: Config, options: BuildContextOptions = {}):
     memory: options.memory,
     costHistory: options.costHistory,
     costNotes: new Set(),
+    ...(options.input ? { input: { meta: options.input } } : {}),
     emit(ev: WorkflowEvent): void {
       sink.emit(ev);
     },

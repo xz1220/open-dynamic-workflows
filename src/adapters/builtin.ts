@@ -663,4 +663,5 @@ export const DEFAULT_SETTINGS: Settings = {
   approveLinks: { ttl: 86_400 }, // a checkpoint's approve/reject links (odw serve --public-url) are valid 24h
   triggers: {}, // no inbound triggers: odw serve starts no run from a webhook
   costGate: null, // no fan-out waits for a go; { usd } asks before one forecast to cost more
+  untrustedInput: { requireSandbox: false }, // a run with untrusted input and no sandbox warns loudly (true: refused)
 };

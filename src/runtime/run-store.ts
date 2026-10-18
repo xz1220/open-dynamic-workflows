@@ -79,6 +79,7 @@ import type { AgentCallRecord, AgentResultRecord } from "../journal.js";
 import { sourceHash } from "../provenance.js";
 import type { Redactor } from "../redact.js";
 import type { TranscriptPaths } from "../transcript.js";
+import type { UntrustedInputMeta } from "../untrusted-input.js";
 import { VERSION } from "../version.generated.js";
 import { readdirSafe, readJsonFile, writeJsonAtomic } from "./fs-util.js";
 
@@ -162,6 +163,11 @@ export interface CreateRunInput {
    * $USER). Written to meta as `launchedBy`.
    */
   launchedBy?: string | null;
+  /**
+   * Its args come from someone who is not the user (ODW extension; see
+   * ../untrusted-input): written to meta as `untrustedInput` only when set.
+   */
+  untrustedInput?: UntrustedInputMeta | null;
 }
 
 /**
@@ -280,6 +286,7 @@ export class RunStore {
       ...(input.deadlineSeconds ? { deadline: { seconds: input.deadlineSeconds, at: createdAt + input.deadlineSeconds } } : {}),
       ...(input.replayOf ? { replayOf: input.replayOf } : {}),
       ...(input.breaks ? { breaks: input.breaks } : {}),
+      ...(input.untrustedInput ? { untrustedInput: input.untrustedInput } : {}),
       launchedBy: clean(input.launchedBy) ?? localLauncher(),
       resumedFrom: input.resumedFrom?.runId ?? null,
       resumedFromDir: input.resumedFrom?.dir ?? null,

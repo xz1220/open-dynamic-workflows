@@ -157,11 +157,19 @@ test("config: triggers validate strictly; untrusted defaults to true; a rate lim
     concurrency: null,
     rateLimit: { max: 30, windowSec: 3600 },
     untrusted: true,
+    permissions: null,
+    approve: true,
     source: null,
   });
   assert.equal(buildTriggers({ t: { workflow: "w", secret: SECRET, verify: "github", untrusted: false } }).t!.untrusted, false);
+  // Untrusted input (ODW extension): a trigger may give its runs a tier, and turn the write checkpoint off.
+  const given = buildTriggers({ t: { workflow: "w", secret: SECRET, verify: "github", permissions: "edit", approve: false } }).t!;
+  assert.equal(given.permissions, "edit");
+  assert.equal(given.approve, false);
   const refuse = (spec: unknown, re: RegExp) => assert.throws(() => buildTriggers(spec), (err: unknown) => err instanceof ConfigError && re.test(err.message));
   refuse([], /"triggers" must be an object/);
+  refuse({ t: { workflow: "w", secret: SECRET, verify: "github", permissions: "write" } }, /permissions must be "read", "edit" or "full"/);
+  refuse({ t: { workflow: "w", secret: SECRET, verify: "github", approve: "no" } }, /approve must be true/);
   refuse({ "bad name!": { workflow: "w", secret: SECRET, verify: "github" } }, /trigger name/);
   refuse({ t: { workflow: "w", secret: SECRET, verify: "github", untrused: false } }, /has no field "untrused"/);
   refuse({ t: { workflow: "w", secret: SECRET, secretEnv: "X", verify: "github" } }, /exactly one of "secret" or "secretEnv"/);

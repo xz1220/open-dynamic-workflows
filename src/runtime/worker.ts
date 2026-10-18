@@ -28,7 +28,7 @@ import type { WaitingCheckpoint } from "../checkpoint.js";
 import type { CostHistory } from "../forecast.js";
 import { buildContext, spentTokens, type RunContext } from "../context.js";
 import { deciderText, PAUSED, RUNNING, STOPPED, type CheckpointRequest } from "../control.js";
-import { DeadlinePassed, RunStopped, WorkflowScriptError, isFatalError } from "../errors.js";
+import { ConfigError, DeadlinePassed, RunStopped, WorkflowScriptError, isFatalError } from "../errors.js";
 import { AGENT_STARTED, LOG, RUN_FAILED, RUN_FINISHED, RUN_STARTED, RUN_STOPPED, event } from "../events.js";
 import { Breaks, breakSpecOf, runSoFar } from "../breaks.js";
 import { DriftWatch, driftEvalArgs, driftEvalOf, previousRun } from "../drift.js";
@@ -42,6 +42,7 @@ import type { QuotaPause } from "../quota-wait.js";
 import { redactorFor, type Redactor } from "../redact.js";
 import type { Scheduler } from "../scheduler.js";
 import { applyRunTrust, resolveRunTrust, untrustedConfigSwap } from "../untrusted.js";
+import { requireSandboxRefusal, sandboxGap, sandboxWarning, untrustedInputNote, untrustedInputOf, untrustedTier } from "../untrusted-input.js";
 import { isCommitId } from "../workspace.js";
 import { pluginOrigin } from "../workflows/plugins.js";
 import { odwInvocation } from "../schedule/command.js";
@@ -187,7 +188,12 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
       typeof meta.adapter === "string" && meta.adapter.length > 0 ? meta.adapter : null;
     // Run-level permission tier (meta.permissions: `--permissions` on run,
     // rerun or resume; ODW extension): the run's tier in place of the config's.
-    const permissionsOverride = isPermissionTier(meta.permissions) ? meta.permissions : null;
+    // Untrusted input (ODW extension; see ../untrusted-input): read-only
+    // agents unless the run's permissions were given, and a minimal agent
+    // environment whatever the config says.
+    const input = untrustedInputOf(meta);
+    const givenPermissions = isPermissionTier(meta.permissions) ? meta.permissions : null;
+    const permissionsOverride = input ? untrustedTier(givenPermissions) : givenPermissions;
     // Run-level container sandbox (meta.sandbox: `--sandbox container` on run,
     // rerun or resume; ODW extension): the config's container, or one of
     // `--sandbox-image` — a ConfigError when neither names an image.
@@ -199,6 +205,7 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
         ...(adapterOverride ? { defaultAdapter: adapterOverride } : {}),
         ...(permissionsOverride ? { permissions: permissionsOverride } : {}),
         ...(sandboxFlag ? { sandbox: withSandboxFlag(base.settings.sandbox, sandboxFlag) } : {}),
+        ...(input ? { agentEnv: "minimal" as const } : {}),
       },
     });
     let overridden = withOverrides(baseConfig);
@@ -320,6 +327,8 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
         onKeep: (note) => memory.record({ kind: "note", text: note.text, paths: note.paths ?? [], agent: note.by.label }),
       }),
       memory,
+      // Untrusted input (ODW extension): workflow.input, the write checkpoint, and the secrets agents do not get.
+      input,
       // What an isolated agent changed is kept beside it, as agents/<agentId>.diff.
       agentDiffPath: (agentId) => store.agentDiffPath(runId, agentId),
       // What each agent's CLI prints, as agents/<agentId>.transcript.jsonl and .stderr.txt.
@@ -381,7 +390,19 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
     store.updateStatus(runId, { state: "running", pid: process.pid });
     // What the run starts with — the settings that change behaviour, and each
     // adapter's fingerprint — for `odw compare` (ODW extension; see ../provenance).
-    sink.emit(event(RUN_STARTED, { runId, setup: runSetup(config) }));
+    // Untrusted input (ODW extension): what the run gave up, said with its start —
+    // loudly without a sandbox, and refused under untrustedInput.requireSandbox.
+    const inputGap = input ? sandboxGap(config.settings) : null;
+    const inputProfile = input
+      ? { ...input, permissions: config.settings.permissions, agentEnv: config.settings.agentEnv, sandboxed: inputGap === null, ...(inputGap ? { warning: sandboxWarning(inputGap) } : {}) }
+      : null;
+    sink.emit(event(RUN_STARTED, { runId, setup: runSetup(config), ...(inputProfile ? { untrustedInput: inputProfile } : {}) }));
+    if (input) {
+      store.updateStatus(runId, { untrustedInput: inputProfile });
+      sink.emit(event(LOG, { message: untrustedInputNote(input, config.settings.permissions), untrustedInput: true }));
+      if (inputGap && config.settings.untrustedInput.requireSandbox) throw new ConfigError(requireSandboxRefusal(inputGap));
+      if (inputGap) sink.emit(event(LOG, { message: sandboxWarning(inputGap), untrustedInput: true }));
+    }
     // A container sandbox that cannot run here — no engine, no image — fails
     // the run before any agent starts (ODW extension; see ../adapters/sandbox).
     await ctx.bridge.checkSandbox();

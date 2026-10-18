@@ -37,6 +37,7 @@ import { isWho } from "../identity.js";
 import { LIMIT_NAMES, type AgentLimits, type LimitHit } from "../limits.js";
 import { readCliVersion, type CliVersion } from "../provenance.js";
 import { pausedForOf, type PausedFor } from "../quota-wait.js";
+import { untrustedInputOf, type UntrustedInputMeta } from "../untrusted-input.js";
 import { RunStore, TERMINAL_STATES, type EvalRunTag, type ResolveLink } from "./run-store.js";
 
 export type AgentState = "running" | "done" | "failed" | "stale";
@@ -311,6 +312,12 @@ export interface RunDetail extends RunSummary {
   adapter: string | null;
   /** The workflow identity recorded at create time (meta.workflowName). */
   workflowName: string | null;
+  /**
+   * The run took untrusted input (ODW extension; see ../untrusted-input): what
+   * said so, the args it covers, and — once its worker started — the profile
+   * it ran with. The dashboard's trust line. Absent: the input was the user's.
+   */
+  untrustedInput?: UntrustedInputView;
   /**
    * checkpoint() calls waiting for an answer, oldest first (ODW extension):
    * what `POST /api/runs/:id/checkpoint` can approve or reject. Empty unless
@@ -832,6 +839,28 @@ export function summaryFrom(runId: string, facts: RunFacts): RunSummary {
   };
 }
 
+/** A run's untrusted input as its detail serves it (ODW extension; see ../untrusted-input). */
+export interface UntrustedInputView extends UntrustedInputMeta {
+  /** The agents' tier, once the worker started; null before. */
+  permissions: PermissionTier | null;
+  /** Whether a container sandbox with an allowlist (or no) network boxed its agents in; null before the worker started. */
+  sandboxed: boolean | null;
+}
+
+/** `{ untrustedInput }` from meta.json, with the profile status.json has once the worker started; `{}` for trusted input. */
+function untrustedInputView(meta: Record<string, unknown>, status: Record<string, unknown>): { untrustedInput?: UntrustedInputView } {
+  const input = untrustedInputOf(meta);
+  if (!input) return {};
+  const profile = (status.untrustedInput !== null && typeof status.untrustedInput === "object" ? status.untrustedInput : {}) as Record<string, unknown>;
+  return {
+    untrustedInput: {
+      ...input,
+      permissions: isPermissionTier(profile.permissions) ? profile.permissions : null,
+      sandboxed: typeof profile.sandboxed === "boolean" ? profile.sandboxed : null,
+    },
+  };
+}
+
 /** meta.bundle as a summary carries it: a shared bundle's when and by which odw. */
 function bundleOf(value: unknown): { bundledAt: number | null; odwVersion: string | null } {
   const b = (value !== null && typeof value === "object" ? value : {}) as Record<string, unknown>;
@@ -886,6 +915,7 @@ export function detailFrom(
     ...resolveLinksOf(meta),
     adapter: (meta.adapter as string) ?? null,
     workflowName: (meta.workflowName as string) ?? null,
+    ...untrustedInputView(meta, facts.status),
     pendingCheckpoints: live ? pendingCheckpoints(fold) : [],
     cliVersions: Object.fromEntries(Object.entries(fold.cliVersions).map(([name, cli]) => [name, { ...cli }])),
     odwVersion: typeof meta.odwVersion === "string" ? meta.odwVersion : null,

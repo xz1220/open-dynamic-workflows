@@ -63,6 +63,7 @@ import type {
   Settings,
   StaggerFanOut,
   TrustLevel,
+  UntrustedInputSettings,
 } from "./types.js";
 
 export const CONFIG_ENV_VAR = "ODW_CONFIG";
@@ -161,6 +162,7 @@ const KNOWN_TOP_KEYS = [
   "triggers",
   "costGate",
   "accounts",
+  "untrustedInput",
 ] as const;
 
 const KNOWN_ADAPTER_KEYS = ["command", "stdin", "env", "timeout", "stallTimeout", "concurrency", "promptCache", "label", "flags", "output", "failures", "permissionArgs", "permissions", "permissionDenials", "trust", "untrustedArgs", "untrustedNote", "sandbox", "agentLimits", "egressHosts"] as const;
@@ -190,6 +192,8 @@ const KNOWN_QUOTA_WAIT_KEYS = ["max"] as const;
 const KNOWN_OTEL_KEYS = ["endpoint", "headers", "captureContent"] as const;
 
 const KNOWN_APPROVE_LINKS_KEYS = ["ttl"] as const;
+
+const KNOWN_UNTRUSTED_INPUT_KEYS = ["requireSandbox"] as const;
 
 /**
  * Lint a parsed config object for keys odw would silently ignore.
@@ -260,6 +264,7 @@ export function collectConfigWarnings(raw: Record<string, unknown>): string[] {
   if (isObject(raw.quotaWait)) warnings.push(...unknownFields(raw.quotaWait, KNOWN_QUOTA_WAIT_KEYS, "quotaWait"));
   if (isObject(raw.otel)) warnings.push(...unknownFields(raw.otel, KNOWN_OTEL_KEYS, "otel"));
   if (isObject(raw.approveLinks)) warnings.push(...unknownFields(raw.approveLinks, KNOWN_APPROVE_LINKS_KEYS, "approveLinks"));
+  if (isObject(raw.untrustedInput)) warnings.push(...unknownFields(raw.untrustedInput, KNOWN_UNTRUSTED_INPUT_KEYS, "untrustedInput"));
   return warnings;
 }
 
@@ -1251,6 +1256,21 @@ function buildSettings(raw: Record<string, unknown>): Settings {
     approveLinks: raw["approveLinks"] == null ? { ...DEFAULT_SETTINGS.approveLinks } : buildApproveLinks(raw["approveLinks"]),
     triggers: raw["triggers"] == null ? {} : buildTriggers(raw["triggers"]),
     costGate: raw["costGate"] == null ? DEFAULT_SETTINGS.costGate : readCostGate(raw["costGate"], '"costGate"', (m) => new ConfigError(m)),
+    untrustedInput: raw["untrustedInput"] == null ? { ...DEFAULT_SETTINGS.untrustedInput } : buildUntrustedInput(raw["untrustedInput"]),
+  };
+}
+
+/**
+ * Validate `untrustedInput` (an ODW extension; see ../untrusted-input):
+ * `{ "requireSandbox": true }` refuses runs with untrusted input that would
+ * run agents outside a container with an allowlist network.
+ */
+function buildUntrustedInput(raw: unknown): UntrustedInputSettings {
+  if (!isObject(raw)) {
+    throw new ConfigError(`"untrustedInput" must be { "requireSandbox": true | false }; got ${kindOf(raw)}`);
+  }
+  return {
+    requireSandbox: raw.requireSandbox == null ? DEFAULT_SETTINGS.untrustedInput.requireSandbox : buildFlag("untrustedInput.requireSandbox", raw.requireSandbox),
   };
 }
 

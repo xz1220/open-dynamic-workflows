@@ -16,6 +16,8 @@
  *       "concurrency": 1,                        // optional: active runs at once
  *       "rateLimit": { "max": 30, "windowSec": 3600 },
  *       "untrusted": true,                       // the default: issue text is untrusted input
+ *       "permissions": "edit",                   // optional: an untrusted run's agents are read-only without it
+ *       "approve": false,                        // optional: its first agent that may write asks first unless false
  *       "source": "~/src/app"                    // optional: the run's working directory
  *     }
  *   }
@@ -46,6 +48,8 @@
 
 import { createHmac, timingSafeEqual } from "node:crypto";
 
+import { isPermissionTier } from "./adapters/permissions.js";
+import type { PermissionTier } from "./adapters/types.js";
 import { ConfigError } from "./errors.js";
 
 /** How a trigger's deliveries are signed. */
@@ -71,8 +75,12 @@ export interface TriggerSettings {
   concurrency: number | null;
   /** Runs it may start per window. */
   rateLimit: { max: number; windowSec: number };
-  /** Start runs `--untrusted` (the default). */
+  /** Start runs `--untrusted` (the default), their args untrusted input (see ../untrusted-input). */
   untrusted: boolean;
+  /** The runs' permission tier; null: the config's — `read` for an untrusted trigger's (see ../untrusted-input). */
+  permissions: PermissionTier | null;
+  /** An untrusted trigger's run asks a person before its first agent that may write (the default), or `odw apply --pr`. */
+  approve: boolean;
   /** The runs' working directory; null: where `odw serve` runs. */
   source: string | null;
 }
@@ -98,6 +106,7 @@ export const GITHUB_REPLAY_SEC = 3600;
 
 const KNOWN_TRIGGER_KEYS = [
   "workflow", "secret", "secretEnv", "verify", "args", "events", "dedupe", "concurrency", "rateLimit", "untrusted", "source",
+  "permissions", "approve",
 ] as const;
 
 // --- config -------------------------------------------------------------------
@@ -175,6 +184,12 @@ function buildTrigger(where: string, spec: Record<string, unknown>): TriggerSett
   if (spec.untrusted != null && typeof spec.untrusted !== "boolean") {
     throw new ConfigError(`${where}.untrusted must be true (the default) or false`);
   }
+  if (spec.permissions != null && !isPermissionTier(spec.permissions)) {
+    throw new ConfigError(`${where}.permissions must be "read", "edit" or "full"; got ${JSON.stringify(spec.permissions)}`);
+  }
+  if (spec.approve != null && typeof spec.approve !== "boolean") {
+    throw new ConfigError(`${where}.approve must be true (the default: ask before the first agent that may write) or false`);
+  }
   if (spec.source != null && (typeof spec.source !== "string" || spec.source.trim() === "")) {
     throw new ConfigError(`${where}.source must be a directory path`);
   }
@@ -189,6 +204,8 @@ function buildTrigger(where: string, spec: Record<string, unknown>): TriggerSett
     concurrency,
     rateLimit,
     untrusted: spec.untrusted !== false,
+    permissions: spec.permissions == null ? null : (spec.permissions as PermissionTier),
+    approve: spec.approve !== false,
     source: spec.source == null ? null : (spec.source as string),
   };
 }
