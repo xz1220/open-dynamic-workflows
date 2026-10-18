@@ -75,7 +75,7 @@ return await agent(
 | `exec(command, opts?)` | 不启动模型直接运行一条命令（测试、构建、linter）；返回 `{ stdout, stderr, exitCode, signal, timedOut, truncated, durationMs }`。字符串经 shell 执行，数组按 argv 执行。**ODW 扩展**——不属于 Claude Code 方言。 |
 | `checkpoint(title, opts?)` | 暂停运行，直到有人批准（可以附上修改后的 payload）或拒绝；返回 `{ approved, note, by, payload, edited }`。**ODW 扩展**——不属于 Claude Code 方言。 |
 
-`agent` 的 `opts`：`{ adapter?, schema?, label?, phase?, model?, agentType?, isolation?, keep?, permissions?, expect?, expectRetries?, allowEmpty?, notes?, handoff? }`。
+`agent` 的 `opts`：`{ adapter?, schema?, label?, phase?, model?, agentType?, isolation?, keep?, permissions?, expect?, expectRetries?, allowEmpty?, notes?, handoff?, scope?, scopePolicy? }`。
 `adapter` 选择用哪个 CLI——写成列表（`['codex', 'claude']`，**ODW 扩展**）就是回退链；
 `model: '@fast'` 为实际运行它的 CLI 选出该层级的模型（**ODW 扩展**）；`schema` 是一个原始 JSON Schema 对象（选项，不是全局）；
 `agentType` 是注入进 prompt 的**人设**，*不是* adapter 名。`keep: true`（**ODW 扩展**）
@@ -126,6 +126,21 @@ const fix = await agent('Fix the failing parser tests.', {   // ODW 扩展：exp
 ```js
 const lanes = await parallel(tasks.map((t, i) => () =>      // ODW 扩展：notes
   agent(t, { label: `lane-${i + 1}`, isolation: 'worktree' })), { notes: true })
+```
+
+`scope`（**ODW 扩展**）声明 agent 打算改动的文件——glob 规则同 `expect.files`。范围重叠的并行调用
+先后运行（后发出的等先发出的结束，记一次日志："fix-auth waits for refactor-login: both declare
+src/auth/**"）；范围不相交或未声明范围的调用照常并行。agent 在范围之外的改动记为 `outOfScope`、
+记日志，打开笔记时还贴到笔记板；`scopePolicy: "fail"`（或 `"scopePolicy"` 设置）让它以
+`out_of_scope` 失败，设了 `expect` 时算一项缺失。在共享代码上扇出时给每条分支声明范围；见
+[`references/primitives.md`](references/primitives.md#scopeodw-扩展)：
+
+```js
+await parallel([                                             // ODW 扩展：scope
+  () => agent('Refactor login.', { label: 'refactor-login', scope: ['src/auth/**'] }),
+  () => agent('Fix token expiry.', { label: 'fix-auth', scope: ['src/auth/token.ts'] }), // 等待
+  () => agent('Document the parser.', { label: 'docs', scope: ['docs/**'] }),            // 并行
+])
 ```
 
 `exec` 的 `opts`：`{ cwd?, env?, timeout?, input?, maxOutputBytes?, label?, phase?, check? }`。

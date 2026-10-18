@@ -389,6 +389,64 @@ Claude Code's Workflow tool ignores these options. [`examples/coordinated-refact
 splits a change across isolated lanes on the board, has a reviewer read it, and
 runs the lanes that clash again with every note in their prompt.
 
+### Declared scopes (ODW extension)
+
+Two agents pointed at the same files produce changes that conflict only at merge
+time. Declaring up front which files each agent means to change lets odw keep
+them apart — mostly by running the ones that collide one after the other:
+
+```js
+await parallel([
+  () => agent('Refactor the login flow.', { label: 'refactor-login', scope: ['src/auth/**'] }),
+  () => agent('Fix the token expiry bug.', { label: 'fix-auth', scope: ['src/auth/token.ts'] }),
+  () => agent('Document the parser.', { label: 'docs', scope: ['docs/parser.md', 'src/parser/**/*.md'] }),
+])
+```
+
+- **`scope`** is a list of globs relative to the agent's workspace, with the
+  `expect` glob rules (`*` within a directory, `**` across them, `{a,b}`, `[…]`).
+  A call without one behaves as before.
+- **Overlapping scopes run one after the other.** A scoped call made while an
+  earlier scoped call whose scope overlaps has not settled waits for it — holding
+  no slot — and the run logs the wait once: `fix-auth waits for refactor-login:
+  fix-auth declares src/auth/token.ts, refactor-login src/auth/**` (or `both
+  declare src/auth/**`; the log event carries `scopeWait: { for, globs }`). The
+  others keep running. This holds for any calls in flight at once — a
+  `parallel()` or `pipeline()` fan-out, or calls started without `await` — and a
+  call only ever waits for calls made before it. In the example, `fix-auth` runs
+  once `refactor-login` is done, while `docs` runs beside them.
+- **How overlap is decided** — from the globs alone, conservatively (in doubt they
+  overlap, which only serializes): `{a,b}` alternatives are expanded; two literal
+  paths overlap when they are the same path; a literal path and a glob when the
+  glob matches the path; two globs when the literal prefix of one (the text before
+  its first wildcard) starts with the other's. So `src/auth/**` and
+  `src/auth/*.ts` overlap, `src/auth/**` and `src/db/**` do not, `src/*.ts` and
+  `src/*.md` do (the part after a wildcard is not compared), and `**` overlaps
+  everything.
+- **Writes outside the scope are flagged.** Once the agent replied, what it changed
+  — read as `expect` reads it: an isolated agent's worktree, an in-place agent's
+  changes since its call began — is compared with its scope. Files outside it are
+  kept as `outOfScope` on its `agent_finished` (or `agent_failed`) event, its saved
+  result, `/api/runs/:id`, `odw agents` (`[outside scope: …]` before the value;
+  `--json` has `scope` and `outOfScope`) and the dashboard drawer, and logged:
+  `fix-auth:2: wrote 1 file outside its scope (src/auth/token.ts) — package.json`.
+  With notes on (see [Notes between parallel agents](#notes-between-parallel-agents-odw-extension))
+  the board gets a note of them too, so the agents the script starts next know.
+- **`scopePolicy`** — per call, else the `"scopePolicy"` setting — is `"warn"` by
+  default: the reply stands. `"fail"` fails such an agent with
+  `reason: "out_of_scope"`, not retried. With `expect` set, a write outside the
+  scope is a miss either way: handed back to the agent (restore those files, keep
+  the change inside the scope), then `unmet_expectation`. The run's setup records
+  `scopePolicy` for `odw compare`.
+- **In place**, the tree is shared: a file inside the scope of another scoped call
+  that ran at the same time is that call's, and is not counted against this one.
+  Edits by unscoped calls running beside it still count — isolate for an exact
+  answer. Outside a git repository nothing can be read: the agent runs, unchecked,
+  and the run says so.
+
+Claude Code's Workflow tool ignores `scope` and `scopePolicy`: there the calls run
+together as written.
+
 ## Compatibility and migration
 
 ODW implements the primitive surface below. Scripts that depend on a host's
@@ -2021,7 +2079,9 @@ refused) or `exit` — and four classes for runs that "succeeded" without the
 evidence: `empty_reply`, `unmet_expectation`, under `"mcpFailures": "fail"`
 `mcp_unavailable`, and `orphaned_background` (background work left running at the
 reply, under `"orphanedBackground": "fail"` or `expect`; see
-[Check an agent's work](#check-an-agents-work-odw-extension)) — and `runaway`, an agent killed at one of its
+[Check an agent's work](#check-an-agents-work-odw-extension)) — and `out_of_scope`, an agent that
+changed files outside its declared scope under `"scopePolicy": "fail"` (see
+[Declared scopes](#declared-scopes-odw-extension)), and `runaway`, an agent killed at one of its
 [limits](#per-agent-limits-and-runaway-loops-odw-extension). The class is the `reason` on the `agent_failed` event (with
 `retryAfter`, in seconds, when the CLI said when to come back), the agent's
 `failureReason` in the dashboard and `/api/runs/:id`, and it shows in the live
