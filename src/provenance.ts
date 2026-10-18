@@ -273,6 +273,7 @@ export const BEHAVIOUR_SETTINGS = [
   "mcpFailures",
   "orphanedBackground",
   "scopePolicy",
+  "questions",
   "sandbox",
   "notes",
   "memory",

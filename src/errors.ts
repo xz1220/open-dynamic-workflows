@@ -18,6 +18,7 @@
 
 import type { FailureReason } from "./adapters/failures.js";
 import type { LimitHit } from "./limits.js";
+import type { AgentQuestion } from "./questions.js";
 
 export class DynamicWorkflowError extends Error {
   constructor(message?: string) {
@@ -80,6 +81,20 @@ export class RunawayError extends AdapterExecutionError {
   constructor(message: string, hit: LimitHit) {
     super(message, { reason: "runaway" });
     this.hit = hit;
+  }
+}
+
+/**
+ * An agent stopped to ask the user a question nobody answered (an ODW
+ * extension; see ./questions): reason "needs_input", and `questions` are what
+ * it asked. Not retried.
+ */
+export class NeedsInputError extends AdapterExecutionError {
+  readonly questions: AgentQuestion[];
+
+  constructor(message: string, questions: AgentQuestion[]) {
+    super(message, { reason: "needs_input" });
+    this.questions = questions;
   }
 }
 

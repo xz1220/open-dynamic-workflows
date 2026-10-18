@@ -24,7 +24,8 @@
  * Each invocation appends one JSON line to the log — its number, the adapter
  * that ran it (its EXPECT_AGENT_ADAPTER variable), its working directory, the
  * `expect` feedback its prompt carried (from the feedback's first line on),
- * and whether it was a schema retry — so a test can tell what the agent was
+ * whether it was a schema retry, and the answers to its earlier questions it
+ * was told (`answered`) — so a test can tell what the agent was
  * told, and where. Used only by the test suite.
  */
 
@@ -53,6 +54,8 @@ process.stdin.on("end", () => {
       cwd: process.cwd(),
       feedback: feedback === -1 ? null : input.slice(feedback),
       schemaRetry: input.includes("did not satisfy the required schema"),
+      // What it was told of the questions it asked earlier (ODW extension: questions).
+      answered: input.includes("Earlier in this task you stopped to ask") ? input.slice(input.indexOf("Earlier in this task you stopped to ask")) : null,
     }) + "\n",
   );
   for (const [path, text] of Object.entries(step.write ?? {})) {

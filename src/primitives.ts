@@ -127,7 +127,7 @@ import { applyArgsEdit } from "./breaks.js";
 import { branchName, ChangeRecorder, type AgentChanges, type KeptChanges } from "./changes.js";
 import { CheckpointTimeout, createCheckpoint, type CheckpointOptions, type CheckpointResult } from "./checkpoint.js";
 import { spentTokens, type RunContext } from "./context.js";
-import { AdapterExecutionError, AgentError, RunStopped, RunawayError, UnmetExpectationError, WorkflowScriptError, isDeadlineStop, isFatalError } from "./errors.js";
+import { AdapterExecutionError, AgentError, NeedsInputError, RunStopped, RunawayError, UnmetExpectationError, WorkflowScriptError, isDeadlineStop, isFatalError } from "./errors.js";
 import { AGENT_FAILED, AGENT_FINISHED, AGENT_STARTED, HANDOFF, LOG, PHASE_STARTED, event } from "./events.js";
 import { ExecError, createExec, execStep, type ExecOptions, type ExecResult } from "./exec.js";
 import { CostGateRejected, costGateTitle, readCostGate, type CostGate, type CostHistory } from "./forecast.js";
@@ -138,6 +138,7 @@ import { hasLimits, readLimits, type AgentLimits, type LimitHit, type LimitSpec 
 // the module cycle is erased at compile time and never exists at runtime.
 import { loadWorkflowScript, scanDualCompat, type WorkflowMeta } from "./loader.js";
 import { interfaceSummary, type AgentNotes } from "./notes.js";
+import { answerOf, isQuestionPolicy, MAX_QUESTION_ROUNDS, questionLine, questionTitle, type QuestionPolicy } from "./questions.js";
 import { firstAdapter, phaseDefaultsOf, type AdapterChoice, type PhaseDefaults } from "./routing.js";
 import type { JsonSchema } from "./schema.js";
 import { planScope, ScopeLocks, waitNote, type ScopeClaim, type ScopePlan, type ScopePolicy } from "./scope.js";
@@ -251,6 +252,14 @@ export interface AgentOptions {
    * setting covers fan-outs, not single agents).
    */
   costGate?: CostGate | null;
+  /**
+   * ODW extension: what a question this agent stops to ask the user does (see
+   * ./questions) — `"checkpoint"` asks a person and runs it again with the
+   * answer, `"fail"` fails it with reason "needs_input", `"deny"` takes its
+   * question tool away and tells it to assume. Unset: its adapter's, else the
+   * `questions` setting ("checkpoint" by default).
+   */
+  questions?: QuestionPolicy;
 }
 
 /** ODW extension: what parallel() takes after its thunks. */
@@ -701,6 +710,10 @@ export function createPrimitives(
     if (opts.memory !== undefined && typeof opts.memory !== "boolean") {
       throw new AgentError(`agent(): memory must be true or false; got ${describeValue(opts.memory)}`);
     }
+    if (opts.questions !== undefined && !isQuestionPolicy(opts.questions)) {
+      const got = typeof opts.questions === "string" ? JSON.stringify(opts.questions) : describeValue(opts.questions);
+      throw new AgentError(`agent(): questions must be "checkpoint", "fail" or "deny"; got ${got}`);
+    }
     // The run's notes board (ODW extension): its call's say, else its parallel()'s, else the setting.
     const notesOn = opts.notes ?? notesScope.getStore() ?? ctx.config.settings.notes === true;
     // Workflow memory (ODW extension; see ./memory): its call's say, else the setting.
@@ -801,6 +814,7 @@ export function createPrimitives(
       ...(opts.sandbox !== undefined ? { sandbox: opts.sandbox } : {}),
       ...(ownLimits !== undefined ? { limits: ownLimits } : {}),
       ...(opts.handoff !== undefined ? { handoff: opts.handoff } : {}),
+      ...(opts.questions !== undefined ? { questions: opts.questions } : {}),
     };
     // The adapters it left down its chain, and the one it is on (ODW extension).
     const fellBackFrom: string[] = [];
@@ -1087,6 +1101,42 @@ export function createPrimitives(
                   retry: { reason: "expect", n: retry, of: maxRetries },
                 }),
               );
+            },
+            // A question it stopped to ask (ODW extension; see ./questions) is put
+            // to a person as a checkpoint — holding no slot while it waits —
+            // and their answer runs it again, said in the log.
+            onQuestion: async ({ adapter: name, questions, round }) => {
+              if (!ctx.control.awaitDecision) return { declined: "this run has no way to ask anyone (no decision channel)" };
+              slot.release();
+              let result: CheckpointResult;
+              try {
+                result = await ask(
+                  questionTitle(display, questions),
+                  { payload: { agent: display, agentId, adapter: name, questions, answer: "" }, memory: false },
+                  { agentId, label: display, adapter: name, questions },
+                );
+              } finally {
+                // Its slot back, on the adapter it asked on, before its CLI runs again.
+                await slot.moveTo(name);
+              }
+              const by = result.who ? ` by ${result.who}` : "";
+              if (!result.approved) {
+                return { declined: `the question was declined${by}${result.note?.trim() ? `: ${result.note.trim()}` : ""}` };
+              }
+              const answer = answerOf(result);
+              ctx.emit(
+                event(LOG, {
+                  message:
+                    `${display}:${agentId} was answered${by} — running it again, told the answer` +
+                    (answer === null ? " (none given: it is told to assume)" : ""),
+                  agentId,
+                  label: display,
+                  phase: activePhase,
+                  // Structured for the run's readers: a span event of its OpenTelemetry trace (../otel).
+                  retry: { reason: "question", n: round, of: MAX_QUESTION_ROUNDS },
+                }),
+              );
+              return { answer };
             },
             // The MCP servers a CLI run started it without (ODW extension): kept
             // for its record, and each server and status said once per run.
@@ -1550,6 +1600,7 @@ export function createPrimitives(
 
   // The same for checkpoint(), on the checkpoint id sequence. A stop noticed
   // before the question is asked is fatal like any other: it ends the run.
+  // An agent's question (ODW extension; see ./questions) asks through it too, with who asked.
   const ask = createCheckpoint(ctx);
   const checkpoint = (title: string, opts?: CheckpointOptions): Promise<CheckpointResult> =>
     ask(title, opts).catch((err: unknown) => {
@@ -1811,8 +1862,10 @@ function refusedNote(who: string, cli: string, denied: string[]): string {
  * its `expect` checks, what it missed. Nothing for other errors (a schema that
  * never validated, a stop).
  */
-function failureFields(err: unknown): { reason?: string; retryAfter?: number; misses?: string[]; limitHit?: LimitHit } {
+function failureFields(err: unknown): { reason?: string; retryAfter?: number; misses?: string[]; limitHit?: LimitHit; questions?: string[] } {
   if (!(err instanceof AdapterExecutionError)) return {};
+  // The questions it asked nobody answered, one line each (ODW extension; see ./questions).
+  if (err instanceof NeedsInputError) return { reason: err.reason, questions: err.questions.map(questionLine) };
   if (err instanceof UnmetExpectationError) return { reason: err.reason, misses: [...err.misses] };
   // The limit a runaway ran into, and the evidence (ODW extension; see ./limits).
   if (err instanceof RunawayError) return { reason: err.reason, limitHit: { ...err.hit } };

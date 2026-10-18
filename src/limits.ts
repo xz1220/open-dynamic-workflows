@@ -207,6 +207,15 @@ export class LimitWatch {
     arm();
   }
 
+  /**
+   * The call waited `ms` for a person — an agent's question (ODW extension;
+   * see ./questions) — between its CLI runs: waiting is not running, so
+   * `seconds` does not count it.
+   */
+  waited(ms: number): void {
+    if (this.startedAt !== null && ms > 0) this.startedAt += ms;
+  }
+
   /** What the CLI printed on stdout, as it arrives. Never throws. */
   stdout(chunk: string): void {
     if (!this.jsonl || this.hit || !this.stop || !this.watching()) return;

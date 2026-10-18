@@ -54,6 +54,10 @@
  * the wait, and the run, at once (see `Scheduler.runWait`). Calls inside
  * parallel() wait side by side, each with its own `checkpointId`; `odw
  * resume` never replays one: the new run asks again.
+ *
+ * An agent's question (an ODW extension; see ./questions) is asked the same
+ * way, on the same sequence: its `checkpoint_requested` event — and its
+ * `waiting` entry — also carry `question`, the agent that asked and what.
  */
 
 import type { Settings } from "./adapters/types.js";
@@ -62,6 +66,7 @@ import { deciderText, STOPPED, type CheckpointDecision } from "./control.js";
 import { DynamicWorkflowError, RunStopped, WorkflowScriptError } from "./errors.js";
 import { CHECKPOINT_REQUESTED, CHECKPOINT_RESOLVED, LOG, event } from "./events.js";
 import { checkMemoryPaths, editSummary } from "./memory.js";
+import type { AgentQuestion } from "./questions.js";
 import { auditSchema, checkedSubset, deepEqual, validate, type JsonSchema, type SchemaIssue } from "./schema.js";
 
 export interface CheckpointOptions {
@@ -106,6 +111,20 @@ export interface WaitingCheckpoint {
   title: string;
   /** When it started waiting (epoch seconds, the `checkpoint_requested` ts). */
   since: number;
+  /** Set when it is an agent's question rather than the script's checkpoint() (ODW extension; see ./questions): who asked. */
+  question?: QuestionAsker;
+}
+
+/** The agent whose question a checkpoint is (ODW extension; see ./questions). */
+export interface QuestionAsker {
+  agentId: number;
+  label: string;
+  adapter: string;
+}
+
+/** An agent's question, put to a person as a checkpoint (ODW extension; see ./questions): who asked, and what. */
+export interface CheckpointQuestion extends QuestionAsker {
+  questions: AgentQuestion[];
 }
 
 /**
@@ -125,6 +144,9 @@ export class CheckpointTimeout extends DynamicWorkflowError {
 
 export type CheckpointPrimitive = (title: string, opts?: CheckpointOptions) => Promise<CheckpointResult>;
 
+/** The run's own way to ask: checkpoint(), or — with `question` — an agent's question (ODW extension; see ./questions). */
+export type AskPrimitive = (title: string, opts?: CheckpointOptions, question?: CheckpointQuestion) => Promise<CheckpointResult>;
+
 /** Bytes of JSON a checkpoint's payload keeps in its event (and so in the dashboard). */
 export const CHECKPOINT_PAYLOAD_MAX_BYTES = 64 * 1024;
 /** Bytes of JSON an edited payload may have: `odw approve`, the server and the run refuse a bigger one. */
@@ -141,8 +163,8 @@ const ON_TIMEOUT = ["approve", "reject", "fail"] as const;
 const MAX_TIMER_MS = 2 ** 31 - 1;
 
 /** Build the checkpoint() primitive bound to one run's context. */
-export function createCheckpoint(ctx: RunContext): CheckpointPrimitive {
-  return async (title, opts = {}) => {
+export function createCheckpoint(ctx: RunContext): AskPrimitive {
+  return async (title, opts = {}, question) => {
     const plan = planCheckpoint(title, opts, ctx.config.settings.schemaKeywords);
     // Its corrections are kept as workflow memory: its own say, else the setting (ODW extension).
     plan.memory ??= ctx.config.settings.memory === true ? { paths: [] } : null;
@@ -154,7 +176,8 @@ export function createCheckpoint(ctx: RunContext): CheckpointPrimitive {
     // Ids follow call order, on the run's own sequence (shared with a nested workflow()).
     const checkpointId = ++ctx.checkpointSeq.value;
     const phase = ctx.currentPhase;
-    return ctx.scheduler.runWait((signal) => wait(ctx, { ...plan, checkpointId, phase }, signal));
+    const asker = question ? { question } : {};
+    return ctx.scheduler.runWait((signal) => wait(ctx, { ...plan, checkpointId, phase, ...asker }, signal));
   };
 }
 
@@ -443,7 +466,7 @@ function clipUtf8(text: string, maxBytes: number): string {
  */
 async function wait(
   ctx: RunContext,
-  cp: Plan & { checkpointId: number; phase: string | null },
+  cp: Plan & { checkpointId: number; phase: string | null; question?: CheckpointQuestion },
   signal: AbortSignal,
 ): Promise<CheckpointResult> {
   const { checkpointId, title } = cp;
@@ -481,9 +504,12 @@ async function wait(
       ...(cp.truncated ? { truncated: true } : {}),
       ...(cp.schema ? { schema: cp.schema } : {}),
       phase: cp.phase,
+      // An agent's question (ODW extension; see ./questions): who asked, and what.
+      ...(cp.question ? { question: cp.question } : {}),
     });
     ctx.emit(requested);
-    waiting = { checkpointId, title, since: requested.ts };
+    const asker = cp.question ? { question: { agentId: cp.question.agentId, label: cp.question.label, adapter: cp.question.adapter } } : {};
+    waiting = { checkpointId, title, since: requested.ts, ...asker };
     report(ctx, waiting, true);
 
     const timedOut = new Promise<"timeout">((resolve) => {

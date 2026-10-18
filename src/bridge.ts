@@ -147,6 +147,7 @@ import {
   AdapterExecutionError,
   AgentError,
   ConfigError,
+  NeedsInputError,
   RunStopped,
   RunawayError,
   SchemaValidationError,
@@ -157,6 +158,15 @@ import {
 import { hasLimits, limitLabel, LimitWatch, mergeLimits, readLimits, type AgentLimits, type LimitHit } from "./limits.js";
 import { orphanedMiss, refusedMiss, type ExpectationSink } from "./expect.js";
 import { PortPool } from "./ports.js";
+import {
+  answeredBrief,
+  DENY_PROMPT,
+  MAX_QUESTION_ROUNDS,
+  questionLine,
+  type AgentQuestion,
+  type AnsweredRound,
+  type QuestionPolicy,
+} from "./questions.js";
 import { QuotaWaits, type QuotaPause, type QuotaPauseChange } from "./quota-wait.js";
 import { bothEnds, type Redactor } from "./redact.js";
 import { LiteralRouter, type InvocationPlan, type OptionRouter } from "./router.js";
@@ -229,6 +239,12 @@ export interface AgentRequest {
    * time. A full commit id; unset, HEAD.
    */
   base?: string;
+  /**
+   * ODW extension (see ./questions): what a question the agent stops to ask
+   * does — "checkpoint", "fail" or "deny". Unset: its adapter's, else the
+   * `questions` setting. Unvalidated: a bad value fails the call.
+   */
+  questions?: QuestionPolicy;
 }
 
 /** The persona framing injected for `agentType`, on top of the independence preamble. */
@@ -475,7 +491,28 @@ export interface RunOptions {
    * slots back on the adapter it starts over on (AgentSlot.moveTo).
    */
   onQuotaResume?: (resume: QuotaResume) => void | Promise<void>;
+  /**
+   * Called when the agent stopped to ask the user a question under
+   * `questions: "checkpoint"` (an ODW extension; see ./questions) — its CLI
+   * already stopped — to ask a person: the call runs again with the answer
+   * once the returned promise resolves to one, and fails with reason
+   * "needs_input" when it resolves to `{ declined }`. Unset: nobody can be
+   * asked, and the call fails so.
+   */
+  onQuestion?: (ask: AgentAsk) => Promise<AgentAskReply>;
 }
+
+/** An agent's questions, for a person to answer (an ODW extension; see ./questions). */
+export interface AgentAsk {
+  /** The adapter whose CLI asked. */
+  adapter: string;
+  questions: AgentQuestion[];
+  /** Which time this call asks: 1 for its first question. */
+  round: number;
+}
+
+/** What a person made of an agent's questions: an answer (null: approved with none), or why it was declined. */
+export type AgentAskReply = { answer: string | null } | { declined: string };
 
 /** A call going on after waiting for a spent quota to reset (an ODW extension: quotaWait). */
 export interface QuotaResume {
@@ -950,6 +987,8 @@ export class Bridge {
     if (options.agentId !== undefined) env.ODW_AGENT_ID = String(options.agentId);
     if (port !== null) env.ODW_PORT = String(port);
     Object.assign(env, options.notes?.env);
+    // The workspace a run that stopped to ask leaves for the run told the answer (ODW extension; see ./questions).
+    const asking: AskingState = { hold: false, held: null };
     try {
       return await this.runCall(request, options, {
         env,
@@ -960,8 +999,10 @@ export class Bridge {
         onOutput: options.onOutput,
         // Its limits count over every CLI run of the call, fallbacks included (ODW extension).
         watch: new LimitWatch(),
+        asking,
       });
     } finally {
+      await asking.held?.close();
       if (port !== null) this.ports.release(port);
     }
   }
@@ -1280,10 +1321,27 @@ export class Bridge {
         shared.onNote,
       );
     }
+    // What a question the agent stops to ask does (ODW extension; see ./questions):
+    // its call's say, else its adapter's, else the run's. Under "deny" its CLI
+    // runs without its question tool, and its prompt says to assume instead.
+    const questions = request.questions ?? adapter.questions ?? settings.questions ?? "checkpoint";
+    if (questions !== "checkpoint" && questions !== "fail" && questions !== "deny") {
+      throw new AgentError(`agent(): questions must be "checkpoint", "fail" or "deny"; got ${JSON.stringify(questions)}`);
+    }
+    const denyArgs = questions === "deny" ? (adapter.questionArgs ?? []) : [];
+    if (questions === "deny" && denyArgs.length === 0 && asksQuestions(adapter)) {
+      this.noteOnce(
+        `questions:${adapter.name}`,
+        `questions: "deny" — adapter '${adapter.name}' declares no questionArgs to take its question tool away: its ` +
+          `agents are told to assume instead, and one that asks anyway fails (needs_input)`,
+        { adapter: adapter.name },
+        shared.onNote,
+      );
+    }
     const call: CallEnv = {
       ...shared,
       container: sandbox.box && engine ? { box: sandbox.box, engine, agentId: options.agentId } : undefined,
-      permissionArgs: [...permissions.args, ...trust.args],
+      permissionArgs: [...permissions.args, ...trust.args, ...denyArgs],
       untrusted: trust.trust === "untrusted",
       schema: schema?.native ? { flag: schema.native, value: request.schema!, file: schemaFile } : undefined,
       // Tool calls the CLI refused fail a run at once only under "fail", and
@@ -1296,6 +1354,8 @@ export class Bridge {
       // Background work left running fails a run at once only under "fail",
       // and not with `expect`, which counts it as a miss (ODW extensions).
       orphanFails: settings.orphanedBackground === "fail" && !options.expect,
+      // A question can be put to a person, who answers it (ODW extension; see ./questions).
+      asksPerson: questions === "checkpoint" && options.onQuestion !== undefined,
       // Its worktree's commit, pinned where its agent_started event says (ODW extension).
       ...(request.base !== undefined ? { base: request.base } : {}),
     };
@@ -1307,12 +1367,17 @@ export class Bridge {
     // Plan the invocation once: workspace mode, the model token/flag, and the
     // routing notes do not change across schema retries — only the prompt does.
     const plan = this.router.plan({ request, adapter, settings });
-    const basePrompt = this.composePrompt(request, schema?.describe ?? false);
+    const assume = questions === "deny" ? DENY_PROMPT : undefined;
+    const basePrompt = this.composePrompt(request, schema?.describe ?? false, undefined, assume);
     // Handed the work over (ODW extension; see ./handoff), it starts from the
     // brief — in the held worktree, kept for each of its runs; an `expect`
     // retry starts over in a fresh one, without it.
     const brief = shared.handoff?.brief;
-    const briefed = brief ? this.composePrompt(request, schema?.describe ?? false, brief) : basePrompt;
+    const briefed = brief ? this.composePrompt(request, schema?.describe ?? false, brief, assume) : basePrompt;
+    // The questions it asked and the answers it was given (ODW extension; see
+    // ./questions): every later run of the call is told them.
+    const answered: AnsweredRound[] = [];
+    const told = (prompt: string): string => (answered.length > 0 ? `${prompt}\n\n${answeredBrief(answered)}` : prompt);
     const maxAttempts = request.schema ? settings.schemaRetries + 1 : 1;
     // The call's `expect` checks (ODW extension) learn where the work happens
     // before it starts on this adapter — a fallback hop starts it over; an
@@ -1373,7 +1438,21 @@ export class Bridge {
         const prompt = attempt > 1 ? `${task}\n\n${retryFeedback(previous, problems)}` : task;
         // The first run on a fallback adapter says so; an `expect` retry stays on this one.
         const why = attempt > 1 ? "schema" : round > 0 ? "expect" : first;
-        const { cli, output, failure } = await this.invokeUntilFinal(adapter, plan, prompt, limits, options, reruns, call, why, inspect);
+        let ran = await this.invokeUntilFinal(adapter, plan, told(prompt), limits, options, reruns, call, why, inspect);
+        // The agent stopped to ask the user (ODW extension; see ./questions):
+        // a person's answer runs it again, told the answer, in the same
+        // workspace; anything else fails it with reason "needs_input".
+        while (ran.failure?.reason === "needs_input" && !signal?.aborted) {
+          const asked = ran.output.questions ?? [];
+          const askedAt = Date.now();
+          answered.push({ questions: asked, answer: await this.answerFor(adapter, asked, questions, answered.length, options) });
+          // Waiting for the answer is not running: its `seconds` limit does not count it (ODW extension; see ./limits).
+          call.watch?.waited(Date.now() - askedAt);
+          ++attempts;
+          await options.beforeRetry?.();
+          ran = await this.invokeUntilFinal(adapter, plan, told(prompt), limits, options, reruns, call, "question", inspect);
+        }
+        const { cli, output, failure } = ran;
         await call.changes?.endAttempt();
         // Killed by a stop (or by a fatal error elsewhere in the run): report
         // the run's reason, not a misleading CLI failure.
@@ -1515,6 +1594,8 @@ export class Bridge {
         const failed = this.failureOf(adapter, cli, output, prompt, call);
         // A run that fails the call over hands its worktree to the next adapter (ODW extension; see ./handoff).
         if (failed && call.handoff && isFallbackReason(failed.failure.reason)) call.handoff.hold = true;
+        // One that stopped to ask keeps it for the run told the answer (ODW extension; see ./questions).
+        if (failed?.failure.reason === "needs_input" && call.asking && call.asksPerson) call.asking.hold = true;
         if (failed) return { cli: failed.cli, output, failure: failed.failure };
         await inspect?.(ws, output);
         return { cli, output };
@@ -1587,6 +1668,9 @@ export class Bridge {
     call: CallEnv,
   ): { cli: CliResult; failure: FailureClass } | null {
     const classify = { patterns: adapter.failures, prompt, now: this.now() };
+    // The agent stopped to ask the user a question (ODW extension; see
+    // ./questions): its CLI was stopped there, whatever it did after.
+    if (output.questions?.length) return { cli: questionEvidence(cli, output.questions), failure: { reason: "needs_input" } };
     // A failure the CLI reported in its output (Claude Code's `is_error`
     // result) is the verdict whatever the exit status, and its message is
     // the evidence: classified like any failure, so a rate limit is ridden
@@ -1710,6 +1794,8 @@ export class Bridge {
           `started the agent without an MCP server it is configured with (mcpFailures: "fail") — fix the server ` +
           `(claude mcp list) and resume the run, ${switchAdapter}`
         );
+      case "needs_input":
+        return "stopped to ask the user a question, which nobody answered";
       case "orphaned_background":
         return (
           "ended its turn with background work still running, which died when its CLI exited — have the agent wait " +
@@ -1804,7 +1890,39 @@ export class Bridge {
    * CLI handed the schema natively); `brief`: a handoff's (an ODW extension;
    * see ./handoff), ahead of the task.
    */
-  private composePrompt(request: AgentRequest, describe: boolean, brief?: string): string {
+  /**
+   * The answer to the questions an agent stopped to ask (an ODW extension;
+   * see ./questions): a person's, asked through `onQuestion` under
+   * "checkpoint" — null when they approved without one. Anything else — the
+   * policy, nobody to ask, a person who declined, a call that keeps asking —
+   * fails the call with reason "needs_input", its questions on the error.
+   */
+  private async answerFor(
+    adapter: Adapter,
+    asked: AgentQuestion[],
+    policy: QuestionPolicy,
+    before: number,
+    options: RunOptions,
+  ): Promise<string | null> {
+    const listed = asked.map(questionLine).join("; ");
+    const shown = this.redactor ? this.redactor.text(listed) : listed;
+    const what = asked.length === 1 ? "a question" : `${asked.length} questions`;
+    const fail = (why: string): NeedsInputError =>
+      new NeedsInputError(`adapter '${adapter.name}' stopped: its agent asked the user ${what} ${why}: ${shown}`, asked);
+    if (policy === "fail") {
+      throw fail(`(questions: "fail") — answer it in the prompt, or set questions: "checkpoint" to ask a person`);
+    }
+    if (policy === "deny") throw fail(`though it runs under questions: "deny" — answer it in the prompt`);
+    if (!options.onQuestion) throw fail("and nobody can be asked here — answer it in the prompt");
+    if (before >= MAX_QUESTION_ROUNDS) {
+      throw fail(`again after ${before} answered — answer what it keeps asking in the prompt`);
+    }
+    const reply = await options.onQuestion({ adapter: adapter.name, questions: asked, round: before + 1 });
+    if ("declined" in reply) throw fail(`and ${reply.declined}`);
+    return reply.answer;
+  }
+
+  private composePrompt(request: AgentRequest, describe: boolean, brief?: string, assume?: string): string {
     const parts = [INDEPENDENCE_PREAMBLE];
     // Persona (agentType) is universal prompt text — it works on every CLI,
     // which native system-prompt flags do not. See LiteralRouter.noteAgentType.
@@ -1814,6 +1932,8 @@ export class Bridge {
     if (brief) parts.push(brief);
     parts.push(request.prompt);
     if (request.notes) parts.push(request.notes);
+    // Under questions: "deny", that nobody can answer it (ODW extension; see ./questions).
+    if (assume) parts.push(assume);
     if (request.schema && describe) parts.push(describeSchema(request.schema));
     return parts.join("\n\n");
   }
@@ -1844,6 +1964,9 @@ export class Bridge {
       ? (chunk: string, terminate: (reason: string) => void) => {
           decoder.write(chunk);
           if (decoder.overflow) terminate(decoder.overflow);
+          // A question nobody can answer headless stops the CLI at once: the
+          // agent never goes on with an empty answer (ODW extension; see ./questions).
+          else if (decoder.questions.length > 0) terminate("the agent stopped to ask the user a question");
           if (decoder.answering) answered();
         }
       : undefined;
@@ -2009,24 +2132,30 @@ export class Bridge {
     fn: (ws: Workspace) => Promise<T>,
   ): Promise<T> {
     const handoff = call.handoff;
-    const held = handoff?.held ?? null;
+    // A run told the answer to its call's question takes the workspace the run that asked left (ODW extension; see ./questions).
+    const asking = call.asking;
+    const resumed = asking?.held ?? null;
+    if (asking) asking.held = null;
+    const held = resumed ? null : (handoff?.held ?? null);
     // Taken only by a run with the trust and container engine of the one that left it.
     const posture = postureOf(call.untrusted === true, call.container?.engine);
     const fits = held !== null && held.mode === mode && handoff!.heldPosture === posture;
-    if (handoff) {
+    if (handoff && !resumed) {
       handoff.held = null;
       handoff.heldPosture = null;
     }
     if (held && !fits) await held.close();
-    const open = fits ? held : await openWorkspace(this.source, mode, setup);
+    const open = resumed ?? (fits ? held : await openWorkspace(this.source, mode, setup));
     try {
       return await fn(open.workspace);
     } finally {
-      if (handoff && (handoff.hold || handoff.carry) && !signal?.aborted) {
+      if (asking?.hold && !signal?.aborted) asking.held = open;
+      else if (handoff && (handoff.hold || handoff.carry) && !signal?.aborted) {
         handoff.held = open;
         handoff.heldPosture = posture;
       } else await open.close();
       if (handoff) handoff.hold = false;
+      if (asking) asking.hold = false;
     }
   }
 }
@@ -2070,6 +2199,18 @@ interface CallEnv {
   handoff?: HandoffState;
   /** The commit its worktree checks out in place of HEAD (ODW extension; AgentRequest.base). */
   base?: string;
+  /** The workspace a run that stopped to ask leaves for the run told the answer (ODW extension; see ./questions). */
+  asking?: AskingState;
+  /** A question the agent asks goes to a person (`questions: "checkpoint"` and an `onQuestion`): its run's workspace is kept for the answer. */
+  asksPerson?: boolean;
+}
+
+/** What a call whose agent stopped to ask keeps for the run told the answer (an ODW extension; see ./questions). */
+interface AskingState {
+  /** The run that is ending stopped to ask a person: its workspace is held, not removed. */
+  hold: boolean;
+  /** The workspace held for the run told the answer. */
+  held: OpenWorkspace | null;
 }
 
 /** What a call that hands its work over on a fallback keeps (an ODW extension; see ./handoff). */
@@ -2249,6 +2390,16 @@ function runawayError(adapter: Adapter, hit: LimitHit): RunawayError {
 /** A run whose CLI refused tool calls, with them as its diagnostic: what a `permission` failure quotes. */
 function refusedEvidence(cli: CliResult, refused: string[]): CliResult {
   return { ...cli, stdout: `denied: ${refused.join("; ")}`, stderr: "" };
+}
+
+/** Whether `adapter` declares how its agents ask the user a question (`output.questions`; ODW extension). */
+function asksQuestions(adapter: Adapter): boolean {
+  return adapter.output?.format === "jsonl" && (adapter.output.questions?.length ?? 0) > 0;
+}
+
+/** A run whose agent stopped to ask, with its questions as its diagnostic: what `needs_input` quotes. */
+function questionEvidence(cli: CliResult, questions: AgentQuestion[]): CliResult {
+  return { ...cli, stdout: `asked: ${questions.map(questionLine).join("; ")}`, stderr: "" };
 }
 
 /** A run whose CLI exited with background work running, with it as its diagnostic: what `orphaned_background` quotes. */
