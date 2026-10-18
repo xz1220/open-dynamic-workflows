@@ -1377,9 +1377,9 @@ test("Review (ODW extension): kept diffs riskiest first, each reason shown; mark
   assert.match(html, /What to look at <em>first<\/em>/);
   assert.match(html, /data-review-all="0">To review<span class="num">2<\/span>/);
   assert.match(html, /data-review-all="1">All<span class="num">3<\/span>/);
-  assert.ok(html.indexOf('data-key="rv-r-1/2"') < html.indexOf('data-key="rv-r-0/0"'), "the order the server ranked");
-  assert.match(html, /class="card rv-item high"[\s\S]*?<span class="rv-score num">7<\/span><span class="rv-level">high<\/span>/);
-  assert.equal(count(html.slice(0, html.indexOf('data-key="rv-r-0/0"')), /<i class="on"><\/i>/g), 7, "a mark per point");
+  assert.ok(html.indexOf('data-key="rq-r-1/2"') < html.indexOf('data-key="rq-r-0/0"'), "the order the server ranked");
+  assert.match(html, /class="card rq-item high"[\s\S]*?<span class="rq-score num">7<\/span><span class="rq-level">high<\/span>/);
+  assert.equal(count(html.slice(0, html.indexOf('data-key="rq-r-0/0"')), /<i class="on"><\/i>/g), 7, "a mark per point");
   assert.match(html, /<b>fix &lt;auth&gt;<\/b>/, "labels are escaped");
   assert.match(html, /<span class="pt num">\+3<\/span><span class="why">touches CI: \.github\/workflows\/ci\.yml<\/span>/);
   assert.match(html, /<li class="for"><span class="pt num">-1<\/span><span class="why">its expect\.command check passed<\/span>/);
@@ -1401,8 +1401,8 @@ test("Review (ODW extension): kept diffs riskiest first, each reason shown; mark
   store.review = { entries: [entry({ review: { ts: NOW - 60, agentId: 2, state: "applied", by: "cli:dan", via: "apply" } })], open: 0, marked: 1 };
   const all = renderReview();
   assert.match(all, /Nothing <em>waits<\/em> for review/);
-  assert.match(all, /class="card rv-item high dealt"/);
-  assert.match(all, /<span class="rv-mark applied">applied · cli:dan · /);
+  assert.match(all, /class="card rq-item high dealt"/);
+  assert.match(all, /<span class="rq-mark applied">applied · cli:dan · /);
   assert.match(all, /data-review-mark="r-1\/2" data-state="open">Back on the queue/);
 
   // Nothing on record: the empty state.
@@ -1414,7 +1414,7 @@ test("Review (ODW extension): kept diffs riskiest first, each reason shown; mark
   store.runs = [summary({ state: "done" })];
   store.review = { entries: [entry({})], open: 3, marked: 0 };
   const activity = renderActivity(NOW);
-  assert.match(activity, /class="ticket review high" data-key="nt-review"[\s\S]*?3 kept diffs wait for review — the riskiest is high[\s\S]*?href="#\/review"/);
+  assert.match(activity, /class="ticket rq-ticket high" data-key="nt-review"[\s\S]*?3 kept diffs wait for review — the riskiest is high[\s\S]*?href="#\/review"/);
   assert.match(activity, /<span class="n">1<\/span>/);
   store.review = { entries: [], open: 0, marked: 2 };
   assert.doesNotMatch(renderActivity(NOW), /nt-review/, "nothing open, no ticket");

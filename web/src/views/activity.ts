@@ -257,7 +257,7 @@ function needsYou(nowSec: number): string {
 /** The review queue's ticket (ODW extension): how many kept diffs wait, and how risky the first one is. */
 function reviewTicket(n: number, risk: string): string {
   return (
-    `<div class="ticket review ${esc(risk)}" data-key="nt-review">` +
+    `<div class="ticket rq-ticket ${esc(risk)}" data-key="nt-review">` +
     `<a class="tk-main" href="#/review" data-nav="#/review">${icons.review}<span class="tk-text"><b>${esc(t("Review"))}</b>` +
     `<span>${esc(tn(n, "{n} kept diff waits for review — the riskiest is {risk}", "{n} kept diffs wait for review — the riskiest is {risk}", { risk: t(risk) }))}</span></span></a>` +
     `<div class="tk-side"><a class="btn sm" href="#/review" data-nav="#/review">${t("Review")}</a></div></div>`
