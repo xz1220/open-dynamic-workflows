@@ -54,18 +54,37 @@ interface Flow {
  * its quota halfway) falls back to `finish` (or to `chain`). `handoff` is the
  * `fallback.handoff` setting.
  */
-async function runFlow(opts: { source: string; body: string; handoff?: boolean; chain?: string[] }): Promise<Flow> {
+async function runFlow(opts: {
+  source: string;
+  body: string;
+  handoff?: boolean;
+  chain?: string[];
+  /** More adapters: a fixture mode each, with fields over it. */
+  adapters?: Record<string, { mode: string } & Record<string, unknown>>;
+  /** The start adapter (default quit). */
+  start?: string;
+  settings?: Record<string, unknown>;
+}): Promise<Flow> {
   const root = mkdtempSync(join(tmpdir(), "odw-handoff-run-"));
   const prompts = join(root, "prompts");
   mkdirSync(prompts);
-  const cli = (mode: string) => ({ command: [execPath, AGENT, mode], stdin: "{prompt}", env: { HANDOFF_PROMPT_DIR: prompts } });
+  const cli = (mode: string, env: Record<string, string> = {}) => ({
+    command: [execPath, AGENT, mode],
+    stdin: "{prompt}",
+    env: { HANDOFF_PROMPT_DIR: prompts, ...env },
+  });
+  const more = Object.fromEntries(
+    Object.entries(opts.adapters ?? {}).map(([name, { mode, env, ...fields }]) => [name, { ...cli(mode, env as Record<string, string>), ...fields }]),
+  );
+  const start = opts.start ?? "quit";
   const configPath = join(root, "odw.config.json");
   writeFileSync(
     configPath,
     JSON.stringify({
-      defaultAdapter: "quit",
-      fallback: { quit: opts.chain ?? ["finish"], ...(opts.handoff !== undefined ? { handoff: opts.handoff } : {}) },
-      adapters: { quit: cli("quit"), quit2: cli("quit"), finish: cli("finish") },
+      defaultAdapter: start,
+      fallback: { [start]: opts.chain ?? ["finish"], ...(opts.handoff !== undefined ? { handoff: opts.handoff } : {}) },
+      adapters: { quit: cli("quit"), quit2: cli("quit"), finish: cli("finish"), ...more },
+      ...opts.settings,
     }),
   );
   const script = join(root, "wf.js");
@@ -228,6 +247,91 @@ test("a handoff whose chain runs out still fails the agent, keeps the latest bri
   }
 });
 
+test("the fallback keeps the handed-over worktree for each of its runs: a rate-limit retry and a schema retry", POSIX_ONLY, async () => {
+  const src = makeRepo();
+  const flows: Flow[] = [];
+  try {
+    const rate = await runFlow({
+      source: src,
+      handoff: true,
+      chain: ["flaky"],
+      adapters: { flaky: { mode: "flaky" } },
+      settings: { maxBackoff: 0.01 },
+      body: "return await agent('build it', { isolation: 'worktree' })\n",
+    });
+    flows.push(rate);
+    assert.equal(rate.state, "done", JSON.stringify(rate.store.readError(rate.id)));
+    assert.equal(readFileSync(join(rate.prompts, "flaky.runs"), "utf8"), "2", "rate-limited once, then retried");
+    // The retry found the partial work and its own first run's, in the same worktree, with the brief.
+    assert.equal(rate.store.readResult(rate.id), "partial:yes brief:yes flaky:yes");
+
+    const schema = await runFlow({
+      source: src,
+      handoff: true,
+      chain: ["json"],
+      adapters: { json: { mode: "json" } },
+      body: "return await agent('build it', { isolation: 'worktree', schema: { type: 'object', required: ['partial'] } })\n",
+    });
+    flows.push(schema);
+    assert.equal(schema.state, "done", JSON.stringify(schema.store.readError(schema.id)));
+    assert.equal(readFileSync(join(schema.prompts, "json.runs"), "utf8"), "2", "a schema retry");
+    assert.deepEqual(schema.store.readResult(schema.id), { partial: "yes", brief: "yes", json: "yes" });
+    assert.equal(worktrees(src), 1, "the carried worktree is gone once the call ends");
+  } finally {
+    cleanup(src, ...flows.map((f) => f.root));
+  }
+});
+
+test("a trusted adapter's worktree is not handed to an untrusted fallback: it starts fresh, with a brief that says so", POSIX_ONLY, async () => {
+  const src = makeRepo();
+  let flow: Flow | undefined;
+  try {
+    flow = await runFlow({
+      source: src,
+      handoff: true,
+      chain: ["outsider"],
+      adapters: { outsider: { mode: "finish", trust: "untrusted" } },
+      body: "return await agent('build it', { isolation: 'worktree' })\n",
+    });
+    assert.equal(flow.state, "done", JSON.stringify(flow.store.readError(flow.id)));
+    assert.equal(flow.store.readResult(flow.id), "partial:no brief:yes", "a fresh worktree, and the brief");
+    const brief = readFileSync(flow.store.agentHandoffPath(flow.id, 1), "utf8");
+    assert.match(brief, /What it changed was NOT carried over: it ran with other trust or in another sandbox than you do/);
+    assert.match(brief, /### Files it changed \(diff stat\)\n partial\.txt \| \+1 -0/, "what it had changed is still listed");
+    const notes = flow.store.readEvents(flow.id).filter((e) => e.type === "log").map((e) => String(e.message));
+    assert.ok(notes.some((m) => /quit's worktree is not handed to outsider — it ran trusted\/host, outsider runs untrusted\/host/.test(m)), notes.join("\n"));
+    assert.doesNotMatch(readFileSync(flow.store.agentDiffPath(flow.id, 1), "utf8"), /partial\.txt/, "the trusted run's change is not the agent's");
+    assert.equal(worktrees(src), 1);
+  } finally {
+    cleanup(src, ...(flow ? [flow.root] : []));
+  }
+});
+
+test("the brief is redacted before it is cut: no part of a secret the cut would split is left", POSIX_ONLY, async () => {
+  const src = makeRepo();
+  let flow: Flow | undefined;
+  // Not a real credential: a value the redactor knows from the adapter's env.
+  const secret = "PLACEHOLDER-not-a-real-secret-for-the-handoff-test-tail-words";
+  // The brief keeps the last 1281 bytes of the output: "…" + the secret's last 31 characters + " " + pad + "\nwrote partial.txt".
+  const pad = 1281 - 31 - 1 - "\nwrote partial.txt".length;
+  try {
+    flow = await runFlow({
+      source: src,
+      handoff: true,
+      start: "leaky",
+      adapters: { leaky: { mode: "secret", env: { HANDOFF_TOKEN: secret, HANDOFF_PAD: String(pad) } } },
+      body: "return await agent('build it', { isolation: 'worktree' })\n",
+    });
+    assert.equal(flow.state, "done", JSON.stringify(flow.store.readError(flow.id)));
+    const brief = readFileSync(flow.store.agentHandoffPath(flow.id, 1), "utf8");
+    assert.match(brief, /### The end of its output\n> …/, "the output was cut");
+    assert.doesNotMatch(brief, /tail-words|handoff-test/, "no end of the secret");
+    assert.doesNotMatch(prompt(flow, "finish"), /tail-words|handoff-test/);
+  } finally {
+    cleanup(src, ...(flow ? [flow.root] : []));
+  }
+});
+
 // --- the brief ------------------------------------------------------------------------
 
 const cliEnd: CliResult = { returncode: 1, stdout: "", stderr: "", timedOut: false, duration: 1 };
@@ -344,12 +448,44 @@ test("the brief is capped at 6 KB, each section within its own share, the latest
   // A CLI that prints text: the end of its output stands for its messages.
   const text = new HandoffLog();
   text.beginRun("text");
-  text.endRun({ ...cliEnd, stdout: `${"early ".repeat(2000)}\nthe last words` });
+  text.endRun({ ...cliEnd, stdout: `${"early line\n".repeat(400)}the last words` });
   assert.ok(!text.empty);
   const fromText = handoffBrief({ from: "a", reason: "quota", to: "b", why: "w", isolated: true, diff: "", log: text });
   assert.match(fromText, /### Files it changed \(diff stat\)\nNone yet\./);
-  assert.match(fromText, /### The end of its output\n> ….*\n> the last words/);
+  assert.match(fromText, /### The end of its output\n> …[^\n]*\n> early line\n[\s\S]*\n> the last words\n/);
   assert.ok(Buffer.byteLength(fromText) <= HANDOFF_MAX_BYTES);
+});
+
+test("each piece of the brief is redacted before it is cut; a tail cut mid-line loses that line; work not carried is said", () => {
+  const SECRET = "PLACEHOLDER-SECRET-not-real";
+  const redact = (text: string): string => text.split(SECRET).join("«redacted:TEST»");
+  const log = new HandoffLog();
+  log.beginRun("jsonl");
+  const plan = { todos: [{ content: `${"p".repeat(1180)} ${SECRET}`, status: "pending" }] };
+  log.stdout(JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", id: "p", name: "TodoWrite", input: plan }] } }) + "\n");
+  log.stdout(JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", id: "c", name: "Bash", input: { command: `${"c".repeat(280)} ${SECRET}` } }] } }) + "\n");
+  log.stdout(JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: `${"m".repeat(600)} ${SECRET} ${"n".repeat(600)}` }] } }) + "\n");
+  log.endRun(cliEnd);
+  const why = `${"w".repeat(585)} ${SECRET}`;
+  const brief = handoffBrief({ from: "a", reason: "quota", to: "b", why, isolated: true, diff: "", log, redact });
+  // Cut after redaction, each section ends in (part of) the marker — never in part of the secret.
+  assert.doesNotMatch(brief, /PLACEHOLDER|SECRET-not/);
+  assert.doesNotMatch(brief, /not-real/);
+  // Unredacted, the same cuts leave a piece of it: what the final pass over the whole brief cannot catch.
+  const raw = handoffBrief({ from: "a", reason: "quota", to: "b", why, isolated: true, diff: "", log });
+  assert.match(raw, /PLACEHOLDER-SEC(?!RET-not-real)/);
+
+  // A text CLI's tail cut in the middle of a line: that line is left out.
+  const text = new HandoffLog();
+  text.beginRun("text");
+  text.endRun({ ...cliEnd, stdout: `${"x".repeat(3000)} token=${SECRET.slice(0, 10)}\nthe last words` });
+  const fromText = handoffBrief({ from: "a", reason: "quota", to: "b", why: "w", isolated: true, diff: "", log: text });
+  assert.match(fromText, /### The end of its output\n> the last words\n/);
+
+  // Isolated, but the worktree was not handed over (other trust or sandbox): the brief says so.
+  const fresh = handoffBrief({ from: "a", reason: "quota", to: "b", why: "w", isolated: true, diff: "", log: text, carried: false });
+  assert.match(fresh, /What it changed was NOT carried over: .* you start in a fresh one\. Below is what it did: redo what the task still needs/);
+  assert.doesNotMatch(fresh, /already in your working directory/);
 });
 
 test("plans are read from Claude Code's todos, Codex's update_plan and to-do list, and a plan's text", () => {

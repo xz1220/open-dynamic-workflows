@@ -87,6 +87,8 @@ export class HandoffLog {
   readonly edited: string[] = [];
   /** The end of what a text CLI printed (a JSONL one's text is in `messages`). */
   textTail = "";
+  /** `textTail` lost its start: its first line may be the end of a longer one. */
+  tailCut = false;
   private format: "jsonl" | "text" = "text";
   private normalizer = new TranscriptNormalizer();
   private partial = "";
@@ -106,7 +108,9 @@ export class HandoffLog {
     if (!chunk) return;
     this.heard = true;
     if (this.format === "text") {
-      this.textTail = (this.textTail + chunk).slice(-TEXT_TAIL_CHARS);
+      const tail = this.textTail + chunk;
+      if (tail.length > TEXT_TAIL_CHARS) this.tailCut = true;
+      this.textTail = tail.slice(-TEXT_TAIL_CHARS);
       return;
     }
     let from = 0;
@@ -199,6 +203,18 @@ export interface HandoffBriefInput {
   /** The worktree's unified diff against its base (isolated), as {@link Workspace.diff} gives it. */
   diff?: string;
   log: HandoffLog;
+  /**
+   * Isolated: the worktree it worked in is the next adapter's too (the
+   * default). False when it is not handed over — the next adapter runs with
+   * other trust or another sandbox — so the brief says the work starts afresh.
+   */
+  carried?: boolean;
+  /**
+   * Redacts a piece of the brief (an ODW extension; see ./redact): each one —
+   * the reason, every file, the plan, every command, every message, the output's
+   * tail — is redacted whole, before any of it is cut, so no secret survives in part.
+   */
+  redact?: (text: string) => string;
 }
 
 /**
@@ -208,27 +224,36 @@ export interface HandoffBriefInput {
  */
 export function handoffBrief(input: HandoffBriefInput): string {
   const { from, to, reason, isolated, log } = input;
+  const r = input.redact ?? ((text: string) => text);
+  const carried = !isolated || input.carried !== false;
   const stopped = reason === "quota" ? "its usage quota ran out" : "its login was refused";
-  const where = isolated
-    ? "What it changed is already in your working directory (the same worktree it worked in)"
-    : "What it changed is already in the working tree (it worked in place, as you do)";
+  const where = !isolated
+    ? "What it changed is already in the working tree (it worked in place, as you do)"
+    : carried
+      ? "What it changed is already in your working directory (the same worktree it worked in)"
+      : "What it changed was NOT carried over: it ran with other trust or in another sandbox than you do, so its " +
+        "worktree was not handed to you and you start in a fresh one. Below is what it did";
+  const next = carried
+    ? "check it, keep what is right, and finish the task from where it stopped rather than starting over"
+    : "redo what the task still needs, using what it learned";
   const parts = [
     HANDOFF_HEADER,
     `You are continuing work another agent started on this same task. It ran on ${from} and stopped before it ` +
-      `finished — ${stopped} — so the work moved to you (${to}). ${where}: check it, keep what is right, and ` +
-      "finish the task from where it stopped rather than starting over. Its reasoning was not kept; below is " +
-      "what it left behind.",
-    section("Why it stopped", cut(input.why.trim() || stopped, BUDGET.why)),
+      `finished — ${stopped} — so the work moved to you (${to}). ${where}: ${next}. Its reasoning was not kept; ` +
+      "below is what it left behind.",
+    section("Why it stopped", cut(r(input.why.trim()) || stopped, BUDGET.why)),
   ];
-  const files = isolated ? diffStat(input.diff ?? "") : log.edited.map((path) => ` ${path}`);
+  const files = (isolated ? diffStat(input.diff ?? "") : log.edited.map((path) => ` ${path}`)).map(r);
   const filesTitle = isolated ? "Files it changed (diff stat)" : "Files it edited (from its tool calls)";
   parts.push(section(filesTitle, files.length > 0 ? fitLines(files, BUDGET.files) : "None yet."));
-  if (log.plan) parts.push(section("Its last plan", cut(log.plan, BUDGET.plan)));
+  if (log.plan) parts.push(section("Its last plan", cut(r(log.plan), BUDGET.plan)));
   if (log.commands.length > 0) {
-    const lines = log.commands.map((c) => `- \`${oneLine(c.command, 300)}\` — ${c.outcome ?? "no result (it stopped here)"}`);
+    const lines = log.commands.map((c) => `- \`${oneLine(r(c.command), 300)}\` — ${c.outcome === undefined ? "no result (it stopped here)" : r(c.outcome)}`);
     parts.push(section("Commands it ran (latest last)", fitLines(lines, BUDGET.commands, true)));
   }
-  const said = log.messages.length > 0 ? log.messages : log.textTail.trim() ? [log.textTail.trim()] : [];
+  // A tail cut mid-line starts with the end of a longer one: that part is left out, so no secret's end is quoted.
+  const tail = r(log.tailCut ? withoutPartialStart(log.textTail) : log.textTail).trim();
+  const said = log.messages.length > 0 ? log.messages.map(r) : tail ? [tail] : [];
   if (said.length > 0) {
     const each = Math.floor(BUDGET.messages / said.length);
     const quoted = said.map((text) => quote(log.messages.length > 0 ? cutMiddle(text, each - 16) : cutEnd(text, each - 16)));
@@ -274,6 +299,14 @@ export function diffStat(diff: string): string[] {
 }
 
 // --- helpers ------------------------------------------------------------------------
+
+/** `text` without its first line — or, all one line, its first word: what a cut may have left of a longer one. */
+function withoutPartialStart(text: string): string {
+  const nl = text.indexOf("\n");
+  if (nl !== -1) return text.slice(nl + 1);
+  const space = text.search(/\s/);
+  return space === -1 ? "" : text.slice(space + 1);
+}
 
 function section(title: string, body: string): string {
   return `### ${title}\n${body}`;
