@@ -92,6 +92,13 @@
     "on": ["done", "failed", "stopped"]
   },
 
+  "//otel": {
+    "$comment": "ODW extension: OpenTelemetry export. Rename \"//otel\" to \"otel\" to turn it on (true works too); the OTEL_* variables alone never do. Once a run ended, the worker posts its trace — invoke_workflow, phase, invoke_agent and execute_tool spans after the GenAI semantic conventions, with usage, cost, retries and fallbacks — once, as OTLP/HTTP JSON to endpoint + /v1/traces (5s limit; a failure is one line in the run's worker.log and never changes the run). endpoint: the receiver's base URL; omitted, OTEL_EXPORTER_OTLP_TRACES_ENDPOINT or OTEL_EXPORTER_OTLP_ENDPOINT, else http://localhost:4318. headers: sent with it, over OTEL_EXPORTER_OTLP_HEADERS; their values are secrets — never logged or shown. captureContent: also export replies, tool input and output and error text (redacted, each cut at 4096 characters); OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true does the same. odw export <run> --otlp writes any run's trace.",
+    "endpoint": "http://localhost:4318",
+    "headers": { "Authorization": "Basic YOUR_BASE64_KEY_PAIR" },
+    "captureContent": false
+  },
+
   "adapters": {
     "codex": {
       "label": "Codex CLI",

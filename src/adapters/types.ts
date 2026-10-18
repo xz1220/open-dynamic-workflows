@@ -388,6 +388,26 @@ export interface Settings {
    * at most `max` seconds away — instead of failing; `false` fails it.
    */
   quotaWait: QuotaWaitSettings | false;
+  /**
+   * OpenTelemetry export (an ODW extension; see ../runtime/otel-export): the
+   * worker posts each run's trace once it ended; `false` (the default) sends
+   * nothing — the OTEL_* variables alone never turn it on.
+   */
+  otel: OtelSettings | false;
+}
+
+/** Where and how a run's trace is exported (see `Settings.otel`). */
+export interface OtelSettings {
+  /**
+   * The OTLP/HTTP base URL, as OTEL_EXPORTER_OTLP_ENDPOINT takes it
+   * (`/v1/traces` is appended); null: the OTEL_EXPORTER_OTLP_* variables, else
+   * http://localhost:4318.
+   */
+  endpoint: string | null;
+  /** Headers sent with each export, over OTEL_EXPORTER_OTLP_HEADERS: secrets, never logged or shown. */
+  headers: Record<string, string>;
+  /** Export what agents replied and their tools' input and output too — redacted and cut. */
+  captureContent: boolean;
 }
 
 /** What redaction looks for (see `Settings.redact`). */

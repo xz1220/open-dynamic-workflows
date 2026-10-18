@@ -345,4 +345,5 @@ export const DEFAULT_SETTINGS: Settings = {
   mcpFailures: "warn", // an agent whose MCP server did not start keeps its reply, recorded and logged ("fail": it fails)
   redact: { env: true, patterns: true, extra: [] }, // likely secrets out of what odw keeps and serves (false: none)
   quotaWait: false, // an agent whose chain is out of quota fails; { max: <s> } waits for the reset instead
+  otel: false, // no trace is sent; { endpoint?, headers?, captureContent? } posts each run's at its end
 };

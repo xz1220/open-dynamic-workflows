@@ -83,10 +83,11 @@ export function bothEnds(text: string, half: number): string {
  * `*APIKEY`), `*TOKEN`, `*SECRET*`, `*PASSWORD*` (`PASSWD`, `PASSPHRASE`,
  * `*_PWD`), `*_PAT`, `AUTHORIZATION`, cloud credentials (`*ACCESS_KEY*`,
  * `*PRIVATE_KEY*`, `*CONNECTION_STRING`, `*CREDENTIALS`, `*KEYFILE_JSON`),
- * webhook URLs — matched without regard to case.
+ * webhook URLs, the OTLP exporter's headers (`OTEL_EXPORTER_OTLP_*HEADERS`: API
+ * keys of a trace backend) — matched without regard to case.
  */
 const SECRET_NAME =
-  /SECRET|PASSWORD|PASSWD|PASSPHRASE|TOKEN$|(?:^|_)(?:API_?)?KEY$|(?:ACCESS|PRIVATE)_?KEY|_PWD$|_PAT$|(?:^|_)AUTHORIZATION$|CONNECTION_STRING$|CREDENTIALS?(?:_JSON)?$|KEYFILE_JSON$|WEBHOOK(?:_URL)?$/i;
+  /SECRET|PASSWORD|PASSWD|PASSPHRASE|TOKEN$|(?:^|_)(?:API_?)?KEY$|(?:ACCESS|PRIVATE)_?KEY|_PWD$|_PAT$|(?:^|_)AUTHORIZATION$|CONNECTION_STRING$|CREDENTIALS?(?:_JSON)?$|KEYFILE_JSON$|WEBHOOK(?:_URL)?$|^OTEL_EXPORTER_OTLP_(?:[A-Z]+_)?HEADERS$/i;
 
 /** Does `name` name a variable whose value is likely a secret? */
 export function isSecretName(name: string): boolean {

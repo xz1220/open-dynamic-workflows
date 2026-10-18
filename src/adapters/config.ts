@@ -41,6 +41,7 @@ import type {
   Config,
   NotifySettings,
   NotifyTrigger,
+  OtelSettings,
   PermissionArgs,
   PermissionTier,
   QuotaWaitSettings,
@@ -130,6 +131,7 @@ const KNOWN_TOP_KEYS = [
   "redact",
   "quotaWait",
   "mcpFailures",
+  "otel",
 ] as const;
 
 const KNOWN_ADAPTER_KEYS = ["command", "stdin", "env", "timeout", "stallTimeout", "concurrency", "promptCache", "label", "flags", "output", "failures", "permissionArgs", "permissions", "permissionDenials"] as const;
@@ -155,6 +157,8 @@ const KNOWN_STAGGER_KEYS = ["first", "delayMs"] as const;
 const KNOWN_REDACT_KEYS = ["env", "patterns", "extra"] as const;
 
 const KNOWN_QUOTA_WAIT_KEYS = ["max"] as const;
+
+const KNOWN_OTEL_KEYS = ["endpoint", "headers", "captureContent"] as const;
 
 /**
  * Lint a parsed config object for keys odw would silently ignore.
@@ -223,6 +227,7 @@ export function collectConfigWarnings(raw: Record<string, unknown>): string[] {
   if (isObject(raw.staggerFanOut)) warnings.push(...unknownFields(raw.staggerFanOut, KNOWN_STAGGER_KEYS, "staggerFanOut"));
   if (isObject(raw.redact)) warnings.push(...unknownFields(raw.redact, KNOWN_REDACT_KEYS, "redact"));
   if (isObject(raw.quotaWait)) warnings.push(...unknownFields(raw.quotaWait, KNOWN_QUOTA_WAIT_KEYS, "quotaWait"));
+  if (isObject(raw.otel)) warnings.push(...unknownFields(raw.otel, KNOWN_OTEL_KEYS, "otel"));
   return warnings;
 }
 
@@ -1054,7 +1059,58 @@ function buildSettings(raw: Record<string, unknown>): Settings {
       raw["mcpFailures"] == null
         ? DEFAULT_SETTINGS.mcpFailures
         : buildChoice("mcpFailures", raw["mcpFailures"], ["warn", "fail"] as const),
+    otel: raw["otel"] == null ? DEFAULT_SETTINGS.otel : buildOtel(raw["otel"]),
   };
+}
+
+/** An HTTP header name: an RFC 9110 token. */
+const HEADER_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
+
+/**
+ * Validate `otel` (an ODW extension): `false` sends no trace; `true` or
+ * `{ "endpoint"?, "headers"?, "captureContent"? }` posts each run's at its end.
+ * Errors never echo a header's value, nor the endpoint: either may carry a key.
+ */
+function buildOtel(raw: unknown): OtelSettings | false {
+  if (raw === false) return false;
+  if (raw === true) return { endpoint: null, headers: {}, captureContent: false };
+  if (!isObject(raw)) {
+    throw new ConfigError(
+      `"otel" must be false, true, or { "endpoint": "<url>", "headers": { … }, "captureContent": false }; got ${kindOf(raw)}`,
+    );
+  }
+  const otel: OtelSettings = { endpoint: null, headers: {}, captureContent: false };
+  if (raw.endpoint != null) otel.endpoint = buildOtelEndpoint(raw.endpoint);
+  if (raw.headers != null) {
+    if (!isObject(raw.headers)) throw new ConfigError(`"otel.headers" must be an object of header names and values; got ${kindOf(raw.headers)}`);
+    for (const [name, value] of Object.entries(raw.headers)) {
+      if (name.startsWith("$") || name.startsWith("//")) continue; // comment conventions
+      if (!HEADER_NAME.test(name)) throw new ConfigError(`"otel.headers" names must be HTTP header names; got ${JSON.stringify(name)}`);
+      if (typeof value !== "string" || /[\r\n\0]/.test(value)) {
+        throw new ConfigError(`"otel.headers.${name}" must be a string on one line; got ${typeof value === "string" ? "a string with a line break" : kindOf(value)}`);
+      }
+      otel.headers[name] = value;
+    }
+  }
+  if (raw.captureContent != null) otel.captureContent = buildFlag("otel.captureContent", raw.captureContent);
+  return otel;
+}
+
+/** Validate `otel.endpoint`: an absolute http(s) URL that fetch() will accept. */
+function buildOtelEndpoint(raw: unknown): string {
+  let url: URL | null = null;
+  try {
+    url = typeof raw === "string" ? new URL(raw) : null;
+  } catch {
+    url = null;
+  }
+  if (!url || (url.protocol !== "http:" && url.protocol !== "https:")) {
+    throw new ConfigError(`"otel.endpoint" must be an http(s) URL, such as "http://localhost:4318"; got ${url ? `a ${url.protocol} URL` : typeof raw === "string" ? "a string that is not an absolute URL" : kindOf(raw)}`);
+  }
+  if (url.username || url.password) {
+    throw new ConfigError(`"otel.endpoint" must not embed credentials (user:password@): put them in "otel.headers"`);
+  }
+  return url.href;
 }
 
 /**
