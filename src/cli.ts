@@ -108,6 +108,7 @@ import { cmdNote, cmdNotes } from "./runtime/notes-view.js";
 import { cmdMemory } from "./runtime/memory-cli.js";
 import { askYesNo, cmdEstimate, estimateBeforeRun } from "./runtime/estimate-cli.js";
 import { cmdGc, cmdPin } from "./runtime/gc-cli.js";
+import { cmdDigest } from "./runtime/digest-cli.js";
 import { executeRun } from "./runtime/worker.js";
 import {
   parseSshTarget,
@@ -173,6 +174,7 @@ export const COMMANDS = [
   "gc",
   "pin",
   "restore",
+  "digest",
 ] as const;
 
 export type Command = (typeof COMMANDS)[number];
@@ -251,6 +253,8 @@ export function helpText(): string {
     "  odw new [<template>] [--name N] [--force] [--yes]  a workflow + starter test in .odw/ from a built-in template; no args lists them",
     "  odw gc [--yes] [--older-than 30d] [--json]         report orphaned worktrees, keep branches, old transcripts; --yes deletes (ODW extension)",
     "  odw pin <run_id> [--remove]                        odw gc skips a pinned run; no run id lists them",
+    "  odw digest [--since 12h|--since-last] [--workflow W] what happened across runs, from their evidence: needs you, failed,",
+    "             [--json|--markdown] [--notify]          missed checks, changes, spend; --notify sends it (notify.on \"digest\"; ODW extension)",
     "",
     "Options:",
     "  --args JSON|@file   workflow input (JSON, @file.json, or a raw string)",
@@ -306,6 +310,7 @@ export function helpText(): string {
     "Schedules (odw schedule, ODW extension — no daemon: cron, launchd or a systemd timer calls odw back):",
     "  add <name> <workflow> --cron \"0 8 * * *\" [--args JSON|@file] [--adapter X] [--config P] [--cwd DIR]",
     "      [--backend cron|launchd|systemd] [--dry-run]     default: launchd on macOS, cron elsewhere",
+    "  add <name> --digest [--cron EXPR] [--workflow W]    send odw digest --since-last --notify instead (cron: config digest.cron)",
     "  list [--json]               each schedule's backend, last run and next run (local time)",
     "  remove <name>               delete its OS entry and its definition (fine if the entry is gone already)",
     "  run <name>                  what the OS entry calls: runs it like run --wait, skipped while the previous",
@@ -423,6 +428,8 @@ export async function main(argv: string[]): Promise<number> {
         return cmdPin(rest);
       case "restore":
         return await cmdRestore(rest);
+      case "digest":
+        return await cmdDigest(rest);
       default:
         process.stderr.write(`odw: unknown command '${command}'\n\n${helpText()}\n`);
         return 2;

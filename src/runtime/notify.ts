@@ -46,6 +46,10 @@
  * object as JSON), so a hook can answer on the issue or thread the work came
  * from. Other runs have neither.
  *
+ * With "digest" in `notify.on` (opt-in), `odw digest --notify` fires the same
+ * hooks once with the cross-run digest (an ODW extension; see ./digest): state
+ * "digest", the digest as JSON and markdown, and no run of its own.
+ *
  * A webhook's payload leaves the machine: its likely secrets are redacted
  * first (an ODW extension; see ../redact) — an error quoting an agent's output
  * included — and a payload that had any carries `redacted: true`.
@@ -141,7 +145,7 @@ export async function notifyRunEnd(
   const log = options.log ?? defaultLog;
   try {
     const end = describeRunEnd(run.store, run.runId, run.state, run.error);
-    const hooks: Array<Promise<void>> = [];
+    const hooks: Array<Promise<boolean>> = [];
     if (notify.command) hooks.push(runHookCommand(notify.command, notifyEnv(end), options, log));
     if (notify.webhook) hooks.push(postWebhook(notify.webhook, redacted(webhookPayload(end), options), options, log));
     await Promise.all(hooks);
@@ -171,7 +175,7 @@ export async function notifyCheckpoint(
   try {
     const waiting = describeWaiting(run.store, run.runId, run.checkpoint);
     const links = run.links ? run.links() : null;
-    const hooks: Array<Promise<void>> = [];
+    const hooks: Array<Promise<boolean>> = [];
     if (notify.command) hooks.push(runHookCommand(notify.command, { ...waitingEnv(waiting), ...linksEnv(links) }, options, log));
     // The links go in after redaction: a link's token is no secret of the run's, and must reach the phone whole.
     if (notify.webhook) hooks.push(postWebhook(notify.webhook, withLinks(redacted(waitingPayload(waiting), options), links), options, log));
@@ -196,12 +200,41 @@ export async function notifyQuotaPause(
   const log = options.log ?? defaultLog;
   try {
     const paused = describePaused(run.store, run.runId, run.pause);
-    const hooks: Array<Promise<void>> = [];
+    const hooks: Array<Promise<boolean>> = [];
     if (notify.command) hooks.push(runHookCommand(notify.command, pausedEnv(paused), options, log));
     if (notify.webhook) hooks.push(postWebhook(notify.webhook, redacted(pausedPayload(paused), options), options, log));
     await Promise.all(hooks);
   } catch (err) {
     log(`notify: hooks for the ${run.pause.adapter} quota pause of run ${run.runId} failed: ${errorMessage(err)}`);
+  }
+}
+
+/**
+ * What the hooks are told about a cross-run digest (ODW extension; see
+ * ./digest): the webhook's JSON body (redacted already, links added after),
+ * and a command's variables.
+ */
+export interface DigestNotice {
+  payload: Record<string, unknown>;
+  env: Record<string, string>;
+}
+
+/**
+ * Fire the hooks for `odw digest --notify` (ODW extension), when `notify.on`
+ * includes "digest" (opt-in). Resolves to whether every configured hook
+ * succeeded — the digest's mark moves only then; never rejects.
+ */
+export async function notifyDigest(notify: NotifySettings | null, notice: DigestNotice, options: NotifyOptions = {}): Promise<boolean> {
+  if (!notify || !notify.on.includes("digest") || (!notify.command && !notify.webhook)) return false;
+  const log = options.log ?? defaultLog;
+  try {
+    const hooks: Array<Promise<boolean>> = [];
+    if (notify.command) hooks.push(runHookCommand(notify.command, notice.env, options, log));
+    if (notify.webhook) hooks.push(postWebhook(notify.webhook, notice.payload, options, log));
+    return (await Promise.all(hooks)).every(Boolean);
+  } catch (err) {
+    log(`notify: hooks for the digest failed: ${errorMessage(err)}`);
+    return false;
   }
 }
 
@@ -493,6 +526,12 @@ const OPTIONAL_HOOK_VARS = [
   "ODW_EVENT_ID",
   "ODW_EVENT_URL",
   "ODW_CONTEXT",
+  "ODW_DIGEST_FILE",
+  "ODW_DIGEST_MARKDOWN_FILE",
+  "ODW_DIGEST_TEXT",
+  "ODW_DIGEST_SINCE",
+  "ODW_DIGEST_NEEDS_YOU",
+  "ODW_DIGEST_FAILED",
 ];
 
 async function runHookCommand(
@@ -500,7 +539,7 @@ async function runHookCommand(
   vars: Record<string, string>,
   options: NotifyOptions,
   log: (line: string) => void,
-): Promise<void> {
+): Promise<boolean> {
   const env: Record<string, string | undefined> = { ...process.env, ...vars };
   for (const name of OPTIONAL_HOOK_VARS) if (!(name in vars)) delete env[name];
   const timeout = options.commandTimeoutSec ?? NOTIFY_COMMAND_TIMEOUT_S;
@@ -511,11 +550,12 @@ async function runHookCommand(
     // A no-op consumer: keep just a diagnostic tail of whatever the hook prints.
     onStdout: () => {},
   });
-  if (cliOk(result)) return;
+  if (cliOk(result)) return true;
   // argv[0] only: the arguments may carry a token.
   const why = result.timedOut ? `timed out after ${timeout}s` : `exited with code ${result.returncode}`;
   const detail = (result.stderr.trim() || result.stdout.trim()).slice(-500);
   log(`notify: command '${command[0]}' ${why}${detail ? `: ${detail}` : ""}`);
+  return false;
 }
 
 async function postWebhook(
@@ -523,7 +563,7 @@ async function postWebhook(
   body: Record<string, unknown>,
   options: NotifyOptions,
   log: (line: string) => void,
-): Promise<void> {
+): Promise<boolean> {
   const where = webhookOrigin(url);
   const limit = options.webhookTimeoutMs ?? NOTIFY_WEBHOOK_TIMEOUT_MS;
   try {
@@ -535,11 +575,12 @@ async function postWebhook(
     });
     if (res.ok) {
       void res.body?.cancel().catch(() => {}); // nothing to read: free the connection
-      return;
+      return true;
     }
     const status = `${res.status}${res.statusText ? ` ${res.statusText}` : ""}`;
     const said = await firstChunk(res);
     log(`notify: webhook ${where} answered ${status}${said ? `: ${said}` : ""}`);
+    return false;
   } catch (err) {
     const why =
       err instanceof Error && err.name === "TimeoutError"
@@ -547,6 +588,7 @@ async function postWebhook(
         : errorMessage(err instanceof Error && err.cause instanceof Error ? err.cause : err);
     // Never let the URL's secret path reach the log through an error message.
     log(`notify: webhook ${where} failed: ${why.split(url).join(where)}`);
+    return false;
   }
 }
 
