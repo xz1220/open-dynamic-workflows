@@ -135,7 +135,8 @@ independent security reviews whose findings are all fixed.
 - Drift watch (**ODW extension**): every run compares its CLI versions and requested
   models with the workflow's previous finished run and logs each change once (`drift:
   claude CLI 2.1.302 → 2.1.330 since the last run of review-swarm`); the run summary has
-  a `drift` field (`{ since, changes }`, web types too). A workflow with an eval file
+  a `drift` field (`{ since, changes }`, web types too), drawn as a `↯ n changes since
+  last run` chip on the run and in the jobs list. A workflow with an eval file
   gets `odw eval <name> --baseline <last report>` suggested; `"driftEval": true` starts
   it once the run ends, detached, its output in `drift-eval.log`.
 
@@ -181,7 +182,8 @@ independent security reviews whose findings are all fixed.
   forecast over the gate becomes a checkpoint (`This fan-out is forecast to cost ~$X
   (p90 $Y) — go?`, answerable from the phone links too); a rejection throws a
   catchable `CostGateRejected`. Without history the gate lets fan-outs through and
-  says so once.
+  says so once. The dashboard's workspace draws the estimate for a workflow with runs:
+  the totals, and a p50/p90 range bar per phase.
 - Codex agents report their tokens too: the built-in `codex` adapter runs `codex exec
   --json --output-last-message {reply_file}` — its reply from that file (else the last
   `agent_message` event), tokens from `turn.completed` (no cost: codex reports none),
@@ -440,7 +442,9 @@ independent security reviews whose findings are all fixed.
   most 500 per file (oldest pruned, logged). Untrusted runs neither recall nor keep the
   repository's memory; a `memoryDir` of the user's own outside the repository they use.
   `odw memory list|add|prune`, `GET /api/memory`, and `web/src/types.ts`
-  `WorkflowMemory` (dashboard view to come).
+  `WorkflowMemory`. The dashboard's workspace lists a workflow's memory, newest first:
+  the kind, the run and agent each entry came from, its globs, and stale entries
+  struck through, with `odw memory prune <wf> --stale` to copy.
 - Declared scopes (**ODW extension**; ROADMAP R11): `agent(…, { scope: ["src/auth/**"] })`
   names the files a call means to change, with the `expect` glob rules. Scoped calls in
   flight at once whose scopes overlap — decided conservatively from the globs: braces
