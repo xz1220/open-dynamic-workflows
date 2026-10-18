@@ -1023,7 +1023,9 @@ The security model:
   "needs a token" screen to paste one into.
 - **Tokens are compared in constant time** (both sides hashed first). An address that
   sends 10 wrong tokens within a minute is answered 429, whatever it sends, until the
-  minute is up; a request with no token at all is not counted.
+  minute is up (an IPv6 address counts by its /64); a request with no token at all is
+  not counted. Past 100 wrong tokens a minute from everyone together, no token is
+  checked until the minute is up, so many addresses cannot keep guessing.
 - **Writes stay refused off loopback, whatever the token**: stopping or pausing runs,
   answering checkpoints and Chat are 409 on any bind but 127.0.0.1 / localhost / ::1.
   The token gives remote *reads*, never writes. (On a loopback bind, `--token` gates

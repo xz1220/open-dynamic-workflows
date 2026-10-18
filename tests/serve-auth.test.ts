@@ -9,7 +9,7 @@ import { execPath } from "node:process";
 import { fileURLToPath } from "node:url";
 
 import { RunStore } from "../src/runtime/run-store.js";
-import { generateToken, isValidToken, TokenGate } from "../src/runtime/serve-auth.js";
+import { AUTH_GLOBAL_FAILURES, failureKey, generateToken, isValidToken, TokenGate } from "../src/runtime/serve-auth.js";
 import { startServer, type ServeHandle } from "../src/runtime/server.js";
 
 // Remote read-only access (ODW extension; src/runtime/serve-auth.ts): with
@@ -271,4 +271,26 @@ test("odw serve --token VALUE never prints it; a bad VALUE is a usage error; off
   const code = await new Promise<number | null>((resolve) => bad.once("exit", resolve));
   assert.equal(code, 2);
   assert.match(err, /--token VALUE must be 16-256 characters/);
+});
+
+test("wrong tokens count against an IPv6 address's /64, and the whole server takes a bounded number per window", () => {
+  assert.equal(failureKey("203.0.113.9"), "203.0.113.9");
+  assert.equal(failureKey("::ffff:203.0.113.9"), "203.0.113.9", "IPv4-mapped is the IPv4 address");
+  assert.equal(failureKey("2001:db8:1:2:aaaa::1"), "2001:db8:1:2::/64");
+  assert.equal(failureKey("2001:db8:1:2:ffff:ffff:ffff:fffe"), "2001:db8:1:2::/64", "one /64, one count");
+  assert.equal(failureKey("2001:db8::1"), "2001:db8:0:0::/64");
+  assert.equal(failureKey("fe80::1%eth0"), "fe80:0:0:0::/64");
+
+  let now = 1_000_000;
+  const gate = new TokenGate(TOKEN, "odw_token_test", { failures: 1_000_000, windowMs: 60_000, now: () => now });
+  const req = (address: string, authorization?: string) =>
+    ({ headers: authorization ? { authorization } : {}, socket: { remoteAddress: address } }) as unknown as IncomingMessage;
+  const url = new URL("http://h/api/runs");
+  // Each guess from a fresh address: the per-address limit never trips, the server's does.
+  for (let i = 0; i < AUTH_GLOBAL_FAILURES; i++) assert.equal(gate.check(req(`198.51.${i >> 8}.${i & 255}`, "Bearer wrong-token-0000000"), url).ok, false);
+  const locked = gate.check(req("192.0.2.1", `Bearer ${TOKEN}`), url);
+  assert.equal(locked.ok, false, "past the budget not even the right token is checked");
+  assert.equal(!locked.ok && locked.status, 429);
+  now += 60_000;
+  assert.equal(gate.check(req("192.0.2.1", `Bearer ${TOKEN}`), url).ok, true, "a new window checks again");
 });
