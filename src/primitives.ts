@@ -261,7 +261,7 @@ export function createPrimitives(
     };
     // The tier the value was produced at, when the record says (ODW extension).
     const tier = permissionField(recorded.permissions);
-    const startedEv = event(AGENT_STARTED, { agentId, label, phase, adapter, ...tier, ...marks });
+    const startedEv = event(AGENT_STARTED, { agentId, label, phase, adapter, key, ...tier, ...marks });
     ctx.emit(startedEv);
     const kept = await carryChanges(recorded, agentId, (message) =>
       ctx.emit(event(LOG, { message: `${label}:${agentId}: ${message}`, agentId, label, phase })),
@@ -532,6 +532,10 @@ export function createPrimitives(
           phase: activePhase,
           adapter: adapter.name,
           ...permissionField(permissions.tier ?? permissions.requested),
+          // What `odw compare` matches and shows it by (ODW extension): its
+          // resume key, and the model it asked for (a tier keeps its @ name).
+          key,
+          ...(model !== undefined ? { model } : {}),
         });
         ctx.emit(startedEv);
         // An adapter that runs another tier than asked, or one ODW cannot

@@ -272,6 +272,12 @@ export interface Settings {
    */
   maxTranscriptBytes: number;
   /**
+   * Record each adapter CLI's version once per run (an ODW extension, for
+   * `odw compare`): `<cli> --version` beside the adapter's first agent, killed
+   * after 3s, as a `cli_version` event; `false` runs no probe.
+   */
+  recordVersions: boolean;
+  /**
    * The run's permission tier (an ODW extension; `odw run --permissions`
    * overrides it): an adapter's `permissions` and an agent()'s `permissions`
    * may only lower it.

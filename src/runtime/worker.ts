@@ -29,6 +29,7 @@ import { LOG, RUN_FAILED, RUN_FINISHED, RUN_STARTED, RUN_STOPPED, event } from "
 import { ReplayJournal } from "../journal.js";
 import { loadWorkflowScript } from "../loader.js";
 import { createPrimitives } from "../primitives.js";
+import { CliVersions, runSetup } from "../provenance.js";
 import type { QuotaPause } from "../quota-wait.js";
 import { redactorFor, type Redactor } from "../redact.js";
 import type { Scheduler } from "../scheduler.js";
@@ -115,6 +116,9 @@ export async function executeRun(runDir: string): Promise<string> {
   const checkpointHooks: Array<Promise<void>> = [];
   // …and "paused" hooks of quota pauses (ODW extension: quotaWait).
   const pauseHooks: Array<Promise<void>> = [];
+  // Records each adapter CLI's version beside its first agent (ODW extension;
+  // see ../provenance); closed before the terminal event, which nothing follows.
+  let versions: CliVersions | undefined;
   const crashes = watchProcessCrashes();
   const signals = watchStopSignals({
     stop: (signal) => {
@@ -127,6 +131,7 @@ export async function executeRun(runDir: string): Promise<string> {
       killAllAgentProcesses();
       if (!end) {
         sink.emit(event(LOG, { message: `${why} — killing the agents and exiting` }));
+        versions?.close();
         sink.emit(event(RUN_STOPPED, { runId }));
         // No checkpoint (nor quota pause) gets to withdraw itself here: nothing waits any more.
         store.updateStatus(runId, { state: "stopped", dispatched: dispatched(), spentTokens: spent(), waiting: null, pausedFor: null });
@@ -179,6 +184,14 @@ export async function executeRun(runDir: string): Promise<string> {
     });
     const replay = replayJournal(meta);
     const waiting = new Map<number, WaitingCheckpoint>();
+    if (config.settings.recordVersions) {
+      versions = new CliVersions({
+        emit: (ev) => sink.emit(ev),
+        settings: config.settings,
+        cwd: typeof meta.source === "string" ? meta.source : undefined,
+      });
+    }
+    const cliVersions = versions;
     ctx = buildContext(config, {
       source: meta.source as string | undefined,
       runId,
@@ -199,6 +212,7 @@ export async function executeRun(runDir: string): Promise<string> {
       // A schema handed to a CLI as a file, as agents/<agentId>.schema.json while it runs.
       agentSchemaPath: (agentId) => store.agentSchemaPath(runId, agentId),
       replay,
+      onCliRun: cliVersions && ((adapter) => cliVersions.note(adapter)),
       onCheckpoint: (cp, isWaiting) => {
         if (isWaiting) {
           waiting.set(cp.checkpointId, cp);
@@ -234,7 +248,9 @@ export async function executeRun(runDir: string): Promise<string> {
     });
 
     store.updateStatus(runId, { state: "running", pid: process.pid });
-    sink.emit(event(RUN_STARTED, { runId }));
+    // What the run starts with — the settings that change behaviour, and each
+    // adapter's fingerprint — for `odw compare` (ODW extension; see ../provenance).
+    sink.emit(event(RUN_STARTED, { runId, setup: runSetup(config) }));
     if (replay) {
       sink.emit(
         event(LOG, {
@@ -291,6 +307,7 @@ export async function executeRun(runDir: string): Promise<string> {
     // The workflow's own value: token shapes are redacted, the values of variables are not (ODW extension).
     const kept = runRedactor.shapes.record({ value: result });
     store.writeResult(runId, kept.value, "redacted" in kept);
+    versions?.close();
     sink.emit(event(RUN_FINISHED, { runId }));
     store.updateStatus(runId, { state: "done", dispatched: dispatched(), spentTokens: spent() });
     end = { state: "done" };
@@ -302,6 +319,7 @@ export async function executeRun(runDir: string): Promise<string> {
       sink.emit(event(LOG, { message: `after the run ended, the workflow also failed: ${errorMessage(err)}` }));
     }
     if (ctx) await stopAgents(ctx.scheduler, outcome);
+    versions?.close();
     if (outcome instanceof RunStopped) {
       sink.emit(event(RUN_STOPPED, { runId }));
       store.updateStatus(runId, { state: "stopped", dispatched: dispatched(), spentTokens: spent() });

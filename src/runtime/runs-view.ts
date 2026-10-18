@@ -32,6 +32,7 @@ import { addUsage, readUsage, type Usage } from "../adapters/usage.js";
 import type { AgentChanges } from "../changes.js";
 import type { WaitingCheckpoint } from "../checkpoint.js";
 import type { WorkflowEvent } from "../events.js";
+import { readCliVersion, type CliVersion } from "../provenance.js";
 import { pausedForOf, type PausedFor } from "../quota-wait.js";
 import { RunStore, TERMINAL_STATES } from "./run-store.js";
 
@@ -220,6 +221,16 @@ export interface RunDetail extends RunSummary {
    * the run is live (neither ended nor stale); absent for Claude Code runs.
    */
   pendingCheckpoints?: PendingCheckpoint[];
+  /**
+   * What ran (ODW extension; see ../provenance): each adapter CLI's version
+   * as the run recorded it on the adapter's first dispatch (`version` null
+   * when the CLI did not tell, with `error`), by adapter; odw's version and
+   * the sha256 of the workflow source as launched (null for older runs).
+   * Absent for Claude Code runs.
+   */
+  cliVersions?: Record<string, CliVersion>;
+  odwVersion?: string | null;
+  sourceHash?: string | null;
 }
 
 /** Is `pid` a live process on this host? null when unknowable (no pid). */
@@ -539,12 +550,16 @@ export class EventFold {
   ended = false;
   /** What the settled agents spent, summed as they settle (see RunSummary.usage). */
   usage: Usage | undefined;
+  /** Each adapter CLI's version, from the run's cli_version events (ODW extension). */
+  readonly cliVersions: Record<string, CliVersion> = {};
 
   apply(events: WorkflowEvent[]): this {
     for (const ev of events) {
       const { settled } = applyAgentEvent(this.agents, ev);
       if (settled?.usage) this.usage = addUsage(this.usage, settled.usage);
       applyCheckpointEvent(this.checkpoints, ev);
+      const cli = readCliVersion(ev);
+      if (cli) this.cliVersions[cli.adapter] = cli.cli;
       if (ev.type === "run_finished" || ev.type === "run_failed" || ev.type === "run_stopped") {
         this.ended = true;
         this.checkpoints.clear(); // nobody waits on a run that ended
@@ -666,6 +681,9 @@ export function detailFrom(
     adapter: (meta.adapter as string) ?? null,
     workflowName: (meta.workflowName as string) ?? null,
     pendingCheckpoints: live ? pendingCheckpoints(fold) : [],
+    cliVersions: Object.fromEntries(Object.entries(fold.cliVersions).map(([name, cli]) => [name, { ...cli }])),
+    odwVersion: typeof meta.odwVersion === "string" ? meta.odwVersion : null,
+    sourceHash: typeof meta.sourceHash === "string" ? meta.sourceHash : null,
   };
 }
 

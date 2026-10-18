@@ -125,6 +125,10 @@ export function formatEvent(ev: WorkflowEvent): string {
   else if (type === "checkpoint_requested") {
     detail = `#${String(ev.checkpointId)} ${sanitizeText(ev.title, 200)}${ev.truncated === true ? " (payload truncated)" : ""}`;
   } else if (type === "checkpoint_resolved") detail = `#${String(ev.checkpointId)} ${answerText(ev)}`;
+  // An adapter CLI's version, recorded on its first dispatch (ODW extension).
+  else if (type === "cli_version") {
+    detail = `${sanitizeText(ev.adapter, 40)}: ${sanitizeText(ev.version ?? `unknown (${String(ev.error ?? "?")})`, 160)}`;
+  }
   else detail = sanitizeText(ev.error ?? ev.runId ?? "", 200);
   return `[${stamp}] ${type.padEnd(15)}${phase} ${detail}`.trimEnd();
 }

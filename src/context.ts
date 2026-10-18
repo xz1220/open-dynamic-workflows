@@ -150,6 +150,8 @@ export interface BuildContextOptions {
   onQuotaPause?: (change: QuotaPauseChange) => void;
   /** Test seams for the run's bridge: the command runner, and the clock, sleep and jitter its waits run on. */
   bridge?: Pick<BridgeOptions, "runner" | "sleep" | "now" | "random">;
+  /** Told as each agent CLI run starts (the bridge's `onCliRun`): the worker records CLI versions by it (ODW extension). */
+  onCliRun?: BridgeOptions["onCliRun"];
 }
 
 /** Wire a full run context from a config and the run's surroundings. */
@@ -163,6 +165,7 @@ export function buildContext(config: Config, options: BuildContextOptions = {}):
     runId: options.runId,
     agentSchemaPath: options.agentSchemaPath,
     redactor,
+    onCliRun: options.onCliRun,
     ...options.bridge,
     // quotaWait (ODW extension): a pause for a spent quota is logged and
     // shown, and `odw resume` ends it at once.

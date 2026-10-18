@@ -623,6 +623,9 @@ function cmdStatus(rest: string[]): number {
   process.stdout.write(`  dispatched: ${dispatchedCount(events, status)} agent(s)\n`);
   // What its agents spent (ODW extension): as their CLIs reported it, or chars/4 estimates.
   if (run.usage) process.stdout.write(`  usage: ${formatUsage(run.usage)}${estimateNote(run)}\n`);
+  // Each adapter CLI's version, as the run recorded it (ODW extension; see provenance.ts).
+  const clis = Object.entries(run.cliVersions ?? {}).map(([name, cli]) => `${name} ${cli.version ?? `unknown (${cli.error ?? "?"})`}`);
+  if (clis.length > 0) process.stdout.write(`  CLIs: ${sanitizeText(clis.join(" · "), 300)}\n`);
   // Agents that fell back to another adapter, and adapters the quota breaker took out (ODW extensions).
   for (const line of fallbackLines(run.agents, events)) process.stdout.write(`  ${line}\n`);
   if (typeof meta.resumedFrom === "string") {

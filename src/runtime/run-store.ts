@@ -10,7 +10,8 @@
  *
  *   <runsRoot>/<workflow-slug>/<runId>/
  *     meta.json      immutable run description (script, args, source, config, workflowName,
- *                    resumedFrom: the run an `odw resume` replays)
+ *                    resumedFrom: the run an `odw resume` replays; odwVersion and the
+ *                    workflow's sourceHash, sha256, for `odw compare`)
  *     status.json    mutable state (running/paused/done/failed/stopped, counters)
  *     events.jsonl   append-only progress stream
  *     agents/<agentId>.json  each completed agent()'s result, saved as it lands
@@ -59,8 +60,10 @@ import { basename, join } from "node:path";
 import { isCheckpointRequest, type CheckpointRequest } from "../control.js";
 import type { EventSink, WorkflowEvent } from "../events.js";
 import type { AgentResultRecord } from "../journal.js";
+import { sourceHash } from "../provenance.js";
 import type { Redactor } from "../redact.js";
 import type { TranscriptPaths } from "../transcript.js";
+import { VERSION } from "../version.generated.js";
 import { readdirSafe, readJsonFile, writeJsonAtomic } from "./fs-util.js";
 
 /** Terminal states: a run in one of these will not change again. */
@@ -166,6 +169,10 @@ export class RunStore {
       // this run dir because it was launched from inline source. Drives the
       // worker's run-by-name divergence exemption and `odw rerun` re-archival.
       inline: input.inlineSource != null,
+      // What ran, for `odw compare` (ODW extension; see ../provenance): this
+      // odw's version, and the sha256 of the workflow source as launched.
+      odwVersion: VERSION,
+      sourceHash: sourceHash(input.inlineSource ?? readText(script)),
       createdAt: now(),
     });
     writeJson(join(dir, STATUS), { runId, state: "pending", dispatched: 0, updatedAt: now() });
@@ -580,6 +587,15 @@ function readWorkflowName(dir: string): string | null {
 
 function now(): number {
   return Date.now() / 1000;
+}
+
+/** A file's text, or null when it cannot be read. */
+function readText(path: string): string | null {
+  try {
+    return readFileSync(path, "utf8");
+  } catch {
+    return null;
+  }
 }
 
 function newRunId(): string {

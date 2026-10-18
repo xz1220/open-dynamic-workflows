@@ -116,6 +116,7 @@ const KNOWN_TOP_KEYS = [
   "keepBranches",
   "applyVerify",
   "maxTranscriptBytes",
+  "recordVersions",
   "permissions",
   "agentEnv",
   "agentEnvPass",
@@ -960,6 +961,8 @@ function buildSettings(raw: Record<string, unknown>): Settings {
       "a whole number of bytes, or 0 to keep no transcripts",
       { min: 0, integer: true },
     ),
+    recordVersions:
+      raw["recordVersions"] == null ? DEFAULT_SETTINGS.recordVersions : buildFlag("recordVersions", raw["recordVersions"]),
     permissions: raw["permissions"] == null ? DEFAULT_SETTINGS.permissions : buildTier(raw["permissions"]),
     agentEnv: raw["agentEnv"] == null ? DEFAULT_SETTINGS.agentEnv : buildAgentEnv(raw["agentEnv"]),
     agentEnvPass: raw["agentEnvPass"] == null ? [...DEFAULT_SETTINGS.agentEnvPass] : buildEnvPass(raw["agentEnvPass"]),

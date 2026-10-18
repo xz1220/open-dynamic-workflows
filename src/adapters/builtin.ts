@@ -281,6 +281,7 @@ export const DEFAULT_SETTINGS: Settings = {
   keepBranches: false, // keep: true per agent still commits its change to a branch
   applyVerify: null, // odw apply runs no command after an apply (--verify still does)
   maxTranscriptBytes: 5 * 1024 * 1024, // each agent's transcript; past it, one truncation line (0: none)
+  recordVersions: true, // each adapter CLI's --version, once per run, for odw compare (false: no probe)
   permissions: "edit", // the tier every built-in ran with before tiers existed
   agentEnv: "inherit", // agent CLIs see ODW's whole environment
   agentEnvPass: [], // more variables a "minimal" agent environment passes through

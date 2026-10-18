@@ -217,6 +217,12 @@ export interface BridgeOptions {
   onQuotaPause?: (change: QuotaPauseChange) => void;
   /** Call `onResume` for each `odw resume` while calls wait for a quota (see Control.watchResume): it ends every pause at once. */
   watchResume?: (onResume: () => void) => () => void;
+  /**
+   * Told as each agent CLI run starts, with its adapter — what records each
+   * adapter CLI's version once per run (an ODW extension; see ./provenance).
+   * It must return at once: the CLI does not wait for it.
+   */
+  onCliRun?: (adapter: Adapter) => void;
 }
 
 /** What the scheduler hands one call; all optional, so a bare `run(request)` works. */
@@ -443,6 +449,7 @@ export class Bridge {
   private readonly quota: QuotaWaits;
   /** What this run has said about a quota it would not wait for: each once. */
   private readonly quotaNotes = new Set<string>();
+  private readonly onCliRun: ((adapter: Adapter) => void) | undefined;
 
   constructor(
     private readonly config: Config,
@@ -457,6 +464,7 @@ export class Bridge {
     this.runId = options.runId;
     this.agentSchemaPath = options.agentSchemaPath;
     this.redactor = options.redactor;
+    this.onCliRun = options.onCliRun;
     this.ports = new PortPool(...config.settings.portRange);
     this.quota = new QuotaWaits({
       now: this.now,
@@ -1269,6 +1277,7 @@ export class Bridge {
         // What the CLI prints is kept as it arrives (ODW extension; see ./transcript).
         const transcript = call.transcript;
         transcript?.beginRun(why, adapter);
+        this.onCliRun?.(adapter);
         const cli = await this.runner(command, {
           stdin,
           cwd: ws.path,

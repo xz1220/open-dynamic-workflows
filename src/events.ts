@@ -23,6 +23,8 @@ export const COMMAND_FAILED = "command_failed";
 // checkpoint() waits for a person (ODW extension): every request gets one resolution.
 export const CHECKPOINT_REQUESTED = "checkpoint_requested";
 export const CHECKPOINT_RESOLVED = "checkpoint_resolved";
+// An adapter CLI's version, recorded once per run on its first dispatch (ODW extension; see provenance.ts).
+export const CLI_VERSION = "cli_version";
 
 export interface WorkflowEvent {
   ts: number;
