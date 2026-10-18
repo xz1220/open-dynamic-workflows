@@ -61,15 +61,19 @@ export interface WorkflowMeta {
   input?: JsonSchema;
 }
 
+/** Told the args object the script holds, and how a worker value enters the script's realm (strict only). */
+export type AdoptArgs = (inScript: unknown, importValue?: (value: unknown) => unknown) => void;
+
 export interface LoadedWorkflow {
   meta: WorkflowMeta;
   /**
    * Execute the transformed body with the injected globals and `args`.
    * `adoptArgs` is told the args object the script holds — in a strict
    * context a copy in its own realm — so a break's edit (../breaks) changes
-   * what the script reads.
+   * what the script reads — and, in a strict context, the membrane's
+   * `toScript`, which an edited value must cross before the script holds it.
    */
-  run(globals: WorkflowGlobals, args: unknown, adoptArgs?: (inScript: unknown) => void): Promise<unknown>;
+  run(globals: WorkflowGlobals, args: unknown, adoptArgs?: AdoptArgs): Promise<unknown>;
 }
 
 /** How {@link loadWorkflowScript} compiles: `context: "strict"` in a fresh vm context (ODW extension; see ./script-context). */
@@ -203,7 +207,7 @@ export function loadWorkflowScript(source: string, filename: string, options: Lo
 
   return {
     meta,
-    run(globals: WorkflowGlobals, args: unknown, adoptArgs?: (inScript: unknown) => void): Promise<unknown> {
+    run(globals: WorkflowGlobals, args: unknown, adoptArgs?: AdoptArgs): Promise<unknown> {
       if (realm) return runStrict(realm, factory, extensions, globals, args, adoptArgs);
       adoptArgs?.(args);
       // The first eight never move; the injected extensions follow in the
@@ -234,11 +238,11 @@ function runStrict(
   extensions: readonly ExtensionName[],
   globals: WorkflowGlobals,
   args: unknown,
-  adoptArgs?: (inScript: unknown) => void,
+  adoptArgs?: AdoptArgs,
 ): Promise<unknown> {
   const g = realm.toScript({ ...globals }) as Record<string, unknown>;
   const inScript = realm.toScript(args);
-  adoptArgs?.(inScript);
+  adoptArgs?.(inScript, realm.toScript);
   let result: Promise<unknown>;
   try {
     result = factory(g.agent, g.parallel, g.pipeline, g.phase, g.log, inScript, g.budget, g.workflow, ...extensions.map((name) => g[name]));

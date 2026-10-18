@@ -1852,7 +1852,7 @@ export function createPrimitives(
       throw stop;
     }
     if (!result.edited) return;
-    const taken = applyArgsEdit(ctx.args, result.payload);
+    const taken = applyArgsEdit(ctx.args, result.payload, ctx.importArgs);
     const message =
       "refused" in taken
         ? `${title}: approved with an edit, but its args were not taken — ${taken.refused}; the run goes on with the args it had`

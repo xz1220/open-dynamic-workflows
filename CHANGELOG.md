@@ -916,6 +916,11 @@ independent security reviews whose findings are all fixed.
   `id_rsa`, `id_ed25519`, `id_ecdsa`, `credentials.json`) are now left out and named in
   the `safety_snapshot` event (`secretLike`), and the README says the snapshot is a ref
   in the repository holding other untracked files until `odw gc` expires it.
+- A break's edited `args` reached a strict script as the worker's own objects (whose
+  `constructor.constructor` is the worker's `Function`, code generation on), and an
+  array's edit called `args.splice`, which the script could replace. Edited values now
+  cross the strict context's membrane into the script's realm, and `args` is changed
+  through `Reflect`, never through a method of the script's object.
 
 ### Changed behavior — check before upgrading
 - `agentType` naming an agent definition file now runs that definition (see "Write

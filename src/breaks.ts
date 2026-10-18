@@ -212,25 +212,38 @@ export class Breaks {
  * `args` object, in place (see the module comment). Returns the keys (or
  * indexes) that changed — none when the edit left `args` alone — or why the
  * edit cannot be taken.
+ *
+ * In a strict script context `args` is an object of the script's realm:
+ * `importValue` (its membrane's `toScript`) copies each edited value into that
+ * realm, so the script never holds one of the worker's objects (whose
+ * `constructor.constructor` is the worker's Function), and the object is
+ * changed through Reflect, never through a method the script could replace.
  */
-export function applyArgsEdit(args: unknown, edited: unknown): { changed: string[] } | { refused: string } {
+export function applyArgsEdit(
+  args: unknown,
+  edited: unknown,
+  importValue: (value: unknown) => unknown = (value) => value,
+): { changed: string[] } | { refused: string } {
   if (edited === null || typeof edited !== "object" || Array.isArray(edited) || !("args" in edited)) {
     return { refused: "the edited payload has no args" };
   }
   const next = (edited as { args: unknown }).args;
   if (deepEqual(next, args)) return { changed: [] };
+  const put = (target: object, key: string, value: unknown): void => {
+    Reflect.defineProperty(target, key, { value: importValue(value), writable: true, enumerable: true, configurable: true });
+  };
   if (Array.isArray(args) && Array.isArray(next)) {
     const changed = indexes(Math.max(args.length, next.length)).filter((i) => !deepEqual(args[Number(i)], next[Number(i)]));
-    args.splice(0, args.length, ...next);
+    for (const i of changed) if (Number(i) < next.length) put(args, i, next[Number(i)]);
+    Reflect.defineProperty(args, "length", { value: next.length });
     return { changed };
   }
   if (isPlainObject(args) && isPlainObject(next)) {
     const keys = new Set([...Object.keys(args), ...Object.keys(next)]);
     const changed = [...keys].filter((key) => !deepEqual(args[key], next[key]));
     for (const key of changed) {
-      if (Object.prototype.hasOwnProperty.call(next, key)) {
-        Object.defineProperty(args, key, { value: next[key], writable: true, enumerable: true, configurable: true });
-      } else delete args[key];
+      if (Object.prototype.hasOwnProperty.call(next, key)) put(args, key, next[key]);
+      else Reflect.deleteProperty(args, key);
     }
     return { changed };
   }

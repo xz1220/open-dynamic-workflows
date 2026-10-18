@@ -566,7 +566,12 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
     const primitives = createPrimitives(ctx, { phases: loaded.meta.phases });
     // The args the script holds — in a strict context its own copy — are the ones a break's edit changes.
     const runCtx = ctx;
-    const result = await crashes.race(loaded.run(primitives, args, (inScript) => (runCtx.args = inScript)));
+    const result = await crashes.race(
+      loaded.run(primitives, args, (inScript, importValue) => {
+        runCtx.args = inScript;
+        runCtx.importArgs = importValue;
+      }),
+    );
     // Agents the script started but never awaited are still this run's work:
     // let them finish (and clean up their worktrees) before recording it.
     await crashes.race(ctx.scheduler.drain());

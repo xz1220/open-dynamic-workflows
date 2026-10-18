@@ -37,6 +37,11 @@ export interface RunContext {
   control: Control;
   sink: EventSink;
   args: unknown;
+  /**
+   * In a strict script context, how a worker value enters the script's realm
+   * (its membrane's `toScript`): what a break's edit puts into `args` crosses it.
+   */
+  importArgs?: (value: unknown) => unknown;
   /** The run's working directory; anchors nested workflow() name resolution. */
   source: string;
   /** The run's id (`ODW_RUN_ID` for its processes); absent where no run is persisted. */

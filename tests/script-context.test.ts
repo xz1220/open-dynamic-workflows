@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { main } from "../src/cli.js";
+import { applyArgsEdit } from "../src/breaks.js";
 import { AdapterExecutionError, WorkflowScriptError } from "../src/errors.js";
 import { loadWorkflowScript } from "../src/loader.js";
 import type { WorkflowGlobals } from "../src/primitives.js";
@@ -166,6 +167,53 @@ test("strict: adoptArgs gets the script's own args, so an edit to it is what the
     (inScript) => (held = inScript as Record<string, unknown>),
   );
   assert.equal(out, "edited");
+});
+
+test("strict: a break's edit enters args through the membrane — no worker object, no worker Function, no script method called", async () => {
+  let held: unknown;
+  let importValue: ((value: unknown) => unknown) | undefined;
+  const adopt = (inScript: unknown, toScript?: (value: unknown) => unknown): void => {
+    held = inScript;
+    importValue = toScript;
+  };
+  const out = (await strict(
+    [
+      "await agent('x')",
+      "let reached",
+      "try { reached = typeof args.cfg.constructor.constructor('return process')() } catch (e) { reached = e.name }",
+      "return { x: args.cfg.x, reached, own: args.cfg.constructor.constructor === Function && args.cfg instanceof Object }",
+    ].join("\n"),
+  ).run(
+    fakeGlobals({
+      agent: async () => {
+        assert.deepEqual(applyArgsEdit(held, { args: { cfg: { x: 1 } } }, importValue), { changed: ["cfg"] });
+        assert.notEqual((held as { cfg: { constructor: unknown } }).cfg.constructor, Object, "not the worker's Object");
+        return "ok";
+      },
+    }),
+    { cfg: null },
+    adopt,
+  )) as Record<string, unknown>;
+  assert.deepEqual({ ...out }, { x: 1, reached: "EvalError", own: true });
+
+  // An array whose splice the script replaced is still changed, without calling it.
+  const list = (await strict(
+    [
+      "args.splice = () => { throw new Error('the script ran') }",
+      "await agent('x')",
+      "return [args.length, args[0].n, args[1].n, args[0] instanceof Object]",
+    ].join("\n"),
+  ).run(
+    fakeGlobals({
+      agent: async () => {
+        assert.deepEqual(applyArgsEdit(held, { args: [{ n: 1 }, { n: 2 }] }, importValue), { changed: ["0", "1", "2"] });
+        return "ok";
+      },
+    }),
+    [{ n: 0 }, { n: 0 }, { n: 0 }],
+    adopt,
+  )) as unknown[];
+  assert.deepEqual([...list], [2, 1, 2, true]);
 });
 
 test("which runs are strict: the config's choice, else triggered, plugin and untrusted runs", () => {
