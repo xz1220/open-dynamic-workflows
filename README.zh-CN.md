@@ -840,10 +840,11 @@ webhook 的正文,并返回 `202 { "runId" }`。
     ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 ```
 
-它安装固定版本的 odw(校验 SHA-256),以 job 超时前留出余量的 `--deadline` 运行
-`odw run --wait`,把花费小票、agent 表和失败写入 job summary,把 `odw bundle` 上传为
-artifact,`apply-pr: true` 时开草稿 PR。来自 fork 的 PR 以及 issue、评论事件以
-`--untrusted` 运行。输入、密钥与示例:[`docs/github-action.md`](docs/github-action.md)。
+它安装固定版本的 odw(对照该 release 的 `SHA256SUMS` 校验 SHA-256——校验的是完整性而非真实性;
+没有 `SHA256SUMS` 的 release 一律拒绝),以 job 超时前留出余量的 `--deadline` 运行
+`odw run --wait`(`args` 输入经文件传入,从不作为命令行参数),把花费小票、agent 表和失败写入
+job summary,把 `odw bundle` 上传为 artifact,`apply-pr: true` 时开草稿 PR。来自 fork 的 PR、
+所有 `pull_request_target`、fork 触发的 `workflow_run`,以及 issue、评论事件以 `--untrusted` 运行。输入、密钥与示例:[`docs/github-action.md`](docs/github-action.md)。
 
 ### 在自己的服务器上运行(ODW 扩展)
 

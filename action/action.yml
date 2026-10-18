@@ -5,9 +5,12 @@
 #       workflow: .odw/workflows/review.js
 #       timeout-minutes: 30          # the same number as the job's timeout-minutes
 #
-# It installs the odw release this action is pinned to (SHA-256 verified),
-# runs the workflow with `--wait --deadline` so the run is STOPPED gracefully
-# margin-seconds before the job's timeout (diffs and finished agents kept),
+# It installs the odw release this action is pinned to (SHA-256 checked
+# against the release's SHA256SUMS: integrity, not authenticity — a release
+# without SHA256SUMS is refused), runs the workflow with `--wait --deadline`
+# so the run is STOPPED gracefully margin-seconds before the job's timeout
+# (finished agents and their diffs kept, and what each isolated agent it
+# killed had changed, marked partial),
 # writes the spend receipt, agent table and failures to the job summary,
 # uploads `odw bundle` as an artifact, and can open a draft PR with
 # `odw apply --pr`. See docs/github-action.md.
@@ -23,7 +26,7 @@ inputs:
     description: The workflow to run — a path in the repository, or a managed workflow name.
     required: true
   args:
-    description: The workflow's input, as JSON (or a plain string).
+    description: The workflow's input, as JSON (or a plain string). Passed through a file (--args=@file), so it is never read as a file name or a flag.
     required: false
     default: ""
   version:
@@ -39,7 +42,7 @@ inputs:
     required: false
     default: "300"
   untrusted:
-    description: auto (default) — untrusted for pull requests from forks and for issue, comment, review and discussion events; or true / false.
+    description: auto (default) — untrusted for pull requests from forks, every pull_request_target, a workflow_run after a fork's run, and issue, comment, review and discussion events; or true / false.
     required: false
     default: auto
   config:

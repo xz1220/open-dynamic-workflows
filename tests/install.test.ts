@@ -245,6 +245,26 @@ installTest("releases up to v0.5.0 predate SHA256SUMS and install with a warning
   }
 });
 
+installTest("ODW_REQUIRE_CHECKSUMS=1 (the GitHub Action's) refuses a release without checksums, even one that predates them", (t) => {
+  for (const version of ["0.5.0", "1.2.3"]) {
+    const f = fixture(t);
+    f.old();
+    writeFileSync(f.archive, gzipSync(binary.replace("1.2.3", version)));
+    f.sums(null);
+    const result = f.run({ ODW_VERSION: version, ODW_REQUIRE_CHECKSUMS: "1", ODW_ALLOW_UNVERIFIED: "1" });
+    assert.notEqual(result.status, 0, version);
+    assert.match(result.stderr, /predates published checksums \(SHA256SUMS\); refusing|publishes no SHA256SUMS; refusing/, version);
+    assert.doesNotMatch(result.stderr, /installing/, version);
+    f.assertOld();
+    f.assertClean();
+  }
+  // With checksums it installs as ever.
+  const f = fixture(t);
+  const result = f.run({ ODW_REQUIRE_CHECKSUMS: "1" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /verified SHA-256/);
+});
+
 installTest("a SHA256SUMS download failure aborts rather than skipping verification", (t) => {
   const f = fixture(t);
   f.old();

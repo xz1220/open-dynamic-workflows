@@ -958,11 +958,14 @@ out, so its output survives:
     ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 ```
 
-It installs the pinned odw release (SHA-256 verified), runs `odw run --wait
---deadline` with a margin before the job's timeout, writes the spend receipt,
-agent table and failures to the job summary, uploads `odw bundle` as an
-artifact, and with `apply-pr: true` opens a draft PR. Pull requests from forks
-and issue or comment events run `--untrusted`. Inputs, secrets and examples:
+It installs the pinned odw release (SHA-256 checked against the release's
+`SHA256SUMS` — integrity, not authenticity; a release without it is refused),
+runs `odw run --wait --deadline` with a margin before the job's timeout (the
+`args` input goes through a file, never as an argument), writes the spend
+receipt, agent table and failures to the job summary, uploads `odw bundle` as an
+artifact, and with `apply-pr: true` opens a draft PR. Pull requests from forks,
+every `pull_request_target`, a `workflow_run` after a fork's run, and issue or
+comment events run `--untrusted`. Inputs, secrets and examples:
 [`docs/github-action.md`](docs/github-action.md).
 
 ### Run on your own server (ODW extension)

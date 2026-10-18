@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 
 // @ts-expect-error -- a plain ESM script (the Action's runner has no TypeScript); its exports are checked here.
 import * as action from "../action/odw-action.mjs";
+import { parseArgsValue } from "../src/cli.js";
 
 // The composite GitHub Action (action/action.yml) cannot run here: these
 // test the script its steps run — each decision as a pure function, and the
@@ -24,12 +25,29 @@ test("version: the input, else the action's own package version; nothing else", 
   assert.throws(() => action.resolveVersion("1.0; rm -rf /", "{}"), /version must be a release/);
 });
 
+test("install: a release without published checksums is refused, not installed with a warning (review fix)", () => {
+  for (const version of ["0.5.0", "0.4.9", "0.5.0-rc.1", "0.1.0"]) {
+    assert.throws(() => action.requireChecksums(version), /predates published checksums/, version);
+  }
+  for (const version of ["0.5.1", "0.7.0", "1.0.0"]) assert.equal(action.requireChecksums(version), version);
+  // The install step tells install.sh the same, and never allows an unverified binary.
+  const src = readFileSync(script, "utf8");
+  assert.match(src, /ODW_ALLOW_UNVERIFIED: "", ODW_REQUIRE_CHECKSUMS: "1"/);
+});
+
 test("untrusted: auto for fork PRs and events anyone can write; explicit values win", () => {
   const pr = (head: string, fork = false) => ({ pull_request: { head: { repo: { full_name: head, fork } }, base: { repo: { full_name: "acme/app" } } } });
   assert.equal(action.untrustedFor("auto", "pull_request", pr("someone/app", true)), true);
   assert.equal(action.untrustedFor("auto", "pull_request_target", pr("someone/app", true)), true);
   assert.equal(action.untrustedFor("auto", "pull_request", pr("acme/app")), false, "a branch of the same repository");
   assert.equal(action.untrustedFor("auto", "pull_request", {}), true, "unknown head: untrusted");
+  // pull_request_target runs with the base's secrets: untrusted whatever the head (review fix).
+  assert.equal(action.untrustedFor("auto", "pull_request_target", pr("acme/app")), true);
+  // workflow_run after a fork's run: its head repository is not this one (review fix).
+  const run = (head: string | undefined) => ({ workflow_run: { head_repository: head ? { full_name: head } : null }, repository: { full_name: "acme/app" } });
+  assert.equal(action.untrustedFor("auto", "workflow_run", run("someone/app")), true);
+  assert.equal(action.untrustedFor("auto", "workflow_run", run(undefined)), true, "unknown head: untrusted");
+  assert.equal(action.untrustedFor("auto", "workflow_run", run("acme/app")), false, "a run of this repository");
   for (const event of ["issues", "issue_comment", "pull_request_review_comment", "discussion"]) {
     assert.equal(action.untrustedFor("auto", event, {}), true, event);
   }
@@ -51,9 +69,17 @@ test("deadline: the job's timeout less the margin and the time already spent", (
 test("the odw run argv: --wait --deadline, --untrusted when untrusted, the optional inputs", () => {
   assert.deepEqual(action.runArgv({ workflow: "review" }, 1500, false), ["run", "review", "--wait", "--deadline", "1500"]);
   assert.deepEqual(
-    action.runArgv({ workflow: ".odw/workflows/fix.js", args: '{"issue":7}', config: "ci.json", adapter: "codex", permissions: "edit" }, 60, true),
-    ["run", ".odw/workflows/fix.js", "--wait", "--deadline", "60", "--untrusted", "--args", '{"issue":7}', "--config", "ci.json", "--adapter", "codex", "--permissions", "edit"],
+    action.runArgv({ workflow: ".odw/workflows/fix.js", args: '{"issue":7}', config: "ci.json", adapter: "codex", permissions: "edit" }, 60, true, "/tmp/r/args.txt"),
+    ["run", ".odw/workflows/fix.js", "--wait", "--deadline", "60", "--untrusted", "--args=@/tmp/r/args.txt", "--config=ci.json", "--adapter=codex", "--permissions=edit"],
   );
+  // The args input is never an argument of its own (review fix): it goes through the file.
+  for (const args of ["@/proc/self/environ", "--untrusted=false", "-x"]) {
+    const argv = action.runArgv({ workflow: "review", args }, 60, false, "/tmp/r/args.txt");
+    assert.deepEqual(argv.slice(5), ["--args=@/tmp/r/args.txt"], args);
+    assert.ok(!argv.includes(args), args);
+  }
+  assert.throws(() => action.runArgv({ workflow: "review", args: "x" }, 60, false), /needs a file/);
+  assert.throws(() => action.runArgv({ workflow: "--help" }, 60, false), /a path or a workflow name/);
   assert.throws(() => action.runArgv({ workflow: " " }, 60, false), /workflow input is required/);
   assert.equal(action.runIdFrom("odw: note\nrunning 20261018-120000-abc123 ...\npermissions: edit\n"), "20261018-120000-abc123");
   assert.equal(action.runIdFrom("nothing here"), null);
@@ -186,6 +212,19 @@ test("the run and summary steps, against a stand-in odw", { skip: process.platfo
     assert.match(md, /dispatched: 1 agent\(s\)/);
     assert.match(md, /- \*\*a\*\* \(agent 0\): boom/);
     assert.match(md, /- \*\*run\*\*: run was stopped at its deadline/);
+
+    // An args input that looks like a file to read or a flag goes through a file, as given (review fix).
+    for (const args of ["@/proc/self/environ", "-x --untrusted=false"]) {
+      const again = spawnSync(execPath, [script, "run"], { env: { ...env, ODW_INPUT_ARGS: args }, encoding: "utf8" });
+      assert.equal(again.status, 3, again.stderr);
+      const logged = readFileSync(join(dir, "argv.log"), "utf8").trim().split("\n").map((line) => JSON.parse(line) as string[]);
+      const passed = logged.filter((a) => a[0] === "run").at(-1)!;
+      const file = join(dir, "odw-action", "args.txt");
+      assert.equal(passed.at(-1), `--args=@${file}`);
+      assert.equal(readFileSync(file, "utf8"), args);
+      // odw reads that file once, and takes its text as a plain string: no second @, no flag.
+      assert.equal(parseArgsValue(`@${file}`), args);
+    }
 
     // A timeout too short for the margin fails the step before anything runs.
     const tooShort = spawnSync(execPath, [script, "run"], { env: { ...env, ODW_INPUT_TIMEOUT_MINUTES: "1" }, encoding: "utf8" });
