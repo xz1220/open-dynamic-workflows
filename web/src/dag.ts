@@ -52,7 +52,7 @@ function subLine(a: AgentView, nowSec: number): string {
       return [t("waiting for a person"), a.startedAt != null ? fmtDurSec(nowSec - a.startedAt) : ""].filter(Boolean).join(" · ");
     }
     if (a.decision) {
-      const verdict = a.decision.approved ? t("approved") : t("rejected");
+      const verdict = a.decision.approved ? (a.edited ? t("approved with edits") : t("approved")) : t("rejected");
       return [verdict, a.decision.by ? t(a.decision.by) : "", a.decision.note ? `“${a.decision.note}”` : ""].filter(Boolean).join(" · ");
     }
     return a.error ? a.error.split("\n")[0]!.slice(0, 80) : t("not answered");

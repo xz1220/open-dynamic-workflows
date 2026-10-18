@@ -197,28 +197,32 @@ function resetNote(a: AgentView, nowSec: number): string {
 function checkpointDrawer(run: RunDetail, a: AgentView, ai: number, nowSec: number): string {
   const waited = a.startedAt != null ? fmtDurSec((a.finishedAt ?? nowSec) - a.startedAt) : "—";
   const d = a.decision;
+  const verdict = d ? (d.approved ? (a.edited ? t("approved with edits") : t("approved")) : t("rejected")) : "";
   const answer = d
-    ? `<div class="drawer-sec">${t("Answer")}</div><div class="outbox${d.approved ? "" : " err"}">${esc(d.approved ? t("approved") : t("rejected"))}` +
+    ? `<div class="drawer-sec">${t("Answer")}</div><div class="outbox${d.approved ? "" : " err"}">${esc(verdict)}` +
       `${d.by ? ` · ${esc(t(d.by))}` : ""}${d.note ? `\n“${esc(d.note)}”` : ""}</div>`
     : a.state === "waiting"
       ? `<div class="drawer-sec">${t("Answer")}</div><div class="outbox">${t("Waiting — answer it in the card above the tabs, or with {cmd}", { cmd: `odw approve ${esc(run.runId)} --checkpoint ${a.checkpointId}` })}</div>`
       : a.error
         ? `<div class="drawer-sec">${t("Error")}</div><div class="outbox err">${esc(a.error)}</div>`
         : "";
+  const approved = a.edited
+    ? `<div class="drawer-sec">${t("Approved payload (edited)")}</div><div class="outbox json-out">${renderJson(a.approvedPayload ?? null)}</div>`
+    : "";
   const payload =
     a.payload !== undefined && a.payload !== null
       ? `<div class="drawer-sec">${t("Payload")}</div><div class="outbox json-out">${renderJson(a.payload)}</div>`
       : "";
   return (
     `<aside class="drawer" data-key="drawer-${ai}">` +
-    `<div class="drawer-head"><div class="row">${pill(a.state, d ? (d.approved ? t("approved") : t("rejected")) : a.state === "stopped" ? t("not answered") : undefined)}<span class="tag">${t("checkpoint")} #${a.checkpointId}</span>` +
+    `<div class="drawer-head"><div class="row">${pill(a.state, d ? verdict : a.state === "stopped" ? t("not answered") : undefined)}<span class="tag">${t("checkpoint")} #${a.checkpointId}</span>` +
     `<button class="iconbtn" data-close="1" aria-label="${esc(t("Close"))}">${icons.close}</button></div>` +
     `<h4>${esc(a.label)}</h4></div>` +
     `<div class="drawer-body"><div class="kv">` +
     `<span class="k">${t("phase")}</span><span class="v">${esc(a.phase ?? "—")}</span>` +
     `<span class="k">${t("asked")}</span><span class="v">${fmtClock(a.startedAt)}</span>` +
     `<span class="k">${t("waited")}</span><span class="v">${waited}</span>` +
-    `</div>${answer}${payload}</div></aside>`
+    `</div>${answer}${approved}${payload}</div></aside>`
   );
 }
 

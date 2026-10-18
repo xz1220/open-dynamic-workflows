@@ -791,4 +791,29 @@ test("compare: figures with their deltas, what changed in the setup, and a row p
   assert.equal(verdict({ a: 100, b: 103, delta: 3 }), "same", "within 5% is noise");
   assert.equal(verdict({ a: 2, b: 1, delta: -1 }, false), "worse", "fewer done is worse");
   store.comparison = null;
+test("a checkpoint approved with edits says so, and the drawer shows what was approved", () => {
+  const view: JobViewState = {
+    cpNote: "",
+    tab: "graph",
+    selectedAi: 1,
+    reviewAi: null,
+    zoom: 1,
+    logQuery: "",
+    logTypes: new Set(["agent"]),
+    logLimit: 600,
+    follow: true,
+    motion: false,
+  };
+  store.focusRun("20260101-000000-aaaaaa");
+  store.run = detail([agent("planner", "Plan", "done", { agentId: 1 })], { state: "done", phaseOrder: ["Plan", "Approve"] });
+  store.runEvents = [
+    { type: "checkpoint_requested", ts: NOW - 90, checkpointId: 1, title: "Ship it?", payload: { steps: ["a", "b"] }, phase: "Approve" },
+    { type: "checkpoint_resolved", ts: NOW - 30, checkpointId: 1, approved: true, note: null, by: "cli", edited: true, payload: { steps: ["only-b"] } },
+  ];
+  const html = renderJob(view, NOW);
+  assert.match(html, /approved with edits · cli/, "the graph node");
+  assert.match(html, /class="pill s-done">[\s\S]*?<span>approved with edits<\/span>/, "the drawer's pill");
+  assert.match(html, /Approved payload \(edited\)[\s\S]*?only-b[\s\S]*?Payload/, "the approved payload, then what was asked");
+  store.runEvents = [];
+  store.focusRun(null);
 });

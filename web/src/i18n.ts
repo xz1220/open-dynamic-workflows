@@ -557,6 +557,8 @@ const ZH: Record<string, string> = {
   // checkpoint() gates in the graph and drawer.
   "waiting for a person": "等待人工决定",
   approved: "已批准",
+  "approved with edits": "修改后批准",
+  "Approved payload (edited)": "批准的内容(已修改)",
   rejected: "已拒绝",
   "not answered": "未获答复",
   Answer: "答复",

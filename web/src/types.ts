@@ -76,6 +76,10 @@ export interface PendingCheckpoint {
   checkpointId: number;
   title: string;
   payload?: unknown;
+  /** The payload was cut to 64 KiB for its event: only its start, as text — not something to edit. */
+  truncated?: boolean;
+  /** The JSON Schema an edited payload must match (ODW extension); the server checks it too. */
+  schema?: Record<string, unknown> | null;
   since: number;
 }
 
@@ -90,6 +94,10 @@ export interface AgentView {
   checkpointId?: number | null;
   payload?: unknown;
   decision?: { approved: boolean; note: string | null; by: string | null } | null;
+  /** A checkpoint approved with an edited payload (ODW extension): `approvedPayload` is what was approved. */
+  edited?: boolean;
+  /** With `edited`: the approved payload, as its event keeps it (JSON-safe, cut to 64 KiB). */
+  approvedPayload?: unknown;
   /** A command step's per-run id (its `agentId` is null). */
   commandId?: number | null;
   /** A command step's exit code once it settled. */
