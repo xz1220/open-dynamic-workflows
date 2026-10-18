@@ -671,9 +671,12 @@ export class RunStore {
  */
 export class JsonlSink implements EventSink {
   redactor: Redactor | undefined;
+  /** Told of each event once it is written, as emitted (the worker's drift watch, ODW extension; see ../drift). */
+  onEmit: ((ev: WorkflowEvent) => void) | undefined;
   constructor(private readonly path: string) {}
   emit(ev: WorkflowEvent): void {
     appendFileSync(this.path, JSON.stringify(this.redactor ? this.redactor.record(ev) : ev) + "\n");
+    this.onEmit?.(ev);
   }
 }
 

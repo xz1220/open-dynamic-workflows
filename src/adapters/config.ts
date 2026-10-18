@@ -134,6 +134,7 @@ const KNOWN_TOP_KEYS = [
   "applyVerify",
   "maxTranscriptBytes",
   "recordVersions",
+  "driftEval",
   "notes",
   "permissions",
   "trust",
@@ -1189,6 +1190,7 @@ function buildSettings(raw: Record<string, unknown>): Settings {
     ),
     recordVersions:
       raw["recordVersions"] == null ? DEFAULT_SETTINGS.recordVersions : buildFlag("recordVersions", raw["recordVersions"]),
+    driftEval: raw["driftEval"] == null ? DEFAULT_SETTINGS.driftEval : buildFlag("driftEval", raw["driftEval"]),
     notes: raw["notes"] == null ? DEFAULT_SETTINGS.notes : buildFlag("notes", raw["notes"]),
     permissions: raw["permissions"] == null ? DEFAULT_SETTINGS.permissions : buildTier(raw["permissions"]),
     trust: raw["trust"] == null ? DEFAULT_SETTINGS.trust : buildTrust(raw["trust"]),

@@ -477,6 +477,14 @@ export interface Settings {
    */
   recordVersions: boolean;
   /**
+   * Drift watch (an ODW extension; see ../drift): when a run's CLI versions or
+   * requested models changed since the workflow's previous run, and the
+   * workflow has an eval file (`.odw/evals/<name>.json`), start `odw eval
+   * <name> --baseline <last report>` once the run ends, detached. `false`
+   * (the default) only suggests it in the run's log.
+   */
+  driftEval: boolean;
+  /**
    * The run's notes board for every agent (an ODW extension; see ../notes):
    * the notes so far in each prompt, `ODW_NOTES` to post and read them, and
    * each isolated agent's interface changes posted as it finishes. Off by

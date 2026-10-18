@@ -56,6 +56,30 @@ export interface RunSummary {
   eval?: EvalRunTag;
   /** A dry run (`odw run --dry`; ODW extension): every agent got a stub reply, no model was called. Absent otherwise. */
   dry?: true;
+  /**
+   * What changed under the workflow since its previous run (ODW extension:
+   * drift watch): the run compared with, and each CLI version or requested
+   * model that differs. Absent when nothing did.
+   */
+  drift?: RunDrift;
+}
+
+/** One thing that changed since a workflow's previous run (ODW extension: drift watch). */
+export interface DriftChange {
+  /** An adapter CLI's version (`cli`), or the model an agent label asked for on its adapter (`model`). */
+  kind: "cli" | "model";
+  adapter: string;
+  /** The agent label whose model changed (kind "model"). */
+  label?: string;
+  /** What the previous run had, and what this one has; null: the CLI's default model. */
+  from: string | null;
+  to: string | null;
+}
+
+/** A run's drift: the run it is compared with, and what changed. */
+export interface RunDrift {
+  since: string;
+  changes: DriftChange[];
 }
 
 /** Which `odw eval` run this is: the eval's name, the case, the cell's adapter, the repeat (from 1). */
