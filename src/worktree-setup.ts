@@ -36,6 +36,7 @@ import { copyFile, lstat, mkdir, readdir, readFile, readlink, stat, symlink } fr
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 
+import { SAFE_GIT } from "./git-safety.js";
 import { DEFAULT_SETTINGS } from "./adapters/builtin.js";
 import { runCommand } from "./adapters/runner.js";
 import { cliOk } from "./adapters/types.js";
@@ -195,7 +196,7 @@ async function matchUntracked(top: string, patterns: string[]): Promise<Set<stri
 
 async function gitList(args: string[]): Promise<string[]> {
   try {
-    const { stdout } = await run("git", args, { maxBuffer: LIST_MAX_BUFFER, windowsHide: true });
+    const { stdout } = await run("git", [...SAFE_GIT, ...args], { maxBuffer: LIST_MAX_BUFFER, windowsHide: true });
     return stdout.split("\0").filter(Boolean);
   } catch (err) {
     const detail = (err as { stderr?: string }).stderr?.trim() || (err as Error).message;

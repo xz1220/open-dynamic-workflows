@@ -255,6 +255,19 @@ changed, and run on a schedule — and a dashboard redesigned to watch them.
 - The dashboard server reads events incrementally, pushes run-list deltas, and stays
   responsive with thousands of runs.
 
+### Security fixes found in review
+- A sandboxed agent could plant git config (`core.fsmonitor`, hooks) in its workspace's
+  `.git` that ran on the host when ODW captured its diff. A container now gets its
+  workspace's `.git` read-only, and every git ODW runs on the host turns fsmonitor and
+  hooks off.
+- A reply file the agent replaced with a link or a FIFO was followed (returning a host
+  file as the reply) or waited on forever; such files are now refused.
+- A relative `--config` was resolved by the worker in the run's source directory, so an
+  untrusted run could read the repository's own config; it is now made absolute where
+  `odw` was started.
+- The private homes holding copies of a CLI's login are removed by the worker's exit
+  backstop too, not only on a clean exit.
+
 ### Changed behavior — check before upgrading
 - The built-in `codex` adapter runs `codex exec --json --output-last-message
   {reply_file}` (it ran text mode). A config entry that gives `codex` its own `command`

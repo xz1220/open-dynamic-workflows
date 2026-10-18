@@ -43,6 +43,7 @@ import {
   type CapturedChanges,
   type WorktreeBaseline,
 } from "./changes.js";
+import { SAFE_GIT } from "./git-safety.js";
 import { ConfigError } from "./errors.js";
 import { prepareWorktree, type WorktreeSetupOptions } from "./worktree-setup.js";
 
@@ -79,7 +80,7 @@ const GIT_MAX_BUFFER = 4 * 1024 * 1024;
 const DIFF_CAP_BYTES = 32 * 1024 * 1024;
 
 async function git(dir: string, args: string[]): Promise<string> {
-  const { stdout } = await run("git", ["-C", dir, ...args], {
+  const { stdout } = await run("git", ["-C", dir, ...SAFE_GIT, ...args], {
     maxBuffer: GIT_MAX_BUFFER,
     windowsHide: true,
   });

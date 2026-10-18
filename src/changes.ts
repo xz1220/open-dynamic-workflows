@@ -34,6 +34,7 @@ import { createReadStream } from "node:fs";
 import { copyFile, lstat, mkdir, open, readlink, rename, rm, stat, utimes, type FileHandle } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 
+import { SAFE_GIT } from "./git-safety.js";
 import type { Workspace } from "./workspace.js";
 
 /** The diffstat of an isolated agent's change, as its events and saved record carry it. */
@@ -354,7 +355,7 @@ async function writeDiff(
   let cut = 0; // just past the last newline written
   let truncated = false;
   try {
-    const child = spawn("git", ["-C", work, ...DIFF_CONFIG, "diff", "--cached", ...DIFF_FLAGS, "--full-index", base], {
+    const child = spawn("git", ["-C", work, ...SAFE_GIT, ...DIFF_CONFIG, "diff", "--cached", ...DIFF_FLAGS, "--full-index", base], {
       env,
       signal: opts.signal,
       stdio: ["ignore", "pipe", "pipe"],
@@ -689,7 +690,7 @@ export interface GitResult {
 /** Run git in `cwd`; resolves however it exits, rejects only when it cannot run (or printed too much). */
 export function runGit(cwd: string, args: string[], opts: GitOptions = {}): Promise<GitResult> {
   return new Promise((done, fail) => {
-    const child = spawn("git", ["-C", cwd, ...args], {
+    const child = spawn("git", ["-C", cwd, ...SAFE_GIT, ...args], {
       env: opts.env,
       signal: opts.signal,
       stdio: ["pipe", "pipe", "pipe"],

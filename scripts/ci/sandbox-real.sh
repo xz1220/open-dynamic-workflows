@@ -14,6 +14,7 @@ work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 proj="$work/proj"
 mkdir -p "$proj/.odw/workflows"
+git -C "$proj" init -q
 cat > "$proj/odw.config.json" <<JSON
 {
   "defaultAdapter": "probe",
@@ -52,6 +53,7 @@ if (report.cwd !== proj) fail(`workspace at ${report.cwd}, not ${proj}`);
 if (String(report.uid) !== uid) fail(`ran as uid ${report.uid}, not the host's ${uid}`);
 if (!report.wroteWorkspace || !existsSync(`${proj}/from-container.txt`)) fail("could not write its workspace");
 if (report.wroteRoot) fail("could write the root filesystem");
+if (report.wroteGit) fail("could write the workspace's .git");
 if (!report.wroteTmp) fail("could not write /tmp");
 if (report.hostPathLeaked) fail("the host's PATH reached the container");
 if (offlineExit === 0) fail("an exec() step reached the network");

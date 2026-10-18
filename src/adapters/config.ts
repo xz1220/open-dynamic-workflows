@@ -534,7 +534,7 @@ export function homeDir(): string {
   return process.env.HOME?.trim() || homedir();
 }
 
-function expandHome(p: string): string {
+export function expandHome(p: string): string {
   if (p === "~") return homeDir();
   if (p.startsWith("~/") || p.startsWith("~\\")) return join(homeDir(), p.slice(2));
   return p;

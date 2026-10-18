@@ -1490,6 +1490,11 @@ What each CLI run becomes (`docker run --rm -i --init --pull never --name odw-<r
   you list. In an isolated worktree, `git` inside the container cannot reach the
   repository (the worktree's `.git` points outside it); ODW takes the diff on the host as
   always. Bind the repository's `.git` read-only with `mounts` if your agents need history.
+  The workspace's own `.git` (a worktree's `.git` file, or the repository's `.git`
+  directory when agents work in place) is bound **read-only**: ODW runs git on the host
+  in that directory afterwards, and config an agent planted there (`core.fsmonitor`,
+  hooks) would otherwise run on the host. Every git ODW runs also turns fsmonitor and
+  hooks off, and a reply file that is a link or a FIFO is refused, never followed.
 - **The CLI's login, as a copy.** `cliConfig: "copy"` (the default) copies the CLI's own
   login and config files into a private temporary home (bound at `/odw/home`, removed
   after the run), so the agent can use them but never change yours. Only the files each

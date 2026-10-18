@@ -50,7 +50,7 @@
  */
 
 import { spawn } from "node:child_process";
-import { existsSync, statSync } from "node:fs";
+import { existsSync, rmSync, statSync } from "node:fs";
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { basename, isAbsolute, join, resolve } from "node:path";
@@ -747,20 +747,22 @@ export function clientEnv(env: Record<string, string | undefined>): Record<strin
 }
 
 /** Containers ODW started that have not been accounted for: name → engine. */
-const live = new Map<string, SandboxEngine>();
+const live = new Map<string, { engine: SandboxEngine; home?: string }>();
 let backstop: (() => void) | undefined;
 
 /** Count a container as live until the returned function is called, so the worker's backstop kills it too. */
-export function trackContainer(name: string, engine: SandboxEngine): () => void {
-  live.set(name, engine);
+export function trackContainer(name: string, engine: SandboxEngine, home?: string): () => void {
+  live.set(name, { engine, ...(home ? { home } : {}) });
   // Synchronous and fire-and-forget: it may run in a process 'exit' handler.
   backstop ??= onKillAll(() => {
-    for (const [container, eng] of live) {
+    for (const [container, entry] of live) {
       try {
-        spawn(eng, ["rm", "--force", container], { detached: true, stdio: "ignore" }).unref();
+        spawn(entry.engine, ["rm", "--force", container], { detached: true, stdio: "ignore" }).unref();
       } catch {
         /* the engine is gone: nothing to do */
       }
+      // Its private home holds copies of the CLI's login: it must not outlive the run.
+      if (entry.home) rmSync(entry.home, { recursive: true, force: true });
     }
     live.clear();
   });
@@ -818,6 +820,11 @@ export interface OpenedContainer {
   close(clean: boolean): Promise<void>;
 }
 
+/** The `.git` file or directory of each of `dirs` that has one, mounted read-only over its read-write parent. */
+export function gitMetadata(dirs: string[]): Array<{ source: string; target: string; readonly: boolean }> {
+  return dirs.map((dir) => join(dir, ".git")).filter((path) => existsSync(path)).map((path) => ({ source: path, target: path, readonly: true }));
+}
+
 /** Prepare one container run: its home, mounts, environment and argv (see the module comment). */
 export async function openContainer(opts: OpenContainer): Promise<OpenedContainer> {
   const { box, engine } = opts;
@@ -839,6 +846,10 @@ export async function openContainer(opts: OpenContainer): Promise<OpenedContaine
     mounts: [
       { source: opts.workspace, target: opts.workspace, readonly: false },
       ...(inside ? [] : [{ source: workdir, target: workdir, readonly: false }]),
+      // Git's metadata stays read-only: odw runs git on the host in these
+      // directories afterwards (to capture a diff), and config planted there
+      // — core.fsmonitor, core.hooksPath, a filter — would run on the host.
+      ...gitMetadata(inside ? [opts.workspace] : [opts.workspace, workdir]),
       { source: home.dir, target: CONTAINER_HOME, readonly: false },
       ...home.mounts,
       ...(opts.extraMounts ?? []),
@@ -853,7 +864,7 @@ export async function openContainer(opts: OpenContainer): Promise<OpenedContaine
     labels: { "odw.run": opts.runId ?? "none" },
     command: opts.command,
   });
-  const untrack = trackContainer(name, engine);
+  const untrack = trackContainer(name, engine, home.dir);
   let closed = false;
   return {
     argv,
