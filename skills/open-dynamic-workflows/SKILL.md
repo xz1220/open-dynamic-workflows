@@ -218,6 +218,13 @@ budget-scaled depth — read
 odw run wf.js --wait --args '{"question": "Design a cache."}'   # block and print the result
 ```
 
+When a run must end by a time — a CI job's timeout, the user's "give it ten
+minutes" — add `--deadline <seconds>` (ODW extension): the run is then STOPPED
+when they pass, its finished agents and diffs kept; `--wait` prints `{ state:
+"stopped", reason: "deadline", finished: [{ agentId, label, phase, value }] }`
+and exits 3. `--timeout <s>` is not that: it only stops waiting (exit 124) and
+the run goes on.
+
 For long runs, fire-and-poll instead of blocking yourself:
 
 ```bash
@@ -500,9 +507,28 @@ odw pull $RUN --from ssh://me@box                # copy it here (again while it 
   did not make.
 - `--config`, `--runs-root`, `--wait`, `--fg`, `--timeout` are refused with
   `--on`; `--args`, `--adapter`, `--permissions`, `--untrusted`, `--sandbox`,
-  `--budget` go along (`--args` as a file on stdin, never on a command line).
+  `--budget`, `--deadline` go along (`--args` as a file on stdin, never on a command line).
 - A pulled run is marked `origin: "remote"`; until it ends there, the local
   copy is a snapshot that reads as stale — pull again to refresh it.
+
+### Start runs from webhooks, or in CI (ODW extension)
+
+- **Signed triggers.** The config's `"triggers": { "<name>": { workflow, verify:
+  "github"|"linear"|"slack"|"hmac-sha256", secretEnv (or secret), args: { key:
+  "$.json.path" }, events?, dedupe?, concurrency?, rateLimit?, untrusted? } }`
+  make `odw serve` answer `POST /api/triggers/<name>`: a webhook whose signature
+  checks out starts that workflow — `--untrusted` unless the trigger says
+  `"untrusted": false` — and gets `202 { runId }`. The run's `context` (trigger,
+  event, issue id and URL, repo, Slack channel and thread) reaches the `notify`
+  hooks (`context` in the payload; `ODW_TRIGGER`, `ODW_EVENT_ID`,
+  `ODW_EVENT_URL`, `ODW_CONTEXT` for a command), so a hook can answer on the
+  issue. Set this up only when the user asks; the secrets are theirs to place in
+  environment variables, never in a committed file.
+- **GitHub Actions.** `uses: xz1220/open-dynamic-workflows/action@<tag>` with
+  `workflow:` and `timeout-minutes:` (the job's) runs `odw run --wait
+  --deadline` a margin before the job times out, writes the receipt to the job
+  summary and uploads `odw bundle`; `apply-pr: true` opens a draft PR. See
+  `docs/github-action.md` in the repository.
 
 ### Evaluate a workflow (ODW extension)
 

@@ -426,6 +426,7 @@ odw run wf.js [--args JSON|@file]            # 终端里前台展示;运行本�
                                              #   --permissions read|edit|full:agent 能做什么
                                              #   --untrusted:挡住仓库的 CLAUDE.md、hooks 等
                                              #   --budget <tokens> 设置 budget.total
+                                             #   --deadline <s>:s 秒后停止运行(见下文)
 ```
 
 运行本体永远在 detached 后台 worker 里执行。只要你的 shell 不是终端——`$(…)` 捕获、
@@ -454,6 +455,14 @@ odw list
 
 `--fg` / `-d, --detach` / `--wait`(阻塞到结束并打印结果,stderr 仅一行 run id
 提示)可显式指定模式;环境变量 `ODW_DETACH=1` 强制后台。
+
+**`--deadline <秒数>`**(ODW 扩展)在运行开始满这么多秒后停止它——像 `odw stop` 一样优雅:
+agent 被杀掉,隔离 agent 的 diff 与每个已完成 agent 的保存结果都保留,运行记为 `stopped`
+(状态里有 `stopReason: "deadline"`)。由 worker 执行,所以任何模式下都有效。配合 `--wait`
+或 `--fg` 时,odw 随后打印已完成的部分——`{ "state": "stopped", "reason": "deadline",
+"deadline", "finished": [{ agentId, label, phase, value }] }`——并**以退出码 3 退出**。退出码:
+0 完成,1 失败或被人停止,3 到达截止时间被停止,124 为 `--timeout`(它只是不再*等待*,运行
+继续)。在 CI 里应当用 `--deadline`:见[在 GitHub Actions 中运行](#在-github-actions-中运行odw-扩展)。
 
 一次运行在独立的 detached worker 进程里执行,并把一切持久化到一个 run 目录——所以它能
 比启动它的命令活得更久,也能从任何地方被观测。向这个 worker 发送 SIGTERM、SIGINT 或
@@ -671,6 +680,63 @@ odw schedule remove digest     # 删除系统里的条目和定义(条目已被�
 表达式是 cron 的五个字段(数字、`*`、列表、范围、步长、`jan`-`dec`、`sun`-`sat`);
 `@daily`、`L`、`#` 之类会被拒绝并说明原因。完整说明,以及手写 cron 行这一手动替代方案:
 [`docs/recipes/cron.md`](docs/recipes/cron.md)。
+
+### 由 webhook 启动运行:GitHub、Linear、Slack(ODW 扩展)
+
+从工作所在的地方启动运行,并在那里回复。在配置里写一个触发器,`odw serve` 就会响应
+`POST /api/triggers/<名字>`:签名校验通过的 webhook 启动该触发器的工作流,参数取自
+webhook 的正文,并返回 `202 { "runId" }`。
+
+```jsonc
+"triggers": {
+  "gh-triage": {
+    "workflow": "triage",                          // 受管工作流名或绝对路径
+    "verify": "github",                            // github | linear | slack | hmac-sha256
+    "secretEnv": "GITHUB_WEBHOOK_SECRET",          // 或 "secret"(至少 16 个字符)
+    "args": { "issue": "$.issue.number", "body": "$.issue.body" },  // JSONPath:$.a.b、$['k']、$.a[0]
+    "events": ["issues.labeled"],                  // 可选:事件过滤
+    "dedupe": "$.issue.number",                    // 可选:每个 issue 同时只有一个运行
+    "concurrency": 2,                              // 可选:同时进行的运行上限
+    "rateLimit": { "max": 30, "windowSec": 3600 }  // 默认值
+    // 默认 "untrusted": true;"source":运行的工作目录
+  }
+}
+```
+
+- **按各家文档验签:** GitHub `X-Hub-Signature-256`,Linear `Linear-Signature`(且
+  `webhookTimestamp` 在一分钟内),Slack `X-Slack-Signature` 加五分钟内的
+  `X-Slack-Request-Timestamp`,其他来源用 ODW 自己的 `X-ODW-Signature`(对
+  `<时间戳>.<正文>` 签名)。都是对原始正文的 HMAC-SHA256、常数时间比较;见过的投递
+  (重放或重试)不会再启动运行。
+- **默认不受信任:** issue 文本谁都能写,所以这些运行默认 `--untrusted`,除非触发器写明
+  `"untrusted": false`。
+- **范围很窄:** 只有配置里的触发器名存在(否则 `404`),每个只能启动它自己的工作流;
+  签名错误 `401`(按地址限速),正文超过 1 MiB `413`,超出 `concurrency` 或 `rateLimit`
+  `429`。这个路由在非回环绑定上、经隧道的 `Host` 也会响应——签名就是凭据——看板的其他
+  部分规则不变。
+- **原路回复:** 运行会记录 `context`——触发器、事件、issue 的 id 与 URL、仓库、Slack 频道与
+  线程——[`notify`](#运行通知) 钩子都会收到,于是钩子可以在 issue 下评论、在线程里回复,
+  或用 `odw apply --pr` 开草稿 PR 并贴上链接。
+
+各平台的设置与这三个钩子:[`docs/recipes/triggers.md`](docs/recipes/triggers.md)。
+
+### 在 GitHub Actions 中运行(ODW 扩展)
+
+一个组合 action 在 CI 中运行工作流,并在 job 超时**之前**把它停下,输出因此得以保留:
+
+```yaml
+- uses: xz1220/open-dynamic-workflows/action@v0.7.0
+  with:
+    workflow: .odw/workflows/review.js
+    timeout-minutes: 30        # 与 job 的 timeout-minutes 相同
+  env:
+    ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+```
+
+它安装固定版本的 odw(校验 SHA-256),以 job 超时前留出余量的 `--deadline` 运行
+`odw run --wait`,把花费小票、agent 表和失败写入 job summary,把 `odw bundle` 上传为
+artifact,`apply-pr: true` 时开草稿 PR。来自 fork 的 PR 以及 issue、评论事件以
+`--untrusted` 运行。输入、密钥与示例:[`docs/github-action.md`](docs/github-action.md)。
 
 ### 在自己的服务器上运行(ODW 扩展)
 
@@ -2198,6 +2264,12 @@ hook——webhook 只显示协议和主机,因为 URL 的其余部分就是密�
 和 `ODW_RESUME_AT`(Unix 秒);webhook 收到 `"state": "paused"`、一个
 `"pausedFor": { "reason": "quota", "adapter", "resumeAt" }` 字段,以及一行类似
 `odw · nightly paused until 19:10 (codex quota) · odw resume <run> goes on now` 的 `text`。
+
+由[签名触发器](#由-webhook-启动运行githublinearslackodw-扩展)启动的运行(ODW 扩展)还会在每个
+payload 中带上它的 `context`——`{ trigger, provider, event, deliveryId, id, url, repo, channel,
+threadTs }`(webhook 有的才有)——命令则得到 `ODW_TRIGGER`、`ODW_EVENT_ID`、`ODW_EVENT_URL`
+和 `ODW_CONTEXT`(完整 JSON),于是钩子能在工作来源的 issue 或线程里回复:
+[`docs/recipes/triggers.md`](docs/recipes/triggers.md)。
 
 Slack、Discord、ntfy 和桌面横幅的现成配置见
 [`docs/recipes/notify.md`](docs/recipes/notify.md)。

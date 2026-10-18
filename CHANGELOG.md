@@ -14,6 +14,35 @@ cannot pass for success, declared scopes, a notes board, an egress allowlist. Pl
 dashboard redesigned to watch them, evals and comparisons to check them, and two
 independent security reviews whose findings are all fixed.
 
+### Start runs from where work is tracked; run in CI
+- Signed inbound triggers (**ODW extension**): the config's `"triggers"` name a
+  workflow, a secret (`secretEnv`, or `secret`) and how deliveries are signed —
+  `github` (`X-Hub-Signature-256`), `linear` (`Linear-Signature`, `webhookTimestamp`
+  within a minute), `slack` (`X-Slack-Signature`, timestamp within five minutes) or
+  ODW's own `hmac-sha256` — plus a JSONPath mapping (`$.issue.number`) from the
+  webhook's body into the run's args. `odw serve` answers `POST
+  /api/triggers/<name>` with `202 { runId }`, off loopback too (the signature is the
+  credential), and starts the run `--untrusted` unless the trigger says otherwise.
+  Replays start nothing; bad signatures are rate limited; `events`, `dedupe` (one
+  active run per issue), `concurrency` and `rateLimit` per trigger; bodies up to 1
+  MiB. Recipes: [`docs/recipes/triggers.md`](docs/recipes/triggers.md).
+- A triggered run's `context` (trigger, event, delivery id, issue id and URL,
+  repository, Slack channel and thread) reaches the `notify` hooks — `context` in
+  the payload, `ODW_TRIGGER`, `ODW_EVENT_ID`, `ODW_EVENT_URL` and `ODW_CONTEXT` for a
+  command — so a hook can comment on the issue, reply in the thread or open a draft
+  PR and link it.
+- `odw run --deadline <seconds>` (**ODW extension**) stops the run gracefully once
+  they pass: status `stopped` (`stopReason: "deadline"`), diffs and finished agents
+  kept. `--wait`/`--fg` print what finished and exit **3**. `--timeout` still only
+  stops waiting (exit 124).
+- A composite GitHub Action, `xz1220/open-dynamic-workflows/action@<tag>`: installs
+  the pinned release (SHA-256 verified; `install.sh` learned `ODW_SKILL=0` for a
+  binary-only install), runs `odw run --wait --deadline` a margin before the job's
+  timeout, writes the spend receipt, agent table and failures to the job summary,
+  uploads `odw bundle`, and can open a draft PR with `odw apply --pr`. Fork pull
+  requests and issue events run `--untrusted`. See
+  [`docs/github-action.md`](docs/github-action.md).
+
 ### Recover instead of restarting
 - Every finished `agent()` result is saved the moment it lands. Read it mid-run with
   `odw agents <run>` and `odw result <run> --agent <id|label>`, or in the dashboard

@@ -494,6 +494,7 @@ odw run wf.js [--args JSON|@file]            # foreground in a terminal; run kee
                                              #   --permissions read|edit|full: what its agents may do
                                              #   --untrusted: keep the repository's CLAUDE.md, hooks… out
                                              #   --budget <tokens> sets budget.total
+                                             #   --deadline <s>: STOP the run after s seconds (below)
 ```
 
 The run itself always executes in a detached background worker. Anywhere your
@@ -523,6 +524,17 @@ odw list
 `--fg` / `-d, --detach` / `--wait` (block, then print the result; a single
 run-id line on stderr) force a mode explicitly; `ODW_DETACH=1` forces
 background from the environment.
+
+**`--deadline <seconds>`** (ODW extension) stops the run once that many seconds
+have passed since it started — gracefully, like `odw stop`: its agents are
+killed, isolated agents' diffs and every finished agent's saved result are kept,
+and the run is recorded `stopped` (`stopReason: "deadline"` in its status). The
+worker enforces it, so it holds in every mode. With `--wait` or `--fg`, odw then
+prints what finished — `{ "state": "stopped", "reason": "deadline", "deadline",
+"finished": [{ agentId, label, phase, value }] }` — and **exits 3**. Exit codes:
+0 done, 1 failed or stopped by a person, 3 stopped at its deadline, 124 for
+`--timeout`, which only gives up *waiting* and leaves the run going. In CI,
+`--deadline` is the one to use: see [Run in GitHub Actions](#run-in-github-actions-odw-extension).
 
 A run executes in a detached worker process and persists everything to a run
 directory, so it outlives the command that started it and can be observed from
@@ -764,6 +776,71 @@ odw schedule remove digest     # delete the OS entry and the definition (safe if
 The expression is cron's five fields (numbers, `*`, lists, ranges, steps, `jan`-`dec`,
 `sun`-`sat`); `@daily`, `L`, `#` and the like are refused with the reason. The full guide,
 and the raw cron line as the manual alternative: [`docs/recipes/cron.md`](docs/recipes/cron.md).
+
+### Start runs from webhooks: GitHub, Linear, Slack (ODW extension)
+
+Start a run from where the work is tracked, and answer there. Name a trigger in
+the config and `odw serve` answers `POST /api/triggers/<name>`: a webhook whose
+signature checks out starts the trigger's workflow, its args taken from the
+webhook's body, and gets `202 { "runId" }` back.
+
+```jsonc
+"triggers": {
+  "gh-triage": {
+    "workflow": "triage",                          // a managed name or an absolute path
+    "verify": "github",                            // github | linear | slack | hmac-sha256
+    "secretEnv": "GITHUB_WEBHOOK_SECRET",          // or "secret" (16+ characters)
+    "args": { "issue": "$.issue.number", "body": "$.issue.body" },  // JSONPath: $.a.b, $['k'], $.a[0]
+    "events": ["issues.labeled"],                  // optional filter
+    "dedupe": "$.issue.number",                    // optional: one active run per issue
+    "concurrency": 2,                              // optional cap on active runs
+    "rateLimit": { "max": 30, "windowSec": 3600 }  // the default
+    // "untrusted": true is the default; "source": the runs' working directory
+  }
+}
+```
+
+- **Signed, each as its provider documents:** GitHub `X-Hub-Signature-256`,
+  Linear `Linear-Signature` (and `webhookTimestamp` within a minute), Slack
+  `X-Slack-Signature` with `X-Slack-Request-Timestamp` within five minutes, or
+  ODW's own `X-ODW-Signature` over `<timestamp>.<body>` for anything else. HMAC-SHA256
+  over the raw body, compared in constant time; a delivery seen before (a replay,
+  a retry) starts nothing.
+- **Untrusted by default:** issue text is anyone's input, so the runs are
+  `--untrusted` unless the trigger says `"untrusted": false`.
+- **Narrow:** only trigger names in the config exist (`404` otherwise), each
+  starts only its own workflow; `401` on a bad signature (rate limited per
+  address), `413` past 1 MiB, `429` past `concurrency` or `rateLimit`. The route
+  answers off loopback and through a tunnel's `Host` — the signature is its
+  credential — while the rest of the dashboard keeps its rules.
+- **Answer back:** the run records a `context` — the trigger, the event, the
+  issue's id and URL, the repository, a Slack channel and thread — that
+  [`notify`](#run-notifications) hooks receive, so a hook can comment on the issue,
+  reply in the thread, or open a draft PR with `odw apply --pr` and link it.
+
+Setup per provider and those three hooks:
+[`docs/recipes/triggers.md`](docs/recipes/triggers.md).
+
+### Run in GitHub Actions (ODW extension)
+
+A composite action runs a workflow in CI and stops it **before** the job times
+out, so its output survives:
+
+```yaml
+- uses: xz1220/open-dynamic-workflows/action@v0.7.0
+  with:
+    workflow: .odw/workflows/review.js
+    timeout-minutes: 30        # the job's timeout-minutes
+  env:
+    ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+```
+
+It installs the pinned odw release (SHA-256 verified), runs `odw run --wait
+--deadline` with a margin before the job's timeout, writes the spend receipt,
+agent table and failures to the job summary, uploads `odw bundle` as an
+artifact, and with `apply-pr: true` opens a draft PR. Pull requests from forks
+and issue or comment events run `--untrusted`. Inputs, secrets and examples:
+[`docs/github-action.md`](docs/github-action.md).
 
 ### Run on your own server (ODW extension)
 
@@ -2532,6 +2609,13 @@ Add `"paused"` to hear when a run [pauses for a spent quota](#pause-for-a-spent-
 `ODW_PAUSED_ADAPTER` and `ODW_RESUME_AT` (Unix seconds), the webhook with
 `"state": "paused"`, a `"pausedFor": { "reason": "quota", "adapter", "resumeAt" }` field,
 and a `text` line such as `odw · nightly paused until 19:10 (codex quota) · odw resume <run> goes on now`.
+
+A run a [signed trigger](#start-runs-from-webhooks-github-linear-slack-odw-extension)
+started (ODW extension) also carries its `context` — `{ trigger, provider, event,
+deliveryId, id, url, repo, channel, threadTs }`, as far as the webhook had them — in
+every payload, and to the command as `ODW_TRIGGER`, `ODW_EVENT_ID`, `ODW_EVENT_URL` and
+`ODW_CONTEXT` (all of it, as JSON), so a hook can answer on the issue or in the
+thread the work came from: [`docs/recipes/triggers.md`](docs/recipes/triggers.md).
 
 Ready-made setups for Slack, Discord, ntfy and desktop banners:
 [`docs/recipes/notify.md`](docs/recipes/notify.md).

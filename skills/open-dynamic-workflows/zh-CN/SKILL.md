@@ -183,6 +183,11 @@ const approvedPlan = r.payload   // 对方修改后的内容，或 plan 本身
 odw run wf.js --wait --args '{"question": "Design a cache."}'   # 阻塞并打印结果
 ```
 
+运行必须在某个时间前结束时——CI job 的超时、用户说「给它十分钟」——加上
+`--deadline <秒数>`（ODW 扩展）：到时运行会被停止，已完成的 agent 与 diff 都保留；
+`--wait` 打印 `{ state: "stopped", reason: "deadline", finished: [{ agentId, label, phase, value }] }`
+并以退出码 3 退出。`--timeout <s>` 不同：它只是不再等待（退出码 124），运行继续。
+
 长任务用 fire-and-poll，不阻塞自己：
 
 ```bash
@@ -410,10 +415,26 @@ odw pull $RUN --from ssh://me@box                # 拷回本机（运行中也�
   不含被忽略的）；`--sync rsync` 镜像整个目录。工作目录默认 `~/odw-remote/<仓库名>`，URL
   带路径时用它（`ssh://box/~/work/app`）；不是 odw 建的非空目录会被拒绝。
 - 与 `--on` 同用时 `--config`、`--runs-root`、`--wait`、`--fg`、`--timeout` 会被拒绝；
-  `--args`、`--adapter`、`--permissions`、`--untrusted`、`--sandbox`、`--budget` 一并传过去
+  `--args`、`--adapter`、`--permissions`、`--untrusted`、`--sandbox`、`--budget`、`--deadline` 一并传过去
   （`--args` 作为文件经 stdin 传递，绝不放在命令行上）。
 - 拉回的运行标记为 `origin: "remote"`；在那边结束之前，本地拷贝是一个显示为 stale 的快照——
   再拉一次即可刷新。
+
+### 由 webhook 或在 CI 中启动运行（ODW 扩展）
+
+- **签名触发器。** 配置中的 `"triggers": { "<名字>": { workflow, verify:
+  "github"|"linear"|"slack"|"hmac-sha256", secretEnv（或 secret）, args: { 键:
+  "$.json.path" }, events?, dedupe?, concurrency?, rateLimit?, untrusted? } }` 让
+  `odw serve` 响应 `POST /api/triggers/<名字>`：签名校验通过的 webhook 启动该工作流——
+  除非触发器写明 `"untrusted": false`，否则以 `--untrusted` 运行——并返回
+  `202 { runId }`。运行的 `context`（触发器、事件、issue 的 id 与 URL、仓库、Slack 频道
+  与线程）会传给 `notify` 钩子（payload 中的 `context`；命令得到 `ODW_TRIGGER`、
+  `ODW_EVENT_ID`、`ODW_EVENT_URL`、`ODW_CONTEXT`），钩子因此可以在 issue 下回复。只在
+  用户要求时设置；密钥由用户放进环境变量，绝不写进提交的文件。
+- **GitHub Actions。** `uses: xz1220/open-dynamic-workflows/action@<tag>`，配上
+  `workflow:` 与 `timeout-minutes:`（job 的），会在 job 超时前留出余量以
+  `odw run --wait --deadline` 运行，把小票写入 job summary 并上传 `odw bundle`；
+  `apply-pr: true` 会开草稿 PR。见仓库中的 `docs/github-action.md`。
 
 ### 评估工作流（ODW 扩展）
 
