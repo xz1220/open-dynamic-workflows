@@ -537,6 +537,19 @@ independent security reviews whose findings are all fixed.
   `pipeline()` the source settles at more than 4,096 items, which Claude Code rejects
   (ODW runs it, nothing enforced), and a `meta` that is not a pure literal, which
   Claude Code drops from its completions. `validate()` gives the same warnings.
+- Input schema and fan-out health (**ODW extension**): `meta.input` declares the shape
+  of `args` as a JSON Schema (the subset `agent()` schemas are checked with; any other
+  keyword is refused at load). `odw run`, `rerun`, `resume`, schedules (also at `odw
+  schedule add`) and triggers (`422`) check `args` before the run exists, naming each
+  path at fault — an array or object that arrived as a string of JSON is said to look
+  encoded twice, never decoded; `odw run <wf> --help` prints it. Every `parallel()` and
+  `pipeline()` writes a `fanout_done` event (ok, failed by reason, null), shown by `odw
+  logs`, the live view and a chip on the dashboard's run, and logs a line when over
+  half is null; `parallel(thunks, { minOk: n | 0.8 | "all" })` throws a
+  `FanOutShortfall` with the counts instead. Without `minOk` the dialect's nulls are
+  unchanged. `odw check` hints (never fails) at a fan-out's `.filter(Boolean)` or a list
+  matched on an agent's text whose emptiness nothing checks
+  (anthropics/claude-code#69206, #94535).
 - `exec(command, opts)` runs tests, builds and linters without a model, as steps of the
   graph ([#31](https://github.com/xz1220/open-dynamic-workflows/issues/31); **ODW
   extension**). Examples: `test-fix-loop.js`, `review-swarm.js`, `plan-approve-execute.js`.

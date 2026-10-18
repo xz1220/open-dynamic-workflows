@@ -970,6 +970,52 @@ rejection throws a `CostGateRejected` the script may catch. `costGate: null` on 
 through and logs that once per run. `costGate` is recorded in the run's setup for
 `odw compare`.
 
+### Check the input, count the nulls (ODW extension)
+
+Two small mistakes make a workflow succeed at doing nothing: `args` of the wrong
+shape (an array that arrived as a string of JSON fans out over its characters), and
+a fan-out that came back mostly `null` carried on as if it had worked.
+
+**`meta.input`** declares the shape of `args` as a JSON Schema — the subset
+`agent()` schemas are checked with (`type`, `enum`, `properties`, `required`,
+`additionalProperties: false`, `items`, `minItems`; `description` and `default` are
+shown, never applied). Any other keyword is refused when the workflow loads, so
+nothing declared goes unchecked. Claude Code ignores `meta.input`.
+
+```js
+export const meta = {
+  name: 'triage',
+  description: 'Triage the open issues of some repositories',
+  input: {
+    type: 'object',
+    properties: { repos: { type: 'array', items: { type: 'string' }, minItems: 1, description: 'owner/name' } },
+    required: ['repos'],
+  },
+}
+```
+
+`odw run`, `rerun` and `resume`, a schedule (checked at `odw schedule add` too) and a
+trigger (answered `422`) check `args` before the run exists, and name every path at
+fault — `$.repos: expected array, got string — it looks encoded twice: the string holds
+JSON (an array); pass the array itself, not a string of it`. odw never decodes it for
+you. `odw run triage --help` prints what the workflow takes. A nested `workflow()`
+call is not checked.
+
+**Fan-out health.** Every `parallel()` and `pipeline()` that settles writes a
+`fanout_done` event — how many slots came back ok, failed (by failure reason:
+`rate_limit`, `timeout`, …) or `null` — which `odw logs`, the live view and the
+dashboard (a chip on the run, amber when one came back mostly null) show. When over
+half of one is null, the run logs a line saying so. `parallel(thunks, { minOk })`
+turns that into an error: a count, a fraction of the thunks (`0.8`) or `"all"` — fewer
+ok results and the call throws a `FanOutShortfall` with the counts instead of
+resolving. Without `minOk` nothing changes: failed slots are `null`, as in Claude Code.
+
+`odw check` adds two hints for the same mistakes, never failing the check: a
+`parallel()`/`pipeline()` result put through `.filter(Boolean)` whose length nothing
+checks, and a list chosen by matching what an agent wrote (a `.filter()` on one of
+its fields) whose emptiness nothing checks — when the agent's text matches nothing,
+the steps over that list do nothing, and the run reads as if they passed.
+
 ### Schedule runs (ODW extension)
 
 Nightly digests, triage, audits: `odw schedule` runs a workflow on a cron
@@ -1352,6 +1398,7 @@ workflow edited or the whole run paid for again:
 ```bash
 odw check wf.js                           # does it load? errors with line, column and a code frame
 odw check wf.js --capabilities            # … and what it names outside the dialect: process, require, import(, …
+odw run wf.js --help                      # what it takes as --args, from its meta.input
 odw replay $RUN --agent judge             # run that one agent again, as a small new run
 odw replay $RUN --agent judge --prompt @better.txt --adapter codex --model gpt-5
 odw compare $RUN $REPLAY --agent judge    # the original and the replay side by side
@@ -1373,7 +1420,11 @@ Code's dialect — `process`, `require`, `import(`, `globalThis`, `Function(`, `
 `fetch`, `console`, timers, … — each with its first line and column and whether a
 [strict script context](#strict-script-context-odw-extension) has it, and the ODW
 extension primitives it calls (`validate`, `exec`, `checkpoint`, `workflow.input`);
-`--json` carries them as `capabilities: { outOfDialect, extensions }`.
+`--json` carries them as `capabilities: { outOfDialect, extensions }`. Its hints — a
+fan-out's `.filter(Boolean)` or an agent-text match whose emptiness nothing checks
+(see [Check the input, count the nulls](#check-the-input-count-the-nulls-odw-extension))
+— print as `file:line:col: hint: …` and go in `--json` as `hints`; they never change
+the exit code.
 
 Among the warnings are **Claude Code's limits** that ODW does not share: a
 `parallel()` or `pipeline()` whose list the source settles at more than 4,096 items

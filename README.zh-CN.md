@@ -836,6 +836,44 @@ try {
 `parallel()` 上写 `costGate: null` 可为这次调用取消该设置。没有历史时闸门放行所有扇出,并在
 每次运行中只记一次。`costGate` 记录在运行的 setup 里,供 `odw compare` 使用。
 
+### 校验输入,清点 null(ODW 扩展)
+
+两类小错误会让工作流「成功地什么都没做」:`args` 形状不对(数组被当成一串 JSON 字符串传进来,
+扇出按字符展开),以及大半为 `null` 的扇出被当作成功继续往下走。
+
+**`meta.input`** 用 JSON Schema 声明 `args` 的形状——与 `agent()` 的 schema 用同一个校验子集
+(`type`、`enum`、`properties`、`required`、`additionalProperties: false`、`items`、`minItems`;
+`description` 与 `default` 只用于展示,不会被应用)。其他关键字在加载工作流时就会被拒绝,所以声明了
+的约束不会悄悄不被检查。Claude Code 会忽略 `meta.input`。
+
+```js
+export const meta = {
+  name: 'triage',
+  description: 'Triage the open issues of some repositories',
+  input: {
+    type: 'object',
+    properties: { repos: { type: 'array', items: { type: 'string' }, minItems: 1, description: 'owner/name' } },
+    required: ['repos'],
+  },
+}
+```
+
+`odw run`、`rerun`、`resume`、定时任务(`odw schedule add` 时也会检查)和触发器(返回 `422`)都在
+运行创建之前校验 `args`,并逐个指出出错的路径——`$.repos: expected array, got string — it looks
+encoded twice: …`(看起来被多编码了一次)。odw 不会替你自动解码。`odw run triage --help` 打印工作流
+接受的参数。嵌套的 `workflow()` 调用不做校验。
+
+**扇出健康度。** 每个结束的 `parallel()` 与 `pipeline()` 都会写一条 `fanout_done` 事件——多少个
+槽位成功、失败(按失败原因计:`rate_limit`、`timeout` 等)或为 `null`——`odw logs`、实时视图和
+仪表盘(运行头部的一个标签,有扇出大半为 null 时显示为琥珀色)都会显示。超过一半为 null 时运行会记
+一行日志。`parallel(thunks, { minOk })` 把它变成错误:一个数量、thunk 数的一个比例(`0.8`)或
+`"all"`——成功数不足时调用抛出带计数的 `FanOutShortfall`,而不是带着 null 返回。不写 `minOk` 时
+行为不变:失败的槽位为 `null`,与 Claude Code 一致。
+
+`odw check` 针对同样的错误增加两条提示(从不让检查失败):对 `parallel()`/`pipeline()` 结果
+`.filter(Boolean)` 之后没有检查长度的;按 agent 写下的内容筛选出的列表(按它的某个字段 `.filter()`)
+之后没有检查是否为空的——agent 的文本一个都没匹配上时,后续步骤什么都没做,运行看上去却像通过了。
+
 ### 定时运行(ODW 扩展)
 
 每晚的摘要、分诊、审计:`odw schedule` 按 cron 表达式、借助操作系统自带的调度器定时运行
@@ -1165,6 +1203,7 @@ CLI——codex、agy,以及任何没有 `output.servedModel` 规则的适配器�
 ```bash
 odw check wf.js                           # 能否加载?错误带行号、列号和代码片段
 odw check wf.js --capabilities            # ……以及它用到的方言之外的名字:process、require、import( 等
+odw run wf.js --help                      # 按 meta.input 打印它接受的 --args
 odw replay $RUN --agent judge             # 把这一个 agent 作为一次小的新运行重跑
 odw replay $RUN --agent judge --prompt @better.txt --adapter codex --model gpt-5
 odw compare $RUN $REPLAY --agent judge    # 原 agent 与重跑并排对照
@@ -1181,7 +1220,9 @@ TypeScript(不再对每个错误都这样说),非 `async` 回调里的 `await`,�
 脚本用到的 Claude Code 方言之外的标识符——`process`、`require`、`import(`、`globalThis`、`Function(`、
 `eval`、`fetch`、`console`、定时器等——各带首次出现的行列号以及[严格脚本上下文](#严格脚本上下文odw-扩展)
 里有没有它,还有它调用的 ODW 扩展原语(`validate`、`exec`、`checkpoint`、`workflow.input`);`--json` 中为
-`capabilities: { outOfDialect, extensions }`。
+`capabilities: { outOfDialect, extensions }`。它的提示——没检查是否为空的扇出 `.filter(Boolean)` 或按
+agent 文本筛选的结果(见[校验输入,清点 null](#校验输入清点-nullodw-扩展))——打印为
+`文件:行:列: hint: …`,`--json` 中为 `hints`;它们从不改变退出码。
 
 警告中还包括 ODW 没有、但 **Claude Code 有的限制**:源码字面量即可判定超过 4,096 项的
 `parallel()` 或 `pipeline()`(数组字面量、`Array.from({ length: n })`、`Array(n)`、`[...Array(n)]`,

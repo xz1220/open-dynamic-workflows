@@ -272,6 +272,8 @@ odw run wf.js --break Review  # stop for a decision (a checkpoint) before phase/
 odw check wf.js             # does it load? file:line:col, a code frame, portability warnings; exit 0/1
                             #   --capabilities: what it names outside the dialect (process, require, import(, …) and the ODW extensions it calls
                             #   warns of Claude Code's limits: a parallel()/pipeline() over 4,096 items, a meta that is not a pure literal
+                            #   hints (never failing): a fan-out's .filter(Boolean), or a list matched on an agent's text, that nothing checks is non-empty
+odw run wf.js --help        # what it takes as --args, from its meta.input (ODW extension)
 odw eval review             # cases × adapters × repeats: pass rate, cost, time per cell (ODW extension; below)
 odw test review             # scripted replies, no model, $0: does the logic hold? (ODW extension; below)
 odw run review --dry        # every agent stubbed: the phase tree and agent counts, $0 (ODW extension)
@@ -839,4 +841,6 @@ it runs the model.
 | Giving one CLI's model id to agents that may run on another (a phase default, a fallback chain) | Model ids do not cross CLIs: use a tier, `model: '@fast'`, which picks each CLI's own id (ODW extension). |
 | Letting a long agent run unbounded, or retrying one that failed with reason `runaway` as if it were flaky | Give it `limits: { toolCalls, costUsd, repeat: 5 }` (or `agentLimits` in the config): odw kills an agent stuck repeating the same tool call or past its caps at once (ODW extension). A `runaway` failure's `limitHit` says what it was doing — change the prompt or the task, don't just raise the limit. |
 | Fanning out wide without watching what it spends | `odw status $RUN` shows the run's tokens and cost so far, phase by phase, and a `parallel()`/`pipeline()` wider than `fanOutWarn` (default 25) logs a warning (ODW extensions). Size fan-outs to `budget.total` when one is set; `--budget` caps output tokens. |
+| Taking `args` on faith, or a list that arrived as a string of JSON | Declare `meta.input` (a JSON Schema; ODW extension, Claude Code ignores it): odw checks `args` before the run starts, names each path at fault, and calls a string of JSON "encoded twice". `odw run wf.js --help` prints it. |
+| Going on with a fan-out that came back mostly `null` | Every `parallel()`/`pipeline()` logs its ok / failed / null counts (`fanout_done`), and a line when most are null; `parallel(thunks, { minOk: 0.8 })` (or a count, or `"all"`) throws a `FanOutShortfall` instead (ODW extensions). `odw check` hints at a `.filter(Boolean)` or an agent-text match whose emptiness nothing checks. |
 | Hand-writing a cron line around `odw run` | `odw schedule add` writes it with an overlap lock, a log and a pinned `PATH` — and only on the user's request: it edits their crontab or LaunchAgents. |

@@ -229,6 +229,8 @@ odw run wf.js --break Review  # 在阶段/label "Review" 之前停下等决定(�
 odw check wf.js             # 能否加载?文件:行:列、代码片段、可移植性警告;退出 0/1
                             #   --capabilities:它用到的方言之外的名字(process、require、import( 等)与调用的 ODW 扩展
                             #   提示 Claude Code 的限制:超过 4,096 项的 parallel()/pipeline()、不是纯字面量的 meta
+                            #   提示(从不判失败):扇出结果 .filter(Boolean)、或按 agent 文本筛出的列表,之后没检查是否为空
+odw run wf.js --help        # 按 meta.input 打印它接受的 --args(ODW 扩展)
 odw eval review             # 用例 × 适配器 × 重复次数：每个单元格的通过率、花费、耗时（ODW 扩展；见下文）
 odw test review             # 脚本化回复，不调用模型，$0：逻辑是否成立？（ODW 扩展；见下文）
 odw run review --dry        # 每个 agent 都用桩应答：阶段树与 agent 数，$0（ODW 扩展）
@@ -688,4 +690,6 @@ agent「在工作」的静默前部截断;它会运行模型,先征得同意。
 | 把某个 CLI 的模型 ID 交给可能跑在别的 CLI 上的 agent（阶段默认值、回退链） | 模型 ID 不能跨 CLI 通用：用层级 `model: '@fast'`，它会为每个 CLI 选出自己的 ID（ODW 扩展）。 |
 | 让长时间运行的 agent 不设上限，或把以 `runaway` 失败的 agent 当作偶发故障重试 | 给它 `limits: { toolCalls, costUsd, repeat: 5 }`（或在配置中设 `agentLimits`）：反复做同一个工具调用或超出上限的 agent 会被 odw 立即杀掉（ODW 扩展）。`runaway` 失败的 `limitHit` 说明它当时在做什么——改提示词或任务，而不是一味调高上限。 |
 | 大规模扇出却不看它花了多少 | `odw status $RUN` 会按阶段显示运行到目前为止的 token 与花费，比 `fanOutWarn`（默认 25）更宽的 `parallel()`/`pipeline()` 会记一条警告（均为 ODW 扩展）。设了 `budget.total` 时按它决定扇出规模；`--budget` 限制输出 token。 |
+| 不校验 `args`,或数组被当成一串 JSON 字符串传了进来 | 在 `meta.input` 里声明它(JSON Schema;ODW 扩展,Claude Code 会忽略):odw 在运行开始前校验 `args`,逐个指出出错的路径,遇到 JSON 字符串会提示「看起来被多编码了一次」。`odw run wf.js --help` 会把它打印出来。 |
+| 扇出大半为 `null` 还照常往下走 | 每个 `parallel()`/`pipeline()` 都会记录成功 / 失败 / null 的计数(`fanout_done`),大半为 null 时记一行日志;`parallel(thunks, { minOk: 0.8 })`(或一个数量,或 `"all"`)不足时抛出 `FanOutShortfall`(均为 ODW 扩展)。`odw check` 会提示没检查是否为空的 `.filter(Boolean)` 与按 agent 文本筛选的结果。 |
 | 自己手写一条包着 `odw run` 的 cron 行 | `odw schedule add` 会带上防重叠锁、日志和固定的 `PATH` 写好它——且只在用户要求时使用：它会改动用户的 crontab 或 LaunchAgents。 |

@@ -180,8 +180,26 @@ each captures its own value.
 
 **ODW extension:** `parallel(thunks, { notes: true })` turns the run's notes
 board on for every agent its thunks start (an agent's own `notes: false` wins);
-`notes` and `costGate` are the only options, anything else throws. See [notes](#notes-odw-extension).
+`notes`, `costGate` and `minOk` are the only options, anything else throws. See [notes](#notes-odw-extension).
 Claude Code's `parallel()` takes only the thunks.
+
+**ODW extension — fan-out health and `minOk`.** Every `parallel()` and
+`pipeline()` that settles writes a `fanout_done` event — `{ call, phase, total,
+ok, failed, null, reasons }`: `failed` slots threw (`reasons` counts them by
+agent failure reason — `rate_limit`, `timeout`, … — else the error's name),
+`null` slots returned `null` themselves, `ok` is the rest (`undefined`
+included). `odw logs`, the live view and the dashboard show it. When over half
+of a fan-out is null either way, the run logs one line:
+`parallel() of 10 tasks: most results are null — 3 of 10 ok; 6 failed (rate_limit 6); 1 returned null; …`.
+`parallel(thunks, { minOk })` makes that an error: a whole number of ok results,
+a fraction of the thunks (`0.8`: 80%, rounded up) or `"all"`. Fewer, and the
+call throws a recoverable `FanOutShortfall` (`e.name`; `e.counts`, `e.required`)
+instead of resolving with the nulls. Without `minOk` nothing changes: failed
+slots stay `null`, as in Claude Code.
+
+```js
+const reviews = await parallel(files.map((f) => () => agent(`Review ${f}`)), { minOk: 0.8 })
+```
 
 **ODW extension — cost forecast and `costGate`.** Before a `parallel()` or
 `pipeline()` at least `fanOutWarn` wide, or one a cost gate covers, the run logs a
@@ -232,6 +250,10 @@ A recoverable stage failure drops that item to `null` and skips its remaining
 stages. Fatal errors propagate after the running chains settle.
 `pipeline(items, stage)` with a single stage is just "map this over items
 concurrently" — handy when each step itself fans out with `parallel`.
+
+A `pipeline()` writes the same `fanout_done` event and logs the same line
+when most of its items end `null` (ODW extension); it takes no `minOk` —
+check the results yourself.
 
 ## phase / log
 
@@ -344,6 +366,29 @@ JSON-looking input that fails to parse is rejected rather than silently passed
 through as a string). `budget.total` is the token target set with
 `odw run … --budget <tokens>`, else `null`; scale depth to it, e.g.
 `budget.total ? Math.floor(budget.total / 120_000) : 5`.
+
+**ODW extension — `meta.input`.** Declare the shape of `args` in `meta` as a
+JSON Schema, in the subset `agent()` schemas are checked with (`type`, `enum`,
+`properties`, `required`, `additionalProperties: false`, `items`, `minItems`;
+`description` and `default` are shown, never applied — any other keyword is
+refused when the workflow loads, so nothing declared goes unchecked).
+`odw run`, `rerun`, `resume`, a schedule (also at `odw schedule add`) and a
+trigger (HTTP 422) check `args` against it before the run exists, and name each
+path at fault; an array or object that arrived as a string of JSON is said to
+look encoded twice — never decoded for you. `odw run <wf> --help` prints it.
+Claude Code ignores `meta.input`; a nested `workflow()` call is not checked.
+
+```js
+export const meta = {
+  name: 'triage',
+  description: 'Triage the open issues of some repositories',
+  input: {
+    type: 'object',
+    properties: { repos: { type: 'array', items: { type: 'string' }, minItems: 1, description: 'owner/name' } },
+    required: ['repos'],
+  },
+}
+```
 A run started on another machine with `odw run … --on ssh://host` (ODW
 extension) gets the same `args` and `budget.total`: `--args` is parsed here
 and sent as a file, and the script runs from the project's copy there.
@@ -1325,6 +1370,7 @@ started phase with how many agents it started and their labels.
 
 ```bash
 odw check wf.js [--json]                      # load it as a run would (never runs it): exit 0, or 1 with file:line:col + a code frame
+odw run wf.js --help                          # what it takes as --args, from its meta.input
 odw replay $RUN --agent <id|label> [--prompt @file|TEXT] [--adapter A] [--model M] [--wait|--fg|-d]
 odw run wf.js --break <phase|label>[,…] [--break …]   # a checkpoint before those phases / agent labels
 odw run wf.js --step                                  # a checkpoint before every phase
@@ -1338,6 +1384,14 @@ odw run wf.js --step                                  # a checkpoint before ever
   list the source settles (an array literal, `Array.from({ length: n })`,
   `Array(n)`, `[...Array(n)]`) at more than 4,096 items, which Claude Code
   rejects and ODW runs; a `meta` that is not a pure literal.
+  Two hints come with it, never failing the check (`file:line:col: hint: …`;
+  `hints: [{ rule, message, line, column }]` in `--json`): `filter-null`, a
+  `parallel()`/`pipeline()` result put through `.filter(Boolean)` whose
+  length nothing checks afterwards (an all-null fan-out goes on as an empty
+  list); `empty-match`, a list chosen by matching what an agent wrote — a
+  `.filter()` over an agent's result by one of its fields, or over other items
+  by a field of the agent's result — that nothing checks is non-empty (it
+  matched nothing, so the steps over it did nothing, as if they passed).
 - **replay**: every `agent()` call saves `agents/<id>.call.json` as it starts
   (prompt, options, adapter it started on, model asked for); an isolated
   agent's `agent_started` carries `base` (its worktree's commit). A replay is
