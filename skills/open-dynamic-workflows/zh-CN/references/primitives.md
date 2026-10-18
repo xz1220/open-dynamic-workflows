@@ -33,9 +33,15 @@ agent(prompt, opts?) -> Promise<unknown>
   并记录该选项被忽略的路由说明。model id 不能跨 CLI 通用。**ODW 扩展：** `"@fast"`
   指定一个模型层级——各 CLI 用自己在该层级下的 ID——阶段也可以给出默认模型；`meta.model`
   仍只是元数据。
-- **opts.agentType** —— 注入进 prompt 的**人设**（如 `"code-reviewer"`），因此在任何 CLI
-  上都生效。它**不是** adapter 名，永远不影响 adapter 选择——只有 `opts.adapter` 才会。
-  它不会加载 Claude 内置角色的权限、工具或项目里的子 agent 定义。
+- **opts.agentType** —— 子 agent 定义的名字（**ODW 扩展**）：带 YAML 前言的 Markdown，按前言 `name`
+  依次在工作目录到仓库根的 `.claude/agents/`（最近者胜）、`.odw/agents/`、`~/.claude/agents/`、
+  已启用插件的 `agents/`（`<plugin>:<name>`）中查找。正文作为人设提示词（所有 CLI）；`model` 是该调用的默认模型
+  （`opts.model` 优先；非 claude 的 CLI 上别名经同名 `models` 层级映射，映射不到用 CLI 默认模型并记日志）；
+  `tools`/`disallowedTools` 给权限档位封顶（只有只读工具 → `read`，不含 Bash → `edit`；只降不升），并以
+  `--tools`（只收窄）和 `--disallowedTools` 传给 `claude`；`isolation: worktree` 隔离该 agent；`effort` 传给
+  `claude --effort` / `codex -c model_reasoning_effort=`。其他字段（`permissionMode`、`maxTurns`、`mcpServers`、
+  `hooks`、`skills` 等）记为未生效。`--untrusted` 运行中仓库内的定义只取正文、tools 与 isolation。找不到定义时是一句话人设并记日志。
+  它**不是** adapter 名，永远不影响 adapter 选择——只有 `opts.adapter` 才会。`odw agents types` 列出定义及其映射。
 - **opts.isolation** —— `"worktree"` 给这个 agent 一个一次性 **git worktree**（默认工作区
   就是 source 目录本身）。要求 source 是有提交的 git 仓库；agent 看到 HEAD，不包含
   未提交改动。调用结束后清理 worktree，不把改动合入 source。`agent()` 只返回回复，

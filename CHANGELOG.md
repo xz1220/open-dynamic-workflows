@@ -653,6 +653,23 @@ independent security reviews whose findings are all fixed.
   blamed TypeScript for every parse error), an `await` in a callback that is not
   `async`, a script that ends before a bracket closes — and a `meta` that is declared
   but not exported says what was found.
+- `agentType` loads the agent definition it names (**ODW extension**): Claude Code's
+  subagent files, looked up by their frontmatter `name` in `.claude/agents/` from the
+  working directory up to the repository root (nearest wins), `.odw/agents/` (an
+  ODW-only location), `~/.claude/agents/`, and enabled plugins' `agents/` as
+  `<plugin>:<name>`. The body replaces the one-line persona; `model` is the call's
+  default (`agent()`'s own wins; on other CLIs an alias maps through the `models` tier
+  of that name, else the CLI's default runs and the log says so); `tools` /
+  `disallowedTools` cap the permission tier — only read-only tools → `read`, no Bash →
+  `edit`, never a raise — and reach `claude` as `--tools` (narrowed) and
+  `--disallowedTools`; `isolation: worktree` isolates the agent; `effort` goes to
+  `claude --effort` and `codex -c model_reasoning_effort=`. Every other field is logged
+  as not applied. `agent_started` records `agentType: { name, source, path, sha256 }`,
+  shown in the dashboard's agent drawer, and `odw compare` lists a definition that
+  changed (`agentDefinition.<name>`). In an `--untrusted` run a repository definition
+  gives its body, tools and isolation only. `odw agents types [--adapter a] [--json]`
+  lists the definitions and what each maps to. New adapter `flags`: `effort`,
+  `effortLevels`, `tools`, `disallowedTools`.
 
 ### Use the CLI and the dashboard
 - `odw run` attaches a live foreground view in interactive terminals (Ctrl-C detaches;
@@ -901,6 +918,10 @@ independent security reviews whose findings are all fixed.
   in the repository holding other untracked files until `odw gc` expires it.
 
 ### Changed behavior — check before upgrading
+- `agentType` naming an agent definition file now runs that definition (see "Write
+  workflows"): its body replaces the one-line persona, and its `tools` may lower the
+  agent's permission tier — a read-only reviewer definition runs at `read`, and fails
+  on a CLI with no read mode. A name with no definition behaves as before, with a log line.
 - Signed triggers in a repository's `./odw.config.json` are no longer served: move them
   to `~/.config/odw/config.json` or pass `--config`. A tunnel to a loopback `odw serve`
   needs `--public-url <the tunnel's URL>` for its webhooks to pass the Host guard.

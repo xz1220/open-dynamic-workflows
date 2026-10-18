@@ -489,7 +489,7 @@ ODW 已实现下列原语能力。依赖宿主私有运行机制的脚本,迁移
 | --- | --- |
 | 嵌套 `workflow()` | 已实现一层嵌套,共享父任务的调度器、控制和预算。更深层的调用需要展平。 |
 | 模型选择 | 在 `agent(..., {model})` 中传该 CLI 的模型 ID;适配器没有模型参数时会记录路由说明。`meta.phases` 条目里的 `model`(以及 `adapter`)是该阶段 agent 的默认值,`model: "@fast"` 按 CLI 选出某层级的模型——都是 **ODW 扩展**(见[按阶段路由](#按阶段路由与回退链odw-扩展));阶段的模型和其他模型 ID 一样,其 agent 可能跑在多个 CLI 上时请用层级。`meta.model` 仍只是元数据。 |
-| `agentType` | 将人设加入提示词,不会加载宿主的同名子 agent 配置或选择适配器。 |
+| `agentType` | 加载同名子 agent 定义(`.claude/agents/<name>.md` 及 Claude Code 的其他位置):正文作为人设,`model`、`tools`、`isolation`、`effort` 按 CLI 映射——tools 只会降低档位,没有生效的字段逐个记入日志(**ODW 扩展**;见[agent 定义](#agenttype-读取-agent-定义odw-扩展))。找不到定义时是一句话人设。它从不选择适配器。 |
 | 工作区隔离 | 从已保存的 HEAD 创建临时工作区,不含未保存修改,结束后清理。不会自动合并,`agent()` 返回回复而非 diff;ODW 会把每个隔离 agent 的改动保存为 diff,供审阅和应用(`odw diff`、`odw apply`、`keep` 分支——均为 ODW 扩展;见[审阅并应用](#审阅并应用隔离-agent-的改动odw-扩展))。支持 `.worktreeinclude`(ODW 连未跟踪文件也复制,而不只是被 gitignore 的文件);其中的 `symlink:` 行、`worktreeSetup` 和 agent 的 `ODW_PORT` 是 ODW 扩展——见[隔离 worktree](#隔离-worktree-与-agent-端口)。 |
 | 预算 | 计算输出 token:适配器上报用量时用 CLI 自己的计数(内置 `claude` 和 `codex` 会上报——见[用量与花费](#用量与花费odw-扩展)),否则按每条回复的 `ceil(字符数 / 4)` 估算。每次 CLI 运行都计入:schema 重试、限流重试,以及上报了用量的失败运行。每次派发和每次 schema 重试前都会检查;预算用尽时运行结束,仍在运行的 agent 会被停止。 |
 | JSON Schema | ODW 只检查[已列出的子集](skills/open-dynamic-workflows/zh-CN/references/primitives.md#schema);`format` 是注解。其他关键字(`$ref`、`const`、`oneOf`、`maxItems` 等)照常运行:运行日志会写明关键字及其位置,自己校验 schema 的 CLI(`claude`、`codex`)会强制执行它们。设 `"schemaKeywords": "strict"` 则改为拒绝这类调用(ODW 扩展;见[结构化输出](#结构化输出odw-扩展))。请明确声明对象/数组类型并使用受支持的约束。 |
@@ -2702,6 +2702,46 @@ search:3 goes on after the quota wait, on codex
 默认关闭,因为一个悄无声息地等上几个小时的运行,会让没有主动要求的人感到意外。等待发生在
 worker 进程里:worker 死掉时,运行会变成 `stale`,`odw resume` 会像对待任何已结束的运行
 一样重放它——已完成的 agent 直接取回结果,不会再跑一遍。
+
+### `agentType` 读取 agent 定义(ODW 扩展)
+
+`agent(prompt, { agentType: "reviewer" })` 运行 Claude Code 子 agent 文件里定义的那个 agent
+——带 YAML 前言的 Markdown,正文是它的提示词(https://code.claude.com/docs/en/sub-agents)——
+无论这次调用跑在哪个 CLI 上:
+
+```markdown
+---
+name: reviewer
+description: Reviews a change for bugs
+tools: Read, Grep, Glob
+model: sonnet
+effort: high
+---
+You are a meticulous reviewer. Report bugs only.
+```
+
+ODW 按 Claude Code 的方式查找——认前言里的 `name`,不认文件名:工作目录及其每一级父目录直到仓库根的
+`.claude/agents/`(最近者胜),然后同样方式的 `.odw/agents/`(ODW 独有的位置,格式相同),
+然后 `~/.claude/agents/`,最后是已安装且启用的 Claude Code 插件的 `agents/`,名字为 `<plugin>:<name>`。映射如下:
+
+| 字段 | ODW |
+| --- | --- |
+| 正文 | 作为人设提示词,取代原来的一句话人设,所有 CLI 都生效。 |
+| `model` | 该调用的默认模型;`agent()` 自己的 `model` 优先,它又优先于阶段的默认值。在 `claude` 上原样传;其他 CLI 上别名经同名的 `models` 层级映射(`"models": { "sonnet": { "codex": "gpt-5.5" } }`),映射不到就用该 CLI 的默认模型,并在运行日志里说明。`inherit` 表示不指定。 |
+| `tools`、`disallowedTools` | 给 agent 的[权限档位](#权限档位odw-扩展)封顶,只降不升:只有 Read、Glob、Grep、WebFetch、WebSearch → `read`;不含 Bash → 最高 `edit`。`claude` 另外拿到 `--tools`(与档位自带的列表取交集,只收窄)和 `--disallowedTools`。 |
+| `isolation: worktree` | 等同 `agent()` 的 `isolation: "worktree"`。 |
+| `effort` | `claude --effort`、`codex -c model_reasoning_effort=`(minimal–xhigh);其他 CLI 上日志会说明未生效。 |
+| 其他字段 | `permissionMode`、`maxTurns`、`mcpServers`、`hooks`、`skills` 等不生效,日志逐个列出。 |
+
+每个定义每次运行只读一次,并连同文件路径记入日志;`agent_started` 带 `agentType: { name, source, path, sha256 }`,
+看板的 agent 抽屉会显示,`odw compare` 会列出两次运行之间文件变了的定义(`agentDefinition.<name>`)。
+找不到定义时保留一句话人设,并记一条日志。`--untrusted` 运行中,来自仓库的定义只取正文、tools 与 isolation,
+不取 model 和 effort。适配器在 `flags` 里声明承载方式:`effort`(元素里可写 `{effort}`)、`effortLevels`、`tools`、`disallowedTools`。
+
+```sh
+odw agents types                  # 列出这里能用的定义,以及在默认适配器上的映射
+odw agents types --adapter codex --json
+```
 
 ### 按阶段路由与回退链(ODW 扩展)
 

@@ -92,8 +92,11 @@ outright, never silently passed through as a string).
 `adapter` picks the CLI — or, as a list (`['codex', 'claude']`, **ODW
 extension**), a fallback chain; `model: '@fast'` picks a tier's model for
 whichever CLI runs it (**ODW extension**); `schema` is a raw JSON Schema object (an option, not
-a global); `agentType` is a **persona** injected into the prompt — *not* an
-adapter name. `keep: true` (**ODW extension**) also commits an isolated agent's
+a global); `agentType` names a subagent definition (`.claude/agents/<name>.md`,
+`.odw/agents/`, `~/.claude/agents/`, `<plugin>:<name>`) — its body is the persona,
+its `model`/`tools`/`isolation`/`effort` map per CLI, tools only lower the tier
+(**ODW extension**; `odw agents types` shows the mapping); with no definition it is
+a one-line persona, and it is never an adapter name. `keep: true` (**ODW extension**) also commits an isolated agent's
 change to a branch `odw/<runId>/<agentId>-<label>`. `permissions: "read"`
 (**ODW extension**) runs the agent at a stricter tier than the run's — see
 [permission tiers](#permission-tiers-odw-extension).

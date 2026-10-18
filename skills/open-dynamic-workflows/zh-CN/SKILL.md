@@ -79,7 +79,9 @@ return await agent(
 `stallMs`（Claude Code 方言）是这一个 agent 的卡死窗口，单位毫秒（`{ stallMs: 1800000 }` 即 30 分钟），取代 `stallTimeout` 设置。
 `adapter` 选择用哪个 CLI——写成列表（`['codex', 'claude']`，**ODW 扩展**）就是回退链；
 `model: '@fast'` 为实际运行它的 CLI 选出该层级的模型（**ODW 扩展**）；`schema` 是一个原始 JSON Schema 对象（选项，不是全局）；
-`agentType` 是注入进 prompt 的**人设**，*不是* adapter 名。`keep: true`（**ODW 扩展**）
+`agentType` 指向子 agent 定义（`.claude/agents/<name>.md`、`.odw/agents/`、`~/.claude/agents/`、`<plugin>:<name>`）——
+正文作为人设，`model`/`tools`/`isolation`/`effort` 按 CLI 映射，tools 只降档（**ODW 扩展**；`odw agents types` 显示映射）；
+找不到定义时是一句话人设，且*不是* adapter 名。`keep: true`（**ODW 扩展**）
 还会把隔离 agent 的改动提交到分支 `odw/<runId>/<agentId>-<label>`。`permissions: "read"`
 （**ODW 扩展**）让该 agent 以比运行更严格的档位运行——见[权限档位](#权限档位odw-扩展)。
 

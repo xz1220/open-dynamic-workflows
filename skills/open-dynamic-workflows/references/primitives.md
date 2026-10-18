@@ -38,10 +38,23 @@ other primitive organizes calls to it.
   ignored option. Model ids are CLI-specific. **ODW extension:** `"@fast"`
   names a model tier — each CLI's own id for it — and a phase may give a
   default model; `meta.model` stays metadata.
-- **opts.agentType** — a **persona** injected into the prompt (e.g.
-  `"code-reviewer"`), so it works on every CLI. It is **not** an adapter name and
-  never affects adapter selection — only `opts.adapter` does. It does not load
-  Claude's built-in role permissions, tools, or project subagent definitions.
+- **opts.agentType** — the name of a subagent definition (**ODW extension**):
+  a Markdown file with YAML frontmatter, found by its `name` in `.claude/agents/`
+  from the working directory up to the repository root (nearest wins), then
+  `.odw/agents/`, `~/.claude/agents/`, and enabled plugins' `agents/` as
+  `<plugin>:<name>`. Its body is the persona prompt (every CLI); `model` is the
+  call's default (`opts.model` wins; on a non-claude CLI an alias maps through
+  the `models` tier of that name, else the CLI's default runs, logged);
+  `tools`/`disallowedTools` cap the permission tier (only read-only tools →
+  `read`, no Bash → `edit`; never a raise) and go to `claude` as `--tools`
+  (narrowed) and `--disallowedTools`; `isolation: worktree` isolates the agent;
+  `effort` goes to `claude --effort` / `codex -c model_reasoning_effort=`.
+  Any other field (`permissionMode`, `maxTurns`, `mcpServers`, `hooks`,
+  `skills`, …) is logged as not applied. In an `--untrusted` run a repository
+  definition gives its body, tools and isolation only. No definition: a
+  one-line persona and a log line. It is **not** an adapter name and never
+  affects adapter selection — only `opts.adapter` does. `odw agents types`
+  lists the definitions and their mapping.
 - **opts.isolation** — `"worktree"` gives this agent a throwaway **git
   worktree** of the source repo (default workspace: the source directory
   itself). Needs a repo with at least one commit; the agent sees HEAD without

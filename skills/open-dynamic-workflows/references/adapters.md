@@ -441,6 +441,18 @@ with an `AgentError` instead. A malformed schema or an unknown keyword fails in 
 mode. To turn native schemas off for a built-in, give its `flags` without `schema`:
 `"claude": { "flags": { "model": ["--model"] } }`.
 
+**Agent-definition flags (ODW extension).** What carries an `agentType`
+definition's fields: `flags.effort` — the flag(s) for its `effort`, an element
+holding `{effort}` getting the level in place (codex:
+`["-c", "model_reasoning_effort={effort}"]`), else the level appended (claude:
+`["--effort"]`); `flags.effortLevels` — the levels it takes (another is logged,
+not passed); `flags.tools` — the flag taking a comma-separated list of built-in
+tools (claude: `["--tools"]`; narrowed with the tier's own list, never widened);
+`flags.disallowedTools` — the flag(s) before tools to deny (claude:
+`["--disallowedTools"]`). An adapter without them still gets the tier cap its
+tools imply; the rest is logged as not applied. `flags` is replaced whole, so an
+override that should keep these lists them too.
+
 ### Run notifications (`notify`)
 
 The hooks fire once per run, after its final state is written, so they can

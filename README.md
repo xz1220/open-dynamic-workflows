@@ -573,7 +573,7 @@ private runtime behavior need the following checks before migration:
 | --- | --- |
 | Nested `workflow()` | Implemented for one level, sharing the parent's scheduler, control and budget. Flatten deeper nesting. |
 | Model selection | Pass `agent(..., {model})` using that CLI's model ID; an adapter without model routing support emits a note. A `meta.phases` entry's `model` (and `adapter`) is the default for its phase's agents, and `model: "@fast"` picks a tier's model per CLI — **ODW extensions** (see [per-phase adapters](#per-phase-adapters-model-tiers-and-fallback-chains-odw-extension)); a phase's model is a model ID like any other, so use a tier when its agents may run on more than one CLI. `meta.model` stays metadata. |
-| `agentType` | A persona added to the prompt. It does not load a host's named subagent configuration or select an adapter. |
+| `agentType` | Loads the named subagent definition (`.claude/agents/<name>.md` and Claude Code's other locations): its body is the persona, and its `model`, `tools`, `isolation` and `effort` map per CLI — tools only ever lower the tier, and every field not applied is logged (**ODW extension**; see [Agent definitions](#agent-definitions-behind-agenttype-odw-extension)). A name with no definition is a one-line persona. It never selects an adapter. |
 | Worktree isolation | Starts from committed HEAD, excludes uncommitted edits, and cleans up afterward. Changes are not merged and `agent()` returns the reply, not a diff; ODW keeps each isolated agent's change as a diff to review and apply (`odw diff`, `odw apply`, `keep` branches — ODW extensions; see [Review and apply](#review-and-apply-what-isolated-agents-changed-odw-extension)). `.worktreeinclude` is honored (ODW copies untracked files too, not only gitignored ones); its `symlink:` lines, `worktreeSetup` and the agents' `ODW_PORT` are ODW extensions — see [Isolated worktrees](#isolated-worktrees-and-agent-ports). |
 | Budget | Counts output tokens: the CLI's own count where its adapter reports usage (the built-in `claude` and `codex` do — see [Usage and cost](#usage-and-cost-odw-extension)), else `ceil(chars / 4)` of each reply. Every CLI run counts: schema and rate-limit retries, and failed runs that reported usage. The guard runs before each dispatch and each schema retry; once the target is spent the run ends and agents still running are stopped. |
 | JSON Schema | ODW checks the [documented subset](skills/open-dynamic-workflows/references/primitives.md#schema); `format` is an annotation. Any other keyword (`$ref`, `const`, `oneOf`, `maxItems`, …) still runs: the run's log names it and where it is, and a CLI that validates schemas itself (`claude`, `codex`) enforces it. `"schemaKeywords": "strict"` refuses such calls instead (ODW extension; see [Structured output](#structured-output-odw-extension)). Use explicit object/array types and supported constraints. |
@@ -3169,6 +3169,52 @@ It is off by default because a run that silently waits for hours would surprise 
 who did not ask for it. The wait lives in the worker process: if the worker dies, the
 run is `stale`, and `odw resume` replays it like any run that ended — its finished
 agents come back without running again.
+
+### Agent definitions behind `agentType` (ODW extension)
+
+`agent(prompt, { agentType: "reviewer" })` runs the agent defined in a Claude Code
+subagent file — Markdown with YAML frontmatter, its body the agent's prompt
+(https://code.claude.com/docs/en/sub-agents) — on whichever CLI the call runs:
+
+```markdown
+---
+name: reviewer
+description: Reviews a change for bugs
+tools: Read, Grep, Glob
+model: sonnet
+effort: high
+---
+You are a meticulous reviewer. Report bugs only.
+```
+
+ODW looks the name up as Claude Code does — by the frontmatter `name`, not the file
+name: `.claude/agents/` in the working directory and each parent up to the
+repository root (nearest wins), then `.odw/agents/` the same way (an ODW-only
+location, same format), then `~/.claude/agents/`, then the `agents/` of installed,
+enabled Claude Code plugins as `<plugin>:<name>`. What it maps:
+
+| Field | ODW |
+| --- | --- |
+| body | The persona prompt, in place of the one-line persona, on every CLI. |
+| `model` | The call's default model; `agent()`'s own `model` wins, and so does it over a phase's. On `claude` as it is; on another CLI an alias maps through the `models` tier of the same name (`"models": { "sonnet": { "codex": "gpt-5.5" } }`), else that CLI's default model runs and the run's log says so. `inherit` is no model. |
+| `tools`, `disallowedTools` | A cap on the agent's [permission tier](#permissions-odw-extension), never a raise: only Read, Glob, Grep, WebFetch, WebSearch → `read`; no Bash → at most `edit`. `claude` is also given `--tools` (narrowed with its tier's list, never widened) and `--disallowedTools`. |
+| `isolation: worktree` | `agent()`'s `isolation: "worktree"`. |
+| `effort` | `claude --effort`, `codex -c model_reasoning_effort=` (minimal–xhigh); on other CLIs the log says it had no effect. |
+| anything else | `permissionMode`, `maxTurns`, `mcpServers`, `hooks`, `skills`, … are not applied, and the log names each one. |
+
+Each definition is read once per run and logged with its file; `agent_started`
+carries `agentType: { name, source, path, sha256 }`, the dashboard's agent drawer
+shows it, and `odw compare` lists a definition whose file changed between two runs
+(`agentDefinition.<name>`). A name no definition has keeps the one-line persona,
+with a log line. In an `--untrusted` run a definition from the repository gives its
+body, tools and isolation — not its model or effort. Adapters declare the carriers
+in `flags`: `effort` (an element may hold `{effort}`), `effortLevels`, `tools`,
+`disallowedTools`.
+
+```sh
+odw agents types                  # each definition here, and what it maps to on the default adapter
+odw agents types --adapter codex --json
+```
 
 ### Per-phase adapters, model tiers and fallback chains (ODW extension)
 

@@ -331,6 +331,13 @@ strict schema）交给 CLI，否则没有谁会强制执行——ODW 检查它�
 在两种模式下都会失败。要为某个内置适配器关闭原生 schema，给它不含 `schema` 的 `flags`：
 `"claude": { "flags": { "model": ["--model"] } }`。
 
+**agent 定义的旗标（ODW 扩展）。** `agentType` 定义里的字段靠这些传给 CLI：`flags.effort`——承载 `effort`
+的旗标，含 `{effort}` 的元素原地替换为级别（codex：`["-c", "model_reasoning_effort={effort}"]`），否则把级别追加在后
+（claude：`["--effort"]`）；`flags.effortLevels`——它接受的级别（其他级别只记日志、不传）；`flags.tools`——接受逗号分隔的
+内建工具列表的旗标（claude：`["--tools"]`；与档位自带列表取交集，只收窄）；`flags.disallowedTools`——要禁用的工具前的旗标
+（claude：`["--disallowedTools"]`）。没有这些旗标的适配器仍按 tools 推出的档位封顶，其余记为未生效。`flags` 是整体替换的，
+覆盖时想保留这些就要一并写上。
+
 ### 运行通知（`notify`）
 
 每次运行在终态写入之后触发一次 hook，所以 hook 既不会拖延、也不会改变终态；失败或卡住的
