@@ -144,13 +144,14 @@ export function readJsonBody(req: IncomingMessage, maxBytes = MAX_BODY_BYTES): P
 /**
  * The request's JSON-object body, or null once a 400 (not a JSON object) or
  * 413 (too large; `connection: close`, as the rest is only drained) has been
- * sent.
+ * sent. `maxBytes`: a route's own cap, when it takes more than the default.
  */
 export async function jsonBodyOrReply(
   req: IncomingMessage,
   res: ServerResponse,
+  maxBytes = MAX_BODY_BYTES,
 ): Promise<Record<string, unknown> | null> {
-  const body = await readJsonBody(req);
+  const body = await readJsonBody(req, maxBytes);
   if (body.ok) return body.value;
   sendJson(res, body.status, { error: body.error }, body.status === 413 ? { connection: "close" } : {});
   return null;

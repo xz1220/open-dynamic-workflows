@@ -39,11 +39,14 @@
  *                                   transcripts or with maxTranscriptBytes 0, a Claude run); the
  *                                   same :agentId check
  *   POST /api/runs/:id/control      { action: pause|resume|stop } (ODW runs; Claude runs → 409)
- *   POST /api/runs/:id/checkpoint   { action: approve|reject, checkpointId?, note? } answers a
+ *   POST /api/runs/:id/checkpoint   { action: approve|reject, checkpointId?, note?, payload? } answers a
  *                                   waiting checkpoint() (ODW extension) — the one named, else the
  *                                   oldest; → { ok, runId, action, checkpointId }. 409 when that
  *                                   checkpoint (or any) is not waiting, and for Claude runs; 400
  *                                   on a bad body. RunDetail.pendingCheckpoints lists what waits.
+ *                                   With approve, `payload` approves an edit of the checkpoint's
+ *                                   payload: 413 past 256 KiB of JSON, 400 (with `problems`) off
+ *                                   the checkpoint's schema; that route takes bodies to 512 KiB.
  *   GET  /api/activity?limit=N      the Activity view (below)
  *   GET  /api/stream                text/event-stream: `runs` frames (the run list, on change);
  *                                   `?delta=1` → one `runs` frame, then `runs-delta` frames
@@ -70,7 +73,7 @@
  * The polled GETs (/api/runs, /api/runs/:id, …/events, …/result, …/agents[/:agentId],
  * …/agents/:agentId/transcript, /api/activity) carry an ETag (with cache-control: no-cache) and answer
  * If-None-Match with 304.
- * Request bodies are capped at 128 KiB (413 past it); a malformed %-escape in a
+ * Request bodies are capped at 128 KiB (413 past it; 512 KiB for /checkpoint); a malformed %-escape in a
  * path id is a 400.
  *
  * Security: binds 127.0.0.1 by default. The run list aggregates every project's
@@ -104,6 +107,7 @@ import {
 } from "../adapters/config.js";
 import { commandAt, runTier } from "../adapters/permissions.js";
 import type { Config } from "../adapters/types.js";
+import { CHECKPOINT_EDIT_MAX_BYTES, checkEdit } from "../checkpoint.js";
 import { CHECKPOINT_NOTE_MAX, isCheckpointId } from "../control.js";
 import { DASHBOARD_HTML } from "../dashboard.generated.js";
 import type { WorkflowEvent } from "../events.js";
@@ -527,10 +531,19 @@ async function controlRun(
 }
 
 /**
+ * The checkpoint route's body cap: an edited payload may be 256 KiB of
+ * compact JSON, and a client's own formatting, escapes and the note need room.
+ */
+const CHECKPOINT_BODY_MAX_BYTES = 2 * CHECKPOINT_EDIT_MAX_BYTES;
+
+/**
  * Answer a waiting checkpoint() (ODW extension): `{ action: approve|reject,
- * checkpointId?, note? }`. The answer is checked against what the run waits
- * for now — and always sent for an explicit id — so it can never land on a
- * question asked after the person decided.
+ * checkpointId?, note?, payload? }`. The answer is checked against what the
+ * run waits for now — and always sent for an explicit id — so it can never
+ * land on a question asked after the person decided. `payload`, with
+ * approve only, is an edit of the checkpoint's payload: refused (413) over
+ * 256 KiB of JSON, and (400, with the validator's `problems`) when it does not
+ * match the checkpoint's schema — the run checks it again on receipt.
  */
 async function decideCheckpoint(
   req: IncomingMessage,
@@ -539,10 +552,13 @@ async function decideCheckpoint(
   runId: string,
 ): Promise<void> {
   // CSRF posture (Content-Type + same-origin) is enforced by writeGuard upstream.
-  const body = await jsonBodyOrReply(req, res);
+  // The body may hold an edited payload of up to 256 KiB, with room around it.
+  const body = await jsonBodyOrReply(req, res, CHECKPOINT_BODY_MAX_BYTES);
   if (!body) return;
   const { action, note } = body;
   const checkpointId = body.checkpointId ?? undefined;
+  // An approval's edited payload: present (null included) means sent.
+  const edited = Object.hasOwn(body, "payload");
   if (action !== "approve" && action !== "reject") {
     sendJson(res, 400, { error: "action must be one of approve, reject" });
     return;
@@ -559,6 +575,17 @@ async function decideCheckpoint(
     sendJson(res, 400, { error: `note must be at most ${CHECKPOINT_NOTE_MAX} characters` });
     return;
   }
+  if (edited && action !== "approve") {
+    sendJson(res, 400, { error: "payload goes with action approve only — a rejection keeps the checkpoint's payload" });
+    return;
+  }
+  if (edited) {
+    const sized = checkEdit(body.payload, null);
+    if (!sized.ok) {
+      sendJson(res, sized.tooLarge ? 413 : 400, { error: sized.message });
+      return;
+    }
+  }
   const pending = src.detail(runId)?.pendingCheckpoints ?? [];
   const target = checkpointId === undefined ? pending[0] : pending.find((cp) => cp.checkpointId === checkpointId);
   if (!target) {
@@ -567,10 +594,17 @@ async function decideCheckpoint(
     sendJson(res, 409, { error: `${which} waiting for an answer in run ${runId}${open}` });
     return;
   }
+  // The same check the run makes on receipt, so it never sees an edit it would refuse.
+  const checked = edited ? checkEdit(body.payload, target.schema ?? null) : null;
+  if (checked && !checked.ok) {
+    sendJson(res, 400, { error: checked.message, problems: checked.problems });
+    return;
+  }
   src.decide(runId, {
     action,
     checkpointId: target.checkpointId,
     ...(typeof note === "string" && note.trim() !== "" ? { note } : {}),
+    ...(checked?.ok ? { payload: checked.value } : {}),
     by: "dashboard",
   });
   sendJson(res, 200, { ok: true, runId, action, checkpointId: target.checkpointId });
