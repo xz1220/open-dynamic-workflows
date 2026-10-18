@@ -112,6 +112,53 @@ approve a changed payload instead (the plan minus a step, say), use
 "approved with edits". The hooks fire when a checkpoint starts waiting, not when
 it is answered.
 
+### Approve from the notification
+
+**ODW extension.** Run the dashboard where your phone can reach it — an HTTPS tunnel to
+`odw serve` is easiest — and name that URL:
+
+```bash
+odw serve --public-url https://odw.example.com
+```
+
+From then on each `waiting` hook carries the checkpoint's two signed, one-time links
+(valid 24 hours; `"approveLinks": { "ttl": <seconds> }` changes it). A Slack or Discord
+webhook shows them at the end of its `text`; any JSON receiver gets `approveUrl`,
+`rejectUrl` and `linksExpireAt`. Opening a link shows the checkpoint and one button;
+pressing it decides, once. Without a running `odw serve --public-url` for the runs root
+there are no links, and the payload's `linksUnavailable` says so. The security model is
+in the [README](../../README.md#approve-from-your-phone-odw-extension).
+
+[ntfy](https://ntfy.sh) can put **Approve** and **Reject** buttons on the push itself. The
+command hook gets a ready-made `Actions` header in `ODW_NTFY_ACTIONS` — two `http` actions
+that POST to the links, name their action in an `X-ODW-Action` header and clear the
+notification once they succeed:
+
+```json
+{
+  "notify": {
+    "command": ["sh", "-c", "curl -s -H \"Title: $ODW_WORKFLOW waits\" -H \"Actions: $ODW_NTFY_ACTIONS\" -d \"$ODW_CHECKPOINT_TITLE\" https://ntfy.sh/your-topic"],
+    "on": ["waiting"]
+  }
+}
+```
+
+`ODW_NTFY_ACTIONS` looks like this (ntfy's simple header format: one action per `;`,
+fields separated by `,`, `headers.<name>=<value>` for a request header, `clear=true` to
+dismiss the notification after the request succeeds — see
+[ntfy: action buttons](https://docs.ntfy.sh/publish/#action-buttons) and its
+[`http` action](https://docs.ntfy.sh/publish/#send-http-request)):
+
+```
+http, Approve, https://odw.example.com/approve/…, method=POST, headers.X-ODW-Action=approve, clear=true; http, Reject, https://odw.example.com/approve/…, method=POST, headers.X-ODW-Action=reject, clear=true
+```
+
+When the links are unavailable the variable is unset, and `ODW_LINKS_UNAVAILABLE` says
+why; the push above then arrives without buttons. Anyone subscribed to the topic can
+press them — use a topic name nobody can guess, or your own ntfy server with access
+control. `ODW_APPROVE_URL` and `ODW_REJECT_URL` hold the bare links for any other
+notifier.
+
 ## When a run pauses for a spent quota
 
 With [`quotaWait`](../../README.md#pause-for-a-spent-quota-odw-extension) on, a run

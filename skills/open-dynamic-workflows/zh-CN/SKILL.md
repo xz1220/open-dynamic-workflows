@@ -332,7 +332,9 @@ odw status $RUN     # 问题、它的 payload，以及回答它的确切命令
 （有多个在等待时加 `--checkpoint N`）——把用户的理由写进 `--note`。如果用户要求改了再批，
 就用 `odw approve $RUN --payload @file.json` 发送用户认可的那份 payload（`--edit` 会在终端里
 打开编辑器——那是用户的终端，不是你的）。如果用户不在，就让它
-继续等：用户之后可以在任意 shell 里回答，或在看板（`odw serve`）里点 Approve/Reject。
+继续等：用户之后可以在任意 shell 里回答，或在看板（`odw serve`）里点 Approve/Reject，或在手机上
+通过 `odw serve --public-url <url>` 运行时 `waiting` 通知发来的签名一次性批准链接回答（ODW 扩展）。
+这些链接属于用户：你自己绝不要打开、访问或 POST 它们。
 
 检查点等待期间 `odw run --wait` 会一直阻塞。带检查点的 workflow 请以后台方式启动
 （`RUN=$(odw run wf.js)`）并轮询 `odw status $RUN`，或用 `--wait --timeout <秒>` 限定

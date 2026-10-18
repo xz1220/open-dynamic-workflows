@@ -77,6 +77,18 @@ changed, and run on a schedule — and a dashboard redesigned to watch them.
 - Run-end hooks: a `notify` command or webhook (Slack/Discord/ntfy-ready) when a run
   finishes, fails, stops — or, opt-in, starts waiting, or pauses for a spent quota
   (`"paused"`).
+- Approve from your phone (**ODW extension**): with `odw serve --public-url <url>`
+  running, each `waiting` hook carries the checkpoint's signed one-time approve and
+  reject links (`approveUrl`, `rejectUrl`, `linksExpireAt`; `ODW_APPROVE_URL`,
+  `ODW_REJECT_URL`, and `ODW_NTFY_ACTIONS` for ntfy Approve/Reject buttons). A link is an
+  HMAC-SHA256 over the run, checkpoint, action and expiry (`approveLinks.ttl`, 24h by
+  default) under a 0600 per-runs-root secret (`--rotate-approve-secret`); it opens a
+  confirmation page, decides once on a POST with the page's CSRF value (or an ntfy
+  button's `X-ODW-Action` header), and records `by: "link"`. Replays, expired and
+  tampered links get clear 410/403 pages, and bad links are rate limited like wrong
+  tokens. `--token-scope approve` lets a remote token holder answer checkpoints from the
+  dashboard too. Nothing else becomes writable remotely; without a server, the hooks say
+  why there are no links (`linksUnavailable`).
 
 ### Know what it costs and what it changed
 - Real usage and cost: the built-in `claude` adapter reads Claude Code's `stream-json`;

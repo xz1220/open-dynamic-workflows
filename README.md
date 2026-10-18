@@ -511,6 +511,7 @@ SSE. No build step, no extra deps, no network access on load.
 odw serve [--open]                      # live dashboard at http://127.0.0.1:4317
 odw serve --port 8080 --host 0.0.0.0 --token   # remote, read-only, token-gated (see Remote access)
 odw view run.odwrun                     # a shared run bundle, read-only (see Share a run)
+odw serve --public-url https://odw.example.com  # answer checkpoints from your phone (see Approve from your phone)
 ```
 
 ![odw serve — a live deep-research run: five phase lanes (Plan → Search → Extract → Vote → Report) drawn as a graph, running agents tracing signal along their edges, per-run counters and a phase stepper](assets/odw-dashboard.gif)
@@ -585,7 +586,8 @@ or with **Approve** / **Reject** on the run's page in the dashboard (loopback bi
 only; it posts `{ action, checkpointId?, note?, payload? }` to `POST /api/runs/:id/checkpoint`;
 `GET /api/runs/:id` lists `pendingCheckpoints`, and the run list names each waiting
 run's oldest question as `waiting`). The call resolves to
-`{ approved, note, by, payload, edited }` — `by` is `cli`, `dashboard` or `timeout` — and a rejection
+`{ approved, note, by, payload, edited }` — `by` is `cli`, `dashboard`, `link` (a signed
+[approve link](#approve-from-your-phone-odw-extension)) or `timeout` — and a rejection
 is an answer, not an error: the script decides what "no" means.
 
 **Approve with edits.** As with Claude Code's plan approval, the person can change
@@ -1111,6 +1113,66 @@ The security model:
 - **Without `--token`**, an off-loopback bind behaves as before — read-only and open to
   anyone who can reach the port — and `odw serve` prints a loud warning that suggests
   `--token`.
+- **Two narrow exceptions answer checkpoints, and nothing else** — see
+  [Approve from your phone](#approve-from-your-phone-odw-extension): signed one-time
+  approve links (`--public-url`), and `--token-scope approve`.
+
+### Approve from your phone (ODW extension)
+
+A [`checkpoint()`](#human-checkpoints-odw-extension) no longer has to wait for you to get
+back to the terminal. Run the dashboard with the URL your phone reaches it at — usually
+an HTTPS tunnel — and turn on the `waiting` notify hook:
+
+```bash
+odw serve --public-url https://odw.example.com     # e.g. behind cloudflared or tailscale funnel
+```
+
+```json
+{ "notify": { "webhook": "https://hooks.example.com/YOUR/WEBHOOK/PATH", "on": ["waiting"] }, "approveLinks": { "ttl": 86400 } }
+```
+
+Each checkpoint that starts waiting then sends two links, approve and reject: in the
+webhook's JSON as `approveUrl`, `rejectUrl` and `linksExpireAt` (and at the end of its
+`text`), and to a notify command as `ODW_APPROVE_URL`, `ODW_REJECT_URL`,
+`ODW_LINKS_EXPIRE_AT` and `ODW_NTFY_ACTIONS` — a ready-made ntfy `Actions` header with an
+Approve and a Reject button ([recipe](docs/recipes/notify.md#approve-from-the-notification)).
+Opening a link shows a small page — the run, the checkpoint's title, its payload and one
+button; pressing it records the decision with `by: "link"`, and the run goes on.
+
+`odw serve --token X --token-scope approve` does the same for a remote dashboard: a token
+holder can approve or reject checkpoints (with a note or an edited payload, as on
+loopback). The default scope is `read`.
+
+The security model — the only remote writes are checkpoint decisions:
+
+- **A link is a capability.** Anyone who has it can make that one decision on that one
+  checkpoint, until it expires or is used — treat it like the webhook URL it travels
+  through. It is an HMAC-SHA256 over the run, the checkpoint, the action and the expiry,
+  under a per-runs-root secret (`<runsRoot>/.approve-secret`, mode 0600, made by the
+  first `odw serve --public-url`; one others can read is replaced). Nothing in a link can
+  be changed without breaking its signature; `odw serve --rotate-approve-secret` kills
+  every link sent before.
+- **One use.** A used link is recorded in the run directory (`approve-links/<nonce>`,
+  created exclusively, so two presses cannot both count); the checkpoint's other link
+  is spent with it. A replay, an expired link (default 24 hours: `approveLinks.ttl`,
+  60 s to 30 days) or a checkpoint answered some other way gets a clear "410" page;
+  a tampered link a "403" page — never a stack trace.
+- **Opening a link decides nothing.** Chat-app link previews and mail scanners only
+  `GET`. The decision is a `POST` carrying the page's CSRF value, which must match an
+  `HttpOnly`, `SameSite=Strict` cookie the page set; an ntfy button instead names the
+  action in an `X-ODW-Action` header, which no other site's page can send. A form from
+  another origin is refused, and the page cannot be framed.
+- **Guessing is rate limited** like wrong tokens: 10 bad links (or failed CSRF checks)
+  a minute per address, 100 from everyone, then 429.
+- **Links work only while `odw serve --public-url` runs.** Without one for the runs root,
+  no links are minted, and the payload says why (`linksUnavailable`,
+  `ODW_LINKS_UNAVAILABLE`). The `/approve/` route needs no dashboard token — the link
+  is the credential — and opens nothing else: stop, pause, resume and Chat stay
+  loopback-only, also under `--token-scope approve`.
+- **Use HTTPS.** Over plain HTTP anyone on the path can read a link and use it first;
+  `odw serve` warns when `--public-url` is `http://` to anything but localhost. A tunnel
+  to a loopback bind works: the public URL's host may reach `/approve/` (only) past the
+  DNS-rebinding check.
 
 ## Configure adapters
 
@@ -2097,7 +2159,9 @@ The hooks then fire once per checkpoint, while the run waits on: the command wit
 `ODW_RUN_STATE=waiting`, `ODW_CHECKPOINT_ID` and `ODW_CHECKPOINT_TITLE` (and no
 `ODW_RESULT_FILE`), the webhook with `"state": "waiting"`, a
 `"checkpoint": { "checkpointId", "title", "since" }` field in place of `finishedAt`,
-and a `text` line naming the command that answers it.
+and a `text` line naming the command that answers it. While an `odw serve --public-url`
+runs, they also carry the checkpoint's signed one-time approve and reject links — see
+[Approve from your phone](#approve-from-your-phone-odw-extension).
 
 Add `"paused"` to hear when a run [pauses for a spent quota](#pause-for-a-spent-quota-odw-extension)
 — once per pause, not when it goes on: the command with `ODW_RUN_STATE=paused`,

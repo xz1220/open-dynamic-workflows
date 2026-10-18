@@ -413,7 +413,8 @@ precedence over the injected one.
 
 The call resolves to `{ approved, note, by, payload, edited }`: `note` is the
 person's note or `null`; `by` is `"cli"` (`odw approve|reject`), `"dashboard"`
-(`odw serve`) or `"timeout"`. A rejection is an answer, not an error: the script
+(`odw serve`), `"link"` (a signed one-time approve link from a `waiting` notify hook,
+answered through `odw serve --public-url`; ODW extension) or `"timeout"`. A rejection is an answer, not an error: the script
 decides what it means — stop, re-plan with the note, skip a step.
 
 The person may approve an **edited** payload instead of rejecting and re-running

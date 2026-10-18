@@ -404,7 +404,10 @@ user asks for changes to what they approve, send exactly the payload they
 approved with `odw approve $RUN --payload @file.json` (`--edit` opens an editor
 in a terminal — theirs, not yours). If the
 user is not there, leave it waiting: they can answer later from any shell, or
-with Approve/Reject in the dashboard (`odw serve`).
+with Approve/Reject in the dashboard (`odw serve`), or from their phone through
+the signed one-time approve links a `waiting` notify hook sends while
+`odw serve --public-url <url>` runs (ODW extension). Those links are the user's:
+never open, follow or POST to one yourself.
 
 `odw run --wait` blocks while a checkpoint waits. Start a workflow with
 checkpoints detached (`RUN=$(odw run wf.js)`) and poll `odw status $RUN`, or

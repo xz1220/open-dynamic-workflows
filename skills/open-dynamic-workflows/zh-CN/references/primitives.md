@@ -317,7 +317,8 @@ checkpoint(title, opts?) -> Promise<{ approved, note, by, payload, edited }>
   也可以交给 `parallel`/`pipeline` 变成 `null`。
 
 调用返回 `{ approved, note, by, payload, edited }`：`note` 是对方的附言或 `null`；`by` 是 `"cli"`
-（`odw approve|reject`）、`"dashboard"`（`odw serve`）或 `"timeout"`。拒绝也是一个答复，
+（`odw approve|reject`）、`"dashboard"`（`odw serve`）、`"link"`（`waiting` 通知带来的签名一次性
+批准链接，经 `odw serve --public-url` 回答；ODW 扩展）或 `"timeout"`。拒绝也是一个答复，
 不是错误：它意味着什么由脚本决定——停止、带着附言重新规划、跳过某一步。
 
 对方可以批准一份**修改过的** payload，而不必拒绝后重跑（与 Claude Code 的计划审批一样）：

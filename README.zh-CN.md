@@ -449,6 +449,7 @@ workflow;项目里有同名 workflow 时运行项目的那个,并提示
 odw serve [--open]                      # 实时看板,默认 http://127.0.0.1:4317
 odw serve --port 8080 --host 0.0.0.0 --token   # 远程只读、需要令牌(见「远程只读访问」)
 odw view run.odwrun                     # 只读查看分享的运行包(见「分享一次运行」)
+odw serve --public-url https://odw.example.com  # 在手机上回答检查点(见「在手机上批准」)
 ```
 
 ![odw serve —— 一次实时 deep-research 运行:五个阶段泳道(Plan → Search → Extract → Vote → Report)绘制成图,运行中的 agent 沿边传递信号,带运行计数与阶段步进条](assets/odw-dashboard.gif)
@@ -516,7 +517,7 @@ odw approve $RUN --edit   # 先修改 payload,再批准修改后的内容
 `POST /api/runs/:id/checkpoint` 发送 `{ action, checkpointId?, note?, payload? }`;
 `GET /api/runs/:id` 会列出 `pendingCheckpoints`,运行列表则用 `waiting` 标出每个等待中
 运行最早的那个问题)。调用返回 `{ approved, note, by, payload, edited }`
-——`by` 是 `cli`、`dashboard` 或 `timeout`——拒绝也是一个答复而不是错误:"不"意味着
+——`by` 是 `cli`、`dashboard`、`link`(签名的[批准链接](#在手机上批准odw-扩展))或 `timeout`——拒绝也是一个答复而不是错误:"不"意味着
 什么由脚本决定。
 
 **修改后批准。** 和 Claude Code 的计划审批一样,审批人可以改了再批,而不必拒绝后重跑。
@@ -982,6 +983,56 @@ odw serve --host 0.0.0.0 --token
   缩小范围,或者改为把一次运行作为[运行包](#分享一次运行odw-扩展)分享。
 - **不加 `--token` 时**,非 loopback 绑定与以前一样——只读,任何能连到该端口的人都能读——并且
   `odw serve` 会打印一条醒目的警告,建议加上 `--token`。
+- **只有两个窄口子能回答检查点,此外什么都不能写**——见[在手机上批准](#在手机上批准odw-扩展):
+  签名的一次性批准链接(`--public-url`),以及 `--token-scope approve`。
+
+### 在手机上批准(ODW 扩展)
+
+[`checkpoint()`](#人工检查点odw-扩展) 不必再等你回到终端。用手机能访问到的 URL(通常是一条
+HTTPS 隧道)启动看板,并打开 `waiting` 通知 hook:
+
+```bash
+odw serve --public-url https://odw.example.com     # 例如放在 cloudflared 或 tailscale funnel 后面
+```
+
+```json
+{ "notify": { "webhook": "https://hooks.example.com/YOUR/WEBHOOK/PATH", "on": ["waiting"] }, "approveLinks": { "ttl": 86400 } }
+```
+
+此后每个开始等待的检查点都会发出两条链接,批准与拒绝:webhook 的 JSON 里是 `approveUrl`、
+`rejectUrl` 和 `linksExpireAt`(`text` 末尾也有);通知命令拿到 `ODW_APPROVE_URL`、
+`ODW_REJECT_URL`、`ODW_LINKS_EXPIRE_AT` 和 `ODW_NTFY_ACTIONS`——一个现成的 ntfy `Actions`
+头,带 Approve 与 Reject 两个按钮([示例](docs/recipes/notify.md#approve-from-the-notification))。
+打开链接会显示一个小页面——运行、检查点标题、payload 和一个按钮;按下即以 `by: "link"`
+记录决定,运行继续。
+
+`odw serve --token X --token-scope approve` 为远程看板做同样的事:持有令牌的人可以批准或拒绝
+检查点(与 loopback 上一样可附备注或修改后的 payload)。默认范围是 `read`。
+
+安全模型——唯一的远程写操作是检查点决定:
+
+- **链接就是能力凭证。** 拿到它的任何人都能在它过期或被用掉之前,对那一个检查点做那一个决定——
+  像对待承载它的 webhook URL 一样对待它。它是对运行、检查点、动作和过期时间的 HMAC-SHA256,
+  密钥按 runs 根目录各有一份(`<runsRoot>/.approve-secret`,权限 0600,由第一次
+  `odw serve --public-url` 生成;他人可读的会被替换)。改动链接里的任何内容都会破坏签名;
+  `odw serve --rotate-approve-secret` 让之前发出的所有链接失效。
+- **只能用一次。** 用过的链接记录在运行目录里(`approve-links/<nonce>`,以独占方式创建,两次
+  点击不可能都生效);检查点的另一条链接随之作废。重放、过期的链接(默认 24 小时:
+  `approveLinks.ttl`,60 秒到 30 天)或已用别的方式回答的检查点,得到一个清楚的 "410" 页面;
+  被篡改的链接得到 "403" 页面——从不出现堆栈。
+- **打开链接不会做出任何决定。** 聊天软件的链接预览和邮件扫描只会 `GET`。决定是一个 `POST`,
+  带着页面的 CSRF 值,它必须与页面设置的 `HttpOnly`、`SameSite=Strict` cookie 一致;ntfy 按钮
+  则在 `X-ODW-Action` 头里写明动作,其他网站的页面发不出这个头。来自其他源的表单会被拒绝,
+  页面也不能被嵌入 frame。
+- **猜测受到限速**,与错误令牌相同:每个地址每分钟 10 个坏链接(或 CSRF 校验失败),全体合计
+  100 个,之后回 429。
+- **链接只在 `odw serve --public-url` 运行时有效。** 该 runs 根目录没有这样的服务时不会生成链接,
+  并在通知里说明原因(`linksUnavailable`、`ODW_LINKS_UNAVAILABLE`)。`/approve/` 路由不需要看板
+  令牌——链接本身就是凭证——也不开放任何别的东西:停止、暂停、恢复和 Chat 仍只限 loopback,
+  `--token-scope approve` 下同样如此。
+- **请用 HTTPS。** 走明文 HTTP 时,路径上的任何人都能读到链接并抢先使用;`--public-url` 是指向
+  localhost 以外的 `http://` 时 `odw serve` 会给出警告。隧道连到 loopback 绑定也可以:公开 URL
+  的主机名可以越过 DNS rebinding 检查到达 `/approve/`(仅此路由)。
 
 ## 配置适配器
 
@@ -1844,7 +1895,8 @@ hook——webhook 只显示协议和主机,因为 URL 的其余部分就是密�
 `ODW_RUN_STATE=waiting`、`ODW_CHECKPOINT_ID` 和 `ODW_CHECKPOINT_TITLE`(没有
 `ODW_RESULT_FILE`);webhook 收到 `"state": "waiting"`、一个
 `"checkpoint": { "checkpointId", "title", "since" }` 字段(代替 `finishedAt`),以及一行
-写明回答命令的 `text`。
+写明回答命令的 `text`。有 `odw serve --public-url` 在运行时,它们还会带上该检查点签名的一次性
+批准与拒绝链接——见[在手机上批准](#在手机上批准odw-扩展)。
 
 加上 `"paused"`,就能在运行[因额度用尽而暂停](#额度用尽时暂停odw-扩展)时收到通知——每次
 暂停一次,继续时不再通知:命令的环境变量带有 `ODW_RUN_STATE=paused`、`ODW_PAUSED_ADAPTER`
