@@ -577,7 +577,7 @@ private runtime behavior need the following checks before migration:
 | Worktree isolation | Starts from committed HEAD, excludes uncommitted edits, and cleans up afterward. Changes are not merged and `agent()` returns the reply, not a diff; ODW keeps each isolated agent's change as a diff to review and apply (`odw diff`, `odw apply`, `keep` branches — ODW extensions; see [Review and apply](#review-and-apply-what-isolated-agents-changed-odw-extension)). `.worktreeinclude` is honored (ODW copies untracked files too, not only gitignored ones); its `symlink:` lines, `worktreeSetup` and the agents' `ODW_PORT` are ODW extensions — see [Isolated worktrees](#isolated-worktrees-and-agent-ports). |
 | Budget | Counts output tokens: the CLI's own count where its adapter reports usage (the built-in `claude` and `codex` do — see [Usage and cost](#usage-and-cost-odw-extension)), else `ceil(chars / 4)` of each reply. Every CLI run counts: schema and rate-limit retries, and failed runs that reported usage. The guard runs before each dispatch and each schema retry; once the target is spent the run ends and agents still running are stopped. |
 | JSON Schema | ODW checks the [documented subset](skills/open-dynamic-workflows/references/primitives.md#schema); `format` is an annotation. Any other keyword (`$ref`, `const`, `oneOf`, `maxItems`, …) still runs: the run's log names it and where it is, and a CLI that validates schemas itself (`claude`, `codex`) enforces it. `"schemaKeywords": "strict"` refuses such calls instead (ODW extension; see [Structured output](#structured-output-odw-extension)). Use explicit object/array types and supported constraints. |
-| Script trust | Run trusted scripts only: a run executes the workflow body as ordinary JavaScript. Loading parses metadata as a pure literal without evaluating it; validation and compatibility warnings are not a sandbox. |
+| Script trust | Run trusted scripts only: a run executes the workflow body as ordinary JavaScript. Loading parses metadata as a pure literal without evaluating it; validation and compatibility warnings are not a sandbox. Triggered, plugin and untrusted runs compile the body in a [strict script context](#strict-script-context-odw-extension) — only the primitives and standard built-ins — which is not a sandbox either. |
 | Recovery | Every completed `agent()` result is saved as it lands. `odw resume` continues a paused live worker in place; on an ended run (done, failed, stopped, or stale after a crash) it starts a new run that replays each call whose prompt and options are unchanged and runs the rest. `rerun` starts over. See [Resume a run](#resume-a-run-odw-extension). |
 
 The supported primitive names do not guarantee full runtime parity.
@@ -590,7 +590,8 @@ result, retry, or fail when the task requires every item.
 as runnable cases: plain workflow scripts in Claude Code's dialect, each with an
 `expected.json` (its result, and the logs, phases and agents that matter), run on
 a deterministic mock agent. `odw conformance [--json] [--case N]` checks this odw
-against them (exit 1 on any failure; CI runs it). Each case says whether Claude
+against them (exit 1 on any failure; CI runs it), and `odw conformance --strict` runs
+every case in a [strict script context](#strict-script-context-odw-extension) (CI runs that too). Each case says whether Claude
 Code's docs settle its behaviour (`documented`) or not (`unspecified`: it pins
 what ODW does). Scripts that keep to what the documented cases pin down run on
 both. The cases run on Claude Code by hand — they are plain workflow files — and
@@ -1304,6 +1305,7 @@ workflow edited or the whole run paid for again:
 
 ```bash
 odw check wf.js                           # does it load? errors with line, column and a code frame
+odw check wf.js --capabilities            # … and what it names outside the dialect: process, require, import(, …
 odw replay $RUN --agent judge             # run that one agent again, as a small new run
 odw replay $RUN --agent judge --prompt @better.txt --adapter codex --model gpt-5
 odw compare $RUN $REPLAY --agent judge    # the original and the replay side by side
@@ -1319,7 +1321,13 @@ when it loads, 1 when it does not. Parse errors say what the compiler says, with
 hint only where one fits: TypeScript syntax when a type annotation, `interface` or
 `as` is at fault (not for every error), an `await` inside a callback that is not
 `async`, a script that ends before a bracket it opened is closed. The same positions
-are in the messages a run fails with and in `validate()`'s errors.
+are in the messages a run fails with and in `validate()`'s errors. `--capabilities`
+adds, read off the source and never run, the identifiers it names outside Claude
+Code's dialect — `process`, `require`, `import(`, `globalThis`, `Function(`, `eval`,
+`fetch`, `console`, timers, … — each with its first line and column and whether a
+[strict script context](#strict-script-context-odw-extension) has it, and the ODW
+extension primitives it calls (`validate`, `exec`, `checkpoint`, `workflow.input`);
+`--json` carries them as `capabilities: { outOfDialect, extensions }`.
 
 **`odw replay <run> --agent <id|label>`** dispatches one saved `agent()` call again.
 Every call's inputs are kept as it starts (`agents/<id>.call.json`: the prompt and
@@ -2513,6 +2521,41 @@ meta.json keeps `untrustedInput: { why, args, approve }`; status.json and the
 `run_started` event add the tier, the environment and whether a sandbox held it, and
 the dashboard's Job header shows it as a trust line. None of this detects or filters an
 injection, and none of it makes a run safe: it only takes away what the text could ask for.
+
+### Strict script context (ODW extension)
+
+A workflow is code: one from a plugin, a shared file or a trigger runs with the worker's
+whole JavaScript context unless something says otherwise — `process`, `require`,
+`fetch` and all they reach. `scriptContext: "strict"` compiles and runs the workflow
+body in a fresh `vm` context that holds only the injected primitives (`agent`,
+`parallel`, `pipeline`, `phase`, `log`, `args`, `budget`, `workflow`, and the ODW
+extensions `validate`, `exec`, `checkpoint`) and the standard JavaScript built-ins —
+the bare ECMAScript realm Claude Code's Workflow tool gives a script. There is no
+`process`, `require`, `fetch`, `console`, timers or `structuredClone`; `eval()` and
+`new Function()` compile nothing; an `import()` is refused when the body compiles.
+Using one fails with a message that says so (`process is not defined: a strict script
+context (scriptContext: "strict") has only the workflow primitives and standard
+JavaScript built-ins, not Node.js's process — …`) rather than a bare `ReferenceError`,
+and the run says it is strict — and which of these names the script uses — before
+the body starts. What a primitive returns or throws reaches the script as a copy in
+the script's own realm; an error the script throws leaves it as an ordinary `Error`.
+
+```jsonc
+{ "scriptContext": "strict" } // every run; "host": every run in the worker's context
+```
+
+Unset, a run is **strict when a trigger started it, when its workflow is a Claude
+Code plugin's, or when its input or its repository is untrusted**, and **host** for
+everything else — local and personal workflows run as before. A nested `workflow()`
+runs in its parent's context. The run's `run_started` event records the context it
+chose, status.json has `scriptContext: "strict"`, and the dashboard's Job header shows
+it on the trust line. `odw check --capabilities` lists what a script would miss there.
+
+**`vm` is not a security boundary.** Strict takes away what a script could casually
+reach; a hostile script can still find its way out of the context, and every script
+drives agents that act with the run's permissions. Read a workflow before you run
+it, and use [permissions](#permissions-odw-extension) and a
+[container sandbox](#run-agents-in-containers-odw-extension) for the agents.
 
 ### Run agents in containers (ODW extension)
 

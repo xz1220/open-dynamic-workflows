@@ -224,6 +224,7 @@ odw replay $RUN --agent 3   # 把这一次 agent() 调用作为新运行重跑,�
                             #   --prompt @文件|文本、--adapter A、--model M 替换原值;会打印对照命令
 odw run wf.js --break Review  # 在阶段/label "Review" 之前停下等决定(一个检查点);--step:每个阶段之前
 odw check wf.js             # 能否加载?文件:行:列、代码片段、可移植性警告;退出 0/1
+                            #   --capabilities:它用到的方言之外的名字(process、require、import( 等)与调用的 ODW 扩展
 odw eval review             # 用例 × 适配器 × 重复次数：每个单元格的通过率、花费、耗时（ODW 扩展；见下文）
 odw test review             # 脚本化回复，不调用模型，$0：逻辑是否成立？（ODW 扩展；见下文）
 odw run review --dry        # 每个 agent 都用桩应答：阶段树与 agent 数，$0（ODW 扩展）
@@ -662,6 +663,7 @@ agent「在工作」的静默前部截断;它会运行模型,先征得同意。
 | 错误 | 纠正 |
 | --- | --- |
 | 在脚本里 import 原语或其他模块 | 原语是注入全局；任何额外的顶层 `import`/`export` 都会被加载器拒绝。 |
+| 在脚本里用 `process`、`require`、`fetch`、`console` 或定时器 | 它们不属于方言:Claude Code 给的是裸 ECMAScript 环境,ODW 的严格脚本上下文(`scriptContext: "strict"`,ODW 扩展)也一样——触发器、插件与不可信运行默认使用它,用到这些名字时运行失败并说明原因。数据经 `args` 传入,用 `log()` 记录,抓取交给 agent;`odw check --capabilities` 列出脚本用到的名字。`vm` 不是安全边界。 |
 | `meta` 里用了变量、展开或函数调用 | `meta` 必须是纯字面量。 |
 | 将 `parallel`/`pipeline` 中所有失败等同处理 | 可恢复失败变 `null`；停止、预算耗尽和派发上限错误会中止。要求完整交付时须重试缺失结果或报告失败,仅允许部分结果时才过滤。 |
 | 按"哪个 agent 先跑完"来分支 | 破坏可复现性；归并要保持顺序无关。 |

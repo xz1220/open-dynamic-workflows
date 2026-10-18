@@ -451,6 +451,22 @@ independent security reviews whose findings are all fixed.
   `destructive_git` once its CLI is done — ODW cannot stop a command before it runs.
   Commands that only reset a working tree do not count for an isolated agent. Shown in
   `odw logs`, the live view, the agent's drawer and node, and a chip on the run's head.
+- A strict script context (**ODW extension**): `"scriptContext": "strict"` compiles and
+  runs the workflow body in a fresh `vm` context holding only the injected primitives
+  (the eight of Claude Code's dialect, plus `validate`, `exec`, `checkpoint`) and the
+  standard JavaScript built-ins — no `process`, `require`, `fetch`, `console`, timers;
+  no `eval()`/`new Function()`; an `import()` is refused when the body compiles. A use
+  fails with a message that says so instead of a bare `ReferenceError`; what a primitive
+  returns or throws reaches the script as a copy in its own realm. Unset, triggered
+  runs, Claude Code plugin workflows and runs with untrusted input or repository are
+  strict and everything else stays `"host"` (no change); a nested `workflow()` follows
+  its parent. The run says so before the body starts — naming what it uses that is
+  not there — and its setup, status and the dashboard's trust line record it.
+  `odw check --capabilities [--json]` lists the identifiers a script names outside the
+  dialect (`process`, `require`, `import(`, `globalThis`, `Function(`, `eval`, `fetch`,
+  …) with line and column, and the ODW extensions it calls; `odw conformance --strict`
+  runs the suite there (all 32 cases pass; `npm test` runs it). `vm` is not a security
+  boundary: this takes away what a script could casually reach, nothing more.
 
 ### Run on a schedule
 - `odw schedule add|list|remove|run` writes a cron, launchd or systemd entry that calls

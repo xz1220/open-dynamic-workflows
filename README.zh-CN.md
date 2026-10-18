@@ -493,7 +493,7 @@ ODW 已实现下列原语能力。依赖宿主私有运行机制的脚本,迁移
 | 工作区隔离 | 从已保存的 HEAD 创建临时工作区,不含未保存修改,结束后清理。不会自动合并,`agent()` 返回回复而非 diff;ODW 会把每个隔离 agent 的改动保存为 diff,供审阅和应用(`odw diff`、`odw apply`、`keep` 分支——均为 ODW 扩展;见[审阅并应用](#审阅并应用隔离-agent-的改动odw-扩展))。支持 `.worktreeinclude`(ODW 连未跟踪文件也复制,而不只是被 gitignore 的文件);其中的 `symlink:` 行、`worktreeSetup` 和 agent 的 `ODW_PORT` 是 ODW 扩展——见[隔离 worktree](#隔离-worktree-与-agent-端口)。 |
 | 预算 | 计算输出 token:适配器上报用量时用 CLI 自己的计数(内置 `claude` 和 `codex` 会上报——见[用量与花费](#用量与花费odw-扩展)),否则按每条回复的 `ceil(字符数 / 4)` 估算。每次 CLI 运行都计入:schema 重试、限流重试,以及上报了用量的失败运行。每次派发和每次 schema 重试前都会检查;预算用尽时运行结束,仍在运行的 agent 会被停止。 |
 | JSON Schema | ODW 只检查[已列出的子集](skills/open-dynamic-workflows/zh-CN/references/primitives.md#schema);`format` 是注解。其他关键字(`$ref`、`const`、`oneOf`、`maxItems` 等)照常运行:运行日志会写明关键字及其位置,自己校验 schema 的 CLI(`claude`、`codex`)会强制执行它们。设 `"schemaKeywords": "strict"` 则改为拒绝这类调用(ODW 扩展;见[结构化输出](#结构化输出odw-扩展))。请明确声明对象/数组类型并使用受支持的约束。 |
-| 脚本可信性 | 只运行可信脚本:运行工作流会把正文当作普通 JavaScript 执行。加载时元数据按纯字面量解析,不会被求值;编译检查和兼容性警告都不提供沙箱隔离。 |
+| 脚本可信性 | 只运行可信脚本:运行工作流会把正文当作普通 JavaScript 执行。加载时元数据按纯字面量解析,不会被求值;编译检查和兼容性警告都不提供沙箱隔离。触发器、插件与不可信的运行在[严格脚本上下文](#严格脚本上下文odw-扩展)中编译正文——只有原语与标准内建对象——它同样不是沙箱。 |
 | 恢复 | 每个完成的 `agent()` 结果都会在完成时保存。`odw resume` 让已暂停且仍存活的 worker 原地继续;对已结束的运行(done、failed、stopped,或崩溃后的 stale)则启动一个新运行:prompt 和选项都没变的调用直接重放,其余照常执行。`rerun` 从头执行。见[恢复运行](#恢复运行odw-扩展)。 |
 
 原语名称一致不代表运行机制完全等价。`validate(source)`、`exec(command)` 和 `checkpoint(title)`
@@ -504,7 +504,7 @@ ODW 已实现下列原语能力。依赖宿主私有运行机制的脚本,迁移
 **一致性测试套件。** [`conformance/`](conformance/) 把方言的行为写成可运行的用例:每个用例是
 一份 Claude Code 方言的普通工作流脚本,配一个 `expected.json`(返回值,以及要紧的日志、phase
 和 agent),由确定性的 mock agent 按表作答。`odw conformance [--json] [--case N]` 用它们检查
-当前的 odw(任一用例失败即退出码 1;CI 会运行)。每个用例都标明 Claude Code 的文档是否确定了
+当前的 odw(任一用例失败即退出码 1;CI 会运行);`odw conformance --strict` 在[严格脚本上下文](#严格脚本上下文odw-扩展)中运行全部用例(CI 同样会运行)。每个用例都标明 Claude Code 的文档是否确定了
 该行为(`documented`),还是没有(`unspecified`:用例记录的是 ODW 的行为)。只依赖 documented
 用例所确定行为的脚本,两边都能跑。这些用例是普通工作流文件,也可以在 Claude Code 上手动运行;
 [`conformance/README.md`](conformance/README.md) 说明了格式,其他运行时可以据此实现自己的
@@ -1127,6 +1127,7 @@ add … --on-cli-change`:定时运行本身就会记录漂移,`driftEval` 会去
 
 ```bash
 odw check wf.js                           # 能否加载?错误带行号、列号和代码片段
+odw check wf.js --capabilities            # ……以及它用到的方言之外的名字:process、require、import( 等
 odw replay $RUN --agent judge             # 把这一个 agent 作为一次小的新运行重跑
 odw replay $RUN --agent judge --prompt @better.txt --adapter codex --model gpt-5
 odw compare $RUN $REPLAY --agent judge    # 原 agent 与重跑并排对照
@@ -1139,7 +1140,11 @@ odw run wf.js --step                      # ……在每个阶段之前
 几行源码和指向出错列的 `^`,然后是 `validate()` 给出的可移植性警告。能加载退出 0,否则退出 1。
 解析错误照编译器的原话说,只在合适时附提示:只有类型注解、`interface` 或 `as` 出错时才提
 TypeScript(不再对每个错误都这样说),非 `async` 回调里的 `await`,以及脚本在括号闭合前就结束了。
-运行失败时的报错与 `validate()` 的错误里也带同样的位置。
+运行失败时的报错与 `validate()` 的错误里也带同样的位置。`--capabilities` 另外列出(只读源码、绝不执行)
+脚本用到的 Claude Code 方言之外的标识符——`process`、`require`、`import(`、`globalThis`、`Function(`、
+`eval`、`fetch`、`console`、定时器等——各带首次出现的行列号以及[严格脚本上下文](#严格脚本上下文odw-扩展)
+里有没有它,还有它调用的 ODW 扩展原语(`validate`、`exec`、`checkpoint`、`workflow.input`);`--json` 中为
+`capabilities: { outOfDialect, extensions }`。
 
 **`odw replay <run> --agent <id|label>`** 把一次保存下来的 `agent()` 调用重新派发。每次调用开始
 时都会保存它的输入(`agents/<id>.call.json`:脚本给出的提示词和选项、开始时所用的适配器、请求的
@@ -2170,6 +2175,33 @@ const fix = await agent(`修复这个 issue 描述的 bug。\n${workflow.input.q
 meta.json 记录 `untrustedInput: { why, args, approve }`;status.json 和 `run_started` 事件补充档位、
 环境以及是否有沙箱,看板的 Job 头部以一行信任信息显示它。这些都不检测或过滤注入,也不让运行
 变得「安全」:它只是拿走了那段文字可能要求的能力。
+
+### 严格脚本上下文(ODW 扩展)
+
+工作流就是代码:来自插件、分享文件或触发器的工作流,默认带着 worker 的整个 JavaScript 上下文运行——
+`process`、`require`、`fetch` 以及经由它们能拿到的一切。`scriptContext: "strict"` 在一个新的 `vm`
+上下文中编译并执行工作流正文,其中只有注入的原语(`agent`、`parallel`、`pipeline`、`phase`、`log`、
+`args`、`budget`、`workflow`,以及 ODW 扩展 `validate`、`exec`、`checkpoint`)和标准 JavaScript 内建对象——
+也就是 Claude Code 的 Workflow 工具给脚本的那个裸 ECMAScript 环境。没有 `process`、`require`、`fetch`、
+`console`、定时器和 `structuredClone`;`eval()` 与 `new Function()` 不编译任何代码;`import()` 在正文编译
+时即被拒绝。用到这些时,报错会直接说明原因(`process is not defined: a strict script context
+(scriptContext: "strict") has only the workflow primitives and standard JavaScript built-ins, not
+Node.js's process — …`),而不是一个光秃秃的 `ReferenceError`;运行在正文开始前就会说明自己是严格的,
+以及脚本用到了其中哪些名字。原语返回或抛出的值,以脚本自身环境中的副本到达脚本;脚本抛出的错误离开
+时是普通的 `Error`。
+
+```jsonc
+{ "scriptContext": "strict" } // 所有运行;"host":所有运行都在 worker 的上下文中
+```
+
+不设置时,**触发器启动的运行、Claude Code 插件的工作流、输入或仓库不可信的运行使用 strict**,
+其余一律 **host**——本地项目与个人工作流照旧运行。嵌套的 `workflow()` 与父运行用同一种上下文。
+运行的 `run_started` 事件记录所选的上下文,status.json 中有 `scriptContext: "strict"`,看板 Job 头部的
+信任行也会显示。`odw check --capabilities` 列出脚本在严格上下文中会缺少的东西。
+
+**`vm` 不是安全边界。** 严格上下文只是拿走了脚本随手就能碰到的东西;恶意脚本仍可能找到办法逃出
+这个上下文,而且每个脚本驱动的 agent 都带着运行的权限行事。运行前请先读一遍工作流,并为 agent 使用
+[权限档位](#权限档位odw-扩展)与[容器沙箱](#在容器中运行-agentodw-扩展)。
 
 ### 在容器中运行 agent(ODW 扩展)
 
