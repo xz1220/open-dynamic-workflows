@@ -9,7 +9,9 @@
  * (`--dry-run`, the default, says so explicitly). `--older-than` (`30d`,
  * `12h`, `2w`) overrides the config's `retention.days`. The repository of
  * `--source` (default: the current directory) is looked at besides each run's
- * own. Exit 0, 1 when a removal failed, 2 on a usage error.
+ * own. Leftover `odw-*` compose projects are listed when `docker compose ls`
+ * answers (`$ODW_DOCKER` names another docker), never removed. Exit 0, 1 when
+ * a removal failed, 2 on a usage error.
  *
  * `pin <run_id>` marks a run so gc skips it in every kind; `--remove` unpins
  * it; with no run id it lists the pinned runs.
@@ -68,7 +70,7 @@ export async function cmdGc(rest: string[]): Promise<number> {
   }
   const store = new RunStore(values["runs-root"] ?? resolveRunsRoot(config.settings.runsRoot));
   const source = resolve(values.source ?? process.cwd());
-  const plan = await planGc({ store, olderThanDays: days, transcripts: config.settings.retention.transcripts, repos: [source] });
+  const plan = await planGc({ store, olderThanDays: days, transcripts: config.settings.retention.transcripts, repos: [source], docker: process.env.ODW_DOCKER || "docker" });
   const result = values.yes ? await applyGc(plan, { store }) : null;
   if (values.json) {
     process.stdout.write(JSON.stringify(gcJson(plan, result), null, 2) + "\n");
@@ -99,6 +101,8 @@ export function gcJson(plan: GcPlan, result: GcResult | null): Record<string, un
     snapshots: plan.snapshots.candidates,
     snapshotsKept: plan.snapshots.kept,
     snapshotsUnknownRun: plan.snapshots.unknown,
+    // Reported, never removed; null when docker could not say (ODW extension: worktreeTeardown, ODW_SLOT).
+    composeProjects: plan.compose?.leftover ?? null,
     runs: plan.runs.map((r) => ({ runId: r.runId, workflow: r.workflow, ageDays: Math.floor(r.ageDays), files: r.files.length, bytes: r.bytes })),
     skipped: plan.skipped,
     totals: { ...plan.totals, reclaimable: plan.totals.worktreeBytes + plan.totals.transcriptBytes },
@@ -137,6 +141,15 @@ export function formatGc(plan: GcPlan, result: GcResult | null, caps: TermCaps =
   for (const c of sn.candidates.slice(0, LIST_MAX)) lines.push(`  ${safe(c.ref)}  ${p.dim(`its run is older than ${ageText(plan.olderThanDays)} · ${safe(c.repo)}`)}`);
   lines.push(...more(sn.candidates.length));
   if (sn.unknown > 0) lines.push(p.dim(`  ${sn.unknown} snapshot(s) of runs not in this runs root: kept`));
+
+  const compose = plan.compose?.leftover ?? [];
+  if (compose.length > 0) {
+    lines.push("", `${p.bold("Compose projects")}  ${compose.length}  ${p.dim("reported only — odw never removes them")}`);
+    for (const c of compose.slice(0, LIST_MAX)) {
+      lines.push(`  ${safe(c.name)}  ${p.dim(`${safe(c.status)}${c.run ? ` · run ${safe(c.run)}` : " · no run here"} · docker compose -p ${safe(c.name)} down -v`)}`);
+    }
+    lines.push(...more(compose.length));
+  }
 
   lines.push("", `${p.bold(`Runs older than ${ageText(plan.olderThanDays)}`)}  ${plan.runs.length}${plan.runs.length ? ` · ${formatBytes(plan.totals.transcriptBytes)} of transcripts and stderr` : ""}`);
   for (const r of plan.runs.slice(0, LIST_MAX)) {

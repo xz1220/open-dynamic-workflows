@@ -41,6 +41,13 @@ export interface ScheduleDefinition {
   odwCommand: string[];
   /** The PATH the OS entry sets. */
   path: string;
+  /**
+   * A digest schedule (`add --digest`; ODW extension, see ../runtime/digest):
+   * each fire sends `odw digest --since-last --notify` — of `workflow`'s runs
+   * only, when one is named — instead of starting a run; `workflow` above is
+   * then only what lists show.
+   */
+  digest?: { workflow: string | null };
 }
 
 /** A schedule name: what the files, crontab markers, launchd labels and unit names are made of. */
@@ -113,7 +120,7 @@ export function entryName(entry: unknown): string | undefined {
 /** One entry of schedules.json checked: the definition, or what is wrong with it. */
 export function checkDefinition(entry: unknown): ScheduleDefinition | string {
   if (!isObject(entry)) return "it is not an object";
-  const { name, workflow, cron, adapter, configPath, cwd, backend, createdAt, odwCommand, path } = entry;
+  const { name, workflow, cron, adapter, configPath, cwd, backend, createdAt, odwCommand, path, digest } = entry;
   if (typeof name !== "string" || !SCHEDULE_NAME_RE.test(name)) return `"name" must match ${SCHEDULE_NAME_RE.source}`;
   if (typeof workflow !== "string" || workflow === "") return `"workflow" must be a workflow name or a script path`;
   if (typeof cron !== "string") return `"cron" must be a cron expression`;
@@ -125,6 +132,9 @@ export function checkDefinition(entry: unknown): ScheduleDefinition | string {
   if (!(BACKENDS as readonly unknown[]).includes(backend)) return `"backend" must be one of ${BACKENDS.join(", ")}`;
   if (!Array.isArray(odwCommand) || odwCommand.length === 0 || !odwCommand.every((p) => typeof p === "string")) {
     return `"odwCommand" must be a non-empty list of strings`;
+  }
+  if (digest !== undefined && (!isObject(digest) || (digest.workflow !== null && typeof digest.workflow !== "string"))) {
+    return `"digest" must be { "workflow": <name> | null }`;
   }
   return {
     name,
@@ -138,6 +148,7 @@ export function checkDefinition(entry: unknown): ScheduleDefinition | string {
     createdAt: typeof createdAt === "string" ? createdAt : "",
     odwCommand: odwCommand as string[],
     path: typeof path === "string" ? path : "",
+    ...(digest !== undefined ? { digest: { workflow: (digest as { workflow: string | null }).workflow } } : {}),
   };
 }
 

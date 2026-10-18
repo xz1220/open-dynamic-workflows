@@ -174,6 +174,9 @@ and `odw doctor --smoke` sends your default adapter one real prompt, catching a
 CLI that installs fine but blocks on a login or approval prompt when headless.
 `odw doctor --models` (ODW extension) sends one tiny prompt to every adapter/model
 pair your config and `.odw/workflows` name, and says which models are gone.
+`odw doctor --local` (ODW extension) checks a local Ollama or LM Studio server: the
+context each model is loaded with, tool calling, and with `--smoke` whether a long
+prompt's front is silently cut (see [Local models](#local-models-check-the-server-route-the-cheap-phases-odw-extension)).
 
 **Your first run costs nothing.** Start from a template, test it, watch it run with
 every agent stubbed — then run it for real:
@@ -623,6 +626,7 @@ odw logs $RUN --follow   # stream raw progress events
 odw logs $RUN --agent 3  # what one agent did: its tool calls, results and text (below)
 odw result $RUN          # final value
 odw diff $RUN --stat     # what isolated agents changed; odw apply $RUN --agent N (or --all) lands it
+odw review               # kept diffs across runs not dealt with yet, riskiest first, each with why (below)
 odw notes $RUN           # what its agents told each other on the notes board (above)
 odw compare $OLD $RUN    # what changed between two runs: setup, time, cost, failures, replies (below)
 odw estimate review      # p50/p90 time, cost, tokens and agents of its next run, from earlier runs (below)
@@ -631,6 +635,7 @@ odw eval review          # cases × adapters × repeats: pass rate, cost and tim
 odw export $RUN --otlp   # the run as OpenTelemetry traces (OTLP/JSON; --send posts it; below)
 odw bundle $RUN          # the run as one redacted file to share: $RUN.odwrun (odw view FILE shows it; below)
 odw gc                   # what runs left on disk — orphaned worktrees, keep branches, old transcripts; --yes deletes (below)
+odw digest               # across runs, from their evidence: needs you, failed, missed checks, changes, spend (below)
 odw pause|resume|stop $RUN
 odw approve|reject $RUN  # answer a checkpoint() the run waits at (--note TEXT, --checkpoint N)
 odw approve $RUN --edit  # …approving its payload as you edit it in $EDITOR (or --payload JSON|@file)
@@ -987,6 +992,56 @@ odw schedule remove digest     # delete the OS entry and the definition (safe if
 The expression is cron's five fields (numbers, `*`, lists, ranges, steps, `jan`-`dec`,
 `sun`-`sat`); `@daily`, `L`, `#` and the like are refused with the reason. The full guide,
 and the raw cron line as the manual alternative: [`docs/recipes/cron.md`](docs/recipes/cron.md).
+
+### Morning digest: `odw digest` (ODW extension)
+
+After a night of schedules, triggers and long runs, `odw digest` is one report across
+all of them — built only from what the runs recorded, never from what an agent said
+about its own work (no reply, result or model-written summary is repeated):
+
+```bash
+odw digest                         # the last 24 hours
+odw digest --since 12h             # 90m, 12h, 2d, 1w
+odw digest --since-last            # since the last digest that was sent (--notify)
+odw digest --workflow nightly      # one workflow's runs
+odw digest --json | --markdown     # for scripts, or to paste
+odw digest --since-last --notify   # send it through the notify hooks ("digest" in notify.on)
+```
+
+Groups, each with the command that acts on it:
+
+- **Needs you** — every checkpoint (and [agent question](#agent-questions-odw-extension))
+  waiting now, whatever the window, with `odw approve|reject … --checkpoint N`; sent
+  with `--notify` while an `odw serve --public-url` runs, each also carries its signed
+  one-time approve/reject links.
+- **Failed** — failed runs and runs whose worker died (stale): the recorded error, how
+  many agents did not finish and why (`timeout 1, exit 2`), and `odw resume <run>`.
+- **Done, but checks were not met** — done runs with agents that missed their
+  [`expect`](#check-an-agents-work-odw-extension) checks, wrote outside their
+  [`scope`](#declared-scopes-odw-extension), or failed under a run that went on.
+- **Done, with changes to review** — done runs whose isolated agents kept a diff: files
+  and lines, and `odw apply <run> --all --check` to preview it.
+- **Spend** — dollars and tokens over the window, and the most expensive run.
+
+A run is in the window when its last write is; dry runs are left out. `--notify` fires
+the [`notify`](#run-notifications) hooks once — a day's runs make one message, not
+one per run — and moves the `--since-last` mark (`<runsRoot>/_digest/marks.json`, per
+`--workflow`) only when every hook succeeded; looking without `--notify` never moves it.
+To send it every weekday morning:
+
+```jsonc
+{
+  "notify": { "webhook": "https://hooks.example.com/YOUR/PATH", "on": ["digest"] },
+  "digest": { "cron": "0 8 * * 1-5" }
+}
+```
+
+```bash
+odw schedule add morning --digest     # each fire: odw digest --since-last --notify (cron: digest.cron, or --cron)
+```
+
+`add --digest` refuses a config whose hooks would not send it; `--workflow W` narrows
+it. Recipe: [`docs/recipes/notify.md`](docs/recipes/notify.md#a-morning-digest).
 
 ### Start runs from webhooks: GitHub, Linear, Slack (ODW extension)
 
@@ -1618,6 +1673,11 @@ odw pin $RUN                  # odw gc skips this run, whatever its age; --remov
   run you pinned (`pinned.json` in its directory; the dashboard tags it **pinned**);
   worktrees and branches odw did not make. Each removal is checked again just before
   it happens, and one that fails is reported (exit 1) while the rest goes on.
+- **Compose projects** named `odw-*` (an isolated agent's `ODW_SLOT`, its default
+  `COMPOSE_PROJECT_NAME`) whose run is not active are listed, with the `docker
+  compose -p <name> down -v` that removes one — **reported only, never removed**.
+  Only when `docker compose ls` answers at once (`$ODW_DOCKER` names another
+  docker); without docker nothing is said.
 - **At start-up** each worker looks, read-only, at its repository's registered
   worktrees, and says once in the run's log when runs that died left some behind,
   with the `odw gc` command. `odw doctor` has a **Disk** line: the runs root's size
@@ -2279,9 +2339,16 @@ working tree holds that git does not: `git stash create` for the tracked changes
 staged and not, plus the untracked files `.gitignore` does not exclude, written to
 one commit at `refs/odw/safety/<run>` — your tree, index and stash list are left as
 they are. A clean tree gets no snapshot; ignored files are never kept, nor untracked
-files over 50 MB (the snapshot names them). The run says so in a `safety_snapshot`
+files over 50 MB, nor untracked files whose names say they hold a secret (`.env`,
+`.env.*`, `*.pem`, `*.key`, `*.p12`, `id_rsa`, `id_ed25519`, `id_ecdsa`,
+`credentials.json`) — the snapshot names each. The run says so in a `safety_snapshot`
 event; when odw cannot take one (not a git repository, a merge in progress) it logs
 why and the agent goes on.
+
+The snapshot is a git ref **in your repository**: until `odw gc` deletes it with its
+run (past `retention`), its commit holds your other untracked files as they were — a
+draft, a local config, a secret under a name odw does not know. Nothing you push by
+branch or tag carries it, but `git push --mirror` (every ref) would publish it.
 
 ```sh
 odw restore $RUN --check   # preview: each file clean, CONFLICT (with its lines) or already applied
@@ -2298,14 +2365,24 @@ it three-way, and the commit HEAD was at is named.
 odw cannot stop a command before it runs — that takes each CLI's own hooks — but it
 reads what agents run as they run (Claude Code's `Bash`, Codex's
 `command_execution`, the kilo, opencode and agy shell tools) for `git reset --hard`,
-`git checkout .` / `-- .` / `--force`, `git restore .`, `git clean -f…`, `git push
---force` (`-f`, `--force-with-lease`, `+refspec`), `git stash drop|clear` and `git
-branch -D`. Command lines are split as a shell would (`cd x && …`, `bash -lc '…'`,
-`sudo`, `env`, `git -C dir …`); text in quotes is not a command. Each hit is a
-`destructive_git` event — in `odw logs`, the live view, and the agent's drawer and
-node in the dashboard — naming `odw restore <run>` when there is a snapshot. Commands
-that only reset a working tree do not count for an isolated agent: its worktree is
-its own.
+`git checkout .` / `-- .` / `--force`, `git switch --force` / `--discard-changes`,
+`git restore .`, `git clean -f…`, `git push --force` (`-f`, `--force-with-lease`,
+`+refspec`), `git push --mirror`, `git push --delete` (`-d`, `:refspec`), `git stash
+drop|clear` and `git branch -D`. Command lines are split as a shell would (`cd x &&
+…`, `bash -lc '…'`, `sudo`, `env`, `if …; then …`, `! …`, `git -C dir …`); text in
+quotes is not a command. Each hit is a `destructive_git` event — in `odw logs`, the
+live view, and the agent's drawer and node in the dashboard — naming `odw restore
+<run>` when there is a snapshot. Commands that only reset a working tree do not count
+for an isolated agent: its worktree is its own — unless git is pointed elsewhere
+(`git -C <dir>`, `--git-dir`, `--work-tree`), which odw cannot place and counts as in
+place.
+
+This detection is **advisory and best effort**, not a guard: it sees only what a
+command line says. It misses git run by another program — `find . -exec git checkout
+-- {} +`, `… | xargs git checkout --`, a script or Makefile —, a git alias (`git
+nuke` for `reset --hard`), a `cd` into another worktree before a plain `git reset
+--hard`, and any CLI that prints no tool calls (a text adapter). The snapshot, not
+the detection, is what gets work back.
 
 ```jsonc
 { "destructiveGit": "fail" } // default "warn": recorded; "fail": the agent fails with reason destructive_git once its CLI is done
@@ -2340,7 +2417,7 @@ still reach the agent` lands in the run's log the first time an agent runs on co
 
 The repository's own code that ODW itself would run is refused: the `symlink:` lines
 of its `.worktreeinclude` link nothing (a link hands agents the source tree; plain
-lines still copy), and a `worktreeSetup` set by a config inside the repository — such
+lines still copy), and a `worktreeSetup` or `worktreeTeardown` set by a config inside the repository — such
 as its `./odw.config.json` — does not run, with a log line saying so. A `worktreeSetup`
 from your own config (`--config`, `$ODW_CONFIG`, or `~/.config/odw/config.json`
 outside the repository) still runs. A config ODW would find by itself inside the
@@ -2389,14 +2466,20 @@ takes it (unless the trigger says `"untrusted": false`), and so does
 
 - **runs read-only agents** — `permissions: "read"` — unless the run's tier was given:
   `--permissions`, or the trigger's `"permissions"`;
-- **starts agent CLIs with `agentEnv: "minimal"` and no secret-named variable** —
-  `GH_TOKEN`, `GITHUB_TOKEN`, `*_API_KEY`, `*_TOKEN`, … — but the ones the CLI's own login
-  documents (`ANTHROPIC_*`/`CLAUDE_*` for claude, `OPENAI_*`/`CODEX_*` for codex, …),
-  whatever `agentEnvPass` lists. An adapter's own `env` still applies, and `exec()`
-  commands — the workflow author's — get the minimal environment plus `agentEnvPass`;
+- **starts agent CLIs with `agentEnv: "minimal"`, no other vendor's variables and no
+  secret-named variable** — `GH_TOKEN`, `GITHUB_TOKEN`, `*_API_KEY`, `*_TOKEN`,
+  `*_HEADERS`, … — but the ones the CLI's own login documents (`ANTHROPIC_*`/`CLAUDE_*`
+  for claude, `OPENAI_*`/`CODEX_*` for codex, `GEMINI_*` and `GOOGLE_API_KEY`,
+  `GOOGLE_GENAI_USE_VERTEXAI`, `GOOGLE_GENAI_USE_GCA`, `GOOGLE_CLOUD_PROJECT`,
+  `GOOGLE_CLOUD_LOCATION` for gemini, …), whatever `agentEnvPass` lists. An adapter's
+  own `env` still applies, and `exec()` commands — the workflow author's — get the
+  minimal environment plus `agentEnvPass`;
 - **says loudly when nothing boxes it in:** without a
   [container sandbox](#run-agents-in-containers-odw-extension) whose `network` is an
-  allowlist (or `"none"`), the start banner, the run's log and its `run_started` event warn.
+  allowlist (or `"none"`), the start banner, the run's log and its `run_started` event warn,
+  and read-only agents start without their CLI's web tools (Claude Code's `WebFetch` and
+  `WebSearch`, codex's `--search`), which could carry a file they read — a token
+  `actions/checkout` left in `.git/config` — off the machine.
   `"untrustedInput": { "requireSandbox": true }` refuses to start such a run instead;
 - **asks before anything writes:** the first agent that may write (`edit` or `full`) waits
   at a [checkpoint](#human-checkpoints-odw-extension) — once per run; its answer stands for
@@ -3087,6 +3170,73 @@ entry becomes an adapter of its own, `<adapter>@<name>`:
 Whether you may pool several accounts is up to each provider's terms of service: check
 them before you configure more than one. ODW only switches between logins you give it.
 
+### Local models: check the server, route the cheap phases (ODW extension)
+
+**ODW extension.** Local models (Ollama, LM Studio) run through an agent CLI that
+talks to them — `opencode` with a provider in its `opencode.json`, `codex --oss`, or
+your own adapter; there is no built-in `ollama` adapter. Their failure is silent:
+Ollama loads a model with a small context window and, when a prompt does not fit,
+cuts its front — the CLI's instructions and tool definitions — and still answers HTTP
+200. Its OpenAI-compatible `/v1` endpoint, the one agent CLIs use, ignores a request's
+`num_ctx`; only the server's `OLLAMA_CONTEXT_LENGTH` raises it. `odw doctor --local`
+checks for that before a run does:
+
+```bash
+odw doctor --local                                   # Ollama on :11434, LM Studio on :1234
+odw doctor --endpoint http://gpu-box:11434           # a server you name (implies --local)
+odw doctor --local --model qwen3-coder:30b --smoke   # and a ~10K-token truncation probe
+```
+
+- **Read-only.** Ollama's `/api/version`, `/api/ps`, `/api/tags` and `/api/show`, or an
+  OpenAI-compatible server's `/v1/models` (and LM Studio's `/api/v0/models`). Nothing is
+  pulled, loaded or changed. A server you named that does not answer is a failed check;
+  nothing on the default ports, one warning.
+- **Per loaded model** (or the one `--model` names): the context it is loaded with — a
+  **warning under 32K**, with how to raise it (`OLLAMA_CONTEXT_LENGTH=32768 ollama
+  serve`; the macOS app: `launchctl setenv`; systemd: `systemctl edit ollama`; then the
+  CONTEXT column of `ollama ps`) — and whether it declares tool calling. The Ollama
+  version gets a warning below 0.13.4, the version `codex --oss` guides ask for. A plain
+  OpenAI-compatible server reports neither context nor tools, and the check says so.
+- **`--smoke`** (with `--local`) sends one request to `/v1/chat/completions`: a
+  ~10K-token prompt with a random passphrase on its first line and, on its last, the
+  instruction to reply with it. A reply without it — the front was cut, or the end
+  ignored — is a failed doctor check (not a run failure reason), with the prompt tokens
+  the server counted. The probe goes only to a server on this machine or the local
+  network (loopback, private and link-local addresses, a bare host name, `.local`,
+  `.lan`, `.internal`, `.home.arpa`), never to an Ollama cloud model, and carries no
+  credentials. `--timeout <seconds>` bounds it (default 180). With `--local`, adapters
+  are smoke-tested too only when `--adapter` names them.
+- These probes are the doctor's own; runs still reach models only through the CLIs.
+
+**Recipe: scout locally, plan and review in the cloud.** With a [model
+tier](#per-phase-adapters-model-tiers-and-fallback-chains-odw-extension), the cheap
+phases of `meta.phases` run on the local model and the rest stay on a cloud one:
+
+```jsonc
+// odw.config.json — "ollama/…" is opencode's provider/model id for the provider its opencode.json declares
+{
+  "models": {
+    "local": { "opencode": "ollama/qwen3-coder:30b" },
+    "strong": { "claude": "opus", "codex": "gpt-5" }
+  }
+}
+```
+
+```js
+export const meta = {
+  name: 'triage',
+  description: 'Sort the issues locally; plan and review the fixes in the cloud.',
+  phases: [
+    { title: 'Scout', adapter: 'opencode', model: '@local' },
+    { title: 'Plan', adapter: 'claude', model: '@strong' },
+    { title: 'Review', adapter: 'claude', model: '@strong' },
+  ],
+}
+```
+
+Run `odw doctor --local --model qwen3-coder:30b --smoke` once the model is loaded, and
+again whenever the server's settings change.
+
 ### Concurrency per adapter and staggered fan-outs
 
 **ODW extension.** `concurrency` caps how many agents a run has going at once; an
@@ -3161,7 +3311,7 @@ ends, so an overnight run can tell you how it went:
 "notify": {
   "command": ["/usr/local/bin/odw-notify"],        // an argv, run WITHOUT a shell
   "webhook": "https://hooks.slack.com/services/…", // Slack, Discord, or any JSON endpoint
-  "on": ["done", "failed", "stopped"]              // the default: every final state; "waiting" and "paused" are opt-in
+  "on": ["done", "failed", "stopped"]              // the default: every final state; "waiting", "paused" and "digest" are opt-in
 }
 ```
 
@@ -3220,6 +3370,14 @@ every payload, and to the command as `ODW_TRIGGER`, `ODW_EVENT_ID`, `ODW_EVENT_U
 `ODW_CONTEXT` (all of it, as JSON), so a hook can answer on the issue or in the
 thread the work came from: [`docs/recipes/triggers.md`](docs/recipes/triggers.md).
 
+Add `"digest"` (ODW extension) to have `odw digest --notify` — by hand or from
+`odw schedule add <name> --digest` — send the [cross-run digest](#morning-digest-odw-digest-odw-extension)
+once: the command with `ODW_RUN_STATE=digest`, `ODW_DIGEST_TEXT` (the one-line summary),
+`ODW_DIGEST_FILE` and `ODW_DIGEST_MARKDOWN_FILE` (deleted once it exits), `ODW_DIGEST_SINCE`,
+`ODW_DIGEST_NEEDS_YOU` and `ODW_DIGEST_FAILED`; the webhook with `"kind": "digest"`, the
+digest's fields (`needsYou`, `failed`, `unmet`, `changes`, `spend`, `counts`, `since`, `until`),
+`markdown`, and `text`/`content` carrying the markdown (`content` cut to Discord's 2000 characters).
+
 Ready-made setups for Slack, Discord, ntfy and desktop banners:
 [`docs/recipes/notify.md`](docs/recipes/notify.md).
 
@@ -3243,6 +3401,12 @@ starts:
   killed after `worktreeSetupTimeout` seconds (600 by default); a setup that
   fails or times out fails that agent — not the run — with the end of its
   output in the error.
+- **`worktreeTeardown`** (**ODW extension**) is its counterpart: it runs in the
+  same workspace, with the same variables, just before the worktree is removed —
+  after the agent finished, failed or was stopped (`odw stop`, a signal to the
+  worker), and after a setup that failed half-way. It is killed after
+  `worktreeTeardownTimeout` seconds (120 by default); one that fails or times out
+  is logged against the agent, whose result stands.
 
 ```gitignore
 # .worktreeinclude
@@ -3282,6 +3446,56 @@ The setup command gets the same three variables, and `exec()` commands get
 the others hold every port runs without `ODW_PORT`, and the run's log says so.
 Each attempt of a call (a schema retry, a stall restart, a rate-limit retry)
 starts from a fresh worktree, prepared the same way.
+
+An isolated agent also gets `ODW_SLOT` (**ODW extension**): `odw-<run>-<agent>` —
+the run id's random part and the agent id, e.g. `odw-a1b2c3-4` — lowercase
+letters, digits and hyphens only, the same for every attempt of the call, its
+setup and its teardown. `COMPOSE_PROJECT_NAME` defaults to it (one you set is
+kept), so `docker compose` in a worktree drives that agent's own stack. Use it
+as a database name or volume prefix too (quote it, or swap the hyphens for
+underscores, where a hyphen is not allowed).
+
+#### Recipe: a compose stack and a database per agent
+
+Each isolated agent brings up its own services on its own port and takes them
+down — volumes included — before its worktree goes, whether it succeeded, failed
+or was stopped:
+
+```yaml
+# compose.yaml — the project name comes from COMPOSE_PROJECT_NAME (= $ODW_SLOT)
+services:
+  db:
+    image: postgres:16
+    environment: { POSTGRES_PASSWORD: dev, POSTGRES_DB: app }
+    volumes: [data:/var/lib/postgresql/data]
+  app:
+    build: .
+    ports: ["${ODW_PORT}:3000"]
+    environment: { DATABASE_URL: "postgres://postgres:dev@db:5432/app" }
+    depends_on: [db]
+volumes:
+  data: {}
+```
+
+```jsonc
+{
+  "worktreeSetup": "docker compose up -d --wait && npm run migrate",
+  "worktreeTeardown": "docker compose down -v --remove-orphans",
+  "worktreeTeardownTimeout": 120
+}
+```
+
+```js
+await parallel(['grid', 'list'].map((layout) => () =>
+  agent(`Build the ${layout} layout; the app runs on http://localhost:$ODW_PORT with its own database.`,
+    { isolation: 'worktree', label: layout })))
+```
+
+Migrations then run against that agent's database, never a shared one. A stack a
+worker killed outright (SIGKILL, a second signal) never got its teardown: `odw
+gc` lists the `odw-*` compose projects whose run is no longer active, with the
+`docker compose -p <name> down -v` to run — it never removes them itself. ODW
+does not clone databases or manage services it did not start.
 
 ### Review and apply what isolated agents changed (ODW extension)
 
@@ -3391,6 +3605,55 @@ in, it stops after the push and prints the compare URL. **It never merges.**
   "applyVerify": null      // e.g. "npm test": run after each odw apply, which is rolled back if it fails
 }
 ```
+
+#### The review queue across runs (ODW extension)
+
+Kept diffs pile up across runs faster than anyone reads them. `odw review` lists
+every one nobody has dealt with yet — in every run under the runs root — riskiest
+first, and says why each ranks where it does:
+
+```bash
+odw review                       # kept diffs not reviewed, dismissed or applied, riskiest first
+odw review --since 7d --json     # only runs from the last week, for scripts
+odw review --all                 # the marked ones too, with who marked them
+odw review mark $RUN 3 reviewed --note "checked the migration"   # or dismissed | applied | open (undo)
+```
+
+```
+2 kept diff(s) to review, riskiest first
+
+HIGH    7  20261018-090000-ab12cd · agent 3 (fix:auth) · 4 file(s) +120 -30 · triage
+        +3  touches CI: .github/workflows/ci.yml
+        +3  changed 2 file(s) outside its scope: src/db.ts, src/env.ts
+        +1  met its expect only after 1 retry
+           odw diff … --agent 3 · odw apply … --agent 3 --check · odw review mark … 3 reviewed
+```
+
+The score is deterministic and uses only what the run recorded — no model reads
+anything. Points: the size of the change (50 / 300 / 1000 lines: +1 / +2 / +3;
+6 / 20 files: +1 / +2); the kinds of path it touches, read from the kept diff —
+CI (+3), database migrations (+3), auth or security code (+3), dependency
+manifests and lock files (+2), tests (+1, and +2 more for deleted tests), binary
+files (+2); a diff cut at `maxDiffBytes` (+2); a `--deadline` that killed the
+agent (+3); `expect` misses (+4) and `untouched` violations (+4); another failure
+(+3: the change is unfinished work); files outside its `scope` (+3); background
+work left running (+2); destructive git commands (+3); a fallback or handoff
+(+1); a resolver at `odw apply --resolve` (+1); expect retries (+1) and other
+retries (+1); cost of $1 / $5 (+1 / +2). A passed `expect.command` check takes one
+off. 0–2 is **low**, 3–5 **medium**, 6 and up **high**. Every point is printed
+on the entry (`factors` in `--json`), so the order can be argued with.
+
+Marks go to the run directory's append-only `reviews.jsonl` — `{ ts, agentId,
+state, by, via, note? }`, `by` who marked it (as for checkpoint decisions: the
+local user, or a named token's name from the dashboard), `via` `cli`,
+`dashboard` or `apply`; the last mark of an agent stands. `odw apply` marks each
+agent it applied cleanly (or found already applied) as `applied`; `--check`
+marks nothing. Runs `odw eval` started and `--resolve`'s resolver runs are not
+on the queue. The dashboard's **Review** page (`g r`) shows the same queue with
+its reasons, marks entries reviewed or dismissed (loopback only, like every
+write), and opens an entry in its run's Changes tab; Activity's **Needs you**
+says how many wait. `GET /api/review[?since=7d][&all=1]` serves it, `POST
+/api/runs/:id/agents/:agentId/review { state, note? }` marks one.
 
 Step by step: [`docs/recipes/review-and-apply.md`](docs/recipes/review-and-apply.md).
 
@@ -3685,7 +3948,9 @@ Node CLI.
 <summary><b>Does ODW call model APIs directly?</b></summary>
 
 No. ODW only shells out to local CLIs you already authenticated. No API keys,
-no token billing of its own, no network calls from the engine.
+no token billing of its own, no network calls from the engine. The one exception is
+a diagnostic you ask for: `odw doctor --local` reads a local model server's status,
+and with `--smoke` sends it one probe — on this machine or the local network only.
 </details>
 
 <details>

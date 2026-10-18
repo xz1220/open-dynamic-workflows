@@ -15,7 +15,11 @@
  *   webhook  a JSON POST (10s limit): { runId, workflow, state, createdAt,
  *            finishedAt, durationSec, counts: { agents, done, failed }, error?,
  *            text, content } — `text` (Slack) and `content` (Discord) carry the
- *            same one-line summary, so chat incoming webhooks render it as is.
+ *            same one-line summary, so chat incoming webhooks render it as is:
+ *            `text` with `&`, `<` and `>` escaped as Slack asks, `content`
+ *            with every mention and masked link broken — a title a model wrote
+ *            (`<!channel> <https://evil.example|Approve run>`) pings nobody and
+ *            links nowhere.
  *
  * With "waiting" in `notify.on` (opt-in), the same hooks also fire once per
  * checkpoint() that starts waiting for a person — while the run goes on
@@ -45,6 +49,10 @@
  * command as ODW_TRIGGER, ODW_EVENT_ID, ODW_EVENT_URL and ODW_CONTEXT (the
  * object as JSON), so a hook can answer on the issue or thread the work came
  * from. Other runs have neither.
+ *
+ * With "digest" in `notify.on` (opt-in), `odw digest --notify` fires the same
+ * hooks once with the cross-run digest (an ODW extension; see ./digest): state
+ * "digest", the digest as JSON and markdown, and no run of its own.
  *
  * A webhook's payload leaves the machine: its likely secrets are redacted
  * first (an ODW extension; see ../redact) — an error quoting an agent's output
@@ -141,7 +149,7 @@ export async function notifyRunEnd(
   const log = options.log ?? defaultLog;
   try {
     const end = describeRunEnd(run.store, run.runId, run.state, run.error);
-    const hooks: Array<Promise<void>> = [];
+    const hooks: Array<Promise<boolean>> = [];
     if (notify.command) hooks.push(runHookCommand(notify.command, notifyEnv(end), options, log));
     if (notify.webhook) hooks.push(postWebhook(notify.webhook, redacted(webhookPayload(end), options), options, log));
     await Promise.all(hooks);
@@ -171,7 +179,7 @@ export async function notifyCheckpoint(
   try {
     const waiting = describeWaiting(run.store, run.runId, run.checkpoint);
     const links = run.links ? run.links() : null;
-    const hooks: Array<Promise<void>> = [];
+    const hooks: Array<Promise<boolean>> = [];
     if (notify.command) hooks.push(runHookCommand(notify.command, { ...waitingEnv(waiting), ...linksEnv(links) }, options, log));
     // The links go in after redaction: a link's token is no secret of the run's, and must reach the phone whole.
     if (notify.webhook) hooks.push(postWebhook(notify.webhook, withLinks(redacted(waitingPayload(waiting), options), links), options, log));
@@ -196,12 +204,41 @@ export async function notifyQuotaPause(
   const log = options.log ?? defaultLog;
   try {
     const paused = describePaused(run.store, run.runId, run.pause);
-    const hooks: Array<Promise<void>> = [];
+    const hooks: Array<Promise<boolean>> = [];
     if (notify.command) hooks.push(runHookCommand(notify.command, pausedEnv(paused), options, log));
     if (notify.webhook) hooks.push(postWebhook(notify.webhook, redacted(pausedPayload(paused), options), options, log));
     await Promise.all(hooks);
   } catch (err) {
     log(`notify: hooks for the ${run.pause.adapter} quota pause of run ${run.runId} failed: ${errorMessage(err)}`);
+  }
+}
+
+/**
+ * What the hooks are told about a cross-run digest (ODW extension; see
+ * ./digest): the webhook's JSON body (redacted already, links added after),
+ * and a command's variables.
+ */
+export interface DigestNotice {
+  payload: Record<string, unknown>;
+  env: Record<string, string>;
+}
+
+/**
+ * Fire the hooks for `odw digest --notify` (ODW extension), when `notify.on`
+ * includes "digest" (opt-in). Resolves to whether every configured hook
+ * succeeded — the digest's mark moves only then; never rejects.
+ */
+export async function notifyDigest(notify: NotifySettings | null, notice: DigestNotice, options: NotifyOptions = {}): Promise<boolean> {
+  if (!notify || !notify.on.includes("digest") || (!notify.command && !notify.webhook)) return false;
+  const log = options.log ?? defaultLog;
+  try {
+    const hooks: Array<Promise<boolean>> = [];
+    if (notify.command) hooks.push(runHookCommand(notify.command, notice.env, options, log));
+    if (notify.webhook) hooks.push(postWebhook(notify.webhook, notice.payload, options, log));
+    return (await Promise.all(hooks)).every(Boolean);
+  } catch (err) {
+    log(`notify: hooks for the digest failed: ${errorMessage(err)}`);
+    return false;
   }
 }
 
@@ -285,7 +322,7 @@ export function pausedEnv(paused: RunPaused): Record<string, string> {
 
 /** The JSON body a webhook receives for a quota pause. */
 export function pausedPayload(paused: RunPaused): Record<string, unknown> {
-  const text = pausedLine(paused);
+  const line = pausedLine(paused);
   return {
     runId: paused.runId,
     workflow: paused.workflow,
@@ -295,8 +332,8 @@ export function pausedPayload(paused: RunPaused): Record<string, unknown> {
     counts: paused.counts,
     pausedFor: paused.pausedFor,
     ...(paused.context ? { context: paused.context } : {}),
-    text,
-    content: text,
+    text: slackText(line),
+    content: discordContent(line),
     allowed_mentions: { parse: [] },
   };
 }
@@ -347,7 +384,7 @@ export function waitingEnv(waiting: RunWaiting): Record<string, string> {
 
 /** The JSON body a webhook receives for a waiting checkpoint. */
 export function waitingPayload(waiting: RunWaiting): Record<string, unknown> {
-  const text = waitingLine(waiting);
+  const line = waitingLine(waiting);
   return {
     runId: waiting.runId,
     workflow: waiting.workflow,
@@ -357,8 +394,8 @@ export function waitingPayload(waiting: RunWaiting): Record<string, unknown> {
     counts: waiting.counts,
     checkpoint: { ...waiting.checkpoint, kind: waiting.checkpoint.question ? "question" : "checkpoint" },
     ...(waiting.context ? { context: waiting.context } : {}),
-    text,
-    content: text,
+    text: slackText(line),
+    content: discordContent(line),
     allowed_mentions: { parse: [] },
   };
 }
@@ -393,8 +430,31 @@ export function withLinks(payload: Record<string, unknown>, links: MintResult | 
   if (!links) return payload;
   if (!links.ok) return { ...payload, linksUnavailable: links.reason };
   const { approveUrl, rejectUrl, expiresAt } = links.links;
-  const text = `${String(payload.text ?? "")} · approve: ${approveUrl} · reject: ${rejectUrl}`;
-  return { ...payload, text, content: text, approveUrl, rejectUrl, linksExpireAt: expiresAt };
+  const tail = ` · approve: ${approveUrl} · reject: ${rejectUrl}`;
+  const text = `${String(payload.text ?? "")}${slackText(tail)}`;
+  const content = `${String(payload.content ?? payload.text ?? "")}${tail}`;
+  return { ...payload, text, content, approveUrl, rejectUrl, linksExpireAt: expiresAt };
+}
+
+/**
+ * A line as Slack's `text`: `&`, `<` and `>` escaped (https://api.slack.com/reference/surfaces/formatting#escaping),
+ * so a title a model wrote cannot be `<!channel>` or a `<url|label>` link.
+ */
+export function slackText(line: string): string {
+  return line.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+/**
+ * A line as Discord's `content`: `@everyone`, `@here`, `<@id>`, `<@&id>` and
+ * `<#id>` broken by a zero-width space, and `[label](url)` links by escaped
+ * brackets — on top of `allowed_mentions: { parse: [] }`, which only keeps a
+ * mention from pinging.
+ */
+export function discordContent(line: string): string {
+  return line
+    .replace(/@(everyone|here)\b/gi, "@\u200b$1")
+    .replace(/<([@#])/g, "<$1\u200b")
+    .replace(/[[\]]/g, "\\$&");
 }
 
 /**
@@ -416,7 +476,7 @@ export function linksEnv(links: MintResult | null): Record<string, string> {
 
 /** The JSON body a webhook receives. */
 export function webhookPayload(end: RunEnd): Record<string, unknown> {
-  const text = summaryLine(end);
+  const line = summaryLine(end);
   return {
     runId: end.runId,
     workflow: end.workflow,
@@ -427,8 +487,8 @@ export function webhookPayload(end: RunEnd): Record<string, unknown> {
     counts: end.counts,
     ...(end.error !== undefined ? { error: end.error } : {}),
     ...(end.context ? { context: end.context } : {}),
-    text,
-    content: text,
+    text: slackText(line),
+    content: discordContent(line),
     // Discord: never ping anyone from a run's text (a generated workflow's
     // name could say "@everyone"). Slack ignores the field.
     allowed_mentions: { parse: [] },
@@ -493,6 +553,12 @@ const OPTIONAL_HOOK_VARS = [
   "ODW_EVENT_ID",
   "ODW_EVENT_URL",
   "ODW_CONTEXT",
+  "ODW_DIGEST_FILE",
+  "ODW_DIGEST_MARKDOWN_FILE",
+  "ODW_DIGEST_TEXT",
+  "ODW_DIGEST_SINCE",
+  "ODW_DIGEST_NEEDS_YOU",
+  "ODW_DIGEST_FAILED",
 ];
 
 async function runHookCommand(
@@ -500,7 +566,7 @@ async function runHookCommand(
   vars: Record<string, string>,
   options: NotifyOptions,
   log: (line: string) => void,
-): Promise<void> {
+): Promise<boolean> {
   const env: Record<string, string | undefined> = { ...process.env, ...vars };
   for (const name of OPTIONAL_HOOK_VARS) if (!(name in vars)) delete env[name];
   const timeout = options.commandTimeoutSec ?? NOTIFY_COMMAND_TIMEOUT_S;
@@ -511,11 +577,12 @@ async function runHookCommand(
     // A no-op consumer: keep just a diagnostic tail of whatever the hook prints.
     onStdout: () => {},
   });
-  if (cliOk(result)) return;
+  if (cliOk(result)) return true;
   // argv[0] only: the arguments may carry a token.
   const why = result.timedOut ? `timed out after ${timeout}s` : `exited with code ${result.returncode}`;
   const detail = (result.stderr.trim() || result.stdout.trim()).slice(-500);
   log(`notify: command '${command[0]}' ${why}${detail ? `: ${detail}` : ""}`);
+  return false;
 }
 
 async function postWebhook(
@@ -523,7 +590,7 @@ async function postWebhook(
   body: Record<string, unknown>,
   options: NotifyOptions,
   log: (line: string) => void,
-): Promise<void> {
+): Promise<boolean> {
   const where = webhookOrigin(url);
   const limit = options.webhookTimeoutMs ?? NOTIFY_WEBHOOK_TIMEOUT_MS;
   try {
@@ -535,11 +602,12 @@ async function postWebhook(
     });
     if (res.ok) {
       void res.body?.cancel().catch(() => {}); // nothing to read: free the connection
-      return;
+      return true;
     }
     const status = `${res.status}${res.statusText ? ` ${res.statusText}` : ""}`;
     const said = await firstChunk(res);
     log(`notify: webhook ${where} answered ${status}${said ? `: ${said}` : ""}`);
+    return false;
   } catch (err) {
     const why =
       err instanceof Error && err.name === "TimeoutError"
@@ -547,6 +615,7 @@ async function postWebhook(
         : errorMessage(err instanceof Error && err.cause instanceof Error ? err.cause : err);
     // Never let the URL's secret path reach the log through an error message.
     log(`notify: webhook ${where} failed: ${why.split(url).join(where)}`);
+    return false;
   }
 }
 

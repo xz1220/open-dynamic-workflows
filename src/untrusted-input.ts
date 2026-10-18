@@ -11,12 +11,16 @@
  *
  *   - its agents are `permissions: "read"` unless the run's permissions were
  *     given (`--permissions`, a trigger's `"permissions"`);
- *   - agent CLIs start with `agentEnv: "minimal"`, and with no secret-named
- *     variable (`GH_TOKEN`, `GITHUB_TOKEN`, `*_API_KEY`, `*_TOKEN`, …) but the
- *     ones their own login needs — whatever `agentEnvPass` lists;
+ *   - agent CLIs start with `agentEnv: "minimal"`, with no other vendor's
+ *     variables (claude gets no `OPENAI_*`, gemini no `GOOGLE_APPLICATION_CREDENTIALS`),
+ *     and with no secret-named variable (`GH_TOKEN`, `GITHUB_TOKEN`,
+ *     `*_API_KEY`, `*_TOKEN`, `*_HEADERS`, …) but the ones their own login
+ *     needs — whatever `agentEnvPass` lists;
  *   - without a container sandbox whose network is an allowlist (or none),
  *     the run says so loudly; `untrustedInput.requireSandbox: true` refuses
- *     to start it;
+ *     to start it; and its read-only agents start without their CLI's web
+ *     tools (Claude Code's WebFetch and WebSearch, codex's `--search`), which
+ *     could carry what they read — a token in `.git/config` — off the machine;
  *   - the first agent that may write (`edit` or `full`) waits at a checkpoint
  *     for a person's go — once per run — unless the trigger says
  *     `"approve": false`; `odw apply --pr` of such a run asks first too.
@@ -29,7 +33,7 @@
 import { createHash } from "node:crypto";
 import { basename } from "node:path";
 
-import { globMatcher } from "./adapters/agent-env.js";
+import { globMatcher, VENDOR_ENV } from "./adapters/agent-env.js";
 import type { Adapter, PermissionTier, Settings } from "./adapters/types.js";
 import { DynamicWorkflowError } from "./errors.js";
 import { isSecretName } from "./redact.js";
@@ -76,12 +80,23 @@ export function taintedArgs(args: unknown): string[] {
 /**
  * The login variables each built-in CLI documents (see VENDOR_ENV in
  * ./adapters/agent-env), by its adapter name and its executable: what an
- * agent of a run with untrusted input keeps of the secret-named variables.
+ * agent of a run with untrusted input keeps of the vendors' variables and of
+ * the secret-named ones. Gemini's are the ones its auth docs name
+ * (https://geminicli.com/docs/get-started/authentication), not `GOOGLE_*`,
+ * which holds a runner's cloud credentials (`GOOGLE_APPLICATION_CREDENTIALS`,
+ * `GOOGLE_OAUTH_ACCESS_TOKEN`, `GOOGLE_GHA_CREDS_PATH`).
  */
 export const LOGIN_ENV: Readonly<Record<string, readonly string[]>> = {
   claude: ["ANTHROPIC_*", "CLAUDE_*"],
   codex: ["OPENAI_*", "CODEX_*"],
-  gemini: ["GEMINI_*", "GOOGLE_*"],
+  gemini: [
+    "GEMINI_*",
+    "GOOGLE_API_KEY",
+    "GOOGLE_GENAI_USE_VERTEXAI",
+    "GOOGLE_GENAI_USE_GCA",
+    "GOOGLE_CLOUD_PROJECT",
+    "GOOGLE_CLOUD_LOCATION",
+  ],
   qwen: ["DASHSCOPE_*", "QWEN_*", "OPENAI_*"],
   kimi: ["MOONSHOT_*", "KIMI_*"],
   cursor: ["CURSOR_*"],
@@ -96,10 +111,15 @@ function loginGlobs(adapter: Pick<Adapter, "name" | "command">): string[] {
   return [...new Set([...(LOGIN_ENV[base] ?? []), ...(LOGIN_ENV[exe] ?? [])])];
 }
 
+/** The vendors' globs of VENDOR_ENV (`ANTHROPIC_*`, `GOOGLE_*`, …): not its proxy and CA variables. */
+const VENDOR_GLOBS = VENDOR_ENV.filter((name) => name.endsWith("_*"));
+
 /**
- * `env` without the secret-named variables (see ../redact) `adapter`'s own
- * login does not need — `GH_TOKEN`, `GITHUB_TOKEN`, another vendor's
- * `*_API_KEY` — for an agent of a run with untrusted input.
+ * `env` without what `adapter`'s own login does not need, for an agent of a
+ * run with untrusted input: another vendor's variables (`OPENAI_BASE_URL` for
+ * claude; for gemini, any `GOOGLE_*` its login does not name), and the
+ * secret-named variables (see ../redact) — `GH_TOKEN`, `GITHUB_TOKEN`,
+ * `ANTHROPIC_CUSTOM_HEADERS` for codex.
  */
 export function withholdSecrets(
   env: Record<string, string | undefined>,
@@ -108,9 +128,10 @@ export function withholdSecrets(
 ): Record<string, string | undefined> {
   const globs = loginGlobs(adapter);
   const login = globs.length > 0 ? globMatcher(globs, platform === "win32") : () => false;
+  const vendor = globMatcher(VENDOR_GLOBS, platform === "win32");
   const out: Record<string, string | undefined> = {};
   for (const [name, value] of Object.entries(env)) {
-    if (isSecretName(name) && !login(name)) continue;
+    if ((isSecretName(name) || vendor(name)) && !login(name)) continue;
     out[name] = value;
   }
   return out;
@@ -128,11 +149,45 @@ export function sandboxGap(settings: Pick<Settings, "sandbox">): string | null {
   return null;
 }
 
+/**
+ * `argv`, an agent CLI's command, without the web tools a read-only agent of
+ * a run with untrusted input and no boxed-in network gives up: Claude Code's
+ * WebFetch and WebSearch (out of `--tools` and `--allowedTools`), and codex's
+ * `--search`. Other CLIs' commands are returned as they are: their read tiers
+ * declare no web tool flag.
+ */
+export function withoutWebTools(argv: readonly string[]): string[] {
+  const exe = (argv[0] ?? "").split(/[\\/]/).pop()!.replace(/\.(?:exe|cmd|bat)$/i, "");
+  if (exe === "codex") return argv.filter((arg) => arg !== "--search");
+  if (exe !== "claude") return [...argv];
+  const web = new Set(WEB_TOOLS);
+  const out: string[] = [];
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i]!;
+    if (arg === "--tools" && i + 1 < argv.length) {
+      out.push(arg, argv[++i]!.split(",").filter((tool) => !web.has(tool.trim())).join(","));
+    } else if (arg === "--allowedTools") {
+      const kept: string[] = [];
+      while (i + 1 < argv.length && !argv[i + 1]!.startsWith("-")) {
+        const tool = argv[++i]!;
+        if (!web.has(tool)) kept.push(tool);
+      }
+      if (kept.length > 0) out.push(arg, ...kept);
+    } else {
+      out.push(arg);
+    }
+  }
+  return out;
+}
+
+/** The web tools {@link withoutWebTools} takes from a read-only Claude Code agent. */
+export const WEB_TOOLS: readonly string[] = ["WebFetch", "WebSearch"];
+
 /** The loud line a run with untrusted input and no sandbox says at its start. */
 export function sandboxWarning(gap: string): string {
   return (
     `⚠ untrusted input without a sandbox: ${gap} — text from outside reaches agents that can use this machine's network ` +
-    `and files; set sandbox to a container with network: { allow: [...] }, and untrustedInput.requireSandbox: true to refuse such runs`
+    `and files (read-only agents start without their web tools: WebFetch, WebSearch, codex --search); set sandbox to a container with network: { allow: [...] }, and untrustedInput.requireSandbox: true to refuse such runs`
   );
 }
 

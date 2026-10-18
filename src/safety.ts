@@ -13,12 +13,16 @@
  *   - the untracked files git does not ignore, added to a tree of their own
  *     through a scratch index (the real one is never touched). Ignored files
  *     are not kept — their size is anyone's guess — nor is an untracked file
- *     over {@link MAX_UNTRACKED_BYTES}, which the snapshot names instead;
+ *     over {@link MAX_UNTRACKED_BYTES}, nor one whose name says it holds a
+ *     secret ({@link isSecretLikeFile}: `.env`, `*.pem`, `id_rsa`, …), which
+ *     the snapshot names instead;
  *
  * together as one commit — its tree the whole working tree as it stood, its
  * parents HEAD and (when there was one) the stash commit — at
  * `refs/odw/safety/<run>`. A ref, not a stash entry or a branch: nothing the
- * user lists day to day shows it, and `git gc` keeps it. The run says so in a
+ * user lists day to day shows it, and `git gc` keeps it — as does `git push
+ * --mirror`, which would publish it, until `odw gc` deletes it with its run
+ * (hence no secret-named files in it). The run says so in a
  * `safety_snapshot` event; `odw restore <run>` previews and puts it back (see
  * runtime/restore.ts). A clean tree needs no snapshot and gets none. A
  * snapshot that cannot be taken — not a git repository, no commit yet, a
@@ -40,6 +44,14 @@ export const MAX_UNTRACKED_BYTES = 50 * 1024 * 1024;
 
 /** Untracked files left out that a snapshot names; past them, a count. */
 const SKIPPED_NAMED = 20;
+
+/** Untracked files whose names say they hold a secret: never kept in a snapshot (a ref `git push --mirror` would publish). */
+const SECRET_LIKE_FILE = /^(?:\.env(?:\..*)?|.*\.(?:pem|key|p12)|id_(?:rsa|ed25519|ecdsa)|credentials\.json)$/i;
+
+/** Whether an untracked file's name says it holds a secret: `.env`, `.env.*`, `*.pem`, `*.key`, `*.p12`, `id_rsa`, `id_ed25519`, `id_ecdsa`, `credentials.json`. */
+export function isSecretLikeFile(path: string): boolean {
+  return SECRET_LIKE_FILE.test(path.slice(path.lastIndexOf("/") + 1));
+}
 
 /** Who a snapshot's commits are by: ODW, whatever the repository's identity (it may have none). */
 const IDENTITY = {
@@ -70,6 +82,8 @@ export interface SafetySnapshotInfo {
   untracked: number;
   /** Untracked files left out for their size (at most {@link SKIPPED_NAMED}, then "… and N more"). */
   skipped: string[];
+  /** Untracked files left out for a name that says they hold a secret (at most {@link SKIPPED_NAMED}, then "… and N more"). */
+  secretLike: string[];
 }
 
 /** What came of trying: a snapshot, a clean tree, or why none could be taken. */
@@ -104,11 +118,16 @@ export async function takeSafetySnapshot(source: string, runId: string, exclude:
       if (rel && !rel.startsWith("..") && !isAbsolute(rel)) left.push(rel.split(sep).join("/"));
     }
     const skipped: string[] = [];
+    const secretLike: string[] = [];
     const untracked: string[] = [];
     for (const path of splitNul(await git(top, ["ls-files", "--others", "--exclude-standard", "-z"]))) {
       // A nested repository is listed as its directory: it is not ours to keep.
       if (path.endsWith("/")) continue;
       if (left.some((dir) => path === dir || path.startsWith(`${dir}/`))) continue;
+      if (isSecretLikeFile(path)) {
+        secretLike.push(path);
+        continue;
+      }
       const size = await lstat(join(top, path)).then(
         (st) => (st.isFile() ? st.size : 0),
         () => -1,
@@ -130,14 +149,19 @@ export async function takeSafetySnapshot(source: string, runId: string, exclude:
     const commit = (await git(top, ["commit-tree", tree, "-p", head, ...(stash ? ["-p", stash] : []), "-m", message], { env })).trim();
     await git(top, ["update-ref", "-m", message, ref, commit]);
     const tracked = stash ? splitNul(await git(top, ["diff", "--name-only", "-z", "--no-renames", head, stash])).length : 0;
-    const named = skipped.slice(0, SKIPPED_NAMED);
-    if (skipped.length > named.length) named.push(`… and ${skipped.length - named.length} more`);
-    return { taken: { ref, commit, head, stash, tracked, untracked: untracked.length, skipped: named } };
+    return { taken: { ref, commit, head, stash, tracked, untracked: untracked.length, skipped: named(skipped), secretLike: named(secretLike) } };
   } catch (err) {
     return { none: err instanceof Error ? err.message : String(err) };
   } finally {
     if (scratch) await rm(scratch, { recursive: true, force: true }).catch(() => {});
   }
+}
+
+/** The first {@link SKIPPED_NAMED} of `paths`, then "… and N more". */
+function named(paths: string[]): string[] {
+  const out = paths.slice(0, SKIPPED_NAMED);
+  if (paths.length > out.length) out.push(`… and ${paths.length - out.length} more`);
+  return out;
 }
 
 /** The `safety_snapshot` event of a snapshot taken for `runId`. */
@@ -146,7 +170,9 @@ export function snapshotEvent(runId: string, info: SafetySnapshotInfo): Workflow
     ...(info.tracked > 0 ? [`${info.tracked} changed tracked file${info.tracked === 1 ? "" : "s"}`] : []),
     ...(info.untracked > 0 ? [`${info.untracked} untracked file${info.untracked === 1 ? "" : "s"}`] : []),
   ].join(" and ");
-  const left = info.skipped.length > 0 ? ` (left out for their size: ${info.skipped.join(", ")})` : "";
+  const left =
+    (info.skipped.length > 0 ? ` (left out for their size: ${info.skipped.join(", ")})` : "") +
+    (info.secretLike.length > 0 ? ` (left out as secret-like: ${info.secretLike.join(", ")})` : "");
   return event(SAFETY_SNAPSHOT, {
     message:
       `safety snapshot of the working tree before the first in-place agent: ${files || "its changes"}${left} ` +
@@ -158,6 +184,7 @@ export function snapshotEvent(runId: string, info: SafetySnapshotInfo): Workflow
     tracked: info.tracked,
     untracked: info.untracked,
     ...(info.skipped.length > 0 ? { skipped: [...info.skipped] } : {}),
+    ...(info.secretLike.length > 0 ? { secretLike: [...info.secretLike] } : {}),
   });
 }
 

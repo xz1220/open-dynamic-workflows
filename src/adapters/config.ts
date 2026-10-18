@@ -25,6 +25,7 @@ import { readLimits } from "../limits.js";
 import { isQuestionPolicy, QUESTION_POLICIES } from "../questions.js";
 import { extraProblem } from "../redact.js";
 import { TIER_NAME } from "../routing.js";
+import { parseCron } from "../schedule/cron.js";
 import { buildTriggers } from "../triggers.js";
 import { BUILTIN_ADAPTERS, DEFAULT_SETTINGS, type RawAdapter } from "./builtin.js";
 import { isOnPath } from "./executable.js";
@@ -61,6 +62,7 @@ import type {
   QuotaWaitSettings,
   RedactSettings,
   RetentionSettings,
+  DigestSettings,
   RunEndState,
   SchemaFlag,
   Settings,
@@ -76,9 +78,10 @@ export const RUN_END_STATES: readonly RunEndState[] = ["done", "failed", "stoppe
 
 /**
  * Everything `notify.on` may list: the terminal states, and the opt-in
- * "waiting" (a checkpoint() waits) and "paused" (the run pauses for a spent quota).
+ * "waiting" (a checkpoint() waits), "paused" (the run pauses for a spent
+ * quota) and "digest" (`odw digest --notify` sends the cross-run digest).
  */
-export const NOTIFY_TRIGGERS: readonly NotifyTrigger[] = [...RUN_END_STATES, "waiting", "paused"];
+export const NOTIFY_TRIGGERS: readonly NotifyTrigger[] = [...RUN_END_STATES, "waiting", "paused", "digest"];
 
 /**
  * Load configuration, merging any discovered file over the built-ins.
@@ -129,6 +132,8 @@ const KNOWN_TOP_KEYS = [
   "notify",
   "worktreeSetup",
   "worktreeSetupTimeout",
+  "worktreeTeardown",
+  "worktreeTeardownTimeout",
   "portRange",
   "fanOutWarn",
   "adaptiveConcurrency",
@@ -169,6 +174,7 @@ const KNOWN_TOP_KEYS = [
   "accounts",
   "untrustedInput",
   "retention",
+  "digest",
 ] as const;
 
 const KNOWN_ADAPTER_KEYS = ["command", "stdin", "env", "timeout", "stallTimeout", "concurrency", "promptCache", "label", "flags", "output", "failures", "permissionArgs", "permissions", "permissionDenials", "trust", "untrustedArgs", "untrustedNote", "sandbox", "agentLimits", "egressHosts", "questions", "questionArgs"] as const;
@@ -1229,6 +1235,12 @@ function buildSettings(raw: Record<string, unknown>): Settings {
       min: 0,
       exclusiveMin: true,
     }),
+    worktreeTeardown:
+      raw["worktreeTeardown"] == null ? DEFAULT_SETTINGS.worktreeTeardown : buildWorktreeSetup(raw["worktreeTeardown"], "worktreeTeardown"),
+    worktreeTeardownTimeout: num("worktreeTeardownTimeout", DEFAULT_SETTINGS.worktreeTeardownTimeout, "a positive number of seconds", {
+      min: 0,
+      exclusiveMin: true,
+    }),
     portRange: raw["portRange"] == null ? [...DEFAULT_SETTINGS.portRange] : buildPortRange(raw["portRange"]),
     // null (unlike for the keys above, where it means "the default") and 0 both mean "never".
     fanOutWarn:
@@ -1325,7 +1337,25 @@ function buildSettings(raw: Record<string, unknown>): Settings {
     costGate: raw["costGate"] == null ? DEFAULT_SETTINGS.costGate : readCostGate(raw["costGate"], '"costGate"', (m) => new ConfigError(m)),
     untrustedInput: raw["untrustedInput"] == null ? { ...DEFAULT_SETTINGS.untrustedInput } : buildUntrustedInput(raw["untrustedInput"]),
     retention: raw["retention"] == null ? { ...DEFAULT_SETTINGS.retention } : buildRetention(raw["retention"]),
+    digest: raw["digest"] == null ? DEFAULT_SETTINGS.digest : buildDigest(raw["digest"]),
   };
+}
+
+/**
+ * Validate `digest` (an ODW extension; see ../runtime/digest): `{ "cron":
+ * "<five fields>" }` — when `odw schedule add <name> --digest` sends it.
+ */
+function buildDigest(raw: unknown): DigestSettings {
+  if (!isObject(raw)) throw new ConfigError(`"digest" must be { "cron": "<minute hour day-of-month month day-of-week>" }; got ${kindOf(raw)}`);
+  for (const key of Object.keys(raw)) {
+    if (key !== "cron") throw new ConfigError(`"digest" has an unknown key '${key}'; expected cron`);
+  }
+  if (typeof raw.cron !== "string") throw new ConfigError(`"digest.cron" must be a cron expression like "0 8 * * 1-5"; got ${kindOf(raw.cron)}`);
+  try {
+    return { cron: parseCron(raw.cron).expr };
+  } catch (err) {
+    throw new ConfigError(`"digest.cron": ${(err as Error).message}`);
+  }
 }
 
 /**
@@ -1621,13 +1651,13 @@ function buildStagger(raw: unknown): StaggerFanOut | null {
   };
 }
 
-/** Validate `worktreeSetup`: a command line for the shell, or an argv run without one. */
-function buildWorktreeSetup(raw: unknown): string | string[] {
+/** Validate `worktreeSetup` (or `worktreeTeardown`): a command line for the shell, or an argv run without one. */
+function buildWorktreeSetup(raw: unknown, key = "worktreeSetup"): string | string[] {
   if (typeof raw === "string" && raw.trim()) return raw;
   if (Array.isArray(raw) && raw.every((part) => typeof part === "string") && raw[0]) return [...(raw as string[])];
   // The kind only: a setup command may carry a token.
   throw new ConfigError(
-    `"worktreeSetup" must be a command string (run by the platform shell) or a non-empty array of strings ` +
+    `"${key}" must be a command string (run by the platform shell) or a non-empty array of strings ` +
       `(an argv, run without a shell); got ${kindOf(raw)}`,
   );
 }
@@ -1666,7 +1696,7 @@ function buildNotify(raw: unknown): NotifySettings {
   if (on != null) {
     if (!Array.isArray(on) || !on.every((trigger) => (NOTIFY_TRIGGERS as readonly unknown[]).includes(trigger))) {
       throw new ConfigError(
-        `"notify.on" must be a list of "done", "failed", "stopped", "waiting", "paused"; got ${JSON.stringify(on)}`,
+        `"notify.on" must be a list of "done", "failed", "stopped", "waiting", "paused", "digest"; got ${JSON.stringify(on)}`,
       );
     }
     notify.on = NOTIFY_TRIGGERS.filter((trigger) => on.includes(trigger));

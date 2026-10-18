@@ -209,6 +209,9 @@ odw bundle $RUN             # 把运行写成一个可分享的脱敏文件 $RUN
 odw gc                      # 运行留在磁盘上的东西——孤儿 worktree、keep 分支、旧 transcript——及其大小
                             #   （ODW 扩展）；默认空跑：--yes 才删，且只在用户明确要求时；
                             #   --older-than 14d、--json；odw pin $RUN 让某个运行不受影响（--remove 取消）
+odw digest                  # 跨运行、只基于证据的一份报告（ODW 扩展）：等待中的检查点、失败的运行 + odw resume、
+                            #   未达成的 expect/越界、保留的 diff、花费；--since 12h | --since-last、--workflow W、
+                            #   --json | --markdown；--notify 发送（notify.on 要有 "digest"）——只在用户明确要求时
 odw result $RUN             # 完成后打印最终值
 odw pause $RUN / resume $RUN / stop $RUN
 odw approve|reject $RUN     # 回答运行正在等待的 checkpoint()——只在用户明确要求时
@@ -278,6 +281,8 @@ odw apply $RUN --all --check          # 预览所有已完成的 agent，每个�
 odw apply $RUN --all --verify "<测试命令>"   # 按顺序应用；校验失败的那次应用被回滚
 odw apply $RUN --all --resolve --verify "<测试命令>"   # 由 resolver agent 解决冲突；校验通过才应用
 odw apply $RUN --all --pr --verify "<测试命令>"   # 新分支、推送、开草稿 PR（gh）；从不合并
+odw review [--since 7d] [--json]      # 跨运行尚未处理的保留 diff，按风险从高到低（ODW 扩展）
+odw review mark $RUN <id|label> reviewed|dismissed|applied|open [--note T]
 ```
 
 - 先预览（`--check`，有冲突时退出码 1），按任务需要应用，并告诉用户应用了什么、哪里冲突了
@@ -299,6 +304,11 @@ odw apply $RUN --all --pr --verify "<测试命令>"   # 新分支、推送、开
   开 PR 时使用。冲突或 `--verify` 失败会在推送前停下。
 - 超过 `maxDiffBytes` 被截断的 diff 无法应用：改用该 agent 的分支（`keep: true`，或在
   配置里设 `"keepBranches": true`）。
+- `odw review`（ODW 扩展）是跨运行的审阅队列：每个尚未审阅、放弃或应用的保留 diff，附一个只用
+  运行记录计算的确定性风险分（大小、CI/迁移/鉴权/依赖/测试/二进制路径、`expect` 未达成、越界、
+  后台任务、破坏性 git、回退、重试、花费）和每一分的理由。用户问先看哪个时从这里开始，并引用这些
+  理由。`odw apply` 会把干净应用的条目标为 `applied`；其余的只在用户做了决定后再标记
+  （`reviewed`、`dismissed`；`open` 撤销）。
 
 **没有**隔离的 agent 就在用户自己的工作区里干活。一次运行中第一个 `edit` 或 `full` 档位的此类
 agent 开始前，odw 会把工作区里未提交的内容——已跟踪文件的改动和未被忽略的未跟踪文件——存到
@@ -331,7 +341,7 @@ odw restore $RUN           # 恢复快照保存的工作区（有未提交改动
 - **别人的仓库：用 `--untrusted` 运行**（ODW 扩展）。这时每个 CLI 都在其文档给出办法的
   地方忽略仓库的 CLAUDE.md、hooks、MCP 服务器和设置（`claude --safe-mode`、
   `qwen --safe-mode`），并由运行说一次哪些 CLI 做不到（codex 仍会读 AGENTS.md）——这时优先
-  用 `adapter: 'claude'`。仓库自己的 `worktreeSetup` 和 `.worktreeinclude` 链接不会执行。
+  用 `adapter: 'claude'`。仓库自己的 `worktreeSetup`/`worktreeTeardown` 和 `.worktreeinclude` 链接不会执行。
   它不是沙箱：审查类工作请再配上 `--permissions read`。
 - **参数是别人写的文字——issue、PR、评论——就是不可信输入**（ODW 扩展）：
   `odw run --untrusted-input`，以及触发器启动的每个运行。它的 agent 默认只读（除非
@@ -452,6 +462,9 @@ odw schedule remove digest     # 删除系统条目和定义
   会被拒绝）。
 - 定时运行遇到 `checkpoint()` 时，在得到答复前会挡住后续的运行：无人值守的检查点要设
   `timeout`。
+- 每天早上一条消息而不是一个运行一条：`odw schedule add <name> --digest [--cron EXPR]` 发送
+  `odw digest --since-last --notify`（时间默认取配置的 `digest.cron`；`notify.on` 里没有
+  `"digest"` 时拒绝添加）。
 
 ### 在用户自己的服务器上运行（ODW 扩展）
 
@@ -598,6 +611,12 @@ Codex、Claude Code、Gemini、Qwen、Kimi 开箱即用，无需配置。要换�
 工作流上一次运行不同时,运行会记 `drift: …` 日志,摘要带 `drift` 字段(ODW 扩展);工作流有
 eval 时,建议用户运行日志里给出的 `odw eval <name> --baseline <上次报告>`,或配置
 `"driftEval": true` 让它自动启动。
+阶段路由到本地模型(Ollama、LM Studio——经由 `opencode`、`codex --oss` 或自定义适配器;
+没有内置的 `ollama` 适配器)时,先跑 `odw doctor --local [--endpoint URL] [--model M]`
+(ODW 扩展,只读):它报告每个已加载模型的上下文——低于 32K 时警告,并给出
+`OLLAMA_CONTEXT_LENGTH` 的设置方法——以及工具调用能力。它的 `--smoke` 只向该本地服务
+(从不向云端模型)发一个约 10K token 的提示,末尾的指令没被执行即失败——这正是平时看起来
+agent「在工作」的静默前部截断;它会运行模型,先征得同意。
 
 ## 必须知道的行为
 
@@ -610,7 +629,10 @@ eval 时,建议用户运行日志里给出的 `odw eval <name> --baseline <上�
   随后会被删除,改动不会自动合并。`agent()` 返回回复而非 diff；运行会把 agent 的改动保存为
   diff，供审阅和应用（`odw diff`、`odw apply`；ODW 扩展——见上文）。新 worktree 不含未跟踪文件：仓库根目录的 `.worktreeinclude`
   （gitignore 语法；`symlink: node_modules` 表示链接而非复制）会把 `.env` 等带进去，
-  配置里的 `worktreeSetup` 命令会在 agent 启动前运行（均为 ODW 扩展）。
+  配置里的 `worktreeSetup` 命令会在 agent 启动前运行（均为 ODW 扩展）；`worktreeTeardown` 在
+  worktree 删除前运行——成功、失败或被停止都会运行——每个隔离 agent 还会拿到 `$ODW_SLOT`
+  （`odw-<run>-<agent>`，也是它默认的 `COMPOSE_PROJECT_NAME`），供它独占一套 compose 栈或数据库
+  （ODW 扩展）。
 - **端口**：每个 agent 进程都有唯一的 `$ODW_PORT`（以及 `$ODW_RUN_ID`、`$ODW_AGENT_ID`）——
   让并行的 agent "在 `$ODW_PORT` 上启动开发服务器"，它们就不会冲突；并让它们在结束前停掉服务
   （agent CLI 退出前可能会等待自己的后台命令）（ODW 扩展）。

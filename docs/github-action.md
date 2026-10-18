@@ -74,6 +74,16 @@ checkout of the fork's code unless the run is untrusted and sandboxed.
 that follows a fork's run, `--untrusted` — both carry the base repository's
 secrets while acting on code or text a fork controls.
 
+**Check out with `persist-credentials: false` for any event whose text or code
+is not yours.** `actions/checkout` keeps the job's `GITHUB_TOKEN` in
+`.git/config` (`http.https://github.com/.extraheader`) by default, so every
+later step — and every agent that can read files, a read-only one included —
+can read it, and an agent with a network can send it anywhere. Untrusted input
+withholds token-like *variables*, not files. With untrusted input on, the run
+step warns (in the log and the job summary) when git's config holds such a
+header. `apply-pr` does not need it: its push authenticates through `gh` with
+`github-token`, for that step only.
+
 ## What the checksum does and does not prove
 
 The install step checks the downloaded binary's SHA-256 against the
@@ -106,6 +116,8 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false   # a fork's PR: no token in .git/config for agents to read
       - run: npm install -g @anthropic-ai/claude-code
       - uses: xz1220/open-dynamic-workflows/action@v0.7.0   # pin a tag or a commit SHA
         with:
@@ -144,6 +156,8 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false   # issue text is anyone's: no token in .git/config
       - run: npm install -g @openai/codex
       - uses: xz1220/open-dynamic-workflows/action@v0.7.0
         with:

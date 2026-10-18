@@ -156,7 +156,9 @@ cp -r "$skill_source" ~/.claude/skills/open-dynamic-workflows
 `odw init --adapter <名字>` 写入)。`odw doctor` 会检查运行环境、配置、运行目录和每个适配器;
 `odw doctor --smoke` 还会给默认适配器发一条真实提示——能发现那些装得上、但在无头模式下卡在
 登录或审批提示上的 CLI。`odw doctor --models`(ODW 扩展)给配置和 `.odw/workflows` 中提到的
-每个「适配器/模型」组合各发一条极短的提示,告诉你哪些模型已经不在了。
+每个「适配器/模型」组合各发一条极短的提示,告诉你哪些模型已经不在了。`odw doctor --local`
+(ODW 扩展)检查本地的 Ollama 或 LM Studio:每个模型实际加载的上下文、工具调用能力,加
+`--smoke` 还会查长提示的前部是否被静默截断(见[本地模型](#本地模型检查推理服务把廉价阶段交给它odw-扩展))。
 
 **第一次运行不花钱。** 从模板开始,先测试,再看它在所有 agent 都用桩回复的情况下跑一遍——然后
 再真跑:
@@ -537,6 +539,7 @@ odw logs $RUN --follow   # 流式输出原始进度事件
 odw logs $RUN --agent 3  # 某个 agent 做了什么:它的工具调用、结果和文字(见下文)
 odw result $RUN          # 最终值
 odw diff $RUN --stat     # 隔离 agent 改了什么;odw apply $RUN --agent N(或 --all)落地
+odw review               # 跨运行尚未处理的保留 diff,按风险从高到低,每条附理由(见下文)
 odw notes $RUN           # 它的 agent 在笔记板上互相告知的内容(见上文)
 odw compare $OLD $RUN    # 两次运行之间变了什么:配置、耗时、花费、失败、回复(见下文)
 odw estimate review      # 下一次运行的 p50/p90 耗时、花费、token 和 agent 数,依据以往运行(见下文)
@@ -545,6 +548,7 @@ odw eval review          # 用例 × 适配器 × 重复次数:每个单元格�
 odw export $RUN --otlp   # 把运行导出为 OpenTelemetry trace(OTLP/JSON;--send 直接发送;见下文)
 odw bundle $RUN          # 把运行写成一个可分享的脱敏文件:$RUN.odwrun(用 odw view FILE 查看;见下文)
 odw gc                   # 运行留在磁盘上的东西:孤儿 worktree、keep 分支、旧 transcript;--yes 才删(见下文)
+odw digest               # 跨运行、基于证据:需要你决定、失败、未达成的检查、待审改动、花费(见下文)
 odw pause|resume|stop $RUN
 odw approve|reject $RUN  # 回答运行正在等待的 checkpoint()(--note TEXT、--checkpoint N)
 odw approve $RUN --edit  # ……先在 $EDITOR 里修改 payload 再批准(或 --payload JSON|@file)
@@ -858,6 +862,52 @@ odw schedule remove digest     # 删除系统里的条目和定义(条目已被�
 表达式是 cron 的五个字段(数字、`*`、列表、范围、步长、`jan`-`dec`、`sun`-`sat`);
 `@daily`、`L`、`#` 之类会被拒绝并说明原因。完整说明,以及手写 cron 行这一手动替代方案:
 [`docs/recipes/cron.md`](docs/recipes/cron.md)。
+
+### 晨报:`odw digest`(ODW 扩展)
+
+一晚上跑了定时任务、触发器和长任务之后,`odw digest` 把它们汇成一份报告——只用运行记录下来的
+证据,绝不复述 agent 对自己工作的说法(不转述任何回复、结果或模型写的总结):
+
+```bash
+odw digest                         # 最近 24 小时
+odw digest --since 12h             # 90m、12h、2d、1w
+odw digest --since-last            # 从上一份已发送(--notify)的晨报算起
+odw digest --workflow nightly      # 只看一个 workflow 的运行
+odw digest --json | --markdown     # 给脚本用,或直接粘贴
+odw digest --since-last --notify   # 经 notify 钩子发送(notify.on 里要有 "digest")
+```
+
+分组,每组附上处理它的命令:
+
+- **需要你决定**——此刻在等待的每个检查点(以及 [agent 的提问](#agent-的提问odw-扩展)),
+  不受时间窗限制,附 `odw approve|reject … --checkpoint N`;`--notify` 发送时若有
+  `odw serve --public-url` 在运行,每条还带签名的一次性批准/拒绝链接。
+- **失败**——失败的运行,以及 worker 已经不在的运行(stale):记录的错误、有几个 agent 没完成、
+  原因分布(`timeout 1, exit 2`),以及 `odw resume <run>`。
+- **完成,但检查未达成**——已完成的运行中,有 agent 没通过 [`expect`](#检查-agent-的工作odw-扩展)
+  检查、改动了[声明范围](#声明范围odw-扩展)之外的文件,或在运行继续的情况下失败了。
+- **完成,有待审改动**——隔离 agent 保留了 diff 的已完成运行:文件与行数,以及预览用的
+  `odw apply <run> --all --check`。
+- **花费**——时间窗内的美元与 token 合计,以及最贵的一次运行。
+
+运行的最后一次写入落在时间窗内即算在内;`--dry` 运行不计。`--notify` 让
+[`notify`](#运行通知) 钩子触发一次——一天的运行是一条消息,而不是一个运行一条——并且只有在每个
+钩子都成功时才移动 `--since-last` 的标记(`<runsRoot>/_digest/marks.json`,按 `--workflow`
+分开);不带 `--notify` 只看不会移动它。每个工作日早上发送:
+
+```jsonc
+{
+  "notify": { "webhook": "https://hooks.example.com/YOUR/PATH", "on": ["digest"] },
+  "digest": { "cron": "0 8 * * 1-5" }
+}
+```
+
+```bash
+odw schedule add morning --digest     # 每次触发:odw digest --since-last --notify(时间取 digest.cron,或 --cron)
+```
+
+钩子不会发送晨报的配置会被 `add --digest` 拒绝;`--workflow W` 只汇总一个 workflow。配方:
+[`docs/recipes/notify.md`](docs/recipes/notify.md#a-morning-digest)。
 
 ### 由 webhook 启动运行:GitHub、Linear、Slack(ODW 扩展)
 
@@ -1390,6 +1440,10 @@ odw pin $RUN                  # odw gc 跳过这个运行,不论多旧;--remove 
 - **从不碰:** 运行中、暂停中或在检查点等待的运行;你固定过的运行(运行目录里的 `pinned.json`,看板
   标出 **已固定**);不是 odw 建的 worktree 和分支。每一项删除前都会再检查一次,失败的会报告(退出码 1),
   其余照常进行。
+- **Compose 项目**:名为 `odw-*`(隔离 agent 的 `ODW_SLOT`,即其默认 `COMPOSE_PROJECT_NAME`)
+  且所属运行已不活跃的,会连同删除它的 `docker compose -p <name> down -v` 一起列出——**只报告,
+  从不删除**。仅当 `docker compose ls` 能立即回答时才看(`$ODW_DOCKER` 可指定另一个 docker);
+  没有 docker 时什么都不说。
 - **启动时** 每个 worker 只读地查看其仓库注册的 worktree,若有已死运行留下的,就在运行日志里说一次,
   并给出 `odw gc` 命令。`odw doctor` 增加 **Disk** 一行:运行根目录的大小与孤儿 worktree 数。
 
@@ -1964,9 +2018,15 @@ approval_mode = "approve"
 运行的第一个 `edit` 或 `full` 档位的原地 agent 开始之前,odw 会保存工作区里 git 还没有的
 东西:用 `git stash create` 保存已跟踪文件的改动(暂存与未暂存),再加上 `.gitignore` 没有
 排除的未跟踪文件,合成一个提交存到 `refs/odw/safety/<run>`——你的工作区、index 和 stash
-列表都保持原样。干净的工作区不建快照;被忽略的文件从不保存,超过 50 MB 的未跟踪文件也不
-保存(快照里会点名)。运行用 `safety_snapshot` 事件说明;odw 无法建快照时(不是 git 仓库、
-正在合并)记一条日志说明原因,agent 照常运行。
+列表都保持原样。干净的工作区不建快照;被忽略的文件从不保存,超过 50 MB 的未跟踪文件不保存,
+文件名表明含有密钥的未跟踪文件(`.env`、`.env.*`、`*.pem`、`*.key`、`*.p12`、`id_rsa`、
+`id_ed25519`、`id_ecdsa`、`credentials.json`)也不保存——快照会逐一点名。运行用
+`safety_snapshot` 事件说明;odw 无法建快照时(不是 git 仓库、正在合并)记一条日志说明原因,
+agent 照常运行。
+
+快照是**你仓库里的一个 git ref**:在 `odw gc` 随其运行一起删除它之前(超过 `retention`),
+它的提交里保存着你其他未跟踪文件当时的内容——草稿、本地配置、odw 不认识的文件名下的密钥。
+按分支或标签推送不会带上它,但 `git push --mirror`(推送所有 ref)会把它公开出去。
 
 ```sh
 odw restore $RUN --check   # 预览:每个文件 clean、CONFLICT(附冲突行)或 already applied
@@ -1981,12 +2041,20 @@ HEAD 在那之后移动过(`git reset --hard origin/main`)时,改动以三方合
 
 odw 无法在命令执行前拦住它——那需要各 CLI 自己的 hook——但会在 agent 运行时读取它执行的命令
 (Claude Code 的 `Bash`、Codex 的 `command_execution`、kilo、opencode 与 agy 的 shell 工具),
-识别 `git reset --hard`、`git checkout .` / `-- .` / `--force`、`git restore .`、
-`git clean -f…`、`git push --force`(`-f`、`--force-with-lease`、`+refspec`)、
+识别 `git reset --hard`、`git checkout .` / `-- .` / `--force`、`git switch --force` /
+`--discard-changes`、`git restore .`、`git clean -f…`、`git push --force`(`-f`、
+`--force-with-lease`、`+refspec`)、`git push --mirror`、`git push --delete`(`-d`、`:refspec`)、
 `git stash drop|clear` 和 `git branch -D`。命令行按 shell 的方式切分(`cd x && …`、
-`bash -lc '…'`、`sudo`、`env`、`git -C dir …`);引号里的文字不算命令。每条命中都是一个
-`destructive_git` 事件——显示在 `odw logs`、实时视图以及看板里该 agent 的抽屉和节点上——有快照时
-会提示 `odw restore <run>`。只重置工作区的那几类命令对隔离 agent 不计:它的 worktree 是它自己的。
+`bash -lc '…'`、`sudo`、`env`、`if …; then …`、`! …`、`git -C dir …`);引号里的文字不算命令。
+每条命中都是一个 `destructive_git` 事件——显示在 `odw logs`、实时视图以及看板里该 agent 的抽屉和
+节点上——有快照时会提示 `odw restore <run>`。只重置工作区的那几类命令对隔离 agent 不计:它的
+worktree 是它自己的——除非 git 被指向别处(`git -C <dir>`、`--git-dir`、`--work-tree`),odw 无法
+判断那是哪里,按原地处理。
+
+这种识别**只是提示、尽力而为**,不是防护:它只看命令行上写了什么。由别的程序调用的 git 它看不到——
+`find . -exec git checkout -- {} +`、`… | xargs git checkout --`、脚本或 Makefile——git 别名
+(把 `reset --hard` 叫作 `git nuke`)、先 `cd` 到另一个 worktree 再执行的普通 `git reset --hard`,
+以及不打印工具调用的 CLI(文本适配器)也都看不到。能把工作找回来的是快照,而不是识别。
 
 ```jsonc
 { "destructiveGit": "fail" } // 默认 "warn":只记录;"fail":agent 的 CLI 结束后以失败原因 destructive_git 判为失败
@@ -2020,7 +2088,7 @@ still reach the agent` 这样的一行。
 
 ODW 自己会执行的、属于仓库的代码会被拒绝:仓库 `.worktreeinclude` 里的 `symlink:` 行
 不做任何链接(链接等于把源码树交给 agent;普通行照常复制);仓库内配置(例如它的
-`./odw.config.json`)设置的 `worktreeSetup` 不会运行,日志里会说明。你自己的配置
+`./odw.config.json`)设置的 `worktreeSetup` 或 `worktreeTeardown` 不会运行,日志里会说明。你自己的配置
 (`--config`、`$ODW_CONFIG`,或仓库之外的 `~/.config/odw/config.json`)里的
 `worktreeSetup` 照常运行。ODW 会自行在仓库里找到的配置(它的 `./odw.config.json`)在不受
 信任运行中根本不会读取:其中的适配器命令就是仓库的代码。运行改用你自己的
@@ -2062,12 +2130,16 @@ issue 正文、PR 标题、评论是任何人写的文字,模型无法可靠地�
 
 - **agent 只读**——`permissions: "read"`——除非显式给出了运行档位:`--permissions`,或触发器的
   `"permissions"`;
-- **agent CLI 以 `agentEnv: "minimal"` 启动,且不带密钥类变量**——`GH_TOKEN`、`GITHUB_TOKEN`、
-  `*_API_KEY`、`*_TOKEN` 等——只保留该 CLI 自身登录文档里的那些(claude 是 `ANTHROPIC_*`/`CLAUDE_*`,
-  codex 是 `OPENAI_*`/`CODEX_*`,……),无论 `agentEnvPass` 列了什么。适配器自己的 `env` 仍然生效,
-  `exec()` 命令(工作流作者写的)得到最小环境加上 `agentEnvPass`;
+- **agent CLI 以 `agentEnv: "minimal"` 启动,不带其他厂商的变量,也不带密钥类变量**——`GH_TOKEN`、
+  `GITHUB_TOKEN`、`*_API_KEY`、`*_TOKEN`、`*_HEADERS` 等——只保留该 CLI 自身登录文档里的那些(claude 是
+  `ANTHROPIC_*`/`CLAUDE_*`,codex 是 `OPENAI_*`/`CODEX_*`,gemini 是 `GEMINI_*` 与 `GOOGLE_API_KEY`、
+  `GOOGLE_GENAI_USE_VERTEXAI`、`GOOGLE_GENAI_USE_GCA`、`GOOGLE_CLOUD_PROJECT`、`GOOGLE_CLOUD_LOCATION`,……),
+  无论 `agentEnvPass` 列了什么。适配器自己的 `env` 仍然生效,`exec()` 命令(工作流作者写的)得到最小环境加上
+  `agentEnvPass`;
 - **没有隔离时大声说出来:** 若没有 `network` 为白名单(或 `"none"`)的
-  [容器沙箱](#在容器中运行-agentodw-扩展),启动横幅、运行日志和 `run_started` 事件都会警告。
+  [容器沙箱](#在容器中运行-agentodw-扩展),启动横幅、运行日志和 `run_started` 事件都会警告,且只读 agent
+  启动时不带其 CLI 的联网工具(Claude Code 的 `WebFetch` 与 `WebSearch`,codex 的 `--search`)——它们可能把
+  读到的文件(比如 `actions/checkout` 留在 `.git/config` 里的 token)带出本机。
   配置 `"untrustedInput": { "requireSandbox": true }` 则直接拒绝启动;
 - **写之前先问:** 第一个可写(`edit` 或 `full`)的 agent 会停在一个[检查点](#人工检查点odw-扩展)
   等人放行——每个运行只问一次,答复对之后的 agent 都有效;拒绝会让这些 agent 以可捕获的
@@ -2646,6 +2718,65 @@ key 是它写下的提示词和选项:阶段默认值和运行的默认适配器
 能否把多个账号合在一起使用,取决于各服务商的服务条款:配置多个账号之前请先确认。ODW
 只是在你提供的登录之间切换。
 
+### 本地模型:检查推理服务,把廉价阶段交给它(ODW 扩展)
+
+**ODW 扩展。** 本地模型(Ollama、LM Studio)通过能连接它们的 agent CLI 运行——在
+`opencode.json` 里配置了提供方的 `opencode`、`codex --oss`,或你自己的适配器;没有内置的
+`ollama` 适配器。它们的失败是静默的:Ollama 以较小的上下文窗口加载模型,提示放不下时就
+截掉前面的部分——也就是 CLI 的说明和工具定义——照样返回 HTTP 200。agent CLI 使用的
+OpenAI 兼容 `/v1` 端点会忽略请求里的 `num_ctx`,只有服务端的 `OLLAMA_CONTEXT_LENGTH`
+能调大它。`odw doctor --local` 在运行之前把这件事查出来:
+
+```bash
+odw doctor --local                                   # :11434 上的 Ollama、:1234 上的 LM Studio
+odw doctor --endpoint http://gpu-box:11434           # 你指定的服务(隐含 --local)
+odw doctor --local --model qwen3-coder:30b --smoke   # 再加一个约 10K token 的截断探针
+```
+
+- **只读。** Ollama 的 `/api/version`、`/api/ps`、`/api/tags` 和 `/api/show`,或 OpenAI 兼容
+  服务的 `/v1/models`(以及 LM Studio 的 `/api/v0/models`)。不拉取、不加载、不修改任何东西。
+  你指定的服务没有应答算检查失败;默认端口上什么都没有,只给一条警告。
+- **每个已加载的模型**(或 `--model` 指定的那个):它实际加载的上下文长度——**低于 32K 时
+  警告**,并给出调大的方法(`OLLAMA_CONTEXT_LENGTH=32768 ollama serve`;macOS 应用用
+  `launchctl setenv`;systemd 用 `systemctl edit ollama`;然后看 `ollama ps` 的 CONTEXT
+  列)——以及它是否声明了工具调用能力。Ollama 版本低于 0.13.4(`codex --oss` 指南要求的版本)
+  时警告。普通的 OpenAI 兼容服务既不报告上下文也不报告工具能力,检查会如实说明。
+- **`--smoke`**(与 `--local` 同用)向 `/v1/chat/completions` 发一次请求:一个约 10K token
+  的提示,第一行是随机口令,最后一行要求回复这个口令。回复里没有口令——前面被截掉了,或者
+  末尾的指令被忽略——就是一项失败的 doctor 检查(不是运行的失败原因),并附上服务端统计的
+  提示 token 数。探针只发往本机或局域网上的服务(回环、私有和链路本地地址、不带点的主机名、
+  `.local`、`.lan`、`.internal`、`.home.arpa`),从不发往 Ollama 的云端模型,也不带任何凭据。
+  `--timeout <秒>` 限定时长(默认 180)。与 `--local` 同用时,只有 `--adapter` 指名的适配器
+  才会一并做冒烟测试。
+- 这些探测只属于 doctor;运行仍然只通过 CLI 访问模型。
+
+**配方:侦察在本地,规划和审阅在云端。** 借助[模型档位](#按阶段路由与回退链odw-扩展),
+`meta.phases` 里廉价的阶段跑在本地模型上,其余留在云端模型:
+
+```jsonc
+// odw.config.json —— "ollama/…" 是 opencode 的 提供方/模型 id,提供方即其 opencode.json 中声明的那个
+{
+  "models": {
+    "local": { "opencode": "ollama/qwen3-coder:30b" },
+    "strong": { "claude": "opus", "codex": "gpt-5" }
+  }
+}
+```
+
+```js
+export const meta = {
+  name: 'triage',
+  description: 'Sort the issues locally; plan and review the fixes in the cloud.',
+  phases: [
+    { title: 'Scout', adapter: 'opencode', model: '@local' },
+    { title: 'Plan', adapter: 'claude', model: '@strong' },
+    { title: 'Review', adapter: 'claude', model: '@strong' },
+  ],
+}
+```
+
+模型加载后跑一次 `odw doctor --local --model qwen3-coder:30b --smoke`,服务端设置变化后再跑一次。
+
 ### 按适配器限制并发与错开扇出
 
 **ODW 扩展。** `concurrency` 限制一次运行同时有多少个 agent;适配器自己的 `concurrency`
@@ -2713,7 +2844,7 @@ staggered fan-out: 15 claude agents sharing a 3412-character prompt prefix waite
 "notify": {
   "command": ["/usr/local/bin/odw-notify"],        // 参数向量,不经过 shell 执行
   "webhook": "https://hooks.slack.com/services/…", // Slack、Discord 或任何接收 JSON 的端点
-  "on": ["done", "failed", "stopped"]              // 默认:所有终态;"waiting" 和 "paused" 需显式加入
+  "on": ["done", "failed", "stopped"]              // 默认:所有终态;"waiting"、"paused" 和 "digest" 需显式加入
 }
 ```
 
@@ -2765,6 +2896,13 @@ threadTs }`(webhook 有的才有)——命令则得到 `ODW_TRIGGER`、`ODW_EVEN
 和 `ODW_CONTEXT`(完整 JSON),于是钩子能在工作来源的 issue 或线程里回复:
 [`docs/recipes/triggers.md`](docs/recipes/triggers.md)。
 
+加上 `"digest"`(ODW 扩展),`odw digest --notify`——手动运行或由 `odw schedule add <name> --digest`
+触发——就会把[跨运行晨报](#晨报odw-digestodw-扩展)发送一次:命令的环境变量带有 `ODW_RUN_STATE=digest`、
+`ODW_DIGEST_TEXT`(一行摘要)、`ODW_DIGEST_FILE` 与 `ODW_DIGEST_MARKDOWN_FILE`(命令结束后删除)、
+`ODW_DIGEST_SINCE`、`ODW_DIGEST_NEEDS_YOU` 和 `ODW_DIGEST_FAILED`;webhook 收到 `"kind": "digest"`、
+晨报各字段(`needsYou`、`failed`、`unmet`、`changes`、`spend`、`counts`、`since`、`until`)、
+`markdown`,以及承载 markdown 的 `text`/`content`(`content` 截到 Discord 的 2000 字符)。
+
 Slack、Discord、ntfy 和桌面横幅的现成配置见
 [`docs/recipes/notify.md`](docs/recipes/notify.md)。
 
@@ -2783,6 +2921,10 @@ Slack、Discord、ntfy 和桌面横幅的现成配置见
 - **`worktreeSetup`**(**ODW 扩展**):文件就位后在 agent 的工作区里运行,字符串交给
   平台 shell,数组作为 argv。超过 `worktreeSetupTimeout` 秒(默认 600)就会被杀掉;
   setup 失败或超时,失败的是这个 agent 而不是整个运行,错误里带着它输出的结尾。
+- **`worktreeTeardown`**(**ODW 扩展**)与之相对:在 worktree 删除之前、在同一个工作区里、带着
+  同样的变量运行——不论 agent 成功、失败还是被停止(`odw stop`、worker 收到信号),setup 中途
+  失败时也会运行。超过 `worktreeTeardownTimeout` 秒(默认 120)就会被杀掉;失败或超时只在该
+  agent 名下记一行日志,不影响 agent 的结果。
 
 ```gitignore
 # .worktreeinclude
@@ -2818,6 +2960,51 @@ setup 命令拿到同样的三个变量,`exec()` 命令拿到 `ODW_RUN_ID`。请
 `concurrency` 更宽:如果其他 agent 占满了所有端口,新启动的 agent 就不带 `ODW_PORT`
 运行,运行日志里会说明。一次调用的每次尝试(schema 重试、卡死重启、限流重试)都从一个新的
 worktree 开始,并以同样方式准备。
+
+隔离 agent 还会拿到 `ODW_SLOT`(**ODW 扩展**):`odw-<run>-<agent>`——运行 id 的随机部分加
+agent id,例如 `odw-a1b2c3-4`——只含小写字母、数字和连字符,在这次调用的每次尝试、它的 setup
+和 teardown 中都相同。`COMPOSE_PROJECT_NAME` 默认设为它(你自己设置的不会被覆盖),于是在
+worktree 里执行 `docker compose` 操作的就是这个 agent 自己的那套栈。它也可以用作数据库名或卷名
+前缀(不允许连字符的地方加引号,或把连字符换成下划线)。
+
+#### 配方:每个 agent 一套 compose 栈和独立数据库
+
+每个隔离 agent 在自己的端口上起自己的服务,并在 worktree 删除前把它们连同卷一起拆掉——
+不论成功、失败还是被停止:
+
+```yaml
+# compose.yaml —— 项目名来自 COMPOSE_PROJECT_NAME(即 $ODW_SLOT)
+services:
+  db:
+    image: postgres:16
+    environment: { POSTGRES_PASSWORD: dev, POSTGRES_DB: app }
+    volumes: [data:/var/lib/postgresql/data]
+  app:
+    build: .
+    ports: ["${ODW_PORT}:3000"]
+    environment: { DATABASE_URL: "postgres://postgres:dev@db:5432/app" }
+    depends_on: [db]
+volumes:
+  data: {}
+```
+
+```jsonc
+{
+  "worktreeSetup": "docker compose up -d --wait && npm run migrate",
+  "worktreeTeardown": "docker compose down -v --remove-orphans",
+  "worktreeTeardownTimeout": 120
+}
+```
+
+```js
+await parallel(['grid', 'list'].map((layout) => () =>
+  agent(`Build the ${layout} layout; the app runs on http://localhost:$ODW_PORT with its own database.`,
+    { isolation: 'worktree', label: layout })))
+```
+
+这样迁移只会落到这个 agent 自己的数据库,不会碰共享库。worker 被直接杀掉(SIGKILL、第二次信号)
+时,teardown 来不及运行:`odw gc` 会列出所属运行已不再活跃的 `odw-*` compose 项目,并给出要执行的
+`docker compose -p <name> down -v`——它自己从不删除。ODW 不克隆数据库,也不管理不是它启动的服务。
 
 ### 审阅并应用隔离 agent 的改动(ODW 扩展)
 
@@ -2901,6 +3088,37 @@ agent 会冲突或校验失败,都会在推送前停下:分支被删除,什么�
   "applyVerify": null      // 例如 "npm test":每次 odw apply 之后运行,失败则回滚这次应用
 }
 ```
+
+#### 跨运行的审阅队列(ODW 扩展)
+
+保留的 diff 在各次运行里越积越多,远快于有人去看。`odw review` 列出运行根目录下所有运行里
+还没人处理过的 diff,风险最高的在前,并说明每一条为什么排在这里:
+
+```bash
+odw review                       # 尚未审阅、放弃或应用的 diff,按风险从高到低
+odw review --since 7d --json     # 只看最近一周的运行,供脚本使用
+odw review --all                 # 连同已标记的,以及是谁标记的
+odw review mark $RUN 3 reviewed --note "看过迁移了"   # 或 dismissed | applied | open(撤销)
+```
+
+分数是确定性的,只用运行记录下来的数据——不让任何模型来读。计分项:改动大小(50 / 300 / 1000
+行:+1 / +2 / +3;6 / 20 个文件:+1 / +2);从保留的 diff 中读出的路径类别——CI(+3)、数据库迁移
+(+3)、鉴权/安全相关代码(+3)、依赖清单与锁文件(+2)、测试(+1,删除测试再 +2)、二进制文件
+(+2);在 `maxDiffBytes` 处被截断的 diff(+2);被 `--deadline` 终止的 agent(+3);`expect` 未达成
+(+4)与 `untouched` 违规(+4);其他失败(+3:改动是未完成的工作);`scope` 之外的文件(+3);
+留下仍在运行的后台任务(+2);破坏性 git 命令(+3);回退或 handoff(+1);`odw apply --resolve`
+时跑过解决冲突的 agent(+1);`expect` 重试(+1)与其他重试(+1);花费达到 $1 / $5(+1 / +2)。
+`expect.command` 检查通过则减一分。0–2 为 **low**,3–5 为 **medium**,6 及以上为 **high**。每一分
+都打印在条目上(`--json` 中为 `factors`),排序有据可查。
+
+标记写入运行目录中只追加的 `reviews.jsonl`——`{ ts, agentId, state, by, via, note? }`,`by` 是标记者
+(与检查点决定一致:本地用户,或看板上具名令牌的名字),`via` 为 `cli`、`dashboard` 或 `apply`;
+同一个 agent 以最后一条标记为准。`odw apply` 会把干净应用(或发现已应用)的每个 agent 标为
+`applied`;`--check` 不做标记。`odw eval` 启动的运行和 `--resolve` 的解决冲突运行不进入队列。
+看板的 **Review** 页(`g r`)展示同一队列及其理由,可把条目标为已审阅或放弃(与所有写操作一样
+仅限回环地址),并能在所属运行的 Changes 标签页中打开条目;Activity 的 **待你处理** 会显示等待
+审阅的数量。`GET /api/review[?since=7d][&all=1]` 提供该队列,`POST
+/api/runs/:id/agents/:agentId/review { state, note? }` 标记一条。
 
 分步说明:[`docs/recipes/review-and-apply.md`](docs/recipes/review-and-apply.md)。
 
@@ -3149,7 +3367,8 @@ ODW 也带一个 skill——但 skill 的职责是教你的 agent 写和跑 work
 <summary><b>ODW 会直接调用模型 API 吗?</b></summary>
 
 不会。ODW 只 shell 出到你已经登录过的本地 CLI。没有 API key、没有自己的 token 计费、
-引擎不发任何网络请求。
+引擎不发任何网络请求。唯一的例外是你主动要求的诊断:`odw doctor --local` 读取本地推理服务的
+状态,加 `--smoke` 时向它发一次探针——只限本机或局域网。
 </details>
 
 <details>

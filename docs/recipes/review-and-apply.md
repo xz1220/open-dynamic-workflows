@@ -177,6 +177,23 @@ change, but `odw apply` refuses a cut diff, and `--all` stops at it. Use the
 agent's branch (rerun it with `keep: true` if it had none), or raise
 `maxDiffBytes`.
 
+## 8. Many runs: start from the review queue (ODW extension)
+
+When diffs pile up over several runs, `odw review` says which to read first —
+every kept diff not yet reviewed, dismissed or applied, riskiest first, each
+point of its score with the reason (CI or migration paths, an `expect` miss,
+files outside its scope, its size, …):
+
+```bash
+odw review --since 7d
+odw diff $RUN --agent 3                      # read the one at the top
+odw apply $RUN --agent 3 --check && odw apply $RUN --agent 3   # marked applied for you
+odw review mark $RUN 5 dismissed --note "superseded by run …"
+```
+
+The dashboard's **Review** page shows the same queue and marks entries from the
+browser; a mark is one line of the run's `reviews.jsonl`, with who made it.
+
 ## What is in a diff, and what is not
 
 - **In:** everything the agent changed relative to the commit it started from,

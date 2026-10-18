@@ -658,6 +658,8 @@ export const DEFAULT_SETTINGS: Settings = {
   notify: null, // no run-completion hooks
   worktreeSetup: null, // nothing runs in a new isolated worktree but the agent
   worktreeSetupTimeout: 600, // seconds
+  worktreeTeardown: null, // nothing runs before an isolated worktree is removed
+  worktreeTeardownTimeout: 120, // seconds
   portRange: [41000, 41999], // ODW_PORT, unique among a run's running agents
   fanOutWarn: 25, // log a warning when one parallel()/pipeline() call fans out wider
   adaptiveConcurrency: true, // a rate limit halves its adapter's cap; a quiet minute gives a slot back
@@ -698,4 +700,5 @@ export const DEFAULT_SETTINGS: Settings = {
   costGate: null, // no fan-out waits for a go; { usd } asks before one forecast to cost more
   untrustedInput: { requireSandbox: false }, // a run with untrusted input and no sandbox warns loudly (true: refused)
   retention: { days: 30, transcripts: true }, // odw gc: an ended run's branches and transcripts after 30 days (only with --yes)
+  digest: null, // no default time for odw schedule add --digest ({ cron } sets one)
 };

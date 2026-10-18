@@ -89,7 +89,7 @@ const SIGNAL_GRACE_MS = 10_000;
  * SIGTERM, SIGINT and SIGHUP are handled for the same reason: agents lead
  * their own process groups, so a worker killed outright would orphan them. The
  * first such signal stops the run like `odw stop`; a second one, or the run
- * not ending within SIGNAL_GRACE_MS, kills every agent process, records the
+ * not ending within SIGNAL_GRACE_MS (plus a worktreeTeardown's timeout), kills every agent process, records the
  * run stopped if it was not yet, and exits the process.
  *
  * Once the outcome is on disk, the configured run-end hooks (`notify`) fire;
@@ -156,6 +156,8 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
   // Undoes the redaction of this process's own output, once the run is over.
   let unredactOutput = (): void => {};
   const signals = watchStopSignals({
+    // A configured worktreeTeardown gets its timeout on top (ODW extension).
+    graceMs: () => SIGNAL_GRACE_MS + teardownMs(ctx?.config.settings),
     stop: (why, deadline) => {
       if (end) return; // only the hooks are left; the grace period bounds them
       // The deadline's stop keeps what the agents it kills had changed (see DeadlinePassed).
@@ -408,7 +410,7 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
     // loudly without a sandbox, and refused under untrustedInput.requireSandbox.
     const inputGap = input ? sandboxGap(config.settings) : null;
     const inputProfile = input
-      ? { ...input, permissions: config.settings.permissions, agentEnv: config.settings.agentEnv, sandboxed: inputGap === null, ...(inputGap ? { warning: sandboxWarning(inputGap) } : {}) }
+      ? { ...input, permissions: config.settings.permissions, agentEnv: config.settings.agentEnv, sandboxed: inputGap === null, ...(inputGap ? { webTools: "withheld from read-only agents", warning: sandboxWarning(inputGap) } : {}) }
       : null;
     sink.emit(event(RUN_STARTED, { runId, setup: runSetup(config), ...(inputProfile ? { untrustedInput: inputProfile } : {}) }));
     if (input) {
@@ -577,7 +579,7 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
     if (outcome !== err) {
       sink.emit(event(LOG, { message: `after the run ended, the workflow also failed: ${errorMessage(err)}` }));
     }
-    if (ctx) await stopAgents(ctx.scheduler, outcome);
+    if (ctx) await stopAgents(ctx.scheduler, outcome, teardownMs(ctx.config.settings));
     await ctx?.bridge.closeEgress().catch(() => undefined);
     versions?.close();
     ctx?.notes?.close();
@@ -754,11 +756,20 @@ function unmatchedDecision(request: CheckpointRequest): string {
 /**
  * The run is over, but agents may still be in flight (siblings of the failure,
  * agents the script never awaited). Abort them, give their worktree cleanup a
- * bounded moment, then kill whatever is left.
+ * bounded moment, then kill whatever is left — but not a `worktreeTeardown`
+ * (ODW extension): with one configured, the worktrees get its timeout more to
+ * go (`teardown` ms).
  */
-async function stopAgents(scheduler: Scheduler, err: unknown): Promise<void> {
+async function stopAgents(scheduler: Scheduler, err: unknown, teardown = 0): Promise<void> {
   scheduler.abort(isFatalError(err) ? err : new RunStopped(`the workflow failed: ${errorMessage(err)}`));
-  if (!(await scheduler.drain(ABORT_DRAIN_MS))) killAllAgentProcesses();
+  if (await scheduler.drain(ABORT_DRAIN_MS)) return;
+  killAllAgentProcesses();
+  if (teardown > 0) await scheduler.drain(teardown + ABORT_DRAIN_MS);
+}
+
+/** How long a configured `worktreeTeardown` may hold a stopping run up, in ms (ODW extension); 0 without one. */
+function teardownMs(settings: { worktreeTeardown: unknown; worktreeTeardownTimeout: number } | undefined): number {
+  return settings?.worktreeTeardown ? settings.worktreeTeardownTimeout * 1000 : 0;
 }
 
 function errorMessage(err: unknown): string {
@@ -825,11 +836,12 @@ function watchProcessCrashes(): { race<T>(work: Promise<T>): Promise<T>; dispose
 
 /**
  * Handle the stop signals while a run executes (see executeRun): `stop` on the
- * first; `force` on a second, or once SIGNAL_GRACE_MS have passed since the
- * first. `stopNow` stops the run the same way for a reason of the run's own
+ * first; `force` on a second, or once `graceMs()` (SIGNAL_GRACE_MS, and a
+ * worktreeTeardown's timeout) have passed since the first. `stopNow` stops the run the same way for a reason of the run's own
  * (its `--deadline`; `stop` is told so): a signal after it forces. Listening ends at `dispose`.
  */
 function watchStopSignals(handlers: {
+  graceMs(): number;
   stop(why: string, deadline: boolean): void;
   force(signal: NodeJS.Signals, why: string): void;
 }): { dispose(): void; stopNow(why: string): void } {
@@ -837,9 +849,10 @@ function watchStopSignals(handlers: {
   let deadline: NodeJS.Timeout | undefined;
   const begin = (signal: NodeJS.Signals | null, why: string): void => {
     first = { signal, why };
+    const grace = handlers.graceMs();
     deadline = setTimeout(
-      () => handlers.force(signal ?? "SIGTERM", `the run did not stop within ${SIGNAL_GRACE_MS / 1000}s of ${signal ?? why}`),
-      SIGNAL_GRACE_MS,
+      () => handlers.force(signal ?? "SIGTERM", `the run did not stop within ${grace / 1000}s of ${signal ?? why}`),
+      grace,
     );
     handlers.stop(why, signal === null);
   };

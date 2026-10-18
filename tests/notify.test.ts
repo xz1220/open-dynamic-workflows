@@ -15,7 +15,12 @@ import {
   summaryLine,
   webhookOrigin,
   webhookPayload,
+  waitingPayload,
+  withLinks,
+  slackText,
+  discordContent,
   type RunEnd,
+  type RunWaiting,
 } from "../src/runtime/notify.js";
 import { RunStore } from "../src/runtime/run-store.js";
 import { startServer } from "../src/runtime/server.js";
@@ -478,4 +483,35 @@ test("/api/settings shows which hooks are set, never their secrets", async () =>
     await handle.close();
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("a title a model wrote neither pings nor links: Slack's text escaped, Discord's mentions and masked links broken (review fix)", () => {
+  const title = "<!channel> <https://evil.example/x|Approve run> @everyone <@123> <@&456> [Approve](https://evil.example/y) & co";
+  const waiting: RunWaiting = {
+    runId: "20261018-120000-abcdef",
+    runDir: "/tmp/r",
+    workflow: "deploy @here",
+    state: "waiting",
+    createdAt: 1,
+    durationSec: 5,
+    counts: { agents: 1, done: 1, failed: 0 },
+    checkpoint: { checkpointId: 1, title, since: 1 },
+  };
+  const payload = waitingPayload(waiting);
+  const text = String(payload.text);
+  assert.ok(!/[<>]/.test(text), text);
+  assert.match(text, /&lt;!channel&gt; &lt;https:\/\/evil\.example\/x\|Approve run&gt;/);
+  assert.match(text, / &amp; co · odw approve\|reject/);
+  const content = String(payload.content);
+  assert.ok(!/@(?:everyone|here)|<[@#]\d|<@&|\[Approve\]\(/.test(content), content);
+  assert.match(content, /@​everyone <@​123> <@​&456> \\\[Approve\\\]\(https:\/\/evil\.example\/y\)/);
+  assert.match(content, /^odw · deploy @​here waits for a decision/);
+  assert.deepEqual(payload.allowed_mentions, { parse: [] });
+  // The approve links go after it: escaped for Slack, as they are for Discord.
+  const links = { approveUrl: "https://odw.example/approve/a?x=1&y=2", rejectUrl: "https://odw.example/approve/r", expiresAt: 9 };
+  const linked = withLinks(payload, { ok: true, links });
+  assert.ok(String(linked.text).endsWith(" · approve: https://odw.example/approve/a?x=1&amp;y=2 · reject: https://odw.example/approve/r"));
+  assert.ok(String(linked.content).startsWith(content) && String(linked.content).endsWith("a?x=1&y=2 · reject: https://odw.example/approve/r"));
+  // A plain line is the same in both.
+  assert.equal(slackText("odw · nightly finished in 4s"), discordContent("odw · nightly finished in 4s"));
 });

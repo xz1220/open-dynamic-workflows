@@ -19,6 +19,8 @@ import type {
   WorkflowMemory,
   RunNote,
   RunSummary,
+  ReviewMark,
+  ReviewQueue,
   ScheduleView,
   SettingsSnapshot,
   TranscriptPage,
@@ -120,6 +122,8 @@ export const api = {
     if (!r.ok) throw new Error(`transcript of agent ${agentId} → ${r.status}`);
     return (await r.json()) as TranscriptPage;
   },
+  /** The review queue (ODW extension): kept diffs not dealt with yet, riskiest first; `all` includes the marked. */
+  review: (all = false) => getJSON<ReviewQueue>(`/api/review${all ? "?all=1" : ""}`),
   /** `odw schedule` entries; empty from servers without schedules. */
   schedules: () => getJSON<ScheduleView[]>("/api/schedules"),
   workflows: () => getJSON<WorkflowSummary[]>("/api/workflows"),
@@ -149,4 +153,7 @@ export const api = {
       | { action: "approve"; checkpointId?: number; note?: string; payload?: unknown }
       | { action: "reject"; checkpointId?: number; note?: string },
   ) => postJSON<{ ok: boolean }>(`/api/runs/${enc(id)}/checkpoint`, body),
+  /** Mark an agent's kept diff on the review queue (ODW extension, loopback only). */
+  markReview: (id: string, agentId: number, state: ReviewMark["state"], note?: string) =>
+    postJSON<{ ok: boolean }>(`/api/runs/${enc(id)}/agents/${agentId}/review`, { state, ...(note ? { note } : {}) }),
 };

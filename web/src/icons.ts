@@ -54,5 +54,6 @@ export const icons = {
   compare: stroke(`<path d="M7 4v13M7 17l-3-3M7 17l3-3M17 20V7M17 7l-3 3M17 7l3 3"/>`),
   receipt: stroke(`<path d="M6 3.5h12v17l-2-1.4-2 1.4-2-1.4-2 1.4-2-1.4-2 1.4z"/><path d="M9 8.5h6M9 12h6M9 15.5h3.5"/>`),
   diff: stroke(`<rect x="4.5" y="3.5" width="15" height="17" rx="2.5"/><path d="M12 7v6M9 10h6M9 16.5h6"/>`),
+  review: stroke(`<path d="M4 6.5h9M4 12h6M4 17.5h5"/><path d="M13.5 15.5l2.5 2.5 4.5-5"/>`),
   branch: stroke(`<circle cx="7" cy="5.5" r="2"/><circle cx="7" cy="18.5" r="2"/><circle cx="17" cy="7.5" r="2"/><path d="M7 7.5v9M17 9.5c0 4.5-10 2.5-10 7"/>`),
 };

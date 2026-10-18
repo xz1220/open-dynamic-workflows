@@ -40,6 +40,7 @@
  *   odw new [<template>] [--name N] [--force] [--yes]   (a workflow + starter test from an embedded template; src/new.ts)
  *   odw gc [--yes] [--older-than 30d] [--json] | odw pin <run_id> [--remove]   (what odw left on disk; runtime/gc.ts)
  *   odw restore <run_id> [--check] [--force]   (the working tree before the run's first in-place agent; runtime/restore.ts)
+ *   odw review [--json] [--since 7d] [--all] | odw review mark <run_id> <agent> <state> [--note T]   (runtime/review-cli.ts)
  */
 
 import { spawn } from "node:child_process";
@@ -108,6 +109,9 @@ import { cmdNote, cmdNotes } from "./runtime/notes-view.js";
 import { cmdMemory } from "./runtime/memory-cli.js";
 import { askYesNo, cmdEstimate, estimateBeforeRun } from "./runtime/estimate-cli.js";
 import { cmdGc, cmdPin } from "./runtime/gc-cli.js";
+import { cmdDigest } from "./runtime/digest-cli.js";
+import { cmdReview } from "./runtime/review-cli.js";
+import { appendReview } from "./runtime/review.js";
 import { executeRun } from "./runtime/worker.js";
 import {
   parseSshTarget,
@@ -173,6 +177,8 @@ export const COMMANDS = [
   "gc",
   "pin",
   "restore",
+  "digest",
+  "review",
 ] as const;
 
 export type Command = (typeof COMMANDS)[number];
@@ -192,6 +198,8 @@ export function helpText(): string {
     "  odw init [--adapter <name>] [--check]              pick the default agent CLI (first-time setup)",
     "  odw doctor [--smoke] [--adapter <name>|all]        check this machine is ready to run workflows",
     "  odw doctor --models                                send each configured adapter/model pair one tiny prompt",
+    "  odw doctor --local [--endpoint URL] [--model M]    check a local Ollama / LM Studio: context length, tool calling;",
+    "                                                     with --smoke, whether a long prompt's front is silently cut",
     "  odw run <script.js|name> [--args JSON|@file]       start a workflow (see modes below)",
     "  odw attach <run_id>                                attach the live foreground view to a run",
     "  odw rerun <run_id>                                 start a fresh run with the same inputs",
@@ -249,6 +257,10 @@ export function helpText(): string {
     "  odw new [<template>] [--name N] [--force] [--yes]  a workflow + starter test in .odw/ from a built-in template; no args lists them",
     "  odw gc [--yes] [--older-than 30d] [--json]         report orphaned worktrees, keep branches, old transcripts; --yes deletes (ODW extension)",
     "  odw pin <run_id> [--remove]                        odw gc skips a pinned run; no run id lists them",
+    "  odw digest [--since 12h|--since-last] [--workflow W] what happened across runs, from their evidence: needs you, failed,",
+    "             [--json|--markdown] [--notify]          missed checks, changes, spend; --notify sends it (notify.on \"digest\"; ODW extension)",
+    "  odw review [--json] [--since 7d] [--all]           kept diffs across runs not dealt with yet, riskiest first, each with why (ODW extension)",
+    "  odw review mark <run_id> <agent> <state> [--note T] reviewed | dismissed | applied | open (undo); odw apply marks applied",
     "",
     "Options:",
     "  --args JSON|@file   workflow input (JSON, @file.json, or a raw string)",
@@ -304,6 +316,7 @@ export function helpText(): string {
     "Schedules (odw schedule, ODW extension — no daemon: cron, launchd or a systemd timer calls odw back):",
     "  add <name> <workflow> --cron \"0 8 * * *\" [--args JSON|@file] [--adapter X] [--config P] [--cwd DIR]",
     "      [--backend cron|launchd|systemd] [--dry-run]     default: launchd on macOS, cron elsewhere",
+    "  add <name> --digest [--cron EXPR] [--workflow W]    send odw digest --since-last --notify instead (cron: config digest.cron)",
     "  list [--json]               each schedule's backend, last run and next run (local time)",
     "  remove <name>               delete its OS entry and its definition (fine if the entry is gone already)",
     "  run <name>                  what the OS entry calls: runs it like run --wait, skipped while the previous",
@@ -421,6 +434,10 @@ export async function main(argv: string[]): Promise<number> {
         return cmdPin(rest);
       case "restore":
         return await cmdRestore(rest);
+      case "digest":
+        return await cmdDigest(rest);
+      case "review":
+        return await cmdReview(rest);
       default:
         process.stderr.write(`odw: unknown command '${command}'\n\n${helpText()}\n`);
         return 2;
@@ -456,9 +473,18 @@ async function cmdDoctor(rest: string[]): Promise<number> {
       adapter: { type: "string", multiple: true },
       timeout: { type: "string" },
       json: { type: "boolean" },
+      local: { type: "boolean" },
+      endpoint: { type: "string", multiple: true },
+      model: { type: "string" },
     },
   });
   const timeoutMs = parseTimeout("doctor", values.timeout);
+  // `--local` (ODW extension): an --endpoint implies it; --model only means something with it.
+  const local = values.local === true || (values.endpoint?.length ?? 0) > 0;
+  if (values.model !== undefined && !local) {
+    process.stderr.write("odw doctor: --model goes with --local (or --endpoint)\n");
+    return 2;
+  }
   const cwd = process.cwd();
   let config: Config | Error;
   let configPath: string | null = null;
@@ -469,7 +495,8 @@ async function cmdDoctor(rest: string[]): Promise<number> {
     config = err as Error;
   }
   let smoke: string[] = [];
-  if (values.smoke && !(config instanceof Error)) {
+  // With --local, --smoke probes the local model; an adapter is smoke-tested only when named.
+  if (values.smoke && !(config instanceof Error) && (!local || values.adapter?.length)) {
     const wanted = values.adapter ?? [];
     if (wanted.includes("all")) smoke = listAdapters(config).filter((a) => a.installed).map((a) => a.name);
     else if (wanted.length) smoke = wanted;
@@ -493,6 +520,9 @@ async function cmdDoctor(rest: string[]): Promise<number> {
       smoke,
       smokeTimeout: timeoutMs !== undefined ? timeoutMs / 1000 : undefined,
       models: values.models === true,
+      local: local
+        ? { endpoints: values.endpoint ?? [], smoke: values.smoke === true, model: values.model, smokeTimeoutMs: timeoutMs || undefined }
+        : undefined,
     });
   } finally {
     for (const s of signals) process.off(s, onSignal);
@@ -1487,6 +1517,10 @@ async function cmdApply(rest: string[]): Promise<number> {
       err: process.stderr,
       caps: detectCaps(process.stdout, process.env),
       width: process.stdout.isTTY && process.stdout.columns ? process.stdout.columns : 120,
+      // What applied cleanly leaves the review queue as `applied` (ODW extension; see runtime/review).
+      onApplied: (a) => {
+        appendReview(store.runDir(runId), { agentId: a.row.agentId, state: "applied", by: cliActor(), via: "apply" });
+      },
     });
   } finally {
     process.stdout.off("error", unheard);

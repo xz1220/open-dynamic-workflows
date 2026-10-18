@@ -98,6 +98,11 @@ waits for its answer while holding the schedule's lock, so the next starts
 are skipped until someone answers; the log says which command does. Give
 unattended checkpoints a `timeout`.
 
+To hear about all of a night's runs in one message instead, schedule the
+digest: `odw schedule add morning --digest --cron "0 8 * * 1-5"` sends
+`odw digest --since-last --notify` (ODW extension) — see
+[notify.md](notify.md#a-morning-digest).
+
 ## Where things live
 
 | | |

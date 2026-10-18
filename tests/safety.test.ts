@@ -12,7 +12,7 @@ import type { AdapterOutput, CliResult } from "../src/adapters/types.js";
 import { DestructiveGitWatch, destructiveGitCommands, type DestructiveGitHit } from "../src/destructive-git.js";
 import { event, type WorkflowEvent } from "../src/events.js";
 import { BEHAVIOUR_SETTINGS } from "../src/provenance.js";
-import { safetyRef, takeSafetySnapshot } from "../src/safety.js";
+import { safetyRef, snapshotEvent, takeSafetySnapshot } from "../src/safety.js";
 import { formatEvent, safetyLines } from "../src/runtime/live-view.js";
 import { restoreSnapshot } from "../src/runtime/restore.js";
 import { RunStore } from "../src/runtime/run-store.js";
@@ -116,6 +116,45 @@ test("a command line is read as a shell reads it: chains, wrappers, shells' -c s
   assert.deepEqual(whats("echo git reset --hard"), []);
   assert.deepEqual(whats("git commit -m 'never git reset --hard'"), []);
   assert.deepEqual(whats("# git reset --hard\ngit status"), []);
+});
+
+test("review fix: shell keywords, git switch --force, push --mirror/--delete/:refspec, and git pointed at another tree", () => {
+  const hits = (line: string) => destructiveGitCommands(line).map((h) => `${h.what}|${h.scope}${h.elsewhere ? "|elsewhere" : ""}`);
+  const cases: Array<[string, string[]]> = [
+    ["if true; then git reset --hard; fi", ["git reset --hard|worktree"]],
+    ["for f in a; do git clean -fd; done", ["git clean -f|worktree"]],
+    ["if false; then :; else git checkout .; fi", ["git checkout .|worktree"]],
+    ["if a; then :; elif b; then git stash clear; fi", ["git stash clear|repository"]],
+    ["while true; do git restore .; done", ["git restore .|worktree"]],
+    ["! git reset --hard", ["git reset --hard|worktree"]],
+    ["{ git reset --hard; }", ["git reset --hard|worktree"]],
+    ["git switch -f main", ["git switch --force|worktree"]],
+    ["git switch --force main", ["git switch --force|worktree"]],
+    ["git switch --discard-changes main", ["git switch --force|worktree"]],
+    ["git switch -c feature", []],
+    ["git push --mirror backup", ["git push --mirror|repository"]],
+    ["git push --delete origin old", ["git push --delete|repository"]],
+    ["git push -d origin old", ["git push --delete|repository"]],
+    ["git push origin :old", ["git push --delete|repository"]],
+    ["git push origin :", []],
+    ["git push origin main", []],
+    ["git -C /home/me/project reset --hard", ["git reset --hard|worktree|elsewhere"]],
+    ["git --git-dir=/elsewhere/.git --work-tree=/elsewhere checkout .", ["git checkout .|worktree|elsewhere"]],
+    ["git --work-tree ../main clean -fd", ["git clean -f|worktree|elsewhere"]],
+    ["git -C . reset --hard", ["git reset --hard|worktree"]],
+    ["git -C /x push --force", ["git push --force|repository"]],
+  ];
+  for (const [line, want] of cases) assert.deepEqual(hits(line), want, line);
+  // An isolated agent that points git at another tree is reported: ODW cannot tell it is its own.
+  const seen: string[] = [];
+  const watch = new DestructiveGitWatch((hit) => seen.push(hit.command), true);
+  watch.beginRun(undefined, CLAUDE);
+  watch.stdout(`${claudeBash("a", "git reset --hard")}\n${claudeBash("b", "git -C /home/me/project reset --hard")}\n`);
+  watch.endRun(ok());
+  assert.deepEqual(seen, ["git -C /home/me/project reset --hard"]);
+  // What runs git without saying so on its command line is not seen (advisory, best effort).
+  assert.deepEqual(hits("find . -name x -exec git checkout -- {} +"), []);
+  assert.deepEqual(hits("echo . | xargs git checkout --"), []);
 });
 
 // --- watching an agent's CLI --------------------------------------------------------------------
@@ -235,6 +274,31 @@ test("the run's own directory, when it lies in the tree, is left out of the snap
     assert.ok("taken" in outcome);
     assert.equal(outcome.taken.untracked, 1);
     assert.deepEqual(git(repo, "ls-tree", "-r", "--name-only", outcome.taken.commit).trim().split("\n").sort(), ["a.txt", "notes.md"]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("review fix: untracked files with secret-like names stay out of the snapshot — a ref git push --mirror would publish — and are named", async () => {
+  const root = tempRoot();
+  try {
+    const repo = makeRepo(root, { "a.txt": "a\n" });
+    const secretish = [".env", ".env.local", "config/.env.production", "certs/server.pem", "tls.KEY", "deploy/id_rsa", "id_ed25519", "id_ecdsa", "store.p12", "gcp/credentials.json"];
+    write(repo, Object.fromEntries([...secretish, "notes.md", "id_rsa.pub", "environment.ts", "keys.md"].map((p) => [p, "x\n"])));
+    const outcome = await takeSafetySnapshot(repo, "r-secret");
+    assert.ok("taken" in outcome, JSON.stringify(outcome));
+    const files = git(repo, "ls-tree", "-r", "--name-only", outcome.taken.commit).trim().split("\n").sort();
+    assert.deepEqual(files, ["a.txt", "environment.ts", "id_rsa.pub", "keys.md", "notes.md"]);
+    assert.deepEqual([...outcome.taken.secretLike].sort(), [...secretish].sort());
+    assert.equal(outcome.taken.untracked, 4);
+    const ev = snapshotEvent("r-secret", outcome.taken);
+    assert.match(String(ev.message), /\(left out as secret-like: [^)]*\.env[^)]*deploy\/id_rsa[^)]*\)/);
+    assert.deepEqual([...(ev.secretLike as string[])].sort(), [...secretish].sort());
+    // Nothing but secret-like files untracked: nothing to keep.
+    mkdirSync(join(root, "c"));
+    const clean = makeRepo(join(root, "c"), { "a.txt": "a\n" });
+    write(clean, { ".env": "x\n" });
+    assert.deepEqual(await takeSafetySnapshot(clean, "r-clean"), { clean: true });
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

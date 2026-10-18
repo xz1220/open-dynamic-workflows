@@ -13,21 +13,29 @@
  *
  *   git reset --hard                       the working tree and index back to a commit
  *   git checkout . / -- . / --force        every file back to the index (or a commit)
+ *   git switch --force / --discard-changes the same, switching branches
  *   git restore .                          the same, by its newer name
  *   git clean -f…                          untracked files deleted (not -n, a dry run)
  *   git push --force / -f / +refspec       the remote's history rewritten
+ *   git push --mirror                      the remote made a copy of every local ref
+ *   git push --delete / -d / :refspec      a remote branch or tag deleted
  *   git stash drop / clear                 stashed work dropped
  *   git branch -D                          a branch deleted, merged or not
  *
- * The first four touch the working tree they run in: they count only for an
+ * The first five touch the working tree they run in: they count only for an
  * agent that works in place — an isolated agent's own worktree is its to
- * throw away. The last three reach the whole repository (its refs, its
- * stashes, its remote), so they count for every agent.
+ * throw away — or for one that points git elsewhere (`git -C <dir>`,
+ * `--git-dir`, `--work-tree`: ODW cannot tell where that is from the command,
+ * so it counts as in place). The rest reach the whole repository (its refs,
+ * its stashes, its remote), so they count for every agent.
  *
  * A command is read the way a shell would split it: `cd x && git reset
- * --hard`, `bash -lc 'git clean -fd'`, `sudo -u me git …`, `env A=1 git …`
- * and git's own global options (`git -C dir …`) are seen through; a quoted
- * string is not a command (`grep "git reset --hard" notes.md` is no hit).
+ * --hard`, `bash -lc 'git clean -fd'`, `sudo -u me git …`, `env A=1 git …`,
+ * `if …; then git …`, `! git …` and git's own global options (`git -C dir …`)
+ * are seen through; a quoted string is not a command (`grep "git reset
+ * --hard" notes.md` is no hit). Detection is advisory and best effort: what
+ * runs git without saying so on its command line — `find -exec`, `xargs`, a
+ * git alias, a script, a `cd` into another worktree — goes unseen.
  * What the `destructiveGit` setting does with a hit is the caller's (see
  * ./primitives): `"warn"` records it, `"fail"` fails the agent once its CLI
  * is done.
@@ -39,6 +47,14 @@ import { TranscriptNormalizer, type TranscriptEntry } from "./runtime/transcript
 
 /** What a destructive git command reaches: the working tree it runs in, or the whole repository. */
 export type DestructiveScope = "worktree" | "repository";
+
+/** One destructive git command found in a command line: what it is, what it reaches, and whether git was pointed elsewhere. */
+export interface DestructiveGitCommand {
+  what: string;
+  scope: DestructiveScope;
+  /** `git -C <dir>`, `--git-dir` or `--work-tree` named another tree than the one it runs in: it counts as in place. */
+  elsewhere?: boolean;
+}
 
 /** One destructive git command an agent ran. */
 export interface DestructiveGitHit {
@@ -75,6 +91,12 @@ const WRAPPER_VALUES: Record<string, ReadonlySet<string>> = {
   stdbuf: new Set(["-i", "-o", "-e"]),
 };
 
+/** Shell reserved words a command may follow (`if …; then git …`, `! git …`): skipped like a wrapper. */
+const KEYWORDS = new Set(["if", "then", "do", "else", "elif", "while", "until", "!", "{"]);
+
+/** git's global options that point it at another tree than the one it runs in. */
+const GIT_ELSEWHERE = new Set(["-C", "--git-dir", "--work-tree"]);
+
 /** git's global options that take the next word as their value. */
 const GIT_GLOBAL_VALUES = new Set(["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--super-prefix", "--config-env", "--exec-path"]);
 
@@ -85,8 +107,8 @@ const WHOLE_TREE = new Set([".", "./", ":/", ":/.", "*", ":(top)", ":(top).", ":
  * The destructive git commands in one shell command line, in the order they
  * appear — each `what` and its scope — or none.
  */
-export function destructiveGitCommands(line: string, depth = 0): Array<{ what: string; scope: DestructiveScope }> {
-  const found: Array<{ what: string; scope: DestructiveScope }> = [];
+export function destructiveGitCommands(line: string, depth = 0): DestructiveGitCommand[] {
+  const found: DestructiveGitCommand[] = [];
   for (const words of simpleCommands(line)) {
     const at = commandStart(words);
     if (at >= words.length) continue;
@@ -114,27 +136,39 @@ export function destructiveGitCommands(line: string, depth = 0): Array<{ what: s
 }
 
 /** What a git invocation's arguments (after `git`) make it, when it is destructive. */
-function gitHit(args: string[]): { what: string; scope: DestructiveScope } | null {
+function gitHit(args: string[]): DestructiveGitCommand | null {
   let i = 0;
+  let elsewhere = false;
   while (i < args.length && args[i]!.startsWith("-")) {
     const arg = args[i]!;
+    const [option, value] = arg.includes("=") ? [arg.slice(0, arg.indexOf("=")), arg.slice(arg.indexOf("=") + 1)] : [arg, args[i + 1]];
+    if (GIT_ELSEWHERE.has(option) && value !== "." && value !== "./") elsewhere = true;
     i += GIT_GLOBAL_VALUES.has(arg) ? 2 : 1;
   }
-  const sub = args[i];
+  const hit = gitSubHit(args.slice(i));
+  return hit && elsewhere && hit.scope === "worktree" ? { ...hit, elsewhere } : hit;
+}
+
+/** What a git subcommand and its arguments make it, when it is destructive. */
+function gitSubHit(args: string[]): DestructiveGitCommand | null {
+  const [sub, ...rest] = args;
   if (sub === undefined) return null;
-  const rest = args.slice(i + 1);
   const dashes = rest.indexOf("--");
   const options = (dashes === -1 ? rest : rest.slice(0, dashes)).filter((a) => a.startsWith("-"));
   const operands = dashes === -1 ? rest.filter((a) => !a.startsWith("-")) : [...rest.slice(0, dashes).filter((a) => !a.startsWith("-")), ...rest.slice(dashes + 1)];
   /** A short-option cluster (`-fdx`) or the long option has `short`/`long`. */
-  const has = (short: string, long?: string): boolean =>
-    options.some((o) => (long !== undefined && (o === long || o.startsWith(`${long}=`))) || (/^-[A-Za-z]+$/.test(o) && o.slice(1).includes(short)));
+  const has = (short: string | null, long?: string): boolean =>
+    options.some(
+      (o) => (long !== undefined && (o === long || o.startsWith(`${long}=`))) || (short !== null && /^-[A-Za-z]+$/.test(o) && o.slice(1).includes(short)),
+    );
   switch (sub) {
     case "reset":
       return options.includes("--hard") ? { what: "git reset --hard", scope: "worktree" } : null;
     case "checkout":
       if (has("f", "--force")) return { what: "git checkout --force", scope: "worktree" };
       return operands.some((o) => WHOLE_TREE.has(o)) ? { what: "git checkout .", scope: "worktree" } : null;
+    case "switch":
+      return has("f", "--force") || has(null, "--discard-changes") ? { what: "git switch --force", scope: "worktree" } : null;
     case "restore": {
       // `--staged` alone touches only the index; the working tree is restored by default or with --worktree.
       const worktree = has("W", "--worktree") || !has("S", "--staged");
@@ -145,6 +179,10 @@ function gitHit(args: string[]): { what: string; scope: DestructiveScope } | nul
     case "push":
       if (has("f", "--force") || options.some((o) => o.startsWith("--force-with-lease")) || operands.some((o) => o.startsWith("+") && o.length > 1)) {
         return { what: "git push --force", scope: "repository" };
+      }
+      if (has(null, "--mirror")) return { what: "git push --mirror", scope: "repository" };
+      if (has("d", "--delete") || operands.some((o) => o.startsWith(":") && o.length > 1)) {
+        return { what: "git push --delete", scope: "repository" };
       }
       return null;
     case "stash":
@@ -163,6 +201,10 @@ function commandStart(words: string[]): number {
   for (;;) {
     while (i < words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[i]!)) i++;
     const word = words[i];
+    if (word !== undefined && KEYWORDS.has(word)) {
+      i++;
+      continue;
+    }
     if (word === undefined || !WRAPPERS.has(basename(word))) return i;
     const wrapper = basename(word);
     const values = WRAPPER_VALUES[wrapper];
@@ -355,8 +397,9 @@ export class DestructiveGitWatch {
       if (entry.kind !== "tool_call") continue;
       const command = commandOf(entry);
       if (command === null || !/\bgit\b/.test(command)) continue;
-      for (const { what, scope } of destructiveGitCommands(command)) {
-        if (this.isolated && scope === "worktree") continue;
+      for (const { what, scope, elsewhere } of destructiveGitCommands(command)) {
+        // An isolated agent's own worktree is its to throw away — not a tree git was pointed at.
+        if (this.isolated && scope === "worktree" && !elsewhere) continue;
         const shown = oneLine(command);
         const key = `${what}\u0000${shown}`;
         if (this.seen.has(key)) continue; // Codex shows a command as it starts and again as it ends

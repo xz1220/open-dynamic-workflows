@@ -51,6 +51,7 @@ import { redactorFor, type RedactionCoverage } from "./redact.js";
 import { otelCheck } from "./runtime/otel-export.js";
 import { diskBytes, formatBytes, scanWorktrees } from "./runtime/gc.js";
 import { RunStore } from "./runtime/run-store.js";
+import { localModelChecks, type LocalProbeOptions } from "./local-models.js";
 import { describeConcurrency } from "./throttle.js";
 import { resolveRunTrust } from "./untrusted.js";
 
@@ -97,6 +98,8 @@ export interface DoctorOptions {
   env?: Record<string, string | undefined>;
   /** Where isolated agents' worktrees are made (default: os.tmpdir()), for the disk check. */
   tmpRoot?: string;
+  /** Probe local model servers (`--local`; ODW extension, see ./local-models). */
+  local?: LocalProbeOptions;
 }
 
 /** The marker a smoke prompt asks for — unlikely to appear by accident. */
@@ -294,6 +297,9 @@ export async function runDoctor(opts: DoctorOptions): Promise<DoctorReport> {
   if (opts.models) {
     for (const check of await modelChecks(config, opts.cwd, runner, opts.smokeTimeout ?? 180)) add(check);
   }
+
+  // Local model servers: context length, tool calling, and with --smoke a truncation probe (ODW extension).
+  if (opts.local) for (const check of await localModelChecks(opts.local)) add(check);
 
   return { ok: !checks.some((c) => c.status === "fail"), checks };
 }

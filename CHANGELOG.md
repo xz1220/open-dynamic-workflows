@@ -153,6 +153,18 @@ independent security reviews whose findings are all fixed.
   `.odw/workflows`, name — on that adapter alone, no retry, no fallback — each reported
   `ok`, `model_unavailable` (a failed check) or `other`; `--json` carries `model: {
   adapter, model, result, from }` per check.
+- `odw doctor --local [--endpoint URL] [--model M] [--smoke]` (**ODW extension**): checks
+  a local Ollama (`/api/version`, `/api/ps`, `/api/tags`, `/api/show`) or OpenAI-compatible
+  server (`/v1/models`, LM Studio's `/api/v0/models`), read-only — default ports 11434
+  and 1234, or each `--endpoint` (which implies `--local`). Per loaded model: the context
+  it is loaded with (a warning under 32K, with how to set `OLLAMA_CONTEXT_LENGTH`; the
+  `/v1` endpoint ignores `num_ctx`), whether it declares tool calling, and an Ollama
+  below 0.13.4 (what `codex --oss` guides ask for). `--smoke` sends one ~10K-token
+  prompt with a passphrase on its first line and the instruction to repeat it on its
+  last; no passphrase is a failed check — the silent front truncation. The probe goes
+  only to this machine or the local network, never to an Ollama cloud model, with no
+  credentials. README recipe: scout phases on a local model through a `models` tier,
+  planning and review in the cloud.
 - Drift watch (**ODW extension**): every run compares its CLI versions and requested
   models with the workflow's previous finished run and logs each change once (`drift:
   claude CLI 2.1.302 → 2.1.330 since the last run of review-swarm`); the run summary has
@@ -325,6 +337,19 @@ independent security reviews whose findings are all fixed.
   on; content stays out unless captured, then redacted again and cut at 4096 characters;
   `odw doctor` shows where traces go. Any OTLP/HTTP receiver that takes JSON gets it
   directly (Jaeger, Langfuse, an OpenTelemetry Collector in front of the rest).
+- A review queue across runs (**ODW extension**): `odw review [--json] [--since 7d]
+  [--all]` lists every kept diff nobody reviewed, dismissed or applied yet, riskiest
+  first, with a deterministic score from recorded data only — the change's size; the CI,
+  migration, auth/security, dependency, test and binary paths in the kept diff; a diff
+  cut at `maxDiffBytes`; a `--deadline` kill; `expect` misses and `untouched`
+  violations; other failures; files outside `scope`; background work left running;
+  destructive git; fallbacks and handoffs; an `--resolve` resolver; retries; cost — and
+  a point off for a passed `expect.command`. Every point is shown with its reason (0–2
+  low, 3–5 medium, 6+ high). `odw review mark <run> <agent> reviewed|dismissed|applied|open
+  [--note]` appends to the run's `reviews.jsonl` with who marked it; `odw apply` marks what
+  it applied cleanly as `applied`. The dashboard's new **Review** page (`g r`) shows the
+  queue and marks entries (loopback only), and Activity's **Needs you** says how many
+  wait; `GET /api/review`, `POST /api/runs/:id/agents/:agentId/review`.
 
 ### Control what agents may do
 - Permission tiers `read` / `edit` / `full` (`--permissions`, per adapter, per call; a
@@ -443,6 +468,23 @@ independent security reviews whose findings are all fixed.
   `compare` and the dashboard work here — again and again while it runs. Plain ssh
   with your ssh config and agent (`ODW_SSH` overrides the binary), no daemon, no
   secrets on a command line; the remote uses its own odw config and CLI logins.
+- `odw digest [--since 12h|--since-last] [--workflow W] [--json|--markdown]
+  [--notify]` (**ODW extension**): one report across runs, built only from what they
+  recorded — no agent reply, result or model-written summary is repeated. Groups:
+  checkpoints and agent questions waiting now (with `odw approve|reject`), failed and
+  stale runs (recorded error, why their agents did not finish, `odw resume`), done runs
+  whose agents missed `expect` checks, wrote outside their `scope` or failed under a
+  run that went on, done runs with kept diffs (`odw apply <run> --all --check`), and
+  spend with the most expensive run. `notify.on: ["digest"]` lets `--notify` send it
+  once — webhook `kind: "digest"` with the structured digest, `markdown` and
+  `text`/`content`, redacted, plus signed one-time approve links while `odw serve
+  --public-url` runs; a command gets `ODW_DIGEST_TEXT`, `ODW_DIGEST_FILE`,
+  `ODW_DIGEST_MARKDOWN_FILE` and counts. `--since-last` starts where the last digest
+  sent ended (`<runsRoot>/_digest/marks.json`, per `--workflow`; moved only when every
+  hook succeeded). `odw schedule add <name> --digest [--cron EXPR]` (cron defaults to
+  the new `digest: { cron }` setting) sends `odw digest --since-last --notify` on a
+  timer — one message a morning instead of one per run. Recipe:
+  [`docs/recipes/notify.md`](docs/recipes/notify.md#a-morning-digest).
 
 ### Write workflows
 - `exec(command, opts)` runs tests, builds and linters without a model, as steps of the
@@ -618,6 +660,18 @@ independent security reviews whose findings are all fixed.
   transcripts: true }`. Each worker says once in the run's log when its repository has
   orphaned worktrees; `odw doctor` gains a **Disk** line (runs root size, orphans); the
   dashboard tags a run **pinned** or **transcripts trimmed**.
+- `worktreeTeardown` and `ODW_SLOT` (**ODW extension**): `worktreeTeardown` (a shell
+  string or an argv, `worktreeTeardownTimeout` seconds, default 120) runs in an isolated
+  agent's workspace, with the setup's variables, just before its worktree is removed —
+  after success, failure, a failed setup, `odw stop` or a stop signal to the worker
+  (which waits for it, and does not kill it with the agents); a failure or timeout is
+  logged against the agent, whose result stands. Like `worktreeSetup`, one set by the
+  repository's own config does not run in an untrusted run. Each isolated agent gets
+  `ODW_SLOT=odw-<run>-<agent>` (the run id's random part and the agent id; lowercase
+  letters, digits, hyphens), and `COMPOSE_PROJECT_NAME` defaults to it unless set. `odw
+  gc` lists leftover `odw-*` compose projects whose run is not active (`docker compose
+  ls`, when it answers; `$ODW_DOCKER` names another docker) and never removes them.
+  README recipe: a compose stack and a database per agent.
 
 ### Security fixes found in review
 - A sandboxed agent could plant git config (`core.fsmonitor`, hooks) in its workspace's
@@ -749,6 +803,39 @@ independent security reviews whose findings are all fixed.
   sanitizer, and an entry whose `run`, `agent`, `at` or `paths` has the wrong type is
   skipped. Files were written through a predictable `<file>.<pid>.tmp`, which a
   planted link could redirect; the temp name is now random and created fresh (`wx`).
+- A read-only Claude Code agent of a run with untrusted input kept `WebFetch` and
+  `WebSearch`, so text from outside could have it read a token on disk — the one
+  `actions/checkout` leaves in `.git/config` — and send it anywhere. Without a container
+  sandbox whose network is an allowlist (or `"none"`), read-only agents now start
+  without them (and codex without `--search`); the run's untrusted-input profile and
+  warning say so. The Action's docs check out with `persist-credentials: false` for
+  untrusted events, its `apply-pr` push authenticates through `gh` for that step only,
+  and its run step warns when untrusted input meets an `http.*extraheader` in git's config.
+- `agentEnv: "minimal"` passed every vendor's variables to every agent, so under
+  untrusted input claude got `OPENAI_*` and gemini every `GOOGLE_*` — a runner's
+  `GOOGLE_APPLICATION_CREDENTIALS`, `GOOGLE_OAUTH_ACCESS_TOKEN` or
+  `GOOGLE_GHA_CREDS_PATH`. An agent of such a run now keeps only its own CLI's login
+  variables (gemini's: `GEMINI_*`, `GOOGLE_API_KEY`, `GOOGLE_GENAI_USE_VERTEXAI`,
+  `GOOGLE_GENAI_USE_GCA`, `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION`), and
+  `*_HEADERS` (`ANTHROPIC_CUSTOM_HEADERS`) counts as secret-named — withheld, and
+  redacted from what ODW keeps. Trusted runs' minimal environment is unchanged.
+- A checkpoint's or question's title — a model's words — went into the notify
+  webhook's `text` and `content` as written, so `<!channel> <https://evil.example|Approve
+  run>` pinged a Slack channel with a fake approve link. Slack's `text` now has `&`, `<`
+  and `>` escaped, and Discord's `content` has `@everyone`, `@here`, `<@…>`, `<#…>` and
+  `[label](url)` links broken (besides `allowed_mentions: { parse: [] }`).
+- Destructive git detection missed `if …; then git reset --hard`, `! git …` and the
+  other shell keywords, `git switch --force` / `--discard-changes`, `git push --mirror`,
+  `git push --delete` (`-d`, `:refspec`), and an isolated agent's `git -C <dir>` (or
+  `--git-dir`, `--work-tree`) reset of another tree. All are now seen; git pointed
+  elsewhere counts as in place. The README says the detection is advisory and best
+  effort, and names what it misses (`find -exec`, `xargs`, git aliases).
+- The safety snapshot kept every untracked file git does not ignore, `.env` and
+  `id_rsa` included, in a ref of the repository that `git push --mirror` would publish.
+  Untracked files with secret-like names (`.env`, `.env.*`, `*.pem`, `*.key`, `*.p12`,
+  `id_rsa`, `id_ed25519`, `id_ecdsa`, `credentials.json`) are now left out and named in
+  the `safety_snapshot` event (`secretLike`), and the README says the snapshot is a ref
+  in the repository holding other untracked files until `odw gc` expires it.
 
 ### Changed behavior — check before upgrading
 - Signed triggers in a repository's `./odw.config.json` are no longer served: move them

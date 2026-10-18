@@ -601,10 +601,16 @@ there. Two steps make the worktree ready before the agent starts:
    (recoverable: `null` inside `parallel`/`pipeline`), with the end of its
    output in the error.
 
+Its counterpart, **`worktreeTeardown`** (**ODW extension**), runs in the same
+workspace with the same variables just before the worktree is removed — after
+the agent finished, failed or was stopped — killed after
+`worktreeTeardownTimeout` seconds (120 by default). Its failure is logged; the
+agent's result stands.
+
 Each attempt of a call (a schema retry, a stall restart) gets a fresh worktree,
 prepared the same way.
 
-Every agent process — isolated or not — gets three variables (**ODW
+Every agent process — isolated or not — gets three variables, an isolated one a fourth (**ODW
 extension**):
 
 | Variable | Value |
@@ -612,6 +618,7 @@ extension**):
 | `ODW_RUN_ID` | the run's id |
 | `ODW_AGENT_ID` | the agent's id, as in its events and `odw agents` |
 | `ODW_PORT` | a port from `portRange` (default 41000–41999) that no other running agent of the run holds — ports something already listens on are passed over — kept until the call settles |
+| `ODW_SLOT` | isolated agents only: `odw-<run>-<agent>` (the run id's random part, the agent id; lowercase letters, digits, hyphens), the same for every attempt, setup and teardown of the call. `COMPOSE_PROJECT_NAME` defaults to it unless already set — a compose stack, database or volume prefix per agent |
 
 So agents running side by side can each start a server without colliding:
 
@@ -647,7 +654,16 @@ odw apply <run> --all [--check]          # every finished agent, in agentId orde
 odw apply <run> --agent <id|label> --verify "<cmd>"   # roll the apply back if <cmd> fails
 odw apply <run> --all --resolve [--adapter A] [--confirm] --verify "<cmd>"   # a resolver agent fixes conflicts
 odw apply <run> --all --pr [--base B] [--remote R] [--ready] [--title T]   # a branch, pushed, and a draft PR
+odw review [--json] [--since 7d] [--all]  # ODW extension: kept diffs across runs not dealt with, riskiest first
+odw review mark <run> <id|label> reviewed|dismissed|applied|open [--note TEXT]
 ```
+
+`odw review` scores each kept diff from recorded data only and lists every
+factor (`{ key, points, why }`): 0–2 low, 3–5 medium, 6+ high. Marks are lines
+of the run's append-only `reviews.jsonl` — `{ ts, agentId, state, by, via,
+note? }`, the last per agent standing; `odw apply` adds `applied` (`via:
+"apply"`) for each agent it applied cleanly. Runs of `odw eval` and resolver
+runs are left out.
 
 Before it touches the tree, `odw apply` runs the same apply against a scratch
 copy of the index and prints each file as `clean`, `CONFLICT` (with the

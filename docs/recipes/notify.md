@@ -182,6 +182,41 @@ as `odw · nightly paused until 19:10 (codex quota) · odw resume <run> goes on 
 Top up the account (or switch plans) and run `odw resume <run>` to go on before the
 reset.
 
+## A morning digest
+
+A night of scheduled and triggered runs makes many messages — or, with `"on":
+["digest"]`, one. `odw digest --since-last --notify` sends a single report of
+everything since the last one it sent, built from what the runs recorded (no
+agent's own summary): checkpoints waiting for you (with their one-time links while
+`odw serve --public-url` runs), failed runs with `odw resume`, done runs whose agents
+missed an `expect` check or wrote outside their scope, done runs with changes to
+review, and the spend.
+
+```json
+{
+  "notify": {
+    "webhook": "https://hooks.example.com/YOUR/WEBHOOK/PATH",
+    "on": ["digest", "waiting"]
+  },
+  "digest": { "cron": "0 8 * * 1-5" }
+}
+```
+
+```bash
+odw schedule add morning --digest           # weekdays at 08:00 (digest.cron); --cron overrides
+odw schedule run morning                    # send one now, as the scheduler will
+odw digest                                  # just look: the last 24 hours, nothing sent, the mark stays
+```
+
+The webhook gets `"kind": "digest"`, the structured digest and `markdown`; Slack's
+`text` and Discord's `content` carry the markdown. A command gets the digest as files
+(`ODW_DIGEST_FILE`, `ODW_DIGEST_MARKDOWN_FILE`) and `ODW_DIGEST_TEXT`, a one-line
+summary such as `odw digest · since the last digest, … · 1 needs you · 2 failed ·
+$3.750 over 9 runs` — enough for ntfy or a desktop banner. A hook that fails leaves
+the mark where it was, so the next digest covers the same window again. Email is a
+webhook or command away (an SMTP relay's HTTP API, or `sendmail` reading
+`ODW_DIGEST_MARKDOWN_FILE`); odw sends none itself.
+
 ## From a script or cron: the exit code
 
 `odw run <name> --wait` blocks until the run ends and exits non-zero when it

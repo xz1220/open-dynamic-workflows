@@ -1,11 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execPath } from "node:process";
 
+import { BUILTIN_ADAPTERS } from "../src/adapters/builtin.js";
 import { collectConfigWarnings, loadConfig } from "../src/adapters/config.js";
+import { spliceArgs } from "../src/adapters/permissions.js";
 import { ConfigError } from "../src/errors.js";
 import { startRun } from "../src/runtime/launcher.js";
 import { RunStore, TERMINAL_STATES } from "../src/runtime/run-store.js";
@@ -18,6 +20,7 @@ import {
   taintedArgs,
   untrustedInputOf,
   withholdSecrets,
+  withoutWebTools,
   type UntrustedInputMeta,
 } from "../src/untrusted-input.js";
 import { cli, until } from "./checkpoint-project.js";
@@ -47,6 +50,58 @@ test("an agent of a run with untrusted input keeps only the secrets its own CLI'
   assert.deepEqual(Object.keys(withholdSecrets(env, { name: "codex", command: ["/usr/bin/codex"] }, "linux")).sort(), ["HOME", "LANG", "OPENAI_API_KEY", "PATH"]);
   // An adapter of the user's own has no documented login: every secret-named variable stays out.
   assert.deepEqual(Object.keys(withholdSecrets(env, { name: "mine", command: ["mine"] }, "linux")).sort(), ["HOME", "LANG", "PATH"]);
+});
+
+test("an agent of a run with untrusted input gets no other vendor's variables, no *_HEADERS, and gemini only its own GOOGLE_* (review fix)", () => {
+  const env = {
+    PATH: "/bin",
+    HOME: "/home/u",
+    ANTHROPIC_API_KEY: "x",
+    ANTHROPIC_CUSTOM_HEADERS: "x",
+    OPENAI_API_KEY: "x",
+    OPENAI_BASE_URL: "https://gw.example",
+    GEMINI_API_KEY: "x",
+    GOOGLE_CLOUD_PROJECT: "demo",
+    GOOGLE_GENAI_USE_VERTEXAI: "true",
+    GOOGLE_APPLICATION_CREDENTIALS: "/tmp/gha-creds.json",
+    GOOGLE_GHA_CREDS_PATH: "/tmp/gha-creds.json",
+    GOOGLE_OAUTH_ACCESS_TOKEN: "x",
+    HTTPS_PROXY: "http://proxy:3128",
+    MY_GATEWAY_HEADERS: "x",
+  };
+  const names = (name: string, command: string) => Object.keys(withholdSecrets(env, { name, command: [command] }, "linux")).sort();
+  const common = ["HOME", "HTTPS_PROXY", "PATH"];
+  assert.deepEqual(names("claude", "claude"), [...common, "ANTHROPIC_API_KEY", "ANTHROPIC_CUSTOM_HEADERS"].sort());
+  assert.deepEqual(names("codex", "codex"), [...common, "OPENAI_API_KEY", "OPENAI_BASE_URL"].sort());
+  assert.deepEqual(names("gemini", "gemini"), [...common, "GEMINI_API_KEY", "GOOGLE_CLOUD_PROJECT", "GOOGLE_GENAI_USE_VERTEXAI"].sort());
+  assert.deepEqual(names("mine", "mine"), common);
+});
+
+test("a read-only agent of a run with untrusted input and an open network starts without its CLI's web tools", () => {
+  const claude = BUILTIN_ADAPTERS.claude!;
+  const read = withoutWebTools(spliceArgs(claude.command, claude.permissionArgs!.read!));
+  assert.deepEqual(read.slice(read.indexOf("--permission-mode")), [
+    "--permission-mode",
+    "dontAsk",
+    "--tools",
+    "Read,Glob,Grep",
+    "--strict-mcp-config",
+    "--no-session-persistence",
+  ]);
+  assert.ok(!read.some((arg) => /Web(?:Fetch|Search)/.test(arg)), read.join(" "));
+  // An allow rule that is not a web tool stays; so does a Windows executable's name.
+  assert.deepEqual(withoutWebTools(["C:\\bin\\claude.exe", "--allowedTools", "WebFetch", "Bash(git log:*)", "-p"]), [
+    "C:\\bin\\claude.exe",
+    "--allowedTools",
+    "Bash(git log:*)",
+    "-p",
+  ]);
+  // codex's web search is a flag of its command.
+  const codex = BUILTIN_ADAPTERS.codex!;
+  assert.ok(codex.command.includes("--search"));
+  assert.ok(!withoutWebTools(spliceArgs(codex.command, codex.permissionArgs!.read!)).includes("--search"));
+  // Another CLI's command is its own.
+  assert.deepEqual(withoutWebTools(["gemini", "--search", "--tools", "WebFetch"]), ["gemini", "--search", "--tools", "WebFetch"]);
 });
 
 test("meta's untrustedInput, the args it covers, the sandbox it lacks, and a quoted block", () => {
@@ -282,6 +337,37 @@ test("a refused go fails every agent that may write with a catchable UntrustedIn
     assert.equal(await open.run, "done");
     assert.equal(p.store.readResult(open.id), "done:free");
     assert.equal(p.store.readEvents(open.id).filter((e) => e.type === "checkpoint_requested").length, 0);
+  } finally {
+    await p.cleanup();
+  }
+});
+
+test("untrusted input without a sandbox: a read-only claude agent runs without WebFetch and WebSearch; the user's own input keeps them", async () => {
+  const p = project();
+  try {
+    // A stand-in named claude (no model is called): it logs its arguments.
+    const shim = join(p.root, "claude");
+    const argv = join(p.root, "argv.log");
+    writeFileSync(
+      shim,
+      `#!${execPath}\nconst fs = require("fs");\nprocess.stdin.resume();\nprocess.stdin.on("end", () => {\n` +
+        `  fs.appendFileSync(${JSON.stringify(argv)}, JSON.stringify(process.argv.slice(2)) + "\\n");\n  process.stdout.write("ok");\n});\n`,
+    );
+    chmodSync(shim, 0o755);
+    const claude = BUILTIN_ADAPTERS.claude!;
+    const adapters = { mock: { command: [shim, "{permission_args}"], stdin: "{prompt}", permissionArgs: claude.permissionArgs } };
+    const runs = () => readFileSync(argv, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as string[]).filter((a) => a[0] !== "--version");
+
+    const untrusted = p.start("return await agent('TASK:look')\n", { config: { adapters } });
+    assert.equal(await untrusted.run, "done");
+    assert.deepEqual(runs()[0], ["--permission-mode", "dontAsk", "--tools", "Read,Glob,Grep", "--strict-mcp-config"]);
+    const profile = p.store.readEvents(untrusted.id).find((e) => e.type === "run_started")!.untrustedInput as Record<string, unknown>;
+    assert.equal(profile.webTools, "withheld from read-only agents");
+    assert.match(String(profile.warning), /read-only agents start without their web tools: WebFetch, WebSearch/);
+
+    const own = p.start("return await agent('TASK:own', { permissions: 'read' })\n", { config: { adapters }, input: null });
+    assert.equal(await own.run, "done");
+    assert.deepEqual(runs()[1], claude.permissionArgs!.read);
   } finally {
     await p.cleanup();
   }

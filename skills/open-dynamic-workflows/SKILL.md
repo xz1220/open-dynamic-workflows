@@ -249,6 +249,10 @@ odw bundle $RUN             # the run as one redacted file to share, $RUN.odwrun
 odw gc                      # what runs left on disk — orphaned worktrees, keep branches, old transcripts — with
                             #   sizes (ODW extension); a dry run: --yes deletes, only on the user's say-so;
                             #   --older-than 14d, --json; odw pin $RUN keeps a run out of it (--remove unpins)
+odw digest                  # one report across runs, from their evidence only (ODW extension): checkpoints
+                            #   waiting, failed runs + odw resume, missed expect/scope, kept diffs, spend;
+                            #   --since 12h | --since-last, --workflow W, --json | --markdown; --notify sends it
+                            #   ("digest" in notify.on) — only on the user's say-so
 odw result $RUN             # print the final value when done
 odw pause $RUN / resume $RUN / stop $RUN
 odw approve|reject $RUN     # answer a checkpoint() the run waits at — only on the user's say-so
@@ -333,6 +337,8 @@ odw apply $RUN --all --check          # preview every finished agent, each on to
 odw apply $RUN --all --verify "<test command>"   # apply them in order; roll back one that fails the check
 odw apply $RUN --all --resolve --verify "<test command>"   # a resolver agent fixes a conflict; applied once verified
 odw apply $RUN --all --pr --verify "<test command>"   # a new branch, pushed, and a draft PR (gh); never merges
+odw review [--since 7d] [--json]      # kept diffs across runs nobody dealt with yet, riskiest first (ODW extension)
+odw review mark $RUN <id|label> reviewed|dismissed|applied|open [--note T]
 ```
 
 - Preview first (`--check`, exit 1 when anything conflicts), apply what the task
@@ -363,6 +369,13 @@ odw apply $RUN --all --pr --verify "<test command>"   # a new branch, pushed, an
   for a PR. A conflict or a failed `--verify` stops it before the push.
 - A diff cut at `maxDiffBytes` cannot be applied: use the agent's branch
   (`keep: true`, or `"keepBranches": true` in the config).
+- `odw review` (ODW extension) is the queue across runs: each kept diff not yet
+  reviewed, dismissed or applied, with a deterministic risk score from what the
+  run recorded (size, CI/migration/auth/dependency/test/binary paths, `expect`
+  misses, scope, background work, destructive git, fallbacks, retries, cost) and
+  every point's reason. When the user asks what to look at, start there and quote
+  the reasons. `odw apply` marks what it applied cleanly as `applied`; mark the
+  rest only when the user decided (`reviewed`, `dismissed`; `open` undoes).
 
 An agent **without** isolation works in the user's own tree. Before a run's
 first such agent at `edit` or `full`, odw keeps the tree's uncommitted work —
@@ -402,7 +415,7 @@ approvals).
   then ignores the repository's CLAUDE.md, hooks, MCP servers and settings where
   its docs give a way (`claude --safe-mode`, `qwen --safe-mode`), and the run says
   once which CLIs cannot (codex still reads AGENTS.md) — prefer `adapter: 'claude'`
-  there. The repository's own `worktreeSetup` and `.worktreeinclude` links do not
+  there. The repository's own `worktreeSetup`/`worktreeTeardown` and `.worktreeinclude` links do not
   run. It is not a sandbox: pair it with `--permissions read` for review work.
 - **Args that are someone else's text — an issue, a PR, a comment — are untrusted
   input** (ODW extension): `odw run --untrusted-input`, and every run a trigger
@@ -554,6 +567,9 @@ odw schedule remove digest     # delete the OS entry and the definition
   expression is cron's five fields (`@daily`, `L`, `#` are refused).
 - A scheduled run that reaches a `checkpoint()` holds back the next ones until
   it is answered: give unattended checkpoints a `timeout`.
+- One morning message instead of one per run: `odw schedule add <name> --digest
+  [--cron EXPR]` sends `odw digest --since-last --notify` (cron defaults to the
+  config's `digest.cron`; refused unless `notify.on` lists `"digest"`).
 
 ### Run on the user's own server (ODW extension)
 
@@ -726,6 +742,14 @@ offer it to the account) or `other` for each — run it when agents fail with
 workflow's last run logs `drift: …` lines and carries a `drift` field in its summary
 (ODW extension); if the workflow has an eval, suggest `odw eval <name> --baseline
 <last report>` (the line names it), or `"driftEval": true` to have it start by itself.
+When phases route to a local model (Ollama, LM Studio — through `opencode`, `codex
+--oss` or a custom adapter; there is no built-in `ollama` adapter), run `odw doctor
+--local [--endpoint URL] [--model M]` (ODW extension, read-only): it reports each
+loaded model's context — a warning under 32K, with how to set `OLLAMA_CONTEXT_LENGTH`
+— and tool calling. Its `--smoke` sends a ~10K-token prompt to that local server
+only (never a cloud model) and fails when the instruction at its end is not followed,
+the silent front-truncation that otherwise passes as an agent "working"; ask first,
+it runs the model.
 
 ## Behavior you must know
 
@@ -743,7 +767,10 @@ workflow's last run logs `drift: …` lines and carries a `drift` field in its s
   untracked files: a `.worktreeinclude` at the repository root (gitignore
   syntax; `symlink: node_modules` links instead of copying) brings in `.env`
   and the like, and a `worktreeSetup` command in the config runs before the
-  agent (both ODW extensions).
+  agent (both ODW extensions); a `worktreeTeardown` runs before the worktree
+  goes — success, failure or stop — and each isolated agent gets `$ODW_SLOT`
+  (`odw-<run>-<agent>`, its default `COMPOSE_PROJECT_NAME`) for a compose stack
+  or database of its own (ODW extensions).
 - **Ports**: every agent process gets a unique `$ODW_PORT` (with `$ODW_RUN_ID`
   and `$ODW_AGENT_ID`) — tell parallel agents "start the dev server on
   `$ODW_PORT`" so they never collide, and to stop the server before finishing

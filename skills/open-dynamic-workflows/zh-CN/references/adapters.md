@@ -112,7 +112,7 @@ CLAUDE.md、hooks 和 MCP 配置仍会加载）。`codex`、`gemini`、`kimi`、
 `cursor` 和 `agy` 没有文档化的方式：运行会为每个适配器记一次日志，说明仍有什么传给了 agent
 （`codex has no documented way to ignore the repository's AGENTS.md — its instructions
 still reach the agent`）。仓库 `.worktreeinclude` 的 `symlink:` 行和仓库内配置设置的
-`worktreeSetup` 不会执行。
+`worktreeSetup`、`worktreeTeardown` 不会执行。
 
 ## 配置文件
 
@@ -169,6 +169,8 @@ still reach the agent`）。仓库 `.worktreeinclude` 的 `symlink:` 行和仓�
 | `notify` | **ODW 扩展。** 运行结束时的 hook：`{ "command": [argv], "webhook": "https://…", "on": ["done", "failed", "stopped"] }`——见下文 |
 | `worktreeSetup` | **ODW 扩展。** 在每个新建的隔离 worktree 里、`.worktreeinclude` 生效之后、agent 启动之前运行的命令：字符串交给平台 shell，数组作为不经 shell 的 argv。它在 agent 的工作区里运行，带着该 agent 的 `ODW_RUN_ID`、`ODW_AGENT_ID` 和 `ODW_PORT`；失败或超时会让这个 agent（而不是整个运行）失败，错误里引用它输出的结尾。`null`（默认）= 不运行 |
 | `worktreeSetupTimeout` | worktree setup 被杀掉之前最多运行的秒数（默认 600） |
+| `worktreeTeardown` | **ODW 扩展。** 在隔离 agent 的 worktree 删除之前、在它的工作区里运行的命令——不论 agent 成功、失败还是被停止，setup 失败后也会运行——带着与 setup 相同的变量（包括 `ODW_SLOT`、`COMPOSE_PROJECT_NAME`）：字符串交给平台 shell，数组作为 argv。失败或超时只记日志，agent 的结果不变。停止中的运行会等它结束。`null`（默认）= 不运行 |
+| `worktreeTeardownTimeout` | worktree teardown 被杀掉之前最多运行的秒数（默认 120） |
 | `portRange` | **ODW 扩展。** `[first, last]`：每个正在运行的 agent 的 `ODW_PORT` 从这个范围分配（默认 `[41000, 41999]`）；请让它比 `concurrency` 更宽 |
 | `fanOutWarn` | **ODW 扩展。** 单次 `parallel()` 或 `pipeline()` 调用扇出的任务或条目超过这个数时，运行记一条带数量的警告（`large fan-out: …`）；从不阻塞。默认 25；`0` 或 `null` = 关闭 |
 | `adaptiveConcurrency` | **ODW 扩展。** `true`（默认）：一次限流会让它所在适配器的上限（该适配器自己的 `concurrency`，否则为运行级上限）在本次运行余下的时间里减半，最低为 1——同一批扇出一起撞上时只减一次——此后每过一分钟没有再被限流就还回一个槽位；两者都会记日志（`adaptive concurrency: …`）。`false` 让所有上限保持不变 |
@@ -192,7 +194,7 @@ still reach the agent`）。仓库 `.worktreeinclude` 的 `symlink:` 行和仓�
 | `quotaBreaker` | **ODW 扩展。** 同一个适配器上连续这么多次额度失败后，本次运行之后的 agent 都会跳过它——各自从回退链上的下一个适配器开始，没有回退链的则立即失败——并记一条警告。默认 3；`0` 或 `null` 表示从不跳过 |
 | `accounts` | **ODW 扩展。** 同一个 CLI 的多个登录：`{ "claude": [{ "name": "work", "configDir": "~/.claude-work" }, …] }`。每一项是一个适配器 `<适配器>@<名字>`——定义与其适配器相同，只是把该 CLI 的配置目录变量（`CLAUDE_CONFIG_DIR`、`CODEX_HOME`；其他 CLI 一律拒绝）设为 `configDir`，有自己的 `concurrency` 上限（取适配器的或该项自己的）和额度熔断；每一项接受 `name`、`configDir`、`concurrency`、`label`。对适配器本身的调用可在任意账号上运行：一条按余量排序的账号链（不处于额度暂停的在前，其次是本次运行额度失败最少的，再次是已路由到它且未结束的 agent 最少的；相同时按配置顺序），账号之间交接工作，除非调用写了 `handoff: false`。模型档位里没有该账号的 id 时使用其适配器的。`odw doctor` 检查每个登录（`claude auth status`、`codex login status`）；容器沙箱复制的是该账号的目录。合用多个账号须遵守各服务商的服务条款。默认无 |
 | `quotaWait` | **ODW 扩展。** 额度用尽时暂停：`{ "max": <秒数> }` 让因额度用尽而无适配器可用的 agent 不占槽位地等到它的 CLI 报出的重置时间（"try again in 3h 22m"、"resets 7pm"、`usage limit reached\|<epoch>`），只要不超过 `max` 秒，然后从链首重新开始（加最多 30 秒抖动）。在那个重置时间之前，运行会跳过该适配器；无处可去的 agent 在派发前就等待。运行显示为 `paused`，带 `pausedFor: { reason: "quota", adapter, resumeAt }`（`odw status`、`odw list` 和实时视图显示 "paused until 19:10 (codex quota)"）；`odw resume` 立即继续，`odw stop` 照常停止。没有重置时间或超过 `max` 的额度失败仍让 agent 失败（日志会说明）。等待发生在 worker 里：worker 死掉时运行变为 stale，`odw resume` 会重放它。默认 `false`——一个会等上几个小时的运行，应当是有人主动要求的 |
-| `models` | **ODW 扩展。** 模型层级：`{ "fast": { "claude": "haiku", "codex": "gpt-5-mini" }, … }`。`model: "@fast"`（写在 `agent()`、`phase()` 或 `meta.phases` 里）让 agent 使用其适配器在该层级下的 ID——回退之后用下一个适配器的；层级没给某适配器 ID 时使用其 CLI 的默认模型（记日志），未知层级会让 agent 失败。层级名由字母、数字、`_`、`-` 和 `.` 组成；列出的每个适配器都必须已配置。默认 `{}` |
+| `models` | **ODW 扩展。** 模型层级：`{ "fast": { "claude": "haiku", "codex": "gpt-5-mini" }, … }`。`model: "@fast"`（写在 `agent()`、`phase()` 或 `meta.phases` 里）让 agent 使用其适配器在该层级下的 ID——回退之后用下一个适配器的；层级没给某适配器 ID 时使用其 CLI 的默认模型（记日志），未知层级会让 agent 失败。层级名由字母、数字、`_`、`-` 和 `.` 组成；列出的每个适配器都必须已配置。层级可以经由能连接本地模型的 CLI 指向本地模型(`"local": { "opencode": "ollama/qwen3-coder:30b" }`);先用 `odw doctor --local [--smoke]` 检查推理服务。默认 `{}` |
 | `expectRetries` | **ODW 扩展。** 工作没达到 `expect` 检查的 agent 带着缺失项重跑的次数，之后以 `unmet_expectation` 失败（默认 1；`agent()` 调用自己的 `expectRetries` 优先）——见 [expect](primitives.md#expectodw-扩展) |
 | `permissionDenials` | **ODW 扩展。** CLI 拒绝了 agent 的工具调用（`deniedPath`）、而回复声称成功时怎么办：`"warn"`（默认）保留回复——这些调用记为 agent 上的 `denied` 并记一次日志——`"fail"` 让 agent 以 `permission` 失败。适配器自己的 `permissionDenials` 优先；设了 `expect` 的调用无论如何都把被拒绝的调用算作缺失 |
 | `mcpFailures` | **ODW 扩展。** CLI 启动 agent 时没连上 MCP 服务器（`mcpPath`：Claude Code 的 init 事件）时怎么办：`"warn"`（默认，与 Claude Code 自己只警告一致）保留回复——每个状态不是 `connected` 的服务器记为 agent 上的 `mcp`，每次运行按服务器和状态各记一次日志——`"fail"` 让服务器为 `failed` 或 `needs-auth` 的 agent 以 `mcp_unavailable` 失败（`pending` 和 `disabled` 从不导致失败）。调用的 `expect.mcp` 列出的服务器则算作缺失 |

@@ -6,7 +6,7 @@ import { store } from "./store";
 import { ACTIVE, clsx, esc } from "./util";
 
 export interface Route {
-  view: "chat" | "activity" | "workspace" | "jobs" | "job" | "compare" | "evals" | "settings";
+  view: "chat" | "activity" | "workspace" | "jobs" | "job" | "compare" | "evals" | "review" | "settings";
   param: string | null;
 }
 
@@ -61,6 +61,7 @@ export function rail(route: Route): string {
     navItem("jobs", route, icons.jobs, t("Jobs"), "j", active.length) +
     navItem("workspace", route, icons.workspace, t("Workspace"), "w") +
     navItem("evals", route, icons.evals, t("Evals"), "e") +
+    navItem("review", route, icons.review, t("Review"), "r", store.review?.open) +
     navItem("chat", route, icons.chat, t("Chat"), "c") +
     `</nav>` +
     live +
@@ -104,6 +105,8 @@ function crumbs(route: Route): string {
     }
     case "workspace":
       return `<span class="here">${t("Workspace")}</span>`;
+    case "review":
+      return `<span class="here">${t("Review")}</span>`;
     case "jobs":
       return `<span class="here">${t("Jobs")}</span>`;
     case "chat":

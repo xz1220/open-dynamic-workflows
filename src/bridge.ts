@@ -174,7 +174,8 @@ import { isAdapterChoice, type AdapterChoice } from "./routing.js";
 import { describeSchema, pickStructured, type JsonSchema } from "./schema.js";
 import { handoffBrief, HandoffLog } from "./handoff.js";
 import { transcriptFormat, type AttemptReason } from "./transcript.js";
-import { withholdSecrets } from "./untrusted-input.js";
+import { withholdSecrets, withoutWebTools } from "./untrusted-input.js";
+import { slotName, withSlot } from "./slot.js";
 import { openWorkspace, type OpenWorkspace, type Workspace, type WorkspaceMode } from "./workspace.js";
 import type { WorktreeSetupOptions } from "./worktree-setup.js";
 
@@ -986,6 +987,8 @@ export class Bridge {
     if (this.runId !== undefined) env.ODW_RUN_ID = this.runId;
     if (options.agentId !== undefined) env.ODW_AGENT_ID = String(options.agentId);
     if (port !== null) env.ODW_PORT = String(port);
+    // An isolated agent's stable name for what it runs beside its worktree (ODW extension; see ./slot).
+    if (request.isolation === "worktree") env.ODW_SLOT = slotName(this.runId, options.agentId);
     Object.assign(env, options.notes?.env);
     // The workspace a run that stopped to ask leaves for the run told the answer (ODW extension; see ./questions).
     const asking: AskingState = { hold: false, held: null };
@@ -1342,6 +1345,11 @@ export class Bridge {
       ...shared,
       container: sandbox.box && engine ? { box: sandbox.box, engine, agentId: options.agentId } : undefined,
       permissionArgs: [...permissions.args, ...trust.args, ...denyArgs],
+      // Untrusted input (ODW extension): a read-only agent whose network is not
+      // boxed in (a container with an allowlist, or none) has no web tool to
+      // carry what it reads — a token in .git/config — off the machine.
+      noWebTools:
+        this.withholdSecrets && permissions.tier === "read" && (!sandbox.box || sandbox.box.network === "default"),
       untrusted: trust.trust === "untrusted",
       schema: schema?.native ? { flag: schema.native, value: request.schema!, file: schemaFile } : undefined,
       // Tool calls the CLI refused fail a run at once only under "fail", and
@@ -1971,10 +1979,13 @@ export class Bridge {
         }
       : undefined;
     const watch = !decoder && call.onOutput ? answered : undefined;
-    const { worktreeSetup, worktreeSetupTimeout } = this.config.settings;
+    const { worktreeSetup, worktreeSetupTimeout, worktreeTeardown, worktreeTeardownTimeout } = this.config.settings;
     const setup = {
       command: worktreeSetup,
       timeout: worktreeSetupTimeout,
+      // Run before the worktree goes, with the same variables (ODW extension).
+      teardown: worktreeTeardown,
+      teardownTimeout: worktreeTeardownTimeout,
       env: withAgentVars(process.env, call.env),
       signal,
       onNote: call.onNote,
@@ -2018,7 +2029,8 @@ export class Bridge {
         };
         // The tier's flags take the place of `{permission_args}`, then every
         // placeholder (theirs too) is expanded. The schema comes last, as is.
-        const template = spliceArgs(adapter.command, call.permissionArgs ?? []);
+        const spliced = spliceArgs(adapter.command, call.permissionArgs ?? []);
+        const template = call.noWebTools ? withoutWebTools(spliced) : spliced;
         const command = [...expandAll(template, context), ...plan.extraArgs, ...(schema?.args ?? [])];
         const stdin = adapter.stdin ? expand(adapter.stdin, context) : undefined;
         // Untrusted input (ODW extension; see ./untrusted-input): no secret its own login does not need.
@@ -2175,6 +2187,8 @@ interface CallEnv {
   changes?: ChangeSink;
   transcript?: TranscriptSink;
   permissionArgs?: string[];
+  /** Untrusted input, read-only, network not boxed in: the CLI starts without its web tools (ODW extension; see ./untrusted-input). */
+  noWebTools?: boolean;
   /** The CLI runs untrusted (ODW extension: trust): its worktree links nothing the repository's `.worktreeinclude` asks for. */
   untrusted?: boolean;
   /** The container each CLI run of the call runs in, and its engine (ODW extension; see adapters/sandbox.ts). */
@@ -2244,15 +2258,17 @@ async function letGoOfHeld(state: HandoffState): Promise<void> {
 }
 
 /** The variables an agent's processes get from ODW: only ever this call's, never inherited. */
-const AGENT_VARS = ["ODW_RUN_ID", "ODW_AGENT_ID", "ODW_PORT", "ODW_NOTES"];
+const AGENT_VARS = ["ODW_RUN_ID", "ODW_AGENT_ID", "ODW_PORT", "ODW_NOTES", "ODW_SLOT"];
 
 /**
  * `base` with the call's agent variables over it — and none of their values
  * from `base` (a worker started by another run's agent inherits that agent's),
  * so an agent without a port has no `ODW_PORT` rather than someone else's.
+ * An agent with an `ODW_SLOT` gets it as `COMPOSE_PROJECT_NAME` too, unless
+ * the user set one (see {@link withSlot}).
  */
 function withAgentVars(base: Record<string, string | undefined>, vars: Record<string, string>): Record<string, string> {
-  const env = { ...base };
+  const env = withSlot(base, vars.ODW_SLOT);
   for (const name of AGENT_VARS) delete env[name];
   return { ...env, ...vars } as Record<string, string>;
 }

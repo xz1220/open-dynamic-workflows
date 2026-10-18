@@ -160,6 +160,7 @@ test("the secret-name rules: *_KEY, *TOKEN, *SECRET*, *PASSWORD*, AUTHORIZATION,
     "GITLAB_PAT",
     "SLACK_WEBHOOK_URL",
     "github_token",
+    "ANTHROPIC_CUSTOM_HEADERS", // review fix: a gateway's auth header
   ];
   const ordinary = ["PATH", "HOME", "PWD", "OLDPWD", "MONKEY", "PUBKEY", "TOKENIZERS_PARALLELISM", "MAX_TOKENS", "SSH_AUTH_SOCK", "TERM", "KEYTIMEOUT", "LANG", "ODW_PORT", "AWS_REGION", "CLASSPATH"];
   for (const name of secret) assert.equal(isSecretName(name), true, name);

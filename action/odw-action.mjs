@@ -149,6 +149,33 @@ export function runArgv({ workflow, args, config, adapter, permissions }, deadli
   return argv;
 }
 
+/** The `git config --get-regexp` patterns of an HTTP auth header git sends — where actions/checkout keeps its token. */
+export const EXTRAHEADER_PATTERNS = ["^http\\..*\\.extraheader$", "^http\\.extraheader$"];
+
+/**
+ * The names of the entries `git config --get-regexp` printed: only the names
+ * (`http.https://github.com/.extraheader`), never their values, which hold the token.
+ */
+export function configNames(output) {
+  return String(output ?? "")
+    .split("\n")
+    .map((line) => line.trim().split(/\s/)[0])
+    .filter(Boolean);
+}
+
+/**
+ * The warning for a run with untrusted input whose checkout left a token in
+ * git's config (`persist-credentials` defaults to true): any agent that can
+ * read `.git/config` can read it. Null when nothing was found.
+ */
+export function persistedCredentialsWarning(names) {
+  if (!names || names.length === 0) return null;
+  return (
+    `untrusted input, and git's config holds an HTTP auth header (${names.join(", ")}) — actions/checkout's token, ` +
+    "readable by every agent that can read .git/config; check out with persist-credentials: false"
+  );
+}
+
 /** The run id `odw run --wait` names on stderr ("running <id> ..."), or null. */
 export function runIdFrom(stderr) {
   const match = /^running (\S+) \.\.\.$/m.exec(String(stderr));
@@ -279,6 +306,17 @@ async function stepRun() {
     argsFile,
     untrustedInput,
   );
+  // Untrusted input: a token actions/checkout left in .git/config is one an agent can read.
+  if (untrustedInput) {
+    const names = EXTRAHEADER_PATTERNS.flatMap(
+      (pattern) => configNames(spawnSync("git", ["config", "--get-regexp", pattern], { encoding: "utf8" }).stdout),
+    );
+    const warning = persistedCredentialsWarning([...new Set(names)]);
+    if (warning) {
+      process.stderr.write(`::warning::odw action: ${warning}\n`);
+      if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, `> ⚠️ ${cell(warning, 400)}\n\n`);
+    }
+  }
   process.stderr.write(`odw ${argv.map((a) => (/\s/.test(a) ? JSON.stringify(a) : a)).join(" ")}\n`);
   const child = spawn("odw", argv, { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, NO_COLOR: "1" } });
   let out = "";

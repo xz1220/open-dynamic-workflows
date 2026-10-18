@@ -507,7 +507,7 @@ test("a malformed notify block is a ConfigError that never echoes a secret", () 
       [{ webhook: "https://user:SECRET@example.com/hook" }, /"notify.webhook" must not embed credentials/],
       [
         { webhook: "https://example.com/h", on: ["done", "finished"] },
-        /"notify.on" must be a list of "done", "failed", "stopped", "waiting", "paused"; got \["done","finished"\]/,
+        /"notify.on" must be a list of "done", "failed", "stopped", "waiting", "paused", "digest"; got \["done","finished"\]/,
       ],
       [{ webhook: "https://example.com/h", on: "failed" }, /"notify.on"/],
     ];

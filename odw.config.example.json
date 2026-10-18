@@ -23,6 +23,10 @@
   "worktreeSetup": null,
   "worktreeSetupTimeout": 600,
 
+  "//worktreeTeardown": "ODW extension. A command run in an isolated agent's workspace just before its worktree is removed — after the agent finished, failed or was stopped, and after a failed setup — with the same variables as worktreeSetup, plus ODW_SLOT (odw-<run>-<agent>, also the default COMPOSE_PROJECT_NAME): e.g. \"docker compose down -v\". Killed after worktreeTeardownTimeout seconds; a failure is logged, the agent's result stands. null (the default) runs nothing.",
+  "worktreeTeardown": null,
+  "worktreeTeardownTimeout": 120,
+
   "//portRange": "ODW extension. Every agent process gets ODW_PORT: a port from this inclusive range that no other running agent of the run holds (ports something already listens on are passed over), kept until its call settles, so a workflow can say \"start your dev server on $ODW_PORT\". Keep the range wider than concurrency.",
   "portRange": [41000, 41999],
 

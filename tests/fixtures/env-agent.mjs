@@ -3,7 +3,7 @@
  * Environment-reporting mock agent, for the worktree environment tests.
  *
  * Reads the prompt from stdin, then replies with a JSON object: the ODW_*
- * variables it was started with, its working directory, and the trimmed
+ * variables (and COMPOSE_PROJECT_NAME) it was started with, its working directory, and the trimmed
  * content of each file named on the command line (null when absent) — what
  * .worktreeinclude and the worktree setup left in its workspace. With
  * `--barrier <dir> <n>` first, it checks in under <dir> and waits (at most
@@ -27,6 +27,8 @@ process.stdin.on("end", async () => {
       runId: process.env.ODW_RUN_ID ?? null,
       agentId: process.env.ODW_AGENT_ID ?? null,
       port: process.env.ODW_PORT ?? null,
+      slot: process.env.ODW_SLOT ?? null,
+      compose: process.env.COMPOSE_PROJECT_NAME ?? null,
       cwd: process.cwd(),
       files: Object.fromEntries(files.map((name) => [name, read(name)])),
     }),

@@ -5,6 +5,7 @@
  *
  *   odw schedule add <name> <workflow> --cron EXPR [--args JSON|@file] [--adapter X]
  *                    [--config P] [--cwd DIR] [--backend cron|launchd|systemd] [--dry-run]
+ *   odw schedule add <name> --digest [--cron EXPR] [--workflow W] [--config P] [--cwd DIR] [--backend …] [--dry-run]
  *   odw schedule list [--json]
  *   odw schedule remove <name>
  *   odw schedule run <name>
@@ -15,6 +16,11 @@
  * second odw process), logs one line per outcome, records the run as the
  * schedule's last, and exits non-zero unless the run finished `done`. A failed
  * run fires the configured `notify` hooks like any other: the worker does that.
+ *
+ * A digest schedule (`add --digest`, an ODW extension) starts no run: each
+ * fire sends the cross-run digest (`odw digest --since-last --notify`, see
+ * ../runtime/digest-cli) under the same lock, log and last-run record. Its
+ * time is `--cron`, else the config's `digest.cron`.
  */
 
 import { existsSync, fstatSync, mkdirSync, readFileSync, rmSync, statSync } from "node:fs";
@@ -35,6 +41,8 @@ import { isCheckpointId } from "../control.js";
 import { AdapterNotFound, DynamicWorkflowError } from "../errors.js";
 import { loadWorkflowScript } from "../loader.js";
 import { startRun, tsxLoaderArgv, waitFor } from "../runtime/launcher.js";
+import { cannotNotify, digestFor, sendDigest } from "../runtime/digest-cli.js";
+import { digestLine } from "../runtime/digest.js";
 import { checkpointCommands } from "../runtime/live-view.js";
 import { formatDuration } from "../runtime/notify.js";
 import { isRunActive } from "../runtime/run-liveness.js";
@@ -150,8 +158,12 @@ function scheduleAdd(rest: string[], deps: ScheduleDeps): number {
       cwd: { type: "string" },
       backend: { type: "string" },
       "dry-run": { type: "boolean" },
+      digest: { type: "boolean" },
+      workflow: { type: "string" },
     },
   });
+  if (values.digest) return scheduleAddDigest(positionals, values, deps);
+  if (values.workflow !== undefined) throw usage(`odw schedule add: --workflow goes with --digest; a run's workflow is the second argument`);
   const [name, workflow, extra] = positionals;
   if (!name || !workflow || extra !== undefined) {
     throw usage(
@@ -200,18 +212,85 @@ function scheduleAdd(rest: string[], deps: ScheduleDeps): number {
   };
   if (platform === "win32") return windowsHelp(def, spec, values["dry-run"] === true);
 
+  if (scheduleExists(name)) {
+    throw new ScheduleExit(1, `odw schedule add: a schedule named '${name}' already exists — remove it first: odw schedule remove ${name}`);
+  }
+  warnAbout(def, config);
+  return installSchedule(def, spec, values["dry-run"] === true, deps);
+}
+
+function scheduleExists(name: string): boolean {
+  return readScheduleFile(schedulePaths().definitions).some((entry) => entryName(entry) === name);
+}
+
+/**
+ * `odw schedule add <name> --digest [--cron EXPR] [--workflow W]` (ODW
+ * extension): each fire sends the cross-run digest. Refused unless the
+ * config's notify hooks would send it ("digest" in `notify.on`).
+ */
+function scheduleAddDigest(
+  positionals: string[],
+  values: { cron?: string; args?: string; adapter?: string; config?: string; cwd?: string; backend?: string; "dry-run"?: boolean; workflow?: string },
+  deps: ScheduleDeps,
+): number {
+  const [name, extra] = positionals;
+  if (!name || extra !== undefined) {
+    throw usage(`odw schedule add --digest: expected one <name>` + (extra !== undefined ? `, got an extra '${extra}' (a digest runs no workflow; --workflow W narrows it)` : ""));
+  }
+  checkName("add", name);
+  if (values.args !== undefined || values.adapter !== undefined) throw usage(`odw schedule add --digest: --args and --adapter belong to a workflow run; a digest starts none`);
+  if (values.workflow !== undefined && values.workflow.trim() === "") throw usage(`odw schedule add --digest: --workflow needs a name`);
+  const platform = deps.platform ?? process.platform;
+  const backend = pickBackend(values.backend, platform);
+  const cwd = resolve(values.cwd ?? process.cwd());
+  if (!isDirectory(cwd)) throw usage(`odw schedule add: --cwd ${cwd} is not a directory`);
+  const pinned = values.config ?? process.env[CONFIG_ENV_VAR] ?? null;
+  const configPath = pinned ? resolve(locateConfig(pinned, cwd)!) : undefined;
+  const config = loadConfig(configPath ?? null, { cwd });
+  const cron = values.cron ?? config.settings.digest?.cron;
+  if (cron === undefined) {
+    throw usage(`odw schedule add --digest: missing --cron "<minute hour day-of-month month day-of-week>", or set "digest": { "cron": "0 8 * * 1-5" } in the config`);
+  }
+  const spec = parseCron(cron);
+  if (backend === "launchd" && platform !== "win32") launchdIntervals(spec);
+  // Fail fast: a digest no hook sends would go nowhere each morning.
+  const why = cannotNotify(config);
+  if (why) throw new ScheduleExit(1, `odw schedule add --digest: ${why}`);
+  const workflow = values.workflow ?? null;
+  const def: ScheduleDefinition = {
+    name,
+    workflow: workflow === null ? "odw digest" : `odw digest --workflow ${workflow}`,
+    cron: spec.expr,
+    args: null,
+    ...(configPath !== undefined ? { configPath } : {}),
+    cwd,
+    backend,
+    createdAt: (deps.now?.() ?? new Date()).toISOString(),
+    odwCommand: odwInvocation(),
+    path: entryPath(),
+    digest: { workflow },
+  };
+  if (platform === "win32") return windowsHelp(def, spec, values["dry-run"] === true);
+  return installSchedule(def, spec, values["dry-run"] === true, deps);
+}
+
+/**
+ * Write a checked definition and install its OS entry (or, `dryRun`, print
+ * what that would do). Refuses a name that exists already.
+ */
+function installSchedule(def: ScheduleDefinition, spec: CronSpec, dryRunOnly: boolean, deps: ScheduleDeps): number {
+  const { name, backend } = def;
   const paths = schedulePaths();
   const entries = readScheduleFile(paths.definitions);
   if (entries.some((entry) => entryName(entry) === name)) {
     throw new ScheduleExit(1, `odw schedule add: a schedule named '${name}' already exists — remove it first: odw schedule remove ${name}`);
   }
-  warnAbout(def, config);
   const env = backendEnv(deps);
   const log = logPath(paths.stateDir, name);
   const entry: EntrySpec = { name, cron: spec.expr, odwCommand: def.odwCommand, path: def.path, log };
   const plan = planInstall(backend, entry, spec, env);
   const next = nextFire(spec, deps.now?.() ?? new Date());
-  if (values["dry-run"]) {
+  if (dryRunOnly) {
     process.stdout.write(dryRun(def, plan, paths.definitions, next));
     return 0;
   }
@@ -231,7 +310,7 @@ function scheduleAdd(rest: string[], deps: ScheduleDeps): number {
     throw new ScheduleExit(1, `odw schedule add: could not install the ${backend} entry: ${(err as Error).message}`);
   }
   process.stderr.write(
-    `added schedule '${name}': ${def.workflow} at "${spec.expr}" through ${backend}\n` +
+    `added schedule '${name}': ${def.digest ? "the digest (odw digest --since-last --notify)" : def.workflow} at "${spec.expr}" through ${backend}\n` +
       `  next run  ${next ? `${localMinute(next)} (local time)` : "never"}\n` +
       `  log       ${log}\n` +
       `  run now   odw schedule run ${name}\n` +
@@ -324,7 +403,14 @@ function showCommand(argv: string[]): string {
  * a start while the previous run goes on — and write nothing.
  */
 function windowsHelp(def: ScheduleDefinition, spec: CronSpec, dryRunOnly: boolean): number {
-  const argv = [
+  const argv = def.digest ? [
+    ...def.odwCommand,
+    "digest",
+    "--since-last",
+    "--notify",
+    ...(def.digest.workflow !== null ? ["--workflow", def.digest.workflow] : []),
+    ...(def.configPath !== undefined ? ["--config", def.configPath] : []),
+  ] : [
     ...def.odwCommand,
     "run",
     def.workflow,
@@ -338,7 +424,7 @@ function windowsHelp(def: ScheduleDefinition, spec: CronSpec, dryRunOnly: boolea
   const { line, task, exact } = schtasksLine(def.name, spec, argv);
   process.stderr.write(
     `odw schedule add: scheduling on Windows is not supported yet — no task was created and nothing was saved.\n` +
-      `  This schtasks line (for cmd.exe) creates a task that runs the workflow with odw run --wait:\n`,
+      `  This schtasks line (for cmd.exe) creates a task that runs ${def.digest ? "odw digest --since-last --notify" : "the workflow with odw run --wait"}:\n`,
   );
   process.stdout.write(`${line}\n`);
   process.stderr.write(
@@ -573,6 +659,7 @@ async function scheduleRun(rest: string[], deps: ScheduleDeps): Promise<number> 
   };
   try {
     if (!isDirectory(def.cwd)) return notStarted(`its directory ${def.cwd} no longer exists`);
+    if (def.digest) return await scheduledDigest(def, { say, last, startedAt, now, notStarted });
     let started: { runId: string; store: RunStore };
     try {
       started = startRun(def.workflow, {
@@ -627,6 +714,38 @@ async function scheduleRun(rest: string[], deps: ScheduleDeps): Promise<number> 
   } finally {
     attempt.lock.release();
   }
+}
+
+/**
+ * One fire of a digest schedule: `odw digest --since-last --notify` with the
+ * schedule's config, a line in its log, and its last run (no run id). Exit 0
+ * when it was sent, 1 otherwise.
+ */
+async function scheduledDigest(
+  def: ScheduleDefinition,
+  ctx: { say: (text: string) => void; last: string; startedAt: Date; now: () => Date; notStarted: (why: string) => number },
+): Promise<number> {
+  let config: Config;
+  try {
+    config = loadConfig(locateConfig(def.configPath ?? null, def.cwd), { cwd: def.cwd, quiet: true });
+  } catch (err) {
+    return ctx.notStarted(sanitizeText((err as Error).message, 500));
+  }
+  const why = cannotNotify(config);
+  if (why) return ctx.notStarted(why);
+  const store = new RunStore(resolveRunsRoot(config.settings.runsRoot));
+  const digest = digestFor({ config, store, sinceLast: true, workflow: def.digest!.workflow, now: ctx.now().getTime() / 1000 });
+  const sent = await sendDigest(digest, { config, store, log: (line) => ctx.say(line) });
+  ctx.say(sent ? `sent: ${digestLine(digest)}` : `failed: a notify hook did not take the digest; the next one covers this window too`);
+  writeLastRun(ctx.last, {
+    runId: null,
+    state: sent ? "done" : "failed",
+    startedAt: localIso(ctx.startedAt),
+    finishedAt: localIso(ctx.now()),
+    ...(sent ? {} : { error: "a notify hook failed" }),
+    runsRoot: store.root,
+  });
+  return sent ? 0 : 1;
 }
 
 /** A dead lock holder's run still going on keeps the schedule's lock (its worker outlives it). */

@@ -3603,3 +3603,229 @@ ul.mcp li {
     animation: none;
   }
 }
+
+/* ---- review: kept diffs across runs, riskiest first (ODW extension) ---- */
+.review-page .page-head h1 em {
+  color: var(--sig-ink);
+}
+.review-page .page-head .lede {
+  max-width: 62ch;
+  margin-top: 12px;
+}
+.rq-tabs {
+  display: inline-flex;
+  flex: none;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--card-2);
+}
+.rq-tabs button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 12px;
+  border: 0;
+  border-radius: var(--r-xs);
+  background: transparent;
+  color: var(--mute);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.rq-tabs button.on {
+  background: var(--card);
+  color: var(--ink);
+  box-shadow: var(--shadow-1);
+}
+.rq-tabs .num {
+  font-family: var(--f-mono);
+  font-size: 11px;
+  color: var(--faint);
+}
+.rq-list {
+  display: grid;
+  gap: 12px;
+}
+.rq-item {
+  --rv: var(--sig);
+  position: relative;
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr);
+  gap: 20px;
+  padding: 16px 20px 14px 22px;
+  overflow: hidden;
+  animation: rc-print 420ms var(--ease-out) both;
+  animation-delay: calc(var(--i) * 40ms);
+}
+.rq-item.medium {
+  --rv: var(--amber);
+}
+.rq-item.high {
+  --rv: var(--alarm);
+}
+.rq-item::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: var(--rv);
+}
+.rq-item.dealt {
+  opacity: 0.66;
+}
+.rq-item.dealt::before {
+  background: var(--line-2);
+}
+.rq-meter {
+  display: grid;
+  align-content: start;
+  gap: 2px;
+}
+.rq-score {
+  font-family: var(--f-display);
+  font-size: 40px;
+  line-height: 1;
+  color: var(--ink);
+}
+.rq-level {
+  font-family: var(--f-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--rv);
+}
+.rq-marks {
+  display: grid;
+  grid-template-columns: repeat(10, 1fr);
+  gap: 2px;
+  margin-top: 8px;
+}
+.rq-marks i {
+  height: 10px;
+  border-radius: 1.5px;
+  background: var(--shade);
+}
+.rq-marks i.on {
+  background: var(--rv);
+}
+.rq-body {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+.rq-head {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  min-width: 0;
+}
+.rq-open {
+  overflow: hidden;
+  min-width: 0;
+  color: inherit;
+  font-size: 15px;
+  text-decoration: none;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rq-open:hover b {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.rq-mark {
+  flex: none;
+  margin-left: auto;
+  font-family: var(--f-mono);
+  font-size: 11px;
+  color: var(--mute);
+}
+.rq-mark.applied {
+  color: var(--sig-ink);
+}
+.rq-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  font-size: 12px;
+  color: var(--mute);
+}
+.rq-meta .mono {
+  font-family: var(--f-mono);
+  font-size: 11.5px;
+}
+.rq-stat {
+  font-family: var(--f-mono);
+  font-size: 11.5px;
+}
+.rq-stat .add {
+  color: var(--sig-ink);
+}
+.rq-stat .del {
+  color: var(--alarm-ink);
+}
+.rq-why {
+  display: grid;
+  gap: 3px;
+  margin: 2px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 12.5px;
+}
+.rq-why li {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr);
+  gap: 8px;
+  color: var(--ink-2);
+}
+.rq-why .pt {
+  font-family: var(--f-mono);
+  font-size: 11.5px;
+  text-align: right;
+  color: var(--rv);
+}
+.rq-why li.for .pt {
+  color: var(--sig-ink);
+}
+.rq-why .why {
+  overflow-wrap: anywhere;
+}
+.rq-quiet {
+  margin: 0;
+  font-size: 12.5px;
+}
+.rq-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+}
+.ticket.rq-ticket::before {
+  background: var(--sig);
+}
+.ticket.rq-ticket.medium::before {
+  background: var(--amber);
+}
+.ticket.rq-ticket.high::before {
+  background: var(--alarm);
+}
+.ticket.rq-ticket .tk-main > .ic {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  color: var(--mute);
+}
+@media (max-width: 760px) {
+  .rq-item {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 10px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .rq-item {
+    animation: none;
+  }
+}

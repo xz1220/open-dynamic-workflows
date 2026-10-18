@@ -952,6 +952,8 @@ export interface ApplyOptions {
   caps: TermCaps;
   /** Columns a line may take. */
   width: number;
+  /** Told of each agent whose diff is now in the tree, cleanly — applied, verified when asked, or there already (the review queue's `applied`; ODW extension). */
+  onApplied?: (agent: AgentDiff) => void;
 }
 
 /** One agent on its way through `odw apply`. */
@@ -1056,6 +1058,15 @@ export async function applyAgents(o: ApplyOptions): Promise<number> {
 
 let stacks = 0;
 
+/** Tell `onApplied` of an agent now in the tree; failing to note it never fails the apply. */
+function markApplied(o: ApplyOptions, item: Item): void {
+  try {
+    o.onApplied?.(item.agent);
+  } catch (err) {
+    o.err.write(`odw apply: could not mark ${item.name} applied on the review queue: ${errorText(err)}\n`);
+  }
+}
+
 /**
  * Preview `items` against the repository's index as it is now, each on top of
  * the ones before it under `--all`; one that would conflict is left out of the
@@ -1081,7 +1092,10 @@ async function previewStack(o: ApplyOptions, repo: string, items: Item[], work: 
 async function applySingle(o: ApplyOptions, repo: string, item: Item, who: string, work: string, zero: string): Promise<number> {
   const preview = item.preview!;
   const verdict = verdictOf(preview);
-  if (verdict === "applied") return 0;
+  if (verdict === "applied") {
+    markApplied(o, item);
+    return 0;
+  }
   if (verdict === "refused") {
     o.err.write(`odw apply: ${who} cannot be applied, so nothing was changed:\n${quoted(preview.refused!, o.width)}\n`);
     return 1;
@@ -1089,7 +1103,11 @@ async function applySingle(o: ApplyOptions, repo: string, item: Item, who: strin
   if (verdict === "conflict" && o.resolve) {
     if (o.interrupt?.aborted) return 1;
     const resolved = await resolveOne(o, repo, item, work, zero);
-    return resolved.kind === "applied" && resolved.conflicts === 0 ? 0 : 1;
+    if (resolved.kind === "applied" && resolved.conflicts === 0) {
+      markApplied(o, item);
+      return 0;
+    }
+    return 1;
   }
   if (verdict === "conflict" && o.verify) {
     o.err.write(
@@ -1105,6 +1123,7 @@ async function applySingle(o: ApplyOptions, repo: string, item: Item, who: strin
         o.out.write(`${result.conflicts} file(s) conflicted: resolve the <<<<<<< markers, then git add them\n`);
         return 1;
       }
+      markApplied(o, item);
       return 0;
     case "refused":
       o.err.write(`odw apply: git could not apply the diff ${who}; nothing was changed:\n${quoted(result.said, o.width)}\n`);
@@ -1162,6 +1181,7 @@ async function applyAll(o: ApplyOptions, repo: string, items: Item[], work: stri
     stop = { at, why: result.kind === "refused" ? "git could not apply its diff" : result.why };
     break;
   }
+  for (const item of [...already, ...applied]) markApplied(o, item);
   const names = (list: Item[]): string => list.map((i) => i.name).join(", ");
   if (applied.length > 0) o.out.write(`applied to ${repo} (staged, as git apply --3way does): ${names(applied)}\n`);
   if (already.length > 0) o.out.write(`already applied: ${names(already)}\n`);
