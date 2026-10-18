@@ -17,7 +17,7 @@ import { after, before, test } from "node:test";
 
 import { loadConfig } from "../src/adapters/config.ts";
 import { killAllAgentProcesses } from "../src/adapters/runner.ts";
-import { EgressProxies } from "../src/adapters/egress-run.ts";
+import { EGRESS_DENIALS_MAX, EgressProxies } from "../src/adapters/egress-run.ts";
 import { EGRESS_DNS, trackNetwork } from "../src/adapters/sandbox.ts";
 import { runCommand } from "../src/adapters/runner.ts";
 import { sandboxChecks } from "../src/doctor.ts";
@@ -227,6 +227,30 @@ test("a network whose rm fails at the run's end stays tracked: the backstop remo
   killAllAgentProcesses();
   await until(() => !existsSync(join(state, `net.${handle.network}`)));
   assert.ok(calls().slice(before).some((a) => a.join(" ") === `network rm ${handle.network}`), "the backstop tried it again");
+  assert.deepEqual(readdirSync(state), []);
+});
+
+test("a run reports at most 200 denials as events, then says once how many more there were and that a log was capped", async () => {
+  const runDir = mkdtempSync(join(root, "run-"));
+  const denied: unknown[] = [];
+  const notes: Array<[string, Record<string, unknown>]> = [];
+  const proxies = new EgressProxies({
+    runner: runCommand,
+    runId: "cap",
+    runDir,
+    pollMs: 60_000,
+    onDenied: (d) => denied.push(d),
+    onNote: (message, fields) => notes.push([message, fields]),
+  });
+  await proxies.for("docker", "odw-test:1", { allow: [allowed] });
+  const lines = Array.from({ length: EGRESS_DENIALS_MAX + 5 }, (_, i) => JSON.stringify({ ts: 1, host: `h${i}.example`, port: 443, agent: "1", method: "CONNECT" }));
+  writeFileSync(join(runDir, "egress", "proxy1.jsonl"), lines.join("\n") + '\n{"capped":true}\n');
+  await proxies.close();
+  assert.equal(denied.length, EGRESS_DENIALS_MAX);
+  assert.equal(notes.length, 1, "said once");
+  assert.match(notes[0]![0], /200 egress denials were reported as events and 5 more were not/);
+  assert.match(notes[0]![0], /a proxy's denial log reached 1 MiB/);
+  assert.deepEqual(notes[0]![1], { egress: "capped", dropped: 5, logCapped: true });
   assert.deepEqual(readdirSync(state), []);
 });
 

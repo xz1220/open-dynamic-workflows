@@ -437,6 +437,25 @@ test("the proxy: plain HTTP to an allowed host with a Host header naming another
   }
 });
 
+test("the proxy's denial log is capped: past logMaxBytes, one capped line and nothing more", async () => {
+  const dir = tmp();
+  const log = join(dir, "denied.jsonl");
+  const ready = join(dir, "ready");
+  const server = startEgressProxy({ allow: [], port: 0, listen: "127.0.0.1", log, ready, logMaxBytes: 400 });
+  try {
+    const port = await listening(ready);
+    for (let i = 0; i < 12; i++) assert.equal((await connect(port, `h${i}.example:443`)).status, 403, "refused all the same");
+    const text = readFileSync(log, "utf8");
+    const lines = text.trim().split("\n");
+    assert.equal(lines.at(-1), '{"capped":true}');
+    assert.equal(lines.filter((l) => l.includes("capped")).length, 1);
+    assert.ok(lines.length > 2 && lines.length < 12, `${lines.length} lines`);
+    assert.ok(Buffer.byteLength(text) <= 400 + '{"capped":true}\n'.length);
+  } finally {
+    server.close();
+  }
+});
+
 test("the proxy with listenFrom: it listens only once its address is written there, and only on that address", async () => {
   const dir = tmp();
   const log = join(dir, "denied.jsonl");

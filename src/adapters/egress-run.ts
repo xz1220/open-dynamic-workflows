@@ -37,7 +37,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { ConfigError } from "../errors.js";
-import { EGRESS_PORT, egressProxyScript, type EgressAllow, type EgressDenial, type EgressProxyConfig } from "./egress.js";
+import { EGRESS_LOG_MAX_BYTES, EGRESS_PORT, egressProxyScript, type EgressAllow, type EgressDenial, type EgressProxyConfig } from "./egress.js";
 import type { CommandRunner } from "./runner.js";
 import { clientEnv, containerName, hostUser, TMPFS, trackContainer, trackNetwork, type SandboxEngine } from "./sandbox.js";
 
@@ -145,6 +145,8 @@ export interface EgressProxiesOptions {
   /** The run's directory: denial logs go to its `egress/`. Absent: a temporary directory, removed at close. */
   runDir?: string;
   onDenied?: (denial: EgressDeniedEvent) => void;
+  /** Told once, at the end, how many denials were not reported past {@link EGRESS_DENIALS_MAX}. */
+  onNote?: (message: string, fields: Record<string, unknown>) => void;
   /** The host's environment, for the engine client. */
   hostEnv?: Record<string, string | undefined>;
   /** How long a proxy may take to listen (ms). */
@@ -152,6 +154,9 @@ export interface EgressProxiesOptions {
   /** How often the denial logs are read (ms). */
   pollMs?: number;
 }
+
+/** Denials a run reports as `egress_denied` events, at most; past it they are counted, and said once at its end. */
+export const EGRESS_DENIALS_MAX = 200;
 
 /** A run's egress proxies: brought up on first use, tailed while it runs, removed at its end. */
 export class EgressProxies {
@@ -164,6 +169,9 @@ export class EgressProxies {
   private timer: NodeJS.Timeout | undefined;
   private closed = false;
   private count = 0;
+  private reported = 0;
+  private dropped = 0;
+  private logCapped = false;
 
   constructor(private readonly opts: EgressProxiesOptions) {}
 
@@ -289,8 +297,15 @@ export class EgressProxies {
         const lines = (log.rest + buffer.toString("utf8")).split("\n");
         log.rest = lines.pop() ?? "";
         for (const line of lines) {
+          if (line === '{"capped":true}') this.logCapped = true;
           const denial = parseDenial(line);
-          if (denial) this.opts.onDenied?.(denial);
+          if (!denial) continue;
+          if (this.reported < EGRESS_DENIALS_MAX) {
+            this.reported++;
+            this.opts.onDenied?.(denial);
+          } else {
+            this.dropped++;
+          }
         }
       } finally {
         closeSync(fd);
@@ -308,6 +323,15 @@ export class EgressProxies {
       this.drain();
     } catch {
       /* a log that cannot be read loses its last lines, nothing else */
+    }
+    if (this.dropped > 0 || this.logCapped) {
+      const where = this.opts.runDir ? ` (all logged are in ${join(this.opts.runDir, "egress")})` : "";
+      const parts: string[] = [];
+      if (this.dropped > 0) {
+        parts.push(`${EGRESS_DENIALS_MAX} egress denials were reported as events and ${this.dropped} more were not${where}`);
+      }
+      if (this.logCapped) parts.push(`a proxy's denial log reached ${EGRESS_LOG_MAX_BYTES / 1024 / 1024} MiB, and its later denials were not logged`);
+      this.opts.onNote?.(parts.join("; "), { egress: "capped", dropped: this.dropped, logCapped: this.logCapped });
     }
     const env = clientEnv(this.opts.hostEnv ?? process.env);
     // Each is untracked only once its removal succeeded: what is left the worker's backstop tries again.

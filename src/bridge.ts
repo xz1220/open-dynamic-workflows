@@ -603,7 +603,11 @@ export class Bridge {
   private readonly sandboxChecks = new Map<string, Promise<string | null>>();
   /** The run's egress proxies and internal networks, brought up on first use (ODW extension). */
   private egress: EgressProxies | undefined;
-  private readonly egressOptions: { runDir?: string; onDenied?: (denial: EgressDeniedEvent) => void };
+  private readonly egressOptions: {
+    runDir?: string;
+    onDenied?: (denial: EgressDeniedEvent) => void;
+    onNote?: (message: string, fields: Record<string, unknown>) => void;
+  };
 
   constructor(
     private readonly config: Config,
@@ -620,7 +624,7 @@ export class Bridge {
     this.redactor = options.redactor;
     this.onCliRun = options.onCliRun;
     this.onRunNote = options.onRunNote;
-    this.egressOptions = { runDir: options.runDir, onDenied: options.onEgressDenied };
+    this.egressOptions = { runDir: options.runDir, onDenied: options.onEgressDenied, onNote: options.onRunNote };
     this.ports =new PortPool(...config.settings.portRange);
     this.quota = new QuotaWaits({
       now: this.now,
