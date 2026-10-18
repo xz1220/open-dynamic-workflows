@@ -93,6 +93,17 @@ changed, and run on a schedule — and a dashboard redesigned to watch them.
   in `meta.json`, its behaviour settings on `run_started`, and each adapter CLI's
   `--version` on its first dispatch (a `cli_version` event, never delaying the run;
   `"recordVersions": false` turns it off) (**ODW extension**).
+- OpenTelemetry traces (**ODW extension**): `odw export <run> --otlp [--out FILE | --send]`
+  writes a run as OTLP/JSON after the GenAI semantic conventions — `invoke_workflow`,
+  `phase`, `invoke_agent` (provider, models, usage, cost, attempts, failure reason),
+  `execute_tool` from transcripts, `exec` and `checkpoint` spans, retries and fallbacks as
+  span events — with no dependency; trace ids derive from the run id, so a re-export
+  de-duplicates. With `otel: { endpoint?, headers?, captureContent? }` in the config the
+  worker posts each run's trace once at its end (5s limit; a failure is a `worker.log`
+  line). The `OTEL_*` variables fill in endpoint, headers and resource but never turn it
+  on; content stays out unless captured, then redacted again and cut at 4096 characters;
+  `odw doctor` shows where traces go. Any OTLP/HTTP receiver that takes JSON gets it
+  directly (Jaeger, Langfuse, an OpenTelemetry Collector in front of the rest).
 
 ### Control what agents may do
 - Permission tiers `read` / `edit` / `full` (`--permissions`, per adapter, per call; a

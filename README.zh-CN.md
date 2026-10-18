@@ -333,6 +333,7 @@ odw logs $RUN --agent 3  # 某个 agent 做了什么:它的工具调用、结果
 odw result $RUN          # 最终值
 odw diff $RUN --stat     # 隔离 agent 改了什么;odw apply $RUN --agent N(或 --all)落地
 odw compare $OLD $RUN    # 两次运行之间变了什么:配置、耗时、花费、失败、回复(见下文)
+odw export $RUN --otlp   # 把运行导出为 OpenTelemetry trace(OTLP/JSON;--send 直接发送;见下文)
 odw pause|resume|stop $RUN
 odw approve|reject $RUN  # 回答运行正在等待的 checkpoint()(--note TEXT、--checkpoint N)
 odw approve $RUN --edit  # ……先在 $EDITOR 里修改 payload 再批准(或 --payload JSON|@file)
@@ -590,6 +591,80 @@ odw compare $OLD $NEW --json           # 同一份对比,供脚本使用——GE
 事件(`odw status` 和 `GET /api/runs/:id` 的 `cliVersions` 会显示)。它绝不拖慢或导致运行失败;
 不回应的 CLI 记为未知版本。命令为 node 或其他解释器、脚本或相对路径的适配器不做探测。
 `"recordVersions": false` 关闭探测。下一步的 `odw eval`(用例 × 适配器 × 重复次数)将基于此构建。
+
+### 可观测性:OpenTelemetry trace(ODW 扩展)
+
+已经在用 Langfuse、Arize Phoenix、Jaeger、Grafana Tempo、Datadog 或 Honeycomb 的团队,可以在
+那里查看每次运行:`odw export` 把运行记录转成遵循 GenAI 语义约定的 OpenTelemetry trace——
+OTLP/HTTP + JSON 编码,不需要 SDK,没有依赖。
+
+```bash
+odw export $RUN --otlp > trace.json          # 离线:把运行导出为 OTLP/JSON(--out FILE 效果相同)
+curl -H 'Content-Type: application/json' --data @trace.json "$ENDPOINT/v1/traces"
+odw export $RUN --otlp --send                # 或直接发送到配置的端点
+```
+
+配置中有 `otel` 时,worker 会在每次运行结束(done、failed 或 stopped)后自己发送该运行的
+trace,且只发一次:
+
+```json
+{ "otel": { "endpoint": "http://localhost:4318", "headers": {}, "captureContent": false } }
+```
+
+- **Span。** 运行对应 `invoke_workflow <name>`(`odw.run.id`、`odw.run.state`、总用量——
+  从不包含 args);`phase <title>` 包住每个阶段的工作;每个 agent 一个 `invoke_agent <label>`,
+  带 `gen_ai.provider.name`(`claude` → `anthropic`、`codex` → `openai`、`gemini` →
+  `gcp.gemini`、`kimi` → `moonshot_ai`,其余用适配器名)、`gen_ai.request.model` /
+  `gen_ai.response.model`、`gen_ai.usage.*`(含缓存 token)、`odw.agent.cost_usd`、
+  `odw.agent.attempts`,失败时 `error.type` 为失败原因(`rate_limit`、`quota` 等)且状态为
+  ERROR;transcript 中的每次工具调用一个 `execute_tool <name>`(`gen_ai.tool.name`、
+  `gen_ai.tool.call.id`,失败时为 ERROR);每个 `exec()` 步骤一个 `exec <label>`,每次等待一个
+  `checkpoint <title>`。
+- **重试、回退和额度等待**是所属 agent 上的 span 事件(`odw.retry`、`odw.fallback`、
+  `odw.quota_wait`):它们是一次 agent 调用中的时刻,时间取自运行记录——不用 link,因为 link
+  需要运行里本不存在的独立 span。
+- **ID 由运行 id 派生**(trace id 为 SHA-256(`odw/run/<runId>`) 的前 16 字节;span id 同理按
+  span 的身份派生),所以重复导出同一运行得到相同 ID,按 ID 去重的后端只保留一份。被续跑的运行,
+  根 span 会 link 到它续跑的运行。
+- **时间**取自运行事件。Claude Code 的 stream-json 不带时间,所以它的工具调用按在 transcript
+  中的位置估算,并标记 `odw.timing.estimated`;opencode 和 kilo 会报告自己的时间。
+- **默认不导出内容**——提示词、回复和工具输出都可能敏感。设 `"captureContent": true`(或
+  `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true`)后,trace 还会包含回复
+  (`gen_ai.output.messages`)、工具参数和结果、错误文本、`exec()` 命令行和检查点 payload——
+  都是 odw 已保存、已脱敏的文本,发出前无论 `redact` 如何设置都会再脱敏一次(环境变量的值
+  绝不外发),每个字段截断到 4096 个字符并以 `…` 标记。提示词本身不保存,因此从不导出。
+- **只有配置能开启它。** `OTEL_EXPORTER_OTLP_ENDPOINT`(或 `…_TRACES_ENDPOINT`)、
+  `OTEL_EXPORTER_OTLP_HEADERS`、`OTEL_SERVICE_NAME` 和 `OTEL_RESOURCE_ATTRIBUTES` 只补全
+  `otel` 没写的部分——人们会为别的工具设置它们,所以单靠它们什么都不会发送。端点默认为
+  `http://localhost:4318`,并追加 `/v1/traces`。
+- **绝不拖累运行:** 结果写盘之后只发一次 POST,时限 5 秒(`OTEL_EXPORTER_OTLP_TIMEOUT` 可以
+  设得更短);失败只在运行的 `worker.log` 中留一行。header 的值是机密:从不写日志、从不进事件;
+  `odw doctor` 只显示是否开启、端点的协议和主机,以及 header 名称。
+- **JSON,而非 protobuf。** 接受 OTLP/HTTP JSON 的接收端(Jaeger、Langfuse、OpenTelemetry
+  Collector)可直接接收;只接受 protobuf 或 gRPC 的(例如 Arize Phoenix)请经由 Collector,
+  它的 `otlp` receiver 可以任一格式转发。
+
+Langfuse(其 OTLP 端点使用项目密钥对的 HTTP Basic 认证):
+
+```json
+{
+  "otel": {
+    "endpoint": "https://cloud.langfuse.com/api/public/otel",
+    "headers": {
+      "Authorization": "Basic BASE64_OF_PUBLIC_KEY_COLON_SECRET_KEY",
+      "x-langfuse-ingestion-version": "4"
+    }
+  }
+}
+```
+
+本地 Jaeger(all-in-one 镜像在 4318 接收 OTLP,界面在 16686):
+
+```bash
+docker run --rm -d -p 16686:16686 -p 4318:4318 jaegertracing/all-in-one
+echo '{ "otel": { "endpoint": "http://localhost:4318" } }' > odw.config.json
+odw run wf.js            # 已有的运行则用:odw export $RUN --otlp --send
+```
 
 ## 看板:观测、检查、对话
 

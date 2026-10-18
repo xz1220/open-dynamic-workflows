@@ -370,6 +370,7 @@ odw logs $RUN --agent 3  # what one agent did: its tool calls, results and text 
 odw result $RUN          # final value
 odw diff $RUN --stat     # what isolated agents changed; odw apply $RUN --agent N (or --all) lands it
 odw compare $OLD $RUN    # what changed between two runs: setup, time, cost, failures, replies (below)
+odw export $RUN --otlp   # the run as OpenTelemetry traces (OTLP/JSON; --send posts it; below)
 odw pause|resume|stop $RUN
 odw approve|reject $RUN  # answer a checkpoint() the run waits at (--note TEXT, --checkpoint N)
 odw approve $RUN --edit  # …approving its payload as you edit it in $EDITOR (or --payload JSON|@file)
@@ -657,6 +658,86 @@ never delays or fails a run; a CLI that does not answer is recorded as unknown. 
 adapter whose command is node or another interpreter, a script or a relative path is
 not probed. `"recordVersions": false` turns the probes off. `odw eval` — cases ×
 adapters × repeats — builds on this next.
+
+### Observability: OpenTelemetry traces (ODW extension)
+
+Teams that already run Langfuse, Arize Phoenix, Jaeger, Grafana Tempo, Datadog or
+Honeycomb can see each run there: `odw export` turns a run's record into an
+OpenTelemetry trace after the GenAI semantic conventions — OTLP/HTTP with JSON
+encoding, no SDK, no dependency.
+
+```bash
+odw export $RUN --otlp > trace.json          # offline: the run as OTLP/JSON (--out FILE does the same)
+curl -H 'Content-Type: application/json' --data @trace.json "$ENDPOINT/v1/traces"
+odw export $RUN --otlp --send                # or post it to the configured endpoint
+```
+
+With `otel` in the config, the worker posts every run's trace itself, once, when the run
+has ended (done, failed or stopped):
+
+```json
+{ "otel": { "endpoint": "http://localhost:4318", "headers": {}, "captureContent": false } }
+```
+
+- **Spans.** `invoke_workflow <name>` for the run (`odw.run.id`, `odw.run.state`, its
+  totals — never its args); `phase <title>` around each phase's work; `invoke_agent <label>`
+  per agent with `gen_ai.provider.name` (`claude` → `anthropic`, `codex` → `openai`,
+  `gemini` → `gcp.gemini`, `kimi` → `moonshot_ai`, others their adapter's name),
+  `gen_ai.request.model` / `gen_ai.response.model`, `gen_ai.usage.*` (cache tokens included),
+  `odw.agent.cost_usd`, `odw.agent.attempts`, and on a failure `error.type` = its reason
+  (`rate_limit`, `quota`, …) with status ERROR; `execute_tool <name>` for every tool call
+  its transcript shows (`gen_ai.tool.name`, `gen_ai.tool.call.id`, ERROR when it failed);
+  `exec <label>` per `exec()` step and `checkpoint <title>` per wait.
+- **Retries, fallbacks and quota waits** are span events on their agent (`odw.retry`,
+  `odw.fallback`, `odw.quota_wait`): moments within one agent call, at the times the run
+  recorded them — not links, which would need spans the run never had.
+- **Ids are derived from the run id** (trace id: the first 16 bytes of
+  SHA-256(`odw/run/<runId>`); span ids likewise from what each span is), so exporting a
+  run again yields the same ids and a backend that keys on them keeps one copy. A resumed
+  run's root links to the run it resumed.
+- **Times** come from the run's events. Claude Code's stream-json carries no times, so its
+  tool calls are placed by where they sit in the transcript, marked `odw.timing.estimated`;
+  opencode and kilo report their own.
+- **Content is off by default** — prompts, replies and tool output are sensitive. With
+  `"captureContent": true` (or `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true`)
+  the trace also holds replies (`gen_ai.output.messages`), tool arguments and results, error
+  text, `exec()` command lines and checkpoint payloads — the text odw kept, already
+  redacted, redacted once more on the way out whatever `redact` says (no environment value
+  ever leaves), each field cut at 4096 characters with `…`. Prompts are not kept, so never
+  exported.
+- **Only the config turns it on.** `OTEL_EXPORTER_OTLP_ENDPOINT` (or `…_TRACES_ENDPOINT`),
+  `OTEL_EXPORTER_OTLP_HEADERS`, `OTEL_SERVICE_NAME` and `OTEL_RESOURCE_ATTRIBUTES` fill in
+  what `otel` leaves out — people set them for other tools, so they alone send nothing. The
+  endpoint defaults to `http://localhost:4318`; `/v1/traces` is appended.
+- **It never costs the run anything:** one POST with a 5-second limit (shorter if
+  `OTEL_EXPORTER_OTLP_TIMEOUT` says), after the outcome is written; a failure is one line in
+  the run's `worker.log`. Header values are secrets: never logged, never in events;
+  `odw doctor` shows whether export is on, the endpoint's scheme and host, and header names.
+- **JSON, not protobuf.** A receiver that takes OTLP/HTTP JSON gets the trace directly (Jaeger,
+  Langfuse, the OpenTelemetry Collector); one that takes only protobuf or gRPC (Arize Phoenix,
+  for one) gets it through a Collector, whose `otlp` receiver forwards it in either.
+
+Langfuse (its OTLP endpoint takes HTTP Basic auth of the project's key pair):
+
+```json
+{
+  "otel": {
+    "endpoint": "https://cloud.langfuse.com/api/public/otel",
+    "headers": {
+      "Authorization": "Basic BASE64_OF_PUBLIC_KEY_COLON_SECRET_KEY",
+      "x-langfuse-ingestion-version": "4"
+    }
+  }
+}
+```
+
+Jaeger, locally (its all-in-one image receives OTLP on 4318; the UI is on 16686):
+
+```bash
+docker run --rm -d -p 16686:16686 -p 4318:4318 jaegertracing/all-in-one
+echo '{ "otel": { "endpoint": "http://localhost:4318" } }' > odw.config.json
+odw run wf.js            # or, for a run you already have: odw export $RUN --otlp --send
+```
 
 ## Dashboard: observe, inspect, chat
 
