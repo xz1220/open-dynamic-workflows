@@ -40,6 +40,7 @@ CLI 官方文档确认在无头模式下成立的映射才会填上：
 | `omp` | 拒绝 | `--approval-mode yolo` | 按 `edit` 运行 |
 | `kilo`、`opencode` | 拒绝 | `--auto` | 按 `edit` 运行 |
 | `cursor` | 拒绝 | `--force` | 按 `edit` 运行 |
+| `agy` | 拒绝 | `--mode accept-edits` | `--mode accept-edits --dangerously-skip-permissions` |
 
 - 请求高于运行（或其适配器）所允许档位的 agent 会在启动前失败，报错同时写明两个档位。
 - **拒绝**：对没有 read 参数的 CLI 请求 `read`，agent 会在启动前失败，并说明哪个适配器可以、
@@ -47,6 +48,10 @@ CLI 官方文档确认在无头模式下成立的映射才会填上：
 - **按 `edit` 运行**：对没有 full 参数的 CLI 请求 `full`，会用它的 `edit` 参数运行；每次运行
   对每个适配器只记一条日志。对 `kimi`、`omp`、`kilo`、`opencode` 和 `cursor` 来说，`edit`
   在无头模式下本来就会批准所有工具调用。
+- `agy`（Google 的 Antigravity CLI）在无头模式下会软拒绝任何需要审批的工具调用：在 `edit`
+  下它可以编辑工作区内的文件，而 shell 命令、联网和 MCP 工具只有在用户自己的
+  `~/.gemini/antigravity-cli/settings.json` 中 `permissions.allow` 规则允许时才会运行。它没有
+  `read`：没有文档化的参数能阻止它写入。
 - 没有 `permissionArgs` 的适配器（你自己的 CLI）按配置的命令原样运行，视为 `edit`；在其他
   档位下，运行会记一条日志，说明 ODW 无法强制执行。
 - `codex` 在任何档位下都无法批准需要审批的 MCP 工具调用：请在 `~/.codex/config.toml` 里
@@ -84,6 +89,14 @@ agent 的 `permissions`；`odw doctor` 会列出每个适配器支持的档位�
 `agent_message`），token 取自 `turn.completed`（没有花费——codex 不上报），`turn.failed` /
 `error` 事件是它自己报告的失败。它的 transcript 会显示每条命令、文件改动、MCP 工具调用和网络搜索。
 
+内置的 `agy`（ODW 扩展）以 print 模式运行 Google 的 Antigravity CLI，`--output-format
+stream-json`，提示词走 stdin（https://antigravity.google/docs/cli/headless）：它的事件用
+`event` 键标明类型（`output.eventKey`），最后的 `result` 事件带着回复（`response`）、token
+（没有花费——agy 不上报）、失败时的 `error`，以及 `denied_actions`（它软拒绝的工具调用）。被拒
+的调用常常让 `response` 在 SUCCESS 状态下为空：agent 以 `empty_reply` 失败，`denied` 说明原因。
+子 agent 的输出不会进入 agy 的事件流（antigravity-cli#1077）；transcript 会列出它启动的每个子
+agent 及其日志。
+
 一种实用的最小权限分工：让 `claude` 写代码（acceptEdits）、让 `codex` 运行/验证
 （workspace-write 沙箱）——见 `examples/codex-claude-loop.js`。
 
@@ -91,8 +104,8 @@ agent 的 `permissions`；`odw doctor` 会列出每个适配器支持的档位�
 档位参数之后加上每个 CLI 文档给出的"忽略所在仓库"的方式：`claude --safe-mode`（关闭
 CLAUDE.md、skills、插件、hooks、MCP 服务器、命令、agents 和 workflows；认证照常）、
 `qwen --safe-mode`，以及 `omp --no-extensions --no-skills --no-rules`（它的 AGENTS.md、
-CLAUDE.md、hooks 和 MCP 配置仍会加载）。`codex`、`gemini`、`kimi`、`kilo`、`opencode` 和
-`cursor` 没有文档化的方式：运行会为每个适配器记一次日志，说明仍有什么传给了 agent
+CLAUDE.md、hooks 和 MCP 配置仍会加载）。`codex`、`gemini`、`kimi`、`kilo`、`opencode`、
+`cursor` 和 `agy` 没有文档化的方式：运行会为每个适配器记一次日志，说明仍有什么传给了 agent
 （`codex has no documented way to ignore the repository's AGENTS.md — its instructions
 still reach the agent`）。仓库 `.worktreeinclude` 的 `symlink:` 行和仓库内配置设置的
 `worktreeSetup` 不会执行。
@@ -193,7 +206,7 @@ still reach the agent`）。仓库 `.worktreeinclude` 的 `symlink:` 行和仓�
 | `concurrency` | **ODW 扩展。** 在运行级 `concurrency` 之内，这个 CLI 上同时最多运行多少个 agent：一个 agent 需要两边各一个槽位，每个适配器先到先得地排队，被限住的适配器不会挡住其他适配器。不设置：只受运行级上限约束 |
 | `promptCache` | **ODW 扩展。** `true`：这个 CLI 背后的模型 API 会缓存提示前缀，所以它的扇出会错开启动（见 `staggerFanOut`）。内置 `claude` 声明了它 |
 | `label` | 进度显示用的友好名字 |
-| `flags` | 能力声明，如 `{ "model": ["--model"] }`——承载每次调用 `model` 的原生旗标。不声明它，`agent(..., { model })` 对该适配器就不生效（日志里会出现一条路由说明）。**ODW 扩展：**`"schema": { "args": [...], "mode": "inline" \| "file", "strict"?: true }` 声明该 CLI 会自己校验调用的 JSON Schema——见[原生结构化输出](#原生结构化输出) |
+| `flags` | 能力声明，如 `{ "model": ["--model"] }`——承载每次调用 `model` 的原生旗标。不声明它，`agent(..., { model })` 对该适配器就不生效（日志里会出现一条路由说明）。**ODW 扩展：**`"schema": { "args": [...], "mode": "inline" \| "file", "strict"?: true, "objectRoot"?: true }` 声明该 CLI 会自己校验调用的 JSON Schema——见[原生结构化输出](#原生结构化输出) |
 | `failures` | **ODW 扩展。** 这个 CLI 自己的失败措辞：`{ "rate_limit": [...], "quota": [...], "auth": [...] }`，正则表达式，先于内置表、不区分大小写地匹配失败运行输出的末尾 |
 | `output` | stdout 如何变成回复（默认：去掉首尾空白的文本）——见下文 |
 | `permissionArgs` | **ODW 扩展。** 各档位的参数：`{ "read"?: [...], "edit": [...], "full"?: [...] }`（`edit` 必填，没有参数写 `[]`），放在命令中 `{permission_args}` 那一项的位置——设置了它，命令就必须恰好有这一项 |
@@ -210,7 +223,8 @@ still reach the agent`）。仓库 `.worktreeinclude` 的 `symlink:` 行和仓�
 - `{ "format": "text" }`——默认：去掉首尾空白的 stdout 就是回复。
 - `{ "format": "jsonl", "eventType": "text", "textPath": ["part", "text"], "select": "last" }`
   ——换行分隔的 JSON 事件，边流式到达边解码；回复是 `type` 为 `eventType` 的最后一个
-  事件里 `textPath` 处的文本。
+  事件里 `textPath` 处的文本。**ODW 扩展：**`eventKey` 指定另一个表示事件类型的键（agy 的
+  事件是 `{"event": "result", …}`：`"eventKey": "event"`）；output 中提到的所有事件类型都按它读取。
 - `{ "format": "json", "textPath": ["response"] }`——stdout 上的一个 JSON 文档。
 
 **ODW 扩展：** 两种 JSON 格式都可以加上 `usagePath`（token 计数）、`costPath`（美元）、
@@ -221,7 +235,7 @@ still reach the agent`）。仓库 `.worktreeinclude` 的 `symlink:` 行和仓�
 `{ name, status }`：没连上的记为 agent 上的 `mcp` 并写入日志，或在 `mcpFailures: "fail"` 下
 让它失败；`jsonl` 从 `mcpEvent` 事件读取，未设则任何事件——内置 `claude` 从 `system` init
 事件读取 `mcp_servers`）；`jsonl` 从 `usageEvent` 事件（默认同 `eventType`）读取用量和花费并累加。用量会在
-不同 CLI 的字段名（Anthropic、OpenAI、Codex）之间归一化为：`inputTokens`（含缓存命中的
+不同 CLI 的字段名（Anthropic、OpenAI、Codex、agy）之间归一化为：`inputTokens`（含缓存命中的
 输入）、`outputTokens`、`cacheReadTokens`、`cacheWriteTokens`、`costUsd`。路径里的整数
 用于索引数组（负数从末尾数）。stdout 里找不到声明的文本时，原始 stdout 就作为回复，运行
 日志会说明原因——agent 不会因此失败。`structuredPath` 指向 CLI 按原生拿到的 schema 校验过的
@@ -258,6 +272,7 @@ stdout 的事件里也没有回复时，回复为空（除非 `allowEmpty`，否
 | `args` | schema 前面的旗标，如 `["--json-schema"]` |
 | `mode` | `"inline"`：schema 的紧凑 JSON 作为下一个参数。`"file"`：一个保存 schema 的文件路径——run 目录下的 `agents/<agentId>.schema.json`（不在运行中时用临时目录），每次 CLI 运行前写入、运行后删除 |
 | `strict` | `true` 表示该 CLI 只接受 OpenAI strict 模式的 schema（codex）：其他 schema——根不是对象，或某个对象没有设 `"additionalProperties": false` 并把全部属性列进 `required`——改为写进提示词，运行会提示一次 |
+| `objectRoot` | `true` 表示该 CLI 只接受根为 `"type": "object"` 的 schema（agy 会在启动时拒绝其他 schema）：其他 schema 改为写进提示词，运行会提示一次 |
 
 schema 参数排在所有其他参数之后（与模型参数同处），且不做占位符展开；没有 schema 的调用完全
 按配置的命令运行。若 CLI 的输出把校验后的值与文本分开放，用 `output.structuredPath` 指出位置；
@@ -269,6 +284,7 @@ schema 参数排在所有其他参数之后（与模型参数同处），且不�
 | --- | --- | --- |
 | `claude` | `{ "args": ["--json-schema"], "mode": "inline" }` | `result` 事件里的 `structured_output`（`"structuredPath": ["structured_output"]`），否则用 `result` 文本 |
 | `codex` | `{ "args": ["--output-schema"], "mode": "file", "strict": true }` | 它的最终消息：`--output-last-message` 文件，否则最后一个 `agent_message` 事件 |
+| `agy` | `{ "args": ["--json-schema"], "mode": "inline", "objectRoot": true }` | `result` 事件里的 `structured_output`，否则用它的 `response` |
 
 agent 启动前，会对照 ODW 校验器支持的子集检查它的 schema（[原语](primitives.md#schema)）。
 其他内容会连同位置在运行日志里写明一次——适配器接收原生 schema 时（`strict` 的适配器上只限
@@ -323,7 +339,7 @@ hook 只会记录到该运行的 `worker.log`。
 `quota`、`auth`、`timeout`、`stalled`、`not_found`、`permission` 或 `exit`（即其
 `agent_failed` 事件上的 `reason`；只有 `rate_limit` 会重试——见 `transientRetries`）。
 CLI 在输出里报告的失败（`errorPath`：Claude Code stream-json 的 `is_error` 结果，常常以 0
-退出；`errorEvents`：Codex 的 `turn.failed` 与 `error`）也一样，干净退出、但简短的文本回复只是一条限流、额度或登录错误的情况（如
+退出，以及 agy 结果里的 `error`；`errorEvents`：Codex 的 `turn.failed` 与 `error`）也一样，干净退出、但简短的文本回复只是一条限流、额度或登录错误的情况（如
 `API Error: Rate limit reached`）同样算作失败。干净退出也可能失败（ODW 扩展）：回复为空时
 为 `empty_reply`（除非调用设了 `allowEmpty`），工作没达到调用的 `expect` 检查时为
 `unmet_expectation`，CLI 拒绝了工具调用（`deniedPath`）且 `permissionDenials` 为 `"fail"`

@@ -87,7 +87,7 @@ return await agent(
 `format` 等注解。其他关键字（`oneOf`、`$ref`、`const`、`pattern`、`maxItems`、类型联合……）
 ODW 不检查：运行日志会连同位置说明一次，调用照常运行——设 `"schemaKeywords": "strict"` 时则在
 启动前以 `AgentError` 失败（**ODW 扩展**）。ODW 检查不了的限制请写进 `description`。在
-`claude` 和 `codex` 上 schema 会原生交给 CLI，由它强制执行；无论哪种，ODW 都会校验回复——见
+`claude`、`codex` 和 `agy` 上 schema 会原生交给 CLI，由它强制执行；无论哪种，ODW 都会校验回复——见
 [`references/primitives.md`](references/primitives.md#schema)。
 
 `expect`（**ODW 扩展**）写明 agent 回复之后必须成立的条件，由 odw 来检查——优先用它，

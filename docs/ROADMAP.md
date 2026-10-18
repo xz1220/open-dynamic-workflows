@@ -114,7 +114,7 @@
 | R6 | `odw apply --resolve`：冲突交给 agent 在临时 worktree 解决，校验通过才接受 | M | ✅ `odw apply <run> --all\|--agent X --resolve [--adapter A] [--confirm]`：在 HEAD + 索引（含之前已应用的 agent）+ 该 agent 干净文件的提交上建临时 worktree，启动一个真正的 resolver 运行（内联工作流、单个隔离 agent，`origin: "apply-resolve"`，meta 中 `applyResolve: { runId, agentId }`），提示词给出每个冲突文件的 base/ours/theirs 与冲突行；只改冲突文件、无冲突标记、在临时 worktree 中通过 `--verify`/`applyVerify` 后，才与干净文件一起按常规方式应用（`--all` 随后重新预览后面的 agent）；否则工作树不变并说明原因；`--confirm` 展示 diff 后在终端询问 y/N；原运行 meta 追加 `resolvedBy`，并记 `apply_resolved` 事件（applied/refused/declined/interrupted）；`RunDetail.applyResolve`/`resolvedBy`；不与 `--force`、`--check` 同用；仅文本冲突（改名/删除/二进制冲突不交给 resolver）；看板专门展示待做 |
 | R7 | 容器出网白名单（代理 sidecar） | M | ⏳ |
 | R8 | 回退时交接上下文（`fallback.handoff`）而非从头再来 | M | ⏳ |
-| R9 | `agy`（Antigravity CLI）内置适配器 | S | ⏳ |
+| R9 | `agy`（Antigravity CLI）内置适配器 | S | ✅ 依据官方无头模式文档、更新日志与 issue 构建（来源写在代码注释里，只映射文档化的参数）：print 模式 `--output-format stream-json`、提示词走 stdin（`--input-format text`、`--disable-slash-commands`、`--print-timeout 24h`）；回复、token（无花费）、失败与软拒绝的工具调用（`denied_actions`）取自 `result` 事件，输出声明新增通用的 `eventKey`（agy 用 `event` 键标明事件类型）；`--json-schema` 原生（inline，`flags.schema.objectRoot`：只交根为对象的 schema）；档位 `edit` = `--mode accept-edits`、`full` 再加 `--dangerously-skip-permissions`，无 `read`；没有文档化的不受信任参数，改为 `untrustedNote`；失败措辞（"Individual quota reached"、AI credits、登录过期/缺失、keyring 锁定）进入 `failures.ts`；transcript、OTel 与 `agentLimits` 读取其工具步骤并列出启动的子 agent。未声明 `output.background`：事件流只说子 agent 何时开始、从不说何时结束（子 agent 输出丢失见 antigravity-cli#1077）。测试用按 agy 解析 argv 的假 `agy`，覆盖回复、用量、schema、额度/限流/登录失败、transcript、doctor 冒烟与整套一致性用例 |
 | R10 | `odw apply --pr` 与 PR 看护示例（不自动合并） | M–L | ⏳ |
 
 ### Later — 0.8+「规模与生态」

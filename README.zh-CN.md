@@ -649,8 +649,8 @@ I'll run the tests first.
 ```
 
 - agent 运行期间,它的 stdout 流式写入 run 目录下的 `agents/<agentId>.transcript.jsonl`:
-  JSONL 适配器的事件按 CLI 打印的原样每行一个(内置 `claude` 的 stream-json、`codex` 的 `exec --json`、`kilo` 和
-  `opencode`),其他适配器的输出写成 `{"kind":"text","text":…}` 行。stderr 的结尾(最后
+  JSONL 适配器的事件按 CLI 打印的原样每行一个(内置 `claude` 的 stream-json、`codex` 的 `exec --json`、`kilo`、
+  `opencode` 和 `agy`),其他适配器的输出写成 `{"kind":"text","text":…}` 行。stderr 的结尾(最后
   64 KB)写入 `agents/<agentId>.stderr.txt`;`odw logs --agent` 会在 transcript 之后显示它的最后几行。
 - schema 重试、卡死重启或限流重试都接着写在同一个文件里,前面先写一行
   `{"kind":"attempt","n":2,"reason":"schema"|"stall"|"rate_limit"}`。
@@ -1037,7 +1037,7 @@ odw serve --public-url https://odw.example.com     # 例如放在 cloudflared �
 ## 配置适配器
 
 Codex、Claude Code、Gemini、Qwen、Kimi、Oh My Pi、Kilo Code、OpenCode、Cursor
-均开箱即用:
+以及 Google 的 Antigravity CLI 均开箱即用:
 
 | 适配器 | 本地 CLI | 非交互契约 |
 | --- | --- | --- |
@@ -1050,6 +1050,7 @@ Codex、Claude Code、Gemini、Qwen、Kimi、Oh My Pi、Kilo Code、OpenCode、C
 | `kilo` | `kilo` | `run --format json --auto`;从 JSONL 解出最终文本 |
 | `opencode` | `opencode` | `run --format json --auto`;从 JSONL 解出最终文本 |
 | `cursor` | `agent` | `--print --force --trust`;stdin 传提示词 |
+| `agy` | `agy` | `--output-format stream-json`,stdin 传提示词;回复、token、错误和被拒的工具调用(`denied_actions`)取自其 `result` 事件;根为对象的 schema 走原生(`--json-schema`) |
 
 内置的 `codex` 和 `claude` **自带联网能力**,调研类 workflow 零调参就能跑。
 `odw init` 会列出装了哪些 CLI
@@ -1139,6 +1140,47 @@ agent 的哪些工具调用。内置的 `claude` 适配器就是这样声明的:
 若没有任何 agent 消息——回复文件为空、也没有 `agent_message` 事件——回复就是空的,agent 以
 `empty_reply` 失败(`allowEmpty: true` 可接受),而不是返回一堆事件;运行日志会写明到底缺了
 什么。事件里没有回复而回复文件里有时,回复照常成立,日志说明事件与声明不符。
+
+内置的 `agy`(Google 的 Antigravity CLI,依据它的
+[无头模式文档](https://antigravity.google/docs/cli/headless)与更新日志;全部为 ODW 扩展)读取
+`--output-format stream-json`,它的事件用 `event` 键标明类型——由 `output.eventKey` 声明
+(默认 `"type"`)。回复、token、失败与被拒的工具调用都取自最后的 `result` 事件;agy 不报告
+花费。失败回合的 `error`("Individual quota reached … Resets in 2h39m52s."、
+"Authentication expired. Please log back in.")与其他失败一样分类。只有根为
+`"type": "object"` 的 schema 才走原生(`flags.schema.objectRoot`:其他 schema agy 会在启动时
+拒绝),其他的写进提示词。
+
+```jsonc
+"agy": {
+  "label": "Antigravity CLI",
+  "command": ["agy", "--output-format", "stream-json", "--input-format", "text",
+              "--disable-slash-commands", "--print-timeout", "24h", "{permission_args}"],
+  "stdin": "{prompt}",                                               // 不用 -p:argv 有长度上限
+  "flags": { "model": ["--model"], "schema": { "args": ["--json-schema"], "mode": "inline", "objectRoot": true } },
+  "output": {
+    "format": "jsonl",
+    "eventKey": "event",                                             // {"event":"result","result":{…}}
+    "eventType": "result",
+    "textPath": ["result", "response"],
+    "select": "last",
+    "usagePath": ["result", "usage"],                                // 只有 token:agy 不报告花费
+    "errorPath": ["result", "error"],                                // 只在运行失败时出现
+    "structuredPath": ["result", "structured_output"],
+    "deniedPath": ["result", "denied_actions"]
+  },
+  "permissionArgs": {
+    "edit": ["--mode", "accept-edits"],
+    "full": ["--mode", "accept-edits", "--dangerously-skip-permissions"]
+  }
+}
+```
+
+无头 agy 无法请求审批的工具调用会被软拒绝:运行以 0 退出,`response` 常常是空的
+([antigravity-cli#794](https://github.com/google-antigravity/antigravity-cli/issues/794)),
+所以 agent 以 `empty_reply` 失败,`denied` 写明 agy 拒绝了什么。子 agent 的输出也不会进入
+agy 的事件流([antigravity-cli#1077](https://github.com/google-antigravity/antigravity-cli/issues/1077)):
+transcript 会列出它启动的每个子 agent 及其日志路径。agy 的事件流从不说明子 agent 何时结束,
+所以 `agy` 没有声明 `output.background`。
 
 在 `acceptEdits` 下,Claude Code 无头运行时会直接拒绝本该询问的操作——比如没在允许列表里
 的 shell 命令——而回复仍可能声称成功;`deniedPath` 读的就是这些拒绝。默认情况下回复照常
@@ -1242,6 +1284,7 @@ const reviews = await parallel(files.map((f) => () =>
 | `omp` | 拒绝 | `--approval-mode yolo` | 按 `edit` 运行 |
 | `kilo`、`opencode` | 拒绝 | `--auto` | 按 `edit` 运行 |
 | `cursor` | 拒绝 | `--force` | 按 `edit` 运行 |
+| `agy` | 拒绝 | `--mode accept-edits` | `--mode accept-edits --dangerously-skip-permissions` |
 
 - **`read`。** 在 `claude` 上,`dontAsk` 会拒绝一切需要询问的调用,`--tools` 只留下只读的
   内置工具——根本没有 Edit、Write 或 Bash,你设置里的 allow 规则也加不回来——外加联网
@@ -1251,7 +1294,10 @@ const reviews = await parallel(files.map((f) => () =>
 - **拒绝。** 没有经过验证的只读模式的 CLI,agent 会在启动前失败:
   `kimi cannot run read-only (…); use an adapter that can (--adapter claude, …), or
   run with --permissions edit`。Qwen 的文档没有说明其 `default` 模式在无头下的行为,所以它
-  也没有 `read`。
+  也没有 `read`。`agy` 同样没有:无头时它总能写入工作区内的文件,plan 模式只是给提示词加前缀。
+- **`agy`。** 无头时,需要审批的工具调用会被软拒绝:在 `edit` 下,shell 命令、联网和 MCP
+  工具只有在你自己的 `~/.gemini/antigravity-cli/settings.json` 中 `permissions.allow` 规则
+  (或其 `toolPermission` 预设)允许时才会运行。被拒绝的调用与 Claude Code 一样记为 `denied`。
 - **按 `edit` 运行。** 没有单独完全权限模式的 CLI 会用它的 `edit` 参数运行,每次运行对每个
   适配器只记一条日志。注意:对 `kimi`、`omp`、`kilo`、`opencode` 和 `cursor` 来说,
   `edit` 在无头模式下本来就会批准所有工具调用——把仓库交给它们之前请想清楚。
@@ -1345,6 +1391,7 @@ hooks、MCP 服务器和项目设置会在 agent 里运行。对这样的仓库�
 | `kimi` | 没有文档化的方式 | AGENTS.md、skills |
 | `kilo`、`opencode` | 没有文档化的方式 | AGENTS.md、项目配置、`.kilo/` / `.opencode/` |
 | `cursor` | 没有文档化的方式 | `.cursor/rules`、AGENTS.md、CLAUDE.md、`mcp.json`、hooks |
+| `agy` | 没有文档化的方式 | AGENTS.md、GEMINI.md、`.agents/` 下的 rules、skills、agents、`mcp_config.json` |
 
 Claude Code 的 `--bare` 跳过的更多,但它只接受 API key 认证,订阅登录用不了。第一次有
 agent 在 codex 上运行时,运行日志里会出现
@@ -1567,8 +1614,8 @@ cloning with «redacted:github»
 看门狗**对所有内置适配器默认关闭**:有些 CLI——文本模式的那些(`gemini`、`qwen`、
 `kimi`……)——在结束前什么都不输出,任何卡死超时都会误杀正常工作。请只对会流式输出进度
 的适配器启用:`claude`(它的 stream-json 每一轮都会输出一个事件,所以现在可以放心对它
-启用)、`codex`(`exec --json` 每条命令、每次编辑、每条消息都输出一个事件)、`kilo` 和
-`opencode` 这类 JSONL 适配器,或会打印心跳的包装脚本;并把值设得高于
+启用)、`codex`(`exec --json` 每条命令、每次编辑、每条消息都输出一个事件)、`kilo`、
+`opencode` 和 `agy`(每一步一个事件)这类 JSONL 适配器,或会打印心跳的包装脚本;并把值设得高于
 健康 agent 最长的静默时段——工具调用里跑一轮很长的测试,同样不会有任何输出。
 
 ### 单 agent 上限与死循环(ODW 扩展)
@@ -1592,8 +1639,8 @@ await agent("修好失败的测试", {
 
 这些上限**实时**执行,依据的是 CLI 运行时打印的内容:Claude Code 的 stream-json(tool_use
 块与每条消息的用量;花费随最后的 `result` 到来)、Codex 的 `exec --json`(命令、文件改动、
-MCP 与网页搜索条目;每一轮的用量),以及 kilo 和 opencode 的事件(工具调用;每一步的 token
-与花费)。一旦越界,ODW 会像卡死一样立即杀掉该 agent 的 CLI 及其启动的所有进程,agent 以
+MCP 与网页搜索条目;每一轮的用量)、kilo 和 opencode 的事件(工具调用;每一步的 token
+与花费),以及 agy 的 stream-json(工具步骤;每一步的 token)。一旦越界,ODW 会像卡死一样立即杀掉该 agent 的 CLI 及其启动的所有进程,agent 以
 `runaway` 失败:`agent_failed` 事件带有 `limitHit: { limit, max, value, evidence }`,错误
 信息形如 ``adapter 'claude' ran away — limits.repeat=5: Bash `npm test` ×5 in a row``
 (或 `41 tool calls > 40`、`$3.12 > $3.00`)。`runaway` 不会被 `transientRetries` 重试,在

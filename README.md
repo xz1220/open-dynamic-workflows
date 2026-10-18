@@ -729,7 +729,7 @@ I'll run the tests first.
 
 - While an agent runs, its stdout streams to `agents/<agentId>.transcript.jsonl` in the
   run directory: a JSONL adapter's events one per line, as its CLI printed them (the
-  built-in `claude`'s stream-json, `codex`'s `exec --json`, `kilo` and `opencode`), any other adapter's output as
+  built-in `claude`'s stream-json, `codex`'s `exec --json`, `kilo`, `opencode` and `agy`), any other adapter's output as
   `{"kind":"text","text":…}` lines. The end of its stderr (the last 64 KB) goes to
   `agents/<agentId>.stderr.txt`; `odw logs --agent` shows its last lines after the transcript.
 - A schema retry, a stall restart or a rate-limit retry goes on in the same file after an
@@ -1176,8 +1176,8 @@ The security model — the only remote writes are checkpoint decisions:
 
 ## Configure adapters
 
-Codex, Claude Code, Gemini, Qwen, Kimi, Oh My Pi, Kilo Code, OpenCode, and
-Cursor work out of the box:
+Codex, Claude Code, Gemini, Qwen, Kimi, Oh My Pi, Kilo Code, OpenCode,
+Cursor, and Google's Antigravity CLI work out of the box:
 
 | Adapter | Local CLI | Non-interactive contract |
 | --- | --- | --- |
@@ -1190,6 +1190,7 @@ Cursor work out of the box:
 | `kilo` | `kilo` | `run --format json --auto`; final text decoded from JSONL |
 | `opencode` | `opencode` | `run --format json --auto`; final text decoded from JSONL |
 | `cursor` | `agent` | `--print --force --trust`; prompt on stdin |
+| `agy` | `agy` | `--output-format stream-json`, prompt on stdin; reply, tokens, errors and refused tool calls (`denied_actions`) from its `result` event; object-rooted schemas natively (`--json-schema`) |
 
 The built-in `codex` and `claude` adapters come **web-capable**, so research
 workflows run with zero tuning. `odw init`
@@ -1286,6 +1287,51 @@ empty and no `agent_message` event — the reply is empty, so the agent fails wi
 `empty_reply` (`allowEmpty: true` accepts it) instead of returning a dump of events,
 and the run's log says exactly what was missing; when its events lack the reply but
 the reply file has it, the reply stands and the log says the events did not match.
+
+The built-in `agy` (Google's Antigravity CLI, from its
+[headless docs](https://antigravity.google/docs/cli/headless) and changelog; ODW
+extensions throughout) reads `--output-format stream-json`, whose events name their
+type with an `event` key — `output.eventKey` says so (default `"type"`). Its reply,
+tokens, failure and refused tool calls all come from its final `result` event; agy
+reports no cost. A failed turn's `error` ("Individual quota reached … Resets in
+2h39m52s.", "Authentication expired. Please log back in.") is classified like any
+failure. It takes a schema natively only when its root is `"type": "object"`
+(`flags.schema.objectRoot`: agy refuses any other at startup); any other goes in the
+prompt.
+
+```jsonc
+"agy": {
+  "label": "Antigravity CLI",
+  "command": ["agy", "--output-format", "stream-json", "--input-format", "text",
+              "--disable-slash-commands", "--print-timeout", "24h", "{permission_args}"],
+  "stdin": "{prompt}",                                               // not -p: argv caps its length
+  "flags": { "model": ["--model"], "schema": { "args": ["--json-schema"], "mode": "inline", "objectRoot": true } },
+  "output": {
+    "format": "jsonl",
+    "eventKey": "event",                                             // {"event":"result","result":{…}}
+    "eventType": "result",
+    "textPath": ["result", "response"],
+    "select": "last",
+    "usagePath": ["result", "usage"],                                // tokens only: agy reports no cost
+    "errorPath": ["result", "error"],                                // present only when the run failed
+    "structuredPath": ["result", "structured_output"],
+    "deniedPath": ["result", "denied_actions"]
+  },
+  "permissionArgs": {
+    "edit": ["--mode", "accept-edits"],
+    "full": ["--mode", "accept-edits", "--dangerously-skip-permissions"]
+  }
+}
+```
+
+A tool call headless agy could not ask approval for is soft-denied: the run exits 0,
+often with an empty `response`
+([antigravity-cli#794](https://github.com/google-antigravity/antigravity-cli/issues/794)),
+so the agent fails with `empty_reply` and its `denied` names what agy refused. And a
+subagent's output never reaches agy's stream
+([antigravity-cli#1077](https://github.com/google-antigravity/antigravity-cli/issues/1077)):
+the transcript shows each subagent it started, with the path of its log. agy's stream
+never says when a subagent ends, so `agy` declares no `output.background`.
 
 Under `acceptEdits`, Claude Code refuses headless what it would have asked about —
 a shell command that is not allowlisted, say — and the reply may still claim
@@ -1408,6 +1454,7 @@ docs confirm for headless runs are filled in:
 | `omp` | refused | `--approval-mode yolo` | runs `edit` |
 | `kilo`, `opencode` | refused | `--auto` | runs `edit` |
 | `cursor` | refused | `--force` | runs `edit` |
+| `agy` | refused | `--mode accept-edits` | `--mode accept-edits --dangerously-skip-permissions` |
 
 - **`read`.** On `claude`, `dontAsk` denies anything that would prompt and `--tools`
   leaves only read-only built-in tools — there is no Edit, Write or Bash for an allow
@@ -1418,7 +1465,12 @@ docs confirm for headless runs are filled in:
 - **refused.** A CLI with no verified read-only mode fails the agent before it starts:
   `kimi cannot run read-only (…); use an adapter that can (--adapter claude, …), or
   run with --permissions edit`. Qwen's docs do not say what its `default` mode does
-  headless, so it has no `read` either.
+  headless, so it has no `read` either. Nor does `agy`: headless it may always write
+  files in its workspace, and its plan mode only prefixes the prompt.
+- **`agy`.** Headless, a tool call that needs an approval is soft-denied: at `edit`,
+  shell commands, web and MCP tools run only where your own `permissions.allow` rules
+  in `~/.gemini/antigravity-cli/settings.json` (or its `toolPermission` preset) allow
+  them. What it refused comes back as `denied`, like Claude Code's.
 - **runs `edit`.** A CLI with no separate full mode runs its `edit` flags, and the run
   logs that once per adapter. For `kimi`, `omp`, `kilo`, `opencode` and `cursor`,
   `edit` already approves every tool call headless — mind that before handing them a
@@ -1520,6 +1572,7 @@ so once per adapter — never silently:
 | `kimi` | no documented way | AGENTS.md, skills |
 | `kilo`, `opencode` | no documented way | AGENTS.md, project config, `.kilo/` / `.opencode/` |
 | `cursor` | no documented way | `.cursor/rules`, AGENTS.md, CLAUDE.md, `mcp.json`, hooks |
+| `agy` | no documented way | AGENTS.md, GEMINI.md, `.agents/` rules, skills, agents, `mcp_config.json` |
 
 Claude Code's `--bare` would skip even more, but it takes API-key auth only, so
 subscription logins could not use it. A line such as
@@ -1789,7 +1842,7 @@ text-mode ones (`gemini`, `qwen`, `kimi`, …) — print nothing until they fini
 any stall timeout would kill healthy work. Use it for adapters that stream
 progress: `claude` (its stream-json prints an event per turn, so it is now safe to
 enable for it), `codex` (`exec --json` prints an event per command, edit and message),
-the JSONL adapters `kilo` and `opencode`, or a wrapper that prints
+the JSONL adapters `kilo`, `opencode` and `agy` (an event per step), or a wrapper that prints
 a heartbeat — with a value above the longest quiet stretch a healthy agent has: a
 long test run inside one tool call prints nothing either.
 
@@ -1815,9 +1868,10 @@ await agent("Fix the failing test", {
 They are enforced **live**, from what the CLI prints as it runs: Claude Code's
 stream-json (tool_use blocks and each message's usage; its cost arrives with its
 final `result`), Codex's `exec --json` (command, file-change, MCP and web-search items;
-each turn's usage) and kilo's and opencode's events (tool calls; each step's tokens and
-cost). A breach kills the agent's CLI and everything it started at once, like a stall,
-and the agent fails with reason `runaway`: its `agent_failed` event carries
+each turn's usage), kilo's and opencode's events (tool calls; each step's tokens and
+cost) and agy's stream-json (tool steps; each step's tokens). A breach kills the
+agent's CLI and everything it started at once, like a stall, and the agent fails
+with reason `runaway`: its `agent_failed` event carries
 `limitHit: { limit, max, value, evidence }` and its error says
 ``adapter 'claude' ran away — limits.repeat=5: Bash `npm test` ×5 in a row``
 (or `41 tool calls > 40`, `$3.12 > $3.00`). A runaway is not retried by

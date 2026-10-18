@@ -597,7 +597,8 @@ did-you-mean 提示。想让某个限制处处生效，就写进 `description`�
 **原生 schema（ODW 扩展）。** 自己会校验 schema 的 CLI 还会直接拿到完整 schema——`claude`
 通过 `--json-schema`（值取自 `structured_output`），`codex` 在 schema 为 strict（根为对象；
 每个对象都设 `"additionalProperties": false` 并把全部属性列进 `required`）时通过
-`--output-schema`——由它强制执行 ODW 不检查的部分；ODW 依旧校验每一次回复并照常重试。只有不
+`--output-schema`，`agy` 在 schema 根为对象时通过 `--json-schema`（值取自 `structured_output`）
+——由它强制执行 ODW 不检查的部分；ODW 依旧校验每一次回复并照常重试。只有不
 接收原生 schema 的 CLI 才会在提示词里看到 schema 描述（`"schemaPrompt": "always"` 则全部附上）。
 见[适配器](adapters.md#原生结构化输出)。
 

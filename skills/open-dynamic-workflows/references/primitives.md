@@ -759,7 +759,8 @@ either mode, with a did-you-mean. To make a limit count everywhere, put it in a
 the whole schema as well — `claude` with `--json-schema` (its value comes from
 `structured_output`), `codex` with `--output-schema` when the schema is strict (an
 object at the root; every object `"additionalProperties": false` and all its
-properties `required`) — and it enforces what ODW does not check; ODW still
+properties `required`), `agy` with `--json-schema` when its root is an object (its
+value comes from `structured_output`) — and it enforces what ODW does not check; ODW still
 validates every reply and retries as usual. The prompt describes the schema only to
 a CLI that does not take it (`"schemaPrompt": "always"` describes it everywhere).
 See [adapters](adapters.md#native-structured-output).

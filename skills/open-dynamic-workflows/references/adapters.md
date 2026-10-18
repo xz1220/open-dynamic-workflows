@@ -45,6 +45,7 @@ confirm for headless runs are filled in:
 | `omp` | refused | `--approval-mode yolo` | runs `edit` |
 | `kilo`, `opencode` | refused | `--auto` | runs `edit` |
 | `cursor` | refused | `--force` | runs `edit` |
+| `agy` | refused | `--mode accept-edits` | `--mode accept-edits --dangerously-skip-permissions` |
 
 - An agent that asks for more than its run (or its adapter) allows fails before
   it starts, naming both tiers.
@@ -53,6 +54,11 @@ confirm for headless runs are filled in:
 - **runs `edit`**: `full` on a CLI with no full flags runs its `edit` flags; the
   run logs that once per adapter. For `kimi`, `omp`, `kilo`, `opencode` and
   `cursor`, `edit` already approves every tool call headless.
+- `agy` (Google's Antigravity CLI) soft-denies headless any tool call that needs
+  an approval: at `edit` it edits files in its workspace, while shell commands,
+  web and MCP tools run only where the user's own `permissions.allow` rules in
+  `~/.gemini/antigravity-cli/settings.json` allow them. It has no `read`: no
+  documented flag keeps it from writing.
 - An adapter without `permissionArgs` (your own CLI) runs its command as
   configured, treated as `edit`; under another tier the run logs once that ODW
   cannot enforce it.
@@ -94,6 +100,16 @@ JSONL events, its reply the final message codex writes to that file (else the la
 reports none), and `turn.failed` / `error` events its own failure report. Its
 transcript shows each command, file change, MCP tool call and web search.
 
+The built-in `agy` (ODW extension) runs Google's Antigravity CLI in print mode,
+`--output-format stream-json`, the prompt on stdin
+(https://antigravity.google/docs/cli/headless): its events name their type with
+an `event` key (`output.eventKey`), and its final `result` event carries the reply
+(`response`), its tokens (no cost — agy reports none), `error` when it failed, and
+`denied_actions` (the tool calls it soft-denied). A refused call often leaves an
+empty `response` under status SUCCESS: the agent fails with `empty_reply`, its
+`denied` saying why. A subagent's output never reaches agy's stream
+(antigravity-cli#1077); the transcript shows each subagent it started and its log.
+
 A useful minimal-privilege split: let `claude` write code (acceptEdits) and let
 `codex` run/verify it (workspace-write sandbox) — see
 `examples/codex-claude-loop.js`.
@@ -104,7 +120,7 @@ repository it works in after its tier's flags: `claude --safe-mode` (CLAUDE.md,
 skills, plugins, hooks, MCP servers, commands, agents and workflows off; auth
 works), `qwen --safe-mode`, and `omp --no-extensions --no-skills --no-rules`
 (its AGENTS.md, CLAUDE.md, hooks and MCP config still load). `codex`, `gemini`,
-`kimi`, `kilo`, `opencode` and `cursor` have no documented way: the run logs
+`kimi`, `kilo`, `opencode`, `cursor` and `agy` have no documented way: the run logs
 once per adapter what still reaches the agent (`codex has no documented way to
 ignore the repository's AGENTS.md — its instructions still reach the agent`).
 The repository's `.worktreeinclude` `symlink:` lines and a `worktreeSetup` from
@@ -240,7 +256,7 @@ did-you-mean hint) instead of silently ignoring them.
 | `concurrency` | **ODW extension.** At most this many agents at once on this CLI, inside the run-wide `concurrency`: an agent needs a slot in both, each adapter queues first come, first served, and a throttled adapter never holds up the others. Unset: the run-wide cap alone |
 | `promptCache` | **ODW extension.** `true`: this CLI's model API caches a prompt's prefix, so its fan-outs start staggered (see `staggerFanOut`). The built-in `claude` declares it |
 | `label` | human-friendly name for progress display |
-| `flags` | capability declaration, e.g. `{ "model": ["--model"] }` — the native flag that carries a per-call `model`. Without it, `agent(..., { model })` is not honored for this adapter (a routing note appears in the logs). **ODW extension:** `"schema": { "args": [...], "mode": "inline" \| "file", "strict"?: true }` says the CLI validates a call's JSON Schema itself — see [native structured output](#native-structured-output) |
+| `flags` | capability declaration, e.g. `{ "model": ["--model"] }` — the native flag that carries a per-call `model`. Without it, `agent(..., { model })` is not honored for this adapter (a routing note appears in the logs). **ODW extension:** `"schema": { "args": [...], "mode": "inline" \| "file", "strict"?: true, "objectRoot"?: true }` says the CLI validates a call's JSON Schema itself — see [native structured output](#native-structured-output) |
 | `failures` | **ODW extension.** This CLI's own failure wording: `{ "rate_limit": [...], "quota": [...], "auth": [...] }`, regular expressions matched case-insensitively against the end of a failed run's output before the built-in table |
 | `output` | how stdout becomes the reply (default: trimmed text) — see below |
 | `permissionArgs` | **ODW extension.** Each tier's flags: `{ "read"?: [...], "edit": [...], "full"?: [...] }` (`edit` required, `[]` for none), put where the command has a `{permission_args}` element — which it must have exactly when this is set |
@@ -257,7 +273,10 @@ did-you-mean hint) instead of silently ignoring them.
 - `{ "format": "text" }` — the default: the trimmed stdout is the reply.
 - `{ "format": "jsonl", "eventType": "text", "textPath": ["part", "text"], "select": "last" }`
   — newline-delimited JSON events, decoded as they stream; the reply is the text at
-  `textPath` in the last event whose `type` is `eventType`.
+  `textPath` in the last event whose `type` is `eventType`. **ODW extension:**
+  `eventKey` names another key for an event's type (agy's events are
+  `{"event": "result", …}`: `"eventKey": "event"`); every event type the output
+  names is read under it.
 - `{ "format": "json", "textPath": ["response"] }` — one JSON document on stdout.
 
 **ODW extension:** both JSON formats may add `usagePath` (the token counts), `costPath`
@@ -272,7 +291,7 @@ one not `connected` is recorded as `mcp` on the agent and logged, or fails it un
 the built-in `claude` reads `mcp_servers` from its `system` init event);
 `jsonl` reads usage
 and cost from `usageEvent` events (default: `eventType`) and adds them up. Usage is
-normalized across the CLIs' field names (Anthropic's, OpenAI's, Codex's):
+normalized across the CLIs' field names (Anthropic's, OpenAI's, Codex's, agy's):
 `inputTokens` (cached input included), `outputTokens`, `cacheReadTokens`,
 `cacheWriteTokens`, `costUsd`. A whole number in a path indexes an array (negative:
 from its end). When stdout does not have the declared text, the raw stdout is the
@@ -320,6 +339,7 @@ and how it takes one:
 | `args` | the flag(s) before the schema, e.g. `["--json-schema"]` |
 | `mode` | `"inline"`: the schema's compact JSON is the next argument. `"file"`: the path of a file holding it — `agents/<agentId>.schema.json` in the run directory (a temp directory outside a run), written before each CLI run and removed after it |
 | `strict` | `true` for a CLI that takes only OpenAI strict-mode schemas (codex): any other schema — one whose root is not an object, or with an object that is not `"additionalProperties": false` with all its properties `required` — goes in the prompt instead, and the run says so once |
+| `objectRoot` | `true` for a CLI that takes only schemas whose root is `"type": "object"` (agy refuses any other at startup): any other goes in the prompt instead, and the run says so once |
 
 The schema goes after every other argument, where a model flag goes, and is not
 placeholder-expanded; a call without a schema runs the command exactly as
@@ -333,6 +353,7 @@ prompt describes the schema only to CLIs that do not take it (`schemaPrompt`).
 | --- | --- | --- |
 | `claude` | `{ "args": ["--json-schema"], "mode": "inline" }` | `structured_output` in its `result` event (`"structuredPath": ["structured_output"]`), else the `result` text |
 | `codex` | `{ "args": ["--output-schema"], "mode": "file", "strict": true }` | its final message: the `--output-last-message` file, else its last `agent_message` event |
+| `agy` | `{ "args": ["--json-schema"], "mode": "inline", "objectRoot": true }` | `structured_output` in its `result` event, else its `response` |
 
 Before an agent starts, its schema is checked against the subset ODW's validator
 enforces ([primitives](primitives.md#schema)). Anything else is named in the run's
@@ -394,8 +415,8 @@ failed agent call, classified as `rate_limit`, `quota`, `auth`, `timeout`,
 `stalled`, `not_found`, `permission` or `exit` (the `reason` on its
 `agent_failed` event; only `rate_limit` is retried — see `transientRetries`).
 So does a failure the CLI reports in its output (`errorPath`: Claude Code's
-stream-json `is_error` result, often with exit 0; `errorEvents`: Codex's `turn.failed`
-and `error`), and a clean exit whose short
+stream-json `is_error` result, often with exit 0, and agy's result `error`; `errorEvents`:
+Codex's `turn.failed` and `error`), and a clean exit whose short
 text reply is nothing but a rate-limit, quota or login error (`API Error: Rate
 limit reached`). A clean exit can still fail (ODW extensions): with reason
 `empty_reply` when the reply is empty (unless the call sets `allowEmpty`),

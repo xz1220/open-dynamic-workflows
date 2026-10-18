@@ -101,6 +101,17 @@ changed, and run on a schedule — and a dashboard redesigned to watch them.
   its `turn.failed` / `error` events as the failure, classified like any (an `error`
   codex retried itself is not one). Output declarations gain `match`, `errorEvents`
   and the `{reply_file}` placeholder (**ODW extension**).
+- A built-in `agy` adapter for Google's Antigravity CLI (**ODW extension**): print mode
+  on `--output-format stream-json`, the prompt on stdin — its reply, tokens (no cost:
+  agy reports none), failure and soft-denied tool calls (`denied_actions`) from the
+  `result` event; schemas natively with `--json-schema` when their root is an object
+  (`flags.schema.objectRoot`); `edit` runs `--mode accept-edits`, `full` adds
+  `--dangerously-skip-permissions`, and it has no `read`; its spent quota ("Individual
+  quota reached … Resets in …"), AI credits and sign-in failures are classified; its
+  transcript, OpenTelemetry export and `agentLimits` read its tool steps, and show the
+  subagents it starts (their output never reaches its stream,
+  [antigravity-cli#1077](https://github.com/google-antigravity/antigravity-cli/issues/1077)).
+  Output declarations gain `eventKey`, the key that names an event's type.
 - The spend receipt in the terminal (**ODW extension**): `odw status` prints a "spend
   by phase" block — each phase's agents, tokens, cost, share and a bar of Unicode
   blocks, within 100 columns, plain under `NO_COLOR` — and `odw list` a cost column

@@ -102,7 +102,7 @@ annotations like `description` and `format`. Any other keyword (`oneOf`, `$ref`,
 `const`, `pattern`, `maxItems`, a type union, …) is not checked by ODW: the run's log
 says so once, with where it is, and the call runs — or, under `"schemaKeywords":
 "strict"`, fails with an `AgentError` before it starts (**ODW extension**). Put a
-limit ODW cannot check in a `description`. On `claude` and `codex` the schema is
+limit ODW cannot check in a `description`. On `claude`, `codex` and `agy` the schema is
 passed to the CLI natively, which enforces it; ODW validates the reply either way —
 see [`references/primitives.md`](references/primitives.md#schema).
 
