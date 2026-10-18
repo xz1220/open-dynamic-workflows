@@ -22,6 +22,10 @@
  *      the agent, not the run ({@link WorktreeSetupError} is recoverable), and
  *      the end of its output is in the error.
  *
+ * In an untrusted run (an ODW extension; see adapters/trust.ts) the
+ * `symlink:` lines link nothing, and a `worktreeSetup` the repository's own
+ * config set is dropped before the run starts (see ./untrusted).
+ *
  * Each worktree is prepared on its own: every CLI attempt of an agent call (a
  * schema retry, a stall restart) starts from a fresh worktree.
  */
@@ -76,6 +80,14 @@ export interface WorktreeSetupOptions {
   signal?: AbortSignal;
   /** Receives what the run should log: files left out, links that could not be made. */
   onNote?: (message: string) => void;
+  /**
+   * The agent runs untrusted (an ODW extension; see adapters/trust.ts): the
+   * `symlink:` lines of the repository's `.worktreeinclude` link nothing —
+   * a link hands the agent the source tree itself — and `onRefused` hears it.
+   */
+  untrusted?: boolean;
+  /** Receives what an untrusted run refused to do, for the run's log (once per run is the caller's to keep). */
+  onRefused?: (message: string) => void;
 }
 
 /** The lines of a `.worktreeinclude`: the patterns to copy, and the `symlink:` ones to link. */
@@ -134,6 +146,15 @@ async function includeFiles(top: string, work: string, options: WorktreeSetupOpt
     throw new WorktreeSetupError(`could not read ${WORKTREE_INCLUDE_FILE}: ${(err as Error).message}`);
   }
   const patterns = parseWorktreeInclude(text);
+  if (options.untrusted && patterns.link.length > 0) {
+    const shown = patterns.link.slice(0, NOTE_PATHS).join(", ");
+    const more = patterns.link.length > NOTE_PATHS ? ` and ${patterns.link.length - NOTE_PATHS} more` : "";
+    options.onRefused?.(
+      `untrusted run: ${WORKTREE_INCLUDE_FILE} is the repository's own, so its symlink: lines link nothing ` +
+        `(${shown}${more}) — a link would hand agents the source tree itself; run trusted to link them`,
+    );
+    patterns.link = [];
+  }
   const linked = await matchUntracked(top, patterns.link);
   const copied = [...(await matchUntracked(top, patterns.copy))].filter((path) => !within(linked, path));
   const copier = new Copier(top, work, linked, options.signal);

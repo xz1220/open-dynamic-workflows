@@ -238,6 +238,11 @@ odw apply $RUN --all --verify "<测试命令>"   # 按顺序应用；校验失�
   适配器支持的档位，每次 `odw run` 也会打印各已安装适配器将以哪个档位运行。
 - **绝不要自己决定用 `full`。** 它去掉了沙箱和所有审批：只在用户明确要求、且是在用户视为
   可丢弃的机器上时才用。
+- **别人的仓库：用 `--untrusted` 运行**（ODW 扩展）。这时每个 CLI 都在其文档给出办法的
+  地方忽略仓库的 CLAUDE.md、hooks、MCP 服务器和设置（`claude --safe-mode`、
+  `qwen --safe-mode`），并由运行说一次哪些 CLI 做不到（codex 仍会读 AGENTS.md）——这时优先
+  用 `adapter: 'claude'`。仓库自己的 `worktreeSetup` 和 `.worktreeinclude` 链接不会执行。
+  它不是沙箱：审查类工作请再配上 `--permissions read`。
 
 ```js
 const findings = await parallel(files.map((f) => () =>
@@ -418,6 +423,7 @@ Codex、Claude Code、Gemini、Qwen、Kimi 开箱即用，无需配置。要换�
 | 看运行像是卡住了，就自己批准了检查点 | 等待中的检查点由用户决定：给用户看 `odw status $RUN`，只有用户明确同意后才运行 `odw approve`/`odw reject`。 |
 | 扇出的调研或审查 agent 能改文件 | 给这些 agent 传 `{ permissions: 'read' }`，或用 `odw run --permissions read`：它们只读取和报告，改不了工作树（ODW 扩展；claude、codex 或 gemini）。 |
 | agent 被拒绝或被拦下时，转而用 `--permissions full` | `full` 去掉了沙箱和所有审批——先问用户。被拒绝的 `read` agent 需要的是一个支持只读的适配器。 |
+| 把不是用户写的仓库当作用户自己的仓库来跑 agent | `odw run --untrusted`（ODW 扩展）：`claude --safe-mode` 等参数挡住它的指令、hooks 和设置；运行日志会说明哪些 CLI 做不到。 |
 | 把某个 CLI 的模型 ID 交给可能跑在别的 CLI 上的 agent（阶段默认值、回退链） | 模型 ID 不能跨 CLI 通用：用层级 `model: '@fast'`，它会为每个 CLI 选出自己的 ID（ODW 扩展）。 |
 | 大规模扇出却不看它花了多少 | `odw status $RUN` 会显示运行到目前为止的 token 与花费，比 `fanOutWarn`（默认 25）更宽的 `parallel()`/`pipeline()` 会记一条警告（均为 ODW 扩展）。设了 `budget.total` 时按它决定扇出规模；`--budget` 限制输出 token。 |
 | 自己手写一条包着 `odw run` 的 cron 行 | `odw schedule add` 会带上防重叠锁、日志和固定的 `PATH` 写好它——且只在用户要求时使用：它会改动用户的 crontab 或 LaunchAgents。 |

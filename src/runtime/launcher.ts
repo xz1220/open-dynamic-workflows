@@ -15,7 +15,7 @@ import { fileURLToPath } from "node:url";
 
 import { loadConfig, resolveAdapter, resolveRunsRoot } from "../adapters/config.js";
 import { isPermissionTier } from "../adapters/permissions.js";
-import type { Config, PermissionTier } from "../adapters/types.js";
+import type { Config, PermissionTier, TrustLevel } from "../adapters/types.js";
 import { ConfigError } from "../errors.js";
 import { loadWorkflowScript } from "../loader.js";
 import { isSeaBinary } from "../sea.js";
@@ -41,6 +41,12 @@ export interface StartRunOptions {
    * agent, in place of the config's `permissions`.
    */
   permissions?: PermissionTier | null;
+  /**
+   * Run untrusted (an ODW extension; `--untrusted`): each agent CLI in its
+   * documented way of ignoring the repository's instructions and settings,
+   * whatever the config's `trust` (see ../untrusted). Null or `"trusted"`: the config's.
+   */
+  trust?: TrustLevel | null;
   /** Where the run was initiated from (e.g. "chat" for Chat Host runs, "eval" for `odw eval`'s). */
   origin?: string | null;
   /** The `odw eval` cell this run is one repeat of (ODW extension), kept in its meta. */
@@ -80,6 +86,7 @@ function commonCreateInput(options: StartRunOptions, source: string, workflowNam
     workflowName,
     adapter: options.adapter ?? null,
     permissions: options.permissions ?? null,
+    trust: options.trust === "untrusted" ? "untrusted" : null,
     origin: options.origin ?? null,
     eval: options.eval ?? null,
     resumedFrom: options.resumedFrom ?? null,

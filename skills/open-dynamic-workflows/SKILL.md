@@ -285,6 +285,12 @@ approvals).
   `odw run` prints the tier each installed adapter will run with.
 - **Never choose `full` on your own.** It removes the sandbox and every approval:
   use it only when the user asks for it, on a machine they treat as disposable.
+- **Someone else's repository: run it `--untrusted`** (ODW extension). Each CLI
+  then ignores the repository's CLAUDE.md, hooks, MCP servers and settings where
+  its docs give a way (`claude --safe-mode`, `qwen --safe-mode`), and the run says
+  once which CLIs cannot (codex still reads AGENTS.md) — prefer `adapter: 'claude'`
+  there. The repository's own `worktreeSetup` and `.worktreeinclude` links do not
+  run. It is not a sandbox: pair it with `--permissions read` for review work.
 
 ```js
 const findings = await parallel(files.map((f) => () =>
@@ -504,6 +510,7 @@ without answering when headless (a login, trust or approval prompt).
 | Approving a checkpoint yourself because the run looks stuck | A waiting checkpoint is the user's decision: show them `odw status $RUN`, and run `odw approve`/`odw reject` only on their explicit say-so. |
 | Fanning out research or review agents that can edit | `{ permissions: 'read' }` on those agents, or `odw run --permissions read`: they read and report, and cannot change the tree (ODW extension; claude, codex or gemini). |
 | Reaching for `--permissions full` when an agent was refused or denied | `full` drops the sandbox and every approval — ask the user. A refused `read` agent needs a read-capable adapter instead. |
+| Running agents on a repository you did not write as if it were the user's | `odw run --untrusted` (ODW extension): `claude --safe-mode` and the like keep its instructions, hooks and settings out; the run logs which CLIs cannot. |
 | Giving one CLI's model id to agents that may run on another (a phase default, a fallback chain) | Model ids do not cross CLIs: use a tier, `model: '@fast'`, which picks each CLI's own id (ODW extension). |
 | Fanning out wide without watching what it spends | `odw status $RUN` shows the run's tokens and cost so far, and a `parallel()`/`pipeline()` wider than `fanOutWarn` (default 25) logs a warning (ODW extensions). Size fan-outs to `budget.total` when one is set; `--budget` caps output tokens. |
 | Hand-writing a cron line around `odw run` | `odw schedule add` writes it with an overlap lock, a log and a pinned `PATH` — and only on the user's request: it edits their crontab or LaunchAgents. |

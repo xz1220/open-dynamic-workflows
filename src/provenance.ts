@@ -246,6 +246,7 @@ export function readCliVersion(ev: WorkflowEvent): { adapter: string; cli: CliVe
 export const BEHAVIOUR_SETTINGS = [
   "defaultAdapter",
   "permissions",
+  "trust",
   "concurrency",
   "maxAgents",
   "timeout",

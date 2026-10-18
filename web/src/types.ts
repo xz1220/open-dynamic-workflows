@@ -131,6 +131,11 @@ export interface AgentView {
   /** The permission tier its CLI runs at (ODW extension); absent for older runs. */
   permissions?: PermissionTier | null;
   /**
+   * `untrusted` when its CLI ran in its way of ignoring the repository's
+   * instructions, settings and hooks (ODW extension); absent: trusted.
+   */
+  trust?: TrustLevel;
+  /**
    * The adapters it fell back from, in order — their quota was spent or their
    * login refused — before `adapter` (ODW extension). Absent when it never
    * left the adapter it started on.
@@ -168,6 +173,9 @@ export interface ScheduleView {
 
 /** How much an agent may do (ODW extension): read < edit < full. */
 export type PermissionTier = "read" | "edit" | "full";
+
+/** Whether an agent's CLI trusted the repository it worked in (ODW extension; `odw run --untrusted`). */
+export type TrustLevel = "trusted" | "untrusted";
 
 /** The diffstat of a worktree agent's changes (ODW extension). */
 export interface AgentChanges {
@@ -496,6 +504,8 @@ export interface AdapterListing {
   permissionNote: string;
   /** The permission tiers it declares flags for (ODW extension); empty: none, it runs as configured. */
   tiers?: PermissionTier[];
+  /** How it runs untrusted: its flags, or that it has no documented way (ODW extension). */
+  untrusted?: string;
 }
 
 export interface SettingsSnapshot {
@@ -663,6 +673,8 @@ export interface AgentResultRecord {
   branch?: string | null;
   /** The permission tier it ran at (ODW extension). */
   permissions?: PermissionTier;
+  /** `untrusted` when its CLI ran untrusted (ODW extension); absent: trusted. */
+  trust?: TrustLevel;
   /** The adapters it fell back from before `adapter` produced the value (ODW extension). */
   fellBackFrom?: string[];
   /** The tool calls its CLI refused while it did the work (ODW extension). */

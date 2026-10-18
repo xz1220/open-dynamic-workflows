@@ -353,6 +353,7 @@ settles, phase by phase, with the result printed at the end. Ctrl-C detaches (th
 odw run wf.js [--args JSON|@file]            # foreground in a terminal; run keeps its own worker
                                              #   --adapter <name> sets this run's default agent
                                              #   --permissions read|edit|full: what its agents may do
+                                             #   --untrusted: keep the repository's CLAUDE.md, hooks… out
                                              #   --budget <tokens> sets budget.total
 ```
 
@@ -1254,7 +1255,7 @@ live view, after `--wait`'s first line and after a detached run's id. Each
 `odw doctor` lists every adapter's tiers. A tier governs what agents may do: `exec()`
 commands are the workflow's own and are not affected. `read` is not a sandbox for code
 you do not trust either — Claude Code, for one, still runs a repository's hooks under
-`-p`.
+`-p`; run such a repository [untrusted](#untrusted-repositories-odw-extension).
 
 **Codex and MCP tools that ask for approval** ([#23](https://github.com/xz1220/open-dynamic-workflows/issues/23)).
 No tier makes `codex exec` approve an MCP tool call. It asks nobody, so a tool call that
@@ -1305,6 +1306,64 @@ does not reach every agent:
 If a CLI cannot log in under `minimal`, add what it needs to `agentEnvPass`
 (`odw doctor --smoke` makes one real call to check). `exec()` commands, `worktreeSetup`
 and the `notify` hooks keep the whole environment.
+
+### Untrusted repositories (ODW extension)
+
+Running agents on someone else's repository is dangerous: its CLAUDE.md or AGENTS.md
+steer the agent, and its hooks, MCP servers and project settings run inside it. Run
+such a repository **untrusted** — `odw run|rerun|resume --untrusted`, or
+`"trust": "untrusted"` in your config (the default is `"trusted"`; a rerun or resume
+of an untrusted run stays untrusted). Each CLI then runs in the way of ignoring the
+repository its own docs give, after its tier's flags; where it has none, the run says
+so once per adapter — never silently:
+
+| Adapter | Untrusted | What still reaches the agent |
+| --- | --- | --- |
+| `claude` | `--safe-mode` (CLAUDE.md, skills, plugins, hooks, MCP servers, commands, agents, workflows off; auth works) | nothing |
+| `qwen` | `--safe-mode` (context files, hooks, extensions, skills, MCP servers off) | nothing |
+| `omp` | `--no-extensions --no-skills --no-rules` | AGENTS.md, CLAUDE.md, hooks, MCP config |
+| `codex` | no documented way | AGENTS.md (its `.codex/` config, hooks and rules load only for a project you trusted) |
+| `gemini` | no documented way (its untrusted-folder mode exits headless) | GEMINI.md, `.gemini/settings.json` |
+| `kimi` | no documented way | AGENTS.md, skills |
+| `kilo`, `opencode` | no documented way | AGENTS.md, project config, `.kilo/` / `.opencode/` |
+| `cursor` | no documented way | `.cursor/rules`, AGENTS.md, CLAUDE.md, `mcp.json`, hooks |
+
+Claude Code's `--bare` would skip even more, but it takes API-key auth only, so
+subscription logins could not use it. A line such as
+`codex has no documented way to ignore the repository's AGENTS.md — its instructions
+still reach the agent` lands in the run's log the first time an agent runs on codex.
+
+The repository's own code that ODW itself would run is refused: the `symlink:` lines
+of its `.worktreeinclude` link nothing (a link hands agents the source tree; plain
+lines still copy), and a `worktreeSetup` set by a config inside the repository — such
+as its `./odw.config.json` — does not run, with a log line saying so. A `worktreeSetup`
+from your own config (`--config`, `$ODW_CONFIG`, or `~/.config/odw/config.json`
+outside the repository) still runs. When the config in use is the repository's own, an
+untrusted run also says once that its adapters and other settings still apply, and it
+cannot loosen the `"trust": "untrusted"` your `~/.config/odw/config.json` sets.
+
+```jsonc
+{
+  "trust": "untrusted",
+  "adapters": {
+    "codex": { "trust": "untrusted" },  // or: only this adapter, in every run
+    "my_wrapper": {
+      "command": ["my-agent", "{permission_args}", "--cwd", "{workspace}"],
+      "permissionArgs": { "edit": [] },
+      "untrustedArgs": ["--no-project-config"],           // goes after the tier's flags
+      "untrustedNote": "my-agent still reads .my-agent/rules" // said once per untrusted run
+    }
+  }
+}
+```
+
+The start banner has a trust line — `trust: untrusted — claude --safe-mode, codex no
+documented way` — and `odw doctor` shows the config's trust and how each adapter runs
+untrusted. An untrusted agent's `agent_started` event, saved result and
+`odw agents --json` row carry `trust: "untrusted"`, the dashboard's drawer shows it,
+and the run's `run_started` setup records `trust`. Untrusted is not a sandbox: it
+keeps the repository's instructions and configuration out where a CLI allows, and the
+permission tier still decides what agents may do.
 
 ### Secrets in what ODW keeps (ODW extension)
 

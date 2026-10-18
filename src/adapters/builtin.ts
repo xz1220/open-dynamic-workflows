@@ -10,7 +10,17 @@
  * explains how to tune them rather than baking opinions in here.
  */
 
-import type { AdapterFailures, AdapterFlags, AdapterOutput, DenialPolicy, PermissionArgs, PermissionTier, SchemaFlag, Settings } from "./types.js";
+import type {
+  AdapterFailures,
+  AdapterFlags,
+  AdapterOutput,
+  DenialPolicy,
+  PermissionArgs,
+  PermissionTier,
+  SchemaFlag,
+  Settings,
+  TrustLevel,
+} from "./types.js";
 
 /** A built-in adapter spec — same shape as a config entry, minus its name. */
 export interface RawAdapter {
@@ -28,6 +38,9 @@ export interface RawAdapter {
   permissionArgs?: PermissionArgs;
   permissions?: PermissionTier;
   permissionDenials?: DenialPolicy;
+  trust?: TrustLevel;
+  untrustedArgs?: string[];
+  untrustedNote?: string;
 }
 
 // `flags` only DECLARES which native flag carries a model — the router appends
@@ -189,6 +202,74 @@ const QWEN_PERMISSIONS: PermissionArgs = {
 // with --auto; Cursor's `agent --print` with --force.
 const EDIT_ONLY = (...edit: string[]): PermissionArgs => ({ edit });
 
+// Untrusted repositories (ODW extension; see trust.ts). Each CLI reads
+// instructions and settings from the repository it works in; an untrusted run
+// adds its documented way of ignoring them after the tier's flags. Only flags
+// a CLI's own docs or `--help` confirm are mapped (flags found only in source
+// code are not); what a CLI cannot keep out is its `untrustedNote`, said once
+// per run.
+
+// Claude Code 2.1.302 `claude --help`: `--safe-mode` "Start[s] with all
+// customizations (CLAUDE.md, skills, installed plugins, hooks, MCP servers,
+// custom commands and agents, output styles, workflows, …) disabled … Auth,
+// model selection, built-in tools and plugins, and permissions work normally."
+// (`--bare` skips the same and more, but takes API-key auth only: subscription
+// logins could not use it.)
+const CLAUDE_UNTRUSTED = ["--safe-mode"];
+
+// Qwen Code (https://github.com/QwenLM/qwen-code/blob/main/docs/users/features/headless.md):
+// `--safe-mode` "Disable[s] all customizations — context files, hooks,
+// extensions, skills, MCP servers, custom subagents …, permission rules,
+// settings-sourced approval mode overrides …; the CLI flags `--yolo` and
+// `--approval-mode` still take effect", headless included (`qwen -p … --safe-mode`).
+const QWEN_UNTRUSTED = ["--safe-mode"];
+
+// Oh My Pi (https://github.com/can1357/oh-my-pi/blob/main/docs/cli-reference.md):
+// `--no-extensions`, `--no-skills`, `--no-rules`. Its README: "Opening a
+// repository loads its project inputs by design"; nothing documented turns
+// off its context files (AGENTS.md, CLAUDE.md), project hooks or MCP config.
+const OMP_UNTRUSTED = ["--no-extensions", "--no-skills", "--no-rules"];
+
+// The CLIs with no documented way, and what still reaches their agents:
+//   codex — AGENTS.md (and AGENTS.override.md) from the git root down
+//     (https://learn.chatgpt.com/docs/agent-configuration/agents-md), with no
+//     flag to skip it; its project `.codex/` config, hooks and rules load only
+//     for a project the user trusted ("Untrusted projects skip project-scoped
+//     `.codex/` layers", https://learn.chatgpt.com/docs/config-file/config-reference);
+//   gemini — GEMINI.md, `.gemini/settings.json` (MCP servers, hooks) and
+//     `.gemini/commands`; its untrusted-folder mode exits when headless
+//     (https://github.com/google-gemini/gemini-cli/blob/main/docs/cli/trusted-folders.md);
+//   kimi — AGENTS.md and the project's skill directories (`--skills-dir` is
+//     documented both as overriding and as adding to them);
+//   kilo, opencode — AGENTS.md (or CLAUDE.md), the project's opencode.json /
+//     kilo.json and `.opencode/` / `.kilo/` agents, commands and plugins
+//     (https://opencode.ai/docs/config/, https://kilo.ai/docs/cli); the
+//     switches that skip them exist only in source;
+//   cursor — `.cursor/rules`, AGENTS.md and CLAUDE.md, mcp.json and hooks
+//     (https://cursor.com/docs/cli/using); headless it runs only on a workspace
+//     it trusts (`--trust`, https://cursor.com/docs/cli/reference/parameters).
+const UNTRUSTED_NOTES = {
+  codex:
+    "codex has no documented way to ignore the repository's AGENTS.md — its instructions still reach the agent " +
+    "(its .codex/ config, hooks and rules load only if you trusted the project in your own Codex config)",
+  gemini:
+    "gemini has no documented way to ignore the repository's GEMINI.md and .gemini/settings.json when headless — " +
+    "its instructions, MCP servers and hooks still reach the agent",
+  kimi: "kimi has no documented way to ignore the repository's AGENTS.md and skills — they still reach the agent",
+  omp:
+    "omp keeps the repository's extensions, skills and rules out (--no-extensions --no-skills --no-rules), but has no " +
+    "documented way to ignore its AGENTS.md, CLAUDE.md, hooks or MCP config — they still reach the agent",
+  kilo:
+    "kilo has no documented way to ignore the repository's AGENTS.md, kilo.json and .kilo/ agents, commands and " +
+    "plugins — they still reach the agent",
+  opencode:
+    "opencode has no documented way to ignore the repository's AGENTS.md, opencode.json and .opencode/ agents, " +
+    "commands and plugins — they still reach the agent",
+  cursor:
+    "cursor has no documented way to ignore the repository's .cursor/rules, AGENTS.md, CLAUDE.md, mcp.json and " +
+    "hooks — headless it runs only on a workspace it trusts, and they still reach the agent",
+} as const;
+
 export const BUILTIN_ADAPTERS: Record<string, RawAdapter> = {
   codex: {
     label: "Codex CLI",
@@ -212,6 +293,7 @@ export const BUILTIN_ADAPTERS: Record<string, RawAdapter> = {
     flags: { model: ["--model"], schema: CODEX_SCHEMA },
     output: CODEX_OUTPUT,
     permissionArgs: CODEX_PERMISSIONS,
+    untrustedNote: UNTRUSTED_NOTES.codex,
   },
   claude: {
     label: "Claude Code",
@@ -230,6 +312,7 @@ export const BUILTIN_ADAPTERS: Record<string, RawAdapter> = {
     flags: { model: ["--model"], schema: CLAUDE_SCHEMA },
     output: CLAUDE_OUTPUT,
     permissionArgs: CLAUDE_PERMISSIONS,
+    untrustedArgs: CLAUDE_UNTRUSTED,
     // Anthropic's API caches a prompt's prefix: a fan-out sharing one starts
     // staggered, so the rest read the cache the first agent wrote.
     promptCache: true,
@@ -239,12 +322,14 @@ export const BUILTIN_ADAPTERS: Record<string, RawAdapter> = {
     command: ["gemini", "{permission_args}", "--prompt", "{prompt}"],
     flags: { model: ["--model"] },
     permissionArgs: GEMINI_PERMISSIONS,
+    untrustedNote: UNTRUSTED_NOTES.gemini,
   },
   qwen: {
     label: "Qwen Code",
     command: ["qwen", "{permission_args}", "--output-format", "text", "{prompt}"],
     flags: { model: ["--model"] },
     permissionArgs: QWEN_PERMISSIONS,
+    untrustedArgs: QWEN_UNTRUSTED,
   },
   kimi: {
     label: "Kimi CLI",
@@ -262,6 +347,7 @@ export const BUILTIN_ADAPTERS: Record<string, RawAdapter> = {
     stdin: "{prompt}",
     flags: { model: ["--model"] },
     permissionArgs: EDIT_ONLY(),
+    untrustedNote: UNTRUSTED_NOTES.kimi,
   },
   omp: {
     label: "Oh My Pi",
@@ -269,6 +355,8 @@ export const BUILTIN_ADAPTERS: Record<string, RawAdapter> = {
     stdin: "{prompt}",
     flags: { model: ["--model"] },
     permissionArgs: EDIT_ONLY("--approval-mode", "yolo"),
+    untrustedArgs: OMP_UNTRUSTED,
+    untrustedNote: UNTRUSTED_NOTES.omp,
   },
   kilo: {
     label: "Kilo Code",
@@ -277,6 +365,7 @@ export const BUILTIN_ADAPTERS: Record<string, RawAdapter> = {
     flags: { model: ["--model"] },
     output: KILO_OPENCODE_OUTPUT,
     permissionArgs: EDIT_ONLY("--auto"),
+    untrustedNote: UNTRUSTED_NOTES.kilo,
   },
   opencode: {
     label: "OpenCode",
@@ -285,6 +374,7 @@ export const BUILTIN_ADAPTERS: Record<string, RawAdapter> = {
     flags: { model: ["--model"] },
     output: KILO_OPENCODE_OUTPUT,
     permissionArgs: EDIT_ONLY("--auto"),
+    untrustedNote: UNTRUSTED_NOTES.opencode,
   },
   cursor: {
     label: "Cursor Agent CLI",
@@ -301,6 +391,7 @@ export const BUILTIN_ADAPTERS: Record<string, RawAdapter> = {
     stdin: "{prompt}",
     flags: { model: ["--model"] },
     permissionArgs: EDIT_ONLY("--force"),
+    untrustedNote: UNTRUSTED_NOTES.cursor,
   },
 };
 
@@ -333,6 +424,7 @@ export const DEFAULT_SETTINGS: Settings = {
   maxTranscriptBytes: 5 * 1024 * 1024, // each agent's transcript; past it, one truncation line (0: none)
   recordVersions: true, // each adapter CLI's --version, once per run, for odw compare (false: no probe)
   permissions: "edit", // the tier every built-in ran with before tiers existed
+  trust: "trusted", // agents read the repository's own instructions and settings (untrusted: each CLI's way of ignoring them)
   agentEnv: "inherit", // agent CLIs see ODW's whole environment
   agentEnvPass: [], // more variables a "minimal" agent environment passes through
   schemaKeywords: "warn", // what ODW's validator does not check is logged once per run, not refused

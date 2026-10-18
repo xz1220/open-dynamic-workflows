@@ -34,6 +34,7 @@ import { CliVersions, runSetup } from "../provenance.js";
 import type { QuotaPause } from "../quota-wait.js";
 import { redactorFor, type Redactor } from "../redact.js";
 import type { Scheduler } from "../scheduler.js";
+import { applyRunTrust, resolveRunTrust } from "../untrusted.js";
 import { FileControl } from "./file-control.js";
 import { notifyCheckpoint, notifyQuotaPause, notifyRunEnd } from "./notify.js";
 import { exportRunEnd } from "./otel-export.js";
@@ -164,7 +165,7 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
     // Run-level permission tier (meta.permissions: `--permissions` on run,
     // rerun or resume; ODW extension): the run's tier in place of the config's.
     const permissionsOverride = isPermissionTier(meta.permissions) ? meta.permissions : null;
-    const config = {
+    const overridden = {
       ...baseConfig,
       settings: {
         ...baseConfig.settings,
@@ -172,6 +173,19 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
         ...(permissionsOverride ? { permissions: permissionsOverride } : {}),
       },
     };
+    // The run's trust (ODW extension; see ../untrusted): `--untrusted` on run,
+    // rerun or resume (meta.trust), else the config's — and an untrusted run
+    // drops the worktreeSetup the repository's own config set.
+    const trusted = applyRunTrust(
+      overridden,
+      resolveRunTrust({
+        flag: meta.trust === "untrusted" ? "untrusted" : null,
+        config: overridden,
+        configPath: (meta.configPath as string | null) ?? null,
+        source: typeof meta.source === "string" ? meta.source : process.cwd(),
+      }),
+    );
+    const config = trusted.config;
     const runRedactor = redactorFor(config);
     redactor = runRedactor;
     sink.redactor = runRedactor;
@@ -264,6 +278,8 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
     // What the run starts with — the settings that change behaviour, and each
     // adapter's fingerprint — for `odw compare` (ODW extension; see ../provenance).
     sink.emit(event(RUN_STARTED, { runId, setup: runSetup(config) }));
+    // An untrusted run says so, and what of the repository's config it refused (ODW extension).
+    for (const message of trusted.notes) sink.emit(event(LOG, { message, trust: "untrusted" }));
     if (replay) {
       sink.emit(
         event(LOG, {

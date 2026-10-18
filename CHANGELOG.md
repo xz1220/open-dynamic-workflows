@@ -122,6 +122,17 @@ changed, and run on a schedule — and a dashboard redesigned to watch them.
 - Permission tiers `read` / `edit` / `full` (`--permissions`, per adapter, per call; a
   call can only lower its tier), mapped to each CLI's documented flags; `agentEnv:
   "minimal"` starts agents with only the environment they need (**ODW extension**).
+- Untrusted repositories (`odw run|rerun|resume --untrusted`, `"trust": "untrusted"`,
+  per adapter too; **ODW extension**): each CLI runs in the way of ignoring the
+  repository's CLAUDE.md, hooks, MCP servers and settings its docs give — `claude
+  --safe-mode` (not `--bare`, which takes API keys only), `qwen --safe-mode`, `omp
+  --no-extensions --no-skills --no-rules` — and the run says once per adapter what a CLI
+  without one still lets in (`codex has no documented way to ignore the repository's
+  AGENTS.md — its instructions still reach the agent`). The repository's
+  `.worktreeinclude` `symlink:` lines and a `worktreeSetup` from a config inside it do
+  not run; a config inside it cannot loosen the trust your `~/.config/odw/config.json`
+  sets. The trust level shows in the start banner, `odw doctor`, the run's setup, each
+  agent's events and saved result, and the dashboard's drawer.
 - Secrets stay out of what odw keeps and serves: whatever an agent prints — `cat .env`
   included — is redacted before it reaches its transcript and stderr tail, its saved
   result, the run's events and error or a webhook. The values of secret-named variables

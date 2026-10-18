@@ -493,6 +493,10 @@ const ZH: Record<string, string> = {
   "reads and searches; no edits, no commands": "只能读取和搜索;不能编辑,不能运行命令",
   "edits files in its workspace": "可以编辑工作区内的文件",
   "no approval checks at all": "完全不做审批检查",
+  trust: "信任",
+  untrusted: "不受信任",
+  "its CLI ignored the repository's instructions, settings and hooks where it could":
+    "它的 CLI 在能做到的地方忽略了仓库自带的指令、设置和钩子",
   // Transcript sheet.
   Transcript: "执行记录",
   "Loading transcript…": "正在载入执行记录…",

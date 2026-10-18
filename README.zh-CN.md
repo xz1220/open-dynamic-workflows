@@ -316,6 +316,7 @@ ODW 已实现下列原语能力。依赖宿主私有运行机制的脚本,迁移
 odw run wf.js [--args JSON|@file]            # 终端里前台展示;运行本体仍是独立 worker
                                              #   --adapter <name> 指定这次运行的默认 agent
                                              #   --permissions read|edit|full:agent 能做什么
+                                             #   --untrusted:挡住仓库的 CLAUDE.md、hooks 等
                                              #   --budget <tokens> 设置 budget.total
 ```
 
@@ -1121,7 +1122,8 @@ const reviews = await parallel(files.map((f) => () =>
 视图里、`--wait` 的第一行之后,以及 detached 运行的 run id 之后。每个 `agent_started`
 事件(以及 `odw agents --json`)都带有该 agent 的 `permissions`,`odw doctor` 会列出每个
 适配器支持的档位。档位只约束 agent 能做什么:`exec()` 命令属于 workflow 自身,不受影响。
-`read` 也不是运行不受信任代码的沙箱——比如 Claude Code 在 `-p` 下仍会执行仓库自带的 hooks。
+`read` 也不是运行不受信任代码的沙箱——比如 Claude Code 在 `-p` 下仍会执行仓库自带的 hooks;
+这样的仓库请以[不受信任](#不受信任的仓库odw-扩展)方式运行。
 
 **Codex 与需要审批的 MCP 工具**([#23](https://github.com/xz1220/open-dynamic-workflows/issues/23))。
 没有哪个档位能让 `codex exec` 批准 MCP 工具调用。它不向任何人询问,所以需要审批的工具
@@ -1168,6 +1170,61 @@ approval_mode = "approve"
 如果某个 CLI 在 `minimal` 下无法登录,把它需要的变量加进 `agentEnvPass`
 (`odw doctor --smoke` 会发一次真实调用来检验)。`exec()` 命令、`worktreeSetup` 和
 `notify` 钩子仍拿到完整的环境变量。
+
+### 不受信任的仓库(ODW 扩展)
+
+在别人的仓库上运行 agent 是危险的:仓库里的 CLAUDE.md 或 AGENTS.md 会左右 agent,它的
+hooks、MCP 服务器和项目设置会在 agent 里运行。对这样的仓库以**不受信任**方式运行——
+`odw run|rerun|resume --untrusted`,或在你的配置里写 `"trust": "untrusted"`(默认是
+`"trusted"`;不受信任运行的 rerun 和 resume 仍不受信任)。这时每个 CLI 都以它自己文档
+给出的"忽略仓库"方式运行,参数加在档位参数之后;没有这种方式的 CLI,运行会为每个适配器
+说一次——绝不悄悄降级:
+
+| 适配器 | 不受信任时 | 仍会传给 agent 的 |
+| --- | --- | --- |
+| `claude` | `--safe-mode`(关闭 CLAUDE.md、skills、插件、hooks、MCP 服务器、命令、agents、workflows;认证照常) | 无 |
+| `qwen` | `--safe-mode`(关闭上下文文件、hooks、扩展、skills、MCP 服务器) | 无 |
+| `omp` | `--no-extensions --no-skills --no-rules` | AGENTS.md、CLAUDE.md、hooks、MCP 配置 |
+| `codex` | 没有文档化的方式 | AGENTS.md(它的 `.codex/` 配置、hooks 和 rules 只对你信任过的项目加载) |
+| `gemini` | 没有文档化的方式(它的不受信任文件夹模式在无头下直接退出) | GEMINI.md、`.gemini/settings.json` |
+| `kimi` | 没有文档化的方式 | AGENTS.md、skills |
+| `kilo`、`opencode` | 没有文档化的方式 | AGENTS.md、项目配置、`.kilo/` / `.opencode/` |
+| `cursor` | 没有文档化的方式 | `.cursor/rules`、AGENTS.md、CLAUDE.md、`mcp.json`、hooks |
+
+Claude Code 的 `--bare` 跳过的更多,但它只接受 API key 认证,订阅登录用不了。第一次有
+agent 在 codex 上运行时,运行日志里会出现
+`codex has no documented way to ignore the repository's AGENTS.md — its instructions
+still reach the agent` 这样的一行。
+
+ODW 自己会执行的、属于仓库的代码会被拒绝:仓库 `.worktreeinclude` 里的 `symlink:` 行
+不做任何链接(链接等于把源码树交给 agent;普通行照常复制);仓库内配置(例如它的
+`./odw.config.json`)设置的 `worktreeSetup` 不会运行,日志里会说明。你自己的配置
+(`--config`、`$ODW_CONFIG`,或仓库之外的 `~/.config/odw/config.json`)里的
+`worktreeSetup` 照常运行。如果所用配置是仓库自己的,不受信任运行还会说一次:它的适配器
+和其他设置仍然生效;它也无法放宽你在 `~/.config/odw/config.json` 里设置的
+`"trust": "untrusted"`。
+
+```jsonc
+{
+  "trust": "untrusted",
+  "adapters": {
+    "codex": { "trust": "untrusted" },  // 或者:只让这个适配器在每次运行中都不受信任
+    "my_wrapper": {
+      "command": ["my-agent", "{permission_args}", "--cwd", "{workspace}"],
+      "permissionArgs": { "edit": [] },
+      "untrustedArgs": ["--no-project-config"],           // 加在档位参数之后
+      "untrustedNote": "my-agent still reads .my-agent/rules" // 每次不受信任运行说一次
+    }
+  }
+}
+```
+
+启动横幅里有一行信任信息——`trust: untrusted — claude --safe-mode, codex no documented
+way`——`odw doctor` 会显示配置的信任级别,以及每个适配器不受信任时如何运行。不受信任
+agent 的 `agent_started` 事件、保存的结果和 `odw agents --json` 行都带有
+`trust: "untrusted"`,看板的详情抽屉会显示它,运行的 `run_started` setup 也记录 `trust`。
+不受信任不是沙箱:它只在 CLI 允许的地方挡住仓库的指令和配置,agent 能做什么仍由权限
+档位决定。
 
 ### ODW 所保存内容中的密钥(ODW 扩展)
 

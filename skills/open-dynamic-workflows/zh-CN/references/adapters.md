@@ -87,6 +87,16 @@ agent 的 `permissions`；`odw doctor` 会列出每个适配器支持的档位�
 一种实用的最小权限分工：让 `claude` 写代码（acceptEdits）、让 `codex` 运行/验证
 （workspace-write 沙箱）——见 `examples/codex-claude-loop.js`。
 
+**不受信任的仓库（ODW 扩展）。** `odw run --untrusted`（或 `"trust": "untrusted"`）会在
+档位参数之后加上每个 CLI 文档给出的"忽略所在仓库"的方式：`claude --safe-mode`（关闭
+CLAUDE.md、skills、插件、hooks、MCP 服务器、命令、agents 和 workflows；认证照常）、
+`qwen --safe-mode`，以及 `omp --no-extensions --no-skills --no-rules`（它的 AGENTS.md、
+CLAUDE.md、hooks 和 MCP 配置仍会加载）。`codex`、`gemini`、`kimi`、`kilo`、`opencode` 和
+`cursor` 没有文档化的方式：运行会为每个适配器记一次日志，说明仍有什么传给了 agent
+（`codex has no documented way to ignore the repository's AGENTS.md — its instructions
+still reach the agent`）。仓库 `.worktreeinclude` 的 `symlink:` 行和仓库内配置设置的
+`worktreeSetup` 不会执行。
+
 ## 配置文件
 
 要改默认、调参，或加自己的 CLI，写一个 `odw.config.json`。它按优先级从高到低被发现：
@@ -152,6 +162,7 @@ agent 的 `permissions`；`odw doctor` 会列出每个适配器支持的档位�
 | `maxTranscriptBytes` | **ODW 扩展。** run 目录里为每个 agent 保存的 transcript 最多多少字节——它的 CLI 在 stdout 上打印的内容写入 `agents/<agentId>.transcript.jsonl`（JSONL 适配器的事件按原样保存，其他输出写成 `{"kind":"text"}` 行），stderr 的结尾写入旁边的 `agents/<agentId>.stderr.txt`；用 `odw logs <run> --agent <id\|label>` 查看（默认 5 MB）。超出时以一行 `{"kind":"truncated","bytes":N}` 结束 transcript；`0` = 不保存 |
 | `recordVersions` | **ODW 扩展。** `true`（默认）：某个适配器在一次运行中第一次派发 agent 时，与 agent 并行执行 `<cli> --version`（命令的第一个 argv 元素），3 秒超时，记为 `cli_version` 事件——`odw status`、`GET /api/runs/:id` 的 `cliVersions` 与 `odw compare` 会读取它。它绝不拖慢或导致运行失败；不回应的 CLI 记为未知版本；命令为 node 或其他解释器、脚本或相对路径的适配器不做探测。`false` = 不探测（meta.json 中的 odw 版本与工作流 sha256、`run_started` 上的设置照常记录） |
 | `permissions` | **ODW 扩展。** 运行的权限档位：`"read"`、`"edit"`（默认）或 `"full"`——见[权限](#权限每个内置适配器能做什么)。`odw run\|rerun\|resume --permissions` 可覆盖 |
+| `trust` | **ODW 扩展。** `"trusted"`（默认）或 `"untrusted"`：用于别人的仓库。不受信任时，每个适配器的 `untrustedArgs` 加在档位参数之后（`claude --safe-mode`、`qwen --safe-mode`、`omp --no-extensions --no-skills --no-rules`）；没有文档化方式的 CLI 每次运行说一次（它的 `untrustedNote`）。`.worktreeinclude` 的 `symlink:` 行不做链接，仓库内配置设置的 `worktreeSetup` 不会运行。`odw run\|rerun\|resume --untrusted` 按次设置；仓库内的配置无法放宽 `~/.config/odw/config.json` 设置的信任级别 |
 | `agentEnv` | **ODW 扩展。** `"inherit"`（默认）：agent CLI 拿到 ODW 的全部环境变量。`"minimal"`：只传 `PATH`、`HOME`、`USER`、`LOGNAME`、`SHELL`、`LANG`、`LC_*`、`TERM`、`TMPDIR`、`TZ`（以及 Windows 系统变量）、内置 CLI 文档中列出的认证与配置变量（`ANTHROPIC_*`、`CLAUDE_*`、`OPENAI_*`、`CODEX_*`、`GEMINI_*`、`GOOGLE_*`、`DASHSCOPE_*`、`QWEN_*`、`MOONSHOT_*`、`KIMI_*`、`CURSOR_*`、`OPENCODE_*`、代理变量、`NODE_EXTRA_CA_CERTS`）、`ODW_*`、`agentEnvPass` 和适配器的 `env`。`exec()` 命令、`worktreeSetup` 和 `notify` 仍拿到完整环境 |
 | `agentEnvPass` | **ODW 扩展。** `"minimal"` 环境下额外放行的变量名或 `*` 通配（如在 Bedrock 上用 Claude Code 时的 `["AWS_*"]`） |
 | `schemaKeywords` | **ODW 扩展。** `agent()` 的 schema 里 ODW 校验器不检查的关键字如何处理。`"warn"`（默认）：调用照常运行，ODW 检查其余部分，运行日志只说一次哪些关键字、位于何处、由谁强制执行（接收原生 schema 的适配器 CLI，即 `flags.schema`，否则无人）。`"strict"`：调用在启动前失败，逐个写明。格式错误的 schema 在两种模式下都会失败。`checkpoint()` 的 `schema`（修改后的 payload 必须满足的结构）遵循同样的规则。见[原生结构化输出](#原生结构化输出) |
@@ -184,6 +195,9 @@ agent 的 `permissions`；`odw doctor` 会列出每个适配器支持的档位�
 | `permissionArgs` | **ODW 扩展。** 各档位的参数：`{ "read"?: [...], "edit": [...], "full"?: [...] }`（`edit` 必填，没有参数写 `[]`），放在命令中 `{permission_args}` 那一项的位置——设置了它，命令就必须恰好有这一项 |
 | `permissions` | **ODW 扩展。** 把该适配器的档位封顶在运行档位之下：它的 agent 取两者中较低的一档 |
 | `permissionDenials` | **ODW 扩展。** `"warn"` 或 `"fail"`：这个 CLI 自己的 `permissionDenials`，优先于运行级设置 |
+| `trust` | **ODW 扩展。** `"untrusted"`：这个适配器在每次运行中都不受信任（`"trusted"` 不能放宽不受信任的运行） |
+| `untrustedArgs` | **ODW 扩展。** 让这个 CLI 不读取仓库指令、设置、hooks 和 MCP 服务器的参数，不受信任时加在 `{permission_args}` 处、档位参数之后。不设：运行会说一次它什么也挡不住。在内置适配器上设置它会去掉内置的 `untrustedNote` |
+| `untrustedNote` | **ODW 扩展。** 不受信任运行时仍会从仓库传给这个 CLI 的内容，每次运行记一次日志 |
 
 ### 输出格式
 

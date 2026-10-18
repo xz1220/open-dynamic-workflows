@@ -102,6 +102,8 @@ export interface CreateRunInput {
   adapter?: string | null;
   /** Run-level permission tier override (`--permissions`; ODW extension), else the config's. */
   permissions?: string | null;
+  /** `"untrusted"` from `--untrusted` (ODW extension; see ../untrusted), else the config's trust. */
+  trust?: string | null;
   /** Where the run was initiated from (e.g. "chat" for Chat Host runs, "eval" for `odw eval`'s). */
   origin?: string | null;
   /** The `odw eval` cell this run is one repeat of (ODW extension); written to meta only when set. */
@@ -179,6 +181,7 @@ export class RunStore {
       workflowName: input.workflowName ?? null,
       adapter: input.adapter ?? null,
       permissions: input.permissions ?? null,
+      ...(input.trust ? { trust: input.trust } : {}),
       origin: input.origin ?? null,
       ...(input.eval ? { eval: input.eval } : {}),
       resumedFrom: input.resumedFrom?.runId ?? null,

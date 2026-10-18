@@ -304,6 +304,9 @@ function drawer(run: RunDetail, ai: number, nowSec: number): string {
     (a.permissions
       ? `<span class="k">${t("permissions")}</span><span class="v"><span class="tag perm-${esc(a.permissions)}" title="${esc(t(PERM_HINT[a.permissions] ?? ""))}">${esc(t(a.permissions))}</span></span>`
       : "") +
+    (a.trust === "untrusted"
+      ? `<span class="k">${t("trust")}</span><span class="v"><span class="tag trust-untrusted" title="${esc(t("its CLI ignored the repository's instructions, settings and hooks where it could"))}">${esc(t("untrusted"))}</span></span>`
+      : "") +
     (a.failureReason ? `<span class="k">${t("reason")}</span><span class="v"><span class="tag ${/rate_limit|quota|stalled|timeout/.test(a.failureReason) ? "warn" : ""}">${esc(reasonLabel(a.failureReason))}</span>${resetNote(a, nowSec)}</span>` : "") +
     (a.usage && (a.usage.inputTokens != null || a.usage.outputTokens != null)
       ? `<span class="k">${t("tokens")}</span><span class="v">${fmtTokens(a.usage.inputTokens)} ${t("in")} · ${fmtTokens(a.usage.outputTokens)} ${t("out")}</span>`

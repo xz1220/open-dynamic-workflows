@@ -51,6 +51,9 @@
   "//permissions": "ODW extension. What the run's agents may do: \"read\" (look, never edit or run commands — for research and review fan-outs), \"edit\" (the default: what every built-in always ran with) or \"full\" (no sandbox, no approvals). odw run|rerun|resume --permissions overrides it per run; an adapter's own \"permissions\" and an agent()'s { permissions } may only lower it. Each adapter's flags per tier are its \"permissionArgs\", spliced where its command has \"{permission_args}\". An agent that asks a CLI with no read flags for \"read\" fails before it starts; one that asks for \"full\" where the CLI declares none runs with its \"edit\" flags, logged once. To cap one built-in without redefining it, give only the fields you change: \"adapters\": { \"codex\": { \"permissions\": \"read\" } }.",
   "permissions": "edit",
 
+  "//trust": "ODW extension. \"untrusted\" (or odw run|rerun|resume --untrusted) is for someone else's repository: its CLAUDE.md, AGENTS.md, hooks, MCP servers and settings would steer or run inside every agent. Each adapter's \"untrustedArgs\" go after its tier's flags (claude --safe-mode, qwen --safe-mode; omp keeps out extensions, skills and rules only); a CLI with no documented way to ignore the repository is said once per run (its \"untrustedNote\"), never silently. The repository's own code that odw would run is refused: .worktreeinclude symlink: lines link nothing, and a worktreeSetup the repository's own odw.config.json sets does not run (one from your own config does). A config inside the repository cannot loosen the trust your ~/.config/odw/config.json sets. An adapter's own \"trust\": \"untrusted\" makes it untrusted in every run. \"trusted\" (the default) changes nothing.",
+  "trust": "trusted",
+
   "//agentEnv": "ODW extension. \"inherit\" (the default) starts agent CLIs with ODW's whole environment. \"minimal\" passes only PATH, HOME, USER, LOGNAME, SHELL, LANG, LC_*, TERM, TMPDIR, TZ (and the Windows system variables), the auth and config variables the built-in CLIs document (ANTHROPIC_*, CLAUDE_*, OPENAI_*, CODEX_*, GEMINI_*, GOOGLE_*, DASHSCOPE_*, QWEN_*, MOONSHOT_*, KIMI_*, CURSOR_*, OPENCODE_*, the proxy variables, NODE_EXTRA_CA_CERTS), the adapter's env, ODW_* and the names or globs in \"agentEnvPass\" (e.g. [\"AWS_*\"] for Claude Code on Bedrock).",
   "agentEnv": "inherit",
 
@@ -110,7 +113,8 @@
         "read": ["--sandbox", "read-only"],
         "edit": ["--sandbox", "workspace-write"],
         "full": ["--sandbox", "danger-full-access"]
-      }
+      },
+      "untrustedNote": "codex has no documented way to ignore the repository's AGENTS.md — its instructions still reach the agent (its .codex/ config, hooks and rules load only if you trusted the project in your own Codex config)"
     },
     "claude": {
       "label": "Claude Code",
@@ -123,6 +127,7 @@
         "edit": ["--permission-mode", "acceptEdits", "--allowedTools", "WebSearch", "WebFetch"],
         "full": ["--permission-mode", "bypassPermissions"]
       },
+      "untrustedArgs": ["--safe-mode"],
       "promptCache": true
     },
     "gemini": {
@@ -133,27 +138,32 @@
         "read": ["--approval-mode", "default"],
         "edit": ["--approval-mode", "auto_edit"],
         "full": ["--approval-mode", "yolo"]
-      }
+      },
+      "untrustedNote": "gemini has no documented way to ignore the repository's GEMINI.md and .gemini/settings.json when headless — its instructions, MCP servers and hooks still reach the agent"
     },
     "qwen": {
       "label": "Qwen Code",
       "command": ["qwen", "{permission_args}", "--output-format", "text", "{prompt}"],
       "flags": { "model": ["--model"] },
-      "permissionArgs": { "edit": ["--approval-mode", "auto-edit"], "full": ["--approval-mode", "yolo"] }
+      "permissionArgs": { "edit": ["--approval-mode", "auto-edit"], "full": ["--approval-mode", "yolo"] },
+      "untrustedArgs": ["--safe-mode"]
     },
     "kimi": {
       "label": "Kimi CLI",
       "command": ["kimi", "--work-dir", "{workspace}", "--print", "{permission_args}", "--input-format", "text", "--output-format", "text"],
       "stdin": "{prompt}",
       "flags": { "model": ["--model"] },
-      "permissionArgs": { "edit": [] }
+      "permissionArgs": { "edit": [] },
+      "untrustedNote": "kimi has no documented way to ignore the repository's AGENTS.md and skills — they still reach the agent"
     },
     "omp": {
       "label": "Oh My Pi",
       "command": ["omp", "--print", "--no-session", "{permission_args}", "--cwd", "{workspace}"],
       "stdin": "{prompt}",
       "flags": { "model": ["--model"] },
-      "permissionArgs": { "edit": ["--approval-mode", "yolo"] }
+      "permissionArgs": { "edit": ["--approval-mode", "yolo"] },
+      "untrustedArgs": ["--no-extensions", "--no-skills", "--no-rules"],
+      "untrustedNote": "omp keeps the repository's extensions, skills and rules out (--no-extensions --no-skills --no-rules), but has no documented way to ignore its AGENTS.md, CLAUDE.md, hooks or MCP config — they still reach the agent"
     },
     "kilo": {
       "label": "Kilo Code",
@@ -161,7 +171,8 @@
       "stdin": "{prompt}",
       "flags": { "model": ["--model"] },
       "output": { "format": "jsonl", "eventType": "text", "textPath": ["part", "text"], "select": "last" },
-      "permissionArgs": { "edit": ["--auto"] }
+      "permissionArgs": { "edit": ["--auto"] },
+      "untrustedNote": "kilo has no documented way to ignore the repository's AGENTS.md, kilo.json and .kilo/ agents, commands and plugins — they still reach the agent"
     },
     "opencode": {
       "label": "OpenCode",
@@ -169,14 +180,16 @@
       "stdin": "{prompt}",
       "flags": { "model": ["--model"] },
       "output": { "format": "jsonl", "eventType": "text", "textPath": ["part", "text"], "select": "last" },
-      "permissionArgs": { "edit": ["--auto"] }
+      "permissionArgs": { "edit": ["--auto"] },
+      "untrustedNote": "opencode has no documented way to ignore the repository's AGENTS.md, opencode.json and .opencode/ agents, commands and plugins — they still reach the agent"
     },
     "cursor": {
       "label": "Cursor Agent CLI",
       "command": ["agent", "--print", "{permission_args}", "--trust", "--output-format", "text", "--workspace", "{workspace}"],
       "stdin": "{prompt}",
       "flags": { "model": ["--model"] },
-      "permissionArgs": { "edit": ["--force"] }
+      "permissionArgs": { "edit": ["--force"] },
+      "untrustedNote": "cursor has no documented way to ignore the repository's .cursor/rules, AGENTS.md, CLAUDE.md, mcp.json and hooks — headless it runs only on a workspace it trusts, and they still reach the agent"
     },
     "my_wrapper": {
       "label": "My custom wrapper (example)",

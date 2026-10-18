@@ -161,6 +161,15 @@ export interface PermissionArgs {
   full?: string[];
 }
 
+/**
+ * Whether a run trusts the repository it works in (an ODW extension):
+ * `trusted` — its agents read what each CLI reads there (CLAUDE.md, AGENTS.md,
+ * hooks, MCP servers, project settings); `untrusted` — each CLI runs in its
+ * documented way of ignoring them (`untrustedArgs`), and where it has none the
+ * run says so (see adapters/trust.ts).
+ */
+export type TrustLevel = "trusted" | "untrusted";
+
 /** How to invoke one coding-agent CLI. */
 export interface Adapter {
   name: string;
@@ -202,6 +211,17 @@ export interface Adapter {
   permissions?: PermissionTier;
   /** What tool calls this CLI refused do to a reply that claims success; overrides `permissionDenials` (ODW extension). */
   permissionDenials?: DenialPolicy;
+  /** `untrusted` runs this CLI untrusted whatever the run's trust (ODW extension); `trusted` cannot loosen an untrusted run. */
+  trust?: TrustLevel;
+  /**
+   * The flags that keep the repository's own instructions, settings, hooks and
+   * MCP servers from this CLI (ODW extension), added after its tier's flags at
+   * `{permission_args}` when it runs untrusted. Absent: it has none, and an
+   * untrusted run says so once.
+   */
+  untrustedArgs?: string[];
+  /** What an untrusted run still lets reach this CLI from the repository, said once per run (ODW extension). */
+  untrustedNote?: string;
 }
 
 /**
@@ -316,6 +336,13 @@ export interface Settings {
    * may only lower it.
    */
   permissions: PermissionTier;
+  /**
+   * Whether the run trusts the repository it works in (an ODW extension;
+   * `odw run --untrusted` overrides it): `untrusted` runs every CLI in its
+   * documented way of ignoring the repository's instructions, settings and
+   * hooks, and refuses the repository's own worktree setup (see adapters/trust.ts).
+   */
+  trust: TrustLevel;
   /**
    * The environment agent CLIs start with (an ODW extension): `"inherit"`
    * passes ODW's whole environment; `"minimal"` only the basics a CLI needs,

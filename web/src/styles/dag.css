@@ -619,6 +619,11 @@
   border-color: var(--alarm-line);
   background: var(--alarm-soft);
 }
+.tag.trust-untrusted {
+  color: var(--sig-ink);
+  border-color: var(--sig-line);
+  background: var(--sig-soft);
+}
 .outbox.err {
   color: var(--alarm-ink);
   background: var(--alarm-soft);

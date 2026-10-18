@@ -27,7 +27,7 @@
  */
 
 import { isPermissionTier } from "../adapters/permissions.js";
-import type { PermissionTier } from "../adapters/types.js";
+import type { PermissionTier, TrustLevel } from "../adapters/types.js";
 import { addUsage, readUsage, type Usage } from "../adapters/usage.js";
 import type { AgentChanges } from "../changes.js";
 import type { WaitingCheckpoint } from "../checkpoint.js";
@@ -108,6 +108,11 @@ export interface AgentView {
    * agent_started's `permissions`. Absent for older event files.
    */
   permissions?: PermissionTier;
+  /**
+   * Agents only (ODW extension): `untrusted` when its CLI runs untrusted —
+   * agent_started's `trust` (see adapters/trust.ts). Absent: trusted.
+   */
+  trust?: TrustLevel;
   /**
    * Agents only (ODW extension): the adapters it fell back from, in order —
    * their quota was spent or their login refused — before `adapter`, the one
@@ -369,6 +374,7 @@ export function applyAgentEvent(
       branch: null,
     };
     if (isPermissionTier(ev.permissions)) opened.permissions = ev.permissions;
+    if (ev.trust === "untrusted") opened.trust = "untrusted";
     agents.push(opened);
     return { opened };
   }

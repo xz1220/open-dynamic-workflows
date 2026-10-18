@@ -72,7 +72,8 @@ import { dirname, resolve } from "node:path";
 import { formatSeconds } from "./adapters/failures.js";
 import { isPermissionTier } from "./adapters/permissions.js";
 import type { McpServer } from "./adapters/output.js";
-import { adapterDisplayName, type Adapter, type PermissionTier } from "./adapters/types.js";
+import { planTrust, runTrust } from "./adapters/trust.js";
+import { adapterDisplayName, type Adapter, type PermissionTier, type TrustLevel } from "./adapters/types.js";
 import { addUsage, estimatedUsage, type Usage } from "./adapters/usage.js";
 import type { AgentRequest } from "./bridge.js";
 import { branchName, ChangeRecorder, type AgentChanges, type KeptChanges } from "./changes.js";
@@ -451,6 +452,9 @@ export function createPrimitives(
     // an agent that may not have its tier, or whose CLI cannot enforce it,
     // fails before it starts.
     const permissions = route.permissions;
+    // Whether its CLI runs untrusted (ODW extension; see adapters/trust.ts):
+    // the run's level, or its first adapter's own. The bridge adds the flags.
+    const trust = planTrust(route.chain[0]!, runTrust(ctx.config)).trust;
     // A staggered fan-out (ODW extension): in a parallel() or pipeline() call,
     // an agent on a prompt-caching adapter whose prompt shares a long prefix
     // with an earlier one's — on the same model and persona, so the same
@@ -543,6 +547,7 @@ export function createPrimitives(
           phase: activePhase,
           adapter: adapter.name,
           ...permissionField(permissions.tier ?? permissions.requested),
+          ...trustField(trust),
           // What `odw compare` matches and shows it by (ODW extension): its
           // resume key, and the model it asked for (a tier keeps its @ name).
           key,
@@ -780,6 +785,7 @@ export function createPrimitives(
           finishedAt: finished.ts,
           value: outcome.value,
           ...permissionField(permissions.tier),
+          ...trustField(trust),
           ...changeFields(kept),
           ...deniedField(outcome.denied),
           ...mcpField(outcome.mcp),
@@ -1046,6 +1052,11 @@ const surfaced = new WeakSet<object>();
 /** The `permissions` field an agent's start event and record carry: its tier, when it has one (ODW extension). */
 function permissionField(tier: unknown): { permissions?: PermissionTier } {
   return isPermissionTier(tier) ? { permissions: tier } : {};
+}
+
+/** The `trust` field an agent's start event and record carry when its CLI runs untrusted (ODW extension; absent: trusted). */
+function trustField(trust: TrustLevel): { trust?: TrustLevel } {
+  return trust === "untrusted" ? { trust } : {};
 }
 
 /**

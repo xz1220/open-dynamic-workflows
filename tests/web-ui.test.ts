@@ -581,6 +581,10 @@ test("the drawer names an agent's permission tier", () => {
   store.focusRun("20260101-000000-aaaaaa");
   store.run = detail([agent("review:1", "Review", "done", { agentId: 1, permissions: "read" })], { state: "done" });
   assert.match(renderJob(view, NOW), /<span class="k">permissions<\/span><span class="v"><span class="tag perm-read" title="reads and searches; no edits, no commands">read<\/span>/);
+  assert.doesNotMatch(renderJob(view, NOW), /trust-untrusted/, "a trusted agent shows no trust row");
+  // An agent whose CLI ran untrusted (ODW extension: --untrusted) says so beside its tier.
+  store.run = detail([agent("review:1", "Review", "done", { agentId: 1, permissions: "read", trust: "untrusted" })], { state: "done" });
+  assert.match(renderJob(view, NOW), /<span class="k">trust<\/span><span class="v"><span class="tag trust-untrusted" title="[^"]+">untrusted<\/span>/);
   store.focusRun(null);
 });
 

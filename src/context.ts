@@ -172,6 +172,8 @@ export function buildContext(config: Config, options: BuildContextOptions = {}):
     agentSchemaPath: options.agentSchemaPath,
     redactor,
     onCliRun: options.onCliRun,
+    // What an untrusted run still lets through, or refused, is the run's to say once (ODW extension: trust).
+    onRunNote: (message, fields) => sink.emit(event(LOG, { message, ...fields })),
     ...options.bridge,
     // quotaWait (ODW extension): a pause for a spent quota is logged and
     // shown, and `odw resume` ends it at once.

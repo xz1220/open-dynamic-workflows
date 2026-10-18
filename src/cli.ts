@@ -38,7 +38,8 @@ import { parseArgs } from "node:util";
 
 import { isOnPath, listAdapters, loadConfig, locateConfig, resolveAdapter, resolveRunsRoot } from "./adapters/config.js";
 import { isPermissionTier, permissionsBanner } from "./adapters/permissions.js";
-import type { Config, PermissionTier } from "./adapters/types.js";
+import { trustBanner } from "./adapters/trust.js";
+import type { Adapter, Config, PermissionTier, TrustLevel } from "./adapters/types.js";
 import { killAllAgentProcesses } from "./adapters/runner.js";
 import { checkEdit } from "./checkpoint.js";
 import { CHECKPOINT_NOTE_MAX, isCheckpointId } from "./control.js";
@@ -78,6 +79,7 @@ import { cmdEval } from "./eval/command.js";
 import { isSeaBinary } from "./sea.js";
 import { describeConcurrency } from "./throttle.js";
 import { detectCaps, glyphs, palette, sanitizeText } from "./tty.js";
+import { resolveRunTrust } from "./untrusted.js";
 import { listWorkflows, resolveWorkflow } from "./workflows/resolve.js";
 
 export const COMMANDS = [
@@ -160,6 +162,8 @@ export function helpText(): string {
     "  --source <dir>      run's working dir; also anchors a relative script path & project-name lookup",
     "  --adapter <name>    default agent() adapter for this run (explicit agent(p,{adapter}) still wins)",
     "  --permissions <t>   read | edit | full: what this run's agents may do (default edit; ODW extension)",
+    "  --untrusted         keep the repository's CLAUDE.md, hooks, MCP servers and settings from agents where",
+    "                      each CLI allows (claude --safe-mode), say where one cannot (ODW extension)",
     "  --fg                run in the foreground: live progress on a TTY, plain event lines otherwise",
     "  -d, --detach        start in the background and print the run id",
     "  --wait              block until the run finishes, then print the result (one run-id line on stderr)",
@@ -185,7 +189,7 @@ export function helpText(): string {
     "  done / failed / stopped,    starts a NEW run with the same script, args and adapter: every agent()",
     "  or stale (worker gone)      call unchanged since (same prompt and options) replays its saved result",
     "                              instead of running again; edited and new calls run. Takes the run",
-    "                              modes and --adapter/--permissions/--config/--runs-root, like rerun",
+    "                              modes and --adapter/--permissions/--untrusted/--config/--runs-root, like rerun",
     "  still running               refused (it would redo work in flight); --force starts the new run anyway",
     "",
     "Schedules (odw schedule, ODW extension — no daemon: cron, launchd or a systemd timer calls odw back):",
@@ -412,6 +416,7 @@ async function cmdRun(rest: string[]): Promise<number> {
       source: { type: "string" },
       adapter: { type: "string" },
       permissions: { type: "string" },
+      untrusted: { type: "boolean" },
       wait: { type: "boolean" },
       fg: { type: "boolean" },
       detach: { type: "boolean", short: "d" },
@@ -436,6 +441,7 @@ async function cmdRun(rest: string[]): Promise<number> {
 
   const { mode, timeoutMs } = resolveStartMode("run", values);
   const permissions = parsePermissions("run", values.permissions);
+  const trust: TrustLevel | null = values.untrusted === true ? "untrusted" : null;
 
   warnIfNoDefaultAdapter(values.adapter ?? null, values.config ?? null, values.source ?? null, "run");
 
@@ -446,13 +452,14 @@ async function cmdRun(rest: string[]): Promise<number> {
     source: values.source ?? null,
     adapter: values.adapter ?? null,
     permissions,
+    trust,
     budgetTotal,
   });
 
   return afterStart(store, runId, mode, {
     timeoutMs,
     hint: "started run",
-    banner: startBanner(values.config ?? null, values.source ?? null, permissions),
+    banner: startBanner(values.config ?? null, values.source ?? null, permissions, trust),
   });
 }
 
@@ -465,18 +472,30 @@ function parsePermissions(cmd: string, raw: string | undefined): PermissionTier 
 
 /**
  * The start banner (ODW extensions), a line each: the permissions line — the
- * run's tier and what each installed adapter runs with — and the concurrency
- * line, the caps the run's agents get (per adapter too). Both from the config
+ * run's tier and what each installed adapter runs with — the trust line —
+ * the run's trust and, untrusted, how each installed adapter keeps the
+ * repository out, or that it cannot — and the concurrency line, the caps
+ * the run's agents get (per adapter too). All from the config
  * the worker will load, which resolves a project-local file against --source
  * (see warnIfNoDefaultAdapter). Undefined when that config cannot be read:
  * the launch itself reports that.
  */
-function startBanner(configPath: string | null, source: string | null, permissions: PermissionTier | null): string | undefined {
+function startBanner(
+  configPath: string | null,
+  source: string | null,
+  permissions: PermissionTier | null,
+  trust: TrustLevel | null = null,
+): string | undefined {
   try {
-    const config = loadConfig(configPath, { quiet: true, ...(source ? { cwd: resolve(source) } : {}) });
+    const cwd = source ? resolve(source) : process.cwd();
+    const config = loadConfig(configPath, { quiet: true, cwd });
     if (permissions) config.settings.permissions = permissions;
+    // The trust line (ODW extension), decided as the worker will decide it (see untrusted.ts).
+    config.settings.trust = resolveRunTrust({ flag: trust, config, configPath, source: cwd, cwd }).trust;
+    const installed = (adapter: Adapter): boolean => isOnPath(adapter.command[0]!);
     return [
-      permissionsBanner(config, (adapter) => isOnPath(adapter.command[0]!)),
+      permissionsBanner(config, installed),
+      trustBanner(config, installed),
       `concurrency: ${describeConcurrency(config)}`,
     ].join("\n");
   } catch {
@@ -1192,6 +1211,7 @@ const RELAUNCH_OPTIONS = {
   "runs-root": { type: "string" },
   adapter: { type: "string" },
   permissions: { type: "string" },
+  untrusted: { type: "boolean" },
   wait: { type: "boolean" },
   fg: { type: "boolean" },
   detach: { type: "boolean", short: "d" },
@@ -1251,7 +1271,7 @@ async function cmdResume(rest: string[]): Promise<number> {
     const control = store.readControl(runId);
     if (state === "paused" || control === "pause") {
       const given = values as Record<string, unknown>;
-      const newRunFlag = ["adapter", "permissions", "wait", "fg", "detach", "timeout"].find((f) => given[f] !== undefined);
+      const newRunFlag = ["adapter", "permissions", "untrusted", "wait", "fg", "detach", "timeout"].find((f) => given[f] !== undefined);
       if (newRunFlag) {
         throw new UsageError(
           `odw resume: run ${runId} is paused, so resume continues it in place — ` +
@@ -1293,7 +1313,7 @@ async function relaunch(
   cmd: "rerun" | "resume",
   store: RunStore,
   runId: string,
-  flags: { "runs-root"?: string; adapter?: string; permissions: PermissionTier | null },
+  flags: { "runs-root"?: string; adapter?: string; permissions: PermissionTier | null; untrusted?: boolean },
   start: { mode: RunMode; timeoutMs: number | undefined },
 ): Promise<number> {
   const meta = store.readMeta(runId);
@@ -1309,6 +1329,8 @@ async function relaunch(
     source: (meta.source as string | undefined) ?? null,
     adapter: flags.adapter ?? (meta.adapter as string | null) ?? null,
     permissions: flags.permissions ?? (isPermissionTier(meta.permissions) ? meta.permissions : null),
+    // An untrusted run's rerun or resume is untrusted too (ODW extension): nothing loosens it.
+    trust: (flags.untrusted === true || meta.trust === "untrusted" ? "untrusted" : null) as TrustLevel | null,
     budgetTotal: (meta.budgetTotal as number | null) ?? null,
     // The worker reads the saved results from the source run's own directory.
     resumedFrom: cmd === "resume" ? { runId, dir: store.runDir(runId) } : null,
@@ -1343,7 +1365,7 @@ async function relaunch(
   return afterStart(started.store, started.runId, start.mode, {
     timeoutMs: start.timeoutMs,
     hint: cmd === "resume" ? `resuming ${runId} (${saved} saved agent result(s) to replay) as` : `re-running ${runId} as`,
-    banner: startBanner(opts.configPath, opts.source, opts.permissions),
+    banner: startBanner(opts.configPath, opts.source, opts.permissions, opts.trust),
   });
 }
 
