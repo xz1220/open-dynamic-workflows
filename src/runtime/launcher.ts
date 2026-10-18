@@ -71,6 +71,10 @@ export interface StartRunOptions {
   dry?: boolean | null;
   /** `odw run --record` (ODW extension): keep the run as a case of this test file. */
   record?: { file: string; workflow: string } | null;
+  /** Where a signed trigger's delivery came from (ODW extension; see ../triggers), kept in meta as `context`. */
+  context?: Record<string, unknown> | null;
+  /** `--deadline <seconds>` (ODW extension): the worker stops the run gracefully once they pass. */
+  deadlineSeconds?: number | null;
 }
 
 /**
@@ -111,6 +115,8 @@ function commonCreateInput(options: StartRunOptions, source: string, workflowNam
     resumedFrom: options.resumedFrom ?? null,
     dry: options.dry ?? null,
     record: options.record ?? null,
+    context: options.context ?? null,
+    deadlineSeconds: options.deadlineSeconds ?? null,
   };
 }
 

@@ -130,6 +130,16 @@ export interface CreateRunInput {
   dry?: boolean | null;
   /** `odw run --record` (ODW extension): the test file the run is kept in as a case, and the workflow it names; written to meta only when set. */
   record?: { file: string; workflow: string } | null;
+  /**
+   * Where the run came from when a signed trigger started it (ODW extension;
+   * see ../triggers): written to meta as `context`, handed to notify hooks.
+   */
+  context?: Record<string, unknown> | null;
+  /**
+   * `--deadline <seconds>` (ODW extension): the worker stops the run that many
+   * seconds after it was created. Written to meta as `deadline: { seconds, at }`.
+   */
+  deadlineSeconds?: number | null;
 }
 
 /**
@@ -198,6 +208,7 @@ export class RunStore {
       script = join(dir, "workflow.js");
       writeFileSync(script, input.inlineSource, "utf8");
     }
+    const createdAt = now();
     writeJson(join(dir, META), {
       runId,
       script,
@@ -217,6 +228,8 @@ export class RunStore {
       ...(input.applyResolve ? { applyResolve: input.applyResolve } : {}),
       ...(input.dry ? { dry: true } : {}),
       ...(input.record ? { record: input.record } : {}),
+      ...(input.context ? { context: input.context } : {}),
+      ...(input.deadlineSeconds ? { deadline: { seconds: input.deadlineSeconds, at: createdAt + input.deadlineSeconds } } : {}),
       resumedFrom: input.resumedFrom?.runId ?? null,
       resumedFromDir: input.resumedFrom?.dir ?? null,
       // First-class fact (not inferred from path topology): the script lives in
@@ -227,7 +240,7 @@ export class RunStore {
       // odw's version, and the sha256 of the workflow source as launched.
       odwVersion: VERSION,
       sourceHash: sourceHash(input.inlineSource ?? readText(script)),
-      createdAt: now(),
+      createdAt,
     });
     writeJson(join(dir, STATUS), { runId, state: "pending", dispatched: 0, updatedAt: now() });
     return runId;
