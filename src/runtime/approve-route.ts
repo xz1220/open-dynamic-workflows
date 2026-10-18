@@ -22,7 +22,9 @@
  * Every answer is a small HTML page — a used (410), expired (410), tampered
  * (403) or unknown link gets one saying so, never a stack trace. Tampered and
  * malformed links and failed CSRF checks count against the client address in
- * a {@link FailureLimiter}, as wrong tokens do; past it, 429.
+ * a {@link FailureLimiter}, as wrong tokens do; past it, a bad link gets 429.
+ * A link whose signature checks out is never held back by the limiter: bad
+ * links sent from the same address (a tunnel's) cannot block the real ones.
  */
 
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
@@ -73,22 +75,25 @@ export function approveLinksOff(res: ServerResponse): void {
 
 async function route(req: IncomingMessage, res: ServerResponse, path: string, ctx: ApproveRouteContext): Promise<void> {
   const address = failureKey(req.socket.remoteAddress ?? "unknown");
-  const blocked = ctx.limiter.blocked(address);
-  if (blocked) {
-    page(res, 429, "Too many bad links", `${blocked.error}.`, { "retry-after": String(blocked.retryAfter) });
-    return;
-  }
   const method = req.method ?? "GET";
   if (method !== "GET" && method !== "HEAD" && method !== "POST") {
     page(res, 405, "Not allowed", "An approve link is opened (GET) or answered (POST).", { allow: "GET, HEAD, POST" });
     return;
   }
+  // The MAC is checked first: a link this server signed is never held back by
+  // the limiter — else anyone sending bad links from the same address (a
+  // tunnel's, a proxy's) could block every real one. Only bad ones count, and wait.
   const match = /^\/approve\/([^/]+)$/.exec(path);
   const nowMs = (ctx.now ?? Date.now)();
   const check = match ? verifyLinkToken(ctx.secret, match[1]!, Math.floor(nowMs / 1000)) : ({ ok: false, reason: "malformed" } as const);
   if (!check.ok) {
     if (check.reason === "expired") {
       page(res, 410, "This link has expired", "Answer the checkpoint with odw approve|reject, or in the dashboard.");
+      return;
+    }
+    const blocked = ctx.limiter.blocked(address);
+    if (blocked) {
+      page(res, 429, "Too many bad links", `${blocked.error}.`, { "retry-after": String(blocked.retryAfter) });
       return;
     }
     ctx.limiter.fail(address);

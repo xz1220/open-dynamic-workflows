@@ -274,7 +274,7 @@ export function startServer(options: ServeOptions): Promise<ServeHandle> {
   let approve: ApproveRouteContext | null = null;
   if (options.publicUrl && !bundle) {
     const publicUrl = parsePublicUrl(options.publicUrl);
-    if (!publicUrl) throw new Error(`--public-url must be an http(s) URL with no credentials, query or fragment`);
+    if (!publicUrl) throw new Error(`--public-url must be a root http(s) URL (https://host[:port]) with no credentials, path, query or fragment`);
     approve = {
       secret: ensureApproveSecret(store.root, { rotate: options.rotateApproveSecret === true }),
       publicUrl,

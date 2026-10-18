@@ -80,7 +80,7 @@ import { exportRun, exportTimeout, otlpTarget, OTEL_SEND_TIMEOUT_MS, postTrace, 
 import { startServer } from "./runtime/server.js";
 import { BUNDLE_EXT, BundleError, bundleRedactor, createBundle, DEFAULT_BUNDLE_MAX_BYTES, isBundleRunId, openBundle, type OpenedBundle } from "./runtime/bundle.js";
 import { generateToken, isValidToken } from "./runtime/serve-auth.js";
-import { parsePublicUrl } from "./runtime/approve-links.js";
+import { parsePublicUrl, publicUrlHasPath } from "./runtime/approve-links.js";
 import { printAgentLogs } from "./runtime/transcript-view.js";
 import { cmdNote, cmdNotes } from "./runtime/notes-view.js";
 import { executeRun } from "./runtime/worker.js";
@@ -1673,7 +1673,13 @@ async function cmdServe(rest: string[], as: "serve" | "view" = "serve"): Promise
   if (scope === "approve" && tokenFlag === undefined) throw new UsageError("odw serve: --token-scope approve goes with --token");
   const publicUrl = values["public-url"] === undefined ? null : parsePublicUrl(values["public-url"]);
   if (values["public-url"] !== undefined && !publicUrl) {
-    throw new UsageError("odw serve: --public-url must be an http(s) URL with no credentials, query, fragment, comma, semicolon or quote");
+    if (publicUrlHasPath(values["public-url"])) {
+      throw new UsageError(
+        "odw serve: --public-url must be a root URL (https://host[:port]), with no path: links are answered at /approve/ on it, " +
+          "so serve odw at the root of its host (a tunnel or a host of its own), not under a path",
+      );
+    }
+    throw new UsageError("odw serve: --public-url must be an http(s) URL with no credentials, path, query, fragment, comma, semicolon or quote");
   }
   if ((publicUrl || values["rotate-approve-secret"]) && positionals[0] !== undefined) {
     throw new UsageError("odw serve: a shared bundle answers no approve links (--public-url, --rotate-approve-secret)");

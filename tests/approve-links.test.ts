@@ -171,7 +171,10 @@ test("minting needs a live odw serve --public-url for the runs root; otherwise i
 
 test("--public-url: an http(s) base that can stand in an ntfy header as it is", () => {
   assert.equal(parsePublicUrl("https://odw.example.test/"), "https://odw.example.test");
-  assert.equal(parsePublicUrl("https://odw.example.test/base/"), "https://odw.example.test/base");
+  // A root only: links are answered at /approve/, so a base path would mint links nothing answers.
+  assert.equal(parsePublicUrl("https://odw.example.test/base/"), null);
+  assert.equal(parsePublicUrl("https://odw.example.test/base"), null);
+  assert.equal(parsePublicUrl("https://odw.example.test:8443//"), "https://odw.example.test:8443");
   assert.equal(parsePublicUrl("http://127.0.0.1:4317"), "http://127.0.0.1:4317");
   for (const bad of ["ftp://x.test", "not a url", "https://u:p@x.test", "https://x.test/?q=1", "https://x.test/#f", "https://x.test/a,b", "https://x.test/a;b", "https://x.test/a'b"]) {
     assert.equal(parsePublicUrl(bad), null, bad);
@@ -396,7 +399,7 @@ test("an ntfy button decides with its X-ODW-Action header; tampered and expired 
   }
 });
 
-test("bad links are rate limited per address like wrong tokens: 429 page with retry-after, even for a good link", async () => {
+test("bad links are rate limited per address like wrong tokens: 429 page with retry-after — a good link from there still works", async () => {
   const p = project();
   try {
     await withLinksServer(
@@ -409,10 +412,19 @@ test("bad links are rate limited per address like wrong tokens: 429 page with re
         const base = `http://127.0.0.1:${handle.port}`;
         assert.equal((await fetch(`${base}/approve/not-a-link`)).status, 403);
         assert.equal((await fetch(`${base}/approve/still.not-a-link`)).status, 403);
-        const locked = await fetch(local(handle, minted.links.approveUrl));
+        const locked = await fetch(`${base}/approve/a-third.bad-link`);
         assert.equal(locked.status, 429);
         assert.ok(Number(locked.headers.get("retry-after")) > 0);
         assert.match(await locked.text(), /too many bad approve links/);
+        // The signature is checked first: bad links sent from the same address (a
+        // tunnel's) cannot block the real ones. A good link opens, and decides.
+        const url = local(handle, minted.links.approveUrl);
+        const page = await openPage(url);
+        assert.equal(page.status, 200);
+        const decided = await postForm(url, { csrf: page.csrf, action: "approve" }, { cookie: page.cookie });
+        assert.equal(decided.status, 200);
+        assert.match(await decided.text(), /Approved/);
+        assert.equal((await fetch(`${base}/approve/still.bad`)).status, 429, "bad ones still wait");
       },
       { approveLimit: { failures: 2, windowMs: 60_000 } },
     );
@@ -564,4 +576,5 @@ test("odw serve: --token-scope and --public-url are checked before anything star
   await usage(["serve", "--token", TOKEN, "--token-scope", "write"], /--token-scope is read or approve/);
   await usage(["serve", "--public-url", "ftp://x.test"], /--public-url must be an http\(s\) URL/);
   await usage(["serve", "--public-url", "https://x.test/?a=1"], /--public-url must be/);
+  await usage(["serve", "--public-url", "https://x.test/odw"], /--public-url must be a root URL \(https:\/\/host\[:port\]\), with no path/);
 });

@@ -184,7 +184,9 @@ function parseClaims(body: string): LinkClaims | null {
  * `odw serve --public-url`'s base URL, normalized (no trailing slash), or
  * null when it is not one: an absolute http(s) URL with no credentials, query
  * or fragment, and none of `, ; " '` or whitespace — so a link can stand in an
- * ntfy `Actions` header as it is.
+ * ntfy `Actions` header as it is. It is a root (`https://host[:port]`): the
+ * server answers links at /approve/, so a URL with a path — a proxy serving
+ * odw under one — would mint links it never answers ({@link publicUrlHasPath}).
  */
 export function parsePublicUrl(raw: string): string | null {
   let url: URL;
@@ -195,8 +197,18 @@ export function parsePublicUrl(raw: string): string | null {
   }
   if (url.protocol !== "http:" && url.protocol !== "https:") return null;
   if (url.username || url.password || url.search || url.hash || raw.includes("?") || raw.includes("#")) return null;
-  const base = `${url.origin}${url.pathname.replace(/\/+$/, "")}`;
+  if (publicUrlHasPath(raw)) return null;
+  const base = url.origin;
   return /[,;"'\s]/.test(base) ? null : base;
+}
+
+/** Does `raw`, an http(s) URL, have a path past its root (`https://host/base`)? */
+export function publicUrlHasPath(raw: string): boolean {
+  try {
+    return new URL(raw).pathname.replace(/\/+$/, "") !== "";
+  } catch {
+    return false;
+  }
 }
 
 /** Say, in the runs root, that this server answers links at `publicUrl`. */
