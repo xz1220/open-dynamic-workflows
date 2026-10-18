@@ -13,7 +13,7 @@ import { join, resolve } from "node:path";
 import { execPath } from "node:process";
 import { fileURLToPath } from "node:url";
 
-import { loadConfig, resolveAdapter, resolveRunsRoot } from "../adapters/config.js";
+import { expandHome, loadConfig, resolveAdapter, resolveRunsRoot } from "../adapters/config.js";
 import { isPermissionTier } from "../adapters/permissions.js";
 import { withSandboxFlag, type SandboxFlag } from "../adapters/sandbox.js";
 import type { Config, PermissionTier, TrustLevel } from "../adapters/types.js";
@@ -109,10 +109,20 @@ function commonCreateInput(options: StartRunOptions, source: string, workflowNam
  * Create a run and launch its worker process; return `{ runId, store }` and
  * how the workflow resolved (`workflow`: a plugin's, what its name noted).
  */
+/**
+ * `options` with `configPath` made absolute against where odw was started: the
+ * worker runs in the run's source directory, and a relative path would name a
+ * file there instead — the repository's own config, in an untrusted run.
+ */
+function absoluteConfig<T extends StartRunOptions>(options: T): T {
+  return options.configPath ? { ...options, configPath: resolve(expandHome(options.configPath)) } : options;
+}
+
 export function startRun(
   script: string,
-  options: StartRunOptions = {},
+  given: StartRunOptions = {},
 ): { runId: string; store: RunStore; workflow: ResolvedWorkflow } {
+  const options = absoluteConfig(given);
   const { config, source, store } = prepare(options);
   // `script` may be a path (./wf.js), a managed-directory name (deep-research)
   // or a Claude Code plugin's workflow (plugin:name, ODW extension); resolve
@@ -160,8 +170,9 @@ export function startRun(
  */
 export function startRunFromSource(
   sourceCode: string,
-  options: StartRunOptions & { allowInvalid?: boolean } = {},
+  given: StartRunOptions & { allowInvalid?: boolean } = {},
 ): { runId: string; store: RunStore } {
+  const options = absoluteConfig(given);
   const { source, store } = prepare(options);
 
   let workflowName: string | null = null;

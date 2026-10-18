@@ -11,6 +11,7 @@
  * depend on the shape of the CLI's stdout (see output.ts).
  */
 
+import { constants } from "node:fs";
 import { mkdtemp, open, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -57,13 +58,22 @@ export async function replyFile(maxBytes = MAX_REPLY_FILE_BYTES): Promise<ReplyF
 async function readReply(path: string, maxBytes: number): Promise<ReplyRead> {
   let file;
   try {
-    file = await open(path, "r");
+    // The CLI owns the reply file's directory (in a container sandbox it is
+    // mounted read-write), so the file may be anything it chose to make
+    // there: a link to a host file would hand that file over as the reply,
+    // and a FIFO would block this open forever. Open without following a
+    // link or waiting on a pipe, and read regular files only.
+    file = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return { text: null };
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") return { text: null };
+    if (code === "ELOOP") return { text: null, note: "its reply file is a link — not read" };
     return { text: null, note: `its reply file could not be read: ${(err as Error).message}` };
   }
   try {
-    const { size } = await file.stat();
+    const info = await file.stat();
+    if (!info.isFile()) return { text: null, note: "its reply file is not a regular file — not read" };
+    const { size } = info;
     const length = Math.min(size, maxBytes);
     const buffer = Buffer.alloc(length);
     let read = 0;

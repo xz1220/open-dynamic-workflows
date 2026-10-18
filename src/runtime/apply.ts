@@ -41,6 +41,7 @@ import { chmod, copyFile, lstat, mkdir, mkdtemp, open, readdir, readFile, readli
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
+import { SAFE_GIT } from "../git-safety.js";
 import { runCommand } from "../adapters/runner.js";
 import { cliOk } from "../adapters/types.js";
 import { fingerprint, git, runGit, splitNul, type GitOptions } from "../changes.js";
@@ -548,7 +549,7 @@ async function writeBlob(repo: string, oid: string, path: string): Promise<void>
   const out = await open(path, "w");
   try {
     await new Promise<void>((done, fail) => {
-      const child = spawn("git", ["-C", repo, "cat-file", "blob", oid], { stdio: ["ignore", out.fd, "ignore"], windowsHide: true });
+      const child = spawn("git", ["-C", repo, ...SAFE_GIT, "cat-file", "blob", oid], { stdio: ["ignore", out.fd, "ignore"], windowsHide: true });
       child.once("error", fail);
       child.once("close", (code) => (code === 0 ? done() : fail(new Error(`git cat-file exited with code ${code}`))));
     });

@@ -37,7 +37,7 @@ import { basename, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
-import { isOnPath, listAdapters, loadConfig, locateConfig, resolveAdapter, resolveRunsRoot } from "./adapters/config.js";
+import { expandHome, isOnPath, listAdapters, loadConfig, locateConfig, resolveAdapter, resolveRunsRoot } from "./adapters/config.js";
 import { isPermissionTier, permissionsBanner } from "./adapters/permissions.js";
 import { trustBanner } from "./adapters/trust.js";
 import { sandboxBanner, sandboxFlagOf, withSandboxFlag, type SandboxFlag } from "./adapters/sandbox.js";
@@ -1493,7 +1493,7 @@ async function cmdServe(rest: string[], as: "serve" | "view" = "serve"): Promise
       host,
       cwd: process.cwd(),
       config,
-      configPath: values.config ?? null,
+      configPath: values.config ? resolve(expandHome(values.config)) : null, // absolute: runs it starts work elsewhere
       token,
       bundle: opened?.info ?? null,
     });
