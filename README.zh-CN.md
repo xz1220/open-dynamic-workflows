@@ -1452,7 +1452,7 @@ Code 与 Codex 的镜像(用 `--build-arg CLAUDE_CODE_VERSION=…` 固定版本)
     "kind": "container",
     "image": "odw-agents",          // 必填;从不拉取
     "engine": "docker",             // 或 "podman";默认:装了 docker 用 docker,否则 podman
-    "network": "default",           // 或 "none"(见下文)
+    "network": "default",           // 或 "none",或 { "allow": [...] }(见下文)
     "cliConfig": "copy",            // 或 "mount-ro" | "none"
     "mounts": [{ "source": "~/datasets", "readonly": true }], // 默认只读,除非 "readonly": false
     "memory": "4g", "cpus": 2, "pids": 512 // pids 默认 512;其余用引擎默认值
@@ -1510,10 +1510,56 @@ CLI 配置和更多挂载,网络与各项限制取更严格者;`agent()` 调用�
   它的退出处理会删除仍在运行的全部容器。崩溃遗留的容器可用
   `docker ps --filter label=odw.run` 找到。
 
+**出站白名单**(ODW 扩展)。agent CLI 必须连到模型 API,所以 `network: "default"` 实际上就是
+开放的互联网。白名单让容器只能连到你列出的主机,而且由容器之外的东西来执行:
+
+```jsonc
+{
+  "sandbox": {
+    "kind": "container", "image": "odw-agents",
+    "network": { "allow": ["adapter", "registry.npmjs.org", "*.githubusercontent.com"] }
+    // "allow": "adapter" —— 只放行该 agent 的适配器所需的主机
+    // "proxyImage": "node:22-alpine" —— 让代理跑在另一个镜像里(需要 node)
+  }
+}
+```
+
+- **条目。** 主机名(`api.anthropic.com`)、匹配其子域的通配符(`*.npmjs.org` 匹配
+  `registry.npmjs.org`,不匹配 `npmjs.org`)或 IP 字面量(`10.0.0.5`、`[::1]`),都可带端口
+  (`example.com:8443`;不带时为 443 与 80)。请求 IP 地址时,除非这个地址本身被列出,一律拒绝——
+  通配符从不匹配 IP。`"*"` 会被拒绝:那就是 `network: "default"`。
+- **`"adapter"`** 代表 agent 的适配器在 `egressHosts` 中声明的主机(取自各 CLI 文档):
+  `claude` 为 api.anthropic.com、claude.ai、platform.claude.com;`codex` 为 api.openai.com、
+  chatgpt.com、auth.openai.com;`gemini` 为 generativelanguage.googleapis.com、
+  cloudcode-pa.googleapis.com、oauth2.googleapis.com;`agy` 为 cloudcode-pa.googleapis.com、
+  oauth2.googleapis.com。可选的遥测不在其中(会被拒绝并记录;Claude Code 可设
+  `DISABLE_TELEMETRY` 让它安静)。其他适配器没有声明——给你的适配器加 `"egressHosts": [...]`,
+  或直接列出主机。
+- **只能收紧。** 适配器或单次调用的 `network: { allow }` 与运行的白名单取交集;`"none"` 仍然优先;
+  白名单之下的调用不能要求 `"default"`。`network: "default"` 的 `exec()` 步骤得到运行的白名单
+  (去掉 `"adapter"`:步骤没有适配器)。
+- **原理。** 第一个需要它的容器会为每个不同的白名单拉起一个运行专属的内部网络
+  (`docker network create --internal`:没有出口路由)和一个出站代理边车容器
+  (`odw-<run>-egress<n>-…`,标签 `odw.role=egress-proxy`),代理位于引擎默认网络上并同时加入内部网络。
+  agent 的容器只加入内部网络,`HTTPS_PROXY`/`HTTP_PROXY`(及小写形式)指向代理,`NO_PROXY` 放过回环地址,
+  并设 `NODE_USE_ENV_PROXY=1`。代理只为白名单主机的 443 端口(或条目指定的端口)建立 `CONNECT` 隧道,
+  只把明文 HTTP 转发给白名单主机,并且**自己解析域名**——agent 的容器对外没有 DNS。它是 ODW 自带的
+  零依赖脚本(与隐藏命令 `odw __egress-proxy` 是同一份代码),用 `node` 跑在**agent 的镜像里——
+  因此镜像需要 node**——或 `proxyImage` 里,加固方式与 agent 容器相同。
+- **拒绝即事件。** 每个被拒绝的请求都会写入 `<运行目录>/egress/` 的一行,运行把它变成
+  `egress_denied` 事件(`{ host, port, method, agent }`,步骤则为 `commandId`),出现在
+  `odw logs` 与看板中。agent 由其代理 URL 中的用户名标识;丢掉用户名的 CLI 显示为 `agent: null`。
+- **会被清理。** 运行结束时先删除代理,再删除网络;worker 被杀时退出处理也会这样做。崩溃遗留的
+  网络可用 `docker network ls --filter label=odw.run` 找到。`odw doctor` 会拉起代理,并在内部网络上的
+  容器里期望第一个列出的主机返回 200、一个保留域名返回 403。
+- **安全的失败方式。** 忽略 `HTTPS_PROXY` 的 CLI 或工具完全没有网络:内部网络除了代理别无出路。
+  不经代理走 HTTP(S) 的一切——SSH、裸 TCP、UDP——都会失败。白名单不同的 agent 用不同的网络与代理,
+  所以 agent 用不了别人的代理。被放行的主机仍是受信任的:agent 能把代码发到任何被放行主机会转发的地方。
+
 缺少引擎或镜像时,运行在第一个 agent 启动前就以 `ConfigError` 失败,并说明如何构建镜像;
 `odw doctor` 做同样的检查,并运行 `docker run --rm --pull never --network none <镜像> true`
 (不涉及模型)。配置了容器时启动横幅多一行沙箱信息,每个 agent 的 `agent_started` 事件与看板的 AgentView
-带 `sandbox: { kind, engine, image, network }`,运行 setup 记录 `sandbox` 供 `odw compare` 比较。
+带 `sandbox: { kind, engine, image, network }`(白名单时 `network: "allowlist"` 并附 `allow` 主机),运行 setup 记录 `sandbox` 供 `odw compare` 比较。
 沙箱中的 agent 不记录 CLI 版本:版本探测在宿主上运行,宿主的 CLI 不是镜像里的那个。
 
 **它保护什么,不保护什么。** 它让 agent——以及它运行的一切——读不到也改不了你文件系统的
@@ -1521,7 +1567,9 @@ CLI 配置和更多挂载,网络与各项限制取更严格者;`agent()` 调用�
 进程。它**不能**让你的代码远离模型:agent 仍会把读到的内容发给模型 API。在
 `network: "default"`(默认值,因为 agent CLI 必须连到模型 API)下它拥有开放网络,可以把工作区
 以及环境变量和登录中的密钥发往任何地方——请把密钥挡在 `agentEnv` 之外,不需要模型 API 的
-地方都用 `network: "none"`(`exec()` 步骤默认就不联网)。工作区是可写的:agent 写在那里的东西
+地方都用 `network: "none"`(`exec()` 步骤默认就不联网),需要的地方用出站白名单
+(`network: { allow: "adapter" }`):这样 agent 只能连到它的模型 API 和你列出的主机,经由一个
+它在容器内改不了的代理,每次拒绝都有记录。工作区是可写的:agent 写在那里的东西
 ——原地工作时仓库里的 git hook、`package.json` 脚本、Makefile——会在你之后运行它时在宿主上
 执行,所以请审阅改动(隔离 worktree 与 `odw apply` 有帮助)。容器与宿主共享内核,不是虚拟机。
 无 root 的 Docker 有自己的 uid 映射,文件可能归另一个 uid 所有;SELinux 宿主上的绑定挂载可能

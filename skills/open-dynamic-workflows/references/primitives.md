@@ -66,9 +66,9 @@ other primitive organizes calls to it.
   [adapters](adapters.md#permissions-what-each-built-in-may-do). Claude Code
   ignores it.
 - **opts.sandbox** (**ODW extension**) — run this agent's CLI in a container, or a
-  stricter one than its run's and adapter's: `"container"`, or `{ network: "none",
-  memory, cpus, pids, cliConfig: "none", image }` (`image` only where nothing else
-  sets one). It may only tighten — `"none"` under a container, a network the
+  stricter one than its run's and adapter's: `"container"`, or `{ network: "none"
+  | { allow: [...] }, memory, cpus, pids, cliConfig: "none", image }` (`image` only
+  where nothing else sets one; an `allow` list meets the sandbox's own). It may only tighten — `"none"` under a container, a network the
   sandbox has not, a higher limit or another image fails the call before it
   starts. See [adapters](adapters.md#container-sandbox-odw-extension). Not part of
   the resume key. Claude Code ignores it.
@@ -369,7 +369,8 @@ script's own `exec` binding takes precedence over the injected one.
 - **opts.network** (**ODW extension**) — in a run whose `sandbox` is a container,
   the step runs in a fresh container of the run's image, with the run's source
   (and its `cwd`) bound at the same path and the agents' environment; its network
-  is `"none"` unless it asks for `"default"` (refused when the sandbox has none).
+  is `"none"` unless it asks for `"default"` (refused when the sandbox has none) —
+  the run's network, an egress allowlist included (its `"adapter"` entry aside).
   No effect outside a sandbox.
 
 A non-zero exit is a result, not an error. A program that cannot be launched

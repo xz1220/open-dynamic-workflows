@@ -344,8 +344,11 @@ approvals).
   holding only its workspace and a copy of the CLI's login. The user builds the
   image (`examples/sandbox/Dockerfile`; ODW never pulls); check with `odw doctor`.
   Agents keep the network (they must reach their model API) — so it guards the
-  user's files, not their code from the model. `agent(p, { sandbox: { network:
-  'none' } })` may only tighten it.
+  user's files, not their code from the model — unless `sandbox.network` is an
+  egress allowlist (`{ allow: "adapter" }` or a host list; ODW extension): then
+  only those hosts, through a proxy outside the container, and each refusal is an
+  `egress_denied` event. `agent(p, { sandbox: { network: 'none' } })` may only
+  tighten it.
 
 ```js
 const findings = await parallel(files.map((f) => () =>

@@ -224,6 +224,19 @@ changed, and run on a schedule — and a dashboard redesigned to watch them.
   pulled; `odw doctor` checks the engine, the image and a smoke run. Agents keep the
   network by default (they must reach their model API) — see the threat model in the
   README.
+- An egress allowlist for container agents (`"network": { "allow": ["adapter",
+  "registry.npmjs.org", "*.example.com"] }`, per run, adapter or call — which may only
+  narrow it; **ODW extension**): the agent's container joins an internal network of the
+  run (`network create --internal`) whose only way out is an egress proxy sidecar —
+  ODW's zero-dependency node script (`odw __egress-proxy`), run in the agent's image
+  (which then needs node) or `proxyImage`. It tunnels CONNECT only to allowlisted
+  host:443 (or the entry's port), forwards plain HTTP only to allowlisted hosts,
+  resolves names itself and refuses IP literals unless listed. `"adapter"` is the hosts
+  the adapter declares (`egressHosts`: claude, codex, gemini and agy declare their API
+  and login hosts). Every refusal is an `egress_denied` event naming the agent; a CLI
+  that ignores `HTTPS_PROXY` gets no network at all. Proxies and networks go at the
+  run's end and in the kill-all backstop; `odw doctor` smoke-tests the proxy both ways,
+  and the real-Docker CI check fetches an allowed host and is refused another.
 - Secrets stay out of what odw keeps and serves: whatever an agent prints — `cat .env`
   included — is redacted before it reaches its transcript and stderr tail, its saved
   result, the run's events and error or a webhook. The values of secret-named variables

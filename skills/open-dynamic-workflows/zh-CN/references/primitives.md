@@ -52,7 +52,7 @@ agent(prompt, opts?) -> Promise<unknown>
   full）——请求更高档位会让调用以 `AgentError` 失败，报错写明两个档位——没有只读模式的适配器会
   拒绝 `"read"`（调用在 CLI 启动前失败；`claude`、`codex` 和 `gemini` 有只读模式）。见
   [适配器](adapters.md#权限每个内置适配器能做什么)。Claude Code 会忽略它。
-- **opts.sandbox**（**ODW 扩展**）—— 让这个 agent 的 CLI 在容器中运行，或在比运行与适配器更严格的容器中运行：`"container"`，或 `{ network: "none", memory, cpus, pids, cliConfig: "none", image }`（只有别处都没设镜像时才能给 `image`）。只能收紧——容器下的 `"none"`、沙箱没有的网络、更高的限制或换镜像都会让调用在启动前失败。见 [adapters](adapters.md)。不计入 resume key。Claude Code 会忽略它。
+- **opts.sandbox**（**ODW 扩展**）—— 让这个 agent 的 CLI 在容器中运行，或在比运行与适配器更严格的容器中运行：`"container"`，或 `{ network: "none" | { allow: [...] }, memory, cpus, pids, cliConfig: "none", image }`（只有别处都没设镜像时才能给 `image`；`allow` 列表与沙箱自己的取交集）。只能收紧——容器下的 `"none"`、沙箱没有的网络、更高的限制或换镜像都会让调用在启动前失败。见 [adapters](adapters.md)。不计入 resume key。Claude Code 会忽略它。
 - **opts.limits**（**ODW 扩展**）—— 这个 agent 被当作失控杀掉之前能做多少：`{ toolCalls?, costUsd?, outputTokens?, seconds?, repeat? }`——累计所有 CLI 运行的工具调用次数、CLI 报告的美元花费与输出 token、从第一次 CLI 运行起的秒数，以及同一工具调用（工具名 + 参数哈希）**连续**出现 `repeat` 次。逐键覆盖适配器与运行级的 `agentLimits`，`null` 取消某项。从 claude、codex、kilo、opencode 的输出实时执行（文本 CLI 的花费只能在每次运行后检查）；越界立即杀掉 CLI 并抛出可恢复的错误，`reason: "runaway"`，事件上的 `limitHit: { limit, max, value, evidence }` 写明证据（``Bash `npm test` ×5 in a row``）。不会重试，也不算 `expect` 未达标。格式错误的值在任何东西运行前抛出 `AgentError`。不计入 resume key。Claude Code 会忽略它。
 - **opts.expect**（**ODW 扩展**）—— agent 回复之后必须成立的条件，由 odw 检查：
   `{ changes?, files?, command?, match?, timeout? }`。见 [expect](#expectodw-扩展)。
@@ -280,7 +280,7 @@ Claude Code 的 Workflow 工具没有 `exec` 全局（`validate()` 会对此给�
 - **opts.label** / **opts.phase** —— 进度展示，与 `agent` 相同。label 默认取命令的前
   40 个字符。
 - **opts.check** —— 命令没有以 0 退出时抛出 `ExecError`。
-- **opts.network**（**ODW 扩展**）—— 运行的 `sandbox` 为容器时，该步骤在运行镜像的全新容器里执行，以相同路径挂载运行的 source（及其 `cwd`），环境同 agent；网络默认 `"none"`，可要求 `"default"`（沙箱本身没有网络时拒绝）。不在沙箱中时无效。
+- **opts.network**（**ODW 扩展**）—— 运行的 `sandbox` 为容器时，该步骤在运行镜像的全新容器里执行，以相同路径挂载运行的 source（及其 `cwd`），环境同 agent；网络默认 `"none"`，可要求 `"default"`（沙箱本身没有网络时拒绝）——即运行的网络，包括出站白名单（其中的 `"adapter"` 条目除外）。不在沙箱中时无效。
 
 非零退出码是结果，不是错误。无法启动的程序像 shell 一样报告退出码 `127`（找不到）或
 `126`。设了 `check: true` 时，失败会抛出携带 `.result` 的 `ExecError`——与 agent 失败

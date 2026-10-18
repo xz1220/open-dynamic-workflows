@@ -283,7 +283,9 @@ odw apply $RUN --all --pr --verify "<测试命令>"   # 新分支、推送、开
   CLI 运行和每个 `exec()` 步骤都在全新的 Docker/Podman 容器里进行，只能看到自己的工作区和
   CLI 登录文件的副本。镜像由用户构建（`examples/sandbox/Dockerfile`；ODW 从不拉取），用
   `odw doctor` 检查。agent 保留网络（必须连到模型 API）——它保护的是用户的文件，而不是让代码
-  远离模型。`agent(p, { sandbox: { network: 'none' } })` 只能收紧它。
+  远离模型——除非 `sandbox.network` 是出站白名单（`{ allow: "adapter" }` 或主机列表；ODW 扩展）：
+  那样只能连到这些主机，经由容器之外的代理，每次拒绝都是一条 `egress_denied` 事件。
+  `agent(p, { sandbox: { network: 'none' } })` 只能收紧它。
 
 ```js
 const findings = await parallel(files.map((f) => () =>

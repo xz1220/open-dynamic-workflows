@@ -146,8 +146,28 @@ gemini `~/.gemini/{settings.json,oauth_creds.json,google_accounts.json,GEMINI.md
 `CLAUDE_CODE_OAUTH_TOKEN`/`ANTHROPIC_API_KEY`, `CODEX_API_KEY`, `GEMINI_API_KEY`;
 macOS keeps Claude Code's login in the Keychain). Env: what `agentEnv` passes,
 by name, less `PATH`, `HOME`, `TMPDIR`, `XDG_*`, `CLAUDE_CONFIG_DIR`,
-`CODEX_HOME`. `network`: `"default"` (agents must reach their model API) or
-`"none"`; `exec()` steps default to `"none"` (`exec(cmd, { network: "default" })`).
+`CODEX_HOME`. `network`: `"default"` (agents must reach their model API),
+`"none"`, or an egress allowlist `{ "allow": [...] | "adapter", "proxyImage"? }`;
+`exec()` steps default to `"none"` (`exec(cmd, { network: "default" })` gets the
+run's network, an allowlist included).
+
+**Egress allowlist (ODW extension).** `"network": { "allow": ["adapter",
+"registry.npmjs.org", "*.example.com", "10.0.0.5:5432"] }`: the container joins
+an internal network of the run (`<engine> network create --internal`, no route
+out) whose only way out is an egress proxy sidecar (ODW's zero-dependency node
+script, the hidden `odw __egress-proxy`, run in the agent's image — **it needs
+node** — or `proxyImage`), reached through `HTTPS_PROXY`/`HTTP_PROXY`. The proxy
+tunnels CONNECT only to an allowlisted host's 443 (or the entry's port),
+forwards plain HTTP only to allowlisted hosts, resolves names itself, and
+refuses IP literals unless listed; `*.d` matches subdomains of `d`, not `d`.
+`"adapter"` = the adapter's `egressHosts` (claude: api.anthropic.com, claude.ai,
+platform.claude.com; codex: api.openai.com, chatgpt.com, auth.openai.com;
+gemini and agy: their Google API and login hosts; others: none). Adapters and
+calls only narrow it (the hosts both allow). Each denial is an `egress_denied`
+event `{ host, port, method, agent | commandId }`. A CLI that ignores
+`HTTPS_PROXY` gets no network at all (the safe failure). Proxies and networks
+are removed at the run's end and by the backstop; `odw doctor` expects 200 for
+the first listed host and 403 for a reserved one.
 A run that does not exit cleanly has its container `kill`ed and `rm --force`d
 by name. The image must hold the CLIs and is never pulled
 (`examples/sandbox/Dockerfile`); a missing engine or image is a `ConfigError`
@@ -156,7 +176,7 @@ before the first container and in `odw doctor`, which also smoke-runs
 `sandbox` sets its own image/engine/cliConfig and more mounts (network and
 limits: the stricter wins); an `agent()`'s may only tighten. It guards the
 host's files and processes, not the workspace or what the agent sends over the
-network.
+network — an egress allowlist narrows that to the hosts listed.
 
 ## Config file
 
@@ -267,6 +287,7 @@ did-you-mean hint) instead of silently ignoring them.
 | `untrustedNote` | **ODW extension.** What an untrusted run still lets reach this CLI from the repository, logged once per run |
 | `sandbox` | **ODW extension.** Run this CLI in a container: `{ "kind": "container", … }`, the fields it sets over the run's `sandbox` (its own `image`, `engine`, `cliConfig`, more `mounts`; of `network` and the limits the stricter wins). It needs an `image` when the run's sandbox is `"none"`; `"none"` here is refused — it may only tighten |
 | `agentLimits` | **ODW extension.** This CLI's own per-agent limits, over the run's `agentLimits` key by key (`null` lifts one); an `agent()`'s `limits` override them |
+| `egressHosts` | **ODW extension.** The hosts this CLI needs (model API, login): what a container sandbox's `"network": { "allow": "adapter" }` lets it reach. claude, codex, gemini and agy declare theirs |
 
 ### Output formats
 

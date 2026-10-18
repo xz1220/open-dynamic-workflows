@@ -1638,7 +1638,7 @@ set it in your config, per run, per adapter, or per call:
     "kind": "container",
     "image": "odw-agents",          // required; never pulled
     "engine": "docker",             // or "podman"; default: docker if installed, else podman
-    "network": "default",           // or "none" (see below)
+    "network": "default",           // or "none", or { "allow": [...] } (see below)
     "cliConfig": "copy",            // or "mount-ro" | "none"
     "mounts": [{ "source": "~/datasets", "readonly": true }], // read-only unless "readonly": false
     "memory": "4g", "cpus": 2, "pids": 512 // pids defaults to 512; the rest to the engine's
@@ -1714,11 +1714,68 @@ What each CLI run becomes (`docker run --rm -i --init --pull never --name odw-<r
   its exit handler removes every container it still has. `docker ps --filter label=odw.run`
   finds any left by a crash.
 
+**An egress allowlist** (ODW extension). Agent CLIs need their model API, so in practice
+`network: "default"` is the open internet. An allowlist lets a container reach only the
+hosts you name, enforced outside it:
+
+```jsonc
+{
+  "sandbox": {
+    "kind": "container", "image": "odw-agents",
+    "network": { "allow": ["adapter", "registry.npmjs.org", "*.githubusercontent.com"] }
+    // "allow": "adapter" — just the hosts the agent's adapter needs
+    // "proxyImage": "node:22-alpine" — run the proxy in another image (it needs node)
+  }
+}
+```
+
+- **Entries.** A host (`api.anthropic.com`), a wildcard over its subdomains
+  (`*.npmjs.org` matches `registry.npmjs.org`, not `npmjs.org`), or an IP literal
+  (`10.0.0.5`, `[::1]`), each with an optional port (`example.com:8443`; without one,
+  443 and 80). A request for an IP address is refused unless that address is listed — a
+  wildcard never matches one. `"*"` is refused: that is `network: "default"`.
+- **`"adapter"`** stands for the hosts the agent's adapter declares in `egressHosts`,
+  from its docs: `claude` api.anthropic.com, claude.ai, platform.claude.com; `codex`
+  api.openai.com, chatgpt.com, auth.openai.com; `gemini`
+  generativelanguage.googleapis.com, cloudcode-pa.googleapis.com, oauth2.googleapis.com;
+  `agy` cloudcode-pa.googleapis.com, oauth2.googleapis.com. Optional telemetry is left
+  out (it is refused and logged; set `DISABLE_TELEMETRY` for Claude Code to quiet it).
+  Other adapters declare none — give yours `"egressHosts": [...]`, or list its hosts.
+- **Tighten only.** An adapter's or a call's `network: { allow }` meets the run's: the
+  agent gets the hosts both allow. `"none"` still wins; a call cannot ask for
+  `"default"` under an allowlist. An `exec()` step with `network: "default"` gets the
+  run's allowlist (less `"adapter"`: a step has no adapter).
+- **How.** The first container that needs it brings up, per distinct allowlist, an
+  internal network of the run (`docker network create --internal`: no route out) and an
+  egress proxy sidecar (`odw-<run>-egress<n>-…`, labelled `odw.role=egress-proxy`) on the
+  engine's default network that also joins it. The agent's container joins only the
+  internal network, with `HTTPS_PROXY`/`HTTP_PROXY` (and lower-case) pointing at the
+  proxy, `NO_PROXY` for loopback and `NODE_USE_ENV_PROXY=1`. The proxy tunnels `CONNECT`
+  only to an allowlisted host's port 443 (or the entry's port), forwards plain HTTP only
+  to an allowlisted host, and **resolves names itself** — the agent's container has no
+  DNS for the outside. It is ODW's own zero-dependency script (the same code as the
+  hidden `odw __egress-proxy`), run with `node` in **the agent's image — which then
+  needs node** — or in `proxyImage`, as locked down as an agent's container.
+- **Denials are events.** Each refused request is a line in `<run dir>/egress/`, which
+  the run turns into `egress_denied` events (`{ host, port, method, agent }`, or
+  `commandId` for a step) in `odw logs` and the dashboard. The agent is named by the
+  user name in its proxy URL; a CLI that drops it shows `agent: null`.
+- **Cleaned up.** At the run's end the proxies are removed, then the networks; the
+  worker's exit handler does the same if it is killed. `docker network ls --filter
+  label=odw.run` finds any a crash left. `odw doctor` brings up the proxy and, from a
+  container on the internal network, expects 200 for the first host listed and 403 for
+  a reserved one.
+- **The safe failure.** A CLI or tool that ignores `HTTPS_PROXY` gets no network at all:
+  there is no route out of the internal network but the proxy. Anything not over HTTP(S)
+  through the proxy — SSH, raw TCP, UDP — fails. Agents with different allowlists get
+  different networks and proxies, so an agent cannot use another's. Allowed hosts are
+  still trusted: an agent can send your code anywhere an allowed host forwards it.
+
 A missing engine or image fails the run before its first agent starts, with a
 `ConfigError` that says how to build the image; `odw doctor` checks the same and runs
 `docker run --rm --pull never --network none <image> true` (no model involved). The
 start banner adds a sandbox line when a container is configured, each agent's `agent_started` event and the dashboard's
-AgentView carry `sandbox: { kind, engine, image, network }`, and the run's setup records
+AgentView carry `sandbox: { kind, engine, image, network }` (`network: "allowlist"` with its `allow` hosts), and the run's setup records
 `sandbox` for `odw compare`. Sandboxed agents record no CLI version: the probe runs on
 the host, whose CLI is not the image's.
 
@@ -1729,8 +1786,10 @@ leaving processes behind. It does **not** keep your code from the model: the age
 still sends what it reads to its model API. With `network: "default"` (the default, as
 agent CLIs must reach their model API) it has the open network, so it can send your
 workspace and the secrets in its environment and login anywhere — keep secrets out of
-`agentEnv`, and use `network: "none"` wherever no model API is needed (`exec()`
-steps are offline by default). The workspace is writable: what an agent writes
+`agentEnv`, use `network: "none"` wherever no model API is needed (`exec()`
+steps are offline by default), and an egress allowlist (`network: { allow: "adapter" }`)
+where it is: then the agent reaches its model API and what you list, through a proxy
+outside its container that the agent cannot reconfigure, and every refusal is logged. The workspace is writable: what an agent writes
 there — a git hook in a repository it works in place, a `package.json` script, a
 Makefile — runs on your host when you later run it, so review changes (isolated
 worktrees and `odw apply` help). A container shares the host's kernel; it is not a VM.
