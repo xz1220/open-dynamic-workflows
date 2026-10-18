@@ -667,6 +667,93 @@ ul.mcp li {
   }
 }
 
+/* ---- notes board: what parallel agents told each other ---- */
+.notes-board {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 22px 18px;
+  padding: 26px 32px 48px;
+  align-items: start;
+}
+.slip {
+  position: relative;
+  padding: 16px 18px 18px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  background: linear-gradient(180deg, var(--card), var(--card-2));
+  box-shadow: var(--shadow-2);
+  transform: rotate(calc(var(--tilt) * 0.35deg));
+  transition: transform var(--t-med) var(--ease-spring), box-shadow var(--t-med);
+  animation: slip-in 520ms var(--ease-spring) both;
+  animation-delay: calc(var(--i) * 60ms);
+}
+.slip:hover {
+  transform: rotate(0deg) translateY(-3px);
+  box-shadow: var(--shadow-3);
+}
+@keyframes slip-in {
+  from {
+    opacity: 0;
+    transform: translateY(-14px) rotate(calc(var(--tilt) * 1.2deg));
+  }
+}
+.slip.interface {
+  border-left: 3px solid var(--sig);
+}
+.slip header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  margin-bottom: 10px;
+  font-size: 12px;
+}
+.slip .pin {
+  position: absolute;
+  top: -6px;
+  left: 50%;
+  width: 12px;
+  height: 12px;
+  margin-left: -6px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 35%, var(--alarm-ink), var(--alarm));
+  box-shadow: 0 2px 3px rgba(0, 0, 0, 0.25);
+}
+.slip.interface .pin {
+  background: radial-gradient(circle at 35% 35%, var(--sig-ink), var(--sig));
+}
+.slip .ix {
+  color: var(--faint);
+  font-size: 11px;
+}
+.slip .by {
+  font-weight: 600;
+}
+.slip p {
+  margin: 0;
+  font-family: var(--f-display);
+  font-size: 19px;
+  line-height: 1.35;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.slip-code {
+  max-height: 260px;
+  margin: 0;
+  overflow: auto;
+  font-family: var(--f-mono);
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--ink-2);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+@media (max-width: 760px) {
+  .notes-board {
+    padding: 18px 16px 32px;
+  }
+}
+
 /* ---- the remote dashboard's token screen ---- */
 .token-screen {
   display: grid;

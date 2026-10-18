@@ -1003,3 +1003,21 @@ test("an agent that ran in a container says which, and whether it was offline", 
   assert.match(html, /sandbox<\/span><span class="v"><span class="tag" title="odw-agents:1">docker<\/span> <span class="mono dim">odw-agents:1<\/span> <span class="tag">offline<\/span>/);
   store.focusRun(null);
 });
+
+test("a run whose agents posted notes gets a Notes tab of pinned slips; interface notes read as code", () => {
+  const view: JobViewState = { cpNote: "", tab: "notes", selectedAi: null, reviewAi: null, zoom: 1, logQuery: "", logTypes: new Set(["agent"]), logLimit: 600, follow: true, motion: false };
+  store.focusRun("20260101-000000-aaaaaa");
+  store.run = detail([agent("lane", "Plan", "done")]);
+  store.runEvents = [{ type: "note_added", ts: NOW - 5 }, { type: "note_added", ts: NOW - 4 }];
+  store.notes.set("20260101-000000-aaaaaa", [
+    { noteId: 1, ts: NOW - 5, by: { agentId: 1, label: "lane:parser" }, text: "renamed parseX → parse", kind: "note" },
+    { noteId: 2, ts: NOW - 4, by: { agentId: 1, label: "lane:parser" }, text: "1 file, +2 −1\n+export function parse(", kind: "interface" },
+  ]);
+  const html = renderJob(view, NOW);
+  assert.match(html, /data-tab="notes"[^>]*>.*?Notes<span class="n">2<\/span>/s);
+  assert.equal(count(html, /<article class="slip/g), 2);
+  assert.match(html, /<article class="slip interface"[\s\S]*?<pre class="slip-code">1 file, \+2 −1\n\+export function parse\(<\/pre>/);
+  store.notes.clear();
+  store.runEvents = [];
+  store.focusRun(null);
+});

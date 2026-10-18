@@ -84,7 +84,7 @@ let poll: number | null = null;
 let routeToken = 0;
 
 const CHAT_STICKY_BOTTOM_PX = 32;
-const JOB_TABS: JobTab[] = ["graph", "timeline", "logs", "result", "changes"];
+const JOB_TABS: JobTab[] = ["graph", "timeline", "logs", "result", "changes", "notes"];
 
 function parseHash(): Route {
   const h = location.hash.replace(/^#\/?/, "");
@@ -537,6 +537,7 @@ async function enterRoute(): Promise<void> {
     await store.loadRun(id);
     if (!live()) return;
     if (job.tab === "result") await store.loadResult(id);
+    if (job.tab === "notes") await store.loadNotes(id);
     if (!live()) return;
     // Poll while the run is live; a terminal run needs no polling at all.
     every(1500, token, async () => {
@@ -544,6 +545,7 @@ async function enterRoute(): Promise<void> {
       if (run && TERMINAL.has(run.state)) return stopPolling();
       await store.loadRun(id);
       if (job.tab === "result" && store.run?.hasResult && !store.resultLoaded) await store.loadResult(id);
+      if (job.tab === "notes") await store.loadNotes(id);
       const tx = job.transcriptAi != null ? store.run?.agents[job.transcriptAi] : undefined;
       if (tx?.agentId != null && tx.state === "running") await store.loadTranscript(id, tx.agentId);
     });
@@ -919,6 +921,7 @@ function selectTab(next: JobTab): void {
   if (r.param) {
     history.replaceState(null, "", `#/job/${encodeURIComponent(r.param)}/${next}`);
     if (next === "result") void store.loadResult(r.param);
+    if (next === "notes") void store.loadNotes(r.param);
   }
   render();
   if (next === "logs" && job.follow) {
@@ -1048,7 +1051,7 @@ document.addEventListener("keydown", (e) => {
   }
   gPending = e.key === "g" ? now : 0;
   const route = currentRoute();
-  if (route.view === "job" && /^[1-5]$/.test(e.key)) selectTab(JOB_TABS[Number(e.key) - 1]!);
+  if (route.view === "job" && /^[1-6]$/.test(e.key)) selectTab(JOB_TABS[Number(e.key) - 1]!);
   if (route.view === "job" && e.key === "$") {
     job.spend = !job.spend;
     render();

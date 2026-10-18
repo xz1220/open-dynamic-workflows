@@ -14,7 +14,7 @@ import { EVT_CLASS, commandDetail, emptyArt } from "./activity";
 import { compareHash, previousRun } from "./compare";
 import { spendReceipt } from "./spend";
 
-export type JobTab = "graph" | "timeline" | "logs" | "result" | "changes";
+export type JobTab = "graph" | "timeline" | "logs" | "result" | "changes" | "notes";
 
 export interface JobViewState {
   /** Draft note for a checkpoint decision. */
@@ -157,6 +157,40 @@ function spendButton(run: RunDetail, stat: (v: string, k: string) => string, ope
   );
 }
 
+/** Notes the run's events say were posted (ODW extension: the notes board). */
+function noteCount(): number {
+  return store.runEvents.filter((e) => e.type === "note_added").length;
+}
+
+/** The notes board: a slip per note, pinned in the order the board took them. */
+function notesTab(run: RunDetail): string {
+  const notes = store.notes.get(run.runId);
+  if (!notes) return `<div class="empty"><div class="spinner"></div><p>${t("Loading notes…")}</p></div>`;
+  if (!notes.length) {
+    return emptyArt(
+      t("No notes on this run"),
+      esc(t("Agents with notes on post what the others must know — run odw note \"…\" — and a worktree agent posts the interfaces it changed.")),
+    );
+  }
+  return (
+    `<div class="notes-board">` +
+    notes
+      .map(
+        (n, i) =>
+          `<article class="slip ${n.kind}" data-key="nt-${n.noteId}" style="--i:${Math.min(i, 20)};--tilt:${((n.noteId * 37) % 7) - 3}">` +
+          `<header><span class="pin" aria-hidden="true"></span><span class="ix mono">#${n.noteId}</span>` +
+          `<span class="by">${esc(n.by.label)}</span><span class="dim mono">${fmtClock(n.ts)}</span>` +
+          (n.kind === "interface" ? `<span class="tag">${t("interface")}</span>` : "") +
+          (n.redacted ? `<span class="tag warn">${t("redacted")}</span>` : "") +
+          `</header>` +
+          (n.kind === "interface" ? `<pre class="slip-code">${markRedactions(esc(n.text))}</pre>` : `<p>${markRedactions(esc(n.text))}</p>`) +
+          `</article>`,
+      )
+      .join("") +
+    `</div>`
+  );
+}
+
 function tabs(run: RunDetail, tab: JobTab): string {
   const changed = changedAgents(run);
   const item = (key: JobTab, icon: string, label: string, n?: number) =>
@@ -168,6 +202,7 @@ function tabs(run: RunDetail, tab: JobTab): string {
     item("logs", icons.logs, t("Logs"), store.runEvents.length) +
     item("result", icons.result, t("Result")) +
     (changed.length || tab === "changes" ? item("changes", icons.diff, t("Changes"), changed.length) : "") +
+    (noteCount() || tab === "notes" ? item("notes", icons.note, t("Notes"), noteCount()) : "") +
     `<i class="ink-bar"></i></nav>`
   );
 }
@@ -757,7 +792,9 @@ export function renderJob(s: JobViewState, nowSec: number): string {
           ? logsTab(s)
           : s.tab === "changes"
             ? changesTab(run, s)
-            : resultTab(run);
+            : s.tab === "notes"
+              ? notesTab(run)
+              : resultTab(run);
   return (
     `<div class="job" data-key="job-${esc(run.runId)}">${runHead(run, nowSec, !!s.spend)}${spendReceipt(run, !!s.spend)}${quotaPause(run, nowSec)}${checkpoints(run, s)}${tabs(run, s.tab)}` +
     `<section class="tab-body" data-tabbody="${s.tab}" data-key="tb-${s.tab}">${body}</section></div>`

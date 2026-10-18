@@ -22,6 +22,7 @@ import type {
   EvalReportSummary,
   RunComparison,
   RunDetail,
+  RunNote,
   RunSummary,
   ScheduleView,
   SettingsSnapshot,
@@ -467,6 +468,21 @@ class Store {
   }
 
   /** Refresh the scheduled runs; repaints only when something changed. */
+  /** The focused run's notes board (ODW extension), by run id. */
+  notes = new Map<string, RunNote[]>();
+
+  async loadNotes(runId: string): Promise<void> {
+    let next: RunNote[];
+    try {
+      next = await api.notes(runId);
+    } catch {
+      return;
+    }
+    if (JSON.stringify(next) === JSON.stringify(this.notes.get(runId))) return;
+    this.notes.set(runId, next);
+    this.emit();
+  }
+
   /** The kept eval reports (null until loaded), and the one on screen by "name/id". */
   evals: EvalReportSummary[] | null = null;
   evalReport: { key: string; value: EvalReport | null; error: string | null } | null = null;

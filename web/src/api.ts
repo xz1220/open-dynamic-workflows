@@ -15,6 +15,7 @@ import type {
   EvalReportSummary,
   RunComparison,
   RunDetail,
+  RunNote,
   RunSummary,
   ScheduleView,
   SettingsSnapshot,
@@ -84,6 +85,8 @@ const enc = encodeURIComponent;
 export const api = {
   runs: () => getJSON<RunSummary[]>("/api/runs"),
   run: (id: string) => getJSON<RunDetail>(`/api/runs/${enc(id)}`),
+  /** A run's notes board (ODW extension), oldest first. */
+  notes: (id: string) => getJSON<RunNote[]>(`/api/runs/${enc(id)}/notes`),
   /** The kept `odw eval` reports, newest first. */
   evals: () => getJSON<EvalReportSummary[]>("/api/evals"),
   evalReport: (name: string, id: string) => getJSON<EvalReport>(`/api/evals/${enc(name)}/${enc(id)}`),
