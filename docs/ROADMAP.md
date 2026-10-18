@@ -100,6 +100,23 @@
 | X6 | **调度**：`odw schedule add/list/remove/run` 写入 cron/launchd/systemd（不引入 daemon）；每个定时任务一把防重叠锁（失效锁自动接管）、每次运行一行日志、上次与下次运行时间；错过的运行按各后端处理（systemd `Persistent=true` 开机补跑）；失败通知复用 `notify` | #14 | S | ✅ |
 | X7 | **按阶段指定适配器和模型**：设置默认值、模型分层和回退链；解析 Claude plugin 工作流 | #13 | M | ✅ 阶段默认适配器/模型、模型分层、回退链与额度熔断 ✅；Claude plugin 工作流（`odw run <插件>:<名字>`，只读发现、按 `enabledPlugins` 启用、项目同名优先并提示）✅ |
 
+### 0.6「不再静默、不再失控」（2026-10-18 调研后新增）
+
+依据：[`docs/research/user-needs-2026-10-after-0.5.md`](research/user-needs-2026-10-after-0.5.md)（0.5 之后仍未覆盖的 12 条需求，均附来源）。
+
+| # | 方向 | 规模 | 状态 |
+| --- | --- | --- | --- |
+| R1 | **孤儿后台任务检测**：解析 stream-json 时跟踪后台任务/子 agent 的开始与结束，`result` 时仍有未完成的则以 `orphaned_background` 失败（warn/fail 两档） | S | 🚧 |
+| R2 | **单 agent 上限与死循环检测**：`agent(…, { limits: { toolCalls, costUsd, outputTokens, repeat } })`，按工具名+参数哈希识别重复调用，越界以 `runaway` 终止 | S–M | 🚧 |
+| R3 | **运行级笔记板 + 接口变更广播**：并行 agent 通过 `odw note` 互相告知决定，完成时广播其接口改动 | M | 🚧 |
+| R4 | **只批准不写入的远程链接**：每个检查点签名的一次性批准/拒绝链接，随 notify 发出；`--token-scope approve` | M | ⏳ |
+| R5 | `expect.untouched`：声明不得改动的路径（防止改测试凑绿） | S | 🚧 |
+| R6 | `odw apply --resolve`：冲突交给 agent 在临时 worktree 解决，校验通过才接受 | M | ⏳ |
+| R7 | 容器出网白名单（代理 sidecar） | M | ⏳ |
+| R8 | 回退时交接上下文（`fallback.handoff`）而非从头再来 | M | ⏳ |
+| R9 | `agy`（Antigravity CLI）内置适配器 | S | ⏳ |
+| R10 | `odw apply --pr` 与 PR 看护示例（不自动合并） | M–L | ⏳ |
+
 ### Later — 0.8+「规模与生态」
 
 - ✅ **可选的容器运行器**（ODW 扩展；#6）：`sandbox: { kind: "container", image, engine?, network?, mounts?, cliConfig?, memory?, cpus?, pids? }`（配置、`odw run|rerun|resume --sandbox container [--sandbox-image <镜像>]`、按适配器、`agent(…, { sandbox })`——只能收紧），每次 CLI 运行与每个 `exec()` 步骤变成 `<engine> run --rm -i --init --pull never --name odw-<run>-<agent>-<随机>` 的全新 Docker/Podman 容器：只以相同路径读写挂载工作区、私有临时 home（按各 CLI 文档复制登录与配置文件：claude 的 `.credentials.json`/`settings.json`/`~/.claude.json` 去掉 `projects` 等，codex 的 `auth.json`/`config.toml`，gemini 的 `oauth_creds.json` 等；`mount-ro` 只读绑定，`none` 为空，运行后删除）、`--user` 宿主 uid:gid（Podman 加 `--userns keep-id`）、`--cap-drop ALL`、`no-new-privileges`、`--pids-limit 512`、只读根文件系统与 tmpfs `/tmp`；环境只含 `agentEnv` 放行的变量且按名字传递（argv 里没有值）。argv 由纯函数构造并单测。超时、停顿、停止或非干净退出时按名字 `kill` + `rm --force` 容器，worker 退出时的兜底清理同样覆盖。镜像由用户构建（`examples/sandbox/Dockerfile`），从不拉取；缺引擎或镜像在 `odw doctor`（含 `run --rm --pull never --network none <镜像> true` 冒烟）与运行开始前报 `ConfigError`。网络默认 `"default"`——agent CLI 必须连到模型 API，所以**并非默认断网**；`exec()` 步骤默认 `network: "none"`。启动横幅、运行 setup（`BEHAVIOUR_SETTINGS`）、`agent_started` 与看板类型 `AgentView.sandbox` 显示沙箱（看板绘制待接入）。
