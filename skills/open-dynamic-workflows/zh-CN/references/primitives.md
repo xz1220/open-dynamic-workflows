@@ -175,7 +175,9 @@ log(message)           // emit a one-line progress event
   改动原样在场（原地调用的改动本来就在源码树里）；它的提示词在任务之前加一段以
   "You are continuing work another agent started…" 开头的简报——上一个适配器停下的原因、改过的
   文件（diff 统计；原地调用取其编辑类工具调用）、最后的计划或待办、运行过的命令及结果、最后几条
-  消息；至多 6 KB，已脱敏。简报保存为 `agents/<id>.handoff.md`，并记 `handoff` 事件
+  消息；至多 6 KB，每一部分先脱敏再截断。下一个适配器的每次运行（卡住重启、限流与 schema
+  重试）都沿用这个 worktree；信任级别或容器引擎不同的回退则拿到新的 worktree，简报会说明改动没有
+  带过来。简报保存为 `agents/<id>.handoff.md`，并记 `handoff` 事件
   `{ from, to, reason, bytes }` 和一行 `{"kind":"handoff"}` transcript。`expect` 与保留的 diff
   判定最终状态（共享 worktree 相对其基线）；`expect` 重试和 `quotaWait` 之后的调用仍从头开始。
   `handoff` 不在 resume key 中。
@@ -456,7 +458,7 @@ odw 以退出码 1 结束并给出命令输出的末尾（被信号中断时同�
 `--pr`（ODW 扩展）不碰工作树——既不读也不写——而是在临时 worktree 里从 `--base` 或 HEAD 建分支
 `odw/<run>-<label>`（`odw/<run>-all`；被占用时加 `-2`……），在那里按上文方式应用（并校验）每个
 agent，每个单独提交、使用用户自己的 git 身份（工作流、agent、diff 统计、运行 id、花费），推送到
-`--remote`（`origin`）后运行 `gh pr create`——默认草稿，`--ready` 则否——正文为运行摘要（agent 与
+`--remote`（`origin`）后运行 `gh pr create --repo <该远端的 owner/name>`——默认草稿，`--ready` 则否——正文为运行摘要（agent 与
 提交、阶段、花费、校验结果、`odw diff` 命令）。冲突或校验失败会在推送前删除分支；没有 `gh`（或未
 登录）时推送后打印对比页 URL。从不合并；不能与 `--check`、`--force`、`--resolve` 同用。
 `examples/pr-shepherd.js` 之后看护这个 PR：红掉的 CI 和新的评审意见交给经 `expect` 校验的修复

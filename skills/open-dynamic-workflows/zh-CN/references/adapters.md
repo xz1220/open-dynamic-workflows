@@ -315,7 +315,8 @@ hook 只会记录到该运行的 `worker.log`。
   （Unix 秒），webhook 收到 `state: "paused"` 与 `pausedFor: { reason, adapter, resumeAt }`。
   暂停从不触发运行结束的 hook。
 
-**ODW 扩展——批准链接。** 当该 runs 根目录有 `odw serve --public-url <url>` 在运行时，每个
+**ODW 扩展——批准链接。** 当该 runs 根目录有 `odw serve --public-url <url>`（根 URL
+`https://host[:port]`，带路径的会被拒绝）在运行时，每个
 `waiting` hook 都带上该检查点签名的一次性链接：webhook 收到 `approveUrl`、`rejectUrl` 和
 `linksExpireAt`（`text` 末尾也有），命令拿到 `ODW_APPROVE_URL`、`ODW_REJECT_URL`、
 `ODW_LINKS_EXPIRE_AT` 和 `ODW_NTFY_ACTIONS`（带 Approve/Reject 两个 `http` 按钮的 ntfy

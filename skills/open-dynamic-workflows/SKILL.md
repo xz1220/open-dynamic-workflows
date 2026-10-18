@@ -480,8 +480,13 @@ machine they own over plain ssh (no daemon). Only with a host they name.
 ```bash
 RUN=$(odw run review --on ssh://me@box)          # sync the project, start there detached, print the run id
 odw status $RUN --on ssh://me@box                # status|logs|attach run on the remote odw
+odw approve $RUN --on ssh://me@box               # so do approve|reject|pause|stop|resume
 odw pull $RUN --from ssh://me@box                # copy it here (again while it runs) for diff/apply/compare
 ```
+
+- A pulled copy (`origin: "remote"`) is a snapshot: answer or control the run
+  where it runs, with `--on`. Locally, `odw approve|reject|pause|stop|resume`
+  refuse it and name that command.
 
 - The remote needs odw on the PATH of a non-interactive ssh session, its own
   odw config and its own agent CLI logins: nothing of the user's config or

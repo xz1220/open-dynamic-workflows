@@ -421,7 +421,8 @@ run's `worker.log`.
   for the command, `state: "paused"` and `pausedFor: { reason, adapter, resumeAt }`
   for the webhook. A pause never fires the run-end hooks.
 
-**ODW extension — approve links.** While `odw serve --public-url <url>` runs for the
+**ODW extension — approve links.** While `odw serve --public-url <url>` (a root URL,
+`https://host[:port]`: one with a path is refused) runs for the
 runs root, each `waiting` hook carries the checkpoint's signed one-time links: the
 webhook gets `approveUrl`, `rejectUrl` and `linksExpireAt` (and both at the end of
 `text`), the command `ODW_APPROVE_URL`, `ODW_REJECT_URL`, `ODW_LINKS_EXPIRE_AT` and

@@ -420,6 +420,41 @@ changed, and run on a schedule — and a dashboard redesigned to watch them.
 - Egress denials are capped: at most 200 `egress_denied` events per run, then one log
   line with the count, and 1 MiB of denial log per proxy. A proxy or network that could
   not be removed at a run's end is left for the exit backstop instead of forgotten.
+- `odw pull` kept symbolic links from the remote run directory (rsync `-a`, or the tar
+  fallback), so a remote `decisions.jsonl` link made a local `odw approve` write outside
+  the runs root. rsync now runs with `--no-links --no-D`, and after any copy every link,
+  device, socket or fifo is removed (and named). A pulled run (`origin: "remote"`) is no
+  longer answered or controlled here: `odw approve|reject|pause|stop|resume` and the
+  dashboard (409) refuse it and point to `odw approve <run> --on ssh://host`, which these
+  commands now take.
+- A failed `odw pull` left a directory that looked like a local run and blocked every
+  later pull of it. The copy now lands in a staging directory under the runs root, is
+  checked and marked there, and is renamed into place; a failure leaves nothing, and an
+  earlier copy stands as it was.
+- Handoff handed a trusted adapter's worktree to an untrusted (or differently sandboxed)
+  fallback. The held worktree now records its runs' trust and container engine; a
+  fallback that runs otherwise starts in a fresh worktree, its brief saying the work was
+  not carried over.
+- The handoff brief was redacted only after it was cut, so a secret the cut split could
+  survive in part. Each piece — the reason, every file, the plan, every command, every
+  message, the output's tail — is now redacted before any cut, and a text tail that
+  starts mid-line drops that line.
+- After a handoff, a stall restart, rate-limit retry or schema retry on the fallback got
+  a fresh worktree but kept the brief that says the work is there. Every run of the call
+  on that adapter now keeps the handed-over worktree (an `expect` retry still starts over,
+  without the brief).
+- Anyone could block every approve link: the bad-link limiter ran before the link's
+  signature was checked. The signature is now checked first; a valid link is never held
+  back, and only bad ones count and wait.
+- `limits.seconds` above about 24.8 days stopped an agent early (a timer's longest wait);
+  the timer now waits again for the time still left.
+- `odw serve --public-url` with a path minted links nothing answered; such a URL is now
+  refused with a clear message: it must be a root (`https://host[:port]`).
+- `odw run --on` treated a `--source` or workflow under a directory named like `..data`
+  as outside the project.
+- `odw apply --pr` let `gh pr create` guess the repository from the checkout (an
+  `upstream` remote, a set default). It now passes `--repo owner/name` of the remote the
+  branch was pushed to (`HOST/owner/name` off github.com).
 
 ### Changed behavior — check before upgrading
 - The built-in `codex` adapter runs `codex exec --json --output-last-message

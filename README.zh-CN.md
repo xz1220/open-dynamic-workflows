@@ -681,6 +681,7 @@ odw run review --on ssh://me@box:2222            # 同步项目,在那边以后�
 odw run wf.js --on ssh://box/srv/work/app --sync rsync --args @in.json --adapter codex
 odw status $RUN --on ssh://box                   # 同一条命令,由那边的 odw 执行
 odw logs $RUN --on ssh://box --follow            # ……odw attach $RUN --on ssh://box 显示实时视图
+odw approve $RUN --on ssh://box                  # 在那边回答它的检查点(reject、pause、stop、resume 同理)
 odw pull $RUN --from ssh://box                   # 拷回本机:odw status、diff、apply、compare、看板都能用
 ```
 
@@ -707,12 +708,19 @@ CLI 的登录都不会被拷过去:在那边安装 odw、登录 agent CLI,需要
 文件经 ssh 的 stdin 传过去——ssh 用的是你自己的,带着你的 `~/.ssh/config`、密钥和 agent;
 `ODW_SSH` 可以替换 `ssh` 可执行文件(`ODW_RSYNC` 替换 `rsync`)。
 
-`odw status|logs|attach <run> --on ssh://host` 在远端 odw 上执行这条命令,原样传回输出和
-退出码(终端里的 attach 和 `logs --follow` 用 `ssh -t`,所以 attach 就是实时视图)。
+`odw status|logs|attach|approve|reject|pause|stop|resume <run> --on ssh://host` 在远端 odw
+上执行这条命令,原样传回输出和退出码(终端里的 attach、`logs --follow` 和 `approve --edit`
+用 `ssh -t`,所以 attach 就是实时视图;`--payload @file` 指的是那边的文件)。
 `odw pull <run> --from ssh://host` 把运行目录拷进本地的运行根目录——本机有 rsync 就用
 rsync,否则走 ssh 上的 tar——并在 `meta.json` 中标记 `origin: "remote"` 和
-`remote: { url, host, dir, pulledAt }`。还在跑的运行可以反复拉取:拷贝是一个快照(远端
-worker 的 pid 被去掉,所以在本机结束前显示为 stale),`odw status` 会说明它来自哪里。
+`remote: { url, host, dir, pulledAt }`。拷贝先放在 runs 根目录下的暂存目录里,完整之后才移到
+位,所以拉取失败什么也不会留下(之前的拷贝保持原样);符号链接、设备文件和 fifo 一律不带回来
+(rsync 加 `--no-links`,拷贝里若有也会被删除并列出)。还在跑的运行可以反复拉取:拷贝是一个
+快照(远端 worker 的 pid 被去掉,所以在本机结束前显示为 stale),`odw status` 会说明它来自哪里。
+
+**拉回来的运行要在它运行的地方回答。** 在本机批准、拒绝、暂停、停止或恢复这份拷贝只会改动拷贝,
+所以 `odw approve|reject|pause|stop|resume` 和看板(409)会拒绝,并给出应当执行的命令:
+`odw approve <run> --on ssh://host`。
 
 ### Agent transcript(ODW 扩展)
 
@@ -1082,6 +1090,9 @@ HTTPS 隧道)启动看板,并打开 `waiting` 通知 hook:
 odw serve --public-url https://odw.example.com     # 例如放在 cloudflared 或 tailscale funnel 后面
 ```
 
+`--public-url` 必须是根 URL(`https://host[:port]`):链接在它的 `/approve/` 下应答,所以带路径
+的 URL(把 odw 挂在 `/odw` 下的代理)会被拒绝——像隧道那样给 odw 一个独立的主机名。
+
 ```json
 { "notify": { "webhook": "https://hooks.example.com/YOUR/WEBHOOK/PATH", "on": ["waiting"] }, "approveLinks": { "ttl": 86400 } }
 ```
@@ -1112,7 +1123,8 @@ odw serve --public-url https://odw.example.com     # 例如放在 cloudflared �
   则在 `X-ODW-Action` 头里写明动作,其他网站的页面发不出这个头。来自其他源的表单会被拒绝,
   页面也不能被嵌入 frame。
 - **猜测受到限速**,与错误令牌相同:每个地址每分钟 10 个坏链接(或 CSRF 校验失败),全体合计
-  100 个,之后回 429。
+  100 个,之后坏链接回 429。链接的签名最先校验,有效的链接从不受限:经同一条隧道发来的坏链接
+  挡不住真正的链接。
 - **链接只在 `odw serve --public-url` 运行时有效。** 该 runs 根目录没有这样的服务时不会生成链接,
   并在通知里说明原因(`linksUnavailable`、`ODW_LINKS_UNAVAILABLE`)。`/approve/` 路由不需要看板
   令牌——链接本身就是凭证——也不开放任何别的东西:停止、暂停、恢复和 Chat 仍只限 loopback,
@@ -1976,13 +1988,15 @@ search:3 → claude after codex quota
 `"fallback": { "handoff": true }`(`handoff` 在这里是保留键,不是适配器)或
 `agent(prompt, { handoff: true })`(两个方向都覆盖设置)后,下一个适配器会接着做:
 
-- 隔离 agent 的 worktree 保留下来:下一个适配器在其中运行,做了一半的改动原样在场。原地
-  agent 的改动本来就在源码树里。
+- 隔离 agent 的 worktree 保留下来:下一个适配器在其中运行,做了一半的改动原样在场——并且在
+  该调用的每次运行中(卡住后的重启、限流重试、schema 重试)都沿用它。原地 agent 的改动本来就在
+  源码树里。worktree 只交给信任级别和容器引擎都相同的适配器:不受信任或沙箱不同的回退会在新的
+  worktree 中开始,仍然拿到简报,简报会说明之前的改动没有带过来。
 - 它的提示词在任务之前加一段以 *"You are continuing work another agent started…"* 开头的
   交接简报:上一个适配器停下的原因、改过的文件(worktree 的 diff 统计;原地 agent 取其编辑
   类工具调用涉及的文件)、它最后写下的计划或待办(Claude Code 的 `TodoWrite`、Codex 的计划)、
-  运行过的命令及其结果、最后几条消息(文本 CLI 取输出末尾)。至多 6 KB,与 ODW 保存的其他
-  内容一样脱敏。推理过程无论如何都会丢失——简报是其中看得见的部分,精简到下一个 agent 需要的
+  运行过的命令及其结果、最后几条消息(文本 CLI 取输出末尾)。至多 6 KB,每一部分都先脱敏
+  再截断。推理过程无论如何都会丢失——简报是其中看得见的部分,精简到下一个 agent 需要的
   程度。
 - 简报保存为 `agents/<id>.handoff.md`;`handoff` 事件 `{ from, to, reason, bytes }` 记录这次
   交接,transcript 在下一个适配器的 `attempt` 行之前有一行 `{"kind":"handoff",…}`
@@ -2232,7 +2246,7 @@ interrupted)链接到它。`--resolve` 不能与 `--force` 或 `--check` 同用:
 每个 agent(`--verify` 也在那里运行),每个 agent 单独一个提交,使用**你自己的** git 身份和签名
 设置;提交说明包含工作流、agent、diff 统计、运行 id,以及 CLI 报告了时该 agent 的花费。任何
 agent 会冲突或校验失败,都会在推送前停下:分支被删除,什么都不会离开本机。之后推送到 `--remote`
-(默认 `origin`),并运行 `gh pr create`——默认是**草稿**,加 `--ready` 则不是;标题为 `--title`
+(默认 `origin`),并运行 `gh pr create --repo <该远端的 owner/name>`——默认是**草稿**,加 `--ready` 则不是;标题为 `--title`
 或按工作流和 agent 生成——正文是运行摘要:各 agent 及其提交、各阶段、以表格呈现的花费明细、
 校验结果和 `odw diff` 命令。没有 `gh` 或 `gh` 未登录时,推送后停下并打印对比页 URL。**它从不合并。**
 (ODW 扩展。)

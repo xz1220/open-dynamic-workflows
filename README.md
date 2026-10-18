@@ -775,6 +775,7 @@ odw run review --on ssh://me@box:2222            # sync the project, start it th
 odw run wf.js --on ssh://box/srv/work/app --sync rsync --args @in.json --adapter codex
 odw status $RUN --on ssh://box                   # the same command, run by the odw over there
 odw logs $RUN --on ssh://box --follow            # …and odw attach $RUN --on ssh://box shows the live view
+odw approve $RUN --on ssh://box                  # answer its checkpoint there (reject, pause, stop, resume too)
 odw pull $RUN --from ssh://box                   # copy it here: odw status, diff, apply, compare, the dashboard
 ```
 
@@ -806,14 +807,23 @@ a command line — `--args` travels as a file on ssh's stdin — and ssh is your
 your `~/.ssh/config`, keys and agent; `ODW_SSH` replaces the `ssh` binary (and
 `ODW_RSYNC` the `rsync` one).
 
-`odw status|logs|attach <run> --on ssh://host` run that command on the remote odw and
-pass its output and exit code back (`ssh -t` for attach and `logs --follow` in a
-terminal, so attach is the live view). `odw pull <run> --from ssh://host` copies the run
-directory into your local runs root — rsync when this machine has it, else tar over
-ssh — and marks it `origin: "remote"` with `remote: { url, host, dir, pulledAt }` in its
-`meta.json`. A run still going can be pulled again and again: the copy is a snapshot
-(the remote worker's pid is dropped, so here it reads as stale until it ends), and
-`odw status` says where it came from.
+`odw status|logs|attach|approve|reject|pause|stop|resume <run> --on ssh://host` run that
+command on the remote odw and pass its output and exit code back (`ssh -t` for attach,
+`logs --follow` and `approve --edit` in a terminal, so attach is the live view; a
+`--payload @file` names a file over there). `odw pull <run> --from ssh://host` copies
+the run directory into your local runs root — rsync when this machine has it, else tar
+over ssh — and marks it `origin: "remote"` with `remote: { url, host, dir, pulledAt }` in
+its `meta.json`. The copy is staged under the runs root and moved into place only once it
+is whole, so a failed pull leaves nothing (an earlier copy stands); symbolic links,
+devices and fifos never come back (rsync `--no-links`, and any the copy holds are
+removed and named). A run still going can be pulled again and again: the copy is a
+snapshot (the remote worker's pid is dropped, so here it reads as stale until it ends),
+and `odw status` says where it came from.
+
+**A pulled run is answered where it runs.** Approving, rejecting, pausing, stopping or
+resuming the copy here would change only the copy, so `odw approve|reject|pause|stop|resume`
+and the dashboard (409) refuse it and name the command to run instead:
+`odw approve <run> --on ssh://host`.
 
 ### Agent transcripts (ODW extension)
 
@@ -1237,6 +1247,10 @@ an HTTPS tunnel — and turn on the `waiting` notify hook:
 odw serve --public-url https://odw.example.com     # e.g. behind cloudflared or tailscale funnel
 ```
 
+`--public-url` is a root URL (`https://host[:port]`): links are answered at `/approve/` on
+it, so a URL with a path (a proxy serving odw under `/odw`) is refused — give odw a host
+of its own, as a tunnel does.
+
 ```json
 { "notify": { "webhook": "https://hooks.example.com/YOUR/WEBHOOK/PATH", "on": ["waiting"] }, "approveLinks": { "ttl": 86400 } }
 ```
@@ -1273,7 +1287,9 @@ The security model — the only remote writes are checkpoint decisions:
   action in an `X-ODW-Action` header, which no other site's page can send. A form from
   another origin is refused, and the page cannot be framed.
 - **Guessing is rate limited** like wrong tokens: 10 bad links (or failed CSRF checks)
-  a minute per address, 100 from everyone, then 429.
+  a minute per address, 100 from everyone, then 429 for bad links. A link's signature is
+  checked first, so a valid link is never held back: bad links sent through the same
+  tunnel cannot block the real ones.
 - **Links work only while `odw serve --public-url` runs.** Without one for the runs root,
   no links are minted, and the payload says why (`linksUnavailable`,
   `ODW_LINKS_UNAVAILABLE`). The `/approve/` route needs no dashboard token — the link
@@ -2278,13 +2294,17 @@ CLI spends its quota redoing what the last one did. With `"fallback": { "handoff
 — which overrides the setting either way — the next adapter carries the work on:
 
 - An isolated agent's worktree is kept: the next adapter runs in it, the partial edits
-  in place. An in-place agent's edits are in the source tree already.
+  in place — and keeps it for each of its runs of the call (a stall restart, a rate-limit
+  or schema retry). An in-place agent's edits are in the source tree already. A worktree
+  is handed only to an adapter that runs with the same trust and container engine: an
+  untrusted or differently sandboxed fallback starts in a fresh one, still with the
+  brief, which says the work was not carried over.
 - Its prompt starts, ahead of the task, with a brief headed *"You are continuing work
   another agent started…"*: why the last adapter stopped, the files it changed (the
   worktree's diff stat; for an in-place agent, the files its edit tool calls named), the
   last plan or to-do list it wrote (Claude Code's `TodoWrite`, Codex's plan), the
   commands it ran and how they ended, and its last few messages (a text CLI: the end of
-  its output). At most 6 KB, redacted like everything ODW keeps. The reasoning is lost
+  its output). At most 6 KB, each piece redacted before anything is cut. The reasoning is lost
   either way — the brief is the visible part of it, cut down to what the next agent needs.
 - The brief is kept as `agents/<id>.handoff.md`; a `handoff` event `{ from, to, reason,
   bytes }` says so, and the transcript has a `{"kind":"handoff",…}` line before the next
@@ -2579,7 +2599,7 @@ identity and signing settings; the message names the workflow, the agent, the
 diff stat, the run id and the agent's cost when its CLI reported one. An agent
 that would conflict, or fails its verify, stops it before the push: the branch is
 deleted and nothing leaves the machine. Then it pushes to `--remote` (default
-`origin`) and runs `gh pr create` — a **draft** unless `--ready`, titled
+`origin`) and runs `gh pr create --repo <owner/name of that remote>` — a **draft** unless `--ready`, titled
 `--title` or after the workflow and agent — with the run summary as its body:
 the agents and their commits, the phases, the spend receipt as a table, the
 verify result and the `odw diff` commands. Without `gh`, or with `gh` not logged
