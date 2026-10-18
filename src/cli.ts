@@ -192,6 +192,8 @@ export function helpText(): string {
     "  odw init [--adapter <name>] [--check]              pick the default agent CLI (first-time setup)",
     "  odw doctor [--smoke] [--adapter <name>|all]        check this machine is ready to run workflows",
     "  odw doctor --models                                send each configured adapter/model pair one tiny prompt",
+    "  odw doctor --local [--endpoint URL] [--model M]    check a local Ollama / LM Studio: context length, tool calling;",
+    "                                                     with --smoke, whether a long prompt's front is silently cut",
     "  odw run <script.js|name> [--args JSON|@file]       start a workflow (see modes below)",
     "  odw attach <run_id>                                attach the live foreground view to a run",
     "  odw rerun <run_id>                                 start a fresh run with the same inputs",
@@ -456,9 +458,18 @@ async function cmdDoctor(rest: string[]): Promise<number> {
       adapter: { type: "string", multiple: true },
       timeout: { type: "string" },
       json: { type: "boolean" },
+      local: { type: "boolean" },
+      endpoint: { type: "string", multiple: true },
+      model: { type: "string" },
     },
   });
   const timeoutMs = parseTimeout("doctor", values.timeout);
+  // `--local` (ODW extension): an --endpoint implies it; --model only means something with it.
+  const local = values.local === true || (values.endpoint?.length ?? 0) > 0;
+  if (values.model !== undefined && !local) {
+    process.stderr.write("odw doctor: --model goes with --local (or --endpoint)\n");
+    return 2;
+  }
   const cwd = process.cwd();
   let config: Config | Error;
   let configPath: string | null = null;
@@ -469,7 +480,8 @@ async function cmdDoctor(rest: string[]): Promise<number> {
     config = err as Error;
   }
   let smoke: string[] = [];
-  if (values.smoke && !(config instanceof Error)) {
+  // With --local, --smoke probes the local model; an adapter is smoke-tested only when named.
+  if (values.smoke && !(config instanceof Error) && (!local || values.adapter?.length)) {
     const wanted = values.adapter ?? [];
     if (wanted.includes("all")) smoke = listAdapters(config).filter((a) => a.installed).map((a) => a.name);
     else if (wanted.length) smoke = wanted;
@@ -493,6 +505,9 @@ async function cmdDoctor(rest: string[]): Promise<number> {
       smoke,
       smokeTimeout: timeoutMs !== undefined ? timeoutMs / 1000 : undefined,
       models: values.models === true,
+      local: local
+        ? { endpoints: values.endpoint ?? [], smoke: values.smoke === true, model: values.model, smokeTimeoutMs: timeoutMs || undefined }
+        : undefined,
     });
   } finally {
     for (const s of signals) process.off(s, onSignal);
