@@ -59,6 +59,10 @@
  *   GET  /api/compare?a=<run>&b=<run>   RunComparison (./compare): what changed between two ODW
  *                                   runs, as `odw compare --json` prints it (ODW extension); 400
  *                                   unless both are run ids, 404 when either is no ODW run
+ *   GET  /api/evals                 [EvalReportSummary], newest first: the `odw eval` reports kept
+ *                                   under <runsRoot>/_evals/<name>/<id>.json (ODW extension; read only)
+ *   GET  /api/evals/:name/:id       one EvalReport (../eval/report), case args token-shape redacted;
+ *                                   400 unless name and id are run-id-like, 404 when there is none
  *   *    /api/chat/sessions[/:id[/messages]]   the Chat Host (see ./chat-host)
  *
  * GET /api/activity?limit=N (default 40, clamped to 1..200; junk → 40) →
@@ -133,6 +137,8 @@ import { activityLimit, activityView } from "./activity-view.js";
 import { ChatHost, type ChatTurnRunner } from "./chat-host.js";
 import { ClaudeRunSource } from "./claude-run-source.js";
 import { compareRuns, readCompareRun } from "./compare.js";
+import { isEvalName } from "../eval/definition.js";
+import { listReports, readStoredReport } from "../eval/report.js";
 import {
   decodeSegment,
   isAllowedHost,
@@ -384,6 +390,10 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandleCont
     if (method === "GET" && path === "/api/schedules") {
       // A schedule's args are the user's data, kept as given for its runs: served with token shapes redacted.
       sendJson(res, 200, bundle ? [] : listSchedules().map((row) => redactor.shapes.record(scheduleJson(row))));
+      return;
+    }
+    if (method === "GET" && (path === "/api/evals" || path.startsWith("/api/evals/"))) {
+      evalsView(req, res, store, path, redactor);
       return;
     }
     if (path.startsWith("/api/chat/") && (await chatHost.route(req, res, method, path, boundHost))) return;
@@ -720,6 +730,32 @@ function compareView(req: IncomingMessage, res: ServerResponse, store: RunStore,
     return { ...run, args: (redactor.shapes.record({ args: run.args }) as { args: unknown }).args };
   };
   sendJsonCached(req, res, compareRuns(served(a), served(b)));
+}
+
+/**
+ * `GET /api/evals` and `GET /api/evals/:name/:id` (ODW extension): the
+ * reports `odw eval` kept under the runs root, read only. Name and id are
+ * checked as run ids are (and never dots only) before they come near a path.
+ */
+function evalsView(req: IncomingMessage, res: ServerResponse, store: RunStore, path: string, redactor: Redactor): void {
+  if (path === "/api/evals") {
+    sendJsonCached(req, res, listReports(store.root));
+    return;
+  }
+  const match = /^\/api\/evals\/([^/]+)\/([^/]+)$/.exec(path);
+  const name = match ? decodeSegment(match[1]!) : null;
+  const id = match ? decodeSegment(match[2]!) : null;
+  if (!isEvalName(name) || !isEvalName(id)) {
+    sendJson(res, 400, { error: "expected /api/evals/<name>/<id>, each letters, digits, '.', '_' or '-'" });
+    return;
+  }
+  const report = readStoredReport(store.root, name, id);
+  if (!report) {
+    sendJson(res, 404, { error: `no eval report ${name}/${id}` });
+    return;
+  }
+  // Case args are the user's data, as run args are: served with token shapes redacted.
+  sendJsonCached(req, res, redactor.shapes.record(report));
 }
 
 /** A saved agent result as listed: which agent and when — the value stays behind its own route. */
