@@ -403,8 +403,8 @@ when one CLI runs out of quota.
   plain model id is passed to every CLI as is — prefer a tier whenever an agent
   may run on more than one CLI.
 - **Fallback chains.** `adapter: ['codex', 'claude']` (or the user's `fallback`
-  config): when the first CLI's quota is spent or its login is refused, the agent
-  runs again on the next one, at the same permission tier, and the log says so
+  config): when the first CLI's quota is spent, its login is refused, or the model
+  it asks for is unavailable (`model_unavailable`), the agent runs again on the next one, at the same permission tier, and the log says so
   (`search:3 → claude after codex quota`). Rate limits are still retried in place.
   After three quota failures in a row on one CLI, the run's later agents skip it.
   `odw agents --json` and the `agent_finished` event name the CLI that produced
@@ -659,6 +659,15 @@ runtime, config, run directory and every adapter, and prints what to fix.
 `odw doctor --smoke` additionally sends the default adapter one real prompt —
 ask your user first (it costs a model call) — and catches a CLI that exits 0
 without answering when headless (a login, trust or approval prompt).
+`odw doctor --models` (ODW extension; also ask first: one tiny prompt per pair)
+probes every adapter/model pair the config's `models` tiers, `fallback` chains,
+default adapter and `.odw/workflows` phases name, and reports `ok`,
+`model_unavailable` (the CLI does not know the model, retired it, or does not
+offer it to the account) or `other` for each — run it when agents fail with
+`model_unavailable`. A run whose CLI version or requested models changed since the
+workflow's last run logs `drift: …` lines and carries a `drift` field in its summary
+(ODW extension); if the workflow has an eval, suggest `odw eval <name> --baseline
+<last report>` (the line names it), or `"driftEval": true` to have it start by itself.
 
 ## Behavior you must know
 
@@ -682,7 +691,8 @@ without answering when headless (a login, trust or approval prompt).
   `$ODW_PORT`" so they never collide, and to stop the server before finishing
   (an agent CLI may wait for its background commands before exiting) (ODW extension).
 - **Rate limits**: a rate-limited CLI is retried after a backoff (honoring its
-  retry-after); a spent quota or a failed login is not retried — the agent fails
+  retry-after); a spent quota, a failed login or a model the CLI does not have
+  (`model_unavailable`) is not retried — the agent fails
   with what to do, and `odw logs` names the reason — unless it has a fallback
   chain, which moves it to the next CLI (ODW extension). Switch adapter with
   `--adapter` rather than retrying a quota failure. Under `quotaWait` (ODW

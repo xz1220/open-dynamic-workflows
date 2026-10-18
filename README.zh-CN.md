@@ -155,7 +155,8 @@ cp -r "$skill_source" ~/.claude/skills/open-dynamic-workflows
 已经让你选过默认了;`odw init` 随时可以重选(agent 则在问过你之后用
 `odw init --adapter <名字>` 写入)。`odw doctor` 会检查运行环境、配置、运行目录和每个适配器;
 `odw doctor --smoke` 还会给默认适配器发一条真实提示——能发现那些装得上、但在无头模式下卡在
-登录或审批提示上的 CLI。
+登录或审批提示上的 CLI。`odw doctor --models`(ODW 扩展)给配置和 `.odw/workflows` 中提到的
+每个「适配器/模型」组合各发一条极短的提示,告诉你哪些模型已经不在了。
 
 **第一次运行不花钱。** 从模板开始,先测试,再看它在所有 agent 都用桩回复的情况下跑一遍——然后
 再真跑:
@@ -959,7 +960,33 @@ odw compare $OLD $NEW --json           # 同一份对比,供脚本使用——GE
 第一次派发 agent 时——与 agent 并行执行、3 秒超时的 `<cli> --version`,记为 `cli_version`
 事件(`odw status` 和 `GET /api/runs/:id` 的 `cliVersions` 会显示)。它绝不拖慢或导致运行失败;
 不回应的 CLI 记为未知版本。命令为 node 或其他解释器、脚本或相对路径的适配器不做探测。
-`"recordVersions": false` 关闭探测。`odw eval`(见下文)就建立在这些记录之上。
+`"recordVersions": false` 关闭探测。`odw eval`(见下文)和漂移监测都建立在这些记录之上。
+
+### 漂移监测(ODW 扩展)
+
+模型被下线或被重新指向、CLI 一夜之间自动升级,工作流却依然"通过"——跑在一个它从未调过的
+东西上。因此每次运行都会与**同一工作流上一次结束的运行**比较——运行根目录中同一分桶里最新
+的、已结束(done、failed 或 stopped)、不是 dry run、且源码哈希相同或名字相同的那一次:各适配器
+CLI 的版本(`cli_version` 事件),以及每个 agent label 在其适配器上请求的模型(`"@tier"` 按
+各自运行的 `models` 解析)。每处不同在本次运行记录到时记一次日志:
+
+```text
+drift: claude CLI 2.1.302 → 2.1.330 since the last run of review-swarm (20261017-091500-3fa2c1)
+drift: reviewer asks claude for model opus-4 → opus-5 since the last run of review-swarm (20261017-091500-3fa2c1)
+drift: review-swarm has an eval — check it still passes against its last report: odw eval review-swarm --baseline ~/.odw/runs/_evals/review-swarm/20261017-093000-77e0.json
+```
+
+只比较两次运行都记录了的内容:其中一次没用过的适配器或 label、版本未知的 CLI 都不算漂移。
+这些变化就是运行摘要的 `drift` 字段——`{ since, changes: [{ kind: "cli" | "model", adapter,
+label?, from, to }] }`——见 `GET /api/runs` 与 `/api/runs/:id`;每条日志
+也以 `drift` 字段带着该变化。
+
+工作流有 eval 文件(`.odw/evals/<name>.json`)时,第一处漂移会建议拿最新保存的报告作基线
+运行它。配置 `"driftEval": true` 后,运行结束时(被停止的除外)会自己启动:`odw eval <name>
+--baseline <报告>`,脱离运行在运行的源码目录中,输出写入运行目录的 `drift-eval.log`。由 `odw
+eval` 启动的运行不会再启动 eval。dry run 和 `odw test` 的运行不做监测。不提供 `odw schedule
+add … --on-cli-change`:定时运行本身就会记录漂移,`driftEval` 会去检验——再加一个轮询 CLI
+版本的调度只是多一个守护进程,收益很小。
 
 ### 调试工作流(ODW 扩展)
 
@@ -1438,6 +1465,13 @@ Codex、Claude Code、Gemini、Qwen、Kimi、Oh My Pi、Kilo Code、OpenCode、C
 | `opencode` | `opencode` | `run --format json --auto`;从 JSONL 解出最终文本 |
 | `cursor` | `agent` | `--print --force --trust`;stdin 传提示词 |
 | `agy` | `agy` | `--output-format stream-json`,stdin 传提示词;回复、token、错误和被拒的工具调用(`denied_actions`)取自其 `result` 事件;根为对象的 schema 走原生(`--json-schema`) |
+
+> **`gemini` 对个人与免费账号已停止支持。** Google 已于 2026-06-18 停止对个人(Gemini Code
+> Assist for individuals)与免费账号的 Gemini CLI 支持;这类登录现在会得到 "This client is no
+> longer supported for Gemini Code Assist for individuals",ODW 将其归为 `model_unavailable`
+> ([回退链](#按阶段路由与回退链odw-扩展)会换到下一个适配器)。请改用 `agy` 适配器
+> (Antigravity CLI)。企业与 Google Cloud 许可据称仍可使用(未经核实)。出处:
+> [littlebearapps/untether#720](https://github.com/littlebearapps/untether/issues/720)。
 
 内置的 `codex` 和 `claude` **自带联网能力**,调研类 workflow 零调参就能跑。
 `odw init` 会列出装了哪些 CLI
@@ -2115,7 +2149,8 @@ agent 在两次之间做的事不可能改变结果。同一次调用的后续 C
 
 **ODW 扩展。** 每个失败的 agent 都会根据其 CLI 的退出状态和输出末尾被归类:`rate_limit`、
 `quota`、`auth`、`timeout`、`stalled`、`not_found`(CLI 无法启动)、`permission`(工具
-调用或审批被拒)或 `exit`——另有四个类别,给"成功了"却拿不出证据的运行:`empty_reply`、
+调用或审批被拒)、`model_unavailable`(请求的模型未知、已下线或该账号不可用)或
+`exit`——另有四个类别,给"成功了"却拿不出证据的运行:`empty_reply`、
 `unmet_expectation`、`"mcpFailures": "fail"` 下的 `mcp_unavailable`,以及
 `orphaned_background`(回复时仍有后台任务在运行,`"orphanedBackground": "fail"` 或设了
 `expect` 时)(见[检查 agent 的工作](#检查-agent-的工作odw-扩展));`out_of_scope`:
@@ -2142,6 +2177,14 @@ agent_failed    (Search) search — [quota, retry after 3h 22m] AdapterExecution
   实际上的限流来处理。配置了[回退链](#按阶段路由与回退链odw-扩展)时,agent 会换到下一个
   CLI;同一适配器连续三次额度失败后,本次运行之后的 agent 会跳过它。开启
   [`quotaWait`](#额度用尽时暂停odw-扩展) 后,没有 CLI 可换的 agent 会等额度重置,而不是失败。
+- **不存在的模型**——CLI 不认识、已下线或该账号不可用("There's an issue with the selected
+  model"、"The model `x` does not exist or you do not have access to it"、Gemini 的
+  "models/x is not found for API version"、`ModelNotFoundError`、agy 的 "invalid model
+  selection"、Cursor 的 "Cannot use this model")——归为 `model_unavailable`:从不重试,并像额度
+  用尽一样让 agent 沿回退链换到下一个适配器。只看运行输出的最后几行,所以 agent 自己的工作里
+  打印的 "model not found" 不会被误判。`odw doctor --models` 检查配置的 `models` 档位、
+  `fallback` 链、默认适配器和 `.odw/workflows` 各阶段提到的每个模型,各发一条极短的提示,
+  逐个报告 `ok`、`model_unavailable` 或 `other`。
 
 Claude Code 会在输出里报告这类错误,而且常常以 0 退出:它的 stream-json `result` 事件
 带着 `is_error: true` 和错误消息(`API Error: Rate limit reached`、
@@ -2169,7 +2212,8 @@ ODW 能识别的措辞——从每个内置 CLI 的源码和 issue 中收集而�
       "failures": {
         "rate_limit": ["server busy", "E_THROTTLED"],
         "quota": ["monthly tokens? (used up|exhausted)"],
-        "auth": ["session expired"]
+        "auth": ["session expired"],
+        "model_unavailable": ["no such model"]
       }
     }
   }
@@ -2780,8 +2824,9 @@ node web/dev.mjs --api http://127.0.0.1:4317     # → http://127.0.0.1:5173
 - **运行钩子与卡死看门狗。** 运行结束、失败或停止时触发 `notify` 命令或 webhook(兼容
   Slack/Discord);可选的 `stallTimeout` 会终止并重启长时间无输出的 agent;worker 收到
   SIGTERM 时会干净地停止运行。
-- **`odw doctor [--smoke]`** 检查运行环境、配置和每个适配器;加 `--smoke` 会发一条真实
-  提示,揪出那些无头模式下没有回答却以 0 退出的 CLI。
+- **`odw doctor [--smoke] [--models]`** 检查运行环境、配置和每个适配器;加 `--smoke` 会发一条真实
+  提示,揪出那些无头模式下没有回答却以 0 退出的 CLI;加 `--models` 则给配置和工作流提到的每个
+  「适配器/模型」组合各发一条。
 - **可靠性。** 超时和停止会作用于 agent 的整个进程树(先 SIGTERM 再 SIGKILL),也能停下
   已在运行的 agent;崩溃或被吞掉的致命错误不会再让运行卡在 `running`,停止的运行也不会被
   记成 `done`;有歧义的结构化回复会重试而不是瞎猜;配置里的非法数字会直接报错。

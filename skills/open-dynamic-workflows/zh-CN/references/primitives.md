@@ -183,7 +183,8 @@ log(message)           // emit a one-line progress event
   会让调用以 `AgentError` 失败并列出已有层级。不带 `@` 的模型（或含有层级名不允许的字符，
   如 `@cf/…`）就是模型 ID，原样传给每个适配器。
 - **回退链。** `adapter: ["codex", "claude"]`，或调用所在适配器在 `fallback` 设置里的回退链：
-  CLI 额度用尽或登录被拒时，调用会在下一个适配器上重新运行——全新的提示词、相同的选项，
+  CLI 额度用尽、登录被拒或请求的模型不可用（`model_unavailable`：CLI 不认识、已下线或该账号
+  不可用）时，调用会在下一个适配器上重新运行——全新的提示词、相同的选项，
   [`expect`](#expectodw-扩展) 检查也一样。限流仍在原地重试（`transientRetries`）；其他失败
   ——包括没达到 expect 检查——都算调用自己的。每次切换记一行日志
   （`search:3 → claude after codex quota`）；调用会在新适配器上取得槽位，先释放旧适配器的；

@@ -333,7 +333,7 @@ CLI 额度用尽时让长时间运行继续下去。
   未知层级会让该 agent 失败并列出已有层级。普通模型 ID 会原样传给每个 CLI——只要 agent
   可能跑在不止一个 CLI 上，就优先用层级。
 - **回退链。** `adapter: ['codex', 'claude']`（或用户配置的 `fallback`）：第一个 CLI 额度
-  用尽或登录被拒时，agent 会以相同的权限档位在下一个 CLI 上重新运行，日志会写明
+  用尽、登录被拒或请求的模型不可用（`model_unavailable`）时，agent 会以相同的权限档位在下一个 CLI 上重新运行，日志会写明
   （`search:3 → claude after codex quota`）。限流仍在原 CLI 上重试。同一个 CLI 连续三次
   额度失败后，本次运行之后的 agent 会跳过它。`odw agents --json` 和 `agent_finished` 事件
   会写明产出每个结果的 CLI（`adapter`）以及它离开过的那些（`fellBackFrom`）。
@@ -546,7 +546,13 @@ Codex、Claude Code、Gemini、Qwen、Kimi 开箱即用，无需配置。要换�
 如果 agent 很快失败或返回空结果,先跑 `odw doctor`:它会检查运行环境、配置、运行目录和每个
 适配器,并给出修复建议。`odw doctor --smoke` 还会给默认适配器发一条真实提示——先征得用户同意
 (会消耗一次模型调用)——能发现那些在无头模式下没有回答就以 0 退出的 CLI(通常卡在登录、
-信任或审批提示上)。
+信任或审批提示上)。`odw doctor --models`(ODW 扩展;同样先征得同意:每个组合一条极短的提示)
+探测配置的 `models` 档位、`fallback` 链、默认适配器和 `.odw/workflows` 各阶段提到的每个
+「适配器/模型」组合,逐个报告 `ok`、`model_unavailable`(CLI 不认识该模型、已下线或该账号
+不可用)或 `other`——agent 以 `model_unavailable` 失败时就跑它。CLI 版本或请求的模型与该
+工作流上一次运行不同时,运行会记 `drift: …` 日志,摘要带 `drift` 字段(ODW 扩展);工作流有
+eval 时,建议用户运行日志里给出的 `odw eval <name> --baseline <上次报告>`,或配置
+`"driftEval": true` 让它自动启动。
 
 ## 必须知道的行为
 
@@ -563,8 +569,8 @@ Codex、Claude Code、Gemini、Qwen、Kimi 开箱即用，无需配置。要换�
 - **端口**：每个 agent 进程都有唯一的 `$ODW_PORT`（以及 `$ODW_RUN_ID`、`$ODW_AGENT_ID`）——
   让并行的 agent "在 `$ODW_PORT` 上启动开发服务器"，它们就不会冲突；并让它们在结束前停掉服务
   （agent CLI 退出前可能会等待自己的后台命令）（ODW 扩展）。
-- **限流**：被限流的 CLI 会按退避时间重试（遵守它给出的 retry-after）；额度耗尽或登录失败
-  不会重试——agent 会失败并说明该怎么做，`odw logs` 会写明原因——除非它有回退链，那样它会
+- **限流**：被限流的 CLI 会按退避时间重试（遵守它给出的 retry-after）；额度耗尽、登录失败
+  或模型不可用（`model_unavailable`）不会重试——agent 会失败并说明该怎么做，`odw logs` 会写明原因——除非它有回退链，那样它会
   换到下一个 CLI（ODW 扩展）。遇到额度耗尽，用 `--adapter` 换一个适配器，而不是反复重试。
   开启 `quotaWait`（ODW 扩展）后，它会改为等额度重置（见上文的路由）。
 - **限速与提示缓存**（ODW 扩展）：适配器自己的 `concurrency` 在运行级上限之内限制它的

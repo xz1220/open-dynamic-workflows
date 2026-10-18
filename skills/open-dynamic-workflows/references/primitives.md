@@ -240,8 +240,10 @@ take it. Claude Code ignores all of it.
   without the `@` (or with characters a tier name cannot have, such as
   `@cf/…`) is a model id, passed to every adapter as is.
 - **Fallback chains.** `adapter: ["codex", "claude"]`, or the `fallback`
-  setting for the adapter a call runs on: when its CLI's quota is spent or its
-  login is refused, the call runs again on the next adapter — a fresh prompt,
+  setting for the adapter a call runs on: when its CLI's quota is spent, its
+  login is refused, or the model it asks for is unavailable (`model_unavailable`:
+  unknown to the CLI, retired, or not offered to the account), the call runs again
+  on the next adapter — a fresh prompt,
   the same options, its [`expect`](#expect-odw-extension) checks included. A
   rate limit is retried in place (`transientRetries`); any other failure — an
   unmet expectation too — is the call's. Each move is a log line

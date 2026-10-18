@@ -172,6 +172,8 @@ that choice anytime (agents use `odw init --adapter <name>` after asking you).
 `odw doctor` checks the setup — runtime, config, run directory, every adapter —
 and `odw doctor --smoke` sends your default adapter one real prompt, catching a
 CLI that installs fine but blocks on a login or approval prompt when headless.
+`odw doctor --models` (ODW extension) sends one tiny prompt to every adapter/model
+pair your config and `.odw/workflows` name, and says which models are gone.
 
 **Your first run costs nothing.** Start from a template, test it, watch it run with
 every agent stubbed — then run it for real:
@@ -1097,7 +1099,38 @@ call key and model on its `agent_started`, and — on an adapter's first agent o
 never delays or fails a run; a CLI that does not answer is recorded as unknown. An
 adapter whose command is node or another interpreter, a script or a relative path is
 not probed. `"recordVersions": false` turns the probes off. `odw eval` (below) builds
-on this.
+on this, and so does drift watch.
+
+### Drift watch (ODW extension)
+
+A model gets retired or re-pointed, a CLI upgrades itself overnight, and the workflow
+still "passes" on something it was never tuned for. Every run is therefore compared with
+the **previous finished run of the same workflow** — the newest one in its bucket of the
+runs root that ended (done, failed or stopped), was no dry run, and has the same source
+hash or the same name: each adapter CLI's version (its `cli_version` event) and the model
+each agent label asked for on its adapter (a `"@tier"` read through each run's own
+`models`). Each difference is logged once, as soon as the run records it:
+
+```text
+drift: claude CLI 2.1.302 → 2.1.330 since the last run of review-swarm (20261017-091500-3fa2c1)
+drift: reviewer asks claude for model opus-4 → opus-5 since the last run of review-swarm (20261017-091500-3fa2c1)
+drift: review-swarm has an eval — check it still passes against its last report: odw eval review-swarm --baseline ~/.odw/runs/_evals/review-swarm/20261017-093000-77e0.json
+```
+
+Only what both runs recorded counts: an adapter or a label one of them never used, or a
+CLI whose version is unknown, is no drift. The changes are the run summary's `drift`
+field — `{ since, changes: [{ kind: "cli" | "model", adapter, label?, from, to }] }` — in
+`GET /api/runs` and `/api/runs/:id`; each log line carries the change
+as `drift`.
+
+When the workflow has an eval file (`.odw/evals/<name>.json`), the first drift suggests
+running it against its newest kept report. With `"driftEval": true` in the config the
+run starts it itself once it ends (not when it was stopped): `odw eval <name> --baseline
+<report>`, detached, from the run's source directory, its output in the run directory's
+`drift-eval.log`. A run `odw eval` started never starts another. Dry runs and `odw test`
+runs are not watched. There is no `odw schedule add … --on-cli-change`: a scheduled run
+already logs its drift, and `driftEval` checks it — a schedule that polls CLI versions
+would be one more daemon for little gain.
 
 ### Debug a workflow (ODW extension)
 
@@ -1653,6 +1686,15 @@ Cursor, and Google's Antigravity CLI work out of the box:
 | `opencode` | `opencode` | `run --format json --auto`; final text decoded from JSONL |
 | `cursor` | `agent` | `--print --force --trust`; prompt on stdin |
 | `agy` | `agy` | `--output-format stream-json`, prompt on stdin; reply, tokens, errors and refused tool calls (`denied_actions`) from its `result` event; object-rooted schemas natively (`--json-schema`) |
+
+> **`gemini` end of life for individual and free accounts.** Google ended Gemini CLI
+> support for individual (Gemini Code Assist for individuals) and free accounts on
+> 2026-06-18; such a login now gets "This client is no longer supported for Gemini
+> Code Assist for individuals", which ODW classifies as `model_unavailable` (a
+> [fallback chain](#per-phase-adapters-model-tiers-and-fallback-chains-odw-extension)
+> moves on). Use the `agy` adapter (Antigravity CLI) instead. Enterprise and Google
+> Cloud licences reportedly still work (unverified). Source:
+> [littlebearapps/untether#720](https://github.com/littlebearapps/untether/issues/720).
 
 The built-in `codex` and `claude` adapters come **web-capable**, so research
 workflows run with zero tuning. `odw init`
@@ -2444,7 +2486,8 @@ chars/4 of its reply — the run's log says so once. A CLI that reports no dolla
 **ODW extension.** Every failed agent is classified from its CLI's exit status
 and the end of its output: `rate_limit`, `quota`, `auth`, `timeout`, `stalled`,
 `not_found` (the CLI could not start), `permission` (a tool call or approval was
-refused) or `exit` — and four classes for runs that "succeeded" without the
+refused), `model_unavailable` (the model asked for is unknown, retired, or not
+offered to the account) or `exit` — and four classes for runs that "succeeded" without the
 evidence: `empty_reply`, `unmet_expectation`, under `"mcpFailures": "fail"`
 `mcp_unavailable`, and `orphaned_background` (background work left running at the
 reply, under `"orphanedBackground": "fail"` or `expect`; see
@@ -2479,6 +2522,16 @@ agent_failed    (Search) search — [quota, retry after 3h 22m] AdapterExecution
   the agent moves to the next CLI instead, and after three quota failures in a row
   the run's later agents skip that adapter. With [`quotaWait`](#pause-for-a-spent-quota-odw-extension),
   an agent with no CLI left waits for the quota to reset instead of failing.
+- **A model that is not there** — unknown to the CLI, retired, or not offered to this
+  account ("There's an issue with the selected model", "The model `x` does not exist or
+  you do not have access to it", Gemini's "models/x is not found for API version",
+  `ModelNotFoundError`, agy's "invalid model selection", Cursor's "Cannot use this
+  model") — is `model_unavailable`: never retried, and like a spent quota it moves the
+  agent down its fallback chain. Only the final lines of a run's output count, so an
+  agent's own work that prints "model not found" is not mistaken for it. `odw doctor
+  --models` checks every model the config's `models` tiers, `fallback` chains, default
+  adapter and the `.odw/workflows` phases name, one tiny prompt each, and reports `ok`,
+  `model_unavailable` or `other` per pair.
 
 Claude Code reports such errors in its output, often with exit 0: its stream-json
 `result` event says `is_error: true` with the message (`API Error: Rate limit
@@ -2509,7 +2562,8 @@ case-insensitively before the built-in table.
       "failures": {
         "rate_limit": ["server busy", "E_THROTTLED"],
         "quota": ["monthly tokens? (used up|exhausted)"],
-        "auth": ["session expired"]
+        "auth": ["session expired"],
+        "model_unavailable": ["no such model"]
       }
     }
   }
@@ -3223,8 +3277,9 @@ upgrading, is in [`CHANGELOG.md`](CHANGELOG.md):
 - **Run hooks and a stall watchdog.** A `notify` command or webhook (Slack/Discord-
   ready) fires when a run finishes, fails or stops; an opt-in `stallTimeout` kills
   and restarts agents that go quiet; a SIGTERM to the worker stops the run cleanly.
-- **`odw doctor [--smoke]`** checks the runtime, config and every adapter — and with
-  `--smoke` sends one real prompt to catch CLIs that exit 0 without answering.
+- **`odw doctor [--smoke] [--models]`** checks the runtime, config and every adapter — and with
+  `--smoke` sends one real prompt to catch CLIs that exit 0 without answering; with
+  `--models`, one to each adapter/model pair the config and workflows name.
 - **Reliability.** Timeouts and stops reach an agent's whole process tree (SIGTERM,
   then SIGKILL) and agents already running; crashes and swallowed fatal errors can no
   longer leave a run `running` or call a stopped run `done`; ambiguous structured

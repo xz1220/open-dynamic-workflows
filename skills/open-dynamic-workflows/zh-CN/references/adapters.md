@@ -11,6 +11,10 @@ shell 出去执行一个本地命令，通过 stdin 或一个参数把拼好的 
 五个开箱即用、无需配置文件：`codex`、`claude`、`gemini`、`qwen`、`kimi`。它们用各自 CLI
 的非交互模式。
 
+`gemini`：Google 已于 2026-06-18 停止对个人与免费账号的 Gemini CLI 支持
+（littlebearapps/untether#720）；这类登录会以 `model_unavailable` 失败。建议改用 `agy`
+适配器（Antigravity CLI）。
+
 ### 权限：每个内置适配器能做什么
 
 命令模板刻意保守，而且内置适配器之间**权限并不相同**。每个 agent 都在一个**权限档位**下
@@ -181,7 +185,8 @@ still reach the agent`）。仓库 `.worktreeinclude` 的 `symlink:` 行和仓�
 | `agentEnvPass` | **ODW 扩展。** `"minimal"` 环境下额外放行的变量名或 `*` 通配（如在 Bedrock 上用 Claude Code 时的 `["AWS_*"]`） |
 | `schemaKeywords` | **ODW 扩展。** `agent()` 的 schema 里 ODW 校验器不检查的关键字如何处理。`"warn"`（默认）：调用照常运行，ODW 检查其余部分，运行日志只说一次哪些关键字、位于何处、由谁强制执行（接收原生 schema 的适配器 CLI，即 `flags.schema`，否则无人）。`"strict"`：调用在启动前失败，逐个写明。格式错误的 schema 在两种模式下都会失败。`checkpoint()` 的 `schema`（修改后的 payload 必须满足的结构）遵循同样的规则。见[原生结构化输出](#原生结构化输出) |
 | `schemaPrompt` | **ODW 扩展。** `"auto"`（默认）：只有不接收原生 schema 的 CLI 才在提示词里看到 schema 描述；`"always"`：所有 CLI 都附上 |
-| `fallback` | **ODW 扩展。** 回退链：`{ "codex": ["claude"], … }`——agent 的 CLI 额度用尽或登录被拒时，它会在为其所在适配器列出的下一个适配器上重新运行（全新的提示词、相同的选项、相同的权限档位：不能运行该档位的适配器会被跳过）。限流仍在原地重试。`agent()` 调用自己的列表 `adapter: ["codex", "claude"]` 会取代它。列出的每个适配器都必须已配置。`"handoff": true`（保留键，不是适配器；默认关闭）让回退交接工作而不是从头再来：下一个适配器在同一个 worktree 中继续，提示词以上一个适配器所做之事的简报开头（至多 6 KB），简报保存为 `agents/<id>.handoff.md`；`agent(…, { handoff })` 覆盖它。默认 `{}`——见[路由](primitives.md#路由阶段默认值模型分层回退链odw-扩展) |
+| `driftEval` | **ODW 扩展。** 漂移监测会把每次运行的 CLI 版本和请求的模型与该工作流上一次结束的运行比较，每处变化记一条日志（`drift: claude CLI 2.1.302 → 2.1.330 since the last run of review-swarm`），并作为运行摘要的 `drift` 字段；工作流有 eval 文件（`.odw/evals/<name>.json`）时建议 `odw eval <name> --baseline <上次报告>`。`true`：运行结束后自动启动该 eval（脱离运行；输出写入运行目录的 `drift-eval.log`）。默认 `false` |
+| `fallback` | **ODW 扩展。** 回退链：`{ "codex": ["claude"], … }`——agent 的 CLI 额度用尽、登录被拒或请求的模型不可用（`model_unavailable`）时，它会在为其所在适配器列出的下一个适配器上重新运行（全新的提示词、相同的选项、相同的权限档位：不能运行该档位的适配器会被跳过）。限流仍在原地重试。`agent()` 调用自己的列表 `adapter: ["codex", "claude"]` 会取代它。列出的每个适配器都必须已配置。`"handoff": true`（保留键，不是适配器；默认关闭）让回退交接工作而不是从头再来：下一个适配器在同一个 worktree 中继续，提示词以上一个适配器所做之事的简报开头（至多 6 KB），简报保存为 `agents/<id>.handoff.md`；`agent(…, { handoff })` 覆盖它。默认 `{}`——见[路由](primitives.md#路由阶段默认值模型分层回退链odw-扩展) |
 | `quotaBreaker` | **ODW 扩展。** 同一个适配器上连续这么多次额度失败后，本次运行之后的 agent 都会跳过它——各自从回退链上的下一个适配器开始，没有回退链的则立即失败——并记一条警告。默认 3；`0` 或 `null` 表示从不跳过 |
 | `accounts` | **ODW 扩展。** 同一个 CLI 的多个登录：`{ "claude": [{ "name": "work", "configDir": "~/.claude-work" }, …] }`。每一项是一个适配器 `<适配器>@<名字>`——定义与其适配器相同，只是把该 CLI 的配置目录变量（`CLAUDE_CONFIG_DIR`、`CODEX_HOME`；其他 CLI 一律拒绝）设为 `configDir`，有自己的 `concurrency` 上限（取适配器的或该项自己的）和额度熔断；每一项接受 `name`、`configDir`、`concurrency`、`label`。对适配器本身的调用可在任意账号上运行：一条按余量排序的账号链（不处于额度暂停的在前，其次是本次运行额度失败最少的，再次是已路由到它且未结束的 agent 最少的；相同时按配置顺序），账号之间交接工作，除非调用写了 `handoff: false`。模型档位里没有该账号的 id 时使用其适配器的。`odw doctor` 检查每个登录（`claude auth status`、`codex login status`）；容器沙箱复制的是该账号的目录。合用多个账号须遵守各服务商的服务条款。默认无 |
 | `quotaWait` | **ODW 扩展。** 额度用尽时暂停：`{ "max": <秒数> }` 让因额度用尽而无适配器可用的 agent 不占槽位地等到它的 CLI 报出的重置时间（"try again in 3h 22m"、"resets 7pm"、`usage limit reached\|<epoch>`），只要不超过 `max` 秒，然后从链首重新开始（加最多 30 秒抖动）。在那个重置时间之前，运行会跳过该适配器；无处可去的 agent 在派发前就等待。运行显示为 `paused`，带 `pausedFor: { reason: "quota", adapter, resumeAt }`（`odw status`、`odw list` 和实时视图显示 "paused until 19:10 (codex quota)"）；`odw resume` 立即继续，`odw stop` 照常停止。没有重置时间或超过 `max` 的额度失败仍让 agent 失败（日志会说明）。等待发生在 worker 里：worker 死掉时运行变为 stale，`odw resume` 会重放它。默认 `false`——一个会等上几个小时的运行，应当是有人主动要求的 |
@@ -211,7 +216,7 @@ still reach the agent`）。仓库 `.worktreeinclude` 的 `symlink:` 行和仓�
 | `promptCache` | **ODW 扩展。** `true`：这个 CLI 背后的模型 API 会缓存提示前缀，所以它的扇出会错开启动（见 `staggerFanOut`）。内置 `claude` 声明了它 |
 | `label` | 进度显示用的友好名字 |
 | `flags` | 能力声明，如 `{ "model": ["--model"] }`——承载每次调用 `model` 的原生旗标。不声明它，`agent(..., { model })` 对该适配器就不生效（日志里会出现一条路由说明）。**ODW 扩展：**`"schema": { "args": [...], "mode": "inline" \| "file", "strict"?: true, "objectRoot"?: true }` 声明该 CLI 会自己校验调用的 JSON Schema——见[原生结构化输出](#原生结构化输出) |
-| `failures` | **ODW 扩展。** 这个 CLI 自己的失败措辞：`{ "rate_limit": [...], "quota": [...], "auth": [...] }`，正则表达式，先于内置表、不区分大小写地匹配失败运行输出的末尾 |
+| `failures` | **ODW 扩展。** 这个 CLI 自己的失败措辞：`{ "rate_limit": [...], "quota": [...], "auth": [...], "model_unavailable": [...] }`，正则表达式，先于内置表、不区分大小写地匹配失败运行输出的末尾 |
 | `output` | stdout 如何变成回复（默认：去掉首尾空白的文本）——见下文 |
 | `permissionArgs` | **ODW 扩展。** 各档位的参数：`{ "read"?: [...], "edit": [...], "full"?: [...] }`（`edit` 必填，没有参数写 `[]`），放在命令中 `{permission_args}` 那一项的位置——设置了它，命令就必须恰好有这一项 |
 | `permissions` | **ODW 扩展。** 把该适配器的档位封顶在运行档位之下：它的 agent 取两者中较低的一档 |

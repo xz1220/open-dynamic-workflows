@@ -116,6 +116,28 @@ independent security reviews whose findings are all fixed.
   naming the paths — so an agent cannot edit or skip the tests it is judged by to get
   green. Read like `expect.changes`: an isolated agent's kept diff, an in-place agent's
   change since the call started.
+- A `model_unavailable` failure reason (**ODW extension**): a model the CLI does not
+  know, has retired, or does not offer the account — Claude Code's "There's an issue
+  with the selected model", Codex's "The model `x` does not exist or you do not have
+  access to it", Gemini's "models/x is not found for API version" and
+  `ModelNotFoundError`, agy's "invalid model selection", OpenCode/Kilo "Model not
+  found", Cursor's "Cannot use this model", each sampled with its source in
+  `tests/failures.test.ts`. Read from the final lines only; never retried; like a spent
+  quota it moves the agent down its fallback chain (and hands over with `handoff`).
+  Adapters may add their own wording (`failures.model_unavailable`); `odw test` scripts
+  it as `fail: "model_unavailable"`. Gemini CLI's end of life for individual and free
+  accounts (2026-06-18) reads as one too, and the README says so.
+- `odw doctor --models` (**ODW extension**): one tiny prompt per adapter/model pair the
+  config's `models` tiers, `fallback` chains and default adapter, and the phases of
+  `.odw/workflows`, name — on that adapter alone, no retry, no fallback — each reported
+  `ok`, `model_unavailable` (a failed check) or `other`; `--json` carries `model: {
+  adapter, model, result, from }` per check.
+- Drift watch (**ODW extension**): every run compares its CLI versions and requested
+  models with the workflow's previous finished run and logs each change once (`drift:
+  claude CLI 2.1.302 → 2.1.330 since the last run of review-swarm`); the run summary has
+  a `drift` field (`{ since, changes }`, web types too). A workflow with an eval file
+  gets `odw eval <name> --baseline <last report>` suggested; `"driftEval": true` starts
+  it once the run ends, detached, its output in `drift-eval.log`.
 
 ### Ask a person, tell a person
 - `checkpoint(title, { payload, timeout, onTimeout })` pauses a run until someone
