@@ -1234,8 +1234,8 @@ agent 文本筛选的结果(见[校验输入,清点 null](#校验输入清点-nu
 时都会保存它的输入(`agents/<id>.call.json`:脚本给出的提示词和选项、开始时所用的适配器、请求的
 模型),隔离 agent 的 `agent_started` 事件还记下它的 worktree 检出的提交(`base`)。重跑是一次只
 含这一个调用的新运行(`meta.json` 中 `origin: "replay"`、`replayOf: { runId, agentId, label,
-base }`;其 `args` 只有 `{ replayOf }`,提示词与选项保存在运行目录的 `call.json` 里,不对外提供),沿用原调用的 label 与 phase,在原运行的目录下、用原运行的配置、权限档位、信任级别与
-沙箱运行——`worktree` agent 则检出原来的 base 提交,不管现在 HEAD 在哪里,所以它看到的代码与
+base }`;其 `args` 只有 `{ replayOf }`,提示词与选项保存在运行目录的 `call.json` 里,不对外提供),沿用原调用的 label 与 phase,在原运行的目录下、用原运行的配置、权限档位、信任级别、不可信输入与
+沙箱运行(触发器启动的运行,其 replay 也在严格脚本上下文中运行)——`worktree` agent 则检出原来的 base 提交,不管现在 HEAD 在哪里,所以它看到的代码与
 原 agent 相同。`--prompt @文件|文本`、`--adapter` 与 `--model` 替换原值(每项改动都会打印出来);
 它接受 `odw run` 的 `--wait`/`--fg`/`-d`/`--timeout`。它打印新运行的 id,以及把重跑与原 agent
 配对的 `odw compare` 命令(按 label;同一运行里还有别的 agent 用同一 label 时按 id)。本版本之前的
@@ -2214,7 +2214,7 @@ issue 正文、PR 标题、评论是任何人写的文字,模型无法可靠地�
 ("Comment and Control"、GitLost)绕过了所有模型层面的防护,由此得出的建议是结构性的——把能力
 拿走。**args** 来自外部的运行带有**不可信输入**,这与[不受信任的仓库](#不受信任的仓库odw-扩展)
 是两回事。[触发器](#由-webhook-启动运行githublinearslackodw-扩展)启动的每个运行都带有它(除非
-触发器写明 `"untrusted": false`),`odw run --untrusted-input` 也一样(rerun / resume 会保留)。
+触发器写明 `"untrusted": false`),`odw run --untrusted-input` 也一样(rerun / resume / replay 会保留)。
 这样的运行:
 
 - **agent 只读**——`permissions: "read"`——除非显式给出了运行档位:`--permissions`,或触发器的

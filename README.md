@@ -1442,8 +1442,9 @@ out (`base`). The replay is a new run (`origin: "replay"`, `replayOf: { runId,
 agentId, label, base }` in its `meta.json`, whose `args` are `{ replayOf }` only: the
 prompt and options are kept in the run directory's `call.json`, which nothing serves)
 of just that call, with the original's
-label and phase, in the original's directory, config, permission tier, trust and
-sandbox — and, for a `worktree` agent, at the original's base commit whatever HEAD is
+label and phase, in the original's directory, config, permission tier, trust,
+untrusted input and sandbox (a triggered run's replay runs in a strict script context
+too) — and, for a `worktree` agent, at the original's base commit whatever HEAD is
 now, so it sees the code the original saw. `--prompt @file|TEXT`, `--adapter` and
 `--model` replace the original's (each change is printed); it takes `odw run`'s
 `--wait`/`--fg`/`-d`/`--timeout`. It prints the new run id and the `odw compare`
@@ -2575,7 +2576,7 @@ structural: take the capabilities away. A run whose **args** come from outside t
 **untrusted input** — separate from an [untrusted repository](#untrusted-repositories-odw-extension).
 Every run a [trigger](#start-runs-from-webhooks-github-linear-slack-odw-extension) starts
 takes it (unless the trigger says `"untrusted": false`), and so does
-`odw run --untrusted-input` (a rerun or resume keeps it). Such a run:
+`odw run --untrusted-input` (a rerun, resume or replay keeps it). Such a run:
 
 - **runs read-only agents** — `permissions: "read"` — unless the run's tier was given:
   `--permissions`, or the trigger's `"permissions"`;

@@ -168,6 +168,12 @@ export interface CreateRunInput {
    * ../untrusted-input): written to meta as `untrustedInput` only when set.
    */
   untrustedInput?: UntrustedInputMeta | null;
+  /**
+   * The origin of the run this one replays or reruns, when it decides the
+   * script context (ODW extension; see ../script-context): `"trigger"`.
+   * Written to meta as `sourceOrigin` only when set.
+   */
+  sourceOrigin?: string | null;
 }
 
 /**
@@ -287,6 +293,7 @@ export class RunStore {
       ...(input.replayOf ? { replayOf: input.replayOf } : {}),
       ...(input.breaks ? { breaks: input.breaks } : {}),
       ...(input.untrustedInput ? { untrustedInput: input.untrustedInput } : {}),
+      ...(input.sourceOrigin ? { sourceOrigin: input.sourceOrigin } : {}),
       launchedBy: clean(input.launchedBy) ?? localLauncher(),
       resumedFrom: input.resumedFrom?.runId ?? null,
       resumedFromDir: input.resumedFrom?.dir ?? null,

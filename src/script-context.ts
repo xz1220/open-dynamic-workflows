@@ -23,7 +23,7 @@
  * errors — the same object again when it is one the worker threw.
  *
  * Unless the config sets `scriptContext`, a run is strict when a trigger
- * started it, when its workflow is a Claude Code plugin's, or when its input or
+ * started it (or the run it reruns or replays), when its workflow is a Claude Code plugin's, or when its input or
  * its repository is untrusted ({@link resolveScriptContext}).
  *
  * `vm` is NOT a security boundary. Strict takes away what a well-meaning but
@@ -52,6 +52,8 @@ export function isScriptContext(value: unknown): value is ScriptContext {
 export interface ScriptContextRun {
   /** meta.json's origin: "trigger" for a run a trigger started. */
   origin?: unknown;
+  /** meta.json's sourceOrigin: "trigger" for a replay or rerun of a run a trigger started. */
+  sourceOrigin?: unknown;
   /** Whether its workflow is a Claude Code plugin's (meta.plugin). */
   plugin: boolean;
   /** Whether its input is untrusted (a trigger's, `--untrusted-input`). */
@@ -71,6 +73,7 @@ export function resolveScriptContext(
 ): { context: ScriptContext; why: string } {
   if (setting) return { context: setting, why: `scriptContext: "${setting}" in the config` };
   if (run.origin === "trigger") return { context: "strict", why: "a trigger started this run" };
+  if (run.sourceOrigin === "trigger") return { context: "strict", why: "a trigger started the run this one replays" };
   if (run.plugin) return { context: "strict", why: "the workflow is a Claude Code plugin's" };
   if (run.untrustedInput) return { context: "strict", why: "the run's input is untrusted" };
   if (run.untrustedRepo) return { context: "strict", why: "the run is untrusted" };

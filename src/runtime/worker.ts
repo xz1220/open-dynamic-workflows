@@ -243,6 +243,7 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
     // Kept in the run's settings, so a nested workflow() runs the same way.
     const scriptContext = resolveScriptContext(chosen.settings.scriptContext, {
       origin: meta.origin,
+      sourceOrigin: meta.sourceOrigin,
       plugin: meta.plugin != null,
       untrustedInput: input !== null,
       untrustedRepo: runTrust.trust === "untrusted",

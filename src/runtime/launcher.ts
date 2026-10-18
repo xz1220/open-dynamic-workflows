@@ -91,7 +91,12 @@ export interface StartRunOptions {
    * and whether its first agent that may write asks first (default true).
    * Kept in meta as `untrustedInput`, with the args it covers.
    */
-  untrustedInput?: { why: string; approve?: boolean } | null;
+  untrustedInput?: { why: string; approve?: boolean; args?: string[] } | null;
+  /**
+   * The origin of the run this one replays or reruns (ODW extension; see
+   * ../script-context): `"trigger"` keeps a triggered run's strict default.
+   */
+  sourceOrigin?: string | null;
 }
 
 /**
@@ -147,8 +152,14 @@ function commonCreateInput(options: StartRunOptions, source: string, workflowNam
     call: options.call ?? null,
     launchedBy: options.launchedBy ?? null,
     untrustedInput: options.untrustedInput
-      ? { why: options.untrustedInput.why, args: taintedArgs(options.args), approve: options.untrustedInput.approve !== false }
+      ? {
+          why: options.untrustedInput.why,
+          // A replay's args are `{ replayOf }`: it keeps the args its original run's input covered.
+          args: options.untrustedInput.args ?? taintedArgs(options.args),
+          approve: options.untrustedInput.approve !== false,
+        }
       : null,
+    sourceOrigin: options.sourceOrigin ?? null,
   };
 }
 

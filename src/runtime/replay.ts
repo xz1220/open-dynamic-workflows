@@ -16,8 +16,8 @@
  * original's (so `odw compare` matches the two by label), its `adapter` the
  * one the original asked for — else the one it started on — and its `model`
  * likewise; `--prompt`, `--adapter` and `--model` replace them. It runs in the
- * original's source directory, with its config, permission tier, trust and
- * sandbox. An isolated agent's worktree checks out the original's base
+ * original's source directory, with its config, permission tier, trust,
+ * untrusted input and sandbox — and, the original triggered, strict. An isolated agent's worktree checks out the original's base
  * commit, whatever HEAD is now (the run's `worktreeBase`), so the replay sees
  * the code the original saw.
  *
@@ -38,6 +38,7 @@ import { isPermissionTier } from "../adapters/permissions.js";
 import { sandboxFlagOf } from "../adapters/sandbox.js";
 import type { PermissionTier, TrustLevel } from "../adapters/types.js";
 import type { AgentCallRecord } from "../journal.js";
+import { untrustedInputOf } from "../untrusted-input.js";
 import { isCommitId } from "../workspace.js";
 import { startRunFromSource, type StartRunOptions } from "./launcher.js";
 import type { ReplayLink, RunStore } from "./run-store.js";
@@ -123,6 +124,10 @@ export function planReplay(store: RunStore, runId: string, agentId: number, over
     budgetTotal: null,
     origin: "replay",
     replayOf: link,
+    // Untrusted input stays untrusted on a replay, as on a rerun (ODW extension): nothing loosens it…
+    untrustedInput: untrustedInputOf(meta),
+    // …and a triggered run's replay keeps its strict script context.
+    sourceOrigin: meta.origin === "trigger" || meta.sourceOrigin === "trigger" ? "trigger" : null,
   };
   return { args: { prompt, options }, link, start, notes };
 }

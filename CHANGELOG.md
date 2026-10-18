@@ -933,6 +933,12 @@ independent security reviews whose findings are all fixed.
   repository dropped it). They now run without the secret-named and vendors' variables
   (`PATH`, `HOME`, `DOCKER_*` and `COMPOSE_*` kept), and a run with untrusted input drops
   the repository's own setup and teardown, saying so in its log.
+- `odw replay` of a run with untrusted input started a run of the user's own input: it
+  carried the original's trust but not its `untrustedInput`, so the replayed agent got
+  the config's permission tier, every secret, and no checkpoint before writing. A replay
+  now keeps `untrustedInput` (with the args it covered) as a rerun or resume does, and
+  a triggered run's replay keeps its strict script context (`sourceOrigin: "trigger"`
+  in its meta).
 
 ### Changed behavior — check before upgrading
 - `agentType` naming an agent definition file now runs that definition (see "Write
