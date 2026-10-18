@@ -200,8 +200,15 @@ test("a missing image or engine is a ConfigError before any container starts", a
   await assert.rejects(noImage.run({ prompt: "hello" }), (err: Error) => err instanceof ConfigError && /image 'not-built:1' is not present in docker \(ODW never pulls\)/.test(err.message));
   await assert.rejects(noImage.checkSandbox(), ConfigError);
   assert.equal(calls().slice(before).some((a) => a[0] === "run"), false);
-  const noEngine = new Bridge(config({ sandbox: { kind: "container", engine: "podman", image: "odw-test:1" } }), { source: root });
-  await assert.rejects(noEngine.run({ prompt: "hello" }), /sandbox engine 'podman' is not on PATH/);
+  // Only the fake's bin on PATH: a CI runner may well have a real podman installed.
+  const path = process.env.PATH;
+  process.env.PATH = bin;
+  try {
+    const noEngine = new Bridge(config({ sandbox: { kind: "container", engine: "podman", image: "odw-test:1" } }), { source: root });
+    await assert.rejects(noEngine.run({ prompt: "hello" }), /sandbox engine 'podman' is not on PATH/);
+  } finally {
+    process.env.PATH = path;
+  }
 });
 
 test("a call may only tighten: asking for the network a sandbox has not fails before it starts", async () => {
