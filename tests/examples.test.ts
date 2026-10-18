@@ -293,6 +293,19 @@ test("review-swarm.js maps, reviews per lens, verifies every finding and summari
   assert.deepEqual(r.lenses, ["correctness", "security"]);
 });
 
+test("coordinated-refactor.js runs isolated lanes on the notes board, reviews them, and reconciles the clashing ones", async () => {
+  const { state, result, error, events } = await runExample("coordinated-refactor.js", { tasks: ["rename parseX", "add --strict"] });
+  assert.equal(state, "done", JSON.stringify(error));
+  const r = result as { lanes: unknown[]; clashes: Array<{ lane: number }>; reconciled: Array<{ lane: number; summary: unknown }> };
+  assert.equal(r.lanes.length, 2);
+  // The mock reviewer names lane 1 (its schema's minimum): it runs again, under its own label.
+  assert.deepEqual(r.reconciled.map((x) => x.lane), [1]);
+  const labels = events.filter((e) => e.type === "agent_finished").map((e) => e.label);
+  assert.deepEqual(labels.sort(), ["lane-1", "lane-1-reconciled", "lane-2", "reviewer"]);
+  const phases = events.filter((e) => e.type === "phase_started").map((e) => e.phase);
+  assert.deepEqual(phases, ["Change", "Review", "Reconcile"]);
+});
+
 // plan-approve-execute.js: a person answers its checkpoint() through the decision log.
 const PLAN_TASK = { task: "Add rate limiting to the public API" };
 
