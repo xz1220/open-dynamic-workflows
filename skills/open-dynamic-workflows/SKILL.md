@@ -111,7 +111,9 @@ and odw checks it — prefer it to asking the model "did you do it?", or to
 trusting a reply that says so. `changes: true|false` (some file changed / none
 did), `files` (globs, each matching a file it changed or created), `command`
 (must exit 0 in the agent's workspace; `timeout` seconds, default 600) and
-`match` (a regular expression the reply must match). Work that misses runs
+`match` (a regular expression the reply must match), and `untouched` (globs no
+file it changed, created or deleted may match — `['test/**', '**/*.snap']`, so
+it cannot edit or skip the tests to get green). Work that misses runs
 again, on the same adapter, with what it missed in its prompt (`expectRetries`,
 default 1), then throws — recoverable — with `reason: "unmet_expectation"` and
 `misses`; a miss never falls back, and a call that does fall back keeps its

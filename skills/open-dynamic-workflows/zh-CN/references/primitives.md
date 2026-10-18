@@ -436,7 +436,7 @@ odw 以退出码 1 结束并给出命令输出的末尾（被信号中断时同�
 ## expect（ODW 扩展）
 
 ```js
-agent(prompt, { expect: { changes?, files?, command?, match?, mcp?, timeout? }, expectRetries?, allowEmpty? })
+agent(prompt, { expect: { changes?, files?, command?, match?, mcp?, untouched?, timeout? }, expectRetries?, allowEmpty? })
 ```
 
 agent 回复之后必须成立的条件——由 odw 检查，而不是问模型有没有做完。优先用它，而不是
@@ -455,11 +455,15 @@ agent 回复之后必须成立的条件——由 odw 检查，而不是问模型
   `connected`——或 `pending`，Claude Code 的文档说它本身不算失败（仍在后台连接，或带缓存的
   工具列表、首次使用时才连接）。`failed`、`needs-auth`、`disabled` 或没有配置都算缺失。没有
   声明 `mcpPath` 的适配器无法检查：调用在 CLI 启动前就失败。
+- **untouched** —— glob 列表（规则同 `files`），agent 修改、新建或删除的文件都不许匹配：它不该
+  为了变绿去改、跳过或删除的测试、快照和 CI 配置（`['test/**', '**/*.snap', '.github/**']`；
+  `*` 不跨目录）。碰到的路径算作一项缺失并被列出——`no file matching "test/**" may change,
+  and 1 did: test/add.test.js`——重试时会要求 agent 把它们恢复原样。和 `changes` 一样从 git 读取。
 
 检查在回复到达、并通过 `schema` 校验之后进行。agent 改了什么从 git 读取。原地运行时，是与
 agent 第一次 CLI 运行前的源码树相比的差异：你自己未提交的改动和运行目录不算，agent 的提交算
 ——同时原地运行的其他 agent 的改动也会算进来，所以需要分清各自改动的 agent 请用隔离。原地
-使用 `expect.changes` 或 `expect.files` 需要 git 仓库（否则调用在 CLI 启动前失败）。用
+使用 `expect.changes`、`expect.files` 或 `expect.untouched` 需要 git 仓库（否则调用在 CLI 启动前失败）。用
 `isolation: "worktree"` 时，就是运行为该 agent 保留的那份 diff；只重排回复格式的 schema 重试，
 按真正干活的那次尝试来评判。
 

@@ -93,7 +93,9 @@ ODW 不检查：运行日志会连同位置说明一次，调用照常运行—�
 `expect`（**ODW 扩展**）写明 agent 回复之后必须成立的条件，由 odw 来检查——优先用它，
 而不是问模型"你做了吗"，或相信一个这么说的回复。`changes: true|false`（有文件改动 / 不许
 有改动）、`files`（glob 列表，每个都要匹配到一个被改动或新建的文件）、`command`（必须在
-agent 的工作区里以 0 退出；`timeout` 秒，默认 600）和 `match`（回复必须匹配的正则）。没
+agent 的工作区里以 0 退出；`timeout` 秒，默认 600）、`match`（回复必须匹配的正则）和
+`untouched`（glob 列表，agent 修改、新建或删除的文件都不许匹配——如 `['test/**',
+'**/*.snap']`，不让它靠改或跳过测试来变绿）。没
 达到要求的工作会在同一个适配器上带着缺失项重跑（`expectRetries`，默认 1），之后抛出可恢复的
 错误，带 `reason: "unmet_expectation"` 和 `misses`；缺失绝不会触发回退，而发生回退的调用会
 带着它的 `expect`。CLI 拒绝的工具调用（claude 的

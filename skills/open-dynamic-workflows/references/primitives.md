@@ -559,7 +559,7 @@ replaces the earlier one. `odw resume` copies a replayed agent's diff into the n
 ## expect (ODW extension)
 
 ```js
-agent(prompt, { expect: { changes?, files?, command?, match?, mcp?, timeout? }, expectRetries?, allowEmpty? })
+agent(prompt, { expect: { changes?, files?, command?, match?, mcp?, untouched?, timeout? }, expectRetries?, allowEmpty? })
 ```
 
 What must hold once the agent has replied — checked by odw, instead of asking
@@ -583,13 +583,19 @@ the model whether it did the work. Prefer it to a second "did you do it?" agent:
   the background, or one with a cached tool list it connects on first use).
   `failed`, `needs-auth`, `disabled` or not configured is a miss. An adapter that
   declares no `mcpPath` cannot be checked: the call fails before its CLI starts.
+- **untouched** — globs, as `files`, that no file the agent changed, created or
+  deleted may match: the tests, snapshots and CI config it must not edit, skip
+  or delete to get green (`['test/**', '**/*.snap', '.github/**']`; `*` stays
+  within a directory). A touched path is a miss naming it — `no file matching
+  "test/**" may change, and 1 did: test/add.test.js` — and the retry is told to
+  restore it. Read from git like `changes`.
 
 The checks run once the reply is in and has satisfied its `schema`. What the
 agent changed is read from git. In place, it is what differs from the source
 tree as it was before the agent's first CLI run: your own uncommitted edits and
 the run's directory are left out, the agent's commits count — and so do edits
 another in-place agent makes meanwhile, so isolate agents whose changes must be
-told apart. `expect.changes` or `expect.files` in place needs a git repository
+told apart. `expect.changes`, `expect.files` or `expect.untouched` in place needs a git repository
 (else the call fails before its CLI starts). With `isolation: "worktree"`, it is
 exactly the change the run keeps as the agent's diff; a schema retry that only
 reformats is judged on the attempt that did the work.

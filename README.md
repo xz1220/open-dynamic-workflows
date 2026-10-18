@@ -258,6 +258,7 @@ const summary = await agent('Fix the failing tests in src/parser.', {
     files: ['src/parser/**'],   // each glob must match a file it changed or created
     match: '^Fixed',            // a regular expression the reply must match
     mcp: ['github'],            // MCP servers its CLI must have started it with (claude)
+    untouched: ['test/**', '**/*.snap', '.github/**'], // no file matching these may change
   },
 })
 ```

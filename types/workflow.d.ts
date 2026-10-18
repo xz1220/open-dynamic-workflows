@@ -122,6 +122,12 @@ declare global {
      * Needs an adapter that reports its MCP servers (`output.mcpPath`; the built-in claude does).
      */
     mcp?: string[];
+    /**
+     * Globs (as `files`) no file the agent changed, created or deleted may match — tests,
+     * snapshots, CI config it must not edit or skip to get green: `['test/**', '**/*.snap',
+     * '.github/**']`. A touched path is a miss naming it. Read from git, as `changes` is.
+     */
+    untouched?: string[];
     /** Seconds `command` may run before it is killed, which is a miss (default 600). */
     timeout?: number;
   }

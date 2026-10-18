@@ -235,6 +235,7 @@ const summary = await agent('Fix the failing tests in src/parser.', {
     files: ['src/parser/**'],   // 每个 glob 都必须匹配到一个被改动或新建的文件
     match: '^Fixed',            // 回复必须匹配的正则表达式
     mcp: ['github'],            // CLI 启动 agent 时必须连上的 MCP 服务器(claude)
+    untouched: ['test/**', '**/*.snap', '.github/**'], // 匹配这些 glob 的文件一个都不许改
   },
 })
 ```

@@ -110,7 +110,7 @@
 | R2 | **单 agent 上限与死循环检测**（ODW 扩展）：`agent(…, { limits: { toolCalls, costUsd, outputTokens, seconds, repeat } })`，配置 `agentLimits` 与按适配器的 `agentLimits` 逐键覆盖（`null` 取消）；从 CLI 输出流实时执行（claude stream-json、codex `exec --json`、kilo/opencode），越界立即杀掉整个进程组，以 `runaway` 失败并在 `limitHit` 写明上限与证据；`repeat` 为同一工具调用（工具名 + 参数稳定哈希）**连续** n 次（不用「最近 2n 次中 n 次」：编辑—测试循环会误报）；不被 `transientRetries` 重试、不算 `expect` 未达标；文本 CLI 的花费只能在每次运行后检查（每次运行提示一次）；`odw status`、`odw agents` 与看板侧栏显示 | S–M | ✅ |
 | R3 | **运行级笔记板 + 接口变更广播**：并行 agent 通过 `odw note` 互相告知决定，完成时广播其接口改动 | M | ✅ `agent(…, { notes: true })`、`parallel(thunks, { notes: true })` 或配置 `"notes": true`（默认关闭）；agent 启动时已有笔记写进提示词，`ODW_NOTES`（每个 agent 自己的 POSIX shell 脚本，容器沙箱中只绑定它自己的笔记目录读写、笔记板只读）或 `odw note` 发布、读取；隔离 agent 完成时在 `agent_finished` 之前广播 diff 统计与 diff 中的声明行（export/def/func/pub fn/class/interface，最多 12 行）；每条 2000 字符、共 200 条/256 KiB 上限并脱敏；`notes.jsonl`、`note_added` 事件、`odw notes <run>`、`GET /api/runs/:id/notes`、`web/src/types.ts` 的 `RunNote`（看板面板待接入）；已在运行的 agent 不推送新笔记（可再次读取 `ODW_NOTES`）；示例 `examples/coordinated-refactor.js` |
 | R4 | **只批准不写入的远程链接**：每个检查点签名的一次性批准/拒绝链接，随 notify 发出；`--token-scope approve` | M | ⏳ |
-| R5 | `expect.untouched`：声明不得改动的路径（防止改测试凑绿） | S | 🚧 |
+| R5 | `expect.untouched`：声明不得改动的路径（防止改测试凑绿） | S | ✅ `agent(…, { expect: { untouched: ['test/**', '**/*.snap', '.github/**'] } })`：agent 修改、新建或删除的文件匹配任一 glob 即为缺失，缺失项列出路径；与 `expect.changes` 同源（隔离 agent 看保留的 diff，原地 agent 看调用开始以来的改动），复用 `expect.files` 的 glob 规则；基线版本上的保留检查（held-out `command`）待做 |
 | R6 | `odw apply --resolve`：冲突交给 agent 在临时 worktree 解决，校验通过才接受 | M | ⏳ |
 | R7 | 容器出网白名单（代理 sidecar） | M | ⏳ |
 | R8 | 回退时交接上下文（`fallback.handoff`）而非从头再来 | M | ⏳ |
