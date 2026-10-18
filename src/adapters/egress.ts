@@ -292,7 +292,26 @@ export function runEgressProxy(deps: EgressProxyDeps, config: EgressProxyConfig)
       res.writeHead(403, { "content-type": "text/plain" }).end(refusal(host, port));
       return;
     }
-    const headers = { ...req.headers };
+    // The URL's host is the one checked, so it is the one the upstream sees: a
+    // Host header naming another (a virtual host behind an allowed address) is
+    // refused, and the header sent on is the URL's host and port.
+    const claimed = req.headers.host;
+    if (claimed !== undefined) {
+      let named: URL | null = null;
+      try {
+        named = new URL(`http://${claimed}`);
+      } catch {
+        named = null;
+      }
+      const namedHost = named ? named.hostname.replace(/^\[|\]$/g, "").toLowerCase().replace(/\.$/, "") : String(claimed);
+      const namedPort = named && named.port ? Number(named.port) : 80;
+      if (!named || named.username || named.pathname !== "/" || named.search || namedHost !== host.replace(/\.$/, "")) {
+        deny("HTTP", namedHost, namedPort, req);
+        res.writeHead(403, { "content-type": "text/plain" }).end(`odw egress: the Host header (${namedHost.slice(0, 255)}) is not the request's host (${host})\n`);
+        return;
+      }
+    }
+    const headers: http.IncomingHttpHeaders = { ...req.headers, host: url.host };
     delete headers["proxy-authorization"];
     delete headers["proxy-connection"];
     const upstream = httpm.request({ host, port, method: req.method, path: url.pathname + url.search, headers }, (reply) => {
