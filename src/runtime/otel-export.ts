@@ -172,6 +172,7 @@ export function traceOptionsFor(config: Config, env: Env): TraceOptions {
     captureContent: capture,
     resource: resourceFromEnv(env),
     executables: Object.fromEntries(Object.entries(config.adapters).map(([name, adapter]) => [name, adapter.command[0] ?? ""])),
+    models: config.settings.models,
     version: VERSION,
   };
   if (capture) {

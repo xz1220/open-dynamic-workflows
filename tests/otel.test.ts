@@ -481,6 +481,21 @@ test("a run still going ends its open spans at its last event", () => {
   assert.equal(seconds(named(trace, "invoke_workflow review").endTimeUnixNano), T0 + 7);
 });
 
+test("gen_ai.request.model: a model id as asked; a tier as its adapter's id, else the configured one the transcript names", () => {
+  const events = [
+    at(0, "agent_started", { agentId: 1, label: "a", adapter: "claude", model: "@fast" }),
+    at(1, "agent_finished", { agentId: 1, label: "a", adapter: "claude", attempts: 1 }),
+    at(2, "agent_started", { agentId: 2, label: "b", adapter: "codex", model: "@fast" }),
+    at(3, "agent_finished", { agentId: 2, label: "b", adapter: "codex", attempts: 1 }),
+    at(4, "agent_started", { agentId: 3, label: "c", adapter: "codex", model: "gpt-5" }),
+    at(5, "agent_finished", { agentId: 3, label: "c", adapter: "codex", attempts: 1 }),
+  ];
+  const trace = runTrace(record(events, { transcript: (id) => (id === 2 ? CLAUDE : null) }), { models: { fast: { claude: "haiku" } } });
+  assert.equal(attrs(named(trace, "invoke_agent a"))["gen_ai.request.model"], "haiku");
+  assert.equal(attrs(named(trace, "invoke_agent b"))["gen_ai.request.model"], "claude-sonnet-4-5", "no id for codex: what its CLI said it ran");
+  assert.equal(attrs(named(trace, "invoke_agent c"))["gen_ai.request.model"], "gpt-5");
+});
+
 test("gen_ai.provider.name: the conventions' value for the CLIs that have one, else the adapter's name", () => {
   assert.equal(providerName("claude"), "anthropic");
   assert.equal(providerName("codex"), "openai");

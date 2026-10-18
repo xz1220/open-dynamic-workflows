@@ -142,8 +142,6 @@ process.stdin.on('data', (c) => (prompt += c)).on('end', () => {
   emit({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_9', content: 'a.txt' }] } });
   emit({ type: 'result', subtype: 'success', is_error: false, result: 'listed', total_cost_usd: 0.02, usage: { input_tokens: 10, output_tokens: 5 } });
 });`,
-  // The model a call asks for reaches the CLI here (the mock ignores it), so agent_started records it.
-  "{model}",
 ];
 
 /** A runs root with a mock stream-json adapter and the given extra config. */

@@ -97,6 +97,8 @@ export interface TraceOptions {
   resource?: Record<string, string>;
   /** Adapter name → its command's executable: a renamed `claude` is still Anthropic. */
   executables?: Record<string, string>;
+  /** The `models` setting: a model tier an agent asked for ("@fast") is its adapter's id there. */
+  models?: Record<string, Record<string, string>>;
   /** What captured content goes through on its way out. */
   redact?: (text: string) => string;
   /** odw's version: the instrumentation scope's. */
@@ -589,7 +591,7 @@ export function runTrace(record: RunRecord, options: TraceOptions = {}): OtlpTra
       .str("gen_ai.provider.name", providerName(node.adapter, node.adapter ? options.executables?.[node.adapter] : undefined))
       .str("gen_ai.agent.name", label)
       .str("gen_ai.agent.id", id !== null ? `${runId}/agents/${id}` : undefined)
-      .str("gen_ai.request.model", typeof begun?.model === "string" ? begun.model : facts?.model)
+      .str("gen_ai.request.model", requestedModel(begun?.model, node.adapter, options.models) ?? facts?.model)
       .str("gen_ai.response.model", facts?.responseModel)
       .str("gen_ai.conversation.id", facts?.conversationId)
       .int("odw.agent.id", id ?? undefined)
@@ -815,6 +817,19 @@ function spanEvent(ev: WorkflowEvent): { name: string; attrs: Attrs } | null {
     };
   }
   return null;
+}
+
+/**
+ * The model an agent asked for, as its start event names it: a model id as it
+ * is, a tier ("@fast") as its adapter's id in `models` — none when the tier
+ * has none for it (its CLI's default ran: the transcript may say which).
+ */
+function requestedModel(model: unknown, adapter: string | null, models: TraceOptions["models"]): string | undefined {
+  if (typeof model !== "string" || model === "") return undefined;
+  const tier = /^@([\w.-]+)$/.exec(model)?.[1];
+  if (tier === undefined) return model;
+  const ids = models && Object.hasOwn(models, tier) ? models[tier]! : undefined;
+  return adapter && ids && Object.hasOwn(ids, adapter) ? ids[adapter] : undefined;
 }
 
 /** A transcript's facts, or undefined when the agent kept none (or it cannot be read). */
