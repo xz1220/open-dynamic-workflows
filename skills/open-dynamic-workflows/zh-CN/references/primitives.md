@@ -458,15 +458,20 @@ ODW 仓库里的 `examples/plan-approve-execute.js` 就是这个流程的完整 
    setup 失败或超时，会像 CLI 出错一样让这个 agent 失败（可恢复：在 `parallel`/`pipeline`
    里变成 `null`），错误里带着它输出的结尾。
 
+与之相对的 **`worktreeTeardown`**（**ODW 扩展**）在 worktree 删除之前、在同一个工作区里、
+带着同样的变量运行——不论 agent 成功、失败还是被停止——超过 `worktreeTeardownTimeout` 秒
+（默认 120）就被杀掉。它失败只记日志，agent 的结果不变。
+
 一次调用的每次尝试（schema 重试、卡死重启）都会得到一个新的 worktree，并以同样方式准备。
 
-每个 agent 进程——不论是否隔离——都会拿到三个变量（**ODW 扩展**）：
+每个 agent 进程——不论是否隔离——都会拿到三个变量，隔离 agent 还有第四个（**ODW 扩展**）：
 
 | 变量 | 值 |
 | --- | --- |
 | `ODW_RUN_ID` | 本次运行的 id |
 | `ODW_AGENT_ID` | 这个 agent 的 id，与它的事件和 `odw agents` 里的一致 |
 | `ODW_PORT` | 来自 `portRange`（默认 41000–41999）的一个端口，本次运行中没有其他正在运行的 agent 占用它——已经有程序在监听的端口会被跳过——直到这次调用结束都归它所有 |
+| `ODW_SLOT` | 仅隔离 agent：`odw-<run>-<agent>`（运行 id 的随机部分加 agent id；只含小写字母、数字和连字符），在这次调用的每次尝试、setup 和 teardown 中都相同。`COMPOSE_PROJECT_NAME` 未设置时默认取它——每个 agent 一套 compose 栈、数据库或卷名前缀 |
 
 这样并行的 agent 各自起服务也不会冲突：
 

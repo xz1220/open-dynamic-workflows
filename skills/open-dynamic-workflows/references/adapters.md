@@ -127,8 +127,8 @@ works), `qwen --safe-mode`, and `omp --no-extensions --no-skills --no-rules`
 `kimi`, `kilo`, `opencode`, `cursor` and `agy` have no documented way: the run logs
 once per adapter what still reaches the agent (`codex has no documented way to
 ignore the repository's AGENTS.md — its instructions still reach the agent`).
-The repository's `.worktreeinclude` `symlink:` lines and a `worktreeSetup` from
-a config inside it do not run.
+The repository's `.worktreeinclude` `symlink:` lines and a `worktreeSetup` or
+`worktreeTeardown` from a config inside it do not run.
 
 ### Container sandbox (ODW extension)
 
@@ -252,6 +252,8 @@ did-you-mean hint) instead of silently ignoring them.
 | `notify` | **ODW extension.** Run-end hooks: `{ "command": [argv], "webhook": "https://…", "on": ["done", "failed", "stopped"] }` — see below |
 | `worktreeSetup` | **ODW extension.** A command run in each new isolated worktree after `.worktreeinclude` has been applied and before its agent starts: a string through the platform shell, or an argv array run without one. It runs in the agent's workspace with the agent's `ODW_RUN_ID`, `ODW_AGENT_ID` and `ODW_PORT`; one that fails or times out fails that agent (not the run), quoting the end of its output. `null` (default) = none |
 | `worktreeSetupTimeout` | seconds the worktree setup may run before it is killed (default 600) |
+| `worktreeTeardown` | **ODW extension.** A command run in an isolated agent's workspace just before its worktree is removed — after the agent finished, failed or was stopped, and after a failed setup — with the same variables as the setup (`ODW_SLOT`, `COMPOSE_PROJECT_NAME` included): a string through the platform shell, or an argv array. One that fails or times out is logged; the agent's result stands. A stopping run waits for it. `null` (default) = none |
+| `worktreeTeardownTimeout` | seconds the worktree teardown may run before it is killed (default 120) |
 | `portRange` | **ODW extension.** `[first, last]`: the ports each running agent's `ODW_PORT` comes from (default `[41000, 41999]`); keep it wider than `concurrency` |
 | `fanOutWarn` | **ODW extension.** When one `parallel()` or `pipeline()` call fans out more than this many tasks or items, the run logs one warning with the count (`large fan-out: …`); it never blocks. Default 25; `0` or `null` = off |
 | `adaptiveConcurrency` | **ODW extension.** `true` (default): a rate limit halves its adapter's cap (its own `concurrency`, else the run-wide one) for the rest of the run, never below 1 — once per fan-out that hit it together — and each minute without another gives one slot back; both are logged (`adaptive concurrency: …`). `false` keeps every cap fixed |

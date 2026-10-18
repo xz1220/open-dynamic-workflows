@@ -334,7 +334,7 @@ odw restore $RUN           # 恢复快照保存的工作区（有未提交改动
 - **别人的仓库：用 `--untrusted` 运行**（ODW 扩展）。这时每个 CLI 都在其文档给出办法的
   地方忽略仓库的 CLAUDE.md、hooks、MCP 服务器和设置（`claude --safe-mode`、
   `qwen --safe-mode`），并由运行说一次哪些 CLI 做不到（codex 仍会读 AGENTS.md）——这时优先
-  用 `adapter: 'claude'`。仓库自己的 `worktreeSetup` 和 `.worktreeinclude` 链接不会执行。
+  用 `adapter: 'claude'`。仓库自己的 `worktreeSetup`/`worktreeTeardown` 和 `.worktreeinclude` 链接不会执行。
   它不是沙箱：审查类工作请再配上 `--permissions read`。
 - **参数是别人写的文字——issue、PR、评论——就是不可信输入**（ODW 扩展）：
   `odw run --untrusted-input`，以及触发器启动的每个运行。它的 agent 默认只读（除非
@@ -622,7 +622,10 @@ agent「在工作」的静默前部截断;它会运行模型,先征得同意。
   随后会被删除,改动不会自动合并。`agent()` 返回回复而非 diff；运行会把 agent 的改动保存为
   diff，供审阅和应用（`odw diff`、`odw apply`；ODW 扩展——见上文）。新 worktree 不含未跟踪文件：仓库根目录的 `.worktreeinclude`
   （gitignore 语法；`symlink: node_modules` 表示链接而非复制）会把 `.env` 等带进去，
-  配置里的 `worktreeSetup` 命令会在 agent 启动前运行（均为 ODW 扩展）。
+  配置里的 `worktreeSetup` 命令会在 agent 启动前运行（均为 ODW 扩展）；`worktreeTeardown` 在
+  worktree 删除前运行——成功、失败或被停止都会运行——每个隔离 agent 还会拿到 `$ODW_SLOT`
+  （`odw-<run>-<agent>`，也是它默认的 `COMPOSE_PROJECT_NAME`），供它独占一套 compose 栈或数据库
+  （ODW 扩展）。
 - **端口**：每个 agent 进程都有唯一的 `$ODW_PORT`（以及 `$ODW_RUN_ID`、`$ODW_AGENT_ID`）——
   让并行的 agent "在 `$ODW_PORT` 上启动开发服务器"，它们就不会冲突；并让它们在结束前停掉服务
   （agent CLI 退出前可能会等待自己的后台命令）（ODW 扩展）。

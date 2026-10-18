@@ -647,6 +647,18 @@ independent security reviews whose findings are all fixed.
   transcripts: true }`. Each worker says once in the run's log when its repository has
   orphaned worktrees; `odw doctor` gains a **Disk** line (runs root size, orphans); the
   dashboard tags a run **pinned** or **transcripts trimmed**.
+- `worktreeTeardown` and `ODW_SLOT` (**ODW extension**): `worktreeTeardown` (a shell
+  string or an argv, `worktreeTeardownTimeout` seconds, default 120) runs in an isolated
+  agent's workspace, with the setup's variables, just before its worktree is removed —
+  after success, failure, a failed setup, `odw stop` or a stop signal to the worker
+  (which waits for it, and does not kill it with the agents); a failure or timeout is
+  logged against the agent, whose result stands. Like `worktreeSetup`, one set by the
+  repository's own config does not run in an untrusted run. Each isolated agent gets
+  `ODW_SLOT=odw-<run>-<agent>` (the run id's random part and the agent id; lowercase
+  letters, digits, hyphens), and `COMPOSE_PROJECT_NAME` defaults to it unless set. `odw
+  gc` lists leftover `odw-*` compose projects whose run is not active (`docker compose
+  ls`, when it answers; `$ODW_DOCKER` names another docker) and never removes them.
+  README recipe: a compose stack and a database per agent.
 
 ### Security fixes found in review
 - A sandboxed agent could plant git config (`core.fsmonitor`, hooks) in its workspace's

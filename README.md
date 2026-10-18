@@ -1672,6 +1672,11 @@ odw pin $RUN                  # odw gc skips this run, whatever its age; --remov
   run you pinned (`pinned.json` in its directory; the dashboard tags it **pinned**);
   worktrees and branches odw did not make. Each removal is checked again just before
   it happens, and one that fails is reported (exit 1) while the rest goes on.
+- **Compose projects** named `odw-*` (an isolated agent's `ODW_SLOT`, its default
+  `COMPOSE_PROJECT_NAME`) whose run is not active are listed, with the `docker
+  compose -p <name> down -v` that removes one — **reported only, never removed**.
+  Only when `docker compose ls` answers at once (`$ODW_DOCKER` names another
+  docker); without docker nothing is said.
 - **At start-up** each worker looks, read-only, at its repository's registered
   worktrees, and says once in the run's log when runs that died left some behind,
   with the `odw gc` command. `odw doctor` has a **Disk** line: the runs root's size
@@ -2411,7 +2416,7 @@ still reach the agent` lands in the run's log the first time an agent runs on co
 
 The repository's own code that ODW itself would run is refused: the `symlink:` lines
 of its `.worktreeinclude` link nothing (a link hands agents the source tree; plain
-lines still copy), and a `worktreeSetup` set by a config inside the repository — such
+lines still copy), and a `worktreeSetup` or `worktreeTeardown` set by a config inside the repository — such
 as its `./odw.config.json` — does not run, with a log line saying so. A `worktreeSetup`
 from your own config (`--config`, `$ODW_CONFIG`, or `~/.config/odw/config.json`
 outside the repository) still runs. A config ODW would find by itself inside the
@@ -3395,6 +3400,12 @@ starts:
   killed after `worktreeSetupTimeout` seconds (600 by default); a setup that
   fails or times out fails that agent — not the run — with the end of its
   output in the error.
+- **`worktreeTeardown`** (**ODW extension**) is its counterpart: it runs in the
+  same workspace, with the same variables, just before the worktree is removed —
+  after the agent finished, failed or was stopped (`odw stop`, a signal to the
+  worker), and after a setup that failed half-way. It is killed after
+  `worktreeTeardownTimeout` seconds (120 by default); one that fails or times out
+  is logged against the agent, whose result stands.
 
 ```gitignore
 # .worktreeinclude
@@ -3434,6 +3445,56 @@ The setup command gets the same three variables, and `exec()` commands get
 the others hold every port runs without `ODW_PORT`, and the run's log says so.
 Each attempt of a call (a schema retry, a stall restart, a rate-limit retry)
 starts from a fresh worktree, prepared the same way.
+
+An isolated agent also gets `ODW_SLOT` (**ODW extension**): `odw-<run>-<agent>` —
+the run id's random part and the agent id, e.g. `odw-a1b2c3-4` — lowercase
+letters, digits and hyphens only, the same for every attempt of the call, its
+setup and its teardown. `COMPOSE_PROJECT_NAME` defaults to it (one you set is
+kept), so `docker compose` in a worktree drives that agent's own stack. Use it
+as a database name or volume prefix too (quote it, or swap the hyphens for
+underscores, where a hyphen is not allowed).
+
+#### Recipe: a compose stack and a database per agent
+
+Each isolated agent brings up its own services on its own port and takes them
+down — volumes included — before its worktree goes, whether it succeeded, failed
+or was stopped:
+
+```yaml
+# compose.yaml — the project name comes from COMPOSE_PROJECT_NAME (= $ODW_SLOT)
+services:
+  db:
+    image: postgres:16
+    environment: { POSTGRES_PASSWORD: dev, POSTGRES_DB: app }
+    volumes: [data:/var/lib/postgresql/data]
+  app:
+    build: .
+    ports: ["${ODW_PORT}:3000"]
+    environment: { DATABASE_URL: "postgres://postgres:dev@db:5432/app" }
+    depends_on: [db]
+volumes:
+  data: {}
+```
+
+```jsonc
+{
+  "worktreeSetup": "docker compose up -d --wait && npm run migrate",
+  "worktreeTeardown": "docker compose down -v --remove-orphans",
+  "worktreeTeardownTimeout": 120
+}
+```
+
+```js
+await parallel(['grid', 'list'].map((layout) => () =>
+  agent(`Build the ${layout} layout; the app runs on http://localhost:$ODW_PORT with its own database.`,
+    { isolation: 'worktree', label: layout })))
+```
+
+Migrations then run against that agent's database, never a shared one. A stack a
+worker killed outright (SIGKILL, a second signal) never got its teardown: `odw
+gc` lists the `odw-*` compose projects whose run is no longer active, with the
+`docker compose -p <name> down -v` to run — it never removes them itself. ODW
+does not clone databases or manage services it did not start.
 
 ### Review and apply what isolated agents changed (ODW extension)
 

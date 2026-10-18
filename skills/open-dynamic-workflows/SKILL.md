@@ -406,7 +406,7 @@ approvals).
   then ignores the repository's CLAUDE.md, hooks, MCP servers and settings where
   its docs give a way (`claude --safe-mode`, `qwen --safe-mode`), and the run says
   once which CLIs cannot (codex still reads AGENTS.md) — prefer `adapter: 'claude'`
-  there. The repository's own `worktreeSetup` and `.worktreeinclude` links do not
+  there. The repository's own `worktreeSetup`/`worktreeTeardown` and `.worktreeinclude` links do not
   run. It is not a sandbox: pair it with `--permissions read` for review work.
 - **Args that are someone else's text — an issue, a PR, a comment — are untrusted
   input** (ODW extension): `odw run --untrusted-input`, and every run a trigger
@@ -758,7 +758,10 @@ it runs the model.
   untracked files: a `.worktreeinclude` at the repository root (gitignore
   syntax; `symlink: node_modules` links instead of copying) brings in `.env`
   and the like, and a `worktreeSetup` command in the config runs before the
-  agent (both ODW extensions).
+  agent (both ODW extensions); a `worktreeTeardown` runs before the worktree
+  goes — success, failure or stop — and each isolated agent gets `$ODW_SLOT`
+  (`odw-<run>-<agent>`, its default `COMPOSE_PROJECT_NAME`) for a compose stack
+  or database of its own (ODW extensions).
 - **Ports**: every agent process gets a unique `$ODW_PORT` (with `$ODW_RUN_ID`
   and `$ODW_AGENT_ID`) — tell parallel agents "start the dev server on
   `$ODW_PORT`" so they never collide, and to stop the server before finishing

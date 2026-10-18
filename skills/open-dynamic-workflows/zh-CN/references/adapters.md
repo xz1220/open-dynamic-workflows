@@ -112,7 +112,7 @@ CLAUDE.md、hooks 和 MCP 配置仍会加载）。`codex`、`gemini`、`kimi`、
 `cursor` 和 `agy` 没有文档化的方式：运行会为每个适配器记一次日志，说明仍有什么传给了 agent
 （`codex has no documented way to ignore the repository's AGENTS.md — its instructions
 still reach the agent`）。仓库 `.worktreeinclude` 的 `symlink:` 行和仓库内配置设置的
-`worktreeSetup` 不会执行。
+`worktreeSetup`、`worktreeTeardown` 不会执行。
 
 ## 配置文件
 
@@ -169,6 +169,8 @@ still reach the agent`）。仓库 `.worktreeinclude` 的 `symlink:` 行和仓�
 | `notify` | **ODW 扩展。** 运行结束时的 hook：`{ "command": [argv], "webhook": "https://…", "on": ["done", "failed", "stopped"] }`——见下文 |
 | `worktreeSetup` | **ODW 扩展。** 在每个新建的隔离 worktree 里、`.worktreeinclude` 生效之后、agent 启动之前运行的命令：字符串交给平台 shell，数组作为不经 shell 的 argv。它在 agent 的工作区里运行，带着该 agent 的 `ODW_RUN_ID`、`ODW_AGENT_ID` 和 `ODW_PORT`；失败或超时会让这个 agent（而不是整个运行）失败，错误里引用它输出的结尾。`null`（默认）= 不运行 |
 | `worktreeSetupTimeout` | worktree setup 被杀掉之前最多运行的秒数（默认 600） |
+| `worktreeTeardown` | **ODW 扩展。** 在隔离 agent 的 worktree 删除之前、在它的工作区里运行的命令——不论 agent 成功、失败还是被停止，setup 失败后也会运行——带着与 setup 相同的变量（包括 `ODW_SLOT`、`COMPOSE_PROJECT_NAME`）：字符串交给平台 shell，数组作为 argv。失败或超时只记日志，agent 的结果不变。停止中的运行会等它结束。`null`（默认）= 不运行 |
+| `worktreeTeardownTimeout` | worktree teardown 被杀掉之前最多运行的秒数（默认 120） |
 | `portRange` | **ODW 扩展。** `[first, last]`：每个正在运行的 agent 的 `ODW_PORT` 从这个范围分配（默认 `[41000, 41999]`）；请让它比 `concurrency` 更宽 |
 | `fanOutWarn` | **ODW 扩展。** 单次 `parallel()` 或 `pipeline()` 调用扇出的任务或条目超过这个数时，运行记一条带数量的警告（`large fan-out: …`）；从不阻塞。默认 25；`0` 或 `null` = 关闭 |
 | `adaptiveConcurrency` | **ODW 扩展。** `true`（默认）：一次限流会让它所在适配器的上限（该适配器自己的 `concurrency`，否则为运行级上限）在本次运行余下的时间里减半，最低为 1——同一批扇出一起撞上时只减一次——此后每过一分钟没有再被限流就还回一个槽位；两者都会记日志（`adaptive concurrency: …`）。`false` 让所有上限保持不变 |

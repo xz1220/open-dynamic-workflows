@@ -1439,6 +1439,10 @@ odw pin $RUN                  # odw gc 跳过这个运行,不论多旧;--remove 
 - **从不碰:** 运行中、暂停中或在检查点等待的运行;你固定过的运行(运行目录里的 `pinned.json`,看板
   标出 **已固定**);不是 odw 建的 worktree 和分支。每一项删除前都会再检查一次,失败的会报告(退出码 1),
   其余照常进行。
+- **Compose 项目**:名为 `odw-*`(隔离 agent 的 `ODW_SLOT`,即其默认 `COMPOSE_PROJECT_NAME`)
+  且所属运行已不活跃的,会连同删除它的 `docker compose -p <name> down -v` 一起列出——**只报告,
+  从不删除**。仅当 `docker compose ls` 能立即回答时才看(`$ODW_DOCKER` 可指定另一个 docker);
+  没有 docker 时什么都不说。
 - **启动时** 每个 worker 只读地查看其仓库注册的 worktree,若有已死运行留下的,就在运行日志里说一次,
   并给出 `odw gc` 命令。`odw doctor` 增加 **Disk** 一行:运行根目录的大小与孤儿 worktree 数。
 
@@ -2083,7 +2087,7 @@ still reach the agent` 这样的一行。
 
 ODW 自己会执行的、属于仓库的代码会被拒绝:仓库 `.worktreeinclude` 里的 `symlink:` 行
 不做任何链接(链接等于把源码树交给 agent;普通行照常复制);仓库内配置(例如它的
-`./odw.config.json`)设置的 `worktreeSetup` 不会运行,日志里会说明。你自己的配置
+`./odw.config.json`)设置的 `worktreeSetup` 或 `worktreeTeardown` 不会运行,日志里会说明。你自己的配置
 (`--config`、`$ODW_CONFIG`,或仓库之外的 `~/.config/odw/config.json`)里的
 `worktreeSetup` 照常运行。ODW 会自行在仓库里找到的配置(它的 `./odw.config.json`)在不受
 信任运行中根本不会读取:其中的适配器命令就是仓库的代码。运行改用你自己的
@@ -2916,6 +2920,10 @@ Slack、Discord、ntfy 和桌面横幅的现成配置见
 - **`worktreeSetup`**(**ODW 扩展**):文件就位后在 agent 的工作区里运行,字符串交给
   平台 shell,数组作为 argv。超过 `worktreeSetupTimeout` 秒(默认 600)就会被杀掉;
   setup 失败或超时,失败的是这个 agent 而不是整个运行,错误里带着它输出的结尾。
+- **`worktreeTeardown`**(**ODW 扩展**)与之相对:在 worktree 删除之前、在同一个工作区里、带着
+  同样的变量运行——不论 agent 成功、失败还是被停止(`odw stop`、worker 收到信号),setup 中途
+  失败时也会运行。超过 `worktreeTeardownTimeout` 秒(默认 120)就会被杀掉;失败或超时只在该
+  agent 名下记一行日志,不影响 agent 的结果。
 
 ```gitignore
 # .worktreeinclude
@@ -2951,6 +2959,51 @@ setup 命令拿到同样的三个变量,`exec()` 命令拿到 `ODW_RUN_ID`。请
 `concurrency` 更宽:如果其他 agent 占满了所有端口,新启动的 agent 就不带 `ODW_PORT`
 运行,运行日志里会说明。一次调用的每次尝试(schema 重试、卡死重启、限流重试)都从一个新的
 worktree 开始,并以同样方式准备。
+
+隔离 agent 还会拿到 `ODW_SLOT`(**ODW 扩展**):`odw-<run>-<agent>`——运行 id 的随机部分加
+agent id,例如 `odw-a1b2c3-4`——只含小写字母、数字和连字符,在这次调用的每次尝试、它的 setup
+和 teardown 中都相同。`COMPOSE_PROJECT_NAME` 默认设为它(你自己设置的不会被覆盖),于是在
+worktree 里执行 `docker compose` 操作的就是这个 agent 自己的那套栈。它也可以用作数据库名或卷名
+前缀(不允许连字符的地方加引号,或把连字符换成下划线)。
+
+#### 配方:每个 agent 一套 compose 栈和独立数据库
+
+每个隔离 agent 在自己的端口上起自己的服务,并在 worktree 删除前把它们连同卷一起拆掉——
+不论成功、失败还是被停止:
+
+```yaml
+# compose.yaml —— 项目名来自 COMPOSE_PROJECT_NAME(即 $ODW_SLOT)
+services:
+  db:
+    image: postgres:16
+    environment: { POSTGRES_PASSWORD: dev, POSTGRES_DB: app }
+    volumes: [data:/var/lib/postgresql/data]
+  app:
+    build: .
+    ports: ["${ODW_PORT}:3000"]
+    environment: { DATABASE_URL: "postgres://postgres:dev@db:5432/app" }
+    depends_on: [db]
+volumes:
+  data: {}
+```
+
+```jsonc
+{
+  "worktreeSetup": "docker compose up -d --wait && npm run migrate",
+  "worktreeTeardown": "docker compose down -v --remove-orphans",
+  "worktreeTeardownTimeout": 120
+}
+```
+
+```js
+await parallel(['grid', 'list'].map((layout) => () =>
+  agent(`Build the ${layout} layout; the app runs on http://localhost:$ODW_PORT with its own database.`,
+    { isolation: 'worktree', label: layout })))
+```
+
+这样迁移只会落到这个 agent 自己的数据库,不会碰共享库。worker 被直接杀掉(SIGKILL、第二次信号)
+时,teardown 来不及运行:`odw gc` 会列出所属运行已不再活跃的 `odw-*` compose 项目,并给出要执行的
+`docker compose -p <name> down -v`——它自己从不删除。ODW 不克隆数据库,也不管理不是它启动的服务。
 
 ### 审阅并应用隔离 agent 的改动(ODW 扩展)
 
