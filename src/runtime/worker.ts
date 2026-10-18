@@ -256,6 +256,8 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
       agentDiffPath: (agentId) => store.agentDiffPath(runId, agentId),
       // What each agent's CLI prints, as agents/<agentId>.transcript.jsonl and .stderr.txt.
       agentTranscriptPaths: (agentId) => store.agentTranscriptPaths(runId, agentId),
+      // The brief of a fallback that handed an agent's work over, as agents/<agentId>.handoff.md.
+      agentHandoffPath: (agentId) => store.agentHandoffPath(runId, agentId),
       // A schema handed to a CLI as a file, as agents/<agentId>.schema.json while it runs.
       agentSchemaPath: (agentId) => store.agentSchemaPath(runId, agentId),
       replay,

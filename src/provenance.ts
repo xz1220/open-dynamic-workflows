@@ -264,6 +264,7 @@ export const BEHAVIOUR_SETTINGS = [
   "schemaKeywords",
   "schemaPrompt",
   "fallback",
+  "handoff",
   "models",
   "quotaBreaker",
   "quotaWait",

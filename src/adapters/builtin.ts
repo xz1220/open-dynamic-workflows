@@ -612,6 +612,7 @@ export const DEFAULT_SETTINGS: Settings = {
   schemaKeywords: "warn", // what ODW's validator does not check is logged once per run, not refused
   schemaPrompt: "auto", // the prompt describes a schema only to a CLI that does not take it natively
   fallback: {}, // no fallback chains: a spent quota or a refused login fails the agent
+  handoff: false, // a fallback starts the work over ("fallback": { "handoff": true } hands it over)
   models: {}, // no model tiers: model: "@<tier>" names none
   quotaBreaker: 3, // quota failures in a row before the run's later agents skip an adapter
   expectRetries: 1, // reruns of an agent whose work missed its expect checks, told what it missed

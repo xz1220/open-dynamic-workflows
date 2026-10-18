@@ -29,6 +29,8 @@ export const CLI_VERSION = "cli_version";
 export const NOTE_ADDED = "note_added";
 // `odw apply --resolve` ran a resolver for one of the run's agents, and how that ended (ODW extension; see runtime/apply-resolve.ts).
 export const APPLY_RESOLVED = "apply_resolved";
+// A fallback handed an agent's work over to the next adapter, with a brief of what the last one did (ODW extension; see handoff.ts).
+export const HANDOFF = "handoff";
 
 export interface WorkflowEvent {
   ts: number;

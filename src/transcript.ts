@@ -24,7 +24,10 @@
  * {"kind":"attempt","n":2,"reason":"fallback","adapter":"<next>"}, its output
  * kept as that adapter prints it from there on — and one that waited for a
  * spent quota to reset (quotaWait, an ODW extension) after
- * {"kind":"attempt","n":2,"reason":"quota_wait","adapter":"<its adapter>"}. Past
+ * {"kind":"attempt","n":2,"reason":"quota_wait","adapter":"<its adapter>"}. A
+ * fallback that hands the work over (an ODW extension; see ./handoff) has a
+ * {"kind":"handoff","from","to","reason","bytes","brief"} line before its
+ * attempt line: the brief the next adapter's prompt starts with. Past
  * `maxTranscriptBytes` nothing more is kept but one
  * {"kind":"truncated","bytes":N} line, N being the bytes kept. ODW's own lines
  * carry a `kind` and no `type`, so they never pass for an adapter's events.
@@ -193,6 +196,18 @@ export class TranscriptRecorder {
     const moved = (reason === "fallback" || reason === "quota_wait") && adapter ? { adapter: adapter.name } : {};
     this.accept(JSON.stringify({ kind: "attempt", n: this.runs, reason, ...moved }) + "\n");
     this.stderrHead = `--- attempt ${this.runs}: ${attemptLabel(reason, adapter?.name)} ---\n`;
+  }
+
+  /**
+   * A fallback hands the work over (an ODW extension; see ./handoff): one
+   * `{"kind":"handoff","from","to","bytes","brief"}` line, before the next
+   * adapter's attempt line. The brief comes redacted already.
+   */
+  handoff(handoff: { from: string; to: string; reason: string; bytes: number; brief: string }): void {
+    if (this.closed) return;
+    this.flushPartial();
+    const { from, to, reason, bytes, brief } = handoff;
+    this.accept(JSON.stringify({ kind: "handoff", from, to, reason, bytes, brief }) + "\n");
   }
 
   /** What the CLI printed on stdout, as it arrives. Never waits. */

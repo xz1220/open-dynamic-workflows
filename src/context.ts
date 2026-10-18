@@ -102,6 +102,12 @@ export interface RunContext {
    */
   agentTranscriptPaths?: (agentId: number) => TranscriptPaths;
   /**
+   * Where the brief of a fallback that handed an agent's work over is kept
+   * (ODW extension; see ./handoff): the run directory's
+   * `agents/<agentId>.handoff.md`. Absent where nothing is persisted.
+   */
+  agentHandoffPath?: (agentId: number) => string;
+  /**
    * `odw resume`: the source run's saved results, replayed by the agent()
    * calls that are unchanged. Shared like `seq`, so a nested workflow()
    * replays its calls too.
@@ -148,6 +154,7 @@ export interface BuildContextOptions {
   saveAgentResult?: (rec: AgentResultRecord) => void;
   agentDiffPath?: (agentId: number) => string;
   agentTranscriptPaths?: (agentId: number) => TranscriptPaths;
+  agentHandoffPath?: (agentId: number) => string;
   replay?: ReplayJournal;
   onCheckpoint?: (cp: WaitingCheckpoint, waiting: boolean) => void;
   /** Where an agent's schema file goes for a CLI that reads one (the bridge's `agentSchemaPath`). */
@@ -244,6 +251,7 @@ export function buildContext(config: Config, options: BuildContextOptions = {}):
     saveAgentResult: options.saveAgentResult,
     agentDiffPath: options.agentDiffPath,
     agentTranscriptPaths: options.agentTranscriptPaths,
+    agentHandoffPath: options.agentHandoffPath,
     replay: options.replay,
     onCheckpoint: options.onCheckpoint,
     redactor,

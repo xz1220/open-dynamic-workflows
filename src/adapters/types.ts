@@ -507,6 +507,14 @@ export interface Settings {
    */
   fallback: Record<string, string[]>;
   /**
+   * A fallback hands the work over (an ODW extension; `"fallback": {
+   * "handoff": true }` in a config file — `handoff` is a reserved key there;
+   * see ../handoff): the next adapter goes on in the same workspace, its
+   * prompt starting with a brief of what the last one did. `false`: it starts
+   * the work over. An agent()'s `handoff` overrides it.
+   */
+  handoff: boolean;
+  /**
    * Model tiers (an ODW extension): tier name → adapter name → that CLI's
    * model id. `model: "@<tier>"` picks the id for the adapter a call runs on.
    */

@@ -46,7 +46,11 @@
  * spent or its login refused, taking a slot on each adapter it moves to; and
  * `model: "@fast"` picks a tier's model for the adapter it runs on (ODW
  * extensions; see ./routing). Its agent_finished event names the adapter that
- * produced the value, and `fellBackFrom` the ones it left. Under `quotaWait`
+ * produced the value, and `fellBackFrom` the ones it left. With handoff on
+ * (`fallback.handoff`, or the call's `handoff`; an ODW extension, see
+ * ./handoff) the next adapter carries the work on in the same worktree, its
+ * prompt starting with a brief — kept as `agents/<id>.handoff.md` and told
+ * by a `handoff` event {from, to, reason, bytes}. Under `quotaWait`
  * (an ODW extension; see ./quota-wait) an agent whose chain is out of quota
  * waits for the reset instead of failing — holding no slot, and before it is
  * dispatched when no adapter of its chain has quota left.
@@ -80,7 +84,7 @@
 
 import { AsyncLocalStorage } from "node:async_hooks";
 import { readFileSync } from "node:fs";
-import { copyFile, mkdir, readFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 
 import { formatSeconds } from "./adapters/failures.js";
@@ -95,7 +99,7 @@ import { branchName, ChangeRecorder, type AgentChanges, type KeptChanges } from 
 import { CheckpointTimeout, createCheckpoint, type CheckpointOptions, type CheckpointResult } from "./checkpoint.js";
 import { spentTokens, type RunContext } from "./context.js";
 import { AdapterExecutionError, AgentError, RunawayError, UnmetExpectationError, WorkflowScriptError, isFatalError } from "./errors.js";
-import { AGENT_FAILED, AGENT_FINISHED, AGENT_STARTED, LOG, PHASE_STARTED, event } from "./events.js";
+import { AGENT_FAILED, AGENT_FINISHED, AGENT_STARTED, HANDOFF, LOG, PHASE_STARTED, event } from "./events.js";
 import { ExecError, createExec, execStep, type ExecOptions, type ExecResult } from "./exec.js";
 import { Expectations, planChecks, type AgentChecks, type ExpectOptions } from "./expect.js";
 import { resumeKey, type AgentResultRecord } from "./journal.js";
@@ -177,6 +181,13 @@ export interface AgentOptions {
    * `false` opts one agent out of its parallel()'s or the `notes` setting.
    */
   notes?: boolean;
+  /**
+   * ODW extension: when a fallback moves this agent to the next adapter of its
+   * chain, hand the work over instead of starting it over — the next adapter
+   * goes on in the same worktree, its prompt starting with a brief of what the
+   * last one did (see ./handoff). Unset: the `fallback.handoff` setting.
+   */
+  handoff?: boolean;
 }
 
 /** ODW extension: what parallel() takes after its thunks. */
@@ -496,6 +507,9 @@ export function createPrimitives(
     if (opts.notes !== undefined && typeof opts.notes !== "boolean") {
       throw new AgentError(`agent(): notes must be true or false; got ${describeValue(opts.notes)}`);
     }
+    if (opts.handoff !== undefined && typeof opts.handoff !== "boolean") {
+      throw new AgentError(`agent(): handoff must be true or false; got ${describeValue(opts.handoff)}`);
+    }
     // The run's notes board (ODW extension): its call's say, else its parallel()'s, else the setting.
     const notesOn = opts.notes ?? notesScope.getStore() ?? ctx.config.settings.notes === true;
     // So are its limits (ODW extension; see ./limits).
@@ -562,6 +576,7 @@ export function createPrimitives(
       ...(checks.allowEmpty ? { allowEmpty: true } : {}),
       ...(opts.sandbox !== undefined ? { sandbox: opts.sandbox } : {}),
       ...(ownLimits !== undefined ? { limits: ownLimits } : {}),
+      ...(opts.handoff !== undefined ? { handoff: opts.handoff } : {}),
     };
     // The adapters it left down its chain, and the one it is on (ODW extension).
     const fellBackFrom: string[] = [];
@@ -743,6 +758,33 @@ export function createPrimitives(
                 }),
               );
               await slot.moveTo(to);
+            },
+            // ...and with handoff on, it hands the work over (ODW extension;
+            // see ./handoff): the brief is kept beside its transcript, and said.
+            onHandoff: async ({ from, reason, to, brief, bytes }) => {
+              let file: string | undefined;
+              if (ctx.agentHandoffPath) {
+                try {
+                  file = ctx.agentHandoffPath(agentId);
+                  await mkdir(dirname(file), { recursive: true });
+                  await writeFile(file, brief.endsWith("\n") ? brief : `${brief}\n`, "utf8");
+                } catch (err) {
+                  file = undefined;
+                  note(`could not keep its handoff brief: ${err instanceof Error ? err.message : String(err)}`);
+                }
+              }
+              ctx.emit(
+                event(HANDOFF, {
+                  agentId,
+                  label: display,
+                  phase: activePhase,
+                  from,
+                  to,
+                  reason,
+                  bytes,
+                  ...(file ? { saved: true } : {}),
+                }),
+              );
             },
             // Its chain out of quota, it waits for a reset (ODW extension:
             // quotaWait) holding no slot — and says so — then takes a slot

@@ -97,6 +97,15 @@ declare global {
      * Default: its parallel()'s `notes`, else the `notes` setting (off); `false` opts out.
      */
     notes?: boolean;
+    /**
+     * ODW extension — Claude Code ignores it. When its CLI runs out of quota (or its login
+     * is refused) and a fallback chain moves it to the next adapter, hand the work over
+     * instead of starting it over: the next adapter goes on in the same worktree, its prompt
+     * starting with a brief of what the last one did (files changed, last plan, commands,
+     * last messages; at most 6 KB), kept as `agents/<id>.handoff.md`. Default: the
+     * `fallback.handoff` setting (off).
+     */
+    handoff?: boolean;
   }
 
   /** ODW extension — Claude Code's parallel() takes only the thunks. */

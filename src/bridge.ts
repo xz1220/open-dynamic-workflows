@@ -73,6 +73,9 @@
  * its permission tier — a fresh prompt, the same options, `expect` checks
  * included — and the run's quota breaker takes an adapter whose quota failed
  * `quotaBreaker` times in a row out of the run, so later calls start past it.
+ * With handoff (an ODW extension; see ./handoff) the next adapter carries the
+ * work on instead: in the worktree the last one left, its prompt starting
+ * with a brief of what that one did.
  *
  * With `quotaWait` (an ODW extension; see ./quota-wait), a call whose chain
  * is out of quota pauses instead of failing: it waits — holding no slot —
@@ -152,8 +155,10 @@ import { bothEnds, type Redactor } from "./redact.js";
 import { LiteralRouter, type InvocationPlan, type OptionRouter } from "./router.js";
 import { isAdapterChoice, type AdapterChoice } from "./routing.js";
 import { describeSchema, pickStructured, type JsonSchema } from "./schema.js";
-import type { AttemptReason } from "./transcript.js";
-import { withWorkspace, type Workspace } from "./workspace.js";
+import { handoffBrief, HandoffLog } from "./handoff.js";
+import { transcriptFormat, type AttemptReason } from "./transcript.js";
+import { openWorkspace, type OpenWorkspace, type Workspace, type WorkspaceMode } from "./workspace.js";
+import type { WorktreeSetupOptions } from "./worktree-setup.js";
 
 export const INDEPENDENCE_PREAMBLE =
   "You are one agent in an automated multi-agent workflow. Work independently " +
@@ -198,6 +203,13 @@ export interface AgentRequest {
    * `agentLimits` key by key (see ./limits). Unvalidated: a bad value fails the call.
    */
   limits?: unknown;
+  /**
+   * ODW extension (see ./handoff): a fallback hands the work over — the next
+   * adapter goes on in the same workspace, its prompt starting with a brief
+   * of what the last one did — instead of starting over. Unset: the
+   * `fallback.handoff` setting.
+   */
+  handoff?: boolean;
 }
 
 /** The persona framing injected for `agentType`, on top of the independence preamble. */
@@ -390,6 +402,12 @@ export interface RunOptions {
    */
   onFallback?: (fallback: AdapterFallback) => void | Promise<void>;
   /**
+   * Called when a fallback hands the work over (an ODW extension; see
+   * ./handoff), after `onFallback` and before the next adapter's first CLI
+   * run, with the brief its prompt starts with: the time to keep it.
+   */
+  onHandoff?: (handoff: AgentHandoff) => void | Promise<void>;
+  /**
    * Checks the call's work against its `expect` (an ODW extension; see
    * ./expect): told where the work happens before the first CLI run on each
    * adapter of its chain, given each isolated run that ended with a reply
@@ -435,7 +453,11 @@ export interface QuotaResume {
 export interface ChangeSink {
   capture(ws: Workspace): Promise<void>;
   endAttempt(): Promise<void>;
-  /** Keep nothing captured so far: a fallback starts the work over on another adapter. */
+  /**
+   * Keep nothing captured so far: a fallback starts the work over on another
+   * adapter — or hands it over (an ODW extension), in the same worktree, whose
+   * next capture holds what every adapter changed.
+   */
   discard(): Promise<void>;
   /** The next attempt starts the work over (an `expect` retry): its change supersedes the earlier ones. */
   redo?(): void;
@@ -448,6 +470,8 @@ export interface TranscriptSink {
   stdout(chunk: string): void;
   stderr(chunk: string): void;
   endRun(cli: CliResult): void;
+  /** A fallback hands the work over (an ODW extension; see ./handoff): before the next adapter's first run starts. */
+  handoff?(handoff: AgentHandoff): void;
 }
 
 /** Where one agent() call runs (an ODW extension; see {@link Bridge.route}). */
@@ -471,6 +495,19 @@ export interface AdapterFallback {
   to: string;
   /** Every adapter the call has left so far, in order (`from` last). */
   fellBackFrom: string[];
+}
+
+/** A fallback handing the work over (an ODW extension; see ./handoff). */
+export interface AgentHandoff {
+  /** The adapter it leaves, and why. */
+  from: string;
+  reason: "quota" | "auth";
+  /** The adapter that carries on. */
+  to: string;
+  /** What the next adapter's prompt starts with, redacted. */
+  brief: string;
+  /** Its size in UTF-8 bytes. */
+  bytes: number;
 }
 
 /** A CLI the stall watchdog killed, about to be started again. */
@@ -802,6 +839,21 @@ export class Bridge {
    * from its chain's start.
    */
   private async runCall(request: AgentRequest, options: RunOptions, call: CallEnv): Promise<AgentOutcome> {
+    // A fallback hands the work over (ODW extension; see ./handoff): what the
+    // call's CLI runs print is read for a brief, and a failed-over run's
+    // worktree is held for the next adapter — let go however the call ends.
+    const handsOver = request.handoff ?? this.config.settings.handoff === true;
+    if (!handsOver) return this.walkChain(request, options, call);
+    const handoff: HandoffState = { log: new HandoffLog(), hold: false, held: null, brief: null };
+    try {
+      return await this.walkChain(request, options, { ...call, handoff });
+    } finally {
+      await handoff.held?.close();
+    }
+  }
+
+  /** {@link runCall}'s walk down the call's route, adapter by adapter. */
+  private async walkChain(request: AgentRequest, options: RunOptions, call: CallEnv): Promise<AgentOutcome> {
     let route = options.route ?? this.route(request.adapter, request.permissions);
     for (const note of route.skipped) options.onNote?.(note);
     const fellBackFrom: string[] = [];
@@ -837,9 +889,13 @@ export class Bridge {
         for (const note of skipped) options.onNote?.(note);
         if (next >= 0) {
           fellBackFrom.push(adapter.name);
-          // The next adapter starts the work over: what this one changed is not the agent's change.
+          // The next adapter starts the work over: what this one changed is not
+          // the agent's change. Handed over (ODW extension), it goes on in the
+          // same worktree, whose next capture holds what both changed.
           await call.changes?.discard();
-          await options.onFallback?.({ from: adapter.name, reason, to: route.chain[next]!.name, fellBackFrom: [...fellBackFrom] });
+          const to = route.chain[next]!.name;
+          await options.onFallback?.({ from: adapter.name, reason, to, fellBackFrom: [...fellBackFrom] });
+          if (call.handoff) await this.handOver(call.handoff, { from: adapter.name, reason, to }, err, request, options, call);
           // Another CLI run: it passes the stop/budget guards first.
           await options.beforeRetry?.();
           at = next;
@@ -862,8 +918,13 @@ export class Bridge {
       if (route.chain[at]!.name !== on) fellBackFrom.push(on);
       on = route.chain[at]!.name;
       why = "quota_wait";
-      // It starts the work over: what was changed before the wait is not the agent's change.
+      // It starts the work over: what was changed before the wait is not the
+      // agent's change — nor, handed over (ODW extension), is any worktree or brief.
       await call.changes?.discard();
+      if (call.handoff) {
+        await call.handoff.held?.close();
+        Object.assign(call.handoff, { log: new HandoffLog(), hold: false, held: null, brief: null });
+      }
       await options.onQuotaResume?.({ adapter: on, fellBackFrom: [...fellBackFrom] });
       await options.beforeRetry?.();
     }
@@ -922,6 +983,31 @@ export class Bridge {
   ): Promise<void> {
     if (reset.resumeAt <= this.now() && !this.quota.isPaused(reset.adapter)) return this.quota.back(reset.adapter);
     await this.quota.wait(reset.adapter, signal, before);
+  }
+
+  /**
+   * Hand the work over to the next adapter (an ODW extension; see ./handoff):
+   * write the brief its prompt starts with — from what the call's CLI runs
+   * printed and, isolated, the diff of the worktree held for it — redacted,
+   * and tell the transcript and the caller.
+   */
+  private async handOver(
+    state: HandoffState,
+    hop: { from: string; reason: "quota" | "auth"; to: string },
+    err: unknown,
+    request: AgentRequest,
+    options: RunOptions,
+    call: CallEnv,
+  ): Promise<void> {
+    const isolated = (state.held?.mode ?? (request.isolation === "worktree" ? "worktree" : "inplace")) === "worktree";
+    const diff = isolated && state.held ? await state.held.workspace.diff().catch(() => "") : "";
+    const why = err instanceof Error ? err.message : String(err);
+    const written = handoffBrief({ ...hop, why, isolated, diff, log: state.log });
+    const brief = this.redactor ? this.redactor.text(written) : written;
+    state.brief = brief;
+    const handoff: AgentHandoff = { ...hop, brief, bytes: Buffer.byteLength(brief) };
+    call.transcript?.handoff?.(handoff);
+    await options.onHandoff?.(handoff);
   }
 
   /** `adapter` runs exactly `tier`, as a fallback must (see {@link nextAdapter}). */
@@ -1032,6 +1118,10 @@ export class Bridge {
     // routing notes do not change across schema retries — only the prompt does.
     const plan = this.router.plan({ request, adapter, settings });
     const basePrompt = this.composePrompt(request, schema?.describe ?? false);
+    // Handed the work over (ODW extension; see ./handoff), it starts from the
+    // brief — in the held worktree; an `expect` retry starts over in a fresh one, without it.
+    const brief = shared.handoff?.brief;
+    const briefed = brief ? this.composePrompt(request, schema?.describe ?? false, brief) : basePrompt;
     const maxAttempts = request.schema ? settings.schemaRetries + 1 : 1;
     // The call's `expect` checks (ODW extension) learn where the work happens
     // before it starts on this adapter — a fallback hop starts it over; an
@@ -1085,7 +1175,7 @@ export class Bridge {
       for (let attempt = 1; attempt <= maxAttempts; attempt++) {
         throwIfAborted(signal);
         if (++attempts > 1) await options.beforeRetry?.();
-        const task = missed ? `${basePrompt}\n\n${missed}` : basePrompt;
+        const task = missed ? `${basePrompt}\n\n${missed}` : round === 0 ? briefed : basePrompt;
         const prompt = attempt > 1 ? `${task}\n\n${retryFeedback(previous, problems)}` : task;
         // The first run on a fallback adapter says so; an `expect` retry stays on this one.
         const why = attempt > 1 ? "schema" : round > 0 ? "expect" : first;
@@ -1218,6 +1308,8 @@ export class Bridge {
         if (hit) return { cli: runawayEvidence(cli, hit), output, failure: { reason: "runaway" as const } };
         if (signal?.aborted || cli.stalled) return { cli, output };
         const failed = this.failureOf(adapter, cli, output, prompt, call);
+        // A run that fails the call over hands its worktree to the next adapter (ODW extension; see ./handoff).
+        if (failed && call.handoff && (failed.failure.reason === "quota" || failed.failure.reason === "auth")) call.handoff.hold = true;
         if (failed) return { cli: failed.cli, output, failure: failed.failure };
         await inspect?.(ws, output);
         return { cli, output };
@@ -1494,12 +1586,17 @@ export class Bridge {
 
   // --- internals -------------------------------------------------------------
 
-  /** The call's prompt; `describe`: with its schema's description (not for a CLI handed the schema natively). */
-  private composePrompt(request: AgentRequest, describe: boolean): string {
+  /**
+   * The call's prompt; `describe`: with its schema's description (not for a
+   * CLI handed the schema natively); `brief`: a handoff's (an ODW extension;
+   * see ./handoff), ahead of the task.
+   */
+  private composePrompt(request: AgentRequest, describe: boolean, brief?: string): string {
     const parts = [INDEPENDENCE_PREAMBLE];
     // Persona (agentType) is universal prompt text — it works on every CLI,
     // which native system-prompt flags do not. See LiteralRouter.noteAgentType.
     if (request.agentType) parts.push(personaPreamble(request.agentType));
+    if (brief) parts.push(brief);
     parts.push(request.prompt);
     if (request.notes) parts.push(request.notes);
     if (request.schema && describe) parts.push(describeSchema(request.schema));
@@ -1549,7 +1646,7 @@ export class Bridge {
       onRefused: (message: string) =>
         this.noteOnce(`refused:${message}`, message, { trust: "untrusted" }, call.onNote),
     };
-    return withWorkspace(this.source, plan.workspaceMode, async (ws) => {
+    return this.inCallWorkspace(plan.workspaceMode, setup, call, signal, async (ws) => {
       let promptFile = "";
       let cleanup: (() => Promise<void>) | undefined;
       if (usesPromptFile(adapter)) {
@@ -1622,6 +1719,9 @@ export class Bridge {
           // What the CLI prints is kept as it arrives (ODW extension; see ./transcript).
           const transcript = call.transcript;
           transcript?.beginRun(why, adapter);
+          // So is what a handoff's brief reads (ODW extension; see ./handoff).
+          const log = call.handoff?.log;
+          log?.beginRun(transcriptFormat(adapter));
           guard?.startRun(call.limits!, adapter.output?.format === "jsonl", stopRun);
           // A version probe runs on the host: for a CLI in a container it would
           // name another CLI (or none), so a sandboxed run records no version.
@@ -1634,9 +1734,10 @@ export class Bridge {
             stallTimeout: limits.stallTimeout,
             onStdout,
             observeStdout:
-              transcript || watch || guard
+              transcript || watch || guard || log
                 ? (chunk) => {
                     transcript?.stdout(chunk);
+                    log?.stdout(chunk);
                     guard?.stdout(chunk);
                     watch?.();
                   }
@@ -1648,6 +1749,7 @@ export class Bridge {
           // Killed as a runaway: its own note says so, not "aborted".
           if (guard?.hit && !signal?.aborted) cli = { ...cli, stderr: cli.stderr.replace(/\n\[aborted; process terminated\]$/, "\n[runaway; terminated]") };
           transcript?.endRun(cli);
+          log?.endRun(cli);
         } finally {
           guard?.endRun();
           signal?.removeEventListener("abort", stopRun);
@@ -1667,7 +1769,35 @@ export class Bridge {
         await schema?.cleanup();
         await reply?.cleanup();
       }
-    }, setup);
+    });
+  }
+
+  /**
+   * Run `fn` in a workspace of `mode`, removed after it — as withWorkspace
+   * does — but for a call that hands its work over on a fallback (an ODW
+   * extension; see ./handoff): its run takes the workspace the last
+   * adapter's run left, and a run that fails the call over leaves its own
+   * for the next adapter instead.
+   */
+  private async inCallWorkspace<T>(
+    mode: WorkspaceMode,
+    setup: WorktreeSetupOptions,
+    call: CallEnv,
+    signal: AbortSignal | undefined,
+    fn: (ws: Workspace) => Promise<T>,
+  ): Promise<T> {
+    const handoff = call.handoff;
+    const held = handoff?.held ?? null;
+    if (handoff) handoff.held = null;
+    if (held && held.mode !== mode) await held.close();
+    const open = held?.mode === mode ? held : await openWorkspace(this.source, mode, setup);
+    try {
+      return await fn(open.workspace);
+    } finally {
+      if (handoff?.hold && !signal?.aborted) handoff.held = open;
+      else await open.close();
+      if (handoff) handoff.hold = false;
+    }
   }
 }
 
@@ -1706,6 +1836,20 @@ interface CallEnv {
   limits?: AgentLimits;
   /** A run whose CLI exited with background work running fails as `orphaned_background` (ODW extension; see failureOf). */
   orphanFails?: boolean;
+  /** A fallback hands the work over (ODW extension; see ./handoff): what that takes, over the whole call. */
+  handoff?: HandoffState;
+}
+
+/** What a call that hands its work over on a fallback keeps (an ODW extension; see ./handoff). */
+interface HandoffState {
+  /** What its CLI runs printed, as far as a brief needs it. */
+  log: HandoffLog;
+  /** The run that is ending fails the call over (its quota, its login): its workspace is held, not removed. */
+  hold: boolean;
+  /** The workspace held for the next adapter's first CLI run. */
+  held: OpenWorkspace | null;
+  /** The brief the next adapter's prompt starts with, once there was a handoff. */
+  brief: string | null;
 }
 
 /** The variables an agent's processes get from ODW: only ever this call's, never inherited. */

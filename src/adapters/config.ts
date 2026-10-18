@@ -1192,6 +1192,8 @@ function buildSettings(raw: Record<string, unknown>): Settings {
     // Fallback chains and model tiers (ODW extensions): the adapters they name
     // are checked against the configured ones once both are built (checkRouting).
     fallback: raw["fallback"] == null ? {} : buildFallback(raw["fallback"]),
+    // `fallback.handoff` (ODW extension; see ../handoff): a reserved key of the chains' object.
+    handoff: isObject(raw["fallback"]) && raw["fallback"]["handoff"] != null ? buildFlag("fallback.handoff", raw["fallback"]["handoff"]) : false,
     models: raw["models"] == null ? {} : buildModels(raw["models"]),
     // Like fanOutWarn: null and 0 both mean "never".
     quotaBreaker:
@@ -1317,7 +1319,10 @@ function buildChoice<T extends string>(key: string, raw: unknown, choices: reado
   throw new ConfigError(`"${key}" must be ${listed}; got ${JSON.stringify(raw)}`);
 }
 
-/** Validate `fallback`: adapter name → the adapters its calls fall back to, in order. */
+/**
+ * Validate `fallback`: adapter name → the adapters its calls fall back to, in
+ * order — but `handoff`, a flag of its own (ODW extension; read by buildSettings).
+ */
 function buildFallback(raw: unknown): Record<string, string[]> {
   if (!isObject(raw)) {
     throw new ConfigError(`"fallback" must be an object: { "<adapter>": ["<next adapter>", …] }; got ${kindOf(raw)}`);
@@ -1325,6 +1330,7 @@ function buildFallback(raw: unknown): Record<string, string[]> {
   const out: Record<string, string[]> = {};
   for (const [name, chain] of Object.entries(raw)) {
     if (name.startsWith("$") || name.startsWith("//")) continue; // comment conventions
+    if (name === "handoff") continue;
     if (!Array.isArray(chain) || !chain.every((next) => typeof next === "string" && next !== "")) {
       throw new ConfigError(`"fallback.${name}" must be a list of adapter names; got ${JSON.stringify(chain)}`);
     }

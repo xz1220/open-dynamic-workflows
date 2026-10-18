@@ -42,7 +42,9 @@
  *                            checkpoint → nothing; result → result (failed
  *                            unless status SUCCESS)
  *   ODW's own lines         {"kind":"text"} → text; attempt (with the
- *                            adapter a fallback moved to); truncated
+ *                            adapter a fallback moved to); handoff (a
+ *                            fallback that handed the work over: from, to,
+ *                            the brief as `output`); truncated
  *   anything else            raw: the line itself
  *
  * Long fields — text, output, input — are clipped to 4 KB and the entry
@@ -62,7 +64,7 @@ import type { AgentRow } from "./agents-view.js";
 import { RunObserver } from "./run-liveness.js";
 import type { RunStore } from "./run-store.js";
 
-export type TranscriptKind = "text" | "tool_call" | "tool_result" | "error" | "attempt" | "result" | "raw" | "truncated";
+export type TranscriptKind = "text" | "tool_call" | "tool_result" | "error" | "attempt" | "handoff" | "result" | "raw" | "truncated";
 
 /** One step of an agent's transcript, normalized for reading (a wire contract: web/src/types.ts mirrors it). */
 export interface TranscriptEntry {
@@ -90,9 +92,11 @@ export interface TranscriptEntry {
   /** attempt: which CLI run of the call begins (2 = the first one more) and why: schema, stall, rate_limit, expect, fallback. */
   n?: number;
   reason?: string;
-  /** attempt, for a fallback (an ODW extension): the adapter the call moved to. */
+  /** attempt, for a fallback (an ODW extension): the adapter the call moved to; handoff: the one that carries on. */
   adapter?: string;
-  /** truncated: the bytes kept before the cut. */
+  /** handoff (an ODW extension): the adapter that handed the work over; its brief is `output`. */
+  from?: string;
+  /** truncated: the bytes kept before the cut; handoff: the brief's size. */
   bytes?: number;
   /** result: the turns the session took and what it cost, as its CLI reported. */
   turns?: number;
@@ -223,6 +227,20 @@ function odwLine(line: Record<string, unknown>, text: string): Draft[] {
       if (n !== undefined) draft.n = n;
       if (reason !== undefined) draft.reason = reason;
       if (adapter !== undefined) draft.adapter = adapter;
+      return [draft];
+    }
+    case "handoff": {
+      // A fallback handed the work over (an ODW extension; see ../handoff): the brief rides along as `output`.
+      const from = typeof line.from === "string" ? line.from : undefined;
+      const to = typeof line.to === "string" ? line.to : undefined;
+      const bytes = typeof line.bytes === "number" ? line.bytes : undefined;
+      const size = bytes !== undefined ? ` — a brief of ${formatBytes(bytes)}` : "";
+      const draft: Draft = { kind: "handoff", text: `handoff from ${from ?? "?"} to ${to ?? "?"}${size}` };
+      if (from !== undefined) draft.from = from;
+      if (to !== undefined) draft.adapter = to;
+      if (typeof line.reason === "string") draft.reason = line.reason;
+      if (bytes !== undefined) draft.bytes = bytes;
+      if (typeof line.brief === "string") draft.output = line.brief;
       return [draft];
     }
     case "truncated": {
@@ -855,6 +873,9 @@ export function formatTranscriptEntry(entry: TranscriptEntry, opts: TranscriptPr
       return [one(`${p.err(m.fail)} ${entry.tool ? `${tool}: ` : ""}${sanitizeText(entry.text ?? "error", width)}`)];
     case "attempt":
       return [one(p.run(`${m.rule} ${sanitizeText(entry.text ?? "attempt", width)} ${m.rule}`))];
+    case "handoff":
+      // The brief itself is the agent's handoff.md in the run directory (and `--raw` prints it).
+      return [one(p.run(`${m.rule} ${sanitizeText(entry.text ?? "handoff", width)} ${m.rule}`))];
     case "result": {
       const stats = [
         entry.turns !== undefined ? `${entry.turns} turn${entry.turns === 1 ? "" : "s"}` : null,
