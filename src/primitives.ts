@@ -265,6 +265,13 @@ export interface AgentOptions {
    * `questions` setting ("checkpoint" by default).
    */
   questions?: QuestionPolicy;
+  /**
+   * Claude Code dialect: this call's stall window in milliseconds — how long
+   * its CLI may write nothing before the stall watchdog kills and restarts it
+   * (`stallRestarts`), in place of its adapter's and the run's `stallTimeout`.
+   * `0` turns the watchdog off for this call (an ODW reading).
+   */
+  stallMs?: number;
 }
 
 /** ODW extension: what parallel() takes after its thunks. */
@@ -745,6 +752,9 @@ export function createPrimitives(
       const got = typeof opts.questions === "string" ? JSON.stringify(opts.questions) : describeValue(opts.questions);
       throw new AgentError(`agent(): questions must be "checkpoint", "fail" or "deny"; got ${got}`);
     }
+    if (opts.stallMs !== undefined && !(typeof opts.stallMs === "number" && Number.isFinite(opts.stallMs) && opts.stallMs >= 0)) {
+      throw new AgentError(`agent(): stallMs must be a number of milliseconds (0 turns the stall watchdog off); got ${describeValue(opts.stallMs)}`);
+    }
     // The run's notes board (ODW extension): its call's say, else its parallel()'s, else the setting.
     const notesOn = opts.notes ?? notesScope.getStore() ?? ctx.config.settings.notes === true;
     // Workflow memory (ODW extension; see ./memory): its call's say, else the setting.
@@ -846,6 +856,7 @@ export function createPrimitives(
       ...(ownLimits !== undefined ? { limits: ownLimits } : {}),
       ...(opts.handoff !== undefined ? { handoff: opts.handoff } : {}),
       ...(opts.questions !== undefined ? { questions: opts.questions } : {}),
+      ...(opts.stallMs !== undefined ? { stallMs: opts.stallMs } : {}),
     };
     // The adapters it left down its chain, and the one it is on (ODW extension).
     const fellBackFrom: string[] = [];

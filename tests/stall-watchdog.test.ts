@@ -78,3 +78,96 @@ test("an agent that stalls past its restarts fails with a stall error", async ()
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+// agent(prompt, { stallMs }) (Claude Code dialect): the call's own stall window,
+// in place of its adapter's and the run's stallTimeout.
+
+function stallMsRun(opts: { command: (counter: string) => string[]; adapterStall?: number; call: string }) {
+  const root = mkdtempSync(join(tmpdir(), "odw-stallms-"));
+  const counter = join(root, "invocations");
+  const configPath = join(root, "odw.config.json");
+  const adapter: Record<string, unknown> = { command: opts.command(counter) };
+  if (opts.adapterStall !== undefined) adapter.stallTimeout = opts.adapterStall;
+  writeFileSync(configPath, JSON.stringify({ defaultAdapter: "flaky", adapters: { flaky: adapter } }));
+  const script = join(root, "wf.js");
+  writeFileSync(script, `export const meta = { name: 'wf', description: 'd' }\nreturn await agent('work', ${opts.call})`);
+  const store = new RunStore(join(root, "runs"));
+  const id = store.create({ script, args: null, source: root, configPath });
+  const invocations = () => Number(readFileSync(counter, "utf8"));
+  return { root, store, id, invocations };
+}
+
+/** Quiet for `quietMs` on every run, then it answers. */
+function slowAgent(counter: string, quietMs: number): string[] {
+  const file = JSON.stringify(counter);
+  return [
+    execPath,
+    "-e",
+    `const fs = require('fs'); const n = fs.existsSync(${file}) ? Number(fs.readFileSync(${file}, 'utf8')) : 0;` +
+      `fs.writeFileSync(${file}, String(n + 1));` +
+      `setTimeout(() => process.stdout.write('answered on run ' + (n + 1)), ${quietMs});`,
+  ];
+}
+
+test("stallMs gives one agent a stall window where neither its adapter nor the run has one", async () => {
+  const { root, store, id, invocations } = stallMsRun({
+    command: (counter) => flakyAgent(counter, 1),
+    call: "{ label: 'search', stallMs: 500 }",
+  });
+  try {
+    assert.equal(await executeRun(store.runDir(id)), "done");
+    assert.equal(store.readResult(id), "answered on run 2");
+    assert.equal(invocations(), 2, "restarted once (stallRestarts), as a configured stallTimeout would be");
+    const restarts = store.readEvents(id).filter((e) => e.type === "log" && /went quiet/.test(String(e.message)));
+    assert.deepEqual(
+      restarts.map((e) => e.message),
+      ["search:1 went quiet for 0.5s — restarting (1/1)"],
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("stallMs takes the place of the adapter's stallTimeout — a longer window lets a slow agent answer", async () => {
+  const { root, store, id, invocations } = stallMsRun({
+    command: (counter) => slowAgent(counter, 1500),
+    adapterStall: 1,
+    call: "{ label: 'search', stallMs: 60000 }",
+  });
+  try {
+    assert.equal(await executeRun(store.runDir(id)), "done");
+    assert.equal(store.readResult(id), "answered on run 1");
+    assert.equal(invocations(), 1, "not killed at the adapter's 1s");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("stallMs: 0 turns the stall watchdog off for that one call", async () => {
+  const { root, store, id, invocations } = stallMsRun({
+    command: (counter) => slowAgent(counter, 1500),
+    adapterStall: 1,
+    call: "{ label: 'search', stallMs: 0 }",
+  });
+  try {
+    assert.equal(await executeRun(store.runDir(id)), "done");
+    assert.equal(store.readResult(id), "answered on run 1");
+    assert.equal(invocations(), 1);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a stallMs that is not a non-negative number fails the call before it starts", async () => {
+  const { root, store, id } = stallMsRun({
+    command: (counter) => slowAgent(counter, 0),
+    call: "{ label: 'search', stallMs: '30m' }",
+  });
+  try {
+    assert.equal(await executeRun(store.runDir(id)), "failed");
+    assert.match(String(store.readError(id)?.error), /agent\(\): stallMs must be a number of milliseconds/);
+    assert.equal(store.readEvents(id).filter((e) => e.type === "agent_started").length, 0, "no agent started");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

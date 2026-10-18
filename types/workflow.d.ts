@@ -122,6 +122,14 @@ declare global {
      * it runs.
      */
     costGate?: { usd: number } | null;
+    /**
+     * This agent's stall window, in milliseconds (as in Claude Code): how long its CLI may
+     * write nothing before the stall watchdog kills it and starts it again (`stallRestarts`
+     * times, then the call throws with reason `"stalled"`) — in place of its adapter's and
+     * the run's `stallTimeout`. `agent(prompt, { stallMs: 1800000 })` gives it 30 minutes.
+     * `0` turns the watchdog off for this call (an ODW reading).
+     */
+    stallMs?: number;
   }
 
   /** ODW extension — Claude Code's parallel() takes only the thunks. */

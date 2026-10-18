@@ -247,6 +247,11 @@ export interface AgentRequest {
    * `questions` setting. Unvalidated: a bad value fails the call.
    */
   questions?: QuestionPolicy;
+  /**
+   * This call's stall window in milliseconds (Claude Code dialect), in place
+   * of its adapter's and the run's `stallTimeout`; 0 turns the watchdog off.
+   */
+  stallMs?: number;
 }
 
 /** The persona framing injected for `agentType`, on top of the independence preamble. */
@@ -1395,7 +1400,8 @@ export class Bridge {
     const limits: CliLimits = {
       timeout: adapter.timeout ?? settings.timeout ?? undefined,
       // An adapter's 0 opts it out of a run-wide stall timeout; null is off.
-      stallTimeout: (adapter.stallTimeout ?? settings.stallTimeout) || undefined,
+      // The call's own `stallMs` (Claude Code dialect) comes first; its 0 is off too.
+      stallTimeout: (request.stallMs !== undefined ? request.stallMs / 1000 : (adapter.stallTimeout ?? settings.stallTimeout)) || undefined,
     };
     // Plan the invocation once: workspace mode, the model token/flag, and the
     // routing notes do not change across schema retries — only the prompt does.
