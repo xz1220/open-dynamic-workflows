@@ -2352,14 +2352,24 @@ it three-way, and the commit HEAD was at is named.
 odw cannot stop a command before it runs — that takes each CLI's own hooks — but it
 reads what agents run as they run (Claude Code's `Bash`, Codex's
 `command_execution`, the kilo, opencode and agy shell tools) for `git reset --hard`,
-`git checkout .` / `-- .` / `--force`, `git restore .`, `git clean -f…`, `git push
---force` (`-f`, `--force-with-lease`, `+refspec`), `git stash drop|clear` and `git
-branch -D`. Command lines are split as a shell would (`cd x && …`, `bash -lc '…'`,
-`sudo`, `env`, `git -C dir …`); text in quotes is not a command. Each hit is a
-`destructive_git` event — in `odw logs`, the live view, and the agent's drawer and
-node in the dashboard — naming `odw restore <run>` when there is a snapshot. Commands
-that only reset a working tree do not count for an isolated agent: its worktree is
-its own.
+`git checkout .` / `-- .` / `--force`, `git switch --force` / `--discard-changes`,
+`git restore .`, `git clean -f…`, `git push --force` (`-f`, `--force-with-lease`,
+`+refspec`), `git push --mirror`, `git push --delete` (`-d`, `:refspec`), `git stash
+drop|clear` and `git branch -D`. Command lines are split as a shell would (`cd x &&
+…`, `bash -lc '…'`, `sudo`, `env`, `if …; then …`, `! …`, `git -C dir …`); text in
+quotes is not a command. Each hit is a `destructive_git` event — in `odw logs`, the
+live view, and the agent's drawer and node in the dashboard — naming `odw restore
+<run>` when there is a snapshot. Commands that only reset a working tree do not count
+for an isolated agent: its worktree is its own — unless git is pointed elsewhere
+(`git -C <dir>`, `--git-dir`, `--work-tree`), which odw cannot place and counts as in
+place.
+
+This detection is **advisory and best effort**, not a guard: it sees only what a
+command line says. It misses git run by another program — `find . -exec git checkout
+-- {} +`, `… | xargs git checkout --`, a script or Makefile —, a git alias (`git
+nuke` for `reset --hard`), a `cd` into another worktree before a plain `git reset
+--hard`, and any CLI that prints no tool calls (a text adapter). The snapshot, not
+the detection, is what gets work back.
 
 ```jsonc
 { "destructiveGit": "fail" } // default "warn": recorded; "fail": the agent fails with reason destructive_git once its CLI is done

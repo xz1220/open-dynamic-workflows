@@ -799,6 +799,12 @@ independent security reviews whose findings are all fixed.
   run>` pinged a Slack channel with a fake approve link. Slack's `text` now has `&`, `<`
   and `>` escaped, and Discord's `content` has `@everyone`, `@here`, `<@…>`, `<#…>` and
   `[label](url)` links broken (besides `allowed_mentions: { parse: [] }`).
+- Destructive git detection missed `if …; then git reset --hard`, `! git …` and the
+  other shell keywords, `git switch --force` / `--discard-changes`, `git push --mirror`,
+  `git push --delete` (`-d`, `:refspec`), and an isolated agent's `git -C <dir>` (or
+  `--git-dir`, `--work-tree`) reset of another tree. All are now seen; git pointed
+  elsewhere counts as in place. The README says the detection is advisory and best
+  effort, and names what it misses (`find -exec`, `xargs`, git aliases).
 
 ### Changed behavior — check before upgrading
 - Signed triggers in a repository's `./odw.config.json` are no longer served: move them

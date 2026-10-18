@@ -118,6 +118,45 @@ test("a command line is read as a shell reads it: chains, wrappers, shells' -c s
   assert.deepEqual(whats("# git reset --hard\ngit status"), []);
 });
 
+test("review fix: shell keywords, git switch --force, push --mirror/--delete/:refspec, and git pointed at another tree", () => {
+  const hits = (line: string) => destructiveGitCommands(line).map((h) => `${h.what}|${h.scope}${h.elsewhere ? "|elsewhere" : ""}`);
+  const cases: Array<[string, string[]]> = [
+    ["if true; then git reset --hard; fi", ["git reset --hard|worktree"]],
+    ["for f in a; do git clean -fd; done", ["git clean -f|worktree"]],
+    ["if false; then :; else git checkout .; fi", ["git checkout .|worktree"]],
+    ["if a; then :; elif b; then git stash clear; fi", ["git stash clear|repository"]],
+    ["while true; do git restore .; done", ["git restore .|worktree"]],
+    ["! git reset --hard", ["git reset --hard|worktree"]],
+    ["{ git reset --hard; }", ["git reset --hard|worktree"]],
+    ["git switch -f main", ["git switch --force|worktree"]],
+    ["git switch --force main", ["git switch --force|worktree"]],
+    ["git switch --discard-changes main", ["git switch --force|worktree"]],
+    ["git switch -c feature", []],
+    ["git push --mirror backup", ["git push --mirror|repository"]],
+    ["git push --delete origin old", ["git push --delete|repository"]],
+    ["git push -d origin old", ["git push --delete|repository"]],
+    ["git push origin :old", ["git push --delete|repository"]],
+    ["git push origin :", []],
+    ["git push origin main", []],
+    ["git -C /home/me/project reset --hard", ["git reset --hard|worktree|elsewhere"]],
+    ["git --git-dir=/elsewhere/.git --work-tree=/elsewhere checkout .", ["git checkout .|worktree|elsewhere"]],
+    ["git --work-tree ../main clean -fd", ["git clean -f|worktree|elsewhere"]],
+    ["git -C . reset --hard", ["git reset --hard|worktree"]],
+    ["git -C /x push --force", ["git push --force|repository"]],
+  ];
+  for (const [line, want] of cases) assert.deepEqual(hits(line), want, line);
+  // An isolated agent that points git at another tree is reported: ODW cannot tell it is its own.
+  const seen: string[] = [];
+  const watch = new DestructiveGitWatch((hit) => seen.push(hit.command), true);
+  watch.beginRun(undefined, CLAUDE);
+  watch.stdout(`${claudeBash("a", "git reset --hard")}\n${claudeBash("b", "git -C /home/me/project reset --hard")}\n`);
+  watch.endRun(ok());
+  assert.deepEqual(seen, ["git -C /home/me/project reset --hard"]);
+  // What runs git without saying so on its command line is not seen (advisory, best effort).
+  assert.deepEqual(hits("find . -name x -exec git checkout -- {} +"), []);
+  assert.deepEqual(hits("echo . | xargs git checkout --"), []);
+});
+
 // --- watching an agent's CLI --------------------------------------------------------------------
 
 const claudeBash = (id: string, command: string) =>

@@ -2030,12 +2030,20 @@ HEAD 在那之后移动过(`git reset --hard origin/main`)时,改动以三方合
 
 odw 无法在命令执行前拦住它——那需要各 CLI 自己的 hook——但会在 agent 运行时读取它执行的命令
 (Claude Code 的 `Bash`、Codex 的 `command_execution`、kilo、opencode 与 agy 的 shell 工具),
-识别 `git reset --hard`、`git checkout .` / `-- .` / `--force`、`git restore .`、
-`git clean -f…`、`git push --force`(`-f`、`--force-with-lease`、`+refspec`)、
+识别 `git reset --hard`、`git checkout .` / `-- .` / `--force`、`git switch --force` /
+`--discard-changes`、`git restore .`、`git clean -f…`、`git push --force`(`-f`、
+`--force-with-lease`、`+refspec`)、`git push --mirror`、`git push --delete`(`-d`、`:refspec`)、
 `git stash drop|clear` 和 `git branch -D`。命令行按 shell 的方式切分(`cd x && …`、
-`bash -lc '…'`、`sudo`、`env`、`git -C dir …`);引号里的文字不算命令。每条命中都是一个
-`destructive_git` 事件——显示在 `odw logs`、实时视图以及看板里该 agent 的抽屉和节点上——有快照时
-会提示 `odw restore <run>`。只重置工作区的那几类命令对隔离 agent 不计:它的 worktree 是它自己的。
+`bash -lc '…'`、`sudo`、`env`、`if …; then …`、`! …`、`git -C dir …`);引号里的文字不算命令。
+每条命中都是一个 `destructive_git` 事件——显示在 `odw logs`、实时视图以及看板里该 agent 的抽屉和
+节点上——有快照时会提示 `odw restore <run>`。只重置工作区的那几类命令对隔离 agent 不计:它的
+worktree 是它自己的——除非 git 被指向别处(`git -C <dir>`、`--git-dir`、`--work-tree`),odw 无法
+判断那是哪里,按原地处理。
+
+这种识别**只是提示、尽力而为**,不是防护:它只看命令行上写了什么。由别的程序调用的 git 它看不到——
+`find . -exec git checkout -- {} +`、`… | xargs git checkout --`、脚本或 Makefile——git 别名
+(把 `reset --hard` 叫作 `git nuke`)、先 `cd` 到另一个 worktree 再执行的普通 `git reset --hard`,
+以及不打印工具调用的 CLI(文本适配器)也都看不到。能把工作找回来的是快照,而不是识别。
 
 ```jsonc
 { "destructiveGit": "fail" } // 默认 "warn":只记录;"fail":agent 的 CLI 结束后以失败原因 destructive_git 判为失败
