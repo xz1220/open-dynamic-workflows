@@ -128,6 +128,14 @@ const lanes = await parallel(tasks.map((t, i) => () =>      // ODW 扩展：note
   agent(t, { label: `lane-${i + 1}`, isolation: 'worktree' })), { notes: true })
 ```
 
+`memory`（**ODW 扩展**）把一个工作流历次运行学到的东西带到下一次：存在仓库里的
+`.odw/memory/<工作流>.jsonl`，只来自明确的来源——用 `"$ODW_NOTES" --keep "…"`（或 `odw note --keep`）
+保留的笔记、带备注被拒绝或修改后批准的检查点（`checkpoint(…, { memory: true })`）、被重试补上的
+`expect` 未达项（`agent(…, { memory: true })`），以及 `odw memory add`。`memory: true`（或配置中的
+`"memory": true`）的 agent 在任务之前看到仍然适用的条目——最新的在前，至多 4 KB；`paths` 自其提交以来
+有改动的条目已过期，不再召回。不受信任的运行不使用仓库的记忆。用 `odw memory list|add|prune` 维护；见
+[`references/primitives.md`](references/primitives.md#memoryodw-扩展)。
+
 `scope`（**ODW 扩展**）声明 agent 打算改动的文件——glob 规则同 `expect.files`。范围重叠的并行调用
 先后运行（后发出的等先发出的结束，记一次日志："fix-auth waits for refactor-login: both declare
 src/auth/**"）；范围不相交或未声明范围的调用照常并行。agent 在范围之外的改动记为 `outOfScope`、

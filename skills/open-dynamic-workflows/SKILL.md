@@ -156,6 +156,17 @@ const lanes = await parallel(tasks.map((t, i) => () =>      // ODW extension: no
   agent(t, { label: `lane-${i + 1}`, isolation: 'worktree' })), { notes: true })
 ```
 
+`memory` (**ODW extension**) carries what earlier runs of a workflow learned into the
+next: `.odw/memory/<workflow>.jsonl` in the repository, filled only from explicit
+sources — a note kept with `"$ODW_NOTES" --keep "…"` (or `odw note --keep`), a
+checkpoint rejected with a note or approved with an edit (`checkpoint(…, { memory:
+true })`), an `expect` miss a retry then met (`agent(…, { memory: true })`), and
+`odw memory add`. An agent with `memory: true` (or `"memory": true` in the config)
+gets the entries still applying ahead of its task — newest first, at most 4 KB; an
+entry whose `paths` changed since its commit is stale and left out. Untrusted runs
+skip the repository's memory. Tend it with `odw memory list|add|prune`; see
+[`references/primitives.md`](references/primitives.md#memory-odw-extension).
+
 `scope` (**ODW extension**) declares the files an agent means to change — globs
 like `expect.files`. Parallel calls whose scopes overlap run one after the other
 (the later waits for the earlier, logged once: "fix-auth waits for

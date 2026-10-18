@@ -426,6 +426,21 @@ independent security reviews whose findings are all fixed.
   notes, 256 KiB) and redacted, kept as `notes.jsonl`, emitted as `note_added`, and read
   with `odw notes <run> [--json]` and `GET /api/runs/:id/notes`. Off by default.
   Example: `coordinated-refactor.js`.
+- Workflow memory with provenance (**ODW extension**; ROADMAP S7): what earlier runs of a
+  workflow learned, kept in the repository as `.odw/memory/<workflow>.jsonl` (reviewable
+  in PRs), one `{ id, text, kind, paths, commit, run, agent?, at }` per line, from
+  explicit sources only — a note kept with `"$ODW_NOTES" --keep "…"` or `odw note --keep
+  [--paths …]`, a checkpoint rejected with a note or approved with an edit (a structural
+  diff of the payload) under `checkpoint(…, { memory: true | { paths } })`, an `expect`
+  miss a retry then met under `agent(…, { memory: true })`, and `odw memory add`; never
+  a model's summary. An agent with `memory: true` (or `"memory": true` in the config)
+  gets the entries that still apply ahead of its task — newest first, at most 4 KB —
+  and an entry whose `paths` changed since its `commit` (`git diff --name-only`) is
+  stale and left out, the run saying how many. Written when the run ends, redacted, at
+  most 500 per file (oldest pruned, logged). Untrusted runs neither recall nor keep the
+  repository's memory; a `memoryDir` of the user's own outside the repository they use.
+  `odw memory list|add|prune`, `GET /api/memory`, and `web/src/types.ts`
+  `WorkflowMemory` (dashboard view to come).
 - Declared scopes (**ODW extension**; ROADMAP R11): `agent(…, { scope: ["src/auth/**"] })`
   names the files a call means to change, with the `expect` glob rules. Scoped calls in
   flight at once whose scopes overlap — decided conservatively from the globs: braces

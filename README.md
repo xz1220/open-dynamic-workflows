@@ -448,6 +448,55 @@ Claude Code's Workflow tool ignores these options. [`examples/coordinated-refact
 splits a change across isolated lanes on the board, has a reviewer read it, and
 runs the lanes that clash again with every note in their prompt.
 
+### Workflow memory (ODW extension)
+
+Every run starts cold: a correction a person made in one run is violated again in
+the next. Workflow memory keeps what earlier runs of a workflow learned **in the
+repository**, as `.odw/memory/<workflow>.jsonl`, so it is reviewed in pull requests
+like any other file. It is off unless asked for, and nothing in it comes from a model
+summarizing — only from explicit sources:
+
+| Source | Entry |
+| --- | --- |
+| `"$ODW_NOTES" --keep "…"` or `odw note --keep [--paths GLOB,…] "…"` (an agent with notes on) | `note`, by that agent — always kept: the agent asked |
+| a `checkpoint()` rejected with a note | `correction`: `"Ship the plan?" was rejected: <note>` |
+| a `checkpoint()` approved with an edited payload | `correction`: a structural diff of the edit, `$.steps[1]: "b" → "c"; removed $.owner` |
+| an `expect` miss that a retry of the same agent then met | `lesson`: what was missing, and that a retry told of it fixed it (with the change it kept) |
+| `odw memory add <wf> "…" [--paths GLOB,…]` | `note` (or `--kind correction\|lesson`), by hand |
+
+Each line is `{ id, text, kind, paths, commit, run, agent?, at }`: `commit` is HEAD
+when it was learned, `paths` the globs (from the repository's top) it is about.
+Corrections and lessons are kept only where memory is on — `"memory": true` in the
+config, `agent(…, { memory: true })` for that agent's lessons, `checkpoint(…, {
+memory: true })` or `{ memory: { paths: ['src/**'] } }` for its corrections.
+
+```js
+const plan = await checkpoint('Ship this plan?', { payload: draft, memory: { paths: ['src/api/**'] } })
+await agent('Implement the approved plan.', { memory: true, expect: { command: 'npm test' } })
+```
+
+- **Recall:** an agent with memory on (`agent(…, { memory: true })`, or the setting;
+  `memory: false` opts one out) finds the entries that still apply ahead of its task,
+  under "What earlier runs of this workflow learned", newest first, at most 4 KB. The
+  run's log says how many it recalled and how many it left out.
+- **Staleness:** an entry is stale once a file its `paths` match changed between its
+  `commit` and HEAD (`git diff --name-only <commit> HEAD`); stale entries are not
+  recalled. An entry without paths never goes stale; one with paths whose commit git
+  does not know is stale — nothing vouches for it.
+- **Kept when the run ends** — done, failed or stopped — redacted with the run's
+  redactor. The same entry learned again replaces the older copy; a file holds at most
+  500 entries, the oldest pruned with a line in the run's log. `odw test` and `--dry`
+  runs recall but keep nothing.
+- **Untrusted runs** neither recall nor keep the repository's memory: the file is the
+  repository's content, and what an untrusted run learned would reach later trusted
+  runs' prompts. Memory the user keeps outside the repository — `"memoryDir":
+  "~/odw-memory/my-repo"` in their own config — is theirs, and an untrusted run uses it.
+- **Tending it:** `odw memory list [<wf>] [--stale] [--json]`, `odw memory add <wf>
+  "text" [--paths …]`, `odw memory prune [<wf>] --stale` or `odw memory prune <wf> --id
+  N` (`--source DIR` picks the repository); `GET /api/memory[?workflow=]` serves the list.
+
+Claude Code's Workflow tool ignores these options.
+
 ### Declared scopes (ODW extension)
 
 Two agents pointed at the same files produce changes that conflict only at merge
@@ -2115,7 +2164,9 @@ adapter commands are the repository's code. The run uses your
 `~/.config/odw/config.json` (outside the repository) or the built-in defaults, and says
 so; one you name with `--config` or `$ODW_CONFIG` is your choice and still applies. A
 repository's config cannot loosen the `"trust": "untrusted"` your
-`~/.config/odw/config.json` sets.
+`~/.config/odw/config.json` sets. Its [workflow memory](#workflow-memory-odw-extension)
+(`.odw/memory/`) is neither recalled nor written; a `memoryDir` of yours outside the
+repository is.
 
 ```jsonc
 {
