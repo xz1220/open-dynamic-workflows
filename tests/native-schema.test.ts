@@ -613,11 +613,11 @@ function loadFrom(raw: unknown): Config {
 
 test("the built-ins declare native schemas: claude inline with its structured_output, codex as a strict file", () => {
   const { adapters } = defaultConfig();
-  assert.deepEqual(adapters.claude!.flags, { model: ["--model"], schema: { args: ["--json-schema"], mode: "inline" } });
+  assert.deepEqual({ model: adapters.claude!.flags?.model, schema: adapters.claude!.flags?.schema }, { model: ["--model"], schema: { args: ["--json-schema"], mode: "inline" } });
   assert.deepEqual(adapters.claude!.output && "structuredPath" in adapters.claude!.output && adapters.claude!.output.structuredPath, [
     "structured_output",
   ]);
-  assert.deepEqual(adapters.codex!.flags, { model: ["--model"], schema: { args: ["--output-schema"], mode: "file", strict: true } });
+  assert.deepEqual({ model: adapters.codex!.flags?.model, schema: adapters.codex!.flags?.schema }, { model: ["--model"], schema: { args: ["--output-schema"], mode: "file", strict: true } });
   for (const name of ["gemini", "qwen", "kimi", "omp", "kilo", "opencode", "cursor"]) {
     assert.equal(adapters[name]!.flags?.schema, undefined, name);
   }

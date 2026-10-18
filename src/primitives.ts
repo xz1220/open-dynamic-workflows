@@ -119,7 +119,8 @@ import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 
 import { formatSeconds } from "./adapters/failures.js";
-import { isPermissionTier } from "./adapters/permissions.js";
+import { isPermissionTier, minTier, planPermissions, runTier } from "./adapters/permissions.js";
+import { agentTypeField, agentTypeSummary, findAgentType, planAgentType, type AgentTypePlan } from "./agent-types.js";
 import type { McpServer } from "./adapters/output.js";
 import { planTrust, runTrust } from "./adapters/trust.js";
 import { sandboxView, type SandboxView } from "./adapters/sandbox.js";
@@ -377,6 +378,33 @@ export function createPrimitives(
   // Each MCP server, with its status, the run has said was not connected:
   // once per run, shared with nested workflow()s like the notes above (ODW extension).
   const notedMcp = (ctx.mcpNotes ??= new Set<string>());
+  // The agent definitions `agentType` named, as mapped — read once per name
+  // per workflow, and logged then (ODW extension; see ./agent-types); null: none found.
+  const agentTypes = new Map<string, AgentTypePlan | null>();
+  const agentTypeFor = (name: string): AgentTypePlan | null => {
+    if (agentTypes.has(name)) return agentTypes.get(name)!;
+    const untrusted = runTrust(ctx.config) === "untrusted";
+    const def = findAgentType(name, { cwd: ctx.source, trust: untrusted ? "untrusted" : "trusted" });
+    const plan = def ? planAgentType(def, untrusted) : null;
+    agentTypes.set(name, plan);
+    const message = plan
+      ? agentTypeSummary(plan)
+      : `agentType '${name}': no agent definition named '${name}' in .claude/agents, .odw/agents, ~/.claude/agents ` +
+        `or an enabled plugin's agents — applied as a one-line persona in the prompt`;
+    ctx.emit(event(LOG, { message, agentType: name }));
+    return plan;
+  };
+  /**
+   * A call's permissions under its definition's tools (ODW extension): the
+   * lower of what it asks — else its first adapter's ceiling — and the cap.
+   * Never higher; a bad option is left for the bridge to refuse.
+   */
+  const cappedPermissions = (option: unknown, cap: PermissionTier | undefined, choice: AdapterChoice | undefined): unknown => {
+    if (!cap) return option;
+    if (option !== undefined) return isPermissionTier(option) ? minTier(option, cap) : option;
+    const ceiling = planPermissions(ctx.bridge.chainFor(choice)[0]!, runTier(ctx.config)).requested;
+    return ceiling && minTier(ceiling, cap) !== ceiling ? cap : undefined;
+  };
   // Each phase's defaults for its agents (ODW extension), by its (prefixed)
   // title — shared with nested workflow()s like the notes above.
   const phaseDefaults = (ctx.phaseDefaults ??= new Map<string, PhaseDefaults>());
@@ -797,7 +825,22 @@ export function createPrimitives(
     // The adapter and model its phase gives a call that names neither (ODW extension).
     const defaults = activePhase !== null ? phaseDefaults.get(activePhase) : undefined;
     const adapterChoice = opts.adapter ?? defaults?.adapter;
-    const model = opts.model ?? defaults?.model;
+    // The agent definition its agentType names (ODW extension; see ./agent-types):
+    // its isolation, and its tools as a cap on its tier, are the call's own
+    // unless it says otherwise; its model is a default the router maps per CLI.
+    const definition = typeof opts.agentType === "string" && opts.agentType !== "" ? agentTypeFor(opts.agentType) : null;
+    if (definition) {
+      const isolation = opts.isolation ?? definition.isolation;
+      const permissions = cappedPermissions(opts.permissions, definition.tier, adapterChoice) as PermissionTier | undefined;
+      opts = {
+        ...opts,
+        ...(isolation !== undefined ? { isolation } : {}),
+        ...(permissions !== undefined ? { permissions } : {}),
+      };
+    }
+    const model = opts.model ?? (definition?.model ? undefined : defaults?.model);
+    // The model it asked for, as its events show it: its own, else its definition's, else its phase's.
+    const shownModel = model ?? definition?.model;
     // Adapter selection honours ONLY opts.adapter (or its phase's default).
     // agentType is a persona (it is forwarded to the bridge and injected into
     // the prompt), never an adapter name. Resolve it before asking for a slot:
@@ -870,6 +913,7 @@ export function createPrimitives(
       label: opts.label,
       model,
       agentType: opts.agentType,
+      ...(definition ? { definition } : {}),
       isolation: opts.isolation,
       permissions: opts.permissions,
       ...(checks.allowEmpty ? { allowEmpty: true } : {}),
@@ -967,7 +1011,9 @@ export function createPrimitives(
           // What `odw compare` matches and shows it by (ODW extension): its
           // resume key, and the model it asked for (a tier keeps its @ name).
           key,
-          ...(model !== undefined ? { model } : {}),
+          ...(shownModel !== undefined ? { model: shownModel } : {}),
+          // The agent definition it runs as (ODW extension): `odw compare` sees it change.
+          ...(definition ? { agentType: agentTypeField(definition) } : {}),
           ...(base ? { base } : {}),
         });
         ctx.emit(startedEv);

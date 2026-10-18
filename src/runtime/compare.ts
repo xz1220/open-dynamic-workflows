@@ -30,7 +30,8 @@
  *   setup     [{ field, a, b }]: what the runs ran with that differs — source
  *             (sha256 of the workflow), script, args, odwVersion, budget,
  *             cliVersion.<adapter>, settings.<key> (the knobs that change
- *             behaviour), adapterDefinition.<adapter> (a fingerprint), adapter
+ *             behaviour), adapterDefinition.<adapter> (a fingerprint),
+ *             agentDefinition.<agentType> (its file's sha256, 12 chars), adapter
  *             and permissions (runs without a recorded setup), adaptersUsed,
  *             modelsUsed, modelsServed (what their CLIs said served the
  *             agents; ODW extension, see ../served-model)
@@ -136,6 +137,8 @@ export interface CompareRunInput {
   /** What it started with (its run_started event's `setup`); null for runs from before setups were recorded. */
   setup: RunSetup | null;
   cliVersions: Record<string, CliVersion>;
+  /** ODW extension (see ../agent-types): the sha256 of each agent definition its agents ran as, by agentType name. */
+  agentTypes?: Record<string, string>;
   /** Its agents (exec() steps aside), in call order. */
   agents: RunAgent[];
 }
@@ -284,7 +287,12 @@ export function readCompareRun(store: RunStore, runId: string, nowMs = Date.now(
   let startedAt: number | null = null;
   let endedAt: number | null = null;
   let setup: RunSetup | null = null;
+  const agentTypes: Record<string, string> = {};
   for (const ev of events) {
+    if (ev.type === AGENT_STARTED && isRecord(ev.agentType)) {
+      const { name, sha256 } = ev.agentType;
+      if (typeof name === "string" && typeof sha256 === "string" && !(name in agentTypes)) agentTypes[name] = sha256;
+    }
     if (ev.type === AGENT_STARTED && typeof ev.agentId === "number") {
       started.set(ev.agentId, { key: str(ev.key), model: str(ev.model) });
     } else if (ev.type === RUN_STARTED) {
@@ -370,6 +378,7 @@ export function readCompareRun(store: RunStore, runId: string, nowMs = Date.now(
     replayOf: replayLinkOf(meta.replayOf),
     setup,
     cliVersions: cliVersionsOf(events),
+    agentTypes,
     agents,
   };
 }
@@ -683,6 +692,11 @@ function setupChanges(a: CompareRunInput, b: CompareRunInput): SetupChange[] {
   for (const adapter of Object.keys(a.cliVersions).sort()) {
     const vb = b.cliVersions[adapter];
     if (vb) add(`cliVersion.${adapter}`, a.cliVersions[adapter]!.version, vb.version);
+  }
+  // The agent definitions both runs' agents ran as (ODW extension): edited between them, it shows.
+  for (const name of Object.keys(a.agentTypes ?? {}).sort()) {
+    const hb = b.agentTypes?.[name];
+    if (hb) add(`agentDefinition.${name}`, a.agentTypes![name]!.slice(0, 12), hb.slice(0, 12));
   }
   const usedA = adaptersUsed(a);
   const usedB = adaptersUsed(b);
@@ -1028,6 +1042,7 @@ function setupLabel(field: string): string {
   const name = rest.join(".");
   if (kind === "cliVersion") return `${name} CLI`;
   if (kind === "adapterDefinition") return `${name} adapter`;
+  if (kind === "agentDefinition") return `${name} agent type`;
   if (kind === "settings") return name;
   return field;
 }
@@ -1035,7 +1050,7 @@ function setupLabel(field: string): string {
 function setupValue(field: string, value: unknown): string {
   if (field === "source" && typeof value === "string") return value.slice(0, 12);
   if (field.startsWith("cliVersion.") && value === null) return "unknown";
-  if (field.startsWith("adapterDefinition.") && typeof value === "string") return `definition ${value}`;
+  if ((field.startsWith("adapterDefinition.") || field.startsWith("agentDefinition.")) && typeof value === "string") return `definition ${value}`;
   if ((field === "adaptersUsed" || field === "modelsUsed" || field === "modelsServed") && Array.isArray(value)) {
     return value.length > 0 ? value.join(", ") : field === "modelsUsed" ? "CLI defaults" : field === "modelsServed" ? "not reported" : "none";
   }

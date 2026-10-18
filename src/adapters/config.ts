@@ -194,7 +194,7 @@ const KNOWN_OUTPUT_KEYS: Record<string, readonly string[]> = {
 const KNOWN_MATCH_KEYS = ["path", "equals"] as const;
 
 /** The fields of an adapter's `flags`, and of its `flags.schema`. */
-const KNOWN_FLAG_KEYS = ["model", "schema"] as const;
+const KNOWN_FLAG_KEYS = ["model", "schema", "effort", "effortLevels", "tools", "disallowedTools"] as const;
 const KNOWN_SCHEMA_FLAG_KEYS = ["args", "mode", "strict", "objectRoot"] as const;
 
 const KNOWN_NOTIFY_KEYS = ["command", "webhook", "on"] as const;
@@ -896,6 +896,15 @@ function buildFlags(name: string, raw: unknown): AdapterFlags {
       throw new ConfigError(`adapter '${name}' 'flags.model' must be an array of strings`);
     }
     out.model = [...(model as string[])];
+  }
+  // The agent-definition flags (ODW extension; see ../agent-types): each a list of strings.
+  for (const key of ["effort", "effortLevels", "tools", "disallowedTools"] as const) {
+    const value = (raw as Record<string, unknown>)[key];
+    if (value == null) continue;
+    if (!Array.isArray(value) || value.length === 0 || !value.every((p) => typeof p === "string" && p.length > 0)) {
+      throw new ConfigError(`adapter '${name}' 'flags.${key}' must be a non-empty array of strings`);
+    }
+    out[key] = [...(value as string[])];
   }
   // null, like leaving it out, means the CLI takes no schema natively.
   const schema = (raw as Record<string, unknown>).schema;

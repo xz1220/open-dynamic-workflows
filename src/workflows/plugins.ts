@@ -103,15 +103,26 @@ export function parsePluginRef(arg: string): { plugin: string; name: string } | 
   return m ? { plugin: m[1]!, name: m[2]! } : null;
 }
 
-/** Every workflow the installed, enabled plugins ship, by name; what was left out goes in `notes`. */
-export function discoverPluginWorkflows(opts: PluginDiscoveryOptions): PluginDiscovery {
-  const notes: string[] = [];
+/** One installed, enabled plugin that applies in the project: what its workflows and agents are read from. */
+export interface EnabledPlugin {
+  /** The install's id: `name@marketplace`. */
+  id: string;
+  /** Its manifest's name (else the id's), the namespace. */
+  plugin: string;
+  version: string | null;
+  scope: string;
+  installPath: string;
+  /** Its `.claude-plugin/plugin.json`, or `{}` without one. */
+  manifest: Record<string, unknown>;
+}
+
+/** The installed, enabled plugins that apply in `opts.cwd`, by id; what was left out goes in `notes`. */
+export function enabledPluginInstalls(opts: PluginDiscoveryOptions, notes: string[]): EnabledPlugin[] {
   const root = claudePluginsRoot();
   const installed = readJson(join(root, "installed_plugins.json"));
-  if (!isObject(installed) || !isObject(installed.plugins)) return { workflows: [], notes };
+  if (!isObject(installed) || !isObject(installed.plugins)) return [];
   const enabled = enabledPlugins(opts);
-  const out: PluginWorkflow[] = [];
-  const seen = new Set<string>();
+  const out: EnabledPlugin[] = [];
   for (const id of Object.keys(installed.plugins).sort()) {
     const record = applicableInstall(installed.plugins[id], opts.cwd);
     if (!record) continue;
@@ -124,7 +135,18 @@ export function discoverPluginWorkflows(opts: PluginDiscoveryOptions): PluginDis
       notes.push(`plugin ${id}: its name '${plugin}' cannot name a workflow (letters, digits, . _ - only); left out`);
       continue;
     }
-    for (const path of scripts(record.installPath, spec.workflows, id, notes)) {
+    out.push({ id, plugin, version: record.version, scope: record.scope, installPath: record.installPath, manifest: spec });
+  }
+  return out;
+}
+
+/** Every workflow the installed, enabled plugins ship, by name; what was left out goes in `notes`. */
+export function discoverPluginWorkflows(opts: PluginDiscoveryOptions): PluginDiscovery {
+  const notes: string[] = [];
+  const out: PluginWorkflow[] = [];
+  const seen = new Set<string>();
+  for (const { id, plugin, version, scope, installPath, manifest } of enabledPluginInstalls(opts, notes)) {
+    for (const path of pluginFiles(installPath, manifest.workflows, "workflows", ".js", id, notes)) {
       const found = auditedMeta(path, id, notes);
       if (!found) continue;
       const name = `${plugin}:${found.name}`;
@@ -139,9 +161,9 @@ export function discoverPluginWorkflows(opts: PluginDiscoveryOptions): PluginDis
         plugin,
         provider: `claude-plugin:${plugin}`,
         id,
-        version: record.version,
-        scope: record.scope,
-        installPath: record.installPath,
+        version,
+        scope,
+        installPath,
         path,
         meta: found.meta,
       });
@@ -214,20 +236,21 @@ function enabledPlugins(opts: PluginDiscoveryOptions): Map<string, boolean> {
 }
 
 /**
- * The `.js` scripts a plugin ships: those its manifest's `workflows` names
- * (files, or directories scanned one level), else its `workflows/` directory.
+ * The `ext` files a plugin ships under one manifest field: those the field
+ * names (files, or directories scanned one level), else its `<dir>/`
+ * directory — `.js` workflows under `workflows`, `.md` agents under `agents`.
  * A manifest path must start with `./` and stay inside the plugin.
  */
-function scripts(installPath: string, declared: unknown, id: string, notes: string[]): string[] {
+export function pluginFiles(installPath: string, declared: unknown, dir: string, ext: string, id: string, notes: string[]): string[] {
   const listed =
     declared === undefined || declared === null ? null : Array.isArray(declared) ? declared : [declared];
   const entries: string[] = [];
   if (listed === null) {
-    entries.push(join(installPath, "workflows"));
+    entries.push(join(installPath, dir));
   } else {
     for (const entry of listed) {
       if (typeof entry !== "string" || !entry.startsWith("./")) {
-        notes.push(`plugin ${id}: its manifest's workflows entry ${JSON.stringify(entry)} is not a ./ path; left out`);
+        notes.push(`plugin ${id}: its manifest's ${dir} entry ${JSON.stringify(entry)} is not a ./ path; left out`);
         continue;
       }
       entries.push(resolve(installPath, entry));
@@ -242,13 +265,13 @@ function scripts(installPath: string, declared: unknown, id: string, notes: stri
     let files: string[];
     if (isDirectory(entry)) {
       files = readdirSafe(entry)
-        .filter((name) => name.endsWith(".js"))
+        .filter((name) => name.endsWith(ext))
         .sort()
         .map((name) => join(entry, name));
-    } else if (entry.endsWith(".js")) {
+    } else if (entry.endsWith(ext)) {
       files = [entry];
     } else {
-      if (listed !== null) notes.push(`plugin ${id}: its manifest's workflows entry ${entry} is not a .js file or a directory; left out`);
+      if (listed !== null) notes.push(`plugin ${id}: its manifest's ${dir} entry ${entry} is not a ${ext} file or a directory; left out`);
       continue;
     }
     for (const file of files) {

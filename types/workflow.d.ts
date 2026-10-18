@@ -52,7 +52,11 @@ declare global {
      * is the default for the phase's agents; `meta.model` is metadata only.
      */
     model?: string;
-    /** Prompt persona, not an adapter name or a loader for Claude roles, tools, permissions, or project subagent definitions. */
+    /**
+     * The subagent definition to run as (`.claude/agents/<name>.md`, `.odw/agents/`, `~/.claude/agents/`,
+     * `<plugin>:<name>`): its body is the persona, its model/tools/isolation/effort map per CLI and tools
+     * only lower the tier (ODW extension; `odw agents types`). No definition: a one-line persona. Never an adapter name.
+     */
     agentType?: string;
     /** Throwaway git worktree at HEAD (needs a committed repo; no uncommitted edits). Cleaned up without merging; agent() does not return its diff, but the run keeps it (`odw diff`, `odw apply`). */
     isolation?: "worktree";

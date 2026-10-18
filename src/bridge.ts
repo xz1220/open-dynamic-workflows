@@ -171,6 +171,7 @@ import {
 import { QuotaWaits, type QuotaPause, type QuotaPauseChange } from "./quota-wait.js";
 import { bothEnds, type Redactor } from "./redact.js";
 import { LiteralRouter, type InvocationPlan, type OptionRouter } from "./router.js";
+import { narrowTools, type AgentTypePlan } from "./agent-types.js";
 import { isAdapterChoice, type AdapterChoice } from "./routing.js";
 import { describeSchema, pickStructured, type JsonSchema } from "./schema.js";
 import { handoffBrief, HandoffLog } from "./handoff.js";
@@ -198,6 +199,12 @@ export interface AgentRequest {
   model?: string;
   /** Persona to take on; injected into the prompt (universal, every CLI). */
   agentType?: string;
+  /**
+   * ODW extension (see ./agent-types): the agent definition `agentType`
+   * names, as mapped — its body is the persona prompt, and the router hands
+   * its model, effort and tool lists to the CLIs that take them.
+   */
+  definition?: AgentTypePlan;
   /** `"worktree"`: run this agent in a throwaway git worktree (as in Claude Code). */
   isolation?: "worktree";
   /**
@@ -1984,7 +1991,9 @@ export class Bridge {
     const parts = [INDEPENDENCE_PREAMBLE];
     // Persona (agentType) is universal prompt text — it works on every CLI,
     // which native system-prompt flags do not. See LiteralRouter.noteAgentType.
-    if (request.agentType) parts.push(personaPreamble(request.agentType));
+    // A definition's body takes the one-line persona's place (ODW extension; see ./agent-types).
+    if (request.definition?.body) parts.push(request.definition.body);
+    else if (request.agentType) parts.push(personaPreamble(request.agentType));
     // What earlier runs of the workflow learned, ahead of the task (ODW extension; see ./memory).
     if (request.memory) parts.push(request.memory);
     if (brief) parts.push(brief);
@@ -2080,7 +2089,9 @@ export class Bridge {
         // The tier's flags take the place of `{permission_args}`, then every
         // placeholder (theirs too) is expanded. The schema comes last, as is.
         const spliced = spliceArgs(adapter.command, call.permissionArgs ?? []);
-        const template = call.noWebTools ? withoutWebTools(spliced) : spliced;
+        const unwebbed = call.noWebTools ? withoutWebTools(spliced) : spliced;
+        // An agent definition's tools narrow what its tier leaves (ODW extension; see ./agent-types).
+        const template = plan.tools ? narrowTools(unwebbed, plan.tools.flag, plan.tools.allow) : unwebbed;
         const command = [...expandAll(template, context), ...plan.extraArgs, ...(schema?.args ?? [])];
         const stdin = adapter.stdin ? expand(adapter.stdin, context) : undefined;
         // Untrusted input (ODW extension; see ./untrusted-input): no secret its own login does not need.

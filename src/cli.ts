@@ -13,6 +13,7 @@
  *   odw logs <run_id> [--follow]
  *   odw logs <run_id> --agent <id|label> [--raw] [--follow]
  *   odw agents <run_id> [--json]
+ *   odw agents types [--adapter <name>] [--json]
  *   odw result <run_id> [--agent <id|label>]
  *   odw diff <run_id> [--agent <id|label>] [--stat]
  *   odw apply <run_id> --agent <id|label>|--all [--check] [--force] [--verify CMD|--no-verify]
@@ -72,6 +73,7 @@ import { cmdNew } from "./new.js";
 import { loadWorkflowScript } from "./loader.js";
 import type { AgentChanges } from "./changes.js";
 import { agentRowJson, agentRows, formatAgentTable, matchAgents, type AgentRow } from "./runtime/agents-view.js";
+import { cmdAgentTypes } from "./agent-types-cli.js";
 import { applyAgents, type AgentDiff } from "./runtime/apply.js";
 import { resolverRuns } from "./runtime/apply-resolve.js";
 import { applyPr } from "./runtime/apply-pr.js";
@@ -210,6 +212,7 @@ export function helpText(): string {
     "  odw logs <run_id|--workflow name> [--follow]       print a run's progress events",
     "  odw logs <run_id> --agent <id|label> [--raw]       one agent's transcript: its tool calls, results, text (--follow)",
     "  odw agents <run_id> [--json]                       list a run's agents with their saved results",
+    "  odw agents types [--adapter <a>] [--json]          the agent definitions agentType can name here, and what each maps to (ODW extension)",
     "  odw result <run_id> [--agent <id|label>]           print a finished run's result, or one agent's (mid-run too)",
     "  odw diff <run_id> [--agent <id|label>] [--stat]    print what isolated agents changed (their kept diffs)",
     "  odw apply <run_id> --agent <id|label>|--all        preview, then apply kept diffs to this working tree (--force)",
@@ -380,7 +383,7 @@ export async function main(argv: string[]): Promise<number> {
       case "status":
         return cmdStatus(rest);
       case "agents":
-        return cmdAgents(rest);
+        return rest[0] === "types" ? cmdAgentTypes(rest.slice(1)) : cmdAgents(rest);
       case "result":
         return cmdResult(rest);
       case "logs":

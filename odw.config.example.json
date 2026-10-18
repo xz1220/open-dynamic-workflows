@@ -122,7 +122,7 @@
       "label": "Codex CLI",
       "command": ["codex", "--search", "exec", "--json", "--output-last-message", "{reply_file}", "--skip-git-repo-check", "{permission_args}", "--cd", "{workspace}", "-"],
       "stdin": "{prompt}",
-      "flags": { "model": ["--model"], "schema": { "args": ["--output-schema"], "mode": "file", "strict": true } },
+      "flags": { "model": ["--model"], "schema": { "args": ["--output-schema"], "mode": "file", "strict": true }, "effort": ["-c", "model_reasoning_effort={effort}"], "effortLevels": ["minimal", "low", "medium", "high", "xhigh"] },
       "output": { "format": "jsonl", "eventType": "item.completed", "match": { "path": ["item", "type"], "equals": "agent_message" }, "textPath": ["item", "text"], "select": "last", "usageEvent": "turn.completed", "usagePath": ["usage"], "errorEvents": { "turn.failed": ["error"], "error": ["message"] } },
       "permissionArgs": {
         "read": ["--sandbox", "read-only"],
@@ -136,7 +136,7 @@
       "label": "Claude Code",
       "command": ["claude", "--print", "--output-format", "stream-json", "--verbose", "{permission_args}", "--no-session-persistence"],
       "stdin": "{prompt}",
-      "flags": { "model": ["--model"], "schema": { "args": ["--json-schema"], "mode": "inline" } },
+      "flags": { "model": ["--model"], "schema": { "args": ["--json-schema"], "mode": "inline" }, "effort": ["--effort"], "effortLevels": ["low", "medium", "high", "xhigh", "max"], "tools": ["--tools"], "disallowedTools": ["--disallowedTools"] },
       "output": {
         "format": "jsonl", "eventType": "result", "textPath": ["result"], "select": "last", "usagePath": ["usage"], "costPath": ["total_cost_usd"], "errorPath": ["is_error"], "structuredPath": ["structured_output"], "deniedPath": ["permission_denials"], "mcpEvent": "system", "mcpPath": ["mcp_servers"],
         "background": {

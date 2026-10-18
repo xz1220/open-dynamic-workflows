@@ -30,6 +30,23 @@ export interface AdapterFlags {
    * described in the prompt, and only ODW validates the reply.
    */
   schema?: SchemaFlag;
+  /**
+   * ODW extension (see ../agent-types): how this CLI takes an agent
+   * definition's `effort` — the flag(s), an element holding `{effort}` getting
+   * the level in place (`["-c", "model_reasoning_effort={effort}"]`), else the
+   * level appended (`["--effort"]`). Without it, `effort` is logged as not applied.
+   */
+  effort?: string[];
+  /** The `effort` levels it takes; another is logged as not applied. Unset: any. */
+  effortLevels?: string[];
+  /**
+   * ODW extension: the flag that limits this CLI to a comma-separated list of
+   * built-in tools (Claude Code's `--tools`) — an agent definition's `tools`,
+   * narrowed with any its tier sets. Without it, `tools` act only as a tier cap.
+   */
+  tools?: string[];
+  /** ODW extension: the flag(s) before tool names to deny (Claude Code's `--disallowedTools`) — a definition's `disallowedTools`. */
+  disallowedTools?: string[];
 }
 
 /**

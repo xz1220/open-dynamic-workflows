@@ -134,6 +134,11 @@ export interface AgentView {
    */
   outOfScope?: string[];
   /**
+   * Agents only (ODW extension; see ../agent-types): the agent definition its
+   * `agentType` named — agent_started's `agentType`. Absent: none was found.
+   */
+  agentType?: { name: string; source: string; path: string; sha256: string };
+  /**
    * Agents only (ODW extension; see ../destructive-git): the destructive git
    * commands its CLI ran — `destructive_git` events, as they showed — each
    * with what it is ("git reset --hard"). Absent: none.
@@ -562,6 +567,8 @@ export function applyAgentEvent(
     const scope = strings(ev.scope);
     if (scope) opened.scope = scope;
     if (typeof ev.model === "string" && ev.model !== "") opened.model = ev.model;
+    const agentType = agentTypeOf(ev.agentType);
+    if (agentType) opened.agentType = agentType;
     agents.push(opened);
     return { opened };
   }
@@ -777,10 +784,19 @@ function copyAgents(agents: AgentView[], stale: boolean): AgentView[] {
     if (a.servedModel) copy.servedModel = [...a.servedModel];
     if (a.substituted) copy.substituted = { requested: a.substituted.requested, served: [...a.substituted.served] };
     if (a.scope) copy.scope = [...a.scope];
+    if (a.agentType) copy.agentType = { ...a.agentType };
     if (a.outOfScope) copy.outOfScope = [...a.outOfScope];
     if (a.destructiveGit) copy.destructiveGit = a.destructiveGit.map((hit) => ({ ...hit }));
     return copy;
   });
+}
+
+/** agent_started's `agentType` (ODW extension; see ../agent-types), when it is one (untrusted JSON). */
+function agentTypeOf(raw: unknown): AgentView["agentType"] {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const { name, source, path, sha256 } = raw as Record<string, unknown>;
+  if (typeof name !== "string" || typeof path !== "string" || typeof sha256 !== "string") return undefined;
+  return { name, source: typeof source === "string" ? source : "", path, sha256 };
 }
 
 /** An event's list of lines (`misses`, `denied`), when it has any. */
