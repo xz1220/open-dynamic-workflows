@@ -605,6 +605,7 @@ odw run wf.js [--args JSON|@file]            # foreground in a terminal; run kee
                                              #   --adapter <name> sets this run's default agent
                                              #   --permissions read|edit|full: what its agents may do
                                              #   --untrusted: keep the repository's CLAUDE.md, hooks… out
+                                             #   --untrusted-input: its args are outside text — read-only, no tokens
                                              #   --budget <tokens> sets budget.total
                                              #   --deadline <s>: STOP the run after s seconds (below)
 ```
@@ -974,6 +975,7 @@ webhook's body, and gets `202 { "runId" }` back.
     "concurrency": 2,                              // optional cap on active runs
     "rateLimit": { "max": 30, "windowSec": 3600 }  // the default
     // "untrusted": true is the default; "source": the runs' working directory
+    // "permissions": "edit" lets its agents edit; "approve": false skips the go the first one asks
   }
 }
 ```
@@ -992,7 +994,9 @@ webhook's body, and gets `202 { "runId" }` back.
   `triggers` are refused with a warning (a clone must not open a webhook into
   your machine), and your own config's are served instead.
 - **Untrusted by default:** issue text is anyone's input, so the runs are
-  `--untrusted` unless the trigger says `"untrusted": false`.
+  `--untrusted` and take [untrusted input](#untrusted-input-odw-extension) — read-only
+  agents, no tokens, a checkpoint before any may write — unless the trigger says
+  `"untrusted": false`.
 - **Narrow:** only the triggers of your config exist, each starts only its own
   workflow. An unknown name, a secret not set yet and a bad, missing or stale
   signature get the same `401` (rate limited per address; `odw serve` logs the
@@ -2241,6 +2245,61 @@ untrusted. An untrusted agent's `agent_started` event, saved result and
 and the run's `run_started` setup records `trust`. Untrusted is not a sandbox: it
 keeps the repository's instructions and configuration out where a CLI allows, and the
 permission tier still decides what agents may do.
+
+### Untrusted input (ODW extension)
+
+An issue's text, a PR title or a comment is anyone's writing, and a model cannot be
+trusted to tell it from instructions: published injections — "Comment and Control",
+GitLost — got past every model-level defence, and the advice that came out of them is
+structural: take the capabilities away. A run whose **args** come from outside takes
+**untrusted input** — separate from an [untrusted repository](#untrusted-repositories-odw-extension).
+Every run a [trigger](#start-runs-from-webhooks-github-linear-slack-odw-extension) starts
+takes it (unless the trigger says `"untrusted": false`), and so does
+`odw run --untrusted-input` (a rerun or resume keeps it). Such a run:
+
+- **runs read-only agents** — `permissions: "read"` — unless the run's tier was given:
+  `--permissions`, or the trigger's `"permissions"`;
+- **starts agent CLIs with `agentEnv: "minimal"` and no secret-named variable** —
+  `GH_TOKEN`, `GITHUB_TOKEN`, `*_API_KEY`, `*_TOKEN`, … — but the ones the CLI's own login
+  documents (`ANTHROPIC_*`/`CLAUDE_*` for claude, `OPENAI_*`/`CODEX_*` for codex, …),
+  whatever `agentEnvPass` lists. An adapter's own `env` still applies, and `exec()`
+  commands — the workflow author's — get the minimal environment plus `agentEnvPass`;
+- **says loudly when nothing boxes it in:** without a
+  [container sandbox](#run-agents-in-containers-odw-extension) whose `network` is an
+  allowlist (or `"none"`), the start banner, the run's log and its `run_started` event warn.
+  `"untrustedInput": { "requireSandbox": true }` refuses to start such a run instead;
+- **asks before anything writes:** the first agent that may write (`edit` or `full`) waits
+  at a [checkpoint](#human-checkpoints-odw-extension) — once per run; its answer stands for
+  the rest, and a rejection fails those agents with a catchable `UntrustedInputRejected`.
+  `odw apply --pr` of such a run asks `y/N` on the terminal, or takes
+  `--accept-untrusted-input`. A trigger's `"approve": false` turns both off.
+
+```jsonc
+"triggers": {
+  "fix-issue": {
+    "workflow": "fix-issue", "verify": "github", "secretEnv": "GITHUB_WEBHOOK_SECRET",
+    "args": { "issue": "$.issue.number", "body": "$.issue.body" },
+    "permissions": "edit"            // its agents may edit: the first one asks first
+  }
+},
+"sandbox": { "kind": "container", "image": "odw-agents:latest", "network": { "allow": "adapter" } },
+"untrustedInput": { "requireSandbox": true }
+```
+
+The workflow sees it as `workflow.input` (an ODW extension; undefined in Claude Code, so
+read it as `workflow.input?.untrusted`): `untrusted`, the `args` it covers (a trigger's
+mapped keys; `["*"]` for all of them), `why` (`trigger:<name>`, `--untrusted-input`), and
+`quote(text, label?)`, which puts text in a fenced `<untrusted-data>` block followed by a
+line saying it is data, not instructions:
+
+```js
+const fix = await agent(`Fix the bug this issue describes.\n${workflow.input.quote(args.body, "issue body")}`)
+```
+
+meta.json keeps `untrustedInput: { why, args, approve }`; status.json and the
+`run_started` event add the tier, the environment and whether a sandbox held it, and
+the dashboard's Job header shows it as a trust line. None of this detects or filters an
+injection, and none of it makes a run safe: it only takes away what the text could ask for.
 
 ### Run agents in containers (ODW extension)
 

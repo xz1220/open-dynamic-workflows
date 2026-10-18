@@ -269,6 +269,21 @@ agent 计数、控制和预算。其 phase 带 `▸ <name>` 前缀，不创建�
 只支持一层嵌套：子工作流再调用 `workflow()` 会抛错。文件不存在、名称无法解析或子脚本
 无效也会抛错；调用位于 `parallel`/`pipeline` 内时，普通错误可变成 `null`。
 
+### workflow.input（ODW 扩展）
+
+```js
+workflow.input -> { untrusted, args, why, quote(text, label?) }   // 在 Claude Code 中为 undefined
+```
+
+本次运行的 `args` 是否来自用户以外的人：触发器启动的运行（除非 `"untrusted": false`）或
+`odw run --untrusted-input`。`args` 列出含有这类文字的键（`["*"]` 表示全部），`why` 说明由谁
+标记（`trigger:<name>`、`--untrusted-input`；受信任时为 `null`）。`quote(text, label?)` 把
+`text` 放进带围栏的 `<untrusted-data id="…">` 块——围栏带有文本的摘要，文本无法提前闭合它——
+后面跟一行说明它是数据而不是指令。脚本若也要在 Claude Code 上运行，请写成
+`workflow.input?.untrusted`。这样的运行中 agent 默认只读（除非给出了运行档位），第一个可写的
+agent 要先过检查点；被拒绝时，它和之后每个可写的 agent 都抛出 `UntrustedInputRejected`
+（可恢复：可以捕获，在 `parallel` 中会变成 `null`）。
+
 ## validate（ODW 扩展）
 
 `validate(source)` 加载候选工作流但不执行其 body，返回 `{ ok, meta?, errors, warnings }`。

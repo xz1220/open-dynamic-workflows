@@ -322,6 +322,21 @@ independent security reviews whose findings are all fixed.
   still does); a config inside it cannot loosen the trust your
   `~/.config/odw/config.json` sets. The trust level shows in the start banner, `odw doctor`, the run's setup, each
   agent's events and saved result, and the dashboard's drawer.
+- Untrusted input (**ODW extension**): a run whose args are someone else's text — every
+  run a trigger starts (unless `"untrusted": false`), and `odw run --untrusted-input`
+  (kept by rerun and resume) — gets fewer capabilities, not a filter: read-only agents
+  unless `--permissions` or the trigger's new `"permissions"` gives a tier; `agentEnv:
+  "minimal"` with every secret-named variable (`GH_TOKEN`, `GITHUB_TOKEN`, `*_API_KEY`,
+  `*_TOKEN`, …) withheld but the ones the agent's own CLI login documents, whatever
+  `agentEnvPass` says; a loud warning in the start banner, the log and `run_started`
+  without a container sandbox whose network is an allowlist or none — refused instead
+  under `"untrustedInput": { "requireSandbox": true }`; and a checkpoint before the first
+  agent that may write (once per run; a rejection throws a catchable
+  `UntrustedInputRejected`), and a `y/N` (or `--accept-untrusted-input`) before `odw apply
+  --pr` — both off with the trigger's `"approve": false`. Scripts read `workflow.input` (`{
+  untrusted, args, why, quote(text, label?) }`, `quote` putting text in a fenced data
+  block); meta.json keeps `untrustedInput: { why, args, approve }`, status.json and
+  `run_started` the profile, and the dashboard's Job header shows a trust line.
 - Run agents in containers (`sandbox: { "kind": "container", "image": … }`, `odw
   run|rerun|resume --sandbox container [--sandbox-image <image>]`, per adapter, per
   `agent()` call — which may only tighten it; **ODW extension**): each CLI run, and each

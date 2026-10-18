@@ -519,6 +519,7 @@ odw run wf.js [--args JSON|@file]            # 终端里前台展示;运行本�
                                              #   --adapter <name> 指定这次运行的默认 agent
                                              #   --permissions read|edit|full:agent 能做什么
                                              #   --untrusted:挡住仓库的 CLAUDE.md、hooks 等
+                                             #   --untrusted-input:参数来自外部——只读、不带令牌
                                              #   --budget <tokens> 设置 budget.total
                                              #   --deadline <s>:s 秒后停止运行(见下文)
 ```
@@ -850,6 +851,7 @@ webhook 的正文,并返回 `202 { "runId" }`。
     "concurrency": 2,                              // 可选:同时进行的运行上限
     "rateLimit": { "max": 30, "windowSec": 3600 }  // 默认值
     // 默认 "untrusted": true;"source":运行的工作目录
+    // "permissions": "edit" 让它的 agent 可以编辑;"approve": false 跳过第一个可写 agent 的询问
   }
 }
 ```
@@ -864,7 +866,8 @@ webhook 的正文,并返回 `202 { "runId" }`。
   或仓库之外的 `~/.config/odw/config.json`。仓库自带的 `./odw.config.json` 不能声明触发器:
   其中的 `triggers` 会被拒绝并给出警告(克隆下来的仓库不能借 webhook 进入你的机器),改为
   提供你自己配置里的触发器。
-- **默认不受信任:** issue 文本谁都能写,所以这些运行默认 `--untrusted`,除非触发器写明
+- **默认不受信任:** issue 文本谁都能写,所以这些运行默认 `--untrusted`,并带有
+  [不可信输入](#不可信输入odw-扩展)——agent 只读、不带令牌、可写之前先过检查点——除非触发器写明
   `"untrusted": false`。
 - **范围很窄:** 只有你配置里的触发器存在,每个只能启动它自己的工作流。未知的名字、尚未设置的
   密钥、错误/缺失/过期的签名一律返回相同的 `401`(按地址限速;`odw serve` 会在日志里写明原因),
@@ -1942,6 +1945,54 @@ agent 的 `agent_started` 事件、保存的结果和 `odw agents --json` 行都
 `trust: "untrusted"`,看板的详情抽屉会显示它,运行的 `run_started` setup 也记录 `trust`。
 不受信任不是沙箱:它只在 CLI 允许的地方挡住仓库的指令和配置,agent 能做什么仍由权限
 档位决定。
+
+### 不可信输入(ODW 扩展)
+
+issue 正文、PR 标题、评论是任何人写的文字,模型无法可靠地把它和指令区分开:已公开的注入
+("Comment and Control"、GitLost)绕过了所有模型层面的防护,由此得出的建议是结构性的——把能力
+拿走。**args** 来自外部的运行带有**不可信输入**,这与[不受信任的仓库](#不受信任的仓库odw-扩展)
+是两回事。[触发器](#由-webhook-启动运行githublinearslackodw-扩展)启动的每个运行都带有它(除非
+触发器写明 `"untrusted": false`),`odw run --untrusted-input` 也一样(rerun / resume 会保留)。
+这样的运行:
+
+- **agent 只读**——`permissions: "read"`——除非显式给出了运行档位:`--permissions`,或触发器的
+  `"permissions"`;
+- **agent CLI 以 `agentEnv: "minimal"` 启动,且不带密钥类变量**——`GH_TOKEN`、`GITHUB_TOKEN`、
+  `*_API_KEY`、`*_TOKEN` 等——只保留该 CLI 自身登录文档里的那些(claude 是 `ANTHROPIC_*`/`CLAUDE_*`,
+  codex 是 `OPENAI_*`/`CODEX_*`,……),无论 `agentEnvPass` 列了什么。适配器自己的 `env` 仍然生效,
+  `exec()` 命令(工作流作者写的)得到最小环境加上 `agentEnvPass`;
+- **没有隔离时大声说出来:** 若没有 `network` 为白名单(或 `"none"`)的
+  [容器沙箱](#在容器中运行-agentodw-扩展),启动横幅、运行日志和 `run_started` 事件都会警告。
+  配置 `"untrustedInput": { "requireSandbox": true }` 则直接拒绝启动;
+- **写之前先问:** 第一个可写(`edit` 或 `full`)的 agent 会停在一个[检查点](#人工检查点odw-扩展)
+  等人放行——每个运行只问一次,答复对之后的 agent 都有效;拒绝会让这些 agent 以可捕获的
+  `UntrustedInputRejected` 失败。对这样的运行执行 `odw apply --pr` 会在终端询问 `y/N`,或接受
+  `--accept-untrusted-input`。触发器的 `"approve": false` 同时关闭两者。
+
+```jsonc
+"triggers": {
+  "fix-issue": {
+    "workflow": "fix-issue", "verify": "github", "secretEnv": "GITHUB_WEBHOOK_SECRET",
+    "args": { "issue": "$.issue.number", "body": "$.issue.body" },
+    "permissions": "edit"            // agent 可以编辑:第一个会先询问
+  }
+},
+"sandbox": { "kind": "container", "image": "odw-agents:latest", "network": { "allow": "adapter" } },
+"untrustedInput": { "requireSandbox": true }
+```
+
+工作流通过 `workflow.input` 看到这一点(ODW 扩展;Claude Code 中为 undefined,请写成
+`workflow.input?.untrusted`):`untrusted`、它覆盖的 `args`(触发器映射的键;`["*"]` 表示全部)、
+`why`(`trigger:<name>`、`--untrusted-input`),以及 `quote(text, label?)`——把文本放进带围栏的
+`<untrusted-data>` 块,后面跟一行说明它是数据而不是指令:
+
+```js
+const fix = await agent(`修复这个 issue 描述的 bug。\n${workflow.input.quote(args.body, "issue body")}`)
+```
+
+meta.json 记录 `untrustedInput: { why, args, approve }`;status.json 和 `run_started` 事件补充档位、
+环境以及是否有沙箱,看板的 Job 头部以一行信任信息显示它。这些都不检测或过滤注入,也不让运行
+变得「安全」:它只是拿走了那段文字可能要求的能力。
 
 ### 在容器中运行 agent(ODW 扩展)
 

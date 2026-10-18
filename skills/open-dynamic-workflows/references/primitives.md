@@ -358,6 +358,24 @@ Only one level is supported: calling `workflow()` from a child throws. Missing
 files, unknown names, and invalid child scripts also throw; ordinary errors
 can become `null` when this call is inside `parallel`/`pipeline`.
 
+### workflow.input (ODW extension)
+
+```js
+workflow.input -> { untrusted, args, why, quote(text, label?) }   // undefined on Claude Code
+```
+
+Whether the run's `args` came from someone who is not the user: a trigger's run
+(unless `"untrusted": false`) or `odw run --untrusted-input`. `args` lists the
+keys that hold such text (`["*"]`: all of them), `why` says what marked it
+(`trigger:<name>`, `--untrusted-input`; `null` when trusted). `quote(text, label?)`
+returns `text` in a fenced `<untrusted-data id="…">` block — the fence carries a
+digest of the text, so the text cannot close it — followed by a line saying it
+is data, not instructions. Read it as `workflow.input?.untrusted` in a script
+that must also run on Claude Code. Such a run's agents are read-only unless the
+run's permissions were given, and the first agent that may write waits at a
+checkpoint; when it is rejected, that agent and every later one that may write
+throw `UntrustedInputRejected` (recoverable: catch it, or `parallel` makes it `null`).
+
 ## validate (ODW extension)
 
 `validate(source)` loads a candidate workflow without running its body and

@@ -317,6 +317,13 @@ odw apply $RUN --all --pr --verify "<测试命令>"   # 新分支、推送、开
   `qwen --safe-mode`），并由运行说一次哪些 CLI 做不到（codex 仍会读 AGENTS.md）——这时优先
   用 `adapter: 'claude'`。仓库自己的 `worktreeSetup` 和 `.worktreeinclude` 链接不会执行。
   它不是沙箱：审查类工作请再配上 `--permissions read`。
+- **参数是别人写的文字——issue、PR、评论——就是不可信输入**（ODW 扩展）：
+  `odw run --untrusted-input`，以及触发器启动的每个运行。它的 agent 默认只读（除非
+  `--permissions` 或触发器的 `permissions` 另有指定），以最小环境启动、不带
+  `GH_TOKEN`/`*_API_KEY` 之类的变量，第一个可写的 agent 要先过检查点；没有带出网白名单的
+  容器沙箱时运行会警告（`untrustedInput.requireSandbox: true` 则拒绝启动）。脚本里读
+  `workflow.input?.untrusted`，把这类文字用 `workflow.input.quote(text, label)` 放进标注过的
+  数据块，绝不当作指令拼进提示词。它只是收缩能力，并不让运行变得安全。
 - **需要真正的边界？在容器里运行 agent**（ODW 扩展）：
   `odw run wf.js --sandbox container --sandbox-image <镜像>`，或在配置里写 `sandbox`。每次
   CLI 运行和每个 `exec()` 步骤都在全新的 Docker/Podman 容器里进行，只能看到自己的工作区和
@@ -452,9 +459,11 @@ odw pull $RUN --from ssh://me@box                # 拷回本机（运行中也�
 
 - **签名触发器。** 配置中的 `"triggers": { "<名字>": { workflow, verify:
   "github"|"linear"|"slack"|"hmac-sha256", secretEnv（或 secret）, args: { 键:
-  "$.json.path" }, events?, dedupe?, concurrency?, rateLimit?, untrusted? } }` 让
-  `odw serve` 响应 `POST /api/triggers/<名字>`：签名校验通过的 webhook 启动该工作流——
-  除非触发器写明 `"untrusted": false`，否则以 `--untrusted` 运行——并返回
+  "$.json.path" }, events?, dedupe?, concurrency?, rateLimit?, untrusted?, permissions?,
+  approve? } }` 让 `odw serve` 响应 `POST /api/triggers/<名字>`：签名校验通过的 webhook
+  启动该工作流——除非触发器写明 `"untrusted": false`，否则以 `--untrusted` 并带不可信输入
+  运行（agent 只读，除非给了 `permissions`；第一个可写 agent 前有检查点，除非
+  `approve: false`）——并返回
   `202 { runId }`。运行的 `context`（触发器、事件、issue 的 id 与 URL、仓库、Slack 频道
   与线程）会传给 `notify` 钩子（payload 中的 `context`；命令得到 `ODW_TRIGGER`、
   `ODW_EVENT_ID`、`ODW_EVENT_URL`、`ODW_CONTEXT`），钩子因此可以在 issue 下回复。只在

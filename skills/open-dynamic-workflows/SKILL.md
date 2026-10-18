@@ -385,6 +385,16 @@ approvals).
   once which CLIs cannot (codex still reads AGENTS.md) — prefer `adapter: 'claude'`
   there. The repository's own `worktreeSetup` and `.worktreeinclude` links do not
   run. It is not a sandbox: pair it with `--permissions read` for review work.
+- **Args that are someone else's text — an issue, a PR, a comment — are untrusted
+  input** (ODW extension): `odw run --untrusted-input`, and every run a trigger
+  starts. Its agents are read-only unless `--permissions` (or the trigger's
+  `permissions`) says otherwise, start with a minimal environment without
+  `GH_TOKEN`/`*_API_KEY`-like variables, and the first one that may write waits at a
+  checkpoint; without a container sandbox with an allowlist network the run warns
+  (`untrustedInput.requireSandbox: true` refuses it). In the script, read
+  `workflow.input?.untrusted` and pass such text as `workflow.input.quote(text,
+  label)` — a marked data block — never spliced in as instructions. It removes
+  capabilities; it does not make a run safe.
 - **Need a real boundary? Run agents in a container** (ODW extension):
   `odw run wf.js --sandbox container --sandbox-image <image>`, or `sandbox` in the
   config. Each CLI run and `exec()` step goes in a fresh Docker/Podman container
@@ -549,9 +559,11 @@ odw pull $RUN --from ssh://me@box                # copy it here (again while it 
 
 - **Signed triggers.** The config's `"triggers": { "<name>": { workflow, verify:
   "github"|"linear"|"slack"|"hmac-sha256", secretEnv (or secret), args: { key:
-  "$.json.path" }, events?, dedupe?, concurrency?, rateLimit?, untrusted? } }`
-  make `odw serve` answer `POST /api/triggers/<name>`: a webhook whose signature
-  checks out starts that workflow — `--untrusted` unless the trigger says
+  "$.json.path" }, events?, dedupe?, concurrency?, rateLimit?, untrusted?,
+  permissions?, approve? } }` make `odw serve` answer `POST /api/triggers/<name>`:
+  a webhook whose signature checks out starts that workflow — `--untrusted` and
+  with untrusted input (read-only agents unless `permissions`; a checkpoint before
+  the first that may write unless `approve: false`) unless the trigger says
   `"untrusted": false` — and gets `202 { runId }`. The run's `context` (trigger,
   event, issue id and URL, repo, Slack channel and thread) reaches the `notify`
   hooks (`context` in the payload; `ODW_TRIGGER`, `ODW_EVENT_ID`,
