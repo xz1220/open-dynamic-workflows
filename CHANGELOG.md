@@ -582,8 +582,47 @@ independent security reviews whose findings are all fixed.
 - `odw apply --pr` let `gh pr create` guess the repository from the checkout (an
   `upstream` remote, a set default). It now passes `--repo owner/name` of the remote the
   branch was pushed to (`HOST/owner/name` off github.com).
+- A repository's own config could make `odw serve` start trusted runs for anyone: a
+  clone's `./odw.config.json` named a trigger with an inline secret and `"untrusted":
+  false`, and the trigger route was matched before the DNS-rebinding Host guard, so a
+  page a browser opened could post a signed request to a loopback `odw serve`. Triggers
+  now come only from the user's own config (`--config`, `$ODW_CONFIG`, or
+  `~/.config/odw/config.json` outside the repository); a repository config's are refused
+  with a warning at start. On a loopback bind the Host guard covers the trigger route,
+  letting loopback hosts and the `--public-url`'s host through.
+- A GitHub delivery could be replayed after an hour, or after `odw serve` restarted
+  (GitHub signs no timestamp; its signature was remembered in memory for an hour). Each
+  accepted delivery's signature and `X-GitHub-Delivery` id are now kept in
+  `<runsRoot>/_triggers/seen.jsonl` for 30 days and checked across restarts. A delivery
+  older than that, or replayed against another runs root, still verifies: rotate a
+  secret that may have leaked.
+- A trigger answered `404` for a name the config lacks and `503` while its secret was
+  unset, before any signature check, so an unauthenticated caller could list the
+  triggers. An unknown name, an unset secret and a bad, missing or stale signature now
+  get the same `401`, after the body is read and checked; `odw serve` logs the reason.
+- `--deadline` threw away what isolated agents it killed had changed. Their partial work
+  is now captured and kept as their diff, the `agent_failed` event marked `partial:
+  true`. A stop by a person still keeps no killed agent's change.
+- Dry runs and `odw test`'s recorded runs fed `odw estimate` and the cost forecasts:
+  twenty dry runs pushed every real run out of the window, so the estimate had no cost
+  and `costGate` let every fan-out through. Runs no model answered (`meta.dry`, `origin:
+  "test"`) are now left out.
+- The GitHub Action passed its `args` input to `odw run --args` as it was: `@/proc/self/
+  environ` made odw read that file into the run, and a leading `-` read as a flag. The
+  input now goes through a file (`--args=@<file>`), the other inputs as `--flag=value`.
+- The Action's `untrusted: auto` ran a `workflow_run` that followed a fork's run, and a
+  same-repository `pull_request_target`, trusted. Both now run `--untrusted`.
+- The Action installed a release without published checksums with a warning. It now
+  refuses one (`ODW_REQUIRE_CHECKSUMS=1` in `install.sh`), and the docs say the SHA-256
+  check proves integrity (the file the release lists), not authenticity.
+- `odw replay` put the original prompt in the new run's `meta.json` args, which the
+  dashboard serves with token-shape redaction only. The call now lives in the run's
+  `call.json`, which nothing serves; `args` hold `{ replayOf }`.
 
 ### Changed behavior — check before upgrading
+- Signed triggers in a repository's `./odw.config.json` are no longer served: move them
+  to `~/.config/odw/config.json` or pass `--config`. A tunnel to a loopback `odw serve`
+  needs `--public-url <the tunnel's URL>` for its webhooks to pass the Host guard.
 - The built-in `codex` adapter runs `codex exec --json --output-last-message
   {reply_file}` (it ran text mode). A config entry that gives `codex` its own `command`
   replaces the built-in and needs the matching `output` block to report usage and to

@@ -928,14 +928,25 @@ webhook's body, and gets `202 { "runId" }` back.
   `X-Slack-Signature` with `X-Slack-Request-Timestamp` within five minutes, or
   ODW's own `X-ODW-Signature` over `<timestamp>.<body>` for anything else. HMAC-SHA256
   over the raw body, compared in constant time; a delivery seen before (a replay,
-  a retry) starts nothing.
+  a retry) starts nothing. GitHub signs no timestamp: its deliveries' signatures
+  and `X-GitHub-Delivery` ids are kept under the runs root for 30 days, across
+  restarts (older ones verify again — rotate a secret that may have leaked).
+- **Your config only:** `odw serve` takes triggers from a config of your own —
+  `--config`, `$ODW_CONFIG`, or `~/.config/odw/config.json` outside the
+  repository. A repository's `./odw.config.json` cannot name one: its
+  `triggers` are refused with a warning (a clone must not open a webhook into
+  your machine), and your own config's are served instead.
 - **Untrusted by default:** issue text is anyone's input, so the runs are
   `--untrusted` unless the trigger says `"untrusted": false`.
-- **Narrow:** only trigger names in the config exist (`404` otherwise), each
-  starts only its own workflow; `401` on a bad signature (rate limited per
-  address), `413` past 1 MiB, `429` past `concurrency` or `rateLimit`. The route
-  answers off loopback and through a tunnel's `Host` — the signature is its
-  credential — while the rest of the dashboard keeps its rules.
+- **Narrow:** only the triggers of your config exist, each starts only its own
+  workflow. An unknown name, a secret not set yet and a bad, missing or stale
+  signature get the same `401` (rate limited per address; `odw serve` logs the
+  reason), so a caller without the secret learns nothing of which triggers
+  exist; `413` past 1 MiB, `429` past `concurrency` or `rateLimit`. The route
+  answers off loopback (`--host`) — the signature is its credential, no
+  `--token` — and on a loopback bind only through loopback `Host`s and the
+  `--public-url`'s (give a tunnel's URL there); the DNS-rebinding guard holds as
+  for the rest of the dashboard.
 - **Answer back:** the run records a `context` — the trigger, the event, the
   issue's id and URL, the repository, a Slack channel and thread — that
   [`notify`](#run-notifications) hooks receive, so a hook can comment on the issue,

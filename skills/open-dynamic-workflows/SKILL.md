@@ -544,7 +544,10 @@ odw pull $RUN --from ssh://me@box                # copy it here (again while it 
   hooks (`context` in the payload; `ODW_TRIGGER`, `ODW_EVENT_ID`,
   `ODW_EVENT_URL`, `ODW_CONTEXT` for a command), so a hook can answer on the
   issue. Set this up only when the user asks; the secrets are theirs to place in
-  environment variables, never in a committed file.
+  environment variables, never in a committed file. Triggers go in the user's
+  own config (`~/.config/odw/config.json`, or `--config`): `odw serve` refuses
+  those of a repository's `./odw.config.json`, and a tunnel to a loopback bind
+  needs `--public-url <tunnel URL>`.
 - **GitHub Actions.** `uses: xz1220/open-dynamic-workflows/action@<tag>` with
   `workflow:` and `timeout-minutes:` (the job's) runs `odw run --wait
   --deadline` a margin before the job times out, writes the receipt to the job

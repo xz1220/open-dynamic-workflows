@@ -448,7 +448,9 @@ odw pull $RUN --from ssh://me@box                # 拷回本机（运行中也�
   `202 { runId }`。运行的 `context`（触发器、事件、issue 的 id 与 URL、仓库、Slack 频道
   与线程）会传给 `notify` 钩子（payload 中的 `context`；命令得到 `ODW_TRIGGER`、
   `ODW_EVENT_ID`、`ODW_EVENT_URL`、`ODW_CONTEXT`），钩子因此可以在 issue 下回复。只在
-  用户要求时设置；密钥由用户放进环境变量，绝不写进提交的文件。
+  用户要求时设置；密钥由用户放进环境变量，绝不写进提交的文件。触发器写在用户自己的配置里
+  （`~/.config/odw/config.json` 或 `--config`）：仓库自带的 `./odw.config.json` 中的触发器
+  会被 `odw serve` 拒绝；经隧道接入回环绑定时需要 `--public-url <隧道 URL>`。
 - **GitHub Actions。** `uses: xz1220/open-dynamic-workflows/action@<tag>`，配上
   `workflow:` 与 `timeout-minutes:`（job 的），会在 job 超时前留出余量以
   `odw run --wait --deadline` 运行，把小票写入 job summary 并上传 `odw bundle`；
