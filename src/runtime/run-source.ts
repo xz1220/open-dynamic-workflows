@@ -85,6 +85,12 @@ export interface RunSource {
    * the server returns (409) for any control attempt. Claude runs are read-only.
    */
   readonly controlError: string | null;
+  /**
+   * Null when this run may be controlled and answered here; otherwise why not
+   * (the server returns it with a 409): a run pulled from a remote (ODW
+   * extension) is answered where it runs, never in its copy here.
+   */
+  runControlError?(runId: string): string | null;
   /** Apply a control action (pause|resume|stop). Only called when controlError is null. */
   control(runId: string, action: string): void;
   /** Answer a waiting checkpoint() (ODW extension). Only called when controlError is null. */

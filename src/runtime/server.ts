@@ -274,7 +274,7 @@ export function startServer(options: ServeOptions): Promise<ServeHandle> {
   let approve: ApproveRouteContext | null = null;
   if (options.publicUrl && !bundle) {
     const publicUrl = parsePublicUrl(options.publicUrl);
-    if (!publicUrl) throw new Error(`--public-url must be an http(s) URL with no credentials, query or fragment`);
+    if (!publicUrl) throw new Error(`--public-url must be a root http(s) URL (https://host[:port]) with no credentials, path, query or fragment`);
     approve = {
       secret: ensureApproveSecret(store.root, { rotate: options.rotateApproveSecret === true }),
       publicUrl,
@@ -601,8 +601,9 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandleCont
       }
       if (method === "POST" && sub === "/control") {
         // A read-only source (Claude) refuses control with a 409 before any work.
-        if (src.controlError) {
-          sendJson(res, 409, { error: src.controlError });
+        const refused = src.controlError ?? src.runControlError?.(runId) ?? null;
+        if (refused) {
+          sendJson(res, 409, { error: refused });
           return;
         }
         await controlRun(req, res, src, runId);
@@ -610,8 +611,9 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandleCont
       }
       if (method === "POST" && sub === "/checkpoint") {
         // Claude runs are read-only, and have no checkpoint() to answer anyway.
-        if (src.controlError) {
-          sendJson(res, 409, { error: src.controlError });
+        const refused = src.controlError ?? src.runControlError?.(runId) ?? null;
+        if (refused) {
+          sendJson(res, 409, { error: refused });
           return;
         }
         await decideCheckpoint(req, res, src, runId);

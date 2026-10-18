@@ -37,7 +37,22 @@
 
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
-import { closeSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  copyFileSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  renameSync,
+  rmdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
@@ -298,6 +313,11 @@ function realPath(path: string): string {
   }
 }
 
+/** Is a `relative()` path outside its base: `..`, `../x` or absolute (a `..data` beside it is inside)? */
+export function isOutside(rel: string): boolean {
+  return rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel);
+}
+
 /** `odw run <wf> --on ssh://host`: check, sync, start detached there, print the remote run id. Returns the exit code. */
 export async function remoteRun(opts: RemoteRunOptions): Promise<number> {
   const { target } = opts;
@@ -312,7 +332,7 @@ export async function remoteRun(opts: RemoteRunOptions): Promise<number> {
   }
   // The source directory is where the remote run starts, relative to the project.
   const sub = relative(root, source);
-  if (sub.startsWith("..") || isAbsolute(sub)) throw new RemoteUsageError(`odw run: --source ${source} is outside the project ${root}`);
+  if (isOutside(sub)) throw new RemoteUsageError(`odw run: --source ${source} is outside the project ${root}`);
 
   const stage = mkdtempSync(join(tmpdir(), "odw-remote-"));
   try {
@@ -458,7 +478,7 @@ function stageWorkflow(ref: string, source: string, root: string, stage: string)
     throw err;
   }
   const rel = relative(root, realPath(scriptPath));
-  const inside = !rel.startsWith("..") && !isAbsolute(rel);
+  const inside = !isOutside(rel);
   if (origin === "project" && inside) return ref;
   // The remote run starts in the source's place in the workdir: a path is relative to it, as here.
   if (origin === "path" && inside) return `./${relative(source, realPath(scriptPath)).split(sep).join("/")}`;
@@ -551,32 +571,74 @@ export async function pullRun(opts: PullOptions): Promise<number> {
     const bucket = basename(dirname(remoteDir));
     dest = join(store.root, NAME_RE.test(bucket) && !/^\.+$/.test(bucket) ? bucket : "remote", runId);
   }
-  mkdirSync(dest, { recursive: true });
 
-  const how = await copyRunDir(target, remoteDir, dest);
-  if (how === null) return 1;
+  // The copy lands in a staging directory first — deep enough that no listing
+  // of the runs root sees it — and is checked and marked there, then moved
+  // into place: a pull that fails leaves nothing that looks like a run (an
+  // earlier copy stands as it was), and no local command reads half of one.
+  const stagingRoot = join(store.root, PULL_STAGING);
+  mkdirSync(stagingRoot, { recursive: true });
+  const staging = mkdtempSync(join(stagingRoot, `${runId}-`));
+  const stage = join(staging, "run");
+  mkdirSync(stage);
+  let status: Record<string, unknown> | null;
+  let how: string | null;
+  try {
+    how = await copyRunDir(target, remoteDir, stage);
+    if (how === null) return 1;
 
-  // Mark it, and drop the remote worker's pid: it names a process over there, never one here.
-  const metaPath = join(dest, "meta.json");
-  const meta = readJsonFile(metaPath);
-  if (!meta) {
-    process.stderr.write(`odw pull: ${dest} has no readable meta.json after the copy — is ${runId} a run?\n`);
-    return 1;
+    // Links never come back: a remote `decisions.jsonl -> ~/.bashrc` would have
+    // a local write land outside the runs root. Nor do devices, sockets or fifos.
+    const dropped = dropNonFiles(stage);
+    if (dropped.length > 0) {
+      const named = dropped.slice(0, 5).map((path) => JSON.stringify(path.slice(0, 200))).join(", ");
+      process.stderr.write(
+        `odw pull: left out ${dropped.length} link(s) or special file(s) of the remote run directory: ${named}${dropped.length > 5 ? ", …" : ""}\n`,
+      );
+    }
+
+    // Mark it, and drop the remote worker's pid: it names a process over there, never one here.
+    const metaPath = join(stage, "meta.json");
+    const meta = readJsonFile(metaPath);
+    if (!meta) {
+      process.stderr.write(`odw pull: the copy of ${runId} has no readable meta.json — is it a run? Nothing was kept here\n`);
+      return 1;
+    }
+    const previous = (meta.remote ?? null) as { origin?: unknown } | null;
+    const firstOrigin = meta.origin === "remote" && previous ? (previous.origin ?? null) : (meta.origin ?? null);
+    writeJsonAtomic(metaPath, {
+      ...meta,
+      origin: "remote",
+      remote: { url: target.url, host: sshDestination(target), dir: remoteDir, origin: firstOrigin, pulledAt: Date.now() / 1000 },
+    });
+    const statusPath = join(stage, "status.json");
+    status = readJsonFile(statusPath);
+    if (status && "pid" in status) {
+      delete status.pid;
+      writeJsonAtomic(statusPath, status);
+    }
+    rmSync(join(stage, "worker.pid"), { force: true });
+
+    // Into place: an earlier copy steps aside first, and comes back if the move fails.
+    mkdirSync(dirname(dest), { recursive: true });
+    const aside = join(staging, "previous");
+    const hadCopy = existsSync(dest);
+    if (hadCopy) renameSync(dest, aside);
+    try {
+      renameSync(stage, dest);
+    } catch (err) {
+      if (hadCopy) renameSync(aside, dest);
+      process.stderr.write(`odw pull: could not move the copy into ${dest}: ${(err as Error).message}\n`);
+      return 1;
+    }
+  } finally {
+    rmSync(staging, { recursive: true, force: true });
+    try {
+      rmdirSync(stagingRoot); // gone once no other pull stages a copy
+    } catch {
+      /* another pull's, or gone already */
+    }
   }
-  const previous = (meta.remote ?? null) as { origin?: unknown } | null;
-  const firstOrigin = meta.origin === "remote" && previous ? (previous.origin ?? null) : (meta.origin ?? null);
-  writeJsonAtomic(metaPath, {
-    ...meta,
-    origin: "remote",
-    remote: { url: target.url, host: sshDestination(target), dir: remoteDir, origin: firstOrigin, pulledAt: Date.now() / 1000 },
-  });
-  const statusPath = join(dest, "status.json");
-  const status = readJsonFile(statusPath);
-  if (status && "pid" in status) {
-    delete status.pid;
-    writeJsonAtomic(statusPath, status);
-  }
-  rmSync(join(dest, "worker.pid"), { force: true });
 
   const state = String(status?.state ?? "?");
   process.stdout.write(runId + "\n");
@@ -589,13 +651,39 @@ export async function pullRun(opts: PullOptions): Promise<number> {
   return 0;
 }
 
+/** Where `odw pull` stages its copies, under the runs root: a run there sits a level deeper than any listing looks. */
+const PULL_STAGING = ".odw-pull";
+
+/**
+ * Remove every symbolic link — and device, socket or fifo — under `dir`,
+ * never following one; returns their paths, relative to `dir`.
+ */
+export function dropNonFiles(dir: string): string[] {
+  const dropped: string[] = [];
+  const walk = (at: string, rel: string): void => {
+    for (const name of readdirSync(at)) {
+      const path = join(at, name);
+      const shown = rel === "" ? name : `${rel}/${name}`;
+      const st = lstatSync(path);
+      if (st.isDirectory()) walk(path, shown);
+      else if (!st.isFile()) {
+        rmSync(path, { force: true });
+        dropped.push(shown);
+      }
+    }
+  };
+  walk(dir, "");
+  return dropped;
+}
+
 /** Copy the remote run directory into `dest`: rsync when this machine has it, else (or when it fails) tar over ssh. */
 async function copyRunDir(target: SshTarget, remoteDir: string, dest: string): Promise<string | null> {
   const bin = rsyncBinary();
   if (bin) {
+    // No links, devices or specials (-a would keep them): a run directory makes none of its own.
     const result = await runProcess(
       bin,
-      ["-a", "--protect-args", "--exclude=worker.pid", "-e", rsyncShell(target), `${rsyncRemotePath(target, remoteDir)}/`, `${dest}/`],
+      ["-a", "--no-links", "--no-D", "--protect-args", "--exclude=worker.pid", "-e", rsyncShell(target), `${rsyncRemotePath(target, remoteDir)}/`, `${dest}/`],
       { stdout: "forward" },
     );
     // 24: files vanished while it copied — a live run's temp files; the copy stands.
@@ -628,7 +716,7 @@ async function copyRunDir(target: SshTarget, remoteDir: string, dest: string): P
   return "tar over ssh";
 }
 
-// --- odw status|logs|attach --on ------------------------------------------------
+// --- odw status|logs|attach|approve|… --on ------------------------------------------------
 
 /** `--on URL` / `--on=URL` out of `args`: the URL (null when absent) and the rest, untouched. */
 export function takeOnFlag(args: string[], flag = "--on"): { url: string | null; rest: string[] } {
@@ -654,15 +742,23 @@ export function takeOnFlag(args: string[], flag = "--on"): { url: string | null;
   return { url, rest };
 }
 
+/** The commands `--on ssh://host` runs on the remote odw instead of here. */
+export const PASS_THROUGH = ["status", "logs", "attach", "approve", "reject", "pause", "stop", "resume"] as const;
+export type PassThroughCommand = (typeof PASS_THROUGH)[number];
+
 /**
- * `odw status|logs|attach <run> … --on ssh://host`: the same command, run by
- * the remote odw from the workdir (so a project config there counts), its
- * output and exit code passed back. attach and logs --follow get a terminal
- * there when this one is a terminal (ssh -t), so attach shows the live view.
+ * `odw status|logs|attach|approve|reject|pause|stop|resume <run> … --on
+ * ssh://host`: the same command, run by the remote odw from the workdir (so
+ * a project config there counts), its output and exit code passed back.
+ * attach, logs --follow and approve --edit get a terminal there when this
+ * one is a terminal (ssh -t), so attach shows the live view.
  */
-export async function passThrough(command: "status" | "logs" | "attach", args: string[], target: SshTarget, cwd: string): Promise<number> {
+export async function passThrough(command: PassThroughCommand, args: string[], target: SshTarget, cwd: string): Promise<number> {
   const workdir = workdirOf(target, cwd);
-  const live = command === "attach" || (command === "logs" && args.some((a) => a === "--follow" || a === "-f"));
+  const live =
+    command === "attach" ||
+    (command === "logs" && args.some((a) => a === "--follow" || a === "-f")) ||
+    (command === "approve" && args.includes("--edit"));
   const tty = live && process.stdin.isTTY === true && process.stdout.isTTY === true;
   const script = `cd ${remotePathExpr(workdir)} 2>/dev/null || cd; ${FIND_ODW}; exec "$@"`;
   const result = await ssh(target, script, [command, ...args], { stdout: "forward", stdin: tty ? "inherit" : "ignore", tty });
@@ -670,6 +766,22 @@ export async function passThrough(command: "status" | "logs" | "attach", args: s
     process.stderr.write(`odw ${command}: ${sshFailure(target, `odw ${command}`, result)}\n`);
   }
   return result.code;
+}
+
+/**
+ * Why a run pulled from a remote (`origin: "remote"`) is not answered or
+ * controlled here — the decision or the control would only change this copy,
+ * while the run goes on there — or null for a run of this machine. `command`:
+ * what to run there instead, with `--on`.
+ */
+export function pulledRunRefusal(meta: Record<string, unknown>, runId: string, command: string): string | null {
+  if (meta.origin !== "remote") return null;
+  const remote = (meta.remote ?? null) as { url?: unknown } | null;
+  const url = typeof remote?.url === "string" && URL_RE.test(remote.url) ? remote.url : "ssh://<host>";
+  return (
+    `run ${runId} was pulled from ${url}: this copy is a snapshot, and answering or controlling it here would change only the copy — ` +
+    `the run itself is there. Do it there: odw ${command} ${runId} --on ${url}`
+  );
 }
 
 /** Hidden `odw __run-dir <run>` (what `odw pull` asks the remote): the run's absolute directory, exit 1 when none. */

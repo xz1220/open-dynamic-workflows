@@ -7,7 +7,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execPath } from "node:process";
@@ -322,14 +322,63 @@ test("an agent's shim posts into its own inbox, prints the board, and odw note d
     seven.close();
     assert.deepEqual(board.list().map((n) => n.text), ["it's a  note", "from odw note"]);
     assert.deepEqual(readdirSync(join(runDir, "notes", "7", "inbox")), []);
-    // The container binds: its own directory read-write, the board read-only.
+    // The container binds: its inbox read-write, its shim and the board read-only —
+    // never its whole notes directory, from which it could swap the inbox for a link.
+    const seven7 = join(runDir, "notes", "7");
     assert.deepEqual(seven.mounts, [
-      { source: join(runDir, "notes", "7"), target: join(runDir, "notes", "7"), readonly: false },
+      { source: join(seven7, "inbox"), target: join(seven7, "inbox"), readonly: false },
+      { source: join(seven7, "note"), target: join(seven7, "note"), readonly: true },
       { source: join(runDir, "notes", "board"), target: join(runDir, "notes", "board"), readonly: true },
     ]);
     assert.ok(existsSync(join(runDir, "notes.jsonl")));
     board.close();
   } finally {
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("an inbox swapped for a link to another directory is not swept: the file there is neither posted nor deleted", POSIX_ONLY, () => {
+  const runDir = mkdtempSync(join(tmpdir(), "odw-notes-escape-"));
+  const victimDir = mkdtempSync(join(tmpdir(), "odw-notes-victim-"));
+  try {
+    writeFileSync(join(victimDir, "id_rsa"), "host secret placeholder");
+    const board = new NotesBoard({ runDir, emit: () => {}, pollMs: 60_000 });
+    const notes = board.openAgent(1, "attacker");
+    const inbox = join(runDir, "notes", "1", "inbox");
+    // `rm -rf inbox; ln -s ~ inbox`, as an agent bound its whole notes directory could.
+    rmSync(inbox, { recursive: true });
+    symlinkSync(victimDir, inbox);
+    notes.close();
+    board.close();
+    assert.equal(readFileSync(join(victimDir, "id_rsa"), "utf8"), "host secret placeholder", "the file outside survives");
+    assert.deepEqual(board.list(), [], "and is not posted");
+    assert.deepEqual(readNotes(runDir), []);
+  } finally {
+    rmSync(runDir, { recursive: true, force: true });
+    rmSync(victimDir, { recursive: true, force: true });
+  }
+});
+
+test("a link or a FIFO dropped in an inbox is skipped — its target neither read nor deleted, the FIFO never waited on — and real notes still post", POSIX_ONLY, () => {
+  const runDir = mkdtempSync(join(tmpdir(), "odw-notes-entries-"));
+  const victimDir = mkdtempSync(join(tmpdir(), "odw-notes-victim-"));
+  try {
+    const victim = join(victimDir, "secret.txt");
+    writeFileSync(victim, "host secret placeholder");
+    const board = new NotesBoard({ runDir, emit: () => {}, pollMs: 60_000 });
+    const notes = board.openAgent(1, "attacker");
+    const inbox = join(runDir, "notes", "1", "inbox");
+    symlinkSync(victim, join(inbox, "n-1-0"));
+    execFileSync("mkfifo", [join(inbox, "n-1-1")]);
+    writeFileSync(join(inbox, "n-1-2"), "a real note");
+    notes.close(); // a FIFO opened for reading, blocking, would hang here
+    board.close();
+    assert.equal(readFileSync(victim, "utf8"), "host secret placeholder", "the link's target survives");
+    assert.deepEqual(board.list().map((n) => n.text), ["a real note"], "only the regular file is posted");
+    assert.ok(existsSync(join(inbox, "n-1-0")) && existsSync(join(inbox, "n-1-1")), "the link and the FIFO are left alone");
+    assert.ok(!existsSync(join(inbox, "n-1-2")), "the note taken is removed");
+  } finally {
+    rmSync(runDir, { recursive: true, force: true });
+    rmSync(victimDir, { recursive: true, force: true });
   }
 });

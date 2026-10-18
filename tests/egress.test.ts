@@ -39,6 +39,7 @@ import {
 import {
   CONTAINER_DEFAULTS,
   CONTAINER_HOME,
+  EGRESS_DNS,
   TMPFS,
   backstopCommands,
   containerArgv,
@@ -62,6 +63,7 @@ function tmp(): string {
 
 const box = (over: Partial<ContainerSandbox> = {}): ContainerSandbox => ({ ...CONTAINER_DEFAULTS, image: "odw-agents:1", mounts: [], ...over });
 const allow = (...hosts: string[]) => ({ allow: hosts });
+const valuesOf = (argv: string[], flag: string): string[] => argv.flatMap((arg, i) => (arg === flag ? [argv[i + 1]!] : []));
 
 // --- the matcher ---------------------------------------------------------------
 
@@ -240,6 +242,11 @@ test("argv: the internal network, the proxy sidecar, joining it, its variables, 
   const argv = containerArgv(agent);
   assert.deepEqual(argv.slice(argv.indexOf("--network"), argv.indexOf("--network") + 2), ["--network", "odw-r1-net1-abcdef"]);
   assert.equal(argv.filter((a) => a === "--network").length, 1);
+  // No outside DNS (Docker's embedded resolver forwarded it through the host before 26.0: CVE-2024-29018);
+  // not on Podman, whose aardvark-dns --dns would replace.
+  assert.deepEqual(valuesOf(argv, "--dns"), [EGRESS_DNS]);
+  assert.deepEqual(valuesOf(containerArgv({ ...agent, engine: "podman" }), "--dns"), []);
+  assert.deepEqual(valuesOf(containerArgv({ ...agent, network: "none", networkName: undefined }), "--dns"), [], "only on an egress network");
   assert.ok(argv.includes(`HTTPS_PROXY=${env.HTTPS_PROXY}`));
   assert.throws(() => containerArgv({ ...agent, networkName: undefined }), /needs its run's internal network/);
 
@@ -383,6 +390,98 @@ test("the proxy: CONNECT to an allowlisted host:port tunnels; others get 403 and
     server.close();
     up.close();
   }
+});
+
+test("the proxy: plain HTTP to an allowed host with a Host header naming another is refused; the upstream sees the URL's host", async () => {
+  const seen: string[] = [];
+  const server0 = http.createServer((req, res) => {
+    seen.push(String(req.headers.host));
+    res.end(`hello ${req.headers.host}`);
+  });
+  await new Promise<void>((done) => server0.listen(0, "127.0.0.1", done));
+  const upPort = (server0.address() as net.AddressInfo).port;
+  const dir = tmp();
+  const log = join(dir, "denied.jsonl");
+  const ready = join(dir, "ready");
+  const server = startEgressProxy({ allow: [`127.0.0.1:${upPort}`], port: 0, listen: "127.0.0.1", log, ready });
+  try {
+    const port = await listening(ready);
+    // Raw, so the Host header is exactly what an agent chose.
+    const raw = (host: string) =>
+      new Promise<{ status: number; body: string }>((done, fail) => {
+        const socket = net.connect(port, "127.0.0.1");
+        let data = "";
+        socket.on("connect", () =>
+          socket.write(`GET http://127.0.0.1:${upPort}/x HTTP/1.1\r\nHost: ${host}\r\nConnection: close\r\n\r\n`),
+        );
+        socket.on("data", (c) => (data += c));
+        socket.on("end", () => done({ status: Number(/^HTTP\/1\.1 (\d{3})/.exec(data)?.[1] ?? 0), body: data.split("\r\n\r\n").slice(1).join("") }));
+        socket.on("error", fail);
+      });
+    // The bypass: an allowed address, another site's name in Host (a CDN edge, a shared host).
+    const fronted = await raw("evil.example");
+    assert.equal(fronted.status, 403);
+    assert.match(fronted.body, /Host header \(evil\.example\) is not the request's host \(127\.0\.0\.1\)/);
+    assert.equal((await raw("evil.example@127.0.0.1")).status, 403, "no user part");
+    assert.equal((await raw("127.0.0.1.evil.example")).status, 403, "the whole name, not a prefix");
+    assert.deepEqual(seen, [], "none of them reached the upstream");
+    assert.deepEqual(denials(log).at(0), { ...denials(log).at(0), method: "HTTP", host: "evil.example", port: 80 });
+
+    // A matching Host, with or without its port, goes through — as the URL's host and port.
+    assert.equal((await raw(`127.0.0.1:${upPort}`)).status, 200);
+    assert.equal((await raw("127.0.0.1")).status, 200);
+    assert.deepEqual(seen, [`127.0.0.1:${upPort}`, `127.0.0.1:${upPort}`]);
+  } finally {
+    server.close();
+    server0.close();
+  }
+});
+
+test("the proxy's denial log is capped: past logMaxBytes, one capped line and nothing more", async () => {
+  const dir = tmp();
+  const log = join(dir, "denied.jsonl");
+  const ready = join(dir, "ready");
+  const server = startEgressProxy({ allow: [], port: 0, listen: "127.0.0.1", log, ready, logMaxBytes: 400 });
+  try {
+    const port = await listening(ready);
+    for (let i = 0; i < 12; i++) assert.equal((await connect(port, `h${i}.example:443`)).status, 403, "refused all the same");
+    const text = readFileSync(log, "utf8");
+    const lines = text.trim().split("\n");
+    assert.equal(lines.at(-1), '{"capped":true}');
+    assert.equal(lines.filter((l) => l.includes("capped")).length, 1);
+    assert.ok(lines.length > 2 && lines.length < 12, `${lines.length} lines`);
+    assert.ok(Buffer.byteLength(text) <= 400 + '{"capped":true}\n'.length);
+  } finally {
+    server.close();
+  }
+});
+
+test("the proxy with listenFrom: it listens only once its address is written there, and only on that address", async () => {
+  const dir = tmp();
+  const log = join(dir, "denied.jsonl");
+  const ready = join(dir, "ready");
+  const listenFile = join(dir, "listen");
+  const server = startEgressProxy({ allow: [], port: 0, listenFrom: listenFile, log, ready });
+  try {
+    await new Promise((r) => setTimeout(r, 150));
+    assert.equal(server.listening, false, "no address yet: not listening anywhere");
+    writeFileSync(listenFile, "junk");
+    await new Promise((r) => setTimeout(r, 150));
+    assert.equal(server.listening, false, "not an address: still waiting");
+    writeFileSync(listenFile, "127.0.0.1\n");
+    const port = await listening(ready);
+    assert.deepEqual(server.address(), { address: "127.0.0.1", family: "IPv4", port });
+    assert.equal((await connect(port, "example.org:443")).status, 403);
+  } finally {
+    server.close();
+  }
+  // Closed before it ever listened, it stops waiting.
+  const idle = startEgressProxy({ allow: [], port: 0, listenFrom: join(dir, "never"), log, ready: join(dir, "ready2") });
+  idle.close();
+  await new Promise((r) => setTimeout(r, 120));
+  writeFileSync(join(dir, "never"), "127.0.0.1");
+  await new Promise((r) => setTimeout(r, 120));
+  assert.equal(idle.listening, false);
 });
 
 test("the proxy's standalone script: the same code runs under plain node, with the port from ODW_EGRESS_PORT", async () => {

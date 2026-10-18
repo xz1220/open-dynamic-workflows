@@ -31,6 +31,7 @@ import {
   clientEnv,
   describeContainer,
   describeNetwork,
+  egressDnsArgs,
   egressOf,
   planSandbox,
   resolveEngine,
@@ -383,12 +384,17 @@ export async function sandboxChecks(
 /** The host the doctor's probe asks for to be refused: reserved (RFC 2606), so never on a list by accident. */
 export const PROBE_DENIED = "odw-egress-check.invalid:443";
 
+/** The outside name the doctor's probe looks up in the agent's container: it must not resolve there. */
+export const PROBE_DNS = "dns:example.com";
+
 /**
  * The egress check (ODW extension; see adapters/egress-run.ts): bring up the
  * box's internal network and proxy as a run would, and from a container on
  * that network ask the proxy for a CONNECT to the first host the allowlist
  * names (it must answer 200: allowed, and reached) and to a reserved host
- * that no list holds (403: refused). The proxy and network go at the end.
+ * that no list holds (403: refused), and look up an outside name in it (it
+ * must not resolve: the proxy resolves names, and DNS out of the container
+ * would be a channel for data). The proxy and network go at the end.
  */
 export async function egressCheck(
   box: ContainerSandbox,
@@ -404,9 +410,10 @@ export async function egressCheck(
   try {
     const handle = await proxies.for(engine, box.image, egress);
     const vars = proxies.env(handle, "doctor");
-    const argv = [engine, "run", "--rm", "--pull", "never", "--network", handle.network, "--cap-drop", "ALL", "--security-opt", "no-new-privileges"];
+    // On the internal network as an agent's container is: with its resolver too.
+    const argv = [engine, "run", "--rm", "--pull", "never", "--network", handle.network, ...egressDnsArgs(engine), "--cap-drop", "ALL", "--security-opt", "no-new-privileges"];
     for (const [name, value] of Object.entries(vars)) argv.push("--env", `${name}=${value}`);
-    argv.push("--entrypoint", "node", egress.proxyImage ?? box.image, "-e", EGRESS_PROBE, PROBE_DENIED, ...(allowed ? [allowed] : []));
+    argv.push("--entrypoint", "node", egress.proxyImage ?? box.image, "-e", EGRESS_PROBE, PROBE_DENIED, PROBE_DNS, ...(allowed ? [allowed] : []));
     const ran = await runner(argv, { timeout: 90, env: clientEnv(env) });
     let answers: Record<string, number> = {};
     try {
@@ -426,11 +433,22 @@ export async function egressCheck(
         hint: "the egress proxy must refuse hosts off its list: run `odw doctor` again, and report it if it persists",
       };
     }
+    if (answers[PROBE_DNS] !== 0) {
+      const name = PROBE_DNS.slice(4);
+      return {
+        status: "fail",
+        detail: `${list} — ${answers[PROBE_DNS] === 1 ? `${name} resolves` : `could not tell whether ${name} resolves`} in a container on the internal network: DNS can carry data out around the proxy`,
+        hint:
+          engine === "docker"
+            ? "Docker before 26.0 (and 25.0.5, 23.0.11) forwards an internal network's DNS through the host (CVE-2024-29018): upgrade Docker"
+            : "the engine's DNS forwards lookups out of an internal network: upgrade it, or keep the host's resolver off loopback",
+      };
+    }
     if (allowed === null) {
-      return { status: "ok", detail: `${list} — the proxy refused ${PROBE_DENIED}; the list has only wildcards, so no allowed host was tried` };
+      return { status: "ok", detail: `${list} — the proxy refused ${PROBE_DENIED} and ${PROBE_DNS.slice(4)} did not resolve; the list has only wildcards, so no allowed host was tried` };
     }
     const got = answers[allowed];
-    if (got === 200) return { status: "ok", detail: `${list} — through the proxy ${allowed} was reached and ${PROBE_DENIED} refused` };
+    if (got === 200) return { status: "ok", detail: `${list} — through the proxy ${allowed} was reached and ${PROBE_DENIED} refused; ${PROBE_DNS.slice(4)} did not resolve in the container` };
     return {
       status: "warn",
       detail: `${list} — the proxy refused ${PROBE_DENIED}, but answered ${got || "nothing"} for ${allowed}${got === 502 ? " (it could not reach it)" : ""}`,

@@ -15,6 +15,14 @@
  * lets through. A CLI that ignores the proxy variables gets no network at
  * all — the safe failure.
  *
+ * What it does not do: it limits by host name, not by site. Over CONNECT the
+ * TLS inside is the agent's, so it can name another site in its SNI and inner
+ * Host (domain fronting) to the edge an allowed name resolves to — behind a
+ * CDN or a shared front end, the allowlist admits that edge. (Plain HTTP's
+ * Host header it checks.) And the agent a denial names is a hint: it is the
+ * proxy user name the client sent, which an agent could change — harmless to
+ * the enforcement, as every agent behind one proxy has the same allowlist.
+ *
  * An entry is a host name (`api.anthropic.com`), a `*.` wildcard over its
  * subdomains (`*.npmjs.org`: `registry.npmjs.org`, not `npmjs.org`), or an IP
  * literal (`10.0.0.5`, `[::1]`), each optionally with a port
@@ -226,18 +234,32 @@ export interface EgressProxyConfig {
   port: number;
   /** The address it listens on; default every interface. */
   listen?: string;
+  /**
+   * A file to wait for and read the address to listen on from, instead: its
+   * address on the run's internal network, known only once it has joined it,
+   * so it is no open proxy for the engine's default network.
+   */
+  listenFrom?: string;
   /** Denials, one JSON line each: `{ ts, host, port, agent, method }`. */
   log: string;
   /** Written with the port once it listens. */
   ready?: string;
+  /** Bytes of denial log it writes at most; then one `{"capped":true}` line, and no more. Default {@link EGRESS_LOG_MAX_BYTES}. */
+  logMaxBytes?: number;
 }
+
+/** Bytes of a proxy's denial log, at most: an agent hammering refused hosts cannot fill the disk. */
+export const EGRESS_LOG_MAX_BYTES = 1024 * 1024;
 
 /** One line of the proxy's denial log. */
 export interface EgressDenial {
   ts: number;
   host: string;
   port: number | null;
-  /** The agent id its client gave as the proxy user name (`HTTPS_PROXY=http://<agent>:odw@…`); null when it gave none. */
+  /**
+   * The agent id its client gave as the proxy user name (`HTTPS_PROXY=http://<agent>:odw@…`);
+   * null when it gave none. A hint, not proof: the client chooses what it sends.
+   */
   agent: string | null;
   method: "CONNECT" | "HTTP";
 }
@@ -246,7 +268,7 @@ export interface EgressDenial {
 export interface EgressProxyDeps {
   net: typeof net;
   http: typeof http;
-  fs: Pick<typeof fs, "appendFileSync" | "writeFileSync">;
+  fs: Pick<typeof fs, "appendFileSync" | "writeFileSync" | "readFileSync">;
   hostAllowed: typeof hostAllowed;
 }
 
@@ -267,10 +289,21 @@ export function runEgressProxy(deps: EgressProxyDeps, config: EgressProxyConfig)
     const user = Buffer.from(match[1]!, "base64").toString("utf8").split(":")[0] ?? "";
     return /^[A-Za-z0-9_.-]{1,64}$/.test(user) ? user : null;
   };
+  // Self-contained: the default is EGRESS_LOG_MAX_BYTES, spelled out.
+  const logMax = config.logMaxBytes ?? 1024 * 1024;
+  let logged = 0;
+  let capped = false;
   const deny = (method: string, host: string, port: number | null, req: http.IncomingMessage): void => {
-    const line = { ts: Date.now() / 1000, host: host.slice(0, 255), port, agent: agentOf(req), method };
+    if (capped) return;
+    const line = JSON.stringify({ ts: Date.now() / 1000, host: host.slice(0, 255), port, agent: agentOf(req), method }) + "\n";
     try {
-      fsm.appendFileSync(config.log, JSON.stringify(line) + "\n");
+      if (logged + Buffer.byteLength(line) > logMax) {
+        capped = true;
+        fsm.appendFileSync(config.log, '{"capped":true}\n');
+        return;
+      }
+      fsm.appendFileSync(config.log, line);
+      logged += Buffer.byteLength(line);
     } catch {
       /* the log is gone: the refusal stands */
     }
@@ -292,7 +325,26 @@ export function runEgressProxy(deps: EgressProxyDeps, config: EgressProxyConfig)
       res.writeHead(403, { "content-type": "text/plain" }).end(refusal(host, port));
       return;
     }
-    const headers = { ...req.headers };
+    // The URL's host is the one checked, so it is the one the upstream sees: a
+    // Host header naming another (a virtual host behind an allowed address) is
+    // refused, and the header sent on is the URL's host and port.
+    const claimed = req.headers.host;
+    if (claimed !== undefined) {
+      let named: URL | null = null;
+      try {
+        named = new URL(`http://${claimed}`);
+      } catch {
+        named = null;
+      }
+      const namedHost = named ? named.hostname.replace(/^\[|\]$/g, "").toLowerCase().replace(/\.$/, "") : String(claimed);
+      const namedPort = named && named.port ? Number(named.port) : 80;
+      if (!named || named.username || named.pathname !== "/" || named.search || namedHost !== host.replace(/\.$/, "")) {
+        deny("HTTP", namedHost, namedPort, req);
+        res.writeHead(403, { "content-type": "text/plain" }).end(`odw egress: the Host header (${namedHost.slice(0, 255)}) is not the request's host (${host})\n`);
+        return;
+      }
+    }
+    const headers: http.IncomingHttpHeaders = { ...req.headers, host: url.host };
     delete headers["proxy-authorization"];
     delete headers["proxy-connection"];
     const upstream = httpm.request({ host, port, method: req.method, path: url.pathname + url.search, headers }, (reply) => {
@@ -333,10 +385,31 @@ export function runEgressProxy(deps: EgressProxyDeps, config: EgressProxyConfig)
   server.on("clientError", (_err: Error, socket: net.Socket) => socket.destroy());
   const override = process.env.ODW_EGRESS_PORT;
   const port = override !== undefined && /^\d+$/.test(override) ? Number(override) : config.port;
-  server.listen(port, config.listen ?? "0.0.0.0", () => {
-    const address = server.address();
-    if (config.ready) fsm.writeFileSync(config.ready, String(typeof address === "object" && address ? address.port : port));
-  });
+  const listen = (host: string): void => {
+    server.listen(port, host, () => {
+      const address = server.address();
+      if (config.ready) fsm.writeFileSync(config.ready, String(typeof address === "object" && address ? address.port : port));
+    });
+  };
+  if (config.listenFrom) {
+    const listenFrom = config.listenFrom;
+    let closed = false;
+    server.once("close", () => (closed = true));
+    const wait = (): void => {
+      if (closed) return;
+      let host = "";
+      try {
+        host = String(fsm.readFileSync(listenFrom, "utf8")).trim();
+      } catch {
+        /* not yet */
+      }
+      if (netm.isIP(host)) listen(host);
+      else setTimeout(wait, 50);
+    };
+    wait();
+  } else {
+    listen(config.listen ?? "0.0.0.0");
+  }
   return server;
 }
 
@@ -369,10 +442,17 @@ export function startEgressProxy(config: EgressProxyConfig): http.Server {
 /**
  * The doctor's probe, run in a container on the internal network: through
  * `$HTTPS_PROXY`, a CONNECT to each `host:port` given as an argument; prints
- * `{ "<host:port>": <status> }` (0: no answer). Plain JS for `node -e`.
+ * `{ "<host:port>": <status> }` (0: no answer). An argument `dns:<name>`
+ * instead looks the name up in the container: 1 when it resolved, 0 when not.
+ * Plain JS for `node -e`.
  */
 export const EGRESS_PROBE = `
 const net = require("node:net");
+const dns = require("node:dns");
+const resolves = (name) => new Promise((done) => {
+  const timer = setTimeout(() => done(0), 20000);
+  dns.lookup(name, (err) => { clearTimeout(timer); done(err ? 0 : 1); });
+});
 const proxy = new URL(process.env.HTTPS_PROXY);
 const auth = proxy.username ? "Proxy-Authorization: Basic " + Buffer.from(decodeURIComponent(proxy.username) + ":" + decodeURIComponent(proxy.password)).toString("base64") + "\\r\\n" : "";
 const ask = (target) => new Promise((done) => {
@@ -389,7 +469,7 @@ const ask = (target) => new Promise((done) => {
 });
 (async () => {
   const out = {};
-  for (const target of process.argv.slice(1)) out[target] = await ask(target);
+  for (const target of process.argv.slice(1)) out[target] = target.startsWith("dns:") ? await resolves(target.slice(4)) : await ask(target);
   process.stdout.write(JSON.stringify(out) + "\\n");
 })();
 `;

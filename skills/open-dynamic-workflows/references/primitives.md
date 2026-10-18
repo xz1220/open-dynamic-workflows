@@ -236,7 +236,11 @@ take it. Claude Code ignores all of it.
   "You are continuing work another agent started…" — why the last adapter
   stopped, the files it changed (diff stat; in place, its edit tool calls),
   its last plan or to-do list, the commands it ran and how they ended, its
-  last messages; at most 6 KB, redacted. The brief is kept as
+  last messages; at most 6 KB, each piece redacted before any cut. The next
+  adapter keeps the worktree for each of its runs (stall restarts, rate-limit
+  and schema retries); a fallback with other trust or another container engine
+  gets a fresh one instead, and a brief saying the work was not carried over.
+  The brief is kept as
   `agents/<id>.handoff.md`, told by a `handoff` event `{ from, to, reason,
   bytes }` and a `{"kind":"handoff"}` transcript line. `expect` and the kept
   diff judge the final state (the shared worktree against its base); an
@@ -596,7 +600,7 @@ and makes a branch `odw/<run>-<label>` (`odw/<run>-all`; `-2`, … when taken) f
 `--base` or HEAD in a temporary worktree, applies (and verifies) each agent there
 as above, commits each on its own under the user's git identity (workflow,
 agent, diff stat, run id, cost), pushes to `--remote` (`origin`) and runs `gh pr
-create` — a draft unless `--ready` — with the run summary as the body (agents
+create --repo <that remote's owner/name>` — a draft unless `--ready` — with the run summary as the body (agents
 and commits, phases, spend, verify result, `odw diff` commands). A conflict or a
 failed verify deletes the branch before the push; without `gh` (or logged out)
 it prints the compare URL after the push. It never merges; not with `--check`,
@@ -739,8 +743,10 @@ break together. Off by default (dialect fidelity); `notes: false` opts one agent
 - **Where.** `notes.jsonl` in the run directory; each note is a `note_added`
   event too. `odw notes <run> [--json]` prints it; `GET /api/runs/:id/notes`
   serves `[{ noteId, ts, by: { agentId, label }, text, kind, truncated?, redacted? }]`.
-- **Containers.** Under a container sandbox the agent's notes directory is bound
-  read-write and the board read-only, at the same paths: the script works there.
+- **Containers.** Under a container sandbox the agent's inbox is bound
+  read-write, its script and the board read-only, at the same paths: the script
+  works there. The worker takes only regular files from the inbox, never
+  following a link.
 - **Not persisted, no board.** An in-process run without a run directory logs
   once that its agents run without one. A call replayed by `odw resume` posts
   nothing. `notes` is not part of the resume key.

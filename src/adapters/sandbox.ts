@@ -511,6 +511,25 @@ export interface ContainerRun {
   command: string[];
 }
 
+/**
+ * The resolver a container on an egress allowlist's internal network is
+ * given (Docker): a documentation address (RFC 5737) that no one answers on,
+ * which the container's own namespace has no route to. Its proxy resolves
+ * names itself, so the container needs none from outside — and Docker's
+ * embedded resolver, before 26.0, forwarded an internal network's lookups out
+ * through the host when the host's resolver was on loopback (CVE-2024-29018),
+ * a channel for data. Not loopback: a loopback resolver is what Docker
+ * forwarded through the host. Container names on the network still resolve.
+ * Podman's aardvark-dns does not forward for internal networks, and there
+ * `--dns` would replace it, so Podman gets none.
+ */
+export const EGRESS_DNS = "192.0.2.1";
+
+/** The flags that take an egress network's container off outside DNS (see {@link EGRESS_DNS}). */
+export function egressDnsArgs(engine: SandboxEngine): string[] {
+  return engine === "docker" ? ["--dns", EGRESS_DNS] : [];
+}
+
 /** The engine argv of one container run. Pure: what it says is all there is. */
 export function containerArgv(run: ContainerRun): string[] {
   const argv: string[] = [run.engine, "run", "--rm", "-i", "--init", "--pull", "never", "--name", run.name];
@@ -525,7 +544,7 @@ export function containerArgv(run: ContainerRun): string[] {
   argv.push("--pids-limit", String(run.pids));
   if (run.memory) argv.push("--memory", run.memory);
   if (run.cpus) argv.push("--cpus", String(run.cpus));
-  if (run.networkName) argv.push("--network", run.networkName);
+  if (run.networkName) argv.push("--network", run.networkName, ...egressDnsArgs(run.engine));
   else if (run.network === "none") argv.push("--network", "none");
   // An allowlist without its internal network would be the default one: never.
   else if (typeof run.network === "object") throw new Error("sandbox: an egress allowlist needs its run's internal network");

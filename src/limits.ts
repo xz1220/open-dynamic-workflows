@@ -193,13 +193,18 @@ export class LimitWatch {
     if (this.hit) return stop();
     const seconds = limits.seconds;
     if (seconds === undefined) return;
-    const left = seconds * 1000 - (this.now() - this.startedAt);
-    const trip = (): void => {
+    // A timer waits at most 2^31-1 ms (about 24.8 days): one that fires before
+    // the call has run `seconds` arms another for the time still left.
+    const arm = (): void => {
+      const left = seconds * 1000 - (this.now() - this.startedAt!);
+      if (left > 0) {
+        this.timer = setTimeout(arm, Math.min(left, 2 ** 31 - 1));
+        return;
+      }
       const ran = (this.now() - this.startedAt!) / 1000;
       this.trip({ limit: "seconds", max: seconds, value: ran, evidence: `running ${Math.round(ran)}s > ${seconds}s` });
     };
-    if (left <= 0) return trip();
-    this.timer = setTimeout(trip, Math.min(left, 2 ** 31 - 1));
+    arm();
   }
 
   /** What the CLI printed on stdout, as it arrives. Never throws. */

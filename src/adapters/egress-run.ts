@@ -9,8 +9,11 @@
  *   <engine> run -d --init --pull never --name odw-<run>-egress<n>-<rand> --network <bridge|podman>
  *            --user <you> --cap-drop ALL --read-only … --entrypoint node <image> /odw/egress-proxy/proxy.mjs …
  *   <engine> network connect <that network> <the proxy>
+ *   <engine> inspect --format <its IP on that network> <the proxy>
  *
- * — the proxy is the network's only way out — and every container with that
+ * — the proxy is the network's only way out, and listens only on its address
+ * there (written to its config directory once known), so it is no open proxy
+ * for the engine's default network — and every container with that
  * allowlist joins the network (`--network`) with `HTTPS_PROXY`, `HTTP_PROXY`
  * (and their lower-case spellings) pointing at the proxy, its agent id as the
  * proxy user name so a denial names the agent, `NO_PROXY` for loopback, and
@@ -28,12 +31,13 @@
  */
 
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, statSync } from "node:fs";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rename, rm, writeFile } from "node:fs/promises";
+import { isIP } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { ConfigError } from "../errors.js";
-import { EGRESS_PORT, egressProxyScript, type EgressAllow, type EgressDenial, type EgressProxyConfig } from "./egress.js";
+import { EGRESS_LOG_MAX_BYTES, EGRESS_PORT, egressProxyScript, type EgressAllow, type EgressDenial, type EgressProxyConfig } from "./egress.js";
 import type { CommandRunner } from "./runner.js";
 import { clientEnv, containerName, hostUser, TMPFS, trackContainer, trackNetwork, type SandboxEngine } from "./sandbox.js";
 
@@ -41,6 +45,8 @@ import { clientEnv, containerName, hostUser, TMPFS, trackContainer, trackNetwork
 export const PROXY_DIR = "/odw/egress-proxy";
 /** Where its denial log and ready file are bound. */
 export const PROXY_LOG_DIR = "/odw/egress-log";
+/** The file in {@link PROXY_DIR} that tells it the address to listen on. */
+export const LISTEN_FILE = "listen";
 
 /** The engine's default network: what the proxy also joins, to reach out. */
 export const DEFAULT_NETWORK: Record<SandboxEngine, string> = { docker: "bridge", podman: "podman" };
@@ -51,6 +57,11 @@ export const NO_PROXY = "localhost,127.0.0.1,::1";
 /** `<engine> network create --internal`: a network with no route out. */
 export function networkCreateArgv(engine: SandboxEngine, name: string, runId: string | undefined): string[] {
   return [engine, "network", "create", "--internal", "--label", `odw.run=${runId ?? "none"}`, name];
+}
+
+/** `<engine> inspect`: a container's IP address on `network` (empty when it has none). */
+export function proxyAddressArgv(engine: SandboxEngine, network: string, container: string): string[] {
+  return [engine, "inspect", "--format", `{{with index .NetworkSettings.Networks ${JSON.stringify(network)}}}{{.IPAddress}}{{end}}`, container];
 }
 
 /** `<engine> network connect <network> <container>`. */
@@ -134,6 +145,8 @@ export interface EgressProxiesOptions {
   /** The run's directory: denial logs go to its `egress/`. Absent: a temporary directory, removed at close. */
   runDir?: string;
   onDenied?: (denial: EgressDeniedEvent) => void;
+  /** Told once, at the end, how many denials were not reported past {@link EGRESS_DENIALS_MAX}. */
+  onNote?: (message: string, fields: Record<string, unknown>) => void;
   /** The host's environment, for the engine client. */
   hostEnv?: Record<string, string | undefined>;
   /** How long a proxy may take to listen (ms). */
@@ -141,6 +154,9 @@ export interface EgressProxiesOptions {
   /** How often the denial logs are read (ms). */
   pollMs?: number;
 }
+
+/** Denials a run reports as `egress_denied` events, at most; past it they are counted, and said once at its end. */
+export const EGRESS_DENIALS_MAX = 200;
 
 /** A run's egress proxies: brought up on first use, tailed while it runs, removed at its end. */
 export class EgressProxies {
@@ -153,6 +169,9 @@ export class EgressProxies {
   private timer: NodeJS.Timeout | undefined;
   private closed = false;
   private count = 0;
+  private reported = 0;
+  private dropped = 0;
+  private logCapped = false;
 
   constructor(private readonly opts: EgressProxiesOptions) {}
 
@@ -200,6 +219,8 @@ export class EgressProxies {
       port: EGRESS_PORT,
       log: `${PROXY_LOG_DIR}/proxy${n}.jsonl`,
       ready: `${PROXY_LOG_DIR}/proxy${n}.ready`,
+      // It listens only on its address on the internal network, written here once it has one.
+      listenFrom: `${PROXY_DIR}/${LISTEN_FILE}`,
     };
     await writeFile(join(configDir, "proxy.mjs"), egressProxyScript(), { mode: 0o644 });
     await writeFile(join(configDir, "config.json"), JSON.stringify(config), { mode: 0o644 });
@@ -226,6 +247,15 @@ export class EgressProxies {
     if (ran.returncode !== 0) fail("start the egress proxy", ran.stderr || ran.stdout);
     const connected = await this.opts.runner(networkConnectArgv(engine, network, proxy), { timeout: 60, env });
     if (connected.returncode !== 0) fail("connect the egress proxy to the run's internal network", connected.stderr || connected.stdout);
+    // Not every interface: on the default network it would be an open proxy for every container there.
+    const inspected = await this.opts.runner(proxyAddressArgv(engine, network, proxy), { timeout: 30, env });
+    const address = inspected.stdout.trim();
+    if (inspected.returncode !== 0 || !isIP(address)) {
+      fail("find the egress proxy's address on the run's internal network", inspected.stderr || inspected.stdout);
+    }
+    const listenTmp = join(configDir, `.${LISTEN_FILE}`);
+    await writeFile(listenTmp, address, { mode: 0o644 });
+    await rename(listenTmp, join(configDir, LISTEN_FILE));
     const port = await this.waitReady(readyFile);
     if (port === null) {
       const logs = await this.opts.runner([engine, "logs", proxy], { timeout: 15, env }).catch(() => null);
@@ -267,8 +297,15 @@ export class EgressProxies {
         const lines = (log.rest + buffer.toString("utf8")).split("\n");
         log.rest = lines.pop() ?? "";
         for (const line of lines) {
+          if (line === '{"capped":true}') this.logCapped = true;
           const denial = parseDenial(line);
-          if (denial) this.opts.onDenied?.(denial);
+          if (!denial) continue;
+          if (this.reported < EGRESS_DENIALS_MAX) {
+            this.reported++;
+            this.opts.onDenied?.(denial);
+          } else {
+            this.dropped++;
+          }
         }
       } finally {
         closeSync(fd);
@@ -287,19 +324,34 @@ export class EgressProxies {
     } catch {
       /* a log that cannot be read loses its last lines, nothing else */
     }
+    if (this.dropped > 0 || this.logCapped) {
+      const where = this.opts.runDir ? ` (all logged are in ${join(this.opts.runDir, "egress")})` : "";
+      const parts: string[] = [];
+      if (this.dropped > 0) {
+        parts.push(`${EGRESS_DENIALS_MAX} egress denials were reported as events and ${this.dropped} more were not${where}`);
+      }
+      if (this.logCapped) parts.push(`a proxy's denial log reached ${EGRESS_LOG_MAX_BYTES / 1024 / 1024} MiB, and its later denials were not logged`);
+      this.opts.onNote?.(parts.join("; "), { egress: "capped", dropped: this.dropped, logCapped: this.logCapped });
+    }
     const env = clientEnv(this.opts.hostEnv ?? process.env);
+    // Each is untracked only once its removal succeeded: what is left the worker's backstop tries again.
+    const removed = new Set<string>();
     for (const engine of ["docker", "podman"] as const) {
       const proxies = this.proxies.filter((p) => p.engine === engine).map((p) => p.name);
       const networks = this.networks.filter((p) => p.engine === engine).map((p) => p.name);
       for (const argv of egressCleanupArgvs(engine, proxies, networks)) {
-        await this.opts.runner(argv, { timeout: 30, env }).catch(() => undefined);
+        const ran = await this.opts.runner(argv, { timeout: 30, env }).catch(() => null);
+        if (ran?.returncode !== 0) continue;
+        if (argv[1] === "rm") for (const name of proxies) removed.add(`container:${name}`);
+        else removed.add(`network:${argv[argv.length - 1]}`);
       }
     }
     for (const proxy of this.proxies) {
+      if (!removed.has(`container:${proxy.name}`)) continue;
       proxy.untrack();
       await rm(proxy.configDir, { recursive: true, force: true }).catch(() => undefined);
     }
-    for (const network of this.networks) network.untrack();
+    for (const network of this.networks) if (removed.has(`network:${network.name}`)) network.untrack();
     if (this.ownLogDir && this.logDir) await rm(this.logDir, { recursive: true, force: true }).catch(() => undefined);
   }
 }

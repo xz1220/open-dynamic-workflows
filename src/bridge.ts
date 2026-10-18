@@ -603,7 +603,11 @@ export class Bridge {
   private readonly sandboxChecks = new Map<string, Promise<string | null>>();
   /** The run's egress proxies and internal networks, brought up on first use (ODW extension). */
   private egress: EgressProxies | undefined;
-  private readonly egressOptions: { runDir?: string; onDenied?: (denial: EgressDeniedEvent) => void };
+  private readonly egressOptions: {
+    runDir?: string;
+    onDenied?: (denial: EgressDeniedEvent) => void;
+    onNote?: (message: string, fields: Record<string, unknown>) => void;
+  };
 
   constructor(
     private readonly config: Config,
@@ -620,7 +624,7 @@ export class Bridge {
     this.redactor = options.redactor;
     this.onCliRun = options.onCliRun;
     this.onRunNote = options.onRunNote;
-    this.egressOptions = { runDir: options.runDir, onDenied: options.onEgressDenied };
+    this.egressOptions = { runDir: options.runDir, onDenied: options.onEgressDenied, onNote: options.onRunNote };
     this.ports =new PortPool(...config.settings.portRange);
     this.quota = new QuotaWaits({
       now: this.now,
@@ -886,7 +890,7 @@ export class Bridge {
     // worktree is held for the next adapter — let go however the call ends.
     const handsOver = request.handoff ?? this.config.settings.handoff === true;
     if (!handsOver) return this.walkChain(request, options, call);
-    const handoff: HandoffState = { log: new HandoffLog(), hold: false, held: null, brief: null };
+    const handoff: HandoffState = { log: new HandoffLog(), hold: false, held: null, heldPosture: null, carry: false, brief: null };
     try {
       return await this.walkChain(request, options, { ...call, handoff });
     } finally {
@@ -937,7 +941,7 @@ export class Bridge {
           await call.changes?.discard();
           const to = route.chain[next]!.name;
           await options.onFallback?.({ from: adapter.name, reason, to, fellBackFrom: [...fellBackFrom] });
-          if (call.handoff) await this.handOver(call.handoff, { from: adapter.name, reason, to }, err, request, options, call);
+          if (call.handoff) await this.handOver(call.handoff, { from: adapter.name, reason, to }, route.chain[next]!, err, request, options, call);
           // Another CLI run: it passes the stop/budget guards first.
           await options.beforeRetry?.();
           at = next;
@@ -965,7 +969,7 @@ export class Bridge {
       await call.changes?.discard();
       if (call.handoff) {
         await call.handoff.held?.close();
-        Object.assign(call.handoff, { log: new HandoffLog(), hold: false, held: null, brief: null });
+        Object.assign(call.handoff, { log: new HandoffLog(), hold: false, held: null, heldPosture: null, carry: false, brief: null });
       }
       await options.onQuotaResume?.({ adapter: on, fellBackFrom: [...fellBackFrom] });
       await options.beforeRetry?.();
@@ -1030,12 +1034,16 @@ export class Bridge {
   /**
    * Hand the work over to the next adapter (an ODW extension; see ./handoff):
    * write the brief its prompt starts with — from what the call's CLI runs
-   * printed and, isolated, the diff of the worktree held for it — redacted,
-   * and tell the transcript and the caller.
+   * printed and, isolated, the diff of the worktree held for it — each piece
+   * redacted before any is cut, and tell the transcript and the caller. The
+   * held worktree goes to `next` only when it runs with the same trust and
+   * container engine as the run that left it: else it is let go, and the
+   * brief says the work was not carried over.
    */
   private async handOver(
     state: HandoffState,
     hop: { from: string; reason: "quota" | "auth"; to: string },
+    next: Adapter,
     err: unknown,
     request: AgentRequest,
     options: RunOptions,
@@ -1043,13 +1051,33 @@ export class Bridge {
   ): Promise<void> {
     const isolated = (state.held?.mode ?? (request.isolation === "worktree" ? "worktree" : "inplace")) === "worktree";
     const diff = isolated && state.held ? await state.held.workspace.diff().catch(() => "") : "";
+    const posture = this.postureFor(next, request);
+    const carried = !state.held || state.heldPosture === posture;
+    if (!carried) {
+      call.onNote?.(
+        `handoff: ${hop.from}'s worktree is not handed to ${hop.to} — it ran ${state.heldPosture}, ${hop.to} runs ${posture} — ` +
+          `so ${hop.to} starts in a fresh worktree, with the brief`,
+      );
+      await state.held!.close();
+      state.held = null;
+      state.heldPosture = null;
+    }
     const why = err instanceof Error ? err.message : String(err);
-    const written = handoffBrief({ ...hop, why, isolated, diff, log: state.log });
-    const brief = this.redactor ? this.redactor.text(written) : written;
+    const redact = this.redactor ? (text: string) => this.redactor!.text(text) : undefined;
+    const written = handoffBrief({ ...hop, why, isolated, diff, log: state.log, carried, redact });
+    const brief = redact ? redact(written) : written;
     state.brief = brief;
+    // Every run of the call on the next adapter — stall restarts, rate-limit and schema retries — keeps its worktree.
+    state.carry = true;
     const handoff: AgentHandoff = { ...hop, brief, bytes: Buffer.byteLength(brief) };
     call.transcript?.handoff?.(handoff);
     await options.onHandoff?.(handoff);
+  }
+
+  /** The trust and container engine `adapter`'s runs of `request` have: what a held worktree is handed on under (see ./handoff). */
+  private postureFor(adapter: Adapter, request: AgentRequest): string {
+    const sandbox = this.sandboxFor(adapter, request.sandbox);
+    return postureOf(planTrust(adapter, runTrust(this.config)).trust === "untrusted", sandbox.box ? resolveEngine(sandbox.box) : null);
   }
 
   /** `adapter` runs exactly `tier`, as a fallback must (see {@link nextAdapter}). */
@@ -1161,7 +1189,8 @@ export class Bridge {
     const plan = this.router.plan({ request, adapter, settings });
     const basePrompt = this.composePrompt(request, schema?.describe ?? false);
     // Handed the work over (ODW extension; see ./handoff), it starts from the
-    // brief — in the held worktree; an `expect` retry starts over in a fresh one, without it.
+    // brief — in the held worktree, kept for each of its runs; an `expect`
+    // retry starts over in a fresh one, without it.
     const brief = shared.handoff?.brief;
     const briefed = brief ? this.composePrompt(request, schema?.describe ?? false, brief) : basePrompt;
     const maxAttempts = request.schema ? settings.schemaRetries + 1 : 1;
@@ -1305,8 +1334,10 @@ export class Bridge {
           );
         }
         options.onExpectRetry?.({ misses: lines, retry: round + 1, maxRetries: expect.retries });
-        // The next round starts the work over, told what this one missed.
+        // The next round starts the work over, told what this one missed —
+        // without a handoff's brief or worktree (ODW extension; see ./handoff).
         missed = expect.feedback(misses);
+        if (call.handoff) await letGoOfHeld(call.handoff);
         expect.retry();
         call.changes?.redo?.();
         break;
@@ -1750,7 +1781,7 @@ export class Bridge {
                 ...(promptFile ? [{ source: promptFile, target: promptFile, readonly: true }] : []),
                 ...(schema?.path ? [{ source: schema.path, target: schema.path, readonly: true }] : []),
                 ...(reply ? [{ source: dirname(reply.path), target: dirname(reply.path), readonly: false }] : []),
-                // The agent's notes directory and the board's (ODW extension; see ./notes).
+                // The agent's notes inbox and shim, and the board's (ODW extension; see ./notes).
                 ...(call.mounts ?? []),
               ],
               env,
@@ -1843,14 +1874,22 @@ export class Bridge {
   ): Promise<T> {
     const handoff = call.handoff;
     const held = handoff?.held ?? null;
-    if (handoff) handoff.held = null;
-    if (held && held.mode !== mode) await held.close();
-    const open = held?.mode === mode ? held : await openWorkspace(this.source, mode, setup);
+    // Taken only by a run with the trust and container engine of the one that left it.
+    const posture = postureOf(call.untrusted === true, call.container?.engine);
+    const fits = held !== null && held.mode === mode && handoff!.heldPosture === posture;
+    if (handoff) {
+      handoff.held = null;
+      handoff.heldPosture = null;
+    }
+    if (held && !fits) await held.close();
+    const open = fits ? held : await openWorkspace(this.source, mode, setup);
     try {
       return await fn(open.workspace);
     } finally {
-      if (handoff?.hold && !signal?.aborted) handoff.held = open;
-      else await open.close();
+      if (handoff && (handoff.hold || handoff.carry) && !signal?.aborted) {
+        handoff.held = open;
+        handoff.heldPosture = posture;
+      } else await open.close();
       if (handoff) handoff.hold = false;
     }
   }
@@ -1901,10 +1940,26 @@ interface HandoffState {
   log: HandoffLog;
   /** The run that is ending fails the call over (its quota, its login): its workspace is held, not removed. */
   hold: boolean;
-  /** The workspace held for the next adapter's first CLI run. */
+  /** The workspace held for the next CLI run: the next adapter's first, or (`carry`) its next. */
   held: OpenWorkspace | null;
+  /** The trust and container engine of the runs `held` was used by (see postureOf): only a run with the same takes it. */
+  heldPosture: string | null;
+  /** The work was handed over: each run of the call on the adapter it went to keeps the worktree for the next. */
+  carry: boolean;
   /** The brief the next adapter's prompt starts with, once there was a handoff. */
   brief: string | null;
+}
+
+/** The trust and container engine ("host": none) of a call's CLI runs, as one string. */
+function postureOf(untrusted: boolean, engine: string | null | undefined): string {
+  return `${untrusted ? "untrusted" : "trusted"}/${engine ?? "host"}`;
+}
+
+/** A handoff's worktree is let go and no longer carried: the work starts over (an `expect` retry). */
+async function letGoOfHeld(state: HandoffState): Promise<void> {
+  const held = state.held;
+  Object.assign(state, { held: null, heldPosture: null, carry: false });
+  await held?.close();
 }
 
 /** The variables an agent's processes get from ODW: only ever this call's, never inherited. */

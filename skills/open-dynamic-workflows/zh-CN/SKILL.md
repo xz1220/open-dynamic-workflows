@@ -395,8 +395,12 @@ odw schedule remove digest     # 删除系统条目和定义
 ```bash
 RUN=$(odw run review --on ssh://me@box)          # 同步项目，在那边后台启动，打印运行 id
 odw status $RUN --on ssh://me@box                # status|logs|attach 在远端 odw 上执行
+odw approve $RUN --on ssh://me@box               # approve|reject|pause|stop|resume 也一样
 odw pull $RUN --from ssh://me@box                # 拷回本机（运行中也可反复拉取），用于 diff/apply/compare
 ```
+
+- 拉回来的拷贝（`origin: "remote"`）只是快照：用 `--on` 在运行所在的地方回答或控制它。在本机，
+  `odw approve|reject|pause|stop|resume` 会拒绝它并给出该命令。
 
 - 远端需要在非交互 ssh 会话的 PATH 上有 odw，并使用它自己的 odw 配置和 agent CLI 登录：
   用户的配置和登录都不会被拷贝。缺少 odw 时会给出安装提示。

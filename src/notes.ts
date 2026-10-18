@@ -46,18 +46,21 @@ import {
   appendFileSync,
   chmodSync,
   closeSync,
+  constants as fsConstants,
   existsSync,
+  fstatSync,
+  lstatSync,
   mkdirSync,
   openSync,
   readdirSync,
   readFileSync,
   readSync,
+  realpathSync,
   renameSync,
-  statSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { basename, dirname, isAbsolute, join } from "node:path";
+import { basename, dirname, isAbsolute, join, sep } from "node:path";
 
 import type { SandboxMount } from "./adapters/types.js";
 import type { AgentChanges } from "./changes.js";
@@ -109,7 +112,7 @@ export interface Note {
 export interface AgentNotes {
   /** `ODW_NOTES`: its shim's path. */
   env: Record<string, string>;
-  /** Its notes directory read-write and the board's read-only, at the same paths (container sandbox). */
+  /** Its inbox read-write, its shim and the board's directory read-only, at the same paths (container sandbox). */
   mounts: SandboxMount[];
   /** The notes posted so far and how to post one, for its prompt. */
   prompt: string;
@@ -133,7 +136,7 @@ export class NotesBoard {
   private readonly notes: Note[] = [];
   private bytes = 0;
   private full = false;
-  private readonly open = new Map<number, { inbox: string; label: string }>();
+  private readonly open = new Map<number, { inbox: string; agentDir: string; label: string }>();
   private timer: NodeJS.Timeout | undefined;
 
   constructor(private readonly opts: NotesBoardOptions) {}
@@ -218,7 +221,7 @@ export class NotesBoard {
     if (!existsSync(boardFile)) this.render();
     writeFileSync(shim, shimScript(boardFile, inbox), { mode: 0o755 });
     chmodSync(shim, 0o755);
-    this.open.set(agentId, { inbox, label });
+    this.open.set(agentId, { inbox, agentDir, label });
     if (!this.timer) {
       this.timer = setInterval(() => this.sweepAll(), this.opts.pollMs ?? NOTE_POLL_MS);
       this.timer.unref();
@@ -226,8 +229,10 @@ export class NotesBoard {
     let closed = false;
     return {
       env: { ODW_NOTES: shim },
+      // Not its whole notes directory: from there it could swap its inbox for a link.
       mounts: [
-        { source: agentDir, target: agentDir, readonly: false },
+        { source: inbox, target: inbox, readonly: false },
+        { source: shim, target: shim, readonly: true },
         { source: this.boardDir, target: this.boardDir, readonly: true },
       ],
       prompt: notesPrompt(this.notes),
@@ -256,36 +261,47 @@ export class NotesBoard {
     for (const agentId of this.open.keys()) this.sweep(agentId);
   }
 
-  /** Post what an agent's inbox holds, oldest first, and empty it. */
+  /**
+   * Post what an agent's inbox holds, oldest first, and empty it. The inbox
+   * is the agent's to write, so nothing in it is followed: the inbox must be
+   * a real directory inside its agent's notes directory, and only regular
+   * files in it are read (and only they are removed).
+   */
   private sweep(agentId: number): void {
     const open = this.open.get(agentId);
     if (!open) return;
+    const inbox = realInbox(open.inbox, open.agentDir);
+    if (!inbox) return;
     let names: string[];
     try {
-      names = readdirSync(open.inbox).filter((name) => !name.startsWith("."));
+      names = readdirSync(inbox).filter((name) => !name.startsWith("."));
     } catch {
       return;
     }
     const files = names
       .map((name) => {
-        const path = join(open.inbox, name);
+        const path = join(inbox, name);
         try {
-          const st = statSync(path);
-          return st.isFile() ? { path, name, at: st.mtimeMs } : null;
+          const st = lstatSync(path);
+          return st.isFile() ? { path, name, at: st.mtimeMs, ino: st.ino } : null;
         } catch {
           return null;
         }
       })
-      .filter((f): f is { path: string; name: string; at: number } => f !== null)
+      .filter((f): f is { path: string; name: string; at: number; ino: number } => f !== null)
       .sort((a, b) => a.at - b.at || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
     for (const file of files) {
-      const text = readHead(file.path, NOTE_MAX_CHARS * 4 + 4);
+      const text = readHead(file.path, NOTE_MAX_CHARS * 4 + 4, file.ino);
+      if (text === null) continue; // swapped for something else since: left alone
       try {
+        // Only the file just read: unlink never follows the name's own link,
+        // and one swapped in since is not ours to take.
+        if (lstatSync(file.path).ino !== file.ino) continue;
         unlinkSync(file.path);
       } catch {
         continue; // taken already, or not ours to take
       }
-      if (text !== null) this.post({ agentId, label: open.label }, text);
+      this.post({ agentId, label: open.label }, text);
     }
   }
 
@@ -510,11 +526,34 @@ function oneLine(text: string): string {
   return text.replace(/\s+/g, " ");
 }
 
-/** At most `max` bytes of a file, as text; null when it cannot be read. */
-function readHead(path: string, max: number): string | null {
+/**
+ * An agent's inbox as a real path, or null when it is not one to read: it must
+ * be a directory itself — not a link to one — whose real path lies in the
+ * agent's own notes directory.
+ */
+function realInbox(inbox: string, agentDir: string): string | null {
+  try {
+    if (!lstatSync(inbox).isDirectory()) return null;
+    const real = realpathSync(inbox);
+    const parent = realpathSync(agentDir);
+    return real.startsWith(parent.endsWith(sep) ? parent : parent + sep) ? real : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * At most `max` bytes of a regular file, as text; null when it cannot be read
+ * or is not one. The name's own link is never followed, a FIFO never waited
+ * on, and with `ino` the file opened must be that one.
+ */
+function readHead(path: string, max: number, ino?: number): string | null {
   let fd: number | undefined;
   try {
-    fd = openSync(path, "r");
+    // O_NOFOLLOW where the platform has it (not Windows, where links need privilege).
+    fd = openSync(path, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0) | (fsConstants.O_NONBLOCK ?? 0));
+    const st = fstatSync(fd);
+    if (!st.isFile() || (ino !== undefined && st.ino !== ino)) return null;
     const buf = Buffer.alloc(max);
     const n = readSync(fd, buf, 0, max, 0);
     return buf.subarray(0, n).toString("utf8");

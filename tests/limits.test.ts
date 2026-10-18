@@ -151,6 +151,24 @@ test("seconds: a run is stopped once the call has run that long, and a later run
   assert.ok(again, "a further run of a call past its limit is stopped before it starts");
 });
 
+test("seconds past a timer's longest wait (about 24.8 days) trip only once the call has run that long", (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: 0 });
+  const watch = new LimitWatch();
+  let stopped = false;
+  const days = 30;
+  watch.startRun({ seconds: days * 86_400 }, false, () => (stopped = true));
+  // A timer waits at most 2^31-1 ms: when it fires, the time still left is waited for again.
+  t.mock.timers.tick(2 ** 31 - 1);
+  assert.equal(stopped, false, "24.8 days in, 30 are not up");
+  assert.equal(watch.hit, null);
+  t.mock.timers.tick(days * 86_400_000 - (2 ** 31 - 1) - 1);
+  assert.equal(stopped, false, "a millisecond short");
+  t.mock.timers.tick(1);
+  assert.equal(stopped, true);
+  assert.equal(watch.hit?.limit, "seconds");
+  assert.equal(watch.hit?.evidence, `running ${days * 86_400}s > ${days * 86_400}s`);
+});
+
 test("limits are read strictly, and layered key by key — null lifts one", () => {
   const fail = (m: string) => new ConfigError(m);
   assert.deepEqual(readLimits({ toolCalls: 40, costUsd: 2.5, outputTokens: 10000, seconds: 600, repeat: 5 }, "x", fail), {

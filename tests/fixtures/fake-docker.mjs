@@ -19,8 +19,15 @@
  *   run -d …              the same, detached: prints an id and exits at once
  *                         (an egress proxy: it gets ODW_EGRESS_PORT=0, so it
  *                         listens on a free port of this host).
- *   network create|rm …   $DOCKER_FAKE_STATE/net.<name> exists while it does.
+ *   network create|rm …   $DOCKER_FAKE_STATE/net.<name> exists while it does. While
+ *                         $DOCKER_FAKE_STATE/fail.netrm exists, an rm fails once
+ *                         (and removes it), as a busy network's does.
  *   network connect …     nothing; logs.
+ *   inspect … <name>      prints 127.0.0.1: its address on any network.
+ *
+ * A container run with `--dns` gets tests/fixtures/fake-dns.cjs preloaded: no
+ * outside name resolves in it, as with the resolver ODW gives it — or, with
+ * $DOCKER_FAKE_DNS_LEAK, every one does (an engine that forwards them anyway).
  *
  * A container's command arguments under a bind mount's target are mapped to
  * its source (the proxy's script and config), and a `@<name>:` in an --env
@@ -33,6 +40,7 @@
 import { spawn } from "node:child_process";
 import { appendFileSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const argv = process.argv.slice(2);
 if (process.env.DOCKER_FAKE_LOG) appendFileSync(process.env.DOCKER_FAKE_LOG, JSON.stringify(argv) + "\n");
@@ -40,7 +48,7 @@ const state = process.env.DOCKER_FAKE_STATE ?? "/tmp";
 
 const WITH_VALUE = new Set([
   "--name", "--label", "--user", "--userns", "--cap-drop", "--security-opt", "--tmpfs", "--pids-limit",
-  "--memory", "--cpus", "--network", "--workdir", "--mount", "--env", "--pull", "--entrypoint",
+  "--memory", "--cpus", "--network", "--workdir", "--mount", "--env", "--pull", "--entrypoint", "--dns",
 ]);
 
 function stop(name) {
@@ -71,12 +79,21 @@ if (sub === "image" && rest[0] === "inspect") {
   const name = names[names.length - 1];
   if (action === "create") writeFileSync(join(state, `net.${name}`), "");
   else if (action === "rm") {
+    if (existsSync(join(state, "fail.netrm"))) {
+      rmSync(join(state, "fail.netrm"), { force: true });
+      process.stderr.write(`Error response from daemon: error while removing network: network ${name} has active endpoints\n`);
+      process.exit(1);
+    }
     if (!existsSync(join(state, `net.${name}`))) {
       process.stderr.write(`Error: network ${name} not found\n`);
       process.exit(1);
     }
     rmSync(join(state, `net.${name}`), { force: true });
   }
+  process.exit(0);
+} else if (sub === "inspect") {
+  // A container's address on a network: this host's loopback, where the fake runs it.
+  process.stdout.write("127.0.0.1\n");
   process.exit(0);
 } else if (sub === "logs") {
   process.exit(0);
@@ -96,6 +113,7 @@ if (sub === "image" && rest[0] === "inspect") {
   let workdir = process.cwd();
   let entrypoint = null;
   let detach = false;
+  let dns = null;
   const env = { PATH: process.env.PATH };
   const mounts = [];
   for (; i < rest.length; i++) {
@@ -107,6 +125,7 @@ if (sub === "image" && rest[0] === "inspect") {
     if (arg === "--name") name = value;
     else if (arg === "--entrypoint") entrypoint = value;
     else if (arg === "--workdir") workdir = value;
+    else if (arg === "--dns") dns = value;
     else if (arg === "--mount") mounts.push(Object.fromEntries(value.split(",").map((f) => f.split("="))));
     else if (arg === "--env") {
       const eq = value.indexOf("=");
@@ -127,12 +146,17 @@ if (sub === "image" && rest[0] === "inspect") {
   for (const [key, value] of Object.entries(env)) {
     env[key] = value.replace(/@([A-Za-z0-9_.-]+):/g, (whole, host) => (existsSync(join(state, host)) ? "@127.0.0.1:" : whole));
   }
+  // A resolver of its own (--dns): no name from outside resolves in it.
+  if (dns !== null) {
+    env.NODE_OPTIONS = `--require=${fileURLToPath(new URL("./fake-dns.cjs", import.meta.url))}`;
+    if (process.env.DOCKER_FAKE_DNS_LEAK) env.DOCKER_FAKE_DNS_LEAK = "1";
+  }
   if (detach) {
     // The proxy's log paths in its config are container paths: the fake maps its config file.
     const configArg = command.find((arg) => arg.endsWith("config.json"));
     if (configArg && existsSync(configArg)) {
       const config = JSON.parse(readFileSync(configArg, "utf8"));
-      for (const key of ["log", "ready"]) if (config[key]) config[key] = mapPath(config[key]);
+      for (const key of ["log", "ready", "listenFrom"]) if (config[key]) config[key] = mapPath(config[key]);
       writeFileSync(configArg, JSON.stringify(config));
     }
     const child = spawn(command[0], command.slice(1), { cwd: workdir, env: { ...env, ODW_EGRESS_PORT: "0" }, detached: true, stdio: "ignore" });

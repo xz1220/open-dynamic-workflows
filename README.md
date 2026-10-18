@@ -379,9 +379,11 @@ const review = await agent('Which lanes clash?', { notes: true, schema: CLASHES 
 - **Bounds:** each note is cut at 2000 characters and redacted like the run's
   events; the board holds 200 notes and 256 KiB, and the run says once when it is
   full. Notes are kept in the run directory as `notes.jsonl`.
-- **In a container sandbox** the script works unchanged: the agent's own notes
-  directory is bound read-write, the board read-only — no other agent's inbox is
-  there to write to.
+- **In a container sandbox** the script works unchanged: the agent's own inbox is
+  bound read-write, its script and the board read-only — no other agent's inbox is
+  there to write to. The worker takes only regular files from an inbox that is a real
+  directory where it made it, never following a link or waiting on a FIFO, so nothing
+  an agent plants there makes the host read or delete a file elsewhere.
 - **Seeing them:** `odw notes $RUN [--json]`, `note_added` events in `odw logs`, and
   `GET /api/runs/:id/notes`.
 
@@ -773,6 +775,7 @@ odw run review --on ssh://me@box:2222            # sync the project, start it th
 odw run wf.js --on ssh://box/srv/work/app --sync rsync --args @in.json --adapter codex
 odw status $RUN --on ssh://box                   # the same command, run by the odw over there
 odw logs $RUN --on ssh://box --follow            # …and odw attach $RUN --on ssh://box shows the live view
+odw approve $RUN --on ssh://box                  # answer its checkpoint there (reject, pause, stop, resume too)
 odw pull $RUN --from ssh://box                   # copy it here: odw status, diff, apply, compare, the dashboard
 ```
 
@@ -804,14 +807,23 @@ a command line — `--args` travels as a file on ssh's stdin — and ssh is your
 your `~/.ssh/config`, keys and agent; `ODW_SSH` replaces the `ssh` binary (and
 `ODW_RSYNC` the `rsync` one).
 
-`odw status|logs|attach <run> --on ssh://host` run that command on the remote odw and
-pass its output and exit code back (`ssh -t` for attach and `logs --follow` in a
-terminal, so attach is the live view). `odw pull <run> --from ssh://host` copies the run
-directory into your local runs root — rsync when this machine has it, else tar over
-ssh — and marks it `origin: "remote"` with `remote: { url, host, dir, pulledAt }` in its
-`meta.json`. A run still going can be pulled again and again: the copy is a snapshot
-(the remote worker's pid is dropped, so here it reads as stale until it ends), and
-`odw status` says where it came from.
+`odw status|logs|attach|approve|reject|pause|stop|resume <run> --on ssh://host` run that
+command on the remote odw and pass its output and exit code back (`ssh -t` for attach,
+`logs --follow` and `approve --edit` in a terminal, so attach is the live view; a
+`--payload @file` names a file over there). `odw pull <run> --from ssh://host` copies
+the run directory into your local runs root — rsync when this machine has it, else tar
+over ssh — and marks it `origin: "remote"` with `remote: { url, host, dir, pulledAt }` in
+its `meta.json`. The copy is staged under the runs root and moved into place only once it
+is whole, so a failed pull leaves nothing (an earlier copy stands); symbolic links,
+devices and fifos never come back (rsync `--no-links`, and any the copy holds are
+removed and named). A run still going can be pulled again and again: the copy is a
+snapshot (the remote worker's pid is dropped, so here it reads as stale until it ends),
+and `odw status` says where it came from.
+
+**A pulled run is answered where it runs.** Approving, rejecting, pausing, stopping or
+resuming the copy here would change only the copy, so `odw approve|reject|pause|stop|resume`
+and the dashboard (409) refuse it and name the command to run instead:
+`odw approve <run> --on ssh://host`.
 
 ### Agent transcripts (ODW extension)
 
@@ -1235,6 +1247,10 @@ an HTTPS tunnel — and turn on the `waiting` notify hook:
 odw serve --public-url https://odw.example.com     # e.g. behind cloudflared or tailscale funnel
 ```
 
+`--public-url` is a root URL (`https://host[:port]`): links are answered at `/approve/` on
+it, so a URL with a path (a proxy serving odw under `/odw`) is refused — give odw a host
+of its own, as a tunnel does.
+
 ```json
 { "notify": { "webhook": "https://hooks.example.com/YOUR/WEBHOOK/PATH", "on": ["waiting"] }, "approveLinks": { "ttl": 86400 } }
 ```
@@ -1271,7 +1287,9 @@ The security model — the only remote writes are checkpoint decisions:
   action in an `X-ODW-Action` header, which no other site's page can send. A form from
   another origin is refused, and the page cannot be framed.
 - **Guessing is rate limited** like wrong tokens: 10 bad links (or failed CSRF checks)
-  a minute per address, 100 from everyone, then 429.
+  a minute per address, 100 from everyone, then 429 for bad links. A link's signature is
+  checked first, so a valid link is never held back: bad links sent through the same
+  tunnel cannot block the real ones.
 - **Links work only while `odw serve --public-url` runs.** Without one for the runs root,
   no links are minted, and the payload says why (`linksUnavailable`,
   `ODW_LINKS_UNAVAILABLE`). The `/approve/` route needs no dashboard token — the link
@@ -1860,24 +1878,39 @@ hosts you name, enforced outside it:
   internal network, with `HTTPS_PROXY`/`HTTP_PROXY` (and lower-case) pointing at the
   proxy, `NO_PROXY` for loopback and `NODE_USE_ENV_PROXY=1`. The proxy tunnels `CONNECT`
   only to an allowlisted host's port 443 (or the entry's port), forwards plain HTTP only
-  to an allowlisted host, and **resolves names itself** — the agent's container has no
-  DNS for the outside. It is ODW's own zero-dependency script (the same code as the
-  hidden `odw __egress-proxy`), run with `node` in **the agent's image — which then
-  needs node** — or in `proxyImage`, as locked down as an agent's container.
+  to an allowlisted host (refusing a `Host` header that names another), and **resolves
+  names itself** — the agent's container has no DNS for the outside: on Docker it gets
+  `--dns 192.0.2.1`, an address nothing answers on, because Docker's embedded resolver
+  before 26.0 forwarded an internal network's lookups out through the host
+  (CVE-2024-29018). The proxy listens only on its address on the internal network, so
+  other containers on the default network cannot use it. It is ODW's own
+  zero-dependency script (the same code as the hidden `odw __egress-proxy`), run with
+  `node` in **the agent's image — which then needs node** — or in `proxyImage`, as
+  locked down as an agent's container.
 - **Denials are events.** Each refused request is a line in `<run dir>/egress/`, which
   the run turns into `egress_denied` events (`{ host, port, method, agent }`, or
-  `commandId` for a step) in `odw logs` and the dashboard. The agent is named by the
-  user name in its proxy URL; a CLI that drops it shows `agent: null`.
+  `commandId` for a step) in `odw logs` and the dashboard — at most 200 per run, then
+  one log line at its end saying how many more there were; each proxy's log stops at
+  1 MiB. The agent is named by the user name in its proxy URL; a CLI that drops it
+  shows `agent: null`. That name is a hint, not proof — the client sends it, and an
+  agent could change it — but it gets an agent nothing: every agent behind a proxy has
+  the same allowlist.
 - **Cleaned up.** At the run's end the proxies are removed, then the networks; the
-  worker's exit handler does the same if it is killed. `docker network ls --filter
-  label=odw.run` finds any a crash left. `odw doctor` brings up the proxy and, from a
-  container on the internal network, expects 200 for the first host listed and 403 for
-  a reserved one.
+  worker's exit handler does the same if it is killed, or if one could not be removed at
+  the end. `docker network ls --filter label=odw.run` finds any a crash left. `odw
+  doctor` brings up the proxy and, from a container on the internal network, expects 200
+  for the first host listed, 403 for a reserved one, and example.com not to resolve.
 - **The safe failure.** A CLI or tool that ignores `HTTPS_PROXY` gets no network at all:
   there is no route out of the internal network but the proxy. Anything not over HTTP(S)
   through the proxy — SSH, raw TCP, UDP — fails. Agents with different allowlists get
   different networks and proxies, so an agent cannot use another's. Allowed hosts are
   still trusted: an agent can send your code anywhere an allowed host forwards it.
+- **By name, not by site.** The list limits the host names a connection is made to, and
+  so the servers those names resolve to — not the site served there. Over `CONNECT` the
+  TLS inside the tunnel is the agent's: it can name another site in its SNI and inner
+  `Host` header (domain fronting), and the server an allowed name resolves to — a CDN's
+  edge, a shared front end — may serve it. Allowing one name behind a CDN can admit
+  every site that edge fronts for; prefer hosts that are not behind shared front ends.
 
 A missing engine or image fails the run before its first agent starts, with a
 `ConfigError` that says how to build the image; `odw doctor` checks the same and runs
@@ -2261,13 +2294,17 @@ CLI spends its quota redoing what the last one did. With `"fallback": { "handoff
 — which overrides the setting either way — the next adapter carries the work on:
 
 - An isolated agent's worktree is kept: the next adapter runs in it, the partial edits
-  in place. An in-place agent's edits are in the source tree already.
+  in place — and keeps it for each of its runs of the call (a stall restart, a rate-limit
+  or schema retry). An in-place agent's edits are in the source tree already. A worktree
+  is handed only to an adapter that runs with the same trust and container engine: an
+  untrusted or differently sandboxed fallback starts in a fresh one, still with the
+  brief, which says the work was not carried over.
 - Its prompt starts, ahead of the task, with a brief headed *"You are continuing work
   another agent started…"*: why the last adapter stopped, the files it changed (the
   worktree's diff stat; for an in-place agent, the files its edit tool calls named), the
   last plan or to-do list it wrote (Claude Code's `TodoWrite`, Codex's plan), the
   commands it ran and how they ended, and its last few messages (a text CLI: the end of
-  its output). At most 6 KB, redacted like everything ODW keeps. The reasoning is lost
+  its output). At most 6 KB, each piece redacted before anything is cut. The reasoning is lost
   either way — the brief is the visible part of it, cut down to what the next agent needs.
 - The brief is kept as `agents/<id>.handoff.md`; a `handoff` event `{ from, to, reason,
   bytes }` says so, and the transcript has a `{"kind":"handoff",…}` line before the next
@@ -2562,7 +2599,7 @@ identity and signing settings; the message names the workflow, the agent, the
 diff stat, the run id and the agent's cost when its CLI reported one. An agent
 that would conflict, or fails its verify, stops it before the push: the branch is
 deleted and nothing leaves the machine. Then it pushes to `--remote` (default
-`origin`) and runs `gh pr create` — a **draft** unless `--ready`, titled
+`origin`) and runs `gh pr create --repo <owner/name of that remote>` — a **draft** unless `--ready`, titled
 `--title` or after the workflow and agent — with the run summary as its body:
 the agents and their commits, the phases, the spend receipt as a table, the
 verify result and the `odw diff` commands. Without `gh`, or with `gh` not logged
