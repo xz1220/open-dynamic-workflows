@@ -35,6 +35,7 @@ import {
   runTier,
 } from "./permissions.js";
 import { isTrustLevel, untrustedPosture } from "./trust.js";
+import { buildEgressHosts } from "./egress.js";
 import { buildAdapterSandbox, buildSandboxSetting, checkSandboxImages } from "./sandbox.js";
 import type {
   Adapter,
@@ -150,7 +151,7 @@ const KNOWN_TOP_KEYS = [
   "approveLinks",
 ] as const;
 
-const KNOWN_ADAPTER_KEYS = ["command", "stdin", "env", "timeout", "stallTimeout", "concurrency", "promptCache", "label", "flags", "output", "failures", "permissionArgs", "permissions", "permissionDenials", "trust", "untrustedArgs", "untrustedNote", "sandbox", "agentLimits"] as const;
+const KNOWN_ADAPTER_KEYS = ["command", "stdin", "env", "timeout", "stallTimeout", "concurrency", "promptCache", "label", "flags", "output", "failures", "permissionArgs", "permissions", "permissionDenials", "trust", "untrustedArgs", "untrustedNote", "sandbox", "agentLimits", "egressHosts"] as const;
 
 /** The fields of an adapter's `output`, per format. */
 const KNOWN_OUTPUT_KEYS: Record<string, readonly string[]> = {
@@ -729,6 +730,8 @@ function buildAdapter(name: string, spec: RawAdapter): Adapter {
   if (spec.agentLimits != null) {
     adapter.agentLimits = readLimits(spec.agentLimits, `adapter '${name}' 'agentLimits'`, (m) => new ConfigError(m));
   }
+  // The hosts its CLI needs, for a sandbox's `network: { allow: "adapter" }` (ODW extension; see ./egress).
+  if (spec.egressHosts != null) adapter.egressHosts = buildEgressHosts(name, spec.egressHosts);
   return adapter;
 }
 

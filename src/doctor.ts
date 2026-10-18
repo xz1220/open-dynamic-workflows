@@ -25,7 +25,18 @@ import {
 import { isOnPath } from "./adapters/executable.js";
 import { runCommand, type CommandRunner } from "./adapters/runner.js";
 import { trustBanner } from "./adapters/trust.js";
-import { clientEnv, describeContainer, planSandbox, resolveEngine, sandboxProblem } from "./adapters/sandbox.js";
+import { EGRESS_PROBE } from "./adapters/egress.js";
+import { EgressProxies } from "./adapters/egress-run.js";
+import {
+  clientEnv,
+  describeContainer,
+  describeNetwork,
+  egressOf,
+  planSandbox,
+  resolveEngine,
+  sandboxProblem,
+  type SandboxEngine,
+} from "./adapters/sandbox.js";
 import type { Config, ContainerSandbox, PermissionTier } from "./adapters/types.js";
 import { Bridge } from "./bridge.js";
 import { redactorFor, type RedactionCoverage } from "./redact.js";
@@ -245,6 +256,9 @@ export async function runDoctor(opts: DoctorOptions): Promise<DoctorReport> {
         detail: (err as Error).message.split("\n")[0]!.slice(0, 160),
         hint: "run the adapter's command by hand in this directory to see what it is waiting for",
       });
+    } finally {
+      // A sandbox's egress proxy, if the smoke run started one (ODW extension).
+      await bridge.closeEgress();
     }
   }
 
@@ -282,6 +296,7 @@ export function trustCheck(config: Config, cwd: string, configPath: string | nul
  * image is present (never pulled), and a smoke run — `<engine> run --rm
  * --pull never --network none <image> true`, no model involved — starts and
  * exits 0. A failure is a `fail`: such a run would stop before its first agent.
+ * A box with an egress allowlist then gets an egress check ({@link egressCheck}).
  */
 export async function sandboxChecks(
   config: Config,
@@ -309,13 +324,24 @@ export async function sandboxChecks(
   }
   const checks: DoctorCheck[] = [];
   const smoked = new Map<string, DoctorCheck>();
+  const probed = new Map<string, DoctorCheck>();
   for (const { id, title, box } of boxes) {
     const what = describeContainer(box, onPath);
     const engine = resolveEngine(box, onPath);
     const key = `${engine}\u0000${box.image}`;
+    // An egress allowlist (ODW extension): once the box runs, its proxy is tried with a smoke request each way.
+    const egress = egressOf(box.network);
+    const probe = async (ran: DoctorCheck): Promise<void> => {
+      if (!egress || ran.status !== "ok" || !engine) return;
+      const probeKey = JSON.stringify([key, egress]);
+      const known = probed.get(probeKey) ?? { id, title, ...(await egressCheck(box, engine, runner, env)) };
+      probed.set(probeKey, known);
+      checks.push({ ...known, id: `${id}:egress`, title: `${title} egress` });
+    };
     const known = smoked.get(key);
     if (known) {
       checks.push({ ...known, id, title });
+      await probe(known);
       continue;
     }
     let check: DoctorCheck;
@@ -349,8 +375,76 @@ export async function sandboxChecks(
     }
     smoked.set(key, check);
     checks.push(check);
+    await probe(check);
   }
   return checks;
+}
+
+/** The host the doctor's probe asks for to be refused: reserved (RFC 2606), so never on a list by accident. */
+export const PROBE_DENIED = "odw-egress-check.invalid:443";
+
+/**
+ * The egress check (ODW extension; see adapters/egress-run.ts): bring up the
+ * box's internal network and proxy as a run would, and from a container on
+ * that network ask the proxy for a CONNECT to the first host the allowlist
+ * names (it must answer 200: allowed, and reached) and to a reserved host
+ * that no list holds (403: refused). The proxy and network go at the end.
+ */
+export async function egressCheck(
+  box: ContainerSandbox,
+  engine: SandboxEngine,
+  runner: CommandRunner,
+  env: Record<string, string | undefined> = process.env,
+): Promise<Omit<DoctorCheck, "id" | "title">> {
+  const egress = egressOf(box.network)!;
+  const proxies = new EgressProxies({ runner, runId: "doctor", hostEnv: env });
+  const named = egress.allow.find((entry) => !entry.startsWith("*."));
+  const allowed = named === undefined ? null : (named.startsWith("[") ? /\]:\d+$/.test(named) : named.includes(":")) ? named : `${named}:443`;
+  const list = describeNetwork(box.network);
+  try {
+    const handle = await proxies.for(engine, box.image, egress);
+    const vars = proxies.env(handle, "doctor");
+    const argv = [engine, "run", "--rm", "--pull", "never", "--network", handle.network, "--cap-drop", "ALL", "--security-opt", "no-new-privileges"];
+    for (const [name, value] of Object.entries(vars)) argv.push("--env", `${name}=${value}`);
+    argv.push("--entrypoint", "node", egress.proxyImage ?? box.image, "-e", EGRESS_PROBE, PROBE_DENIED, ...(allowed ? [allowed] : []));
+    const ran = await runner(argv, { timeout: 90, env: clientEnv(env) });
+    let answers: Record<string, number> = {};
+    try {
+      answers = JSON.parse(ran.stdout.trim().split("\n").pop() ?? "") as Record<string, number>;
+    } catch {
+      const said = (ran.stderr || ran.stdout).trim().split("\n")[0]?.slice(0, 160) ?? "";
+      return {
+        status: "fail",
+        detail: `${list} — the probe on the internal network did not run (exit ${ran.returncode})${said ? `: ${said}` : ""}`,
+        hint: "the probe and the proxy need node in the image (or set network.proxyImage to one with node)",
+      };
+    }
+    if (answers[PROBE_DENIED] !== 403) {
+      return {
+        status: "fail",
+        detail: `${list} — the proxy answered ${answers[PROBE_DENIED] || "nothing"} for ${PROBE_DENIED}, not 403`,
+        hint: "the egress proxy must refuse hosts off its list: run `odw doctor` again, and report it if it persists",
+      };
+    }
+    if (allowed === null) {
+      return { status: "ok", detail: `${list} — the proxy refused ${PROBE_DENIED}; the list has only wildcards, so no allowed host was tried` };
+    }
+    const got = answers[allowed];
+    if (got === 200) return { status: "ok", detail: `${list} — through the proxy ${allowed} was reached and ${PROBE_DENIED} refused` };
+    return {
+      status: "warn",
+      detail: `${list} — the proxy refused ${PROBE_DENIED}, but answered ${got || "nothing"} for ${allowed}${got === 502 ? " (it could not reach it)" : ""}`,
+      hint: "check that this machine can reach that host (DNS, firewall); the proxy resolves names itself",
+    };
+  } catch (err) {
+    return {
+      status: "fail",
+      detail: `${list} — ${(err as Error).message.split("\n")[0]!.slice(0, 200)}`,
+      hint: "the egress proxy runs in the agent's image (it needs node) or network.proxyImage; the engine must create internal networks",
+    };
+  } finally {
+    await proxies.close();
+  }
 }
 
 /** Variables the redaction check names before it says how many more. */

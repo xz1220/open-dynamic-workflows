@@ -31,6 +31,8 @@ export const NOTE_ADDED = "note_added";
 export const APPLY_RESOLVED = "apply_resolved";
 // A fallback handed an agent's work over to the next adapter, with a brief of what the last one did (ODW extension; see handoff.ts).
 export const HANDOFF = "handoff";
+// A sandbox's egress proxy refused a request: { host, port, method, agent | commandId } (ODW extension; see adapters/egress-run.ts).
+export const EGRESS_DENIED = "egress_denied";
 
 export interface WorkflowEvent {
   ts: number;

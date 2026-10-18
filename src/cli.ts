@@ -43,6 +43,7 @@ import { parseArgs } from "node:util";
 import { expandHome, isOnPath, listAdapters, loadConfig, locateConfig, resolveAdapter, resolveRunsRoot } from "./adapters/config.js";
 import { isPermissionTier, permissionsBanner } from "./adapters/permissions.js";
 import { trustBanner } from "./adapters/trust.js";
+import { startEgressProxy, type EgressProxyConfig } from "./adapters/egress.js";
 import { sandboxBanner, sandboxFlagOf, withSandboxFlag, type SandboxFlag } from "./adapters/sandbox.js";
 import type { Adapter, Config, PermissionTier, TrustLevel } from "./adapters/types.js";
 import { killAllAgentProcesses } from "./adapters/runner.js";
@@ -248,6 +249,9 @@ export async function main(argv: string[]): Promise<number> {
         // Hidden: the worker entrypoint a background run re-execs into. In a SEA
         // binary there is no separate worker.js, so the binary calls itself here.
         return await cmdWorker(rest);
+      case "__egress-proxy":
+        // Hidden: a sandbox's egress proxy (ODW extension; see adapters/egress.ts), run until killed.
+        return await cmdEgressProxy(rest);
       case "init":
         return await cmdInitCli(rest);
       case "doctor":
@@ -415,6 +419,21 @@ async function cmdWorker(rest: string[]): Promise<number> {
   }
   const state = await executeRun(runDir, { worker: true });
   return state === "done" ? 0 : 1;
+}
+
+/** Hidden: `odw __egress-proxy <config.json>` — the egress proxy a sandbox's sidecar runs as a script of its own. */
+async function cmdEgressProxy(rest: string[]): Promise<number> {
+  const file = rest[0];
+  if (!file) {
+    process.stderr.write("odw __egress-proxy: missing <config.json> ({ allow, port, log, ready? })\n");
+    return 2;
+  }
+  const server = startEgressProxy(JSON.parse(readFileSync(file, "utf8")) as EgressProxyConfig);
+  await new Promise<void>((done) => {
+    server.on("close", done);
+    for (const signal of ["SIGINT", "SIGTERM"] as const) process.once(signal, () => server.close());
+  });
+  return 0;
 }
 
 /** `odw init` — detect agent CLIs and set/inspect the default (see src/init.ts). */

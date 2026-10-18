@@ -59,3 +59,65 @@ if (report.hostPathLeaked) fail("the host's PATH reached the container");
 if (offlineExit === 0) fail("an exec() step reached the network");
 console.log("sandbox on a real engine: ok");
 NODE
+
+# The egress allowlist: the agent's container is on an internal network of
+# the run, its only way out the proxy sidecar. example.com is allowlisted
+# (fetched over TLS through the tunnel), example.org is not (403, and an
+# egress_denied event naming the agent), and a connection around the proxy
+# gets nowhere. The doctor's egress check passes, and nothing is left behind.
+egress="$work/egress"
+mkdir -p "$egress/.odw/workflows"
+git -C "$egress" init -q
+cat > "$egress/odw.config.json" <<JSON
+{
+  "defaultAdapter": "probe",
+  "runsRoot": "$work/egress-runs",
+  "adapters": { "probe": { "command": ["egress-probe"], "stdin": "{prompt}" } },
+  "sandbox": { "kind": "container", "engine": "$engine", "image": "$image", "cliConfig": "none",
+               "network": { "allow": ["example.com"] } }
+}
+JSON
+cat > "$egress/.odw/workflows/egress.js" <<'JS'
+export const meta = { name: "egress", description: "what an agent behind an egress allowlist can reach" };
+return JSON.parse(await agent("fetch example.com example.org", { label: "egress" }));
+JS
+cd "$egress"
+node "$here/dist/cli.js" doctor --json > "$work/egress-doctor.json" || true
+node "$here/dist/cli.js" run egress --wait 2>"$work/egress.err" >/dev/null || true
+eid="$(ls "$work/egress-runs/egress" | head -1)"
+edir="$work/egress-runs/egress/$eid"
+if [ ! -f "$edir/result.json" ]; then
+  echo "the egress run left no result" >&2
+  cat "$work/egress.err" >&2
+  tail -40 "$edir/events.jsonl" >&2 2>/dev/null || true
+  exit 1
+fi
+cat "$edir/result.json"
+node - "$edir" "$work/egress-doctor.json" <<'NODE'
+const [dir, doctorFile] = process.argv.slice(2);
+const { readFileSync } = require("node:fs");
+const fail = (why) => { console.error(`egress check failed: ${why}`); process.exit(1); };
+const raw = JSON.parse(readFileSync(`${dir}/result.json`, "utf8"));
+const report = raw.value ?? raw;
+const allowed = report.fetched["example.com"];
+const denied = report.fetched["example.org"];
+if (!/^http:\/\/1:odw@odw-/.test(report.proxyVar ?? "")) fail(`HTTPS_PROXY was ${report.proxyVar}`);
+if (allowed.proxy !== 200 || !(allowed.https >= 200 && allowed.https < 500)) fail(`example.com through the proxy: ${JSON.stringify(allowed)}`);
+if (denied.proxy !== 403) fail(`example.org was not refused: ${JSON.stringify(denied)}`);
+if (report.direct) fail("a connection around the proxy got out");
+const events = readFileSync(`${dir}/events.jsonl`, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+const denial = events.find((e) => e.type === "egress_denied" && e.host === "example.org");
+if (!denial) fail("no egress_denied event for example.org");
+if (denial.agent !== 1) fail(`the denial named agent ${denial.agent}, not 1`);
+if (events.some((e) => e.type === "egress_denied" && e.host === "example.com")) fail("example.com was denied");
+const doctor = JSON.parse(readFileSync(doctorFile, "utf8"));
+const check = (doctor.checks ?? []).find((c) => c.id === "sandbox:egress");
+if (!check || check.status !== "ok") fail(`doctor's egress check: ${JSON.stringify(check)}`);
+console.log("egress allowlist on a real engine: ok");
+NODE
+left="$("$engine" ps -a --filter label=odw.role=egress-proxy --format '{{.Names}}')"
+nets="$("$engine" network ls --filter label=odw.run --format '{{.Name}}')"
+if [ -n "$left" ] || [ -n "$nets" ]; then
+  echo "left behind: proxies [$left] networks [$nets]" >&2
+  exit 1
+fi

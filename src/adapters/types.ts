@@ -6,6 +6,7 @@
  * loaded once at run start and then only read.
  */
 
+import type { EgressAllow } from "./egress.js";
 import type { LimitSpec } from "../limits.js";
 
 /**
@@ -302,10 +303,20 @@ export interface Adapter {
   sandbox?: ContainerSpec;
   /** This CLI's own per-agent limits, over the run's `agentLimits` key by key (ODW extension; see ../limits). */
   agentLimits?: LimitSpec;
+  /**
+   * The hosts this CLI needs to reach — its model API and login — what a
+   * container sandbox's `network: { allow: "adapter" }` lets it reach (ODW
+   * extension; see ./egress). The built-in adapters declare theirs.
+   */
+  egressHosts?: string[];
 }
 
-/** Where a sandboxed agent's container may reach (ODW extension): nowhere, or the engine's default network. */
-export type SandboxNetwork = "none" | "default";
+/**
+ * Where a sandboxed agent's container may reach (ODW extension): nowhere, the
+ * engine's default network, or only the hosts of an allowlist, through an
+ * egress proxy outside its container (see ./egress).
+ */
+export type SandboxNetwork = "none" | "default" | EgressAllow;
 
 /**
  * What a container gets of its CLI's own config and login (ODW extension):

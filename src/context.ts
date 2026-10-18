@@ -14,7 +14,7 @@ import { Bridge, type BridgeOptions } from "./bridge.js";
 import type { WaitingCheckpoint } from "./checkpoint.js";
 import { NullControl, type Control } from "./control.js";
 import { BudgetExhausted } from "./errors.js";
-import { LOG, NullSink, event, type EventSink, type WorkflowEvent } from "./events.js";
+import { EGRESS_DENIED, LOG, NullSink, event, type EventSink, type WorkflowEvent } from "./events.js";
 import type { AgentResultRecord, ReplayJournal } from "./journal.js";
 import { quotaPauseMessage, type QuotaPauseChange } from "./quota-wait.js";
 import { redactorFor, type Redactor } from "./redact.js";
@@ -185,6 +185,9 @@ export function buildContext(config: Config, options: BuildContextOptions = {}):
   const bridge = new Bridge(config, {
     source: options.source,
     runId: options.runId,
+    // A sandbox's egress denials (ODW extension): logged in the run directory, tailed into events.
+    runDir: options.runDir,
+    onEgressDenied: (denial) => sink.emit(event(EGRESS_DENIED, { ...denial })),
     agentSchemaPath: options.agentSchemaPath,
     redactor,
     onCliRun: options.onCliRun,

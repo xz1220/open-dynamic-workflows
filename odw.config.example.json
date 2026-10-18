@@ -119,7 +119,8 @@
         "edit": ["--sandbox", "workspace-write"],
         "full": ["--sandbox", "danger-full-access"]
       },
-      "untrustedNote": "codex has no documented way to ignore the repository's AGENTS.md — its instructions still reach the agent (its .codex/ config, hooks and rules load only if you trusted the project in your own Codex config)"
+      "untrustedNote": "codex has no documented way to ignore the repository's AGENTS.md — its instructions still reach the agent (its .codex/ config, hooks and rules load only if you trusted the project in your own Codex config)",
+      "egressHosts": ["api.openai.com", "chatgpt.com", "auth.openai.com"]
     },
     "claude": {
       "label": "Claude Code",
@@ -147,7 +148,8 @@
         "full": ["--permission-mode", "bypassPermissions"]
       },
       "untrustedArgs": ["--safe-mode"],
-      "promptCache": true
+      "promptCache": true,
+      "egressHosts": ["api.anthropic.com", "claude.ai", "platform.claude.com"]
     },
     "gemini": {
       "label": "Gemini CLI",
@@ -158,7 +160,8 @@
         "edit": ["--approval-mode", "auto_edit"],
         "full": ["--approval-mode", "yolo"]
       },
-      "untrustedNote": "gemini has no documented way to ignore the repository's GEMINI.md and .gemini/settings.json when headless — its instructions, MCP servers and hooks still reach the agent"
+      "untrustedNote": "gemini has no documented way to ignore the repository's GEMINI.md and .gemini/settings.json when headless — its instructions, MCP servers and hooks still reach the agent",
+      "egressHosts": ["generativelanguage.googleapis.com", "cloudcode-pa.googleapis.com", "oauth2.googleapis.com"]
     },
     "qwen": {
       "label": "Qwen Code",
@@ -230,7 +233,8 @@
         "edit": ["--mode", "accept-edits"],
         "full": ["--mode", "accept-edits", "--dangerously-skip-permissions"]
       },
-      "untrustedNote": "agy has no documented way to ignore the repository's AGENTS.md, GEMINI.md and .agents/ rules, skills, agents and MCP servers — they still reach the agent"
+      "untrustedNote": "agy has no documented way to ignore the repository's AGENTS.md, GEMINI.md and .agents/ rules, skills, agents and MCP servers — they still reach the agent",
+      "egressHosts": ["cloudcode-pa.googleapis.com", "oauth2.googleapis.com"]
     },
     "my_wrapper": {
       "label": "My custom wrapper (example)",

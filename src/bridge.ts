@@ -117,7 +117,9 @@ import {
 } from "./adapters/output.js";
 import { replyFile, usesReplyFile, type ReplyFile } from "./adapters/reply-file.js";
 import { runCommand, type CommandRunner } from "./adapters/runner.js";
+import { EgressProxies, type EgressDeniedEvent } from "./adapters/egress-run.js";
 import {
+  egressOf,
   openContainer,
   planSandbox,
   resolveEngine,
@@ -285,6 +287,10 @@ export interface BridgeOptions {
   random?: () => number;
   /** The run's id, given to every agent process (and worktree setup) as `ODW_RUN_ID`. */
   runId?: string;
+  /** The run's directory: a sandbox's egress proxies log their denials in its `egress/` (ODW extension). */
+  runDir?: string;
+  /** Told of each request a sandbox's egress proxy refused (ODW extension; see adapters/egress-run.ts). */
+  onEgressDenied?: (denial: EgressDeniedEvent) => void;
   /**
    * Where a call writes the schema file of a CLI that reads its schema from
    * one (`flags.schema.mode: "file"`): the run directory's
@@ -585,6 +591,9 @@ export class Bridge {
   private readonly onRunNote: ((message: string, fields: Record<string, unknown>) => void) | undefined;
   /** Per engine and image: whether a sandbox can run here, asked once per run (ODW extension). */
   private readonly sandboxChecks = new Map<string, Promise<string | null>>();
+  /** The run's egress proxies and internal networks, brought up on first use (ODW extension). */
+  private egress: EgressProxies | undefined;
+  private readonly egressOptions: { runDir?: string; onDenied?: (denial: EgressDeniedEvent) => void };
 
   constructor(
     private readonly config: Config,
@@ -601,6 +610,7 @@ export class Bridge {
     this.redactor = options.redactor;
     this.onCliRun = options.onCliRun;
     this.onRunNote = options.onRunNote;
+    this.egressOptions = { runDir: options.runDir, onDenied: options.onEgressDenied };
     this.ports =new PortPool(...config.settings.portRange);
     this.quota = new QuotaWaits({
       now: this.now,
@@ -679,6 +689,28 @@ export class Bridge {
     const problem = await check;
     if (problem || !engine) throw new ConfigError(problem ?? "no container engine on PATH (docker or podman)");
     return engine;
+  }
+
+  /**
+   * The way out of a container whose sandbox has an egress allowlist (ODW
+   * extension; see adapters/egress-run.ts): its run's internal network and
+   * proxy variables, the proxy started on first use. Undefined: no allowlist.
+   */
+  async egressFor(
+    box: ContainerSandbox,
+    engine: SandboxEngine,
+    agentId?: number | string,
+  ): Promise<{ network: string; env: Record<string, string> } | undefined> {
+    const allow = egressOf(box.network);
+    if (!allow) return undefined;
+    this.egress ??= new EgressProxies({ runner: this.runner, runId: this.runId, ...this.egressOptions });
+    const handle = await this.egress.for(engine, box.image, allow);
+    return { network: handle.network, env: this.egress.env(handle, agentId) };
+  }
+
+  /** At the run's end: its egress proxies, then their networks, removed — after a last read of their denials. */
+  async closeEgress(): Promise<void> {
+    await this.egress?.close();
   }
 
   /** Check the run's own sandbox before anything runs (ODW extension): a ConfigError when it cannot run here. */
@@ -1702,6 +1734,7 @@ export class Bridge {
               env,
               runId: this.runId,
               agentId: call.container.agentId,
+              egress: await this.egressFor(call.container.box, call.container.engine, call.container.agentId),
             })
           : undefined;
         if (container?.note) this.noteOnce(`sandbox:${adapter.name}`, container.note, { adapter: adapter.name }, call.onNote);

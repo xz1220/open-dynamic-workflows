@@ -16,6 +16,16 @@
  *   kill <name>           SIGKILLs that container's group, removes its file.
  *   rm --force <name>     the same; quiet when it is gone.
  *   image inspect … <img> exit 0 when <img> is in $DOCKER_FAKE_IMAGES (comma list).
+ *   run -d …              the same, detached: prints an id and exits at once
+ *                         (an egress proxy: it gets ODW_EGRESS_PORT=0, so it
+ *                         listens on a free port of this host).
+ *   network create|rm …   $DOCKER_FAKE_STATE/net.<name> exists while it does.
+ *   network connect …     nothing; logs.
+ *
+ * A container's command arguments under a bind mount's target are mapped to
+ * its source (the proxy's script and config), and a `@<name>:` in an --env
+ * value — a proxy URL naming a running container — becomes `@127.0.0.1:`,
+ * as the engine's DNS would resolve it.
  *
  * Used only by the test suite.
  */
@@ -30,7 +40,7 @@ const state = process.env.DOCKER_FAKE_STATE ?? "/tmp";
 
 const WITH_VALUE = new Set([
   "--name", "--label", "--user", "--userns", "--cap-drop", "--security-opt", "--tmpfs", "--pids-limit",
-  "--memory", "--cpus", "--network", "--workdir", "--mount", "--env", "--pull",
+  "--memory", "--cpus", "--network", "--workdir", "--mount", "--env", "--pull", "--entrypoint",
 ]);
 
 function stop(name) {
@@ -56,7 +66,26 @@ if (sub === "image" && rest[0] === "inspect") {
   }
   process.stderr.write(`Error: No such image: ${image}\n`);
   process.exit(1);
+} else if (sub === "network") {
+  const [action, ...names] = rest;
+  const name = names[names.length - 1];
+  if (action === "create") writeFileSync(join(state, `net.${name}`), "");
+  else if (action === "rm") {
+    if (!existsSync(join(state, `net.${name}`))) {
+      process.stderr.write(`Error: network ${name} not found\n`);
+      process.exit(1);
+    }
+    rmSync(join(state, `net.${name}`), { force: true });
+  }
+  process.exit(0);
+} else if (sub === "logs") {
+  process.exit(0);
 } else if (sub === "kill" || sub === "rm") {
+  if (sub === "rm" && rest.length > 2) {
+    // rm --force a b …: each of them.
+    for (const name of rest.slice(1)) stop(name);
+    process.exit(0);
+  }
   const name = rest[rest.length - 1];
   if (stop(name)) process.exit(0);
   process.stderr.write(`Error: No such container: ${name}\n`);
@@ -65,14 +94,18 @@ if (sub === "image" && rest[0] === "inspect") {
   let i = 0;
   let name = "anon";
   let workdir = process.cwd();
+  let entrypoint = null;
+  let detach = false;
   const env = { PATH: process.env.PATH };
   const mounts = [];
   for (; i < rest.length; i++) {
     const arg = rest[i];
     if (!arg.startsWith("-")) break;
+    if (arg === "-d") detach = true;
     if (!WITH_VALUE.has(arg)) continue;
     const value = rest[++i];
     if (arg === "--name") name = value;
+    else if (arg === "--entrypoint") entrypoint = value;
     else if (arg === "--workdir") workdir = value;
     else if (arg === "--mount") mounts.push(Object.fromEntries(value.split(",").map((f) => f.split("="))));
     else if (arg === "--env") {
@@ -82,10 +115,32 @@ if (sub === "image" && rest[0] === "inspect") {
       } else env[value.slice(0, eq)] = value.slice(eq + 1);
     }
   }
-  const command = rest.slice(i + 1);
+  const mapPath = (arg) => {
+    const mount = mounts.find((m) => m.target !== m.source && arg.startsWith(m.target + "/"));
+    return mount ? mount.source + arg.slice(mount.target.length) : arg;
+  };
+  const command = [...(entrypoint ? [entrypoint] : []), ...rest.slice(i + 1)].map(mapPath);
   // The container's HOME is a host directory bound there: map it back.
   const home = mounts.find((m) => m.target === env.HOME);
   if (home) env.HOME = home.source;
+  // Container names resolve to this host.
+  for (const [key, value] of Object.entries(env)) {
+    env[key] = value.replace(/@([A-Za-z0-9_.-]+):/g, (whole, host) => (existsSync(join(state, host)) ? "@127.0.0.1:" : whole));
+  }
+  if (detach) {
+    // The proxy's log paths in its config are container paths: the fake maps its config file.
+    const configArg = command.find((arg) => arg.endsWith("config.json"));
+    if (configArg && existsSync(configArg)) {
+      const config = JSON.parse(readFileSync(configArg, "utf8"));
+      for (const key of ["log", "ready"]) if (config[key]) config[key] = mapPath(config[key]);
+      writeFileSync(configArg, JSON.stringify(config));
+    }
+    const child = spawn(command[0], command.slice(1), { cwd: workdir, env: { ...env, ODW_EGRESS_PORT: "0" }, detached: true, stdio: "ignore" });
+    child.unref();
+    writeFileSync(join(state, name), String(child.pid));
+    process.stdout.write(`fake-${name}\n`);
+    process.exit(0);
+  }
   const child = spawn(command[0], command.slice(1), { cwd: workdir, env, detached: true, stdio: ["pipe", "inherit", "inherit"] });
   writeFileSync(join(state, name), String(child.pid));
   process.stdin.pipe(child.stdin);

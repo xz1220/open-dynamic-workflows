@@ -161,8 +161,9 @@ export interface AgentOptions {
   allowEmpty?: boolean;
   /**
    * ODW extension: run this agent in a container, or a stricter one than the
-   * run's — `"container"`, or `{ network: "none", memory, cpus, pids,
-   * cliConfig: "none", image }` (`image` only where nothing else sets one).
+   * run's — `"container"`, or `{ network: "none" | { allow: [...] }, memory,
+   * cpus, pids, cliConfig: "none", image }` (`image` only where nothing else
+   * sets one; an `allow` list narrows the sandbox's to the hosts both allow).
    * It may only tighten the sandbox; asking for less fails the call (see
    * adapters/sandbox.ts).
    */

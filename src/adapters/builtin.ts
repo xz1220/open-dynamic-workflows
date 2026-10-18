@@ -46,6 +46,7 @@ export interface RawAdapter {
   untrustedNote?: string;
   sandbox?: ContainerSpec;
   agentLimits?: LimitSpec;
+  egressHosts?: string[];
 }
 
 // `flags` only DECLARES which native flag carries a model — the router appends
@@ -421,6 +422,33 @@ const UNTRUSTED_NOTES = {
     "and MCP servers — they still reach the agent",
 } as const;
 
+// The hosts each CLI needs from inside a container sandbox with an egress
+// allowlist (`network: { allow: "adapter" }`; ODW extension, see ./egress) —
+// its model API and its login, from its docs; not its optional telemetry,
+// updates or plugin downloads, which an allowlist then refuses (and logs).
+// - Claude Code (https://code.claude.com/docs/en/network-config, "Network
+//   access requirements"): api.anthropic.com (the API, feature flags and
+//   event logging), claude.ai (a claude.ai login) and platform.claude.com (a
+//   Console login, and every login's token exchange and refresh). Its
+//   Datadog telemetry is left out: set DISABLE_TELEMETRY (or
+//   CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC) to quiet the denials.
+// - Codex (https://developers.openai.com/codex/auth): api.openai.com (an API
+//   key), chatgpt.com (a ChatGPT login's backend) and auth.openai.com (its
+//   token refresh).
+// - Gemini CLI (https://geminicli.com/docs/get-started/authentication):
+//   generativelanguage.googleapis.com (a Gemini API key),
+//   cloudcode-pa.googleapis.com (a Google login, Code Assist) and
+//   oauth2.googleapis.com (its token refresh). Vertex AI's regional hosts
+//   are the user's to list.
+// - Antigravity CLI: a Google login like Gemini CLI's —
+//   cloudcode-pa.googleapis.com and oauth2.googleapis.com.
+export const EGRESS_HOSTS: Record<string, string[]> = {
+  claude: ["api.anthropic.com", "claude.ai", "platform.claude.com"],
+  codex: ["api.openai.com", "chatgpt.com", "auth.openai.com"],
+  gemini: ["generativelanguage.googleapis.com", "cloudcode-pa.googleapis.com", "oauth2.googleapis.com"],
+  agy: ["cloudcode-pa.googleapis.com", "oauth2.googleapis.com"],
+};
+
 export const BUILTIN_ADAPTERS: Record<string, RawAdapter> = {
   codex: {
     label: "Codex CLI",
@@ -445,6 +473,7 @@ export const BUILTIN_ADAPTERS: Record<string, RawAdapter> = {
     output: CODEX_OUTPUT,
     permissionArgs: CODEX_PERMISSIONS,
     untrustedNote: UNTRUSTED_NOTES.codex,
+    egressHosts: EGRESS_HOSTS.codex,
   },
   claude: {
     label: "Claude Code",
@@ -467,6 +496,7 @@ export const BUILTIN_ADAPTERS: Record<string, RawAdapter> = {
     // Anthropic's API caches a prompt's prefix: a fan-out sharing one starts
     // staggered, so the rest read the cache the first agent wrote.
     promptCache: true,
+    egressHosts: EGRESS_HOSTS.claude,
   },
   gemini: {
     label: "Gemini CLI",
@@ -474,6 +504,7 @@ export const BUILTIN_ADAPTERS: Record<string, RawAdapter> = {
     flags: { model: ["--model"] },
     permissionArgs: GEMINI_PERMISSIONS,
     untrustedNote: UNTRUSTED_NOTES.gemini,
+    egressHosts: EGRESS_HOSTS.gemini,
   },
   qwen: {
     label: "Qwen Code",
@@ -573,6 +604,7 @@ export const BUILTIN_ADAPTERS: Record<string, RawAdapter> = {
     output: AGY_OUTPUT,
     permissionArgs: AGY_PERMISSIONS,
     untrustedNote: UNTRUSTED_NOTES.agy,
+    egressHosts: EGRESS_HOSTS.agy,
   },
 };
 
