@@ -413,6 +413,10 @@ when one CLI runs out of quota.
   it carries on instead: in the same worktree, its prompt starting with a brief of
   what the last one did (`agents/<id>.handoff.md`). Suggest it for long, isolated
   agents whose partial work is worth keeping.
+- **Accounts** (**ODW extension**). When the user's config has `accounts`,
+  `adapter: 'claude'` already means any of their claude logins — ordered by
+  headroom, handing the work over when one runs out — and `'claude@work'` one
+  login. Write `adapter: 'claude'`; name an account only when the user asks.
 - Only name adapters the user has installed (`odw doctor` lists them), and keep
   the user's choice of default CLI: suggest a chain when long runs keep stopping
   on quota, don't add one silently.

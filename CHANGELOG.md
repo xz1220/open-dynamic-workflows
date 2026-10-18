@@ -71,6 +71,16 @@ independent security reviews whose findings are all fixed.
   event `{ from, to, reason, bytes }`, and marked in the transcript (`odw logs --agent`,
   the dashboard drawer, the brief folded in). `expect` and the kept diff judge the final
   state, against the worktree's base.
+- Several accounts of one CLI in one run (`"accounts": { "claude": [{ "name": "work",
+  "configDir": "~/.claude-work" }, …] }`; **ODW extension**): each login becomes an
+  adapter `claude@work` with its CLI's config-dir variable (`CLAUDE_CONFIG_DIR`,
+  `CODEX_HOME`; other CLIs are refused), its own concurrency cap and quota breaker.
+  `adapter: "claude"` then runs on any account — the one with the most headroom first
+  (not paused for quota, fewest quota failures this run, fewest agents on it) — and hands
+  the work over to the next when one runs out. `odw status` groups agents by account,
+  `odw doctor` checks each login without a model call (`claude auth status`, `codex
+  login status`) and `--smoke` probes each; a container sandbox copies the account's
+  directory. Pooling accounts must follow each provider's terms of service.
 - Evidence of success: `agent(…, { expect })` checks an agent's work instead of taking
   its word — `command` exits 0 in its workspace, `changes`, `files` (globs), `match` —
   and hands misses back (`expectRetries`, default 1) before failing with

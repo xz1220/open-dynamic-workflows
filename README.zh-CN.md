@@ -2262,6 +2262,48 @@ search:3 → claude after codex quota
 key 是它写下的提示词和选项:阶段默认值和运行的默认适配器一样不在其中,所以把某个阶段改到
 别处——比如离开额度用尽的 CLI——仍会重放所有已完成的调用。
 
+### 同一个 CLI 的多个账号
+
+**ODW 扩展。** 如果你有不止一个 Claude Code 或 Codex 登录,`accounts` 让一次运行把它们
+都用上,不必在某个账号额度用完时手动重新登录。每一项都会成为一个独立的适配器
+`<适配器>@<名字>`:
+
+```jsonc
+{
+  "accounts": {
+    "claude": [
+      { "name": "work", "configDir": "~/.claude-work" },
+      { "name": "home", "configDir": "~/.claude-home", "concurrency": 2 }
+    ],
+    "codex": [{ "name": "team", "configDir": "~/.codex-team" }]
+  }
+}
+```
+
+- `claude@work` 就是 `claude` 适配器,只是把该 CLI 文档中的配置目录变量设为这个账号的目录:
+  Claude Code 用 `CLAUDE_CONFIG_DIR`,Codex 用 `CODEX_HOME`。每个账号先手动登录一次:
+  `CLAUDE_CONFIG_DIR=~/.claude-work claude auth login`、`CODEX_HOME=~/.codex-team codex login`。
+  其他 CLI 一律拒绝:ODW 不知道有哪个变量能把两个登录分开。
+- 每个账号有自己的并发上限(取其适配器的 `concurrency`,或该项自己的)和自己的额度熔断;
+  其余定义与其适配器相同。每一项接受 `name`、`configDir`(绝对路径或 `~/` 开头)、
+  `concurrency` 和 `label`。
+- `agent(…, { adapter: "claude" })`——以及默认适配器、提到 `claude` 的回退链——表示
+  *任意一个 claude 账号*:这次调用得到一条由这些账号组成、按余量排序的链,某个账号用完时
+  **交接工作**(与 `"fallback": { "handoff": true }` 相同;`agent(…, { handoff: false })`
+  则从头开始)。`adapter: "claude@work"` 只在这个账号上运行。
+- **余量**在每次路由调用时计算:不处于额度暂停的账号在前(额度熔断已把它移出,或在
+  `quotaWait` 下额度用完、等待重置),其次是本次运行中额度失败最少的,再次是本次运行中
+  已路由到它、尚未结束的 agent 最少的;相同时保持配置中的顺序。扇出因此会分散到各个账号。
+- 模型档位里没有 `claude@work` 的 id 时,使用 `claude` 的。
+- agent 的适配器在事件、实时视图、看板抽屉与花费小票中都显示为 `claude@work`;`odw status`
+  按账号分组列出 agent(`accounts of claude: claude@home 2 agents · claude@work 1 agent, 1 moved on`)。
+- `odw doctor` 不调用模型地检查每个账号的登录——用该账号的目录运行 `claude auth status`
+  或 `codex login status`——`odw doctor --smoke --adapter claude` 会通过每个账号各发一次提示词。
+- 在容器沙箱中,复制(或绑定)进容器 home 的是该账号的目录,而不是 `~/.claude`。
+
+能否把多个账号合在一起使用,取决于各服务商的服务条款:配置多个账号之前请先确认。ODW
+只是在你提供的登录之间切换。
+
 ### 按适配器限制并发与错开扇出
 
 **ODW 扩展。** `concurrency` 限制一次运行同时有多少个 agent;适配器自己的 `concurrency`

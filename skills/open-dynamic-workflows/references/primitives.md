@@ -275,6 +275,15 @@ take it. Claude Code ignores all of it.
   on one adapter, the run's later calls skip it: each starts on the next
   adapter of its chain, or fails at once (reason `quota`) without one. One
   warning says so.
+- **Accounts** (ODW extension). With the user's `accounts` config, each login
+  is an adapter `<adapter>@<name>` (`claude@work`) with its own config dir,
+  concurrency cap and quota breaker. `adapter: "claude"` (or the default
+  adapter, or a chain naming it) then means any claude account: a chain of
+  the accounts by headroom — not in a quota pause first, then fewest quota
+  failures this run, then fewest agents routed to it and not yet finished —
+  with handoff on unless the call says `handoff: false`.
+  `adapter: "claude@work"` runs on that account alone. Events, `odw status`
+  and the dashboard name the account.
 - **Pause for a spent quota.** With the `quotaWait` setting (`{ "max":
   <seconds> }`; off by default), a call with no adapter left on a spent quota
   does not fail: it waits, holding no slot, for the reset its CLI named — when

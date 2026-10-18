@@ -2615,6 +2615,55 @@ call's resume key is its prompt and options as written: a phase's defaults stay 
 it, like the run's default adapter, so routing a phase elsewhere — say, off a CLI that
 ran out of quota — still replays every call that finished.
 
+### Several accounts of one CLI
+
+**ODW extension.** If you have more than one Claude Code or Codex login, `accounts`
+lets one run use them all instead of you logging in again when one runs out. Each
+entry becomes an adapter of its own, `<adapter>@<name>`:
+
+```jsonc
+{
+  "accounts": {
+    "claude": [
+      { "name": "work", "configDir": "~/.claude-work" },
+      { "name": "home", "configDir": "~/.claude-home", "concurrency": 2 }
+    ],
+    "codex": [{ "name": "team", "configDir": "~/.codex-team" }]
+  }
+}
+```
+
+- `claude@work` is the `claude` adapter with its CLI's documented config-dir variable
+  set to the account's directory: `CLAUDE_CONFIG_DIR` for Claude Code, `CODEX_HOME` for
+  Codex. Log each one in once by hand: `CLAUDE_CONFIG_DIR=~/.claude-work claude auth login`,
+  `CODEX_HOME=~/.codex-team codex login`. Any other CLI is refused: ODW knows no
+  variable that would keep two logins apart.
+- Each account has its own concurrency cap (its adapter's `concurrency`, or the entry's
+  own) and its own quota breaker; the rest of the definition is its adapter's. An entry
+  takes `name`, `configDir` (absolute or `~/`), `concurrency` and `label`.
+- `agent(…, { adapter: "claude" })` — and the default adapter, and a fallback chain
+  naming `claude` — means *any claude account*: the call gets a chain of the accounts,
+  ordered by headroom, and **hands the work over** when one runs out (as `"fallback":
+  { "handoff": true }` does; `agent(…, { handoff: false })` starts over instead).
+  `adapter: "claude@work"` runs on that account alone.
+- **Headroom**, worked out each time a call is routed: accounts not in a quota pause
+  first (the quota breaker took them out, or under `quotaWait` their quota is spent
+  until a reset), then the fewest quota failures this run, then the fewest of the
+  run's agents routed to them and not yet finished; ties keep the config's order. A
+  fan-out spreads over the accounts that way.
+- A model tier without an id for `claude@work` uses the one for `claude`.
+- The agent's adapter reads `claude@work` in its events, the live view, the dashboard's
+  drawer and spend receipt; `odw status` groups agents by account (`accounts of claude:
+  claude@home 2 agents · claude@work 1 agent, 1 moved on`).
+- `odw doctor` checks each account's login without a model call — `claude auth
+  status` or `codex login status` with the account's directory — and `odw doctor
+  --smoke --adapter claude` sends one prompt through each account.
+- In a container sandbox, the account's directory is what gets copied (or bound) into
+  the container's home, not `~/.claude`.
+
+Whether you may pool several accounts is up to each provider's terms of service: check
+them before you configure more than one. ODW only switches between logins you give it.
+
 ### Concurrency per adapter and staggered fan-outs
 
 **ODW extension.** `concurrency` caps how many agents a run has going at once; an

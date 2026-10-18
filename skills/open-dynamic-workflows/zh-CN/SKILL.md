@@ -339,6 +339,9 @@ CLI 额度用尽时让长时间运行继续下去。
 - **交接**（**ODW 扩展**）。默认情况下下一个 CLI 从头再来。调用上写 `handoff: true`（或用户
   配置 `"fallback": { "handoff": true }`）时它会接着做：在同一个 worktree 中，提示词以上一个
   CLI 所做之事的简报开头（`agents/<id>.handoff.md`）。适合做了一半就值得保留的长时间隔离 agent。
+- **多账号**（**ODW 扩展**）。用户配置了 `accounts` 时，`adapter: 'claude'` 已经表示用户的
+  任意一个 claude 登录——按余量排序，某个用完时交接工作——`'claude@work'` 表示其中一个。
+  写 `adapter: 'claude'` 即可；只有用户要求时才指定账号。
 - 只写用户装好的适配器（`odw doctor` 会列出），并尊重用户选定的默认 CLI：长时间运行总因
   额度停下时，建议用户加回退链，不要擅自加。
 - **额度用尽时暂停。** 配置里写上 `"quotaWait": { "max": <秒数> }`（默认关闭）后，无 CLI
