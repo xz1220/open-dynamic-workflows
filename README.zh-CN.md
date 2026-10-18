@@ -717,6 +717,16 @@ odw run wf.js            # 已有的运行则用:odw export $RUN --otlp --send
       <img src="assets/app-screenshots/checkpoint.png" alt="停在检查点的运行:审批卡片里是问题和附带内容,带批准与拒绝按钮;图中 Approve 泳道里是一个琥珀色的关卡节点" />
     </td>
   </tr>
+  <tr>
+    <td width="50%">
+      <strong>花费</strong><br />
+      <img src="assets/app-screenshots/spend.png" alt="一次运行的花费小票:按阶段的 token 与花费及占比条、按适配器的分段、花费最多的 agent" />
+    </td>
+    <td width="50%">
+      <strong>对比</strong><br />
+      <img src="assets/app-screenshots/compare.png" alt="同一工作流两次运行的对比:总耗时、token、花费、完成与失败数及其变化,运行配置的差异,以及每个 agent 一行" />
+    </td>
+  </tr>
 </table>
 
 按 <kbd>⌘K</kbd> / <kbd>Ctrl K</kbd>(或 <kbd>/</kbd>)打开命令面板——跳转到任意运行或工作流、

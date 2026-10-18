@@ -795,6 +795,16 @@ switches to a night theme on demand. What it gives you:
       <img src="assets/app-screenshots/checkpoint.png" alt="A run waiting at a checkpoint: the question and its payload in an approval card with Approve and Reject, and an amber gate node in the graph's Approve lane" />
     </td>
   </tr>
+  <tr>
+    <td width="50%">
+      <strong>Spend</strong><br />
+      <img src="assets/app-screenshots/spend.png" alt="A run's spend receipt: tokens and dollars by phase with share bars, the split by adapter, and the agents that spent most" />
+    </td>
+    <td width="50%">
+      <strong>Compare</strong><br />
+      <img src="assets/app-screenshots/compare.png" alt="Two runs of a workflow compared: wall time, tokens, cost, done and failed with their deltas, what the runs ran with, and a row per agent" />
+    </td>
+  </tr>
 </table>
 
 Press <kbd>⌘K</kbd> / <kbd>Ctrl K</kbd> (or <kbd>/</kbd>) for the command palette —
