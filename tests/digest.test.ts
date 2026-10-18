@@ -382,20 +382,20 @@ test("odw schedule add --digest: the config's digest.cron, refused without a dig
       const write = (raw: Record<string, unknown>) => writeFileSync(join(box.proj, "odw.config.json"), JSON.stringify({ runsRoot, ...raw }));
 
       write({ notify: { webhook: hook.url, on: ["failed"] }, digest: { cron: "0 8 * * 1-5" } });
-      const refused = await odw(["schedule", "add", "morning", "--digest", "--cwd", box.proj]);
+      const refused = await odw(["schedule", "add", "morning", "--digest", "--cwd", box.proj, "--backend", "cron"]);
       assert.equal(refused.code, 1);
       assert.match(refused.err, /"notify\.on" does not list "digest"/);
       assert.equal(box.definitions().length, 0);
 
       write({ notify: { webhook: hook.url, on: ["digest"] } });
-      const noCron = await odw(["schedule", "add", "morning", "--digest", "--cwd", box.proj]);
+      const noCron = await odw(["schedule", "add", "morning", "--digest", "--cwd", box.proj, "--backend", "cron"]);
       assert.equal(noCron.code, 2);
       assert.match(noCron.err, /missing --cron/);
-      const withWorkflow = await odw(["schedule", "add", "morning", "nightly", "--digest", "--cron", "0 8 * * *", "--cwd", box.proj]);
+      const withWorkflow = await odw(["schedule", "add", "morning", "nightly", "--digest", "--cron", "0 8 * * *", "--cwd", box.proj, "--backend", "cron"]);
       assert.equal(withWorkflow.code, 2);
 
       write({ notify: { webhook: hook.url, on: ["digest"] }, digest: { cron: "0 8 * * 1-5" } });
-      const added = await odw(["schedule", "add", "morning", "--digest", "--cwd", box.proj]);
+      const added = await odw(["schedule", "add", "morning", "--digest", "--cwd", box.proj, "--backend", "cron"]);
       assert.equal(added.code, 0, added.err);
       assert.match(added.err, /added schedule 'morning': the digest \(odw digest --since-last --notify\) at "0 8 \* \* 1-5" through cron/);
       const [def] = box.definitions();
