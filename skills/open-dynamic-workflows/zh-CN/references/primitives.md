@@ -670,6 +670,21 @@ Ctrl-C（SIGINT、SIGTERM、SIGHUP）会停止本次 eval 启动的所有运行�
 花费与 token 只对上报了它们的运行求和与平均，都未上报时为 null。任意两个运行 id 都可以用
 `odw compare <runA> <runB>` 对照。
 
+## odw conformance
+
+```bash
+odw conformance [--json] [--case N|name]... [--dir DIR]
+```
+
+把方言的行为写成可运行的用例（ODW 仓库的 `conformance/`，随 npm 包发布）：每个用例是一份
+Claude Code 方言的普通工作流脚本，配一个 `expected.json`——返回值，以及要紧的日志、phase 和
+agent——由确定性的 mock agent 按用例里的表作答。`odw conformance` 把每个用例当作一次真实的
+odw 运行来跑，逐个打印通过与否；任一失败退出码为 1，未知用例或不符合格式的套件为 2。每个用例
+要么是 `documented`（Claude Code 的文档确定了该行为），要么是 `unspecified`（文档没有确定；
+用例记录的是 ODW 的行为——也就是可能出现差异的地方）。通过一致性测试的脚本两边都能跑：只依赖
+documented 用例所确定的行为。这条命令属于 ODW；用例本身可以在 Claude Code 上手动运行，
+`conformance/README.md` 说明了格式，供其他运行时实现自己的 runner。
+
 ## 限制
 
 - **并发上限** —— 同时最多跑 N 个 agent CLI（默认 `min(16, cpus-2)`；在配置里设

@@ -343,6 +343,17 @@ must be removed when targeting a host that does not provide them (`validate()`
 warns about `exec()` and `checkpoint()` calls). Recoverable `null` results require an explicit choice: accept a partial
 result, retry, or fail when the task requires every item.
 
+**Conformance suite.** [`conformance/`](conformance/) holds the dialect's behaviour
+as runnable cases: plain workflow scripts in Claude Code's dialect, each with an
+`expected.json` (its result, and the logs, phases and agents that matter), run on
+a deterministic mock agent. `odw conformance [--json] [--case N]` checks this odw
+against them (exit 1 on any failure; CI runs it). Each case says whether Claude
+Code's docs settle its behaviour (`documented`) or not (`unspecified`: it pins
+what ODW does). Scripts that keep to what the documented cases pin down run on
+both. The cases run on Claude Code by hand — they are plain workflow files — and
+[`conformance/README.md`](conformance/README.md) gives the format, so another
+runtime can implement a runner.
+
 ## Run and observe
 
 In an interactive terminal, `odw run` attaches a **live foreground view** — every
@@ -2047,6 +2058,7 @@ npm ci                # install the locked build dependencies
 npm run build         # tsc → dist/
 npm test              # node:test suite, driven by a mock adapter (no real accounts)
 npm run typecheck     # tsc --noEmit
+npx tsx src/cli.ts conformance   # the dialect conformance suite (conformance/); also part of npm test
 npm run build:binary  # bundle + Node SEA + postject → a single self-contained ./build/odw
 ```
 

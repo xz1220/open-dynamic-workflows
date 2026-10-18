@@ -40,6 +40,10 @@ do it directly.
 - Ordinary control flow (loops, `if`, dedup) lives in the script. The
   primitives only **dispatch and wait**; what to do with results is the
   script's decision.
+- To run on Claude Code's Workflow tool as well, keep to the dialect: no ODW
+  extension, and no behaviour the conformance suite marks `unspecified`.
+  Scripts that pass conformance run on both — `odw conformance` runs the
+  suite (`conformance/` in the ODW repository; [primitives](references/primitives.md#odw-conformance)).
 
 ```js
 // fan-out-reduce.js

@@ -326,3 +326,10 @@ test("every case is Claude Code dialect only: no ODW extension, a pure meta wher
     }
   }
 });
+
+test("the suite's README lists every case with its title and status", () => {
+  const readme = readFileSync(join(SUITE, "README.md"), "utf8");
+  for (const c of loadSuite(SUITE)) {
+    assert.ok(readme.includes(`| [${c.name}](cases/${c.name}/) | ${c.title} | ${c.claudeCode} |`), `README.md: no row for ${c.name}`);
+  }
+});

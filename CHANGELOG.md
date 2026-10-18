@@ -195,6 +195,15 @@ changed, and run on a schedule — and a dashboard redesigned to watch them.
   `installed_plugins.json` and `enabledPlugins`; a project workflow of the same bare
   name wins, with a note. Each run logs which plugin, version and scope its workflow
   came from, and any ODW-only primitive it uses.
+- A dialect conformance suite ([#13](https://github.com/xz1220/open-dynamic-workflows/issues/13)):
+  `conformance/` holds 32 plain workflow scripts in Claude Code's dialect, each with an
+  `expected.json` — its result, and the logs, phases and agents that matter — run on a
+  deterministic mock agent that answers from a table in the case. `odw conformance
+  [--json] [--case N]` checks this odw against them (exit 1 on any failure; CI runs it).
+  Each case says whether Claude Code's docs settle its behaviour (`documented`) or not
+  (`unspecified`, pinning what ODW does); scripts that pass conformance run on both.
+  `conformance/README.md` gives the format for another runtime's runner, and the cases
+  run on Claude Code by hand.
 
 ### Use the CLI and the dashboard
 - `odw run` attaches a live foreground view in interactive terminals (Ctrl-C detaches;

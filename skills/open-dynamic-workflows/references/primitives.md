@@ -814,6 +814,25 @@ Costs and tokens are summed and averaged over the runs whose CLIs reported
 them, and null when none did. Any two run ids open side by side with
 `odw compare <runA> <runB>`.
 
+## odw conformance
+
+```bash
+odw conformance [--json] [--case N|name]... [--dir DIR]
+```
+
+The dialect's behaviour as runnable cases (`conformance/` in the ODW
+repository, shipped with the npm package): each a plain workflow script in
+Claude Code's dialect with an `expected.json` — its result, and the logs,
+phases and agents that matter — run on a deterministic mock agent that answers
+from a table in the case. `odw conformance` runs each as a real odw run and
+prints pass/fail per case; exit 1 on any failure, 2 for an unknown case or a
+suite that breaks the format. Each case is `documented` (Claude Code's docs
+settle the behaviour) or `unspecified` (they do not; the case pins what ODW
+does — the place to expect a difference). Scripts that pass conformance run
+on both: keep to what the documented cases pin down. The command is ODW's; the
+cases themselves run on Claude Code by hand, and `conformance/README.md` gives
+the format for another runtime's runner.
+
 ## Limits
 
 - **Concurrency cap** — at most N agent CLIs run at once (`min(16, cpus-2)` by

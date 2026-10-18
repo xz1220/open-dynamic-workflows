@@ -306,6 +306,15 @@ ODW 已实现下列原语能力。依赖宿主私有运行机制的脚本,迁移
 调用给出 warning)。可恢复失败产生的 `null` 需要显式处理：接受部分结果、重试,或在要求完整
 交付时报告失败。
 
+**一致性测试套件。** [`conformance/`](conformance/) 把方言的行为写成可运行的用例:每个用例是
+一份 Claude Code 方言的普通工作流脚本,配一个 `expected.json`(返回值,以及要紧的日志、phase
+和 agent),由确定性的 mock agent 按表作答。`odw conformance [--json] [--case N]` 用它们检查
+当前的 odw(任一用例失败即退出码 1;CI 会运行)。每个用例都标明 Claude Code 的文档是否确定了
+该行为(`documented`),还是没有(`unspecified`:用例记录的是 ODW 的行为)。只依赖 documented
+用例所确定行为的脚本,两边都能跑。这些用例是普通工作流文件,也可以在 Claude Code 上手动运行;
+[`conformance/README.md`](conformance/README.md) 说明了格式,其他运行时可以据此实现自己的
+runner。
+
 ## 运行与观测
 
 在交互式终端里,`odw run` 会附着一个**实时前台视图**——每个 agent(以及带 `$` 提示符的
@@ -1817,6 +1826,7 @@ npm ci                # 安装锁定版本的构建依赖
 npm run build         # tsc → dist/
 npm test              # node:test 测试套件,由 mock 适配器驱动(无需真实账号)
 npm run typecheck     # tsc --noEmit
+npx tsx src/cli.ts conformance   # 方言一致性测试套件(conformance/);npm test 也会运行
 npm run build:binary  # 打包 + Node SEA + postject → 单个自包含的 ./build/odw
 ```
 

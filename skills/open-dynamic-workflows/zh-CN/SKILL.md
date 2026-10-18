@@ -31,6 +31,9 @@ license: MIT
   其他顶层 `import` / `export` 都会被加载器拒绝。
 - 循环、`if`、去重等普通控制流直接写在脚本里。原语只负责**派发并等待**，拿结果做
   什么由脚本决定。
+- 要同时能在 Claude Code 的 Workflow 工具上运行，就只用方言本身：不用 ODW 扩展，也不依赖
+  一致性测试套件标为 `unspecified` 的行为。通过一致性测试的脚本两边都能跑——
+  `odw conformance` 运行该套件（ODW 仓库的 `conformance/`；见[原语参考](references/primitives.md#odw-conformance)）。
 
 ```js
 // fan-out-reduce.js
