@@ -11,7 +11,11 @@
 //     --args '{"task": "Add rate limiting to the public API"}')
 //   odw status $RUN        # the plan, and the exact commands that answer it
 //   odw approve $RUN       # go ahead
+//   odw approve $RUN --edit   # change the plan in $EDITOR first; the edited plan runs
 //   odw reject $RUN --note "Leave the admin routes alone"   # re-plan with that note
+//
+// An edited plan must still match PLAN (the checkpoint's schema): odw approve
+// and the dashboard refuse one that does not, and so does the run.
 //
 // The executors edit the source directory in place (the default workspace):
 // point --source at the repository, and read the plan before you approve it.
@@ -67,10 +71,19 @@ for (let draft = 1; ; draft++) {
   phase('Approve')
   decision = await checkpoint(`Run this ${plan.steps.length}-step plan? ${plan.summary}`, {
     payload: plan,
+    schema: PLAN, // an approver may edit the plan; the edit must still be a plan
     timeout,
     onTimeout,
   })
-  if (decision.approved) break
+  if (decision.approved) {
+    // What was approved: the plan as the person edited it, if they did.
+    if (decision.edited) {
+      plan = decision.payload
+      plan.steps = plan.steps.slice(0, maxSteps)
+      log(`plan ${draft} approved with edits: ${plan.steps.length} step(s)`)
+    }
+    break
+  }
   if (!decision.note || draft > replans) {
     log(`plan ${draft} rejected (${decision.by})${decision.note ? `: ${decision.note}` : ''}; nothing was changed`)
     return { approved: false, by: decision.by, note: decision.note, plan }
@@ -106,6 +119,7 @@ return {
   approved: true,
   by: decision.by,
   note: decision.note,
+  edited: decision.edited,
   plan,
   steps: { total: results.length, done: results.filter((r) => r !== null).length },
   report,

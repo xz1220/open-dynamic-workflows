@@ -16,7 +16,7 @@ const mockAgent = fileURLToPath(new URL("./fixtures/mock-agent.mjs", import.meta
 const exampleDir = fileURLToPath(new URL("../examples/", import.meta.url));
 
 /** A person's answer to the next checkpoint() a run asks (sent through its decision log, as `odw approve|reject` does). */
-type Answer = { action: "approve" | "reject"; note?: string };
+type Answer = { action: "approve" | "reject"; note?: string; payload?: unknown };
 
 async function runExample(
   file: string,
@@ -320,6 +320,23 @@ test("plan-approve-execute.js executes the plan only once a person approves it",
   // Nothing executed before the approval.
   const answeredAt = events.findIndex((e) => e.type === "checkpoint_resolved");
   assert.ok(events.findIndex((e) => e.type === "agent_started" && String(e.label).startsWith("step")) > answeredAt);
+});
+
+test("plan-approve-execute.js runs the plan as the person edited it", async () => {
+  const edited = { summary: "Only the gateway.", steps: [{ title: "gateway", instructions: "Rate-limit the gateway only." }] };
+  const { state, result, error, events } = await runExample("plan-approve-execute.js", PLAN_TASK, undefined, [
+    { action: "approve", payload: edited },
+  ]);
+  assert.equal(state, "done", JSON.stringify(error));
+  const r = result as { edited: boolean; plan: unknown; steps: { total: number } };
+  assert.equal(r.edited, true);
+  assert.deepEqual(r.plan, edited);
+  assert.equal(r.steps.total, 1);
+  assert.deepEqual(
+    foldAgents(events).filter((n) => n.phase === "Execute").map((n) => n.label),
+    ["step 1"],
+    "only the edited plan's step ran",
+  );
 });
 
 test("plan-approve-execute.js re-plans after a rejection with a note, and stops on a bare rejection", async () => {
