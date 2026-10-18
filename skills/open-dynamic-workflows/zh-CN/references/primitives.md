@@ -609,7 +609,8 @@ parallel(thunks, { notes: true })              // 其 thunk 启动的每个 agen
 - **不持久化则没有笔记板。** 没有运行目录的进程内运行会记一次日志，其 agent 不带笔记板运行。
   被 `odw resume` 重放的调用不发布任何笔记。`notes` 不属于 resume key。
 - **保留笔记。** `"$ODW_NOTES" --keep "…"` 或 `odw note --keep [--paths GLOB,…] "…"` 发布一条标记为
-  `keep` 的笔记，运行结束时成为工作流记忆——见 [memory](#memoryodw-扩展)。
+  `keep` 的笔记，运行结束时成为工作流记忆——见 [memory](#memoryodw-扩展)。只有开启记忆的 agent
+  会被告知 `--keep`，其笔记才会保留；未开启的 agent 的这类笔记只发布、不保留，并记日志。
 
 ## memory（ODW 扩展）
 
@@ -623,20 +624,23 @@ checkpoint(title, { memory: { paths: ['src/api/**'] } }) // …这些文件改�
 一个工作流历次运行学到的东西，存在仓库里的 `.odw/memory/<工作流>.jsonl`（可在 PR 中审阅）。每行一个
 JSON 对象：`{ id, text, kind: "note"|"correction"|"lesson", paths: [globs], commit, run, agent?, at }`。
 
-- **来源——只有明确的来源，不由模型总结。** 用 `--keep` 保留的笔记（`note`，总会保留）；带备注被拒绝的
+- **来源——只有明确的来源，不由模型总结。** 用 `--keep` 保留的笔记（`note`，来自开启记忆的 agent）；带备注被拒绝的
   检查点（`correction`，`"<标题>" was rejected: <备注>`）或修改 payload 后批准的检查点（`correction`，
   结构化 diff：`$.steps[1]: "b" → "c"; removed $.owner`）；同一 agent 的重试补上了的 `expect` 未达项
-  （`lesson`）；`odw memory add`。纠正与教训只在开启记忆时保留（调用的 `memory`，否则看设置）。
+  （`lesson`）；`odw memory add`。每种条目都只在开启记忆时保留（调用的 `memory`，否则看设置）。
   花费闸门与 `--break` 的检查点从不写入记忆。
 - **召回。** 开启记忆的 agent 在任务之前看到仍然适用的条目，标题 "## What earlier runs of this workflow
-  learned"，最新的在前，至多 4 KB；运行日志说明召回了多少、多少已过期、多少放不下。每次运行只读一次。
+  learned"，最新的在前，至多 4 KB，每条标明种类与来源（运行与 agent，或"手工添加"），正文逐行以 `> `
+  引用；运行日志说明召回了多少、多少已过期、多少放不下。每次运行只读一次。
 - **过期。** 有 `paths` 的条目在其 `commit` 与 HEAD 之间、paths 匹配的文件（glob，或目录及其下所有文件）
-  有改动即过期；git 不认识其提交的也算过期。没有 paths 的永不过期。
+  有改动即过期；git 不认识其提交的也算过期。没有 paths 的永不过期。每个文件至多检查 32 个不同的提交
+  （最新条目的优先，其余视为过期）；超过 4 MiB 的文件不读取，并会说明。
 - **写入。** 运行结束时（完成、失败或被停止），按各条学到时的 HEAD 记录，经运行的脱敏器处理；种类、文本
   与 paths 相同的条目替换旧的那条；至多 500 条，超出时删去最旧的并记日志。`odw test` 与 `--dry` 运行
   不保存。不持久化的运行没有记忆，并说明一次。
 - **不受信任的运行**既不召回也不保存仓库里的记忆（那是仓库的内容，这样的运行学到的东西会进入受信任运行的
-  提示词）。你在自己的配置里把 `memoryDir` 设为仓库之外的目录，那就是你自己的：不受信任的运行也会使用。
+  提示词）。你在自己的配置里把 `memoryDir` 设为仓库之外的目录，那就是你自己的：不受信任的运行也会使用（按字面路径和解析链接后都须在仓库之外）。仓库自己的配置设置的
+  `memoryDir` 一律不算。
 - **CLI。** `odw memory list [<wf>] [--stale] [--json]`、`odw memory add <wf> "内容" [--paths G,…]
   [--kind …]`、`odw memory prune [<wf>] --stale | <wf> --id N`（`--source DIR`、`--config FILE`）。
   `GET /api/memory[?workflow=]` 返回同样的列表。

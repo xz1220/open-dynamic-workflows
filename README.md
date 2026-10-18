@@ -458,7 +458,7 @@ summarizing — only from explicit sources:
 
 | Source | Entry |
 | --- | --- |
-| `"$ODW_NOTES" --keep "…"` or `odw note --keep [--paths GLOB,…] "…"` (an agent with notes on) | `note`, by that agent — always kept: the agent asked |
+| `"$ODW_NOTES" --keep "…"` or `odw note --keep [--paths GLOB,…] "…"` (an agent with notes on) | `note`, by that agent — kept only when that agent has memory on (else posted, not kept, and said) |
 | a `checkpoint()` rejected with a note | `correction`: `"Ship the plan?" was rejected: <note>` |
 | a `checkpoint()` approved with an edited payload | `correction`: a structural diff of the edit, `$.steps[1]: "b" → "c"; removed $.owner` |
 | an `expect` miss that a retry of the same agent then met | `lesson`: what was missing, and that a retry told of it fixed it (with the change it kept) |
@@ -466,8 +466,8 @@ summarizing — only from explicit sources:
 
 Each line is `{ id, text, kind, paths, commit, run, agent?, at }`: `commit` is HEAD
 when it was learned, `paths` the globs (from the repository's top) it is about.
-Corrections and lessons are kept only where memory is on — `"memory": true` in the
-config, `agent(…, { memory: true })` for that agent's lessons, `checkpoint(…, {
+Every entry is kept only where memory is on — `"memory": true` in the config,
+`agent(…, { memory: true })` for that agent's kept notes and lessons, `checkpoint(…, {
 memory: true })` or `{ memory: { paths: ['src/**'] } }` for its corrections.
 
 ```js
@@ -477,12 +477,16 @@ await agent('Implement the approved plan.', { memory: true, expect: { command: '
 
 - **Recall:** an agent with memory on (`agent(…, { memory: true })`, or the setting;
   `memory: false` opts one out) finds the entries that still apply ahead of its task,
-  under "What earlier runs of this workflow learned", newest first, at most 4 KB. The
-  run's log says how many it recalled and how many it left out.
+  under "What earlier runs of this workflow learned", newest first, at most 4 KB, each
+  labelled with its kind and where it came from (run and agent, or "by hand") and its
+  text quoted (`> ` on every line). The run's log says how many it recalled and how
+  many it left out.
 - **Staleness:** an entry is stale once a file its `paths` match changed between its
   `commit` and HEAD (`git diff --name-only <commit> HEAD`); stale entries are not
   recalled. An entry without paths never goes stale; one with paths whose commit git
-  does not know is stale — nothing vouches for it.
+  does not know is stale — nothing vouches for it. At most 32 distinct commits are
+  checked per file (the newest entries' first); entries at others count as stale. A
+  file over 4 MiB is not read: the run, `odw memory list` and the API say so.
 - **Kept when the run ends** — done, failed or stopped — redacted with the run's
   redactor. The same entry learned again replaces the older copy; a file holds at most
   500 entries, the oldest pruned with a line in the run's log. `odw test` and `--dry`
@@ -490,7 +494,9 @@ await agent('Implement the approved plan.', { memory: true, expect: { command: '
 - **Untrusted runs** neither recall nor keep the repository's memory: the file is the
   repository's content, and what an untrusted run learned would reach later trusted
   runs' prompts. Memory the user keeps outside the repository — `"memoryDir":
-  "~/odw-memory/my-repo"` in their own config — is theirs, and an untrusted run uses it.
+  "~/odw-memory/my-repo"` in their own config — is theirs, and an untrusted run uses it:
+  only when it is outside the repository both as written and with links resolved,
+  and never a `memoryDir` the repository's own config sets.
 - **Tending it:** `odw memory list [<wf>] [--stale] [--json]`, `odw memory add <wf>
   "text" [--paths …]`, `odw memory prune [<wf>] --stale` or `odw memory prune <wf> --id
   N` (`--source DIR` picks the repository); `GET /api/memory[?workflow=]` serves the list.

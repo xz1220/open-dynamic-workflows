@@ -400,15 +400,15 @@ Claude Code 的 Workflow 工具会忽略这些选项。[`examples/coordinated-re
 
 | 来源 | 条目 |
 | --- | --- |
-| `"$ODW_NOTES" --keep "…"` 或 `odw note --keep [--paths GLOB,…] "…"`(开启笔记的 agent) | `note`,记该 agent——总会保留:是 agent 要求的 |
+| `"$ODW_NOTES" --keep "…"` 或 `odw note --keep [--paths GLOB,…] "…"`(开启笔记的 agent) | `note`,记该 agent——只在该 agent 开启记忆时保留(否则只发布、不保留,并记日志) |
 | 带备注被拒绝的 `checkpoint()` | `correction`:`"Ship the plan?" was rejected: <备注>` |
 | 修改 payload 后批准的 `checkpoint()` | `correction`:修改的结构化 diff,如 `$.steps[1]: "b" → "c"; removed $.owner` |
 | 同一 agent 的重试补上了的 `expect` 未达项 | `lesson`:缺了什么,以及被告知后的重试补上了它(附它保留的改动) |
 | `odw memory add <wf> "…" [--paths GLOB,…]` | 手工添加的 `note`(或 `--kind correction\|lesson`) |
 
 每行是 `{ id, text, kind, paths, commit, run, agent?, at }`:`commit` 是学到时的 HEAD,`paths`
-是它涉及的 glob(相对仓库根目录)。纠正与教训只在开启记忆时保留——配置 `"memory": true`、
-对该 agent 的教训用 `agent(…, { memory: true })`、对检查点的纠正用 `checkpoint(…, { memory: true })`
+是它涉及的 glob(相对仓库根目录)。每种条目都只在开启记忆时保留——配置 `"memory": true`、
+对该 agent 保留的笔记与教训用 `agent(…, { memory: true })`、对检查点的纠正用 `checkpoint(…, { memory: true })`
 或 `{ memory: { paths: ['src/**'] } }`。
 
 ```js
@@ -418,15 +418,18 @@ await agent('Implement the approved plan.', { memory: true, expect: { command: '
 
 - **召回:** 开启记忆的 agent(`agent(…, { memory: true })` 或该设置;`memory: false` 让单个 agent
   退出)在任务之前看到仍然适用的条目,标题为 "What earlier runs of this workflow learned",最新的在前,
-  至多 4 KB。运行日志说明召回了多少、略去了多少。
+  至多 4 KB;每条标明种类与来源(运行与 agent,或"手工添加"),正文逐行以 `> ` 引用。运行日志说明
+  召回了多少、略去了多少。
 - **过期:** 条目的 `paths` 匹配的文件在其 `commit` 与 HEAD 之间有改动(`git diff --name-only
   <commit> HEAD`)即过期,不再召回。没有 paths 的条目永不过期;有 paths 但 git 不认识其提交的条目
-  视为过期——没有东西能为它作证。
+  视为过期——没有东西能为它作证。每个文件至多检查 32 个不同的提交(最新条目的优先),其余提交上的条目
+  视为过期;超过 4 MiB 的文件不读取,运行、`odw memory list` 与 API 都会说明。
 - **运行结束时保存**——无论完成、失败还是被停止——并经运行的脱敏器处理。同一条目再次学到时替换旧的
   那条;每个文件至多 500 条,超出时删去最旧的并记一行日志。`odw test` 与 `--dry` 运行会召回但不保存。
 - **不受信任的运行**既不召回也不保存仓库里的记忆:那个文件是仓库的内容,而不受信任的运行学到的东西
   会进入之后受信任运行的提示词。用户放在仓库之外的记忆——在自己的配置里写 `"memoryDir":
-  "~/odw-memory/my-repo"`——属于用户自己,不受信任的运行也会使用。
+  "~/odw-memory/my-repo"`——属于用户自己,不受信任的运行也会使用:前提是它按字面路径和解析链接后
+  都在仓库之外;仓库自己的配置设置的 `memoryDir` 一律不算。
 - **维护:** `odw memory list [<wf>] [--stale] [--json]`、`odw memory add <wf> "内容" [--paths …]`、
   `odw memory prune [<wf>] --stale` 或 `odw memory prune <wf> --id N`(`--source DIR` 指定仓库);
   `GET /api/memory[?workflow=]` 返回同样的列表。

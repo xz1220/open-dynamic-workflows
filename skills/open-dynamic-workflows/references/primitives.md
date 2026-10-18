@@ -800,7 +800,9 @@ break together. Off by default (dialect fidelity); `notes: false` opts one agent
   nothing. `notes` is not part of the resume key.
 - **Keeping a note.** `"$ODW_NOTES" --keep "…"` or `odw note --keep [--paths
   GLOB,…] "…"` posts a note marked `keep` that becomes workflow memory when the
-  run ends — see [memory](#memory-odw-extension).
+  run ends — see [memory](#memory-odw-extension). Only an agent with memory on is
+  told of `--keep` and has its notes kept; from one without, the note is posted
+  unkept and the run says so.
 
 ## memory (ODW extension)
 
@@ -816,20 +818,23 @@ What earlier runs of a workflow learned, kept in the repository as
 `{ id, text, kind: "note"|"correction"|"lesson", paths: [globs], commit, run, agent?, at }`.
 
 - **Sources — explicit only, no model summarizing.** A note kept with `--keep`
-  (`note`, always kept); a checkpoint rejected with a note (`correction`,
+  (`note`, from an agent with memory on); a checkpoint rejected with a note (`correction`,
   `"<title>" was rejected: <note>`) or approved with an edited payload
   (`correction`, a structural diff: `$.steps[1]: "b" → "c"; removed $.owner`); an
   `expect` miss a retry of the same agent then met (`lesson`, `"<label>": <miss> —
   it was fixed by a retry told what was missing (…)`); `odw memory add`.
-  Corrections and lessons only where memory is on (the call's `memory`, else the
+  Every entry only where memory is on (the call's `memory`, else the
   setting). Cost-gate and `--break` checkpoints never write memory.
 - **Recall.** An agent with memory on gets, ahead of its task, the entries that
   still apply under "## What earlier runs of this workflow learned", newest first,
-  at most 4 KB; the run logs how many it recalled, how many were stale, and how
-  many did not fit. Read once per run.
+  at most 4 KB, each labelled with its kind and origin (run and agent, or "by
+  hand") and its text quoted (`> ` on every line); the run logs how many it
+  recalled, how many were stale, and how many did not fit. Read once per run.
 - **Staleness.** An entry with `paths` is stale once a file they match (a glob,
   or a directory and all under it) changed between its `commit` and HEAD; one
-  whose commit git does not know is stale too. No paths: never stale.
+  whose commit git does not know is stale too. No paths: never stale. At most 32
+  distinct commits are checked per file (newest entries first; others count as
+  stale); a file over 4 MiB is not read, and that is said.
 - **Writing.** Once the run ends (done, failed or stopped), at HEAD as it was when
   each was learned, redacted with the run's redactor; the same kind + text + paths
   replaces the older entry; at most 500 entries, the oldest pruned with a log
@@ -838,7 +843,8 @@ What earlier runs of a workflow learned, kept in the repository as
 - **Untrusted runs** neither recall nor keep the repository's memory (its content
   is the repository's, and what such a run learned would reach trusted runs'
   prompts). `memoryDir` set in your own config to a directory outside the
-  repository is yours: an untrusted run uses it.
+  repository (as written and with links resolved) is yours: an untrusted run
+  uses it. A `memoryDir` the repository's own config sets never is.
 - **CLI.** `odw memory list [<wf>] [--stale] [--json]`, `odw memory add <wf> "text"
   [--paths G,…] [--kind …]`, `odw memory prune [<wf>] --stale | <wf> --id N`
   (`--source DIR`, `--config FILE`). `GET /api/memory[?workflow=]` serves the list.
