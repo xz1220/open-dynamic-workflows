@@ -22,6 +22,7 @@ import { dirname, join } from "node:path";
 import { AdapterNotFound, ConfigError } from "../errors.js";
 import { readCostGate } from "../forecast.js";
 import { readLimits } from "../limits.js";
+import { isQuestionPolicy, QUESTION_POLICIES } from "../questions.js";
 import { extraProblem } from "../redact.js";
 import { TIER_NAME } from "../routing.js";
 import { buildTriggers } from "../triggers.js";
@@ -56,13 +57,16 @@ import type {
   OtelSettings,
   PermissionArgs,
   PermissionTier,
+  QuestionRule,
   QuotaWaitSettings,
   RedactSettings,
+  RetentionSettings,
   RunEndState,
   SchemaFlag,
   Settings,
   StaggerFanOut,
   TrustLevel,
+  UntrustedInputSettings,
 } from "./types.js";
 
 export const CONFIG_ENV_VAR = "ODW_CONFIG";
@@ -154,6 +158,8 @@ const KNOWN_TOP_KEYS = [
   "mcpFailures",
   "orphanedBackground",
   "scopePolicy",
+  "questions",
+  "destructiveGit",
   "otel",
   "sandbox",
   "agentLimits",
@@ -161,14 +167,16 @@ const KNOWN_TOP_KEYS = [
   "triggers",
   "costGate",
   "accounts",
+  "untrustedInput",
+  "retention",
 ] as const;
 
-const KNOWN_ADAPTER_KEYS = ["command", "stdin", "env", "timeout", "stallTimeout", "concurrency", "promptCache", "label", "flags", "output", "failures", "permissionArgs", "permissions", "permissionDenials", "trust", "untrustedArgs", "untrustedNote", "sandbox", "agentLimits", "egressHosts"] as const;
+const KNOWN_ADAPTER_KEYS = ["command", "stdin", "env", "timeout", "stallTimeout", "concurrency", "promptCache", "label", "flags", "output", "failures", "permissionArgs", "permissions", "permissionDenials", "trust", "untrustedArgs", "untrustedNote", "sandbox", "agentLimits", "egressHosts", "questions", "questionArgs"] as const;
 
 /** The fields of an adapter's `output`, per format. */
 const KNOWN_OUTPUT_KEYS: Record<string, readonly string[]> = {
   text: ["format"],
-  jsonl: ["format", "eventType", "textPath", "select", "usageEvent", "usagePath", "costPath", "errorPath", "structuredPath", "deniedPath", "mcpEvent", "mcpPath", "match", "errorEvents", "background", "eventKey"],
+  jsonl: ["format", "eventType", "textPath", "select", "usageEvent", "usagePath", "costPath", "errorPath", "structuredPath", "deniedPath", "mcpEvent", "mcpPath", "match", "errorEvents", "background", "eventKey", "questions"],
   json: ["format", "textPath", "usagePath", "costPath", "errorPath", "structuredPath", "deniedPath", "mcpPath"],
 };
 
@@ -190,6 +198,8 @@ const KNOWN_QUOTA_WAIT_KEYS = ["max"] as const;
 const KNOWN_OTEL_KEYS = ["endpoint", "headers", "captureContent"] as const;
 
 const KNOWN_APPROVE_LINKS_KEYS = ["ttl"] as const;
+
+const KNOWN_UNTRUSTED_INPUT_KEYS = ["requireSandbox"] as const;
 
 /**
  * Lint a parsed config object for keys odw would silently ignore.
@@ -260,6 +270,7 @@ export function collectConfigWarnings(raw: Record<string, unknown>): string[] {
   if (isObject(raw.quotaWait)) warnings.push(...unknownFields(raw.quotaWait, KNOWN_QUOTA_WAIT_KEYS, "quotaWait"));
   if (isObject(raw.otel)) warnings.push(...unknownFields(raw.otel, KNOWN_OTEL_KEYS, "otel"));
   if (isObject(raw.approveLinks)) warnings.push(...unknownFields(raw.approveLinks, KNOWN_APPROVE_LINKS_KEYS, "approveLinks"));
+  if (isObject(raw.untrustedInput)) warnings.push(...unknownFields(raw.untrustedInput, KNOWN_UNTRUSTED_INPUT_KEYS, "untrustedInput"));
   return warnings;
 }
 
@@ -708,6 +719,24 @@ function buildAdapter(name: string, spec: RawAdapter): Adapter {
     }
     adapter.permissionDenials = spec.permissionDenials;
   }
+  // What an agent's question does on it, and the flags that take its question tool away (ODW extension; see ../questions).
+  if (spec.questions != null) {
+    if (!isQuestionPolicy(spec.questions)) {
+      throw new ConfigError(
+        `adapter '${name}' 'questions' must be ${QUESTION_POLICIES.map((p) => `"${p}"`).join(", ")}; got ${JSON.stringify(spec.questions)}`,
+      );
+    }
+    adapter.questions = spec.questions;
+  }
+  if (spec.questionArgs != null) {
+    if (!Array.isArray(spec.questionArgs) || !spec.questionArgs.every((arg) => typeof arg === "string")) {
+      throw new ConfigError(`adapter '${name}' 'questionArgs' must be a list of argv elements; got ${JSON.stringify(spec.questionArgs)}`);
+    }
+    if (!adapter.command.includes(PERMISSION_ARGS_TOKEN)) {
+      throw new ConfigError(`adapter '${name}' declares "questionArgs" but its command has no ${PERMISSION_ARGS_TOKEN} element to put them in`);
+    }
+    adapter.questionArgs = [...spec.questionArgs];
+  }
   // Trust (ODW extension; see ./trust): an adapter may only make itself
   // untrusted, and its untrusted flags go where its tier flags go.
   if (spec.trust != null) {
@@ -952,7 +981,44 @@ function buildOutput(name: string, raw: unknown): AdapterOutput {
     ...extras,
     ...(value.errorEvents != null ? { errorEvents: buildErrorEvents(name, value.errorEvents, [eventType, usageEvent]) } : {}),
     ...(value.background != null ? { background: buildBackground(name, value.background) } : {}),
+    ...(value.questions != null ? { questions: buildQuestionRules(name, value.questions) } : {}),
   };
+}
+
+const KNOWN_QUESTION_RULE_KEYS = ["event", "each", "where", "list", "text", "header", "options", "optionLabel", "multiSelect"] as const;
+
+/**
+ * Validate a jsonl output's `questions` (ODW extension; see ../questions): a
+ * non-empty array of rules `{ event, each?, where?, list?, text, header?,
+ * options?, optionLabel?, multiSelect? }` (see {@link QuestionRule}).
+ */
+function buildQuestionRules(name: string, raw: unknown): QuestionRule[] {
+  if (!Array.isArray(raw) || raw.length === 0) {
+    throw new ConfigError(`adapter '${name}' 'output.questions' must be a non-empty array of rules`);
+  }
+  return raw.map((entry, i) => {
+    const at = `questions[${i}]`;
+    const where = `adapter '${name}' 'output.${at}'`;
+    if (!isObject(entry)) throw new ConfigError(`${where} must be an object: { "event", "text", "each"?, "where"?, "list"?, … }`);
+    rejectUnknown(entry, KNOWN_QUESTION_RULE_KEYS, where);
+    if (typeof entry.event !== "string" || !entry.event.trim()) throw new ConfigError(`${where}.event must be a non-empty string (an event type)`);
+    const paths = (key: string, value: unknown): string[][] => {
+      if (!Array.isArray(value) || value.length === 0) throw new ConfigError(`${where}.${key} must be a non-empty array of paths`);
+      return value.map((path, j) => buildPath(name, `${at}.${key}[${j}]`, path)!);
+    };
+    const rule: QuestionRule = { event: entry.event, text: paths("text", entry.text) };
+    if (entry.each != null) rule.each = buildPath(name, `${at}.each`, entry.each);
+    if (entry.where != null) {
+      if (!Array.isArray(entry.where)) throw new ConfigError(`${where}.where must be an array of conditions`);
+      rule.where = entry.where.map((condition, j) => buildBackgroundCondition(name, `${at}.where[${j}]`, condition));
+    }
+    if (entry.list != null) rule.list = buildPath(name, `${at}.list`, entry.list);
+    if (entry.header != null) rule.header = paths("header", entry.header);
+    for (const key of ["options", "optionLabel", "multiSelect"] as const) {
+      if (entry[key] != null) rule[key] = buildPath(name, `${at}.${key}`, entry[key]);
+    }
+    return rule;
+  });
 }
 
 /** The fields of a jsonl output's `background`, of each of its rules, and of a rule's condition. */
@@ -1245,12 +1311,54 @@ function buildSettings(raw: Record<string, unknown>): Settings {
       raw["scopePolicy"] == null
         ? DEFAULT_SETTINGS.scopePolicy
         : buildChoice("scopePolicy", raw["scopePolicy"], ["warn", "fail"] as const),
+    questions:
+      raw["questions"] == null ? DEFAULT_SETTINGS.questions : buildChoice("questions", raw["questions"], ["fail", "checkpoint", "deny"] as const),
+    destructiveGit:
+      raw["destructiveGit"] == null
+        ? DEFAULT_SETTINGS.destructiveGit
+        : buildChoice("destructiveGit", raw["destructiveGit"], ["warn", "fail"] as const),
     otel: raw["otel"] == null ? DEFAULT_SETTINGS.otel : buildOtel(raw["otel"]),
     sandbox: raw["sandbox"] == null ? DEFAULT_SETTINGS.sandbox : buildSandboxSetting(raw["sandbox"]),
     agentLimits: raw["agentLimits"] == null ? {} : readLimits(raw["agentLimits"], '"agentLimits"', (m) => new ConfigError(m)),
     approveLinks: raw["approveLinks"] == null ? { ...DEFAULT_SETTINGS.approveLinks } : buildApproveLinks(raw["approveLinks"]),
     triggers: raw["triggers"] == null ? {} : buildTriggers(raw["triggers"]),
     costGate: raw["costGate"] == null ? DEFAULT_SETTINGS.costGate : readCostGate(raw["costGate"], '"costGate"', (m) => new ConfigError(m)),
+    untrustedInput: raw["untrustedInput"] == null ? { ...DEFAULT_SETTINGS.untrustedInput } : buildUntrustedInput(raw["untrustedInput"]),
+    retention: raw["retention"] == null ? { ...DEFAULT_SETTINGS.retention } : buildRetention(raw["retention"]),
+  };
+}
+
+/**
+ * Validate `untrustedInput` (an ODW extension; see ../untrusted-input):
+ * `{ "requireSandbox": true }` refuses runs with untrusted input that would
+ * run agents outside a container with an allowlist network.
+ */
+function buildUntrustedInput(raw: unknown): UntrustedInputSettings {
+  if (!isObject(raw)) {
+    throw new ConfigError(`"untrustedInput" must be { "requireSandbox": true | false }; got ${kindOf(raw)}`);
+  }
+  return {
+    requireSandbox: raw.requireSandbox == null ? DEFAULT_SETTINGS.untrustedInput.requireSandbox : buildFlag("untrustedInput.requireSandbox", raw.requireSandbox),
+  };
+}
+
+/**
+ * Validate `retention` (an ODW extension; see ../runtime/gc): `{ "days"?:
+ * <positive whole number>, "transcripts"?: <boolean> }` — what `odw gc` keeps.
+ */
+function buildRetention(raw: unknown): RetentionSettings {
+  if (!isObject(raw)) {
+    throw new ConfigError(`"retention" must be { "days": <days>, "transcripts": true|false }: what odw gc keeps; got ${kindOf(raw)}`);
+  }
+  for (const key of Object.keys(raw)) {
+    if (key !== "days" && key !== "transcripts") throw new ConfigError(`"retention" has an unknown key '${key}'; expected days, transcripts`);
+  }
+  return {
+    days:
+      raw.days == null
+        ? DEFAULT_SETTINGS.retention.days
+        : numberSetting(`"retention.days"`, raw.days, "a positive whole number of days", { min: 1, integer: true }),
+    transcripts: raw.transcripts == null ? DEFAULT_SETTINGS.retention.transcripts : buildFlag("retention.transcripts", raw.transcripts),
   };
 }
 

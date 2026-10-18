@@ -23,7 +23,8 @@
  * what was missing.
  */
 
-import type { Adapter, AdapterOutput, BackgroundCondition, BackgroundRule, BackgroundRules, BackgroundScalar } from "./types.js";
+import { clipText, MAX_OPTIONS, MAX_QUESTIONS, OPTION_CHARS, QUESTION_CHARS, type AgentQuestion } from "../questions.js";
+import type { Adapter, AdapterOutput, BackgroundCondition, BackgroundRule, BackgroundRules, BackgroundScalar, QuestionRule } from "./types.js";
 import { addUsage, normalizeUsage, type Usage } from "./usage.js";
 
 /**
@@ -85,6 +86,13 @@ export interface DecodedOutput {
    * the bridge records it, or fails the run (`orphanedBackground`, `expect`).
    */
   orphaned?: string[];
+  /**
+   * The questions the agent stopped to ask the user (`questions`; an ODW
+   * extension): its CLI's clarifying tool calls, in the order it made them;
+   * absent when it asked none. Nobody can answer them headless: the bridge
+   * stops the CLI at the first, and the call's `questions` policy decides.
+   */
+  questions?: AgentQuestion[];
   /** Set when stdout did not match the declared format and `text` is the raw stdout: why, for the run's log. */
   fallback?: string;
   /**
@@ -194,6 +202,8 @@ export class AdapterOutputDecoder {
   private readonly background: BackgroundTracker | undefined;
   /** The background work still open at the latest matching text event, when there was any. */
   private orphaned: string[] | undefined;
+  /** The questions the agent asked so far (`questions`), when the adapter declares how they look. */
+  private asked: AgentQuestion[] = [];
   private usage: Usage | undefined;
   /** The first line that was not JSON, for the fallback note. */
   private badLine: string | undefined;
@@ -245,6 +255,15 @@ export class AdapterOutputDecoder {
   }
 
   /**
+   * JSONL: the questions the agent has stopped to ask so far (`questions`;
+   * an ODW extension) — what the bridge stops the CLI at, as soon as the
+   * first is in.
+   */
+  get questions(): readonly AgentQuestion[] {
+    return this.asked;
+  }
+
+  /**
    * The decoded run. Never throws: a stream that does not match its format
    * falls back to the raw stdout. `reply` is what the CLI wrote to its
    * `{reply_file}` (see {@link ReplyFileText}); the first call decides.
@@ -253,7 +272,8 @@ export class AdapterOutputDecoder {
     if (!this.result) {
       const decoded = this.decode(reply);
       const withMcp = this.mcp ? { ...decoded, mcp: this.mcp } : decoded;
-      this.result = this.orphaned ? { ...withMcp, orphaned: this.orphaned } : withMcp;
+      const withOrphans = this.orphaned ? { ...withMcp, orphaned: this.orphaned } : withMcp;
+      this.result = this.asked.length > 0 ? { ...withOrphans, questions: [...this.asked] } : withOrphans;
     }
     return this.result;
   }
@@ -394,6 +414,8 @@ export class AdapterOutputDecoder {
     }
     // Background work started and ended (ODW extension): what is open at the reply was orphaned.
     if (this.background && type !== undefined) this.background.see(type, event);
+    // A question the agent stopped to ask (ODW extension; see ../questions).
+    if (output.questions && type !== undefined) this.see(output.questions, type, event);
     const failurePath = type !== undefined && output.errorEvents && hasOwn(output.errorEvents, type) ? output.errorEvents[type] : undefined;
     if (failurePath) {
       this.failure = reportedError(event, failurePath, undefined) ?? quoted(event);
@@ -418,6 +440,50 @@ export class AdapterOutputDecoder {
     // So does the background work still running as it was given.
     this.orphaned = this.background?.running();
   }
+
+  /** Read the questions an event asks by the adapter's `questions` rules (ODW extension). */
+  private see(rules: readonly QuestionRule[], type: string, event: Record<string, unknown>): void {
+    for (const rule of rules) {
+      if (rule.event !== type) continue;
+      for (const item of ruleItems(event, rule)) {
+        if (!meets(item, rule.where)) continue;
+        for (const question of questionsOf(item, rule)) {
+          if (this.asked.length < MAX_QUESTIONS) this.asked.push(question);
+        }
+      }
+    }
+  }
+}
+
+/**
+ * The questions one tool call (an event, or one of its items) asks, by a
+ * `questions` rule: each with its text, heading, options and multiSelect as
+ * far as it has them — one with no text at all is still a question, said so.
+ */
+function questionsOf(item: unknown, rule: QuestionRule): AgentQuestion[] {
+  const listed = rule.list ? walk(item, rule.list) : [item];
+  const each = Array.isArray(listed) && listed.length > 0 ? listed : [undefined];
+  const first = (holder: unknown, paths: string[][] | undefined): string | undefined =>
+    (paths ?? []).map((path) => walk(holder, path)).find((v): v is string => typeof v === "string" && v.trim() !== "");
+  return each.slice(0, MAX_QUESTIONS).map((holder) => {
+    const text = first(holder, rule.text);
+    const header = first(holder, rule.header);
+    const offered = rule.options ? walk(holder, rule.options) : undefined;
+    const options = Array.isArray(offered)
+      ? offered
+          .map((option) => (typeof option === "string" ? option : walk(option, rule.optionLabel ?? ["label"])))
+          .filter((label): label is string => typeof label === "string" && label.trim() !== "")
+          .slice(0, MAX_OPTIONS)
+          .map((label) => clipText(label, OPTION_CHARS))
+      : [];
+    const multi = rule.multiSelect ? walk(holder, rule.multiSelect) === true : false;
+    return {
+      question: text ? clipText(text, QUESTION_CHARS) : "(the agent asked a question whose text its CLI did not show)",
+      ...(header ? { header: clipText(header, OPTION_CHARS) } : {}),
+      ...(options.length > 0 ? { options } : {}),
+      ...(multi ? { multiSelect: true } : {}),
+    };
+  });
 }
 
 /** Pieces of open background work a tracker keeps, at most; past it, more are counted, not kept. */
@@ -540,7 +606,7 @@ class BackgroundTracker {
 }
 
 /** What a background rule looks at in an event: the event, or each item of the array at its `each`. */
-function ruleItems(event: Record<string, unknown>, rule: BackgroundRule): unknown[] {
+function ruleItems(event: Record<string, unknown>, rule: Pick<BackgroundRule, "each">): unknown[] {
   if (!rule.each) return [event];
   const items = walk(event, rule.each);
   return Array.isArray(items) ? items : [];

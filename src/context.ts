@@ -21,12 +21,14 @@ import type { AgentCallRecord, AgentResultRecord, ReplayJournal } from "./journa
 import { quotaPauseMessage, type QuotaPauseChange } from "./quota-wait.js";
 import { redactorFor, type Redactor } from "./redact.js";
 import type { RunMemory } from "./memory.js";
+import type { SafetySnapshot } from "./safety.js";
 import type { NotesBoard } from "./notes.js";
 import type { PhaseDefaults } from "./routing.js";
 import { Scheduler } from "./scheduler.js";
 import type { ScopeLocks } from "./scope.js";
 import { capChangeMessage } from "./throttle.js";
 import type { TranscriptPaths } from "./transcript.js";
+import type { UntrustedInputMeta } from "./untrusted-input.js";
 
 export interface RunContext {
   config: Config;
@@ -176,6 +178,18 @@ export interface RunContext {
    * once per run (ODW extension). Shared like `seq`.
    */
   costNotes?: Set<string>;
+  /**
+   * The run's untrusted input (ODW extension; see ./untrusted-input): what
+   * meta.json says of it, and the one checkpoint its first agent that may
+   * write waits at. Shared like `seq`; absent: the input is the user's.
+   */
+  input?: { meta: UntrustedInputMeta; writeGate?: Promise<void> };
+  /**
+   * The run's safety snapshot (ODW extension; see ./safety): taken once,
+   * before its first in-place agent with `edit` or `full` starts. Shared like
+   * `seq`; absent where no run is persisted, and for a dry or test run.
+   */
+  safety?: SafetySnapshot;
   emit(ev: WorkflowEvent): void;
 }
 
@@ -214,6 +228,8 @@ export interface BuildContextOptions {
   memory?: RunMemory;
   /** The workflow's earlier runs, for fan-out forecasts and cost gates (ODW extension; see ./forecast). */
   costHistory?: () => CostHistory | null;
+  /** The run's safety snapshot, taken before its first in-place agent that may change things (ODW extension; see ./safety). */
+  safety?: SafetySnapshot;
   /**
    * quotaWait (ODW extension): told whenever the run's pause for an adapter's
    * spent quota starts, moves or ends — after the run's log has said so — so
@@ -225,6 +241,8 @@ export interface BuildContextOptions {
   bridge?: Pick<BridgeOptions, "runner" | "sleep" | "now" | "random">;
   /** Told as each agent CLI run starts (the bridge's `onCliRun`): the worker records CLI versions by it (ODW extension). */
   onCliRun?: BridgeOptions["onCliRun"];
+  /** The run's untrusted input, as meta.json says (ODW extension; see ./untrusted-input); null or absent: the user's. */
+  input?: UntrustedInputMeta | null;
 }
 
 /** Wire a full run context from a config and the run's surroundings. */
@@ -242,6 +260,8 @@ export function buildContext(config: Config, options: BuildContextOptions = {}):
     agentSchemaPath: options.agentSchemaPath,
     redactor,
     onCliRun: options.onCliRun,
+    // Untrusted input (ODW extension): agent CLIs get no secret their own login does not need.
+    withholdSecrets: options.input != null,
     // What an untrusted run still lets through, or refused, is the run's to say once (ODW extension: trust).
     onRunNote: (message, fields) => sink.emit(event(LOG, { message, ...fields })),
     ...options.bridge,
@@ -316,6 +336,8 @@ export function buildContext(config: Config, options: BuildContextOptions = {}):
     memory: options.memory,
     costHistory: options.costHistory,
     costNotes: new Set(),
+    ...(options.input ? { input: { meta: options.input } } : {}),
+    safety: options.safety,
     emit(ev: WorkflowEvent): void {
       sink.emit(ev);
     },

@@ -519,6 +519,7 @@ odw run wf.js [--args JSON|@file]            # 终端里前台展示;运行本�
                                              #   --adapter <name> 指定这次运行的默认 agent
                                              #   --permissions read|edit|full:agent 能做什么
                                              #   --untrusted:挡住仓库的 CLAUDE.md、hooks 等
+                                             #   --untrusted-input:参数来自外部——只读、不带令牌
                                              #   --budget <tokens> 设置 budget.total
                                              #   --deadline <s>:s 秒后停止运行(见下文)
 ```
@@ -543,6 +544,7 @@ odw replay $RUN --agent 3 # 把这一个 agent 作为新运行重跑,检出它�
 odw eval review          # 用例 × 适配器 × 重复次数:每个单元格的通过率、花费与耗时(见下文)
 odw export $RUN --otlp   # 把运行导出为 OpenTelemetry trace(OTLP/JSON;--send 直接发送;见下文)
 odw bundle $RUN          # 把运行写成一个可分享的脱敏文件:$RUN.odwrun(用 odw view FILE 查看;见下文)
+odw gc                   # 运行留在磁盘上的东西:孤儿 worktree、keep 分支、旧 transcript;--yes 才删(见下文)
 odw pause|resume|stop $RUN
 odw approve|reject $RUN  # 回答运行正在等待的 checkpoint()(--note TEXT、--checkpoint N)
 odw approve $RUN --edit  # ……先在 $EDITOR 里修改 payload 再批准(或 --payload JSON|@file)
@@ -705,6 +707,31 @@ const { approved, payload: approvedPlan } = await checkpoint('Run this plan?', {
 [`examples/plan-approve-execute.js`](examples/plan-approve-execute.js) 是完整的
 计划 → 批准 → 执行循环,附带说明的拒绝会触发重新规划。
 
+### agent 的提问(ODW 扩展)
+
+模型有时会在任务中途停下来问用户——Claude Code 的 `AskUserQuestion` 工具。无头运行时没人
+能回答:工具立刻空着返回,模型接着瞎猜,或者一直挂到超时
+([claude-code#50728](https://github.com/anthropics/claude-code/issues/50728))。odw 从 CLI
+的输出流里识别这个调用,**在提问处立即停下 CLI**——agent 绝不会拿着空答案继续——然后按
+`questions` 的设置处理:
+
+- `"checkpoint"`(默认)把问题变成一个检查点:与 `checkpoint()` 共用 `odw status`、看板卡片
+  (每个选项是一个可点击填入答案的标签)、`notify` 的 `"waiting"` hook 和一次性审批链接。用
+  `odw approve <run> --checkpoint N --note "<答案>"` 回答(或批准时把编辑后的 payload 的
+  `answer` 填上);同一个 agent() 调用会重新派发——隔离 agent 复用原来的 worktree——提示词末尾
+  附上"Earlier in this task you stopped to ask the user: … The user answered: …"。重派会记
+  一行日志(`retry.reason: "question"`)并计入预算。`odw reject` 表示拒绝回答:agent 以
+  `reason: "needs_input"` 失败。同一调用回答过 3 次后再问,也会失败。
+- `"fail"`:agent 立即以 `reason: "needs_input"` 失败;它问了什么会列在 `agent_failed`
+  事件、`/api/runs/:id`、看板侧栏和 `odw status` 里。
+- `"deny"`:CLI 运行时不带提问工具(适配器的 `questionArgs`:`claude --disallowedTools
+  AskUserQuestion`),并告诉 agent 自行假设、在回复里说明假设了什么。仍然提问的以 `needs_input` 失败。
+
+可以在运行级(配置里的 `"questions"`)、适配器级或单个调用上设置:
+`agent(prompt, { questions: "fail" })`。只认 CLI 自己的工具调用——以问号结尾的回复不算提问——
+也不续接 CLI 会话:调用带着答案重新运行。任何 JSONL 适配器都可以用 `output.questions` 声明自己
+CLI 的提问事件(见适配器参考);内置 `claude` 已声明。
+
 ### 用量与花费(ODW 扩展)
 
 扇出很快就会烧掉额度,所以运行会边跑边显示花了多少。每个 `agent_finished`(以及
@@ -850,6 +877,7 @@ webhook 的正文,并返回 `202 { "runId" }`。
     "concurrency": 2,                              // 可选:同时进行的运行上限
     "rateLimit": { "max": 30, "windowSec": 3600 }  // 默认值
     // 默认 "untrusted": true;"source":运行的工作目录
+    // "permissions": "edit" 让它的 agent 可以编辑;"approve": false 跳过第一个可写 agent 的询问
   }
 }
 ```
@@ -864,7 +892,8 @@ webhook 的正文,并返回 `202 { "runId" }`。
   或仓库之外的 `~/.config/odw/config.json`。仓库自带的 `./odw.config.json` 不能声明触发器:
   其中的 `triggers` 会被拒绝并给出警告(克隆下来的仓库不能借 webhook 进入你的机器),改为
   提供你自己配置里的触发器。
-- **默认不受信任:** issue 文本谁都能写,所以这些运行默认 `--untrusted`,除非触发器写明
+- **默认不受信任:** issue 文本谁都能写,所以这些运行默认 `--untrusted`,并带有
+  [不可信输入](#不可信输入odw-扩展)——agent 只读、不带令牌、可写之前先过检查点——除非触发器写明
   `"untrusted": false`。
 - **范围很窄:** 只有你配置里的触发器存在,每个只能启动它自己的工作流。未知的名字、尚未设置的
   密钥、错误/缺失/过期的签名一律返回相同的 `401`(按地址限速;`odw serve` 会在日志里写明原因),
@@ -1328,6 +1357,49 @@ odw view run.odwrun                   # 即 odw serve --open run.odwrun:在浏�
   一律拒绝(409),在 loopback 上也是如此。
 
 看板上运行的 **分享** 按钮会复制 `odw bundle <run>`。
+
+### 回收磁盘:`odw gc` 与 `odw pin`(ODW 扩展)
+
+每个隔离 agent 的 worktree 在调用结束时就会删除——但 worker 被 SIGKILL、机器断电时,清理来不及
+执行。保留的分支(`keep: true`、`keepBranches`)在你删除之前一直存在,每个运行目录也一直保留 agent
+的 transcript。`odw gc` 把这些连同大小一起列出来,**不加 `--yes` 什么都不删**:
+
+```bash
+odw gc                        # 默认空跑:列出会删什么、能腾出多少空间
+odw gc --older-than 14d       # 超过 14 天的运行算作过期(默认取 retention.days,30)
+odw gc --yes                  # 真的删除
+odw gc --json                 # 同一份报告,给脚本用
+odw pin $RUN                  # odw gc 跳过这个运行,不论多旧;--remove 取消;不带运行 id 列出已固定的
+```
+
+- **孤儿 worktree。** 每个隔离 agent 的 worktree 目录(`$TMPDIR/odw-wt-*`)里有一个
+  `odw-owner.json`,写明它属于哪个进程、哪个运行、哪个仓库。进程已不在、且所属运行不再活动的,
+  就是孤儿;没有这个文件的(旧版 odw 建的)要一天没被改动过才算。清理方式与 worker 自己一样:
+  `git worktree unlock`、`worktree remove --force --force`、删目录、`worktree prune`;目录已经
+  不在的注册项会被 prune。`odw gc` 查看临时目录,以及当前仓库(`--source DIR`)和每个运行的源仓库
+  里注册的 worktree。
+- **keep 分支** `odw/<run>/<agent>-<label>`(属于本运行根目录中的运行):HEAD 已经包含其改动
+  (提交在 HEAD 中,或 `git cherry` 在 HEAD 里找到同样的补丁——`odw apply` 加一次提交之后就是这样),
+  或所属运行超过保留期限时删除。任何地方检出着的分支 git 会拒绝删除,于是保留;本运行根目录不认识
+  其运行的分支只计数,从不删除。
+- **保险快照** `refs/odw/safety/<run>`(`odw restore` 用来恢复的那份)在所属运行超过保留期限时
+  随之删除;本运行根目录不认识其运行的快照只计数,从不删除。
+- **过期运行**——已结束且超过保留期限——删除各 agent 的 transcript 和 stderr(运行中最大的部分)。
+  `meta.json`、状态、事件、保存的结果和 diff 都保留,所以 `odw list`、`odw estimate`、`odw compare`
+  和 `odw apply` 仍然可用;运行目录中的 `gc.json` 记录删了什么,看板为该运行标出 **转录已清理**。
+- **从不碰:** 运行中、暂停中或在检查点等待的运行;你固定过的运行(运行目录里的 `pinned.json`,看板
+  标出 **已固定**);不是 odw 建的 worktree 和分支。每一项删除前都会再检查一次,失败的会报告(退出码 1),
+  其余照常进行。
+- **启动时** 每个 worker 只读地查看其仓库注册的 worktree,若有已死运行留下的,就在运行日志里说一次,
+  并给出 `odw gc` 命令。`odw doctor` 增加 **Disk** 一行:运行根目录的大小与孤儿 worktree 数。
+
+```jsonc
+{
+  "retention": { "days": 30, "transcripts": true } // transcripts: false 保留 transcript;gc 只清理 worktree 与分支
+}
+```
+
+odw 不运行常驻进程:要定期清理,把 `odw gc --yes` 放进你自己的 crontab 或 CI 任务。
 
 ## 看板:观测、检查、对话
 
@@ -1884,6 +1956,42 @@ approval_mode = "approve"
 (`odw doctor --smoke` 会发一次真实调用来检验)。`exec()` 命令、`worktreeSetup` 和
 `notify` 钩子仍拿到完整的环境变量。
 
+### 安全快照与破坏性 git 命令(ODW 扩展)
+
+原地工作的 agent——方言的默认做法,没有 `isolation: "worktree"`——就在你未提交的改动旁边
+干活,一条 `git reset --hard` 就能把它们全部丢掉
+([claude-code#33850](https://github.com/anthropics/claude-code/issues/33850))。所以在一次
+运行的第一个 `edit` 或 `full` 档位的原地 agent 开始之前,odw 会保存工作区里 git 还没有的
+东西:用 `git stash create` 保存已跟踪文件的改动(暂存与未暂存),再加上 `.gitignore` 没有
+排除的未跟踪文件,合成一个提交存到 `refs/odw/safety/<run>`——你的工作区、index 和 stash
+列表都保持原样。干净的工作区不建快照;被忽略的文件从不保存,超过 50 MB 的未跟踪文件也不
+保存(快照里会点名)。运行用 `safety_snapshot` 事件说明;odw 无法建快照时(不是 git 仓库、
+正在合并)记一条日志说明原因,agent 照常运行。
+
+```sh
+odw restore $RUN --check   # 预览:每个文件 clean、CONFLICT(附冲突行)或 already applied
+odw restore $RUN           # 把工作区恢复成快照保存时的样子(git apply --3way,已暂存)
+```
+
+`odw restore` 在运行的源仓库里工作,复用
+[`odw apply`](#审阅并应用隔离-agent-的改动odw-扩展) 的机制:工作区里已经与快照一致的文件
+(例如 reset 没有动到的未跟踪文件)会略过;某个路径有未提交改动时拒绝,除非加 `--force`;
+HEAD 在那之后移动过(`git reset --hard origin/main`)时,改动以三方合并方式放到新的 HEAD
+之上,并说明 HEAD 原来所在的提交。
+
+odw 无法在命令执行前拦住它——那需要各 CLI 自己的 hook——但会在 agent 运行时读取它执行的命令
+(Claude Code 的 `Bash`、Codex 的 `command_execution`、kilo、opencode 与 agy 的 shell 工具),
+识别 `git reset --hard`、`git checkout .` / `-- .` / `--force`、`git restore .`、
+`git clean -f…`、`git push --force`(`-f`、`--force-with-lease`、`+refspec`)、
+`git stash drop|clear` 和 `git branch -D`。命令行按 shell 的方式切分(`cd x && …`、
+`bash -lc '…'`、`sudo`、`env`、`git -C dir …`);引号里的文字不算命令。每条命中都是一个
+`destructive_git` 事件——显示在 `odw logs`、实时视图以及看板里该 agent 的抽屉和节点上——有快照时
+会提示 `odw restore <run>`。只重置工作区的那几类命令对隔离 agent 不计:它的 worktree 是它自己的。
+
+```jsonc
+{ "destructiveGit": "fail" } // 默认 "warn":只记录;"fail":agent 的 CLI 结束后以失败原因 destructive_git 判为失败
+```
+
 ### 不受信任的仓库(ODW 扩展)
 
 在别人的仓库上运行 agent 是危险的:仓库里的 CLAUDE.md 或 AGENTS.md 会左右 agent,它的
@@ -1942,6 +2050,54 @@ agent 的 `agent_started` 事件、保存的结果和 `odw agents --json` 行都
 `trust: "untrusted"`,看板的详情抽屉会显示它,运行的 `run_started` setup 也记录 `trust`。
 不受信任不是沙箱:它只在 CLI 允许的地方挡住仓库的指令和配置,agent 能做什么仍由权限
 档位决定。
+
+### 不可信输入(ODW 扩展)
+
+issue 正文、PR 标题、评论是任何人写的文字,模型无法可靠地把它和指令区分开:已公开的注入
+("Comment and Control"、GitLost)绕过了所有模型层面的防护,由此得出的建议是结构性的——把能力
+拿走。**args** 来自外部的运行带有**不可信输入**,这与[不受信任的仓库](#不受信任的仓库odw-扩展)
+是两回事。[触发器](#由-webhook-启动运行githublinearslackodw-扩展)启动的每个运行都带有它(除非
+触发器写明 `"untrusted": false`),`odw run --untrusted-input` 也一样(rerun / resume 会保留)。
+这样的运行:
+
+- **agent 只读**——`permissions: "read"`——除非显式给出了运行档位:`--permissions`,或触发器的
+  `"permissions"`;
+- **agent CLI 以 `agentEnv: "minimal"` 启动,且不带密钥类变量**——`GH_TOKEN`、`GITHUB_TOKEN`、
+  `*_API_KEY`、`*_TOKEN` 等——只保留该 CLI 自身登录文档里的那些(claude 是 `ANTHROPIC_*`/`CLAUDE_*`,
+  codex 是 `OPENAI_*`/`CODEX_*`,……),无论 `agentEnvPass` 列了什么。适配器自己的 `env` 仍然生效,
+  `exec()` 命令(工作流作者写的)得到最小环境加上 `agentEnvPass`;
+- **没有隔离时大声说出来:** 若没有 `network` 为白名单(或 `"none"`)的
+  [容器沙箱](#在容器中运行-agentodw-扩展),启动横幅、运行日志和 `run_started` 事件都会警告。
+  配置 `"untrustedInput": { "requireSandbox": true }` 则直接拒绝启动;
+- **写之前先问:** 第一个可写(`edit` 或 `full`)的 agent 会停在一个[检查点](#人工检查点odw-扩展)
+  等人放行——每个运行只问一次,答复对之后的 agent 都有效;拒绝会让这些 agent 以可捕获的
+  `UntrustedInputRejected` 失败。对这样的运行执行 `odw apply --pr` 会在终端询问 `y/N`,或接受
+  `--accept-untrusted-input`。触发器的 `"approve": false` 同时关闭两者。
+
+```jsonc
+"triggers": {
+  "fix-issue": {
+    "workflow": "fix-issue", "verify": "github", "secretEnv": "GITHUB_WEBHOOK_SECRET",
+    "args": { "issue": "$.issue.number", "body": "$.issue.body" },
+    "permissions": "edit"            // agent 可以编辑:第一个会先询问
+  }
+},
+"sandbox": { "kind": "container", "image": "odw-agents:latest", "network": { "allow": "adapter" } },
+"untrustedInput": { "requireSandbox": true }
+```
+
+工作流通过 `workflow.input` 看到这一点(ODW 扩展;Claude Code 中为 undefined,请写成
+`workflow.input?.untrusted`):`untrusted`、它覆盖的 `args`(触发器映射的键;`["*"]` 表示全部)、
+`why`(`trigger:<name>`、`--untrusted-input`),以及 `quote(text, label?)`——把文本放进带围栏的
+`<untrusted-data>` 块,后面跟一行说明它是数据而不是指令:
+
+```js
+const fix = await agent(`修复这个 issue 描述的 bug。\n${workflow.input.quote(args.body, "issue body")}`)
+```
+
+meta.json 记录 `untrustedInput: { why, args, approve }`;status.json 和 `run_started` 事件补充档位、
+环境以及是否有沙箱,看板的 Job 头部以一行信任信息显示它。这些都不检测或过滤注入,也不让运行
+变得「安全」:它只是拿走了那段文字可能要求的能力。
 
 ### 在容器中运行 agent(ODW 扩展)
 
@@ -2246,7 +2402,7 @@ agent 在两次之间做的事不可能改变结果。同一次调用的后续 C
 `unmet_expectation`、`"mcpFailures": "fail"` 下的 `mcp_unavailable`,以及
 `orphaned_background`(回复时仍有后台任务在运行,`"orphanedBackground": "fail"` 或设了
 `expect` 时)(见[检查 agent 的工作](#检查-agent-的工作odw-扩展));`out_of_scope`:
-`"scopePolicy": "fail"` 下改动了声明范围之外文件的 agent(见[声明范围](#声明范围odw-扩展));还有 `runaway`:触及[上限](#单-agent-上限与死循环odw-扩展)被杀掉的 agent。这个类别就是 `agent_failed` 事件上的 `reason`(CLI 说明了何时
+`"scopePolicy": "fail"` 下改动了声明范围之外文件的 agent(见[声明范围](#声明范围odw-扩展));`needs_input`:停下来提问却没人回答的 agent(见[agent 的提问](#agent-的提问odw-扩展));还有 `runaway`:触及[上限](#单-agent-上限与死循环odw-扩展)被杀掉的 agent。这个类别就是 `agent_failed` 事件上的 `reason`(CLI 说明了何时
 可以重试时,还带有以秒计的 `retryAfter`),也是看板和 `/api/runs/:id` 里该 agent 的
 `failureReason`,并显示在实时视图和 `odw logs` 中:
 
@@ -2592,7 +2748,10 @@ hook——webhook 只显示协议和主机,因为 URL 的其余部分就是密�
 `ODW_RESULT_FILE`);webhook 收到 `"state": "waiting"`、一个
 `"checkpoint": { "checkpointId", "title", "since" }` 字段(代替 `finishedAt`),以及一行
 写明回答命令的 `text`。有 `odw serve --public-url` 在运行时,它们还会带上该检查点签名的一次性
-批准与拒绝链接——见[在手机上批准](#在手机上批准odw-扩展)。
+批准与拒绝链接——见[在手机上批准](#在手机上批准odw-扩展)。[agent 的提问](#agent-的提问odw-扩展)
+也触发同样的 hook:载荷的 `checkpoint.kind` 为 `"question"`(普通检查点为 `"checkpoint"`),
+`checkpoint.question` 写明提问的 agent(`{ agentId, label, adapter }`),命令多出
+`ODW_CHECKPOINT_KIND` 与 `ODW_QUESTION_AGENT`,`text` 行提示用 `odw approve … --note` 回答。
 
 加上 `"paused"`,就能在运行[因额度用尽而暂停](#额度用尽时暂停odw-扩展)时收到通知——每次
 暂停一次,继续时不再通知:命令的环境变量带有 `ODW_RUN_STATE=paused`、`ODW_PAUSED_ADAPTER`

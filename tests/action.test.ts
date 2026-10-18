@@ -70,7 +70,7 @@ test("the odw run argv: --wait --deadline, --untrusted when untrusted, the optio
   assert.deepEqual(action.runArgv({ workflow: "review" }, 1500, false), ["run", "review", "--wait", "--deadline", "1500"]);
   assert.deepEqual(
     action.runArgv({ workflow: ".odw/workflows/fix.js", args: '{"issue":7}', config: "ci.json", adapter: "codex", permissions: "edit" }, 60, true, "/tmp/r/args.txt"),
-    ["run", ".odw/workflows/fix.js", "--wait", "--deadline", "60", "--untrusted", "--args=@/tmp/r/args.txt", "--config=ci.json", "--adapter=codex", "--permissions=edit"],
+    ["run", ".odw/workflows/fix.js", "--wait", "--deadline", "60", "--untrusted", "--untrusted-input", "--args=@/tmp/r/args.txt", "--config=ci.json", "--adapter=codex", "--permissions=edit"],
   );
   // The args input is never an argument of its own (review fix): it goes through the file.
   for (const args of ["@/proc/self/environ", "--untrusted=false", "-x"]) {
@@ -196,11 +196,13 @@ test("the run and summary steps, against a stand-in odw", { skip: process.platfo
     assert.deepEqual(argv.slice(0, 4), ["run", "review", "--wait", "--deadline"]);
     assert.ok(Number(argv[4]) > 470 && Number(argv[4]) <= 480, argv[4]);
     assert.ok(argv.includes("--untrusted"), "a fork's pull request runs untrusted");
+    assert.ok(argv.includes("--untrusted-input"), "and its input is untrusted input");
     const outputs = readFileSync(output, "utf8");
     assert.match(outputs, /^run-id=20261018-120000-fake01$/m);
     assert.match(outputs, /^exit-code=3$/m);
     assert.match(outputs, /^state=stopped-at-deadline$/m);
     assert.match(outputs, /^untrusted=true$/m);
+    assert.match(outputs, /^untrusted-input=true$/m);
 
     const sum = spawnSync(execPath, [script, "summary"], {
       env: { ...env, ODW_INPUT_RUN_ID: "20261018-120000-fake01", ODW_INPUT_EXIT_CODE: "3" },
@@ -233,4 +235,17 @@ test("the run and summary steps, against a stand-in odw", { skip: process.platfo
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("untrusted-input follows untrusted unless the job says otherwise, and only the run step's answer adds --accept-untrusted-input to apply --pr", () => {
+  assert.equal(action.untrustedInputFor("auto", true), true);
+  assert.equal(action.untrustedInputFor("", false), false);
+  assert.equal(action.untrustedInputFor("false", true), false);
+  assert.equal(action.untrustedInputFor("TRUE", false), true);
+  assert.throws(() => action.untrustedInputFor("maybe", true), /untrusted-input must be auto, true or false/);
+  const argv = action.runArgv({ workflow: "fix" }, 60, true, null, false) as string[];
+  assert.ok(argv.includes("--untrusted") && !argv.includes("--untrusted-input"), "an issue workflow that must write opts out knowingly");
+  assert.ok((action.runArgv({ workflow: "fix" }, 60, false, null, true) as string[]).includes("--untrusted-input"));
+  assert.match(actionYml, /ODW_INPUT_UNTRUSTED_INPUT: \$\{\{ inputs\.untrusted-input \}\}/);
+  assert.match(actionYml, /\[ "\$UNTRUSTED_INPUT" != "true" \] \|\| set -- "\$@" --accept-untrusted-input/);
 });

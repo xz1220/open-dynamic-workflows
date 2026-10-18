@@ -40,7 +40,9 @@ independent security reviews whose findings are all fixed.
   binary-only install), runs `odw run --wait --deadline` a margin before the job's
   timeout, writes the spend receipt, agent table and failures to the job summary,
   uploads `odw bundle`, and can open a draft PR with `odw apply --pr`. Fork pull
-  requests and issue events run `--untrusted`. See
+  requests and issue events run `--untrusted`, and with `untrusted-input: auto` as
+  untrusted input too (`--untrusted-input`; `apply-pr` then passes
+  `--accept-untrusted-input`, the write having been held at the run's checkpoint). See
   [`docs/github-action.md`](docs/github-action.md).
 
 ### Recover instead of restarting
@@ -111,6 +113,25 @@ independent security reviews whose findings are all fixed.
   handed back, then `orphaned_background`. Adapters declare their CLI's background
   events generically with `output.background` (`started` / `ended` rules); the built-in
   `claude` ships one.
+- Agent questions become checkpoints (**ODW extension**; ROADMAP T1, T10): an agent that
+  stops to ask the user — Claude Code's `AskUserQuestion` — gets no answer headless and
+  goes on guessing ([claude-code#50728](https://github.com/anthropics/claude-code/issues/50728)).
+  ODW reads the tool call from the stream and stops the CLI there, then does what
+  `"questions"` says (run-wide, per adapter, or `agent(…, { questions })`):
+  `"checkpoint"` (the default) asks a person at a checkpoint — `odw status`, a dashboard
+  card with the options as chips, the `notify` "waiting" hook and approve links — and
+  runs the same call again, in the same worktree, told "earlier you asked X; the user
+  answered Y" (`odw approve <run> --checkpoint N --note "<answer>"`); a rejection, a
+  fourth question, `"fail"`, or a question asked anyway under `"deny"` fail it with the
+  new reason `needs_input`, its questions on the `agent_failed` event, the drawer and
+  `odw status`. `"deny"` runs claude with `--disallowedTools AskUserQuestion`
+  (`questionArgs`) and tells the agent to assume and say so. The rerun is logged
+  (`retry.reason: "question"`) and counts toward the budget. Activity's "Needs you" and
+  the command palette show questions and `needs_input` failures apart from checkpoints;
+  the `notify` waiting payload carries `checkpoint.kind` (`"checkpoint"` | `"question"`),
+  `checkpoint.question` and `ODW_CHECKPOINT_KIND` / `ODW_QUESTION_AGENT`. Adapters
+  declare their CLI's question events with `output.questions`; no reply text is ever
+  guessed to be a question, and no CLI session is resumed.
 - `expect: { untouched: ['test/**', '**/*.snap', '.github/**'] }` (**ODW extension**):
   a file the agent changed, created or deleted that matches a listed glob is a miss
   naming the paths — so an agent cannot edit or skip the tests it is judged by to get
@@ -197,6 +218,9 @@ independent security reviews whose findings are all fixed.
   catchable `CostGateRejected`. Without history the gate lets fan-outs through and
   says so once. The dashboard's workspace draws the estimate for a workflow with runs:
   the totals, and a p50/p90 range bar per phase.
+  Activity adds a Spend card: the last fortnight's dollars (else tokens) per day,
+  stacked by the three workflows that spent most, today lit, with the change against
+  the fortnight before; dry runs stay out.
 - Codex agents report their tokens too: the built-in `codex` adapter runs `codex exec
   --json --output-last-message {reply_file}` — its reply from that file (else the last
   `agent_message` event), tokens from `turn.completed` (no cost: codex reports none),
@@ -319,6 +343,21 @@ independent security reviews whose findings are all fixed.
   still does); a config inside it cannot loosen the trust your
   `~/.config/odw/config.json` sets. The trust level shows in the start banner, `odw doctor`, the run's setup, each
   agent's events and saved result, and the dashboard's drawer.
+- Untrusted input (**ODW extension**): a run whose args are someone else's text — every
+  run a trigger starts (unless `"untrusted": false`), and `odw run --untrusted-input`
+  (kept by rerun and resume) — gets fewer capabilities, not a filter: read-only agents
+  unless `--permissions` or the trigger's new `"permissions"` gives a tier; `agentEnv:
+  "minimal"` with every secret-named variable (`GH_TOKEN`, `GITHUB_TOKEN`, `*_API_KEY`,
+  `*_TOKEN`, …) withheld but the ones the agent's own CLI login documents, whatever
+  `agentEnvPass` says; a loud warning in the start banner, the log and `run_started`
+  without a container sandbox whose network is an allowlist or none — refused instead
+  under `"untrustedInput": { "requireSandbox": true }`; and a checkpoint before the first
+  agent that may write (once per run; a rejection throws a catchable
+  `UntrustedInputRejected`), and a `y/N` (or `--accept-untrusted-input`) before `odw apply
+  --pr` — both off with the trigger's `"approve": false`. Scripts read `workflow.input` (`{
+  untrusted, args, why, quote(text, label?) }`, `quote` putting text in a fenced data
+  block); meta.json keeps `untrustedInput: { why, args, approve }`, status.json and
+  `run_started` the profile, and the dashboard's Job header shows a trust line.
 - Run agents in containers (`sandbox: { "kind": "container", "image": … }`, `odw
   run|rerun|resume --sandbox container [--sandbox-image <image>]`, per adapter, per
   `agent()` call — which may only tighten it; **ODW extension**): each CLI run, and each
@@ -370,6 +409,23 @@ independent security reviews whose findings are all fixed.
   (name plus a hash of its arguments) n times in a row. A runaway is never retried
   (`transientRetries`) nor an `expect` miss. A text CLI's spend is checked after each run,
   and the run says so once. Shown in `odw status`, `odw agents` and the agent's drawer.
+- A safety snapshot before in-place agents, and destructive git commands caught
+  (**ODW extension**; anthropics/claude-code#33850): before a run's first agent that
+  works in the source tree (no `isolation: "worktree"`) with `edit` or `full`, a tree
+  with uncommitted work is kept at `refs/odw/safety/<run>` — `git stash create` for the
+  tracked changes plus the untracked, non-ignored files through a scratch index (your
+  tree, index and stash list are never touched; ignored files and untracked files over
+  50 MB are not kept) — announced by a `safety_snapshot` event. `odw restore <run>
+  [--check] [--force]` previews, then puts it back file by file with `odw apply`'s
+  three-way machinery, leaving out what the tree already holds as kept. What agents
+  run is read as it streams (Claude Code's Bash, Codex's `command_execution`,
+  kilo/opencode/agy shell tools) for `git reset --hard`, `git checkout .`/`-- .`/
+  `--force`, `git restore .`, `git clean -f…`, `git push --force`, `git stash
+  drop|clear` and `git branch -D`: each is a `destructive_git` event naming `odw
+  restore`; `"destructiveGit": "fail"` (default `"warn"`) fails the agent with reason
+  `destructive_git` once its CLI is done — ODW cannot stop a command before it runs.
+  Commands that only reset a working tree do not count for an isolated agent. Shown in
+  `odw logs`, the live view, the agent's drawer and node, and a chip on the run's head.
 
 ### Run on a schedule
 - `odw schedule add|list|remove|run` writes a cron, launchd or systemd entry that calls
@@ -548,6 +604,20 @@ independent security reviews whose findings are all fixed.
   compiles a body; installs verify SHA256 checksums.
 - The dashboard server reads events incrementally, pushes run-list deltas, and stays
   responsive with thousands of runs.
+- `odw gc` and `odw pin` (**ODW extension**): `odw gc [--yes] [--older-than 30d]
+  [--json] [--source DIR]` reports what runs left on disk, with sizes — orphaned
+  `$TMPDIR/odw-wt-*` worktrees whose process is gone (each worktree now names its
+  process, run and repository in `odw-owner.json` beside it), keep branches whose change
+  HEAD already holds or whose run is past retention, safety snapshots
+  (`refs/odw/safety/<run>`) of runs past retention, and expired runs' transcripts and
+  stderr — and deletes nothing without `--yes` (worktrees as the worker would:
+  unlock, `remove --force --force`, prune; meta, events, results and diffs of a trimmed
+  run stay, `gc.json` says what went). Running, paused and waiting runs, and runs marked
+  with `odw pin <run>` (`pinned.json`; `--remove` unpins), are skipped; branches and
+  worktrees odw did not make are never looked at. Config `retention: { days: 30,
+  transcripts: true }`. Each worker says once in the run's log when its repository has
+  orphaned worktrees; `odw doctor` gains a **Disk** line (runs root size, orphans); the
+  dashboard tags a run **pinned** or **transcripts trimmed**.
 
 ### Security fixes found in review
 - A sandboxed agent could plant git config (`core.fsmonitor`, hooks) in its workspace's

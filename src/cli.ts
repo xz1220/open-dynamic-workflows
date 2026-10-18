@@ -38,6 +38,8 @@
  *   odw run <wf> --break <phase|label>[,…] | --step   (a checkpoint before them; src/breaks.ts)
  *   odw check <script.js|name> [--json]   (the loader's checks, with a code frame; src/check.ts)
  *   odw new [<template>] [--name N] [--force] [--yes]   (a workflow + starter test from an embedded template; src/new.ts)
+ *   odw gc [--yes] [--older-than 30d] [--json] | odw pin <run_id> [--remove]   (what odw left on disk; runtime/gc.ts)
+ *   odw restore <run_id> [--check] [--force]   (the working tree before the run's first in-place agent; runtime/restore.ts)
  */
 
 import { spawn } from "node:child_process";
@@ -72,6 +74,7 @@ import { agentRowJson, agentRows, formatAgentTable, matchAgents, type AgentRow }
 import { applyAgents, type AgentDiff } from "./runtime/apply.js";
 import { resolverRuns } from "./runtime/apply-resolve.js";
 import { applyPr } from "./runtime/apply-pr.js";
+import { restoreSnapshot } from "./runtime/restore.js";
 import {
   changedAgents,
   colorDiff,
@@ -84,8 +87,9 @@ import {
 import { compareRuns, findComparedAgents, formatAgentComparison, formatComparison, readCompareRun } from "./runtime/compare.js";
 import { editBlocker, editorCommand, editPayload, readPayloadOption } from "./runtime/checkpoint-edit.js";
 import { startRun, startRunFromSource, waitFor } from "./runtime/launcher.js";
-import { attachRun, bannerLines, checkpointCommands, fallbackLines, formatEvent, formatUsage, resolveRunMode, runawayLines, shellArg, type RunMode } from "./runtime/live-view.js";
+import { attachRun, bannerLines, checkpointCommands, fallbackLines, formatEvent, formatUsage, needsInputLines, resolveRunMode, runawayLines, shellArg, type RunMode } from "./runtime/live-view.js";
 import { accountLines } from "./runtime/live-view.js";
+import { safetyLines } from "./runtime/live-view.js";
 import { isRunActive, RunObserver } from "./runtime/run-liveness.js";
 import { RunStore, TERMINAL_STATES, type ReplayLink } from "./runtime/run-store.js";
 import { detail, evalTagOf, summarize, type RunDetail } from "./runtime/runs-view.js";
@@ -102,7 +106,8 @@ import { planReplay, readPromptOption, ReplayError, startReplay } from "./runtim
 import { printAgentLogs } from "./runtime/transcript-view.js";
 import { cmdNote, cmdNotes } from "./runtime/notes-view.js";
 import { cmdMemory } from "./runtime/memory-cli.js";
-import { cmdEstimate, estimateBeforeRun } from "./runtime/estimate-cli.js";
+import { askYesNo, cmdEstimate, estimateBeforeRun } from "./runtime/estimate-cli.js";
+import { cmdGc, cmdPin } from "./runtime/gc-cli.js";
 import { executeRun } from "./runtime/worker.js";
 import {
   parseSshTarget,
@@ -116,6 +121,7 @@ import {
   RemoteUsageError,
   takeOnFlag,
 } from "./runtime/remote.js";
+import { questionLine } from "./questions.js";
 import { pausedForOf, pausedText } from "./quota-wait.js";
 import { cmdSchedule } from "./schedule/command.js";
 import { cmdEval } from "./eval/command.js";
@@ -126,6 +132,7 @@ import { isSeaBinary } from "./sea.js";
 import { describeConcurrency } from "./throttle.js";
 import { detectCaps, fmtUsd, glyphs, palette, sanitizeText } from "./tty.js";
 import { resolveRunTrust } from "./untrusted.js";
+import { confirmUntrustedPr, untrustedInputBanner, untrustedInputOf, untrustedTier } from "./untrusted-input.js";
 import { pluginOrigin } from "./workflows/plugins.js";
 import { listWorkflows, resolveWorkflow, type ResolvedWorkflow } from "./workflows/resolve.js";
 
@@ -163,6 +170,9 @@ export const COMMANDS = [
   "check",
   "new",
   "token",
+  "gc",
+  "pin",
+  "restore",
 ] as const;
 
 export type Command = (typeof COMMANDS)[number];
@@ -196,6 +206,8 @@ export function helpText(): string {
     "                                                     --check previews only; --verify CMD rolls an apply back if CMD fails",
     "                                                     --resolve [--adapter A] [--confirm]: an agent resolves a conflict, verified first",
     "                                                     --pr [--base B] [--ready] [--title T]: a branch, pushed, and a draft PR (gh); never merges",
+    "                                                     (a run with untrusted input asks y/N first; --accept-untrusted-input: yes)",
+    "  odw restore <run_id> [--check] [--force]           put back the working tree as it was before the run's first in-place agent (ODW extension)",
     "  odw compare <runA> <runB> [--json]                 what changed: setup, time, cost, failures, replies",
     "                                                     --agent <label|id> shows one agent's whole reply diff",
     "  odw estimate <wf> [--args JSON|@file] [--json]     p50/p90 time, cost, tokens and agents, from its earlier runs (ODW extension)",
@@ -235,6 +247,8 @@ export function helpText(): string {
     "  odw run <wf> --break <phase|label>[,…] | --step    stop for a decision before those phases/agents, or every phase (ODW extension)",
     "  odw check <script.js|name> [--json]                check a workflow loads: errors with line, column and a code frame",
     "  odw new [<template>] [--name N] [--force] [--yes]  a workflow + starter test in .odw/ from a built-in template; no args lists them",
+    "  odw gc [--yes] [--older-than 30d] [--json]         report orphaned worktrees, keep branches, old transcripts; --yes deletes (ODW extension)",
+    "  odw pin <run_id> [--remove]                        odw gc skips a pinned run; no run id lists them",
     "",
     "Options:",
     "  --args JSON|@file   workflow input (JSON, @file.json, or a raw string)",
@@ -245,6 +259,8 @@ export function helpText(): string {
     "  --permissions <t>   read | edit | full: what this run's agents may do (default edit; ODW extension)",
     "  --untrusted         keep the repository's CLAUDE.md, hooks, MCP servers and settings from agents where",
     "                      each CLI allows (claude --safe-mode), say where one cannot (ODW extension)",
+    "  --untrusted-input   the args are someone else's text (an issue, a comment): read-only agents unless",
+    "                      --permissions, a minimal env without tokens, a checkpoint before any agent may write (ODW extension)",
     "  --sandbox container run each agent CLI (and exec() step) in a Docker/Podman container (ODW extension)",
     "  --sandbox-image <i> the image it runs in (else the config's sandbox.image); never pulled",
     "  --fg                run in the foreground: live progress on a TTY, plain event lines otherwise",
@@ -399,6 +415,12 @@ export async function main(argv: string[]): Promise<number> {
         return cmdCheck(rest);
       case "token":
         return cmdToken(rest);
+      case "gc":
+        return await cmdGc(rest);
+      case "pin":
+        return cmdPin(rest);
+      case "restore":
+        return await cmdRestore(rest);
       default:
         process.stderr.write(`odw: unknown command '${command}'\n\n${helpText()}\n`);
         return 2;
@@ -592,6 +614,7 @@ async function cmdRun(rest: string[]): Promise<number> {
       adapter: { type: "string" },
       permissions: { type: "string" },
       untrusted: { type: "boolean" },
+      "untrusted-input": { type: "boolean" },
       sandbox: { type: "string" },
       "sandbox-image": { type: "string" },
       wait: { type: "boolean" },
@@ -658,6 +681,8 @@ async function cmdRun(rest: string[]): Promise<number> {
   const permissions = parsePermissions("run", values.permissions);
   const trust: TrustLevel | null = values.untrusted === true ? "untrusted" : null;
   const sandbox = parseSandbox("run", values.sandbox, values["sandbox-image"]);
+  // --untrusted-input (ODW extension; see untrusted-input.ts): the args are someone else's text.
+  const untrustedInput = values["untrusted-input"] === true ? { why: "--untrusted-input" } : null;
 
   // A dry run answers every agent itself: no adapter needs to be installed.
   if (!values.dry) warnIfNoDefaultAdapter(values.adapter ?? null, values.config ?? null, values.source ?? null, "run");
@@ -682,13 +707,14 @@ async function cmdRun(rest: string[]): Promise<number> {
     record,
     deadlineSeconds,
     breaks,
+    untrustedInput,
   });
   if (record) process.stderr.write(`recording: once ${runId} ends, it is a case of ${record.file} (odw test ${record.workflow})\n`);
   if (!values.dry) {
     return afterStart(store, runId, mode, {
       timeoutMs,
       hint: "started run",
-      banner: withWorkflowLines(startBanner(values.config ?? null, values.source ?? null, permissions, trust, sandbox), workflow),
+      banner: withWorkflowLines(startBanner(values.config ?? null, values.source ?? null, permissions, trust, sandbox, untrustedInput !== null), workflow),
     });
   }
   // A dry run is waited for (a non-TTY start would detach), then shown as its phase tree.
@@ -754,6 +780,7 @@ async function cmdRunRemote(ref: string, values: Record<string, string | boolean
     if (typeof values[flag] === "string") flags.push(`--${flag}`, values[flag] as string);
   }
   if (values.untrusted === true) flags.push("--untrusted");
+  if (values["untrusted-input"] === true) flags.push("--untrusted-input");
   return remoteRun({
     ref,
     target,
@@ -823,11 +850,14 @@ function startBanner(
   permissions: PermissionTier | null,
   trust: TrustLevel | null = null,
   sandbox: SandboxFlag | null = null,
+  untrustedInput = false,
 ): string | undefined {
   try {
     const cwd = source ? resolve(source) : process.cwd();
     const config = loadConfig(configPath, { quiet: true, cwd });
     if (permissions) config.settings.permissions = permissions;
+    // Untrusted input (ODW extension): read-only unless --permissions, as the worker decides it.
+    if (untrustedInput) config.settings.permissions = untrustedTier(permissions);
     // The sandbox line (ODW extension): `--sandbox container` over the config's.
     config.settings.sandbox = withSandboxFlag(config.settings.sandbox, sandbox);
     // The trust line (ODW extension), decided as the worker will decide it (see untrusted.ts).
@@ -839,6 +869,8 @@ function startBanner(
       `concurrency: ${describeConcurrency(config)}`,
       // The sandbox line (ODW extension), when a container is in play: none adds no line.
       ...(config.settings.sandbox !== "none" || Object.values(config.adapters).some((a) => a.sandbox) ? [sandboxBanner(config)] : []),
+      // The untrusted-input line (ODW extension), loud when no sandbox boxes its agents in.
+      ...(untrustedInput ? untrustedInputBanner(config.settings) : []),
     ].join("\n");
   } catch {
     return undefined;
@@ -961,10 +993,18 @@ async function afterStart(
           toldPauses.add(`${pause.adapter}@${pause.resumeAt}`);
           process.stderr.write(`${sanitizeText(pausedText(pause), 120)} — odw resume ${runId} goes on now\n`);
         }
-        const cp = waiting as { checkpointId?: unknown; title?: unknown } | null | undefined;
+        const cp = waiting as { checkpointId?: unknown; title?: unknown; question?: unknown } | null | undefined;
         if (!cp || !isCheckpointId(cp.checkpointId) || told.has(cp.checkpointId)) return;
         told.add(cp.checkpointId);
         const { approve, reject } = checkpointCommands(runId, cp.checkpointId, (flags ??= storeFlagsFor(store)));
+        // An agent's question is answered with a note (ODW extension; see questions.ts).
+        if (cp.question) {
+          process.stderr.write(
+            `an agent asks — checkpoint #${cp.checkpointId}: ${sanitizeText(cp.title, 200)}\n` +
+              `  answer:  ${approve} --note '<answer>'\n  decline: ${reject}\n`,
+          );
+          return;
+        }
         process.stderr.write(
           `waiting for a decision — checkpoint #${cp.checkpointId}: ${sanitizeText(cp.title, 200)}\n` +
             `  approve: ${approve}\n  reject:  ${reject}\n`,
@@ -1054,6 +1094,10 @@ function cmdStatus(rest: string[]): number {
   for (const line of accountLines(run.agents)) process.stdout.write(`  ${line}\n`);
   // Agents killed at one of their limits, with the evidence (ODW extension; see limits.ts).
   for (const line of runawayLines(run.agents)) process.stdout.write(`  ${line}\n`);
+  // Agents that stopped to ask a question nobody answered (ODW extension; see questions.ts).
+  for (const line of needsInputLines(run.agents)) process.stdout.write(`  ${line}\n`);
+  // The working tree's safety snapshot, and agents that ran destructive git commands (ODW extension; see safety.ts).
+  for (const line of safetyLines(runId, run.agents, run.safetySnapshot)) process.stdout.write(`  ${line}\n`);
   if (typeof meta.resumedFrom === "string") {
     const replayed = events.filter((e) => e.type === "agent_finished" && e.cached === true).length;
     process.stdout.write(`  resumed from: ${meta.resumedFrom} (${replayed} agent result(s) replayed)\n`);
@@ -1062,6 +1106,13 @@ function cmdStatus(rest: string[]): number {
   for (const cp of pending) {
     const since = new Date(cp.since * 1000).toLocaleTimeString();
     const { approve, reject } = checkpointCommands(runId, cp.checkpointId, flags);
+    // An agent's question (ODW extension; see questions.ts): what it asked, and how to answer it.
+    if (cp.question) {
+      process.stdout.write(`  an agent asks, since ${since} — checkpoint #${cp.checkpointId}: ${sanitizeText(cp.title, 200)}\n`);
+      for (const q of cp.question.questions) process.stdout.write(`    - ${sanitizeText(questionLine(q), 300)}\n`);
+      process.stdout.write(`    answer:  ${approve} --note '<answer>'\n    decline: ${reject}\n`);
+      continue;
+    }
     process.stdout.write(`  waiting for a decision since ${since} — checkpoint #${cp.checkpointId}: ${sanitizeText(cp.title, 200)}\n`);
     for (const line of payloadPreview(cp.payload)) process.stdout.write(`    ${line}\n`);
     process.stdout.write(`    approve: ${approve}\n    reject:  ${reject}\n`);
@@ -1301,12 +1352,13 @@ async function cmdApply(rest: string[]): Promise<number> {
       draft: { type: "boolean" },
       ready: { type: "boolean" },
       title: { type: "string" },
+      "accept-untrusted-input": { type: "boolean" },
     },
   });
   const runId = positionals[0];
   if (!runId) throw new UsageError("odw apply: missing <run_id>");
   if (!values.pr) {
-    for (const flag of ["base", "remote", "draft", "ready", "title"] as const) {
+    for (const flag of ["base", "remote", "draft", "ready", "title", "accept-untrusted-input"] as const) {
       if (values[flag] !== undefined) throw new UsageError(`odw apply: --${flag} goes with --pr`);
     }
   } else {
@@ -1389,6 +1441,14 @@ async function cmdApply(rest: string[]): Promise<number> {
   process.stderr.on("error", unheard);
   try {
     if (values.pr) {
+      // A run with untrusted input (ODW extension; see untrusted-input.ts): a person says yes before its PR is pushed.
+      const confirmed = await confirmUntrustedPr(untrustedInputOf(store.readMeta(runId)), {
+        runId,
+        accepted: values["accept-untrusted-input"] === true,
+        ask: process.stdin.isTTY ? (question) => askYesNo(question, process.stdin, process.stderr) : null,
+        err: process.stderr,
+      });
+      if (!confirmed) return 1;
       return await applyPr({
         cwd: process.cwd(),
         runId,
@@ -1431,6 +1491,59 @@ async function cmdApply(rest: string[]): Promise<number> {
   } finally {
     process.stdout.off("error", unheard);
     process.stderr.off("error", unheard);
+    for (const s of signals) process.off(s, onSignal);
+    if (caught) process.kill(process.pid, caught);
+  }
+}
+
+/**
+ * `odw restore <run_id> [--check] [--force]` (ODW extension) — preview, then
+ * put back, the working tree the run's safety snapshot kept before its first
+ * in-place agent (see ../safety, runtime/restore): in the run's source
+ * repository, file by file as `odw apply` does. Exit 0 when everything is
+ * back (or would be), 1 otherwise. A signal stops it before the apply.
+ */
+async function cmdRestore(rest: string[]): Promise<number> {
+  const { values, positionals } = parseArgs({
+    args: rest,
+    allowPositionals: true,
+    options: {
+      config: { type: "string" },
+      "runs-root": { type: "string" },
+      check: { type: "boolean" },
+      force: { type: "boolean" },
+    },
+  });
+  const runId = positionals[0];
+  if (!runId) throw new UsageError("odw restore: missing <run_id>");
+  const store = storeFrom(values);
+  if (!store.exists(runId)) {
+    process.stderr.write(`no such run: ${runId}\n`);
+    return 1;
+  }
+  const source = store.readMeta(runId).source;
+  // A signal stops it before anything more is applied; odw then ends by that signal.
+  const interrupt = new AbortController();
+  let caught: NodeJS.Signals | null = null;
+  const onSignal = (signal: NodeJS.Signals): void => {
+    caught ??= signal;
+    interrupt.abort();
+  };
+  const signals: NodeJS.Signals[] = ["SIGINT", "SIGTERM", "SIGHUP"];
+  for (const s of signals) process.on(s, onSignal);
+  try {
+    return await restoreSnapshot({
+      runId,
+      source: typeof source === "string" ? source : process.cwd(),
+      check: values.check === true,
+      force: values.force === true,
+      interrupt: interrupt.signal,
+      out: process.stdout,
+      err: process.stderr,
+      caps: detectCaps(process.stdout, process.env),
+      width: process.stdout.isTTY && process.stdout.columns ? process.stdout.columns : 120,
+    });
+  } finally {
     for (const s of signals) process.off(s, onSignal);
     if (caught) process.kill(process.pid, caught);
   }
@@ -1863,6 +1976,8 @@ async function relaunch(
     budgetTotal: (meta.budgetTotal as number | null) ?? null,
     // The worker reads the saved results from the source run's own directory.
     resumedFrom: cmd === "resume" ? { runId, dir: store.runDir(runId) } : null,
+    // Untrusted input stays untrusted on a rerun or resume (ODW extension): nothing loosens it.
+    untrustedInput: untrustedInputOf(meta),
   };
   warnIfNoDefaultAdapter(opts.adapter, opts.configPath, opts.source, cmd);
   // An inline-launched run's script lives inside the OLD run dir. Re-archive its

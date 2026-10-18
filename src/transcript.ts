@@ -59,7 +59,7 @@ import { hasMarker, type RedactStream, type Redactor } from "./redact.js";
  * `expect` checks, the call fell back to the next adapter of its chain, or it
  * starts over after waiting for a spent quota to reset (quotaWait).
  */
-export type AttemptReason = "schema" | "stall" | "rate_limit" | "expect" | "fallback" | "quota_wait";
+export type AttemptReason = "schema" | "stall" | "rate_limit" | "expect" | "fallback" | "quota_wait" | "question";
 
 /** Where one agent's transcript is kept: its stdout, and the end of its stderr. */
 export interface TranscriptPaths {
@@ -94,6 +94,8 @@ export function attemptLabel(reason: string | undefined, adapter?: string): stri
       return adapter ? `fallback to ${adapter}` : "fallback";
     case "quota_wait":
       return adapter ? `after the quota wait, on ${adapter}` : "after the quota wait";
+    case "question":
+      return "after the user's answer";
     default:
       return "retry";
   }

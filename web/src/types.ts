@@ -43,7 +43,11 @@ export interface RunSummary {
   /** Token/cost totals when adapters report them (`estimated` when some only had chars/4). */
   usage?: UsageTotals | null;
   /** The oldest checkpoint() waiting for a person, while the run is `waiting`. */
-  waiting?: { checkpointId: number; title: string; since: number } | null;
+  waiting?: { checkpointId: number; title: string; since: number; question?: QuestionAsker } | null;
+  /** How many of its agents stopped to ask a question nobody answered (reason "needs_input"; ODW extension). Absent when none. */
+  needsInput?: number;
+  /** How many of its agents ran a destructive git command, and whether `odw restore` can put the tree back (ODW extension). Absent when none did. */
+  destructiveGit?: { agents: number; restorable: boolean };
   /**
    * While the run is `paused` because its agents wait for an adapter's spent
    * quota to reset (ODW extension: quotaWait): which adapter, and when the run
@@ -121,6 +125,23 @@ export interface PendingCheckpoint {
   /** The JSON Schema an edited payload must match (ODW extension); the server checks it too. */
   schema?: Record<string, unknown> | null;
   since: number;
+  /** Set when it is an agent's question (ODW extension; src/questions.ts): who asked, and what. Answered with a note. */
+  question?: QuestionAsker & { questions: AgentQuestion[] };
+}
+
+/** The agent whose question a checkpoint is (ODW extension). */
+export interface QuestionAsker {
+  agentId: number;
+  label: string;
+  adapter: string;
+}
+
+/** One question an agent stopped to ask (ODW extension). */
+export interface AgentQuestion {
+  question: string;
+  header?: string;
+  options?: string[];
+  multiSelect?: boolean;
 }
 
 export interface AgentView {
@@ -144,10 +165,12 @@ export interface AgentView {
   exitCode?: number | null;
   /** A command step that is an agent's `expect.command` check: that agent's id (ODW extension). */
   forAgentId?: number;
-  /** Why an agent failed: rate_limit, quota, auth, timeout, stalled, not_found, permission, exit, empty_reply, unmet_expectation, mcp_unavailable, runaway, orphaned_background, out_of_scope. */
+  /** Why an agent failed: rate_limit, quota, auth, timeout, stalled, not_found, permission, exit, empty_reply, unmet_expectation, mcp_unavailable, runaway, orphaned_background, out_of_scope, needs_input. */
   failureReason?: string | null;
   /** With `unmet_expectation`: the `expect` checks its work did not meet, one line each (ODW extension). */
   misses?: string[];
+  /** With `needs_input`: the questions it stopped to ask that nobody answered, one line each (ODW extension). */
+  questions?: string[];
   /** A finished agent's tool calls its CLI refused (its reply stood anyway), one line each (ODW extension). */
   denied?: string[];
   /** A finished agent's background work its CLI left running when it replied, which died with it (its reply stood anyway), one line each (ODW extension). */
@@ -156,6 +179,8 @@ export interface AgentView {
   scope?: string[];
   /** The files it changed outside its scope, finished or failed (ODW extension). */
   outOfScope?: string[];
+  /** The destructive git commands its CLI ran — git reset --hard, git clean -f, … (ODW extension; src/destructive-git.ts). */
+  destructiveGit?: Array<{ command: string; what: string }>;
   /** What the adapter reported spending on this agent. */
   usage?: Usage | null;
   /** What an isolated (worktree) agent changed; its diff is served separately. */
@@ -219,6 +244,19 @@ export interface ScheduleView {
 /** How much an agent may do (ODW extension): read < edit < full. */
 export type PermissionTier = "read" | "edit" | "full";
 
+/** A run's untrusted input (ODW extension), as its detail serves it. */
+export interface UntrustedInput {
+  /** `trigger:<name>` or `--untrusted-input`. */
+  why: string;
+  /** The args it covers (`["*"]`: all of them). */
+  args: string[];
+  approve: boolean;
+  /** Null until the worker started. */
+  permissions: PermissionTier | null;
+  /** Null until the worker started. */
+  sandboxed: boolean | null;
+}
+
 /** Whether an agent's CLI trusted the repository it worked in (ODW extension; `odw run --untrusted`). */
 export type TrustLevel = "trusted" | "untrusted";
 
@@ -280,6 +318,13 @@ export interface RunDetail extends RunSummary {
   adapter: string | null;
   /** The workflow identity recorded at create time (meta.workflowName). */
   workflowName: string | null;
+  /**
+   * The run took untrusted input (ODW extension: a trigger, `odw run
+   * --untrusted-input`): what said so, the args it covers, whether the first
+   * agent that may write asks first, and — once the worker started — the
+   * agents' tier and whether a sandbox boxed them in. Absent: the user's input.
+   */
+  untrustedInput?: UntrustedInput;
   /** checkpoint() calls waiting for approval (ODW extension). */
   pendingCheckpoints?: PendingCheckpoint[];
   /** This run resolved a conflict of that run's agent (`odw apply --resolve`; ODW extension). */
@@ -291,6 +336,25 @@ export interface RunDetail extends RunSummary {
   /** odw's version, and the sha256 of the workflow source as launched; null for older runs (ODW extension). */
   odwVersion?: string | null;
   sourceHash?: string | null;
+  /** `odw pin` marked it: `odw gc` skips it (ODW extension). Absent otherwise. */
+  pinned?: { at: number; by: string | null };
+  /** `odw gc` trimmed its transcripts and stderr: when, and how many files (ODW extension). Absent otherwise. */
+  trimmed?: { at: number; files: number };
+  /** The working tree as it stood before the run's first in-place agent — what `odw restore <run>` puts back (ODW extension; src/safety.ts). */
+  safetySnapshot?: SafetySnapshot;
+}
+
+/** A run's safety snapshot at refs/odw/safety/<run> (ODW extension). */
+export interface SafetySnapshot {
+  ref: string;
+  commit: string;
+  head: string | null;
+  /** Changed tracked files, and untracked ones, it kept. */
+  tracked: number;
+  untracked: number;
+  /** Untracked files left out for their size. */
+  skipped?: string[];
+  at: number | null;
 }
 
 /** An adapter CLI's `--version` as a run recorded it: null, with why, when the CLI did not tell (ODW extension). */

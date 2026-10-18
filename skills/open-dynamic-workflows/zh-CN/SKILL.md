@@ -75,7 +75,7 @@ return await agent(
 | `exec(command, opts?)` | 不启动模型直接运行一条命令（测试、构建、linter）；返回 `{ stdout, stderr, exitCode, signal, timedOut, truncated, durationMs }`。字符串经 shell 执行，数组按 argv 执行。**ODW 扩展**——不属于 Claude Code 方言。 |
 | `checkpoint(title, opts?)` | 暂停运行，直到有人批准（可以附上修改后的 payload）或拒绝；返回 `{ approved, note, by, payload, edited }`。**ODW 扩展**——不属于 Claude Code 方言。 |
 
-`agent` 的 `opts`：`{ adapter?, schema?, label?, phase?, model?, agentType?, isolation?, keep?, permissions?, expect?, expectRetries?, allowEmpty?, notes?, handoff?, scope?, scopePolicy? }`。
+`agent` 的 `opts`：`{ adapter?, schema?, label?, phase?, model?, agentType?, isolation?, keep?, permissions?, expect?, expectRetries?, allowEmpty?, notes?, handoff?, scope?, scopePolicy?, questions? }`。
 `adapter` 选择用哪个 CLI——写成列表（`['codex', 'claude']`，**ODW 扩展**）就是回退链；
 `model: '@fast'` 为实际运行它的 CLI 选出该层级的模型（**ODW 扩展**）；`schema` 是一个原始 JSON Schema 对象（选项，不是全局）；
 `agentType` 是注入进 prompt 的**人设**，*不是* adapter 名。`keep: true`（**ODW 扩展**）
@@ -206,6 +206,9 @@ odw logs $RUN --agent 3     # 某个 agent 做了什么：工具调用、结果�
 odw export $RUN --otlp      # 把运行导出为 OpenTelemetry trace（OTLP/JSON）——--send 直接发送（ODW 扩展）
 odw bundle $RUN             # 把运行写成一个可分享的脱敏文件 $RUN.odwrun；odw view FILE 只读查看
                             #   （ODW 扩展；--no-transcripts、--out FILE、--max-bytes N）
+odw gc                      # 运行留在磁盘上的东西——孤儿 worktree、keep 分支、旧 transcript——及其大小
+                            #   （ODW 扩展）；默认空跑：--yes 才删，且只在用户明确要求时；
+                            #   --older-than 14d、--json；odw pin $RUN 让某个运行不受影响（--remove 取消）
 odw result $RUN             # 完成后打印最终值
 odw pause $RUN / resume $RUN / stop $RUN
 odw approve|reject $RUN     # 回答运行正在等待的 checkpoint()——只在用户明确要求时
@@ -297,6 +300,19 @@ odw apply $RUN --all --pr --verify "<测试命令>"   # 新分支、推送、开
 - 超过 `maxDiffBytes` 被截断的 diff 无法应用：改用该 agent 的分支（`keep: true`，或在
   配置里设 `"keepBranches": true`）。
 
+**没有**隔离的 agent 就在用户自己的工作区里干活。一次运行中第一个 `edit` 或 `full` 档位的此类
+agent 开始前，odw 会把工作区里未提交的内容——已跟踪文件的改动和未被忽略的未跟踪文件——存到
+`refs/odw/safety/<run>`（ODW 扩展；`safety_snapshot` 事件会说明；干净的工作区不建快照）。
+agent 执行的命令会被检查是否有破坏性 git 命令（`git reset --hard`、`git checkout .`、
+`git clean -f`、`git push --force`、`git stash drop|clear`、`git branch -D` 等）：每条都是一个
+`destructive_git` 事件，`"destructiveGit": "fail"` 会在 CLI 结束后让 agent 以 `"destructive_git"`
+失败（默认 `"warn"`；odw 无法拦住命令本身）。出现这种情况时要告诉用户，只在用户同意时才恢复：
+
+```bash
+odw restore $RUN --check   # 逐文件预览，与 odw apply 相同
+odw restore $RUN           # 恢复快照保存的工作区（有未提交改动时需 --force）
+```
+
 ### 权限档位（ODW 扩展）
 
 每个 agent 都在一个档位下运行：`read`（只看——不改文件、不跑命令）、`edit`（默认：各 CLI
@@ -317,6 +333,13 @@ odw apply $RUN --all --pr --verify "<测试命令>"   # 新分支、推送、开
   `qwen --safe-mode`），并由运行说一次哪些 CLI 做不到（codex 仍会读 AGENTS.md）——这时优先
   用 `adapter: 'claude'`。仓库自己的 `worktreeSetup` 和 `.worktreeinclude` 链接不会执行。
   它不是沙箱：审查类工作请再配上 `--permissions read`。
+- **参数是别人写的文字——issue、PR、评论——就是不可信输入**（ODW 扩展）：
+  `odw run --untrusted-input`，以及触发器启动的每个运行。它的 agent 默认只读（除非
+  `--permissions` 或触发器的 `permissions` 另有指定），以最小环境启动、不带
+  `GH_TOKEN`/`*_API_KEY` 之类的变量，第一个可写的 agent 要先过检查点；没有带出网白名单的
+  容器沙箱时运行会警告（`untrustedInput.requireSandbox: true` 则拒绝启动）。脚本里读
+  `workflow.input?.untrusted`，把这类文字用 `workflow.input.quote(text, label)` 放进标注过的
+  数据块，绝不当作指令拼进提示词。它只是收缩能力，并不让运行变得安全。
 - **需要真正的边界？在容器里运行 agent**（ODW 扩展）：
   `odw run wf.js --sandbox container --sandbox-image <镜像>`，或在配置里写 `sandbox`。每次
   CLI 运行和每个 `exec()` 步骤都在全新的 Docker/Podman 容器里进行，只能看到自己的工作区和
@@ -392,6 +415,14 @@ odw status $RUN     # 问题、它的 payload，以及回答它的确切命令
 （`RUN=$(odw run wf.js)`）并轮询 `odw status $RUN`，或用 `--wait --timeout <秒>` 限定
 等待时长。`odw resume` 会重放已完成的 agent，但每个检查点都会重新提问。
 
+**agent 的提问（ODW 扩展）。** agent 停下来问用户（Claude Code 的 `AskUserQuestion`）时，会在
+提问处被停下，绝不让它瞎猜。默认（`questions: "checkpoint"`）问题像检查点一样等待——
+`odw status $RUN` 把它显示为"an agent asks"并列出选项——回答后同一个调用会带着答案重新运行。
+规则不变：**把问题转给用户，只用用户的原话回答**——`odw approve $RUN --checkpoint N --note
+"<用户的回答>"`；`odw reject` 表示拒绝回答，agent 以 `needs_input` 失败。无人值守的运行更适合
+`agent(prompt, { questions: "deny" })`（不给提问工具，agent 自行假设并说明）或 `"fail"`（以
+`needs_input` 失败），并把 agent 可能会问的事写进提示词。
+
 **成本闸门（ODW 扩展）。** 大规模扇出之前，与其自己加检查点，不如用 `costGate`，只在必要时
 才问：配置里写 `"costGate": { "usd": 5 }`，或 `parallel(thunks, { costGate: { usd: 5 } })`
 （单个昂贵 agent 用 `agent()` 的 `costGate`），依据同一工作流以往运行预测花费超过该值的扇出会
@@ -452,9 +483,11 @@ odw pull $RUN --from ssh://me@box                # 拷回本机（运行中也�
 
 - **签名触发器。** 配置中的 `"triggers": { "<名字>": { workflow, verify:
   "github"|"linear"|"slack"|"hmac-sha256", secretEnv（或 secret）, args: { 键:
-  "$.json.path" }, events?, dedupe?, concurrency?, rateLimit?, untrusted? } }` 让
-  `odw serve` 响应 `POST /api/triggers/<名字>`：签名校验通过的 webhook 启动该工作流——
-  除非触发器写明 `"untrusted": false`，否则以 `--untrusted` 运行——并返回
+  "$.json.path" }, events?, dedupe?, concurrency?, rateLimit?, untrusted?, permissions?,
+  approve? } }` 让 `odw serve` 响应 `POST /api/triggers/<名字>`：签名校验通过的 webhook
+  启动该工作流——除非触发器写明 `"untrusted": false`，否则以 `--untrusted` 并带不可信输入
+  运行（agent 只读，除非给了 `permissions`；第一个可写 agent 前有检查点，除非
+  `approve: false`）——并返回
   `202 { runId }`。运行的 `context`（触发器、事件、issue 的 id 与 URL、仓库、Slack 频道
   与线程）会传给 `notify` 钩子（payload 中的 `context`；命令得到 `ODW_TRIGGER`、
   `ODW_EVENT_ID`、`ODW_EVENT_URL`、`ODW_CONTEXT`），钩子因此可以在 issue 下回复。只在

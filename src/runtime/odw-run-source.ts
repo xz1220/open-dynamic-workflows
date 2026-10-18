@@ -15,6 +15,7 @@ import type { AgentResultRecord } from "../journal.js";
 import { readNotes, type Note } from "../notes.js";
 import type { Redactor } from "../redact.js";
 import { SigCache, statSig } from "./fs-util.js";
+import { readPin, readTrimmed } from "./gc.js";
 import { detailFrom, EventFold, summaryFrom, type RunDetail, type RunFacts, type RunSummary } from "./runs-view.js";
 import { pulledRunRefusal } from "./remote.js";
 import type { RunSource } from "./run-source.js";
@@ -111,6 +112,12 @@ export class OdwRunSource implements RunSource {
       hasResult: this.store.hasResult(runId),
       error: this.store.readError(runId) as { error?: string; stack?: string } | null,
     });
+    // What `odw pin` and `odw gc` left on it (ODW extension; see ./gc).
+    const dir = this.store.runDir(runId);
+    const pin = readPin(dir);
+    if (pin) detail.pinned = pin;
+    const trimmed = readTrimmed(dir);
+    if (trimmed) detail.trimmed = trimmed;
     return this.redactor ? servedArgs(detail, this.redactor) : detail;
   }
   events(runId: string, since: number): WorkflowEvent[] {

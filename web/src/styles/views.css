@@ -677,6 +677,30 @@ ul.mcp li {
   content: "↯ ";
 }
 
+/* ---- the safety snapshot, and the destructive git commands it guards against ---- */
+.tag.safety {
+  cursor: copy;
+  border-color: var(--sig-line);
+  background: var(--sig-soft);
+  color: var(--sig-ink);
+}
+.tag.safety::before {
+  content: "⛑ ";
+}
+.denied.destructive-git li::before {
+  content: "✗";
+  left: 2px;
+  color: var(--alarm-ink);
+}
+.denied.destructive-git .tag {
+  margin-right: 4px;
+  color: var(--alarm-ink);
+  background: var(--alarm-soft);
+}
+.node .ngit {
+  color: var(--alarm-ink);
+}
+
 /* ---- what earlier runs of a workflow learned: marginalia, stale ones struck ---- */
 .mem-list {
   list-style: none;
@@ -864,6 +888,40 @@ ul.mcp li {
   border-style: dashed;
   border-color: var(--line-2);
   background: repeating-linear-gradient(-45deg, var(--shade) 0 4px, transparent 4px 8px);
+  color: var(--mute);
+}
+
+/* ---- the trust line: a run whose input came from outside ---- */
+.trust-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  color: var(--ink-2);
+  font-size: 12px;
+}
+.trust-line .sep {
+  color: var(--mute);
+}
+.tag.input-untrusted {
+  color: var(--sig-ink);
+  border-color: var(--sig-line);
+  background: var(--sig-soft);
+}
+.trust-line .unboxed {
+  color: var(--alarm-ink);
+  font-weight: 600;
+}
+
+/* ---- odw pin / odw gc: kept, or trimmed ---- */
+.tag.pinned {
+  border-color: var(--ink);
+  color: var(--ink);
+}
+.tag.trimmed {
+  border-style: dashed;
+  border-color: var(--line-2);
   color: var(--mute);
 }
 
@@ -3404,4 +3462,144 @@ ul.mcp li {
 .section-title .chips.owners .chip.on {
   background: var(--ink);
   color: var(--paper);
+}
+
+/* ---- spend, day by day: a fortnight of columns rising in turn, today lit ---- */
+.trend {
+  margin-top: 18px;
+  padding: 0 20px 18px;
+}
+.tr-body {
+  display: grid;
+  grid-template-columns: minmax(150px, 0.32fr) minmax(0, 1fr);
+  gap: 24px;
+  align-items: end;
+}
+.tr-fig .v {
+  display: block;
+  font-family: var(--f-display);
+  font-size: 44px;
+  line-height: 1;
+  letter-spacing: -0.01em;
+}
+.tr-change {
+  display: inline-block;
+  margin-top: 6px;
+  font-family: var(--f-mono);
+  font-size: 11.5px;
+  color: var(--mute);
+}
+.tr-change.up {
+  color: var(--alarm-ink);
+}
+.tr-change.down {
+  color: var(--sig-ink);
+}
+.tr-legend {
+  display: grid;
+  gap: 4px;
+  margin-top: 14px;
+}
+.tr-key {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  color: var(--ink-2);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tr-key i {
+  flex: none;
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+}
+.tr-cols {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+  gap: 6px;
+  height: 150px;
+  padding-top: 8px;
+  background: repeating-linear-gradient(to top, transparent 0 36px, var(--grid) 36px 37px);
+}
+.tr-col {
+  display: grid;
+  grid-template-rows: 1fr auto;
+  gap: 6px;
+  min-width: 0;
+}
+.tr-bar {
+  align-self: end;
+  display: flex;
+  flex-direction: column-reverse;
+  gap: 1px;
+  height: var(--h);
+  min-height: 2px;
+  border-radius: 3px 3px 1px 1px;
+  overflow: hidden;
+  transform-origin: bottom;
+  animation: tr-rise 620ms var(--ease-spring) both;
+  animation-delay: calc(var(--i) * 32ms);
+  transition: filter var(--t-fast);
+}
+.tr-col.zero .tr-bar {
+  height: 2px;
+  background: var(--line);
+}
+@keyframes tr-rise {
+  from {
+    transform: scaleY(0);
+  }
+}
+.tr-col:hover .tr-bar {
+  filter: brightness(1.15) saturate(1.1);
+}
+.tr-bar i,
+.tr-key i {
+  display: block;
+}
+.tr-bar i {
+  flex-basis: 0;
+  min-height: 2px;
+}
+.trend .s0 {
+  background: var(--ink);
+}
+.trend .s1 {
+  background: var(--ink-2);
+  opacity: 0.62;
+}
+.trend .s2 {
+  background: var(--mute);
+  opacity: 0.5;
+}
+.trend .s3 {
+  background: repeating-linear-gradient(135deg, var(--line-2) 0 3px, transparent 3px 6px);
+}
+.tr-col.today .tr-bar .s0 {
+  background: var(--sig);
+  box-shadow: 0 0 18px var(--sig-glow);
+}
+.tr-day {
+  text-align: center;
+  font-family: var(--f-mono);
+  font-size: 10px;
+  color: var(--faint);
+}
+.tr-col.today .tr-day {
+  color: var(--sig-ink);
+}
+@media (max-width: 720px) {
+  .tr-body {
+    grid-template-columns: 1fr;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tr-bar {
+    animation: none;
+  }
 }

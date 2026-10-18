@@ -1,4 +1,5 @@
 /** Activity — the machine's pulse: a headline, live counters, the ridgeline, the fleet and the event stream. */
+import { renderTrend } from "../components/trend";
 import { glyph, pill } from "../components/glyph";
 import { icons } from "../icons";
 import { renderPulse } from "../components/pulse";
@@ -156,6 +157,7 @@ export function renderActivity(nowSec: number): string {
     `</div></section>` +
     needsYou(nowSec) +
     pulseCard +
+    renderTrend(runs, nowSec) +
     `<div class="act-grid">` +
     `<section class="card fleet" data-key="fleet"><div class="card-head" style="padding:16px 0 8px"><h3>${t("Fleet")}</h3><span class="eyebrow">${t("agents running · by adapter")}</span></div>${fleetRows}</section>` +
     `<section class="card stream" data-key="stream"><div class="card-head"><h3>${t("Live event stream")}</h3><span class="eyebrow">${t("all runs · events.jsonl")}</span></div><div class="stream-list">${stream}</div></section>` +
@@ -175,7 +177,11 @@ function needsYou(nowSec: number): string {
     (r) => r.provider === "odw" && (r.state === "failed" || r.state === "stale") && (r.updatedAt ?? 0) > nowSec - 86_400,
   );
   const broken = allBroken.slice(0, 3);
-  if (!waiting.length && !quota.length && !broken.length) return "";
+  // Agents that ran git reset --hard, clean -f, push --force… (ODW extension): worth a look even when the run went well.
+  const destructive = store.runs
+    .filter((r) => r.destructiveGit && !allBroken.includes(r) && (r.updatedAt ?? 0) > nowSec - 86_400)
+    .slice(0, 3);
+  if (!waiting.length && !quota.length && !broken.length && !destructive.length) return "";
   const href = (r: RunSummary) => `#/job/${encodeURIComponent(r.runId)}`;
   const ticket = (r: RunSummary, kind: string, what: string, action: string) =>
     `<div class="ticket ${kind}" data-key="nt-${esc(r.runId)}">` +
@@ -185,12 +191,20 @@ function needsYou(nowSec: number): string {
     `<button class="btn sm" data-copy="odw resume ${esc(r.runId)}" data-tip="${esc(t("copies a command that replays finished agents"))}">${icons.terminal}${t("Copy resume")}</button>`;
   const tickets = [
     ...waiting.map((r) =>
-      ticket(
-        r,
-        "waiting",
-        r.waiting?.title ? t("asks: {q}", { q: esc(r.waiting.title) }) : t("is waiting for your decision"),
-        `<a class="btn sm primary" href="${href(r)}">${t("Review")}</a>`,
-      ),
+      // An agent's question (ODW extension) reads as one, and is answered, not reviewed.
+      r.waiting?.question
+        ? ticket(
+            r,
+            "waiting",
+            t("an agent has a question — {q}", { q: esc(r.waiting.title) }),
+            `<a class="btn sm primary" href="${href(r)}">${t("Answer")}</a>`,
+          )
+        : ticket(
+            r,
+            "waiting",
+            r.waiting?.title ? t("asks: {q}", { q: esc(r.waiting.title) }) : t("is waiting for your decision"),
+            `<a class="btn sm primary" href="${href(r)}">${t("Review")}</a>`,
+          ),
     ),
     ...quota.map((r) =>
       ticket(
@@ -206,16 +220,28 @@ function needsYou(nowSec: number): string {
         r.state,
         r.state === "stale"
           ? t("lost its worker")
-          : r.counts.failed
+          : r.needsInput
+            ? t("failed · {n} agent(s) asked a question nobody answered", { n: r.needsInput })
+            : r.counts.failed
             ? t("failed · {n} of {m} agents failed", { n: r.counts.failed, m: r.counts.agents })
             : t("failed"),
         resume(r),
       ),
     ),
+    ...destructive.map((r) =>
+      ticket(
+        r,
+        "failed",
+        t("{n} agent(s) ran a destructive git command", { n: r.destructiveGit!.agents }),
+        r.destructiveGit!.restorable
+          ? `<button class="btn sm" data-copy="odw restore ${esc(r.runId)} --check" data-tip="${esc(t("copies a command that previews putting the tree back"))}">${icons.terminal}${t("Copy restore")}</button>`
+          : `<a class="btn sm" href="${href(r)}">${t("Review")}</a>`,
+      ),
+    ),
   ];
   return (
     `<section class="needs" data-key="needs" aria-label="${esc(t("Needs you"))}">` +
-    `<div class="needs-head"><h3>${t("Needs you")}</h3><span class="n">${waiting.length + quota.length + allBroken.length}</span>` +
+    `<div class="needs-head"><h3>${t("Needs you")}</h3><span class="n">${waiting.length + quota.length + allBroken.length + destructive.length}</span>` +
     `<span class="eyebrow">${t("decisions and runs to pick up")}</span></div>` +
     `<div class="tickets">${tickets.join("")}</div>` +
     (allBroken.length > broken.length

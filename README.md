@@ -605,6 +605,7 @@ odw run wf.js [--args JSON|@file]            # foreground in a terminal; run kee
                                              #   --adapter <name> sets this run's default agent
                                              #   --permissions read|edit|full: what its agents may do
                                              #   --untrusted: keep the repository's CLAUDE.md, hooks… out
+                                             #   --untrusted-input: its args are outside text — read-only, no tokens
                                              #   --budget <tokens> sets budget.total
                                              #   --deadline <s>: STOP the run after s seconds (below)
 ```
@@ -629,6 +630,7 @@ odw replay $RUN --agent 3 # that one agent again as a new run, at the commit it 
 odw eval review          # cases × adapters × repeats: pass rate, cost and time per cell (below)
 odw export $RUN --otlp   # the run as OpenTelemetry traces (OTLP/JSON; --send posts it; below)
 odw bundle $RUN          # the run as one redacted file to share: $RUN.odwrun (odw view FILE shows it; below)
+odw gc                   # what runs left on disk — orphaned worktrees, keep branches, old transcripts; --yes deletes (below)
 odw pause|resume|stop $RUN
 odw approve|reject $RUN  # answer a checkpoint() the run waits at (--note TEXT, --checkpoint N)
 odw approve $RUN --edit  # …approving its payload as you edit it in $EDITOR (or --payload JSON|@file)
@@ -817,6 +819,37 @@ const { approved, payload: approvedPlan } = await checkpoint('Run this plan?', {
 [`examples/plan-approve-execute.js`](examples/plan-approve-execute.js) is the full
 plan → approve → execute loop, re-planning when a rejection comes with a note.
 
+### Agent questions (ODW extension)
+
+A model sometimes stops mid-task to ask the user something — Claude Code's
+`AskUserQuestion` tool. Run headless, nobody can answer: the tool comes back
+empty and the model goes on guessing, or the run hangs until a timeout
+([claude-code#50728](https://github.com/anthropics/claude-code/issues/50728)).
+odw reads the call from the CLI's stream, **stops the CLI at the question** — an
+agent never goes on with an empty answer — and then does what `questions` says:
+
+- `"checkpoint"` (the default) turns the question into a checkpoint: the same
+  `odw status`, dashboard card (each option a chip that fills the answer), `notify`
+  `"waiting"` hook and one-time approve links as `checkpoint()`. Answer it with
+  `odw approve <run> --checkpoint N --note "<answer>"` (or an approval whose edited
+  payload has an `answer`); the same agent() call runs again — in the same worktree
+  when isolated — its prompt ending with “Earlier in this task you stopped to ask
+  the user: … The user answered: …”. The rerun is logged (`retry.reason:
+  "question"`) and counts toward the budget. `odw reject` declines: the agent
+  fails with `reason: "needs_input"`. A call answered 3 times that asks again fails too.
+- `"fail"` fails the agent at once with `reason: "needs_input"`; its `agent_failed`
+  event, `/api/runs/:id`, the drawer and `odw status` list what it asked.
+- `"deny"` runs the CLI without its question tool (the adapter's `questionArgs`:
+  `claude --disallowedTools AskUserQuestion`) and tells the agent to assume and say
+  what it assumed. One that asks anyway fails with `needs_input`.
+
+Set it for the run (`"questions"` in the config), per adapter, or per call:
+`agent(prompt, { questions: "fail" })`. Only the CLI's own tool call counts — a
+reply that ends in a question mark is not a question — and no CLI session is
+resumed: the call runs again, told the answer. Any JSONL adapter can declare its
+CLI's question events with `output.questions` (see the adapters reference); the
+built-in `claude` does.
+
 ### Usage and cost (ODW extension)
 
 A fan-out spends quota fast, so a run shows what it spends as it goes. Every
@@ -974,6 +1007,7 @@ webhook's body, and gets `202 { "runId" }` back.
     "concurrency": 2,                              // optional cap on active runs
     "rateLimit": { "max": 30, "windowSec": 3600 }  // the default
     // "untrusted": true is the default; "source": the runs' working directory
+    // "permissions": "edit" lets its agents edit; "approve": false skips the go the first one asks
   }
 }
 ```
@@ -992,7 +1026,9 @@ webhook's body, and gets `202 { "runId" }` back.
   `triggers` are refused with a warning (a clone must not open a webhook into
   your machine), and your own config's are served instead.
 - **Untrusted by default:** issue text is anyone's input, so the runs are
-  `--untrusted` unless the trigger says `"untrusted": false`.
+  `--untrusted` and take [untrusted input](#untrusted-input-odw-extension) — read-only
+  agents, no tokens, a checkpoint before any may write — unless the trigger says
+  `"untrusted": false`.
 - **Narrow:** only the triggers of your config exist, each starts only its own
   workflow. An unknown name, a secret not set yet and a bad, missing or stale
   signature get the same `401` (rate limited per address; `odw serve` logs the
@@ -1539,6 +1575,62 @@ odw view run.odwrun                   # = odw serve --open run.odwrun: opens the
   write refused (409), on loopback too.
 
 The dashboard's **Share** button on a run copies `odw bundle <run>`.
+
+### Reclaim disk: `odw gc` and `odw pin` (ODW extension)
+
+Each isolated agent's worktree is removed when its call settles — but a worker that is
+SIGKILLed, or a machine that loses power, never gets to. Kept branches (`keep: true`,
+`keepBranches`) stay until you delete them, and every run directory keeps its agents'
+transcripts. `odw gc` reports all of it, with sizes, and **deletes nothing unless you
+pass `--yes`**:
+
+```bash
+odw gc                        # dry run (the default): what would go, and how much it frees
+odw gc --older-than 14d       # runs older than 14 days count as expired (default: retention.days, 30)
+odw gc --yes                  # delete it
+odw gc --json                 # the same report for scripts
+odw pin $RUN                  # odw gc skips this run, whatever its age; --remove unpins; no run id lists pins
+```
+
+- **Orphaned worktrees.** Every isolated agent's worktree directory
+  (`$TMPDIR/odw-wt-*`) holds an `odw-owner.json` naming the process, run and
+  repository it is for. One whose process is gone — and whose run is not active —
+  is an orphan; one without the file (made by an older odw) only once it has not
+  been touched for a day. They are removed as the worker would have: `git worktree
+  unlock`, `worktree remove --force --force`, the directory, `worktree prune`. A
+  registration whose directory is already gone is pruned. `odw gc` looks at the
+  temp directory and the registered worktrees of the current repository (`--source
+  DIR`) and of each run's source.
+- **Keep branches** `odw/<run>/<agent>-<label>` of a run in this runs root go
+  when HEAD already holds their change (the commit is in HEAD, or `git cherry` finds
+  the same patch there — what `odw apply` and a commit leave), or when their run is
+  older than the retention. A branch checked out anywhere is refused by git and
+  stays; a branch whose run this runs root does not know is counted, never deleted.
+- **Safety snapshots** `refs/odw/safety/<run>` (what `odw restore` puts back) go with
+  their run once it is older than the retention; one of a run this runs root does not
+  know is counted, never deleted.
+- **Expired runs** — ended, and older than the retention — have their agents'
+  transcripts and stderr removed: the largest part of a run. `meta.json`, status,
+  events, saved results and diffs stay, so `odw list`, `odw estimate`, `odw compare`
+  and `odw apply` still work; `gc.json` in the run records what went, and the
+  dashboard tags the run **transcripts trimmed**.
+- **Never touched:** a run that is running, paused or waiting at a checkpoint; a
+  run you pinned (`pinned.json` in its directory; the dashboard tags it **pinned**);
+  worktrees and branches odw did not make. Each removal is checked again just before
+  it happens, and one that fails is reported (exit 1) while the rest goes on.
+- **At start-up** each worker looks, read-only, at its repository's registered
+  worktrees, and says once in the run's log when runs that died left some behind,
+  with the `odw gc` command. `odw doctor` has a **Disk** line: the runs root's size
+  and the orphaned worktrees.
+
+```jsonc
+{
+  "retention": { "days": 30, "transcripts": true } // transcripts: false keeps them; gc then removes only worktrees and branches
+}
+```
+
+odw runs no daemon: to collect on a timer, put `odw gc --yes` in your own crontab or
+CI job.
 
 ## Dashboard: observe, inspect, chat
 
@@ -2177,6 +2269,48 @@ If a CLI cannot log in under `minimal`, add what it needs to `agentEnvPass`
 (`odw doctor --smoke` makes one real call to check). `exec()` commands, `worktreeSetup`
 and the `notify` hooks keep the whole environment.
 
+### Safety snapshot and destructive git commands (ODW extension)
+
+An agent that works in place — the dialect's default, without `isolation: "worktree"`
+— works beside your uncommitted changes, and one `git reset --hard` throws them away
+([claude-code#33850](https://github.com/anthropics/claude-code/issues/33850)). So
+before a run's first in-place agent at `edit` or `full` starts, odw keeps what your
+working tree holds that git does not: `git stash create` for the tracked changes,
+staged and not, plus the untracked files `.gitignore` does not exclude, written to
+one commit at `refs/odw/safety/<run>` — your tree, index and stash list are left as
+they are. A clean tree gets no snapshot; ignored files are never kept, nor untracked
+files over 50 MB (the snapshot names them). The run says so in a `safety_snapshot`
+event; when odw cannot take one (not a git repository, a merge in progress) it logs
+why and the agent goes on.
+
+```sh
+odw restore $RUN --check   # preview: each file clean, CONFLICT (with its lines) or already applied
+odw restore $RUN           # put the working tree back as the snapshot kept it (git apply --3way, staged)
+```
+
+`odw restore` works in the run's source repository and goes through
+[`odw apply`](#review-and-apply-what-isolated-agents-changed-odw-extension)'s
+machinery: files the tree already holds as kept (an untracked file a reset left
+alone) are left out, a path with uncommitted changes refuses unless `--force`, and
+when HEAD has moved since (`git reset --hard origin/main`) the changes go on top of
+it three-way, and the commit HEAD was at is named.
+
+odw cannot stop a command before it runs — that takes each CLI's own hooks — but it
+reads what agents run as they run (Claude Code's `Bash`, Codex's
+`command_execution`, the kilo, opencode and agy shell tools) for `git reset --hard`,
+`git checkout .` / `-- .` / `--force`, `git restore .`, `git clean -f…`, `git push
+--force` (`-f`, `--force-with-lease`, `+refspec`), `git stash drop|clear` and `git
+branch -D`. Command lines are split as a shell would (`cd x && …`, `bash -lc '…'`,
+`sudo`, `env`, `git -C dir …`); text in quotes is not a command. Each hit is a
+`destructive_git` event — in `odw logs`, the live view, and the agent's drawer and
+node in the dashboard — naming `odw restore <run>` when there is a snapshot. Commands
+that only reset a working tree do not count for an isolated agent: its worktree is
+its own.
+
+```jsonc
+{ "destructiveGit": "fail" } // default "warn": recorded; "fail": the agent fails with reason destructive_git once its CLI is done
+```
+
 ### Untrusted repositories (ODW extension)
 
 Running agents on someone else's repository is dangerous: its CLAUDE.md or AGENTS.md
@@ -2241,6 +2375,61 @@ untrusted. An untrusted agent's `agent_started` event, saved result and
 and the run's `run_started` setup records `trust`. Untrusted is not a sandbox: it
 keeps the repository's instructions and configuration out where a CLI allows, and the
 permission tier still decides what agents may do.
+
+### Untrusted input (ODW extension)
+
+An issue's text, a PR title or a comment is anyone's writing, and a model cannot be
+trusted to tell it from instructions: published injections — "Comment and Control",
+GitLost — got past every model-level defence, and the advice that came out of them is
+structural: take the capabilities away. A run whose **args** come from outside takes
+**untrusted input** — separate from an [untrusted repository](#untrusted-repositories-odw-extension).
+Every run a [trigger](#start-runs-from-webhooks-github-linear-slack-odw-extension) starts
+takes it (unless the trigger says `"untrusted": false`), and so does
+`odw run --untrusted-input` (a rerun or resume keeps it). Such a run:
+
+- **runs read-only agents** — `permissions: "read"` — unless the run's tier was given:
+  `--permissions`, or the trigger's `"permissions"`;
+- **starts agent CLIs with `agentEnv: "minimal"` and no secret-named variable** —
+  `GH_TOKEN`, `GITHUB_TOKEN`, `*_API_KEY`, `*_TOKEN`, … — but the ones the CLI's own login
+  documents (`ANTHROPIC_*`/`CLAUDE_*` for claude, `OPENAI_*`/`CODEX_*` for codex, …),
+  whatever `agentEnvPass` lists. An adapter's own `env` still applies, and `exec()`
+  commands — the workflow author's — get the minimal environment plus `agentEnvPass`;
+- **says loudly when nothing boxes it in:** without a
+  [container sandbox](#run-agents-in-containers-odw-extension) whose `network` is an
+  allowlist (or `"none"`), the start banner, the run's log and its `run_started` event warn.
+  `"untrustedInput": { "requireSandbox": true }` refuses to start such a run instead;
+- **asks before anything writes:** the first agent that may write (`edit` or `full`) waits
+  at a [checkpoint](#human-checkpoints-odw-extension) — once per run; its answer stands for
+  the rest, and a rejection fails those agents with a catchable `UntrustedInputRejected`.
+  `odw apply --pr` of such a run asks `y/N` on the terminal, or takes
+  `--accept-untrusted-input`. A trigger's `"approve": false` turns both off.
+
+```jsonc
+"triggers": {
+  "fix-issue": {
+    "workflow": "fix-issue", "verify": "github", "secretEnv": "GITHUB_WEBHOOK_SECRET",
+    "args": { "issue": "$.issue.number", "body": "$.issue.body" },
+    "permissions": "edit"            // its agents may edit: the first one asks first
+  }
+},
+"sandbox": { "kind": "container", "image": "odw-agents:latest", "network": { "allow": "adapter" } },
+"untrustedInput": { "requireSandbox": true }
+```
+
+The workflow sees it as `workflow.input` (an ODW extension; undefined in Claude Code, so
+read it as `workflow.input?.untrusted`): `untrusted`, the `args` it covers (a trigger's
+mapped keys; `["*"]` for all of them), `why` (`trigger:<name>`, `--untrusted-input`), and
+`quote(text, label?)`, which puts text in a fenced `<untrusted-data>` block followed by a
+line saying it is data, not instructions:
+
+```js
+const fix = await agent(`Fix the bug this issue describes.\n${workflow.input.quote(args.body, "issue body")}`)
+```
+
+meta.json keeps `untrustedInput: { why, args, approve }`; status.json and the
+`run_started` event add the tier, the environment and whether a sandbox held it, and
+the dashboard's Job header shows it as a trust line. None of this detects or filters an
+injection, and none of it makes a run safe: it only takes away what the text could ask for.
 
 ### Run agents in containers (ODW extension)
 
@@ -2616,7 +2805,8 @@ evidence: `empty_reply`, `unmet_expectation`, under `"mcpFailures": "fail"`
 reply, under `"orphanedBackground": "fail"` or `expect`; see
 [Check an agent's work](#check-an-agents-work-odw-extension)) — and `out_of_scope`, an agent that
 changed files outside its declared scope under `"scopePolicy": "fail"` (see
-[Declared scopes](#declared-scopes-odw-extension)), and `runaway`, an agent killed at one of its
+[Declared scopes](#declared-scopes-odw-extension)), `needs_input`, an agent that stopped to ask a
+question nobody answered (see [Agent questions](#agent-questions-odw-extension)), and `runaway`, an agent killed at one of its
 [limits](#per-agent-limits-and-runaway-loops-odw-extension). The class is the `reason` on the `agent_failed` event (with
 `retryAfter`, in seconds, when the CLI said when to come back), the agent's
 `failureReason` in the dashboard and `/api/runs/:id`, and it shows in the live
@@ -3011,7 +3201,11 @@ The hooks then fire once per checkpoint, while the run waits on: the command wit
 `"checkpoint": { "checkpointId", "title", "since" }` field in place of `finishedAt`,
 and a `text` line naming the command that answers it. While an `odw serve --public-url`
 runs, they also carry the checkpoint's signed one-time approve and reject links — see
-[Approve from your phone](#approve-from-your-phone-odw-extension).
+[Approve from your phone](#approve-from-your-phone-odw-extension). An
+[agent's question](#agent-questions-odw-extension) fires the same hooks: the payload's
+`checkpoint.kind` is `"question"` (else `"checkpoint"`), `checkpoint.question` names the
+agent that asked (`{ agentId, label, adapter }`), the command gets `ODW_CHECKPOINT_KIND`
+and `ODW_QUESTION_AGENT`, and the `text` line says to answer with `odw approve … --note`.
 
 Add `"paused"` to hear when a run [pauses for a spent quota](#pause-for-a-spent-quota-odw-extension)
 — once per pause, not when it goes on: the command with `ODW_RUN_STATE=paused`,

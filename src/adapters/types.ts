@@ -9,6 +9,7 @@
 import type { TriggerSettings } from "../triggers.js";
 import type { EgressAllow } from "./egress.js";
 import type { CostGate } from "../forecast.js";
+import type { QuestionPolicy } from "../questions.js";
 import type { LimitSpec } from "../limits.js";
 import type { AccountOf } from "./accounts.js";
 
@@ -134,6 +135,12 @@ export type AdapterOutput =
        * exited while it ran, and it died with it (`orphanedBackground`).
        */
       background?: BackgroundRules;
+      /**
+       * The events that are the agent asking the user a question — a
+       * clarifying tool call (an ODW extension; see ../questions): the CLI is
+       * stopped at once, and the call's `questions` policy decides what next.
+       */
+      questions?: QuestionRule[];
     }
   | {
       /** One JSON document on stdout: the paths are read from it. */
@@ -186,6 +193,31 @@ export interface BackgroundRule {
   kind?: string[][];
   /** Starts only: paths to what it does, the first non-empty string wins (its description, its command). */
   about?: string[][];
+}
+
+/**
+ * One kind of event that is the agent asking the user a question (an ODW
+ * extension; `output.questions`): Claude Code's `AskUserQuestion` tool call.
+ */
+export interface QuestionRule {
+  /** The event's `type`. */
+  event: string;
+  /** Path to an array in the event whose items are each looked at (an assistant message's `message.content` blocks). */
+  each?: string[];
+  /** Conditions the event (or item) must meet, all of them (a tool_use block named AskUserQuestion). */
+  where?: BackgroundCondition[];
+  /** Path, in the event (or item), to its list of questions; unset: it is one question. */
+  list?: string[];
+  /** Paths, in each question, to its text: the first non-empty string wins. */
+  text: string[][];
+  /** Paths, in each question, to its short heading: the first non-empty string wins. */
+  header?: string[][];
+  /** Path, in each question, to the answers it offers: strings, or objects with a string at `optionLabel`. */
+  options?: string[];
+  /** Path, in each option object, to its label (default `["label"]`). */
+  optionLabel?: string[];
+  /** Path, in each question, to whether more than one option may be chosen. */
+  multiSelect?: string[];
 }
 
 /** A condition on a background event (ODW extension): the value at `path` is `equals` (one of them), or is not `not` (none of them). */
@@ -285,6 +317,14 @@ export interface Adapter {
   failures?: AdapterFailures;
   /** Each tier's flags (ODW extension); without them the CLI runs as configured, treated as `edit`. */
   permissionArgs?: PermissionArgs;
+  /** What an agent's question does on this CLI; overrides the `questions` setting (ODW extension; see ../questions). */
+  questions?: QuestionPolicy;
+  /**
+   * The flags that take this CLI's question tool away (ODW extension), added
+   * at `{permission_args}` when an agent on it runs under `questions: "deny"`
+   * (the built-in claude: `--disallowedTools AskUserQuestion`).
+   */
+  questionArgs?: string[];
   /** Caps this CLI's tier below the run's (ODW extension): an agent on it gets the lower of the two. */
   permissions?: PermissionTier;
   /** What tool calls this CLI refused do to a reply that claims success; overrides `permissionDenials` (ODW extension). */
@@ -603,6 +643,26 @@ export interface Settings {
    */
   scopePolicy: "warn" | "fail";
   /**
+   * What an agent's question does — a clarifying tool call its CLI made
+   * (an ODW extension; `output.questions`, see ../questions): `"checkpoint"`
+   * asks a person at a checkpoint and runs the call again with the answer;
+   * `"fail"` fails it with reason "needs_input"; `"deny"` takes the question
+   * tool away (`questionArgs`) and tells the agent to assume. An adapter's
+   * and an agent()'s `questions` override it.
+   */
+  questions: QuestionPolicy;
+  /**
+   * An agent whose CLI ran a destructive git command — `git reset --hard`,
+   * `git checkout .`, `git clean -f`, `git push --force`, `git stash
+   * drop|clear`, `git branch -D`, … (an ODW extension; see
+   * ../destructive-git): `"warn"` keeps its reply, recording the command as a
+   * `destructive_git` event on the agent; `"fail"` fails the agent with
+   * reason "destructive_git" once its CLI is done (ODW cannot stop the
+   * command before it runs). Commands that only reset a working tree count
+   * for in-place agents alone.
+   */
+  destructiveGit: "warn" | "fail";
+  /**
    * What odw keeps and serves of its agents — transcripts, saved results,
    * events, the run's error and result, webhook payloads — has its likely
    * secrets replaced by `«redacted:<kind>»` (an ODW extension; see ../redact);
@@ -655,6 +715,33 @@ export interface Settings {
    * go. `null`: none.
    */
   costGate: CostGate | null;
+  /**
+   * Runs with untrusted input (an ODW extension; see ../untrusted-input):
+   * `requireSandbox: true` refuses to start one unless its agents run in a
+   * container whose network is an allowlist or none.
+   */
+  untrustedInput: UntrustedInputSettings;
+  /**
+   * What `odw gc` keeps (an ODW extension; see ../runtime/gc): an ended run
+   * older than `days` has its keep branches deleted and — unless
+   * `transcripts` is false — its transcripts and stderr trimmed; `odw gc
+   * --older-than` overrides `days`. Nothing is deleted without `odw gc --yes`.
+   */
+  retention: RetentionSettings;
+}
+
+/** How runs with untrusted input are held (see `Settings.untrustedInput`). */
+export interface UntrustedInputSettings {
+  /** Refuse to start a run with untrusted input unless agents run in a container with an allowlist (or no) network. */
+  requireSandbox: boolean;
+}
+
+/** What `odw gc` keeps (see `Settings.retention`). */
+export interface RetentionSettings {
+  /** Days after an ended run's last activity before gc reclaims what it left. */
+  days: number;
+  /** Whether gc trims an expired run's transcripts and stderr (meta, status, events and results always stay). */
+  transcripts: boolean;
 }
 
 /** How approve links are minted (see `Settings.approveLinks`). */

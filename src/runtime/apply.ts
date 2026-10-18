@@ -918,6 +918,8 @@ async function runVerify(repo: string, command: string, timeout: number | null, 
 export interface AgentDiff {
   row: AgentRow & { agentId: number };
   file: string;
+  /** What the report calls it, in place of "agent <id> (<label>)": `odw restore`'s "the safety snapshot" (ODW extension). */
+  name?: string;
 }
 
 export interface Writer {
@@ -997,7 +999,7 @@ export async function applyAgents(o: ApplyOptions): Promise<number> {
     const bytes = await readFile(agent.file);
     // The note is the last line: no need to read the whole diff as text for it.
     const cut = truncationNoteOf(bytes.subarray(Math.max(0, bytes.length - 4096)).toString("utf8"));
-    const name = `agent ${agent.row.agentId} (${labelOf(agent.row)})`;
+    const name = agent.name ?? `agent ${agent.row.agentId} (${labelOf(agent.row)})`;
     items.push({ agent, name, files: cut ? [] : diffSections(bytes), cut, preview: null });
   }
   const single = o.all ? null : items[0]!;
@@ -1562,7 +1564,7 @@ function previewLines(o: ApplyOptions, item: Item, head: string, to: string): st
     }
     if (f.moreHunks > 0) lines.push(p.dim(`      … ${f.moreHunks} more conflict(s) in this file`));
   });
-  if (hunks) lines.push(p.dim("  (ours: what this tree holds · theirs: the agent's change)"));
+  if (hunks) lines.push(p.dim(`  (ours: what this tree holds · theirs: ${item.agent.name ?? "the agent's change"})`));
   return lines;
 }
 

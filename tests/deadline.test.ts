@@ -56,7 +56,8 @@ async function cli(argv: string[]): Promise<{ code: number; out: string; err: st
 test("--deadline: the worker stops the run, keeps what finished; --wait prints it and exits 3", async () => {
   const p = project();
   try {
-    const r = await cli(["run", p.wf, "--wait", "--deadline", "2", "--config", p.config, "--runs-root", p.runs]);
+    // Its own directory as the source: the time a safety snapshot of a dirty checkout takes stays out of the 2s.
+    const r = await cli(["run", p.wf, "--wait", "--deadline", "2", "--config", p.config, "--runs-root", p.runs, "--source", p.root]);
     assert.equal(r.code, DEADLINE_EXIT_CODE, r.err);
     assert.equal(DEADLINE_EXIT_CODE, 3);
     const report = JSON.parse(r.out) as { state: string; reason: string; deadline: number; finished: Array<{ label: string; value: unknown }> };

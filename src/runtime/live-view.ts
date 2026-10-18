@@ -62,7 +62,7 @@ import {
 import { DEADLINE_EXIT_CODE, deadlineReport, stoppedByDeadline } from "./deadline.js";
 import { RunObserver } from "./run-liveness.js";
 import { RunStore, TERMINAL_STATES } from "./run-store.js";
-import { applyAgentEvent, type AgentView } from "./runs-view.js";
+import { applyAgentEvent, type AgentView, type SafetySnapshotView } from "./runs-view.js";
 
 // --- mode resolution -----------------------------------------------------------
 
@@ -139,6 +139,8 @@ export function formatEvent(ev: WorkflowEvent): string {
     const by = ev.by as { agentId?: unknown; label?: unknown } | undefined;
     detail = `#${String(ev.noteId)} ${sanitizeText(by?.label ?? "?", 60)}:${String(by?.agentId ?? "?")} ${sanitizeText(ev.text, 300)}`;
   }
+  // The working tree's safety snapshot, and a destructive git command an agent ran (ODW extensions; see ../safety).
+  else if (type === "safety_snapshot" || type === "destructive_git") detail = sanitizeText(ev.message, 400);
   else detail = sanitizeText(ev.error ?? ev.runId ?? "", 200);
   return `[${stamp}] ${type.padEnd(15)}${phase} ${detail}`.trimEnd();
 }
@@ -256,6 +258,45 @@ export function runawayLines(agents: AgentView[]): string[] {
   return [`runaway: ${hits.length} agent${hits.length === 1 ? "" : "s"} killed at a limit — ${named.join(", ")}${more}`];
 }
 
+/**
+ * What `odw status` says about agents that stopped to ask a question nobody
+ * answered (reason "needs_input"; ODW extension, see ../questions): each, with
+ * what it asked. No line for a run without one.
+ */
+export function needsInputLines(agents: AgentView[]): string[] {
+  return agents
+    .filter((a) => a.kind === "agent" && a.state === "failed" && a.failureReason === "needs_input")
+    .slice(0, RUNAWAYS_NAMED)
+    .map((a) => {
+      const asked = a.questions?.length ? `: ${sanitizeText(a.questions.join("; "), 300)}` : "";
+      return `needs input: ${sanitizeText(a.label, 40)}:${a.agentId ?? "?"} stopped to ask${asked}`;
+    });
+}
+
+/**
+ * What `odw status` says about the working tree's safety (ODW extension; see
+ * ../safety): the run's snapshot, and the agents that ran destructive git
+ * commands. No lines for a run without either.
+ */
+export function safetyLines(runId: string, agents: AgentView[], snapshot: SafetySnapshotView | undefined): string[] {
+  const lines: string[] = [];
+  if (snapshot) {
+    lines.push(
+      `safety snapshot: ${snapshot.tracked} changed and ${snapshot.untracked} untracked file(s) at ${sanitizeText(snapshot.ref, 120)} ` +
+        `(${snapshot.commit.slice(0, 12)}) — odw restore ${runId} puts them back`,
+    );
+  }
+  const ran = agents.filter((a) => a.kind === "agent" && (a.destructiveGit?.length ?? 0) > 0);
+  if (ran.length > 0) {
+    const named = ran
+      .slice(0, RUNAWAYS_NAMED)
+      .map((a) => `${sanitizeText(a.label, 40)}:${a.agentId ?? "?"} ${sanitizeText([...new Set(a.destructiveGit!.map((h) => h.what))].join(", "), 120)}`);
+    const more = ran.length > RUNAWAYS_NAMED ? `, and ${ran.length - RUNAWAYS_NAMED} more` : "";
+    lines.push(`destructive git: ${ran.length} agent${ran.length === 1 ? "" : "s"} — ${named.join(", ")}${more}`);
+  }
+  return lines;
+}
+
 /** The `expect` checks a failed agent's work missed (agent_failed's `misses`; ODW extension), or null. */
 function missesOf(ev: WorkflowEvent): string[] | null {
   return linesOf(ev.misses);
@@ -325,6 +366,8 @@ function reasonText(reason: string | undefined): string | null {
     runaway: "runaway",
     orphaned_background: "left background work running",
     out_of_scope: "wrote outside its scope",
+    needs_input: "asked a question nobody answered",
+    destructive_git: "ran a destructive git command",
   };
   return words[reason] ?? sanitizeText(reason.replace(/_/g, " "), 40);
 }
@@ -484,14 +527,23 @@ class LiveView {
         applyAgentEvent(this.agents, ev);
         continue;
       }
+      // The working tree's safety snapshot, and a destructive git command an agent ran (ODW extensions; see ../safety).
+      if (ev.type === "safety_snapshot" || ev.type === "destructive_git") {
+        const line = `${g.bullet} ${sanitizeText(ev.message, 400)}`;
+        out.push(`    ${ev.type === "destructive_git" ? p.err(line) : p.dim(line)}`);
+        applyAgentEvent(this.agents, ev);
+        continue;
+      }
       if (ev.type === "checkpoint_requested" && typeof ev.checkpointId === "number") {
         const title = sanitizeText(ev.title, 120);
         this.asked.set(ev.checkpointId, title);
         const { approve, reject } = checkpointCommands(this.runId, ev.checkpointId, this.commandFlags);
+        // An agent's question is answered with a note (ODW extension; see ../questions).
+        const asking = ev.question !== undefined && ev.question !== null;
         out.push(
-          `    ${p.run(g.wait)} ${p.bold(title)}  ${p.dim(`checkpoint #${ev.checkpointId} ${g.bullet} waiting for a decision`)}`,
-          `      ${p.dim(`approve: ${approve}`)}`,
-          `      ${p.dim(`reject:  ${reject}`)}`,
+          `    ${p.run(g.wait)} ${p.bold(title)}  ${p.dim(`checkpoint #${ev.checkpointId} ${g.bullet} ${asking ? "an agent asks" : "waiting for a decision"}`)}`,
+          `      ${p.dim(asking ? `answer:  ${approve} --note '<answer>'` : `approve: ${approve}`)}`,
+          `      ${p.dim(asking ? `decline: ${reject}` : `reject:  ${reject}`)}`,
         );
         continue;
       }
@@ -809,7 +861,9 @@ export async function attachRun(
           opts.err.write(formatEvent(ev) + "\n");
           if (ev.type === "checkpoint_requested" && typeof ev.checkpointId === "number") {
             const { approve, reject } = checkpointCommands(runId, ev.checkpointId, opts.commandFlags);
-            opts.err.write(`  approve: ${approve}\n  reject:  ${reject}\n`);
+            // An agent's question is answered with a note (ODW extension; see ../questions).
+            if (ev.question) opts.err.write(`  answer:  ${approve} --note '<answer>'\n  decline: ${reject}\n`);
+            else opts.err.write(`  approve: ${approve}\n  reject:  ${reject}\n`);
           }
         }
       }

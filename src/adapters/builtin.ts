@@ -19,11 +19,13 @@ import type {
   DenialPolicy,
   PermissionArgs,
   PermissionTier,
+  QuestionRule,
   SchemaFlag,
   Settings,
   TrustLevel,
 } from "./types.js";
 import type { LimitSpec } from "../limits.js";
+import type { QuestionPolicy } from "../questions.js";
 
 /** A built-in adapter spec — same shape as a config entry, minus its name. */
 export interface RawAdapter {
@@ -41,6 +43,8 @@ export interface RawAdapter {
   permissionArgs?: PermissionArgs;
   permissions?: PermissionTier;
   permissionDenials?: DenialPolicy;
+  questions?: QuestionPolicy;
+  questionArgs?: string[];
   trust?: TrustLevel;
   untrustedArgs?: string[];
   untrustedNote?: string;
@@ -133,6 +137,31 @@ const CLAUDE_BACKGROUND: BackgroundRules = {
   ],
 };
 
+// Questions (ODW extension; `questions`, see ../questions): the model asks the
+// user with its AskUserQuestion tool — an assistant tool_use block whose input
+// is `{ questions: [{ question, header, options: [{ label, description }],
+// multiSelect }] }`. Headless, nobody answers it: it returns at once with an
+// empty answer and the model goes on guessing (anthropics/claude-code#50728).
+// `--disallowedTools AskUserQuestion` takes the tool away (`claude --help`:
+// "--disallowedTools, --disallowed-tools <tools...> Comma or space-separated
+// list of tool names to deny").
+const CLAUDE_QUESTIONS: QuestionRule[] = [
+  {
+    event: "assistant",
+    each: ["message", "content"],
+    where: [
+      { path: ["type"], equals: "tool_use" },
+      { path: ["name"], equals: "AskUserQuestion" },
+    ],
+    list: ["input", "questions"],
+    text: [["question"]],
+    header: [["header"]],
+    options: ["options"],
+    optionLabel: ["label"],
+    multiSelect: ["multiSelect"],
+  },
+];
+
 const CLAUDE_OUTPUT: AdapterOutput = {
   format: "jsonl",
   eventType: "result",
@@ -146,6 +175,7 @@ const CLAUDE_OUTPUT: AdapterOutput = {
   mcpEvent: "system",
   mcpPath: ["mcp_servers"],
   background: CLAUDE_BACKGROUND,
+  questions: CLAUDE_QUESTIONS,
 };
 
 // `codex exec --json` (https://developers.openai.com/codex/noninteractive, now
@@ -492,6 +522,7 @@ export const BUILTIN_ADAPTERS: Record<string, RawAdapter> = {
     flags: { model: ["--model"], schema: CLAUDE_SCHEMA },
     output: CLAUDE_OUTPUT,
     permissionArgs: CLAUDE_PERMISSIONS,
+    questionArgs: ["--disallowedTools", "AskUserQuestion"],
     untrustedArgs: CLAUDE_UNTRUSTED,
     // Anthropic's API caches a prompt's prefix: a fan-out sharing one starts
     // staggered, so the rest read the cache the first agent wrote.
@@ -655,6 +686,8 @@ export const DEFAULT_SETTINGS: Settings = {
   mcpFailures: "warn", // an agent whose MCP server did not start keeps its reply, recorded and logged ("fail": it fails)
   orphanedBackground: "warn", // an agent that ended its turn with background work running keeps its reply, recorded and logged ("fail": it fails)
   scopePolicy: "warn", // an agent that wrote outside its declared scope keeps its reply, recorded and logged ("fail": it fails)
+  questions: "checkpoint", // an agent's question waits at a checkpoint for a person's answer ("fail": it fails; "deny": no question tool)
+  destructiveGit: "warn", // an agent that ran git reset --hard, clean -f, push --force, … keeps its reply, recorded ("fail": it fails)
   redact: { env: true, patterns: true, extra: [] }, // likely secrets out of what odw keeps and serves (false: none)
   quotaWait: false, // an agent whose chain is out of quota fails; { max: <s> } waits for the reset instead
   otel: false, // no trace is sent; { endpoint?, headers?, captureContent? } posts each run's at its end
@@ -663,4 +696,6 @@ export const DEFAULT_SETTINGS: Settings = {
   approveLinks: { ttl: 86_400 }, // a checkpoint's approve/reject links (odw serve --public-url) are valid 24h
   triggers: {}, // no inbound triggers: odw serve starts no run from a webhook
   costGate: null, // no fan-out waits for a go; { usd } asks before one forecast to cost more
+  untrustedInput: { requireSandbox: false }, // a run with untrusted input and no sandbox warns loudly (true: refused)
+  retention: { days: 30, transcripts: true }, // odw gc: an ended run's branches and transcripts after 30 days (only with --yes)
 };

@@ -753,6 +753,17 @@ root.addEventListener("click", (ev) => {
     }
     return render();
   }
+  // An agent question's option (ODW extension) fills the answer.
+  const optEl = t.closest<HTMLElement>("[data-cp-option]");
+  if (optEl) {
+    job.cpNote = optEl.dataset.cpOption ?? "";
+    const input = root.querySelector<HTMLInputElement>("#cp-note");
+    if (input) {
+      input.value = job.cpNote;
+      input.focus();
+    }
+    return;
+  }
   const cpEl = t.closest<HTMLElement>("[data-cp]");
   if (cpEl && store.run) {
     const id = store.run.runId;
@@ -772,7 +783,8 @@ root.addEventListener("click", (ev) => {
       .then(() => {
         job.cpNote = "";
         if (job.cpEdit?.id === checkpointId) job.cpEdit = null;
-        toast({ state: action === "approve" ? "done" : "stopped", title: action === "approve" ? (edit?.changed ? tr("Approved with edits") : tr("Approved")) : tr("Rejected"), body: id, ttlMs: 2400 });
+        const answered = asked?.question ? (action === "approve" ? tr("Answered") : tr("Declined")) : null;
+        toast({ state: action === "approve" ? "done" : "stopped", title: answered ?? (action === "approve" ? (edit?.changed ? tr("Approved with edits") : tr("Approved")) : tr("Rejected")), body: id, ttlMs: 2400 });
         return store.loadRun(id);
       })
       .catch((err: Error) => toast({ state: "failed", title: tr("Could not resolve the checkpoint"), body: err.message }));
@@ -1108,6 +1120,29 @@ setPaletteSource((): PaletteItem[] => {
       run: () => go(runHash(r.runId)),
     });
   }
+  // What waits for a person — a checkpoint, or an agent's question (ODW extension) — first in its own group.
+  for (const r of store.runs.filter((x) => x.state === "waiting")) {
+    items.push({
+      id: `needs-${r.runId}`,
+      group: tr("Needs you"),
+      title: r.waiting?.question ? tr("Answer {agent}'s question", { agent: r.waiting.question.label }) : tr("Decide: {title}", { title: r.waiting?.title ?? r.name }),
+      hint: r.name,
+      icon: glyph("waiting"),
+      keywords: `${r.runId} ${r.waiting?.title ?? ""} ${r.waiting?.question ? "question" : "checkpoint"}`,
+      run: () => go(runHash(r.runId)),
+    });
+  }
+  for (const r of store.runs.filter((x) => x.needsInput)) {
+    items.push({
+      id: `needs-input-${r.runId}`,
+      group: tr("Needs you"),
+      title: tr("{name}: an agent's question went unanswered", { name: r.name }),
+      hint: "needs_input",
+      icon: glyph("failed"),
+      keywords: `${r.runId} needs input question`,
+      run: () => go(runHash(r.runId)),
+    });
+  }
   for (const w of store.workflows ?? []) {
     items.push({
       id: `wf-${wfKey(w)}`,
@@ -1191,7 +1226,7 @@ store.onTransition((r: RunSummary) => {
   if (r.state === "waiting") {
     const ask = {
       state: "waiting",
-      title: tr("{name} is waiting for you", { name: r.name }),
+      title: r.waiting?.question ? tr("{name}: an agent has a question", { name: r.name }) : tr("{name} is waiting for you", { name: r.name }),
       body: r.waiting?.title ?? tr("A checkpoint needs your decision."),
       href: runHash(r.runId),
       ttlMs: 12_000,

@@ -30,13 +30,14 @@ import { isPermissionTier } from "../adapters/permissions.js";
 import type { PermissionTier, TrustLevel } from "../adapters/types.js";
 import { addUsage, readUsage, type Usage } from "../adapters/usage.js";
 import type { AgentChanges } from "../changes.js";
-import type { WaitingCheckpoint } from "../checkpoint.js";
+import type { CheckpointQuestion, QuestionAsker, WaitingCheckpoint } from "../checkpoint.js";
 import { readDrift, type RunDrift } from "../drift.js";
 import type { WorkflowEvent } from "../events.js";
 import { isWho } from "../identity.js";
 import { LIMIT_NAMES, type AgentLimits, type LimitHit } from "../limits.js";
 import { readCliVersion, type CliVersion } from "../provenance.js";
 import { pausedForOf, type PausedFor } from "../quota-wait.js";
+import { untrustedInputOf, type UntrustedInputMeta } from "../untrusted-input.js";
 import { RunStore, TERMINAL_STATES, type EvalRunTag, type ResolveLink } from "./run-store.js";
 
 export type AgentState = "running" | "done" | "failed" | "stale";
@@ -78,7 +79,7 @@ export interface AgentView {
   /**
    * Why a failed agent's CLI failed (agent_failed's `reason`): rate_limit,
    * quota, auth, timeout, stalled, not_found, permission or exit — or, ODW
-   * extensions, empty_reply, unmet_expectation, mcp_unavailable, runaway, orphaned_background and out_of_scope. Absent while running, for
+   * extensions, empty_reply, unmet_expectation, mcp_unavailable, runaway, orphaned_background, out_of_scope, needs_input and destructive_git. Absent while running, for
    * other failures (schema, stop) and for older event files.
    */
   failureReason?: string;
@@ -88,6 +89,12 @@ export interface AgentView {
    * line each. Absent otherwise.
    */
   misses?: string[];
+  /**
+   * Agents only (ODW extension; see ../questions): the questions a failed
+   * agent stopped to ask that nobody answered (agent_failed's `questions`,
+   * with reason "needs_input"), one line each. Absent otherwise.
+   */
+  questions?: string[];
   /**
    * Agents only (ODW extension): the tool calls its CLI refused under a reply
    * that stood anyway (agent_finished's `denied`), one line each. Absent otherwise.
@@ -109,6 +116,12 @@ export interface AgentView {
    * its scope — its terminal event's `outOfScope`. Absent otherwise.
    */
   outOfScope?: string[];
+  /**
+   * Agents only (ODW extension; see ../destructive-git): the destructive git
+   * commands its CLI ran — `destructive_git` events, as they showed — each
+   * with what it is ("git reset --hard"). Absent: none.
+   */
+  destructiveGit?: Array<{ command: string; what: string }>;
   startedAt: number | null;
   finishedAt: number | null;
   /** Wall-clock from agent_started to agent_finished/failed, in ms (a command's own measurement). */
@@ -207,6 +220,8 @@ export interface PendingCheckpoint {
   schema?: Record<string, unknown>;
   /** When it started waiting (epoch seconds). */
   since: number;
+  /** Set when it is an agent's question (ODW extension; see ../questions): who asked, and what. */
+  question?: CheckpointQuestion;
 }
 
 /**
@@ -257,6 +272,18 @@ export interface RunSummary {
    * otherwise, and absent for Claude Code runs.
    */
   waiting?: WaitingCheckpoint | null;
+  /**
+   * How many of its agents failed with reason "needs_input" — they stopped to
+   * ask a question nobody answered (ODW extension; see ../questions). Absent
+   * when none did, and for Claude Code runs.
+   */
+  needsInput?: number;
+  /**
+   * How many of its agents ran a destructive git command (`destructive_git`
+   * events; ODW extension, see ../destructive-git), and whether a safety
+   * snapshot can put the tree back (`odw restore`). Absent when none did.
+   */
+  destructiveGit?: { agents: number; restorable: boolean };
   /**
    * What a "paused" run waits for when its agents wait for an adapter's
    * spent quota to reset (ODW extension: quotaWait) — `{ reason: "quota",
@@ -312,6 +339,12 @@ export interface RunDetail extends RunSummary {
   /** The workflow identity recorded at create time (meta.workflowName). */
   workflowName: string | null;
   /**
+   * The run took untrusted input (ODW extension; see ../untrusted-input): what
+   * said so, the args it covers, and — once its worker started — the profile
+   * it ran with. The dashboard's trust line. Absent: the input was the user's.
+   */
+  untrustedInput?: UntrustedInputView;
+  /**
    * checkpoint() calls waiting for an answer, oldest first (ODW extension):
    * what `POST /api/runs/:id/checkpoint` can approve or reject. Empty unless
    * the run is live (neither ended nor stale); absent for Claude Code runs.
@@ -327,6 +360,32 @@ export interface RunDetail extends RunSummary {
   cliVersions?: Record<string, CliVersion>;
   odwVersion?: string | null;
   sourceHash?: string | null;
+  /** `odw pin` marked it (ODW extension; see ./gc): `odw gc` skips it. Absent otherwise. */
+  pinned?: { at: number; by: string | null };
+  /** `odw gc` trimmed its transcripts and stderr (ODW extension; see ./gc): when, and how many files. Absent otherwise. */
+  trimmed?: { at: number; files: number };
+  /**
+   * The working tree as it stood before the run's first in-place agent that
+   * could change it (ODW extension; see ../safety) — what `odw restore <run>`
+   * puts back. Absent when none was taken.
+   */
+  safetySnapshot?: SafetySnapshotView;
+}
+
+/** A run's safety snapshot, as its detail shows it (ODW extension; see ../safety). */
+export interface SafetySnapshotView {
+  /** `refs/odw/safety/<run>`, in the run's source repository. */
+  ref: string;
+  commit: string;
+  /** HEAD when it was taken. */
+  head: string | null;
+  /** Changed tracked files, and untracked ones, it kept. */
+  tracked: number;
+  untracked: number;
+  /** Untracked files left out for their size. */
+  skipped?: string[];
+  /** When it was taken (epoch seconds). */
+  at: number | null;
 }
 
 /** Is `pid` a live process on this host? null when unknowable (no pid). */
@@ -403,6 +462,14 @@ export function applyAgentEvent(
 ): { opened?: AgentView; settled?: AgentView } {
   if (ev.type === "command_started" || ev.type === "command_finished" || ev.type === "command_failed") {
     return applyCommandEvent(agents, ev);
+  }
+  if (ev.type === "destructive_git") {
+    // A destructive git command its CLI ran (ODW extension), running or settled.
+    const target = typeof ev.agentId === "number" ? agents.find((a) => a.kind === "agent" && a.agentId === ev.agentId) : undefined;
+    if (target && typeof ev.command === "string") {
+      (target.destructiveGit ??= []).push({ command: ev.command, what: typeof ev.what === "string" ? ev.what : "git" });
+    }
+    return {};
   }
   if (ev.type === "log") {
     if (typeof ev.agentId !== "number" || typeof ev.adapter !== "string") return {};
@@ -499,6 +566,9 @@ export function applyAgentEvent(
       if (from && typeof ev.adapter === "string") target.adapter = ev.adapter;
       const misses = strings(ev.misses);
       if (misses) target.misses = misses;
+      // The questions it asked nobody answered (ODW extension).
+      const questions = strings(ev.questions);
+      if (questions) target.questions = questions;
       // The limit a runaway ran into (ODW extension).
       const hit = limitHit(ev.limitHit);
       if (hit) target.limits = { ...target.limits, hit };
@@ -652,11 +722,13 @@ function copyAgents(agents: AgentView[], stale: boolean): AgentView[] {
     if (a.quotaWait) copy.quotaWait = { ...a.quotaWait };
     if (a.mcp) copy.mcp = a.mcp.map((server) => ({ ...server }));
     if (a.misses) copy.misses = [...a.misses];
+    if (a.questions) copy.questions = [...a.questions];
     if (a.denied) copy.denied = [...a.denied];
     if (a.limits) copy.limits = { ...a.limits, ...(a.limits.hit ? { hit: { ...a.limits.hit } } : {}) };
     if (a.orphaned) copy.orphaned = [...a.orphaned];
     if (a.scope) copy.scope = [...a.scope];
     if (a.outOfScope) copy.outOfScope = [...a.outOfScope];
+    if (a.destructiveGit) copy.destructiveGit = a.destructiveGit.map((hit) => ({ ...hit }));
     return copy;
   });
 }
@@ -718,6 +790,8 @@ export class EventFold {
   readonly cliVersions: Record<string, CliVersion> = {};
   /** What drifted since the workflow's previous run, from the run's drift log lines (ODW extension). */
   drift: RunDrift | undefined;
+  /** The working tree's snapshot before the run's first in-place agent, from its safety_snapshot event (ODW extension). */
+  safety: SafetySnapshotView | undefined;
 
   apply(events: WorkflowEvent[]): this {
     for (const ev of events) {
@@ -732,6 +806,7 @@ export class EventFold {
         this.drift ??= { since, changes: [] };
         this.drift.changes.push(change);
       }
+      if (ev.type === "safety_snapshot") this.safety = safetySnapshotOf(ev) ?? this.safety;
       if (ev.type === "run_finished" || ev.type === "run_failed" || ev.type === "run_stopped") {
         this.ended = true;
         this.checkpoints.clear(); // nobody waits on a run that ended
@@ -746,6 +821,21 @@ export class EventFold {
   }
 }
 
+/** A safety_snapshot event as a run's detail shows it (ODW extension); null for a malformed one. */
+function safetySnapshotOf(ev: WorkflowEvent): SafetySnapshotView | null {
+  if (typeof ev.ref !== "string" || typeof ev.commit !== "string") return null;
+  const skipped = strings(ev.skipped);
+  return {
+    ref: ev.ref,
+    commit: ev.commit,
+    head: typeof ev.head === "string" ? ev.head : null,
+    tracked: asNumber(ev.tracked) ?? 0,
+    untracked: asNumber(ev.untracked) ?? 0,
+    ...(skipped ? { skipped } : {}),
+    at: asNumber(ev.ts),
+  };
+}
+
 /** checkpoint_requested opens a pending checkpoint; checkpoint_resolved closes it. */
 function applyCheckpointEvent(pending: Map<number, PendingCheckpoint>, ev: WorkflowEvent): void {
   if (typeof ev.checkpointId !== "number") return;
@@ -758,10 +848,23 @@ function applyCheckpointEvent(pending: Map<number, PendingCheckpoint>, ev: Workf
       ...(ev.truncated === true ? { truncated: true } : {}),
       ...(schema !== null && typeof schema === "object" && !Array.isArray(schema) ? { schema: schema as Record<string, unknown> } : {}),
       since: asNumber(ev.ts) ?? 0,
+      ...questionOf(ev.question),
     });
   } else if (ev.type === "checkpoint_resolved") {
     pending.delete(ev.checkpointId);
   }
+}
+
+/** An agent's question a checkpoint_requested event carries (ODW extension), when it is a well-formed one. */
+function questionOf(value: unknown): { question?: CheckpointQuestion } {
+  if (value === null || typeof value !== "object") return {};
+  const q = value as Record<string, unknown>;
+  if (typeof q.agentId !== "number" || typeof q.label !== "string" || typeof q.adapter !== "string" || !Array.isArray(q.questions)) return {};
+  const questions = q.questions.filter(
+    (item): item is CheckpointQuestion["questions"][number] =>
+      item !== null && typeof item === "object" && typeof (item as { question?: unknown }).question === "string",
+  );
+  return { question: { agentId: q.agentId, label: q.label, adapter: q.adapter, questions } };
 }
 
 /** The pending checkpoints of a fold, oldest first, as copies (folds are cached). */
@@ -822,6 +925,8 @@ export function summaryFrom(runId: string, facts: RunFacts): RunSummary {
     lastActivityTs: fold.lastActivityTs,
     usage: fold.usage ? { ...fold.usage } : null,
     waiting: state === "waiting" ? oldestWaiting(fold) : null,
+    ...needsInputOf(fold),
+    ...destructiveGitOf(fold),
     // Only a live paused run waits for a quota; a stale one's worker is gone.
     pausedFor: state === "paused" ? pausedForOf(status.pausedFor) : null,
     ...(meta.bundle ? { bundle: bundleOf(meta.bundle) } : {}),
@@ -830,6 +935,42 @@ export function summaryFrom(runId: string, facts: RunFacts): RunSummary {
     ...(fold.drift ? { drift: { since: fold.drift.since, changes: fold.drift.changes.map((c) => ({ ...c })) } } : {}),
     ...(isWho(meta.launchedBy) ? { launchedBy: meta.launchedBy } : {}),
   };
+}
+
+/** A run's untrusted input as its detail serves it (ODW extension; see ../untrusted-input). */
+export interface UntrustedInputView extends UntrustedInputMeta {
+  /** The agents' tier, once the worker started; null before. */
+  permissions: PermissionTier | null;
+  /** Whether a container sandbox with an allowlist (or no) network boxed its agents in; null before the worker started. */
+  sandboxed: boolean | null;
+}
+
+/** `{ untrustedInput }` from meta.json, with the profile status.json has once the worker started; `{}` for trusted input. */
+function untrustedInputView(meta: Record<string, unknown>, status: Record<string, unknown>): { untrustedInput?: UntrustedInputView } {
+  const input = untrustedInputOf(meta);
+  if (!input) return {};
+  const profile = (status.untrustedInput !== null && typeof status.untrustedInput === "object" ? status.untrustedInput : {}) as Record<string, unknown>;
+  return {
+    untrustedInput: {
+      ...input,
+      permissions: isPermissionTier(profile.permissions) ? profile.permissions : null,
+      sandboxed: typeof profile.sandboxed === "boolean" ? profile.sandboxed : null,
+    },
+  };
+}
+
+/** `{ needsInput }`: how many of a fold's agents failed with reason "needs_input" — `{}` when none did. */
+function needsInputOf(fold: EventFold): { needsInput?: number } {
+  let n = 0;
+  for (const agent of fold.agents) if (agent.failureReason === "needs_input") n++;
+  return n > 0 ? { needsInput: n } : {};
+}
+
+/** `{ destructiveGit }`: how many of a fold's agents ran a destructive git command, and whether a snapshot can restore — `{}` when none did. */
+function destructiveGitOf(fold: EventFold): { destructiveGit?: { agents: number; restorable: boolean } } {
+  let n = 0;
+  for (const agent of fold.agents) if (agent.destructiveGit?.length) n++;
+  return n > 0 ? { destructiveGit: { agents: n, restorable: fold.safety !== undefined } } : {};
 }
 
 /** meta.bundle as a summary carries it: a shared bundle's when and by which odw. */
@@ -861,7 +1002,11 @@ function resolveLinksOf(meta: Record<string, unknown>): { applyResolve?: Resolve
 function oldestWaiting(fold: EventFold): WaitingCheckpoint | null {
   let oldest: PendingCheckpoint | undefined;
   for (const cp of fold.checkpoints.values()) if (!oldest || cp.checkpointId < oldest.checkpointId) oldest = cp;
-  return oldest ? { checkpointId: oldest.checkpointId, title: oldest.title, since: oldest.since } : null;
+  if (!oldest) return null;
+  const asker: { question?: QuestionAsker } = oldest.question
+    ? { question: { agentId: oldest.question.agentId, label: oldest.question.label, adapter: oldest.question.adapter } }
+    : {};
+  return { checkpointId: oldest.checkpointId, title: oldest.title, since: oldest.since, ...asker };
 }
 
 /** Reconcile liveness and build the full detail from cached or fresh facts. */
@@ -886,10 +1031,12 @@ export function detailFrom(
     ...resolveLinksOf(meta),
     adapter: (meta.adapter as string) ?? null,
     workflowName: (meta.workflowName as string) ?? null,
+    ...untrustedInputView(meta, facts.status),
     pendingCheckpoints: live ? pendingCheckpoints(fold) : [],
     cliVersions: Object.fromEntries(Object.entries(fold.cliVersions).map(([name, cli]) => [name, { ...cli }])),
     odwVersion: typeof meta.odwVersion === "string" ? meta.odwVersion : null,
     sourceHash: typeof meta.sourceHash === "string" ? meta.sourceHash : null,
+    ...(fold.safety ? { safetySnapshot: { ...fold.safety, ...(fold.safety.skipped ? { skipped: [...fold.safety.skipped] } : {}) } } : {}),
   };
 }
 

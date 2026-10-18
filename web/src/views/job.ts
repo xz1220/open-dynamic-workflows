@@ -113,11 +113,12 @@ function runHead(run: RunDetail, nowSec: number, spendOpen: boolean): string {
   const w = (n: number) => `${((n / total) * 100).toFixed(2)}%`;
   return (
     `<header class="run-head">` +
-    `<div style="min-width:0"><div class="eyebrow"><span>${t("Run")}</span><span class="mono" style="text-transform:none;letter-spacing:0">${esc(run.runId)}</span>${cc}${shared}${driftChip(run)}${run.dry ? `<span class="tag dry" title="${esc(t("every agent answered by a stub: it cost nothing"))}">${t("dry run")}</span>` : ""}</div>` +
+    `<div style="min-width:0"><div class="eyebrow"><span>${t("Run")}</span><span class="mono" style="text-transform:none;letter-spacing:0">${esc(run.runId)}</span>${cc}${shared}${driftChip(run)}${safetyChip(run)}${run.dry ? `<span class="tag dry" title="${esc(t("every agent answered by a stub: it cost nothing"))}">${t("dry run")}</span>` : ""}${gcTags(run)}</div>` +
     `<div class="title-row"><h1 class="display">${esc(run.name)}</h1>${pill(run.state)}</div>` +
     (run.description ? `<p class="lede">${esc(run.description)}</p>` : "") +
     // Who started it (ODW extension): the local user, a named token's name, or trigger:<name>.
     (run.launchedBy ? `<p class="dim launched-by">${esc(t("launched by {who}", { who: run.launchedBy }))}</p>` : "") +
+    trustLine(run) +
     resolveLinks(run) +
     `</div>` +
     `<div class="actions">${stop}${resume}${compareLink(run)}${share}` +
@@ -139,7 +140,58 @@ function runHead(run: RunDetail, nowSec: number, spendOpen: boolean): string {
   );
 }
 
+/** The run's safety snapshot (ODW extension): a chip that copies the command that puts the working tree back. */
+function safetyChip(run: RunDetail): string {
+  const s = run.safetySnapshot;
+  if (!s) return "";
+  const tip = t("{tracked} changed and {untracked} untracked file(s) kept at {ref} before the first in-place agent — click to copy the restore command", {
+    tracked: s.tracked,
+    untracked: s.untracked,
+    ref: s.ref,
+  });
+  return `<span class="tag safety" role="button" tabindex="0" data-copy="odw restore ${esc(run.runId)}" title="${esc(tip)}">${t("safety snapshot")}</span>`;
+}
+
+/** The destructive git commands an agent ran (ODW extension), and how to get the work back. */
+function destructiveGitSection(run: RunDetail, a: AgentView): string {
+  if (!a.destructiveGit?.length) return "";
+  const cmd = `odw restore ${run.runId}`;
+  return (
+    `<div class="drawer-sec">${t("Destructive git commands")}</div>` +
+    `<ul class="denied destructive-git">${a.destructiveGit.map((h) => `<li><span class="tag">${esc(h.what)}</span> ${esc(h.command)}</li>`).join("")}</ul>` +
+    (run.safetySnapshot
+      ? `<p class="dnote">${t("The working tree was snapshot before this run's first in-place agent — {cmd} puts it back.", { cmd: `<code>${esc(cmd)}</code>` })}</p>` +
+        `<button class="btn sm" data-copy="${esc(cmd)}">${icons.copy}${t("Copy restore command")}</button>`
+      : `<p class="dnote">${t("No snapshot of the working tree was taken for this run: what it threw away may still be in git reflog.")}</p>`)
+  );
+}
+
 /** The runs `odw apply --resolve` linked to this one: the run whose conflict it resolved, or its resolvers. */
+/**
+ * The trust line (ODW extension): a run whose args came from outside — a
+ * trigger, `odw run --untrusted-input` — says so, which args, and what its
+ * agents were left: their tier, the sandbox (alarm when none), and whether
+ * the first that may write asked first. Empty for the user's own input.
+ */
+export function trustLine(run: Pick<RunDetail, "untrustedInput">): string {
+  const u = run.untrustedInput;
+  if (!u) return "";
+  const args = u.args.includes("*") ? t("all args") : u.args.join(", ");
+  const parts = [
+    `<span class="tag input-untrusted" title="${esc(t("its args came from someone who is not you: text, never instructions"))}">${esc(t("untrusted input"))}</span>`,
+    `<span class="mono">${esc(u.why)}</span>`,
+    ...(args ? [`<span>${esc(t("args: {args}", { args }))}</span>`] : []),
+    ...(u.permissions ? [`<span>${esc(t("agents {tier}", { tier: u.permissions }))}</span>`] : []),
+    ...(u.sandboxed === false
+      ? [`<span class="unboxed" title="${esc(t("no container sandbox with an allowlist network: agents reach this machine's network and files"))}">${esc(t("no sandbox"))}</span>`]
+      : u.sandboxed
+        ? [`<span>${esc(t("sandboxed"))}</span>`]
+        : []),
+    ...(u.permissions === "edit" || u.permissions === "full" ? [`<span>${esc(u.approve ? t("writes ask first") : t("writes without asking"))}</span>`] : []),
+  ];
+  return `<p class="trust-line">${parts.join('<span class="sep">·</span>')}</p>`;
+}
+
 function resolveLinks(run: RunDetail): string {
   const link = (l: { runId: string; agentId: number }, text: string) =>
     `<a class="rlink" href="#/job/${encodeURIComponent(l.runId)}">${icons.branch}${esc(text)} <span class="mono">${esc(l.runId)}</span></a>`;
@@ -160,6 +212,19 @@ export function driftChip(run: { drift?: { since: string; changes: Array<{ kind:
       : t("{label} on {adapter}: model {from} → {to}", { label: c.label ?? "?", adapter: c.adapter, from: c.from ?? t("default"), to: c.to ?? t("default") }),
   );
   return `<span class="tag drift" title="${esc(`${t("since {run}", { run: d.since })}\n${lines.join("\n")}`)}">${esc(tn(d.changes.length, "{n} change since last run", "{n} changes since last run"))}</span>`;
+}
+
+/** What `odw pin` and `odw gc` left on the run (ODW extension): kept from gc, or its transcripts trimmed. */
+export function gcTags(run: Pick<RunDetail, "runId" | "pinned" | "trimmed">): string {
+  let out = "";
+  if (run.pinned) {
+    const tip = t("odw gc skips this run (odw pin {run} --remove undoes it)", { run: run.runId }) + (run.pinned.by ? `\n${t("pinned by {who}", { who: run.pinned.by })}` : "");
+    out += `<span class="tag pinned" title="${esc(tip)}">${t("pinned")}</span>`;
+  }
+  if (run.trimmed) {
+    out += `<span class="tag trimmed" title="${esc(t("odw gc removed {n} transcript and stderr file(s); events, results and diffs stay", { n: run.trimmed.files }))}">${t("transcripts trimmed")}</span>`;
+  }
+  return out;
 }
 
 /** A link to what changed since the workflow's previous run, when it has one. */
@@ -411,6 +476,10 @@ function drawer(run: RunDetail, ai: number, nowSec: number): string {
     (a.misses?.length
       ? `<div class="drawer-sec">${t("Missed")}</div><ul class="misses">${a.misses.map((m) => `<li>${esc(m)}</li>`).join("")}</ul>`
       : "") +
+    (a.questions?.length
+      ? `<div class="drawer-sec">${t("Asked, unanswered")}</div><ul class="misses asked">${a.questions.map((q) => `<li>${esc(q)}</li>`).join("")}</ul>` +
+        `<p class="dnote">${t("It stopped to ask and nobody answered. Answer it in the prompt, or leave questions on checkpoint so you are asked.")}</p>`
+      : "") +
     (a.denied?.length
       ? `<div class="drawer-sec">${t("Refused tool calls")}</div><ul class="denied">${a.denied.map((d) => `<li>${esc(d)}</li>`).join("")}</ul>` +
         `<p class="dnote">${t("Its reply may rest on work it could not do — raise its tier with --permissions, or allowlist the tool.")}</p>`
@@ -432,6 +501,7 @@ function drawer(run: RunDetail, ai: number, nowSec: number): string {
       ? `<div class="drawer-sec">${t("Outside its scope")}</div><ul class="denied out-of-scope">${a.outOfScope.map((f) => `<li>${esc(f)}</li>`).join("")}</ul>` +
         `<p class="dnote">${t("It changed these files outside the scope it declared — another agent may be changing them too.")}</p>`
       : "") +
+    destructiveGitSection(run, a) +
     changesSection(run, a, ai, rec?.branch) +
     output +
     (evs ? `<div class="drawer-sec">${t("Events")}</div><div class="mini-events">${evs}</div>` : "") +
@@ -637,6 +707,8 @@ function checkpoints(run: RunDetail, s: JobViewState): string {
   const canDecide = run.provider === "odw" && (store.capabilities.writable || store.capabilities.decide === true);
   return pending
     .map((cp, i) => {
+      // An agent's question (ODW extension): what it asked, answered with the note.
+      if (cp.question) return questionCard(run, cp, cp.question, i, canDecide, s);
       const has = cp.payload !== undefined && cp.payload !== null;
       const edit = s.cpEdit?.id === cp.checkpointId ? cpEditState(cp.payload, s.cpEdit.text) : null;
       const payload = edit
@@ -663,6 +735,42 @@ function checkpoints(run: RunDetail, s: JobViewState): string {
       );
     })
     .join("");
+}
+
+/** An agent's question waiting for a person (ODW extension; src/questions.ts): each question and its options, the answer in the note. */
+function questionCard(
+  run: RunDetail,
+  cp: { checkpointId: number; since: number; title: string },
+  q: NonNullable<NonNullable<RunDetail["pendingCheckpoints"]>[number]["question"]>,
+  i: number,
+  canDecide: boolean,
+  s: JobViewState,
+): string {
+  const asked = q.questions
+    .map(
+      (one) =>
+        `<li>${one.header ? `<span class="tag">${esc(one.header)}</span>` : ""}<span class="q">${esc(one.question)}</span>` +
+        (one.options?.length
+          ? `<span class="opts">${one.options
+              .map((o) => (canDecide && i === 0 ? `<button class="opt" data-cp-option="${esc(o)}">${esc(o)}</button>` : `<span class="opt">${esc(o)}</span>`))
+              .join("")}</span>`
+          : "") +
+        `</li>`,
+    )
+    .join("");
+  const actions = canDecide
+    ? `<div class="cp-actions">` +
+      (i === 0
+        ? `<input id="cp-note" class="cp-note" placeholder="${esc(t("Your answer — the agent runs again, told it"))}" value="${esc(s.cpNote)}" autocomplete="off"/>`
+        : "") +
+      `<button class="btn primary" data-cp="approve" data-cp-id="${cp.checkpointId}">${t("Answer")}</button>` +
+      `<button class="btn danger" data-cp="reject" data-cp-id="${cp.checkpointId}">${t("Decline")}</button></div>`
+    : `<p class="dim" style="margin:10px 0 0">${t("Answer it with {cmd}", { cmd: `<code>odw approve ${esc(run.runId)} --checkpoint ${cp.checkpointId} --note "…"</code>` })}</p>`;
+  return (
+    `<section class="card checkpoint question marked" data-key="cp-${cp.checkpointId}">` +
+    `<div class="cp-head">${glyph("waiting")}<span class="eyebrow">${t("Agent question")} · ${esc(q.label)}:${q.agentId} · ${esc(q.adapter)} · ${t("waiting since {t}", { t: fmtClock(cp.since) })}</span></div>` +
+    `<h3 class="cp-title">${esc(cp.title)}</h3><ol class="asked">${asked}</ol>${actions}</section>`
+  );
 }
 
 // --- transcript: what one agent's CLI did, turn by turn ---

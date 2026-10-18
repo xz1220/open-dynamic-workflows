@@ -122,13 +122,14 @@ import { planTrust, runTrust } from "./adapters/trust.js";
 import { sandboxView, type SandboxView } from "./adapters/sandbox.js";
 import { adapterDisplayName, type Adapter, type PermissionTier, type TrustLevel } from "./adapters/types.js";
 import { addUsage, estimatedUsage, type Usage } from "./adapters/usage.js";
-import type { AgentRequest } from "./bridge.js";
+import type { AgentRequest, TranscriptSink } from "./bridge.js";
 import { applyArgsEdit } from "./breaks.js";
 import { branchName, ChangeRecorder, type AgentChanges, type KeptChanges } from "./changes.js";
 import { CheckpointTimeout, createCheckpoint, type CheckpointOptions, type CheckpointResult } from "./checkpoint.js";
 import { spentTokens, type RunContext } from "./context.js";
-import { AdapterExecutionError, AgentError, RunStopped, RunawayError, UnmetExpectationError, WorkflowScriptError, isDeadlineStop, isFatalError } from "./errors.js";
-import { AGENT_FAILED, AGENT_FINISHED, AGENT_STARTED, HANDOFF, LOG, PHASE_STARTED, event } from "./events.js";
+import { AdapterExecutionError, AgentError, NeedsInputError, RunStopped, RunawayError, UnmetExpectationError, WorkflowScriptError, isDeadlineStop, isFatalError } from "./errors.js";
+import { AGENT_FAILED, AGENT_FINISHED, AGENT_STARTED, DESTRUCTIVE_GIT, HANDOFF, LOG, PHASE_STARTED, event } from "./events.js";
+import { DestructiveGitWatch } from "./destructive-git.js";
 import { ExecError, createExec, execStep, type ExecOptions, type ExecResult } from "./exec.js";
 import { CostGateRejected, costGateTitle, readCostGate, type CostGate, type CostHistory } from "./forecast.js";
 import { Expectations, planChecks, scopeOnlyPlan, type AgentChecks, type ExpectOptions } from "./expect.js";
@@ -138,12 +139,14 @@ import { hasLimits, readLimits, type AgentLimits, type LimitHit, type LimitSpec 
 // the module cycle is erased at compile time and never exists at runtime.
 import { loadWorkflowScript, scanDualCompat, type WorkflowMeta } from "./loader.js";
 import { interfaceSummary, type AgentNotes } from "./notes.js";
+import { answerOf, isQuestionPolicy, MAX_QUESTION_ROUNDS, questionLine, questionTitle, type QuestionPolicy } from "./questions.js";
 import { firstAdapter, phaseDefaultsOf, type AdapterChoice, type PhaseDefaults } from "./routing.js";
 import type { JsonSchema } from "./schema.js";
 import { planScope, ScopeLocks, waitNote, type ScopeClaim, type ScopePlan, type ScopePolicy } from "./scope.js";
 import { FanOut } from "./throttle.js";
 import { fmtUsd } from "./tty.js";
 import { TranscriptRecorder } from "./transcript.js";
+import { UntrustedInputRejected, workflowInput, writes, type WorkflowInput } from "./untrusted-input.js";
 import { resolveWorkflow } from "./workflows/resolve.js";
 import { headCommit } from "./workspace.js";
 
@@ -250,6 +253,14 @@ export interface AgentOptions {
    * setting covers fan-outs, not single agents).
    */
   costGate?: CostGate | null;
+  /**
+   * ODW extension: what a question this agent stops to ask the user does (see
+   * ./questions) — `"checkpoint"` asks a person and runs it again with the
+   * answer, `"fail"` fails it with reason "needs_input", `"deny"` takes its
+   * question tool away and tells it to assume. Unset: its adapter's, else the
+   * `questions` setting ("checkpoint" by default).
+   */
+  questions?: QuestionPolicy;
 }
 
 /** ODW extension: what parallel() takes after its thunks. */
@@ -295,7 +306,8 @@ export interface WorkflowGlobals {
   phase(title: string, opts?: PhaseDefaults): void;
   log(message: unknown): void;
   budget: Budget;
-  workflow(nameOrRef: string | { scriptPath: string }, args?: unknown): Promise<unknown>;
+  /** `workflow.input` is an ODW extension (see ./untrusted-input): whether the run's args came from outside. */
+  workflow: ((nameOrRef: string | { scriptPath: string }, args?: unknown) => Promise<unknown>) & { readonly input?: WorkflowInput };
   /**
    * Compile-check a candidate workflow source without executing it (ODW
    * extension; not part of Claude Code's Workflow tool surface). The seam that
@@ -527,6 +539,31 @@ export function createPrimitives(
   };
 
   /**
+   * What watches an agent's CLI runs for destructive git commands (ODW
+   * extension; see ./destructive-git): each one it runs is a
+   * `destructive_git` event as soon as it shows — with `odw restore` named
+   * when the run has a snapshot to put back.
+   */
+  const destructiveGitWatch = (agentId: number, label: string, phase: string | null, isolated: boolean): DestructiveGitWatch =>
+    new DestructiveGitWatch((hit) => {
+      const policy = ctx.config.settings.destructiveGit;
+      const snapshot = ctx.safety?.info;
+      const restore = snapshot && ctx.runId ? ` — odw restore ${ctx.runId} puts back the working tree as it was before the run's first in-place agent` : "";
+      ctx.emit(
+        event(DESTRUCTIVE_GIT, {
+          message: `${label}:${agentId} ran a destructive git command (${hit.what}): ${hit.command}${restore}`,
+          agentId,
+          label,
+          phase,
+          command: hit.command,
+          what: hit.what,
+          policy,
+          ...(snapshot ? { snapshot: snapshot.ref } : {}),
+        }),
+      );
+    }, isolated);
+
+  /**
    * What checks a call's work against its `expect` (ODW extension; see
    * ./expect). Its command runs as an exec() step of the run — in the agent's
    * phase, carrying the agent's id — so it shows under the agent and a stop
@@ -699,6 +736,10 @@ export function createPrimitives(
     if (opts.memory !== undefined && typeof opts.memory !== "boolean") {
       throw new AgentError(`agent(): memory must be true or false; got ${describeValue(opts.memory)}`);
     }
+    if (opts.questions !== undefined && !isQuestionPolicy(opts.questions)) {
+      const got = typeof opts.questions === "string" ? JSON.stringify(opts.questions) : describeValue(opts.questions);
+      throw new AgentError(`agent(): questions must be "checkpoint", "fail" or "deny"; got ${got}`);
+    }
     // The run's notes board (ODW extension): its call's say, else its parallel()'s, else the setting.
     const notesOn = opts.notes ?? notesScope.getStore() ?? ctx.config.settings.notes === true;
     // Workflow memory (ODW extension; see ./memory): its call's say, else the setting.
@@ -737,6 +778,16 @@ export function createPrimitives(
     // an agent that may not have its tier, or whose CLI cannot enforce it,
     // fails before it starts.
     const permissions = route.permissions;
+    // Untrusted input (ODW extension; see ./untrusted-input): the first agent
+    // that may write waits for a person's go, once per run, holding no slot.
+    if (writes(permissions.tier) && ctx.input?.meta.approve) {
+      try {
+        await writeGate(display, permissions.tier!);
+      } catch (err) {
+        ctx.bridge.releaseRoute?.(route);
+        throw err;
+      }
+    }
     // Whether its CLI runs untrusted (ODW extension; see adapters/trust.ts):
     // the run's level, or its first adapter's own. The bridge adds the flags.
     const trust = planTrust(route.chain[0]!, runTrust(ctx.config)).trust;
@@ -789,6 +840,7 @@ export function createPrimitives(
       ...(opts.sandbox !== undefined ? { sandbox: opts.sandbox } : {}),
       ...(ownLimits !== undefined ? { limits: ownLimits } : {}),
       ...(opts.handoff !== undefined ? { handoff: opts.handoff } : {}),
+      ...(opts.questions !== undefined ? { questions: opts.questions } : {}),
     };
     // The adapters it left down its chain, and the one it is on (ODW extension).
     const fellBackFrom: string[] = [];
@@ -857,6 +909,10 @@ export function createPrimitives(
         // The commit an isolated agent's worktree checks out (ODW extension):
         // the run's pinned one (`odw replay`), else HEAD as it starts.
         const base = opts.isolation === "worktree" ? (ctx.worktreeBase ?? (await headCommit(ctx.source))) : null;
+        // The run's first in-place agent that may change the user's tree has it
+        // snapshot first; any other one starting meanwhile waits for that (ODW extension; see ./safety).
+        const inPlace = opts.isolation !== "worktree";
+        if (inPlace && (permissions.tier === "edit" || permissions.tier === "full")) await ctx.safety?.before();
         const startedEv = event(AGENT_STARTED, {
           agentId,
           label: display,
@@ -895,6 +951,8 @@ export function createPrimitives(
         }
         const changes = changeRecorder(agentId, display, opts, signal, note);
         const transcript = transcriptRecorder(agentId, adapter, note);
+        // The destructive git commands its CLI runs are said as they show (ODW extension; see ./destructive-git).
+        const gitWatch = destructiveGitWatch(agentId, display, activePhase, !inPlace);
         const scoping = scope && claim ? { plan: scope, claim, note } : undefined;
         const expect = expectations(checks, agentId, display, activePhase, signal, scoping);
         // Without `expect`, its scope has a reader of its own (ODW extension; see ./scope).
@@ -970,8 +1028,8 @@ export function createPrimitives(
               ),
             // An isolated agent's change is kept as it lands (ODW extension).
             changes,
-            // So is what its CLI prints (ODW extension).
-            transcript,
+            // So is what its CLI prints (ODW extension), read for destructive git commands as it goes.
+            transcript: teeTranscript(transcript, gitWatch),
             // Where it runs, as routed at dispatch: the adapter its slot is on (ODW extension).
             route,
             // A spent quota, a refused login or a model that is not there moved it down its chain (ODW
@@ -1076,6 +1134,42 @@ export function createPrimitives(
                 }),
               );
             },
+            // A question it stopped to ask (ODW extension; see ./questions) is put
+            // to a person as a checkpoint — holding no slot while it waits —
+            // and their answer runs it again, said in the log.
+            onQuestion: async ({ adapter: name, questions, round }) => {
+              if (!ctx.control.awaitDecision) return { declined: "this run has no way to ask anyone (no decision channel)" };
+              slot.release();
+              let result: CheckpointResult;
+              try {
+                result = await ask(
+                  questionTitle(display, questions),
+                  { payload: { agent: display, agentId, adapter: name, questions, answer: "" }, memory: false },
+                  { agentId, label: display, adapter: name, questions },
+                );
+              } finally {
+                // Its slot back, on the adapter it asked on, before its CLI runs again.
+                await slot.moveTo(name);
+              }
+              const by = result.who ? ` by ${result.who}` : "";
+              if (!result.approved) {
+                return { declined: `the question was declined${by}${result.note?.trim() ? `: ${result.note.trim()}` : ""}` };
+              }
+              const answer = answerOf(result);
+              ctx.emit(
+                event(LOG, {
+                  message:
+                    `${display}:${agentId} was answered${by} — running it again, told the answer` +
+                    (answer === null ? " (none given: it is told to assume)" : ""),
+                  agentId,
+                  label: display,
+                  phase: activePhase,
+                  // Structured for the run's readers: a span event of its OpenTelemetry trace (../otel).
+                  retry: { reason: "question", n: round, of: MAX_QUESTION_ROUNDS },
+                }),
+              );
+              return { answer };
+            },
             // The MCP servers a CLI run started it without (ODW extension): kept
             // for its record, and each server and status said once per run.
             onMcp: ({ adapter: name, servers }) => {
@@ -1097,6 +1191,8 @@ export function createPrimitives(
               }
             },
           });
+          // Under destructiveGit: "fail", a destructive git command fails it once its CLI is done (ODW extension).
+          if (gitWatch.hits.length > 0 && ctx.config.settings.destructiveGit === "fail") throw destructiveGitError(gitWatch);
         } catch (err) {
           // Out of rate-limit retries (or allowed none): that lowers its adapter's cap too.
           if (err instanceof AdapterExecutionError && err.reason === "rate_limit") slot.rateLimited();
@@ -1538,12 +1634,37 @@ export function createPrimitives(
 
   // The same for checkpoint(), on the checkpoint id sequence. A stop noticed
   // before the question is asked is fatal like any other: it ends the run.
+  // An agent's question (ODW extension; see ./questions) asks through it too, with who asked.
   const ask = createCheckpoint(ctx);
   const checkpoint = (title: string, opts?: CheckpointOptions): Promise<CheckpointResult> =>
     ask(title, opts).catch((err: unknown) => {
       if (isFatalError(err)) ctx.scheduler.abort(err);
       throw err;
     });
+
+  /**
+   * The checkpoint a run with untrusted input asks before its first agent that
+   * may write (ODW extension; see ./untrusted-input): asked once per run, and
+   * its answer stands for every later such agent. A refusal — or a run with
+   * nobody to ask — fails those agents with UntrustedInputRejected (recoverable).
+   */
+  const writeGate = (label: string, tier: PermissionTier): Promise<void> => {
+    const input = ctx.input!;
+    input.writeGate ??= (async () => {
+      const { why, args } = input.meta;
+      const title = `Untrusted input (${why}): let agents that may write (${tier}) run?`;
+      if (!ctx.control.awaitDecision) {
+        throw new UntrustedInputRejected(`${title} — nobody can be asked in this run (no decision channel), so no agent that may write starts`);
+      }
+      const answer = await checkpoint(title, { payload: { untrustedInput: { why, args }, agent: label, permissions: tier }, memory: false });
+      if (!answer.approved) {
+        throw new UntrustedInputRejected(
+          `untrusted input (${why}): agents that may write were refused${answer.note ? ` — ${answer.note}` : ""}; this one did not start`,
+        );
+      }
+    })();
+    return input.writeGate;
+  };
 
   /** Run `fn` with the phase cursor at `phase`: what a call reads as it starts. */
   const atPhase = <T>(phase: string | null, fn: () => T): T => {
@@ -1609,7 +1730,10 @@ export function createPrimitives(
     phase,
     log,
     budget,
-    workflow: (nameOrRef, childArgs) => handled(held(undefined, () => workflow(nameOrRef, childArgs))),
+    // `workflow.input` (ODW extension; see ./untrusted-input): whether the run's args came from outside.
+    workflow: Object.assign((nameOrRef: string | { scriptPath: string }, childArgs?: unknown) => handled(held(undefined, () => workflow(nameOrRef, childArgs))), {
+      input: workflowInput(ctx.input?.meta ?? null),
+    }),
     validate,
     exec: (command, opts) => handled(held(undefined, () => exec(command, opts))),
     checkpoint: (title, opts) => handled(held(undefined, () => checkpoint(title, opts))),
@@ -1772,8 +1896,44 @@ function refusedNote(who: string, cli: string, denied: string[]): string {
  * its `expect` checks, what it missed. Nothing for other errors (a schema that
  * never validated, a stop).
  */
-function failureFields(err: unknown): { reason?: string; retryAfter?: number; misses?: string[]; limitHit?: LimitHit } {
+/**
+ * One transcript sink for the bridge from two (ODW extension): an agent's
+ * transcript, kept when the run keeps them, and its destructive-git watch.
+ */
+function teeTranscript(transcript: TranscriptRecorder | undefined, watch: DestructiveGitWatch): TranscriptSink {
+  if (!transcript) return watch;
+  return {
+    beginRun: (reason, adapter) => {
+      transcript.beginRun(reason, adapter);
+      watch.beginRun(reason, adapter);
+    },
+    stdout: (chunk) => {
+      transcript.stdout(chunk);
+      watch.stdout(chunk);
+    },
+    stderr: (chunk) => transcript.stderr(chunk),
+    endRun: (cli) => {
+      transcript.endRun(cli);
+      watch.endRun(cli);
+    },
+    handoff: (handoff) => transcript.handoff(handoff),
+  };
+}
+
+/** How an agent that ran a destructive git command fails under `destructiveGit: "fail"` (ODW extension). */
+function destructiveGitError(watch: DestructiveGitWatch): AdapterExecutionError {
+  const more = watch.more > 0 ? `, and ${watch.more} more` : "";
+  const commands = watch.hits.map((hit) => hit.command).join("; ");
+  return new AdapterExecutionError(
+    `it ran a destructive git command (${watch.summary()}): ${commands}${more} — destructiveGit: "fail" fails such an agent`,
+    { reason: "destructive_git" },
+  );
+}
+
+function failureFields(err: unknown): { reason?: string; retryAfter?: number; misses?: string[]; limitHit?: LimitHit; questions?: string[] } {
   if (!(err instanceof AdapterExecutionError)) return {};
+  // The questions it asked nobody answered, one line each (ODW extension; see ./questions).
+  if (err instanceof NeedsInputError) return { reason: err.reason, questions: err.questions.map(questionLine) };
   if (err instanceof UnmetExpectationError) return { reason: err.reason, misses: [...err.misses] };
   // The limit a runaway ran into, and the evidence (ODW extension; see ./limits).
   if (err instanceof RunawayError) return { reason: err.reason, limitHit: { ...err.hit } };

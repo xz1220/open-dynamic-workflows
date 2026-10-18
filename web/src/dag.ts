@@ -107,6 +107,8 @@ export function reasonLabel(reason: string): string {
     runaway: t("runaway"),
     orphaned_background: t("orphaned background work"),
     out_of_scope: t("outside its scope"),
+    needs_input: t("needs input"),
+    destructive_git: t("ran a destructive git command"),
   };
   return labels[reason] ?? reason.replace(/_/g, " ");
 }
@@ -209,7 +211,7 @@ export function renderDag(
       parts.push(
         `<div class="node ${esc(p.state)}${a.kind === "command" ? " cmd" : a.kind === "checkpoint" ? " cp" : a.quotaWait && a.state === "running" ? " qwait" : ""}${sel}${dim}" data-ai="${p.ai}" data-key="n-${p.ai}" tabindex="0" role="button" aria-pressed="${selectedAi === p.ai}" ` +
           `style="left:${p.x}px;top:${p.y}px;width:${NODE_W}px" title="${esc(a.label)}">` +
-          `<div class="h">${glyph(p.state)}<span class="lbl">${a.kind === "command" ? `<span class="prompt">$</span> ` : ""}${esc(a.label)}</span>${a.changes?.files ? `<span class="ndelta" title="${esc(t("lines changed"))}"><b class="ins">+${fmtTokens(a.changes.insertions)}</b><b class="del">−${fmtTokens(a.changes.deletions)}</b></span>` : ""}${a.denied?.length ? `<span class="ndeny" title="${esc(t("{n} tool calls refused", { n: a.denied.length }))}">⚠${a.denied.length}</span>` : ""}${a.cached ? `<span class="cached" title="${esc(t("replayed from an earlier run"))}">↺</span>` : ""}</div>` +
+          `<div class="h">${glyph(p.state)}<span class="lbl">${a.kind === "command" ? `<span class="prompt">$</span> ` : ""}${esc(a.label)}</span>${a.changes?.files ? `<span class="ndelta" title="${esc(t("lines changed"))}"><b class="ins">+${fmtTokens(a.changes.insertions)}</b><b class="del">−${fmtTokens(a.changes.deletions)}</b></span>` : ""}${a.denied?.length ? `<span class="ndeny" title="${esc(t("{n} tool calls refused", { n: a.denied.length }))}">⚠${a.denied.length}</span>` : ""}${a.destructiveGit?.length ? `<span class="ndeny ngit" title="${esc(t("ran {n} destructive git command(s)", { n: a.destructiveGit.length }))}">git!</span>` : ""}${a.cached ? `<span class="cached" title="${esc(t("replayed from an earlier run"))}">↺</span>` : ""}</div>` +
           `<div class="sub">${esc(subLine(a, opts.nowSec))}</div></div>`,
       );
     }

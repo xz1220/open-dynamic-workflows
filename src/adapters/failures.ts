@@ -28,7 +28,9 @@
  * authentication — `mcp_unavailable` when `mcpFailures` is "fail" — and one
  * whose CLI exited with background work still running (`output.background`)
  * — `orphaned_background` when `orphanedBackground` is "fail", or when the
- * call's `expect` still misses because of it.
+ * call's `expect` still misses because of it. An agent that stopped to ask the
+ * user a question (`output.questions`) nobody answered is `needs_input`
+ * (see ../questions).
  *
  * The HTTP status alone does not decide a class: providers send a spent quota
  * as 429, 401 or 403, and a per-minute limit under the word "quota". So the
@@ -72,7 +74,15 @@ export type FailureReason =
    */
   | "orphaned_background"
   /** The agent changed files outside its declared `scope`, under `scopePolicy: "fail"` (ODW extension; see ../scope). */
-  | "out_of_scope";
+  | "out_of_scope"
+  /**
+   * The agent stopped to ask the user a question (its CLI's clarifying tool
+   * call) that nobody answered — under `questions: "fail"`, a rejected
+   * question checkpoint, or one asked under `"deny"` (ODW extension; see ../questions).
+   */
+  | "needs_input"
+  /** The agent ran a destructive git command (`git reset --hard`, …), under `destructiveGit: "fail"` (ODW extension; see ../destructive-git). */
+  | "destructive_git";
 
 /** The classes an adapter's `failures` config may add patterns to. */
 export const CONFIGURABLE_REASONS = ["rate_limit", "quota", "auth", "model_unavailable"] as const;

@@ -66,6 +66,15 @@ const UNTRUSTED_EVENTS = new Set([
   "issues", "issue_comment", "discussion", "discussion_comment", "pull_request_review", "pull_request_review_comment",
 ]);
 
+/** Whether the run's input is untrusted (`--untrusted-input`): `true`/`false` as given; `auto` follows `untrusted`. */
+export function untrustedInputFor(input, untrusted) {
+  const value = String(input ?? "auto").trim().toLowerCase() || "auto";
+  if (value === "true") return true;
+  if (value === "false") return false;
+  if (value !== "auto") throw new Error(`untrusted-input must be auto, true or false; got '${input}'`);
+  return untrusted;
+}
+
 /**
  * Whether the run goes `--untrusted`: `true`/`false` as given; `auto` (the
  * default) for a pull request from a fork, for every `pull_request_target`
@@ -121,12 +130,15 @@ export function deadlineSeconds({ timeoutMinutes, marginSeconds, elapsedSeconds 
  * or a plain string, as it does `--args`. The other inputs go as
  * `--flag=value`, so no value reads as a flag either.
  */
-export function runArgv({ workflow, args, config, adapter, permissions }, deadline, untrusted, argsFile = null) {
+export function runArgv({ workflow, args, config, adapter, permissions }, deadline, untrusted, argsFile = null, untrustedInput = untrusted) {
   const wf = String(workflow ?? "");
   if (!wf.trim()) throw new Error("the workflow input is required");
   if (wf.startsWith("-")) throw new Error(`the workflow input must be a path or a workflow name, not '${wf}'`);
   const argv = ["run", wf, "--wait", "--deadline", String(deadline)];
   if (untrusted) argv.push("--untrusted");
+  // Untrusted input: agents without tokens, read-only unless `permissions` says
+  // otherwise, and a checkpoint before the first that may write.
+  if (untrustedInput) argv.push("--untrusted-input");
   if (String(args ?? "").trim()) {
     if (!argsFile) throw new Error("the args input needs a file to go through");
     argv.push(`--args=@${argsFile}`);
@@ -255,6 +267,7 @@ async function stepRun() {
   });
   const event = process.env.GITHUB_EVENT_PATH ? JSON.parse(readFileSafe(process.env.GITHUB_EVENT_PATH) || "{}") : {};
   const untrusted = untrustedFor(input("untrusted", "auto"), process.env.GITHUB_EVENT_NAME ?? "", event);
+  const untrustedInput = untrustedInputFor(input("untrusted-input", "auto"), untrusted);
   // The args input goes through a file, as given: odw reads it once and parses it as --args does.
   const args = input("args");
   const argsFile = join(workDir(), "args.txt");
@@ -264,6 +277,7 @@ async function stepRun() {
     deadline,
     untrusted,
     argsFile,
+    untrustedInput,
   );
   process.stderr.write(`odw ${argv.map((a) => (/\s/.test(a) ? JSON.stringify(a) : a)).join(" ")}\n`);
   const child = spawn("odw", argv, { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, NO_COLOR: "1" } });
@@ -291,6 +305,7 @@ async function stepRun() {
   setOutput("exit-code", code);
   setOutput("state", stateFor(code));
   setOutput("untrusted", untrusted);
+  setOutput("untrusted-input", untrustedInput);
   return code;
 }
 

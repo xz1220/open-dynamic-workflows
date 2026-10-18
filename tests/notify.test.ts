@@ -253,7 +253,8 @@ test("'waiting' (opt-in) fires the hooks once per checkpoint() while the run wai
     ]);
     assert.equal(first.runId, id);
     assert.equal(first.workflow, "nightly");
-    assert.deepEqual(Object.keys(first.checkpoint).sort(), ["checkpointId", "since", "title"]);
+    assert.deepEqual(Object.keys(first.checkpoint).sort(), ["checkpointId", "kind", "since", "title"]);
+    assert.equal(first.checkpoint.kind, "checkpoint", "a checkpoint(), not an agent's question (ODW extension)");
     assert.equal(first.checkpoint.title, "First?");
     assert.equal(first.text, `odw · nightly waits for a decision: First? · odw approve|reject ${id} --checkpoint 1`);
     assert.equal(first.content, first.text);

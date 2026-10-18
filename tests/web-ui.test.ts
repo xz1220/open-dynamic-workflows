@@ -952,6 +952,40 @@ test("an agent that left background work running lists it in its drawer, and the
   store.focusRun(null);
 });
 
+test("an agent's destructive git commands are marked on its node and listed in its drawer, with odw restore when the run has a snapshot", () => {
+  const view: JobViewState = {
+    cpNote: "",
+    tab: "graph",
+    selectedAi: 0,
+    reviewAi: null,
+    zoom: 1,
+    logQuery: "",
+    logTypes: new Set(["agent"]),
+    logLimit: 600,
+    follow: true,
+    motion: false,
+  };
+  const hits = [{ command: "cd x && git reset --hard <HEAD>", what: "git reset --hard" }];
+  const snapshot = { ref: "refs/odw/safety/20260101-000000-aaaaaa", commit: "c".repeat(40), head: "h".repeat(40), tracked: 2, untracked: 1, at: NOW - 110 };
+  store.focusRun("20260101-000000-aaaaaa");
+  store.run = detail([agent("fix", "Plan", "done", { adapter: "claude", destructiveGit: hits })], { safetySnapshot: snapshot });
+  store.runEvents = [];
+  const html = renderJob(view, NOW);
+  assert.match(html, /Destructive git commands<\/div><ul class="denied destructive-git"><li><span class="tag">git reset --hard<\/span> cd x &amp;&amp; git reset --hard &lt;HEAD&gt;<\/li><\/ul>/);
+  assert.match(html, /<code>odw restore 20260101-000000-aaaaaa<\/code> puts it back/);
+  assert.match(html, /data-copy="odw restore 20260101-000000-aaaaaa">/);
+  assert.match(html, /<span class="ndeny ngit" title="ran 1 destructive git command\(s\)">git!<\/span>/);
+  // The run's head carries the snapshot as a chip that copies the restore command.
+  assert.match(html, /<span class="tag safety" role="button" tabindex="0" data-copy="odw restore 20260101-000000-aaaaaa" title="2 changed and 1 untracked file\(s\) kept at refs\/odw\/safety\/20260101-000000-aaaaaa/);
+  // Without a snapshot the drawer says where the work may still be.
+  store.run = detail([agent("fix", "Plan", "failed", { adapter: "claude", destructiveGit: hits, failureReason: "destructive_git" })]);
+  const bare = renderJob(view, NOW);
+  assert.match(bare, /No snapshot of the working tree was taken for this run/);
+  assert.doesNotMatch(bare, /tag safety/);
+  assert.equal(reasonLabel("destructive_git"), "ran a destructive git command");
+  store.focusRun(null);
+});
+
 test("evals: a card per eval with its pass-rate dial and trend, and a report as a case × adapter matrix", async () => {
   const { renderEvals, rateColor } = await import("../web/src/views/evals.ts");
   const totals = (passed: number, runs: number) => ({ runs, passed, failed: runs - passed, passRate: passed / runs, costUsd: 0.5, inputTokens: 1000, outputTokens: 100 });
@@ -1084,6 +1118,39 @@ test("a dry run is tagged as one in its header", () => {
   store.focusRun(null);
 });
 
+test("a run with untrusted input has a trust line in its header: what said so, its args, the agents' tier, an alarm without a sandbox", async () => {
+  const { trustLine } = await import("../web/src/views/job.ts");
+  assert.equal(trustLine({}), "");
+  const line = trustLine({ untrustedInput: { why: "trigger:gh", args: ["issue", "body"], approve: true, permissions: "edit", sandboxed: false } });
+  assert.match(line, /^<p class="trust-line"><span class="tag input-untrusted" title="[^"]+">untrusted input<\/span>/);
+  assert.match(line, /<span class="mono">trigger:gh<\/span>.*<span>args: issue, body<\/span>.*<span>agents edit<\/span>/);
+  assert.match(line, /<span class="unboxed" title="[^"]+">no sandbox<\/span>.*<span>writes ask first<\/span>/);
+  // Before its worker started: no tier, no sandbox word; read-only agents have nothing to ask.
+  const pending = trustLine({ untrustedInput: { why: "--untrusted-input", args: ["*"], approve: true, permissions: null, sandboxed: null } });
+  assert.match(pending, /<span>args: all args<\/span><\/p>$/);
+  assert.doesNotMatch(pending, /agents|sandbox|ask/);
+  const view: JobViewState = { cpNote: "", tab: "graph", selectedAi: null, reviewAi: null, zoom: 1, logQuery: "", logTypes: new Set(["agent"]), logLimit: 600, follow: true, motion: false };
+  store.focusRun("20260101-000000-aaaaaa");
+  store.run = detail([], { untrustedInput: { why: "trigger:gh", args: ["issue"], approve: true, permissions: "read", sandboxed: true } });
+  store.runEvents = [];
+  assert.match(renderJob(view, NOW), /<p class="trust-line">.*<span>agents read<\/span>.*<span>sandboxed<\/span><\/p>/);
+  store.focusRun(null);
+});
+
+test("a pinned run, and one whose transcripts odw gc trimmed, say so in the header", () => {
+  const view: JobViewState = { cpNote: "", tab: "graph", selectedAi: null, reviewAi: null, zoom: 1, logQuery: "", logTypes: new Set(["agent"]), logLimit: 600, follow: true, motion: false };
+  store.focusRun("20260101-000000-aaaaaa");
+  store.run = detail([], { pinned: { at: 1, by: "cli:ada" }, trimmed: { at: 2, files: 3 } });
+  store.runEvents = [];
+  const html = renderJob(view, NOW);
+  assert.match(html, /<span class="tag pinned" title="odw gc skips this run \(odw pin 20260101-000000-aaaaaa --remove undoes it\)\npinned by cli:ada">pinned<\/span>/);
+  assert.match(html, /<span class="tag trimmed" title="odw gc removed 3 transcript and stderr file\(s\); events, results and diffs stay">transcripts trimmed<\/span>/);
+  store.run = detail([]);
+  const plain = renderJob(view, NOW);
+  assert.doesNotMatch(plain, /tag pinned|tag trimmed/);
+  store.focusRun(null);
+});
+
 test("a run whose CLI or model changed since the workflow's last run says so in a chip that lists it", async () => {
   const { driftChip } = await import("../web/src/views/job.ts");
   const html = driftChip({ drift: { since: "20260101-000000-zzzzzz", changes: [
@@ -1164,4 +1231,111 @@ test("who did what (ODW extension): the Job header says who launched it; Jobs fi
   ];
   const gate = withCheckpoints(detail([], { state: "done" }), events).agents.at(-1)!;
   assert.deepEqual(gate.decision, { approved: true, note: null, by: "link", who: "bob" });
+});
+
+test("the spend trend buckets a fortnight by local day, stacks the top workflows, leaves dry runs out and compares with the fortnight before", async () => {
+  const { spendTrend, renderTrend } = await import("../web/src/components/trend.ts");
+  const noon = new Date();
+  noon.setHours(12, 0, 0, 0);
+  const now = Math.floor(noon.getTime() / 1000);
+  const day = 86400;
+  const run = (name: string, ago: number, costUsd: number, extra: Record<string, unknown> = {}) =>
+    ({ runId: `r-${name}-${ago}-${costUsd}`, name, state: "done", createdAt: now - ago * day, usage: { costUsd }, counts: { agents: 1 }, ...extra }) as never;
+  const runs = [
+    run("a", 0, 2), run("b", 0, 1), run("c", 1, 0.5), run("d", 1, 0.25), run("e", 2, 0.1),
+    run("a", 0, 100, { dry: true }),
+    run("a", 20, 1), // the fortnight before
+    run("a", 40, 9), // older still
+  ];
+  const tr = spendTrend(runs, now)!;
+  assert.equal(tr.by, "cost");
+  assert.equal(tr.days.length, 14);
+  assert.equal(tr.days[13].total, 3);
+  assert.equal(tr.days[13].runs, 2);
+  assert.ok(Math.abs(tr.total - 3.85) < 1e-9);
+  assert.equal(tr.previous, 1);
+  assert.deepEqual(tr.top, ["a", "b", "c"]);
+  assert.ok(Math.abs((tr.days[12].parts.get("") ?? 0) - 0.25) < 1e-9, "d falls into the rest");
+  const html = renderTrend(runs, now);
+  assert.match(html, /class="tr-col today"/);
+  assert.match(html, /↑ 285%/);
+  assert.equal(spendTrend([run("a", 0, 5, { dry: true })], now), null);
+  assert.equal(renderTrend([], now), "");
+});
+
+test("an agent's question: a card to answer it, its own ticket on Activity, and an unanswered one in the drawer", () => {
+  const view: JobViewState = {
+    cpNote: "",
+    tab: "graph",
+    selectedAi: 0,
+    reviewAi: null,
+    zoom: 1,
+    logQuery: "",
+    logTypes: new Set(["agent"]),
+    logLimit: 600,
+    follow: true,
+    motion: false,
+  };
+  const question = {
+    agentId: 1,
+    label: "cache",
+    adapter: "claude",
+    questions: [{ question: "Which <db>?", header: "Database", options: ["SQLite", "Postgres"] }],
+  };
+  const prevCaps = store.capabilities;
+  store.focusRun("20260101-000000-aaaaaa");
+  store.capabilities = { ...store.capabilities, writable: true };
+  store.run = detail([agent("cache", "Plan", "running", { adapter: "claude" })], {
+    state: "waiting",
+    pendingCheckpoints: [{ checkpointId: 1, title: "cache asks: Which <db>?", payload: { answer: "" }, since: NOW - 30, question }],
+  });
+  store.runEvents = [];
+  let html = renderJob(view, NOW);
+  assert.match(html, /class="card checkpoint question marked"/);
+  assert.match(html, /Agent question · cache:1 · claude/);
+  assert.match(html, /<span class="tag">Database<\/span><span class="q">Which &lt;db&gt;\?<\/span>/);
+  assert.match(html, /<button class="opt" data-cp-option="SQLite">SQLite<\/button><button class="opt" data-cp-option="Postgres">Postgres<\/button>/);
+  assert.match(html, /placeholder="Your answer — the agent runs again, told it"/);
+  assert.match(html, /data-cp="approve" data-cp-id="1">Answer<\/button>/);
+  assert.match(html, /data-cp="reject" data-cp-id="1">Decline<\/button>/);
+  assert.ok(!html.includes("Edit before approving"), "answered with the note, not a payload edit");
+
+  // Failed with needs_input: the drawer lists what it asked, and the reason has words.
+  store.run = detail([agent("cache", "Plan", "failed", { adapter: "claude", failureReason: "needs_input", questions: ["Which <db>? (options: SQLite / Postgres)"] })]);
+  html = renderJob(view, NOW);
+  assert.match(html, /Asked, unanswered<\/div><ul class="misses asked"><li>Which &lt;db&gt;\? \(options: SQLite \/ Postgres\)<\/li><\/ul>/);
+  assert.equal(reasonLabel("needs_input"), "needs input");
+  store.focusRun(null);
+  store.capabilities = prevCaps;
+
+  // Activity: a question reads as one and is answered; a run whose agent's question went unanswered says so.
+  const prev = store.runs;
+  store.runs = [
+    summary({
+      runId: "r-ask",
+      name: "cache-wf",
+      state: "waiting",
+      waiting: { checkpointId: 1, title: "cache asks: Which <db>?", since: NOW - 60, question: { agentId: 1, label: "cache", adapter: "claude" } },
+    }),
+    summary({ runId: "r-ni", name: "wf-ni", state: "failed", updatedAt: NOW - 100, needsInput: 1, counts: { agents: 1, running: 0, done: 0, failed: 1, stale: 0 } }),
+  ];
+  const activity = renderActivity(NOW);
+  assert.match(activity, /class="ticket waiting"[\s\S]*?an agent has a question — cache asks: Which &lt;db&gt;\?[\s\S]*?>Answer<\/a>/);
+  assert.match(activity, /class="ticket failed"[\s\S]*?failed · 1 agent\(s\) asked a question nobody answered/);
+  store.runs = prev;
+});
+
+test("Activity flags a day's run whose agents ran destructive git, offering odw restore --check when a snapshot can put the tree back", () => {
+  const prev = store.runs;
+  store.runs = [
+    summary({ runId: "r-git", name: "fixer", state: "done", updatedAt: NOW - 50, destructiveGit: { agents: 2, restorable: true } }),
+    summary({ runId: "r-git2", name: "pusher", state: "done", updatedAt: NOW - 60, destructiveGit: { agents: 1, restorable: false } }),
+    summary({ runId: "r-old-git", name: "old", state: "done", updatedAt: NOW - 200_000, destructiveGit: { agents: 1, restorable: true } }),
+  ];
+  const html = renderActivity(NOW);
+  assert.match(html, /data-key="nt-r-git"[\s\S]*?2 agent\(s\) ran a destructive git command[\s\S]*?data-copy="odw restore r-git --check"/);
+  assert.match(html, /data-key="nt-r-git2"[\s\S]*?href="#\/job\/r-git2">Review</);
+  assert.ok(!html.includes("nt-r-old-git"), "only the last day's");
+  assert.match(html, /<span class="n">2<\/span>/);
+  store.runs = prev;
 });
