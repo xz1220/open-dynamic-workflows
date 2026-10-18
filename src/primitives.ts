@@ -921,7 +921,7 @@ export function createPrimitives(
             transcript,
             // Where it runs, as routed at dispatch: the adapter its slot is on (ODW extension).
             route,
-            // A spent quota or a refused login moved it down its chain (ODW
+            // A spent quota, a refused login or a model that is not there moved it down its chain (ODW
             // extension): say so — the line also moves it, for every reader of
             // the run (runtime/runs-view) — and take a slot on the new adapter,
             // the old one's let go first.

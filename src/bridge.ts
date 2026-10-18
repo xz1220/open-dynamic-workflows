@@ -517,11 +517,19 @@ export interface AgentRoute {
   lease?: { adapter: string | null };
 }
 
+/** Why a call moves down its fallback chain: its quota is spent, its login was refused, or its model is not there. */
+export type FallbackReason = "quota" | "auth" | "model_unavailable";
+
+/** Is this failure one that moves a call down its fallback chain? */
+export function isFallbackReason(reason: unknown): reason is FallbackReason {
+  return reason === "quota" || reason === "auth" || reason === "model_unavailable";
+}
+
 /** A call moving to the next adapter of its fallback chain (an ODW extension). */
 export interface AdapterFallback {
-  /** The adapter it leaves, and why: its quota is spent, or its login was refused. */
+  /** The adapter it leaves, and why: its quota is spent, its login was refused, or its model is unavailable. */
   from: string;
-  reason: "quota" | "auth";
+  reason: FallbackReason;
   /** The adapter it moves to. */
   to: string;
   /** Every adapter the call has left so far, in order (`from` last). */
@@ -532,7 +540,7 @@ export interface AdapterFallback {
 export interface AgentHandoff {
   /** The adapter it leaves, and why. */
   from: string;
-  reason: "quota" | "auth";
+  reason: FallbackReason;
   /** The adapter that carries on. */
   to: string;
   /** What the next adapter's prompt starts with, redacted. */
@@ -1017,7 +1025,7 @@ export class Bridge {
         }
       }
       const reason = err instanceof AdapterExecutionError && !options.signal?.aborted ? err.reason : null;
-      if (reason !== "quota" && reason !== "auth") throw err;
+      if (!isFallbackReason(reason)) throw err;
       if (adapter) {
         const skipped: string[] = [];
         const next = this.nextAdapter(route.chain, at, route.permissions.tier!, skipped);
@@ -1135,7 +1143,7 @@ export class Bridge {
    */
   private async handOver(
     state: HandoffState,
-    hop: { from: string; reason: "quota" | "auth"; to: string },
+    hop: { from: string; reason: FallbackReason; to: string },
     next: Adapter,
     err: unknown,
     request: AgentRequest,
@@ -1489,7 +1497,7 @@ export class Bridge {
         if (signal?.aborted || cli.stalled) return { cli, output };
         const failed = this.failureOf(adapter, cli, output, prompt, call);
         // A run that fails the call over hands its worktree to the next adapter (ODW extension; see ./handoff).
-        if (failed && call.handoff && (failed.failure.reason === "quota" || failed.failure.reason === "auth")) call.handoff.hold = true;
+        if (failed && call.handoff && isFallbackReason(failed.failure.reason)) call.handoff.hold = true;
         if (failed) return { cli: failed.cli, output, failure: failed.failure };
         await inspect?.(ws, output);
         return { cli, output };
@@ -1672,6 +1680,12 @@ export class Bridge {
       }
       case "auth":
         return `could not authenticate — log in to ${adapterDisplayName(adapter)} and resume the run, ${switchAdapter}`;
+      case "model_unavailable":
+        return (
+          "could not use the model it was asked for — the CLI does not know it, has retired it, or does not offer it " +
+          `to this account; pick another (the call's model, or the config's "models" tiers — odw doctor --models ` +
+          `checks each), ${switchAdapter}`
+        );
       case "permission":
         return `was refused a permission it needed — allow it in the adapter's permissionArgs for its tier, ${switchAdapter}`;
       case "mcp_unavailable":

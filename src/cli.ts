@@ -176,6 +176,7 @@ export function helpText(): string {
     "Usage:",
     "  odw init [--adapter <name>] [--check]              pick the default agent CLI (first-time setup)",
     "  odw doctor [--smoke] [--adapter <name>|all]        check this machine is ready to run workflows",
+    "  odw doctor --models                                send each configured adapter/model pair one tiny prompt",
     "  odw run <script.js|name> [--args JSON|@file]       start a workflow (see modes below)",
     "  odw attach <run_id>                                attach the live foreground view to a run",
     "  odw rerun <run_id>                                 start a fresh run with the same inputs",
@@ -402,8 +403,9 @@ export async function main(argv: string[]): Promise<number> {
 
 /**
  * `odw doctor` — a readiness checklist (see doctor.ts). `--smoke` also sends one
- * real prompt to the default adapter (or each `--adapter`, or `all` installed).
- * Exit 0 when nothing failed, 1 otherwise; `--json` for machines.
+ * real prompt to the default adapter (or each `--adapter`, or `all` installed);
+ * `--models` (ODW extension) one to each adapter/model pair the config and
+ * `.odw/workflows` name. Exit 0 when nothing failed, 1 otherwise; `--json` for machines.
  */
 async function cmdDoctor(rest: string[]): Promise<number> {
   const { values } = parseArgs({
@@ -411,6 +413,7 @@ async function cmdDoctor(rest: string[]): Promise<number> {
     options: {
       config: { type: "string" },
       smoke: { type: "boolean" },
+      models: { type: "boolean" },
       adapter: { type: "string", multiple: true },
       timeout: { type: "string" },
       json: { type: "boolean" },
@@ -450,6 +453,7 @@ async function cmdDoctor(rest: string[]): Promise<number> {
       cwd,
       smoke,
       smokeTimeout: timeoutMs !== undefined ? timeoutMs / 1000 : undefined,
+      models: values.models === true,
     });
   } finally {
     for (const s of signals) process.off(s, onSignal);
@@ -480,7 +484,7 @@ async function cmdDoctor(rest: string[]): Promise<number> {
     failed
       ? p.err(`${failed} check(s) failed`) + (warned ? p.dim(`, ${warned} warning(s)`) : "")
       : p.ok("ready") + (warned ? p.dim(` — ${warned} warning(s)`) : "") +
-          (values.smoke ? "" : p.dim(" · add --smoke to send each adapter a real prompt")),
+          (values.smoke || values.models ? "" : p.dim(" · add --smoke to send each adapter a real prompt")),
   );
   process.stdout.write(lines.join("\n") + "\n");
   return report.ok ? 0 : 1;

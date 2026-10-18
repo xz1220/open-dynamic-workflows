@@ -216,6 +216,8 @@ export interface AdapterFailures {
   quota?: string[];
   /** Not logged in, or refused credentials: not retried. */
   auth?: string[];
+  /** The model asked for is unknown, retired or not available to the account: not retried, it falls back. */
+  model_unavailable?: string[];
 }
 
 /**
@@ -518,8 +520,9 @@ export interface Settings {
   schemaPrompt: "auto" | "always";
   /**
    * Fallback chains (an ODW extension): adapter name → the adapters a call on
-   * it moves to, in order, when its CLI's quota is spent or its login is
-   * refused. An agent() call that lists its own adapters uses that list instead.
+   * it moves to, in order, when its CLI's quota is spent, its login is
+   * refused, or the model it asks for is unavailable. An agent() call that
+   * lists its own adapters uses that list instead.
    */
   fallback: Record<string, string[]>;
   /**

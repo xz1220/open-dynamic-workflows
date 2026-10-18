@@ -191,9 +191,9 @@ export class HandoffLog {
 
 /** What a brief is written from. */
 export interface HandoffBriefInput {
-  /** The adapter that stopped, and why: its quota is spent, or its login was refused. */
+  /** The adapter that stopped, and why: its quota is spent, its login was refused, or its model is unavailable. */
   from: string;
-  reason: "quota" | "auth";
+  reason: "quota" | "auth" | "model_unavailable";
   /** The adapter that carries on. */
   to: string;
   /** The error the last run ended with. */
@@ -226,7 +226,12 @@ export function handoffBrief(input: HandoffBriefInput): string {
   const { from, to, reason, isolated, log } = input;
   const r = input.redact ?? ((text: string) => text);
   const carried = !isolated || input.carried !== false;
-  const stopped = reason === "quota" ? "its usage quota ran out" : "its login was refused";
+  const stopped =
+    reason === "quota"
+      ? "its usage quota ran out"
+      : reason === "auth"
+        ? "its login was refused"
+        : "the model it was asked for is not available on it";
   const where = !isolated
     ? "What it changed is already in the working tree (it worked in place, as you do)"
     : carried

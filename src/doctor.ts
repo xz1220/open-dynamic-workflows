@@ -7,13 +7,17 @@
  * real one-line prompt through the same bridge a workflow uses — the only way
  * to learn that a CLI which installs fine still blocks on an approval prompt,
  * needs a login, or exits 0 without answering when run headless. That costs a
- * model call, so it is opt-in.
+ * model call, so it is opt-in. So does `--models` (an ODW extension): one tiny
+ * prompt per adapter/model pair the config and the project's workflows name
+ * (see {@link modelPairs}), each reported ok, model_unavailable — the CLI does
+ * not know the model, has retired it, or does not offer it to this account —
+ * or other.
  *
  * Reporting only: nothing here touches config, runs or adapters (the run
  * directory is created if missing, exactly as the first run would).
  */
 
-import { mkdirSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 
 import {
@@ -41,6 +45,8 @@ import {
 import type { Adapter, Config, ContainerSandbox, PermissionTier } from "./adapters/types.js";
 import { loginCheckArgv } from "./adapters/accounts.js";
 import { Bridge } from "./bridge.js";
+import { AdapterExecutionError } from "./errors.js";
+import { readWorkflowMeta } from "./loader.js";
 import { redactorFor, type RedactionCoverage } from "./redact.js";
 import { otelCheck } from "./runtime/otel-export.js";
 import { describeConcurrency } from "./throttle.js";
@@ -59,7 +65,12 @@ export interface DoctorCheck {
   tiers?: PermissionTier[];
   /** Adapter checks: how it runs untrusted — its flags, or that it has no documented way (ODW extension). */
   untrusted?: string;
+  /** Model checks (`--models`, ODW extension): the pair probed, and what its probe found. */
+  model?: { adapter: string; model: string | null; result: ModelProbeResult; from: string[] };
 }
+
+/** What one `--models` probe found: the model answered, is not there, or the probe failed some other way. */
+export type ModelProbeResult = "ok" | "model_unavailable" | "other";
 
 export interface DoctorReport {
   ok: boolean;
@@ -74,8 +85,10 @@ export interface DoctorOptions {
   cwd: string;
   /** Adapters to smoke-test with a real prompt; empty = none. */
   smoke: string[];
-  /** Seconds per smoke prompt. */
+  /** Seconds per smoke prompt (and per `--models` probe). */
   smokeTimeout?: number;
+  /** Probe every adapter/model pair the config and `.odw/workflows` name (`--models`; ODW extension). */
+  models?: boolean;
   runner?: CommandRunner;
   nodeVersion?: string;
   /** The environment runs would start agents with; defaults to this process's. */
@@ -271,7 +284,181 @@ export async function runDoctor(opts: DoctorOptions): Promise<DoctorReport> {
     }
   }
 
+  if (opts.models) {
+    for (const check of await modelChecks(config, opts.cwd, runner, opts.smokeTimeout ?? 180)) add(check);
+  }
+
   return { ok: !checks.some((c) => c.status === "fail"), checks };
+}
+
+/** An adapter/model pair `odw doctor --models` probes, and where it is named. */
+export interface ModelPair {
+  adapter: string;
+  /** The model id; null for the CLI's own default model. */
+  model: string | null;
+  /** Where the config or a workflow names it: "models.fast", "fallback", "default adapter", "workflow review: phase Review". */
+  from: string[];
+}
+
+/** A model naming a tier: `@` and a tier name (see ./routing). */
+const TIER_REF = /^@([\w.-]+)$/;
+
+/**
+ * Every adapter/model pair the config and the project's workflows name (ODW
+ * extension): each model id of the `models` tiers on its adapter; the
+ * default adapter and every adapter of a `fallback` chain on its own default
+ * model; and, for each workflow in `<cwd>/.odw/workflows` (its meta read as a
+ * literal, never run), the adapter and model of its `meta.model` and each of
+ * its `meta.phases` — a tier read through `models` for each adapter it
+ * names, an adapter list paired with the model on every adapter in it. A
+ * workflow whose meta does not parse is skipped.
+ */
+export function modelPairs(config: Config, cwd: string): ModelPair[] {
+  const pairs = new Map<string, ModelPair>();
+  const add = (adapter: string, model: string | null, from: string): void => {
+    const key = `${adapter}\0${model ?? ""}`;
+    const pair = pairs.get(key) ?? { adapter, model, from: [] };
+    if (!pair.from.includes(from)) pair.from.push(from);
+    pairs.set(key, pair);
+  };
+  const tiers = config.settings.models ?? {};
+  for (const [tier, ids] of Object.entries(tiers)) {
+    for (const [adapter, id] of Object.entries(ids)) add(adapter, id, `models.${tier}`);
+  }
+  const def = config.settings.defaultAdapter;
+  if (def) add(def, null, "default adapter");
+  for (const [adapter, chain] of Object.entries(config.settings.fallback ?? {})) {
+    for (const name of [adapter, ...chain]) add(name, null, "fallback");
+  }
+  // A model as a call on `adapter` asks for it: a tier through `models` (none there: the CLI's default).
+  const resolved = (model: string | undefined, adapter: string): string | null => {
+    if (!model) return null;
+    const tier = TIER_REF.exec(model)?.[1];
+    if (tier === undefined) return model;
+    const ids = Object.prototype.hasOwnProperty.call(tiers, tier) ? tiers[tier] : undefined;
+    return ids && Object.prototype.hasOwnProperty.call(ids, adapter) ? ids[adapter]! : null;
+  };
+  const dir = join(cwd, ".odw", "workflows");
+  let files: string[] = [];
+  try {
+    files = readdirSync(dir).filter((name) => name.endsWith(".js")).sort();
+  } catch {
+    // No workflows here: the config's pairs alone.
+  }
+  for (const file of files) {
+    let meta;
+    try {
+      meta = readWorkflowMeta(readFileSync(join(dir, file), "utf8"), file);
+    } catch {
+      continue;
+    }
+    const where = `workflow ${meta.name}`;
+    const named = (adapter: unknown, model: string | undefined, what: string): void => {
+      const adapters = Array.isArray(adapter) ? adapter : typeof adapter === "string" ? [adapter] : def ? [def] : [];
+      for (const name of adapters) {
+        if (typeof name !== "string" || name === "") continue;
+        add(name, resolved(model, name), `${where}: ${what}`);
+      }
+    };
+    if (typeof meta.model === "string") named(undefined, meta.model, "meta.model");
+    for (const phase of meta.phases ?? []) {
+      if (!phase || typeof phase !== "object") continue;
+      if (phase.adapter === undefined && phase.model === undefined) continue;
+      named(phase.adapter, typeof phase.model === "string" ? phase.model : undefined, `phase ${phase.title}`);
+    }
+  }
+  return [...pairs.values()];
+}
+
+/**
+ * `odw doctor --models` (ODW extension): one tiny prompt through the smoke
+ * machinery per pair of {@link modelPairs}, on that adapter alone — no
+ * fallback, no retry — each a check: ok when it answered; model_unavailable
+ * (a fail) when its CLI said the model is not there; other (a warning) for
+ * any other failure, or a reply without the marker. A pair on an adapter that
+ * is not configured fails; one on a CLI that is not installed is skipped.
+ */
+export async function modelChecks(config: Config, cwd: string, runner: CommandRunner, timeout: number): Promise<DoctorCheck[]> {
+  const checks: DoctorCheck[] = [];
+  const listing = listAdapters(config);
+  const pairs = modelPairs(config, cwd);
+  if (pairs.length === 0) {
+    return [
+      {
+        id: "models",
+        title: "Models",
+        status: "warn",
+        detail: "no adapter or model named: no default adapter, models tiers, fallback chains or workflow phases",
+        hint: "set defaultAdapter or models in the config (odw init picks an adapter)",
+      },
+    ];
+  }
+  // One try on one adapter: a probe reports what the pair does, it never falls back nor waits.
+  const probeConfig: Config = {
+    ...config,
+    settings: { ...config.settings, timeout, schemaRetries: 0, transientRetries: 0, fallback: {}, quotaWait: false },
+  };
+  for (const pair of pairs) {
+    const shown = pair.model ?? "(default model)";
+    const base = { id: `model:${pair.adapter}:${pair.model ?? ""}`, title: `Model ${pair.adapter} ${shown}` };
+    const about = (result: ModelProbeResult) => ({ adapter: pair.adapter, model: pair.model, result, from: [...pair.from] });
+    const named = `named by ${pair.from.join(", ")}`;
+    const listed = listing.find((a) => a.name === pair.adapter);
+    if (!listed) {
+      checks.push({ ...base, status: "fail", detail: `not a configured adapter · ${named}`, model: about("other") });
+      continue;
+    }
+    if (!listed.installed) {
+      checks.push({ ...base, status: "skip", detail: `not installed · ${named}`, model: about("other") });
+      continue;
+    }
+    const bridge = new Bridge(probeConfig, { source: cwd, runner });
+    const started = Date.now();
+    try {
+      const outcome = await bridge.run({
+        prompt: `This is a model check. Reply with exactly ${SMOKE_TOKEN} and nothing else. Do not use any tools.`,
+        adapter: pair.adapter,
+        ...(pair.model !== null ? { model: pair.model } : {}),
+        label: "doctor",
+      });
+      const secs = ((Date.now() - started) / 1000).toFixed(1);
+      const text = String(outcome.text ?? "");
+      checks.push(
+        text.includes(SMOKE_TOKEN)
+          ? { ...base, status: "ok", detail: `answered in ${secs}s · ${named}`, model: about("ok") }
+          : {
+              ...base,
+              status: "warn",
+              detail: `other: exited cleanly but did not answer (${JSON.stringify(text.trim().slice(0, 80))}) · ${named}`,
+              hint: "odw doctor --smoke --adapter " + pair.adapter + " checks the CLI itself",
+              model: about("other"),
+            },
+      );
+    } catch (err) {
+      const reason = err instanceof AdapterExecutionError ? err.reason : null;
+      const said = (err as Error).message.split("\n")[0]!.slice(0, 160);
+      checks.push(
+        reason === "model_unavailable"
+          ? {
+              ...base,
+              status: "fail",
+              detail: `model_unavailable: ${said} · ${named}`,
+              hint: "pick a model the CLI lists, and update the config's models tiers or the workflow's phases",
+              model: about("model_unavailable"),
+            }
+          : {
+              ...base,
+              status: "warn",
+              detail: `other${reason ? ` (${reason})` : ""}: ${said} · ${named}`,
+              hint: "odw doctor --smoke --adapter " + pair.adapter + " checks the CLI itself",
+              model: about("other"),
+            },
+      );
+    } finally {
+      await bridge.closeEgress();
+    }
+  }
+  return checks;
 }
 
 /**
