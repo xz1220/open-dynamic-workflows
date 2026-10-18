@@ -45,6 +45,7 @@ confirm for headless runs are filled in:
 | `omp` | refused | `--approval-mode yolo` | runs `edit` |
 | `kilo`, `opencode` | refused | `--auto` | runs `edit` |
 | `cursor` | refused | `--force` | runs `edit` |
+| `agy` | refused | `--mode accept-edits` | `--mode accept-edits --dangerously-skip-permissions` |
 
 - An agent that asks for more than its run (or its adapter) allows fails before
   it starts, naming both tiers.
@@ -53,6 +54,11 @@ confirm for headless runs are filled in:
 - **runs `edit`**: `full` on a CLI with no full flags runs its `edit` flags; the
   run logs that once per adapter. For `kimi`, `omp`, `kilo`, `opencode` and
   `cursor`, `edit` already approves every tool call headless.
+- `agy` (Google's Antigravity CLI) soft-denies headless any tool call that needs
+  an approval: at `edit` it edits files in its workspace, while shell commands,
+  web and MCP tools run only where the user's own `permissions.allow` rules in
+  `~/.gemini/antigravity-cli/settings.json` allow them. It has no `read`: no
+  documented flag keeps it from writing.
 - An adapter without `permissionArgs` (your own CLI) runs its command as
   configured, treated as `edit`; under another tier the run logs once that ODW
   cannot enforce it.
@@ -94,6 +100,16 @@ JSONL events, its reply the final message codex writes to that file (else the la
 reports none), and `turn.failed` / `error` events its own failure report. Its
 transcript shows each command, file change, MCP tool call and web search.
 
+The built-in `agy` (ODW extension) runs Google's Antigravity CLI in print mode,
+`--output-format stream-json`, the prompt on stdin
+(https://antigravity.google/docs/cli/headless): its events name their type with
+an `event` key (`output.eventKey`), and its final `result` event carries the reply
+(`response`), its tokens (no cost — agy reports none), `error` when it failed, and
+`denied_actions` (the tool calls it soft-denied). A refused call often leaves an
+empty `response` under status SUCCESS: the agent fails with `empty_reply`, its
+`denied` saying why. A subagent's output never reaches agy's stream
+(antigravity-cli#1077); the transcript shows each subagent it started and its log.
+
 A useful minimal-privilege split: let `claude` write code (acceptEdits) and let
 `codex` run/verify it (workspace-write sandbox) — see
 `examples/codex-claude-loop.js`.
@@ -104,7 +120,7 @@ repository it works in after its tier's flags: `claude --safe-mode` (CLAUDE.md,
 skills, plugins, hooks, MCP servers, commands, agents and workflows off; auth
 works), `qwen --safe-mode`, and `omp --no-extensions --no-skills --no-rules`
 (its AGENTS.md, CLAUDE.md, hooks and MCP config still load). `codex`, `gemini`,
-`kimi`, `kilo`, `opencode` and `cursor` have no documented way: the run logs
+`kimi`, `kilo`, `opencode`, `cursor` and `agy` have no documented way: the run logs
 once per adapter what still reaches the agent (`codex has no documented way to
 ignore the repository's AGENTS.md — its instructions still reach the agent`).
 The repository's `.worktreeinclude` `symlink:` lines and a `worktreeSetup` from
@@ -130,8 +146,28 @@ gemini `~/.gemini/{settings.json,oauth_creds.json,google_accounts.json,GEMINI.md
 `CLAUDE_CODE_OAUTH_TOKEN`/`ANTHROPIC_API_KEY`, `CODEX_API_KEY`, `GEMINI_API_KEY`;
 macOS keeps Claude Code's login in the Keychain). Env: what `agentEnv` passes,
 by name, less `PATH`, `HOME`, `TMPDIR`, `XDG_*`, `CLAUDE_CONFIG_DIR`,
-`CODEX_HOME`. `network`: `"default"` (agents must reach their model API) or
-`"none"`; `exec()` steps default to `"none"` (`exec(cmd, { network: "default" })`).
+`CODEX_HOME`. `network`: `"default"` (agents must reach their model API),
+`"none"`, or an egress allowlist `{ "allow": [...] | "adapter", "proxyImage"? }`;
+`exec()` steps default to `"none"` (`exec(cmd, { network: "default" })` gets the
+run's network, an allowlist included).
+
+**Egress allowlist (ODW extension).** `"network": { "allow": ["adapter",
+"registry.npmjs.org", "*.example.com", "10.0.0.5:5432"] }`: the container joins
+an internal network of the run (`<engine> network create --internal`, no route
+out) whose only way out is an egress proxy sidecar (ODW's zero-dependency node
+script, the hidden `odw __egress-proxy`, run in the agent's image — **it needs
+node** — or `proxyImage`), reached through `HTTPS_PROXY`/`HTTP_PROXY`. The proxy
+tunnels CONNECT only to an allowlisted host's 443 (or the entry's port),
+forwards plain HTTP only to allowlisted hosts, resolves names itself, and
+refuses IP literals unless listed; `*.d` matches subdomains of `d`, not `d`.
+`"adapter"` = the adapter's `egressHosts` (claude: api.anthropic.com, claude.ai,
+platform.claude.com; codex: api.openai.com, chatgpt.com, auth.openai.com;
+gemini and agy: their Google API and login hosts; others: none). Adapters and
+calls only narrow it (the hosts both allow). Each denial is an `egress_denied`
+event `{ host, port, method, agent | commandId }`. A CLI that ignores
+`HTTPS_PROXY` gets no network at all (the safe failure). Proxies and networks
+are removed at the run's end and by the backstop; `odw doctor` expects 200 for
+the first listed host and 403 for a reserved one.
 A run that does not exit cleanly has its container `kill`ed and `rm --force`d
 by name. The image must hold the CLIs and is never pulled
 (`examples/sandbox/Dockerfile`); a missing engine or image is a `ConfigError`
@@ -140,7 +176,7 @@ before the first container and in `odw doctor`, which also smoke-runs
 `sandbox` sets its own image/engine/cliConfig and more mounts (network and
 limits: the stricter wins); an `agent()`'s may only tighten. It guards the
 host's files and processes, not the workspace or what the agent sends over the
-network.
+network — an egress allowlist narrows that to the hosts listed.
 
 ## Config file
 
@@ -215,7 +251,7 @@ did-you-mean hint) instead of silently ignoring them.
 | `agentEnvPass` | **ODW extension.** More names, or `*` globs, a `"minimal"` agent environment passes (e.g. `["AWS_*"]` for Claude Code on Bedrock) |
 | `schemaKeywords` | **ODW extension.** What happens to keywords in an `agent()` schema that ODW's validator does not check. `"warn"` (default): the call runs, ODW checks the rest, and the run logs once which keywords, where, and who enforces them (an adapter's CLI that takes schemas natively, `flags.schema`, else nobody). `"strict"`: the call fails before it starts, naming each one. A malformed schema fails in either mode. A `checkpoint()` `schema` (what an edited payload must match) is held to the same rule. See [native structured output](#native-structured-output) |
 | `schemaPrompt` | **ODW extension.** `"auto"` (default): the prompt describes the schema only to a CLI that does not take it natively; `"always"`: to every CLI |
-| `fallback` | **ODW extension.** Fallback chains: `{ "codex": ["claude"], … }` — when an agent's CLI has spent its usage quota or its login is refused, the agent runs again on the next adapter listed for the one it was on (a fresh prompt, the same options, the same permission tier: an adapter that cannot run that tier is skipped). A rate limit is still retried in place. An `agent()` call's own list, `adapter: ["codex", "claude"]`, takes its place. Every adapter named must be configured. Default `{}` — see [routing](primitives.md#routing-phase-defaults-model-tiers-fallback-chains-odw-extension) |
+| `fallback` | **ODW extension.** Fallback chains: `{ "codex": ["claude"], … }` — when an agent's CLI has spent its usage quota or its login is refused, the agent runs again on the next adapter listed for the one it was on (a fresh prompt, the same options, the same permission tier: an adapter that cannot run that tier is skipped). A rate limit is still retried in place. An `agent()` call's own list, `adapter: ["codex", "claude"]`, takes its place. Every adapter named must be configured. `"handoff": true` (a reserved key, not an adapter; default off) makes a fallback hand the work over instead of starting it over: the next adapter goes on in the same worktree, its prompt starting with a brief (at most 6 KB) of what the last one did, kept as `agents/<id>.handoff.md`; `agent(…, { handoff })` overrides it. Default `{}` — see [routing](primitives.md#routing-phase-defaults-model-tiers-fallback-chains-odw-extension) |
 | `quotaBreaker` | **ODW extension.** After this many quota failures in a row on one adapter, the run's later agents skip it — each starts on the next adapter of its chain, or fails at once without one — with one warning. Default 3; `0` or `null` = never |
 | `quotaWait` | **ODW extension.** Pause for a spent quota: `{ "max": <seconds> }` makes an agent with no adapter left on a spent quota wait — holding no slot — for the reset its CLI named ("try again in 3h 22m", "resets 7pm", `usage limit reached\|<epoch>`), when that is at most `max` seconds away, then start over from its chain's start (plus up to 30s of jitter). Until that reset the run passes over the adapter; one with nowhere else to go waits before it is dispatched. The run shows `paused` with `pausedFor: { reason: "quota", adapter, resumeAt }` ("paused until 19:10 (codex quota)" in `odw status`, `odw list`, the live view); `odw resume` goes on at once, `odw stop` stops it. A quota that names no reset, or one past `max`, still fails the agent (logged). The wait lives in the worker: if it dies, the run is stale and `odw resume` replays it. Default `false` — a run that waits for hours should be one someone asked for |
 | `models` | **ODW extension.** Model tiers: `{ "fast": { "claude": "haiku", "codex": "gpt-5-mini" }, … }`. `model: "@fast"` (in `agent()`, `phase()` or `meta.phases`) runs an agent with its adapter's id for the tier — after a fallback, the next adapter's; an adapter the tier names no id for runs its CLI's default (logged), and an unknown tier fails the agent. Tier names are letters, digits, `_`, `-` and `.`; every adapter named must be configured. Default `{}` |
@@ -240,7 +276,7 @@ did-you-mean hint) instead of silently ignoring them.
 | `concurrency` | **ODW extension.** At most this many agents at once on this CLI, inside the run-wide `concurrency`: an agent needs a slot in both, each adapter queues first come, first served, and a throttled adapter never holds up the others. Unset: the run-wide cap alone |
 | `promptCache` | **ODW extension.** `true`: this CLI's model API caches a prompt's prefix, so its fan-outs start staggered (see `staggerFanOut`). The built-in `claude` declares it |
 | `label` | human-friendly name for progress display |
-| `flags` | capability declaration, e.g. `{ "model": ["--model"] }` — the native flag that carries a per-call `model`. Without it, `agent(..., { model })` is not honored for this adapter (a routing note appears in the logs). **ODW extension:** `"schema": { "args": [...], "mode": "inline" \| "file", "strict"?: true }` says the CLI validates a call's JSON Schema itself — see [native structured output](#native-structured-output) |
+| `flags` | capability declaration, e.g. `{ "model": ["--model"] }` — the native flag that carries a per-call `model`. Without it, `agent(..., { model })` is not honored for this adapter (a routing note appears in the logs). **ODW extension:** `"schema": { "args": [...], "mode": "inline" \| "file", "strict"?: true, "objectRoot"?: true }` says the CLI validates a call's JSON Schema itself — see [native structured output](#native-structured-output) |
 | `failures` | **ODW extension.** This CLI's own failure wording: `{ "rate_limit": [...], "quota": [...], "auth": [...] }`, regular expressions matched case-insensitively against the end of a failed run's output before the built-in table |
 | `output` | how stdout becomes the reply (default: trimmed text) — see below |
 | `permissionArgs` | **ODW extension.** Each tier's flags: `{ "read"?: [...], "edit": [...], "full"?: [...] }` (`edit` required, `[]` for none), put where the command has a `{permission_args}` element — which it must have exactly when this is set |
@@ -251,13 +287,17 @@ did-you-mean hint) instead of silently ignoring them.
 | `untrustedNote` | **ODW extension.** What an untrusted run still lets reach this CLI from the repository, logged once per run |
 | `sandbox` | **ODW extension.** Run this CLI in a container: `{ "kind": "container", … }`, the fields it sets over the run's `sandbox` (its own `image`, `engine`, `cliConfig`, more `mounts`; of `network` and the limits the stricter wins). It needs an `image` when the run's sandbox is `"none"`; `"none"` here is refused — it may only tighten |
 | `agentLimits` | **ODW extension.** This CLI's own per-agent limits, over the run's `agentLimits` key by key (`null` lifts one); an `agent()`'s `limits` override them |
+| `egressHosts` | **ODW extension.** The hosts this CLI needs (model API, login): what a container sandbox's `"network": { "allow": "adapter" }` lets it reach. claude, codex, gemini and agy declare theirs |
 
 ### Output formats
 
 - `{ "format": "text" }` — the default: the trimmed stdout is the reply.
 - `{ "format": "jsonl", "eventType": "text", "textPath": ["part", "text"], "select": "last" }`
   — newline-delimited JSON events, decoded as they stream; the reply is the text at
-  `textPath` in the last event whose `type` is `eventType`.
+  `textPath` in the last event whose `type` is `eventType`. **ODW extension:**
+  `eventKey` names another key for an event's type (agy's events are
+  `{"event": "result", …}`: `"eventKey": "event"`); every event type the output
+  names is read under it.
 - `{ "format": "json", "textPath": ["response"] }` — one JSON document on stdout.
 
 **ODW extension:** both JSON formats may add `usagePath` (the token counts), `costPath`
@@ -272,7 +312,7 @@ one not `connected` is recorded as `mcp` on the agent and logged, or fails it un
 the built-in `claude` reads `mcp_servers` from its `system` init event);
 `jsonl` reads usage
 and cost from `usageEvent` events (default: `eventType`) and adds them up. Usage is
-normalized across the CLIs' field names (Anthropic's, OpenAI's, Codex's):
+normalized across the CLIs' field names (Anthropic's, OpenAI's, Codex's, agy's):
 `inputTokens` (cached input included), `outputTokens`, `cacheReadTokens`,
 `cacheWriteTokens`, `costUsd`. A whole number in a path indexes an array (negative:
 from its end). When stdout does not have the declared text, the raw stdout is the
@@ -320,6 +360,7 @@ and how it takes one:
 | `args` | the flag(s) before the schema, e.g. `["--json-schema"]` |
 | `mode` | `"inline"`: the schema's compact JSON is the next argument. `"file"`: the path of a file holding it — `agents/<agentId>.schema.json` in the run directory (a temp directory outside a run), written before each CLI run and removed after it |
 | `strict` | `true` for a CLI that takes only OpenAI strict-mode schemas (codex): any other schema — one whose root is not an object, or with an object that is not `"additionalProperties": false` with all its properties `required` — goes in the prompt instead, and the run says so once |
+| `objectRoot` | `true` for a CLI that takes only schemas whose root is `"type": "object"` (agy refuses any other at startup): any other goes in the prompt instead, and the run says so once |
 
 The schema goes after every other argument, where a model flag goes, and is not
 placeholder-expanded; a call without a schema runs the command exactly as
@@ -333,6 +374,7 @@ prompt describes the schema only to CLIs that do not take it (`schemaPrompt`).
 | --- | --- | --- |
 | `claude` | `{ "args": ["--json-schema"], "mode": "inline" }` | `structured_output` in its `result` event (`"structuredPath": ["structured_output"]`), else the `result` text |
 | `codex` | `{ "args": ["--output-schema"], "mode": "file", "strict": true }` | its final message: the `--output-last-message` file, else its last `agent_message` event |
+| `agy` | `{ "args": ["--json-schema"], "mode": "inline", "objectRoot": true }` | `structured_output` in its `result` event, else its `response` |
 
 Before an agent starts, its schema is checked against the subset ODW's validator
 enforces ([primitives](primitives.md#schema)). Anything else is named in the run's
@@ -394,8 +436,8 @@ failed agent call, classified as `rate_limit`, `quota`, `auth`, `timeout`,
 `stalled`, `not_found`, `permission` or `exit` (the `reason` on its
 `agent_failed` event; only `rate_limit` is retried — see `transientRetries`).
 So does a failure the CLI reports in its output (`errorPath`: Claude Code's
-stream-json `is_error` result, often with exit 0; `errorEvents`: Codex's `turn.failed`
-and `error`), and a clean exit whose short
+stream-json `is_error` result, often with exit 0, and agy's result `error`; `errorEvents`:
+Codex's `turn.failed` and `error`), and a clean exit whose short
 text reply is nothing but a rate-limit, quota or login error (`API Error: Rate
 limit reached`). A clean exit can still fail (ODW extensions): with reason
 `empty_reply` when the reply is empty (unless the call sets `allowEmpty`),

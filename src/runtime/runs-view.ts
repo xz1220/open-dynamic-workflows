@@ -45,7 +45,9 @@ export interface AgentSandbox {
   /** null: no engine was found when it started. */
   engine: "docker" | "podman" | null;
   image: string;
-  network: "none" | "default";
+  /** "allowlist": only the hosts of `allow`, through its run's egress proxy (see adapters/egress.ts). */
+  network: "none" | "default" | "allowlist";
+  allow?: string[];
 }
 
 /** The limits an agent runs under, and the one it ran into (ODW extension; see limits.ts). */
@@ -551,13 +553,14 @@ function mcpServers(raw: unknown): Array<{ name: string; status: string }> | und
 /** An event's `sandbox`, when it names a container (ODW extension); undefined otherwise. */
 function agentSandbox(raw: unknown): AgentSandbox | undefined {
   if (raw === null || typeof raw !== "object") return undefined;
-  const { kind, engine, image, network } = raw as Record<string, unknown>;
+  const { kind, engine, image, network, allow } = raw as Record<string, unknown>;
   if (kind !== "container" || typeof image !== "string") return undefined;
   return {
     kind,
     engine: engine === "docker" || engine === "podman" ? engine : null,
     image,
-    network: network === "none" ? "none" : "default",
+    network: network === "none" ? "none" : network === "allowlist" ? "allowlist" : "default",
+    ...(network === "allowlist" && Array.isArray(allow) ? { allow: allow.filter((h): h is string => typeof h === "string") } : {}),
   };
 }
 

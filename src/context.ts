@@ -14,7 +14,7 @@ import { Bridge, type BridgeOptions } from "./bridge.js";
 import type { WaitingCheckpoint } from "./checkpoint.js";
 import { NullControl, type Control } from "./control.js";
 import { BudgetExhausted } from "./errors.js";
-import { LOG, NullSink, event, type EventSink, type WorkflowEvent } from "./events.js";
+import { EGRESS_DENIED, LOG, NullSink, event, type EventSink, type WorkflowEvent } from "./events.js";
 import type { AgentResultRecord, ReplayJournal } from "./journal.js";
 import { quotaPauseMessage, type QuotaPauseChange } from "./quota-wait.js";
 import { redactorFor, type Redactor } from "./redact.js";
@@ -102,6 +102,12 @@ export interface RunContext {
    */
   agentTranscriptPaths?: (agentId: number) => TranscriptPaths;
   /**
+   * Where the brief of a fallback that handed an agent's work over is kept
+   * (ODW extension; see ./handoff): the run directory's
+   * `agents/<agentId>.handoff.md`. Absent where nothing is persisted.
+   */
+  agentHandoffPath?: (agentId: number) => string;
+  /**
    * `odw resume`: the source run's saved results, replayed by the agent()
    * calls that are unchanged. Shared like `seq`, so a nested workflow()
    * replays its calls too.
@@ -148,6 +154,7 @@ export interface BuildContextOptions {
   saveAgentResult?: (rec: AgentResultRecord) => void;
   agentDiffPath?: (agentId: number) => string;
   agentTranscriptPaths?: (agentId: number) => TranscriptPaths;
+  agentHandoffPath?: (agentId: number) => string;
   replay?: ReplayJournal;
   onCheckpoint?: (cp: WaitingCheckpoint, waiting: boolean) => void;
   /** Where an agent's schema file goes for a CLI that reads one (the bridge's `agentSchemaPath`). */
@@ -178,6 +185,9 @@ export function buildContext(config: Config, options: BuildContextOptions = {}):
   const bridge = new Bridge(config, {
     source: options.source,
     runId: options.runId,
+    // A sandbox's egress denials (ODW extension): logged in the run directory, tailed into events.
+    runDir: options.runDir,
+    onEgressDenied: (denial) => sink.emit(event(EGRESS_DENIED, { ...denial })),
     agentSchemaPath: options.agentSchemaPath,
     redactor,
     onCliRun: options.onCliRun,
@@ -244,6 +254,7 @@ export function buildContext(config: Config, options: BuildContextOptions = {}):
     saveAgentResult: options.saveAgentResult,
     agentDiffPath: options.agentDiffPath,
     agentTranscriptPaths: options.agentTranscriptPaths,
+    agentHandoffPath: options.agentHandoffPath,
     replay: options.replay,
     onCheckpoint: options.onCheckpoint,
     redactor,

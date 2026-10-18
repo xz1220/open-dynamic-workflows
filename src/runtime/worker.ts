@@ -256,6 +256,8 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
       agentDiffPath: (agentId) => store.agentDiffPath(runId, agentId),
       // What each agent's CLI prints, as agents/<agentId>.transcript.jsonl and .stderr.txt.
       agentTranscriptPaths: (agentId) => store.agentTranscriptPaths(runId, agentId),
+      // The brief of a fallback that handed an agent's work over, as agents/<agentId>.handoff.md.
+      agentHandoffPath: (agentId) => store.agentHandoffPath(runId, agentId),
       // A schema handed to a CLI as a file, as agents/<agentId>.schema.json while it runs.
       agentSchemaPath: (agentId) => store.agentSchemaPath(runId, agentId),
       replay,
@@ -364,6 +366,8 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
     // Agents the script started but never awaited are still this run's work:
     // let them finish (and clean up their worktrees) before recording it.
     await crashes.race(ctx.scheduler.drain());
+    // A sandbox's egress proxies and networks go, after a last read of their denials (ODW extension).
+    await ctx.bridge.closeEgress();
     // A fatal error (stop, budget, dispatch cap, config) decides the outcome
     // even when the script caught it and returned anyway — a stopped run must
     // not read "done". The return value is not kept: result.json is written
@@ -394,6 +398,7 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
       sink.emit(event(LOG, { message: `after the run ended, the workflow also failed: ${errorMessage(err)}` }));
     }
     if (ctx) await stopAgents(ctx.scheduler, outcome);
+    await ctx?.bridge.closeEgress().catch(() => undefined);
     versions?.close();
     ctx?.notes?.close();
     if (outcome instanceof RunStopped) {

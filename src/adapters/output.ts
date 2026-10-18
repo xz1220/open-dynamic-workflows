@@ -114,9 +114,9 @@ export type ReplyFileText = string | null | undefined;
 /**
  * JSONL events a CLI prints while it starts up, before its model has read the
  * prompt: Claude Code's `system` events (its `init`), Codex's `thread.started`
- * and `turn.started`. Any other event means it is answering.
+ * and `turn.started`, agy's `init`. Any other event means it is answering.
  */
-const STARTUP_EVENTS: ReadonlySet<string> = new Set(["system", "thread.started", "turn.started"]);
+const STARTUP_EVENTS: ReadonlySet<string> = new Set(["system", "thread.started", "turn.started", "init"]);
 
 /** What stdout said about the reply, before a reply file has its say. */
 type Verdict =
@@ -172,7 +172,7 @@ export class AdapterOutputDecoder {
   private lines = 0;
   /** JSON events parsed (of any type). */
   private events = 0;
-  /** Of those, objects with a string `type`: the stream is one of events. */
+  /** Of those, objects with a string type (at `eventKey`): the stream is one of events. */
   private typed = 0;
   /** Events of the text type seen. */
   private matching = 0;
@@ -375,7 +375,8 @@ export class AdapterOutputDecoder {
     }
     this.events++;
     if (!isRecord(event)) return;
-    const type = typeof event.type === "string" ? event.type : undefined;
+    const named = event[output.eventKey ?? "type"];
+    const type = typeof named === "string" ? named : undefined;
     if (type !== undefined) this.typed++;
     if (type === undefined || !STARTUP_EVENTS.has(type)) this.answering = true;
     if (type === (output.usageEvent ?? output.eventType)) {
@@ -648,8 +649,9 @@ const DENIAL_CHARS = 160;
 /**
  * The tool calls a CLI refused, listed at `path` — one line each — or
  * undefined when it lists none. An entry is a string, or an object naming the
- * tool (Claude Code's `{ tool_name, tool_use_id, tool_input }`) and, from its
- * input, what the call was about: `Bash (npm test)`, `WebFetch (https://…)`.
+ * tool (Claude Code's `{ tool_name, tool_use_id, tool_input }`, agy's
+ * `{ action, display_name }`) and, from its input, what the call was about:
+ * `Bash (npm test)`, `WebFetch (https://…)`.
  */
 function deniedCalls(holder: unknown, path: readonly string[]): string[] | undefined {
   const list = walk(holder, path);
@@ -657,7 +659,10 @@ function deniedCalls(holder: unknown, path: readonly string[]): string[] | undef
   return list.map((entry) => {
     if (typeof entry === "string") return clipLine(entry);
     if (!isRecord(entry)) return clipLine(JSON.stringify(entry) ?? String(entry));
-    const tool = [entry.tool_name, entry.name, entry.tool].find((v): v is string => typeof v === "string" && v !== "");
+    // agy's denied_actions name the action and the tool: { action: "command", display_name: "RunCommand" }.
+    const tool = [entry.tool_name, entry.name, entry.tool, entry.display_name, entry.action].find(
+      (v): v is string => typeof v === "string" && v !== "",
+    );
     const input = isRecord(entry.tool_input) ? entry.tool_input : isRecord(entry.input) ? entry.input : {};
     const about = [input.command, input.file_path, input.path, input.url, input.pattern, input.query].find(
       (v): v is string => typeof v === "string" && v.trim() !== "",

@@ -28,6 +28,16 @@ changed, and run on a schedule — and a dashboard redesigned to watch them.
   instead of failing its agents. It shows `paused until 19:10 (codex quota)` in
   `odw status`, `odw list`, the live view and the API (`pausedFor`); `odw resume` goes
   on at once. A quota that names no reset, or one past `max`, still fails, saying why.
+- Hand the work over on a fallback (`"fallback": { "handoff": true }`, or `agent(…, {
+  handoff: true })`; off by default; **ODW extension**): when an agent's CLI runs out
+  of quota or its login is refused mid-task, the next adapter of its chain carries on
+  instead of starting over — in the same worktree, partial edits in place, its prompt
+  starting with a brief (at most 6 KB) of why the last one stopped, the files it changed
+  (diff stat), its last plan or to-do list, the commands it ran and how they ended, and
+  its last messages. The brief is kept as `agents/<id>.handoff.md`, told by a `handoff`
+  event `{ from, to, reason, bytes }`, and marked in the transcript (`odw logs --agent`,
+  the dashboard drawer, the brief folded in). `expect` and the kept diff judge the final
+  state, against the worktree's base.
 - Evidence of success: `agent(…, { expect })` checks an agent's work instead of taking
   its word — `command` exits 0 in its workspace, `changes`, `files` (globs), `match` —
   and hands misses back (`expectRetries`, default 1) before failing with
@@ -101,6 +111,17 @@ changed, and run on a schedule — and a dashboard redesigned to watch them.
   its `turn.failed` / `error` events as the failure, classified like any (an `error`
   codex retried itself is not one). Output declarations gain `match`, `errorEvents`
   and the `{reply_file}` placeholder (**ODW extension**).
+- A built-in `agy` adapter for Google's Antigravity CLI (**ODW extension**): print mode
+  on `--output-format stream-json`, the prompt on stdin — its reply, tokens (no cost:
+  agy reports none), failure and soft-denied tool calls (`denied_actions`) from the
+  `result` event; schemas natively with `--json-schema` when their root is an object
+  (`flags.schema.objectRoot`); `edit` runs `--mode accept-edits`, `full` adds
+  `--dangerously-skip-permissions`, and it has no `read`; its spent quota ("Individual
+  quota reached … Resets in …"), AI credits and sign-in failures are classified; its
+  transcript, OpenTelemetry export and `agentLimits` read its tool steps, and show the
+  subagents it starts (their output never reaches its stream,
+  [antigravity-cli#1077](https://github.com/google-antigravity/antigravity-cli/issues/1077)).
+  Output declarations gain `eventKey`, the key that names an event's type.
 - The spend receipt in the terminal (**ODW extension**): `odw status` prints a "spend
   by phase" block — each phase's agents, tokens, cost, share and a bar of Unicode
   blocks, within 100 columns, plain under `NO_COLOR` — and `odw list` a cost column
@@ -123,6 +144,20 @@ changed, and run on a schedule — and a dashboard redesigned to watch them.
   it edits just the conflicting files, leaves no conflict markers and passes the verify
   command there; `--confirm` asks y/N with the resolved diff shown. Otherwise nothing in
   your tree changes, and odw says why.
+- `odw apply <run> --agent X|--all --pr [--base B] [--remote R] [--ready] [--title T]`
+  (**ODW extension**): the kept diffs go to a new branch `odw/<run>-<label>` (or
+  `odw/<run>-all`) from `--base` or HEAD, made in a temporary worktree — your working
+  tree is never touched — one commit per agent under your own git identity (workflow,
+  agent, diff stat, run id and cost in the message), pushed to `origin`, and opened as
+  a **draft** PR with `gh` whose body is the run summary: agents and their commits,
+  phases, the spend receipt, the verify result and `odw diff` commands. An agent that
+  conflicts or fails `--verify` stops it before the push. Without `gh` (or logged out)
+  it prints the compare URL. It never merges.
+- `examples/pr-shepherd.js` (**ODW extension**): given a PR number, it waits for CI with
+  `gh` through `exec()`, hands red checks (with their failing logs) and review comments
+  newer than the last commit to an isolated fixer checked by `expect`, pushes the fix to
+  the PR branch, and asks a `checkpoint()` before `gh pr ready`. Never merges;
+  cron-ready with `odw schedule`.
 - Transcripts: every agent's CLI output is kept — `odw logs <run> --agent <id|label>
   [--follow]`, or live in the dashboard's Transcript sheet.
 - Compare two runs: `odw compare <runA> <runB>` shows what changed after you edited a
@@ -189,6 +224,19 @@ changed, and run on a schedule — and a dashboard redesigned to watch them.
   pulled; `odw doctor` checks the engine, the image and a smoke run. Agents keep the
   network by default (they must reach their model API) — see the threat model in the
   README.
+- An egress allowlist for container agents (`"network": { "allow": ["adapter",
+  "registry.npmjs.org", "*.example.com"] }`, per run, adapter or call — which may only
+  narrow it; **ODW extension**): the agent's container joins an internal network of the
+  run (`network create --internal`) whose only way out is an egress proxy sidecar —
+  ODW's zero-dependency node script (`odw __egress-proxy`), run in the agent's image
+  (which then needs node) or `proxyImage`. It tunnels CONNECT only to allowlisted
+  host:443 (or the entry's port), forwards plain HTTP only to allowlisted hosts,
+  resolves names itself and refuses IP literals unless listed. `"adapter"` is the hosts
+  the adapter declares (`egressHosts`: claude, codex, gemini and agy declare their API
+  and login hosts). Every refusal is an `egress_denied` event naming the agent; a CLI
+  that ignores `HTTPS_PROXY` gets no network at all. Proxies and networks go at the
+  run's end and in the kill-all backstop; `odw doctor` smoke-tests the proxy both ways,
+  and the real-Docker CI check fetches an allowed host and is refused another.
 - Secrets stay out of what odw keeps and serves: whatever an agent prints — `cat .env`
   included — is redacted before it reaches its transcript and stderr tail, its saved
   result, the run's events and error or a webhook. The values of secret-named variables

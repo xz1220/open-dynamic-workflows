@@ -6,6 +6,7 @@
  * loaded once at run start and then only read.
  */
 
+import type { EgressAllow } from "./egress.js";
 import type { LimitSpec } from "../limits.js";
 
 /**
@@ -42,6 +43,11 @@ export interface SchemaFlag {
    * properties `required`. Any other schema goes in the prompt instead.
    */
   strict?: boolean;
+  /**
+   * The CLI takes only schemas whose root is `"type": "object"` (agy refuses
+   * any other at startup). Any other schema goes in the prompt instead.
+   */
+  objectRoot?: boolean;
 }
 
 /**
@@ -59,6 +65,13 @@ export type AdapterOutput =
       /** Newline-delimited JSON events; the last matching text event wins. */
       format: "jsonl";
       eventType: string;
+      /**
+       * The key that names each event's type (an ODW extension; default
+       * `"type"`). agy's stream-json names it `event`: `{"event":"result",…}`.
+       * Every event type below — `eventType`, `usageEvent`, `mcpEvent`,
+       * `errorEvents`, `background` rules — is read under it.
+       */
+      eventKey?: string;
       /**
        * Narrows the text events to those whose value at `path` is `equals`
        * (an ODW extension): Codex prints every finished item as an
@@ -290,10 +303,20 @@ export interface Adapter {
   sandbox?: ContainerSpec;
   /** This CLI's own per-agent limits, over the run's `agentLimits` key by key (ODW extension; see ../limits). */
   agentLimits?: LimitSpec;
+  /**
+   * The hosts this CLI needs to reach — its model API and login — what a
+   * container sandbox's `network: { allow: "adapter" }` lets it reach (ODW
+   * extension; see ./egress). The built-in adapters declare theirs.
+   */
+  egressHosts?: string[];
 }
 
-/** Where a sandboxed agent's container may reach (ODW extension): nowhere, or the engine's default network. */
-export type SandboxNetwork = "none" | "default";
+/**
+ * Where a sandboxed agent's container may reach (ODW extension): nowhere, the
+ * engine's default network, or only the hosts of an allowlist, through an
+ * egress proxy outside its container (see ./egress).
+ */
+export type SandboxNetwork = "none" | "default" | EgressAllow;
 
 /**
  * What a container gets of its CLI's own config and login (ODW extension):
@@ -494,6 +517,14 @@ export interface Settings {
    * refused. An agent() call that lists its own adapters uses that list instead.
    */
   fallback: Record<string, string[]>;
+  /**
+   * A fallback hands the work over (an ODW extension; `"fallback": {
+   * "handoff": true }` in a config file — `handoff` is a reserved key there;
+   * see ../handoff): the next adapter goes on in the same workspace, its
+   * prompt starting with a brief of what the last one did. `false`: it starts
+   * the work over. An agent()'s `handoff` overrides it.
+   */
+  handoff: boolean;
   /**
    * Model tiers (an ODW extension): tier name → adapter name → that CLI's
    * model id. `model: "@<tier>"` picks the id for the adapter a call runs on.

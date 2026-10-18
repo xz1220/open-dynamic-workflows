@@ -275,8 +275,10 @@ const CODEX_TOOLS = new Set(["command_execution", "file_change", "mcp_tool_call"
  * The tool calls, models and session of a transcript (../transcript): Claude
  * Code's stream-json (tool_use blocks, their tool_result by tool_use_id, a
  * subagent's calls under its Task call), opencode's and kilo's `tool_use`
- * events (call and result at once, with their times), and codex's
- * `item.started` / `item.completed` tool items. Anything else is passed over.
+ * events (call and result at once, with their times), codex's
+ * `item.started` / `item.completed` tool items, and agy's stream-json tool
+ * steps (`step_update`, by conversation and step index). Anything else is
+ * passed over.
  */
 export function transcriptFacts(lines: Iterable<string>): TranscriptFacts {
   const facts: TranscriptFacts = { tools: [], dropped: 0, lines: 0, runs: 1 };
@@ -309,6 +311,26 @@ export function transcriptFacts(lines: Iterable<string>): TranscriptFacts {
       continue; // a CLI's stray notice
     }
     if (!isRecord(ev)) continue;
+    if (typeof ev.type !== "string" && ev.event === "init" && isRecord(ev.init)) {
+      // agy stream-json (https://antigravity.google/docs/cli/headless): its model when set, its conversation.
+      if (typeof ev.init.model === "string" && ev.init.model) facts.model = ev.init.model;
+      if (typeof ev.conversation_id === "string" && ev.conversation_id) facts.conversationId = ev.conversation_id;
+      continue;
+    }
+    if (typeof ev.type !== "string" && ev.event === "step_update" && isRecord(ev.step_update)) {
+      // agy: a tool step, ACTIVE while it runs, DONE or ERROR once it ended; no times, so placed by line.
+      const step = ev.step_update;
+      if (step.step_type !== "tool") continue;
+      const info = isRecord(step.tool_info) ? step.tool_info : {};
+      const id = `agy:${String(step.conversation_id ?? "")}:${String(step.step_index ?? "")}`;
+      const name = [step.tool_name, info.name].find((v): v is string => typeof v === "string" && v !== "") ?? "tool";
+      const call = byId.get(id) ?? add({ id, name, input: info.parameters, callLine: at });
+      if (!call || step.state === "ACTIVE") continue;
+      if (call.input === undefined && info.parameters !== undefined) call.input = info.parameters;
+      const error = isRecord(info.error) ? errorText(info.error) : undefined;
+      settle(call, at, error ?? (typeof info.output === "string" ? info.output : contentText(info.output)), step.state === "ERROR" || error !== undefined);
+      continue;
+    }
     if (typeof ev.type !== "string") {
       if (ev.kind === "attempt") facts.runs++; // ODW's own line: another CLI run
       continue;

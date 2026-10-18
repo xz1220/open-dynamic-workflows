@@ -649,8 +649,8 @@ I'll run the tests first.
 ```
 
 - agent 运行期间,它的 stdout 流式写入 run 目录下的 `agents/<agentId>.transcript.jsonl`:
-  JSONL 适配器的事件按 CLI 打印的原样每行一个(内置 `claude` 的 stream-json、`codex` 的 `exec --json`、`kilo` 和
-  `opencode`),其他适配器的输出写成 `{"kind":"text","text":…}` 行。stderr 的结尾(最后
+  JSONL 适配器的事件按 CLI 打印的原样每行一个(内置 `claude` 的 stream-json、`codex` 的 `exec --json`、`kilo`、
+  `opencode` 和 `agy`),其他适配器的输出写成 `{"kind":"text","text":…}` 行。stderr 的结尾(最后
   64 KB)写入 `agents/<agentId>.stderr.txt`;`odw logs --agent` 会在 transcript 之后显示它的最后几行。
 - schema 重试、卡死重启或限流重试都接着写在同一个文件里,前面先写一行
   `{"kind":"attempt","n":2,"reason":"schema"|"stall"|"rate_limit"}`。
@@ -1037,7 +1037,7 @@ odw serve --public-url https://odw.example.com     # 例如放在 cloudflared �
 ## 配置适配器
 
 Codex、Claude Code、Gemini、Qwen、Kimi、Oh My Pi、Kilo Code、OpenCode、Cursor
-均开箱即用:
+以及 Google 的 Antigravity CLI 均开箱即用:
 
 | 适配器 | 本地 CLI | 非交互契约 |
 | --- | --- | --- |
@@ -1050,6 +1050,7 @@ Codex、Claude Code、Gemini、Qwen、Kimi、Oh My Pi、Kilo Code、OpenCode、C
 | `kilo` | `kilo` | `run --format json --auto`;从 JSONL 解出最终文本 |
 | `opencode` | `opencode` | `run --format json --auto`;从 JSONL 解出最终文本 |
 | `cursor` | `agent` | `--print --force --trust`;stdin 传提示词 |
+| `agy` | `agy` | `--output-format stream-json`,stdin 传提示词;回复、token、错误和被拒的工具调用(`denied_actions`)取自其 `result` 事件;根为对象的 schema 走原生(`--json-schema`) |
 
 内置的 `codex` 和 `claude` **自带联网能力**,调研类 workflow 零调参就能跑。
 `odw init` 会列出装了哪些 CLI
@@ -1139,6 +1140,47 @@ agent 的哪些工具调用。内置的 `claude` 适配器就是这样声明的:
 若没有任何 agent 消息——回复文件为空、也没有 `agent_message` 事件——回复就是空的,agent 以
 `empty_reply` 失败(`allowEmpty: true` 可接受),而不是返回一堆事件;运行日志会写明到底缺了
 什么。事件里没有回复而回复文件里有时,回复照常成立,日志说明事件与声明不符。
+
+内置的 `agy`(Google 的 Antigravity CLI,依据它的
+[无头模式文档](https://antigravity.google/docs/cli/headless)与更新日志;全部为 ODW 扩展)读取
+`--output-format stream-json`,它的事件用 `event` 键标明类型——由 `output.eventKey` 声明
+(默认 `"type"`)。回复、token、失败与被拒的工具调用都取自最后的 `result` 事件;agy 不报告
+花费。失败回合的 `error`("Individual quota reached … Resets in 2h39m52s."、
+"Authentication expired. Please log back in.")与其他失败一样分类。只有根为
+`"type": "object"` 的 schema 才走原生(`flags.schema.objectRoot`:其他 schema agy 会在启动时
+拒绝),其他的写进提示词。
+
+```jsonc
+"agy": {
+  "label": "Antigravity CLI",
+  "command": ["agy", "--output-format", "stream-json", "--input-format", "text",
+              "--disable-slash-commands", "--print-timeout", "24h", "{permission_args}"],
+  "stdin": "{prompt}",                                               // 不用 -p:argv 有长度上限
+  "flags": { "model": ["--model"], "schema": { "args": ["--json-schema"], "mode": "inline", "objectRoot": true } },
+  "output": {
+    "format": "jsonl",
+    "eventKey": "event",                                             // {"event":"result","result":{…}}
+    "eventType": "result",
+    "textPath": ["result", "response"],
+    "select": "last",
+    "usagePath": ["result", "usage"],                                // 只有 token:agy 不报告花费
+    "errorPath": ["result", "error"],                                // 只在运行失败时出现
+    "structuredPath": ["result", "structured_output"],
+    "deniedPath": ["result", "denied_actions"]
+  },
+  "permissionArgs": {
+    "edit": ["--mode", "accept-edits"],
+    "full": ["--mode", "accept-edits", "--dangerously-skip-permissions"]
+  }
+}
+```
+
+无头 agy 无法请求审批的工具调用会被软拒绝:运行以 0 退出,`response` 常常是空的
+([antigravity-cli#794](https://github.com/google-antigravity/antigravity-cli/issues/794)),
+所以 agent 以 `empty_reply` 失败,`denied` 写明 agy 拒绝了什么。子 agent 的输出也不会进入
+agy 的事件流([antigravity-cli#1077](https://github.com/google-antigravity/antigravity-cli/issues/1077)):
+transcript 会列出它启动的每个子 agent 及其日志路径。agy 的事件流从不说明子 agent 何时结束,
+所以 `agy` 没有声明 `output.background`。
 
 在 `acceptEdits` 下,Claude Code 无头运行时会直接拒绝本该询问的操作——比如没在允许列表里
 的 shell 命令——而回复仍可能声称成功;`deniedPath` 读的就是这些拒绝。默认情况下回复照常
@@ -1242,6 +1284,7 @@ const reviews = await parallel(files.map((f) => () =>
 | `omp` | 拒绝 | `--approval-mode yolo` | 按 `edit` 运行 |
 | `kilo`、`opencode` | 拒绝 | `--auto` | 按 `edit` 运行 |
 | `cursor` | 拒绝 | `--force` | 按 `edit` 运行 |
+| `agy` | 拒绝 | `--mode accept-edits` | `--mode accept-edits --dangerously-skip-permissions` |
 
 - **`read`。** 在 `claude` 上,`dontAsk` 会拒绝一切需要询问的调用,`--tools` 只留下只读的
   内置工具——根本没有 Edit、Write 或 Bash,你设置里的 allow 规则也加不回来——外加联网
@@ -1251,7 +1294,10 @@ const reviews = await parallel(files.map((f) => () =>
 - **拒绝。** 没有经过验证的只读模式的 CLI,agent 会在启动前失败:
   `kimi cannot run read-only (…); use an adapter that can (--adapter claude, …), or
   run with --permissions edit`。Qwen 的文档没有说明其 `default` 模式在无头下的行为,所以它
-  也没有 `read`。
+  也没有 `read`。`agy` 同样没有:无头时它总能写入工作区内的文件,plan 模式只是给提示词加前缀。
+- **`agy`。** 无头时,需要审批的工具调用会被软拒绝:在 `edit` 下,shell 命令、联网和 MCP
+  工具只有在你自己的 `~/.gemini/antigravity-cli/settings.json` 中 `permissions.allow` 规则
+  (或其 `toolPermission` 预设)允许时才会运行。被拒绝的调用与 Claude Code 一样记为 `denied`。
 - **按 `edit` 运行。** 没有单独完全权限模式的 CLI 会用它的 `edit` 参数运行,每次运行对每个
   适配器只记一条日志。注意:对 `kimi`、`omp`、`kilo`、`opencode` 和 `cursor` 来说,
   `edit` 在无头模式下本来就会批准所有工具调用——把仓库交给它们之前请想清楚。
@@ -1345,6 +1391,7 @@ hooks、MCP 服务器和项目设置会在 agent 里运行。对这样的仓库�
 | `kimi` | 没有文档化的方式 | AGENTS.md、skills |
 | `kilo`、`opencode` | 没有文档化的方式 | AGENTS.md、项目配置、`.kilo/` / `.opencode/` |
 | `cursor` | 没有文档化的方式 | `.cursor/rules`、AGENTS.md、CLAUDE.md、`mcp.json`、hooks |
+| `agy` | 没有文档化的方式 | AGENTS.md、GEMINI.md、`.agents/` 下的 rules、skills、agents、`mcp_config.json` |
 
 Claude Code 的 `--bare` 跳过的更多,但它只接受 API key 认证,订阅登录用不了。第一次有
 agent 在 codex 上运行时,运行日志里会出现
@@ -1405,7 +1452,7 @@ Code 与 Codex 的镜像(用 `--build-arg CLAUDE_CODE_VERSION=…` 固定版本)
     "kind": "container",
     "image": "odw-agents",          // 必填;从不拉取
     "engine": "docker",             // 或 "podman";默认:装了 docker 用 docker,否则 podman
-    "network": "default",           // 或 "none"(见下文)
+    "network": "default",           // 或 "none",或 { "allow": [...] }(见下文)
     "cliConfig": "copy",            // 或 "mount-ro" | "none"
     "mounts": [{ "source": "~/datasets", "readonly": true }], // 默认只读,除非 "readonly": false
     "memory": "4g", "cpus": 2, "pids": 512 // pids 默认 512;其余用引擎默认值
@@ -1463,10 +1510,56 @@ CLI 配置和更多挂载,网络与各项限制取更严格者;`agent()` 调用�
   它的退出处理会删除仍在运行的全部容器。崩溃遗留的容器可用
   `docker ps --filter label=odw.run` 找到。
 
+**出站白名单**(ODW 扩展)。agent CLI 必须连到模型 API,所以 `network: "default"` 实际上就是
+开放的互联网。白名单让容器只能连到你列出的主机,而且由容器之外的东西来执行:
+
+```jsonc
+{
+  "sandbox": {
+    "kind": "container", "image": "odw-agents",
+    "network": { "allow": ["adapter", "registry.npmjs.org", "*.githubusercontent.com"] }
+    // "allow": "adapter" —— 只放行该 agent 的适配器所需的主机
+    // "proxyImage": "node:22-alpine" —— 让代理跑在另一个镜像里(需要 node)
+  }
+}
+```
+
+- **条目。** 主机名(`api.anthropic.com`)、匹配其子域的通配符(`*.npmjs.org` 匹配
+  `registry.npmjs.org`,不匹配 `npmjs.org`)或 IP 字面量(`10.0.0.5`、`[::1]`),都可带端口
+  (`example.com:8443`;不带时为 443 与 80)。请求 IP 地址时,除非这个地址本身被列出,一律拒绝——
+  通配符从不匹配 IP。`"*"` 会被拒绝:那就是 `network: "default"`。
+- **`"adapter"`** 代表 agent 的适配器在 `egressHosts` 中声明的主机(取自各 CLI 文档):
+  `claude` 为 api.anthropic.com、claude.ai、platform.claude.com;`codex` 为 api.openai.com、
+  chatgpt.com、auth.openai.com;`gemini` 为 generativelanguage.googleapis.com、
+  cloudcode-pa.googleapis.com、oauth2.googleapis.com;`agy` 为 cloudcode-pa.googleapis.com、
+  oauth2.googleapis.com。可选的遥测不在其中(会被拒绝并记录;Claude Code 可设
+  `DISABLE_TELEMETRY` 让它安静)。其他适配器没有声明——给你的适配器加 `"egressHosts": [...]`,
+  或直接列出主机。
+- **只能收紧。** 适配器或单次调用的 `network: { allow }` 与运行的白名单取交集;`"none"` 仍然优先;
+  白名单之下的调用不能要求 `"default"`。`network: "default"` 的 `exec()` 步骤得到运行的白名单
+  (去掉 `"adapter"`:步骤没有适配器)。
+- **原理。** 第一个需要它的容器会为每个不同的白名单拉起一个运行专属的内部网络
+  (`docker network create --internal`:没有出口路由)和一个出站代理边车容器
+  (`odw-<run>-egress<n>-…`,标签 `odw.role=egress-proxy`),代理位于引擎默认网络上并同时加入内部网络。
+  agent 的容器只加入内部网络,`HTTPS_PROXY`/`HTTP_PROXY`(及小写形式)指向代理,`NO_PROXY` 放过回环地址,
+  并设 `NODE_USE_ENV_PROXY=1`。代理只为白名单主机的 443 端口(或条目指定的端口)建立 `CONNECT` 隧道,
+  只把明文 HTTP 转发给白名单主机,并且**自己解析域名**——agent 的容器对外没有 DNS。它是 ODW 自带的
+  零依赖脚本(与隐藏命令 `odw __egress-proxy` 是同一份代码),用 `node` 跑在**agent 的镜像里——
+  因此镜像需要 node**——或 `proxyImage` 里,加固方式与 agent 容器相同。
+- **拒绝即事件。** 每个被拒绝的请求都会写入 `<运行目录>/egress/` 的一行,运行把它变成
+  `egress_denied` 事件(`{ host, port, method, agent }`,步骤则为 `commandId`),出现在
+  `odw logs` 与看板中。agent 由其代理 URL 中的用户名标识;丢掉用户名的 CLI 显示为 `agent: null`。
+- **会被清理。** 运行结束时先删除代理,再删除网络;worker 被杀时退出处理也会这样做。崩溃遗留的
+  网络可用 `docker network ls --filter label=odw.run` 找到。`odw doctor` 会拉起代理,并在内部网络上的
+  容器里期望第一个列出的主机返回 200、一个保留域名返回 403。
+- **安全的失败方式。** 忽略 `HTTPS_PROXY` 的 CLI 或工具完全没有网络:内部网络除了代理别无出路。
+  不经代理走 HTTP(S) 的一切——SSH、裸 TCP、UDP——都会失败。白名单不同的 agent 用不同的网络与代理,
+  所以 agent 用不了别人的代理。被放行的主机仍是受信任的:agent 能把代码发到任何被放行主机会转发的地方。
+
 缺少引擎或镜像时,运行在第一个 agent 启动前就以 `ConfigError` 失败,并说明如何构建镜像;
 `odw doctor` 做同样的检查,并运行 `docker run --rm --pull never --network none <镜像> true`
 (不涉及模型)。配置了容器时启动横幅多一行沙箱信息,每个 agent 的 `agent_started` 事件与看板的 AgentView
-带 `sandbox: { kind, engine, image, network }`,运行 setup 记录 `sandbox` 供 `odw compare` 比较。
+带 `sandbox: { kind, engine, image, network }`(白名单时 `network: "allowlist"` 并附 `allow` 主机),运行 setup 记录 `sandbox` 供 `odw compare` 比较。
 沙箱中的 agent 不记录 CLI 版本:版本探测在宿主上运行,宿主的 CLI 不是镜像里的那个。
 
 **它保护什么,不保护什么。** 它让 agent——以及它运行的一切——读不到也改不了你文件系统的
@@ -1474,7 +1567,9 @@ CLI 配置和更多挂载,网络与各项限制取更严格者;`agent()` 调用�
 进程。它**不能**让你的代码远离模型:agent 仍会把读到的内容发给模型 API。在
 `network: "default"`(默认值,因为 agent CLI 必须连到模型 API)下它拥有开放网络,可以把工作区
 以及环境变量和登录中的密钥发往任何地方——请把密钥挡在 `agentEnv` 之外,不需要模型 API 的
-地方都用 `network: "none"`(`exec()` 步骤默认就不联网)。工作区是可写的:agent 写在那里的东西
+地方都用 `network: "none"`(`exec()` 步骤默认就不联网),需要的地方用出站白名单
+(`network: { allow: "adapter" }`):这样 agent 只能连到它的模型 API 和你列出的主机,经由一个
+它在容器内改不了的代理,每次拒绝都有记录。工作区是可写的:agent 写在那里的东西
 ——原地工作时仓库里的 git hook、`package.json` 脚本、Makefile——会在你之后运行它时在宿主上
 执行,所以请审阅改动(隔离 worktree 与 `odw apply` 有帮助)。容器与宿主共享内核,不是虚拟机。
 无 root 的 Docker 有自己的 uid 映射,文件可能归另一个 uid 所有;SELinux 宿主上的绑定挂载可能
@@ -1567,8 +1662,8 @@ cloning with «redacted:github»
 看门狗**对所有内置适配器默认关闭**:有些 CLI——文本模式的那些(`gemini`、`qwen`、
 `kimi`……)——在结束前什么都不输出,任何卡死超时都会误杀正常工作。请只对会流式输出进度
 的适配器启用:`claude`(它的 stream-json 每一轮都会输出一个事件,所以现在可以放心对它
-启用)、`codex`(`exec --json` 每条命令、每次编辑、每条消息都输出一个事件)、`kilo` 和
-`opencode` 这类 JSONL 适配器,或会打印心跳的包装脚本;并把值设得高于
+启用)、`codex`(`exec --json` 每条命令、每次编辑、每条消息都输出一个事件)、`kilo`、
+`opencode` 和 `agy`(每一步一个事件)这类 JSONL 适配器,或会打印心跳的包装脚本;并把值设得高于
 健康 agent 最长的静默时段——工具调用里跑一轮很长的测试,同样不会有任何输出。
 
 ### 单 agent 上限与死循环(ODW 扩展)
@@ -1592,8 +1687,8 @@ await agent("修好失败的测试", {
 
 这些上限**实时**执行,依据的是 CLI 运行时打印的内容:Claude Code 的 stream-json(tool_use
 块与每条消息的用量;花费随最后的 `result` 到来)、Codex 的 `exec --json`(命令、文件改动、
-MCP 与网页搜索条目;每一轮的用量),以及 kilo 和 opencode 的事件(工具调用;每一步的 token
-与花费)。一旦越界,ODW 会像卡死一样立即杀掉该 agent 的 CLI 及其启动的所有进程,agent 以
+MCP 与网页搜索条目;每一轮的用量)、kilo 和 opencode 的事件(工具调用;每一步的 token
+与花费),以及 agy 的 stream-json(工具步骤;每一步的 token)。一旦越界,ODW 会像卡死一样立即杀掉该 agent 的 CLI 及其启动的所有进程,agent 以
 `runaway` 失败:`agent_failed` 事件带有 `limitHit: { limit, max, value, evidence }`,错误
 信息形如 ``adapter 'claude' ran away — limits.repeat=5: Bash `npm test` ×5 in a row``
 (或 `41 tool calls > 40`、`$3.12 > $3.00`)。`runaway` 不会被 `transientRetries` 重试,在
@@ -1778,6 +1873,30 @@ search:3 → claude after codex quota
 - **额度熔断。** 同一个适配器上连续 `quotaBreaker`(默认 3)次额度失败后,本次运行之后的
   agent 都会跳过它:各自从回退链上的下一个适配器开始,没有回退链的则立即失败。只记一条
   警告,`odw status` 也会列出它。
+
+**交接工作,而不是从头再来。** 默认情况下回退会让 agent 的工作从头开始:隔离 agent 做了一半
+的 worktree 被丢弃,下一个 CLI 再花额度把上一个做过的重做一遍。配置
+`"fallback": { "handoff": true }`(`handoff` 在这里是保留键,不是适配器)或
+`agent(prompt, { handoff: true })`(两个方向都覆盖设置)后,下一个适配器会接着做:
+
+- 隔离 agent 的 worktree 保留下来:下一个适配器在其中运行,做了一半的改动原样在场。原地
+  agent 的改动本来就在源码树里。
+- 它的提示词在任务之前加一段以 *"You are continuing work another agent started…"* 开头的
+  交接简报:上一个适配器停下的原因、改过的文件(worktree 的 diff 统计;原地 agent 取其编辑
+  类工具调用涉及的文件)、它最后写下的计划或待办(Claude Code 的 `TodoWrite`、Codex 的计划)、
+  运行过的命令及其结果、最后几条消息(文本 CLI 取输出末尾)。至多 6 KB,与 ODW 保存的其他
+  内容一样脱敏。推理过程无论如何都会丢失——简报是其中看得见的部分,精简到下一个 agent 需要的
+  程度。
+- 简报保存为 `agents/<id>.handoff.md`;`handoff` 事件 `{ from, to, reason, bytes }` 记录这次
+  交接,transcript 在下一个适配器的 `attempt` 行之前有一行 `{"kind":"handoff",…}`
+  (`odw logs --agent` 会显示;看板侧栏把简报折叠在其中)。
+- `expect` 与保留的 diff 判定最终状态:共享 worktree 相对其基线的 diff,两个适配器的工作都在
+  其中。`expect` 重试仍在新的 worktree 中从头开始,等待额度重置(`quotaWait`)之后的调用也
+  一样。交接属于同一次调用:`odw resume` 照旧重放该调用。
+
+```jsonc
+{ "fallback": { "codex": ["claude"], "handoff": true } }
+```
 
 ```jsonc
 {
@@ -1975,6 +2094,7 @@ odw apply $RUN --agent 3           # 用 git apply --3way 应用到当前工作�
 odw apply $RUN --all --check       # 预览所有已完成的 agent,每个都叠在前面的之上
 odw apply $RUN --all --verify "npm test"   # 按顺序应用;校验失败的那个回滚
 odw apply $RUN --all --resolve --verify "npm test"   # 由 agent 解决冲突;校验通过后才应用
+odw apply $RUN --all --pr --verify "npm test"   # 新分支、每个 agent 一个提交、推送、开草稿 PR(gh)
 ```
 
 `odw apply` 在你所在的 git 工作树里用 `git apply --3way` 应用一个 agent 的 diff——加
@@ -2007,6 +2127,18 @@ resolver 运行,告诉它每个冲突文件的 base、双方版本和冲突行,�
 `resolvedBy` 和一条 `apply_resolved` 事件(`outcome`:applied、refused、declined 或
 interrupted)链接到它。`--resolve` 不能与 `--force` 或 `--check` 同用:有未提交改动挡路的路径
 照旧拒绝。(ODW 扩展。)
+
+`--pr`(配合 `--agent` 或 `--all`)不碰你的工作树,而是开一个 pull request——它既不读也不写
+你的工作树,所以那里未提交的改动原样保留,也不会进入 PR。odw 在临时 worktree 里从 `--base <分支>`
+——否则从 HEAD 所在提交,目标为 HEAD 所在分支——建分支 `odw/<run>-<label>`(`--all` 时为
+`odw/<run>-all`;名字在本地或远端已被占用时加 `-2`、`-3`……),在那里按上文的方式逐个预览并应用
+每个 agent(`--verify` 也在那里运行),每个 agent 单独一个提交,使用**你自己的** git 身份和签名
+设置;提交说明包含工作流、agent、diff 统计、运行 id,以及 CLI 报告了时该 agent 的花费。任何
+agent 会冲突或校验失败,都会在推送前停下:分支被删除,什么都不会离开本机。之后推送到 `--remote`
+(默认 `origin`),并运行 `gh pr create`——默认是**草稿**,加 `--ready` 则不是;标题为 `--title`
+或按工作流和 agent 生成——正文是运行摘要:各 agent 及其提交、各阶段、以表格呈现的花费明细、
+校验结果和 `odw diff` 命令。没有 `gh` 或 `gh` 未登录时,推送后停下并打印对比页 URL。**它从不合并。**
+(ODW 扩展。)
 
 - **`keep: true`**(`agent()` 选项)或 **`keepBranches: true`**(配置)还会把改动提交到源
   仓库的分支 `odw/<runId>/<agentId>-<label>` 上——作者是 `odw <odw@localhost>`,父提交是
@@ -2088,6 +2220,7 @@ workflow 脚本始终是**纯 `.js`**、从不编译;引擎用 **TypeScript** �
 | [`test-fix-loop.js`](examples/test-fix-loop.js) | 用 `exec()` 跑测试 → agent 修复失败 → 重跑直到全绿(仅 ODW) |
 | [`fix-until-green.js`](examples/fix-until-green.js) | 同样的循环改用 `expect`:agent 回复后由 odw 跑测试,把仍然红的测试——或什么都没改的"修复"——交还给它,最后带着缺失项失败(仅 ODW) |
 | [`plan-approve-execute.js`](examples/plan-approve-execute.js) | agent 起草计划 → 有人在 `checkpoint()` 处批准(附说明的拒绝会重新规划)→ 并行执行 → 汇报(仅 ODW) |
+| [`pr-shepherd.js`](examples/pr-shepherd.js) | 给一个 PR 编号 → 用 `gh` 等待 CI → 隔离的修复 agent 处理红掉的检查和新的评审意见,由 `expect` 校验 → 修复推送到 PR 分支 → `gh pr ready` 之前先过 `checkpoint()`;从不合并,可用 `odw schedule` 定时运行(仅 ODW) |
 | [`coordinated-refactor.js`](examples/coordinated-refactor.js) | 多个隔离分支在笔记板上并行修改同一仓库,每个分支落地时广播其接口改动 → 审阅者指出相互冲突的分支 → 这些分支在知道别人改了什么之后重跑(仅 ODW) |
 
 ## 开发

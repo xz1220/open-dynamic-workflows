@@ -31,9 +31,11 @@
  *     environment) so no secret appears in a process listing — less the
  *     host's paths (PATH, HOME, TMPDIR, XDG_*, the CLIs' config-dir variables);
  *   - the engine's default network (`network: "default"`: agent CLIs must
- *     reach their model API), or none at all (`"none"`). Nothing is
- *     published: a server the agent starts on its `ODW_PORT` is reachable
- *     only inside its container.
+ *     reach their model API), none at all (`"none"`), or only the hosts of
+ *     an allowlist (`{ allow: [...] }`): an internal network of the run's,
+ *     whose way out is an egress proxy sidecar (./egress, ./egress-run).
+ *     Nothing is published: a server the agent starts on its `ODW_PORT` is
+ *     reachable only inside its container.
  *
  * A container is named by ODW and labelled `odw.run=<runId>`. A CLI run that
  * did not exit cleanly — a timeout, a stall, a stop, a crash — has its
@@ -57,6 +59,7 @@ import { basename, isAbsolute, join, resolve } from "node:path";
 
 import { ConfigError } from "../errors.js";
 import { globMatcher } from "./agent-env.js";
+import { ADAPTER_HOSTS, buildEgressAllow, expandAdapterHosts, intersectAllow, type EgressAllow } from "./egress.js";
 import { isOnPath } from "./executable.js";
 import { onKillAll, type CommandRunner } from "./runner.js";
 import type {
@@ -186,7 +189,7 @@ export function buildContainerSpec(raw: unknown, where: string): ContainerSpec {
     out.engine = spec.engine as SandboxEngine;
   }
   if (spec.image != null) out.image = buildImage(spec.image, `${where}.image`);
-  if (spec.network != null) out.network = choice(spec.network, NETWORKS, `${where}.network`);
+  if (spec.network != null) out.network = buildNetwork(spec.network, `${where}.network`);
   if (spec.cliConfig != null) out.cliConfig = choice(spec.cliConfig, CLI_CONFIG_MODES, `${where}.cliConfig`);
   if (spec.mounts != null) {
     if (!Array.isArray(spec.mounts)) throw new ConfigError(`${where}.mounts must be a list of { "source", "target"?, "readonly"? }`);
@@ -201,6 +204,41 @@ export function buildContainerSpec(raw: unknown, where: string): ContainerSpec {
   }
   if (spec.pids != null) out.pids = buildPids(spec.pids, `${where}.pids`);
   return out;
+}
+
+/** `"none"`, `"default"`, or an egress allowlist `{ allow, proxyImage? }` (see ./egress). */
+function buildNetwork(raw: unknown, where: string): SandboxNetwork {
+  if (raw !== null && typeof raw === "object" && !Array.isArray(raw)) return buildEgressAllow(raw as Record<string, unknown>, where);
+  if ((NETWORKS as readonly unknown[]).includes(raw)) return raw as SandboxNetwork;
+  throw new ConfigError(`${where} must be "none" or "default", or { "allow": ["api.anthropic.com", …] | "adapter" }; got ${JSON.stringify(raw)}`);
+}
+
+/** The allowlist of a network, or null when it is "none" or "default". */
+export function egressOf(network: SandboxNetwork): EgressAllow | null {
+  return typeof network === "object" ? network : null;
+}
+
+/**
+ * The stricter of two networks: none over everything, an allowlist over the
+ * default network, and of two allowlists the hosts both allow. `hosts` are
+ * the adapter's (what `"adapter"` stands for).
+ */
+export function tighterNetwork(a: SandboxNetwork, b: SandboxNetwork | undefined, hosts?: readonly string[]): SandboxNetwork {
+  if (b === undefined) return withHosts(a, hosts);
+  if (a === "none" || b === "none") return "none";
+  if (a === "default") return withHosts(b, hosts);
+  if (b === "default") return withHosts(a, hosts);
+  const proxyImage = b.proxyImage ?? a.proxyImage;
+  return {
+    allow: intersectAllow(expandAdapterHosts(a.allow, hosts), expandAdapterHosts(b.allow, hosts)),
+    ...(proxyImage ? { proxyImage } : {}),
+  };
+}
+
+/** A network with `"adapter"` replaced by the adapter's hosts. */
+function withHosts(network: SandboxNetwork, hosts: readonly string[] | undefined): SandboxNetwork {
+  if (typeof network !== "object" || !network.allow.includes(ADAPTER_HOSTS)) return network;
+  return { ...network, allow: expandAdapterHosts(network.allow, hosts) };
 }
 
 function choice<T extends string>(raw: unknown, choices: readonly T[], where: string): T {
@@ -291,13 +329,16 @@ export interface SandboxPlan {
  * a limit, or drop the CLI's config. Anything else is an error, and so is a
  * malformed option.
  */
-export function planSandbox(run: SandboxSetting, adapter: Pick<Adapter, "sandbox">, option?: unknown): SandboxPlan {
+export function planSandbox(run: SandboxSetting, adapter: Pick<Adapter, "sandbox" | "egressHosts">, option?: unknown): SandboxPlan {
   let box: ContainerSandbox | null = run === "none" ? null : run;
   const spec = adapter.sandbox;
+  const hosts = adapter.egressHosts;
   if (spec) {
-    if (box) box = mergeSpec(box, spec);
+    if (box) box = mergeSpec(box, spec, hosts);
     else if (spec.image) box = { ...CONTAINER_DEFAULTS, ...spec, image: spec.image, mounts: [...(spec.mounts ?? [])] };
   }
+  // An allowlist's "adapter" stands for the hosts this adapter declares (see ./egress).
+  if (box && egressOf(box.network)?.allow.includes(ADAPTER_HOSTS)) box = { ...box, network: withHosts(box.network, hosts) };
   if (option === undefined || option === null) return { box };
   const fail = (why: string): SandboxPlan => ({ box, error: `agent(): sandbox ${why}` });
   if (option === "none") {
@@ -326,7 +367,16 @@ export function planSandbox(run: SandboxSetting, adapter: Pick<Adapter, "sandbox
     if (spec2.image === undefined) return fail(`needs an image: pass { image: "<image>" }, or set "sandbox" in odw.config.json`);
     return { box: { ...CONTAINER_DEFAULTS, ...spec2, image: spec2.image, mounts: [] } };
   }
-  if (spec2.network === "default" && box.network === "none") return fail(`network "default" would give this agent the network its sandbox has none of`);
+  if (spec2.network === "default" && box.network !== "default") {
+    return fail(
+      box.network === "none"
+        ? `network "default" would give this agent the network its sandbox has none of`
+        : `network "default" would lift its sandbox's egress allowlist: a call may only tighten it`,
+    );
+  }
+  if (typeof spec2.network === "object" && box.network === "none") {
+    return fail(`network { allow } would give this agent the network its sandbox has none of`);
+  }
   if (spec2.cliConfig !== undefined && spec2.cliConfig !== box.cliConfig && spec2.cliConfig !== "none") {
     return fail(`cliConfig may only be "none" (or the sandbox's own "${box.cliConfig}") in a call`);
   }
@@ -340,7 +390,7 @@ export function planSandbox(run: SandboxSetting, adapter: Pick<Adapter, "sandbox
   return {
     box: {
       ...box,
-      network: spec2.network ?? box.network,
+      network: tighterNetwork(box.network, spec2.network, hosts),
       cliConfig: spec2.cliConfig ?? box.cliConfig,
       memory: spec2.memory ?? box.memory,
       cpus: spec2.cpus ?? box.cpus,
@@ -350,7 +400,7 @@ export function planSandbox(run: SandboxSetting, adapter: Pick<Adapter, "sandbox
 }
 
 /** The run's container with an adapter's fields over it (see {@link planSandbox}). */
-function mergeSpec(box: ContainerSandbox, spec: ContainerSpec): ContainerSandbox {
+function mergeSpec(box: ContainerSandbox, spec: ContainerSpec, hosts?: readonly string[]): ContainerSandbox {
   const lower = <T extends number>(a: T | null, b: T | null | undefined): T | null => (b == null ? a : a == null ? b : (Math.min(a, b) as T));
   const memory =
     spec.memory == null ? box.memory : box.memory == null || memoryBytes(spec.memory) < memoryBytes(box.memory) ? spec.memory : box.memory;
@@ -359,7 +409,7 @@ function mergeSpec(box: ContainerSandbox, spec: ContainerSpec): ContainerSandbox
     engine: spec.engine ?? box.engine,
     image: spec.image ?? box.image,
     cliConfig: spec.cliConfig ?? box.cliConfig,
-    network: box.network === "none" || spec.network === "none" ? "none" : "default",
+    network: tighterNetwork(box.network, spec.network, hosts),
     mounts: [...box.mounts, ...(spec.mounts ?? [])],
     memory,
     cpus: lower(box.cpus, spec.cpus),
@@ -378,11 +428,28 @@ export interface SandboxView {
   kind: "container";
   engine: SandboxEngine | null;
   image: string;
-  network: SandboxNetwork;
+  /** "allowlist": only the hosts of `allow`, through an egress proxy. */
+  network: "none" | "default" | "allowlist";
+  allow?: string[];
 }
 
 export function sandboxView(box: ContainerSandbox, onPath?: (cmd: string) => boolean): SandboxView {
-  return { kind: "container", engine: resolveEngine(box, onPath), image: box.image, network: box.network };
+  const egress = egressOf(box.network);
+  return {
+    kind: "container",
+    engine: resolveEngine(box, onPath),
+    image: box.image,
+    ...(egress ? { network: "allowlist", allow: egress.allow } : { network: box.network as "none" | "default" }),
+  };
+}
+
+/** A network in a few words: `default`, `none`, `allowlist (api.anthropic.com, claude.ai +1)`. */
+export function describeNetwork(network: SandboxNetwork): string {
+  const egress = egressOf(network);
+  if (!egress) return network as string;
+  if (egress.allow.length === 0) return "allowlist (empty: every host refused)";
+  const shown = egress.allow.slice(0, 2).join(", ");
+  return `allowlist (${shown}${egress.allow.length > 2 ? ` +${egress.allow.length - 2}` : ""})`;
 }
 
 /** A container in a few words: `docker, image odw-agents, network default, cli config copy`. */
@@ -390,7 +457,7 @@ export function describeContainer(box: ContainerSandbox, onPath?: (cmd: string) 
   const engine = resolveEngine(box, onPath) ?? "no engine found";
   const limits = [box.memory && `memory ${box.memory}`, box.cpus && `cpus ${box.cpus}`, `pids ${box.pids}`].filter(Boolean).join(", ");
   const mounts = box.mounts.length > 0 ? `, ${box.mounts.length} extra mount${box.mounts.length === 1 ? "" : "s"}` : "";
-  return `${engine}, image ${box.image}, network ${box.network}, cli config ${box.cliConfig}, ${limits}${mounts}`;
+  return `${engine}, image ${box.image}, network ${describeNetwork(box.network)}, cli config ${box.cliConfig}, ${limits}${mounts}`;
 }
 
 /**
@@ -403,7 +470,10 @@ export function sandboxBanner(config: Config, onPath?: (cmd: string) => boolean)
     .filter((adapter) => adapter.sandbox)
     .map((adapter) => {
       const box = planSandbox(run, adapter).box;
-      return box ? `${adapter.name}: image ${box.image}${box.network === "none" ? ", no network" : ""}` : null;
+      const egress = box && egressOf(box.network);
+      return box
+        ? `${adapter.name}: image ${box.image}${box.network === "none" ? ", no network" : egress ? `, network ${describeNetwork(box.network)}` : ""}`
+        : null;
     })
     .filter((line): line is string => line !== null);
   const head =
@@ -427,6 +497,8 @@ export interface ContainerRun {
   /** Every bind mount, the workspace's included. */
   mounts: SandboxMount[];
   network: SandboxNetwork;
+  /** The network it joins instead (an egress allowlist's internal network; see ./egress-run). */
+  networkName?: string;
   /** Variables the container gets from the engine client's environment, by name (secrets stay out of argv). */
   passEnv: string[];
   /** Variables set to these values (no secrets: HOME, TMPDIR). */
@@ -453,7 +525,10 @@ export function containerArgv(run: ContainerRun): string[] {
   argv.push("--pids-limit", String(run.pids));
   if (run.memory) argv.push("--memory", run.memory);
   if (run.cpus) argv.push("--cpus", String(run.cpus));
-  if (run.network === "none") argv.push("--network", "none");
+  if (run.networkName) argv.push("--network", run.networkName);
+  else if (run.network === "none") argv.push("--network", "none");
+  // An allowlist without its internal network would be the default one: never.
+  else if (typeof run.network === "object") throw new Error("sandbox: an egress allowlist needs its run's internal network");
   argv.push("--workdir", run.workdir);
   for (const mount of run.mounts) {
     argv.push("--mount", `type=bind,source=${mount.source},target=${mount.target}${mount.readonly ? ",readonly" : ""}`);
@@ -748,27 +823,60 @@ export function clientEnv(env: Record<string, string | undefined>): Record<strin
 
 /** Containers ODW started that have not been accounted for: name → engine. */
 const live = new Map<string, { engine: SandboxEngine; home?: string }>();
+/** Networks ODW created (an egress allowlist's; see ./egress-run) not yet removed: name → engine. */
+const liveNetworks = new Map<string, SandboxEngine>();
 let backstop: (() => void) | undefined;
 
 /** Count a container as live until the returned function is called, so the worker's backstop kills it too. */
 export function trackContainer(name: string, engine: SandboxEngine, home?: string): () => void {
   live.set(name, { engine, ...(home ? { home } : {}) });
-  // Synchronous and fire-and-forget: it may run in a process 'exit' handler.
-  backstop ??= onKillAll(() => {
-    for (const [container, entry] of live) {
-      try {
-        spawn(entry.engine, ["rm", "--force", container], { detached: true, stdio: "ignore" }).unref();
-      } catch {
-        /* the engine is gone: nothing to do */
-      }
-      // Its private home holds copies of the CLI's login: it must not outlive the run.
-      if (entry.home) rmSync(entry.home, { recursive: true, force: true });
-    }
-    live.clear();
-  });
+  armBackstop();
   return () => {
     live.delete(name);
   };
+}
+
+/** Count a network as live until the returned function is called: the backstop removes it after the containers. */
+export function trackNetwork(name: string, engine: SandboxEngine): () => void {
+  liveNetworks.set(name, engine);
+  armBackstop();
+  return () => {
+    liveNetworks.delete(name);
+  };
+}
+
+function armBackstop(): void {
+  // Synchronous and fire-and-forget: it may run in a process 'exit' handler.
+  backstop ??= onKillAll(() => {
+    for (const engine of ENGINES) {
+      const containers = [...live].filter(([, entry]) => entry.engine === engine).map(([name]) => name);
+      const networks = [...liveNetworks].filter(([, owner]) => owner === engine).map(([name]) => name);
+      for (const [file, args] of backstopCommands(engine, containers, networks)) {
+        try {
+          spawn(file, args, { detached: true, stdio: "ignore" }).unref();
+        } catch {
+          /* the engine is gone: nothing to do */
+        }
+      }
+    }
+    // A private home holds copies of the CLI's login: it must not outlive the run.
+    for (const entry of live.values()) if (entry.home) rmSync(entry.home, { recursive: true, force: true });
+    live.clear();
+    liveNetworks.clear();
+  });
+}
+
+/**
+ * What the backstop runs, detached, for one engine's live containers and
+ * networks: each container's `rm --force`; with networks, one shell that
+ * removes the containers first and then the networks (a network with a
+ * container still on it cannot go). Names are ODW's own (`[A-Za-z0-9_.-]`)
+ * and passed as arguments, never spliced into the script.
+ */
+export function backstopCommands(engine: SandboxEngine, containers: string[], networks: string[]): Array<[string, string[]]> {
+  if (networks.length === 0) return containers.map((name) => [engine, ["rm", "--force", name]]);
+  const script = 'e="$1"; n="$2"; shift 2; if [ "$#" -gt 0 ]; then "$e" rm --force "$@"; fi; set -f; for net in $n; do "$e" network rm "$net"; done';
+  return [["/bin/sh", ["-c", script, "odw-backstop", engine, networks.join(" "), ...containers]]];
 }
 
 /**
@@ -804,6 +912,12 @@ export interface OpenContainer {
   agentId?: number | string;
   /** The host's home the CLI's config is read from (tests). */
   home?: string;
+  /**
+   * An egress allowlist's way out (see ./egress-run): the run's internal
+   * network it joins, and the proxy variables it gets. Required when the box
+   * has an allowlist.
+   */
+  egress?: { network: string; env: Record<string, string> };
 }
 
 /** One container run, ready: its argv and client environment, and what ends it. */
@@ -833,10 +947,14 @@ export async function openContainer(opts: OpenContainer): Promise<OpenedContaine
     const problem = pathProblem(path);
     if (problem) throw new ConfigError(`sandbox: the working directory ${path} ${problem}`);
   }
+  if (egressOf(box.network) && !opts.egress) throw new Error("sandbox: an egress allowlist needs its run's internal network");
   const inside = workdir === opts.workspace || workdir.startsWith(opts.workspace.endsWith("/") ? opts.workspace : `${opts.workspace}/`);
   const home = await prepareHome(opts.command, opts.cliConfig ?? box.cliConfig, opts.env, opts.home);
   const name = containerName(opts.runId, opts.agentId);
   const split = containerEnv(opts.env, opts.hostEnv ?? process.env);
+  const setEnv: Record<string, string> = { HOME: CONTAINER_HOME, TMPDIR: "/tmp", ...opts.egress?.env };
+  // What ODW sets is not the host's to override: its proxy variables above all.
+  const pass = split.pass.filter((name) => !Object.prototype.hasOwnProperty.call(setEnv, name));
   const argv = containerArgv({
     engine,
     image: box.image,
@@ -856,8 +974,9 @@ export async function openContainer(opts: OpenContainer): Promise<OpenedContaine
       ...box.mounts,
     ],
     network: box.network,
-    passEnv: split.pass,
-    setEnv: { HOME: CONTAINER_HOME, TMPDIR: "/tmp" },
+    ...(opts.egress ? { networkName: opts.egress.network } : {}),
+    passEnv: pass,
+    setEnv,
     memory: box.memory,
     cpus: box.cpus,
     pids: box.pids,

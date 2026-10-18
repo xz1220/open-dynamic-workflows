@@ -46,7 +46,7 @@ import { resolve } from "node:path";
 
 import { agentBaseEnv } from "./adapters/agent-env.js";
 import { killProcessTree, runCommand, trackProcess } from "./adapters/runner.js";
-import { openContainer } from "./adapters/sandbox.js";
+import { openContainer, tighterNetwork } from "./adapters/sandbox.js";
 import type { ContainerSandbox, SandboxSetting } from "./adapters/types.js";
 import type { RunContext } from "./context.js";
 import { DynamicWorkflowError, RunStopped, WorkflowScriptError } from "./errors.js";
@@ -72,7 +72,8 @@ export interface ExecOptions {
   check?: boolean;
   /**
    * ODW extension: in a run whose sandbox is a container, the step's network —
-   * `"none"` (the default: a step is an offline check) or `"default"`, which
+   * `"none"` (the default: a step is an offline check) or `"default"`: the
+   * sandbox's own — through its egress proxy when it has an allowlist — which
    * a sandbox without network refuses. No effect outside a sandbox.
    */
   network?: "none" | "default";
@@ -172,6 +173,8 @@ export async function execStep(
             cliConfig: "none",
             runId: ctx.runId,
             agentId: `c${commandId}`,
+            // A run with an egress allowlist: the step goes out through its proxy too (ODW extension).
+            egress: await ctx.bridge.egressFor(box, engine, `c${commandId}`),
           })
         : undefined;
     let outcome: StepOutcome | undefined;
@@ -314,7 +317,10 @@ function stepSandbox(run: SandboxSetting, network: unknown): ContainerSandbox | 
   if (network === "default" && run.network === "none") {
     throw misuse(`network "default" — the run's sandbox has no network, and a step may not have more than it`);
   }
-  return { ...run, network: network === "default" ? "default" : "none" };
+  if (network !== "default") return { ...run, network: "none" };
+  // "default" is the run's network: an egress allowlist stays one — less
+  // "adapter", which a step has none of (ODW extension; see adapters/egress.ts).
+  return { ...run, network: tighterNetwork(run.network, undefined, []) };
 }
 
 /**

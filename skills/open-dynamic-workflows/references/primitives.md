@@ -66,9 +66,9 @@ other primitive organizes calls to it.
   [adapters](adapters.md#permissions-what-each-built-in-may-do). Claude Code
   ignores it.
 - **opts.sandbox** (**ODW extension**) — run this agent's CLI in a container, or a
-  stricter one than its run's and adapter's: `"container"`, or `{ network: "none",
-  memory, cpus, pids, cliConfig: "none", image }` (`image` only where nothing else
-  sets one). It may only tighten — `"none"` under a container, a network the
+  stricter one than its run's and adapter's: `"container"`, or `{ network: "none"
+  | { allow: [...] }, memory, cpus, pids, cliConfig: "none", image }` (`image` only
+  where nothing else sets one; an `allow` list meets the sandbox's own). It may only tighten — `"none"` under a container, a network the
   sandbox has not, a higher limit or another image fails the call before it
   starts. See [adapters](adapters.md#container-sandbox-odw-extension). Not part of
   the resume key. Claude Code ignores it.
@@ -99,6 +99,11 @@ other primitive organizes calls to it.
   and an isolated agent's kept change is broadcast as it finishes); `false`
   opts it out of its `parallel()`'s or the `notes` setting. See
   [notes](#notes-odw-extension). Claude Code ignores it.
+- **opts.handoff** (**ODW extension**) — `true`: when a fallback moves the
+  call to the next adapter, it hands the work over instead of starting it
+  over; `false` starts over whatever the `fallback.handoff` setting says. See
+  [routing](#routing-phase-defaults-model-tiers-fallback-chains-odw-extension).
+  Claude Code ignores it.
 
 Returns the reply text, or the validated JSON value when `schema` is set. CLI
 errors, exhausted schema retries, work that missed its `expect` checks and an
@@ -215,6 +220,20 @@ take it. Claude Code ignores all of it.
   with a log line. `agent_finished` and the saved result name the adapter that
   produced the value (`adapter`) and the ones left (`fellBackFrom`);
   `agent_failed` names them too when the call fell back.
+- **Handoff.** With `"fallback": { "handoff": true }` or `handoff: true` on
+  the call (off by default), a fallback hands the work over instead of
+  starting it over: an isolated call's worktree is kept and the next adapter
+  runs in it, partial edits in place (an in-place call's are in the source
+  tree already), and its prompt starts, ahead of the task, with a brief headed
+  "You are continuing work another agent started…" — why the last adapter
+  stopped, the files it changed (diff stat; in place, its edit tool calls),
+  its last plan or to-do list, the commands it ran and how they ended, its
+  last messages; at most 6 KB, redacted. The brief is kept as
+  `agents/<id>.handoff.md`, told by a `handoff` event `{ from, to, reason,
+  bytes }` and a `{"kind":"handoff"}` transcript line. `expect` and the kept
+  diff judge the final state (the shared worktree against its base); an
+  `expect` retry, and a call after a `quotaWait`, still start over. `handoff`
+  is not part of the resume key.
 - **Quota breaker.** After `quotaBreaker` (default 3) quota failures in a row
   on one adapter, the run's later calls skip it: each starts on the next
   adapter of its chain, or fails at once (reason `quota`) without one. One
@@ -350,7 +369,8 @@ script's own `exec` binding takes precedence over the injected one.
 - **opts.network** (**ODW extension**) — in a run whose `sandbox` is a container,
   the step runs in a fresh container of the run's image, with the run's source
   (and its `cwd`) bound at the same path and the agents' environment; its network
-  is `"none"` unless it asks for `"default"` (refused when the sandbox has none).
+  is `"none"` unless it asks for `"default"` (refused when the sandbox has none) —
+  the run's network, an egress allowlist included (its `"adapter"` entry aside).
   No effect outside a sandbox.
 
 A non-zero exit is a result, not an error. A program that cannot be launched
@@ -532,6 +552,7 @@ odw apply <run> --agent <id|label>       # git apply --3way into the working tre
 odw apply <run> --all [--check]          # every finished agent, in agentId order
 odw apply <run> --agent <id|label> --verify "<cmd>"   # roll the apply back if <cmd> fails
 odw apply <run> --all --resolve [--adapter A] [--confirm] --verify "<cmd>"   # a resolver agent fixes conflicts
+odw apply <run> --all --pr [--base B] [--remote R] [--ready] [--title T]   # a branch, pushed, and a draft PR
 ```
 
 Before it touches the tree, `odw apply` runs the same apply against a scratch
@@ -559,6 +580,18 @@ with the agent's clean files only when it edits just the conflicting files,
 leaves no conflict markers and passes `<cmd>` in that worktree (`--confirm`: y/N
 at a terminal first); otherwise the tree is unchanged and odw says why. Only
 text conflicts are resolved; never with `--force` or `--check`.
+`--pr` (ODW extension) leaves the working tree alone — never read or written —
+and makes a branch `odw/<run>-<label>` (`odw/<run>-all`; `-2`, … when taken) from
+`--base` or HEAD in a temporary worktree, applies (and verifies) each agent there
+as above, commits each on its own under the user's git identity (workflow,
+agent, diff stat, run id, cost), pushes to `--remote` (`origin`) and runs `gh pr
+create` — a draft unless `--ready` — with the run summary as the body (agents
+and commits, phases, spend, verify result, `odw diff` commands). A conflict or a
+failed verify deletes the branch before the push; without `gh` (or logged out)
+it prints the compare URL after the push. It never merges; not with `--check`,
+`--force` or `--resolve`. `examples/pr-shepherd.js` keeps a PR green afterwards:
+red CI and new review comments go to an `expect`-checked fixer, its fix is pushed
+to the PR branch, and a `checkpoint()` comes before `gh pr ready`.
 A diff past `maxDiffBytes` (default 2 MB) keeps its head and ends with a
 `# odw: diff truncated …` line; its counts still describe the whole change, and
 `odw apply` refuses it (`--all` stops there) — use the agent's branch
@@ -759,7 +792,8 @@ either mode, with a did-you-mean. To make a limit count everywhere, put it in a
 the whole schema as well — `claude` with `--json-schema` (its value comes from
 `structured_output`), `codex` with `--output-schema` when the schema is strict (an
 object at the root; every object `"additionalProperties": false` and all its
-properties `required`) — and it enforces what ODW does not check; ODW still
+properties `required`), `agy` with `--json-schema` when its root is an object (its
+value comes from `structured_output`) — and it enforces what ODW does not check; ODW still
 validates every reply and retries as usual. The prompt describes the schema only to
 a CLI that does not take it (`"schemaPrompt": "always"` describes it everywhere).
 See [adapters](adapters.md#native-structured-output).

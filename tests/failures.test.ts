@@ -520,6 +520,38 @@ const WORDING: Array<{ cli: string; text: string; reason: string; retryAfter?: n
   },
   { cli: "cursor", text: "Blocked by permissions configuration", reason: "permission", source: "Cursor agent bundle" },
   { cli: "cursor", text: "⚠ Workspace Trust Required", reason: "permission", source: "Cursor agent bundle" },
+  // Antigravity CLI (agy): the stream-json result's `error` (exit 3 since
+  // 1.2.10), and an `AGY_ERROR: {...}` line on stderr since 1.2.6
+  {
+    cli: "agy",
+    text:
+      "API error (attempt 3): RESOURCE_EXHAUSTED (code 429): Individual quota reached. Please upgrade your subscription " +
+      "to increase your limits. Resets in 2h39m52s.",
+    reason: "quota",
+    retryAfter: 2 * 3600 + 39 * 60 + 52,
+    source: "google-antigravity/antigravity-cli#1018",
+  },
+  {
+    cli: "agy",
+    text:
+      'AGY_ERROR: {"short_error":"RESOURCE_EXHAUSTED (code 429): Individual quota reached. ... Resets in 1h1m35s.",' +
+      '"status":"RESOURCE_EXHAUSTED","error_code":429,"code_kind":"http","retryable":true}',
+    reason: "quota",
+    retryAfter: 3600 + 60 + 35,
+    source: "google-antigravity/antigravity-cli#1018 (1.2.14)",
+  },
+  { cli: "agy", text: "Your AI credits balance is too low to continue.", reason: "quota", source: "agy changelog 1.2.15" },
+  {
+    // Composed: #1018's prefix on the 429 RESOURCE_EXHAUSTED message of #1019.
+    cli: "agy",
+    text: "API error (attempt 3): RESOURCE_EXHAUSTED (code 429): Resource has been exhausted (e.g. check quota).",
+    reason: "rate_limit",
+    source: "google-antigravity/antigravity-cli#1018, #1019",
+  },
+  { cli: "agy", text: "error: authentication required", reason: "auth", source: "antigravity.google/docs/cli/headless" },
+  { cli: "agy", text: "Authentication expired. Please log back in.", reason: "auth", source: "agy changelog 1.3.3" },
+  { cli: "agy", text: "Waiting for authentication (timeout 60s)...\nError: authentication timed out", reason: "auth", source: "google-antigravity/antigravity-cli#944" },
+  { cli: "agy", text: "Error: failed to retrieve token: secret keyring is locked", reason: "auth", source: "antigravity.google/docs/cli/troubleshooting" },
 ];
 
 test("each CLI's own wording lands in its class, with when to come back", () => {
@@ -533,7 +565,7 @@ test("each CLI's own wording lands in its class, with when to come back", () => 
   // Every CLI and every class is covered.
   assert.deepEqual(
     [...new Set(WORDING.map((w) => w.cli))].sort(),
-    ["claude", "codex", "cursor", "gemini", "kilo", "kimi", "opencode", "qwen"],
+    ["agy", "claude", "codex", "cursor", "gemini", "kilo", "kimi", "opencode", "qwen"],
   );
   assert.deepEqual([...new Set(WORDING.map((w) => w.reason))].sort(), ["auth", "permission", "quota", "rate_limit"]);
 });

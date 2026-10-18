@@ -17,6 +17,7 @@
  *   odw diff <run_id> [--agent <id|label>] [--stat]
  *   odw apply <run_id> --agent <id|label>|--all [--check] [--force] [--verify CMD|--no-verify]
  *             [--resolve [--adapter A] [--confirm]]   (a resolver run for a conflict; runtime/apply-resolve)
+ *             [--pr [--base B] [--remote R] [--ready] [--title T]]   (a branch, pushed, and a draft PR; runtime/apply-pr)
  *   odw rerun|resume <run_id>
  *   odw pause|resume|stop <run_id>
  *   odw approve|reject <run_id> [--note TEXT] [--checkpoint N]
@@ -42,6 +43,7 @@ import { parseArgs } from "node:util";
 import { expandHome, isOnPath, listAdapters, loadConfig, locateConfig, resolveAdapter, resolveRunsRoot } from "./adapters/config.js";
 import { isPermissionTier, permissionsBanner } from "./adapters/permissions.js";
 import { trustBanner } from "./adapters/trust.js";
+import { startEgressProxy, type EgressProxyConfig } from "./adapters/egress.js";
 import { sandboxBanner, sandboxFlagOf, withSandboxFlag, type SandboxFlag } from "./adapters/sandbox.js";
 import type { Adapter, Config, PermissionTier, TrustLevel } from "./adapters/types.js";
 import { killAllAgentProcesses } from "./adapters/runner.js";
@@ -56,6 +58,7 @@ import type { AgentChanges } from "./changes.js";
 import { agentRowJson, agentRows, formatAgentTable, matchAgents, type AgentRow } from "./runtime/agents-view.js";
 import { applyAgents, type AgentDiff } from "./runtime/apply.js";
 import { resolverRuns } from "./runtime/apply-resolve.js";
+import { applyPr } from "./runtime/apply-pr.js";
 import {
   changedAgents,
   colorDiff,
@@ -150,6 +153,7 @@ export function helpText(): string {
     "  odw apply <run_id> --agent <id|label>|--all        preview, then apply kept diffs to this working tree (--force)",
     "                                                     --check previews only; --verify CMD rolls an apply back if CMD fails",
     "                                                     --resolve [--adapter A] [--confirm]: an agent resolves a conflict, verified first",
+    "                                                     --pr [--base B] [--ready] [--title T]: a branch, pushed, and a draft PR (gh); never merges",
     "  odw compare <runA> <runB> [--json]                 what changed: setup, time, cost, failures, replies",
     "                                                     --agent <label|id> shows one agent's whole reply diff",
     "  odw list [--workflow <name>]                       list known runs",
@@ -245,6 +249,9 @@ export async function main(argv: string[]): Promise<number> {
         // Hidden: the worker entrypoint a background run re-execs into. In a SEA
         // binary there is no separate worker.js, so the binary calls itself here.
         return await cmdWorker(rest);
+      case "__egress-proxy":
+        // Hidden: a sandbox's egress proxy (ODW extension; see adapters/egress.ts), run until killed.
+        return await cmdEgressProxy(rest);
       case "init":
         return await cmdInitCli(rest);
       case "doctor":
@@ -412,6 +419,21 @@ async function cmdWorker(rest: string[]): Promise<number> {
   }
   const state = await executeRun(runDir, { worker: true });
   return state === "done" ? 0 : 1;
+}
+
+/** Hidden: `odw __egress-proxy <config.json>` — the egress proxy a sandbox's sidecar runs as a script of its own. */
+async function cmdEgressProxy(rest: string[]): Promise<number> {
+  const file = rest[0];
+  if (!file) {
+    process.stderr.write("odw __egress-proxy: missing <config.json> ({ allow, port, log, ready? })\n");
+    return 2;
+  }
+  const server = startEgressProxy(JSON.parse(readFileSync(file, "utf8")) as EgressProxyConfig);
+  await new Promise<void>((done) => {
+    server.on("close", done);
+    for (const signal of ["SIGINT", "SIGTERM"] as const) process.once(signal, () => server.close());
+  });
+  return 0;
 }
 
 /** `odw init` — detect agent CLIs and set/inspect the default (see src/init.ts). */
@@ -973,7 +995,9 @@ async function cmdDiff(rest: string[]): Promise<number> {
  * cleanly (and passed), 1 otherwise. A signal during a verify rolls its apply
  * back, then ends odw by that signal. `--resolve [--adapter A] [--confirm]`
  * hands a conflict to a resolver run instead (runtime/apply-resolve), never
- * with `--force` or `--check`.
+ * with `--force` or `--check`. `--pr [--base B] [--remote R] [--draft|--ready]
+ * [--title T]` puts the diffs on a new branch instead, pushes it and opens a
+ * PR with gh (runtime/apply-pr): your working tree is never touched.
  */
 async function cmdApply(rest: string[]): Promise<number> {
   const { values, positionals } = parseArgs({
@@ -991,10 +1015,30 @@ async function cmdApply(rest: string[]): Promise<number> {
       resolve: { type: "boolean" },
       adapter: { type: "string" },
       confirm: { type: "boolean" },
+      pr: { type: "boolean" },
+      base: { type: "string" },
+      remote: { type: "string" },
+      draft: { type: "boolean" },
+      ready: { type: "boolean" },
+      title: { type: "string" },
     },
   });
   const runId = positionals[0];
   if (!runId) throw new UsageError("odw apply: missing <run_id>");
+  if (!values.pr) {
+    for (const flag of ["base", "remote", "draft", "ready", "title"] as const) {
+      if (values[flag] !== undefined) throw new UsageError(`odw apply: --${flag} goes with --pr`);
+    }
+  } else {
+    // A PR branch is made in a worktree of its own: nothing of yours is in the way, and nothing is only previewed.
+    if (values.check) throw new UsageError("odw apply: --pr pushes a branch; --check previews only — drop one");
+    if (values.force) throw new UsageError("odw apply: --pr never touches your working tree, so there is nothing to --force");
+    if (values.resolve) throw new UsageError("odw apply: --pr does not take --resolve: resolve the conflict with odw apply --resolve first");
+    if (values.draft && values.ready) throw new UsageError("odw apply: --draft and --ready exclude each other");
+    for (const flag of ["base", "remote", "title"] as const) {
+      if (values[flag] !== undefined && values[flag]!.trim() === "") throw new UsageError(`odw apply: --${flag} needs a value`);
+    }
+  }
   if (!values.resolve) {
     for (const flag of ["adapter", "confirm"] as const) {
       if (values[flag] !== undefined) throw new UsageError(`odw apply: --${flag} goes with --resolve`);
@@ -1058,12 +1102,35 @@ async function cmdApply(rest: string[]): Promise<number> {
         input: process.stdin,
       }
     : null;
-  if (verify || resolveWith) for (const s of signals) process.on(s, onSignal);
+  if (verify || resolveWith || values.pr) for (const s of signals) process.on(s, onSignal);
   // A pipe or terminal that goes away (EPIPE, EIO) must not end odw between an apply and its rollback.
   const unheard = (): void => {};
   process.stdout.on("error", unheard);
   process.stderr.on("error", unheard);
   try {
+    if (values.pr) {
+      return await applyPr({
+        cwd: process.cwd(),
+        runId,
+        agents,
+        all: values.all === true,
+        verify,
+        timeout: settings?.timeout ?? null,
+        interrupt: interrupt.signal,
+        source: typeof source === "string" ? source : undefined,
+        out: process.stdout,
+        err: process.stderr,
+        caps: detectCaps(process.stdout, process.env),
+        width: process.stdout.isTTY && process.stdout.columns ? process.stdout.columns : 120,
+        pr: {
+          base: values.base ?? null,
+          remote: values.remote ?? "origin",
+          draft: values.ready !== true,
+          title: values.title ?? null,
+          run: detail(store, runId),
+        },
+      });
+    }
     return await applyAgents({
       cwd: process.cwd(),
       runId,

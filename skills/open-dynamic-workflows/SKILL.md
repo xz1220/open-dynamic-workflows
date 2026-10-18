@@ -86,7 +86,7 @@ outright, never silently passed through as a string).
 | `exec(command, opts?)` | Run a command (tests, a build, a linter) without a model; resolves to `{ stdout, stderr, exitCode, signal, timedOut, truncated, durationMs }`. A string runs through the shell, an array as argv. **ODW extension** — not part of Claude Code's dialect. |
 | `checkpoint(title, opts?)` | Pause the run until a person approves (perhaps with an edited payload) or rejects; resolves to `{ approved, note, by, payload, edited }`. **ODW extension** — not part of Claude Code's dialect. |
 
-`opts` for `agent`: `{ adapter?, schema?, label?, phase?, model?, agentType?, isolation?, keep?, permissions?, expect?, expectRetries?, allowEmpty?, notes? }`.
+`opts` for `agent`: `{ adapter?, schema?, label?, phase?, model?, agentType?, isolation?, keep?, permissions?, expect?, expectRetries?, allowEmpty?, notes?, handoff? }`.
 `adapter` picks the CLI — or, as a list (`['codex', 'claude']`, **ODW
 extension**), a fallback chain; `model: '@fast'` picks a tier's model for
 whichever CLI runs it (**ODW extension**); `schema` is a raw JSON Schema object (an option, not
@@ -102,7 +102,7 @@ annotations like `description` and `format`. Any other keyword (`oneOf`, `$ref`,
 `const`, `pattern`, `maxItems`, a type union, …) is not checked by ODW: the run's log
 says so once, with where it is, and the call runs — or, under `"schemaKeywords":
 "strict"`, fails with an `AgentError` before it starts (**ODW extension**). Put a
-limit ODW cannot check in a `description`. On `claude` and `codex` the schema is
+limit ODW cannot check in a `description`. On `claude`, `codex` and `agy` the schema is
 passed to the CLI natively, which enforces it; ODW validates the reply either way —
 see [`references/primitives.md`](references/primitives.md#schema).
 
@@ -282,6 +282,7 @@ odw apply $RUN --agent <id>           # git apply --3way into this working tree 
 odw apply $RUN --all --check          # preview every finished agent, each on top of the ones before it
 odw apply $RUN --all --verify "<test command>"   # apply them in order; roll back one that fails the check
 odw apply $RUN --all --resolve --verify "<test command>"   # a resolver agent fixes a conflict; applied once verified
+odw apply $RUN --all --pr --verify "<test command>"   # a new branch, pushed, and a draft PR (gh); never merges
 ```
 
 - Preview first (`--check`, exit 1 when anything conflicts), apply what the task
@@ -304,6 +305,12 @@ odw apply $RUN --all --resolve --verify "<test command>"   # a resolver agent fi
   leave it off when no person is there to answer.
 - `odw apply` refuses while a path the diff touches has uncommitted changes —
   commit or stash first; use `--force` only when the user agrees.
+- `--pr` (ODW extension; `[--base B] [--remote R] [--ready] [--title T]`) puts the
+  diffs on a new branch `odw/<run>-<label>` made in a temporary worktree, one
+  commit per agent under the user's git identity, pushes it and opens a draft PR
+  with `gh` (or prints the compare URL without `gh`). It never touches the
+  working tree and never merges; it pushes, so use it only when the user asked
+  for a PR. A conflict or a failed `--verify` stops it before the push.
 - A diff cut at `maxDiffBytes` cannot be applied: use the agent's branch
   (`keep: true`, or `"keepBranches": true` in the config).
 
@@ -337,8 +344,11 @@ approvals).
   holding only its workspace and a copy of the CLI's login. The user builds the
   image (`examples/sandbox/Dockerfile`; ODW never pulls); check with `odw doctor`.
   Agents keep the network (they must reach their model API) — so it guards the
-  user's files, not their code from the model. `agent(p, { sandbox: { network:
-  'none' } })` may only tighten it.
+  user's files, not their code from the model — unless `sandbox.network` is an
+  egress allowlist (`{ allow: "adapter" }` or a host list; ODW extension): then
+  only those hosts, through a proxy outside the container, and each refusal is an
+  `egress_denied` event. `agent(p, { sandbox: { network: 'none' } })` may only
+  tighten it.
 
 ```js
 const findings = await parallel(files.map((f) => () =>
@@ -365,6 +375,11 @@ when one CLI runs out of quota.
   After three quota failures in a row on one CLI, the run's later agents skip it.
   `odw agents --json` and the `agent_finished` event name the CLI that produced
   each value (`adapter`) and the ones it left (`fellBackFrom`).
+- **Handoff** (**ODW extension**). By default the next CLI starts the work over.
+  With `handoff: true` on the call (or the user's `"fallback": { "handoff": true }`)
+  it carries on instead: in the same worktree, its prompt starting with a brief of
+  what the last one did (`agents/<id>.handoff.md`). Suggest it for long, isolated
+  agents whose partial work is worth keeping.
 - Only name adapters the user has installed (`odw doctor` lists them), and keep
   the user's choice of default CLI: suggest a chain when long runs keep stopping
   on quota, don't add one silently.

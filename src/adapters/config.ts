@@ -35,6 +35,7 @@ import {
   runTier,
 } from "./permissions.js";
 import { isTrustLevel, untrustedPosture } from "./trust.js";
+import { buildEgressHosts } from "./egress.js";
 import { buildAdapterSandbox, buildSandboxSetting, checkSandboxImages } from "./sandbox.js";
 import type {
   Adapter,
@@ -150,12 +151,12 @@ const KNOWN_TOP_KEYS = [
   "approveLinks",
 ] as const;
 
-const KNOWN_ADAPTER_KEYS = ["command", "stdin", "env", "timeout", "stallTimeout", "concurrency", "promptCache", "label", "flags", "output", "failures", "permissionArgs", "permissions", "permissionDenials", "trust", "untrustedArgs", "untrustedNote", "sandbox", "agentLimits"] as const;
+const KNOWN_ADAPTER_KEYS = ["command", "stdin", "env", "timeout", "stallTimeout", "concurrency", "promptCache", "label", "flags", "output", "failures", "permissionArgs", "permissions", "permissionDenials", "trust", "untrustedArgs", "untrustedNote", "sandbox", "agentLimits", "egressHosts"] as const;
 
 /** The fields of an adapter's `output`, per format. */
 const KNOWN_OUTPUT_KEYS: Record<string, readonly string[]> = {
   text: ["format"],
-  jsonl: ["format", "eventType", "textPath", "select", "usageEvent", "usagePath", "costPath", "errorPath", "structuredPath", "deniedPath", "mcpEvent", "mcpPath", "match", "errorEvents", "background"],
+  jsonl: ["format", "eventType", "textPath", "select", "usageEvent", "usagePath", "costPath", "errorPath", "structuredPath", "deniedPath", "mcpEvent", "mcpPath", "match", "errorEvents", "background", "eventKey"],
   json: ["format", "textPath", "usagePath", "costPath", "errorPath", "structuredPath", "deniedPath", "mcpPath"],
 };
 
@@ -164,7 +165,7 @@ const KNOWN_MATCH_KEYS = ["path", "equals"] as const;
 
 /** The fields of an adapter's `flags`, and of its `flags.schema`. */
 const KNOWN_FLAG_KEYS = ["model", "schema"] as const;
-const KNOWN_SCHEMA_FLAG_KEYS = ["args", "mode", "strict"] as const;
+const KNOWN_SCHEMA_FLAG_KEYS = ["args", "mode", "strict", "objectRoot"] as const;
 
 const KNOWN_NOTIFY_KEYS = ["command", "webhook", "on"] as const;
 
@@ -467,7 +468,9 @@ function permissionNote(command: string[]): string {
     const pm = valueOf("--permission-mode", i);
     const sb = valueOf("--sandbox", i);
     const am = valueOf("--approval-mode", i);
+    const md = valueOf("--mode", i);
     if (pm) notes.push(`permission mode: ${pm}`);
+    else if (md) notes.push(`mode: ${md}`);
     else if (sb) notes.push(`sandbox: ${sb}`);
     else if (am) notes.push(`approval mode: ${am}`);
     else if (arg === "--dangerously-skip-permissions") notes.push("full autonomy (permission prompts skipped)");
@@ -727,6 +730,8 @@ function buildAdapter(name: string, spec: RawAdapter): Adapter {
   if (spec.agentLimits != null) {
     adapter.agentLimits = readLimits(spec.agentLimits, `adapter '${name}' 'agentLimits'`, (m) => new ConfigError(m));
   }
+  // The hosts its CLI needs, for a sandbox's `network: { allow: "adapter" }` (ODW extension; see ./egress).
+  if (spec.egressHosts != null) adapter.egressHosts = buildEgressHosts(name, spec.egressHosts);
   return adapter;
 }
 
@@ -848,7 +853,8 @@ function buildFlags(name: string, raw: unknown): AdapterFlags {
 
 /**
  * Validate how a CLI takes a JSON Schema natively (ODW extension): the flag(s)
- * before it, `inline` or `file`, and whether it takes only strict schemas.
+ * before it, `inline` or `file`, and whether it takes only strict schemas
+ * (or only object-rooted ones).
  */
 function buildSchemaFlag(name: string, raw: unknown): SchemaFlag {
   if (!isObject(raw)) {
@@ -856,7 +862,7 @@ function buildSchemaFlag(name: string, raw: unknown): SchemaFlag {
       `adapter '${name}' 'flags.schema' must be an object: { "args": ["--json-schema"], "mode": "inline" | "file", "strict"?: true }`,
     );
   }
-  const { args, mode, strict } = raw;
+  const { args, mode, strict, objectRoot } = raw;
   if (!Array.isArray(args) || args.length === 0 || !args.every((part) => typeof part === "string" && part.length > 0)) {
     throw new ConfigError(`adapter '${name}' 'flags.schema.args' must be a non-empty array of strings: the flag(s) before the schema`);
   }
@@ -869,7 +875,10 @@ function buildSchemaFlag(name: string, raw: unknown): SchemaFlag {
   if (strict != null && typeof strict !== "boolean") {
     throw new ConfigError(`adapter '${name}' 'flags.schema.strict' must be true or false; got ${JSON.stringify(strict)}`);
   }
-  return { args: [...(args as string[])], mode, ...(strict ? { strict: true } : {}) };
+  if (objectRoot != null && typeof objectRoot !== "boolean") {
+    throw new ConfigError(`adapter '${name}' 'flags.schema.objectRoot' must be true or false; got ${JSON.stringify(objectRoot)}`);
+  }
+  return { args: [...(args as string[])], mode, ...(strict ? { strict: true } : {}), ...(objectRoot ? { objectRoot: true } : {}) };
 }
 
 /** Validate and normalize an adapter's stdout decoding declaration. */
@@ -913,11 +922,15 @@ function buildOutput(name: string, raw: unknown): AdapterOutput {
   if (value.mcpEvent != null && (typeof value.mcpEvent !== "string" || !value.mcpEvent.trim())) {
     throw new ConfigError(`adapter '${name}' 'output.mcpEvent' must be a non-empty string`);
   }
+  if (value.eventKey != null && (typeof value.eventKey !== "string" || !value.eventKey.trim())) {
+    throw new ConfigError(`adapter '${name}' 'output.eventKey' must be a non-empty string: the key that names each event's type`);
+  }
   const eventType = value.eventType as string;
   const usageEvent = (value.usageEvent as string | undefined) ?? eventType;
   return {
     format: "jsonl",
     eventType,
+    ...(value.eventKey != null ? { eventKey: value.eventKey as string } : {}),
     ...(value.match != null ? { match: buildMatch(name, value.match) } : {}),
     textPath,
     select: "last",
@@ -1182,6 +1195,8 @@ function buildSettings(raw: Record<string, unknown>): Settings {
     // Fallback chains and model tiers (ODW extensions): the adapters they name
     // are checked against the configured ones once both are built (checkRouting).
     fallback: raw["fallback"] == null ? {} : buildFallback(raw["fallback"]),
+    // `fallback.handoff` (ODW extension; see ../handoff): a reserved key of the chains' object.
+    handoff: isObject(raw["fallback"]) && raw["fallback"]["handoff"] != null ? buildFlag("fallback.handoff", raw["fallback"]["handoff"]) : false,
     models: raw["models"] == null ? {} : buildModels(raw["models"]),
     // Like fanOutWarn: null and 0 both mean "never".
     quotaBreaker:
@@ -1307,7 +1322,10 @@ function buildChoice<T extends string>(key: string, raw: unknown, choices: reado
   throw new ConfigError(`"${key}" must be ${listed}; got ${JSON.stringify(raw)}`);
 }
 
-/** Validate `fallback`: adapter name → the adapters its calls fall back to, in order. */
+/**
+ * Validate `fallback`: adapter name → the adapters its calls fall back to, in
+ * order — but `handoff`, a flag of its own (ODW extension; read by buildSettings).
+ */
 function buildFallback(raw: unknown): Record<string, string[]> {
   if (!isObject(raw)) {
     throw new ConfigError(`"fallback" must be an object: { "<adapter>": ["<next adapter>", …] }; got ${kindOf(raw)}`);
@@ -1315,6 +1333,7 @@ function buildFallback(raw: unknown): Record<string, string[]> {
   const out: Record<string, string[]> = {};
   for (const [name, chain] of Object.entries(raw)) {
     if (name.startsWith("$") || name.startsWith("//")) continue; // comment conventions
+    if (name === "handoff") continue;
     if (!Array.isArray(chain) || !chain.every((next) => typeof next === "string" && next !== "")) {
       throw new ConfigError(`"fallback.${name}" must be a list of adapter names; got ${JSON.stringify(chain)}`);
     }

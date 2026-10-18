@@ -68,6 +68,13 @@ export function transcriptEntry(e: TranscriptEntry): string {
         `<div class="tx tx-sep${e.reason === "fallback" ? " fallback" : ""}" data-i="${e.i}"><span>${esc(t("attempt {n}", { n: e.n ?? 2 }))}` +
         `${e.reason ? ` · ${esc(t(REASON[e.reason] ?? e.reason))}` : ""}${e.reason === "fallback" && e.adapter ? ` → ${esc(e.adapter)}` : ""}</span></div>`
       );
+    case "handoff":
+      // A fallback handed the work over (ODW extension): the brief the next adapter started from, folded.
+      return (
+        `<div class="tx tx-sep fallback handoff" data-i="${e.i}"><span>${esc(t("handoff"))} · ${esc(e.from ?? "?")} → ${esc(e.adapter ?? "?")}` +
+        `${e.bytes != null ? ` · ${esc(t("brief of {n} bytes", { n: e.bytes }))}` : ""}</span></div>` +
+        (e.output ? folded(t("handoff brief"), e.output) : "")
+      );
     case "result": {
       const bits = [e.isError ? t("ended with an error") : t("done")];
       if (e.turns != null) bits.push(t("{n} turns", { n: e.turns }));

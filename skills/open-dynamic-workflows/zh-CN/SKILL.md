@@ -75,7 +75,7 @@ return await agent(
 | `exec(command, opts?)` | 不启动模型直接运行一条命令（测试、构建、linter）；返回 `{ stdout, stderr, exitCode, signal, timedOut, truncated, durationMs }`。字符串经 shell 执行，数组按 argv 执行。**ODW 扩展**——不属于 Claude Code 方言。 |
 | `checkpoint(title, opts?)` | 暂停运行，直到有人批准（可以附上修改后的 payload）或拒绝；返回 `{ approved, note, by, payload, edited }`。**ODW 扩展**——不属于 Claude Code 方言。 |
 
-`agent` 的 `opts`：`{ adapter?, schema?, label?, phase?, model?, agentType?, isolation?, keep?, permissions?, expect?, expectRetries?, allowEmpty?, notes? }`。
+`agent` 的 `opts`：`{ adapter?, schema?, label?, phase?, model?, agentType?, isolation?, keep?, permissions?, expect?, expectRetries?, allowEmpty?, notes?, handoff? }`。
 `adapter` 选择用哪个 CLI——写成列表（`['codex', 'claude']`，**ODW 扩展**）就是回退链；
 `model: '@fast'` 为实际运行它的 CLI 选出该层级的模型（**ODW 扩展**）；`schema` 是一个原始 JSON Schema 对象（选项，不是全局）；
 `agentType` 是注入进 prompt 的**人设**，*不是* adapter 名。`keep: true`（**ODW 扩展**）
@@ -87,7 +87,7 @@ return await agent(
 `format` 等注解。其他关键字（`oneOf`、`$ref`、`const`、`pattern`、`maxItems`、类型联合……）
 ODW 不检查：运行日志会连同位置说明一次，调用照常运行——设 `"schemaKeywords": "strict"` 时则在
 启动前以 `AgentError` 失败（**ODW 扩展**）。ODW 检查不了的限制请写进 `description`。在
-`claude` 和 `codex` 上 schema 会原生交给 CLI，由它强制执行；无论哪种，ODW 都会校验回复——见
+`claude`、`codex` 和 `agy` 上 schema 会原生交给 CLI，由它强制执行；无论哪种，ODW 都会校验回复——见
 [`references/primitives.md`](references/primitives.md#schema)。
 
 `expect`（**ODW 扩展**）写明 agent 回复之后必须成立的条件，由 odw 来检查——优先用它，
@@ -235,6 +235,7 @@ odw apply $RUN --agent <id>           # 用 git apply --3way 应用到当前工�
 odw apply $RUN --all --check          # 预览所有已完成的 agent，每个都叠在前面的之上
 odw apply $RUN --all --verify "<测试命令>"   # 按顺序应用；校验失败的那次应用被回滚
 odw apply $RUN --all --resolve --verify "<测试命令>"   # 由 resolver agent 解决冲突；校验通过才应用
+odw apply $RUN --all --pr --verify "<测试命令>"   # 新分支、推送、开草稿 PR（gh）；从不合并
 ```
 
 - 先预览（`--check`，有冲突时退出码 1），按任务需要应用，并告诉用户应用了什么、哪里冲突了
@@ -250,6 +251,10 @@ odw apply $RUN --all --resolve --verify "<测试命令>"   # 由 resolver agent 
   用户；`--confirm` 需要在终端回答 y/N，没人回答时不要加。
 - 只要 diff 涉及的路径上有未提交的改动，`odw apply` 就会拒绝——先提交或 stash；只有用户
   同意时才用 `--force`。
+- `--pr`（ODW 扩展；`[--base B] [--remote R] [--ready] [--title T]`）把 diff 放到临时 worktree
+  里新建的分支 `odw/<run>-<label>` 上，每个 agent 一个提交、用用户自己的 git 身份，推送后用 `gh`
+  开草稿 PR（没有 `gh` 时打印对比页 URL）。它不碰工作树、从不合并；但它会推送，所以只在用户要求
+  开 PR 时使用。冲突或 `--verify` 失败会在推送前停下。
 - 超过 `maxDiffBytes` 被截断的 diff 无法应用：改用该 agent 的分支（`keep: true`，或在
   配置里设 `"keepBranches": true`）。
 
@@ -278,7 +283,9 @@ odw apply $RUN --all --resolve --verify "<测试命令>"   # 由 resolver agent 
   CLI 运行和每个 `exec()` 步骤都在全新的 Docker/Podman 容器里进行，只能看到自己的工作区和
   CLI 登录文件的副本。镜像由用户构建（`examples/sandbox/Dockerfile`；ODW 从不拉取），用
   `odw doctor` 检查。agent 保留网络（必须连到模型 API）——它保护的是用户的文件，而不是让代码
-  远离模型。`agent(p, { sandbox: { network: 'none' } })` 只能收紧它。
+  远离模型——除非 `sandbox.network` 是出站白名单（`{ allow: "adapter" }` 或主机列表；ODW 扩展）：
+  那样只能连到这些主机，经由容器之外的代理，每次拒绝都是一条 `egress_denied` 事件。
+  `agent(p, { sandbox: { network: 'none' } })` 只能收紧它。
 
 ```js
 const findings = await parallel(files.map((f) => () =>
@@ -301,6 +308,9 @@ CLI 额度用尽时让长时间运行继续下去。
   （`search:3 → claude after codex quota`）。限流仍在原 CLI 上重试。同一个 CLI 连续三次
   额度失败后，本次运行之后的 agent 会跳过它。`odw agents --json` 和 `agent_finished` 事件
   会写明产出每个结果的 CLI（`adapter`）以及它离开过的那些（`fellBackFrom`）。
+- **交接**（**ODW 扩展**）。默认情况下下一个 CLI 从头再来。调用上写 `handoff: true`（或用户
+  配置 `"fallback": { "handoff": true }`）时它会接着做：在同一个 worktree 中，提示词以上一个
+  CLI 所做之事的简报开头（`agents/<id>.handoff.md`）。适合做了一半就值得保留的长时间隔离 agent。
 - 只写用户装好的适配器（`odw doctor` 会列出），并尊重用户选定的默认 CLI：长时间运行总因
   额度停下时，建议用户加回退链，不要擅自加。
 - **额度用尽时暂停。** 配置里写上 `"quotaWait": { "max": <秒数> }`（默认关闭）后，无 CLI

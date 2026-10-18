@@ -52,7 +52,7 @@ agent(prompt, opts?) -> Promise<unknown>
   full）——请求更高档位会让调用以 `AgentError` 失败，报错写明两个档位——没有只读模式的适配器会
   拒绝 `"read"`（调用在 CLI 启动前失败；`claude`、`codex` 和 `gemini` 有只读模式）。见
   [适配器](adapters.md#权限每个内置适配器能做什么)。Claude Code 会忽略它。
-- **opts.sandbox**（**ODW 扩展**）—— 让这个 agent 的 CLI 在容器中运行，或在比运行与适配器更严格的容器中运行：`"container"`，或 `{ network: "none", memory, cpus, pids, cliConfig: "none", image }`（只有别处都没设镜像时才能给 `image`）。只能收紧——容器下的 `"none"`、沙箱没有的网络、更高的限制或换镜像都会让调用在启动前失败。见 [adapters](adapters.md)。不计入 resume key。Claude Code 会忽略它。
+- **opts.sandbox**（**ODW 扩展**）—— 让这个 agent 的 CLI 在容器中运行，或在比运行与适配器更严格的容器中运行：`"container"`，或 `{ network: "none" | { allow: [...] }, memory, cpus, pids, cliConfig: "none", image }`（只有别处都没设镜像时才能给 `image`；`allow` 列表与沙箱自己的取交集）。只能收紧——容器下的 `"none"`、沙箱没有的网络、更高的限制或换镜像都会让调用在启动前失败。见 [adapters](adapters.md)。不计入 resume key。Claude Code 会忽略它。
 - **opts.limits**（**ODW 扩展**）—— 这个 agent 被当作失控杀掉之前能做多少：`{ toolCalls?, costUsd?, outputTokens?, seconds?, repeat? }`——累计所有 CLI 运行的工具调用次数、CLI 报告的美元花费与输出 token、从第一次 CLI 运行起的秒数，以及同一工具调用（工具名 + 参数哈希）**连续**出现 `repeat` 次。逐键覆盖适配器与运行级的 `agentLimits`，`null` 取消某项。从 claude、codex、kilo、opencode 的输出实时执行（文本 CLI 的花费只能在每次运行后检查）；越界立即杀掉 CLI 并抛出可恢复的错误，`reason: "runaway"`，事件上的 `limitHit: { limit, max, value, evidence }` 写明证据（``Bash `npm test` ×5 in a row``）。不会重试，也不算 `expect` 未达标。格式错误的值在任何东西运行前抛出 `AgentError`。不计入 resume key。Claude Code 会忽略它。
 - **opts.expect**（**ODW 扩展**）—— agent 回复之后必须成立的条件，由 odw 检查：
   `{ changes?, files?, command?, match?, timeout? }`。见 [expect](#expectodw-扩展)。
@@ -65,6 +65,9 @@ agent(prompt, opts?) -> Promise<unknown>
 - **opts.notes**（**ODW 扩展**）—— `true`：该 agent 使用本次运行的笔记板（提示词里有已有的笔记，
   `ODW_NOTES` 用来发布和读取笔记，隔离 agent 完成时广播其保留改动）；`false` 让它退出所在
   `parallel()` 或 `notes` 设置的笔记板。见 [notes](#notesodw-扩展)。Claude Code 会忽略它。
+- **opts.handoff**（**ODW 扩展**）—— `true`：回退把调用移到下一个适配器时交接工作，而不是从头
+  再来；`false` 无论 `fallback.handoff` 设置如何都从头再来。见[路由](#路由阶段默认值模型分层回退链odw-扩展)。
+  Claude Code 会忽略它。
 
 返回回复文本，设了 `schema` 则返回校验过的 JSON 值。CLI 出错、schema 重试耗尽、工作没达到
 `expect`、空回复都会抛错；这些可恢复失败在 `parallel`/`pipeline` 内变成 `null`。停止请求、
@@ -162,6 +165,15 @@ log(message)           // emit a one-line progress event
   继续；失败的那些运行花掉的用量照样计入。回退时沿用调用自己的权限档位——不能恰好运行该档位
   的适配器会被跳过并记一行日志。`agent_finished` 和保存的结果会写明产出结果的适配器
   （`adapter`）和离开过的那些（`fellBackFrom`）；发生过回退的 `agent_failed` 也会写明。
+- **交接。** 配置 `"fallback": { "handoff": true }` 或在调用上写 `handoff: true`（默认关闭）时，
+  回退交接工作而不是从头再来：隔离调用的 worktree 保留下来，下一个适配器在其中运行，做了一半的
+  改动原样在场（原地调用的改动本来就在源码树里）；它的提示词在任务之前加一段以
+  "You are continuing work another agent started…" 开头的简报——上一个适配器停下的原因、改过的
+  文件（diff 统计；原地调用取其编辑类工具调用）、最后的计划或待办、运行过的命令及结果、最后几条
+  消息；至多 6 KB，已脱敏。简报保存为 `agents/<id>.handoff.md`，并记 `handoff` 事件
+  `{ from, to, reason, bytes }` 和一行 `{"kind":"handoff"}` transcript。`expect` 与保留的 diff
+  判定最终状态（共享 worktree 相对其基线）；`expect` 重试和 `quotaWait` 之后的调用仍从头开始。
+  `handoff` 不在 resume key 中。
 - **额度熔断。** 同一个适配器上连续 `quotaBreaker`（默认 3）次额度失败后，本次运行之后的
   调用都会跳过它：各自从回退链上的下一个适配器开始，没有回退链的则立即失败（原因为 `quota`）。
   只记一条警告。
@@ -268,7 +280,7 @@ Claude Code 的 Workflow 工具没有 `exec` 全局（`validate()` 会对此给�
 - **opts.label** / **opts.phase** —— 进度展示，与 `agent` 相同。label 默认取命令的前
   40 个字符。
 - **opts.check** —— 命令没有以 0 退出时抛出 `ExecError`。
-- **opts.network**（**ODW 扩展**）—— 运行的 `sandbox` 为容器时，该步骤在运行镜像的全新容器里执行，以相同路径挂载运行的 source（及其 `cwd`），环境同 agent；网络默认 `"none"`，可要求 `"default"`（沙箱本身没有网络时拒绝）。不在沙箱中时无效。
+- **opts.network**（**ODW 扩展**）—— 运行的 `sandbox` 为容器时，该步骤在运行镜像的全新容器里执行，以相同路径挂载运行的 source（及其 `cwd`），环境同 agent；网络默认 `"none"`，可要求 `"default"`（沙箱本身没有网络时拒绝）——即运行的网络，包括出站白名单（其中的 `"adapter"` 条目除外）。不在沙箱中时无效。
 
 非零退出码是结果，不是错误。无法启动的程序像 shell 一样报告退出码 `127`（找不到）或
 `126`。设了 `check: true` 时，失败会抛出携带 `.result` 的 `ExecError`——与 agent 失败
@@ -418,6 +430,7 @@ odw apply <run> --agent <id|label>       # 用 git apply --3way 应用到你所�
 odw apply <run> --all [--check]          # 所有已完成的 agent，按 agentId 顺序
 odw apply <run> --agent <id|label> --verify "<cmd>"   # <cmd> 失败则回滚这次应用
 odw apply <run> --all --resolve [--adapter A] [--confirm] --verify "<cmd>"   # 由 resolver agent 解决冲突
+odw apply <run> --all --pr [--base B] [--remote R] [--ready] [--title T]   # 新分支、推送、开草稿 PR
 ```
 
 动手之前，`odw apply` 先在索引的临时副本上做同样的应用，逐个文件给出 `clean`、`CONFLICT`
@@ -435,6 +448,14 @@ odw 以退出码 1 结束并给出命令输出的末尾（被信号中断时同�
 给出每个冲突文件的 base、双方版本和冲突行。只有当它只改冲突文件、不留冲突标记、并在该 worktree
 里通过 `<cmd>` 时（`--confirm`：先在终端回答 y/N），它的改动才会连同 agent 的干净文件一起应用；
 否则工作树不变，odw 说明原因。只处理文本冲突；不能与 `--force` 或 `--check` 同用。
+`--pr`（ODW 扩展）不碰工作树——既不读也不写——而是在临时 worktree 里从 `--base` 或 HEAD 建分支
+`odw/<run>-<label>`（`odw/<run>-all`；被占用时加 `-2`……），在那里按上文方式应用（并校验）每个
+agent，每个单独提交、使用用户自己的 git 身份（工作流、agent、diff 统计、运行 id、花费），推送到
+`--remote`（`origin`）后运行 `gh pr create`——默认草稿，`--ready` 则否——正文为运行摘要（agent 与
+提交、阶段、花费、校验结果、`odw diff` 命令）。冲突或校验失败会在推送前删除分支；没有 `gh`（或未
+登录）时推送后打印对比页 URL。从不合并；不能与 `--check`、`--force`、`--resolve` 同用。
+`examples/pr-shepherd.js` 之后看护这个 PR：红掉的 CI 和新的评审意见交给经 `expect` 校验的修复
+agent，修复推送到 PR 分支，`gh pr ready` 之前先过 `checkpoint()`。
 超过 `maxDiffBytes`（默认 2 MB）的 diff 只保留开头，并以一行 `# odw: diff truncated …` 结尾；
 计数仍描述完整改动，但 `odw apply` 会拒绝它（`--all` 在此停下）——请改用该 agent 的分支
 （`keep: true` 或 `keepBranches`）。一次调用的每次尝试都在新的 worktree 里进行：只重排回复格式的 schema
@@ -597,7 +618,8 @@ did-you-mean 提示。想让某个限制处处生效，就写进 `description`�
 **原生 schema（ODW 扩展）。** 自己会校验 schema 的 CLI 还会直接拿到完整 schema——`claude`
 通过 `--json-schema`（值取自 `structured_output`），`codex` 在 schema 为 strict（根为对象；
 每个对象都设 `"additionalProperties": false` 并把全部属性列进 `required`）时通过
-`--output-schema`——由它强制执行 ODW 不检查的部分；ODW 依旧校验每一次回复并照常重试。只有不
+`--output-schema`，`agy` 在 schema 根为对象时通过 `--json-schema`（值取自 `structured_output`）
+——由它强制执行 ODW 不检查的部分；ODW 依旧校验每一次回复并照常重试。只有不
 接收原生 schema 的 CLI 才会在提示词里看到 schema 描述（`"schemaPrompt": "always"` 则全部附上）。
 见[适配器](adapters.md#原生结构化输出)。
 

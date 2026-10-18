@@ -46,6 +46,7 @@ export interface RawAdapter {
   untrustedNote?: string;
   sandbox?: ContainerSpec;
   agentLimits?: LimitSpec;
+  egressHosts?: string[];
 }
 
 // `flags` only DECLARES which native flag carries a model — the router appends
@@ -185,6 +186,58 @@ const CODEX_OUTPUT: AdapterOutput = {
   errorEvents: { "turn.failed": ["error"], error: ["message"] },
 };
 
+// Google Antigravity CLI (`agy`) print mode, `--output-format stream-json`
+// (added in 1.1.8: https://antigravity.google/docs/changelog, "v1.1.8"; the
+// shapes are https://antigravity.google/docs/cli/headless, "Streaming JSON"):
+// NDJSON events named by an `event` key, not `type` — one `init`
+// {cwd, tools, permission_mode}, `step_update`s {step_index, state:
+// ACTIVE|DONE, step_type: user_input|agent_response|tool|checkpoint, text_delta?,
+// usage?, tool_info?, subagent_info?}, and one `result` shaped like
+// `--output-format json`'s envelope: {status, response, error?, num_turns,
+// usage, structured_output?}. The reply is the result's `response`.
+//
+// Usage: the result's, the session's total (one turn per run here). Its
+// fields are input_tokens, output_tokens (thinking_tokens are part of them),
+// cache_read_tokens — counted apart from input_tokens, as the docs' second
+// turn shows (input 278, cache_read 30214, total 282) — and total_tokens;
+// usage.ts adds the cache back in. No dollars: agy reports none (it bills AI
+// credits), and ODW invents no prices.
+//
+// Failures: `error` is "present only on failure" (the docs' envelope table),
+// with `status` ERROR. Since 1.2.10 a run that ends on a model or API error
+// also exits 3 and prints a structured `AGY_ERROR: {...}` line on stderr
+// (changelog 1.2.6, 1.2.10; its fields: google-antigravity/antigravity-cli#778);
+// a run that cannot start (an unknown --model, a bad --json-schema) prints
+// `error: …` on stderr and exits 1, a usage error exits 2. Wording: failures.ts.
+//
+// Refusals: a tool call headless agy could not ask approval for is
+// soft-denied — the run goes on, exits 0, and since 1.1.27 lists it in the
+// result's `denied_actions` ({action, display_name}: changelog 1.1.27, and
+// antigravity-cli#794 for the shape). A run that ends on one often has an
+// empty response under status SUCCESS (#794): ODW fails that as empty_reply,
+// with the refusal recorded.
+//
+// No `background`: agy's stream says when a subagent starts (`subagent_info`)
+// but nothing documented says when one ends, and a backgrounded run_command
+// shows no id a later event ends — rules for them would call every subagent
+// orphaned. Headless agy waits for its background tasks itself, up to
+// --print-timeout (changelog 1.1.28, 1.2.9); "terminating N background
+// task(s) on exit" on stderr (antigravity-cli#1044) is what it says when it
+// did not. And a subagent's own output never reaches the parent's stream
+// (antigravity-cli#1077): the transcript shows that one started, and where
+// its log is.
+const AGY_OUTPUT: AdapterOutput = {
+  format: "jsonl",
+  eventKey: "event",
+  eventType: "result",
+  textPath: ["result", "response"],
+  select: "last",
+  usagePath: ["result", "usage"],
+  errorPath: ["result", "error"],
+  structuredPath: ["result", "structured_output"],
+  deniedPath: ["result", "denied_actions"],
+};
+
 // Native structured output (ODW extension; see native-schema.ts). Claude Code
 // 2.1.302 `--json-schema <schema>` takes the schema's JSON as its value and
 // rejects an invalid one before the run starts ("Error: --json-schema is not
@@ -196,6 +249,13 @@ const CLAUDE_SCHEMA: SchemaFlag = { args: ["--json-schema"], mode: "inline" };
 // in OpenAI's strict mode, which refuses (HTTP 400, before the model runs) a
 // schema whose objects are not all closed with every property required.
 const CODEX_SCHEMA: SchemaFlag = { args: ["--output-schema"], mode: "file", strict: true };
+// agy `--json-schema` takes "either an inline schema string or a path to a
+// schema file"; with stream-json "the schema applies to the final result
+// event", whose `structured_output` holds the parsed value (changelog 1.1.8;
+// https://antigravity.google/docs/cli/headless, "Structured output with a
+// schema"). Since 1.2.14 it refuses, at startup with exit 1, "any schema whose
+// root is not "type": "object"" (changelog 1.2.14): any other goes in the prompt.
+const AGY_SCHEMA: SchemaFlag = { args: ["--json-schema"], mode: "inline", objectRoot: true };
 
 // Permission tiers (ODW extension). Each built-in's posture flags sit in
 // `permissionArgs` and are spliced where its command has `{permission_args}`;
@@ -260,6 +320,25 @@ const QWEN_PERMISSIONS: PermissionArgs = {
   full: ["--approval-mode", "yolo"],
 };
 
+// agy (https://antigravity.google/docs/cli/headless, "Permissions in headless
+// mode"; https://antigravity.google/docs/cli/modes; https://antigravity.google/docs/permissions):
+// headless, a tool that needs an approval it cannot get is soft-denied;
+// reading and writing files in the workspace is allowed, while shell
+// commands, web and MCP tools default to Ask — so are denied — unless the
+// user's own permissions.allow rules in ~/.gemini/antigravity-cli/settings.json
+// (or its "toolPermission" preset) allow them. `--mode` pins the execution
+// mode over the user's agentMode setting (honoured headless since 1.1.12:
+// changelog); accept-edits approves file edits and creations, while
+// permission rules still govern shell commands. --dangerously-skip-permissions
+// "approves all tool calls, including file writes and command execution". No
+// read tier: no documented flag keeps headless agy from writing the workspace
+// (plan mode only prefixes the prompt with /plan, and headless proceeds past
+// its plan review: changelog 1.1.28).
+const AGY_PERMISSIONS: PermissionArgs = {
+  edit: ["--mode", "accept-edits"],
+  full: ["--mode", "accept-edits", "--dangerously-skip-permissions"],
+};
+
 // One headless posture, no verified other: Kimi's print mode decides every
 // tool call itself and takes no plan or approval flag with a prompt
 // (https://www.kimi.com/code/docs/en/kimi-code-cli/reference/kimi-command);
@@ -312,7 +391,12 @@ const OMP_UNTRUSTED = ["--no-extensions", "--no-skills", "--no-rules"];
 //     switches that skip them exist only in source;
 //   cursor — `.cursor/rules`, AGENTS.md and CLAUDE.md, mcp.json and hooks
 //     (https://cursor.com/docs/cli/using); headless it runs only on a workspace
-//     it trusts (`--trust`, https://cursor.com/docs/cli/reference/parameters).
+//     it trusts (`--trust`, https://cursor.com/docs/cli/reference/parameters);
+//   agy — AGENTS.md or GEMINI.md in every directory up to the workspace root,
+//     `.agents/rules/`, `.agents/skills/`, `.agents/agents/` and
+//     `.agents/mcp_config.json` (https://antigravity.google/docs/rules,
+//     https://antigravity.google/docs/cli/gcli-migration); neither its CLI
+//     reference nor its headless flags have a switch that skips them.
 const UNTRUSTED_NOTES = {
   codex:
     "codex has no documented way to ignore the repository's AGENTS.md — its instructions still reach the agent " +
@@ -333,7 +417,37 @@ const UNTRUSTED_NOTES = {
   cursor:
     "cursor has no documented way to ignore the repository's .cursor/rules, AGENTS.md, CLAUDE.md, mcp.json and " +
     "hooks — headless it runs only on a workspace it trusts, and they still reach the agent",
+  agy:
+    "agy has no documented way to ignore the repository's AGENTS.md, GEMINI.md and .agents/ rules, skills, agents " +
+    "and MCP servers — they still reach the agent",
 } as const;
+
+// The hosts each CLI needs from inside a container sandbox with an egress
+// allowlist (`network: { allow: "adapter" }`; ODW extension, see ./egress) —
+// its model API and its login, from its docs; not its optional telemetry,
+// updates or plugin downloads, which an allowlist then refuses (and logs).
+// - Claude Code (https://code.claude.com/docs/en/network-config, "Network
+//   access requirements"): api.anthropic.com (the API, feature flags and
+//   event logging), claude.ai (a claude.ai login) and platform.claude.com (a
+//   Console login, and every login's token exchange and refresh). Its
+//   Datadog telemetry is left out: set DISABLE_TELEMETRY (or
+//   CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC) to quiet the denials.
+// - Codex (https://developers.openai.com/codex/auth): api.openai.com (an API
+//   key), chatgpt.com (a ChatGPT login's backend) and auth.openai.com (its
+//   token refresh).
+// - Gemini CLI (https://geminicli.com/docs/get-started/authentication):
+//   generativelanguage.googleapis.com (a Gemini API key),
+//   cloudcode-pa.googleapis.com (a Google login, Code Assist) and
+//   oauth2.googleapis.com (its token refresh). Vertex AI's regional hosts
+//   are the user's to list.
+// - Antigravity CLI: a Google login like Gemini CLI's —
+//   cloudcode-pa.googleapis.com and oauth2.googleapis.com.
+export const EGRESS_HOSTS: Record<string, string[]> = {
+  claude: ["api.anthropic.com", "claude.ai", "platform.claude.com"],
+  codex: ["api.openai.com", "chatgpt.com", "auth.openai.com"],
+  gemini: ["generativelanguage.googleapis.com", "cloudcode-pa.googleapis.com", "oauth2.googleapis.com"],
+  agy: ["cloudcode-pa.googleapis.com", "oauth2.googleapis.com"],
+};
 
 export const BUILTIN_ADAPTERS: Record<string, RawAdapter> = {
   codex: {
@@ -359,6 +473,7 @@ export const BUILTIN_ADAPTERS: Record<string, RawAdapter> = {
     output: CODEX_OUTPUT,
     permissionArgs: CODEX_PERMISSIONS,
     untrustedNote: UNTRUSTED_NOTES.codex,
+    egressHosts: EGRESS_HOSTS.codex,
   },
   claude: {
     label: "Claude Code",
@@ -381,6 +496,7 @@ export const BUILTIN_ADAPTERS: Record<string, RawAdapter> = {
     // Anthropic's API caches a prompt's prefix: a fan-out sharing one starts
     // staggered, so the rest read the cache the first agent wrote.
     promptCache: true,
+    egressHosts: EGRESS_HOSTS.claude,
   },
   gemini: {
     label: "Gemini CLI",
@@ -388,6 +504,7 @@ export const BUILTIN_ADAPTERS: Record<string, RawAdapter> = {
     flags: { model: ["--model"] },
     permissionArgs: GEMINI_PERMISSIONS,
     untrustedNote: UNTRUSTED_NOTES.gemini,
+    egressHosts: EGRESS_HOSTS.gemini,
   },
   qwen: {
     label: "Qwen Code",
@@ -458,6 +575,37 @@ export const BUILTIN_ADAPTERS: Record<string, RawAdapter> = {
     permissionArgs: EDIT_ONLY("--force"),
     untrustedNote: UNTRUSTED_NOTES.cursor,
   },
+  agy: {
+    label: "Antigravity CLI",
+    // The prompt goes on stdin: `--input-format text` (the default) "reads
+    // prompts on stdin" (https://antigravity.google/docs/cli/headless, "Flag
+    // reference"), and agy runs headless when stdin is a pipe, without -p
+    // (changelog 1.1.2: "stdin is consumed by a piped prompt";
+    // google-antigravity/antigravity-cli#1018 runs it so). Not -p: it takes
+    // the next argument as its value, and argv caps one argument's length.
+    // --disable-slash-commands (changelog 1.1.9) keeps a prompt that starts
+    // with "/" from running a skill. --print-timeout: the docs still give it
+    // a 5m default — 1.2.6 made it unlimited, and before that a run that hit
+    // it returned partial output as a success (1.1.28) — so it is set past
+    // any agent timeout ODW allows by default ("24h", as #1077 runs it).
+    command: [
+      "agy",
+      "--output-format",
+      "stream-json",
+      "--input-format",
+      "text",
+      "--disable-slash-commands",
+      "--print-timeout",
+      "24h",
+      "{permission_args}",
+    ],
+    stdin: "{prompt}",
+    flags: { model: ["--model"], schema: AGY_SCHEMA },
+    output: AGY_OUTPUT,
+    permissionArgs: AGY_PERMISSIONS,
+    untrustedNote: UNTRUSTED_NOTES.agy,
+    egressHosts: EGRESS_HOSTS.agy,
+  },
 };
 
 /** Defaults for run-wide settings; any config value overrides these. */
@@ -496,6 +644,7 @@ export const DEFAULT_SETTINGS: Settings = {
   schemaKeywords: "warn", // what ODW's validator does not check is logged once per run, not refused
   schemaPrompt: "auto", // the prompt describes a schema only to a CLI that does not take it natively
   fallback: {}, // no fallback chains: a spent quota or a refused login fails the agent
+  handoff: false, // a fallback starts the work over ("fallback": { "handoff": true } hands it over)
   models: {}, // no model tiers: model: "@<tier>" names none
   quotaBreaker: 3, // quota failures in a row before the run's later agents skip an adapter
   expectRetries: 1, // reruns of an agent whose work missed its expect checks, told what it missed

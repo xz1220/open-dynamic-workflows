@@ -24,6 +24,8 @@
  *     agents/<agentId>.transcript.jsonl  what an agent's CLI printed on stdout, as it ran
  *                    (ODW extension; see ../transcript), and agents/<agentId>.stderr.txt
  *                    the end of its stderr — none for a replayed agent
+ *     agents/<agentId>.handoff.md  the brief a fallback that handed an agent's work over put in the
+ *                    next adapter's prompt (ODW extension; see ../handoff)
  *     agents/<agentId>.schema.json  the schema of an agent whose CLI reads it from a file
  *                    (ODW extension; see ../adapters/native-schema), there only while it runs
  *     result.json    final return value (on success)
@@ -428,6 +430,15 @@ export class RunStore {
     if (!isAgentId(agentId)) throw new Error(`invalid agentId ${String(agentId)}`);
     const dir = join(this.runDir(runId), AGENTS);
     return { transcript: join(dir, `${agentId}.transcript.jsonl`), stderr: join(dir, `${agentId}.stderr.txt`) };
+  }
+  /**
+   * Where the brief of a fallback that handed an agent's work over is kept
+   * (ODW extension; see ../handoff): `agents/<agentId>.handoff.md` — the
+   * latest, when it was handed over more than once.
+   */
+  agentHandoffPath(runId: string, agentId: number): string {
+    if (!isAgentId(agentId)) throw new Error(`invalid agentId ${String(agentId)}`);
+    return join(this.runDir(runId), AGENTS, `${agentId}.handoff.md`);
   }
   /**
    * Where an agent's schema is written for a CLI that reads it from a file

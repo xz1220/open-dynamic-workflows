@@ -112,8 +112,19 @@ export const FAILURE_PATTERNS: Readonly<Record<TextReason, readonly RegExp[]>> =
     // Daily quotas (Gemini: "You have exhausted your daily quota on this model").
     /\bdaily\b[^\n]{0,60}\bquota\b|\bquota\b[^\n]{0,200}\bper ?day\b|\bPerDay\b|\bTerminalQuotaError\b/i,
     /\bexhausted your (?:capacity|quota)\b/i,
+    // agy: a plan's quota ("RESOURCE_EXHAUSTED (code 429): Individual quota
+    // reached. … Resets in 2h39m52s.", antigravity-cli#1018), and the AI
+    // credits behind it ("Your AI credits balance is too low to continue.",
+    // changelog 1.2.15).
+    /\bindividual quota reached\b|\bcredits balance is too low\b/i,
   ],
   auth: [
+    // agy: an expired sign-in ("Authentication expired. Please log back in.",
+    // changelog 1.3.3), a sign-in it waited for in vain ("Error: authentication
+    // timed out", antigravity-cli#944), a keyring it cannot read its token from
+    // ("Error: failed to retrieve token: secret keyring is locked",
+    // https://antigravity.google/docs/cli/troubleshooting).
+    /\bauthentication (?:expired|timed out)\b|\blog back in\b|\bsecret keyring is locked\b/i,
     /\bnot logged in\b|\bnot authenticated\b|\bfailed to authenticate\b/i,
     // Claude Code "Please run /login"; Qwen "Please use '/auth' to re-authenticate".
     /\brun \/login\b|\buse '\/auth'|\bre-?authenticate\b/i,

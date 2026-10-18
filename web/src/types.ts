@@ -736,7 +736,7 @@ export interface AgentResultRecord {
 export interface TranscriptEntry {
   /** Its place in the transcript, from 0: what `?since=` counts. */
   i: number;
-  kind: "text" | "tool_call" | "tool_result" | "error" | "attempt" | "result" | "raw" | "truncated";
+  kind: "text" | "tool_call" | "tool_result" | "error" | "attempt" | "handoff" | "result" | "raw" | "truncated";
   /**
    * text: what the agent wrote; tool_call: what the call is about (the command,
    * the file, …); tool_result: its exit code and size ("exit 1, 12 lines"); the
@@ -758,9 +758,14 @@ export interface TranscriptEntry {
   /** attempt: which CLI run of the call begins (2 = the first one more), and why: schema | stall | rate_limit | expect | fallback. */
   n?: number;
   reason?: string;
-  /** attempt, for a fallback (ODW extension): the adapter the call moved to. */
+  /** attempt, for a fallback (ODW extension): the adapter the call moved to; handoff: the one that carries on. */
   adapter?: string;
-  /** truncated: the bytes kept before maxTranscriptBytes cut the transcript. */
+  /**
+   * handoff (ODW extension): a fallback handed the work over instead of starting it over —
+   * the adapter it left; `output` is the brief the next one's prompt started with, `reason` why.
+   */
+  from?: string;
+  /** truncated: the bytes kept before maxTranscriptBytes cut the transcript; handoff: the brief's size. */
   bytes?: number;
   /** result: the turns the session took and what it cost, as its CLI reported. */
   turns?: number;
