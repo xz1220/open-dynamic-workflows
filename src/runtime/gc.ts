@@ -19,7 +19,10 @@
  *      transcripts and stderr (the largest part) trimmed; meta.json, status,
  *      events, saved results and diffs stay, so `odw list`, `estimate` and
  *      `compare` still work. `gc.json` in the run says what went.
- *   4. totals — the runs root's size, and what each kind would reclaim.
+ *   4. safety snapshots — `refs/odw/safety/<runId>` (see ../safety) of a run
+ *      in this runs root that is past retention. A snapshot of a run this
+ *      runs root does not know is counted, never deleted.
+ *   5. totals — the runs root's size, and what each kind would reclaim.
  *
  * A run that is running, paused or waiting at a checkpoint, or that `odw pin`
  * marked (`pinned.json` in its directory), is skipped in every kind: the
@@ -34,6 +37,7 @@ import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { promisify } from "node:util";
 
 import { SAFE_GIT } from "../git-safety.js";
+import { SAFETY_REF_PREFIX } from "../safety.js";
 import { OWNER_FILE, WORKTREE_PREFIX } from "../workspace.js";
 import { readJsonFile, readdirSafe, writeJsonAtomic } from "./fs-util.js";
 import { isRunActive } from "./run-liveness.js";
@@ -389,6 +393,24 @@ async function headHolds(repo: string, commit: string): Promise<boolean> {
   }
 }
 
+// --- 4. safety snapshots -------------------------------------------------------------
+
+export interface SnapshotFinding {
+  repo: string;
+  /** `refs/odw/safety/<run>`. */
+  ref: string;
+  run: string;
+}
+
+export interface SnapshotScan {
+  /** Snapshots of runs past retention. */
+  candidates: SnapshotFinding[];
+  /** Snapshots of runs this runs root does not know: counted, never deleted. */
+  unknown: number;
+  /** Snapshots of runs that are active, pinned, or within retention. */
+  kept: number;
+}
+
 // --- 3. run directories ---------------------------------------------------------------
 
 export interface RunFinding {
@@ -421,6 +443,7 @@ export interface GcPlan {
   olderThanDays: number;
   worktrees: WorktreeFinding[];
   branches: BranchScan;
+  snapshots: SnapshotScan;
   runs: RunFinding[];
   /** Runs skipped in every kind: still active, or pinned. */
   skipped: { active: string[]; pinned: string[] };
@@ -514,11 +537,30 @@ export async function planGc(opts: GcOptions): Promise<GcPlan> {
     }
   }
 
+  const known = new Set(store.listRunIds());
+  const snapshots: SnapshotScan = { candidates: [], unknown: 0, kept: 0 };
+  for (const repo of repos) {
+    let out: string;
+    try {
+      out = await git(repo, ["for-each-ref", "--format=%(refname)", SAFETY_REF_PREFIX]);
+    } catch {
+      continue;
+    }
+    for (const ref of out.split("\n")) {
+      if (!ref.startsWith(SAFETY_REF_PREFIX)) continue;
+      const runId = ref.slice(SAFETY_REF_PREFIX.length);
+      if (!known.has(runId)) snapshots.unknown++;
+      else if (!held.has(runId) && (ages.get(runId) ?? 0) >= opts.olderThanDays) snapshots.candidates.push({ repo, ref, run: runId });
+      else snapshots.kept++;
+    }
+  }
+
   return {
     runsRoot: store.root,
     olderThanDays: opts.olderThanDays,
     worktrees,
     branches,
+    snapshots,
     runs,
     skipped,
     totals: {
@@ -533,6 +575,7 @@ export async function planGc(opts: GcOptions): Promise<GcPlan> {
 export interface GcResult {
   worktrees: number;
   branches: number;
+  snapshots: number;
   runs: number;
   bytes: number;
   errors: string[];
@@ -548,7 +591,7 @@ export async function applyGc(plan: GcPlan, opts: Pick<GcOptions, "store" | "isA
   const { store } = opts;
   const isAlive = opts.isAlive ?? isProcessAlive;
   const now = opts.now ?? Date.now() / 1000;
-  const result: GcResult = { worktrees: 0, branches: 0, runs: 0, bytes: 0, errors: [] };
+  const result: GcResult = { worktrees: 0, branches: 0, snapshots: 0, runs: 0, bytes: 0, errors: [] };
   const stillFree = (runId: string): boolean =>
     !store.exists(runId) || (!readPin(store.runDir(runId)) && !isRunActive(store, runId, isAlive));
 
@@ -572,6 +615,15 @@ export async function applyGc(plan: GcPlan, opts: Pick<GcOptions, "store" | "isA
       result.branches++;
     } catch (err) {
       result.errors.push(`branch ${b.branch} in ${b.repo}: ${message(err)}`);
+    }
+  }
+  for (const snap of plan.snapshots.candidates) {
+    if (!stillFree(snap.run)) continue;
+    try {
+      await git(snap.repo, ["update-ref", "-d", snap.ref]);
+      result.snapshots++;
+    } catch (err) {
+      result.errors.push(`snapshot ${snap.ref} in ${snap.repo}: ${message(err)}`);
     }
   }
   for (const r of plan.runs) {

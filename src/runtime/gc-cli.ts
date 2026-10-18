@@ -96,6 +96,9 @@ export function gcJson(plan: GcPlan, result: GcResult | null): Record<string, un
     branches: plan.branches.candidates,
     branchesKept: plan.branches.kept,
     branchesUnknownRun: plan.branches.unknown,
+    snapshots: plan.snapshots.candidates,
+    snapshotsKept: plan.snapshots.kept,
+    snapshotsUnknownRun: plan.snapshots.unknown,
     runs: plan.runs.map((r) => ({ runId: r.runId, workflow: r.workflow, ageDays: Math.floor(r.ageDays), files: r.files.length, bytes: r.bytes })),
     skipped: plan.skipped,
     totals: { ...plan.totals, reclaimable: plan.totals.worktreeBytes + plan.totals.transcriptBytes },
@@ -129,6 +132,12 @@ export function formatGc(plan: GcPlan, result: GcResult | null, caps: TermCaps =
   lines.push(...more(b.candidates.length));
   if (b.unknown.length > 0) lines.push(p.dim(`  ${b.unknown.length} odw branch(es) of runs not in this runs root: kept`));
 
+  const sn = plan.snapshots;
+  lines.push("", `${p.bold("Safety snapshots")}  ${sn.candidates.length}`);
+  for (const c of sn.candidates.slice(0, LIST_MAX)) lines.push(`  ${safe(c.ref)}  ${p.dim(`its run is older than ${ageText(plan.olderThanDays)} · ${safe(c.repo)}`)}`);
+  lines.push(...more(sn.candidates.length));
+  if (sn.unknown > 0) lines.push(p.dim(`  ${sn.unknown} snapshot(s) of runs not in this runs root: kept`));
+
   lines.push("", `${p.bold(`Runs older than ${ageText(plan.olderThanDays)}`)}  ${plan.runs.length}${plan.runs.length ? ` · ${formatBytes(plan.totals.transcriptBytes)} of transcripts and stderr` : ""}`);
   for (const r of plan.runs.slice(0, LIST_MAX)) {
     lines.push(`  ${safe(r.runId)}  ${p.dim(`${safe(r.workflow ?? "?")} · ${ageText(r.ageDays)} · ${r.files.length} file(s)`)}  ${formatBytes(r.bytes)}`);
@@ -144,11 +153,12 @@ export function formatGc(plan: GcPlan, result: GcResult | null, caps: TermCaps =
   const reclaimable = plan.totals.worktreeBytes + plan.totals.transcriptBytes;
   lines.push("");
   if (result === null) {
-    const nothing = orphans.length === 0 && b.candidates.length === 0 && plan.runs.length === 0;
-    lines.push(nothing ? p.ok("nothing to reclaim") : `would reclaim ${formatBytes(reclaimable)}${b.candidates.length ? ` and ${b.candidates.length} branch(es)` : ""} — ${p.bold("odw gc --yes")} deletes it`);
+    const nothing = orphans.length === 0 && b.candidates.length === 0 && sn.candidates.length === 0 && plan.runs.length === 0;
+    const refs = [b.candidates.length ? `${b.candidates.length} branch(es)` : "", sn.candidates.length ? `${sn.candidates.length} safety snapshot(s)` : ""].filter(Boolean).join(" and ");
+    lines.push(nothing ? p.ok("nothing to reclaim") : `would reclaim ${formatBytes(reclaimable)}${refs ? ` and ${refs}` : ""} — ${p.bold("odw gc --yes")} deletes it`);
   } else {
     lines.push(
-      p.ok(`removed ${result.worktrees} worktree(s), ${result.branches} branch(es), trimmed ${result.runs} run(s): ${formatBytes(result.bytes)} reclaimed`),
+      p.ok(`removed ${result.worktrees} worktree(s), ${result.branches} branch(es), ${result.snapshots} safety snapshot(s), trimmed ${result.runs} run(s): ${formatBytes(result.bytes)} reclaimed`),
     );
     for (const e of result.errors) lines.push(p.err(`  failed: ${safe(e)}`));
   }

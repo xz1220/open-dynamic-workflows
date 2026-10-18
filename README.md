@@ -1606,6 +1606,9 @@ odw pin $RUN                  # odw gc skips this run, whatever its age; --remov
   the same patch there — what `odw apply` and a commit leave), or when their run is
   older than the retention. A branch checked out anywhere is refused by git and
   stays; a branch whose run this runs root does not know is counted, never deleted.
+- **Safety snapshots** `refs/odw/safety/<run>` (what `odw restore` puts back) go with
+  their run once it is older than the retention; one of a run this runs root does not
+  know is counted, never deleted.
 - **Expired runs** — ended, and older than the retention — have their agents'
   transcripts and stderr removed: the largest part of a run. `meta.json`, status,
   events, saved results and diffs stay, so `odw list`, `odw estimate`, `odw compare`

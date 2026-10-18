@@ -608,7 +608,8 @@ independent security reviews whose findings are all fixed.
   [--json] [--source DIR]` reports what runs left on disk, with sizes — orphaned
   `$TMPDIR/odw-wt-*` worktrees whose process is gone (each worktree now names its
   process, run and repository in `odw-owner.json` beside it), keep branches whose change
-  HEAD already holds or whose run is past retention, and expired runs' transcripts and
+  HEAD already holds or whose run is past retention, safety snapshots
+  (`refs/odw/safety/<run>`) of runs past retention, and expired runs' transcripts and
   stderr — and deletes nothing without `--yes` (worktrees as the worker would:
   unlock, `remove --force --force`, prune; meta, events, results and diffs of a trimmed
   run stay, `gc.json` says what went). Running, paused and waiting runs, and runs marked

@@ -8,7 +8,7 @@ import { basename, dirname, join } from "node:path";
 import { loadConfig } from "../src/adapters/config.js";
 import { main } from "../src/cli.js";
 import { diskCheck } from "../src/doctor.js";
-import { parseAge } from "../src/runtime/gc-cli.js";
+import { formatGc, gcJson, parseAge } from "../src/runtime/gc-cli.js";
 import { GC_FILE, PIN_FILE, applyGc, orphanedWorktreesOf, pinRun, planGc, readPin, readTrimmed, scanWorktrees } from "../src/runtime/gc.js";
 import { OdwRunSource } from "../src/runtime/odw-run-source.js";
 import { RunStore } from "../src/runtime/run-store.js";
@@ -194,6 +194,35 @@ test("keep branches go when HEAD holds their change or their run is past retenti
     assert.equal(result.branches, 2);
     const left = git(repo, "for-each-ref", "--format=%(refname:short)", "refs/heads/").split("\n").filter(Boolean).sort();
     assert.deepEqual(left, ["mine", `odw/${young}/2-open`, `odw/${pinned}/1-kept`, "odw/20990101-000000-zzzzzz/1-elsewhere", git(repo, "branch", "--show-current").trim()].sort());
+  } finally {
+    cleanup();
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test("a safety snapshot goes with its run past retention; a young, a pinned and an unknown run's stay", async () => {
+  const repo = makeRepo();
+  const { tmpRoot, store, cleanup } = scratch();
+  try {
+    const young = endedRun(store, repo, 1);
+    const old = endedRun(store, repo, 40);
+    const pinned = endedRun(store, repo, 40);
+    pinRun(store.runDir(pinned), null);
+    const head = git(repo, "rev-parse", "HEAD").trim();
+    for (const run of [young, old, pinned, "20990101-000000-zzzzzz"]) git(repo, "update-ref", `refs/odw/safety/${run}`, head);
+
+    const plan = await planGc({ store, olderThanDays: 30, transcripts: true, repos: [repo], tmpRoot });
+    assert.deepEqual(plan.snapshots.candidates.map((c) => c.run), [old]);
+    assert.equal(plan.snapshots.unknown, 1);
+    assert.equal(plan.snapshots.kept, 2);
+    assert.match(formatGc(plan, null), /Safety snapshots {2}1\n {2}refs\/odw\/safety\//);
+    assert.deepEqual((gcJson(plan, null).snapshots as Array<{ ref: string }>).map((c) => c.ref), [`refs/odw/safety/${old}`]);
+
+    const result = await applyGc(plan, { store });
+    assert.deepEqual(result.errors, []);
+    assert.equal(result.snapshots, 1);
+    const left = git(repo, "for-each-ref", "--format=%(refname)", "refs/odw/safety/").split("\n").filter(Boolean).sort();
+    assert.deepEqual(left, [`refs/odw/safety/${young}`, `refs/odw/safety/${pinned}`, "refs/odw/safety/20990101-000000-zzzzzz"].sort());
   } finally {
     cleanup();
     rmSync(repo, { recursive: true, force: true });

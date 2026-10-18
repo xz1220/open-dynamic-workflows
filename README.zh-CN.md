@@ -1382,6 +1382,8 @@ odw pin $RUN                  # odw gc 跳过这个运行,不论多旧;--remove 
   (提交在 HEAD 中,或 `git cherry` 在 HEAD 里找到同样的补丁——`odw apply` 加一次提交之后就是这样),
   或所属运行超过保留期限时删除。任何地方检出着的分支 git 会拒绝删除,于是保留;本运行根目录不认识
   其运行的分支只计数,从不删除。
+- **保险快照** `refs/odw/safety/<run>`(`odw restore` 用来恢复的那份)在所属运行超过保留期限时
+  随之删除;本运行根目录不认识其运行的快照只计数,从不删除。
 - **过期运行**——已结束且超过保留期限——删除各 agent 的 transcript 和 stderr(运行中最大的部分)。
   `meta.json`、状态、事件、保存的结果和 diff 都保留,所以 `odw list`、`odw estimate`、`odw compare`
   和 `odw apply` 仍然可用;运行目录中的 `gc.json` 记录删了什么,看板为该运行标出 **转录已清理**。
