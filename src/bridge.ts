@@ -176,7 +176,7 @@ import { isAdapterChoice, type AdapterChoice } from "./routing.js";
 import { describeSchema, pickStructured, type JsonSchema } from "./schema.js";
 import { handoffBrief, HandoffLog } from "./handoff.js";
 import { transcriptFormat, type AttemptReason } from "./transcript.js";
-import { withholdSecrets, withoutWebTools } from "./untrusted-input.js";
+import { withholdSecrets, withholdSetupSecrets, withoutWebTools } from "./untrusted-input.js";
 import { slotName, withSlot } from "./slot.js";
 import { openWorkspace, type OpenWorkspace, type Workspace, type WorkspaceMode } from "./workspace.js";
 import type { WorktreeSetupOptions } from "./worktree-setup.js";
@@ -2060,7 +2060,8 @@ export class Bridge {
       // Run before the worktree goes, with the same variables (ODW extension).
       teardown: worktreeTeardown,
       teardownTimeout: worktreeTeardownTimeout,
-      env: withAgentVars(process.env, call.env, this.composeOverride(call.onNote)),
+      // Untrusted input (ODW extension; see ./untrusted-input): no secret-named variable either.
+      env: withAgentVars(this.withholdSecrets ? withholdSetupSecrets(process.env) : process.env, call.env, this.composeOverride(call.onNote)),
       signal,
       onNote: call.onNote,
       // Untrusted (ODW extension: trust): `symlink:` lines of the

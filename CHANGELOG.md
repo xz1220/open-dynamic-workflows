@@ -927,6 +927,12 @@ independent security reviews whose findings are all fixed.
   as `COMPOSE_PROJECT_NAME` (the run's log says once when that overrides a value of the
   user's), and the recipe names the project explicitly: `docker compose -p "$ODW_SLOT"`
   in setup and teardown.
+- Under untrusted input, `worktreeSetup` and `worktreeTeardown` ran with the worker's
+  whole environment — `GH_TOKEN` and every other secret the agents themselves no longer
+  got — and one the repository's own config set still ran (only an untrusted
+  repository dropped it). They now run without the secret-named and vendors' variables
+  (`PATH`, `HOME`, `DOCKER_*` and `COMPOSE_*` kept), and a run with untrusted input drops
+  the repository's own setup and teardown, saying so in its log.
 
 ### Changed behavior — check before upgrading
 - `agentType` naming an agent definition file now runs that definition (see "Write

@@ -232,7 +232,7 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
       overridden = withOverrides(baseConfig);
       runTrust = { ...runTrust, repositoryConfig: null };
     }
-    const trusted = applyRunTrust(overridden, runTrust);
+    const trusted = applyRunTrust(overridden, runTrust, { untrustedInput: input !== null });
     if (swapNote) trusted.notes.push(swapNote);
     // No model is called (ODW extension; see ../wftest/mock): `odw test`'s
     // scripted replies, or a dry run's stubs, answer every agent in-process.

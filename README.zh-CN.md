@@ -2225,6 +2225,9 @@ issue 正文、PR 标题、评论是任何人写的文字,模型无法可靠地�
   `GOOGLE_GENAI_USE_VERTEXAI`、`GOOGLE_GENAI_USE_GCA`、`GOOGLE_CLOUD_PROJECT`、`GOOGLE_CLOUD_LOCATION`,……),
   无论 `agentEnvPass` 列了什么。适配器自己的 `env` 仍然生效,`exec()` 命令(工作流作者写的)得到最小环境加上
   `agentEnvPass`;
+- **不运行仓库自己的 worktree setup 与 teardown:** 仓库自身配置设置的 `worktreeSetup` 或 `worktreeTeardown`
+  会被丢弃,运行日志会说明,与[不受信任的仓库](#不受信任的仓库odw-扩展)相同;你自己配置里的仍会运行,但不带
+  密钥类变量和各厂商的变量(保留 `PATH`、`HOME`、`DOCKER_*` 与 `COMPOSE_*`,docker 和 compose 照常可用);
 - **没有隔离时大声说出来:** 若没有 `network` 为白名单(或 `"none"`)的
   [容器沙箱](#在容器中运行-agentodw-扩展),启动横幅、运行日志和 `run_started` 事件都会警告,且只读 agent
   启动时不带其 CLI 的联网工具(Claude Code 的 `WebFetch` 与 `WebSearch`,codex 的 `--search`)——它们可能把

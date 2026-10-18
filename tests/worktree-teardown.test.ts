@@ -447,6 +447,72 @@ test("an untrusted run drops the worktreeTeardown the repository's own config se
   }
 });
 
+test("a run with untrusted input drops the repository's own worktreeSetup and worktreeTeardown too, and says so (review fix)", () => {
+  const src = makeRepo();
+  try {
+    const repoConfig = join(src, "odw.config.json");
+    writeFileSync(repoConfig, JSON.stringify({ worktreeSetup: "touch pwned", worktreeTeardown: "touch pwned" }));
+    const theirs = loadConfig(repoConfig, { quiet: true });
+    const trust = resolveRunTrust({ flag: null, config: theirs, configPath: repoConfig, source: src });
+    assert.equal(trust.trust, "trusted");
+    const input = applyRunTrust(theirs, trust, { untrustedInput: true });
+    assert.equal(input.config.settings.worktreeSetup, null);
+    assert.equal(input.config.settings.worktreeTeardown, null);
+    assert.deepEqual(
+      input.notes.map((n) => n.slice(0, n.indexOf(" that"))),
+      ["untrusted input: not running the worktreeSetup", "untrusted input: not running the worktreeTeardown"],
+    );
+    // The user's own input: the repository's config is the user's choice, as before.
+    const own = applyRunTrust(theirs, trust);
+    assert.equal(own.config.settings.worktreeTeardown, "touch pwned");
+    assert.deepEqual(own.notes, []);
+  } finally {
+    rmSync(src, { recursive: true, force: true });
+  }
+});
+
+test("under untrusted input, worktreeSetup and worktreeTeardown run without secret-named variables, docker's kept (review fix)", POSIX_ONLY, async () => {
+  const src = makeRepo();
+  const out = mkdtempSync(join(tmpdir(), "odw-setup-env-"));
+  const dump = (name: string) => [execPath, "-e", `require('fs').writeFileSync(${JSON.stringify(join(out, name))}, JSON.stringify(process.env))`];
+  const saved = { GH_TOKEN: process.env.GH_TOKEN, ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY, DOCKER_HOST: process.env.DOCKER_HOST };
+  const run = async (withholdSecrets: boolean) => {
+    const cfg = defaultConfig();
+    cfg.settings.defaultAdapter = "claude";
+    cfg.settings.worktreeSetup = dump(`setup-${withholdSecrets}.json`);
+    cfg.settings.worktreeTeardown = dump(`teardown-${withholdSecrets}.json`);
+    const bridge = new Bridge(cfg, {
+      runId: "20261018-120000-abc123",
+      source: src,
+      withholdSecrets,
+      runner: async () => ({ returncode: 0, stdout: "ok", stderr: "", timedOut: false, duration: 0.01 }),
+    });
+    await bridge.run({ prompt: "x", isolation: "worktree" }, { agentId: 1 });
+  };
+  const env = (name: string) => JSON.parse(readFileSync(join(out, name), "utf8")) as Record<string, string>;
+  try {
+    Object.assign(process.env, { GH_TOKEN: "not-a-real-token", ANTHROPIC_API_KEY: "not-a-real-key", DOCKER_HOST: "unix:///tmp/odw-test.sock" });
+    await run(true);
+    for (const name of ["setup-true.json", "teardown-true.json"]) {
+      const seenEnv = env(name);
+      assert.equal(seenEnv.GH_TOKEN, undefined, name);
+      assert.equal(seenEnv.ANTHROPIC_API_KEY, undefined, name);
+      assert.equal(seenEnv.DOCKER_HOST, "unix:///tmp/odw-test.sock", name);
+      assert.equal(seenEnv.PATH, process.env.PATH, name);
+      assert.equal(seenEnv.ODW_SLOT, "odw-abc123-1", name);
+    }
+    await run(false);
+    assert.equal(env("setup-false.json").GH_TOKEN, "not-a-real-token", "the user's own input: as before");
+  } finally {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    rmSync(src, { recursive: true, force: true });
+    rmSync(out, { recursive: true, force: true });
+  }
+});
+
 test("worktreeTeardown and worktreeTeardownTimeout load, default, and reject malformed values", () => {
   const defaults = defaultConfig().settings;
   assert.equal(defaults.worktreeTeardown, null);

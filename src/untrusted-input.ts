@@ -11,6 +11,9 @@
  *
  *   - its agents are `permissions: "read"` unless the run's permissions were
  *     given (`--permissions`, a trigger's `"permissions"`);
+ *   - a `worktreeSetup` or `worktreeTeardown` the repository's own config
+ *     sets does not run, and one of the user's runs without the secret-named
+ *     and vendors' variables (docker's and compose's kept);
  *   - agent CLIs start with `agentEnv: "minimal"`, with no other vendor's
  *     variables (claude gets no `OPENAI_*`, gemini no `GOOGLE_APPLICATION_CREDENTIALS`),
  *     and with no secret-named variable (`GH_TOKEN`, `GITHUB_TOKEN`,
@@ -132,6 +135,30 @@ export function withholdSecrets(
   const out: Record<string, string | undefined> = {};
   for (const [name, value] of Object.entries(env)) {
     if ((isSecretName(name) || vendor(name)) && !login(name)) continue;
+    out[name] = value;
+  }
+  return out;
+}
+
+/** What a worktree's setup and teardown keep of the withheld variables: what docker and compose read. */
+const SETUP_KEEP = ["DOCKER_*", "COMPOSE_*"];
+
+/**
+ * `env` as a run with untrusted input's `worktreeSetup` and `worktreeTeardown`
+ * get it: without the secret-named variables and any vendor's (no agent CLI
+ * logs in there), but with docker's and compose's (`DOCKER_HOST`,
+ * `DOCKER_CONFIG`, `COMPOSE_FILE`, …) and everything else — `PATH`, `HOME` —
+ * a command needs to run.
+ */
+export function withholdSetupSecrets(
+  env: Record<string, string | undefined>,
+  platform: NodeJS.Platform = process.platform,
+): Record<string, string | undefined> {
+  const keep = globMatcher(SETUP_KEEP, platform === "win32");
+  const vendor = globMatcher(VENDOR_GLOBS, platform === "win32");
+  const out: Record<string, string | undefined> = {};
+  for (const [name, value] of Object.entries(env)) {
+    if ((isSecretName(name) || vendor(name)) && !keep(name)) continue;
     out[name] = value;
   }
   return out;

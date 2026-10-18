@@ -20,6 +20,7 @@ import {
   taintedArgs,
   untrustedInputOf,
   withholdSecrets,
+  withholdSetupSecrets,
   withoutWebTools,
   type UntrustedInputMeta,
 } from "../src/untrusted-input.js";
@@ -75,6 +76,22 @@ test("an agent of a run with untrusted input gets no other vendor's variables, n
   assert.deepEqual(names("codex", "codex"), [...common, "OPENAI_API_KEY", "OPENAI_BASE_URL"].sort());
   assert.deepEqual(names("gemini", "gemini"), [...common, "GEMINI_API_KEY", "GOOGLE_CLOUD_PROJECT", "GOOGLE_GENAI_USE_VERTEXAI"].sort());
   assert.deepEqual(names("mine", "mine"), common);
+});
+
+test("a worktree's setup and teardown under untrusted input: no secret-named or vendor variable, docker's and compose's kept (review fix)", () => {
+  const env = {
+    PATH: "/bin",
+    HOME: "/home/u",
+    GH_TOKEN: "x",
+    ANTHROPIC_API_KEY: "x",
+    OPENAI_BASE_URL: "x",
+    AWS_SECRET_ACCESS_KEY: "x",
+    DOCKER_HOST: "unix:///run/docker.sock",
+    DOCKER_CONFIG: "/home/u/.docker",
+    COMPOSE_FILE: "compose.yaml",
+    LANG: "C",
+  };
+  assert.deepEqual(Object.keys(withholdSetupSecrets(env, "linux")).sort(), ["COMPOSE_FILE", "DOCKER_CONFIG", "DOCKER_HOST", "HOME", "LANG", "PATH"]);
 });
 
 test("a read-only agent of a run with untrusted input and an open network starts without its CLI's web tools", () => {

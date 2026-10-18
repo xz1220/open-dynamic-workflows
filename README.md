@@ -2587,6 +2587,11 @@ takes it (unless the trigger says `"untrusted": false`), and so does
   `GOOGLE_CLOUD_LOCATION` for gemini, …), whatever `agentEnvPass` lists. An adapter's
   own `env` still applies, and `exec()` commands — the workflow author's — get the
   minimal environment plus `agentEnvPass`;
+- **runs no worktree setup or teardown of the repository's:** a `worktreeSetup` or
+  `worktreeTeardown` that the repository's own config sets is dropped, and the run's log
+  says so, as in an [untrusted repository](#untrusted-repositories-odw-extension); one of
+  your own config still runs, without the secret-named and vendors' variables (`PATH`,
+  `HOME`, `DOCKER_*` and `COMPOSE_*` are kept, so docker and compose work);
 - **says loudly when nothing boxes it in:** without a
   [container sandbox](#run-agents-in-containers-odw-extension) whose `network` is an
   allowlist (or `"none"`), the start banner, the run's log and its `run_started` event warn,
