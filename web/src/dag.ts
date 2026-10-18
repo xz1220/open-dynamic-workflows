@@ -105,6 +105,7 @@ export function reasonLabel(reason: string): string {
     mcp_unavailable: t("MCP unavailable"),
     runaway: t("runaway"),
     orphaned_background: t("orphaned background work"),
+    out_of_scope: t("outside its scope"),
   };
   return labels[reason] ?? reason.replace(/_/g, " ");
 }

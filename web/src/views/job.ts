@@ -193,6 +193,7 @@ function notesTab(run: RunDetail): string {
           `<header><span class="pin" aria-hidden="true"></span><span class="ix mono">#${n.noteId}</span>` +
           `<span class="by">${esc(n.by.label)}</span><span class="dim mono">${fmtClock(n.ts)}</span>` +
           (n.kind === "interface" ? `<span class="tag">${t("interface")}</span>` : "") +
+          (n.kind === "scope" ? `<span class="tag warn">${t("outside its scope")}</span>` : "") +
           (n.redacted ? `<span class="tag warn">${t("redacted")}</span>` : "") +
           `</header>` +
           (n.kind === "interface" ? `<pre class="slip-code">${markRedactions(esc(n.text))}</pre>` : `<p>${markRedactions(esc(n.text))}</p>`) +
@@ -409,6 +410,13 @@ function drawer(run: RunDetail, ai: number, nowSec: number): string {
     (a.orphaned?.length
       ? `<div class="drawer-sec">${t("Left running")}</div><ul class="denied orphaned">${a.orphaned.map((o) => `<li>${esc(o)}</li>`).join("")}</ul>` +
         `<p class="dnote">${t("It replied while this background work still ran; it died when the CLI exited, so the reply may rest on work that never finished.")}</p>`
+      : "") +
+    (a.scope?.length
+      ? `<div class="drawer-sec">${t("Scope")}</div><ul class="scope mono">${a.scope.map((g) => `<li>${esc(g)}</li>`).join("")}</ul>`
+      : "") +
+    (a.outOfScope?.length
+      ? `<div class="drawer-sec">${t("Outside its scope")}</div><ul class="denied out-of-scope">${a.outOfScope.map((f) => `<li>${esc(f)}</li>`).join("")}</ul>` +
+        `<p class="dnote">${t("It changed these files outside the scope it declared — another agent may be changing them too.")}</p>`
       : "") +
     changesSection(run, a, ai, rec?.branch) +
     output +
