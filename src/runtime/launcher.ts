@@ -23,7 +23,7 @@ import { isSeaBinary } from "../sea.js";
 import { resolveRunTrust } from "../untrusted.js";
 import { resolveWorkflow, type ResolvedWorkflow } from "../workflows/resolve.js";
 import { RunObserver } from "./run-liveness.js";
-import { RunStore, type EvalRunTag, type ResolveLink } from "./run-store.js";
+import { RunStore, type BreakSpec, type EvalRunTag, type ReplayLink, type ResolveLink } from "./run-store.js";
 
 export interface StartRunOptions {
   args?: unknown;
@@ -67,6 +67,18 @@ export interface StartRunOptions {
    * instead of running again.
    */
   resumedFrom?: { runId: string; dir: string } | null;
+  /** `odw run --dry` (ODW extension): every agent gets a stub, no model is called. */
+  dry?: boolean | null;
+  /** `odw run --record` (ODW extension): keep the run as a case of this test file. */
+  record?: { file: string; workflow: string } | null;
+  /** Where a signed trigger's delivery came from (ODW extension; see ../triggers), kept in meta as `context`. */
+  context?: Record<string, unknown> | null;
+  /** `--deadline <seconds>` (ODW extension): the worker stops the run gracefully once they pass. */
+  deadlineSeconds?: number | null;
+  /** The agent this run dispatches again for `odw replay` (ODW extension; see ./replay), kept in its meta. */
+  replayOf?: ReplayLink | null;
+  /** `odw run --break`/`--step` (ODW extension; see ../breaks): where it stops for a person, kept in its meta. */
+  breaks?: BreakSpec | null;
 }
 
 /**
@@ -105,6 +117,12 @@ function commonCreateInput(options: StartRunOptions, source: string, workflowNam
     eval: options.eval ?? null,
     applyResolve: options.applyResolve ?? null,
     resumedFrom: options.resumedFrom ?? null,
+    dry: options.dry ?? null,
+    record: options.record ?? null,
+    context: options.context ?? null,
+    deadlineSeconds: options.deadlineSeconds ?? null,
+    replayOf: options.replayOf ?? null,
+    breaks: options.breaks ?? null,
   };
 }
 

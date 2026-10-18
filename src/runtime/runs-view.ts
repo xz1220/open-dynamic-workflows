@@ -270,6 +270,8 @@ export interface RunSummary {
    * name, the case, the adapter and the repeat. Absent for every other run.
    */
   eval?: EvalRunTag;
+  /** A dry run (`odw run --dry`; meta.dry, ODW extension): every agent got a stub, no model was called. Absent otherwise. */
+  dry?: true;
 }
 
 export interface RunDetail extends RunSummary {
@@ -798,6 +800,7 @@ export function summaryFrom(runId: string, facts: RunFacts): RunSummary {
     pausedFor: state === "paused" ? pausedForOf(status.pausedFor) : null,
     ...(meta.bundle ? { bundle: bundleOf(meta.bundle) } : {}),
     ...evalTagOf(meta),
+    ...(meta.dry === true ? { dry: true as const } : {}),
   };
 }
 

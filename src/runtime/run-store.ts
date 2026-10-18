@@ -14,7 +14,8 @@
  *                    workflow's sourceHash, sha256, for `odw compare`; origin, and `eval`
  *                    for a run of `odw eval`; applyResolve for a resolver run of
  *                    `odw apply --resolve`, and resolvedBy — appended later — on the
- *                    run whose agent it resolved)
+ *                    run whose agent it resolved; replayOf for a run of `odw replay`; breaks
+ *                    for a run of `odw run --break|--step`)
  *     status.json    mutable state (running/paused/done/failed/stopped, counters)
  *     events.jsonl   append-only progress stream
  *     agents/<agentId>.json  each completed agent()'s result, saved as it lands
@@ -24,6 +25,9 @@
  *     agents/<agentId>.transcript.jsonl  what an agent's CLI printed on stdout, as it ran
  *                    (ODW extension; see ../transcript), and agents/<agentId>.stderr.txt
  *                    the end of its stderr — none for a replayed agent
+ *     agents/<agentId>.call.json  what the call was asked — prompt, options, adapter, model and
+ *                    an isolated agent's base commit — saved as it starts, for `odw replay`
+ *                    (ODW extension; see ../journal AgentCallRecord)
  *     agents/<agentId>.handoff.md  the brief a fallback that handed an agent's work over put in the
  *                    next adapter's prompt (ODW extension; see ../handoff)
  *     agents/<agentId>.schema.json  the schema of an agent whose CLI reads it from a file
@@ -66,7 +70,7 @@ import { basename, join } from "node:path";
 
 import { isCheckpointRequest, type CheckpointRequest } from "../control.js";
 import type { EventSink, WorkflowEvent } from "../events.js";
-import type { AgentResultRecord } from "../journal.js";
+import type { AgentCallRecord, AgentResultRecord } from "../journal.js";
 import { sourceHash } from "../provenance.js";
 import type { Redactor } from "../redact.js";
 import type { TranscriptPaths } from "../transcript.js";
@@ -126,6 +130,48 @@ export interface CreateRunInput {
    * runs roots).
    */
   resumedFrom?: { runId: string; dir: string } | null;
+  /** `odw run --dry` (ODW extension; see ../wftest): every agent gets a stub, no model is called; written to meta only when set. */
+  dry?: boolean | null;
+  /** `odw run --record` (ODW extension): the test file the run is kept in as a case, and the workflow it names; written to meta only when set. */
+  record?: { file: string; workflow: string } | null;
+  /**
+   * Where the run came from when a signed trigger started it (ODW extension;
+   * see ../triggers): written to meta as `context`, handed to notify hooks.
+   */
+  context?: Record<string, unknown> | null;
+  /**
+   * `--deadline <seconds>` (ODW extension): the worker stops the run that many
+   * seconds after it was created. Written to meta as `deadline: { seconds, at }`.
+   */
+  deadlineSeconds?: number | null;
+  /** The agent this run dispatches again for `odw replay` (ODW extension); written to meta only when set. */
+  replayOf?: ReplayLink | null;
+  /** `odw run --break`/`--step` (ODW extension): where the run stops for a person; written to meta only when set. */
+  breaks?: BreakSpec | null;
+}
+
+/**
+ * The agent a run of `odw replay --agent` dispatches again (ODW extension):
+ * the run and agent it came from, its label, and — isolated — the commit its
+ * worktree checked out, which the replay's worktree checks out too. Kept in
+ * meta.json as `replayOf`, beside `origin: "replay"`.
+ */
+export interface ReplayLink {
+  runId: string;
+  agentId: number;
+  label: string;
+  base?: string;
+}
+
+/**
+ * Where `odw run --break <phase|label>[,…]` / `--step` stops the run for a
+ * person (ODW extension; see ../breaks): before the phases and the agents
+ * labelled `at` names, and with `step` before every phase. Kept in meta.json
+ * as `breaks`.
+ */
+export interface BreakSpec {
+  at: string[];
+  step: boolean;
 }
 
 /**
@@ -194,6 +240,7 @@ export class RunStore {
       script = join(dir, "workflow.js");
       writeFileSync(script, input.inlineSource, "utf8");
     }
+    const createdAt = now();
     writeJson(join(dir, META), {
       runId,
       script,
@@ -211,6 +258,12 @@ export class RunStore {
       origin: input.origin ?? null,
       ...(input.eval ? { eval: input.eval } : {}),
       ...(input.applyResolve ? { applyResolve: input.applyResolve } : {}),
+      ...(input.dry ? { dry: true } : {}),
+      ...(input.record ? { record: input.record } : {}),
+      ...(input.context ? { context: input.context } : {}),
+      ...(input.deadlineSeconds ? { deadline: { seconds: input.deadlineSeconds, at: createdAt + input.deadlineSeconds } } : {}),
+      ...(input.replayOf ? { replayOf: input.replayOf } : {}),
+      ...(input.breaks ? { breaks: input.breaks } : {}),
       resumedFrom: input.resumedFrom?.runId ?? null,
       resumedFromDir: input.resumedFrom?.dir ?? null,
       // First-class fact (not inferred from path topology): the script lives in
@@ -221,7 +274,7 @@ export class RunStore {
       // odw's version, and the sha256 of the workflow source as launched.
       odwVersion: VERSION,
       sourceHash: sourceHash(input.inlineSource ?? readText(script)),
-      createdAt: now(),
+      createdAt,
     });
     writeJson(join(dir, STATUS), { runId, state: "pending", dispatched: 0, updatedAt: now() });
     return runId;
@@ -406,6 +459,22 @@ export class RunStore {
     const dir = join(this.runDir(runId), AGENTS);
     mkdirSync(dir, { recursive: true });
     writeJson(join(dir, `${rec.agentId}.json`), { ...rec, value: rec.value ?? null });
+  }
+  /**
+   * Save what one agent() call was asked (ODW extension; see
+   * ../journal AgentCallRecord) as `agents/<agentId>.call.json`, atomically.
+   */
+  writeAgentCall(runId: string, call: AgentCallRecord): void {
+    if (!isAgentId(call.agentId)) throw new Error(`invalid agentId ${String(call.agentId)}`);
+    const dir = join(this.runDir(runId), AGENTS);
+    mkdirSync(dir, { recursive: true });
+    writeJson(join(dir, `${call.agentId}.call.json`), call);
+  }
+  /** What agent `agentId` was asked, or null when the run saved no call for it (a run from before odw 0.7). */
+  readAgentCall(runId: string, agentId: number): AgentCallRecord | null {
+    if (!isAgentId(agentId)) return null;
+    const call = readJsonFile<AgentCallRecord>(join(this.runDir(runId), AGENTS, `${agentId}.call.json`));
+    return call && typeof call === "object" && typeof call.prompt === "string" && call.agentId === agentId ? call : null;
   }
   /** One saved agent result, or null when that agent has none (not finished, failed, unknown). */
   readAgentResult(runId: string, agentId: number): AgentResultRecord | null {

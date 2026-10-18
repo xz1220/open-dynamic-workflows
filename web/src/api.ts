@@ -15,6 +15,7 @@ import type {
   EvalReportSummary,
   RunComparison,
   RunDetail,
+  WorkflowEstimate,
   RunNote,
   RunSummary,
   ScheduleView,
@@ -92,6 +93,9 @@ export const api = {
   evalReport: (name: string, id: string) => getJSON<EvalReport>(`/api/evals/${enc(name)}/${enc(id)}`),
   /** What changed between two of ODW's runs (B against A). */
   compare: (a: string, b: string) => getJSON<RunComparison>(`/api/compare?a=${enc(a)}&b=${enc(b)}`),
+  /** What a run of a workflow is likely to cost and take, from its earlier runs (ODW extension). */
+  estimate: (workflow: string, sourceHash?: string) =>
+    getJSON<WorkflowEstimate>(`/api/estimate?workflow=${enc(workflow)}${sourceHash ? `&sourceHash=${enc(sourceHash)}` : ""}`),
   events: (id: string, since = 0) =>
     getJSON<WorkflowEvent[]>(`/api/runs/${enc(id)}/events?since=${since}`),
   /** The newest events across runs plus running agents per adapter. */

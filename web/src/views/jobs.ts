@@ -21,6 +21,7 @@ export const HISTORY_PAGE = 100;
 
 function provTag(r: RunSummary): string {
   if (r.bundle) return `<span class="tag bundle">${t("shared bundle")}</span>`;
+  if (r.dry) return `<span class="tag dry" title="${t("every agent answered by a stub: it cost nothing")}">${t("dry run")}</span>`;
   return r.provider === "claude" ? `<span class="tag cc" title="${t("Claude Code workflow — observed read-only")}">Claude Code</span>` : "";
 }
 

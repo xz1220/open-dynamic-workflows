@@ -207,7 +207,8 @@ export function parseAdapterList(raw: unknown, fail: (message: string) => never)
   return names;
 }
 
-function parseCheck(raw: unknown, at: string, fail: (where: string, message: string) => never): EvalCheck {
+/** Validate one check (see the module comment); `at` names where it sits for `fail`. Also what `odw test` checks with. */
+export function parseCheck(raw: unknown, at: string, fail: (where: string, message: string) => never): EvalCheck {
   const kinds = CHECK_KINDS.map((k) => k.key).join(", ");
   if (!isRecord(raw)) fail(at, `must be a check object (one of ${kinds}); got ${describe(raw)}`);
   const check = raw as Record<string, unknown>;

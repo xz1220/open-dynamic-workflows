@@ -658,4 +658,6 @@ export const DEFAULT_SETTINGS: Settings = {
   sandbox: "none", // agent CLIs run on this machine; { kind: "container", image, … } runs each in a container
   agentLimits: {}, // no per-agent limits; { toolCalls, costUsd, outputTokens, seconds, repeat } kills a runaway agent
   approveLinks: { ttl: 86_400 }, // a checkpoint's approve/reject links (odw serve --public-url) are valid 24h
+  triggers: {}, // no inbound triggers: odw serve starts no run from a webhook
+  costGate: null, // no fan-out waits for a go; { usd } asks before one forecast to cost more
 };

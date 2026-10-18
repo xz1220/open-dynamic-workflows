@@ -145,7 +145,7 @@ test("an isolated agent's change is kept as a diff: edits, new, deleted, renamed
     // The source tree is untouched, the worktree gone, nothing left beside the diff — and it applies.
     assert.equal(git(src, "status", "--porcelain"), "");
     assert.equal(worktrees(src), 1);
-    assert.deepEqual(readdirSync(dirname(file)).sort(), ["1.diff", "1.json", "1.transcript.jsonl"]);
+    assert.deepEqual(readdirSync(dirname(file)).sort(), ["1.call.json", "1.diff", "1.json", "1.transcript.jsonl"]);
     git(src, "apply", "--check", file);
   } finally {
     cleanup(root, src);
@@ -171,7 +171,8 @@ test("no diff is kept when an isolated agent changed nothing, nor for an agent i
       assert.equal("changes" in terminal(store, id, agentId), false);
     }
     assert.deepEqual(
-      detail(store, id).agents.map((a) => [a.label, a.changes, a.branch]),
+      // In call order: an isolated agent resolves its base commit first, so it may start second.
+      [...detail(store, id).agents].sort((x, y) => (x.agentId ?? 0) - (y.agentId ?? 0)).map((a) => [a.label, a.changes, a.branch]),
       [
         ["idle", null, null],
         ["here", null, null],
@@ -323,7 +324,7 @@ test("keep: true commits the change to odw/<run>/<agent>-<label>; the user's bra
     assert.equal(terminal(store, id, 1).branch, branch);
     assert.equal(store.readAgentResult(id, 1)?.branch, branch);
     assert.deepEqual(
-      detail(store, id).agents.map((a) => [a.label, a.changes?.files ?? 0, a.branch]),
+      [...detail(store, id).agents].sort((x, y) => (x.agentId ?? 0) - (y.agentId ?? 0)).map((a) => [a.label, a.changes?.files ?? 0, a.branch]),
       [
         ["Fix: Auth!", 1, branch],
         ["plain", 1, null],

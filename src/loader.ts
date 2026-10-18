@@ -31,7 +31,7 @@
 
 import { Script } from "node:vm";
 
-import { WorkflowScriptError } from "./errors.js";
+import { WorkflowScriptError, type SourceLocation } from "./errors.js";
 import type { WorkflowGlobals } from "./primitives.js";
 import { phaseDefaultsOf, type AdapterChoice } from "./routing.js";
 
@@ -136,7 +136,7 @@ export function readWorkflowMeta(source: string, filename: string): WorkflowMeta
 
 /** Parse + transform a workflow script's source into a runnable form. */
 export function loadWorkflowScript(source: string, filename: string): LoadedWorkflow {
-  const { meta, body } = extractMeta(source, filename);
+  const { meta, body, metaAt } = extractMeta(source, filename);
   // The defaults its phases give their agents (an ODW extension) must be
   // usable before the body runs; a listing reads only the titles.
   for (const [i, entry] of (Array.isArray(meta.phases) ? meta.phases : []).entries()) {
@@ -144,7 +144,7 @@ export function loadWorkflowScript(source: string, filename: string): LoadedWork
     try {
       phaseDefaultsOf(entry, `meta.phases[${i}]`);
     } catch (err) {
-      throw new WorkflowScriptError(`workflow ${filename}: ${(err as Error).message}`);
+      throw new WorkflowScriptError(`workflow ${filename}: ${(err as Error).message}`, metaAt);
     }
   }
 
@@ -168,7 +168,7 @@ export function loadWorkflowScript(source: string, filename: string): LoadedWork
     const wrapped = `(async function (${paramNames.join(", ")}) {\n${body}\n})`;
     factory = new Script(wrapped, { filename, lineOffset: -1 }).runInThisContext() as typeof factory;
   } catch (err) {
-    throw new WorkflowScriptError(`failed to compile workflow ${filename}: ${(err as Error).message}`);
+    throw compileError(err, body, paramNames, filename);
   }
 
   return {
@@ -189,6 +189,86 @@ export function loadWorkflowScript(source: string, filename: string): LoadedWork
       );
     },
   };
+}
+
+/**
+ * A body that does not compile, told as the compiler sees it: its message,
+ * with the line and column (the body keeps the source's lines and columns),
+ * and a hint only where the cause is plausible — TypeScript only when a
+ * TypeScript token is at fault, an `await` in a callback that is not async,
+ * a script that ends before something it opened is closed. (A message that
+ * blames TypeScript for every parse error sends people looking for type
+ * annotations that are not there: anthropics/claude-code#63540.)
+ */
+function compileError(err: unknown, body: string, paramNames: string[], filename: string): WorkflowScriptError {
+  let message = err instanceof Error ? err.message : String(err);
+  const at = err instanceof SyntaxError ? syntaxLocation(body, paramNames, filename) : null;
+  if (!at) return new WorkflowScriptError(`failed to compile workflow ${filename}: ${message}`);
+  const lines = body.split(/\r\n|[\n\r\u2028\u2029]/);
+  let { line, column } = at;
+  let hint: string | null = null;
+  if (line > lines.length) {
+    // The error is on the wrapper's closing line: the script ended first.
+    line = lines.length;
+    while (line > 1 && (lines[line - 1] ?? "").trim() === "") line--;
+    column = (lines[line - 1] ?? "").length + 1;
+    hint = "the script ends before a bracket, brace, parenthesis or template literal it opened is closed";
+  } else {
+    hint = syntaxHint(message, lines[line - 1] ?? "", column);
+  }
+  if (at.message) message = at.message;
+  return new WorkflowScriptError(
+    `failed to compile workflow ${filename}: ${message} (line ${line}:${column})${hint ? ` — ${hint}` : ""}`,
+    { line, column },
+  );
+}
+
+/**
+ * Where the compiler stops on the body, read off the SyntaxError a compile of
+ * the wrapped body throws (`<filename>:<line>`, the source line, a caret
+ * under the column). Compiled, never run. Null when it compiles that way (a
+ * body that closes the wrapper early) or the error says no position.
+ */
+function syntaxLocation(
+  body: string,
+  paramNames: string[],
+  filename: string,
+): { line: number; column: number; message: string } | null {
+  try {
+    new Script(`(async function (${paramNames.join(", ")}) {\n${body}\n})`, { filename, lineOffset: -1 });
+    return null;
+  } catch (err) {
+    if (!(err instanceof SyntaxError) || typeof err.stack !== "string") return null;
+    const [head, , caret] = err.stack.split("\n");
+    const line = Number(/:(\d+)$/.exec(head ?? "")?.[1]);
+    const column = (caret ?? "").indexOf("^") + 1;
+    if (!Number.isSafeInteger(line) || line < 1 || column < 1) return null;
+    return { line, column, message: err.message };
+  }
+}
+
+/** Words after which an identifier is a TypeScript declaration, not JavaScript. */
+const TS_DECLARATIONS = new Set(["interface", "type", "enum", "declare", "namespace", "abstract", "implements"]);
+
+/** A hint for a syntax error at `column` (1-based) of `text`, only where its cause is plausible; else null. */
+function syntaxHint(message: string, text: string, column: number): string | null {
+  const rest = text.slice(column - 1);
+  const before = text.slice(0, column - 1);
+  const token = /^[\p{ID_Start}$_][\p{ID_Continue}$]*/u.exec(rest)?.[0] ?? rest.charAt(0);
+  const typescript = "this is TypeScript syntax; workflow scripts are plain JavaScript, so remove the types";
+  if (token === "await") {
+    return "`await` inside a function that is not async; mark that callback async, e.g. `async (x) => await agent(x)`";
+  }
+  // `const x: string[] = …`: the compiler stops at the name, which a type follows.
+  if (/Missing initializer/.test(message) && /^[\p{ID_Start}$_][\p{ID_Continue}$]*\s*:/u.test(rest)) return typescript;
+  // `function f(a: number)`, `(x): string =>`: a colon right after a name or `)`, a type after it.
+  if (token === ":" && /[\p{ID_Continue}$)?]\s*$/u.test(before) && /^:\s*[\p{ID_Start}$_][\p{ID_Continue}$.]*\s*(?:\[\]|<|[)>,=;|&{]|$)/u.test(rest)) {
+    return typescript;
+  }
+  // `interface Foo {`, `type Foo = …`, `enum Color {`, `x as Foo`.
+  const word = /([\p{ID_Start}$_][\p{ID_Continue}$]*)\s*$/u.exec(before)?.[1];
+  if (/^Unexpected identifier/.test(message) && ((word && TS_DECLARATIONS.has(word)) || token === "as")) return typescript;
+  return null;
 }
 
 /**
@@ -263,9 +343,12 @@ export function readMetaLiteral(source: string): Record<string, unknown> | null 
   return decl ? parseMetaLiteral(source, decl.valueStart) : null;
 }
 
-/** The meta declaration is not a pure literal; the message says what and where. */
+/** The meta declaration is not a pure literal; the message says what and where (`location`, 1-based). */
 export class MetaLiteralError extends Error {
-  constructor(message: string) {
+  constructor(
+    message: string,
+    readonly location?: SourceLocation,
+  ) {
     super(message);
     this.name = "MetaLiteralError";
   }
@@ -273,42 +356,52 @@ export class MetaLiteralError extends Error {
 
 // --- internals ---------------------------------------------------------------
 
-function extractMeta(source: string, filename: string): { meta: WorkflowMeta; body: string } {
+function extractMeta(source: string, filename: string): { meta: WorkflowMeta; body: string; metaAt: SourceLocation } {
   const masked = maskCode(source);
 
   const decl = locateMeta(masked);
   if (!decl) {
-    throw new WorkflowScriptError(`workflow ${filename} must 'export const meta = { ... }'`);
+    // A meta declared but not as `export const` is told so: the message names what was found, and where.
+    const near = /\b(?:export\s+)?(?:let|var|const)\s+meta\s*=|\bexport\s+default\b/.exec(masked);
+    const found = near ? `; found '${near[0].replace(/\s+/g, " ").replace(/\s*=$/, "")}'` : "";
+    throw new WorkflowScriptError(
+      `workflow ${filename} must 'export const meta = { ... }'${found}`,
+      near ? locationAt(source, near.index) : undefined,
+    );
   }
   const { exportStart } = decl;
   const exportLen = "export".length;
+  const metaAt = locationAt(source, exportStart);
 
   let meta: Record<string, unknown>;
   try {
     meta = parseMetaLiteral(source, decl.valueStart);
   } catch (err) {
     if (err instanceof MetaLiteralError) {
-      throw new WorkflowScriptError(`workflow ${filename}: ${err.message}`);
+      throw new WorkflowScriptError(`workflow ${filename}: ${err.message}`, err.location);
     }
     throw err;
   }
-  assertMeta(meta, filename);
+  assertMeta(meta, filename, metaAt);
 
   // Reject any *other* top-level export/import: blank the meta `export` keyword
   // in the masked copy, then look for a stray one outside strings/comments.
   const restMasked =
     masked.slice(0, exportStart) + " ".repeat(exportLen) + masked.slice(exportStart + exportLen);
-  if (/\b(?:export|import)\b/.test(restMasked)) {
+  const stray = /\b(?:export|import)\b/.exec(restMasked);
+  if (stray) {
     throw new WorkflowScriptError(
       `workflow ${filename}: a workflow body may only 'export const meta'; other top-level ` +
         `export/import statements are not supported (the primitives are injected, not imported)`,
+      locationAt(source, stray.index),
     );
   }
 
-  // Strip just the `export` keyword; keep `const meta = <literal>` in the body
-  // so the body remains a valid statement sequence.
-  const body = source.slice(0, exportStart) + source.slice(exportStart + exportLen);
-  return { meta, body };
+  // Blank just the `export` keyword; keep `const meta = <literal>` in the body
+  // so the body remains a valid statement sequence — with every line and
+  // column where the source has it, for the compiler's error positions.
+  const body = source.slice(0, exportStart) + " ".repeat(exportLen) + source.slice(exportStart + exportLen);
+  return { meta, body, metaAt };
 }
 
 /** Where `export const meta =` is, found in the masked source; null if absent. */
@@ -317,16 +410,16 @@ function locateMeta(masked: string): { exportStart: number; valueStart: number }
   return match ? { exportStart: match.index, valueStart: match.index + match[0].length } : null;
 }
 
-function assertMeta(meta: unknown, filename: string): asserts meta is WorkflowMeta {
+function assertMeta(meta: unknown, filename: string, at?: SourceLocation): asserts meta is WorkflowMeta {
   if (meta === null || typeof meta !== "object" || Array.isArray(meta)) {
-    throw new WorkflowScriptError(`workflow ${filename}: meta must be an object`);
+    throw new WorkflowScriptError(`workflow ${filename}: meta must be an object`, at);
   }
   const m = meta as Record<string, unknown>;
   if (typeof m.name !== "string" || m.name.length === 0) {
-    throw new WorkflowScriptError(`workflow ${filename}: meta.name must be a non-empty string`);
+    throw new WorkflowScriptError(`workflow ${filename}: meta.name must be a non-empty string`, at);
   }
   if (typeof m.description !== "string") {
-    throw new WorkflowScriptError(`workflow ${filename}: meta.description must be a string`);
+    throw new WorkflowScriptError(`workflow ${filename}: meta.description must be a string`, at);
   }
   // A phase given as a plain string is its title.
   if (Array.isArray(m.phases)) {
@@ -550,6 +643,7 @@ class MetaLiteralParser {
       if (literal) {
         throw new MetaLiteralError(
           `meta must be an object literal (found ${this.describe(start)} at line ${this.lineCol(start)})`,
+          locationAt(this.src, start),
         );
       }
       throw this.fail(`found ${this.describe(start)}`, start);
@@ -849,20 +943,26 @@ class MetaLiteralParser {
   }
 
   private fail(what: string, at: number): MetaLiteralError {
-    return new MetaLiteralError(`meta must be a pure literal (${what} at line ${this.lineCol(at)})`);
+    return new MetaLiteralError(`meta must be a pure literal (${what} at line ${this.lineCol(at)})`, locationAt(this.src, at));
   }
 
   /** 1-based `line:column` of `at` in the whole source. */
   private lineCol(at: number): string {
-    let line = 1;
-    let lineStart = 0;
-    for (let i = 0; i < at; i++) {
-      const c = this.src[i];
-      if (c === "\n" || c === "\u2028" || c === "\u2029" || (c === "\r" && this.src[i + 1] !== "\n")) {
-        line++;
-        lineStart = i + 1;
-      }
-    }
-    return `${line}:${at - lineStart + 1}`;
+    const { line, column } = locationAt(this.src, at);
+    return `${line}:${column}`;
   }
+}
+
+/** The 1-based line and column of offset `at` in `src` (every JS line terminator ends a line). */
+export function locationAt(src: string, at: number): SourceLocation {
+  let line = 1;
+  let lineStart = 0;
+  for (let i = 0; i < at; i++) {
+    const c = src[i];
+    if (c === "\n" || c === "\u2028" || c === "\u2029" || (c === "\r" && src[i + 1] !== "\n")) {
+      line++;
+      lineStart = i + 1;
+    }
+  }
+  return { line, column: at - lineStart + 1 };
 }

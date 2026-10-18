@@ -20,9 +20,11 @@ import { cpus, homedir } from "node:os";
 import { dirname, join } from "node:path";
 
 import { AdapterNotFound, ConfigError } from "../errors.js";
+import { readCostGate } from "../forecast.js";
 import { readLimits } from "../limits.js";
 import { extraProblem } from "../redact.js";
 import { TIER_NAME } from "../routing.js";
+import { buildTriggers } from "../triggers.js";
 import { BUILTIN_ADAPTERS, DEFAULT_SETTINGS, type RawAdapter } from "./builtin.js";
 import { isOnPath } from "./executable.js";
 import { CONFIGURABLE_REASONS } from "./failures.js";
@@ -150,6 +152,8 @@ const KNOWN_TOP_KEYS = [
   "sandbox",
   "agentLimits",
   "approveLinks",
+  "triggers",
+  "costGate",
 ] as const;
 
 const KNOWN_ADAPTER_KEYS = ["command", "stdin", "env", "timeout", "stallTimeout", "concurrency", "promptCache", "label", "flags", "output", "failures", "permissionArgs", "permissions", "permissionDenials", "trust", "untrustedArgs", "untrustedNote", "sandbox", "agentLimits", "egressHosts"] as const;
@@ -1234,6 +1238,8 @@ function buildSettings(raw: Record<string, unknown>): Settings {
     sandbox: raw["sandbox"] == null ? DEFAULT_SETTINGS.sandbox : buildSandboxSetting(raw["sandbox"]),
     agentLimits: raw["agentLimits"] == null ? {} : readLimits(raw["agentLimits"], '"agentLimits"', (m) => new ConfigError(m)),
     approveLinks: raw["approveLinks"] == null ? { ...DEFAULT_SETTINGS.approveLinks } : buildApproveLinks(raw["approveLinks"]),
+    triggers: raw["triggers"] == null ? {} : buildTriggers(raw["triggers"]),
+    costGate: raw["costGate"] == null ? DEFAULT_SETTINGS.costGate : readCostGate(raw["costGate"], '"costGate"', (m) => new ConfigError(m)),
   };
 }
 

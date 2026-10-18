@@ -1,0 +1,57 @@
+{
+  "workflow": "examples/review-swarm.js",
+  "description": "review-swarm.js at $0: scripted replies, no model. From the repository root: odw test examples/tests/review-swarm.json",
+  "cases": [
+    {
+      "name": "a real finding survives verification, a false one does not",
+      "args": { "lenses": ["correctness", "security"] },
+      "replies": [
+        { "label": "map", "reply": { "summary": "adds a read-through cache", "files": ["src/cache.ts"], "risks": ["invalidation"] } },
+        {
+          "label": "review:correctness",
+          "reply": { "findings": [{ "title": "stale read after write", "file": "src/cache.ts", "line": 42, "severity": "high", "rationale": "set() never invalidates" }] }
+        },
+        {
+          "label": "review:security",
+          "reply": { "findings": [{ "title": "cache key leaks user id", "severity": "low", "rationale": "keys are logged" }] }
+        },
+        { "label": "verify:correctness", "reply": { "real": true, "reason": "set() at line 42 skips the invalidation" } },
+        { "label": "verify:security", "reply": { "real": false, "reason": "keys are hashed before logging" } }
+      ],
+      "expect": {
+        "checks": [
+          { "path": "confirmed[0].title", "equals": "stale read after write" },
+          { "path": "confirmed[0].evidence", "contains": "line 42" },
+          { "path": "rejected", "equals": 1 },
+          { "path": "summary", "equals": "adds a read-through cache" }
+        ],
+        "agents": { "count": 5, "labels": ["map", "review:correctness", "review:security", "verify:correctness", "verify:security"] },
+        "logs": ["2 candidate findings from 2 lenses", "1 of 2 findings survived verification"]
+      }
+    },
+    {
+      "name": "a reviewer that keeps failing leaves its lens out; the run goes on",
+      "args": { "lenses": ["correctness", "security"] },
+      "replies": [
+        { "label": "map", "reply": { "summary": "s", "files": [] }, "schemaMiss": 1 },
+        { "label": "review:security", "fail": "rate_limit" },
+        { "label": "review:*", "reply": { "findings": [{ "title": "off by one", "severity": "medium", "rationale": "loop bound" }] } },
+        { "label": "verify:*", "reply": { "real": true, "reason": "confirmed" } }
+      ],
+      "expect": {
+        "checks": [{ "path": "confirmed", "contains": { "title": "off by one", "severity": "medium", "rationale": "loop bound", "lens": "correctness", "evidence": "confirmed" } }],
+        "agents": { "count": 4 },
+        "logs": ["1 candidate findings from 2 lenses"]
+      }
+    },
+    {
+      "name": "nothing found: nothing to verify",
+      "default": { "dry": true },
+      "expect": {
+        "checks": [{ "path": "confirmed", "equals": [] }, { "path": "rejected", "equals": 0 }],
+        "agents": { "count": 6 },
+        "logs": ["0 candidate findings from 5 lenses"]
+      }
+    }
+  ]
+}

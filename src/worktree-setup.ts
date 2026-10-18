@@ -89,6 +89,12 @@ export interface WorktreeSetupOptions {
   untrusted?: boolean;
   /** Receives what an untrusted run refused to do, for the run's log (once per run is the caller's to keep). */
   onRefused?: (message: string) => void;
+  /**
+   * The commit the worktree checks out, in place of the source's HEAD: the
+   * base its agent_started event names (ODW extension; `odw replay` starts a
+   * replayed agent where the original started). A full hex commit id.
+   */
+  base?: string;
 }
 
 /** The lines of a `.worktreeinclude`: the patterns to copy, and the `symlink:` ones to link. */

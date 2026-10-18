@@ -34,6 +34,14 @@
  * `pausedFor: { reason: "quota", adapter, resumeAt }`). A pause never fires
  * the run-end hooks.
  *
+ * A run a signed trigger started (an ODW extension; see ../triggers) carries
+ * its `context` — the trigger, the provider, and the source event's type,
+ * delivery id, subject id and URL, repository, Slack channel and thread, as
+ * far as the delivery had them — in every payload (`context`) and to a
+ * command as ODW_TRIGGER, ODW_EVENT_ID, ODW_EVENT_URL and ODW_CONTEXT (the
+ * object as JSON), so a hook can answer on the issue or thread the work came
+ * from. Other runs have neither.
+ *
  * A webhook's payload leaves the machine: its likely secrets are redacted
  * first (an ODW extension; see ../redact) — an error quoting an agent's output
  * included — and a payload that had any carries `redacted: true`.
@@ -47,6 +55,7 @@ import { cliOk, type NotifySettings, type RunEndState } from "../adapters/types.
 import type { WaitingCheckpoint } from "../checkpoint.js";
 import { pausedText, type PausedFor, type QuotaPause } from "../quota-wait.js";
 import type { Redactor } from "../redact.js";
+import type { TriggerContext } from "../triggers.js";
 import { ntfyActions, type MintResult } from "./approve-links.js";
 import type { RunStore } from "./run-store.js";
 import { countAgents, foldAgents } from "./runs-view.js";
@@ -70,7 +79,8 @@ export interface RunEnd {
   /** Why a failed run failed, or what stopped a stopped one. */
   error?: string;
   /** result.json, when the run wrote one (successful runs only). */
-  resultFile: string | null;
+  resultFile: string | null;  /** Where a signed trigger's delivery came from (ODW extension), when one started the run. */
+  context?: TriggerContext;
 }
 
 /** What the hooks are told about a run whose checkpoint() waits for a person ("waiting"). */
@@ -83,7 +93,8 @@ export interface RunWaiting {
   /** Whole seconds from creation to the checkpoint. */
   durationSec: number;
   counts: { agents: number; done: number; failed: number };
-  checkpoint: WaitingCheckpoint;
+  checkpoint: WaitingCheckpoint;  /** Where a signed trigger's delivery came from (ODW extension), when one started the run. */
+  context?: TriggerContext;
 }
 
 /** What the hooks are told about a run that pauses for an adapter's spent quota ("paused"; ODW extension: quotaWait). */
@@ -96,7 +107,8 @@ export interface RunPaused {
   /** Whole seconds from creation to the pause. */
   durationSec: number;
   counts: { agents: number; done: number; failed: number };
-  pausedFor: PausedFor;
+  pausedFor: PausedFor;  /** Where a signed trigger's delivery came from (ODW extension), when one started the run. */
+  context?: TriggerContext;
 }
 
 export interface NotifyOptions {
@@ -209,6 +221,7 @@ export function describeRunEnd(store: RunStore, runId: string, state: RunEndStat
     counts: { agents, done, failed },
     ...(error !== undefined ? { error } : {}),
     resultFile: store.hasResult(runId) ? join(runDir, "result.json") : null,
+    ...contextOf(meta),
   };
 }
 
@@ -227,6 +240,7 @@ export function describeWaiting(store: RunStore, runId: string, checkpoint: Wait
     durationSec: createdAt === null ? 0 : Math.max(0, Math.round(checkpoint.since - createdAt)),
     counts: { agents, done, failed },
     checkpoint: { ...checkpoint },
+    ...contextOf(meta),
   };
 }
 
@@ -245,6 +259,7 @@ export function describePaused(store: RunStore, runId: string, pause: QuotaPause
     durationSec: createdAt === null ? 0 : Math.max(0, Math.round(now / 1000 - createdAt)),
     counts: { agents, done, failed },
     pausedFor: { reason: "quota", adapter: pause.adapter, resumeAt: pause.resumeAt },
+    ...contextOf(meta),
   };
 }
 
@@ -260,6 +275,7 @@ export function pausedEnv(paused: RunPaused): Record<string, string> {
     ODW_FAILED_AGENTS: String(paused.counts.failed),
     ODW_PAUSED_ADAPTER: paused.pausedFor.adapter,
     ODW_RESUME_AT: String(Math.round(paused.pausedFor.resumeAt)),
+    ...contextEnv(paused.context),
   };
 }
 
@@ -274,6 +290,7 @@ export function pausedPayload(paused: RunPaused): Record<string, unknown> {
     durationSec: paused.durationSec,
     counts: paused.counts,
     pausedFor: paused.pausedFor,
+    ...(paused.context ? { context: paused.context } : {}),
     text,
     content: text,
     allowed_mentions: { parse: [] },
@@ -300,6 +317,7 @@ export function notifyEnv(end: RunEnd): Record<string, string> {
     ODW_DURATION_SEC: String(end.durationSec),
     ODW_AGENTS: String(end.counts.agents),
     ODW_FAILED_AGENTS: String(end.counts.failed),
+    ...contextEnv(end.context),
   };
 }
 
@@ -316,6 +334,7 @@ export function waitingEnv(waiting: RunWaiting): Record<string, string> {
     ODW_CHECKPOINT_ID: String(waiting.checkpoint.checkpointId),
     // An environment value cannot hold a NUL byte.
     ODW_CHECKPOINT_TITLE: waiting.checkpoint.title.replace(/\0/g, ""),
+    ...contextEnv(waiting.context),
   };
 }
 
@@ -330,6 +349,7 @@ export function waitingPayload(waiting: RunWaiting): Record<string, unknown> {
     durationSec: waiting.durationSec,
     counts: waiting.counts,
     checkpoint: waiting.checkpoint,
+    ...(waiting.context ? { context: waiting.context } : {}),
     text,
     content: text,
     allowed_mentions: { parse: [] },
@@ -392,6 +412,7 @@ export function webhookPayload(end: RunEnd): Record<string, unknown> {
     durationSec: end.durationSec,
     counts: end.counts,
     ...(end.error !== undefined ? { error: end.error } : {}),
+    ...(end.context ? { context: end.context } : {}),
     text,
     content: text,
     // Discord: never ping anyone from a run's text (a generated workflow's
@@ -454,6 +475,10 @@ const OPTIONAL_HOOK_VARS = [
   "ODW_LINKS_EXPIRE_AT",
   "ODW_NTFY_ACTIONS",
   "ODW_LINKS_UNAVAILABLE",
+  "ODW_TRIGGER",
+  "ODW_EVENT_ID",
+  "ODW_EVENT_URL",
+  "ODW_CONTEXT",
 ];
 
 async function runHookCommand(
@@ -522,6 +547,29 @@ async function firstChunk(res: Response): Promise<string> {
   } catch {
     return "";
   }
+}
+
+/** `{ context }` of a run a signed trigger started (meta.context, ODW extension), else nothing. */
+export function contextOf(meta: Record<string, unknown>): { context?: TriggerContext } {
+  const ctx = meta.context;
+  if (ctx === null || typeof ctx !== "object" || Array.isArray(ctx)) return {};
+  const { trigger, provider } = ctx as Record<string, unknown>;
+  if (typeof trigger !== "string" || typeof provider !== "string") return {};
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(ctx)) if (typeof value === "string") out[key] = value;
+  return { context: out as unknown as TriggerContext };
+}
+
+/** What a notify command gets of a run's trigger context (ODW extension): nothing for other runs. */
+export function contextEnv(context: TriggerContext | undefined): Record<string, string> {
+  if (!context) return {};
+  // An environment value cannot hold a NUL byte (the context has none: see ../triggers).
+  return {
+    ODW_TRIGGER: context.trigger,
+    ...(context.id ? { ODW_EVENT_ID: context.id } : {}),
+    ...(context.url ? { ODW_EVENT_URL: context.url } : {}),
+    ODW_CONTEXT: JSON.stringify(context),
+  };
 }
 
 function seconds(value: unknown): number | null {

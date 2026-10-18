@@ -493,3 +493,25 @@ installTest("does not move a new binary into the target of a directory symlink",
   assert.equal(readFileSync(join(f.binDir, "odw"), "utf8"), binary);
   f.assertClean();
 });
+
+installTest("ODW_SKILL=0 installs the verified binary alone: no skill, no odw init (the GitHub Action's install)", (t) => {
+  const f = fixture(t);
+  const result = f.run({ ODW_VERSION: "1.2.3", ODW_SKILL: "0" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(readFileSync(f.requests, "utf8").trim().split("\n"), [
+    `${repository}/releases/download/v1.2.3/odw-linux-x64.gz`,
+    `${repository}/releases/download/v1.2.3/SHA256SUMS`,
+  ]);
+  assert.match(result.stdout, /verified SHA-256 of odw-linux-x64\.gz against SHA256SUMS/);
+  assert.equal(readFileSync(join(f.binDir, "odw"), "utf8"), binary);
+  assert.equal(existsSync(f.skillDir), false, "no skill installed");
+  assert.equal(existsSync(join(f.root, "init.log")), false, "odw init not run");
+  f.assertClean();
+
+  const bad = fixture(t);
+  bad.sums(`${"0".repeat(64)}  odw-linux-x64.gz\n`);
+  const refused = bad.run({ ODW_VERSION: "1.2.3", ODW_SKILL: "0" });
+  assert.notEqual(refused.status, 0);
+  assert.match(refused.stderr, /Checksum mismatch for odw-linux-x64\.gz/);
+  assert.equal(existsSync(join(bad.binDir, "odw")), false, "nothing installed after a failed check");
+});

@@ -218,6 +218,13 @@ budget-scaled depth — read
 odw run wf.js --wait --args '{"question": "Design a cache."}'   # block and print the result
 ```
 
+When a run must end by a time — a CI job's timeout, the user's "give it ten
+minutes" — add `--deadline <seconds>` (ODW extension): the run is then STOPPED
+when they pass, its finished agents and diffs kept; `--wait` prints `{ state:
+"stopped", reason: "deadline", finished: [{ agentId, label, phase, value }] }`
+and exits 3. `--timeout <s>` is not that: it only stops waiting (exit 124) and
+the run goes on.
+
 For long runs, fire-and-poll instead of blocking yourself:
 
 ```bash
@@ -233,8 +240,16 @@ odw pause $RUN / resume $RUN / stop $RUN
 odw approve|reject $RUN     # answer a checkpoint() the run waits at — only on the user's say-so
                             # (approve --payload JSON|@file approves the user's edit; --edit needs their terminal)
 odw compare $OLD $RUN       # what changed between two runs: setup, time, cost, failures, replies (ODW extension)
+odw estimate wf.js          # p50/p90 time, cost, tokens, agents of its next run, from its earlier runs (ODW extension)
+                            #   --json for scripts; odw run --estimate prints it and asks y/N first (--yes: just print)
                             #   --agent <label|id>: one agent's whole reply diff; --json for scripts
+odw replay $RUN --agent 3   # that one agent() call again, as a new run, at the commit it saw (ODW extension);
+                            #   --prompt @file|TEXT, --adapter A, --model M replace its own; prints the compare command
+odw run wf.js --break Review  # stop for a decision (a checkpoint) before phase/label "Review"; --step: every phase
+odw check wf.js             # does it load? file:line:col, a code frame, portability warnings; exit 0/1
 odw eval review             # cases × adapters × repeats: pass rate, cost, time per cell (ODW extension; below)
+odw test review             # scripted replies, no model, $0: does the logic hold? (ODW extension; below)
+odw run review --dry        # every agent stubbed: the phase tree and agent counts, $0 (ODW extension)
 odw notes $RUN              # what its agents told each other on the notes board (ODW extension)
 odw list                    # all runs (with a cost column once one reported dollars)
 ```
@@ -447,6 +462,16 @@ checkpoints detached (`RUN=$(odw run wf.js)`) and poll `odw status $RUN`, or
 bound the wait with `--wait --timeout <s>`. `odw resume` replays finished
 agents but asks every checkpoint again.
 
+**Cost gates (ODW extension).** Before a big fan-out, rather than a checkpoint of
+your own, a `costGate` asks only when it matters: with `"costGate": { "usd": 5 }`
+in the config, or `parallel(thunks, { costGate: { usd: 5 } })` (or an `agent()`'s
+`costGate` for one expensive agent), a fan-out forecast — from earlier runs of the
+same workflow — to cost more than that waits at a checkpoint (`This fan-out is
+forecast to cost ~$X (p90 $Y) — go?`). A rejection throws `CostGateRejected`;
+catch it (`e.name === 'CostGateRejected'`) to go on without that fan-out. Without
+history the gate lets everything through. Before suggesting a large run, show the
+user `odw estimate <wf>` — it never guesses: with no finished runs it says so.
+
 ### Schedule runs (ODW extension)
 
 Set up a recurring run only when the user asks for one: `odw schedule add`
@@ -498,9 +523,28 @@ odw pull $RUN --from ssh://me@box                # copy it here (again while it 
   did not make.
 - `--config`, `--runs-root`, `--wait`, `--fg`, `--timeout` are refused with
   `--on`; `--args`, `--adapter`, `--permissions`, `--untrusted`, `--sandbox`,
-  `--budget` go along (`--args` as a file on stdin, never on a command line).
+  `--budget`, `--deadline` go along (`--args` as a file on stdin, never on a command line).
 - A pulled run is marked `origin: "remote"`; until it ends there, the local
   copy is a snapshot that reads as stale — pull again to refresh it.
+
+### Start runs from webhooks, or in CI (ODW extension)
+
+- **Signed triggers.** The config's `"triggers": { "<name>": { workflow, verify:
+  "github"|"linear"|"slack"|"hmac-sha256", secretEnv (or secret), args: { key:
+  "$.json.path" }, events?, dedupe?, concurrency?, rateLimit?, untrusted? } }`
+  make `odw serve` answer `POST /api/triggers/<name>`: a webhook whose signature
+  checks out starts that workflow — `--untrusted` unless the trigger says
+  `"untrusted": false` — and gets `202 { runId }`. The run's `context` (trigger,
+  event, issue id and URL, repo, Slack channel and thread) reaches the `notify`
+  hooks (`context` in the payload; `ODW_TRIGGER`, `ODW_EVENT_ID`,
+  `ODW_EVENT_URL`, `ODW_CONTEXT` for a command), so a hook can answer on the
+  issue. Set this up only when the user asks; the secrets are theirs to place in
+  environment variables, never in a committed file.
+- **GitHub Actions.** `uses: xz1220/open-dynamic-workflows/action@<tag>` with
+  `workflow:` and `timeout-minutes:` (the job's) runs `odw run --wait
+  --deadline` a margin before the job times out, writes the receipt to the job
+  summary and uploads `odw bundle`; `apply-pr: true` opens a draft PR. See
+  `docs/github-action.md` in the repository.
 
 ### Evaluate a workflow (ODW extension)
 
@@ -532,6 +576,43 @@ odw eval review --baseline base.json               # deltas per cell; exit 1 whe
   its check and run id (open two with `odw compare`). Exit 0 all passed (or,
   with `--baseline`, nothing regressed), 1 otherwise, 2 for a usage error.
 - The whole file format and report: [`references/primitives.md`](references/primitives.md#odw-eval-odw-extension).
+
+### Test a workflow (ODW extension)
+
+To check a workflow's logic without paying a model — after editing it, or
+before its first real run — script its agents' replies and run `odw test`.
+It runs the real runtime (schema retries, fallbacks, the run store); only the
+agent CLIs are replaced by a built-in mock. A test costs $0: no need to ask.
+
+```bash
+odw test review-swarm                     # .odw/tests/review-swarm.json (or a path); no name: every file there
+odw test review-swarm --case 2 --json     # one case, by number or name; the report as JSON
+odw run review-swarm --dry                # every agent gets a stub: the phase tree and agent counts, $0
+odw run review-swarm --record             # a real (paid) run, kept as a test case to replay for $0
+```
+
+```json
+{ "workflow": "review-swarm",
+  "cases": [{ "name": "one finding", "args": { "lenses": ["correctness"] },
+              "replies": [{ "label": "map", "reply": { "summary": "s", "files": [] } },
+                          { "label": "review:*", "reply": { "findings": [] }, "schemaMiss": 1 },
+                          { "label": "verify:*", "fail": "rate_limit" }],
+              "default": { "dry": true },
+              "expect": { "checks": [{ "path": "rejected", "equals": 0 }], "agents": { "count": 2 }, "logs": ["0 candidate"] } }] }
+```
+
+- A reply entry matches by `label` / `phase` (globs), `prompt` (substring),
+  `adapter`; the first match answers with `reply` (text, or JSON for a schema
+  call), `fail` (`rate_limit`, `quota`, `auth`, `permission`, `timeout`,
+  `stalled`, `not_found`, `exit`), `empty: true` or `dry: true`; `schemaMiss:
+  N`, `delayMs`, `once: true` modify it. An agent nothing matches fails the case
+  ("unscripted agent `x`") unless a `default` entry answers it.
+- `expect`: `state` (default "done"), `error`, `checks` (`odw eval`'s), `agents:
+  { count, labels }`, `logs` (substrings, in order). Exit 0 all passed, 1 any
+  failed, 2 usage.
+- `--dry` stubs are `"(dry run)"` or a schema's smallest valid value; the run is
+  marked `dry: true`. `--record` costs what a normal run costs — confirm first.
+- The whole format: [`references/primitives.md`](references/primitives.md#odw-test-odw-extension).
 
 ## Adapters
 

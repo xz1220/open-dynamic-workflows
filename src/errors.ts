@@ -107,8 +107,25 @@ export class BudgetExhausted extends DynamicWorkflowError {}
 /** A stop was requested: running agents are killed and the run unwinds. */
 export class RunStopped extends DynamicWorkflowError {}
 
-/** The workflow script is malformed (bad `meta`, syntax error, no result). */
-export class WorkflowScriptError extends DynamicWorkflowError {}
+/** A 1-based line and column in a workflow script's source. */
+export interface SourceLocation {
+  line: number;
+  column: number;
+}
+
+/**
+ * The workflow script is malformed (bad `meta`, syntax error, no result).
+ * `location` is where in its source, when the loader knows (ODW extension:
+ * `odw check` prints a code frame there).
+ */
+export class WorkflowScriptError extends DynamicWorkflowError {
+  constructor(
+    message?: string,
+    readonly location?: SourceLocation,
+  ) {
+    super(message);
+  }
+}
 
 /**
  * Errors that must propagate through `parallel`/`pipeline` rather than becoming

@@ -90,6 +90,27 @@ export interface AgentResultRecord {
 }
 
 /**
+ * What one agent() call was asked (ODW extension): its prompt and options as
+ * the script gave them, the adapter it started on, the model it asked for (a
+ * phase's default included), and — isolated — the commit its worktree
+ * checked out. Saved as `agents/<agentId>.call.json` as the agent starts, so
+ * `odw replay --agent` can dispatch the same call again (./runtime/replay).
+ * Kept as given, like meta.json's `args`: it is what a replay sends, and it
+ * is served nowhere (nor bundled).
+ */
+export interface AgentCallRecord {
+  agentId: number;
+  label: string;
+  phase: string | null;
+  prompt: string;
+  /** The call's options as JSON (what JSON drops, dropped). */
+  options: Record<string, unknown>;
+  adapter: string | null;
+  model: string | null;
+  base?: string;
+}
+
+/**
  * The resume key of an agent() call: sha256 (hex) of a stable JSON
  * serialization of the inputs that decide what the call produces. Each field
  * is in it for a reason:
@@ -210,6 +231,11 @@ export class ReplayJournal {
   /** Records not replayed (yet). */
   get size(): number {
     return this.left;
+  }
+
+  /** Whether a record saved under `key` is left: the call would replay, not run. */
+  has(key: string): boolean {
+    return (this.queues.get(key)?.length ?? 0) > 0;
   }
 
   /** Take the next record saved under `key`, if one is left. */

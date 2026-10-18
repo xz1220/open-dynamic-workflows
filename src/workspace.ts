@@ -91,6 +91,25 @@ function gitDetail(err: unknown): string {
   return (err as { stderr?: string }).stderr?.trim() || (err as Error).message;
 }
 
+/** A full hex commit id (SHA-1 or SHA-256), the only form a pinned worktree base takes. */
+export function isCommitId(value: unknown): value is string {
+  return typeof value === "string" && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(value);
+}
+
+/**
+ * The commit an isolated agent started from `source` gets — its HEAD — or
+ * null where there is none (not a repository, no commits): the worktree
+ * itself then fails with the reason (ODW extension: agent_started's `base`).
+ */
+export async function headCommit(source: string): Promise<string | null> {
+  try {
+    const head = (await git(source, ["rev-parse", "--verify", "HEAD"])).trim();
+    return isCommitId(head) ? head : null;
+  } catch {
+    return null;
+  }
+}
+
 /** A workspace that stays open until {@link OpenWorkspace.close}: what {@link openWorkspace} hands back. */
 export interface OpenWorkspace {
   workspace: Workspace;
@@ -161,6 +180,18 @@ export async function openWorkspace(
         `(agents are isolated via git worktrees, as in Claude Code). ` +
         `Run without isolation, or initialise the repo first. git said: ${gitDetail(err)}`,
     );
+  }
+  // A pinned base (ODW extension: `odw replay`) in place of HEAD — a commit
+  // id, never an option or a ref, and one this repository has.
+  if (setup.base !== undefined) {
+    if (!isCommitId(setup.base)) throw new ConfigError(`the worktree base must be a full commit id; got ${JSON.stringify(setup.base)}`);
+    try {
+      base = (await git(source, ["rev-parse", "--verify", `${setup.base}^{commit}`])).trim();
+    } catch (err) {
+      throw new ConfigError(
+        `the worktree base ${setup.base} is not a commit of the repository at '${top}' (gone since, or another repository): ${gitDetail(err)}`,
+      );
+    }
   }
 
   const tmp = await mkdtemp(join(tmpdir(), "odw-wt-"));

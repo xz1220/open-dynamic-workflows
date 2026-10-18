@@ -110,8 +110,29 @@ const yes = votes.filter((v) => v && v.toLowerCase().startsWith('yes')).length
 每个 thunk 必须是零参——用 `.map((x) => () => agent(...))` 来构造，这样每个都捕获自己的值。
 
 **ODW 扩展：** `parallel(thunks, { notes: true })` 为其 thunk 启动的每个 agent 打开本次运行的
-笔记板（agent 自己的 `notes: false` 优先）；`notes` 是唯一的选项，其他键会抛错。见
+笔记板（agent 自己的 `notes: false` 优先）；只有 `notes` 和 `costGate` 两个选项，其他键会抛错。见
 [notes](#notesodw-扩展)。Claude Code 的 `parallel()` 只接受 thunk 数组。
+
+**ODW 扩展——花费预测与 `costGate`。** 在宽度不小于 `fanOutWarn`、或受成本闸门约束的
+`parallel()` / `pipeline()` 之前，运行会依据同一工作流以往已完成的运行（有相同源码的就只用
+这些，否则按同名）记一条预测：宽度 × 该阶段 agent 花费的中位数，并附 p90（`cost forecast:
+parallel() of 40 tasks in phase "Review" ~$12.40 (p90 $18.00) — …`；`pipeline()` 按条目数 × 阶段数
+计 agent）。设了闸门——`costGate` 设置 `{ usd }`，或 `parallel(thunks, { costGate: { usd } })`
+（`costGate: null` 为这次调用取消设置）——预测超过 `usd` 时，在任何 agent 启动之前先变成
+`checkpoint("This fan-out is forecast to cost ~$X (p90 $Y) — go?", { payload: { width, forecast } })`。
+批准则照常运行；拒绝则该调用抛出可恢复的 `CostGateRejected`（看 `e.name`；`e.forecast`），脚本
+可以捕获。`agent(prompt, { costGate: { usd } })` 为单个 agent 设闸门，依据同阶段、同标签前缀
+（`review-3` → `review`）的 agent，没有则取整个阶段；resume 重放它时不会再问。没有历史时闸门
+全部放行，每次运行只记一次。
+
+```js
+try {
+  await parallel(files.map((f) => () => agent(`Review ${f}`)), { costGate: { usd: 5 } })
+} catch (e) {
+  if (e.name !== 'CostGateRejected') throw e
+  log('review skipped: ' + e.message)
+}
+```
 
 ## pipeline
 
@@ -790,6 +811,101 @@ Ctrl-C（SIGINT、SIGTERM、SIGHUP）会停止本次 eval 启动的所有运行�
 
 花费与 token 只对上报了它们的运行求和与平均，都未上报时为 null。任意两个运行 id 都可以用
 `odw compare <runA> <runB>` 对照。
+
+## odw test（ODW 扩展）
+
+```bash
+odw test [<wf|file.json>] [--case N|name]... [--json] [--keep] [--runs-root DIR] [--config P]
+odw run <wf> --dry
+odw run <wf> --record [--record-to FILE]
+```
+
+`odw test` 把工作流的测试用例作为真实的 odw 运行在进程内执行——worker、调度器、bridge、schema
+校验与重试、回退链、运行存储——每个 agent CLI 都由内置 mock 替换，按用例的脚本化回复作答，不调用
+任何模型。`<wf>` 指 `.odw/tests/<wf>.json`；`.json` 结尾或含路径分隔符的是文件；不给参数则运行所有
+`.odw/tests/*.json`。运行放在临时运行存储中，结束后删除（`--keep` 或 `--runs-root DIR` 可保留），标记为
+`origin: "test"`。
+
+### 测试文件
+
+| 键 | 含义 |
+| --- | --- |
+| `workflow` | 名字或路径，与 `odw run` 一样从运行 `odw test` 的目录解析。缺省：文件名去掉 `.json`。 |
+| `default` | 文件级回复，应答没有条目匹配的 agent（不带匹配条件的条目）；用例自己的 `default` 优先。缺省：这样的 agent 让用例失败。 |
+| `cases[].args` | 工作流输入；缺省为 null。 |
+| `cases[].replies` | 回复条目，见下。 |
+| `cases[].expect` | 必须得到的结果，见下。缺省：`{ "state": "done" }`。 |
+| `cases[].checkpoints` | `"approve"` 或 `"reject"`：每个 `checkpoint()` 都这样应答。缺省：它会等待，用例最终超时。 |
+| `cases[].timeout` | 秒数（默认 120）；届时仍在运行则停止，用例失败。 |
+
+其他键都是错误，并指明位置；什么都不会运行。
+
+**回复条目。** 匹配条件——给出的每一个都须成立，第一个匹配的条目作答：`label`（glob：`*`、`?`）、
+`phase`（glob；不在任何阶段的 agent 不匹配）、`prompt`（子串）、`adapter`（glob；回退后为转到的适配器）。
+恰好一种作答：`reply`（字符串原样，其他值按 JSON——即 schema 调用的值）、`fail`（`rate_limit` |
+`quota` | `auth` | `permission` | `timeout` | `stalled` | `not_found` | `exit`：措辞让 ODW 的失败分类像
+真实失败一样识别——限流会无等待地重试 `transientRetries` 次，额度用尽会沿回退链转移）、`empty: true`
+（空回复）、`dry: true`（`--dry` 的桩）。修饰：`schemaMiss: N`（前 N 次尝试回复任何 schema 都不接受的
+文本，然后作答：用于检验 schema 重试；与 `reply` 或 `dry` 同用）、`delayMs`（延迟作答：控制完成顺序）、
+`once: true`（只回答一个 agent——包括它的所有尝试——之后即用完；同一标签的 agent 依次取用）。
+没有条目匹配且无 `default` 的 agent 会得到一个失败的 CLI，并让用例失败：
+`unscripted agent \`label\` (agent #N, phase P)`。
+
+**`expect`。** `state`（默认 `"done"`，或 `"failed"`、`"stopped"`）、`error`（运行错误中的子串）、
+`checks`（上文 `odw eval` 的检查词汇：`{ path, equals | contains | matches | exists }`、`{ command }`
+——带 `ODW_RESULT`、`ODW_RUN_ID` 与 `ODW_TEST_CASE`——`{ state }`、`{ maxSeconds }`、按 $0 判定的
+`{ maxCostUsd }`）、`agents: { count, labels }`（启动的 agent 数；标签作为多重集恰好相等）、`logs`
+（`log()` 行中的子串，按此顺序，中间可有其他行）。
+
+**输出与退出码。** 每个用例一行（✔/✖、名字、agent 数、耗时，随后每个未满足的期望写作
+`check: 实际发现`）。`--json`：`{ version: 1, odwVersion, passed, failed, runsRoot, cases: [{ file,
+workflow, case, name, passed, failures: [{ check, message }], runId, state, agents, durationMs }] }`。
+全部通过退出 0，有失败为 1，用法错误为 2（错误的参数或文件、未知用例、无法加载的工作流）。
+
+**mock。** 配置中的每个适配器都按名字保留（因此 `agent(p, { adapter })`、阶段默认值与回退链照常解析），
+但都运行 mock：纯文本输出、schema 以原生方式传入（提示词中不含 schema 文本）、所有权限档位都视为可执行、
+无沙箱、不探测 CLI 版本、不触发 notify 钩子、不导出 OpenTelemetry、不等待额度、不运行 worktree setup 命令。
+配置没有可用的默认适配器时，会得到一个名为 `mock` 的。`exec()`、`isolation: "worktree"` 等照常真实执行。
+
+**`odw run <wf> --record [--record-to FILE]`。** 一次真实运行（花费与普通运行相同），运行结束后其 worker
+向 `FILE`（默认运行源目录下的 `.odw/tests/<meta.name>.json`；不存在则创建，同名用例被替换，其余保留）
+追加一个名为 `recorded <run_id>` 的用例：它的 `args`、每个 agent 一个回复条目——`{ label, phase?, reply }`
+为运行保存的值，失败的 agent 为 `{ fail: <失败类别> }` / `{ empty: true }`——以及
+`expect: { state, error?, checks?: [{ path: "", equals: <结果> }], agents: { count } }`（结果的 JSON 少于
+8,000 字符时才比较）。同一标签与阶段但回复不同的 agent 各得一个 `once` 条目，按启动顺序。用运行的脱敏器
+脱敏（包括输入）；每个字符串截断到 4,000 字符；最多 500 个条目。不能与 `--dry` 或 `--on` 同用。
+
+**`odw run <wf> --dry`。** 每个 agent 都由桩应答：`"(dry run)"`，或对 schema 调用给出最小合法值——只含必需
+属性、`minItems` 个元素、`const` / `enum` 的第一个值、`anyOf`/`oneOf` 的第一个分支、合并后的 `allOf`、
+跟随本地 `$ref`、边界允许的最小数、`""`（或 `minLength` 个 `"x"`；已知的 `format` 给出样例）。运行在
+`meta.json`（以及看板摘要）中标记为 `dry: true`；`odw run --dry` 会等待它结束（不可 `--detach`），并在
+stderr 打印阶段树：每个声明或启动过的阶段、它启动的 agent 数及其标签。
+
+## 调试：odw check、odw replay、--break / --step（ODW 扩展）
+
+```bash
+odw check wf.js [--json]                      # 按运行的方式加载（绝不执行）：退出 0，或退出 1 并给出 文件:行:列 + 代码片段
+odw replay $RUN --agent <id|label> [--prompt @文件|文本] [--adapter A] [--model M] [--wait|--fg|-d]
+odw run wf.js --break <阶段|label>[,…] [--break …]    # 在这些阶段 / agent label 之前加一个检查点
+odw run wf.js --step                                  # 在每个阶段之前加一个检查点
+```
+
+- **check**：`meta` 字面量、其 name/description/phases、编译脚本体。解析错误保留编译器原话并附
+  `(line 行:列)`；只在合适时附提示（TypeScript 语法、非 async 回调里的 `await`、括号未闭合脚本就
+  结束了）。`validate()` 给出同样的内容。
+- **replay**：每次 `agent()` 调用开始时保存 `agents/<id>.call.json`（提示词、选项、开始时的适配器、
+  请求的模型）；隔离 agent 的 `agent_started` 带 `base`（其 worktree 的提交）。重跑是只含这一个调用的
+  新运行（`origin: "replay"`、`replayOf: { runId, agentId, label, base? }`）——label、phase、源码目录、
+  配置、权限档位、信任级别、沙箱都与原来相同，`isolation: "worktree"` 时检出原来的 `base`，不管现在
+  HEAD 在哪。`odw compare <原运行> <重跑> --agent <label>` 把两者配对（CLI 会打印该命令，label
+  被共用时用 id）。本版本之前的运行没有保存调用：用 `odw rerun`。
+- **--break / --step**：断点就是运行自己发起的 `checkpoint()`，标题 `Break before phase X` /
+  `Break before agent X`，payload 为 `{ before, phasesDone, agents: { done, failed, running },
+  results: [最近 20 个], args }`——用 `odw approve|reject`、看板或手机链接回答。`phase(X)`（无法等待）
+  之后调用的每个 `agent()`、`exec()`、`workflow()` 和 `checkpoint()` 都停住直到有答复；已在跑的 agent
+  继续。批准：继续。拒绝：运行停止（状态 `stopped`）。批准并修改 payload：只采用 `args`，且只在
+  `args` 为对象或数组并保持同类时原地修改——答复之后的读取会看到修改，此前读到的（包括被拦住的
+  那次调用自己的提示词）不变。其他修改会被拒绝并记一行日志。`meta.json` 保留原始 args（rerun/resume 用它）。
 
 ## odw conformance
 

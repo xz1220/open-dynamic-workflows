@@ -119,7 +119,13 @@ test(
       const script = p.script("lanes", LANES);
       // A real detached worker: the one thing a test can kill -9.
       const { runId, store } = startRun(script, { source: p.root, runsRoot: p.runsRoot, configPath: p.config });
-      await until(() => store.readAgentResult(runId, 1) !== null && callsOf(p.calls).includes("block-slow"));
+      // The record is written just before agent_finished: wait for both.
+      await until(
+        () =>
+          store.readAgentResult(runId, 1) !== null &&
+          callsOf(p.calls).includes("block-slow") &&
+          store.readEvents(runId).some((e) => e.type === "agent_finished" && e.agentId === 1),
+      );
       assert.equal(store.readStatus(runId).state, "running", "the run is still going");
 
       // The store: the fast lane's record, the blocked lane none.

@@ -14,6 +14,35 @@ cannot pass for success, declared scopes, a notes board, an egress allowlist. Pl
 dashboard redesigned to watch them, evals and comparisons to check them, and two
 independent security reviews whose findings are all fixed.
 
+### Start runs from where work is tracked; run in CI
+- Signed inbound triggers (**ODW extension**): the config's `"triggers"` name a
+  workflow, a secret (`secretEnv`, or `secret`) and how deliveries are signed —
+  `github` (`X-Hub-Signature-256`), `linear` (`Linear-Signature`, `webhookTimestamp`
+  within a minute), `slack` (`X-Slack-Signature`, timestamp within five minutes) or
+  ODW's own `hmac-sha256` — plus a JSONPath mapping (`$.issue.number`) from the
+  webhook's body into the run's args. `odw serve` answers `POST
+  /api/triggers/<name>` with `202 { runId }`, off loopback too (the signature is the
+  credential), and starts the run `--untrusted` unless the trigger says otherwise.
+  Replays start nothing; bad signatures are rate limited; `events`, `dedupe` (one
+  active run per issue), `concurrency` and `rateLimit` per trigger; bodies up to 1
+  MiB. Recipes: [`docs/recipes/triggers.md`](docs/recipes/triggers.md).
+- A triggered run's `context` (trigger, event, delivery id, issue id and URL,
+  repository, Slack channel and thread) reaches the `notify` hooks — `context` in
+  the payload, `ODW_TRIGGER`, `ODW_EVENT_ID`, `ODW_EVENT_URL` and `ODW_CONTEXT` for a
+  command — so a hook can comment on the issue, reply in the thread or open a draft
+  PR and link it.
+- `odw run --deadline <seconds>` (**ODW extension**) stops the run gracefully once
+  they pass: status `stopped` (`stopReason: "deadline"`), diffs and finished agents
+  kept. `--wait`/`--fg` print what finished and exit **3**. `--timeout` still only
+  stops waiting (exit 124).
+- A composite GitHub Action, `xz1220/open-dynamic-workflows/action@<tag>`: installs
+  the pinned release (SHA-256 verified; `install.sh` learned `ODW_SKILL=0` for a
+  binary-only install), runs `odw run --wait --deadline` a margin before the job's
+  timeout, writes the spend receipt, agent table and failures to the job summary,
+  uploads `odw bundle`, and can open a draft PR with `odw apply --pr`. Fork pull
+  requests and issue events run `--untrusted`. See
+  [`docs/github-action.md`](docs/github-action.md).
+
 ### Recover instead of restarting
 - Every finished `agent()` result is saved the moment it lands. Read it mid-run with
   `odw agents <run>` and `odw result <run> --agent <id|label>`, or in the dashboard
@@ -108,6 +137,19 @@ independent security reviews whose findings are all fixed.
 - Real usage and cost: the built-in `claude` adapter reads Claude Code's `stream-json`;
   tokens and dollars per agent and per run in `odw status`, the live view and the
   dashboard; `--budget` meters real output tokens; wide fan-outs warn up front.
+- Know the cost before you run (**ODW extension**): `odw estimate <wf> [--args JSON]
+  [--json]` gives the p50/p90 wall time, cost, tokens and agents of a run — and of each
+  phase and adapter — from the last 20 finished runs of the same source (else of the
+  same workflow name; it says which), and `no estimate: no finished runs of this
+  workflow yet` without any. `odw run --estimate` prints it and asks y/N on a terminal
+  (`--yes`: just print); `GET /api/estimate?workflow=…` serves it. Before a
+  `parallel()` or `pipeline()` at least `fanOutWarn` wide the run logs a cost forecast
+  (width × the median agent of that phase in those runs, and the p90), and with a
+  `costGate: { usd }` — the setting, a `parallel()`'s option, or an `agent()`'s — a
+  forecast over the gate becomes a checkpoint (`This fan-out is forecast to cost ~$X
+  (p90 $Y) — go?`, answerable from the phone links too); a rejection throws a
+  catchable `CostGateRejected`. Without history the gate lets fan-outs through and
+  says so once.
 - Codex agents report their tokens too: the built-in `codex` adapter runs `codex exec
   --json --output-last-message {reply_file}` — its reply from that file (else the last
   `agent_message` event), tokens from `turn.completed` (no cost: codex reports none),
@@ -175,6 +217,19 @@ independent security reviews whose findings are all fixed.
   in `meta.json`, its behaviour settings on `run_started`, and each adapter CLI's
   `--version` on its first dispatch (a `cli_version` event, never delaying the run;
   `"recordVersions": false` turns it off) (**ODW extension**).
+- Test a workflow for $0 (**ODW extension**): `odw test [<wf|file>] [--case N] [--json]
+  [--keep]` runs the cases of `.odw/tests/<wf>.json` as real runs whose agents a built-in
+  mock answers from scripted replies — matched by label or phase glob, prompt substring or
+  adapter; a reply, a failure (`rate_limit`, `quota`, `auth`, `permission`, `timeout`,
+  `stalled`, `not_found`, `exit`, classified like the real thing), an empty reply, a dry
+  stub, `schemaMiss: N` invalid replies first, `delayMs`, `once`. An unscripted agent fails
+  the case unless a `default` answers it; `expect` takes `odw eval`'s checks plus `agents:
+  { count, labels }` and `logs`. Exit 0 / 1 / 2 (usage). `odw run <wf> --record
+  [--record-to FILE]` keeps a real run as a case (each agent's actual reply, redacted and
+  capped), and `odw run <wf> --dry` answers every agent with a stub — `"(dry run)"` or a
+  schema's smallest valid value — prints the phase tree with each phase's agent count,
+  and marks the run `dry: true` (also in the dashboard's run summaries). Example:
+  `examples/tests/review-swarm.json`.
 - Evaluate a workflow (**ODW extension**): `odw eval <file|name>` runs the cases of an
   eval file (`.odw/evals/<name>.json`) on each of its `adapters`, `repeats` times each,
   at most `concurrency` at once, as real runs marked `origin: "eval"` (shown by `odw
@@ -352,6 +407,25 @@ independent security reviews whose findings are all fixed.
   run's setup) is `"warn"` by default; `"fail"` fails such an agent with reason
   `out_of_scope`, and with `expect` it is a miss. In place, writes inside the scope of a
   scoped call that ran beside it are not counted.
+- Debug one step (**ODW extension**; ROADMAP S4). `odw replay <run> --agent <id|label>
+  [--prompt @file|TEXT] [--adapter A] [--model M]` dispatches one saved `agent()` call
+  again as a small new run (`origin: "replay"`, `replayOf` in its meta.json): every call
+  now keeps its inputs as it starts (`agents/<id>.call.json`), an isolated agent's
+  `agent_started` names its worktree's `base` commit, and the replay checks that commit
+  out whatever HEAD is now. It prints the `odw compare` command that pairs the replay
+  with its original. `odw run <wf> --break <phase|label>[,…]` and `--step` stop the run
+  for a decision before those phases or agent labels (or every phase): a checkpoint
+  titled `Break before phase X` whose payload is the run so far — approve goes on,
+  reject stops the run, an approval with edited `args` changes them in place for what
+  the script reads from then on (object or array args only).
+- `odw check <script.js|name> [--json]` (**ODW extension**) loads a workflow as a run
+  would, never running it, and reports `file:line:col` with a code frame; exit 0 or 1.
+  Parse errors now carry the line and column everywhere (runs, `validate()`) and keep
+  the compiler's own message, with a hint only where it fits — TypeScript syntax only
+  when a type annotation, `interface` or `as` is at fault (anthropics/claude-code#63540
+  blamed TypeScript for every parse error), an `await` in a callback that is not
+  `async`, a script that ends before a bracket closes — and a `meta` that is declared
+  but not exported says what was found.
 
 ### Use the CLI and the dashboard
 - `odw run` attaches a live foreground view in interactive terminals (Ctrl-C detaches;

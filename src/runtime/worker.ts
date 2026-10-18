@@ -24,10 +24,12 @@ import { sandboxFlagOf, withSandboxFlag } from "../adapters/sandbox.js";
 import { killAllAgentProcesses } from "../adapters/runner.js";
 import type { RunEndState } from "../adapters/types.js";
 import type { WaitingCheckpoint } from "../checkpoint.js";
+import type { CostHistory } from "../forecast.js";
 import { buildContext, spentTokens, type RunContext } from "../context.js";
 import { deciderText, PAUSED, RUNNING, type CheckpointRequest } from "../control.js";
 import { RunStopped, WorkflowScriptError, isFatalError } from "../errors.js";
-import { LOG, RUN_FAILED, RUN_FINISHED, RUN_STARTED, RUN_STOPPED, event } from "../events.js";
+import { AGENT_STARTED, LOG, RUN_FAILED, RUN_FINISHED, RUN_STARTED, RUN_STOPPED, event } from "../events.js";
+import { Breaks, breakSpecOf, runSoFar } from "../breaks.js";
 import { ReplayJournal } from "../journal.js";
 import { loadWorkflowScript, scanDualCompat } from "../loader.js";
 import { NotesBoard } from "../notes.js";
@@ -37,11 +39,15 @@ import type { QuotaPause } from "../quota-wait.js";
 import { redactorFor, type Redactor } from "../redact.js";
 import type { Scheduler } from "../scheduler.js";
 import { applyRunTrust, resolveRunTrust, untrustedConfigSwap } from "../untrusted.js";
+import { isCommitId } from "../workspace.js";
 import { pluginOrigin } from "../workflows/plugins.js";
+import { dryResponder, mockConfig, mockRunner, noSleep, type MockResponder } from "../wftest/mock.js";
+import { recordFixture } from "../wftest/record.js";
 import { FileControl } from "./file-control.js";
 import { notifyCheckpoint, notifyQuotaPause, notifyRunEnd } from "./notify.js";
 import { mintCheckpointLinks, runsRootsOf } from "./approve-links.js";
 import { exportRunEnd } from "./otel-export.js";
+import { loadCostHistory } from "./estimate.js";
 import { JsonlSink, RunStore } from "./run-store.js";
 
 /**
@@ -115,6 +121,8 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
 
   const sink = new JsonlSink(store.eventsPath(runId));
   const args = meta.args;
+  // The name its earlier runs go by: meta.workflowName, else — once loaded — the script's meta.name.
+  let historyName: string | null = typeof meta.workflowName === "string" ? meta.workflowName : null;
   // ctx is created inside the try so that a config or context-build failure is
   // still recorded as a failed run rather than leaving it stuck in "pending".
   let ctx: RunContext | undefined;
@@ -137,9 +145,9 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
   // Undoes the redaction of this process's own output, once the run is over.
   let unredactOutput = (): void => {};
   const signals = watchStopSignals({
-    stop: (signal) => {
+    stop: (why) => {
       if (end) return; // only the hooks are left; the grace period bounds them
-      const reason = new RunStopped(`worker received ${signal}`);
+      const reason = new RunStopped(why);
       sink.emit(event(LOG, { message: `${reason.message} — stopping the run` }));
       ctx?.scheduler.abort(reason);
     },
@@ -159,6 +167,8 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
     },
   });
   process.on("exit", killAllAgentProcesses);
+  // `--deadline` (ODW extension): stops the run like a stop signal once it passes — armed once the run can be stopped.
+  let deadline: { dispose(): void } | undefined;
   try {
     let baseConfig = loadConfig((meta.configPath as string | null) ?? null);
     // Run-level adapter override (meta.adapter): becomes this run's default for
@@ -203,7 +213,10 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
     }
     const trusted = applyRunTrust(overridden, runTrust);
     if (swapNote) trusted.notes.push(swapNote);
-    const config = trusted.config;
+    // No model is called (ODW extension; see ../wftest/mock): `odw test`'s
+    // scripted replies, or a dry run's stubs, answer every agent in-process.
+    const mock: MockResponder | undefined = options.mock ?? (meta.dry === true ? dryResponder : undefined);
+    const config = mock ? mockConfig(trusted.config) : trusted.config;
     const runRedactor = redactorFor(config);
     redactor = runRedactor;
     sink.redactor = runRedactor;
@@ -228,6 +241,13 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
       },
     });
     const replay = replayJournal(meta);
+    // `odw run --break`/`--step` (ODW extension; see ../breaks): where the run stops for a person.
+    const breakSpec = breakSpecOf(meta.breaks);
+    const breaks = breakSpec
+      ? new Breaks(breakSpec, () => runSoFar(store.readEvents(runId), store.listAgentResults(runId)))
+      : undefined;
+    // A run of `odw replay` (ODW extension; see ./replay): its agent starts where the original did.
+    const replayOf = replayLinkOf(meta);
     const waiting = new Map<number, WaitingCheckpoint>();
     if (config.settings.recordVersions) {
       versions = new CliVersions({
@@ -237,6 +257,21 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
       });
     }
     const cliVersions = versions;
+    // The workflow's earlier runs, for fan-out forecasts and cost gates (ODW
+    // extension; see ../forecast): read from its bucket of the runs root on
+    // the first fan-out that asks, this run left out.
+    let history: CostHistory | null | undefined;
+    const costHistory = (): CostHistory | null => {
+      if (history !== undefined) return history;
+      history = null; // read once, even when reading fails
+      if (historyName === null) return null;
+      history = loadCostHistory(new RunStore(dirname(dirname(runDir))), {
+        workflow: historyName,
+        sourceHash: typeof meta.sourceHash === "string" ? meta.sourceHash : null,
+        exclude: runId,
+      });
+      return history;
+    };
     ctx = buildContext(config, {
       source: meta.source as string | undefined,
       runId,
@@ -261,7 +296,14 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
       // A schema handed to a CLI as a file, as agents/<agentId>.schema.json while it runs.
       agentSchemaPath: (agentId) => store.agentSchemaPath(runId, agentId),
       replay,
+      costHistory,
+      // What each agent() call was asked, as agents/<agentId>.call.json, for `odw replay` (ODW extension).
+      saveAgentCall: (call) => store.writeAgentCall(runId, call),
+      ...(replayOf?.base ? { worktreeBase: replayOf.base } : {}),
+      breaks,
       onCliRun: cliVersions && ((adapter) => cliVersions.note(adapter)),
+      // Each mocked agent is answered knowing its label and phase, from its agent_started event.
+      ...(mock ? { bridge: { runner: mockRunner(mock, (agentId) => startedAgent(store, runId, agentId)), sleep: noSleep } } : {}),
       onCheckpoint: (cp, isWaiting) => {
         if (isWaiting) {
           waiting.set(cp.checkpointId, cp);
@@ -298,6 +340,11 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
       },
     });
 
+    deadline = watchDeadline(meta.deadline, (seconds) => {
+      if (end) return;
+      store.updateStatus(runId, { stopReason: "deadline" });
+      signals.stopNow(`the run's deadline (--deadline ${seconds}) passed`);
+    });
     store.updateStatus(runId, { state: "running", pid: process.pid });
     // What the run starts with — the settings that change behaviour, and each
     // adapter's fingerprint — for `odw compare` (ODW extension; see ../provenance).
@@ -305,8 +352,22 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
     // A container sandbox that cannot run here — no engine, no image — fails
     // the run before any agent starts (ODW extension; see ../adapters/sandbox).
     await ctx.bridge.checkSandbox();
+    if (mock) {
+      const how = meta.dry === true ? "a dry run: every agent gets a stub reply" : "a test run: every agent gets its scripted reply";
+      sink.emit(event(LOG, { message: `${how}, no model is called (ODW extension)` }));
+    }
     // An untrusted run says so, and what of the repository's config it refused (ODW extension).
     for (const message of trusted.notes) sink.emit(event(LOG, { message, trust: "untrusted" }));
+    if (breaks) sink.emit(event(LOG, { message: breaks.describe() }));
+    if (replayOf) {
+      sink.emit(
+        event(LOG, {
+          message:
+            `replaying agent ${replayOf.agentId} (${replayOf.label}) of run ${replayOf.runId}` +
+            (replayOf.base ? ` — an isolated agent, at the commit it started from, ${replayOf.base.slice(0, 12)}` : ""),
+        }),
+      );
+    }
     if (replay) {
       sink.emit(
         event(LOG, {
@@ -355,6 +416,7 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
         }),
       );
     }
+    historyName ??= loaded.meta.name;
     store.updateStatus(runId, {
       name: loaded.meta.name,
       description: loaded.meta.description,
@@ -382,6 +444,10 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
       throw fatal;
     }
 
+    // A --break name nothing matched is said, once the run is done (ODW extension).
+    for (const name of breaks?.unmatched() ?? []) {
+      sink.emit(event(LOG, { message: `--break ${JSON.stringify(name)}: no phase title and no agent label of this run matched it` }));
+    }
     // The workflow's own value: token shapes are redacted, the values of variables are not (ODW extension).
     const kept = runRedactor.shapes.record({ value: result });
     store.writeResult(runId, kept.value, "redacted" in kept);
@@ -417,6 +483,7 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
       end = { state: "failed", error: message };
     }
   } finally {
+    deadline?.dispose();
     process.off("exit", killAllAgentProcesses);
     crashes.dispose();
     if (!end) signals.dispose(); // the run itself threw: no hooks follow
@@ -437,7 +504,26 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
     signals.dispose();
     unredactOutput();
   }
+  // `odw run --record` (ODW extension): the run, its replies included, kept as a test case.
+  const record = meta.record as { file?: unknown; workflow?: unknown } | null | undefined;
+  if (record && typeof record.file === "string" && typeof record.workflow === "string") {
+    try {
+      recordFixture(store, runId, { file: record.file, workflow: record.workflow, redactor });
+    } catch (err) {
+      process.stderr.write(`odw: could not record ${runId} to ${record.file}: ${errorMessage(err)}\n`);
+    }
+  }
   return end.state;
+}
+
+/** An agent's label and phase, as the run's agent_started event for it names them; null before it has one. */
+function startedAgent(store: RunStore, runId: string, agentId: number): { label: string | null; phase: string | null } | null {
+  for (const ev of store.readEvents(runId)) {
+    if (ev.type === AGENT_STARTED && ev.agentId === agentId) {
+      return { label: typeof ev.label === "string" ? ev.label : null, phase: typeof ev.phase === "string" ? ev.phase : null };
+    }
+  }
+  return null;
 }
 
 export interface ExecuteRunOptions {
@@ -446,6 +532,12 @@ export interface ExecuteRunOptions {
    * worker.log: what it prints is redacted too (see executeRun).
    */
   worker?: boolean;
+  /**
+   * Answer every agent in-process instead of running its CLI (ODW extension;
+   * `odw test`, see ../wftest): the config's adapters, each pointed at the
+   * mock. A run whose meta says `dry` gets the dry run's stubs without it.
+   */
+  mock?: MockResponder;
 }
 
 /**
@@ -521,6 +613,14 @@ function replayJournal(meta: Record<string, unknown>): ReplayJournal | undefined
   );
 }
 
+/** The agent a run of `odw replay` dispatches again (meta.replayOf, ODW extension), well-formed; null for any other run. */
+function replayLinkOf(meta: Record<string, unknown>): { runId: string; agentId: number; label: string; base?: string } | null {
+  const r = meta.replayOf as Record<string, unknown> | null | undefined;
+  if (!r || typeof r !== "object" || typeof r.runId !== "string" || typeof r.agentId !== "number") return null;
+  const label = typeof r.label === "string" ? r.label : String(r.agentId);
+  return { runId: r.runId, agentId: r.agentId, label, ...(isCommitId(r.base) ? { base: r.base } : {}) };
+}
+
 /** The Claude Code plugin a run's workflow came from (meta.plugin, ODW extension); null for any other run. */
 function pluginOfMeta(raw: unknown): { name: string; id: string; version: string | null; scope: string } | null {
   if (raw === null || typeof raw !== "object") return null;
@@ -559,24 +659,29 @@ function watchProcessCrashes(): { race<T>(work: Promise<T>): Promise<T>; dispose
 /**
  * Handle the stop signals while a run executes (see executeRun): `stop` on the
  * first; `force` on a second, or once SIGNAL_GRACE_MS have passed since the
- * first. Listening ends at `dispose`.
+ * first. `stopNow` stops the run the same way for a reason of the run's own
+ * (its `--deadline`): a signal after it forces. Listening ends at `dispose`.
  */
 function watchStopSignals(handlers: {
-  stop(signal: NodeJS.Signals): void;
+  stop(why: string): void;
   force(signal: NodeJS.Signals, why: string): void;
-}): { dispose(): void } {
-  let first: NodeJS.Signals | undefined;
+}): { dispose(): void; stopNow(why: string): void } {
+  let first: { signal: NodeJS.Signals | null; why: string } | undefined;
   let deadline: NodeJS.Timeout | undefined;
-  const onSignal = (signal: NodeJS.Signals): void => {
-    if (first) {
-      return handlers.force(signal, `worker received ${signal} ${signal === first ? "again" : `after ${first}`}`);
-    }
-    first = signal;
+  const begin = (signal: NodeJS.Signals | null, why: string): void => {
+    first = { signal, why };
     deadline = setTimeout(
-      () => handlers.force(signal, `the run did not stop within ${SIGNAL_GRACE_MS / 1000}s of ${signal}`),
+      () => handlers.force(signal ?? "SIGTERM", `the run did not stop within ${SIGNAL_GRACE_MS / 1000}s of ${signal ?? why}`),
       SIGNAL_GRACE_MS,
     );
-    handlers.stop(signal);
+    handlers.stop(why);
+  };
+  const onSignal = (signal: NodeJS.Signals): void => {
+    if (first) {
+      const after = first.signal === signal ? "again" : `after ${first.signal ?? first.why}`;
+      return handlers.force(signal, `worker received ${signal} ${after}`);
+    }
+    begin(signal, `worker received ${signal}`);
   };
   for (const signal of STOP_SIGNALS) process.on(signal, onSignal);
   return {
@@ -584,7 +689,33 @@ function watchStopSignals(handlers: {
       clearTimeout(deadline);
       for (const signal of STOP_SIGNALS) process.off(signal, onSignal);
     },
+    stopNow: (why) => {
+      if (!first) begin(null, why);
+    },
   };
+}
+
+/** The longest a timer waits in one go: setTimeout fires at once past 2^31-1 ms. */
+const MAX_TIMER_MS = 2 ** 31 - 1;
+
+/**
+ * Call `onPassed(seconds)` once the run's `meta.deadline` (`{ seconds, at }`,
+ * `at` in Unix seconds; ODW extension: `--deadline`) passes — at once when it
+ * already has. A far deadline is waited for in steps a timer can take.
+ */
+function watchDeadline(raw: unknown, onPassed: (seconds: number) => void): { dispose(): void } {
+  const spec = raw as { seconds?: unknown; at?: unknown } | null | undefined;
+  if (!spec || typeof spec.at !== "number" || !Number.isFinite(spec.at)) return { dispose: () => {} };
+  const at = spec.at * 1000;
+  const seconds = typeof spec.seconds === "number" ? spec.seconds : Math.round(spec.at - Date.now() / 1000);
+  let timer: NodeJS.Timeout | undefined;
+  const arm = (): void => {
+    const left = at - Date.now();
+    if (left <= 0) return onPassed(seconds);
+    timer = setTimeout(arm, Math.min(left, MAX_TIMER_MS));
+  };
+  arm();
+  return { dispose: () => clearTimeout(timer) };
 }
 
 function crashError(kind: string, cause: unknown): WorkflowScriptError {

@@ -59,6 +59,7 @@ import {
   type Palette,
   type TermCaps,
 } from "../tty.js";
+import { DEADLINE_EXIT_CODE, deadlineReport, stoppedByDeadline } from "./deadline.js";
 import { RunObserver } from "./run-liveness.js";
 import { RunStore, TERMINAL_STATES } from "./run-store.js";
 import { applyAgentEvent, type AgentView } from "./runs-view.js";
@@ -312,7 +313,7 @@ export function checkpointCommands(
 }
 
 /** One argument as a POSIX shell would need it typed. */
-function shellArg(arg: string): string {
+export function shellArg(arg: string): string {
   return /^[\w@%+=:,./-]+$/.test(arg) ? arg : `'${arg.replace(/'/g, "'\\''")}'`;
 }
 
@@ -642,7 +643,7 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 /**
  * Attach to a run and render it until it settles (or we detach). Returns the
- * process exit code: 0 done, 1 failed/stopped/vanished, 124 timeout, 130
+ * process exit code: 0 done, 1 failed/stopped/vanished, 3 stopped by its --deadline, 124 timeout, 130
  * detached by Ctrl-C. The run itself is never affected by detaching.
  */
 export async function attachRun(
@@ -824,6 +825,13 @@ async function settle(
     for (let i = 0; i < 10 && !store.hasResult(runId); i++) await sleep(100);
     opts.out.write(JSON.stringify(store.readResult(runId), null, 2) + "\n");
     return 0;
+  }
+  // Stopped by its --deadline (ODW extension): what it finished, and exit 3.
+  if (stoppedByDeadline({ ...status, state })) {
+    const report = deadlineReport(store, runId);
+    opts.out.write(JSON.stringify(report, null, 2) + "\n");
+    if (!view) opts.err.write(`run was stopped at its deadline (--deadline ${String(report.deadline)}); finished agents kept: ${(report.finished as unknown[]).length}\n`);
+    return DEADLINE_EXIT_CODE;
   }
   if (!view) {
     if (state === "failed") opts.err.write(`run failed: ${sanitizeText(errText ?? "unknown error", 300)}\n`);

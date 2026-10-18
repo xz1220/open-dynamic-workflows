@@ -183,6 +183,11 @@ const approvedPlan = r.payload   // 对方修改后的内容，或 plan 本身
 odw run wf.js --wait --args '{"question": "Design a cache."}'   # 阻塞并打印结果
 ```
 
+运行必须在某个时间前结束时——CI job 的超时、用户说「给它十分钟」——加上
+`--deadline <秒数>`（ODW 扩展）：到时运行会被停止，已完成的 agent 与 diff 都保留；
+`--wait` 打印 `{ state: "stopped", reason: "deadline", finished: [{ agentId, label, phase, value }] }`
+并以退出码 3 退出。`--timeout <s>` 不同：它只是不再等待（退出码 124），运行继续。
+
 长任务用 fire-and-poll，不阻塞自己：
 
 ```bash
@@ -198,8 +203,16 @@ odw pause $RUN / resume $RUN / stop $RUN
 odw approve|reject $RUN     # 回答运行正在等待的 checkpoint()——只在用户明确要求时
                             # （approve --payload JSON|@file 批准用户修改后的内容；--edit 需要用户的终端）
 odw compare $OLD $RUN       # 两次运行之间变了什么:配置、耗时、花费、失败、回复(ODW 扩展)
+odw estimate wf.js          # 依据以往运行估算下一次的 p50/p90 耗时、花费、token、agent 数(ODW 扩展)
+                            #   --json 给脚本用;odw run --estimate 先打印并询问 y/N(--yes:只打印)
                             #   --agent <label|id>:某个 agent 的完整回复 diff;--json 供脚本使用
+odw replay $RUN --agent 3   # 把这一次 agent() 调用作为新运行重跑,检出它当时的提交(ODW 扩展);
+                            #   --prompt @文件|文本、--adapter A、--model M 替换原值;会打印对照命令
+odw run wf.js --break Review  # 在阶段/label "Review" 之前停下等决定(一个检查点);--step:每个阶段之前
+odw check wf.js             # 能否加载?文件:行:列、代码片段、可移植性警告;退出 0/1
 odw eval review             # 用例 × 适配器 × 重复次数：每个单元格的通过率、花费、耗时（ODW 扩展；见下文）
+odw test review             # 脚本化回复，不调用模型，$0：逻辑是否成立？（ODW 扩展；见下文）
+odw run review --dry        # 每个 agent 都用桩应答：阶段树与 agent 数，$0（ODW 扩展）
 odw notes $RUN              # 本次运行的 agent 在笔记板上互相告知的内容（ODW 扩展）
 odw list                    # 所有运行（有运行报了美元时多一列花费）
 ```
@@ -365,6 +378,14 @@ odw status $RUN     # 问题、它的 payload，以及回答它的确切命令
 （`RUN=$(odw run wf.js)`）并轮询 `odw status $RUN`，或用 `--wait --timeout <秒>` 限定
 等待时长。`odw resume` 会重放已完成的 agent，但每个检查点都会重新提问。
 
+**成本闸门（ODW 扩展）。** 大规模扇出之前，与其自己加检查点，不如用 `costGate`，只在必要时
+才问：配置里写 `"costGate": { "usd": 5 }`，或 `parallel(thunks, { costGate: { usd: 5 } })`
+（单个昂贵 agent 用 `agent()` 的 `costGate`），依据同一工作流以往运行预测花费超过该值的扇出会
+停在检查点等待（`This fan-out is forecast to cost ~$X (p90 $Y) — go?`）。拒绝会抛出
+`CostGateRejected`；捕获它（`e.name === 'CostGateRejected'`）即可跳过该扇出继续运行。没有历史时
+闸门全部放行。建议用户跑大任务之前，先给他看 `odw estimate <wf>`——它从不猜测：没有已完成的
+运行时会直说。
+
 ### 定时运行（ODW 扩展）
 
 只有用户要求定期运行时才设置：`odw schedule add` 会写入用户的 crontab、LaunchAgents
@@ -408,10 +429,26 @@ odw pull $RUN --from ssh://me@box                # 拷回本机（运行中也�
   不含被忽略的）；`--sync rsync` 镜像整个目录。工作目录默认 `~/odw-remote/<仓库名>`，URL
   带路径时用它（`ssh://box/~/work/app`）；不是 odw 建的非空目录会被拒绝。
 - 与 `--on` 同用时 `--config`、`--runs-root`、`--wait`、`--fg`、`--timeout` 会被拒绝；
-  `--args`、`--adapter`、`--permissions`、`--untrusted`、`--sandbox`、`--budget` 一并传过去
+  `--args`、`--adapter`、`--permissions`、`--untrusted`、`--sandbox`、`--budget`、`--deadline` 一并传过去
   （`--args` 作为文件经 stdin 传递，绝不放在命令行上）。
 - 拉回的运行标记为 `origin: "remote"`；在那边结束之前，本地拷贝是一个显示为 stale 的快照——
   再拉一次即可刷新。
+
+### 由 webhook 或在 CI 中启动运行（ODW 扩展）
+
+- **签名触发器。** 配置中的 `"triggers": { "<名字>": { workflow, verify:
+  "github"|"linear"|"slack"|"hmac-sha256", secretEnv（或 secret）, args: { 键:
+  "$.json.path" }, events?, dedupe?, concurrency?, rateLimit?, untrusted? } }` 让
+  `odw serve` 响应 `POST /api/triggers/<名字>`：签名校验通过的 webhook 启动该工作流——
+  除非触发器写明 `"untrusted": false`，否则以 `--untrusted` 运行——并返回
+  `202 { runId }`。运行的 `context`（触发器、事件、issue 的 id 与 URL、仓库、Slack 频道
+  与线程）会传给 `notify` 钩子（payload 中的 `context`；命令得到 `ODW_TRIGGER`、
+  `ODW_EVENT_ID`、`ODW_EVENT_URL`、`ODW_CONTEXT`），钩子因此可以在 issue 下回复。只在
+  用户要求时设置；密钥由用户放进环境变量，绝不写进提交的文件。
+- **GitHub Actions。** `uses: xz1220/open-dynamic-workflows/action@<tag>`，配上
+  `workflow:` 与 `timeout-minutes:`（job 的），会在 job 超时前留出余量以
+  `odw run --wait --deadline` 运行，把小票写入 job summary 并上传 `odw bundle`；
+  `apply-pr: true` 会开草稿 PR。见仓库中的 `docs/github-action.md`。
 
 ### 评估工作流（ODW 扩展）
 
@@ -440,6 +477,40 @@ odw eval review --baseline base.json               # 每个单元格的变化；
   耗时中位数、花费与 token，然后列出每个失败及其检查与运行 id（用 `odw compare` 对照任意两次）。
   全部通过（或带 `--baseline` 时没有退步）退出 0，否则 1，用法错误为 2。
 - 完整的文件格式与报告：[`references/primitives.md`](references/primitives.md) 的「odw eval（ODW 扩展）」一节。
+
+### 测试工作流（ODW 扩展）
+
+想在不为模型付费的情况下检查工作流的逻辑——改完之后，或第一次真实运行之前——就给它的 agent
+写好脚本化回复，然后运行 `odw test`。它运行真实的运行时（schema 重试、回退、运行存储），只有
+agent CLI 被内置 mock 替换。测试花费 $0：无需先问用户。
+
+```bash
+odw test review-swarm                     # .odw/tests/review-swarm.json（或路径）；不给名字：该目录下所有文件
+odw test review-swarm --case 2 --json     # 只跑一个用例（编号或名字）；报告以 JSON 输出
+odw run review-swarm --dry                # 每个 agent 都得到桩回复：阶段树与各阶段 agent 数，$0
+odw run review-swarm --record             # 一次真实（付费）运行，存为测试用例，之后以 $0 回放
+```
+
+```json
+{ "workflow": "review-swarm",
+  "cases": [{ "name": "one finding", "args": { "lenses": ["correctness"] },
+              "replies": [{ "label": "map", "reply": { "summary": "s", "files": [] } },
+                          { "label": "review:*", "reply": { "findings": [] }, "schemaMiss": 1 },
+                          { "label": "verify:*", "fail": "rate_limit" }],
+              "default": { "dry": true },
+              "expect": { "checks": [{ "path": "rejected", "equals": 0 }], "agents": { "count": 2 }, "logs": ["0 candidate"] } }] }
+```
+
+- 回复条目按 `label` / `phase`（glob）、`prompt`（子串）、`adapter` 匹配；第一个匹配的条目以
+  `reply`（文本，或 schema 调用的 JSON）、`fail`（`rate_limit`、`quota`、`auth`、`permission`、
+  `timeout`、`stalled`、`not_found`、`exit`）、`empty: true` 或 `dry: true` 作答；`schemaMiss: N`、
+  `delayMs`、`once: true` 用来修饰。没有条目匹配的 agent 会让用例失败（“unscripted agent `x`”），
+  除非有 `default` 条目应答它。
+- `expect`：`state`（默认 "done"）、`error`、`checks`（即 `odw eval` 的检查）、`agents: { count, labels }`、
+  `logs`（子串，按顺序）。全部通过退出 0，有失败为 1，用法错误为 2。
+- `--dry` 的桩回复是 `"(dry run)"` 或 schema 的最小合法值；运行标记为 `dry: true`。`--record`
+  的花费与普通运行相同——先确认。
+- 完整格式：[`references/primitives.md`](references/primitives.md) 的「odw test（ODW 扩展）」一节。
 
 ## 适配器
 

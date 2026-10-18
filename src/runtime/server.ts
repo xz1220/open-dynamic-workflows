@@ -64,11 +64,19 @@
  *   GET  /api/compare?a=<run>&b=<run>   RunComparison (./compare): what changed between two ODW
  *                                   runs, as `odw compare --json` prints it (ODW extension); 400
  *                                   unless both are run ids, 404 when either is no ODW run
+ *   GET  /api/estimate?workflow=<name>[&sourceHash=<sha256>]   WorkflowEstimate (./estimate): what
+ *                                   a run of it is likely to cost and take, from its earlier finished
+ *                                   runs, as `odw estimate --json` prints it (ODW extension); matched by
+ *                                   `sourceHash`, else the newest run's, then by name; 400 for a bad
+ *                                   name or hash
  *   GET  /api/evals                 [EvalReportSummary], newest first: the `odw eval` reports kept
  *                                   under <runsRoot>/_evals/<name>/<id>.json (ODW extension; read only)
  *   GET  /api/evals/:name/:id       one EvalReport (../eval/report), case args token-shape redacted;
  *                                   400 unless name and id are run-id-like, 404 when there is none
  *   *    /api/chat/sessions[/:id[/messages]]   the Chat Host (see ./chat-host)
+ *   POST /api/triggers/:name        start the run a signed trigger in the config names (ODW
+ *                                   extension; see ./trigger-route): 202 { runId }, 401 on a bad
+ *                                   signature, 404 for a name the config lacks. Off loopback too.
  *
  * GET /api/activity?limit=N (default 40, clamped to 1..200; junk → 40) →
  *   { events: Array<WorkflowEvent & { runId, run, adapter, provider }>,
@@ -117,6 +125,12 @@
  *     passes off loopback too, behind the token and jsonPostGuard;
  *     /api/capabilities says `decide: true`. Control, chat and launches stay refused.
  *
+ * Signed triggers (ODW extension; see ./trigger-route): POST /api/triggers/<name>
+ * answers a webhook whose signature checks out against the trigger's secret —
+ * the signature is its credential, so the Host guard, the token gate and the
+ * loopback-only rule do not apply there; only names in the config's
+ * `triggers` exist, and each starts only its own workflow, untrusted by default.
+ *
  * Remote read-only access (ODW extension; see ./serve-auth): with `token` set
  * (`odw serve --token`), every /api request and the SSE stream need it — a
  * Bearer header, a `?token=` (which sets an HttpOnly SameSite=Strict cookie),
@@ -152,6 +166,7 @@ import { activityLimit, activityView } from "./activity-view.js";
 import { ChatHost, type ChatTurnRunner } from "./chat-host.js";
 import { ClaudeRunSource } from "./claude-run-source.js";
 import { compareRuns, readCompareRun } from "./compare.js";
+import { latestSourceHash, loadEstimate } from "./estimate.js";
 import { isEvalName } from "../eval/definition.js";
 import { listReports, readStoredReport } from "../eval/report.js";
 import {
@@ -178,6 +193,7 @@ import { FailureLimiter, TokenGate, type TokenGateOptions } from "./serve-auth.j
 import { announceServe, ensureApproveSecret, parsePublicUrl, withdrawServe } from "./approve-links.js";
 import { approveLinksOff, approveRoute, type ApproveRouteContext } from "./approve-route.js";
 import { listWorkflowSummaries, workflowDetail } from "./workflows-view.js";
+import { TriggerRoute, type TriggerRouteOptions } from "./trigger-route.js";
 
 export type { ChatTurnRequest, ChatTurnRunner } from "./chat-host.js";
 
@@ -216,6 +232,8 @@ export interface ServeOptions {
   tokenScope?: "read" | "approve";
   /** The bad-link rate limit (tests). */
   approveLimit?: TokenGateOptions;
+  /** Seams of the signed-trigger route (tests): how it starts runs, sees them end, reads secrets and the clock. */
+  triggerSeams?: Pick<TriggerRouteOptions, "start" | "isActive" | "env" | "now" | "failureLimit" | "log">;
 }
 
 export interface ServeHandle {
@@ -285,9 +303,14 @@ export function startServer(options: ServeOptions): Promise<ServeHandle> {
   } else if (options.rotateApproveSecret && !bundle) {
     ensureApproveSecret(store.root, { rotate: true });
   }
+  // Signed triggers (ODW extension): only when the config names some, and never for a shared bundle.
+  const triggers =
+    !bundle && Object.keys(config.settings.triggers).length > 0
+      ? new TriggerRoute({ triggers: config.settings.triggers, store, cwd, configPath, ...options.triggerSeams })
+      : null;
   const ctx: HandleContext = {
     sources, store, chatHost, feed, cwd, config, configPath, boundHost: host, redactor, bundle, gate: null,
-    approve, remoteDecide: options.tokenScope === "approve" && !bundle,
+    approve, remoteDecide: options.tokenScope === "approve" && !bundle, triggers,
   };
   const server = createServer((req, res) => {
     handle(req, res, ctx).catch((err) => {
@@ -362,6 +385,8 @@ interface HandleContext {
   approve: ApproveRouteContext | null;
   /** `--token-scope approve` (ODW extension): a token holder may answer checkpoints off loopback too. */
   remoteDecide: boolean;
+  /** The signed-trigger route (ODW extension); null when the config has no triggers. */
+  triggers: TriggerRoute | null;
 }
 
 async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandleContext): Promise<void> {
@@ -377,6 +402,16 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandleCont
       return;
     }
     const path = url.pathname;
+
+    // Signed triggers (ODW extension; see ./trigger-route): the signature is the
+    // credential — a webhook comes through a tunnel's Host and carries no token.
+    const triggerMatch = /^\/api\/triggers\/([^/]+)$/.exec(path);
+    if (triggerMatch) {
+      if (bundle) sendJson(res, 409, { error: "this dashboard shows a shared bundle: it starts no runs" });
+      else if (!ctx.triggers) sendJson(res, 404, { error: "no such trigger" });
+      else await ctx.triggers.handle(req, res, triggerMatch[1]!);
+      return;
+    }
 
     // DNS-rebinding guard: on a loopback bind, a browser reaching this server
     // through a hostile DNS name carries that name in Host — refuse it outright
@@ -454,6 +489,10 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandleCont
     }
     if (method === "GET" && path === "/api/compare") {
       compareView(req, res, store, url.searchParams, redactor);
+      return;
+    }
+    if (method === "GET" && path === "/api/estimate") {
+      estimateView(req, res, store, url.searchParams);
       return;
     }
     if (method === "GET" && path === "/api/schedules") {
@@ -814,6 +853,28 @@ function compareView(req: IncomingMessage, res: ServerResponse, store: RunStore,
     return { ...run, args: (redactor.shapes.record({ args: run.args }) as { args: unknown }).args };
   };
   sendJsonCached(req, res, compareRuns(served(a), served(b)));
+}
+
+/**
+ * `GET /api/estimate?workflow=<name>[&sourceHash=<sha256>]` (ODW extension):
+ * the WorkflowEstimate `odw estimate --json` prints, from the workflow's
+ * earlier finished runs. Read only. The name only ever picks a bucket through
+ * the store's own slug (no path of it is joined as given); a name that is
+ * empty, over 200 characters or has control characters is a 400, and so is a
+ * `sourceHash` that is no sha256. Without one, the newest run's is matched.
+ */
+function estimateView(req: IncomingMessage, res: ServerResponse, store: RunStore, params: URLSearchParams): void {
+  const workflow = params.get("workflow");
+  if (workflow === null || workflow.trim() === "" || workflow.length > 200 || /[\u0000-\u001f\u007f]/.test(workflow)) {
+    sendJson(res, 400, { error: "workflow must be a workflow's name: /api/estimate?workflow=<name>" });
+    return;
+  }
+  const hash = params.get("sourceHash");
+  if (hash !== null && !/^[0-9a-f]{64}$/.test(hash)) {
+    sendJson(res, 400, { error: "sourceHash must be a sha256, 64 lowercase hex characters" });
+    return;
+  }
+  sendJsonCached(req, res, loadEstimate(store, { workflow, sourceHash: hash ?? latestSourceHash(store, workflow) }));
 }
 
 /**
