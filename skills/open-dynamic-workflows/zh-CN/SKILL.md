@@ -300,6 +300,19 @@ odw apply $RUN --all --pr --verify "<测试命令>"   # 新分支、推送、开
 - 超过 `maxDiffBytes` 被截断的 diff 无法应用：改用该 agent 的分支（`keep: true`，或在
   配置里设 `"keepBranches": true`）。
 
+**没有**隔离的 agent 就在用户自己的工作区里干活。一次运行中第一个 `edit` 或 `full` 档位的此类
+agent 开始前，odw 会把工作区里未提交的内容——已跟踪文件的改动和未被忽略的未跟踪文件——存到
+`refs/odw/safety/<run>`（ODW 扩展；`safety_snapshot` 事件会说明；干净的工作区不建快照）。
+agent 执行的命令会被检查是否有破坏性 git 命令（`git reset --hard`、`git checkout .`、
+`git clean -f`、`git push --force`、`git stash drop|clear`、`git branch -D` 等）：每条都是一个
+`destructive_git` 事件，`"destructiveGit": "fail"` 会在 CLI 结束后让 agent 以 `"destructive_git"`
+失败（默认 `"warn"`；odw 无法拦住命令本身）。出现这种情况时要告诉用户，只在用户同意时才恢复：
+
+```bash
+odw restore $RUN --check   # 逐文件预览，与 odw apply 相同
+odw restore $RUN           # 恢复快照保存的工作区（有未提交改动时需 --force）
+```
+
 ### 权限档位（ODW 扩展）
 
 每个 agent 都在一个档位下运行：`read`（只看——不改文件、不跑命令）、`edit`（默认：各 CLI

@@ -2266,6 +2266,48 @@ If a CLI cannot log in under `minimal`, add what it needs to `agentEnvPass`
 (`odw doctor --smoke` makes one real call to check). `exec()` commands, `worktreeSetup`
 and the `notify` hooks keep the whole environment.
 
+### Safety snapshot and destructive git commands (ODW extension)
+
+An agent that works in place — the dialect's default, without `isolation: "worktree"`
+— works beside your uncommitted changes, and one `git reset --hard` throws them away
+([claude-code#33850](https://github.com/anthropics/claude-code/issues/33850)). So
+before a run's first in-place agent at `edit` or `full` starts, odw keeps what your
+working tree holds that git does not: `git stash create` for the tracked changes,
+staged and not, plus the untracked files `.gitignore` does not exclude, written to
+one commit at `refs/odw/safety/<run>` — your tree, index and stash list are left as
+they are. A clean tree gets no snapshot; ignored files are never kept, nor untracked
+files over 50 MB (the snapshot names them). The run says so in a `safety_snapshot`
+event; when odw cannot take one (not a git repository, a merge in progress) it logs
+why and the agent goes on.
+
+```sh
+odw restore $RUN --check   # preview: each file clean, CONFLICT (with its lines) or already applied
+odw restore $RUN           # put the working tree back as the snapshot kept it (git apply --3way, staged)
+```
+
+`odw restore` works in the run's source repository and goes through
+[`odw apply`](#review-and-apply-what-isolated-agents-changed-odw-extension)'s
+machinery: files the tree already holds as kept (an untracked file a reset left
+alone) are left out, a path with uncommitted changes refuses unless `--force`, and
+when HEAD has moved since (`git reset --hard origin/main`) the changes go on top of
+it three-way, and the commit HEAD was at is named.
+
+odw cannot stop a command before it runs — that takes each CLI's own hooks — but it
+reads what agents run as they run (Claude Code's `Bash`, Codex's
+`command_execution`, the kilo, opencode and agy shell tools) for `git reset --hard`,
+`git checkout .` / `-- .` / `--force`, `git restore .`, `git clean -f…`, `git push
+--force` (`-f`, `--force-with-lease`, `+refspec`), `git stash drop|clear` and `git
+branch -D`. Command lines are split as a shell would (`cd x && …`, `bash -lc '…'`,
+`sudo`, `env`, `git -C dir …`); text in quotes is not a command. Each hit is a
+`destructive_git` event — in `odw logs`, the live view, and the agent's drawer and
+node in the dashboard — naming `odw restore <run>` when there is a snapshot. Commands
+that only reset a working tree do not count for an isolated agent: its worktree is
+its own.
+
+```jsonc
+{ "destructiveGit": "fail" } // default "warn": recorded; "fail": the agent fails with reason destructive_git once its CLI is done
+```
+
 ### Untrusted repositories (ODW extension)
 
 Running agents on someone else's repository is dangerous: its CLAUDE.md or AGENTS.md

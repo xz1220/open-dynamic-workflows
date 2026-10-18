@@ -1954,6 +1954,42 @@ approval_mode = "approve"
 (`odw doctor --smoke` 会发一次真实调用来检验)。`exec()` 命令、`worktreeSetup` 和
 `notify` 钩子仍拿到完整的环境变量。
 
+### 安全快照与破坏性 git 命令(ODW 扩展)
+
+原地工作的 agent——方言的默认做法,没有 `isolation: "worktree"`——就在你未提交的改动旁边
+干活,一条 `git reset --hard` 就能把它们全部丢掉
+([claude-code#33850](https://github.com/anthropics/claude-code/issues/33850))。所以在一次
+运行的第一个 `edit` 或 `full` 档位的原地 agent 开始之前,odw 会保存工作区里 git 还没有的
+东西:用 `git stash create` 保存已跟踪文件的改动(暂存与未暂存),再加上 `.gitignore` 没有
+排除的未跟踪文件,合成一个提交存到 `refs/odw/safety/<run>`——你的工作区、index 和 stash
+列表都保持原样。干净的工作区不建快照;被忽略的文件从不保存,超过 50 MB 的未跟踪文件也不
+保存(快照里会点名)。运行用 `safety_snapshot` 事件说明;odw 无法建快照时(不是 git 仓库、
+正在合并)记一条日志说明原因,agent 照常运行。
+
+```sh
+odw restore $RUN --check   # 预览:每个文件 clean、CONFLICT(附冲突行)或 already applied
+odw restore $RUN           # 把工作区恢复成快照保存时的样子(git apply --3way,已暂存)
+```
+
+`odw restore` 在运行的源仓库里工作,复用
+[`odw apply`](#审阅并应用隔离-agent-的改动odw-扩展) 的机制:工作区里已经与快照一致的文件
+(例如 reset 没有动到的未跟踪文件)会略过;某个路径有未提交改动时拒绝,除非加 `--force`;
+HEAD 在那之后移动过(`git reset --hard origin/main`)时,改动以三方合并方式放到新的 HEAD
+之上,并说明 HEAD 原来所在的提交。
+
+odw 无法在命令执行前拦住它——那需要各 CLI 自己的 hook——但会在 agent 运行时读取它执行的命令
+(Claude Code 的 `Bash`、Codex 的 `command_execution`、kilo、opencode 与 agy 的 shell 工具),
+识别 `git reset --hard`、`git checkout .` / `-- .` / `--force`、`git restore .`、
+`git clean -f…`、`git push --force`(`-f`、`--force-with-lease`、`+refspec`)、
+`git stash drop|clear` 和 `git branch -D`。命令行按 shell 的方式切分(`cd x && …`、
+`bash -lc '…'`、`sudo`、`env`、`git -C dir …`);引号里的文字不算命令。每条命中都是一个
+`destructive_git` 事件——显示在 `odw logs`、实时视图以及看板里该 agent 的抽屉和节点上——有快照时
+会提示 `odw restore <run>`。只重置工作区的那几类命令对隔离 agent 不计:它的 worktree 是它自己的。
+
+```jsonc
+{ "destructiveGit": "fail" } // 默认 "warn":只记录;"fail":agent 的 CLI 结束后以失败原因 destructive_git 判为失败
+```
+
 ### 不受信任的仓库(ODW 扩展)
 
 在别人的仓库上运行 agent 是危险的:仓库里的 CLAUDE.md 或 AGENTS.md 会左右 agent,它的

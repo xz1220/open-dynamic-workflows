@@ -409,6 +409,23 @@ independent security reviews whose findings are all fixed.
   (name plus a hash of its arguments) n times in a row. A runaway is never retried
   (`transientRetries`) nor an `expect` miss. A text CLI's spend is checked after each run,
   and the run says so once. Shown in `odw status`, `odw agents` and the agent's drawer.
+- A safety snapshot before in-place agents, and destructive git commands caught
+  (**ODW extension**; anthropics/claude-code#33850): before a run's first agent that
+  works in the source tree (no `isolation: "worktree"`) with `edit` or `full`, a tree
+  with uncommitted work is kept at `refs/odw/safety/<run>` — `git stash create` for the
+  tracked changes plus the untracked, non-ignored files through a scratch index (your
+  tree, index and stash list are never touched; ignored files and untracked files over
+  50 MB are not kept) — announced by a `safety_snapshot` event. `odw restore <run>
+  [--check] [--force]` previews, then puts it back file by file with `odw apply`'s
+  three-way machinery, leaving out what the tree already holds as kept. What agents
+  run is read as it streams (Claude Code's Bash, Codex's `command_execution`,
+  kilo/opencode/agy shell tools) for `git reset --hard`, `git checkout .`/`-- .`/
+  `--force`, `git restore .`, `git clean -f…`, `git push --force`, `git stash
+  drop|clear` and `git branch -D`: each is a `destructive_git` event naming `odw
+  restore`; `"destructiveGit": "fail"` (default `"warn"`) fails the agent with reason
+  `destructive_git` once its CLI is done — ODW cannot stop a command before it runs.
+  Commands that only reset a working tree do not count for an isolated agent. Shown in
+  `odw logs`, the live view, the agent's drawer and node, and a chip on the run's head.
 
 ### Run on a schedule
 - `odw schedule add|list|remove|run` writes a cron, launchd or systemd entry that calls

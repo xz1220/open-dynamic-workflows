@@ -364,6 +364,22 @@ odw apply $RUN --all --pr --verify "<test command>"   # a new branch, pushed, an
 - A diff cut at `maxDiffBytes` cannot be applied: use the agent's branch
   (`keep: true`, or `"keepBranches": true` in the config).
 
+An agent **without** isolation works in the user's own tree. Before a run's
+first such agent at `edit` or `full`, odw keeps the tree's uncommitted work —
+tracked changes and untracked, non-ignored files — at `refs/odw/safety/<run>`
+(ODW extension; a `safety_snapshot` event says so; a clean tree gets none). What
+agents run is read for destructive git commands (`git reset --hard`, `git
+checkout .`, `git clean -f`, `git push --force`, `git stash drop|clear`, `git
+branch -D`, …): each is a `destructive_git` event, and `"destructiveGit":
+"fail"` fails the agent with reason `"destructive_git"` once its CLI is done
+(default `"warn"`; odw cannot stop the command itself). When one shows up, tell
+the user, and put their work back only when they agree:
+
+```bash
+odw restore $RUN --check   # preview, file by file, as odw apply does
+odw restore $RUN           # put back the working tree the snapshot kept (--force over uncommitted changes)
+```
+
 ### Permission tiers (ODW extension)
 
 Every agent runs at a tier: `read` (look — never edit or run commands), `edit`
