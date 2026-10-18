@@ -158,7 +158,8 @@
 | ✅ 本轮 | 「待你处理」：Activity 首屏列出等待决定的检查点，以及过去一天失败或失去 worker 的运行（附 `odw resume` 命令）；官网新增「为长任务而生」一节 |
 | ✅ 本轮 | 执行记录侧栏（运行中实时跟随、追加不重绘）；Jobs 页「即将运行」（下一次触发、cron 的自然语言描述、上次运行）；检查点关卡节点与等待提醒；抽屉里的权限档位、回退链、未达成的预期与被拒的工具调用；DAG 节点上的回退链与被拒计数 |
 | ✅ 本轮 | 额度暂停卡片（重置时间、倒计时、立即继续）与运行卡片上的「暂停至」；花费小票：按阶段、按适配器与花费最多的 agent（`$` 键） |
-| ⏳ | 运行之间的对比（`odw compare`：`GET /api/compare` 与 `web/src/types.ts` 的 `RunComparison` 已就绪）；eval 报告视图（`odw eval`：`GET /api/evals[/:name/:id]` 与 `EvalReport`、`EvalReportSummary` 已就绪，eval 运行的摘要带 `eval` 标记）；检查点审批时编辑 payload；MCP 状态与 codex 用量在抽屉中的呈现 |
+| ✅ 本轮 | 运行对比视图（`odw compare`）；eval 报告视图（Evals 页）；检查点审批时编辑 payload；抽屉中的 MCP 状态、沙箱与 codex 用量；Workspace 中的花费预估（按阶段 p50–p90 区间条）、工作流记忆（过期条目划线、可复制 `odw memory prune`）；运行头部与 Jobs 的「距上次运行的变化」标记；「由谁发起 / 由谁决定」与 Jobs 历史上的 全部 / 我的 / 团队 筛选 |
+| ⏳ | 更远：多运行的花费趋势图；按 token 名字的审计时间线；看板内编辑记忆条目（目前只读，写入走 `odw memory`） |
 
 开发方式：`node web/demo-fixtures.mjs <runs> <proj> --live` 生成实时模拟数据，`node web/dev.mjs --api http://127.0.0.1:4317` 启动开发服务器（每次刷新都会重新构建）。
 
