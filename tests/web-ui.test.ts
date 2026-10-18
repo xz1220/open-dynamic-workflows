@@ -791,6 +791,8 @@ test("compare: figures with their deltas, what changed in the setup, and a row p
   assert.equal(verdict({ a: 100, b: 103, delta: 3 }), "same", "within 5% is noise");
   assert.equal(verdict({ a: 2, b: 1, delta: -1 }, false), "worse", "fewer done is worse");
   store.comparison = null;
+});
+
 test("a checkpoint approved with edits says so, and the drawer shows what was approved", () => {
   const view: JobViewState = {
     cpNote: "",
