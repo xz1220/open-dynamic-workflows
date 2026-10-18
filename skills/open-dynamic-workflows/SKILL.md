@@ -176,7 +176,7 @@ For long runs, fire-and-poll instead of blocking yourself:
 
 ```bash
 RUN=$(odw run wf.js)        # prints a run id and returns immediately
-odw status $RUN             # state, agent count, tokens and cost
+odw status $RUN             # state, agent count, tokens and cost (by phase: ODW extension)
 odw logs $RUN --follow      # stream progress events
 odw logs $RUN --agent 3     # what one agent did: tool calls, results, errors (ODW extension)
 odw export $RUN --otlp      # the run as OpenTelemetry traces, OTLP/JSON — --send posts it (ODW extension)
@@ -189,7 +189,7 @@ odw approve|reject $RUN     # answer a checkpoint() the run waits at — only on
 odw compare $OLD $RUN       # what changed between two runs: setup, time, cost, failures, replies (ODW extension)
                             #   --agent <label|id>: one agent's whole reply diff; --json for scripts
 odw eval review             # cases × adapters × repeats: pass rate, cost, time per cell (ODW extension; below)
-odw list                    # all runs
+odw list                    # all runs (with a cost column once one reported dollars)
 ```
 
 Both patterns above behave exactly like this for you: your shell is not a
@@ -516,5 +516,5 @@ without answering when headless (a login, trust or approval prompt).
 | Reaching for `--permissions full` when an agent was refused or denied | `full` drops the sandbox and every approval — ask the user. A refused `read` agent needs a read-capable adapter instead. |
 | Running agents on a repository you did not write as if it were the user's | `odw run --untrusted` (ODW extension): `claude --safe-mode` and the like keep its instructions, hooks and settings out; the run logs which CLIs cannot. |
 | Giving one CLI's model id to agents that may run on another (a phase default, a fallback chain) | Model ids do not cross CLIs: use a tier, `model: '@fast'`, which picks each CLI's own id (ODW extension). |
-| Fanning out wide without watching what it spends | `odw status $RUN` shows the run's tokens and cost so far, and a `parallel()`/`pipeline()` wider than `fanOutWarn` (default 25) logs a warning (ODW extensions). Size fan-outs to `budget.total` when one is set; `--budget` caps output tokens. |
+| Fanning out wide without watching what it spends | `odw status $RUN` shows the run's tokens and cost so far, phase by phase, and a `parallel()`/`pipeline()` wider than `fanOutWarn` (default 25) logs a warning (ODW extensions). Size fan-outs to `budget.total` when one is set; `--budget` caps output tokens. |
 | Hand-writing a cron line around `odw run` | `odw schedule add` writes it with an overlap lock, a log and a pinned `PATH` — and only on the user's request: it edits their crontab or LaunchAgents. |

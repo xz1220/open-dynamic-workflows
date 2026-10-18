@@ -560,9 +560,23 @@ text-mode adapters), ODW counts `ceil(chars / 4)` of the reply and marks the fig
 $ odw status $RUN
 20261017-101500-ab12cd  [done]  review-swarm
   dispatched: 9 agent(s)
-  usage: 1.4M tokens in (1.2M cache read, 96k cache write) · ~38k out · $2.871 (estimated in part: 1 of 9 agents reported no output tokens)
+  usage: 1.4M tokens in (1.2M cache read, 96k cache write) · ~50k out · $2.867 (estimated in part: 1 of 9 agents reported no output tokens)
+  spend by phase (share of tokens):
+    01  Scan    6 agents  1.1M  $2.100  78%  ███████████████▋
+    02  Verify  2 agents  296k  $0.767  21%  ████▎
+    03  Report  1 agent   10k~       —  <1%  ▏
+    not every agent reported dollars, so shares are of tokens
+    ~ partly estimated: a CLI that reports no count is measured as characters / 4
 ```
 
+- `odw status` breaks the spend down by phase — the dashboard's spend receipt in
+  text: a line per phase in the order the workflow declared them (one not started
+  yet says so), then the agents outside every phase, each with its agents, tokens,
+  cost and share, and a bar of Unicode blocks (`#` without a UTF-8 locale). The
+  shares are of dollars when every agent that spent reported some, else of tokens.
+  It fits 100 columns and is plain text under `NO_COLOR` or in a pipe.
+- `odw list` adds a cost column when any listed run reported dollars (`—` for one
+  that did not).
 - The live view's summary line shows output tokens (what `--budget` counts) and the
   running cost; each settled agent's line shows its own cost.
 - `GET /api/runs` and `GET /api/runs/:id` carry the run's total as `usage`
@@ -902,7 +916,15 @@ switches to a night theme on demand. What it gives you:
 - **Workspace** — every saved workflow with a static outline of its phases and the
   primitives each one calls, its source, and its recent runs.
 - **Chat Host** — ordinary Codex conversation; mention ODW or workflow and the turn
-  is attached to a real background run whose tool card updates live.
+  is attached to a real background run whose tool card updates live. A plain turn
+  runs `codex exec --json` (read-only sandbox, `--ephemeral`) and reads it as the
+  built-in `codex` adapter does: the reply is its `--output-last-message` file, else
+  its last `agent_message`, and each message shows as it completes while the reply
+  streams. The turn's tokens (from `turn.completed`; codex reports no dollars) are
+  kept on the message as `usage`. A failure codex reports is classified like an
+  agent's: a spent quota or a refused login says what to do — wait for the window to
+  reset, or `codex login` — and the message carries `failureReason` (`quota`,
+  `auth`, …) (ODW extensions).
 
 <table>
   <tr>

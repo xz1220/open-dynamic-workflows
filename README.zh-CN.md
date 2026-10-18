@@ -503,9 +503,21 @@ token、不显示花费。CLI 不上报输出 token 时
 $ odw status $RUN
 20261017-101500-ab12cd  [done]  review-swarm
   dispatched: 9 agent(s)
-  usage: 1.4M tokens in (1.2M cache read, 96k cache write) · ~38k out · $2.871 (estimated in part: 1 of 9 agents reported no output tokens)
+  usage: 1.4M tokens in (1.2M cache read, 96k cache write) · ~50k out · $2.867 (estimated in part: 1 of 9 agents reported no output tokens)
+  spend by phase (share of tokens):
+    01  Scan    6 agents  1.1M  $2.100  78%  ███████████████▋
+    02  Verify  2 agents  296k  $0.767  21%  ████▎
+    03  Report  1 agent   10k~       —  <1%  ▏
+    not every agent reported dollars, so shares are of tokens
+    ~ partly estimated: a CLI that reports no count is measured as characters / 4
 ```
 
+- `odw status` 按阶段拆分花费 —— 即看板花费清单(spend receipt)的文本版:按工作流声明的
+  顺序每个阶段一行(尚未开始的会注明),最后是不属于任何阶段的 agent;每行给出 agent 数、
+  token、花费、占比,以及一条 Unicode 方块组成的占比条(没有 UTF-8 locale 时用 `#`)。
+  当每个有花费的 agent 都报了美元时,占比按美元计算,否则按 token。整块不超过 100 列,
+  在 `NO_COLOR` 下或输出到管道时为纯文本。
+- 当列出的运行中有任何一个报了美元时,`odw list` 会多出一列花费(没有花费的运行显示 `—`)。
 - 实时视图的汇总行显示输出 token(也就是 `--budget` 所计的数)和累计花费;每个已结束
   agent 的那一行显示它自己的花费。
 - `GET /api/runs` 和 `GET /api/runs/:id` 以 `usage` 给出运行的合计(有 agent 的输出
@@ -806,7 +818,12 @@ odw view run.odwrun                   # 即 odw serve --open run.odwrun:在浏�
   并可复制 `odw apply` 命令(以及保留的分支)。
 - **Workspace** —— 所有已保存的工作流:阶段的静态结构及每个阶段调用的原语、源码和最近的运行。
 - **Chat Host** —— 正常的 Codex 对话;提到 ODW 或 workflow 时,该回合会关联到一个真实的后台
-  运行,工具卡片实时更新。
+  运行,工具卡片实时更新。普通回合运行 `codex exec --json`(只读沙箱、`--ephemeral`),
+  并按内置 `codex` 适配器的方式解读:回复取自它的 `--output-last-message` 文件,没有时取最后
+  一条 `agent_message`;回复流式输出期间,每条消息完成时即显示。该回合的 token(来自
+  `turn.completed`;codex 不报美元)记录在消息的 `usage` 上。codex 报告的失败按 agent 失败
+  的方式归类:额度用尽或登录被拒时会说明该怎么做 —— 等额度窗口重置,或执行 `codex login` ——
+  消息带上 `failureReason`(`quota`、`auth` 等)(ODW 扩展)。
 
 <table>
   <tr>

@@ -71,6 +71,10 @@ changed, and run on a schedule — and a dashboard redesigned to watch them.
   its `turn.failed` / `error` events as the failure, classified like any (an `error`
   codex retried itself is not one). Output declarations gain `match`, `errorEvents`
   and the `{reply_file}` placeholder (**ODW extension**).
+- The spend receipt in the terminal (**ODW extension**): `odw status` prints a "spend
+  by phase" block — each phase's agents, tokens, cost, share and a bar of Unicode
+  blocks, within 100 columns, plain under `NO_COLOR` — and `odw list` a cost column
+  when any listed run reported dollars.
 - Isolated (`worktree`) agents keep their change as a diff (setup files excluded),
   optionally on a `keep` branch. Review with `odw diff` or the dashboard's Changes tab;
   land with `odw apply`, which previews every file first — clean, conflicting (with the
@@ -202,6 +206,11 @@ changed, and run on a schedule — and a dashboard redesigned to watch them.
   outputs, usage, failure reasons and tiers, the Changes and Transcript views, a Spend
   receipt (where a run's tokens and dollars went, by phase, adapter and agent; `$`),
   Upcoming schedules, a command palette, light and dark themes, English and Chinese.
+- The Chat Host talks to codex as the `codex` adapter does (**ODW extension**): `codex
+  exec --json` with its reply from `--output-last-message` (else the last
+  `agent_message`), each message shown as it completes while the reply streams, the
+  turn's tokens kept on the message (`usage`), and a failure codex reports classified
+  — a spent quota or a refused login says what to do (`failureReason`).
 - Share a run (**ODW extension**): `odw bundle <run> [--out FILE] [--no-transcripts]
   [--max-bytes N]` writes `<run>.odwrun`, one self-contained JSON file — meta, status,
   events, saved agent results, kept diffs, transcripts, the result and the error — all
