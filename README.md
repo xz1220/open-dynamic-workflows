@@ -2333,9 +2333,16 @@ working tree holds that git does not: `git stash create` for the tracked changes
 staged and not, plus the untracked files `.gitignore` does not exclude, written to
 one commit at `refs/odw/safety/<run>` — your tree, index and stash list are left as
 they are. A clean tree gets no snapshot; ignored files are never kept, nor untracked
-files over 50 MB (the snapshot names them). The run says so in a `safety_snapshot`
+files over 50 MB, nor untracked files whose names say they hold a secret (`.env`,
+`.env.*`, `*.pem`, `*.key`, `*.p12`, `id_rsa`, `id_ed25519`, `id_ecdsa`,
+`credentials.json`) — the snapshot names each. The run says so in a `safety_snapshot`
 event; when odw cannot take one (not a git repository, a merge in progress) it logs
 why and the agent goes on.
+
+The snapshot is a git ref **in your repository**: until `odw gc` deletes it with its
+run (past `retention`), its commit holds your other untracked files as they were — a
+draft, a local config, a secret under a name odw does not know. Nothing you push by
+branch or tag carries it, but `git push --mirror` (every ref) would publish it.
 
 ```sh
 odw restore $RUN --check   # preview: each file clean, CONFLICT (with its lines) or already applied

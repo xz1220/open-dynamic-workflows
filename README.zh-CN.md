@@ -2013,9 +2013,15 @@ approval_mode = "approve"
 运行的第一个 `edit` 或 `full` 档位的原地 agent 开始之前,odw 会保存工作区里 git 还没有的
 东西:用 `git stash create` 保存已跟踪文件的改动(暂存与未暂存),再加上 `.gitignore` 没有
 排除的未跟踪文件,合成一个提交存到 `refs/odw/safety/<run>`——你的工作区、index 和 stash
-列表都保持原样。干净的工作区不建快照;被忽略的文件从不保存,超过 50 MB 的未跟踪文件也不
-保存(快照里会点名)。运行用 `safety_snapshot` 事件说明;odw 无法建快照时(不是 git 仓库、
-正在合并)记一条日志说明原因,agent 照常运行。
+列表都保持原样。干净的工作区不建快照;被忽略的文件从不保存,超过 50 MB 的未跟踪文件不保存,
+文件名表明含有密钥的未跟踪文件(`.env`、`.env.*`、`*.pem`、`*.key`、`*.p12`、`id_rsa`、
+`id_ed25519`、`id_ecdsa`、`credentials.json`)也不保存——快照会逐一点名。运行用
+`safety_snapshot` 事件说明;odw 无法建快照时(不是 git 仓库、正在合并)记一条日志说明原因,
+agent 照常运行。
+
+快照是**你仓库里的一个 git ref**:在 `odw gc` 随其运行一起删除它之前(超过 `retention`),
+它的提交里保存着你其他未跟踪文件当时的内容——草稿、本地配置、odw 不认识的文件名下的密钥。
+按分支或标签推送不会带上它,但 `git push --mirror`(推送所有 ref)会把它公开出去。
 
 ```sh
 odw restore $RUN --check   # 预览:每个文件 clean、CONFLICT(附冲突行)或 already applied

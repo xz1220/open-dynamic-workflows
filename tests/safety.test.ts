@@ -12,7 +12,7 @@ import type { AdapterOutput, CliResult } from "../src/adapters/types.js";
 import { DestructiveGitWatch, destructiveGitCommands, type DestructiveGitHit } from "../src/destructive-git.js";
 import { event, type WorkflowEvent } from "../src/events.js";
 import { BEHAVIOUR_SETTINGS } from "../src/provenance.js";
-import { safetyRef, takeSafetySnapshot } from "../src/safety.js";
+import { safetyRef, snapshotEvent, takeSafetySnapshot } from "../src/safety.js";
 import { formatEvent, safetyLines } from "../src/runtime/live-view.js";
 import { restoreSnapshot } from "../src/runtime/restore.js";
 import { RunStore } from "../src/runtime/run-store.js";
@@ -274,6 +274,31 @@ test("the run's own directory, when it lies in the tree, is left out of the snap
     assert.ok("taken" in outcome);
     assert.equal(outcome.taken.untracked, 1);
     assert.deepEqual(git(repo, "ls-tree", "-r", "--name-only", outcome.taken.commit).trim().split("\n").sort(), ["a.txt", "notes.md"]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("review fix: untracked files with secret-like names stay out of the snapshot — a ref git push --mirror would publish — and are named", async () => {
+  const root = tempRoot();
+  try {
+    const repo = makeRepo(root, { "a.txt": "a\n" });
+    const secretish = [".env", ".env.local", "config/.env.production", "certs/server.pem", "tls.KEY", "deploy/id_rsa", "id_ed25519", "id_ecdsa", "store.p12", "gcp/credentials.json"];
+    write(repo, Object.fromEntries([...secretish, "notes.md", "id_rsa.pub", "environment.ts", "keys.md"].map((p) => [p, "x\n"])));
+    const outcome = await takeSafetySnapshot(repo, "r-secret");
+    assert.ok("taken" in outcome, JSON.stringify(outcome));
+    const files = git(repo, "ls-tree", "-r", "--name-only", outcome.taken.commit).trim().split("\n").sort();
+    assert.deepEqual(files, ["a.txt", "environment.ts", "id_rsa.pub", "keys.md", "notes.md"]);
+    assert.deepEqual([...outcome.taken.secretLike].sort(), [...secretish].sort());
+    assert.equal(outcome.taken.untracked, 4);
+    const ev = snapshotEvent("r-secret", outcome.taken);
+    assert.match(String(ev.message), /\(left out as secret-like: [^)]*\.env[^)]*deploy\/id_rsa[^)]*\)/);
+    assert.deepEqual([...(ev.secretLike as string[])].sort(), [...secretish].sort());
+    // Nothing but secret-like files untracked: nothing to keep.
+    mkdirSync(join(root, "c"));
+    const clean = makeRepo(join(root, "c"), { "a.txt": "a\n" });
+    write(clean, { ".env": "x\n" });
+    assert.deepEqual(await takeSafetySnapshot(clean, "r-clean"), { clean: true });
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

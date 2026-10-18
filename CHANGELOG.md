@@ -805,6 +805,12 @@ independent security reviews whose findings are all fixed.
   `--git-dir`, `--work-tree`) reset of another tree. All are now seen; git pointed
   elsewhere counts as in place. The README says the detection is advisory and best
   effort, and names what it misses (`find -exec`, `xargs`, git aliases).
+- The safety snapshot kept every untracked file git does not ignore, `.env` and
+  `id_rsa` included, in a ref of the repository that `git push --mirror` would publish.
+  Untracked files with secret-like names (`.env`, `.env.*`, `*.pem`, `*.key`, `*.p12`,
+  `id_rsa`, `id_ed25519`, `id_ecdsa`, `credentials.json`) are now left out and named in
+  the `safety_snapshot` event (`secretLike`), and the README says the snapshot is a ref
+  in the repository holding other untracked files until `odw gc` expires it.
 
 ### Changed behavior — check before upgrading
 - Signed triggers in a repository's `./odw.config.json` are no longer served: move them
