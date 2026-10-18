@@ -317,6 +317,29 @@ agent_failed    (Fix) fixer — [unmet_expectation] did not meet: `npm test` mus
   `unmet_expectation`. `pending` is neither: Claude Code's docs say not to treat it
   as a failure (servers from `.mcp.json` usually start that way and connect in the
   background).
+- **Protected paths stay untouched.** Agents game the checks they are judged by:
+  to get green they edit, skip or delete the tests. `untouched` lists globs (as
+  `files`: `*` stays within a directory, `**/*.snap` finds one at any depth) that
+  no file the agent changed, created or deleted may match — read like `changes`,
+  so in place your own edits made before the call do not count. A touched path is
+  a miss naming it — ``no file matching "test/**" may change, and 1 did:
+  test/add.test.js`` — and the retry is told to restore it.
+- **Background work left running.** In headless mode the agent can start a
+  background shell command (`run_in_background`) or subagent, end its turn and
+  exit: the work dies with the CLI while the result says success
+  ([claude-code#85129](https://github.com/anthropics/claude-code/issues/85129)).
+  odw follows Claude Code's stream-json task events (`task_started`,
+  `task_updated`, `task_notification`) and the background tool calls; work still
+  open at the `result` event is kept as `orphaned` on the agent's
+  `agent_finished` event, its saved result, `/api/runs/:id` and the dashboard
+  drawer, and the run logs one line per agent: `serve:1: Claude Code ended its
+  turn with 1 background task still running — Bash (Start the dev server); it
+  died when the CLI exited, …`. The reply stands (the default
+  `"orphanedBackground": "warn"`); `"orphanedBackground": "fail"` fails such agents
+  with `reason: "orphaned_background"`, and with `expect` set it is a miss —
+  handed back (“wait for every background command and subagent to finish before
+  you reply”), then `orphaned_background`. Any JSONL adapter can declare its CLI's
+  background events with `output.background` (see the adapters reference).
 
 Claude Code's Workflow tool ignores `expect`, so there the checks do not run.
 [`examples/fix-until-green.js`](examples/fix-until-green.js) lets `expect` run a
@@ -1769,9 +1792,10 @@ chars/4 of its reply — the run's log says so once. A CLI that reports no dolla
 **ODW extension.** Every failed agent is classified from its CLI's exit status
 and the end of its output: `rate_limit`, `quota`, `auth`, `timeout`, `stalled`,
 `not_found` (the CLI could not start), `permission` (a tool call or approval was
-refused) or `exit` — and three classes for runs that "succeeded" without the
-evidence: `empty_reply`, `unmet_expectation` and, under `"mcpFailures": "fail"`,
-`mcp_unavailable` (see
+refused) or `exit` — and four classes for runs that "succeeded" without the
+evidence: `empty_reply`, `unmet_expectation`, under `"mcpFailures": "fail"`
+`mcp_unavailable`, and `orphaned_background` (background work left running at the
+reply, under `"orphanedBackground": "fail"` or `expect`; see
 [Check an agent's work](#check-an-agents-work-odw-extension)) — and `runaway`, an agent killed at one of its
 [limits](#per-agent-limits-and-runaway-loops-odw-extension). The class is the `reason` on the `agent_failed` event (with
 `retryAfter`, in seconds, when the CLI said when to come back), the agent's

@@ -45,6 +45,24 @@ changed, and run on a schedule — and a dashboard redesigned to watch them.
   `failed` or `needs-auth` with reason `mcp_unavailable`, and `expect: { mcp: [...] }`
   makes a listed server that is not there a miss. Adapters declare where their CLI
   lists its servers with `output.mcpEvent` and `output.mcpPath`.
+- Orphaned background work (**ODW extension**): in headless mode an agent can start a
+  background shell command (`run_in_background`) or subagent, end its turn and exit —
+  the work dies with the CLI while the result says success
+  ([claude-code#85129](https://github.com/anthropics/claude-code/issues/85129)). ODW
+  reads Claude Code's stream-json task events (`task_started`, `task_updated`,
+  `task_notification`, plus the background tool calls themselves) and, when work is
+  still open at the `result` event, keeps it as `orphaned` on the agent (events, saved
+  result, `/api/runs/:id`, the dashboard drawer) and logs it once, while its reply
+  stands (the default `"orphanedBackground": "warn"`); `"orphanedBackground": "fail"`
+  fails such agents with reason `orphaned_background`, and with `expect` it is a miss —
+  handed back, then `orphaned_background`. Adapters declare their CLI's background
+  events generically with `output.background` (`started` / `ended` rules); the built-in
+  `claude` ships one.
+- `expect: { untouched: ['test/**', '**/*.snap', '.github/**'] }` (**ODW extension**):
+  a file the agent changed, created or deleted that matches a listed glob is a miss
+  naming the paths — so an agent cannot edit or skip the tests it is judged by to get
+  green. Read like `expect.changes`: an isolated agent's kept diff, an in-place agent's
+  change since the call started.
 
 ### Ask a person, tell a person
 - `checkpoint(title, { payload, timeout, onTimeout })` pauses a run until someone

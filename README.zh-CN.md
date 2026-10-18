@@ -282,6 +282,23 @@ agent_failed    (Fix) fixer — [unmet_expectation] did not meet: `npm test` mus
   `failed`、`needs-auth`、`disabled` 或没有配置——算作一项缺失,重试后以
   `unmet_expectation` 失败。`pending` 两者都不算:Claude Code 的文档说不要把它单独当作
   失败(`.mcp.json` 里的服务器通常以这个状态启动,并在后台连接)。
+- **受保护的路径不许碰。** agent 会钻考核它的检查的空子:为了变绿去改、跳过或删除测试。
+  `untouched` 列出 glob(规则同 `files`:`*` 不跨目录,`**/*.snap` 匹配任意深度),agent
+  修改、新建或删除的文件都不许匹配——读取方式同 `changes`,所以原地运行时你在调用之前的
+  改动不算。碰到的路径算作一项缺失并被列出——``no file matching "test/**" may change, and
+  1 did: test/add.test.js``——重试时会要求 agent 把它们恢复原样。
+- **被丢下仍在运行的后台任务。** 无头模式下 agent 可以启动后台 shell 命令
+  (`run_in_background`)或子 agent,随后结束回合并退出:任务随 CLI 一起终止,结果却显示成功
+  ([claude-code#85129](https://github.com/anthropics/claude-code/issues/85129))。odw 跟踪
+  Claude Code stream-json 的任务事件(`task_started`、`task_updated`、`task_notification`)
+  和后台工具调用;到 `result` 事件时仍未结束的任务作为 `orphaned` 记在 agent 的
+  `agent_finished` 事件、保存的结果、`/api/runs/:id` 和看板侧栏上,运行为每个 agent 记一行
+  日志:`serve:1: Claude Code ended its turn with 1 background task still running — Bash
+  (Start the dev server); it died when the CLI exited, …`。回复照常成立(默认
+  `"orphanedBackground": "warn"`);`"orphanedBackground": "fail"` 让这样的 agent 以
+  `reason: "orphaned_background"` 失败;设了 `expect` 时它算作一项缺失——先交还给 agent
+  (要求它等所有后台命令和子 agent 结束后再回复),之后以 `orphaned_background` 失败。任何
+  JSONL 适配器都可以用 `output.background` 声明自己 CLI 的后台事件(见适配器参考)。
 
 Claude Code 的 Workflow 工具会忽略 `expect`,在那里检查不会执行。
 [`examples/fix-until-green.js`](examples/fix-until-green.js) 用 `expect` 驱动一个
@@ -1556,8 +1573,10 @@ agent 在两次之间做的事不可能改变结果。同一次调用的后续 C
 
 **ODW 扩展。** 每个失败的 agent 都会根据其 CLI 的退出状态和输出末尾被归类:`rate_limit`、
 `quota`、`auth`、`timeout`、`stalled`、`not_found`(CLI 无法启动)、`permission`(工具
-调用或审批被拒)或 `exit`——另有三个类别,给"成功了"却拿不出证据的运行:`empty_reply`、
-`unmet_expectation`,以及 `"mcpFailures": "fail"` 下的 `mcp_unavailable`(见[检查 agent 的工作](#检查-agent-的工作odw-扩展));还有 `runaway`:触及[上限](#单-agent-上限与死循环odw-扩展)被杀掉的 agent。这个类别就是 `agent_failed` 事件上的 `reason`(CLI 说明了何时
+调用或审批被拒)或 `exit`——另有四个类别,给"成功了"却拿不出证据的运行:`empty_reply`、
+`unmet_expectation`、`"mcpFailures": "fail"` 下的 `mcp_unavailable`,以及
+`orphaned_background`(回复时仍有后台任务在运行,`"orphanedBackground": "fail"` 或设了
+`expect` 时)(见[检查 agent 的工作](#检查-agent-的工作odw-扩展));还有 `runaway`:触及[上限](#单-agent-上限与死循环odw-扩展)被杀掉的 agent。这个类别就是 `agent_failed` 事件上的 `reason`(CLI 说明了何时
 可以重试时,还带有以秒计的 `retryAfter`),也是看板和 `/api/runs/:id` 里该 agent 的
 `failureReason`,并显示在实时视图和 `odw logs` 中:
 
