@@ -72,6 +72,18 @@ other primitive organizes calls to it.
   sandbox has not, a higher limit or another image fails the call before it
   starts. See [adapters](adapters.md#container-sandbox-odw-extension). Not part of
   the resume key. Claude Code ignores it.
+- **opts.limits** (**ODW extension**) — what this agent may do before it is killed
+  as a runaway: `{ toolCalls?, costUsd?, outputTokens?, seconds?, repeat? }` —
+  tool calls over all its CLI runs, dollars and output tokens its CLIs reported,
+  seconds since its first CLI run, and the same tool call (name + argument hash)
+  `repeat` times **in a row**. Over its adapter's and the run's `agentLimits`
+  key by key; `null` lifts one. Enforced live from claude, codex, kilo and
+  opencode output (a text CLI's spend only after each run); a breach kills the
+  CLI at once and throws — recoverable — with `reason: "runaway"` and
+  `limitHit: { limit, max, value, evidence }` on its event (``Bash `npm test`
+  ×5 in a row``). Never retried, never an `expect` miss. A malformed value
+  throws an `AgentError` before anything runs. Not part of the resume key.
+  Claude Code ignores it.
 - **opts.expect** (**ODW extension**) — what must hold once the agent has
   replied, checked by odw: `{ changes?, files?, command?, match?, timeout? }`. See
   [expect](#expect-odw-extension). Claude Code ignores it.

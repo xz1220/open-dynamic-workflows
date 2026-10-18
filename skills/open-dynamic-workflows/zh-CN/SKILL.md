@@ -452,5 +452,6 @@ Codex、Claude Code、Gemini、Qwen、Kimi 开箱即用，无需配置。要换�
 | agent 被拒绝或被拦下时，转而用 `--permissions full` | `full` 去掉了沙箱和所有审批——先问用户。被拒绝的 `read` agent 需要的是一个支持只读的适配器。 |
 | 把不是用户写的仓库当作用户自己的仓库来跑 agent | `odw run --untrusted`（ODW 扩展）：`claude --safe-mode` 等参数挡住它的指令、hooks 和设置；运行日志会说明哪些 CLI 做不到。 |
 | 把某个 CLI 的模型 ID 交给可能跑在别的 CLI 上的 agent（阶段默认值、回退链） | 模型 ID 不能跨 CLI 通用：用层级 `model: '@fast'`，它会为每个 CLI 选出自己的 ID（ODW 扩展）。 |
+| 让长时间运行的 agent 不设上限，或把以 `runaway` 失败的 agent 当作偶发故障重试 | 给它 `limits: { toolCalls, costUsd, repeat: 5 }`（或在配置中设 `agentLimits`）：反复做同一个工具调用或超出上限的 agent 会被 odw 立即杀掉（ODW 扩展）。`runaway` 失败的 `limitHit` 说明它当时在做什么——改提示词或任务，而不是一味调高上限。 |
 | 大规模扇出却不看它花了多少 | `odw status $RUN` 会按阶段显示运行到目前为止的 token 与花费，比 `fanOutWarn`（默认 25）更宽的 `parallel()`/`pipeline()` 会记一条警告（均为 ODW 扩展）。设了 `budget.total` 时按它决定扇出规模；`--budget` 限制输出 token。 |
 | 自己手写一条包着 `odw run` 的 cron 行 | `odw schedule add` 会带上防重叠锁、日志和固定的 `PATH` 写好它——且只在用户要求时使用：它会改动用户的 crontab 或 LaunchAgents。 |

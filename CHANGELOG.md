@@ -167,6 +167,16 @@ changed, and run on a schedule — and a dashboard redesigned to watch them.
 - Per-adapter `concurrency` caps; a rate limit halves that adapter's cap for the rest of
   the run; `claude` fan-outs sharing a long prompt prefix stagger their start so the
   rest read the prompt cache.
+- Per-agent limits and runaway-loop detection (**ODW extension**): `agent(…, { limits:
+  { toolCalls, costUsd, outputTokens, seconds, repeat } })`, over the adapter's and the
+  run's `agentLimits` key by key (`null` lifts one). They are enforced live from what the
+  CLI prints — Claude Code's stream-json, Codex's `exec --json`, kilo/opencode events —
+  and a breach kills the agent's CLI and everything it started at once: the agent fails
+  with reason `runaway` and `limitHit` names the limit and the evidence
+  (``Bash `npm test` ×5 in a row``, `41 tool calls > 40`). `repeat: n` trips on the same tool call
+  (name plus a hash of its arguments) n times in a row. A runaway is never retried
+  (`transientRetries`) nor an `expect` miss. A text CLI's spend is checked after each run,
+  and the run says so once. Shown in `odw status`, `odw agents` and the agent's drawer.
 
 ### Run on a schedule
 - `odw schedule add|list|remove|run` writes a cron, launchd or systemd entry that calls

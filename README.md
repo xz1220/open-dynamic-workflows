@@ -1707,6 +1707,62 @@ the JSONL adapters `kilo` and `opencode`, or a wrapper that prints
 a heartbeat — with a value above the longest quiet stretch a healthy agent has: a
 long test run inside one tool call prints nothing either.
 
+### Per-agent limits and runaway loops (ODW extension)
+
+An agent stuck in a loop keeps printing, so the stall watchdog never fires, and
+`--budget` caps the whole run, not one agent. `limits` caps one `agent()` call:
+
+```js
+await agent("Fix the failing test", {
+  limits: { toolCalls: 200, costUsd: 3, outputTokens: 200000, seconds: 1800, repeat: 5 },
+});
+```
+
+| Limit | Trips when |
+| --- | --- |
+| `toolCalls` | the agent made more tool calls than this, over all its CLI runs |
+| `costUsd` | its CLIs reported spending more dollars than this |
+| `outputTokens` | its CLIs reported generating more tokens than this |
+| `seconds` | this long has passed since its first CLI run started |
+| `repeat` | the same tool call — its name and a hash of its arguments — came this many times **in a row** (2 or more) |
+
+They are enforced **live**, from what the CLI prints as it runs: Claude Code's
+stream-json (tool_use blocks and each message's usage; its cost arrives with its
+final `result`), Codex's `exec --json` (command, file-change, MCP and web-search items;
+each turn's usage) and kilo's and opencode's events (tool calls; each step's tokens and
+cost). A breach kills the agent's CLI and everything it started at once, like a stall,
+and the agent fails with reason `runaway`: its `agent_failed` event carries
+`limitHit: { limit, max, value, evidence }` and its error says
+``adapter 'claude' ran away — limits.repeat=5: Bash `npm test` ×5 in a row``
+(or `41 tool calls > 40`, `$3.12 > $3.00`). A runaway is not retried by
+`transientRetries`, and under `expect` it is not a miss to run again — its limit is
+spent. `odw status` lists the runaways with their evidence, `odw agents` shows it in
+place of the value, and the dashboard's drawer shows the agent's limits with the one
+it hit.
+
+`repeat` counts calls in a row, not *n* within the last *2n*: the windowed rule also
+fires on a healthy edit–test cycle (`npm test`, edit, `npm test`, edit, …), while the
+same call with the same arguments back to back means nothing the agent did in between
+could change the answer. Each further CLI run of the call (a retry, a restart) starts
+its own streak.
+
+Set defaults for every agent in the config, and per adapter; a call's `limits`
+override both key by key, and `null` lifts an inherited limit:
+
+```jsonc
+{
+  "agentLimits": { "toolCalls": 300, "repeat": 6 },   // {} (the default) sets none
+  "adapters": {
+    "codex": { "agentLimits": { "seconds": 1800, "repeat": null } }
+  }
+}
+```
+
+A CLI that prints text (`gemini`, `qwen`, …) reports no usage while it runs: its
+`outputTokens` and `costUsd` are checked after each run, against what it reported or
+chars/4 of its reply — the run's log says so once. A CLI that reports no dollars at all
+(Codex) cannot trip `costUsd`; the log says that once too — use `outputTokens`.
+
 ### Rate limits, quotas and logins
 
 **ODW extension.** Every failed agent is classified from its CLI's exit status
@@ -1715,7 +1771,8 @@ and the end of its output: `rate_limit`, `quota`, `auth`, `timeout`, `stalled`,
 refused) or `exit` — and three classes for runs that "succeeded" without the
 evidence: `empty_reply`, `unmet_expectation` and, under `"mcpFailures": "fail"`,
 `mcp_unavailable` (see
-[Check an agent's work](#check-an-agents-work-odw-extension)). The class is the `reason` on the `agent_failed` event (with
+[Check an agent's work](#check-an-agents-work-odw-extension)) — and `runaway`, an agent killed at one of its
+[limits](#per-agent-limits-and-runaway-loops-odw-extension). The class is the `reason` on the `agent_failed` event (with
 `retryAfter`, in seconds, when the CLI said when to come back), the agent's
 `failureReason` in the dashboard and `/api/runs/:id`, and it shows in the live
 view and `odw logs`:

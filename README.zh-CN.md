@@ -1502,12 +1502,61 @@ cloning with «redacted:github»
 `opencode` 这类 JSONL 适配器,或会打印心跳的包装脚本;并把值设得高于
 健康 agent 最长的静默时段——工具调用里跑一轮很长的测试,同样不会有任何输出。
 
+### 单 agent 上限与死循环(ODW 扩展)
+
+陷入循环的 agent 一直在输出,所以卡死看门狗永远不会触发;而 `--budget` 限制的是整个运行,
+不是单个 agent。`limits` 限制的是一次 `agent()` 调用:
+
+```js
+await agent("修好失败的测试", {
+  limits: { toolCalls: 200, costUsd: 3, outputTokens: 200000, seconds: 1800, repeat: 5 },
+});
+```
+
+| 上限 | 何时触发 |
+| --- | --- |
+| `toolCalls` | agent 的工具调用次数(累计它的所有 CLI 运行)超过此值 |
+| `costUsd` | 它的 CLI 报告的花费(美元)超过此值 |
+| `outputTokens` | 它的 CLI 报告的输出 token 超过此值 |
+| `seconds` | 从它第一次 CLI 运行开始已过去这么多秒 |
+| `repeat` | 同一个工具调用——工具名加参数的哈希——**连续**出现这么多次(至少 2) |
+
+这些上限**实时**执行,依据的是 CLI 运行时打印的内容:Claude Code 的 stream-json(tool_use
+块与每条消息的用量;花费随最后的 `result` 到来)、Codex 的 `exec --json`(命令、文件改动、
+MCP 与网页搜索条目;每一轮的用量),以及 kilo 和 opencode 的事件(工具调用;每一步的 token
+与花费)。一旦越界,ODW 会像卡死一样立即杀掉该 agent 的 CLI 及其启动的所有进程,agent 以
+`runaway` 失败:`agent_failed` 事件带有 `limitHit: { limit, max, value, evidence }`,错误
+信息形如 ``adapter 'claude' ran away — limits.repeat=5: Bash `npm test` ×5 in a row``
+(或 `41 tool calls > 40`、`$3.12 > $3.00`)。`runaway` 不会被 `transientRetries` 重试,在
+`expect` 下也不算需要重跑的未达标——它的额度已经用完。`odw status` 列出失控的 agent 及证据,
+`odw agents` 在值的位置显示证据,看板侧栏显示该 agent 的上限并标出触发的那一项。
+
+`repeat` 统计的是**连续**调用,而不是「最近 2n 次中出现 n 次」:后者在健康的编辑—测试循环
+(`npm test`、编辑、`npm test`、编辑……)上也会触发;而同样参数的同一调用接连出现,说明
+agent 在两次之间做的事不可能改变结果。同一次调用的后续 CLI 运行(重试、重启)重新计数。
+
+可以在配置中为所有 agent 设默认值,也可以按适配器设置;调用自己的 `limits` 逐键覆盖两者,
+`null` 取消继承来的某项上限:
+
+```jsonc
+{
+  "agentLimits": { "toolCalls": 300, "repeat": 6 },   // {}(默认)= 不设上限
+  "adapters": {
+    "codex": { "agentLimits": { "seconds": 1800, "repeat": null } }
+  }
+}
+```
+
+只输出文本的 CLI(`gemini`、`qwen`……)运行期间不报告用量:它们的 `outputTokens` 与
+`costUsd` 只能在每次运行结束后检查,依据它报告的用量或回复字符数 / 4——运行日志会提示一次。
+完全不报告美元花费的 CLI(Codex)无法触发 `costUsd`,日志同样提示一次——请改用 `outputTokens`。
+
 ### 限流、额度与登录
 
 **ODW 扩展。** 每个失败的 agent 都会根据其 CLI 的退出状态和输出末尾被归类:`rate_limit`、
 `quota`、`auth`、`timeout`、`stalled`、`not_found`(CLI 无法启动)、`permission`(工具
 调用或审批被拒)或 `exit`——另有三个类别,给"成功了"却拿不出证据的运行:`empty_reply`、
-`unmet_expectation`,以及 `"mcpFailures": "fail"` 下的 `mcp_unavailable`(见[检查 agent 的工作](#检查-agent-的工作odw-扩展))。这个类别就是 `agent_failed` 事件上的 `reason`(CLI 说明了何时
+`unmet_expectation`,以及 `"mcpFailures": "fail"` 下的 `mcp_unavailable`(见[检查 agent 的工作](#检查-agent-的工作odw-扩展));还有 `runaway`:触及[上限](#单-agent-上限与死循环odw-扩展)被杀掉的 agent。这个类别就是 `agent_failed` 事件上的 `reason`(CLI 说明了何时
 可以重试时,还带有以秒计的 `retryAfter`),也是看板和 `/api/runs/:id` 里该 agent 的
 `failureReason`,并显示在实时视图和 `odw logs` 中:
 
