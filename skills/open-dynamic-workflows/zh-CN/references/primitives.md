@@ -418,6 +418,7 @@ odw apply <run> --agent <id|label>       # 用 git apply --3way 应用到你所�
 odw apply <run> --all [--check]          # 所有已完成的 agent，按 agentId 顺序
 odw apply <run> --agent <id|label> --verify "<cmd>"   # <cmd> 失败则回滚这次应用
 odw apply <run> --all --resolve [--adapter A] [--confirm] --verify "<cmd>"   # 由 resolver agent 解决冲突
+odw apply <run> --all --pr [--base B] [--remote R] [--ready] [--title T]   # 新分支、推送、开草稿 PR
 ```
 
 动手之前，`odw apply` 先在索引的临时副本上做同样的应用，逐个文件给出 `clean`、`CONFLICT`
@@ -435,6 +436,14 @@ odw 以退出码 1 结束并给出命令输出的末尾（被信号中断时同�
 给出每个冲突文件的 base、双方版本和冲突行。只有当它只改冲突文件、不留冲突标记、并在该 worktree
 里通过 `<cmd>` 时（`--confirm`：先在终端回答 y/N），它的改动才会连同 agent 的干净文件一起应用；
 否则工作树不变，odw 说明原因。只处理文本冲突；不能与 `--force` 或 `--check` 同用。
+`--pr`（ODW 扩展）不碰工作树——既不读也不写——而是在临时 worktree 里从 `--base` 或 HEAD 建分支
+`odw/<run>-<label>`（`odw/<run>-all`；被占用时加 `-2`……），在那里按上文方式应用（并校验）每个
+agent，每个单独提交、使用用户自己的 git 身份（工作流、agent、diff 统计、运行 id、花费），推送到
+`--remote`（`origin`）后运行 `gh pr create`——默认草稿，`--ready` 则否——正文为运行摘要（agent 与
+提交、阶段、花费、校验结果、`odw diff` 命令）。冲突或校验失败会在推送前删除分支；没有 `gh`（或未
+登录）时推送后打印对比页 URL。从不合并；不能与 `--check`、`--force`、`--resolve` 同用。
+`examples/pr-shepherd.js` 之后看护这个 PR：红掉的 CI 和新的评审意见交给经 `expect` 校验的修复
+agent，修复推送到 PR 分支，`gh pr ready` 之前先过 `checkpoint()`。
 超过 `maxDiffBytes`（默认 2 MB）的 diff 只保留开头，并以一行 `# odw: diff truncated …` 结尾；
 计数仍描述完整改动，但 `odw apply` 会拒绝它（`--all` 在此停下）——请改用该 agent 的分支
 （`keep: true` 或 `keepBranches`）。一次调用的每次尝试都在新的 worktree 里进行：只重排回复格式的 schema

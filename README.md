@@ -2305,6 +2305,7 @@ odw apply $RUN --agent 3           # apply it to this working tree (git apply --
 odw apply $RUN --all --check       # preview every finished agent, each on top of the ones before it
 odw apply $RUN --all --verify "npm test"   # apply them in order; roll back one that fails the check
 odw apply $RUN --all --resolve --verify "npm test"   # an agent resolves a conflict; applied once verified
+odw apply $RUN --all --pr --verify "npm test"   # a branch, one commit per agent, pushed, and a draft PR (gh)
 ```
 
 `odw apply` applies one agent's diff — or, with `--all`, every finished agent's,
@@ -2352,6 +2353,24 @@ from the run applied by `resolvedBy` in its meta.json and an `apply_resolved`
 event (`outcome`: applied, refused, declined or interrupted). `--resolve` never
 goes with `--force` or `--check`: a path with uncommitted changes in the way is
 refused as ever. (ODW extension.)
+
+`--pr` (with `--agent` or `--all`) opens a pull request instead of touching your
+working tree — which it never reads or writes, so uncommitted work there stays
+put and stays out of the PR. odw makes a branch `odw/<run>-<label>` (`odw/<run>-all`
+with `--all`; `-2`, `-3`, … when the name is taken here or on the remote) from
+`--base <branch>` — else from the commit HEAD is on, targeting HEAD's branch — in
+a temporary worktree, previews and applies each agent there exactly as above
+(`--verify` runs there), and commits each agent on its own under **your** git
+identity and signing settings; the message names the workflow, the agent, the
+diff stat, the run id and the agent's cost when its CLI reported one. An agent
+that would conflict, or fails its verify, stops it before the push: the branch is
+deleted and nothing leaves the machine. Then it pushes to `--remote` (default
+`origin`) and runs `gh pr create` — a **draft** unless `--ready`, titled
+`--title` or after the workflow and agent — with the run summary as its body:
+the agents and their commits, the phases, the spend receipt as a table, the
+verify result and the `odw diff` commands. Without `gh`, or with `gh` not logged
+in, it stops after the push and prints the compare URL. **It never merges.**
+(ODW extension.)
 
 - **`keep: true`** (an `agent()` option) or **`keepBranches: true`** (config) also
   commits the change to a branch `odw/<runId>/<agentId>-<label>` of the source
@@ -2440,6 +2459,7 @@ Runnable, plain-JS workflows in [`examples/`](examples/):
 | [`test-fix-loop.js`](examples/test-fix-loop.js) | run the tests with `exec()` → an agent fixes the failures → re-run until green (ODW only) |
 | [`fix-until-green.js`](examples/fix-until-green.js) | the same loop with `expect`: odw runs the tests after the agent replies and hands a red suite — or a "fix" that changed nothing — back to it, then fails with what it missed (ODW only) |
 | [`plan-approve-execute.js`](examples/plan-approve-execute.js) | an agent drafts a plan → a person approves it at a `checkpoint()` (a rejection with a note re-plans) → parallel execution → report (ODW only) |
+| [`pr-shepherd.js`](examples/pr-shepherd.js) | a PR number → wait for CI with `gh` → an isolated fixer takes red checks and new review comments, checked by `expect` → the fix is pushed to the PR branch → a `checkpoint()` before `gh pr ready`; never merges, cron-ready with `odw schedule` (ODW only) |
 | [`coordinated-refactor.js`](examples/coordinated-refactor.js) | isolated lanes change one repo in parallel on a notes board, each one's interface changes broadcast as it lands → a reviewer names the lanes that clash → they run again knowing what the others changed (ODW only) |
 
 ## Develop

@@ -235,6 +235,7 @@ odw apply $RUN --agent <id>           # 用 git apply --3way 应用到当前工�
 odw apply $RUN --all --check          # 预览所有已完成的 agent，每个都叠在前面的之上
 odw apply $RUN --all --verify "<测试命令>"   # 按顺序应用；校验失败的那次应用被回滚
 odw apply $RUN --all --resolve --verify "<测试命令>"   # 由 resolver agent 解决冲突；校验通过才应用
+odw apply $RUN --all --pr --verify "<测试命令>"   # 新分支、推送、开草稿 PR（gh）；从不合并
 ```
 
 - 先预览（`--check`，有冲突时退出码 1），按任务需要应用，并告诉用户应用了什么、哪里冲突了
@@ -250,6 +251,10 @@ odw apply $RUN --all --resolve --verify "<测试命令>"   # 由 resolver agent 
   用户；`--confirm` 需要在终端回答 y/N，没人回答时不要加。
 - 只要 diff 涉及的路径上有未提交的改动，`odw apply` 就会拒绝——先提交或 stash；只有用户
   同意时才用 `--force`。
+- `--pr`（ODW 扩展；`[--base B] [--remote R] [--ready] [--title T]`）把 diff 放到临时 worktree
+  里新建的分支 `odw/<run>-<label>` 上，每个 agent 一个提交、用用户自己的 git 身份，推送后用 `gh`
+  开草稿 PR（没有 `gh` 时打印对比页 URL）。它不碰工作树、从不合并；但它会推送，所以只在用户要求
+  开 PR 时使用。冲突或 `--verify` 失败会在推送前停下。
 - 超过 `maxDiffBytes` 被截断的 diff 无法应用：改用该 agent 的分支（`keep: true`，或在
   配置里设 `"keepBranches": true`）。
 

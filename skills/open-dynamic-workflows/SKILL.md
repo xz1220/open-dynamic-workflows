@@ -282,6 +282,7 @@ odw apply $RUN --agent <id>           # git apply --3way into this working tree 
 odw apply $RUN --all --check          # preview every finished agent, each on top of the ones before it
 odw apply $RUN --all --verify "<test command>"   # apply them in order; roll back one that fails the check
 odw apply $RUN --all --resolve --verify "<test command>"   # a resolver agent fixes a conflict; applied once verified
+odw apply $RUN --all --pr --verify "<test command>"   # a new branch, pushed, and a draft PR (gh); never merges
 ```
 
 - Preview first (`--check`, exit 1 when anything conflicts), apply what the task
@@ -304,6 +305,12 @@ odw apply $RUN --all --resolve --verify "<test command>"   # a resolver agent fi
   leave it off when no person is there to answer.
 - `odw apply` refuses while a path the diff touches has uncommitted changes —
   commit or stash first; use `--force` only when the user agrees.
+- `--pr` (ODW extension; `[--base B] [--remote R] [--ready] [--title T]`) puts the
+  diffs on a new branch `odw/<run>-<label>` made in a temporary worktree, one
+  commit per agent under the user's git identity, pushes it and opens a draft PR
+  with `gh` (or prints the compare URL without `gh`). It never touches the
+  working tree and never merges; it pushes, so use it only when the user asked
+  for a PR. A conflict or a failed `--verify` stops it before the push.
 - A diff cut at `maxDiffBytes` cannot be applied: use the agent's branch
   (`keep: true`, or `"keepBranches": true` in the config).
 

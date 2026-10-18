@@ -134,6 +134,20 @@ changed, and run on a schedule — and a dashboard redesigned to watch them.
   it edits just the conflicting files, leaves no conflict markers and passes the verify
   command there; `--confirm` asks y/N with the resolved diff shown. Otherwise nothing in
   your tree changes, and odw says why.
+- `odw apply <run> --agent X|--all --pr [--base B] [--remote R] [--ready] [--title T]`
+  (**ODW extension**): the kept diffs go to a new branch `odw/<run>-<label>` (or
+  `odw/<run>-all`) from `--base` or HEAD, made in a temporary worktree — your working
+  tree is never touched — one commit per agent under your own git identity (workflow,
+  agent, diff stat, run id and cost in the message), pushed to `origin`, and opened as
+  a **draft** PR with `gh` whose body is the run summary: agents and their commits,
+  phases, the spend receipt, the verify result and `odw diff` commands. An agent that
+  conflicts or fails `--verify` stops it before the push. Without `gh` (or logged out)
+  it prints the compare URL. It never merges.
+- `examples/pr-shepherd.js` (**ODW extension**): given a PR number, it waits for CI with
+  `gh` through `exec()`, hands red checks (with their failing logs) and review comments
+  newer than the last commit to an isolated fixer checked by `expect`, pushes the fix to
+  the PR branch, and asks a `checkpoint()` before `gh pr ready`. Never merges;
+  cron-ready with `odw schedule`.
 - Transcripts: every agent's CLI output is kept — `odw logs <run> --agent <id|label>
   [--follow]`, or live in the dashboard's Transcript sheet.
 - Compare two runs: `odw compare <runA> <runB>` shows what changed after you edited a

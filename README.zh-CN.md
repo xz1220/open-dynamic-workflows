@@ -2022,6 +2022,7 @@ odw apply $RUN --agent 3           # 用 git apply --3way 应用到当前工作�
 odw apply $RUN --all --check       # 预览所有已完成的 agent,每个都叠在前面的之上
 odw apply $RUN --all --verify "npm test"   # 按顺序应用;校验失败的那个回滚
 odw apply $RUN --all --resolve --verify "npm test"   # 由 agent 解决冲突;校验通过后才应用
+odw apply $RUN --all --pr --verify "npm test"   # 新分支、每个 agent 一个提交、推送、开草稿 PR(gh)
 ```
 
 `odw apply` 在你所在的 git 工作树里用 `git apply --3way` 应用一个 agent 的 diff——加
@@ -2054,6 +2055,18 @@ resolver 运行,告诉它每个冲突文件的 base、双方版本和冲突行,�
 `resolvedBy` 和一条 `apply_resolved` 事件(`outcome`:applied、refused、declined 或
 interrupted)链接到它。`--resolve` 不能与 `--force` 或 `--check` 同用:有未提交改动挡路的路径
 照旧拒绝。(ODW 扩展。)
+
+`--pr`(配合 `--agent` 或 `--all`)不碰你的工作树,而是开一个 pull request——它既不读也不写
+你的工作树,所以那里未提交的改动原样保留,也不会进入 PR。odw 在临时 worktree 里从 `--base <分支>`
+——否则从 HEAD 所在提交,目标为 HEAD 所在分支——建分支 `odw/<run>-<label>`(`--all` 时为
+`odw/<run>-all`;名字在本地或远端已被占用时加 `-2`、`-3`……),在那里按上文的方式逐个预览并应用
+每个 agent(`--verify` 也在那里运行),每个 agent 单独一个提交,使用**你自己的** git 身份和签名
+设置;提交说明包含工作流、agent、diff 统计、运行 id,以及 CLI 报告了时该 agent 的花费。任何
+agent 会冲突或校验失败,都会在推送前停下:分支被删除,什么都不会离开本机。之后推送到 `--remote`
+(默认 `origin`),并运行 `gh pr create`——默认是**草稿**,加 `--ready` 则不是;标题为 `--title`
+或按工作流和 agent 生成——正文是运行摘要:各 agent 及其提交、各阶段、以表格呈现的花费明细、
+校验结果和 `odw diff` 命令。没有 `gh` 或 `gh` 未登录时,推送后停下并打印对比页 URL。**它从不合并。**
+(ODW 扩展。)
 
 - **`keep: true`**(`agent()` 选项)或 **`keepBranches: true`**(配置)还会把改动提交到源
   仓库的分支 `odw/<runId>/<agentId>-<label>` 上——作者是 `odw <odw@localhost>`,父提交是
@@ -2135,6 +2148,7 @@ workflow 脚本始终是**纯 `.js`**、从不编译;引擎用 **TypeScript** �
 | [`test-fix-loop.js`](examples/test-fix-loop.js) | 用 `exec()` 跑测试 → agent 修复失败 → 重跑直到全绿(仅 ODW) |
 | [`fix-until-green.js`](examples/fix-until-green.js) | 同样的循环改用 `expect`:agent 回复后由 odw 跑测试,把仍然红的测试——或什么都没改的"修复"——交还给它,最后带着缺失项失败(仅 ODW) |
 | [`plan-approve-execute.js`](examples/plan-approve-execute.js) | agent 起草计划 → 有人在 `checkpoint()` 处批准(附说明的拒绝会重新规划)→ 并行执行 → 汇报(仅 ODW) |
+| [`pr-shepherd.js`](examples/pr-shepherd.js) | 给一个 PR 编号 → 用 `gh` 等待 CI → 隔离的修复 agent 处理红掉的检查和新的评审意见,由 `expect` 校验 → 修复推送到 PR 分支 → `gh pr ready` 之前先过 `checkpoint()`;从不合并,可用 `odw schedule` 定时运行(仅 ODW) |
 | [`coordinated-refactor.js`](examples/coordinated-refactor.js) | 多个隔离分支在笔记板上并行修改同一仓库,每个分支落地时广播其接口改动 → 审阅者指出相互冲突的分支 → 这些分支在知道别人改了什么之后重跑(仅 ODW) |
 
 ## 开发

@@ -532,6 +532,7 @@ odw apply <run> --agent <id|label>       # git apply --3way into the working tre
 odw apply <run> --all [--check]          # every finished agent, in agentId order
 odw apply <run> --agent <id|label> --verify "<cmd>"   # roll the apply back if <cmd> fails
 odw apply <run> --all --resolve [--adapter A] [--confirm] --verify "<cmd>"   # a resolver agent fixes conflicts
+odw apply <run> --all --pr [--base B] [--remote R] [--ready] [--title T]   # a branch, pushed, and a draft PR
 ```
 
 Before it touches the tree, `odw apply` runs the same apply against a scratch
@@ -559,6 +560,18 @@ with the agent's clean files only when it edits just the conflicting files,
 leaves no conflict markers and passes `<cmd>` in that worktree (`--confirm`: y/N
 at a terminal first); otherwise the tree is unchanged and odw says why. Only
 text conflicts are resolved; never with `--force` or `--check`.
+`--pr` (ODW extension) leaves the working tree alone — never read or written —
+and makes a branch `odw/<run>-<label>` (`odw/<run>-all`; `-2`, … when taken) from
+`--base` or HEAD in a temporary worktree, applies (and verifies) each agent there
+as above, commits each on its own under the user's git identity (workflow,
+agent, diff stat, run id, cost), pushes to `--remote` (`origin`) and runs `gh pr
+create` — a draft unless `--ready` — with the run summary as the body (agents
+and commits, phases, spend, verify result, `odw diff` commands). A conflict or a
+failed verify deletes the branch before the push; without `gh` (or logged out)
+it prints the compare URL after the push. It never merges; not with `--check`,
+`--force` or `--resolve`. `examples/pr-shepherd.js` keeps a PR green afterwards:
+red CI and new review comments go to an `expect`-checked fixer, its fix is pushed
+to the PR branch, and a `checkpoint()` comes before `gh pr ready`.
 A diff past `maxDiffBytes` (default 2 MB) keeps its head and ends with a
 `# odw: diff truncated …` line; its counts still describe the whole change, and
 `odw apply` refuses it (`--all` stops there) — use the agent's branch
