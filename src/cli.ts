@@ -22,10 +22,11 @@
  *   odw approve <run_id> [--checkpoint N] (--payload JSON|@file | --edit)
  *   odw schedule add|list|remove|run …   (recurring runs via the OS scheduler, src/schedule/)
  *   odw compare <runA> <runB> [--json] [--agent <label|id>]   (what changed; runtime/compare)
+ *   odw export <run_id> --otlp [--out FILE | --send]   (OpenTelemetry traces, runtime/otel-export.ts)
  */
 
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { basename, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -61,6 +62,7 @@ import { attachRun, bannerLines, checkpointCommands, fallbackLines, formatEvent,
 import { isRunActive, RunObserver } from "./runtime/run-liveness.js";
 import { RunStore, TERMINAL_STATES } from "./runtime/run-store.js";
 import { detail, type RunDetail } from "./runtime/runs-view.js";
+import { exportRun, exportTimeout, otlpTarget, OTEL_SEND_TIMEOUT_MS, postTrace, spanCount } from "./runtime/otel-export.js";
 import { startServer } from "./runtime/server.js";
 import { printAgentLogs } from "./runtime/transcript-view.js";
 import { executeRun } from "./runtime/worker.js";
@@ -93,6 +95,7 @@ export const COMMANDS = [
   "apply",
   "schedule",
   "compare",
+  "export",
 ] as const;
 
 export type Command = (typeof COMMANDS)[number];
@@ -134,6 +137,7 @@ export function helpText(): string {
     "  odw approve <run_id> --edit | --payload JSON|@file approve it with an edited payload ($VISUAL/$EDITOR for --edit)",
     "  odw schedule add <name> <workflow> --cron EXPR     run a workflow on a timer via cron/launchd/systemd (below)",
     "  odw schedule list [--json] | remove|run <name>     list schedules; delete one; run one now",
+    "  odw export <run_id> --otlp [--out FILE|--send]     the run as OpenTelemetry traces (OTLP/JSON; ODW extension)",
     "",
     "Options:",
     "  --args JSON|@file   workflow input (JSON, @file.json, or a raw string)",
@@ -241,6 +245,8 @@ export async function main(argv: string[]): Promise<number> {
         return await cmdSchedule(rest, { parseArgsValue });
       case "compare":
         return cmdCompare(rest);
+      case "export":
+        return await cmdExport(rest);
       default:
         process.stderr.write(`odw: unknown command '${command}'\n\n${helpText()}\n`);
         return 2;
@@ -1535,6 +1541,62 @@ function editRefusal(which: string, message: string, problems: string[]): string
   const shown = problems.slice(0, 20).map((p) => `  ${sanitizeText(p, 200)}\n`).join("");
   const more = problems.length > 20 ? `  … and ${problems.length - 20} more\n` : "";
   return `the edited payload does not match ${which}'s schema — not answering; it still waits:\n${shown}${more}`;
+}
+
+/**
+ * `odw export <run_id> --otlp [--out <file> | --send]` (ODW extension) — the
+ * run as OpenTelemetry traces in OTLP/JSON (see runtime/otel-export): on
+ * stdout, into a file, or POSTed to the configured endpoint. Content is
+ * captured only when `otel.captureContent` or
+ * OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT asks. A run still going
+ * is exported as it stands. Exit 0, or 1 when the run is unknown or the send failed.
+ */
+async function cmdExport(rest: string[]): Promise<number> {
+  const { values, positionals } = parseArgs({
+    args: rest,
+    allowPositionals: true,
+    options: {
+      config: { type: "string" },
+      "runs-root": { type: "string" },
+      otlp: { type: "boolean" },
+      out: { type: "string" },
+      send: { type: "boolean" },
+    },
+  });
+  const runId = positionals[0];
+  if (!runId) throw new UsageError("odw export: missing <run_id>");
+  if (!values.otlp) throw new UsageError("odw export: name the format: --otlp (OpenTelemetry traces, OTLP/JSON)");
+  if (values.send && values.out !== undefined) throw new UsageError("odw export: --out and --send exclude each other");
+  const config = loadConfig(values.config ?? null, { quiet: true });
+  const store = values["runs-root"] ? new RunStore(values["runs-root"]) : new RunStore(resolveRunsRoot(config.settings.runsRoot));
+  if (!store.exists(runId)) {
+    process.stderr.write(`no such run: ${runId}\n`);
+    return 1;
+  }
+  const state = String(store.readStatus(runId).state ?? "pending");
+  if (!TERMINAL_STATES.has(state)) {
+    process.stderr.write(`odw export: run ${runId} is ${state}: its trace holds what happened so far, open spans ending at its last event\n`);
+  }
+  const trace = exportRun(store, runId, config);
+  const spans = spanCount(trace);
+  if (values.send) {
+    const target = otlpTarget(config.settings.otel, process.env);
+    const failure = await postTrace(target, trace, exportTimeout(process.env, OTEL_SEND_TIMEOUT_MS));
+    if (failure) {
+      process.stderr.write(`odw export: ${failure}\n`);
+      return 1;
+    }
+    process.stderr.write(`sent the trace of run ${runId} (${spans} spans) to ${target.origin}\n`);
+    return 0;
+  }
+  const json = JSON.stringify(trace) + "\n";
+  if (values.out !== undefined) {
+    writeFileSync(values.out, json);
+    process.stderr.write(`wrote the trace of run ${runId} (${spans} spans) to ${values.out}\n`);
+  } else {
+    process.stdout.write(json);
+  }
+  return 0;
 }
 
 /** `odw workflows <list|where>` — inspect the workflows runnable by name. */

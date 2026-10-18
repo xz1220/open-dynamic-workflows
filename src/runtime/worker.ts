@@ -36,6 +36,7 @@ import { redactorFor, type Redactor } from "../redact.js";
 import type { Scheduler } from "../scheduler.js";
 import { FileControl } from "./file-control.js";
 import { notifyCheckpoint, notifyQuotaPause, notifyRunEnd } from "./notify.js";
+import { exportRunEnd } from "./otel-export.js";
 import { JsonlSink, RunStore } from "./run-store.js";
 
 /**
@@ -75,6 +76,8 @@ const SIGNAL_GRACE_MS = 10_000;
  *
  * Once the outcome is on disk, the configured run-end hooks (`notify`) fire;
  * they are bounded and never throw, so they cannot change the returned state.
+ * So is the run's OpenTelemetry trace, posted once when the config has `otel`
+ * (an ODW extension; see ./otel-export).
  *
  * What the run writes down has its likely secrets redacted (an ODW extension;
  * see ../redact): its events, each saved agent result, its error, a webhook's
@@ -350,7 +353,9 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
     crashes.dispose();
     if (!end) signals.dispose(); // the run itself threw: no hooks follow
   }
-  // The outcome is on disk; only now do the run-end hooks fire.
+  // The outcome is on disk; only now do the run-end hooks fire — and its trace
+  // go out, with `otel` in the config (ODW extension), beside them.
+  const exported = exportRunEnd(ctx?.config ?? null, { store, runId });
   try {
     await notifyRunEnd(ctx?.config.settings.notify ?? null, { store, runId, ...end }, {
       cwd: typeof meta.source === "string" ? meta.source : undefined,
@@ -359,6 +364,7 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
     // A checkpoint's hooks may still be on their way (a quick answer): let them finish.
     await Promise.all(checkpointHooks);
     await Promise.all(pauseHooks);
+    await exported;
   } finally {
     signals.dispose();
     unredactOutput();

@@ -26,6 +26,7 @@ import { runCommand, type CommandRunner } from "./adapters/runner.js";
 import type { Config, PermissionTier } from "./adapters/types.js";
 import { Bridge } from "./bridge.js";
 import { redactorFor, type RedactionCoverage } from "./redact.js";
+import { otelCheck } from "./runtime/otel-export.js";
 import { describeConcurrency } from "./throttle.js";
 
 export type CheckStatus = "ok" | "warn" | "fail" | "skip";
@@ -151,6 +152,9 @@ export async function runDoctor(opts: DoctorOptions): Promise<DoctorReport> {
 
   // Whether what runs keep and serve has its likely secrets redacted (ODW extension; see ./redact).
   add(redactionCheck(redactorFor(config, opts.env ?? process.env).coverage));
+
+  // Whether each run's trace is exported, and where to: scheme and host only (ODW extension).
+  add(otelCheck(config, opts.env ?? process.env));
 
   for (const a of listing) {
     // The permission tiers it can run (ODW extension): `odw run --permissions`
