@@ -36,6 +36,7 @@ commit SHA.
 | `timeout-minutes` | `360` | **set it to the job's `timeout-minutes`** |
 | `margin-seconds` | `300` | kept after the deadline for the summary, bundle and upload |
 | `untrusted` | `auto` | `auto`: untrusted for pull requests from forks, every `pull_request_target`, a `workflow_run` whose triggering run came from another repository (a fork's), and `issues`, `issue_comment`, review and discussion events; or `true` / `false` |
+| `untrusted-input` | `auto` | `auto`: as `untrusted` decides; or `true` / `false`. Untrusted input (`odw run --untrusted-input`): agents get no token-like variables beyond their own CLI's login, read access unless `permissions` says otherwise, and the first agent that may write waits at a checkpoint (notify's approve links answer it) until the deadline |
 | `config`, `adapter`, `permissions` | | passed to `odw run` (`--config`, `--adapter`, `--permissions`) |
 | `version` | the action's tag | the odw release to install |
 | `bundle` | `true` | upload `odw bundle` |
@@ -151,7 +152,11 @@ jobs:
           timeout-minutes: 60
           adapter: codex
           apply-pr: true
-          # untrusted: auto — issue text is written by anyone: runs --untrusted
+          permissions: edit
+          # untrusted: auto — issue text is written by anyone: runs --untrusted.
+          # It must write and read the issue with GH_TOKEN, so it opts out of
+          # untrusted input knowingly; see below.
+          untrusted-input: false
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           GH_TOKEN: ${{ github.token }}
@@ -159,7 +164,12 @@ jobs:
 
 Only the issue *number* goes into `args`; the workflow reads the title and body
 itself (`gh issue view`), so issue text never passes through the workflow file's
-expressions. The draft PR is committed as `github-actions[bot]` unless the job
+expressions. Left at `auto`, an issue event's run would also be untrusted
+input: no `GH_TOKEN` for the agents, read-only agents, and a checkpoint before
+the first that may write — the safer shape for a workflow that only reads and
+comments through its own steps. Opting out hands the agents a token while they
+read text anyone wrote; give such a job the narrowest `permissions:` block and a
+`sandbox` with an egress allowlist. The draft PR is committed as `github-actions[bot]` unless the job
 sets a git identity.
 
 ## On a schedule

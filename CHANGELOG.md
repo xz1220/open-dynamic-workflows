@@ -40,7 +40,9 @@ independent security reviews whose findings are all fixed.
   binary-only install), runs `odw run --wait --deadline` a margin before the job's
   timeout, writes the spend receipt, agent table and failures to the job summary,
   uploads `odw bundle`, and can open a draft PR with `odw apply --pr`. Fork pull
-  requests and issue events run `--untrusted`. See
+  requests and issue events run `--untrusted`, and with `untrusted-input: auto` as
+  untrusted input too (`--untrusted-input`; `apply-pr` then passes
+  `--accept-untrusted-input`, the write having been held at the run's checkpoint). See
   [`docs/github-action.md`](docs/github-action.md).
 
 ### Recover instead of restarting

@@ -45,6 +45,10 @@ inputs:
     description: auto (default) — untrusted for pull requests from forks, every pull_request_target, a workflow_run after a fork's run, and issue, comment, review and discussion events; or true / false.
     required: false
     default: auto
+  untrusted-input:
+    description: auto (default) — as `untrusted` decides; or true / false. Untrusted input (odw run --untrusted-input) gives agents no token-like variables (GH_TOKEN, *_API_KEY … beyond their own CLI's login), read access unless `permissions` says otherwise, and holds the first agent that may write at a checkpoint (answerable through notify's approve links) until the deadline. A workflow that must write from an issue sets it to false, knowingly.
+    required: false
+    default: auto
   config:
     description: Path to an odw.config.json (else the repository's own, or the built-in defaults; an untrusted run never reads the repository's own).
     required: false
@@ -107,6 +111,7 @@ runs:
         ODW_INPUT_TIMEOUT_MINUTES: ${{ inputs.timeout-minutes }}
         ODW_INPUT_MARGIN_SECONDS: ${{ inputs.margin-seconds }}
         ODW_INPUT_UNTRUSTED: ${{ inputs.untrusted }}
+        ODW_INPUT_UNTRUSTED_INPUT: ${{ inputs.untrusted-input }}
         ODW_INPUT_CONFIG: ${{ inputs.config }}
         ODW_INPUT_ADAPTER: ${{ inputs.adapter }}
         ODW_INPUT_PERMISSIONS: ${{ inputs.permissions }}
@@ -145,6 +150,7 @@ runs:
       shell: bash
       env:
         RUN_ID: ${{ steps.run.outputs.run-id }}
+        UNTRUSTED_INPUT: ${{ steps.run.outputs.untrusted-input }}
         BASE: ${{ inputs.apply-pr-base }}
         GH_TOKEN: ${{ inputs.github-token }}
         GH_PROMPT_DISABLED: "1"
@@ -157,4 +163,6 @@ runs:
         fi
         set -- apply "$RUN_ID" --all --pr
         [ -z "$BASE" ] || set -- "$@" --base "$BASE"
+        # apply-pr: true is the job's own yes; any write was already held at the run's checkpoint.
+        [ "$UNTRUSTED_INPUT" != "true" ] || set -- "$@" --accept-untrusted-input
         odw "$@"
