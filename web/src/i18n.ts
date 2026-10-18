@@ -804,4 +804,21 @@ const ZH: Record<string, string> = {
   "Running agents add theirs when they finish.": "运行中的 agent 结束后才计入。",
   "Not every agent reported dollars, so shares are of tokens.": "并非每个 agent 都报告了金额,所以占比按 token 计算。",
   "~ partly estimated: a CLI that reports no count is measured as characters ÷ 4.": "~ 部分为估算:不报告用量的 CLI 按字符数 ÷ 4 计。",
+  // Agent questions (questions: ODW extension).
+  "needs input": "需要输入",
+  "Asked, unanswered": "提问未获答复",
+  "It stopped to ask and nobody answered. Answer it in the prompt, or leave questions on checkpoint so you are asked.":
+    "它停下来提问,但没人回答。可在提示词里写明答案,或把 questions 设为 checkpoint,让你来回答。",
+  "Your answer — the agent runs again, told it": "你的回答 —— agent 会带着它重新运行",
+  Decline: "拒绝回答",
+  "Answer it with {cmd}": "用 {cmd} 回答",
+  "Agent question": "agent 提问",
+  "an agent has a question — {q}": "有 agent 提问 —— {q}",
+  "failed · {n} agent(s) asked a question nobody answered": "失败 · {n} 个 agent 的提问没人回答",
+  "Answer {agent}'s question": "回答 {agent} 的提问",
+  "Decide: {title}": "决定:{title}",
+  "{name}: an agent's question went unanswered": "{name}:有 agent 的提问没人回答",
+  "{name}: an agent has a question": "{name}:有 agent 提问",
+  Answered: "已回答",
+  Declined: "已拒绝回答",
 };

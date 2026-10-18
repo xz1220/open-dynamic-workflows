@@ -256,6 +256,21 @@ export function runawayLines(agents: AgentView[]): string[] {
   return [`runaway: ${hits.length} agent${hits.length === 1 ? "" : "s"} killed at a limit — ${named.join(", ")}${more}`];
 }
 
+/**
+ * What `odw status` says about agents that stopped to ask a question nobody
+ * answered (reason "needs_input"; ODW extension, see ../questions): each, with
+ * what it asked. No line for a run without one.
+ */
+export function needsInputLines(agents: AgentView[]): string[] {
+  return agents
+    .filter((a) => a.kind === "agent" && a.state === "failed" && a.failureReason === "needs_input")
+    .slice(0, RUNAWAYS_NAMED)
+    .map((a) => {
+      const asked = a.questions?.length ? `: ${sanitizeText(a.questions.join("; "), 300)}` : "";
+      return `needs input: ${sanitizeText(a.label, 40)}:${a.agentId ?? "?"} stopped to ask${asked}`;
+    });
+}
+
 /** The `expect` checks a failed agent's work missed (agent_failed's `misses`; ODW extension), or null. */
 function missesOf(ev: WorkflowEvent): string[] | null {
   return linesOf(ev.misses);
@@ -325,6 +340,7 @@ function reasonText(reason: string | undefined): string | null {
     runaway: "runaway",
     orphaned_background: "left background work running",
     out_of_scope: "wrote outside its scope",
+    needs_input: "asked a question nobody answered",
   };
   return words[reason] ?? sanitizeText(reason.replace(/_/g, " "), 40);
 }
@@ -488,10 +504,12 @@ class LiveView {
         const title = sanitizeText(ev.title, 120);
         this.asked.set(ev.checkpointId, title);
         const { approve, reject } = checkpointCommands(this.runId, ev.checkpointId, this.commandFlags);
+        // An agent's question is answered with a note (ODW extension; see ../questions).
+        const asking = ev.question !== undefined && ev.question !== null;
         out.push(
-          `    ${p.run(g.wait)} ${p.bold(title)}  ${p.dim(`checkpoint #${ev.checkpointId} ${g.bullet} waiting for a decision`)}`,
-          `      ${p.dim(`approve: ${approve}`)}`,
-          `      ${p.dim(`reject:  ${reject}`)}`,
+          `    ${p.run(g.wait)} ${p.bold(title)}  ${p.dim(`checkpoint #${ev.checkpointId} ${g.bullet} ${asking ? "an agent asks" : "waiting for a decision"}`)}`,
+          `      ${p.dim(asking ? `answer:  ${approve} --note '<answer>'` : `approve: ${approve}`)}`,
+          `      ${p.dim(asking ? `decline: ${reject}` : `reject:  ${reject}`)}`,
         );
         continue;
       }
@@ -809,7 +827,9 @@ export async function attachRun(
           opts.err.write(formatEvent(ev) + "\n");
           if (ev.type === "checkpoint_requested" && typeof ev.checkpointId === "number") {
             const { approve, reject } = checkpointCommands(runId, ev.checkpointId, opts.commandFlags);
-            opts.err.write(`  approve: ${approve}\n  reject:  ${reject}\n`);
+            // An agent's question is answered with a note (ODW extension; see ../questions).
+            if (ev.question) opts.err.write(`  answer:  ${approve} --note '<answer>'\n  decline: ${reject}\n`);
+            else opts.err.write(`  approve: ${approve}\n  reject:  ${reject}\n`);
           }
         }
       }

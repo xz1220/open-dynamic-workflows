@@ -84,7 +84,7 @@ import {
 import { compareRuns, findComparedAgents, formatAgentComparison, formatComparison, readCompareRun } from "./runtime/compare.js";
 import { editBlocker, editorCommand, editPayload, readPayloadOption } from "./runtime/checkpoint-edit.js";
 import { startRun, startRunFromSource, waitFor } from "./runtime/launcher.js";
-import { attachRun, bannerLines, checkpointCommands, fallbackLines, formatEvent, formatUsage, resolveRunMode, runawayLines, shellArg, type RunMode } from "./runtime/live-view.js";
+import { attachRun, bannerLines, checkpointCommands, fallbackLines, formatEvent, formatUsage, needsInputLines, resolveRunMode, runawayLines, shellArg, type RunMode } from "./runtime/live-view.js";
 import { accountLines } from "./runtime/live-view.js";
 import { isRunActive, RunObserver } from "./runtime/run-liveness.js";
 import { RunStore, TERMINAL_STATES, type ReplayLink } from "./runtime/run-store.js";
@@ -116,6 +116,7 @@ import {
   RemoteUsageError,
   takeOnFlag,
 } from "./runtime/remote.js";
+import { questionLine } from "./questions.js";
 import { pausedForOf, pausedText } from "./quota-wait.js";
 import { cmdSchedule } from "./schedule/command.js";
 import { cmdEval } from "./eval/command.js";
@@ -975,10 +976,18 @@ async function afterStart(
           toldPauses.add(`${pause.adapter}@${pause.resumeAt}`);
           process.stderr.write(`${sanitizeText(pausedText(pause), 120)} — odw resume ${runId} goes on now\n`);
         }
-        const cp = waiting as { checkpointId?: unknown; title?: unknown } | null | undefined;
+        const cp = waiting as { checkpointId?: unknown; title?: unknown; question?: unknown } | null | undefined;
         if (!cp || !isCheckpointId(cp.checkpointId) || told.has(cp.checkpointId)) return;
         told.add(cp.checkpointId);
         const { approve, reject } = checkpointCommands(runId, cp.checkpointId, (flags ??= storeFlagsFor(store)));
+        // An agent's question is answered with a note (ODW extension; see questions.ts).
+        if (cp.question) {
+          process.stderr.write(
+            `an agent asks — checkpoint #${cp.checkpointId}: ${sanitizeText(cp.title, 200)}\n` +
+              `  answer:  ${approve} --note '<answer>'\n  decline: ${reject}\n`,
+          );
+          return;
+        }
         process.stderr.write(
           `waiting for a decision — checkpoint #${cp.checkpointId}: ${sanitizeText(cp.title, 200)}\n` +
             `  approve: ${approve}\n  reject:  ${reject}\n`,
@@ -1068,6 +1077,8 @@ function cmdStatus(rest: string[]): number {
   for (const line of accountLines(run.agents)) process.stdout.write(`  ${line}\n`);
   // Agents killed at one of their limits, with the evidence (ODW extension; see limits.ts).
   for (const line of runawayLines(run.agents)) process.stdout.write(`  ${line}\n`);
+  // Agents that stopped to ask a question nobody answered (ODW extension; see questions.ts).
+  for (const line of needsInputLines(run.agents)) process.stdout.write(`  ${line}\n`);
   if (typeof meta.resumedFrom === "string") {
     const replayed = events.filter((e) => e.type === "agent_finished" && e.cached === true).length;
     process.stdout.write(`  resumed from: ${meta.resumedFrom} (${replayed} agent result(s) replayed)\n`);
@@ -1076,6 +1087,13 @@ function cmdStatus(rest: string[]): number {
   for (const cp of pending) {
     const since = new Date(cp.since * 1000).toLocaleTimeString();
     const { approve, reject } = checkpointCommands(runId, cp.checkpointId, flags);
+    // An agent's question (ODW extension; see questions.ts): what it asked, and how to answer it.
+    if (cp.question) {
+      process.stdout.write(`  an agent asks, since ${since} — checkpoint #${cp.checkpointId}: ${sanitizeText(cp.title, 200)}\n`);
+      for (const q of cp.question.questions) process.stdout.write(`    - ${sanitizeText(questionLine(q), 300)}\n`);
+      process.stdout.write(`    answer:  ${approve} --note '<answer>'\n    decline: ${reject}\n`);
+      continue;
+    }
     process.stdout.write(`  waiting for a decision since ${since} — checkpoint #${cp.checkpointId}: ${sanitizeText(cp.title, 200)}\n`);
     for (const line of payloadPreview(cp.payload)) process.stdout.write(`    ${line}\n`);
     process.stdout.write(`    approve: ${approve}\n    reject:  ${reject}\n`);

@@ -1214,3 +1214,65 @@ test("the spend trend buckets a fortnight by local day, stacks the top workflows
   assert.equal(spendTrend([run("a", 0, 5, { dry: true })], now), null);
   assert.equal(renderTrend([], now), "");
 });
+
+test("an agent's question: a card to answer it, its own ticket on Activity, and an unanswered one in the drawer", () => {
+  const view: JobViewState = {
+    cpNote: "",
+    tab: "graph",
+    selectedAi: 0,
+    reviewAi: null,
+    zoom: 1,
+    logQuery: "",
+    logTypes: new Set(["agent"]),
+    logLimit: 600,
+    follow: true,
+    motion: false,
+  };
+  const question = {
+    agentId: 1,
+    label: "cache",
+    adapter: "claude",
+    questions: [{ question: "Which <db>?", header: "Database", options: ["SQLite", "Postgres"] }],
+  };
+  const prevCaps = store.capabilities;
+  store.focusRun("20260101-000000-aaaaaa");
+  store.capabilities = { ...store.capabilities, writable: true };
+  store.run = detail([agent("cache", "Plan", "running", { adapter: "claude" })], {
+    state: "waiting",
+    pendingCheckpoints: [{ checkpointId: 1, title: "cache asks: Which <db>?", payload: { answer: "" }, since: NOW - 30, question }],
+  });
+  store.runEvents = [];
+  let html = renderJob(view, NOW);
+  assert.match(html, /class="card checkpoint question marked"/);
+  assert.match(html, /Agent question · cache:1 · claude/);
+  assert.match(html, /<span class="tag">Database<\/span><span class="q">Which &lt;db&gt;\?<\/span>/);
+  assert.match(html, /<button class="opt" data-cp-option="SQLite">SQLite<\/button><button class="opt" data-cp-option="Postgres">Postgres<\/button>/);
+  assert.match(html, /placeholder="Your answer — the agent runs again, told it"/);
+  assert.match(html, /data-cp="approve" data-cp-id="1">Answer<\/button>/);
+  assert.match(html, /data-cp="reject" data-cp-id="1">Decline<\/button>/);
+  assert.ok(!html.includes("Edit before approving"), "answered with the note, not a payload edit");
+
+  // Failed with needs_input: the drawer lists what it asked, and the reason has words.
+  store.run = detail([agent("cache", "Plan", "failed", { adapter: "claude", failureReason: "needs_input", questions: ["Which <db>? (options: SQLite / Postgres)"] })]);
+  html = renderJob(view, NOW);
+  assert.match(html, /Asked, unanswered<\/div><ul class="misses asked"><li>Which &lt;db&gt;\? \(options: SQLite \/ Postgres\)<\/li><\/ul>/);
+  assert.equal(reasonLabel("needs_input"), "needs input");
+  store.focusRun(null);
+  store.capabilities = prevCaps;
+
+  // Activity: a question reads as one and is answered; a run whose agent's question went unanswered says so.
+  const prev = store.runs;
+  store.runs = [
+    summary({
+      runId: "r-ask",
+      name: "cache-wf",
+      state: "waiting",
+      waiting: { checkpointId: 1, title: "cache asks: Which <db>?", since: NOW - 60, question: { agentId: 1, label: "cache", adapter: "claude" } },
+    }),
+    summary({ runId: "r-ni", name: "wf-ni", state: "failed", updatedAt: NOW - 100, needsInput: 1, counts: { agents: 1, running: 0, done: 0, failed: 1, stale: 0 } }),
+  ];
+  const activity = renderActivity(NOW);
+  assert.match(activity, /class="ticket waiting"[\s\S]*?an agent has a question — cache asks: Which &lt;db&gt;\?[\s\S]*?>Answer<\/a>/);
+  assert.match(activity, /class="ticket failed"[\s\S]*?failed · 1 agent\(s\) asked a question nobody answered/);
+  store.runs = prev;
+});

@@ -187,12 +187,20 @@ function needsYou(nowSec: number): string {
     `<button class="btn sm" data-copy="odw resume ${esc(r.runId)}" data-tip="${esc(t("copies a command that replays finished agents"))}">${icons.terminal}${t("Copy resume")}</button>`;
   const tickets = [
     ...waiting.map((r) =>
-      ticket(
-        r,
-        "waiting",
-        r.waiting?.title ? t("asks: {q}", { q: esc(r.waiting.title) }) : t("is waiting for your decision"),
-        `<a class="btn sm primary" href="${href(r)}">${t("Review")}</a>`,
-      ),
+      // An agent's question (ODW extension) reads as one, and is answered, not reviewed.
+      r.waiting?.question
+        ? ticket(
+            r,
+            "waiting",
+            t("an agent has a question — {q}", { q: esc(r.waiting.title) }),
+            `<a class="btn sm primary" href="${href(r)}">${t("Answer")}</a>`,
+          )
+        : ticket(
+            r,
+            "waiting",
+            r.waiting?.title ? t("asks: {q}", { q: esc(r.waiting.title) }) : t("is waiting for your decision"),
+            `<a class="btn sm primary" href="${href(r)}">${t("Review")}</a>`,
+          ),
     ),
     ...quota.map((r) =>
       ticket(
@@ -208,7 +216,9 @@ function needsYou(nowSec: number): string {
         r.state,
         r.state === "stale"
           ? t("lost its worker")
-          : r.counts.failed
+          : r.needsInput
+            ? t("failed · {n} agent(s) asked a question nobody answered", { n: r.needsInput })
+            : r.counts.failed
             ? t("failed · {n} of {m} agents failed", { n: r.counts.failed, m: r.counts.agents })
             : t("failed"),
         resume(r),

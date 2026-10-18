@@ -107,6 +107,7 @@ export function reasonLabel(reason: string): string {
     runaway: t("runaway"),
     orphaned_background: t("orphaned background work"),
     out_of_scope: t("outside its scope"),
+    needs_input: t("needs input"),
   };
   return labels[reason] ?? reason.replace(/_/g, " ");
 }

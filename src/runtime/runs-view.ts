@@ -30,7 +30,7 @@ import { isPermissionTier } from "../adapters/permissions.js";
 import type { PermissionTier, TrustLevel } from "../adapters/types.js";
 import { addUsage, readUsage, type Usage } from "../adapters/usage.js";
 import type { AgentChanges } from "../changes.js";
-import type { WaitingCheckpoint } from "../checkpoint.js";
+import type { CheckpointQuestion, QuestionAsker, WaitingCheckpoint } from "../checkpoint.js";
 import { readDrift, type RunDrift } from "../drift.js";
 import type { WorkflowEvent } from "../events.js";
 import { isWho } from "../identity.js";
@@ -79,7 +79,7 @@ export interface AgentView {
   /**
    * Why a failed agent's CLI failed (agent_failed's `reason`): rate_limit,
    * quota, auth, timeout, stalled, not_found, permission or exit — or, ODW
-   * extensions, empty_reply, unmet_expectation, mcp_unavailable, runaway, orphaned_background and out_of_scope. Absent while running, for
+   * extensions, empty_reply, unmet_expectation, mcp_unavailable, runaway, orphaned_background, out_of_scope and needs_input. Absent while running, for
    * other failures (schema, stop) and for older event files.
    */
   failureReason?: string;
@@ -89,6 +89,12 @@ export interface AgentView {
    * line each. Absent otherwise.
    */
   misses?: string[];
+  /**
+   * Agents only (ODW extension; see ../questions): the questions a failed
+   * agent stopped to ask that nobody answered (agent_failed's `questions`,
+   * with reason "needs_input"), one line each. Absent otherwise.
+   */
+  questions?: string[];
   /**
    * Agents only (ODW extension): the tool calls its CLI refused under a reply
    * that stood anyway (agent_finished's `denied`), one line each. Absent otherwise.
@@ -208,6 +214,8 @@ export interface PendingCheckpoint {
   schema?: Record<string, unknown>;
   /** When it started waiting (epoch seconds). */
   since: number;
+  /** Set when it is an agent's question (ODW extension; see ../questions): who asked, and what. */
+  question?: CheckpointQuestion;
 }
 
 /**
@@ -258,6 +266,12 @@ export interface RunSummary {
    * otherwise, and absent for Claude Code runs.
    */
   waiting?: WaitingCheckpoint | null;
+  /**
+   * How many of its agents failed with reason "needs_input" — they stopped to
+   * ask a question nobody answered (ODW extension; see ../questions). Absent
+   * when none did, and for Claude Code runs.
+   */
+  needsInput?: number;
   /**
    * What a "paused" run waits for when its agents wait for an adapter's
    * spent quota to reset (ODW extension: quotaWait) — `{ reason: "quota",
@@ -506,6 +520,9 @@ export function applyAgentEvent(
       if (from && typeof ev.adapter === "string") target.adapter = ev.adapter;
       const misses = strings(ev.misses);
       if (misses) target.misses = misses;
+      // The questions it asked nobody answered (ODW extension).
+      const questions = strings(ev.questions);
+      if (questions) target.questions = questions;
       // The limit a runaway ran into (ODW extension).
       const hit = limitHit(ev.limitHit);
       if (hit) target.limits = { ...target.limits, hit };
@@ -659,6 +676,7 @@ function copyAgents(agents: AgentView[], stale: boolean): AgentView[] {
     if (a.quotaWait) copy.quotaWait = { ...a.quotaWait };
     if (a.mcp) copy.mcp = a.mcp.map((server) => ({ ...server }));
     if (a.misses) copy.misses = [...a.misses];
+    if (a.questions) copy.questions = [...a.questions];
     if (a.denied) copy.denied = [...a.denied];
     if (a.limits) copy.limits = { ...a.limits, ...(a.limits.hit ? { hit: { ...a.limits.hit } } : {}) };
     if (a.orphaned) copy.orphaned = [...a.orphaned];
@@ -765,10 +783,23 @@ function applyCheckpointEvent(pending: Map<number, PendingCheckpoint>, ev: Workf
       ...(ev.truncated === true ? { truncated: true } : {}),
       ...(schema !== null && typeof schema === "object" && !Array.isArray(schema) ? { schema: schema as Record<string, unknown> } : {}),
       since: asNumber(ev.ts) ?? 0,
+      ...questionOf(ev.question),
     });
   } else if (ev.type === "checkpoint_resolved") {
     pending.delete(ev.checkpointId);
   }
+}
+
+/** An agent's question a checkpoint_requested event carries (ODW extension), when it is a well-formed one. */
+function questionOf(value: unknown): { question?: CheckpointQuestion } {
+  if (value === null || typeof value !== "object") return {};
+  const q = value as Record<string, unknown>;
+  if (typeof q.agentId !== "number" || typeof q.label !== "string" || typeof q.adapter !== "string" || !Array.isArray(q.questions)) return {};
+  const questions = q.questions.filter(
+    (item): item is CheckpointQuestion["questions"][number] =>
+      item !== null && typeof item === "object" && typeof (item as { question?: unknown }).question === "string",
+  );
+  return { question: { agentId: q.agentId, label: q.label, adapter: q.adapter, questions } };
 }
 
 /** The pending checkpoints of a fold, oldest first, as copies (folds are cached). */
@@ -829,6 +860,7 @@ export function summaryFrom(runId: string, facts: RunFacts): RunSummary {
     lastActivityTs: fold.lastActivityTs,
     usage: fold.usage ? { ...fold.usage } : null,
     waiting: state === "waiting" ? oldestWaiting(fold) : null,
+    ...needsInputOf(fold),
     // Only a live paused run waits for a quota; a stale one's worker is gone.
     pausedFor: state === "paused" ? pausedForOf(status.pausedFor) : null,
     ...(meta.bundle ? { bundle: bundleOf(meta.bundle) } : {}),
@@ -861,6 +893,13 @@ function untrustedInputView(meta: Record<string, unknown>, status: Record<string
   };
 }
 
+/** `{ needsInput }`: how many of a fold's agents failed with reason "needs_input" — `{}` when none did. */
+function needsInputOf(fold: EventFold): { needsInput?: number } {
+  let n = 0;
+  for (const agent of fold.agents) if (agent.failureReason === "needs_input") n++;
+  return n > 0 ? { needsInput: n } : {};
+}
+
 /** meta.bundle as a summary carries it: a shared bundle's when and by which odw. */
 function bundleOf(value: unknown): { bundledAt: number | null; odwVersion: string | null } {
   const b = (value !== null && typeof value === "object" ? value : {}) as Record<string, unknown>;
@@ -890,7 +929,11 @@ function resolveLinksOf(meta: Record<string, unknown>): { applyResolve?: Resolve
 function oldestWaiting(fold: EventFold): WaitingCheckpoint | null {
   let oldest: PendingCheckpoint | undefined;
   for (const cp of fold.checkpoints.values()) if (!oldest || cp.checkpointId < oldest.checkpointId) oldest = cp;
-  return oldest ? { checkpointId: oldest.checkpointId, title: oldest.title, since: oldest.since } : null;
+  if (!oldest) return null;
+  const asker: { question?: QuestionAsker } = oldest.question
+    ? { question: { agentId: oldest.question.agentId, label: oldest.question.label, adapter: oldest.question.adapter } }
+    : {};
+  return { checkpointId: oldest.checkpointId, title: oldest.title, since: oldest.since, ...asker };
 }
 
 /** Reconcile liveness and build the full detail from cached or fresh facts. */

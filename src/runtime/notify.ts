@@ -21,7 +21,11 @@
  * checkpoint() that starts waiting for a person — while the run goes on
  * waiting, so they never hold it up: state "waiting", no finishedAt or
  * result, and the checkpoint (`ODW_CHECKPOINT_ID`, `ODW_CHECKPOINT_TITLE`; the
- * webhook's `checkpoint: { checkpointId, title, since }`). While an `odw serve
+ * webhook's `checkpoint: { checkpointId, title, since, kind }`). `kind` (and
+ * `ODW_CHECKPOINT_KIND`) tells the script's checkpoint() ("checkpoint") from
+ * an agent's question ("question", an ODW extension; see ../questions), whose
+ * `checkpoint.question` names the agent that asked (`ODW_QUESTION_AGENT`) and
+ * whose line says to answer with `odw approve --note`. While an `odw serve
  * --public-url` runs for the runs root, they also carry the checkpoint's
  * signed one-time approve and reject links (ODW extension; see
  * ./approve-links and {@link withLinks}, {@link linksEnv}); otherwise they
@@ -334,6 +338,9 @@ export function waitingEnv(waiting: RunWaiting): Record<string, string> {
     ODW_CHECKPOINT_ID: String(waiting.checkpoint.checkpointId),
     // An environment value cannot hold a NUL byte.
     ODW_CHECKPOINT_TITLE: waiting.checkpoint.title.replace(/\0/g, ""),
+    // The script's checkpoint(), or an agent's question (ODW extension; see ../questions).
+    ODW_CHECKPOINT_KIND: waiting.checkpoint.question ? "question" : "checkpoint",
+    ...(waiting.checkpoint.question ? { ODW_QUESTION_AGENT: waiting.checkpoint.question.label.replace(/\0/g, "") } : {}),
     ...contextEnv(waiting.context),
   };
 }
@@ -348,7 +355,7 @@ export function waitingPayload(waiting: RunWaiting): Record<string, unknown> {
     createdAt: waiting.createdAt,
     durationSec: waiting.durationSec,
     counts: waiting.counts,
-    checkpoint: waiting.checkpoint,
+    checkpoint: { ...waiting.checkpoint, kind: waiting.checkpoint.question ? "question" : "checkpoint" },
     ...(waiting.context ? { context: waiting.context } : {}),
     text,
     content: text,
@@ -362,7 +369,14 @@ export function waitingPayload(waiting: RunWaiting): Record<string, unknown> {
  * approve|reject 20261017-041600-3fa2c1 --checkpoint 1".
  */
 export function waitingLine(waiting: RunWaiting): string {
-  const { checkpointId, title } = waiting.checkpoint;
+  const { checkpointId, title, question } = waiting.checkpoint;
+  // An agent's question is answered with a note (ODW extension; see ../questions).
+  if (question) {
+    return (
+      `odw · ${waiting.workflow}: an agent asks — ${title} · ` +
+      `answer: odw approve ${waiting.runId} --checkpoint ${checkpointId} --note "<answer>" · decline: odw reject`
+    );
+  }
   return (
     `odw · ${waiting.workflow} waits for a decision: ${title} · ` +
     `odw approve|reject ${waiting.runId} --checkpoint ${checkpointId}`

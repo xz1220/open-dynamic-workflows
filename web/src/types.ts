@@ -43,7 +43,9 @@ export interface RunSummary {
   /** Token/cost totals when adapters report them (`estimated` when some only had chars/4). */
   usage?: UsageTotals | null;
   /** The oldest checkpoint() waiting for a person, while the run is `waiting`. */
-  waiting?: { checkpointId: number; title: string; since: number } | null;
+  waiting?: { checkpointId: number; title: string; since: number; question?: QuestionAsker } | null;
+  /** How many of its agents stopped to ask a question nobody answered (reason "needs_input"; ODW extension). Absent when none. */
+  needsInput?: number;
   /**
    * While the run is `paused` because its agents wait for an adapter's spent
    * quota to reset (ODW extension: quotaWait): which adapter, and when the run
@@ -121,6 +123,23 @@ export interface PendingCheckpoint {
   /** The JSON Schema an edited payload must match (ODW extension); the server checks it too. */
   schema?: Record<string, unknown> | null;
   since: number;
+  /** Set when it is an agent's question (ODW extension; src/questions.ts): who asked, and what. Answered with a note. */
+  question?: QuestionAsker & { questions: AgentQuestion[] };
+}
+
+/** The agent whose question a checkpoint is (ODW extension). */
+export interface QuestionAsker {
+  agentId: number;
+  label: string;
+  adapter: string;
+}
+
+/** One question an agent stopped to ask (ODW extension). */
+export interface AgentQuestion {
+  question: string;
+  header?: string;
+  options?: string[];
+  multiSelect?: boolean;
 }
 
 export interface AgentView {
@@ -144,10 +163,12 @@ export interface AgentView {
   exitCode?: number | null;
   /** A command step that is an agent's `expect.command` check: that agent's id (ODW extension). */
   forAgentId?: number;
-  /** Why an agent failed: rate_limit, quota, auth, timeout, stalled, not_found, permission, exit, empty_reply, unmet_expectation, mcp_unavailable, runaway, orphaned_background, out_of_scope. */
+  /** Why an agent failed: rate_limit, quota, auth, timeout, stalled, not_found, permission, exit, empty_reply, unmet_expectation, mcp_unavailable, runaway, orphaned_background, out_of_scope, needs_input. */
   failureReason?: string | null;
   /** With `unmet_expectation`: the `expect` checks its work did not meet, one line each (ODW extension). */
   misses?: string[];
+  /** With `needs_input`: the questions it stopped to ask that nobody answered, one line each (ODW extension). */
+  questions?: string[];
   /** A finished agent's tool calls its CLI refused (its reply stood anyway), one line each (ODW extension). */
   denied?: string[];
   /** A finished agent's background work its CLI left running when it replied, which died with it (its reply stood anyway), one line each (ODW extension). */

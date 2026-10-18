@@ -437,6 +437,10 @@ function drawer(run: RunDetail, ai: number, nowSec: number): string {
     (a.misses?.length
       ? `<div class="drawer-sec">${t("Missed")}</div><ul class="misses">${a.misses.map((m) => `<li>${esc(m)}</li>`).join("")}</ul>`
       : "") +
+    (a.questions?.length
+      ? `<div class="drawer-sec">${t("Asked, unanswered")}</div><ul class="misses asked">${a.questions.map((q) => `<li>${esc(q)}</li>`).join("")}</ul>` +
+        `<p class="dnote">${t("It stopped to ask and nobody answered. Answer it in the prompt, or leave questions on checkpoint so you are asked.")}</p>`
+      : "") +
     (a.denied?.length
       ? `<div class="drawer-sec">${t("Refused tool calls")}</div><ul class="denied">${a.denied.map((d) => `<li>${esc(d)}</li>`).join("")}</ul>` +
         `<p class="dnote">${t("Its reply may rest on work it could not do — raise its tier with --permissions, or allowlist the tool.")}</p>`
@@ -663,6 +667,8 @@ function checkpoints(run: RunDetail, s: JobViewState): string {
   const canDecide = run.provider === "odw" && (store.capabilities.writable || store.capabilities.decide === true);
   return pending
     .map((cp, i) => {
+      // An agent's question (ODW extension): what it asked, answered with the note.
+      if (cp.question) return questionCard(run, cp, cp.question, i, canDecide, s);
       const has = cp.payload !== undefined && cp.payload !== null;
       const edit = s.cpEdit?.id === cp.checkpointId ? cpEditState(cp.payload, s.cpEdit.text) : null;
       const payload = edit
@@ -689,6 +695,42 @@ function checkpoints(run: RunDetail, s: JobViewState): string {
       );
     })
     .join("");
+}
+
+/** An agent's question waiting for a person (ODW extension; src/questions.ts): each question and its options, the answer in the note. */
+function questionCard(
+  run: RunDetail,
+  cp: { checkpointId: number; since: number; title: string },
+  q: NonNullable<NonNullable<RunDetail["pendingCheckpoints"]>[number]["question"]>,
+  i: number,
+  canDecide: boolean,
+  s: JobViewState,
+): string {
+  const asked = q.questions
+    .map(
+      (one) =>
+        `<li>${one.header ? `<span class="tag">${esc(one.header)}</span>` : ""}<span class="q">${esc(one.question)}</span>` +
+        (one.options?.length
+          ? `<span class="opts">${one.options
+              .map((o) => (canDecide && i === 0 ? `<button class="opt" data-cp-option="${esc(o)}">${esc(o)}</button>` : `<span class="opt">${esc(o)}</span>`))
+              .join("")}</span>`
+          : "") +
+        `</li>`,
+    )
+    .join("");
+  const actions = canDecide
+    ? `<div class="cp-actions">` +
+      (i === 0
+        ? `<input id="cp-note" class="cp-note" placeholder="${esc(t("Your answer — the agent runs again, told it"))}" value="${esc(s.cpNote)}" autocomplete="off"/>`
+        : "") +
+      `<button class="btn primary" data-cp="approve" data-cp-id="${cp.checkpointId}">${t("Answer")}</button>` +
+      `<button class="btn danger" data-cp="reject" data-cp-id="${cp.checkpointId}">${t("Decline")}</button></div>`
+    : `<p class="dim" style="margin:10px 0 0">${t("Answer it with {cmd}", { cmd: `<code>odw approve ${esc(run.runId)} --checkpoint ${cp.checkpointId} --note "…"</code>` })}</p>`;
+  return (
+    `<section class="card checkpoint question marked" data-key="cp-${cp.checkpointId}">` +
+    `<div class="cp-head">${glyph("waiting")}<span class="eyebrow">${t("Agent question")} · ${esc(q.label)}:${q.agentId} · ${esc(q.adapter)} · ${t("waiting since {t}", { t: fmtClock(cp.since) })}</span></div>` +
+    `<h3 class="cp-title">${esc(cp.title)}</h3><ol class="asked">${asked}</ol>${actions}</section>`
+  );
 }
 
 // --- transcript: what one agent's CLI did, turn by turn ---

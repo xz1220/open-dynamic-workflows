@@ -1046,6 +1046,40 @@
 .cp-note:focus {
   border-color: var(--ink);
 }
+/* an agent's question (ODW extension): each question, its options as chips that fill the answer */
+.checkpoint.question .asked {
+  margin: 12px 0 0;
+  padding: 0 0 0 20px;
+  display: grid;
+  gap: 10px;
+}
+.checkpoint.question .asked li {
+  line-height: 1.5;
+}
+.checkpoint.question .asked .tag {
+  margin-right: 8px;
+}
+.checkpoint.question .opts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+.checkpoint.question .opt {
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--line-2);
+  background: var(--card-2);
+  font-size: 12.5px;
+  color: var(--ink);
+}
+.checkpoint.question button.opt {
+  cursor: pointer;
+}
+.checkpoint.question button.opt:hover {
+  border-color: var(--amber-line);
+  box-shadow: 0 0 0 3px var(--amber-soft);
+}
 
 /* ---- result ---- */
 .result {
