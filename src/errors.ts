@@ -17,6 +17,7 @@
  */
 
 import type { FailureReason } from "./adapters/failures.js";
+import type { LimitHit } from "./limits.js";
 
 export class DynamicWorkflowError extends Error {
   constructor(message?: string) {
@@ -58,6 +59,20 @@ export class UnmetExpectationError extends AdapterExecutionError {
   constructor(message: string, misses: string[], reason: "unmet_expectation" | "permission" = "unmet_expectation") {
     super(message, { reason });
     this.misses = misses;
+  }
+}
+
+/**
+ * An agent ran into one of its `limits` (an ODW extension; see ./limits): its
+ * CLI was killed, reason "runaway", and `hit` names the limit and the evidence.
+ * Not retried — not by `transientRetries`, not as an `expect` miss.
+ */
+export class RunawayError extends AdapterExecutionError {
+  readonly hit: LimitHit;
+
+  constructor(message: string, hit: LimitHit) {
+    super(message, { reason: "runaway" });
+    this.hit = hit;
   }
 }
 

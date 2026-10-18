@@ -40,6 +40,13 @@
  * `retries`; then the call fails with reason `unmet_expectation` and the list
  * of misses.
  *
+ * A call runs under its limits (an ODW extension; see ./limits): the run's
+ * `agentLimits`, its adapter's, its own `limits`. What its CLI prints is
+ * watched as it streams, and a limit it runs into — tool calls, the same call
+ * in a row, output tokens, dollars, seconds — kills the CLI at once; the call
+ * fails with reason `runaway`, never retried and never an `expect` miss. A
+ * text CLI's spend is checked once each run is over.
+ *
  * What each CLI run spent — the usage and cost its CLI reported, when its
  * adapter declares where (adapters/usage.ts) — is handed to the caller as the
  * run ends, schema retries, rate-limit retries and failed runs included.
@@ -128,10 +135,12 @@ import {
   AgentError,
   ConfigError,
   RunStopped,
+  RunawayError,
   SchemaValidationError,
   UnmetExpectationError,
   isFatalError,
 } from "./errors.js";
+import { hasLimits, limitLabel, LimitWatch, mergeLimits, readLimits, type AgentLimits, type LimitHit } from "./limits.js";
 import { refusedMiss, type ExpectationSink } from "./expect.js";
 import { PortPool } from "./ports.js";
 import { QuotaWaits, type QuotaPause, type QuotaPauseChange } from "./quota-wait.js";
@@ -180,6 +189,11 @@ export interface AgentRequest {
    * to post a note, and the notes so far — appended after the task.
    */
   notes?: string;
+  /**
+   * ODW extension: this agent's own limits, over its adapter's and the run's
+   * `agentLimits` key by key (see ./limits). Unvalidated: a bad value fails the call.
+   */
+  limits?: unknown;
 }
 
 /** The persona framing injected for `agentType`, on top of the independence preamble. */
@@ -592,6 +606,16 @@ export class Bridge {
   }
 
   /**
+   * The limits an agent on `adapter` runs under (ODW extension; see ./limits):
+   * the run's `agentLimits`, its adapter's over them, and the call's own
+   * `option` over both, key by key. A malformed `option` is an AgentError.
+   */
+  limitsFor(adapter: Adapter, option?: unknown): AgentLimits {
+    const own = option === undefined ? undefined : readLimits(option, "agent(): limits", (m) => new AgentError(m));
+    return mergeLimits(this.config.settings.agentLimits, adapter.agentLimits, own);
+  }
+
+  /**
    * The engine `box` runs on, once it is known to run here: its engine is
    * installed and its image present (asked once per run for each). Throws a
    * ConfigError — fatal: every agent of the sandbox would fail alike.
@@ -745,6 +769,8 @@ export class Bridge {
         changes: options.changes,
         transcript: options.transcript,
         onOutput: options.onOutput,
+        // Its limits count over every CLI run of the call, fallbacks included (ODW extension).
+        watch: new LimitWatch(),
       });
     } finally {
       if (port !== null) this.ports.release(port);
@@ -957,6 +983,18 @@ export class Bridge {
     const sandbox = this.sandboxFor(adapter, request.sandbox);
     if (sandbox.error) throw new AgentError(sandbox.error);
     const engine = sandbox.box ? await unlessStopped(signal, () => this.sandboxReady(sandbox.box!)) : undefined;
+    // Its limits (ODW extension; see ./limits): enforced live from what a
+    // JSONL CLI prints; a text CLI's spend only once each run is over — said once.
+    const agentLimits = this.limitsFor(adapter, request.limits);
+    if (adapter.output?.format !== "jsonl" && (agentLimits.outputTokens !== undefined || agentLimits.costUsd !== undefined)) {
+      this.noteOnce(
+        `limits:${adapter.name}`,
+        `limits: adapter '${adapter.name}' prints no usage while it runs — its agents' outputTokens and costUsd ` +
+          `are checked only after each CLI run, against what it reported or chars/4 of its reply`,
+        { adapter: adapter.name },
+        shared.onNote,
+      );
+    }
     const call: CallEnv = {
       ...shared,
       container: sandbox.box && engine ? { box: sandbox.box, engine, agentId: options.agentId } : undefined,
@@ -969,6 +1007,7 @@ export class Bridge {
       // MCP servers that could not start fail a run at once only under "fail" —
       // but those the call's `expect.mcp` lists, which are a miss (ODW extensions).
       mcpFails: settings.mcpFailures === "fail" ? new Set(options.expect?.mcp ?? []) : undefined,
+      limits: agentLimits,
     };
     const limits: CliLimits = {
       timeout: adapter.timeout ?? settings.timeout ?? undefined,
@@ -1038,6 +1077,8 @@ export class Bridge {
         // Killed by a stop (or by a fatal error elsewhere in the run): report
         // the run's reason, not a misleading CLI failure.
         throwIfAborted(signal);
+        // A runaway is not retried, nor a miss to run again: its limit is spent (ODW extension).
+        if (failure?.reason === "runaway" && call.watch?.hit) throw runawayError(adapter, call.watch.hit);
         if (failure || !cliOk(cli)) {
           const verdict = failure ?? classifyFailure(cli, { patterns: adapter.failures, prompt, now: this.now() });
           throw new AdapterExecutionError(
@@ -1148,6 +1189,9 @@ export class Bridge {
         const output = decoder?.received ? decoder.finish(reply) : decodeOutput(adapter, cli.stdout, reply);
         // What the run said of its MCP servers is told as soon as it is in (ODW extension).
         if (output.mcp && !signal?.aborted) options.onMcp?.({ adapter: adapter.name, servers: notConnected(output.mcp) });
+        // A limit it ran into — live, or now that its spend is in — ends the call (ODW extension; see ./limits).
+        const hit = signal?.aborted ? null : this.settleLimits(adapter, call, output);
+        if (hit) return { cli: runawayEvidence(cli, hit), output, failure: { reason: "runaway" as const } };
         if (signal?.aborted || cli.stalled) return { cli, output };
         const failed = this.failureOf(adapter, cli, output, prompt, call);
         if (failed) return { cli: failed.cli, output, failure: failed.failure };
@@ -1186,6 +1230,28 @@ export class Bridge {
       }
       await options.beforeRetry?.();
     }
+  }
+
+  /**
+   * The call's limits once a CLI run's output is decoded (ODW extension; see
+   * ./limits): what the run spent is the call's — as its CLI reported it,
+   * else chars/4 of its reply — and the limit it ran into, live or now, comes
+   * back. A CLI that reported no cost leaves `costUsd` unchecked: said once.
+   */
+  private settleLimits(adapter: Adapter, call: CallEnv, output: DecodedOutput): LimitHit | null {
+    const { watch, limits } = call;
+    if (!watch || !hasLimits(limits)) return watch?.hit ?? null;
+    const estimate = output.usage?.outputTokens === undefined && output.text ? Math.ceil(output.text.length / 4) : undefined;
+    const hit = watch.settle(output.usage, estimate);
+    if (!hit && limits.costUsd !== undefined && !watch.reportedCost) {
+      this.noteOnce(
+        `limits-cost:${adapter.name}`,
+        `limits: adapter '${adapter.name}' reports no cost — its agents' costUsd limit cannot be checked (outputTokens can)`,
+        { adapter: adapter.name },
+        call.onNote,
+      );
+    }
+    return hit;
   }
 
   /**
@@ -1484,10 +1550,20 @@ export class Bridge {
           : undefined;
         if (container?.note) this.noteOnce(`sandbox:${adapter.name}`, container.note, { adapter: adapter.name }, call.onNote);
         let cli: CliResult | null = null;
+        // Its limits (ODW extension; see ./limits) watch what it prints, and
+        // one it runs into kills it — and everything it started — at once.
+        const guard = hasLimits(call.limits) && call.watch ? call.watch : undefined;
+        const runaway = guard ? new AbortController() : undefined;
+        const stopRun = (): void => runaway?.abort();
+        if (runaway && signal) {
+          if (signal.aborted) runaway.abort();
+          else signal.addEventListener("abort", stopRun, { once: true });
+        }
         try {
           // What the CLI prints is kept as it arrives (ODW extension; see ./transcript).
           const transcript = call.transcript;
           transcript?.beginRun(why, adapter);
+          guard?.startRun(call.limits!, adapter.output?.format === "jsonl", stopRun);
           // A version probe runs on the host: for a CLI in a container it would
           // name another CLI (or none), so a sandboxed run records no version.
           if (!container) this.onCliRun?.(adapter);
@@ -1499,18 +1575,24 @@ export class Bridge {
             stallTimeout: limits.stallTimeout,
             onStdout,
             observeStdout:
-              transcript || watch
+              transcript || watch || guard
                 ? (chunk) => {
                     transcript?.stdout(chunk);
+                    guard?.stdout(chunk);
                     watch?.();
                   }
                 : undefined,
             onStderr: transcript && ((chunk) => transcript.stderr(chunk)),
-            signal,
+            signal: runaway ? runaway.signal : signal,
           });
+          guard?.endRun();
+          // Killed as a runaway: its own note says so, not "aborted".
+          if (guard?.hit && !signal?.aborted) cli = { ...cli, stderr: cli.stderr.replace(/\n\[aborted; process terminated\]$/, "\n[runaway; terminated]") };
           transcript?.endRun(cli);
         } finally {
-          await container?.close(cli !== null && cliOk(cli) && !signal?.aborted);
+          guard?.endRun();
+          signal?.removeEventListener("abort", stopRun);
+          await container?.close(cli !== null && cliOk(cli) && !signal?.aborted && !guard?.hit);
         }
         // What it wrote to its reply file is read once it has exited.
         const written = reply ? await reply.read() : undefined;
@@ -1559,6 +1641,10 @@ interface CallEnv {
    * the set, which `expect.mcp` checks (ODW extension; see failureOf).
    */
   mcpFails?: ReadonlySet<string>;
+  /** Watches the call's CLI runs against its limits, over all of them (ODW extension; see ./limits). */
+  watch?: LimitWatch;
+  /** The limits the call runs under on this adapter (ODW extension). */
+  limits?: AgentLimits;
 }
 
 /** The variables an agent's processes get from ODW: only ever this call's, never inherited. */
@@ -1695,6 +1781,16 @@ function reportsMcp(adapter: Adapter): boolean {
 function mcpEvidence(cli: CliResult, servers: McpServer[]): CliResult {
   const listed = servers.map((server) => `${server.name} (${server.status})`).join("; ");
   return { ...cli, stdout: `MCP servers not connected: ${listed}`, stderr: "" };
+}
+
+/** A run that ran into a limit, with the evidence as its diagnostic (ODW extension; see ./limits). */
+function runawayEvidence(cli: CliResult, hit: LimitHit): CliResult {
+  return { ...cli, stdout: hit.evidence, stderr: "" };
+}
+
+/** How a call that ran into a limit fails: reason "runaway", naming the limit and the evidence (ODW extension). */
+function runawayError(adapter: Adapter, hit: LimitHit): RunawayError {
+  return new RunawayError(`adapter '${adapter.name}' ran away — ${limitLabel(hit)}: ${hit.evidence}`, hit);
 }
 
 /** A run whose CLI refused tool calls, with them as its diagnostic: what a `permission` failure quotes. */

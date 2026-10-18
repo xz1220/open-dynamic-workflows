@@ -32,6 +32,7 @@ import { addUsage, readUsage, type Usage } from "../adapters/usage.js";
 import type { AgentChanges } from "../changes.js";
 import type { WaitingCheckpoint } from "../checkpoint.js";
 import type { WorkflowEvent } from "../events.js";
+import { LIMIT_NAMES, type AgentLimits, type LimitHit } from "../limits.js";
 import { readCliVersion, type CliVersion } from "../provenance.js";
 import { pausedForOf, type PausedFor } from "../quota-wait.js";
 import { RunStore, TERMINAL_STATES, type EvalRunTag } from "./run-store.js";
@@ -45,6 +46,11 @@ export interface AgentSandbox {
   engine: "docker" | "podman" | null;
   image: string;
   network: "none" | "default";
+}
+
+/** The limits an agent runs under, and the one it ran into (ODW extension; see limits.ts). */
+export interface AgentLimitsView extends AgentLimits {
+  hit?: LimitHit;
 }
 
 /**
@@ -68,7 +74,7 @@ export interface AgentView {
   /**
    * Why a failed agent's CLI failed (agent_failed's `reason`): rate_limit,
    * quota, auth, timeout, stalled, not_found, permission or exit — or, ODW
-   * extensions, empty_reply, unmet_expectation and mcp_unavailable. Absent while running, for
+   * extensions, empty_reply, unmet_expectation, mcp_unavailable and runaway. Absent while running, for
    * other failures (schema, stop) and for older event files.
    */
   failureReason?: string;
@@ -128,6 +134,13 @@ export interface AgentView {
    * Absent: on the host.
    */
   sandbox?: AgentSandbox;
+  /**
+   * Agents only (ODW extension): the limits it runs under — agent_started's
+   * `limits` (see limits.ts) — and, once it ran into one, `hit`: the limit,
+   * what it reached and the evidence (agent_failed's `limitHit`, reason
+   * "runaway"). Absent: no limits.
+   */
+  limits?: AgentLimitsView;
   /**
    * Agents only (ODW extension): the adapters it fell back from, in order —
    * their quota was spent or their login refused — before `adapter`, the one
@@ -392,6 +405,8 @@ export function applyAgentEvent(
     if (ev.trust === "untrusted") opened.trust = "untrusted";
     const sandbox = agentSandbox(ev.sandbox);
     if (sandbox) opened.sandbox = sandbox;
+    const limits = agentLimits(ev.limits);
+    if (limits) opened.limits = limits;
     agents.push(opened);
     return { opened };
   }
@@ -437,6 +452,9 @@ export function applyAgentEvent(
       if (from && typeof ev.adapter === "string") target.adapter = ev.adapter;
       const misses = strings(ev.misses);
       if (misses) target.misses = misses;
+      // The limit a runaway ran into (ODW extension).
+      const hit = limitHit(ev.limitHit);
+      if (hit) target.limits = { ...target.limits, hit };
     } else {
       const denied = strings(ev.denied);
       if (denied) target.denied = denied;
@@ -531,6 +549,26 @@ function agentSandbox(raw: unknown): AgentSandbox | undefined {
   };
 }
 
+/** An event's `limits`, the numbers it sets (ODW extension); undefined when it sets none. */
+function agentLimits(raw: unknown): AgentLimits | undefined {
+  if (raw === null || typeof raw !== "object") return undefined;
+  const limits: AgentLimits = {};
+  for (const name of LIMIT_NAMES) {
+    const value = (raw as Record<string, unknown>)[name];
+    if (typeof value === "number" && Number.isFinite(value) && value > 0) limits[name] = value;
+  }
+  return Object.keys(limits).length > 0 ? limits : undefined;
+}
+
+/** An event's `limitHit`, when it names a limit (ODW extension); undefined otherwise. */
+function limitHit(raw: unknown): LimitHit | undefined {
+  if (raw === null || typeof raw !== "object") return undefined;
+  const { limit, max, value, evidence } = raw as Record<string, unknown>;
+  if (!(LIMIT_NAMES as readonly unknown[]).includes(limit) || typeof evidence !== "string") return undefined;
+  const number = (n: unknown): number => (typeof n === "number" && Number.isFinite(n) ? n : 0);
+  return { limit: limit as LimitHit["limit"], max: number(max), value: number(value), evidence };
+}
+
 /** An event's `changes`, when it is a diffstat; null otherwise. */
 function agentChanges(raw: unknown): AgentChanges | null {
   if (raw === null || typeof raw !== "object") return null;
@@ -565,6 +603,7 @@ function copyAgents(agents: AgentView[], stale: boolean): AgentView[] {
     if (a.mcp) copy.mcp = a.mcp.map((server) => ({ ...server }));
     if (a.misses) copy.misses = [...a.misses];
     if (a.denied) copy.denied = [...a.denied];
+    if (a.limits) copy.limits = { ...a.limits, ...(a.limits.hit ? { hit: { ...a.limits.hit } } : {}) };
     return copy;
   });
 }

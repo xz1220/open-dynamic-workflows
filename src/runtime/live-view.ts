@@ -41,6 +41,7 @@
 import { formatSeconds } from "../adapters/failures.js";
 import { addUsage, type Usage } from "../adapters/usage.js";
 import type { WorkflowEvent } from "../events.js";
+import { limitLabel } from "../limits.js";
 import { clockTime, pausedForOf, pausedText } from "../quota-wait.js";
 import {
   cursor,
@@ -187,6 +188,24 @@ export function fallbackLines(agents: AgentView[], events: WorkflowEvent[]): str
   return lines;
 }
 
+/** How many runaway agents `odw status` names; past them, a count. */
+const RUNAWAYS_NAMED = 5;
+
+/**
+ * What `odw status` says about runaways (ODW extension; see ../limits): the
+ * agents killed at one of their limits, each with the evidence — "fix:3
+ * Bash `npm test` ×5 in a row (limits.repeat=5)". No line for a run without one.
+ */
+export function runawayLines(agents: AgentView[]): string[] {
+  const hits = agents.filter((a) => a.kind === "agent" && a.limits?.hit);
+  if (hits.length === 0) return [];
+  const named = hits
+    .slice(0, RUNAWAYS_NAMED)
+    .map((a) => `${sanitizeText(a.label, 40)}:${a.agentId ?? "?"} ${sanitizeText(a.limits!.hit!.evidence, 120)} (${limitLabel(a.limits!.hit!)})`);
+  const more = hits.length > RUNAWAYS_NAMED ? `, and ${hits.length - RUNAWAYS_NAMED} more` : "";
+  return [`runaway: ${hits.length} agent${hits.length === 1 ? "" : "s"} killed at a limit — ${named.join(", ")}${more}`];
+}
+
 /** The `expect` checks a failed agent's work missed (agent_failed's `misses`; ODW extension), or null. */
 function missesOf(ev: WorkflowEvent): string[] | null {
   return linesOf(ev.misses);
@@ -253,6 +272,7 @@ function reasonText(reason: string | undefined): string | null {
     permission: "permission denied",
     empty_reply: "empty reply",
     unmet_expectation: "expectations not met",
+    runaway: "runaway",
   };
   return words[reason] ?? sanitizeText(reason.replace(/_/g, " "), 40);
 }

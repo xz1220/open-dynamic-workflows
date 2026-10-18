@@ -22,6 +22,7 @@ import type {
   Settings,
   TrustLevel,
 } from "./types.js";
+import type { LimitSpec } from "../limits.js";
 
 /** A built-in adapter spec — same shape as a config entry, minus its name. */
 export interface RawAdapter {
@@ -43,6 +44,7 @@ export interface RawAdapter {
   untrustedArgs?: string[];
   untrustedNote?: string;
   sandbox?: ContainerSpec;
+  agentLimits?: LimitSpec;
 }
 
 // `flags` only DECLARES which native flag carries a model — the router appends
@@ -442,4 +444,5 @@ export const DEFAULT_SETTINGS: Settings = {
   quotaWait: false, // an agent whose chain is out of quota fails; { max: <s> } waits for the reset instead
   otel: false, // no trace is sent; { endpoint?, headers?, captureContent? } posts each run's at its end
   sandbox: "none", // agent CLIs run on this machine; { kind: "container", image, … } runs each in a container
+  agentLimits: {}, // no per-agent limits; { toolCalls, costUsd, outputTokens, seconds, repeat } kills a runaway agent
 };

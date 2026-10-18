@@ -6,6 +6,8 @@
  * loaded once at run start and then only read.
  */
 
+import type { LimitSpec } from "../limits.js";
+
 /**
  * Which per-call options this CLI can carry, and the argv flag that carries
  * each. An option absent here is one this adapter does NOT support natively, so
@@ -228,6 +230,8 @@ export interface Adapter {
    * container on, never off.
    */
   sandbox?: ContainerSpec;
+  /** This CLI's own per-agent limits, over the run's `agentLimits` key by key (ODW extension; see ../limits). */
+  agentLimits?: LimitSpec;
 }
 
 /** Where a sandboxed agent's container may reach (ODW extension): nowhere, or the engine's default network. */
@@ -490,6 +494,13 @@ export interface Settings {
    * may only tighten it.
    */
   sandbox: SandboxSetting;
+  /**
+   * What one agent may do before it is killed as a runaway (an ODW extension;
+   * see ../limits): tool calls, dollars, output tokens, seconds, and the same
+   * tool call in a row. An adapter's `agentLimits` and an agent()'s `limits`
+   * override it key by key; `{}` sets none.
+   */
+  agentLimits: LimitSpec;
 }
 
 /** Where and how a run's trace is exported (see `Settings.otel`). */

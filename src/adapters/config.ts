@@ -20,6 +20,7 @@ import { cpus, homedir } from "node:os";
 import { dirname, join } from "node:path";
 
 import { AdapterNotFound, ConfigError } from "../errors.js";
+import { readLimits } from "../limits.js";
 import { extraProblem } from "../redact.js";
 import { TIER_NAME } from "../routing.js";
 import { BUILTIN_ADAPTERS, DEFAULT_SETTINGS, type RawAdapter } from "./builtin.js";
@@ -139,9 +140,10 @@ const KNOWN_TOP_KEYS = [
   "mcpFailures",
   "otel",
   "sandbox",
+  "agentLimits",
 ] as const;
 
-const KNOWN_ADAPTER_KEYS = ["command", "stdin", "env", "timeout", "stallTimeout", "concurrency", "promptCache", "label", "flags", "output", "failures", "permissionArgs", "permissions", "permissionDenials", "trust", "untrustedArgs", "untrustedNote", "sandbox"] as const;
+const KNOWN_ADAPTER_KEYS = ["command", "stdin", "env", "timeout", "stallTimeout", "concurrency", "promptCache", "label", "flags", "output", "failures", "permissionArgs", "permissions", "permissionDenials", "trust", "untrustedArgs", "untrustedNote", "sandbox", "agentLimits"] as const;
 
 /** The fields of an adapter's `output`, per format. */
 const KNOWN_OUTPUT_KEYS: Record<string, readonly string[]> = {
@@ -711,6 +713,10 @@ function buildAdapter(name: string, spec: RawAdapter): Adapter {
   }
   // The container sandbox (ODW extension; see ./sandbox): an adapter may only turn it on.
   if (spec.sandbox != null) adapter.sandbox = buildAdapterSandbox(name, spec.sandbox);
+  // Per-agent limits (ODW extension; see ../limits): over the run's, key by key.
+  if (spec.agentLimits != null) {
+    adapter.agentLimits = readLimits(spec.agentLimits, `adapter '${name}' 'agentLimits'`, (m) => new ConfigError(m));
+  }
   return adapter;
 }
 
@@ -1107,6 +1113,7 @@ function buildSettings(raw: Record<string, unknown>): Settings {
         : buildChoice("mcpFailures", raw["mcpFailures"], ["warn", "fail"] as const),
     otel: raw["otel"] == null ? DEFAULT_SETTINGS.otel : buildOtel(raw["otel"]),
     sandbox: raw["sandbox"] == null ? DEFAULT_SETTINGS.sandbox : buildSandboxSetting(raw["sandbox"]),
+    agentLimits: raw["agentLimits"] == null ? {} : readLimits(raw["agentLimits"], '"agentLimits"', (m) => new ConfigError(m)),
   };
 }
 

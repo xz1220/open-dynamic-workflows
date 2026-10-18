@@ -68,6 +68,12 @@
  * board in its prompt and `ODW_NOTES` in its environment, and an isolated one
  * that kept a change has a note of its interface changes posted for it before
  * its agent_finished event, so the agents the script starts next see it.
+ *
+ * An agent runs under its limits (an ODW extension; see ./limits) — the
+ * call's `limits` over its adapter's and the run's `agentLimits` — carried as
+ * `limits` on its agent_started event; one that runs into a limit is killed
+ * and fails with reason "runaway" and `limitHit` (the limit, what it reached,
+ * the evidence) on agent_failed.
  */
 
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -86,11 +92,12 @@ import type { AgentRequest } from "./bridge.js";
 import { branchName, ChangeRecorder, type AgentChanges, type KeptChanges } from "./changes.js";
 import { CheckpointTimeout, createCheckpoint, type CheckpointOptions, type CheckpointResult } from "./checkpoint.js";
 import { spentTokens, type RunContext } from "./context.js";
-import { AdapterExecutionError, AgentError, UnmetExpectationError, WorkflowScriptError, isFatalError } from "./errors.js";
+import { AdapterExecutionError, AgentError, RunawayError, UnmetExpectationError, WorkflowScriptError, isFatalError } from "./errors.js";
 import { AGENT_FAILED, AGENT_FINISHED, AGENT_STARTED, LOG, PHASE_STARTED, event } from "./events.js";
 import { ExecError, createExec, execStep, type ExecOptions, type ExecResult } from "./exec.js";
 import { Expectations, planChecks, type AgentChecks, type ExpectOptions } from "./expect.js";
 import { resumeKey, type AgentResultRecord } from "./journal.js";
+import { hasLimits, readLimits, type AgentLimits, type LimitHit, type LimitSpec } from "./limits.js";
 // Value import of the loader is safe: loader.ts only type-imports from here, so
 // the module cycle is erased at compile time and never exists at runtime.
 import { loadWorkflowScript, scanDualCompat, type WorkflowMeta } from "./loader.js";
@@ -154,6 +161,13 @@ export interface AgentOptions {
    * adapters/sandbox.ts).
    */
   sandbox?: "none" | "container" | Record<string, unknown>;
+  /**
+   * ODW extension: what this agent may do before it is killed as a runaway —
+   * `{ toolCalls, costUsd, outputTokens, seconds, repeat }`, over its
+   * adapter's and the run's `agentLimits` key by key (`null` lifts one). A
+   * breach fails it with reason "runaway" (see ./limits).
+   */
+  limits?: LimitSpec;
   /**
    * ODW extension: the run's notes board for this agent (see ./notes) — the
    * notes so far in its prompt, `ODW_NOTES` to post and read them, and, for
@@ -481,6 +495,8 @@ export function createPrimitives(
     }
     // The run's notes board (ODW extension): its call's say, else its parallel()'s, else the setting.
     const notesOn = opts.notes ?? notesScope.getStore() ?? ctx.config.settings.notes === true;
+    // So are its limits (ODW extension; see ./limits).
+    const ownLimits = opts.limits === undefined ? undefined : readLimits(opts.limits, "agent(): limits", (m) => new AgentError(m));
     const activePhase = opts.phase !== undefined ? opts.phase : ctx.currentPhase;
     // Stable per-dispatch identity. Events for THIS dispatch all carry it, so
     // observers pair started/finished exactly even when several concurrent
@@ -542,6 +558,7 @@ export function createPrimitives(
       permissions: opts.permissions,
       ...(checks.allowEmpty ? { allowEmpty: true } : {}),
       ...(opts.sandbox !== undefined ? { sandbox: opts.sandbox } : {}),
+      ...(ownLimits !== undefined ? { limits: ownLimits } : {}),
     };
     // The adapters it left down its chain, and the one it is on (ODW extension).
     const fellBackFrom: string[] = [];
@@ -612,6 +629,8 @@ export function createPrimitives(
           ...permissionField(permissions.tier ?? permissions.requested),
           ...trustField(trust),
           ...sandboxField(sandbox && sandboxView(sandbox)),
+          // The limits it runs under on this adapter, if any (ODW extension; see ./limits).
+          ...limitsField(ctx.bridge.limitsFor?.(adapter, ownLimits)),
           // What `odw compare` matches and shows it by (ODW extension): its
           // resume key, and the model it asked for (a tier keeps its @ name).
           key,
@@ -1144,6 +1163,11 @@ function sandboxField(view: SandboxView | null): { sandbox?: SandboxView } {
   return view ? { sandbox: view } : {};
 }
 
+/** The `limits` field an agent's start event carries when it runs under any (ODW extension; see ./limits). */
+function limitsField(limits: AgentLimits | undefined): { limits?: AgentLimits } {
+  return hasLimits(limits) ? { limits: { ...limits } } : {};
+}
+
 /** The `trust` field an agent's start event and record carry when its CLI runs untrusted (ODW extension; absent: trusted). */
 function trustField(trust: TrustLevel): { trust?: TrustLevel } {
   return trust === "untrusted" ? { trust } : {};
@@ -1236,9 +1260,11 @@ function refusedNote(who: string, cli: string, denied: string[]): string {
  * its `expect` checks, what it missed. Nothing for other errors (a schema that
  * never validated, a stop).
  */
-function failureFields(err: unknown): { reason?: string; retryAfter?: number; misses?: string[] } {
+function failureFields(err: unknown): { reason?: string; retryAfter?: number; misses?: string[]; limitHit?: LimitHit } {
   if (!(err instanceof AdapterExecutionError)) return {};
   if (err instanceof UnmetExpectationError) return { reason: err.reason, misses: [...err.misses] };
+  // The limit a runaway ran into, and the evidence (ODW extension; see ./limits).
+  if (err instanceof RunawayError) return { reason: err.reason, limitHit: { ...err.hit } };
   if (err.retryAfter === undefined) return { reason: err.reason };
   return { reason: err.reason, retryAfter: Math.ceil(err.retryAfter) };
 }

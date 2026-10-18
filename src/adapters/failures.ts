@@ -54,7 +54,9 @@ export type FailureReason =
   /** The agent's work missed its `expect` checks, retries included (ODW extension). */
   | "unmet_expectation"
   /** An MCP server the CLI started the agent with failed or needs authentication, under `mcpFailures: "fail"` (ODW extension). */
-  | "mcp_unavailable";
+  | "mcp_unavailable"
+  /** The agent ran into one of its `limits` — a loop, too many tool calls, too much spend — and was killed (ODW extension). */
+  | "runaway";
 
 /** The classes an adapter's `failures` config may add patterns to. */
 export const CONFIGURABLE_REASONS = ["rate_limit", "quota", "auth"] as const;
