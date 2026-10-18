@@ -209,6 +209,11 @@ export interface RunSummary {
    * absent for Claude Code runs.
    */
   pausedFor?: PausedFor | null;
+  /**
+   * The run is a shared bundle opened by `odw serve --open FILE.odwrun` (ODW
+   * extension; see ./bundle): when it was bundled and by which odw. Absent otherwise.
+   */
+  bundle?: { bundledAt: number | null; odwVersion: string | null };
 }
 
 export interface RunDetail extends RunSummary {
@@ -678,7 +683,14 @@ export function summaryFrom(runId: string, facts: RunFacts): RunSummary {
     waiting: state === "waiting" ? oldestWaiting(fold) : null,
     // Only a live paused run waits for a quota; a stale one's worker is gone.
     pausedFor: state === "paused" ? pausedForOf(status.pausedFor) : null,
+    ...(meta.bundle ? { bundle: bundleOf(meta.bundle) } : {}),
   };
+}
+
+/** meta.bundle as a summary carries it: a shared bundle's when and by which odw. */
+function bundleOf(value: unknown): { bundledAt: number | null; odwVersion: string | null } {
+  const b = (value !== null && typeof value === "object" ? value : {}) as Record<string, unknown>;
+  return { bundledAt: asNumber(b.bundledAt), odwVersion: typeof b.odwVersion === "string" ? b.odwVersion : null };
 }
 
 /** The oldest checkpoint a fold has waiting, as status.json's `waiting` names it. */

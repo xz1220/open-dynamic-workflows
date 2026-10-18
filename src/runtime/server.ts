@@ -96,7 +96,18 @@
  *      CORS "simple requests") and, when an Origin header is present, it must be
  *      same-origin.
  *   2. Host-header allowlist on loopback binds (DNS-rebinding guard, all routes).
- *   3. Off-loopback binds (--host) refuse every write with 409.
+ *   3. Off-loopback binds (--host) refuse every write with 409 — with a token too.
+ *
+ * Remote read-only access (ODW extension; see ./serve-auth): with `token` set
+ * (`odw serve --token`), every /api request and the SSE stream need it — a
+ * Bearer header, a `?token=` (which sets an HttpOnly SameSite=Strict cookie),
+ * or that cookie; 401 without, 429 for an address that sent too many wrong
+ * ones. The HTML shell loads without it and shows a "needs a token" screen.
+ *
+ * A shared bundle (ODW extension; see ./bundle): with `bundle` set, the store
+ * is the bundle unpacked into a temp runs root and the server shows that run
+ * alone — no Claude Code runs, workflows, schedules or local settings — and
+ * refuses every write (409), on loopback too.
  */
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -139,6 +150,8 @@ import { OdwRunSource } from "./odw-run-source.js";
 import { RunFeed } from "./run-feed.js";
 import { allSummaries, RUN_ID_RE, sourceForRun, type RunSource } from "./run-source.js";
 import { RunStore } from "./run-store.js";
+import type { BundleInfo } from "./bundle.js";
+import { TokenGate, type TokenGateOptions } from "./serve-auth.js";
 import { listWorkflowSummaries, workflowDetail } from "./workflows-view.js";
 
 export type { ChatTurnRequest, ChatTurnRunner } from "./chat-host.js";
@@ -160,6 +173,12 @@ export interface ServeOptions {
   claudeJobsScope?: "all" | "project";
   /** Test seam for Chat Host's Codex-backed assistant stream. Defaults to `codex exec`. */
   chatRunner?: ChatTurnRunner;
+  /** Require this token on every /api request (ODW extension: `odw serve --token`; see ./serve-auth). */
+  token?: string | null;
+  /** The wrong-token rate limit (tests). */
+  authLimit?: TokenGateOptions;
+  /** Show a shared bundle, read-only (ODW extension: `odw serve --open FILE.odwrun`): `store` is it unpacked. */
+  bundle?: BundleInfo | null;
 }
 
 export interface ServeHandle {
@@ -181,6 +200,7 @@ export function startServer(options: ServeOptions): Promise<ServeHandle> {
   const cwd = options.cwd ?? process.cwd();
   const config = options.config ?? loadConfig(null);
   const configPath = options.configPath ?? null;
+  const bundle = options.bundle ?? null;
   // What the server serves of runs' args and keeps of chat sessions has its likely secrets redacted (ODW extension).
   const redactor = redactorFor(config);
   const sources: RunSource[] = [
@@ -188,11 +208,16 @@ export function startServer(options: ServeOptions): Promise<ServeHandle> {
     // Default scope "all": the observatory aggregates every project's Claude runs,
     // mirroring how the global runs root already aggregates ODW runs. The scope can
     // be narrowed to the served repo + its worktrees via claudeJobsScope.
-    new ClaudeRunSource({
-      projectsRoot: options.claudeProjectsRoot ?? resolveClaudeProjectsRoot(),
-      cwd,
-      scope: options.claudeJobsScope ?? config.settings.claudeJobsScope,
-    }),
+    // A shared bundle shows its one run and nothing of this machine's.
+    ...(bundle
+      ? []
+      : [
+          new ClaudeRunSource({
+            projectsRoot: options.claudeProjectsRoot ?? resolveClaudeProjectsRoot(),
+            cwd,
+            scope: options.claudeJobsScope ?? config.settings.claudeJobsScope,
+          }),
+        ]),
   ];
   // The live feed: SSE clients + the run-list push loop (see ./run-feed).
   const feed = new RunFeed(store.root, sources);
@@ -207,8 +232,9 @@ export function startServer(options: ServeOptions): Promise<ServeHandle> {
     redactor,
   });
 
+  const ctx: HandleContext = { sources, store, chatHost, feed, cwd, config, configPath, boundHost: host, redactor, bundle, gate: null };
   const server = createServer((req, res) => {
-    handle(req, res, { sources, store, chatHost, feed, cwd, config, configPath, boundHost: host, redactor }).catch((err) => {
+    handle(req, res, ctx).catch((err) => {
       try {
         sendJson(res, 500, { error: (err as Error).message ?? "internal error" });
       } catch {
@@ -241,6 +267,8 @@ export function startServer(options: ServeOptions): Promise<ServeHandle> {
       server.on("error", (err) => logServeError("server error", err));
       const addr = server.address();
       const boundPort = typeof addr === "object" && addr ? addr.port : port;
+      // The cookie is named by port: cookies ignore ports, and two servers on a host must keep apart.
+      if (options.token) ctx.gate = new TokenGate(options.token, `odw_token_${boundPort}`, options.authLimit);
       const shown = host === "0.0.0.0" || host === "::" ? "localhost" : host;
       resolve({
         url: `http://${shown}:${boundPort}`,
@@ -267,10 +295,14 @@ interface HandleContext {
   boundHost: string;
   /** What redacts the args it serves (ODW extension). */
   redactor: Redactor;
+  /** The shared bundle shown, read-only (ODW extension); null for the runs root. */
+  bundle: BundleInfo | null;
+  /** The token check (ODW extension: `--token`); null when reads are open. */
+  gate: TokenGate | null;
 }
 
 async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandleContext): Promise<void> {
-  const { sources, store, chatHost, feed, cwd, config, configPath, boundHost, redactor } = ctx;
+  const { sources, store, chatHost, feed, cwd, config, configPath, boundHost, redactor, bundle, gate } = ctx;
   const method = req.method ?? "GET";
 
   try {
@@ -293,9 +325,32 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandleCont
     }
 
     if (method === "GET" && (path === "/" || path === "/index.html")) {
-      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      // The shell needs no token (without one it shows a "needs a token" screen);
+      // a right ?token= on it sets the cookie all the same.
+      const auth = gate && url.searchParams.has("token") ? gate.check(req, url) : null;
+      res.writeHead(200, {
+        "content-type": "text/html; charset=utf-8",
+        ...(auth?.ok && auth.setCookie ? { "set-cookie": auth.setCookie } : {}),
+      });
       res.end(DASHBOARD_HTML);
       return;
+    }
+    if (path === "/api" || path.startsWith("/api/")) {
+      // --token (ODW extension): every API read and the stream need it.
+      if (gate) {
+        const auth = gate.check(req, url);
+        if (!auth.ok) {
+          const headers: Record<string, string> = auth.retryAfter ? { "retry-after": String(auth.retryAfter) } : {};
+          sendJson(res, auth.status, { error: auth.error, auth: "token" }, headers);
+          return;
+        }
+        if (auth.setCookie) res.setHeader("set-cookie", auth.setCookie);
+      }
+      // A shared bundle is read-only, on loopback too.
+      if (bundle && method !== "GET" && method !== "HEAD") {
+        sendJson(res, 409, { error: "this dashboard shows a shared bundle: it is read-only" });
+        return;
+      }
     }
     if (method === "GET" && path === "/api/runs") {
       sendJsonCached(req, res, allSummaries(sources));
@@ -314,11 +369,12 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandleCont
       // The SPA hides local write affordances when writes are refused, so a
       // remotely-viewed off-loopback dashboard shows no dead buttons. Mirrors
       // the writeGuard's loopback-only rule exactly.
-      sendJson(res, 200, { writable: isLoopbackBind(boundHost) });
+      // `auth`: whether reads need a token; `bundle`: the shared bundle shown (ODW extensions).
+      sendJson(res, 200, { writable: isLoopbackBind(boundHost) && !bundle, auth: gate ? "token" : "none", bundle });
       return;
     }
     if (method === "GET" && path === "/api/settings") {
-      sendJson(res, 200, settingsView(store, config, cwd, configPath, boundHost));
+      sendJson(res, 200, bundle ? bundleSettingsView(bundle, config) : settingsView(store, config, cwd, configPath, boundHost));
       return;
     }
     if (method === "GET" && path === "/api/compare") {
@@ -327,16 +383,16 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandleCont
     }
     if (method === "GET" && path === "/api/schedules") {
       // A schedule's args are the user's data, kept as given for its runs: served with token shapes redacted.
-      sendJson(res, 200, listSchedules().map((row) => redactor.shapes.record(scheduleJson(row))));
+      sendJson(res, 200, bundle ? [] : listSchedules().map((row) => redactor.shapes.record(scheduleJson(row))));
       return;
     }
     if (path.startsWith("/api/chat/") && (await chatHost.route(req, res, method, path, boundHost))) return;
     if (method === "GET" && path === "/api/workflows") {
-      sendJson(res, 200, listWorkflowSummaries(cwd, config, store));
+      sendJson(res, 200, bundle ? [] : listWorkflowSummaries(cwd, config, store));
       return;
     }
     const wfMatch = path.match(/^\/api\/workflows\/([^/]+)$/);
-    if (method === "GET" && wfMatch) {
+    if (method === "GET" && wfMatch && !bundle) {
       const name = decodeSegment(wfMatch[1]!);
       if (name === null) {
         sendJson(res, 400, { error: "malformed URL escape in workflow name" });
@@ -520,6 +576,21 @@ function settingsView(
       webhook: config.settings.notify?.webhook ? webhookOrigin(config.settings.notify.webhook) : null,
       on: config.settings.notify?.on ?? [...RUN_END_STATES],
     },
+  };
+}
+
+/** Settings as a shared bundle shows them: nothing of this machine's — its paths, adapters, hooks. */
+function bundleSettingsView(bundle: BundleInfo, config: Config): Record<string, unknown> {
+  return {
+    cwd: "",
+    configPath: null,
+    runsRoot: "",
+    writable: false,
+    bundle,
+    claudeJobsScope: config.settings.claudeJobsScope,
+    adapters: [],
+    workflowRoots: [],
+    notify: { command: false, webhook: null, on: [] },
   };
 }
 

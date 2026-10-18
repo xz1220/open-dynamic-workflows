@@ -23,11 +23,14 @@
  *   odw schedule add|list|remove|run …   (recurring runs via the OS scheduler, src/schedule/)
  *   odw compare <runA> <runB> [--json] [--agent <label|id>]   (what changed; runtime/compare)
  *   odw export <run_id> --otlp [--out FILE | --send]   (OpenTelemetry traces, runtime/otel-export.ts)
+ *   odw bundle <run_id> [--out FILE] [--no-transcripts] [--max-bytes N]   (a shareable run, runtime/bundle.ts)
+ *   odw serve FILE.odwrun | odw view FILE   (a bundle, read-only); odw serve --token [VALUE] (runtime/serve-auth.ts)
  */
 
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
+import { networkInterfaces } from "node:os";
 import { basename, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
@@ -64,6 +67,8 @@ import { RunStore, TERMINAL_STATES } from "./runtime/run-store.js";
 import { detail, type RunDetail } from "./runtime/runs-view.js";
 import { exportRun, exportTimeout, otlpTarget, OTEL_SEND_TIMEOUT_MS, postTrace, spanCount } from "./runtime/otel-export.js";
 import { startServer } from "./runtime/server.js";
+import { BUNDLE_EXT, BundleError, bundleRedactor, createBundle, DEFAULT_BUNDLE_MAX_BYTES, isBundleRunId, openBundle, type OpenedBundle } from "./runtime/bundle.js";
+import { generateToken, isValidToken } from "./runtime/serve-auth.js";
 import { printAgentLogs } from "./runtime/transcript-view.js";
 import { executeRun } from "./runtime/worker.js";
 import { pausedForOf, pausedText } from "./quota-wait.js";
@@ -96,6 +101,8 @@ export const COMMANDS = [
   "schedule",
   "compare",
   "export",
+  "bundle",
+  "view",
 ] as const;
 
 export type Command = (typeof COMMANDS)[number];
@@ -138,6 +145,8 @@ export function helpText(): string {
     "  odw schedule add <name> <workflow> --cron EXPR     run a workflow on a timer via cron/launchd/systemd (below)",
     "  odw schedule list [--json] | remove|run <name>     list schedules; delete one; run one now",
     "  odw export <run_id> --otlp [--out FILE|--send]     the run as OpenTelemetry traces (OTLP/JSON; ODW extension)",
+    "  odw bundle <run_id> [--out FILE] [--no-transcripts] one redacted file to share: <run_id>.odwrun (ODW extension)",
+    "  odw view FILE.odwrun                               show a bundle read-only (odw serve --open FILE.odwrun)",
     "",
     "Options:",
     "  --args JSON|@file   workflow input (JSON, @file.json, or a raw string)",
@@ -158,6 +167,8 @@ export function helpText(): string {
     "  --port <n>          dashboard port (default 4317)",
     "  --host <addr>       dashboard bind address (default 127.0.0.1)",
     "  --open              open the dashboard in the default browser",
+    "  --token [VALUE]     reads need a token (remote read-only access); no VALUE: a random one, printed once",
+    "  FILE.odwrun         show that bundle alone, read-only (--max-bytes N raises the 32 MiB cap)",
     "",
     "Run modes (odw run / rerun / resume):",
     "  interactive terminal        attaches in the foreground (Ctrl-C detaches; the run keeps going)",
@@ -247,6 +258,10 @@ export async function main(argv: string[]): Promise<number> {
         return cmdCompare(rest);
       case "export":
         return await cmdExport(rest);
+      case "bundle":
+        return cmdBundle(rest);
+      case "view":
+        return await cmdServe(["--open", ...rest], "view");
       default:
         process.stderr.write(`odw: unknown command '${command}'\n\n${helpText()}\n`);
         return 2;
@@ -1322,9 +1337,17 @@ async function relaunch(
   });
 }
 
-async function cmdServe(rest: string[]): Promise<number> {
-  const { values } = parseArgs({
-    args: rest,
+/**
+ * `odw serve` — the live dashboard. ODW extensions:
+ *   FILE.odwrun     show that shared bundle alone, read-only (`odw view FILE` too):
+ *                   unpacked into a private temp dir, removed on exit
+ *   --token [VALUE] every API read needs the token (remote read-only access); with
+ *                   no VALUE a random one, printed once in the URL (`/#token=…`)
+ */
+async function cmdServe(rest: string[], as: "serve" | "view" = "serve"): Promise<number> {
+  const { args, token: tokenFlag } = takeTokenFlag(rest);
+  const { values, positionals } = parseArgs({
+    args,
     allowPositionals: true,
     options: {
       config: { type: "string" },
@@ -1332,44 +1355,206 @@ async function cmdServe(rest: string[]): Promise<number> {
       port: { type: "string" },
       host: { type: "string" },
       open: { type: "boolean" },
+      "max-bytes": { type: "string" },
     },
   });
+  if (positionals.length > 1) throw new UsageError("odw serve: at most one bundle file (FILE.odwrun)");
+  const file = positionals[0];
+  if (as === "view" && file === undefined) throw new UsageError("usage: odw view FILE.odwrun [--port N] [--host H] [--token [VALUE]]");
 
+  // --port 0: any free port (the URL printed says which).
   const port = values.port === undefined ? 4317 : Number(values.port);
-  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+  if (!Number.isInteger(port) || port < 0 || port > 65535) {
     process.stderr.write(`odw serve: invalid --port '${values.port}'\n`);
     return 2;
   }
+  let token: string | null = null;
+  const generated = tokenFlag === "";
+  if (tokenFlag !== undefined) {
+    token = generated ? generateToken() : tokenFlag;
+    if (!isValidToken(token)) throw new UsageError("odw serve: --token VALUE must be 16-256 characters of A-Z a-z 0-9 . _ ~ - (or omit VALUE for a random one)");
+  }
+  const maxBytes = maxBytesOption("serve", values["max-bytes"]);
+  if (values["max-bytes"] !== undefined && file === undefined) throw new UsageError("odw serve: --max-bytes goes with a bundle file");
   const host = values.host ?? "127.0.0.1";
-  const store = storeFrom(values);
   const config = loadConfig(values.config ?? null);
 
-  const handle = await startServer({
-    store,
-    port,
-    host,
-    cwd: process.cwd(),
-    config,
-    configPath: values.config ?? null,
-  });
-  process.stdout.write(`odw dashboard → ${handle.url}\n`);
-  process.stdout.write(`  watching ${store.root}\n`);
-  if (host !== "127.0.0.1" && host !== "localhost" && host !== "::1") {
+  let opened: OpenedBundle | null = null;
+  if (file !== undefined) {
+    try {
+      opened = openBundle(file, maxBytes);
+    } catch (err) {
+      if (!(err instanceof BundleError)) throw err;
+      process.stderr.write(`odw serve: ${err.message}\n`);
+      return 1;
+    }
+  }
+  const cleanup = () => opened?.cleanup();
+  process.once("exit", cleanup); // however serve ends, the unpacked bundle goes with it
+  const store = opened ? new RunStore(opened.root) : storeFrom(values);
+
+  let handle: Awaited<ReturnType<typeof startServer>>;
+  try {
+    handle = await startServer({
+      store,
+      port,
+      host,
+      cwd: process.cwd(),
+      config,
+      configPath: values.config ?? null,
+      token,
+      bundle: opened?.info ?? null,
+    });
+  } catch (err) {
+    cleanup();
+    throw err;
+  }
+  const loopback = host === "127.0.0.1" || host === "localhost" || host === "::1";
+  const base = loopback ? handle.url : `http://${reachableHost(host)}:${handle.port}`;
+  const page = opened ? `#/job/${encodeURIComponent(opened.info.runId)}` : "";
+  // The generated token is printed here, once, and nowhere else.
+  const url = generated ? `${base}/#token=${token}` : `${base}/${page}`;
+  process.stdout.write(`odw dashboard → ${url}\n`);
+  if (opened) {
+    process.stdout.write(`  shared bundle ${opened.info.file} (run ${opened.info.runId}), read-only\n`);
+    process.stdout.write(`  unpacked in ${opened.root} (removed on exit)\n`);
+  } else {
+    process.stdout.write(`  watching ${store.root}\n`);
+  }
+  if (token) {
+    process.stdout.write(
+      generated
+        ? "  reads need the token in that URL (or Authorization: Bearer <token>); writes stay loopback-only\n"
+        : "  reads need the token given with --token (?token=, a cookie, or Authorization: Bearer); writes stay loopback-only\n",
+    );
+  }
+  if (!loopback && !token) {
     process.stderr.write(
-      `  ⚠ bound to ${host}: every project's runs (prompts, results) are reachable off-localhost — use only on a trusted network\n`,
+      `\n  ⚠ WARNING: bound to ${host} with no --token — anyone who can reach this port reads every project's runs\n` +
+        `    (prompts, results). Writes are refused off-loopback, but reads are open. Require a token:\n` +
+        `      odw serve --host ${host} --token\n\n`,
     );
   }
   process.stdout.write("  press Ctrl-C to stop\n");
-  if (values.open) openBrowser(handle.url);
+  if (values.open) openBrowser(generated ? url : `${handle.url}/${page}`);
 
   await new Promise<void>((resolve) => {
     const shutdown = () => {
       process.stdout.write("\nshutting down…\n");
-      handle.close().then(resolve);
+      handle.close().then(() => {
+        cleanup();
+        resolve();
+      });
     };
     process.once("SIGINT", shutdown);
     process.once("SIGTERM", shutdown);
   });
+  return 0;
+}
+
+/**
+ * `--token [VALUE]` out of serve's arguments: parseArgs has no optional
+ * values. The token is the next argument unless that is a flag or a bundle
+ * file; `--token=VALUE` works too. Undefined without `--token`, "" for one
+ * with no VALUE (a random token).
+ */
+function takeTokenFlag(rest: string[]): { args: string[]; token: string | undefined } {
+  const args: string[] = [];
+  let token: string | undefined;
+  for (let i = 0; i < rest.length; i++) {
+    const arg = rest[i]!;
+    if (arg === "--") {
+      args.push(...rest.slice(i));
+      break;
+    }
+    if (arg.startsWith("--token=")) {
+      token = arg.slice("--token=".length);
+      if (token === "") throw new UsageError("odw serve: --token= needs a VALUE (or plain --token for a random one)");
+      continue;
+    }
+    if (arg !== "--token") {
+      args.push(arg);
+      continue;
+    }
+    const next = rest[i + 1];
+    if (next !== undefined && !next.startsWith("-") && !next.endsWith(BUNDLE_EXT)) {
+      token = next;
+      i++;
+    } else {
+      token = "";
+    }
+  }
+  return { args, token };
+}
+
+/** `--max-bytes N`: a positive integer, else the default cap. */
+function maxBytesOption(cmd: string, value: string | undefined): number {
+  if (value === undefined) return DEFAULT_BUNDLE_MAX_BYTES;
+  const n = Number(value);
+  if (!/^\d+$/.test(value.trim()) || !Number.isSafeInteger(n) || n < 1) throw new UsageError(`odw ${cmd}: --max-bytes must be a positive integer (bytes)`);
+  return n;
+}
+
+/** The host to print for a bind: a wildcard bind's first external IPv4 address (what a phone reaches), else the bind. */
+function reachableHost(host: string): string {
+  if (host !== "0.0.0.0" && host !== "::") return host.includes(":") ? `[${host}]` : host;
+  for (const addresses of Object.values(networkInterfaces())) {
+    for (const a of addresses ?? []) if (a.family === "IPv4" && !a.internal) return a.address;
+  }
+  return "localhost";
+}
+
+/**
+ * `odw bundle <run_id>` (ODW extension; see runtime/bundle.ts): the run as one
+ * redacted, self-contained file to share — `<run_id>.odwrun` here, or `--out
+ * FILE` (`-`: stdout). `--no-transcripts` leaves the agents' transcripts out;
+ * past 32 MiB it is refused unless `--max-bytes` raises the cap. Exit 0, 1 when
+ * the run is unknown or the bundle too big, 2 on a usage error.
+ */
+function cmdBundle(rest: string[]): number {
+  const { values, positionals } = parseArgs({
+    args: rest,
+    allowPositionals: true,
+    options: {
+      config: { type: "string" },
+      "runs-root": { type: "string" },
+      out: { type: "string" },
+      "no-transcripts": { type: "boolean" },
+      "max-bytes": { type: "string" },
+    },
+  });
+  const runId = positionals[0];
+  if (!runId || positionals.length > 1) throw new UsageError("usage: odw bundle <run_id> [--out FILE] [--no-transcripts] [--max-bytes N]");
+  if (runId.startsWith("cc-")) throw new UsageError(`odw bundle: ${runId} is a Claude Code run: odw bundles its own runs`);
+  if (!isBundleRunId(runId)) throw new UsageError(`odw bundle: not a run id: ${runId}`);
+  const maxBytes = maxBytesOption("bundle", values["max-bytes"]);
+  const config = loadConfig(values.config ?? null, { quiet: true });
+  const store = values["runs-root"] ? new RunStore(values["runs-root"]) : new RunStore(resolveRunsRoot(config.settings.runsRoot));
+  if (!store.exists(runId)) {
+    process.stderr.write(`no such run: ${runId}\n`);
+    return 1;
+  }
+  const state = String(store.readStatus(runId).state ?? "pending");
+  if (!TERMINAL_STATES.has(state)) process.stderr.write(`odw bundle: run ${runId} is ${state}: the bundle holds what happened so far\n`);
+  let made: ReturnType<typeof createBundle>;
+  try {
+    made = createBundle(store, runId, bundleRedactor(config), { transcripts: !values["no-transcripts"], maxBytes });
+  } catch (err) {
+    if (!(err instanceof BundleError)) throw err;
+    process.stderr.write(`odw bundle: ${err.message}\n`);
+    return 1;
+  }
+  const out = values.out ?? `${runId}${BUNDLE_EXT}`;
+  const bytes = Buffer.byteLength(made.json);
+  if (out === "-") process.stdout.write(made.json);
+  else writeFileSync(out, made.json, { mode: 0o600 });
+  const what = [
+    `${bytes} bytes`,
+    made.bundle.redacted ? "likely secrets redacted" : "nothing to redact found",
+    made.bundle.transcripts ? "with transcripts" : "without transcripts",
+  ].join(", ");
+  process.stderr.write(`${out === "-" ? "wrote" : `wrote ${out}:`} run ${runId} (${what})\n`);
+  if (out !== "-") process.stderr.write(`  look before you share: odw view ${out}${bytes > DEFAULT_BUNDLE_MAX_BYTES ? ` --max-bytes ${bytes}` : ""}\n`);
   return 0;
 }
 
@@ -1382,11 +1567,13 @@ function openBrowser(url: string): void {
         ? ["cmd", ["/c", "start", "", url]]
         : ["xdg-open", [url]];
   try {
-    spawn(cmd as string, args as string[], {
+    const opener = spawn(cmd as string, args as string[], {
       stdio: "ignore",
       detached: true,
       windowsHide: true,
-    }).unref();
+    });
+    opener.on("error", () => {}); // no opener installed (ENOENT arrives as an event, not a throw)
+    opener.unref();
   } catch {
     /* no browser opener available — the URL is already printed */
   }
