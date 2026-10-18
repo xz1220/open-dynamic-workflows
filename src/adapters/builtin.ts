@@ -690,6 +690,7 @@ export const DEFAULT_SETTINGS: Settings = {
   scopePolicy: "warn", // an agent that wrote outside its declared scope keeps its reply, recorded and logged ("fail": it fails)
   questions: "checkpoint", // an agent's question waits at a checkpoint for a person's answer ("fail": it fails; "deny": no question tool)
   destructiveGit: "warn", // an agent that ran git reset --hard, clean -f, push --force, … keeps its reply, recorded ("fail": it fails)
+  scriptContext: null, // strict for triggered, plugin and untrusted runs, host for the rest ("host" | "strict": every run)
   redact: { env: true, patterns: true, extra: [] }, // likely secrets out of what odw keeps and serves (false: none)
   quotaWait: false, // an agent whose chain is out of quota fails; { max: <s> } waits for the reset instead
   otel: false, // no trace is sent; { endpoint?, headers?, captureContent? } posts each run's at its end

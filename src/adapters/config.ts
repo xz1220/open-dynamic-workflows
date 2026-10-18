@@ -23,6 +23,7 @@ import { AdapterNotFound, ConfigError } from "../errors.js";
 import { readCostGate } from "../forecast.js";
 import { readLimits } from "../limits.js";
 import { isQuestionPolicy, QUESTION_POLICIES } from "../questions.js";
+import { SCRIPT_CONTEXTS } from "../script-context.js";
 import { extraProblem } from "../redact.js";
 import { TIER_NAME } from "../routing.js";
 import { parseCron } from "../schedule/cron.js";
@@ -165,6 +166,7 @@ const KNOWN_TOP_KEYS = [
   "scopePolicy",
   "questions",
   "destructiveGit",
+  "scriptContext",
   "otel",
   "sandbox",
   "agentLimits",
@@ -1329,6 +1331,8 @@ function buildSettings(raw: Record<string, unknown>): Settings {
       raw["destructiveGit"] == null
         ? DEFAULT_SETTINGS.destructiveGit
         : buildChoice("destructiveGit", raw["destructiveGit"], ["warn", "fail"] as const),
+    // Where a workflow body runs (ODW extension; see ../script-context); null: by the run.
+    scriptContext: raw["scriptContext"] == null ? DEFAULT_SETTINGS.scriptContext : buildChoice("scriptContext", raw["scriptContext"], SCRIPT_CONTEXTS),
     otel: raw["otel"] == null ? DEFAULT_SETTINGS.otel : buildOtel(raw["otel"]),
     sandbox: raw["sandbox"] == null ? DEFAULT_SETTINGS.sandbox : buildSandboxSetting(raw["sandbox"]),
     agentLimits: raw["agentLimits"] == null ? {} : readLimits(raw["agentLimits"], '"agentLimits"', (m) => new ConfigError(m)),

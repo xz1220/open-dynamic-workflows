@@ -12,6 +12,13 @@
  *
  *   { file, ok, meta?: { name, description, phases }, errors: [{ message,
  *     line?, column?, frame? }], warnings: [string] }
+ *
+ * `--capabilities` (an ODW extension; see ./script-context) adds what the
+ * script names outside Claude Code's dialect — `process`, `require`,
+ * `import(`, `globalThis`, `Function(`, `eval`, `fetch`, timers, … — and the
+ * ODW extension primitives it calls, read off the source, never run:
+ *
+ *   capabilities: { outOfDialect: [{ name, line, column, count, strict }], extensions: [string] }
  */
 
 import { readFileSync } from "node:fs";
@@ -21,6 +28,7 @@ import { parseArgs } from "node:util";
 import { loadConfig } from "./adapters/config.js";
 import { WorkflowScriptError } from "./errors.js";
 import { loadWorkflowScript, scanDualCompat } from "./loader.js";
+import { scanCapabilities, type CapabilityReport } from "./script-context.js";
 import { resolveWorkflow } from "./workflows/resolve.js";
 
 export interface CheckProblem {
@@ -39,6 +47,8 @@ export interface CheckReport {
   meta?: { name: string; description: string; phases: string[] };
   errors: CheckProblem[];
   warnings: string[];
+  /** With `--capabilities`: what it names outside the dialect, and the ODW extensions it calls. */
+  capabilities?: CapabilityReport;
 }
 
 /** Lines of context a code frame shows before and after the line at fault. */
@@ -113,7 +123,12 @@ function printable(text: string): string {
   return text.replace(/\t/g, " ").replace(/[\u0000-\u001f\u007f-\u009f]/g, "?");
 }
 
-/** `odw check`'s text: `file:line:column: error: message`, the code frame, then each warning. */
+/** {@link checkWorkflow}'s report with what the script names outside the dialect (`odw check --capabilities`). */
+export function checkCapabilities(source: string, file: string): CheckReport {
+  return { ...checkWorkflow(source, file), capabilities: scanCapabilities(source) };
+}
+
+/** `odw check`'s text: `file:line:column: error: message`, the code frame, then each warning (and its capabilities). */
 export function formatCheck(report: CheckReport): string[] {
   const out: string[] = [];
   for (const e of report.errors) {
@@ -127,6 +142,16 @@ export function formatCheck(report: CheckReport): string[] {
     if (e.frame) out.push(e.frame);
   }
   for (const w of report.warnings) out.push(`${report.file}: warning: ${w}`);
+  if (report.capabilities) {
+    const { outOfDialect, extensions } = report.capabilities;
+    for (const use of outOfDialect) {
+      const times = use.count > 1 ? `, ${use.count} times` : "";
+      const strict = use.strict ? "a strict context has its own, bare one" : "not in a strict context";
+      out.push(`${report.file}:${use.line}:${use.column}: capability: ${use.name} — outside the dialect${times}; ${strict}`);
+    }
+    if (outOfDialect.length === 0) out.push(`${report.file}: capabilities: nothing outside the dialect`);
+    out.push(`${report.file}: ODW extensions: ${extensions.length > 0 ? extensions.join(", ") : "none"}`);
+  }
   if (report.ok && report.meta) {
     const phases = report.meta.phases.length;
     out.push(`${report.file}: ok — workflow '${report.meta.name}'${phases > 0 ? `, ${phases} phase${phases === 1 ? "" : "s"}` : ""}`);
@@ -135,7 +160,7 @@ export function formatCheck(report: CheckReport): string[] {
 }
 
 /**
- * `odw check <script.js|name> [--json] [--config P]`: resolve the workflow as
+ * `odw check <script.js|name> [--json] [--capabilities] [--config P]`: resolve the workflow as
  * `odw run` would, check it, and print the report. Exit 0 when it would load
  * (warnings or not), 1 when it would not, 2 for a usage mistake.
  */
@@ -143,11 +168,11 @@ export function cmdCheck(rest: string[]): number {
   const { values, positionals } = parseArgs({
     args: rest,
     allowPositionals: true,
-    options: { json: { type: "boolean" }, config: { type: "string" } },
+    options: { json: { type: "boolean" }, capabilities: { type: "boolean" }, config: { type: "string" } },
   });
   const ref = positionals[0];
   if (!ref || positionals.length > 1) {
-    process.stderr.write("usage: odw check <script.js|name> [--json]\n");
+    process.stderr.write("usage: odw check <script.js|name> [--json] [--capabilities]\n");
     return 2;
   }
   let scriptPath: string;
@@ -165,7 +190,8 @@ export function cmdCheck(rest: string[]): number {
     return 1;
   }
   const shown = relative(process.cwd(), scriptPath);
-  const report = checkWorkflow(source, shown && !shown.startsWith("..") ? shown : scriptPath);
+  const file = shown && !shown.startsWith("..") ? shown : scriptPath;
+  const report = values.capabilities ? checkCapabilities(source, file) : checkWorkflow(source, file);
   if (values.json) process.stdout.write(JSON.stringify(report, null, 2) + "\n");
   else for (const line of formatCheck(report)) (report.ok ? process.stdout : process.stderr).write(line + "\n");
   return report.ok ? 0 : 1;

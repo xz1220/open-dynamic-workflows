@@ -75,6 +75,18 @@ test("every shipped case passes on this ODW (odw conformance --json, exit 0)", a
   assert.ok(report.cases.some((c) => c.claudeCode === "unspecified"));
 });
 
+test("every shipped case passes in a strict script context too (odw conformance --strict --json, exit 0)", async () => {
+  const { code, out, err } = await odw(["conformance", "--strict", "--json"]);
+  const report = JSON.parse(out) as ConformanceReport;
+  const failing = report.cases.filter((c) => !c.passed).map((c) => `${c.case}: ${c.failures.join("; ")}`);
+  assert.deepEqual(failing, [], err);
+  assert.equal(code, 0);
+  assert.equal(report.scriptContext, "strict");
+  assert.equal(report.passed, caseNames.length);
+  const text = await odw(["conformance", "--strict", "--case", "1"]);
+  assert.match(text.out, /1 case from .* in a strict script context/);
+});
+
 test("--case picks cases by number or by name; the text report has a line per case and a total", async () => {
   const { code, out } = await odw(["conformance", "--case", "3", "--case", "01-agent-text", "--case", "03"]);
   assert.equal(code, 0);

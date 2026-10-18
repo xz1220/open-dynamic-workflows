@@ -27,6 +27,7 @@ import { AGENT_FAILED, AGENT_FINISHED, AGENT_STARTED, LOG, PHASE_STARTED, type W
 import { RunStore } from "../runtime/run-store.js";
 import { executeRun } from "../runtime/worker.js";
 import { isSeaBinary } from "../sea.js";
+import type { ScriptContext } from "../script-context.js";
 
 /** Whether Claude Code's docs settle a case's behaviour. */
 export type ClaudeCodeStatus = "documented" | "unspecified";
@@ -280,8 +281,13 @@ export function mockCommand(suiteDir: string): string[] {
   return [isSeaBinary() ? "node" : execPath, resolve(suiteDir, "mock-agent.mjs")];
 }
 
+/** How a case runs: `scriptContext` is the config's (ODW extension; see ../script-context), default the run's own. */
+export interface RunCaseOptions {
+  scriptContext?: ScriptContext;
+}
+
 /** Run one case as a real odw run on the mock agent, in a scratch run store. */
-export async function runCase(c: ConformanceCase, suiteDir: string): Promise<CaseOutcome> {
+export async function runCase(c: ConformanceCase, suiteDir: string, options: RunCaseOptions = {}): Promise<CaseOutcome> {
   const scratch = mkdtempSync(join(tmpdir(), "odw-conformance-"));
   try {
     const table = join(scratch, "mock.json");
@@ -293,6 +299,7 @@ export async function runCase(c: ConformanceCase, suiteDir: string): Promise<Cas
         defaultAdapter: MOCK_ADAPTER,
         // The mock has no --version to record.
         recordVersions: false,
+        ...(options.scriptContext ? { scriptContext: options.scriptContext } : {}),
         adapters: { [MOCK_ADAPTER]: { command: [...mockCommand(suiteDir), table], stdin: "{prompt}" } },
       }),
     );
@@ -368,9 +375,9 @@ export function judgeCase(c: ConformanceCase, out: CaseOutcome): string[] {
 }
 
 /** Run and judge one case. */
-export async function checkCase(c: ConformanceCase, suiteDir: string): Promise<CaseReport> {
+export async function checkCase(c: ConformanceCase, suiteDir: string, options: RunCaseOptions = {}): Promise<CaseReport> {
   const started = Date.now();
-  const out = await runCase(c, suiteDir);
+  const out = await runCase(c, suiteDir, options);
   const failures = judgeCase(c, out);
   return {
     case: c.name,

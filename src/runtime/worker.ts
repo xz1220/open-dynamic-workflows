@@ -34,6 +34,7 @@ import { Breaks, breakSpecOf, runSoFar } from "../breaks.js";
 import { DriftWatch, driftEvalArgs, driftEvalOf, previousRun } from "../drift.js";
 import { ReplayJournal } from "../journal.js";
 import { loadWorkflowScript, scanDualCompat } from "../loader.js";
+import { resolveScriptContext, scanCapabilities } from "../script-context.js";
 import { RunMemory } from "../memory.js";
 import { NotesBoard } from "../notes.js";
 import { createPrimitives } from "../primitives.js";
@@ -236,7 +237,17 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
     // No model is called (ODW extension; see ../wftest/mock): `odw test`'s
     // scripted replies, or a dry run's stubs, answer every agent in-process.
     const mock: MockResponder | undefined = options.mock ?? (meta.dry === true ? dryResponder : undefined);
-    const config = mock ? mockConfig(trusted.config) : trusted.config;
+    const chosen = mock ? mockConfig(trusted.config) : trusted.config;
+    // Where the workflow body runs (ODW extension; see ../script-context): the
+    // config's choice, else strict for a triggered, plugin or untrusted run.
+    // Kept in the run's settings, so a nested workflow() runs the same way.
+    const scriptContext = resolveScriptContext(chosen.settings.scriptContext, {
+      origin: meta.origin,
+      plugin: meta.plugin != null,
+      untrustedInput: input !== null,
+      untrustedRepo: runTrust.trust === "untrusted",
+    });
+    const config = { ...chosen, settings: { ...chosen.settings, scriptContext: scriptContext.context } };
     const runRedactor = redactorFor(config);
     redactor = runRedactor;
     sink.redactor = runRedactor;
@@ -483,7 +494,22 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
         sink.emit(event(LOG, { message: `workflow ${plugin.name}: ${warning}`, plugin: plugin.id }));
       }
     }
-    const loaded = loadWorkflowScript(source, script);
+    // A strict script context (ODW extension; see ../script-context) is said
+    // before the body runs, with the names outside the dialect it uses.
+    if (scriptContext.context === "strict") {
+      const outside = scanCapabilities(source).outOfDialect.filter((use) => !use.strict);
+      const names = outside.map((use) => `${use.name} (line ${use.line})`).join(", ");
+      sink.emit(
+        event(LOG, {
+          message:
+            `the workflow runs in a strict script context — ${scriptContext.why}: only the primitives and standard JavaScript built-ins ` +
+            `(not a security boundary)${outside.length > 0 ? `; it names ${names}, which it does not have there` : ""}`,
+          scriptContext: "strict",
+        }),
+      );
+      store.updateStatus(runId, { scriptContext: "strict" });
+    }
+    const loaded = loadWorkflowScript(source, script, { context: scriptContext.context });
     // The run-by-name lookup keys on the filename stem, not meta.name. Flag a
     // divergence (through the event stream, so it shows in `odw logs` and the
     // dashboard) so the author knows which token actually invokes this file.
@@ -538,7 +564,9 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
     });
     // Its meta.phases may give their agents an adapter and a model (ODW extension).
     const primitives = createPrimitives(ctx, { phases: loaded.meta.phases });
-    const result = await crashes.race(loaded.run(primitives, args));
+    // The args the script holds — in a strict context its own copy — are the ones a break's edit changes.
+    const runCtx = ctx;
+    const result = await crashes.race(loaded.run(primitives, args, (inScript) => (runCtx.args = inScript)));
     // Agents the script started but never awaited are still this run's work:
     // let them finish (and clean up their worktrees) before recording it.
     await crashes.race(ctx.scheduler.drain());

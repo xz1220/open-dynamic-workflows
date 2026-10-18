@@ -1593,7 +1593,8 @@ export function createPrimitives(
         `workflow(): cannot read ${scriptPath}: ${(err as Error).message}`,
       );
     }
-    const loaded = loadWorkflowScript(text, scriptPath); // throws on a syntax error
+    // In the run's script context (ODW extension; see ./script-context): a strict run's child is strict too.
+    const loaded = loadWorkflowScript(text, scriptPath, { context: ctx.config.settings.scriptContext ?? "host" }); // throws on a syntax error
     const name = loaded.meta.name;
     const entryLane = `▸ ${name}`;
     // The child gets its own phase cursor (so a concurrent parent agent keeps
