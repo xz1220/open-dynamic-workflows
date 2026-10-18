@@ -135,6 +135,22 @@
 | S8 | 具名令牌与操作人归属 | M | ✅ `odw serve --tokens FILE`（ODW 扩展）：文件为 `[{ name, scope: "read" \| "approve", hash }]`，`hash` 是令牌的 sha256（十六进制），文件从不保存令牌；可与不具名的 `--token` 并用；收到的令牌先哈希再按摘要查找（`TokenGate` 的 `holders` 映射），每个令牌各有权限，approve 权限的具名令牌在非 loopback 上可回答检查点。`odw token add <name> [--scope approve] --file F`（随机令牌只打印一次，追加哈希，0600 原子写入）、`odw token list [--json]`、`odw token remove <name>`。归属（`src/identity.ts`）：`meta.json` 的 `launchedBy`（本地为 git `user.email`，否则 `$USER`；看板 Chat 启动为具名令牌名；触发器为 `trigger:<name>`）；检查点决定在 `by`（渠道不变）旁加 `who`（CLI 为 `cli:<$USER> <email>`，看板为令牌名，批准链接为请求同时携带的具名令牌名），写入 `decisions.jsonl`、`checkpoint_resolved` 事件和 `checkpoint()` 结果；`control.json` 记 `who`，worker 记 "paused by …"/"resumed by …" 日志，`run_stopped` 带 `who`、`status.json` 带 `stoppedBy`。`odw list --by <name\|me>`（不区分大小写）。看板：`/api/capabilities` 返回 `you`（具名令牌名；无令牌时为本地用户；不具名令牌为 null），运行标题显示 "launched by"，检查点答复显示 who，Jobs 页 Mine/Team 筛选。名字是标签而非访问控制；不做更细的 RBAC。测试：`tests/who.test.ts`（令牌文件与命令、哈希查找、各路径归属、`--by`、`you`），以及 trigger-route、web-ui 中的断言 |
 | S9 | `odw new` 模板与零成本首跑 | S | ✅ `odw new [<模板>] [--name N] [--force] [--yes]`（ODW 扩展）：模板在构建时嵌入二进制（`templates/index.json` 列出名字、描述与文件，`scripts/embed-templates.mjs` 生成 `src/templates.generated.ts`，CI 与 `tests/embed.test.ts` 检查漂移）——`hello`（新写的最小工作流：两个只读 agent 并行、纯 JS 挑选）与 `review-swarm`、`fix-until-green`、`plan-approve-execute`、`pr-shepherd`、`fan-out-reduce`（即同名示例）；写入 `.odw/workflows/<名字>.js`、`odw test <名字>` 立即通过的起步测试 `.odw/tests/<名字>.json`，review-swarm 与 pr-shepherd 另有 eval 骨架 `.odw/evals/<名字>.json`；`--name` 在三个文件里替换模板名；内容不同的已有文件不加 `--force` 不覆盖（一个都不写，退出 1），内容相同视为已写入；无参数时列出模板。git 仓库根目录没有 `.worktreeinclude` 时，按 lockfile（`node_modules`、`.venv`、`vendor` 的 `symlink:` 行）与 `.env*` 文件打印建议，`--yes` 或终端里回答 yes 才写入。`odw init`（非 `--check`）最后在终端里询问后写入 `hello` 并运行 `odw run hello --dry`（实时视图，全部桩回复），再打印 `odw serve --open` 与真实的 `odw run hello`；不在终端时只打印命令，从不发起付费调用。README 快速开始改为先 `odw new` + `odw test` + `odw run --dry`，再真实运行。测试：每个模板写入、加载并通过其起步测试，`--name`，拒绝覆盖，临时仓库中的 `.worktreeinclude` 建议（含终端询问），嵌入与漂移，伪终端下 init 的 dry run |
 
+### 0.8「不再静默损失」（2026-10-18 第四轮调研）
+
+依据：[`docs/research/user-needs-2026-10-round4.md`](research/user-needs-2026-10-round4.md)。
+
+| # | 方向 | 规模 | 状态 |
+| --- | --- | --- | --- |
+| T1 | **agent 的提问接入检查点**：识别无头模式下的澄清类工具调用，失败原因 `needs_input`；`questions: checkpoint\|deny\|fail`，回答后附加问答重新派发（含 T10 的「待你处理」与 notify 区分） | S–M | ⏳ |
+| T2 | **`odw gc` 与 `odw pin`**：孤儿 worktree、keep 分支、超期运行目录，默认只报告，`--yes` 才删 | S–M | ⏳ |
+| T3 | **原地运行前的保险快照 + 破坏性 git 命令检测**：`refs/odw/safety/<run>`、`odw restore`、`destructiveGit: warn\|fail` | S | ⏳ |
+| T4 | **不可信输入档案**：触发的运行默认只读、最小环境、无沙箱时警告、写入前检查点 | S–M | ⏳ |
+| T5 | 跨运行的审阅队列：确定性风险分诊 + 已审阅状态（`odw review`、看板 Review 页） | M | ⏳ |
+| T6 | `worktreeTeardown` 与稳定槽位名 `ODW_SLOT` | S | ⏳ |
+| T7 | 跨运行晨报 `odw digest` | S | ⏳ |
+| T8 | 严格脚本上下文 `scriptContext: strict` + `odw check --capabilities` | M | ⏳ |
+| T9 | `odw doctor --local`：本地模型上下文截断探测 | S | ⏳ |
+
 ### Later — 0.8+「规模与生态」
 
 - ✅ **可选的容器运行器**（ODW 扩展；#6）：`sandbox: { kind: "container", image, engine?, network?, mounts?, cliConfig?, memory?, cpus?, pids? }`（配置、`odw run|rerun|resume --sandbox container [--sandbox-image <镜像>]`、按适配器、`agent(…, { sandbox })`——只能收紧），每次 CLI 运行与每个 `exec()` 步骤变成 `<engine> run --rm -i --init --pull never --name odw-<run>-<agent>-<随机>` 的全新 Docker/Podman 容器：只以相同路径读写挂载工作区、私有临时 home（按各 CLI 文档复制登录与配置文件：claude 的 `.credentials.json`/`settings.json`/`~/.claude.json` 去掉 `projects` 等，codex 的 `auth.json`/`config.toml`，gemini 的 `oauth_creds.json` 等；`mount-ro` 只读绑定，`none` 为空，运行后删除）、`--user` 宿主 uid:gid（Podman 加 `--userns keep-id`）、`--cap-drop ALL`、`no-new-privileges`、`--pids-limit 512`、只读根文件系统与 tmpfs `/tmp`；环境只含 `agentEnv` 放行的变量且按名字传递（argv 里没有值）。argv 由纯函数构造并单测。超时、停顿、停止或非干净退出时按名字 `kill` + `rm --force` 容器，worker 退出时的兜底清理同样覆盖。镜像由用户构建（`examples/sandbox/Dockerfile`），从不拉取；缺引擎或镜像在 `odw doctor`（含 `run --rm --pull never --network none <镜像> true` 冒烟）与运行开始前报 `ConfigError`。网络默认 `"default"`——agent CLI 必须连到模型 API，所以**并非默认断网**；`exec()` 步骤默认 `network: "none"`。启动横幅、运行 setup（`BEHAVIOUR_SETTINGS`）、`agent_started` 与看板类型 `AgentView.sandbox` 显示沙箱（看板绘制待接入）。
