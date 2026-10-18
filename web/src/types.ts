@@ -185,6 +185,8 @@ export interface AgentView {
   scope?: string[];
   /** The files it changed outside its scope, finished or failed (ODW extension). */
   outOfScope?: string[];
+  /** The agent definition its agentType named — file, where it was found, sha256 (ODW extension; src/agent-types.ts). */
+  agentType?: { name: string; source: string; path: string; sha256: string };
   /** The destructive git commands its CLI ran — git reset --hard, git clean -f, … (ODW extension; src/destructive-git.ts). */
   destructiveGit?: Array<{ command: string; what: string }>;
   /** What the adapter reported spending on this agent. */

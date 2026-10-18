@@ -80,6 +80,8 @@ function fieldLabel(field: string): string {
       return rest;
     case "adapterDefinition":
       return t("{adapter} adapter config", { adapter: rest });
+    case "agentDefinition":
+      return t("{agent} agent definition", { agent: rest });
     case "adaptersUsed":
       return t("adapters used");
     case "modelsUsed":

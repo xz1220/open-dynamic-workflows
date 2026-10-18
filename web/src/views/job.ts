@@ -517,6 +517,10 @@ function drawer(run: RunDetail, ai: number, nowSec: number): string {
     (a.permissions
       ? `<span class="k">${t("permissions")}</span><span class="v"><span class="tag perm-${esc(a.permissions)}" title="${esc(t(PERM_HINT[a.permissions] ?? ""))}">${esc(t(a.permissions))}</span></span>`
       : "") +
+    (a.agentType
+      ? `<span class="k">${t("agent type")}</span><span class="v"><span class="tag" title="${esc(t("the agent definition its agentType named: its body is the persona, its tools cap the permissions"))}">${esc(a.agentType.name)}</span>` +
+        ` <span class="mono dim agent-type-path" title="${esc(`${a.agentType.path} · sha256 ${a.agentType.sha256}`)}">${esc(a.agentType.path.split("/").slice(-3).join("/"))}</span></span>`
+      : "") +
     (a.trust === "untrusted"
       ? `<span class="k">${t("trust")}</span><span class="v"><span class="tag trust-untrusted" title="${esc(t("its CLI ignored the repository's instructions, settings and hooks where it could"))}">${esc(t("untrusted"))}</span></span>`
       : "") +

@@ -590,6 +590,30 @@ test("the drawer names an agent's permission tier", () => {
   store.focusRun(null);
 });
 
+test("the drawer names the agent definition an agent ran as (ODW extension: agentType)", () => {
+  const view: JobViewState = {
+    cpNote: "",
+    tab: "graph",
+    selectedAi: 0,
+    reviewAi: null,
+    zoom: 1,
+    logQuery: "",
+    logTypes: new Set(["agent"]),
+    logLimit: 600,
+    follow: true,
+    motion: false,
+  };
+  store.focusRun("20260101-000000-aaaaaa");
+  store.run = detail([agent("review:1", "Review", "done", { agentId: 1 })], { state: "done" });
+  assert.doesNotMatch(renderJob(view, NOW), /agent-type-path/, "no definition, no row");
+  const agentType = { name: "reviewer", source: "project", path: "/repo/.claude/agents/reviewer.md", sha256: "ab".repeat(32) };
+  store.run = detail([agent("review:1", "Review", "done", { agentId: 1, agentType })], { state: "done" });
+  const html = renderJob(view, NOW);
+  assert.match(html, /<span class="k">agent type<\/span><span class="v"><span class="tag" title="[^"]+">reviewer<\/span>/);
+  assert.match(html, /<span class="mono dim agent-type-path" title="\/repo\/\.claude\/agents\/reviewer\.md · sha256 (ab)+">\.claude\/agents\/reviewer\.md<\/span>/);
+  store.focusRun(null);
+});
+
 test("an agent that fell back shows its chain in the graph, the drawer and the transcript", () => {
   const view: JobViewState = {
     cpNote: "",

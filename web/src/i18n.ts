@@ -512,6 +512,9 @@ const ZH: Record<string, string> = {
   untrusted: "不受信任",
   "its CLI ignored the repository's instructions, settings and hooks where it could":
     "它的 CLI 在能做到的地方忽略了仓库自带的指令、设置和钩子",
+  "agent type": "agent 类型",
+  "the agent definition its agentType named: its body is the persona, its tools cap the permissions":
+    "agentType 指向的 agent 定义:正文作为人设,tools 限定权限档",
   // Transcript sheet.
   Transcript: "执行记录",
   "Loading transcript…": "正在载入执行记录…",
@@ -674,6 +677,7 @@ const ZH: Record<string, string> = {
   "odw version": "odw 版本",
   "{cli} version": "{cli} 版本",
   "{adapter} adapter config": "{adapter} 适配器配置",
+  "{agent} agent definition": "agent 定义 {agent}",
   "adapters used": "用到的适配器",
   "models used": "用到的模型",
   "models served": "实际服务的模型",
