@@ -153,6 +153,18 @@ independent security reviews whose findings are all fixed.
   `.odw/workflows`, name — on that adapter alone, no retry, no fallback — each reported
   `ok`, `model_unavailable` (a failed check) or `other`; `--json` carries `model: {
   adapter, model, result, from }` per check.
+- `odw doctor --local [--endpoint URL] [--model M] [--smoke]` (**ODW extension**): checks
+  a local Ollama (`/api/version`, `/api/ps`, `/api/tags`, `/api/show`) or OpenAI-compatible
+  server (`/v1/models`, LM Studio's `/api/v0/models`), read-only — default ports 11434
+  and 1234, or each `--endpoint` (which implies `--local`). Per loaded model: the context
+  it is loaded with (a warning under 32K, with how to set `OLLAMA_CONTEXT_LENGTH`; the
+  `/v1` endpoint ignores `num_ctx`), whether it declares tool calling, and an Ollama
+  below 0.13.4 (what `codex --oss` guides ask for). `--smoke` sends one ~10K-token
+  prompt with a passphrase on its first line and the instruction to repeat it on its
+  last; no passphrase is a failed check — the silent front truncation. The probe goes
+  only to this machine or the local network, never to an Ollama cloud model, with no
+  credentials. README recipe: scout phases on a local model through a `models` tier,
+  planning and review in the cloud.
 - Drift watch (**ODW extension**): every run compares its CLI versions and requested
   models with the workflow's previous finished run and logs each change once (`drift:
   claude CLI 2.1.302 → 2.1.330 since the last run of review-swarm`); the run summary has

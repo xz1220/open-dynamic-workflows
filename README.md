@@ -174,6 +174,9 @@ and `odw doctor --smoke` sends your default adapter one real prompt, catching a
 CLI that installs fine but blocks on a login or approval prompt when headless.
 `odw doctor --models` (ODW extension) sends one tiny prompt to every adapter/model
 pair your config and `.odw/workflows` name, and says which models are gone.
+`odw doctor --local` (ODW extension) checks a local Ollama or LM Studio server: the
+context each model is loaded with, tool calling, and with `--smoke` whether a long
+prompt's front is silently cut (see [Local models](#local-models-check-the-server-route-the-cheap-phases-odw-extension)).
 
 **Your first run costs nothing.** Start from a template, test it, watch it run with
 every agent stubbed — then run it for real:
@@ -3087,6 +3090,73 @@ entry becomes an adapter of its own, `<adapter>@<name>`:
 Whether you may pool several accounts is up to each provider's terms of service: check
 them before you configure more than one. ODW only switches between logins you give it.
 
+### Local models: check the server, route the cheap phases (ODW extension)
+
+**ODW extension.** Local models (Ollama, LM Studio) run through an agent CLI that
+talks to them — `opencode` with a provider in its `opencode.json`, `codex --oss`, or
+your own adapter; there is no built-in `ollama` adapter. Their failure is silent:
+Ollama loads a model with a small context window and, when a prompt does not fit,
+cuts its front — the CLI's instructions and tool definitions — and still answers HTTP
+200. Its OpenAI-compatible `/v1` endpoint, the one agent CLIs use, ignores a request's
+`num_ctx`; only the server's `OLLAMA_CONTEXT_LENGTH` raises it. `odw doctor --local`
+checks for that before a run does:
+
+```bash
+odw doctor --local                                   # Ollama on :11434, LM Studio on :1234
+odw doctor --endpoint http://gpu-box:11434           # a server you name (implies --local)
+odw doctor --local --model qwen3-coder:30b --smoke   # and a ~10K-token truncation probe
+```
+
+- **Read-only.** Ollama's `/api/version`, `/api/ps`, `/api/tags` and `/api/show`, or an
+  OpenAI-compatible server's `/v1/models` (and LM Studio's `/api/v0/models`). Nothing is
+  pulled, loaded or changed. A server you named that does not answer is a failed check;
+  nothing on the default ports, one warning.
+- **Per loaded model** (or the one `--model` names): the context it is loaded with — a
+  **warning under 32K**, with how to raise it (`OLLAMA_CONTEXT_LENGTH=32768 ollama
+  serve`; the macOS app: `launchctl setenv`; systemd: `systemctl edit ollama`; then the
+  CONTEXT column of `ollama ps`) — and whether it declares tool calling. The Ollama
+  version gets a warning below 0.13.4, the version `codex --oss` guides ask for. A plain
+  OpenAI-compatible server reports neither context nor tools, and the check says so.
+- **`--smoke`** (with `--local`) sends one request to `/v1/chat/completions`: a
+  ~10K-token prompt with a random passphrase on its first line and, on its last, the
+  instruction to reply with it. A reply without it — the front was cut, or the end
+  ignored — is a failed doctor check (not a run failure reason), with the prompt tokens
+  the server counted. The probe goes only to a server on this machine or the local
+  network (loopback, private and link-local addresses, a bare host name, `.local`,
+  `.lan`, `.internal`, `.home.arpa`), never to an Ollama cloud model, and carries no
+  credentials. `--timeout <seconds>` bounds it (default 180). With `--local`, adapters
+  are smoke-tested too only when `--adapter` names them.
+- These probes are the doctor's own; runs still reach models only through the CLIs.
+
+**Recipe: scout locally, plan and review in the cloud.** With a [model
+tier](#per-phase-adapters-model-tiers-and-fallback-chains-odw-extension), the cheap
+phases of `meta.phases` run on the local model and the rest stay on a cloud one:
+
+```jsonc
+// odw.config.json — "ollama/…" is opencode's provider/model id for the provider its opencode.json declares
+{
+  "models": {
+    "local": { "opencode": "ollama/qwen3-coder:30b" },
+    "strong": { "claude": "opus", "codex": "gpt-5" }
+  }
+}
+```
+
+```js
+export const meta = {
+  name: 'triage',
+  description: 'Sort the issues locally; plan and review the fixes in the cloud.',
+  phases: [
+    { title: 'Scout', adapter: 'opencode', model: '@local' },
+    { title: 'Plan', adapter: 'claude', model: '@strong' },
+    { title: 'Review', adapter: 'claude', model: '@strong' },
+  ],
+}
+```
+
+Run `odw doctor --local --model qwen3-coder:30b --smoke` once the model is loaded, and
+again whenever the server's settings change.
+
 ### Concurrency per adapter and staggered fan-outs
 
 **ODW extension.** `concurrency` caps how many agents a run has going at once; an
@@ -3685,7 +3755,9 @@ Node CLI.
 <summary><b>Does ODW call model APIs directly?</b></summary>
 
 No. ODW only shells out to local CLIs you already authenticated. No API keys,
-no token billing of its own, no network calls from the engine.
+no token billing of its own, no network calls from the engine. The one exception is
+a diagnostic you ask for: `odw doctor --local` reads a local model server's status,
+and with `--smoke` sends it one probe — on this machine or the local network only.
 </details>
 
 <details>

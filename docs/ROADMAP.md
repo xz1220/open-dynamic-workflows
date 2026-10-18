@@ -149,7 +149,7 @@
 | T6 | `worktreeTeardown` 与稳定槽位名 `ODW_SLOT` | S | ⏳ |
 | T7 | 跨运行晨报 `odw digest` | S | ⏳ |
 | T8 | 严格脚本上下文 `scriptContext: strict` + `odw check --capabilities` | M | ⏳ |
-| T9 | `odw doctor --local`：本地模型上下文截断探测 | S | ⏳ |
+| T9 | `odw doctor --local`：本地模型上下文截断探测 | S | ✅ `odw doctor --local [--endpoint URL] [--model M] [--smoke]`（ODW 扩展，`src/local-models.ts`）：只读探测 Ollama（`/api/version`、`/api/ps`、`/api/tags`、`/api/show`）或 OpenAI 兼容服务（`/v1/models`，LM Studio 另读 `/api/v0/models`），默认 127.0.0.1 的 11434 与 1234 端口（都没有只给一条警告），`--endpoint`（可多次，隐含 `--local`，可带 `/v1`）没有应答算失败；逐个已加载模型（或 `--model` 指定的）报告实际加载的上下文（低于 32K 警告，给出 `OLLAMA_CONTEXT_LENGTH` 的设置方法与 `ollama ps` 核对）、模型上限、Modelfile 的 `num_ctx`、是否声明工具调用（Ollama `capabilities` 的 `tools`、LM Studio 的 `tool_use`），Ollama 低于 0.13.4（`codex --oss` 指南要求）警告；普通 OpenAI 兼容服务如实说明不报告上下文与工具能力。`--smoke` 向 `/v1/chat/completions` 发一个约 10K token 的提示（首行随机口令、末行要求复述，不设 `num_ctx`，与 agent 所见一致），回复没有口令即一项失败的 doctor 检查（附服务端统计的提示 token 数），不是运行失败原因；只发往本机或局域网地址、从不发往 Ollama 云端模型（`remote_host`/`-cloud`）、不带凭据、不跟随重定向；与 `--local` 同用时适配器冒烟只在 `--adapter` 指名时进行。README 配方：`models` 档位把 `meta.phases` 的侦察阶段经 `opencode` 路由到本地模型、规划与审阅留在云端。不新增内置 `ollama` 适配器、不拉取模型。测试：本地假 HTTP 服务模拟 Ollama、LM Studio、普通 OpenAI 兼容服务与截断（只保留提示末尾）、云端模型、无应答端点，以及 CLI `--json` |
 
 ### Later — 0.8+「规模与生态」
 

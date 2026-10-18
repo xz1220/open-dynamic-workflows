@@ -726,6 +726,14 @@ offer it to the account) or `other` for each — run it when agents fail with
 workflow's last run logs `drift: …` lines and carries a `drift` field in its summary
 (ODW extension); if the workflow has an eval, suggest `odw eval <name> --baseline
 <last report>` (the line names it), or `"driftEval": true` to have it start by itself.
+When phases route to a local model (Ollama, LM Studio — through `opencode`, `codex
+--oss` or a custom adapter; there is no built-in `ollama` adapter), run `odw doctor
+--local [--endpoint URL] [--model M]` (ODW extension, read-only): it reports each
+loaded model's context — a warning under 32K, with how to set `OLLAMA_CONTEXT_LENGTH`
+— and tool calling. Its `--smoke` sends a ~10K-token prompt to that local server
+only (never a cloud model) and fails when the instruction at its end is not followed,
+the silent front-truncation that otherwise passes as an agent "working"; ask first,
+it runs the model.
 
 ## Behavior you must know
 

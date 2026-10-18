@@ -156,7 +156,9 @@ cp -r "$skill_source" ~/.claude/skills/open-dynamic-workflows
 `odw init --adapter <名字>` 写入)。`odw doctor` 会检查运行环境、配置、运行目录和每个适配器;
 `odw doctor --smoke` 还会给默认适配器发一条真实提示——能发现那些装得上、但在无头模式下卡在
 登录或审批提示上的 CLI。`odw doctor --models`(ODW 扩展)给配置和 `.odw/workflows` 中提到的
-每个「适配器/模型」组合各发一条极短的提示,告诉你哪些模型已经不在了。
+每个「适配器/模型」组合各发一条极短的提示,告诉你哪些模型已经不在了。`odw doctor --local`
+(ODW 扩展)检查本地的 Ollama 或 LM Studio:每个模型实际加载的上下文、工具调用能力,加
+`--smoke` 还会查长提示的前部是否被静默截断(见[本地模型](#本地模型检查推理服务把廉价阶段交给它odw-扩展))。
 
 **第一次运行不花钱。** 从模板开始,先测试,再看它在所有 agent 都用桩回复的情况下跑一遍——然后
 再真跑:
@@ -2646,6 +2648,65 @@ key 是它写下的提示词和选项:阶段默认值和运行的默认适配器
 能否把多个账号合在一起使用,取决于各服务商的服务条款:配置多个账号之前请先确认。ODW
 只是在你提供的登录之间切换。
 
+### 本地模型:检查推理服务,把廉价阶段交给它(ODW 扩展)
+
+**ODW 扩展。** 本地模型(Ollama、LM Studio)通过能连接它们的 agent CLI 运行——在
+`opencode.json` 里配置了提供方的 `opencode`、`codex --oss`,或你自己的适配器;没有内置的
+`ollama` 适配器。它们的失败是静默的:Ollama 以较小的上下文窗口加载模型,提示放不下时就
+截掉前面的部分——也就是 CLI 的说明和工具定义——照样返回 HTTP 200。agent CLI 使用的
+OpenAI 兼容 `/v1` 端点会忽略请求里的 `num_ctx`,只有服务端的 `OLLAMA_CONTEXT_LENGTH`
+能调大它。`odw doctor --local` 在运行之前把这件事查出来:
+
+```bash
+odw doctor --local                                   # :11434 上的 Ollama、:1234 上的 LM Studio
+odw doctor --endpoint http://gpu-box:11434           # 你指定的服务(隐含 --local)
+odw doctor --local --model qwen3-coder:30b --smoke   # 再加一个约 10K token 的截断探针
+```
+
+- **只读。** Ollama 的 `/api/version`、`/api/ps`、`/api/tags` 和 `/api/show`,或 OpenAI 兼容
+  服务的 `/v1/models`(以及 LM Studio 的 `/api/v0/models`)。不拉取、不加载、不修改任何东西。
+  你指定的服务没有应答算检查失败;默认端口上什么都没有,只给一条警告。
+- **每个已加载的模型**(或 `--model` 指定的那个):它实际加载的上下文长度——**低于 32K 时
+  警告**,并给出调大的方法(`OLLAMA_CONTEXT_LENGTH=32768 ollama serve`;macOS 应用用
+  `launchctl setenv`;systemd 用 `systemctl edit ollama`;然后看 `ollama ps` 的 CONTEXT
+  列)——以及它是否声明了工具调用能力。Ollama 版本低于 0.13.4(`codex --oss` 指南要求的版本)
+  时警告。普通的 OpenAI 兼容服务既不报告上下文也不报告工具能力,检查会如实说明。
+- **`--smoke`**(与 `--local` 同用)向 `/v1/chat/completions` 发一次请求:一个约 10K token
+  的提示,第一行是随机口令,最后一行要求回复这个口令。回复里没有口令——前面被截掉了,或者
+  末尾的指令被忽略——就是一项失败的 doctor 检查(不是运行的失败原因),并附上服务端统计的
+  提示 token 数。探针只发往本机或局域网上的服务(回环、私有和链路本地地址、不带点的主机名、
+  `.local`、`.lan`、`.internal`、`.home.arpa`),从不发往 Ollama 的云端模型,也不带任何凭据。
+  `--timeout <秒>` 限定时长(默认 180)。与 `--local` 同用时,只有 `--adapter` 指名的适配器
+  才会一并做冒烟测试。
+- 这些探测只属于 doctor;运行仍然只通过 CLI 访问模型。
+
+**配方:侦察在本地,规划和审阅在云端。** 借助[模型档位](#按阶段路由与回退链odw-扩展),
+`meta.phases` 里廉价的阶段跑在本地模型上,其余留在云端模型:
+
+```jsonc
+// odw.config.json —— "ollama/…" 是 opencode 的 提供方/模型 id,提供方即其 opencode.json 中声明的那个
+{
+  "models": {
+    "local": { "opencode": "ollama/qwen3-coder:30b" },
+    "strong": { "claude": "opus", "codex": "gpt-5" }
+  }
+}
+```
+
+```js
+export const meta = {
+  name: 'triage',
+  description: 'Sort the issues locally; plan and review the fixes in the cloud.',
+  phases: [
+    { title: 'Scout', adapter: 'opencode', model: '@local' },
+    { title: 'Plan', adapter: 'claude', model: '@strong' },
+    { title: 'Review', adapter: 'claude', model: '@strong' },
+  ],
+}
+```
+
+模型加载后跑一次 `odw doctor --local --model qwen3-coder:30b --smoke`,服务端设置变化后再跑一次。
+
 ### 按适配器限制并发与错开扇出
 
 **ODW 扩展。** `concurrency` 限制一次运行同时有多少个 agent;适配器自己的 `concurrency`
@@ -3149,7 +3210,8 @@ ODW 也带一个 skill——但 skill 的职责是教你的 agent 写和跑 work
 <summary><b>ODW 会直接调用模型 API 吗?</b></summary>
 
 不会。ODW 只 shell 出到你已经登录过的本地 CLI。没有 API key、没有自己的 token 计费、
-引擎不发任何网络请求。
+引擎不发任何网络请求。唯一的例外是你主动要求的诊断:`odw doctor --local` 读取本地推理服务的
+状态,加 `--smoke` 时向它发一次探针——只限本机或局域网。
 </details>
 
 <details>

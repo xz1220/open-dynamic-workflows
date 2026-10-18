@@ -598,6 +598,12 @@ Codex、Claude Code、Gemini、Qwen、Kimi 开箱即用，无需配置。要换�
 工作流上一次运行不同时,运行会记 `drift: …` 日志,摘要带 `drift` 字段(ODW 扩展);工作流有
 eval 时,建议用户运行日志里给出的 `odw eval <name> --baseline <上次报告>`,或配置
 `"driftEval": true` 让它自动启动。
+阶段路由到本地模型(Ollama、LM Studio——经由 `opencode`、`codex --oss` 或自定义适配器;
+没有内置的 `ollama` 适配器)时,先跑 `odw doctor --local [--endpoint URL] [--model M]`
+(ODW 扩展,只读):它报告每个已加载模型的上下文——低于 32K 时警告,并给出
+`OLLAMA_CONTEXT_LENGTH` 的设置方法——以及工具调用能力。它的 `--smoke` 只向该本地服务
+(从不向云端模型)发一个约 10K token 的提示,末尾的指令没被执行即失败——这正是平时看起来
+agent「在工作」的静默前部截断;它会运行模型,先征得同意。
 
 ## 必须知道的行为
 
