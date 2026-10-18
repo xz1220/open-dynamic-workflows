@@ -608,6 +608,10 @@ test("an agent that fell back shows its chain in the graph, the drawer and the t
   assert.match(html, /<div class="sub">codex → claude · 1m00s<\/div>/, "the node names the chain");
   assert.match(html, /<span class="v">claude <span class="tag warn"[^>]*>after codex<\/span><\/span>/, "the drawer names what it replaced");
   assert.match(transcriptEntries([{ i: 4, kind: "attempt", n: 2, reason: "fallback", adapter: "claude" }]), /class="tx tx-sep fallback"[^>]*><span>attempt 2 · fallback → claude<\/span>/);
+  // A fallback that handed the work over (ODW extension): a separator, its brief folded under it.
+  const handoff = transcriptEntries([{ i: 3, kind: "handoff", from: "codex", adapter: "claude", reason: "quota", bytes: 812, output: "## Handoff <b>" }]);
+  assert.match(handoff, /class="tx tx-sep fallback handoff"[^>]*><span>handoff · codex → claude · brief of 812 bytes<\/span>/);
+  assert.match(handoff, /<details class="tx-fold"><summary>handoff brief<\/summary><pre>## Handoff &lt;b&gt;<\/pre><\/details>/);
   store.focusRun(null);
 });
 
