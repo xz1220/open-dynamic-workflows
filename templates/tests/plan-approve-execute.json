@@ -1,0 +1,45 @@
+{
+  "workflow": "plan-approve-execute",
+  "description": "Starter tests: scripted replies, no model called, $0; each case answers the checkpoint itself. Run them with: odw test plan-approve-execute",
+  "cases": [
+    {
+      "name": "an approved plan runs its steps in parallel",
+      "args": { "task": "Add input validation to the signup form." },
+      "checkpoints": "approve",
+      "replies": [
+        {
+          "label": "plan 1",
+          "reply": {
+            "summary": "validate on the client and on the server",
+            "steps": [
+              { "title": "client", "instructions": "check the fields before submit" },
+              { "title": "server", "instructions": "reject bad input with a 400" }
+            ]
+          }
+        },
+        { "label": "step *", "reply": "done" },
+        { "label": "report", "reply": "both steps are done; try a signup with an empty email" }
+      ],
+      "expect": {
+        "checks": [
+          { "path": "approved", "equals": true },
+          { "path": "steps", "equals": { "total": 2, "done": 2 } }
+        ],
+        "agents": { "count": 4, "labels": ["plan 1", "step 1", "step 2", "report"] }
+      }
+    },
+    {
+      "name": "a rejected plan changes nothing",
+      "args": { "task": "Rewrite the billing module.", "replans": 0 },
+      "checkpoints": "reject",
+      "replies": [
+        { "label": "plan 1", "reply": { "summary": "rewrite it all", "steps": [{ "title": "everything", "instructions": "start over" }] } }
+      ],
+      "expect": {
+        "checks": [{ "path": "approved", "equals": false }],
+        "agents": { "count": 1 },
+        "logs": ["plan 1 rejected"]
+      }
+    }
+  ]
+}

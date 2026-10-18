@@ -1,0 +1,30 @@
+{
+  "workflow": "fix-until-green",
+  "description": "Starter tests: scripted replies, no model called, $0 (the test command is a stand-in: exec() runs it for real). Run them with: odw test fix-until-green",
+  "cases": [
+    {
+      "name": "a green suite needs no fixer",
+      "args": { "test": "exit 0" },
+      "expect": {
+        "checks": [
+          { "path": "passed", "equals": true },
+          { "path": "fixed", "equals": false }
+        ],
+        "agents": { "count": 0 },
+        "logs": ["the tests already pass"]
+      }
+    },
+    {
+      "name": "a fixer whose suite stays red is reported, not taken at its word",
+      "args": { "test": "exit 1", "retries": 1 },
+      "replies": [{ "label": "fixer", "reply": "fixed it" }],
+      "expect": {
+        "checks": [
+          { "path": "passed", "equals": false },
+          { "path": "fixed", "equals": false }
+        ],
+        "logs": ["the tests still fail"]
+      }
+    }
+  ]
+}

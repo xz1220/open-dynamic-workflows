@@ -1,0 +1,40 @@
+[
+  {
+    "name": "hello",
+    "description": "the smallest useful workflow: two agents in parallel, plain JS picks (read-only; start here)",
+    "workflow": "templates/hello.js",
+    "test": "templates/tests/hello.json"
+  },
+  {
+    "name": "review-swarm",
+    "description": "review a change through several lenses in parallel, verify every finding, keep what survives",
+    "workflow": "examples/review-swarm.js",
+    "test": "templates/tests/review-swarm.json",
+    "eval": "templates/evals/review-swarm.json"
+  },
+  {
+    "name": "fix-until-green",
+    "description": "an agent fixes a red test suite; odw runs the suite to check it (expect) and hands misses back",
+    "workflow": "examples/fix-until-green.js",
+    "test": "templates/tests/fix-until-green.json"
+  },
+  {
+    "name": "plan-approve-execute",
+    "description": "draft a plan, wait at a checkpoint for a person to approve it, then execute its steps in parallel",
+    "workflow": "examples/plan-approve-execute.js",
+    "test": "templates/tests/plan-approve-execute.json"
+  },
+  {
+    "name": "pr-shepherd",
+    "description": "take a pull request to green: fix red CI and new review comments, push, ask before marking it ready",
+    "workflow": "examples/pr-shepherd.js",
+    "test": "templates/tests/pr-shepherd.json",
+    "eval": "templates/evals/pr-shepherd.json"
+  },
+  {
+    "name": "fan-out-reduce",
+    "description": "draft N answers in parallel, then synthesize the single best one",
+    "workflow": "examples/fan-out-reduce.js",
+    "test": "templates/tests/fan-out-reduce.json"
+  }
+]

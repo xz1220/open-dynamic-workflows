@@ -36,6 +36,7 @@
  *   odw replay <run_id> --agent <id|label> [--prompt @file|TEXT] [--adapter A] [--model M]   (runtime/replay.ts)
  *   odw run <wf> --break <phase|label>[,…] | --step   (a checkpoint before them; src/breaks.ts)
  *   odw check <script.js|name> [--json]   (the loader's checks, with a code frame; src/check.ts)
+ *   odw new [<template>] [--name N] [--force] [--yes]   (a workflow + starter test from an embedded template; src/new.ts)
  */
 
 import { spawn } from "node:child_process";
@@ -62,6 +63,7 @@ import { AdapterNotFound } from "./errors.js";
 import type { WorkflowEvent } from "./events.js";
 import { VERSION } from "./index.js";
 import { cmdInit } from "./init.js";
+import { cmdNew } from "./new.js";
 import { loadWorkflowScript } from "./loader.js";
 import type { AgentChanges } from "./changes.js";
 import { agentRowJson, agentRows, formatAgentTable, matchAgents, type AgentRow } from "./runtime/agents-view.js";
@@ -155,6 +157,7 @@ export const COMMANDS = [
   "estimate",
   "replay",
   "check",
+  "new",
 ] as const;
 
 export type Command = (typeof COMMANDS)[number];
@@ -219,6 +222,7 @@ export function helpText(): string {
     "                                                     --prompt @file|TEXT, --adapter A, --model M replace its own; then odw compare",
     "  odw run <wf> --break <phase|label>[,…] | --step    stop for a decision before those phases/agents, or every phase (ODW extension)",
     "  odw check <script.js|name> [--json]                check a workflow loads: errors with line, column and a code frame",
+    "  odw new [<template>] [--name N] [--force] [--yes]  a workflow + starter test in .odw/ from a built-in template; no args lists them",
     "",
     "Options:",
     "  --args JSON|@file   workflow input (JSON, @file.json, or a raw string)",
@@ -315,6 +319,8 @@ export async function main(argv: string[]): Promise<number> {
         return await cmdEgressProxy(rest);
       case "init":
         return await cmdInitCli(rest);
+      case "new":
+        return await cmdNewCli(rest);
       case "doctor":
         return await cmdDoctor(rest);
       case "run":
@@ -516,10 +522,40 @@ async function cmdInitCli(rest: string[]): Promise<number> {
       config: { type: "string" },
     },
   });
-  return cmdInit({
-    ...(values.adapter !== undefined ? { adapter: values.adapter } : {}),
-    check: values.check === true,
-    config: values.config ?? null,
+  return cmdInit(
+    {
+      ...(values.adapter !== undefined ? { adapter: values.adapter } : {}),
+      check: values.check === true,
+      config: values.config ?? null,
+    },
+    // The $0 first run it offers: `odw run hello --dry`, here, with its live view.
+    { runDry: (argv) => cmdRun(argv.slice(1)) },
+  );
+}
+
+/** `odw new` — a workflow and its starter test from an embedded template (see src/new.ts). */
+async function cmdNewCli(rest: string[]): Promise<number> {
+  let parsed;
+  try {
+    parsed = parseArgs({
+      args: rest,
+      allowPositionals: true,
+      options: {
+        name: { type: "string" },
+        force: { type: "boolean" },
+        yes: { type: "boolean", short: "y" },
+      },
+    });
+  } catch (err) {
+    throw new UsageError(`odw new: ${(err as Error).message}\nusage: odw new [<template>] [--name N] [--force] [--yes]`);
+  }
+  const { values, positionals } = parsed;
+  if (positionals.length > 1) throw new UsageError("usage: odw new [<template>] [--name N] [--force] [--yes]");
+  return cmdNew({
+    ...(positionals[0] !== undefined ? { template: positionals[0] } : {}),
+    ...(values.name !== undefined ? { name: values.name } : {}),
+    force: values.force === true,
+    yes: values.yes === true,
   });
 }
 

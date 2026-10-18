@@ -4,7 +4,7 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -64,4 +64,53 @@ test("the committed embed is in the generated format (typed as a plain string)",
 test("typecheck only generates the gitignored version file, never the committed embeds", () => {
   const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
   assert.equal(pkg.scripts.pretypecheck, "node scripts/generate-version.mjs");
+});
+
+test("the build embeds the odw new templates too", () => {
+  const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+  assert.match(pkg.scripts.embed, /node scripts\/embed-templates\.mjs/);
+});
+
+test("embed-templates fails loudly when a template's source is missing", (t) => {
+  const { root, run } = sandbox(t, "embed-templates.mjs");
+  mkdirSync(join(root, "templates"));
+  writeFileSync(join(root, "templates", "index.json"), JSON.stringify([{ name: "hello", description: "d", workflow: "templates/hello.js", test: "templates/hello.json" }]));
+  writeFileSync(join(root, "templates", "hello.js"), "return 1\n");
+  const r = run();
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /template 'hello': test templates\/hello\.json not found/);
+  assert.equal(existsSync(join(root, "src", "templates.generated.ts")), false);
+});
+
+test("embed-templates inlines each template's files byte-for-byte, typed (no literal types in the .d.ts)", (t) => {
+  const { root, run } = sandbox(t, "embed-templates.mjs");
+  mkdirSync(join(root, "templates"));
+  mkdirSync(join(root, "examples"));
+  const wf = "export const meta = { name: 'x', description: `${'d'}` }\n// \"quotes\" \\ 中文\nreturn 1\n";
+  writeFileSync(join(root, "examples", "x.js"), wf);
+  writeFileSync(join(root, "templates", "x.json"), '{ "cases": [] }\n');
+  writeFileSync(
+    join(root, "templates", "index.json"),
+    JSON.stringify([{ name: "x", description: "an x", workflow: "examples/x.js", test: "templates/x.json" }]),
+  );
+  const r = run();
+  assert.equal(r.status, 0, r.stderr);
+  const generated = readFileSync(join(root, "src", "templates.generated.ts"), "utf8");
+  const m = /^export const TEMPLATES: readonly EmbeddedTemplate\[\] = ([\s\S]*);\n$/m.exec(generated);
+  assert.ok(m, generated.slice(0, 300));
+  assert.deepEqual(JSON.parse(m[1]!), [{ name: "x", description: "an x", workflow: wf, test: '{ "cases": [] }\n', eval: null }]);
+});
+
+test("the committed template embed matches its sources (templates/index.json and the files it names)", (t) => {
+  const { root, run } = sandbox(t, "embed-templates.mjs");
+  const repo = fileURLToPath(new URL("../", import.meta.url));
+  cpSync(join(repo, "templates"), join(root, "templates"), { recursive: true });
+  cpSync(join(repo, "examples"), join(root, "examples"), { recursive: true });
+  const r = run();
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(
+    readFileSync(join(root, "src", "templates.generated.ts"), "utf8"),
+    readFileSync(join(repo, "src", "templates.generated.ts"), "utf8"),
+    "src/templates.generated.ts drifted: run npm run build (or node scripts/embed-templates.mjs) and commit it",
+  );
 });

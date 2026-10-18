@@ -1,0 +1,34 @@
+{
+  "workflow": "fan-out-reduce",
+  "description": "Starter tests: scripted replies, no model called, $0. Run them with: odw test fan-out-reduce",
+  "cases": [
+    {
+      "name": "every draft reaches the synthesizer",
+      "args": { "question": "Design a rate limiter.", "drafts": 3 },
+      "replies": [
+        { "label": "draft-1", "reply": "token bucket per user" },
+        { "label": "draft-2", "reply": "sliding window in Redis" },
+        { "label": "draft-3", "reply": "leaky bucket at the gateway" },
+        { "label": "synthesize", "prompt": "sliding window in Redis", "reply": "a token bucket per user, kept in Redis" }
+      ],
+      "expect": {
+        "checks": [{ "path": "", "equals": "a token bucket per user, kept in Redis" }],
+        "agents": { "count": 4, "labels": ["draft-1", "draft-2", "draft-3", "synthesize"] },
+        "logs": ["Drafting 3 independent answers", "3/3 drafts succeeded"]
+      }
+    },
+    {
+      "name": "a failed draft is left out, the rest go on",
+      "args": { "question": "Name the service.", "drafts": 2 },
+      "replies": [
+        { "label": "draft-1", "fail": "rate_limit" },
+        { "label": "draft-2", "reply": "Beacon" },
+        { "label": "synthesize", "reply": "Beacon" }
+      ],
+      "expect": {
+        "checks": [{ "path": "", "equals": "Beacon" }],
+        "logs": ["1/2 drafts succeeded"]
+      }
+    }
+  ]
+}
