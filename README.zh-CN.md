@@ -539,6 +539,7 @@ odw logs $RUN --follow   # 流式输出原始进度事件
 odw logs $RUN --agent 3  # 某个 agent 做了什么:它的工具调用、结果和文字(见下文)
 odw result $RUN          # 最终值
 odw diff $RUN --stat     # 隔离 agent 改了什么;odw apply $RUN --agent N(或 --all)落地
+odw review               # 跨运行尚未处理的保留 diff,按风险从高到低,每条附理由(见下文)
 odw notes $RUN           # 它的 agent 在笔记板上互相告知的内容(见上文)
 odw compare $OLD $RUN    # 两次运行之间变了什么:配置、耗时、花费、失败、回复(见下文)
 odw estimate review      # 下一次运行的 p50/p90 耗时、花费、token 和 agent 数,依据以往运行(见下文)
@@ -3087,6 +3088,37 @@ agent 会冲突或校验失败,都会在推送前停下:分支被删除,什么�
   "applyVerify": null      // 例如 "npm test":每次 odw apply 之后运行,失败则回滚这次应用
 }
 ```
+
+#### 跨运行的审阅队列(ODW 扩展)
+
+保留的 diff 在各次运行里越积越多,远快于有人去看。`odw review` 列出运行根目录下所有运行里
+还没人处理过的 diff,风险最高的在前,并说明每一条为什么排在这里:
+
+```bash
+odw review                       # 尚未审阅、放弃或应用的 diff,按风险从高到低
+odw review --since 7d --json     # 只看最近一周的运行,供脚本使用
+odw review --all                 # 连同已标记的,以及是谁标记的
+odw review mark $RUN 3 reviewed --note "看过迁移了"   # 或 dismissed | applied | open(撤销)
+```
+
+分数是确定性的,只用运行记录下来的数据——不让任何模型来读。计分项:改动大小(50 / 300 / 1000
+行:+1 / +2 / +3;6 / 20 个文件:+1 / +2);从保留的 diff 中读出的路径类别——CI(+3)、数据库迁移
+(+3)、鉴权/安全相关代码(+3)、依赖清单与锁文件(+2)、测试(+1,删除测试再 +2)、二进制文件
+(+2);在 `maxDiffBytes` 处被截断的 diff(+2);被 `--deadline` 终止的 agent(+3);`expect` 未达成
+(+4)与 `untouched` 违规(+4);其他失败(+3:改动是未完成的工作);`scope` 之外的文件(+3);
+留下仍在运行的后台任务(+2);破坏性 git 命令(+3);回退或 handoff(+1);`odw apply --resolve`
+时跑过解决冲突的 agent(+1);`expect` 重试(+1)与其他重试(+1);花费达到 $1 / $5(+1 / +2)。
+`expect.command` 检查通过则减一分。0–2 为 **low**,3–5 为 **medium**,6 及以上为 **high**。每一分
+都打印在条目上(`--json` 中为 `factors`),排序有据可查。
+
+标记写入运行目录中只追加的 `reviews.jsonl`——`{ ts, agentId, state, by, via, note? }`,`by` 是标记者
+(与检查点决定一致:本地用户,或看板上具名令牌的名字),`via` 为 `cli`、`dashboard` 或 `apply`;
+同一个 agent 以最后一条标记为准。`odw apply` 会把干净应用(或发现已应用)的每个 agent 标为
+`applied`;`--check` 不做标记。`odw eval` 启动的运行和 `--resolve` 的解决冲突运行不进入队列。
+看板的 **Review** 页(`g r`)展示同一队列及其理由,可把条目标为已审阅或放弃(与所有写操作一样
+仅限回环地址),并能在所属运行的 Changes 标签页中打开条目;Activity 的 **待你处理** 会显示等待
+审阅的数量。`GET /api/review[?since=7d][&all=1]` 提供该队列,`POST
+/api/runs/:id/agents/:agentId/review { state, note? }` 标记一条。
 
 分步说明:[`docs/recipes/review-and-apply.md`](docs/recipes/review-and-apply.md)。
 

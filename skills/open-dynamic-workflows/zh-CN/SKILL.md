@@ -281,6 +281,8 @@ odw apply $RUN --all --check          # 预览所有已完成的 agent，每个�
 odw apply $RUN --all --verify "<测试命令>"   # 按顺序应用；校验失败的那次应用被回滚
 odw apply $RUN --all --resolve --verify "<测试命令>"   # 由 resolver agent 解决冲突；校验通过才应用
 odw apply $RUN --all --pr --verify "<测试命令>"   # 新分支、推送、开草稿 PR（gh）；从不合并
+odw review [--since 7d] [--json]      # 跨运行尚未处理的保留 diff，按风险从高到低（ODW 扩展）
+odw review mark $RUN <id|label> reviewed|dismissed|applied|open [--note T]
 ```
 
 - 先预览（`--check`，有冲突时退出码 1），按任务需要应用，并告诉用户应用了什么、哪里冲突了
@@ -302,6 +304,11 @@ odw apply $RUN --all --pr --verify "<测试命令>"   # 新分支、推送、开
   开 PR 时使用。冲突或 `--verify` 失败会在推送前停下。
 - 超过 `maxDiffBytes` 被截断的 diff 无法应用：改用该 agent 的分支（`keep: true`，或在
   配置里设 `"keepBranches": true`）。
+- `odw review`（ODW 扩展）是跨运行的审阅队列：每个尚未审阅、放弃或应用的保留 diff，附一个只用
+  运行记录计算的确定性风险分（大小、CI/迁移/鉴权/依赖/测试/二进制路径、`expect` 未达成、越界、
+  后台任务、破坏性 git、回退、重试、花费）和每一分的理由。用户问先看哪个时从这里开始，并引用这些
+  理由。`odw apply` 会把干净应用的条目标为 `applied`；其余的只在用户做了决定后再标记
+  （`reviewed`、`dismissed`；`open` 撤销）。
 
 **没有**隔离的 agent 就在用户自己的工作区里干活。一次运行中第一个 `edit` 或 `full` 档位的此类
 agent 开始前，odw 会把工作区里未提交的内容——已跟踪文件的改动和未被忽略的未跟踪文件——存到

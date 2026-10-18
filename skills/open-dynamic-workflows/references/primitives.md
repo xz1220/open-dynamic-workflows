@@ -654,7 +654,16 @@ odw apply <run> --all [--check]          # every finished agent, in agentId orde
 odw apply <run> --agent <id|label> --verify "<cmd>"   # roll the apply back if <cmd> fails
 odw apply <run> --all --resolve [--adapter A] [--confirm] --verify "<cmd>"   # a resolver agent fixes conflicts
 odw apply <run> --all --pr [--base B] [--remote R] [--ready] [--title T]   # a branch, pushed, and a draft PR
+odw review [--json] [--since 7d] [--all]  # ODW extension: kept diffs across runs not dealt with, riskiest first
+odw review mark <run> <id|label> reviewed|dismissed|applied|open [--note TEXT]
 ```
+
+`odw review` scores each kept diff from recorded data only and lists every
+factor (`{ key, points, why }`): 0–2 low, 3–5 medium, 6+ high. Marks are lines
+of the run's append-only `reviews.jsonl` — `{ ts, agentId, state, by, via,
+note? }`, the last per agent standing; `odw apply` adds `applied` (`via:
+"apply"`) for each agent it applied cleanly. Runs of `odw eval` and resolver
+runs are left out.
 
 Before it touches the tree, `odw apply` runs the same apply against a scratch
 copy of the index and prints each file as `clean`, `CONFLICT` (with the

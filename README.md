@@ -626,6 +626,7 @@ odw logs $RUN --follow   # stream raw progress events
 odw logs $RUN --agent 3  # what one agent did: its tool calls, results and text (below)
 odw result $RUN          # final value
 odw diff $RUN --stat     # what isolated agents changed; odw apply $RUN --agent N (or --all) lands it
+odw review               # kept diffs across runs not dealt with yet, riskiest first, each with why (below)
 odw notes $RUN           # what its agents told each other on the notes board (above)
 odw compare $OLD $RUN    # what changed between two runs: setup, time, cost, failures, replies (below)
 odw estimate review      # p50/p90 time, cost, tokens and agents of its next run, from earlier runs (below)
@@ -3604,6 +3605,55 @@ in, it stops after the push and prints the compare URL. **It never merges.**
   "applyVerify": null      // e.g. "npm test": run after each odw apply, which is rolled back if it fails
 }
 ```
+
+#### The review queue across runs (ODW extension)
+
+Kept diffs pile up across runs faster than anyone reads them. `odw review` lists
+every one nobody has dealt with yet — in every run under the runs root — riskiest
+first, and says why each ranks where it does:
+
+```bash
+odw review                       # kept diffs not reviewed, dismissed or applied, riskiest first
+odw review --since 7d --json     # only runs from the last week, for scripts
+odw review --all                 # the marked ones too, with who marked them
+odw review mark $RUN 3 reviewed --note "checked the migration"   # or dismissed | applied | open (undo)
+```
+
+```
+2 kept diff(s) to review, riskiest first
+
+HIGH    7  20261018-090000-ab12cd · agent 3 (fix:auth) · 4 file(s) +120 -30 · triage
+        +3  touches CI: .github/workflows/ci.yml
+        +3  changed 2 file(s) outside its scope: src/db.ts, src/env.ts
+        +1  met its expect only after 1 retry
+           odw diff … --agent 3 · odw apply … --agent 3 --check · odw review mark … 3 reviewed
+```
+
+The score is deterministic and uses only what the run recorded — no model reads
+anything. Points: the size of the change (50 / 300 / 1000 lines: +1 / +2 / +3;
+6 / 20 files: +1 / +2); the kinds of path it touches, read from the kept diff —
+CI (+3), database migrations (+3), auth or security code (+3), dependency
+manifests and lock files (+2), tests (+1, and +2 more for deleted tests), binary
+files (+2); a diff cut at `maxDiffBytes` (+2); a `--deadline` that killed the
+agent (+3); `expect` misses (+4) and `untouched` violations (+4); another failure
+(+3: the change is unfinished work); files outside its `scope` (+3); background
+work left running (+2); destructive git commands (+3); a fallback or handoff
+(+1); a resolver at `odw apply --resolve` (+1); expect retries (+1) and other
+retries (+1); cost of $1 / $5 (+1 / +2). A passed `expect.command` check takes one
+off. 0–2 is **low**, 3–5 **medium**, 6 and up **high**. Every point is printed
+on the entry (`factors` in `--json`), so the order can be argued with.
+
+Marks go to the run directory's append-only `reviews.jsonl` — `{ ts, agentId,
+state, by, via, note? }`, `by` who marked it (as for checkpoint decisions: the
+local user, or a named token's name from the dashboard), `via` `cli`,
+`dashboard` or `apply`; the last mark of an agent stands. `odw apply` marks each
+agent it applied cleanly (or found already applied) as `applied`; `--check`
+marks nothing. Runs `odw eval` started and `--resolve`'s resolver runs are not
+on the queue. The dashboard's **Review** page (`g r`) shows the same queue with
+its reasons, marks entries reviewed or dismissed (loopback only, like every
+write), and opens an entry in its run's Changes tab; Activity's **Needs you**
+says how many wait. `GET /api/review[?since=7d][&all=1]` serves it, `POST
+/api/runs/:id/agents/:agentId/review { state, note? }` marks one.
 
 Step by step: [`docs/recipes/review-and-apply.md`](docs/recipes/review-and-apply.md).
 

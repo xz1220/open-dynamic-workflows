@@ -504,7 +504,14 @@ odw apply <run> --all [--check]          # 所有已完成的 agent，按 agentI
 odw apply <run> --agent <id|label> --verify "<cmd>"   # <cmd> 失败则回滚这次应用
 odw apply <run> --all --resolve [--adapter A] [--confirm] --verify "<cmd>"   # 由 resolver agent 解决冲突
 odw apply <run> --all --pr [--base B] [--remote R] [--ready] [--title T]   # 新分支、推送、开草稿 PR
+odw review [--json] [--since 7d] [--all]  # ODW 扩展：跨运行尚未处理的保留 diff，按风险从高到低
+odw review mark <run> <id|label> reviewed|dismissed|applied|open [--note TEXT]
 ```
+
+`odw review` 只用记录下的数据给每个保留 diff 打分，并列出每一个计分项（`{ key, points, why }`）：
+0–2 为 low，3–5 为 medium，6 及以上为 high。标记是运行目录中只追加的 `reviews.jsonl` 里的一行——
+`{ ts, agentId, state, by, via, note? }`，每个 agent 以最后一条为准；`odw apply` 每干净应用一个
+agent 就追加一条 `applied`（`via: "apply"`）。`odw eval` 的运行和 resolver 运行不进入队列。
 
 动手之前，`odw apply` 先在索引的临时副本上做同样的应用，逐个文件给出 `clean`、`CONFLICT`
 （附上合并后会留在文件里的冲突行，或无法合并的原因：`deleted here`、`binary: …`、挡在那里的未跟踪或被忽略文件）或

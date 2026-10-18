@@ -337,6 +337,19 @@ independent security reviews whose findings are all fixed.
   on; content stays out unless captured, then redacted again and cut at 4096 characters;
   `odw doctor` shows where traces go. Any OTLP/HTTP receiver that takes JSON gets it
   directly (Jaeger, Langfuse, an OpenTelemetry Collector in front of the rest).
+- A review queue across runs (**ODW extension**): `odw review [--json] [--since 7d]
+  [--all]` lists every kept diff nobody reviewed, dismissed or applied yet, riskiest
+  first, with a deterministic score from recorded data only — the change's size; the CI,
+  migration, auth/security, dependency, test and binary paths in the kept diff; a diff
+  cut at `maxDiffBytes`; a `--deadline` kill; `expect` misses and `untouched`
+  violations; other failures; files outside `scope`; background work left running;
+  destructive git; fallbacks and handoffs; an `--resolve` resolver; retries; cost — and
+  a point off for a passed `expect.command`. Every point is shown with its reason (0–2
+  low, 3–5 medium, 6+ high). `odw review mark <run> <agent> reviewed|dismissed|applied|open
+  [--note]` appends to the run's `reviews.jsonl` with who marked it; `odw apply` marks what
+  it applied cleanly as `applied`. The dashboard's new **Review** page (`g r`) shows the
+  queue and marks entries (loopback only), and Activity's **Needs you** says how many
+  wait; `GET /api/review`, `POST /api/runs/:id/agents/:agentId/review`.
 
 ### Control what agents may do
 - Permission tiers `read` / `edit` / `full` (`--permissions`, per adapter, per call; a

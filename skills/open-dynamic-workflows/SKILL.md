@@ -337,6 +337,8 @@ odw apply $RUN --all --check          # preview every finished agent, each on to
 odw apply $RUN --all --verify "<test command>"   # apply them in order; roll back one that fails the check
 odw apply $RUN --all --resolve --verify "<test command>"   # a resolver agent fixes a conflict; applied once verified
 odw apply $RUN --all --pr --verify "<test command>"   # a new branch, pushed, and a draft PR (gh); never merges
+odw review [--since 7d] [--json]      # kept diffs across runs nobody dealt with yet, riskiest first (ODW extension)
+odw review mark $RUN <id|label> reviewed|dismissed|applied|open [--note T]
 ```
 
 - Preview first (`--check`, exit 1 when anything conflicts), apply what the task
@@ -367,6 +369,13 @@ odw apply $RUN --all --pr --verify "<test command>"   # a new branch, pushed, an
   for a PR. A conflict or a failed `--verify` stops it before the push.
 - A diff cut at `maxDiffBytes` cannot be applied: use the agent's branch
   (`keep: true`, or `"keepBranches": true` in the config).
+- `odw review` (ODW extension) is the queue across runs: each kept diff not yet
+  reviewed, dismissed or applied, with a deterministic risk score from what the
+  run recorded (size, CI/migration/auth/dependency/test/binary paths, `expect`
+  misses, scope, background work, destructive git, fallbacks, retries, cost) and
+  every point's reason. When the user asks what to look at, start there and quote
+  the reasons. `odw apply` marks what it applied cleanly as `applied`; mark the
+  rest only when the user decided (`reviewed`, `dismissed`; `open` undoes).
 
 An agent **without** isolation works in the user's own tree. Before a run's
 first such agent at `edit` or `full`, odw keeps the tree's uncommitted work —
