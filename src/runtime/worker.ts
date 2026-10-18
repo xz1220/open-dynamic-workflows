@@ -30,6 +30,7 @@ import { RunStopped, WorkflowScriptError, isFatalError } from "../errors.js";
 import { LOG, RUN_FAILED, RUN_FINISHED, RUN_STARTED, RUN_STOPPED, event } from "../events.js";
 import { ReplayJournal } from "../journal.js";
 import { loadWorkflowScript, scanDualCompat } from "../loader.js";
+import { NotesBoard } from "../notes.js";
 import { createPrimitives } from "../primitives.js";
 import { CliVersions, runSetup } from "../provenance.js";
 import type { QuotaPause } from "../quota-wait.js";
@@ -248,6 +249,8 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
       // its likely secrets redacted (ODW extension).
       saveAgentResult: (rec) => store.writeAgentResult(runId, runRedactor.record(rec)),
       redactor: runRedactor,
+      // The run's notes board (ODW extension): notes.jsonl, for agents with notes on.
+      notes: new NotesBoard({ runDir: store.runDir(runId), redactor: runRedactor, emit: (ev) => sink.emit(ev) }),
       // What an isolated agent changed is kept beside it, as agents/<agentId>.diff.
       agentDiffPath: (agentId) => store.agentDiffPath(runId, agentId),
       // What each agent's CLI prints, as agents/<agentId>.transcript.jsonl and .stderr.txt.
@@ -376,6 +379,7 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
     const kept = runRedactor.shapes.record({ value: result });
     store.writeResult(runId, kept.value, "redacted" in kept);
     versions?.close();
+    ctx.notes?.close();
     sink.emit(event(RUN_FINISHED, { runId }));
     store.updateStatus(runId, { state: "done", dispatched: dispatched(), spentTokens: spent() });
     end = { state: "done" };
@@ -388,6 +392,7 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
     }
     if (ctx) await stopAgents(ctx.scheduler, outcome);
     versions?.close();
+    ctx?.notes?.close();
     if (outcome instanceof RunStopped) {
       sink.emit(event(RUN_STOPPED, { runId }));
       store.updateStatus(runId, { state: "stopped", dispatched: dispatched(), spentTokens: spent() });

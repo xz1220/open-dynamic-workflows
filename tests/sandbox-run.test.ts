@@ -21,6 +21,7 @@ import { RunStore } from "../src/runtime/run-store.ts";
 import { foldAgents } from "../src/runtime/runs-view.ts";
 import { executeRun } from "../src/runtime/worker.ts";
 import { main } from "../src/cli.ts";
+import { readNotes } from "../src/notes.ts";
 
 const FAKE = fileURLToPath(new URL("./fixtures/fake-docker.mjs", import.meta.url));
 
@@ -358,4 +359,50 @@ test("odw run|rerun --sandbox container [--sandbox-image]: the banner, the meta,
   assert.notEqual(r.code, 0);
   assert.match(r.err, /--sandbox container needs an image/);
   assert.equal(store.listRuns().length, runs);
+});
+
+test("notes in a container: the shim posts through its bound notes directory, the board is bound read-only, ODW_NOTES by name", async () => {
+  const noter = fileURLToPath(new URL("./fixtures/note-agent.mjs", import.meta.url));
+  chmodSync(noter, 0o755);
+  if (!existsSync(join(bin, "noter"))) symlinkSync(noter, join(bin, "noter"));
+  const source = mkdtempSync(join(root, "repo-"));
+  const cfgDir = mkdtempSync(join(root, "cfg-"));
+  const configPath = join(cfgDir, "odw.config.json");
+  writeFileSync(
+    configPath,
+    JSON.stringify({
+      sandbox: { kind: "container", engine: "docker", image: "odw-test:1" },
+      adapters: { boxed: { command: ["noter"], stdin: "{prompt}" } },
+      defaultAdapter: "boxed",
+      notes: true,
+    }),
+  );
+  const script = join(source, "wf.js");
+  writeFileSync(
+    script,
+    "export const meta = { name: 'boxed-notes', description: 'd' }\n" +
+      "await agent('NOTE: the config loader now returns a Promise', { label: 'writer' })\n" +
+      "return JSON.parse(await agent('go on', { label: 'reader' }))\n",
+  );
+  const store = new RunStore(join(cfgDir, "runs"));
+  const before = calls().length;
+  const id = store.create({ script, args: null, source, configPath });
+  assert.equal(await executeRun(store.runDir(id)), "done");
+
+  const runDir = store.runDir(id);
+  const writerRun = calls().slice(before).find((a) => a[0] === "run" && a.at(-1) === "noter")!;
+  const mounts = valuesOf(writerRun, "--mount");
+  const agentDir = join(runDir, "notes", "1");
+  const boardDir = join(runDir, "notes", "board");
+  assert.ok(mounts.includes(`type=bind,source=${agentDir},target=${agentDir}`), "its own notes directory, read-write");
+  assert.ok(mounts.includes(`type=bind,source=${boardDir},target=${boardDir},readonly`), "the board, read-only");
+  assert.ok(!mounts.some((m) => m.includes(join(runDir, "notes", "2"))), "no other agent's inbox");
+  assert.ok(valuesOf(writerRun, "--env").includes("ODW_NOTES"), "ODW_NOTES passed by name");
+
+  const notes = readNotes(runDir);
+  assert.deepEqual(notes.map((n) => [n.by.label, n.text]), [["writer", "the config loader now returns a Promise"]]);
+  const reader = store.readResult(id) as { prompt: string; board: string };
+  assert.match(reader.prompt, /#1 \[agent 1 · writer\] the config loader now returns a Promise/);
+  assert.match(reader.board, /#1 \[agent 1 · writer\] the config loader now returns a Promise/);
+  assertNothingLeft();
 });

@@ -62,11 +62,17 @@
  * started it without (Claude Code's init event) are kept as `mcp` on its
  * terminal event and saved record, and logged once per run for each server
  * and status.
+ *
+ * An agent with notes on — `notes: true` on its call or its parallel(), or
+ * the `notes` setting (an ODW extension; see ./notes) — finds the run's notes
+ * board in its prompt and `ODW_NOTES` in its environment, and an isolated one
+ * that kept a change has a note of its interface changes posted for it before
+ * its agent_finished event, so the agents the script starts next see it.
  */
 
 import { AsyncLocalStorage } from "node:async_hooks";
 import { readFileSync } from "node:fs";
-import { copyFile, mkdir } from "node:fs/promises";
+import { copyFile, mkdir, readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 
 import { formatSeconds } from "./adapters/failures.js";
@@ -80,7 +86,7 @@ import type { AgentRequest } from "./bridge.js";
 import { branchName, ChangeRecorder, type AgentChanges, type KeptChanges } from "./changes.js";
 import { CheckpointTimeout, createCheckpoint, type CheckpointOptions, type CheckpointResult } from "./checkpoint.js";
 import { spentTokens, type RunContext } from "./context.js";
-import { AdapterExecutionError, UnmetExpectationError, WorkflowScriptError, isFatalError } from "./errors.js";
+import { AdapterExecutionError, AgentError, UnmetExpectationError, WorkflowScriptError, isFatalError } from "./errors.js";
 import { AGENT_FAILED, AGENT_FINISHED, AGENT_STARTED, LOG, PHASE_STARTED, event } from "./events.js";
 import { ExecError, createExec, execStep, type ExecOptions, type ExecResult } from "./exec.js";
 import { Expectations, planChecks, type AgentChecks, type ExpectOptions } from "./expect.js";
@@ -88,6 +94,7 @@ import { resumeKey, type AgentResultRecord } from "./journal.js";
 // Value import of the loader is safe: loader.ts only type-imports from here, so
 // the module cycle is erased at compile time and never exists at runtime.
 import { loadWorkflowScript, scanDualCompat, type WorkflowMeta } from "./loader.js";
+import { interfaceSummary, type AgentNotes } from "./notes.js";
 import { firstAdapter, phaseDefaultsOf, type AdapterChoice, type PhaseDefaults } from "./routing.js";
 import type { JsonSchema } from "./schema.js";
 import { FanOut } from "./throttle.js";
@@ -147,6 +154,19 @@ export interface AgentOptions {
    * adapters/sandbox.ts).
    */
   sandbox?: "none" | "container" | Record<string, unknown>;
+  /**
+   * ODW extension: the run's notes board for this agent (see ./notes) — the
+   * notes so far in its prompt, `ODW_NOTES` to post and read them, and, for
+   * an isolated agent that kept a change, a note of its interface changes.
+   * `false` opts one agent out of its parallel()'s or the `notes` setting.
+   */
+  notes?: boolean;
+}
+
+/** ODW extension: what parallel() takes after its thunks. */
+export interface ParallelOptions {
+  /** Every agent its thunks start has notes on (see AgentOptions.notes), unless one says `notes: false`. */
+  notes?: boolean;
 }
 
 export interface Budget {
@@ -173,7 +193,8 @@ export interface ValidationReport {
 /** The surface injected into a workflow script (alongside `args`). */
 export interface WorkflowGlobals {
   agent(prompt: string, opts?: AgentOptions): Promise<unknown>;
-  parallel<T>(thunks: Array<Thunk<T>>): Promise<Array<T | null>>;
+  /** ODW extension: `opts.notes` turns the notes board on for its agents. */
+  parallel<T>(thunks: Array<Thunk<T>>, opts?: ParallelOptions): Promise<Array<T | null>>;
   pipeline(items: unknown[], ...stages: Stage[]): Promise<unknown[]>;
   /** ODW extension: `opts` gives the phase's agents an adapter and a model (see ./routing). */
   phase(title: string, opts?: PhaseDefaults): void;
@@ -427,10 +448,39 @@ export function createPrimitives(
     return null;
   };
 
+  /**
+   * Set an agent up on the run's notes board (ODW extension; see ./notes) —
+   * none in a run that is not persisted, which says so once.
+   */
+  const openNotes = (agentId: number, label: string): AgentNotes | undefined => {
+    if (ctx.notes) return ctx.notes.openAgent(agentId, label);
+    if (!notesUnavailable.has(ctx.seq)) {
+      notesUnavailable.add(ctx.seq);
+      ctx.emit(event(LOG, { message: "notes: this run is not persisted, so it has no notes board — its agents run without one" }));
+    }
+    return undefined;
+  };
+
+  /** Post the note of an isolated agent's kept change: its diff stat and the interface lines it touched (ODW extension). */
+  const broadcast = async (agentId: number, label: string, kept: KeptChanges, note: (message: string) => void): Promise<void> => {
+    if (!ctx.notes || !ctx.agentDiffPath) return;
+    try {
+      const summary = interfaceSummary(await readFile(ctx.agentDiffPath(agentId), "utf8"), kept.changes);
+      if (summary) ctx.notes.post({ agentId, label }, summary, "interface");
+    } catch (err) {
+      note(`could not post its interface changes to the notes board: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+
   const dispatch = async (prompt: string, opts: AgentOptions): Promise<unknown> => {
     // The output checks a call asks for are checked before anything starts:
     // a misuse is a recoverable error that costs no dispatch (ODW extension).
     const checks = planChecks(opts);
+    if (opts.notes !== undefined && typeof opts.notes !== "boolean") {
+      throw new AgentError(`agent(): notes must be true or false; got ${describeValue(opts.notes)}`);
+    }
+    // The run's notes board (ODW extension): its call's say, else its parallel()'s, else the setting.
+    const notesOn = opts.notes ?? notesScope.getStore() ?? ctx.config.settings.notes === true;
     const activePhase = opts.phase !== undefined ? opts.phase : ctx.currentPhase;
     // Stable per-dispatch identity. Events for THIS dispatch all carry it, so
     // observers pair started/finished exactly even when several concurrent
@@ -586,12 +636,16 @@ export function createPrimitives(
         const changes = changeRecorder(agentId, display, opts, signal, note);
         const transcript = transcriptRecorder(agentId, adapter, note);
         const expect = expectations(checks, agentId, display, activePhase, signal);
+        // The run's notes board (ODW extension): the notes so far go in its
+        // prompt as it starts; what it posts is taken until it ends.
+        const notes = notesOn ? openNotes(agentId, display) : undefined;
         let outcome;
         try {
-          outcome = await ctx.bridge.run(request, {
+          outcome = await ctx.bridge.run(notes ? { ...request, notes: notes.prompt } : request, {
             signal,
             // The agent process's ODW_AGENT_ID.
             agentId,
+            ...(notes ? { notes: { env: notes.env, mounts: notes.mounts } } : {}),
             onNote: note,
             // Feed the shared budget tally and this agent's usage from every
             // CLI run: replies (schema retries included), and runs that failed
@@ -750,11 +804,15 @@ export function createPrimitives(
           // is kept too (the work of one that timed out); a stop keeps none.
           // Its transcript is kept either way, complete before the event.
           await transcript?.close();
+          notes?.close();
           failed(err, await keepChanges(changes, isFatalError(err) || signal.aborted, note));
           throw err;
         }
         await transcript?.close();
+        notes?.close();
         const kept = await keepChanges(changes, false, note);
+        // Its interface changes go on the board before it is seen to finish (ODW extension).
+        if (notes && kept) await broadcast(agentId, display, kept, note);
         // No option is dropped silently: surface each routing note as a LOG event
         // (visible in `odw logs` and the dashboard).
         for (const routing of outcome.notes ?? []) {
@@ -876,9 +934,19 @@ export function createPrimitives(
     return fanOutScope.run(fanOut, batch);
   };
 
-  const parallel = async <T>(thunks: Array<Thunk<T>>): Promise<Array<T | null>> => {
+  const parallel = async <T>(thunks: Array<Thunk<T>>, opts?: ParallelOptions): Promise<Array<T | null>> => {
     if (!Array.isArray(thunks)) {
       throw new WorkflowScriptError(`parallel() takes an array of functions (thunks); got ${describeValue(thunks)}`);
+    }
+    // ODW extension: options after the thunks — only `notes` (see ./notes).
+    if (opts !== undefined && (opts === null || typeof opts !== "object" || Array.isArray(opts))) {
+      throw new WorkflowScriptError(`parallel()'s options must be an object — { notes?: boolean }; got ${describeValue(opts)}`);
+    }
+    for (const key of Object.keys(opts ?? {})) {
+      if (key !== "notes") throw new WorkflowScriptError(`parallel() has no option "${key}"; use notes`);
+    }
+    if (opts?.notes !== undefined && typeof opts.notes !== "boolean") {
+      throw new WorkflowScriptError(`parallel(): notes must be true or false; got ${describeValue(opts.notes)}`);
     }
     thunks.forEach((thunk, i) => {
       if (typeof thunk !== "function") {
@@ -889,16 +957,19 @@ export function createPrimitives(
       }
     });
     warnFanOut("parallel()", thunks.length);
-    return asFanOut(() => ctx.scheduler.gather(
-      thunks.map((thunk, i) => async () => {
-        try {
-          return await thunk();
-        } catch (err) {
-          noteSwallowed(err, `parallel() thunk ${i}`);
-          throw err;
-        }
-      }),
-    ));
+    const batch = (): Promise<Array<T | null>> =>
+      asFanOut(() => ctx.scheduler.gather(
+        thunks.map((thunk, i) => async () => {
+          try {
+            return await thunk();
+          } catch (err) {
+            noteSwallowed(err, `parallel() thunk ${i}`);
+            throw err;
+          }
+        }),
+      ));
+    // Every agent its thunks start — through any await — has notes on or off as it says.
+    return opts?.notes === undefined ? batch() : notesScope.run(opts.notes, batch);
   };
 
   const pipeline = async (items: unknown[], ...stages: Stage[]): Promise<unknown[]> => {
@@ -1033,7 +1104,7 @@ export function createPrimitives(
 
   return {
     agent: (prompt, opts) => handled(agent(prompt, opts)),
-    parallel: (thunks) => handled(parallel(thunks)),
+    parallel: (thunks, opts) => handled(parallel(thunks, opts)),
     pipeline: (items, ...stages) => handled(pipeline(items, ...stages)),
     phase,
     log,
@@ -1085,6 +1156,15 @@ function trustField(trust: TrustLevel): { trust?: TrustLevel } {
  * workflow()'s agents belong to the fan-out that called it.
  */
 const fanOutScope = new AsyncLocalStorage<FanOut>();
+
+/**
+ * Whether a parallel() call turned the notes board on (or off) for its
+ * agents (an ODW extension; see ./notes), carried like `fanOutScope`.
+ */
+const notesScope = new AsyncLocalStorage<boolean>();
+
+/** Runs (by their shared `seq`) that said they have no notes board, so it is said once. */
+const notesUnavailable = new WeakSet<object>();
 
 /** The `fellBackFrom` an agent's agent_finished event and record carry when it fell back (ODW extension). */
 function fallbackField(fellBackFrom: string[] | undefined): { fellBackFrom?: string[] } {

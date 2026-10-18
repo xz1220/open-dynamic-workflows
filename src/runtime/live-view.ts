@@ -129,6 +129,11 @@ export function formatEvent(ev: WorkflowEvent): string {
   else if (type === "cli_version") {
     detail = `${sanitizeText(ev.adapter, 40)}: ${sanitizeText(ev.version ?? `unknown (${String(ev.error ?? "?")})`, 160)}`;
   }
+  // A note on the run's notes board (ODW extension; see ../notes).
+  else if (type === "note_added") {
+    const by = ev.by as { agentId?: unknown; label?: unknown } | undefined;
+    detail = `#${String(ev.noteId)} ${sanitizeText(by?.label ?? "?", 60)}:${String(by?.agentId ?? "?")} ${sanitizeText(ev.text, 300)}`;
+  }
   else detail = sanitizeText(ev.error ?? ev.runId ?? "", 200);
   return `[${stamp}] ${type.padEnd(15)}${phase} ${detail}`.trimEnd();
 }

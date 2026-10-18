@@ -425,6 +425,7 @@ export const DEFAULT_SETTINGS: Settings = {
   applyVerify: null, // odw apply runs no command after an apply (--verify still does)
   maxTranscriptBytes: 5 * 1024 * 1024, // each agent's transcript; past it, one truncation line (0: none)
   recordVersions: true, // each adapter CLI's --version, once per run, for odw compare (false: no probe)
+  notes: false, // no notes board: agents run as written (true: every agent gets one; see src/notes.ts)
   permissions: "edit", // the tier every built-in ran with before tiers existed
   trust: "trusted", // agents read the repository's own instructions and settings (untrusted: each CLI's way of ignoring them)
   agentEnv: "inherit", // agent CLIs see ODW's whole environment

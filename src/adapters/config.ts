@@ -122,6 +122,7 @@ const KNOWN_TOP_KEYS = [
   "applyVerify",
   "maxTranscriptBytes",
   "recordVersions",
+  "notes",
   "permissions",
   "trust",
   "agentEnv",
@@ -1064,6 +1065,7 @@ function buildSettings(raw: Record<string, unknown>): Settings {
     ),
     recordVersions:
       raw["recordVersions"] == null ? DEFAULT_SETTINGS.recordVersions : buildFlag("recordVersions", raw["recordVersions"]),
+    notes: raw["notes"] == null ? DEFAULT_SETTINGS.notes : buildFlag("notes", raw["notes"]),
     permissions: raw["permissions"] == null ? DEFAULT_SETTINGS.permissions : buildTier(raw["permissions"]),
     trust: raw["trust"] == null ? DEFAULT_SETTINGS.trust : buildTrust(raw["trust"]),
     agentEnv: raw["agentEnv"] == null ? DEFAULT_SETTINGS.agentEnv : buildAgentEnv(raw["agentEnv"]),

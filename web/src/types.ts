@@ -741,6 +741,29 @@ export interface TranscriptEntry {
   redacted?: true;
 }
 
+/**
+ * One note on a run's notes board (ODW extension; src/notes.ts): GET
+ * /api/runs/:id/notes returns them in order ([] when the run has none; 404
+ * for Claude runs). Each is also a `note_added` event, with the same fields
+ * but `ts` (the event's own). Agents with notes on post them; ODW posts a
+ * `kind: "interface"` one for an isolated agent's kept change.
+ */
+export interface RunNote {
+  /** 1, 2, … in the order the board took them. */
+  noteId: number;
+  ts: number;
+  /** The agent that posted it, or that ODW posted it for. */
+  by: { agentId: number; label: string };
+  /** At most 2000 characters; may span lines. */
+  text: string;
+  /** "note": the agent's own; "interface": its diff stat and the interface lines it touched. */
+  kind: "note" | "interface";
+  /** Cut at 2000 characters. */
+  truncated?: true;
+  /** Secrets in it were replaced by `«redacted:<kind>»`. */
+  redacted?: true;
+}
+
 /** GET /api/runs/:id/agents/:agentId/transcript?since=<i> — 404 when the agent has no transcript. */
 export interface TranscriptPage {
   /** The entries from `since` on, at most 1000. */

@@ -5,7 +5,8 @@
  * self-contained prompt (independence framing + optional schema instructions),
  * runs the adapter in its workspace (the source tree by default, a throwaway
  * git worktree when isolation is requested) with the agent's `ODW_RUN_ID`,
- * `ODW_AGENT_ID` and `ODW_PORT` in its environment, and — when a schema is requested —
+ * `ODW_AGENT_ID` and `ODW_PORT` in its environment (and `ODW_NOTES`, with the run's notes
+ * board in its prompt, when notes are on — an ODW extension; see ./notes), and — when a schema is requested —
  * extracts/validates the reply and retries with corrective feedback until it
  * conforms or the retry budget is spent. A CLI the stall watchdog killed for
  * going quiet is started again, up to `stallRestarts` times per call. Each
@@ -118,6 +119,7 @@ import {
   type CliResult,
   type Config,
   type ContainerSandbox,
+  type SandboxMount,
   type PermissionTier,
   type SchemaFlag,
 } from "./adapters/types.js";
@@ -173,6 +175,11 @@ export interface AgentRequest {
    * tighten (see adapters/sandbox.ts). Unvalidated: a bad value fails the call.
    */
   sandbox?: unknown;
+  /**
+   * ODW extension (see ./notes): the notes board section of the prompt — how
+   * to post a note, and the notes so far — appended after the task.
+   */
+  notes?: string;
 }
 
 /** The persona framing injected for `agentType`, on top of the independence preamble. */
@@ -285,6 +292,11 @@ export interface RunOptions {
   signal?: AbortSignal;
   /** The call's agent id (its events' `agentId`), given to its processes as `ODW_AGENT_ID`. */
   agentId?: number;
+  /**
+   * The run's notes board for this call (an ODW extension; see ./notes): its
+   * `ODW_NOTES`, and what a container binds for it.
+   */
+  notes?: { env: Record<string, string>; mounts: SandboxMount[] };
   /**
    * Called with a note on preparing the call — no port left for `ODW_PORT`, a
    * file `.worktreeinclude` left out — so the run can log it.
@@ -724,9 +736,11 @@ export class Bridge {
     if (this.runId !== undefined) env.ODW_RUN_ID = this.runId;
     if (options.agentId !== undefined) env.ODW_AGENT_ID = String(options.agentId);
     if (port !== null) env.ODW_PORT = String(port);
+    Object.assign(env, options.notes?.env);
     try {
       return await this.runCall(request, options, {
         env,
+        mounts: options.notes?.mounts,
         onNote: options.onNote,
         changes: options.changes,
         transcript: options.transcript,
@@ -1362,6 +1376,7 @@ export class Bridge {
     // which native system-prompt flags do not. See LiteralRouter.noteAgentType.
     if (request.agentType) parts.push(personaPreamble(request.agentType));
     parts.push(request.prompt);
+    if (request.notes) parts.push(request.notes);
     if (request.schema && describe) parts.push(describeSchema(request.schema));
     return parts.join("\n\n");
   }
@@ -1459,6 +1474,8 @@ export class Bridge {
                 ...(promptFile ? [{ source: promptFile, target: promptFile, readonly: true }] : []),
                 ...(schema?.path ? [{ source: schema.path, target: schema.path, readonly: true }] : []),
                 ...(reply ? [{ source: dirname(reply.path), target: dirname(reply.path), readonly: false }] : []),
+                // The agent's notes directory and the board's (ODW extension; see ./notes).
+                ...(call.mounts ?? []),
               ],
               env,
               runId: this.runId,
@@ -1520,6 +1537,8 @@ export class Bridge {
  */
 interface CallEnv {
   env: Record<string, string>;
+  /** More binds each container run of the call gets: its notes board's (ODW extension). */
+  mounts?: SandboxMount[];
   onNote?: (message: string) => void;
   changes?: ChangeSink;
   transcript?: TranscriptSink;
@@ -1543,7 +1562,7 @@ interface CallEnv {
 }
 
 /** The variables an agent's processes get from ODW: only ever this call's, never inherited. */
-const AGENT_VARS = ["ODW_RUN_ID", "ODW_AGENT_ID", "ODW_PORT"];
+const AGENT_VARS = ["ODW_RUN_ID", "ODW_AGENT_ID", "ODW_PORT", "ODW_NOTES"];
 
 /**
  * `base` with the call's agent variables over it — and none of their values

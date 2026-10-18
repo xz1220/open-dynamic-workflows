@@ -27,6 +27,7 @@
  *   odw serve FILE.odwrun | odw view FILE   (a bundle, read-only); odw serve --token [VALUE] (runtime/serve-auth.ts)
  *   odw eval <file|name> [--adapter a,b] [--repeats N] [--json] [--out F] [--baseline F]   (src/eval/)
  *   odw conformance [--json] [--case N] [--dir DIR]   (the dialect conformance suite, src/conformance/)
+ *   odw note <text…> | odw notes [<run_id>] [--json]   (the run's notes board, runtime/notes-view.ts)
  */
 
 import { spawn } from "node:child_process";
@@ -75,6 +76,7 @@ import { startServer } from "./runtime/server.js";
 import { BUNDLE_EXT, BundleError, bundleRedactor, createBundle, DEFAULT_BUNDLE_MAX_BYTES, isBundleRunId, openBundle, type OpenedBundle } from "./runtime/bundle.js";
 import { generateToken, isValidToken } from "./runtime/serve-auth.js";
 import { printAgentLogs } from "./runtime/transcript-view.js";
+import { cmdNote, cmdNotes } from "./runtime/notes-view.js";
 import { executeRun } from "./runtime/worker.js";
 import { pausedForOf, pausedText } from "./quota-wait.js";
 import { cmdSchedule } from "./schedule/command.js";
@@ -161,6 +163,8 @@ export function helpText(): string {
     "  odw view FILE.odwrun                               show a bundle read-only (odw serve --open FILE.odwrun)",
     "  odw eval <file|name> [--adapter a,b] [--repeats N] cases × adapters × repeats: pass rate, cost, time (ODW extension)",
     "                                                     --json, --out report.json, --baseline report.json (exit 1: regressed)",
+    "  odw notes <run_id> [--json]                        a run's notes board: what its agents told each other (ODW extension)",
+    '  odw note "<text>"                                  inside an agent with notes on: post a note for the run\'s other agents',
     "",
     "Options:",
     "  --args JSON|@file   workflow input (JSON, @file.json, or a raw string)",
@@ -282,6 +286,10 @@ export async function main(argv: string[]): Promise<number> {
         return await cmdServe(["--open", ...rest], "view");
       case "eval":
         return await cmdEval(rest);
+      case "note":
+        return cmdNote(rest, storeFrom);
+      case "notes":
+        return cmdNotes(rest, storeFrom);
       case "conformance":
         return await cmdConformance(rest);
       default:

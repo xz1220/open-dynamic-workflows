@@ -22,6 +22,7 @@
 import type { CheckpointRequest } from "../control.js";
 import type { WorkflowEvent } from "../events.js";
 import type { AgentResultRecord } from "../journal.js";
+import type { Note } from "../notes.js";
 import type { RunDetail, RunSummary } from "./runs-view.js";
 import type { TranscriptPage } from "./transcript-view.js";
 
@@ -74,6 +75,11 @@ export interface RunSource {
    * (empty) page says `replayed`.
    */
   agentTranscript(runId: string, agentId: number, since: number): TranscriptPage | null;
+  /**
+   * The run's notes board (ODW extension; see ../notes): its notes in order,
+   * [] when it has none. Absent, or null, where the provider keeps none.
+   */
+  notes?(runId: string): Note[] | null;
   /**
    * Null when this source can pause/resume/stop a run; otherwise a human reason
    * the server returns (409) for any control attempt. Claude runs are read-only.

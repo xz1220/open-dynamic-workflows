@@ -12,6 +12,7 @@ import { join } from "node:path";
 import type { CheckpointRequest } from "../control.js";
 import type { WorkflowEvent } from "../events.js";
 import type { AgentResultRecord } from "../journal.js";
+import { readNotes, type Note } from "../notes.js";
 import type { Redactor } from "../redact.js";
 import { SigCache, statSig } from "./fs-util.js";
 import { detailFrom, EventFold, summaryFrom, type RunDetail, type RunFacts, type RunSummary } from "./runs-view.js";
@@ -138,6 +139,9 @@ export class OdwRunSource implements RunSource {
   agentDiff(runId: string, agentId: number): string | null {
     const path = this.store.agentDiffPath(runId, agentId);
     return existsSync(path) ? path : null;
+  }
+  notes(runId: string): Note[] {
+    return readNotes(this.store.runDir(runId));
   }
   agentTranscript(runId: string, agentId: number, since: number): TranscriptPage | null {
     const path = this.store.agentTranscriptPaths(runId, agentId).transcript;

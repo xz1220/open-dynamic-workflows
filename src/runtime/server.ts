@@ -38,6 +38,10 @@
  *                                   true. 404 when it has none (not started, a run from before
  *                                   transcripts or with maxTranscriptBytes 0, a Claude run); the
  *                                   same :agentId check
+ *   GET  /api/runs/:id/notes        the run's notes board (ODW extension; see ../notes): [Note] in
+ *                                   order — { noteId, ts, by: { agentId, label }, text, kind:
+ *                                   note|interface, truncated?, redacted? } — [] when it has none;
+ *                                   404 for Claude runs
  *   POST /api/runs/:id/control      { action: pause|resume|stop } (ODW runs; Claude runs → 409)
  *   POST /api/runs/:id/checkpoint   { action: approve|reject, checkpointId?, note?, payload? } answers a
  *                                   waiting checkpoint() (ODW extension) — the one named, else the
@@ -425,7 +429,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandleCont
     }
 
     const runMatch = path.match(
-      /^\/api\/runs\/([^/]+)(\/events|\/control|\/checkpoint|\/result|\/agents(?:\/[^/]+(?:\/diff|\/transcript)?)?)?$/,
+      /^\/api\/runs\/([^/]+)(\/events|\/control|\/checkpoint|\/result|\/notes|\/agents(?:\/[^/]+(?:\/diff|\/transcript)?)?)?$/,
     );
     if (runMatch) {
       const sub = runMatch[2];
@@ -471,6 +475,16 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandleCont
           return;
         }
         sendJsonCached(req, res, { value });
+        return;
+      }
+      // The run's notes board (ODW extension): ODW runs only; [] when it has none.
+      if (method === "GET" && sub === "/notes") {
+        const notes = src.notes?.(runId) ?? null;
+        if (!notes) {
+          sendJson(res, 404, { error: "notes boards are kept for ODW runs only" });
+          return;
+        }
+        sendJsonCached(req, res, notes);
         return;
       }
       // Saved per-agent results: ODW saves each one as it lands; Claude runs have none.

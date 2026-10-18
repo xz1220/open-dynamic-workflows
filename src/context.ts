@@ -18,6 +18,7 @@ import { LOG, NullSink, event, type EventSink, type WorkflowEvent } from "./even
 import type { AgentResultRecord, ReplayJournal } from "./journal.js";
 import { quotaPauseMessage, type QuotaPauseChange } from "./quota-wait.js";
 import { redactorFor, type Redactor } from "./redact.js";
+import type { NotesBoard } from "./notes.js";
 import type { PhaseDefaults } from "./routing.js";
 import { Scheduler } from "./scheduler.js";
 import { capChangeMessage } from "./throttle.js";
@@ -119,6 +120,12 @@ export interface RunContext {
    * Built once per run, shared like `seq`; absent: nothing is redacted.
    */
   redactor?: Redactor;
+  /**
+   * The run's notes board (ODW extension; see ./notes): what agents with
+   * notes on post and read. Shared like `seq`; absent where no run is
+   * persisted (in-process runs), which then have none.
+   */
+  notes?: NotesBoard;
   emit(ev: WorkflowEvent): void;
 }
 
@@ -147,6 +154,8 @@ export interface BuildContextOptions {
   agentSchemaPath?: (agentId: number) => string;
   /** The run's redactor; built from the config's `redact` when absent. */
   redactor?: Redactor;
+  /** The run's notes board (ODW extension; see ./notes). */
+  notes?: NotesBoard;
   /**
    * quotaWait (ODW extension): told whenever the run's pause for an adapter's
    * spent quota starts, moves or ends — after the run's log has said so — so
@@ -238,6 +247,7 @@ export function buildContext(config: Config, options: BuildContextOptions = {}):
     replay: options.replay,
     onCheckpoint: options.onCheckpoint,
     redactor,
+    notes: options.notes,
     emit(ev: WorkflowEvent): void {
       sink.emit(ev);
     },

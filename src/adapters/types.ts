@@ -385,6 +385,13 @@ export interface Settings {
    */
   recordVersions: boolean;
   /**
+   * The run's notes board for every agent (an ODW extension; see ../notes):
+   * the notes so far in each prompt, `ODW_NOTES` to post and read them, and
+   * each isolated agent's interface changes posted as it finishes. Off by
+   * default; `agent(…, { notes })` and `parallel(…, { notes })` override it.
+   */
+  notes: boolean;
+  /**
    * The run's permission tier (an ODW extension; `odw run --permissions`
    * overrides it): an adapter's `permissions` and an agent()'s `permissions`
    * may only lower it.

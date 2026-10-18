@@ -25,6 +25,8 @@ export const CHECKPOINT_REQUESTED = "checkpoint_requested";
 export const CHECKPOINT_RESOLVED = "checkpoint_resolved";
 // An adapter CLI's version, recorded once per run on its first dispatch (ODW extension; see provenance.ts).
 export const CLI_VERSION = "cli_version";
+// A note on the run's notes board (ODW extension; see notes.ts).
+export const NOTE_ADDED = "note_added";
 
 export interface WorkflowEvent {
   ts: number;

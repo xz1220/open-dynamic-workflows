@@ -84,6 +84,21 @@ declare global {
     expectRetries?: number;
     /** ODW extension: accept an empty or whitespace-only reply; without it the call throws with reason `"empty_reply"`. */
     allowEmpty?: boolean;
+    /**
+     * ODW extension — Claude Code ignores it. The run's notes board: the agent's prompt shows
+     * the notes posted before it started and how to post one (`"$ODW_NOTES" "text"`, or
+     * `odw note "text"`); `"$ODW_NOTES"` alone prints the notes so far. With `isolation:
+     * "worktree"`, a change it keeps is posted for it as it finishes: its diff stat and the
+     * declaration lines (export, def, func, pub fn, class, interface) its diff touched.
+     * Default: its parallel()'s `notes`, else the `notes` setting (off); `false` opts out.
+     */
+    notes?: boolean;
+  }
+
+  /** ODW extension — Claude Code's parallel() takes only the thunks. */
+  interface ParallelOptions {
+    /** Every agent the thunks start gets the run's notes board (see {@link AgentOptions.notes}), unless it says `notes: false`. */
+    notes?: boolean;
   }
 
   /** What {@link AgentOptions.expect} checks (ODW extension). */
@@ -133,7 +148,7 @@ declare global {
   function agent(prompt: string, opts?: AgentOptions): Promise<any>;
 
   /** Ordered barrier: recoverable failures become null; fatal stop/budget/dispatch-cap/configuration errors propagate after all thunks settle. */
-  function parallel<T>(thunks: Array<() => Promise<T> | T>): Promise<Array<T | null>>;
+  function parallel<T>(thunks: Array<() => Promise<T> | T>, opts?: ParallelOptions): Promise<Array<T | null>>;
 
   /** Run each item through stages independently; recoverable failures drop that item to null, fatal errors propagate. */
   function pipeline(
