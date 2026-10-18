@@ -2000,7 +2000,11 @@ async function cmdServe(rest: string[], as: "serve" | "view" = "serve"): Promise
     }
   }
   // Signed triggers (ODW extension): where each is answered, and one whose secret is missing.
-  for (const line of opened ? [] : triggerLines(config.settings.triggers, publicUrl ?? base)) process.stdout.write(`${line}\n`);
+  for (const line of opened ? [] : triggerLines(handle.triggers, publicUrl ?? base)) process.stdout.write(`${line}\n`);
+  for (const line of handle.triggerWarnings) process.stderr.write(`  ${line}\n`);
+  if (loopback && !publicUrl && Object.keys(handle.triggers).length > 0) {
+    process.stdout.write("  triggers on a loopback bind answer loopback Hosts only: give a tunnel's URL as --public-url to take its webhooks\n");
+  }
   if (!loopback && !token) {
     process.stderr.write(
       `\n  ⚠ WARNING: bound to ${host} with no --token — anyone who can reach this port reads every project's runs\n` +

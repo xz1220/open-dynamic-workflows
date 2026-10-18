@@ -75,8 +75,9 @@
  *                                   400 unless name and id are run-id-like, 404 when there is none
  *   *    /api/chat/sessions[/:id[/messages]]   the Chat Host (see ./chat-host)
  *   POST /api/triggers/:name        start the run a signed trigger in the config names (ODW
- *                                   extension; see ./trigger-route): 202 { runId }, 401 on a bad
- *                                   signature, 404 for a name the config lacks. Off loopback too.
+ *                                   extension; see ./trigger-route): 202 { runId }; one 401 for a bad
+ *                                   signature and a name the config lacks alike; 404 with no triggers.
+ *                                   Off loopback too; on loopback, Host loopback or --public-url's.
  *
  * GET /api/activity?limit=N (default 40, clamped to 1..200; junk → 40) →
  *   { events: Array<WorkflowEvent & { runId, run, adapter, provider }>,
@@ -127,9 +128,12 @@
  *
  * Signed triggers (ODW extension; see ./trigger-route): POST /api/triggers/<name>
  * answers a webhook whose signature checks out against the trigger's secret —
- * the signature is its credential, so the Host guard, the token gate and the
- * loopback-only rule do not apply there; only names in the config's
- * `triggers` exist, and each starts only its own workflow, untrusted by default.
+ * the signature is its credential, so the token gate and the loopback-only
+ * rule do not apply there. On a loopback bind the Host guard does, with the
+ * `--public-url`'s host let through too (a tunnel's): a DNS-rebinding page
+ * cannot post to it. Only the triggers of the user's own config exist — a
+ * repository's `./odw.config.json` names none (see triggersToServe) — and
+ * each starts only its own workflow, untrusted by default.
  *
  * Remote read-only access (ODW extension; see ./serve-auth): with `token` set
  * (`odw serve --token`), every /api request and the SSE stream need it — a
@@ -193,7 +197,8 @@ import { FailureLimiter, TokenGate, type TokenGateOptions } from "./serve-auth.j
 import { announceServe, ensureApproveSecret, parsePublicUrl, withdrawServe } from "./approve-links.js";
 import { approveLinksOff, approveRoute, type ApproveRouteContext } from "./approve-route.js";
 import { listWorkflowSummaries, workflowDetail } from "./workflows-view.js";
-import { TriggerRoute, type TriggerRouteOptions } from "./trigger-route.js";
+import { TriggerRoute, triggersToServe, type TriggerRouteOptions } from "./trigger-route.js";
+import type { TriggerSettings } from "../triggers.js";
 
 export type { ChatTurnRequest, ChatTurnRunner } from "./chat-host.js";
 
@@ -240,6 +245,10 @@ export interface ServeHandle {
   url: string;
   port: number;
   host: string;
+  /** The signed triggers it answers (ODW extension): the user's own config's only. */
+  triggers: Record<string, TriggerSettings>;
+  /** What to say at start about triggers it refused (a repository's own config's), a line each. */
+  triggerWarnings: string[];
   close(): Promise<void>;
 }
 
@@ -303,10 +312,12 @@ export function startServer(options: ServeOptions): Promise<ServeHandle> {
   } else if (options.rotateApproveSecret && !bundle) {
     ensureApproveSecret(store.root, { rotate: true });
   }
-  // Signed triggers (ODW extension): only when the config names some, and never for a shared bundle.
+  // Signed triggers (ODW extension): only when the user's own config names some
+  // (never a repository's: see triggersToServe), and never for a shared bundle.
+  const served = bundle ? { triggers: {}, configPath, warnings: [] } : triggersToServe(config, configPath, cwd);
   const triggers =
-    !bundle && Object.keys(config.settings.triggers).length > 0
-      ? new TriggerRoute({ triggers: config.settings.triggers, store, cwd, configPath, ...options.triggerSeams })
+    Object.keys(served.triggers).length > 0
+      ? new TriggerRoute({ triggers: served.triggers, store, cwd, configPath: served.configPath, ...options.triggerSeams })
       : null;
   const ctx: HandleContext = {
     sources, store, chatHost, feed, cwd, config, configPath, boundHost: host, redactor, bundle, gate: null,
@@ -355,6 +366,8 @@ export function startServer(options: ServeOptions): Promise<ServeHandle> {
         url: `http://${shown}:${boundPort}`,
         port: boundPort,
         host,
+        triggers: served.triggers,
+        triggerWarnings: served.warnings,
         close: () => {
           if (approve) withdrawServe(store.root);
           stopBackground(); // also ends the SSE streams, so server.close() can finish
@@ -403,25 +416,29 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandleCont
     }
     const path = url.pathname;
 
-    // Signed triggers (ODW extension; see ./trigger-route): the signature is the
-    // credential — a webhook comes through a tunnel's Host and carries no token.
-    const triggerMatch = /^\/api\/triggers\/([^/]+)$/.exec(path);
-    if (triggerMatch) {
-      if (bundle) sendJson(res, 409, { error: "this dashboard shows a shared bundle: it starts no runs" });
-      else if (!ctx.triggers) sendJson(res, 404, { error: "no such trigger" });
-      else await ctx.triggers.handle(req, res, triggerMatch[1]!);
-      return;
-    }
-
     // DNS-rebinding guard: on a loopback bind, a browser reaching this server
     // through a hostile DNS name carries that name in Host — refuse it outright
     // (reads too: the run list is sensitive). Off-loopback binds are explicit
     // opt-ins to remote reads, so the allowlist does not apply there.
-    // An approve link also arrives through the --public-url's host (a tunnel to a loopback bind).
+    // An approve link or a signed trigger's webhook also arrives through the
+    // --public-url's host (a tunnel to a loopback bind) — for those routes only.
     const approvePath = path === "/approve" || path.startsWith("/approve/");
-    const publicHost = approvePath && ctx.approve && req.headers.host ? new URL(ctx.approve.publicUrl).host === req.headers.host : false;
+    const triggerMatch = /^\/api\/triggers\/([^/]+)$/.exec(path);
+    const publicHost =
+      (approvePath || triggerMatch !== null) && ctx.approve && req.headers.host
+        ? new URL(ctx.approve.publicUrl).host === req.headers.host.toLowerCase()
+        : false;
     if (!isAllowedHost(boundHost, req.headers.host) && !publicHost) {
       sendJson(res, 403, { error: `unexpected Host '${req.headers.host}' — refusing (DNS rebinding guard)` });
+      return;
+    }
+
+    // Signed triggers (ODW extension; see ./trigger-route): the signature is the
+    // credential — a webhook carries no token, and is answered off loopback too.
+    if (triggerMatch) {
+      if (bundle) sendJson(res, 409, { error: "this dashboard shows a shared bundle: it starts no runs" });
+      else if (!ctx.triggers) sendJson(res, 404, { error: "no such trigger" });
+      else await ctx.triggers.handle(req, res, triggerMatch[1]!);
       return;
     }
 

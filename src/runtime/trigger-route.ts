@@ -4,20 +4,26 @@
  * ODW way (see ../triggers for the config and each provider's signature).
  *
  * The signature is the credential, as an approve link is its own: the route
- * passes the dashboard's Host guard, `--token` gate and loopback-only write
- * rule — a webhook sender can carry none of those — and answers off loopback
- * too. It stays narrow: only a trigger named in the config can start a run,
- * only the workflow and the arg mapping the config gives it, untrusted unless
- * the config says `"untrusted": false`.
+ * passes the dashboard's `--token` gate and loopback-only write rule — a
+ * webhook sender can carry neither — and answers off loopback too. On a
+ * loopback bind the DNS-rebinding Host guard still holds, letting through
+ * loopback hosts and the `--public-url`'s host only (a tunnel's), so a page
+ * a browser opened cannot reach it. It stays narrow: only a trigger named in
+ * the user's own config can start a run (see {@link triggersToServe}: never
+ * the repository's), only the workflow and the arg mapping it gives,
+ * untrusted unless that config says `"untrusted": false`.
  *
  * In order, each step answering when it refuses:
- *   404  no trigger of that name (or the server shows a shared bundle: 409)
  *   413  a body past 1 MiB (read no further)
- *   503  the trigger's secret is not set (`secretEnv` unset, or under 16 characters)
- *   401  a missing or bad signature, or a stale timestamp — and 429 once an
- *        address has sent too many (a good signature is never held back)
+ *   401  no trigger of that name, its secret not set (`secretEnv` unset, or
+ *        under 16 characters; `odw serve` says which on its stderr), a missing
+ *        or bad signature, or a stale timestamp — one answer for all, so a
+ *        caller without the secret cannot tell which triggers exist — and 429
+ *        once an address has sent too many (a good signature is never held back)
  *   200  `{ duplicate: true }` — this signature was accepted before (a replay, a retry);
- *        one refused with a 429 or 500 below is not remembered, so its retry counts
+ *        one refused with a 429 or 500 below is not remembered, so its retry counts.
+ *        A GitHub delivery's signature and `X-GitHub-Delivery` id are kept for 30
+ *        days across restarts (./trigger-seen); the others' signed timestamps expire
  *   400  a body that is neither JSON nor a form
  *   200  `{ challenge }` for Slack's url_verification, `{ pong: true }` for GitHub's ping
  *   200  `{ ignored }` — an event type the trigger's `events` does not list
@@ -29,7 +35,10 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { isAbsolute, resolve } from "node:path";
 
-import { expandHome } from "../adapters/config.js";
+import { randomBytes } from "node:crypto";
+
+import { expandHome, loadConfig } from "../adapters/config.js";
+import type { Config } from "../adapters/types.js";
 import {
   MIN_SECRET_LENGTH,
   ReplayCache,
@@ -48,9 +57,21 @@ import { startRun } from "./launcher.js";
 import { isRunActive } from "./run-liveness.js";
 import type { RunStore } from "./run-store.js";
 import { FailureLimiter, failureKey, type TokenGateOptions } from "./serve-auth.js";
+import { SeenDeliveries, seenFile } from "./trigger-seen.js";
+import { untrustedConfigSwap } from "../untrusted.js";
 
 /** The largest delivery a trigger reads: GitHub's issue and PR events are tens of KiB. */
 export const TRIGGER_MAX_BODY_BYTES = 1024 * 1024;
+
+/** The one 401 answer: an unknown trigger, a secret not set and a bad signature look alike to the caller. */
+export const UNAUTHENTICATED = "no trigger of that name accepts this signature";
+
+/** A GitHub delivery's keys in the seen file: its signature, and its `X-GitHub-Delivery` id when well-formed. */
+function githubKeys(name: string, signature: string, delivery: string | string[] | undefined): string[] {
+  const keys = [`${name}:sig:${signature}`];
+  if (typeof delivery === "string" && /^[A-Za-z0-9-]{1,64}$/.test(delivery.trim())) keys.push(`${name}:delivery:${delivery.trim()}`);
+  return keys;
+}
 
 /** What a trigger asks to start: the route's seam onto the launcher. */
 export interface TriggerStart {
@@ -89,14 +110,19 @@ type ActiveRuns = Map<string, string | null>;
 export class TriggerRoute {
   private readonly limiter: FailureLimiter;
   private readonly replays = new ReplayCache();
+  /** GitHub's deliveries, kept across restarts: GitHub signs no time (see ./trigger-seen). */
+  private readonly seen: SeenDeliveries;
   private readonly active = new Map<string, ActiveRuns>();
   private readonly starts = new Map<string, number[]>();
   private seeded = false;
   private readonly now: () => number;
+  /** What an unknown trigger's delivery is checked against: so it takes as long as a known one's. */
+  private readonly decoy = randomBytes(32).toString("hex");
 
   constructor(private readonly options: TriggerRouteOptions) {
     this.limiter = new FailureLimiter("bad trigger signatures", options.failureLimit);
     this.now = options.now ?? Date.now;
+    this.seen = new SeenDeliveries(seenFile(options.store.root), options.log ?? defaultLog);
   }
 
   /** Answer a request for trigger `rawName` (the path segment, still %-encoded). */
@@ -112,42 +138,46 @@ export class TriggerRoute {
       name = "";
     }
     const trigger = TRIGGER_NAME_RE.test(name) && Object.hasOwn(this.options.triggers, name) ? this.options.triggers[name]! : null;
-    if (!trigger) {
-      // Drain the body unread: the answer must not wait on it, nor reset the connection.
-      req.resume();
-      sendJson(res, 404, { error: "no such trigger" });
-      return;
-    }
+    // Every delivery is read and its signature checked, a known trigger's or not:
+    // a caller without the secret gets the same answer either way (401), so it
+    // cannot learn which triggers exist, nor which have no secret set yet.
     const body = await readRawBody(req, TRIGGER_MAX_BODY_BYTES);
     if (!body.ok) {
       sendJson(res, body.status, { error: body.error }, body.status === 413 ? { connection: "close" } : {});
       return;
     }
-    const secret = trigger.secret ?? (trigger.secretEnv ? ((this.options.env ?? process.env)[trigger.secretEnv] ?? "") : "");
-    if (secret.length < MIN_SECRET_LENGTH) {
+    const log = this.options.log ?? defaultLog;
+    const secret = trigger ? (trigger.secret ?? (trigger.secretEnv ? ((this.options.env ?? process.env)[trigger.secretEnv] ?? "") : "")) : "";
+    const ready = trigger !== null && secret.length >= MIN_SECRET_LENGTH;
+    if (trigger && !ready) {
       // Which variable is the operator's to know (odw serve says it at start), not the sender's.
-      (this.options.log ?? defaultLog)(`odw serve: trigger ${name} refused a delivery: $${trigger.secretEnv} is unset or under ${MIN_SECRET_LENGTH} characters`);
-      sendJson(res, 503, { error: `trigger ${name} is not ready: its secret is not set on the server` });
-      return;
+      log(`odw serve: trigger ${name} refused a delivery: $${trigger.secretEnv} is unset or under ${MIN_SECRET_LENGTH} characters`);
     }
     const now = this.now();
     const address = failureKey(req.socket.remoteAddress ?? "unknown");
-    const verdict = verifySignature(trigger.verify, secret, { headers: req.headers, body: body.bytes, now });
-    if (!verdict.ok) {
+    const verdict = verifySignature(trigger?.verify ?? "github", ready ? secret : this.decoy, { headers: req.headers, body: body.bytes, now });
+    if (!ready || !verdict.ok) {
       const blocked = this.limiter.blocked(address);
       if (blocked) {
         sendJson(res, 429, { error: blocked.error }, { "retry-after": String(blocked.retryAfter) });
         return;
       }
       this.limiter.fail(address);
-      sendJson(res, 401, { error: verdict.error });
+      // Why is the operator's to know: a known, ready trigger's reason goes to the server's log.
+      if (ready && !verdict.ok) log(`odw serve: trigger ${name} refused a delivery: ${verdict.error}`);
+      sendJson(res, 401, { error: UNAUTHENTICATED });
       return;
     }
+    const known = trigger!;
+    // GitHub signs no time: its deliveries are kept across restarts, by signature and delivery id.
+    const keys = known.verify === "github" ? githubKeys(name, verdict.replayKey, req.headers["x-github-delivery"]) : null;
     const replayKey = `${name}:${verdict.replayKey}`;
-    if (!this.replays.remember(replayKey, verdict.replayTtlSec, now)) {
+    const fresh = keys ? this.seen.remember(keys, now) : this.replays.remember(replayKey, verdict.replayTtlSec, now);
+    if (!fresh) {
       sendJson(res, 200, { ok: true, duplicate: true, error: "this delivery was received before: nothing started" });
       return;
     }
+    const forget = (): void => (keys ? this.seen.forget(keys, now) : this.replays.forget(replayKey));
     const parsed = parseDeliveryBody(body.bytes, req.headers["content-type"]);
     if (parsed === null || typeof parsed !== "object") {
       sendJson(res, 400, { error: "the body must be JSON (or a form, for Slack)" });
@@ -155,22 +185,22 @@ export class TriggerRoute {
     }
     const delivery = parsed as Record<string, unknown>;
     // The providers' handshakes start nothing.
-    if (trigger.verify === "slack" && delivery.type === "url_verification" && typeof delivery.challenge === "string") {
+    if (known.verify === "slack" && delivery.type === "url_verification" && typeof delivery.challenge === "string") {
       sendJson(res, 200, { challenge: delivery.challenge });
       return;
     }
-    const types = eventTypes(trigger.verify, req.headers, delivery);
-    if (trigger.verify === "github" && types[0] === "ping") {
+    const types = eventTypes(known.verify, req.headers, delivery);
+    if (known.verify === "github" && types[0] === "ping") {
       sendJson(res, 200, { ok: true, pong: true });
       return;
     }
-    if (trigger.events && !types.some((type) => trigger.events!.includes(type))) {
+    if (known.events && !types.some((type) => known.events!.includes(type))) {
       sendJson(res, 200, { ok: true, ignored: `event ${types.join(" / ") || "(none)"} is not one of this trigger's events` });
       return;
     }
 
     const active = this.activeRuns(name);
-    const key = dedupeKey(delivery, trigger.dedupe);
+    const key = dedupeKey(delivery, known.dedupe);
     if (key !== null) {
       for (const [runId, value] of active) {
         if (value === key) {
@@ -179,36 +209,36 @@ export class TriggerRoute {
         }
       }
     }
-    if (trigger.concurrency !== null && active.size >= trigger.concurrency) {
-      this.replays.forget(replayKey);
+    if (known.concurrency !== null && active.size >= known.concurrency) {
+      forget();
       sendJson(res, 429, { error: `trigger ${name} has ${active.size} active run(s), its concurrency` }, { "retry-after": "60" });
       return;
     }
-    const windowMs = trigger.rateLimit.windowSec * 1000;
+    const windowMs = known.rateLimit.windowSec * 1000;
     const recent = (this.starts.get(name) ?? []).filter((at) => now - at < windowMs);
     this.starts.set(name, recent);
-    if (recent.length >= trigger.rateLimit.max) {
+    if (recent.length >= known.rateLimit.max) {
       const retryAfter = Math.max(1, Math.ceil((recent[0]! + windowMs - now) / 1000));
-      this.replays.forget(replayKey);
-      sendJson(res, 429, { error: `trigger ${name} started ${recent.length} runs in ${trigger.rateLimit.windowSec}s, its rate limit` }, { "retry-after": String(retryAfter) });
+      forget();
+      sendJson(res, 429, { error: `trigger ${name} started ${recent.length} runs in ${known.rateLimit.windowSec}s, its rate limit` }, { "retry-after": String(retryAfter) });
       return;
     }
 
-    const context: TriggerContext = { ...triggerContext(name, trigger.verify, req.headers, delivery), ...(key !== null ? { dedupe: key } : {}) };
-    const source = trigger.source ? resolve(this.options.cwd, expandHome(trigger.source)) : this.options.cwd;
+    const context: TriggerContext = { ...triggerContext(name, known.verify, req.headers, delivery), ...(key !== null ? { dedupe: key } : {}) };
+    const source = known.source ? resolve(this.options.cwd, expandHome(known.source)) : this.options.cwd;
     let runId: string;
     try {
       runId = (this.options.start ?? startTriggerRun)({
-        workflow: trigger.workflow,
-        args: mapArgs(delivery, trigger.args),
-        untrusted: trigger.untrusted,
+        workflow: known.workflow,
+        args: mapArgs(delivery, known.args),
+        untrusted: known.untrusted,
         source: isAbsolute(source) ? source : resolve(source),
         configPath: this.options.configPath,
         runsRoot: this.options.store.root,
         context,
       });
     } catch (err) {
-      this.replays.forget(replayKey);
+      forget();
       sendJson(res, 500, { error: `trigger ${name} could not start its run: ${(err as Error).message}` });
       return;
     }
@@ -250,6 +280,46 @@ export class TriggerRoute {
   }
 }
 
+/** The triggers `odw serve` answers, where they come from, and what it refused (see {@link triggersToServe}). */
+export interface ServedTriggers {
+  triggers: Record<string, TriggerSettings>;
+  /** The config file a trigger's runs read: the one `odw serve` was given, or the user's own it served in its place. */
+  configPath: string | null;
+  /** What `odw serve` says at start, a line each: a repository's triggers it refused. */
+  warnings: string[];
+}
+
+/**
+ * The triggers `odw serve` may answer: only those of the user's own config —
+ * `--config`, `$ODW_CONFIG`, or `~/.config/odw/config.json` outside the
+ * repository it runs in (the test an untrusted run makes, ../untrusted). A
+ * repository's own config (`./odw.config.json`) is code the repository
+ * ships: a clone must not open a webhook that starts runs — trusted ones,
+ * with `"untrusted": false` — on the user's machine. Its triggers are
+ * refused, with a warning, and those of the user's own
+ * `~/.config/odw/config.json` (outside the repository) are served in their
+ * place; their runs read that config.
+ */
+export function triggersToServe(config: Config, configPath: string | null, cwd: string): ServedTriggers {
+  const swap = untrustedConfigSwap(configPath, cwd, cwd);
+  if (!swap) return { triggers: config.settings.triggers, configPath, warnings: [] };
+  const warnings: string[] = [];
+  const refused = Object.keys(config.settings.triggers);
+  if (refused.length > 0) {
+    warnings.push(
+      `⚠ not serving the trigger${refused.length === 1 ? "" : "s"} ${refused.join(", ")} of ${swap.dropped}: it is the repository's own config, ` +
+        `and a repository may not start runs on this machine — put triggers in a config of your own (--config, $ODW_CONFIG or ~/.config/odw/config.json)`,
+    );
+  }
+  if (!swap.path) return { triggers: {}, configPath, warnings };
+  try {
+    return { triggers: loadConfig(swap.path, { quiet: true }).settings.triggers, configPath: swap.path, warnings };
+  } catch (err) {
+    warnings.push(`⚠ not serving the triggers of ${swap.path}: ${(err as Error).message}`);
+    return { triggers: {}, configPath, warnings };
+  }
+}
+
 /** Start a trigger's run with the launcher: detached, as `odw run` does. */
 function startTriggerRun(spec: TriggerStart): string {
   return startRun(spec.workflow, {
@@ -275,7 +345,7 @@ export function triggerLines(triggers: Record<string, TriggerSettings>, base: st
     lines.push(`  trigger ${name} → POST ${base}/api/triggers/${name} (${trigger.verify}-signed; runs ${trigger.workflow}, ${trust})`);
     const secret = trigger.secret ?? (trigger.secretEnv ? (env[trigger.secretEnv] ?? "") : "");
     if (secret.length < MIN_SECRET_LENGTH) {
-      lines.push(`  ⚠ trigger ${name}: $${trigger.secretEnv} is unset or under ${MIN_SECRET_LENGTH} characters — it answers 503 until it is set`);
+      lines.push(`  ⚠ trigger ${name}: $${trigger.secretEnv} is unset or under ${MIN_SECRET_LENGTH} characters — its deliveries are refused (401) until it is set`);
     }
   }
   return lines;

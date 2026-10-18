@@ -25,7 +25,9 @@
  *   github  `X-Hub-Signature-256: sha256=<hex HMAC-SHA256(secret, raw body)>`.
  *           https://docs.github.com/en/webhooks/using-webhooks/validating-webhook-deliveries
  *           GitHub signs no timestamp: a replayed delivery is caught by its
- *           signature having been seen (see ReplayCache), for an hour.
+ *           signature or its `X-GitHub-Delivery` id having been seen — kept
+ *           under the runs root for 30 days, across restarts (see
+ *           ../runtime/trigger-seen, which says what that leaves).
  *   linear  `Linear-Signature: <hex HMAC-SHA256(secret, raw body)>`, and the
  *           body's `webhookTimestamp` (Unix ms) within a minute of now, as the
  *           docs recommend against replays.
@@ -88,7 +90,10 @@ export const DEFAULT_TRIGGER_RATE = { max: 30, windowSec: 3600 } as const;
 export const TIMESTAMP_WINDOW_SEC = 300;
 /** Seconds a Linear delivery's `webhookTimestamp` may be off from now (Linear's docs: a minute). */
 export const LINEAR_WINDOW_SEC = 60;
-/** How long a GitHub delivery's signature is remembered against replays (GitHub signs no time). */
+/**
+ * How long a GitHub delivery's signature is remembered in memory. The route
+ * keeps GitHub's deliveries on disk for 30 days instead (../runtime/trigger-seen).
+ */
 export const GITHUB_REPLAY_SEC = 3600;
 
 const KNOWN_TRIGGER_KEYS = [
