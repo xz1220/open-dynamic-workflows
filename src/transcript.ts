@@ -8,8 +8,9 @@
  *
  *   agents/<agentId>.transcript.jsonl   its stdout: a JSONL adapter's events one
  *                                       per line, as received (Claude Code's
- *                                       stream-json, kilo's and opencode's
- *                                       events); any other adapter's output as
+ *                                       stream-json, Codex's `exec --json`,
+ *                                       kilo's and opencode's events); any
+ *                                       other adapter's output as
  *                                       {"kind":"text","text":…} lines, one per
  *                                       line it printed (newline included; a
  *                                       longer line in 4 KB pieces)

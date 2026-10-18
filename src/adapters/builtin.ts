@@ -69,6 +69,44 @@ const CLAUDE_OUTPUT: AdapterOutput = {
   mcpPath: ["mcp_servers"],
 };
 
+// `codex exec --json` (https://developers.openai.com/codex/noninteractive, now
+// https://learn.chatgpt.com/docs/non-interactive-mode; the event types are
+// codex-rs/exec/src/exec_events.rs): JSONL events — thread.started,
+// turn.started, item.started/updated/completed {item: {id, type, …}},
+// turn.completed {usage}, turn.failed {error: {message}}, error {message}.
+//
+// The reply comes from two places, on purpose. `--output-last-message
+// {reply_file}` is codex's own final message, written once the turn completed
+// — empty when it had none — whatever shape its events take (it even
+// recovers a message whose event was dropped under backpressure), so it wins.
+// The last `item.completed` agent_message (`match`) is the reply when that
+// file is missing — and when both are, a stream of events is no reply: the
+// reply is empty (an empty_reply failure) and the run's log says what was
+// missing (see output.ts). With --output-schema that message is the JSON.
+//
+// Usage: `turn.completed`'s, summed. Its input_tokens already counts the
+// cached part (codex's own non_cached_input() is input_tokens -
+// cached_input_tokens) and its output_tokens the reasoning part, so they are
+// usage.ts's inputTokens and outputTokens as they are; cached_input_tokens is
+// cacheReadTokens, cache_write_input_tokens cacheWriteTokens. Codex runs one
+// turn per exec, so the sum is that turn's (codex reports its thread's total
+// so far). No dollars: codex reports none, and ODW invents no prices.
+//
+// Failures: `turn.failed` and `error` are codex's own report, classified like
+// any failure — but codex also prints an error it retries ("Reconnecting...
+// 2/5") as an `error` event and goes on, so a later turn.completed clears it.
+// Non-fatal `error` *items* are warnings, shown in the transcript only.
+const CODEX_OUTPUT: AdapterOutput = {
+  format: "jsonl",
+  eventType: "item.completed",
+  match: { path: ["item", "type"], equals: "agent_message" },
+  textPath: ["item", "text"],
+  select: "last",
+  usageEvent: "turn.completed",
+  usagePath: ["usage"],
+  errorEvents: { "turn.failed": ["error"], error: ["message"] },
+};
+
 // Native structured output (ODW extension; see native-schema.ts). Claude Code
 // 2.1.302 `--json-schema <schema>` takes the schema's JSON as its value and
 // rejects an invalid one before the run starts ("Error: --json-schema is not
@@ -159,6 +197,11 @@ export const BUILTIN_ADAPTERS: Record<string, RawAdapter> = {
       // top-level flag: `codex exec --search` is rejected, it must precede `exec`
       "--search",
       "exec",
+      // exec options: events on stdout, and the final message in a file of
+      // its own. The long spelling: older releases do not know `-o`.
+      "--json",
+      "--output-last-message",
+      "{reply_file}",
       "--skip-git-repo-check",
       "{permission_args}",
       "--cd",
@@ -167,6 +210,7 @@ export const BUILTIN_ADAPTERS: Record<string, RawAdapter> = {
     ],
     stdin: "{prompt}",
     flags: { model: ["--model"], schema: CODEX_SCHEMA },
+    output: CODEX_OUTPUT,
     permissionArgs: CODEX_PERMISSIONS,
   },
   claude: {

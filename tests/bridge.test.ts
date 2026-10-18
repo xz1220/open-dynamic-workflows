@@ -158,7 +158,7 @@ test("JSONL replies are decoded while the runner streams them; text replies are 
 
   let textStreamed: unknown = "unset";
   const textConfig = defaultConfig();
-  textConfig.settings.defaultAdapter = "codex"; // a text adapter (claude streams stream-json)
+  textConfig.settings.defaultAdapter = "gemini"; // a text adapter (claude and codex stream JSONL)
   const textBridge = new Bridge(textConfig, {
     runner: async (_command, options) => {
       textStreamed = options?.onStdout;

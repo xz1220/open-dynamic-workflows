@@ -19,6 +19,17 @@
  *   kilo / opencode          text → text; reasoning → text (`thinking`);
  *                            tool_use → tool_call and tool_result; error →
  *                            error; step_start / step_finish → nothing
+ *   Codex `exec --json`      thread.started → raw; turn.started → nothing;
+ *                            items: agent_message → text, reasoning → text
+ *                            (`thinking`), command_execution → tool_call
+ *                            `shell` {command} then tool_result (ok: exit 0,
+ *                            its output), file_change → tool_call `edit`
+ *                            {paths}, mcp_tool_call → tool_call
+ *                            `server.tool` then tool_result, web_search →
+ *                            tool_call `web_search` {query}, todo_list → raw
+ *                            (the list), error → error; turn.completed →
+ *                            result; turn.failed → result (failed); error →
+ *                            error
  *   ODW's own lines          {"kind":"text"} → text; attempt (with the
  *                            adapter a fallback moved to); truncated
  *   anything else            raw: the line itself
@@ -161,8 +172,22 @@ function normalizeLine(line: string, tools: Map<string, string>): Draft[] {
     case "step_start":
     case "step_finish":
       return [];
+    // Codex `exec --json` (codex-rs/exec/src/exec_events.rs)
+    case "thread.started":
+      return [{ kind: "raw", text: typeof event.thread_id === "string" ? `thread ${event.thread_id} started` : "thread started" }];
+    case "turn.started":
+      return [];
+    case "turn.completed":
+      return [{ kind: "result", isError: false }];
+    case "turn.failed":
+      return [{ kind: "result", isError: true, text: errorMessage(event.error) ?? "turn failed" }];
+    case "item.started":
+    case "item.updated":
+    case "item.completed":
+      return codexItem(event.type, event.item, tools, text);
     case "error":
-      return [{ kind: "error", text: errorMessage(event.error) ?? text }];
+      // opencode's { error: {…} }; Codex's { message }.
+      return [{ kind: "error", text: errorMessage(event.error) ?? errorMessage(event) ?? text }];
     default:
       return [{ kind: "raw", text }];
   }
@@ -331,6 +356,86 @@ function opencodeTool(event: Record<string, unknown>, tools: Map<string, string>
   if (state.status !== "completed") return [call];
   const output = typeof state.output === "string" ? state.output : contentText(state.output);
   return [call, toolResult(call.tool, output, false, exitStatus(state.metadata))];
+}
+
+/**
+ * A Codex item event (`item.started`, `item.updated`, `item.completed`). A
+ * tool's call shows when its item starts — or with its result, when its start
+ * never came (a file change has none) — and its result when it completes;
+ * what the agent wrote and thought shows once it is complete. An item of a
+ * type this does not know stays a raw line.
+ */
+function codexItem(phase: string, raw: unknown, tools: Map<string, string>, line: string): Draft[] {
+  if (!isRecord(raw)) return [{ kind: "raw", text: line }];
+  const item = raw;
+  const id = typeof item.id === "string" && item.id ? item.id : undefined;
+  const done = phase === "item.completed";
+  const called = id !== undefined && tools.has(id);
+  /** Its call, unless its start showed it already. */
+  const call = (name: string, input: unknown, about?: string): Draft[] => {
+    if (called) return [];
+    const draft = toolCall(id, name, input, tools);
+    if (about) draft.text = about;
+    return [draft];
+  };
+  /** A completed item's entries; its id is let go (a retry's items count from 0 again). */
+  const completed = (drafts: Draft[]): Draft[] => {
+    if (id !== undefined) tools.delete(id);
+    return drafts;
+  };
+  const words = (value: unknown): string => (typeof value === "string" ? value : "");
+  switch (item.type) {
+    case "agent_message":
+    case "reasoning": {
+      const text = words(item.text);
+      if (!done || !text.trim()) return [];
+      return [item.type === "reasoning" ? { kind: "text", text, thinking: true } : { kind: "text", text }];
+    }
+    case "command_execution": {
+      const input = { command: words(item.command) };
+      if (!done) return phase === "item.started" ? call("shell", input) : [];
+      const exit = typeof item.exit_code === "number" ? item.exit_code : undefined;
+      const declined = item.status === "declined";
+      const failed = declined || item.status === "failed" || (exit !== undefined && exit !== 0);
+      const result = toolResult("shell", words(item.aggregated_output), failed, exit);
+      if (declined) result.text = "declined";
+      return completed([...call("shell", input), result]);
+    }
+    case "file_change": {
+      const changes = Array.isArray(item.changes) ? item.changes.filter(isRecord) : [];
+      const paths = changes.map((change) => [words(change.kind), words(change.path)].filter(Boolean).join(" ")).join(", ");
+      if (!done) return phase === "item.started" ? call("edit", item.changes, paths) : [];
+      const failed = item.status === "failed";
+      return completed([...call("edit", item.changes, paths), ...(failed ? [toolResult("edit", "the patch was not applied", true)] : [])]);
+    }
+    case "mcp_tool_call": {
+      const name = [words(item.server), words(item.tool)].filter(Boolean).join(".") || "mcp";
+      if (!done) return phase === "item.started" ? call(name, item.arguments) : [];
+      const result = isRecord(item.result) ? item.result : {};
+      const error = errorMessage(item.error);
+      const failed = item.status === "failed" || error !== undefined;
+      const output = error ?? contentText(result.content ?? result.structured_content);
+      return completed([...call(name, item.arguments), toolResult(name, output, failed)]);
+    }
+    case "web_search": {
+      const action = isRecord(item.action) ? item.action : {};
+      const about = [item.query, action.query, action.url, action.pattern].find((v): v is string => typeof v === "string" && v.trim() !== "");
+      // A search may start before its query is known: it shows once it has one.
+      if (!done) return phase === "item.started" && about ? call("web_search", { query: item.query, action: item.action }, about) : [];
+      return completed(call("web_search", { query: item.query, action: item.action }, about));
+    }
+    case "todo_list": {
+      const steps = (Array.isArray(item.items) ? item.items.filter(isRecord) : []).map(
+        (step) => `${step.completed === true ? "[x]" : "[ ]"} ${words(step.text)}`,
+      );
+      return [{ kind: "raw", text: steps.length > 0 ? `to-do: ${steps.join(" · ")}` : "to-do list" }];
+    }
+    case "error":
+      // A warning codex surfaced as an item: the run goes on.
+      return done ? [{ kind: "error", text: words(item.message) || line }] : [];
+    default:
+      return [{ kind: "raw", text: line }];
+  }
 }
 
 function toolCall(id: unknown, name: unknown, input: unknown, tools: Map<string, string>): Draft {

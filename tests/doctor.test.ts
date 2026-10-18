@@ -3,10 +3,11 @@
  * catches CLIs which exit 0 without answering when run headless.
  */
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execPath } from "node:process";
+import { fileURLToPath } from "node:url";
 import { after, test } from "node:test";
 
 import { loadConfig, locateConfig } from "../src/adapters/config.ts";
@@ -81,6 +82,23 @@ test("doctor: --smoke reports a rate-limited CLI at once instead of waiting it o
   assert.equal(smoke.status, "fail");
   assert.match(smoke.detail, /^adapter 'limited' hit a rate limit: 429 Too Many Requests/);
   assert.ok(Date.now() - started < 10_000, "no backoff in a smoke check");
+});
+
+test("doctor: --smoke reads codex's exec --json — its reply file answers, and a failed turn says why", async () => {
+  // codex's full config entry (the example's), run on the fake codex.
+  const fake = fileURLToPath(new URL("./fixtures/fake-codex.mjs", import.meta.url));
+  const example = JSON.parse(readFileSync(join(process.cwd(), "odw.config.example.json"), "utf8"));
+  const entry = example.adapters.codex;
+  const as = (prompt: string) => ({ ...entry, command: [execPath, fake, ...entry.command.slice(1)], stdin: `${prompt} {prompt}` });
+  const { dir, path, config } = setup({ adapters: { codex: as("CASE:ok"), spent: as("CASE:quota") } });
+  const report = await runDoctor({ config, configPath: path, cwd: dir, smoke: ["codex", "spent"] });
+  assert.equal(byId(report, "adapter:codex").status, "ok");
+  assert.match(byId(report, "adapter:codex").detail, /sandbox: workspace-write/, "the posture still read from its argv");
+  assert.equal(byId(report, "smoke:codex").status, "ok");
+  assert.match(byId(report, "smoke:codex").detail, /answered headless/);
+  const spent = byId(report, "smoke:spent");
+  assert.equal(spent.status, "fail");
+  assert.match(spent.detail, /^adapter 'spent' ran out of usage quota — .*: Quota exceeded\./, "codex's own words, from its turn.failed");
 });
 
 test("doctor: a broken config fails fast with the loader's message", async () => {

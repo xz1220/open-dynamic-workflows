@@ -96,6 +96,8 @@ export const FAILURE_PATTERNS: Readonly<Record<TextReason, readonly RegExp[]>> =
     /\b(?:is )?out of credits\b|\badd credits to continue\b|\b(?:requires|needs) more credits\b/i,
     /\bCreditsError\b|\bFreeUsageLimitError\b|\bFREE_USER_USAGE_LIMIT\b|\bUSAGE_PRICING_REQUIRED\b|\bPROMOTION_MODEL_LIMIT_REACHED\b/,
     /\bfree usage (?:exceeded|limit)\b|\bfree tier has been discontinued\b|\baccount budget exceeded\b/i,
+    // Codex: a workspace's spend cap; a ChatGPT plan without Codex.
+    /\bhit your spend cap\b|\bincrease your spend cap\b|\bwith your ChatGPT plan, upgrade to\b/i,
     // Daily quotas (Gemini: "You have exhausted your daily quota on this model").
     /\bdaily\b[^\n]{0,60}\bquota\b|\bquota\b[^\n]{0,200}\bper ?day\b|\bPerDay\b|\bTerminalQuotaError\b/i,
     /\bexhausted your (?:capacity|quota)\b/i,
@@ -132,6 +134,8 @@ export const FAILURE_PATTERNS: Readonly<Record<TextReason, readonly RegExp[]>> =
     /(?<![a-z])overloaded_error|\b(?:model|server|service|api|engine|system)s? (?:is |are )?(?:currently |temporarily )?overloaded\b/i,
     /\b(?:503|529)\b[^\n]{0,80}\boverloaded\b|\berror\W{0,3}overloaded\b/i,
     /\bis at capacity\b|\btemporary capacity issue\b|\btemporarily limiting requests\b/i,
+    // Codex: the Flex tier out of capacity; "We're currently experiencing high demand".
+    /\bflex capacity unavailable\b|\bexperiencing high demand\b/i,
     // Gemini/Vertex 429 RESOURCE_EXHAUSTED; Cursor "[resource_exhausted]".
     /\bresource (?:has been )?exhausted\b|\bRESOURCE_EXHAUSTED\b|\bRetryableQuotaError\b/i,
     /\bmax (?:RPM|TPM|RPS)\b|\bquota\b[^\n]{0,200}\bper ?minute\b/i,
