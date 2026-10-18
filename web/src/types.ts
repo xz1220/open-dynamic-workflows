@@ -172,6 +172,142 @@ export interface RunDetail extends RunSummary {
   workflowName: string | null;
   /** checkpoint() calls waiting for approval (ODW extension). */
   pendingCheckpoints?: PendingCheckpoint[];
+  /** Each adapter CLI's version as the run recorded it on its first dispatch, by adapter (ODW extension). */
+  cliVersions?: Record<string, CliVersion>;
+  /** odw's version, and the sha256 of the workflow source as launched; null for older runs (ODW extension). */
+  odwVersion?: string | null;
+  sourceHash?: string | null;
+}
+
+/** An adapter CLI's `--version` as a run recorded it: null, with why, when the CLI did not tell (ODW extension). */
+export interface CliVersion {
+  /** The executable probed: the adapter command's first argv element. */
+  command: string;
+  version: string | null;
+  error?: string;
+}
+
+/**
+ * GET /api/compare?a=<run>&b=<run> — what changed from run A to run B (ODW
+ * extension; src/runtime/compare.ts documents every key). 400 unless both are
+ * run ids, 404 when either is no ODW run.
+ */
+export interface RunComparison {
+  /** 1; it changes when a key changes meaning. */
+  version: 1;
+  a: CompareRunInfo;
+  b: CompareRunInfo;
+  /** How to read it, a sentence each: a run still going (compared as it stands), a run without a recorded setup, different workflows. */
+  notes: string[];
+  /** What the runs ran with that differs. */
+  setup: SetupChange[];
+  totals: CompareTotals;
+  /** A row per agent of either run, in A's phase and call order (B's new phases in place). */
+  agents: AgentComparison[];
+}
+
+export interface CompareRunInfo {
+  runId: string;
+  name: string;
+  workflowName: string | null;
+  /** Display state: done, failed, stopped, running, paused, waiting, stale, pending. */
+  state: string;
+  /** Still going: compared as it stands. */
+  live: boolean;
+  createdAt: number | null;
+  odwVersion: string | null;
+  sourceHash: string | null;
+  resumedFrom: string | null;
+}
+
+/**
+ * `field`: "source" (sha256), "script", "args", "odwVersion", "budget",
+ * "cliVersion.<adapter>", "settings.<key>", "adapterDefinition.<adapter>" (a
+ * 12-hex fingerprint), "adapter" / "permissions" (runs without a recorded
+ * setup), "adaptersUsed", "modelsUsed" (sorted lists). `a`/`b`: as recorded; null: unknown or unset.
+ */
+export interface SetupChange {
+  field: string;
+  a: unknown;
+  b: unknown;
+}
+
+/** One figure of both runs, and B − A (null when either is unknown). */
+export interface CompareMetric {
+  a: number | null;
+  b: number | null;
+  delta: number | null;
+}
+
+export interface CompareTotals {
+  wallMs: CompareMetric;
+  inputTokens: CompareMetric;
+  outputTokens: CompareMetric;
+  costUsd: CompareMetric;
+  agents: CompareMetric;
+  done: CompareMetric;
+  failed: CompareMetric;
+  /** Some output tokens of the run are chars/4 estimates. */
+  estimated: { a: boolean; b: boolean };
+}
+
+export interface CompareAgentFacts {
+  agentId: number | null;
+  label: string;
+  phase: string | null;
+  state: "running" | "done" | "failed" | "stale";
+  adapter: string | null;
+  /** The model it asked for: a tier keeps its `@` name. */
+  model: string | null;
+  attempts: number | null;
+  durationMs: number | null;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  costUsd: number | null;
+  estimated: boolean;
+  /** Replayed by `odw resume`: no CLI ran. */
+  replayed: boolean;
+  failureReason: string | null;
+  error: string | null;
+  /** Its kept diff's stats; null when it kept none. */
+  changes: AgentChanges | null;
+}
+
+export interface AgentComparison {
+  /** How A's and B's agents were paired; null when one run has it only. */
+  match: "label" | "key" | "order" | null;
+  /** Red: "newly-failed"; green: "fixed". */
+  outcome: "unchanged" | "newly-failed" | "fixed" | "only-a" | "only-b";
+  label: string;
+  phase: string | null;
+  a: CompareAgentFacts | null;
+  b: CompareAgentFacts | null;
+  /** B − A; null when either is unknown. */
+  delta: {
+    durationMs: number | null;
+    inputTokens: number | null;
+    outputTokens: number | null;
+    costUsd: number | null;
+    attempts: number | null;
+  };
+  reply: ReplyComparison;
+}
+
+export interface ReplyComparison {
+  /** "none": a side has no saved reply (failed, still running, not in that run). */
+  status: "identical" | "differs" | "none";
+  kind: "text" | "json" | null;
+  /** text: unified-diff lines (`@@` headers, ` `/`-`/`+` lines), at most 40, each cut to 200 characters. */
+  diff?: string[];
+  /** text: lines added and removed over the whole reply. */
+  added?: number;
+  removed?: number;
+  /** json: the paths that differ, at most 20; values as compact JSON cut to 200 characters. */
+  paths?: Array<{ path: string; op: "changed" | "added" | "removed"; a?: string; b?: string }>;
+  /** json: how many paths differ in all. */
+  changed?: number;
+  /** Cut: `odw compare <a> <b> --agent <label|id>` shows it whole. */
+  truncated: boolean;
 }
 
 /** One adapter row exposed in settings snapshots. */
