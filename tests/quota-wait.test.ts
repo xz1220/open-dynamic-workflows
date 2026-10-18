@@ -712,7 +712,7 @@ test("agent(): a checkpoint() waits beside a quota pause — answered meanwhile,
   const asked = p.checkpoint("Ship it?");
   await until(() => control.waiting().length === 1);
   assert.equal(control.decide({ action: "approve", note: "go", by: "cli" }), true);
-  assert.deepEqual(await asked, { approved: true, note: "go", by: "cli" });
+  assert.deepEqual(await asked, { approved: true, note: "go", by: "cli", payload: undefined, edited: false });
   assert.deepEqual([clock.sleeping, changes.map((c) => c.change)], [1, ["started"]], "the pause goes on");
   clock.advance(RESET_MS);
   assert.equal(await waiting, "a answered");
