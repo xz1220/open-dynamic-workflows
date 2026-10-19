@@ -1520,6 +1520,15 @@ adapter whose command is node or another interpreter, a script or a relative pat
 not probed. `"recordVersions": false` turns the probes off. `odw eval` (below) builds
 on this, and so does drift watch.
 
+A CLI can update itself under a long run (Claude Code's native installer does, in the
+background). So a run asks again — at the adapter's next dispatch once 30 minutes have
+passed since it last asked, and at once (at most once a minute) when one of its agents
+fails oddly: an unexplained exit, or a CLI that could not start. A different answer
+lands as a `cli_version_changed` event — `{ adapter, command, from, to, message }`,
+shown in the live view, `odw logs` and the dashboard's logs — and the run goes on; the
+run's `cli_version` stays the first one, so `odw compare` still holds runs to what they
+started with.
+
 ### Drift watch (ODW extension)
 
 A model gets retired or re-pointed, a CLI upgrades itself overnight, and the workflow
@@ -3248,6 +3257,16 @@ exactly like a timeout — then starts it again with the same prompt, up to
 with an error saying the agent stalled. A stop, pause or budget ceiling always
 wins over a restart.
 
+**A laptop that slept is not a stall.** Silence is counted on the monotonic clock,
+which stands still while the machine sleeps; and the worker compares the wall clock
+with it every 30 seconds — a jump of more than a minute (or a check that came that
+much later than due: a paused VM, a stopped worker) is a sleep. Every running agent's
+silence then starts over, a full `stallTimeout` of grace, and the run logs it once as a
+`host_suspended` event (`{ sleptSeconds, message }`). An agent whose connection dropped
+while the lid was closed fails as `network` and is retried (see
+[Rate limits, quotas and logins](#rate-limits-quotas-and-logins)). ODW does not keep the
+machine awake — a closed lid sleeps anyway.
+
 ```jsonc
 {
   "stallTimeout": 120, // seconds of silence; null (the default) = off
@@ -3337,7 +3356,7 @@ chars/4 of its reply — the run's log says so once. A CLI that reports no dolla
 **ODW extension.** Every failed agent is classified from its CLI's exit status
 and the end of its output: `rate_limit`, `quota`, `auth`, `timeout`, `stalled`,
 `not_found` (the CLI could not start), `permission` (a tool call or approval was
-refused), `model_unavailable` (the model asked for is unknown, retired, or not
+refused), `network` (the connection to the model's API was lost), `model_unavailable` (the model asked for is unknown, retired, or not
 offered to the account) or `exit` — and four classes for runs that "succeeded" without the
 evidence: `empty_reply`, `unmet_expectation`, under `"mcpFailures": "fail"`
 `mcp_unavailable`, and `orphaned_background` (background work left running at the
@@ -3366,6 +3385,14 @@ agent_failed    (Search) search — [quota, retry after 3h 22m] AdapterExecution
   that asks to wait longer than that is not retried early. Each wait is logged
   (`search:3 hit a rate limit on codex — retrying in 45s (2/3)`); a stop ends it
   at once, and a paused run starts the retry only once resumed.
+- **A lost connection** — Node's `ECONNRESET`, `ENOTFOUND`, `EAI_AGAIN`,
+  `ETIMEDOUT`, "fetch failed", "socket hang up", "network error", Claude Code's
+  "API Error: Connection error.", Codex's "error sending request for url" — is
+  `network` (an ODW extension), ridden out exactly like a rate limit: the same
+  backoff, its own `transientRetries` per call, logged as `search:3 lost its
+  connection on claude — retrying in 15s (1/3)`. Only the final lines of the output
+  count, so a test the agent ran against a closed port is not one. It does not lower
+  the adapter's adaptive cap.
 - **Spent quotas and failed logins** are never retried. The error says what to
   do — wait for the quota window, log in to the CLI, or switch adapter with
   `--adapter` — and the run goes on, since its other adapters may be fine. When
@@ -3408,7 +3435,7 @@ case-insensitively before the built-in table.
 
 ```jsonc
 {
-  "transientRetries": 3, // retries per agent() call after a rate limit; 0 = never
+  "transientRetries": 3, // retries per agent() call after a rate limit (and, apart, after a lost connection); 0 = never
   "maxBackoff": 300, // longest single wait, in seconds
   "adapters": {
     "my_wrapper": {
@@ -3417,7 +3444,8 @@ case-insensitively before the built-in table.
         "rate_limit": ["server busy", "E_THROTTLED"],
         "quota": ["monthly tokens? (used up|exhausted)"],
         "auth": ["session expired"],
-        "model_unavailable": ["no such model"]
+        "model_unavailable": ["no such model"],
+        "network": ["E_OFFLINE"]
       }
     }
   }

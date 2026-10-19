@@ -180,7 +180,7 @@
 | V4 | Windows 的真实 CI 与 POSIX 假设 | M | ⏳ |
 | V5 | 看板在几千次运行下保持常数开销 | S–M | ⏳ |
 | V6 | 主机级并发上限 | S–M | ⏳ |
-| V7 | **睡眠、断网与 CLI 中途更新** | S | ⏳ |
+| V7 | **睡眠、断网与 CLI 中途更新** | S | ✅ ODW 扩展（`src/adapters/suspend.ts`、`failures.ts`、`runner.ts`、`src/provenance.ts`）：卡死看门狗改用单调时钟（`performance.now()`）计算沉默；进程内的睡眠探测每 30 s 比较墙钟与单调时钟，墙钟超前超过 60 s（Linux/macOS 睡眠时单调时钟不走），或一次检查比预期晚了这么久（Windows 的单调时钟、被暂停的虚拟机或 worker），即为一次睡眠：所有带看门狗的 agent 沉默计时清零、再给一个完整 `stallTimeout`，看门狗杀进程前也先检查一次，worker 记一条 `host_suspended { sleptSeconds, message }`（每次睡眠一条）。新失败原因 `network`：Node 的 `ECONNRESET`/`ENOTFOUND`/`EAI_AGAIN`/`ETIMEDOUT` 等、"fetch failed"、"socket hang up"、"network error"、Claude Code 的 "API Error: Connection error."、Codex 的 "error sending request for url"，只看最后几行，适配器 `failures.network` 可追加；与限流同样退避重试（同一 `maxBackoff`，单独计 `transientRetries`），日志 `lost its connection on <adapter> — retrying …`，不降低自适应并发。CLI 版本在距上次探测满 30 分钟后的下一次派发、或该适配器的 agent 以 `exit`/`not_found` 失败时（每分钟至多一次）重新探测，版本变化写 `cli_version_changed { adapter, command, from, to, message }`（实时视图、`odw logs`、看板日志），不使运行失败，`cli_version` 仍为第一次的版本。看板：失败原因「connection lost」（警示色）、两种事件的日志行。不做：`networkWait` 暂停派发与 TCP 探测、`keepAwake`、默认 `DISABLE_AUTOUPDATER`、realpath/mtime 比较（本轮范围外）。测试：`tests/host-suspend.test.ts`、`tests/failures.test.ts`、`tests/bridge.test.ts`、`tests/cli-versions.test.ts`、`tests/web-ui.test.ts` |
 | V8 | **磁盘写满与 pid 复用** | S | ⏳ |
 | V9 | 包管理器渠道与来源证明 | S–M | ⏳ |
 | V10 | 1.0 的兼容承诺 | S | ⏳ |

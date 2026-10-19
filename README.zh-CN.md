@@ -1294,6 +1294,12 @@ odw compare $OLD $NEW --json           # 同一份对比,供脚本使用——GE
 不回应的 CLI 记为未知版本。命令为 node 或其他解释器、脚本或相对路径的适配器不做探测。
 `"recordVersions": false` 关闭探测。`odw eval`(见下文)和漂移监测都建立在这些记录之上。
 
+CLI 可能在长任务进行中自行更新(Claude Code 的原生安装会在后台更新)。因此运行会再次询问版本——
+距上次询问满 30 分钟后在该适配器的下一次派发时问一次;某个 agent 以可疑方式失败(原因不明的退出、
+CLI 无法启动)时立即问一次(每分钟至多一次)。答案不同就记一条 `cli_version_changed` 事件——
+`{ adapter, command, from, to, message }`,显示在实时视图、`odw logs` 和看板日志中——运行照常继续;
+运行的 `cli_version` 仍是第一次的版本,`odw compare` 依旧按运行开始时的版本比较。
+
 ### 漂移监测(ODW 扩展)
 
 模型被下线或被重新指向、CLI 一夜之间自动升级,工作流却依然"通过"——跑在一个它从未调过的
@@ -2739,6 +2745,12 @@ cloning with «redacted:github»
 (`search:3 went quiet for 120s — restarting (1/1)`);用完重启次数后,这次调用失败,
 错误信息会说明 agent 卡死(stalled)。停止、暂停或预算上限永远优先于重启。
 
+**笔记本睡眠不算卡死。** 静默时长按单调时钟计算,机器睡眠时它不走;worker 还每 30 秒比较一次
+墙钟与单调时钟——跳变超过一分钟(或检查比预期晚了这么久:虚拟机被暂停、worker 被停住)即视为
+睡眠。此时所有运行中 agent 的静默计时清零,重新给一个完整的 `stallTimeout` 宽限,运行记一次
+`host_suspended` 事件(`{ sleptSeconds, message }`)。合盖期间连接断开的 agent 会以 `network`
+失败并被重试(见[限流、额度与登录](#限流额度与登录))。ODW 不阻止机器睡眠——合盖照样会睡。
+
 ```jsonc
 {
   "stallTimeout": 120, // 静默的秒数;null(默认)= 关闭
@@ -2815,7 +2827,7 @@ agent 在两次之间做的事不可能改变结果。同一次调用的后续 C
 
 **ODW 扩展。** 每个失败的 agent 都会根据其 CLI 的退出状态和输出末尾被归类:`rate_limit`、
 `quota`、`auth`、`timeout`、`stalled`、`not_found`(CLI 无法启动)、`permission`(工具
-调用或审批被拒)、`model_unavailable`(请求的模型未知、已下线或该账号不可用)或
+调用或审批被拒)、`network`(与模型 API 的连接断开)、`model_unavailable`(请求的模型未知、已下线或该账号不可用)或
 `exit`——另有四个类别,给"成功了"却拿不出证据的运行:`empty_reply`、
 `unmet_expectation`、`"mcpFailures": "fail"` 下的 `mcp_unavailable`,以及
 `orphaned_background`(回复时仍有后台任务在运行,`"orphanedBackground": "fail"` 或设了
@@ -2836,6 +2848,12 @@ agent_failed    (Search) search — [quota, retry after 3h 22m] AdapterExecution
   300);CLI 要求等得比这更久时,不会提前重试。每次等待都会记一条日志
   (`search:3 hit a rate limit on codex — retrying in 45s (2/3)`);停止会立刻结束等待,
   暂停的运行要等恢复后才开始重试。
+- **连接断开**——Node 的 `ECONNRESET`、`ENOTFOUND`、`EAI_AGAIN`、`ETIMEDOUT`、"fetch failed"、
+  "socket hang up"、"network error",Claude Code 的 "API Error: Connection error.",Codex 的
+  "error sending request for url"——归为 `network`(ODW 扩展),与限流一样被扛过去:同样的退避,
+  每次调用单独计 `transientRetries` 次,日志为 `search:3 lost its connection on claude — retrying
+  in 15s (1/3)`。只看输出的最后几行,agent 自己跑的测试连不上端口不会被误判。它不会降低适配器的
+  自适应并发上限。
 - **额度用尽和登录失败**从不重试。错误信息会说明该怎么做——等额度窗口重置、登录该 CLI,
   或用 `--adapter` 换一个适配器——运行本身继续,因为其他适配器可能完全正常。同一个适配器
   上连续三个 agent 都这样失败时,运行会记一条警告;之后用 `odw resume` 会重放所有已完成
@@ -2870,7 +2888,7 @@ ODW 能识别的措辞——从每个内置 CLI 的源码和 issue 中收集而�
 
 ```jsonc
 {
-  "transientRetries": 3, // 限流后每次 agent() 调用的重试次数;0 = 从不重试
+  "transientRetries": 3, // 限流后(连接断开另计)每次 agent() 调用的重试次数;0 = 从不重试
   "maxBackoff": 300, // 单次等待的最长秒数
   "adapters": {
     "my_wrapper": {
@@ -2879,7 +2897,8 @@ ODW 能识别的措辞——从每个内置 CLI 的源码和 issue 中收集而�
         "rate_limit": ["server busy", "E_THROTTLED"],
         "quota": ["monthly tokens? (used up|exhausted)"],
         "auth": ["session expired"],
-        "model_unavailable": ["no such model"]
+        "model_unavailable": ["no such model"],
+        "network": ["E_OFFLINE"]
       }
     }
   }

@@ -159,7 +159,7 @@ empty reply throw. Inside `parallel`/`pipeline`, these recoverable failures
 become `null`. Fatal errors — stop requests, exhausted budgets, the total-agent
 cap, and invalid adapter/run configuration — propagate and terminate the run.
 A failed CLI run's error carries `reason` (`rate_limit`, `quota`, `auth`,
-`timeout`, `stalled`, `not_found`, `permission`, `exit`, `empty_reply`,
+`network` (ODW extension), `timeout`, `stalled`, `not_found`, `permission`, `exit`, `empty_reply`,
 `unmet_expectation` or `needs_input`), the same as its `agent_failed` event — branch on it in a
 `try`/`catch`.
 

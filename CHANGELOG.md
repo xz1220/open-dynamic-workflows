@@ -897,6 +897,22 @@ independent security reviews whose findings are all fixed.
   gc` lists leftover `odw-*` compose projects whose run is not active (`docker compose
   ls`, when it answers; `$ODW_DOCKER` names another docker) and never removes them.
   README recipe: a compose stack and a database per agent.
+- Sleep, network loss and a CLI updated mid-run (**ODW extension**): the stall watchdog
+  counts silence on the monotonic clock, and a host that slept — the wall clock jumping
+  more than a minute past it, or a 30-second check that came that much late — starts
+  every running agent's silence over (a full `stallTimeout` of grace) and is logged once
+  as a `host_suspended` event (`{ sleptSeconds, message }`), so a laptop that wakes no
+  longer kills its agents as `stalled`. A new failure reason `network` (Node's
+  `ECONNRESET`, `ENOTFOUND`, `EAI_AGAIN`, `ETIMEDOUT`, "fetch failed", "socket hang up",
+  "network error", Claude Code's "API Error: Connection error.", Codex's "error sending
+  request for url"; final lines only; an adapter's `failures.network` adds its own) is
+  retried like a rate limit — the same backoff and `maxBackoff`, its own
+  `transientRetries` per call — and logged as `lost its connection on <adapter> —
+  retrying in 15s (1/3)`. An adapter's CLI is asked `--version` again at its next
+  dispatch 30 minutes after the last probe, and at once (at most once a minute) when an
+  agent of it fails with `exit` or `not_found`; a different answer is a
+  `cli_version_changed` event (`{ adapter, command, from, to, message }`) in the live
+  view, `odw logs` and the dashboard, and never fails the run.
 
 ### Security fixes found in review
 - A sandboxed agent could plant git config (`core.fsmonitor`, hooks) in its workspace's
