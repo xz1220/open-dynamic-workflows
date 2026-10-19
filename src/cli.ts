@@ -67,6 +67,7 @@ import { checkEdit } from "./checkpoint.js";
 import { CHECKPOINT_NOTE_MAX, isCheckpointId } from "./control.js";
 import { cliActor, localLauncher } from "./identity.js";
 import { runDoctor, type CheckStatus } from "./doctor.js";
+import { formatSteps, noRunsYet, welcomeText } from "./first-run.js";
 import { AdapterNotFound } from "./errors.js";
 import type { WorkflowEvent } from "./events.js";
 import { VERSION } from "./index.js";
@@ -203,6 +204,15 @@ export function versionText(): string {
   return `open-dynamic-workflows ${VERSION}`;
 }
 
+/** Whether bare `odw` greets a new user: the runs root holds no run yet (a config that does not load: no). */
+function welcomeNewUser(): boolean {
+  try {
+    return noRunsYet(resolveRunsRoot(loadConfig(null, { cwd: process.cwd(), quiet: true }).settings.runsRoot));
+  } catch {
+    return false;
+  }
+}
+
 export function helpText(): string {
   return [
     `odw — Open Dynamic Workflows (v${VERSION})`,
@@ -215,6 +225,7 @@ export function helpText(): string {
     "  odw doctor --local [--endpoint URL] [--model M]    check a local Ollama / LM Studio: context length, tool calling;",
     "                                                     with --smoke, whether a long prompt's front is silently cut",
     "  odw doctor --adapter <acp-adapter>                 an ACP agent's handshake: what it says it can do (ODW extension)",
+    "  odw doctor --fanout <n>                            check the open-file limit against n agents at once (default: the concurrency cap)",
     "  odw run <script.js|name> [--args JSON|@file]       start a workflow (see modes below)",
     "  odw run <script.js|name> --help                    what it takes as --args, from its meta.input (ODW extension)",
     "  odw attach <run_id>                                attach the live foreground view to a run",
@@ -363,6 +374,11 @@ class UsageError extends Error {}
 export async function main(argv: string[]): Promise<number> {
   const [command, ...rest] = argv;
 
+  // Bare `odw` before any run (ODW extension): the first run, for $0, instead of every command.
+  if (command === undefined && welcomeNewUser()) {
+    process.stdout.write(welcomeText(helpText().split("\n").slice(0, 2).join("\n"), process.cwd()) + "\n");
+    return 2;
+  }
   if (command === undefined || command === "--help" || command === "-h" || command === "help") {
     process.stdout.write(helpText() + "\n");
     return command === undefined ? 2 : 0;
@@ -513,9 +529,15 @@ async function cmdDoctor(rest: string[]): Promise<number> {
       local: { type: "boolean" },
       endpoint: { type: "string", multiple: true },
       model: { type: "string" },
+      fanout: { type: "string" },
     },
   });
   const timeoutMs = parseTimeout("doctor", values.timeout);
+  // `--fanout N` (ODW extension): the agents you mean to run at once, for the open-file check.
+  const fanout = values.fanout === undefined ? undefined : Number(values.fanout);
+  if (fanout !== undefined && !(Number.isInteger(fanout) && fanout >= 1)) {
+    throw new UsageError("odw doctor: --fanout must be a whole number of agents, 1 or more");
+  }
   // `--local` (ODW extension): an --endpoint implies it; --model only means something with it.
   const local = values.local === true || (values.endpoint?.length ?? 0) > 0;
   if (values.model !== undefined && !local) {
@@ -557,6 +579,7 @@ async function cmdDoctor(rest: string[]): Promise<number> {
       smoke,
       smokeTimeout: timeoutMs !== undefined ? timeoutMs / 1000 : undefined,
       models: values.models === true,
+      fanout,
       // An ACP agent named by --adapter gets a handshake (ODW extension; see adapters/acp.ts).
       handshake:
         config instanceof Error || !values.adapter?.length
@@ -599,6 +622,8 @@ async function cmdDoctor(rest: string[]): Promise<number> {
       : p.ok("ready") + (warned ? p.dim(` — ${warned} warning(s)`) : "") +
           (values.smoke || values.models ? "" : p.dim(" · add --smoke to send each adapter a real prompt")),
   );
+  // No run yet (ODW extension): the first run, for $0.
+  if (report.next?.length) lines.push("", p.bold("first run, for $0 — no model called:"), ...formatSteps(report.next, p.dim));
   process.stdout.write(lines.join("\n") + "\n");
   return report.ok ? 0 : 1;
 }

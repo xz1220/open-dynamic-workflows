@@ -18,11 +18,13 @@
  */
 
 import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
   listAdapters,
   resolveClaudeWorkflowsRoot,
+  resolveConcurrency,
   resolveRunsRoot,
   resolveWorkflowsRoot,
 } from "./adapters/config.js";
@@ -49,6 +51,8 @@ import {
 import type { Adapter, Config, ContainerSandbox, PermissionTier } from "./adapters/types.js";
 import { loginCheckArgv } from "./adapters/accounts.js";
 import { Bridge } from "./bridge.js";
+import { firstRunSteps, noRunsYet, type FirstRunStep } from "./first-run.js";
+import { gatherRunEnv, runEnvChecks } from "./run-env.js";
 import { typesStatus } from "./editor-types.js";
 import { AdapterExecutionError } from "./errors.js";
 import { readWorkflowMeta } from "./loader.js";
@@ -85,6 +89,8 @@ export type ModelProbeResult = "ok" | "model_unavailable" | "other";
 export interface DoctorReport {
   ok: boolean;
   checks: DoctorCheck[];
+  /** No run yet in the runs root: the first run, for $0 (ODW extension; see ./first-run). */
+  next?: FirstRunStep[];
 }
 
 export interface DoctorOptions {
@@ -111,6 +117,8 @@ export interface DoctorOptions {
   env?: Record<string, string | undefined>;
   /** Where isolated agents' worktrees are made (default: os.tmpdir()), for the disk check. */
   tmpRoot?: string;
+  /** Agents meant to run at once, for the open-file check (`--fanout`; default: the concurrency cap). */
+  fanout?: number;
   /** Probe local model servers (`--local`; ODW extension, see ./local-models). */
   local?: LocalProbeOptions;
 }
@@ -167,6 +175,17 @@ export async function runDoctor(opts: DoctorOptions): Promise<DoctorReport> {
 
   // What runs left on disk: the runs root's size and orphaned worktrees (ODW extension; see ./runtime/gc).
   add(await diskCheck(runsRoot, opts.cwd, opts.tmpRoot));
+
+  // What a fan-out needs of this machine: open files, free space for runs and worktrees, git (ODW extension; see ./run-env).
+  const concurrency = resolveConcurrency(config.settings.concurrency);
+  const facts = await gatherRunEnv({
+    runsRoot,
+    tmpRoot: opts.tmpRoot ?? tmpdir(),
+    fanout: opts.fanout ?? concurrency,
+    concurrency,
+    runner,
+  });
+  for (const check of runEnvChecks(facts)) add(check);
 
   const roots = [
     join(opts.cwd, ".odw", "workflows"),
@@ -329,7 +348,10 @@ export async function runDoctor(opts: DoctorOptions): Promise<DoctorReport> {
   // Local model servers: context length, tool calling, and with --smoke a truncation probe (ODW extension).
   if (opts.local) for (const check of await localModelChecks(opts.local)) add(check);
 
-  return { ok: !checks.some((c) => c.status === "fail"), checks };
+  const report: DoctorReport = { ok: !checks.some((c) => c.status === "fail"), checks };
+  // A new user — no run yet — is shown the first run, for $0.
+  if (noRunsYet(runsRoot)) report.next = firstRunSteps(opts.cwd);
+  return report;
 }
 
 /**

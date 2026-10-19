@@ -3,7 +3,7 @@
  * catches CLIs which exit 0 without answering when run headless.
  */
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execPath } from "node:process";
@@ -123,4 +123,30 @@ test("locateConfig reports the file loadConfig reads", () => {
   const { dir, path } = setup();
   assert.equal(locateConfig(path, dir), path);
   assert.throws(() => locateConfig(join(dir, "nope.json")), /not found/);
+});
+
+test("doctor: run-environment checks — open files against --fanout, free space, git (ODW extension)", async () => {
+  const { dir, path, config } = setup();
+  const report = await runDoctor({ config, configPath: path, cwd: dir, smoke: [], fanout: 3 });
+  for (const id of ["open-files", "free-runs", "free-tmp", "git"]) {
+    assert.notEqual(byId(report, id), undefined, `a ${id} check`);
+    assert.notEqual(byId(report, id).status, "fail", "an environment check warns at most");
+  }
+  if (process.platform !== "win32") assert.match(byId(report, "open-files").detail, /a fan-out of 3 agent\(s\) needs ~76/);
+  assert.match(byId(report, "free-runs").detail, new RegExp(join(dir, "runs").replace(/[\\.]/g, "\\$&")));
+});
+
+test("doctor: with no run yet the report carries the first run for $0; once a run exists it does not", async () => {
+  const { dir, path, config } = setup();
+  const fresh = await runDoctor({ config, configPath: path, cwd: dir, smoke: [] });
+  assert.deepEqual(fresh.next?.map((s) => s.command), ["odw new hello", "odw test hello", "odw run hello --dry", "odw serve --open"]);
+  // hello.js already written: no `odw new hello`.
+  mkdirSync(join(dir, ".odw", "workflows"), { recursive: true });
+  writeFileSync(join(dir, ".odw", "workflows", "hello.js"), "");
+  const written = await runDoctor({ config, configPath: path, cwd: dir, smoke: [] });
+  assert.equal(written.next?.[0]?.command, "odw test hello");
+  mkdirSync(join(dir, "runs", "hello", "20260101-000000-aaaaaa"), { recursive: true });
+  writeFileSync(join(dir, "runs", "hello", "20260101-000000-aaaaaa", "meta.json"), "{}");
+  const seasoned = await runDoctor({ config, configPath: path, cwd: dir, smoke: [] });
+  assert.equal(seasoned.next, undefined);
 });
