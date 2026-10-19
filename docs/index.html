@@ -2669,7 +2669,142 @@
         animation-delay: 1.9s;
       }
 
-      /* ---------- 07 · install ---------- */
+      /* the written-right plate: an editor that completes the dialect, two repositories, what got applied */
+      .pl-write .frame {
+        fill: var(--card);
+        stroke: var(--line-2);
+      }
+      .pl-write .bar0 {
+        fill: var(--shade);
+      }
+      .pl-write .dot {
+        fill: var(--line-2);
+      }
+      .pl-write .ln {
+        fill: var(--faint);
+        font-size: 9px;
+      }
+      .pl-write .code {
+        fill: var(--ink-2);
+        font-size: 10px;
+      }
+      .pl-write .kw {
+        fill: var(--sig-ink);
+      }
+      .pl-write .str {
+        fill: var(--amber-ink);
+      }
+      .pl-write .caret {
+        fill: var(--sig);
+      }
+      .pl-write .pop rect {
+        fill: var(--card);
+        stroke: var(--line-2);
+        filter: drop-shadow(0 6px 10px rgba(0, 0, 0, 0.14));
+      }
+      .pl-write .pop .on {
+        fill: var(--sig-soft);
+        stroke: none;
+        filter: none;
+      }
+      .pl-write .pop text {
+        fill: var(--ink-2);
+        font-size: 9px;
+      }
+      .pl-write .pop .ty {
+        fill: var(--faint);
+      }
+      .pl-write .lane {
+        fill: var(--faint);
+        font-size: 9px;
+      }
+      .pl-write .rail {
+        stroke: var(--line);
+        stroke-dasharray: 2 4;
+      }
+      .pl-write .bar {
+        fill: var(--sig-soft);
+        stroke: var(--sig-line);
+      }
+      .pl-write .bt {
+        fill: var(--ink-2);
+        font-size: 9px;
+      }
+      .pl-write .add {
+        fill: var(--sig-ink);
+        font-size: 9px;
+      }
+      .pl-write .del {
+        fill: var(--alarm-ink);
+        font-size: 9px;
+      }
+      .pl-write .m {
+        fill: var(--shade);
+      }
+      .pl-write .m.on {
+        fill: var(--sig);
+      }
+      .pl-write .big {
+        fill: var(--ink);
+        font-family: var(--f-display);
+        font-size: 22px;
+      }
+      .pl-write .cap {
+        fill: var(--mute);
+        font-size: 8.5px;
+      }
+      .pl-write .pop,
+      .pl-write .bar,
+      .pl-write .m {
+        transform-box: fill-box;
+        transform-origin: left top;
+      }
+      .pl-write.draw .typed {
+        animation: rec-pop 0.35s var(--ease-out) both;
+      }
+      .pl-write.draw .typed.t1 {
+        animation-delay: 0.15s;
+      }
+      .pl-write.draw .typed.t2 {
+        animation-delay: 0.35s;
+      }
+      .pl-write.draw .typed.t3 {
+        animation-delay: 0.55s;
+      }
+      .pl-write.draw .typed.t4 {
+        animation-delay: 0.75s;
+      }
+      .pl-write.draw .pop {
+        animation: rec-pop 0.45s var(--ease-spring) 1s both;
+      }
+      .pl-write.draw .caret {
+        animation: write-blink 1s steps(1) 1.4s infinite;
+      }
+      @keyframes write-blink {
+        50% {
+          opacity: 0;
+        }
+      }
+      .pl-write.draw .bar {
+        animation: ctl-grow 0.8s var(--ease-out) both;
+      }
+      .pl-write.draw .bar.r1 {
+        animation-delay: 1.2s;
+      }
+      .pl-write.draw .bar.r2 {
+        animation-delay: 1.4s;
+      }
+      .pl-write.draw .m.on {
+        animation: rec-pop 0.3s var(--ease-spring) both;
+        animation-delay: calc(1.8s + var(--k) * 60ms);
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .pl-write.draw .caret {
+          animation: none;
+        }
+      }
+
+      /* ---------- 08 · install ---------- */
       .install-panel {
         display: grid;
         grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.05fr);
@@ -3210,7 +3345,8 @@
             <a href="#control"><span class="ix" aria-hidden="true">04</span><span data-i18n="nav.control">Control</span></a>
             <a href="#guard"><span class="ix" aria-hidden="true">05</span><span data-i18n="nav.guard">Guardrails</span></a>
             <a href="#lost"><span class="ix" aria-hidden="true">06</span><span data-i18n="nav.lost">Nothing lost</span></a>
-            <a href="#install"><span class="ix" aria-hidden="true">07</span><span data-i18n="nav.install">Install</span></a>
+            <a href="#write"><span class="ix" aria-hidden="true">07</span><span data-i18n="nav.write">Written right</span></a>
+            <a href="#install"><span class="ix" aria-hidden="true">08</span><span data-i18n="nav.install">Install</span></a>
             <a class="gh" href="https://github.com/xz1220/open-dynamic-workflows"
               >GitHub<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7.5 16.5 16.5 7.5M9 7.5h7.5V15" /></svg
             ></a>
@@ -3932,10 +4068,103 @@
         </div>
       </section>
 
-      <!-- ============================ 07 · INSTALL ============================ -->
+      <!-- ============================ 07 · WRITTEN RIGHT ============================ -->
+      <section class="section" id="write" aria-labelledby="write-title">
+        <div class="section-inner">
+          <p class="seclabel"><span class="num">07</span> <span class="kick" data-i18n="write.kicker">Written right</span> <span class="rule"></span></p>
+          <div class="sechead">
+            <h2 class="sectitle display" id="write-title" data-i18n="write.title" data-i18n-html>Workflows you can <em>write</em> right — and see work.</h2>
+            <p class="section-lede" data-i18n="write.copy">
+              Your editor completes the dialect. Your agent definitions mean what they say. Arguments are checked before a run starts, fan-outs that came back empty fail loudly, and one script reaches across repositories — then odw shows what of it you actually kept.
+            </p>
+          </div>
+
+          <div class="long-grid">
+            <figure class="rec-card card marked">
+              <div class="plate" aria-hidden="true">
+                <svg class="pl pl-write" viewBox="0 0 520 260" data-live data-draw>
+                  <!-- an editor: the dialect, completed -->
+                  <rect class="frame" x="14" y="18" width="282" height="224" rx="8" />
+                  <rect class="bar0" x="14" y="18" width="282" height="18" rx="8" />
+                  <circle class="dot" cx="26" cy="27" r="3" /><circle class="dot" cx="36" cy="27" r="3" /><circle class="dot" cx="46" cy="27" r="3" />
+                  <text class="ln" x="24" y="58">1</text>
+                  <text class="code typed t1" x="40" y="58"><tspan class="kw">const</tspan> fix = <tspan class="kw">await</tspan> agent(task, {</text>
+                  <text class="ln" x="24" y="76">2</text>
+                  <text class="code typed t2" x="52" y="76">agentType: <tspan class="str">'reviewer'</tspan>,</text>
+                  <text class="ln" x="24" y="94">3</text>
+                  <text class="code typed t3" x="52" y="94">repo: <tspan class="str">'api'</tspan>,</text>
+                  <text class="ln" x="24" y="112">4</text>
+                  <text class="code typed t4" x="52" y="112">mi</text>
+                  <rect class="caret" x="65" y="103" width="1.5" height="11" />
+                  <g class="pop">
+                    <rect x="64" y="118" width="196" height="66" rx="5" />
+                    <rect class="on" x="66" y="121" width="192" height="18" rx="3" />
+                    <text x="74" y="133">minOk</text><text class="ty" x="152" y="133">number | "all"</text>
+                    <text x="74" y="152">model</text><text class="ty" x="152" y="152">string | "@tier"</text>
+                    <text x="74" y="171">memory</text><text class="ty" x="152" y="171">boolean</text>
+                  </g>
+                  <text class="ln" x="24" y="208">5</text>
+                  <text class="code" x="40" y="208">})</text>
+                  <!-- two repositories, one run -->
+                  <text class="lane" x="316" y="48">--repo api</text>
+                  <line class="rail" x1="316" y1="70" x2="504" y2="70" />
+                  <rect class="bar r1" x="316" y="58" width="132" height="22" rx="6" />
+                  <text class="bt" x="326" y="73">reviewer · claude</text>
+                  <text class="add" x="456" y="73">+48</text><text class="del" x="482" y="73">−6</text>
+                  <text class="lane" x="316" y="108">--repo web</text>
+                  <line class="rail" x1="316" y1="130" x2="504" y2="130" />
+                  <rect class="bar r2" x="316" y="118" width="110" height="22" rx="6" />
+                  <text class="bt" x="326" y="133">ui · codex</text>
+                  <text class="add" x="456" y="133">+21</text><text class="del" x="482" y="133">−3</text>
+                  <!-- what was kept -->
+                  <text class="big" x="316" y="200">7/9</text>
+                  <text class="cap" x="360" y="198">applied · odw outcomes</text>
+                  <rect class="m on" x="316" y="214" width="14" height="10" rx="2" style="--k:0" /><rect class="m on" x="334" y="214" width="14" height="10" rx="2" style="--k:1" /><rect class="m on" x="352" y="214" width="14" height="10" rx="2" style="--k:2" /><rect class="m on" x="370" y="214" width="14" height="10" rx="2" style="--k:3" /><rect class="m on" x="388" y="214" width="14" height="10" rx="2" style="--k:4" /><rect class="m on" x="406" y="214" width="14" height="10" rx="2" style="--k:5" /><rect class="m on" x="424" y="214" width="14" height="10" rx="2" style="--k:6" /><rect class="m" x="442" y="214" width="14" height="10" rx="2" /><rect class="m" x="460" y="214" width="14" height="10" rx="2" />
+                </svg>
+              </div>
+              <figcaption class="rec-cap"><code>odw types · agentType · --repo · odw outcomes</code><span data-i18n="write.tally">2 repos · 1 run · 7 of 9 applied</span></figcaption>
+            </figure>
+
+            <div class="lr-list">
+              <article class="lr card">
+                <span class="op par"><i></i><span class="kd">odw types</span></span>
+                <h3 data-i18n="write.types.title">An editor that knows the dialect</h3>
+                <p data-i18n="write.types.copy">Completion and hover for agent(), parallel() and every option; odw-only ones are marked, so a script stays portable.</p>
+              </article>
+              <article class="lr card">
+                <span class="op ok"><i></i><span class="kd">agentType</span></span>
+                <h3 data-i18n="write.agents.title">Agent definitions that mean it</h3>
+                <p data-i18n="write.agents.copy">.claude/agents/*.md loaded per CLI: body, model, effort, isolation — and a tools list that can only tighten.</p>
+              </article>
+              <article class="lr card">
+                <span class="op bell"><i></i><span class="kd">meta.input · minOk</span></span>
+                <h3 data-i18n="write.input.title">Nothing quietly does nothing</h3>
+                <p data-i18n="write.input.copy">Arguments checked before a run exists; every fan-out counts what came back, and minOk fails one that mostly didn't.</p>
+              </article>
+              <article class="lr card">
+                <span class="op pipe"><i></i><span class="kd">--repo</span></span>
+                <h3 data-i18n="write.repo.title">One script, several repositories</h3>
+                <p data-i18n="write.repo.copy">Agents work in the repository they name — own worktree, own diff — and odw apply writes none unless all apply.</p>
+              </article>
+              <article class="lr card">
+                <span class="op rp"><i></i><span class="kd">odw workflows add</span></span>
+                <h3 data-i18n="write.lock.title">Workflows from git, locked</h3>
+                <p data-i18n="write.lock.copy">Fetched without running anything, shown before written, pinned by hash, and run strict as third-party code.</p>
+              </article>
+              <article class="lr card">
+                <span class="op cmd"><i></i><span class="kd">odw outcomes</span></span>
+                <h3 data-i18n="write.outcomes.title">See what you kept</h3>
+                <p data-i18n="write.outcomes.copy">Applied, dismissed and left, by workflow and by the model that served it — plus tmux panes, a compact IDE panel and ACP agents.</p>
+              </article>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================ 08 · INSTALL ============================ -->
       <section class="section" id="install" aria-labelledby="install-title">
         <div class="section-inner">
-          <p class="seclabel"><span class="num">07</span> <span class="kick" data-i18n="install.kicker">Start</span> <span class="rule"></span></p>
+          <p class="seclabel"><span class="num">08</span> <span class="kick" data-i18n="install.kicker">Start</span> <span class="rule"></span></p>
           <div class="install-panel">
             <div class="install-copy">
               <h2 class="sectitle display" id="install-title" data-i18n="install.title" data-i18n-html>Install the runtime or <em>hack from source</em>.</h2>
@@ -4183,6 +4412,23 @@
           "lost.digest.title": "One morning note",
           "lost.digest.copy": "What needs you, what failed, what changed and what it cost — across every run, from the record, once a day.",
           "nav.lost": "Nothing lost",
+          "write.kicker": "Written right",
+          "write.title": "Workflows you can <em>write</em> right — and see work.",
+          "write.copy": "Your editor completes the dialect. Your agent definitions mean what they say. Arguments are checked before a run starts, fan-outs that came back empty fail loudly, and one script reaches across repositories — then odw shows what of it you actually kept.",
+          "write.tally": "2 repos · 1 run · 7 of 9 applied",
+          "write.types.title": "An editor that knows the dialect",
+          "write.types.copy": "Completion and hover for agent(), parallel() and every option; odw-only ones are marked, so a script stays portable.",
+          "write.agents.title": "Agent definitions that mean it",
+          "write.agents.copy": ".claude/agents/*.md loaded per CLI: body, model, effort, isolation — and a tools list that can only tighten.",
+          "write.input.title": "Nothing quietly does nothing",
+          "write.input.copy": "Arguments checked before a run exists; every fan-out counts what came back, and minOk fails one that mostly didn't.",
+          "write.repo.title": "One script, several repositories",
+          "write.repo.copy": "Agents work in the repository they name — own worktree, own diff — and odw apply writes none unless all apply.",
+          "write.lock.title": "Workflows from git, locked",
+          "write.lock.copy": "Fetched without running anything, shown before written, pinned by hash, and run strict as third-party code.",
+          "write.outcomes.title": "See what you kept",
+          "write.outcomes.copy": "Applied, dismissed and left, by workflow and by the model that served it — plus tmux panes, a compact IDE panel and ACP agents.",
+          "nav.write": "Written right",
           "install.kicker": "Start",
           "install.title": "Install the runtime or <em>hack from source</em>.",
           "install.copy":
@@ -4353,6 +4599,23 @@
           "lost.digest.title": "一份晨报",
           "lost.digest.copy": "需要你处理的、失败的、改了什么、花了多少——跨所有运行，只取记录，一天一次。",
           "nav.lost": "不丢东西",
+          "write.kicker": "写得对",
+          "write.title": "工作流<em>写得对</em>，也看得见效果。",
+          "write.copy": "编辑器能补全方言；agent 定义说到做到；参数在运行开始前就检查，空手而归的扇出会大声失败，一份脚本可以跨多个仓库——最后 odw 告诉你其中真正留下了多少。",
+          "write.tally": "2 个仓库 · 1 次运行 · 9 份中采纳 7 份",
+          "write.types.title": "懂方言的编辑器",
+          "write.types.copy": "agent()、parallel() 与每个选项都有补全和悬停说明；odw 独有的会被标出，脚本因此保持可移植。",
+          "write.agents.title": "说到做到的 agent 定义",
+          "write.agents.copy": "按 CLI 加载 .claude/agents/*.md：正文、模型、effort、隔离——工具列表只能收紧。",
+          "write.input.title": "不会悄无声息地什么都没做",
+          "write.input.copy": "运行创建前先校验参数；每次扇出都统计结果，minOk 让大多落空的扇出直接失败。",
+          "write.repo.title": "一份脚本，多个仓库",
+          "write.repo.copy": "agent 在它点名的仓库里工作——各自的 worktree、各自的 diff——任何一个应用不了，odw apply 就一个都不写。",
+          "write.lock.title": "从 git 安装工作流，并锁定",
+          "write.lock.copy": "拉取时不运行任何东西，写入前先展示，按哈希锁定，作为第三方代码以严格上下文运行。",
+          "write.outcomes.title": "看清你留下了什么",
+          "write.outcomes.copy": "按工作流、按实际服务的模型统计采纳、驳回与搁置——另有 tmux 分屏、IDE 紧凑面板和 ACP agent。",
+          "nav.write": "写得对",
           "install.kicker": "开始使用",
           "install.title": "安装运行时，或直接<em>从源码改起</em>。",
           "install.copy": "可以用单文件安装器、npm 安装，或 clone 仓库。ODW 只驱动本地 agent CLI，不直接调用模型 API。",
