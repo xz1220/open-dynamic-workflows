@@ -13,6 +13,9 @@
  *                               `odw test <name>` passes at once, for $0
  *   .odw/evals/<name>.json      for the review-ish templates: an eval skeleton
  *                               (real runs — edit it before `odw eval <name>`)
+ *   .odw/types/odw.d.ts, .odw/jsconfig.json
+ *                               what `odw types` writes: editor completion for
+ *                               the workflow (`--no-types` leaves it out)
  *
  * `<name>` (default: the template's) replaces the template's own name in all
  * three. A file that exists with other content is never overwritten without
@@ -32,6 +35,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSy
 import { createInterface } from "node:readline";
 import { dirname, join, relative } from "node:path";
 
+import { reportTypes, writeTypes } from "./editor-types.js";
 import { envTruthy } from "./runtime/live-view.js";
 import { SAFE_GIT } from "./git-safety.js";
 import { TEMPLATES, type EmbeddedTemplate } from "./templates.generated.js";
@@ -53,6 +57,8 @@ export interface NewFlags {
   name?: string;
   force?: boolean;
   yes?: boolean;
+  /** Also write what `odw types` writes (editor completion; default on, `--no-types` off). */
+  types?: boolean;
 }
 
 /** Streams/env/cwd injected for tests; production callers pass nothing. */
@@ -275,6 +281,8 @@ export async function cmdNew(flags: NewFlags, io?: Partial<NewIO>): Promise<numb
   };
   for (const f of outcome.written) err.write(`${p.ok(g.ok)} wrote ${rel(cwd, f.path)}  ${p.dim(`(${what[f.kind]})`)}\n`);
   for (const f of outcome.unchanged) err.write(`${p.dim(`${g.ok} ${rel(cwd, f.path)} is already this template`)}\n`);
+  // Editor completion for the workflow just written (ODW extension; see ./editor-types).
+  if (flags.types !== false) reportTypes(writeTypes(cwd), cwd, err, env);
 
   const root = gitRoot(cwd);
   if (root !== null) await offerWorktreeInclude(root, template.name, name, flags.yes === true, { cwd, input, err, env });

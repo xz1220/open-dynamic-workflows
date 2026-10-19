@@ -70,6 +70,7 @@ import type { WorkflowEvent } from "./events.js";
 import { VERSION } from "./index.js";
 import { cmdInit } from "./init.js";
 import { cmdNew } from "./new.js";
+import { cmdTypes } from "./editor-types.js";
 import { loadWorkflowScript } from "./loader.js";
 import type { AgentChanges } from "./changes.js";
 import { agentRowJson, agentRows, formatAgentTable, matchAgents, type AgentRow } from "./runtime/agents-view.js";
@@ -182,6 +183,7 @@ export const COMMANDS = [
   "restore",
   "digest",
   "review",
+  "types",
 ] as const;
 
 export type Command = (typeof COMMANDS)[number];
@@ -261,6 +263,8 @@ export function helpText(): string {
     "  odw check <script.js|name> [--json]                check a workflow loads: errors with line, column and a code frame",
     "                                                     --capabilities lists what it names outside the dialect (process, require, import(, …)",
     "  odw new [<template>] [--name N] [--force] [--yes]  a workflow + starter test in .odw/ from a built-in template; no args lists them",
+    "                                                     (and what odw types writes; --no-types leaves that out)",
+    "  odw types [--dir .odw] [--force]                   editor completion for workflow scripts: .odw/types/odw.d.ts + jsconfig.json (ODW extension)",
     "  odw gc [--yes] [--older-than 30d] [--json]         report orphaned worktrees, keep branches, old transcripts; --yes deletes (ODW extension)",
     "  odw pin <run_id> [--remove]                        odw gc skips a pinned run; no run id lists them",
     "  odw digest [--since 12h|--since-last] [--workflow W] what happened across runs, from their evidence: needs you, failed,",
@@ -370,6 +374,8 @@ export async function main(argv: string[]): Promise<number> {
         return await cmdInitCli(rest);
       case "new":
         return await cmdNewCli(rest);
+      case "types":
+        return cmdTypesCli(rest);
       case "doctor":
         return await cmdDoctor(rest);
       case "run":
@@ -623,10 +629,11 @@ async function cmdNewCli(rest: string[]): Promise<number> {
         name: { type: "string" },
         force: { type: "boolean" },
         yes: { type: "boolean", short: "y" },
+        "no-types": { type: "boolean" },
       },
     });
   } catch (err) {
-    throw new UsageError(`odw new: ${(err as Error).message}\nusage: odw new [<template>] [--name N] [--force] [--yes]`);
+    throw new UsageError(`odw new: ${(err as Error).message}\nusage: odw new [<template>] [--name N] [--force] [--yes] [--no-types]`);
   }
   const { values, positionals } = parsed;
   if (positionals.length > 1) throw new UsageError("usage: odw new [<template>] [--name N] [--force] [--yes]");
@@ -635,7 +642,19 @@ async function cmdNewCli(rest: string[]): Promise<number> {
     ...(values.name !== undefined ? { name: values.name } : {}),
     force: values.force === true,
     yes: values.yes === true,
+    types: values["no-types"] !== true,
   });
+}
+
+/** `odw types` — the dialect's declarations and a jsconfig.json, for editors (ODW extension; see src/editor-types.ts). */
+function cmdTypesCli(rest: string[]): number {
+  let values;
+  try {
+    ({ values } = parseArgs({ args: rest, options: { dir: { type: "string" }, force: { type: "boolean" } } }));
+  } catch (err) {
+    throw new UsageError(`odw types: ${(err as Error).message}\nusage: odw types [--dir D] [--force]`);
+  }
+  return cmdTypes({ ...(values.dir !== undefined ? { dir: values.dir } : {}), force: values.force === true });
 }
 
 async function cmdRun(rest: string[]): Promise<number> {
