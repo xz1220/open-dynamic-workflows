@@ -127,8 +127,8 @@ Downloads the prebuilt binary for your platform (gzipped, ~35 MB) to
 to `~/.codex/skills/`). No Node required. `latest` resolves to one release tag;
 the binary and skill both come from that tag. All downloads and the new binary
 are validated before replacing an existing installation, with rollback if the
-replacement fails. The binary must match the release's `SHA256SUMS` (releases up
-to v0.5.0 predate it and install with a warning; for newer ones a missing list
+replacement fails. The binary must match the release's `SHA256SUMS` (releases
+before v0.5.0 predate it and install with a warning; for newer ones a missing list
 aborts unless `ODW_ALLOW_UNVERIFIED=1`). Override the destination with
 `ODW_BIN_DIR`, or pin a release with `ODW_VERSION=v0.4.0`. `ODW_REF` explicitly
 overrides the skill's source ref for custom deployments; the default keeps it
@@ -1316,7 +1316,7 @@ A composite action runs a workflow in CI and stops it **before** the job times
 out, so its output survives:
 
 ```yaml
-- uses: xz1220/open-dynamic-workflows/action@v0.7.0
+- uses: xz1220/open-dynamic-workflows/action@v0.X.Y   # pin the release you installed
   with:
     workflow: .odw/workflows/review.js
     timeout-minutes: 30        # the job's timeout-minutes
@@ -4321,6 +4321,13 @@ checkout at that tag, matching package and lockfile versions, passing tests and
 type checks, and a binary that reports the expected version. The release workflow
 publishes only after all platform builds succeed.
 
+To cut a release, `node scripts/prepare-release.mjs <version> [--date YYYY-MM-DD]
+[--dry-run]` sets the package and lockfile version, turns `CHANGELOG.md`'s
+`## Unreleased` into `## <version> — <date>` under a new empty `## Unreleased`, and
+points the docs' `action@v…` pins at the new tag; it then prints the `git` commands
+that commit, tag and push — it runs none of them. The tag's workflow publishes that
+changelog section as the release notes, and fails when the section is missing.
+
 `build:binary` follows the standard single-executable recipe: [esbuild](https://esbuild.github.io/)
 bundles `dist/` (zero-dep ESM) into one CommonJS file, `node --experimental-sea-config`
 turns it into a [SEA](https://nodejs.org/api/single-executable-applications.html)
@@ -4335,131 +4342,10 @@ into the host's `node`, so each target is built on its own runner.
 
 ## Status
 
-**What's new on `main` (October 2026)** — the full list, with what to check before
-upgrading, is in [`CHANGELOG.md`](CHANGELOG.md):
-- **Per-phase adapters and fallback chains.** A phase can run its agents on its own
-  CLI and model (`meta.phases: [{ title, adapter, model }]`, `phase(title, { … })`),
-  `model: "@fast"` picks each CLI's model for a tier, and an agent whose CLI ran out of
-  quota or is logged out moves down its chain (`adapter: ["codex", "claude"]`, or
-  `fallback` in the config) instead of failing — with a quota breaker that stops
-  trying a spent CLI (ODW extensions; see
-  [Per-phase adapters](#per-phase-adapters-model-tiers-and-fallback-chains-odw-extension)).
-- **Pause for a spent quota.** With `"quotaWait": { "max": 21600 }`, an overnight run
-  whose CLIs are out of quota waits for the reset they named — holding no slot, other
-  CLIs working on — and carries on, instead of failing its agents. It shows
-  `paused until 19:10 (codex quota)`; `odw resume` goes on at once, and
-  `notify.on: ["paused"]` tells you (ODW extensions; see
-  [Pause for a spent quota](#pause-for-a-spent-quota-odw-extension)).
-- **Native structured output.** `claude` (`--json-schema`) and `codex`
-  (`--output-schema`, for strict schemas) are handed an agent's schema and enforce it
-  themselves; ODW still validates every reply. A schema keyword ODW's validator does
-  not check is named in the run's log with where it is, never silently skipped —
-  `"schemaKeywords": "strict"` refuses such calls (ODW extensions; see
-  [Structured output](#structured-output-odw-extension)).
-- **Evidence of success.** `agent(…, { expect })` checks an agent's work instead of
-  taking its word — a command exits 0, files changed, the reply matches — and hands
-  misses back once before failing with `reason: "unmet_expectation"` and what it
-  missed. An empty reply fails as `empty_reply`; tool calls Claude Code refused, and
-  MCP servers it could not start, are recorded on the agent and logged — and count
-  against `expect` (ODW extensions;
-  see [Check an agent's work](#check-an-agents-work-odw-extension)).
-- **Permission tiers.** Every agent runs `read`, `edit` (the default, unchanged) or
-  `full`, mapped to each CLI's own flags: review and research fan-outs that cannot
-  touch the tree (`--permissions read`, `agent(…, { permissions: 'read' })`), full
-  access only by explicit opt-in, and a CLI that cannot enforce a tier refused or
-  logged — never silently downgraded. `agentEnv: "minimal"` keeps unrelated secrets
-  out of agents (ODW extensions; see [Permissions](#permissions-odw-extension)).
-- **Secrets kept out of what ODW keeps.** Whatever an agent prints — `cat .env`
-  included — is redacted before it reaches its transcript, its saved result, the run's
-  log and error or a webhook: the values of secret-named variables and well-known token
-  shapes become `«redacted:<kind>»` (ODW extension; see
-  [Secrets in what ODW keeps](#secrets-in-what-odw-keeps-odw-extension)).
-- **Human checkpoints.** `checkpoint()` pauses a run until a person approves or
-  rejects — with `odw approve|reject`, the dashboard, or an opt-in `waiting` hook —
-  so a plan gets a yes before the expensive fan-out (ODW extension; see
-  [`plan-approve-execute.js`](examples/plan-approve-execute.js)).
-- **Rate limits ridden out.** Every agent failure is classified (rate limit, quota,
-  login, timeout, stall, …). A rate-limited CLI is retried after a backoff that
-  honors its retry-after; a spent quota or a failed login fails fast with what to do
-  — in `odw logs`, the live view and the dashboard, with the reset time.
-- **Throttles that learn.** Cap any adapter with `"concurrency"`; a rate limit halves
-  that adapter's cap for the rest of the run and quiet minutes give slots back; and
-  a `claude` fan-out sharing a long prompt prefix starts one agent first so the rest
-  read its prompt cache instead of each paying for it.
-- **See what each agent did.** Every agent's CLI output is kept as a transcript —
-  tool calls, results, retries — readable with `odw logs <run> --agent <id|label>`
-  (`--follow` while it runs) or live in the dashboard's Transcript sheet.
-- **Scheduled runs without a daemon.** `odw schedule add <name> <workflow> --cron
-  "15 2 * * 1-5"` writes a cron, launchd or systemd entry that calls back into odw —
-  with an overlap lock, a per-schedule log and the last run in `odw schedule list`
-  ([recipe](docs/recipes/cron.md)).
-- **Review and apply what isolated agents changed.** A worktree agent's change
-  is kept as a diff when its worktree goes (setup files left out), optionally on
-  a `keep` branch. Read it in the dashboard's **Changes** tab or with `odw diff`,
-  and land it with `odw apply`: it previews every file — clean, conflicting (with
-  the lines) or already applied — before it touches the tree, takes `--all`
-  agents in order, and with `--verify "npm test"` rolls back an apply that breaks
-  the build, leaving your other uncommitted work alone.
-- **Real usage and cost.** The built-in `claude` adapter now reads Claude Code's
-  `stream-json`, and the built-in `codex` adapter `codex exec --json`, so every agent
-  records the tokens (and, for Claude, the dollars) its CLI reported — in `odw status`,
-  the live view and the dashboard — and `--budget` meters real output tokens. Codex
-  agents' transcripts show their commands, edits and tool calls. A single fan-out wider than `fanOutWarn` (25) says so up front.
-- **Ready-to-work worktrees.** `.worktreeinclude` copies or links `.env`,
-  `node_modules` and the like into isolated agents' worktrees, `worktreeSetup` runs
-  your bootstrap command, and every agent gets its own `$ODW_PORT`.
-- **"Needs you"** on the dashboard's Activity page: runs waiting for a decision, and
-  the day's failed runs with the `odw resume` command that picks them up.
-- **Recoverable runs.** Every finished agent's result is saved as it lands — read it
-  mid-run with `odw agents` / `odw result <run> --agent <id|label>` or in the
-  dashboard — and `odw resume <run>` starts a new run that replays every unchanged
-  `agent()` call, so a stalled or failed run costs only the work that changed (#24).
-- **`exec()`** runs a command from a workflow without a model — tests, builds,
-  linters — with timeouts, output caps and stop handling (#31; ODW extension), and
-  the new [`test-fix-loop.js`](examples/test-fix-loop.js) and
-  [`review-swarm.js`](examples/review-swarm.js) examples.
-- **Run hooks and a stall watchdog.** A `notify` command or webhook (Slack/Discord-
-  ready) fires when a run finishes, fails or stops; an opt-in `stallTimeout` kills
-  and restarts agents that go quiet; a SIGTERM to the worker stops the run cleanly.
-- **`odw doctor [--smoke] [--models]`** checks the runtime, config and every adapter — and with
-  `--smoke` sends one real prompt to catch CLIs that exit 0 without answering; with
-  `--models`, one to each adapter/model pair the config and workflows name.
-- **Reliability.** Timeouts and stops reach an agent's whole process tree (SIGTERM,
-  then SIGKILL) and agents already running; crashes and swallowed fatal errors can no
-  longer leave a run `running` or call a stopped run `done`; ambiguous structured
-  replies are retried instead of guessed; malformed config numbers fail loudly.
-- **Safety and scale.** Workflow `meta` is parsed, never evaluated, and listings never
-  compile a body; the dashboard server reads events incrementally, pushes only run-list
-  deltas and stays responsive with thousands of runs; installs verify SHA256 checksums;
-  CI covers Node 20/22/24, macOS and Windows.
-- **A redesigned dashboard** ([above](#dashboard-observe-inspect-chat)) and landing page.
-
-**0.5.0 development:** queued tasks recheck pause, stop, and budget before
-starting. Waiting commands detect a vanished worker instead of waiting forever.
-Upgrades keep the binary and skill on the same release and roll back replacement
-failures; source builds now report their revision.
-
-**What's new (unreleased, on `main`):** `odw run` now attaches a **live
-foreground view** in interactive terminals — Ctrl-C detaches, `odw attach`
-re-attaches, and pipes/CI keep the fire-and-poll contract. First-run
-**onboarding** landed: the installer asks you to pick a default agent when
-several CLIs are installed, `odw init` re-opens that choice anytime, launches
-warn upfront when bare `agent()` calls would fail, and config errors are now
-fatal instead of returning a "done" run full of nulls. The built-in
-`codex`/`claude` adapters got **web access** out of the box, and the
-battle-tested [`deep-research-verified.js`](examples/deep-research-verified.js)
-ships with a cron-ready wrapper. Earlier on `main`: the dashboard's local
-**Chat Host** (hand ODW-mentioned turns to a real asynchronous run), the
-desktop (Tauri) app **retired** in favor of `odw serve`, and the dialect made
-broader — nested `workflow()` (shared scheduler/budget, one level deep),
-estimated `budget.spent()` accounting with a guard before later dispatches,
-`odw run --adapter <name>`, inline-source runs archived in their run directory,
-and a `validate()` primitive so workflows can generate workflows.
-
-**v0.3.0:** the **Jobs** tab also surfaces **Claude Code's own workflow runs** —
-finished history and live in-flight jobs — read-only, merged alongside ODW's own
-runs. See
-[Releases](https://github.com/xz1220/open-dynamic-workflows/releases).
+What changed in each release — and what to check before upgrading — is in
+[`CHANGELOG.md`](CHANGELOG.md): its `Unreleased` section is what `main` has that no
+release has yet, and every released version has a section of its own, which is also
+the text of its [GitHub Release](https://github.com/xz1220/open-dynamic-workflows/releases).
 
 **Core runtime is shipped.** The full runtime is on `main` — the adapter layer, execution
 bridge, workspace isolation, the async scheduler, the injected primitives, the

@@ -32,6 +32,10 @@ jobs:
           node-version: ${{ matrix.node }}
           cache: npm
       - run: npm ci
+      # Changes land under "## Unreleased"; scripts/prepare-release.mjs turns it
+      # into the release's section, which release.yml publishes as the notes.
+      - name: CHANGELOG has an Unreleased section
+        run: node scripts/changelog.mjs check
       # Builds the web client, re-embeds it and SKILL.md, then runs tsc over src
       # (which is also the typecheck, so no separate `npm run typecheck`).
       - run: npm run build

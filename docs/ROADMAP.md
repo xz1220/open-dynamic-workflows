@@ -174,7 +174,7 @@
 
 | # | 方向 | 规模 | 状态 |
 | --- | --- | --- | --- |
-| V1 | **发布就绪，文档与发布对齐**：CHANGELOG 按版本整理、文档不引用不存在的 tag、安装脚本的校验边界 | S | ⏳ |
+| V1 | **发布就绪，文档与发布对齐**：CHANGELOG 按版本整理、文档不引用不存在的 tag、安装脚本的校验边界 | S | ✅ 只做到「随时可发」，不打 tag、不发 Release、不改版本号：CHANGELOG 的大节改为 `## Unreleased`，首段写明「自 v0.4.0 起，路线图 0.5–0.9」，「Changed behavior — check before upgrading」移到最前。`scripts/prepare-release.mjs <version> [--date YYYY-MM-DD] [--dry-run]`：改 `package.json`/锁文件版本（低于当前版本拒绝），把 `## Unreleased` 改名为 `## <version> — <日期>` 并新开空的 `## Unreleased`（空的 Unreleased 或已有同名节拒绝，写入前全部校验），把 `README*.md`、`docs/`（不含 `docs/research/` 的调研记录）与 `action/action.yml` 中的 `xz1220/open-dynamic-workflows/action@v…`（含占位符 `v0.X.Y`）改为新 tag，最后打印 commit/tag/push 命令但不执行。`scripts/changelog.mjs`：`notes <tag>` 截取与 tag 同名的小节，`release.yml` 在 verify 阶段先校验（找不到即失败，不构建二进制），publish 阶段以它为 `body_path`，`generate_release_notes` 保留为附加的 PR 列表；`check` 由 CI 检查 `## Unreleased` 存在。文档中不存在的 `action@v0.7.0` 改为 `@v0.X.Y   # pin the release you installed`；README「Status」只链接 CHANGELOG。`install.sh` 与 Action 的 `predates_checksums` 边界改为 `<0.5.0`。测试：`tests/release.test.ts`（在仓库临时副本上运行 prepare-release）、`tests/install.test.ts`、`tests/action.test.ts` |
 | V2 | **「安装后 60 秒」与 `odw doctor` 的运行环境检查**：文件句柄、磁盘、tmpfs | S | ⏳ |
 | V3 | README 瘦身与文档拆分（教程 / 指南 / 参考 / 原理） | M | ⏳ |
 | V4 | Windows 的真实 CI 与 POSIX 假设 | M | ⏳ |

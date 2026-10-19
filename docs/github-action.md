@@ -5,7 +5,7 @@
 1. installs the odw release binary its own tag pins (or the `version` input)
    with [`scripts/install.sh`](../scripts/install.sh), checked against the
    release's `SHA256SUMS` — binary only, no skill. A release that publishes no
-   `SHA256SUMS` (odw 0.5.0 and older) is refused, never installed unverified;
+   `SHA256SUMS` (odw 0.4.x and older) is refused, never installed unverified;
    see [What the checksum does and does not prove](#what-the-checksum-does-and-does-not-prove);
 2. runs `odw run <workflow> --wait --deadline <s>`, the deadline being the
    job's `timeout-minutes` less `margin-seconds` (default 300) and the time
@@ -119,7 +119,7 @@ jobs:
         with:
           persist-credentials: false   # a fork's PR: no token in .git/config for agents to read
       - run: npm install -g @anthropic-ai/claude-code
-      - uses: xz1220/open-dynamic-workflows/action@v0.7.0   # pin a tag or a commit SHA
+      - uses: xz1220/open-dynamic-workflows/action@v0.X.Y   # pin the release you installed (a tag or a commit SHA)
         with:
           workflow: .odw/workflows/review.js
           args: '{"pr": ${{ github.event.pull_request.number }}}'
@@ -159,7 +159,7 @@ jobs:
         with:
           persist-credentials: false   # issue text is anyone's: no token in .git/config
       - run: npm install -g @openai/codex
-      - uses: xz1220/open-dynamic-workflows/action@v0.7.0
+      - uses: xz1220/open-dynamic-workflows/action@v0.X.Y   # pin the release you installed
         with:
           workflow: fix-issue
           args: '{"issue": ${{ github.event.issue.number }}}'

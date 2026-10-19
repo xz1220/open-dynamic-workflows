@@ -1,6 +1,6 @@
 # Open Dynamic Workflows as a composite GitHub Action (ODW extension).
 #
-#   - uses: xz1220/open-dynamic-workflows/action@v0.7.0
+#   - uses: xz1220/open-dynamic-workflows/action@v0.X.Y   # pin the release you installed
 #     with:
 #       workflow: .odw/workflows/review.js
 #       timeout-minutes: 30          # the same number as the job's timeout-minutes

@@ -117,7 +117,7 @@ curl -fsSL https://raw.githubusercontent.com/xz1220/open-dynamic-workflows/main/
 `~/.claude/skills/`(没有就退到 `~/.codex/skills/`)。无需 Node。可用环境变量
 `ODW_BIN_DIR` 指定目录,或用 `ODW_VERSION=v0.4.0` 固定版本。`latest` 会先解析成一个
 确定的发布版本,二进制和 skill 都从该版本下载。所有下载与新二进制验证成功后才替换现有
-安装;替换失败会恢复旧文件。二进制必须与该版本发布的 `SHA256SUMS` 一致(v0.5.0 及更早的版本
+安装;替换失败会恢复旧文件。二进制必须与该版本发布的 `SHA256SUMS` 一致(v0.5.0 之前的版本
 没有该文件,会带警告安装;更新的版本缺少它则中止,除非设置 `ODW_ALLOW_UNVERIFIED=1`)。自定义部署可用 `ODW_REF` 显式指定 skill 的来源,默认与二进制一致。
 
 ### 3. 手动安装
@@ -1124,7 +1124,7 @@ webhook 的正文,并返回 `202 { "runId" }`。
 一个组合 action 在 CI 中运行工作流,并在 job 超时**之前**把它停下,输出因此得以保留:
 
 ```yaml
-- uses: xz1220/open-dynamic-workflows/action@v0.7.0
+- uses: xz1220/open-dynamic-workflows/action@v0.X.Y   # 固定为你安装的版本
   with:
     workflow: .odw/workflows/review.js
     timeout-minutes: 30        # 与 job 的 timeout-minutes 相同
@@ -3630,6 +3630,12 @@ node web/dev.mjs --api http://127.0.0.1:4317     # → http://127.0.0.1:5173
 正式构建设置 `ODW_RELEASE_TAG=v0.5.0`,要求当前源码正好对应该版本、没有未保存修改,
 包版本与锁文件一致,测试和类型检查通过,且二进制报告预期版本。所有平台构建成功后才发布。
 
+发版时运行 `node scripts/prepare-release.mjs <version> [--date YYYY-MM-DD] [--dry-run]`:它修改
+package 与锁文件的版本,把 `CHANGELOG.md` 的 `## Unreleased` 改名为 `## <version> — <日期>`
+并在其上新开一个空的 `## Unreleased`,把文档里的 `action@v…` 固定版本改成新 tag,然后打印提交、
+打 tag、推送所需的 `git` 命令——它自己一条都不执行。tag 触发的发布流程以这一节 changelog 作为
+Release 正文,找不到这一节则发布失败。
+
 `build:binary` 走的是标准的单二进制配方:[esbuild](https://esbuild.github.io/) 把
 `dist/`(零依赖 ESM)打包成一个 CommonJS 文件,`node --experimental-sea-config` 生成
 [SEA](https://nodejs.org/api/single-executable-applications.html) blob,再由
@@ -3643,101 +3649,9 @@ node web/dev.mjs --api http://127.0.0.1:4317     # → http://127.0.0.1:5173
 
 ## 状态
 
-**`main` 上的新内容(2026 年 10 月)**——完整清单以及升级前需要留意的变化见
-[`CHANGELOG.md`](CHANGELOG.md):
-- **按阶段指定适配器,以及回退链。** 阶段可以让自己的 agent 跑在指定的 CLI 和模型上
-  (`meta.phases: [{ title, adapter, model }]`、`phase(title, { … })`),`model: "@fast"`
-  按 CLI 选出某层级的模型;CLI 额度用尽或登录失效的 agent 会沿回退链换到下一个 CLI
-  (`adapter: ["codex", "claude"]`,或配置里的 `fallback`),而不是失败——额度熔断会让运行
-  不再尝试已经用尽的 CLI(ODW 扩展;见[按阶段路由](#按阶段路由与回退链odw-扩展))。
-- **额度用尽时暂停。** 配置 `"quotaWait": { "max": 21600 }` 后,CLI 额度用尽的通宵运行会
-  等到 CLI 报出的重置时间——等待时不占槽位,其他 CLI 照常工作——然后继续,而不是让 agent
-  失败。运行显示 `paused until 19:10 (codex quota)`;`odw resume` 立即继续,
-  `notify.on: ["paused"]` 会通知你(ODW 扩展;见[额度用尽时暂停](#额度用尽时暂停odw-扩展))。
-- **原生结构化输出。** `claude`(`--json-schema`)和 `codex`(`--output-schema`,限 strict
-  schema)直接拿到 agent 的 schema 并自行强制执行;ODW 依旧校验每一次回复。ODW 校验器不检查
-  的 schema 关键字会连同位置写进运行日志,绝不悄悄跳过——`"schemaKeywords": "strict"` 则拒绝
-  这类调用(ODW 扩展;见[结构化输出](#结构化输出odw-扩展))。
-- **有证据的成功。** `agent(…, { expect })` 检查 agent 的工作,而不是听它怎么说——某条命令
-  以 0 退出、有文件改动、回复匹配——没达到就把缺失项交还给它一次,之后以
-  `reason: "unmet_expectation"` 和缺失项失败。空回复以 `empty_reply` 失败;Claude Code
-  拒绝的工具调用和它没能启动的 MCP 服务器会记在 agent 上并写入日志——并计入 `expect`(ODW 扩展;见
-  [检查 agent 的工作](#检查-agent-的工作odw-扩展))。
-- **权限档位。** 每个 agent 以 `read`、`edit`(默认,与以往一致)或 `full` 运行,映射到各
-  CLI 自己的参数:审查与调研类 fan-out 碰不到工作树(`--permissions read`、
-  `agent(…, { permissions: 'read' })`),完全权限必须显式开启,无法强制执行某档位的 CLI 会被
-  拒绝或记录日志——绝不静默降级。`agentEnv: "minimal"` 让无关的密钥不进入 agent
-  (ODW 扩展;见[权限档位](#权限档位odw-扩展))。
-- **ODW 保存的内容里不留密钥。** agent 打印的任何东西——包括 `cat .env`——在写入它的
-  transcript、保存的结果、运行的日志与错误或 webhook 之前都会脱敏:名字像密钥的变量的值和
-  常见令牌形态都变成 `«redacted:<kind>»`(ODW 扩展;见
-  [ODW 所保存内容中的密钥](#odw-所保存内容中的密钥odw-扩展))。
-- **人工检查点。** `checkpoint()` 会让运行暂停,直到有人批准或拒绝——通过
-  `odw approve|reject`、看板,或可选的 `waiting` 钩子——让计划在昂贵的 fan-out 之前先
-  得到一个"可以"(ODW 扩展;见 [`plan-approve-execute.js`](examples/plan-approve-execute.js))。
-- **扛过限流。** 每次 agent 失败都会被分类(限流、额度、登录、超时、卡死……)。被限流的
-  CLI 会按退避时间重试并遵守它给出的 retry-after;额度耗尽或登录失败则立即失败并说明该
-  怎么做——`odw logs`、实时视图和看板里都能看到,连同恢复时间。
-- **会自我调节的限速。** 用 `"concurrency"` 给任意适配器设并发上限;撞上限流时,该适配器在本次
-  运行余下时间里上限减半,之后每平静一分钟归还一个名额;共享长提示前缀的 `claude` 扇出会先启动
-  一个 agent,让其余的读取它写入的提示缓存,而不是各付一份。
-- **看清每个 agent 做了什么。** 每个 agent 的 CLI 输出都会保存为执行记录——工具调用、结果、
-  重试——可以用 `odw logs <run> --agent <id|label>` 查看(运行中加 `--follow`),也可以在看板的
-  执行记录侧栏里实时跟随。
-- **无需常驻进程的定时运行。** `odw schedule add <name> <workflow> --cron "15 2 * * 1-5"`
-  会写入一条 cron、launchd 或 systemd 定时项,由它回调 odw——带防重叠锁、每个定时任务各自的日志,
-  `odw schedule list` 里能看到上一次运行([配方](docs/recipes/cron.md))。
-- **审阅并应用隔离 agent 的改动。** worktree agent 的改动会在 worktree 删除前保存为 diff
-  (排除初始化时放进去的文件),也可以用 `keep` 保留到分支。在看板的**改动**标签页或用 `odw diff`
-  审阅,再用 `odw apply` 落地:动手之前它会逐个文件预览——干净、冲突(附冲突行)还是已应用——
-  `--all` 按顺序应用所有 agent,加上 `--verify "npm test"` 时,把弄坏构建的那次应用回滚,
-  你其余的未提交改动不受影响。
-- **真实用量与花费。** 内置 `claude` 适配器改为读取 Claude Code 的 `stream-json`,内置 `codex`
-  适配器改为读取 `codex exec --json`,每个 agent 都会记录 CLI 上报的 token(Claude 还有花费;
-  codex agent 的 transcript 会显示它执行的命令、编辑与工具调用)——`odw status`、实时视图和看板里都能看到——`--budget` 也按真实
-  输出 token 计量。单次 fan-out 超过 `fanOutWarn`(25)时会提前提示。
-- **开箱即用的 worktree。** `.worktreeinclude` 会把 `.env`、`node_modules` 等复制或链接
-  进隔离 agent 的 worktree,`worktreeSetup` 运行你的初始化命令,每个 agent 都有自己的
-  `$ODW_PORT`。
-- 看板 Activity 页新增 **"待你处理"**:等待决定的运行,以及过去一天失败的运行和接着跑的
-  `odw resume` 命令。
-- **可恢复的运行。** 每个 agent 完成时结果即落盘——运行中就能用 `odw agents` /
-  `odw result <run> --agent <id|label>` 或看板查看;`odw resume <run>` 会启动新运行并
-  重放所有未变的 `agent()` 调用,卡住或失败的运行只需重跑改动的部分(#24)。
-- **`exec()`** 不经模型直接在工作流里运行命令——测试、构建、lint——支持超时、输出上限
-  和停止(#31;ODW 扩展),并附 [`test-fix-loop.js`](examples/test-fix-loop.js) 与
-  [`review-swarm.js`](examples/review-swarm.js) 两个新示例。
-- **运行钩子与卡死看门狗。** 运行结束、失败或停止时触发 `notify` 命令或 webhook(兼容
-  Slack/Discord);可选的 `stallTimeout` 会终止并重启长时间无输出的 agent;worker 收到
-  SIGTERM 时会干净地停止运行。
-- **`odw doctor [--smoke] [--models]`** 检查运行环境、配置和每个适配器;加 `--smoke` 会发一条真实
-  提示,揪出那些无头模式下没有回答却以 0 退出的 CLI;加 `--models` 则给配置和工作流提到的每个
-  「适配器/模型」组合各发一条。
-- **可靠性。** 超时和停止会作用于 agent 的整个进程树(先 SIGTERM 再 SIGKILL),也能停下
-  已在运行的 agent;崩溃或被吞掉的致命错误不会再让运行卡在 `running`,停止的运行也不会被
-  记成 `done`;有歧义的结构化回复会重试而不是瞎猜;配置里的非法数字会直接报错。
-- **安全与规模。** 工作流 `meta` 只解析、绝不求值,列出工作流时也不编译正文;看板服务端
-  增量读取事件、只推送运行列表的变化,上千个运行也依然流畅;安装时校验 SHA256;CI 覆盖
-  Node 20/22/24、macOS 与 Windows。
-- **全新设计的看板**([见上文](#看板观测检查对话))与落地页。
-
-**0.5.0 开发版：**排队任务在真正启动前重新检查暂停、停止和预算;等待命令能识别后台进程
-已退出。升级时二进制与 skill 固定同一版本,替换失败恢复旧文件;源码构建显示具体修订号。
-
-**最新(`main` 上,未发版):**在交互式终端里,`odw run` 现在会直接挂上**前台实时视图**
-——Ctrl-C 只脱离不杀任务,`odw attach` 随时挂回,管道/CI 下仍保持先拿 run id 再轮询的
-老契约。**首跑引导**落地:装了多个 CLI 时安装器会当场让你选默认,`odw init` 随时重开
-这个选择,发射时会预警"裸 `agent()` 调用会失败",配置错误也改为当场失败——不再返回一个
-装满 null 的"成功"运行。内置 `codex`/`claude` 适配器**开箱自带联网能力**,实战版
-[`deep-research-verified.js`](examples/deep-research-verified.js) 连同可进 cron 的
-包装脚本一起入库。更早合入 `main` 的:看板的本地 **Chat Host**(提到 ODW 的回合交给真实
-异步运行)、桌面(Tauri)App **退役**、方言补**完整**——嵌套 `workflow()`(共享调度与预算,
-仅一层)、`budget.spent()` 估算计量及后续派发前的预算检查、`odw run --adapter
-<name>`、随 run 留档的内联脚本运行,以及让 workflow 能生成 workflow 的 `validate()` 原语。
-
-**v0.3.0:****Jobs** 标签页也会展示 **Claude Code 自己的 workflow 运行**——已完成的
-历史与正在跑的实时任务——只读,并与 ODW 自己的 run 合并。见
-[Releases](https://github.com/xz1220/open-dynamic-workflows/releases)。
+每个版本改了什么、升级前要检查什么,都在 [`CHANGELOG.md`](CHANGELOG.md):`Unreleased` 一节
+是 `main` 上尚未发布的内容,每个已发布版本各有一节,也就是对应
+[GitHub Release](https://github.com/xz1220/open-dynamic-workflows/releases) 的正文。
 
 **核心运行时已交付。** 完整运行时已在 `main` 上——适配层、执行桥接、工作区隔离、异步调度器、
 注入原语、loader/transform、JSON-Schema 引擎、后台运行时,以及 `odw` CLI。回归测试由

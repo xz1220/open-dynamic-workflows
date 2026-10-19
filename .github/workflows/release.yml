@@ -29,6 +29,11 @@ jobs:
           node-version: "24"
           cache: npm
       - run: npm ci
+      # The release notes are CHANGELOG.md's section named like the tag
+      # (scripts/prepare-release.mjs writes it): no section, no release.
+      - name: CHANGELOG has a section for the tag
+        if: env.ODW_RELEASE_TAG != ''
+        run: node scripts/changelog.mjs notes "$ODW_RELEASE_TAG" > /dev/null
       # Version generation checks tag, package, lockfile and source revision.
       - run: npm run build
       - run: npm run typecheck
@@ -78,6 +83,16 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            CHANGELOG.md
+            scripts/changelog.mjs
+          sparse-checkout-cone-mode: false
+      # The Release body: the tag's CHANGELOG.md section (fails when it is missing);
+      # generate_release_notes appends GitHub's list of merged pull requests.
+      - name: Release notes from CHANGELOG.md
+        run: node scripts/changelog.mjs notes "$GITHUB_REF_NAME" --out "$RUNNER_TEMP/release-notes.md"
       # Publish only after all four verified binaries exist, avoiding partial releases.
       - uses: actions/download-artifact@v4
         with:
@@ -96,4 +111,5 @@ jobs:
             artifacts/odw-*.gz
             artifacts/SHA256SUMS
           fail_on_unmatched_files: true
+          body_path: ${{ runner.temp }}/release-notes.md
           generate_release_notes: true
