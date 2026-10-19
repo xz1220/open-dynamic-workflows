@@ -19,6 +19,7 @@
 import type { Adapter, Settings } from "./adapters/types.js";
 import type { PlaceholderContext } from "./adapters/placeholders.js";
 import type { AgentRequest } from "./bridge.js";
+import { isToolEntry } from "./agent-types.js";
 import { resolveModel } from "./routing.js";
 
 /** Whether `adapter` runs Claude Code: its command is `claude` (accounts and user configs included). */
@@ -181,17 +182,26 @@ export class LiteralRouter implements OptionRouter {
         extraArgs.push(...flags.effort.map((part) => part.split("{effort}").join(level)), ...(inPlace ? [] : [level]));
       }
     }
-    if (def.disallowedTools && def.disallowedTools.length > 0) {
-      if (flags.disallowedTools) extraArgs.push(...flags.disallowedTools, ...def.disallowedTools);
+    // Tool names reach argv only in their shape (see ./agent-types) — never a flag of their own.
+    const valid = (key: string, list: string[]): string[] => {
+      const bad = list.filter((name) => !isToolEntry(name));
+      if (bad.length > 0) notes.push(`${who}: ${key} entries that are not tool names left out (${bad.length})`);
+      return list.filter(isToolEntry);
+    };
+    const disallowed = def.disallowedTools ? valid("disallowedTools", def.disallowedTools) : [];
+    if (disallowed.length > 0) {
+      // One element after the flag: claude's --disallowedTools is variadic, so each would be read on its own.
+      if (flags.disallowedTools) extraArgs.push(...flags.disallowedTools, disallowed.join(","));
       else notes.push(`${who}: disallowedTools act only as its permissions cap on adapter '${adapter.name}', which declares no flag for them`);
     }
     if (def.tools) {
+      const allowed = valid("tools", def.tools);
       const tool = flags.tools?.[flags.tools.length - 1];
       if (tool) {
-        const mcp = def.tools.filter((name) => name.startsWith("mcp__"));
+        const mcp = allowed.filter((name) => name.startsWith("mcp__"));
         if (mcp.length > 0) notes.push(`${who}: ${mcp.join(", ")} not narrowed — ${tool} names built-in tools only`);
         extraArgs.push(...flags.tools!.slice(0, -1));
-        return { flag: tool, allow: def.tools };
+        return { flag: tool, allow: allowed };
       }
       notes.push(
         `${who}: tools ${def.tools.join(", ")} act only as its permissions cap ` +

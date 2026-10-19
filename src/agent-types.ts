@@ -31,14 +31,25 @@
  * frontmatter `name`, not its file name. Nothing found: the old one-line
  * persona, and a log line. In an untrusted run a definition from the
  * repository gives its body and what only tightens (tools, isolation), not its
- * model or effort. Files are read, never run.
+ * model or effort, and the user's and plugins' definitions come first: one in
+ * the repository never shadows them. Files are read, never run.
+ *
+ * What a file may say is held to its shape: a `name` with `:` is refused
+ * (only a plugin's agents are `<plugin>:<name>`); a tool entry that is not a
+ * tool name with an optional `(rule)` — `Read`, `Bash(git *)`, `mcp__gh__x` —
+ * is left out, said, and never reaches a CLI's argv; a definition file that
+ * is a symlink is followed only when it stays in its agents directory (the
+ * user's: in their home). The walk up to the repository root stops below a
+ * directory not owned by the current user (see ./project-levels).
  */
 
 import { createHash } from "node:crypto";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
+import { lstatSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { homedir } from "node:os";
+import { basename, isAbsolute, join, relative, sep } from "node:path";
 
 import type { PermissionTier, TrustLevel } from "./adapters/types.js";
+import { projectLevels } from "./project-levels.js";
 import { claudeConfigDir, enabledPluginInstalls, parsePluginRef, pluginFiles } from "./workflows/plugins.js";
 
 /** Where a definition was found: the repository's `.claude/agents`, its `.odw/agents`, the user's, a plugin's. */
@@ -57,6 +68,8 @@ export interface AgentDefinition {
   body: string;
   /** Its frontmatter, as parsed: strings, lists of strings, or `true` for a nested block. */
   fields: Record<string, FieldValue>;
+  /** The definitions of the same name it shadows, in lookup order. */
+  shadows?: Array<{ path: string; source: AgentTypeSource }>;
 }
 
 type FieldValue = string | string[] | true;
@@ -99,38 +112,59 @@ export interface AgentTypeOptions {
   trust?: TrustLevel;
 }
 
-/** Every definition, in lookup order, the first of a name winning; what was shadowed or unreadable goes in `notes`. */
+/**
+ * Every definition, in lookup order, the first of a name winning; what was
+ * shadowed or unreadable goes in `notes`. In an untrusted run the user's and
+ * plugins' definitions are looked up before the repository's.
+ */
 export function discoverAgentTypes(opts: AgentTypeOptions): { definitions: AgentDefinition[]; notes: string[] } {
   const notes: string[] = [];
   const out: AgentDefinition[] = [];
   const seen = new Map<string, AgentDefinition>();
+  const untrusted = opts.trust === "untrusted";
   const add = (def: AgentDefinition): void => {
     const first = seen.get(def.name);
     if (first) {
-      if (first.path !== def.path) notes.push(`agent type '${def.name}' in ${def.path} is shadowed by ${first.path}`);
+      if (first.path !== def.path) {
+        (first.shadows ??= []).push({ path: def.path, source: def.source });
+        const why = untrusted && isRepoSource(def.source) && !isRepoSource(first.source) ? " (the run is untrusted: the user's and plugins' definitions come first)" : "";
+        notes.push(`agent type '${def.name}' in ${def.path} is shadowed by ${first.path}${why}`);
+      }
       return;
     }
     seen.set(def.name, def);
     out.push(def);
   };
-  const levels = upToRoot(resolve(opts.cwd));
-  for (const [dir, source] of [
-    ...levels.map((level) => [join(level, ".claude", "agents"), "project"] as const),
-    ...levels.map((level) => [join(level, ".odw", "agents"), "odw"] as const),
-    [join(claudeConfigDir(), "agents"), "user"] as const,
-  ]) {
-    for (const file of markdownFiles(dir)) {
+  const levels = projectLevels(opts.cwd);
+  const readDir = (dir: string, source: AgentTypeSource): void => {
+    for (const file of markdownFiles(dir, source, notes)) {
       const def = readDefinition(file, source, notes);
       if (def) add(def);
     }
-  }
+  };
+  const readRepo = (): void => {
+    for (const level of levels) readDir(join(level, ".claude", "agents"), "project");
+    for (const level of levels) readDir(join(level, ".odw", "agents"), "odw");
+  };
+  if (!untrusted) readRepo();
+  readDir(join(claudeConfigDir(), "agents"), "user");
   for (const plugin of enabledPluginInstalls({ cwd: opts.cwd, trust: opts.trust }, notes)) {
     for (const file of pluginFiles(plugin.installPath, plugin.manifest.agents, "agents", ".md", plugin.id, notes)) {
       const def = readDefinition(file, "plugin", notes, plugin.plugin);
       if (def) add(def);
     }
   }
+  if (untrusted) {
+    // Listed in the usual order all the same: the repository's first.
+    const theirs = out.length;
+    readRepo();
+    out.unshift(...out.splice(theirs));
+  }
   return { definitions: out, notes };
+}
+
+function isRepoSource(source: AgentTypeSource): boolean {
+  return source === "project" || source === "odw";
 }
 
 /** The definition `agentType` names, or null (the caller keeps the one-line persona and says so). */
@@ -152,7 +186,11 @@ export function findAgentType(name: string, opts: AgentTypeOptions): AgentDefini
 export function planAgentType(def: AgentDefinition, untrusted = false): AgentTypePlan {
   const notes: string[] = [];
   const plan: AgentTypePlan = { name: def.name, source: def.source, path: def.path, sha256: def.sha256, body: def.body, notes };
-  const fromRepo = untrusted && (def.source === "project" || def.source === "odw");
+  const fromRepo = untrusted && isRepoSource(def.source);
+  if (untrusted && !fromRepo) {
+    const repo = (def.shadows ?? []).filter((s) => isRepoSource(s.source)).map((s) => s.path);
+    if (repo.length > 0) notes.push(`the repository's ${repo.join(", ")} not used: the run is untrusted, and the user's and plugins' definitions come first`);
+  }
   const scalar = (key: string): string | undefined => {
     const value = def.fields[key];
     if (value === undefined) return undefined;
@@ -167,7 +205,10 @@ export function planAgentType(def: AgentDefinition, untrusted = false): AgentTyp
       notes.push(`${key} is not a list of tool names — not applied`);
       return undefined;
     }
-    return (Array.isArray(value) ? value : value.split(",")).map((tool) => tool.trim()).filter((tool) => tool !== "");
+    const entries = (Array.isArray(value) ? value : value.split(",")).map((tool) => tool.trim()).filter((tool) => tool !== "");
+    const bad = entries.filter((tool) => !isToolEntry(tool));
+    if (bad.length > 0) notes.push(`${key}: ${bad.map(shown).join(", ")} ${bad.length === 1 ? "is not a tool name" : "are not tool names"} — left out`);
+    return entries.filter(isToolEntry);
   };
 
   const model = scalar("model");
@@ -186,6 +227,13 @@ export function planAgentType(def: AgentDefinition, untrusted = false): AgentTyp
   else if (isolation !== undefined) notes.push(`isolation '${isolation}' is not "worktree" — not applied`);
   const tools = list("tools");
   if (tools) plan.tools = tools;
+  const ruled = (tools ?? []).filter((tool) => tool.includes("("));
+  if (ruled.length > 0) {
+    notes.push(
+      `tools: the rule of ${ruled.join(", ")} is not enforced — ${[...new Set(ruled.map(toolName))].join(", ")} ` +
+        `${ruled.length === 1 ? "is" : "are"} allowed whole (Claude Code's --tools takes tool names only)`,
+    );
+  }
   const disallowed = list("disallowedTools");
   if (disallowed) plan.disallowedTools = disallowed;
   const tier = toolsTier(tools, disallowed);
@@ -211,6 +259,22 @@ export function toolsTier(tools: string[] | undefined, disallowed: string[] | un
   return denied.has("Bash") ? "edit" : undefined;
 }
 
+/**
+ * A tool entry an agent definition may name: a tool (`Read`, `mcp__gh__issue`),
+ * optionally with a rule (`Bash(git *)`). Never a leading `-`, nor whitespace
+ * or a control character outside the rule, and at most 256 characters: what
+ * is not one never reaches a CLI's argv.
+ */
+export const TOOL_ENTRY_RE = /^[A-Za-z_][A-Za-z0-9_.-]*(?:\([^()\u0000-\u001f\u007f]*\))?$/;
+
+export function isToolEntry(tool: string): boolean {
+  return tool.length <= 256 && TOOL_ENTRY_RE.test(tool);
+}
+
+function shown(value: string): string {
+  return JSON.stringify(value.length > 60 ? `${value.slice(0, 60)}…` : value);
+}
+
 /** A tool's name without its rule: `Bash(git *)` → `Bash`. */
 export function toolName(tool: string): string {
   const at = tool.indexOf("(");
@@ -224,7 +288,7 @@ export function toolName(tool: string): string {
  * MCP tools (`mcp__…`) are not built-ins and are left out of it.
  */
 export function narrowTools(argv: readonly string[], flag: string, allow: readonly string[]): string[] {
-  const wanted = [...new Set(allow.map(toolName).filter((tool) => tool !== "" && !tool.startsWith("mcp__")))];
+  const wanted = [...new Set(allow.filter(isToolEntry).map(toolName).filter((tool) => !tool.startsWith("mcp__")))];
   const at = argv.indexOf(flag);
   if (at !== -1 && at + 1 < argv.length) {
     const have = argv[at + 1]!.split(",").map((tool) => tool.trim());
@@ -252,17 +316,12 @@ export function agentTypeField(plan: AgentTypePlan): { name: string; source: Age
 
 // --- reading -------------------------------------------------------------------
 
-/** The working directory, then each parent up to the repository root (one with `.git`); only `cwd` outside a repository. */
-function upToRoot(cwd: string): string[] {
-  const levels: string[] = [];
-  for (let dir = cwd; ; dir = dirname(dir)) {
-    levels.push(dir);
-    if (existsSync(join(dir, ".git"))) return levels;
-    if (dirname(dir) === dir) return [cwd];
-  }
-}
-
-function markdownFiles(dir: string): string[] {
+/**
+ * The `.md` files in an agents directory. One that is a symlink is followed
+ * only when its target stays in the directory — a user's, also anywhere in
+ * their home — and is otherwise left out, said in `notes`.
+ */
+function markdownFiles(dir: string, source: AgentTypeSource, notes: string[]): string[] {
   let names: string[];
   try {
     names = readdirSync(dir);
@@ -275,11 +334,24 @@ function markdownFiles(dir: string): string[] {
     .map((name) => join(dir, name))
     .filter((path) => {
       try {
+        if (lstatSync(path).isSymbolicLink()) {
+          const target = realpathSync(path);
+          const roots = [realpathSync(dir), ...(source === "user" ? [realpathSync(homedir())] : [])];
+          if (!roots.some((root) => within(root, target))) {
+            notes.push(`${path} is a symlink to ${target}, outside ${source === "user" ? "your home" : dir}; left out`);
+            return false;
+          }
+        }
         return statSync(path).isFile();
       } catch {
         return false;
       }
     });
+}
+
+function within(root: string, path: string): boolean {
+  const rel = relative(root, path);
+  return rel !== "" && rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
 }
 
 /** One definition file, or null (with a note) when it cannot be one. */
@@ -299,6 +371,11 @@ function readDefinition(path: string, source: AgentTypeSource, notes: string[], 
   const own = typeof parsed.fields.name === "string" && parsed.fields.name !== "" ? parsed.fields.name : null;
   const name = own ?? basename(path, ".md");
   if (!own) notes.push(`${path} has no name in its frontmatter; known by its file name '${name}'`);
+  // `<plugin>:<name>` names a plugin's agent: no definition names itself that way.
+  if (name.includes(":")) {
+    notes.push(`${path}: name '${name}' has a ':', which only a plugin's agents are named with; not an agent definition`);
+    return null;
+  }
   return {
     name: plugin ? `${plugin}:${name}` : name,
     source,

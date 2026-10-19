@@ -26,11 +26,12 @@
  */
 
 import { existsSync, readdirSync, realpathSync, statSync } from "node:fs";
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import { resolveClaudeWorkflowsRoot, resolveWorkflowsRoot } from "../adapters/config.js";
 import type { Config, TrustLevel } from "../adapters/types.js";
 import { ConfigError, WorkflowScriptError } from "../errors.js";
+import { projectLevels } from "../project-levels.js";
 import {
   claudePluginsRoot,
   discoverPluginWorkflows,
@@ -39,6 +40,7 @@ import {
   type PluginProvider,
   type PluginWorkflow,
 } from "./plugins.js";
+import { installedWorkflowFor, type InstalledWorkflow } from "./lock.js";
 
 /** How a `run` argument was resolved: `plugin` — a workflow an installed Claude Code plugin ships (ODW extension). */
 export type WorkflowOrigin = "path" | "project" | "global" | "plugin";
@@ -56,6 +58,8 @@ export interface ResolvedWorkflow {
   plugin?: PluginWorkflow;
   /** What the run should say about how the name resolved: a plugin workflow it did not pick, a project one it skipped. */
   notes?: string[];
+  /** A workflow `odw workflows add` installed from git: its lock entry, and whether the file still matches it (ODW extension; see ./lock). */
+  installed?: InstalledWorkflow;
 }
 
 export interface ResolveOptions {
@@ -94,6 +98,17 @@ export function resolveWorkflow(arg: string, opts: ResolveOptions): ResolvedWork
   if (!arg || !arg.trim()) {
     throw new WorkflowScriptError("no workflow specified");
   }
+  return withInstalled(resolveArg(arg, opts));
+}
+
+/** A file a workflows lock names — by name or by path — is one `odw workflows add` installed (ODW extension; see ./lock). */
+function withInstalled(found: ResolvedWorkflow): ResolvedWorkflow {
+  if (found.plugin) return found;
+  const installed = installedWorkflowFor(found.scriptPath);
+  return installed ? { ...found, installed } : found;
+}
+
+function resolveArg(arg: string, opts: ResolveOptions): ResolvedWorkflow {
   // Decide path-vs-name from the raw string, before touching the filesystem.
   if (isPathLike(arg)) return withPluginOrigin(resolveAsPath(arg, opts.cwd), opts);
   const ref = parsePluginRef(arg);
@@ -123,6 +138,8 @@ export interface WorkflowListing {
   note?: string;
   /** A plugin workflow: the plugin it came from (ODW extension). */
   plugin?: PluginWorkflow;
+  /** Installed from git by `odw workflows add`: third-party (ODW extension; see ./lock). */
+  installed?: InstalledWorkflow;
 }
 
 /**
@@ -166,6 +183,7 @@ function listRootWorkflows(cwd: string, config: Config): WorkflowListing[] {
       const path = join(root.dir, file);
       const winner = winners.get(name);
       if (!winner) winners.set(name, { rootLabel: root.label, path });
+      const installed = root.provider === "odw" ? installedWorkflowFor(path) : null;
       out.push({
         name,
         origin: root.origin,
@@ -174,6 +192,7 @@ function listRootWorkflows(cwd: string, config: Config): WorkflowListing[] {
         path,
         shadowed: winner !== undefined,
         ...(winner ? { shadowedBy: winner } : {}),
+        ...(installed ? { installed } : {}),
       });
     }
   }
@@ -325,7 +344,8 @@ function withPluginOrigin(found: ResolvedWorkflow, opts: ResolveOptions): Resolv
  * `.claude/workflows/` along that path, the one closest to the working
  * directory winning a name: in a monorepo, a package's own workflow shadows
  * the root's. At each level `.odw` comes before `.claude`, as it always has.
- * Outside a git repository only `cwd` is searched.
+ * Outside a git repository only `cwd` is searched, and the walk stops below a
+ * parent not owned by the current user (see ../project-levels).
  */
 function searchRoots(cwd: string, config: Config): SearchRoot[] {
   const project: SearchRoot[] = [];
@@ -368,23 +388,6 @@ function searchRoots(cwd: string, config: Config): SearchRoot[] {
     out.push(root);
   }
   return out;
-}
-
-/**
- * `cwd`, then each parent up to the nearest one holding `.git` (a directory,
- * or the file of a worktree or submodule): the repository root. With no
- * `.git` above it, `cwd` alone.
- */
-function projectLevels(cwd: string): string[] {
-  const start = resolve(cwd);
-  const levels: string[] = [];
-  for (let dir = start; ; ) {
-    levels.push(dir);
-    if (existsSync(join(dir, ".git"))) return levels;
-    const parent = dirname(dir);
-    if (parent === dir) return [start];
-    dir = parent;
-  }
 }
 
 function defaultClaudeWorkflowsLabel(): string {

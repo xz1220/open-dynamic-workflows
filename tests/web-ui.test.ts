@@ -389,6 +389,48 @@ test("the Changes tab lists agents that left a diff and freezes a host for the d
   store.focusRun(null);
 });
 
+test("the Changes tab groups a multi-repository run's agents by the repository each worked in", () => {
+  const view: JobViewState = {
+    cpNote: "",
+    tab: "changes",
+    selectedAi: 0,
+    reviewAi: null,
+    zoom: 1,
+    logQuery: "",
+    logTypes: new Set(["agent"]),
+    logLimit: 600,
+    follow: true,
+    motion: false,
+  };
+  store.focusRun("20260101-000000-aaaaaa");
+  const api = { name: "api", path: "/w/api" };
+  store.run = detail(
+    [
+      agent("api:1", "Fix", "done", { agentId: 1, repo: api, changes: { files: 1, insertions: 4, deletions: 0 } }),
+      agent("web", "Fix", "done", { agentId: 2, changes: { files: 1, insertions: 2, deletions: 1 } }),
+      agent("api:2", "Fix", "done", { agentId: 3, repo: api, changes: { files: 2, insertions: 1, deletions: 1 } }),
+    ],
+    { state: "done" },
+  );
+  const html = renderJob(view, NOW);
+  assert.equal(count(html, /class="rv-repo"/g), 2, "one heading per repository");
+  // The source's agents first, then each repository's, in the order it first shows.
+  const order = [...html.matchAll(/class="rv-repo"[^>]*>.*?<span class="nm">([^<]+)<\/span><span class="n num">(\d+)<|data-review="(\d+)" data-key/g)].map((m) =>
+    m[1] ? `${m[1]}(${m[2]})` : m[3],
+  );
+  assert.deepEqual(order, ["source(1)", "1", "api(2)", "0", "2"]);
+  assert.match(html, /class="rv-repo" data-key="rvr-api" title="\/w\/api"/);
+  // The first one listed is reviewed by default, its repository named.
+  assert.match(html, /class="rv-item on" data-review="1"/);
+  view.reviewAi = 0;
+  assert.match(renderJob(view, NOW), /class="eyebrow">Agent #1 · repo api · Fix/);
+  // A single-repository run lists its agents as before.
+  store.run = detail([agent("web", "Fix", "done", { agentId: 2, changes: { files: 1, insertions: 2, deletions: 1 } })], { state: "done" });
+  view.reviewAi = null;
+  assert.equal(count(renderJob(view, NOW), /class="rv-repo"/g), 0);
+  store.focusRun(null);
+});
+
 test("Activity puts waiting checkpoints and the day's failures in front of the person", () => {
   const prev = store.runs;
   const counts = { agents: 4, running: 0, done: 2, failed: 2, stale: 0 };
@@ -1146,6 +1188,34 @@ test("the Workspace groups a Claude Code plugin's workflows on their own, and th
   }
 });
 
+test("the Workspace flags a workflow installed from git as third-party, and one modified since install loudly", () => {
+  const w: WorkflowSummary = {
+    name: "audit",
+    origin: "project",
+    provider: "odw",
+    rootLabel: ".odw/workflows",
+    path: "/x/audit.js",
+    description: null,
+    phases: [],
+    runCount: 0,
+    shadowed: false,
+    installed: { url: "https://example.com/acme/flows.git", ref: "v1", commit: "0123456789abcdef0123456789abcdef01234567", modified: false },
+  };
+  const saved = store.workflows;
+  try {
+    store.workflows = [w];
+    const clean = renderWorkspace(wfKey(w), null, "");
+    assert.match(clean, /<span class="tag" title="installed from https:\/\/example\.com\/acme\/flows\.git#v1 @ 0123456789ab — runs in a strict script context">third-party<\/span>/);
+    assert.doesNotMatch(clean, /modified since install/);
+    store.workflows = [{ ...w, installed: { ...w.installed!, modified: true } }];
+    assert.match(renderWorkspace(wfKey(w), null, ""), /<span class="tag warn" title="its file no longer matches workflows\.lock\.json — odw workflows verify">modified since install<\/span>/);
+    store.workflows = [{ ...w, installed: undefined }];
+    assert.doesNotMatch(renderWorkspace(wfKey(w), null, ""), /third-party/);
+  } finally {
+    store.workflows = saved;
+  }
+});
+
 test("an agent that ran in a container says which, and whether it was offline", () => {
   const view: JobViewState = { cpNote: "", tab: "graph", selectedAi: 0, reviewAi: null, zoom: 1, logQuery: "", logTypes: new Set(["agent"]), logLimit: 600, follow: true, motion: false };
   store.focusRun("20260101-000000-aaaaaa");
@@ -1612,6 +1682,42 @@ test("fan-out health (ODW extension): a chip on the run's head, amber when one c
   assert.match(html, /<span class="msg">parallel\(\) · Review — 3\/10 ok · 6 failed \(rate_limit 4, timeout 2\) · 1 null · below minOk \(8 needed\)<\/span>/);
   store.run = detail([]);
   assert.doesNotMatch(renderJob(view, NOW), /tag fanout/, "no fan-outs, no chip");
+  store.focusRun(null);
+});
+
+test("an ACP agent's permission answers (ODW extension) are log lines: the tool, its kind, and how its tier answered", () => {
+  const view: JobViewState = {
+    cpNote: "",
+    tab: "logs",
+    selectedAi: null,
+    reviewAi: null,
+    zoom: 1,
+    logQuery: "",
+    logTypes: new Set(["agent", "phase", "log", "run"]),
+    logLimit: 600,
+    follow: true,
+    motion: false,
+  };
+  const answer = (decision: string, title: string, kind: string) => ({
+    ts: NOW - 10,
+    type: "acp_permission",
+    agentId: 1,
+    label: "scout",
+    adapter: "gem",
+    toolCallId: "t1",
+    title,
+    kind,
+    decision,
+    tier: "read",
+  });
+  store.focusRun("20260101-000000-aaaaaa");
+  store.run = detail([]);
+  store.runEvents = [answer("allowed", "Read README.md", "read"), answer("rejected", "npm <test>", "execute"), answer("unasked", "Write a.txt", "edit")];
+  const html = renderJob(view, NOW);
+  assert.match(html, /<span class="evt log">ACP<\/span>/);
+  assert.match(html, /<b>scout<\/b> Read README\.md <span class="dim">\[read\]<\/span> <span class="ok">allowed by tier read<\/span>/);
+  assert.match(html, /<b>scout<\/b> npm &lt;test&gt; <span class="dim">\[execute\]<\/span> <span class="er">rejected by tier read<\/span>/);
+  assert.match(html, /Write a\.txt <span class="dim">\[edit\]<\/span> <span class="er">ran without asking, beyond tier read<\/span>/);
   store.focusRun(null);
 });
 

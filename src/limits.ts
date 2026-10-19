@@ -19,7 +19,8 @@
  * items (command_execution, file_change, mcp_tool_call, web_search) and its
  * per-turn `turn.completed` usage, kilo's and opencode's `tool_use` and
  * `step_finish` (tokens and cost) events, and agy's stream-json tool steps
- * and each step's usage (its `result` brings the total). A breach kills the CLI and
+ * and each step's usage (its `result` brings the total), and an ACP agent's
+ * tool calls and `usage_update` cost (see adapters/acp.ts). A breach kills the CLI and
  * everything it started at once, like a stall, and the agent fails with
  * reason `runaway` and the evidence ("Bash `npm test` ×5 in a row", "41 tool
  * calls > 40"). A CLI that prints text reports no usage while it runs: its
@@ -372,6 +373,24 @@ export class LimitWatch {
       case "turn.completed": {
         const usage = isRecord(event.usage) ? event.usage : null;
         this.runTokens += (usage ? count(usage.output_tokens) : undefined) ?? 0;
+        break;
+      }
+      // An ACP agent, as odw keeps its session (adapters/acp.ts): each tool call; the session's cost so far; the turn's tokens.
+      case "acp.tool_call":
+        this.call(event.toolCallId, event.title ?? event.kind, event.rawInput);
+        break;
+      case "acp.usage": {
+        const cost = isRecord(event.cost) && event.cost.currency === "USD" ? count(event.cost.amount) : undefined;
+        if (cost !== undefined) {
+          this.runFinal.usd = cost;
+          this.sawCost = true;
+        }
+        break;
+      }
+      case "acp.result": {
+        const usage = isRecord(event.usage) ? event.usage : null;
+        const out = usage ? count(usage.outputTokens) : undefined;
+        if (out !== undefined) this.runFinal.tokens = out;
         break;
       }
       default:

@@ -119,6 +119,10 @@ const ZH: Record<string, string> = {
   shadowed: "被覆盖",
   "name shadowed — odw run {name} runs a higher-precedence workflow":
     "名称被覆盖——odw run {name} 实际运行的是优先级更高的工作流",
+  "third-party": "第三方",
+  "installed from {source} — runs in a strict script context": "安装自 {source}——在严格脚本上下文中运行",
+  "modified since install": "安装后被改动",
+  "its file no longer matches workflows.lock.json — odw workflows verify": "文件与 workflows.lock.json 不符——运行 odw workflows verify 查看",
   "{n} phases": "{n} 个阶段",
   "What earlier runs learned": "以往运行学到的",
   "{n} agent(s) ran a destructive git command": "{n} 个 agent 执行了破坏性 git 命令",
@@ -640,6 +644,9 @@ const ZH: Record<string, string> = {
     '以 isolation: "worktree" 运行的 agent 会保存它们改动的 diff,可以在这里审阅,并用 odw apply 应用。原地工作的 agent 直接修改你的文件——请用 git diff 审阅。',
   truncated: "已截断",
   "Agents with changes": "有改动的 agent",
+  "the run's source repository": "运行的源仓库",
+  source: "源仓库",
+  repo: "仓库",
   "agent changed files": "个 agent 改动了文件",
   "agents changed files": "个 agent 改动了文件",
   "This agent's diff is not available.": "该 agent 的 diff 不可用。",
@@ -917,4 +924,7 @@ const ZH: Record<string, string> = {
   "{a} applied, {d} dismissed, {l} left": "{a} 已应用,{d} 已放弃,{l} 未处理",
   Recent: "最近",
   "Full dashboard": "完整看板",
+  "allowed by tier {tier}": "按档位 {tier} 允许",
+  "rejected by tier {tier}": "按档位 {tier} 拒绝",
+  "ran without asking, beyond tier {tier}": "未请求权限即执行,超出档位 {tier}",
 };

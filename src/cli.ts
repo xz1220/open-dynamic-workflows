@@ -146,8 +146,11 @@ import { describeConcurrency } from "./throttle.js";
 import { detectCaps, fmtUsd, glyphs, palette, sanitizeText } from "./tty.js";
 import { resolveRunTrust } from "./untrusted.js";
 import { confirmUntrustedPr, untrustedInputBanner, untrustedInputOf, untrustedTier } from "./untrusted-input.js";
+import { parseRepoFlags, repoFlagsOf, repoTop } from "./repos.js";
 import { pluginOrigin } from "./workflows/plugins.js";
 import { listWorkflows, resolveWorkflow, workflowCandidates, type ResolvedWorkflow } from "./workflows/resolve.js";
+import { cmdWorkflowsAdd, cmdWorkflowsUpdate, cmdWorkflowsVerify } from "./workflows/install.js";
+import { describeSource, modifiedLockedMessage } from "./workflows/lock.js";
 
 export const COMMANDS = [
   "init",
@@ -211,6 +214,7 @@ export function helpText(): string {
     "  odw doctor --models                                send each configured adapter/model pair one tiny prompt",
     "  odw doctor --local [--endpoint URL] [--model M]    check a local Ollama / LM Studio: context length, tool calling;",
     "                                                     with --smoke, whether a long prompt's front is silently cut",
+    "  odw doctor --adapter <acp-adapter>                 an ACP agent's handshake: what it says it can do (ODW extension)",
     "  odw run <script.js|name> [--args JSON|@file]       start a workflow (see modes below)",
     "  odw run <script.js|name> --help                    what it takes as --args, from its meta.input (ODW extension)",
     "  odw attach <run_id>                                attach the live foreground view to a run",
@@ -228,7 +232,10 @@ export function helpText(): string {
     "                                                     --resolve [--adapter A] [--confirm]: an agent resolves a conflict, verified first",
     "                                                     --pr [--base B] [--ready] [--title T]: a branch, pushed, and a draft PR (gh); never merges",
     "                                                     (a run with untrusted input asks y/N first; --accept-untrusted-input: yes)",
+    "                                                     each agent's diff goes to the repository it worked in (--repo): --all previews",
+    "                                                     every repository before writing any; --repo <name|.> picks one (ODW extension)",
     "  odw restore <run_id> [--check] [--force]           put back the working tree as it was before the run's first in-place agent (ODW extension)",
+    "                                                     --repo <name>: another repository of the run, from its own snapshot",
     "  odw compare <runA> <runB> [--json]                 what changed: setup, time, cost, failures, replies",
     "                                                     --agent <label|id> shows one agent's whole reply diff",
     "  odw estimate <wf> [--args JSON|@file] [--json]     p50/p90 time, cost, tokens and agents, from its earlier runs (ODW extension)",
@@ -239,6 +246,9 @@ export function helpText(): string {
     "  odw workflows list [--project|--global|--plugins|--all]  list workflows runnable by name,",
     "                                                     Claude Code plugins' as <plugin>:<name> (ODW extension)",
     "  odw workflows where <name>                         show the file a name resolves to (and the ones it shadows)",
+    "  odw workflows add <git-url>[#ref] [--path P] [--name N] [--global] [--yes]  install workflows from git, locked (ODW extension)",
+    "  odw workflows update [<name>] [--global] [--yes]   re-fetch each locked ref, show the diff, then write",
+    "  odw workflows verify [<name>] [--json]             check every locked file's sha256; exit 1 on a mismatch",
     "  odw pause|resume|stop <run_id>                     control a running workflow",
     "  odw approve|reject <run_id> [--checkpoint N]       answer a checkpoint() the run waits at (--note TEXT)",
     "  odw approve <run_id> --edit | --payload JSON|@file approve it with an edited payload ($VISUAL/$EDITOR for --edit)",
@@ -295,6 +305,7 @@ export function helpText(): string {
     "                      --permissions, a minimal env without tokens, a checkpoint before any agent may write (ODW extension)",
     "  --sandbox container run each agent CLI (and exec() step) in a Docker/Podman container (ODW extension)",
     "  --sandbox-image <i> the image it runs in (else the config's sandbox.image); never pulled",
+    "  --repo name=path    another repository its agents may work in: agent(p, { repo: name }) (repeatable; ODW extension)",
     "  --fg                run in the foreground: live progress on a TTY, plain event lines otherwise",
     "  -d, --detach        start in the background and print the run id",
     "  --wait              block until the run finishes, then print the result (one run-id line on stderr)",
@@ -409,7 +420,7 @@ export async function main(argv: string[]): Promise<number> {
       case "serve":
         return await cmdServe(rest);
       case "workflows":
-        return cmdWorkflows(rest);
+        return await cmdWorkflows(rest);
       case "pause":
       case "stop":
         return cmdControl(command, rest);
@@ -546,6 +557,13 @@ async function cmdDoctor(rest: string[]): Promise<number> {
       smoke,
       smokeTimeout: timeoutMs !== undefined ? timeoutMs / 1000 : undefined,
       models: values.models === true,
+      // An ACP agent named by --adapter gets a handshake (ODW extension; see adapters/acp.ts).
+      handshake:
+        config instanceof Error || !values.adapter?.length
+          ? []
+          : values.adapter.includes("all")
+            ? listAdapters(config).filter((a) => a.installed).map((a) => a.name)
+            : values.adapter,
       local: local
         ? { endpoints: values.endpoint ?? [], smoke: values.smoke === true, model: values.model, smokeTimeoutMs: timeoutMs || undefined }
         : undefined,
@@ -701,6 +719,7 @@ async function cmdRun(rest: string[]): Promise<number> {
       yes: { type: "boolean", short: "y" },
       break: { type: "string", multiple: true },
       step: { type: "boolean" },
+      repo: { type: "string", multiple: true },
       help: { type: "boolean", short: "h" },
     },
   });
@@ -728,6 +747,8 @@ async function cmdRun(rest: string[]): Promise<number> {
   }
   if (values.on !== undefined || values.sync !== undefined) {
     if (values.break !== undefined || values.step !== undefined) throw new UsageError("odw run: --break and --step run here; the remote run cannot take them (yet)");
+    // A run on another machine works in the one repository it syncs (ODW extension; see repos.ts).
+    if (values.repo !== undefined) throw new UsageError("odw run: --repo names repositories on this machine; a run --on ssh:// works in one repository (multi-repository runs are local only)");
     return cmdRunRemote(ref, values as Record<string, string | boolean | undefined>);
   }
   // `--break`/`--step` (ODW extension; see breaks.ts): where the run stops for a decision.
@@ -758,6 +779,15 @@ async function cmdRun(rest: string[]): Promise<number> {
   const sandbox = parseSandbox("run", values.sandbox, values["sandbox-image"]);
   // --untrusted-input (ODW extension; see untrusted-input.ts): the args are someone else's text.
   const untrustedInput = values["untrusted-input"] === true ? { why: "--untrusted-input" } : null;
+  // --repo name=path (ODW extension; see repos.ts): the other repositories its agents may work in.
+  let repos: Record<string, string> | null = null;
+  if (values.repo !== undefined) {
+    try {
+      repos = parseRepoFlags(values.repo, process.cwd());
+    } catch (err) {
+      throw new UsageError(`odw run: ${(err as Error).message}`);
+    }
+  }
 
   // A dry run answers every agent itself: no adapter needs to be installed.
   if (!values.dry) warnIfNoDefaultAdapter(values.adapter ?? null, values.config ?? null, values.source ?? null, "run");
@@ -783,6 +813,7 @@ async function cmdRun(rest: string[]): Promise<number> {
     deadlineSeconds,
     breaks,
     untrustedInput,
+    repos,
   });
   if (record) process.stderr.write(`recording: once ${runId} ends, it is a case of ${record.file} (odw test ${record.workflow})\n`);
   if (!values.dry) {
@@ -960,6 +991,8 @@ function startBanner(
 function withWorkflowLines(banner: string | undefined, workflow: ResolvedWorkflow | undefined): string | undefined {
   const lines = [
     ...(workflow?.plugin ? [`workflow: ${workflow.plugin.name} from ${pluginOrigin(workflow.plugin)} (run in place, never modified)`] : []),
+    ...(workflow?.installed ? [`workflow: ${workflow.installed.name} is third-party, installed from ${describeSource(workflow.installed.entry)}`] : []),
+    ...(workflow?.installed?.modified ? [`⚠ ${modifiedLockedMessage(workflow.installed)}`] : []),
     ...(workflow?.notes ?? []).map((note) => `note: ${note}`),
   ];
   if (lines.length === 0) return banner;
@@ -1336,10 +1369,12 @@ async function cmdDiff(rest: string[]): Promise<number> {
       "runs-root": { type: "string" },
       agent: { type: "string" },
       stat: { type: "boolean" },
+      repo: { type: "string" },
     },
   });
   const runId = positionals[0];
   if (!runId) throw new UsageError("odw diff: missing <run_id>");
+  if (values.repo !== undefined && values.agent !== undefined) throw new UsageError("odw diff: --repo and --agent exclude each other");
   const store = storeFrom(values);
   if (!store.exists(runId)) {
     process.stderr.write(`no such run: ${runId}\n`);
@@ -1347,7 +1382,14 @@ async function cmdDiff(rest: string[]): Promise<number> {
   }
   const rows = agentRows(store, runId);
   let agents = changedAgents(store, runId, rows);
-  if (values.agent !== undefined) {
+  if (values.repo !== undefined) {
+    // One repository's agents (ODW extension; see repos.ts): "." is the run's source.
+    agents = inRepo(agents, values.repo);
+    if (agents.length === 0) {
+      process.stderr.write(`run ${runId} kept no changes in ${repoName(values.repo)}\n`);
+      return 0;
+    }
+  } else if (values.agent !== undefined) {
     const row = findAgent(rows, runId, values.agent, "diff");
     if (!row) return 1;
     agents = agents.filter((a) => a.row.agentId === row.agentId);
@@ -1387,7 +1429,9 @@ async function cmdDiff(rest: string[]): Promise<number> {
     if (values.agent === undefined) {
       const c = row.changes ?? countChanges(text);
       const kept = row.branch ? ` · branch ${row.branch}` : "";
-      const head = `# odw: agent ${row.agentId} · ${sanitizeText(row.label, 80)} · ${c.files} file(s) +${c.insertions} -${c.deletions}${kept}`;
+      // The run's other repository it worked in (ODW extension; see repos.ts).
+      const where = row.repo ? ` · repo ${sanitizeText(row.repo.name, 64)}` : "";
+      const head = `# odw: agent ${row.agentId} · ${sanitizeText(row.label, 80)}${where} · ${c.files} file(s) +${c.insertions} -${c.deletions}${kept}`;
       process.stdout.write((paint ? colorDiff(head, caps) : head) + "\n");
     }
     process.stdout.write(paint ? colorDiff(text, caps) : text);
@@ -1433,10 +1477,12 @@ async function cmdApply(rest: string[]): Promise<number> {
       ready: { type: "boolean" },
       title: { type: "string" },
       "accept-untrusted-input": { type: "boolean" },
+      repo: { type: "string" },
     },
   });
   const runId = positionals[0];
   if (!runId) throw new UsageError("odw apply: missing <run_id>");
+  if (values.repo !== undefined && values.agent !== undefined) throw new UsageError("odw apply: --repo goes with --all: --agent names one agent, in its own repository");
   if (!values.pr) {
     for (const flag of ["base", "remote", "draft", "ready", "title", "accept-untrusted-input"] as const) {
       if (values[flag] !== undefined) throw new UsageError(`odw apply: --${flag} goes with --pr`);
@@ -1483,6 +1529,14 @@ async function cmdApply(rest: string[]): Promise<number> {
       process.stderr.write(`run ${runId} kept no changes: agents that run with isolation: "worktree" keep a diff of what they changed\n`);
       return 0;
     }
+    // One repository's agents (ODW extension; see repos.ts): "." is the run's source.
+    if (values.repo !== undefined) {
+      agents = inRepo(agents, values.repo);
+      if (agents.length === 0) {
+        process.stderr.write(`run ${runId} kept no changes in ${repoName(values.repo)}\n`);
+        return 0;
+      }
+    }
   } else {
     const row = findAgent(rows, runId, values.agent!, "apply");
     if (!row) return 1;
@@ -1498,6 +1552,30 @@ async function cmdApply(rest: string[]): Promise<number> {
   const settings = check || values["no-verify"] ? null : loadConfig(values.config ?? null, { quiet: true }).settings;
   const verify = settings ? (values.verify ?? settings.applyVerify) : null;
   const source = store.readMeta(runId).source;
+  // Each agent's diff goes to the repository it worked in (ODW extension; see repos.ts):
+  // the source's to the working tree odw runs in, another repository's to that one.
+  const groups = repoGroups(agents);
+  // Where an alias's diffs go is what the run declared it to be — never the event log's word alone.
+  const undeclared = declaredRepoPaths(store, runId, groups);
+  if (undeclared) {
+    process.stderr.write(`odw apply: ${undeclared}\n`);
+    return 1;
+  }
+  const multi = groups.length > 1;
+  if (multi && (values.pr || values.resolve)) {
+    const names = groups.map((g) => g.name ?? ".").join(", ");
+    process.stderr.write(
+      `odw apply: run ${runId}'s agents worked in ${groups.length} repositories (${names}) — ` +
+        `${values.pr ? "--pr opens one repository's PR" : "--resolve resolves one repository's conflicts"} at a time: add --repo <name> ("." for the source)\n`,
+    );
+    return 1;
+  }
+  const strayed = rows.some((r) => r.repo) ? sourceTreeProblem(groups) : null;
+  if (strayed) {
+    process.stderr.write(`odw apply: ${strayed}\n`);
+    return 1;
+  }
+  const cwd = groups[0]?.path ?? process.cwd();
   // A signal while an apply is verified stops the command; the apply is rolled back before odw ends by it.
   const interrupt = new AbortController();
   let caught: NodeJS.Signals | null = null;
@@ -1530,7 +1608,7 @@ async function cmdApply(rest: string[]): Promise<number> {
       });
       if (!confirmed) return 1;
       return await applyPr({
-        cwd: process.cwd(),
+        cwd,
         runId,
         agents,
         all: values.all === true,
@@ -1551,8 +1629,8 @@ async function cmdApply(rest: string[]): Promise<number> {
         },
       });
     }
-    return await applyAgents({
-      cwd: process.cwd(),
+    const applying = {
+      cwd,
       runId,
       agents,
       all: values.all === true,
@@ -1568,16 +1646,146 @@ async function cmdApply(rest: string[]): Promise<number> {
       caps: detectCaps(process.stdout, process.env),
       width: process.stdout.isTTY && process.stdout.columns ? process.stdout.columns : 120,
       // What applied cleanly leaves the review queue as `applied` (ODW extension; see runtime/review).
-      onApplied: (a) => {
+      onApplied: (a: AgentDiff) => {
         appendReview(store.runDir(runId), { agentId: a.row.agentId, state: "applied", by: cliActor(), via: "apply" });
       },
-    });
+    };
+    return multi ? await applyAcross(applying, groups) : await applyAgents(applying);
   } finally {
     process.stdout.off("error", unheard);
     process.stderr.off("error", unheard);
     for (const s of signals) process.off(s, onSignal);
     if (caught) process.kill(process.pid, caught);
   }
+}
+
+/** The kept diffs of one repository of a run (ODW extension; see repos.ts): its alias and top level, null for the source. */
+interface RepoGroup {
+  name: string | null;
+  path: string | null;
+  agents: AgentDiff[];
+}
+
+/** `agents` by the repository each worked in: the source's first, then each other one's in the order it first shows. */
+function repoGroups(agents: AgentDiff[]): RepoGroup[] {
+  const groups = new Map<string, RepoGroup>();
+  for (const a of agents) {
+    const key = a.row.repo ? `repo:${a.row.repo.name}` : ".";
+    let g = groups.get(key);
+    if (!g) {
+      g = { name: a.row.repo?.name ?? null, path: a.row.repo?.path ?? null, agents: [] };
+      groups.set(key, g);
+    }
+    g.agents.push(a);
+  }
+  return [...groups.values()].sort((a, b) => (a.name === null ? -1 : b.name === null ? 1 : 0));
+}
+
+/**
+ * Point each group of another repository at the top level the run declared
+ * for its alias — `status.json`'s `repos` (what the worker resolved), checked
+ * against `meta.json`'s `repos` (`--repo`) when that names it too — in place
+ * of the path the event log recorded. Why not, or null: an alias the run
+ * never declared, the two disagreeing, or the event log naming another path.
+ */
+function declaredRepoPaths(store: RunStore, runId: string, groups: RepoGroup[]): string | null {
+  const status = store.readStatus(runId).repos;
+  const flags = repoFlagsOf(store.readMeta(runId).repos);
+  for (const g of groups) {
+    if (g.name === null) continue;
+    const name = sanitizeText(g.name, 64);
+    const resolved = status !== null && typeof status === "object" && !Array.isArray(status) ? (status as Record<string, unknown>)[g.name] : undefined;
+    const declared = typeof resolved === "string" ? resolved : null;
+    let flagged: string | null = null;
+    if (flags && Object.hasOwn(flags, g.name)) {
+      try {
+        flagged = repoTop(g.name, flags[g.name]!);
+      } catch (err) {
+        return `repository '${name}' of run ${runId}: ${sanitizeText((err as Error).message, 300)}`;
+      }
+    }
+    const top = declared ?? flagged;
+    if (top === null) return `run ${runId}'s agents worked in repository '${name}', which the run never declared — nothing is applied`;
+    if (declared !== null && flagged !== null && declared !== flagged) {
+      return `repository '${name}' of run ${runId} is ${sanitizeText(declared, 300)} in its status but --repo named ${sanitizeText(flagged, 300)} — nothing is applied`;
+    }
+    if (g.path !== null && g.path !== top) {
+      return `the event log of run ${runId} puts repository '${name}' at ${sanitizeText(g.path, 300)}, not ${sanitizeText(top, 300)} as the run declared — nothing is applied`;
+    }
+    g.path = top;
+  }
+  return null;
+}
+
+/** The agents of the repository `--repo` names: an alias, or "." for the source. */
+function inRepo<T extends { row: AgentRow }>(agents: T[], name: string): T[] {
+  return agents.filter((a) => (name === "." ? !a.row.repo : a.row.repo?.name === name));
+}
+
+/** What `--repo` names, said in a message. */
+function repoName(name: string): string {
+  return name === "." ? "its source repository" : `repository '${sanitizeText(name, 64)}'`;
+}
+
+/**
+ * Why the source's diffs must not go to the working tree odw runs in, or
+ * null: it is another repository of the run, where they do not belong.
+ */
+function sourceTreeProblem(groups: RepoGroup[]): string | null {
+  if (!groups.some((g) => g.name === null)) return null;
+  let here: string;
+  try {
+    here = repoTop(".", process.cwd());
+  } catch {
+    return null; // applyAgents says it needs a repository
+  }
+  const other = groups.find((g) => g.path !== null && g.path === here);
+  return other
+    ? `this working tree is the repository '${other.name}' of the run — run odw apply in its source repository for the source's agents, or add --repo ${other.name}`
+    : null;
+}
+
+/**
+ * `odw apply --all` over agents that worked in more than one repository (ODW
+ * extension; see repos.ts): every repository is previewed first, and nothing
+ * is written unless each would apply cleanly; then each is applied in turn,
+ * the source first. A repository whose apply fails is rolled back as `odw
+ * apply` always does — the ones after it are not written, the ones before it stay.
+ */
+async function applyAcross(o: Parameters<typeof applyAgents>[0], groups: RepoGroup[]): Promise<number> {
+  const label = (g: RepoGroup): string => (g.name === null ? "the source" : `repository '${g.name}'`);
+  const where = (g: RepoGroup): string => g.path ?? o.cwd;
+  o.out.write(`run ${o.runId}'s agents worked in ${groups.length} repositories: each is previewed before any is written\n`);
+  const failing: RepoGroup[] = [];
+  for (const g of groups) {
+    o.out.write(`\n${label(g)} (${where(g)}):\n`);
+    const code = await applyAgents({ ...o, cwd: where(g), agents: g.agents, check: true });
+    if (code !== 0) failing.push(g);
+  }
+  if (o.check) return failing.length > 0 ? 1 : 0;
+  if (failing.length > 0) {
+    o.err.write(
+      `odw apply: nothing applied — ${failing.map(label).join(", ")} would not apply cleanly, and a multi-repository run is applied only when every repository would; ` +
+        `apply one repository's agents with --repo <name> ("." for the source)\n`,
+    );
+    return 1;
+  }
+  const done: RepoGroup[] = [];
+  for (const g of groups) {
+    if (o.interrupt?.aborted) break;
+    o.out.write(`\n${label(g)} (${where(g)}):\n`);
+    const code = await applyAgents({ ...o, cwd: where(g), agents: g.agents, previewed: true });
+    if (code !== 0) {
+      const left = groups.slice(done.length + 1);
+      o.err.write(
+        `odw apply: stopped at ${label(g)}${done.length > 0 ? ` — applied: ${done.map(label).join(", ")}` : ""}` +
+          `${left.length > 0 ? `; not applied: ${left.map(label).join(", ")}` : ""}\n`,
+      );
+      return 1;
+    }
+    done.push(g);
+  }
+  return done.length === groups.length ? 0 : 1;
 }
 
 /**
@@ -1596,6 +1804,7 @@ async function cmdRestore(rest: string[]): Promise<number> {
       "runs-root": { type: "string" },
       check: { type: "boolean" },
       force: { type: "boolean" },
+      repo: { type: "string" },
     },
   });
   const runId = positionals[0];
@@ -1605,7 +1814,20 @@ async function cmdRestore(rest: string[]): Promise<number> {
     process.stderr.write(`no such run: ${runId}\n`);
     return 1;
   }
-  const source = store.readMeta(runId).source;
+  let source = store.readMeta(runId).source;
+  // Another repository of the run has its own snapshot (ODW extension; see repos.ts).
+  if (values.repo !== undefined) {
+    const repos = store.readStatus(runId).repos as Record<string, unknown> | undefined;
+    const path = repos && typeof repos === "object" ? repos[values.repo] : undefined;
+    if (typeof path !== "string") {
+      const known = repos && typeof repos === "object" ? Object.keys(repos) : [];
+      process.stderr.write(
+        `odw restore: run ${runId} has no repository '${sanitizeText(values.repo, 64)}'${known.length > 0 ? ` — it worked in ${known.join(", ")}` : " — it worked in its source alone"}\n`,
+      );
+      return 1;
+    }
+    source = path;
+  }
   // A signal stops it before anything more is applied; odw then ends by that signal.
   const interrupt = new AbortController();
   let caught: NodeJS.Signals | null = null;
@@ -2078,6 +2300,8 @@ async function relaunch(
     // …and a triggered run's rerun or resume is still one, strict by default (ODW extension; see ./script-context).
     origin: meta.origin === "trigger" ? "trigger" : null,
     sourceOrigin: meta.sourceOrigin === "trigger" ? "trigger" : null,
+    // …and so are the repositories its --repo named (ODW extension; see ./repos).
+    repos: repoFlagsOf(meta.repos),
   };
   warnIfNoDefaultAdapter(opts.adapter, opts.configPath, opts.source, cmd);
   // An inline-launched run's script lives inside the OLD run dir. Re-archive its
@@ -2643,12 +2867,15 @@ async function cmdExport(rest: string[]): Promise<number> {
   return 0;
 }
 
-/** `odw workflows <list|where>` — inspect the workflows runnable by name. */
-function cmdWorkflows(rest: string[]): number {
+/** `odw workflows <list|where|add|update|verify>` — inspect the workflows runnable by name; install them from git (ODW extension). */
+async function cmdWorkflows(rest: string[]): Promise<number> {
   const [sub, ...subRest] = rest;
   if (sub === "list") return cmdWorkflowsList(subRest);
   if (sub === "where") return cmdWorkflowsWhere(subRest);
-  process.stderr.write(`odw workflows: expected 'list' or 'where', got '${sub ?? ""}'\n`);
+  if (sub === "add") return await cmdWorkflowsAdd(subRest);
+  if (sub === "update") return await cmdWorkflowsUpdate(subRest);
+  if (sub === "verify") return cmdWorkflowsVerify(subRest);
+  process.stderr.write(`odw workflows: expected 'list', 'where', 'add', 'update' or 'verify', got '${sub ?? ""}'\n`);
   return 2;
 }
 
@@ -2694,7 +2921,11 @@ function cmdWorkflowsList(rest: string[]): number {
       ? `  shadowed by ${e.shadowedBy ? `${e.shadowedBy.rootLabel}/${basename(e.shadowedBy.path)}` : "a higher-precedence workflow"}`
       : "";
     const note = e.note ? `  note: ${e.note}` : "";
-    process.stdout.write(`${e.name.padEnd(width)}  (${scope.padEnd(14)} ${e.rootLabel})  ${e.path}${shadow}${note}\n`);
+    // Installed from git by `odw workflows add` (ODW extension): third-party, and whether it is still what was installed.
+    const installed = e.installed
+      ? `  third-party: ${describeSource(e.installed.entry)}${e.installed.modified ? "  MODIFIED since install (odw workflows verify)" : ""}`
+      : "";
+    process.stdout.write(`${e.name.padEnd(width)}  (${scope.padEnd(14)} ${e.rootLabel})  ${e.path}${shadow}${note}${installed}\n`);
   }
   return 0;
 }

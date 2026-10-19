@@ -17,6 +17,7 @@ import { loadConfig, resolveRunsRoot } from "../adapters/config.js";
 import { cliActor } from "../identity.js";
 import { detectCaps, palette, sanitizeText, type TermCaps } from "../tty.js";
 import { agentRows, matchAgents } from "./agents-view.js";
+import { MAX_SINCE_SECONDS } from "./digest-cli.js";
 import { parseAge } from "./gc-cli.js";
 import { appendReview, isReviewState, markable, ReviewReader, REVIEW_NOTE_MAX, type ReviewEntry, type ReviewQueue } from "./review.js";
 import { RunStore } from "./run-store.js";
@@ -42,6 +43,7 @@ export async function cmdReview(rest: string[], now = Date.now() / 1000): Promis
   if (values.since !== undefined) {
     const days = parseAge(values.since);
     if (days === null) return usage(`odw review: --since takes an age like 7d, 12h or 2w; got ${JSON.stringify(values.since)}`);
+    if (days * 86_400 > MAX_SINCE_SECONDS) return usage(`odw review: --since is at most 156w (three years); got ${JSON.stringify(values.since)}`);
     since = now - days * 86_400;
   }
   const queue = new ReviewReader(storeOf(values)).queue({ since, all: values.all === true });
@@ -113,7 +115,7 @@ export function formatReview(queue: ReviewQueue, opts: { all?: boolean; caps?: T
     const mark = e.review && e.review.state !== "open" ? p.dim(` · ${e.review.state}${e.review.by ? ` by ${safe(e.review.by, 80)}` : ""}`) : "";
     lines.push("");
     lines.push(
-      `${tint(e, `${e.risk.toUpperCase().padEnd(6)} ${String(e.score).padStart(2)}`)}  ${e.runId} · agent ${e.agentId} (${safe(e.label, 60)})` +
+      `${tint(e, `${e.risk.toUpperCase().padEnd(6)} ${String(e.score).padStart(2)}`)}  ${e.runId} · agent ${e.agentId} (${safe(e.label, 60)})${e.repo ? ` · repo ${safe(e.repo, 64)}` : ""}` +
         ` · ${c.files} file(s) +${c.insertions} -${c.deletions} · ${safe(e.run, 60)}${e.agentState === "failed" ? p.err(" · failed") : ""}${mark}`,
     );
     if (e.factors.length === 0) lines.push(p.dim("           small, and nothing on record against it"));

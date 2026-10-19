@@ -78,7 +78,27 @@ export interface RunCommandOptions {
    * it leaves behind (see {@link handOffCleanups}).
    */
   cleanup?: boolean;
+  /**
+   * Keep stdin open and talk to the process over it (an ODW extension: the
+   * ACP adapters, see ./acp): called once it is spawned, after `stdin` is
+   * written, with a writer. `close()` ends stdin; a process still running
+   * {@link CLOSE_GRACE_MS} later is killed, and reported as a clean exit.
+   */
+  duplex?: (io: ProcessIO) => void;
+  /** Told just before the process is killed — a timeout, a stall, an abort, an overrun — while its stdin is still open. */
+  onTerminate?: () => void;
 }
+
+/** A process's stdin, held open (see {@link RunCommandOptions.duplex}). */
+export interface ProcessIO {
+  /** Write to its stdin; false once it is closed or gone. */
+  write(data: string): boolean;
+  /** End its stdin: it is done. */
+  close(): void;
+}
+
+/** How long a duplex process may take to exit once its stdin is closed before it is killed. */
+export const CLOSE_GRACE_MS = 3000;
 
 /** The injectable contract for executing a command. */
 export type CommandRunner = (command: string[], options?: RunCommandOptions) => Promise<CliResult>;
@@ -274,6 +294,9 @@ export const runCommand: CommandRunner = (command, options = {}) => {
     let drainTimer: NodeJS.Timeout | undefined;
     let killTimer: NodeJS.Timeout | undefined;
     let termTimer: NodeJS.Timeout | undefined;
+    let closeTimer: NodeJS.Timeout | undefined;
+    /** Killed because it outlived its closed stdin (duplex): not a failure of its own. */
+    let closedOut = false;
 
     const finish = (result: CliResult): void => {
       if (settled) return;
@@ -283,6 +306,7 @@ export const runCommand: CommandRunner = (command, options = {}) => {
       clearTimeout(drainTimer);
       clearTimeout(killTimer);
       clearTimeout(termTimer);
+      clearTimeout(closeTimer);
       options.signal?.removeEventListener("abort", onAbort);
       live.delete(child);
       cleanups.delete(child);
@@ -296,11 +320,12 @@ export const runCommand: CommandRunner = (command, options = {}) => {
       let returncode: number;
       if (overrun) returncode = 1;
       else if (timedOut || stalled || aborted) returncode = -1;
+      else if (closedOut) returncode = 0;
       else if (code !== null) returncode = code;
       else returncode = signal ? 128 : 1;
       const note = aborted
         ? "\n[aborted; process terminated]"
-        : signal && !timedOut && !stalled
+        : signal && !timedOut && !stalled && !closedOut
           ? `\n[process terminated by signal ${signal}]`
           : "";
       const outputNote = overrun ? `\n[${overrun}; terminated]` : "";
@@ -323,6 +348,13 @@ export const runCommand: CommandRunner = (command, options = {}) => {
 
     const terminate = (): void => {
       if (termTimer || killTimer) return; // already on its way down
+      if (!closedOut) {
+        try {
+          options.onTerminate?.();
+        } catch {
+          // a last word that fails changes nothing: the process goes
+        }
+      }
       // SIGTERM first: an agent CLI gets a moment to stop the tools it started
       // in process groups of their own (out of reach of our group kill), then
       // the whole group is SIGKILLed.
@@ -420,6 +452,7 @@ export const runCommand: CommandRunner = (command, options = {}) => {
       if (settled) return;
       // The agent is gone; silence while its pipes drain is not a stall.
       clearTimeout(stallTimer);
+      clearTimeout(closeTimer);
       // 'close' (all pipes drained) normally follows at once. A descendant that
       // outlived the agent can hold the pipes open indefinitely: give it a
       // grace period, then kill what is left of the agent's group and settle.
@@ -436,7 +469,31 @@ export const runCommand: CommandRunner = (command, options = {}) => {
     // real outcome arrives via the 'exit'/'close'/'error' handlers above.
     child.stdin.on("error", () => {});
     if (options.stdin != null) child.stdin.write(options.stdin);
-    child.stdin.end();
+    if (!options.duplex) {
+      child.stdin.end();
+      return;
+    }
+    let stdinOpen = true;
+    options.duplex({
+      write: (data) => {
+        if (!stdinOpen || settled || child.stdin.destroyed) return false;
+        child.stdin.write(data);
+        return true;
+      },
+      close: () => {
+        if (!stdinOpen) return;
+        stdinOpen = false;
+        child.stdin.end();
+        if (settled) return;
+        closeTimer = setTimeout(() => {
+          if (settled || timedOut || stalled || aborted || overrun) return;
+          closedOut = true;
+          clearTimeout(timer);
+          clearTimeout(stallTimer);
+          terminate();
+        }, CLOSE_GRACE_MS);
+      },
+    });
   });
 };
 

@@ -52,6 +52,8 @@ export interface RawAdapter {
   sandbox?: ContainerSpec;
   agentLimits?: LimitSpec;
   egressHosts?: string[];
+  /** `"acp"`: an Agent Client Protocol agent (ODW extension; see ./acp). */
+  protocol?: "acp";
 }
 
 // `flags` only DECLARES which native flag carries a model — the router appends
@@ -734,6 +736,7 @@ export const DEFAULT_SETTINGS: Settings = {
   destructiveGit: "warn", // an agent that ran git reset --hard, clean -f, push --force, … keeps its reply, recorded ("fail": it fails)
   modelMismatch: "warn", // an agent its CLI says another model served keeps its reply, recorded and logged ("fail": it fails)
   scriptContext: null, // strict for triggered, plugin and untrusted runs, host for the rest ("host" | "strict": every run)
+  lockedWorkflows: "warn", // a workflow installed from git and modified since runs, said loudly ("fail": it does not start)
   redact: { env: true, patterns: true, extra: [] }, // likely secrets out of what odw keeps and serves (false: none)
   quotaWait: false, // an agent whose chain is out of quota fails; { max: <s> } waits for the reset instead
   otel: false, // no trace is sent; { endpoint?, headers?, captureContent? } posts each run's at its end
@@ -745,4 +748,5 @@ export const DEFAULT_SETTINGS: Settings = {
   untrustedInput: { requireSandbox: false }, // a run with untrusted input and no sandbox warns loudly (true: refused)
   retention: { days: 30, transcripts: true }, // odw gc: an ended run's branches and transcripts after 30 days (only with --yes)
   digest: null, // no default time for odw schedule add --digest ({ cron } sets one)
+  repos: {}, // no repositories besides the source: agent(…, { repo }) names none
 };

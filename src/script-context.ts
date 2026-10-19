@@ -23,7 +23,8 @@
  * errors — the same object again when it is one the worker threw.
  *
  * Unless the config sets `scriptContext`, a run is strict when a trigger
- * started it (or the run it reruns or replays), when its workflow is a Claude Code plugin's, or when its input or
+ * started it (or the run it reruns or replays), when its workflow is a Claude Code plugin's or one
+ * `odw workflows add` installed from git, or when its input or
  * its repository is untrusted ({@link resolveScriptContext}).
  *
  * `vm` is NOT a security boundary. Strict takes away what a well-meaning but
@@ -61,6 +62,8 @@ export interface ScriptContextRun {
   untrustedInput: boolean;
   /** Whether the run itself is untrusted (`--untrusted`, `trust: "untrusted"`). */
   untrustedRepo: boolean;
+  /** The URL its workflow was installed from by `odw workflows add` (see ./workflows/lock), when it was. */
+  installedFrom?: string | null;
 }
 
 /**
@@ -83,6 +86,7 @@ export function resolveScriptContext(
   if (run.origin === "trigger") return { context: "strict", why: "a trigger started this run" };
   if (run.sourceOrigin === "trigger") return { context: "strict", why: "a trigger started the run this one replays" };
   if (run.plugin) return { context: "strict", why: "the workflow is a Claude Code plugin's" };
+  if (run.installedFrom) return { context: "strict", why: `the workflow is third-party, installed from ${run.installedFrom}` };
   if (run.untrustedInput) return { context: "strict", why: "the run's input is untrusted" };
   if (run.untrustedRepo) return { context: "strict", why: "the run is untrusted" };
   return { context: "host", why: "a local run" };

@@ -75,7 +75,7 @@ return await agent(
 | `exec(command, opts?)` | 不启动模型直接运行一条命令（测试、构建、linter）；返回 `{ stdout, stderr, exitCode, signal, timedOut, truncated, durationMs }`。字符串经 shell 执行，数组按 argv 执行。**ODW 扩展**——不属于 Claude Code 方言。 |
 | `checkpoint(title, opts?)` | 暂停运行，直到有人批准（可以附上修改后的 payload）或拒绝；返回 `{ approved, note, by, payload, edited }`。**ODW 扩展**——不属于 Claude Code 方言。 |
 
-`agent` 的 `opts`：`{ adapter?, schema?, label?, phase?, model?, agentType?, isolation?, keep?, permissions?, expect?, expectRetries?, allowEmpty?, notes?, handoff?, scope?, scopePolicy?, questions?, stallMs? }`。
+`agent` 的 `opts`：`{ adapter?, schema?, label?, phase?, model?, agentType?, isolation?, keep?, permissions?, expect?, expectRetries?, allowEmpty?, notes?, handoff?, scope?, scopePolicy?, questions?, stallMs?, repo? }`。
 `stallMs`（Claude Code 方言）是这一个 agent 的卡死窗口，单位毫秒（`{ stallMs: 1800000 }` 即 30 分钟），取代 `stallTimeout` 设置。
 `adapter` 选择用哪个 CLI——写成列表（`['codex', 'claude']`，**ODW 扩展**）就是回退链；
 `model: '@fast'` 为实际运行它的 CLI 选出该层级的模型（**ODW 扩展**）；`schema` 是一个原始 JSON Schema 对象（选项，不是全局）；
@@ -140,6 +140,12 @@ const lanes = await parallel(tasks.map((t, i) => () =>      // ODW 扩展：note
 `"memory": true`）的 agent 在任务之前看到仍然适用的条目——最新的在前，至多 4 KB；`paths` 自其提交以来
 有改动的条目已过期，不再召回。不受信任的运行不使用仓库的记忆。用 `odw memory list|add|prune` 维护；见
 [`references/primitives.md`](references/primitives.md#memoryodw-扩展)。
+
+`repo`（**ODW 扩展**）让 agent——或 `exec(cmd, { repo })` 的命令——在本次运行的另一个仓库里工作，
+用运行声明过的别名指定：`odw run --repo api=../api` 或 `"repos"` 设置（`meta.repos: ['api']` 列出工作流
+需要的别名）。从不接受路径。它的 worktree、diff、`expect`、`scope` 与保险快照都属于该仓库；`odw diff`/
+`odw apply` 会标出仓库，`odw apply --all` 先预检所有仓库再写入。一个 agent 只写一个仓库：跨仓库的改动
+拆成每仓库一个 agent。见 [`references/primitives.md`](references/primitives.md#repoodw-扩展)。
 
 `scope`（**ODW 扩展**）声明 agent 打算改动的文件——glob 规则同 `expect.files`。范围重叠的并行调用
 先后运行（后发出的等先发出的结束，记一次日志："fix-auth waits for refactor-login: both declare
@@ -255,6 +261,14 @@ odw token add alice --scope approve --file tokens.json  # 给 odw serve --tokens
 列出它们）：就地、只读、同一方言。只有当项目级和个人级都没有同名 workflow 时，裸名字才会
 运行插件的 workflow——想确定运行哪一个，就用 `<插件>:<名字>` 的写法。
 
+共享的 workflow 可以从 git 安装并锁定版本（ODW 扩展）：
+`odw workflows add <git-url>[#ref] [--path P] [--name N] [--global] [--yes]`
+把它们复制到 `.odw/workflows`（或 `~/.odw/workflows`），并在 `.odw/workflows.lock.json`
+记录 `{ url, ref, commit, path, sha256 }`；`odw workflows update [名字]` 先显示 diff 再写入
+该 ref 的最新提交；`odw workflows verify` 在锁定文件被改动时退出码为 1。安装的 workflow
+是第三方的：默认在严格脚本上下文中运行，所以写的时候不要用 `process`、`require`、`fetch`
+或定时器。
+
 ### 恢复卡住或失败的运行（ODW 扩展）
 
 每个 `agent()` 的结果在该 agent 完成的那一刻就会保存，所以某条泳道卡住、运行被停止或
@@ -356,6 +370,9 @@ odw restore $RUN           # 恢复快照保存的工作区（有未提交改动
 - `read` 在 `claude`、`codex` 和 `gemini` 上可用。其他 CLI 会拒绝：agent 在启动前失败，并说明
   哪个适配器可以。只读 agent 请指定其中之一（`adapter: 'claude'`）；`odw doctor` 会列出每个
   适配器支持的档位，每次 `odw run` 也会打印各已安装适配器将以哪个档位运行。
+- ACP agent 适配器（`"protocol": "acp"`，**ODW 扩展**）可运行任何档位：ODW 按档位应答 agent 的
+  每个权限请求，并把每次应答记为 `acp_permission` 事件。它拦不住 agent 不经询问就做的事，
+  所以审查类工作优先选有真正 `read` 模式的 CLI。
 - **绝不要自己决定用 `full`。** 它去掉了沙箱和所有审批：只在用户明确要求、且是在用户视为
   可丢弃的机器上时才用。
 - **别人的仓库：用 `--untrusted` 运行**（ODW 扩展）。这时每个 CLI 都在其文档给出办法的

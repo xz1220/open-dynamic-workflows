@@ -6,7 +6,7 @@
  *
  *   odw outcomes [--since 30d] [--workflow W] [--json | --markdown] [--config P] [--runs-root DIR]
  *
- * `--since` takes `90m`, `12h`, `30d` or `4w` (default 30d). Read only: it
+ * `--since` takes `90m`, `12h`, `30d` or `4w` (default 30d; at most 156w). Read only: it
  * never writes a mark or a file. Exit 0; 2 on a usage error.
  */
 
@@ -14,7 +14,7 @@ import { parseArgs } from "node:util";
 
 import { loadConfig, resolveRunsRoot } from "../adapters/config.js";
 import { detectCaps } from "../tty.js";
-import { parseSince } from "./digest-cli.js";
+import { parseSince, sinceTooLong } from "./digest-cli.js";
 import { collectOutcomes, formatOutcomes, outcomesMarkdown } from "./outcomes.js";
 import { RunStore } from "./run-store.js";
 
@@ -43,6 +43,8 @@ export function cmdOutcomes(rest: string[]): number {
   if (values.since !== undefined) {
     const parsed = parseSince(values.since);
     if (parsed === null) return usage(`odw outcomes: --since takes an age like 12h, 30d or 4w; got ${JSON.stringify(values.since)}`);
+    const tooLong = sinceTooLong(parsed);
+    if (tooLong) return usage(`odw outcomes: --${tooLong}; got ${JSON.stringify(values.since)}`);
     seconds = parsed;
   }
   if (values.workflow !== undefined && values.workflow.trim() === "") return usage(`odw outcomes: --workflow needs a name\n${USAGE}`);

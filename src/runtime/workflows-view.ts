@@ -44,6 +44,22 @@ export interface WorkflowSummary {
   shadowed: boolean;
   /** A plugin workflow whose bare name runs a project or global workflow instead (ODW extension). */
   note?: string;
+  /** Installed from git by `odw workflows add` — third-party — and whether its file still matches the lock (ODW extension). */
+  installed?: InstalledSummary;
+}
+
+/** Where an installed workflow came from (ODW extension; see ../workflows/lock). */
+export interface InstalledSummary {
+  url: string;
+  ref: string | null;
+  commit: string;
+  modified: boolean;
+}
+
+function installedSummary(w: WorkflowListing): { installed?: InstalledSummary } {
+  if (!w.installed) return {};
+  const { url, ref, commit } = w.installed.entry;
+  return { installed: { url, ref, commit, modified: w.installed.modified } };
 }
 
 export interface WorkflowDetail extends WorkflowSummary {
@@ -102,6 +118,7 @@ export function listWorkflowSummaries(
       runCount: store && !w.shadowed ? store.listRunsForWorkflow(w.name).length : 0,
       shadowed: w.shadowed,
       ...(w.note ? { note: w.note } : {}),
+      ...installedSummary(w),
     });
   }
   return out;
@@ -146,6 +163,7 @@ export function workflowDetail(
     runCount: runs.length,
     shadowed: w.shadowed,
     ...(w.note ? { note: w.note } : {}),
+    ...installedSummary(w),
     source,
     runs,
   };

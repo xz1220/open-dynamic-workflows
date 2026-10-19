@@ -870,6 +870,9 @@
 .logrow .msg .er {
   color: var(--alarm-ink);
 }
+.logrow .msg .ok {
+  color: var(--sig-ink);
+}
 .evt {
   display: inline-flex;
   align-items: center;

@@ -164,8 +164,8 @@ function named(paths: string[]): string[] {
   return out;
 }
 
-/** The `safety_snapshot` event of a snapshot taken for `runId`. */
-export function snapshotEvent(runId: string, info: SafetySnapshotInfo): WorkflowEvent {
+/** The `safety_snapshot` event of a snapshot taken for `runId` — of the repository `repo` names, for one of its other repositories (ODW extension; see ./repos). */
+export function snapshotEvent(runId: string, info: SafetySnapshotInfo, repo?: string): WorkflowEvent {
   const files = [
     ...(info.tracked > 0 ? [`${info.tracked} changed tracked file${info.tracked === 1 ? "" : "s"}`] : []),
     ...(info.untracked > 0 ? [`${info.untracked} untracked file${info.untracked === 1 ? "" : "s"}`] : []),
@@ -175,8 +175,9 @@ export function snapshotEvent(runId: string, info: SafetySnapshotInfo): Workflow
     (info.secretLike.length > 0 ? ` (left out as secret-like: ${info.secretLike.join(", ")})` : "");
   return event(SAFETY_SNAPSHOT, {
     message:
-      `safety snapshot of the working tree before the first in-place agent: ${files || "its changes"}${left} ` +
-      `kept at ${info.ref} (${info.commit.slice(0, 12)}) — odw restore ${runId} puts them back`,
+      `safety snapshot of the ${repo ? `repository '${repo}'` : "working tree"} before the first in-place agent: ${files || "its changes"}${left} ` +
+      `kept at ${info.ref} (${info.commit.slice(0, 12)}) — odw restore ${runId}${repo ? ` --repo ${repo}` : ""} puts them back`,
+    ...(repo ? { repo } : {}),
     ref: info.ref,
     commit: info.commit,
     head: info.head,
@@ -196,6 +197,8 @@ export interface SafetySnapshotOptions {
   /** The run's directory, left out of the snapshot should it lie in the tree. */
   runDir?: string;
   emit(ev: WorkflowEvent): void;
+  /** The alias of the run's other repository `source` is (ODW extension; see ./repos); unset: the run's source. */
+  repo?: string;
 }
 
 /**
@@ -218,18 +221,19 @@ export class SafetySnapshot {
   }
 
   private async take(): Promise<void> {
-    const { source, runId, runDir, emit } = this.options;
+    const { source, runId, runDir, emit, repo } = this.options;
     const outcome = await takeSafetySnapshot(source, runId, runDir ? [runDir] : []);
     if ("taken" in outcome) {
       this.info = outcome.taken;
-      emit(snapshotEvent(runId, outcome.taken));
+      emit(snapshotEvent(runId, outcome.taken, repo));
     } else if ("none" in outcome) {
       emit(
         event(LOG, {
           message:
-            `safety: no snapshot of the working tree before the first in-place agent — ${outcome.none}; ` +
+            `safety: no snapshot of the ${repo ? `repository '${repo}'` : "working tree"} before the first in-place agent — ${outcome.none}; ` +
             `what a destructive git command of an agent throws away cannot be put back with odw restore`,
           safety: "none",
+          ...(repo ? { repo } : {}),
         }),
       );
     }

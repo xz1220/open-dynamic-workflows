@@ -167,6 +167,15 @@ const ANSI_SEQ = new RegExp(
 const CONTROLS = /[\x00-\x08\x0b-\x1f\x7f-\x9f]/g;
 
 /**
+ * Text with no escape sequence and no control character but tab and newline:
+ * for multi-line text from elsewhere (a diff, a code frame) whose lines and
+ * indentation should stay as they are.
+ */
+export function stripEscapes(raw: string): string {
+  return raw.replace(ANSI_SEQ, "").replace(CONTROLS, "");
+}
+
+/**
  * Make event-derived text safe to print: no escape sequences, no control
  * characters, newlines/tabs flattened to spaces, length clamped. Everything the
  * live view prints that originated in a workflow script or adapter output must

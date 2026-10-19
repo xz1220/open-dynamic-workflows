@@ -129,9 +129,10 @@ export type ReplyFileText = string | null | undefined;
 /**
  * JSONL events a CLI prints while it starts up, before its model has read the
  * prompt: Claude Code's `system` events (its `init`), Codex's `thread.started`
- * and `turn.started`, agy's `init`. Any other event means it is answering.
+ * and `turn.started`, agy's `init`, an ACP agent's `acp.initialized` and
+ * `acp.session` (see ./acp). Any other event means it is answering.
  */
-const STARTUP_EVENTS: ReadonlySet<string> = new Set(["system", "thread.started", "turn.started", "init"]);
+const STARTUP_EVENTS: ReadonlySet<string> = new Set(["system", "thread.started", "turn.started", "init", "acp.initialized", "acp.session"]);
 
 /** What stdout said about the reply, before a reply file has its say. */
 type Verdict =

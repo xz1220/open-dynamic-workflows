@@ -498,6 +498,22 @@ independent security reviews whose findings are all fixed.
   …) with line and column, and the ODW extensions it calls; `odw conformance --strict`
   runs the suite there (all 32 cases pass; `npm test` runs it). `vm` is not a security
   boundary: this takes away what a script could casually reach, nothing more.
+- ACP agents as adapters (**ODW extension**): `"protocol": "acp"` plus the command
+  that starts an Agent Client Protocol agent (`gemini --experimental-acp`, say) makes
+  it an adapter. A zero-dependency JSON-RPC client over stdio runs `initialize`
+  (protocol 1, no client capabilities), `session/new` in the agent's workspace,
+  `session/prompt`, streamed `session/update`, and `session/cancel` on stop, timeout
+  or stall. Each `session/request_permission` is answered by the agent's tier: `read`
+  allows read/search/think/fetch, `edit` adds edit/delete/move, `full` allows all,
+  always once and never always. Every answer is an `acp_permission` event (log, live
+  view, the dashboard's Logs tab). A write beyond the tier that ran without asking is
+  recorded as `unasked`. The session is kept as `acp.*` transcript events. Usage comes
+  from `usage_update`'s USD cost and the prompt response's draft `usage`. Live
+  `toolCalls`/`costUsd` limits and failure reasons apply (`auth_required` →
+  `auth`). `odw doctor --adapter <acp>` does an `initialize`-only handshake and
+  reports the agent's capabilities. Not implemented: elicitation, client `fs` and
+  `terminal`, `session/load`, extra roots, remote transports. Tested against a fake
+  agent only.
 
 ### Run on a schedule
 - `odw schedule add|list|remove|run` writes a cron, launchd or systemd entry that calls
@@ -681,6 +697,33 @@ independent security reviews whose findings are all fixed.
   gives its body, tools and isolation only. `odw agents types [--adapter a] [--json]`
   lists the definitions and what each maps to. New adapter `flags`: `effort`,
   `effortLevels`, `tools`, `disallowedTools`.
+- Multi-repository runs (**ODW extension**): the `repos` setting (alias → path, relative
+  to the run's source) and `odw run --repo name=path` (repeatable; kept for rerun,
+  resume and replay) declare the repositories a run works in besides its source;
+  `meta.repos` lists the aliases a workflow needs. `agent(p, { repo })` runs its CLI in
+  that repository — isolated, in a worktree of it, its diff kept as usual — with its
+  `expect`, `scope` and safety snapshot read there (`odw restore <run> --repo <alias>`);
+  `exec(cmd, { repo })` runs a command there. Only declared aliases are taken, never a
+  path; an untrusted run drops the paths its repository's own config names outside the
+  repository. `odw diff`, `odw review` and the dashboard's Changes tab (grouped by
+  repository) name each agent's repository; `odw apply` sends each diff to its
+  repository, and `--all` previews every repository and writes none unless each
+  applies cleanly. `--repo` with `--on ssh://` is refused.
+- Install workflows from git, locked (**ODW extension**): `odw workflows add
+  <git-url>[#ref] [--path P] [--name N] [--global] [--yes] [--force]` fetches the ref
+  one commit deep into a temp bare repository (no tags, no submodules, nothing checked
+  out, no hooks, never a prompt, https/ssh/file URLs only), reads the workflows as git
+  blobs (symlinks and submodules skipped, `meta` compiled — never run), prints what each
+  reaches outside the dialect, asks, and copies them into `.odw/workflows` (with their
+  `.odw/tests`/`.odw/evals` files) or `~/.odw/workflows`, recording `{ url, ref, commit,
+  path, sha256 }` per name in `.odw/workflows.lock.json`. `odw workflows update [name]`
+  re-fetches the ref and shows the diff before writing (a locally modified file only
+  with `--force`); `odw workflows verify [--json]` hashes every locked file and exits 1
+  on a mismatch, and `odw doctor` has the same check. Installed workflows are
+  third-party: flagged in `odw workflows list` and the dashboard's Workspace, run in a
+  strict script context by default (a nested `workflow()` of one too), recorded as
+  `installed` in `meta.json`, and a modified one is said loudly at start — or refused
+  with the new setting `"lockedWorkflows": "fail"` (default `"warn"`).
 
 ### Use the CLI and the dashboard
 - `odw run` attaches a live foreground view in interactive terminals (Ctrl-C detaches;
@@ -993,6 +1036,91 @@ independent security reviews whose findings are all fixed.
   longer carries the runs root's absolute path (`--json` still prints it), and the
   README says that on a loopback bind a `read`-scope token can still control runs and
   mark reviews, like every loopback write.
+- An agent definition's `disallowedTools` went into claude's argv one element per entry
+  after its variadic `--disallowedTools`, so a repository's `.claude/agents/x.md` could
+  inject flags (`--dangerously-skip-permissions`, `--add-dir /`, `--permission-mode
+  bypassPermissions`), also under `--untrusted`. Every `tools` and `disallowedTools`
+  entry is now held to a tool name with an optional `(rule)` — never a leading `-`,
+  whitespace or over 256 characters — when the file is read and again at the argv
+  boundary (what is not one is left out and logged), and the list goes to the flag as
+  one comma-separated element.
+- `GET /api/outcomes?since=13000000w` built a row per week and took `odw serve` down.
+  `--since` / `?since=` for `odw outcomes`, `odw digest` and `odw review` (and
+  `/api/review`) is at most 156 weeks — a usage error (exit 2) or a 400 beyond — the
+  outcomes' weeks are bounded whatever they are given, and `odw serve` reads a settled
+  run's facts again only when its `meta.json`, `events.jsonl` or `reviews.jsonl`
+  changes.
+- `odw types` (and `odw new`) wrote through symlinks: the declarations through a linked
+  `odw.d.ts`, and a dangling linked `jsconfig.json` counted as missing. A file is now
+  refused (exit 1) when it or a directory from the project down to it is a symlink, or
+  its directory resolves outside the project, and is written to a temporary file
+  renamed over it.
+- In an untrusted run a repository's agent definitions shadowed the user's
+  (`~/.claude/agents`) and plugins', and a repository's `name: myplugin:reviewer`
+  impersonated a plugin's agent. In an untrusted run the user's and plugins'
+  definitions now come first (the shadowed repository file is logged), and a `:` in a
+  name is refused for every definition but a plugin's own prefix.
+- The walk from the working directory up to the repository root (agent definitions,
+  workflows) stopped only at a `.git`, whoever owned the directories on the way. Like
+  git's `safe.directory`, it now stops below a directory not owned by the current user
+  (POSIX; not checked on Windows), and says so once when a repository root lay beyond.
+- `odw run <wf> --help` printed a workflow's name, description, `whenToUse` and input
+  descriptions raw, so an escape sequence in one (OSC 52 writes the clipboard) reached
+  the terminal. Every line is now sanitized, and nested input is described to 32
+  levels.
+- A rule-scoped tool in a definition's `tools` (`Bash(git status)`) passed plain `Bash`
+  to claude's `--tools`, which takes names only, without a word: the run's log now says
+  the rule is not enforced. A definition file that is a symlink is followed only when
+  it stays in its agents directory (the user's: in their home). A live Claude Code
+  run's journal `agentId` is checked before it names a transcript to stat.
+- `odw workflows add` and `update` wrote through symlinks: a cloned project's committed
+  `.odw/workflows.lock.json` and a dangling `.odw/workflows/foo.js` link made `odw
+  workflows update --yes` write the source's bytes outside the project, and a linked
+  `.odw/tests` or `.odw/evals` took the test or eval elsewhere. Nothing is now written
+  (exit 1, the path named) when the workflow, its test or eval, the lock, or a
+  directory from the project (`--global`: the workflows directory's parent) down to
+  them is a symlink or resolves outside it; each file is written to a temporary file
+  beside it renamed over it — the helper `odw types` uses, now shared.
+- `odw workflows add` took a workflow's name from its file's name unchecked: a name
+  with spaces or escape bytes installed (its escapes printed raw) and made the lock
+  unreadable — and a lock that could not be read made every workflow beside it
+  first-party: no strict context, no "modified" warning, no `lockedWorkflows: "fail"`.
+  `__proto__.js` installed with no lock entry. A file whose name is not a workflow name,
+  or is `__proto__`, `constructor` or `prototype`, is now skipped with a note (its path
+  stripped of escapes, as every path add and update print), the lock is keyed in a
+  prototype-free object, and beside a lock that cannot be read every workflow is
+  third-party from an unknown source and modified: strict, said loudly, and refused
+  under `"fail"`. `odw workflows verify` and `odw doctor` report the lock.
+- `odw workflows update` installed a fetched file that did not check as a workflow;
+  like `add`, it now leaves the installed one and fails (exit 1).
+- A lock's `url`, `ref` and paths were taken as written, so a committed lock could hand
+  `git fetch` an option-shaped ref or a `ssh://-o…` host, and name a path outside the
+  repository. They are now held to what `odw workflows add` takes (https, ssh or file,
+  no user or host starting with `-`; a ref of letters, digits and `. _ / + -` without
+  `..`; a relative path without `.` or `..`), and in `update` an entry that fails —
+  unreachable, refused — fails alone (exit 1) while the others go on.
+- An ACP agent's output was unbounded: the runner skips its output cap for a streamed
+  CLI, and the ACP client joined message, thought and reply text, its refused calls and
+  its tool bookkeeping without limit (a fake agent pushed one 419 MB event, 1.8 GB RSS).
+  The agent's stdout now counts against the same output cap, past which the run is
+  stopped with the same `process output exceeded N bytes` a buffered CLI gets; a
+  message and the reply keep at most 4 MiB, a thought 256 KiB (each cut said at its
+  end), `denied` lists at most 1000 calls ("… and N more"), and at most 1000 tool calls
+  are remembered.
+- With untrusted input and a network not boxed in, a `read` ACP agent was still allowed
+  `search`; it is now refused like `fetch` (the same `sandboxGap` check the CLI path's
+  web tools use). A tool call that ran without asking was flagged `unasked` only for
+  `edit`, `delete`, `move` and `execute`; any kind beyond the tier but `read`, `search`
+  and `think` — `other`, `switch_mode`, unknown — now is, and so is a `search` or
+  `fetch` that never asked where web tools are withheld. The README says plainly that
+  the tier is advisory for an ACP agent, and that a real guarantee needs the container
+  sandbox (`untrustedInput.requireSandbox` applies).
+- `odw apply` took the repository an alias's diffs go to from the path the event log
+  recorded for the agent, so an edited `events.jsonl` could send them anywhere. The
+  alias is now resolved through what the run declared — `status.json`'s `repos`,
+  checked against `meta.json`'s `--repo` — and the apply is refused (exit 1, nothing
+  written) when the two disagree, when the event log names another path, or when the
+  run never declared the alias.
 
 ### Changed behavior — check before upgrading
 - `agentType` naming an agent definition file now runs that definition (see "Write

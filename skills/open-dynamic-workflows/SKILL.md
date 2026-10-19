@@ -86,7 +86,7 @@ outright, never silently passed through as a string).
 | `exec(command, opts?)` | Run a command (tests, a build, a linter) without a model; resolves to `{ stdout, stderr, exitCode, signal, timedOut, truncated, durationMs }`. A string runs through the shell, an array as argv. **ODW extension** — not part of Claude Code's dialect. |
 | `checkpoint(title, opts?)` | Pause the run until a person approves (perhaps with an edited payload) or rejects; resolves to `{ approved, note, by, payload, edited }`. **ODW extension** — not part of Claude Code's dialect. |
 
-`opts` for `agent`: `{ adapter?, schema?, label?, phase?, model?, agentType?, isolation?, keep?, permissions?, expect?, expectRetries?, allowEmpty?, notes?, handoff?, scope?, scopePolicy?, questions?, stallMs? }`.
+`opts` for `agent`: `{ adapter?, schema?, label?, phase?, model?, agentType?, isolation?, keep?, permissions?, expect?, expectRetries?, allowEmpty?, notes?, handoff?, scope?, scopePolicy?, questions?, stallMs?, repo? }`.
 `stallMs` (Claude Code dialect) is that one agent's stall window in milliseconds
 (`{ stallMs: 1800000 }` = 30 minutes), in place of the `stallTimeout` setting.
 `adapter` picks the CLI — or, as a list (`['codex', 'claude']`, **ODW
@@ -174,6 +174,15 @@ gets the entries still applying ahead of its task — newest first, at most 4 KB
 entry whose `paths` changed since its commit is stale and left out. Untrusted runs
 skip the repository's memory. Tend it with `odw memory list|add|prune`; see
 [`references/primitives.md`](references/primitives.md#memory-odw-extension).
+
+`repo` (**ODW extension**) runs an agent — or `exec(cmd, { repo })` a command — in
+another repository of the run, named by an alias the run declares: `odw run --repo
+api=../api` or the `"repos"` setting (`meta.repos: ['api']` lists the ones a workflow
+needs). Never a path. Its worktree, diff, `expect`, `scope` and safety snapshot are that
+repository's; `odw diff`/`odw apply` name it, and `odw apply --all` previews every
+repository before writing any. One agent writes one repository: split a cross-repository
+change into one agent per repository. See
+[`references/primitives.md`](references/primitives.md#repo-odw-extension).
 
 `scope` (**ODW extension**) declares the files an agent means to change — globs
 like `expect.files`. Parallel calls whose scopes overlap run one after the other
@@ -307,6 +316,15 @@ ship run as `odw run <plugin>:<name>` (ODW extension; `odw workflows list
 a plugin's workflow only when no project or personal one has it — use the
 `<plugin>:<name>` form to be sure which runs.
 
+Shared workflows can be installed from git, pinned (ODW extension):
+`odw workflows add <git-url>[#ref] [--path P] [--name N] [--global] [--yes]`
+copies them into `.odw/workflows` (or `~/.odw/workflows`) and records
+`{ url, ref, commit, path, sha256 }` in `.odw/workflows.lock.json`;
+`odw workflows update [name]` shows the diff before writing the newest commit
+of the ref; `odw workflows verify` exits 1 when a locked file was modified.
+Installed workflows are third-party: they run in a strict script context by
+default, so write them without `process`, `require`, `fetch` or timers.
+
 ### Recover a stalled or failed run (ODW extension)
 
 Every `agent()` result is saved the moment that agent finishes, so a hung
@@ -434,6 +452,10 @@ approvals).
   fails before it starts, saying which adapter can. Name one of those for read-only
   agents (`adapter: 'claude'`); `odw doctor` lists each adapter's tiers, and every
   `odw run` prints the tier each installed adapter will run with.
+- An ACP agent adapter (`"protocol": "acp"`, **ODW extension**) runs every tier:
+  ODW answers each permission request the agent makes by its tier, and records
+  each answer as an `acp_permission` event. It cannot refuse what the agent does
+  without asking, so for review work prefer a CLI with a real `read` mode.
 - **Never choose `full` on your own.** It removes the sandbox and every approval:
   use it only when the user asks for it, on a machine they treat as disposable.
 - **Someone else's repository: run it `--untrusted`** (ODW extension). Each CLI

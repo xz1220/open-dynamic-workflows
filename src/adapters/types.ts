@@ -45,7 +45,7 @@ export interface AdapterFlags {
    * narrowed with any its tier sets. Without it, `tools` act only as a tier cap.
    */
   tools?: string[];
-  /** ODW extension: the flag(s) before tool names to deny (Claude Code's `--disallowedTools`) — a definition's `disallowedTools`. */
+  /** ODW extension: the flag(s) before the comma-separated tool names to deny, one argv element (Claude Code's `--disallowedTools`) — a definition's `disallowedTools`. */
   disallowedTools?: string[];
 }
 
@@ -399,6 +399,13 @@ export interface Adapter {
   egressHosts?: string[];
   /** An account of another adapter (ODW extension; see ./accounts): set on the adapters `accounts` expands into. */
   account?: AccountOf;
+  /**
+   * `"acp"`: the CLI is an Agent Client Protocol agent (ODW extension; see
+   * ./acp) — `command` starts it in its ACP mode, the prompt goes over the
+   * protocol, and its permission requests are answered by the agent's tier.
+   * Unset: a headless CLI whose stdout is decoded by `output`.
+   */
+  protocol?: "acp";
 }
 
 /**
@@ -733,6 +740,12 @@ export interface Settings {
    */
   scriptContext: ScriptContext | null;
   /**
+   * A workflow `odw workflows add` installed from git whose file no longer
+   * hashes to its lock entry (an ODW extension; see ../workflows/lock):
+   * `"warn"` runs it and says so loudly; `"fail"` refuses to start it.
+   */
+  lockedWorkflows: "warn" | "fail";
+  /**
    * What odw keeps and serves of its agents — transcripts, saved results,
    * events, the run's error and result, webhook payloads — has its likely
    * secrets replaced by `«redacted:<kind>»` (an ODW extension; see ../redact);
@@ -804,6 +817,13 @@ export interface Settings {
    * --notify` unless `--cron` says otherwise. `null`: no default time.
    */
   digest: DigestSettings | null;
+  /**
+   * The repositories a run may work in besides its source (an ODW extension;
+   * see ../repos): alias → path, `~` allowed, relative to the run's source.
+   * `agent(p, { repo })` and `exec(cmd, { repo })` name one by its alias;
+   * `odw run --repo name=path` adds or overrides one. `{}`: none.
+   */
+  repos: Record<string, string>;
 }
 
 /** When the scheduled digest goes out (see `Settings.digest`). */

@@ -123,6 +123,8 @@ export interface CreateRunInput {
   sandbox?: { kind: "container"; image: string | null } | null;
   /** The Claude Code plugin the workflow came from (ODW extension; see ../workflows/plugins), recorded as `plugin`. */
   plugin?: { name: string; id: string; version: string | null; scope: string } | null;
+  /** A workflow `odw workflows add` installed from git (ODW extension; see ../workflows/lock): its lock entry, and whether the file still matched it. */
+  installed?: { name: string; url: string; ref: string | null; commit: string; path: string; sha256: string; modified: boolean } | null;
   /** What resolving the workflow's name noted — a plugin's same-named workflow it did not pick — for the run's log. */
   workflowNotes?: string[];
   /** Where the run was initiated from (e.g. "chat" for Chat Host runs, "eval" for `odw eval`'s). */
@@ -168,6 +170,12 @@ export interface CreateRunInput {
    * ../untrusted-input): written to meta as `untrustedInput` only when set.
    */
   untrustedInput?: UntrustedInputMeta | null;
+  /**
+   * `odw run --repo name=path` (ODW extension; see ../repos): the other
+   * repositories it names, alias → absolute path. Written to meta as `repos`
+   * only when set.
+   */
+  repos?: Record<string, string> | null;
   /**
    * The origin of the run this one replays or reruns, when it decides the
    * script context (ODW extension; see ../script-context): `"trigger"`.
@@ -282,6 +290,7 @@ export class RunStore {
       ...(input.trust ? { trust: input.trust } : {}),
       ...(input.sandbox ? { sandbox: input.sandbox } : {}),
       ...(input.plugin ? { plugin: input.plugin } : {}),
+      ...(input.installed ? { installed: input.installed } : {}),
       ...(input.workflowNotes && input.workflowNotes.length > 0 ? { workflowNotes: input.workflowNotes } : {}),
       origin: input.origin ?? null,
       ...(input.eval ? { eval: input.eval } : {}),
@@ -294,6 +303,7 @@ export class RunStore {
       ...(input.breaks ? { breaks: input.breaks } : {}),
       ...(input.untrustedInput ? { untrustedInput: input.untrustedInput } : {}),
       ...(input.sourceOrigin ? { sourceOrigin: input.sourceOrigin } : {}),
+      ...(input.repos && Object.keys(input.repos).length > 0 ? { repos: input.repos } : {}),
       launchedBy: clean(input.launchedBy) ?? localLauncher(),
       resumedFrom: input.resumedFrom?.runId ?? null,
       resumedFromDir: input.resumedFrom?.dir ?? null,

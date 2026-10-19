@@ -121,6 +121,7 @@ import {
 } from "./adapters/output.js";
 import { replyFile, usesReplyFile, type ReplyFile } from "./adapters/reply-file.js";
 import { runCommand, type CommandRunner } from "./adapters/runner.js";
+import { acpRunner, type AcpPermission } from "./adapters/acp.js";
 import { EgressProxies, type EgressDeniedEvent } from "./adapters/egress-run.js";
 import {
   egressOf,
@@ -176,7 +177,7 @@ import { isAdapterChoice, type AdapterChoice } from "./routing.js";
 import { describeSchema, pickStructured, type JsonSchema } from "./schema.js";
 import { handoffBrief, HandoffLog } from "./handoff.js";
 import { transcriptFormat, type AttemptReason } from "./transcript.js";
-import { withholdSecrets, withholdSetupSecrets, withoutWebTools } from "./untrusted-input.js";
+import { sandboxGap, withholdSecrets, withholdSetupSecrets, withoutWebTools } from "./untrusted-input.js";
 import { slotName, withSlot } from "./slot.js";
 import { openWorkspace, type OpenWorkspace, type Workspace, type WorkspaceMode } from "./workspace.js";
 import type { WorktreeSetupOptions } from "./worktree-setup.js";
@@ -259,6 +260,12 @@ export interface AgentRequest {
    * of its adapter's and the run's `stallTimeout`; 0 turns the watchdog off.
    */
   stallMs?: number;
+  /**
+   * ODW extension (see ./repos): the repository the agent works in — the top
+   * level of one of the run's other repositories, `agent(p, { repo })` — in
+   * place of the run's source; an isolated agent's worktree is one of it.
+   */
+  source?: string;
 }
 
 /** The persona framing injected for `agentType`, on top of the independence preamble. */
@@ -514,6 +521,12 @@ export interface RunOptions {
    * of the call — so the run can record and log it.
    */
   onModelSubstituted?: (substitution: ModelSubstitution) => void;
+  /**
+   * Called with each permission request of an ACP agent (an ODW extension;
+   * see adapters/acp.ts) as ODW answers it by the agent's tier — and with a
+   * tool beyond the tier it ran without asking — so the run can record it.
+   */
+  onAcpPermission?: (permission: AcpPermission & { adapter: string }) => void;
   /**
    * Called when the call waits for a spent quota to reset (an ODW extension:
    * quotaWait) — its chain is out of quota, and `adapter`'s resets first —
@@ -1397,9 +1410,10 @@ export class Bridge {
       permissionArgs: [...permissions.args, ...trust.args, ...denyArgs],
       // Untrusted input (ODW extension): a read-only agent whose network is not
       // boxed in (a container with an allowlist, or none) has no web tool to
-      // carry what it reads — a token in .git/config — off the machine.
+      // carry what it reads — a token in .git/config — off the machine (an ACP
+      // agent's fetch and search requests are refused instead; see adapters/acp.ts).
       noWebTools:
-        this.withholdSecrets && permissions.tier === "read" && (!sandbox.box || sandbox.box.network === "default"),
+        this.withholdSecrets && permissions.tier === "read" && sandboxGap({ sandbox: sandbox.box ?? "none" }) !== null,
       untrusted: trust.trust === "untrusted",
       schema: schema?.native ? { flag: schema.native, value: request.schema!, file: schemaFile } : undefined,
       // Tool calls the CLI refused fail a run at once only under "fail", and
@@ -1416,8 +1430,19 @@ export class Bridge {
       substitutionFails: settings.modelMismatch === "fail",
       // A question can be put to a person, who answers it (ODW extension; see ./questions).
       asksPerson: questions === "checkpoint" && options.onQuestion !== undefined,
+      // An ACP agent's permission requests are answered by its tier (ODW extension; see adapters/acp.ts).
+      ...(adapter.protocol === "acp"
+        ? {
+            acp: {
+              tier: permissions.tier!,
+              onPermission: options.onAcpPermission && ((p: AcpPermission) => options.onAcpPermission!({ ...p, adapter: adapter.name })),
+            },
+          }
+        : {}),
       // Its worktree's commit, pinned where its agent_started event says (ODW extension).
       ...(request.base !== undefined ? { base: request.base } : {}),
+      // The repository it works in, when not the run's source (ODW extension; see ./repos).
+      ...(request.source !== undefined ? { source: request.source } : {}),
     };
     const limits: CliLimits = {
       timeout: adapter.timeout ?? settings.timeout ?? undefined,
@@ -1453,7 +1478,7 @@ export class Bridge {
     // A declared scope without `expect` reads the work the same way (ODW extension; see ./scope).
     const watch = expect ? undefined : options.scopeWatch;
     const looker = expect ?? watch;
-    if (looker) await unlessStopped(signal, () => looker.begin(plan.workspaceMode, this.source));
+    if (looker) await unlessStopped(signal, () => looker.begin(plan.workspaceMode, request.source ?? this.source));
     const inspect =
       looker && plan.workspaceMode === "worktree"
         ? async (ws: Workspace, output: DecodedOutput): Promise<void> => {
@@ -2163,7 +2188,17 @@ export class Bridge {
           // A version probe runs on the host: for a CLI in a container it would
           // name another CLI (or none), so a sandboxed run records no version.
           if (!container) this.onCliRun?.(adapter);
-          cli = await this.runner(container ? container.argv : command, {
+          // An ACP agent is driven over its stdin and stdout (ODW extension; see adapters/acp.ts).
+          const run = call.acp
+            ? acpRunner(this.runner, {
+                prompt,
+                cwd: ws.path,
+                tier: call.acp.tier,
+                noWebTools: call.noWebTools === true,
+                onPermission: call.acp.onPermission,
+              })
+            : this.runner;
+          cli = await run(container ? container.argv : command, {
             stdin,
             cwd: ws.path,
             env: container ? container.env : env,
@@ -2240,7 +2275,7 @@ export class Bridge {
       handoff.heldPosture = null;
     }
     if (held && !fits) await held.close();
-    const open = resumed ?? (fits ? held : await openWorkspace(this.source, mode, setup));
+    const open = resumed ?? (fits ? held : await openWorkspace(call.source ?? this.source, mode, setup));
     try {
       return await fn(open.workspace);
     } finally {
@@ -2298,10 +2333,14 @@ interface CallEnv {
   handoff?: HandoffState;
   /** The commit its worktree checks out in place of HEAD (ODW extension; AgentRequest.base). */
   base?: string;
+  /** The repository its workspace is of, in place of the run's source (ODW extension; AgentRequest.source). */
+  source?: string;
   /** The workspace a run that stopped to ask leaves for the run told the answer (ODW extension; see ./questions). */
   asking?: AskingState;
   /** A question the agent asks goes to a person (`questions: "checkpoint"` and an `onQuestion`): its run's workspace is kept for the answer. */
   asksPerson?: boolean;
+  /** An ACP agent (ODW extension; see adapters/acp.ts): the tier its permission requests are answered by, and who is told each answer. */
+  acp?: { tier: PermissionTier; onPermission?: (permission: AcpPermission) => void };
 }
 
 /** What a call whose agent stopped to ask keeps for the run told the answer (an ODW extension; see ./questions). */

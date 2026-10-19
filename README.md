@@ -304,6 +304,10 @@ odw types --force         # also replace a jsconfig.json that is not odw's
   error (TS1108). Put `// @ts-check` atop a script to have it checked anyway.
 - **After an upgrade**, `odw doctor` warns when `.odw/types/odw.d.ts` no longer matches
   this odw's declarations; `odw types` rewrites it. Nothing is compiled or checked by odw.
+- **Never through a symlink**: a file that is a symlink, or under a directory that is
+  one (from the project down), or whose directory resolves outside the project, is not
+  written — `odw types` says which and exits 1. Each file is written to a temporary
+  file renamed over it.
 
 ## The primitives
 
@@ -591,6 +595,70 @@ await parallel([
 Claude Code's Workflow tool ignores `scope` and `scopePolicy`: there the calls run
 together as written.
 
+### Several repositories in one run (ODW extension)
+
+A change that spans a frontend, a backend and a shared library is one piece of work.
+Name the other repositories by alias and point each agent at one; their changes stay
+one run, reviewed and applied together:
+
+```bash
+odw run ./wf.js --repo api=../api --repo web=../web    # alias=path, repeatable
+```
+
+```jsonc
+// odw.config.json — paths relative to the run's source, ~ allowed
+{ "repos": { "api": "../api", "web": "../web" } }
+```
+
+```js
+export const meta = { name: 'rename-field', description: '…', repos: ['api', 'web'] }
+await parallel([
+  () => agent('Rename user.login to user.handle in the API.', { repo: 'api', isolation: 'worktree', scope: ['src/**'] }),
+  () => agent('Follow the rename in the UI.', { repo: 'web', isolation: 'worktree', expect: { command: 'npm test' } }),
+])
+const { stdout } = await exec('git log -1 --format=%h', { repo: 'api' })
+```
+
+- **Declared, never pointed at.** `agent(p, { repo })` and `exec(cmd, { repo })` take an
+  alias the run declares — the `repos` setting, or `--repo name=path` over it — never a
+  path. An alias the run lacks fails the run before the call starts; `meta.repos` lists
+  the aliases a workflow needs, and a run without one of them fails before any agent
+  does. Each path must be a git repository (`--repo` is checked before the run exists).
+  The run logs the repositories it has, and status.json keeps them as `repos`.
+  `--repo` is kept for `odw rerun`, `resume` and `replay`.
+- **Everything per repository.** The agent's CLI runs at that repository's top level —
+  with `isolation: "worktree"` in a worktree of it, whose diff is kept as any isolated
+  agent's. Its `expect` (`files`, `untouched`, `command`), `scope` and out-of-scope check
+  read that repository; scopes in different repositories never wait for each other. An
+  in-place agent that may write gets that repository's own safety snapshot
+  (`odw restore <run> --repo api` puts it back). `exec()`'s `cwd` resolves against it.
+  Its `agent_started` event carries `repo: { name, path }`.
+- **Review and apply.** `odw diff` names each agent's repository (`# odw: agent 2 · fix ·
+  repo api · …`; `--stat` adds a REPO column, `.` for the source; `--repo <name|.>` shows
+  one), as do `odw review` and the dashboard's Changes tab, which groups the agents by
+  repository. `odw apply --agent N` applies to the repository the agent worked in —
+  the path the run declared for its alias (`status.json`'s `repos`, checked against
+  `--repo`), refused when the event log names another or the run never declared it;
+  the source's agents still go to the working tree you run odw in (refused when that is
+  one of the run's other repositories). `odw apply --all` previews every repository
+  first and writes nothing unless each would apply cleanly — then applies them one by
+  one, the source first; a repository whose apply fails (its `--verify`, say) is rolled
+  back as `odw apply` always does, the ones before it stay and the ones after it are not
+  written. `--repo <name|.>` applies one repository's agents; `--pr` and `--resolve`
+  take one repository at a time.
+- **Untrusted runs** (`--untrusted`) take no path from the repository's own config
+  outside the repository: such an alias is dropped, and the run says so. Your own
+  config (`--config`, `~/.config/odw/config.json`) and `--repo` name any.
+- **Not in this version:** an agent writes to one repository (split a cross-repository
+  change into one agent per repository, and use the [notes board](#notes-between-parallel-agents-odw-extension)
+  to keep them in step); no atomic merge across repositories; no discovery of
+  submodules or sibling directories; `--repo` with `--on ssh://` is refused; one PR per
+  repository with `odw apply --all --pr --repo <name>`, without cross-links; `odw gc`
+  finds orphaned worktrees of the source repository only.
+
+Claude Code's Workflow tool ignores `repo` and `meta.repos`: there every agent works in
+the session's repository.
+
 ## Compatibility and migration
 
 ODW implements the primitive surface below. Scripts that depend on a host's
@@ -706,6 +774,8 @@ and `~/.claude/workflows` (honoring `CLAUDE_CONFIG_DIR`).
 In a monorepo, as in Claude Code, the project directories are every `.odw/workflows`
 and `.claude/workflows` from the working directory up to the repository root (the
 nearest directory holding `.git`; outside a repository, the working directory alone).
+As git's `safe.directory` does, the walk stops below a parent not owned by the current
+user (not checked on Windows), and says so once when a repository root lay beyond it.
 The nearest one wins a name, so a package's own `audit` shadows the root's; at one
 level `.odw` still comes before `.claude`. `odw workflows list --all` labels each
 entry with its directory (`../../.claude/workflows`) and says which entry shadows it;
@@ -738,6 +808,61 @@ provider `claude-plugin:<plugin>`, and runs are filed under `<plugin>:<name>`. I
 you installed them — but the repository's settings can only disable a plugin, and a
 name never resolves to the repository's own `.odw/workflows` or `.claude/workflows`
 (its path still runs it).
+
+**Install workflows from git, locked** (ODW extension). Share workflows through a git
+repository instead of copying files around, and pin what each teammate runs:
+
+```bash
+odw workflows add https://example.com/acme/flows.git#v1.2.0     # → .odw/workflows, locked
+odw workflows add git@example.com:acme/flows.git --path flows/audit.js --name audit
+odw workflows add ../flows --global                             # a local repository → ~/.odw/workflows
+odw workflows verify                  # every locked file against its sha256; exit 1 on a mismatch (CI)
+odw workflows update [audit]          # newest commit of the locked ref: shows the diff, then asks
+```
+
+`add` fetches `<url>[#ref]` (a branch, tag or commit id; none: the remote's HEAD) with
+git, one commit deep, into a fresh bare repository in a temp directory — no tags, no
+submodules, nothing checked out, an empty hooks directory, never a prompt, and only
+https, ssh (`ssh://` or `user@host:path`) and file URLs (a local directory is read as its
+file URL). Nothing from the repository is executed: files are read as git blobs, symlinks
+and submodules are skipped, and each `.js` is compiled — not run — to check its `meta`.
+It takes `--path` (a file, or a directory's `.js` files), else the first of
+`.odw/workflows`, `.claude/workflows`, `workflows` and the repository root that has
+any; prints what each reaches outside the dialect (as `odw check --capabilities`);
+asks (`--yes` to accept without a terminal); and copies them into `.odw/workflows` —
+with the workflow's `.odw/tests/<name>.json` and `.odw/evals/<name>.json` when the
+repository has them beside it — or into `~/.odw/workflows` with `--global`. It never
+replaces a file it did not install (`--force` does). A file whose name is not a
+workflow name (letters, digits and `. _ -`; never `__proto__`, `constructor` or
+`prototype`) is skipped with a note — `--path` and `--name` install it under one. Nothing
+is written through a symlink: when the workflow, its test or eval, the lock, or a
+directory from the project down to them is one, `add` and `update` write nothing there
+and exit 1. Each workflow gets an entry in
+the lock beside its directory, `.odw/workflows.lock.json` (`~/.odw/workflows.lock.json`):
+
+```json
+{ "version": 1, "workflows": { "audit": {
+  "url": "https://example.com/acme/flows.git", "ref": "v1.2.0", "commit": "<40-hex commit>",
+  "path": ".odw/workflows/audit.js", "sha256": "<sha256 of the installed file>",
+  "installedAt": "2026-10-19T08:00:00.000Z",
+  "test": { "path": ".odw/tests/audit.json", "sha256": "…" } } } }
+```
+
+Commit the lock with `.odw/workflows`. `update` re-fetches each entry's ref, prints a
+unified diff of what changed and asks before writing (a file modified locally is left
+alone unless `--force`); `verify` hashes every locked file — `odw doctor` runs the same
+check ("Locked workflows"). An installed workflow is **third-party**: `odw workflows
+list` and the dashboard's Workspace say so with its source and commit, and it runs in
+a [strict script context](#strict-script-context-odw-extension) unless the config
+says `scriptContext: "host"` (so does a nested `workflow()` of it). A run of one whose
+file no longer matches its lock says so in its start banner and log;
+`"lockedWorkflows": "fail"` refuses to start it instead (default `"warn"`). Beside a
+lock that cannot be read, every workflow counts as third-party from an unknown source
+and modified, and `verify` and `odw doctor` report the lock. `update` takes a lock's
+`url`, `ref` and paths only as `add` would, leaves a fetched file that does not check
+as it was, and an entry that fails fails alone (exit 1). Not done:
+signatures, a hub or search, automatic updates, and checking a Claude Code plugin's
+installed commit.
 
 **Prefer a browser?** `odw serve` opens a zero-dependency live dashboard onto the same
 run directory — every run as a live graph, its timeline, logs and result, streamed over
@@ -1085,7 +1210,7 @@ about its own work (no reply, result or model-written summary is repeated):
 
 ```bash
 odw digest                         # the last 24 hours
-odw digest --since 12h             # 90m, 12h, 2d, 1w
+odw digest --since 12h             # 90m, 12h, 2d, 1w (at most 156w)
 odw digest --since-last            # since the last digest that was sent (--notify)
 odw digest --workflow nightly      # one workflow's runs
 odw digest --json | --markdown     # for scripts, or to paste
@@ -2327,6 +2452,95 @@ configured adapter — or, on a fresh install, the sole adapter whose CLI it
 actually finds on PATH; if several are installed, the error lists them and shows
 how to pick one.
 
+### ACP agents (ODW extension)
+
+An agent that speaks the [Agent Client Protocol](https://agentclientprotocol.com)
+(the protocol Zed and JetBrains editors use to drive coding agents) can be an
+adapter as is: give it `"protocol": "acp"` and the command that starts its ACP
+mode. ODW then drives it the way an editor would, over JSON-RPC on its stdin and
+stdout, with a small client of its own (no dependency). It adds a way to connect
+agents and replaces nothing: the built-in adapters keep their headless modes.
+
+```json
+{
+  "adapters": {
+    "gemini-acp": { "protocol": "acp", "command": ["gemini", "--experimental-acp"], "label": "Gemini CLI (ACP)" }
+  }
+}
+```
+
+Check each agent's own docs for its ACP flag (`gemini --help`; newer Gemini CLI
+releases may name it `--acp`). An `acp` adapter takes no `stdin` and no `output`,
+since the prompt and reply go over the protocol, and it cannot be a built-in with only
+`protocol` changed, so give it a name of its own. Everything else works as for
+any adapter: `env`, `timeout`, `stallTimeout`, `flags.model` (appended to its
+command), `permissions`, `permissionArgs` (flags for its command, per tier),
+`sandbox`, `agentLimits`, fallback chains and accounts.
+
+What ODW implements (protocol version 1), per CLI run of an agent call:
+
+| Step | What ODW does |
+| --- | --- |
+| `initialize` | protocol version 1; **no client capabilities**: no `fs`, no `terminal`, no elicitation. The agent reads and writes files itself. A request for any of them is answered "method not found" |
+| `session/new` | `cwd` is the agent's workspace (its worktree when isolated); no MCP servers from ODW |
+| `session/prompt` | the agent's prompt as one text block; the turn ends with the response's `stopReason`. Anything but `end_turn` (`max_tokens`, `max_turn_requests`, `refusal`, `cancelled`) fails the call |
+| `session/update` | message and thought chunks, tool calls and their updates, plans and `usage_update` are read as they stream. The reply is the message text after the agent's last tool call |
+| `session/request_permission` | answered at once **by the agent's permission tier**. Nobody is asked |
+| `session/cancel` | sent when the run is stopped, times out, stalls or hits a limit, just before its process is killed |
+
+How the tier answers a permission request, by the tool call's ACP `kind`:
+
+| Tier | Allowed | Rejected |
+| --- | --- | --- |
+| `read` | `read`, `search`, `think`, `fetch` (not `fetch` or `search` for a run with untrusted input, unless its sandbox network is an allowlist or none) | `edit`, `delete`, `move`, `execute`, `switch_mode`, `other`, anything else |
+| `edit` | those, plus `edit`, `delete`, `move` | `execute`, `switch_mode`, `other`, anything else |
+| `full` | everything | nothing |
+
+ODW selects `allow_once` (or `reject_once`), never an `*_always` option, so no
+answer becomes a rule the agent remembers. When the agent offers no reject option,
+ODW cancels the request, which allows nothing. Each answer is an
+`acp_permission` event (`toolCallId`, `title`, `kind`, `decision`, `option`,
+`tier`). These events show in `odw logs`, the live view and the dashboard's Logs
+tab. What was refused is recorded on the agent like any CLI's refused tool calls
+(`permissionDenials`).
+
+**For an ACP agent the tier is advisory.** It is only as strong as the agent's own
+asking: ODW can refuse only what the agent asks about, and an agent configured to
+edit or run commands without asking is not stopped. When a tool call beyond the tier
+whose kind is anything but `read`, `search` or `think` (`other`, `switch_mode` and
+kinds ODW does not know included) runs without a request, ODW records an
+`acp_permission` event with `decision: "unasked"` and does not let it pass silently —
+after the fact. A real guarantee needs the
+[container sandbox](#run-agents-in-containers-odw-extension); with untrusted input,
+`untrustedInput.requireSandbox: true` refuses a run whose agents (ACP ones included)
+are not in one with a boxed-in network. Pair a `read` tier with the agent's own
+approval settings at least.
+
+The session is kept as ODW's own `acp.*` events (`acp.message`, `acp.thought`,
+`acp.tool_call`, `acp.tool_result`, `acp.permission`, `acp.plan`, `acp.usage`,
+`acp.error`, `acp.result`). It does not keep the raw JSON-RPC. Those events feed the
+agent's transcript (`odw logs --agent`, the dashboard drawer), its live
+`toolCalls` and `costUsd` limits, and its failure reasons. A JSON-RPC error is
+classified like any CLI failure. An `auth_required` error from `session/new`, for
+one, is reason `auth`. Usage comes from what the protocol carries:
+`usage_update`'s cumulative `cost` when it is in US dollars, and token counts
+only when the prompt response carries a `usage` object (a draft of the
+protocol, read when present). An agent that reports neither gets chars/4 of its
+reply, as any CLI does. The agent's stdout counts against the 32 MiB output cap a buffered
+CLI's does (past it the run is stopped); a message and the reply keep at most 4 MiB,
+a thought 256 KiB, a tool's output 64 KiB, and `denied` lists at most 1000 calls.
+
+`odw doctor --adapter <name>` gives an ACP agent a handshake: it sends
+`initialize` alone (no session, no prompt, nothing spent) and reports the agent's
+name and version, protocol version, `loadSession`, prompt and MCP capabilities,
+and login methods. `--smoke` sends it one real prompt, as for any adapter.
+
+Not implemented: ODW as an ACP *agent* (an editor driving ODW), remote
+transports, elicitation (structured questions; the capability is not declared),
+the client `fs` and `terminal` methods, `session/load`, extra workspace roots,
+session modes and config options, and authenticating for the agent (log in to it
+first).
+
 ### Structured output (ODW extension)
 
 `agent(prompt, { schema })` returns a value that satisfies its JSON Schema, or the
@@ -2724,7 +2938,7 @@ the script's own realm; an error the script throws leaves it as an ordinary `Err
 ```
 
 Unset, a run is **strict when a trigger started it, when its workflow is a Claude
-Code plugin's, or when its input or its repository is untrusted**, and **host** for
+Code plugin's or one `odw workflows add` installed from git, or when its input or its repository is untrusted**, and **host** for
 everything else — local and personal workflows run as before. A rerun, resume or
 replay of a triggered run is strict too. A config's `"host"` wins, and the run's log
 warns when it takes a strict default away. A nested `workflow()` runs in its parent's
@@ -3276,7 +3490,7 @@ enabled Claude Code plugins as `<plugin>:<name>`. What it maps:
 | --- | --- |
 | body | The persona prompt, in place of the one-line persona, on every CLI. |
 | `model` | The call's default model; `agent()`'s own `model` wins, and so does it over a phase's. On `claude` as it is; on another CLI an alias maps through the `models` tier of the same name (`"models": { "sonnet": { "codex": "gpt-5.5" } }`), else that CLI's default model runs and the run's log says so. `inherit` is no model. |
-| `tools`, `disallowedTools` | A cap on the agent's [permission tier](#permissions-odw-extension), never a raise: only Read, Glob, Grep, WebFetch, WebSearch → `read`; no Bash → at most `edit`. `claude` is also given `--tools` (narrowed with its tier's list, never widened) and `--disallowedTools`. |
+| `tools`, `disallowedTools` | A cap on the agent's [permission tier](#permissions-odw-extension), never a raise: only Read, Glob, Grep, WebFetch, WebSearch → `read`; no Bash → at most `edit`. `claude` is also given `--tools` (narrowed with its tier's list, never widened) and `--disallowedTools` (one comma-separated argument). Each entry must be a tool name with an optional rule (`Read`, `Bash(git *)`, `mcp__gh__issue`); anything else — a leading `-`, whitespace — is left out and logged. A rule in `tools` counts as its tool and is not enforced (`--tools` takes names only): the log says so. |
 | `isolation: worktree` | `agent()`'s `isolation: "worktree"`. |
 | `effort` | `claude --effort`, `codex -c model_reasoning_effort=` (minimal–xhigh); on other CLIs the log says it had no effect. |
 | anything else | `permissionMode`, `maxTurns`, `mcpServers`, `hooks`, `skills`, … are not applied, and the log names each one. |
@@ -3286,7 +3500,11 @@ carries `agentType: { name, source, path, sha256 }`, the dashboard's agent drawe
 shows it, and `odw compare` lists a definition whose file changed between two runs
 (`agentDefinition.<name>`). A name no definition has keeps the one-line persona,
 with a log line. In an `--untrusted` run a definition from the repository gives its
-body, tools and isolation — not its model or effort. Adapters declare the carriers
+body, tools and isolation — not its model or effort — and the user's and plugins'
+definitions come first: a repository's of the same name never shadows them (the log
+names it). Only a plugin's agents have a `:` in their name; a definition naming
+itself `x:y` is refused. A definition file that is a symlink is followed only when it
+stays in its agents directory (the user's: in their home). Adapters declare the carriers
 in `flags`: `effort` (an element may hold `{effort}`), `effortLevels`, `tools`,
 `disallowedTools`.
 
@@ -3952,7 +4170,7 @@ week, from what the runs recorded and the review marks — no model judges anyth
 
 ```bash
 odw outcomes                         # the last 30 days: by week, workflow, adapter and model
-odw outcomes --since 12w --workflow triage --json
+odw outcomes --since 12w --workflow triage --json   # --since: at most 156w (three years)
 odw outcomes --markdown              # tables, for a PR or a wiki page
 ```
 

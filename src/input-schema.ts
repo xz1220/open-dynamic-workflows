@@ -124,7 +124,14 @@ export function describeInput(input: JsonSchema): string[] {
   return out;
 }
 
+/** How deep `odw run --help` describes nested properties: below it, one line says there is more. */
+export const DESCRIBE_MAX_DEPTH = 32;
+
 function describeNode(schema: JsonSchema, name: string, required: boolean, depth: number, out: string[]): void {
+  if (depth > DESCRIBE_MAX_DEPTH) {
+    out.push(`${"  ".repeat(depth)}… (nested deeper than ${DESCRIBE_MAX_DEPTH} levels: not shown)`);
+    return;
+  }
   const parts = [`${"  ".repeat(depth)}${name}`, typeText(schema)];
   if (depth > 0 && required) parts.push("(required)");
   if (Array.isArray(schema.enum)) parts.push(`one of ${schema.enum.map((v) => JSON.stringify(v)).join(", ")}`);

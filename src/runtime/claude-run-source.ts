@@ -427,7 +427,8 @@ export class ClaudeRunSource implements RunSource {
     const journalMs = mtimeMs(journal);
     let freshestMs = journalMs;
     for (const r of running) {
-      if (r.agentId != null) freshestMs = Math.max(freshestMs, mtimeMs(join(d.path, `agent-${r.agentId}.jsonl`)));
+      // An id is a file name only in its shape: never a path out of the run directory.
+      if (r.agentId != null && AGENT_ID_RE.test(r.agentId)) freshestMs = Math.max(freshestMs, mtimeMs(join(d.path, `agent-${r.agentId}.jsonl`)));
     }
     const created = birthSec(d.path);
     return {

@@ -132,7 +132,8 @@ import { branchName, ChangeRecorder, type AgentChanges, type KeptChanges } from 
 import { CheckpointTimeout, createCheckpoint, type CheckpointOptions, type CheckpointResult } from "./checkpoint.js";
 import { spentTokens, type RunContext } from "./context.js";
 import { AdapterExecutionError, AgentError, NeedsInputError, RunStopped, RunawayError, UnmetExpectationError, WorkflowScriptError, isDeadlineStop, isFatalError } from "./errors.js";
-import { AGENT_FAILED, AGENT_FINISHED, AGENT_STARTED, DESTRUCTIVE_GIT, HANDOFF, LOG, MODEL_SUBSTITUTED, PHASE_STARTED, event } from "./events.js";
+import { ACP_PERMISSION, AGENT_FAILED, AGENT_FINISHED, AGENT_STARTED, DESTRUCTIVE_GIT, HANDOFF, LOG, MODEL_SUBSTITUTED, PHASE_STARTED, event } from "./events.js";
+import { acpPermissionNote } from "./adapters/acp.js";
 import { substitutionNote } from "./served-model.js";
 import { DestructiveGitWatch } from "./destructive-git.js";
 import { ExecError, createExec, execStep, type ExecOptions, type ExecResult } from "./exec.js";
@@ -162,12 +163,15 @@ import { answerOf, isQuestionPolicy, MAX_QUESTION_ROUNDS, questionLine, question
 import { firstAdapter, phaseDefaultsOf, type AdapterChoice, type PhaseDefaults } from "./routing.js";
 import type { JsonSchema } from "./schema.js";
 import { resolveScriptContext } from "./script-context.js";
+import { repoOf } from "./repos.js";
+import type { SafetySnapshot } from "./safety.js";
 import { planScope, ScopeLocks, waitNote, type ScopeClaim, type ScopePlan, type ScopePolicy } from "./scope.js";
 import { FanOut } from "./throttle.js";
 import { fmtUsd } from "./tty.js";
 import { TranscriptRecorder } from "./transcript.js";
 import { UntrustedInputRejected, workflowInput, writes, type WorkflowInput } from "./untrusted-input.js";
 import { resolveWorkflow } from "./workflows/resolve.js";
+import { installedWorkflowFor, modifiedLockedMessage } from "./workflows/lock.js";
 import { headCommit } from "./workspace.js";
 
 export interface AgentOptions {
@@ -288,6 +292,14 @@ export interface AgentOptions {
    * `0` turns the watchdog off for this call (an ODW reading).
    */
   stallMs?: number;
+  /**
+   * ODW extension: the alias of one of the run's other repositories (see
+   * ./repos) — the `repos` setting or `odw run --repo name=path` — to work in
+   * instead of the source: its CLI runs there, an isolated one in a worktree
+   * of it, and its diff, `expect`, `scope` and safety snapshot are that
+   * repository's. An alias the run does not declare is refused.
+   */
+  repo?: string;
 }
 
 /** ODW extension: what parallel() takes after its thunks. */
@@ -606,11 +618,21 @@ export function createPrimitives(
    * `destructive_git` event as soon as it shows — with `odw restore` named
    * when the run has a snapshot to put back.
    */
-  const destructiveGitWatch = (agentId: number, label: string, phase: string | null, isolated: boolean): DestructiveGitWatch =>
+  const destructiveGitWatch = (
+    agentId: number,
+    label: string,
+    phase: string | null,
+    isolated: boolean,
+    safety: SafetySnapshot | undefined,
+    repo: string | undefined,
+  ): DestructiveGitWatch =>
     new DestructiveGitWatch((hit) => {
       const policy = ctx.config.settings.destructiveGit;
-      const snapshot = ctx.safety?.info;
-      const restore = snapshot && ctx.runId ? ` — odw restore ${ctx.runId} puts back the working tree as it was before the run's first in-place agent` : "";
+      const snapshot = safety?.info;
+      const restore =
+        snapshot && ctx.runId
+          ? ` — odw restore ${ctx.runId}${repo ? ` --repo ${repo}` : ""} puts back the working tree as it was before the run's first in-place agent`
+          : "";
       ctx.emit(
         event(DESTRUCTIVE_GIT, {
           message: `${label}:${agentId} ran a destructive git command (${hit.what}): ${hit.command}${restore}`,
@@ -813,6 +835,8 @@ export function createPrimitives(
     const ownLimits = opts.limits === undefined ? undefined : readLimits(opts.limits, "agent(): limits", (m) => new AgentError(m));
     // And its declared scope (ODW extension; see ./scope).
     const scope = planScope(opts, ctx.config.settings.scopePolicy ?? "warn");
+    // The repository it works in, when not the source (ODW extension; see ./repos): only one the run declares.
+    const repo = repoOf(ctx.repos, opts.repo, "agent()", (m) => new AgentError(m));
     const activePhase = opts.phase !== undefined ? opts.phase : ctx.currentPhase;
     // Stable per-dispatch identity. Events for THIS dispatch all carry it, so
     // observers pair started/finished exactly even when several concurrent
@@ -882,7 +906,9 @@ export function createPrimitives(
     const cache = [adapter.name, model ?? "", opts.agentType ?? ""].join("\u0000");
     // A scoped call claims its scope as it is made (ODW extension; see ./scope):
     // it waits, holding no slot, for each earlier call in flight whose scope overlaps.
-    const claim = scope ? scopeLocks.claim({ agentId, label: display }, scope.globs.map(({ glob }) => glob)) : undefined;
+    // Scopes in another repository never overlap: each repository has its locks.
+    const locks = repo ? ctx.repos!.scopeLocks(repo.name) : scopeLocks;
+    const claim = scope ? locks.claim({ agentId, label: display }, scope.globs.map(({ glob }) => glob)) : undefined;
     const turn = fanOut?.enter(adapter.name, cache, prompt);
     // A call none of whose adapters has quota left waits for the first reset
     // before it is dispatched (ODW extension: quotaWait) — holding no slot,
@@ -923,6 +949,7 @@ export function createPrimitives(
       ...(opts.handoff !== undefined ? { handoff: opts.handoff } : {}),
       ...(opts.questions !== undefined ? { questions: opts.questions } : {}),
       ...(opts.stallMs !== undefined ? { stallMs: opts.stallMs } : {}),
+      ...(repo ? { source: repo.path } : {}),
     };
     // The adapters it left down its chain, and the one it is on (ODW extension).
     const fellBackFrom: string[] = [];
@@ -992,11 +1019,13 @@ export function createPrimitives(
         claim?.start();
         // The commit an isolated agent's worktree checks out (ODW extension):
         // the run's pinned one (`odw replay`), else HEAD as it starts.
-        const base = opts.isolation === "worktree" ? (ctx.worktreeBase ?? (await headCommit(ctx.source))) : null;
+        const base = opts.isolation === "worktree" ? (ctx.worktreeBase ?? (await headCommit(repo?.path ?? ctx.source))) : null;
         // The run's first in-place agent that may change the user's tree has it
         // snapshot first; any other one starting meanwhile waits for that (ODW extension; see ./safety).
         const inPlace = opts.isolation !== "worktree";
-        if (inPlace && (permissions.tier === "edit" || permissions.tier === "full")) await ctx.safety?.before();
+        // In another repository, that repository's own snapshot (ODW extension; see ./repos).
+        const safety = repo ? ctx.repos!.safety(repo.name) : ctx.safety;
+        if (inPlace && (permissions.tier === "edit" || permissions.tier === "full")) await safety?.before();
         const startedEv = event(AGENT_STARTED, {
           agentId,
           label: display,
@@ -1016,6 +1045,8 @@ export function createPrimitives(
           // The agent definition it runs as (ODW extension): `odw compare` sees it change.
           ...(definition ? { agentType: agentTypeField(definition) } : {}),
           ...(base ? { base } : {}),
+          // The repository it works in, when not the source (ODW extension; see ./repos).
+          ...(repo ? { repo: { name: repo.name, path: repo.path } } : {}),
         });
         ctx.emit(startedEv);
         // What it was asked, for `odw replay` (ODW extension).
@@ -1038,7 +1069,7 @@ export function createPrimitives(
         const changes = changeRecorder(agentId, display, opts, signal, note);
         const transcript = transcriptRecorder(agentId, adapter, note);
         // The destructive git commands its CLI runs are said as they show (ODW extension; see ./destructive-git).
-        const gitWatch = destructiveGitWatch(agentId, display, activePhase, !inPlace);
+        const gitWatch = destructiveGitWatch(agentId, display, activePhase, !inPlace, safety, repo?.name);
         const scoping = scope && claim ? { plan: scope, claim, note } : undefined;
         const expect = expectations(checks, agentId, display, activePhase, signal, scoping);
         // Without `expect`, its scope has a reader of its own (ODW extension; see ./scope).
@@ -1276,6 +1307,18 @@ export function createPrimitives(
                   requested,
                   served,
                   policy,
+                }),
+              );
+            },
+            // An ACP agent's permission request, as its tier answered it (ODW extension; see adapters/acp.ts): an event each.
+            onAcpPermission: (permission) => {
+              ctx.emit(
+                event(ACP_PERMISSION, {
+                  message: acpPermissionNote(`${display}:${agentId}`, permission),
+                  agentId,
+                  label: display,
+                  phase: activePhase,
+                  ...permission,
                 }),
               );
             },
@@ -1752,8 +1795,16 @@ export function createPrimitives(
     }
     // In the run's script context (ODW extension; see ./script-context): a strict run's child is strict too,
     // and a plugin's workflow is strict as when it runs on its own, unless the config says "host".
+    // A workflow `odw workflows add` installed from git is third-party the same way (see ./workflows/lock).
+    const installed = plugin ? null : installedWorkflowFor(scriptPath);
+    if (installed?.modified) {
+      if (ctx.config.settings.lockedWorkflows === "fail") {
+        throw new WorkflowScriptError(`workflow(): ${modifiedLockedMessage(installed)} (lockedWorkflows: "fail")`);
+      }
+      ctx.emit(event(LOG, { message: `⚠ ${modifiedLockedMessage(installed)}`, installed: { modified: true } }));
+    }
     const parentContext = ctx.config.settings.scriptContext ?? "host";
-    const pluginContext = plugin
+    const pluginContext = plugin || installed
       ? (ctx.pluginScriptContext ?? resolveScriptContext(ctx.config.settings.scriptContext, { plugin: true, untrustedInput: false, untrustedRepo: false }).context)
       : "host";
     const context = parentContext === "strict" || pluginContext === "strict" ? "strict" : "host";
@@ -1773,7 +1824,10 @@ export function createPrimitives(
     if (context !== parentContext) {
       ctx.emit(
         event(LOG, {
-          message: `▸ workflow ${name} runs in a strict script context — the workflow is a Claude Code plugin's: only the primitives and standard JavaScript built-ins`,
+          message:
+            `▸ workflow ${name} runs in a strict script context — ` +
+            `${installed ? `the workflow is third-party, installed from ${installed.entry.url}` : "the workflow is a Claude Code plugin's"}: ` +
+            "only the primitives and standard JavaScript built-ins",
           scriptContext: "strict",
         }),
       );

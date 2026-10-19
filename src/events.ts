@@ -41,6 +41,8 @@ export const DESTRUCTIVE_GIT = "destructive_git";
 export const MODEL_SUBSTITUTED = "model_substituted";
 // A parallel() or pipeline() call settled: { call, phase?, total, ok, failed, null, reasons, minOk?, required?, belowMinOk? } (ODW extension; see fanout.ts).
 export const FANOUT_DONE = "fanout_done";
+// An ACP agent's permission request, answered by its tier — or a tool beyond it that ran without asking: { agentId, label, phase, adapter, toolCallId, title, kind, decision, option?, tier, message } (ODW extension; see adapters/acp.ts).
+export const ACP_PERMISSION = "acp_permission";
 
 export interface WorkflowEvent {
   ts: number;

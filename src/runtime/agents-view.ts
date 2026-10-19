@@ -63,6 +63,8 @@ export interface AgentRow {
   servedModel?: string[] | null;
   /** Another model served it than the one it asked for (ODW extension): what was asked, what served; null otherwise. */
   substituted?: { requested: string; served: string[] } | null;
+  /** The run's other repository it worked in, its alias and top level (ODW extension; see ../repos); null: the source. */
+  repo?: { name: string; path: string } | null;
 }
 
 /** A run's agents in call (agentId) order, each with its saved result if it has one. */
@@ -96,6 +98,7 @@ export function agentRows(store: RunStore, runId: string): AgentRow[] {
       model: a.model ?? null,
       servedModel: a.servedModel ?? record?.servedModel ?? null,
       substituted: a.substituted ?? null,
+      repo: a.repo ?? null,
     };
   });
   // A saved result whose events were lost (a truncated log) is still listed.
@@ -179,6 +182,8 @@ export function agentRowJson(row: AgentRow): Record<string, unknown> {
     ...(row.model ? { model: row.model } : {}),
     ...(row.servedModel ? { servedModel: row.servedModel } : {}),
     ...(row.substituted ? { substituted: row.substituted } : {}),
+    // The run's other repository it worked in (ODW extension), when not the source.
+    ...(row.repo ? { repo: row.repo } : {}),
     saved: row.record !== null,
     error: row.error,
     preview: row.record ? previewValue(row.record.value, 120) : null,

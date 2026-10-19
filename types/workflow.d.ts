@@ -152,6 +152,15 @@ declare global {
      * `0` turns the watchdog off for this call (an ODW reading).
      */
     stallMs?: number;
+    /**
+     * The alias of another repository of the run to work in instead of the source — one the
+     * `repos` setting or `odw run --repo name=path` declares (`meta.repos` lists the ones a
+     * workflow needs). Its CLI runs there; with `isolation: "worktree"` in a worktree of it,
+     * whose diff `odw apply` applies there. Its `expect`, `scope` and safety snapshot are that
+     * repository's. An alias the run does not declare fails the run; a path is never taken.
+     * @remarks ODW extension — Claude Code ignores it.
+     */
+    repo?: string;
   }
 
   /**
@@ -282,6 +291,8 @@ declare global {
     phase?: string;
     /** Throw an `ExecError` (recoverable, carrying `.result`) unless the command exits 0. */
     check?: boolean;
+    /** The alias of another repository of the run to run in (its top level; a relative `cwd` resolves against it). */
+    repo?: string;
   }
 
   /**

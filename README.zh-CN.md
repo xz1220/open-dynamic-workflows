@@ -272,6 +272,8 @@ odw types --force         # 连不是 odw 写的 jsconfig.json 也替换
   脚本,就在它首行加 `// @ts-check`。
 - **升级之后**,若 `.odw/types/odw.d.ts` 与当前 odw 的声明不一致,`odw doctor` 会警告;
   `odw types` 重写它。odw 自己不编译、不做类型检查。
+- **从不穿过符号链接写入**:文件本身是符号链接、从项目往下的某级目录是符号链接,或其目录解析到
+  项目之外时,不写——`odw types` 会说明是哪个并以 1 退出。每个文件先写入临时文件再改名覆盖。
 
 ## 编程原语
 
@@ -504,6 +506,56 @@ await parallel([
 
 Claude Code 的 Workflow 工具会忽略 `scope` 与 `scopePolicy`:在那里这些调用按原样一起运行。
 
+### 一次运行涉及多个仓库(ODW 扩展)
+
+前端、后端加共享库的改动本是一件事。给其他仓库起别名,让每个 agent 指向其中一个;它们的改动
+仍属同一次运行,一起审阅、一起应用:
+
+```bash
+odw run ./wf.js --repo api=../api --repo web=../web    # 别名=路径,可多次
+```
+
+```jsonc
+// odw.config.json——路径相对运行的源目录,可用 ~
+{ "repos": { "api": "../api", "web": "../web" } }
+```
+
+```js
+export const meta = { name: 'rename-field', description: '…', repos: ['api', 'web'] }
+await parallel([
+  () => agent('Rename user.login to user.handle in the API.', { repo: 'api', isolation: 'worktree', scope: ['src/**'] }),
+  () => agent('Follow the rename in the UI.', { repo: 'web', isolation: 'worktree', expect: { command: 'npm test' } }),
+])
+const { stdout } = await exec('git log -1 --format=%h', { repo: 'api' })
+```
+
+- **只认声明过的别名,不接受路径。** `agent(p, { repo })` 与 `exec(cmd, { repo })` 只接受运行声明过的
+  别名——`repos` 设置,或覆盖它的 `--repo name=path`——从不接受路径。运行没有的别名会在调用开始前让
+  运行失败;`meta.repos` 列出工作流需要的别名,缺一个则在任何 agent 启动前失败。每个路径都必须是
+  git 仓库(`--repo` 在运行创建前就检查)。运行会记下它有哪些仓库,status.json 以 `repos` 保存。
+  `odw rerun`、`resume`、`replay` 沿用 `--repo`。
+- **一切按仓库生效。** agent 的 CLI 在该仓库的顶层运行——`isolation: "worktree"` 时在它的一个
+  worktree 里,diff 与其他隔离 agent 一样保留。它的 `expect`(`files`、`untouched`、`command`)、
+  `scope` 与越界检查读的都是该仓库;不同仓库的 scope 互不等待。可写的原地 agent 先给该仓库打一份
+  自己的保险快照(`odw restore <run> --repo api` 放回)。`exec()` 的 `cwd` 相对该仓库解析。
+  `agent_started` 事件带 `repo: { name, path }`。
+- **审阅与应用。** `odw diff` 标出每个 agent 的仓库(`# odw: agent 2 · fix · repo api · …`;
+  `--stat` 多一列 REPO,源仓库为 `.`;`--repo <name|.>` 只看一个),`odw review` 与看板的
+  「改动」页也一样,后者按仓库分组列出 agent。`odw apply --agent N` 应用到该 agent 所在的仓库——即本次运行为该别名声明的路径(`status.json` 的
+  `repos`,并与 `--repo` 核对),事件日志记的路径与之不符或运行从未声明该别名时拒绝;源仓库
+  的 agent 仍应用到你运行 odw 的工作区(若那正是本次运行的另一个仓库则拒绝)。`odw apply --all` 先逐个
+  仓库预检,只要有一个不能干净应用就什么都不写——全部通过后再按源仓库优先逐个写入;某个仓库应用
+  失败(比如它的 `--verify`)时按 `odw apply` 一贯的方式回滚,之前的仓库保留,之后的不再写入。
+  `--repo <name|.>` 只应用一个仓库的 agent;`--pr` 与 `--resolve` 一次只处理一个仓库。
+- **不可信运行**(`--untrusted`)不采用仓库自带配置里指向仓库之外的路径:这样的别名会被丢弃并说明。
+  你自己的配置(`--config`、`~/.config/odw/config.json`)与 `--repo` 可指向任何仓库。
+- **这一版不做:** 一个 agent 只写一个仓库(跨仓库的改动拆成每仓库一个 agent,用
+  [笔记板](#并行-agent-之间的笔记odw-扩展)保持同步);不做跨仓库的原子合并;不自动发现 submodule
+  或兄弟目录;`--repo` 与 `--on ssh://` 同用会被拒绝;PR 用 `odw apply --all --pr --repo <name>`
+  每仓库各开一个,暂不互相链接;`odw gc` 只查找源仓库的遗留 worktree。
+
+Claude Code 的 Workflow 工具会忽略 `repo` 与 `meta.repos`:在那里所有 agent 都在会话所在的仓库里工作。
+
 ## 兼容性与迁移
 
 ODW 已实现下列原语能力。依赖宿主私有运行机制的脚本,迁移前需要逐项核对：
@@ -604,6 +656,8 @@ SIGHUP,效果与 `odw stop` 相同:它的 agent 连同其启动的所有进程�
 在 monorepo 中,与 Claude Code 一样,项目级目录是从工作目录向上直到仓库根(最近的含 `.git`
 的目录;不在仓库中时只看工作目录)沿途的每个 `.odw/workflows` 与 `.claude/workflows`。同名时
 最近者胜,所以包内自己的 `audit` 会遮蔽根目录的;同一层里仍是 `.odw` 先于 `.claude`。
+与 git 的 `safe.directory` 一样,向上查找在不属于当前用户的父目录之下停止(Windows 上不检查),
+若仓库根在它之上,会说明一次。
 `odw workflows list --all` 为每一项标出它来自哪个目录(`../../.claude/workflows`)以及被哪一项遮蔽;
 `odw workflows where <名字>` 打印实际运行的文件,多个目录都有这个名字时再按优先级列出完整的候选链。
 
@@ -629,6 +683,46 @@ workflow;项目里有同名 workflow 时运行项目的那个,并提示
 [不受信任](#不受信任的仓库odw-扩展)的运行中插件 workflow 照常可用——它们是你自己安装的——
 但仓库的设置只能禁用插件,不能启用;名字也不会解析到仓库自己的 `.odw/workflows` 或
 `.claude/workflows`(给出路径仍可运行)。
+
+**从 git 安装工作流并锁定版本**(ODW 扩展)。用一个 git 仓库在团队里共享工作流,不再到处复制
+文件,并固定每个人运行的版本:
+
+```bash
+odw workflows add https://example.com/acme/flows.git#v1.2.0     # → .odw/workflows,写入锁文件
+odw workflows add git@example.com:acme/flows.git --path flows/audit.js --name audit
+odw workflows add ../flows --global                             # 本地仓库 → ~/.odw/workflows
+odw workflows verify                  # 按 sha256 核对每个锁定文件;不符时退出码 1(适合 CI)
+odw workflows update [audit]          # 拉取锁定 ref 的最新提交:先显示 diff,再询问
+```
+
+`add` 用 git 把 `<url>[#ref]`(分支、标签或提交 id;不写则为远端 HEAD)浅取一个提交到临时
+目录里新建的裸仓库——不取标签、不取子模块、不检出任何文件、hooks 目录为空、从不提示输入,
+只接受 https、ssh(`ssh://` 或 `user@host:path`)和 file URL(本地目录按其 file URL 读取)。
+不执行仓库里的任何东西:文件按 git blob 读取,符号链接与子模块跳过,每个 `.js` 只编译不运行,
+用来校验 `meta`。取 `--path`(一个文件,或一个目录下的 `.js`),否则取 `.odw/workflows`、
+`.claude/workflows`、`workflows` 与仓库根目录中第一个有 `.js` 的;打印每个文件用到的方言外能力
+(同 `odw check --capabilities`);询问确认(没有终端时用 `--yes` 接受);然后复制到
+`.odw/workflows`——仓库里同处有 `.odw/tests/<name>.json`、`.odw/evals/<name>.json` 时一并复制——
+`--global` 时复制到 `~/.odw/workflows`。不是它安装的同名文件不会被替换(`--force` 才会)。
+文件名不是工作流名(字母、数字与 `. _ -`;且不能是 `__proto__`、`constructor`、`prototype`)
+的文件会跳过并给出提示——可用 `--path` 加 `--name` 换个名字安装。从不穿过符号链接写入:
+工作流文件、其 test 或 eval、锁文件,或从项目到它们之间的任一目录是符号链接时,`add` 与
+`update` 不写入并以退出码 1 结束。
+每个工作流在其目录旁的锁文件 `.odw/workflows.lock.json`(`~/.odw/workflows.lock.json`)中有一项:
+`{ url, ref, commit, path, sha256, installedAt, test?, eval? }`(`path` 为仓库内路径,`sha256`
+为安装的文件内容)。
+
+把锁文件与 `.odw/workflows` 一起提交。`update` 重新拉取每一项的 ref,打印变化的统一 diff,
+询问后才写入(本地改过的文件不动,除非 `--force`);`verify` 计算每个锁定文件的哈希——
+`odw doctor` 也做同样的检查(「Locked workflows」)。安装的工作流是**第三方**的:
+`odw workflows list` 与看板的 Workspace 标出它及其来源与提交,并且除非配置写
+`scriptContext: "host"`,它在[严格脚本上下文](#严格脚本上下文odw-扩展)中运行(嵌套
+`workflow()` 调用它时也一样)。文件与锁文件不符时,运行的启动横幅与日志会醒目提示;
+`"lockedWorkflows": "fail"` 则拒绝启动(默认 `"warn"`)。锁文件无法读取时,其旁的每个工作流
+都视为来源未知的第三方且已被修改,`verify` 与 `odw doctor` 会报告该锁文件。`update` 对锁文件
+中的 `url`、`ref` 与路径做与 `add` 相同的校验,拉取到的文件校验不通过时保留已安装的版本,
+某一项失败只影响该项(退出码 1)。未做:签名、Hub 或搜索、自动更新、
+核对 Claude Code 插件安装目录的实际提交。
 
 **喜欢用浏览器?** `odw serve` 会对同一个 run 目录开一个零依赖的实时看板——每次运行都是一张
 实时图,还有时间线、日志和结果,全部通过 SSE 推送。无需构建,不引入额外依赖,加载时不访问网络。
@@ -938,7 +1032,7 @@ odw schedule remove digest     # 删除系统里的条目和定义(条目已被�
 
 ```bash
 odw digest                         # 最近 24 小时
-odw digest --since 12h             # 90m、12h、2d、1w
+odw digest --since 12h             # 90m、12h、2d、1w(最多 156w)
 odw digest --since-last            # 从上一份已发送(--notify)的晨报算起
 odw digest --workflow nightly      # 只看一个 workflow 的运行
 odw digest --json | --markdown     # 给脚本用,或直接粘贴
@@ -1992,6 +2086,68 @@ Windows 下的可执行文件探测遵循 `PATHEXT`,所以 `agent.cmd`、`kilo.c
 `defaultAdapter` 时,odw 会用唯一配置的 adapter——或在全新安装下,用 PATH 上
 唯一真实存在的那个 CLI;若装了多个,报错会列出它们并告诉你如何选择。
 
+### ACP agent(ODW 扩展)
+
+说 [Agent Client Protocol](https://agentclientprotocol.com)(Zed、JetBrains 编辑器驱动编码 agent 的协议)的
+agent 可以直接作为适配器:写上 `"protocol": "acp"` 和启动其 ACP 模式的命令。ODW 像编辑器一样,
+经 stdin/stdout 上的 JSON-RPC 驱动它(自带的最小客户端,零依赖)。这只是新增一种接入方式,不替换任何内置适配器的无头模式。
+
+```json
+{
+  "adapters": {
+    "gemini-acp": { "protocol": "acp", "command": ["gemini", "--experimental-acp"], "label": "Gemini CLI (ACP)" }
+  }
+}
+```
+
+ACP 启动参数以各 agent 自己的文档为准(`gemini --help`;较新的 Gemini CLI 可能叫 `--acp`)。
+`acp` 适配器不接受 `stdin` 和 `output`(提示与回复走协议),也不能只给内置适配器改 `protocol`——请另起名字。
+其余字段照常生效:`env`、`timeout`、`stallTimeout`、`flags.model`(追加到命令)、`permissions`、
+`permissionArgs`(按档位给命令加的参数)、`sandbox`、`agentLimits`、回退链与多账号。
+
+ODW 实现的部分(协议版本 1),每次 CLI 运行:
+
+| 步骤 | ODW 的做法 |
+| --- | --- |
+| `initialize` | 协议版本 1;**不声明任何客户端能力**——没有 `fs`、`terminal`、elicitation(agent 自己读写文件);agent 若请求其中任何方法,回答 method not found |
+| `session/new` | `cwd` 为 agent 的工作区(隔离时为其 worktree);ODW 不提供 MCP 服务器 |
+| `session/prompt` | agent 的提示作为一个文本块;回合以响应的 `stopReason` 结束——`end_turn` 以外的(`max_tokens`、`max_turn_requests`、`refusal`、`cancelled`)都使这次调用失败 |
+| `session/update` | 流式读取消息与思考片段、工具调用及其更新、计划、`usage_update`;回复是 agent 最后一次工具调用之后的消息文本 |
+| `session/request_permission` | 立即**按 agent 的权限档位**应答,不问任何人 |
+| `session/cancel` | 运行被停止、超时、卡死或触到限额时,在杀进程之前发送 |
+
+档位按工具调用的 ACP `kind` 应答权限请求:
+
+| 档位 | 允许 | 拒绝 |
+| --- | --- | --- |
+| `read` | `read`、`search`、`think`、`fetch`(不可信输入的运行不含 `fetch` 与 `search`,除非其沙箱网络是允许列表或 none) | `edit`、`delete`、`move`、`execute`、`switch_mode`、`other` 及其他 |
+| `edit` | 以上,加 `edit`、`delete`、`move` | `execute`、`switch_mode`、`other` 及其他 |
+| `full` | 全部 | 无 |
+
+ODW 选 `allow_once`(或 `reject_once`),从不选 `*_always`——任何应答都不会变成 agent 记住的规则;
+agent 没给拒绝选项时,ODW 取消该请求(等于不允许)。每次应答写一个 `acp_permission` 事件
+(`toolCallId`、`title`、`kind`、`decision`、`option`、`tier`),在 `odw logs`、实时视图与看板 Logs 页显示;
+被拒绝的调用像其他 CLI 被拒的工具调用一样记在 agent 上(`permissionDenials`)。
+
+**对 ACP agent 而言,档位只是建议性的。** 它的强度取决于 agent 自己是否请求权限:ODW 只能拒绝它来问的事。被配置成不经询问就编辑或执行命令的 agent 不会被拦下;
+超出档位、kind 不是 `read`、`search`、`think` 的工具调用(包括 `other`、`switch_mode` 与 ODW 不认识的 kind)未经请求就执行时,
+ODW 记一个 `decision: "unasked"` 的 `acp_permission` 事件——不会静默放过,但已是事后。真正的保证需要[容器沙箱](#在容器中运行-agentodw-扩展);
+有不可信输入时,`untrustedInput.requireSandbox: true` 会拒绝 agent(包括 ACP agent)不在网络受限沙箱中的运行。`read` 档至少要配合 agent 自身的审批设置。
+
+会话以 ODW 自己的 `acp.*` 事件保存(`acp.message`、`acp.thought`、`acp.tool_call`、`acp.tool_result`、
+`acp.permission`、`acp.plan`、`acp.usage`、`acp.error`、`acp.result`),不保存原始 JSON-RPC;这些事件进入
+agent 的 transcript(`odw logs --agent`、看板抽屉)、实时的 `toolCalls`/`costUsd` 限额与失败原因——JSON-RPC 错误像任何
+CLI 失败一样归类(例如 `session/new` 返回 `auth_required` 即原因 `auth`)。用量只取协议携带的部分:
+`usage_update` 中以美元计的累计 `cost`;token 数只在 prompt 响应带有 `usage` 对象时读取(协议草案,存在才读)。
+两者都没有的 agent,与其他 CLI 一样按回复字符数/4 估算。agent 的 stdout 与缓冲读取的 CLI 一样计入 32 MiB 的输出上限
+(超过即停止运行);一条消息与回复最多保留 4 MiB,一段思考 256 KiB,一个工具的输出 64 KiB,`denied` 最多列出 1000 个调用。
+
+`odw doctor --adapter <名字>` 对 ACP agent 做一次握手:只发 `initialize`(不建会话、不发提示、不花钱),
+报告 agent 名称与版本、协议版本、`loadSession`、提示与 MCP 能力、登录方式;`--smoke` 照常发一次真实提示。
+
+未实现:把 ODW 做成 ACP *agent*(让编辑器驱动 ODW)、远程传输、elicitation(结构化提问——不声明该能力)、
+客户端 `fs` 与 `terminal` 方法、`session/load`、额外工作区根、会话模式与配置项、替 agent 登录(请先自行登录)。
+
 ### 结构化输出(ODW 扩展)
 
 `agent(prompt, { schema })` 返回的值要么满足它的 JSON Schema,要么调用失败。背后有两层保障:
@@ -2338,7 +2494,7 @@ Node.js's process — …`),而不是一个光秃秃的 `ReferenceError`;运行�
 { "scriptContext": "strict" } // 所有运行;"host":所有运行都在 worker 的上下文中
 ```
 
-不设置时,**触发器启动的运行、Claude Code 插件的工作流、输入或仓库不可信的运行使用 strict**,
+不设置时,**触发器启动的运行、Claude Code 插件的工作流、`odw workflows add` 从 git 安装的工作流、输入或仓库不可信的运行使用 strict**,
 其余一律 **host**——本地项目与个人工作流照旧运行。触发器启动的运行,其 rerun、resume 与 replay 也是 strict。
 配置中的 `"host"` 优先,但它拿走 strict 默认值时,运行日志会给出警告。嵌套的 `workflow()` 与父运行用同一种
 上下文——插件的工作流即使在 host 父运行之下也是 strict,除非配置写明 `"host"`。
@@ -2791,7 +2947,7 @@ ODW 按 Claude Code 的方式查找——认前言里的 `name`,不认文件名:
 | --- | --- |
 | 正文 | 作为人设提示词,取代原来的一句话人设,所有 CLI 都生效。 |
 | `model` | 该调用的默认模型;`agent()` 自己的 `model` 优先,它又优先于阶段的默认值。在 `claude` 上原样传;其他 CLI 上别名经同名的 `models` 层级映射(`"models": { "sonnet": { "codex": "gpt-5.5" } }`),映射不到就用该 CLI 的默认模型,并在运行日志里说明。`inherit` 表示不指定。 |
-| `tools`、`disallowedTools` | 给 agent 的[权限档位](#权限档位odw-扩展)封顶,只降不升:只有 Read、Glob、Grep、WebFetch、WebSearch → `read`;不含 Bash → 最高 `edit`。`claude` 另外拿到 `--tools`(与档位自带的列表取交集,只收窄)和 `--disallowedTools`。 |
+| `tools`、`disallowedTools` | 给 agent 的[权限档位](#权限档位odw-扩展)封顶,只降不升:只有 Read、Glob、Grep、WebFetch、WebSearch → `read`;不含 Bash → 最高 `edit`。`claude` 另外拿到 `--tools`(与档位自带的列表取交集,只收窄)和 `--disallowedTools`(一个逗号分隔的参数)。每一项必须是工具名,可带规则(`Read`、`Bash(git *)`、`mcp__gh__issue`);其他的——以 `-` 开头、含空白——被略去并记入日志。`tools` 里的规则按其工具计,但不会被强制(`--tools` 只接受工具名),日志会说明。 |
 | `isolation: worktree` | 等同 `agent()` 的 `isolation: "worktree"`。 |
 | `effort` | `claude --effort`、`codex -c model_reasoning_effort=`(minimal–xhigh);其他 CLI 上日志会说明未生效。 |
 | 其他字段 | `permissionMode`、`maxTurns`、`mcpServers`、`hooks`、`skills` 等不生效,日志逐个列出。 |
@@ -2799,7 +2955,9 @@ ODW 按 Claude Code 的方式查找——认前言里的 `name`,不认文件名:
 每个定义每次运行只读一次,并连同文件路径记入日志;`agent_started` 带 `agentType: { name, source, path, sha256 }`,
 看板的 agent 抽屉会显示,`odw compare` 会列出两次运行之间文件变了的定义(`agentDefinition.<name>`)。
 找不到定义时保留一句话人设,并记一条日志。`--untrusted` 运行中,来自仓库的定义只取正文、tools 与 isolation,
-不取 model 和 effort。适配器在 `flags` 里声明承载方式:`effort`(元素里可写 `{effort}`)、`effortLevels`、`tools`、`disallowedTools`。
+不取 model 和 effort;并且用户自己的与插件的定义优先:仓库里同名的定义不会遮蔽它们(日志会指出)。
+名字里带 `:` 的只能是插件的 agent;自称 `x:y` 的定义会被拒绝。定义文件是符号链接时,只有链接目标仍在
+它所在的 agents 目录内(用户的:在用户主目录内)才会被读取。适配器在 `flags` 里声明承载方式:`effort`(元素里可写 `{effort}`)、`effortLevels`、`tools`、`disallowedTools`。
 
 ```sh
 odw agents types                  # 列出这里能用的定义,以及在默认适配器上的映射
@@ -3355,7 +3513,7 @@ odw review mark $RUN 3 reviewed --note "看过迁移了"   # 或 dismissed | app
 
 ```bash
 odw outcomes                         # 最近 30 天:按周、工作流、适配器、模型
-odw outcomes --since 12w --workflow triage --json
+odw outcomes --since 12w --workflow triage --json   # --since 最多 156w(三年)
 odw outcomes --markdown              # 表格,方便贴进 PR 或 wiki
 ```
 

@@ -139,6 +139,11 @@ export interface AgentView {
    */
   agentType?: { name: string; source: string; path: string; sha256: string };
   /**
+   * Agents only (ODW extension; see ../repos): the run's other repository it
+   * worked in — agent_started's `repo`, its alias and top level. Absent: the source.
+   */
+  repo?: { name: string; path: string };
+  /**
    * Agents only (ODW extension; see ../destructive-git): the destructive git
    * commands its CLI ran — `destructive_git` events, as they showed — each
    * with what it is ("git reset --hard"). Absent: none.
@@ -569,6 +574,8 @@ export function applyAgentEvent(
     if (typeof ev.model === "string" && ev.model !== "") opened.model = ev.model;
     const agentType = agentTypeOf(ev.agentType);
     if (agentType) opened.agentType = agentType;
+    const repo = agentRepoOf(ev.repo);
+    if (repo) opened.repo = repo;
     agents.push(opened);
     return { opened };
   }
@@ -785,10 +792,18 @@ function copyAgents(agents: AgentView[], stale: boolean): AgentView[] {
     if (a.substituted) copy.substituted = { requested: a.substituted.requested, served: [...a.substituted.served] };
     if (a.scope) copy.scope = [...a.scope];
     if (a.agentType) copy.agentType = { ...a.agentType };
+    if (a.repo) copy.repo = { ...a.repo };
     if (a.outOfScope) copy.outOfScope = [...a.outOfScope];
     if (a.destructiveGit) copy.destructiveGit = a.destructiveGit.map((hit) => ({ ...hit }));
     return copy;
   });
+}
+
+/** agent_started's `repo` (ODW extension; see ../repos), when it is one (untrusted JSON). */
+function agentRepoOf(raw: unknown): AgentView["repo"] {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const { name, path } = raw as Record<string, unknown>;
+  return typeof name === "string" && name !== "" && typeof path === "string" && path !== "" ? { name, path } : undefined;
 }
 
 /** agent_started's `agentType` (ODW extension; see ../agent-types), when it is one (untrusted JSON). */

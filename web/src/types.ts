@@ -185,6 +185,8 @@ export interface AgentView {
   scope?: string[];
   /** The files it changed outside its scope, finished or failed (ODW extension). */
   outOfScope?: string[];
+  /** The run's other repository it worked in — agent(…, { repo }): its alias and top level (ODW extension; src/repos.ts). Absent: the source. */
+  repo?: { name: string; path: string };
   /** The agent definition its agentType named — file, where it was found, sha256 (ODW extension; src/agent-types.ts). */
   agentType?: { name: string; source: string; path: string; sha256: string };
   /** The destructive git commands its CLI ran — git reset --hard, git clean -f, … (ODW extension; src/destructive-git.ts). */
@@ -796,6 +798,8 @@ export interface WorkflowSummary {
   shadowed: boolean;
   /** A plugin workflow whose bare name runs a project or global workflow instead (ODW extension). */
   note?: string;
+  /** Installed from git by `odw workflows add` — third-party — and whether its file still matches the lock (ODW extension). */
+  installed?: { url: string; ref: string | null; commit: string; modified: boolean };
 }
 
 export interface WorkflowDetail extends WorkflowSummary {

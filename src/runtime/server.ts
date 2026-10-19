@@ -191,8 +191,8 @@ import type { AgentResultRecord } from "../journal.js";
 import { activityLimit, activityView } from "./activity-view.js";
 import { parseAge } from "./gc-cli.js";
 import { appendReview, isReviewState, markable, ReviewReader, REVIEW_NOTE_MAX } from "./review.js";
-import { parseSince } from "./digest-cli.js";
-import { collectOutcomes } from "./outcomes.js";
+import { MAX_SINCE_SECONDS, parseSince, sinceTooLong } from "./digest-cli.js";
+import { collectOutcomes, OutcomesCache } from "./outcomes.js";
 import { OUTCOMES_DEFAULT_SECONDS } from "./outcomes-cli.js";
 import { ChatHost, type ChatTurnRunner } from "./chat-host.js";
 import { ClaudeRunSource } from "./claude-run-source.js";
@@ -547,6 +547,10 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandleCont
       const days = sinceText === null ? null : parseAge(sinceText);
       if (sinceText !== null && days === null) {
         sendJson(res, 400, { error: "since takes an age like 7d, 12h or 2w" });
+        return;
+      }
+      if (days !== null && days * 86_400 > MAX_SINCE_SECONDS) {
+        sendJson(res, 400, { error: sinceTooLong(days * 86_400) });
         return;
       }
       const since = days === null ? null : Date.now() / 1000 - days * 86_400;
@@ -1002,11 +1006,19 @@ function compareView(req: IncomingMessage, res: ServerResponse, store: RunStore,
  * runs root's path. Read only. The name only ever picks a bucket through the
  * store's own slug, and is held to what /api/estimate takes.
  */
+/** Each settled run's outcome facts, read again only when its files change: the Review page polls every 30s. */
+const outcomesCache = new OutcomesCache();
+
 function outcomesView(req: IncomingMessage, res: ServerResponse, store: RunStore, params: URLSearchParams): void {
   const sinceText = params.get("since");
   const seconds = sinceText === null ? OUTCOMES_DEFAULT_SECONDS : parseSince(sinceText);
   if (seconds === null) {
     sendJson(res, 400, { error: "since takes an age like 12h, 30d or 4w" });
+    return;
+  }
+  const tooLong = sinceTooLong(seconds);
+  if (tooLong) {
+    sendJson(res, 400, { error: tooLong });
     return;
   }
   const workflow = params.get("workflow");
@@ -1015,7 +1027,7 @@ function outcomesView(req: IncomingMessage, res: ServerResponse, store: RunStore
     return;
   }
   const until = Date.now() / 1000;
-  const { runsRoot: _runsRoot, ...outcomes } = collectOutcomes(store, { since: until - seconds, until, workflow });
+  const { runsRoot: _runsRoot, ...outcomes } = collectOutcomes(store, { since: until - seconds, until, workflow, cache: outcomesCache });
   sendJsonCached(req, res, outcomes);
 }
 
