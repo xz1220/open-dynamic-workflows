@@ -3883,11 +3883,14 @@ ul.mcp li {
   gap: 2px;
 }
 .oc-stats .v {
-  font-family: var(--f-mono);
-  font-size: 20px;
+  font-family: var(--f-display);
+  font-size: 32px;
+  line-height: 1.05;
   color: var(--ink);
 }
 .oc-stats .v .of {
+  margin-left: 2px;
+  font-family: var(--f-mono);
   font-size: 12px;
   color: var(--faint);
 }
