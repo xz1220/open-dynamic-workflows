@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -15,7 +15,7 @@ import { listWorkflows, resolveWorkflow, workflowCandidates } from "../src/workf
 
 /** A repository `repo/` (a `.git` directory marks its root) with a package `repo/packages/foo`, and empty global roots. */
 function monorepo(opts: { git?: boolean } = {}) {
-  const tmp = mkdtempSync(join(tmpdir(), "odw-nested-"));
+  const tmp = realpathSync(mkdtempSync(join(tmpdir(), "odw-nested-"))); // macOS: /var is a link to /private/var
   const repo = join(tmp, "repo");
   const pkg = join(repo, "packages", "foo");
   mkdirSync(pkg, { recursive: true });
