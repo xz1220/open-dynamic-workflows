@@ -208,6 +208,10 @@ RUN=$(odw run wf.js)        # 打印一个 run id 后立即返回
 odw status $RUN             # 状态、agent 计数、token 与花费（按阶段：ODW 扩展）
 odw logs $RUN --follow      # 流式输出进度事件
 odw logs $RUN --agent 3     # 某个 agent 做了什么：工具调用、结果、错误（ODW 扩展）
+odw status|logs|attach cc-… # Claude Code 自己的工作流运行也能看，只读——logs --agent <id|label>
+                            #   --follow 跟随其中一个 agent（ODW 扩展）
+odw tmux $RUN               # 一个 tmux 窗口：运行事件 + 每个运行中 agent 一个窗格（ODW 扩展；
+                            #   --layout tiled、--max-panes 6；不在 tmux 里时打印命令）
 odw export $RUN --otlp      # 把运行导出为 OpenTelemetry trace（OTLP/JSON）——--send 直接发送（ODW 扩展）
 odw bundle $RUN             # 把运行写成一个可分享的脱敏文件 $RUN.odwrun；odw view FILE 只读查看
                             #   （ODW 扩展；--no-transcripts、--out FILE、--max-bytes N）
@@ -294,6 +298,7 @@ odw apply $RUN --all --resolve --verify "<测试命令>"   # 由 resolver agent 
 odw apply $RUN --all --pr --verify "<测试命令>"   # 新分支、推送、开草稿 PR（gh）；从不合并
 odw review [--since 7d] [--json]      # 跨运行尚未处理的保留 diff，按风险从高到低（ODW 扩展）
 odw review mark $RUN <id|label> reviewed|dismissed|applied|open [--note T]
+odw outcomes [--since 30d] [--workflow W] [--json]   # 按周/工作流/适配器/模型：应用、放弃、未处理、失败、返工、每个已应用改动的花费（ODW 扩展）
 ```
 
 - 先预览（`--check`，有冲突时退出码 1），按任务需要应用，并告诉用户应用了什么、哪里冲突了
@@ -320,6 +325,10 @@ odw review mark $RUN <id|label> reviewed|dismissed|applied|open [--note T]
   后台任务、破坏性 git、回退、重试、花费）和每一分的理由。用户问先看哪个时从这里开始，并引用这些
   理由。`odw apply` 会把干净应用的条目标为 `applied`；其余的只在用户做了决定后再标记
   （`reviewed`、`dismissed`；`open` 撤销）。
+- `odw outcomes`（ODW 扩展）回答「agent 的改动有多少被接受、是否在变好」：时间窗内创建的运行，
+  按周、工作流、适配器、模型统计——保留 diff 的应用/放弃/未处理（来自上述标记）、按原因的失败运行、
+  返工（重试、回退、resolver、replay）与每个已应用改动的花费，并与上一个时间段对比。只有证据：
+  引用它的数字，不要自己再加质量评判。
 
 **没有**隔离的 agent 就在用户自己的工作区里干活。一次运行中第一个 `edit` 或 `full` 档位的此类
 agent 开始前，odw 会把工作区里未提交的内容——已跟踪文件的改动和未被忽略的未跟踪文件——存到
@@ -599,6 +608,9 @@ review-swarm、fix-until-green、plan-approve-execute、pr-shepherd、fan-out-re
   行），只有 `--yes` 才写入：先给用户看并征得同意。
 - 在人的终端里，`odw init` 最后会提供 `odw new hello` 与 `odw run hello --dry`；在你的 shell 里只
   打印这些命令。
+- `odw new` 还会写出 `.odw/types/odw.d.ts` 与 `.odw/jsconfig.json`（即 `odw types` 写的内容，ODW
+  扩展：原语的编辑器补全与悬停文档；`--no-types` 不写）。不要给 workflow 加 `// @ts-check`：
+  它的顶层 `return` 会因此显示为错误。
 - 详见 [`references/primitives.md`](references/primitives.md) 的「odw new（ODW 扩展）」一节。
 
 ## 适配器

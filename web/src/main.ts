@@ -38,6 +38,7 @@ import type { ReviewMark, RunSummary, WorkflowDetail } from "./types";
 import { ACTIVE, TERMINAL, fmtDurSec, runDurationSec } from "./util";
 import { renderActivity } from "./views/activity";
 import { renderChat } from "./views/chat";
+import { compactBar, compactFlag, renderCompactRuns } from "./views/compact";
 import { compareHash, renderCompare } from "./views/compare";
 import { renderEvals } from "./views/evals";
 import { renderReview } from "./views/review";
@@ -77,6 +78,8 @@ let chatDraft = "";
 let activeChatId: string | null = null;
 let composing = false;
 let deferredRender = false;
+/** The compact layout for narrow IDE panels (ODW extension; see views/compact): no rail. */
+let compact = compactFlag(location.search, location.hash) ?? false;
 let chatScrollToBottomOnNextRender = false;
 let lastRouteKey = "";
 
@@ -88,9 +91,16 @@ const CHAT_STICKY_BOTTOM_PX = 32;
 const JOB_TABS: JobTab[] = ["graph", "timeline", "logs", "result", "changes", "notes"];
 
 function parseHash(): Route {
-  const h = location.hash.replace(/^#\/?/, "");
+  // A route's hash may end in `?compact[=0]` (ODW extension): it switches the compact layout.
+  const said = compactFlag("", location.hash);
+  if (said !== null) compact = said;
+  const h = location.hash.replace(/^#\/?/, "").split("?")[0]!;
   const [view, ...rest] = h.split("/");
   switch (view) {
+    case "compact":
+      // #/compact — the compact layout's run list (the Jobs route, drawn compact).
+      jobs.filter = "all";
+      return { view: "jobs", param: null };
     case "chat":
       return { view: "chat", param: rest.length ? decodeURIComponent(rest[0]!) : null };
     case "workspace":
@@ -150,7 +160,7 @@ function viewHtml(route: Route): string {
     case "workspace":
       return renderWorkspace(wfActive, wfDetail, wfQuery);
     case "jobs":
-      return renderJobs(jobs, now);
+      return compact ? renderCompactRuns(store.runs) : renderJobs(jobs, now);
     case "job":
       return renderJob(job, now);
     case "compare":
@@ -176,12 +186,17 @@ function render(): void {
   const followLogs = job.follow && route.view === "job" && job.tab === "logs" && logsAtBottom();
   morph(
     root,
-    `<div class="app">` +
-      rail(route) +
-      topbar(route) +
-      `<main class="main" data-view="${route.view}">${viewHtml(route)}</main>` +
-      statusbar() +
-      `</div>`,
+    compact
+      ? `<div class="app compact">` +
+          compactBar(route, store.conn) +
+          `<main class="main" data-view="${route.view}">${viewHtml(route)}</main>` +
+          `</div>`
+      : `<div class="app">` +
+          rail(route) +
+          topbar(route) +
+          `<main class="main" data-view="${route.view}">${viewHtml(route)}</main>` +
+          statusbar() +
+          `</div>`,
   );
   restoreFocus(focus);
   restoreChatScroll(chatScroll, route);
@@ -510,8 +525,10 @@ async function enterRoute(): Promise<void> {
     await store.loadSettings();
   } else if (route.view === "review") {
     render();
-    await store.loadReview();
+    await Promise.all([store.loadReview(), store.loadOutcomes()]);
     if (live()) every(5000, token, () => store.loadReview());
+    // Outcomes (ODW extension) read every run of the month: a slower beat.
+    if (live()) every(30_000, token, () => store.loadOutcomes());
   } else if (route.view === "evals") {
     render();
     if (route.param) {
@@ -763,7 +780,7 @@ root.addEventListener("click", (ev) => {
     const state = markEl.dataset.state as ReviewMark["state"];
     void api
       .markReview(runId, agentId, state)
-      .then(() => store.loadReview())
+      .then(() => Promise.all([store.loadReview(), store.loadOutcomes()]))
       .catch((err: Error) => toast({ state: "failed", title: tr("Could not mark it"), body: err.message }));
     return;
   }
@@ -1351,7 +1368,7 @@ const snap = new URLSearchParams(location.search).get("snap") === "1";
 applyPrefs();
 applyDocLang();
 const givenToken = tokenFromUrl();
-if (!location.hash) location.hash = "#/activity";
+if (!location.hash) location.hash = compact ? "#/compact" : "#/activity";
 void (async () => {
   // Remote access (odw serve --token): trade the URL's token for the server's cookie first.
   if (givenToken) await store.signIn(givenToken);

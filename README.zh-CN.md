@@ -74,7 +74,7 @@ workflow,就成了你在任何 agent 上都能跑的资产。
   `logs --follow`、`result`、`pause` / `stop`,以及在人工 `checkpoint()` 处等待时的
   `approve` / `reject`。
 - **无线程、零运行时依赖** —— 引擎是异步 TypeScript(`parallel` 就是 `Promise.all`);
-  workflow 脚本保持纯 `.js`,并附带 `.d.ts` 类型供编辑器补全。
+  workflow 脚本保持纯 `.js`,并附带 `.d.ts` 类型供编辑器补全(`odw types` 把它写进项目)。
 
 ## 为什么不直接用 Claude Code 内置的 Workflow 工具?
 
@@ -249,6 +249,29 @@ odw new hello --yes                     # 同时写入建议的 .worktreeinclude
 - **`odw init`**(不带 `--check`)最后提供零成本的首跑:在终端里先询问,然后写入 `hello`(若
   `.odw/workflows/hello.js` 已存在则直接用它),带实时视图运行 `odw run hello --dry`,再打印
   `odw serve --open` 和真实的 `odw run hello`。不在终端时只打印这些命令。
+- **它也写出 `odw types` 写的东西**(见下),编辑器立刻就能补全新 workflow;`--no-types` 不写。
+
+### 编辑器补全:`odw types`(ODW 扩展)
+
+workflow 脚本拿到的原语是全局变量,编辑器对 `agent()` 及其选项一无所知——除非项目里有方言的
+类型声明。`odw types` 从内置在二进制里的副本写出它们(只装了二进制也有):
+
+```bash
+odw types                 # .odw/types/odw.d.ts + .odw/jsconfig.json(+ .claude/workflows/jsconfig.json)
+odw types --dir editor    # 声明与 jsconfig.json 改写到 editor/ 下
+odw types --force         # 连不是 odw 写的 jsconfig.json 也替换
+```
+
+- **`.odw/types/odw.d.ts`**:类型声明,文件头写着写出它的 odw 版本。每个 ODW 扩展都带
+  `@remarks ODW extension`,悬停即可分辨 Claude Code 方言与只有 ODW 读取的扩展。
+- **`.odw/jsconfig.json`**:`include` 覆盖声明、`.odw/workflows/**/*.js` 与
+  `.claude/workflows/**/*.js`。`.claude/workflows` 存在时也给它写一份 `jsconfig.json`,
+  因为编辑器只用离文件最近的配置。不是 odw 写的 `jsconfig.json` 原样保留,改为打印它需要的
+  `include`。
+- **`checkJs` 保持关闭**:类型检查器会把方言的顶层 `return` 报成错误(TS1108)。想检查某个
+  脚本,就在它首行加 `// @ts-check`。
+- **升级之后**,若 `.odw/types/odw.d.ts` 与当前 odw 的声明不一致,`odw doctor` 会警告;
+  `odw types` 重写它。odw 自己不编译、不做类型检查。
 
 ## 编程原语
 
@@ -540,6 +563,7 @@ odw logs $RUN --agent 3  # 某个 agent 做了什么:它的工具调用、结果
 odw result $RUN          # 最终值
 odw diff $RUN --stat     # 隔离 agent 改了什么;odw apply $RUN --agent N(或 --all)落地
 odw review               # 跨运行尚未处理的保留 diff,按风险从高到低,每条附理由(见下文)
+odw outcomes             # 按周、工作流、适配器、模型:保留 diff 的应用/放弃/未处理、失败、返工、每个已应用改动的花费(见下文)
 odw notes $RUN           # 它的 agent 在笔记板上互相告知的内容(见上文)
 odw compare $OLD $RUN    # 两次运行之间变了什么:配置、耗时、花费、失败、回复(见下文)
 odw estimate review      # 下一次运行的 p50/p90 耗时、花费、token 和 agent 数,依据以往运行(见下文)
@@ -1108,6 +1132,37 @@ I'll run the tests first.
   `{ entries, next, more, truncated, replayed }`,每个条目为
   `{ i, kind: text|tool_call|tool_result|error|attempt|result|raw|truncated, text?, tool?, input?, output?, isError? }`,
   长字段截断到 4 KB(`clipped: true`),有密钥被拦下的条目带 `redacted: true`。
+
+### 在终端、tmux 和 IDE 里看运行(ODW 扩展)
+
+看板是一种看法;终端、tmux 窗口和 IDE 面板是另外几种——ODW 自己的运行如此,
+**Claude Code 自己的工作流运行**(`cc-…` id,即其 Workflow 工具启动的运行;看板的 Jobs 列表里也有)也一样:
+
+```bash
+odw status cc-wf_0da91623-31d                         # 状态与 agent:label、阶段、状态、Claude 的 agent id
+odw logs cc-wf_0da91623-31d --follow                  # 事件实时打印,直到运行结束
+odw logs cc-wf_0da91623-31d --agent find:engine-store --follow   # 某个 agent 的 transcript(按 label 或 id)
+odw attach cc-wf_0da91623-31d                         # 等同 logs --follow,外加一行抬头
+odw tmux $RUN                                         # 一个 tmux 窗口:运行概览,外加每个运行中 agent 一个窗格
+```
+
+- Claude Code 的运行从 `~/.claude/projects` 下它自己的存储读取(遵循 `CLAUDE_CONFIG_DIR`),覆盖所有项目,
+  **只读**:停止或回答它仍在 Claude Code 里完成。其 agent 的 `agent-<id>.jsonl` transcript 渲染方式与 ODW
+  agent 相同(`▸` 工具调用、`✓/✗` 结果、正文、thinking);`--raw` 按原样打印各行。Claude Code 可能清理它的
+  transcript——运行消失时会明确说明。
+- `odw tmux <run> [--layout tiled|even-horizontal|even-vertical|main-horizontal|main-vertical] [--max-panes 6]`
+  在当前 tmux 会话里开一个窗口。第一个窗格是概览:打印运行的事件,并在每个 agent 开始时为它开一个窗格
+  (`odw logs <run> --agent <id> --follow`),最多 `--max-panes` 个;超出的只在概览里列出跟随它的命令。
+  agent 结束后窗格保留(tmux 的 `remain-on-exit`),最后几行之下标明它如何结束。ODW 与 `cc-` 运行都支持。
+- 不在 tmux 里时,打印能做到同样效果的 `tmux new-session …` 命令;没装 tmux 时,打印可以手动运行的
+  `odw attach` 与 `odw logs --agent … --follow` 命令。只驱动 tmux,不支持其他终端复用器。
+
+**在 VS Code、JetBrains 或 Antigravity 里。** 运行 `odw serve`,然后在 IDE 自带的浏览器面板中打开
+`http://127.0.0.1:4317/#/compact`——VS Code:命令面板里的 *Simple Browser: Show*;JetBrains:
+*Tools → Web Browsers*(或任意内置浏览器视图)。紧凑布局去掉侧栏:一个运行列表,显示每个运行的实时状态
+(运行中的在前,Claude Code 的运行标 `CC`),点开某个运行后顶部有一条细栏可以返回列表。页面 URL 上的
+`?compact=1`,或任意路由后的 `?compact`(`#/job/<id>?compact`)同样开启;之后导航时保持开启,
+点 *完整看板*(`?compact=0`)关闭。
 
 ### 对比两次运行(ODW 扩展)
 
@@ -3292,6 +3347,39 @@ odw review mark $RUN 3 reviewed --note "看过迁移了"   # 或 dismissed | app
 /api/runs/:id/agents/:agentId/review { state, note? }` 标记一条。
 
 分步说明:[`docs/recipes/review-and-apply.md`](docs/recipes/review-and-apply.md)。
+
+#### 按周看产出结果(ODW 扩展)
+
+一次 eval 的通过率只说明那一次过没过,说明不了 agent 的产出有多少真的被人接受。`odw outcomes`
+跨运行、按周统计这件事,只用运行记录下的证据和审阅标记——没有任何模型参与评判:
+
+```bash
+odw outcomes                         # 最近 30 天:按周、工作流、适配器、模型
+odw outcomes --since 12w --workflow triage --json
+odw outcomes --markdown              # 表格,方便贴进 PR 或 wiki
+```
+
+各项统计的含义:
+
+- **kept / applied / dismissed / reviewed / left**——保留了 diff 的 agent,按它在
+  `reviews.jsonl` 里的最后一条标记归类(`odw apply` 标 `applied`,`odw review mark` 与看板标其余);
+  `left` 是没有标记或被放回队列(`open`)的。标记按现在的状态读取,所以运行一周后才应用的 diff 也算在那次运行上。
+  「已应用」只看 ODW 自己的标记,不读 PR 的合并状态。
+- **failed**——失败与 stale 的运行,原因取其失败 agent 中最多的那个,没有则为 `stale` 或 `script_error`;
+  agent 级的失败也按原因计数。
+- **rework(返工)**——需要重试(`expect`、限流、卡死、提问)、回退/交接,或在 `odw apply --resolve`
+  时需要解决冲突的保留 diff;以及 `odw replay` 发起的运行。
+- **per applied change(每个已应用改动的花费)**——该行的全部花费(包括失败的 agent)除以已应用改动数:
+  有 agent 报告美元时用美元,否则用 token。
+- **与上一个时间段对比**——紧挨着的同样长度的时间段;比例变化 15 个百分点以上(两边各至少 5 个样本),
+  或每个已应用改动的花费变化一半以上(两边各至少 3 个)时会标出来。
+
+运行按创建时间计入时间窗。不计入:dry run、仍在进行的运行,以及 `odw eval`、`odw test`、
+`odw conformance` 和 `odw apply --resolve` 发起的运行。`odw pull` 拉回的运行一并计入;其他机器的运行根目录各自统计。
+工作流行按运行计数;适配器/模型行按 agent 计数,只有它自己的 agent 在某次失败运行里失败时才把那次失败记在它头上。
+模型取 CLI 报告实际服务的模型,否则取请求的模型(`… (requested)`),否则为 `(CLI default)`。
+看板的 **Review** 页顶部有一张最近 30 天的 **产出结果** 卡片——已应用/保留、按周的堆叠柱、显著变化、
+每个工作流一行——数据来自 `GET /api/outcomes[?since=30d][&workflow=W]`。
 
 ## 工作原理
 

@@ -948,6 +948,27 @@ odw new <模板> [--name N] [--force] [--yes]
 - `odw init`（不带 `--check`）最后是首跑：在终端里先询问（回车即 yes），若
   `.odw/workflows/hello.js` 不存在则写入 `hello`，运行 `odw run hello --dry`，再打印
   `odw serve --open`、`odw test hello` 与 `odw run hello`；不在终端时只打印命令。它从不调用模型。
+- 它也写出 `odw types` 写的内容（见下）；`--no-types` 不写。
+
+## odw types（ODW 扩展）
+
+```bash
+odw types [--dir D] [--force]                    # D 默认为 .odw
+```
+
+工作流脚本的编辑器补全，声明内置在二进制里（即 npm 包的 `types/workflow.d.ts`）：
+
+| 文件 | 内容 |
+| --- | --- |
+| `D/types/odw.d.ts` | 方言的类型声明；文件头 `// odw types <版本> …`；每次都重写 |
+| `D/jsconfig.json` | `allowJs`、`checkJs: false`、`lib: ["es2022"]`、`types: []`；`include`：声明、`.odw/workflows/**/*.js`、`.claude/workflows/**/*.js` |
+| `.claude/workflows/jsconfig.json` | 仅当该目录存在时（编辑器只用最近的配置）：`include` 其 `**/*.js` 与声明 |
+
+- 首行不是 odw 标记的 jsconfig.json 属于用户：原样保留，改为打印它需要的 `include`；`--force` 替换。
+- 带 `@remarks ODW extension` 的成员不属于 Claude Code 方言。
+- `checkJs` 关闭，因为类型检查器把方言的顶层 `return` 报为 TS1108；在脚本首行加 `// @ts-check` 仍可单独开启。
+- `.odw/types/odw.d.ts` 存在后，`odw doctor` 多一项「Editor types」：其声明与当前 odw 不一致（升级过）时警告。
+- 退出码：0 已写入（或保留），2 用法错误（`--dir` 指向文件）。
 
 ## odw test（ODW 扩展）
 

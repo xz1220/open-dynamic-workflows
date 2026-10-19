@@ -251,6 +251,10 @@ RUN=$(odw run wf.js)        # prints a run id and returns immediately
 odw status $RUN             # state, agent count, tokens and cost (by phase: ODW extension)
 odw logs $RUN --follow      # stream progress events
 odw logs $RUN --agent 3     # what one agent did: tool calls, results, errors (ODW extension)
+odw status|logs|attach cc-… # Claude Code's own workflow runs too, read-only — logs --agent <id|label>
+                            #   --follow tails one of its agents (ODW extension)
+odw tmux $RUN               # a tmux window: the run's events + a pane per running agent (ODW extension;
+                            #   --layout tiled, --max-panes 6; prints the commands when not in tmux)
 odw export $RUN --otlp      # the run as OpenTelemetry traces, OTLP/JSON — --send posts it (ODW extension)
 odw bundle $RUN             # the run as one redacted file to share, $RUN.odwrun; odw view FILE shows it
                             #   read-only (ODW extension; --no-transcripts, --out FILE, --max-bytes N)
@@ -353,6 +357,7 @@ odw apply $RUN --all --resolve --verify "<test command>"   # a resolver agent fi
 odw apply $RUN --all --pr --verify "<test command>"   # a new branch, pushed, and a draft PR (gh); never merges
 odw review [--since 7d] [--json]      # kept diffs across runs nobody dealt with yet, riskiest first (ODW extension)
 odw review mark $RUN <id|label> reviewed|dismissed|applied|open [--note T]
+odw outcomes [--since 30d] [--workflow W] [--json]   # by week/workflow/adapter/model: applied, dismissed, left, failures, rework, cost per applied (ODW extension)
 ```
 
 - Preview first (`--check`, exit 1 when anything conflicts), apply what the task
@@ -390,6 +395,12 @@ odw review mark $RUN <id|label> reviewed|dismissed|applied|open [--note T]
   every point's reason. When the user asks what to look at, start there and quote
   the reasons. `odw apply` marks what it applied cleanly as `applied`; mark the
   rest only when the user decided (`reviewed`, `dismissed`; `open` undoes).
+- `odw outcomes` (ODW extension) answers "are the agents' changes being taken,
+  and is it getting better?": across runs created in the window, by week,
+  workflow, adapter and model — kept diffs applied / dismissed / left (from those
+  marks), failed runs by reason, rework (retries, fallbacks, resolvers, replays)
+  and spend per applied change, against the window before. Evidence only: quote
+  its numbers; do not add a quality judgement of your own.
 
 An agent **without** isolation works in the user's own tree. Before a run's
 first such agent at `edit` or `full`, odw keeps the tree's uncommitted work —
@@ -725,6 +736,10 @@ $0, so no need to ask before them.
   only with `--yes`: show it to the user and ask first.
 - `odw init` at a human's terminal ends by offering `odw new hello` and
   `odw run hello --dry`; in your shell it only prints those commands.
+- `odw new` also writes `.odw/types/odw.d.ts` and `.odw/jsconfig.json` (what
+  `odw types` writes, an ODW extension: editor completion and hover docs for the
+  primitives; `--no-types` leaves them out). Do not add `// @ts-check` to a
+  workflow: its top-level `return` then shows as an error.
 - Details: [`references/primitives.md`](references/primitives.md#odw-new-odw-extension).
 
 ## Adapters

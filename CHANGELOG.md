@@ -370,6 +370,17 @@ independent security reviews whose findings are all fixed.
   it applied cleanly as `applied`. The dashboard's new **Review** page (`g r`) shows the
   queue and marks entries (loopback only), and Activity's **Needs you** says how many
   wait; `GET /api/review`, `POST /api/runs/:id/agents/:agentId/review`.
+- Outcomes over weeks (**ODW extension**): `odw outcomes [--since 30d] [--workflow W]
+  [--json|--markdown]` counts, across the runs created in the window, what became of
+  their work — by week (UTC, from Monday), workflow, adapter and model (the served model
+  when the CLI reported it, else the requested one): kept diffs applied, dismissed,
+  reviewed and left by their last review mark; failed runs and agents by reason;
+  retries, fallbacks, resolvers at apply and replays (rework); `expect` misses,
+  `untouched` and `scope` violations; spend and spend per applied change — and calls
+  out what moved notably against the window before. Evidence only: no model scores
+  anything and a PR's merge state is not read. Dry runs, runs still going, and eval,
+  test, conformance and resolver runs are left out. The dashboard's Review page opens
+  with an **Outcomes** card for the last 30 days; `GET /api/outcomes`.
 
 ### Control what agents may do
 - Permission tiers `read` / `edit` / `full` (`--permissions`, per adapter, per call; a
@@ -674,6 +685,18 @@ independent security reviews whose findings are all fixed.
 ### Use the CLI and the dashboard
 - `odw run` attaches a live foreground view in interactive terminals (Ctrl-C detaches;
   `odw attach` re-attaches); pipes and CI keep the fire-and-poll contract.
+- Watch runs where you already are (**ODW extension**): `odw status|logs|attach` take
+  Claude Code's own workflow runs (`cc-…` ids), read-only, from the store the dashboard
+  reads — `odw logs <cc-…> --agent <id|label> [--raw] [--follow]` tails one of its agents'
+  `agent-<id>.jsonl` transcripts, rendered like an ODW agent's. `odw tmux <run> [--layout
+  tiled] [--max-panes 6]` opens a tmux window whose overview pane follows the run and
+  opens a pane per agent as it starts (`odw logs … --agent … --follow`, kept after it
+  ends; the ones past the cap are listed); outside tmux it prints the `tmux new-session`
+  command, without tmux the commands to run by hand. The dashboard's compact layout
+  (`#/compact`, `?compact=1`, or `?compact` after a route) drops the rail for a narrow IDE
+  panel — a run list with live status, a slim bar back from a run; the README has the VS
+  Code / JetBrains / Antigravity recipe. A live Claude Code run's agents now carry the
+  labels and phases its journal gives them.
 - First-run onboarding: `odw init` picks the default agent CLI; `odw doctor [--smoke]`
   checks the runtime, config and every adapter — `--smoke` sends one real prompt.
 - `odw new [<template>] [--name N] [--force] [--yes]` (**ODW extension**): a workflow
@@ -688,6 +711,20 @@ independent security reviews whose findings are all fixed.
   writes it with `--yes` or a yes at a terminal. The templates are embedded at build
   time (`scripts/embed-templates.mjs` → `src/templates.generated.ts`, drift-checked in
   CI like the dashboard).
+- `odw types [--dir .odw] [--force]` (**ODW extension**): editor completion for
+  workflow scripts, binary-only installs included. It writes the dialect's
+  declarations, embedded at build time (`scripts/embed-types.mjs` →
+  `src/types.generated.ts`, drift-checked in CI), as `.odw/types/odw.d.ts` with the
+  odw version in its header, and a `.odw/jsconfig.json` whose `include` covers them,
+  `.odw/workflows` and `.claude/workflows` (plus `.claude/workflows/jsconfig.json` when
+  that directory exists, since editors take the nearest config). A `jsconfig.json` odw
+  did not write is kept, its needed `include` printed; `--force` replaces it. `checkJs`
+  stays off — a checker reads the dialect's top-level `return` as TS1108. Every ODW
+  extension in the declarations now carries `@remarks ODW extension`, so hover tells
+  dialect from extension. `odw new` writes them too (`--no-types` leaves them out), and
+  `odw doctor` warns when `.odw/types/odw.d.ts` is stale after an upgrade. Fixed on the
+  way: a `**/` inside a doc comment of `types/workflow.d.ts` ended it early, so the file
+  did not parse.
 - `odw init` ends with a first run that costs nothing: at a terminal it offers `odw new
   hello` and runs `odw run hello --dry` — the live view, every agent stubbed — then
   prints the dashboard command and the real `odw run hello`. It never makes a paid call

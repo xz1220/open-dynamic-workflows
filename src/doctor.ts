@@ -45,6 +45,7 @@ import {
 import type { Adapter, Config, ContainerSandbox, PermissionTier } from "./adapters/types.js";
 import { loginCheckArgv } from "./adapters/accounts.js";
 import { Bridge } from "./bridge.js";
+import { typesStatus } from "./editor-types.js";
 import { AdapterExecutionError } from "./errors.js";
 import { readWorkflowMeta } from "./loader.js";
 import { redactorFor, type RedactionCoverage } from "./redact.js";
@@ -54,6 +55,7 @@ import { RunStore } from "./runtime/run-store.js";
 import { localModelChecks, type LocalProbeOptions } from "./local-models.js";
 import { describeConcurrency } from "./throttle.js";
 import { resolveRunTrust } from "./untrusted.js";
+import { VERSION } from "./version.generated.js";
 
 export type CheckStatus = "ok" | "warn" | "fail" | "skip";
 
@@ -168,6 +170,10 @@ export async function runDoctor(opts: DoctorOptions): Promise<DoctorReport> {
     status: "ok",
     detail: present.length ? present.join(", ") : "none yet — `odw run <file.js>` still works",
   });
+
+  // The editor declarations `odw types` wrote, if it did: are they this odw's (ODW extension)?
+  const types = typesCheck(opts.cwd);
+  if (types) add(types);
 
   const listing = listAdapters(config);
   const installed = listing.filter((a) => a.installed);
@@ -526,6 +532,24 @@ export async function diskCheck(runsRoot: string, cwd: string, tmpRoot?: string)
     status: "warn",
     detail: `runs root ${size} · ${orphans.length} orphaned worktree(s), ${bytes}`,
     hint: "`odw gc` lists what runs left behind; `odw gc --yes` removes it",
+  };
+}
+
+/**
+ * `.odw/types/odw.d.ts` (`odw types`, ODW extension): null when it was never
+ * written; a warning when its declarations are not this odw's — an upgrade
+ * since, so an editor completes options this odw has changed.
+ */
+export function typesCheck(cwd: string): DoctorCheck | null {
+  const status = typesStatus(cwd);
+  if (status === null) return null;
+  const check = { id: "types", title: "Editor types" };
+  if (!status.stale) return { ...check, status: "ok", detail: `${status.path} matches this odw (${VERSION})` };
+  return {
+    ...check,
+    status: "warn",
+    detail: `${status.path} is stale: written by odw ${status.version ?? "(unknown)"}, its declarations differ from this odw's (${VERSION})`,
+    hint: "run `odw types` to rewrite it",
   };
 }
 

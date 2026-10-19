@@ -36,7 +36,7 @@ jobs:
       # (which is also the typecheck, so no separate `npm run typecheck`).
       - run: npm run build
       - name: Committed generated files match their sources
-        run: git diff --exit-code -- src/dashboard.generated.ts src/templates.generated.ts
+        run: git diff --exit-code -- src/dashboard.generated.ts src/templates.generated.ts src/types.generated.ts
       - name: Typecheck the web client
         run: npx tsc -p web/tsconfig.json
       # The Claude Code dialect conformance suite (conformance/), on the built CLI.
@@ -89,7 +89,7 @@ jobs:
       - run: npm run build
       # The Windows release binary embeds what this runner generates.
       - name: Committed generated files match their sources
-        run: git diff --exit-code -- src/dashboard.generated.ts src/templates.generated.ts
+        run: git diff --exit-code -- src/dashboard.generated.ts src/templates.generated.ts src/types.generated.ts
       - name: CLI smoke check
         shell: bash
         run: |

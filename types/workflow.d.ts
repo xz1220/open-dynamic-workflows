@@ -9,6 +9,10 @@
  *   /// <reference path="../types/workflow.d.ts" />
  *
  * Adjust the path for your script. The script still ships as untyped `.js`.
+ * `odw types` (an ODW extension) writes this file into a project as
+ * `.odw/types/odw.d.ts`, with a `jsconfig.json` that brings it to every script
+ * in `.odw/workflows` and `.claude/workflows` — no reference line needed.
+ * A member tagged `@remarks ODW extension` is not part of Claude Code's dialect.
  * These types describe ODW's authoring surface, not full Claude runtime parity;
  * scripts run as trusted JavaScript, without a sandbox. Each completed agent()
  * result is saved with its run, and `odw resume` replays the unchanged calls of
@@ -32,6 +36,7 @@ declare global {
      * fallback chain, in order of preference — when an adapter's quota is spent or its login
      * refused, the call runs again on the next one (fresh prompt, same options, same
      * permission tier), in place of the `fallback` setting's chain.
+     * @remarks ODW extension — Claude Code ignores it.
      */
     adapter?: string | string[];
     /**
@@ -64,6 +69,7 @@ declare global {
      * ODW extension — Claude Code ignores it. With `isolation: "worktree"`, also commit the
      * agent's change to a branch `odw/<runId>/<agentId>-<label>` of the source repository
      * (HEAD and the index are never touched); `false` opts out of the `keepBranches` setting.
+     * @remarks ODW extension — Claude Code ignores it.
      */
     keep?: boolean;
     /**
@@ -71,6 +77,7 @@ declare global {
      * than the run's: `"read"` (no edits, no commands) for research and review fan-outs. It
      * may only lower the run's tier (read < edit < full); asking for more fails the call, as
      * does `"read"` on a CLI with no read-only mode.
+     * @remarks ODW extension — Claude Code ignores it.
      */
     permissions?: "read" | "edit" | "full";
     /**
@@ -86,11 +93,18 @@ declare global {
      * makes one that failed or needs authentication throw with reason `"mcp_unavailable"`.
      * Background work left running is recorded (`orphaned`) and logged;
      * `"orphanedBackground": "fail"` makes it throw with reason `"orphaned_background"`.
+     * @remarks ODW extension — Claude Code ignores it.
      */
     expect?: ExpectOptions;
-    /** ODW extension: how many times work that missed `expect` runs again (default: the `expectRetries` setting, 1). */
+    /**
+     * ODW extension: how many times work that missed `expect` runs again (default: the `expectRetries` setting, 1).
+     * @remarks ODW extension — Claude Code ignores it.
+     */
     expectRetries?: number;
-    /** ODW extension: accept an empty or whitespace-only reply; without it the call throws with reason `"empty_reply"`. */
+    /**
+     * ODW extension: accept an empty or whitespace-only reply; without it the call throws with reason `"empty_reply"`.
+     * @remarks ODW extension — Claude Code ignores it.
+     */
     allowEmpty?: boolean;
     /**
      * ODW extension — Claude Code ignores it. The run's notes board: the agent's prompt shows
@@ -99,6 +113,7 @@ declare global {
      * "worktree"`, a change it keeps is posted for it as it finishes: its diff stat and the
      * declaration lines (export, def, func, pub fn, class, interface) its diff touched.
      * Default: its parallel()'s `notes`, else the `notes` setting (off); `false` opts out.
+     * @remarks ODW extension — Claude Code ignores it.
      */
     notes?: boolean;
     /**
@@ -107,6 +122,7 @@ declare global {
      * changed since) go ahead of the task, under "What earlier runs of this workflow
      * learned", newest first, at most 4 KB; and an `expect` miss a retry then met is kept
      * there as a lesson once the run ends. Default: the `memory` setting (off).
+     * @remarks ODW extension — Claude Code ignores it.
      */
     memory?: boolean;
     /**
@@ -116,6 +132,7 @@ declare global {
      * starting with a brief of what the last one did (files changed, last plan, commands,
      * last messages; at most 6 KB), kept as `agents/<id>.handoff.md`. Default: the
      * `fallback.handoff` setting (off).
+     * @remarks ODW extension — Claude Code ignores it.
      */
     handoff?: boolean;
     /**
@@ -124,6 +141,7 @@ declare global {
      * its phase), to cost more than `usd` dollars, it waits at a checkpoint for a person's
      * go first; a rejection throws an error named `"CostGateRejected"`. Without history
      * it runs.
+     * @remarks ODW extension — Claude Code ignores it.
      */
     costGate?: { usd: number } | null;
     /**
@@ -136,7 +154,10 @@ declare global {
     stallMs?: number;
   }
 
-  /** ODW extension — Claude Code's parallel() takes only the thunks. */
+  /**
+   * ODW extension — Claude Code's parallel() takes only the thunks.
+   * @remarks ODW extension — Claude Code ignores it.
+   */
   interface ParallelOptions {
     /** Every agent the thunks start gets the run's notes board (see {@link AgentOptions.notes}), unless it says `notes: false`. */
     notes?: boolean;
@@ -149,7 +170,10 @@ declare global {
     costGate?: { usd: number } | null;
   }
 
-  /** What {@link AgentOptions.expect} checks (ODW extension). */
+  /**
+   * What {@link AgentOptions.expect} checks (ODW extension).
+   * @remarks ODW extension — Claude Code ignores it.
+   */
   interface ExpectOptions {
     /**
      * `true`: the agent must change some file; `false`: it must change none. Read from git: in
@@ -172,7 +196,7 @@ declare global {
     mcp?: string[];
     /**
      * Globs (as `files`) no file the agent changed, created or deleted may match — tests,
-     * snapshots, CI config it must not edit or skip to get green: `['test/**', '**/*.snap',
+     * snapshots, CI config it must not edit or skip to get green: `['test/**', 'snapshots/**',
      * '.github/**']`. A touched path is a miss naming it. Read from git, as `changes` is.
      */
     untouched?: string[];
@@ -210,7 +234,10 @@ declare global {
     ...stages: Array<(previous: any, item: any, index: number) => any>
   ): Promise<any[]>;
 
-  /** Defaults a phase gives its agents (ODW extension — Claude Code ignores them). */
+  /**
+   * Defaults a phase gives its agents (ODW extension — Claude Code ignores them).
+   * @remarks ODW extension — Claude Code ignores it.
+   */
   interface PhaseOptions {
     /** The adapter, or fallback chain, of the phase's agents that name none. */
     adapter?: string | string[];
@@ -234,7 +261,10 @@ declare global {
   /** Inline child sharing scheduler, controls, and budget; only one level. scriptPath is relative to the run source. */
   function workflow(nameOrRef: string | { scriptPath: string }, args?: unknown): Promise<any>;
 
-  /** Options for {@link exec} (ODW extension). */
+  /**
+   * Options for {@link exec} (ODW extension).
+   * @remarks ODW extension — not in Claude Code's dialect: a script that uses it runs on ODW only.
+   */
   interface ExecOptions {
     /** Working directory; a relative path resolves against the run's source directory, which is also the default. */
     cwd?: string;
@@ -254,7 +284,10 @@ declare global {
     check?: boolean;
   }
 
-  /** What {@link exec} resolves to. */
+  /**
+   * What {@link exec} resolves to.
+   * @remarks ODW extension — not in Claude Code's dialect: a script that uses it runs on ODW only.
+   */
   interface ExecResult {
     stdout: string;
     stderr: string;
@@ -277,10 +310,14 @@ declare global {
    * maxAgents or the budget, but waits while the run is paused, and a stop kills
    * it with every process it started. A script's own `exec` binding takes
    * precedence over this one.
+   * @remarks ODW extension — not in Claude Code's dialect: a script that uses it runs on ODW only.
    */
   function exec(command: string | string[], opts?: ExecOptions): Promise<ExecResult>;
 
-  /** Options for {@link checkpoint} (ODW extension). */
+  /**
+   * Options for {@link checkpoint} (ODW extension).
+   * @remarks ODW extension — not in Claude Code's dialect: a script that uses it runs on ODW only.
+   */
   interface CheckpointOptions {
     /** What the person should look at (a plan, a summary of the changes): any JSON value, kept up to 64 KiB. */
     payload?: unknown;
@@ -303,7 +340,10 @@ declare global {
     memory?: boolean | { paths: string[] };
   }
 
-  /** What {@link checkpoint} resolves to. */
+  /**
+   * What {@link checkpoint} resolves to.
+   * @remarks ODW extension — not in Claude Code's dialect: a script that uses it runs on ODW only.
+   */
   interface CheckpointResult {
     approved: boolean;
     /** The note given with the answer, or null. */
@@ -335,10 +375,14 @@ declare global {
    * Takes no agent slot and counts toward neither maxAgents nor the
    * budget; a stop ends the wait and the run. `odw resume` asks it again. A
    * script's own `checkpoint` binding takes precedence over this one.
+   * @remarks ODW extension — not in Claude Code's dialect: a script that uses it runs on ODW only.
    */
   function checkpoint(title: string, opts?: CheckpointOptions): Promise<CheckpointResult>;
 
-  /** ODW extension: parses meta as a pure literal (never evaluated) and compile-checks the body without running it. Warnings are advisory; a script's own validate binding takes precedence. */
+  /**
+   * ODW extension: parses meta as a pure literal (never evaluated) and compile-checks the body without running it. Warnings are advisory; a script's own validate binding takes precedence.
+   * @remarks ODW extension — not in Claude Code's dialect: a script that uses it runs on ODW only.
+   */
   function validate(source: string): {
     ok: boolean;
     meta?: {

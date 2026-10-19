@@ -79,7 +79,8 @@ mode you have probably met; each mechanism is a runnable pattern in this repo:
   `approve` / `reject` for a run that waits at a human `checkpoint()`.
 - **No threads, zero runtime dependencies** — the engine is async TypeScript
   (`parallel` is `Promise.all`); workflow scripts stay plain `.js` and ship with
-  `.d.ts` authoring types for editor autocomplete.
+  `.d.ts` authoring types for editor autocomplete (`odw types` writes them into a
+  project).
 
 ## Why not just use Claude Code's built-in Workflow tool?
 
@@ -273,10 +274,36 @@ odw new hello --yes                     # also write the suggested .worktreeincl
   directories its lockfiles imply (`node_modules` for npm, yarn, pnpm and bun; `.venv`
   for uv, Poetry, Pipenv and PDM; `vendor` for Composer). It writes it with `--yes`, or
   when you say yes at a terminal; never otherwise.
+- **It also writes what `odw types` writes** (below), so the editor completes the new
+  workflow at once; `--no-types` leaves that out.
 - **`odw init`** (not `--check`) ends with the $0 first run: at a terminal it asks, then
   writes `hello` (unless `.odw/workflows/hello.js` exists — then it runs that one) and
   runs `odw run hello --dry` with its live view, then prints `odw serve --open` and the
   real `odw run hello`. Off a terminal it only prints the commands.
+
+### Editor completion: `odw types` (ODW extension)
+
+Workflow scripts get the primitives as globals, so an editor knows nothing of `agent()`
+and its options — unless the dialect's declarations are in the project. `odw types`
+writes them, from a copy built into the binary (a binary-only install has them too):
+
+```bash
+odw types                 # .odw/types/odw.d.ts + .odw/jsconfig.json (+ .claude/workflows/jsconfig.json)
+odw types --dir editor    # the declarations and jsconfig.json under editor/ instead
+odw types --force         # also replace a jsconfig.json that is not odw's
+```
+
+- **`.odw/types/odw.d.ts`**: the declarations, the odw version that wrote them in the
+  header. Each ODW extension carries `@remarks ODW extension`, so hovering an option
+  tells Claude Code's dialect from what only ODW reads.
+- **`.odw/jsconfig.json`**: `include` covers the declarations, `.odw/workflows/**/*.js`
+  and `.claude/workflows/**/*.js`. When `.claude/workflows` exists it gets its own
+  `jsconfig.json` too, since an editor uses the config nearest a file. A `jsconfig.json`
+  odw did not write is left as it is, and the `include` it needs is printed instead.
+- **`checkJs` stays off**: a type checker reads the dialect's top-level `return` as an
+  error (TS1108). Put `// @ts-check` atop a script to have it checked anyway.
+- **After an upgrade**, `odw doctor` warns when `.odw/types/odw.d.ts` no longer matches
+  this odw's declarations; `odw types` rewrites it. Nothing is compiled or checked by odw.
 
 ## The primitives
 
@@ -628,6 +655,7 @@ odw logs $RUN --agent 3  # what one agent did: its tool calls, results and text 
 odw result $RUN          # final value
 odw diff $RUN --stat     # what isolated agents changed; odw apply $RUN --agent N (or --all) lands it
 odw review               # kept diffs across runs not dealt with yet, riskiest first, each with why (below)
+odw outcomes             # by week, workflow, adapter, model: kept diffs applied/dismissed/left, failures, rework, cost per applied change (below)
 odw notes $RUN           # what its agents told each other on the notes board (above)
 odw compare $OLD $RUN    # what changed between two runs: setup, time, cost, failures, replies (below)
 odw estimate review      # p50/p90 time, cost, tokens and agents of its next run, from earlier runs (below)
@@ -1284,6 +1312,43 @@ I'll run the tests first.
   `{ i, kind: text|tool_call|tool_result|error|attempt|result|raw|truncated, text?, tool?, input?, output?, isError? }`,
   long fields clipped to 4 KB (`clipped: true`), and `redacted: true` on one a secret
   was kept out of.
+
+### Watch runs in a terminal, tmux or your IDE (ODW extension)
+
+The dashboard is one way to watch; a terminal, a tmux window and an IDE panel are the
+others — for ODW's runs and for **Claude Code's own workflow runs** (`cc-…` ids, the ones
+its Workflow tool starts; the dashboard's Jobs list shows them):
+
+```bash
+odw status cc-wf_0da91623-31d                         # its state and agents: label, phase, state, Claude's agent id
+odw logs cc-wf_0da91623-31d --follow                  # its events as they come, until it ends
+odw logs cc-wf_0da91623-31d --agent find:engine-store --follow   # one agent's transcript (by label or id)
+odw attach cc-wf_0da91623-31d                         # the same as logs --follow, under a header
+odw tmux $RUN                                         # a tmux window: the run, and a pane per running agent
+```
+
+- A Claude Code run is read from its store under `~/.claude/projects` (`CLAUDE_CONFIG_DIR`
+  honored), every project's, **read-only**: stopping it or answering it stays in Claude
+  Code. Its agents' `agent-<id>.jsonl` transcripts read like an ODW agent's (`▸` tool
+  calls, `✓/✗` results, text, thinking); `--raw` prints the lines as kept. Claude Code
+  may clean its transcripts up — a run that vanished says so.
+- `odw tmux <run> [--layout tiled|even-horizontal|even-vertical|main-horizontal|main-vertical] [--max-panes 6]`
+  opens one window inside your tmux session. Its first pane is the overview: the run's
+  events, and a pane opened for each agent as it starts (`odw logs <run> --agent <id> --follow`),
+  up to `--max-panes`; past the cap it lists the command that follows each of the others.
+  A pane whose agent settled stays (tmux's `remain-on-exit`), its last lines under how it
+  ended. ODW and `cc-` runs alike.
+- Outside tmux it prints the `tmux new-session …` command that does the same; without
+  tmux, the `odw attach` and `odw logs --agent … --follow` commands to run by hand. Only
+  tmux is driven — no other terminal multiplexer.
+
+**In VS Code, JetBrains or Antigravity.** Run `odw serve`, then open
+`http://127.0.0.1:4317/#/compact` in the IDE's own browser panel — VS Code: *Simple Browser:
+Show* from the command palette; JetBrains: *Tools → Web Browsers* (or any built-in
+browser view). The compact layout drops the rail: a run list with each run's live state
+(live runs first, Claude Code's tagged `CC`), and a run opens under a slim bar back to the
+list. `?compact=1` on the page URL or `?compact` after any route (`#/job/<id>?compact`)
+turns it on too; it stays on as you navigate, and *Full dashboard* (`?compact=0`) turns it off.
 
 ### Compare two runs (ODW extension)
 
@@ -3878,6 +3943,65 @@ says how many wait. `GET /api/review[?since=7d][&all=1]` serves it, `POST
 /api/runs/:id/agents/:agentId/review { state, note? }` marks one.
 
 Step by step: [`docs/recipes/review-and-apply.md`](docs/recipes/review-and-apply.md).
+
+#### Outcomes over weeks (ODW extension)
+
+A pass rate says whether one eval passed; it does not say how much of what the
+agents produced people actually took. `odw outcomes` counts that across runs, by
+week, from what the runs recorded and the review marks — no model judges anything:
+
+```bash
+odw outcomes                         # the last 30 days: by week, workflow, adapter and model
+odw outcomes --since 12w --workflow triage --json
+odw outcomes --markdown              # tables, for a PR or a wiki page
+```
+
+```
+odw outcomes · last 30d · 14 runs
+
+Runs        11 done · 3 failed (timeout 2, script_error 1)
+Agents      41 · 4 failed (timeout 3, unmet_expectation 1) · 6 retries over 4 agents · 1 fell back
+Kept diffs  12 · 7 applied (58%) · 2 dismissed · 1 reviewed · 2 left
+Rework      4 of the kept needed a retry, fallback or resolver (33%) · 1 resolved at apply
+Checks      1 missed expect · 0 changed untouched files · 1 wrote outside scope
+Spend       $18.40 · 2.1M tokens · per applied change: $2.629
+
+Against the window before
+  - applied share of kept diffs 80% → 58% (worse)
+
+By week (UTC, from Monday)
+  2026-09-21  3 runs · 0 failed · 2 kept · 2 applied (100%) · 0 dismissed · 0 left · per applied $1.900
+  …
+By workflow / By adapter / By model   runs (agents) · failed · kept · applied · dismissed · left · reworked · per applied
+```
+
+What each count is:
+
+- **kept / applied / dismissed / reviewed / left** — the agents that kept a diff,
+  by their last mark in `reviews.jsonl` (`odw apply` marks `applied`; `odw review
+  mark` and the dashboard mark the rest); `left` has no mark or was put back `open`.
+  Marks are read as they stand now, so a diff applied a week after its run counts
+  for that run. Applied is ODW's own mark: a PR's merge state is not read.
+- **failed** — failed and stale runs, by the commonest failure reason of their
+  failed agents, else `stale` or `script_error`; agents' failures by reason too.
+- **rework** — kept diffs that needed a retry (`expect`, rate limit, stall,
+  question), a fallback or handoff, or a resolver at `odw apply --resolve`; and
+  runs `odw replay` started.
+- **per applied change** — everything the row spent (failed agents included)
+  over its applied changes: dollars when some agent reported them, else tokens.
+- **Against the window before** — the same counts for the window as long just
+  before; a share that moves 15 points or more (over at least 5 on both sides) or
+  a cost per applied change that moves by half (over at least 3) is called out.
+
+A run counts in the window it was created in. Left out: dry runs, runs still going,
+and the runs `odw eval`, `odw test`, `odw conformance` and `odw apply --resolve`
+started. Runs `odw pull` copied here count like any other; another machine's runs
+root is counted there. A workflow row counts its runs; an adapter or model row counts
+its agents and is charged a failed run only when one of its own agents failed in it.
+The model is the one the CLI said served the agent, else the one it asked for
+(`… (requested)`), else `(CLI default)`. The dashboard's **Review** page opens
+with an **Outcomes** card for the last 30 days — applied of kept, a stacked column
+per week, what moved, a line per workflow — from `GET /api/outcomes[?since=30d][&workflow=W]`.
 
 ## How it works
 

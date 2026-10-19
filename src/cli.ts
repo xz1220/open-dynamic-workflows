@@ -12,6 +12,8 @@
  *   odw status <run_id>
  *   odw logs <run_id> [--follow]
  *   odw logs <run_id> --agent <id|label> [--raw] [--follow]
+ *   odw status|logs|attach <cc-…>   (Claude Code's own runs, read-only; runtime/claude-watch.ts)
+ *   odw tmux <run_id> [--layout tiled] [--max-panes N]   (runtime/tmux.ts)
  *   odw agents <run_id> [--json]
  *   odw agents types [--adapter <name>] [--json]
  *   odw result <run_id> [--agent <id|label>]
@@ -70,6 +72,7 @@ import type { WorkflowEvent } from "./events.js";
 import { VERSION } from "./index.js";
 import { cmdInit } from "./init.js";
 import { cmdNew } from "./new.js";
+import { cmdTypes } from "./editor-types.js";
 import { loadWorkflowScript } from "./loader.js";
 import type { AgentChanges } from "./changes.js";
 import { agentRowJson, agentRows, formatAgentTable, matchAgents, type AgentRow } from "./runtime/agents-view.js";
@@ -112,7 +115,10 @@ import { cmdMemory } from "./runtime/memory-cli.js";
 import { askYesNo, cmdEstimate, estimateBeforeRun } from "./runtime/estimate-cli.js";
 import { cmdGc, cmdPin } from "./runtime/gc-cli.js";
 import { cmdDigest } from "./runtime/digest-cli.js";
+import { cmdOutcomes } from "./runtime/outcomes-cli.js";
 import { cmdReview } from "./runtime/review-cli.js";
+import { claudeAgentLogs, claudeAttach, claudeLogs, claudeRunSource, claudeStatus, isClaudeRunId } from "./runtime/claude-watch.js";
+import { cmdTmux } from "./runtime/tmux.js";
 import { appendReview } from "./runtime/review.js";
 import { executeRun } from "./runtime/worker.js";
 import {
@@ -182,6 +188,8 @@ export const COMMANDS = [
   "restore",
   "digest",
   "review",
+  "types",
+  "outcomes",
 ] as const;
 
 export type Command = (typeof COMMANDS)[number];
@@ -261,12 +269,18 @@ export function helpText(): string {
     "  odw check <script.js|name> [--json]                check a workflow loads: errors with line, column and a code frame",
     "                                                     --capabilities lists what it names outside the dialect (process, require, import(, …)",
     "  odw new [<template>] [--name N] [--force] [--yes]  a workflow + starter test in .odw/ from a built-in template; no args lists them",
+    "                                                     (and what odw types writes; --no-types leaves that out)",
+    "  odw types [--dir .odw] [--force]                   editor completion for workflow scripts: .odw/types/odw.d.ts + jsconfig.json (ODW extension)",
     "  odw gc [--yes] [--older-than 30d] [--json]         report orphaned worktrees, keep branches, old transcripts; --yes deletes (ODW extension)",
     "  odw pin <run_id> [--remove]                        odw gc skips a pinned run; no run id lists them",
     "  odw digest [--since 12h|--since-last] [--workflow W] what happened across runs, from their evidence: needs you, failed,",
     "             [--json|--markdown] [--notify]          missed checks, changes, spend; --notify sends it (notify.on \"digest\"; ODW extension)",
     "  odw review [--json] [--since 7d] [--all]           kept diffs across runs not dealt with yet, riskiest first, each with why (ODW extension)",
     "  odw review mark <run_id> <agent> <state> [--note T] reviewed | dismissed | applied | open (undo); odw apply marks applied",
+    "  odw outcomes [--since 30d] [--workflow W]          across runs, by week, workflow, adapter and model: kept diffs applied/dismissed/left,",
+    "               [--json|--markdown]                   failures by reason, rework, cost per applied change (ODW extension)",
+    "  odw status|logs|attach <cc-…>                      Claude Code's own workflow runs too, read-only (logs --agent <id|label> --follow)",
+    "  odw tmux <run_id> [--layout tiled] [--max-panes N] a tmux window: the run, and a pane per running agent (ODW extension)",
     "",
     "Options:",
     "  --args JSON|@file   workflow input (JSON, @file.json, or a raw string)",
@@ -370,6 +384,8 @@ export async function main(argv: string[]): Promise<number> {
         return await cmdInitCli(rest);
       case "new":
         return await cmdNewCli(rest);
+      case "types":
+        return cmdTypesCli(rest);
       case "doctor":
         return await cmdDoctor(rest);
       case "run":
@@ -444,6 +460,10 @@ export async function main(argv: string[]): Promise<number> {
         return await cmdDigest(rest);
       case "review":
         return await cmdReview(rest);
+      case "outcomes":
+        return cmdOutcomes(rest);
+      case "tmux":
+        return await cmdTmux(rest, storeFrom, { out: process.stdout, err: process.stderr });
       default:
         process.stderr.write(`odw: unknown command '${command}'\n\n${helpText()}\n`);
         return 2;
@@ -623,10 +643,11 @@ async function cmdNewCli(rest: string[]): Promise<number> {
         name: { type: "string" },
         force: { type: "boolean" },
         yes: { type: "boolean", short: "y" },
+        "no-types": { type: "boolean" },
       },
     });
   } catch (err) {
-    throw new UsageError(`odw new: ${(err as Error).message}\nusage: odw new [<template>] [--name N] [--force] [--yes]`);
+    throw new UsageError(`odw new: ${(err as Error).message}\nusage: odw new [<template>] [--name N] [--force] [--yes] [--no-types]`);
   }
   const { values, positionals } = parsed;
   if (positionals.length > 1) throw new UsageError("usage: odw new [<template>] [--name N] [--force] [--yes]");
@@ -635,7 +656,19 @@ async function cmdNewCli(rest: string[]): Promise<number> {
     ...(values.name !== undefined ? { name: values.name } : {}),
     force: values.force === true,
     yes: values.yes === true,
+    types: values["no-types"] !== true,
   });
+}
+
+/** `odw types` — the dialect's declarations and a jsconfig.json, for editors (ODW extension; see src/editor-types.ts). */
+function cmdTypesCli(rest: string[]): number {
+  let values;
+  try {
+    ({ values } = parseArgs({ args: rest, options: { dir: { type: "string" }, force: { type: "boolean" } } }));
+  } catch (err) {
+    throw new UsageError(`odw types: ${(err as Error).message}\nusage: odw types [--dir D] [--force]`);
+  }
+  return cmdTypes({ ...(values.dir !== undefined ? { dir: values.dir } : {}), force: values.force === true });
 }
 
 async function cmdRun(rest: string[]): Promise<number> {
@@ -1087,6 +1120,8 @@ async function cmdAttach(rest: string[]): Promise<number> {
     return 2;
   }
   const timeoutMs = parseTimeout("attach", values.timeout);
+  // A Claude Code run (ODW extension): its events as they come, read-only.
+  if (isClaudeRunId(runId)) return claudeAttach(claudeRunSource(), runId, { out: process.stdout, err: process.stderr });
   const store = storeFrom(values);
   if (!store.exists(runId)) {
     process.stderr.write(`no such run: ${runId}\n`);
@@ -1101,6 +1136,9 @@ async function cmdAttach(rest: string[]): Promise<number> {
 }
 
 function cmdStatus(rest: string[]): number {
+  // A Claude Code run (ODW extension): its state and agents, read-only.
+  const first = parseArgs({ args: rest, allowPositionals: true, options: { config: { type: "string" }, "runs-root": { type: "string" } } }).positionals[0];
+  if (isClaudeRunId(first)) return claudeStatus(claudeRunSource(), first, { out: process.stdout, err: process.stderr });
   const { store, runId } = storeAndRun(rest);
   if (!store) return runId ? 1 : 2;
   const status = store.readStatus(runId);
@@ -1778,6 +1816,19 @@ async function cmdLogs(rest: string[]): Promise<number> {
   });
   if (values.raw && values.agent === undefined) {
     throw new UsageError("odw logs: --raw prints an agent's transcript as kept — name the agent with --agent <id|label>");
+  }
+  // A Claude Code run (ODW extension): its events, or one agent's transcript, read-only.
+  if (isClaudeRunId(positionals[0])) {
+    const io = { out: process.stdout, err: process.stderr };
+    if (values.agent === undefined) return claudeLogs(claudeRunSource(), positionals[0], values.follow === true, io);
+    const width = process.stdout.isTTY && process.stdout.columns ? process.stdout.columns : 120;
+    return claudeAgentLogs(claudeRunSource(), positionals[0], values.agent, {
+      ...io,
+      raw: values.raw === true,
+      follow: values.follow === true,
+      caps: detectCaps(process.stdout, process.env),
+      width,
+    });
   }
   const store = storeFrom(values);
   let runId = positionals[0];

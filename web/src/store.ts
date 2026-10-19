@@ -27,6 +27,7 @@ import type {
   RunNote,
   RunSummary,
   ReviewQueue,
+  Outcomes,
   ScheduleView,
   SettingsSnapshot,
   TranscriptEntry,
@@ -534,6 +535,21 @@ class Store {
     if (all === this.reviewAll && JSON.stringify(next) === JSON.stringify(this.review)) return;
     this.reviewAll = all;
     this.review = next;
+    this.emit();
+  }
+
+  /** What became of the runs' work over the last 30 days (ODW extension; null until loaded or from an older server). */
+  outcomes: Outcomes | null = null;
+
+  async loadOutcomes(): Promise<void> {
+    let next: Outcomes | null;
+    try {
+      next = await api.outcomes();
+    } catch {
+      next = null; // an older server reports no outcomes
+    }
+    if (JSON.stringify(next) === JSON.stringify(this.outcomes)) return;
+    this.outcomes = next;
     this.emit();
   }
 
