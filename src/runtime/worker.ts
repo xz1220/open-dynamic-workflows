@@ -30,10 +30,8 @@ import type { WaitingCheckpoint } from "../checkpoint.js";
 import type { CostHistory } from "../forecast.js";
 import { buildContext, spentTokens, type RunContext } from "../context.js";
 import { deciderText, PAUSED, RUNNING, STOPPED, type CheckpointRequest } from "../control.js";
-import { ConfigError, DeadlinePassed, RunStopped, WorkflowScriptError, isFatalError } from "../errors.js";
-import { AGENT_STARTED, HOST_SUSPENDED, LOG, RUN_FAILED, RUN_FINISHED, RUN_STARTED, RUN_STOPPED, event } from "../events.js";
 import { ConfigError, DeadlinePassed, DiskFull, RunStopped, WorkflowScriptError, isFatalError } from "../errors.js";
-import { AGENT_STARTED, LOG, RUN_FAILED, RUN_FINISHED, RUN_STARTED, RUN_STOPPED, event } from "../events.js";
+import { AGENT_STARTED, HOST_SUSPENDED, LOG, RUN_FAILED, RUN_FINISHED, RUN_STARTED, RUN_STOPPED, event } from "../events.js";
 import { Breaks, breakSpecOf, runSoFar } from "../breaks.js";
 import { DriftWatch, driftEvalArgs, driftEvalOf, previousRun } from "../drift.js";
 import { ReplayJournal } from "../journal.js";
@@ -737,9 +735,7 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
     }
     if (ctx) await stopAgents(ctx.scheduler, full ?? outcome, teardownMs(ctx.config.settings));
     await ctx?.bridge.closeEgress().catch(() => undefined);
-    versions?.close();
     unwatchSuspend();
-    ctx?.notes?.close();
     // With the disk full, the rest goes as far as it can.
     const quietly = (write: () => void): void => {
       try {
