@@ -48,6 +48,7 @@ import { OWNER_FILE, WORKTREE_PREFIX } from "../workspace.js";
 import { readJsonFile, readdirSafe, writeJsonAtomic } from "./fs-util.js";
 import { isRunActive } from "./run-liveness.js";
 import type { RunStore } from "./run-store.js";
+import { pidReused } from "./process-identity.js";
 import { isProcessAlive } from "./runs-view.js";
 
 const run = promisify(execFile);
@@ -165,6 +166,8 @@ export interface WorktreeFinding {
   run: string | null;
   /** The process that made it, when its owner file names one. */
   pid: number | null;
+  /** When that process started (ODW extension; see ./process-identity): a live pid that started otherwise is another process. */
+  pidStart?: string;
   /** Why it is an orphan, or why it is kept. */
   why: string;
   orphan: boolean;
@@ -309,6 +312,7 @@ export async function scanWorktrees(opts: WorktreeScanOptions = {}): Promise<Wor
       registered: registration !== null,
       run: runId,
       pid,
+      ...(typeof owner?.pidStart === "string" ? { pidStart: owner.pidStart } : {}),
       why: "",
       orphan: false,
       bytes: 0,
@@ -324,7 +328,7 @@ export async function scanWorktrees(opts: WorktreeScanOptions = {}): Promise<Wor
     } else if (!present) {
       finding.orphan = true;
       finding.why = "registered with git, but its directory is gone";
-    } else if (pid !== null && isAlive(pid) !== false) {
+    } else if (pid !== null && isAlive(pid) !== false && !pidReused({ pid, pidStart: owner?.pidStart })) {
       finding.why = `in use by process ${pid}`;
     } else if (known && isRunActive(store!, runId!, isAlive)) {
       finding.why = `its run ${runId} is still active`;
@@ -662,7 +666,7 @@ export async function applyGc(plan: GcPlan, opts: Pick<GcOptions, "store" | "isA
 
   for (const w of plan.worktrees) {
     if (!w.orphan) continue;
-    if (w.pid !== null && isAlive(w.pid) !== false) continue;
+    if (w.pid !== null && isAlive(w.pid) !== false && !pidReused({ pid: w.pid, pidStart: w.pidStart })) continue;
     if (w.run !== null && !stillFree(w.run)) continue;
     try {
       await removeWorktree(w);

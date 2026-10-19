@@ -71,7 +71,7 @@ const META_FIELDS = [
 ] as const;
 
 /** status.json fields a bundle never carries: the worker's process, which is no one's to probe elsewhere. */
-const STATUS_DROPPED = new Set(["pid"]);
+const STATUS_DROPPED = new Set(["pid", "pidStart"]);
 
 /** One agent's files in a bundle. */
 export interface BundleAgent {

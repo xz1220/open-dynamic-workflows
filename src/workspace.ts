@@ -45,6 +45,7 @@ import {
 } from "./changes.js";
 import { SAFE_GIT } from "./git-safety.js";
 import { ConfigError } from "./errors.js";
+import { processStartTime } from "./runtime/process-identity.js";
 import { prepareWorktree, runTeardown, type WorktreeSetupOptions } from "./worktree-setup.js";
 
 const run = promisify(execFile);
@@ -63,6 +64,8 @@ export const OWNER_FILE = "odw-owner.json";
  */
 export interface WorktreeOwner {
   pid: number;
+  /** When that process started (ODW extension; see ./runtime/process-identity), when it can be read. */
+  pidStart?: string;
   run: string | null;
   repo: string;
   at: number;
@@ -227,7 +230,8 @@ export async function openWorkspace(
   // Who the worktree is for, beside it (ODW extension; see runtime/gc): a
   // worktree whose process is gone — a SIGKILL, a power cut — is an orphan
   // `odw gc` may remove; one whose process lives is never touched.
-  await writeOwner(tmp, { pid: process.pid, run: setup.owner ?? null, repo: top, at: Date.now() / 1000 });
+  const pidStart = processStartTime(process.pid);
+  await writeOwner(tmp, { pid: process.pid, ...(pidStart ? { pidStart } : {}), run: setup.owner ?? null, repo: top, at: Date.now() / 1000 });
   try {
     // Pin the worktree to the resolved base commit: immune to concurrent HEAD
     // movement, and the later diff is taken against this exact baseline.
