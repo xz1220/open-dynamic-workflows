@@ -190,6 +190,22 @@ test("one source instance: a write to ANY running agent's transcript revives a s
   }
 });
 
+test("review: a journal's agentId is a transcript's name only in its shape — never a path out of the run directory", () => {
+  const root = fixture();
+  try {
+    const live1 = join(root, encodeProjectDir(CWD), "5fe06326-session", "subagents", "workflows", "wf_live1");
+    // An id that walks up: agent-x/../../outside.jsonl is a file beside the run directory, kept fresh by someone else.
+    writeFileSync(join(live1, "journal.jsonl"), JSON.stringify({ type: "started", key: "v2:k9", agentId: "x/../../outside" }) + "\n");
+    writeFileSync(join(live1, "..", "outside.jsonl"), "{}\n");
+    const old = Date.now() / 1000 - 600;
+    for (const f of ["journal.jsonl", "agent-a2.jsonl"]) utimesSync(join(live1, f), old, old);
+    const src = new ClaudeRunSource({ projectsRoot: root, cwd: CWD, scope: "all" });
+    assert.equal(src.listSummaries().find((r) => r.runId === "cc-wf_live1")!.state, "stale", "the file outside is never stat'ed");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 /** Counts full discovery walks (every project + session dir). */
 class CountingSource extends ClaudeRunSource {
   walks = 0;
