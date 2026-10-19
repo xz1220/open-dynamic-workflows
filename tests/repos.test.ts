@@ -187,7 +187,8 @@ describe("agents and commands in another repository", () => {
     assert.equal(r.state, "done", errorOf(r));
     const started = r.events.filter((e) => e.type === "agent_started");
     assert.deepEqual(
-      started.map((e) => [e.label, e.repo ?? null]),
+      // Parallel agents start in any order: compare by label.
+      started.map((e) => [e.label, e.repo ?? null]).sort((a, b) => String(a[0]).localeCompare(String(b[0]))),
       [
         ["here", null],
         ["there", { name: "api", path: api }],
