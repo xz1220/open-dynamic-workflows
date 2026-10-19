@@ -168,6 +168,23 @@
 | U9 | ACP 适配器类型 | M | ✅ ODW 扩展（`src/adapters/acp.ts`）：适配器写 `"protocol": "acp"` 与启动 ACP 模式的命令（如 `gemini --experimental-acp`，以各 agent 文档为准），零依赖 JSON-RPC 2.0 over stdio 客户端（`runner.ts` 新增 `duplex`/`onTerminate`，进程组、超时、卡死看门狗、容器沙箱照旧）：`initialize`（协议版本 1，不声明任何客户端能力：无 `fs`、`terminal`、elicitation，agent 请求即回 method not found）、`session/new`（`cwd` 为 agent 工作区）、`session/prompt`（一个文本块）、流式读 `session/update`（消息/思考片段、工具调用及更新、plan、`usage_update`）、停止/超时/卡死/限额时先发 `session/cancel` 再杀进程；回合结束即关闭 stdin，滞留的进程宽限后杀掉并视为干净退出。`session/request_permission` 按 agent 档位按工具 `kind` 立即应答：`read` 允许 read/search/think/fetch（不可信输入时不含 fetch），`edit` 再加 edit/delete/move，`full` 全部；只选 `allow_once`/`reject_once`，没有拒绝选项时取消请求；每次应答一个 `acp_permission` 事件（`odw logs`、实时视图、看板 Logs 页），被拒的调用经 `permissionDenials` 记在 agent 上；超出档位的写类调用未经请求即执行记为 `unasked`。会话存为 ODW 自己的 `acp.*` 事件（`ACP_OUTPUT` 解码），复用 transcript（`odw logs --agent` 可读）、实时 `toolCalls`/`costUsd` 限额、失败分类（`auth_required` → `auth`，非 `end_turn` 的 stopReason 失败）；用量取 `usage_update` 的美元 `cost`，token 只在 prompt 响应带草案 `usage` 时读取。ACP 适配器可运行任何档位；不接受 `stdin`/`output`，不能只给内置适配器改 `protocol`。`odw doctor --adapter <acp>` 只发 `initialize` 做握手，报告名称版本、协议版本、`loadSession`、提示与 MCP 能力、登录方式。测试只用测试内的假 ACP agent（`tests/acp-adapter.test.ts`、`tests/web-ui.test.ts`）。未做：elicitation 接 `questions`、额外工作区根（U6 未落地）、`session/load`、远程传输、把 ODW 做成 ACP agent、otel 导出的 ACP 工具 span |
 | U10 | 编辑器补全开箱即用：`odw types` | S | ✅ ODW 扩展（`src/editor-types.ts`）：`types/workflow.d.ts` 由 `scripts/embed-types.mjs` 嵌入 `src/types.generated.ts`（与模板同法，CI 漂移检查 + 测试逐字节比对）；`odw types [--dir .odw] [--force]` 写出 `.odw/types/odw.d.ts`（文件头带 odw 版本，每次重写）与 `.odw/jsconfig.json`（`allowJs`、`lib: ["es2022"]`、`types: []`，`include` 覆盖声明、`.odw/workflows/**/*.js` 与 `.claude/workflows/**/*.js`），`.claude/workflows` 存在时另写其 `jsconfig.json`（编辑器只认最近的配置）；首行无 odw 标记的 jsconfig 视为用户所有，原样保留并打印所需 `include`，`--force` 才替换。`checkJs` 保持关闭、模板不加 `// @ts-check`：方言的顶层 `return` 在类型检查下是 TS1108，会让每个模板报错。d.ts 的 ODW 扩展逐个加 `@remarks ODW extension`（选项为 "Claude Code ignores it"，全局为 "not in Claude Code's dialect"），并修好 `untouched` 注释里提前结束注释的 `**/`（此前 d.ts 无法解析）。`odw new` 默认顺带写出（`--no-types` 关闭）；`odw doctor` 在该文件存在时多一项「Editor types」，声明与当前 odw 不一致即警告（比对内容而非版本号）。未做：`--from-meta`（按 `meta.input` 生成 `args` 类型）。测试：`tests/editor-types.test.ts` 用真实 TypeScript 语言服务验证补全、悬停 `@remarks` 与模板零报错 |
 
+### 1.0「可装、可靠、可依赖」（2026-10-19 第六轮调研）
+
+依据：[`docs/research/user-needs-2026-10-round6.md`](research/user-needs-2026-10-round6.md)。发布本身（打 tag、发 Release）由维护者决定；以下各项只做到「随时可发」。
+
+| # | 方向 | 规模 | 状态 |
+| --- | --- | --- | --- |
+| V1 | **发布就绪，文档与发布对齐**：CHANGELOG 按版本整理、文档不引用不存在的 tag、安装脚本的校验边界 | S | ⏳ |
+| V2 | **「安装后 60 秒」与 `odw doctor` 的运行环境检查**：文件句柄、磁盘、tmpfs | S | ⏳ |
+| V3 | README 瘦身与文档拆分（教程 / 指南 / 参考 / 原理） | M | ⏳ |
+| V4 | Windows 的真实 CI 与 POSIX 假设 | M | ⏳ |
+| V5 | 看板在几千次运行下保持常数开销 | S–M | ⏳ |
+| V6 | 主机级并发上限 | S–M | ⏳ |
+| V7 | **睡眠、断网与 CLI 中途更新** | S | ⏳ |
+| V8 | **磁盘写满与 pid 复用** | S | ⏳ |
+| V9 | 包管理器渠道与来源证明 | S–M | ⏳ |
+| V10 | 1.0 的兼容承诺 | S | ⏳ |
+
 ### Later — 0.8+「规模与生态」
 
 - ✅ **可选的容器运行器**（ODW 扩展；#6）：`sandbox: { kind: "container", image, engine?, network?, mounts?, cliConfig?, memory?, cpus?, pids? }`（配置、`odw run|rerun|resume --sandbox container [--sandbox-image <镜像>]`、按适配器、`agent(…, { sandbox })`——只能收紧），每次 CLI 运行与每个 `exec()` 步骤变成 `<engine> run --rm -i --init --pull never --name odw-<run>-<agent>-<随机>` 的全新 Docker/Podman 容器：只以相同路径读写挂载工作区、私有临时 home（按各 CLI 文档复制登录与配置文件：claude 的 `.credentials.json`/`settings.json`/`~/.claude.json` 去掉 `projects` 等，codex 的 `auth.json`/`config.toml`，gemini 的 `oauth_creds.json` 等；`mount-ro` 只读绑定，`none` 为空，运行后删除）、`--user` 宿主 uid:gid（Podman 加 `--userns keep-id`）、`--cap-drop ALL`、`no-new-privileges`、`--pids-limit 512`、只读根文件系统与 tmpfs `/tmp`；环境只含 `agentEnv` 放行的变量且按名字传递（argv 里没有值）。argv 由纯函数构造并单测。超时、停顿、停止或非干净退出时按名字 `kill` + `rm --force` 容器，worker 退出时的兜底清理同样覆盖。镜像由用户构建（`examples/sandbox/Dockerfile`），从不拉取；缺引擎或镜像在 `odw doctor`（含 `run --rm --pull never --network none <镜像> true` 冒烟）与运行开始前报 `ConfigError`。网络默认 `"default"`——agent CLI 必须连到模型 API，所以**并非默认断网**；`exec()` 步骤默认 `network: "none"`。启动横幅、运行 setup（`BEHAVIOUR_SETTINGS`）、`agent_started` 与看板类型 `AgentView.sandbox` 显示沙箱（看板绘制待接入）。
