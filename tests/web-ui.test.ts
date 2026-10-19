@@ -1188,6 +1188,34 @@ test("the Workspace groups a Claude Code plugin's workflows on their own, and th
   }
 });
 
+test("the Workspace flags a workflow installed from git as third-party, and one modified since install loudly", () => {
+  const w: WorkflowSummary = {
+    name: "audit",
+    origin: "project",
+    provider: "odw",
+    rootLabel: ".odw/workflows",
+    path: "/x/audit.js",
+    description: null,
+    phases: [],
+    runCount: 0,
+    shadowed: false,
+    installed: { url: "https://example.com/acme/flows.git", ref: "v1", commit: "0123456789abcdef0123456789abcdef01234567", modified: false },
+  };
+  const saved = store.workflows;
+  try {
+    store.workflows = [w];
+    const clean = renderWorkspace(wfKey(w), null, "");
+    assert.match(clean, /<span class="tag" title="installed from https:\/\/example\.com\/acme\/flows\.git#v1 @ 0123456789ab — runs in a strict script context">third-party<\/span>/);
+    assert.doesNotMatch(clean, /modified since install/);
+    store.workflows = [{ ...w, installed: { ...w.installed!, modified: true } }];
+    assert.match(renderWorkspace(wfKey(w), null, ""), /<span class="tag warn" title="its file no longer matches workflows\.lock\.json — odw workflows verify">modified since install<\/span>/);
+    store.workflows = [{ ...w, installed: undefined }];
+    assert.doesNotMatch(renderWorkspace(wfKey(w), null, ""), /third-party/);
+  } finally {
+    store.workflows = saved;
+  }
+});
+
 test("an agent that ran in a container says which, and whether it was offline", () => {
   const view: JobViewState = { cpNote: "", tab: "graph", selectedAi: 0, reviewAi: null, zoom: 1, logQuery: "", logTypes: new Set(["agent"]), logLimit: 600, follow: true, motion: false };
   store.focusRun("20260101-000000-aaaaaa");

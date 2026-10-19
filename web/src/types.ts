@@ -798,6 +798,8 @@ export interface WorkflowSummary {
   shadowed: boolean;
   /** A plugin workflow whose bare name runs a project or global workflow instead (ODW extension). */
   note?: string;
+  /** Installed from git by `odw workflows add` — third-party — and whether its file still matches the lock (ODW extension). */
+  installed?: { url: string; ref: string | null; commit: string; modified: boolean };
 }
 
 export interface WorkflowDetail extends WorkflowSummary {

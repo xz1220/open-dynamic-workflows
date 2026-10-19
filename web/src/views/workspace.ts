@@ -56,7 +56,19 @@ function listItem(w: WorkflowSummary, activeKey: string | null): string {
     `<span class="tag">${tn(w.phases.length, "{n} phase", "{n} phases")}</span>` +
     (w.runCount ? `<span class="tag sig">${tn(w.runCount, "{n} run", "{n} runs")}</span>` : "") +
     shadow +
+    installedTags(w) +
     `</div></a>`
+  );
+}
+
+/** A workflow `odw workflows add` installed from git (ODW extension): third-party, and loud when no longer what was installed. */
+export function installedTags(w: WorkflowSummary): string {
+  if (!w.installed) return "";
+  const { url, ref, commit, modified } = w.installed;
+  const source = `${url}${ref ? `#${ref}` : ""} @ ${commit.slice(0, 12)}`;
+  return (
+    `<span class="tag" title="${esc(t("installed from {source} — runs in a strict script context", { source }))}">${t("third-party")}</span>` +
+    (modified ? `<span class="tag warn" title="${esc(t("its file no longer matches workflows.lock.json — odw workflows verify"))}">${t("modified since install")}</span>` : "")
   );
 }
 
@@ -181,7 +193,7 @@ function detailPane(d: WorkflowDetail): string {
     : t("Runs start from your agent or terminal — not from here.");
   return (
     `<div class="page" data-key="wfd-${esc(wfKey(d))}">` +
-    `<div class="eyebrow"><span class="tag${d.provider === "claude" ? " cc" : ""}">${esc(d.rootLabel)}</span><span class="mono" style="text-transform:none;letter-spacing:0">${esc(d.path)}</span></div>` +
+    `<div class="eyebrow"><span class="tag${d.provider === "claude" ? " cc" : ""}">${esc(d.rootLabel)}</span>${installedTags(d)}<span class="mono" style="text-transform:none;letter-spacing:0">${esc(d.path)}</span></div>` +
     `<h1 class="display">${esc(d.name)}</h1>` +
     (d.description ? `<p class="lede">${esc(d.description)}</p>` : "") +
     `<div style="display:flex;align-items:center;gap:14px;margin-top:20px;flex-wrap:wrap">` +

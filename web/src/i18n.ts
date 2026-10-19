@@ -119,6 +119,10 @@ const ZH: Record<string, string> = {
   shadowed: "被覆盖",
   "name shadowed — odw run {name} runs a higher-precedence workflow":
     "名称被覆盖——odw run {name} 实际运行的是优先级更高的工作流",
+  "third-party": "第三方",
+  "installed from {source} — runs in a strict script context": "安装自 {source}——在严格脚本上下文中运行",
+  "modified since install": "安装后被改动",
+  "its file no longer matches workflows.lock.json — odw workflows verify": "文件与 workflows.lock.json 不符——运行 odw workflows verify 查看",
   "{n} phases": "{n} 个阶段",
   "What earlier runs learned": "以往运行学到的",
   "{n} agent(s) ran a destructive git command": "{n} 个 agent 执行了破坏性 git 命令",
