@@ -75,7 +75,7 @@ return await agent(
 | `exec(command, opts?)` | 不启动模型直接运行一条命令（测试、构建、linter）；返回 `{ stdout, stderr, exitCode, signal, timedOut, truncated, durationMs }`。字符串经 shell 执行，数组按 argv 执行。**ODW 扩展**——不属于 Claude Code 方言。 |
 | `checkpoint(title, opts?)` | 暂停运行，直到有人批准（可以附上修改后的 payload）或拒绝；返回 `{ approved, note, by, payload, edited }`。**ODW 扩展**——不属于 Claude Code 方言。 |
 
-`agent` 的 `opts`：`{ adapter?, schema?, label?, phase?, model?, agentType?, isolation?, keep?, permissions?, expect?, expectRetries?, allowEmpty?, notes?, handoff?, scope?, scopePolicy?, questions?, stallMs? }`。
+`agent` 的 `opts`：`{ adapter?, schema?, label?, phase?, model?, agentType?, isolation?, keep?, permissions?, expect?, expectRetries?, allowEmpty?, notes?, handoff?, scope?, scopePolicy?, questions?, stallMs?, repo? }`。
 `stallMs`（Claude Code 方言）是这一个 agent 的卡死窗口，单位毫秒（`{ stallMs: 1800000 }` 即 30 分钟），取代 `stallTimeout` 设置。
 `adapter` 选择用哪个 CLI——写成列表（`['codex', 'claude']`，**ODW 扩展**）就是回退链；
 `model: '@fast'` 为实际运行它的 CLI 选出该层级的模型（**ODW 扩展**）；`schema` 是一个原始 JSON Schema 对象（选项，不是全局）；
@@ -140,6 +140,12 @@ const lanes = await parallel(tasks.map((t, i) => () =>      // ODW 扩展：note
 `"memory": true`）的 agent 在任务之前看到仍然适用的条目——最新的在前，至多 4 KB；`paths` 自其提交以来
 有改动的条目已过期，不再召回。不受信任的运行不使用仓库的记忆。用 `odw memory list|add|prune` 维护；见
 [`references/primitives.md`](references/primitives.md#memoryodw-扩展)。
+
+`repo`（**ODW 扩展**）让 agent——或 `exec(cmd, { repo })` 的命令——在本次运行的另一个仓库里工作，
+用运行声明过的别名指定：`odw run --repo api=../api` 或 `"repos"` 设置（`meta.repos: ['api']` 列出工作流
+需要的别名）。从不接受路径。它的 worktree、diff、`expect`、`scope` 与保险快照都属于该仓库；`odw diff`/
+`odw apply` 会标出仓库，`odw apply --all` 先预检所有仓库再写入。一个 agent 只写一个仓库：跨仓库的改动
+拆成每仓库一个 agent。见 [`references/primitives.md`](references/primitives.md#repoodw-扩展)。
 
 `scope`（**ODW 扩展**）声明 agent 打算改动的文件——glob 规则同 `expect.files`。范围重叠的并行调用
 先后运行（后发出的等先发出的结束，记一次日志："fix-auth waits for refactor-login: both declare

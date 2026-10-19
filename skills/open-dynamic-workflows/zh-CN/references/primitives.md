@@ -82,6 +82,8 @@ agent(prompt, opts?) -> Promise<unknown>
   见 [scope](#scopeodw-扩展)。Claude Code 会忽略它。
 - **opts.scopePolicy**（**ODW 扩展**）—— `"warn"`（默认：`scopePolicy` 设置）或 `"fail"`：
   越出 `scope` 的写入如何处理。需要同时设 `scope`。
+- **opts.repo**（**ODW 扩展**）—— 在本次运行的另一个仓库（`--repo name=path`、`repos` 设置）里
+  工作，而不是源仓库；只接受别名。见 [repo](#repoodw-扩展)。Claude Code 会忽略它。
 - **opts.questions**（**ODW 扩展**）—— agent 停下来向用户提问（CLI 的澄清工具调用：Claude
   Code 的 `AskUserQuestion`）时怎么办。无论哪种，CLI 都在提问处被停下。`"checkpoint"`（默认：
   适配器的设置，否则 `questions` 设置）在检查点上问人（`checkpoint_requested` 带
@@ -353,6 +355,8 @@ Claude Code 的 Workflow 工具没有 `exec` 全局（`validate()` 会对此给�
 - **opts.label** / **opts.phase** —— 进度展示，与 `agent` 相同。label 默认取命令的前
   40 个字符。
 - **opts.check** —— 命令没有以 0 退出时抛出 `ExecError`。
+- **opts.repo**（**ODW 扩展**）—— 在本次运行的另一个仓库里运行，用别名指定（见
+  [repo](#repoodw-扩展)）：在它的顶层运行，相对的 `cwd` 也相对它解析。
 - **opts.network**（**ODW 扩展**）—— 运行的 `sandbox` 为容器时，该步骤在运行镜像的全新容器里执行，以相同路径挂载运行的 source（及其 `cwd`），环境同 agent；网络默认 `"none"`，可要求 `"default"`（沙箱本身没有网络时拒绝）——即运行的网络，包括出站白名单（其中的 `"adapter"` 条目除外）。不在沙箱中时无效。
 
 非零退出码是结果，不是错误。无法启动的程序像 shell 一样报告退出码 `127`（找不到）或
@@ -728,6 +732,33 @@ agent(prompt, { scope: [...], scopePolicy: 'fail' })              // 越出范�
   调用的改动会计入。不在 git 仓库中时无法读取改动：记日志，不做检查。
 - **事件。** `agent_started` 带 `scope`。`scope` 与 `scopePolicy` 不属于 resume key；被重放的调用
   不等待任何调用，保留记录中的 `outOfScope`。
+
+## repo（ODW 扩展）
+
+```js
+export const meta = { name: 'w', description: 'd', repos: ['api'] }  // 它需要的别名
+agent(prompt, { repo: 'api', isolation: 'worktree' })                  // 在 ../api 的一个 worktree 里
+exec('npm test', { repo: 'api' })                                      // 在它的顶层
+// odw run w --repo api=../api   |   odw.config.json: "repos": { "api": "../api" }
+```
+
+- **先声明。** 运行在源仓库之外的仓库来自 `repos` 设置（别名 → 路径，相对源目录，可用 `~`）与
+  `odw run --repo name=path`（可多次，相对运行 odw 的目录，覆盖同名设置；rerun、resume、replay 沿用）。
+  每个路径都必须是 git 仓库。别名：字母开头，之后是字母、数字、`_`、`-`。`repo` 只接受别名：运行没有的
+  别名——或一个路径——会在调用开始前抛出致命的 `ConfigError`；非字符串是可恢复的 `AgentError`
+  （`exec` 为 `WorkflowScriptError`）。运行缺少 `meta.repos` 中的别名时，在脚本主体运行前就失败。
+  `--repo` 与 `--on ssh://` 同用会被拒绝。
+- **按仓库生效。** CLI 在该仓库顶层运行；隔离时在它的一个 worktree 里（`base` 是它的 HEAD），diff 保存为
+  `agents/<id>.diff`，`keep` 分支建在该仓库。`expect`（`files`、`untouched`、`command`，在 agent 的
+  工作区运行）、`scope` 与越界检查读的是该仓库；scope 锁按仓库分开。可写的原地 agent 先给该仓库打一份
+  自己的保险快照（`safety_snapshot` 带 `repo`；`odw restore <run> --repo <alias>`）。
+- **事件。** `agent_started` 带 `repo: { name, path }`；`command_started` 带 `repo: <alias>`；运行会记录
+  它的仓库（log 事件的 `repos`，以及 status.json）。`repo` 属于 resume key。
+- **审阅与应用。** `odw diff` / `--stat` / `odw review` / 看板都会标出仓库（`--repo <alias|.>` 过滤；`.`
+  是源仓库）。`odw apply --agent` 应用到 agent 所在的仓库；`--all` 先预检所有仓库，有一个不能干净应用就
+  都不写，之后源仓库优先逐个写入；`--pr` 与 `--resolve` 一次只处理一个仓库（`--repo`）。
+- **不可信运行**会丢弃仓库自带配置中指向仓库之外的别名；用户自己的配置与 `--repo` 可指向任何仓库。
+- 一个 agent 只写一个仓库；不做跨仓库的原子合并；不自动发现 submodule。
 
 ## schema
 

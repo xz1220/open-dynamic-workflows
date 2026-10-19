@@ -129,6 +129,9 @@ other primitive organizes calls to it.
 - **opts.scopePolicy** (**ODW extension**) — `"warn"` (default: the
   `scopePolicy` setting) or `"fail"`: what a write outside `scope` does. Needs
   `scope`.
+- **opts.repo** (**ODW extension**) — the alias of another repository of the
+  run to work in instead of the source (`--repo name=path`, the `repos`
+  setting). See [repo](#repo-odw-extension). Claude Code ignores it.
 - **opts.questions** (**ODW extension**) — what a question the agent stops to
   ask the user (its CLI's clarifying tool call: Claude Code's `AskUserQuestion`)
   does. The CLI is stopped at the question either way. `"checkpoint"` (default:
@@ -517,6 +520,9 @@ script's own `exec` binding takes precedence over the injected one.
 - **opts.label** / **opts.phase** — progress display, as for `agent`. The label
   defaults to the first 40 characters of the command.
 - **opts.check** — throw an `ExecError` unless the command exits 0.
+- **opts.repo** (**ODW extension**) — run in another repository of the run,
+  named by its alias (see [repo](#repo-odw-extension)): its top level, which a
+  relative `cwd` resolves against.
 - **opts.network** (**ODW extension**) — in a run whose `sandbox` is a container,
   the step runs in a fresh container of the run's image, with the run's source
   (and its `cwd`) bound at the same path and the agents' environment; its network
@@ -1022,6 +1028,42 @@ other's files — an advisory plan, not a sandbox.
 - **Events.** `agent_started` carries `scope`. `scope` and `scopePolicy` are not
   part of the resume key; a replayed call waits for nobody and keeps its recorded
   `outOfScope`.
+
+## repo (ODW extension)
+
+```js
+export const meta = { name: 'w', description: 'd', repos: ['api'] }  // the aliases it needs
+agent(prompt, { repo: 'api', isolation: 'worktree' })                  // in a worktree of ../api
+exec('npm test', { repo: 'api' })                                      // at its top level
+// odw run w --repo api=../api   |   odw.config.json: "repos": { "api": "../api" }
+```
+
+- **Declared.** The run's repositories besides its source come from the `repos`
+  setting (alias → path, relative to the source, `~` allowed) and `odw run --repo
+  name=path` (repeatable, relative to where odw runs, over the setting; kept for
+  rerun, resume and replay). Each must be a git repository. Aliases: a letter, then
+  letters, digits, `_`, `-`. `repo` takes an alias only: one the run lacks — or a
+  path — throws a fatal `ConfigError` before the call starts; a non-string is a
+  recoverable `AgentError` (`WorkflowScriptError` for `exec`). A `meta.repos` alias
+  the run lacks fails the run before its body runs. `--repo` with `--on ssh://` is refused.
+- **Per repository.** The CLI runs at the repository's top level; isolated, in a
+  worktree of it (`base` is its HEAD), its diff kept as `agents/<id>.diff`, a `keep`
+  branch made there. `expect` (`files`, `untouched`, `command`, run in the agent's
+  workspace), `scope` and the out-of-scope check read that repository; scope locks
+  are per repository. An in-place agent that may write gets that repository's own
+  safety snapshot (`safety_snapshot` with `repo`; `odw restore <run> --repo <alias>`).
+- **Events.** `agent_started` carries `repo: { name, path }`; `command_started`
+  `repo: <alias>`; the run logs its repositories (`repos` on the log event, and in
+  status.json). `repo` is part of the resume key.
+- **Review and apply.** `odw diff` / `--stat` / `odw review` / the dashboard name
+  the repository (`--repo <alias|.>` filters; `.` is the source). `odw apply --agent`
+  applies to the agent's repository; `--all` previews every repository and writes
+  none unless each applies cleanly, then the source first; `--pr` and `--resolve`
+  take one repository at a time (`--repo`).
+- **Untrusted runs** drop an alias the repository's own config names outside the
+  repository; the user's own config and `--repo` name any.
+- One agent writes one repository; no atomic cross-repository merge; no submodule
+  discovery.
 
 ## schema
 

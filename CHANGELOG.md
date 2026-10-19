@@ -681,6 +681,18 @@ independent security reviews whose findings are all fixed.
   gives its body, tools and isolation only. `odw agents types [--adapter a] [--json]`
   lists the definitions and what each maps to. New adapter `flags`: `effort`,
   `effortLevels`, `tools`, `disallowedTools`.
+- Multi-repository runs (**ODW extension**): the `repos` setting (alias → path, relative
+  to the run's source) and `odw run --repo name=path` (repeatable; kept for rerun,
+  resume and replay) declare the repositories a run works in besides its source;
+  `meta.repos` lists the aliases a workflow needs. `agent(p, { repo })` runs its CLI in
+  that repository — isolated, in a worktree of it, its diff kept as usual — with its
+  `expect`, `scope` and safety snapshot read there (`odw restore <run> --repo <alias>`);
+  `exec(cmd, { repo })` runs a command there. Only declared aliases are taken, never a
+  path; an untrusted run drops the paths its repository's own config names outside the
+  repository. `odw diff`, `odw review` and the dashboard's Changes tab (grouped by
+  repository) name each agent's repository; `odw apply` sends each diff to its
+  repository, and `--all` previews every repository and writes none unless each
+  applies cleanly. `--repo` with `--on ssh://` is refused.
 
 ### Use the CLI and the dashboard
 - `odw run` attaches a live foreground view in interactive terminals (Ctrl-C detaches;
