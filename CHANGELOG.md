@@ -1235,3 +1235,23 @@ independent security reviews whose findings are all fixed.
 - `install.sh` (and the action) treat only releases before v0.5.0 as predating
   `SHA256SUMS`; it was `≤ 0.5.0`, which would have let a 0.5.0 release without its
   checksums install with a warning.
+
+### Documentation
+- The README is a front door again (about 360 lines, from 4,500; docs only — no change to
+  the dialect, the CLI or any ODW extension): what ODW is, install,
+  the $0 first run, one real example, and a map of the docs. Everything else moved,
+  unchanged, into [`docs/`](docs/README.md), sorted the Diátaxis way: a
+  [tutorial](docs/tutorial.md), task guides under `docs/guides/` (running and
+  observing, the dashboard, reviewing and applying, multi-repo runs, checkpoints and
+  questions, notifications, scheduling and triggers, remote runs, adapters and models,
+  cost and limits, safety and trust, testing, developing ODW), reference pages for the
+  [workflow API](docs/reference/workflow-api.md), the [CLI](docs/reference/cli.md),
+  [configuration](docs/reference/config.md) and [events and failure
+  reasons](docs/reference/events.md), and [concepts](docs/concepts.md); the same pages
+  in Chinese under `docs/zh-CN/`. Links into the old README sections (recipes, the
+  GitHub Action page, the skill's references) point at the new pages; the action pins
+  `prepare-release` rewrites now live in `docs/guides/remote-runs.md`.
+- `tests/docs-links.test.ts` checks that every relative link and `#anchor` in
+  `README*.md` and `docs/**/*.md` resolves, and that the reference pages name every
+  config key (`KNOWN_TOP_KEYS`), event type (`src/events.ts`) and failure reason the
+  source has.
