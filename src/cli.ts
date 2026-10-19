@@ -12,6 +12,8 @@
  *   odw status <run_id>
  *   odw logs <run_id> [--follow]
  *   odw logs <run_id> --agent <id|label> [--raw] [--follow]
+ *   odw status|logs|attach <cc-…>   (Claude Code's own runs, read-only; runtime/claude-watch.ts)
+ *   odw tmux <run_id> [--layout tiled] [--max-panes N]   (runtime/tmux.ts)
  *   odw agents <run_id> [--json]
  *   odw agents types [--adapter <name>] [--json]
  *   odw result <run_id> [--agent <id|label>]
@@ -115,6 +117,8 @@ import { cmdGc, cmdPin } from "./runtime/gc-cli.js";
 import { cmdDigest } from "./runtime/digest-cli.js";
 import { cmdOutcomes } from "./runtime/outcomes-cli.js";
 import { cmdReview } from "./runtime/review-cli.js";
+import { claudeAgentLogs, claudeAttach, claudeLogs, claudeRunSource, claudeStatus, isClaudeRunId } from "./runtime/claude-watch.js";
+import { cmdTmux } from "./runtime/tmux.js";
 import { appendReview } from "./runtime/review.js";
 import { executeRun } from "./runtime/worker.js";
 import {
@@ -275,6 +279,8 @@ export function helpText(): string {
     "  odw review mark <run_id> <agent> <state> [--note T] reviewed | dismissed | applied | open (undo); odw apply marks applied",
     "  odw outcomes [--since 30d] [--workflow W]          across runs, by week, workflow, adapter and model: kept diffs applied/dismissed/left,",
     "               [--json|--markdown]                   failures by reason, rework, cost per applied change (ODW extension)",
+    "  odw status|logs|attach <cc-…>                      Claude Code's own workflow runs too, read-only (logs --agent <id|label> --follow)",
+    "  odw tmux <run_id> [--layout tiled] [--max-panes N] a tmux window: the run, and a pane per running agent (ODW extension)",
     "",
     "Options:",
     "  --args JSON|@file   workflow input (JSON, @file.json, or a raw string)",
@@ -456,6 +462,8 @@ export async function main(argv: string[]): Promise<number> {
         return await cmdReview(rest);
       case "outcomes":
         return cmdOutcomes(rest);
+      case "tmux":
+        return await cmdTmux(rest, storeFrom, { out: process.stdout, err: process.stderr });
       default:
         process.stderr.write(`odw: unknown command '${command}'\n\n${helpText()}\n`);
         return 2;
@@ -1112,6 +1120,8 @@ async function cmdAttach(rest: string[]): Promise<number> {
     return 2;
   }
   const timeoutMs = parseTimeout("attach", values.timeout);
+  // A Claude Code run (ODW extension): its events as they come, read-only.
+  if (isClaudeRunId(runId)) return claudeAttach(claudeRunSource(), runId, { out: process.stdout, err: process.stderr });
   const store = storeFrom(values);
   if (!store.exists(runId)) {
     process.stderr.write(`no such run: ${runId}\n`);
@@ -1126,6 +1136,9 @@ async function cmdAttach(rest: string[]): Promise<number> {
 }
 
 function cmdStatus(rest: string[]): number {
+  // A Claude Code run (ODW extension): its state and agents, read-only.
+  const first = parseArgs({ args: rest, allowPositionals: true, options: { config: { type: "string" }, "runs-root": { type: "string" } } }).positionals[0];
+  if (isClaudeRunId(first)) return claudeStatus(claudeRunSource(), first, { out: process.stdout, err: process.stderr });
   const { store, runId } = storeAndRun(rest);
   if (!store) return runId ? 1 : 2;
   const status = store.readStatus(runId);
@@ -1803,6 +1816,19 @@ async function cmdLogs(rest: string[]): Promise<number> {
   });
   if (values.raw && values.agent === undefined) {
     throw new UsageError("odw logs: --raw prints an agent's transcript as kept — name the agent with --agent <id|label>");
+  }
+  // A Claude Code run (ODW extension): its events, or one agent's transcript, read-only.
+  if (isClaudeRunId(positionals[0])) {
+    const io = { out: process.stdout, err: process.stderr };
+    if (values.agent === undefined) return claudeLogs(claudeRunSource(), positionals[0], values.follow === true, io);
+    const width = process.stdout.isTTY && process.stdout.columns ? process.stdout.columns : 120;
+    return claudeAgentLogs(claudeRunSource(), positionals[0], values.agent, {
+      ...io,
+      raw: values.raw === true,
+      follow: values.follow === true,
+      caps: detectCaps(process.stdout, process.env),
+      width,
+    });
   }
   const store = storeFrom(values);
   let runId = positionals[0];
