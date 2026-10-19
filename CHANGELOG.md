@@ -1005,6 +1005,43 @@ independent security reviews whose findings are all fixed.
   longer carries the runs root's absolute path (`--json` still prints it), and the
   README says that on a loopback bind a `read`-scope token can still control runs and
   mark reviews, like every loopback write.
+- An agent definition's `disallowedTools` went into claude's argv one element per entry
+  after its variadic `--disallowedTools`, so a repository's `.claude/agents/x.md` could
+  inject flags (`--dangerously-skip-permissions`, `--add-dir /`, `--permission-mode
+  bypassPermissions`), also under `--untrusted`. Every `tools` and `disallowedTools`
+  entry is now held to a tool name with an optional `(rule)` — never a leading `-`,
+  whitespace or over 256 characters — when the file is read and again at the argv
+  boundary (what is not one is left out and logged), and the list goes to the flag as
+  one comma-separated element.
+- `GET /api/outcomes?since=13000000w` built a row per week and took `odw serve` down.
+  `--since` / `?since=` for `odw outcomes`, `odw digest` and `odw review` (and
+  `/api/review`) is at most 156 weeks — a usage error (exit 2) or a 400 beyond — the
+  outcomes' weeks are bounded whatever they are given, and `odw serve` reads a settled
+  run's facts again only when its `meta.json`, `events.jsonl` or `reviews.jsonl`
+  changes.
+- `odw types` (and `odw new`) wrote through symlinks: the declarations through a linked
+  `odw.d.ts`, and a dangling linked `jsconfig.json` counted as missing. A file is now
+  refused (exit 1) when it or a directory from the project down to it is a symlink, or
+  its directory resolves outside the project, and is written to a temporary file
+  renamed over it.
+- In an untrusted run a repository's agent definitions shadowed the user's
+  (`~/.claude/agents`) and plugins', and a repository's `name: myplugin:reviewer`
+  impersonated a plugin's agent. In an untrusted run the user's and plugins'
+  definitions now come first (the shadowed repository file is logged), and a `:` in a
+  name is refused for every definition but a plugin's own prefix.
+- The walk from the working directory up to the repository root (agent definitions,
+  workflows) stopped only at a `.git`, whoever owned the directories on the way. Like
+  git's `safe.directory`, it now stops below a directory not owned by the current user
+  (POSIX; not checked on Windows), and says so once when a repository root lay beyond.
+- `odw run <wf> --help` printed a workflow's name, description, `whenToUse` and input
+  descriptions raw, so an escape sequence in one (OSC 52 writes the clipboard) reached
+  the terminal. Every line is now sanitized, and nested input is described to 32
+  levels.
+- A rule-scoped tool in a definition's `tools` (`Bash(git status)`) passed plain `Bash`
+  to claude's `--tools`, which takes names only, without a word: the run's log now says
+  the rule is not enforced. A definition file that is a symlink is followed only when
+  it stays in its agents directory (the user's: in their home). A live Claude Code
+  run's journal `agentId` is checked before it names a transcript to stat.
 
 ### Changed behavior — check before upgrading
 - `agentType` naming an agent definition file now runs that definition (see "Write

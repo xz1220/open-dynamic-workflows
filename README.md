@@ -304,6 +304,10 @@ odw types --force         # also replace a jsconfig.json that is not odw's
   error (TS1108). Put `// @ts-check` atop a script to have it checked anyway.
 - **After an upgrade**, `odw doctor` warns when `.odw/types/odw.d.ts` no longer matches
   this odw's declarations; `odw types` rewrites it. Nothing is compiled or checked by odw.
+- **Never through a symlink**: a file that is a symlink, or under a directory that is
+  one (from the project down), or whose directory resolves outside the project, is not
+  written — `odw types` says which and exits 1. Each file is written to a temporary
+  file renamed over it.
 
 ## The primitives
 
@@ -768,6 +772,8 @@ and `~/.claude/workflows` (honoring `CLAUDE_CONFIG_DIR`).
 In a monorepo, as in Claude Code, the project directories are every `.odw/workflows`
 and `.claude/workflows` from the working directory up to the repository root (the
 nearest directory holding `.git`; outside a repository, the working directory alone).
+As git's `safe.directory` does, the walk stops below a parent not owned by the current
+user (not checked on Windows), and says so once when a repository root lay beyond it.
 The nearest one wins a name, so a package's own `audit` shadows the root's; at one
 level `.odw` still comes before `.claude`. `odw workflows list --all` labels each
 entry with its directory (`../../.claude/workflows`) and says which entry shadows it;
@@ -1147,7 +1153,7 @@ about its own work (no reply, result or model-written summary is repeated):
 
 ```bash
 odw digest                         # the last 24 hours
-odw digest --since 12h             # 90m, 12h, 2d, 1w
+odw digest --since 12h             # 90m, 12h, 2d, 1w (at most 156w)
 odw digest --since-last            # since the last digest that was sent (--notify)
 odw digest --workflow nightly      # one workflow's runs
 odw digest --json | --markdown     # for scripts, or to paste
@@ -3338,7 +3344,7 @@ enabled Claude Code plugins as `<plugin>:<name>`. What it maps:
 | --- | --- |
 | body | The persona prompt, in place of the one-line persona, on every CLI. |
 | `model` | The call's default model; `agent()`'s own `model` wins, and so does it over a phase's. On `claude` as it is; on another CLI an alias maps through the `models` tier of the same name (`"models": { "sonnet": { "codex": "gpt-5.5" } }`), else that CLI's default model runs and the run's log says so. `inherit` is no model. |
-| `tools`, `disallowedTools` | A cap on the agent's [permission tier](#permissions-odw-extension), never a raise: only Read, Glob, Grep, WebFetch, WebSearch → `read`; no Bash → at most `edit`. `claude` is also given `--tools` (narrowed with its tier's list, never widened) and `--disallowedTools`. |
+| `tools`, `disallowedTools` | A cap on the agent's [permission tier](#permissions-odw-extension), never a raise: only Read, Glob, Grep, WebFetch, WebSearch → `read`; no Bash → at most `edit`. `claude` is also given `--tools` (narrowed with its tier's list, never widened) and `--disallowedTools` (one comma-separated argument). Each entry must be a tool name with an optional rule (`Read`, `Bash(git *)`, `mcp__gh__issue`); anything else — a leading `-`, whitespace — is left out and logged. A rule in `tools` counts as its tool and is not enforced (`--tools` takes names only): the log says so. |
 | `isolation: worktree` | `agent()`'s `isolation: "worktree"`. |
 | `effort` | `claude --effort`, `codex -c model_reasoning_effort=` (minimal–xhigh); on other CLIs the log says it had no effect. |
 | anything else | `permissionMode`, `maxTurns`, `mcpServers`, `hooks`, `skills`, … are not applied, and the log names each one. |
@@ -3348,7 +3354,11 @@ carries `agentType: { name, source, path, sha256 }`, the dashboard's agent drawe
 shows it, and `odw compare` lists a definition whose file changed between two runs
 (`agentDefinition.<name>`). A name no definition has keeps the one-line persona,
 with a log line. In an `--untrusted` run a definition from the repository gives its
-body, tools and isolation — not its model or effort. Adapters declare the carriers
+body, tools and isolation — not its model or effort — and the user's and plugins'
+definitions come first: a repository's of the same name never shadows them (the log
+names it). Only a plugin's agents have a `:` in their name; a definition naming
+itself `x:y` is refused. A definition file that is a symlink is followed only when it
+stays in its agents directory (the user's: in their home). Adapters declare the carriers
 in `flags`: `effort` (an element may hold `{effort}`), `effortLevels`, `tools`,
 `disallowedTools`.
 
@@ -4014,7 +4024,7 @@ week, from what the runs recorded and the review marks — no model judges anyth
 
 ```bash
 odw outcomes                         # the last 30 days: by week, workflow, adapter and model
-odw outcomes --since 12w --workflow triage --json
+odw outcomes --since 12w --workflow triage --json   # --since: at most 156w (three years)
 odw outcomes --markdown              # tables, for a PR or a wiki page
 ```
 

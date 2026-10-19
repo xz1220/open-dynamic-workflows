@@ -272,6 +272,8 @@ odw types --force         # 连不是 odw 写的 jsconfig.json 也替换
   脚本,就在它首行加 `// @ts-check`。
 - **升级之后**,若 `.odw/types/odw.d.ts` 与当前 odw 的声明不一致,`odw doctor` 会警告;
   `odw types` 重写它。odw 自己不编译、不做类型检查。
+- **从不穿过符号链接写入**:文件本身是符号链接、从项目往下的某级目录是符号链接,或其目录解析到
+  项目之外时,不写——`odw types` 会说明是哪个并以 1 退出。每个文件先写入临时文件再改名覆盖。
 
 ## 编程原语
 
@@ -653,6 +655,8 @@ SIGHUP,效果与 `odw stop` 相同:它的 agent 连同其启动的所有进程�
 在 monorepo 中,与 Claude Code 一样,项目级目录是从工作目录向上直到仓库根(最近的含 `.git`
 的目录;不在仓库中时只看工作目录)沿途的每个 `.odw/workflows` 与 `.claude/workflows`。同名时
 最近者胜,所以包内自己的 `audit` 会遮蔽根目录的;同一层里仍是 `.odw` 先于 `.claude`。
+与 git 的 `safe.directory` 一样,向上查找在不属于当前用户的父目录之下停止(Windows 上不检查),
+若仓库根在它之上,会说明一次。
 `odw workflows list --all` 为每一项标出它来自哪个目录(`../../.claude/workflows`)以及被哪一项遮蔽;
 `odw workflows where <名字>` 打印实际运行的文件,多个目录都有这个名字时再按优先级列出完整的候选链。
 
@@ -987,7 +991,7 @@ odw schedule remove digest     # 删除系统里的条目和定义(条目已被�
 
 ```bash
 odw digest                         # 最近 24 小时
-odw digest --since 12h             # 90m、12h、2d、1w
+odw digest --since 12h             # 90m、12h、2d、1w(最多 156w)
 odw digest --since-last            # 从上一份已发送(--notify)的晨报算起
 odw digest --workflow nightly      # 只看一个 workflow 的运行
 odw digest --json | --markdown     # 给脚本用,或直接粘贴
@@ -2840,7 +2844,7 @@ ODW 按 Claude Code 的方式查找——认前言里的 `name`,不认文件名:
 | --- | --- |
 | 正文 | 作为人设提示词,取代原来的一句话人设,所有 CLI 都生效。 |
 | `model` | 该调用的默认模型;`agent()` 自己的 `model` 优先,它又优先于阶段的默认值。在 `claude` 上原样传;其他 CLI 上别名经同名的 `models` 层级映射(`"models": { "sonnet": { "codex": "gpt-5.5" } }`),映射不到就用该 CLI 的默认模型,并在运行日志里说明。`inherit` 表示不指定。 |
-| `tools`、`disallowedTools` | 给 agent 的[权限档位](#权限档位odw-扩展)封顶,只降不升:只有 Read、Glob、Grep、WebFetch、WebSearch → `read`;不含 Bash → 最高 `edit`。`claude` 另外拿到 `--tools`(与档位自带的列表取交集,只收窄)和 `--disallowedTools`。 |
+| `tools`、`disallowedTools` | 给 agent 的[权限档位](#权限档位odw-扩展)封顶,只降不升:只有 Read、Glob、Grep、WebFetch、WebSearch → `read`;不含 Bash → 最高 `edit`。`claude` 另外拿到 `--tools`(与档位自带的列表取交集,只收窄)和 `--disallowedTools`(一个逗号分隔的参数)。每一项必须是工具名,可带规则(`Read`、`Bash(git *)`、`mcp__gh__issue`);其他的——以 `-` 开头、含空白——被略去并记入日志。`tools` 里的规则按其工具计,但不会被强制(`--tools` 只接受工具名),日志会说明。 |
 | `isolation: worktree` | 等同 `agent()` 的 `isolation: "worktree"`。 |
 | `effort` | `claude --effort`、`codex -c model_reasoning_effort=`(minimal–xhigh);其他 CLI 上日志会说明未生效。 |
 | 其他字段 | `permissionMode`、`maxTurns`、`mcpServers`、`hooks`、`skills` 等不生效,日志逐个列出。 |
@@ -2848,7 +2852,9 @@ ODW 按 Claude Code 的方式查找——认前言里的 `name`,不认文件名:
 每个定义每次运行只读一次,并连同文件路径记入日志;`agent_started` 带 `agentType: { name, source, path, sha256 }`,
 看板的 agent 抽屉会显示,`odw compare` 会列出两次运行之间文件变了的定义(`agentDefinition.<name>`)。
 找不到定义时保留一句话人设,并记一条日志。`--untrusted` 运行中,来自仓库的定义只取正文、tools 与 isolation,
-不取 model 和 effort。适配器在 `flags` 里声明承载方式:`effort`(元素里可写 `{effort}`)、`effortLevels`、`tools`、`disallowedTools`。
+不取 model 和 effort;并且用户自己的与插件的定义优先:仓库里同名的定义不会遮蔽它们(日志会指出)。
+名字里带 `:` 的只能是插件的 agent;自称 `x:y` 的定义会被拒绝。定义文件是符号链接时,只有链接目标仍在
+它所在的 agents 目录内(用户的:在用户主目录内)才会被读取。适配器在 `flags` 里声明承载方式:`effort`(元素里可写 `{effort}`)、`effortLevels`、`tools`、`disallowedTools`。
 
 ```sh
 odw agents types                  # 列出这里能用的定义,以及在默认适配器上的映射
@@ -3404,7 +3410,7 @@ odw review mark $RUN 3 reviewed --note "看过迁移了"   # 或 dismissed | app
 
 ```bash
 odw outcomes                         # 最近 30 天:按周、工作流、适配器、模型
-odw outcomes --since 12w --workflow triage --json
+odw outcomes --since 12w --workflow triage --json   # --since 最多 156w(三年)
 odw outcomes --markdown              # 表格,方便贴进 PR 或 wiki
 ```
 
