@@ -79,7 +79,7 @@ export interface AgentView {
   /**
    * Why a failed agent's CLI failed (agent_failed's `reason`): rate_limit,
    * quota, auth, timeout, stalled, not_found, permission or exit — or, ODW
-   * extensions, empty_reply, unmet_expectation, mcp_unavailable, runaway, orphaned_background, out_of_scope, needs_input and destructive_git. Absent while running, for
+   * extensions, empty_reply, unmet_expectation, mcp_unavailable, runaway, orphaned_background, out_of_scope, needs_input, destructive_git and model_substituted. Absent while running, for
    * other failures (schema, stop) and for older event files.
    */
   failureReason?: string;
@@ -107,6 +107,23 @@ export interface AgentView {
    */
   orphaned?: string[];
   /**
+   * Agents only: the model it asked for, as its agent_started event says (a
+   * tier keeps its `@` name). Absent: its CLI's default.
+   */
+  model?: string;
+  /**
+   * Agents only (ODW extension; see ../served-model): the models its CLI said
+   * served it (agent_finished's `servedModel`). Absent: not reported (or not
+   * finished).
+   */
+  servedModel?: string[];
+  /**
+   * Agents only (ODW extension): another model served it than the one it
+   * asked for — its latest `model_substituted` event: the id its CLI was
+   * asked for, and the models that served it. Absent otherwise.
+   */
+  substituted?: { requested: string; served: string[] };
+  /**
    * Agents only (ODW extension; see scope.ts): the files it declared it means
    * to change — agent_started's `scope`. Absent: no scope.
    */
@@ -116,6 +133,11 @@ export interface AgentView {
    * its scope — its terminal event's `outOfScope`. Absent otherwise.
    */
   outOfScope?: string[];
+  /**
+   * Agents only (ODW extension; see ../agent-types): the agent definition its
+   * `agentType` named — agent_started's `agentType`. Absent: none was found.
+   */
+  agentType?: { name: string; source: string; path: string; sha256: string };
   /**
    * Agents only (ODW extension; see ../destructive-git): the destructive git
    * commands its CLI ran — `destructive_git` events, as they showed — each
@@ -372,6 +394,25 @@ export interface RunDetail extends RunSummary {
    * puts back. Absent when none was taken.
    */
   safetySnapshot?: SafetySnapshotView;
+  /** How each parallel() and pipeline() came out, from its fanout_done event, in order (ODW extension; see ../fanout). Absent when none settled. */
+  fanOuts?: FanOutView[];
+}
+
+/** One settled parallel() or pipeline() call, as a run's detail shows it (ODW extension; see ../fanout). */
+export interface FanOutView {
+  call: "parallel()" | "pipeline()";
+  phase: string | null;
+  total: number;
+  ok: number;
+  failed: number;
+  null: number;
+  /** Failed slots by reason. */
+  reasons: Record<string, number>;
+  /** What `minOk` asked of it in ok results, when it set one, and whether it fell short. */
+  required?: number;
+  belowMinOk?: boolean;
+  /** When it settled (epoch seconds). */
+  at: number | null;
 }
 
 /** A run's safety snapshot, as its detail shows it (ODW extension; see ../safety). */
@@ -473,6 +514,13 @@ export function applyAgentEvent(
     }
     return {};
   }
+  if (ev.type === "model_substituted") {
+    // Another model than the one asked for served it (ODW extension), running or settled.
+    const target = typeof ev.agentId === "number" ? agents.find((a) => a.kind === "agent" && a.agentId === ev.agentId) : undefined;
+    const served = strings(ev.served);
+    if (target && typeof ev.requested === "string" && served) target.substituted = { requested: ev.requested, served };
+    return {};
+  }
   if (ev.type === "log") {
     if (typeof ev.agentId !== "number" || typeof ev.adapter !== "string") return {};
     const target = agents.find((a) => a.state === "running" && a.agentId === ev.agentId);
@@ -518,6 +566,9 @@ export function applyAgentEvent(
     if (limits) opened.limits = limits;
     const scope = strings(ev.scope);
     if (scope) opened.scope = scope;
+    if (typeof ev.model === "string" && ev.model !== "") opened.model = ev.model;
+    const agentType = agentTypeOf(ev.agentType);
+    if (agentType) opened.agentType = agentType;
     agents.push(opened);
     return { opened };
   }
@@ -579,6 +630,8 @@ export function applyAgentEvent(
       if (denied) target.denied = denied;
       const orphaned = strings(ev.orphaned);
       if (orphaned) target.orphaned = orphaned;
+      const servedModel = strings(ev.servedModel);
+      if (servedModel) target.servedModel = servedModel;
       target.state = "done";
       target.adapter = ev.adapter != null ? String(ev.adapter) : null;
       target.attempts = typeof ev.attempts === "number" ? ev.attempts : null;
@@ -728,11 +781,22 @@ function copyAgents(agents: AgentView[], stale: boolean): AgentView[] {
     if (a.denied) copy.denied = [...a.denied];
     if (a.limits) copy.limits = { ...a.limits, ...(a.limits.hit ? { hit: { ...a.limits.hit } } : {}) };
     if (a.orphaned) copy.orphaned = [...a.orphaned];
+    if (a.servedModel) copy.servedModel = [...a.servedModel];
+    if (a.substituted) copy.substituted = { requested: a.substituted.requested, served: [...a.substituted.served] };
     if (a.scope) copy.scope = [...a.scope];
+    if (a.agentType) copy.agentType = { ...a.agentType };
     if (a.outOfScope) copy.outOfScope = [...a.outOfScope];
     if (a.destructiveGit) copy.destructiveGit = a.destructiveGit.map((hit) => ({ ...hit }));
     return copy;
   });
+}
+
+/** agent_started's `agentType` (ODW extension; see ../agent-types), when it is one (untrusted JSON). */
+function agentTypeOf(raw: unknown): AgentView["agentType"] {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const { name, source, path, sha256 } = raw as Record<string, unknown>;
+  if (typeof name !== "string" || typeof path !== "string" || typeof sha256 !== "string") return undefined;
+  return { name, source: typeof source === "string" ? source : "", path, sha256 };
 }
 
 /** An event's list of lines (`misses`, `denied`), when it has any. */
@@ -794,6 +858,8 @@ export class EventFold {
   drift: RunDrift | undefined;
   /** The working tree's snapshot before the run's first in-place agent, from its safety_snapshot event (ODW extension). */
   safety: SafetySnapshotView | undefined;
+  /** Its settled parallel() and pipeline() calls, from their fanout_done events (ODW extension). */
+  readonly fanOuts: FanOutView[] = [];
 
   apply(events: WorkflowEvent[]): this {
     for (const ev of events) {
@@ -809,6 +875,10 @@ export class EventFold {
         this.drift.changes.push(change);
       }
       if (ev.type === "safety_snapshot") this.safety = safetySnapshotOf(ev) ?? this.safety;
+      if (ev.type === "fanout_done") {
+        const fanOut = fanOutOf(ev);
+        if (fanOut) this.fanOuts.push(fanOut);
+      }
       if (ev.type === "run_finished" || ev.type === "run_failed" || ev.type === "run_stopped") {
         this.ended = true;
         this.checkpoints.clear(); // nobody waits on a run that ended
@@ -821,6 +891,29 @@ export class EventFold {
     if (events.length > 0) this.lastActivityTs = asNumber(events[events.length - 1]!.ts);
     return this;
   }
+}
+
+/** A fanout_done event as a run's detail shows it (ODW extension); null for a malformed one. */
+function fanOutOf(ev: WorkflowEvent): FanOutView | null {
+  const count = (value: unknown): number | null => (typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : null);
+  const [total, ok, failed, nulls] = [count(ev.total), count(ev.ok), count(ev.failed), count(ev.null)];
+  if (total === null || ok === null || failed === null || nulls === null) return null;
+  const reasons: Record<string, number> = {};
+  if (ev.reasons !== null && typeof ev.reasons === "object" && !Array.isArray(ev.reasons)) {
+    for (const [reason, n] of Object.entries(ev.reasons)) if (count(n) !== null) reasons[reason] = n as number;
+  }
+  const required = count(ev.required);
+  return {
+    call: ev.call === "pipeline()" ? "pipeline()" : "parallel()",
+    phase: typeof ev.phase === "string" ? ev.phase : null,
+    total,
+    ok,
+    failed,
+    null: nulls,
+    reasons,
+    ...(required !== null ? { required, belowMinOk: ev.belowMinOk === true } : {}),
+    at: typeof ev.ts === "number" ? ev.ts : null,
+  };
 }
 
 /** A safety_snapshot event as a run's detail shows it (ODW extension); null for a malformed one. */
@@ -1040,6 +1133,7 @@ export function detailFrom(
     odwVersion: typeof meta.odwVersion === "string" ? meta.odwVersion : null,
     sourceHash: typeof meta.sourceHash === "string" ? meta.sourceHash : null,
     ...(fold.safety ? { safetySnapshot: { ...fold.safety, ...(fold.safety.skipped ? { skipped: [...fold.safety.skipped] } : {}) } } : {}),
+    ...(fold.fanOuts.length > 0 ? { fanOuts: fold.fanOuts.map((f) => ({ ...f, reasons: { ...f.reasons } })) } : {}),
   };
 }
 

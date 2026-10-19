@@ -370,6 +370,27 @@ test("end to end: the launcher starts a real untrusted run carrying its context"
   }
 });
 
+test("a delivery whose mapped args miss the workflow's meta.input is refused 422, and no run starts (ODW extension)", async () => {
+  const wfDir = mkdtempSync(join(tmpdir(), "odw-trigger-input-"));
+  try {
+    const wf = join(wfDir, "typed.js");
+    const input = { type: "object", properties: { issue: { type: "string" } }, required: ["issue"] };
+    writeFileSync(wf, `export const meta = { name: 'typed', description: 'x', input: ${JSON.stringify(input)} }\nreturn args\n`);
+    await withTriggers(
+      { gh: { workflow: wf, secret: SECRET, verify: "github", args: { issue: "$.issue.number" }, source: wfDir } },
+      async ({ post, store }) => {
+        const res = await post("gh", issueEvent(42), { headers: { "x-github-event": "issues" } });
+        assert.equal(res.status, 422);
+        assert.match(String(res.json.error), /^trigger gh could not start its run: .*its args do not match its meta\.input:\n {2}\$\.issue: expected string, got integer/);
+        assert.deepEqual(store.listRunIds(), [], "no run was created");
+      },
+      { realStart: true },
+    );
+  } finally {
+    rmSync(wfDir, { recursive: true, force: true });
+  }
+});
+
 test("odw serve's trigger lines: where each answers, and a secret it lacks", () => {
   const triggers = buildTriggers({
     gh: { workflow: "triage", secretEnv: "GH_SECRET_FOR_TEST", verify: "github" },

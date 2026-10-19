@@ -39,6 +39,8 @@ import {
 import type { Config } from "../adapters/types.js";
 import { isCheckpointId } from "../control.js";
 import { AdapterNotFound, DynamicWorkflowError } from "../errors.js";
+import { checkInput } from "../input-schema.js";
+import type { JsonSchema } from "../schema.js";
 import { loadWorkflowScript } from "../loader.js";
 import { startRun, tsxLoaderArgv, waitFor } from "../runtime/launcher.js";
 import { cannotNotify, digestFor, sendDigest } from "../runtime/digest-cli.js";
@@ -190,10 +192,18 @@ function scheduleAdd(rest: string[], deps: ScheduleDeps): number {
   if (values.adapter !== undefined) resolveAdapter(config, values.adapter);
   // Fail fast: the workflow must resolve and load now, not at the first 3 a.m. run.
   const { scriptPath, origin } = resolveWorkflow(workflow, { cwd, config });
+  let input: JsonSchema | undefined;
   try {
-    loadWorkflowScript(readFileSync(scriptPath, "utf8"), scriptPath);
+    input = loadWorkflowScript(readFileSync(scriptPath, "utf8"), scriptPath).meta.input;
   } catch (err) {
     throw new ScheduleExit(1, `odw schedule add: workflow ${scriptPath} does not load: ${(err as Error).message}`);
+  }
+  const args = deps.parseArgsValue(values.args);
+  // …and its args must match its meta.input (ODW extension; see ../input-schema), now too.
+  try {
+    checkInput(input, args, workflow);
+  } catch (err) {
+    throw new ScheduleExit(1, `odw schedule add: ${(err as Error).message}`);
   }
 
   const def: ScheduleDefinition = {
@@ -201,7 +211,7 @@ function scheduleAdd(rest: string[], deps: ScheduleDeps): number {
     // A name is looked up from cwd at each run (so it follows edits); a path is pinned absolute.
     workflow: origin === "path" ? scriptPath : workflow,
     cron: spec.expr,
-    args: deps.parseArgsValue(values.args),
+    args,
     ...(values.adapter !== undefined ? { adapter: values.adapter } : {}),
     ...(configPath !== undefined ? { configPath } : {}),
     cwd,

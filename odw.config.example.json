@@ -23,7 +23,7 @@
   "worktreeSetup": null,
   "worktreeSetupTimeout": 600,
 
-  "//worktreeTeardown": "ODW extension. A command run in an isolated agent's workspace just before its worktree is removed — after the agent finished, failed or was stopped, and after a failed setup — with the same variables as worktreeSetup, plus ODW_SLOT (odw-<run>-<agent>, also the default COMPOSE_PROJECT_NAME): e.g. \"docker compose down -v\". Killed after worktreeTeardownTimeout seconds; a failure is logged, the agent's result stands. null (the default) runs nothing.",
+  "//worktreeTeardown": "ODW extension. A command run in an isolated agent's workspace just before its worktree is removed — after the agent finished, failed or was stopped, and after a failed setup — with the same variables as worktreeSetup, plus ODW_SLOT (odw-<run>-<agent>, also its COMPOSE_PROJECT_NAME): e.g. \"docker compose -p \\\"$ODW_SLOT\\\" down -v\". Killed after worktreeTeardownTimeout seconds; a failure is logged, the agent's result stands. null (the default) runs nothing.",
   "worktreeTeardown": null,
   "worktreeTeardownTimeout": 120,
 
@@ -94,6 +94,9 @@
   "//orphanedBackground": "ODW extension. In headless mode an agent can start a background shell command (Bash run_in_background) or subagent, end its turn, and exit: the work dies with the CLI while the result says success (anthropics/claude-code#85129). ODW reads the task events in Claude Code's stream-json (an adapter's output.background rules) and, when work is still running at the result event, records it as orphaned on the agent's agent_finished event and saved result and logs it once. \"warn\" (the default) keeps the reply; \"fail\" fails the agent with reason orphaned_background. With agent(prompt, { expect }) it is a miss: retried, then orphaned_background.",
   "orphanedBackground": "warn",
 
+  "//modelMismatch": "ODW extension. A call's model is only a request: an allowlist, a plan or a retired id can put the agent on another model, and the reply never says so. Where a CLI's events name the model that served the agent (an adapter's output.servedModel rules: Claude Code's init event, its assistant messages, the result's modelUsage keys), ODW records it as servedModel on the agent's agent_finished event and saved result. When none of them is the model the CLI was asked for (case, a [1m] suffix and a provider prefix aside; an alias like opus matches claude-opus-4-8), a model_substituted event is logged. \"warn\" (the default) keeps the reply; \"fail\" fails the agent with reason model_substituted. A CLI that names no model (codex, agy) is \"not reported\", never guessed.",
+  "modelMismatch": "warn",
+
   "//questions": "ODW extension. What an agent's question does: a clarifying tool call its CLI made (Claude Code's AskUserQuestion, read through an adapter's output.questions rules), which nobody can answer headless — the CLI returns an empty answer and the model goes on guessing (anthropics/claude-code#50728). ODW stops the CLI at the question, then: \"checkpoint\" (the default) asks a person at a checkpoint — odw approve <run> --checkpoint N --note \"<answer>\", the dashboard's card, notify's waiting hook (checkpoint.kind \"question\") — and runs the same call again, in the same worktree, its prompt told \"earlier you asked X; the user answered Y\" (odw reject fails it with reason needs_input); \"fail\" fails the agent with reason needs_input and its questions; \"deny\" runs the CLI without its question tool (an adapter's questionArgs: claude --disallowedTools AskUserQuestion) and tells the agent to assume and say so. An adapter's own \"questions\" and agent(prompt, { questions }) override it.",
   "questions": "checkpoint",
 
@@ -119,7 +122,7 @@
       "label": "Codex CLI",
       "command": ["codex", "--search", "exec", "--json", "--output-last-message", "{reply_file}", "--skip-git-repo-check", "{permission_args}", "--cd", "{workspace}", "-"],
       "stdin": "{prompt}",
-      "flags": { "model": ["--model"], "schema": { "args": ["--output-schema"], "mode": "file", "strict": true } },
+      "flags": { "model": ["--model"], "schema": { "args": ["--output-schema"], "mode": "file", "strict": true }, "effort": ["-c", "model_reasoning_effort={effort}"], "effortLevels": ["minimal", "low", "medium", "high", "xhigh"] },
       "output": { "format": "jsonl", "eventType": "item.completed", "match": { "path": ["item", "type"], "equals": "agent_message" }, "textPath": ["item", "text"], "select": "last", "usageEvent": "turn.completed", "usagePath": ["usage"], "errorEvents": { "turn.failed": ["error"], "error": ["message"] } },
       "permissionArgs": {
         "read": ["--sandbox", "read-only"],
@@ -133,7 +136,7 @@
       "label": "Claude Code",
       "command": ["claude", "--print", "--output-format", "stream-json", "--verbose", "{permission_args}", "--no-session-persistence"],
       "stdin": "{prompt}",
-      "flags": { "model": ["--model"], "schema": { "args": ["--json-schema"], "mode": "inline" } },
+      "flags": { "model": ["--model"], "schema": { "args": ["--json-schema"], "mode": "inline" }, "effort": ["--effort"], "effortLevels": ["low", "medium", "high", "xhigh", "max"], "tools": ["--tools"], "disallowedTools": ["--disallowedTools"] },
       "output": {
         "format": "jsonl", "eventType": "result", "textPath": ["result"], "select": "last", "usagePath": ["usage"], "costPath": ["total_cost_usd"], "errorPath": ["is_error"], "structuredPath": ["structured_output"], "deniedPath": ["permission_denials"], "mcpEvent": "system", "mcpPath": ["mcp_servers"],
         "background": {
@@ -150,6 +153,11 @@
         },
         "questions": [
           { "event": "assistant", "each": ["message", "content"], "where": [{ "path": ["type"], "equals": "tool_use" }, { "path": ["name"], "equals": "AskUserQuestion" }], "list": ["input", "questions"], "text": [["question"]], "header": [["header"]], "options": ["options"], "optionLabel": ["label"], "multiSelect": ["multiSelect"] }
+        ],
+        "servedModel": [
+          { "event": "system", "where": [{ "path": ["subtype"], "equals": "init" }], "path": ["model"] },
+          { "event": "assistant", "where": [{ "path": ["message", "model"], "not": "<synthetic>" }], "path": ["message", "model"] },
+          { "event": "result", "path": ["modelUsage"], "keys": true }
         ]
       },
       "permissionArgs": {

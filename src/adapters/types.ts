@@ -30,6 +30,23 @@ export interface AdapterFlags {
    * described in the prompt, and only ODW validates the reply.
    */
   schema?: SchemaFlag;
+  /**
+   * ODW extension (see ../agent-types): how this CLI takes an agent
+   * definition's `effort` — the flag(s), an element holding `{effort}` getting
+   * the level in place (`["-c", "model_reasoning_effort={effort}"]`), else the
+   * level appended (`["--effort"]`). Without it, `effort` is logged as not applied.
+   */
+  effort?: string[];
+  /** The `effort` levels it takes; another is logged as not applied. Unset: any. */
+  effortLevels?: string[];
+  /**
+   * ODW extension: the flag that limits this CLI to a comma-separated list of
+   * built-in tools (Claude Code's `--tools`) — an agent definition's `tools`,
+   * narrowed with any its tier sets. Without it, `tools` act only as a tier cap.
+   */
+  tools?: string[];
+  /** ODW extension: the flag(s) before tool names to deny (Claude Code's `--disallowedTools`) — a definition's `disallowedTools`. */
+  disallowedTools?: string[];
 }
 
 /**
@@ -142,6 +159,14 @@ export type AdapterOutput =
        * stopped at once, and the call's `questions` policy decides what next.
        */
       questions?: QuestionRule[];
+      /**
+       * Where the CLI's events say which model served the agent (an ODW
+       * extension; `output.servedModel`): Claude Code's init event `model`,
+       * each assistant message's `message.model`, the result's `modelUsage`
+       * keys. Recorded beside the model the call asked for; one that is not
+       * it is a substitution (`modelMismatch`). Unset: the CLI reports none.
+       */
+      servedModel?: ServedModelRule[];
     }
   | {
       /** One JSON document on stdout: the paths are read from it. */
@@ -219,6 +244,23 @@ export interface QuestionRule {
   optionLabel?: string[];
   /** Path, in each question, to whether more than one option may be chosen. */
   multiSelect?: string[];
+}
+
+/**
+ * One kind of event that names the model serving the agent (an ODW extension;
+ * `output.servedModel`): the string at `path` — or each string of an array
+ * there, or with `keys` each key of an object there (Claude Code's
+ * `modelUsage`) — is a model id the CLI reports it used.
+ */
+export interface ServedModelRule {
+  /** The event's type (at `eventKey`). */
+  event: string;
+  /** Conditions the event must meet, all of them (a `system` event whose `subtype` is "init"). */
+  where?: BackgroundCondition[];
+  /** Path, in the event, to the model id — or ids. */
+  path: string[];
+  /** The value at `path` is an object whose keys are the model ids. */
+  keys?: boolean;
 }
 
 /** A condition on a background event (ODW extension): the value at `path` is `equals` (one of them), or is not `not` (none of them). */
@@ -672,6 +714,14 @@ export interface Settings {
    * for in-place agents alone.
    */
   destructiveGit: "warn" | "fail";
+  /**
+   * An agent whose CLI reported it was served by a model other than the one
+   * the call asked it for (an ODW extension; `output.servedModel`, see
+   * ../served-model): `"warn"` keeps its reply, recording a `model_substituted`
+   * event and logging it; `"fail"` fails the agent with reason
+   * "model_substituted". A CLI that reports no model is never a mismatch.
+   */
+  modelMismatch: "warn" | "fail";
   /**
    * Where a workflow body runs (an ODW extension; see ../script-context):
    * `"host"` in the worker's own context, `"strict"` in a fresh vm context

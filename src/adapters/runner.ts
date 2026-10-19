@@ -73,7 +73,9 @@ export interface RunCommandOptions {
   /**
    * A cleanup command (an ODW extension: `worktreeTeardown`) — bounded by its
    * own timeout, and not killed by {@link killAllAgentProcesses}: a stopped
-   * run's agents die, the cleanup after them still runs.
+   * run's agents die, the cleanup after them still runs. One still running
+   * when this process exits is killed once its timeout is up, by a watchdog
+   * it leaves behind (see {@link handOffCleanups}).
    */
   cleanup?: boolean;
 }
@@ -125,6 +127,47 @@ export function onKillAll(kill: () => void): () => void {
   return () => {
     backstops.delete(kill);
   };
+}
+
+/** Cleanup processes (`cleanup: true`) that have not settled, and when their timeout ends (epoch ms). */
+const cleanups = new Map<ChildProcess, number>();
+let cleanupsWatched = false;
+
+/**
+ * This process is exiting (a worker done, or forced out by a second signal):
+ * each cleanup command still running may finish within its timeout, as it
+ * would have here, but no longer — a detached watchdog kills its process
+ * group (Windows: its tree) when the timeout is up; one already past it is
+ * killed now. Synchronous, for a process 'exit' handler.
+ */
+export function handOffCleanups(): void {
+  const now = Date.now();
+  for (const [child, deadline] of cleanups) {
+    const pid = child.pid;
+    if (pid === undefined || child.exitCode !== null || child.signalCode !== null) continue;
+    if (deadline <= now) {
+      killProcessTree(child);
+      continue;
+    }
+    const seconds = Math.ceil((deadline - now) / 1000);
+    try {
+      const watchdog = IS_WINDOWS
+        ? spawn("cmd.exe", ["/d", "/s", "/c", `ping -n ${seconds + 1} 127.0.0.1 >nul & taskkill /T /F /PID ${pid}`], {
+            detached: true,
+            stdio: "ignore",
+            windowsHide: true,
+          })
+        : spawn("/bin/sh", ["-c", `sleep ${seconds}; kill -TERM -${pid} 2>/dev/null && sleep 2; kill -KILL -${pid} 2>/dev/null`], {
+            detached: true,
+            stdio: "ignore",
+          });
+      watchdog.on("error", () => {});
+      watchdog.unref();
+    } catch {
+      // no watchdog: the cleanup goes on unbounded, as before
+    }
+  }
+  cleanups.clear();
 }
 
 /**
@@ -205,6 +248,14 @@ export const runCommand: CommandRunner = (command, options = {}) => {
     });
 
     if (child.pid !== undefined && !options.cleanup) live.add(child);
+    // A cleanup outlives a stop, never its own timeout: not even past this process's exit.
+    if (child.pid !== undefined && options.cleanup && options.timeout != null) {
+      cleanups.set(child, Date.now() + options.timeout * 1000);
+      if (!cleanupsWatched) {
+        cleanupsWatched = true;
+        process.on("exit", handOffCleanups);
+      }
+    }
 
     let stdout = "";
     const stderr = new Tail(TAIL_CHARS);
@@ -234,6 +285,7 @@ export const runCommand: CommandRunner = (command, options = {}) => {
       clearTimeout(termTimer);
       options.signal?.removeEventListener("abort", onAbort);
       live.delete(child);
+      cleanups.delete(child);
       resolve(result);
     };
 

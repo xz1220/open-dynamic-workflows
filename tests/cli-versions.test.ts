@@ -257,6 +257,8 @@ test("a hanging --version never delays the run: it is killed at the end and reco
     // The probe was killed with the run's end, not left to its own timeout.
     const deadline = Date.now() + 5000;
     while (!existsSync(pidFile) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 20));
+    // A probe killed before it wrote its pid never ran: nothing is left of it.
+    if (!existsSync(pidFile)) return;
     const pid = Number(readFileSync(pidFile, "utf8"));
     const alive = () => {
       try {

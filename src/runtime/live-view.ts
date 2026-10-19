@@ -41,6 +41,7 @@
 import { formatSeconds } from "../adapters/failures.js";
 import { addUsage, type Usage } from "../adapters/usage.js";
 import type { WorkflowEvent } from "../events.js";
+import { fanOutLine } from "../fanout.js";
 import { limitLabel } from "../limits.js";
 import { clockTime, pausedForOf, pausedText } from "../quota-wait.js";
 import {
@@ -126,6 +127,9 @@ export function formatEvent(ev: WorkflowEvent): string {
     // Background work its CLI left running under a reply that stood (ODW extension).
     const orphaned = type === "agent_finished" ? linesOf(ev.orphaned) : null;
     if (orphaned) detail += ` — left running: ${sanitizeText(orphaned.join("; "), 200)}`;
+    // The models its CLI said served it (ODW extension; see ../served-model).
+    const served = type === "agent_finished" ? linesOf(ev.servedModel) : null;
+    if (served) detail += ` — served by ${sanitizeText(served.join(", "), 200)}`;
   } else if (type.startsWith("command_")) detail = commandDetail(ev, type);
   else if (type === "checkpoint_requested") {
     detail = `#${String(ev.checkpointId)} ${sanitizeText(ev.title, 200)}${ev.truncated === true ? " (payload truncated)" : ""}`;
@@ -141,6 +145,10 @@ export function formatEvent(ev: WorkflowEvent): string {
   }
   // The working tree's safety snapshot, and a destructive git command an agent ran (ODW extensions; see ../safety).
   else if (type === "safety_snapshot" || type === "destructive_git") detail = sanitizeText(ev.message, 400);
+  // Another model served an agent than the one it asked for (ODW extension; see ../served-model).
+  else if (type === "model_substituted") detail = sanitizeText(ev.message, 400);
+  // How a parallel() or pipeline() came out (ODW extension; see ../fanout).
+  else if (type === "fanout_done") detail = sanitizeText(fanOutLine(ev), 400);
   else detail = sanitizeText(ev.error ?? ev.runId ?? "", 200);
   return `[${stamp}] ${type.padEnd(15)}${phase} ${detail}`.trimEnd();
 }
@@ -368,6 +376,7 @@ function reasonText(reason: string | undefined): string | null {
     out_of_scope: "wrote outside its scope",
     needs_input: "asked a question nobody answered",
     destructive_git: "ran a destructive git command",
+    model_substituted: "served by another model",
   };
   return words[reason] ?? sanitizeText(reason.replace(/_/g, " "), 40);
 }
@@ -532,6 +541,19 @@ class LiveView {
         const line = `${g.bullet} ${sanitizeText(ev.message, 400)}`;
         out.push(`    ${ev.type === "destructive_git" ? p.err(line) : p.dim(line)}`);
         applyAgentEvent(this.agents, ev);
+        continue;
+      }
+      // Another model served an agent than the one it asked for (ODW extension; see ../served-model).
+      if (ev.type === "model_substituted") {
+        out.push(`    ${p.run(`${g.bullet} ${sanitizeText(ev.message, 400)}`)}`);
+        applyAgentEvent(this.agents, ev);
+        continue;
+      }
+      // How a parallel() or pipeline() came out (ODW extension; see ../fanout): amber when most of it is null.
+      if (ev.type === "fanout_done") {
+        const line = `${g.bullet} ${sanitizeText(fanOutLine(ev), 400)}`;
+        const bad = ev.belowMinOk === true || (typeof ev.total === "number" && (Number(ev.failed) + Number(ev.null)) * 2 > ev.total);
+        out.push(`    ${bad ? p.run(line) : p.dim(line)}`);
         continue;
       }
       if (ev.type === "checkpoint_requested" && typeof ev.checkpointId === "number") {

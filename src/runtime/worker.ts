@@ -232,7 +232,7 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
       overridden = withOverrides(baseConfig);
       runTrust = { ...runTrust, repositoryConfig: null };
     }
-    const trusted = applyRunTrust(overridden, runTrust);
+    const trusted = applyRunTrust(overridden, runTrust, { untrustedInput: input !== null });
     if (swapNote) trusted.notes.push(swapNote);
     // No model is called (ODW extension; see ../wftest/mock): `odw test`'s
     // scripted replies, or a dry run's stubs, answer every agent in-process.
@@ -243,6 +243,7 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
     // Kept in the run's settings, so a nested workflow() runs the same way.
     const scriptContext = resolveScriptContext(chosen.settings.scriptContext, {
       origin: meta.origin,
+      sourceOrigin: meta.sourceOrigin,
       plugin: meta.plugin != null,
       untrustedInput: input !== null,
       untrustedRepo: runTrust.trust === "untrusted",
@@ -409,6 +410,8 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
       },
     });
 
+    // A nested workflow() of a plugin's runs strict, unless the config says "host" (ODW extension; see ../script-context).
+    ctx.pluginScriptContext = resolveScriptContext(chosen.settings.scriptContext, { plugin: true, untrustedInput: false, untrustedRepo: false }).context;
     deadline = watchDeadline(meta.deadline, (seconds) => {
       if (end) return;
       store.updateStatus(runId, { stopReason: "deadline" });
@@ -495,7 +498,18 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
       }
     }
     // A strict script context (ODW extension; see ../script-context) is said
-    // before the body runs, with the names outside the dialect it uses.
+    // before the body runs, with the names outside the dialect it uses — and so
+    // is a config's "host" that took away the strict default.
+    if (scriptContext.overrode) {
+      sink.emit(
+        event(LOG, {
+          message:
+            `⚠ the workflow runs in the worker's own script context (scriptContext: "host" in the config), though ${scriptContext.overrode} ` +
+            "and it would run strict by default: the script reaches process, require, fetch and the run's environment",
+          scriptContext: "host",
+        }),
+      );
+    }
     if (scriptContext.context === "strict") {
       const outside = scanCapabilities(source).outOfDialect.filter((use) => !use.strict);
       const names = outside.map((use) => `${use.name} (line ${use.line})`).join(", ");
@@ -566,7 +580,12 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
     const primitives = createPrimitives(ctx, { phases: loaded.meta.phases });
     // The args the script holds — in a strict context its own copy — are the ones a break's edit changes.
     const runCtx = ctx;
-    const result = await crashes.race(loaded.run(primitives, args, (inScript) => (runCtx.args = inScript)));
+    const result = await crashes.race(
+      loaded.run(primitives, args, (inScript, importValue) => {
+        runCtx.args = inScript;
+        runCtx.importArgs = importValue;
+      }),
+    );
     // Agents the script started but never awaited are still this run's work:
     // let them finish (and clean up their worktrees) before recording it.
     await crashes.race(ctx.scheduler.drain());

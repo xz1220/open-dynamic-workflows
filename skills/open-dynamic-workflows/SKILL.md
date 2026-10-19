@@ -86,12 +86,17 @@ outright, never silently passed through as a string).
 | `exec(command, opts?)` | Run a command (tests, a build, a linter) without a model; resolves to `{ stdout, stderr, exitCode, signal, timedOut, truncated, durationMs }`. A string runs through the shell, an array as argv. **ODW extension** — not part of Claude Code's dialect. |
 | `checkpoint(title, opts?)` | Pause the run until a person approves (perhaps with an edited payload) or rejects; resolves to `{ approved, note, by, payload, edited }`. **ODW extension** — not part of Claude Code's dialect. |
 
-`opts` for `agent`: `{ adapter?, schema?, label?, phase?, model?, agentType?, isolation?, keep?, permissions?, expect?, expectRetries?, allowEmpty?, notes?, handoff?, scope?, scopePolicy?, questions? }`.
+`opts` for `agent`: `{ adapter?, schema?, label?, phase?, model?, agentType?, isolation?, keep?, permissions?, expect?, expectRetries?, allowEmpty?, notes?, handoff?, scope?, scopePolicy?, questions?, stallMs? }`.
+`stallMs` (Claude Code dialect) is that one agent's stall window in milliseconds
+(`{ stallMs: 1800000 }` = 30 minutes), in place of the `stallTimeout` setting.
 `adapter` picks the CLI — or, as a list (`['codex', 'claude']`, **ODW
 extension**), a fallback chain; `model: '@fast'` picks a tier's model for
 whichever CLI runs it (**ODW extension**); `schema` is a raw JSON Schema object (an option, not
-a global); `agentType` is a **persona** injected into the prompt — *not* an
-adapter name. `keep: true` (**ODW extension**) also commits an isolated agent's
+a global); `agentType` names a subagent definition (`.claude/agents/<name>.md`,
+`.odw/agents/`, `~/.claude/agents/`, `<plugin>:<name>`) — its body is the persona,
+its `model`/`tools`/`isolation`/`effort` map per CLI, tools only lower the tier
+(**ODW extension**; `odw agents types` shows the mapping); with no definition it is
+a one-line persona, and it is never an adapter name. `keep: true` (**ODW extension**) also commits an isolated agent's
 change to a branch `odw/<runId>/<agentId>-<label>`. `permissions: "read"`
 (**ODW extension**) runs the agent at a stricter tier than the run's — see
 [permission tiers](#permission-tiers-odw-extension).
@@ -129,7 +134,10 @@ per run (`"mcpFailures": "fail"` fails an agent whose server `failed` or
 when it replied (a `run_in_background` command or subagent, killed as `-p`
 exits) is a miss too, reason `"orphaned_background"`; without `expect` it is
 kept as `orphaned` on the agent and logged once (`"orphanedBackground": "fail"`
-fails it instead). An empty reply always throws
+fails it instead). The model its CLI said served it is kept as `servedModel`;
+one that is not the `model` asked for is a logged `model_substituted` event
+(`"modelMismatch": "fail"` fails it, reason `"model_substituted"`; a CLI that
+names no model is "not reported"). An empty reply always throws
 `reason: "empty_reply"` (`allowEmpty: true` accepts one):
 
 ```js
@@ -266,6 +274,9 @@ odw replay $RUN --agent 3   # that one agent() call again, as a new run, at the 
 odw run wf.js --break Review  # stop for a decision (a checkpoint) before phase/label "Review"; --step: every phase
 odw check wf.js             # does it load? file:line:col, a code frame, portability warnings; exit 0/1
                             #   --capabilities: what it names outside the dialect (process, require, import(, …) and the ODW extensions it calls
+                            #   warns of Claude Code's limits: a parallel()/pipeline() over 4,096 items, a meta that is not a pure literal
+                            #   hints (never failing): a fan-out's .filter(Boolean), or a list matched on an agent's text, that nothing checks is non-empty
+odw run wf.js --help        # what it takes as --args, from its meta.input (ODW extension)
 odw eval review             # cases × adapters × repeats: pass rate, cost, time per cell (ODW extension; below)
 odw test review             # scripted replies, no model, $0: does the logic hold? (ODW extension; below)
 odw run review --dry        # every agent stubbed: the phase tree and agent counts, $0 (ODW extension)
@@ -283,8 +294,10 @@ in a human's interactive terminal attaches a live progress view instead
 Force either way with `-d`/`--detach` or `--fg`, or `ODW_DETACH=1`.
 
 Saved workflows run by name (`odw run <name>`); lookup order:
-`.odw/workflows`, `.claude/workflows`, `~/.odw/workflows`,
-`~/.claude/workflows`. Workflows that installed, enabled Claude Code plugins
+`.odw/workflows`, `.claude/workflows` — in each directory from the working
+directory up to the repository root, nearest first (a monorepo package's own
+workflow shadows the root's; `odw workflows where <name>` shows the chain) —
+then `~/.odw/workflows`, `~/.claude/workflows`. Workflows that installed, enabled Claude Code plugins
 ship run as `odw run <plugin>:<name>` (ODW extension; `odw workflows list
 --plugins` lists them): in place, read-only, same dialect. A bare name reaches
 a plugin's workflow only when no project or personal one has it — use the
@@ -770,7 +783,7 @@ it runs the model.
   and the like, and a `worktreeSetup` command in the config runs before the
   agent (both ODW extensions); a `worktreeTeardown` runs before the worktree
   goes — success, failure or stop — and each isolated agent gets `$ODW_SLOT`
-  (`odw-<run>-<agent>`, its default `COMPOSE_PROJECT_NAME`) for a compose stack
+  (`odw-<run>-<agent>`, also its `COMPOSE_PROJECT_NAME`; name it with `docker compose -p "$ODW_SLOT"`) for a compose stack
   or database of its own (ODW extensions).
 - **Ports**: every agent process gets a unique `$ODW_PORT` (with `$ODW_RUN_ID`
   and `$ODW_AGENT_ID`) — tell parallel agents "start the dev server on
@@ -831,4 +844,6 @@ it runs the model.
 | Giving one CLI's model id to agents that may run on another (a phase default, a fallback chain) | Model ids do not cross CLIs: use a tier, `model: '@fast'`, which picks each CLI's own id (ODW extension). |
 | Letting a long agent run unbounded, or retrying one that failed with reason `runaway` as if it were flaky | Give it `limits: { toolCalls, costUsd, repeat: 5 }` (or `agentLimits` in the config): odw kills an agent stuck repeating the same tool call or past its caps at once (ODW extension). A `runaway` failure's `limitHit` says what it was doing — change the prompt or the task, don't just raise the limit. |
 | Fanning out wide without watching what it spends | `odw status $RUN` shows the run's tokens and cost so far, phase by phase, and a `parallel()`/`pipeline()` wider than `fanOutWarn` (default 25) logs a warning (ODW extensions). Size fan-outs to `budget.total` when one is set; `--budget` caps output tokens. |
+| Taking `args` on faith, or a list that arrived as a string of JSON | Declare `meta.input` (a JSON Schema; ODW extension, Claude Code ignores it): odw checks `args` before the run starts, names each path at fault, and calls a string of JSON "encoded twice". `odw run wf.js --help` prints it. |
+| Going on with a fan-out that came back mostly `null` | Every `parallel()`/`pipeline()` logs its ok / failed / null counts (`fanout_done`), and a line when most are null; `parallel(thunks, { minOk: 0.8 })` (or a count, or `"all"`) throws a `FanOutShortfall` instead (ODW extensions). `odw check` hints at a `.filter(Boolean)` or an agent-text match whose emptiness nothing checks. |
 | Hand-writing a cron line around `odw run` | `odw schedule add` writes it with an overlap lock, a log and a pinned `PATH` — and only on the user's request: it edits their crontab or LaunchAgents. |

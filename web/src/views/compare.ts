@@ -80,10 +80,14 @@ function fieldLabel(field: string): string {
       return rest;
     case "adapterDefinition":
       return t("{adapter} adapter config", { adapter: rest });
+    case "agentDefinition":
+      return t("{agent} agent definition", { agent: rest });
     case "adaptersUsed":
       return t("adapters used");
     case "modelsUsed":
       return t("models used");
+    case "modelsServed":
+      return t("models served");
     default:
       return field;
   }
@@ -118,7 +122,12 @@ function setupSection(c: RunComparison): string {
 function side(f: CompareAgentFacts | null, which: "a" | "b"): string {
   if (!f) return `<span class="cmp-side ${which} none">${t("not in this run")}</span>`;
   const what = [f.adapter, f.model].filter(Boolean).join(" · ");
-  const extra = f.replayed ? ` <span class="tag">${t("replayed")}</span>` : "";
+  // Served by another model than it asked for (ODW extension): which one, flagged.
+  const swapped =
+    f.substituted && f.servedModel?.length
+      ? ` <span class="tag warn" title="${esc(t("its CLI said another model served it than the one it asked for"))}">${esc(t("served by {model}", { model: f.servedModel.join(", ") }))}</span>`
+      : "";
+  const extra = (f.replayed ? ` <span class="tag">${t("replayed")}</span>` : "") + swapped;
   return `<span class="cmp-side ${which}">${glyph(f.state)}<span class="w">${esc(what || "—")}</span>${extra}</span>`;
 }
 

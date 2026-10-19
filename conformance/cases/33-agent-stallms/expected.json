@@ -1,0 +1,35 @@
+{
+  "title": "agent(prompt, { stallMs }) sets that agent's stall window: one quiet for longer fails, one given more time replies",
+  "claudeCode": "documented",
+  "sources": [
+    "skills/open-dynamic-workflows/references/primitives.md#agent",
+    "docs/research/user-needs-2026-10-round5.md §2"
+  ],
+  "notes": "Claude Code documents stallMs as one agent's stall window in milliseconds. ODW starts a stalled agent again `stallRestarts` times (default 1) before the call throws with reason \"stalled\"; the script sees the same rejection either way. By hand on Claude Code, the 'quiet' agent has to stay silent some other way (a model cannot be told to).",
+  "mock": [
+    {
+      "when": "the text alpha and",
+      "reply": "alpha"
+    },
+    {
+      "when": "the text late and",
+      "reply": "late",
+      "delayMs": 20000
+    }
+  ],
+  "state": "done",
+  "result": {
+    "patient": "alpha",
+    "quiet": "failed"
+  },
+  "agents": [
+    {
+      "label": "patient",
+      "outcome": "finished"
+    },
+    {
+      "label": "quiet",
+      "outcome": "failed"
+    }
+  ]
+}

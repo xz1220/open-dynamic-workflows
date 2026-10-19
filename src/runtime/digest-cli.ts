@@ -12,7 +12,7 @@
  * the first. Looking (no `--notify`) never moves the mark.
  *
  * `--notify` fires the configured hooks once, when `notify.on` lists "digest":
- * the webhook gets `{ kind: "digest", state: "digest", …the digest as JSON,
+ * the webhook gets `{ kind: "digest", state: "digest", …the digest as JSON (not its runsRoot),
  * markdown, text, content }`, redacted, with each waiting checkpoint's signed
  * one-time approve/reject links while an `odw serve --public-url` runs; a
  * command gets ODW_RUN_STATE=digest, ODW_DIGEST_TEXT (the one-line summary),
@@ -21,7 +21,7 @@
  * a hook failed or none is configured for "digest"; 2 on a usage error.
  */
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
@@ -65,14 +65,49 @@ export function readMark(root: string, workflow: string | null): number | null {
   return typeof at === "number" && Number.isFinite(at) ? at : null;
 }
 
-/** Record that a digest for `workflow` was sent, up to `at`. */
+/** A marks lock this old was left by a digest that died holding it. */
+const MARK_LOCK_STALE_MS = 10_000;
+
+/**
+ * Record that a digest for `workflow` was sent, up to `at`: read, changed and
+ * written back (atomically) under `marks.json.lock`, taken with O_EXCL, so two
+ * digests sent at once — each for its own `--workflow` — both keep their mark.
+ * A lock older than {@link MARK_LOCK_STALE_MS} is taken over.
+ */
 export function writeMark(root: string, workflow: string | null, at: number): void {
   const dir = join(root, DIGEST_DIR);
   mkdirSync(dir, { recursive: true });
   const path = join(dir, MARKS_FILE);
-  const file = readJsonFile<{ marks?: Record<string, unknown> }>(path);
-  const marks = file?.marks !== null && typeof file?.marks === "object" ? file.marks : {};
-  writeJsonAtomic(path, { version: 1, marks: { ...marks, [markKey(workflow)]: { at } } }, 2);
+  const lock = `${path}.lock`;
+  const token = `${process.pid}.${Math.random().toString(36).slice(2)}\n`;
+  for (let waited = 0; ; waited += 20) {
+    try {
+      writeFileSync(lock, token, { flag: "wx", mode: 0o600 });
+      break;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+    }
+    let age = 0;
+    try {
+      age = Date.now() - statSync(lock).mtimeMs;
+    } catch {
+      continue; // released meanwhile
+    }
+    if (age > MARK_LOCK_STALE_MS || waited > MARK_LOCK_STALE_MS * 2) rmSync(lock, { force: true });
+    else Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+  }
+  try {
+    const file = readJsonFile<{ marks?: Record<string, unknown> }>(path);
+    const marks = file?.marks !== null && typeof file?.marks === "object" ? file.marks : {};
+    writeJsonAtomic(path, { version: 1, marks: { ...marks, [markKey(workflow)]: { at } } }, 2);
+  } finally {
+    // Only while it is still ours: one taken over as stale is another digest's now.
+    try {
+      if (readFileSync(lock, "utf8") === token) rmSync(lock, { force: true });
+    } catch {
+      // gone already
+    }
+  }
 }
 
 export interface DigestRequest {
@@ -127,10 +162,12 @@ export async function sendDigest(
   });
   const markdown = digestMarkdown(sent);
   const line = digestLine(sent);
+  // The runs root's absolute path stays on this machine: `--json` prints it, the webhook does not send it.
+  const { runsRoot: _runsRoot, ...shared } = sent;
   const payload: Record<string, unknown> = {
     kind: "digest",
     state: "digest",
-    ...sent,
+    ...shared,
     ...(linksUnavailable && sent.needsYou.length ? { linksUnavailable } : {}),
     markdown,
     // As notify's own lines (see ./notify): Slack's text escaped, Discord's mentions and links broken.

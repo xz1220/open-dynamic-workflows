@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { main } from "../src/cli.js";
+import { applyArgsEdit } from "../src/breaks.js";
 import { AdapterExecutionError, WorkflowScriptError } from "../src/errors.js";
 import { loadWorkflowScript } from "../src/loader.js";
 import type { WorkflowGlobals } from "../src/primitives.js";
@@ -168,6 +169,53 @@ test("strict: adoptArgs gets the script's own args, so an edit to it is what the
   assert.equal(out, "edited");
 });
 
+test("strict: a break's edit enters args through the membrane — no worker object, no worker Function, no script method called", async () => {
+  let held: unknown;
+  let importValue: ((value: unknown) => unknown) | undefined;
+  const adopt = (inScript: unknown, toScript?: (value: unknown) => unknown): void => {
+    held = inScript;
+    importValue = toScript;
+  };
+  const out = (await strict(
+    [
+      "await agent('x')",
+      "let reached",
+      "try { reached = typeof args.cfg.constructor.constructor('return process')() } catch (e) { reached = e.name }",
+      "return { x: args.cfg.x, reached, own: args.cfg.constructor.constructor === Function && args.cfg instanceof Object }",
+    ].join("\n"),
+  ).run(
+    fakeGlobals({
+      agent: async () => {
+        assert.deepEqual(applyArgsEdit(held, { args: { cfg: { x: 1 } } }, importValue), { changed: ["cfg"] });
+        assert.notEqual((held as { cfg: { constructor: unknown } }).cfg.constructor, Object, "not the worker's Object");
+        return "ok";
+      },
+    }),
+    { cfg: null },
+    adopt,
+  )) as Record<string, unknown>;
+  assert.deepEqual({ ...out }, { x: 1, reached: "EvalError", own: true });
+
+  // An array whose splice the script replaced is still changed, without calling it.
+  const list = (await strict(
+    [
+      "args.splice = () => { throw new Error('the script ran') }",
+      "await agent('x')",
+      "return [args.length, args[0].n, args[1].n, args[0] instanceof Object]",
+    ].join("\n"),
+  ).run(
+    fakeGlobals({
+      agent: async () => {
+        assert.deepEqual(applyArgsEdit(held, { args: [{ n: 1 }, { n: 2 }] }, importValue), { changed: ["0", "1", "2"] });
+        return "ok";
+      },
+    }),
+    [{ n: 0 }, { n: 0 }, { n: 0 }],
+    adopt,
+  )) as unknown[];
+  assert.deepEqual([...list], [2, 1, 2, true]);
+});
+
 test("which runs are strict: the config's choice, else triggered, plugin and untrusted runs", () => {
   const run = { plugin: false, untrustedInput: false, untrustedRepo: false };
   assert.equal(resolveScriptContext(null, run).context, "host");
@@ -176,6 +224,12 @@ test("which runs are strict: the config's choice, else triggered, plugin and unt
   assert.equal(resolveScriptContext(null, { ...run, untrustedInput: true }).context, "strict");
   assert.equal(resolveScriptContext(null, { ...run, untrustedRepo: true }).context, "strict");
   assert.equal(resolveScriptContext("host", { ...run, origin: "trigger" }).context, "host");
+  // A "host" that takes a strict default away says what it took away (review fix); one over host's own default does not.
+  assert.equal(resolveScriptContext("host", { ...run, origin: "trigger" }).overrode, "a trigger started this run");
+  assert.equal(resolveScriptContext("host", { ...run, untrustedInput: true }).overrode, "the run's input is untrusted");
+  assert.equal(resolveScriptContext("host", run).overrode, undefined);
+  // A replay or rerun of a triggered run (meta.sourceOrigin) is strict too.
+  assert.equal(resolveScriptContext(null, { ...run, origin: "replay", sourceOrigin: "trigger" }).context, "strict");
   assert.equal(resolveScriptContext("strict", run).context, "strict");
   assert.equal(readableStrictMessage("ReferenceError", "x is not defined"), null, "a script's own typo stays as it was");
 });
@@ -299,6 +353,38 @@ test("a triggered run is strict: said before the body runs, with the names it la
 
   const overridden = await runWorkflow(body, { origin: "trigger", config: { scriptContext: "host" } });
   assert.equal(overridden.state, "done");
+  // …and its log warns that the config took the strict default away (review fix).
+  assert.ok(
+    overridden.logs.some((l) =>
+      l.startsWith(`⚠ the workflow runs in the worker's own script context (scriptContext: "host" in the config), though a trigger started this run`),
+    ),
+    overridden.logs.join("\n"),
+  );
+  assert.equal(local.logs.some((l) => l.includes("worker's own script context")), false, "a local run's host is not warned about");
+});
+
+test("a rerun of a triggered run is still triggered: origin \"trigger\", strict by default (review fix)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "odw-strict-rerun-"));
+  try {
+    const table = join(dir, "mock.json");
+    writeFileSync(table, JSON.stringify([{ when: "say hi", reply: "hi" }]));
+    const configPath = join(dir, "odw.config.json");
+    writeFileSync(configPath, JSON.stringify({ defaultAdapter: "mock", recordVersions: false, adapters: { mock: { command: [...mockCommand(SUITE), table], stdin: "{prompt}" } } }));
+    const script = join(dir, "wf.js");
+    writeFileSync(script, META + "return [typeof process, await agent('say hi')]\n");
+    const store = new RunStore(join(dir, "runs"));
+    const runId = store.create({ script, args: null, source: dir, configPath, origin: "trigger" });
+    assert.equal(await executeRun(store.runDir(runId)), "done");
+    const known = new Set(store.listRunIds());
+    const r = await odw(["rerun", runId, "--wait", "--timeout", "60", "--runs-root", store.root]);
+    assert.equal(r.code, 0, r.err);
+    assert.deepEqual(JSON.parse(r.out), ["undefined", "hi"]);
+    const again = store.listRunIds().find((id) => !known.has(id))!;
+    assert.equal(store.readMeta(again).origin, "trigger");
+    assert.equal(store.readStatus(again).scriptContext, "strict");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("a strict run's nested workflow() is strict too", async () => {

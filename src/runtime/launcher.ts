@@ -18,7 +18,8 @@ import { isPermissionTier } from "../adapters/permissions.js";
 import { withSandboxFlag, type SandboxFlag } from "../adapters/sandbox.js";
 import type { Config, PermissionTier, TrustLevel } from "../adapters/types.js";
 import { ConfigError } from "../errors.js";
-import { loadWorkflowScript } from "../loader.js";
+import { checkInput } from "../input-schema.js";
+import { loadWorkflowScript, type WorkflowMeta } from "../loader.js";
 import { isSeaBinary } from "../sea.js";
 import { resolveRunTrust } from "../untrusted.js";
 import { requireSandboxRefusal, sandboxGap, taintedArgs } from "../untrusted-input.js";
@@ -90,7 +91,12 @@ export interface StartRunOptions {
    * and whether its first agent that may write asks first (default true).
    * Kept in meta as `untrustedInput`, with the args it covers.
    */
-  untrustedInput?: { why: string; approve?: boolean } | null;
+  untrustedInput?: { why: string; approve?: boolean; args?: string[] } | null;
+  /**
+   * The origin of the run this one replays or reruns (ODW extension; see
+   * ../script-context): `"trigger"` keeps a triggered run's strict default.
+   */
+  sourceOrigin?: string | null;
 }
 
 /**
@@ -146,8 +152,14 @@ function commonCreateInput(options: StartRunOptions, source: string, workflowNam
     call: options.call ?? null,
     launchedBy: options.launchedBy ?? null,
     untrustedInput: options.untrustedInput
-      ? { why: options.untrustedInput.why, args: taintedArgs(options.args), approve: options.untrustedInput.approve !== false }
+      ? {
+          why: options.untrustedInput.why,
+          // A replay's args are `{ replayOf }`: it keeps the args its original run's input covered.
+          args: options.untrustedInput.args ?? taintedArgs(options.args),
+          approve: options.untrustedInput.approve !== false,
+        }
       : null,
+    sourceOrigin: options.sourceOrigin ?? null,
   };
 }
 
@@ -185,13 +197,17 @@ export function startRun(
   // gets created, then the worker records it as failed in the normal way). A
   // plugin's workflow is bucketed by its `<plugin>:<name>`.
   let workflowName: string | null = null;
+  let meta: WorkflowMeta | null = null;
   try {
-    workflowName = loadWorkflowScript(readFileSync(scriptPath, "utf8"), scriptPath).meta.name;
+    meta = loadWorkflowScript(readFileSync(scriptPath, "utf8"), scriptPath).meta;
+    workflowName = meta.name;
   } catch {
     workflowName = null;
   }
   const plugin = workflow.plugin;
   if (plugin) workflowName = plugin.name;
+  // Its args against its meta.input (ODW extension; see ../input-schema): refused before a run exists.
+  if (meta && !options.call && options.origin !== "replay") checkInput(meta.input, options.args, script);
 
   const runId = store.create({
     script: scriptPath,
@@ -222,11 +238,15 @@ export function startRunFromSource(
   const { source, store } = prepare(options);
 
   let workflowName: string | null = null;
+  let meta: WorkflowMeta | null = null;
   try {
-    workflowName = loadWorkflowScript(sourceCode, "workflow.js").meta.name;
+    meta = loadWorkflowScript(sourceCode, "workflow.js").meta;
+    workflowName = meta.name;
   } catch (err) {
     if (!options.allowInvalid) throw err; // surface the compile error to the caller
   }
+  // Its args against its meta.input (ODW extension; see ../input-schema); a replay's call runs no script.
+  if (meta && !options.call && options.origin !== "replay") checkInput(meta.input, options.args, meta.name);
 
   const runId = store.create({
     script: "",

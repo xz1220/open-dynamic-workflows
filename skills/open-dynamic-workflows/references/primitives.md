@@ -38,10 +38,23 @@ other primitive organizes calls to it.
   ignored option. Model ids are CLI-specific. **ODW extension:** `"@fast"`
   names a model tier — each CLI's own id for it — and a phase may give a
   default model; `meta.model` stays metadata.
-- **opts.agentType** — a **persona** injected into the prompt (e.g.
-  `"code-reviewer"`), so it works on every CLI. It is **not** an adapter name and
-  never affects adapter selection — only `opts.adapter` does. It does not load
-  Claude's built-in role permissions, tools, or project subagent definitions.
+- **opts.agentType** — the name of a subagent definition (**ODW extension**):
+  a Markdown file with YAML frontmatter, found by its `name` in `.claude/agents/`
+  from the working directory up to the repository root (nearest wins), then
+  `.odw/agents/`, `~/.claude/agents/`, and enabled plugins' `agents/` as
+  `<plugin>:<name>`. Its body is the persona prompt (every CLI); `model` is the
+  call's default (`opts.model` wins; on a non-claude CLI an alias maps through
+  the `models` tier of that name, else the CLI's default runs, logged);
+  `tools`/`disallowedTools` cap the permission tier (only read-only tools →
+  `read`, no Bash → `edit`; never a raise) and go to `claude` as `--tools`
+  (narrowed) and `--disallowedTools`; `isolation: worktree` isolates the agent;
+  `effort` goes to `claude --effort` / `codex -c model_reasoning_effort=`.
+  Any other field (`permissionMode`, `maxTurns`, `mcpServers`, `hooks`,
+  `skills`, …) is logged as not applied. In an `--untrusted` run a repository
+  definition gives its body, tools and isolation only. No definition: a
+  one-line persona and a log line. It is **not** an adapter name and never
+  affects adapter selection — only `opts.adapter` does. `odw agents types`
+  lists the definitions and their mapping.
 - **opts.isolation** — `"worktree"` gives this agent a throwaway **git
   worktree** of the source repo (default workspace: the source directory
   itself). Needs a repo with at least one commit; the agent sees HEAD without
@@ -129,6 +142,13 @@ other primitive organizes calls to it.
   question tool (the adapter's `questionArgs`) and tells the agent to assume.
   A `needs_input` failure carries the questions (`agent_failed`'s `questions`).
   Claude Code ignores it.
+- **opts.stallMs** (Claude Code dialect) — this agent's stall window in
+  milliseconds: `agent(prompt, { stallMs: 1800000 })` lets its CLI go 30
+  minutes without output before the stall watchdog kills it and starts it
+  again (`stallRestarts`, default 1), then the call throws with reason
+  `stalled`. It takes the place of the adapter's and the run's `stallTimeout`,
+  and works where none is set; `0` turns the watchdog off for the call (an ODW
+  reading). Anything but a non-negative number throws before the agent starts.
 
 Returns the reply text, or the validated JSON value when `schema` is set. CLI
 errors, exhausted schema retries, work that missed its `expect` checks and an
@@ -173,8 +193,26 @@ each captures its own value.
 
 **ODW extension:** `parallel(thunks, { notes: true })` turns the run's notes
 board on for every agent its thunks start (an agent's own `notes: false` wins);
-`notes` and `costGate` are the only options, anything else throws. See [notes](#notes-odw-extension).
+`notes`, `costGate` and `minOk` are the only options, anything else throws. See [notes](#notes-odw-extension).
 Claude Code's `parallel()` takes only the thunks.
+
+**ODW extension — fan-out health and `minOk`.** Every `parallel()` and
+`pipeline()` that settles writes a `fanout_done` event — `{ call, phase, total,
+ok, failed, null, reasons }`: `failed` slots threw (`reasons` counts them by
+agent failure reason — `rate_limit`, `timeout`, … — else the error's name),
+`null` slots returned `null` themselves, `ok` is the rest (`undefined`
+included). `odw logs`, the live view and the dashboard show it. When over half
+of a fan-out is null either way, the run logs one line:
+`parallel() of 10 tasks: most results are null — 3 of 10 ok; 6 failed (rate_limit 6); 1 returned null; …`.
+`parallel(thunks, { minOk })` makes that an error: a whole number of ok results,
+a fraction of the thunks (`0.8`: 80%, rounded up) or `"all"`. Fewer, and the
+call throws a recoverable `FanOutShortfall` (`e.name`; `e.counts`, `e.required`)
+instead of resolving with the nulls. Without `minOk` nothing changes: failed
+slots stay `null`, as in Claude Code.
+
+```js
+const reviews = await parallel(files.map((f) => () => agent(`Review ${f}`)), { minOk: 0.8 })
+```
 
 **ODW extension — cost forecast and `costGate`.** Before a `parallel()` or
 `pipeline()` at least `fanOutWarn` wide, or one a cost gate covers, the run logs a
@@ -225,6 +263,10 @@ A recoverable stage failure drops that item to `null` and skips its remaining
 stages. Fatal errors propagate after the running chains settle.
 `pipeline(items, stage)` with a single stage is just "map this over items
 concurrently" — handy when each step itself fans out with `parallel`.
+
+A `pipeline()` writes the same `fanout_done` event and logs the same line
+when most of its items end `null` (ODW extension); it takes no `minOk` —
+check the results yourself.
 
 ## phase / log
 
@@ -337,6 +379,29 @@ JSON-looking input that fails to parse is rejected rather than silently passed
 through as a string). `budget.total` is the token target set with
 `odw run … --budget <tokens>`, else `null`; scale depth to it, e.g.
 `budget.total ? Math.floor(budget.total / 120_000) : 5`.
+
+**ODW extension — `meta.input`.** Declare the shape of `args` in `meta` as a
+JSON Schema, in the subset `agent()` schemas are checked with (`type`, `enum`,
+`properties`, `required`, `additionalProperties: false`, `items`, `minItems`;
+`description` and `default` are shown, never applied — any other keyword is
+refused when the workflow loads, so nothing declared goes unchecked).
+`odw run`, `rerun`, `resume`, a schedule (also at `odw schedule add`) and a
+trigger (HTTP 422) check `args` against it before the run exists, and name each
+path at fault; an array or object that arrived as a string of JSON is said to
+look encoded twice — never decoded for you. `odw run <wf> --help` prints it.
+Claude Code ignores `meta.input`; a nested `workflow()` call is not checked.
+
+```js
+export const meta = {
+  name: 'triage',
+  description: 'Triage the open issues of some repositories',
+  input: {
+    type: 'object',
+    properties: { repos: { type: 'array', items: { type: 'string' }, minItems: 1, description: 'owner/name' } },
+    required: ['repos'],
+  },
+}
+```
 A run started on another machine with `odw run … --on ssh://host` (ODW
 extension) gets the same `args` and `budget.total`: `--args` is parsed here
 and sent as a file, and the script runs from the project's copy there.
@@ -618,7 +683,7 @@ extension**):
 | `ODW_RUN_ID` | the run's id |
 | `ODW_AGENT_ID` | the agent's id, as in its events and `odw agents` |
 | `ODW_PORT` | a port from `portRange` (default 41000–41999) that no other running agent of the run holds — ports something already listens on are passed over — kept until the call settles |
-| `ODW_SLOT` | isolated agents only: `odw-<run>-<agent>` (the run id's random part, the agent id; lowercase letters, digits, hyphens), the same for every attempt, setup and teardown of the call. `COMPOSE_PROJECT_NAME` defaults to it unless already set — a compose stack, database or volume prefix per agent |
+| `ODW_SLOT` | isolated agents only: `odw-<run>-<agent>` (the run id's random part, the agent id; lowercase letters, digits, hyphens), the same for every attempt, setup and teardown of the call. `COMPOSE_PROJECT_NAME` is set to it, over one already set (the run logs that once) — a compose stack, database or volume prefix per agent; name the project explicitly too: `docker compose -p "$ODW_SLOT" down -v` |
 
 So agents running side by side can each start a server without colliding:
 
@@ -803,7 +868,13 @@ instead). Background work its CLI left running when it replied is kept as
 logs one line per agent (`serve:1: Claude Code ended its turn with 1 background
 task still running — Bash (Start the dev server); …`);
 `"orphanedBackground": "fail"` throws with reason `"orphaned_background"`
-instead. None of these failures is retried. `expect` is
+instead. The model its CLI said served it (ODW extension; `output.servedModel`)
+is kept as `servedModel` on the agent's `agent_finished` event and saved result;
+when none of those models is the one `model` asked its CLI for, the run writes a
+`model_substituted` event and logs it (``review:1: asked claude for model 'opus'
+but it was served by claude-sonnet-4-5 — …``), and `"modelMismatch": "fail"`
+throws with reason `"model_substituted"`. A CLI that names no model is "not
+reported" — never guessed. None of these failures is retried. `expect` is
 part of the call's resume key; Claude Code ignores it, so there the checks do not
 run.
 
@@ -1312,6 +1383,7 @@ started phase with how many agents it started and their labels.
 
 ```bash
 odw check wf.js [--json]                      # load it as a run would (never runs it): exit 0, or 1 with file:line:col + a code frame
+odw run wf.js --help                          # what it takes as --args, from its meta.input
 odw replay $RUN --agent <id|label> [--prompt @file|TEXT] [--adapter A] [--model M] [--wait|--fg|-d]
 odw run wf.js --break <phase|label>[,…] [--break …]   # a checkpoint before those phases / agent labels
 odw run wf.js --step                                  # a checkpoint before every phase
@@ -1321,6 +1393,18 @@ odw run wf.js --step                                  # a checkpoint before ever
   Parse errors keep the compiler's message plus `(line L:C)`; a hint is added
   only when it fits (TypeScript syntax, `await` in a non-async callback, the
   script ending before a bracket closes). `validate()` reports the same.
+  Its warnings include Claude Code's limits: a `parallel()`/`pipeline()` whose
+  list the source settles (an array literal, `Array.from({ length: n })`,
+  `Array(n)`, `[...Array(n)]`) at more than 4,096 items, which Claude Code
+  rejects and ODW runs; a `meta` that is not a pure literal.
+  Two hints come with it, never failing the check (`file:line:col: hint: …`;
+  `hints: [{ rule, message, line, column }]` in `--json`): `filter-null`, a
+  `parallel()`/`pipeline()` result put through `.filter(Boolean)` whose
+  length nothing checks afterwards (an all-null fan-out goes on as an empty
+  list); `empty-match`, a list chosen by matching what an agent wrote — a
+  `.filter()` over an agent's result by one of its fields, or over other items
+  by a field of the agent's result — that nothing checks is non-empty (it
+  matched nothing, so the steps over it did nothing, as if they passed).
 - **replay**: every `agent()` call saves `agents/<id>.call.json` as it starts
   (prompt, options, adapter it started on, model asked for); an isolated
   agent's `agent_started` carries `base` (its worktree's commit). A replay is

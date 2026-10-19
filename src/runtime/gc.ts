@@ -24,7 +24,7 @@
  *      runs root does not know is counted, never deleted.
  *   5. totals — the runs root's size, and what each kind would reclaim.
  *   6. compose projects — `odw-*` docker compose projects (an agent's
- *      `ODW_SLOT` is its default `COMPOSE_PROJECT_NAME`; see ../slot) whose
+ *      `ODW_SLOT` is its `COMPOSE_PROJECT_NAME`; see ../slot) whose
  *      run is not active: what a `worktreeTeardown` did not take down.
  *      Reported only, never removed, and only when `docker compose ls`
  *      answers at once; ODW does not manage services.

@@ -33,9 +33,15 @@ agent(prompt, opts?) -> Promise<unknown>
   并记录该选项被忽略的路由说明。model id 不能跨 CLI 通用。**ODW 扩展：** `"@fast"`
   指定一个模型层级——各 CLI 用自己在该层级下的 ID——阶段也可以给出默认模型；`meta.model`
   仍只是元数据。
-- **opts.agentType** —— 注入进 prompt 的**人设**（如 `"code-reviewer"`），因此在任何 CLI
-  上都生效。它**不是** adapter 名，永远不影响 adapter 选择——只有 `opts.adapter` 才会。
-  它不会加载 Claude 内置角色的权限、工具或项目里的子 agent 定义。
+- **opts.agentType** —— 子 agent 定义的名字（**ODW 扩展**）：带 YAML 前言的 Markdown，按前言 `name`
+  依次在工作目录到仓库根的 `.claude/agents/`（最近者胜）、`.odw/agents/`、`~/.claude/agents/`、
+  已启用插件的 `agents/`（`<plugin>:<name>`）中查找。正文作为人设提示词（所有 CLI）；`model` 是该调用的默认模型
+  （`opts.model` 优先；非 claude 的 CLI 上别名经同名 `models` 层级映射，映射不到用 CLI 默认模型并记日志）；
+  `tools`/`disallowedTools` 给权限档位封顶（只有只读工具 → `read`，不含 Bash → `edit`；只降不升），并以
+  `--tools`（只收窄）和 `--disallowedTools` 传给 `claude`；`isolation: worktree` 隔离该 agent；`effort` 传给
+  `claude --effort` / `codex -c model_reasoning_effort=`。其他字段（`permissionMode`、`maxTurns`、`mcpServers`、
+  `hooks`、`skills` 等）记为未生效。`--untrusted` 运行中仓库内的定义只取正文、tools 与 isolation。找不到定义时是一句话人设并记日志。
+  它**不是** adapter 名，永远不影响 adapter 选择——只有 `opts.adapter` 才会。`odw agents types` 列出定义及其映射。
 - **opts.isolation** —— `"worktree"` 给这个 agent 一个一次性 **git worktree**（默认工作区
   就是 source 目录本身）。要求 source 是有提交的 git 仓库；agent 看到 HEAD，不包含
   未提交改动。调用结束后清理 worktree，不把改动合入 source。`agent()` 只返回回复，
@@ -85,6 +91,11 @@ agent(prompt, opts?) -> Promise<unknown>
   `needs_input` 抛错。`"fail"` 立即以 `needs_input` 抛错；`"deny"` 让 CLI 不带提问工具运行
   （适配器的 `questionArgs`）并告诉 agent 自行假设。`needs_input` 失败带着问题列表
   （`agent_failed` 的 `questions`）。Claude Code 会忽略它。
+- **opts.stallMs**（Claude Code 方言）—— 这个 agent 的卡死窗口，单位毫秒：
+  `agent(prompt, { stallMs: 1800000 })` 让它的 CLI 可以 30 分钟没有输出，超过后卡死看门狗将其终止并
+  重启（`stallRestarts`，默认 1 次），之后调用以 `stalled` 原因抛错。它取代适配器和整个运行的
+  `stallTimeout`，没有设置 `stallTimeout` 时同样生效；`0` 关闭这一次调用的看门狗（ODW 的解释）。
+  不是非负数时，在 agent 启动前抛错。
 
 返回回复文本，设了 `schema` 则返回校验过的 JSON 值。CLI 出错、schema 重试耗尽、工作没达到
 `expect`、空回复都会抛错；这些可恢复失败在 `parallel`/`pipeline` 内变成 `null`。停止请求、
@@ -471,7 +482,7 @@ ODW 仓库里的 `examples/plan-approve-execute.js` 就是这个流程的完整 
 | `ODW_RUN_ID` | 本次运行的 id |
 | `ODW_AGENT_ID` | 这个 agent 的 id，与它的事件和 `odw agents` 里的一致 |
 | `ODW_PORT` | 来自 `portRange`（默认 41000–41999）的一个端口，本次运行中没有其他正在运行的 agent 占用它——已经有程序在监听的端口会被跳过——直到这次调用结束都归它所有 |
-| `ODW_SLOT` | 仅隔离 agent：`odw-<run>-<agent>`（运行 id 的随机部分加 agent id；只含小写字母、数字和连字符），在这次调用的每次尝试、setup 和 teardown 中都相同。`COMPOSE_PROJECT_NAME` 未设置时默认取它——每个 agent 一套 compose 栈、数据库或卷名前缀 |
+| `ODW_SLOT` | 仅隔离 agent：`odw-<run>-<agent>`（运行 id 的随机部分加 agent id；只含小写字母、数字和连字符），在这次调用的每次尝试、setup 和 teardown 中都相同。`COMPOSE_PROJECT_NAME` 被设为它，已设置的也会被覆盖（运行日志说明一次）——每个 agent 一套 compose 栈、数据库或卷名前缀；仍请显式指定项目名：`docker compose -p "$ODW_SLOT" down -v` |
 
 这样并行的 agent 各自起服务也不会冲突：
 
@@ -612,7 +623,10 @@ CLI 回复时仍在运行的后台任务也一样——用 `run_in_background` �
 `"mcpFailures": "fail"` 让服务器为 `failed` 或 `needs-auth` 的调用以 `"mcp_unavailable"` 抛错
 （`expect.mcp` 列出的服务器则算作缺失）。CLI 回复时仍在运行的后台任务作为 `orphaned` 记在
 agent 的 `agent_finished` 事件和保存的结果上，运行为每个 agent 记一行日志；
-`"orphanedBackground": "fail"` 则以 `"orphaned_background"` 抛错。这些失败都不重试。`expect` 属于调用的 resume key；Claude Code 会忽略它，在那里检查
+`"orphanedBackground": "fail"` 则以 `"orphaned_background"` 抛错。CLI 报告的实际服务模型（ODW
+扩展；`output.servedModel`）作为 `servedModel` 记在 agent 的 `agent_finished` 事件和保存的结果上；
+这些模型都不是 `model` 向 CLI 请求的那个时，运行写入 `model_substituted` 事件并记一行日志，
+`"modelMismatch": "fail"` 则以 `"model_substituted"` 抛错。CLI 不报告模型时只显示"未报告"，不做推断。这些失败都不重试。`expect` 属于调用的 resume key；Claude Code 会忽略它，在那里检查
 不会执行。
 
 ## notes（ODW 扩展）
@@ -1015,7 +1029,9 @@ odw run wf.js --step                                  # 在每个阶段之前加
 
 - **check**：`meta` 字面量、其 name/description/phases、编译脚本体。解析错误保留编译器原话并附
   `(line 行:列)`；只在合适时附提示（TypeScript 语法、非 async 回调里的 `await`、括号未闭合脚本就
-  结束了）。`validate()` 给出同样的内容。
+  结束了）。`validate()` 给出同样的内容。警告中包括 Claude Code 的限制：源码字面量即可判定（数组
+  字面量、`Array.from({ length: n })`、`Array(n)`、`[...Array(n)]`）超过 4,096 项的
+  `parallel()`/`pipeline()`——Claude Code 会拒绝，ODW 照常运行；以及不是纯字面量的 `meta`。
 - **replay**：每次 `agent()` 调用开始时保存 `agents/<id>.call.json`（提示词、选项、开始时的适配器、
   请求的模型）；隔离 agent 的 `agent_started` 带 `base`（其 worktree 的提交）。重跑是只含这一个调用的
   新运行（`origin: "replay"`、`replayOf: { runId, agentId, label, base? }`）——label、phase、源码目录、

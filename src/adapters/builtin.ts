@@ -21,6 +21,7 @@ import type {
   PermissionTier,
   QuestionRule,
   SchemaFlag,
+  ServedModelRule,
   Settings,
   TrustLevel,
 } from "./types.js";
@@ -162,6 +163,19 @@ const CLAUDE_QUESTIONS: QuestionRule[] = [
   },
 ];
 
+// The model that served the agent (ODW extension; `servedModel`, see
+// ../served-model): the Agent SDK's init message (SDKSystemMessage, `{ type:
+// "system", subtype: "init", model }`) names the session's model; each
+// assistant message is the API's Message, whose `model` is the one that wrote
+// it — but for the `"<synthetic>"` ones Claude Code writes itself (an API
+// error, an interrupt); and the result's `modelUsage` is keyed by every model
+// the session spent on, helpers (a WebFetch summary on haiku) included.
+const CLAUDE_SERVED_MODEL: ServedModelRule[] = [
+  { event: "system", where: [{ path: ["subtype"], equals: "init" }], path: ["model"] },
+  { event: "assistant", where: [{ path: ["message", "model"], not: "<synthetic>" }], path: ["message", "model"] },
+  { event: "result", path: ["modelUsage"], keys: true },
+];
+
 const CLAUDE_OUTPUT: AdapterOutput = {
   format: "jsonl",
   eventType: "result",
@@ -176,6 +190,7 @@ const CLAUDE_OUTPUT: AdapterOutput = {
   mcpPath: ["mcp_servers"],
   background: CLAUDE_BACKGROUND,
   questions: CLAUDE_QUESTIONS,
+  servedModel: CLAUDE_SERVED_MODEL,
 };
 
 // `codex exec --json` (https://developers.openai.com/codex/noninteractive, now
@@ -205,6 +220,10 @@ const CLAUDE_OUTPUT: AdapterOutput = {
 // any failure — but codex also prints an error it retries ("Reconnecting...
 // 2/5") as an `error` event and goes on, so a later turn.completed clears it.
 // Non-fatal `error` *items* are warnings, shown in the transcript only.
+//
+// No `servedModel`: none of these events names a model (thread.started
+// carries only its thread_id), so a codex agent's served model is "not
+// reported" — never guessed.
 const CODEX_OUTPUT: AdapterOutput = {
   format: "jsonl",
   eventType: "item.completed",
@@ -256,6 +275,9 @@ const CODEX_OUTPUT: AdapterOutput = {
 // did not. And a subagent's own output never reaches the parent's stream
 // (antigravity-cli#1077): the transcript shows that one started, and where
 // its log is.
+//
+// No `servedModel`: the documented events (init's cwd, tools and
+// permission_mode; the result envelope) name no model.
 const AGY_OUTPUT: AdapterOutput = {
   format: "jsonl",
   eventKey: "event",
@@ -479,6 +501,26 @@ export const EGRESS_HOSTS: Record<string, string[]> = {
   agy: ["cloudcode-pa.googleapis.com", "oauth2.googleapis.com"],
 };
 
+// Agent definitions (ODW extension; see ../agent-types): what carries a
+// definition's `effort` and tool lists. Claude Code 2.1.302 (`claude --help`):
+// "--effort <level> Effort level for the current session (low, medium, high,
+// xhigh, max)"; "--tools <tools...> Specify the list of available tools from
+// the built-in set"; "--disallowedTools … list of tool names to deny". Codex
+// (https://developers.openai.com/codex/config-reference): `-c key=value`
+// overrides a config key, and `model_reasoning_effort` is one of minimal, low,
+// medium, high, xhigh. No other built-in's docs name an effort or tool flag:
+// there `effort` is logged as not applied, and `tools` act as a tier cap only.
+const CLAUDE_AGENT_FLAGS = {
+  effort: ["--effort"],
+  effortLevels: ["low", "medium", "high", "xhigh", "max"],
+  tools: ["--tools"],
+  disallowedTools: ["--disallowedTools"],
+};
+const CODEX_AGENT_FLAGS = {
+  effort: ["-c", "model_reasoning_effort={effort}"],
+  effortLevels: ["minimal", "low", "medium", "high", "xhigh"],
+};
+
 export const BUILTIN_ADAPTERS: Record<string, RawAdapter> = {
   codex: {
     label: "Codex CLI",
@@ -499,7 +541,7 @@ export const BUILTIN_ADAPTERS: Record<string, RawAdapter> = {
       "-",
     ],
     stdin: "{prompt}",
-    flags: { model: ["--model"], schema: CODEX_SCHEMA },
+    flags: { model: ["--model"], schema: CODEX_SCHEMA, ...CODEX_AGENT_FLAGS },
     output: CODEX_OUTPUT,
     permissionArgs: CODEX_PERMISSIONS,
     untrustedNote: UNTRUSTED_NOTES.codex,
@@ -519,7 +561,7 @@ export const BUILTIN_ADAPTERS: Record<string, RawAdapter> = {
       "--no-session-persistence",
     ],
     stdin: "{prompt}",
-    flags: { model: ["--model"], schema: CLAUDE_SCHEMA },
+    flags: { model: ["--model"], schema: CLAUDE_SCHEMA, ...CLAUDE_AGENT_FLAGS },
     output: CLAUDE_OUTPUT,
     permissionArgs: CLAUDE_PERMISSIONS,
     questionArgs: ["--disallowedTools", "AskUserQuestion"],
@@ -690,6 +732,7 @@ export const DEFAULT_SETTINGS: Settings = {
   scopePolicy: "warn", // an agent that wrote outside its declared scope keeps its reply, recorded and logged ("fail": it fails)
   questions: "checkpoint", // an agent's question waits at a checkpoint for a person's answer ("fail": it fails; "deny": no question tool)
   destructiveGit: "warn", // an agent that ran git reset --hard, clean -f, push --force, … keeps its reply, recorded ("fail": it fails)
+  modelMismatch: "warn", // an agent its CLI says another model served keeps its reply, recorded and logged ("fail": it fails)
   scriptContext: null, // strict for triggered, plugin and untrusted runs, host for the rest ("host" | "strict": every run)
   redact: { env: true, patterns: true, extra: [] }, // likely secrets out of what odw keeps and serves (false: none)
   quotaWait: false, // an agent whose chain is out of quota fails; { max: <s> } waits for the reset instead

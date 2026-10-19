@@ -109,6 +109,7 @@ export function reasonLabel(reason: string): string {
     out_of_scope: t("outside its scope"),
     needs_input: t("needs input"),
     destructive_git: t("ran a destructive git command"),
+    model_substituted: t("served by another model"),
   };
   return labels[reason] ?? reason.replace(/_/g, " ");
 }

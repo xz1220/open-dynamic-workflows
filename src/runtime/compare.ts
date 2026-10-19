@@ -30,9 +30,11 @@
  *   setup     [{ field, a, b }]: what the runs ran with that differs — source
  *             (sha256 of the workflow), script, args, odwVersion, budget,
  *             cliVersion.<adapter>, settings.<key> (the knobs that change
- *             behaviour), adapterDefinition.<adapter> (a fingerprint), adapter
+ *             behaviour), adapterDefinition.<adapter> (a fingerprint),
+ *             agentDefinition.<agentType> (its file's sha256, 12 chars), adapter
  *             and permissions (runs without a recorded setup), adaptersUsed,
- *             modelsUsed
+ *             modelsUsed, modelsServed (what their CLIs said served the
+ *             agents; ODW extension, see ../served-model)
  *   totals    wallMs, inputTokens, outputTokens, costUsd, agents, done,
  *             failed: each { a, b, delta } (delta = b − a, null when either is
  *             unknown); estimated: { a, b } (some output tokens are chars/4)
@@ -41,7 +43,9 @@
  *             outcome  "unchanged" | "newly-failed" | "fixed" | "only-a" | "only-b"
  *             label, phase
  *             a, b     the agent in each run, or null: agentId, label, phase,
- *                      state, adapter, model, attempts, durationMs, inputTokens,
+ *                      state, adapter, model, servedModel (the models its
+ *                      CLI said served it; null: not reported), substituted
+ *                      (none of them the one asked for), attempts, durationMs, inputTokens,
  *                      outputTokens, costUsd, estimated, replayed,
  *                      failureReason, error, changes (its kept diff's files and
  *                      +/- lines, null when it kept none)
@@ -90,6 +94,10 @@ export interface RunAgent {
   adapter: string | null;
   /** The model it asked for, as its agent_started event says — a tier keeps its `@` name. */
   model: string | null;
+  /** The models its CLI said served it (ODW extension; see ../served-model); null or absent: not reported. */
+  servedModel?: string[] | null;
+  /** Another model served it than the one it asked for — a `model_substituted` event (ODW extension). */
+  substituted?: boolean;
   attempts: number | null;
   durationMs: number | null;
   usage: Usage | null;
@@ -129,6 +137,8 @@ export interface CompareRunInput {
   /** What it started with (its run_started event's `setup`); null for runs from before setups were recorded. */
   setup: RunSetup | null;
   cliVersions: Record<string, CliVersion>;
+  /** ODW extension (see ../agent-types): the sha256 of each agent definition its agents ran as, by agentType name. */
+  agentTypes?: Record<string, string>;
   /** Its agents (exec() steps aside), in call order. */
   agents: RunAgent[];
 }
@@ -193,6 +203,10 @@ export interface AgentFacts {
   state: AgentState;
   adapter: string | null;
   model: string | null;
+  /** The models its CLI said served it; null: not reported (ODW extension). */
+  servedModel: string[] | null;
+  /** None of them is the model it asked for (ODW extension). */
+  substituted: boolean;
   attempts: number | null;
   durationMs: number | null;
   inputTokens: number | null;
@@ -273,7 +287,12 @@ export function readCompareRun(store: RunStore, runId: string, nowMs = Date.now(
   let startedAt: number | null = null;
   let endedAt: number | null = null;
   let setup: RunSetup | null = null;
+  const agentTypes: Record<string, string> = {};
   for (const ev of events) {
+    if (ev.type === AGENT_STARTED && isRecord(ev.agentType)) {
+      const { name, sha256 } = ev.agentType;
+      if (typeof name === "string" && typeof sha256 === "string" && !(name in agentTypes)) agentTypes[name] = sha256;
+    }
     if (ev.type === AGENT_STARTED && typeof ev.agentId === "number") {
       started.set(ev.agentId, { key: str(ev.key), model: str(ev.model) });
     } else if (ev.type === RUN_STARTED) {
@@ -303,6 +322,8 @@ export function readCompareRun(store: RunStore, runId: string, nowMs = Date.now(
       state: record ? "done" : a.state,
       adapter: a.adapter ?? record?.adapter ?? null,
       model: ev?.model ?? null,
+      servedModel: a.servedModel ?? record?.servedModel ?? null,
+      substituted: a.substituted !== undefined,
       attempts: a.attempts ?? record?.attempts ?? null,
       durationMs: a.durationMs ?? durationOf(record),
       usage: a.usage ?? null,
@@ -323,6 +344,7 @@ export function readCompareRun(store: RunStore, runId: string, nowMs = Date.now(
       state: "done",
       adapter: rec.adapter,
       model: null,
+      servedModel: rec.servedModel ?? null,
       attempts: rec.attempts,
       durationMs: durationOf(rec),
       usage: null,
@@ -356,6 +378,7 @@ export function readCompareRun(store: RunStore, runId: string, nowMs = Date.now(
     replayOf: replayLinkOf(meta.replayOf),
     setup,
     cliVersions: cliVersionsOf(events),
+    agentTypes,
     agents,
   };
 }
@@ -577,6 +600,8 @@ function factsOf(agent: RunAgent): AgentFacts {
     state: agent.state,
     adapter: agent.adapter,
     model: agent.model,
+    servedModel: agent.servedModel ?? null,
+    substituted: agent.substituted === true,
     attempts: agent.attempts,
     durationMs: agent.durationMs,
     inputTokens: agent.usage?.inputTokens ?? null,
@@ -668,6 +693,11 @@ function setupChanges(a: CompareRunInput, b: CompareRunInput): SetupChange[] {
     const vb = b.cliVersions[adapter];
     if (vb) add(`cliVersion.${adapter}`, a.cliVersions[adapter]!.version, vb.version);
   }
+  // The agent definitions both runs' agents ran as (ODW extension): edited between them, it shows.
+  for (const name of Object.keys(a.agentTypes ?? {}).sort()) {
+    const hb = b.agentTypes?.[name];
+    if (hb) add(`agentDefinition.${name}`, a.agentTypes![name]!.slice(0, 12), hb.slice(0, 12));
+  }
   const usedA = adaptersUsed(a);
   const usedB = adaptersUsed(b);
   if (a.setup && b.setup) {
@@ -686,6 +716,7 @@ function setupChanges(a: CompareRunInput, b: CompareRunInput): SetupChange[] {
   }
   add("adaptersUsed", usedA, usedB);
   add("modelsUsed", modelsUsed(a), modelsUsed(b));
+  add("modelsServed", modelsServed(a), modelsServed(b));
   return out;
 }
 
@@ -695,6 +726,11 @@ function adaptersUsed(run: CompareRunInput): string[] {
 
 function modelsUsed(run: CompareRunInput): string[] {
   return [...new Set(run.agents.flatMap((x) => (x.model && !x.cached ? [x.model] : [])))].sort();
+}
+
+/** The models a run's CLIs said served its agents (ODW extension; see ../served-model), replayed ones aside. */
+function modelsServed(run: CompareRunInput): string[] {
+  return [...new Set(run.agents.flatMap((x) => (x.servedModel && !x.cached ? x.servedModel : [])))].sort();
 }
 
 // --- diffs ---------------------------------------------------------------------
@@ -997,6 +1033,7 @@ const SETUP_LABELS: Record<string, string> = {
   permissions: "--permissions",
   adaptersUsed: "adapters used",
   modelsUsed: "models used",
+  modelsServed: "models served",
 };
 
 function setupLabel(field: string): string {
@@ -1005,6 +1042,7 @@ function setupLabel(field: string): string {
   const name = rest.join(".");
   if (kind === "cliVersion") return `${name} CLI`;
   if (kind === "adapterDefinition") return `${name} adapter`;
+  if (kind === "agentDefinition") return `${name} agent type`;
   if (kind === "settings") return name;
   return field;
 }
@@ -1012,9 +1050,9 @@ function setupLabel(field: string): string {
 function setupValue(field: string, value: unknown): string {
   if (field === "source" && typeof value === "string") return value.slice(0, 12);
   if (field.startsWith("cliVersion.") && value === null) return "unknown";
-  if (field.startsWith("adapterDefinition.") && typeof value === "string") return `definition ${value}`;
-  if ((field === "adaptersUsed" || field === "modelsUsed") && Array.isArray(value)) {
-    return value.length > 0 ? value.join(", ") : field === "modelsUsed" ? "CLI defaults" : "none";
+  if ((field.startsWith("adapterDefinition.") || field.startsWith("agentDefinition.")) && typeof value === "string") return `definition ${value}`;
+  if ((field === "adaptersUsed" || field === "modelsUsed" || field === "modelsServed") && Array.isArray(value)) {
+    return value.length > 0 ? value.join(", ") : field === "modelsUsed" ? "CLI defaults" : field === "modelsServed" ? "not reported" : "none";
   }
   if (typeof value === "string") return value;
   return JSON.stringify(value) ?? "null";
@@ -1036,7 +1074,9 @@ function agentTable(rows: AgentComparison[], p: Palette, opts: { width: number; 
           : row.a!.state === row.b!.state
             ? `${row.b!.state}${row.b!.replayed ? ` ${replayed}` : ""}`
             : `${row.a!.state}${arrow}${row.b!.state}`;
-    const route = (x: AgentFacts): string => `${x.adapter ?? "-"}${x.model ? `/${x.model}` : ""}`;
+    // Served by another model than it asked for (ODW extension): which one, beside the request.
+    const route = (x: AgentFacts): string =>
+      `${x.adapter ?? "-"}${x.model ? `/${x.model}` : ""}${x.substituted && x.servedModel ? ` (served ${x.servedModel[0]})` : ""}`;
     const adapter = row.a && row.b && route(row.a) !== route(row.b) ? `${route(row.a)}${arrow}${route(row.b)}` : route(after);
     const time = `${maybe(after.durationMs, fmtDuration)}${row.a && row.b ? ` ${signed(row.delta.durationMs, fmtDuration)}` : ""}`;
     const spendCost = row.a?.costUsd != null || row.b?.costUsd != null;
@@ -1145,6 +1185,8 @@ export function formatAgentComparison(
       `#${agent.agentId ?? "-"}`,
       tintState(p, agent.state, `${agent.state}${agent.replayed ? " (replayed)" : ""}`),
       `${agent.adapter ?? "-"}${agent.model ? `/${agent.model}` : ""}`,
+      // The models its CLI said served it (ODW extension), marked when none is the one asked for.
+      agent.servedModel ? `${agent.substituted ? p.run("served by") : "served by"} ${sanitizeText(agent.servedModel.join(", "), 80)}` : "",
       maybe(agent.durationMs, fmtDuration),
       agent.costUsd !== null ? fmtUsd(agent.costUsd) : agent.outputTokens !== null ? `${fmtTokens(agent.outputTokens)} tok` : "-",
       agent.attempts !== null ? `${agent.attempts} attempt${agent.attempts === 1 ? "" : "s"}` : "",

@@ -113,6 +113,26 @@ independent security reviews whose findings are all fixed.
   handed back, then `orphaned_background`. Adapters declare their CLI's background
   events generically with `output.background` (`started` / `ended` rules); the built-in
   `claude` ships one.
+- The model that actually served an agent (**ODW extension**; ROADMAP U3): a call's
+  `model` is only a request — an allowlist, a plan or a retired id can put the agent on
+  another model, and the reply never says so
+  ([claude-code#102655](https://github.com/anthropics/claude-code/issues/102655)). Where
+  a CLI's events name the model, ODW records it as `servedModel` on the agent's
+  `agent_finished` event and saved result, beside the requested `model` (`odw agents
+  --json`, `/api/runs/:id`, the dashboard drawer's "served by", `odw logs`). The built-in
+  `claude` reads stream-json's init `model`, each assistant `message.model` (not
+  `<synthetic>`) and the result's `modelUsage` keys; codex, agy and the rest name none,
+  so theirs is "not reported" — never guessed. When none of the served models is the
+  one the CLI was asked for (a tier resolved; case, `[1m]` and provider prefixes aside,
+  an alias such as `opus` matching `claude-opus-5-5`, and only a version, date or
+  release word after it — `gpt-5-mini` is not `gpt-5`), a `model_substituted` event
+  (`requested`, `served`, `policy`) is logged; the reply stands under the default
+  `"modelMismatch": "warn"`, and `"modelMismatch": "fail"` fails the agent with reason
+  `model_substituted` (not retried, no fallback). The drawer flags it, `odw agents`
+  marks the value, `odw compare` adds `modelsServed` to the setup and `servedModel` /
+  `substituted` to each agent, and `odw estimate` groups history by served model
+  (`models`). Adapters declare their CLI's model events with `output.servedModel`
+  rules (`{ event, where?, path, keys? }`).
 - Agent questions become checkpoints (**ODW extension**; ROADMAP T1, T10): an agent that
   stops to ask the user — Claude Code's `AskUserQuestion` — gets no answer headless and
   goes on guessing ([claude-code#50728](https://github.com/anthropics/claude-code/issues/50728)).
@@ -503,6 +523,33 @@ independent security reviews whose findings are all fixed.
   [`docs/recipes/notify.md`](docs/recipes/notify.md#a-morning-digest).
 
 ### Write workflows
+- Dialect gaps closed (Claude Code dialect, not ODW extensions): `agent(prompt, {
+  stallMs })` sets that one call's stall window in milliseconds, in place of its
+  adapter's and the run's `stallTimeout` (and where none is set), with the same
+  `stallRestarts` and reason `stalled`; `0` turns the watchdog off for the call (an
+  ODW reading); typed in `types/workflow.d.ts`, conformance case `33-agent-stallms`.
+  A workflow name now resolves through every `.odw/workflows` and `.claude/workflows`
+  from the working directory up to the repository root (the nearest `.git`), the
+  nearest winning — a monorepo package's own workflow shadows the root's; `.odw`
+  still comes before `.claude` at one level. `odw workflows list` says which entry
+  shadows one; `odw workflows where` prints the candidate chain.
+- `odw check` warns of Claude Code's limits (**ODW extension**): a `parallel()` or
+  `pipeline()` the source settles at more than 4,096 items, which Claude Code rejects
+  (ODW runs it, nothing enforced), and a `meta` that is not a pure literal, which
+  Claude Code drops from its completions. `validate()` gives the same warnings.
+- Input schema and fan-out health (**ODW extension**): `meta.input` declares the shape
+  of `args` as a JSON Schema (the subset `agent()` schemas are checked with; any other
+  keyword is refused at load). `odw run`, `rerun`, `resume`, schedules (also at `odw
+  schedule add`) and triggers (`422`) check `args` before the run exists, naming each
+  path at fault — an array or object that arrived as a string of JSON is said to look
+  encoded twice, never decoded; `odw run <wf> --help` prints it. Every `parallel()` and
+  `pipeline()` writes a `fanout_done` event (ok, failed by reason, null), shown by `odw
+  logs`, the live view and a chip on the dashboard's run, and logs a line when over
+  half is null; `parallel(thunks, { minOk: n | 0.8 | "all" })` throws a
+  `FanOutShortfall` with the counts instead. Without `minOk` the dialect's nulls are
+  unchanged. `odw check` hints (never fails) at a fan-out's `.filter(Boolean)` or a list
+  matched on an agent's text whose emptiness nothing checks
+  (anthropics/claude-code#69206, #94535).
 - `exec(command, opts)` runs tests, builds and linters without a model, as steps of the
   graph ([#31](https://github.com/xz1220/open-dynamic-workflows/issues/31); **ODW
   extension**). Examples: `test-fix-loop.js`, `review-swarm.js`, `plan-approve-execute.js`.
@@ -606,6 +653,23 @@ independent security reviews whose findings are all fixed.
   blamed TypeScript for every parse error), an `await` in a callback that is not
   `async`, a script that ends before a bracket closes — and a `meta` that is declared
   but not exported says what was found.
+- `agentType` loads the agent definition it names (**ODW extension**): Claude Code's
+  subagent files, looked up by their frontmatter `name` in `.claude/agents/` from the
+  working directory up to the repository root (nearest wins), `.odw/agents/` (an
+  ODW-only location), `~/.claude/agents/`, and enabled plugins' `agents/` as
+  `<plugin>:<name>`. The body replaces the one-line persona; `model` is the call's
+  default (`agent()`'s own wins; on other CLIs an alias maps through the `models` tier
+  of that name, else the CLI's default runs and the log says so); `tools` /
+  `disallowedTools` cap the permission tier — only read-only tools → `read`, no Bash →
+  `edit`, never a raise — and reach `claude` as `--tools` (narrowed) and
+  `--disallowedTools`; `isolation: worktree` isolates the agent; `effort` goes to
+  `claude --effort` and `codex -c model_reasoning_effort=`. Every other field is logged
+  as not applied. `agent_started` records `agentType: { name, source, path, sha256 }`,
+  shown in the dashboard's agent drawer, and `odw compare` lists a definition that
+  changed (`agentDefinition.<name>`). In an `--untrusted` run a repository definition
+  gives its body, tools and isolation only. `odw agents types [--adapter a] [--json]`
+  lists the definitions and what each maps to. New adapter `flags`: `effort`,
+  `effortLevels`, `tools`, `disallowedTools`.
 
 ### Use the CLI and the dashboard
 - `odw run` attaches a live foreground view in interactive terminals (Ctrl-C detaches;
@@ -684,7 +748,7 @@ independent security reviews whose findings are all fixed.
   logged against the agent, whose result stands. Like `worktreeSetup`, one set by the
   repository's own config does not run in an untrusted run. Each isolated agent gets
   `ODW_SLOT=odw-<run>-<agent>` (the run id's random part and the agent id; lowercase
-  letters, digits, hyphens), and `COMPOSE_PROJECT_NAME` defaults to it unless set. `odw
+  letters, digits, hyphens), and `COMPOSE_PROJECT_NAME` is set to it. `odw
   gc` lists leftover `odw-*` compose projects whose run is not active (`docker compose
   ls`, when it answers; `$ODW_DOCKER` names another docker) and never removes them.
   README recipe: a compose stack and a database per agent.
@@ -852,8 +916,52 @@ independent security reviews whose findings are all fixed.
   `id_rsa`, `id_ed25519`, `id_ecdsa`, `credentials.json`) are now left out and named in
   the `safety_snapshot` event (`secretLike`), and the README says the snapshot is a ref
   in the repository holding other untracked files until `odw gc` expires it.
+- A break's edited `args` reached a strict script as the worker's own objects (whose
+  `constructor.constructor` is the worker's `Function`, code generation on), and an
+  array's edit called `args.splice`, which the script could replace. Edited values now
+  cross the strict context's membrane into the script's realm, and `args` is changed
+  through `Reflect`, never through a method of the script's object.
+- An isolated agent kept a `COMPOSE_PROJECT_NAME` the user had set, so every agent
+  drove the user's own compose stack, and the README recipe's teardown (`docker compose
+  down -v`) removed it, volumes and all. An agent with an `ODW_SLOT` now always gets it
+  as `COMPOSE_PROJECT_NAME` (the run's log says once when that overrides a value of the
+  user's), and the recipe names the project explicitly: `docker compose -p "$ODW_SLOT"`
+  in setup and teardown.
+- Under untrusted input, `worktreeSetup` and `worktreeTeardown` ran with the worker's
+  whole environment — `GH_TOKEN` and every other secret the agents themselves no longer
+  got — and one the repository's own config set still ran (only an untrusted
+  repository dropped it). They now run without the secret-named and vendors' variables
+  (`PATH`, `HOME`, `DOCKER_*` and `COMPOSE_*` kept), and a run with untrusted input drops
+  the repository's own setup and teardown, saying so in its log.
+- `odw replay` of a run with untrusted input started a run of the user's own input: it
+  carried the original's trust but not its `untrustedInput`, so the replayed agent got
+  the config's permission tier, every secret, and no checkpoint before writing. A replay
+  now keeps `untrustedInput` (with the args it covered) as a rerun or resume does, and
+  a triggered run's replay keeps its strict script context (`sourceOrigin: "trigger"`
+  in its meta).
+- The strict script context's defaults had gaps: a rerun or resume of a triggered run
+  lost its `origin: "trigger"` and ran host; a nested `workflow()` of a plugin's
+  workflow under a host parent ran host, though the plugin's own run is strict; and a
+  config's `scriptContext: "host"` took the strict default away from triggered, plugin
+  and untrusted runs without a word. A rerun now keeps the origin, a plugin's nested
+  workflow runs strict unless the config says `"host"`, and such a `"host"` is warned
+  about in the run's log. The README says `exec()` still runs a host shell with the
+  run's environment in a strict context.
+- A `worktreeTeardown` still running when its worker exited (after the grace period,
+  or forced out by a second signal) ran on unbounded: it is not killed with the agents.
+  It now still gets the rest of its timeout, then a watchdog it leaves behind kills its
+  process group. Two `odw digest --notify` sent at once could lose each other's
+  `--since-last` mark (a read, change and write of `marks.json`); the mark is now
+  written under an O_EXCL lock (taken over after 10 seconds). The digest webhook no
+  longer carries the runs root's absolute path (`--json` still prints it), and the
+  README says that on a loopback bind a `read`-scope token can still control runs and
+  mark reviews, like every loopback write.
 
 ### Changed behavior — check before upgrading
+- `agentType` naming an agent definition file now runs that definition (see "Write
+  workflows"): its body replaces the one-line persona, and its `tools` may lower the
+  agent's permission tier — a read-only reviewer definition runs at `read`, and fails
+  on a CLI with no read mode. A name with no definition behaves as before, with a log line.
 - Signed triggers in a repository's `./odw.config.json` are no longer served: move them
   to `~/.config/odw/config.json` or pass `--config`. A tunnel to a loopback `odw serve`
   needs `--public-url <the tunnel's URL>` for its webhooks to pass the Host guard.

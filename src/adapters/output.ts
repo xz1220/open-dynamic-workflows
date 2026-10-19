@@ -5,7 +5,8 @@
  * calls it refused the agent (Claude Code's `permission_denials`), the MCP
  * servers it started the agent with (Claude Code's init `mcp_servers`), and
  * the background work still running when it replied (`background`: Claude
- * Code's task events), which died when it exited.
+ * Code's task events), which died when it exited, and the models it said
+ * served the agent (`servedModel`: Claude Code's init and assistant `model`).
  *
  * A structured decode that cannot find its text never fails the agent: the
  * raw stdout becomes the reply and {@link DecodedOutput.fallback} says why, for
@@ -24,7 +25,7 @@
  */
 
 import { clipText, MAX_OPTIONS, MAX_QUESTIONS, OPTION_CHARS, QUESTION_CHARS, type AgentQuestion } from "../questions.js";
-import type { Adapter, AdapterOutput, BackgroundCondition, BackgroundRule, BackgroundRules, BackgroundScalar, QuestionRule } from "./types.js";
+import type { Adapter, AdapterOutput, BackgroundCondition, BackgroundRule, BackgroundRules, BackgroundScalar, QuestionRule, ServedModelRule } from "./types.js";
 import { addUsage, normalizeUsage, type Usage } from "./usage.js";
 
 /**
@@ -93,6 +94,12 @@ export interface DecodedOutput {
    * stops the CLI at the first, and the call's `questions` policy decides.
    */
   questions?: AgentQuestion[];
+  /**
+   * The models the CLI's events say served the agent (`servedModel`; an ODW
+   * extension), in the order they first showed; absent when it named none.
+   * The bridge compares them with the model the call asked for (`modelMismatch`).
+   */
+  servedModel?: string[];
   /** Set when stdout did not match the declared format and `text` is the raw stdout: why, for the run's log. */
   fallback?: string;
   /**
@@ -202,6 +209,8 @@ export class AdapterOutputDecoder {
   private readonly background: BackgroundTracker | undefined;
   /** The background work still open at the latest matching text event, when there was any. */
   private orphaned: string[] | undefined;
+  /** The models the stream named as serving the agent so far (`servedModel`). */
+  private served: string[] = [];
   /** The questions the agent asked so far (`questions`), when the adapter declares how they look. */
   private asked: AgentQuestion[] = [];
   private usage: Usage | undefined;
@@ -273,7 +282,8 @@ export class AdapterOutputDecoder {
       const decoded = this.decode(reply);
       const withMcp = this.mcp ? { ...decoded, mcp: this.mcp } : decoded;
       const withOrphans = this.orphaned ? { ...withMcp, orphaned: this.orphaned } : withMcp;
-      this.result = this.asked.length > 0 ? { ...withOrphans, questions: [...this.asked] } : withOrphans;
+      const withQuestions = this.asked.length > 0 ? { ...withOrphans, questions: [...this.asked] } : withOrphans;
+      this.result = this.served.length > 0 ? { ...withQuestions, servedModel: [...this.served] } : withQuestions;
     }
     return this.result;
   }
@@ -414,6 +424,8 @@ export class AdapterOutputDecoder {
     }
     // Background work started and ended (ODW extension): what is open at the reply was orphaned.
     if (this.background && type !== undefined) this.background.see(type, event);
+    // The model that served the agent, as the CLI names it (ODW extension; see ../served-model).
+    if (output.servedModel && type !== undefined) this.serve(output.servedModel, type, event);
     // A question the agent stopped to ask (ODW extension; see ../questions).
     if (output.questions && type !== undefined) this.see(output.questions, type, event);
     const failurePath = type !== undefined && output.errorEvents && hasOwn(output.errorEvents, type) ? output.errorEvents[type] : undefined;
@@ -439,6 +451,20 @@ export class AdapterOutputDecoder {
     this.denied = output.deniedPath ? deniedCalls(event, output.deniedPath) : undefined;
     // So does the background work still running as it was given.
     this.orphaned = this.background?.running();
+  }
+
+  /** Read the models an event names by the adapter's `servedModel` rules (ODW extension). */
+  private serve(rules: readonly ServedModelRule[], type: string, event: Record<string, unknown>): void {
+    for (const rule of rules) {
+      if (rule.event !== type || !meets(event, rule.where)) continue;
+      const value = walk(event, rule.path);
+      const ids = rule.keys ? (isRecord(value) ? Object.keys(value) : []) : Array.isArray(value) ? value : [value];
+      for (const id of ids) {
+        if (typeof id !== "string" || !id.trim()) continue;
+        const model = clipLine(id.trim());
+        if (!this.served.includes(model) && this.served.length < MAX_SERVED_MODELS) this.served.push(model);
+      }
+    }
   }
 
   /** Read the questions an event asks by the adapter's `questions` rules (ODW extension). */
@@ -485,6 +511,9 @@ function questionsOf(item: unknown, rule: QuestionRule): AgentQuestion[] {
     };
   });
 }
+
+/** Models a decoder keeps of what a stream says served the agent, at most. */
+const MAX_SERVED_MODELS = 16;
 
 /** Pieces of open background work a tracker keeps, at most; past it, more are counted, not kept. */
 const MAX_OPEN_BACKGROUND = 1000;

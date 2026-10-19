@@ -1,9 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync, spawn } from "node:child_process";
+import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { execPath } from "node:process";
 
 import { runCommand, TAIL_CHARS } from "../src/adapters/runner.js";
@@ -95,6 +96,34 @@ function isRunning(pid: number): boolean {
     return false; // ps exits non-zero once the pid is gone
   }
 }
+
+test("a cleanup command still running when the process exits finishes within its timeout, then a watchdog kills it (review fix)", { skip: process.platform === "win32" }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), "odw-cleanup-exit-"));
+  const pidFile = join(dir, "pid");
+  const runner = fileURLToPath(new URL("../src/adapters/runner.ts", import.meta.url));
+  // A process that starts a 3-second cleanup which would run forever, and exits while it runs.
+  const body = [
+    `const { runCommand } = await import(${JSON.stringify(runner)});`,
+    `const cleanup = "require('fs').writeFileSync(" + ${JSON.stringify(JSON.stringify(pidFile))} + ", String(process.pid)); setInterval(() => {}, 1000)";`,
+    `void runCommand([process.execPath, "-e", cleanup], { cleanup: true, timeout: 3 });`,
+    `const fs = await import("node:fs");`,
+    `while (!fs.existsSync(${JSON.stringify(pidFile)})) await new Promise((r) => setTimeout(r, 20));`,
+    `process.exit(0);`,
+  ].join("\n");
+  try {
+    const exited = Date.now();
+    await new Promise<void>((resolve, reject) => {
+      const child = spawn(execPath, ["--import", "tsx", "--input-type=module", "-e", body], { stdio: "inherit" });
+      child.on("error", reject);
+      child.on("exit", () => resolve());
+    });
+    const pid = Number(readFileSync(pidFile, "utf8"));
+    if (Date.now() - exited < 2000) assert.equal(isRunning(pid), true, "within its timeout it goes on");
+    assert.equal(await eventually(() => !isRunning(pid), 10_000), true, "past its timeout it is killed");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 async function eventually(check: () => boolean, ms = 2000): Promise<boolean> {
   const deadline = Date.now() + ms;

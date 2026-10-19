@@ -34,6 +34,10 @@
  *   phases     [{ phase, runs, ...the figures }]: wallMs from its first agent's
  *              start to its last's end; runs: how many had the phase
  *   adapters   [{ adapter, runs, ...the figures }]
+ *   models     [{ model, runs, ...the figures }] — by the model that served
+ *              each agent, as its CLI said (ODW extension; see
+ *              ../served-model), "(not reported)" for the rest; absent when
+ *              no agent's CLI said
  *   estimated  some output tokens are chars/4 estimates
  *   notes      how to read it, a sentence each
  */
@@ -57,6 +61,8 @@ export interface HistoryAgent {
   label: string;
   phase: string | null;
   adapter: string | null;
+  /** The model its CLI said served it — the first it named (ODW extension); null or absent: not reported. */
+  servedModel?: string | null;
   /** Epoch seconds. */
   startedAt: number | null;
   finishedAt: number | null;
@@ -96,6 +102,13 @@ export interface AdapterEstimate extends EstimateFigures {
   runs: number;
 }
 
+/** The figures of the agents one model served, across runs (ODW extension; see ../served-model). */
+export interface ModelEstimate extends EstimateFigures {
+  /** The model their CLI said served them; "(not reported)" for agents whose CLI said none. */
+  model: string;
+  runs: number;
+}
+
 export interface WorkflowEstimate {
   version: 1;
   workflow: string;
@@ -105,6 +118,8 @@ export interface WorkflowEstimate {
   total: EstimateFigures | null;
   phases: PhaseEstimate[];
   adapters: AdapterEstimate[];
+  /** By served model (ODW extension): absent when no agent's CLI named one. */
+  models?: ModelEstimate[];
   estimated: boolean;
   notes: string[];
 }
@@ -118,6 +133,9 @@ export interface EstimateOptions {
   /** Runs to base it on, at most (default {@link ESTIMATE_RUNS}). */
   limit?: number;
 }
+
+/** The model group of agents whose CLI named no model (ODW extension). */
+const NOT_REPORTED = "(not reported)";
 
 /** What the estimate says without history. */
 export const NO_HISTORY = "no estimate: no finished runs of this workflow yet";
@@ -163,8 +181,27 @@ export function estimateFrom(runs: readonly HistoryRun[], match: "sourceHash" | 
       .filter((agents) => agents.length > 0);
     adapters.push({ adapter: adapter!, runs: per.length, ...figures(per.map((agents) => groupFigures(agents, spanOf(agents)))) });
   }
+  // By the model that served them (ODW extension): spend on one model is not mixed with another's.
+  const models: ModelEstimate[] = [];
+  if (runs.some((run) => run.agents.some((a) => a.servedModel))) {
+    const servedBy = (a: HistoryAgent): string => a.servedModel ?? NOT_REPORTED;
+    for (const model of orderOf(runs, servedBy)) {
+      const per = runs.map((run) => run.agents.filter((a) => servedBy(a) === model)).filter((agents) => agents.length > 0);
+      models.push({ model, runs: per.length, ...figures(per.map((agents) => groupFigures(agents, spanOf(agents)))) });
+    }
+  }
   const estimated = runs.some((run) => run.agents.some((a) => a.usage?.estimated === true));
-  return { ...base, match, runs: runs.map((r) => r.runId), total, phases, adapters, estimated, notes: notesFor(runs, match, opts, estimated, total) };
+  return {
+    ...base,
+    match,
+    runs: runs.map((r) => r.runId),
+    total,
+    phases,
+    adapters,
+    ...(models.length > 0 ? { models } : {}),
+    estimated,
+    notes: notesFor(runs, match, opts, estimated, total),
+  };
 }
 
 /** How to read the estimate, a sentence each. */
@@ -307,6 +344,7 @@ function readHistoryRun(store: RunStore, c: Candidate): HistoryRun {
       label: a.label,
       phase: a.phase,
       adapter: a.adapter,
+      servedModel: a.servedModel?.[0] ?? null,
       startedAt: a.startedAt,
       finishedAt: a.finishedAt,
       usage: readUsage(a.usage) ?? null,
@@ -398,6 +436,7 @@ export function formatEstimate(est: WorkflowEstimate, opts: { width: number; cap
   const rows: string[][] = [["total", ...cells(est.total)]];
   for (const ph of est.phases) rows.push([`phase ${ph.phase === null ? "(none)" : sanitizeText(ph.phase, 60)}`, ...cells(ph)]);
   for (const ad of est.adapters) rows.push([`adapter ${sanitizeText(ad.adapter, 60)}`, ...cells(ad)]);
+  for (const m of est.models ?? []) rows.push([`model ${sanitizeText(m.model, 60)}`, ...cells(m)]);
   const widths = head.map((h, i) => Math.max(h.length, ...rows.map((r) => r[i]!.length)));
   widths[0] = Math.min(widths[0]!, 32);
   const line = (r: string[]) => "  " + r.map((c, i) => padEndWidth(truncateToWidth(c, widths[i]!), widths[i]!)).join("  ").trimEnd();

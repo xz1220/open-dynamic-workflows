@@ -340,6 +340,8 @@ test("the comparison's keys are the documented, stable ones", () => {
     "state",
     "adapter",
     "model",
+    "servedModel",
+    "substituted",
     "attempts",
     "durationMs",
     "inputTokens",

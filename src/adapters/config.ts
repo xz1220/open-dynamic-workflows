@@ -66,6 +66,7 @@ import type {
   DigestSettings,
   RunEndState,
   SchemaFlag,
+  ServedModelRule,
   Settings,
   StaggerFanOut,
   TrustLevel,
@@ -166,6 +167,7 @@ const KNOWN_TOP_KEYS = [
   "scopePolicy",
   "questions",
   "destructiveGit",
+  "modelMismatch",
   "scriptContext",
   "otel",
   "sandbox",
@@ -184,7 +186,7 @@ const KNOWN_ADAPTER_KEYS = ["command", "stdin", "env", "timeout", "stallTimeout"
 /** The fields of an adapter's `output`, per format. */
 const KNOWN_OUTPUT_KEYS: Record<string, readonly string[]> = {
   text: ["format"],
-  jsonl: ["format", "eventType", "textPath", "select", "usageEvent", "usagePath", "costPath", "errorPath", "structuredPath", "deniedPath", "mcpEvent", "mcpPath", "match", "errorEvents", "background", "eventKey", "questions"],
+  jsonl: ["format", "eventType", "textPath", "select", "usageEvent", "usagePath", "costPath", "errorPath", "structuredPath", "deniedPath", "mcpEvent", "mcpPath", "match", "errorEvents", "background", "eventKey", "questions", "servedModel"],
   json: ["format", "textPath", "usagePath", "costPath", "errorPath", "structuredPath", "deniedPath", "mcpPath"],
 };
 
@@ -192,7 +194,7 @@ const KNOWN_OUTPUT_KEYS: Record<string, readonly string[]> = {
 const KNOWN_MATCH_KEYS = ["path", "equals"] as const;
 
 /** The fields of an adapter's `flags`, and of its `flags.schema`. */
-const KNOWN_FLAG_KEYS = ["model", "schema"] as const;
+const KNOWN_FLAG_KEYS = ["model", "schema", "effort", "effortLevels", "tools", "disallowedTools"] as const;
 const KNOWN_SCHEMA_FLAG_KEYS = ["args", "mode", "strict", "objectRoot"] as const;
 
 const KNOWN_NOTIFY_KEYS = ["command", "webhook", "on"] as const;
@@ -895,6 +897,15 @@ function buildFlags(name: string, raw: unknown): AdapterFlags {
     }
     out.model = [...(model as string[])];
   }
+  // The agent-definition flags (ODW extension; see ../agent-types): each a list of strings.
+  for (const key of ["effort", "effortLevels", "tools", "disallowedTools"] as const) {
+    const value = (raw as Record<string, unknown>)[key];
+    if (value == null) continue;
+    if (!Array.isArray(value) || value.length === 0 || !value.every((p) => typeof p === "string" && p.length > 0)) {
+      throw new ConfigError(`adapter '${name}' 'flags.${key}' must be a non-empty array of strings`);
+    }
+    out[key] = [...(value as string[])];
+  }
   // null, like leaving it out, means the CLI takes no schema natively.
   const schema = (raw as Record<string, unknown>).schema;
   if (schema != null) out.schema = buildSchemaFlag(name, schema);
@@ -990,6 +1001,7 @@ function buildOutput(name: string, raw: unknown): AdapterOutput {
     ...(value.errorEvents != null ? { errorEvents: buildErrorEvents(name, value.errorEvents, [eventType, usageEvent]) } : {}),
     ...(value.background != null ? { background: buildBackground(name, value.background) } : {}),
     ...(value.questions != null ? { questions: buildQuestionRules(name, value.questions) } : {}),
+    ...(value.servedModel != null ? { servedModel: buildServedModelRules(name, value.servedModel) } : {}),
   };
 }
 
@@ -1024,6 +1036,36 @@ function buildQuestionRules(name: string, raw: unknown): QuestionRule[] {
     if (entry.header != null) rule.header = paths("header", entry.header);
     for (const key of ["options", "optionLabel", "multiSelect"] as const) {
       if (entry[key] != null) rule[key] = buildPath(name, `${at}.${key}`, entry[key]);
+    }
+    return rule;
+  });
+}
+
+const KNOWN_SERVED_MODEL_RULE_KEYS = ["event", "where", "path", "keys"] as const;
+
+/**
+ * Validate a jsonl output's `servedModel` (ODW extension; see ../served-model):
+ * a non-empty array of rules `{ event, where?, path, keys? }` (see
+ * {@link ServedModelRule}).
+ */
+function buildServedModelRules(name: string, raw: unknown): ServedModelRule[] {
+  if (!Array.isArray(raw) || raw.length === 0) {
+    throw new ConfigError(`adapter '${name}' 'output.servedModel' must be a non-empty array of rules`);
+  }
+  return raw.map((entry, i) => {
+    const at = `servedModel[${i}]`;
+    const where = `adapter '${name}' 'output.${at}'`;
+    if (!isObject(entry)) throw new ConfigError(`${where} must be an object: { "event", "path", "where"?, "keys"? }`);
+    rejectUnknown(entry, KNOWN_SERVED_MODEL_RULE_KEYS, where);
+    if (typeof entry.event !== "string" || !entry.event.trim()) throw new ConfigError(`${where}.event must be a non-empty string (an event type)`);
+    const rule: ServedModelRule = { event: entry.event, path: buildPath(name, `${at}.path`, entry.path)! };
+    if (entry.where != null) {
+      if (!Array.isArray(entry.where)) throw new ConfigError(`${where}.where must be an array of conditions`);
+      rule.where = entry.where.map((condition, j) => buildBackgroundCondition(name, `${at}.where[${j}]`, condition));
+    }
+    if (entry.keys != null) {
+      if (typeof entry.keys !== "boolean") throw new ConfigError(`${where}.keys must be true or false`);
+      if (entry.keys) rule.keys = true;
     }
     return rule;
   });
@@ -1331,6 +1373,10 @@ function buildSettings(raw: Record<string, unknown>): Settings {
       raw["destructiveGit"] == null
         ? DEFAULT_SETTINGS.destructiveGit
         : buildChoice("destructiveGit", raw["destructiveGit"], ["warn", "fail"] as const),
+    modelMismatch:
+      raw["modelMismatch"] == null
+        ? DEFAULT_SETTINGS.modelMismatch
+        : buildChoice("modelMismatch", raw["modelMismatch"], ["warn", "fail"] as const),
     // Where a workflow body runs (ODW extension; see ../script-context); null: by the run.
     scriptContext: raw["scriptContext"] == null ? DEFAULT_SETTINGS.scriptContext : buildChoice("scriptContext", raw["scriptContext"], SCRIPT_CONTEXTS),
     otel: raw["otel"] == null ? DEFAULT_SETTINGS.otel : buildOtel(raw["otel"]),

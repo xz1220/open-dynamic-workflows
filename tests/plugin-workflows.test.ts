@@ -294,6 +294,39 @@ test("odw run <plugin>:<name> runs a plugin's workflow with the mock adapter, sa
   }
 });
 
+test("a host run's nested workflow() of a plugin's runs strict, as the plugin's own run does; the config's host wins (review fix)", async () => {
+  const f = fixture();
+  const root = mkdtempSync(join(tmpdir(), "odw-plugin-nested-"));
+  try {
+    const dir = f.install("acme-tools", { "workflows/probe.js": flow("probe", "return typeof process\n") });
+    const mock = { command: [execPath, "-e", "process.stdin.resume();process.stdin.on('end',()=>process.stdout.write('ok'))"], stdin: "{prompt}" };
+    const parent = join(root, "parent.js");
+    writeFileSync(
+      parent,
+      "export const meta = { name: 'parent', description: 'd' }\n" +
+        `return [typeof process, await workflow('acme-tools:probe'), await workflow({ scriptPath: ${JSON.stringify(join(dir, "workflows", "probe.js"))} })]\n`,
+    );
+    const runsRoot = join(root, "runs");
+    const run = async (extra: Record<string, unknown>) => {
+      const config = join(root, `config-${Object.keys(extra).length}.json`);
+      writeFileSync(config, JSON.stringify({ defaultAdapter: "mock", adapters: { mock }, ...extra }));
+      const r = await cli(["run", parent, "--config", config, "--runs-root", runsRoot, "--source", f.project, "--wait"]);
+      assert.equal(r.code, 0, r.err);
+      const id = /running (\S+) \.\.\./.exec(r.err)![1]!;
+      const logs = new RunStore(runsRoot).readEvents(id).filter((e) => e.type === "log").map((e) => String(e.message));
+      return { result: JSON.parse(r.out) as string[], logs };
+    };
+    const plain = await run({});
+    assert.deepEqual(plain.result, ["object", "undefined", "undefined"], "by name and by its path");
+    assert.ok(plain.logs.some((m) => m.startsWith("▸ workflow probe runs in a strict script context — the workflow is a Claude Code plugin's")), plain.logs.join("\n"));
+    const host = await run({ scriptContext: "host" });
+    assert.deepEqual(host.result, ["object", "object", "object"]);
+  } finally {
+    f.cleanup();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("GET /api/workflows lists a plugin's workflows under claude-plugin:<plugin>; ?provider= opens one", async () => {
   const f = fixture();
   const runs = mkdtempSync(join(tmpdir(), "odw-plugin-api-"));

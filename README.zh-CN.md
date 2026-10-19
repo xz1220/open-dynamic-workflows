@@ -489,7 +489,7 @@ ODW 已实现下列原语能力。依赖宿主私有运行机制的脚本,迁移
 | --- | --- |
 | 嵌套 `workflow()` | 已实现一层嵌套,共享父任务的调度器、控制和预算。更深层的调用需要展平。 |
 | 模型选择 | 在 `agent(..., {model})` 中传该 CLI 的模型 ID;适配器没有模型参数时会记录路由说明。`meta.phases` 条目里的 `model`(以及 `adapter`)是该阶段 agent 的默认值,`model: "@fast"` 按 CLI 选出某层级的模型——都是 **ODW 扩展**(见[按阶段路由](#按阶段路由与回退链odw-扩展));阶段的模型和其他模型 ID 一样,其 agent 可能跑在多个 CLI 上时请用层级。`meta.model` 仍只是元数据。 |
-| `agentType` | 将人设加入提示词,不会加载宿主的同名子 agent 配置或选择适配器。 |
+| `agentType` | 加载同名子 agent 定义(`.claude/agents/<name>.md` 及 Claude Code 的其他位置):正文作为人设,`model`、`tools`、`isolation`、`effort` 按 CLI 映射——tools 只会降低档位,没有生效的字段逐个记入日志(**ODW 扩展**;见[agent 定义](#agenttype-读取-agent-定义odw-扩展))。找不到定义时是一句话人设。它从不选择适配器。 |
 | 工作区隔离 | 从已保存的 HEAD 创建临时工作区,不含未保存修改,结束后清理。不会自动合并,`agent()` 返回回复而非 diff;ODW 会把每个隔离 agent 的改动保存为 diff,供审阅和应用(`odw diff`、`odw apply`、`keep` 分支——均为 ODW 扩展;见[审阅并应用](#审阅并应用隔离-agent-的改动odw-扩展))。支持 `.worktreeinclude`(ODW 连未跟踪文件也复制,而不只是被 gitignore 的文件);其中的 `symlink:` 行、`worktreeSetup` 和 agent 的 `ODW_PORT` 是 ODW 扩展——见[隔离 worktree](#隔离-worktree-与-agent-端口)。 |
 | 预算 | 计算输出 token:适配器上报用量时用 CLI 自己的计数(内置 `claude` 和 `codex` 会上报——见[用量与花费](#用量与花费odw-扩展)),否则按每条回复的 `ceil(字符数 / 4)` 估算。每次 CLI 运行都计入:schema 重试、限流重试,以及上报了用量的失败运行。每次派发和每次 schema 重试前都会检查;预算用尽时运行结束,仍在运行的 agent 会被停止。 |
 | JSON Schema | ODW 只检查[已列出的子集](skills/open-dynamic-workflows/zh-CN/references/primitives.md#schema);`format` 是注解。其他关键字(`$ref`、`const`、`oneOf`、`maxItems` 等)照常运行:运行日志会写明关键字及其位置,自己校验 schema 的 CLI(`claude`、`codex`)会强制执行它们。设 `"schemaKeywords": "strict"` 则改为拒绝这类调用(ODW 扩展;见[结构化输出](#结构化输出odw-扩展))。请明确声明对象/数组类型并使用受支持的约束。 |
@@ -576,6 +576,12 @@ SIGHUP,效果与 `odw stop` 相同:它的 agent 连同其启动的所有进程�
 保存好的 workflow 也可以直接按名字运行。ODW 会先找项目级、再找个人级,并同时读取自己
 的目录和 Claude Code 保存 workflow 的目录: `.odw/workflows`、`.claude/workflows`、
 `~/.odw/workflows`、`~/.claude/workflows`(遵循 `CLAUDE_CONFIG_DIR`)。
+
+在 monorepo 中,与 Claude Code 一样,项目级目录是从工作目录向上直到仓库根(最近的含 `.git`
+的目录;不在仓库中时只看工作目录)沿途的每个 `.odw/workflows` 与 `.claude/workflows`。同名时
+最近者胜,所以包内自己的 `audit` 会遮蔽根目录的;同一层里仍是 `.odw` 先于 `.claude`。
+`odw workflows list --all` 为每一项标出它来自哪个目录(`../../.claude/workflows`)以及被哪一项遮蔽;
+`odw workflows where <名字>` 打印实际运行的文件,多个目录都有这个名字时再按优先级列出完整的候选链。
 
 **来自 Claude Code 插件的 workflow**(ODW 扩展)。Claude Code 插件可以自带 workflow——放在
 它的 `workflows/` 目录,或 `plugin.json` 的 `"workflows"` 指向的位置。ODW 能运行你已安装
@@ -829,6 +835,44 @@ try {
 [手机批准链接](#在手机上批准odw-扩展)。拒绝会抛出脚本可以捕获的 `CostGateRejected`。在某个
 `parallel()` 上写 `costGate: null` 可为这次调用取消该设置。没有历史时闸门放行所有扇出,并在
 每次运行中只记一次。`costGate` 记录在运行的 setup 里,供 `odw compare` 使用。
+
+### 校验输入,清点 null(ODW 扩展)
+
+两类小错误会让工作流「成功地什么都没做」:`args` 形状不对(数组被当成一串 JSON 字符串传进来,
+扇出按字符展开),以及大半为 `null` 的扇出被当作成功继续往下走。
+
+**`meta.input`** 用 JSON Schema 声明 `args` 的形状——与 `agent()` 的 schema 用同一个校验子集
+(`type`、`enum`、`properties`、`required`、`additionalProperties: false`、`items`、`minItems`;
+`description` 与 `default` 只用于展示,不会被应用)。其他关键字在加载工作流时就会被拒绝,所以声明了
+的约束不会悄悄不被检查。Claude Code 会忽略 `meta.input`。
+
+```js
+export const meta = {
+  name: 'triage',
+  description: 'Triage the open issues of some repositories',
+  input: {
+    type: 'object',
+    properties: { repos: { type: 'array', items: { type: 'string' }, minItems: 1, description: 'owner/name' } },
+    required: ['repos'],
+  },
+}
+```
+
+`odw run`、`rerun`、`resume`、定时任务(`odw schedule add` 时也会检查)和触发器(返回 `422`)都在
+运行创建之前校验 `args`,并逐个指出出错的路径——`$.repos: expected array, got string — it looks
+encoded twice: …`(看起来被多编码了一次)。odw 不会替你自动解码。`odw run triage --help` 打印工作流
+接受的参数。嵌套的 `workflow()` 调用不做校验。
+
+**扇出健康度。** 每个结束的 `parallel()` 与 `pipeline()` 都会写一条 `fanout_done` 事件——多少个
+槽位成功、失败(按失败原因计:`rate_limit`、`timeout` 等)或为 `null`——`odw logs`、实时视图和
+仪表盘(运行头部的一个标签,有扇出大半为 null 时显示为琥珀色)都会显示。超过一半为 null 时运行会记
+一行日志。`parallel(thunks, { minOk })` 把它变成错误:一个数量、thunk 数的一个比例(`0.8`)或
+`"all"`——成功数不足时调用抛出带计数的 `FanOutShortfall`,而不是带着 null 返回。不写 `minOk` 时
+行为不变:失败的槽位为 `null`,与 Claude Code 一致。
+
+`odw check` 针对同样的错误增加两条提示(从不让检查失败):对 `parallel()`/`pipeline()` 结果
+`.filter(Boolean)` 之后没有检查长度的;按 agent 写下的内容筛选出的列表(按它的某个字段 `.filter()`)
+之后没有检查是否为空的——agent 的文本一个都没匹配上时,后续步骤什么都没做,运行看上去却像通过了。
 
 ### 定时运行(ODW 扩展)
 
@@ -1121,6 +1165,37 @@ eval` 启动的运行不会再启动 eval。dry run 和 `odw test` 的运行不�
 add … --on-cli-change`:定时运行本身就会记录漂移,`driftEval` 会去检验——再加一个轮询 CLI
 版本的调度只是多一个守护进程,收益很小。
 
+### 实际服务 agent 的模型(ODW 扩展)
+
+`agent(prompt, { model: "opus" })` 只是一个请求。组织的 `availableModels` 白名单、套餐、已下线的
+模型 id 或 CLI 自己的设置都可能让 agent 跑在另一个模型上,而回复里不会提
+([claude-code#102655](https://github.com/anthropics/claude-code/issues/102655)、
+[#73597](https://github.com/anthropics/claude-code/issues/73597))。只要 CLI 自己的事件写明了
+实际服务的模型,odw 就把它记在请求旁边:内置 `claude` 读取 stream-json 的 init 事件
+(`model`)、每条 assistant 消息的 `message.model`(Claude Code 自己生成的 `<synthetic>` 除外)
+和 result 的 `modelUsage` 键。这些模型作为 `servedModel` 记在 agent 的 `agent_finished` 事件和
+保存的结果上,也出现在 `odw agents --json`、`/api/runs/:id`(agent 的 `model` 与
+`servedModel`)和看板侧栏("实际模型")里,`odw logs` 也会显示。
+
+它们都不是 CLI 被要求使用的模型时——先解析 `"@tier"`;大小写、`[1m]` 后缀和供应商前缀
+(`anthropic/…`、`us.anthropic.…`)不计,别名或较短的 id 完整出现在实际 id 中、其后只跟版本号、日期或 `latest`/`preview` 时算一致
+(`opus` ~ `claude-opus-5-5`,但 `gpt-5` ≁ `gpt-5-mini`;`best` 即 opus,`default` 与任何模型一致)——运行写入
+`model_substituted` 事件(`{ agentId, label, adapter, requested, served, policy, message }`),
+并以一行日志显示:
+
+```text
+review:1: asked claude for model 'opus' but it was served by claude-sonnet-4-5 — its reply is kept; modelMismatch: "fail" fails such an agent
+```
+
+回复照常成立(默认 `"modelMismatch": "warn"`);`"modelMismatch": "fail"` 让这样的 agent 以
+`reason: "model_substituted"` 失败(不重试,不回退)。请求的模型之外顺带用到的辅助模型
+(Claude Code 用 haiku 总结 WebFetch)不算替换。看板侧栏标出"已替换",`odw agents` 在值前加
+`[served by …, asked …]`,`odw compare` 并排列出 `modelsServed` 并标出该 agent,`odw estimate`
+增加按实际模型(第一个报告的模型)分组的 `models`,不同模型的花费不再混在一起。不报告模型的
+CLI——codex、agy,以及任何没有 `output.servedModel` 规则的适配器——显示"未报告":不做任何
+推断,更不从回复文本里猜。任何 JSONL 适配器都可以用 `output.servedModel` 声明自己 CLI 的模型
+事件(见适配器参考)。
+
 ### 调试工作流(ODW 扩展)
 
 工作流里某一步不对时,有三件工具可用——都不需要改工作流,也不需要为整次运行再付一次钱:
@@ -1128,6 +1203,7 @@ add … --on-cli-change`:定时运行本身就会记录漂移,`driftEval` 会去
 ```bash
 odw check wf.js                           # 能否加载?错误带行号、列号和代码片段
 odw check wf.js --capabilities            # ……以及它用到的方言之外的名字:process、require、import( 等
+odw run wf.js --help                      # 按 meta.input 打印它接受的 --args
 odw replay $RUN --agent judge             # 把这一个 agent 作为一次小的新运行重跑
 odw replay $RUN --agent judge --prompt @better.txt --adapter codex --model gpt-5
 odw compare $RUN $REPLAY --agent judge    # 原 agent 与重跑并排对照
@@ -1144,14 +1220,22 @@ TypeScript(不再对每个错误都这样说),非 `async` 回调里的 `await`,�
 脚本用到的 Claude Code 方言之外的标识符——`process`、`require`、`import(`、`globalThis`、`Function(`、
 `eval`、`fetch`、`console`、定时器等——各带首次出现的行列号以及[严格脚本上下文](#严格脚本上下文odw-扩展)
 里有没有它,还有它调用的 ODW 扩展原语(`validate`、`exec`、`checkpoint`、`workflow.input`);`--json` 中为
-`capabilities: { outOfDialect, extensions }`。
+`capabilities: { outOfDialect, extensions }`。它的提示——没检查是否为空的扇出 `.filter(Boolean)` 或按
+agent 文本筛选的结果(见[校验输入,清点 null](#校验输入清点-nullodw-扩展))——打印为
+`文件:行:列: hint: …`,`--json` 中为 `hints`;它们从不改变退出码。
+
+警告中还包括 ODW 没有、但 **Claude Code 有的限制**:源码字面量即可判定超过 4,096 项的
+`parallel()` 或 `pipeline()`(数组字面量、`Array.from({ length: n })`、`Array(n)`、`[...Array(n)]`,
+可经 `.map`/`.fill`/`.keys`),Claude Code 的运行时会报错拒绝——`parallel() on line 12 is given
+5,000 items …`;以及不是纯字面量的 `meta`,Claude Code 会把它从补全中去掉(ODW 直接拒绝)。
+它们只是警告:ODW 照样运行任意规模的扇出,`check` 仍退出 0。
 
 **`odw replay <run> --agent <id|label>`** 把一次保存下来的 `agent()` 调用重新派发。每次调用开始
 时都会保存它的输入(`agents/<id>.call.json`:脚本给出的提示词和选项、开始时所用的适配器、请求的
 模型),隔离 agent 的 `agent_started` 事件还记下它的 worktree 检出的提交(`base`)。重跑是一次只
 含这一个调用的新运行(`meta.json` 中 `origin: "replay"`、`replayOf: { runId, agentId, label,
-base }`;其 `args` 只有 `{ replayOf }`,提示词与选项保存在运行目录的 `call.json` 里,不对外提供),沿用原调用的 label 与 phase,在原运行的目录下、用原运行的配置、权限档位、信任级别与
-沙箱运行——`worktree` agent 则检出原来的 base 提交,不管现在 HEAD 在哪里,所以它看到的代码与
+base }`;其 `args` 只有 `{ replayOf }`,提示词与选项保存在运行目录的 `call.json` 里,不对外提供),沿用原调用的 label 与 phase,在原运行的目录下、用原运行的配置、权限档位、信任级别、不可信输入与
+沙箱运行(触发器启动的运行,其 replay 也在严格脚本上下文中运行)——`worktree` agent 则检出原来的 base 提交,不管现在 HEAD 在哪里,所以它看到的代码与
 原 agent 相同。`--prompt @文件|文本`、`--adapter` 与 `--model` 替换原值(每项改动都会打印出来);
 它接受 `odw run` 的 `--wait`/`--fg`/`-d`/`--timeout`。它打印新运行的 id,以及把重跑与原 agent
 配对的 `odw compare` 命令(按 label;同一运行里还有别的 agent 用同一 label 时按 id)。本版本之前的
@@ -1568,7 +1652,9 @@ odw serve --host 0.0.0.0 --token
 - **非 loopback 绑定上写操作一律拒绝,与令牌无关**:停止或暂停运行、回答检查点、Chat,在
   127.0.0.1 / localhost / ::1 以外的任何绑定上都是 409。令牌给的是远程*读*,从不给写。(在 loopback
   绑定上,`--token` 对写操作与读操作同样把关,原有的写保护全部照旧:严格的
-  `Content-Type: application/json`、同源 `Origin`、防 DNS rebinding 的 Host 检查。)
+  `Content-Type: application/json`、同源 `Origin`、防 DNS rebinding 的 Host 检查。在那里,任何有效令牌
+  都能写,与其范围无关:`read` 令牌仍可停止、暂停或恢复运行并标记审阅,与其他 loopback 路由一样——
+  范围只限制令牌在 loopback 以外能做什么。)
 - **这是明文 HTTP。** 令牌和看板展示的一切都以未加密的形式经过网络:请在你信任的网络中使用,
   或通过 VPN、SSH 隧道(`ssh -L 4317:localhost:4317 host` 根本不需要 `--host`),或放在 TLS
   代理后面。
@@ -2130,7 +2216,7 @@ issue 正文、PR 标题、评论是任何人写的文字,模型无法可靠地�
 ("Comment and Control"、GitLost)绕过了所有模型层面的防护,由此得出的建议是结构性的——把能力
 拿走。**args** 来自外部的运行带有**不可信输入**,这与[不受信任的仓库](#不受信任的仓库odw-扩展)
 是两回事。[触发器](#由-webhook-启动运行githublinearslackodw-扩展)启动的每个运行都带有它(除非
-触发器写明 `"untrusted": false`),`odw run --untrusted-input` 也一样(rerun / resume 会保留)。
+触发器写明 `"untrusted": false`),`odw run --untrusted-input` 也一样(rerun / resume / replay 会保留)。
 这样的运行:
 
 - **agent 只读**——`permissions: "read"`——除非显式给出了运行档位:`--permissions`,或触发器的
@@ -2141,6 +2227,9 @@ issue 正文、PR 标题、评论是任何人写的文字,模型无法可靠地�
   `GOOGLE_GENAI_USE_VERTEXAI`、`GOOGLE_GENAI_USE_GCA`、`GOOGLE_CLOUD_PROJECT`、`GOOGLE_CLOUD_LOCATION`,……),
   无论 `agentEnvPass` 列了什么。适配器自己的 `env` 仍然生效,`exec()` 命令(工作流作者写的)得到最小环境加上
   `agentEnvPass`;
+- **不运行仓库自己的 worktree setup 与 teardown:** 仓库自身配置设置的 `worktreeSetup` 或 `worktreeTeardown`
+  会被丢弃,运行日志会说明,与[不受信任的仓库](#不受信任的仓库odw-扩展)相同;你自己配置里的仍会运行,但不带
+  密钥类变量和各厂商的变量(保留 `PATH`、`HOME`、`DOCKER_*` 与 `COMPOSE_*`,docker 和 compose 照常可用);
 - **没有隔离时大声说出来:** 若没有 `network` 为白名单(或 `"none"`)的
   [容器沙箱](#在容器中运行-agentodw-扩展),启动横幅、运行日志和 `run_started` 事件都会警告,且只读 agent
   启动时不带其 CLI 的联网工具(Claude Code 的 `WebFetch` 与 `WebSearch`,codex 的 `--search`)——它们可能把
@@ -2195,12 +2284,15 @@ Node.js's process — …`),而不是一个光秃秃的 `ReferenceError`;运行�
 ```
 
 不设置时,**触发器启动的运行、Claude Code 插件的工作流、输入或仓库不可信的运行使用 strict**,
-其余一律 **host**——本地项目与个人工作流照旧运行。嵌套的 `workflow()` 与父运行用同一种上下文。
+其余一律 **host**——本地项目与个人工作流照旧运行。触发器启动的运行,其 rerun、resume 与 replay 也是 strict。
+配置中的 `"host"` 优先,但它拿走 strict 默认值时,运行日志会给出警告。嵌套的 `workflow()` 与父运行用同一种
+上下文——插件的工作流即使在 host 父运行之下也是 strict,除非配置写明 `"host"`。
 运行的 `run_started` 事件记录所选的上下文,status.json 中有 `scriptContext: "strict"`,看板 Job 头部的
 信任行也会显示。`odw check --capabilities` 列出脚本在严格上下文中会缺少的东西。
 
 **`vm` 不是安全边界。** 严格上下文只是拿走了脚本随手就能碰到的东西;恶意脚本仍可能找到办法逃出
-这个上下文,而且每个脚本驱动的 agent 都带着运行的权限行事。运行前请先读一遍工作流,并为 agent 使用
+这个上下文,而且每个脚本驱动的 agent 都带着运行的权限行事。`exec()` 仍然可用,它在本机(或运行的容器沙箱)
+的 shell 中、带着运行的环境变量执行命令——严格上下文不会拿走命令。运行前请先读一遍工作流,并为 agent 使用
 [权限档位](#权限档位odw-扩展)与[容器沙箱](#在容器中运行-agentodw-扩展)。
 
 ### 在容器中运行 agent(ODW 扩展)
@@ -2448,6 +2540,11 @@ cloning with «redacted:github»
 `opencode` 和 `agy`(每一步一个事件)这类 JSONL 适配器,或会打印心跳的包装脚本;并把值设得高于
 健康 agent 最长的静默时段——工具调用里跑一轮很长的测试,同样不会有任何输出。
 
+**单个 agent 的窗口**(Claude Code 方言):`agent(prompt, { stallMs: 1800000 })` 为这一次调用
+单独设定卡死窗口(毫秒,此处为 30 分钟),取代其适配器和整个运行的 `stallTimeout`,重启次数
+(`stallRestarts`)与失败方式(原因 `"stalled"`)不变。没有设置 `stallTimeout` 时它同样生效,
+因此长扇出可以给慢的审查者更宽的窗口、给快的更窄;`stallMs: 0` 关闭这一次调用的看门狗。
+
 ### 单 agent 上限与死循环(ODW 扩展)
 
 陷入循环的 agent 一直在输出,所以卡死看门狗永远不会触发;而 `--budget` 限制的是整个运行,
@@ -2506,7 +2603,7 @@ agent 在两次之间做的事不可能改变结果。同一次调用的后续 C
 `unmet_expectation`、`"mcpFailures": "fail"` 下的 `mcp_unavailable`,以及
 `orphaned_background`(回复时仍有后台任务在运行,`"orphanedBackground": "fail"` 或设了
 `expect` 时)(见[检查 agent 的工作](#检查-agent-的工作odw-扩展));`out_of_scope`:
-`"scopePolicy": "fail"` 下改动了声明范围之外文件的 agent(见[声明范围](#声明范围odw-扩展));`needs_input`:停下来提问却没人回答的 agent(见[agent 的提问](#agent-的提问odw-扩展));还有 `runaway`:触及[上限](#单-agent-上限与死循环odw-扩展)被杀掉的 agent。这个类别就是 `agent_failed` 事件上的 `reason`(CLI 说明了何时
+`"scopePolicy": "fail"` 下改动了声明范围之外文件的 agent(见[声明范围](#声明范围odw-扩展));`needs_input`:停下来提问却没人回答的 agent(见[agent 的提问](#agent-的提问odw-扩展));`model_substituted`:`"modelMismatch": "fail"` 下 CLI 报告由其他模型服务的 agent(见[实际服务 agent 的模型](#实际服务-agent-的模型odw-扩展));还有 `runaway`:触及[上限](#单-agent-上限与死循环odw-扩展)被杀掉的 agent。这个类别就是 `agent_failed` 事件上的 `reason`(CLI 说明了何时
 可以重试时,还带有以秒计的 `retryAfter`),也是看板和 `/api/runs/:id` 里该 agent 的
 `failureReason`,并显示在实时视图和 `odw logs` 中:
 
@@ -2613,6 +2710,46 @@ search:3 goes on after the quota wait, on codex
 默认关闭,因为一个悄无声息地等上几个小时的运行,会让没有主动要求的人感到意外。等待发生在
 worker 进程里:worker 死掉时,运行会变成 `stale`,`odw resume` 会像对待任何已结束的运行
 一样重放它——已完成的 agent 直接取回结果,不会再跑一遍。
+
+### `agentType` 读取 agent 定义(ODW 扩展)
+
+`agent(prompt, { agentType: "reviewer" })` 运行 Claude Code 子 agent 文件里定义的那个 agent
+——带 YAML 前言的 Markdown,正文是它的提示词(https://code.claude.com/docs/en/sub-agents)——
+无论这次调用跑在哪个 CLI 上:
+
+```markdown
+---
+name: reviewer
+description: Reviews a change for bugs
+tools: Read, Grep, Glob
+model: sonnet
+effort: high
+---
+You are a meticulous reviewer. Report bugs only.
+```
+
+ODW 按 Claude Code 的方式查找——认前言里的 `name`,不认文件名:工作目录及其每一级父目录直到仓库根的
+`.claude/agents/`(最近者胜),然后同样方式的 `.odw/agents/`(ODW 独有的位置,格式相同),
+然后 `~/.claude/agents/`,最后是已安装且启用的 Claude Code 插件的 `agents/`,名字为 `<plugin>:<name>`。映射如下:
+
+| 字段 | ODW |
+| --- | --- |
+| 正文 | 作为人设提示词,取代原来的一句话人设,所有 CLI 都生效。 |
+| `model` | 该调用的默认模型;`agent()` 自己的 `model` 优先,它又优先于阶段的默认值。在 `claude` 上原样传;其他 CLI 上别名经同名的 `models` 层级映射(`"models": { "sonnet": { "codex": "gpt-5.5" } }`),映射不到就用该 CLI 的默认模型,并在运行日志里说明。`inherit` 表示不指定。 |
+| `tools`、`disallowedTools` | 给 agent 的[权限档位](#权限档位odw-扩展)封顶,只降不升:只有 Read、Glob、Grep、WebFetch、WebSearch → `read`;不含 Bash → 最高 `edit`。`claude` 另外拿到 `--tools`(与档位自带的列表取交集,只收窄)和 `--disallowedTools`。 |
+| `isolation: worktree` | 等同 `agent()` 的 `isolation: "worktree"`。 |
+| `effort` | `claude --effort`、`codex -c model_reasoning_effort=`(minimal–xhigh);其他 CLI 上日志会说明未生效。 |
+| 其他字段 | `permissionMode`、`maxTurns`、`mcpServers`、`hooks`、`skills` 等不生效,日志逐个列出。 |
+
+每个定义每次运行只读一次,并连同文件路径记入日志;`agent_started` 带 `agentType: { name, source, path, sha256 }`,
+看板的 agent 抽屉会显示,`odw compare` 会列出两次运行之间文件变了的定义(`agentDefinition.<name>`)。
+找不到定义时保留一句话人设,并记一条日志。`--untrusted` 运行中,来自仓库的定义只取正文、tools 与 isolation,
+不取 model 和 effort。适配器在 `flags` 里声明承载方式:`effort`(元素里可写 `{effort}`)、`effortLevels`、`tools`、`disallowedTools`。
+
+```sh
+odw agents types                  # 列出这里能用的定义,以及在默认适配器上的映射
+odw agents types --adapter codex --json
+```
 
 ### 按阶段路由与回退链(ODW 扩展)
 
@@ -2995,9 +3132,10 @@ worktree 开始,并以同样方式准备。
 
 隔离 agent 还会拿到 `ODW_SLOT`(**ODW 扩展**):`odw-<run>-<agent>`——运行 id 的随机部分加
 agent id,例如 `odw-a1b2c3-4`——只含小写字母、数字和连字符,在这次调用的每次尝试、它的 setup
-和 teardown 中都相同。`COMPOSE_PROJECT_NAME` 默认设为它(你自己设置的不会被覆盖),于是在
-worktree 里执行 `docker compose` 操作的就是这个 agent 自己的那套栈。它也可以用作数据库名或卷名
-前缀(不允许连字符的地方加引号,或把连字符换成下划线)。
+和 teardown 中都相同。`COMPOSE_PROJECT_NAME` 被设为它——即使你自己设置了,也会被覆盖,运行日志会
+说明一次——于是在 worktree 里执行 `docker compose` 操作的就是这个 agent 自己的那套栈,不会是你的,
+并行的 agent 也不会共用一套。尽管如此,仍请显式指定项目名(`docker compose -p "$ODW_SLOT" …`),
+如下面的配方所示。它也可以用作数据库名或卷名前缀(不允许连字符的地方加引号,或把连字符换成下划线)。
 
 #### 配方:每个 agent 一套 compose 栈和独立数据库
 
@@ -3005,7 +3143,7 @@ worktree 里执行 `docker compose` 操作的就是这个 agent 自己的那套�
 不论成功、失败还是被停止:
 
 ```yaml
-# compose.yaml —— 项目名来自 COMPOSE_PROJECT_NAME(即 $ODW_SLOT)
+# compose.yaml —— 项目名在命令行上指定:-p "$ODW_SLOT"
 services:
   db:
     image: postgres:16
@@ -3022,8 +3160,8 @@ volumes:
 
 ```jsonc
 {
-  "worktreeSetup": "docker compose up -d --wait && npm run migrate",
-  "worktreeTeardown": "docker compose down -v --remove-orphans",
+  "worktreeSetup": "docker compose -p \"$ODW_SLOT\" up -d --wait && npm run migrate",
+  "worktreeTeardown": "docker compose -p \"$ODW_SLOT\" down -v --remove-orphans",
   "worktreeTeardownTimeout": 120
 }
 ```
@@ -3034,7 +3172,8 @@ await parallel(['grid', 'list'].map((layout) => () =>
     { isolation: 'worktree', label: layout })))
 ```
 
-这样迁移只会落到这个 agent 自己的数据库,不会碰共享库。worker 被直接杀掉(SIGKILL、第二次信号)
+这样迁移只会落到这个 agent 自己的数据库,不会碰共享库;teardown 的 `down -v` 也只删除这个 agent
+的栈和卷——不论环境里有什么,`-p "$ODW_SLOT"` 都指定了它。worker 被直接杀掉(SIGKILL、第二次信号)
 时,teardown 来不及运行:`odw gc` 会列出所属运行已不再活跃的 `odw-*` compose 项目,并给出要执行的
 `docker compose -p <name> down -v`——它自己从不删除。ODW 不克隆数据库,也不管理不是它启动的服务。
 
@@ -3148,7 +3287,7 @@ odw review mark $RUN 3 reviewed --note "看过迁移了"   # 或 dismissed | app
 同一个 agent 以最后一条标记为准。`odw apply` 会把干净应用(或发现已应用)的每个 agent 标为
 `applied`;`--check` 不做标记。`odw eval` 启动的运行和 `--resolve` 的解决冲突运行不进入队列。
 看板的 **Review** 页(`g r`)展示同一队列及其理由,可把条目标为已审阅或放弃(与所有写操作一样
-仅限回环地址),并能在所属运行的 Changes 标签页中打开条目;Activity 的 **待你处理** 会显示等待
+仅限回环地址——在那里也与所有写操作一样,服务接受的任何令牌都可以,`read` 范围的也不例外),并能在所属运行的 Changes 标签页中打开条目;Activity 的 **待你处理** 会显示等待
 审阅的数量。`GET /api/review[?since=7d][&all=1]` 提供该队列,`POST
 /api/runs/:id/agents/:agentId/review { state, note? }` 标记一条。
 

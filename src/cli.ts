@@ -13,6 +13,7 @@
  *   odw logs <run_id> [--follow]
  *   odw logs <run_id> --agent <id|label> [--raw] [--follow]
  *   odw agents <run_id> [--json]
+ *   odw agents types [--adapter <name>] [--json]
  *   odw result <run_id> [--agent <id|label>]
  *   odw diff <run_id> [--agent <id|label>] [--stat]
  *   odw apply <run_id> --agent <id|label>|--all [--check] [--force] [--verify CMD|--no-verify]
@@ -72,6 +73,7 @@ import { cmdNew } from "./new.js";
 import { loadWorkflowScript } from "./loader.js";
 import type { AgentChanges } from "./changes.js";
 import { agentRowJson, agentRows, formatAgentTable, matchAgents, type AgentRow } from "./runtime/agents-view.js";
+import { cmdAgentTypes } from "./agent-types-cli.js";
 import { applyAgents, type AgentDiff } from "./runtime/apply.js";
 import { resolverRuns } from "./runtime/apply-resolve.js";
 import { applyPr } from "./runtime/apply-pr.js";
@@ -126,6 +128,7 @@ import {
   takeOnFlag,
 } from "./runtime/remote.js";
 import { questionLine } from "./questions.js";
+import { runHelpLines } from "./run-help.js";
 import { pausedForOf, pausedText } from "./quota-wait.js";
 import { cmdSchedule } from "./schedule/command.js";
 import { cmdEval } from "./eval/command.js";
@@ -138,7 +141,7 @@ import { detectCaps, fmtUsd, glyphs, palette, sanitizeText } from "./tty.js";
 import { resolveRunTrust } from "./untrusted.js";
 import { confirmUntrustedPr, untrustedInputBanner, untrustedInputOf, untrustedTier } from "./untrusted-input.js";
 import { pluginOrigin } from "./workflows/plugins.js";
-import { listWorkflows, resolveWorkflow, type ResolvedWorkflow } from "./workflows/resolve.js";
+import { listWorkflows, resolveWorkflow, workflowCandidates, type ResolvedWorkflow } from "./workflows/resolve.js";
 
 export const COMMANDS = [
   "init",
@@ -201,6 +204,7 @@ export function helpText(): string {
     "  odw doctor --local [--endpoint URL] [--model M]    check a local Ollama / LM Studio: context length, tool calling;",
     "                                                     with --smoke, whether a long prompt's front is silently cut",
     "  odw run <script.js|name> [--args JSON|@file]       start a workflow (see modes below)",
+    "  odw run <script.js|name> --help                    what it takes as --args, from its meta.input (ODW extension)",
     "  odw attach <run_id>                                attach the live foreground view to a run",
     "  odw rerun <run_id>                                 start a fresh run with the same inputs",
     "  odw resume <run_id> [--force]                      unpause a paused run, or replay an ended one (below)",
@@ -208,6 +212,7 @@ export function helpText(): string {
     "  odw logs <run_id|--workflow name> [--follow]       print a run's progress events",
     "  odw logs <run_id> --agent <id|label> [--raw]       one agent's transcript: its tool calls, results, text (--follow)",
     "  odw agents <run_id> [--json]                       list a run's agents with their saved results",
+    "  odw agents types [--adapter <a>] [--json]          the agent definitions agentType can name here, and what each maps to (ODW extension)",
     "  odw result <run_id> [--agent <id|label>]           print a finished run's result, or one agent's (mid-run too)",
     "  odw diff <run_id> [--agent <id|label>] [--stat]    print what isolated agents changed (their kept diffs)",
     "  odw apply <run_id> --agent <id|label>|--all        preview, then apply kept diffs to this working tree (--force)",
@@ -225,7 +230,7 @@ export function helpText(): string {
     "  odw token list|remove [<name>] --file F            the named tokens in F; withdraw one (ODW extension)",
     "  odw workflows list [--project|--global|--plugins|--all]  list workflows runnable by name,",
     "                                                     Claude Code plugins' as <plugin>:<name> (ODW extension)",
-    "  odw workflows where <name>                         show the file a name resolves to",
+    "  odw workflows where <name>                         show the file a name resolves to (and the ones it shadows)",
     "  odw pause|resume|stop <run_id>                     control a running workflow",
     "  odw approve|reject <run_id> [--checkpoint N]       answer a checkpoint() the run waits at (--note TEXT)",
     "  odw approve <run_id> --edit | --payload JSON|@file approve it with an edited payload ($VISUAL/$EDITOR for --edit)",
@@ -378,7 +383,7 @@ export async function main(argv: string[]): Promise<number> {
       case "status":
         return cmdStatus(rest);
       case "agents":
-        return cmdAgents(rest);
+        return rest[0] === "types" ? cmdAgentTypes(rest.slice(1)) : cmdAgents(rest);
       case "result":
         return cmdResult(rest);
       case "logs":
@@ -663,9 +668,15 @@ async function cmdRun(rest: string[]): Promise<number> {
       yes: { type: "boolean", short: "y" },
       break: { type: "string", multiple: true },
       step: { type: "boolean" },
+      help: { type: "boolean", short: "h" },
     },
   });
   const ref = positionals[0];
+  // `odw run <wf> --help` (ODW extension; see run-help.ts): what it takes as args, from its meta.input.
+  if (values.help) {
+    process.stdout.write((ref ? runHelpLines(ref, { config: values.config ?? null, source: values.source ?? null }) : [helpText()]).join("\n") + "\n");
+    return 0;
+  }
   if (!ref) {
     process.stderr.write("odw run: missing <script.js|name>\n");
     return 2;
@@ -2013,6 +2024,9 @@ async function relaunch(
     resumedFrom: cmd === "resume" ? { runId, dir: store.runDir(runId) } : null,
     // Untrusted input stays untrusted on a rerun or resume (ODW extension): nothing loosens it.
     untrustedInput: untrustedInputOf(meta),
+    // …and a triggered run's rerun or resume is still one, strict by default (ODW extension; see ./script-context).
+    origin: meta.origin === "trigger" ? "trigger" : null,
+    sourceOrigin: meta.sourceOrigin === "trigger" ? "trigger" : null,
   };
   warnIfNoDefaultAdapter(opts.adapter, opts.configPath, opts.source, cmd);
   // An inline-launched run's script lives inside the OLD run dir. Re-archive its
@@ -2625,7 +2639,9 @@ function cmdWorkflowsList(rest: string[]): number {
   const width = Math.max(...entries.map((e) => e.name.length));
   for (const e of entries) {
     const scope = e.origin === "plugin" ? e.provider : `${e.provider}:${e.origin}`;
-    const shadow = e.shadowed ? "  shadowed by higher-precedence workflow" : "";
+    const shadow = e.shadowed
+      ? `  shadowed by ${e.shadowedBy ? `${e.shadowedBy.rootLabel}/${basename(e.shadowedBy.path)}` : "a higher-precedence workflow"}`
+      : "";
     const note = e.note ? `  note: ${e.note}` : "";
     process.stdout.write(`${e.name.padEnd(width)}  (${scope.padEnd(14)} ${e.rootLabel})  ${e.path}${shadow}${note}\n`);
   }
@@ -2649,6 +2665,15 @@ function cmdWorkflowsWhere(rest: string[]): number {
     const scope = origin === "plugin" ? provider : provider ? `${provider}:${origin}` : origin;
     const source = `${scope}${provider && rootLabel ? ` ${rootLabel}` : ""}`;
     process.stdout.write(`${scriptPath}  (${source})\n`);
+    // More than one directory has the name: the whole chain, nearest first, and which one runs.
+    const chain = workflowCandidates(name, process.cwd(), config);
+    if (chain.length > 1) {
+      process.stdout.write("candidates, in precedence order:\n");
+      for (const c of chain) {
+        const mark = c.path === scriptPath ? "runs    " : "shadowed";
+        process.stdout.write(`  ${mark}  ${c.path}  (${c.provider}:${c.origin} ${c.rootLabel})\n`);
+      }
+    }
     return 0;
   } catch (err) {
     process.stderr.write(`${(err as Error).message}\n`);

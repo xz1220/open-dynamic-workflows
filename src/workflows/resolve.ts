@@ -7,7 +7,8 @@
  *   - a PATH (`./wf.js`, `/abs/wf.js`, `foo.js`) → used literally, exactly as the
  *     CLI always has (backward compatible);
  *   - a NAME (`deep-research`) → looked up by FILENAME STEM in a managed
- *     directory ODW or Claude Code owns, project-local first then global;
+ *     directory ODW or Claude Code owns, project-local first (from the
+ *     directory up to the repository root, nearest first) then global;
  *   - `<plugin>:<name>` (an ODW extension) → the workflow an installed, enabled
  *     Claude Code plugin ships under that name (see ./plugins); a bare name no
  *     project or global workflow has resolves to the one plugin that ships it.
@@ -25,7 +26,7 @@
  */
 
 import { existsSync, readdirSync, realpathSync, statSync } from "node:fs";
-import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import { resolveClaudeWorkflowsRoot, resolveWorkflowsRoot } from "../adapters/config.js";
 import type { Config, TrustLevel } from "../adapters/types.js";
@@ -61,7 +62,8 @@ export interface ResolveOptions {
   /**
    * Directory the run operates against (the run's `source`, NOT necessarily
    * `process.cwd()`). Both literal-path resolution and the project-local
-   * `.odw/workflows` / `.claude/workflows` lookup are anchored here, so
+   * `.odw/workflows` / `.claude/workflows` lookup are anchored here (the
+   * lookup walks up from it to the repository root, nearest first), so
    * `--source` is honoured consistently for paths and names alike.
    */
   cwd: string;
@@ -115,6 +117,8 @@ export interface WorkflowListing {
   path: string;
   /** A higher-precedence root defines this name, so this entry never wins. */
   shadowed: boolean;
+  /** For a shadowed entry: the root label and path of the one that wins. */
+  shadowedBy?: { rootLabel: string; path: string };
   /** A plugin workflow's bare name runs a project or global workflow instead (ODW extension). */
   note?: string;
   /** A plugin workflow: the plugin it came from (ODW extension). */
@@ -147,7 +151,7 @@ export function listWorkflows(cwd: string, config: Config, opts: { trust?: Trust
 }
 
 function listRootWorkflows(cwd: string, config: Config): WorkflowListing[] {
-  const winners = new Set<string>();
+  const winners = new Map<string, { rootLabel: string; path: string }>();
   const out: WorkflowListing[] = [];
   for (const root of searchRoots(cwd, config)) {
     if (!existsSync(root.dir)) continue;
@@ -159,17 +163,43 @@ function listRootWorkflows(cwd: string, config: Config): WorkflowListing[] {
       .sort();
     for (const file of files) {
       const name = file.slice(0, -".js".length);
-      const shadowed = winners.has(name);
-      if (!shadowed) winners.add(name);
+      const path = join(root.dir, file);
+      const winner = winners.get(name);
+      if (!winner) winners.set(name, { rootLabel: root.label, path });
       out.push({
         name,
         origin: root.origin,
         provider: root.provider,
         rootLabel: root.label,
-        path: join(root.dir, file),
-        shadowed,
+        path,
+        shadowed: winner !== undefined,
+        ...(winner ? { shadowedBy: winner } : {}),
       });
     }
+  }
+  return out;
+}
+
+/** One file a name could resolve to, in precedence order (see {@link workflowCandidates}). */
+export interface WorkflowCandidate {
+  origin: "project" | "global";
+  provider: WorkflowProvider;
+  rootLabel: string;
+  path: string;
+}
+
+/**
+ * Every file in the managed directories a bare `name` could resolve to, in
+ * precedence order — the first is the one `odw run <name>` runs (an
+ * untrusted run aside, which skips the project's). Drives `odw workflows
+ * where`. Pure stat — never opens a file.
+ */
+export function workflowCandidates(name: string, cwd: string, config: Config): WorkflowCandidate[] {
+  if (!isValidName(name)) return [];
+  const out: WorkflowCandidate[] = [];
+  for (const root of searchRoots(cwd, config)) {
+    const path = join(root.dir, `${name}.js`);
+    if (isRegularFile(path)) out.push({ origin: root.origin, provider: root.provider, rootLabel: root.label, path });
   }
   return out;
 }
@@ -218,9 +248,10 @@ function resolveAsName(name: string, opts: ResolveOptions): ResolvedWorkflow {
     // Untrusted (ODW extension: trust): the repository's own workflows run
     // only when their path is given — a name could shadow one of the user's.
     if (untrusted && root.origin === "project") {
+      const rel = relative(opts.cwd, candidate).split(sep).join("/");
       notes.push(
         `untrusted run: not running the repository's own ${root.label}/${name}.js by name — ` +
-          `pass its path (./${relative(opts.cwd, candidate).split(sep).join("/")}) to run it anyway`,
+          `pass its path (${rel.startsWith("../") ? rel : `./${rel}`}) to run it anyway`,
       );
       continue;
     }
@@ -287,16 +318,32 @@ function withPluginOrigin(found: ResolvedWorkflow, opts: ResolveOptions): Resolv
   return w ? { ...found, provider: w.provider, rootLabel: pluginOrigin(w), plugin: w } : found;
 }
 
-/** Project roots then global roots, deduped by realpath. */
+/**
+ * Project roots then global roots, deduped by realpath. The project roots
+ * are every `.odw/workflows` and `.claude/workflows` from `cwd` up to its
+ * repository root, nearest first — as Claude Code loads every
+ * `.claude/workflows/` along that path, the one closest to the working
+ * directory winning a name: in a monorepo, a package's own workflow shadows
+ * the root's. At each level `.odw` comes before `.claude`, as it always has.
+ * Outside a git repository only `cwd` is searched.
+ */
 function searchRoots(cwd: string, config: Config): SearchRoot[] {
+  const project: SearchRoot[] = [];
+  for (const level of projectLevels(cwd)) {
+    const rel = relative(cwd, level).split(sep).join("/");
+    const prefix = rel ? `${rel}/` : "";
+    project.push(
+      { dir: join(level, ".odw", "workflows"), origin: "project", provider: "odw", label: `${prefix}.odw/workflows` },
+      {
+        dir: join(level, ".claude", "workflows"),
+        origin: "project",
+        provider: "claude",
+        label: `${prefix}.claude/workflows`,
+      },
+    );
+  }
   const candidates: SearchRoot[] = [
-    { dir: join(cwd, ".odw", "workflows"), origin: "project", provider: "odw", label: ".odw/workflows" },
-    {
-      dir: join(cwd, ".claude", "workflows"),
-      origin: "project",
-      provider: "claude",
-      label: ".claude/workflows",
-    },
+    ...project,
     {
       dir: resolveWorkflowsRoot(config.settings.workflowsRoot),
       origin: "global",
@@ -321,6 +368,23 @@ function searchRoots(cwd: string, config: Config): SearchRoot[] {
     out.push(root);
   }
   return out;
+}
+
+/**
+ * `cwd`, then each parent up to the nearest one holding `.git` (a directory,
+ * or the file of a worktree or submodule): the repository root. With no
+ * `.git` above it, `cwd` alone.
+ */
+function projectLevels(cwd: string): string[] {
+  const start = resolve(cwd);
+  const levels: string[] = [];
+  for (let dir = start; ; ) {
+    levels.push(dir);
+    if (existsSync(join(dir, ".git"))) return levels;
+    const parent = dirname(dir);
+    if (parent === dir) return [start];
+    dir = parent;
+  }
 }
 
 function defaultClaudeWorkflowsLabel(): string {

@@ -287,6 +287,43 @@ test("a label two agents share is replayed by id; compare is pointed at the id a
   }
 });
 
+test("a replay of a triggered run with untrusted input keeps both: its untrustedInput and its strict script context (review fix)", async () => {
+  const f = await original();
+  try {
+    // approve: false — the mock adapter has no read-only flags, so its agents may write and would wait for a go.
+    const untrustedInput = { why: "trigger:issue", args: ["topic"], approve: false };
+    const triggered = f.store.create({
+      script: join(f.root, "rp.js"),
+      args: { topic: "auth" },
+      source: f.repo,
+      configPath: f.configPath,
+      origin: "trigger",
+      untrustedInput,
+    });
+    assert.equal(await executeRun(f.store.runDir(triggered)), "done");
+    const plan = planReplay(f.store, triggered, 1);
+    assert.deepEqual(plan.start.untrustedInput, untrustedInput);
+    assert.equal(plan.start.sourceOrigin, "trigger");
+    const known = new Set(f.store.listRunIds());
+    const r = await cli(["replay", triggered, "--agent", "plan", "--wait", "--timeout", "60", "--runs-root", f.store.root]);
+    assert.equal(r.code, 0, r.err);
+    const id = f.store.listRunIds().find((runId) => !known.has(runId))!;
+    const meta = f.store.readMeta(id);
+    assert.equal(meta.origin, "replay");
+    assert.deepEqual(meta.untrustedInput, untrustedInput, "the args the original's input covered, not { replayOf }");
+    assert.equal(meta.sourceOrigin, "trigger");
+    assert.equal(f.store.readStatus(id).scriptContext, "strict");
+    // Its agents ran under the tier the original's did.
+    assert.equal(startedOf(f.store, id)[0]!.permissions, startedOf(f.store, triggered)[0]!.permissions);
+    // A replay of the user's own run: neither.
+    const own = planReplay(f.store, f.runId, 1);
+    assert.equal(own.start.untrustedInput, null);
+    assert.equal(own.start.sourceOrigin, null);
+  } finally {
+    rmSync(f.root, { recursive: true, force: true });
+  }
+});
+
 test("an agent with no saved call cannot be replayed, and says why", async () => {
   const f = await original();
   try {

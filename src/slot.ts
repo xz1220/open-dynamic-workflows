@@ -10,11 +10,12 @@
  * compose project name, and a database or volume name once quoted, or with
  * the hyphens swapped for underscores.
  *
- * `COMPOSE_PROJECT_NAME` defaults to it, so `docker compose up` in a worktree
- * starts that agent's own stack; a value the user set is kept. One inherited
- * from another run's agent (a worker started by an agent) is that agent's
- * slot, not the user's: it is replaced, or — for an agent without a slot —
- * dropped.
+ * `COMPOSE_PROJECT_NAME` is set to it, so `docker compose up` in a worktree
+ * starts that agent's own stack — even when the user set one: kept, every
+ * agent would share the user's stack, and a teardown's `down -v` would remove
+ * it (the run logs, once, that it was overridden). One inherited from another
+ * run's agent (a worker started by an agent) is that agent's slot: for an
+ * agent without a slot it is dropped.
  */
 
 /** `odw-` and a lowercase name: what {@link slotName} makes, and `odw gc` looks for in compose projects. */
@@ -39,15 +40,22 @@ export function slotName(runId: string | undefined, agentId: number | string | u
 }
 
 /**
- * `base` with `COMPOSE_PROJECT_NAME` set to `slot` — unless the user set one
- * — or, without a slot, without the one an agent's slot left there. A copy;
- * `base` is not changed.
+ * `base` with `COMPOSE_PROJECT_NAME` set to `slot` — whatever was there — or,
+ * without a slot, without the one an agent's slot left there. `onOverride` is
+ * told a value of the user's that the slot replaced. A copy; `base` is not
+ * changed.
  */
-export function withSlot(base: Record<string, string | undefined>, slot: string | undefined): Record<string, string | undefined> {
+export function withSlot(
+  base: Record<string, string | undefined>,
+  slot: string | undefined,
+  onOverride?: (userValue: string) => void,
+): Record<string, string | undefined> {
   const env = { ...base };
   const inherited = env.ODW_SLOT !== undefined && env.COMPOSE_PROJECT_NAME === env.ODW_SLOT;
   if (slot !== undefined) {
-    if (!env.COMPOSE_PROJECT_NAME || inherited) env.COMPOSE_PROJECT_NAME = slot;
+    const user = env.COMPOSE_PROJECT_NAME;
+    if (user && !inherited && user !== slot) onOverride?.(user);
+    env.COMPOSE_PROJECT_NAME = slot;
   } else if (inherited) {
     delete env.COMPOSE_PROJECT_NAME;
   }

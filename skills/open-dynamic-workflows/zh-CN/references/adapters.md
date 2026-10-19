@@ -199,10 +199,11 @@ still reach the agent`）。仓库 `.worktreeinclude` 的 `symlink:` 行和仓�
 | `permissionDenials` | **ODW 扩展。** CLI 拒绝了 agent 的工具调用（`deniedPath`）、而回复声称成功时怎么办：`"warn"`（默认）保留回复——这些调用记为 agent 上的 `denied` 并记一次日志——`"fail"` 让 agent 以 `permission` 失败。适配器自己的 `permissionDenials` 优先；设了 `expect` 的调用无论如何都把被拒绝的调用算作缺失 |
 | `mcpFailures` | **ODW 扩展。** CLI 启动 agent 时没连上 MCP 服务器（`mcpPath`：Claude Code 的 init 事件）时怎么办：`"warn"`（默认，与 Claude Code 自己只警告一致）保留回复——每个状态不是 `connected` 的服务器记为 agent 上的 `mcp`，每次运行按服务器和状态各记一次日志——`"fail"` 让服务器为 `failed` 或 `needs-auth` 的 agent 以 `mcp_unavailable` 失败（`pending` 和 `disabled` 从不导致失败）。调用的 `expect.mcp` 列出的服务器则算作缺失 |
 | `orphanedBackground` | **ODW 扩展。** CLI 给出回复时仍有后台任务在运行——`run_in_background` 的 shell 命令或它从未等待的子 agent，随 CLI 退出而终止（`output.background`：Claude Code 的任务事件）——时怎么办：`"warn"`（默认）保留回复，任务记为 agent 上的 `orphaned` 并记一次日志；`"fail"` 让 agent 以 `orphaned_background` 失败。设了 `expect` 的调用无论如何都把它算作缺失 |
+| `modelMismatch` | **ODW 扩展。** CLI 报告实际服务 agent 的模型不是它被请求的模型时（`output.servedModel`：Claude Code 的 init `model`、assistant `message.model`、result `modelUsage` 键）怎么办：`"warn"`（默认）保留回复——模型作为 `servedModel` 记在 agent 上，并记录一条 `model_substituted` 事件 `{ agentId, label, adapter, requested, served, policy, message }`；`"fail"` 让 agent 以 `model_substituted` 失败（不重试、不回退）。`"@tier"` 先解析成向 CLI 请求的 id；大小写、`[1m]` 后缀和供应商前缀不计，别名完整出现在实际 id 中即一致（`opus` ~ `claude-opus-5-5`；`best` 即 opus，`default` 与任何模型一致），任一实际模型一致即可（辅助模型不算替换）。不报告模型的 CLI 显示"未报告"，从不算不一致 |
 | `scopePolicy` | **ODW 扩展。** agent 改动了声明的 `scope` 之外的文件时怎么办（见原语参考）：`"warn"`（默认）保留回复，这些文件记为 agent 上的 `outOfScope` 并记日志；`"fail"` 让 agent 以 `out_of_scope` 失败。`agent()` 自己的 `scopePolicy` 优先；设了 `expect` 的调用无论如何都把它算作缺失 |
 | `questions` | **ODW 扩展。** agent 提问时怎么办——CLI 的澄清工具调用（`output.questions`：Claude Code 的 `AskUserQuestion`），无头运行时没人能回答；无论哪种，CLI 都在提问处被停下：`"checkpoint"`（默认）在检查点上问人，再带着答案重新运行这个调用（`odw approve --note`），被拒绝则以 `needs_input` 失败；`"fail"` 以 `needs_input` 失败；`"deny"` 让 CLI 不带提问工具运行（`questionArgs`）并告诉 agent 自行假设。适配器自己的 `questions` 和 `agent()` 的会覆盖它 |
 | `destructiveGit` | **ODW 扩展。** agent 的 CLI 执行了破坏性 git 命令——`git reset --hard`、`git checkout .` / `-- .` / `--force`、`git restore .`、`git clean -f…`、`git push --force`（`-f`、`--force-with-lease`、`+refspec`）、`git stash drop\|clear`、`git branch -D`——时怎么办；命令从流式输出的工具调用中读取（Claude Code 的 Bash、Codex 的 `command_execution`、kilo/opencode/agy 的 shell 工具；文本适配器的正文不读）：`"warn"`（默认）保留回复，每条命令记为一个 `destructive_git` 事件，运行有安全快照时提示 `odw restore <run>`；`"fail"` 在 CLI 结束后让 agent 以 `destructive_git` 失败（ODW 无法在命令执行前拦住它）。只重置工作区的几类命令对隔离 agent 不计。快照本身——运行中第一个 `edit` 或 `full` 档位的原地 agent 开始前、工作区有未提交内容时存到 `refs/odw/safety/<run>`——不需要设置 |
-| `scriptContext` | **ODW 扩展。** 工作流正文在哪里运行:`"host"` 在 worker 自己的上下文中(`process`、`require`、`fetch` 都可触及),`"strict"` 在一个新的 `vm` 上下文中,只有原语与标准内建对象——没有 `process`、`require`、`import()`、`fetch`、`console`、定时器、`eval`/`new Function`;用到时报错会说明原因。不设置(默认):触发器启动的运行、Claude Code 插件的工作流、输入或仓库不可信的运行用 strict,其余用 host;嵌套的 `workflow()` 与父运行相同。记录在 `run_started` 的设置中。`vm` 不是安全边界。 |
+| `scriptContext` | **ODW 扩展。** 工作流正文在哪里运行:`"host"` 在 worker 自己的上下文中(`process`、`require`、`fetch` 都可触及),`"strict"` 在一个新的 `vm` 上下文中,只有原语与标准内建对象——没有 `process`、`require`、`import()`、`fetch`、`console`、定时器、`eval`/`new Function`;用到时报错会说明原因。不设置(默认):触发器启动的运行、Claude Code 插件的工作流、输入或仓库不可信的运行用 strict,其余用 host(触发器启动的运行,其 rerun、resume、replay 亦然;`"host"` 拿走 strict 默认值时运行日志会警告);嵌套的 `workflow()` 与父运行相同,插件的工作流除非设为 `"host"` 否则为 strict。记录在 `run_started` 的设置中。`vm` 不是安全边界,`exec()` 仍在 shell 中带着运行的环境变量执行。 |
 | `redact` | **ODW 扩展。** `{ "env": true, "patterns": true, "extra": [] }`（默认）：odw 保存和提供的内容——transcript 与 stderr 结尾、保存的结果、事件、运行的错误、webhook 负载——在写下之前把疑似密钥替换为 `«redacted:<kind>»`，并以 `redacted: true` 标明；`worker.log` 与 Chat Host 会话同样脱敏（用户输入只脱敏令牌形态），运行的 `args` 为 `odw rerun` 原样保存、对外提供时脱敏令牌形态。`env`：odw 环境及各适配器 `env` 中名字像密钥的变量（`*_KEY`、`*TOKEN`、`*SECRET*`、`*PASSWORD*`、`AUTHORIZATION`、云凭据）的值（8 个字符及以上），无论出现在哪里，以及这类名字的 `NAME=value`；`patterns`：常见令牌形态（Anthropic、OpenAI、GitHub、Slack、AWS、Google、JWT、私钥、`Bearer`）；`extra`：更多正则表达式。运行的结果只应用 `patterns` 和 `extra`；提示词、agent 看到的内容和保存的 diff 从不脱敏。`false` = 关闭；`odw doctor` 会报告 |
 | `otel` | **ODW 扩展。** OpenTelemetry 导出：`false`（默认）什么都不发送——单靠 `OTEL_*` 环境变量不会开启。`true` 或 `{ "endpoint": "http://localhost:4318", "headers": { … }, "captureContent": false }`：运行结束后，worker 把它的 trace（遵循 GenAI 语义约定的 `invoke_workflow` / `phase` / `invoke_agent` / `execute_tool` / `exec` / `checkpoint` span——含用量、花费、模型、失败原因，重试和回退作为 span 事件）以 OTLP/HTTP JSON 发送到 `endpoint` + `/v1/traces`，只发一次，时限 5 秒；失败只在运行的 `worker.log` 留一行，绝不改变运行结果。省略时 `endpoint` 和 `headers` 取自 `OTEL_EXPORTER_OTLP_(TRACES_)ENDPOINT` / `…HEADERS`（默认端点 `http://localhost:4318`）；header 的值是机密，从不写日志或显示。`captureContent`（或 `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true`）会附带回复、工具输入输出和错误文本——发出前再次脱敏，每个字段截断到 4096 个字符。`odw export <run> --otlp [--out FILE \| --send]` 可导出任意运行；`odw doctor` 显示 trace 发往何处 |
 | `sandbox` | **ODW 扩展。** `"none"`（默认）：agent CLI 在本机运行。`{ "kind": "container", "image", "engine"?, "network"?, "mounts"?, "cliConfig"?, "memory"?, "cpus"?, "pids"? }`：每次 CLI 运行与每个 `exec()` 步骤都在全新的 Docker/Podman 容器中进行——只以相同路径挂载工作区与私有 home（复制 CLI 的登录文件），以宿主 uid:gid、无 capability、`no-new-privileges`、pids 上限、只读根文件系统运行，环境变量按名字传递；`network` 默认 `"default"`（agent 必须连到模型 API），也可以是 `"none"` 或出站白名单 `{ "allow": [...] \| "adapter", "proxyImage"? }`——容器只加入运行专属的内部网络（`network create --internal`），唯一出口是代理边车（ODW 的零依赖 node 脚本，即隐藏命令 `odw __egress-proxy`，跑在 agent 镜像里——**需要 node**——或 `proxyImage` 里），通过 `HTTPS_PROXY`/`HTTP_PROXY` 访问；代理只为白名单主机的 443（或条目端口）建立 CONNECT、只转发白名单主机的明文 HTTP（`Host` 头须指向该主机）、自己解析域名（Docker 上容器得到 `--dns 192.0.2.1`：无外部 DNS，CVE-2024-29018）、只在内部网络地址上监听，除非列出否则拒绝 IP 字面量；它按主机名而非站点限制：CONNECT 里的 TLS 可以指向同一 CDN 边缘后的其他站点（域前置）；`*.d` 匹配 `d` 的子域而非 `d` 本身；`"adapter"` 即适配器的 `egressHosts`；适配器与调用只能取交集；每次拒绝是一条 `egress_denied` 事件 `{ host, port, method, agent \| commandId }`（每次运行最多 200 条，之后一行日志给出数量；`agent` 是客户端发来的代理用户名，仅作提示）；忽略 `HTTPS_PROXY` 的 CLI 完全没有网络（安全的失败方式）；运行结束与兜底时删除代理和网络，`odw doctor` 期望首个列出的主机返回 200、保留域名返回 403、容器内 example.com 解析不了。`exec()` 步骤默认 `"none"`（`"default"` 即运行的网络，含白名单）；非干净退出时按名字 kill 容器；镜像从不拉取（`examples/sandbox/Dockerfile`），缺引擎或镜像即 `ConfigError`。`odw run\|rerun\|resume --sandbox container [--sandbox-image <镜像>]` 按运行开启；适配器与 `agent()` 只能收紧 |
@@ -292,6 +293,14 @@ stdout 的事件里也没有回复时，回复为空（除非 `allowEmpty`，否
 字符串的对象）。内置 `claude` 读取名为 `AskUserQuestion` 的 `assistant` `tool_use` 块及其
 `input.questions[]`（`question`、`header`、`options[].label`、`multiSelect`）。
 
+**ODW 扩展**，仅 `jsonl`：`servedModel: [规则…]` 说明哪些事件写明了实际服务 agent 的模型，作为
+`servedModel` 记在调用请求的模型旁边（`modelMismatch`）。规则为 `{ "event": <类型>, "where"?:
+[条件，同 background], "path": [路径], "keys"?: true }`：匹配的事件中，`path` 处的字符串——或该处
+数组里的每个字符串，设了 `keys` 时为该处对象的每个键——即模型 id，按出现顺序各记一次。内置
+`claude` 读取 `system` `init` 事件的 `model`、每条 `assistant` 消息的 `message.model`（
+`"<synthetic>"` 除外）和 `result` 的 `modelUsage` 键。codex、agy 等其他内置适配器不声明——它们
+文档化的事件里没有模型字段——其 agent 的实际模型显示为"未报告"，不做推断。
+
 ### 原生结构化输出
 
 **ODW 扩展。** `flags.schema` 声明某个 CLI 会自己校验 JSON Schema，以及它如何接收 schema：
@@ -321,6 +330,13 @@ strict schema）交给 CLI，否则没有谁会强制执行——ODW 检查它�
 `"schemaKeywords": "strict"` 时则改为让调用以 `AgentError` 失败。格式错误的 schema 或未知关键字
 在两种模式下都会失败。要为某个内置适配器关闭原生 schema，给它不含 `schema` 的 `flags`：
 `"claude": { "flags": { "model": ["--model"] } }`。
+
+**agent 定义的旗标（ODW 扩展）。** `agentType` 定义里的字段靠这些传给 CLI：`flags.effort`——承载 `effort`
+的旗标，含 `{effort}` 的元素原地替换为级别（codex：`["-c", "model_reasoning_effort={effort}"]`），否则把级别追加在后
+（claude：`["--effort"]`）；`flags.effortLevels`——它接受的级别（其他级别只记日志、不传）；`flags.tools`——接受逗号分隔的
+内建工具列表的旗标（claude：`["--tools"]`；与档位自带列表取交集，只收窄）；`flags.disallowedTools`——要禁用的工具前的旗标
+（claude：`["--disallowedTools"]`）。没有这些旗标的适配器仍按 tools 推出的档位封顶，其余记为未生效。`flags` 是整体替换的，
+覆盖时想保留这些就要一并写上。
 
 ### 运行通知（`notify`）
 
@@ -382,4 +398,5 @@ CLI 在输出里报告的失败（`errorPath`：Claude Code stream-json 的 `is_
 或调用设了 `expect` 时为 `permission`，CLI 启动 agent 时有 MCP 服务器 `failed` 或
 `needs-auth`（`mcpPath`）且 `mcpFailures` 为 `"fail"` 时为 `mcp_unavailable`，CLI 回复时
 仍有后台任务在运行（`background`）且 `orphanedBackground` 为 `"fail"` 或调用设了 `expect`
-时为 `orphaned_background`。停下来提问却没人回答的 agent（`questions`）以 `needs_input` 失败。
+时为 `orphaned_background`，CLI 报告实际服务的模型不是被请求的模型（`servedModel`）且
+`modelMismatch` 为 `"fail"` 时为 `model_substituted`。停下来提问却没人回答的 agent（`questions`）以 `needs_input` 失败。

@@ -13,7 +13,8 @@
  *   - the `worktreeSetup` (and `worktreeTeardown`) it sets does not run: a command the repository
  *     chose would run in every isolated agent's worktree. One the user's own
  *     config sets (`--config`, `$ODW_CONFIG`, `~/.config/odw/config.json`
- *     outside the repository) still runs;
+ *     outside the repository) still runs. A trusted run with untrusted input
+ *     (../untrusted-input) drops them too;
  *   - the run says, once, that the config is the repository's — its adapters
  *     and other settings still apply — and how to use one of the user's own.
  *
@@ -129,11 +130,27 @@ export function resolveRunTrust(opts: {
 /**
  * `config` as an untrusted run uses it — its trust set, and without the
  * `worktreeSetup` (and `worktreeTeardown`) the repository's own config set — and what the run logs
- * about it, one line each. A trusted run's config is returned as it is.
+ * about it, one line each. A trusted run's config is returned as it is, but
+ * for a run with untrusted input (`untrustedInput`; see ./untrusted-input),
+ * which drops the repository's setup and teardown the same way: text from
+ * outside could have an agent change them before a later run's teardown.
  */
-export function applyRunTrust(config: Config, run: RunTrust): { config: Config; notes: string[] } {
+export function applyRunTrust(config: Config, run: RunTrust, opts: { untrustedInput?: boolean } = {}): { config: Config; notes: string[] } {
   const settings = { ...config.settings, trust: run.trust };
-  if (run.trust !== "untrusted") return { config: { ...config, settings }, notes: [] };
+  if (run.trust !== "untrusted") {
+    const notes: string[] = [];
+    if (opts.untrustedInput && run.repositoryConfig) {
+      for (const key of ["worktreeSetup", "worktreeTeardown"] as const) {
+        if (!settings[key]) continue;
+        notes.push(
+          `untrusted input: not running the ${key} that the repository's own config (${run.repositoryConfig}) sets — ` +
+            `it is the repository's code; set ${key} in a config of your own (--config) to run one`,
+        );
+        settings[key] = null;
+      }
+    }
+    return { config: { ...config, settings }, notes };
+  }
   const notes = [
     `untrusted run (${run.why}): each agent CLI runs in its documented way of ignoring the repository's ` +
       `instructions, settings and hooks; what one cannot keep out is said below`,

@@ -67,7 +67,10 @@
  * terminal event and saved record, and logged once per run for each server
  * and status. Background work its CLI left running under a reply that stood
  * (`orphanedBackground: "warn"`) is logged once and kept as `orphaned` on its
- * agent_finished event and saved record.
+ * agent_finished event and saved record. The models its CLI said served it
+ * (`output.servedModel`) are kept as `servedModel` there too; one run served by
+ * another model than the one asked for is a `model_substituted` event, once
+ * per adapter and models (see ./served-model).
  *
  * An agent with notes on — `notes: true` on its call or its parallel(), or
  * the `notes` setting (an ODW extension; see ./notes) — finds the run's notes
@@ -116,7 +119,8 @@ import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 
 import { formatSeconds } from "./adapters/failures.js";
-import { isPermissionTier } from "./adapters/permissions.js";
+import { isPermissionTier, minTier, planPermissions, runTier } from "./adapters/permissions.js";
+import { agentTypeField, agentTypeSummary, findAgentType, planAgentType, type AgentTypePlan } from "./agent-types.js";
 import type { McpServer } from "./adapters/output.js";
 import { planTrust, runTrust } from "./adapters/trust.js";
 import { sandboxView, type SandboxView } from "./adapters/sandbox.js";
@@ -128,9 +132,24 @@ import { branchName, ChangeRecorder, type AgentChanges, type KeptChanges } from 
 import { CheckpointTimeout, createCheckpoint, type CheckpointOptions, type CheckpointResult } from "./checkpoint.js";
 import { spentTokens, type RunContext } from "./context.js";
 import { AdapterExecutionError, AgentError, NeedsInputError, RunStopped, RunawayError, UnmetExpectationError, WorkflowScriptError, isDeadlineStop, isFatalError } from "./errors.js";
-import { AGENT_FAILED, AGENT_FINISHED, AGENT_STARTED, DESTRUCTIVE_GIT, HANDOFF, LOG, PHASE_STARTED, event } from "./events.js";
+import { AGENT_FAILED, AGENT_FINISHED, AGENT_STARTED, DESTRUCTIVE_GIT, HANDOFF, LOG, MODEL_SUBSTITUTED, PHASE_STARTED, event } from "./events.js";
+import { substitutionNote } from "./served-model.js";
 import { DestructiveGitWatch } from "./destructive-git.js";
 import { ExecError, createExec, execStep, type ExecOptions, type ExecResult } from "./exec.js";
+import {
+  countOutcomes,
+  countsText,
+  failedOutcome,
+  FanOutShortfall,
+  fanOutEvent,
+  fanOutWhat,
+  mostlyNull,
+  readMinOk,
+  requiredOk,
+  returnedOutcome,
+  type MinOk,
+  type SlotOutcome,
+} from "./fanout.js";
 import { CostGateRejected, costGateTitle, readCostGate, type CostGate, type CostHistory } from "./forecast.js";
 import { Expectations, planChecks, scopeOnlyPlan, type AgentChecks, type ExpectOptions } from "./expect.js";
 import { resumeKey, type AgentCallRecord, type AgentResultRecord } from "./journal.js";
@@ -142,6 +161,7 @@ import { interfaceSummary, type AgentNotes } from "./notes.js";
 import { answerOf, isQuestionPolicy, MAX_QUESTION_ROUNDS, questionLine, questionTitle, type QuestionPolicy } from "./questions.js";
 import { firstAdapter, phaseDefaultsOf, type AdapterChoice, type PhaseDefaults } from "./routing.js";
 import type { JsonSchema } from "./schema.js";
+import { resolveScriptContext } from "./script-context.js";
 import { planScope, ScopeLocks, waitNote, type ScopeClaim, type ScopePlan, type ScopePolicy } from "./scope.js";
 import { FanOut } from "./throttle.js";
 import { fmtUsd } from "./tty.js";
@@ -261,6 +281,13 @@ export interface AgentOptions {
    * `questions` setting ("checkpoint" by default).
    */
   questions?: QuestionPolicy;
+  /**
+   * Claude Code dialect: this call's stall window in milliseconds — how long
+   * its CLI may write nothing before the stall watchdog kills and restarts it
+   * (`stallRestarts`), in place of its adapter's and the run's `stallTimeout`.
+   * `0` turns the watchdog off for this call (an ODW reading).
+   */
+  stallMs?: number;
 }
 
 /** ODW extension: what parallel() takes after its thunks. */
@@ -273,6 +300,13 @@ export interface ParallelOptions {
    * this call. Unset: the setting.
    */
   costGate?: CostGate | null;
+  /**
+   * The ok results it needs (see ./fanout): a whole number, a fraction of
+   * its thunks (`0.8`), or `"all"`. Fewer, and parallel() throws a
+   * FanOutShortfall with the counts instead of resolving with the nulls.
+   * Unset: it resolves whatever came back, as in Claude Code.
+   */
+  minOk?: MinOk;
 }
 
 export interface Budget {
@@ -345,6 +379,33 @@ export function createPrimitives(
   // Each MCP server, with its status, the run has said was not connected:
   // once per run, shared with nested workflow()s like the notes above (ODW extension).
   const notedMcp = (ctx.mcpNotes ??= new Set<string>());
+  // The agent definitions `agentType` named, as mapped — read once per name
+  // per workflow, and logged then (ODW extension; see ./agent-types); null: none found.
+  const agentTypes = new Map<string, AgentTypePlan | null>();
+  const agentTypeFor = (name: string): AgentTypePlan | null => {
+    if (agentTypes.has(name)) return agentTypes.get(name)!;
+    const untrusted = runTrust(ctx.config) === "untrusted";
+    const def = findAgentType(name, { cwd: ctx.source, trust: untrusted ? "untrusted" : "trusted" });
+    const plan = def ? planAgentType(def, untrusted) : null;
+    agentTypes.set(name, plan);
+    const message = plan
+      ? agentTypeSummary(plan)
+      : `agentType '${name}': no agent definition named '${name}' in .claude/agents, .odw/agents, ~/.claude/agents ` +
+        `or an enabled plugin's agents — applied as a one-line persona in the prompt`;
+    ctx.emit(event(LOG, { message, agentType: name }));
+    return plan;
+  };
+  /**
+   * A call's permissions under its definition's tools (ODW extension): the
+   * lower of what it asks — else its first adapter's ceiling — and the cap.
+   * Never higher; a bad option is left for the bridge to refuse.
+   */
+  const cappedPermissions = (option: unknown, cap: PermissionTier | undefined, choice: AdapterChoice | undefined): unknown => {
+    if (!cap) return option;
+    if (option !== undefined) return isPermissionTier(option) ? minTier(option, cap) : option;
+    const ceiling = planPermissions(ctx.bridge.chainFor(choice)[0]!, runTier(ctx.config)).requested;
+    return ceiling && minTier(ceiling, cap) !== ceiling ? cap : undefined;
+  };
   // Each phase's defaults for its agents (ODW extension), by its (prefixed)
   // title — shared with nested workflow()s like the notes above.
   const phaseDefaults = (ctx.phaseDefaults ??= new Map<string, PhaseDefaults>());
@@ -442,6 +503,7 @@ export function createPrimitives(
     const denied = deniedField(recorded.denied);
     const mcp = mcpField(recorded.mcp);
     const orphaned = orphanedField(recorded.orphaned);
+    const served = servedModelField(recorded.servedModel);
     const outside = outOfScopeField(recorded.outOfScope);
     const changed = changeFields(kept);
     // A value saved with its secrets redacted replays as saved, and says so (ODW extension; see ./redact).
@@ -456,11 +518,11 @@ export function createPrimitives(
         }),
       );
     }
-    const finished = event(AGENT_FINISHED, { agentId, label, phase, adapter, ...moved, attempts, ...marks, ...changed, ...denied, ...mcp, ...orphaned, ...outside });
+    const finished = event(AGENT_FINISHED, { agentId, label, phase, adapter, ...moved, attempts, ...marks, ...changed, ...denied, ...mcp, ...orphaned, ...served, ...outside });
     const startedAt = startedEv.ts;
     const finishedAt = finished.ts;
     const value = recorded.value;
-    if (save({ agentId, key, label, phase, adapter, ...moved, attempts, startedAt, finishedAt, value, ...tier, ...marks, ...changed, ...denied, ...mcp, ...orphaned, ...outside, ...redacted })) {
+    if (save({ agentId, key, label, phase, adapter, ...moved, attempts, startedAt, finishedAt, value, ...tier, ...marks, ...changed, ...denied, ...mcp, ...orphaned, ...served, ...outside, ...redacted })) {
       finished.saved = true;
     }
     ctx.emit(finished);
@@ -740,6 +802,9 @@ export function createPrimitives(
       const got = typeof opts.questions === "string" ? JSON.stringify(opts.questions) : describeValue(opts.questions);
       throw new AgentError(`agent(): questions must be "checkpoint", "fail" or "deny"; got ${got}`);
     }
+    if (opts.stallMs !== undefined && !(typeof opts.stallMs === "number" && Number.isFinite(opts.stallMs) && opts.stallMs >= 0)) {
+      throw new AgentError(`agent(): stallMs must be a number of milliseconds (0 turns the stall watchdog off); got ${describeValue(opts.stallMs)}`);
+    }
     // The run's notes board (ODW extension): its call's say, else its parallel()'s, else the setting.
     const notesOn = opts.notes ?? notesScope.getStore() ?? ctx.config.settings.notes === true;
     // Workflow memory (ODW extension; see ./memory): its call's say, else the setting.
@@ -761,7 +826,22 @@ export function createPrimitives(
     // The adapter and model its phase gives a call that names neither (ODW extension).
     const defaults = activePhase !== null ? phaseDefaults.get(activePhase) : undefined;
     const adapterChoice = opts.adapter ?? defaults?.adapter;
-    const model = opts.model ?? defaults?.model;
+    // The agent definition its agentType names (ODW extension; see ./agent-types):
+    // its isolation, and its tools as a cap on its tier, are the call's own
+    // unless it says otherwise; its model is a default the router maps per CLI.
+    const definition = typeof opts.agentType === "string" && opts.agentType !== "" ? agentTypeFor(opts.agentType) : null;
+    if (definition) {
+      const isolation = opts.isolation ?? definition.isolation;
+      const permissions = cappedPermissions(opts.permissions, definition.tier, adapterChoice) as PermissionTier | undefined;
+      opts = {
+        ...opts,
+        ...(isolation !== undefined ? { isolation } : {}),
+        ...(permissions !== undefined ? { permissions } : {}),
+      };
+    }
+    const model = opts.model ?? (definition?.model ? undefined : defaults?.model);
+    // The model it asked for, as its events show it: its own, else its definition's, else its phase's.
+    const shownModel = model ?? definition?.model;
     // Adapter selection honours ONLY opts.adapter (or its phase's default).
     // agentType is a persona (it is forwarded to the bridge and injected into
     // the prompt), never an adapter name. Resolve it before asking for a slot:
@@ -834,6 +914,7 @@ export function createPrimitives(
       label: opts.label,
       model,
       agentType: opts.agentType,
+      ...(definition ? { definition } : {}),
       isolation: opts.isolation,
       permissions: opts.permissions,
       ...(checks.allowEmpty ? { allowEmpty: true } : {}),
@@ -841,6 +922,7 @@ export function createPrimitives(
       ...(ownLimits !== undefined ? { limits: ownLimits } : {}),
       ...(opts.handoff !== undefined ? { handoff: opts.handoff } : {}),
       ...(opts.questions !== undefined ? { questions: opts.questions } : {}),
+      ...(opts.stallMs !== undefined ? { stallMs: opts.stallMs } : {}),
     };
     // The adapters it left down its chain, and the one it is on (ODW extension).
     const fellBackFrom: string[] = [];
@@ -868,6 +950,8 @@ export function createPrimitives(
     };
     // The MCP servers its latest CLI run started it without (ODW extension): what a failed agent keeps.
     let mcpSeen: McpServer[] = [];
+    // The substitutions its CLI runs reported, each said once (ODW extension).
+    const substitutions = new Set<string>();
     const failed = (err: unknown, kept: KeptChanges | null = null, outside: { outOfScope?: string[]; partial?: true } = {}): void => {
       ctx.emit(
         event(AGENT_FAILED, {
@@ -928,7 +1012,9 @@ export function createPrimitives(
           // What `odw compare` matches and shows it by (ODW extension): its
           // resume key, and the model it asked for (a tier keeps its @ name).
           key,
-          ...(model !== undefined ? { model } : {}),
+          ...(shownModel !== undefined ? { model: shownModel } : {}),
+          // The agent definition it runs as (ODW extension): `odw compare` sees it change.
+          ...(definition ? { agentType: agentTypeField(definition) } : {}),
           ...(base ? { base } : {}),
         });
         ctx.emit(startedEv);
@@ -1172,6 +1258,27 @@ export function createPrimitives(
             },
             // The MCP servers a CLI run started it without (ODW extension): kept
             // for its record, and each server and status said once per run.
+            // Another model than the one it asked for served it (ODW extension; see
+            // ./served-model): a model_substituted event, once per adapter and models.
+            onModelSubstituted: ({ adapter: name, requested, served }) => {
+              const key = `${name}\u0000${requested}\u0000${served.join("\u0000")}`;
+              if (substitutions.has(key)) return;
+              substitutions.add(key);
+              const policy = ctx.config.settings.modelMismatch;
+              const cli = adapterDisplayName(ctx.config.adapters[name] ?? adapter);
+              ctx.emit(
+                event(MODEL_SUBSTITUTED, {
+                  message: substitutionNote(`${display}:${agentId}`, cli, requested, served, policy),
+                  agentId,
+                  label: display,
+                  phase: activePhase,
+                  adapter: name,
+                  requested,
+                  served,
+                  policy,
+                }),
+              );
+            },
             onMcp: ({ adapter: name, servers }) => {
               mcpSeen = servers;
               for (const server of servers) {
@@ -1266,6 +1373,7 @@ export function createPrimitives(
           ...deniedField(outcome.denied),
           ...mcpField(outcome.mcp),
           ...orphanedField(outcome.orphaned),
+          ...servedModelField(outcome.servedModel),
           ...outside,
         });
         const persisted = save({
@@ -1285,6 +1393,7 @@ export function createPrimitives(
           ...deniedField(outcome.denied),
           ...mcpField(outcome.mcp),
           ...orphanedField(outcome.orphaned),
+          ...servedModelField(outcome.servedModel),
           ...outside,
         });
         if (persisted) finished.saved = true;
@@ -1467,11 +1576,13 @@ export function createPrimitives(
     }
     // ODW extension: options after the thunks — `notes` (see ./notes) and `costGate` (see ./forecast).
     if (opts !== undefined && (opts === null || typeof opts !== "object" || Array.isArray(opts))) {
-      throw new WorkflowScriptError(`parallel()'s options must be an object — { notes?: boolean, costGate?: { usd } }; got ${describeValue(opts)}`);
+      throw new WorkflowScriptError(`parallel()'s options must be an object — { notes?: boolean, costGate?: { usd }, minOk? }; got ${describeValue(opts)}`);
     }
     for (const key of Object.keys(opts ?? {})) {
-      if (key !== "notes" && key !== "costGate") throw new WorkflowScriptError(`parallel() has no option "${key}"; use notes or costGate`);
+      if (key !== "notes" && key !== "costGate" && key !== "minOk") throw new WorkflowScriptError(`parallel() has no option "${key}"; use notes, costGate or minOk`);
     }
+    // `minOk` (ODW extension; see ./fanout): too few ok results is an error, not a list of nulls.
+    const minOk = opts?.minOk === undefined ? undefined : readMinOk(opts.minOk, (m) => new WorkflowScriptError(m));
     if (opts?.notes !== undefined && typeof opts.notes !== "boolean") {
       throw new WorkflowScriptError(`parallel(): notes must be true or false; got ${describeValue(opts.notes)}`);
     }
@@ -1488,19 +1599,26 @@ export function createPrimitives(
     warnFanOut("parallel()", thunks.length);
     const forecasting = forecastFanOut("parallel()", thunks.length, thunks.length, gate, ctx.currentPhase);
     if (forecasting) await forecasting;
+    const startedIn = ctx.currentPhase;
+    const outcomes: SlotOutcome[] = [];
     const batch = (): Promise<Array<T | null>> =>
       asFanOut(() => ctx.scheduler.gather(
         thunks.map((thunk, i) => async () => {
           try {
-            return await thunk();
+            const value = await thunk();
+            outcomes[i] = returnedOutcome(value);
+            return value;
           } catch (err) {
+            outcomes[i] = failedOutcome(err);
             noteSwallowed(err, `parallel() thunk ${i}`);
             throw err;
           }
         }),
       ));
     // Every agent its thunks start — through any await — has notes on or off as it says.
-    return opts?.notes === undefined ? batch() : notesScope.run(opts.notes, batch);
+    const results = await (opts?.notes === undefined ? batch() : notesScope.run(opts.notes, batch));
+    fanOutDone("parallel()", startedIn, Array.from({ length: thunks.length }, (_, i) => outcomes[i]), minOk);
+    return results;
   };
 
   const pipeline = async (items: unknown[], ...stages: Stage[]): Promise<unknown[]> => {
@@ -1520,18 +1638,49 @@ export function createPrimitives(
     // A pipeline() takes no options: the `costGate` setting covers it.
     const forecasting = forecastFanOut("pipeline()", items.length, items.length * Math.max(1, stages.length), undefined, ctx.currentPhase);
     if (forecasting) await forecasting;
+    const startedIn = ctx.currentPhase;
+    const outcomes: SlotOutcome[] = [];
     const chains = items.map((item, index) => async (): Promise<unknown> => {
       let value: unknown = item;
       let s = 0;
       try {
         for (; s < stages.length; s++) value = await stages[s]!(value, item, index);
       } catch (err) {
+        outcomes[index] = failedOutcome(err);
         noteSwallowed(err, `pipeline() item ${index} at stage ${s}`);
         throw err;
       }
+      outcomes[index] = returnedOutcome(value);
       return value;
     });
-    return asFanOut(() => ctx.scheduler.gather(chains) as Promise<unknown[]>);
+    const results = await asFanOut(() => ctx.scheduler.gather(chains) as Promise<unknown[]>);
+    fanOutDone("pipeline()", startedIn, Array.from({ length: items.length }, (_, i) => outcomes[i]));
+    return results;
+  };
+
+  /**
+   * A settled fan-out's `fanout_done` event (ODW extension; see ./fanout),
+   * one LOG when over half of it is null, and — under `minOk` — the
+   * FanOutShortfall that replaces its result when too few came back ok.
+   */
+  const fanOutDone = (call: "parallel()" | "pipeline()", phase: string | null, outcomes: Array<SlotOutcome | undefined>, minOk?: MinOk): void => {
+    if (outcomes.length === 0) return;
+    const counts = countOutcomes(outcomes);
+    const required = minOk === undefined ? undefined : requiredOk(minOk, counts.total);
+    ctx.emit(fanOutEvent(call, phase, counts, minOk === undefined ? undefined : { minOk, required: required! }));
+    const what = fanOutWhat(call, counts.total);
+    if (required !== undefined && counts.ok < required) {
+      throw new FanOutShortfall(`${what}: ${countsText(counts)} — minOk ${JSON.stringify(minOk)} needs ${required} ok`, counts, required);
+    }
+    if (mostlyNull(counts)) {
+      ctx.emit(
+        event(LOG, {
+          message:
+            `${what}: most results are null — ${countsText(counts)}` +
+            (call === "parallel()" ? "; parallel(thunks, { minOk }) fails a fan-out like this instead of going on" : ""),
+        }),
+      );
+    }
   };
 
   const phase = (title: string, opts?: PhaseDefaults): void => {
@@ -1578,10 +1727,18 @@ export function createPrimitives(
       );
     }
     let scriptPath: string;
+    let plugin = false;
     if (typeof nameOrRef === "string") {
-      scriptPath = resolveWorkflow(nameOrRef, { cwd: ctx.source, config: ctx.config }).scriptPath;
+      const found = resolveWorkflow(nameOrRef, { cwd: ctx.source, config: ctx.config });
+      scriptPath = found.scriptPath;
+      plugin = found.plugin != null;
     } else if (nameOrRef && typeof nameOrRef.scriptPath === "string") {
       scriptPath = resolve(ctx.source, nameOrRef.scriptPath);
+      try {
+        plugin = resolveWorkflow(scriptPath, { cwd: ctx.source, config: ctx.config }).plugin != null; // a plugin's, by its path
+      } catch {
+        // not there: reading it says so below
+      }
     } else {
       throw new WorkflowScriptError("workflow() expects a name or { scriptPath }");
     }
@@ -1593,8 +1750,14 @@ export function createPrimitives(
         `workflow(): cannot read ${scriptPath}: ${(err as Error).message}`,
       );
     }
-    // In the run's script context (ODW extension; see ./script-context): a strict run's child is strict too.
-    const loaded = loadWorkflowScript(text, scriptPath, { context: ctx.config.settings.scriptContext ?? "host" }); // throws on a syntax error
+    // In the run's script context (ODW extension; see ./script-context): a strict run's child is strict too,
+    // and a plugin's workflow is strict as when it runs on its own, unless the config says "host".
+    const parentContext = ctx.config.settings.scriptContext ?? "host";
+    const pluginContext = plugin
+      ? (ctx.pluginScriptContext ?? resolveScriptContext(ctx.config.settings.scriptContext, { plugin: true, untrustedInput: false, untrustedRepo: false }).context)
+      : "host";
+    const context = parentContext === "strict" || pluginContext === "strict" ? "strict" : "host";
+    const loaded = loadWorkflowScript(text, scriptPath, { context }); // throws on a syntax error
     const name = loaded.meta.name;
     const entryLane = `▸ ${name}`;
     // The child gets its own phase cursor (so a concurrent parent agent keeps
@@ -1607,6 +1770,14 @@ export function createPrimitives(
       phases: loaded.meta.phases,
     });
     ctx.emit(event(LOG, { message: `▸ entering workflow ${name} (${scriptPath})` }));
+    if (context !== parentContext) {
+      ctx.emit(
+        event(LOG, {
+          message: `▸ workflow ${name} runs in a strict script context — the workflow is a Claude Code plugin's: only the primitives and standard JavaScript built-ins`,
+          scriptContext: "strict",
+        }),
+      );
+    }
     // Open the child's entry lane as a real phase, so a child that dispatches
     // agents BEFORE its first phase() call (phases are optional) renders them in
     // its own lane rather than inheriting the parent's current phase. A child
@@ -1704,7 +1875,7 @@ export function createPrimitives(
       throw stop;
     }
     if (!result.edited) return;
-    const taken = applyArgsEdit(ctx.args, result.payload);
+    const taken = applyArgsEdit(ctx.args, result.payload, ctx.importArgs);
     const message =
       "refused" in taken
         ? `${title}: approved with an edit, but its args were not taken — ${taken.refused}; the run goes on with the args it had`
@@ -1851,6 +2022,13 @@ function mcpNote(server: McpServer, adapter: string, label: string): string {
     default:
       return `MCP server ${server.name} was ${JSON.stringify(server.status)}, not connected ${who}: its tools may have been unavailable`;
   }
+}
+
+/** The `servedModel` an agent's agent_finished event and record carry: the models its CLI said served it, when any (ODW extension). */
+function servedModelField(served: unknown): { servedModel?: string[] } {
+  if (!Array.isArray(served)) return {};
+  const models = served.filter((model): model is string => typeof model === "string" && model !== "");
+  return models.length > 0 ? { servedModel: models } : {};
 }
 
 /** The `orphaned` an agent's agent_finished event and record carry: the background work its CLI left running, when any (ODW extension). */

@@ -31,9 +31,12 @@
 
 import { Script } from "node:vm";
 
+import { scanClaudeCodeLimits } from "./claude-limits.js";
 import { WorkflowScriptError, type SourceLocation } from "./errors.js";
+import { inputSchemaProblems } from "./input-schema.js";
 import type { WorkflowGlobals } from "./primitives.js";
 import { phaseDefaultsOf, type AdapterChoice } from "./routing.js";
+import type { JsonSchema } from "./schema.js";
 import { assertNoDynamicImport, createStrictRealm, type ScriptContext, type StrictRealm } from "./script-context.js";
 
 /**
@@ -54,7 +57,12 @@ export interface WorkflowMeta {
   whenToUse?: string;
   phases?: WorkflowPhaseMeta[];
   model?: string;
+  /** The shape of its `args`, checked before a run starts (ODW extension; see ./input-schema). */
+  input?: JsonSchema;
 }
+
+/** Told the args object the script holds, and how a worker value enters the script's realm (strict only). */
+export type AdoptArgs = (inScript: unknown, importValue?: (value: unknown) => unknown) => void;
 
 export interface LoadedWorkflow {
   meta: WorkflowMeta;
@@ -62,9 +70,10 @@ export interface LoadedWorkflow {
    * Execute the transformed body with the injected globals and `args`.
    * `adoptArgs` is told the args object the script holds — in a strict
    * context a copy in its own realm — so a break's edit (../breaks) changes
-   * what the script reads.
+   * what the script reads — and, in a strict context, the membrane's
+   * `toScript`, which an edited value must cross before the script holds it.
    */
-  run(globals: WorkflowGlobals, args: unknown, adoptArgs?: (inScript: unknown) => void): Promise<unknown>;
+  run(globals: WorkflowGlobals, args: unknown, adoptArgs?: AdoptArgs): Promise<unknown>;
 }
 
 /** How {@link loadWorkflowScript} compiles: `context: "strict"` in a fresh vm context (ODW extension; see ./script-context). */
@@ -158,6 +167,11 @@ export function loadWorkflowScript(source: string, filename: string, options: Lo
       throw new WorkflowScriptError(`workflow ${filename}: ${(err as Error).message}`, metaAt);
     }
   }
+  // Its input schema (an ODW extension) must be one the validator checks in full.
+  if (meta.input !== undefined) {
+    const problems = inputSchemaProblems(meta.input);
+    if (problems.length > 0) throw new WorkflowScriptError(`workflow ${filename}: ${problems.join("; ")}`, metaAt);
+  }
 
   // Inject each extension unless the body's own top-level binding of that
   // name would clash with it. The masked body (strings and comments blanked)
@@ -193,7 +207,7 @@ export function loadWorkflowScript(source: string, filename: string, options: Lo
 
   return {
     meta,
-    run(globals: WorkflowGlobals, args: unknown, adoptArgs?: (inScript: unknown) => void): Promise<unknown> {
+    run(globals: WorkflowGlobals, args: unknown, adoptArgs?: AdoptArgs): Promise<unknown> {
       if (realm) return runStrict(realm, factory, extensions, globals, args, adoptArgs);
       adoptArgs?.(args);
       // The first eight never move; the injected extensions follow in the
@@ -224,11 +238,11 @@ function runStrict(
   extensions: readonly ExtensionName[],
   globals: WorkflowGlobals,
   args: unknown,
-  adoptArgs?: (inScript: unknown) => void,
+  adoptArgs?: AdoptArgs,
 ): Promise<unknown> {
   const g = realm.toScript({ ...globals }) as Record<string, unknown>;
   const inScript = realm.toScript(args);
-  adoptArgs?.(inScript);
+  adoptArgs?.(inScript, realm.toScript);
   let result: Promise<unknown>;
   try {
     result = factory(g.agent, g.parallel, g.pipeline, g.phase, g.log, inScript, g.budget, g.workflow, ...extensions.map((name) => g[name]));
@@ -336,6 +350,9 @@ function syntaxHint(message: string, text: string, column: number): string | nul
  * which is then the one it calls (member calls such as `re.exec(text)` never
  * count).
  *
+ * And a `parallel()` or `pipeline()` whose list the source settles at more
+ * than 4,096 items, which Claude Code's runtime rejects (see ./claude-limits).
+ *
  * These come back as *warnings*, not errors — ODW itself executes them — so a
  * caller (the generate-workflow repair loop, a linter) can decide how hard to
  * push for dual-compatibility.
@@ -361,6 +378,8 @@ export function scanDualCompat(source: string): string[] {
       "checkpoint() is an ODW extension, not portable to Claude Code — its Workflow tool takes no mid-run input and has no checkpoint global, so the script fails there",
     );
   }
+  // Claude Code's documented limits ODW does not share: a fan-out over 4,096 items (see ./claude-limits).
+  warnings.push(...scanClaudeCodeLimits(source, masked));
   return warnings;
 }
 

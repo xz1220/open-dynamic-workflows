@@ -75,10 +75,13 @@ return await agent(
 | `exec(command, opts?)` | 不启动模型直接运行一条命令（测试、构建、linter）；返回 `{ stdout, stderr, exitCode, signal, timedOut, truncated, durationMs }`。字符串经 shell 执行，数组按 argv 执行。**ODW 扩展**——不属于 Claude Code 方言。 |
 | `checkpoint(title, opts?)` | 暂停运行，直到有人批准（可以附上修改后的 payload）或拒绝；返回 `{ approved, note, by, payload, edited }`。**ODW 扩展**——不属于 Claude Code 方言。 |
 
-`agent` 的 `opts`：`{ adapter?, schema?, label?, phase?, model?, agentType?, isolation?, keep?, permissions?, expect?, expectRetries?, allowEmpty?, notes?, handoff?, scope?, scopePolicy?, questions? }`。
+`agent` 的 `opts`：`{ adapter?, schema?, label?, phase?, model?, agentType?, isolation?, keep?, permissions?, expect?, expectRetries?, allowEmpty?, notes?, handoff?, scope?, scopePolicy?, questions?, stallMs? }`。
+`stallMs`（Claude Code 方言）是这一个 agent 的卡死窗口，单位毫秒（`{ stallMs: 1800000 }` 即 30 分钟），取代 `stallTimeout` 设置。
 `adapter` 选择用哪个 CLI——写成列表（`['codex', 'claude']`，**ODW 扩展**）就是回退链；
 `model: '@fast'` 为实际运行它的 CLI 选出该层级的模型（**ODW 扩展**）；`schema` 是一个原始 JSON Schema 对象（选项，不是全局）；
-`agentType` 是注入进 prompt 的**人设**，*不是* adapter 名。`keep: true`（**ODW 扩展**）
+`agentType` 指向子 agent 定义（`.claude/agents/<name>.md`、`.odw/agents/`、`~/.claude/agents/`、`<plugin>:<name>`）——
+正文作为人设，`model`/`tools`/`isolation`/`effort` 按 CLI 映射，tools 只降档（**ODW 扩展**；`odw agents types` 显示映射）；
+找不到定义时是一句话人设，且*不是* adapter 名。`keep: true`（**ODW 扩展**）
 还会把隔离 agent 的改动提交到分支 `odw/<runId>/<agentId>-<label>`。`permissions: "read"`
 （**ODW 扩展**）让该 agent 以比运行更严格的档位运行——见[权限档位](#权限档位odw-扩展)。
 
@@ -106,7 +109,9 @@ agent 的工作区里以 0 退出；`timeout` 秒，默认 600）、`match`（�
 （`"mcpFailures": "fail"` 让服务器为 `failed` 或 `needs-auth` 的 agent 以 `"mcp_unavailable"`
 失败）。CLI 回复时仍在运行的后台任务（`run_in_background` 的命令或子 agent，随 `-p` 退出
 被终止）同样算作缺失，原因为 `"orphaned_background"`；不设 `expect` 时它作为 `orphaned`
-记在 agent 上并记一次日志（`"orphanedBackground": "fail"` 则让它失败）。空回复总会抛出 `reason: "empty_reply"`（`allowEmpty: true` 接受空回复）：
+记在 agent 上并记一次日志（`"orphanedBackground": "fail"` 则让它失败）。CLI 报告的实际服务模型记为
+`servedModel`；与请求的 `model` 不一致时记录一条 `model_substituted` 事件并记日志（`"modelMismatch": "fail"`
+则以 `"model_substituted"` 失败；不报告模型的 CLI 显示"未报告"）。空回复总会抛出 `reason: "empty_reply"`（`allowEmpty: true` 接受空回复）：
 
 ```js
 const fix = await agent('Fix the failing parser tests.', {   // ODW 扩展：expect
@@ -225,6 +230,9 @@ odw replay $RUN --agent 3   # 把这一次 agent() 调用作为新运行重跑,�
 odw run wf.js --break Review  # 在阶段/label "Review" 之前停下等决定(一个检查点);--step:每个阶段之前
 odw check wf.js             # 能否加载?文件:行:列、代码片段、可移植性警告;退出 0/1
                             #   --capabilities:它用到的方言之外的名字(process、require、import( 等)与调用的 ODW 扩展
+                            #   提示 Claude Code 的限制:超过 4,096 项的 parallel()/pipeline()、不是纯字面量的 meta
+                            #   提示(从不判失败):扇出结果 .filter(Boolean)、或按 agent 文本筛出的列表,之后没检查是否为空
+odw run wf.js --help        # 按 meta.input 打印它接受的 --args(ODW 扩展)
 odw eval review             # 用例 × 适配器 × 重复次数：每个单元格的通过率、花费、耗时（ODW 扩展；见下文）
 odw test review             # 脚本化回复，不调用模型，$0：逻辑是否成立？（ODW 扩展；见下文）
 odw run review --dry        # 每个 agent 都用桩应答：阶段树与 agent 数，$0（ODW 扩展）
@@ -236,7 +244,9 @@ odw token add alice --scope approve --file tokens.json  # 给 odw serve --tokens
 ```
 
 保存过的 workflow 可直接按名字运行（`odw run <名字>`）；查找顺序：`.odw/workflows`、
-`.claude/workflows`、`~/.odw/workflows`、`~/.claude/workflows`。已安装并启用的 Claude Code
+`.claude/workflows`——从工作目录向上到仓库根的每一层，最近者优先（monorepo 中包内的
+同名 workflow 遮蔽根目录的；`odw workflows where <名字>` 显示候选链）——然后是
+`~/.odw/workflows`、`~/.claude/workflows`。已安装并启用的 Claude Code
 插件所带的 workflow 用 `odw run <插件>:<名字>` 运行（ODW 扩展；`odw workflows list --plugins`
 列出它们）：就地、只读、同一方言。只有当项目级和个人级都没有同名 workflow 时，裸名字才会
 运行插件的 workflow——想确定运行哪一个，就用 `<插件>:<名字>` 的写法。
@@ -632,7 +642,7 @@ agent「在工作」的静默前部截断;它会运行模型,先征得同意。
   （gitignore 语法；`symlink: node_modules` 表示链接而非复制）会把 `.env` 等带进去，
   配置里的 `worktreeSetup` 命令会在 agent 启动前运行（均为 ODW 扩展）；`worktreeTeardown` 在
   worktree 删除前运行——成功、失败或被停止都会运行——每个隔离 agent 还会拿到 `$ODW_SLOT`
-  （`odw-<run>-<agent>`，也是它默认的 `COMPOSE_PROJECT_NAME`），供它独占一套 compose 栈或数据库
+  （`odw-<run>-<agent>`，也是它的 `COMPOSE_PROJECT_NAME`；用 `docker compose -p "$ODW_SLOT"` 显式指定），供它独占一套 compose 栈或数据库
   （ODW 扩展）。
 - **端口**：每个 agent 进程都有唯一的 `$ODW_PORT`（以及 `$ODW_RUN_ID`、`$ODW_AGENT_ID`）——
   让并行的 agent "在 `$ODW_PORT` 上启动开发服务器"，它们就不会冲突；并让它们在结束前停掉服务
@@ -682,4 +692,6 @@ agent「在工作」的静默前部截断;它会运行模型,先征得同意。
 | 把某个 CLI 的模型 ID 交给可能跑在别的 CLI 上的 agent（阶段默认值、回退链） | 模型 ID 不能跨 CLI 通用：用层级 `model: '@fast'`，它会为每个 CLI 选出自己的 ID（ODW 扩展）。 |
 | 让长时间运行的 agent 不设上限，或把以 `runaway` 失败的 agent 当作偶发故障重试 | 给它 `limits: { toolCalls, costUsd, repeat: 5 }`（或在配置中设 `agentLimits`）：反复做同一个工具调用或超出上限的 agent 会被 odw 立即杀掉（ODW 扩展）。`runaway` 失败的 `limitHit` 说明它当时在做什么——改提示词或任务，而不是一味调高上限。 |
 | 大规模扇出却不看它花了多少 | `odw status $RUN` 会按阶段显示运行到目前为止的 token 与花费，比 `fanOutWarn`（默认 25）更宽的 `parallel()`/`pipeline()` 会记一条警告（均为 ODW 扩展）。设了 `budget.total` 时按它决定扇出规模；`--budget` 限制输出 token。 |
+| 不校验 `args`,或数组被当成一串 JSON 字符串传了进来 | 在 `meta.input` 里声明它(JSON Schema;ODW 扩展,Claude Code 会忽略):odw 在运行开始前校验 `args`,逐个指出出错的路径,遇到 JSON 字符串会提示「看起来被多编码了一次」。`odw run wf.js --help` 会把它打印出来。 |
+| 扇出大半为 `null` 还照常往下走 | 每个 `parallel()`/`pipeline()` 都会记录成功 / 失败 / null 的计数(`fanout_done`),大半为 null 时记一行日志;`parallel(thunks, { minOk: 0.8 })`(或一个数量,或 `"all"`)不足时抛出 `FanOutShortfall`(均为 ODW 扩展)。`odw check` 会提示没检查是否为空的 `.filter(Boolean)` 与按 agent 文本筛选的结果。 |
 | 自己手写一条包着 `odw run` 的 cron 行 | `odw schedule add` 会带上防重叠锁、日志和固定的 `PATH` 写好它——且只在用户要求时使用：它会改动用户的 crontab 或 LaunchAgents。 |

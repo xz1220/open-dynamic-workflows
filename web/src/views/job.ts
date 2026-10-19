@@ -113,7 +113,7 @@ function runHead(run: RunDetail, nowSec: number, spendOpen: boolean): string {
   const w = (n: number) => `${((n / total) * 100).toFixed(2)}%`;
   return (
     `<header class="run-head">` +
-    `<div style="min-width:0"><div class="eyebrow"><span>${t("Run")}</span><span class="mono" style="text-transform:none;letter-spacing:0">${esc(run.runId)}</span>${cc}${shared}${driftChip(run)}${safetyChip(run)}${run.dry ? `<span class="tag dry" title="${esc(t("every agent answered by a stub: it cost nothing"))}">${t("dry run")}</span>` : ""}${gcTags(run)}</div>` +
+    `<div style="min-width:0"><div class="eyebrow"><span>${t("Run")}</span><span class="mono" style="text-transform:none;letter-spacing:0">${esc(run.runId)}</span>${cc}${shared}${driftChip(run)}${safetyChip(run)}${fanOutChip(run)}${run.dry ? `<span class="tag dry" title="${esc(t("every agent answered by a stub: it cost nothing"))}">${t("dry run")}</span>` : ""}${gcTags(run)}</div>` +
     `<div class="title-row"><h1 class="display">${esc(run.name)}</h1>${pill(run.state)}</div>` +
     (run.description ? `<p class="lede">${esc(run.description)}</p>` : "") +
     // Who started it (ODW extension): the local user, a named token's name, or trigger:<name>.
@@ -152,6 +152,47 @@ function safetyChip(run: RunDetail): string {
   return `<span class="tag safety" role="button" tabindex="0" data-copy="odw restore ${esc(run.runId)}" title="${esc(tip)}">${t("safety snapshot")}</span>`;
 }
 
+/**
+ * How the run's parallel() and pipeline() calls came out (ODW extension):
+ * one chip — its ok slots of all of them — amber when any came back mostly
+ * null or below its minOk; the tooltip lists each, with why its slots failed.
+ */
+export function fanOutChip(run: Pick<RunDetail, "fanOuts">): string {
+  const all = run.fanOuts ?? [];
+  if (!all.length) return "";
+  const ok = all.reduce((n, f) => n + f.ok, 0);
+  const total = all.reduce((n, f) => n + f.total, 0);
+  const bad = all.some((f) => f.belowMinOk || (f.failed + f.null) * 2 > f.total);
+  const lines = all.map((f) => fanOutText(f));
+  const label = tn(all.length, "{n} fan-out: {ok}/{total} ok", "{n} fan-outs: {ok}/{total} ok", { ok, total });
+  return `<span class="tag fanout${bad ? " warn" : ""}" title="${esc(lines.join("\n"))}">${esc(label)}</span>`;
+}
+
+/** One fan-out in a line: `parallel() · review — 7/10 ok · 2 failed (rate_limit 2) · 1 null`. */
+export function fanOutText(f: {
+  call: string;
+  phase?: string | null;
+  total: number;
+  ok: number;
+  failed: number;
+  null: number;
+  reasons?: Record<string, number>;
+  required?: number;
+  belowMinOk?: boolean;
+}): string {
+  const parts = [t("{ok}/{total} ok", { ok: f.ok, total: f.total })];
+  if (f.failed) {
+    const why = Object.entries(f.reasons ?? {})
+      .sort((a, b) => b[1] - a[1])
+      .map(([reason, n]) => `${reason} ${n}`)
+      .join(", ");
+    parts.push(t("{n} failed", { n: f.failed }) + (why ? ` (${why})` : ""));
+  }
+  if (f.null) parts.push(t("{n} null", { n: f.null }));
+  if (f.belowMinOk) parts.push(t("below minOk ({n} needed)", { n: f.required ?? 0 }));
+  return `${f.call}${f.phase ? ` · ${f.phase}` : ""} — ${parts.join(" · ")}`;
+}
+
 /** The destructive git commands an agent ran (ODW extension), and how to get the work back. */
 function destructiveGitSection(run: RunDetail, a: AgentView): string {
   if (!a.destructiveGit?.length) return "";
@@ -164,6 +205,27 @@ function destructiveGitSection(run: RunDetail, a: AgentView): string {
         `<button class="btn sm" data-copy="${esc(cmd)}">${icons.copy}${t("Copy restore command")}</button>`
       : `<p class="dnote">${t("No snapshot of the working tree was taken for this run: what it threw away may still be in git reflog.")}</p>`)
   );
+}
+
+/**
+ * The drawer's model rows (ODW extension; src/served-model.ts): the model the
+ * agent asked for, and the one its CLI said served it — flagged when it is
+ * another, "not reported" when its CLI said none. Never guessed.
+ */
+function modelRows(run: RunDetail, a: AgentView): string {
+  if (a.kind === "command" || run.provider !== "odw") return "";
+  const settled = a.state === "done" || a.state === "failed";
+  const asked = a.substituted?.requested ?? a.model;
+  const served = a.servedModel ?? a.substituted?.served;
+  const askedRow = `<span class="k">${t("model")}</span><span class="v mono">${esc(asked ?? t("CLI default"))}</span>`;
+  if (served?.length) {
+    const swap = a.substituted
+      ? ` <span class="tag warn served-swap" title="${esc(t("its CLI said another model served it than the one it asked for"))}">${t("substituted")}</span>`
+      : "";
+    return askedRow + `<span class="k">${t("served by")}</span><span class="v"><span class="mono">${esc(served.join(", "))}</span>${swap}</span>`;
+  }
+  if (!settled || a.cached) return a.model ? askedRow : "";
+  return askedRow + `<span class="k">${t("served by")}</span><span class="v"><span class="dim" title="${esc(t("its CLI does not say which model served it"))}">${t("not reported")}</span></span>`;
 }
 
 /** The runs `odw apply --resolve` linked to this one: the run whose conflict it resolved, or its resolvers. */
@@ -442,6 +504,7 @@ function drawer(run: RunDetail, ai: number, nowSec: number): string {
           ? ` <span class="tag warn" title="${esc(t("its earlier adapters ran out of quota or refused the login"))}">${esc(t("after {chain}", { chain: a.fellBackFrom.join(" → ") }))}</span>`
           : "") +
         `</span>`) +
+    modelRows(run, a) +
     `<span class="k">${t("started")}</span><span class="v">${fmtClock(a.startedAt)}</span>` +
     `<span class="k">${t("finished")}</span><span class="v">${fmtClock(a.finishedAt)}</span>` +
     `<span class="k">${t("duration")}</span><span class="v">${dur}</span>` +
@@ -453,6 +516,10 @@ function drawer(run: RunDetail, ai: number, nowSec: number): string {
       : `<span class="k">${t("attempts")}</span><span class="v">${a.attempts ?? "—"}</span>`) +
     (a.permissions
       ? `<span class="k">${t("permissions")}</span><span class="v"><span class="tag perm-${esc(a.permissions)}" title="${esc(t(PERM_HINT[a.permissions] ?? ""))}">${esc(t(a.permissions))}</span></span>`
+      : "") +
+    (a.agentType
+      ? `<span class="k">${t("agent type")}</span><span class="v"><span class="tag" title="${esc(t("the agent definition its agentType named: its body is the persona, its tools cap the permissions"))}">${esc(a.agentType.name)}</span>` +
+        ` <span class="mono dim agent-type-path" title="${esc(`${a.agentType.path} · sha256 ${a.agentType.sha256}`)}">${esc(a.agentType.path.split("/").slice(-3).join("/"))}</span></span>`
       : "") +
     (a.trust === "untrusted"
       ? `<span class="k">${t("trust")}</span><span class="v"><span class="tag trust-untrusted" title="${esc(t("its CLI ignored the repository's instructions, settings and hooks where it could"))}">${esc(t("untrusted"))}</span></span>`
@@ -578,6 +645,23 @@ function graphTab(run: RunDetail, s: JobViewState, nowSec: number): string {
   );
 }
 
+/** A fanout_done event's counts, read defensively (ODW extension). */
+function fanOutOfEvent(e: WorkflowEvent): Parameters<typeof fanOutText>[0] {
+  const n = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+  const reasons = e.reasons !== null && typeof e.reasons === "object" && !Array.isArray(e.reasons) ? (e.reasons as Record<string, number>) : {};
+  return {
+    call: String(e.call ?? "parallel()"),
+    phase: typeof e.phase === "string" ? e.phase : null,
+    total: n(e.total),
+    ok: n(e.ok),
+    failed: n(e.failed),
+    null: n(e.null),
+    reasons,
+    required: n(e.required),
+    belowMinOk: e.belowMinOk === true,
+  };
+}
+
 function logRow(e: WorkflowEvent, i: number): string {
   const cls = EVT_CLASS[e.type] ?? "log";
   const label =
@@ -595,6 +679,8 @@ function logRow(e: WorkflowEvent, i: number): string {
     msg = `<b>${esc(String(e.label ?? ""))}</b> <span class="er">${esc(String(e.error ?? ""))}</span>`;
   else if (e.type.startsWith("command_"))
     msg = `<b>${esc(commandDetail(e))}</b>${e.type === "command_failed" && e.error ? ` <span class="er">${esc(String(e.error))}</span>` : ""}`;
+  // How a parallel() or pipeline() came out (ODW extension).
+  else if (e.type === "fanout_done") msg = esc(fanOutText(fanOutOfEvent(e)));
   else if (e.type === "cli_version")
     msg = `<b>${esc(String(e.adapter ?? ""))}</b> ${esc(String(e.version ?? e.error ?? ""))}`;
   else if (e.type.startsWith("agent_"))

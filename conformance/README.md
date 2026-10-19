@@ -166,6 +166,7 @@ uses them: a portable script must not.
 | [30-script-syntax-error](cases/30-script-syntax-error/) | a body that does not parse fails the run before any agent starts | documented |
 | [31-script-import](cases/31-script-import/) | a top-level import statement fails the run before any agent starts | unspecified |
 | [32-parallel-not-thunks](cases/32-parallel-not-thunks/) | parallel() given something other than functions throws, and uncaught, the run fails | unspecified |
+| [33-agent-stallms](cases/33-agent-stallms/) | agent(prompt, { stallMs }) sets that agent's stall window: one quiet for longer fails, one given more time replies | documented |
 
 ## Adding a case
 

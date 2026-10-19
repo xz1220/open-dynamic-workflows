@@ -512,6 +512,9 @@ const ZH: Record<string, string> = {
   untrusted: "不受信任",
   "its CLI ignored the repository's instructions, settings and hooks where it could":
     "它的 CLI 在能做到的地方忽略了仓库自带的指令、设置和钩子",
+  "agent type": "agent 类型",
+  "the agent definition its agentType named: its body is the persona, its tools cap the permissions":
+    "agentType 指向的 agent 定义:正文作为人设,tools 限定权限档",
   // Transcript sheet.
   Transcript: "执行记录",
   "Loading transcript…": "正在载入执行记录…",
@@ -674,8 +677,19 @@ const ZH: Record<string, string> = {
   "odw version": "odw 版本",
   "{cli} version": "{cli} 版本",
   "{adapter} adapter config": "{adapter} 适配器配置",
+  "{agent} agent definition": "agent 定义 {agent}",
   "adapters used": "用到的适配器",
   "models used": "用到的模型",
+  "models served": "实际服务的模型",
+  "served by {model}": "实际由 {model} 服务",
+  "served by another model": "被替换为其他模型",
+  "its CLI said another model served it than the one it asked for": "CLI 报告实际服务的模型不是所请求的模型",
+  model: "模型",
+  "CLI default": "CLI 默认",
+  "served by": "实际模型",
+  substituted: "已替换",
+  "not reported": "未报告",
+  "its CLI does not say which model served it": "该 CLI 不报告实际服务的模型",
   "Both ran with the same workflow, settings and CLIs.": "两次运行的工作流、设置与 CLI 完全相同。",
   "One of the runs recorded no setup, so there is nothing to set side by side.": "其中一次运行没有记录配置,无从并排对比。",
   "not in this run": "本次运行中没有",
@@ -736,6 +750,12 @@ const ZH: Record<string, string> = {
     "本次运行没有为工作区做快照:被丢弃的内容也许还能在 git reflog 里找到。",
   "Copy restore command": "复制恢复命令",
   "safety snapshot": "安全快照",
+  // How a parallel() or pipeline() came out (ODW extension).
+  "{n} fan-out: {ok}/{total} ok": "{n} 次扇出:{ok}/{total} 成功",
+  "{n} fan-outs: {ok}/{total} ok": "{n} 次扇出:{ok}/{total} 成功",
+  "{ok}/{total} ok": "{ok}/{total} 成功",
+  "{n} null": "{n} 个 null",
+  "below minOk ({n} needed)": "未达 minOk(需要 {n} 个)",
   "{tracked} changed and {untracked} untracked file(s) kept at {ref} before the first in-place agent — click to copy the restore command":
     "第一个原地 agent 开始前保存了 {tracked} 个改动文件和 {untracked} 个未跟踪文件,位于 {ref}——点击复制恢复命令",
   "It replied while this background work still ran; it died when the CLI exited, so the reply may rest on work that never finished.":

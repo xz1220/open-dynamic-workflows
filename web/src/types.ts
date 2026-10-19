@@ -175,10 +175,18 @@ export interface AgentView {
   denied?: string[];
   /** A finished agent's background work its CLI left running when it replied, which died with it (its reply stood anyway), one line each (ODW extension). */
   orphaned?: string[];
+  /** The model it asked for (agent_started's `model`; a tier keeps its `@` name). Absent: its CLI's default. */
+  model?: string;
+  /** The models its CLI said served it (ODW extension; src/served-model.ts). Absent: not reported. */
+  servedModel?: string[];
+  /** Another model served it than the one it asked for — its `model_substituted` event (ODW extension). */
+  substituted?: { requested: string; served: string[] };
   /** The files it declared it means to change — agent(…, { scope }) globs (ODW extension; src/scope.ts). */
   scope?: string[];
   /** The files it changed outside its scope, finished or failed (ODW extension). */
   outOfScope?: string[];
+  /** The agent definition its agentType named — file, where it was found, sha256 (ODW extension; src/agent-types.ts). */
+  agentType?: { name: string; source: string; path: string; sha256: string };
   /** The destructive git commands its CLI ran — git reset --hard, git clean -f, … (ODW extension; src/destructive-git.ts). */
   destructiveGit?: Array<{ command: string; what: string }>;
   /** What the adapter reported spending on this agent. */
@@ -344,6 +352,24 @@ export interface RunDetail extends RunSummary {
   trimmed?: { at: number; files: number };
   /** The working tree as it stood before the run's first in-place agent — what `odw restore <run>` puts back (ODW extension; src/safety.ts). */
   safetySnapshot?: SafetySnapshot;
+  /** How each parallel() and pipeline() came out, from its fanout_done event (ODW extension; src/fanout.ts). */
+  fanOuts?: FanOut[];
+}
+
+/** One settled parallel() or pipeline() call (ODW extension): its ok, failed and null slots. */
+export interface FanOut {
+  call: "parallel()" | "pipeline()";
+  phase: string | null;
+  total: number;
+  ok: number;
+  failed: number;
+  null: number;
+  /** Failed slots by reason. */
+  reasons: Record<string, number>;
+  /** The ok results its minOk asked for, and whether it fell short. */
+  required?: number;
+  belowMinOk?: boolean;
+  at: number | null;
 }
 
 /** A run's safety snapshot at refs/odw/safety/<run> (ODW extension). */
@@ -439,6 +465,10 @@ export interface CompareAgentFacts {
   adapter: string | null;
   /** The model it asked for: a tier keeps its `@` name. */
   model: string | null;
+  /** The models its CLI said served it; null: not reported (ODW extension). Absent from older servers. */
+  servedModel?: string[] | null;
+  /** None of them is the model it asked for (ODW extension). */
+  substituted?: boolean;
   attempts: number | null;
   durationMs: number | null;
   inputTokens: number | null;
@@ -536,6 +566,8 @@ export interface WorkflowEstimate {
   total: EstimateFigures | null;
   phases: PhaseEstimate[];
   adapters: AdapterEstimate[];
+  /** By the model that served the agents, as their CLIs said (ODW extension); absent when none said. */
+  models?: Array<EstimateFigures & { model: string; runs: number }>;
   /** Some output tokens are chars/4 estimates. */
   estimated: boolean;
   notes: string[];
@@ -906,6 +938,8 @@ export interface AgentResultRecord {
   mcp?: Array<{ name: string; status: string }>;
   /** The background work its CLI left running when it replied (ODW extension). */
   orphaned?: string[];
+  /** The models its CLI said served it (ODW extension). */
+  servedModel?: string[];
   /** Secrets in it were replaced by `«redacted:<kind>»` before it was saved (ODW extension): show a "redacted" tag. */
   redacted?: boolean;
 }

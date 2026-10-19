@@ -23,13 +23,14 @@
  * errors — the same object again when it is one the worker threw.
  *
  * Unless the config sets `scriptContext`, a run is strict when a trigger
- * started it, when its workflow is a Claude Code plugin's, or when its input or
+ * started it (or the run it reruns or replays), when its workflow is a Claude Code plugin's, or when its input or
  * its repository is untrusted ({@link resolveScriptContext}).
  *
  * `vm` is NOT a security boundary. Strict takes away what a well-meaning but
  * unknown script could casually reach; it does not stop a hostile one from
- * finding a way out of the context, and a script still drives agents that act
- * with the run's permissions. Read a workflow before you run it.
+ * finding a way out of the context, a script still drives agents that act
+ * with the run's permissions, and its `exec()` still runs a shell with the
+ * run's environment. Read a workflow before you run it.
  *
  * {@link scanCapabilities} is the static half, for `odw check --capabilities`:
  * which identifiers outside the dialect a script names, and which ODW
@@ -52,6 +53,8 @@ export function isScriptContext(value: unknown): value is ScriptContext {
 export interface ScriptContextRun {
   /** meta.json's origin: "trigger" for a run a trigger started. */
   origin?: unknown;
+  /** meta.json's sourceOrigin: "trigger" for a replay or rerun of a run a trigger started. */
+  sourceOrigin?: unknown;
   /** Whether its workflow is a Claude Code plugin's (meta.plugin). */
   plugin: boolean;
   /** Whether its input is untrusted (a trigger's, `--untrusted-input`). */
@@ -63,14 +66,22 @@ export interface ScriptContextRun {
 /**
  * The run's script context and why: the config's `scriptContext` when it sets
  * one, else strict for a triggered run, a plugin's workflow, or untrusted
- * input or repository, and host for the rest.
+ * input or repository, and host for the rest. `overrode` is why the run would
+ * have been strict, when the config's `"host"` took that away — the run's log
+ * says so.
  */
 export function resolveScriptContext(
   setting: ScriptContext | null | undefined,
   run: ScriptContextRun,
-): { context: ScriptContext; why: string } {
+): { context: ScriptContext; why: string; overrode?: string } {
+  if (setting === "host") {
+    const strict = resolveScriptContext(null, run);
+    const why = `scriptContext: "host" in the config`;
+    return strict.context === "strict" ? { context: "host", why, overrode: strict.why } : { context: "host", why };
+  }
   if (setting) return { context: setting, why: `scriptContext: "${setting}" in the config` };
   if (run.origin === "trigger") return { context: "strict", why: "a trigger started this run" };
+  if (run.sourceOrigin === "trigger") return { context: "strict", why: "a trigger started the run this one replays" };
   if (run.plugin) return { context: "strict", why: "the workflow is a Claude Code plugin's" };
   if (run.untrustedInput) return { context: "strict", why: "the run's input is untrusted" };
   if (run.untrustedRepo) return { context: "strict", why: "the run is untrusted" };

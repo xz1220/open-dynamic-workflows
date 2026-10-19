@@ -590,6 +590,30 @@ test("the drawer names an agent's permission tier", () => {
   store.focusRun(null);
 });
 
+test("the drawer names the agent definition an agent ran as (ODW extension: agentType)", () => {
+  const view: JobViewState = {
+    cpNote: "",
+    tab: "graph",
+    selectedAi: 0,
+    reviewAi: null,
+    zoom: 1,
+    logQuery: "",
+    logTypes: new Set(["agent"]),
+    logLimit: 600,
+    follow: true,
+    motion: false,
+  };
+  store.focusRun("20260101-000000-aaaaaa");
+  store.run = detail([agent("review:1", "Review", "done", { agentId: 1 })], { state: "done" });
+  assert.doesNotMatch(renderJob(view, NOW), /agent-type-path/, "no definition, no row");
+  const agentType = { name: "reviewer", source: "project", path: "/repo/.claude/agents/reviewer.md", sha256: "ab".repeat(32) };
+  store.run = detail([agent("review:1", "Review", "done", { agentId: 1, agentType })], { state: "done" });
+  const html = renderJob(view, NOW);
+  assert.match(html, /<span class="k">agent type<\/span><span class="v"><span class="tag" title="[^"]+">reviewer<\/span>/);
+  assert.match(html, /<span class="mono dim agent-type-path" title="\/repo\/\.claude\/agents\/reviewer\.md · sha256 (ab)+">\.claude\/agents\/reviewer\.md<\/span>/);
+  store.focusRun(null);
+});
+
 test("an agent that fell back shows its chain in the graph, the drawer and the transcript", () => {
   const view: JobViewState = {
     cpNote: "",
@@ -950,6 +974,72 @@ test("an agent that left background work running lists it in its drawer, and the
   assert.match(html, /it died when the CLI exited/);
   assert.equal(reasonLabel("orphaned_background"), "orphaned background work");
   store.focusRun(null);
+});
+
+test("an agent's drawer sets the model it asked for beside the one that served it: substituted flagged, not reported said so", async () => {
+  const view: JobViewState = {
+    cpNote: "",
+    tab: "graph",
+    selectedAi: 0,
+    reviewAi: null,
+    zoom: 1,
+    logQuery: "",
+    logTypes: new Set(["agent"]),
+    logLimit: 600,
+    follow: true,
+    motion: false,
+  };
+  store.focusRun("20260101-000000-aaaaaa");
+  store.runEvents = [];
+  const swapped = { requested: "opus", served: ["claude-sonnet-4-5"] };
+  store.run = detail([agent("review", "Plan", "done", { adapter: "claude", model: "opus", servedModel: ["claude-sonnet-4-5"], substituted: swapped })]);
+  let html = renderJob(view, NOW);
+  assert.match(html, /<span class="k">model<\/span><span class="v mono">opus<\/span>/);
+  assert.match(html, /<span class="k">served by<\/span><span class="v"><span class="mono">claude-sonnet-4-5<\/span> <span class="tag warn served-swap"[^>]*>substituted<\/span>/);
+
+  // Served as asked: no flag.
+  store.run = detail([agent("review", "Plan", "done", { adapter: "claude", model: "sonnet", servedModel: ["claude-sonnet-4-5"] })]);
+  html = renderJob(view, NOW);
+  assert.match(html, /served by<\/span><span class="v"><span class="mono">claude-sonnet-4-5<\/span><\/span>/);
+  assert.doesNotMatch(html, /served-swap/);
+
+  // A CLI that names no model: "not reported", never a guess; the CLI's default when none was asked for.
+  store.run = detail([agent("review", "Plan", "done", { adapter: "codex" })]);
+  html = renderJob(view, NOW);
+  assert.match(html, /<span class="k">model<\/span><span class="v mono">CLI default<\/span>/);
+  assert.match(html, /served by<\/span><span class="v"><span class="dim"[^>]*>not reported<\/span>/);
+  assert.equal(reasonLabel("model_substituted"), "served by another model");
+  store.focusRun(null);
+
+  // odw compare's agent row flags the side another model served.
+  const { renderCompare } = await import("../web/src/views/compare.ts");
+  const facts = (over: Record<string, unknown> = {}) => ({
+    agentId: 1, label: "review", phase: "Plan", state: "done", adapter: "claude", model: "opus", servedModel: ["claude-opus-5-5"], substituted: false, attempts: 1,
+    durationMs: 10_000, inputTokens: 1000, outputTokens: 200, costUsd: 0.01, estimated: false, replayed: false, failureReason: null, error: null, changes: null, ...over,
+  });
+  const run = (runId: string) => ({ runId, name: "demo", workflowName: "demo", state: "done", live: false, createdAt: NOW, odwVersion: "0.5.0", sourceHash: null, resumedFrom: null });
+  const m = (a: number, b: number) => ({ a, b, delta: b - a });
+  store.comparison = {
+    key: "A/B",
+    error: null,
+    value: {
+      version: 1,
+      a: run("A"),
+      b: run("B"),
+      notes: [],
+      setup: [{ field: "modelsServed", a: ["claude-opus-5-5"], b: ["claude-sonnet-4-5"] }],
+      totals: { wallMs: m(1, 1), inputTokens: m(1, 1), outputTokens: m(1, 1), costUsd: m(1, 1), agents: m(1, 1), done: m(1, 1), failed: m(0, 0), estimated: { a: false, b: false } },
+      agents: [
+        { match: "label", outcome: "unchanged", label: "review", phase: "Plan", a: facts(), b: facts({ servedModel: ["claude-sonnet-4-5"], substituted: true }),
+          delta: { durationMs: 0, inputTokens: 0, outputTokens: 0, costUsd: 0, attempts: 0 },
+          reply: { status: "identical", kind: null, truncated: false } },
+      ],
+    },
+  } as never;
+  const cmp = renderCompare("A/B");
+  assert.match(cmp, /<span class="k">models served<\/span><span class="a mono"[^>]*>\[&quot;claude-opus-5-5&quot;\]<\/span>/);
+  assert.equal(count(cmp, /<span class="tag warn"[^>]*>served by claude-sonnet-4-5<\/span>/g), 1, "only the side another model served");
+  store.comparison = null;
 });
 
 test("an agent's destructive git commands are marked on its node and listed in its drawer, with odw restore when the run has a snapshot", () => {
@@ -1439,4 +1529,37 @@ test("Review (ODW extension): kept diffs riskiest first, each reason shown; mark
   store.review = prevReview;
   store.reviewAll = prevAll;
   store.capabilities = prevCaps;
+});
+
+test("fan-out health (ODW extension): a chip on the run's head, amber when one came back mostly null; a line in the logs", () => {
+  const view: JobViewState = {
+    cpNote: "",
+    tab: "logs",
+    selectedAi: null,
+    reviewAi: null,
+    zoom: 1,
+    logQuery: "",
+    logTypes: new Set(["agent", "phase", "log", "run"]),
+    logLimit: 600,
+    follow: true,
+    motion: false,
+  };
+  const healthy = { call: "pipeline()" as const, phase: null, total: 4, ok: 4, failed: 0, null: 0, reasons: {}, at: NOW - 60 };
+  const sick = { call: "parallel()" as const, phase: "Review", total: 10, ok: 3, failed: 6, null: 1, reasons: { rate_limit: 4, timeout: 2 }, required: 8, belowMinOk: true, at: NOW - 30 };
+  store.focusRun("20260101-000000-aaaaaa");
+  store.run = detail([], { fanOuts: [healthy] });
+  store.runEvents = [];
+  let html = renderJob(view, NOW);
+  assert.match(html, /<span class="tag fanout" title="pipeline\(\) — 4\/4 ok">1 fan-out: 4\/4 ok<\/span>/);
+  store.run = detail([], { fanOuts: [healthy, sick] });
+  store.runEvents = [{ ts: NOW - 30, type: "fanout_done", call: "parallel()", phase: "Review", total: 10, ok: 3, failed: 6, null: 1, reasons: { rate_limit: 4, timeout: 2 }, required: 8, belowMinOk: true }];
+  html = renderJob(view, NOW);
+  assert.match(
+    html,
+    /<span class="tag fanout warn" title="pipeline\(\) — 4\/4 ok\nparallel\(\) · Review — 3\/10 ok · 6 failed \(rate_limit 4, timeout 2\) · 1 null · below minOk \(8 needed\)">2 fan-outs: 7\/14 ok<\/span>/,
+  );
+  assert.match(html, /<span class="msg">parallel\(\) · Review — 3\/10 ok · 6 failed \(rate_limit 4, timeout 2\) · 1 null · below minOk \(8 needed\)<\/span>/);
+  store.run = detail([]);
+  assert.doesNotMatch(renderJob(view, NOW), /tag fanout/, "no fan-outs, no chip");
+  store.focusRun(null);
 });
