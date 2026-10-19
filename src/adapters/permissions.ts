@@ -13,7 +13,8 @@
  * for `full` runs with the adapter's `edit` flags, and the run says so once
  * per adapter. An adapter with no `permissionArgs` at all (a user's own CLI)
  * runs as configured, treated as `edit`, and any other tier is logged the same
- * way.
+ * way. An ACP agent (`"protocol": "acp"`) runs every tier: ODW answers each
+ * permission request it makes by its tier (see ./acp).
  */
 
 import type { Adapter, Config, PermissionArgs, PermissionTier } from "./types.js";
@@ -43,6 +44,8 @@ export function spliceArgs(command: string[], args: string[]): string[] {
 
 /** The tiers an adapter declares flags for, strictest first; none for an adapter without `permissionArgs`. */
 export function declaredTiers(adapter: Adapter): PermissionTier[] {
+  // An ACP agent's tier is how ODW answers its permission requests (see ./acp): any.
+  if (adapter.protocol === "acp") return [...PERMISSION_TIERS];
   const declared = adapter.permissionArgs;
   return declared ? PERMISSION_TIERS.filter((tier) => declared[tier] !== undefined) : [];
 }
@@ -89,6 +92,9 @@ export function planPermissions(
   }
   const requested = option ?? ceiling;
   const declared = adapter.permissionArgs;
+  // An ACP agent (ODW extension; see ./acp) runs any tier: ODW answers its
+  // permission requests by it — with the tier's own flags, where it declares them.
+  if (adapter.protocol === "acp") return { requested, tier: requested, args: [...(declared?.[requested] ?? declared?.edit ?? [])] };
   if (!declared) {
     if (requested === "edit") return { requested, tier: "edit", args: [] };
     return {
@@ -158,7 +164,7 @@ function refusal(adapter: Adapter, run: PermissionTier, option: unknown, alterna
 export function readCapableAdapter(config: Config, exclude: string, isInstalled: (adapter: Adapter) => boolean): string | null {
   const able = Object.keys(config.adapters)
     .sort()
-    .filter((name) => name !== exclude && config.adapters[name]!.permissionArgs?.read !== undefined);
+    .filter((name) => name !== exclude && declaredTiers(config.adapters[name]!).includes("read"));
   return able.find((name) => isInstalled(config.adapters[name]!)) ?? able[0] ?? null;
 }
 

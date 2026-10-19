@@ -44,6 +44,7 @@ import { buildEgressHosts } from "./egress.js";
 import { buildAdapterSandbox, buildSandboxSetting, checkSandboxImages } from "./sandbox.js";
 import { buildAccounts } from "./accounts.js";
 import { buildRepos } from "../repos.js";
+import { ACP_OUTPUT, ACP_PROTOCOL } from "./acp.js";
 import type {
   Adapter,
   AdapterFailures,
@@ -184,7 +185,7 @@ const KNOWN_TOP_KEYS = [
   "lockedWorkflows",
 ] as const;
 
-const KNOWN_ADAPTER_KEYS = ["command", "stdin", "env", "timeout", "stallTimeout", "concurrency", "promptCache", "label", "flags", "output", "failures", "permissionArgs", "permissions", "permissionDenials", "trust", "untrustedArgs", "untrustedNote", "sandbox", "agentLimits", "egressHosts", "questions", "questionArgs"] as const;
+const KNOWN_ADAPTER_KEYS = ["command", "stdin", "env", "timeout", "stallTimeout", "concurrency", "promptCache", "label", "flags", "output", "failures", "permissionArgs", "permissions", "permissionDenials", "trust", "untrustedArgs", "untrustedNote", "sandbox", "agentLimits", "egressHosts", "questions", "questionArgs", "protocol"] as const;
 
 /** The fields of an adapter's `output`, per format. */
 const KNOWN_OUTPUT_KEYS: Record<string, readonly string[]> = {
@@ -651,6 +652,13 @@ function buildAdapters(user: Record<string, RawAdapter>): Record<string, Adapter
     // the built-in of its name (`"codex": { "permissions": "read" }`); one with
     // a command replaces the built-in whole.
     const builtin = BUILTIN_ADAPTERS[name];
+    // An ACP agent (ODW extension; see ./acp) is started its own way: never a built-in's headless command.
+    if (builtin && isObject(spec) && spec.command == null && spec.protocol != null) {
+      throw new ConfigError(
+        `adapter '${name}' sets "protocol" without a "command": the built-in '${name}' runs headless, not as an ACP agent — ` +
+          `give the ACP agent a name of its own and the command that starts its ACP mode`,
+      );
+    }
     if (builtin && isObject(spec) && spec.command == null) {
       merged[name] = { ...builtin, ...spec, command: builtin.command };
       // The built-in's note says what its own untrusted flags leave in: flags
@@ -713,6 +721,21 @@ function buildAdapter(name: string, spec: RawAdapter): Adapter {
   if (spec.label !== undefined) adapter.label = spec.label;
   if (spec.flags !== undefined) adapter.flags = buildFlags(name, spec.flags);
   if (spec.output !== undefined) adapter.output = buildOutput(name, spec.output);
+  // An Agent Client Protocol agent (ODW extension; see ./acp): the prompt and
+  // its reply go over the protocol, decoded by ODW's own rules.
+  if (spec.protocol != null) {
+    if (spec.protocol !== ACP_PROTOCOL) {
+      throw new ConfigError(`adapter '${name}' 'protocol' must be "${ACP_PROTOCOL}"; got ${JSON.stringify(spec.protocol)}`);
+    }
+    const own = (["stdin", "output"] as const).filter((key) => spec[key] !== undefined);
+    if (own.length > 0) {
+      throw new ConfigError(
+        `adapter '${name}' speaks ACP: its prompt and reply go over the protocol, so it takes no ${own.map((k) => `'${k}'`).join(" or ")}`,
+      );
+    }
+    adapter.protocol = ACP_PROTOCOL;
+    adapter.output = ACP_OUTPUT;
+  }
   if (spec.failures != null) adapter.failures = buildFailures(name, spec.failures);
   if (spec.permissionArgs != null) adapter.permissionArgs = buildPermissionArgs(name, spec.permissionArgs);
   checkPermissionToken(name, adapter, spec.stdin);

@@ -28,6 +28,10 @@ import {
 } from "./adapters/config.js";
 import { isOnPath } from "./adapters/executable.js";
 import { runCommand, type CommandRunner } from "./adapters/runner.js";
+import { acpHandshake } from "./adapters/acp.js";
+import { commandAt, runTier } from "./adapters/permissions.js";
+import { agentBaseEnv } from "./adapters/agent-env.js";
+import { expandAll } from "./adapters/placeholders.js";
 import { trustBanner } from "./adapters/trust.js";
 import { EGRESS_PROBE } from "./adapters/egress.js";
 import { EgressProxies } from "./adapters/egress-run.js";
@@ -95,6 +99,12 @@ export interface DoctorOptions {
   smokeTimeout?: number;
   /** Probe every adapter/model pair the config and `.odw/workflows` name (`--models`; ODW extension). */
   models?: boolean;
+  /**
+   * Adapters `--adapter` named: each ACP agent among them gets a handshake —
+   * `initialize` alone, nothing spent — and its capabilities reported (ODW
+   * extension; see adapters/acp.ts). Others are ignored here.
+   */
+  handshake?: string[];
   runner?: CommandRunner;
   nodeVersion?: string;
   /** The environment runs would start agents with; defaults to this process's. */
@@ -252,6 +262,13 @@ export async function runDoctor(opts: DoctorOptions): Promise<DoctorReport> {
     });
   }
 
+  // An ACP agent named by --adapter: a handshake, and what it says it can do (ODW extension).
+  for (const name of new Set(opts.handshake ?? [])) {
+    const adapter = config.adapters[name];
+    if (!adapter || adapter.protocol !== "acp" || !listing.find((a) => a.name === name)?.installed) continue;
+    add(await acpCheck(config, adapter, opts.cwd, runner, opts.smokeTimeout ?? 30, opts.env ?? process.env));
+  }
+
   // An adapter with accounts is smoke-tested on each of them (ODW extension: accounts).
   const smoke = [...new Set(opts.smoke.flatMap((name) => config.accounts?.[name] ?? [name]))];
   for (const name of smoke) {
@@ -313,6 +330,51 @@ export async function runDoctor(opts: DoctorOptions): Promise<DoctorReport> {
   if (opts.local) for (const check of await localModelChecks(opts.local)) add(check);
 
   return { ok: !checks.some((c) => c.status === "fail"), checks };
+}
+
+/**
+ * `odw doctor --adapter <acp>` (ODW extension; see adapters/acp.ts): start
+ * the ACP agent as a run would — at the run's tier, in this directory — ask
+ * `initialize` alone, and report what it said of itself: its name and
+ * version, protocol version, capabilities and login methods. No session is
+ * opened, no prompt sent.
+ */
+async function acpCheck(
+  config: Config,
+  adapter: Adapter,
+  cwd: string,
+  runner: CommandRunner,
+  timeout: number,
+  env: Record<string, string | undefined>,
+): Promise<DoctorCheck> {
+  const check = { id: `acp:${adapter.name}`, title: `ACP ${adapter.name}` };
+  const command = expandAll(commandAt(adapter, runTier(config)), { prompt: "", workspace: cwd, source: cwd, adapter: adapter.name, role: adapter.label ?? adapter.name });
+  const base = agentBaseEnv(env, config.settings);
+  const childEnv = Object.fromEntries(Object.entries({ ...base, ...adapter.env }).filter((e): e is [string, string] => e[1] !== undefined));
+  const { info, error } = await acpHandshake(runner, command, { cwd, env: childEnv, timeout });
+  if (error || !info) {
+    return {
+      ...check,
+      status: "fail",
+      detail: (error ?? "no answer to initialize").slice(0, 240),
+      hint: "run the adapter's command by hand: an ACP agent waits for JSON-RPC on its stdin and answers on its stdout",
+    };
+  }
+  const caps = info.agentCapabilities;
+  const flags = (holder: unknown, keys: string[]): string[] =>
+    keys.filter((key) => typeof holder === "object" && holder !== null && (holder as Record<string, unknown>)[key] === true);
+  const prompt = flags(caps.promptCapabilities, ["image", "audio", "embeddedContext"]);
+  const mcp = flags(caps.mcpCapabilities, ["http", "sse"]);
+  const agent = info.agentInfo ? [info.agentInfo.title ?? info.agentInfo.name, info.agentInfo.version].filter(Boolean).join(" ") : "";
+  const parts = [
+    agent || "an unnamed agent",
+    `protocol ${info.protocolVersion}`,
+    `loadSession: ${caps.loadSession === true ? "yes" : "no"}`,
+    `prompt: text${prompt.length ? `, ${prompt.join(", ")}` : ""}`,
+    `MCP: stdio${mcp.length ? `, ${mcp.join(", ")}` : ""}`,
+    `auth: ${info.authMethods.length ? info.authMethods.join(", ") : "none"}`,
+  ];
+  return { ...check, status: "ok", detail: parts.join(" · ") };
 }
 
 /** An adapter/model pair `odw doctor --models` probes, and where it is named. */

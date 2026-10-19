@@ -41,6 +41,14 @@
  *                            stream); error_message → error; user_input and
  *                            checkpoint → nothing; result → result (failed
  *                            unless status SUCCESS)
+ *   ACP agents (an ODW      acp.initialized and acp.session → raw; acp.message →
+ *   extension; ../adapters  text; acp.thought → text (`thinking`); acp.tool_call
+ *   /acp.ts)                → tool_call {title, rawInput}; acp.tool_result →
+ *                            tool_result (failed: status failed); acp.permission
+ *                            → raw when allowed, error when rejected or
+ *                            unasked; acp.plan → raw (the list); acp.usage →
+ *                            nothing; acp.error → error; acp.result → result
+ *                            (failed unless end_turn)
  *   ODW's own lines         {"kind":"text"} → text; attempt (with the
  *                            adapter a fallback moved to); handoff (a
  *                            fallback that handed the work over: from, to,
@@ -206,6 +214,19 @@ function normalizeLine(line: string, tools: Map<string, string>, agy: AgySteps =
     case "item.updated":
     case "item.completed":
       return codexItem(event.type, event.item, tools, text);
+    // ACP agents, as odw keeps their sessions (../adapters/acp.ts).
+    case "acp.initialized":
+    case "acp.session":
+    case "acp.message":
+    case "acp.thought":
+    case "acp.tool_call":
+    case "acp.tool_result":
+    case "acp.permission":
+    case "acp.plan":
+    case "acp.usage":
+    case "acp.error":
+    case "acp.result":
+      return acpEvent(event, tools);
     case "error":
       // opencode's { error: {…} }; Codex's { message }.
       return [{ kind: "error", text: errorMessage(event.error) ?? errorMessage(event) ?? text }];
@@ -581,6 +602,58 @@ function agyStep(step: Record<string, unknown>, line: string, tools: Map<string,
       // A step this does not know: once it ends, the line itself.
       if (!active && subagents.length === 0) out.push({ kind: "raw", text: line });
       return out;
+  }
+}
+
+/** An ACP session's events, as odw keeps them (see ../adapters/acp.ts). */
+function acpEvent(event: Record<string, unknown>, tools: Map<string, string>): Draft[] {
+  const str = (value: unknown): string => (typeof value === "string" ? value : "");
+  switch (event.type) {
+    case "acp.initialized": {
+      const agent = isRecord(event.agentInfo) ? event.agentInfo : {};
+      const name = [str(agent.title) || str(agent.name), str(agent.version)].filter(Boolean).join(" ") || "ACP agent";
+      return [{ kind: "raw", text: `${name} (ACP protocol ${String(event.protocolVersion ?? "?")})` }];
+    }
+    case "acp.session":
+      return [{ kind: "raw", text: `session ${str(event.sessionId)} started` }];
+    case "acp.message":
+    case "acp.thought": {
+      const text = str(event.text);
+      if (!text) return [];
+      return [event.type === "acp.thought" ? { kind: "text", text, thinking: true } : { kind: "text", text }];
+    }
+    case "acp.tool_call":
+      return [toolCall(event.toolCallId, str(event.title) || str(event.kind), event.rawInput, tools)];
+    case "acp.tool_result":
+      return [toolResult(toolName(tools, event.toolCallId) ?? (str(event.title) || undefined), str(event.output), event.status === "failed")];
+    case "acp.permission": {
+      const tool = str(event.title) || "tool";
+      const kind = str(event.kind) || "other";
+      const tier = str(event.tier);
+      if (event.decision === "allowed") return [{ kind: "raw", tool, text: `permission for ${tool} [${kind}] allowed (tier ${tier})` }];
+      const text =
+        event.decision === "unasked"
+          ? `${tool} [${kind}] ran without asking for permission, beyond tier ${tier}`
+          : `permission for ${tool} [${kind}] rejected (tier ${tier})`;
+      return [{ kind: "error", tool, text }];
+    }
+    case "acp.plan": {
+      const entries = Array.isArray(event.entries) ? event.entries : [];
+      const lines = entries.map((entry) => (isRecord(entry) ? `[${str(entry.status) || "?"}] ${str(entry.content)}` : compact(entry)));
+      return [{ kind: "raw", text: `plan:\n${lines.join("\n")}` }];
+    }
+    case "acp.usage":
+      return [];
+    case "acp.error":
+      return [{ kind: "error", text: str(event.message) || "ACP error" }];
+    default: {
+      // acp.result
+      const failed = event.stopReason !== "end_turn";
+      const draft: Draft = { kind: "result", isError: failed };
+      if (failed) draft.text = str(event.error) || `stopped: ${str(event.stopReason)}`;
+      if (typeof event.costUsd === "number") draft.costUsd = event.costUsd;
+      return [draft];
+    }
   }
 }
 

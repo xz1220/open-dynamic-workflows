@@ -121,6 +121,7 @@ import {
 } from "./adapters/output.js";
 import { replyFile, usesReplyFile, type ReplyFile } from "./adapters/reply-file.js";
 import { runCommand, type CommandRunner } from "./adapters/runner.js";
+import { acpRunner, type AcpPermission } from "./adapters/acp.js";
 import { EgressProxies, type EgressDeniedEvent } from "./adapters/egress-run.js";
 import {
   egressOf,
@@ -520,6 +521,12 @@ export interface RunOptions {
    * of the call — so the run can record and log it.
    */
   onModelSubstituted?: (substitution: ModelSubstitution) => void;
+  /**
+   * Called with each permission request of an ACP agent (an ODW extension;
+   * see adapters/acp.ts) as ODW answers it by the agent's tier — and with a
+   * tool beyond the tier it ran without asking — so the run can record it.
+   */
+  onAcpPermission?: (permission: AcpPermission & { adapter: string }) => void;
   /**
    * Called when the call waits for a spent quota to reset (an ODW extension:
    * quotaWait) — its chain is out of quota, and `adapter`'s resets first —
@@ -1422,6 +1429,15 @@ export class Bridge {
       substitutionFails: settings.modelMismatch === "fail",
       // A question can be put to a person, who answers it (ODW extension; see ./questions).
       asksPerson: questions === "checkpoint" && options.onQuestion !== undefined,
+      // An ACP agent's permission requests are answered by its tier (ODW extension; see adapters/acp.ts).
+      ...(adapter.protocol === "acp"
+        ? {
+            acp: {
+              tier: permissions.tier!,
+              onPermission: options.onAcpPermission && ((p: AcpPermission) => options.onAcpPermission!({ ...p, adapter: adapter.name })),
+            },
+          }
+        : {}),
       // Its worktree's commit, pinned where its agent_started event says (ODW extension).
       ...(request.base !== undefined ? { base: request.base } : {}),
       // The repository it works in, when not the run's source (ODW extension; see ./repos).
@@ -2171,7 +2187,17 @@ export class Bridge {
           // A version probe runs on the host: for a CLI in a container it would
           // name another CLI (or none), so a sandboxed run records no version.
           if (!container) this.onCliRun?.(adapter);
-          cli = await this.runner(container ? container.argv : command, {
+          // An ACP agent is driven over its stdin and stdout (ODW extension; see adapters/acp.ts).
+          const run = call.acp
+            ? acpRunner(this.runner, {
+                prompt,
+                cwd: ws.path,
+                tier: call.acp.tier,
+                noWebTools: call.noWebTools === true,
+                onPermission: call.acp.onPermission,
+              })
+            : this.runner;
+          cli = await run(container ? container.argv : command, {
             stdin,
             cwd: ws.path,
             env: container ? container.env : env,
@@ -2312,6 +2338,8 @@ interface CallEnv {
   asking?: AskingState;
   /** A question the agent asks goes to a person (`questions: "checkpoint"` and an `onQuestion`): its run's workspace is kept for the answer. */
   asksPerson?: boolean;
+  /** An ACP agent (ODW extension; see adapters/acp.ts): the tier its permission requests are answered by, and who is told each answer. */
+  acp?: { tier: PermissionTier; onPermission?: (permission: AcpPermission) => void };
 }
 
 /** What a call whose agent stopped to ask keeps for the run told the answer (an ODW extension; see ./questions). */

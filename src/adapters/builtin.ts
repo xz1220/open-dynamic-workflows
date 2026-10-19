@@ -52,6 +52,8 @@ export interface RawAdapter {
   sandbox?: ContainerSpec;
   agentLimits?: LimitSpec;
   egressHosts?: string[];
+  /** `"acp"`: an Agent Client Protocol agent (ODW extension; see ./acp). */
+  protocol?: "acp";
 }
 
 // `flags` only DECLARES which native flag carries a model — the router appends

@@ -214,6 +214,7 @@ export function helpText(): string {
     "  odw doctor --models                                send each configured adapter/model pair one tiny prompt",
     "  odw doctor --local [--endpoint URL] [--model M]    check a local Ollama / LM Studio: context length, tool calling;",
     "                                                     with --smoke, whether a long prompt's front is silently cut",
+    "  odw doctor --adapter <acp-adapter>                 an ACP agent's handshake: what it says it can do (ODW extension)",
     "  odw run <script.js|name> [--args JSON|@file]       start a workflow (see modes below)",
     "  odw run <script.js|name> --help                    what it takes as --args, from its meta.input (ODW extension)",
     "  odw attach <run_id>                                attach the live foreground view to a run",
@@ -556,6 +557,13 @@ async function cmdDoctor(rest: string[]): Promise<number> {
       smoke,
       smokeTimeout: timeoutMs !== undefined ? timeoutMs / 1000 : undefined,
       models: values.models === true,
+      // An ACP agent named by --adapter gets a handshake (ODW extension; see adapters/acp.ts).
+      handshake:
+        config instanceof Error || !values.adapter?.length
+          ? []
+          : values.adapter.includes("all")
+            ? listAdapters(config).filter((a) => a.installed).map((a) => a.name)
+            : values.adapter,
       local: local
         ? { endpoints: values.endpoint ?? [], smoke: values.smoke === true, model: values.model, smokeTimeoutMs: timeoutMs || undefined }
         : undefined,

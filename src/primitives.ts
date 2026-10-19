@@ -132,7 +132,8 @@ import { branchName, ChangeRecorder, type AgentChanges, type KeptChanges } from 
 import { CheckpointTimeout, createCheckpoint, type CheckpointOptions, type CheckpointResult } from "./checkpoint.js";
 import { spentTokens, type RunContext } from "./context.js";
 import { AdapterExecutionError, AgentError, NeedsInputError, RunStopped, RunawayError, UnmetExpectationError, WorkflowScriptError, isDeadlineStop, isFatalError } from "./errors.js";
-import { AGENT_FAILED, AGENT_FINISHED, AGENT_STARTED, DESTRUCTIVE_GIT, HANDOFF, LOG, MODEL_SUBSTITUTED, PHASE_STARTED, event } from "./events.js";
+import { ACP_PERMISSION, AGENT_FAILED, AGENT_FINISHED, AGENT_STARTED, DESTRUCTIVE_GIT, HANDOFF, LOG, MODEL_SUBSTITUTED, PHASE_STARTED, event } from "./events.js";
+import { acpPermissionNote } from "./adapters/acp.js";
 import { substitutionNote } from "./served-model.js";
 import { DestructiveGitWatch } from "./destructive-git.js";
 import { ExecError, createExec, execStep, type ExecOptions, type ExecResult } from "./exec.js";
@@ -1306,6 +1307,18 @@ export function createPrimitives(
                   requested,
                   served,
                   policy,
+                }),
+              );
+            },
+            // An ACP agent's permission request, as its tier answered it (ODW extension; see adapters/acp.ts): an event each.
+            onAcpPermission: (permission) => {
+              ctx.emit(
+                event(ACP_PERMISSION, {
+                  message: acpPermissionNote(`${display}:${agentId}`, permission),
+                  agentId,
+                  label: display,
+                  phase: activePhase,
+                  ...permission,
                 }),
               );
             },

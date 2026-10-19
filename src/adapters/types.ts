@@ -399,6 +399,13 @@ export interface Adapter {
   egressHosts?: string[];
   /** An account of another adapter (ODW extension; see ./accounts): set on the adapters `accounts` expands into. */
   account?: AccountOf;
+  /**
+   * `"acp"`: the CLI is an Agent Client Protocol agent (ODW extension; see
+   * ./acp) — `command` starts it in its ACP mode, the prompt goes over the
+   * protocol, and its permission requests are answered by the agent's tier.
+   * Unset: a headless CLI whose stdout is decoded by `output`.
+   */
+  protocol?: "acp";
 }
 
 /**
