@@ -792,6 +792,21 @@ independent security reviews whose findings are all fixed.
   labels and phases its journal gives them.
 - First-run onboarding: `odw init` picks the default agent CLI; `odw doctor [--smoke]`
   checks the runtime, config and every adapter — `--smoke` sends one real prompt.
+- The first 60 seconds (**ODW extension**): bare `odw` before any run prints the $0
+  first run (`odw new hello` → `odw test hello` → `odw run hello --dry` → `odw serve
+  --open`), then `odw doctor`, `odw init` and the real run, instead of every command
+  (still exit 2; once a run exists it prints the full help as before). `odw doctor` ends
+  with the same steps while the runs root holds no run (`next` in `--json`), and gains
+  read-only run-environment checks, each warning with its fix line: **Open-file limit**
+  — the limit odw runs with (Node raises its soft limit to the hard one; agents inherit
+  it) against `--fanout N` agents (default: the concurrency cap) at ~4 descriptors each
+  plus 64; **Free space (runs)** and **Free space (temp)** — under 1 GiB warns, and a
+  tmpfs temp dir (Linux, `/proc/mounts`), where `isolation: "worktree"` checkouts go, is
+  named with its mount; **Git** — missing or older than 2.17 warns. Windows skips the
+  open-file check. The dashboard's Get started card now leads with `odw new hello` and
+  `odw run hello --dry` instead of a paid `odw doctor --smoke` and a repository-only
+  example, and `install.sh`'s next steps end on the same first run (for a release that
+  has `odw new`).
 - `odw new [<template>] [--name N] [--force] [--yes]` (**ODW extension**): a workflow
   from a template embedded in the binary — `hello`, `review-swarm`, `fix-until-green`,
   `plan-approve-execute`, `pr-shepherd`, `fan-out-reduce` — written to

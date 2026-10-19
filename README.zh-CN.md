@@ -159,6 +159,12 @@ cp -r "$skill_source" ~/.claude/skills/open-dynamic-workflows
 每个「适配器/模型」组合各发一条极短的提示,告诉你哪些模型已经不在了。`odw doctor --local`
 (ODW 扩展)检查本地的 Ollama 或 LM Studio:每个模型实际加载的上下文、工具调用能力,加
 `--smoke` 还会查长提示的前部是否被静默截断(见[本地模型](#本地模型检查推理服务把廉价阶段交给它odw-扩展))。
+`odw doctor` 还会检查一次扇出需要机器提供什么(ODW 扩展,只读):odw 运行时的打开文件数上限
+与你打算同时运行的 agent 数比较(`--fanout N`;默认取并发上限——每个 agent 约占 4 个描述符,
+odw 自身另需 64 个)、运行根目录和临时目录(`isolation: "worktree"` 的检出放在这里)的剩余
+空间(低于 1 GiB 时警告)以及临时目录是否为 tmpfs、PATH 上的 git(worktree 需要 2.17 及以上)。
+每条警告都附带修复它的那一行命令;平台上不适用的检查(Windows 上的 `ulimit -n`)会跳过。
+第一次运行之前直接敲 `odw`,以及在有运行之前的 `odw doctor`,都会打印下面这段 $0 的首跑步骤。
 
 **第一次运行不花钱。** 从模板开始,先测试,再看它在所有 agent 都用桩回复的情况下跑一遍——然后
 再真跑:

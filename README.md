@@ -178,6 +178,14 @@ pair your config and `.odw/workflows` name, and says which models are gone.
 `odw doctor --local` (ODW extension) checks a local Ollama or LM Studio server: the
 context each model is loaded with, tool calling, and with `--smoke` whether a long
 prompt's front is silently cut (see [Local models](#local-models-check-the-server-route-the-cheap-phases-odw-extension)).
+`odw doctor` also checks what a fan-out needs of the machine (ODW extension, read-only):
+the open-file limit odw runs with against the agents you mean to run at once
+(`--fanout N`; default: the concurrency cap — each agent holds ~4 descriptors, on top of
+64 for odw), free space at the runs root and in the temp dir where `isolation: "worktree"`
+checkouts go (a warning under 1 GiB) and whether that temp dir is a tmpfs, and the git on
+PATH (2.17 or newer for worktrees). Each warning comes with the line that fixes it; what
+does not apply on a platform (`ulimit -n` on Windows) is skipped. Bare `odw` before your
+first run, and `odw doctor` until there is one, print the $0 first run below.
 
 **Your first run costs nothing.** Start from a template, test it, watch it run with
 every agent stubbed — then run it for real:
