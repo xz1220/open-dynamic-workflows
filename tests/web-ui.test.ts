@@ -1531,6 +1531,57 @@ test("Review (ODW extension): kept diffs riskiest first, each reason shown; mark
   store.capabilities = prevCaps;
 });
 
+test("Outcomes (ODW extension): the Review page's card — applied of kept, a stacked column per week, what moved, a line per workflow", async () => {
+  const { outcomesCard, renderReview } = await import("../web/src/views/review.ts");
+  const row = (key: string, over: Record<string, unknown> = {}) => ({
+    key, runs: 0, runsDone: 0, runsFailed: 0, runReasons: {}, replays: 0, agents: 0, agentsFailed: 0, agentReasons: {},
+    kept: 0, applied: 0, dismissed: 0, reviewed: 0, left: 0, acceptRate: null, retries: 0, retried: 0, handedOff: 0, resolved: 0,
+    reworked: 0, reworkRate: null, unmet: 0, untouched: 0, outOfScope: 0, costUsd: null, tokens: 0, estimated: false,
+    costPerApplied: null, tokensPerApplied: null, ...over,
+  });
+  const o = {
+    version: 1 as const,
+    since: NOW - 30 * 86_400,
+    until: NOW,
+    workflow: null,
+    total: row("total", { runs: 6, runsFailed: 2, kept: 4, applied: 2, dismissed: 1, left: 1, acceptRate: 0.5, costUsd: 5, costPerApplied: 2.5 }),
+    previous: row("previous", { runs: 6 }),
+    shifts: [{ metric: "acceptRate" as const, before: 0.8, after: 0.5, direction: "worse" as const }],
+    weeks: [
+      { ...row("2026-09-28"), start: NOW - 21 * 86_400 },
+      { ...row("2026-10-05", { runs: 3, kept: 2, applied: 2 }), start: NOW - 14 * 86_400 },
+      { ...row("2026-10-12", { runs: 3, kept: 2, dismissed: 1, left: 1 }), start: NOW - 7 * 86_400 },
+    ],
+    workflows: [row("fix <it>", { runs: 4, runsFailed: 1, kept: 3, applied: 1, acceptRate: 1 / 3, costPerApplied: 4 }), row("docs", { runs: 2, kept: 1, applied: 1, acceptRate: 1, tokensPerApplied: 1200 })],
+    adapters: [],
+    models: [],
+  };
+  const html = outcomesCard(o);
+  assert.match(html, /class="card oc-card" data-key="outcomes"/);
+  assert.match(html, /Outcomes · last 30 days/);
+  assert.match(html, /<span class="v num">2<span class="of">\/4<\/span><\/span><span class="k">kept diffs applied<\/span>/);
+  assert.match(html, /<span class="v num">50%<\/span><span class="k">applied share<\/span>/);
+  assert.match(html, /class="rs bad"><span class="v num">2<span class="of">\/6<\/span>/, "failed runs in alarm");
+  assert.match(html, /<span class="v num">\$2\.500<\/span><span class="k">per applied change<\/span>/);
+  assert.equal(count(html, /<li class="oc-week/g), 3);
+  assert.match(html, /<li class="oc-week idle"/, "a week without runs keeps its place");
+  assert.match(html, /<i class="ap" style="--h:1\.0000"><\/i>/, "the fullest week fills its column");
+  assert.match(html, /<i class="dm" style="--h:0\.5000"><\/i><i class="lf" style="--h:0\.5000"><\/i>/);
+  assert.match(html, /<span class="tag warn">applied share 80% → 50%<\/span>/);
+  assert.match(html, /<td class="nm">fix &lt;it&gt;<\/td><td class="num">4<\/td><td class="num bad">1<\/td><td class="num">1\/3<\/td><td class="num">33%<\/td><td class="num">\$4\.000<\/td>/);
+  assert.match(html, /<td class="nm">docs<\/td>[\s\S]*?<td class="num">1\.2k tokens<\/td>/, "tokens when no dollars were reported");
+  // Nothing to show: no card.
+  assert.equal(outcomesCard(null), "");
+  assert.equal(outcomesCard({ ...o, total: row("total") }), "");
+  // On the page, above the queue — and above the empty state too.
+  const prev = [store.review, store.outcomes];
+  store.outcomes = o;
+  store.review = { entries: [], open: 0, marked: 0 };
+  const page = renderReview();
+  assert.ok(page.indexOf('data-key="outcomes"') > 0 && page.indexOf('data-key="outcomes"') < page.indexOf("Nothing to review"));
+  [store.review, store.outcomes] = prev as [typeof store.review, typeof store.outcomes];
+});
+
 test("fan-out health (ODW extension): a chip on the run's head, amber when one came back mostly null; a line in the logs", () => {
   const view: JobViewState = {
     cpNote: "",

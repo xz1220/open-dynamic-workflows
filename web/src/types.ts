@@ -1107,3 +1107,51 @@ export interface ReviewQueue {
   open: number;
   marked: number;
 }
+
+/** A row of GET /api/outcomes (ODW extension): a workflow, an adapter, a model, a week or the whole window. */
+export interface OutcomeRow {
+  key: string;
+  runs: number;
+  runsDone: number;
+  runsFailed: number;
+  runReasons: Record<string, number>;
+  replays: number;
+  agents: number;
+  agentsFailed: number;
+  agentReasons: Record<string, number>;
+  kept: number;
+  applied: number;
+  dismissed: number;
+  reviewed: number;
+  left: number;
+  acceptRate: number | null;
+  retries: number;
+  retried: number;
+  handedOff: number;
+  resolved: number;
+  reworked: number;
+  reworkRate: number | null;
+  unmet: number;
+  untouched: number;
+  outOfScope: number;
+  costUsd: number | null;
+  tokens: number;
+  estimated: boolean;
+  costPerApplied: number | null;
+  tokensPerApplied: number | null;
+}
+
+/** GET /api/outcomes (ODW extension): what became of the runs' work over a window, from evidence only. */
+export interface Outcomes {
+  version: 1;
+  since: number;
+  until: number;
+  workflow: string | null;
+  total: OutcomeRow;
+  previous: OutcomeRow | null;
+  shifts: Array<{ metric: "acceptRate" | "failRate" | "reworkRate" | "costPerApplied"; before: number; after: number; direction: "better" | "worse" }>;
+  weeks: Array<OutcomeRow & { start: number }>;
+  workflows: OutcomeRow[];
+  adapters: OutcomeRow[];
+  models: OutcomeRow[];
+}

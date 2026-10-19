@@ -3842,3 +3842,159 @@ ul.mcp li {
     animation: none;
   }
 }
+
+/* ---- outcomes: what became of the month's kept diffs (ODW extension) ---- */
+.oc-card {
+  display: grid;
+  gap: 14px;
+  margin-bottom: 18px;
+  padding: 16px 20px;
+  animation: rc-print 420ms var(--ease-out) both;
+}
+.oc-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+}
+.oc-head p {
+  margin: 4px 0 0;
+  font-size: 12px;
+}
+.oc-cmd {
+  flex: none;
+  font-family: var(--f-mono);
+  font-size: 11px;
+  color: var(--mute);
+}
+.oc-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 20px;
+  align-items: end;
+}
+.oc-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px 16px;
+}
+.oc-stats .rs {
+  display: grid;
+  gap: 2px;
+}
+.oc-stats .v {
+  font-family: var(--f-mono);
+  font-size: 20px;
+  color: var(--ink);
+}
+.oc-stats .v .of {
+  font-size: 12px;
+  color: var(--faint);
+}
+.oc-stats .sig .v {
+  color: var(--sig-ink);
+}
+.oc-stats .bad .v {
+  color: var(--alarm-ink);
+}
+.oc-stats .k {
+  font-size: 11.5px;
+  color: var(--mute);
+}
+.oc-weeks {
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+  height: 96px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.oc-week {
+  display: grid;
+  grid-template-rows: 1fr auto;
+  flex: 1;
+  height: 100%;
+  gap: 4px;
+}
+.oc-col {
+  display: flex;
+  flex-direction: column-reverse;
+  justify-content: flex-start;
+  border-bottom: 1px solid var(--line-2);
+}
+.oc-col i {
+  display: block;
+  height: calc(var(--h) * 100%);
+  transform-origin: bottom;
+  animation: oc-grow 520ms var(--ease-out) both;
+  animation-delay: calc(var(--i) * 30ms);
+}
+.oc-col .ap {
+  background: var(--sig);
+}
+.oc-col .dm {
+  background: var(--alarm);
+  opacity: 0.7;
+}
+.oc-col .lf {
+  background: var(--line-2);
+}
+.oc-week.idle .oc-wk {
+  color: var(--faint);
+}
+.oc-wk {
+  font-size: 10px;
+  color: var(--mute);
+  text-align: center;
+}
+.oc-shifts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+.oc-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+.oc-table th {
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--line);
+  color: var(--mute);
+  font-weight: 500;
+  text-align: right;
+}
+.oc-table th:first-child,
+.oc-table td.nm {
+  text-align: left;
+}
+.oc-table td {
+  padding: 5px 8px;
+  border-bottom: 1px dashed var(--line);
+  text-align: right;
+}
+.oc-table td.num {
+  font-family: var(--f-mono);
+}
+.oc-table td.bad {
+  color: var(--alarm-ink);
+}
+@keyframes oc-grow {
+  from {
+    transform: scaleY(0);
+  }
+}
+@media (max-width: 760px) {
+  .oc-body {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .oc-card,
+  .oc-col i {
+    animation: none;
+  }
+}

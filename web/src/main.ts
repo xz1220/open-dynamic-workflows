@@ -510,8 +510,10 @@ async function enterRoute(): Promise<void> {
     await store.loadSettings();
   } else if (route.view === "review") {
     render();
-    await store.loadReview();
+    await Promise.all([store.loadReview(), store.loadOutcomes()]);
     if (live()) every(5000, token, () => store.loadReview());
+    // Outcomes (ODW extension) read every run of the month: a slower beat.
+    if (live()) every(30_000, token, () => store.loadOutcomes());
   } else if (route.view === "evals") {
     render();
     if (route.param) {
@@ -763,7 +765,7 @@ root.addEventListener("click", (ev) => {
     const state = markEl.dataset.state as ReviewMark["state"];
     void api
       .markReview(runId, agentId, state)
-      .then(() => store.loadReview())
+      .then(() => Promise.all([store.loadReview(), store.loadOutcomes()]))
       .catch((err: Error) => toast({ state: "failed", title: tr("Could not mark it"), body: err.message }));
     return;
   }

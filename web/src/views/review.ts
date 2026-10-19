@@ -10,8 +10,8 @@
 import { icons } from "../icons";
 import { t, tn } from "../i18n";
 import { store } from "../store";
-import type { ReviewEntry, ReviewFactor } from "../types";
-import { esc, fmtAgo } from "../util";
+import type { OutcomeRow, Outcomes, ReviewEntry, ReviewFactor } from "../types";
+import { esc, fmtAgo, fmtTokens, fmtUsd } from "../util";
 import { emptyArt } from "./activity";
 
 /** The marks of a score: one per point, at most 10, tinted by its level. */
@@ -67,6 +67,80 @@ function entry(e: ReviewEntry, i: number, writable: boolean): string {
   );
 }
 
+const pct = (r: number | null): string => (r === null ? "—" : `${Math.round(r * 100)}%`);
+
+/** Spend per applied change: dollars, else tokens, else a dash. */
+function perApplied(r: OutcomeRow): string {
+  if (r.costPerApplied != null) return fmtUsd(r.costPerApplied);
+  if (r.tokensPerApplied != null) return `${fmtTokens(r.tokensPerApplied)} ${t("tokens")}`;
+  return "—";
+}
+
+const SHIFT: Record<Outcomes["shifts"][number]["metric"], string> = {
+  acceptRate: "applied share",
+  failRate: "failed runs",
+  reworkRate: "reworked share",
+  costPerApplied: "cost per applied change",
+};
+
+/**
+ * Outcomes (ODW extension): what became of the last 30 days' kept diffs —
+ * a column per week, stacked applied / dismissed / left — the window's
+ * totals, what moved against the 30 days before, and a line per workflow.
+ * Counted from run records and review marks; no model judged anything.
+ */
+export function outcomesCard(o: Outcomes | null): string {
+  if (!o || o.total.runs === 0) return "";
+  const tot = o.total;
+  const most = Math.max(1, ...o.weeks.map((w) => w.kept));
+  const weeks = o.weeks
+    .map((w, i) => {
+      const h = (n: number) => (n / most).toFixed(4);
+      const title = `${w.key} · ${tn(w.runs, "{n} run", "{n} runs")} · ${t("{a} applied, {d} dismissed, {l} left", { a: w.applied, d: w.dismissed, l: w.left + w.reviewed })}`;
+      return (
+        `<li class="oc-week${w.runs ? "" : " idle"}" style="--i:${i}" title="${esc(title)}">` +
+        `<span class="oc-col"><i class="ap" style="--h:${h(w.applied)}"></i><i class="dm" style="--h:${h(w.dismissed)}"></i><i class="lf" style="--h:${h(w.left + w.reviewed)}"></i></span>` +
+        `<span class="oc-wk mono">${esc(w.key.slice(5))}</span></li>`
+      );
+    })
+    .join("");
+  const stat = (v: string, k: string, cls = "") => `<div class="rs${cls ? ` ${cls}` : ""}"><span class="v num">${v}</span><span class="k">${esc(k)}</span></div>`;
+  const shifts = o.shifts
+    .map((s) => {
+      const v = (n: number) => (s.metric === "costPerApplied" ? fmtUsd(n) : pct(n));
+      return `<span class="tag ${s.direction === "better" ? "sig" : "warn"}">${esc(t(SHIFT[s.metric]))} ${esc(v(s.before))} → ${esc(v(s.after))}</span>`;
+    })
+    .join("");
+  const rows = o.workflows
+    .slice(0, 8)
+    .map(
+      (r) =>
+        `<tr><td class="nm">${esc(r.key)}</td><td class="num">${r.runs}</td><td class="num${r.runsFailed ? " bad" : ""}">${r.runsFailed}</td>` +
+        `<td class="num">${r.applied}/${r.kept}</td><td class="num">${pct(r.acceptRate)}</td><td class="num">${esc(perApplied(r))}</td></tr>`,
+    )
+    .join("");
+  return (
+    `<section class="card oc-card" data-key="outcomes" aria-label="${esc(t("Outcomes"))}">` +
+    `<header class="oc-head"><div><span class="eyebrow">${t("Outcomes · last 30 days")}</span>` +
+    `<p class="dim">${t("From run records and review marks — applied is what odw apply or a mark says; no model judged anything.")}</p></div>` +
+    `<code class="oc-cmd">odw outcomes</code></header>` +
+    `<div class="oc-body"><div class="oc-stats">` +
+    stat(`${tot.applied}<span class="of">/${tot.kept}</span>`, t("kept diffs applied"), "sig") +
+    stat(pct(tot.acceptRate), t("applied share")) +
+    stat(String(tot.dismissed), t("dismissed")) +
+    stat(String(tot.left + tot.reviewed), t("left")) +
+    stat(`${tot.runsFailed}<span class="of">/${tot.runs}</span>`, t("runs failed"), tot.runsFailed ? "bad" : "") +
+    stat(esc(perApplied(tot)), t("per applied change")) +
+    `</div>` +
+    `<ol class="oc-weeks" aria-label="${esc(t("kept diffs by week: applied, dismissed, left"))}">${weeks}</ol></div>` +
+    (shifts ? `<div class="oc-shifts"><span class="dim">${t("against the 30 days before")}</span>${shifts}</div>` : "") +
+    (rows
+      ? `<table class="oc-table"><thead><tr><th>${t("workflow")}</th><th>${t("runs")}</th><th>${t("failed")}</th><th>${t("applied")}</th><th>%</th><th>${t("per applied change")}</th></tr></thead><tbody>${rows}</tbody></table>`
+      : "") +
+    `</section>`
+  );
+}
+
 export function renderReview(): string {
   const q = store.review;
   if (!q) return `<div class="page review-page"><div class="empty"><div class="spinner"></div><p>${t("Loading the review queue…")}</p></div></div>`;
@@ -81,11 +155,11 @@ export function renderReview(): string {
     `</div></header>`;
   if (!q.entries.length) {
     return (
-      `<div class="page review-page">${head}` +
+      `<div class="page review-page">${head}${outcomesCard(store.outcomes)}` +
       emptyArt(t("Nothing to review"), esc(t("Agents that run with isolation: \"worktree\" keep a diff of what they changed; each one shows here until it is reviewed, dismissed or applied."))) +
       `</div>`
     );
   }
   const writable = store.capabilities.writable;
-  return `<div class="page review-page">${head}<div class="rq-list">${q.entries.map((e, i) => entry(e, i, writable)).join("")}</div></div>`;
+  return `<div class="page review-page">${head}${outcomesCard(store.outcomes)}<div class="rq-list">${q.entries.map((e, i) => entry(e, i, writable)).join("")}</div></div>`;
 }

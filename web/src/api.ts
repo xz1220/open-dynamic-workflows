@@ -21,6 +21,7 @@ import type {
   RunSummary,
   ReviewMark,
   ReviewQueue,
+  Outcomes,
   ScheduleView,
   SettingsSnapshot,
   TranscriptPage,
@@ -124,6 +125,8 @@ export const api = {
   },
   /** The review queue (ODW extension): kept diffs not dealt with yet, riskiest first; `all` includes the marked. */
   review: (all = false) => getJSON<ReviewQueue>(`/api/review${all ? "?all=1" : ""}`),
+  /** What became of the runs' work over the last 30 days (ODW extension): applied, dismissed, left, by week and workflow. */
+  outcomes: () => getJSON<Outcomes>("/api/outcomes?since=30d"),
   /** `odw schedule` entries; empty from servers without schedules. */
   schedules: () => getJSON<ScheduleView[]>("/api/schedules"),
   workflows: () => getJSON<WorkflowSummary[]>("/api/workflows"),
