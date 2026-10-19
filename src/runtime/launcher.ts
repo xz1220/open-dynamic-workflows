@@ -23,6 +23,7 @@ import { loadWorkflowScript, type WorkflowMeta } from "../loader.js";
 import { isSeaBinary } from "../sea.js";
 import { resolveRunTrust } from "../untrusted.js";
 import { requireSandboxRefusal, sandboxGap, taintedArgs } from "../untrusted-input.js";
+import { repoTop } from "../repos.js";
 import { resolveWorkflow, type ResolvedWorkflow } from "../workflows/resolve.js";
 import { RunObserver } from "./run-liveness.js";
 import { RunStore, type BreakSpec, type EvalRunTag, type ReplayLink, type ResolveLink } from "./run-store.js";
@@ -97,6 +98,12 @@ export interface StartRunOptions {
    * ../script-context): `"trigger"` keeps a triggered run's strict default.
    */
   sourceOrigin?: string | null;
+  /**
+   * `odw run --repo name=path` (ODW extension; see ../repos): the other
+   * repositories the run may work in, alias → absolute path — over the
+   * config's `repos`. Each must be a git repository: checked before the run exists.
+   */
+  repos?: Record<string, string> | null;
 }
 
 /**
@@ -123,6 +130,8 @@ function prepare(options: StartRunOptions): { config: Config; source: string; st
     const gap = sandboxGap({ sandbox: withSandboxFlag(settings.sandbox, options.sandbox ?? null) });
     if (gap && settings.untrustedInput.requireSandbox) throw new ConfigError(requireSandboxRefusal(gap));
   }
+  // Each `--repo` must be a git repository (ODW extension; see ../repos): refused before a run exists.
+  for (const [name, path] of Object.entries(options.repos ?? {})) repoTop(name, path);
   const store = new RunStore(options.runsRoot ?? resolveRunsRoot(config.settings.runsRoot));
   return { config, source, store };
 }
@@ -160,6 +169,7 @@ function commonCreateInput(options: StartRunOptions, source: string, workflowNam
         }
       : null,
     sourceOrigin: options.sourceOrigin ?? null,
+    repos: options.repos ?? null,
   };
 }
 

@@ -804,6 +804,13 @@ export interface Settings {
    * --notify` unless `--cron` says otherwise. `null`: no default time.
    */
   digest: DigestSettings | null;
+  /**
+   * The repositories a run may work in besides its source (an ODW extension;
+   * see ../repos): alias → path, `~` allowed, relative to the run's source.
+   * `agent(p, { repo })` and `exec(cmd, { repo })` name one by its alias;
+   * `odw run --repo name=path` adds or overrides one. `{}`: none.
+   */
+  repos: Record<string, string>;
 }
 
 /** When the scheduled digest goes out (see `Settings.digest`). */

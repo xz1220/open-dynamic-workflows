@@ -259,6 +259,12 @@ export interface AgentRequest {
    * of its adapter's and the run's `stallTimeout`; 0 turns the watchdog off.
    */
   stallMs?: number;
+  /**
+   * ODW extension (see ./repos): the repository the agent works in — the top
+   * level of one of the run's other repositories, `agent(p, { repo })` — in
+   * place of the run's source; an isolated agent's worktree is one of it.
+   */
+  source?: string;
 }
 
 /** The persona framing injected for `agentType`, on top of the independence preamble. */
@@ -1418,6 +1424,8 @@ export class Bridge {
       asksPerson: questions === "checkpoint" && options.onQuestion !== undefined,
       // Its worktree's commit, pinned where its agent_started event says (ODW extension).
       ...(request.base !== undefined ? { base: request.base } : {}),
+      // The repository it works in, when not the run's source (ODW extension; see ./repos).
+      ...(request.source !== undefined ? { source: request.source } : {}),
     };
     const limits: CliLimits = {
       timeout: adapter.timeout ?? settings.timeout ?? undefined,
@@ -1453,7 +1461,7 @@ export class Bridge {
     // A declared scope without `expect` reads the work the same way (ODW extension; see ./scope).
     const watch = expect ? undefined : options.scopeWatch;
     const looker = expect ?? watch;
-    if (looker) await unlessStopped(signal, () => looker.begin(plan.workspaceMode, this.source));
+    if (looker) await unlessStopped(signal, () => looker.begin(plan.workspaceMode, request.source ?? this.source));
     const inspect =
       looker && plan.workspaceMode === "worktree"
         ? async (ws: Workspace, output: DecodedOutput): Promise<void> => {
@@ -2240,7 +2248,7 @@ export class Bridge {
       handoff.heldPosture = null;
     }
     if (held && !fits) await held.close();
-    const open = resumed ?? (fits ? held : await openWorkspace(this.source, mode, setup));
+    const open = resumed ?? (fits ? held : await openWorkspace(call.source ?? this.source, mode, setup));
     try {
       return await fn(open.workspace);
     } finally {
@@ -2298,6 +2306,8 @@ interface CallEnv {
   handoff?: HandoffState;
   /** The commit its worktree checks out in place of HEAD (ODW extension; AgentRequest.base). */
   base?: string;
+  /** The repository its workspace is of, in place of the run's source (ODW extension; AgentRequest.source). */
+  source?: string;
   /** The workspace a run that stopped to ask leaves for the run told the answer (ODW extension; see ./questions). */
   asking?: AskingState;
   /** A question the agent asks goes to a person (`questions: "checkpoint"` and an `onQuestion`): its run's workspace is kept for the answer. */

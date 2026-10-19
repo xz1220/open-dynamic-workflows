@@ -21,6 +21,7 @@ import type { AgentCallRecord, AgentResultRecord, ReplayJournal } from "./journa
 import { quotaPauseMessage, type QuotaPauseChange } from "./quota-wait.js";
 import { redactorFor, type Redactor } from "./redact.js";
 import type { RunMemory } from "./memory.js";
+import type { RunRepos } from "./repos.js";
 import type { SafetySnapshot } from "./safety.js";
 import type { NotesBoard } from "./notes.js";
 import type { PhaseDefaults } from "./routing.js";
@@ -202,6 +203,12 @@ export interface RunContext {
    * `seq`; absent where no run is persisted, and for a dry or test run.
    */
   safety?: SafetySnapshot;
+  /**
+   * The repositories the run works in besides its source (ODW extension; see
+   * ./repos): what `agent(…, { repo })` and `exec(…, { repo })` name, each
+   * with its own safety snapshot and scope locks. Shared like `seq`; absent: none.
+   */
+  repos?: RunRepos;
   emit(ev: WorkflowEvent): void;
 }
 
@@ -255,6 +262,8 @@ export interface BuildContextOptions {
   onCliRun?: BridgeOptions["onCliRun"];
   /** The run's untrusted input, as meta.json says (ODW extension; see ./untrusted-input); null or absent: the user's. */
   input?: UntrustedInputMeta | null;
+  /** The repositories the run works in besides its source (ODW extension; see ./repos). */
+  repos?: RunRepos;
 }
 
 /** Wire a full run context from a config and the run's surroundings. */
@@ -350,6 +359,7 @@ export function buildContext(config: Config, options: BuildContextOptions = {}):
     costNotes: new Set(),
     ...(options.input ? { input: { meta: options.input } } : {}),
     safety: options.safety,
+    ...(options.repos ? { repos: options.repos } : {}),
     emit(ev: WorkflowEvent): void {
       sink.emit(ev);
     },

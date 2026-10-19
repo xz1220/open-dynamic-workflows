@@ -169,6 +169,12 @@ export interface CreateRunInput {
    */
   untrustedInput?: UntrustedInputMeta | null;
   /**
+   * `odw run --repo name=path` (ODW extension; see ../repos): the other
+   * repositories it names, alias → absolute path. Written to meta as `repos`
+   * only when set.
+   */
+  repos?: Record<string, string> | null;
+  /**
    * The origin of the run this one replays or reruns, when it decides the
    * script context (ODW extension; see ../script-context): `"trigger"`.
    * Written to meta as `sourceOrigin` only when set.
@@ -294,6 +300,7 @@ export class RunStore {
       ...(input.breaks ? { breaks: input.breaks } : {}),
       ...(input.untrustedInput ? { untrustedInput: input.untrustedInput } : {}),
       ...(input.sourceOrigin ? { sourceOrigin: input.sourceOrigin } : {}),
+      ...(input.repos && Object.keys(input.repos).length > 0 ? { repos: input.repos } : {}),
       launchedBy: clean(input.launchedBy) ?? localLauncher(),
       resumedFrom: input.resumedFrom?.runId ?? null,
       resumedFromDir: input.resumedFrom?.dir ?? null,

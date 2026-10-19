@@ -34,6 +34,7 @@ import { Script } from "node:vm";
 import { scanClaudeCodeLimits } from "./claude-limits.js";
 import { WorkflowScriptError, type SourceLocation } from "./errors.js";
 import { inputSchemaProblems } from "./input-schema.js";
+import { metaReposProblem } from "./repos.js";
 import type { WorkflowGlobals } from "./primitives.js";
 import { phaseDefaultsOf, type AdapterChoice } from "./routing.js";
 import type { JsonSchema } from "./schema.js";
@@ -59,6 +60,8 @@ export interface WorkflowMeta {
   model?: string;
   /** The shape of its `args`, checked before a run starts (ODW extension; see ./input-schema). */
   input?: JsonSchema;
+  /** The aliases of the repositories it works in besides its source, which a run must declare (ODW extension; see ./repos). */
+  repos?: string[];
 }
 
 /** Told the args object the script holds, and how a worker value enters the script's realm (strict only). */
@@ -172,6 +175,10 @@ export function loadWorkflowScript(source: string, filename: string, options: Lo
     const problems = inputSchemaProblems(meta.input);
     if (problems.length > 0) throw new WorkflowScriptError(`workflow ${filename}: ${problems.join("; ")}`, metaAt);
   }
+
+  // The repositories it needs (an ODW extension) are a list of aliases.
+  const reposProblem = metaReposProblem(meta.repos);
+  if (reposProblem) throw new WorkflowScriptError(`workflow ${filename}: ${reposProblem}`, metaAt);
 
   // Inject each extension unless the body's own top-level binding of that
   // name would clash with it. The masked body (strings and comments blanked)

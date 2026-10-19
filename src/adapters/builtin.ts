@@ -745,4 +745,5 @@ export const DEFAULT_SETTINGS: Settings = {
   untrustedInput: { requireSandbox: false }, // a run with untrusted input and no sandbox warns loudly (true: refused)
   retention: { days: 30, transcripts: true }, // odw gc: an ended run's branches and transcripts after 30 days (only with --yes)
   digest: null, // no default time for odw schedule add --digest ({ cron } sets one)
+  repos: {}, // no repositories besides the source: agent(…, { repo }) names none
 };

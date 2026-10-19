@@ -11,7 +11,8 @@
  *     on POSIX, `cmd.exe /d /s /c` on Windows); an array is an argv run
  *     directly, without a shell, so no element is ever interpreted.
  *   - **cwd** — the run's source directory (where agents run) by default; a
- *     relative `cwd` resolves against it.
+ *     relative `cwd` resolves against it. `repo` (an ODW extension; see
+ *     ./repos) names another repository of the run to run in instead.
  *   - **timeout** — 600 s by default. The command is killed together with every
  *     process it started (the runner's process-group kill), and the result says
  *     `timedOut`.
@@ -52,6 +53,7 @@ import type { RunContext } from "./context.js";
 import { DynamicWorkflowError, RunStopped, WorkflowScriptError } from "./errors.js";
 import { COMMAND_FAILED, COMMAND_FINISHED, COMMAND_STARTED, event } from "./events.js";
 import { bothEnds, type Redactor } from "./redact.js";
+import { repoOf } from "./repos.js";
 
 export interface ExecOptions {
   /** Working directory; a relative path resolves against the run's source directory (the default). */
@@ -77,6 +79,12 @@ export interface ExecOptions {
    * a sandbox without network refuses. No effect outside a sandbox.
    */
   network?: "none" | "default";
+  /**
+   * ODW extension: the alias of one of the run's other repositories (see
+   * ./repos) to run in — its top level, which a relative `cwd` resolves
+   * against — instead of the source. An alias the run does not declare is refused.
+   */
+  repo?: string;
 }
 
 export interface ExecResult {
@@ -146,11 +154,14 @@ export async function execStep(
   opts: ExecOptions = {},
   extra: Record<string, unknown> = {},
 ): Promise<ExecResult> {
-  const step = planStep(command, opts, ctx.source, ctx.runId, ctx.redactor);
+  // The repository it runs in, when not the source (ODW extension; see ./repos).
+  const repo = opts !== null && typeof opts === "object" ? repoOf(ctx.repos, opts.repo, "exec()", (m) => new WorkflowScriptError(m)) : null;
+  const root = repo?.path ?? ctx.source;
+  const step = planStep(command, opts, root, ctx.runId, ctx.redactor);
   const phase = opts.phase !== undefined ? opts.phase : ctx.currentPhase;
   // Ids follow call order, as agent ids do, on the run's command sequence.
   const commandId = ++ctx.commandSeq.value;
-  const fields = { commandId, label: step.label, phase, command: clip(step.display, EVENT_COMMAND_CHARS), ...extra };
+  const fields = { commandId, label: step.label, phase, command: clip(step.display, EVENT_COMMAND_CHARS), ...(repo ? { repo: repo.name } : {}), ...extra };
   const box = stepSandbox(ctx.config.settings.sandbox ?? "none", opts.network);
   return ctx.scheduler.runCommand(async (signal) => {
     // In a container sandbox (ODW extension; see adapters/sandbox.ts) the step
@@ -167,7 +178,7 @@ export async function execStep(
             engine,
             runner: runCommand,
             command: step.shell ? ["/bin/sh", "-c", step.file] : [step.file, ...step.args],
-            workspace: resolve(ctx.source),
+            workspace: resolve(root),
             workdir: step.cwd,
             env: stepEnv(ctx, opts.env),
             cliConfig: "none",

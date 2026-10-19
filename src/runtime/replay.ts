@@ -38,6 +38,7 @@ import { isPermissionTier } from "../adapters/permissions.js";
 import { sandboxFlagOf } from "../adapters/sandbox.js";
 import type { PermissionTier, TrustLevel } from "../adapters/types.js";
 import type { AgentCallRecord } from "../journal.js";
+import { repoFlagsOf } from "../repos.js";
 import { untrustedInputOf } from "../untrusted-input.js";
 import { isCommitId } from "../workspace.js";
 import { startRunFromSource, type StartRunOptions } from "./launcher.js";
@@ -128,6 +129,8 @@ export function planReplay(store: RunStore, runId: string, agentId: number, over
     untrustedInput: untrustedInputOf(meta),
     // …and a triggered run's replay keeps its strict script context.
     sourceOrigin: meta.origin === "trigger" || meta.sourceOrigin === "trigger" ? "trigger" : null,
+    // …and the repositories its --repo named (ODW extension; see ../repos).
+    repos: repoFlagsOf(meta.repos),
   };
   return { args: { prompt, options }, link, start, notes };
 }

@@ -218,25 +218,29 @@ export function formatFileList(files: DiffFile[], opts: { width: number; caps: T
 /**
  * The `odw diff --stat` table: per agent that kept a diff — ID, STATE, LABEL,
  * FILES, lines added (+) and removed (-), and the BRANCH it was kept on — and
- * a mark on a diff that was cut at its size cap.
+ * a mark on a diff that was cut at its size cap. When an agent worked in
+ * another repository of the run (ODW extension; see ../repos), a REPO column
+ * names each one's ("." for the source).
  */
 export function formatChangeTable(
   agents: Array<{ row: AgentRow; changes: AgentChanges }>,
   opts: { width: number; caps: TermCaps },
 ): string[] {
   const p = palette(opts.caps);
-  const header = ["ID", "STATE", "LABEL", "FILES", "+", "-", "BRANCH"];
+  const repos = agents.some(({ row }) => row.repo);
+  const header = ["ID", "STATE", "LABEL", ...(repos ? ["REPO"] : []), "FILES", "+", "-", "BRANCH"];
   const cells = agents.map(({ row, changes }) => [
     String(row.agentId ?? "-"),
     row.state,
     sanitizeText(row.label, 28),
+    ...(repos ? [row.repo ? sanitizeText(row.repo.name, 64) : "."] : []),
     String(changes.files),
     `+${changes.insertions}`,
     `-${changes.deletions}`,
     row.branch ? sanitizeText(row.branch, 120) : "-",
   ]);
   const widths = header.map((h, i) => Math.max(h.length, ...cells.map((c) => displayWidth(c[i]!))));
-  const right = new Set([0, 3, 4, 5]);
+  const right = new Set(repos ? [0, 4, 5, 6] : [0, 3, 4, 5]);
   const line = (c: string[]): string =>
     c.map((s, i) => (right.has(i) ? s.padStart(widths[i]!) : padEndWidth(s, widths[i]!))).join("  ").trimEnd();
   const out = [p.dim(line(header))];

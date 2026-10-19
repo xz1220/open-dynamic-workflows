@@ -43,6 +43,7 @@ import { isTrustLevel, untrustedPosture } from "./trust.js";
 import { buildEgressHosts } from "./egress.js";
 import { buildAdapterSandbox, buildSandboxSetting, checkSandboxImages } from "./sandbox.js";
 import { buildAccounts } from "./accounts.js";
+import { buildRepos } from "../repos.js";
 import type {
   Adapter,
   AdapterFailures,
@@ -179,6 +180,7 @@ const KNOWN_TOP_KEYS = [
   "untrustedInput",
   "retention",
   "digest",
+  "repos",
 ] as const;
 
 const KNOWN_ADAPTER_KEYS = ["command", "stdin", "env", "timeout", "stallTimeout", "concurrency", "promptCache", "label", "flags", "output", "failures", "permissionArgs", "permissions", "permissionDenials", "trust", "untrustedArgs", "untrustedNote", "sandbox", "agentLimits", "egressHosts", "questions", "questionArgs"] as const;
@@ -1388,6 +1390,7 @@ function buildSettings(raw: Record<string, unknown>): Settings {
     untrustedInput: raw["untrustedInput"] == null ? { ...DEFAULT_SETTINGS.untrustedInput } : buildUntrustedInput(raw["untrustedInput"]),
     retention: raw["retention"] == null ? { ...DEFAULT_SETTINGS.retention } : buildRetention(raw["retention"]),
     digest: raw["digest"] == null ? DEFAULT_SETTINGS.digest : buildDigest(raw["digest"]),
+    repos: raw["repos"] == null ? {} : buildRepos(raw["repos"]),
   };
 }
 

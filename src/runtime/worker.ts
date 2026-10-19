@@ -43,7 +43,8 @@ import type { QuotaPause } from "../quota-wait.js";
 import { redactorFor, type Redactor } from "../redact.js";
 import { SafetySnapshot } from "../safety.js";
 import type { Scheduler } from "../scheduler.js";
-import { applyRunTrust, resolveRunTrust, untrustedConfigSwap } from "../untrusted.js";
+import { applyRunTrust, repositoryRoot, resolveRunTrust, untrustedConfigSwap } from "../untrusted.js";
+import { checkMetaRepos, repoFlagsOf, reposEvent, resolveRunRepos, RunRepos } from "../repos.js";
 import { requireSandboxRefusal, sandboxGap, sandboxWarning, untrustedInputNote, untrustedInputOf, untrustedTier } from "../untrusted-input.js";
 import { isCommitId } from "../workspace.js";
 import { pluginOrigin } from "../workflows/plugins.js";
@@ -307,6 +308,19 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
       });
       return history;
     };
+    // The repositories it works in besides its source (ODW extension; see ../repos):
+    // the config's, with `--repo` over them — in an untrusted run, none the
+    // repository's own config names outside it.
+    const runSource = typeof meta.source === "string" ? meta.source : process.cwd();
+    const declared = resolveRunRepos({
+      setting: config.settings.repos ?? {},
+      flags: repoFlagsOf(meta.repos),
+      source: runSource,
+      sourceRoot: repositoryRoot(runSource),
+      untrusted: runTrust.trust === "untrusted",
+      repositoryConfig: runTrust.repositoryConfig,
+    });
+    const repos = new RunRepos(declared.repos, { runId, runDir: store.runDir(runId), emit: (ev) => sink.emit(ev), snapshots: !mock });
     // The workflow's memory (ODW extension; see ../memory): recalled for agents
     // with memory on; what the run learns is kept once it ends — not by a run no model answers.
     const memory = new RunMemory({
@@ -369,6 +383,7 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
           }),
       // What each agent() call was asked, as agents/<agentId>.call.json, for `odw replay` (ODW extension).
       saveAgentCall: (call) => store.writeAgentCall(runId, call),
+      ...(repos.size > 0 ? { repos } : {}),
       ...(replayOf?.base ? { worktreeBase: replayOf.base } : {}),
       breaks,
       onCliRun: cliVersions && ((adapter) => cliVersions.note(adapter)),
@@ -443,6 +458,12 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
     // An untrusted run says so, and what of the repository's config it refused (ODW extension).
     for (const message of trusted.notes) sink.emit(event(LOG, { message, trust: "untrusted" }));
     if (breaks) sink.emit(event(LOG, { message: breaks.describe() }));
+    // The repositories it works in besides its source, and what of them an untrusted run refused (ODW extension).
+    for (const message of declared.notes) sink.emit(event(LOG, { message, trust: "untrusted" }));
+    if (repos.size > 0) {
+      sink.emit(reposEvent(repos.list()));
+      store.updateStatus(runId, { repos: repos.paths() });
+    }
     if (replayOf) {
       sink.emit(
         event(LOG, {
@@ -544,6 +565,8 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
       );
     }
     historyName ??= loaded.meta.name;
+    // The repositories its meta.repos needs (ODW extension; see ../repos): each declared, or no agent starts.
+    checkMetaRepos(loaded.meta.repos, repos.list(), `workflow ${loaded.meta.name}`);
     // Drift watch (ODW extension; see ../drift): what this run records — CLI
     // versions, requested models — against the workflow's previous run. Not
     // for a run no model answers.

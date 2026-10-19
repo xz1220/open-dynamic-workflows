@@ -952,6 +952,8 @@ export interface ApplyOptions {
   caps: TermCaps;
   /** Columns a line may take. */
   width: number;
+  /** The preview was printed already — a multi-repository `--all` previews every repository first (ODW extension; see ../repos): only the apply is reported. */
+  previewed?: boolean;
   /** Told of each agent whose diff is now in the tree, cleanly — applied, verified when asked, or there already (the review queue's `applied`; ODW extension). */
   onApplied?: (agent: AgentDiff) => void;
 }
@@ -1039,7 +1041,9 @@ export async function applyAgents(o: ApplyOptions): Promise<number> {
   const work = await mkdtemp(join(tmpdir(), "odw-apply-"));
   try {
     await previewStack(o, repo, items, work, unstaged);
-    if (single) {
+    if (o.previewed) {
+      // said already
+    } else if (single) {
       for (const line of previewLines(o, single, `${who} `, ` to ${repo}`)) o.out.write(`${line}\n`);
     } else {
       o.out.write(`previewing ${items.length} agent(s) of run ${o.runId} against ${repo}, each on top of the ones before it:\n`);
