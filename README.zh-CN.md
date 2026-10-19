@@ -563,6 +563,7 @@ odw logs $RUN --agent 3  # 某个 agent 做了什么:它的工具调用、结果
 odw result $RUN          # 最终值
 odw diff $RUN --stat     # 隔离 agent 改了什么;odw apply $RUN --agent N(或 --all)落地
 odw review               # 跨运行尚未处理的保留 diff,按风险从高到低,每条附理由(见下文)
+odw outcomes             # 按周、工作流、适配器、模型:保留 diff 的应用/放弃/未处理、失败、返工、每个已应用改动的花费(见下文)
 odw notes $RUN           # 它的 agent 在笔记板上互相告知的内容(见上文)
 odw compare $OLD $RUN    # 两次运行之间变了什么:配置、耗时、花费、失败、回复(见下文)
 odw estimate review      # 下一次运行的 p50/p90 耗时、花费、token 和 agent 数,依据以往运行(见下文)
@@ -3315,6 +3316,39 @@ odw review mark $RUN 3 reviewed --note "看过迁移了"   # 或 dismissed | app
 /api/runs/:id/agents/:agentId/review { state, note? }` 标记一条。
 
 分步说明:[`docs/recipes/review-and-apply.md`](docs/recipes/review-and-apply.md)。
+
+#### 按周看产出结果(ODW 扩展)
+
+一次 eval 的通过率只说明那一次过没过,说明不了 agent 的产出有多少真的被人接受。`odw outcomes`
+跨运行、按周统计这件事,只用运行记录下的证据和审阅标记——没有任何模型参与评判:
+
+```bash
+odw outcomes                         # 最近 30 天:按周、工作流、适配器、模型
+odw outcomes --since 12w --workflow triage --json
+odw outcomes --markdown              # 表格,方便贴进 PR 或 wiki
+```
+
+各项统计的含义:
+
+- **kept / applied / dismissed / reviewed / left**——保留了 diff 的 agent,按它在
+  `reviews.jsonl` 里的最后一条标记归类(`odw apply` 标 `applied`,`odw review mark` 与看板标其余);
+  `left` 是没有标记或被放回队列(`open`)的。标记按现在的状态读取,所以运行一周后才应用的 diff 也算在那次运行上。
+  「已应用」只看 ODW 自己的标记,不读 PR 的合并状态。
+- **failed**——失败与 stale 的运行,原因取其失败 agent 中最多的那个,没有则为 `stale` 或 `script_error`;
+  agent 级的失败也按原因计数。
+- **rework(返工)**——需要重试(`expect`、限流、卡死、提问)、回退/交接,或在 `odw apply --resolve`
+  时需要解决冲突的保留 diff;以及 `odw replay` 发起的运行。
+- **per applied change(每个已应用改动的花费)**——该行的全部花费(包括失败的 agent)除以已应用改动数:
+  有 agent 报告美元时用美元,否则用 token。
+- **与上一个时间段对比**——紧挨着的同样长度的时间段;比例变化 15 个百分点以上(两边各至少 5 个样本),
+  或每个已应用改动的花费变化一半以上(两边各至少 3 个)时会标出来。
+
+运行按创建时间计入时间窗。不计入:dry run、仍在进行的运行,以及 `odw eval`、`odw test`、
+`odw conformance` 和 `odw apply --resolve` 发起的运行。`odw pull` 拉回的运行一并计入;其他机器的运行根目录各自统计。
+工作流行按运行计数;适配器/模型行按 agent 计数,只有它自己的 agent 在某次失败运行里失败时才把那次失败记在它头上。
+模型取 CLI 报告实际服务的模型,否则取请求的模型(`… (requested)`),否则为 `(CLI default)`。
+看板的 **Review** 页顶部有一张最近 30 天的 **产出结果** 卡片——已应用/保留、按周的堆叠柱、显著变化、
+每个工作流一行——数据来自 `GET /api/outcomes[?since=30d][&workflow=W]`。
 
 ## 工作原理
 

@@ -294,6 +294,7 @@ odw apply $RUN --all --resolve --verify "<测试命令>"   # 由 resolver agent 
 odw apply $RUN --all --pr --verify "<测试命令>"   # 新分支、推送、开草稿 PR（gh）；从不合并
 odw review [--since 7d] [--json]      # 跨运行尚未处理的保留 diff，按风险从高到低（ODW 扩展）
 odw review mark $RUN <id|label> reviewed|dismissed|applied|open [--note T]
+odw outcomes [--since 30d] [--workflow W] [--json]   # 按周/工作流/适配器/模型：应用、放弃、未处理、失败、返工、每个已应用改动的花费（ODW 扩展）
 ```
 
 - 先预览（`--check`，有冲突时退出码 1），按任务需要应用，并告诉用户应用了什么、哪里冲突了
@@ -320,6 +321,10 @@ odw review mark $RUN <id|label> reviewed|dismissed|applied|open [--note T]
   后台任务、破坏性 git、回退、重试、花费）和每一分的理由。用户问先看哪个时从这里开始，并引用这些
   理由。`odw apply` 会把干净应用的条目标为 `applied`；其余的只在用户做了决定后再标记
   （`reviewed`、`dismissed`；`open` 撤销）。
+- `odw outcomes`（ODW 扩展）回答「agent 的改动有多少被接受、是否在变好」：时间窗内创建的运行，
+  按周、工作流、适配器、模型统计——保留 diff 的应用/放弃/未处理（来自上述标记）、按原因的失败运行、
+  返工（重试、回退、resolver、replay）与每个已应用改动的花费，并与上一个时间段对比。只有证据：
+  引用它的数字，不要自己再加质量评判。
 
 **没有**隔离的 agent 就在用户自己的工作区里干活。一次运行中第一个 `edit` 或 `full` 档位的此类
 agent 开始前，odw 会把工作区里未提交的内容——已跟踪文件的改动和未被忽略的未跟踪文件——存到

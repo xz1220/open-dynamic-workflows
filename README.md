@@ -655,6 +655,7 @@ odw logs $RUN --agent 3  # what one agent did: its tool calls, results and text 
 odw result $RUN          # final value
 odw diff $RUN --stat     # what isolated agents changed; odw apply $RUN --agent N (or --all) lands it
 odw review               # kept diffs across runs not dealt with yet, riskiest first, each with why (below)
+odw outcomes             # by week, workflow, adapter, model: kept diffs applied/dismissed/left, failures, rework, cost per applied change (below)
 odw notes $RUN           # what its agents told each other on the notes board (above)
 odw compare $OLD $RUN    # what changed between two runs: setup, time, cost, failures, replies (below)
 odw estimate review      # p50/p90 time, cost, tokens and agents of its next run, from earlier runs (below)
@@ -3905,6 +3906,65 @@ says how many wait. `GET /api/review[?since=7d][&all=1]` serves it, `POST
 /api/runs/:id/agents/:agentId/review { state, note? }` marks one.
 
 Step by step: [`docs/recipes/review-and-apply.md`](docs/recipes/review-and-apply.md).
+
+#### Outcomes over weeks (ODW extension)
+
+A pass rate says whether one eval passed; it does not say how much of what the
+agents produced people actually took. `odw outcomes` counts that across runs, by
+week, from what the runs recorded and the review marks — no model judges anything:
+
+```bash
+odw outcomes                         # the last 30 days: by week, workflow, adapter and model
+odw outcomes --since 12w --workflow triage --json
+odw outcomes --markdown              # tables, for a PR or a wiki page
+```
+
+```
+odw outcomes · last 30d · 14 runs
+
+Runs        11 done · 3 failed (timeout 2, script_error 1)
+Agents      41 · 4 failed (timeout 3, unmet_expectation 1) · 6 retries over 4 agents · 1 fell back
+Kept diffs  12 · 7 applied (58%) · 2 dismissed · 1 reviewed · 2 left
+Rework      4 of the kept needed a retry, fallback or resolver (33%) · 1 resolved at apply
+Checks      1 missed expect · 0 changed untouched files · 1 wrote outside scope
+Spend       $18.40 · 2.1M tokens · per applied change: $2.629
+
+Against the window before
+  - applied share of kept diffs 80% → 58% (worse)
+
+By week (UTC, from Monday)
+  2026-09-21  3 runs · 0 failed · 2 kept · 2 applied (100%) · 0 dismissed · 0 left · per applied $1.900
+  …
+By workflow / By adapter / By model   runs (agents) · failed · kept · applied · dismissed · left · reworked · per applied
+```
+
+What each count is:
+
+- **kept / applied / dismissed / reviewed / left** — the agents that kept a diff,
+  by their last mark in `reviews.jsonl` (`odw apply` marks `applied`; `odw review
+  mark` and the dashboard mark the rest); `left` has no mark or was put back `open`.
+  Marks are read as they stand now, so a diff applied a week after its run counts
+  for that run. Applied is ODW's own mark: a PR's merge state is not read.
+- **failed** — failed and stale runs, by the commonest failure reason of their
+  failed agents, else `stale` or `script_error`; agents' failures by reason too.
+- **rework** — kept diffs that needed a retry (`expect`, rate limit, stall,
+  question), a fallback or handoff, or a resolver at `odw apply --resolve`; and
+  runs `odw replay` started.
+- **per applied change** — everything the row spent (failed agents included)
+  over its applied changes: dollars when some agent reported them, else tokens.
+- **Against the window before** — the same counts for the window as long just
+  before; a share that moves 15 points or more (over at least 5 on both sides) or
+  a cost per applied change that moves by half (over at least 3) is called out.
+
+A run counts in the window it was created in. Left out: dry runs, runs still going,
+and the runs `odw eval`, `odw test`, `odw conformance` and `odw apply --resolve`
+started. Runs `odw pull` copied here count like any other; another machine's runs
+root is counted there. A workflow row counts its runs; an adapter or model row counts
+its agents and is charged a failed run only when one of its own agents failed in it.
+The model is the one the CLI said served the agent, else the one it asked for
+(`… (requested)`), else `(CLI default)`. The dashboard's **Review** page opens
+with an **Outcomes** card for the last 30 days — applied of kept, a stacked column
+per week, what moved, a line per workflow — from `GET /api/outcomes[?since=30d][&workflow=W]`.
 
 ## How it works
 

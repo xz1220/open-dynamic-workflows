@@ -721,6 +721,7 @@ odw apply <run> --all --resolve [--adapter A] [--confirm] --verify "<cmd>"   # a
 odw apply <run> --all --pr [--base B] [--remote R] [--ready] [--title T]   # a branch, pushed, and a draft PR
 odw review [--json] [--since 7d] [--all]  # ODW extension: kept diffs across runs not dealt with, riskiest first
 odw review mark <run> <id|label> reviewed|dismissed|applied|open [--note TEXT]
+odw outcomes [--since 30d] [--workflow W] [--json|--markdown]  # ODW extension: outcomes across runs, by week
 ```
 
 `odw review` scores each kept diff from recorded data only and lists every
@@ -729,6 +730,15 @@ of the run's append-only `reviews.jsonl` — `{ ts, agentId, state, by, via,
 note? }`, the last per agent standing; `odw apply` adds `applied` (`via:
 "apply"`) for each agent it applied cleanly. Runs of `odw eval` and resolver
 runs are left out.
+
+`odw outcomes` reads the same marks across the runs created in the window
+(default 30 days) and the window before: per week, workflow, adapter and model —
+`kept`, `applied`, `dismissed`, `reviewed`, `left`, `acceptRate`; `runsFailed`
+with `runReasons`, `agentsFailed` with `agentReasons`; `retries`, `handedOff`,
+`resolved`, `reworked`, `replays`; `unmet`, `untouched`, `outOfScope`; `costUsd`,
+`tokens`, `costPerApplied`; and `shifts`, what moved notably. Dry runs, runs
+still going, and eval, test, conformance and resolver runs are left out; no
+model is asked anything. `GET /api/outcomes[?since=30d][&workflow=W]` serves it.
 
 Before it touches the tree, `odw apply` runs the same apply against a scratch
 copy of the index and prints each file as `clean`, `CONFLICT` (with the

@@ -353,6 +353,7 @@ odw apply $RUN --all --resolve --verify "<test command>"   # a resolver agent fi
 odw apply $RUN --all --pr --verify "<test command>"   # a new branch, pushed, and a draft PR (gh); never merges
 odw review [--since 7d] [--json]      # kept diffs across runs nobody dealt with yet, riskiest first (ODW extension)
 odw review mark $RUN <id|label> reviewed|dismissed|applied|open [--note T]
+odw outcomes [--since 30d] [--workflow W] [--json]   # by week/workflow/adapter/model: applied, dismissed, left, failures, rework, cost per applied (ODW extension)
 ```
 
 - Preview first (`--check`, exit 1 when anything conflicts), apply what the task
@@ -390,6 +391,12 @@ odw review mark $RUN <id|label> reviewed|dismissed|applied|open [--note T]
   every point's reason. When the user asks what to look at, start there and quote
   the reasons. `odw apply` marks what it applied cleanly as `applied`; mark the
   rest only when the user decided (`reviewed`, `dismissed`; `open` undoes).
+- `odw outcomes` (ODW extension) answers "are the agents' changes being taken,
+  and is it getting better?": across runs created in the window, by week,
+  workflow, adapter and model — kept diffs applied / dismissed / left (from those
+  marks), failed runs by reason, rework (retries, fallbacks, resolvers, replays)
+  and spend per applied change, against the window before. Evidence only: quote
+  its numbers; do not add a quality judgement of your own.
 
 An agent **without** isolation works in the user's own tree. Before a run's
 first such agent at `edit` or `full`, odw keeps the tree's uncommitted work —

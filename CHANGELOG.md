@@ -370,6 +370,17 @@ independent security reviews whose findings are all fixed.
   it applied cleanly as `applied`. The dashboard's new **Review** page (`g r`) shows the
   queue and marks entries (loopback only), and Activity's **Needs you** says how many
   wait; `GET /api/review`, `POST /api/runs/:id/agents/:agentId/review`.
+- Outcomes over weeks (**ODW extension**): `odw outcomes [--since 30d] [--workflow W]
+  [--json|--markdown]` counts, across the runs created in the window, what became of
+  their work — by week (UTC, from Monday), workflow, adapter and model (the served model
+  when the CLI reported it, else the requested one): kept diffs applied, dismissed,
+  reviewed and left by their last review mark; failed runs and agents by reason;
+  retries, fallbacks, resolvers at apply and replays (rework); `expect` misses,
+  `untouched` and `scope` violations; spend and spend per applied change — and calls
+  out what moved notably against the window before. Evidence only: no model scores
+  anything and a PR's merge state is not read. Dry runs, runs still going, and eval,
+  test, conformance and resolver runs are left out. The dashboard's Review page opens
+  with an **Outcomes** card for the last 30 days; `GET /api/outcomes`.
 
 ### Control what agents may do
 - Permission tiers `read` / `edit` / `full` (`--permissions`, per adapter, per call; a
