@@ -478,3 +478,111 @@ kbd,
     padding: 26px 22px 48px;
   }
 }
+
+/* ---- compact layout (ODW extension): a narrow IDE panel — no rail, a slim bar ---- */
+.app.compact {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: 40px minmax(0, 1fr);
+}
+.app.compact .main {
+  grid-column: 1;
+}
+.app.compact .page {
+  padding: 16px 14px 32px;
+}
+.compact-bar {
+  grid-column: 1;
+  grid-row: 1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--line);
+  background: color-mix(in srgb, var(--paper) 86%, transparent);
+  font-size: 13px;
+  z-index: 5;
+}
+.compact-bar .grow {
+  flex: 1;
+}
+.compact-bar .here {
+  font-weight: 500;
+}
+.compact-bar .conn {
+  height: 22px;
+  padding: 0 8px;
+}
+.compact-back,
+.compact-full {
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color var(--t-fast);
+}
+.compact-back:hover,
+.compact-full:hover {
+  color: var(--ink);
+}
+.compact-full {
+  font-family: var(--f-mono);
+  font-size: 11px;
+}
+.compact-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px;
+}
+.compact-label {
+  display: flex;
+  justify-content: space-between;
+  margin: 10px 2px 2px;
+  font-family: var(--f-mono);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+.compact-label .num {
+  color: var(--sig-ink);
+}
+.compact-empty {
+  margin: 24px 2px;
+}
+.crow {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--card);
+  cursor: pointer;
+  transition: border-color var(--t-fast);
+}
+.crow:hover {
+  border-color: var(--line-2);
+}
+.crow.s-running {
+  border-left: 2px solid var(--sig);
+}
+.crow.s-failed {
+  border-left: 2px solid var(--alarm);
+}
+.crow-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.crow-top .nm {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink);
+  font-weight: 500;
+}
+.crow-meta {
+  font-size: 11px;
+}

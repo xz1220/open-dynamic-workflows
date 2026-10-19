@@ -915,4 +915,6 @@ const ZH: Record<string, string> = {
   "cost per applied change": "每个已应用改动的花费",
   "kept diffs by week: applied, dismissed, left": "按周的保留 diff:已应用、已放弃、未处理",
   "{a} applied, {d} dismissed, {l} left": "{a} 已应用,{d} 已放弃,{l} 未处理",
+  Recent: "最近",
+  "Full dashboard": "完整看板",
 };

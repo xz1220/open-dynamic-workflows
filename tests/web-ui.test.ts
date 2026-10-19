@@ -1614,3 +1614,29 @@ test("fan-out health (ODW extension): a chip on the run's head, amber when one c
   assert.doesNotMatch(renderJob(view, NOW), /tag fanout/, "no fan-outs, no chip");
   store.focusRun(null);
 });
+
+test("compact layout (ODW extension): the URL turns it on and off; the run list puts live runs first, Claude Code's tagged; a run gets a bar back", async () => {
+  const { compactBar, compactFlag, renderCompactRuns } = await import("../web/src/views/compact.ts");
+  assert.equal(compactFlag("", "#/compact"), true);
+  assert.equal(compactFlag("?compact=1", "#/activity"), true);
+  assert.equal(compactFlag("", "#/job/r1?compact"), true);
+  assert.equal(compactFlag("?compact=1", "#/jobs?compact=0"), false, "the hash's say wins");
+  assert.equal(compactFlag("", "#/jobs"), null, "silent: keep what it was");
+
+  const runs = [
+    summary({ runId: "r-old", name: "old", state: "done", createdAt: NOW - 900, counts: { agents: 2, running: 0, done: 2, failed: 0, stale: 0 } }),
+    summary({ runId: "cc-wf_live", name: "cc-live", provider: "claude", state: "running", createdAt: NOW - 60, counts: { agents: 3, running: 2, done: 1, failed: 0, stale: 0 } }),
+  ];
+  const html = renderCompactRuns(runs);
+  assert.ok(html.indexOf("cc-live") < html.indexOf(">old<"), "live first");
+  assert.match(html, /<a class="crow s-running" href="#\/job\/cc-wf_live"/);
+  assert.match(html, /class="tag cc"[^>]*>CC<\/span>/);
+  assert.match(html, /2 running · 1 done/);
+  assert.match(html, /Recent<\/span><span class="num">1</);
+  assert.match(renderCompactRuns([]), /No runs yet/);
+
+  const bar = compactBar({ view: "job", param: "cc-wf_live" }, "live");
+  assert.match(bar, /<a class="compact-back" href="#\/compact"/);
+  assert.match(bar, /href="#\/job\/cc-wf_live\?compact=0">Full dashboard</);
+  assert.doesNotMatch(compactBar({ view: "jobs", param: null }, "live"), /compact-back/);
+});
