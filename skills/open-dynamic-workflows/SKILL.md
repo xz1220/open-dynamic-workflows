@@ -316,6 +316,15 @@ ship run as `odw run <plugin>:<name>` (ODW extension; `odw workflows list
 a plugin's workflow only when no project or personal one has it — use the
 `<plugin>:<name>` form to be sure which runs.
 
+Shared workflows can be installed from git, pinned (ODW extension):
+`odw workflows add <git-url>[#ref] [--path P] [--name N] [--global] [--yes]`
+copies them into `.odw/workflows` (or `~/.odw/workflows`) and records
+`{ url, ref, commit, path, sha256 }` in `.odw/workflows.lock.json`;
+`odw workflows update [name]` shows the diff before writing the newest commit
+of the ref; `odw workflows verify` exits 1 when a locked file was modified.
+Installed workflows are third-party: they run in a strict script context by
+default, so write them without `process`, `require`, `fetch` or timers.
+
 ### Recover a stalled or failed run (ODW extension)
 
 Every `agent()` result is saved the moment that agent finishes, so a hung

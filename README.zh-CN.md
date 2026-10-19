@@ -683,6 +683,39 @@ workflow;项目里有同名 workflow 时运行项目的那个,并提示
 但仓库的设置只能禁用插件,不能启用;名字也不会解析到仓库自己的 `.odw/workflows` 或
 `.claude/workflows`(给出路径仍可运行)。
 
+**从 git 安装工作流并锁定版本**(ODW 扩展)。用一个 git 仓库在团队里共享工作流,不再到处复制
+文件,并固定每个人运行的版本:
+
+```bash
+odw workflows add https://example.com/acme/flows.git#v1.2.0     # → .odw/workflows,写入锁文件
+odw workflows add git@example.com:acme/flows.git --path flows/audit.js --name audit
+odw workflows add ../flows --global                             # 本地仓库 → ~/.odw/workflows
+odw workflows verify                  # 按 sha256 核对每个锁定文件;不符时退出码 1(适合 CI)
+odw workflows update [audit]          # 拉取锁定 ref 的最新提交:先显示 diff,再询问
+```
+
+`add` 用 git 把 `<url>[#ref]`(分支、标签或提交 id;不写则为远端 HEAD)浅取一个提交到临时
+目录里新建的裸仓库——不取标签、不取子模块、不检出任何文件、hooks 目录为空、从不提示输入,
+只接受 https、ssh(`ssh://` 或 `user@host:path`)和 file URL(本地目录按其 file URL 读取)。
+不执行仓库里的任何东西:文件按 git blob 读取,符号链接与子模块跳过,每个 `.js` 只编译不运行,
+用来校验 `meta`。取 `--path`(一个文件,或一个目录下的 `.js`),否则取 `.odw/workflows`、
+`.claude/workflows`、`workflows` 与仓库根目录中第一个有 `.js` 的;打印每个文件用到的方言外能力
+(同 `odw check --capabilities`);询问确认(没有终端时用 `--yes` 接受);然后复制到
+`.odw/workflows`——仓库里同处有 `.odw/tests/<name>.json`、`.odw/evals/<name>.json` 时一并复制——
+`--global` 时复制到 `~/.odw/workflows`。不是它安装的同名文件不会被替换(`--force` 才会)。
+每个工作流在其目录旁的锁文件 `.odw/workflows.lock.json`(`~/.odw/workflows.lock.json`)中有一项:
+`{ url, ref, commit, path, sha256, installedAt, test?, eval? }`(`path` 为仓库内路径,`sha256`
+为安装的文件内容)。
+
+把锁文件与 `.odw/workflows` 一起提交。`update` 重新拉取每一项的 ref,打印变化的统一 diff,
+询问后才写入(本地改过的文件不动,除非 `--force`);`verify` 计算每个锁定文件的哈希——
+`odw doctor` 也做同样的检查(「Locked workflows」)。安装的工作流是**第三方**的:
+`odw workflows list` 与看板的 Workspace 标出它及其来源与提交,并且除非配置写
+`scriptContext: "host"`,它在[严格脚本上下文](#严格脚本上下文odw-扩展)中运行(嵌套
+`workflow()` 调用它时也一样)。文件与锁文件不符时,运行的启动横幅与日志会醒目提示;
+`"lockedWorkflows": "fail"` 则拒绝启动(默认 `"warn"`)。未做:签名、Hub 或搜索、自动更新、
+核对 Claude Code 插件安装目录的实际提交。
+
 **喜欢用浏览器?** `odw serve` 会对同一个 run 目录开一个零依赖的实时看板——每次运行都是一张
 实时图,还有时间线、日志和结果,全部通过 SSE 推送。无需构建,不引入额外依赖,加载时不访问网络。
 
@@ -2391,7 +2424,7 @@ Node.js's process — …`),而不是一个光秃秃的 `ReferenceError`;运行�
 { "scriptContext": "strict" } // 所有运行;"host":所有运行都在 worker 的上下文中
 ```
 
-不设置时,**触发器启动的运行、Claude Code 插件的工作流、输入或仓库不可信的运行使用 strict**,
+不设置时,**触发器启动的运行、Claude Code 插件的工作流、`odw workflows add` 从 git 安装的工作流、输入或仓库不可信的运行使用 strict**,
 其余一律 **host**——本地项目与个人工作流照旧运行。触发器启动的运行,其 rerun、resume 与 replay 也是 strict。
 配置中的 `"host"` 优先,但它拿走 strict 默认值时,运行日志会给出警告。嵌套的 `workflow()` 与父运行用同一种
 上下文——插件的工作流即使在 host 父运行之下也是 strict,除非配置写明 `"host"`。

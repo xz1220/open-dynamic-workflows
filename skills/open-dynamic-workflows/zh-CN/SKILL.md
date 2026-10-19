@@ -261,6 +261,14 @@ odw token add alice --scope approve --file tokens.json  # 给 odw serve --tokens
 列出它们）：就地、只读、同一方言。只有当项目级和个人级都没有同名 workflow 时，裸名字才会
 运行插件的 workflow——想确定运行哪一个，就用 `<插件>:<名字>` 的写法。
 
+共享的 workflow 可以从 git 安装并锁定版本（ODW 扩展）：
+`odw workflows add <git-url>[#ref] [--path P] [--name N] [--global] [--yes]`
+把它们复制到 `.odw/workflows`（或 `~/.odw/workflows`），并在 `.odw/workflows.lock.json`
+记录 `{ url, ref, commit, path, sha256 }`；`odw workflows update [名字]` 先显示 diff 再写入
+该 ref 的最新提交；`odw workflows verify` 在锁定文件被改动时退出码为 1。安装的 workflow
+是第三方的：默认在严格脚本上下文中运行，所以写的时候不要用 `process`、`require`、`fetch`
+或定时器。
+
 ### 恢复卡住或失败的运行（ODW 扩展）
 
 每个 `agent()` 的结果在该 agent 完成的那一刻就会保存，所以某条泳道卡住、运行被停止或

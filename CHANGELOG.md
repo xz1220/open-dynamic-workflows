@@ -693,6 +693,21 @@ independent security reviews whose findings are all fixed.
   repository) name each agent's repository; `odw apply` sends each diff to its
   repository, and `--all` previews every repository and writes none unless each
   applies cleanly. `--repo` with `--on ssh://` is refused.
+- Install workflows from git, locked (**ODW extension**): `odw workflows add
+  <git-url>[#ref] [--path P] [--name N] [--global] [--yes] [--force]` fetches the ref
+  one commit deep into a temp bare repository (no tags, no submodules, nothing checked
+  out, no hooks, never a prompt, https/ssh/file URLs only), reads the workflows as git
+  blobs (symlinks and submodules skipped, `meta` compiled — never run), prints what each
+  reaches outside the dialect, asks, and copies them into `.odw/workflows` (with their
+  `.odw/tests`/`.odw/evals` files) or `~/.odw/workflows`, recording `{ url, ref, commit,
+  path, sha256 }` per name in `.odw/workflows.lock.json`. `odw workflows update [name]`
+  re-fetches the ref and shows the diff before writing (a locally modified file only
+  with `--force`); `odw workflows verify [--json]` hashes every locked file and exits 1
+  on a mismatch, and `odw doctor` has the same check. Installed workflows are
+  third-party: flagged in `odw workflows list` and the dashboard's Workspace, run in a
+  strict script context by default (a nested `workflow()` of one too), recorded as
+  `installed` in `meta.json`, and a modified one is said loudly at start — or refused
+  with the new setting `"lockedWorkflows": "fail"` (default `"warn"`).
 
 ### Use the CLI and the dashboard
 - `odw run` attaches a live foreground view in interactive terminals (Ctrl-C detaches;

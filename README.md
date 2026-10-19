@@ -807,6 +807,52 @@ you installed them — but the repository's settings can only disable a plugin, 
 name never resolves to the repository's own `.odw/workflows` or `.claude/workflows`
 (its path still runs it).
 
+**Install workflows from git, locked** (ODW extension). Share workflows through a git
+repository instead of copying files around, and pin what each teammate runs:
+
+```bash
+odw workflows add https://example.com/acme/flows.git#v1.2.0     # → .odw/workflows, locked
+odw workflows add git@example.com:acme/flows.git --path flows/audit.js --name audit
+odw workflows add ../flows --global                             # a local repository → ~/.odw/workflows
+odw workflows verify                  # every locked file against its sha256; exit 1 on a mismatch (CI)
+odw workflows update [audit]          # newest commit of the locked ref: shows the diff, then asks
+```
+
+`add` fetches `<url>[#ref]` (a branch, tag or commit id; none: the remote's HEAD) with
+git, one commit deep, into a fresh bare repository in a temp directory — no tags, no
+submodules, nothing checked out, an empty hooks directory, never a prompt, and only
+https, ssh (`ssh://` or `user@host:path`) and file URLs (a local directory is read as its
+file URL). Nothing from the repository is executed: files are read as git blobs, symlinks
+and submodules are skipped, and each `.js` is compiled — not run — to check its `meta`.
+It takes `--path` (a file, or a directory's `.js` files), else the first of
+`.odw/workflows`, `.claude/workflows`, `workflows` and the repository root that has
+any; prints what each reaches outside the dialect (as `odw check --capabilities`);
+asks (`--yes` to accept without a terminal); and copies them into `.odw/workflows` —
+with the workflow's `.odw/tests/<name>.json` and `.odw/evals/<name>.json` when the
+repository has them beside it — or into `~/.odw/workflows` with `--global`. It never
+replaces a file it did not install (`--force` does). Each workflow gets an entry in
+the lock beside its directory, `.odw/workflows.lock.json` (`~/.odw/workflows.lock.json`):
+
+```json
+{ "version": 1, "workflows": { "audit": {
+  "url": "https://example.com/acme/flows.git", "ref": "v1.2.0", "commit": "<40-hex commit>",
+  "path": ".odw/workflows/audit.js", "sha256": "<sha256 of the installed file>",
+  "installedAt": "2026-10-19T08:00:00.000Z",
+  "test": { "path": ".odw/tests/audit.json", "sha256": "…" } } } }
+```
+
+Commit the lock with `.odw/workflows`. `update` re-fetches each entry's ref, prints a
+unified diff of what changed and asks before writing (a file modified locally is left
+alone unless `--force`); `verify` hashes every locked file — `odw doctor` runs the same
+check ("Locked workflows"). An installed workflow is **third-party**: `odw workflows
+list` and the dashboard's Workspace say so with its source and commit, and it runs in
+a [strict script context](#strict-script-context-odw-extension) unless the config
+says `scriptContext: "host"` (so does a nested `workflow()` of it). A run of one whose
+file no longer matches its lock says so in its start banner and log;
+`"lockedWorkflows": "fail"` refuses to start it instead (default `"warn"`). Not done:
+signatures, a hub or search, automatic updates, and checking a Claude Code plugin's
+installed commit.
+
 **Prefer a browser?** `odw serve` opens a zero-dependency live dashboard onto the same
 run directory — every run as a live graph, its timeline, logs and result, streamed over
 SSE. No build step, no extra deps, no network access on load.
@@ -2792,7 +2838,7 @@ the script's own realm; an error the script throws leaves it as an ordinary `Err
 ```
 
 Unset, a run is **strict when a trigger started it, when its workflow is a Claude
-Code plugin's, or when its input or its repository is untrusted**, and **host** for
+Code plugin's or one `odw workflows add` installed from git, or when its input or its repository is untrusted**, and **host** for
 everything else — local and personal workflows run as before. A rerun, resume or
 replay of a triggered run is strict too. A config's `"host"` wins, and the run's log
 warns when it takes a strict default away. A nested `workflow()` runs in its parent's
