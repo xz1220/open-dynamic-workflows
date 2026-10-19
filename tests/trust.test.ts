@@ -483,3 +483,28 @@ test("an untrusted run never reads a config ODW found by itself inside the repos
     rmSync(home, { recursive: true, force: true });
   }
 });
+
+test("an untrusted run's nested workflow('name') never runs the repository's own workflow either", async () => {
+  const root = mkdtempSync(join(tmpdir(), "odw-trust-nested-"));
+  const source = join(root, "repo");
+  mkdirSync(join(source, ".odw", "workflows"), { recursive: true });
+  try {
+    // The repository's own workflow — what an untrusted run must not pick up by name.
+    writeFileSync(join(source, ".odw", "workflows", "inner.js"), "export const meta = { name: 'inner', description: 'd' }\nreturn 'the repository ran'\n");
+    const config = join(root, "mine.json");
+    writeFileSync(config, JSON.stringify({ defaultAdapter: "probe", adapters: { probe: { command: [execPath, "-e", ECHO_ARGS], stdin: "{prompt}" } } }));
+    const script = join(root, "outer.js");
+    writeFileSync(script, "export const meta = { name: 'outer', description: 'd' }\nreturn await workflow('inner')\n");
+    const flags = ["--config", config, "--runs-root", join(root, "runs"), "--source", source, "--wait"];
+
+    const trusted = await cli(["run", script, ...flags]);
+    assert.equal(trusted.code, 0, trusted.err);
+    assert.equal(JSON.parse(trusted.out), "the repository ran", "trusted, the nested name resolves to the repository's workflow");
+
+    const untrusted = await cli(["run", script, "--untrusted", ...flags]);
+    assert.notEqual(untrusted.code, 0, "an untrusted run's nested workflow() refuses the repository's own");
+    assert.match(untrusted.err, /untrusted run: not running the repository's own \.odw\/workflows\/inner\.js by name/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
