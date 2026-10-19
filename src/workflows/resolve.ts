@@ -26,11 +26,12 @@
  */
 
 import { existsSync, readdirSync, realpathSync, statSync } from "node:fs";
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import { resolveClaudeWorkflowsRoot, resolveWorkflowsRoot } from "../adapters/config.js";
 import type { Config, TrustLevel } from "../adapters/types.js";
 import { ConfigError, WorkflowScriptError } from "../errors.js";
+import { projectLevels } from "../project-levels.js";
 import {
   claudePluginsRoot,
   discoverPluginWorkflows,
@@ -325,7 +326,8 @@ function withPluginOrigin(found: ResolvedWorkflow, opts: ResolveOptions): Resolv
  * `.claude/workflows/` along that path, the one closest to the working
  * directory winning a name: in a monorepo, a package's own workflow shadows
  * the root's. At each level `.odw` comes before `.claude`, as it always has.
- * Outside a git repository only `cwd` is searched.
+ * Outside a git repository only `cwd` is searched, and the walk stops below a
+ * parent not owned by the current user (see ../project-levels).
  */
 function searchRoots(cwd: string, config: Config): SearchRoot[] {
   const project: SearchRoot[] = [];
@@ -368,23 +370,6 @@ function searchRoots(cwd: string, config: Config): SearchRoot[] {
     out.push(root);
   }
   return out;
-}
-
-/**
- * `cwd`, then each parent up to the nearest one holding `.git` (a directory,
- * or the file of a worktree or submodule): the repository root. With no
- * `.git` above it, `cwd` alone.
- */
-function projectLevels(cwd: string): string[] {
-  const start = resolve(cwd);
-  const levels: string[] = [];
-  for (let dir = start; ; ) {
-    levels.push(dir);
-    if (existsSync(join(dir, ".git"))) return levels;
-    const parent = dirname(dir);
-    if (parent === dir) return [start];
-    dir = parent;
-  }
 }
 
 function defaultClaudeWorkflowsLabel(): string {

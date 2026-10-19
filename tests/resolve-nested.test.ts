@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { defaultConfig } from "../src/adapters/config.js";
 import { main } from "../src/cli.js";
 import { WorkflowScriptError } from "../src/errors.js";
+import { setOwnershipPredicate } from "../src/project-levels.js";
 import { listWorkflows, resolveWorkflow, workflowCandidates } from "../src/workflows/resolve.js";
 
 // Workflow lookup in a monorepo (Claude Code dialect): every `.odw/workflows`
@@ -209,6 +210,31 @@ test("odw workflows where prints the candidate chain; list names what shadows an
     const list = await cli(["workflows", "list", "--project", "--config", m.configPath], m.pkg);
     assert.match(list.out, /audit .*\.\.\/\.\.\/\.odw\/workflows\).*shadowed by \.claude\/workflows\/audit\.js/);
   } finally {
+    rmSync(m.tmp, { recursive: true, force: true });
+  }
+});
+
+test("the walk stops below a directory not owned by the current user, as git's safe.directory does, and says so once", () => {
+  const m = monorepo();
+  const se = process.stderr.write.bind(process.stderr);
+  const err: string[] = [];
+  try {
+    m.writeWf(m.repo, ".claude", "audit");
+    const own = m.writeWf(m.pkg, ".odw", "own");
+    // repo/ (holding .git) is someone else's: its workflows are never read; the working directory still is.
+    setOwnershipPredicate((dir) => dir !== m.repo);
+    (process.stderr as { write: unknown }).write = (s: unknown) => (err.push(String(s)), true);
+    assert.throws(() => resolveWorkflow("audit", { cwd: m.pkg, config: m.config }), WorkflowScriptError);
+    assert.throws(() => resolveWorkflow("audit", { cwd: m.pkg, config: m.config }), WorkflowScriptError);
+    assert.equal(resolveWorkflow("own", { cwd: m.pkg, config: m.config }).scriptPath, own);
+    process.stderr.write = se;
+    assert.equal(err.filter((l) => l.includes(`${m.repo} is not owned by the current user`)).length, 1, err.join(""));
+    // The working directory itself is the user's choice: a level whoever owns it.
+    setOwnershipPredicate(() => false);
+    assert.equal(resolveWorkflow("own", { cwd: m.pkg, config: m.config }).scriptPath, own);
+  } finally {
+    process.stderr.write = se;
+    setOwnershipPredicate(null);
     rmSync(m.tmp, { recursive: true, force: true });
   }
 });

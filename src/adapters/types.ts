@@ -45,7 +45,7 @@ export interface AdapterFlags {
    * narrowed with any its tier sets. Without it, `tools` act only as a tier cap.
    */
   tools?: string[];
-  /** ODW extension: the flag(s) before tool names to deny (Claude Code's `--disallowedTools`) — a definition's `disallowedTools`. */
+  /** ODW extension: the flag(s) before the comma-separated tool names to deny, one argv element (Claude Code's `--disallowedTools`) — a definition's `disallowedTools`. */
   disallowedTools?: string[];
 }
 
