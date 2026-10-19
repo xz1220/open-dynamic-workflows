@@ -113,7 +113,7 @@ export function formatReview(queue: ReviewQueue, opts: { all?: boolean; caps?: T
     const mark = e.review && e.review.state !== "open" ? p.dim(` · ${e.review.state}${e.review.by ? ` by ${safe(e.review.by, 80)}` : ""}`) : "";
     lines.push("");
     lines.push(
-      `${tint(e, `${e.risk.toUpperCase().padEnd(6)} ${String(e.score).padStart(2)}`)}  ${e.runId} · agent ${e.agentId} (${safe(e.label, 60)})` +
+      `${tint(e, `${e.risk.toUpperCase().padEnd(6)} ${String(e.score).padStart(2)}`)}  ${e.runId} · agent ${e.agentId} (${safe(e.label, 60)})${e.repo ? ` · repo ${safe(e.repo, 64)}` : ""}` +
         ` · ${c.files} file(s) +${c.insertions} -${c.deletions} · ${safe(e.run, 60)}${e.agentState === "failed" ? p.err(" · failed") : ""}${mark}`,
     );
     if (e.factors.length === 0) lines.push(p.dim("           small, and nothing on record against it"));

@@ -245,6 +245,25 @@
   width: 100%;
   margin-top: 8px;
 }
+.rv-repo {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 4px 2px;
+  font-family: var(--f-mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+.rv-repo svg {
+  width: 12px;
+  height: 12px;
+}
+.rv-repo .nm {
+  flex: 1;
+  color: var(--ink);
+}
 .rv-item {
   position: relative;
   display: flex;

@@ -898,13 +898,20 @@ function transcriptSheet(run: RunDetail, ai: number): string {
 
 // --- changes: what worktree agents changed, to review and apply ---
 
-/** Agents that left a diff, in call order. */
+/**
+ * Agents that left a diff, in call order — grouped by the repository each
+ * worked in when a run has more than one (ODW extension): the source's first,
+ * then each other one's in the order it first shows.
+ */
 export function changedAgents(run: RunDetail): Array<{ a: AgentView; ai: number }> {
   const out: Array<{ a: AgentView; ai: number }> = [];
   run.agents.forEach((a, ai) => {
     if (a.agentId != null && a.changes && a.changes.files > 0) out.push({ a, ai });
   });
-  return out;
+  if (!out.some(({ a }) => a.repo)) return out;
+  const order = [""];
+  for (const { a } of out) if (a.repo && !order.includes(a.repo.name)) order.push(a.repo.name);
+  return order.flatMap((name) => out.filter(({ a }) => (a.repo?.name ?? "") === name));
 }
 
 /** The agent the Changes tab shows: the chosen one, else the first with changes. */
@@ -954,6 +961,17 @@ function changesSection(run: RunDetail, a: AgentView, ai: number, recordBranch: 
   );
 }
 
+/** The heading of one repository's agents in the Changes list: its alias (the source's, unnamed) and how many changed it. */
+function repoHead(a: AgentView, changed: Array<{ a: AgentView; ai: number }>): string {
+  const name = a.repo?.name ?? "";
+  const n = changed.filter((c) => (c.a.repo?.name ?? "") === name).length;
+  const title = a.repo ? a.repo.path : t("the run's source repository");
+  return (
+    `<div class="rv-repo" data-key="rvr-${esc(name || ".")}" title="${esc(title)}">${icons.branch}` +
+    `<span class="nm">${a.repo ? esc(a.repo.name) : t("source")}</span><span class="n num">${n}</span></div>`
+  );
+}
+
 function changesTab(run: RunDetail, s: JobViewState): string {
   const changed = changedAgents(run);
   const target = reviewTarget(run, s.reviewAi);
@@ -973,9 +991,12 @@ function changesTab(run: RunDetail, s: JobViewState): string {
     ins += a.changes!.insertions;
     del += a.changes!.deletions;
   }
+  // A run whose agents worked in more than one repository (ODW extension) lists them under each one's name.
+  const grouped = changed.some(({ a }) => a.repo);
   const list = changed
     .map(
-      ({ a, ai }) =>
+      ({ a, ai }, i) =>
+        (grouped && (i === 0 || (a.repo?.name ?? "") !== (changed[i - 1]!.a.repo?.name ?? "")) ? repoHead(a, changed) : "") +
         `<button class="rv-item${ai === target.ai ? " on" : ""}" data-review="${ai}" data-key="rv-${ai}" aria-pressed="${ai === target.ai}">` +
         `<span class="rv-top">${glyph(a.state)}<span class="lbl">${esc(a.label)}</span>${diffBar(a.changes!.insertions, a.changes!.deletions)}</span>` +
         `<span class="rv-sub"><span>${esc([a.phase, a.adapter].filter(Boolean).join(" · "))}</span>${deltaHtml(a.changes!.insertions, a.changes!.deletions)}</span>` +
@@ -992,7 +1013,7 @@ function changesTab(run: RunDetail, s: JobViewState): string {
   const version = `${key}|${parsed === undefined ? "loading" : parsed === null ? "none" : "ready"}|${getLang()}`;
   const head =
     `<header class="rv-head">` +
-    `<div class="rv-title"><span class="eyebrow">${t("Agent")} #${a.agentId}${a.phase ? ` · ${esc(a.phase)}` : ""}${a.adapter ? ` · ${esc(a.adapter)}` : ""}</span>` +
+    `<div class="rv-title"><span class="eyebrow">${t("Agent")} #${a.agentId}${a.repo ? ` · ${t("repo")} ${esc(a.repo.name)}` : ""}${a.phase ? ` · ${esc(a.phase)}` : ""}${a.adapter ? ` · ${esc(a.adapter)}` : ""}</span>` +
     `<h3>${esc(a.label)}</h3>` +
     `<div class="rv-stat">${deltaHtml(c.insertions, c.deletions)}<span>${tn(c.files, "{n} file", "{n} files")}</span>${diffBar(c.insertions, c.deletions)}` +
     (c.truncated ? `<span class="tag warn">${t("truncated")}</span>` : "") +

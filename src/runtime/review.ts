@@ -81,6 +81,8 @@ export interface ReviewEntry {
   finishedAt: number | null;
   changes: AgentChanges;
   branch: string | null;
+  /** The run's other repository it worked in (ODW extension; see ../repos); absent: the source. */
+  repo?: string;
   /** The kinds of path it touches: tests, ci, deps, migrations, auth, binary. */
   categories: string[];
   score: number;
@@ -479,6 +481,7 @@ export function readRunEntries(store: RunStore, runId: string): RunEntries {
       finishedAt: agent.finishedAt,
       changes: { ...agent.changes! },
       branch: agent.branch ?? null,
+      ...(agent.repo ? { repo: agent.repo.name } : {}),
       ...scored,
     });
   }

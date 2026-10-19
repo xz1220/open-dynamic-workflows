@@ -389,6 +389,48 @@ test("the Changes tab lists agents that left a diff and freezes a host for the d
   store.focusRun(null);
 });
 
+test("the Changes tab groups a multi-repository run's agents by the repository each worked in", () => {
+  const view: JobViewState = {
+    cpNote: "",
+    tab: "changes",
+    selectedAi: 0,
+    reviewAi: null,
+    zoom: 1,
+    logQuery: "",
+    logTypes: new Set(["agent"]),
+    logLimit: 600,
+    follow: true,
+    motion: false,
+  };
+  store.focusRun("20260101-000000-aaaaaa");
+  const api = { name: "api", path: "/w/api" };
+  store.run = detail(
+    [
+      agent("api:1", "Fix", "done", { agentId: 1, repo: api, changes: { files: 1, insertions: 4, deletions: 0 } }),
+      agent("web", "Fix", "done", { agentId: 2, changes: { files: 1, insertions: 2, deletions: 1 } }),
+      agent("api:2", "Fix", "done", { agentId: 3, repo: api, changes: { files: 2, insertions: 1, deletions: 1 } }),
+    ],
+    { state: "done" },
+  );
+  const html = renderJob(view, NOW);
+  assert.equal(count(html, /class="rv-repo"/g), 2, "one heading per repository");
+  // The source's agents first, then each repository's, in the order it first shows.
+  const order = [...html.matchAll(/class="rv-repo"[^>]*>.*?<span class="nm">([^<]+)<\/span><span class="n num">(\d+)<|data-review="(\d+)" data-key/g)].map((m) =>
+    m[1] ? `${m[1]}(${m[2]})` : m[3],
+  );
+  assert.deepEqual(order, ["source(1)", "1", "api(2)", "0", "2"]);
+  assert.match(html, /class="rv-repo" data-key="rvr-api" title="\/w\/api"/);
+  // The first one listed is reviewed by default, its repository named.
+  assert.match(html, /class="rv-item on" data-review="1"/);
+  view.reviewAi = 0;
+  assert.match(renderJob(view, NOW), /class="eyebrow">Agent #1 · repo api · Fix/);
+  // A single-repository run lists its agents as before.
+  store.run = detail([agent("web", "Fix", "done", { agentId: 2, changes: { files: 1, insertions: 2, deletions: 1 } })], { state: "done" });
+  view.reviewAi = null;
+  assert.equal(count(renderJob(view, NOW), /class="rv-repo"/g), 0);
+  store.focusRun(null);
+});
+
 test("Activity puts waiting checkpoints and the day's failures in front of the person", () => {
   const prev = store.runs;
   const counts = { agents: 4, running: 0, done: 2, failed: 2, stale: 0 };

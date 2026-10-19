@@ -220,6 +220,11 @@ describe("agents and commands in another repository", () => {
     const one = await cli(["diff", r.id, "--repo", "web", "--stat", ...flags]);
     assert.doesNotMatch(one.out, /there/);
     assert.match(one.out, /web/);
+    // So does the review queue.
+    const queue = await cli(["review", ...flags]);
+    assert.equal(queue.code, 0, queue.err);
+    assert.match(queue.out, /agent 2 \(there\) · repo api ·/);
+    assert.match(queue.out, /agent 1 \(here\) · 1 file/);
 
     // --pr opens one repository's PR at a time.
     const pr = await cli(["apply", r.id, "--all", "--pr", ...flags], src);
