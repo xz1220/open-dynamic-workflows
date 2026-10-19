@@ -17,7 +17,8 @@
  *
  * Every failed CLI run is classified (adapters/failures.ts). A rate-limited
  * one is ridden out: retried after an exponential backoff that honors the
- * retry-after it printed, up to `transientRetries` times per call. A spent
+ * retry-after it printed, up to `transientRetries` times per call — and so is
+ * a lost connection (`network`, an ODW extension), on a count of its own. A spent
  * quota or a refused login is not retried; its error says what to do instead.
  * A run whose CLI reports its own failure in its output (`errorPath`: Claude
  * Code's `is_error` result, often with exit 0) is classified the same way. A
@@ -104,6 +105,7 @@ import {
   classifyFailure,
   formatSeconds,
   type FailureClass,
+  type FailureReason,
 } from "./adapters/failures.js";
 import { planPermissions, readCapableAdapter, runTier, spliceArgs, type PermissionPlan } from "./adapters/permissions.js";
 import { nativeSchemaArgs, planSchema, type NativeSchemaArgs } from "./adapters/native-schema.js";
@@ -386,6 +388,12 @@ export interface BridgeOptions {
    */
   onCliRun?: (adapter: Adapter) => void;
   /**
+   * Told when an agent CLI run fails, with its adapter and why — what re-asks
+   * a CLI that failed oddly for its version, in case it was updated mid-run
+   * (an ODW extension; see ./provenance). It must return at once.
+   */
+  onCliFailed?: (adapter: Adapter, reason: FailureReason) => void;
+  /**
    * Told what the whole run should log once, not against one agent — what an
    * untrusted run still lets reach an adapter's CLI, a `.worktreeinclude`
    * link it refused (ODW extension: trust) — with the fields to log it with.
@@ -657,10 +665,12 @@ export interface StallRestart {
   maxRestarts: number;
 }
 
-/** A rate-limited CLI, about to be run again after a backoff. */
+/** A rate-limited CLI — or one that lost its connection — about to be run again after a backoff. */
 export interface RateLimitRetry {
   /** The adapter that hit the limit. */
   adapter: string;
+  /** Why it runs again: a rate limit, or a lost connection (`network`, an ODW extension); absent means a rate limit. */
+  reason?: "rate_limit" | "network";
   /** How long the call waits before the retry, in seconds. */
   waitSeconds: number;
   /** Which retry this is (1-based), and how many the call may make (`transientRetries`). */
@@ -721,6 +731,7 @@ export class Bridge {
   /** What this run has said about a quota it would not wait for: each once. */
   private readonly quotaNotes = new Set<string>();
   private readonly onCliRun: ((adapter: Adapter) => void) | undefined;
+  private readonly onCliFailed: ((adapter: Adapter, reason: FailureReason) => void) | undefined;
   /** What this untrusted run has said about the repository reaching its agents (ODW extension: trust): each once. */
   private readonly trustNotes = new Set<string>();
   private readonly onRunNote: ((message: string, fields: Record<string, unknown>) => void) | undefined;
@@ -751,6 +762,7 @@ export class Bridge {
     this.agentSchemaPath = options.agentSchemaPath;
     this.redactor = options.redactor;
     this.onCliRun = options.onCliRun;
+    this.onCliFailed = options.onCliFailed;
     this.onRunNote = options.onRunNote;
     this.withholdSecrets = options.withholdSecrets === true;
     this.egressOptions = { runDir: options.runDir, onDenied: options.onEgressDenied, onNote: options.onRunNote };
@@ -1489,7 +1501,7 @@ export class Bridge {
 
     // Stall restarts and rate-limit retries re-run one attempt's prompt; each
     // is capped over the whole call, schema attempts included.
-    const reruns: Reruns = { stalls: 0, rateLimits: 0 };
+    const reruns: Reruns = { stalls: 0, rateLimits: 0, networks: 0 };
     let attempts = 0;
     // What the work missed last round, told to the next one.
     let missed = "";
@@ -1694,6 +1706,7 @@ export class Bridge {
         return { cli, output };
       });
       if (signal?.aborted) return { cli, output };
+      if (failure) this.onCliFailed?.(adapter, failure.reason);
       if (cli.stalled) {
         if (output.usage) options.onUsage?.(output.usage);
         if (reruns.stalls >= settings.stallRestarts) return { cli, output };
@@ -1707,21 +1720,24 @@ export class Bridge {
       } else {
         if (!failure) return { cli, output }; // a real reply
         if (output.usage) options.onUsage?.(output.usage);
-        if (failure.reason !== "rate_limit" || reruns.rateLimits >= settings.transientRetries) {
+        // A lost connection (ODW extension) is ridden out like a rate limit, on a count of its own.
+        const transient = failure.reason === "rate_limit" ? "rateLimits" : failure.reason === "network" ? "networks" : null;
+        if (!transient || reruns[transient] >= settings.transientRetries) {
           return { cli, output, failure };
         }
-        const wait = backoffSeconds(reruns.rateLimits + 1, failure.retryAfter, settings.maxBackoff, this.random);
+        const wait = backoffSeconds(reruns[transient] + 1, failure.retryAfter, settings.maxBackoff, this.random);
         if (wait === null) return { cli, output, failure }; // the CLI asked for longer than maxBackoff
-        reruns.rateLimits++;
+        reruns[transient]++;
         options.onRateLimit?.({
           adapter: adapter.name,
+          ...(failure.reason === "network" ? { reason: "network" as const } : {}),
           waitSeconds: wait,
-          retry: reruns.rateLimits,
+          retry: reruns[transient],
           maxRetries: settings.transientRetries,
         });
         await this.sleep(wait * 1000, signal);
         throwIfAborted(signal);
-        why = "rate_limit";
+        why = failure.reason === "network" ? "network" : "rate_limit";
       }
       await options.beforeRetry?.();
     }
@@ -1875,6 +1891,10 @@ export class Bridge {
           `hit a rate limit and asked to wait ${formatSeconds(failure.retryAfter ?? 0)}, ` +
           `longer than maxBackoff (${settings.maxBackoff}s) — retry later, or raise maxBackoff`
         );
+      case "network":
+        return reruns.networks
+          ? `lost its connection to the model's API and could not reconnect after ${reruns.networks} ${reruns.networks === 1 ? "retry" : "retries"} — check the network and resume the run`
+          : "lost its connection to the model's API — check the network and resume the run";
       case "quota": {
         const reset = failure.retryAfter !== undefined ? ` (in ${formatSeconds(failure.retryAfter)})` : "";
         return `ran out of usage quota — wait for the window to reset${reset} and resume the run, ${switchAdapter}`;
@@ -2427,10 +2447,11 @@ interface CliLimits {
   stallTimeout?: number;
 }
 
-/** The extra CLI runs a call has made so far: stall restarts and rate-limit retries. */
+/** The extra CLI runs a call has made so far: stall restarts, rate-limit and lost-connection retries. */
 interface Reruns {
   stalls: number;
   rateLimits: number;
+  networks: number;
 }
 
 /**

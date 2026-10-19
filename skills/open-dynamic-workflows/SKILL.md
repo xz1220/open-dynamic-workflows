@@ -781,6 +781,10 @@ which vendor's CLI (and whose quota/permissions) every bare `agent()` call uses.
 
 If agents fail fast or come back empty, run `odw doctor`: it checks the
 runtime, config, run directory and every adapter, and prints what to fix.
+It also checks (ODW extension, no model call) the open-file limit against a planned
+fan-out (`odw doctor --fanout N`; default: the concurrency cap), free space at the runs
+root and in the temp dir where worktrees go (under 1 GiB warns; a tmpfs is named), and
+git (2.17+) — before a wide fan-out, run it with `--fanout` and relay any fix line.
 `odw doctor --smoke` additionally sends the default adapter one real prompt —
 ask your user first (it costs a model call) — and catches a CLI that exits 0
 without answering when headless (a login, trust or approval prompt).

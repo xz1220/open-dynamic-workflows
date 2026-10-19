@@ -401,6 +401,7 @@ test("an adapter's own failure patterns load; a bad class or pattern is a Config
         .failures,
       { rate_limit: ["server busy", "^E429"], quota: ["out of tokens"], auth: ["session gone"] },
     );
+    assert.deepEqual(load({ network: ["E_OFFLINE"] }).failures, { network: ["E_OFFLINE"] }, "a lost connection's own wording (ODW extension)");
     assert.equal(load(null).failures, undefined, "null means none");
     assert.equal(defaultConfig().adapters.claude!.failures, undefined, "built-ins rely on the shared table");
     const example = loadConfig(join(process.cwd(), "odw.config.example.json"), { quiet: true });
@@ -408,7 +409,7 @@ test("an adapter's own failure patterns load; a bad class or pattern is a Config
     assert.deepEqual(Object.keys(example.adapters.my_wrapper!.failures ?? {}), ["rate_limit", "quota", "auth"]);
     const cases: Array<[unknown, RegExp]> = [
       [["busy"], /adapter 'mine' 'failures' must be an object of regular-expression lists/],
-      [{ ratelimit: ["busy"] }, /adapter 'mine' 'failures' may set "rate_limit", "quota", "auth", "model_unavailable"; got "ratelimit"/],
+      [{ ratelimit: ["busy"] }, /adapter 'mine' 'failures' may set "rate_limit", "quota", "auth", "model_unavailable", "network"; got "ratelimit"/],
       [{ permission: ["denied"] }, /got "permission"/],
       [{ quota: "out of tokens" }, /adapter 'mine' 'failures.quota' must be an array of non-empty regular-expression strings/],
       [{ auth: [""] }, /'failures.auth' must be an array of non-empty/],

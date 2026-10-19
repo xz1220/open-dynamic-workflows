@@ -74,7 +74,7 @@ function seed(box: Box) {
     { type: "run_started" },
     { type: "checkpoint_requested", checkpointId: 1, title: "Ship it? <!channel> @everyone <https://evil.example/x|Approve run>", payload: null },
     { type: "checkpoint_requested", checkpointId: 2, title: "Which DB?", payload: null, question: { agentId: 3, label: "planner", adapter: "mock", questions: [{ question: "Which DB?" }] } },
-  ], { status: { pid: process.pid } });
+  ], { status: { pid: process.pid, updatedAt: now() } }); // a live worker wrote it since this boot
   const failed = fakeRun(box, "nightly", "failed", 2, [
     started(0, "build"),
     { type: "agent_failed", agentId: 0, label: "build", error: "exit 1", reason: "timeout", usage: usage(2, 4000) },

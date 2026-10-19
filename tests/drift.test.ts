@@ -244,7 +244,9 @@ function fakeCli(root: string, bin: string): void {
       "#!/bin/sh",
       `if [ "$1" = "--version" ]; then cat '${join(root, "version.txt")}'; touch '${marker}'; exit 0; fi`,
       "cat > /dev/null",
-      `i=0; while [ ! -f '${marker}' ] && [ $i -lt 50 ]; do sleep 0.02; i=$((i+1)); done`,
+      // Answer only once this run's --version probe has: the marker is removed for the next run, and a moment
+      // lets odw read the probe's reply before the run ends (a short run's probe is killed with it).
+      `i=0; while [ ! -f '${marker}' ] && [ $i -lt 150 ]; do sleep 0.02; i=$((i+1)); done; rm -f '${marker}'; sleep 0.2`,
       'model=""; while [ $# -gt 0 ]; do if [ "$1" = "--model" ]; then model="$2"; fi; shift; done',
       'echo "answered by ${model:-default}"',
       "",

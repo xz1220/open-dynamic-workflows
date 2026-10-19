@@ -93,6 +93,7 @@ function subLine(a: AgentView, nowSec: number): string {
 export function reasonLabel(reason: string): string {
   const labels: Record<string, string> = {
     rate_limit: t("rate limit"),
+    network: t("connection lost"),
     quota: t("quota"),
     auth: t("login needed"),
     model_unavailable: t("model unavailable"),

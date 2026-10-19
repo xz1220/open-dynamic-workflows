@@ -11,6 +11,8 @@
  * as a thrown error, so the caller has one uniform thing to inspect. So is a
  * stall: with a stall timeout, a process that writes nothing to stdout or
  * stderr for that long is killed like a timeout and reported `stalled`.
+ * Silence is measured on the monotonic clock, and a host that slept (see
+ * ./suspend) starts every agent's silence over: a wake-up is not a stall.
  *
  * Agent CLIs start processes of their own (shells, test runners, language
  * servers). On POSIX each agent therefore leads its own process group, and a
@@ -23,9 +25,11 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import { extname, join } from "node:path";
+import { performance } from "node:perf_hooks";
 
 import type { CliResult } from "./types.js";
 import { resolveExecutable } from "./executable.js";
+import { checkHostSuspend, onHostSuspend } from "./suspend.js";
 
 export interface RunCommandOptions {
   stdin?: string;
@@ -284,8 +288,12 @@ export const runCommand: CommandRunner = (command, options = {}) => {
     let stalled = false;
     let aborted = false;
     let outputBytes = 0;
-    /** When the process last wrote to stdout or stderr (or started). */
-    let lastOutputAt = Date.now();
+    /**
+     * When the process last wrote to stdout or stderr (or started, or the host
+     * woke from a sleep), on the monotonic clock: time the host slept is no silence.
+     */
+    let lastOutputAt = performance.now();
+    let stopWatchingSuspend: (() => void) | undefined;
     /** Why the output was refused (the stdout cap, or the stream consumer). */
     let overrun: string | null = null;
     let settled = false;
@@ -308,6 +316,7 @@ export const runCommand: CommandRunner = (command, options = {}) => {
       clearTimeout(termTimer);
       clearTimeout(closeTimer);
       options.signal?.removeEventListener("abort", onAbort);
+      stopWatchingSuspend?.();
       live.delete(child);
       cleanups.delete(child);
       resolve(result);
@@ -380,14 +389,21 @@ export const runCommand: CommandRunner = (command, options = {}) => {
       // setTimeout fires at once past 2^31-1 ms; a shorter wake just re-arms.
       stallTimer = setTimeout(() => {
         if (killTimer) return; // already being killed (abort, output overrun)
-        const quiet = Date.now() - lastOutputAt;
+        // A host just back from a sleep says so first: the silence starts over.
+        checkHostSuspend();
+        const quiet = performance.now() - lastOutputAt;
         if (quiet < stallMs) return watchStall(stallMs - quiet);
         stalled = true;
         clearTimeout(timer);
         terminate();
       }, Math.min(delay, 2 ** 31 - 1));
     };
-    if (stallMs > 0) watchStall(stallMs);
+    if (stallMs > 0) {
+      watchStall(stallMs);
+      stopWatchingSuspend = onHostSuspend(() => {
+        lastOutputAt = performance.now();
+      });
+    }
 
     function onAbort(): void {
       aborted = true;
@@ -402,7 +418,7 @@ export const runCommand: CommandRunner = (command, options = {}) => {
     };
 
     const appendStdout = (d: string): void => {
-      lastOutputAt = Date.now();
+      lastOutputAt = performance.now();
       if (overrun) return;
       options.observeStdout?.(d);
       if (options.onStdout) {
@@ -430,7 +446,7 @@ export const runCommand: CommandRunner = (command, options = {}) => {
     // count as runaway output: keep the tail, where the final error lands. It
     // is still a sign of life to the stall watchdog.
     child.stderr.on("data", (d: string) => {
-      lastOutputAt = Date.now();
+      lastOutputAt = performance.now();
       stderr.push(d);
       options.onStderr?.(d);
     });

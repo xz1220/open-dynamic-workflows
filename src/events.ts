@@ -25,6 +25,10 @@ export const CHECKPOINT_REQUESTED = "checkpoint_requested";
 export const CHECKPOINT_RESOLVED = "checkpoint_resolved";
 // An adapter CLI's version, recorded once per run on its first dispatch (ODW extension; see provenance.ts).
 export const CLI_VERSION = "cli_version";
+// An adapter CLI answered with another version later in the run (updated mid-run): { adapter, command, from, to, message } (ODW extension; see provenance.ts).
+export const CLI_VERSION_CHANGED = "cli_version_changed";
+// The host slept (a closed lid, a paused VM), and every agent's stall timer started over: { sleptSeconds, message } (ODW extension; see adapters/suspend.ts).
+export const HOST_SUSPENDED = "host_suspended";
 // A note on the run's notes board (ODW extension; see notes.ts).
 export const NOTE_ADDED = "note_added";
 // `odw apply --resolve` ran a resolver for one of the run's agents, and how that ended (ODW extension; see runtime/apply-resolve.ts).

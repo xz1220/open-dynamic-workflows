@@ -4,15 +4,65 @@ Notable changes to Open Dynamic Workflows. Binaries and the installer come from
 [GitHub Releases](https://github.com/xz1220/open-dynamic-workflows/releases); everything
 marked **ODW extension** is outside Claude Code's workflow dialect and runs on `odw` only.
 
-## Unreleased — 0.5.0
+## Unreleased
 
-Everything since v0.4.0 (2026-06-11). The theme: runs you can leave alone — they
-survive failures, ask before the expensive parts (from your phone too), say what they
-cost and what they changed, run on a schedule or on your own server — and many agents
+Everything since v0.4.0 (2026-06-11): roadmap 0.5–0.9, released together. The theme:
+runs you can leave alone — they survive failures, ask before the expensive parts (from
+your phone too), say what they cost and what they changed, run on a schedule or on your own server — and many agents
 that share a codebase without surprises: limits that stop runaways, background work that
 cannot pass for success, declared scopes, a notes board, an egress allowlist. Plus a
 dashboard redesigned to watch them, evals and comparisons to check them, and two
 independent security reviews whose findings are all fixed.
+
+### Changed behavior — check before upgrading
+- `agentType` naming an agent definition file now runs that definition (see "Write
+  workflows"): its body replaces the one-line persona, and its `tools` may lower the
+  agent's permission tier — a read-only reviewer definition runs at `read`, and fails
+  on a CLI with no read mode. A name with no definition behaves as before, with a log line.
+- Signed triggers in a repository's `./odw.config.json` are no longer served: move them
+  to `~/.config/odw/config.json` or pass `--config`. A tunnel to a loopback `odw serve`
+  needs `--public-url <the tunnel's URL>` for its webhooks to pass the Host guard.
+- The built-in `codex` adapter runs `codex exec --json --output-last-message
+  {reply_file}` (it ran text mode). A config entry that gives `codex` its own `command`
+  replaces the built-in and needs the matching `output` block to report usage and to
+  read its reply from the events (the README shows the full entry). A codex turn that
+  ends with no agent message is now an `empty_reply` failure (`allowEmpty: true`
+  accepts it) rather than a reply.
+- The built-in `claude` adapter runs `--output-format stream-json --verbose`. A config
+  entry that gives `claude` its own `command` replaces the built-in and needs the
+  matching `output` block to report usage (the README shows the full entry).
+- An adapter entry **without** `command` now adjusts the built-in (e.g.
+  `"codex": { "concurrency": 4 }`); before, it was an error.
+- Adaptive concurrency is on by default (`adaptiveConcurrency: false` turns it off), and
+  `claude` fan-outs with long shared prompts may wait up to 2.5s to stagger
+  (`staggerFanOut: false`).
+- `budget.spent()` counts real output tokens where the adapter reports them.
+- A schema keyword ODW's validator does not check (`oneOf`, `anyOf`, `$ref`, `const`,
+  `pattern`, `minimum`, `maxItems`, a type union, …) is now reported in the run's log,
+  once, with where it is; before, it was skipped without a word. The call still runs
+  unless `"schemaKeywords": "strict"`, which refuses it. `format` is an annotation and
+  is not reported. A malformed schema (a typo such as `requird`, an unknown `type`)
+  now fails its call in either mode.
+- `claude` and `codex` agents no longer get their schema described in the prompt when
+  their CLI takes it natively (`"schemaPrompt": "always"` keeps the description). An
+  entry that gives either its own `command` replaces the built-in: copy `flags.schema`
+  (and `claude`'s `output.structuredPath`) from the example config to keep native schemas.
+- A `meta.phases` entry's `model` now sets the model of that phase's agents (it was
+  metadata only): use a tier (`"@fast"`) when they may run on more than one CLI.
+- After 3 quota failures in a row on one adapter (`quotaBreaker`), a run's later agents
+  skip it — and fail at once when they have no fallback chain; `"quotaBreaker": null`
+  keeps trying the adapter every time.
+- An empty or whitespace-only reply fails the agent with reason `empty_reply`;
+  `agent(…, { allowEmpty: true })` accepts one.
+- Redaction is on by default: transcripts, saved agent results, events, `error.json`
+  and webhook payloads show likely secrets as `«redacted:<kind>»`, and `result.json`
+  token shapes; a resumed run replays a redacted agent result as kept. `"redact": false`
+  keeps everything as printed.
+- Config errors are fatal instead of producing a "done" run full of nulls.
+- The desktop (Tauri) app is retired in favor of `odw serve`.
+- `odw serve` bound off loopback without `--token` prints a loud warning on stderr that
+  suggests `--token` (it stays read-only and open, as before); a positional argument to
+  `odw serve` is now a bundle file to show; `--port 0` picks a free port.
 
 ### Start runs from where work is tracked; run in CI
 - Signed inbound triggers (**ODW extension**): the config's `"triggers"` name a
@@ -742,6 +792,21 @@ independent security reviews whose findings are all fixed.
   labels and phases its journal gives them.
 - First-run onboarding: `odw init` picks the default agent CLI; `odw doctor [--smoke]`
   checks the runtime, config and every adapter — `--smoke` sends one real prompt.
+- The first 60 seconds (**ODW extension**): bare `odw` before any run prints the $0
+  first run (`odw new hello` → `odw test hello` → `odw run hello --dry` → `odw serve
+  --open`), then `odw doctor`, `odw init` and the real run, instead of every command
+  (still exit 2; once a run exists it prints the full help as before). `odw doctor` ends
+  with the same steps while the runs root holds no run (`next` in `--json`), and gains
+  read-only run-environment checks, each warning with its fix line: **Open-file limit**
+  — the limit odw runs with (Node raises its soft limit to the hard one; agents inherit
+  it) against `--fanout N` agents (default: the concurrency cap) at ~4 descriptors each
+  plus 64; **Free space (runs)** and **Free space (temp)** — under 1 GiB warns, and a
+  tmpfs temp dir (Linux, `/proc/mounts`), where `isolation: "worktree"` checkouts go, is
+  named with its mount; **Git** — missing or older than 2.17 warns. Windows skips the
+  open-file check. The dashboard's Get started card now leads with `odw new hello` and
+  `odw run hello --dry` instead of a paid `odw doctor --smoke` and a repository-only
+  example, and `install.sh`'s next steps end on the same first run (for a release that
+  has `odw new`).
 - `odw new [<template>] [--name N] [--force] [--yes]` (**ODW extension**): a workflow
   from a template embedded in the binary — `hello`, `review-swarm`, `fix-until-green`,
   `plan-approve-execute`, `pr-shepherd`, `fan-out-reduce` — written to
@@ -832,6 +897,34 @@ independent security reviews whose findings are all fixed.
   gc` lists leftover `odw-*` compose projects whose run is not active (`docker compose
   ls`, when it answers; `$ODW_DOCKER` names another docker) and never removes them.
   README recipe: a compose stack and a database per agent.
+- Sleep, network loss and a CLI updated mid-run (**ODW extension**): the stall watchdog
+  counts silence on the monotonic clock, and a host that slept — the wall clock jumping
+  more than a minute past it, or a 30-second check that came that much late — starts
+  every running agent's silence over (a full `stallTimeout` of grace) and is logged once
+  as a `host_suspended` event (`{ sleptSeconds, message }`), so a laptop that wakes no
+  longer kills its agents as `stalled`. A new failure reason `network` (Node's
+  `ECONNRESET`, `ENOTFOUND`, `EAI_AGAIN`, `ETIMEDOUT`, "fetch failed", "socket hang up",
+  "network error", Claude Code's "API Error: Connection error.", Codex's "error sending
+  request for url"; final lines only; an adapter's `failures.network` adds its own) is
+  retried like a rate limit — the same backoff and `maxBackoff`, its own
+  `transientRetries` per call — and logged as `lost its connection on <adapter> —
+  retrying in 15s (1/3)`. An adapter's CLI is asked `--version` again at its next
+  dispatch 30 minutes after the last probe, and at once (at most once a minute) when an
+  agent of it fails with `exit` or `not_found`; a different answer is a
+  `cli_version_changed` event (`{ adapter, command, from, to, message }`) in the live
+  view, `odw logs` and the dashboard, and never fails the run.
+- A full disk and a reused pid (**ODW extension**): a run directory holds a 64 KB
+  `.odw-reserve` from its creation; a write to it that fails with `ENOSPC` or `EDQUOT`
+  stops the run — dispatch stopped, agents killed — and, in the reserve's room,
+  records it `failed` with `"failureReason": "disk_full"` in `status.json` and
+  `error.json` and an error naming the directory, `odw gc` and `odw resume` (stderr,
+  `worker.log`, when even that fails); the dashboard shows **failed — disk full**. The
+  worker records its process start beside its pid (`pidStart`: Linux `/proc` with the
+  boot id, else `ps -o lstart=`); a live pid that started otherwise, or any pid of a run
+  whose status predates this boot, is a dead worker — for the run list, `odw wait`,
+  `odw gc`, schedules' overlap guard and triggers' dedupe. Worktree owner files and
+  schedule locks record it too. Where it cannot be read (Windows), the bare pid probe
+  stands.
 
 ### Security fixes found in review
 - A sandboxed agent could plant git config (`core.fsmonitor`, hooks) in its workspace's
@@ -1122,52 +1215,23 @@ independent security reviews whose findings are all fixed.
   written) when the two disagree, when the event log names another path, or when the
   run never declared the alias.
 
-### Changed behavior — check before upgrading
-- `agentType` naming an agent definition file now runs that definition (see "Write
-  workflows"): its body replaces the one-line persona, and its `tools` may lower the
-  agent's permission tier — a read-only reviewer definition runs at `read`, and fails
-  on a CLI with no read mode. A name with no definition behaves as before, with a log line.
-- Signed triggers in a repository's `./odw.config.json` are no longer served: move them
-  to `~/.config/odw/config.json` or pass `--config`. A tunnel to a loopback `odw serve`
-  needs `--public-url <the tunnel's URL>` for its webhooks to pass the Host guard.
-- The built-in `codex` adapter runs `codex exec --json --output-last-message
-  {reply_file}` (it ran text mode). A config entry that gives `codex` its own `command`
-  replaces the built-in and needs the matching `output` block to report usage and to
-  read its reply from the events (the README shows the full entry). A codex turn that
-  ends with no agent message is now an `empty_reply` failure (`allowEmpty: true`
-  accepts it) rather than a reply.
-- The built-in `claude` adapter runs `--output-format stream-json --verbose`. A config
-  entry that gives `claude` its own `command` replaces the built-in and needs the
-  matching `output` block to report usage (the README shows the full entry).
-- An adapter entry **without** `command` now adjusts the built-in (e.g.
-  `"codex": { "concurrency": 4 }`); before, it was an error.
-- Adaptive concurrency is on by default (`adaptiveConcurrency: false` turns it off), and
-  `claude` fan-outs with long shared prompts may wait up to 2.5s to stagger
-  (`staggerFanOut: false`).
-- `budget.spent()` counts real output tokens where the adapter reports them.
-- A schema keyword ODW's validator does not check (`oneOf`, `anyOf`, `$ref`, `const`,
-  `pattern`, `minimum`, `maxItems`, a type union, …) is now reported in the run's log,
-  once, with where it is; before, it was skipped without a word. The call still runs
-  unless `"schemaKeywords": "strict"`, which refuses it. `format` is an annotation and
-  is not reported. A malformed schema (a typo such as `requird`, an unknown `type`)
-  now fails its call in either mode.
-- `claude` and `codex` agents no longer get their schema described in the prompt when
-  their CLI takes it natively (`"schemaPrompt": "always"` keeps the description). An
-  entry that gives either its own `command` replaces the built-in: copy `flags.schema`
-  (and `claude`'s `output.structuredPath`) from the example config to keep native schemas.
-- A `meta.phases` entry's `model` now sets the model of that phase's agents (it was
-  metadata only): use a tier (`"@fast"`) when they may run on more than one CLI.
-- After 3 quota failures in a row on one adapter (`quotaBreaker`), a run's later agents
-  skip it — and fail at once when they have no fallback chain; `"quotaBreaker": null`
-  keeps trying the adapter every time.
-- An empty or whitespace-only reply fails the agent with reason `empty_reply`;
-  `agent(…, { allowEmpty: true })` accepts one.
-- Redaction is on by default: transcripts, saved agent results, events, `error.json`
-  and webhook payloads show likely secrets as `«redacted:<kind>»`, and `result.json`
-  token shapes; a resumed run replays a redacted agent result as kept. `"redact": false`
-  keeps everything as printed.
-- Config errors are fatal instead of producing a "done" run full of nulls.
-- The desktop (Tauri) app is retired in favor of `odw serve`.
-- `odw serve` bound off loopback without `--token` prints a loud warning on stderr that
-  suggests `--token` (it stays read-only and open, as before); a positional argument to
-  `odw serve` is now a bundle file to show; `--port 0` picks a free port.
+### Release readiness
+- `node scripts/prepare-release.mjs <version> [--date YYYY-MM-DD] [--dry-run]` gets a
+  checkout ready to tag (**ODW extension**, maintainer tooling): it sets
+  `package.json` and `package-lock.json` to the version, renames this changelog's
+  `## Unreleased` to `## <version> — <date>` under a new empty `## Unreleased`,
+  points every `xz1220/open-dynamic-workflows/action@v…` pin in `README*.md`, `docs/`
+  (not the dated notes in `docs/research/`) and `action/action.yml` at the new tag, and
+  prints the `git` commands that commit, tag and push — it runs none of them. It
+  refuses a version below `package.json`'s, an empty `## Unreleased`, or a version the
+  changelog already has, before writing anything.
+- A GitHub Release's body is now the changelog section named like its tag
+  (`scripts/changelog.mjs notes <tag>`), followed by GitHub's list of merged pull
+  requests; a tag with no such section fails before any binary is built. CI checks
+  that `## Unreleased` exists (`scripts/changelog.mjs check`).
+- The docs no longer pin the action to `@v0.7.0`, a release that never existed: they
+  show `@v0.X.Y — pin the release you installed`, which `prepare-release` rewrites.
+  README's "Status" links this changelog instead of repeating it.
+- `install.sh` (and the action) treat only releases before v0.5.0 as predating
+  `SHA256SUMS`; it was `≤ 0.5.0`, which would have let a 0.5.0 release without its
+  checksums install with a warning.

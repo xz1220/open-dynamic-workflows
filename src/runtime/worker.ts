@@ -23,13 +23,15 @@ import { defaultConfig, loadConfig } from "../adapters/config.js";
 import { isPermissionTier } from "../adapters/permissions.js";
 import { sandboxFlagOf, withSandboxFlag } from "../adapters/sandbox.js";
 import { killAllAgentProcesses } from "../adapters/runner.js";
+import { formatSeconds } from "../adapters/failures.js";
+import { onHostSuspend } from "../adapters/suspend.js";
 import type { RunEndState } from "../adapters/types.js";
 import type { WaitingCheckpoint } from "../checkpoint.js";
 import type { CostHistory } from "../forecast.js";
 import { buildContext, spentTokens, type RunContext } from "../context.js";
 import { deciderText, PAUSED, RUNNING, STOPPED, type CheckpointRequest } from "../control.js";
-import { ConfigError, DeadlinePassed, RunStopped, WorkflowScriptError, isFatalError } from "../errors.js";
-import { AGENT_STARTED, LOG, RUN_FAILED, RUN_FINISHED, RUN_STARTED, RUN_STOPPED, event } from "../events.js";
+import { ConfigError, DeadlinePassed, DiskFull, RunStopped, WorkflowScriptError, isFatalError } from "../errors.js";
+import { AGENT_STARTED, HOST_SUSPENDED, LOG, RUN_FAILED, RUN_FINISHED, RUN_STARTED, RUN_STOPPED, event } from "../events.js";
 import { Breaks, breakSpecOf, runSoFar } from "../breaks.js";
 import { DriftWatch, driftEvalArgs, driftEvalOf, previousRun } from "../drift.js";
 import { ReplayJournal } from "../journal.js";
@@ -58,7 +60,9 @@ import { exportRunEnd } from "./otel-export.js";
 import { loadCostHistory } from "./estimate.js";
 import { JsonlSink, RunStore } from "./run-store.js";
 import { describeSource, installedWorkflowFor, modifiedLockedMessage } from "../workflows/lock.js";
+import { DISK_FULL, diskFullMessage, isDiskFullError, releaseReserve } from "./disk-full.js";
 import { orphanedWorktreesOf } from "./gc.js";
+import { processStartTime } from "./process-identity.js";
 
 /**
  * Once a run has failed or stopped, how long its remaining agents get to die
@@ -116,6 +120,11 @@ const SIGNAL_GRACE_MS = 10_000;
  * process: a worker that dies leaves the run stale, and `odw resume` replays
  * it. A new `odw resume` ends the wait at once.
  *
+ * A write to the run directory that finds the disk full (an ODW extension;
+ * see ./disk-full) ends the run like a fatal error — its agents killed — and
+ * it fails with `failureReason: "disk_full"`, written in the room of the run's
+ * reserve, else said on stderr.
+ *
  * Run as the run's worker process (`options.worker`), whose stdout and stderr
  * are the run's worker.log, what it prints — a workflow's console.log of an
  * agent's reply, a hook's failure — is redacted like the run's events, from
@@ -143,6 +152,35 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
   const redact = <T extends object>(record: T): T => redactor?.record(record) ?? record;
   const dispatched = () => ctx?.scheduler.dispatched ?? 0;
   const spent = () => (ctx ? spentTokens(ctx.usage) : 0);
+  // A full disk under the run directory (ODW extension; see ./disk-full): the
+  // first write that finds it ends the run — said on stderr at once, the
+  // dispatch stopped and the agents killed, as for any fatal error.
+  let diskFull: DiskFull | undefined;
+  const onDiskFull = (err: unknown): DiskFull => {
+    if (diskFull) return diskFull;
+    diskFull = new DiskFull(diskFullMessage(store.runDir(runId), err));
+    diskFull.cause = err;
+    stderrLine(`odw: ${diskFull.message}`);
+    ctx?.scheduler.abort(diskFull);
+    return diskFull;
+  };
+  // An event that finds it is lost, not thrown where it was emitted — a timer, a callback — once the run can be
+  // aborted; before that it fails the run's start, and once the run is ending it is only lost.
+  let ending = false;
+  sink.onDiskFull = (err) => {
+    const reason = onDiskFull(err);
+    if (!ctx && !ending) throw reason;
+  };
+  // …and so is an agent's saved result or call: the run's end, not that agent's failure.
+  const diskGuard =
+    <A>(write: (a: A) => void) =>
+    (a: A): void => {
+      try {
+        write(a);
+      } catch (err) {
+        throw isDiskFullError(err) ? onDiskFull(err) : err;
+      }
+    };
 
   // Set right after the terminal state is written; the run then only has its hooks left.
   let end: { state: RunEndState; error?: string } | undefined;
@@ -153,6 +191,8 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
   // Records each adapter CLI's version beside its first agent (ODW extension;
   // see ../provenance); closed before the terminal event, which nothing follows.
   let versions: CliVersions | undefined;
+  // Says once per sleep of the host that the agents' stall timers started over (ODW extension; see ../adapters/suspend).
+  let unwatchSuspend = (): void => {};
   // Compares what the run records with the workflow's previous run (ODW extension; see ../drift).
   let drift: DriftWatch | undefined;
   const crashes = watchProcessCrashes();
@@ -173,6 +213,7 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
       if (!end) {
         sink.emit(event(LOG, { message: `${why} — killing the agents and exiting` }));
         versions?.close();
+        unwatchSuspend();
         sink.emit(event(RUN_STOPPED, { runId }));
         // No checkpoint (nor quota pause) gets to withdraw itself here: nothing waits any more.
         store.updateStatus(runId, { state: "stopped", dispatched: dispatched(), spentTokens: spent(), waiting: null, pausedFor: null });
@@ -297,6 +338,17 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
       });
     }
     const cliVersions = versions;
+    unwatchSuspend = onHostSuspend(({ sleptSeconds }) => {
+      if (end) return; // nothing may follow the terminal event
+      sink.emit(
+        event(HOST_SUSPENDED, {
+          sleptSeconds,
+          message:
+            `the host was asleep for about ${formatSeconds(sleptSeconds)} — every agent's stall timer starts over; ` +
+            "an agent whose connection dropped meanwhile is retried",
+        }),
+      );
+    });
     // The workflow's earlier runs, for fan-out forecasts and cost gates (ODW
     // extension; see ../forecast): read from its bucket of the runs root on
     // the first fan-out that asks, this run left out.
@@ -350,7 +402,7 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
       // Each completed agent's result lands in agents/<agentId>.json at once,
       // so a run that stalls, is stopped, or dies keeps its finished work —
       // its likely secrets redacted (ODW extension).
-      saveAgentResult: (rec) => store.writeAgentResult(runId, runRedactor.record(rec)),
+      saveAgentResult: diskGuard((rec) => store.writeAgentResult(runId, runRedactor.record(rec))),
       redactor: runRedactor,
       // The run's notes board (ODW extension): notes.jsonl, for agents with notes on.
       // A note posted with --keep becomes workflow memory when the run ends.
@@ -386,11 +438,12 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
             }),
           }),
       // What each agent() call was asked, as agents/<agentId>.call.json, for `odw replay` (ODW extension).
-      saveAgentCall: (call) => store.writeAgentCall(runId, call),
+      saveAgentCall: diskGuard((call) => store.writeAgentCall(runId, call)),
       ...(repos.size > 0 ? { repos } : {}),
       ...(replayOf?.base ? { worktreeBase: replayOf.base } : {}),
       breaks,
       onCliRun: cliVersions && ((adapter) => cliVersions.note(adapter)),
+      onCliFailed: cliVersions && ((adapter, reason) => cliVersions.failed(adapter, reason)),
       // Each mocked agent is answered knowing its label and phase, from its agent_started event.
       ...(mock ? { bridge: { runner: mockRunner(mock, (agentId) => startedAgent(store, runId, agentId)), sleep: noSleep } } : {}),
       onCheckpoint: (cp, isWaiting) => {
@@ -436,7 +489,10 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
       store.updateStatus(runId, { stopReason: "deadline" });
       signals.stopNow(`the run's deadline (--deadline ${seconds}) passed`);
     });
-    store.updateStatus(runId, { state: "running", pid: process.pid });
+    // With the pid, when this process started (ODW extension; see ./process-identity): a pid reused after
+    // this worker is gone — a reboot, a wrapped pid space — is not taken for it.
+    const pidStart = processStartTime(process.pid);
+    store.updateStatus(runId, { state: "running", pid: process.pid, ...(pidStart ? { pidStart } : {}) });
     // What the run starts with — the settings that change behaviour, and each
     // adapter's fingerprint — for `odw compare` (ODW extension; see ../provenance).
     // Untrusted input (ODW extension): what the run gave up, said with its start —
@@ -654,6 +710,7 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
     const kept = runRedactor.shapes.record({ value: result });
     store.writeResult(runId, kept.value, "redacted" in kept);
     versions?.close();
+    unwatchSuspend();
     ctx.notes?.close();
     // What the run learned is kept, before its terminal event (ODW extension).
     ctx.memory?.flush();
@@ -664,16 +721,46 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
     // The first fatal error is the root cause, even when the script swallowed
     // it and later failed for another reason (still worth a log line).
     const outcome = ctx?.scheduler.fatalError ?? err;
-    if (outcome !== err) {
+    ending = true;
+    // A full disk (ODW extension; see ./disk-full) is the run's end, whatever
+    // it surfaced as — the script's rejection, a crash — unless a stop came first.
+    const full =
+      outcome instanceof DiskFull
+        ? outcome
+        : !(outcome instanceof RunStopped) && (diskFull || isDiskFullError(outcome) || isDiskFullError(err))
+          ? onDiskFull(isDiskFullError(outcome) ? outcome : err)
+          : undefined;
+    if (outcome !== err && !full) {
       sink.emit(event(LOG, { message: `after the run ended, the workflow also failed: ${errorMessage(err)}` }));
     }
-    if (ctx) await stopAgents(ctx.scheduler, outcome, teardownMs(ctx.config.settings));
+    if (ctx) await stopAgents(ctx.scheduler, full ?? outcome, teardownMs(ctx.config.settings));
     await ctx?.bridge.closeEgress().catch(() => undefined);
-    versions?.close();
-    ctx?.notes?.close();
+    unwatchSuspend();
+    // With the disk full, the rest goes as far as it can.
+    const quietly = (write: () => void): void => {
+      try {
+        write();
+      } catch (e) {
+        if (!full) throw e;
+      }
+    };
+    quietly(() => versions?.close());
+    quietly(() => ctx?.notes?.close());
     // A failed or stopped run keeps what it learned too: a correction is no less true.
-    ctx?.memory?.flush();
-    if (outcome instanceof RunStopped) {
+    quietly(() => ctx?.memory?.flush());
+    if (full) {
+      // The reserve's room, for the run's last status first: failed, and why.
+      releaseReserve(store.runDir(runId));
+      const message = full.message;
+      try {
+        store.updateStatus(runId, { state: "failed", failureReason: DISK_FULL, dispatched: dispatched(), spentTokens: spent(), waiting: null, pausedFor: null });
+      } catch (e) {
+        stderrLine(`odw: could not record run ${runId} as failed (${errorMessage(e)}): ${message}`);
+      }
+      quietly(() => store.writeError(runId, { error: message, stack: null, failureReason: DISK_FULL }));
+      sink.emit(event(RUN_FAILED, { runId, error: message, failureReason: DISK_FULL }));
+      end = { state: "failed", error: message };
+    } else if (outcome instanceof RunStopped) {
       // Who stopped it, by name (ODW extension; see ../identity), when `odw stop` or the dashboard did.
       const control = store.readControlRequest(runId);
       const who = control?.action === "stop" ? control.who : undefined;
@@ -693,6 +780,8 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
     }
   } finally {
     deadline?.dispose();
+    // The run is over: its reserve's room goes back (ODW extension; see ./disk-full).
+    releaseReserve(store.runDir(runId));
     process.off("exit", killAllAgentProcesses);
     crashes.dispose();
     if (!end) signals.dispose(); // the run itself threw: no hooks follow
@@ -860,6 +949,15 @@ function teardownMs(settings: { worktreeTeardown: unknown; worktreeTeardownTimeo
   return settings?.worktreeTeardown ? settings.worktreeTeardownTimeout * 1000 : 0;
 }
 
+/** One line to this process's stderr — the run's worker.log — when even that may fail: a full disk's last word. */
+function stderrLine(line: string): void {
+  try {
+    writeSync(2, line + "\n");
+  } catch {
+    /* nowhere left to say it */
+  }
+}
+
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
@@ -989,6 +1087,7 @@ function watchDeadline(raw: unknown, onPassed: (seconds: number) => void): { dis
 function crashError(kind: string, cause: unknown): WorkflowScriptError {
   const error = new WorkflowScriptError(`the workflow crashed with ${kind}: ${errorMessage(cause)}`);
   if (cause instanceof Error && cause.stack) error.stack = cause.stack;
+  error.cause = cause; // what it was — a full disk's ENOSPC, say (see ./disk-full)
   return error;
 }
 

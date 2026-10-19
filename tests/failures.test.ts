@@ -762,6 +762,43 @@ test("an agent's own work in the output is not mistaken for a failure class", ()
   }
 });
 
+test("a lost connection is a network failure (ODW extension), read from the final lines only", () => {
+  for (const text of [
+    // Node-based CLIs relaying socket and DNS errors.
+    "Error: read ECONNRESET",
+    "Error: getaddrinfo ENOTFOUND api.anthropic.com",
+    "getaddrinfo EAI_AGAIN generativelanguage.googleapis.com",
+    "connect ECONNREFUSED 127.0.0.1:443",
+    "connect ETIMEDOUT 160.79.104.10:443",
+    "TypeError: fetch failed",
+    "[cause]: SocketError: other side closed { code: 'UND_ERR_SOCKET' }",
+    "Error: socket hang up",
+    "NetworkError when attempting to fetch resource.",
+    "network error",
+    // Claude Code: the Anthropic SDK's APIConnectionError.
+    "API Error: Connection error.",
+    "APIConnectionTimeoutError: Request timed out.",
+    // Codex (Rust).
+    "ERROR: error sending request for url (https://api.openai.com/v1/responses)",
+    "Connection reset by peer (os error 104)",
+    "dns error: failed to lookup address information: Temporary failure in name resolution",
+  ]) {
+    assert.deepEqual(classify(text), { reason: "network" }, text);
+  }
+  // A rate limit cut off mid-stream is still a rate limit; a refused login is not a network failure.
+  assert.equal(classify("error sending request for url: 429 Too Many Requests").reason, "rate_limit");
+  // Codex's "stream disconnected before completion" says no more than that the turn ended early: not by itself.
+  assert.equal(classify("ERROR: stream disconnected before completion").reason, "exit");
+  assert.equal(classify("Invalid API key · Please run /login\nError: read ECONNRESET").reason, "auth");
+  // An agent's own transcript (a test that hit a closed port) is no evidence: only the final lines count.
+  const transcript = "running tests…\nconnect ECONNREFUSED 127.0.0.1:5432\n" + "ok\n".repeat(3000);
+  assert.equal(classifyFailure(run({ stdout: transcript, stderr: "segmentation fault" })).reason, "exit");
+  // Claude Code's text mode prints it as its reply and exits 0.
+  assert.deepEqual(classifyErrorReply("API Error: Connection error."), { reason: "network" });
+  // An adapter may add its own wording.
+  assert.equal(classify("E_OFFLINE: link down", { network: ["^E_OFFLINE"] }).reason, "network");
+});
+
 test("lines that only echo the prompt are no evidence", () => {
   const prompt = "You are one agent in an automated workflow.\n\nRetry 429 Too Many Requests responses in the API client.";
   // Codex prints the prompt on stderr before its session.

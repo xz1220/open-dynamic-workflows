@@ -16,6 +16,7 @@ import { dirname, isAbsolute, join } from "node:path";
 
 import { homeDir } from "../adapters/config.js";
 import { readJsonFile, writeJsonAtomic } from "../runtime/fs-util.js";
+import { pidReused, processStartTime } from "../runtime/process-identity.js";
 import { isProcessAlive } from "../runtime/runs-view.js";
 import { BACKENDS, ScheduleError, type Backend } from "./backends.js";
 
@@ -161,6 +162,8 @@ function isObject(value: unknown): value is Record<string, unknown> {
 /** Who holds a schedule's lock. */
 export interface LockHolder {
   pid: number;
+  /** When that process started (ODW extension; see ../runtime/process-identity), when it could be read. */
+  pidStart?: string;
   /** When it took the lock (local ISO 8601). */
   startedAt: string;
   /** The run it started, once it has one, and the runs root that run lives under. */
@@ -171,6 +174,8 @@ export interface LockHolder {
 export interface LockOptions {
   /** Whether a process is alive; process.kill(pid, 0) by default. */
   isAlive?: (pid: number) => boolean | null;
+  /** When a process started (see ../runtime/process-identity); a live holder pid that started otherwise is dead. */
+  startOf?: (pid: number) => string | null;
   /** When this machine booted (ms since the epoch): a lock taken before that is stale whatever its pid. */
   bootedAt?: number;
   /** Whether the run a dead holder started still goes on: then the lock still holds. */
@@ -200,7 +205,8 @@ const BOOT_SLACK_MS = 60_000;
  */
 export function acquireLock(path: string, options: LockOptions = {}): LockAttempt {
   const now = options.now ?? (() => new Date());
-  const content = JSON.stringify({ pid: process.pid, startedAt: localIso(now()) }) + "\n";
+  const pidStart = (options.startOf ?? processStartTime)(process.pid);
+  const content = JSON.stringify({ pid: process.pid, ...(pidStart ? { pidStart } : {}), startedAt: localIso(now()) }) + "\n";
   for (let attempt = 0; attempt < 100; attempt++) {
     try {
       writeFileSync(path, content, { flag: "wx", mode: 0o600 });
@@ -244,7 +250,8 @@ function isStale(holder: LockHolder | null, ageMs: number, options: LockOptions)
   const bootedAt = options.bootedAt ?? Date.now() - uptime() * 1000;
   const startedAt = Date.parse(holder.startedAt);
   if (Number.isFinite(startedAt) && startedAt < bootedAt - BOOT_SLACK_MS) return true;
-  if ((options.isAlive ?? isProcessAlive)(holder.pid) !== false) return false;
+  const alive = (options.isAlive ?? isProcessAlive)(holder.pid) !== false;
+  if (alive && !pidReused({ pid: holder.pid, pidStart: holder.pidStart }, { startOf: options.startOf, bootedAt })) return false;
   return !(holder.runId !== undefined && options.runActive?.(holder));
 }
 
@@ -289,6 +296,7 @@ function parseHolder(raw: string): LockHolder | null {
     return {
       pid,
       startedAt,
+      ...(typeof value.pidStart === "string" ? { pidStart: value.pidStart } : {}),
       ...(typeof runId === "string" ? { runId } : {}),
       ...(typeof runsRoot === "string" ? { runsRoot } : {}),
     };

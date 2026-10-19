@@ -38,6 +38,7 @@ import { LIMIT_NAMES, type AgentLimits, type LimitHit } from "../limits.js";
 import { readCliVersion, type CliVersion } from "../provenance.js";
 import { pausedForOf, type PausedFor } from "../quota-wait.js";
 import { untrustedInputOf, type UntrustedInputMeta } from "../untrusted-input.js";
+import { pidReused, type IdentityProbe } from "./process-identity.js";
 import { RunStore, TERMINAL_STATES, type EvalRunTag, type ResolveLink } from "./run-store.js";
 
 export type AgentState = "running" | "done" | "failed" | "stale";
@@ -319,6 +320,12 @@ export interface RunSummary {
    */
   pausedFor?: PausedFor | null;
   /**
+   * Why a failed run failed, when the worker knew it for one of its own:
+   * "disk_full" — the disk under its run directory filled up (ODW extension;
+   * see ./disk-full). Absent otherwise.
+   */
+  failureReason?: "disk_full";
+  /**
    * The run is a shared bundle opened by `odw serve --open FILE.odwrun` (ODW
    * extension; see ./bundle): when it was bundled and by which odw. Absent otherwise.
    */
@@ -458,9 +465,16 @@ export function isProcessAlive(pid: number | null | undefined): boolean | null {
  * pre-fork and pid-less for a moment, so they stay pending. We intentionally do
  * NOT use an updatedAt-timeout heuristic: the worker only rewrites status on
  * state transitions, so a legitimately long-running phase looks "idle" and
- * would be wrongly flagged.
+ * would be wrongly flagged. Only a status written before this machine booted
+ * is: no worker of it can still be alive.
  */
-export function reconcileState(rawState: string, pid: number | null): {
+export function reconcileState(
+  rawState: string,
+  pid: number | null,
+  // When the worker started and its status was last written: a pid reused since is stale too (ODW extension; see ./process-identity).
+  identity: { pidStart?: unknown; updatedAt?: unknown } = {},
+  probe: IdentityProbe = {},
+): {
   state: RunDisplayState;
   stale: boolean;
 } {
@@ -468,7 +482,7 @@ export function reconcileState(rawState: string, pid: number | null): {
     return { state: rawState as RunDisplayState, stale: false };
   }
   if (rawState === "running" || rawState === "paused") {
-    if (pid == null || isProcessAlive(pid) === false) {
+    if (pid == null || isProcessAlive(pid) === false || pidReused({ pid, ...identity }, probe)) {
       return { state: "stale", stale: true };
     }
   }
@@ -1000,7 +1014,7 @@ export function summaryFrom(runId: string, facts: RunFacts): RunSummary {
   const { status, meta, fold } = facts;
   const rawState = String(status.state ?? "pending");
   const pid = asNumber(status.pid);
-  const reconciled = reconcileState(rawState, pid);
+  const reconciled = reconcileState(rawState, pid, { pidStart: status.pidStart, updatedAt: status.updatedAt });
   const { stale } = reconciled;
   // A live, running run that waits at a checkpoint() shows as "waiting"; every
   // other mapping (paused included) stands as reconciled.
@@ -1039,6 +1053,7 @@ export function summaryFrom(runId: string, facts: RunFacts): RunSummary {
     ...destructiveGitOf(fold),
     // Only a live paused run waits for a quota; a stale one's worker is gone.
     pausedFor: state === "paused" ? pausedForOf(status.pausedFor) : null,
+    ...(state === "failed" && status.failureReason === "disk_full" ? { failureReason: "disk_full" as const } : {}),
     ...(meta.bundle ? { bundle: bundleOf(meta.bundle) } : {}),
     ...evalTagOf(meta),
     ...(meta.dry === true ? { dry: true as const } : {}),

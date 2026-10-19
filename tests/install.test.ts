@@ -210,7 +210,7 @@ installTest("accepts binary-mode and uppercase SHA256SUMS entries", (t) => {
   f.assertClean();
 });
 
-installTest("a release after v0.5.0 without SHA256SUMS fails closed unless ODW_ALLOW_UNVERIFIED=1", (t) => {
+installTest("a release from v0.5.0 on without SHA256SUMS fails closed unless ODW_ALLOW_UNVERIFIED=1", (t) => {
   const f = fixture(t);
   f.old();
   f.sums(null);
@@ -226,9 +226,9 @@ installTest("a release after v0.5.0 without SHA256SUMS fails closed unless ODW_A
   f.assertClean();
 });
 
-installTest("releases up to v0.5.0 predate SHA256SUMS and install with a warning", (t) => {
+installTest("releases before v0.5.0 predate SHA256SUMS and install with a warning", (t) => {
   for (const [version, predates] of [
-    ["0.5.0", true], ["0.4.9", true], ["0.5.0-rc.1", true], ["0.5.1", false], ["1.0.0", false],
+    ["0.4.9", true], ["0.4.0", true], ["0.1.0-rc.1", true], ["0.5.0", false], ["0.5.0-rc.1", false], ["0.9.0", false], ["1.0.0", false],
   ] as const) {
     const f = fixture(t);
     writeFileSync(f.archive, gzipSync(binary.replace("1.2.3", version)));
@@ -246,7 +246,7 @@ installTest("releases up to v0.5.0 predate SHA256SUMS and install with a warning
 });
 
 installTest("ODW_REQUIRE_CHECKSUMS=1 (the GitHub Action's) refuses a release without checksums, even one that predates them", (t) => {
-  for (const version of ["0.5.0", "1.2.3"]) {
+  for (const version of ["0.4.0", "1.2.3"]) {
     const f = fixture(t);
     f.old();
     writeFileSync(f.archive, gzipSync(binary.replace("1.2.3", version)));
@@ -534,4 +534,18 @@ installTest("ODW_SKILL=0 installs the verified binary alone: no skill, no odw in
   assert.notEqual(refused.status, 0);
   assert.match(refused.stderr, /Checksum mismatch for odw-linux-x64\.gz/);
   assert.equal(existsSync(join(bad.binDir, "odw")), false, "nothing installed after a failed check");
+});
+
+installTest("next steps: a release with odw new ends on the $0 first run; an older one on odw run", (t) => {
+  const f = fixture(t);
+  writeFileSync(f.archive, gzipSync(binary.replace("echo 'odw init'", "printf 'odw init\\nodw new\\n'")));
+  const result = f.run();
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /next steps:[\s\S]*odw new hello[\s\S]*odw run hello --dry .*\$0[\s\S]*odw serve --open/);
+  assert.doesNotMatch(result.stdout, /odw run <workflow\.js> --wait/);
+  const old = fixture(t);
+  const before = old.run();
+  assert.equal(before.status, 0, before.stderr);
+  assert.match(before.stdout, /odw run <workflow\.js> --wait/);
+  assert.doesNotMatch(before.stdout, /odw new hello/);
 });

@@ -613,8 +613,9 @@ export async function pullRun(opts: PullOptions): Promise<number> {
     });
     const statusPath = join(stage, "status.json");
     status = readJsonFile(statusPath);
-    if (status && "pid" in status) {
+    if (status && ("pid" in status || "pidStart" in status)) {
       delete status.pid;
+      delete status.pidStart;
       writeJsonAtomic(statusPath, status);
     }
     rmSync(join(stage, "worker.pid"), { force: true });

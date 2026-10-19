@@ -223,7 +223,7 @@ export function renderJobs(state: JobsState, nowSec: number): string {
     rows.push(
       `<tr class="run" data-run="${esc(r.runId)}" data-key="h-${esc(r.runId)}" tabindex="0" role="link">` +
         `<td><div class="wf">${esc(r.name)} ${provTag(r)}</div><div class="rid">${esc(r.runId)}${byWho(r)}</div></td>` +
-        `<td>${pill(r.state)}</td>` +
+        `<td>${pill(r.state, r.failureReason === "disk_full" ? t("failed — disk full") : undefined)}</td>` +
         `<td class="when">${fmtClock(r.createdAt)}<span>${fmtAgo(r.createdAt)}</span></td>` +
         `<td><div class="dur"><i style="width:${Math.max(3, Math.round(Math.sqrt(Math.min(1, (dur ?? 0) / longest)) * 90))}px"></i>${fmtDurSec(dur)}</div></td>` +
         `<td class="agents">${r.counts.agents}${r.counts.failed ? ` · <span class="f">${r.counts.failed} ✕</span>` : ""}` +

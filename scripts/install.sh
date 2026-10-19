@@ -16,7 +16,7 @@
 #
 # Integrity: the binary is checked against the release's SHA256SUMS asset
 # before anything is installed. A checksum mismatch, or a SHA256SUMS that does
-# not list the binary, always aborts. Releases up to v0.5.0 predate SHA256SUMS
+# not list the binary, always aborts. Releases before v0.5.0 predate SHA256SUMS
 # and install with a warning — or abort under ODW_REQUIRE_CHECKSUMS=1. For any
 # newer release, a missing SHA256SUMS (or no sha256sum/shasum on this machine)
 # aborts unless ODW_ALLOW_UNVERIFIED=1.
@@ -126,7 +126,7 @@ trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-# Releases up to v0.5.0 were published before SHA256SUMS existed.
+# Releases before v0.5.0 were published before SHA256SUMS existed.
 predates_checksums() {
   core="${VERSION#v}"
   core="${core%%[-+]*}"
@@ -136,7 +136,7 @@ predates_checksums() {
   esac
   major="${core%%.*}"; rest="${core#*.}"; minor="${rest%%.*}"; patch="${rest#*.}"
   case "$major$minor$patch" in *[!0-9]*) return 1 ;; esac
-  [ "$major" -eq 0 ] && { [ "$minor" -lt 5 ] || { [ "$minor" -eq 5 ] && [ "$patch" -eq 0 ]; }; }
+  [ "$major" -eq 0 ] && [ "$minor" -lt 5 ]
 }
 # Verification is impossible here: abort, unless explicitly allowed.
 unverified() {
@@ -304,5 +304,12 @@ echo "  odw --version                       # confirm the binary works"
 if printf '%s\n' "$HELP_OUT" | grep -q "odw init"; then
   echo "  odw init                            # (re)pick the default agent, if you skipped it above"
 fi
-echo "  odw run <workflow.js> --wait        # run your first workflow"
+if printf '%s\n' "$HELP_OUT" | grep -q "odw new"; then
+  # The first run, for $0 — the same steps bare `odw` and `odw doctor` show.
+  echo "  odw new hello                       # a starter workflow and its test"
+  echo "  odw run hello --dry                 # watch it run, every agent stubbed: \$0"
+  echo "  odw serve --open                    # the dashboard"
+else
+  echo "  odw run <workflow.js> --wait        # run your first workflow"
+fi
 echo "  or just ask your agent: \"use Open Dynamic Workflows to …\" — it picked up the skill"

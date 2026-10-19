@@ -10,7 +10,8 @@
  * events, `failureReason` on the dashboard's agents. A model the CLI does not
  * know, has retired, or will not give this account (`model_unavailable`) is
  * never retried either: like a spent quota or a refused login, it moves the
- * call down its fallback chain.
+ * call down its fallback chain. A lost connection (`network`, an ODW extension)
+ * is ridden out like a rate limit: a laptop's Wi-Fi coming back is a wait.
  *
  * The wording each CLI is known to print lives in one table,
  * {@link FAILURE_PATTERNS}. An adapter can add its own wording for the classes
@@ -45,6 +46,12 @@ export type FailureReason =
   | "rate_limit"
   /** A usage window, credit balance or plan limit is spent: wait for the reset. */
   | "quota"
+  /**
+   * The connection to the model's API was lost or never made (a dropped
+   * Wi-Fi, a DNS failure, a reset stream): retried after a backoff, like a
+   * rate limit (ODW extension).
+   */
+  | "network"
   /** Not logged in, or the credentials were refused. */
   | "auth"
   /** The model asked for is unknown to the CLI, retired, or not available to this account: not retried. */
@@ -90,25 +97,26 @@ export type FailureReason =
   | "model_substituted";
 
 /** The classes an adapter's `failures` config may add patterns to. */
-export const CONFIGURABLE_REASONS = ["rate_limit", "quota", "auth", "model_unavailable"] as const;
+export const CONFIGURABLE_REASONS = ["rate_limit", "quota", "auth", "model_unavailable", "network"] as const;
 
 /** The classes read from output text. */
-type TextReason = "quota" | "model_unavailable" | "auth" | "rate_limit" | "permission";
+type TextReason = "quota" | "model_unavailable" | "auth" | "rate_limit" | "network" | "permission";
 
 // Precedence, first match wins. Quota before rate_limit: a spent quota usually
 // arrives as an HTTP 429 that also says "rate limit" or "too many requests".
 // Quota before auth: a spent quota also arrives as a 401 or 403. Quota before
 // model_unavailable: a model's spent quota says "switch to another model";
 // model_unavailable before auth: a model the account may not use says
-// "you may not have access to it", sometimes as a 403.
-const TEXT_ORDER: readonly TextReason[] = ["quota", "model_unavailable", "auth", "rate_limit", "permission"];
+// "you may not have access to it", sometimes as a 403. Rate limit before
+// network: a throttled request is sometimes also cut off mid-stream.
+const TEXT_ORDER: readonly TextReason[] = ["quota", "model_unavailable", "auth", "rate_limit", "network", "permission"];
 
 /**
  * The classes that count only in the final lines of a run's output: each
  * moves the call on (a retry, a fallback), and an agent's own transcript — a
  * test hitting an API, a repo's error strings — lands in the same streams.
  */
-const FINAL_LINES_ONLY: ReadonlySet<TextReason> = new Set(["rate_limit", "model_unavailable"]);
+const FINAL_LINES_ONLY: ReadonlySet<TextReason> = new Set(["rate_limit", "model_unavailable", "network"]);
 
 /**
  * The wording that marks each class, per CLI (and the model APIs they relay),
@@ -228,6 +236,24 @@ export const FAILURE_PATTERNS: Readonly<Record<TextReason, readonly RegExp[]>> =
     // AWS Bedrock; Kilo's gateway while a top-up settles.
     /\bThrottlingException\b|\btop-up is processing\b/i,
   ],
+  network: [
+    // Node's socket and DNS errors, as the Node-based CLIs (Claude Code,
+    // Gemini, Qwen, OpenCode) relay them: "ECONNRESET", "getaddrinfo ENOTFOUND
+    // api.anthropic.com", "EAI_AGAIN", undici's "TypeError: fetch failed" and
+    // "UND_ERR_SOCKET", "socket hang up".
+    /\b(?:ECONNRESET|ECONNREFUSED|ECONNABORTED|ENOTFOUND|EAI_AGAIN|ETIMEDOUT|ENETUNREACH|ENETDOWN|EHOSTUNREACH)\b/,
+    /\bfetch failed\b|\bUND_ERR_(?:SOCKET|CONNECT_TIMEOUT|HEADERS_TIMEOUT|BODY_TIMEOUT)\b|\bsocket hang up\b/i,
+    // "network error", "NetworkError", "Network request failed", "network is unreachable".
+    /\bnetwork[ _]?error\b|\bnetwork request failed\b|\bnetwork is (?:unreachable|down)\b/i,
+    // The Anthropic SDK's APIConnectionError, as Claude Code prints it: "API Error: Connection error."
+    /\bAPI ?Connection(?:Timeout)?Error\b|\bAPI Error\W{0,3}Connection error\b/i,
+    // Codex (Rust): "error sending request for url (…)", "Connection reset by
+    // peer (os error 104)", "dns error: failed to lookup address information",
+    // "Temporary failure in name resolution". Its bare "stream disconnected
+    // before completion" says only that the turn ended early: not by itself.
+    /\berror sending request for url\b/i,
+    /\bconnection (?:reset by peer|refused \(os error)|\bfailed to lookup address information\b|\btemporary failure in name resolution\b/i,
+  ],
   permission: [
     // Codex: an MCP tool call that needed an approval exec mode cannot give.
     /\buser cancell?ed MCP tool call\b|\bMCP tool call cancell?ed\b|\binteractive approval is unavailable\b/i,
@@ -322,8 +348,8 @@ const ERROR_REPLY =
 const ERROR_REPLY_MAX_CHARS = 1000;
 
 /**
- * A clean exit whose whole reply is the CLI's own rate-limit, quota, login or
- * unknown-model error — classified like a failure — or null for a real reply. Anchored at the
+ * A clean exit whose whole reply is the CLI's own rate-limit, quota, login,
+ * connection or unknown-model error — classified like a failure — or null for a real reply. Anchored at the
  * start and short, so an answer that merely discusses such errors stays one.
  */
 export function classifyErrorReply(reply: string, options: ClassifyOptions = {}): FailureClass | null {
@@ -331,7 +357,9 @@ export function classifyErrorReply(reply: string, options: ClassifyOptions = {})
   if (text === "" || text.length > ERROR_REPLY_MAX_CHARS || !ERROR_REPLY.test(text)) return null;
   const verdict = classifyFailure({ returncode: 1, stdout: text, stderr: "", timedOut: false, duration: 0 }, options);
   const { reason } = verdict;
-  return reason === "rate_limit" || reason === "quota" || reason === "auth" || reason === "model_unavailable" ? verdict : null;
+  return reason === "rate_limit" || reason === "quota" || reason === "auth" || reason === "model_unavailable" || reason === "network"
+    ? verdict
+    : null;
 }
 
 function compileOwn(own: AdapterFailures | undefined): Partial<Record<TextReason, RegExp[]>> | undefined {

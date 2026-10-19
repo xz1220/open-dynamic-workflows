@@ -264,7 +264,7 @@ function reviewTicket(n: number, risk: string): string {
   );
 }
 
-/** First run: three steps from a fresh install to a live graph on this page. */
+/** First run: three steps from a fresh install to a live graph on this page — the first two for $0. */
 function gettingStarted(): string {
   const step = (n: string, title: string, cmd: string, note: string) =>
     `<li class="gs-step"><span class="ix">${n}</span><div><h4>${esc(title)}</h4>` +
@@ -274,8 +274,8 @@ function gettingStarted(): string {
     `<section class="card pulse marked gs" data-key="pulse">` +
     `<div class="pulse-head"><h3>${t("Get started")}</h3><span class="eyebrow">${t("three steps to a live graph")}</span></div>` +
     `<ol class="gs-steps">` +
-    step("01", t("Check the setup"), "odw doctor --smoke", t("Runtime, config and every adapter — plus one real prompt to the default.")) +
-    step("02", t("Run an example"), "odw run examples/fan-out-reduce.js --args '{\"question\":\"Design a rate limiter\"}'", t("Four drafts in parallel, then a synthesis. Watch it draw here.")) +
+    step("01", t("Start from a template"), "odw new hello", t("Writes .odw/workflows/hello.js and a starter test — no model called.")) +
+    step("02", t("Watch it run, for $0"), "odw run hello --dry", t("Every agent stubbed: it draws here, and nothing is spent.")) +
     step("03", t("Hand it to your agent"), "odw run <name> --wait", t("With the ODW skill installed, your coding agent writes and runs workflows for you.")) +
     `</ol></section>`
   );

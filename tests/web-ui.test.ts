@@ -758,6 +758,37 @@ test("a run waiting out a spent quota says until when, and offers to go on now",
   store.focusRun(null);
 });
 
+test("a run whose disk filled up (ODW extension) says so on its page and in the run list, with what to do", () => {
+  const view: JobViewState = {
+    cpNote: "",
+    tab: "graph",
+    selectedAi: null,
+    reviewAi: null,
+    zoom: 1,
+    logQuery: "",
+    logTypes: new Set(["agent"]),
+    logLimit: 600,
+    follow: true,
+    motion: false,
+  };
+  store.focusRun("20260101-000000-aaaaaa");
+  store.run = detail([agent("fill", "Search", "done", { agentId: 1 })], { state: "failed", failureReason: "disk_full" });
+  const html = renderJob(view, NOW);
+  assert.match(html, /<section class="card dfull"/);
+  assert.match(html, /The disk filled up under this run/);
+  assert.match(html, /odw gc lists old runs/);
+  assert.match(html, /<section class="card dfull"[\s\S]*?data-copy="odw resume 20260101-000000-aaaaaa"[\s\S]*?<\/section>/, "the card offers the resume command");
+  store.run = detail([agent("fill", "Search", "done", { agentId: 1 })], { state: "failed" });
+  assert.doesNotMatch(renderJob(view, NOW), /class="card dfull"/, "any other failure has no such card");
+  const prev = store.runs;
+  store.runs = [summary({ runId: "r-d", name: "nightly", state: "failed", failureReason: "disk_full" }), summary({ runId: "r-f", name: "other", state: "failed" })];
+  const list = renderJobs({ filter: "all", query: "", limit: 100 }, NOW);
+  assert.match(list, /data-run="r-d"[\s\S]*?<span class="pill s-failed">[\s\S]*?<span>failed — disk full<\/span>/);
+  assert.match(list, /data-run="r-f"[\s\S]*?<span class="pill s-failed">[\s\S]*?<span>failed<\/span>/);
+  store.runs = prev;
+  store.focusRun(null);
+});
+
 test("spend: phases in declared order with outsiders last, shares of cost, top spenders, and nothing before any usage", () => {
   const u = (inputTokens: number, outputTokens: number, costUsd?: number) => ({ inputTokens, outputTokens, ...(costUsd != null ? { costUsd } : {}) });
   const run = detail([
@@ -1745,4 +1776,51 @@ test("compact layout (ODW extension): the URL turns it on and off; the run list 
   assert.match(bar, /<a class="compact-back" href="#\/compact"/);
   assert.match(bar, /href="#\/job\/cc-wf_live\?compact=0">Full dashboard</);
   assert.doesNotMatch(compactBar({ view: "jobs", param: null }, "live"), /compact-back/);
+});
+
+test("activity: with no run yet, Get started leads with the first run for $0 — no paid smoke prompt", () => {
+  const prev = { runs: store.runs, loaded: store.runsLoaded };
+  store.runs = [];
+  store.runsLoaded = true;
+  try {
+    const html = renderActivity(NOW);
+    assert.match(html, /class="card pulse marked gs"/);
+    assert.match(html, /data-copy="odw new hello"[\s\S]*data-copy="odw run hello --dry"/);
+    assert.doesNotMatch(html, /doctor --smoke|examples\/fan-out-reduce/);
+  } finally {
+    store.runs = prev.runs;
+    store.runsLoaded = prev.loaded;
+  }
+});
+
+test("sleep, network loss and a CLI updated mid-run (ODW extension): a lost connection is a warn reason; the host's sleep and the CLI's new version are log lines", () => {
+  const view: JobViewState = {
+    cpNote: "",
+    tab: "graph",
+    selectedAi: 0,
+    reviewAi: null,
+    zoom: 1,
+    logQuery: "",
+    logTypes: new Set(["agent", "phase", "log", "run"]),
+    logLimit: 600,
+    follow: true,
+    motion: false,
+  };
+  store.focusRun("20260101-000000-aaaaaa");
+  store.runEvents = [];
+  store.run = detail([agent("fetch", "Plan", "failed", { adapter: "claude", failureReason: "network", error: "API Error: Connection error." })]);
+  let html = renderJob(view, NOW);
+  assert.match(html, /<span class="k">reason<\/span><span class="v"><span class="tag warn">connection lost<\/span>/);
+  assert.equal(reasonLabel("network"), "connection lost");
+
+  view.tab = "logs";
+  store.run = detail([]);
+  store.runEvents = [
+    { ts: NOW - 20, type: "host_suspended", sleptSeconds: 3600, message: "the host was asleep for about 1h — every agent's stall timer starts over" },
+    { ts: NOW - 10, type: "cli_version_changed", adapter: "claude", command: "claude", from: "2.1.0 (Claude Code)", to: "2.2.0 <new>", message: "m" },
+  ];
+  html = renderJob(view, NOW);
+  assert.match(html, /<span class="evt log">HOST_SUSPENDED<\/span><\/span><span class="msg">the host was asleep for about 1h — every agent&#39;s stall timer starts over<\/span>/);
+  assert.match(html, /<span class="evt log">CLI_VERSION_CHANGED<\/span><\/span><span class="msg"><b>claude<\/b> 2\.1\.0 \(Claude Code\) → <span class="er">2\.2\.0 &lt;new&gt;<\/span><\/span>/);
+  store.focusRun(null);
 });

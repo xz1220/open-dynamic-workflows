@@ -240,9 +240,9 @@ did-you-mean hint) instead of silently ignoring them.
 | `concurrency` | max agent CLIs running at once; omit for auto (`min(16, cpus-2)`) |
 | `maxAgents` | hard cap on total dispatches per run (runaway guard) |
 | `timeout` | per-agent CLI timeout in seconds |
-| `stallTimeout` | **ODW extension.** Seconds an agent may print nothing on stdout or stderr before it is killed (like a timeout) and restarted with the same prompt; `null` (default) = off. Off for every built-in because some CLIs (the text-mode `gemini`, `qwen`, `kimi`) print nothing until they finish — enable it for adapters that stream progress: `claude` (stream-json, an event per turn), `codex` (`exec --json`, an event per item), `kilo`, `opencode`, with a value above the longest single tool call |
+| `stallTimeout` | **ODW extension.** Seconds an agent may print nothing on stdout or stderr before it is killed (like a timeout) and restarted with the same prompt; `null` (default) = off. Off for every built-in because some CLIs (the text-mode `gemini`, `qwen`, `kimi`) print nothing until they finish — enable it for adapters that stream progress: `claude` (stream-json, an event per turn), `codex` (`exec --json`, an event per item), `kilo`, `opencode`, with a value above the longest single tool call. Silence is counted on the monotonic clock, and a host that slept (a closed lid; a wall-clock jump of more than a minute) starts every agent's silence over, logged once as a `host_suspended` event — a wake-up is not a stall |
 | `stallRestarts` | restarts per `agent()` call after a stall before the call fails with a "stalled" error (default 1) |
-| `transientRetries` | **ODW extension.** Retries per `agent()` call after its CLI hit a rate limit (429/529, overloaded), each after an exponential backoff that honors a retry-after the CLI printed (default 3; `0` = never). A spent quota or a failed login is never retried: its error says what to do |
+| `transientRetries` | **ODW extension.** Retries per `agent()` call after its CLI hit a rate limit (429/529, overloaded), each after an exponential backoff that honors a retry-after the CLI printed (default 3; `0` = never) — and, on a count of its own, after a lost connection (`network`: `ECONNRESET`, `ENOTFOUND`, "fetch failed", "API Error: Connection error.", …). A spent quota or a failed login is never retried: its error says what to do |
 | `maxBackoff` | the longest single backoff wait, in seconds (default 300); a CLI that asks to wait longer is not retried early |
 | `schemaRetries` | extra attempts when a schema fails to validate |
 | `runsRoot` | where runs are stored (default `~/.odw/runs`) |
@@ -310,7 +310,7 @@ did-you-mean hint) instead of silently ignoring them.
 | `promptCache` | **ODW extension.** `true`: this CLI's model API caches a prompt's prefix, so its fan-outs start staggered (see `staggerFanOut`). The built-in `claude` declares it |
 | `label` | human-friendly name for progress display |
 | `flags` | capability declaration, e.g. `{ "model": ["--model"] }` — the native flag that carries a per-call `model`. Without it, `agent(..., { model })` is not honored for this adapter (a routing note appears in the logs). **ODW extension:** `"schema": { "args": [...], "mode": "inline" \| "file", "strict"?: true, "objectRoot"?: true }` says the CLI validates a call's JSON Schema itself — see [native structured output](#native-structured-output) |
-| `failures` | **ODW extension.** This CLI's own failure wording: `{ "rate_limit": [...], "quota": [...], "auth": [...], "model_unavailable": [...] }`, regular expressions matched case-insensitively against the end of a failed run's output before the built-in table |
+| `failures` | **ODW extension.** This CLI's own failure wording: `{ "rate_limit": [...], "quota": [...], "auth": [...], "model_unavailable": [...], "network": [...] }`, regular expressions matched case-insensitively against the end of a failed run's output before the built-in table |
 | `output` | how stdout becomes the reply (default: trimmed text) — see below |
 | `permissionArgs` | **ODW extension.** Each tier's flags: `{ "read"?: [...], "edit": [...], "full"?: [...] }` (`edit` required, `[]` for none), put where the command has a `{permission_args}` element — which it must have exactly when this is set |
 | `permissions` | **ODW extension.** Caps this adapter's tier below the run's: its agents get the lower of the two |
@@ -517,8 +517,8 @@ Expanded in `command` and `stdin` before each call:
 A CLI fits as long as it reads a prompt (via stdin or an argument) and prints its
 reply to stdout. Non-zero exit, a timeout, or a missing executable surface as a
 failed agent call, classified as `rate_limit`, `quota`, `auth`, `timeout`,
-`stalled`, `not_found`, `permission` or `exit` (the `reason` on its
-`agent_failed` event; only `rate_limit` is retried — see `transientRetries`).
+`stalled`, `not_found`, `permission`, `network` or `exit` (the `reason` on its
+`agent_failed` event; only `rate_limit` and `network` are retried — see `transientRetries`).
 So does a failure the CLI reports in its output (`errorPath`: Claude Code's
 stream-json `is_error` result, often with exit 0, and agy's result `error`; `errorEvents`:
 Codex's `turn.failed` and `error`), and a clean exit whose short

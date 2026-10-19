@@ -134,6 +134,14 @@ export function isDeadlineStop(reason: unknown): boolean {
   return reason instanceof DeadlinePassed;
 }
 
+/**
+ * The disk under the run directory filled up (ENOSPC, or a quota's EDQUOT;
+ * ODW extension): the run cannot record its progress, so it stops — its
+ * agents killed, as for any fatal error — and fails with `failureReason:
+ * "disk_full"`.
+ */
+export class DiskFull extends DynamicWorkflowError {}
+
 /** A 1-based line and column in a workflow script's source. */
 export interface SourceLocation {
   line: number;
@@ -167,6 +175,7 @@ export function isFatalError(error: unknown): boolean {
     error instanceof AgentLimitExceeded ||
     error instanceof RunStopped ||
     error instanceof BudgetExhausted ||
+    error instanceof DiskFull ||
     error instanceof ConfigError
   );
 }

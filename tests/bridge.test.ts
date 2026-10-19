@@ -537,6 +537,48 @@ test("rate-limit retries stop at transientRetries; the error counts them", async
   }
 });
 
+test("a lost connection (ODW extension) is ridden out like a rate limit, on a count of its own; the error says so", async () => {
+  const OFFLINE = "API Error: Connection error.";
+  // Two drops and a rate limit in one call: each class has its own transientRetries.
+  const replies = [failing(OFFLINE), failing(RATE_LIMITED), failing("Error: getaddrinfo ENOTFOUND api.anthropic.com"), ok("back")];
+  const failed: string[] = [];
+  const cfg = inplaceConfig();
+  cfg.settings.transientRetries = 2;
+  const slept: number[] = [];
+  const bridge = new Bridge(cfg, {
+    runner: async () => replies.shift()!,
+    sleep: async (ms) => void slept.push(ms),
+    random: () => 0,
+    onCliFailed: (adapter, reason) => failed.push(`${adapter.name}:${reason}`),
+  });
+  const waits: RateLimitRetry[] = [];
+  const out = await bridge.run({ prompt: "x" }, { onRateLimit: (retry) => waits.push(retry) });
+  assert.equal(out.text, "back");
+  assert.deepEqual(waits, [
+    { adapter: "claude", reason: "network", waitSeconds: 15, retry: 1, maxRetries: 2 },
+    { adapter: "claude", waitSeconds: 15, retry: 1, maxRetries: 2 },
+    { adapter: "claude", reason: "network", waitSeconds: 30, retry: 2, maxRetries: 2 },
+  ]);
+  assert.deepEqual(slept, [15_000, 15_000, 30_000]);
+  assert.deepEqual(failed, ["claude:network", "claude:rate_limit", "claude:network"], "each failed CLI run is told");
+
+  // Still offline after its retries: a network failure that says what to do.
+  let calls = 0;
+  const { bridge: offline } = backoffBridge(async () => {
+    calls++;
+    return failing("TypeError: fetch failed");
+  });
+  await assert.rejects(
+    () => offline.run({ prompt: "x" }),
+    (err: AdapterExecutionError) =>
+      err.reason === "network" &&
+      err.message.startsWith(
+        "adapter 'claude' lost its connection to the model's API and could not reconnect after 3 retries — check the network and resume the run",
+      ),
+  );
+  assert.equal(calls, 4);
+});
+
 test("rate-limit retries are capped per call, across schema attempts", async () => {
   const replies = [failing(RATE_LIMITED), ok("not json"), failing(RATE_LIMITED), ok('{"n":1}')];
   const cfg = inplaceConfig();

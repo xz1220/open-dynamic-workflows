@@ -132,7 +132,7 @@ function seed(box: Box) {
   fakeRun(box, "fixer", "failed", UNTIL - DAY, [], { meta: { origin: "eval" } });
   fakeRun(box, "fixer", "done", UNTIL - DAY, [started(0, "resolve", "claude"), finished(0, "resolve", "claude", { usage: usage(9, 9000) })], { meta: { origin: "apply-resolve" } });
   fakeRun(box, "fixer", "done", UNTIL - DAY, [], { meta: { origin: "test" } });
-  fakeRun(box, "fixer", "running", UNTIL - DAY, [started(0, "fix", "claude")], { status: { pid: process.pid } });
+  fakeRun(box, "fixer", "running", UNTIL - DAY, [started(0, "fix", "claude")], { status: { pid: process.pid, updatedAt: Date.now() / 1000 } }); // a live worker wrote it since this boot
   return { fixer, timeout, docs, crashed, replay, stale, before };
 }
 
