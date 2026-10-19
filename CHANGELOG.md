@@ -685,6 +685,18 @@ independent security reviews whose findings are all fixed.
 ### Use the CLI and the dashboard
 - `odw run` attaches a live foreground view in interactive terminals (Ctrl-C detaches;
   `odw attach` re-attaches); pipes and CI keep the fire-and-poll contract.
+- Watch runs where you already are (**ODW extension**): `odw status|logs|attach` take
+  Claude Code's own workflow runs (`cc-…` ids), read-only, from the store the dashboard
+  reads — `odw logs <cc-…> --agent <id|label> [--raw] [--follow]` tails one of its agents'
+  `agent-<id>.jsonl` transcripts, rendered like an ODW agent's. `odw tmux <run> [--layout
+  tiled] [--max-panes 6]` opens a tmux window whose overview pane follows the run and
+  opens a pane per agent as it starts (`odw logs … --agent … --follow`, kept after it
+  ends; the ones past the cap are listed); outside tmux it prints the `tmux new-session`
+  command, without tmux the commands to run by hand. The dashboard's compact layout
+  (`#/compact`, `?compact=1`, or `?compact` after a route) drops the rail for a narrow IDE
+  panel — a run list with live status, a slim bar back from a run; the README has the VS
+  Code / JetBrains / Antigravity recipe. A live Claude Code run's agents now carry the
+  labels and phases its journal gives them.
 - First-run onboarding: `odw init` picks the default agent CLI; `odw doctor [--smoke]`
   checks the runtime, config and every adapter — `--smoke` sends one real prompt.
 - `odw new [<template>] [--name N] [--force] [--yes]` (**ODW extension**): a workflow

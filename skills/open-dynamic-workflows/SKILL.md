@@ -251,6 +251,10 @@ RUN=$(odw run wf.js)        # prints a run id and returns immediately
 odw status $RUN             # state, agent count, tokens and cost (by phase: ODW extension)
 odw logs $RUN --follow      # stream progress events
 odw logs $RUN --agent 3     # what one agent did: tool calls, results, errors (ODW extension)
+odw status|logs|attach cc-… # Claude Code's own workflow runs too, read-only — logs --agent <id|label>
+                            #   --follow tails one of its agents (ODW extension)
+odw tmux $RUN               # a tmux window: the run's events + a pane per running agent (ODW extension;
+                            #   --layout tiled, --max-panes 6; prints the commands when not in tmux)
 odw export $RUN --otlp      # the run as OpenTelemetry traces, OTLP/JSON — --send posts it (ODW extension)
 odw bundle $RUN             # the run as one redacted file to share, $RUN.odwrun; odw view FILE shows it
                             #   read-only (ODW extension; --no-transcripts, --out FILE, --max-bytes N)

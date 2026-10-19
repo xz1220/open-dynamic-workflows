@@ -208,6 +208,10 @@ RUN=$(odw run wf.js)        # 打印一个 run id 后立即返回
 odw status $RUN             # 状态、agent 计数、token 与花费（按阶段：ODW 扩展）
 odw logs $RUN --follow      # 流式输出进度事件
 odw logs $RUN --agent 3     # 某个 agent 做了什么：工具调用、结果、错误（ODW 扩展）
+odw status|logs|attach cc-… # Claude Code 自己的工作流运行也能看，只读——logs --agent <id|label>
+                            #   --follow 跟随其中一个 agent（ODW 扩展）
+odw tmux $RUN               # 一个 tmux 窗口：运行事件 + 每个运行中 agent 一个窗格（ODW 扩展；
+                            #   --layout tiled、--max-panes 6；不在 tmux 里时打印命令）
 odw export $RUN --otlp      # 把运行导出为 OpenTelemetry trace（OTLP/JSON）——--send 直接发送（ODW 扩展）
 odw bundle $RUN             # 把运行写成一个可分享的脱敏文件 $RUN.odwrun；odw view FILE 只读查看
                             #   （ODW 扩展；--no-transcripts、--out FILE、--max-bytes N）

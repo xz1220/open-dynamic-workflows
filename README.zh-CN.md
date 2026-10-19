@@ -1133,6 +1133,37 @@ I'll run the tests first.
   `{ i, kind: text|tool_call|tool_result|error|attempt|result|raw|truncated, text?, tool?, input?, output?, isError? }`,
   长字段截断到 4 KB(`clipped: true`),有密钥被拦下的条目带 `redacted: true`。
 
+### 在终端、tmux 和 IDE 里看运行(ODW 扩展)
+
+看板是一种看法;终端、tmux 窗口和 IDE 面板是另外几种——ODW 自己的运行如此,
+**Claude Code 自己的工作流运行**(`cc-…` id,即其 Workflow 工具启动的运行;看板的 Jobs 列表里也有)也一样:
+
+```bash
+odw status cc-wf_0da91623-31d                         # 状态与 agent:label、阶段、状态、Claude 的 agent id
+odw logs cc-wf_0da91623-31d --follow                  # 事件实时打印,直到运行结束
+odw logs cc-wf_0da91623-31d --agent find:engine-store --follow   # 某个 agent 的 transcript(按 label 或 id)
+odw attach cc-wf_0da91623-31d                         # 等同 logs --follow,外加一行抬头
+odw tmux $RUN                                         # 一个 tmux 窗口:运行概览,外加每个运行中 agent 一个窗格
+```
+
+- Claude Code 的运行从 `~/.claude/projects` 下它自己的存储读取(遵循 `CLAUDE_CONFIG_DIR`),覆盖所有项目,
+  **只读**:停止或回答它仍在 Claude Code 里完成。其 agent 的 `agent-<id>.jsonl` transcript 渲染方式与 ODW
+  agent 相同(`▸` 工具调用、`✓/✗` 结果、正文、thinking);`--raw` 按原样打印各行。Claude Code 可能清理它的
+  transcript——运行消失时会明确说明。
+- `odw tmux <run> [--layout tiled|even-horizontal|even-vertical|main-horizontal|main-vertical] [--max-panes 6]`
+  在当前 tmux 会话里开一个窗口。第一个窗格是概览:打印运行的事件,并在每个 agent 开始时为它开一个窗格
+  (`odw logs <run> --agent <id> --follow`),最多 `--max-panes` 个;超出的只在概览里列出跟随它的命令。
+  agent 结束后窗格保留(tmux 的 `remain-on-exit`),最后几行之下标明它如何结束。ODW 与 `cc-` 运行都支持。
+- 不在 tmux 里时,打印能做到同样效果的 `tmux new-session …` 命令;没装 tmux 时,打印可以手动运行的
+  `odw attach` 与 `odw logs --agent … --follow` 命令。只驱动 tmux,不支持其他终端复用器。
+
+**在 VS Code、JetBrains 或 Antigravity 里。** 运行 `odw serve`,然后在 IDE 自带的浏览器面板中打开
+`http://127.0.0.1:4317/#/compact`——VS Code:命令面板里的 *Simple Browser: Show*;JetBrains:
+*Tools → Web Browsers*(或任意内置浏览器视图)。紧凑布局去掉侧栏:一个运行列表,显示每个运行的实时状态
+(运行中的在前,Claude Code 的运行标 `CC`),点开某个运行后顶部有一条细栏可以返回列表。页面 URL 上的
+`?compact=1`,或任意路由后的 `?compact`(`#/job/<id>?compact`)同样开启;之后导航时保持开启,
+点 *完整看板*(`?compact=0`)关闭。
+
 ### 对比两次运行(ODW 扩展)
 
 改了提示词、换了适配器或模型、升级了 CLI 之后重跑了工作流?`odw compare` 告诉你变了什么:

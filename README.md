@@ -1313,6 +1313,43 @@ I'll run the tests first.
   long fields clipped to 4 KB (`clipped: true`), and `redacted: true` on one a secret
   was kept out of.
 
+### Watch runs in a terminal, tmux or your IDE (ODW extension)
+
+The dashboard is one way to watch; a terminal, a tmux window and an IDE panel are the
+others — for ODW's runs and for **Claude Code's own workflow runs** (`cc-…` ids, the ones
+its Workflow tool starts; the dashboard's Jobs list shows them):
+
+```bash
+odw status cc-wf_0da91623-31d                         # its state and agents: label, phase, state, Claude's agent id
+odw logs cc-wf_0da91623-31d --follow                  # its events as they come, until it ends
+odw logs cc-wf_0da91623-31d --agent find:engine-store --follow   # one agent's transcript (by label or id)
+odw attach cc-wf_0da91623-31d                         # the same as logs --follow, under a header
+odw tmux $RUN                                         # a tmux window: the run, and a pane per running agent
+```
+
+- A Claude Code run is read from its store under `~/.claude/projects` (`CLAUDE_CONFIG_DIR`
+  honored), every project's, **read-only**: stopping it or answering it stays in Claude
+  Code. Its agents' `agent-<id>.jsonl` transcripts read like an ODW agent's (`▸` tool
+  calls, `✓/✗` results, text, thinking); `--raw` prints the lines as kept. Claude Code
+  may clean its transcripts up — a run that vanished says so.
+- `odw tmux <run> [--layout tiled|even-horizontal|even-vertical|main-horizontal|main-vertical] [--max-panes 6]`
+  opens one window inside your tmux session. Its first pane is the overview: the run's
+  events, and a pane opened for each agent as it starts (`odw logs <run> --agent <id> --follow`),
+  up to `--max-panes`; past the cap it lists the command that follows each of the others.
+  A pane whose agent settled stays (tmux's `remain-on-exit`), its last lines under how it
+  ended. ODW and `cc-` runs alike.
+- Outside tmux it prints the `tmux new-session …` command that does the same; without
+  tmux, the `odw attach` and `odw logs --agent … --follow` commands to run by hand. Only
+  tmux is driven — no other terminal multiplexer.
+
+**In VS Code, JetBrains or Antigravity.** Run `odw serve`, then open
+`http://127.0.0.1:4317/#/compact` in the IDE's own browser panel — VS Code: *Simple Browser:
+Show* from the command palette; JetBrains: *Tools → Web Browsers* (or any built-in
+browser view). The compact layout drops the rail: a run list with each run's live state
+(live runs first, Claude Code's tagged `CC`), and a run opens under a slim bar back to the
+list. `?compact=1` on the page URL or `?compact` after any route (`#/job/<id>?compact`)
+turns it on too; it stays on as you navigate, and *Full dashboard* (`?compact=0`) turns it off.
+
 ### Compare two runs (ODW extension)
 
 Re-ran a workflow after editing a prompt, switching adapter or model, or upgrading a
