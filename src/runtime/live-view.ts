@@ -138,6 +138,8 @@ export function formatEvent(ev: WorkflowEvent): string {
   else if (type === "cli_version") {
     detail = `${sanitizeText(ev.adapter, 40)}: ${sanitizeText(ev.version ?? `unknown (${String(ev.error ?? "?")})`, 160)}`;
   }
+  // A CLI updated under the run; the host asleep, the stall timers started over (ODW extensions).
+  else if (type === "cli_version_changed" || type === "host_suspended") detail = sanitizeText(ev.message, 400);
   // A note on the run's notes board (ODW extension; see ../notes).
   else if (type === "note_added") {
     const by = ev.by as { agentId?: unknown; label?: unknown } | undefined;
@@ -365,6 +367,7 @@ function reasonText(reason: string | undefined): string | null {
   if (!reason || reason === "exit") return null;
   const words: Record<string, string> = {
     rate_limit: "rate limited",
+    network: "lost its connection",
     quota: "out of quota",
     auth: "not logged in",
     timeout: "timed out",

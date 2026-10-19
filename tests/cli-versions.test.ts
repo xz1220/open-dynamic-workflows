@@ -15,6 +15,8 @@ import { VERSION } from "../src/index.js";
 import {
   adapterFingerprint,
   CliVersions,
+  MIN_REPROBE_MS,
+  REPROBE_MS,
   runSetup,
   versionOf,
   versionProbe,
@@ -328,5 +330,123 @@ test("recordVersions loads, defaults to true, and rejects a non-boolean", () => 
     assert.equal(loadConfig(join(process.cwd(), "odw.config.example.json"), { quiet: true }).settings.recordVersions, true);
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a CLI updated mid-run (ODW extension): asked again after REPROBE_MS, or at once after an odd failure; a new version is a cli_version_changed", async () => {
+  const events: WorkflowEvent[] = [];
+  const calls: string[][] = [];
+  let version = "1.0.0";
+  let clock = 0;
+  const versions = new CliVersions({
+    emit: (ev) => events.push(ev),
+    settings: { agentEnv: "inherit", agentEnvPass: [] },
+    runner: async (command) => {
+      calls.push(command);
+      return version === "gone"
+        ? cli({ returncode: 127, stderr: "failed to launch 'claude': spawn claude ENOENT" })
+        : cli({ stdout: `${version} (Claude Code)\n` });
+    },
+    now: () => clock,
+  });
+  const claude = adapter("claude", ["claude", "-p"]);
+  const settle = () => new Promise((r) => setImmediate(r));
+  versions.note(claude);
+  await settle();
+  // Within REPROBE_MS, a dispatch asks nothing; nor does a failure that is no sign of an update.
+  clock += REPROBE_MS - 1;
+  versions.note(claude);
+  versions.failed(claude, "rate_limit");
+  versions.failed(claude, "timeout");
+  assert.equal(calls.length, 1);
+  // Past it, the next dispatch asks again: the same version says nothing.
+  clock += 1;
+  versions.note(claude);
+  await settle();
+  assert.equal(calls.length, 2);
+  assert.deepEqual(events.map((e) => e.type), ["cli_version"]);
+
+  // Updated under the run: an odd failure has it asked at once, and the change is told.
+  version = "1.1.0";
+  versions.failed(claude, "exit");
+  await settle();
+  assert.equal(calls.length, 3);
+  assert.deepEqual(
+    { ...events.at(-1)!, ts: 0 },
+    {
+      ts: 0,
+      type: "cli_version_changed",
+      adapter: "claude",
+      command: "claude",
+      from: "1.0.0 (Claude Code)",
+      to: "1.1.0 (Claude Code)",
+      message:
+        "adapter 'claude' CLI changed version mid-run: 1.0.0 (Claude Code) → 1.1.0 (Claude Code) — " +
+        "its agents from here on run on the new one (the run goes on)",
+    },
+  );
+  // A fan-out failing together asks once a MIN_REPROBE_MS.
+  versions.failed(claude, "exit");
+  versions.failed(claude, "not_found");
+  assert.equal(calls.length, 3);
+  // A binary gone mid-update records nothing and keeps the version it knew …
+  clock += MIN_REPROBE_MS;
+  version = "gone";
+  versions.failed(claude, "not_found");
+  await settle();
+  assert.equal(calls.length, 4);
+  assert.equal(events.length, 2);
+  // … so the next answer is compared with that one.
+  clock += REPROBE_MS;
+  version = "1.2.0";
+  versions.note(claude);
+  await settle();
+  assert.deepEqual([events.length, events.at(-1)!.from, events.at(-1)!.to], [3, "1.1.0 (Claude Code)", "1.2.0 (Claude Code)"]);
+  // Closed: nothing more.
+  versions.close();
+  clock += REPROBE_MS;
+  versions.note(claude);
+  versions.failed(claude, "exit");
+  assert.equal(calls.length, 5);
+});
+
+test("a run whose CLI was updated under it records the change and goes on", posix, async () => {
+  const box = sandbox();
+  try {
+    const r = box.root;
+    writeFileSync(join(r, "ver"), "1.0.0\n");
+    const waitFor = (file: string) => `i=0; while [ ! -f '${join(r, file)}' ] && [ $i -lt 150 ]; do sleep 0.02; i=$((i+1)); done`;
+    fakeCli(
+      box.bin,
+      "upcli",
+      [
+        `if [ "$1" = "--version" ]; then echo "upcli $(cat '${join(r, "ver")}')"; n=$(ls '${r}' | grep -c '^probe\\.'); touch '${r}/probe.'$n; exit 0; fi`,
+        "cat > /dev/null",
+        waitFor("probe.0"),
+        // The first agent: the CLI is updated under it, and it dies oddly.
+        `if [ ! -f '${join(r, "failed")}' ]; then sleep 0.2; echo 2.0.0 > '${join(r, "ver")}'; touch '${join(r, "failed")}'; echo boom >&2; exit 1; fi`,
+        // The next: once the CLI was asked again.
+        waitFor("probe.1"),
+        "sleep 0.3; echo ok",
+      ].join("\n"),
+    );
+    const { store, id } = launch(
+      r,
+      { up: { command: ["upcli"], stdin: "{prompt}" } },
+      "let first = null\ntry { await agent('x', { adapter: 'up' }) } catch (e) { first = 'failed' }\nreturn [first, await agent('y', { adapter: 'up' })]\n",
+    );
+    assert.equal(await executeRun(store.runDir(id)), "done");
+    assert.deepEqual(store.readResult(id), ["failed", "ok"]);
+    const events = store.readEvents(id);
+    assert.deepEqual(
+      versionEvents(events),
+      [{ type: "cli_version", adapter: "up", command: "upcli", version: "upcli 1.0.0" }],
+      "the run's cli_version stays its first",
+    );
+    const changed = events.filter((e) => e.type === "cli_version_changed");
+    assert.deepEqual(changed.map((e) => [e.from, e.to]), [["upcli 1.0.0", "upcli 2.0.0"]]);
+    assert.equal(events.at(-1)!.type, "run_finished");
+  } finally {
+    box.cleanup();
   }
 });

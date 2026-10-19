@@ -23,13 +23,15 @@ import { defaultConfig, loadConfig } from "../adapters/config.js";
 import { isPermissionTier } from "../adapters/permissions.js";
 import { sandboxFlagOf, withSandboxFlag } from "../adapters/sandbox.js";
 import { killAllAgentProcesses } from "../adapters/runner.js";
+import { formatSeconds } from "../adapters/failures.js";
+import { onHostSuspend } from "../adapters/suspend.js";
 import type { RunEndState } from "../adapters/types.js";
 import type { WaitingCheckpoint } from "../checkpoint.js";
 import type { CostHistory } from "../forecast.js";
 import { buildContext, spentTokens, type RunContext } from "../context.js";
 import { deciderText, PAUSED, RUNNING, STOPPED, type CheckpointRequest } from "../control.js";
 import { ConfigError, DeadlinePassed, RunStopped, WorkflowScriptError, isFatalError } from "../errors.js";
-import { AGENT_STARTED, LOG, RUN_FAILED, RUN_FINISHED, RUN_STARTED, RUN_STOPPED, event } from "../events.js";
+import { AGENT_STARTED, HOST_SUSPENDED, LOG, RUN_FAILED, RUN_FINISHED, RUN_STARTED, RUN_STOPPED, event } from "../events.js";
 import { Breaks, breakSpecOf, runSoFar } from "../breaks.js";
 import { DriftWatch, driftEvalArgs, driftEvalOf, previousRun } from "../drift.js";
 import { ReplayJournal } from "../journal.js";
@@ -153,6 +155,8 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
   // Records each adapter CLI's version beside its first agent (ODW extension;
   // see ../provenance); closed before the terminal event, which nothing follows.
   let versions: CliVersions | undefined;
+  // Says once per sleep of the host that the agents' stall timers started over (ODW extension; see ../adapters/suspend).
+  let unwatchSuspend = (): void => {};
   // Compares what the run records with the workflow's previous run (ODW extension; see ../drift).
   let drift: DriftWatch | undefined;
   const crashes = watchProcessCrashes();
@@ -173,6 +177,7 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
       if (!end) {
         sink.emit(event(LOG, { message: `${why} — killing the agents and exiting` }));
         versions?.close();
+        unwatchSuspend();
         sink.emit(event(RUN_STOPPED, { runId }));
         // No checkpoint (nor quota pause) gets to withdraw itself here: nothing waits any more.
         store.updateStatus(runId, { state: "stopped", dispatched: dispatched(), spentTokens: spent(), waiting: null, pausedFor: null });
@@ -297,6 +302,17 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
       });
     }
     const cliVersions = versions;
+    unwatchSuspend = onHostSuspend(({ sleptSeconds }) => {
+      if (end) return; // nothing may follow the terminal event
+      sink.emit(
+        event(HOST_SUSPENDED, {
+          sleptSeconds,
+          message:
+            `the host was asleep for about ${formatSeconds(sleptSeconds)} — every agent's stall timer starts over; ` +
+            "an agent whose connection dropped meanwhile is retried",
+        }),
+      );
+    });
     // The workflow's earlier runs, for fan-out forecasts and cost gates (ODW
     // extension; see ../forecast): read from its bucket of the runs root on
     // the first fan-out that asks, this run left out.
@@ -391,6 +407,7 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
       ...(replayOf?.base ? { worktreeBase: replayOf.base } : {}),
       breaks,
       onCliRun: cliVersions && ((adapter) => cliVersions.note(adapter)),
+      onCliFailed: cliVersions && ((adapter, reason) => cliVersions.failed(adapter, reason)),
       // Each mocked agent is answered knowing its label and phase, from its agent_started event.
       ...(mock ? { bridge: { runner: mockRunner(mock, (agentId) => startedAgent(store, runId, agentId)), sleep: noSleep } } : {}),
       onCheckpoint: (cp, isWaiting) => {
@@ -654,6 +671,7 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
     const kept = runRedactor.shapes.record({ value: result });
     store.writeResult(runId, kept.value, "redacted" in kept);
     versions?.close();
+    unwatchSuspend();
     ctx.notes?.close();
     // What the run learned is kept, before its terminal event (ODW extension).
     ctx.memory?.flush();
@@ -670,6 +688,7 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
     if (ctx) await stopAgents(ctx.scheduler, outcome, teardownMs(ctx.config.settings));
     await ctx?.bridge.closeEgress().catch(() => undefined);
     versions?.close();
+    unwatchSuspend();
     ctx?.notes?.close();
     // A failed or stopped run keeps what it learned too: a correction is no less true.
     ctx?.memory?.flush();

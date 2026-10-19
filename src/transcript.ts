@@ -56,10 +56,10 @@ import { hasMarker, type RedactStream, type Redactor } from "./redact.js";
 /**
  * Why a call ran a CLI once more: its reply failed the schema, the CLI
  * stalled, it was rate-limited, or — ODW extensions — its work missed its
- * `expect` checks, the call fell back to the next adapter of its chain, or it
+ * `expect` checks, it lost its connection (`network`), the call fell back to the next adapter of its chain, or it
  * starts over after waiting for a spent quota to reset (quotaWait).
  */
-export type AttemptReason = "schema" | "stall" | "rate_limit" | "expect" | "fallback" | "quota_wait" | "question";
+export type AttemptReason = "schema" | "stall" | "rate_limit" | "network" | "expect" | "fallback" | "quota_wait" | "question";
 
 /** Where one agent's transcript is kept: its stdout, and the end of its stderr. */
 export interface TranscriptPaths {
@@ -88,6 +88,8 @@ export function attemptLabel(reason: string | undefined, adapter?: string): stri
       return "stall restart";
     case "rate_limit":
       return "rate-limit retry";
+    case "network":
+      return "retry after a lost connection";
     case "expect":
       return "expectation retry";
     case "fallback":

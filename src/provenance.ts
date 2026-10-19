@@ -14,6 +14,12 @@
  *     why. An adapter whose command is node (or another interpreter) or a
  *     script is not probed: `--version` would name the interpreter, or run
  *     the script. `recordVersions: false` turns the probes off;
+ *   - a CLI updated under a running run: the version is asked again at the
+ *     next dispatch once {@link REPROBE_MS} have passed, and at once when an
+ *     agent's CLI failed oddly (an unexplained exit, a binary gone — what a
+ *     CLI replaced mid-run looks like). A version that changed lands as a
+ *     `cli_version_changed` event; the `cli_version` stays the run's first.
+ *     Like the first probe, it never delays or fails the run;
  *   - the settings that change what its agents do ({@link BEHAVIOUR_SETTINGS})
  *     and a fingerprint of each adapter's definition, as its `run_started`
  *     event's `setup` ({@link runSetup});
@@ -23,16 +29,27 @@
 
 import { createHash } from "node:crypto";
 import { basename, isAbsolute } from "node:path";
+import { performance } from "node:perf_hooks";
 
 import { agentBaseEnv } from "./adapters/agent-env.js";
 import { runCommand, type CommandRunner } from "./adapters/runner.js";
 import type { Adapter, CliResult, Config, Settings } from "./adapters/types.js";
-import { CLI_VERSION, event, type WorkflowEvent } from "./events.js";
+import type { FailureReason } from "./adapters/failures.js";
+import { CLI_VERSION, CLI_VERSION_CHANGED, event, type WorkflowEvent } from "./events.js";
 import { stableJson } from "./journal.js";
 import { sanitizeText } from "./tty.js";
 
 /** Seconds a `<cli> --version` probe may take; then it is killed and the version recorded unknown. */
 export const VERSION_TIMEOUT_SECONDS = 3;
+
+/** How long a CLI's version stands before a dispatch asks again: an update mid-run is noticed. */
+export const REPROBE_MS = 30 * 60 * 1000;
+
+/** The least time between two probes of one CLI its odd failures ask for, however many of its agents fail. */
+export const MIN_REPROBE_MS = 60 * 1000;
+
+/** The failures a CLI updated under the run may show: an unexplained exit, a binary that is gone. */
+const ODD_FAILURES: ReadonlySet<FailureReason> = new Set(["exit", "not_found"]);
 
 /** Characters of a CLI's version line kept, and of why there is none. */
 const VERSION_CHARS = 120;
@@ -135,38 +152,86 @@ export interface CliVersionOptions {
   settings: Pick<Settings, "agentEnv" | "agentEnvPass">;
   /** Where probes run: the run's source directory. */
   cwd?: string;
-  /** Test seams: what runs a probe, and how long it may take. */
+  /** Test seams: what runs a probe, how long it may take, and the (monotonic) clock re-probes are timed by. */
   runner?: CommandRunner;
   timeoutSeconds?: number;
+  now?: () => number;
+}
+
+/** What a run knows of one adapter's CLI. */
+interface Probed {
+  command: string;
+  /** Its last known version: null until a probe answered. */
+  version: string | null;
+  /** When it was last probed, on {@link CliVersionOptions.now}'s clock. */
+  at: number;
+  /** A probe is running. */
+  busy: boolean;
+  /** When an odd failure last had it probed (-Infinity: never). */
+  failedAt: number;
 }
 
 /**
- * Records each adapter CLI's version once per run (see the module comment):
- * told of every agent CLI run by {@link note}, and closed before the run's
- * terminal event — nothing may follow that in events.jsonl.
+ * Records each adapter CLI's version once per run, and a version that changed
+ * under it (see the module comment): told of every agent CLI run by
+ * {@link note} and of every failed one by {@link failed}, and closed before
+ * the run's terminal event — nothing may follow that in events.jsonl.
  */
 export class CliVersions {
-  /** Adapters already noted: each is probed at most once per run. */
-  private readonly noted = new Set<string>();
+  /** Adapters already noted, and what is known of their CLIs (none: not probed). */
+  private readonly noted = new Map<string, Probed | null>();
   private readonly stop = new AbortController();
   private closed = false;
   private readonly runner: CommandRunner;
   private readonly timeout: number;
+  private readonly now: () => number;
 
   constructor(private readonly opts: CliVersionOptions) {
     this.runner = opts.runner ?? runCommand;
     this.timeout = opts.timeoutSeconds ?? VERSION_TIMEOUT_SECONDS;
+    this.now = opts.now ?? (() => performance.now());
   }
 
   /**
    * An agent's CLI is about to run on `adapter`. The first time in the run,
-   * its version is probed beside it — never awaited: the agent does not wait.
+   * its version is probed beside it — never awaited: the agent does not wait —
+   * and again once {@link REPROBE_MS} have passed since the last probe.
    */
   note(adapter: Adapter): void {
-    if (this.closed || this.noted.has(adapter.name)) return;
-    this.noted.add(adapter.name);
+    if (this.closed) return;
+    if (this.noted.has(adapter.name)) {
+      const known = this.noted.get(adapter.name);
+      if (known && !known.busy && this.now() - known.at >= REPROBE_MS) this.probe(adapter, known);
+      return;
+    }
     const exe = versionProbe(adapter);
-    if (!exe) return;
+    if (!exe) {
+      this.noted.set(adapter.name, null);
+      return;
+    }
+    const known: Probed = { command: exe, version: null, at: 0, busy: false, failedAt: -Infinity };
+    this.noted.set(adapter.name, known);
+    this.probe(adapter, known, true);
+  }
+
+  /**
+   * An agent's CLI on `adapter` failed: an odd failure (an unexplained exit,
+   * a binary gone) has its CLI asked again at once — at most once a
+   * {@link MIN_REPROBE_MS} — in case it was updated under the run.
+   */
+  failed(adapter: Adapter, reason: FailureReason): void {
+    if (this.closed || !ODD_FAILURES.has(reason)) return;
+    const known = this.noted.get(adapter.name);
+    if (!known || known.busy || this.now() - known.failedAt < MIN_REPROBE_MS) return;
+    known.failedAt = this.now();
+    this.probe(adapter, known);
+  }
+
+  /** Ask `<cli> --version` beside the run: the first answer is the run's `cli_version`, a later different one a change. */
+  private probe(adapter: Adapter, known: Probed, first = false): void {
+    known.busy = true;
+    known.at = this.now();
+    const exe = known.command;
     const env = { ...agentBaseEnv(process.env, this.opts.settings), ...adapter.env } as Record<string, string>;
     let probe: Promise<CliResult>;
     try {
@@ -180,14 +245,24 @@ export class CliVersions {
     } catch (err) {
       probe = Promise.reject(err);
     }
-    probe.then(
-      (cli) => this.record(adapter.name, exe, versionOf(cli, this.timeout)),
-      (err: unknown) =>
-        this.record(adapter.name, exe, {
+    probe
+      .then(
+        (cli) => versionOf(cli, this.timeout),
+        (err: unknown): VersionFinding => ({
           version: null,
           error: `could not start: ${sanitizeText(err instanceof Error ? err.message : String(err), VERSION_CHARS)}`,
         }),
-    );
+      )
+      .then((found) => {
+        known.busy = false;
+        known.at = this.now();
+        if (first) this.record(adapter.name, exe, found);
+        else if (found.version !== null && known.version !== null && found.version !== known.version) {
+          this.changed(adapter.name, exe, known.version, found.version);
+        }
+        // A CLI that does not answer now (mid-update, say) keeps the version it last gave.
+        if (found.version !== null) known.version = found.version;
+      });
   }
 
   /** The run is ending: record nothing more, and kill the probes still running. */
@@ -195,6 +270,26 @@ export class CliVersions {
     if (this.closed) return;
     this.closed = true;
     this.stop.abort();
+  }
+
+  /** A CLI answered with another version than before: it was updated under the run. */
+  private changed(adapter: string, command: string, from: string, to: string): void {
+    if (this.closed) return;
+    try {
+      this.opts.emit(
+        event(CLI_VERSION_CHANGED, {
+          adapter,
+          command,
+          from,
+          to,
+          message:
+            `adapter '${adapter}' CLI changed version mid-run: ${from} → ${to} — ` +
+            "its agents from here on run on the new one (the run goes on)",
+        }),
+      );
+    } catch {
+      // Recording what ran never fails the run.
+    }
   }
 
   private record(adapter: string, command: string, found: VersionFinding): void {

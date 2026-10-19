@@ -260,6 +260,8 @@ export interface BuildContextOptions {
   bridge?: Pick<BridgeOptions, "runner" | "sleep" | "now" | "random">;
   /** Told as each agent CLI run starts (the bridge's `onCliRun`): the worker records CLI versions by it (ODW extension). */
   onCliRun?: BridgeOptions["onCliRun"];
+  /** Told as an agent CLI run fails (the bridge's `onCliFailed`): the worker re-asks an odd failure's CLI for its version (ODW extension). */
+  onCliFailed?: BridgeOptions["onCliFailed"];
   /** The run's untrusted input, as meta.json says (ODW extension; see ./untrusted-input); null or absent: the user's. */
   input?: UntrustedInputMeta | null;
   /** The repositories the run works in besides its source (ODW extension; see ./repos). */
@@ -281,6 +283,7 @@ export function buildContext(config: Config, options: BuildContextOptions = {}):
     agentSchemaPath: options.agentSchemaPath,
     redactor,
     onCliRun: options.onCliRun,
+    onCliFailed: options.onCliFailed,
     // Untrusted input (ODW extension): agent CLIs get no secret their own login does not need.
     withholdSecrets: options.input != null,
     // What an untrusted run still lets through, or refused, is the run's to say once (ODW extension: trust).

@@ -293,6 +293,8 @@ export interface AdapterFailures {
   auth?: string[];
   /** The model asked for is unknown, retired or not available to the account: not retried, it falls back. */
   model_unavailable?: string[];
+  /** A lost or refused connection to the model's API: retried after a backoff, like a rate limit. */
+  network?: string[];
 }
 
 /**

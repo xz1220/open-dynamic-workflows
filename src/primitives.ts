@@ -1114,16 +1114,19 @@ export function createPrimitives(
                 }),
               ),
             // A rate-limited CLI is retried after a backoff: say so, and for how long.
-            onRateLimit: ({ adapter: name, waitSeconds, retry, maxRetries }) => {
+            // So is one that lost its connection (ODW extension), which leaves the cap alone.
+            onRateLimit: ({ adapter: name, reason = "rate_limit", waitSeconds, retry, maxRetries }) => {
+              const what = reason === "network" ? "lost its connection" : "hit a rate limit";
               ctx.emit(
                 event(LOG, {
-                  message: `${display}:${agentId} hit a rate limit on ${name} — retrying in ${formatSeconds(waitSeconds)} (${retry}/${maxRetries})`,
+                  message: `${display}:${agentId} ${what} on ${name} — retrying in ${formatSeconds(waitSeconds)} (${retry}/${maxRetries})`,
                   agentId,
                   label: display,
                   phase: activePhase,
-                  retry: { reason: "rate_limit", n: retry, of: maxRetries, waitSeconds },
+                  retry: { reason, n: retry, of: maxRetries, waitSeconds },
                 }),
               );
+              if (reason === "network") return;
               // Adaptive back-pressure (ODW extension): the limit lowers its adapter's cap.
               slot.rateLimited();
             },
