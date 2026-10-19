@@ -79,8 +79,10 @@ interface Discovered {
 interface LiveScan {
   kind: "live";
   /** Agents whose last journal line is "started". */
-  running: Array<{ key: string; agentId?: string }>;
+  running: LiveAgent[];
   done: number;
+  /** Agents whose last journal line is a result, in journal order. */
+  finished: LiveAgent[];
   created: number | null;
   updatedAt: number | null;
   name: string;
@@ -94,6 +96,31 @@ interface TerminalSummary {
 }
 
 type Folded = { summary: RunSummary; detail: RunDetail; events: WorkflowEvent[] };
+
+/** One agent of a live run, as its journal's lines name it (the "started" line carries label and phase). */
+interface LiveAgent {
+  key: string;
+  agentId?: string;
+  label?: string;
+  phase?: string;
+}
+
+/**
+ * One agent of a Claude Code run with what a terminal follower needs (`odw
+ * logs --agent`, `odw tmux`; an ODW extension): Claude's own agent id and the
+ * path of its `agent-<id>.jsonl` transcript (null when the id is not a safe
+ * file-name segment, or the journal named none).
+ */
+export interface ClaudeAgentRef {
+  agentId: string | null;
+  label: string;
+  phase: string | null;
+  state: AgentView["state"];
+  transcript: string | null;
+}
+
+/** A Claude agent id that may name a transcript file: one plain segment. */
+const AGENT_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
 
 export class ClaudeRunSource implements RunSource {
   readonly provider = "claude" as const;
@@ -170,6 +197,35 @@ export class ClaudeRunSource implements RunSource {
   }
   agentTranscript(): null {
     return null; // nor ODW transcripts (this source surfaces no raw agent transcripts)
+  }
+
+  /**
+   * The run's agents with their Claude agent ids and transcript paths — what
+   * `odw logs --agent` and `odw tmux` follow (read-only). Null for an unknown run.
+   */
+  agentRefs(runId: string): ClaudeAgentRef[] | null {
+    const d = this.find(runId);
+    if (!d) return null;
+    const dir = join(d.sessDir, "subagents", "workflows", d.wid);
+    const ref = (agentId: unknown, label: string, phase: string | null, state: AgentView["state"]): ClaudeAgentRef => {
+      const id = typeof agentId === "string" && AGENT_ID_RE.test(agentId) ? agentId : null;
+      return { agentId: id, label, phase, state, transcript: id ? join(dir, `agent-${id}.jsonl`) : null };
+    };
+    if (d.kind === "terminal") {
+      const j = readJson(d.path) ?? {};
+      const progress: any[] = Array.isArray(j.workflowProgress) ? j.workflowProgress : [];
+      return progress
+        .filter((e: any) => e?.type === "workflow_agent")
+        .map((a: any) =>
+          ref(a.agentId, String(a.label ?? a.agentId ?? "agent"), a.phaseTitle != null ? String(a.phaseTitle) : null, mapAgentState(a.state)),
+        );
+    }
+    const scan = this.scanLive(d);
+    const alive = this.now() < scan.aliveUntilMs;
+    return [
+      ...scan.finished.map((a) => ref(a.agentId, liveLabel(a), a.phase ?? null, "done")),
+      ...scan.running.map((a) => ref(a.agentId, liveLabel(a), a.phase ?? null, alive ? "running" : "stale")),
+    ];
   }
 
   // --- discovery -------------------------------------------------------------
@@ -346,13 +402,26 @@ export class ClaudeRunSource implements RunSource {
     const lines = readLines(journal);
     // Pair by `key` (the stable v2 prompt-hash); an agent is RUNNING iff its LAST line is "started".
     const last = new Map<string, Record<string, any>>();
-    for (const l of lines) if (l && typeof l.key === "string") last.set(l.key, l);
-    const running: Array<{ key: string; agentId?: string }> = [];
-    let done = 0;
-    for (const [key, l] of last) {
-      if (l.type === "started") running.push({ key, agentId: l.agentId });
-      else done++;
+    // The "started" line names the agent (label, phase); its result line does not.
+    const named = new Map<string, Record<string, any>>();
+    for (const l of lines) {
+      if (!l || typeof l.key !== "string") continue;
+      last.set(l.key, l);
+      if (l.type === "started") named.set(l.key, l);
     }
+    const running: LiveAgent[] = [];
+    const finished: LiveAgent[] = [];
+    for (const [key, l] of last) {
+      const n = named.get(key);
+      const agent: LiveAgent = {
+        key,
+        agentId: typeof l.agentId === "string" ? l.agentId : typeof n?.agentId === "string" ? n.agentId : undefined,
+        label: typeof n?.label === "string" && n.label ? n.label : undefined,
+        phase: typeof n?.phase === "string" && n.phase ? n.phase : undefined,
+      };
+      (l.type === "started" ? running : finished).push(agent);
+    }
+    const done = finished.length;
     // Alive while the journal, or the transcript of an agent still running, was
     // written within the freshness window; a missing file (mtime 0) never is.
     const journalMs = mtimeMs(journal);
@@ -365,6 +434,7 @@ export class ClaudeRunSource implements RunSource {
       kind: "live",
       running,
       done,
+      finished,
       created,
       updatedAt: journalMs / 1000 || created,
       name: liveName(d.sessDir, d.wid),
@@ -374,7 +444,7 @@ export class ClaudeRunSource implements RunSource {
 
   /** Build a live run's views as of now. `withScript` reads the script for the detail view. */
   private foldLive(d: Discovered, scan: LiveScan, withScript = false): Folded {
-    const { running, done, created, updatedAt } = scan;
+    const { running, done, finished, created, updatedAt } = scan;
     const alive = this.now() < scan.aliveUntilMs;
     const state: RunDisplayState = alive ? "running" : "stale";
 
@@ -383,8 +453,8 @@ export class ClaudeRunSource implements RunSource {
         (r): AgentView => ({
           agentId: null,
           kind: "agent",
-          label: agentLabel(r.agentId, r.key),
-          phase: null,
+          label: liveLabel(r),
+          phase: r.phase ?? null,
           state: alive ? "running" : "stale",
           adapter: null,
           attempts: null,
@@ -395,11 +465,11 @@ export class ClaudeRunSource implements RunSource {
           cached: false,
         }),
       ),
-      ...Array.from({ length: done }, (): AgentView => ({
+      ...finished.map((f): AgentView => ({
         agentId: null,
         kind: "agent",
-        label: "agent",
-        phase: null,
+        label: f.label ?? "agent",
+        phase: f.phase ?? null,
         state: "done",
         adapter: null,
         attempts: null,
@@ -447,11 +517,14 @@ export class ClaudeRunSource implements RunSource {
       adapter: null,
       workflowName: null,
     };
+    // Finished agents too (started, then finished): a follower of the run sees each settle.
     const events: WorkflowEvent[] = [
       { type: "run_started", ts: created } as WorkflowEvent,
-      ...agents
-        .filter((a) => a.state === "running" || a.state === "stale")
-        .map((a) => ({ type: "agent_started", ts: updatedAt, label: a.label }) as WorkflowEvent),
+      ...agents.flatMap((a) => {
+        const started = { type: "agent_started", ts: updatedAt, label: a.label, phase: a.phase } as WorkflowEvent;
+        if (a.state !== "done") return [started];
+        return [started, { type: "agent_finished", ts: updatedAt, label: a.label, phase: a.phase } as WorkflowEvent];
+      }),
     ];
     return { summary, detail, events };
   }
@@ -537,6 +610,10 @@ function readScript(sessDir: string, wid: string): string | null {
     }
   }
   return null;
+}
+/** A live agent's label: the one its journal gave, else a short id. */
+function liveLabel(a: LiveAgent): string {
+  return a.label ?? agentLabel(a.agentId, a.key);
 }
 function agentLabel(agentId: string | undefined, key: string): string {
   if (agentId) return `agent ${agentId.slice(0, 8)}`;
