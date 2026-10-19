@@ -149,6 +149,8 @@ import { confirmUntrustedPr, untrustedInputBanner, untrustedInputOf, untrustedTi
 import { parseRepoFlags, repoFlagsOf, repoTop } from "./repos.js";
 import { pluginOrigin } from "./workflows/plugins.js";
 import { listWorkflows, resolveWorkflow, workflowCandidates, type ResolvedWorkflow } from "./workflows/resolve.js";
+import { cmdWorkflowsAdd, cmdWorkflowsUpdate, cmdWorkflowsVerify } from "./workflows/install.js";
+import { describeSource, modifiedLockedMessage } from "./workflows/lock.js";
 
 export const COMMANDS = [
   "init",
@@ -243,6 +245,9 @@ export function helpText(): string {
     "  odw workflows list [--project|--global|--plugins|--all]  list workflows runnable by name,",
     "                                                     Claude Code plugins' as <plugin>:<name> (ODW extension)",
     "  odw workflows where <name>                         show the file a name resolves to (and the ones it shadows)",
+    "  odw workflows add <git-url>[#ref] [--path P] [--name N] [--global] [--yes]  install workflows from git, locked (ODW extension)",
+    "  odw workflows update [<name>] [--global] [--yes]   re-fetch each locked ref, show the diff, then write",
+    "  odw workflows verify [<name>] [--json]             check every locked file's sha256; exit 1 on a mismatch",
     "  odw pause|resume|stop <run_id>                     control a running workflow",
     "  odw approve|reject <run_id> [--checkpoint N]       answer a checkpoint() the run waits at (--note TEXT)",
     "  odw approve <run_id> --edit | --payload JSON|@file approve it with an edited payload ($VISUAL/$EDITOR for --edit)",
@@ -414,7 +419,7 @@ export async function main(argv: string[]): Promise<number> {
       case "serve":
         return await cmdServe(rest);
       case "workflows":
-        return cmdWorkflows(rest);
+        return await cmdWorkflows(rest);
       case "pause":
       case "stop":
         return cmdControl(command, rest);
@@ -978,6 +983,8 @@ function startBanner(
 function withWorkflowLines(banner: string | undefined, workflow: ResolvedWorkflow | undefined): string | undefined {
   const lines = [
     ...(workflow?.plugin ? [`workflow: ${workflow.plugin.name} from ${pluginOrigin(workflow.plugin)} (run in place, never modified)`] : []),
+    ...(workflow?.installed ? [`workflow: ${workflow.installed.name} is third-party, installed from ${describeSource(workflow.installed.entry)}`] : []),
+    ...(workflow?.installed?.modified ? [`⚠ ${modifiedLockedMessage(workflow.installed)}`] : []),
     ...(workflow?.notes ?? []).map((note) => `note: ${note}`),
   ];
   if (lines.length === 0) return banner;
@@ -2810,12 +2817,15 @@ async function cmdExport(rest: string[]): Promise<number> {
   return 0;
 }
 
-/** `odw workflows <list|where>` — inspect the workflows runnable by name. */
-function cmdWorkflows(rest: string[]): number {
+/** `odw workflows <list|where|add|update|verify>` — inspect the workflows runnable by name; install them from git (ODW extension). */
+async function cmdWorkflows(rest: string[]): Promise<number> {
   const [sub, ...subRest] = rest;
   if (sub === "list") return cmdWorkflowsList(subRest);
   if (sub === "where") return cmdWorkflowsWhere(subRest);
-  process.stderr.write(`odw workflows: expected 'list' or 'where', got '${sub ?? ""}'\n`);
+  if (sub === "add") return await cmdWorkflowsAdd(subRest);
+  if (sub === "update") return await cmdWorkflowsUpdate(subRest);
+  if (sub === "verify") return cmdWorkflowsVerify(subRest);
+  process.stderr.write(`odw workflows: expected 'list', 'where', 'add', 'update' or 'verify', got '${sub ?? ""}'\n`);
   return 2;
 }
 
@@ -2861,7 +2871,11 @@ function cmdWorkflowsList(rest: string[]): number {
       ? `  shadowed by ${e.shadowedBy ? `${e.shadowedBy.rootLabel}/${basename(e.shadowedBy.path)}` : "a higher-precedence workflow"}`
       : "";
     const note = e.note ? `  note: ${e.note}` : "";
-    process.stdout.write(`${e.name.padEnd(width)}  (${scope.padEnd(14)} ${e.rootLabel})  ${e.path}${shadow}${note}\n`);
+    // Installed from git by `odw workflows add` (ODW extension): third-party, and whether it is still what was installed.
+    const installed = e.installed
+      ? `  third-party: ${describeSource(e.installed.entry)}${e.installed.modified ? "  MODIFIED since install (odw workflows verify)" : ""}`
+      : "";
+    process.stdout.write(`${e.name.padEnd(width)}  (${scope.padEnd(14)} ${e.rootLabel})  ${e.path}${shadow}${note}${installed}\n`);
   }
   return 0;
 }

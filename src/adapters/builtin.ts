@@ -734,6 +734,7 @@ export const DEFAULT_SETTINGS: Settings = {
   destructiveGit: "warn", // an agent that ran git reset --hard, clean -f, push --force, … keeps its reply, recorded ("fail": it fails)
   modelMismatch: "warn", // an agent its CLI says another model served keeps its reply, recorded and logged ("fail": it fails)
   scriptContext: null, // strict for triggered, plugin and untrusted runs, host for the rest ("host" | "strict": every run)
+  lockedWorkflows: "warn", // a workflow installed from git and modified since runs, said loudly ("fail": it does not start)
   redact: { env: true, patterns: true, extra: [] }, // likely secrets out of what odw keeps and serves (false: none)
   quotaWait: false, // an agent whose chain is out of quota fails; { max: <s> } waits for the reset instead
   otel: false, // no trace is sent; { endpoint?, headers?, captureContent? } posts each run's at its end

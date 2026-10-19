@@ -40,6 +40,7 @@ import {
   type PluginProvider,
   type PluginWorkflow,
 } from "./plugins.js";
+import { installedWorkflowFor, type InstalledWorkflow } from "./lock.js";
 
 /** How a `run` argument was resolved: `plugin` — a workflow an installed Claude Code plugin ships (ODW extension). */
 export type WorkflowOrigin = "path" | "project" | "global" | "plugin";
@@ -57,6 +58,8 @@ export interface ResolvedWorkflow {
   plugin?: PluginWorkflow;
   /** What the run should say about how the name resolved: a plugin workflow it did not pick, a project one it skipped. */
   notes?: string[];
+  /** A workflow `odw workflows add` installed from git: its lock entry, and whether the file still matches it (ODW extension; see ./lock). */
+  installed?: InstalledWorkflow;
 }
 
 export interface ResolveOptions {
@@ -95,6 +98,17 @@ export function resolveWorkflow(arg: string, opts: ResolveOptions): ResolvedWork
   if (!arg || !arg.trim()) {
     throw new WorkflowScriptError("no workflow specified");
   }
+  return withInstalled(resolveArg(arg, opts));
+}
+
+/** A file a workflows lock names — by name or by path — is one `odw workflows add` installed (ODW extension; see ./lock). */
+function withInstalled(found: ResolvedWorkflow): ResolvedWorkflow {
+  if (found.plugin) return found;
+  const installed = installedWorkflowFor(found.scriptPath);
+  return installed ? { ...found, installed } : found;
+}
+
+function resolveArg(arg: string, opts: ResolveOptions): ResolvedWorkflow {
   // Decide path-vs-name from the raw string, before touching the filesystem.
   if (isPathLike(arg)) return withPluginOrigin(resolveAsPath(arg, opts.cwd), opts);
   const ref = parsePluginRef(arg);
@@ -124,6 +138,8 @@ export interface WorkflowListing {
   note?: string;
   /** A plugin workflow: the plugin it came from (ODW extension). */
   plugin?: PluginWorkflow;
+  /** Installed from git by `odw workflows add`: third-party (ODW extension; see ./lock). */
+  installed?: InstalledWorkflow;
 }
 
 /**
@@ -167,6 +183,7 @@ function listRootWorkflows(cwd: string, config: Config): WorkflowListing[] {
       const path = join(root.dir, file);
       const winner = winners.get(name);
       if (!winner) winners.set(name, { rootLabel: root.label, path });
+      const installed = root.provider === "odw" ? installedWorkflowFor(path) : null;
       out.push({
         name,
         origin: root.origin,
@@ -175,6 +192,7 @@ function listRootWorkflows(cwd: string, config: Config): WorkflowListing[] {
         path,
         shadowed: winner !== undefined,
         ...(winner ? { shadowedBy: winner } : {}),
+        ...(installed ? { installed } : {}),
       });
     }
   }

@@ -56,6 +56,7 @@ import { localModelChecks, type LocalProbeOptions } from "./local-models.js";
 import { describeConcurrency } from "./throttle.js";
 import { resolveRunTrust } from "./untrusted.js";
 import { VERSION } from "./version.generated.js";
+import { lockedWorkflowsCheck } from "./workflows/install.js";
 
 export type CheckStatus = "ok" | "warn" | "fail" | "skip";
 
@@ -174,6 +175,10 @@ export async function runDoctor(opts: DoctorOptions): Promise<DoctorReport> {
   // The editor declarations `odw types` wrote, if it did: are they this odw's (ODW extension)?
   const types = typesCheck(opts.cwd);
   if (types) add(types);
+
+  // Workflows installed from git (ODW extension; see ./workflows/lock): does every locked file still match?
+  const locked = lockedWorkflowsCheck(opts.cwd, config);
+  if (locked) add(locked);
 
   const listing = listAdapters(config);
   const installed = listing.filter((a) => a.installed);

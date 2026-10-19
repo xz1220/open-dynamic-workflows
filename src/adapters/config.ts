@@ -181,6 +181,7 @@ const KNOWN_TOP_KEYS = [
   "retention",
   "digest",
   "repos",
+  "lockedWorkflows",
 ] as const;
 
 const KNOWN_ADAPTER_KEYS = ["command", "stdin", "env", "timeout", "stallTimeout", "concurrency", "promptCache", "label", "flags", "output", "failures", "permissionArgs", "permissions", "permissionDenials", "trust", "untrustedArgs", "untrustedNote", "sandbox", "agentLimits", "egressHosts", "questions", "questionArgs"] as const;
@@ -1381,6 +1382,11 @@ function buildSettings(raw: Record<string, unknown>): Settings {
         : buildChoice("modelMismatch", raw["modelMismatch"], ["warn", "fail"] as const),
     // Where a workflow body runs (ODW extension; see ../script-context); null: by the run.
     scriptContext: raw["scriptContext"] == null ? DEFAULT_SETTINGS.scriptContext : buildChoice("scriptContext", raw["scriptContext"], SCRIPT_CONTEXTS),
+    // A locked workflow modified since `odw workflows add` installed it (ODW extension; see ../workflows/lock).
+    lockedWorkflows:
+      raw["lockedWorkflows"] == null
+        ? DEFAULT_SETTINGS.lockedWorkflows
+        : buildChoice("lockedWorkflows", raw["lockedWorkflows"], ["warn", "fail"] as const),
     otel: raw["otel"] == null ? DEFAULT_SETTINGS.otel : buildOtel(raw["otel"]),
     sandbox: raw["sandbox"] == null ? DEFAULT_SETTINGS.sandbox : buildSandboxSetting(raw["sandbox"]),
     agentLimits: raw["agentLimits"] == null ? {} : readLimits(raw["agentLimits"], '"agentLimits"', (m) => new ConfigError(m)),

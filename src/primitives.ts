@@ -170,6 +170,7 @@ import { fmtUsd } from "./tty.js";
 import { TranscriptRecorder } from "./transcript.js";
 import { UntrustedInputRejected, workflowInput, writes, type WorkflowInput } from "./untrusted-input.js";
 import { resolveWorkflow } from "./workflows/resolve.js";
+import { installedWorkflowFor, modifiedLockedMessage } from "./workflows/lock.js";
 import { headCommit } from "./workspace.js";
 
 export interface AgentOptions {
@@ -1781,8 +1782,16 @@ export function createPrimitives(
     }
     // In the run's script context (ODW extension; see ./script-context): a strict run's child is strict too,
     // and a plugin's workflow is strict as when it runs on its own, unless the config says "host".
+    // A workflow `odw workflows add` installed from git is third-party the same way (see ./workflows/lock).
+    const installed = plugin ? null : installedWorkflowFor(scriptPath);
+    if (installed?.modified) {
+      if (ctx.config.settings.lockedWorkflows === "fail") {
+        throw new WorkflowScriptError(`workflow(): ${modifiedLockedMessage(installed)} (lockedWorkflows: "fail")`);
+      }
+      ctx.emit(event(LOG, { message: `⚠ ${modifiedLockedMessage(installed)}`, installed: { modified: true } }));
+    }
     const parentContext = ctx.config.settings.scriptContext ?? "host";
-    const pluginContext = plugin
+    const pluginContext = plugin || installed
       ? (ctx.pluginScriptContext ?? resolveScriptContext(ctx.config.settings.scriptContext, { plugin: true, untrustedInput: false, untrustedRepo: false }).context)
       : "host";
     const context = parentContext === "strict" || pluginContext === "strict" ? "strict" : "host";
@@ -1802,7 +1811,10 @@ export function createPrimitives(
     if (context !== parentContext) {
       ctx.emit(
         event(LOG, {
-          message: `▸ workflow ${name} runs in a strict script context — the workflow is a Claude Code plugin's: only the primitives and standard JavaScript built-ins`,
+          message:
+            `▸ workflow ${name} runs in a strict script context — ` +
+            `${installed ? `the workflow is third-party, installed from ${installed.entry.url}` : "the workflow is a Claude Code plugin's"}: ` +
+            "only the primitives and standard JavaScript built-ins",
           scriptContext: "strict",
         }),
       );

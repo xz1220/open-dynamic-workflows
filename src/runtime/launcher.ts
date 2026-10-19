@@ -24,6 +24,7 @@ import { isSeaBinary } from "../sea.js";
 import { resolveRunTrust } from "../untrusted.js";
 import { requireSandboxRefusal, sandboxGap, taintedArgs } from "../untrusted-input.js";
 import { repoTop } from "../repos.js";
+import { modifiedLockedMessage, type InstalledWorkflow } from "../workflows/lock.js";
 import { resolveWorkflow, type ResolvedWorkflow } from "../workflows/resolve.js";
 import { RunObserver } from "./run-liveness.js";
 import { RunStore, type BreakSpec, type EvalRunTag, type ReplayLink, type ResolveLink } from "./run-store.js";
@@ -216,6 +217,9 @@ export function startRun(
   }
   const plugin = workflow.plugin;
   if (plugin) workflowName = plugin.name;
+  // A workflow installed from git and modified since (ODW extension; see ../workflows/lock): lockedWorkflows "fail" starts no run.
+  const installed = workflow.installed;
+  if (installed?.modified && config.settings.lockedWorkflows === "fail") throw new ConfigError(modifiedLockedMessage(installed));
   // Its args against its meta.input (ODW extension; see ../input-schema): refused before a run exists.
   if (meta && !options.call && options.origin !== "replay") checkInput(meta.input, options.args, script);
 
@@ -223,6 +227,7 @@ export function startRun(
     script: scriptPath,
     ...commonCreateInput(options, source, workflowName),
     ...(plugin ? { plugin: { name: plugin.name, id: plugin.id, version: plugin.version, scope: plugin.scope } } : {}),
+    ...(installed ? { installed: installedRecord(installed) } : {}),
     ...(workflow.notes ? { workflowNotes: workflow.notes } : {}),
   });
   spawnWorker(store, runId, source);
@@ -265,6 +270,12 @@ export function startRunFromSource(
   });
   spawnWorker(store, runId, source);
   return { runId, store };
+}
+
+/** What a run's meta.json keeps of a workflow installed from git (ODW extension; see ../workflows/lock). */
+export function installedRecord(w: InstalledWorkflow): NonNullable<Parameters<RunStore["create"]>[0]["installed"]> {
+  const { url, ref, commit, path, sha256 } = w.entry;
+  return { name: w.name, url, ref, commit, path, sha256, modified: w.modified };
 }
 
 function spawnWorker(store: RunStore, runId: string, source: string): void {

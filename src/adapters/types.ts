@@ -733,6 +733,12 @@ export interface Settings {
    */
   scriptContext: ScriptContext | null;
   /**
+   * A workflow `odw workflows add` installed from git whose file no longer
+   * hashes to its lock entry (an ODW extension; see ../workflows/lock):
+   * `"warn"` runs it and says so loudly; `"fail"` refuses to start it.
+   */
+  lockedWorkflows: "warn" | "fail";
+  /**
    * What odw keeps and serves of its agents — transcripts, saved results,
    * events, the run's error and result, webhook payloads — has its likely
    * secrets replaced by `«redacted:<kind>»` (an ODW extension; see ../redact);

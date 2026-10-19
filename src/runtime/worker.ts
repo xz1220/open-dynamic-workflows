@@ -57,6 +57,7 @@ import { mintCheckpointLinks, runsRootsOf } from "./approve-links.js";
 import { exportRunEnd } from "./otel-export.js";
 import { loadCostHistory } from "./estimate.js";
 import { JsonlSink, RunStore } from "./run-store.js";
+import { describeSource, installedWorkflowFor, modifiedLockedMessage } from "../workflows/lock.js";
 import { orphanedWorktreesOf } from "./gc.js";
 
 /**
@@ -242,12 +243,15 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
     // Where the workflow body runs (ODW extension; see ../script-context): the
     // config's choice, else strict for a triggered, plugin or untrusted run.
     // Kept in the run's settings, so a nested workflow() runs the same way.
+    // A workflow installed from git (ODW extension; see ../workflows/lock), as its file is now: third-party, so strict too.
+    const installed = installedWorkflowFor(script);
     const scriptContext = resolveScriptContext(chosen.settings.scriptContext, {
       origin: meta.origin,
       sourceOrigin: meta.sourceOrigin,
       plugin: meta.plugin != null,
       untrustedInput: input !== null,
       untrustedRepo: runTrust.trust === "untrusted",
+      installedFrom: installed?.entry.url ?? null,
     });
     const config = { ...chosen, settings: { ...chosen.settings, scriptContext: scriptContext.context } };
     const runRedactor = redactorFor(config);
@@ -516,6 +520,20 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
       );
       for (const warning of scanDualCompat(source)) {
         sink.emit(event(LOG, { message: `workflow ${plugin.name}: ${warning}`, plugin: plugin.id }));
+      }
+    }
+    // A workflow installed from git (ODW extension; see ../workflows/lock): where from, and — loudly —
+    // a file no longer the one installed, which lockedWorkflows "fail" does not run.
+    if (installed) {
+      sink.emit(
+        event(LOG, {
+          message: `workflow ${installed.name} is third-party: installed from ${describeSource(installed.entry)} (${installed.entry.path})`,
+          installed: { url: installed.entry.url, commit: installed.entry.commit, modified: installed.modified },
+        }),
+      );
+      if (installed.modified) {
+        if (config.settings.lockedWorkflows === "fail") throw new ConfigError(`${modifiedLockedMessage(installed)} (lockedWorkflows: "fail")`);
+        sink.emit(event(LOG, { message: `⚠ ${modifiedLockedMessage(installed)}`, installed: { modified: true } }));
       }
     }
     // A strict script context (ODW extension; see ../script-context) is said
