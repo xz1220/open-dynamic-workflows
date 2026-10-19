@@ -99,7 +99,7 @@ const MAX_TITLE_CHARS = 1000;
 const READ_KINDS: ReadonlySet<string> = new Set(["read", "search", "think", "fetch"]);
 /** Tool kinds an `edit` agent may be allowed: those, and changing files. Running commands, switching modes and the rest are `full`'s. */
 const EDIT_KINDS: ReadonlySet<string> = new Set([...READ_KINDS, "edit", "delete", "move"]);
-/** Kinds that only look: one that ran without asking is not reported. Any other beyond the tier is (`unasked`). */
+/** Kinds that only look: one that ran without asking is not reported (a web one is, where web tools are withheld). Any other beyond the tier is (`unasked`). */
 const LOOK_KINDS: ReadonlySet<string> = new Set(["read", "search", "think"]);
 /** Kinds that reach the network: refused under `noWebTools`. */
 const WEB_KINDS: ReadonlySet<string> = new Set(["fetch", "search"]);
@@ -533,7 +533,8 @@ class AcpClient {
     if (
       id &&
       (status === "in_progress" || status === "completed") &&
-      !LOOK_KINDS.has(kind) &&
+      // Looking is not reported — unless it reaches the network where web tools are withheld (untrusted input).
+      !(LOOK_KINDS.has(kind) && !(this.spec.noWebTools && WEB_KINDS.has(kind))) &&
       !permits(this.spec.tier, kind, this.spec.noWebTools) &&
       !this.asked.has(id) &&
       !this.unasked.has(id)

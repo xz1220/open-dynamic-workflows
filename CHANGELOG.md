@@ -1111,7 +1111,8 @@ independent security reviews whose findings are all fixed.
   `search`; it is now refused like `fetch` (the same `sandboxGap` check the CLI path's
   web tools use). A tool call that ran without asking was flagged `unasked` only for
   `edit`, `delete`, `move` and `execute`; any kind beyond the tier but `read`, `search`
-  and `think` — `other`, `switch_mode`, unknown — now is. The README says plainly that
+  and `think` — `other`, `switch_mode`, unknown — now is, and so is a `search` or
+  `fetch` that never asked where web tools are withheld. The README says plainly that
   the tier is advisory for an ACP agent, and that a real guarantee needs the container
   sandbox (`untrustedInput.requireSandbox` applies).
 - `odw apply` took the repository an alias's diffs go to from the path the event log

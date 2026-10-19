@@ -51,11 +51,11 @@ function sent(log: string): Array<{ id?: number; method?: string; params?: Recor
 }
 
 /** Run one agent call on the fake playing `scenario` at `tier`: its outcome or error, the permissions told, what it was sent. */
-async function call(scenario: string, options: { tier?: PermissionTier; prompt?: string; timeout?: number } = {}) {
+async function call(scenario: string, options: { tier?: PermissionTier; prompt?: string; timeout?: number; untrustedInput?: boolean } = {}) {
   const dir = tempDir();
   const log = join(dir, "acp.log");
   const config = acpConfig(scenario, log, { permissions: options.tier ?? "edit", ...(options.timeout ? { timeout: options.timeout } : {}) });
-  const bridge = new Bridge(config, { source: dir, runner: runCommand });
+  const bridge = new Bridge(config, { source: dir, runner: runCommand, ...(options.untrustedInput ? { withholdSecrets: true } : {}) });
   const permissions: Array<AcpPermission & { adapter: string }> = [];
   try {
     const outcome = await bridge.run(
@@ -172,6 +172,12 @@ test("a tool that ran without asking is reported unless it only looks: other, sw
     ["other:unasked", "switch_mode:unasked", "made-up:unasked", "other:unasked"],
   );
   assert.deepEqual((await call("unasked-kinds", { tier: "full" })).permissions, []);
+  // Untrusted input without a boxed network: a web search or fetch that never asked is said too — it can carry data out.
+  const untrusted = await call("unasked-kinds", { tier: "read", untrustedInput: true });
+  assert.deepEqual(
+    untrusted.permissions.map((p) => `${p.kind}:${p.decision}`),
+    ["search:unasked", "fetch:unasked", "other:unasked", "switch_mode:unasked", "made-up:unasked", "other:unasked"],
+  );
 });
 
 test("a client capability ODW does not declare is answered method-not-found", async () => {
