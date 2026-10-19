@@ -29,9 +29,10 @@
  * compiles or checks anything (zero dependencies).
  */
 
-import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
+import { unsafeTarget, within, writeReplacing } from "./runtime/safe-write.js";
 import { detectCaps, glyphs, palette } from "./tty.js";
 import { WORKFLOW_DTS } from "./types.generated.js";
 import { VERSION } from "./version.generated.js";
@@ -169,52 +170,6 @@ export function writeTypes(cwd: string, dir: string = TYPES_DIR, force = false):
     files.push({ ...f, state });
   }
   return { files };
-}
-
-/**
- * Why `path` must not be written, or null: it, or a directory from `root`
- * down to it, is a symlink, or its parent's realpath leaves `root`'s. A
- * symlink is never written through — not the declarations, not a dangling
- * jsconfig.json — wherever it points.
- */
-function unsafeTarget(root: string, path: string): string | null {
-  const parts = relative(root, path).split(sep);
-  if (parts[0] === ".." || isAbsolute(relative(root, path))) return `${path} is outside ${root}`;
-  let at = root;
-  for (const part of parts) {
-    at = join(at, part);
-    let st;
-    try {
-      st = lstatSync(at);
-    } catch {
-      break; // not there yet: created, as a directory or the file, below what was checked
-    }
-    if (st.isSymbolicLink()) return `${at} is a symbolic link`;
-  }
-  try {
-    const parent = realpathSync(dirname(path));
-    if (!within(realpathSync(root), parent) && parent !== realpathSync(root)) return `${dirname(path)} resolves outside ${root}`;
-  } catch {
-    // the parent is not there yet: nothing resolves anywhere
-  }
-  return null;
-}
-
-/** Write through a temporary file beside `path`, renamed over it: never through what `path` is. */
-function writeReplacing(path: string, content: string): void {
-  const tmp = join(dirname(path), `.${basename(path)}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`);
-  writeFileSync(tmp, content, { encoding: "utf8", flag: "wx" });
-  try {
-    renameSync(tmp, path);
-  } catch (err) {
-    rmSync(tmp, { force: true });
-    throw err;
-  }
-}
-
-function within(root: string, path: string): boolean {
-  const rel = relative(root, path);
-  return rel !== "" && rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
 }
 
 /** What `odw doctor` reports of `.odw/types/odw.d.ts`: null when it was never written. */

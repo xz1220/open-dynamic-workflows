@@ -1073,6 +1073,32 @@ independent security reviews whose findings are all fixed.
   the rule is not enforced. A definition file that is a symlink is followed only when
   it stays in its agents directory (the user's: in their home). A live Claude Code
   run's journal `agentId` is checked before it names a transcript to stat.
+- `odw workflows add` and `update` wrote through symlinks: a cloned project's committed
+  `.odw/workflows.lock.json` and a dangling `.odw/workflows/foo.js` link made `odw
+  workflows update --yes` write the source's bytes outside the project, and a linked
+  `.odw/tests` or `.odw/evals` took the test or eval elsewhere. Nothing is now written
+  (exit 1, the path named) when the workflow, its test or eval, the lock, or a
+  directory from the project (`--global`: the workflows directory's parent) down to
+  them is a symlink or resolves outside it; each file is written to a temporary file
+  beside it renamed over it — the helper `odw types` uses, now shared.
+- `odw workflows add` took a workflow's name from its file's name unchecked: a name
+  with spaces or escape bytes installed (its escapes printed raw) and made the lock
+  unreadable — and a lock that could not be read made every workflow beside it
+  first-party: no strict context, no "modified" warning, no `lockedWorkflows: "fail"`.
+  `__proto__.js` installed with no lock entry. A file whose name is not a workflow name,
+  or is `__proto__`, `constructor` or `prototype`, is now skipped with a note (its path
+  stripped of escapes, as every path add and update print), the lock is keyed in a
+  prototype-free object, and beside a lock that cannot be read every workflow is
+  third-party from an unknown source and modified: strict, said loudly, and refused
+  under `"fail"`. `odw workflows verify` and `odw doctor` report the lock.
+- `odw workflows update` installed a fetched file that did not check as a workflow;
+  like `add`, it now leaves the installed one and fails (exit 1).
+- A lock's `url`, `ref` and paths were taken as written, so a committed lock could hand
+  `git fetch` an option-shaped ref or a `ssh://-o…` host, and name a path outside the
+  repository. They are now held to what `odw workflows add` takes (https, ssh or file,
+  no user or host starting with `-`; a ref of letters, digits and `. _ / + -` without
+  `..`; a relative path without `.` or `..`), and in `update` an entry that fails —
+  unreachable, refused — fails alone (exit 1) while the others go on.
 
 ### Changed behavior — check before upgrading
 - `agentType` naming an agent definition file now runs that definition (see "Write

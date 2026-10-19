@@ -830,7 +830,12 @@ any; prints what each reaches outside the dialect (as `odw check --capabilities`
 asks (`--yes` to accept without a terminal); and copies them into `.odw/workflows` —
 with the workflow's `.odw/tests/<name>.json` and `.odw/evals/<name>.json` when the
 repository has them beside it — or into `~/.odw/workflows` with `--global`. It never
-replaces a file it did not install (`--force` does). Each workflow gets an entry in
+replaces a file it did not install (`--force` does). A file whose name is not a
+workflow name (letters, digits and `. _ -`; never `__proto__`, `constructor` or
+`prototype`) is skipped with a note — `--path` and `--name` install it under one. Nothing
+is written through a symlink: when the workflow, its test or eval, the lock, or a
+directory from the project down to them is one, `add` and `update` write nothing there
+and exit 1. Each workflow gets an entry in
 the lock beside its directory, `.odw/workflows.lock.json` (`~/.odw/workflows.lock.json`):
 
 ```json
@@ -849,7 +854,11 @@ list` and the dashboard's Workspace say so with its source and commit, and it ru
 a [strict script context](#strict-script-context-odw-extension) unless the config
 says `scriptContext: "host"` (so does a nested `workflow()` of it). A run of one whose
 file no longer matches its lock says so in its start banner and log;
-`"lockedWorkflows": "fail"` refuses to start it instead (default `"warn"`). Not done:
+`"lockedWorkflows": "fail"` refuses to start it instead (default `"warn"`). Beside a
+lock that cannot be read, every workflow counts as third-party from an unknown source
+and modified, and `verify` and `odw doctor` report the lock. `update` takes a lock's
+`url`, `ref` and paths only as `add` would, leaves a fetched file that does not check
+as it was, and an entry that fails fails alone (exit 1). Not done:
 signatures, a hub or search, automatic updates, and checking a Claude Code plugin's
 installed commit.
 

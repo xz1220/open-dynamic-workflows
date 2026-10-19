@@ -31,7 +31,7 @@ export interface GitSource {
 
 /** A ref git takes as one fetch argument: no option, no refspec, no `..`. */
 const REF_RE = /^(?!-)(?!.*\.\.)[A-Za-z0-9._/+-]{1,200}$/;
-const SCP_RE = /^[A-Za-z0-9._-]+@[A-Za-z0-9.-]+:(?!\/\/)[^\s]+$/;
+const SCP_RE = /^[A-Za-z0-9._][A-Za-z0-9._-]*@[A-Za-z0-9.][A-Za-z0-9.-]*:(?!\/\/)[^\s]+$/;
 
 /**
  * `<git-url>[#ref]` as a {@link GitSource}; a ConfigError for any other
@@ -42,14 +42,16 @@ export function parseGitSource(arg: string, cwd: string = process.cwd()): GitSou
   const hash = arg.lastIndexOf("#");
   const base = hash >= 0 ? arg.slice(0, hash) : arg;
   const ref = hash >= 0 ? arg.slice(hash + 1) : null;
-  if (ref !== null && !REF_RE.test(ref)) {
+  if (ref !== null && !isGitRef(ref)) {
     throw new ConfigError(`'${ref}' is not a ref odw fetches: a branch, tag or commit id (letters, digits and . _ / + -)`);
   }
-  if (!base || base.startsWith("-") || /\s/.test(base)) throw new ConfigError(`'${base}' is not a git URL`);
+  if (!base || base.startsWith("-") || /[\s\x00-\x1f\x7f]/.test(base)) throw new ConfigError(`'${base}' is not a git URL`);
   let url: string;
-  if (/^(https|ssh|file):\/\//i.test(base)) url = base;
-  else if (SCP_RE.test(base)) url = base; // git@host:org/repo.git — ssh
-  else if (/^[A-Za-z][A-Za-z0-9+.-]*:/.test(base) && !/^[A-Za-z]:[\\/]/.test(base)) {
+  if (/^(https|ssh|file):\/\//i.test(base) || SCP_RE.test(base)) {
+    // https://, ssh://, file://, or git@host:org/repo.git — ssh
+    if (!isGitUrl(base)) throw new ConfigError(`'${base}' is not a git URL`);
+    url = base;
+  } else if (/^[A-Za-z][A-Za-z0-9+.-]*:/.test(base) && !/^[A-Za-z]:[\\/]/.test(base)) {
     throw new ConfigError(`'${base}': odw fetches workflows over https, ssh or file only`);
   } else {
     const dir = resolve(cwd, expandHome(base));
@@ -57,6 +59,23 @@ export function parseGitSource(arg: string, cwd: string = process.cwd()): GitSou
     url = pathToFileURL(dir).href;
   }
   return { url, ref };
+}
+
+/** A ref as {@link parseGitSource} takes one after `#` (and a lock's `ref` must be). */
+export function isGitRef(ref: string): boolean {
+  return REF_RE.test(ref);
+}
+
+/**
+ * A URL odw fetches from as it is (a lock's `url` must be one): https://,
+ * ssh:// or file://, or scp-like `user@host:path` — never option-shaped, no
+ * whitespace or control character, no user or host starting with `-`.
+ */
+export function isGitUrl(url: string): boolean {
+  if (!url || url.startsWith("-") || /[\s\x00-\x1f\x7f]/.test(url)) return false;
+  const scheme = /^(?:https|ssh|file):\/\/([^/]*)/i.exec(url);
+  if (scheme) return !scheme[1]!.startsWith("-") && !scheme[1]!.replace(/^[^@]*@/, "").startsWith("-");
+  return SCP_RE.test(url);
 }
 
 /** One file of the fetched commit. */

@@ -20,9 +20,17 @@
  * `update` re-fetches each entry's ref, and shows the diff of every file that
  * changed before writing it; `verify` hashes every locked file (exit 1 when
  * one is modified or missing).
+ *
+ * A file from the repository is taken only under a name `odw run` resolves
+ * (letters, digits and . _ -; never `__proto__`, `constructor` or
+ * `prototype`), and what is printed of the repository's paths is stripped of
+ * escapes. Nothing is written through a symlink: not the workflow, its test
+ * or eval, the lock, nor any directory from the project (or, `--global`, the
+ * workflows directory's parent) down to them — each is written to a temporary
+ * file beside it and renamed over it (../runtime/safe-write).
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync } from "node:fs";
 import { dirname, join, relative, sep } from "node:path";
 import { parseArgs } from "node:util";
 
@@ -33,11 +41,14 @@ import type { DoctorCheck } from "../doctor.js";
 import { ConfigError } from "../errors.js";
 import { askYesNo, canPrompt } from "../new.js";
 import { unifiedDiff } from "../runtime/compare.js";
+import { UnsafeWriteError, unsafeTarget, writeInside } from "../runtime/safe-write.js";
+import { sanitizeText, stripEscapes } from "../tty.js";
 import { fetchGitSource, normalizeRepoPath, parseGitSource, type FetchedRepo, type TreeFile } from "./git-source.js";
 import {
   EXTRA_DIRS,
   EXTRA_KINDS,
   describeSource,
+  isLockableName,
   lockPathFor,
   lockedExtraPath,
   lockedWorkflowPath,
@@ -46,12 +57,12 @@ import {
   sha256Of,
   verifyLock,
   writeLock,
+  type WorkflowLock,
   type ExtraKind,
   type LockEntry,
   type VerifiedFile,
 } from "./lock.js";
 import { projectLevels } from "../project-levels.js";
-import { isValidWorkflowName } from "./resolve.js";
 
 /** Where the prompts go and come from; tests pass their own. */
 export interface InstallIo {
@@ -69,6 +80,28 @@ const DEFAULT_DIRS = [".odw/workflows", ".claude/workflows", "workflows", ""];
 /** The workflows directory an install writes to: `<cwd>/.odw/workflows`, or the global one. */
 function installDir(global: boolean, config: Config, cwd: string): string {
   return global ? resolveWorkflowsRoot(config.settings.workflowsRoot) : join(cwd, ".odw", "workflows");
+}
+
+/** Below which nothing an install writes may be a symlink: the project, or (global) the workflows directory's parent. */
+function installRoot(global: boolean, dir: string, cwd: string): string {
+  return global ? dirname(dir) : cwd;
+}
+
+/** The lock, written as {@link writeInside} writes: never through a symlink. */
+function writeLockInside(root: string, lockPath: string, lock: WorkflowLock): void {
+  const unsafe = unsafeTarget(root, lockPath);
+  if (unsafe) throw new UnsafeWriteError(unsafe);
+  writeLock(lockPath, lock);
+}
+
+/** Something is at `path` — a file, a directory, or a symlink, dangling or not. */
+function present(path: string): boolean {
+  try {
+    lstatSync(path);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** Every workflows directory a lock may sit beside: each `.odw/workflows` from `cwd` up to its repository root, then the global one. */
@@ -91,8 +124,11 @@ async function confirm(question: string, yes: boolean, io: InstallIo): Promise<b
 
 function display(path: string, cwd: string): string {
   const rel = relative(cwd, path);
-  return rel && !rel.startsWith("..") ? rel.split(sep).join("/") : path;
+  return sanitizeText(rel && !rel.startsWith("..") ? rel.split(sep).join("/") : path, 1000);
 }
+
+/** Text from the repository (its paths, a check's report of them): escapes and control characters stripped, lines and their indent kept. */
+const printable = stripEscapes;
 
 /** A workflow picked from the fetched repository. */
 interface Pick {
@@ -169,13 +205,14 @@ export async function cmdWorkflowsAdd(rest: string[], io: InstallIo = defaultIo(
     io.err.write("usage: odw workflows add <git-url>[#ref] [--path P] [--name N] [--global] [--yes] [--force]\n");
     return 2;
   }
-  if (values.name !== undefined && !isValidWorkflowName(values.name)) {
-    io.err.write(`odw workflows add: '${values.name}' is not a workflow name (letters, digits and . _ -)\n`);
+  if (values.name !== undefined && !isLockableName(values.name)) {
+    io.err.write(`odw workflows add: '${sanitizeText(values.name, 200)}' is not a workflow name (letters, digits and . _ -)\n`);
     return 2;
   }
   const config = loadConfig(values.config ?? null, { quiet: true, cwd: io.cwd });
   const source = parseGitSource(positionals[0]!, io.cwd);
   const dir = installDir(values.global === true, config, io.cwd);
+  const root = installRoot(values.global === true, dir, io.cwd);
   const lockPath = lockPathFor(dir);
   const lock = readLock(lockPath);
 
@@ -188,16 +225,21 @@ export async function cmdWorkflowsAdd(rest: string[], io: InstallIo = defaultIo(
     for (const file of files) {
       const bytes = repo.read(file);
       const text = bytes.toString("utf8");
+      const stem = file.path.slice(file.path.lastIndexOf("/") + 1, -".js".length);
+      // Its name is its file's: one `odw run` resolves and a lock can key (unless --name gives it another).
+      if (values.name === undefined && !isLockableName(stem)) {
+        notes.push(`skipped ${file.path}: not a workflow name (letters, digits and . _ -) — --path and --name install it under one`);
+        continue;
+      }
       const report = checkCapabilities(text, file.path);
-      for (const line of formatCheck(report)) io.err.write(`  ${line}\n`);
+      for (const line of formatCheck(report)) io.err.write(`  ${printable(line)}\n`);
       if (!report.ok) {
         notes.push(`skipped ${file.path}: not a workflow odw can load`);
         continue;
       }
-      const stem = file.path.slice(file.path.lastIndexOf("/") + 1, -".js".length);
       picks.push({ file, name: stem, bytes, extras: values.global ? {} : extrasOf(repo, file) });
     }
-    for (const note of notes) io.err.write(`  note: ${note}\n`);
+    for (const note of notes) io.err.write(`  note: ${sanitizeText(note, 1000)}\n`);
     if (picks.length === 0) {
       io.err.write(
         `odw workflows add: no workflow found in ${repo.url} at ${repo.commit.slice(0, 12)}` +
@@ -220,8 +262,20 @@ export async function cmdWorkflowsAdd(rest: string[], io: InstallIo = defaultIo(
         io.err.write(`odw workflows add: '${p.name}' is already installed from ${describeSource(locked)} — odw workflows update ${p.name}\n`);
         return 1;
       }
-      if (!locked && existsSync(target) && !values.force) {
+      if (!locked && present(target) && !values.force) {
         io.err.write(`odw workflows add: ${display(target, io.cwd)} exists and odw workflows add did not install it — pass --force to replace it\n`);
+        return 1;
+      }
+    }
+    // Nothing is written through a symlink: the workflow, its test or eval, the lock, or a directory above them.
+    const writes = [
+      lockPath,
+      ...picks.flatMap((p) => [lockedWorkflowPath(dir, p.name), ...EXTRA_KINDS.filter((k) => p.extras[k]).map((k) => lockedExtraPath(dir, p.name, k))]),
+    ];
+    for (const at of writes) {
+      const unsafe = unsafeTarget(root, at);
+      if (unsafe) {
+        io.err.write(`odw workflows add: not writing ${display(at, io.cwd)}: ${sanitizeText(unsafe, 1000)} — a symlink is never written through\n`);
         return 1;
       }
     }
@@ -229,16 +283,15 @@ export async function cmdWorkflowsAdd(rest: string[], io: InstallIo = defaultIo(
     io.err.write(`\nfrom ${repo.url}${repo.ref ? `#${repo.ref}` : ""} at ${repo.commit}:\n`);
     for (const p of picks) {
       const extras = EXTRA_KINDS.filter((k) => p.extras[k]).map((k) => `${EXTRA_DIRS[k]}/${p.name}.json`);
-      io.err.write(`  ${p.file.path} → ${display(lockedWorkflowPath(dir, p.name), io.cwd)}${extras.length ? ` (+ ${extras.join(", ")})` : ""}\n`);
+      io.err.write(`  ${sanitizeText(p.file.path, 1000)} → ${display(lockedWorkflowPath(dir, p.name), io.cwd)}${extras.length ? ` (+ ${extras.join(", ")})` : ""}\n`);
     }
     io.err.write("installed workflows are third-party: they run in a strict script context unless the config says scriptContext: \"host\"\n");
     if (!(await confirm(`install ${picks.length === 1 ? "it" : `these ${picks.length}`}?`, values.yes === true, io))) return 1;
 
-    mkdirSync(dir, { recursive: true });
     const installedAt = new Date().toISOString();
     for (const p of picks) {
       const target = lockedWorkflowPath(dir, p.name);
-      writeFileSync(target, p.bytes);
+      writeInside(root, target, p.bytes);
       const entry: LockEntry = {
         url: repo.url,
         ref: repo.ref,
@@ -251,20 +304,19 @@ export async function cmdWorkflowsAdd(rest: string[], io: InstallIo = defaultIo(
         const x = p.extras[kind];
         if (!x) continue;
         const at = lockedExtraPath(dir, p.name, kind);
-        const before = existsSync(at) ? sha256File(at) : null;
+        const before = present(at) ? sha256File(at) : null;
         const previous = Object.hasOwn(lock.workflows, p.name) ? lock.workflows[p.name]![kind] : undefined;
         if (before !== null && before !== previous?.sha256 && !values.force) {
           io.err.write(`  note: kept ${display(at, io.cwd)}: it exists and is not this workflow's (--force replaces it)\n`);
           continue;
         }
-        mkdirSync(dirname(at), { recursive: true });
-        writeFileSync(at, x.bytes);
+        writeInside(root, at, x.bytes);
         entry[kind] = { path: x.file.path, sha256: sha256Of(x.bytes) };
       }
       lock.workflows[p.name] = entry;
       io.err.write(`installed ${p.name} → ${display(target, io.cwd)}\n`);
     }
-    writeLock(lockPath, lock);
+    writeLockInside(root, lockPath, lock);
     io.err.write(`locked in ${display(lockPath, io.cwd)} — odw workflows verify checks it, odw workflows update moves it\n`);
     return 0;
   } finally {
@@ -291,13 +343,14 @@ export async function cmdWorkflowsUpdate(rest: string[], io: InstallIo = default
   const only = positionals[0];
   const config = loadConfig(values.config ?? null, { quiet: true, cwd: io.cwd });
   const dir = installDir(values.global === true, config, io.cwd);
+  const root = installRoot(values.global === true, dir, io.cwd);
   const lockPath = lockPathFor(dir);
   const lock = readLock(lockPath);
   const names = Object.keys(lock.workflows).filter((n) => only === undefined || n === only).sort();
   if (names.length === 0) {
     io.err.write(
       only !== undefined
-        ? `odw workflows update: no workflow '${only}' in ${display(lockPath, io.cwd)}\n`
+        ? `odw workflows update: no workflow '${sanitizeText(only, 200)}' in ${display(lockPath, io.cwd)}\n`
         : `odw workflows update: nothing installed from git in ${display(dir, io.cwd)}\n`,
     );
     return only !== undefined ? 1 : 0;
@@ -306,88 +359,108 @@ export async function cmdWorkflowsUpdate(rest: string[], io: InstallIo = default
   const repos = new Map<string, FetchedRepo>();
   let failed = 0;
   let changed = false;
+  /** One entry: "updated", "failed", or "unchanged" (up to date, its commit perhaps moved). */
+  const updateOne = async (name: string): Promise<"updated" | "failed" | "unchanged"> => {
+    const entry = lock.workflows[name]!;
+    const target = lockedWorkflowPath(dir, name);
+    // Nothing is read or written through a symlink: the workflow, its test or eval, or a directory above them.
+    for (const at of [target, ...EXTRA_KINDS.filter((k) => entry[k]).map((k) => lockedExtraPath(dir, name, k))]) {
+      const unsafe = unsafeTarget(root, at);
+      if (unsafe) {
+        io.err.write(`${name}: not writing ${display(at, io.cwd)}: ${sanitizeText(unsafe, 1000)} — a symlink is never written through\n`);
+        return "failed";
+      }
+    }
+    const key = `${entry.url}#${entry.ref ?? ""}`;
+    let repo = repos.get(key);
+    if (!repo) {
+      io.err.write(`fetching ${entry.url}${entry.ref ? `#${entry.ref}` : ""} …\n`);
+      repo = fetchGitSource({ url: entry.url, ref: entry.ref });
+      repos.set(key, repo);
+    }
+    const found = repo.list(entry.path);
+    if (found?.kind !== "file" || (found.file.mode !== "100644" && found.file.mode !== "100755")) {
+      io.err.write(`${name}: ${entry.path} is no longer a file in ${entry.url} at ${repo.commit.slice(0, 12)} — left as installed\n`);
+      return "failed";
+    }
+    const bytes = repo.read(found.file);
+    const text = bytes.toString("utf8");
+    const sha256 = sha256Of(bytes);
+    const onDisk = sha256File(target);
+    const extras = EXTRA_KINDS.map((kind) => {
+      const x = entry[kind];
+      if (!x) return null;
+      const f = repo!.list(x.path);
+      return f?.kind === "file" ? { kind, path: x.path, bytes: repo!.read(f.file) } : null;
+    }).filter((x): x is { kind: ExtraKind; path: string; bytes: Buffer } => x !== null);
+    const extrasChanged = extras.filter((x) => sha256Of(x.bytes) !== entry[x.kind]!.sha256);
+    if (sha256 === entry.sha256 && extrasChanged.length === 0) {
+      if (repo.commit !== entry.commit) {
+        lock.workflows[name] = { ...entry, commit: repo.commit };
+        changed = true;
+      }
+      io.err.write(`${name}: up to date at ${repo.commit.slice(0, 12)}${onDisk !== entry.sha256 ? " (but modified locally: odw workflows verify)" : ""}\n`);
+      return "unchanged";
+    }
+    if (onDisk !== null && onDisk !== entry.sha256 && !values.force) {
+      io.err.write(`${name}: ${display(target, io.cwd)} was modified since it was installed — not overwriting it (--force does)\n`);
+      return "failed";
+    }
+    io.err.write(`\n${name}: ${entry.commit.slice(0, 12)} → ${repo.commit.slice(0, 12)} (${entry.url}${entry.ref ? `#${entry.ref}` : ""})\n`);
+    if (sha256 !== entry.sha256) {
+      const before = onDisk === null ? "" : readFileSync(target, "utf8");
+      const diff = unifiedDiff(before, text, { maxLines: 400 });
+      process.stdout.write(`--- a/${display(target, io.cwd)}\t${entry.commit.slice(0, 12)}\n+++ b/${display(target, io.cwd)}\t${repo.commit.slice(0, 12)}\n`);
+      for (const line of diff.lines) process.stdout.write(`${printable(line)}\n`);
+      if (diff.truncated) process.stdout.write(`… (diff cut: +${diff.added} −${diff.removed} in all)\n`);
+      const report = checkCapabilities(text, entry.path);
+      for (const line of formatCheck(report)) io.err.write(`  ${printable(line)}\n`);
+      // As add: a file that does not check is never installed.
+      if (!report.ok) {
+        io.err.write(`${name}: ${entry.path} at ${repo.commit.slice(0, 12)} is not a workflow odw can load — left as installed\n`);
+        return "failed";
+      }
+    }
+    for (const x of extrasChanged) io.err.write(`  ${EXTRA_DIRS[x.kind]}/${name}.json changed too\n`);
+    if (!(await confirm(`update ${name}?`, values.yes === true, io))) return "failed";
+    writeInside(root, target, bytes);
+    const next: LockEntry = { ...entry, commit: repo.commit, sha256, installedAt: new Date().toISOString() };
+    for (const x of extrasChanged) {
+      const at = lockedExtraPath(dir, name, x.kind);
+      const local = sha256File(at);
+      if (local !== null && local !== entry[x.kind]!.sha256 && !values.force) {
+        io.err.write(`  note: kept ${display(at, io.cwd)}: modified since it was installed (--force replaces it)\n`);
+        continue;
+      }
+      writeInside(root, at, x.bytes);
+      next[x.kind] = { path: x.path, sha256: sha256Of(x.bytes) };
+    }
+    lock.workflows[name] = next;
+    changed = true;
+    io.err.write(`updated ${name} to ${repo.commit.slice(0, 12)}\n`);
+    return "updated";
+  };
   try {
     for (const name of names) {
-      const entry = lock.workflows[name]!;
-      const key = `${entry.url}#${entry.ref ?? ""}`;
-      let repo = repos.get(key);
-      if (!repo) {
-        io.err.write(`fetching ${entry.url}${entry.ref ? `#${entry.ref}` : ""} …\n`);
-        try {
-          repo = fetchGitSource({ url: entry.url, ref: entry.ref });
-        } catch (err) {
-          io.err.write(`${name}: ${(err as Error).message}\n`);
-          failed++;
-          continue;
-        }
-        repos.set(key, repo);
-      }
-      const found = repo.list(entry.path);
-      if (found?.kind !== "file" || (found.file.mode !== "100644" && found.file.mode !== "100755")) {
-        io.err.write(`${name}: ${entry.path} is no longer a file in ${entry.url} at ${repo.commit.slice(0, 12)} — left as installed\n`);
+      // One entry that cannot be updated (its source unreachable, a file refused) fails alone.
+      try {
+        if ((await updateOne(name)) === "failed") failed++;
+      } catch (err) {
+        io.err.write(`${name}: ${sanitizeText((err as Error).message, 1000)}\n`);
         failed++;
-        continue;
       }
-      const bytes = repo.read(found.file);
-      const text = bytes.toString("utf8");
-      const sha256 = sha256Of(bytes);
-      const target = lockedWorkflowPath(dir, name);
-      const onDisk = sha256File(target);
-      const extras = EXTRA_KINDS.map((kind) => {
-        const x = entry[kind];
-        if (!x) return null;
-        const f = repo!.list(x.path);
-        return f?.kind === "file" ? { kind, path: x.path, bytes: repo!.read(f.file) } : null;
-      }).filter((x): x is { kind: ExtraKind; path: string; bytes: Buffer } => x !== null);
-      const extrasChanged = extras.filter((x) => sha256Of(x.bytes) !== entry[x.kind]!.sha256);
-      if (sha256 === entry.sha256 && extrasChanged.length === 0) {
-        if (repo.commit !== entry.commit) {
-          lock.workflows[name] = { ...entry, commit: repo.commit };
-          changed = true;
-        }
-        io.err.write(`${name}: up to date at ${repo.commit.slice(0, 12)}${onDisk !== entry.sha256 ? " (but modified locally: odw workflows verify)" : ""}\n`);
-        continue;
-      }
-      if (onDisk !== null && onDisk !== entry.sha256 && !values.force) {
-        io.err.write(`${name}: ${display(target, io.cwd)} was modified since it was installed — not overwriting it (--force does)\n`);
-        failed++;
-        continue;
-      }
-      io.err.write(`\n${name}: ${entry.commit.slice(0, 12)} → ${repo.commit.slice(0, 12)} (${entry.url}${entry.ref ? `#${entry.ref}` : ""})\n`);
-      if (sha256 !== entry.sha256) {
-        const before = onDisk === null ? "" : readFileSync(target, "utf8");
-        const diff = unifiedDiff(before, text, { maxLines: 400 });
-        process.stdout.write(`--- a/${display(target, io.cwd)}\t${entry.commit.slice(0, 12)}\n+++ b/${display(target, io.cwd)}\t${repo.commit.slice(0, 12)}\n`);
-        for (const line of diff.lines) process.stdout.write(`${line}\n`);
-        if (diff.truncated) process.stdout.write(`… (diff cut: +${diff.added} −${diff.removed} in all)\n`);
-        for (const line of formatCheck(checkCapabilities(text, entry.path))) io.err.write(`  ${line}\n`);
-      }
-      for (const x of extrasChanged) io.err.write(`  ${EXTRA_DIRS[x.kind]}/${name}.json changed too\n`);
-      if (!(await confirm(`update ${name}?`, values.yes === true, io))) {
-        failed++;
-        continue;
-      }
-      writeFileSync(target, bytes);
-      const next: LockEntry = { ...entry, commit: repo.commit, sha256, installedAt: new Date().toISOString() };
-      for (const x of extrasChanged) {
-        const at = lockedExtraPath(dir, name, x.kind);
-        const local = sha256File(at);
-        if (local !== null && local !== entry[x.kind]!.sha256 && !values.force) {
-          io.err.write(`  note: kept ${display(at, io.cwd)}: modified since it was installed (--force replaces it)\n`);
-          continue;
-        }
-        mkdirSync(dirname(at), { recursive: true });
-        writeFileSync(at, x.bytes);
-        next[x.kind] = { path: x.path, sha256: sha256Of(x.bytes) };
-      }
-      lock.workflows[name] = next;
-      changed = true;
-      io.err.write(`updated ${name} to ${repo.commit.slice(0, 12)}\n`);
     }
   } finally {
     for (const repo of repos.values()) repo.cleanup();
   }
-  if (changed) writeLock(lockPath, lock);
+  if (changed) {
+    try {
+      writeLockInside(root, lockPath, lock);
+    } catch (err) {
+      io.err.write(`odw workflows update: ${sanitizeText((err as Error).message, 1000)}\n`);
+      return 1;
+    }
+  }
   return failed > 0 ? 1 : 0;
 }
 

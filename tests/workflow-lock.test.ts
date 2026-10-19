@@ -7,7 +7,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { execPath } from "node:process";
@@ -22,7 +22,7 @@ import { listWorkflowSummaries } from "../src/runtime/workflows-view.js";
 import { resolveScriptContext } from "../src/script-context.js";
 import { fetchGitSource, parseGitSource } from "../src/workflows/git-source.js";
 import { cmdWorkflowsAdd, cmdWorkflowsUpdate, cmdWorkflowsVerify, lockedWorkflowsCheck, type InstallIo } from "../src/workflows/install.js";
-import { installedWorkflowFor, readLock, sha256Of } from "../src/workflows/lock.js";
+import { installedWorkflowFor, modifiedLockedMessage, readLock, sha256Of } from "../src/workflows/lock.js";
 import { listWorkflows, resolveWorkflow } from "../src/workflows/resolve.js";
 
 const flow = (name: string, body = "return typeof process + ' ' + (await agent('TASK'))\n") =>
@@ -470,3 +470,221 @@ function defaultConfigWith(raw: Record<string, unknown>): unknown {
     rmSync(dir, { recursive: true, force: true });
   }
 }
+
+// --- found in review -----------------------------------------------------------------
+
+/** A lock of one entry `name`, as a cloned checkout could carry it. */
+function lockOf(entries: Record<string, Record<string, unknown>>): string {
+  const workflows: Record<string, unknown> = {};
+  for (const [name, e] of Object.entries(entries)) {
+    workflows[name] = { ref: null, commit: "0".repeat(40), sha256: "0".repeat(64), installedAt: "", ...e };
+  }
+  return JSON.stringify({ version: 1, workflows });
+}
+
+test("add and update never write through a symlink: a dangling workflow link, a linked tests directory, a linked .odw", { skip: process.platform === "win32" }, async () => {
+  const f = fixture();
+  try {
+    f.write(".odw/workflows/foo.js", flow("foo"));
+    f.write(".odw/tests/foo.json", "{}\n");
+    f.commit("one");
+    const outside = join(f.root, "outside");
+    mkdirSync(outside);
+
+    // A checkout's committed lock, and its workflow a dangling link out of the project: update refuses it.
+    mkdirSync(join(f.project, ".odw", "workflows"), { recursive: true });
+    const lockPath = join(f.project, ".odw", "workflows.lock.json");
+    const lockText = lockOf({ foo: { url: pathToFileURL(f.src).href, path: ".odw/workflows/foo.js" } });
+    writeFileSync(lockPath, lockText);
+    symlinkSync(join(outside, "victim.js"), join(f.project, ".odw", "workflows", "foo.js"));
+    const update = io(f.project);
+    assert.equal(await stdout(() => cmdWorkflowsUpdate(["--yes"], update)).then((r) => r.value), 1);
+    assert.match(update.text(), /foo: not writing \.odw\/workflows\/foo\.js: \S+foo\.js is a symbolic link — a symlink is never written through/);
+    assert.equal(existsSync(join(outside, "victim.js")), false, "nothing written outside the project");
+    assert.equal(readFileSync(lockPath, "utf8"), lockText, "the lock is left as it was");
+
+    // add: the same dangling link is something there (never "missing"), and --force does not write through it.
+    rmSync(lockPath);
+    const add = io(f.project);
+    assert.equal(await cmdWorkflowsAdd([f.src, "--yes"], add), 1);
+    assert.match(add.text(), /\.odw\/workflows\/foo\.js exists and odw workflows add did not install it/);
+    const forced = io(f.project);
+    assert.equal(await cmdWorkflowsAdd([f.src, "--yes", "--force"], forced), 1);
+    assert.match(forced.text(), /not writing \.odw\/workflows\/foo\.js: \S+ is a symbolic link/);
+    assert.equal(existsSync(join(outside, "victim.js")), false);
+    rmSync(join(f.project, ".odw", "workflows", "foo.js"));
+
+    // A linked .odw/tests: the test is not written there, and nothing is installed.
+    symlinkSync(outside, join(f.project, ".odw", "tests"));
+    const extras = io(f.project);
+    assert.equal(await cmdWorkflowsAdd([f.src, "--yes"], extras), 1);
+    assert.match(extras.text(), /not writing \.odw\/tests\/foo\.json: \S+tests is a symbolic link/);
+    assert.equal(existsSync(join(outside, "foo.json")), false);
+    assert.equal(existsSync(join(f.project, ".odw", "workflows", "foo.js")), false, "all or nothing: refused before writing");
+    rmSync(join(f.project, ".odw"), { recursive: true });
+
+    // A linked .odw itself.
+    mkdirSync(join(outside, "odw"));
+    symlinkSync(join(outside, "odw"), join(f.project, ".odw"));
+    const linked = io(f.project);
+    assert.equal(await cmdWorkflowsAdd([f.src, "--yes"], linked), 1);
+    assert.match(linked.text(), /\.odw is a symbolic link/);
+    assert.deepEqual(readdirSync(join(outside, "odw")), []);
+    rmSync(join(f.project, ".odw"));
+
+    // Installed for real, then the tests directory swapped for a link: update refuses before fetching.
+    assert.equal(await cmdWorkflowsAdd([f.src, "--yes"], io(f.project)), 0);
+    rmSync(join(f.project, ".odw", "tests"), { recursive: true });
+    symlinkSync(outside, join(f.project, ".odw", "tests"));
+    f.write(".odw/tests/foo.json", '{"cases":[]}\n');
+    f.commit("two");
+    const swapped = io(f.project);
+    assert.equal(await stdout(() => cmdWorkflowsUpdate(["--yes"], swapped)).then((r) => r.value), 1);
+    assert.match(swapped.text(), /tests is a symbolic link/);
+    assert.equal(existsSync(join(outside, "foo.json")), false);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test("a repository's file whose name is no workflow name is skipped, with its name stripped of escapes; __proto__ never installs", { skip: process.platform === "win32" }, async () => {
+  const f = fixture();
+  try {
+    f.write(".odw/workflows/good.js", flow("good"));
+    f.write(".odw/workflows/x y\u001b[2J.js", flow("bad"));
+    f.write(".odw/workflows/__proto__.js", flow("proto"));
+    f.write(".odw/workflows/constructor.js", flow("ctor"));
+    f.commit("one");
+    const out = io(f.project);
+    assert.equal(await cmdWorkflowsAdd([f.src, "--yes"], out), 0, out.text());
+    const text = out.text();
+    assert.equal(text.includes("\u001b"), false, "no escape reaches the terminal");
+    assert.match(text, /note: skipped \.odw\/workflows\/x y\.js: not a workflow name/);
+    assert.match(text, /note: skipped \.odw\/workflows\/__proto__\.js: not a workflow name/);
+    assert.match(text, /note: skipped \.odw\/workflows\/constructor\.js: not a workflow name/);
+    assert.deepEqual(readdirSync(join(f.project, ".odw", "workflows")), ["good.js"]);
+    const lock = readLock(join(f.project, ".odw", "workflows.lock.json"));
+    assert.deepEqual(Object.keys(lock.workflows), ["good"]);
+    assert.equal(Object.getPrototypeOf(lock.workflows), null);
+    assert.equal(installedWorkflowFor(join(f.project, ".odw", "workflows", "good.js"))?.modified, false);
+    const named = io(f.project);
+    assert.equal(await cmdWorkflowsAdd([f.src, "--path", ".odw/workflows/good.js", "--name", "__proto__", "--yes"], named), 2);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test("a lock that cannot be read makes every workflow beside it third-party from an unknown source and modified; verify and doctor say so", async () => {
+  const f = fixture();
+  try {
+    f.write(".odw/workflows/audit.js", flow("audit"));
+    f.commit("one");
+    assert.equal(await cmdWorkflowsAdd([f.src, "--yes"], io(f.project)), 0);
+    const lockPath = join(f.project, ".odw", "workflows.lock.json");
+    const good = readFileSync(lockPath, "utf8");
+    writeFileSync(join(f.project, ".odw", "workflows", "mine.js"), flow("mine"));
+    const config = defaultConfig();
+    config.settings.workflowsRoot = join(f.root, "global");
+
+    for (const broken of ["{not json", lockOf({ "x y": { url: pathToFileURL(f.src).href, path: "a.js" } }), '{"version":1,"workflows":{"__proto__":{}}}']) {
+      writeFileSync(lockPath, broken);
+      for (const name of ["audit", "mine"]) {
+        const w = installedWorkflowFor(join(f.project, ".odw", "workflows", `${name}.js`));
+        assert.ok(w, `${name} beside ${broken}`);
+        assert.equal(w.modified, true);
+        assert.match(w.lockError!, /not a workflow lock/);
+      }
+      const resolved = resolveWorkflow("mine", { cwd: f.project, config });
+      assert.match(modifiedLockedMessage(resolved.installed!), /sits beside a workflow lock that cannot be read .* third-party from an unknown source/);
+      const verified = io(f.project);
+      assert.equal(await stdout(() => cmdWorkflowsVerify(["--project"], verified)).then((r) => r.value), 1);
+      assert.match(verified.text(), /not a workflow lock/);
+      const check = lockedWorkflowsCheck(f.project, config)!;
+      assert.equal(check.status, "fail");
+      assert.match(check.detail, /not a workflow lock/);
+    }
+
+    // A run of one under lockedWorkflows: "fail" does not start; under "warn" it runs strict, said loudly.
+    const mock = { command: [execPath, "-e", "process.stdin.resume();process.stdin.on('end',()=>process.stdout.write('ok'))"], stdin: "{prompt}" };
+    const configPath = join(f.root, "mine.json");
+    const runsRoot = join(f.root, "runs");
+    const flags = ["--config", configPath, "--runs-root", runsRoot, "--source", f.project, "--wait"];
+    writeFileSync(configPath, JSON.stringify({ defaultAdapter: "mock", adapters: { mock }, lockedWorkflows: "fail" }));
+    const refused = await cli(["run", "mine", ...flags]);
+    assert.notEqual(refused.code, 0);
+    assert.match(refused.err, /lock that cannot be read/);
+    writeFileSync(configPath, JSON.stringify({ defaultAdapter: "mock", adapters: { mock } }));
+    const warned = await cli(["run", "mine", ...flags]);
+    assert.equal(warned.code, 0, warned.err);
+    assert.equal(JSON.parse(warned.out), "undefined ok", "strict: no process");
+    assert.match(warned.err, /⚠ workflow mine sits beside a workflow lock that cannot be read/);
+
+    writeFileSync(lockPath, good);
+    assert.equal(installedWorkflowFor(join(f.project, ".odw", "workflows", "mine.js")), null, "a readable lock that does not name it: not third-party");
+  } finally {
+    f.cleanup();
+  }
+});
+
+test("update refuses a fetched file that does not check, as add does", async () => {
+  const f = fixture();
+  try {
+    f.write(".odw/workflows/audit.js", flow("audit"));
+    f.commit("one");
+    assert.equal(await cmdWorkflowsAdd([f.src, "--yes"], io(f.project)), 0);
+    const target = join(f.project, ".odw", "workflows", "audit.js");
+    f.write(".odw/workflows/audit.js", "this is not a workflow\n");
+    f.commit("two");
+    const out = io(f.project);
+    assert.equal(await stdout(() => cmdWorkflowsUpdate(["--yes"], out)).then((r) => r.value), 1);
+    assert.match(out.text(), /audit: \.odw\/workflows\/audit\.js at [0-9a-f]{12} is not a workflow odw can load — left as installed/);
+    assert.equal(readFileSync(target, "utf8"), flow("audit"));
+  } finally {
+    f.cleanup();
+  }
+});
+
+test("a lock's url, ref and paths are checked as add checks its own; in update, one entry that fails fails alone", async () => {
+  const f = fixture();
+  try {
+    const lockPath = join(f.root, "workflows.lock.json");
+    const ok = { url: "https://example.com/x.git", path: ".odw/workflows/a.js" };
+    for (const bad of [
+      { url: "ssh://-oProxyCommand=touch$IFS/tmp/x/y" },
+      { url: "ext::sh -c touch% /tmp/x" },
+      { url: "--upload-pack=touch /tmp/x" },
+      { url: "-u@host:x" },
+      { url: "http://example.com/x.git" },
+      { ref: "--upload-pack=touch /tmp/x" },
+      { ref: "a..b" },
+      { path: "../x.js" },
+      { path: "/etc/passwd" },
+      { path: "" },
+      { test: { path: "a/../../b.json", sha256: "0".repeat(64) } },
+    ]) {
+      writeFileSync(lockPath, lockOf({ a: { ...ok, ...bad } }));
+      assert.throws(() => readLock(lockPath), ConfigError, JSON.stringify(bad));
+    }
+    writeFileSync(lockPath, lockOf({ a: ok }));
+    assert.equal(readLock(lockPath).workflows.a!.url, ok.url);
+
+    // Two entries: one whose source is gone fails alone; the other still updates.
+    f.write(".odw/workflows/audit.js", flow("audit"));
+    f.commit("one");
+    assert.equal(await cmdWorkflowsAdd([f.src, "--yes"], io(f.project)), 0);
+    const projectLock = join(f.project, ".odw", "workflows.lock.json");
+    const lock = JSON.parse(readFileSync(projectLock, "utf8")) as { workflows: Record<string, Record<string, unknown>> };
+    lock.workflows.gone = { ...lock.workflows.audit, url: pathToFileURL(join(f.root, "no-such-repo")).href };
+    writeFileSync(join(f.project, ".odw", "workflows", "gone.js"), flow("audit"));
+    writeFileSync(projectLock, JSON.stringify(lock));
+    f.write(".odw/workflows/audit.js", flow("audit", "return 'v2'\n"));
+    const second = f.commit("two");
+    const out = io(f.project);
+    assert.equal(await stdout(() => cmdWorkflowsUpdate(["--yes"], out)).then((r) => r.value), 1);
+    assert.match(out.text(), /gone: could not fetch/);
+    assert.match(out.text(), /updated audit to [0-9a-f]{12}/);
+    assert.equal(readLock(projectLock).workflows.audit!.commit, second);
+  } finally {
+    f.cleanup();
+  }
+});

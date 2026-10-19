@@ -23,7 +23,13 @@
  *
  * A workflow with an entry here is third-party: it runs in a strict script
  * context by default, and a run whose file no longer hashes to its `sha256`
- * says so loudly (or, with `lockedWorkflows: "fail"`, does not start).
+ * says so loudly (or, with `lockedWorkflows: "fail"`, does not start). A lock
+ * that cannot be read makes every workflow beside it third-party from an
+ * unknown source, and modified: never a reason to trust one.
+ *
+ * Entries are keyed in a prototype-free object; a name is one `odw run`
+ * resolves, never `__proto__`, `constructor` or `prototype`; `url`, `ref` and
+ * the paths are checked as `odw workflows add` checks its own (./git-source).
  */
 
 import { createHash } from "node:crypto";
@@ -32,12 +38,21 @@ import { basename, dirname, join } from "node:path";
 
 import { ConfigError } from "../errors.js";
 import { writeJsonAtomic } from "../runtime/fs-util.js";
+import { sanitizeText } from "../tty.js";
+import { isGitRef, isGitUrl, normalizeRepoPath } from "./git-source.js";
 
 export const LOCK_VERSION = 1;
 
 /** A workflow name, as `odw run <name>` resolves one (../workflows/resolve; not imported, which imports this). */
 const NAME_RE = /^[A-Za-z0-9._-]{1,255}$/;
 const isValidWorkflowName = (name: string) => NAME_RE.test(name) && name !== "." && name !== "..";
+/** Names no lock entry takes: an object's own machinery. */
+const RESERVED_NAMES: ReadonlySet<string> = new Set(["__proto__", "constructor", "prototype"]);
+
+/** A name a lock entry (and so an installed workflow) may have: a workflow name, not a reserved one. */
+export function isLockableName(name: string): boolean {
+  return isValidWorkflowName(name) && !RESERVED_NAMES.has(name);
+}
 
 /** A file copied along with the workflow (its test or eval). */
 export interface LockedExtra {
@@ -110,17 +125,17 @@ export function readLock(path: string): WorkflowLock {
   try {
     raw = JSON.parse(readFileSync(path, "utf8"));
   } catch (err) {
-    throw new ConfigError(`${path}: not a workflow lock: ${(err as Error).message}`);
+    throw new ConfigError(`${path}: not a workflow lock: ${sanitizeText((err as Error).message, 500)}`);
   }
-  const bad = (why: string) => new ConfigError(`${path}: not a workflow lock: ${why}`);
+  const bad = (why: string) => new ConfigError(`${path}: not a workflow lock: ${sanitizeText(why, 500)}`);
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) throw bad("expected an object");
   const r = raw as Record<string, unknown>;
   if (r.version !== LOCK_VERSION) throw bad(`version ${JSON.stringify(r.version)} (this odw reads ${LOCK_VERSION})`);
   const list = r.workflows;
   if (list === null || typeof list !== "object" || Array.isArray(list)) throw bad('"workflows" is not an object');
-  const workflows: Record<string, LockEntry> = {};
+  const workflows: Record<string, LockEntry> = Object.create(null);
   for (const [name, value] of Object.entries(list as Record<string, unknown>)) {
-    if (!isValidWorkflowName(name)) throw bad(`'${name}' is not a workflow name`);
+    if (!isLockableName(name)) throw bad(`'${name}' is not a workflow name`);
     const e = value as Record<string, unknown> | null;
     const str = (k: string) => (e && typeof e[k] === "string" ? (e[k] as string) : null);
     const url = str("url");
@@ -131,6 +146,10 @@ export function readLock(path: string): WorkflowLock {
       throw bad(`entry '${name}' needs url, path, a commit id and a sha256`);
     }
     if (e.ref !== null && e.ref !== undefined && typeof e.ref !== "string") throw bad(`entry '${name}': ref must be a string or null`);
+    // As `odw workflows add` takes them: a URL it fetches, a ref that is no option, a path inside the repository.
+    if (!isGitUrl(url)) throw bad(`entry '${name}': '${url}' is not a git URL odw fetches (https, ssh or file)`);
+    if (typeof e.ref === "string" && !isGitRef(e.ref)) throw bad(`entry '${name}': '${e.ref}' is not a ref odw fetches`);
+    if (!isRepoPath(at)) throw bad(`entry '${name}': '${at}' is not a path inside the repository`);
     const entry: LockEntry = {
       url,
       ref: typeof e.ref === "string" ? e.ref : null,
@@ -142,7 +161,7 @@ export function readLock(path: string): WorkflowLock {
     for (const kind of EXTRA_KINDS) {
       const x = e[kind] as Record<string, unknown> | undefined;
       if (x === undefined) continue;
-      if (!x || typeof x.path !== "string" || typeof x.sha256 !== "string" || !HEX64.test(x.sha256)) {
+      if (!x || typeof x.path !== "string" || !isRepoPath(x.path) || typeof x.sha256 !== "string" || !HEX64.test(x.sha256)) {
         throw bad(`entry '${name}': ${kind} needs a path and a sha256`);
       }
       entry[kind] = { path: x.path, sha256: x.sha256 };
@@ -152,9 +171,18 @@ export function readLock(path: string): WorkflowLock {
   return { version: LOCK_VERSION, workflows };
 }
 
+/** A file's path inside a repository, as git lists it: relative, `/`-separated, no `.` or `..`. */
+function isRepoPath(path: string): boolean {
+  try {
+    return path !== "" && normalizeRepoPath(path) === path;
+  } catch {
+    return false;
+  }
+}
+
 /** Write the lock, its entries by name. */
 export function writeLock(path: string, lock: WorkflowLock): void {
-  const workflows: Record<string, LockEntry> = {};
+  const workflows: Record<string, LockEntry> = Object.create(null);
   for (const name of Object.keys(lock.workflows).sort()) workflows[name] = lock.workflows[name]!;
   mkdirSync(dirname(path), { recursive: true });
   writeJsonAtomic(path, { version: LOCK_VERSION, workflows }, 2);
@@ -167,14 +195,21 @@ export interface InstalledWorkflow {
   entry: LockEntry;
   /** sha256 of the file as it is now; null when it cannot be read. */
   actualSha256: string | null;
-  /** Its bytes are no longer the ones installed. */
+  /** Its bytes are no longer the ones installed (always, when the lock cannot be read). */
   modified: boolean;
+  /** Why the lock beside it cannot be read: then `entry` is a stand-in, its source unknown. */
+  lockError?: string;
 }
+
+/** The url a stand-in entry has: where a workflow beside an unreadable lock came from is not known. */
+const UNKNOWN_SOURCE = "(unknown source: the lock cannot be read)";
 
 /**
  * The lock entry for the workflow at `scriptPath`, if its directory has a lock
- * that names it (`<dir>.lock.json`, entry `<stem>`); null for any other file —
- * and for a lock that cannot be read, which `odw workflows verify` reports.
+ * that names it (`<dir>.lock.json`, entry `<stem>`); null for any other file.
+ * Beside a lock that cannot be read, every workflow is third-party from an
+ * unknown source, and modified (`lockError` says why; `odw workflows verify`
+ * and `odw doctor` report it): an unreadable lock never makes one trusted.
  */
 export function installedWorkflowFor(scriptPath: string): InstalledWorkflow | null {
   const file = basename(scriptPath);
@@ -185,8 +220,10 @@ export function installedWorkflowFor(scriptPath: string): InstalledWorkflow | nu
   let lock: WorkflowLock;
   try {
     lock = readLock(lockPath);
-  } catch {
-    return null;
+  } catch (err) {
+    const actualSha256 = sha256File(scriptPath);
+    const entry: LockEntry = { url: UNKNOWN_SOURCE, ref: null, commit: "", path: file, sha256: "", installedAt: "" };
+    return { name, lockPath, entry, actualSha256, modified: true, lockError: (err as Error).message };
   }
   const entry = Object.hasOwn(lock.workflows, name) ? lock.workflows[name] : undefined;
   if (!entry) return null;
@@ -229,6 +266,12 @@ export function verifyLock(dir: string, lock: WorkflowLock, only?: string): Veri
 
 /** What a run says of a workflow installed from git whose file no longer hashes to its lock entry. */
 export function modifiedLockedMessage(w: InstalledWorkflow): string {
+  if (w.lockError !== undefined) {
+    return (
+      `workflow ${sanitizeText(w.name, 255)} sits beside a workflow lock that cannot be read (${sanitizeText(w.lockError, 500)}): ` +
+      "it is third-party from an unknown source — odw workflows verify shows the lock; fix it, or remove it and odw workflows add again"
+    );
+  }
   return (
     `workflow ${w.name} was installed from ${describeSource(w.entry)} but was modified since: its sha256 is not the one in ${w.lockPath} — ` +
     "odw workflows verify shows it; restore it, or odw workflows update --force"
@@ -237,5 +280,5 @@ export function modifiedLockedMessage(w: InstalledWorkflow): string {
 
 /** `url#ref @ commit12` — how a listing names where an installed workflow came from. */
 export function describeSource(entry: Pick<LockEntry, "url" | "ref" | "commit">): string {
-  return `${entry.url}${entry.ref ? `#${entry.ref}` : ""} @ ${entry.commit.slice(0, 12)}`;
+  return sanitizeText(`${entry.url}${entry.ref ? `#${entry.ref}` : ""}${entry.commit ? ` @ ${entry.commit.slice(0, 12)}` : ""}`, 1000);
 }

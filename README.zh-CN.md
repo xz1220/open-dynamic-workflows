@@ -703,6 +703,10 @@ odw workflows update [audit]          # 拉取锁定 ref 的最新提交:先显�
 (同 `odw check --capabilities`);询问确认(没有终端时用 `--yes` 接受);然后复制到
 `.odw/workflows`——仓库里同处有 `.odw/tests/<name>.json`、`.odw/evals/<name>.json` 时一并复制——
 `--global` 时复制到 `~/.odw/workflows`。不是它安装的同名文件不会被替换(`--force` 才会)。
+文件名不是工作流名(字母、数字与 `. _ -`;且不能是 `__proto__`、`constructor`、`prototype`)
+的文件会跳过并给出提示——可用 `--path` 加 `--name` 换个名字安装。从不穿过符号链接写入:
+工作流文件、其 test 或 eval、锁文件,或从项目到它们之间的任一目录是符号链接时,`add` 与
+`update` 不写入并以退出码 1 结束。
 每个工作流在其目录旁的锁文件 `.odw/workflows.lock.json`(`~/.odw/workflows.lock.json`)中有一项:
 `{ url, ref, commit, path, sha256, installedAt, test?, eval? }`(`path` 为仓库内路径,`sha256`
 为安装的文件内容)。
@@ -713,7 +717,10 @@ odw workflows update [audit]          # 拉取锁定 ref 的最新提交:先显�
 `odw workflows list` 与看板的 Workspace 标出它及其来源与提交,并且除非配置写
 `scriptContext: "host"`,它在[严格脚本上下文](#严格脚本上下文odw-扩展)中运行(嵌套
 `workflow()` 调用它时也一样)。文件与锁文件不符时,运行的启动横幅与日志会醒目提示;
-`"lockedWorkflows": "fail"` 则拒绝启动(默认 `"warn"`)。未做:签名、Hub 或搜索、自动更新、
+`"lockedWorkflows": "fail"` 则拒绝启动(默认 `"warn"`)。锁文件无法读取时,其旁的每个工作流
+都视为来源未知的第三方且已被修改,`verify` 与 `odw doctor` 会报告该锁文件。`update` 对锁文件
+中的 `url`、`ref` 与路径做与 `add` 相同的校验,拉取到的文件校验不通过时保留已安装的版本,
+某一项失败只影响该项(退出码 1)。未做:签名、Hub 或搜索、自动更新、
 核对 Claude Code 插件安装目录的实际提交。
 
 **喜欢用浏览器?** `odw serve` 会对同一个 run 目录开一个零依赖的实时看板——每次运行都是一张
