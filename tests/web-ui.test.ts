@@ -1746,3 +1746,18 @@ test("compact layout (ODW extension): the URL turns it on and off; the run list 
   assert.match(bar, /href="#\/job\/cc-wf_live\?compact=0">Full dashboard</);
   assert.doesNotMatch(compactBar({ view: "jobs", param: null }, "live"), /compact-back/);
 });
+
+test("activity: with no run yet, Get started leads with the first run for $0 — no paid smoke prompt", () => {
+  const prev = { runs: store.runs, loaded: store.runsLoaded };
+  store.runs = [];
+  store.runsLoaded = true;
+  try {
+    const html = renderActivity(NOW);
+    assert.match(html, /class="card pulse marked gs"/);
+    assert.match(html, /data-copy="odw new hello"[\s\S]*data-copy="odw run hello --dry"/);
+    assert.doesNotMatch(html, /doctor --smoke|examples\/fan-out-reduce/);
+  } finally {
+    store.runs = prev.runs;
+    store.runsLoaded = prev.loaded;
+  }
+});

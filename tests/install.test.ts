@@ -535,3 +535,17 @@ installTest("ODW_SKILL=0 installs the verified binary alone: no skill, no odw in
   assert.match(refused.stderr, /Checksum mismatch for odw-linux-x64\.gz/);
   assert.equal(existsSync(join(bad.binDir, "odw")), false, "nothing installed after a failed check");
 });
+
+installTest("next steps: a release with odw new ends on the $0 first run; an older one on odw run", (t) => {
+  const f = fixture(t);
+  writeFileSync(f.archive, gzipSync(binary.replace("echo 'odw init'", "printf 'odw init\\nodw new\\n'")));
+  const result = f.run();
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /next steps:[\s\S]*odw new hello[\s\S]*odw run hello --dry .*\$0[\s\S]*odw serve --open/);
+  assert.doesNotMatch(result.stdout, /odw run <workflow\.js> --wait/);
+  const old = fixture(t);
+  const before = old.run();
+  assert.equal(before.status, 0, before.stderr);
+  assert.match(before.stdout, /odw run <workflow\.js> --wait/);
+  assert.doesNotMatch(before.stdout, /odw new hello/);
+});

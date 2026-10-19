@@ -304,5 +304,12 @@ echo "  odw --version                       # confirm the binary works"
 if printf '%s\n' "$HELP_OUT" | grep -q "odw init"; then
   echo "  odw init                            # (re)pick the default agent, if you skipped it above"
 fi
-echo "  odw run <workflow.js> --wait        # run your first workflow"
+if printf '%s\n' "$HELP_OUT" | grep -q "odw new"; then
+  # The first run, for $0 — the same steps bare `odw` and `odw doctor` show.
+  echo "  odw new hello                       # a starter workflow and its test"
+  echo "  odw run hello --dry                 # watch it run, every agent stubbed: \$0"
+  echo "  odw serve --open                    # the dashboard"
+else
+  echo "  odw run <workflow.js> --wait        # run your first workflow"
+fi
 echo "  or just ask your agent: \"use Open Dynamic Workflows to …\" — it picked up the skill"
