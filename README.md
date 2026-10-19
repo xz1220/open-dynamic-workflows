@@ -2490,7 +2490,7 @@ How the tier answers a permission request, by the tool call's ACP `kind`:
 
 | Tier | Allowed | Rejected |
 | --- | --- | --- |
-| `read` | `read`, `search`, `think`, `fetch` (not `fetch` for a run with untrusted input) | `edit`, `delete`, `move`, `execute`, `switch_mode`, `other`, anything else |
+| `read` | `read`, `search`, `think`, `fetch` (not `fetch` or `search` for a run with untrusted input, unless its sandbox network is an allowlist or none) | `edit`, `delete`, `move`, `execute`, `switch_mode`, `other`, anything else |
 | `edit` | those, plus `edit`, `delete`, `move` | `execute`, `switch_mode`, `other`, anything else |
 | `full` | everything | nothing |
 
@@ -2502,12 +2502,17 @@ ODW cancels the request, which allows nothing. Each answer is an
 tab. What was refused is recorded on the agent like any CLI's refused tool calls
 (`permissionDenials`).
 
-The tier is only as strong as the agent's own asking. ODW can refuse only what the
-agent asks about. An agent configured to edit or run commands without asking is
-not stopped. When a tool call of kind `edit`, `delete`, `move` or `execute` beyond
-the tier runs without a request, ODW records an `acp_permission` event with
-`decision: "unasked"` and does not let it pass silently. Pair a `read` tier with the
-agent's own approval settings, or with a [container sandbox](#run-agents-in-containers-odw-extension).
+**For an ACP agent the tier is advisory.** It is only as strong as the agent's own
+asking: ODW can refuse only what the agent asks about, and an agent configured to
+edit or run commands without asking is not stopped. When a tool call beyond the tier
+whose kind is anything but `read`, `search` or `think` (`other`, `switch_mode` and
+kinds ODW does not know included) runs without a request, ODW records an
+`acp_permission` event with `decision: "unasked"` and does not let it pass silently —
+after the fact. A real guarantee needs the
+[container sandbox](#run-agents-in-containers-odw-extension); with untrusted input,
+`untrustedInput.requireSandbox: true` refuses a run whose agents (ACP ones included)
+are not in one with a boxed-in network. Pair a `read` tier with the agent's own
+approval settings at least.
 
 The session is kept as ODW's own `acp.*` events (`acp.message`, `acp.thought`,
 `acp.tool_call`, `acp.tool_result`, `acp.permission`, `acp.plan`, `acp.usage`,
@@ -2519,7 +2524,9 @@ one, is reason `auth`. Usage comes from what the protocol carries:
 `usage_update`'s cumulative `cost` when it is in US dollars, and token counts
 only when the prompt response carries a `usage` object (a draft of the
 protocol, read when present). An agent that reports neither gets chars/4 of its
-reply, as any CLI does.
+reply, as any CLI does. The agent's stdout counts against the 32 MiB output cap a buffered
+CLI's does (past it the run is stopped); a message and the reply keep at most 4 MiB,
+a thought 256 KiB, a tool's output 64 KiB, and `denied` lists at most 1000 calls.
 
 `odw doctor --adapter <name>` gives an ACP agent a handshake: it sends
 `initialize` alone (no session, no prompt, nothing spent) and reports the agent's

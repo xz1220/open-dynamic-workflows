@@ -9,8 +9,11 @@
 //                "ACP-OK <the prompt's last word>" and a draft `usage`
 //   permissions  asks for read, fetch, edit, execute and switch_mode tool
 //                calls in turn; replies with what each was answered
+//   web          asks for read, fetch and search tool calls; replies with the answers
 //   no-reject    asks for an execute call offering only allow options
 //   unasked      reports an edit tool call that completed without asking
+//   unasked-kinds  reports read, search, think, fetch, other, switch_mode, unknown and
+//                kindless tool calls that completed without asking
 //   auth         session/new fails with auth_required (-32000)
 //   version      initialize answers protocol version 2
 //   hang         never ends the turn; a session/cancel is logged
@@ -78,6 +81,14 @@ async function turn(id, prompt) {
       update({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: answers.join(" ") } });
       return send({ id, result: { stopReason: "end_turn" } });
     }
+    case "web": {
+      const answers = [];
+      for (const kind of ["read", "fetch", "search"]) {
+        answers.push(`${kind}=${outcome(await permission(`w-${kind}`, `do ${kind}`, kind))}`);
+      }
+      update({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: answers.join(" ") } });
+      return send({ id, result: { stopReason: "end_turn" } });
+    }
     case "no-reject": {
       const answer = await permission("t1", "rm -rf build", "execute", STANDARD_OPTIONS.slice(0, 2));
       update({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: `execute=${outcome(answer)}` } });
@@ -87,6 +98,15 @@ async function turn(id, prompt) {
       update({ sessionUpdate: "tool_call", toolCallId: "w1", title: "Write notes.txt", kind: "edit", status: "in_progress" });
       update({ sessionUpdate: "tool_call_update", toolCallId: "w1", status: "completed", content: [{ type: "diff", path: "/tmp/notes.txt", oldText: null, newText: "x" }] });
       update({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "wrote it" } });
+      return send({ id, result: { stopReason: "end_turn" } });
+    }
+    case "unasked-kinds": {
+      // Tool calls of every kind that ran without asking: what only looks is not reported, anything else beyond the tier is.
+      for (const kind of ["read", "search", "think", "fetch", "other", "switch_mode", "made-up"]) {
+        update({ sessionUpdate: "tool_call", toolCallId: `u-${kind}`, title: `ran ${kind}`, kind, status: "completed" });
+      }
+      update({ sessionUpdate: "tool_call", toolCallId: "u-none", title: "ran nameless", status: "completed" });
+      update({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "ran them" } });
       return send({ id, result: { stopReason: "end_turn" } });
     }
     case "hang":

@@ -177,7 +177,7 @@ import { isAdapterChoice, type AdapterChoice } from "./routing.js";
 import { describeSchema, pickStructured, type JsonSchema } from "./schema.js";
 import { handoffBrief, HandoffLog } from "./handoff.js";
 import { transcriptFormat, type AttemptReason } from "./transcript.js";
-import { withholdSecrets, withholdSetupSecrets, withoutWebTools } from "./untrusted-input.js";
+import { sandboxGap, withholdSecrets, withholdSetupSecrets, withoutWebTools } from "./untrusted-input.js";
 import { slotName, withSlot } from "./slot.js";
 import { openWorkspace, type OpenWorkspace, type Workspace, type WorkspaceMode } from "./workspace.js";
 import type { WorktreeSetupOptions } from "./worktree-setup.js";
@@ -1410,9 +1410,10 @@ export class Bridge {
       permissionArgs: [...permissions.args, ...trust.args, ...denyArgs],
       // Untrusted input (ODW extension): a read-only agent whose network is not
       // boxed in (a container with an allowlist, or none) has no web tool to
-      // carry what it reads — a token in .git/config — off the machine.
+      // carry what it reads — a token in .git/config — off the machine (an ACP
+      // agent's fetch and search requests are refused instead; see adapters/acp.ts).
       noWebTools:
-        this.withholdSecrets && permissions.tier === "read" && (!sandbox.box || sandbox.box.network === "default"),
+        this.withholdSecrets && permissions.tier === "read" && sandboxGap({ sandbox: sandbox.box ?? "none" }) !== null,
       untrusted: trust.trust === "untrusted",
       schema: schema?.native ? { flag: schema.native, value: request.schema!, file: schemaFile } : undefined,
       // Tool calls the CLI refused fail a run at once only under "fail", and

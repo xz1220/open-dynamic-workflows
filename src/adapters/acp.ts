@@ -41,6 +41,12 @@
  *   {"type":"acp.error","message":"…","code":N}
  *   {"type":"acp.result","stopReason":"end_turn","text":"…","usage":{…},"costUsd":N,"error":"…","denied":[…]}
  *
+ * Bounds: the agent's stdout counts against the run's `maxOutputBytes` (the
+ * protocol's bytes; past it the run is stopped as any CLI's output overrun);
+ * a message and the reply keep at most 4 MiB, a thought 256 KiB, a tool's
+ * output 64 KiB (each cut said at its end), and the refused calls listed in
+ * `denied` at most 1000 ("… and N more").
+ *
  * Usage: `usage_update`'s cumulative `cost` when it is in US dollars (the
  * stable Session Usage feature carries no token counts); token counts only
  * where the prompt response carries a `usage` object (a draft of the
@@ -48,7 +54,7 @@
  */
 
 import type { AdapterOutput, CliResult, PermissionTier } from "./types.js";
-import { TAIL_CHARS, type CommandRunner, type ProcessIO, type RunCommandOptions } from "./runner.js";
+import { DEFAULT_MAX_OUTPUT_BYTES, TAIL_CHARS, type CommandRunner, type ProcessIO, type RunCommandOptions } from "./runner.js";
 
 /** The ACP major version this client speaks. */
 export const ACP_PROTOCOL_VERSION = 1;
@@ -78,24 +84,37 @@ const AUTH_REQUIRED = -32000;
 const MAX_MESSAGE_CHARS = 32 * 1024 * 1024;
 /** Characters of a tool's output kept in its `acp.tool_result` event. */
 const MAX_TOOL_OUTPUT_CHARS = 64 * 1024;
+/** Characters of one message, and of the reply, kept. */
+const MAX_REPLY_CHARS = 4 * 1024 * 1024;
+/** Characters of one thought kept. */
+const MAX_THOUGHT_CHARS = 256 * 1024;
+/** Refused calls listed in the result's `denied`; past it, one "… and N more". */
+const MAX_DENIED = 1000;
+/** Tool calls whose title, kind and asking are remembered; past it the oldest are forgotten. */
+const MAX_TRACKED = 1000;
+/** Characters of a tool call's title kept. */
+const MAX_TITLE_CHARS = 1000;
 
 /** Tool kinds (ACP `ToolKind`) a `read` agent may be allowed: looking, never changing or running. */
 const READ_KINDS: ReadonlySet<string> = new Set(["read", "search", "think", "fetch"]);
 /** Tool kinds an `edit` agent may be allowed: those, and changing files. Running commands, switching modes and the rest are `full`'s. */
 const EDIT_KINDS: ReadonlySet<string> = new Set([...READ_KINDS, "edit", "delete", "move"]);
-/** Kinds that surely change something: one that ran without asking, beyond the tier, is reported (`unasked`). */
-const WRITE_KINDS: ReadonlySet<string> = new Set(["edit", "delete", "move", "execute"]);
+/** Kinds that only look: one that ran without asking is not reported. Any other beyond the tier is (`unasked`). */
+const LOOK_KINDS: ReadonlySet<string> = new Set(["read", "search", "think"]);
+/** Kinds that reach the network: refused under `noWebTools`. */
+const WEB_KINDS: ReadonlySet<string> = new Set(["fetch", "search"]);
 
 /**
  * Whether an agent at `tier` is allowed a tool call of ACP kind `kind` (ODW
- * extension): `read` — read, search, think, fetch (not fetch when
- * `noWebTools`: untrusted input, see ../untrusted-input); `edit` — those and
- * edit, delete, move; `full` — anything. A kind ODW does not know, `other`,
- * `execute` and `switch_mode` are `full`'s alone.
+ * extension): `read` — read, search, think, fetch (not fetch or search when
+ * `noWebTools`: untrusted input without a boxed-in network, see
+ * ../untrusted-input); `edit` — those and edit, delete, move; `full` —
+ * anything. A kind ODW does not know, `other`, `execute` and `switch_mode`
+ * are `full`'s alone.
  */
 export function permits(tier: PermissionTier, kind: string, noWebTools = false): boolean {
   if (tier === "full") return true;
-  if (noWebTools && kind === "fetch") return false;
+  if (noWebTools && WEB_KINDS.has(kind)) return false;
   return (tier === "edit" ? EDIT_KINDS : READ_KINDS).has(kind);
 }
 
@@ -130,7 +149,7 @@ export interface AcpRunSpec {
   cwd: string;
   /** The agent's permission tier: how its permission requests are answered. */
   tier: PermissionTier;
-  /** Untrusted input, read-only: no `fetch` either. */
+  /** Untrusted input, read-only, its network not boxed in: no `fetch` or `search` either. */
   noWebTools?: boolean;
   /** Told each permission answer, as it is given. */
   onPermission?: (permission: AcpPermission) => void;
@@ -187,6 +206,10 @@ async function runClient(
   options: RunCommandOptions,
 ): Promise<CliResult> {
   const { onStdout, observeStdout } = options;
+  // The agent's stdout counts against maxOutputBytes, as a buffered CLI's does (the runner skips it for a stream).
+  const maxBytes = options.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
+  let fed = 0;
+  let overrun = false;
   let kept = "";
   let terminateRun: ((reason: string) => void) | null = null;
   client.emit = (line) => {
@@ -202,6 +225,13 @@ async function runClient(
     observeStdout: undefined,
     onStdout: (chunk, terminate) => {
       terminateRun = terminate;
+      if (overrun) return;
+      fed += Buffer.byteLength(chunk);
+      if (fed > maxBytes) {
+        overrun = true;
+        terminate(`process output exceeded ${maxBytes} bytes`);
+        return;
+      }
       client.feed(chunk, terminate);
     },
     duplex: (io) => client.start(io),
@@ -253,6 +283,8 @@ class AcpClient {
   private readonly asked = new Set<string>();
   private readonly unasked = new Set<string>();
   private readonly denied: Array<{ tool_name: string; tool_use_id: string; tool_input?: unknown }> = [];
+  /** Refused calls past {@link MAX_DENIED}: counted, not listed. */
+  private deniedMore = 0;
   private costUsd: number | undefined;
 
   constructor(
@@ -423,7 +455,9 @@ class AcpClient {
     if (this.costUsd !== undefined) event.costUsd = this.costUsd;
     // A turn that ended for any reason but its own end is the agent's failure, in its words.
     if (stopReason !== "end_turn") event.error = `the ACP agent stopped: ${stopReason}`;
-    if (this.denied.length > 0) event.denied = this.denied;
+    if (this.denied.length > 0) {
+      event.denied = this.deniedMore > 0 ? [...this.denied, { tool_name: `… and ${this.deniedMore} more`, tool_use_id: "" }] : this.denied;
+    }
     this.out(event);
     this.finish();
   }
@@ -451,12 +485,12 @@ class AcpClient {
       const text = chunkText(update.content);
       if (this.message && this.message.id !== (update.messageId ?? this.message.id)) this.flushMessage();
       this.message ??= { id: update.messageId, text: "" };
-      this.message.text += text;
+      this.message.text = appendCapped(this.message.text, text, MAX_REPLY_CHARS);
       return;
     }
     if (kind === "agent_thought_chunk") {
       this.flushMessage();
-      this.thought += chunkText(update.content);
+      this.thought = appendCapped(this.thought, chunkText(update.content), MAX_THOUGHT_CHARS);
       return;
     }
     this.flushText();
@@ -483,9 +517,9 @@ class AcpClient {
   private tool(update: Json, first: boolean): void {
     const id = typeof update.toolCallId === "string" ? update.toolCallId : "";
     const known = this.tools.get(id);
-    const title = typeof update.title === "string" && update.title ? update.title : (known?.title ?? "tool");
-    const kind = typeof update.kind === "string" && update.kind ? update.kind : (known?.kind ?? "other");
-    if (id) this.tools.set(id, { title, kind });
+    const title = typeof update.title === "string" && update.title ? update.title.slice(0, MAX_TITLE_CHARS) : (known?.title ?? "tool");
+    const kind = typeof update.kind === "string" && update.kind ? update.kind.slice(0, 64) : (known?.kind ?? "other");
+    if (id) remember(this.tools, id, { title, kind });
     const status = typeof update.status === "string" ? update.status : undefined;
     // The reply is what the agent says after its last tool call.
     if (first) this.replyText = "";
@@ -495,16 +529,16 @@ class AcpClient {
       const output = toolOutput(update.content, update.rawOutput);
       this.out({ type: "acp.tool_result", toolCallId: id, title, kind, status, output });
     }
-    // A tool that surely changes something, beyond the tier, ran without asking: said, never let pass silently.
+    // A tool beyond the tier that ran without asking — anything but looking — is said, never let pass silently.
     if (
       id &&
       (status === "in_progress" || status === "completed") &&
-      WRITE_KINDS.has(kind) &&
+      !LOOK_KINDS.has(kind) &&
       !permits(this.spec.tier, kind, this.spec.noWebTools) &&
       !this.asked.has(id) &&
       !this.unasked.has(id)
     ) {
-      this.unasked.add(id);
+      remember(this.unasked, id);
       this.permission({ toolCallId: id, title, kind, decision: "unasked", tier: this.spec.tier });
     }
   }
@@ -515,11 +549,11 @@ class AcpClient {
     const call = isRecord(params.toolCall) ? params.toolCall : {};
     const id = typeof call.toolCallId === "string" ? call.toolCallId : "";
     const known = this.tools.get(id);
-    const title = typeof call.title === "string" && call.title ? call.title : (known?.title ?? "tool");
-    const kind = typeof call.kind === "string" && call.kind ? call.kind : (known?.kind ?? "other");
+    const title = typeof call.title === "string" && call.title ? call.title.slice(0, MAX_TITLE_CHARS) : (known?.title ?? "tool");
+    const kind = typeof call.kind === "string" && call.kind ? call.kind.slice(0, 64) : (known?.kind ?? "other");
     if (id) {
-      this.asked.add(id);
-      this.tools.set(id, { title, kind });
+      remember(this.asked, id);
+      remember(this.tools, id, { title, kind });
     }
     const options = Array.isArray(params.options) ? params.options.filter(isRecord) : [];
     const pick = (...kinds: string[]): Json | undefined => {
@@ -535,7 +569,9 @@ class AcpClient {
     const decision = allowed && option ? "allowed" : "rejected";
     if (decision === "rejected") {
       const input = call.rawInput !== undefined ? call.rawInput : undefined;
-      this.denied.push({ tool_name: `${title} [${kind}]`, tool_use_id: id, ...(input !== undefined ? { tool_input: input } : {}) });
+      if (this.denied.length < MAX_DENIED) {
+        this.denied.push({ tool_name: `${title} [${kind}]`, tool_use_id: id, ...(input !== undefined ? { tool_input: input } : {}) });
+      } else this.deniedMore++;
     }
     this.permission({
       toolCallId: id,
@@ -567,7 +603,7 @@ class AcpClient {
     const message = this.message;
     this.message = null;
     if (!message || !message.text) return;
-    this.replyText += message.text;
+    this.replyText = appendCapped(this.replyText, message.text, MAX_REPLY_CHARS);
     if (message.text.trim()) this.lastText = message.text;
     this.out({ type: "acp.message", text: message.text });
   }
@@ -577,6 +613,22 @@ class AcpClient {
     this.thought = "";
     if (text) this.out({ type: "acp.thought", text });
   }
+}
+
+/** `text` and `more`, at most `max` characters: the rest is dropped, and the cut said once, at its end. */
+function appendCapped(text: string, more: string, max: number): string {
+  if (!more || text.length > max) return text; // past full: its cut already said
+  const joined = text + more;
+  return joined.length <= max ? joined : `${joined.slice(0, max)}\n[… cut at ${max} characters]`;
+}
+
+/** Add `key` to a set or map of at most {@link MAX_TRACKED}, forgetting the oldest past it. */
+function remember(set: Set<string>, key: string): void;
+function remember<V>(map: Map<string, V>, key: string, value: V): void;
+function remember<V>(into: Set<string> | Map<string, V>, key: string, value?: V): void {
+  if (into instanceof Map) into.set(key, value as V);
+  else into.add(key);
+  if (into.size > MAX_TRACKED) into.delete(into.keys().next().value as string);
 }
 
 /** A JSON-RPC error response, as text and code; null for a result. */

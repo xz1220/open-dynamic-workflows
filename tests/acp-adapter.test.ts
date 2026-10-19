@@ -70,11 +70,11 @@ async function call(scenario: string, options: { tier?: PermissionTier; prompt?:
 
 // --- the tiers ----------------------------------------------------------------------------
 
-test("a tier allows tool kinds: read looks (and fetches, unless untrusted input), edit changes files, full runs anything", () => {
+test("a tier allows tool kinds: read looks (and fetches and searches, unless untrusted input meets an open network), edit changes files, full runs anything", () => {
   const kinds = ["read", "search", "think", "fetch", "edit", "delete", "move", "execute", "switch_mode", "other", "made-up"];
   const allowed = (tier: PermissionTier, noWeb = false) => kinds.filter((k) => permits(tier, k, noWeb));
   assert.deepEqual(allowed("read"), ["read", "search", "think", "fetch"]);
-  assert.deepEqual(allowed("read", true), ["read", "search", "think"]);
+  assert.deepEqual(allowed("read", true), ["read", "think"]);
   assert.deepEqual(allowed("edit"), ["read", "search", "think", "fetch", "edit", "delete", "move"]);
   assert.deepEqual(allowed("full"), kinds);
 });
@@ -154,6 +154,26 @@ test("a refusal with no reject option cancels the request; a write beyond the ti
   assert.deepEqual((await call("unasked", { tier: "edit" })).permissions, []);
 });
 
+test("untrusted input on an open network: a read agent's fetch and search requests are refused; trusted, they are allowed", async () => {
+  const answers = async (withholdSecrets: boolean) => {
+    const dir = tempDir();
+    const bridge = new Bridge(acpConfig("web", join(dir, "acp.log"), { permissions: "read" }), { source: dir, runner: runCommand, withholdSecrets });
+    return (await bridge.run({ prompt: "look", adapter: "gem", label: "t" })).text;
+  };
+  assert.equal(await answers(true), "read=ao fetch=ro search=ro");
+  assert.equal(await answers(false), "read=ao fetch=ao search=ao");
+});
+
+test("a tool that ran without asking is reported unless it only looks: other, switch_mode and unknown kinds too", async () => {
+  const read = await call("unasked-kinds", { tier: "read" });
+  assert.equal(read.outcome!.text, "ran them");
+  assert.deepEqual(
+    read.permissions.map((p) => `${p.kind}:${p.decision}`),
+    ["other:unasked", "switch_mode:unasked", "made-up:unasked", "other:unasked"],
+  );
+  assert.deepEqual((await call("unasked-kinds", { tier: "full" })).permissions, []);
+});
+
 test("a client capability ODW does not declare is answered method-not-found", async () => {
   assert.equal((await call("fs")).outcome!.text, "fs=-32601");
 });
@@ -218,6 +238,62 @@ test("acpRunner hands the caller ODW's acp.* events, not the protocol", async ()
     usage: { inputTokens: 300, outputTokens: 40 },
     costUsd: 0.02,
   });
+});
+
+// --- bounds -------------------------------------------------------------------------------
+
+const FLOOD_ACP = fileURLToPath(new URL("./fixtures/flood-acp-agent.mjs", import.meta.url));
+
+/** Run the flooding agent through acpRunner: its result, and every acp.* event it handed on (their longest line too). */
+async function flood(mode: string, count: number, chars: number, maxOutputBytes: number, tier: PermissionTier = "read") {
+  const dir = tempDir();
+  let longest = 0;
+  const events: Array<Record<string, unknown>> = [];
+  const run = acpRunner(runCommand, { prompt: "x", cwd: dir, tier });
+  const result = await run([execPath, FLOOD_ACP, mode, String(count), String(chars)], {
+    cwd: dir,
+    timeout: 60,
+    maxOutputBytes,
+    onStdout: (line) => {
+      longest = Math.max(longest, line.length);
+      events.push(JSON.parse(line) as Record<string, unknown>);
+    },
+  });
+  return { result, events, longest };
+}
+
+test("an ACP agent's stdout counts against maxOutputBytes: past it the run is stopped as any CLI's overrun", async () => {
+  const MiB = 1024 * 1024;
+  const { result, longest } = await flood("message", 40, MiB, 2 * MiB);
+  assert.notEqual(result.returncode, 0);
+  assert.match(result.stderr, /\[process output exceeded 2097152 bytes; terminated\]/);
+  assert.ok(longest < 3 * MiB, `the longest event handed on: ${longest}`);
+  // The same words a buffered CLI's overrun has.
+  const plain = await runCommand([execPath, "-e", "process.stdout.write('x'.repeat(4096))"], { timeout: 30, maxOutputBytes: 1024 });
+  assert.match(plain.stderr, /\[process output exceeded 1024 bytes; terminated\]/);
+});
+
+test("an ACP session's text is bounded: a message and the reply at 4 MiB, a thought at 256 KiB, denied at 1000 listed", async () => {
+  const MiB = 1024 * 1024;
+  const message = await flood("message", 6, MiB, 64 * MiB);
+  assert.equal(message.result.returncode, 0, message.result.stderr);
+  const reply = message.events.find((e) => e.type === "acp.result")!;
+  const cut = `\n[… cut at ${4 * MiB} characters]`;
+  assert.equal(String(reply.text).length, 4 * MiB + cut.length);
+  assert.ok(String(reply.text).endsWith(cut));
+  assert.ok(message.longest < 5 * MiB, `the longest event: ${message.longest}`);
+
+  const thought = await flood("thought", 4, 128 * 1024, 64 * MiB);
+  const said = thought.events.find((e) => e.type === "acp.thought")!;
+  assert.ok(String(said.text).endsWith(`\n[… cut at ${256 * 1024} characters]`));
+  assert.equal(thought.events.find((e) => e.type === "acp.result")!.text, "done");
+
+  const denied = await flood("denied", 1100, 0, 64 * MiB);
+  const result = denied.events.find((e) => e.type === "acp.result")!;
+  const list = result.denied as Array<{ tool_name: string }>;
+  assert.equal(list.length, 1001);
+  assert.equal(list[0]!.tool_name, "run 0 [execute]");
+  assert.equal(list[1000]!.tool_name, "… and 100 more");
 });
 
 // --- end to end ---------------------------------------------------------------------------

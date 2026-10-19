@@ -1099,6 +1099,21 @@ independent security reviews whose findings are all fixed.
   no user or host starting with `-`; a ref of letters, digits and `. _ / + -` without
   `..`; a relative path without `.` or `..`), and in `update` an entry that fails —
   unreachable, refused — fails alone (exit 1) while the others go on.
+- An ACP agent's output was unbounded: the runner skips its output cap for a streamed
+  CLI, and the ACP client joined message, thought and reply text, its refused calls and
+  its tool bookkeeping without limit (a fake agent pushed one 419 MB event, 1.8 GB RSS).
+  The agent's stdout now counts against the same output cap, past which the run is
+  stopped with the same `process output exceeded N bytes` a buffered CLI gets; a
+  message and the reply keep at most 4 MiB, a thought 256 KiB (each cut said at its
+  end), `denied` lists at most 1000 calls ("… and N more"), and at most 1000 tool calls
+  are remembered.
+- With untrusted input and a network not boxed in, a `read` ACP agent was still allowed
+  `search`; it is now refused like `fetch` (the same `sandboxGap` check the CLI path's
+  web tools use). A tool call that ran without asking was flagged `unasked` only for
+  `edit`, `delete`, `move` and `execute`; any kind beyond the tier but `read`, `search`
+  and `think` — `other`, `switch_mode`, unknown — now is. The README says plainly that
+  the tier is advisory for an ACP agent, and that a real guarantee needs the container
+  sandbox (`untrustedInput.requireSandbox` applies).
 
 ### Changed behavior — check before upgrading
 - `agentType` naming an agent definition file now runs that definition (see "Write

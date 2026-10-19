@@ -2119,7 +2119,7 @@ ODW 实现的部分(协议版本 1),每次 CLI 运行:
 
 | 档位 | 允许 | 拒绝 |
 | --- | --- | --- |
-| `read` | `read`、`search`、`think`、`fetch`(不可信输入的运行不含 `fetch`) | `edit`、`delete`、`move`、`execute`、`switch_mode`、`other` 及其他 |
+| `read` | `read`、`search`、`think`、`fetch`(不可信输入的运行不含 `fetch` 与 `search`,除非其沙箱网络是允许列表或 none) | `edit`、`delete`、`move`、`execute`、`switch_mode`、`other` 及其他 |
 | `edit` | 以上,加 `edit`、`delete`、`move` | `execute`、`switch_mode`、`other` 及其他 |
 | `full` | 全部 | 无 |
 
@@ -2128,16 +2128,18 @@ agent 没给拒绝选项时,ODW 取消该请求(等于不允许)。每次应答�
 (`toolCallId`、`title`、`kind`、`decision`、`option`、`tier`),在 `odw logs`、实时视图与看板 Logs 页显示;
 被拒绝的调用像其他 CLI 被拒的工具调用一样记在 agent 上(`permissionDenials`)。
 
-档位的强度取决于 agent 自己是否请求权限:ODW 只能拒绝它来问的事。被配置成不经询问就编辑或执行命令的 agent 不会被拦下;
-超出档位的 `edit`、`delete`、`move`、`execute` 工具调用未经请求就执行时,ODW 记一个 `decision: "unasked"` 的
-`acp_permission` 事件——不会静默放过。`read` 档请配合 agent 自身的审批设置,或[容器沙箱](#在容器中运行-agentodw-扩展)。
+**对 ACP agent 而言,档位只是建议性的。** 它的强度取决于 agent 自己是否请求权限:ODW 只能拒绝它来问的事。被配置成不经询问就编辑或执行命令的 agent 不会被拦下;
+超出档位、kind 不是 `read`、`search`、`think` 的工具调用(包括 `other`、`switch_mode` 与 ODW 不认识的 kind)未经请求就执行时,
+ODW 记一个 `decision: "unasked"` 的 `acp_permission` 事件——不会静默放过,但已是事后。真正的保证需要[容器沙箱](#在容器中运行-agentodw-扩展);
+有不可信输入时,`untrustedInput.requireSandbox: true` 会拒绝 agent(包括 ACP agent)不在网络受限沙箱中的运行。`read` 档至少要配合 agent 自身的审批设置。
 
 会话以 ODW 自己的 `acp.*` 事件保存(`acp.message`、`acp.thought`、`acp.tool_call`、`acp.tool_result`、
 `acp.permission`、`acp.plan`、`acp.usage`、`acp.error`、`acp.result`),不保存原始 JSON-RPC;这些事件进入
 agent 的 transcript(`odw logs --agent`、看板抽屉)、实时的 `toolCalls`/`costUsd` 限额与失败原因——JSON-RPC 错误像任何
 CLI 失败一样归类(例如 `session/new` 返回 `auth_required` 即原因 `auth`)。用量只取协议携带的部分:
 `usage_update` 中以美元计的累计 `cost`;token 数只在 prompt 响应带有 `usage` 对象时读取(协议草案,存在才读)。
-两者都没有的 agent,与其他 CLI 一样按回复字符数/4 估算。
+两者都没有的 agent,与其他 CLI 一样按回复字符数/4 估算。agent 的 stdout 与缓冲读取的 CLI 一样计入 32 MiB 的输出上限
+(超过即停止运行);一条消息与回复最多保留 4 MiB,一段思考 256 KiB,一个工具的输出 64 KiB,`denied` 最多列出 1000 个调用。
 
 `odw doctor --adapter <名字>` 对 ACP agent 做一次握手:只发 `initialize`(不建会话、不发提示、不花钱),
 报告 agent 名称与版本、协议版本、`loadSession`、提示与 MCP 能力、登录方式;`--smoke` 照常发一次真实提示。
