@@ -58,6 +58,10 @@
  *   POST /api/runs/:id/agents/:agentId/review   { state: reviewed|dismissed|applied|open, note? } marks
  *                                   an agent's kept diff in the run's reviews.jsonl, `by` who asks
  *                                   (ODW extension); 404 when it kept none; 400 on a bad body
+ *   GET  /api/outcomes[?since=30d][&workflow=<name>]   Outcomes (./outcomes) without its runsRoot:
+ *                                   kept diffs applied/dismissed/left, failures by reason, rework and
+ *                                   cost per applied change, by week, workflow, adapter and model, as
+ *                                   `odw outcomes --json` prints it (ODW extension); 400 for a bad since or name
  *   GET  /api/stream                text/event-stream: `runs` frames (the run list, on change);
  *                                   `?delta=1` → one `runs` frame, then `runs-delta` frames
  *                                   and `chat` frames ({ sessionId }, coalesced per 250ms)
@@ -187,6 +191,9 @@ import type { AgentResultRecord } from "../journal.js";
 import { activityLimit, activityView } from "./activity-view.js";
 import { parseAge } from "./gc-cli.js";
 import { appendReview, isReviewState, markable, ReviewReader, REVIEW_NOTE_MAX } from "./review.js";
+import { parseSince } from "./digest-cli.js";
+import { collectOutcomes } from "./outcomes.js";
+import { OUTCOMES_DEFAULT_SECONDS } from "./outcomes-cli.js";
 import { ChatHost, type ChatTurnRunner } from "./chat-host.js";
 import { ClaudeRunSource } from "./claude-run-source.js";
 import { compareRuns, readCompareRun } from "./compare.js";
@@ -544,6 +551,10 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandleCont
       }
       const since = days === null ? null : Date.now() / 1000 - days * 86_400;
       sendJsonCached(req, res, ctx.reviews.queue({ since, all: url.searchParams.get("all") === "1" }));
+      return;
+    }
+    if (method === "GET" && path === "/api/outcomes") {
+      outcomesView(req, res, store, url.searchParams);
       return;
     }
     if (method === "GET" && path === "/api/stream") {
@@ -983,6 +994,29 @@ function compareView(req: IncomingMessage, res: ServerResponse, store: RunStore,
     return { ...run, args: (redactor.shapes.record({ args: run.args }) as { args: unknown }).args };
   };
   sendJsonCached(req, res, compareRuns(served(a), served(b)));
+}
+
+/**
+ * `GET /api/outcomes[?since=30d][&workflow=<name>]` (ODW extension): what
+ * became of the runs' work, as `odw outcomes --json` prints it, without the
+ * runs root's path. Read only. The name only ever picks a bucket through the
+ * store's own slug, and is held to what /api/estimate takes.
+ */
+function outcomesView(req: IncomingMessage, res: ServerResponse, store: RunStore, params: URLSearchParams): void {
+  const sinceText = params.get("since");
+  const seconds = sinceText === null ? OUTCOMES_DEFAULT_SECONDS : parseSince(sinceText);
+  if (seconds === null) {
+    sendJson(res, 400, { error: "since takes an age like 12h, 30d or 4w" });
+    return;
+  }
+  const workflow = params.get("workflow");
+  if (workflow !== null && (workflow.trim() === "" || workflow.length > 200 || /[\u0000-\u001f\u007f]/.test(workflow))) {
+    sendJson(res, 400, { error: "workflow must be a workflow's name" });
+    return;
+  }
+  const until = Date.now() / 1000;
+  const { runsRoot: _runsRoot, ...outcomes } = collectOutcomes(store, { since: until - seconds, until, workflow });
+  sendJsonCached(req, res, outcomes);
 }
 
 /**

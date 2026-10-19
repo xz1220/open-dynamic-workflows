@@ -113,6 +113,7 @@ import { cmdMemory } from "./runtime/memory-cli.js";
 import { askYesNo, cmdEstimate, estimateBeforeRun } from "./runtime/estimate-cli.js";
 import { cmdGc, cmdPin } from "./runtime/gc-cli.js";
 import { cmdDigest } from "./runtime/digest-cli.js";
+import { cmdOutcomes } from "./runtime/outcomes-cli.js";
 import { cmdReview } from "./runtime/review-cli.js";
 import { appendReview } from "./runtime/review.js";
 import { executeRun } from "./runtime/worker.js";
@@ -184,6 +185,7 @@ export const COMMANDS = [
   "digest",
   "review",
   "types",
+  "outcomes",
 ] as const;
 
 export type Command = (typeof COMMANDS)[number];
@@ -271,6 +273,8 @@ export function helpText(): string {
     "             [--json|--markdown] [--notify]          missed checks, changes, spend; --notify sends it (notify.on \"digest\"; ODW extension)",
     "  odw review [--json] [--since 7d] [--all]           kept diffs across runs not dealt with yet, riskiest first, each with why (ODW extension)",
     "  odw review mark <run_id> <agent> <state> [--note T] reviewed | dismissed | applied | open (undo); odw apply marks applied",
+    "  odw outcomes [--since 30d] [--workflow W]          across runs, by week, workflow, adapter and model: kept diffs applied/dismissed/left,",
+    "               [--json|--markdown]                   failures by reason, rework, cost per applied change (ODW extension)",
     "",
     "Options:",
     "  --args JSON|@file   workflow input (JSON, @file.json, or a raw string)",
@@ -450,6 +454,8 @@ export async function main(argv: string[]): Promise<number> {
         return await cmdDigest(rest);
       case "review":
         return await cmdReview(rest);
+      case "outcomes":
+        return cmdOutcomes(rest);
       default:
         process.stderr.write(`odw: unknown command '${command}'\n\n${helpText()}\n`);
         return 2;
