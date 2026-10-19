@@ -924,4 +924,7 @@ const ZH: Record<string, string> = {
   "{a} applied, {d} dismissed, {l} left": "{a} 已应用,{d} 已放弃,{l} 未处理",
   Recent: "最近",
   "Full dashboard": "完整看板",
+  "allowed by tier {tier}": "按档位 {tier} 允许",
+  "rejected by tier {tier}": "按档位 {tier} 拒绝",
+  "ran without asking, beyond tier {tier}": "未请求权限即执行,超出档位 {tier}",
 };

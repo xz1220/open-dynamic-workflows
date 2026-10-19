@@ -662,6 +662,18 @@ function fanOutOfEvent(e: WorkflowEvent): Parameters<typeof fanOutText>[0] {
   };
 }
 
+/** An `acp_permission` event as a log line: who, the tool and its kind, and how the tier answered (ODW extension). */
+export function acpPermissionText(e: WorkflowEvent): string {
+  const tier = String(e.tier ?? "?");
+  const decision =
+    e.decision === "allowed"
+      ? `<span class="ok">${esc(t("allowed by tier {tier}", { tier }))}</span>`
+      : e.decision === "unasked"
+        ? `<span class="er">${esc(t("ran without asking, beyond tier {tier}", { tier }))}</span>`
+        : `<span class="er">${esc(t("rejected by tier {tier}", { tier }))}</span>`;
+  return `<b>${esc(String(e.label ?? ""))}</b> ${esc(String(e.title ?? "tool"))} <span class="dim">[${esc(String(e.kind ?? "other"))}]</span> ${decision}`;
+}
+
 function logRow(e: WorkflowEvent, i: number): string {
   const cls = EVT_CLASS[e.type] ?? "log";
   const label =
@@ -669,6 +681,8 @@ function logRow(e: WorkflowEvent, i: number): string {
       ? "PHASE"
       : e.type === "log"
         ? "LOG"
+        : e.type === "acp_permission"
+          ? "ACP"
         : e.type.startsWith("command_")
           ? `$ ${e.type.replace("command_", "").toUpperCase()}`
           : e.type.replace(/^(agent|run)_/, "").toUpperCase();
@@ -681,6 +695,8 @@ function logRow(e: WorkflowEvent, i: number): string {
     msg = `<b>${esc(commandDetail(e))}</b>${e.type === "command_failed" && e.error ? ` <span class="er">${esc(String(e.error))}</span>` : ""}`;
   // How a parallel() or pipeline() came out (ODW extension).
   else if (e.type === "fanout_done") msg = esc(fanOutText(fanOutOfEvent(e)));
+  // An ACP agent's permission request, as its tier answered it (ODW extension).
+  else if (e.type === "acp_permission") msg = acpPermissionText(e);
   else if (e.type === "cli_version")
     msg = `<b>${esc(String(e.adapter ?? ""))}</b> ${esc(String(e.version ?? e.error ?? ""))}`;
   else if (e.type.startsWith("agent_"))

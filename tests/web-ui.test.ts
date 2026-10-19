@@ -1685,6 +1685,42 @@ test("fan-out health (ODW extension): a chip on the run's head, amber when one c
   store.focusRun(null);
 });
 
+test("an ACP agent's permission answers (ODW extension) are log lines: the tool, its kind, and how its tier answered", () => {
+  const view: JobViewState = {
+    cpNote: "",
+    tab: "logs",
+    selectedAi: null,
+    reviewAi: null,
+    zoom: 1,
+    logQuery: "",
+    logTypes: new Set(["agent", "phase", "log", "run"]),
+    logLimit: 600,
+    follow: true,
+    motion: false,
+  };
+  const answer = (decision: string, title: string, kind: string) => ({
+    ts: NOW - 10,
+    type: "acp_permission",
+    agentId: 1,
+    label: "scout",
+    adapter: "gem",
+    toolCallId: "t1",
+    title,
+    kind,
+    decision,
+    tier: "read",
+  });
+  store.focusRun("20260101-000000-aaaaaa");
+  store.run = detail([]);
+  store.runEvents = [answer("allowed", "Read README.md", "read"), answer("rejected", "npm <test>", "execute"), answer("unasked", "Write a.txt", "edit")];
+  const html = renderJob(view, NOW);
+  assert.match(html, /<span class="evt log">ACP<\/span>/);
+  assert.match(html, /<b>scout<\/b> Read README\.md <span class="dim">\[read\]<\/span> <span class="ok">allowed by tier read<\/span>/);
+  assert.match(html, /<b>scout<\/b> npm &lt;test&gt; <span class="dim">\[execute\]<\/span> <span class="er">rejected by tier read<\/span>/);
+  assert.match(html, /Write a\.txt <span class="dim">\[edit\]<\/span> <span class="er">ran without asking, beyond tier read<\/span>/);
+  store.focusRun(null);
+});
+
 test("compact layout (ODW extension): the URL turns it on and off; the run list puts live runs first, Claude Code's tagged; a run gets a bar back", async () => {
   const { compactBar, compactFlag, renderCompactRuns } = await import("../web/src/views/compact.ts");
   assert.equal(compactFlag("", "#/compact"), true);
