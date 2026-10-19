@@ -54,6 +54,8 @@ export interface RunSummary {
    * goes on (epoch seconds) — "paused until 19:10 (codex quota)". Null otherwise.
    */
   pausedFor?: { reason: "quota"; adapter: string; resumeAt: number } | null;
+  /** A failed run whose disk filled up under its run directory (ODW extension). Absent otherwise. */
+  failureReason?: "disk_full";
   /** A shared bundle opened by `odw serve --open FILE.odwrun` (ODW extension): when it was bundled. */
   bundle?: { bundledAt: number | null; odwVersion: string | null };
   /** A run `odw eval` started (meta.origin "eval"; ODW extension); absent for every other run. */

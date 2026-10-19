@@ -1080,6 +1080,20 @@ function quotaPause(run: RunDetail, nowSec: number): string {
   );
 }
 
+/** A run that stopped because its disk filled up (ODW extension): said plainly, with what to do. */
+function diskFull(run: RunDetail): string {
+  if (run.failureReason !== "disk_full") return "";
+  const resume = `odw resume ${run.runId}`;
+  return (
+    `<section class="card dfull" data-key="dfull">` +
+    `<div class="df-mark">${glyph("failed")}<span class="eyebrow">${t("disk full")}</span></div>` +
+    `<div class="df-text"><h3>${t("The disk filled up under this run")}</h3>` +
+    `<p>${t("The run stopped its agents and failed rather than go on unrecorded. Free some space — odw gc lists old runs and orphaned worktrees it can remove — then resume it.")}</p></div>` +
+    `<button class="btn sm ghost" data-copy="${esc(resume)}">${icons.copy}${esc(resume)}</button>` +
+    `</section>`
+  );
+}
+
 export function renderJob(s: JobViewState, nowSec: number): string {
   // checkpoint() gates join the graph, the timeline and the drawer as nodes.
   const run = store.run ? withCheckpoints(store.run, store.runEvents) : null;
@@ -1101,7 +1115,7 @@ export function renderJob(s: JobViewState, nowSec: number): string {
               ? notesTab(run)
               : resultTab(run);
   return (
-    `<div class="job" data-key="job-${esc(run.runId)}">${runHead(run, nowSec, !!s.spend)}${spendReceipt(run, !!s.spend)}${quotaPause(run, nowSec)}${checkpoints(run, s)}${tabs(run, s.tab)}` +
+    `<div class="job" data-key="job-${esc(run.runId)}">${runHead(run, nowSec, !!s.spend)}${spendReceipt(run, !!s.spend)}${quotaPause(run, nowSec)}${diskFull(run)}${checkpoints(run, s)}${tabs(run, s.tab)}` +
     `<section class="tab-body" data-tabbody="${s.tab}" data-key="tb-${s.tab}">${body}</section></div>`
   );
 }

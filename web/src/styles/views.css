@@ -331,6 +331,45 @@
   }
 }
 
+/* ---- a run whose disk filled up ---- */
+.dfull {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 18px 24px;
+  margin: 14px 32px 0;
+  padding: 16px 20px;
+  border-color: var(--alarm-line);
+  background: linear-gradient(90deg, var(--alarm-soft), transparent 70%), var(--card);
+}
+.df-mark {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-right: 22px;
+  border-right: 1px dashed var(--alarm-line);
+  color: var(--alarm-ink);
+}
+.df-text h3 {
+  margin: 0 0 4px;
+  font-size: 15px;
+}
+.df-text p {
+  margin: 0;
+  font-size: 13px;
+  color: var(--mute);
+}
+@media (max-width: 760px) {
+  .dfull {
+    grid-template-columns: minmax(0, 1fr);
+    margin: 12px 16px 0;
+  }
+  .df-mark {
+    border-right: 0;
+    padding-right: 0;
+  }
+}
+
 /* a drawer's MCP servers that did not start */
 ul.mcp {
   display: grid;

@@ -553,6 +553,11 @@ const ZH: Record<string, string> = {
   "{adapter} is out of quota — resumes at {t}": "{adapter} 额度用尽——{t} 继续",
   "The run waits for the reset its CLI named, then picks up where it stopped. Agents on other adapters keep running.": "运行会等到 CLI 给出的重置时间,然后从停下的地方继续;其他适配器上的 agent 照常运行。",
   "Resume now": "立即继续",
+  "disk full": "磁盘已满",
+  "failed — disk full": "失败——磁盘已满",
+  "The disk filled up under this run": "这次运行所在的磁盘写满了",
+  "The run stopped its agents and failed rather than go on unrecorded. Free some space — odw gc lists old runs and orphaned worktrees it can remove — then resume it.":
+    "运行停下了所有 agent 并记为失败,而不是在无法记录的情况下继续。请先腾出空间(odw gc 会列出可删除的旧运行和孤立 worktree),再继续这次运行。",
   "Resume requested": "已请求继续",
   "Could not resume the run": "无法继续这次运行",
   "secrets in it were replaced before it was saved": "保存前其中的密钥已被替换",

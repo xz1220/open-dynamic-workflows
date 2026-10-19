@@ -43,6 +43,9 @@
  *                    the dashboard: one { action: approve|reject, checkpointId?, note?,
  *                    by, at } per line
  *     worker.log     the worker process's stdout/stderr
+ *     .odw-reserve   64 KB set aside when the run is created, deleted to make room for the
+ *                    run's last status write should its disk fill up, and once the run ends
+ *                    (ODW extension; see ./disk-full)
  *
  * A `runId` is globally unique, so it stays the public handle: `runDir(runId)`
  * locates a run across buckets (and still finds pre-bucket flat runs under
@@ -81,6 +84,7 @@ import type { Redactor } from "../redact.js";
 import type { TranscriptPaths } from "../transcript.js";
 import type { UntrustedInputMeta } from "../untrusted-input.js";
 import { VERSION } from "../version.generated.js";
+import { isDiskFullError, writeReserve } from "./disk-full.js";
 import { readdirSafe, readJsonFile, writeJsonAtomic } from "./fs-util.js";
 
 /** Terminal states: a run in one of these will not change again. */
@@ -318,6 +322,8 @@ export class RunStore {
       createdAt,
     });
     writeJson(join(dir, STATUS), { runId, state: "pending", dispatched: 0, updatedAt: now() });
+    // The room to say the disk filled up, should it (ODW extension; see ./disk-full).
+    writeReserve(dir);
     return runId;
   }
 
@@ -721,9 +727,21 @@ export class JsonlSink implements EventSink {
   redactor: Redactor | undefined;
   /** Told of each event once it is written, as emitted (the worker's drift watch, ODW extension; see ../drift). */
   onEmit: ((ev: WorkflowEvent) => void) | undefined;
+  /**
+   * Told when an append finds the disk full (ENOSPC, EDQUOT; ODW extension,
+   * see ./disk-full), in place of throwing wherever the event was emitted —
+   * a timer, a callback: the event is lost, and the worker ends the run.
+   */
+  onDiskFull: ((err: unknown) => void) | undefined;
   constructor(private readonly path: string) {}
   emit(ev: WorkflowEvent): void {
-    appendFileSync(this.path, JSON.stringify(this.redactor ? this.redactor.record(ev) : ev) + "\n");
+    try {
+      appendFileSync(this.path, JSON.stringify(this.redactor ? this.redactor.record(ev) : ev) + "\n");
+    } catch (err) {
+      if (!this.onDiskFull || !isDiskFullError(err)) throw err;
+      this.onDiskFull(err);
+      return;
+    }
     this.onEmit?.(ev);
   }
 }

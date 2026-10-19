@@ -758,6 +758,37 @@ test("a run waiting out a spent quota says until when, and offers to go on now",
   store.focusRun(null);
 });
 
+test("a run whose disk filled up (ODW extension) says so on its page and in the run list, with what to do", () => {
+  const view: JobViewState = {
+    cpNote: "",
+    tab: "graph",
+    selectedAi: null,
+    reviewAi: null,
+    zoom: 1,
+    logQuery: "",
+    logTypes: new Set(["agent"]),
+    logLimit: 600,
+    follow: true,
+    motion: false,
+  };
+  store.focusRun("20260101-000000-aaaaaa");
+  store.run = detail([agent("fill", "Search", "done", { agentId: 1 })], { state: "failed", failureReason: "disk_full" });
+  const html = renderJob(view, NOW);
+  assert.match(html, /<section class="card dfull"/);
+  assert.match(html, /The disk filled up under this run/);
+  assert.match(html, /odw gc lists old runs/);
+  assert.match(html, /<section class="card dfull"[\s\S]*?data-copy="odw resume 20260101-000000-aaaaaa"[\s\S]*?<\/section>/, "the card offers the resume command");
+  store.run = detail([agent("fill", "Search", "done", { agentId: 1 })], { state: "failed" });
+  assert.doesNotMatch(renderJob(view, NOW), /class="card dfull"/, "any other failure has no such card");
+  const prev = store.runs;
+  store.runs = [summary({ runId: "r-d", name: "nightly", state: "failed", failureReason: "disk_full" }), summary({ runId: "r-f", name: "other", state: "failed" })];
+  const list = renderJobs({ filter: "all", query: "", limit: 100 }, NOW);
+  assert.match(list, /data-run="r-d"[\s\S]*?<span class="pill s-failed">[\s\S]*?<span>failed — disk full<\/span>/);
+  assert.match(list, /data-run="r-f"[\s\S]*?<span class="pill s-failed">[\s\S]*?<span>failed<\/span>/);
+  store.runs = prev;
+  store.focusRun(null);
+});
+
 test("spend: phases in declared order with outsiders last, shares of cost, top spenders, and nothing before any usage", () => {
   const u = (inputTokens: number, outputTokens: number, costUsd?: number) => ({ inputTokens, outputTokens, ...(costUsd != null ? { costUsd } : {}) });
   const run = detail([
