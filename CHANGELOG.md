@@ -498,6 +498,22 @@ independent security reviews whose findings are all fixed.
   …) with line and column, and the ODW extensions it calls; `odw conformance --strict`
   runs the suite there (all 32 cases pass; `npm test` runs it). `vm` is not a security
   boundary: this takes away what a script could casually reach, nothing more.
+- ACP agents as adapters (**ODW extension**): `"protocol": "acp"` plus the command
+  that starts an Agent Client Protocol agent (`gemini --experimental-acp`, say) makes
+  it an adapter. A zero-dependency JSON-RPC client over stdio runs `initialize`
+  (protocol 1, no client capabilities), `session/new` in the agent's workspace,
+  `session/prompt`, streamed `session/update`, and `session/cancel` on stop, timeout
+  or stall. Each `session/request_permission` is answered by the agent's tier: `read`
+  allows read/search/think/fetch, `edit` adds edit/delete/move, `full` allows all,
+  always once and never always. Every answer is an `acp_permission` event (log, live
+  view, the dashboard's Logs tab). A write beyond the tier that ran without asking is
+  recorded as `unasked`. The session is kept as `acp.*` transcript events. Usage comes
+  from `usage_update`'s USD cost and the prompt response's draft `usage`. Live
+  `toolCalls`/`costUsd` limits and failure reasons apply (`auth_required` →
+  `auth`). `odw doctor --adapter <acp>` does an `initialize`-only handshake and
+  reports the agent's capabilities. Not implemented: elicitation, client `fs` and
+  `terminal`, `session/load`, extra roots, remote transports. Tested against a fake
+  agent only.
 
 ### Run on a schedule
 - `odw schedule add|list|remove|run` writes a cron, launchd or systemd entry that calls

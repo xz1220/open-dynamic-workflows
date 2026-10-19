@@ -239,6 +239,7 @@ still reach the agent`）。仓库 `.worktreeinclude` 的 `symlink:` 行和仓�
 | `sandbox` | **ODW 扩展。** 让这个 CLI 在容器中运行：`{ "kind": "container", … }`，覆盖运行级 `sandbox` 的字段（自己的 `image`、`engine`、`cliConfig`，追加 `mounts`；`network` 与各项限制取更严格者）。运行级沙箱为 `"none"` 时必须给出 `image`；这里写 `"none"` 会被拒绝——只能收紧 |
 | `agentLimits` | **ODW 扩展。** 这个 CLI 自己的单 agent 上限，逐键覆盖运行级 `agentLimits`（`null` 取消某项）；`agent()` 的 `limits` 再覆盖它 |
 | `egressHosts` | **ODW 扩展。** 这个 CLI 需要访问的主机（模型 API、登录）：容器沙箱的 `"network": { "allow": "adapter" }` 放行的就是它们。claude、codex、gemini、agy 已声明自己的 |
+| `protocol` | **ODW 扩展。** `"acp"`：命令启动一个 [Agent Client Protocol](https://agentclientprotocol.com) agent（如 `["gemini", "--experimental-acp"]`，以各 agent 文档为准），ODW 经 stdio 上的 JSON-RPC 驱动它——`initialize`（不声明客户端能力：无 `fs`、`terminal`、elicitation）、在 agent 工作区 `session/new`、经 `session/prompt` 发提示、流式读 `session/update`、停止或超时时 `session/cancel`；每个 `session/request_permission` 按 agent 的档位应答（`read` 允许 read/search/think/fetch，`edit` 再加 edit/delete/move，`full` 全部允许；只选 `allow_once`/`reject_once`），每次应答一个 `acp_permission` 事件。不接受 `stdin`、`output`；不能只给内置适配器设置而不给自己的 `command`。`odw doctor --adapter <名字>` 做一次握手（只发 `initialize`）。详见 README 的「ACP agent」 |
 
 ### 输出格式
 

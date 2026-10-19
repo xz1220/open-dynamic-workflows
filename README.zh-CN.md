@@ -2078,6 +2078,66 @@ Windows 下的可执行文件探测遵循 `PATHEXT`,所以 `agent.cmd`、`kilo.c
 `defaultAdapter` 时,odw 会用唯一配置的 adapter——或在全新安装下,用 PATH 上
 唯一真实存在的那个 CLI;若装了多个,报错会列出它们并告诉你如何选择。
 
+### ACP agent(ODW 扩展)
+
+说 [Agent Client Protocol](https://agentclientprotocol.com)(Zed、JetBrains 编辑器驱动编码 agent 的协议)的
+agent 可以直接作为适配器:写上 `"protocol": "acp"` 和启动其 ACP 模式的命令。ODW 像编辑器一样,
+经 stdin/stdout 上的 JSON-RPC 驱动它(自带的最小客户端,零依赖)。这只是新增一种接入方式,不替换任何内置适配器的无头模式。
+
+```json
+{
+  "adapters": {
+    "gemini-acp": { "protocol": "acp", "command": ["gemini", "--experimental-acp"], "label": "Gemini CLI (ACP)" }
+  }
+}
+```
+
+ACP 启动参数以各 agent 自己的文档为准(`gemini --help`;较新的 Gemini CLI 可能叫 `--acp`)。
+`acp` 适配器不接受 `stdin` 和 `output`(提示与回复走协议),也不能只给内置适配器改 `protocol`——请另起名字。
+其余字段照常生效:`env`、`timeout`、`stallTimeout`、`flags.model`(追加到命令)、`permissions`、
+`permissionArgs`(按档位给命令加的参数)、`sandbox`、`agentLimits`、回退链与多账号。
+
+ODW 实现的部分(协议版本 1),每次 CLI 运行:
+
+| 步骤 | ODW 的做法 |
+| --- | --- |
+| `initialize` | 协议版本 1;**不声明任何客户端能力**——没有 `fs`、`terminal`、elicitation(agent 自己读写文件);agent 若请求其中任何方法,回答 method not found |
+| `session/new` | `cwd` 为 agent 的工作区(隔离时为其 worktree);ODW 不提供 MCP 服务器 |
+| `session/prompt` | agent 的提示作为一个文本块;回合以响应的 `stopReason` 结束——`end_turn` 以外的(`max_tokens`、`max_turn_requests`、`refusal`、`cancelled`)都使这次调用失败 |
+| `session/update` | 流式读取消息与思考片段、工具调用及其更新、计划、`usage_update`;回复是 agent 最后一次工具调用之后的消息文本 |
+| `session/request_permission` | 立即**按 agent 的权限档位**应答,不问任何人 |
+| `session/cancel` | 运行被停止、超时、卡死或触到限额时,在杀进程之前发送 |
+
+档位按工具调用的 ACP `kind` 应答权限请求:
+
+| 档位 | 允许 | 拒绝 |
+| --- | --- | --- |
+| `read` | `read`、`search`、`think`、`fetch`(不可信输入的运行不含 `fetch`) | `edit`、`delete`、`move`、`execute`、`switch_mode`、`other` 及其他 |
+| `edit` | 以上,加 `edit`、`delete`、`move` | `execute`、`switch_mode`、`other` 及其他 |
+| `full` | 全部 | 无 |
+
+ODW 选 `allow_once`(或 `reject_once`),从不选 `*_always`——任何应答都不会变成 agent 记住的规则;
+agent 没给拒绝选项时,ODW 取消该请求(等于不允许)。每次应答写一个 `acp_permission` 事件
+(`toolCallId`、`title`、`kind`、`decision`、`option`、`tier`),在 `odw logs`、实时视图与看板 Logs 页显示;
+被拒绝的调用像其他 CLI 被拒的工具调用一样记在 agent 上(`permissionDenials`)。
+
+档位的强度取决于 agent 自己是否请求权限:ODW 只能拒绝它来问的事。被配置成不经询问就编辑或执行命令的 agent 不会被拦下;
+超出档位的 `edit`、`delete`、`move`、`execute` 工具调用未经请求就执行时,ODW 记一个 `decision: "unasked"` 的
+`acp_permission` 事件——不会静默放过。`read` 档请配合 agent 自身的审批设置,或[容器沙箱](#在容器中运行-agentodw-扩展)。
+
+会话以 ODW 自己的 `acp.*` 事件保存(`acp.message`、`acp.thought`、`acp.tool_call`、`acp.tool_result`、
+`acp.permission`、`acp.plan`、`acp.usage`、`acp.error`、`acp.result`),不保存原始 JSON-RPC;这些事件进入
+agent 的 transcript(`odw logs --agent`、看板抽屉)、实时的 `toolCalls`/`costUsd` 限额与失败原因——JSON-RPC 错误像任何
+CLI 失败一样归类(例如 `session/new` 返回 `auth_required` 即原因 `auth`)。用量只取协议携带的部分:
+`usage_update` 中以美元计的累计 `cost`;token 数只在 prompt 响应带有 `usage` 对象时读取(协议草案,存在才读)。
+两者都没有的 agent,与其他 CLI 一样按回复字符数/4 估算。
+
+`odw doctor --adapter <名字>` 对 ACP agent 做一次握手:只发 `initialize`(不建会话、不发提示、不花钱),
+报告 agent 名称与版本、协议版本、`loadSession`、提示与 MCP 能力、登录方式;`--smoke` 照常发一次真实提示。
+
+未实现:把 ODW 做成 ACP *agent*(让编辑器驱动 ODW)、远程传输、elicitation(结构化提问——不声明该能力)、
+客户端 `fs` 与 `terminal` 方法、`session/load`、额外工作区根、会话模式与配置项、替 agent 登录(请先自行登录)。
+
 ### 结构化输出(ODW 扩展)
 
 `agent(prompt, { schema })` 返回的值要么满足它的 JSON Schema,要么调用失败。背后有两层保障:

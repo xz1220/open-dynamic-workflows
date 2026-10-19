@@ -452,6 +452,10 @@ approvals).
   fails before it starts, saying which adapter can. Name one of those for read-only
   agents (`adapter: 'claude'`); `odw doctor` lists each adapter's tiers, and every
   `odw run` prints the tier each installed adapter will run with.
+- An ACP agent adapter (`"protocol": "acp"`, **ODW extension**) runs every tier:
+  ODW answers each permission request the agent makes by its tier, and records
+  each answer as an `acp_permission` event. It cannot refuse what the agent does
+  without asking, so for review work prefer a CLI with a real `read` mode.
 - **Never choose `full` on your own.** It removes the sandbox and every approval:
   use it only when the user asks for it, on a machine they treat as disposable.
 - **Someone else's repository: run it `--untrusted`** (ODW extension). Each CLI

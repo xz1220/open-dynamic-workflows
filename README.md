@@ -2441,6 +2441,88 @@ configured adapter — or, on a fresh install, the sole adapter whose CLI it
 actually finds on PATH; if several are installed, the error lists them and shows
 how to pick one.
 
+### ACP agents (ODW extension)
+
+An agent that speaks the [Agent Client Protocol](https://agentclientprotocol.com)
+(the protocol Zed and JetBrains editors use to drive coding agents) can be an
+adapter as is: give it `"protocol": "acp"` and the command that starts its ACP
+mode. ODW then drives it the way an editor would, over JSON-RPC on its stdin and
+stdout, with a small client of its own (no dependency). It adds a way to connect
+agents and replaces nothing: the built-in adapters keep their headless modes.
+
+```json
+{
+  "adapters": {
+    "gemini-acp": { "protocol": "acp", "command": ["gemini", "--experimental-acp"], "label": "Gemini CLI (ACP)" }
+  }
+}
+```
+
+Check each agent's own docs for its ACP flag (`gemini --help`; newer Gemini CLI
+releases may name it `--acp`). An `acp` adapter takes no `stdin` and no `output`,
+since the prompt and reply go over the protocol, and it cannot be a built-in with only
+`protocol` changed, so give it a name of its own. Everything else works as for
+any adapter: `env`, `timeout`, `stallTimeout`, `flags.model` (appended to its
+command), `permissions`, `permissionArgs` (flags for its command, per tier),
+`sandbox`, `agentLimits`, fallback chains and accounts.
+
+What ODW implements (protocol version 1), per CLI run of an agent call:
+
+| Step | What ODW does |
+| --- | --- |
+| `initialize` | protocol version 1; **no client capabilities**: no `fs`, no `terminal`, no elicitation. The agent reads and writes files itself. A request for any of them is answered "method not found" |
+| `session/new` | `cwd` is the agent's workspace (its worktree when isolated); no MCP servers from ODW |
+| `session/prompt` | the agent's prompt as one text block; the turn ends with the response's `stopReason`. Anything but `end_turn` (`max_tokens`, `max_turn_requests`, `refusal`, `cancelled`) fails the call |
+| `session/update` | message and thought chunks, tool calls and their updates, plans and `usage_update` are read as they stream. The reply is the message text after the agent's last tool call |
+| `session/request_permission` | answered at once **by the agent's permission tier**. Nobody is asked |
+| `session/cancel` | sent when the run is stopped, times out, stalls or hits a limit, just before its process is killed |
+
+How the tier answers a permission request, by the tool call's ACP `kind`:
+
+| Tier | Allowed | Rejected |
+| --- | --- | --- |
+| `read` | `read`, `search`, `think`, `fetch` (not `fetch` for a run with untrusted input) | `edit`, `delete`, `move`, `execute`, `switch_mode`, `other`, anything else |
+| `edit` | those, plus `edit`, `delete`, `move` | `execute`, `switch_mode`, `other`, anything else |
+| `full` | everything | nothing |
+
+ODW selects `allow_once` (or `reject_once`), never an `*_always` option, so no
+answer becomes a rule the agent remembers. When the agent offers no reject option,
+ODW cancels the request, which allows nothing. Each answer is an
+`acp_permission` event (`toolCallId`, `title`, `kind`, `decision`, `option`,
+`tier`). These events show in `odw logs`, the live view and the dashboard's Logs
+tab. What was refused is recorded on the agent like any CLI's refused tool calls
+(`permissionDenials`).
+
+The tier is only as strong as the agent's own asking. ODW can refuse only what the
+agent asks about. An agent configured to edit or run commands without asking is
+not stopped. When a tool call of kind `edit`, `delete`, `move` or `execute` beyond
+the tier runs without a request, ODW records an `acp_permission` event with
+`decision: "unasked"` and does not let it pass silently. Pair a `read` tier with the
+agent's own approval settings, or with a [container sandbox](#run-agents-in-containers-odw-extension).
+
+The session is kept as ODW's own `acp.*` events (`acp.message`, `acp.thought`,
+`acp.tool_call`, `acp.tool_result`, `acp.permission`, `acp.plan`, `acp.usage`,
+`acp.error`, `acp.result`). It does not keep the raw JSON-RPC. Those events feed the
+agent's transcript (`odw logs --agent`, the dashboard drawer), its live
+`toolCalls` and `costUsd` limits, and its failure reasons. A JSON-RPC error is
+classified like any CLI failure. An `auth_required` error from `session/new`, for
+one, is reason `auth`. Usage comes from what the protocol carries:
+`usage_update`'s cumulative `cost` when it is in US dollars, and token counts
+only when the prompt response carries a `usage` object (a draft of the
+protocol, read when present). An agent that reports neither gets chars/4 of its
+reply, as any CLI does.
+
+`odw doctor --adapter <name>` gives an ACP agent a handshake: it sends
+`initialize` alone (no session, no prompt, nothing spent) and reports the agent's
+name and version, protocol version, `loadSession`, prompt and MCP capabilities,
+and login methods. `--smoke` sends it one real prompt, as for any adapter.
+
+Not implemented: ODW as an ACP *agent* (an editor driving ODW), remote
+transports, elicitation (structured questions; the capability is not declared),
+the client `fs` and `terminal` methods, `session/load`, extra workspace roots,
+session modes and config options, and authenticating for the agent (log in to it
+first).
+
 ### Structured output (ODW extension)
 
 `agent(prompt, { schema })` returns a value that satisfies its JSON Schema, or the

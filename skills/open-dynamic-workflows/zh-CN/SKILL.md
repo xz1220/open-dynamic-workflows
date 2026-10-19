@@ -370,6 +370,9 @@ odw restore $RUN           # 恢复快照保存的工作区（有未提交改动
 - `read` 在 `claude`、`codex` 和 `gemini` 上可用。其他 CLI 会拒绝：agent 在启动前失败，并说明
   哪个适配器可以。只读 agent 请指定其中之一（`adapter: 'claude'`）；`odw doctor` 会列出每个
   适配器支持的档位，每次 `odw run` 也会打印各已安装适配器将以哪个档位运行。
+- ACP agent 适配器（`"protocol": "acp"`，**ODW 扩展**）可运行任何档位：ODW 按档位应答 agent 的
+  每个权限请求，并把每次应答记为 `acp_permission` 事件。它拦不住 agent 不经询问就做的事，
+  所以审查类工作优先选有真正 `read` 模式的 CLI。
 - **绝不要自己决定用 `full`。** 它去掉了沙箱和所有审批：只在用户明确要求、且是在用户视为
   可丢弃的机器上时才用。
 - **别人的仓库：用 `--untrusted` 运行**（ODW 扩展）。这时每个 CLI 都在其文档给出办法的
