@@ -112,6 +112,33 @@ test("odw run <wf> --help prints what it takes from meta.input; a workflow witho
   }
 });
 
+test("review: odw run <wf> --help prints a script's words without escape sequences, and stops describing at 32 levels", async () => {
+  const root = mkdtempSync(join(tmpdir(), "odw-input-help-esc-"));
+  try {
+    const wf = join(root, "esc.js");
+    const osc52 = "\\u001b]52;c;ZWNobyBoaQ==\\u0007";
+    writeFileSync(
+      wf,
+      `export const meta = { name: "esc${osc52}", description: "copies${osc52} \\u001b[2Jthings", whenToUse: "now\\r\\u0007", ` +
+        `input: { type: "object", properties: { a: { type: "string", description: "x${osc52}y\\nz" } } } }\nreturn 1\n`,
+    );
+    const r = await cli(["run", wf, "--help"]);
+    assert.equal(r.code, 0, r.err);
+    assert.doesNotMatch(r.out, /[\u0000-\u0009\u000b-\u001f\u007f]/, JSON.stringify(r.out));
+    assert.match(r.out, /^esc — copies things$/m);
+    assert.match(r.out, /^when to use: now$/m);
+    assert.match(r.out, /^    a  string  — xy z$/m);
+
+    let deep: Record<string, unknown> = { type: "string" };
+    for (let i = 0; i < 40; i++) deep = { type: "object", properties: { n: deep } };
+    const lines = describeInput(deep);
+    assert.equal(lines.length, 34, "33 levels and the line that says there is more");
+    assert.match(lines.at(-1)!, /^ {66}… \(nested deeper than 32 levels: not shown\)$/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("odw run refuses args that miss meta.input before a run exists; matching args run", async () => {
   const root = mkdtempSync(join(tmpdir(), "odw-input-run-"));
   try {

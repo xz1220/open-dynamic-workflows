@@ -10,6 +10,7 @@ import { resolve } from "node:path";
 import { loadConfig } from "./adapters/config.js";
 import { describeInput } from "./input-schema.js";
 import { loadWorkflowScript } from "./loader.js";
+import { sanitizeText } from "./tty.js";
 import { resolveWorkflow } from "./workflows/resolve.js";
 
 /** The help text for `odw run <ref> --help`, as lines. Throws when the workflow does not resolve or load. */
@@ -26,5 +27,12 @@ export function runHelpLines(ref: string, opts: { config: string | null; source:
     out.push("args (meta.input, checked before the run starts):");
     for (const line of describeInput(meta.input)) out.push(`  ${line}`);
   }
-  return out;
+  // The script's own words reach the terminal as text: no escape sequence (OSC 52 writes the clipboard), no control character.
+  return out.map(shown);
+}
+
+/** A line without escapes or control characters, its indentation kept. */
+function shown(line: string): string {
+  const indent = /^ */.exec(line)![0];
+  return indent + sanitizeText(line.slice(indent.length), 2000);
 }
