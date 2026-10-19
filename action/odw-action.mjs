@@ -36,7 +36,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 
 /**
  * The odw release to install: the `version` input, else this action's own
- * package version — so `uses: …/action@v0.7.0` installs odw 0.7.0.
+ * package version — so `uses: …/action@v0.9.0` installs odw 0.9.0.
  */
 export function resolveVersion(input, packageJsonText) {
   const given = String(input ?? "").trim();
@@ -50,13 +50,13 @@ export function resolveVersion(input, packageJsonText) {
 
 /**
  * Throws for a release that predates published checksums (SHA256SUMS: from
- * after v0.5.0): the Action installs only what it can verify. install.sh
+ * v0.5.0 on): the Action installs only what it can verify. install.sh
  * refuses it too, under ODW_REQUIRE_CHECKSUMS=1.
  */
 export function requireChecksums(version) {
-  const [major, minor, patch] = String(version).split(/[-+]/)[0].split(".").map(Number);
-  if (major === 0 && (minor < 5 || (minor === 5 && patch === 0))) {
-    throw new Error(`odw ${version} predates published checksums (SHA256SUMS, from after 0.5.0): the action installs only a release it can verify; use a newer version`);
+  const [major, minor] = String(version).split(/[-+]/)[0].split(".").map(Number);
+  if (major === 0 && minor < 5) {
+    throw new Error(`odw ${version} predates published checksums (SHA256SUMS, from 0.5.0 on): the action installs only a release it can verify; use a newer version`);
   }
   return version;
 }

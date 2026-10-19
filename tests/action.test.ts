@@ -26,10 +26,10 @@ test("version: the input, else the action's own package version; nothing else", 
 });
 
 test("install: a release without published checksums is refused, not installed with a warning (review fix)", () => {
-  for (const version of ["0.5.0", "0.4.9", "0.5.0-rc.1", "0.1.0"]) {
+  for (const version of ["0.4.0", "0.4.9", "0.4.0-rc.1", "0.1.0"]) {
     assert.throws(() => action.requireChecksums(version), /predates published checksums/, version);
   }
-  for (const version of ["0.5.1", "0.7.0", "1.0.0"]) assert.equal(action.requireChecksums(version), version);
+  for (const version of ["0.5.0", "0.5.0-rc.1", "0.5.1", "0.9.0", "1.0.0"]) assert.equal(action.requireChecksums(version), version);
   // The install step tells install.sh the same, and never allows an unverified binary.
   const src = readFileSync(script, "utf8");
   assert.match(src, /ODW_ALLOW_UNVERIFIED: "", ODW_REQUIRE_CHECKSUMS: "1"/);

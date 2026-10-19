@@ -210,7 +210,7 @@ installTest("accepts binary-mode and uppercase SHA256SUMS entries", (t) => {
   f.assertClean();
 });
 
-installTest("a release after v0.5.0 without SHA256SUMS fails closed unless ODW_ALLOW_UNVERIFIED=1", (t) => {
+installTest("a release from v0.5.0 on without SHA256SUMS fails closed unless ODW_ALLOW_UNVERIFIED=1", (t) => {
   const f = fixture(t);
   f.old();
   f.sums(null);
@@ -226,9 +226,9 @@ installTest("a release after v0.5.0 without SHA256SUMS fails closed unless ODW_A
   f.assertClean();
 });
 
-installTest("releases up to v0.5.0 predate SHA256SUMS and install with a warning", (t) => {
+installTest("releases before v0.5.0 predate SHA256SUMS and install with a warning", (t) => {
   for (const [version, predates] of [
-    ["0.5.0", true], ["0.4.9", true], ["0.5.0-rc.1", true], ["0.5.1", false], ["1.0.0", false],
+    ["0.4.9", true], ["0.4.0", true], ["0.1.0-rc.1", true], ["0.5.0", false], ["0.5.0-rc.1", false], ["0.9.0", false], ["1.0.0", false],
   ] as const) {
     const f = fixture(t);
     writeFileSync(f.archive, gzipSync(binary.replace("1.2.3", version)));
@@ -246,7 +246,7 @@ installTest("releases up to v0.5.0 predate SHA256SUMS and install with a warning
 });
 
 installTest("ODW_REQUIRE_CHECKSUMS=1 (the GitHub Action's) refuses a release without checksums, even one that predates them", (t) => {
-  for (const version of ["0.5.0", "1.2.3"]) {
+  for (const version of ["0.4.0", "1.2.3"]) {
     const f = fixture(t);
     f.old();
     writeFileSync(f.archive, gzipSync(binary.replace("1.2.3", version)));
