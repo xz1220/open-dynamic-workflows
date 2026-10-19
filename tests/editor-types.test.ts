@@ -8,7 +8,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -192,6 +192,43 @@ test("running it again changes nothing; a user's own jsconfig.json is kept unles
     writeFileSync(join(dir, ".odw", "types", "odw.d.ts"), "// mine\n");
     assert.equal(writeTypes(dir).files[0]!.state, "updated");
     assert.equal(readFileSync(join(dir, ".odw", "types", "odw.d.ts"), "utf8"), typesText());
+  }));
+
+test("review: odw types never writes through a symlink — a linked odw.d.ts, a dangling jsconfig.json link, a linked .odw/types", () =>
+  withDir((dir) => {
+    const outside = realpathSync(mkdtempSync(join(tmpdir(), "odw-types-outside-")));
+    try {
+      const victim = join(outside, "victim.txt");
+      writeFileSync(victim, "keep me\n");
+      // The declarations: a link to a file elsewhere is refused, the file untouched.
+      mkdirSync(join(dir, ".odw", "types"), { recursive: true });
+      symlinkSync(victim, join(dir, ".odw", "types", "odw.d.ts"));
+      // A dangling jsconfig.json link does not count as missing.
+      symlinkSync(join(outside, "created.json"), join(dir, ".odw", "jsconfig.json"));
+      const err = sink();
+      assert.equal(cmdTypes({}, { cwd: dir, err, env: {} }), 1);
+      assert.deepEqual(writeTypes(dir).files.map((f) => f.state), ["refused", "refused"]);
+      assert.equal(readFileSync(victim, "utf8"), "keep me\n");
+      assert.equal(existsSync(join(outside, "created.json")), false);
+      assert.match(err.text(), /odw\.d\.ts not written: .*odw\.d\.ts is a symbolic link/);
+      assert.match(err.text(), /jsconfig\.json not written: .*jsconfig\.json is a symbolic link/);
+
+      // A linked directory on the way down: .odw/types → elsewhere.
+      rmSync(join(dir, ".odw"), { recursive: true, force: true });
+      mkdirSync(join(dir, ".odw"));
+      symlinkSync(outside, join(dir, ".odw", "types"));
+      const linked = writeTypes(dir).files;
+      assert.deepEqual(linked.map((f) => f.state), ["refused", "written"]);
+      assert.match(linked[0]!.reason!, /\.odw\/types is a symbolic link/);
+      assert.equal(existsSync(join(outside, "odw.d.ts")), false);
+      // And the project's own .odw a link: nothing under it is written.
+      rmSync(join(dir, ".odw"), { recursive: true, force: true });
+      symlinkSync(outside, join(dir, ".odw"));
+      assert.deepEqual(writeTypes(dir).files.map((f) => f.state), ["refused", "refused"]);
+      assert.deepEqual(readdirSync(outside), ["victim.txt"], "nothing written outside, no temporary file left");
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
   }));
 
 test("--dir puts them elsewhere, the include paths still reaching .odw/workflows and .claude/workflows", () =>

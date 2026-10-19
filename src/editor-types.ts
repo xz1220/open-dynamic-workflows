@@ -29,8 +29,8 @@
  * compiles or checks anything (zero dependencies).
  */
 
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import { detectCaps, glyphs, palette } from "./tty.js";
 import { WORKFLOW_DTS } from "./types.generated.js";
@@ -122,20 +122,32 @@ export function typesFiles(cwd: string, dir: string = TYPES_DIR, version: string
 }
 
 /** What became of one file. */
-export type TypesFileState = "written" | "updated" | "unchanged" | "kept";
+export type TypesFileState = "written" | "updated" | "unchanged" | "kept" | "refused";
 
 export interface TypesOutcome {
-  files: Array<TypesFile & { state: TypesFileState }>;
+  /** `reason`: why a file was `refused`. */
+  files: Array<TypesFile & { state: TypesFileState; reason?: string }>;
 }
 
 /**
  * Write the declarations and the jsconfig files. The declarations are always
  * (re)written; a jsconfig.json is written when missing, rewritten when this
- * wrote it ({@link JSCONFIG_MARK}) or with `force`, and otherwise kept.
+ * wrote it ({@link JSCONFIG_MARK}) or with `force`, and otherwise kept. None
+ * is written when it, or a directory from the project down to it, is a
+ * symlink, or when its directory resolves outside the project: `refused`.
+ * Each is written to a temporary file renamed over it.
  */
 export function writeTypes(cwd: string, dir: string = TYPES_DIR, force = false): TypesOutcome {
   const files: TypesOutcome["files"] = [];
+  // The project: cwd, or the types directory itself when --dir names one outside it.
+  const base = resolve(cwd, dir);
   for (const f of typesFiles(cwd, dir)) {
+    const root = within(resolve(cwd), f.path) ? resolve(cwd) : base;
+    const unsafe = unsafeTarget(root, f.path);
+    if (unsafe) {
+      files.push({ ...f, state: "refused", reason: unsafe });
+      continue;
+    }
     let state: TypesFileState;
     if (!existsSync(f.path)) state = "written";
     else {
@@ -146,11 +158,63 @@ export function writeTypes(cwd: string, dir: string = TYPES_DIR, force = false):
     }
     if (state === "written" || state === "updated") {
       mkdirSync(dirname(f.path), { recursive: true });
-      writeFileSync(f.path, f.content, "utf8");
+      // Created: a link put there meanwhile, or a parent resolving out of the project, still stops it.
+      const after = unsafeTarget(root, f.path);
+      if (after) {
+        files.push({ ...f, state: "refused", reason: after });
+        continue;
+      }
+      writeReplacing(f.path, f.content);
     }
     files.push({ ...f, state });
   }
   return { files };
+}
+
+/**
+ * Why `path` must not be written, or null: it, or a directory from `root`
+ * down to it, is a symlink, or its parent's realpath leaves `root`'s. A
+ * symlink is never written through — not the declarations, not a dangling
+ * jsconfig.json — wherever it points.
+ */
+function unsafeTarget(root: string, path: string): string | null {
+  const parts = relative(root, path).split(sep);
+  if (parts[0] === ".." || isAbsolute(relative(root, path))) return `${path} is outside ${root}`;
+  let at = root;
+  for (const part of parts) {
+    at = join(at, part);
+    let st;
+    try {
+      st = lstatSync(at);
+    } catch {
+      break; // not there yet: created, as a directory or the file, below what was checked
+    }
+    if (st.isSymbolicLink()) return `${at} is a symbolic link`;
+  }
+  try {
+    const parent = realpathSync(dirname(path));
+    if (!within(realpathSync(root), parent) && parent !== realpathSync(root)) return `${dirname(path)} resolves outside ${root}`;
+  } catch {
+    // the parent is not there yet: nothing resolves anywhere
+  }
+  return null;
+}
+
+/** Write through a temporary file beside `path`, renamed over it: never through what `path` is. */
+function writeReplacing(path: string, content: string): void {
+  const tmp = join(dirname(path), `.${basename(path)}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`);
+  writeFileSync(tmp, content, { encoding: "utf8", flag: "wx" });
+  try {
+    renameSync(tmp, path);
+  } catch (err) {
+    rmSync(tmp, { force: true });
+    throw err;
+  }
+}
+
+function within(root: string, path: string): boolean {
+  const rel = relative(root, path);
+  return rel !== "" && rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
 }
 
 /** What `odw doctor` reports of `.odw/types/odw.d.ts`: null when it was never written. */
@@ -200,6 +264,7 @@ export function cmdTypes(flags: TypesFlags, io?: Partial<TypesIO>): number {
   }
   const outcome = writeTypes(cwd, dir, flags.force === true);
   reportTypes(outcome, cwd, err, env);
+  if (outcome.files.some((f) => f.state === "refused")) return 1;
   if (outcome.files.some((f) => f.state !== "kept")) {
     err.write(
       palette(detectCaps(err, env)).dim(
@@ -224,6 +289,8 @@ export function reportTypes(outcome: TypesOutcome, cwd: string, err: NodeJS.Writ
       err.write(`${p.ok(g.ok)} ${f.state === "written" ? "wrote" : "updated"} ${shown}  ${p.dim(`(${what})`)}\n`);
     } else if (f.state === "unchanged") {
       err.write(p.dim(`${g.ok} ${shown} is up to date`) + "\n");
+    } else if (f.state === "refused") {
+      err.write(`${p.err(g.fail)} ${shown} not written: ${f.reason ?? "unsafe"} — odw types never writes through a symlink\n`);
     } else {
       err.write(`${p.run("!")} ${shown} is not odw's: left as it is. For completion, its "include" needs:\n`);
       err.write(`    ${JSON.stringify(f.include)}\n`);
