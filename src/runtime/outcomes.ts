@@ -26,11 +26,12 @@
  * default.
  */
 
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
+import { join } from "node:path";
 
 import { fmtTokens, fmtUsd, palette, padEndWidth, sanitizeText, truncateToWidth, type TermCaps } from "../tty.js";
 import { formatDuration } from "./notify.js";
-import { agentEvidence, latestMarks, readReviews, type AgentEvidence } from "./review.js";
+import { agentEvidence, latestMarks, readReviews, REVIEWS_FILE, type AgentEvidence } from "./review.js";
 import type { RunStore } from "./run-store.js";
 import { detailFrom, readFacts, type AgentView, type RunDetail } from "./runs-view.js";
 
@@ -122,6 +123,49 @@ export interface OutcomesOptions {
   since: number;
   until: number;
   workflow?: string | null;
+  /** Settled runs' facts kept between calls (`odw serve`): a run is read again only when its files change. */
+  cache?: OutcomesCache;
+}
+
+/** At most this many weeks are rows, the newest: a window longer than three years keeps its last 157. */
+export const MAX_OUTCOME_WEEKS = 157;
+
+/**
+ * Each settled run's facts, by run directory, with the size and mtime of its
+ * meta.json, events.jsonl and reviews.jsonl when read: one changed is read again.
+ */
+export class OutcomesCache {
+  private readonly runs = new Map<string, { signature: string; facts: RunFacts }>();
+  /** More runs than this, and it starts over. */
+  static readonly MAX_RUNS = 20_000;
+
+  get(dir: string): RunFacts | null {
+    const hit = this.runs.get(dir);
+    return hit && hit.signature === runSignature(dir) ? hit.facts : null;
+  }
+
+  set(dir: string, signature: string, facts: RunFacts): void {
+    if (this.runs.size >= OutcomesCache.MAX_RUNS) this.runs.clear();
+    this.runs.set(dir, { signature, facts });
+  }
+
+  get size(): number {
+    return this.runs.size;
+  }
+}
+
+/** Cheap: three stats. */
+export function runSignature(dir: string): string {
+  return ["meta.json", "events.jsonl", REVIEWS_FILE]
+    .map((name) => {
+      try {
+        const st = statSync(join(dir, name));
+        return `${st.size}:${st.mtimeMs}`;
+      } catch {
+        return "-";
+      }
+    })
+    .join("|");
 }
 
 const WEEK = 7 * 86_400;
@@ -240,6 +284,18 @@ function runReason(run: RunDetail, agents: AgentFacts[]): string {
   const top = Object.entries(counts).sort((x, y) => y[1] - x[1] || x[0].localeCompare(y[0]))[0];
   if (top) return top[0];
   return run.state === "stale" ? "stale" : "script_error";
+}
+
+/** {@link readRun} through `cache`: only a settled run's facts are kept (a running one may yet go stale). */
+function cachedRun(store: RunStore, runId: string, cache: OutcomesCache | undefined): RunFacts | null {
+  if (!cache) return readRun(store, runId);
+  const dir = store.runDir(runId);
+  const hit = cache.get(dir);
+  if (hit) return hit;
+  const signature = runSignature(dir);
+  const run = readRun(store, runId);
+  if (run) cache.set(dir, signature, run);
+  return run;
 }
 
 /** A settled run's facts; null when it is left out. */
@@ -366,7 +422,7 @@ export function collectOutcomes(store: RunStore, options: OutcomesOptions): Outc
   for (const { runId } of refs) {
     const createdAt = store.readMeta(runId).createdAt;
     if (typeof createdAt !== "number" || createdAt < prevSince || createdAt >= until) continue;
-    const run = readRun(store, runId);
+    const run = cachedRun(store, runId, options.cache);
     if (!run || (workflow !== null && run.workflow !== workflow)) continue;
     (run.createdAt >= since ? runs : earlier).push(run);
   }
@@ -382,7 +438,8 @@ export function collectOutcomes(store: RunStore, options: OutcomesOptions): Outc
   }
 
   const weeks: OutcomeWeek[] = [];
-  for (let start = weekStart(since); start < until; start += WEEK) weeks.push({ ...emptyRow(new Date(start * 1000).toISOString().slice(0, 10)), start });
+  const first = Math.max(weekStart(since), weekStart(until) - (MAX_OUTCOME_WEEKS - 1) * WEEK);
+  for (let start = first; start < until; start += WEEK) weeks.push({ ...emptyRow(new Date(start * 1000).toISOString().slice(0, 10)), start });
   for (const run of runs) {
     const week = weeks.find((w) => run.createdAt >= w.start && run.createdAt < w.start + WEEK);
     if (week) addRun(week, run, run.agents, run.reason);

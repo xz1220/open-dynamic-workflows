@@ -11,7 +11,18 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
 import { main } from "../src/cli.js";
-import { collectOutcomes, formatOutcomes, modelKey, outcomesMarkdown, shiftsOf, emptyRow, weekStart } from "../src/runtime/outcomes.js";
+import {
+  collectOutcomes,
+  formatOutcomes,
+  modelKey,
+  outcomesMarkdown,
+  shiftsOf,
+  emptyRow,
+  weekStart,
+  MAX_OUTCOME_WEEKS,
+  OutcomesCache,
+  runSignature,
+} from "../src/runtime/outcomes.js";
 import { appendReview } from "../src/runtime/review.js";
 import { RunStore } from "../src/runtime/run-store.js";
 import { startServer } from "../src/runtime/server.js";
@@ -239,12 +250,12 @@ test("odw outcomes: usage errors exit 2; --json and --markdown print the report"
       const r = await capture(() => main(["outcomes", ...args, ...rr]));
       assert.equal(r.code, 2, args.join(" "));
     }
-    const json = await capture(() => main(["outcomes", "--json", "--since", "400w", ...rr]));
+    const json = await capture(() => main(["outcomes", "--json", "--since", "156w", ...rr]));
     assert.equal(json.code, 0, json.err);
     const o = JSON.parse(json.out);
     assert.equal(o.version, 1);
-    assert.equal(o.total.runs, 8, "every settled run of the last 400 weeks");
-    const md = await capture(() => main(["outcomes", "--markdown", "--workflow", "docs", "--since", "400w", ...rr]));
+    assert.equal(o.total.runs, 8, "every settled run of the last 156 weeks");
+    const md = await capture(() => main(["outcomes", "--markdown", "--workflow", "docs", "--since", "156w", ...rr]));
     assert.equal(md.code, 0);
     assert.match(md.out, /^### odw outcomes · docs · last /);
     const text = await capture(() => main(["outcomes", ...rr]));
@@ -260,19 +271,77 @@ test("HTTP: GET /api/outcomes serves the report without the runs root's path; a 
   const handle = await startServer({ store: box.store, port: 0, host: "127.0.0.1", claudeProjectsRoot: join(box.root, "no-claude") });
   try {
     seed(box);
-    const res = await fetch(`${handle.url}/api/outcomes?since=400w`);
+    const res = await fetch(`${handle.url}/api/outcomes?since=156w`);
     assert.equal(res.status, 200);
     const o = await res.json();
     assert.equal(o.version, 1);
     assert.equal(o.total.runs, 8);
     assert.equal(o.runsRoot, undefined, "the runs root's path stays on this machine");
-    const docs = await fetch(`${handle.url}/api/outcomes?since=400w&workflow=docs`).then((r) => r.json());
+    const docs = await fetch(`${handle.url}/api/outcomes?since=156w&workflow=docs`).then((r) => r.json());
     assert.deepEqual(docs.workflows.map((r: { key: string }) => r.key), ["docs"]);
-    const outside = await fetch(`${handle.url}/api/outcomes?since=400w&workflow=${encodeURIComponent("../../etc")}`).then((r) => r.json());
+    const outside = await fetch(`${handle.url}/api/outcomes?since=156w&workflow=${encodeURIComponent("../../etc")}`).then((r) => r.json());
     assert.equal(outside.total.runs, 0, "a name only ever picks a bucket by its slug");
     for (const q of ["since=soon", "since=", "workflow=", `workflow=${encodeURIComponent("a\nb")}`]) {
       assert.equal((await fetch(`${handle.url}/api/outcomes?${q}`)).status, 400, q);
     }
+  } finally {
+    await handle.close();
+    box.cleanup();
+  }
+});
+
+// --- security review: a window of millions of weeks took `odw serve` down ---------------
+
+test("review: --since is at most 156 weeks for outcomes, digest and review (usage error 2); the weeks are bounded", async () => {
+  const box = scratch();
+  try {
+    seed(box);
+    const rr = ["--runs-root", box.runsRoot];
+    for (const cmd of ["outcomes", "digest", "review"]) {
+      for (const since of ["13000000w", "157w"]) {
+        const r = await capture(() => main([cmd, "--since", since, ...rr]));
+        assert.equal(r.code, 2, `${cmd} --since ${since}`);
+        assert.match(r.err, /--since is at most 156w \(three years\)/, r.err);
+      }
+      const ok = await capture(() => main([cmd, "--json", "--since", "156w", ...rr]));
+      assert.equal(ok.code, 0, `${cmd}: ${ok.err}`);
+    }
+    // Called directly with any window, the rows stay bounded: the newest 157 weeks.
+    const o = collectOutcomes(box.store, { since: UNTIL - 13_000_000 * 7 * DAY, until: UNTIL });
+    assert.equal(o.weeks.length, MAX_OUTCOME_WEEKS);
+    assert.equal(o.weeks.at(-1)!.start, weekStart(UNTIL));
+    assert.equal(o.total.runs, 8, "every settled run still counts in the total");
+  } finally {
+    box.cleanup();
+  }
+});
+
+test("review: HTTP /api/outcomes and /api/review refuse a window over 156 weeks with a 400; settled runs are read once per change", async () => {
+  const box = scratch();
+  const handle = await startServer({ store: box.store, port: 0, host: "127.0.0.1", claudeProjectsRoot: join(box.root, "no-claude") });
+  try {
+    const { fixer } = seed(box);
+    for (const path of ["/api/outcomes?since=13000000w", "/api/outcomes?since=157w", "/api/review?since=13000000w", "/api/review?since=157w"]) {
+      const res = await fetch(`${handle.url}${path}`);
+      assert.equal(res.status, 400, path);
+      assert.match((await res.json()).error, /at most 156w/);
+    }
+    assert.equal((await fetch(`${handle.url}/api/review?since=156w`)).status, 200);
+
+    // The cache: a run whose files did not change is not read again; a new mark is seen at once.
+    const cache = new OutcomesCache();
+    const window = { since: Date.now() / 1000 - 156 * 7 * DAY, until: Date.now() / 1000, cache };
+    const first = collectOutcomes(box.store, window);
+    assert.equal(cache.size, 8, "the settled runs");
+    const again = collectOutcomes(box.store, window);
+    assert.deepEqual(again.total, first.total);
+    const fixerDir = box.store.runDir(fixer);
+    const sig = runSignature(fixerDir);
+    appendReview(fixerDir, { agentId: 1, state: "applied", by: "dan", via: "cli" });
+    assert.notEqual(runSignature(fixerDir), sig, "a mark changes the signature");
+    const marked = collectOutcomes(box.store, window);
+    assert.deepEqual([marked.total.applied, marked.total.dismissed], [first.total.applied + 1, first.total.dismissed - 1], "the new mark is read");
+    assert.equal(cache.size, 8);
   } finally {
     await handle.close();
     box.cleanup();

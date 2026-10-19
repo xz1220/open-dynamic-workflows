@@ -56,6 +56,18 @@ export function parseSince(text: string): number | null {
   return Number.isFinite(seconds) && seconds > 0 ? seconds : null;
 }
 
+/**
+ * The longest window `--since` (and `?since=`) takes: three years, 156 weeks.
+ * `odw outcomes` keeps a row per week of it, `odw serve` answers it on every
+ * poll: a window of millions of weeks would take the server down.
+ */
+export const MAX_SINCE_SECONDS = 156 * 604_800;
+
+/** Why a parsed window is refused, or null when it is within {@link MAX_SINCE_SECONDS}. */
+export function sinceTooLong(seconds: number): string | null {
+  return seconds > MAX_SINCE_SECONDS ? "since is at most 156w (three years)" : null;
+}
+
 const markKey = (workflow: string | null) => (workflow === null ? "*" : `workflow:${workflow}`);
 
 /** When the last digest sent for `workflow` (null: all runs) ended, Unix seconds; null before the first. */
@@ -234,6 +246,8 @@ export async function cmdDigest(rest: string[]): Promise<number> {
   if (values.since !== undefined) {
     sinceSeconds = parseSince(values.since);
     if (sinceSeconds === null) return usage(`odw digest: --since takes an age like 90m, 12h, 2d or 1w; got ${JSON.stringify(values.since)}`);
+    const tooLong = sinceTooLong(sinceSeconds);
+    if (tooLong) return usage(`odw digest: --${tooLong}; got ${JSON.stringify(values.since)}`);
   }
   if (values.workflow !== undefined && values.workflow.trim() === "") return usage(`odw digest: --workflow needs a name\n${USAGE}`);
   const config = loadConfig(values.config ?? null, { quiet: true });

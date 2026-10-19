@@ -17,6 +17,7 @@ import { loadConfig, resolveRunsRoot } from "../adapters/config.js";
 import { cliActor } from "../identity.js";
 import { detectCaps, palette, sanitizeText, type TermCaps } from "../tty.js";
 import { agentRows, matchAgents } from "./agents-view.js";
+import { MAX_SINCE_SECONDS } from "./digest-cli.js";
 import { parseAge } from "./gc-cli.js";
 import { appendReview, isReviewState, markable, ReviewReader, REVIEW_NOTE_MAX, type ReviewEntry, type ReviewQueue } from "./review.js";
 import { RunStore } from "./run-store.js";
@@ -42,6 +43,7 @@ export async function cmdReview(rest: string[], now = Date.now() / 1000): Promis
   if (values.since !== undefined) {
     const days = parseAge(values.since);
     if (days === null) return usage(`odw review: --since takes an age like 7d, 12h or 2w; got ${JSON.stringify(values.since)}`);
+    if (days * 86_400 > MAX_SINCE_SECONDS) return usage(`odw review: --since is at most 156w (three years); got ${JSON.stringify(values.since)}`);
     since = now - days * 86_400;
   }
   const queue = new ReviewReader(storeOf(values)).queue({ since, all: values.all === true });
