@@ -599,6 +599,9 @@ review-swarm、fix-until-green、plan-approve-execute、pr-shepherd、fan-out-re
   行），只有 `--yes` 才写入：先给用户看并征得同意。
 - 在人的终端里，`odw init` 最后会提供 `odw new hello` 与 `odw run hello --dry`；在你的 shell 里只
   打印这些命令。
+- `odw new` 还会写出 `.odw/types/odw.d.ts` 与 `.odw/jsconfig.json`（即 `odw types` 写的内容，ODW
+  扩展：原语的编辑器补全与悬停文档；`--no-types` 不写）。不要给 workflow 加 `// @ts-check`：
+  它的顶层 `return` 会因此显示为错误。
 - 详见 [`references/primitives.md`](references/primitives.md) 的「odw new（ODW 扩展）」一节。
 
 ## 适配器

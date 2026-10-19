@@ -1271,6 +1271,31 @@ same name). One writes, under the current directory:
   `odw run hello --dry`, then prints `odw serve --open`, `odw test hello` and
   `odw run hello`; elsewhere it prints the commands only. It never calls a
   model.
+- It also writes what `odw types` writes (below); `--no-types` leaves it out.
+
+## odw types (ODW extension)
+
+```bash
+odw types [--dir D] [--force]                    # D defaults to .odw
+```
+
+Editor completion for workflow scripts, from declarations embedded in the
+binary (the npm package's `types/workflow.d.ts`):
+
+| File | What |
+| --- | --- |
+| `D/types/odw.d.ts` | the dialect's declarations; header `// odw types <version> …`; always rewritten |
+| `D/jsconfig.json` | `allowJs`, `checkJs: false`, `lib: ["es2022"]`, `types: []`; `include`: the declarations, `.odw/workflows/**/*.js`, `.claude/workflows/**/*.js` |
+| `.claude/workflows/jsconfig.json` | only when that directory exists (an editor takes the nearest config): `include` its `**/*.js` and the declarations |
+
+- A jsconfig.json whose first line is not odw's marker is the user's: left as
+  it is, the `include` it needs printed; `--force` replaces it.
+- Members tagged `@remarks ODW extension` are not Claude Code's dialect.
+- `checkJs` is off because a checker reads the dialect's top-level `return` as
+  TS1108; `// @ts-check` atop a script opts it in anyway.
+- `odw doctor` adds an "Editor types" check once `.odw/types/odw.d.ts` exists:
+  a warning when its declarations differ from this odw's (an upgrade since).
+- Exit 0 written (or kept), 2 usage (`--dir` names a file).
 
 ## odw test (ODW extension)
 

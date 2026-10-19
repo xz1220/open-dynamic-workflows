@@ -79,7 +79,8 @@ mode you have probably met; each mechanism is a runnable pattern in this repo:
   `approve` / `reject` for a run that waits at a human `checkpoint()`.
 - **No threads, zero runtime dependencies** — the engine is async TypeScript
   (`parallel` is `Promise.all`); workflow scripts stay plain `.js` and ship with
-  `.d.ts` authoring types for editor autocomplete.
+  `.d.ts` authoring types for editor autocomplete (`odw types` writes them into a
+  project).
 
 ## Why not just use Claude Code's built-in Workflow tool?
 
@@ -273,10 +274,36 @@ odw new hello --yes                     # also write the suggested .worktreeincl
   directories its lockfiles imply (`node_modules` for npm, yarn, pnpm and bun; `.venv`
   for uv, Poetry, Pipenv and PDM; `vendor` for Composer). It writes it with `--yes`, or
   when you say yes at a terminal; never otherwise.
+- **It also writes what `odw types` writes** (below), so the editor completes the new
+  workflow at once; `--no-types` leaves that out.
 - **`odw init`** (not `--check`) ends with the $0 first run: at a terminal it asks, then
   writes `hello` (unless `.odw/workflows/hello.js` exists — then it runs that one) and
   runs `odw run hello --dry` with its live view, then prints `odw serve --open` and the
   real `odw run hello`. Off a terminal it only prints the commands.
+
+### Editor completion: `odw types` (ODW extension)
+
+Workflow scripts get the primitives as globals, so an editor knows nothing of `agent()`
+and its options — unless the dialect's declarations are in the project. `odw types`
+writes them, from a copy built into the binary (a binary-only install has them too):
+
+```bash
+odw types                 # .odw/types/odw.d.ts + .odw/jsconfig.json (+ .claude/workflows/jsconfig.json)
+odw types --dir editor    # the declarations and jsconfig.json under editor/ instead
+odw types --force         # also replace a jsconfig.json that is not odw's
+```
+
+- **`.odw/types/odw.d.ts`**: the declarations, the odw version that wrote them in the
+  header. Each ODW extension carries `@remarks ODW extension`, so hovering an option
+  tells Claude Code's dialect from what only ODW reads.
+- **`.odw/jsconfig.json`**: `include` covers the declarations, `.odw/workflows/**/*.js`
+  and `.claude/workflows/**/*.js`. When `.claude/workflows` exists it gets its own
+  `jsconfig.json` too, since an editor uses the config nearest a file. A `jsconfig.json`
+  odw did not write is left as it is, and the `include` it needs is printed instead.
+- **`checkJs` stays off**: a type checker reads the dialect's top-level `return` as an
+  error (TS1108). Put `// @ts-check` atop a script to have it checked anyway.
+- **After an upgrade**, `odw doctor` warns when `.odw/types/odw.d.ts` no longer matches
+  this odw's declarations; `odw types` rewrites it. Nothing is compiled or checked by odw.
 
 ## The primitives
 

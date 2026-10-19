@@ -74,7 +74,7 @@ workflow,就成了你在任何 agent 上都能跑的资产。
   `logs --follow`、`result`、`pause` / `stop`,以及在人工 `checkpoint()` 处等待时的
   `approve` / `reject`。
 - **无线程、零运行时依赖** —— 引擎是异步 TypeScript(`parallel` 就是 `Promise.all`);
-  workflow 脚本保持纯 `.js`,并附带 `.d.ts` 类型供编辑器补全。
+  workflow 脚本保持纯 `.js`,并附带 `.d.ts` 类型供编辑器补全(`odw types` 把它写进项目)。
 
 ## 为什么不直接用 Claude Code 内置的 Workflow 工具?
 
@@ -249,6 +249,29 @@ odw new hello --yes                     # 同时写入建议的 .worktreeinclude
 - **`odw init`**(不带 `--check`)最后提供零成本的首跑:在终端里先询问,然后写入 `hello`(若
   `.odw/workflows/hello.js` 已存在则直接用它),带实时视图运行 `odw run hello --dry`,再打印
   `odw serve --open` 和真实的 `odw run hello`。不在终端时只打印这些命令。
+- **它也写出 `odw types` 写的东西**(见下),编辑器立刻就能补全新 workflow;`--no-types` 不写。
+
+### 编辑器补全:`odw types`(ODW 扩展)
+
+workflow 脚本拿到的原语是全局变量,编辑器对 `agent()` 及其选项一无所知——除非项目里有方言的
+类型声明。`odw types` 从内置在二进制里的副本写出它们(只装了二进制也有):
+
+```bash
+odw types                 # .odw/types/odw.d.ts + .odw/jsconfig.json(+ .claude/workflows/jsconfig.json)
+odw types --dir editor    # 声明与 jsconfig.json 改写到 editor/ 下
+odw types --force         # 连不是 odw 写的 jsconfig.json 也替换
+```
+
+- **`.odw/types/odw.d.ts`**:类型声明,文件头写着写出它的 odw 版本。每个 ODW 扩展都带
+  `@remarks ODW extension`,悬停即可分辨 Claude Code 方言与只有 ODW 读取的扩展。
+- **`.odw/jsconfig.json`**:`include` 覆盖声明、`.odw/workflows/**/*.js` 与
+  `.claude/workflows/**/*.js`。`.claude/workflows` 存在时也给它写一份 `jsconfig.json`,
+  因为编辑器只用离文件最近的配置。不是 odw 写的 `jsconfig.json` 原样保留,改为打印它需要的
+  `include`。
+- **`checkJs` 保持关闭**:类型检查器会把方言的顶层 `return` 报成错误(TS1108)。想检查某个
+  脚本,就在它首行加 `// @ts-check`。
+- **升级之后**,若 `.odw/types/odw.d.ts` 与当前 odw 的声明不一致,`odw doctor` 会警告;
+  `odw types` 重写它。odw 自己不编译、不做类型检查。
 
 ## 编程原语
 

@@ -166,7 +166,7 @@
 | U7 | `odw outcomes`：跨运行的接受率与返工趋势 | S–M | ⏳ |
 | U8 | 从 git 安装工作流并锁定版本 | M | ⏳ |
 | U9 | ACP 适配器类型 | M | ⏳ |
-| U10 | 编辑器补全开箱即用：`odw types` | S | ⏳ |
+| U10 | 编辑器补全开箱即用：`odw types` | S | ✅ ODW 扩展（`src/editor-types.ts`）：`types/workflow.d.ts` 由 `scripts/embed-types.mjs` 嵌入 `src/types.generated.ts`（与模板同法，CI 漂移检查 + 测试逐字节比对）；`odw types [--dir .odw] [--force]` 写出 `.odw/types/odw.d.ts`（文件头带 odw 版本，每次重写）与 `.odw/jsconfig.json`（`allowJs`、`lib: ["es2022"]`、`types: []`，`include` 覆盖声明、`.odw/workflows/**/*.js` 与 `.claude/workflows/**/*.js`），`.claude/workflows` 存在时另写其 `jsconfig.json`（编辑器只认最近的配置）；首行无 odw 标记的 jsconfig 视为用户所有，原样保留并打印所需 `include`，`--force` 才替换。`checkJs` 保持关闭、模板不加 `// @ts-check`：方言的顶层 `return` 在类型检查下是 TS1108，会让每个模板报错。d.ts 的 ODW 扩展逐个加 `@remarks ODW extension`（选项为 "Claude Code ignores it"，全局为 "not in Claude Code's dialect"），并修好 `untouched` 注释里提前结束注释的 `**/`（此前 d.ts 无法解析）。`odw new` 默认顺带写出（`--no-types` 关闭）；`odw doctor` 在该文件存在时多一项「Editor types」，声明与当前 odw 不一致即警告（比对内容而非版本号）。未做：`--from-meta`（按 `meta.input` 生成 `args` 类型）。测试：`tests/editor-types.test.ts` 用真实 TypeScript 语言服务验证补全、悬停 `@remarks` 与模板零报错 |
 
 ### Later — 0.8+「规模与生态」
 

@@ -725,6 +725,10 @@ $0, so no need to ask before them.
   only with `--yes`: show it to the user and ask first.
 - `odw init` at a human's terminal ends by offering `odw new hello` and
   `odw run hello --dry`; in your shell it only prints those commands.
+- `odw new` also writes `.odw/types/odw.d.ts` and `.odw/jsconfig.json` (what
+  `odw types` writes, an ODW extension: editor completion and hover docs for the
+  primitives; `--no-types` leaves them out). Do not add `// @ts-check` to a
+  workflow: its top-level `return` then shows as an error.
 - Details: [`references/primitives.md`](references/primitives.md#odw-new-odw-extension).
 
 ## Adapters

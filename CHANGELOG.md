@@ -688,6 +688,20 @@ independent security reviews whose findings are all fixed.
   writes it with `--yes` or a yes at a terminal. The templates are embedded at build
   time (`scripts/embed-templates.mjs` → `src/templates.generated.ts`, drift-checked in
   CI like the dashboard).
+- `odw types [--dir .odw] [--force]` (**ODW extension**): editor completion for
+  workflow scripts, binary-only installs included. It writes the dialect's
+  declarations, embedded at build time (`scripts/embed-types.mjs` →
+  `src/types.generated.ts`, drift-checked in CI), as `.odw/types/odw.d.ts` with the
+  odw version in its header, and a `.odw/jsconfig.json` whose `include` covers them,
+  `.odw/workflows` and `.claude/workflows` (plus `.claude/workflows/jsconfig.json` when
+  that directory exists, since editors take the nearest config). A `jsconfig.json` odw
+  did not write is kept, its needed `include` printed; `--force` replaces it. `checkJs`
+  stays off — a checker reads the dialect's top-level `return` as TS1108. Every ODW
+  extension in the declarations now carries `@remarks ODW extension`, so hover tells
+  dialect from extension. `odw new` writes them too (`--no-types` leaves them out), and
+  `odw doctor` warns when `.odw/types/odw.d.ts` is stale after an upgrade. Fixed on the
+  way: a `**/` inside a doc comment of `types/workflow.d.ts` ended it early, so the file
+  did not parse.
 - `odw init` ends with a first run that costs nothing: at a terminal it offers `odw new
   hello` and runs `odw run hello --dry` — the live view, every agent stubbed — then
   prints the dashboard command and the real `odw run hello`. It never makes a paid call
