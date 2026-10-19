@@ -913,6 +913,18 @@ independent security reviews whose findings are all fixed.
   agent of it fails with `exit` or `not_found`; a different answer is a
   `cli_version_changed` event (`{ adapter, command, from, to, message }`) in the live
   view, `odw logs` and the dashboard, and never fails the run.
+- A full disk and a reused pid (**ODW extension**): a run directory holds a 64 KB
+  `.odw-reserve` from its creation; a write to it that fails with `ENOSPC` or `EDQUOT`
+  stops the run — dispatch stopped, agents killed — and, in the reserve's room,
+  records it `failed` with `"failureReason": "disk_full"` in `status.json` and
+  `error.json` and an error naming the directory, `odw gc` and `odw resume` (stderr,
+  `worker.log`, when even that fails); the dashboard shows **failed — disk full**. The
+  worker records its process start beside its pid (`pidStart`: Linux `/proc` with the
+  boot id, else `ps -o lstart=`); a live pid that started otherwise, or any pid of a run
+  whose status predates this boot, is a dead worker — for the run list, `odw wait`,
+  `odw gc`, schedules' overlap guard and triggers' dedupe. Worktree owner files and
+  schedule locks record it too. Where it cannot be read (Windows), the bare pid probe
+  stands.
 
 ### Security fixes found in review
 - A sandboxed agent could plant git config (`core.fsmonitor`, hooks) in its workspace's

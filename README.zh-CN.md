@@ -1705,6 +1705,23 @@ odw pin $RUN                  # odw gc 跳过这个运行,不论多旧;--remove 
 
 odw 不运行常驻进程:要定期清理,把 `odw gc --yes` 放进你自己的 crontab 或 CI 任务。
 
+### 磁盘写满与 pid 复用(ODW 扩展)
+
+过去运行会悄无声息地结束的两种情形——都是 odw 自己的行为,不属于 Claude Code 方言:
+
+- **磁盘写满。** 运行目录里有 `.odw-reserve`,创建运行时预留的 64 KB。向运行目录写入时遇到 `ENOSPC`
+  (或配额的 `EDQUOT`)即结束运行:worker 停止派发、像其他致命错误一样杀掉 agent、删除预留文件腾出空间,
+  在 `status.json`(及 `error.json`)里把运行记为 `failed`,并写 `"failureReason": "disk_full"`,
+  错误信息说明在哪里写不下、该怎么做。若连这次写入也失败,同一句话写到 worker 的 stderr(`worker.log`)。
+  看板把该运行标为 **失败——磁盘已满**。odw 不会为腾空间删除任何东西:先腾出空间(`odw gc` 会列出可删除的内容),
+  再 `odw resume` 这次运行——已完成的 agent 会重放。以其他方式结束的运行会归还预留空间。
+- **pid 被复用。** 重启后或 pid 空间回绕后(macOS 上限 99,999),已死 worker 的 pid 可能属于另一个进程——
+  运行便永远像是活着:列表显示 running,`odw gc` 跳过它,定时任务的防重叠与触发器的去重一直被占着。
+  现在 worker 在 `pid` 旁记录其进程的启动时间(`status.json` 的 `pidStart`:Linux 上取开机 id 与 `/proc`
+  中的启动时间,其他平台取 `ps -o lstart=`)。活着的 pid 若启动时间不同,就不是这个 worker;
+  状态最后写于本次开机之前的运行,其任何 pid 也都不是。隔离 worktree 的 `odw-owner.json` 与定时任务锁同样记录。
+  取不到启动时间的平台(Windows)仍只用 pid 探测。
+
 ## 看板:观测、检查、对话
 
 看板的视觉像一张印刷品——纸、墨和一种信号色——也可以随时切换到夜间主题。它提供:

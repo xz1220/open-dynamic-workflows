@@ -2013,6 +2013,31 @@ odw pin $RUN                  # odw gc skips this run, whatever its age; --remov
 odw runs no daemon: to collect on a timer, put `odw gc --yes` in your own crontab or
 CI job.
 
+### A full disk, and a reused pid (ODW extension)
+
+Two ways a run used to end without a word — both odw's own, not Claude Code's dialect:
+
+- **The disk fills up.** A run directory holds `.odw-reserve`, 64 KB set aside when
+  the run is created. A write to the run directory that fails with `ENOSPC` (or a
+  quota's `EDQUOT`) ends the run: the worker stops dispatching, kills its agents as
+  for any fatal error, deletes the reserve for room, and records the run `failed`
+  with `"failureReason": "disk_full"` in `status.json` (and `error.json`), with an
+  error that says where and what to do. Should even that write fail, the same line
+  goes to the worker's stderr (`worker.log`). The dashboard marks the run
+  **failed — disk full**. Nothing is deleted to make room: free some space (`odw gc`
+  lists what it can remove), then `odw resume` the run — finished agents replay.
+  A run that ends any other way gives its reserve back.
+- **A pid is reused.** A dead worker's pid can belong to another process after a
+  reboot or once the pid space wraps (macOS stops at 99,999) — and then the run
+  looked alive forever: listed as running, skipped by `odw gc`, holding a schedule's
+  overlap guard and a trigger's dedupe. The worker now records, beside its `pid`, when
+  its process started (`pidStart` in `status.json`: on Linux the boot id and start
+  time from `/proc`, elsewhere `ps -o lstart=`). A live pid whose process started
+  at another time is not the worker; neither is any pid of a run whose status was
+  last written before the machine booted. Isolated worktrees' `odw-owner.json` and
+  schedule locks record it the same way. Where the start cannot be read (Windows),
+  liveness stays the bare pid probe.
+
 ## Dashboard: observe, inspect, chat
 
 The dashboard reads like a printed sheet — paper, ink and one signal colour — and
