@@ -533,7 +533,7 @@ function drawer(run: RunDetail, ai: number, nowSec: number): string {
         `</span>`
       : "") +
     limitsRow(a) +
-    (a.failureReason ? `<span class="k">${t("reason")}</span><span class="v"><span class="tag ${/rate_limit|quota|stalled|timeout|runaway/.test(a.failureReason) ? "warn" : ""}">${esc(reasonLabel(a.failureReason))}</span>${resetNote(a, nowSec)}</span>` : "") +
+    (a.failureReason ? `<span class="k">${t("reason")}</span><span class="v"><span class="tag ${/rate_limit|quota|stalled|timeout|runaway|network/.test(a.failureReason) ? "warn" : ""}">${esc(reasonLabel(a.failureReason))}</span>${resetNote(a, nowSec)}</span>` : "") +
     (a.usage && (a.usage.inputTokens != null || a.usage.outputTokens != null)
       ? `<span class="k">${t("tokens")}</span><span class="v">${fmtTokens(a.usage.inputTokens)} ${t("in")} · ${fmtTokens(a.usage.outputTokens)} ${t("out")}</span>`
       : "") +
@@ -699,6 +699,10 @@ function logRow(e: WorkflowEvent, i: number): string {
   else if (e.type === "acp_permission") msg = acpPermissionText(e);
   else if (e.type === "cli_version")
     msg = `<b>${esc(String(e.adapter ?? ""))}</b> ${esc(String(e.version ?? e.error ?? ""))}`;
+  // A CLI updated under the run, and the host asleep with the stall timers started over (ODW extensions).
+  else if (e.type === "cli_version_changed")
+    msg = `<b>${esc(String(e.adapter ?? ""))}</b> ${esc(String(e.from ?? "?"))} → <span class="er">${esc(String(e.to ?? "?"))}</span>`;
+  else if (e.type === "host_suspended") msg = esc(String(e.message ?? ""));
   else if (e.type.startsWith("agent_"))
     msg = `<b>${esc(String(e.label ?? ""))}</b>${e.adapter ? ` · ${esc(String(e.adapter))}` : ""}${e.attempts && Number(e.attempts) > 1 ? ` · ×${esc(String(e.attempts))}` : ""}`;
   else msg = esc(e.type.replace(/_/g, " "));

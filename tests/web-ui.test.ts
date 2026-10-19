@@ -1761,3 +1761,35 @@ test("activity: with no run yet, Get started leads with the first run for $0 —
     store.runsLoaded = prev.loaded;
   }
 });
+
+test("sleep, network loss and a CLI updated mid-run (ODW extension): a lost connection is a warn reason; the host's sleep and the CLI's new version are log lines", () => {
+  const view: JobViewState = {
+    cpNote: "",
+    tab: "graph",
+    selectedAi: 0,
+    reviewAi: null,
+    zoom: 1,
+    logQuery: "",
+    logTypes: new Set(["agent", "phase", "log", "run"]),
+    logLimit: 600,
+    follow: true,
+    motion: false,
+  };
+  store.focusRun("20260101-000000-aaaaaa");
+  store.runEvents = [];
+  store.run = detail([agent("fetch", "Plan", "failed", { adapter: "claude", failureReason: "network", error: "API Error: Connection error." })]);
+  let html = renderJob(view, NOW);
+  assert.match(html, /<span class="k">reason<\/span><span class="v"><span class="tag warn">connection lost<\/span>/);
+  assert.equal(reasonLabel("network"), "connection lost");
+
+  view.tab = "logs";
+  store.run = detail([]);
+  store.runEvents = [
+    { ts: NOW - 20, type: "host_suspended", sleptSeconds: 3600, message: "the host was asleep for about 1h — every agent's stall timer starts over" },
+    { ts: NOW - 10, type: "cli_version_changed", adapter: "claude", command: "claude", from: "2.1.0 (Claude Code)", to: "2.2.0 <new>", message: "m" },
+  ];
+  html = renderJob(view, NOW);
+  assert.match(html, /<span class="evt log">HOST_SUSPENDED<\/span><\/span><span class="msg">the host was asleep for about 1h — every agent&#39;s stall timer starts over<\/span>/);
+  assert.match(html, /<span class="evt log">CLI_VERSION_CHANGED<\/span><\/span><span class="msg"><b>claude<\/b> 2\.1\.0 \(Claude Code\) → <span class="er">2\.2\.0 &lt;new&gt;<\/span><\/span>/);
+  store.focusRun(null);
+});

@@ -19,6 +19,7 @@ const REASON: Record<string, string> = {
   schema: "schema retry",
   stall: "stall restart",
   rate_limit: "rate-limit retry",
+  network: "retry after a lost connection",
   expect: "expectation retry",
   fallback: "fallback",
 };
