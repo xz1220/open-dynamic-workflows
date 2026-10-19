@@ -37,7 +37,8 @@ function copyRepo(t: { after: (fn: () => void) => void }) {
   return { dir, at, prepare };
 }
 
-const PIN_PATHS = ["README.md", "README.zh-CN.md", "docs/github-action.md", "action/action.yml"];
+// The action pins live in the GitHub Action page and the remote-runs guide (English and Chinese).
+const PIN_PATHS = ["docs/github-action.md", "docs/guides/remote-runs.md", "docs/zh-CN/guides/remote-runs.md", "action/action.yml"];
 const SNAPSHOT_PATHS = ["package.json", "package-lock.json", "CHANGELOG.md", ...PIN_PATHS];
 
 const sample = [
@@ -187,7 +188,7 @@ test("prepare-release (temp copy): bumps the versions, releases the changelog, r
 
   assert.match(r.stdout, /Prepared v0\.9\.0 \(2026-10-20\):/);
   assert.match(r.stdout, /Nothing is committed, tagged or pushed/);
-  assert.match(r.stdout, /\n {2}git add package\.json package-lock\.json CHANGELOG\.md README\.md README\.zh-CN\.md docs\/github-action\.md action\/action\.yml\n/);
+  assert.match(r.stdout, /\n {2}git add package\.json package-lock\.json CHANGELOG\.md docs\/github-action\.md docs\/guides\/remote-runs\.md docs\/zh-CN\/guides\/remote-runs\.md action\/action\.yml\n/);
   assert.match(r.stdout, /\n {2}git commit -m "chore\(release\): v0\.9\.0"\n {2}git tag -a v0\.9\.0 -m "v0\.9\.0"\n {2}git push origin HEAD v0\.9\.0\n/);
   assert.equal(existsSync(join(f.dir, ".git")), false);
 

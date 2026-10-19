@@ -32,7 +32,7 @@ odw stop $RUN    # every running agent gets SIGTERM, then SIGKILL; worktrees are
 
 To have ODW do this for you next time, give streaming adapters a stall
 watchdog — an agent that prints nothing for `stallTimeout` seconds is killed and
-restarted (`stallRestarts` times) — see "Stall watchdog" in the README.
+restarted (`stallRestarts` times) — see [Stall watchdog](../guides/cost-limits-and-quotas.md#stall-watchdog).
 
 A run that shows `paused until 19:10 (codex quota)` is not stuck: under
 `quotaWait` its agents wait for a spent quota to reset, holding no slot, and go

@@ -70,11 +70,11 @@ file.
 - **Untrusted by default.** Anyone who can open an issue writes the text your
   agents read, so a trigger's runs are `--untrusted`: each agent CLI ignores the
   repository's own instructions, hooks and settings where it can (see
-  *Untrusted repositories* in the README), and a workflow name never resolves to
+  [Untrusted repositories](../guides/safety-and-trust.md#untrusted-repositories-odw-extension)), and a workflow name never resolves to
   the repository's `.odw/workflows`. Name a managed workflow or give an absolute
   path. For anything public, also give `odw serve` a config (`--config`) with
   `"permissions": "read"` or a [container
-  sandbox](../../README.md#run-agents-in-containers-odw-extension): triggered runs
+  sandbox](../guides/safety-and-trust.md#run-agents-in-containers-odw-extension): triggered runs
   use the config `odw serve` was started with.
 - **Your config, never the repository's.** `odw serve` takes triggers only
   from a config of your own: `--config`, `$ODW_CONFIG`, or

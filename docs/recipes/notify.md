@@ -88,7 +88,7 @@ your own is the easiest place for anything longer.
 
 ## When a run needs a decision
 
-A workflow that calls [`checkpoint()`](../../README.md#human-checkpoints-odw-extension)
+A workflow that calls [`checkpoint()`](../guides/checkpoints-and-questions.md#human-checkpoints-odw-extension)
 waits for a person. Add `"waiting"` to `on` and the same hooks fire once per
 checkpoint as it starts waiting — the command with `ODW_RUN_STATE=waiting`,
 `ODW_CHECKPOINT_ID` and `ODW_CHECKPOINT_TITLE`, the webhook with
@@ -127,7 +127,7 @@ webhook shows them at the end of its `text`; any JSON receiver gets `approveUrl`
 `rejectUrl` and `linksExpireAt`. Opening a link shows the checkpoint and one button;
 pressing it decides, once. Without a running `odw serve --public-url` for the runs root
 there are no links, and the payload's `linksUnavailable` says so. The security model is
-in the [README](../../README.md#approve-from-your-phone-odw-extension).
+in the [dashboard guide](../guides/dashboard.md#approve-from-your-phone-odw-extension).
 
 [ntfy](https://ntfy.sh) can put **Approve** and **Reject** buttons on the push itself. The
 command hook gets a ready-made `Actions` header in `ODW_NTFY_ACTIONS` — two `http` actions
@@ -161,7 +161,7 @@ notifier.
 
 ## When a run pauses for a spent quota
 
-With [`quotaWait`](../../README.md#pause-for-a-spent-quota-odw-extension) on, a run
+With [`quotaWait`](../guides/cost-limits-and-quotas.md#pause-for-a-spent-quota-odw-extension) on, a run
 whose CLIs are out of quota waits for the reset instead of failing. Add `"paused"`
 to `on` to hear about each pause — once, not when the run goes on, which it does by
 itself: the command with `ODW_RUN_STATE=paused`, `ODW_PAUSED_ADAPTER` and

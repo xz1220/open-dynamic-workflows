@@ -60,7 +60,7 @@ CLI 官方文档确认在无头模式下成立的映射才会填上：
   档位下，运行会记一条日志，说明 ODW 无法强制执行。
 - `codex` 在任何档位下都无法批准需要审批的 MCP 工具调用：请在 `~/.codex/config.toml` 里
   预先批准该工具（`[mcp_servers.<server>.tools.<tool>] approval_mode = "approve"`）——见
-  README 的"权限档位"一节。
+  仓库中 `docs/zh-CN/guides/safety-and-trust.md` 的"权限档位"一节。
 
 每次 `odw run` 都会打印各已安装适配器将以哪个档位运行；每个 `agent_started` 事件都带有该
 agent 的 `permissions`；`odw doctor` 会列出每个适配器支持的档位。

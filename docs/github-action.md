@@ -63,8 +63,7 @@ env:
 
 ODW redacts the values of secret-named variables from what it keeps — the
 events, saved results, transcripts and the bundle — so an artifact never
-carries the key even if an agent printed it (see *Secrets in what ODW keeps* in
-the README). Keep `permissions:` on the job as narrow as the run needs:
+carries the key even if an agent printed it (see [Secrets in what ODW keeps](guides/safety-and-trust.md#secrets-in-what-odw-keeps-odw-extension)). Keep `permissions:` on the job as narrow as the run needs:
 `contents: read` unless you use `apply-pr`.
 
 Pull requests from forks get no repository secrets (`pull_request`), which is
@@ -190,7 +189,7 @@ sets a git identity.
 
 `on: schedule` works the same way (`untrusted: auto` runs it trusted — the code
 is your default branch). For runs on your own machine instead of a runner, see
-`odw schedule` in the README.
+[Schedule runs](guides/scheduling-and-triggers.md#schedule-runs-odw-extension).
 
 ## Exit codes, and `--deadline` outside CI
 

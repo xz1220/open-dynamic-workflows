@@ -93,7 +93,7 @@ A run that cannot even start — its workflow was deleted, its config no longer
 parses — has no run to report on: it is the `failed to start` line in the
 schedule's log and a non-zero exit (which cron mails you when `MAILTO` is set).
 
-A run that reaches a [`checkpoint()`](../../README.md#human-checkpoints-odw-extension)
+A run that reaches a [`checkpoint()`](../guides/checkpoints-and-questions.md#human-checkpoints-odw-extension)
 waits for its answer while holding the schedule's lock, so the next starts
 are skipped until someone answers; the log says which command does. Give
 unattended checkpoints a `timeout`.

@@ -348,7 +348,7 @@ const CLAUDE_PERMISSIONS: PermissionArgs = {
 // approval", and exec asks nobody; workspace-write — edits and commands inside
 // the workspace; danger-full-access — no filesystem or network boundary. No
 // sandbox mode approves an MCP tool call that asks for approval
-// (openai/codex#24135): see "Permissions" in the README.
+// (openai/codex#24135): see "Permissions" in docs/guides/safety-and-trust.md.
 const CODEX_PERMISSIONS: PermissionArgs = {
   read: ["--sandbox", "read-only"],
   edit: ["--sandbox", "workspace-write"],

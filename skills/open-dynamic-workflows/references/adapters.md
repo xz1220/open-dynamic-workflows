@@ -69,7 +69,7 @@ confirm for headless runs are filled in:
 - `codex` at any tier cannot approve an MCP tool call that asks for approval:
   pre-approve the tool in `~/.codex/config.toml`
   (`[mcp_servers.<server>.tools.<tool>] approval_mode = "approve"`) — see
-  "Permissions" in the README.
+  "Permissions" in the repository's `docs/guides/safety-and-trust.md`.
 
 Every `odw run` prints the tier each installed adapter runs with; each
 `agent_started` event carries the agent's `permissions`; `odw doctor` lists every
