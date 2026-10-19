@@ -10,6 +10,7 @@
 // notes in docs/research/) and action/action.yml at the new tag. Then it prints the
 // git commands that commit, tag and push it, for the maintainer to run.
 // --dry-run reports the same and writes nothing.
+import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -76,7 +77,19 @@ export function pinFiles(root) {
   };
   if (existsSync(join(root, "docs"))) walk(join(root, "docs"));
   if (existsSync(join(root, "action", "action.yml"))) files.push("action/action.yml");
-  return files;
+  // In a git checkout, only what git tracks: an ignored local draft would break the printed `git add`.
+  const tracked = trackedFiles(root);
+  return tracked ? files.filter((f) => tracked.has(f)) : files;
+}
+
+/** The files git tracks in `root`, or null outside a git checkout. */
+function trackedFiles(root) {
+  try {
+    const out = execFileSync("git", ["-C", root, "ls-files", "-z"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+    return new Set(out.split("\0").filter(Boolean));
+  } catch {
+    return null;
+  }
 }
 
 /**

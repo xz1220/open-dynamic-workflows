@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -235,4 +235,22 @@ test("prepare-release (temp copy): releasing the version package.json already ha
   assert.equal(f.at("package.json"), pkg);
   assert.doesNotMatch(r.stdout, / {2}package\.json:/);
   assert.match(f.at("CHANGELOG.md"), new RegExp(`\\n## ${current.replace(/\./g, "\\.")} — 2026-10-20\\n`));
+});
+
+test("in a git checkout, only tracked files have their pins rewritten — an ignored local draft is left alone", async () => {
+  const { pinFiles } = await import("../scripts/prepare-release.mjs");
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "odw-release-git-")));
+  try {
+    mkdirSync(join(root, "docs"), { recursive: true });
+    const pin = "uses: xz1220/open-dynamic-workflows/action@v0.X.Y\n";
+    writeFileSync(join(root, "README.md"), pin);
+    writeFileSync(join(root, "docs", "guide.md"), pin);
+    writeFileSync(join(root, "docs", "draft.md"), pin);
+    writeFileSync(join(root, ".gitignore"), "docs/draft.md\n");
+    execFileSync("git", ["-C", root, "init", "-q"]);
+    execFileSync("git", ["-C", root, "add", "README.md", "docs/guide.md", ".gitignore"]);
+    assert.deepEqual((pinFiles(root) as string[]).sort(), ["README.md", "docs/guide.md"]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
