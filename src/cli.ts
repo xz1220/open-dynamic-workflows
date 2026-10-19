@@ -1555,6 +1555,12 @@ async function cmdApply(rest: string[]): Promise<number> {
   // Each agent's diff goes to the repository it worked in (ODW extension; see repos.ts):
   // the source's to the working tree odw runs in, another repository's to that one.
   const groups = repoGroups(agents);
+  // Where an alias's diffs go is what the run declared it to be — never the event log's word alone.
+  const undeclared = declaredRepoPaths(store, runId, groups);
+  if (undeclared) {
+    process.stderr.write(`odw apply: ${undeclared}\n`);
+    return 1;
+  }
   const multi = groups.length > 1;
   if (multi && (values.pr || values.resolve)) {
     const names = groups.map((g) => g.name ?? ".").join(", ");
@@ -1673,6 +1679,42 @@ function repoGroups(agents: AgentDiff[]): RepoGroup[] {
     g.agents.push(a);
   }
   return [...groups.values()].sort((a, b) => (a.name === null ? -1 : b.name === null ? 1 : 0));
+}
+
+/**
+ * Point each group of another repository at the top level the run declared
+ * for its alias — `status.json`'s `repos` (what the worker resolved), checked
+ * against `meta.json`'s `repos` (`--repo`) when that names it too — in place
+ * of the path the event log recorded. Why not, or null: an alias the run
+ * never declared, the two disagreeing, or the event log naming another path.
+ */
+function declaredRepoPaths(store: RunStore, runId: string, groups: RepoGroup[]): string | null {
+  const status = store.readStatus(runId).repos;
+  const flags = repoFlagsOf(store.readMeta(runId).repos);
+  for (const g of groups) {
+    if (g.name === null) continue;
+    const name = sanitizeText(g.name, 64);
+    const resolved = status !== null && typeof status === "object" && !Array.isArray(status) ? (status as Record<string, unknown>)[g.name] : undefined;
+    const declared = typeof resolved === "string" ? resolved : null;
+    let flagged: string | null = null;
+    if (flags && Object.hasOwn(flags, g.name)) {
+      try {
+        flagged = repoTop(g.name, flags[g.name]!);
+      } catch (err) {
+        return `repository '${name}' of run ${runId}: ${sanitizeText((err as Error).message, 300)}`;
+      }
+    }
+    const top = declared ?? flagged;
+    if (top === null) return `run ${runId}'s agents worked in repository '${name}', which the run never declared — nothing is applied`;
+    if (declared !== null && flagged !== null && declared !== flagged) {
+      return `repository '${name}' of run ${runId} is ${sanitizeText(declared, 300)} in its status but --repo named ${sanitizeText(flagged, 300)} — nothing is applied`;
+    }
+    if (g.path !== null && g.path !== top) {
+      return `the event log of run ${runId} puts repository '${name}' at ${sanitizeText(g.path, 300)}, not ${sanitizeText(top, 300)} as the run declared — nothing is applied`;
+    }
+    g.path = top;
+  }
+  return null;
 }
 
 /** The agents of the repository `--repo` names: an alias, or "." for the source. */

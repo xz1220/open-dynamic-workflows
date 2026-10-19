@@ -541,7 +541,8 @@ const { stdout } = await exec('git log -1 --format=%h', { repo: 'api' })
   `agent_started` 事件带 `repo: { name, path }`。
 - **审阅与应用。** `odw diff` 标出每个 agent 的仓库(`# odw: agent 2 · fix · repo api · …`;
   `--stat` 多一列 REPO,源仓库为 `.`;`--repo <name|.>` 只看一个),`odw review` 与看板的
-  「改动」页也一样,后者按仓库分组列出 agent。`odw apply --agent N` 应用到该 agent 所在的仓库;源仓库
+  「改动」页也一样,后者按仓库分组列出 agent。`odw apply --agent N` 应用到该 agent 所在的仓库——即本次运行为该别名声明的路径(`status.json` 的
+  `repos`,并与 `--repo` 核对),事件日志记的路径与之不符或运行从未声明该别名时拒绝;源仓库
   的 agent 仍应用到你运行 odw 的工作区(若那正是本次运行的另一个仓库则拒绝)。`odw apply --all` 先逐个
   仓库预检,只要有一个不能干净应用就什么都不写——全部通过后再按源仓库优先逐个写入;某个仓库应用
   失败(比如它的 `--verify`)时按 `odw apply` 一贯的方式回滚,之前的仓库保留,之后的不再写入。

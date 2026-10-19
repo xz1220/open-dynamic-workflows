@@ -1114,6 +1114,12 @@ independent security reviews whose findings are all fixed.
   and `think` — `other`, `switch_mode`, unknown — now is. The README says plainly that
   the tier is advisory for an ACP agent, and that a real guarantee needs the container
   sandbox (`untrustedInput.requireSandbox` applies).
+- `odw apply` took the repository an alias's diffs go to from the path the event log
+  recorded for the agent, so an edited `events.jsonl` could send them anywhere. The
+  alias is now resolved through what the run declared — `status.json`'s `repos`,
+  checked against `meta.json`'s `--repo` — and the apply is refused (exit 1, nothing
+  written) when the two disagree, when the event log names another path, or when the
+  run never declared the alias.
 
 ### Changed behavior — check before upgrading
 - `agentType` naming an agent definition file now runs that definition (see "Write

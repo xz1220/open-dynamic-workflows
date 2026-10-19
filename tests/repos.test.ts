@@ -282,6 +282,58 @@ describe("agents and commands in another repository", () => {
     git(api, "reset", "-q", "--hard");
   });
 
+  test("odw apply takes an alias's repository from what the run declared, never the event log's path alone", async () => {
+    const r = await run(
+      root,
+      src,
+      "await agent('EDITS: ' + JSON.stringify({ write: { 'b.txt': 'b, agent\\n' } }), { isolation: 'worktree', label: 'there', repo: 'api' })\n" +
+        "return 'ok'\n",
+      { repos: { api } },
+    );
+    assert.equal(r.state, "done", errorOf(r));
+    const flags = ["--runs-root", r.store.root];
+    const events = r.store.eventsPath(r.id);
+    const status = join(r.store.runDir(r.id), "status.json");
+    const meta = join(r.store.runDir(r.id), "meta.json");
+    const original = { events: readFileSync(events, "utf8"), status: readFileSync(status, "utf8"), meta: readFileSync(meta, "utf8") };
+    try {
+      // The event log names web for api: refused, web untouched.
+      writeFileSync(events, original.events.split(JSON.stringify(api)).join(JSON.stringify(web)));
+      const moved = await cli(["apply", r.id, "--agent", "there", ...flags], src);
+      assert.equal(moved.code, 1);
+      assert.match(moved.err, /the event log of run \S+ puts repository 'api' at .*web, not .*api as the run declared — nothing is applied/);
+      assert.equal(staged(web), "");
+      writeFileSync(events, original.events);
+
+      // status.json and meta.json's --repo disagree: refused.
+      const s = JSON.parse(original.status) as Record<string, unknown>;
+      writeFileSync(status, JSON.stringify({ ...s, repos: { api: web } }));
+      const disagree = await cli(["apply", r.id, "--agent", "there", ...flags], src);
+      assert.equal(disagree.code, 1);
+      assert.match(disagree.err, /repository 'api' of run \S+ is .*web in its status but --repo named .*api — nothing is applied/);
+
+      // Declared by neither: refused.
+      writeFileSync(status, JSON.stringify({ ...s, repos: {} }));
+      const m = JSON.parse(original.meta) as Record<string, unknown>;
+      delete m.repos;
+      writeFileSync(meta, JSON.stringify(m));
+      const undeclared = await cli(["apply", r.id, "--agent", "there", ...flags], src);
+      assert.equal(undeclared.code, 1);
+      assert.match(undeclared.err, /worked in repository 'api', which the run never declared/);
+      assert.equal(staged(api), "");
+      assert.equal(staged(web), "");
+    } finally {
+      writeFileSync(events, original.events);
+      writeFileSync(status, original.status);
+      writeFileSync(meta, original.meta);
+    }
+    // As declared: applied to api.
+    const applied = await cli(["apply", r.id, "--agent", "there", ...flags], src);
+    assert.equal(applied.code, 0, applied.err + applied.out);
+    assert.equal(staged(api), "b.txt");
+    git(api, "reset", "-q", "--hard");
+  });
+
   test("an in-place agent and exec() run in the repository; its snapshot is its own, odw restore --repo puts it back", async () => {
     writeFileSync(join(api, "wip.txt"), "uncommitted\n");
     const r = await run(

@@ -636,7 +636,9 @@ const { stdout } = await exec('git log -1 --format=%h', { repo: 'api' })
 - **Review and apply.** `odw diff` names each agent's repository (`# odw: agent 2 · fix ·
   repo api · …`; `--stat` adds a REPO column, `.` for the source; `--repo <name|.>` shows
   one), as do `odw review` and the dashboard's Changes tab, which groups the agents by
-  repository. `odw apply --agent N` applies to the repository the agent worked in;
+  repository. `odw apply --agent N` applies to the repository the agent worked in —
+  the path the run declared for its alias (`status.json`'s `repos`, checked against
+  `--repo`), refused when the event log names another or the run never declared it;
   the source's agents still go to the working tree you run odw in (refused when that is
   one of the run's other repositories). `odw apply --all` previews every repository
   first and writes nothing unless each would apply cleanly — then applies them one by
