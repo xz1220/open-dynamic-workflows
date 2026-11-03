@@ -2154,7 +2154,7 @@ ODW 实现的部分(协议版本 1),每次 CLI 运行:
 | `full` | 全部 | 无 |
 
 ODW 选 `allow_once`(或 `reject_once`),从不选 `*_always`——任何应答都不会变成 agent 记住的规则;
-agent 没给拒绝选项时,ODW 取消该请求(等于不允许)。每次应答写一个 `acp_permission` 事件
+agent 只给了 `*_always` 选项、或档位拒绝的调用没有拒绝选项时,ODW 取消该请求(等于不允许)。每次应答写一个 `acp_permission` 事件
 (`toolCallId`、`title`、`kind`、`decision`、`option`、`tier`),在 `odw logs`、实时视图与看板 Logs 页显示;
 被拒绝的调用像其他 CLI 被拒的工具调用一样记在 agent 上(`permissionDenials`)。
 

@@ -394,13 +394,37 @@ export async function cmdWorkflowsUpdate(rest: string[], io: InstallIo = default
       return f?.kind === "file" ? { kind, path: x.path, bytes: repo!.read(f.file) } : null;
     }).filter((x): x is { kind: ExtraKind; path: string; bytes: Buffer } => x !== null);
     const extrasChanged = extras.filter((x) => sha256Of(x.bytes) !== entry[x.kind]!.sha256);
+    // Local drift beside the lock: the workflow file (a different hash, or
+    // null when missing) and each extra no longer matching its installed bytes.
+    const targetDrift = onDisk !== entry.sha256;
+    const extrasDrifted = extras.filter((x) => sha256File(lockedExtraPath(dir, name, x.kind)) !== entry[x.kind]!.sha256);
     if (sha256 === entry.sha256 && extrasChanged.length === 0) {
+      // Upstream is unchanged: the only thing left to fix is local drift, and
+      // only --force does that — it restores the installed bytes, which is
+      // also what `odw workflows verify` and `odw doctor` point at.
+      if (!values.force || (!targetDrift && extrasDrifted.length === 0)) {
+        if (repo.commit !== entry.commit) {
+          lock.workflows[name] = { ...entry, commit: repo.commit };
+          changed = true;
+        }
+        io.err.write(`${name}: up to date at ${repo.commit.slice(0, 12)}${targetDrift ? " (but modified locally: odw workflows verify)" : ""}\n`);
+        return "unchanged";
+      }
+      if (!(await confirm(`restore ${name}?`, values.yes === true, io))) return "failed";
+      if (targetDrift) {
+        writeInside(root, target, bytes);
+        io.err.write(`restored ${display(target, io.cwd)}${onDisk === null ? " (was missing)" : " (was modified locally)"}\n`);
+      }
+      for (const x of extrasDrifted) {
+        writeInside(root, lockedExtraPath(dir, name, x.kind), x.bytes);
+        io.err.write(`  restored ${EXTRA_DIRS[x.kind]}/${name}.json\n`);
+      }
       if (repo.commit !== entry.commit) {
         lock.workflows[name] = { ...entry, commit: repo.commit };
         changed = true;
       }
-      io.err.write(`${name}: up to date at ${repo.commit.slice(0, 12)}${onDisk !== entry.sha256 ? " (but modified locally: odw workflows verify)" : ""}\n`);
-      return "unchanged";
+      io.err.write(`restored ${name} to ${entry.commit.slice(0, 12)} (upstream unchanged)\n`);
+      return "updated";
     }
     if (onDisk !== null && onDisk !== entry.sha256 && !values.force) {
       io.err.write(`${name}: ${display(target, io.cwd)} was modified since it was installed — not overwriting it (--force does)\n`);
@@ -425,10 +449,15 @@ export async function cmdWorkflowsUpdate(rest: string[], io: InstallIo = default
     if (!(await confirm(`update ${name}?`, values.yes === true, io))) return "failed";
     writeInside(root, target, bytes);
     const next: LockEntry = { ...entry, commit: repo.commit, sha256, installedAt: new Date().toISOString() };
-    for (const x of extrasChanged) {
+    for (const x of extras) {
+      // An extra is rewritten when upstream changed it, or when --force
+      // restores one that drifted locally — upstream unchanged or not.
       const at = lockedExtraPath(dir, name, x.kind);
-      const local = sha256File(at);
-      if (local !== null && local !== entry[x.kind]!.sha256 && !values.force) {
+      const upstreamChanged = extrasChanged.includes(x);
+      const drifted = extrasDrifted.includes(x);
+      if (!upstreamChanged && !(values.force === true && drifted)) continue;
+      // A modified file is kept without --force; a missing one is written back either way.
+      if (drifted && sha256File(at) !== null && values.force !== true) {
         io.err.write(`  note: kept ${display(at, io.cwd)}: modified since it was installed (--force replaces it)\n`);
         continue;
       }

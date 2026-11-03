@@ -94,6 +94,26 @@ async function turn(id, prompt) {
       update({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: `execute=${outcome(answer)}` } });
       return send({ id, result: { stopReason: "end_turn" } });
     }
+    case "persistent-only": {
+      // Only persistent options for a call the tier would allow: ODW never
+      // selects one — the request is cancelled, which allows nothing.
+      const answer = await permission("t1", "Read README.md", "read", [
+        { optionId: "aa", name: "Allow always", kind: "allow_always" },
+        { optionId: "ra", name: "Reject always", kind: "reject_always" },
+      ]);
+      update({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: `read=${outcome(answer)}` } });
+      return send({ id, result: { stopReason: "end_turn" } });
+    }
+    case "persistent-allow": {
+      // The probe's case: allow_always beside a once-only reject, at a tier
+      // that would allow the call — still never selected.
+      const answer = await permission("t1", "Read README.md", "read", [
+        { optionId: "persistent", name: "Always allow", kind: "allow_always" },
+        { optionId: "reject", name: "Reject", kind: "reject_once" },
+      ]);
+      update({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: `read=${outcome(answer)}` } });
+      return send({ id, result: { stopReason: "end_turn" } });
+    }
     case "unasked": {
       update({ sessionUpdate: "tool_call", toolCallId: "w1", title: "Write notes.txt", kind: "edit", status: "in_progress" });
       update({ sessionUpdate: "tool_call_update", toolCallId: "w1", status: "completed", content: [{ type: "diff", path: "/tmp/notes.txt", oldText: null, newText: "x" }] });

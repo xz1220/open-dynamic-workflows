@@ -11,7 +11,7 @@ import { loadConfig } from "../src/adapters/config.js";
 import { main } from "../src/cli.js";
 import { ConfigError } from "../src/errors.js";
 import { loadWorkflowScript } from "../src/loader.js";
-import { buildRepos, parseRepoFlags, resolveRunRepos } from "../src/repos.js";
+import { buildRepos, parseRepoFlags, resolveRunRepos, RunRepos } from "../src/repos.js";
 import { agentRows } from "../src/runtime/agents-view.js";
 import { RunStore } from "../src/runtime/run-store.js";
 import { executeRun } from "../src/runtime/worker.js";
@@ -158,6 +158,30 @@ describe("the repos setting and --repo", () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  test("scope locks key by physical working tree: aliases of one tree — and the source — share one set", () => {
+    const root = mkdtempSync(join(tmpdir(), "odw-repos-locks-"));
+    try {
+      const dir = repo(join(root, "same"), { "s.txt": "s\n" });
+      const other = repo(join(root, "other"), { "o.txt": "o\n" });
+      const repos = new RunRepos(
+        [
+          { name: "a", path: dir, from: "config" },
+          { name: "b", path: dir, from: "config" },
+          { name: "o", path: other, from: "config" },
+        ],
+        { source: dir },
+      );
+      // Two aliases of one physical tree wait on each other, not beside each other…
+      assert.equal(repos.scopeLocks("a"), repos.scopeLocks("b"));
+      // …and an alias of the source is the source: its scoped calls serialize with the source's.
+      assert.equal(repos.scopeLocks("a"), repos.sourceLocks());
+      // A different tree has its own set.
+      assert.notEqual(repos.scopeLocks("a"), repos.scopeLocks("o"));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("agents and commands in another repository", () => {
@@ -249,6 +273,52 @@ describe("agents and commands in another repository", () => {
     assert.equal(staged(web), "c.txt");
     assert.equal(readFileSync(join(api, "b.txt"), "utf8"), "b, there\n");
     for (const dir of [src, api, web]) git(dir, "reset", "-q", "--hard");
+  });
+
+  test("overlapping scopes serialize by physical working tree: aliases of one tree, and the source an alias points back at", async () => {
+    const fixture = fileURLToPath(new URL("./fixtures/scope-serialization-agent.mjs", import.meta.url));
+    for (const variant of ["aliases", "source-and-alias"] as const) {
+      const dir = repo(join(root, `same-tree-${variant}`), { "shared.txt": "original\n" });
+      const log = join(root, `same-tree-${variant}.log`);
+      const release = join(root, `same-tree-${variant}.release`);
+      const configPath = join(root, `same-tree-${variant}.json`);
+      writeFileSync(
+        configPath,
+        JSON.stringify({
+          defaultAdapter: "fixture",
+          concurrency: 2,
+          recordVersions: false,
+          adapters: { fixture: { command: [execPath, fixture, log, release], stdin: "{prompt}" } },
+        }),
+      );
+      const script = join(root, `same-tree-${variant}.js`);
+      // The agent marks start/end in `log` and holds until the test writes
+      // `release`: if both run at once, the trace overlaps and one marker of
+      // shared.txt is lost.
+      const first = variant === "aliases" ? "{ repo: 'a', label: 'first', scope: ['shared.txt'] }" : "{ label: 'first', scope: ['shared.txt'] }";
+      writeFileSync(
+        script,
+        `export const meta = { name: 'scope-check', description: 'd' }\n` +
+          `return await parallel([() => agent('FIRST', ${first}), () => agent('SECOND', { repo: 'a', label: 'second', scope: ['shared.txt'] })])`,
+      );
+      const store = new RunStore(join(root, `same-tree-${variant}-runs`));
+      const id = store.create({ script, source: dir, args: null, configPath, repos: variant === "aliases" ? { a: dir, b: dir } : { a: dir } });
+      const done = executeRun(store.runDir(id));
+      // Hold the release until one call is running and the other is waiting on its scope.
+      const deadline = Date.now() + 15_000;
+      for (;;) {
+        const events = store.readEvents(id) as Array<Record<string, unknown>>;
+        const started = events.filter((e) => e.type === "agent_started").length;
+        const waiting = events.some((e) => e.type === "log" && typeof e.message === "string" && /waits for/.test(e.message));
+        if (started >= 1 && waiting) break;
+        if (Date.now() > deadline) throw new Error(`${variant}: the second scoped call never waited: ${JSON.stringify(events.map((e) => e.type))}`);
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      writeFileSync(release, "");
+      assert.equal(await done, "done", `${variant}: ${JSON.stringify(store.readEvents(id).filter((e) => (e.type as string).endsWith("failed")))}`);
+      assert.deepEqual(readFileSync(log, "utf8").trim().split("\n"), ["start A", "end A", "start B", "end B"], `${variant}: the calls overlapped`);
+      assert.equal(readFileSync(join(dir, "shared.txt"), "utf8"), "original\nA\nB\n");
+    }
   });
 
   test("odw apply --all writes nothing when one repository would not apply cleanly; --agent applies to its own", async () => {

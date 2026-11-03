@@ -45,8 +45,8 @@ import type { QuotaPause } from "../quota-wait.js";
 import { redactorFor, type Redactor } from "../redact.js";
 import { SafetySnapshot } from "../safety.js";
 import type { Scheduler } from "../scheduler.js";
-import { applyRunTrust, repositoryRoot, resolveRunTrust, untrustedConfigSwap } from "../untrusted.js";
-import { checkMetaRepos, repoFlagsOf, reposEvent, resolveRunRepos, RunRepos } from "../repos.js";
+import { applyRunTrust, resolveRunTrust, untrustedConfigSwap } from "../untrusted.js";
+import { canonicalTree, checkMetaRepos, repoFlagsOf, reposEvent, resolveRunRepos, RunRepos } from "../repos.js";
 import { requireSandboxRefusal, sandboxGap, sandboxWarning, untrustedInputNote, untrustedInputOf, untrustedTier } from "../untrusted-input.js";
 import { isCommitId } from "../workspace.js";
 import { pluginOrigin } from "../workflows/plugins.js";
@@ -368,15 +368,19 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
     // the config's, with `--repo` over them — in an untrusted run, none the
     // repository's own config names outside it.
     const runSource = typeof meta.source === "string" ? meta.source : process.cwd();
+    // The source's canonical working-tree path: what its scope locks key by,
+    // shared with any alias of the same tree (an alias of the source is not a
+    // second working tree).
+    const sourceTree = canonicalTree(runSource);
     const declared = resolveRunRepos({
       setting: config.settings.repos ?? {},
       flags: repoFlagsOf(meta.repos),
       source: runSource,
-      sourceRoot: repositoryRoot(runSource),
+      sourceRoot: sourceTree,
       untrusted: runTrust.trust === "untrusted",
       repositoryConfig: runTrust.repositoryConfig,
     });
-    const repos = new RunRepos(declared.repos, { runId, runDir: store.runDir(runId), emit: (ev) => sink.emit(ev), snapshots: !mock });
+    const repos = new RunRepos(declared.repos, { runId, runDir: store.runDir(runId), emit: (ev) => sink.emit(ev), snapshots: !mock, source: sourceTree });
     // The workflow's memory (ODW extension; see ../memory): recalled for agents
     // with memory on; what the run learns is kept once it ends — not by a run no model answers.
     const memory = new RunMemory({
@@ -715,6 +719,10 @@ export async function executeRun(runDir: string, options: ExecuteRunOptions = {}
     // What the run learned is kept, before its terminal event (ODW extension).
     ctx.memory?.flush();
     sink.emit(event(RUN_FINISHED, { runId }));
+    // The terminal append may itself have found the disk full — the sink
+    // records that instead of throwing (see ./disk-full). Never commit
+    // "done" over it: the run ends failed, with its files consistent.
+    if (diskFull) throw diskFull;
     store.updateStatus(runId, { state: "done", dispatched: dispatched(), spentTokens: spent() });
     end = { state: "done" };
   } catch (err) {

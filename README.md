@@ -2539,7 +2539,8 @@ How the tier answers a permission request, by the tool call's ACP `kind`:
 | `full` | everything | nothing |
 
 ODW selects `allow_once` (or `reject_once`), never an `*_always` option, so no
-answer becomes a rule the agent remembers. When the agent offers no reject option,
+answer becomes a rule the agent remembers. When the agent offers no once-only
+option — no reject option for a call the tier refuses, or only `*_always` ones —
 ODW cancels the request, which allows nothing. Each answer is an
 `acp_permission` event (`toolCallId`, `title`, `kind`, `decision`, `option`,
 `tier`). These events show in `odw logs`, the live view and the dashboard's Logs

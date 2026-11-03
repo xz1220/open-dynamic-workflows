@@ -280,6 +280,52 @@ test("odw workflows update shows the diff before writing, moves the lock, and ne
   }
 });
 
+test("odw workflows update --force restores a locally modified or missing file even when upstream is unchanged", async () => {
+  const f = fixture();
+  try {
+    f.write(".odw/workflows/audit.js", flow("audit"));
+    f.write(".odw/evals/audit.json", '{"cases":[]}\n');
+    f.commit("one");
+    assert.equal(await cmdWorkflowsAdd([f.src, "--yes"], io(f.project)), 0);
+    const target = join(f.project, ".odw", "workflows", "audit.js");
+    const extra = join(f.project, ".odw", "evals", "audit.json");
+    const lockPath = join(f.project, ".odw", "workflows.lock.json");
+    const commit = readLock(lockPath).workflows.audit!.commit;
+
+    // Modified locally, upstream unchanged: without --force it is reported and
+    // left; with --force it is restored, and verify passes again.
+    const edited = flow("audit") + "// mine\n";
+    writeFileSync(target, edited);
+    writeFileSync(extra, '{"cases":[{"prompt":"tampered"}]}\n');
+    const plain = io(f.project);
+    assert.equal(await cmdWorkflowsUpdate(["audit", "--yes"], plain), 0);
+    assert.match(plain.text(), /audit: up to date at [0-9a-f]{12} \(but modified locally: odw workflows verify\)/);
+    assert.equal(readFileSync(target, "utf8"), edited, "no --force: the local edit stays");
+    assert.equal(readFileSync(extra, "utf8"), '{"cases":[{"prompt":"tampered"}]}\n');
+
+    const forced = io(f.project);
+    assert.equal(await stdout(() => cmdWorkflowsUpdate(["audit", "--force", "--yes"], forced)).then((r) => r.value), 0, forced.text());
+    assert.match(forced.text(), /restored \.odw\/workflows\/audit\.js \(was modified locally\)/);
+    assert.match(forced.text(), /restored evals\/audit\.json/);
+    assert.match(forced.text(), /restored audit to [0-9a-f]{12} \(upstream unchanged\)/);
+    assert.equal(readFileSync(target, "utf8"), flow("audit"));
+    assert.equal(readFileSync(extra, "utf8"), '{"cases":[]}\n');
+    assert.equal((await stdout(() => cmdWorkflowsVerify(["audit"], io(f.project)))).value, 0);
+    const entry = readLock(lockPath).workflows.audit!;
+    assert.equal(entry.commit, commit, "upstream did not move: the lock stays");
+
+    // Missing instead of modified: --force writes it back.
+    rmSync(target);
+    const missing = io(f.project);
+    assert.equal(await stdout(() => cmdWorkflowsUpdate(["audit", "--force", "--yes"], missing)).then((r) => r.value), 0, missing.text());
+    assert.match(missing.text(), /restored \.odw\/workflows\/audit\.js \(was missing\)/);
+    assert.equal(readFileSync(target, "utf8"), flow("audit"));
+    assert.equal((await stdout(() => cmdWorkflowsVerify(["audit"], io(f.project)))).value, 0);
+  } finally {
+    f.cleanup();
+  }
+});
+
 test("odw workflows verify hashes every locked file (exit 1 on a modified or missing one); list, doctor and the dashboard flag them third-party", async () => {
   const f = fixture();
   const cwd = process.cwd();

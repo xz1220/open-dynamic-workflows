@@ -1,11 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import fsDefault, { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execPath } from "node:process";
 
+import { DISK_FULL } from "../src/runtime/disk-full.js";
 import { startRunFromSource, waitFor } from "../src/runtime/launcher.js";
 import { RunStore, TERMINAL_STATES } from "../src/runtime/run-store.js";
 import { executeRun } from "../src/runtime/worker.js";
@@ -29,6 +31,44 @@ test("executeRun runs a no-agent workflow to done with a result", async () => {
     assert.equal(store.readStatus(id).state, "done");
     assert.deepEqual(store.readResult(id), { ok: 42 });
     assert.equal(store.readStatus(id).name, "t");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("ENOSPC on the terminal event fails the run as disk_full instead of recording done", async () => {
+  const { root, store } = setup();
+  try {
+    const script = join(root, "wf.js");
+    writeFileSync(script, "export const meta = { name: 't', description: 'd' }\nreturn 42");
+    const id = store.create({ script, args: null, source: root });
+    // The terminal append of run_finished finds the disk full; later writes
+    // succeed (space again): the run must still end failed, with its reason.
+    const original = fsDefault.appendFileSync;
+    let injected = false;
+    fsDefault.appendFileSync = function (this: unknown, path: unknown, data: unknown, ...rest: unknown[]) {
+      if (path === store.eventsPath(id) && String(data).includes('"type":"run_finished"')) {
+        injected = true;
+        throw Object.assign(new Error("injected: no space left on device"), { code: "ENOSPC" });
+      }
+      return (original as (...args: unknown[]) => unknown).call(this, path, data, ...rest);
+    } as typeof fsDefault.appendFileSync;
+    syncBuiltinESMExports();
+    let state: string | undefined;
+    try {
+      state = await executeRun(store.runDir(id));
+    } finally {
+      fsDefault.appendFileSync = original;
+      syncBuiltinESMExports();
+    }
+    assert.equal(injected, true, "the fault was injected");
+    assert.equal(state, "failed");
+    assert.equal(store.readStatus(id).state, "failed");
+    assert.equal(store.readStatus(id).failureReason, DISK_FULL);
+    // The terminal event on disk is the failure, not silence after "done".
+    const events = store.readEvents(id);
+    assert.ok(events.some((e) => e.type === "run_failed"), JSON.stringify(events.map((e) => e.type)));
+    assert.ok(!events.some((e) => e.type === "run_finished"));
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

@@ -154,6 +154,22 @@ test("a refusal with no reject option cancels the request; a write beyond the ti
   assert.deepEqual((await call("unasked", { tier: "edit" })).permissions, []);
 });
 
+test("a persistent option is never selected: only *_always options offered, the request is cancelled — even for a call the tier would allow", async () => {
+  for (const scenario of ["persistent-only", "persistent-allow"]) {
+    const r = await call(scenario, { tier: "read" });
+    assert.equal(r.error, null, String(r.error));
+    assert.equal(r.outcome!.text, "read=cancelled");
+    // The JSON-RPC answer cancels the request; nothing persistent is selected.
+    const answered = r.sent.find((m) => m.result && typeof m.result === "object" && "outcome" in m.result)!;
+    assert.deepEqual(answered.result, { outcome: { outcome: "cancelled" } });
+    // The run's record says rejected with no option — never allow_always.
+    assert.deepEqual(
+      r.permissions.map((p) => [p.decision, p.option]),
+      [["rejected", undefined]],
+    );
+  }
+});
+
 test("untrusted input on an open network: a read agent's fetch and search requests are refused; trusted, they are allowed", async () => {
   const answers = async (withholdSecrets: boolean) => {
     const dir = tempDir();
