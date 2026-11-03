@@ -131,6 +131,27 @@ function real(path: string): string {
   }
 }
 
+/**
+ * The canonical working-tree path `path` names: its git top level with links
+ * resolved, else `path` itself resolved. Two names of one physical working
+ * tree — repository aliases, or the run's source and an alias of it — map to
+ * the same path, so what is keyed by it (scope locks) treats them as one.
+ */
+export function canonicalTree(path: string): string {
+  let top = "";
+  try {
+    top = execFileSync("git", ["-C", path, "rev-parse", "--show-toplevel"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 5000,
+      windowsHide: true,
+    }).trim();
+  } catch {
+    // not a repository (or no git): the directory is the whole of it
+  }
+  return real(top || path);
+}
+
 /** Whether `path` is `root` or lies under it. */
 function inside(root: string, path: string): boolean {
   const rel = relative(real(root), real(path));
@@ -211,6 +232,8 @@ export class RunRepos {
       emit?: (ev: WorkflowEvent) => void;
       /** Take safety snapshots (not in a run no model answers). */
       snapshots?: boolean;
+      /** The run's source working tree, canonical (see {@link canonicalTree}): what its scope locks share with an alias of the same tree. */
+      source?: string;
     } = {},
   ) {
     this.byName = new Map(repos.map((r) => [r.name, r]));
@@ -246,12 +269,27 @@ export class RunRepos {
     return snap;
   }
 
-  /** The scoped calls not settled yet in this repository (see ./scope): scopes in other repositories never overlap. */
+  /**
+   * The scoped calls not settled yet in this repository (see ./scope): scopes
+   * in other repositories never overlap. Locks are keyed by the repository's
+   * canonical working-tree path, not its alias: two aliases of one physical
+   * tree — or the source and an alias of it — share one set, so overlapping
+   * scopes there serialize instead of racing.
+   */
   scopeLocks(name: string): ScopeLocks {
-    let locks = this.locks.get(name);
+    return this.locksFor(this.byName.get(name)?.path ?? name);
+  }
+
+  /** The source working tree's own scoped calls: the same locks an alias of the same tree waits on. */
+  sourceLocks(): ScopeLocks {
+    return this.locksFor(this.options.source ?? "");
+  }
+
+  private locksFor(path: string): ScopeLocks {
+    let locks = this.locks.get(path);
     if (!locks) {
       locks = new ScopeLocks();
-      this.locks.set(name, locks);
+      this.locks.set(path, locks);
     }
     return locks;
   }

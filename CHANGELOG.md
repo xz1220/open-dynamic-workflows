@@ -1235,3 +1235,16 @@ independent security reviews whose findings are all fixed.
 - `install.sh` (and the action) treat only releases before v0.5.0 as predating
   `SHA256SUMS`; it was `≤ 0.5.0`, which would have let a 0.5.0 release without its
   checksums install with a warning.
+
+### Fixed — acceptance regressions (issue #63)
+- Scoped calls serialize by physical working tree, not by alias: two aliases of the
+  same repository — or the run's source and an alias pointing back at it — share one
+  set of scope locks, so overlapping scopes wait instead of racing and losing edits.
+- An ACP agent's persistent permission options are never selected: ODW answers with a
+  once-only option (`allow_once`/`reject_once`) or cancels the request — never
+  `allow_always`/`reject_always`, even as a fallback when nothing else is offered.
+- `odw workflows update --force` restores the installed bytes of a workflow file (and
+  its test/eval file) that was modified or deleted locally, even when upstream is
+  unchanged — the recovery `odw workflows verify` and `odw doctor` point at.
+- A run whose terminal event cannot be written because the disk is full ends
+  `failed` with reason `disk_full` (and a `run_failed` terminal event), never `done`.

@@ -906,8 +906,10 @@ export function createPrimitives(
     const cache = [adapter.name, model ?? "", opts.agentType ?? ""].join("\u0000");
     // A scoped call claims its scope as it is made (ODW extension; see ./scope):
     // it waits, holding no slot, for each earlier call in flight whose scope overlaps.
-    // Scopes in another repository never overlap: each repository has its locks.
-    const locks = repo ? ctx.repos!.scopeLocks(repo.name) : scopeLocks;
+    // Scopes in another repository never overlap: each repository has its locks,
+    // keyed by canonical working-tree path — aliases of one physical tree, and
+    // the source an alias points back at, share one set (see ./repos).
+    const locks = repo ? ctx.repos!.scopeLocks(repo.name) : ctx.repos ? ctx.repos.sourceLocks() : scopeLocks;
     const claim = scope ? locks.claim({ agentId, label: display }, scope.globs.map(({ glob }) => glob)) : undefined;
     const turn = fanOut?.enter(adapter.name, cache, prompt);
     // A call none of whose adapters has quota left waits for the first reset

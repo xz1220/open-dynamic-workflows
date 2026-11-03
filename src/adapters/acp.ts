@@ -565,8 +565,10 @@ class AcpClient {
       return undefined;
     };
     const allowed = !this.done && !this.cancelled && permits(this.spec.tier, kind, this.spec.noWebTools);
-    // Once, never always: what ODW allows is this call's, not a rule the agent remembers.
-    const option = allowed ? pick("allow_once", "allow_always") : pick("reject_once", "reject_always");
+    // Once, never always: what ODW allows is this call's, not a rule the agent
+    // remembers — a persistent option is never selected, even as a fallback;
+    // with no once-only choice the request is cancelled, which allows nothing.
+    const option = allowed ? pick("allow_once") : pick("reject_once");
     const decision = allowed && option ? "allowed" : "rejected";
     if (decision === "rejected") {
       const input = call.rawInput !== undefined ? call.rawInput : undefined;
