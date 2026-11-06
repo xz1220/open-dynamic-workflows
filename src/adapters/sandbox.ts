@@ -925,6 +925,8 @@ export interface OpenContainer {
   env: Record<string, string | undefined>;
   /** The host's environment, for the engine client. */
   hostEnv?: Record<string, string | undefined>;
+  /** The `PWD` it starts with, for a CLI that reads it (an adapter's `workspacePwd`): `--workdir` doesn't replace an image's own. */
+  pwd?: string;
   /** `none` for an exec() step: it gets an empty home whatever the box says. */
   cliConfig?: SandboxCliConfig;
   runId?: string;
@@ -971,7 +973,7 @@ export async function openContainer(opts: OpenContainer): Promise<OpenedContaine
   const home = await prepareHome(opts.command, opts.cliConfig ?? box.cliConfig, opts.env, opts.home);
   const name = containerName(opts.runId, opts.agentId);
   const split = containerEnv(opts.env, opts.hostEnv ?? process.env);
-  const setEnv: Record<string, string> = { HOME: CONTAINER_HOME, TMPDIR: "/tmp", ...opts.egress?.env };
+  const setEnv: Record<string, string> = { HOME: CONTAINER_HOME, TMPDIR: "/tmp", ...(opts.pwd ? { PWD: opts.pwd } : {}), ...opts.egress?.env };
   // What ODW sets is not the host's to override: its proxy variables above all.
   const pass = split.pass.filter((name) => !Object.prototype.hasOwnProperty.call(setEnv, name));
   const argv = containerArgv({

@@ -2185,6 +2185,7 @@ export class Bridge {
                 ...(call.mounts ?? []),
               ],
               env,
+              ...(adapter.workspacePwd ? { pwd: ws.path } : {}),
               runId: this.runId,
               agentId: call.container.agentId,
               egress: await this.egressFor(call.container.box, call.container.engine, call.container.agentId),
