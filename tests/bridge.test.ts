@@ -166,6 +166,34 @@ test("an isolated agent gets its worktree as PWD, not the checkout it came from"
   }
 });
 
+test("workspacePwd decides, whatever the adapter is called", async () => {
+  const saved = process.env.PWD;
+  process.env.PWD = "/somewhere/else";
+  const pwdOf = async (name: string, workspacePwd: boolean | undefined) => {
+    const config = defaultConfig();
+    config.adapters[name] = { ...config.adapters.opencode!, name, workspacePwd };
+    config.settings.defaultAdapter = name;
+    let env: Record<string, string | undefined> | undefined;
+    const bridge = new Bridge(config, {
+      source: "/repo",
+      runner: async (_command, options) => {
+        env = options?.env;
+        return ok(JSON.stringify({ type: "text", part: { type: "text", text: "answer" } }));
+      },
+    });
+    await bridge.run({ prompt: "ask" });
+    return env?.PWD;
+  };
+  try {
+    assert.equal(await pwdOf("opencode", false), "/somewhere/else", "the built-in, turned off");
+    assert.equal(await pwdOf("renamed", true), "/repo", "another name, turned on");
+    assert.equal(await pwdOf("renamed", undefined), "/somewhere/else", "another name, not set");
+  } finally {
+    if (saved === undefined) delete process.env.PWD;
+    else process.env.PWD = saved;
+  }
+});
+
 test("new harness adapters send prompts on stdin and route workspace and model flags", async () => {
   for (const name of ["omp", "kilo", "opencode", "cursor"]) {
     const config = defaultConfig();
