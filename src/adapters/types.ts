@@ -334,6 +334,11 @@ export interface Adapter {
   stdin?: string;
   /** Extra environment variables layered over the process environment. */
   env?: Record<string, string>;
+  /**
+   * Start the CLI with `PWD` set to its workspace. For a CLI that takes its
+   * folder from `$PWD` instead of its working directory, as `opencode run` does.
+   */
+  workspacePwd?: boolean;
   /** Per-call timeout in seconds; falls back to the run-wide setting. */
   timeout?: number;
   /**

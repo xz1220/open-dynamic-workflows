@@ -105,6 +105,95 @@ test("T5: an option with no native carrier surfaces as an outcome note, never dr
   );
 });
 
+test("only an adapter that asks for it gets its workspace as PWD", async () => {
+  const saved = process.env.PWD;
+  process.env.PWD = "/somewhere/else";
+  try {
+    const names = Object.keys(defaultConfig().adapters);
+    assert.ok(names.includes("opencode") && names.length > 1);
+    for (const name of names) {
+      const config = defaultConfig();
+      config.settings.defaultAdapter = name;
+      let env: Record<string, string | undefined> | undefined;
+      let cwd: string | undefined;
+      const bridge = new Bridge(config, {
+        source: "/repo",
+        runner: async (_command, options) => {
+          env = options?.env;
+          cwd = options?.cwd;
+          return ok(JSON.stringify({ type: "text", part: { type: "text", text: "answer" } }));
+        },
+      });
+      await bridge.run({ prompt: "ask" }).catch(() => undefined);
+      assert.equal(cwd, "/repo", name);
+      assert.equal(env?.PWD, name === "opencode" ? "/repo" : "/somewhere/else", name);
+    }
+  } finally {
+    if (saved === undefined) delete process.env.PWD;
+    else process.env.PWD = saved;
+  }
+});
+
+test("an isolated agent gets its worktree as PWD, not the checkout it came from", async () => {
+  const saved = process.env.PWD;
+  const repo = mkdtempSync(join(tmpdir(), "odw-workspace-pwd-"));
+  process.env.PWD = repo;
+  try {
+    const git = (...args: string[]) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8" });
+    git("init", "-q");
+    writeFileSync(join(repo, "a.txt"), "a\n");
+    git("add", "-A");
+    git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--no-gpg-sign", "-m", "init");
+    const config = defaultConfig();
+    config.settings.defaultAdapter = "opencode";
+    let env: Record<string, string | undefined> | undefined;
+    let cwd: string | undefined;
+    const bridge = new Bridge(config, {
+      source: repo,
+      runner: async (_command, options) => {
+        env = options?.env;
+        cwd = options?.cwd;
+        return ok(JSON.stringify({ type: "text", part: { type: "text", text: "answer" } }));
+      },
+    });
+    await bridge.run({ prompt: "edit", isolation: "worktree" });
+    assert.ok(cwd && cwd !== repo, `expected a worktree, got ${cwd}`);
+    assert.equal(env?.PWD, cwd);
+  } finally {
+    if (saved === undefined) delete process.env.PWD;
+    else process.env.PWD = saved;
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test("workspacePwd decides, whatever the adapter is called", async () => {
+  const saved = process.env.PWD;
+  process.env.PWD = "/somewhere/else";
+  const pwdOf = async (name: string, workspacePwd: boolean | undefined) => {
+    const config = defaultConfig();
+    config.adapters[name] = { ...config.adapters.opencode!, name, workspacePwd };
+    config.settings.defaultAdapter = name;
+    let env: Record<string, string | undefined> | undefined;
+    const bridge = new Bridge(config, {
+      source: "/repo",
+      runner: async (_command, options) => {
+        env = options?.env;
+        return ok(JSON.stringify({ type: "text", part: { type: "text", text: "answer" } }));
+      },
+    });
+    await bridge.run({ prompt: "ask" });
+    return env?.PWD;
+  };
+  try {
+    assert.equal(await pwdOf("opencode", false), "/somewhere/else", "the built-in, turned off");
+    assert.equal(await pwdOf("renamed", true), "/repo", "another name, turned on");
+    assert.equal(await pwdOf("renamed", undefined), "/somewhere/else", "another name, not set");
+  } finally {
+    if (saved === undefined) delete process.env.PWD;
+    else process.env.PWD = saved;
+  }
+});
+
 test("new harness adapters send prompts on stdin and route workspace and model flags", async () => {
   for (const name of ["omp", "kilo", "opencode", "cursor"]) {
     const config = defaultConfig();
@@ -128,7 +217,7 @@ test("new harness adapters send prompts on stdin and route workspace and model f
     assert.equal(out.text, `${name} answer`);
     assert.match(stdin, new RegExp(`ask ${name}`));
     assert.equal(command.includes("{prompt}"), false);
-    assert.ok(command.includes("/repo"), `expected workspace in ${JSON.stringify(command)}`);
+    if (name !== "opencode") assert.ok(command.includes("/repo"), `expected workspace in ${JSON.stringify(command)}`);
     const modelFlag = command.indexOf("--model");
     assert.ok(modelFlag >= 0, `expected model flag in ${JSON.stringify(command)}`);
     assert.equal(command[modelFlag + 1], `${name}/model`);

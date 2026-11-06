@@ -185,7 +185,7 @@ const KNOWN_TOP_KEYS = [
   "lockedWorkflows",
 ] as const;
 
-const KNOWN_ADAPTER_KEYS = ["command", "stdin", "env", "timeout", "stallTimeout", "concurrency", "promptCache", "label", "flags", "output", "failures", "permissionArgs", "permissions", "permissionDenials", "trust", "untrustedArgs", "untrustedNote", "sandbox", "agentLimits", "egressHosts", "questions", "questionArgs", "protocol"] as const;
+const KNOWN_ADAPTER_KEYS = ["command", "stdin", "env", "timeout", "stallTimeout", "concurrency", "promptCache", "workspacePwd", "label", "flags", "output", "failures", "permissionArgs", "permissions", "permissionDenials", "trust", "untrustedArgs", "untrustedNote", "sandbox", "agentLimits", "egressHosts", "questions", "questionArgs", "protocol"] as const;
 
 /** The fields of an adapter's `output`, per format. */
 const KNOWN_OUTPUT_KEYS: Record<string, readonly string[]> = {
@@ -711,6 +711,12 @@ function buildAdapter(name: string, spec: RawAdapter): Adapter {
       min: 1,
       integer: true,
     });
+  }
+  if (spec.workspacePwd != null) {
+    if (typeof spec.workspacePwd !== "boolean") {
+      throw new ConfigError(`adapter '${name}' 'workspacePwd' must be true or false; got ${JSON.stringify(spec.workspacePwd)}`);
+    }
+    adapter.workspacePwd = spec.workspacePwd;
   }
   if (spec.promptCache != null) {
     if (typeof spec.promptCache !== "boolean") {

@@ -15,6 +15,11 @@ dashboard redesigned to watch them, evals and comparisons to check them, and two
 independent security reviews whose findings are all fixed.
 
 ### Changed behavior — check before upgrading
+- The built-in `opencode` adapter no longer passes `--dir`, which OpenCode v2 removed from
+  `opencode run`, and sets `PWD` to the agent's workspace instead (`"workspacePwd": true`, a
+  new adapter field). `opencode run` takes its folder from `$PWD`, so an isolated agent would
+  otherwise work in the main checkout. A config entry that gives `opencode` its own `command`
+  replaces the built-in and needs `"workspacePwd": true` for the same effect.
 - `agentType` naming an agent definition file now runs that definition (see "Write
   workflows"): its body replaces the one-line persona, and its `tools` may lower the
   agent's permission tier — a read-only reviewer definition runs at `read`, and fails

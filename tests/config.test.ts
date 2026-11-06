@@ -56,8 +56,8 @@ test("new built-ins declare their automation, model, workspace, and output contr
       select: "last",
     });
     assert.ok(edit(name).includes("--auto"));
-    assert.ok(adapter.command.includes("--dir"));
-    assert.ok(adapter.command.includes("{workspace}"));
+    assert.equal(adapter.command.includes("--dir"), name === "kilo");
+    assert.equal(adapter.command.includes("{workspace}"), name === "kilo");
     assert.equal(adapter.stdin, "{prompt}");
   }
 
@@ -96,6 +96,28 @@ test("config example lints clean, and its commented-out notify block is valid on
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("workspacePwd: an entry without a command keeps the built-in's, one with a command replaces it", () => {
+  const opencode = (entry: Record<string, unknown>) => {
+    const dir = mkdtempSync(join(tmpdir(), "odw-workspace-pwd-config-"));
+    try {
+      const path = join(dir, "odw.config.json");
+      writeFileSync(path, JSON.stringify({ adapters: { opencode: entry } }));
+      return loadConfig(path, { quiet: true }).adapters.opencode!;
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+  assert.equal(defaultConfig().adapters.opencode!.workspacePwd, true);
+  assert.equal(opencode({ timeout: 90 }).workspacePwd, true);
+  assert.equal(opencode({ workspacePwd: false }).workspacePwd, false);
+  assert.equal(opencode({ command: ["opencode", "run"] }).workspacePwd, undefined);
+  assert.equal(opencode({ command: ["opencode", "run"], workspacePwd: true }).workspacePwd, true);
+  assert.throws(
+    () => opencode({ workspacePwd: "yes" }),
+    (err: unknown) => err instanceof ConfigError && /adapter 'opencode' 'workspacePwd' must be true or false; got "yes"/.test(err.message),
+  );
 });
 
 test("loadConfig merges a user file over the built-ins (user wins)", () => {

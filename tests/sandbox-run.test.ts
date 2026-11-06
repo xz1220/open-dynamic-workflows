@@ -170,6 +170,14 @@ test("an agent runs in its container: workspace at the same path, a copy of its 
   assertNothingLeft();
 });
 
+test("a container gets its workspace as PWD only for an adapter that asks for it", async () => {
+  const source = mkdtempSync(join(root, "repo-"));
+  await new Bridge(config({}, { workspacePwd: true }), { source, runId: "20261018-000000-bbbbb1" }).run({ prompt: "hello" }, { agentId: 1 });
+  assert.ok(valuesOf(runs().at(-1)!, "--env").includes(`PWD=${source}`));
+  await new Bridge(config(), { source, runId: "20261018-000000-bbbbb2" }).run({ prompt: "hello" }, { agentId: 2 });
+  assert.equal(valuesOf(runs().at(-1)!, "--env").some((value) => /^PWD(=|$)/.test(value)), false);
+});
+
 test("a timeout kills the container by name, not just the engine client: nothing is left", async () => {
   const bridge = new Bridge(config({ timeout: 1 }), { source: mkdtempSync(join(root, "repo-")), runId: "r-timeout" });
   const before = calls().length;

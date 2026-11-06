@@ -224,6 +224,7 @@ still reach the agent`）。仓库 `.worktreeinclude` 的 `symlink:` 行和仓�
 | `stallTimeout` | 这个 CLI 的卡死超时（秒）（覆盖运行级的 `stallTimeout`；`0` 表示对该适配器关闭看门狗） |
 | `concurrency` | **ODW 扩展。** 在运行级 `concurrency` 之内，这个 CLI 上同时最多运行多少个 agent：一个 agent 需要两边各一个槽位，每个适配器先到先得地排队，被限住的适配器不会挡住其他适配器。不设置：只受运行级上限约束 |
 | `promptCache` | **ODW 扩展。** `true`：这个 CLI 背后的模型 API 会缓存提示前缀，所以它的扇出会错开启动（见 `staggerFanOut`）。内置 `claude` 声明了它 |
+| `workspacePwd` | **ODW 扩展。** `true`：启动这个 CLI 时把 `PWD` 设为它的工作区（在容器中也是如此），用于根据 `$PWD` 而不是工作目录来确定文件夹的 CLI，例如 `opencode run`。内置 `opencode` 声明了它 |
 | `label` | 进度显示用的友好名字 |
 | `flags` | 能力声明，如 `{ "model": ["--model"] }`——承载每次调用 `model` 的原生旗标。不声明它，`agent(..., { model })` 对该适配器就不生效（日志里会出现一条路由说明）。**ODW 扩展：**`"schema": { "args": [...], "mode": "inline" \| "file", "strict"?: true, "objectRoot"?: true }` 声明该 CLI 会自己校验调用的 JSON Schema——见[原生结构化输出](#原生结构化输出) |
 | `failures` | **ODW 扩展。** 这个 CLI 自己的失败措辞：`{ "rate_limit": [...], "quota": [...], "auth": [...], "model_unavailable": [...] }`，正则表达式，先于内置表、不区分大小写地匹配失败运行输出的末尾 |

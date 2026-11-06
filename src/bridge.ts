@@ -2158,7 +2158,11 @@ export class Bridge {
         // Untrusted input (ODW extension; see ./untrusted-input): no secret its own login does not need.
         const base = agentBaseEnv(process.env, this.config.settings);
         const env = withAgentVars(
-          { ...(this.withholdSecrets ? withholdSecrets(base, adapter) : base), ...adapter.env },
+          {
+            ...(this.withholdSecrets ? withholdSecrets(base, adapter) : base),
+            ...adapter.env,
+            ...(adapter.workspacePwd ? { PWD: ws.path } : {}),
+          },
           call.env,
           this.composeOverride(call.onNote),
         );
@@ -2181,6 +2185,7 @@ export class Bridge {
                 ...(call.mounts ?? []),
               ],
               env,
+              ...(adapter.workspacePwd ? { pwd: ws.path } : {}),
               runId: this.runId,
               agentId: call.container.agentId,
               egress: await this.egressFor(call.container.box, call.container.engine, call.container.agentId),
